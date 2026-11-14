@@ -14,8 +14,18 @@ publish = false
 # principle 5). Each exception is approved in a work package and recorded
 # here with its reason.
 [workspace.dependencies]
-mortar = { path = "crates/mortar" }
-xtask  = { path = "xtask" }
+mortar          = { path = "crates/mortar" }
+mortar_diag     = { path = "crates/mortar_diag" }
+mortar_elf      = { path = "crates/mortar_elf" }
+mortar_testutil = { path = "crates/mortar_testutil" }
+xtask           = { path = "xtask" }
+# Third-party (each approved in a work package; docs/AGENTS.md rule 3).
+# signal-hook: the harness and the test support, and only they, kill their
+# children and return their held jobserver tokens on SIGINT/SIGTERM (WP-003,
+# spec/harness.md "Jobserver"); the signal-handler `unsafe` stays in the
+# dependency, both crates remain `forbid(unsafe_code)`. Same choice as kiln
+# and hod.
+signal-hook = { version = "0.3", default-features = false, features = ["iterator"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

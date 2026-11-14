@@ -1,0 +1,306 @@
+//! Test support shared by mortar's crates. Not shipped: a dev-dependency of
+//! the crates, and a dependency of the harness (`xtask`).
+//!
+//! Tests that compare against an external oracle (binutils, LLVM's tools, a
+//! reference linker, a compiler that builds test inputs) find it with
+//! [`tool`]. A missing tool makes the test skip with a note, unless
+//! `MORTAR_REQUIRE_TOOLS=1`, which makes it a failure (`docs/VALIDATION.md`
+//! "Oracles").
+//!
+//! Every process a test starts goes through [`run_with`], [`run`] or
+//! [`write_script`], never a bare `Command`: WP-003 makes each of them hold
+//! a token of the machine's jobserver for the child's lifetime
+//! (`spec/harness.md` "Jobserver"). Until it lands they run the child
+//! directly; the signatures are the ones that stay.
+//!
+//! Ported from hod's `hod_testutil`.
+
+use std::ffi::OsStr;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
+
+/// LLVM majors searched, preferred first.
+pub const LLVM_MAJORS: [u32; 2] = [22, 19];
+
+/// Whether a missing external tool is a failure rather than a skip.
+pub fn tools_required() -> bool {
+    std::env::var_os("MORTAR_REQUIRE_TOOLS").is_some_and(|v| v == "1")
+}
+
+/// Finds an external tool by base name.
+///
+/// For an LLVM tool (`llvm-mc`, `llc`, `ld.lld`, ...) the versioned names
+/// `<name>-22` and `<name>-19` on `PATH` and the `/usr/lib/llvm-N/bin`
+/// directories are tried, newest first. The plain name on `PATH` is not:
+/// its LLVM major is unknown (`spec/harness.md` "Toolchain for tests").
+/// Any other name, and a versioned one (`llc-22`), is also looked up as
+/// given.
+pub fn find_tool(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let on_path =
+        |file: &str| std::env::split_paths(&path).map(|dir| dir.join(file)).find(|p| p.is_file());
+    for major in LLVM_MAJORS {
+        if let Some(found) = on_path(&format!("{name}-{major}")) {
+            return Some(found);
+        }
+        let installed = PathBuf::from(format!("/usr/lib/llvm-{major}/bin/{name}"));
+        if installed.is_file() {
+            return Some(installed);
+        }
+    }
+    if is_unversioned_llvm_tool(name) {
+        return None;
+    }
+    on_path(name)
+}
+
+/// Whether `name` is an LLVM tool named without its major
+/// ([`find_tool`]): `clang++`, `llc`, `ld.lld`, `llvm-dwarfdump`, but not
+/// `llc-22`, `gcc` or `ld.bfd`.
+pub fn is_unversioned_llvm_tool(name: &str) -> bool {
+    let versioned = name
+        .rsplit_once('-')
+        .is_some_and(|(_, major)| !major.is_empty() && major.bytes().all(|b| b.is_ascii_digit()));
+    let llvm = name.starts_with("llvm-")
+        || matches!(
+            name,
+            "clang" | "clang++" | "clang-cpp" | "llc" | "opt" | "lli" | "lld" | "ld.lld" | "lldb"
+        );
+    llvm && !versioned
+}
+
+/// Finds a tool for a test, or says the test must skip.
+///
+/// Returns `None` after printing a note when the tool is missing and tools
+/// are optional.
+///
+/// # Panics
+/// Panics when the tool is missing and `MORTAR_REQUIRE_TOOLS=1`.
+pub fn tool(name: &str) -> Option<PathBuf> {
+    let found = find_tool(name);
+    if found.is_none() {
+        assert!(!tools_required(), "required tool `{name}` not found (MORTAR_REQUIRE_TOOLS=1)");
+        eprintln!("note: `{name}` not found; skipping the tool-backed part of this test");
+    }
+    found
+}
+
+/// `<build directory>/tmp`, when this executable is in
+/// `<build directory>/<profile>/deps` or `<build directory>/<profile>`.
+fn build_tmp_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?;
+    if dir.file_name()? == "deps" {
+        dir = dir.parent()?;
+    }
+    // `dir` is the profile directory if its parent holds cargo's marker.
+    let build = dir.parent()?;
+    build.join("CACHEDIR.TAG").is_file().then(|| build.join("tmp"))
+}
+
+/// A scratch directory removed on drop.
+///
+/// Created in the build directory's `tmp` (the directory cargo calls
+/// `CARGO_TARGET_TMPDIR`), found from the running test executable, which
+/// cargo puts in `<build directory>/<profile>/deps`. Only a process that
+/// cargo did not build falls back to the system temporary directory. The
+/// name is unique to this process and call.
+#[derive(Debug)]
+pub struct Scratch {
+    path: PathBuf,
+}
+
+impl Scratch {
+    /// Creates a new scratch directory whose name starts with `label`.
+    ///
+    /// # Panics
+    /// Panics if the directory cannot be created.
+    pub fn new(label: &str) -> Self {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let base = std::env::var_os("CARGO_TARGET_TMPDIR")
+            .map(PathBuf::from)
+            .or_else(build_tmp_dir)
+            .unwrap_or_else(std::env::temp_dir);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = base.join(format!("mortar-{label}-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&path)
+            .unwrap_or_else(|e| panic!("cannot create {}: {e}", path.display()));
+        Self { path }
+    }
+
+    /// The directory.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// A path inside the directory.
+    pub fn join(&self, name: impl AsRef<Path>) -> PathBuf {
+        self.path.join(name)
+    }
+
+    /// Writes a file inside the directory and returns its path.
+    ///
+    /// # Panics
+    /// Panics if the file cannot be written.
+    pub fn write(&self, name: &str, contents: impl AsRef<[u8]>) -> PathBuf {
+        let path = self.join(name);
+        std::fs::write(&path, contents)
+            .unwrap_or_else(|e| panic!("cannot write {}: {e}", path.display()));
+        path
+    }
+}
+
+impl Scratch {
+    /// Writes an executable `sh` script inside the directory and returns
+    /// its path. See [`write_script`].
+    ///
+    /// # Panics
+    /// Panics if the script cannot be written.
+    pub fn write_script(&self, name: &str, body: &str) -> PathBuf {
+        let path = self.join(name);
+        write_script(&path, body);
+        path
+    }
+}
+
+/// Writes an executable `sh` script (`#!/bin/sh`, then `body`) at `path`.
+///
+/// The file is written by a child process, not by this one: a file this
+/// process has open for writing is inherited by every process another test
+/// thread forks at that moment, and running the script (here or in a
+/// grandchild) then fails with "text file busy" until that process calls
+/// `exec`.
+///
+/// # Panics
+/// Panics if the script cannot be written.
+pub fn write_script(path: &Path, body: &str) {
+    let mut writer = Command::new("sh");
+    writer.args(["-c", "cat > \"$0\" && chmod 755 \"$0\""]).arg(path);
+    let script = format!("#!/bin/sh\n{body}\n");
+    let outcome = run_with(&mut writer, script.as_bytes(), DEFAULT_TIMEOUT);
+    assert!(outcome.success(), "cannot write {}: {}", path.display(), outcome.stderr_text());
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// What a bounded child process did.
+#[derive(Debug)]
+pub struct Outcome {
+    /// `None` when the process was killed at the time limit.
+    pub status: Option<ExitStatus>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+impl Outcome {
+    /// Exited with status zero.
+    pub fn success(&self) -> bool {
+        self.status.is_some_and(|s| s.success())
+    }
+
+    /// Killed at the time limit.
+    pub fn timed_out(&self) -> bool {
+        self.status.is_none()
+    }
+
+    /// Standard output as text, lossily decoded.
+    pub fn stdout_text(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).into_owned()
+    }
+
+    /// Standard error as text, lossily decoded.
+    pub fn stderr_text(&self) -> String {
+        String::from_utf8_lossy(&self.stderr).into_owned()
+    }
+}
+
+/// Default time limit for a child process in a test.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(1);
+
+/// Runs a command with `stdin` as its input and a time limit, capturing its
+/// output. The process is killed when the limit passes.
+///
+/// From WP-003 the process holds one token of the jobserver this test
+/// binary inherited from before it starts until it has ended, and the time
+/// limit starts once the token is held.
+///
+/// # Panics
+/// Panics if the process cannot be started.
+pub fn run_with(command: &mut Command, stdin: &[u8], timeout: Duration) -> Outcome {
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawn(command)
+        .unwrap_or_else(|e| panic!("cannot run {}: {e}", command.get_program().display()));
+    let mut input = child.stdin.take().expect("piped stdin");
+    let mut out = child.stdout.take().expect("piped stdout");
+    let mut err = child.stderr.take().expect("piped stderr");
+    let stdin = stdin.to_vec();
+    let (stdout, stderr, status) = std::thread::scope(|scope| {
+        // A child that exits early closes the pipe; that is not our error.
+        scope.spawn(move || {
+            let _ = input.write_all(&stdin);
+        });
+        let out_reader = scope.spawn(move || {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf);
+            buf
+        });
+        let err_reader = scope.spawn(move || {
+            let mut buf = Vec::new();
+            let _ = err.read_to_end(&mut buf);
+            buf
+        });
+        let status = wait_until(&mut child, Instant::now() + timeout);
+        (out_reader.join().unwrap_or_default(), err_reader.join().unwrap_or_default(), status)
+    });
+    Outcome { status, stdout, stderr }
+}
+
+/// Runs `program` with `args`, no input, and the default time limit.
+pub fn run<I, S>(program: impl AsRef<OsStr>, args: I) -> Outcome
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_with(Command::new(program).args(args), &[], DEFAULT_TIMEOUT)
+}
+
+/// Starts a process, trying again while the program is "busy".
+///
+/// A test that writes a script and runs it can find it busy (`ETXTBSY`) for
+/// a moment: a process forked by another test thread while the script was
+/// being written holds it open for writing until that process calls `exec`.
+fn spawn(command: &mut Command) -> std::io::Result<Child> {
+    let mut attempts = 0;
+    loop {
+        match command.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 200 => {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            result => return result,
+        }
+    }
+}
+
+fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}

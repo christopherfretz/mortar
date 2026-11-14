@@ -1,0 +1,17 @@
+[package]
+name = "mortar_elf"
+description = "ELF64 for a linker: bounds-checked zero-copy readers for objects, archives and shared objects."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+mortar_testutil.workspace = true
+
+[lints]
+workspace = true

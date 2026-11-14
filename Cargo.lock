@@ -7,5 +7,20 @@ name = "mortar"
 version = "0.0.0"
 
 [[package]]
+name = "mortar_diag"
+version = "0.0.0"
+
+[[package]]
+name = "mortar_elf"
+version = "0.0.0"
+dependencies = [
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_testutil"
+version = "0.0.0"
+
+[[package]]
 name = "xtask"
 version = "0.0.0"
