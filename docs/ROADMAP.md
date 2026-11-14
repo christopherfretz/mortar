@@ -1,0 +1,175 @@
+# Roadmap
+
+Milestones are ordered by what they unlock; tracks run in parallel inside a
+milestone once the interfaces they share are fixed. Work packages are rows
+in `docs/BACKLOG.md`.
+
+The first long-term goal is **M3**: the full libc++ test suite, compiled by
+kiln and hod and linked by mortar, passing wherever it passes with the
+control linker.
+
+## Tracks
+
+| track | area | crates |
+|---|---|---|
+| T-H | Harness: CI, link tests, differential runs, external suites, bench, jobserver | `xtask`, `mortar_testutil` |
+| T-ELF | File formats: ELF, archives | `mortar_elf` |
+| T-CLI | Command line, linker scripts, version scripts, diagnostics | `mortar_cli`, `mortar_script`, `mortar_diag` |
+| T-RES | The model, inputs, symbol resolution, liveness, merging | `mortar_core`, `mortar_input`, `mortar_resolve`, `mortar_live`, `mortar_merge` |
+| T-A64 | AArch64: relocations, relaxations, PLT/GOT, TLS, thunks | `mortar_arch`, `mortar_a64` |
+| T-X64 | x86-64: the same | `mortar_x64` |
+| T-OUT | Synthetic sections, layout, image, debug sections | `mortar_synth`, `mortar_layout`, `mortar_image` |
+| T-V | The independent verifier | `mortar_plumb` |
+| T-META | Mason metadata, one-definition rule | `mortar_meta`, `mortar_odr` |
+| T-INC | Incremental linking | `mortar_incr` |
+| T-PERF | Speed and memory | all |
+
+T-V is staffed separately from T-A64, T-X64 and T-OUT by rule: the verifier
+is written from the specs, not from the linker.
+
+## M0: foundations
+
+The repository, the gate, the harness and the contracts that let the tracks
+run in parallel.
+
+- Workspace, lints, `scripts/env.sh`, the jobserver pool (done: WP-001).
+- `spec/model.md`: the ids and the `Plan`/`Inputs`/`Resolution`/`Layout`
+  tables. Design only, reviewed before T-RES and T-OUT start.
+- `mortar_elf` readers with the L1 corpus; `mortar_diag`.
+- The link-test format and runner with the reference-linker self-check, so
+  that tests exist and are proven right before the code they test.
+- `mortar_cli`: the option table from the link lines the drivers really
+  produce (GCC, Clang, gfortran, rustc, kiln), each option with a status.
+- The verifier's first stage, developed against the reference linkers'
+  outputs alone.
+- Bench harness and the first baselines of mold, lld and GNU ld.
+
+**Done when:** `cargo xtask ci` runs link tests against the three reference
+linkers, the verifier checks their outputs for the M1 relocation set, and
+mortar refuses every link by name.
+
+## M1: static executables (AArch64)
+
+The whole pipeline, in its final shape, on the smallest useful case.
+
+- `-static` non-PIE: objects and archives, symbol resolution with archive
+  extraction, COMDAT, common symbols, default layout, the AArch64 static
+  relocations, `.eh_frame` and `.eh_frame_hdr`, IRELATIVE for the IFUNCs of
+  a static glibc, static TLS, `.init_array`, `.symtab`, build id, map file.
+- A static C hello-world, then static C++ with exceptions, link and run.
+- `--time-phases`; determinism test; first mortar rows in the bench.
+
+**Done when:** the static subset of the link tests passes with the verifier
+clean, and static C and C++ test programs behave as with every reference.
+
+## M2: dynamic executables
+
+What every default link line of GCC, Clang and kiln needs.
+
+- Shared objects as inputs: `.dynsym`, versions (`verdef`/`verneed`),
+  `DT_NEEDED`, `--as-needed`; implicit linker scripts (`libc.so`).
+- PIE and non-PIE dynamic executables: `.interp`, `.dynamic`, `.dynsym`,
+  `.gnu.hash`, GOT, PLT, dynamic relocations, copy relocations, canonical
+  PLTs, RELRO, `.note.gnu.property`.
+- TLS: descriptors, initial-exec, local-exec, and the relaxations between
+  them; GOT relaxations.
+- `--gc-sections`, mergeable sections, `--build-id`, `-z` options in use.
+- Debug sections as data: relocation, tombstones, string merging.
+- kiln's executing corpus and hod's link matrix with mortar (L7).
+
+**Done when:** the default link lines of `gcc`, `g++`, `clang++`,
+`gfortran` and `kiln++` work for the test corpus on AArch64 with the
+verifier clean, and kiln's corpus passes with mortar.
+
+## M3: libc++ with kiln and hod
+
+- The libc++ lane: kiln and hod's sweep with mortar as the linker, strict
+  against the control, without and with `-g`.
+- gdb and lldb session tests (L6).
+- Range thunks; everything the sweep and the session tests find.
+- Start-up and small-link speed, since this lane is nine thousand links.
+
+**Done when:** libc++ strict passes with and without `-g`; the time of the
+link step over the suite is recorded against GNU ld, lld and mold.
+
+## M4: completeness
+
+Parallel tracks, each closing a class of real-world links.
+
+- x86-64 to parity with AArch64 (starts in M1 as soon as `mortar_arch` is
+  fixed; listed here because this is where it must be complete).
+- Shared-object output: symbol visibility and export rules, version scripts,
+  `-Bsymbolic*`, `--dynamic-list`, `DT_SONAME`, `DT_RUNPATH`.
+- Linker scripts: `SECTIONS`, `MEMORY`, `PHDRS`, expressions, `PROVIDE`,
+  `KEEP`, `INSERT`.
+- `-r`, `-static-pie`, `--wrap`, `--defsym`, `--exclude-libs`,
+  `--start-lib`, `--push-state`, RELR, compressed debug sections,
+  `.gdb_index`, `.debug_names`, identical code folding, `--emit-relocs`.
+- External suites (L9): mold's and lld's tests with recorded pass lists.
+- Open-source builds with GCC, Clang and gfortran objects; a Fortran lane
+  (LAPACK's tests); mortar and Rust test binaries linked by mortar; musl.
+
+**Done when:** the open-source lanes build and pass their own tests on both
+architectures, and each unsupported GNU ld feature is refused by name with
+a row in `docs/status/support.md`.
+
+## M5: the fastest
+
+Design for speed is in the architecture from M0; this milestone is where it
+is measured against the competition and won.
+
+- Parallel everything, the concurrent symbol table, memory layout of the
+  tables, output writing; the decision on file mapping (`unsafe`, by
+  measurement).
+- Bench gate enabled; ratios against mold, lld and GNU ld recorded per
+  release.
+
+**Done when:** mortar is at least as fast as mold and uses no more memory
+on every workload of the bench set, or the difference is explained and
+accepted in `docs/status/bench.md`.
+
+## M6: metadata and the one-definition rule
+
+Needs the kiln and hod projects (see "Cross-project").
+
+- `spec/meta.md`: the Mason metadata container, agreed across projects.
+- Static checks in `mortar_odr`; the weaker checks for foreign objects.
+- The loadable table and the load-time hook for shared objects.
+- The violation corpus (L11).
+
+**Done when:** every violation kind in `spec/odr.md` is diagnosed across
+objects, archives and shared objects, with no false positive on libc++ and
+the open-source lanes.
+
+## M7: incremental linking
+
+Needs M5's layout work and benefits from M6's metadata (per-section
+content hashes from kiln and hod).
+
+- Link state format; change detection; delta resolution.
+- Layout with slack; in-place patching; moving a section and patching its
+  referrers; fall back to a full link, with the reason.
+- The incremental validation layer (L10) and bench cases.
+
+**Done when:** L10 passes over long random edit sequences on the
+open-source lanes, and the incremental bench cases are recorded.
+
+## M8: 1.0
+
+Release gate green (`docs/VALIDATION.md`), documentation for users,
+packaging, a stability statement for the command line and the metadata
+format.
+
+## Cross-project
+
+Requests to the other Mason projects, raised as early as their design
+allows because they have their own queues:
+
+| request | to | needed by |
+|---|---|---|
+| A `-fuse-ld=mortar` spelling and discovery of the `mortar` executable in kiln's driver; later, kiln running mortar directly | kiln | M2 (convenience), M5 (start-up time) |
+| mortar as a linker in hod's link matrix and in both projects' libc++ sweeps | hod, kiln | M2, M3 |
+| The metadata container: kiln emits records, hod carries them into a discardable section | kiln, hod | M6 |
+| One-definition-rule records: per-entity definition hashes and locations | kiln | M6 |
+| Per-section content hashes and `-ffunction-sections`-style granularity for incremental links | kiln, hod | M7 |
+| What tuck needs the linker to keep or index | tuck | after M3 |

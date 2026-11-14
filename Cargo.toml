@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/christopherfretz/mortar"
+publish = false
+
+# No third-party dependencies in the shipped crates (docs/ARCHITECTURE.md,
+# principle 5). Each exception is approved in a work package and recorded
+# here with its reason.
+[workspace.dependencies]
+mortar = { path = "crates/mortar" }
+xtask  = { path = "xtask" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+
+# The linker is run once per edit: start-up cost and straight-line speed
+# both matter. Whole-program LTO and one code unit, as in hod (its WP-068
+# measured a smaller binary with fewer start-up page faults). A panic is a
+# bug of mortar's: the process aborts, no caller catches it. Tests keep
+# unwinding (cargo ignores `panic` for test targets).
+[profile.release]
+debug = 1
+lto = "fat"
+codegen-units = 1
+panic = "abort"

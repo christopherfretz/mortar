@@ -1,0 +1,6 @@
+/target/
+/.build/
+/.toolchain/
+/.worktrees/
+__pycache__/
+/.oss/

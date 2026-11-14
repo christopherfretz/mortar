@@ -1,0 +1,47 @@
+# Backlog
+
+One row per work package. Status: `todo`, `in-progress`, `review`, `done`.
+Rows are added by the supervisor; the format of a WP is in `docs/AGENTS.md`.
+Milestones and tracks are in `docs/ROADMAP.md`.
+
+## M0: foundations
+
+WP-002 and WP-013 are designs that later tracks build on; everything else
+in this milestone is independent of them and of each other unless the
+"depends on" column says so.
+
+| WP | track | scope | depends on | status |
+|---|---|---|---|---|
+| WP-001 | T-H | Cargo workspace, lints (`forbid(unsafe_code)`, clippy pedantic), `rust-toolchain.toml`, `scripts/env.sh`, `scripts/jobserver.sh` (ported from hod), the `mortar` facade and executable refusing every link by name, `xtask ci --quick` (fmt, clippy, test), the documents under `docs/` | - | done |
+| WP-002 | T-RES | `spec/model.md`: the ids (`FileId`, `SectionId`, `SymbolId`, `ChunkId`) and the tables phases exchange (`Plan`, `Inputs`, `Resolution`, `Layout`), their invariants, which phase writes which column, the deterministic-merge rules of the parallel helpers, what the link state for incremental links must be able to store. Design only; reviewed before T-RES and T-OUT work starts | WP-004 (reader API shape) | todo |
+| WP-003 | T-H | Jobserver client and process runner, ported from hod (`xtask/src/jobs.rs`, its `spec/harness.md` "Jobserver"): every child of `xtask` and of `mortar_testutil::run_with` holds a token of the pool named by `MAKEFLAGS`, with the implicit token, release on drop, kill-children-then-return-tokens on SIGINT/SIGTERM (approves `signal-hook` for `xtask` and `mortar_testutil` only), wall-clock and address-space limits per process, peak-RSS capture; `spec/harness.md` "Jobserver" and "Limits"; a private pool for the tests of the client | WP-001 | todo |
+| WP-004 | T-ELF | `spec/elf.md` §1-§4 and `mortar_elf`: constants; the bounds-checked zero-copy reader for ELF64 little-endian relocatable objects (header, section headers incl. `SHN_XINDEX` and more than 0xff00 sections, symbols, RELA, groups, notes, `SHF_COMPRESSED` headers, the AArch64 and x86-64 specifics); every malformed shape is an error value naming what is wrong; L1: agreement with `readelf`/`llvm-readobj` over the objects of the system toolchains and of GCC, Clang, gfortran output built at test time; truncation and mutation tests | WP-001 | todo |
+| WP-005 | T-ELF | `spec/elf.md` §5 and `mortar_elf::archive`: GNU archives (long names, the symbol index incl. `/SYM64/`), thin archives, BSD-style names as written by `llvm-ar`; L1 against `ar t` and `nm -s` over the system's archives (`libc.a`, `libstdc++.a`, `libgcc.a`) and archives built at test time | WP-001 | todo |
+| WP-006 | T-ELF | `spec/elf.md` §6 and `mortar_elf::dso`: the shared-object reader a linker needs (program headers, the dynamic table, `.dynsym`, `DT_SONAME`, `DT_NEEDED`, `versym`/`verdef`/`verneed`, `.note.gnu.property`), by section headers and, when they are stripped, by the dynamic table; L1 against `readelf -dW --dyn-syms -V` over the system's shared objects | WP-004 | todo |
+| WP-007 | T-CLI | `spec/diag.md` and `mortar_diag`: the diagnostic model (severity, a stable id, the refused construct's name, file/section/symbol context), rendering as GNU ld-shaped text that drivers and IDEs parse, `--error-limit`, color; the rule that an error leaves no output file | WP-001 | todo |
+| WP-008 | T-CLI | `spec/cli.md` and `mortar_cli`: GNU ld's option grammar (one or two dashes, joined and separate values, `-z` keywords, `-m` emulations, `@file`, position-dependent options such as `--as-needed`, `--push-state`, `--whole-archive`, `-Bstatic`); the option table with a status per option (implemented, accepted without effect with the reason, refused); a census of real link lines as fixtures (`gcc`, `g++`, `clang++`, `gfortran`, `rustc`, `kiln++`; static, PIE, shared, `-r`) parsed to a `Plan`; `--version`/`--help` texts that driver probes accept | WP-007 | todo |
+| WP-009 | T-CLI | `spec/script.md` §1-§3 and `mortar_script`, stage 1: the lexer and the commands of implicit linker scripts (`GROUP`, `INPUT`, `AS_NEEDED`, `OUTPUT_FORMAT`, `SEARCH_DIR`, comments), every other command refused by name; corpus: the text files under the system's library directories that a linker meets (`libc.so`, `libm.so`, `libstdc++.so`, `libgcc_s.so`) | WP-007 | todo |
+| WP-010 | T-H | `spec/harness.md` "Link tests" and `xtask linktest`: the test format (`tests/link/`: inputs built at test time from assembler, C, C++, Fortran or `yaml2obj`; the link line; checks on exit status, diagnostics, `readelf`/`nm` patterns, the program's output, per-architecture and per-linker conditions, `xfail(mortar)`), the runner with the reference self-check (GNU ld, lld, mold must pass a test before mortar is judged by it), `--linker`, `--filter`, result table; thirty seed cases over the M1 scope; `ci` runs it | WP-003 | todo |
+| WP-011 | T-V | `spec/plumb.md` and `mortar_plumb`, stage 1: read an output and its inputs, recover where each input section went from the linker's map file (GNU ld, lld and mold formats; mortar's own format is specified here), recompute every AArch64 static relocation of a static non-PIE link from the processor supplement's formulas, check sections against segments; `xtask plumb` runs it over the link tests' reference outputs. Rule 10 of `docs/AGENTS.md` applies | WP-004 | todo |
+| WP-012 | T-H | `spec/harness.md` "bench", `xtask bench` and `bench/`: the workload set of `docs/VALIDATION.md` (captured link lines and how each is rebuilt from pinned sources; nothing binary checked in), wall-clock median and peak RSS per linker, the baseline files and thresholds, `docs/status/bench.md` generated; first numbers for GNU ld, lld and mold on this machine | WP-003 | todo |
+| WP-013 | T-A64 | `spec/arch.md`: the `Arch` trait (classify, scan, apply and relax a relocation; PLT, GOT and thunk shapes; TLS sequences; `.eh_frame` pointer encodings) and `spec/a64.md`: the table of every AArch64 relocation type GCC, Clang, gfortran and hod emit, with formula, overflow check, the dynamic relocation or table entry it may demand, and the relaxations. Design only; reviewed before T-A64 and T-X64 code starts | WP-002 | todo |
+| WP-014 | T-H | Hosted CI: a GitHub Actions workflow running `cargo xtask ci` on AArch64 and x86-64 runners with the reference tools provisioned. Needs the operator's approval (runner minutes) | WP-010 | todo |
+| WP-015 | T-H | Provisioning of the pinned reference tools beyond the distribution's (lld 22, `yaml2obj`, `eu-elflint`, `qemu-user` with an x86-64 sysroot and cross toolchain), `MORTAR_REQUIRE_TOOLS=1` making a missing tool an error instead of a skip | WP-001 | todo |
+
+## M1: static executables (AArch64)
+
+Coarse rows; the supervisor cuts them finer when WP-002 and WP-013 are
+reviewed.
+
+| WP | track | scope | depends on | status |
+|---|---|---|---|---|
+| WP-020 | T-RES | `mortar_core`: the ids and tables of `spec/model.md` in Rust, interning, the parallel helpers with their merge tests | WP-002 | todo |
+| WP-021 | T-RES | `spec/input.md` and `mortar_input`: search paths, `-l` lookup, sysroot, sniffing, parallel reading and parsing into `Inputs` | WP-020, WP-005, WP-008, WP-009 | todo |
+| WP-022 | T-RES | `spec/resolve.md` and `mortar_resolve` for static links: binding and visibility rules, archive extraction to a fixed point in GNU ld's order semantics, COMDAT groups, common symbols, undefined-symbol diagnostics | WP-020 | todo |
+| WP-023 | T-A64 | `mortar_arch` and `mortar_a64`: the static relocations of `spec/a64.md`, scan and apply, overflow diagnostics, IRELATIVE, static TLS | WP-013, WP-020 | todo |
+| WP-024 | T-OUT | `spec/layout.md` and `mortar_layout`: the default output-section rules, section order, segments, addresses for static non-PIE executables | WP-020 | todo |
+| WP-025 | T-OUT | `spec/synth.md` and `mortar_synth` for static links: `.eh_frame` (CIE deduplication, dead FDE removal) and `.eh_frame_hdr`, `.symtab`/`.strtab`, the build-id note, `.comment`, the `__start_`/`__stop_` and layout symbols, the IRELATIVE table | WP-020, WP-023 | todo |
+| WP-026 | T-OUT | `spec/image.md` and `mortar_image`: parallel copy-and-relocate, the file writer, the map file in the format `spec/plumb.md` specifies, no output on error | WP-023, WP-024, WP-025 | todo |
+| WP-027 | T-RES | The pipeline in `mortar::link`, `--time-phases`, `--threads`, the determinism test, static C and C++ programs linked and run, mortar's first bench rows | WP-021, WP-022, WP-026 | todo |
+| WP-028 | T-V | `mortar_plumb` stage 2: `.eh_frame_hdr` against `.eh_frame`, symbol-table checks, IRELATIVE and static TLS; run by the harness on every link (L3) | WP-011 | todo |
+| WP-029 | T-X64 | `spec/x64.md`: the x86-64 relocation table as `spec/a64.md` does for AArch64; then `mortar_x64` for static links | WP-013 | todo |
