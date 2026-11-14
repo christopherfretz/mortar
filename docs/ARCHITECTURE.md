@@ -62,15 +62,25 @@ This document is the map. Contracts live in `spec/`, the plan in
 
 ## Scope
 
-In scope, in the order the roadmap takes them: ELF64 little-endian for
-`aarch64-unknown-linux-gnu` and `x86_64-unknown-linux-gnu`; executables
-(PIE, non-PIE, static, static-PIE), shared objects, relocatable output
-(`-r`); glibc first, musl checked; GNU ld's command line, linker scripts,
-version scripts and dynamic lists.
+In scope, in the order the roadmap takes them: little-endian ELF for
+`aarch64-unknown-linux-gnu` and `x86_64-unknown-linux-gnu` (ELF64) and
+`i686-unknown-linux-gnu` (ELF32, `SHT_REL` relocations); executables (PIE,
+non-PIE, static, static-PIE), shared objects, relocatable output (`-r`);
+glibc first, musl checked; GNU ld's command line, linker scripts, version
+scripts and dynamic lists.
 
-Out of scope until a milestone says otherwise: Mach-O, COFF, 32-bit and
-big-endian ELF, other architectures, link-time optimization (the plugin
-interface is refused by name; `-flto` objects are a later decision).
+kiln and hod target the two 64-bit architectures; 32-bit x86 objects come
+from GCC and Clang. Because a 32-bit target is in scope, nothing in the
+shared crates assumes the ELF class: readers present both classes through
+one widened view, the tables hold addresses and sizes as 64-bit values
+with the class a property of the link, and the writers of headers, symbol
+tables, dynamic tables and relocation records are generic over the class
+and over REL or RELA.
+
+Out of scope until a milestone says otherwise: Mach-O, COFF, big-endian
+ELF, the x32 ABI, other architectures (32-bit ARM included), link-time
+optimization (the plugin interface is refused by name; `-flto` objects are
+a later decision).
 
 ## Pipeline
 
@@ -126,7 +136,7 @@ parallel work on them starts.
 
 | crate | role | depends on |
 |---|---|---|
-| `mortar_elf` | ELF64: constants, bounds-checked zero-copy readers for relocatable objects, shared objects and archives (GNU, thin, BSD), writer primitives. No policy. | - |
+| `mortar_elf` | ELF, both classes: constants, bounds-checked zero-copy readers for relocatable objects, shared objects and archives (GNU, thin, BSD), writer primitives. No policy. | - |
 | `mortar_diag` | The diagnostic model, rendering, symbol demangling (Itanium C++, Rust v0), the "refused by name" vocabulary. | - |
 | `mortar_core` | The shared vocabulary: ids, the `Plan`/`Inputs`/`Resolution`/`Layout` tables, interning, the parallel helpers with their deterministic merges. No algorithms. | `mortar_elf`, `mortar_diag` |
 | `mortar_cli` | GNU ld's command line to a `Plan`: the option table with a status per option, response files, emulation names. | `mortar_core` |
@@ -136,7 +146,7 @@ parallel work on them starts.
 | `mortar_live` | Section liveness (`--gc-sections`), identical code folding. | `mortar_core` |
 | `mortar_merge` | `SHF_MERGE` sections: string and constant deduplication. | `mortar_core` |
 | `mortar_arch` | The `Arch` trait: classify, scan, apply and relax relocations; PLT, GOT and thunk shapes; TLS sequences; unwind encodings. | `mortar_core` |
-| `mortar_a64`, `mortar_x64` | The two architectures. | `mortar_arch` |
+| `mortar_a64`, `mortar_x64`, `mortar_x86` | The architectures: AArch64, x86-64, 32-bit x86. | `mortar_arch` |
 | `mortar_synth` | Synthetic sections: `.dynamic`, `.dynsym`, hash tables, version sections, GOT and PLT, dynamic relocations (RELA, RELR), `.eh_frame` and `.eh_frame_hdr`, notes, `.symtab`, debug indexes. | `mortar_core`, `mortar_arch` |
 | `mortar_layout` | Output sections from the default rules or a script, their order, segments, addresses, thunk insertion: `Layout`. | `mortar_core`, `mortar_arch`, `mortar_script` |
 | `mortar_image` | Image synthesis and the file writer; debug section handling (tombstones, compression). | `mortar_core`, `mortar_arch`, `mortar_synth` |
