@@ -732,7 +732,7 @@ when the record is written is generic, from `Facts.rel_form`:
 | `Symbolic` | 0 | `A` | `A` |
 | `GlobDat` | 0 | 0 | 0 |
 | `JumpSlot` | the lazy target (§3.7 `lazy_target`, D-49), under `-z now` too | 0 | the lazy target |
-| `IRelative` | the resolver's link address (`S + A`; `spec/dyn.md` §15 Q7) | the resolver's address | the resolver's address |
+| `IRelative` | per architecture (`spec/dyn.md` §15 Q7): AArch64 the resolver's link address (`S + A`, a64 §6.2); x86-64 0 (x64 X-39) | the resolver's address | the resolver's address (the word is the addend) |
 | `Copy` | none: the allocation is `NOBITS` | 0 | none |
 | `TpOff`, `DtpMod`, `DtpOff`, `TlsDesc` against a shared key | 0 | 0 | 0 |
 

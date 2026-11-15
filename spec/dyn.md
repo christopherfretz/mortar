@@ -1548,12 +1548,15 @@ WP-040r).
 - **Q7. Closed: `S+A`.** synth S-69 writes the IPLT word 0; a64 §6.2 and §10.2 say `S+A`
   (M1 contradiction). *Recommendation:* a64's `S+A` (GNU ld's bytes; glibc
   ignores it under RELA), fixed by `mortar_synth` before the M2 baseline is cut,
-  because it changes static outputs' bytes. *Ruled*: `S+A` (the
-  resolver's address) on every RELA target; synth S-69 and §13, x64
-  X-39 corrected; WP-041 changes the bytes. (The recommendation called
-  `S+A` "GNU ld's bytes"; synth §13 measured GNU ld writing the PLT
-  entry's address on AArch64 and the entry + 6 on x86-64, so it is
-  not.)
+  because it changes static outputs' bytes. *Ruled*, per architecture
+  as WP-041 implements it: AArch64 the resolver (`S+A`, a64.md §6.2's
+  rule: glibc ignores the word under RELA and reads the addend, and the
+  verifier accepts it); x86-64 0 (x64.md X-39; plumb F5(3)); i386 the
+  resolver (REL: the word is the addend). synth S-69 and §13 state it;
+  WP-041 changes the AArch64 bytes. The rule rests on a64.md, not on
+  GNU ld: "GNU ld's bytes" above is wrong (WP-041 measured GNU ld 2.44,
+  AArch64 static, writing the start of `.plt` into the word, with the
+  resolver in `r_addend`; on x86-64 it writes the entry + 6).
 - **Q8. Closed: M4.** layout §1 / L-100 and synth S-3 row 8 tag shared-object output
   and verdefs M2. *Recommendation:* the ROADMAP stands (M4); R-L3, R-S4.
   *Ruled as recommended*: layout §1, L-100; synth S-3 row 8.
