@@ -41,10 +41,18 @@ pub(crate) fn kinds<V: View>(view: &V) -> Vec<FileKind> {
     (0..view.files()).map(|f| view.file(FileId(f)).kind).collect()
 }
 
-/// Whether a file takes part in resolution in M1 (shared objects are
-/// refused, §1.2, and contribute nothing).
-pub(crate) const fn takes_part(kind: FileKind) -> bool {
-    !matches!(kind, FileKind::Shared)
+/// Whether a file's definitions count for `first`/`cfirst` (§4.1): every
+/// file but a closure shared object (`spec/dyn.md` D-12: closure files
+/// never give `def`).
+pub(crate) fn defines<V: View>(view: &V, kind: FileKind, file: FileId) -> bool {
+    kind != FileKind::Shared || view.shared(file).is_some_and(|s| !s.closure)
+}
+
+/// Whether a file that is not lazy is a source of edges from the start
+/// (§4.1, §4.2): every one but a shared object whose references do not
+/// extract (`spec/dyn.md` D-12, Q1: an as-needed one or a closure file).
+pub(crate) fn extracts<V: View>(view: &V, kind: FileKind, file: FileId) -> bool {
+    kind != FileKind::Shared || view.shared(file).is_some_and(crate::view::SharedInfo::extracts)
 }
 
 /// `first(K)` and `cfirst(K)` (§4.1, §12.1 first row).
@@ -59,10 +67,10 @@ pub(crate) fn targets_with<V: View>(view: &V, kinds: &[FileKind], pool: &Pool) -
     let cfirst = atomics_u32(keys, NO_FILE);
     pool.unit_cost(280).for_each_init(kinds.len(), Vec::new, |buf: &mut Vec<Mention>, f| {
         let kind = kinds[f];
-        if !takes_part(kind) || kind == FileKind::Internal {
+        let file = FileId(f as u32);
+        if !defines(view, kind, file) || kind == FileKind::Internal {
             return;
         }
-        let file = FileId(f as u32);
         buf.clear();
         view.mentions(file, buf);
         let lazy = kind.is_lazy();
@@ -145,7 +153,7 @@ pub(crate) fn closure<V: View>(
     let pull = atomics_u64(n, u64::MAX);
     let mut frontier: Vec<u32> = Vec::new();
     for (f, kind) in kinds.iter().enumerate() {
-        if takes_part(*kind) && !kind.is_lazy() {
+        if extracts(view, *kind, FileId(f as u32)) && !kind.is_lazy() {
             live.set(f);
             if *kind != FileKind::Internal {
                 frontier.push(f as u32);
@@ -225,7 +233,7 @@ pub fn oracle<V: View>(
     let mut pull = vec![u64::MAX; n];
     let mut work = std::collections::BTreeSet::new();
     for (f, kind) in kinds.iter().enumerate() {
-        if takes_part(*kind) && !kind.is_lazy() {
+        if extracts(view, *kind, FileId(f as u32)) && !kind.is_lazy() {
             live[f] = true;
             work.insert(f as u32);
         }

@@ -21,7 +21,7 @@ use mortar_elf::consts::{
 };
 use mortar_elf::object::Object;
 use mortar_elf::{Machine, SectionIndex, SymbolIndex, SymbolSection};
-use mortar_resolve::view::{FileInfo, FileKind, Groups, Mention, SectionInfo, View};
+use mortar_resolve::view::{FileInfo, FileKind, Groups, Mention, SectionInfo, SharedInfo, View};
 
 pub const TEXT: u32 = 1;
 pub const DATA: u32 = 2;
@@ -65,6 +65,11 @@ pub struct MFile {
     pub mentions: Vec<Mention>,
     pub groups: Groups,
     pub sections: Vec<MSection>,
+    /// For a shared object: what it is to the link, its `DT_NEEDED`
+    /// edges and its version indices by symbol index.
+    pub shared: Option<SharedInfo>,
+    pub needed: Vec<Option<FileId>>,
+    pub versions: Vec<(u32, u16)>,
     next_index: u32,
 }
 
@@ -111,6 +116,9 @@ impl Model {
             mentions: Vec::new(),
             groups: Groups::default(),
             sections,
+            shared: None,
+            needed: Vec::new(),
+            versions: Vec::new(),
             next_index: 1,
         });
         id
@@ -151,6 +159,31 @@ impl Model {
         let f = self.member(archive, label);
         self.files[f.0 as usize].info.kind = FileKind::WholeMember;
         f
+    }
+
+    /// A shared object named on the line (a member of C), `as_needed` its
+    /// merged state.
+    pub fn shlib(&mut self, label: &str, as_needed: bool) -> FileId {
+        let f = self.push_file(FileKind::Shared, label, Vec::new());
+        self.files[f.0 as usize].shared = Some(SharedInfo { closure: false, as_needed });
+        f
+    }
+
+    /// A shared object loaded only by the `DT_NEEDED` walk (W).
+    pub fn closure_lib(&mut self, label: &str) -> FileId {
+        let f = self.push_file(FileKind::Shared, label, Vec::new());
+        self.files[f.0 as usize].shared = Some(SharedInfo { closure: true, as_needed: false });
+        f
+    }
+
+    /// Appends a `DT_NEEDED` edge of `from`.
+    pub fn needs(&mut self, from: FileId, to: Option<FileId>) {
+        self.files[from.0 as usize].needed.push(to);
+    }
+
+    /// Sets the version index of a shared object's entry.
+    pub fn set_version(&mut self, file: FileId, index: SymbolIndex, version: u16) {
+        self.files[file.0 as usize].versions.push((index.0, version));
     }
 
     pub fn set_group(&mut self, file: FileId, group: u32) {
@@ -537,6 +570,16 @@ impl View for Model {
     }
     fn find_key(&self, name: &[u8]) -> Option<SymbolId> {
         self.index.get(name).copied()
+    }
+    fn shared(&self, file: FileId) -> Option<SharedInfo> {
+        self.files[file.0 as usize].shared
+    }
+    fn needed(&self, file: FileId, out: &mut Vec<Option<FileId>>) {
+        out.extend_from_slice(&self.files[file.0 as usize].needed);
+    }
+    fn version(&self, file: FileId, index: SymbolIndex) -> u16 {
+        let f = &self.files[file.0 as usize];
+        f.versions.iter().rev().find(|v| v.0 == index.0).map_or(0, |v| v.1)
     }
 }
 
