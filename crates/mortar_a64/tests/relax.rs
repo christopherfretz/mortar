@@ -480,11 +480,16 @@ fn s8_2_r2_tlsdesc_to_ie() {
     c.output = OutputKind::Pie;
     let out = apply_both(&c, &relocs).unwrap();
     assert_eq!(out, words(&[insert(forms::LDX19, 0x5800_0000, 0x1238), NOP, NOP]));
-    // Scan: GOT_TPREL, never TLS_DESC; the large form stays a descriptor.
+    // Scan: GOT_TPREL, never TLS_DESC; the large form stays a descriptor
+    // (WP-047: a lone `TLSDESC_ADD`, without its `CALL` after it, is
+    // refused by name, `tests/dynamic.rs`).
     let s = scan(M2, &t, OutputKind::Exec, &input, &[r(0, 1, 562)]);
     assert_eq!(raised(&s, key(1)), DemandFlags::GOT_TPREL);
     let movz = words(&[0xD2A0_0000]);
     let s = scan(M2, &t, OutputKind::Exec, &movz, &[r(0, 1, 565)]);
+    assert_eq!(raised(&s, key(1)), DemandFlags::TLS_DESC);
+    // In a shared output it is a descriptor.
+    let s = scan(M2, &t, OutputKind::Shared, &movz, &[r(0, 1, 565)]);
     assert_eq!(raised(&s, key(1)), DemandFlags::TLS_DESC);
 }
 
