@@ -1186,14 +1186,17 @@ They are a planned row ("Planned workloads").
 | `--baseline <file>` | default `bench/baselines/<machine id>.tsv` |
 | `--mortar <binary>` | default: the checkout's, built by `cargo build --release -p mortar --bin mortar` (a cargo step, `process::run_step`) |
 | `--work <dir>` | the cache, default `<build directory>/bench-work` ("The cache") |
+| `--no-verify` | no verifier on mortar's outputs ("Verification"), for timing-only loops: said on standard error and in the results (`verify off`); no `output_hash` is recorded |
 | `-h`, `--help` | the usage on standard output, status 0 |
 
 At most one action. `--update-baseline` without a non-blank `--reason`,
-with `--workload` or with `--linker`, and `--reason` without
+with `--workload`, `--linker` or `--no-verify`, and `--reason` without
 `--update-baseline`, are usage errors: a baseline is always a whole run,
 and every change of it says why (`docs/AGENTS.md` "Review gates").
 
-Exit status: 0; 1 when `--check` finds a mortar link regressed or lost;
+Exit status: 0; 1 when the verifier finds a mortar output wrong
+("Verification"; any action, and `--update-baseline` then writes
+nothing), or when `--check` finds a mortar link regressed or lost;
 3 when the run cannot be trusted: an error of the harness (a build, a
 fetch, a census, a missing tool or baseline), a reference linker that did
 not link, a link killed by a limit, or a `--check` with a slower time on
@@ -1466,6 +1469,51 @@ results header.
 - The **spread** of a row is how far its median wall time is above its
   fastest, in thousandths of the fastest.
 
+### Verification
+
+No mortar output is timed that the verifier has not judged (WP-035;
+`docs/VALIDATION.md` L3). For every workload, when mortar is among the
+linkers and `--no-verify` is not given, before the warm-up:
+
+- mortar links the workload once more, **untimed**: `mortar
+  @<response> -o <scratch>/<workload>-mortar-verify.out
+  --mortar-map=<scratch>/<workload>-mortar-verify.map` in the recorded
+  directory, at its default threads, under the limits of a measured link
+  (`process::run`, one token). `--mortar-map` does not change the
+  output's bytes; the golden check below compares them with the timed
+  links' anyway.
+- If mortar refuses, the verdict is `refused: <first line>`; any other
+  failure is `failed: <detail>`.
+- If the output is outside what the verifier judges
+  (`linktest::engine::not_judged`, "L3": `machine`, `pie-or-shared`,
+  `dynamic`, `relocatable`), the verdict is `not judged: <reason>`: named
+  and counted, never silent.
+- Else `xtask plumb <out> --map <map> --map-format mortar` runs as a
+  child process in the recorded directory (the inputs are the files the
+  map names; `--fix-cortex-a53-843419` or `--no-fix-…` as the response
+  file says, else inferred, `spec/plumb.md` §5.10). A child, so that what
+  the verifier allocates never stays in the process that starts the
+  measured links. Exit 0 is `clean`; 1 is `findings <n>: <rule> <count>,
+  ...`; anything else `failed`.
+
+**A finding** fails mortar's rows of the workload (both thread
+configurations): `failed`, no figures, the detail `the verifier finds <n>
+(<rule> <count>, ...): <first three findings> (kept: <output>)`; the
+output and its map are kept in the scratch directory for `cargo xtask
+plumb`. The run exits 1 after printing the table.
+
+**The golden output hash** (`output_hash.<workload>`) is recorded only
+from a `clean` output, and only when the warm-up output at the default
+threads hashes the same; a different hash fails mortar's rows (`the timed
+output (...) is not the verified output (...)`). A `not judged` or
+`refused` workload has no golden hash.
+
+After the table, a summary names every workload under its verdict:
+verified clean, FINDINGS, linked and not judged yet (with the reason),
+refused by mortar (with its first line), failed. The verdicts are in the
+results header (`verify`, `verify.<workload>`). The cost and the
+before/after medians are in `spec/landed/harness/WP-035.md`.
+
 ### Calibration
 
 The workload of class `calibration` is linked by lld (22) at its default
@@ -1513,8 +1561,11 @@ link	<fields>
   its tracked files differ), `runs`, `probe` (`Probe::describe`),
   `limits`, `calibration` (`lld default on <input hash>`),
   `calibration_before_us`, `calibration_after_us`, `noisy` (`yes`, `no`),
-  `load_before`, `load_after`, `version.<linker>`, `output_hash.<workload>`
-  (FNV-1a 64 of mortar's warm-up output, the golden output check: its
+  `load_before`, `load_after`, `version.<linker>`, `verify` (`on`, `off`;
+  when mortar is measured), `verify.<workload>` (the verdict,
+  "Verification"), `output_hash.<workload>`
+  (FNV-1a 64 of mortar's warm-up output, recorded only when the verifier
+  judged that output clean; the golden output check: its
   warm-up outputs at the default and at one thread must be identical, or
   both links are `failed`; `check` prints `OUTPUT CHANGED` for a workload
   whose inputs are the baseline's and whose hash is not, as information:
@@ -1627,7 +1678,9 @@ the needed members of the first), so a link drops nothing.
 `the_generators_output_is_pinned`, `the_shapes`.
 `xtask/src/bench/report.rs`: `the_table`, `the_status_page`.
 `xtask/src/bench.rs`: `options`, `the_checked_in_manifest`,
-`baseline_paths`.
+`baseline_paths`. `xtask/src/bench/verify.rs`:
+`a_finding_fails_mortars_rows`, `the_golden_hash_is_the_verified_outputs`,
+`findings_are_read_from_xtask_plumb`, `the_summary_names_every_workload`.
 
 The end-to-end behavior (building, capturing, replaying with the real
 linkers, the census) is exercised by `cargo xtask bench` itself and not by

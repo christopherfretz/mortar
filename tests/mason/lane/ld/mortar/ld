@@ -6,7 +6,8 @@
 # not fail the link: the report counts it.
 out=a.out; prev=
 for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
-err=$("${MASON_MORTAR:?}" "$@" -Map="$out.map" 2>&1 >/dev/null); st=$?
+# The verifier reads mortar's machine map (--mortar-map), not -Map's GNU text.
+err=$("${MASON_MORTAR:?}" "$@" --mortar-map="$out.map" 2>&1 >/dev/null); st=$?
 plumb=-
 if [ $st = 0 ] && [ "${MASON_PLUMB:-}" = 1 ]; then
   plumb=$("${MASON_XTASK:?}" mason verify "$out" "$out.map" 2>&1 | head -c 1000 | tr '\n\t' '  ')

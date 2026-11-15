@@ -528,7 +528,9 @@ fn run_cell(
         let out = format!("out.{name}");
         let mut argv = with_output(&line, &out);
         if *name == "mortar" {
-            argv.push(format!("-Map={out}.map"));
+            // The verifier's map is mortar's machine map (`--mortar-map`,
+            // image.md I-120); `-Map` is the GNU text map (WP-027e).
+            argv.push(format!("--mortar-map={out}.map"));
         }
         let r = match run_in(linker, &argv, dir, &[], TOOL_LIMITS) {
             Err(e) => Err(e),
