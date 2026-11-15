@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-472 rows: 49 supported, 3 partial, 44 noop, 376 refused.
+472 rows: 53 supported, 3 partial, 44 noop, 372 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's own.
 
@@ -45,11 +45,11 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's
 | `--eh-frame-hdr` |  | GNU, lld, mold | all | supported | `shaping.eh_frame_hdr` | Write .eh_frame_hdr and PT_GNU_EH_FRAME |
 | `--no-eh-frame-hdr` |  | GNU, lld, mold | all | supported | `shaping.eh_frame_hdr` | Write no .eh_frame_hdr |
 | `--package-metadata` | optional, `=` only: JSON | GNU, mold | all | refused | `other` | Write a .note.package note |
-| `--gc-sections` |  | GNU, lld, mold | all | refused | `shaping.gc_sections` | Remove sections nothing refers to |
+| `--gc-sections` |  | GNU, lld, mold | all | supported | `shaping.gc_sections` | Remove sections nothing refers to |
 | `--no-gc-sections` |  | GNU, lld, mold | all | supported | `shaping.gc_sections` | Keep every section (default) |
-| `--print-gc-sections` |  | GNU, lld, mold | all | refused | `other` | List the sections --gc-sections removes |
-| `--no-print-gc-sections` |  | GNU, lld, mold | all | refused | `other` | Do not list removed sections (default) |
-| `--gc-keep-exported` |  | GNU | all | refused | `other` | Keep sections that define exported symbols |
+| `--print-gc-sections` |  | GNU, lld, mold | all | supported | `shaping.print_gc_sections` | List the sections --gc-sections removes |
+| `--no-print-gc-sections` |  | GNU, lld, mold | all | supported | `shaping.print_gc_sections` | Do not list removed sections (default) |
+| `--gc-keep-exported` |  | GNU | all | supported | `shaping.gc_keep_exported` | Keep sections that define exported symbols |
 | `--icf` | all \| safe \| none | lld, mold | all | refused | `shaping.icf` | Fold identical code |
 | `--no-icf` |  | mold | all | refused | `shaping.icf` | Fold nothing (default) |
 | `--print-icf-sections` |  | lld, mold | all | refused | `other` | List the folded sections |

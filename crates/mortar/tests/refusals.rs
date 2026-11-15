@@ -35,18 +35,6 @@ fn c_program(label: &str) -> Option<(Scratch, Built)> {
 const NOT_LINKED: &str = "mortar: error: unsupported feature: linking\n\
      >>> an option above is refused, so nothing is linked (docs/status/options.md)\n";
 
-// spec: image.md I-5, cli.md §4.4 (`--gc-sections` is refused in M1, by
-// name, at the command line once the line says it is on; nothing is
-// written)
-#[test]
-fn gc_sections_is_refused_by_name() {
-    let Some((_s, built)) = c_program("refuse-gc") else { return };
-    let (status, stderr) = link(&built, &["--gc-sections"], &[]);
-    assert_eq!(status, Some(1));
-    assert_eq!(stderr, format!("mortar: error: unsupported option: --gc-sections\n{NOT_LINKED}"));
-    assert!(!built.dir.join("out").exists());
-}
-
 // spec: synth.md S-91, cli.md §4.2, §4.4 (`--build-id` is partial: `=md5`
 // and `=uuid` are refused at the command line, naming the supported
 // spellings; a later `--build-id` overrides them, last wins)
