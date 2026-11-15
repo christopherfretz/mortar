@@ -1,0 +1,104 @@
+# dyn.md D-32, `_DYNAMIC` and the GOT headers: `_DYNAMIC` is the address
+# of `.dynamic`, a local hidden symbol (resolve §8.1), never exported; the
+# first word of the GOT the architecture names holds its link-time
+# address: x86-64 `.got.plt[0]` (psABI; `DT_PLTGOT` points at it),
+# AArch64 `.got[0]` (a64 §10.1 Q8, `_GLOBAL_OFFSET_TABLE_` is the start
+# of `.got`); the other reserved `.got.plt` words are 0 in the file. The
+# program reads the words at run time and compares them, plus the load
+# bias, with `&_DYNAMIC` (the loader relocates neither). Under `-z now`
+# glibc does not set up lazy binding, so the reserved words 1 and 2 are
+# still the linker's 0s when `main` runs (in a lazy link they hold the
+# loader's `link_map` and resolver).
+#
+# Where the references differ (D-32, E-dynamic §2): on AArch64 GNU ld
+# writes `.got[0]`, mold writes `.got.plt[0]` instead and lld writes
+# neither (glibc 2.41 reads none of them); mortar's is GNU ld's. On
+# x86-64 all three agree. `_DYNAMIC` is hidden in lld's `.symtab` only
+# (GNU ld and mold: local, default visibility; GNU ld's is `ABS` on
+# AArch64).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-32"
+#@ arch: aarch64 x86_64
+#@ fixture: dynsym-walk
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libgh.so -o libgh.so
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+
+link gcc -pie pie.o -L. -lgh -o pie
+run(x86_64) pie
+  stdout: got.plt[0] is _DYNAMIC 1
+  stdout: lib_fn 1
+run(bfd,mortar,aarch64) pie
+  stdout: got[0] is _DYNAMIC 1, got.plt[0] is _DYNAMIC 0
+  stdout: lib_fn 1
+run(lld,aarch64) pie
+  stdout: got[0] is _DYNAMIC 0, got.plt[0] is _DYNAMIC 0
+  stdout: lib_fn 1
+run(mold,aarch64) pie
+  stdout: got[0] is _DYNAMIC 0, got.plt[0] is _DYNAMIC 1
+  stdout: lib_fn 1
+check readelf -sW pie
+  count: 1 LOCAL * _DYNAMIC$
+check(mortar) readelf -sW pie
+  has: LOCAL HIDDEN * _DYNAMIC$
+check readelf --dyn-syms -W pie
+  not: _DYNAMIC
+
+link gcc -no-pie exec.o -L. -lgh -o exec
+run(x86_64) exec
+  stdout: got.plt[0] is _DYNAMIC 1
+  stdout: lib_fn 1
+run(bfd,mortar,aarch64) exec
+  stdout: got[0] is _DYNAMIC 1, got.plt[0] is _DYNAMIC 0
+  stdout: lib_fn 1
+run(lld,aarch64) exec
+  stdout: got[0] is _DYNAMIC 0, got.plt[0] is _DYNAMIC 0
+  stdout: lib_fn 1
+run(mold,aarch64) exec
+  stdout: got[0] is _DYNAMIC 0, got.plt[0] is _DYNAMIC 1
+  stdout: lib_fn 1
+check readelf --dyn-syms -W exec
+  not: _DYNAMIC
+
+link gcc -pie pie.o -L. -lgh -Wl,-z,now -o now
+run(x86_64) now
+  stdout: got.plt[0] is _DYNAMIC 1
+  stdout: got.plt[1] 0, got.plt[2] 0
+  stdout: lib_fn 1
+run(bfd,mortar,aarch64) now
+  stdout: got[0] is _DYNAMIC 1, got.plt[0] is _DYNAMIC 0
+  stdout: got.plt[1] 0, got.plt[2] 0
+  stdout: lib_fn 1
+
+#--- lib.c
+int lib_fn(void) { return 1; }
+#--- main.c
+#include "dynwalk.h"
+int lib_fn(void);
+extern ElfW(Dyn) _DYNAMIC[] __attribute__((visibility("hidden")));
+
+int main(void) {
+  struct dw w;
+  if (!dw_open(&w)) return 1;
+  uintptr_t pltgot = 0, now = 0;
+  for (ElfW(Dyn) *d = _DYNAMIC; d->d_tag != DT_NULL; d++) {
+    if (d->d_tag == DT_PLTGOT) pltgot = dw_ptr(&w, d->d_un.d_ptr);
+    if (d->d_tag == DT_FLAGS) now = d->d_un.d_val & DF_BIND_NOW;
+  }
+  const uintptr_t *p = (const uintptr_t *)pltgot;
+  int plt0 = p && p[0] + w.bias == (uintptr_t)_DYNAMIC;
+#ifdef __aarch64__
+  extern uintptr_t _GLOBAL_OFFSET_TABLE_[] __attribute__((visibility("hidden")));
+  int got0 = _GLOBAL_OFFSET_TABLE_[0] + w.bias == (uintptr_t)_DYNAMIC;
+  printf("got[0] is _DYNAMIC %d, got.plt[0] is _DYNAMIC %d\n", got0, plt0);
+#else
+  printf("got.plt[0] is _DYNAMIC %d\n", plt0);
+#endif
+  if (now && p) printf("got.plt[1] %lu, got.plt[2] %lu\n", (unsigned long)p[1], (unsigned long)p[2]);
+  printf("lib_fn %d\n", lib_fn());
+  return 0;
+}
