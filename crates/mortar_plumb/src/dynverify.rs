@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use mortar_elf::consts::{PT_DYNAMIC, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK};
 
-use crate::dynmodel::Model;
+use crate::dynmodel::{Model, SoDef};
 use crate::dynout::DynOut;
 use crate::image::Image;
 use crate::line::{Files, Line};
@@ -113,7 +113,9 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     let mut model = Model::build(&line, &objs, &[], ctx.files);
     let file0: Vec<String> = pre
         .into_iter()
-        .filter(|n| !model.dsos.iter().any(|d| d.defs.get(n).is_some_and(|v| v.iter().any(|x| x.visible()))))
+        .filter(|n| {
+            !model.dsos.iter().any(|d| d.defs.get(n).is_some_and(|v| v.iter().any(SoDef::visible)))
+        })
         .collect();
     if !file0.is_empty() {
         model = Model::build(&line, &objs, &file0, ctx.files);
@@ -138,9 +140,9 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         machine: image.header.e_machine,
     };
     let kind = line.kind.unwrap_or(OutputKind::Exec);
-    report.findings.extend(crate::dyncheck::check(
-        &image, &dout, &line, &model, &ld, &objs, map.format,
-    ));
+    report
+        .findings
+        .extend(crate::dyncheck::check(&image, &dout, &line, &model, &ld, &objs, map.format));
     // View 1: bias 0.
     let p1 = Params::default();
     let v1 = loader::apply(&image, &dout, &ld, &p1, true);
@@ -195,11 +197,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     // loader finds no definition for) defined at a fresh address.
     let mut fresh: HashMap<String, u64> = HashMap::new();
     for (j, s) in dout.syms.iter().enumerate() {
-        if j > 0
-            && !s.defined()
-            && s.binding() == STB_WEAK
-            && v1.dynbind.get(&s.name) == Some(&0)
-        {
+        if j > 0 && !s.defined() && s.binding() == STB_WEAK && v1.dynbind.get(&s.name) == Some(&0) {
             let n = fresh.len() as u64;
             fresh.insert(s.name.clone(), FRESH + n * 0x1000);
         }
@@ -308,7 +306,13 @@ fn exported_ifuncs(
             v.push(x);
         };
         if format == crate::map::Format::Mortar {
-            f(7, format!("the executable's IFUNC '{}' is exported as STT_GNU_IFUNC (D-23, W13)", s.name));
+            f(
+                7,
+                format!(
+                    "the executable's IFUNC '{}' is exported as STT_GNU_IFUNC (D-23, W13)",
+                    s.name
+                ),
+            );
             continue;
         }
         let referenced = model.ref_dynamic.contains(&s.name);
@@ -325,7 +329,10 @@ fn exported_ifuncs(
         match chosen.get(&s.st_value) {
             None => f(
                 7,
-                format!("'{}' is exported as STT_GNU_IFUNC at {:#x}, which is no resolver of the program (W13)", s.name, s.st_value),
+                format!(
+                    "'{}' is exported as STT_GNU_IFUNC at {:#x}, which is no resolver of the program (W13)",
+                    s.name, s.st_value
+                ),
             ),
             Some(Some(e)) => f(
                 9,
@@ -342,9 +349,13 @@ fn exported_ifuncs(
 
 /// Gives stage 2's engine a view: the loader's bindings, the TLS block
 /// the view uses, the PLT entries.
-fn dyn_engine(e: &mut reloc::Engine<'_, '_>, v: &loader::View, plt: &std::collections::BTreeMap<u64, u64>) {
+fn dyn_engine(
+    e: &mut reloc::Engine<'_, '_>,
+    v: &loader::View,
+    plt: &std::collections::BTreeMap<u64, u64>,
+) {
     e.dynbind = v.dynbind.iter().map(|(k, x)| (k.clone(), *x)).collect();
-    e.dyn_tls = v.dyn_tls.clone();
+    e.dyn_tls.clone_from(&v.dyn_tls);
     e.dyn_tls_mod = v.dyn_tls_mod.iter().map(|(k, x)| (k.clone(), *x)).collect();
     e.plt = plt.clone();
     e.dynamic = true;

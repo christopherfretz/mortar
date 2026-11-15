@@ -4,6 +4,8 @@
 //! relocation records. Everything is read through the output's memory
 //! (the `PT_LOAD` segments), never through the section headers, except
 //! where a rule is about a section header.
+// ELF fields and addresses read best by the specs' short names.
+#![allow(clippy::many_single_char_names, clippy::similar_names)]
 
 use crate::image::Image;
 
@@ -312,7 +314,9 @@ impl DynOut {
                 let sh = image
                     .sections
                     .iter()
-                    .find(|s| s.shdr.sh_addr == a && s.shdr.sh_type == mortar_elf::consts::SHT_DYNSYM)
+                    .find(|s| {
+                        s.shdr.sh_addr == a && s.shdr.sh_type == mortar_elf::consts::SHT_DYNSYM
+                    })
                     .map_or(0, |s| s.shdr.sh_size / entsize);
                 Some(c.max(sh))
             }
@@ -363,7 +367,8 @@ impl DynOut {
             let n = d.syms.len() as u64;
             match image.bytes(a, 2 * n) {
                 Some(b) => {
-                    d.versym = Some(b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect());
+                    d.versym =
+                        Some(b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect());
                 }
                 None => d.problems.push("DT_VERSYM is not in the output's file image".into()),
             }
@@ -583,6 +588,6 @@ mod tests {
         assert_eq!(gnu_hash(b"printf"), 0x156b_2bb8);
         assert_eq!(gnu_hash(b"exit"), 0x7c96_7e3f);
         assert_eq!(elf_hash(b"GLIBC_2.17"), 0x0696_9197);
-        assert_eq!(elf_hash(b"GLIBC_2.2.5"), 0x0963_cf85);
+        assert_eq!(elf_hash(b"GLIBC_2.2.5"), 0x0969_1a75);
     }
 }

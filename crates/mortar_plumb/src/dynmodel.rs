@@ -4,12 +4,13 @@
 //! N, the used set U, `giver` and `bind`, the expected `DT_NEEDED` order,
 //! imports, exports and the `WeakDyn` keys. Written from the spec, never
 //! from the linker; nothing here is taken from the map.
+// ELF fields and addresses read best by the specs' short names.
+#![allow(clippy::many_single_char_names, clippy::similar_names)]
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use mortar_elf::consts::{
-    SHN_ABS, SHN_COMMON, SHN_UNDEF, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STV_HIDDEN,
-    STV_INTERNAL,
+    SHN_ABS, SHN_COMMON, SHN_UNDEF, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STV_HIDDEN, STV_INTERNAL,
 };
 use mortar_elf::{SharedObject, SymbolIndex, Version};
 
@@ -23,7 +24,6 @@ pub struct SoDef {
     pub version: Option<String>,
     /// `name@@V` (or unversioned): what an unversioned reference binds.
     pub default: bool,
-    pub bind: u8,
     pub ty: u8,
     pub other: u8,
     pub shndx: u16,
@@ -142,7 +142,7 @@ impl Dso {
             // written; two spellings are two objects (D-19a).
             d.soname = path.to_string();
         }
-        for seg in so.program_headers().iter() {
+        for seg in so.program_headers() {
             let p = *seg.header();
             match p.p_type {
                 mortar_elf::consts::PT_LOAD => d.loads.push((p.p_vaddr, p.p_memsz, p.p_flags)),
@@ -192,12 +192,12 @@ impl Dso {
                 }
                 // The base version definition (VER_FLG_BASE) names the
                 // object: a symbol at it is unversioned.
-                let base = ver.is_some_and(|v| matches!(v.version, Version::Defined(vd) if vd.is_base()));
+                let base =
+                    ver.is_some_and(|v| matches!(v.version, Version::Defined(vd) if vd.is_base()));
                 let version = if base { None } else { version };
                 d.defs.entry(name).or_default().push(SoDef {
                     default: !hidden,
                     version,
-                    bind: s.binding(),
                     ty: s.sym_type(),
                     other: s.st_other,
                     shndx: s.st_shndx,
@@ -224,6 +224,7 @@ fn split_version(name: &str) -> (&str, Option<&str>) {
 
 /// The program's view of one key (its relocatable objects and file 0).
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_excessive_bools)] // independent facts of D-12
 pub struct Key {
     /// Defined by a live relocatable object, or file 0 (`.symtab`).
     pub defined: bool,
@@ -330,13 +331,12 @@ impl Model {
                 };
                 match Dso::read(path, bytes, true) {
                     Ok(d) => {
-                        let i = match m.by_soname(&d.soname) {
-                            Some(j) => j,
-                            None => {
-                                m.dsos.push(d);
-                                m.c.push(m.dsos.len() - 1);
-                                m.dsos.len() - 1
-                            }
+                        let i = if let Some(j) = m.by_soname(&d.soname) {
+                            j
+                        } else {
+                            m.dsos.push(d);
+                            m.c.push(m.dsos.len() - 1);
+                            m.dsos.len() - 1
                         };
                         by_path.insert(path.clone(), i);
                         i
@@ -374,7 +374,7 @@ impl Model {
                         continue;
                     }
                     if d.soname == path {
-                        d.soname = n.clone();
+                        d.soname.clone_from(&n);
                     }
                     let needs = d.needed.clone();
                     m.dsos.push(d);
@@ -434,8 +434,12 @@ impl Model {
         // D-11: N0, then item 3 to the fixed point.
         let mut n0: BTreeSet<usize> =
             m.c.iter().copied().filter(|&i| !m.dsos[i].as_needed).collect();
-        let strong: Vec<String> =
-            m.keys.iter().filter(|(_, k)| k.strong_ref && !k.defined).map(|(n, _)| n.clone()).collect();
+        let strong: Vec<String> = m
+            .keys
+            .iter()
+            .filter(|(_, k)| k.strong_ref && !k.defined)
+            .map(|(n, _)| n.clone())
+            .collect();
         for k in &strong {
             if let Some(g) = m.giver(k) {
                 n0.insert(g);
@@ -454,11 +458,10 @@ impl Model {
                     if m.keys.get(&r.name).is_some_and(|k| k.defined) {
                         continue;
                     }
-                    let s = m
-                        .c
-                        .iter()
-                        .copied()
-                        .find(|&i| m.dsos[i].def(&r.name, r.version.as_deref()).is_some());
+                    let s =
+                        m.c.iter()
+                            .copied()
+                            .find(|&i| m.dsos[i].def(&r.name, r.version.as_deref()).is_some());
                     if let Some(s) = s
                         && !reach_n0.contains(&s)
                         && !rx.contains(&s)
@@ -491,7 +494,9 @@ impl Model {
                     continue;
                 }
                 if let Some(s) =
-                    m.c.iter().copied().find(|&i| m.dsos[i].def(&r.name, r.version.as_deref()).is_some())
+                    m.c.iter()
+                        .copied()
+                        .find(|&i| m.dsos[i].def(&r.name, r.version.as_deref()).is_some())
                     && s != x
                 {
                     dso_reasons.entry(s).or_default().push(x);
@@ -504,11 +509,10 @@ impl Model {
                 if !m.needed.contains(&d) || keep.contains_key(&d) {
                     continue;
                 }
-                let qualifies = !asn
-                    || obj_reasons.get(&d).is_some_and(|v| {
+                let qualifies =
+                    !asn || obj_reasons.get(&d).is_some_and(|v| {
                         v.iter().any(|&(p, g)| p < pos || (g.is_some() && g == group))
-                    })
-                    || dso_reasons
+                    }) || dso_reasons
                         .get(&d)
                         .is_some_and(|v| v.iter().any(|x| keep.get(x).is_some_and(|&kp| kp < pos)));
                 if qualifies {
@@ -546,7 +550,13 @@ impl Model {
     }
 
     /// The search of input §8.6 for edge `n` of object `s`.
-    fn search(&self, line: &Line, s: usize, n: &str, files: &dyn Files) -> Option<(String, Vec<u8>)> {
+    fn search(
+        &self,
+        line: &Line,
+        s: usize,
+        n: &str,
+        files: &dyn Files,
+    ) -> Option<(String, Vec<u8>)> {
         if n.contains('/') {
             return files.read(n).map(|b| (n.to_string(), b));
         }

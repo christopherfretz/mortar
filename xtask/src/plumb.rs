@@ -278,9 +278,9 @@ pub fn run(args: &Args) -> Result<bool, String> {
     let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut fix = args.fix_843419;
     let line: Option<Vec<String>> = match (&args.line, &args.inputs_from) {
-        (Some(l), _) => Some(
-            String::from_utf8_lossy(&read(l)?).lines().map(str::to_string).collect(),
-        ),
+        (Some(l), _) => {
+            Some(String::from_utf8_lossy(&read(l)?).lines().map(str::to_string).collect())
+        }
         (None, Some(rsp)) => Some(response_words(&String::from_utf8_lossy(&read(rsp)?))),
         (None, None) => None,
     };
@@ -313,7 +313,10 @@ pub fn run(args: &Args) -> Result<bool, String> {
         parsed.fix_843419 = fix;
         let inputs: Vec<Input<'_>> =
             files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
-        let outcome = mortar_plumb::mutate::run(&output, &inputs, &parsed, cfg)?;
+        // Stage 3 judges the mutants of a dynamic output (spec/plumb.md §12).
+        let files = BaseFiles(Path::new(""));
+        let ctx = mortar_plumb::Ctx { line: line.clone(), files: &files };
+        let outcome = mortar_plumb::mutate::run_with(&output, &inputs, &parsed, cfg, Some(&ctx))?;
         println!("{}: baseline findings {}", args.output.display(), outcome.baseline);
         print!("{}", outcome.render());
         return Ok(true);

@@ -8,7 +8,7 @@
 use crate::map::OutputKind;
 
 /// Where the verifier reads files from.
-pub trait Files {
+pub trait Files: Sync {
     /// The bytes of `path`, or `None` when it cannot be read.
     fn read(&self, path: &str) -> Option<Vec<u8>>;
 }
@@ -35,6 +35,7 @@ pub enum Item {
 
 /// The line, read.
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_excessive_bools)] // independent options of the line
 pub struct Line {
     pub kind: Option<OutputKind>,
     pub interp: Option<String>,
@@ -216,7 +217,8 @@ impl Line {
                 }
                 _ if WITH_ARG.contains(&a) => i += 1,
                 _ => {
-                    if let Some(v) = val(a, "--dynamic-linker").or_else(|| val(a, "-dynamic-linker"))
+                    if let Some(v) =
+                        val(a, "--dynamic-linker").or_else(|| val(a, "-dynamic-linker"))
                     {
                         l.interp = Some(v);
                     } else if let Some(z) = a.strip_prefix("-z") {
@@ -251,11 +253,7 @@ impl Line {
         } else if static_ {
             OutputKind::Static
         } else if pie == Some(true) {
-            if l.interp.is_none() && no_interp {
-                OutputKind::StaticPie
-            } else {
-                OutputKind::Pie
-            }
+            if l.interp.is_none() && no_interp { OutputKind::StaticPie } else { OutputKind::Pie }
         } else if l.interp.is_some() || l.items.iter().any(|i| matches!(i, Item::Shared { .. })) {
             OutputKind::Exec
         } else {
@@ -306,7 +304,14 @@ impl Line {
 
     /// An input file: by its first bytes, an object, an archive, a shared
     /// object or a script.
-    fn file(&mut self, path: &str, st: &State, group: Option<usize>, files: &dyn Files, depth: u32) {
+    fn file(
+        &mut self,
+        path: &str,
+        st: &State,
+        group: Option<usize>,
+        files: &dyn Files,
+        depth: u32,
+    ) {
         let Some(bytes) = files.read(path) else {
             self.problems.push(format!("{path}: cannot be read"));
             return;
@@ -318,11 +323,7 @@ impl Line {
                     self.problems
                         .push(format!("{path}: a shared object after -Bstatic (dyn.md D-19)"));
                 }
-                self.items.push(Item::Shared {
-                    path: path.into(),
-                    as_needed: st.as_needed,
-                    group,
-                });
+                self.items.push(Item::Shared { path: path.into(), as_needed: st.as_needed, group });
             } else {
                 self.items.push(Item::Relocatable { path: path.into(), group });
             }
@@ -403,7 +404,10 @@ impl Line {
                     }
                 }
                 _ if in_input => {
-                    let sub = State { as_needed: st.as_needed || as_needed_at.is_some(), bstatic: st.bstatic };
+                    let sub = State {
+                        as_needed: st.as_needed || as_needed_at.is_some(),
+                        bstatic: st.bstatic,
+                    };
                     if let Some(n) = w.strip_prefix("-l") {
                         self.library(n, &sub, grp, files);
                     } else if w.starts_with('/') || files.read(w).is_some() {
@@ -472,7 +476,9 @@ mod tests {
         m.insert("/l/libgcc.a".into(), b"!<arch>\n".to_vec());
         m.insert("h.o".into(), elf(1));
         let l = Line::parse(
-            &words("--as-needed -dynamic-linker /lib/ld.so.1 -pie -z now -o h -L/l h.o -lgcc --push-state --no-as-needed -lgcc_s --pop-state -lc"),
+            &words(
+                "--as-needed -dynamic-linker /lib/ld.so.1 -pie -z now -o h -L/l h.o -lgcc --push-state --no-as-needed -lgcc_s --pop-state -lc",
+            ),
             &Mem(m),
         );
         assert!(l.problems.is_empty(), "{:?}", l.problems);

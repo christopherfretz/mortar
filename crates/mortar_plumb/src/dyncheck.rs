@@ -3,6 +3,8 @@
 //! references differ by design (`dyn.md` §13.1) a reference output is
 //! judged by its own linker's form; `Format::Mortar` is judged by the
 //! D rules exactly (`spec/plumb.md` §12.4, "per-linker forms").
+// ELF fields and addresses read best by the specs' short names.
+#![allow(clippy::many_single_char_names, clippy::similar_names)]
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -101,18 +103,15 @@ fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, format: Format, v: &mut Vec
     let h = &image.header;
     let okind = line.kind.unwrap_or(OutputKind::Exec);
     let dynamic_exec = matches!(okind, OutputKind::Exec | OutputKind::Pie);
-    let first_load = image
-        .phdrs
-        .iter()
-        .filter(|p| p.p_type == PT_LOAD)
-        .min_by_key(|p| p.p_vaddr)
-        .copied();
+    let first_load =
+        image.phdrs.iter().filter(|p| p.p_type == PT_LOAD).min_by_key(|p| p.p_vaddr).copied();
     // PT_PHDR.
     match image.phdrs.iter().find(|p| p.p_type == PT_PHDR) {
         Some(p) => {
             let size = u64::from(h.e_phnum) * u64::from(h.e_phentsize);
             // lld reserves room for one more header (its form).
-            let covers = if format == Format::Mortar { p.p_filesz == size } else { p.p_filesz >= size };
+            let covers =
+                if format == Format::Mortar { p.p_filesz == size } else { p.p_filesz >= size };
             if p.p_offset != h.e_phoff || !covers {
                 v.push(fd(4, "PT_PHDR does not cover exactly the program header table"));
             }
@@ -133,9 +132,9 @@ fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, format: Format, v: &mut Vec
             "no PT_INTERP in a dynamic executable: the kernel cannot start it (D-31, W10)",
         )),
         (Some(p), want) => {
-            let s = image
-                .bytes(p.p_vaddr, p.p_filesz)
-                .map(|b| String::from_utf8_lossy(b.split(|&c| c == 0).next().unwrap_or(b)).into_owned());
+            let s = image.bytes(p.p_vaddr, p.p_filesz).map(|b| {
+                String::from_utf8_lossy(b.split(|&c| c == 0).next().unwrap_or(b)).into_owned()
+            });
             match (s, want) {
                 (None, _) => v.push(fd(4, "PT_INTERP is not in the file image")),
                 (Some(s), None) => v.push(fd(
@@ -181,11 +180,7 @@ fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, format: Format, v: &mut Vec
     let now = out.get(DT_FLAGS).is_some_and(|f| f & DF_BIND_NOW != 0)
         || out.get(DT_FLAGS_1).is_some_and(|f| f & DF_1_NOW != 0)
         || out.has(dynout::DT_BIND_NOW);
-    if !line.relro {
-        if !relro.is_empty() {
-            v.push(fd(4, "PT_GNU_RELRO under -z norelro"));
-        }
-    } else {
+    if line.relro {
         if relro.is_empty() {
             v.push(fd(4, "no PT_GNU_RELRO (the line does not say -z norelro)"));
         }
@@ -210,10 +205,16 @@ fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, format: Format, v: &mut Vec
                 }
             }
         }
+    } else if !relro.is_empty() {
+        v.push(fd(4, "PT_GNU_RELRO under -z norelro"));
     }
     // A lazily bound slot must stay writable after RELRO.
     if !now {
-        for r in out.rels.iter().filter(|r| r.plt && kind(image.header.e_machine, r.ty) == Kind::JumpSlot) {
+        for r in out
+            .rels
+            .iter()
+            .filter(|r| r.plt && kind(image.header.e_machine, r.ty) == Kind::JumpSlot)
+        {
             if inside(r.offset, 8) {
                 v.push(
                     fd(
@@ -262,8 +263,16 @@ fn pd5(image: &Image<'_>, out: &DynOut, format: Format, v: &mut Vec<Finding>) {
         }
         match dynout::gnu_lookup(g, &out.syms, &s.name, bits) {
             Some(i) if i == j => {}
-            Some(i) => v.push(sym_finding(5, &s.name, format!("the loader's lookup finds entry {i}, not {j}"))),
-            None => v.push(sym_finding(5, &s.name, format!("the loader's lookup does not find .dynsym entry {j}"))),
+            Some(i) => v.push(sym_finding(
+                5,
+                &s.name,
+                format!("the loader's lookup finds entry {i}, not {j}"),
+            )),
+            None => v.push(sym_finding(
+                5,
+                &s.name,
+                format!("the loader's lookup does not find .dynsym entry {j}"),
+            )),
         }
     }
     for a in ABSENT {
@@ -295,7 +304,14 @@ fn pd5(image: &Image<'_>, out: &DynOut, format: Format, v: &mut Vec<Finding>) {
 }
 
 #[allow(clippy::too_many_lines)] // one block per tag family
-fn pd6(image: &Image<'_>, out: &DynOut, line: &Line, model: &Model, format: Format, v: &mut Vec<Finding>) {
+fn pd6(
+    image: &Image<'_>,
+    out: &DynOut,
+    line: &Line,
+    model: &Model,
+    format: Format,
+    v: &mut Vec<Finding>,
+) {
     // DT_NEEDED: the set D-11 computes, in the linker's own order rule.
     let expect: &[usize] = match format {
         Format::Gnu | Format::Mortar => &model.order_d19a,
@@ -338,7 +354,10 @@ fn pd6(image: &Image<'_>, out: &DynOut, line: &Line, model: &Model, format: Form
         if let (Some(val), Some((a, z))) = (out.get(tag), sec(image, name)) {
             let want = if size { z } else { a };
             if val != want {
-                v.push(fd(6, format!("{} is {val:#x}, {name} is at {want:#x}", dynout::tag_name(tag))));
+                v.push(fd(
+                    6,
+                    format!("{} is {val:#x}, {name} is at {want:#x}", dynout::tag_name(tag)),
+                ));
             }
         }
     }
@@ -403,8 +422,12 @@ fn pd6(image: &Image<'_>, out: &DynOut, line: &Line, model: &Model, format: Form
             v.push(fd(6, format!("{} DT_NULL entries, D-30 writes 6", out.nulls)));
         }
         let order = d30_rank();
-        let ranks: Vec<usize> =
-            out.entries.iter().filter(|e| e.0 != DT_NULL).map(|e| *order.get(&e.0).unwrap_or(&99)).collect();
+        let ranks: Vec<usize> = out
+            .entries
+            .iter()
+            .filter(|e| e.0 != DT_NULL)
+            .map(|e| *order.get(&e.0).unwrap_or(&99))
+            .collect();
         if ranks.windows(2).any(|w| w[0] > w[1]) {
             v.push(fd(6, "the .dynamic tags are not in D-30's order"));
         }
@@ -415,6 +438,7 @@ fn pd6(image: &Image<'_>, out: &DynOut, line: &Line, model: &Model, format: Form
     let _ = (DT_RELASZ, DT_RELACOUNT);
 }
 
+#[allow(clippy::wildcard_imports)] // every tag of D-30's table
 fn d30_rank() -> HashMap<u64, usize> {
     use crate::dynout::*;
     [
@@ -459,7 +483,14 @@ fn d30_rank() -> HashMap<u64, usize> {
 
 /// P-D7: the `.dynsym` set and fields (D-21, D-23).
 #[allow(clippy::too_many_lines)] // imports, exports, fields
-fn pd7(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, format: Format, v: &mut Vec<Finding>) {
+fn pd7(
+    image: &Image<'_>,
+    out: &DynOut,
+    model: &Model,
+    ld: &Loader<'_>,
+    format: Format,
+    v: &mut Vec<Finding>,
+) {
     let by_name: HashMap<&str, usize> =
         out.syms.iter().enumerate().skip(1).map(|(i, s)| (s.name.as_str(), i)).collect();
     let nu: BTreeSet<usize> = model.needed.union(&model.used).copied().collect();
@@ -488,9 +519,10 @@ fn pd7(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, format: 
             }
             (None, Some(&j)) if !out.syms[j].defined() && k.strong_ref => {
                 // W1: the reference linker bound a hidden entry.
-                let hidden = model.dsos.iter().any(|d| {
-                    d.defs.get(name).is_some_and(|x| x.iter().any(|y| !y.visible()))
-                });
+                let hidden = model
+                    .dsos
+                    .iter()
+                    .any(|d| d.defs.get(name).is_some_and(|x| x.iter().any(|y| !y.visible())));
                 v.push(sym_finding(
                     7,
                     name,
@@ -504,14 +536,23 @@ fn pd7(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, format: 
                 let s = &out.syms[j];
                 if !s.defined() {
                     if s.st_value == 0 {
-                        let want_ty = if matches!(d.ty, STT_FUNC | STT_GNU_IFUNC) { STT_FUNC } else { d.ty };
+                        let want_ty =
+                            if matches!(d.ty, STT_FUNC | STT_GNU_IFUNC) { STT_FUNC } else { d.ty };
                         if format == Format::Mortar && s.sym_type() != want_ty {
-                            v.push(sym_finding(7, name, "an import's type is not its definition's (D-23)"));
+                            v.push(sym_finding(
+                                7,
+                                name,
+                                "an import's type is not its definition's (D-23)",
+                            ));
                         }
                     }
                     let want_weak = !k.strong_ref;
                     if format == Format::Mortar && (s.binding() == STB_WEAK) != want_weak {
-                        v.push(sym_finding(7, name, "an import's binding is not STB_WEAK iff no strong reference (D-23)"));
+                        v.push(sym_finding(
+                            7,
+                            name,
+                            "an import's binding is not STB_WEAK iff no strong reference (D-23)",
+                        ));
                     }
                     let _ = i;
                 }
@@ -556,7 +597,10 @@ fn pd7(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, format: 
             v.push(sym_finding(
                 7,
                 &s.name,
-                format!("'{}' is exported at its IFUNC resolver, not a canonical IPLT entry (W13)", s.name),
+                format!(
+                    "'{}' is exported at its IFUNC resolver, not a canonical IPLT entry (W13)",
+                    s.name
+                ),
             ));
         }
     }
@@ -654,7 +698,10 @@ fn pd9_order(out: &DynOut, machine: u16, v: &mut Vec<Finding>) {
     if let Some(c) = out.get(DT_RELACOUNT)
         && c != lead as u64
     {
-        v.push(fd(9, format!("DT_RELACOUNT is {c}; {lead} RELATIVE records lead .rela.dyn (D-40)")));
+        v.push(fd(
+            9,
+            format!("DT_RELACOUNT is {c}; {lead} RELATIVE records lead .rela.dyn (D-40)"),
+        ));
     }
 }
 
@@ -706,7 +753,9 @@ fn pd10(image: &Image<'_>, out: &DynOut, machine: u16, v: &mut Vec<Finding>) {
             x64_lazy_ok(image, &entries, r.offset, lazy, idx as u64, plt0)
         };
         if !ok {
-            let mut f = fd(10, "the JUMP_SLOT word's initial content is not the lazy target (D-49)").at(r.offset);
+            let mut f =
+                fd(10, "the JUMP_SLOT word's initial content is not the lazy target (D-49)")
+                    .at(r.offset);
             f.found = Some(lazy);
             v.push(f);
         }
@@ -750,7 +799,8 @@ fn x64_lazy_ok(
             image.bytes(e, 10).is_some_and(|b| {
                 let i = if b[..4] == [0xf3, 0x0f, 0x1e, 0xfa] { 4 } else { 0 };
                 b[i..i + 2] == [0x41, 0xbb]
-                    && u64::from(u32::from_le_bytes([b[i + 2], b[i + 3], b[i + 4], b[i + 5]])) == idx
+                    && u64::from(u32::from_le_bytes([b[i + 2], b[i + 3], b[i + 4], b[i + 5]]))
+                        == idx
             })
         });
     }
@@ -779,34 +829,66 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
         let ver = out.need_of(r.sym as usize).map(|n| n.name.as_str());
         let Some((_, d)) = model.lookup(&ld.order, &s.name, ver) else { continue };
         if d.visibility() == STV_PROTECTED {
-            v.push(sym_finding(13, &s.name, format!("a COPY of '{}', whose definition is STV_PROTECTED (D-18, W5)", s.name)).at(r.offset));
+            v.push(
+                sym_finding(
+                    13,
+                    &s.name,
+                    format!("a COPY of '{}', whose definition is STV_PROTECTED (D-18, W5)", s.name),
+                )
+                .at(r.offset),
+            );
         }
         if s.st_size == 0 || d.size == 0 {
-            v.push(sym_finding(11, &s.name, format!("a COPY of '{}' of size 0 (W4)", s.name)).at(r.offset));
+            v.push(
+                sym_finding(11, &s.name, format!("a COPY of '{}' of size 0 (W4)", s.name))
+                    .at(r.offset),
+            );
         }
         if s.st_size != d.size {
-            let mut f = sym_finding(11, &s.name, format!("the copy of '{}' has size {}, its definition {}", s.name, s.st_size, d.size)).at(r.offset);
+            let mut f = sym_finding(
+                11,
+                &s.name,
+                format!(
+                    "the copy of '{}' has size {}, its definition {}",
+                    s.name, s.st_size, d.size
+                ),
+            )
+            .at(r.offset);
             f.expected = Some(d.size);
             f.found = Some(s.st_size);
             v.push(f);
         }
         let align = model.dsos[i].copy_align(d.shndx, d.value);
         if !r.offset.is_multiple_of(align) {
-            v.push(sym_finding(11, &s.name, format!("the copy of '{}' at {:#x} is not aligned to {align} (D-42)", s.name, r.offset)).at(r.offset));
+            v.push(
+                sym_finding(
+                    11,
+                    &s.name,
+                    format!(
+                        "the copy of '{}' at {:#x} is not aligned to {align} (D-42)",
+                        s.name, r.offset
+                    ),
+                )
+                .at(r.offset),
+            );
         }
         let ro = model.dsos[i].read_only_at(d.value);
-        let in_relro = relro.iter().any(|&(lo, hi)| lo <= r.offset && r.offset + s.st_size.max(1) <= hi);
+        let in_relro =
+            relro.iter().any(|&(lo, hi)| lo <= r.offset && r.offset + s.st_size.max(1) <= hi);
         if ro != in_relro {
-            v.push(sym_finding(
-                11,
-                &s.name,
-                format!(
-                    "the copy of '{}' is {} RELRO; its definition is {} (D-42)",
-                    s.name,
-                    if in_relro { "inside" } else { "outside" },
-                    if ro { "read-only" } else { "writable" }
-                ),
-            ).at(r.offset));
+            v.push(
+                sym_finding(
+                    11,
+                    &s.name,
+                    format!(
+                        "the copy of '{}' is {} RELRO; its definition is {} (D-42)",
+                        s.name,
+                        if in_relro { "inside" } else { "outside" },
+                        if ro { "read-only" } else { "writable" }
+                    ),
+                )
+                .at(r.offset),
+            );
         }
         if image.load_of(r.offset, s.st_size.max(1)).is_none_or(|l| l.p_flags & PF_W == 0) {
             v.push(sym_finding(11, &s.name, "a copy outside writable memory").at(r.offset));
@@ -819,14 +901,19 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
             if !defs.iter().any(|x| x.visible() && x.value == d.value && x.shndx != 0) {
                 continue;
             }
-            let ok = out.syms.iter().any(|y| &y.name == name && y.defined() && y.st_value == r.offset);
+            let ok =
+                out.syms.iter().any(|y| &y.name == name && y.defined() && y.st_value == r.offset);
             if !ok {
                 v.push(sym_finding(
                     11,
                     name,
                     format!("'{name}', an alias of the copied '{}', is not defined at the copy (D-21, W2)", s.name),
                 ).at(r.offset));
-                v.push(sym_finding(7, name, format!("the copy alias '{name}' is not in .dynsym (W2)")));
+                v.push(sym_finding(
+                    7,
+                    name,
+                    format!("the copy alias '{name}' is not in .dynsym (W2)"),
+                ));
             }
         }
         allocs.push((r.offset, s.st_size, s.name.clone()));
@@ -852,7 +939,10 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
             }
             continue;
         };
-        let same = model.dsos[*i].defs.get(&s.name).is_some_and(|x| x.iter().any(|y| y.visible() && y.value == *value));
+        let same = model.dsos[*i]
+            .defs
+            .get(&s.name)
+            .is_some_and(|x| x.iter().any(|y| y.visible() && y.value == *value));
         if !same {
             v.push(sym_finding(
                 11,
@@ -867,7 +957,14 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
     allocs.sort();
     for w in allocs.windows(2) {
         if w[0].0 + w[0].1 > w[1].0 {
-            v.push(sym_finding(11, &w[1].2, format!("the copies of '{}' and '{}' overlap", w[0].2, w[1].2)).at(w[1].0));
+            v.push(
+                sym_finding(
+                    11,
+                    &w[1].2,
+                    format!("the copies of '{}' and '{}' overlap", w[0].2, w[1].2),
+                )
+                .at(w[1].0),
+            );
         }
     }
     // Overlap with another definition of the executable.
@@ -882,7 +979,9 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
                 continue;
             }
             if o.sym.st_value < a + z && *a < o.sym.st_value + o.sym.st_size {
-                v.push(sym_finding(11, n, format!("the copy of '{n}' overlaps '{}'", o.name)).at(*a));
+                v.push(
+                    sym_finding(11, n, format!("the copy of '{n}' overlaps '{}'", o.name)).at(*a),
+                );
             }
         }
     }
@@ -895,7 +994,14 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
         if let Some((_, d)) = model.lookup(&ld.order, &s.name, ver)
             && d.visibility() == STV_PROTECTED
         {
-            v.push(sym_finding(13, &s.name, format!("a canonical PLT of '{}', whose definition is STV_PROTECTED (D-18, W5)", s.name)));
+            v.push(sym_finding(
+                13,
+                &s.name,
+                format!(
+                    "a canonical PLT of '{}', whose definition is STV_PROTECTED (D-18, W5)",
+                    s.name
+                ),
+            ));
         }
     }
 }
@@ -910,27 +1016,45 @@ fn pd12(out: &DynOut, ld: &Loader<'_>, format: Format, v: &mut Vec<Finding>) {
         }
         if r.sym == 0 {
             if format == Format::Mortar {
-                v.push(fd(12, "a TLS record against the executable's own block (D-48: local-exec)").at(r.offset));
+                v.push(
+                    fd(12, "a TLS record against the executable's own block (D-48: local-exec)")
+                        .at(r.offset),
+                );
             }
             continue;
         }
         let Some(s) = out.syms.get(r.sym as usize) else { continue };
         match ld.bind(out, r.sym as usize, false, &p) {
-            Bound::Lib { tls: false, .. } => v.push(sym_finding(
-                12,
-                &s.name,
-                format!("a TLS record against '{}', whose definition is not STT_TLS (D-16)", s.name),
-            ).at(r.offset)),
-            Bound::Exec(_) if format == Format::Mortar => v.push(sym_finding(
-                12,
-                &s.name,
-                "a TLS record against an executable-defined symbol (D-48)",
-            ).at(r.offset)),
-            Bound::Missing => v.push(sym_finding(12, &s.name, "a TLS record against a name no object defines").at(r.offset)),
+            Bound::Lib { tls: false, .. } => v.push(
+                sym_finding(
+                    12,
+                    &s.name,
+                    format!(
+                        "a TLS record against '{}', whose definition is not STT_TLS (D-16)",
+                        s.name
+                    ),
+                )
+                .at(r.offset),
+            ),
+            Bound::Exec(_) if format == Format::Mortar => v.push(
+                sym_finding(
+                    12,
+                    &s.name,
+                    "a TLS record against an executable-defined symbol (D-48)",
+                )
+                .at(r.offset),
+            ),
+            Bound::Missing => v.push(
+                sym_finding(12, &s.name, "a TLS record against a name no object defines")
+                    .at(r.offset),
+            ),
             _ => {}
         }
         if k == Kind::TlsDesc && format == Format::Mortar {
-            v.push(sym_finding(12, &s.name, "a TLSDESC record (D-48: descriptors are relaxed)").at(r.offset));
+            v.push(
+                sym_finding(12, &s.name, "a TLSDESC record (D-48: descriptors are relaxed)")
+                    .at(r.offset),
+            );
         }
     }
     let _ = DT_NEEDED;

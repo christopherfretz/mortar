@@ -14,6 +14,7 @@ pub mod buildid;
 mod content;
 mod dyncheck;
 mod dynmodel;
+mod dynmutate;
 pub mod dynout;
 mod dynverify;
 mod erratum;

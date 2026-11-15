@@ -256,7 +256,8 @@ impl Engine<'_, '_> {
         // (A weak undefined call through a PLT whose word holds 0 calls 0.)
         if matches!(ty, x::PLT32 | x::PC32)
             && !matches!(judge(rec, xv as i64), Verdict::Ok(_))
-            && self.plt_hop(rec.p.wrapping_add(4).wrapping_add(rec.out_word as u32 as i32 as u64), s)
+            && self
+                .plt_hop(rec.p.wrapping_add(4).wrapping_add(rec.out_word as u32 as i32 as u64), s)
         {
             return self.cov.add_verified(Via::Plt, ty);
         }
@@ -663,7 +664,12 @@ impl Engine<'_, '_> {
             && o[..before as usize] == i[..before as usize]
             && o[before as usize + 4..] == i[before as usize + 4..]
         {
-            let rel = i32::from_le_bytes([o[before as usize], o[before as usize + 1], o[before as usize + 2], o[before as usize + 3]]);
+            let rel = i32::from_le_bytes([
+                o[before as usize],
+                o[before as usize + 1],
+                o[before as usize + 2],
+                o[before as usize + 3],
+            ]);
             let g = (lead.p + 4).wrapping_add_signed(i64::from(rel));
             let name = self.sym_name(oi, lead.sym);
             let module = self.dyn_tls_mod.get(&name).copied().unwrap_or(1);
@@ -672,7 +678,9 @@ impl Engine<'_, '_> {
                 return SeqX::Kept;
             }
             return SeqX::Bad(
-                format!("the kept {what} sequence reaches no GOT pair holding module {module} and offset {off:#x}"),
+                format!(
+                    "the kept {what} sequence reaches no GOT pair holding module {module} and offset {off:#x}"
+                ),
                 Vec::new(),
                 None,
             );

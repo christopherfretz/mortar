@@ -1300,7 +1300,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         };
         let verdict = judge(rec, x);
         if let Verdict::Ok(rw) = verdict {
-            if op == Op::Abs && matches!(rec.def.field, a64::Field::Data(4 | 8)) && !weak {
+            if op == Op::Abs && matches!(rec.def.field, Field::Data(4 | 8)) && !weak {
                 let s = sa.wrapping_sub(addend as u64);
                 self.abs_words.push((rec.p, rec.def.field.width(), sa, self.internal(s)));
             }
@@ -1584,7 +1584,8 @@ impl<'a, 'b> Engine<'a, 'b> {
             }
             return Outcome::Fail(
                 Rule::GotSlot,
-                "the TLS descriptor the kept sequence reaches is not resolved to this symbol".into(),
+                "the TLS descriptor the kept sequence reaches is not resolved to this symbol"
+                    .into(),
                 Some(x),
             );
         }

@@ -652,7 +652,8 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
                 // A dynamic output's loader applies its IRELATIVE records;
                 // the C runtime's range is empty (stage 3; GNU ld and mold
                 // give start = end, lld does not define them).
-                let dynamic = image.phdrs.iter().any(|p| p.p_type == mortar_elf::consts::PT_DYNAMIC);
+                let dynamic =
+                    image.phdrs.iter().any(|p| p.p_type == mortar_elf::consts::PT_DYNAMIC);
                 match relas.as_slice() {
                     _ if dynamic => Some(Want::Equal),
                     [] => Some(Want::Equal),

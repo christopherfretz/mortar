@@ -3,6 +3,8 @@
 //! and the addresses the libraries' definitions get), giving the bytes the
 //! program sees after loading. Stage 2's engine then judges every input
 //! relocation against those bytes.
+// ELF fields and addresses read best by the specs' short names.
+#![allow(clippy::many_single_char_names, clippy::similar_names)]
 
 use std::collections::HashMap;
 
@@ -32,7 +34,7 @@ pub enum Kind {
 
 pub fn kind(machine: u16, ty: u32) -> Kind {
     match (machine, ty) {
-        (EM_AARCH64, 0) | (EM_X86_64, 0) => Kind::None,
+        (EM_AARCH64 | EM_X86_64, 0) => Kind::None,
         (EM_AARCH64, 257) | (EM_X86_64, 1) => Kind::Abs,
         (EM_AARCH64, 1024) | (EM_X86_64, 5) => Kind::Copy,
         (EM_AARCH64, 1025) | (EM_X86_64, 6) => Kind::GlobDat,
@@ -174,7 +176,13 @@ fn file_off(image: &Image<'_>, addr: u64, len: u64) -> Option<usize> {
 
 /// Applies the output's records in view `p`.
 #[allow(clippy::too_many_lines)] // one arm per record kind
-pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_findings: bool) -> View {
+pub fn apply(
+    image: &Image<'_>,
+    out: &DynOut,
+    ld: &Loader<'_>,
+    p: &Params,
+    with_findings: bool,
+) -> View {
     let mut v = View {
         bytes: image.data.to_vec(),
         findings: Vec::new(),
@@ -195,8 +203,9 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
         }
     });
     let tls_start = tls.map_or(0, |t| t.p_vaddr);
-    let tcb = Some(tcb.unwrap_or(if m == EM_AARCH64 { 16 } else { 0 }));
-    v.tls = (tls_start, tcb.unwrap_or(0));
+    let tcb = tcb.unwrap_or(if m == EM_AARCH64 { 16 } else { 0 });
+    v.tls = (tls_start, tcb);
+    let tcb = Some(tcb);
     let relro: Vec<(u64, u64)> = image
         .phdrs
         .iter()
@@ -220,7 +229,8 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
         if let Bound::Lib { tls: true, i, addr, .. } = b {
             v.dyn_tls.insert(s.name.clone());
             v.dyn_tls_mod.insert(s.name.clone(), 2 + i as u64);
-            v.dynbind.insert(s.name.clone(), tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i))));
+            v.dynbind
+                .insert(s.name.clone(), tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i))));
         } else if !matches!(b, Bound::Missing) {
             v.dynbind.insert(s.name.clone(), b.addr());
         }
@@ -255,7 +265,10 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
                 if b == Bound::Missing {
                     if with_findings {
                         let mut x = f(
-                            format!("the loader finds no definition of '{}': the load fails", name()),
+                            format!(
+                                "the loader finds no definition of '{}': the load fails",
+                                name()
+                            ),
                             r.offset,
                         );
                         x.symbol = Some(name());
@@ -313,9 +326,7 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
             // A thread-local symbol's st_value in an executable is its
             // offset in the TLS segment (gABI), so the bias comes back off.
             Kind::DtpOff => match sym(false) {
-                Bound::Exec(s) if r.sym != 0 => {
-                    Some(s.wrapping_sub(p.bias).wrapping_add(a as u64))
-                }
+                Bound::Exec(s) if r.sym != 0 => Some(s.wrapping_sub(p.bias).wrapping_add(a as u64)),
                 Bound::Lib { i, addr, .. } => Some(
                     tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i)))
                         .wrapping_sub(tls_start)
@@ -331,7 +342,8 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
                 // A library's block: where `tls_fake` puts it.
                 (Bound::Lib { i, addr, .. }, Some(t)) => Some(
                     t.wrapping_add(
-                        tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i))).wrapping_sub(tls_start),
+                        tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i)))
+                            .wrapping_sub(tls_start),
                     )
                     .wrapping_add(a as u64),
                 ),
@@ -342,9 +354,10 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
                 let off = match sym(false) {
                     Bound::Exec(s) if r.sym != 0 => Some(s.wrapping_sub(p.bias)),
                     Bound::Exec(_) => Some(0),
-                    Bound::Lib { i, addr, .. } => {
-                        Some(tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i))).wrapping_sub(tls_start))
-                    }
+                    Bound::Lib { i, addr, .. } => Some(
+                        tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i)))
+                            .wrapping_sub(tls_start),
+                    ),
                     _ => None,
                 };
                 if let (Some(off), Some(t), Some(o)) = (off, tcb, file_off(image, r.offset, 16)) {
@@ -356,7 +369,8 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
             }
             Kind::Unknown => {
                 if with_findings && k == Kind::Unknown {
-                    v.findings.push(f(format!("a dynamic record of unknown type {}", r.ty), r.offset));
+                    v.findings
+                        .push(f(format!("a dynamic record of unknown type {}", r.ty), r.offset));
                 }
                 None
             }
@@ -366,7 +380,10 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
             v.bytes[o..o + 8].copy_from_slice(&val.to_le_bytes());
         } else if with_findings {
             v.findings.push(f(
-                format!("a dynamic record (type {}) at a place outside the file image: not modelled", r.ty),
+                format!(
+                    "a dynamic record (type {}) at a place outside the file image: not modelled",
+                    r.ty
+                ),
                 r.offset,
             ));
         }

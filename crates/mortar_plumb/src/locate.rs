@@ -520,7 +520,9 @@ fn place_one(
         // it writes for its PLT (x86): a further `.eh_frame` row of that
         // file is the linker's (the FDEs are judged by §6.4, which knows
         // a reference's PLT FDE).
-        0 if free.is_empty() && gnu && cands.iter().all(|&i| obj.secs[i].is_eh_frame(machine)) => return,
+        0 if free.is_empty() && gnu && cands.iter().all(|&i| obj.secs[i].is_eh_frame(machine)) => {
+            return;
+        }
         0 if free.is_empty() => {
             out.findings.push(Finding::new(
                 Rule::Map(2),

@@ -807,6 +807,14 @@ impl Engine<'_, '_> {
     }
 }
 
+/// Whether `pc` is in a PLT section of the output.
+fn in_plt(image: &crate::image::Image<'_>, pc: u64) -> bool {
+    image.sections.iter().any(|s| {
+        matches!(s.name.as_str(), ".plt" | ".plt.got" | ".plt.sec" | ".iplt")
+            && (s.shdr.sh_addr..s.shdr.sh_addr + s.shdr.sh_size).contains(&pc)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -893,12 +901,4 @@ mod tests {
         bad.extend([4, 0, 0, 0, 1, 0, 0, 0]);
         assert!(parse(&bad).is_err());
     }
-}
-
-/// Whether `pc` is in a PLT section of the output.
-fn in_plt(image: &crate::image::Image<'_>, pc: u64) -> bool {
-    image.sections.iter().any(|s| {
-        matches!(s.name.as_str(), ".plt" | ".plt.got" | ".plt.sec" | ".iplt")
-            && (s.shdr.sh_addr..s.shdr.sh_addr + s.shdr.sh_size).contains(&pc)
-    })
 }
