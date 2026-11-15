@@ -966,15 +966,17 @@ impl<'c, 's> Walk<'c, 's> {
                         search: sref,
                         outcome: ProbeOutcome::Error(Some(21)),
                     });
-                    self.problems.push(Self::mention_problem(
-                        m,
-                        Problem::error(
-                            m.arg,
-                            m.seq,
-                            "cannot-open-file",
-                            format!("cannot open {}: Is a directory", text(c)),
-                        ),
-                    ));
+                    if self.first_report(c) {
+                        self.problems.push(Self::mention_problem(
+                            m,
+                            Problem::error(
+                                m.arg,
+                                m.seq,
+                                "cannot-open-file",
+                                format!("cannot open {}: Is a directory", text(c)),
+                            ),
+                        ));
+                    }
                     return Searched::Failed;
                 }
                 Stat::Error { errno, reason } => {
@@ -983,15 +985,17 @@ impl<'c, 's> Walk<'c, 's> {
                         search: sref,
                         outcome: ProbeOutcome::Error(Some(errno)),
                     });
-                    self.problems.push(Self::mention_problem(
-                        m,
-                        Problem::error(
-                            m.arg,
-                            m.seq,
-                            "cannot-open-file",
-                            format!("cannot open {}: {reason}", text(c)),
-                        ),
-                    ));
+                    if self.first_report(c) {
+                        self.problems.push(Self::mention_problem(
+                            m,
+                            Problem::error(
+                                m.arg,
+                                m.seq,
+                                "cannot-open-file",
+                                format!("cannot open {}: {reason}", text(c)),
+                            ),
+                        ));
+                    }
                     return Searched::Failed;
                 }
                 _ => match look.open(&mut self.needs, c, false) {
@@ -1178,8 +1182,10 @@ impl<'c, 's> Walk<'c, 's> {
         p.at(Place::File(file)).named_by(&m.named_by)
     }
 
-    /// A read error, once per file (§9.3: at the lowest mention).
-    fn read_error(&mut self, m: &Mention, path: &[u8], e: &ReadError) {
+    /// Whether a failure to open or read `path` is the first for its file
+    /// (§9.3: one diagnostic, at the lowest mention): the file is its
+    /// device and inode when `stat` gave them, else its path.
+    fn first_report(&mut self, path: &[u8]) -> bool {
         let fs = fs_path(self.look.cwd, path);
         let key = match self.look.caches.stats.get(&fs) {
             Some(Stat::Regular(meta) | Stat::CharDevice(meta)) => {
@@ -1187,7 +1193,12 @@ impl<'c, 's> Walk<'c, 's> {
             }
             _ => fs,
         };
-        if !self.read_reported.insert(key) {
+        self.read_reported.insert(key)
+    }
+
+    /// A read error, once per file (§9.3: at the lowest mention).
+    fn read_error(&mut self, m: &Mention, path: &[u8], e: &ReadError) {
+        if !self.first_report(path) {
             return;
         }
         let file = FileRef::new(text(path));
