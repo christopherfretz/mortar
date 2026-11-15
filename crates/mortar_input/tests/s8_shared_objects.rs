@@ -1,4 +1,8 @@
 //! `spec/input.md` §8: shared objects.
+#![allow(
+    clippy::many_single_char_names,
+    reason = "s: the scratch, d: the driver, w: its directory"
+)]
 mod common;
 
 use mortar_testutil::Scratch;

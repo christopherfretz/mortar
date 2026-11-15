@@ -7,7 +7,8 @@
 //! per line, run in `DIR/build`); thread counts default to 1 2 4 8. Each
 //! thread count runs in its own process, so its peak RSS is its own; each
 //! process runs the walk `RUNS` times (default 5) with a fresh store and
-//! reports the median and minimum.
+//! reports the median and minimum, then runs the whole of `load` (the walk
+//! plus interning into `Inputs`) `RUNS` times and reports its median.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use mortar_core::par::Pool;
+use mortar_diag::{Collector, Policy};
 use mortar_input::store::{Store, StorePolicy};
 use mortar_input::walk::{Options, Timing, WalkEnv, walk};
 
@@ -94,6 +96,27 @@ fn child(dir: &Path, threads: usize, runs: usize) {
         st.reads,
         st.closes,
         st.peak_open,
+    );
+    let env = mortar_input::LoadEnv { cwd: env.cwd, pool };
+    let mut loads = Vec::new();
+    let mut keys = (0, 0, 0);
+    for _ in 0..runs {
+        let store = Store::new(StorePolicy::Resident);
+        let diag = Collector::new(Policy::default());
+        let t = Instant::now();
+        let inputs = mortar_input::load(&plan, &env, &store, &diag).expect("the workload loads");
+        loads.push(t.elapsed());
+        keys = (inputs.files.len(), inputs.symbols.len(), inputs.comdats.len());
+    }
+    loads.sort();
+    println!(
+        "threads {threads}: load median {:.1} ms (min {:.1}); files {}, symbol keys {}, comdat keys {}; VmHWM {}",
+        ms(loads[runs / 2]),
+        ms(loads[0]),
+        keys.0,
+        keys.1,
+        keys.2,
+        status("VmHWM:"),
     );
 }
 

@@ -432,3 +432,11 @@ fn link_inputs<'s>(
         link.rpath_from_r.iter().map(|(arg, dir)| (*arg, kept.get(dir))).collect();
     LinkInputs { group, sonames, closure, opened, probes, script_entries, directives, rpath_from_r }
 }
+
+/// What `--dependency-file` lists and `-t` prints (§10.4): the distinct
+/// found paths of `opened`, in its order.
+#[must_use]
+pub fn dependency_paths<'s>(link: &LinkInputs<'s>) -> Vec<&'s [u8]> {
+    let mut seen = std::collections::HashSet::new();
+    link.opened.iter().map(|o| o.path).filter(|p| seen.insert(*p)).collect()
+}

@@ -260,3 +260,244 @@ fn s1_load_warnings_do_not_fail() {
         inputs.archives[ArchiveId(0)].members.end
     );
 }
+
+// ---------------------------------------------------------------- §10, §12
+
+/// A command-line item of the generated lines of `s10_1_walk_reference`.
+#[derive(Clone, Debug)]
+enum Item {
+    File(&'static str),
+    Group(Vec<&'static str>),
+    Lib(Vec<&'static str>),
+}
+
+/// The §10.1 pseudocode over the fixture of `s10_1_walk_reference`, whose
+/// kinds the test knows: `(display name, group ordinal, lazy)` per row,
+/// and the number of archive mentions.
+#[derive(Default)]
+struct Reference {
+    rows: Vec<(String, Option<u32>, bool)>,
+    archives: u32,
+    soname_loaded: bool,
+    groups: Vec<(u32, u32)>,
+    script_groups: u32,
+}
+
+impl Reference {
+    /// `group`: `(0, n)` the n-th command-line group, `(1, n)` the n-th
+    /// script `GROUP` outside one.
+    fn row(&mut self, name: String, group: Option<(u32, u32)>, lazy: bool) {
+        let ordinal = group.map(|g| {
+            if let Some(at) = self.groups.iter().position(|x| *x == g) {
+                at as u32 + 1
+            } else {
+                self.groups.push(g);
+                self.groups.len() as u32
+            }
+        });
+        self.rows.push((name, ordinal, lazy));
+    }
+
+    fn visit(&mut self, name: &str, group: Option<(u32, u32)>, lazy: bool) {
+        match name {
+            "o1.o" | "o2.o" => self.row(name.to_owned(), group, lazy),
+            "liba.a" => {
+                self.archives += 1;
+                self.row("liba.a(m1.o)".to_owned(), group, false);
+                self.row("liba.a(m2.o)".to_owned(), group, false);
+            }
+            "libs1.so" | "libs2.so" if !self.soname_loaded => {
+                self.soname_loaded = true;
+                self.row(name.to_owned(), group, false);
+            }
+            "s1.ld" => {
+                self.visit("o2.o", group, lazy);
+                self.visit("s2.ld", group, lazy);
+            }
+            "s2.ld" => {
+                let g = group.or_else(|| {
+                    self.script_groups += 1;
+                    Some((1, self.script_groups))
+                });
+                self.visit("liba.a", g, lazy);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn s10_1_walk_reference() {
+    let s = Scratch::new("s10ref");
+    if !common::have(&["native"]) {
+        return;
+    }
+    for (o, f) in [("o1.o", "o1"), ("o2.o", "o2"), ("m1.o", "m1"), ("m2.o", "m2")] {
+        common::cc(s.path(), "native", o, &format!("int {f}(void){{return 1;}}\n"), &[]);
+    }
+    s.write("t.txt", "not an object\n");
+    common::ar(s.path(), "liba.a", &["m1.o", "t.txt", "m2.o"], false);
+    let so = ["-shared", "-fPIC", "-nostdlib", "-Wl,-soname,libs.so"];
+    common::cc(s.path(), "native", "libs1.so", "int s(void){return 1;}\n", &so);
+    common::cc(s.path(), "native", "libs2.so", "int s(void){return 2;}\n", &so);
+    s.write("s1.ld", "INPUT(o2.o s2.ld)\n");
+    s.write("s2.ld", "GROUP(liba.a)\n");
+    s.write("empty.o", "");
+    let files = ["o1.o", "o2.o", "liba.a", "libs1.so", "libs2.so", "s1.ld", "s2.ld", "empty.o"];
+    let lazy_files = ["o1.o", "o2.o", "empty.o"];
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    for line in 0..120 {
+        let mut items = Vec::new();
+        for _ in 0..=next(7) {
+            let item = match next(6) {
+                0 => Item::Group((0..=next(3)).map(|_| files[next(files.len())]).collect()),
+                1 => Item::Lib((0..=next(3)).map(|_| lazy_files[next(lazy_files.len())]).collect()),
+                _ => Item::File(files[next(files.len())]),
+            };
+            items.push(item);
+        }
+        let mut args: Vec<&str> = EXE.to_vec();
+        let mut want = Reference::default();
+        let mut cli_groups = 0;
+        for item in &items {
+            match item {
+                Item::File(f) => {
+                    args.push(f);
+                    want.visit(f, None, false);
+                }
+                Item::Group(fs) => {
+                    cli_groups += 1;
+                    args.push("--start-group");
+                    for f in fs {
+                        args.push(f);
+                        want.visit(f, Some((0, cli_groups)), false);
+                    }
+                    args.push("--end-group");
+                }
+                Item::Lib(fs) => {
+                    args.push("--start-lib");
+                    for f in fs {
+                        args.push(f);
+                        want.visit(f, None, true);
+                    }
+                    args.push("--end-lib");
+                }
+            }
+        }
+        let (inputs, report) = load_in(s.path(), &args, 1 + line % 3);
+        assert!(!report.failed(), "{args:?}: {report:?}");
+        let inputs = inputs.expect("loaded");
+        let got: Vec<(String, Option<u32>, bool)> = inputs
+            .files
+            .iter()
+            .skip(1)
+            .map(|(id, f)| {
+                let path = String::from_utf8_lossy(f.path).into_owned();
+                let name = match f.member {
+                    Some(m) => format!("{path}({})", String::from_utf8_lossy(m.name)),
+                    None => path,
+                };
+                let lazy = f.state.contains(mortar_core::inputs::InputFlags::LAZY);
+                (name, inputs.group_of(id).map(|g| g.0), lazy)
+            })
+            .collect();
+        assert_eq!(got, want.rows, "{args:?}");
+        assert_eq!(inputs.archives.len(), want.archives, "{args:?}");
+    }
+}
+
+#[test]
+#[allow(clippy::many_single_char_names)]
+fn s10_3_rows_are_per_mention() {
+    let s = Scratch::new("s10rows");
+    if !objects_fixture(&s) {
+        return;
+    }
+    s.write("one.ld", "INPUT(libb.a)\n");
+    s.write("two.ld", "INPUT(b1.o libb.a)\n");
+    // The columns that are a function of the bytes and the own mention.
+    let row = |inputs: &Inputs<'_>, f: u32| {
+        let f = &inputs.files[FileId(f)];
+        let member = f.member.map(|m| (m.name, m.ordinal, m.offset));
+        format!("{:?} {member:?} {:?} {} {} {:?}", f.path, f.state, f.sections, f.syms.len, f.hash)
+    };
+    let (a, _) = load_in(s.path(), &[M, "a.o", "libb.a"], 1);
+    let (b, _) =
+        load_in(s.path(), &[M, "b2.o", "--as-needed", "a.o", "--no-as-needed", "libb.a"], 1);
+    let (a, b) = (a.unwrap(), b.unwrap());
+    // Another mention before them: the archive members' rows are equal.
+    assert_eq!(row(&a, 2), row(&b, 3));
+    assert_eq!(row(&a, 3), row(&b, 4));
+    // Its own state changes its own row only.
+    assert_ne!(row(&a, 1), row(&b, 2));
+    // Another script naming the same archive: equal rows.
+    let (c, _) = load_in(s.path(), &[M, "one.ld"], 1);
+    let (d, _) = load_in(s.path(), &[M, "two.ld"], 1);
+    let (c, d) = (c.unwrap(), d.unwrap());
+    assert_eq!(row(&c, 1), row(&d, 2));
+    assert_eq!(row(&c, 2), row(&d, 3));
+}
+
+#[test]
+fn s10_4_opened_and_dependency_file() {
+    let s = Scratch::new("s10opened");
+    if !objects_fixture(&s) {
+        return;
+    }
+    s.write("s.ld", "INPUT(a.o)\n");
+    s.write("empty.o", "");
+    let (inputs, report) = load_in(s.path(), &[M, "s.ld", "libb.a", "s.ld", "empty.o"], 1);
+    assert!(report.diagnostics().is_empty(), "{report:?}");
+    let inputs = inputs.unwrap();
+    let opened: Vec<_> = inputs
+        .link
+        .opened
+        .iter()
+        .map(|o| (String::from_utf8_lossy(o.path).into_owned(), o.kind))
+        .collect();
+    assert_eq!(
+        opened,
+        [
+            ("s.ld".to_owned(), OpenedKind::Script),
+            ("a.o".to_owned(), OpenedKind::Object(FileId(1))),
+            ("libb.a".to_owned(), OpenedKind::Archive(ArchiveId(0))),
+            ("s.ld".to_owned(), OpenedKind::Script),
+            ("a.o".to_owned(), OpenedKind::Object(FileId(4))),
+            ("empty.o".to_owned(), OpenedKind::Empty),
+        ]
+    );
+    // --dependency-file: each found path once, in this order [E21].
+    let deps = mortar_input::dependency_paths(&inputs.link);
+    assert_eq!(deps, [&b"s.ld"[..], b"a.o", b"libb.a", b"empty.o"]);
+}
+
+#[test]
+fn s12_3_all_errors_reported() {
+    let s = Scratch::new("s12all");
+    if !common::have(&["native", "x86"]) {
+        return;
+    }
+    common::cc(s.path(), "native", "usef.o", "int f(void){return 1;}\n", &[]);
+    common::cc(s.path(), "x86", "xf.o", "int f;\n", &[]);
+    s.write("g1.o", "garbage\x01");
+    // [E20]: GNU ld stops at g1.o; every error of the line is reported.
+    let line = [M, "usef.o", "nosuch1.o", "-lnosuch", "nosuch2.o", "g1.o", "xf.o"];
+    let (inputs, report) = load_in(s.path(), &line, 2);
+    assert!(inputs.is_none());
+    assert_eq!(
+        ids(&report),
+        [
+            "cannot-open-file",
+            "library-not-found",
+            "cannot-open-file",
+            "unknown-file-type",
+            "incompatible-file"
+        ]
+    );
+}
