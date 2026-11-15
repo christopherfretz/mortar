@@ -177,7 +177,14 @@ pub fn build(
     flags: &[&str],
     sources: &[Source],
 ) -> Option<Built> {
-    let cc = tool(driver.tool())?;
+    build_by(scratch, driver.tool(), flags, sources)
+}
+
+/// [`build`] with the driver named `cc` (a cross driver such as
+/// `x86_64-linux-gnu-gcc`, WP-029b).
+pub fn build_by(scratch: &Scratch, cc: &str, flags: &[&str], sources: &[Source]) -> Option<Built> {
+    let name = cc;
+    let cc = tool(cc)?;
     let mut objects = Vec::new();
     for s in sources {
         let src = scratch.write(s.name, s.text);
@@ -185,7 +192,7 @@ pub fn build(
         let mut args: Vec<OsString> = flags.iter().map(OsString::from).collect();
         args.extend(["-c".into(), src.into_os_string(), "-o".into(), obj.clone().into_os_string()]);
         let o = run(&cc, &args);
-        assert!(o.success(), "{} {args:?}: {}", driver.tool(), o.stderr_text());
+        assert!(o.success(), "{name} {args:?}: {}", o.stderr_text());
         objects.push(obj);
     }
     let mut args: Vec<OsString> = flags.iter().map(OsString::from).collect();
@@ -194,7 +201,7 @@ pub fn build(
     args.extend(objects.iter().map(|o| o.clone().into_os_string()));
     args.extend(["-o".into(), "out".into()]);
     let o = run(&cc, &args);
-    assert!(o.success(), "{} -###: {}", driver.tool(), o.stderr_text());
+    assert!(o.success(), "{name} -###: {}", o.stderr_text());
     let text = o.stderr_text();
     let line = text
         .lines()
@@ -202,7 +209,10 @@ pub fn build(
         .find(|l| {
             let w = words(l);
             w.first().is_some_and(|p| {
-                p.ends_with("collect2") || p.ends_with("/ld") || p.ends_with("ld.bfd")
+                p.ends_with("collect2")
+                    || p.ends_with("/ld")
+                    || p.ends_with("ld.bfd")
+                    || p.ends_with("-linux-gnu-ld")
             })
         })
         .unwrap_or_else(|| panic!("no link line in {text}"));

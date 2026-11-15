@@ -211,27 +211,37 @@ impl<'a> SectionTable<'a> {
 
     /// The one symbol table of type `sh_type` (`SHT_SYMTAB` or
     /// `SHT_DYNSYM`) with its `SHT_SYMTAB_SHNDX` section, or `None` when
-    /// the file has no section of that type. Two passes over the section
-    /// headers; more than one table of the type, or more than one
-    /// `SHT_SYMTAB_SHNDX` section linked to it, is an error.
+    /// the file has no section of that type. More than one table of the
+    /// type, or more than one `SHT_SYMTAB_SHNDX` section linked to it, is
+    /// an error. One pass reading only each header's `sh_type`; a second,
+    /// for the links, only when the file has an `SHT_SYMTAB_SHNDX` section
+    /// at all (every phase asks for the table, so this is per file and
+    /// phase: WP-032a).
     pub fn find_symbol_table(&self, sh_type: u32) -> Result<Option<SymbolTable<'a>>, Error> {
+        let size = Shdr::size(self.headers.class());
+        let type_of = |h: &[u8]| u32::from_le_bytes([h[4], h[5], h[6], h[7]]);
         let mut symtab: Option<u32> = None;
-        for (index, shdr) in (0u32..).zip(self.headers.iter()) {
-            if shdr.sh_type == sh_type {
+        let mut any_shndx = false;
+        for (index, h) in (0u32..).zip(self.headers.bytes().chunks_exact(size)) {
+            let t = type_of(h);
+            if t == sh_type {
                 if let Some(first) = symtab {
                     return Err(Error::MultipleSymbolTables { first, second: index });
                 }
                 symtab = Some(index);
             }
+            any_shndx |= t == SHT_SYMTAB_SHNDX;
         }
         let Some(symtab) = symtab else { return Ok(None) };
         let mut shndx: Option<u32> = None;
-        for (index, shdr) in (0u32..).zip(self.headers.iter()) {
-            if shdr.sh_type == SHT_SYMTAB_SHNDX && shdr.sh_link == symtab {
-                if let Some(first) = shndx {
-                    return Err(Error::MultipleShndxTables { first, second: index });
+        if any_shndx {
+            for (index, shdr) in (0u32..).zip(self.headers.iter()) {
+                if shdr.sh_type == SHT_SYMTAB_SHNDX && shdr.sh_link == symtab {
+                    if let Some(first) = shndx {
+                        return Err(Error::MultipleShndxTables { first, second: index });
+                    }
+                    shndx = Some(index);
                 }
-                shndx = Some(index);
             }
         }
         self.symbol_table(SectionIndex(symtab), shndx.map(SectionIndex)).map(Some)

@@ -68,6 +68,7 @@ pub(crate) fn relocate(
             section: sec.section,
             name: b".eh_frame",
             alloc: true,
+            exec: false,
             section_size: input.len() as u64,
             sec_src: 0,
             addr: e.addr.wrapping_add(at).wrapping_sub(off),

@@ -6,7 +6,7 @@ use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_elf::consts::{
-    STB_GLOBAL, STB_WEAK, STT_NOTYPE, STT_OBJECT, STV_DEFAULT, STV_HIDDEN, STV_INTERNAL,
+    STB_GLOBAL, STB_WEAK, STT_NOTYPE, STT_OBJECT, STT_TLS, STV_DEFAULT, STV_HIDDEN, STV_INTERNAL,
     STV_PROTECTED,
 };
 use mortar_elf::{Sym, SymbolIndex, SymbolSection, SymbolTable};
@@ -167,7 +167,11 @@ impl SymSource for CoreSyms<'_, '_> {
                     .map(|r| r.visibility)
                     .or_else(|| mortar_resolve::linker::start_stop(key.name).map(|p| p.binding().1))
                     .unwrap_or(STV_DEFAULT);
-                let mut g = row(STT_NOTYPE, 0, SymDef::Internal, FileId::INTERNAL, STB_GLOBAL);
+                // `_TLS_MODULE_BASE_` is the TLS block's own symbol
+                // (x64.md X-47; GNU ld writes it `STT_TLS`): its value is
+                // then a template offset (synth.md S-81), 0.
+                let typ = if key.name == b"_TLS_MODULE_BASE_" { STT_TLS } else { STT_NOTYPE };
+                let mut g = row(typ, 0, SymDef::Internal, FileId::INTERNAL, STB_GLOBAL);
                 g.other = (g.other & !3) | stricter(other, table);
                 g
             }

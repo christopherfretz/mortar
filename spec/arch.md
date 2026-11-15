@@ -469,15 +469,26 @@ pub trait Records { fn len(&self) -> u32; fn get(&self, i: u32) -> Option<Reloc>
 ### 3.6 `apply`
 
 ```rust
-pub struct FillCx<'a> { /* the tables of model §3, §4: sym(SymKey) -> address, kind, size;
+pub struct FillCx<'a> { /* the tables of model §3, §4: sym(SymKey) -> address, kind, size,
+                           tls (STT_TLS: the address is then in the TLS template);
                            slot(SymKey, SlotKind) -> address; plt(SymKey) -> address;
                            got_base(); tls(); flags(SymKey) -> DemandFlags;
                            redirect(SectionId, offset) -> patch address; output kind; options */ }
 pub struct SectionOut<'a> { /* the unit's output bytes in the clip [a, b) of section
                                offsets, pre-filled with the input bytes; P of offset 0;
                                written through write(off, bytes); writes outside the
-                               clip are discarded */ }
+                               clip are discarded; the section's name, SHF_ALLOC and
+                               SHF_EXECINSTR (exec: Option<bool>, None when the caller
+                               does not know it) */ }
 ```
+
+- **`SectionOut.exec`** (WP-029b): x86-64 decides `DTPOFF32`/`DTPOFF64`
+  by it (`spec/x64.md` X-46: `TpRel` in an executable section of an
+  executable, `DtpRel` elsewhere). The image phase sets it from the
+  output section's flags; an architecture whose rule needs it refuses by
+  name (`DTPOFF relocation in an allocated section of unknown kind`)
+  when it is `None`, never
+  guesses.
 
 - **Contract**: compute `X` for one relocation and write it, or write the
   relaxed form when the architecture's rule says so. Reads: the

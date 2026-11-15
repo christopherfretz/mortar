@@ -11,6 +11,7 @@
 //! "correct, or loudly refused"): it never produces a file it cannot
 //! vouch for.
 
+pub mod arch;
 pub mod front;
 pub mod image;
 mod proof;

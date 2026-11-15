@@ -111,7 +111,7 @@ impl Bad {
 
 /// A relocatable object: the reader and what its symbol-table pass found
 /// (§6).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ObjectFacts<'s> {
     pub object: Object<'s>,
     /// `e_shnum`, section 0 included.
@@ -120,6 +120,18 @@ pub struct ObjectFacts<'s> {
     pub globals: u32,
     /// `SHT_GROUP` sections.
     pub groups: u32,
+    /// The names of the non-local entries, in table order, and the
+    /// effective signatures of the groups, in section order: what the
+    /// interner numbers (§6), read here once (WP-032a: the interner's two
+    /// passes decoded them again, a group's signature at ~50 ns).
+    pub keys: ObjectKeys<'s>,
+}
+
+/// The keys of an object's mentions, as its symbol-table pass read them.
+#[derive(Clone, Debug, Default)]
+pub struct ObjectKeys<'s> {
+    pub names: Vec<&'s [u8]>,
+    pub signatures: Vec<&'s [u8]>,
 }
 
 /// A shared object: what §8 needs of its dynamic table (§8.1).
@@ -477,8 +489,7 @@ fn elf<'s>(view: View<'s>, bytes: &'s [u8], member: bool) -> Kind<'s> {
 /// interning slot of stage B), the `SHT_GROUP` signatures, the LTO check
 /// of §2.2.
 fn object_facts(object: Object<'_>) -> Kind<'_> {
-    let mut globals = 0u32;
-    let mut groups = 0u32;
+    let mut keys = ObjectKeys::default();
     let table = match object.symbols() {
         Ok(table) => table,
         Err(e) => return Kind::Bad(Bad::Malformed(e.to_string())),
@@ -502,28 +513,36 @@ fn object_facts(object: Object<'_>) -> Kind<'_> {
                 gnu_phrase: false,
             });
         }
+        keys.names.reserve(table.globals().len());
         for (_, sym) in table.globals() {
-            if let Err(e) = table.name(&sym) {
-                return Kind::Bad(Bad::Malformed(e.to_string()));
+            match table.name(&sym) {
+                Ok(name) => keys.names.push(name),
+                Err(e) => return Kind::Bad(Bad::Malformed(e.to_string())),
             }
-            globals += 1;
         }
     }
     for section in object.sections() {
         if section.sh_type() != SHT_GROUP {
             continue;
         }
-        if let Err(e) = effective_signature(&object, table.as_ref(), &section) {
-            return Kind::Bad(Bad::Malformed(e.to_string()));
+        match effective_signature(&object, table.as_ref(), &section) {
+            Ok(signature) => keys.signatures.push(signature),
+            Err(e) => return Kind::Bad(Bad::Malformed(e.to_string())),
         }
-        groups += 1;
     }
     Kind::Object(Box::new(ObjectFacts {
         object,
         sections: object.section_count(),
-        globals,
-        groups,
+        globals: count(keys.names.len()),
+        groups: count(keys.signatures.len()),
+        keys,
     }))
+}
+
+/// A count of at most `u32::MAX` (symbols: `TooManySymbols`; groups:
+/// sections).
+fn count(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// §8.1: what is read of a shared object, and its refusals.
