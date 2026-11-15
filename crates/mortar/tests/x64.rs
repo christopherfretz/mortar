@@ -588,8 +588,8 @@ fn x64_small_sections_do_not_move_with_the_large() {
     assert_eq!(seen[0], seen[1], "the small sections moved with the large sections' size");
 }
 
-/// x64.md X-33, X-34: a small-model `PC32` or `32S` that cannot reach a
-/// symbol placed past 2 GiB of large sections is the named overflow,
+/// x64.md X-33, X-34: a small-model `PC32`, `32S` or `32` that cannot
+/// reach a symbol placed past 4 GiB of large sections is the named overflow,
 /// never a truncated value, and no output is left.
 #[test]
 fn x64_small_model_reference_to_far_large_data_overflows_by_name() {
@@ -599,10 +599,11 @@ fn x64_small_model_reference_to_far_large_data_overflows_by_name() {
     for (label, insn, r_type) in [
         ("x64-large-pc32", "movl far_(%rip), %eax", "R_X86_64_PC32"),
         ("x64-large-32s", "movl far_, %eax", "R_X86_64_32S"),
+        ("x64-large-32", "movl $far_, %eax", "R_X86_64_32 "),
     ] {
         let text = format!(
             "\t.text\n\t.globl main\nmain:\n\t{insn}\n\txorl %eax, %eax\n\tret\n\
-             \t.section .lbss,\"awl\",@nobits\n\t.skip 0xc0000000\n\t.globl far_\nfar_:\n\t.skip 4\n\
+             \t.section .lbss,\"awl\",@nobits\n\t.skip 0x100000000\n\t.globl far_\nfar_:\n\t.skip 4\n\
              \t.section .note.GNU-stack,\"\",@progbits\n"
         );
         let scratch = Scratch::new(label);
