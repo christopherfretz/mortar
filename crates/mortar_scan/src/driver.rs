@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU16, Ordering};
 
 use mortar_arch::seq::{disjoint_in_order, overlaps};
 use mortar_arch::{
-    DemandOut, DemandSink, DynRole, Howto, PlaceFacts, ProofRun, RefName, RelocAt, ScanCx,
-    ScanError, Site, UnitWindow,
+    DemandOut, DemandSink, DynRefusal, DynRole, Howto, Incompatible, PlaceFacts, ProofRun, RefName,
+    RelocAt, ScanCx, ScanError, ScanTables, Site, UnitWindow,
 };
 use mortar_core::demands::{DemandFlags, DynCounts, DynKind, GlobalFlags};
 use mortar_core::par::SCAN_BLOCK;
@@ -38,7 +38,7 @@ pub(crate) struct Unit {
     pub types_only: bool,
 }
 
-fn key_at(file: FileId, index: u32, record: u32) -> Key {
+pub(crate) fn key_at(file: FileId, index: u32, record: u32) -> Key {
     mortar_arch::cx::scan_key(file, index, record)
 }
 
@@ -504,6 +504,11 @@ pub(crate) struct UnitOut {
     pub nonalloc: u64,
     /// Some record's type is in `Facts.seq_leads` (`RelocAt.leads`).
     pub leads: bool,
+    /// The branch candidates of a code section's unit, in record order.
+    pub branches: Vec<crate::BranchRec>,
+    /// The records that raised `COPY` or `CANON_PLT` on a global key, in
+    /// record order (`spec/dyn.md` D-18, D-42: checked per key).
+    pub copy_refs: Vec<(SymbolId, u32)>,
 }
 
 /// The sink one record's `arch.scan` writes (`spec/arch.md` §3.4).
@@ -514,6 +519,7 @@ struct Sink<'u> {
     counts: [u32; 4],
     errors: Vec<(u32, ScanError)>,
     refs: Vec<(u32, EventClass, SymKey)>,
+    copy_refs: Vec<(SymbolId, u32)>,
     record: u32,
     errored: bool,
 }
@@ -525,6 +531,11 @@ impl DemandOut for Sink<'_> {
         }
         match key.kind() {
             SymKind::Global(id) => {
+                if flags.intersects(DemandFlags::COPY | DemandFlags::CANON_PLT)
+                    && self.copy_refs.last().is_none_or(|l| *l != (id, self.record))
+                {
+                    self.copy_refs.push((id, self.record));
+                }
                 // I-16: read before or-ing, so the line stays shared.
                 if let Some(cell) = self.global.get(id.0 as usize) {
                     let bits = flags.bits();
@@ -575,6 +586,29 @@ pub(crate) const fn dyn_kind(role: DynRole) -> DynKind {
     }
 }
 
+/// `spec/dyn.md` D-47: in an output with `.dynamic`, a record that
+/// would be dynamic at a read-only place (arch.md §4.3 `TX`, the
+/// `read-only` reason of `relocation-incompatible`) is `text-relocation`.
+/// A static link (static PIE included) keeps the M1 diagnostic.
+pub(crate) fn dynamic_error(view: &View<'_, '_>, e: ScanError) -> ScanError {
+    match e {
+        ScanError::Incompatible(Incompatible::ReadOnly) if view.opts.dynamic => {
+            ScanError::Dynamic(DynRefusal::TextRelocation)
+        }
+        e => e,
+    }
+}
+
+/// Whether `key`'s target kind is `Weak0`, from the definitions alone;
+/// checked against the full facts in debug builds.
+fn weak0(view: &View<'_, '_>, tables: &RecTables<'_, '_, '_>, key: SymKey) -> bool {
+    let w = view.is_weak0(key);
+    debug_assert_eq!(w, ScanTables::sym(tables, key).kind == mortar_arch::TargetKind::Weak0);
+    #[cfg(not(debug_assertions))]
+    let _ = tables;
+    w
+}
+
 /// Walks one unit (§4.1 step 2): every record in record order.
 pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> UnitOut {
     with_bufs(|bufs| walk_unit(view, u, global, bufs))
@@ -604,6 +638,7 @@ fn walk_types(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Bu
         counts: [0; 4],
         errors: Vec::new(),
         refs: Vec::new(),
+        copy_refs: Vec::new(),
         record: 0,
         errored: false,
     };
@@ -661,6 +696,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
         counts: [0; 4],
         errors: Vec::new(),
         refs: Vec::new(),
+        copy_refs: Vec::new(),
         record: 0,
         errored: false,
     };
@@ -672,6 +708,8 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     let mut faults: Vec<(u32, Fault)> = Vec::new();
     let mut prev: Option<u64> = None;
     let seq_leads = view.arch.facts().seq_leads;
+    // The branch candidates (`crate::BranchRec`): only in live code.
+    let code = sec.place.alloc && sec.place.exec == Some(true);
     for i in u.lo..u.hi {
         out.records += 1;
         let Some(raw) = sec.recs.records.raw(i) else {
@@ -698,19 +736,44 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
                 continue;
             }
         };
+        // `spec/dyn.md` D-25: the key's refusal (made once, by the weak
+        // classes) precedes what the architecture says of the record.
+        if let SymKind::Global(id) = key.kind()
+            && view.weak_refused.contains(id)
+        {
+            continue;
+        }
         let at = sec.at(i, &raw, key, &h);
         let tables = RecTables {
             view,
             key,
             mention: SymEntry { file: u.file, index: SymbolIndex(raw.r_sym) },
         };
+        if code
+            && let Some(b) = view.arch.branch(&h)
+            && b.veneer
+            && let Some(site) = mortar_arch::need::branch_candidate(
+                view.arch,
+                output,
+                &at,
+                &tables,
+                weak0(view, &tables, key),
+            )
+        {
+            out.branches.push(crate::BranchRec {
+                section: u.section,
+                offset: raw.r_offset,
+                record: i,
+                site,
+            });
+        }
         sink.record = i;
         sink.errored = false;
         let before = sink.errors.len();
         let cx = ScanCx { tables: &tables, output, place: sec.place, name: sec.name };
         view.arch.scan(&cx, &at, &mut DemandSink::new(&mut sink));
         for (record, e) in sink.errors.drain(before..) {
-            faults.push((record, Fault::Scan(e)));
+            faults.push((record, Fault::Scan(dynamic_error(view, e))));
         }
         for (record, class, k) in sink.refs.drain(..) {
             let group = if class == EventClass::DiscardedSection {
@@ -768,6 +831,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     }
     out.output = sink.output;
     out.counts = DynCounts(sink.counts);
+    out.copy_refs = sink.copy_refs;
     out
 }
 

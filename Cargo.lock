@@ -181,9 +181,11 @@ dependencies = [
 name = "mortar_resolve"
 version = "0.0.0"
 dependencies = [
+ "mortar_cli",
  "mortar_core",
  "mortar_diag",
  "mortar_elf",
+ "mortar_input",
  "mortar_testutil",
 ]
 
@@ -200,6 +202,7 @@ dependencies = [
  "mortar_input",
  "mortar_live",
  "mortar_resolve",
+ "mortar_synth",
  "mortar_testutil",
 ]
 

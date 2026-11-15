@@ -38,6 +38,7 @@ use Proof::{Check, Same, Test};
 /// Every row that is not `refused`, in table order.
 const AUDIT: &[(&str, Proof)] = &[
     ("-o", Check(output_is_named)),
+    ("-no-pie", Check(no_pie)),
     ("-m", Check(emulation_sets_the_target)),
     ("-e", Check(entry_is_the_symbol)),
     ("-s", Check(strip_all)),
@@ -72,6 +73,10 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--as-needed", Same(&["--as-needed"], Some(shared_objects_are_refused))),
     ("--no-as-needed", Same(&["--no-as-needed"], Some(shared_objects_are_refused))),
     ("-Bstatic", Check(bstatic)),
+    (
+        "--no-copy-dt-needed-entries",
+        Same(&["--no-copy-dt-needed-entries"], Some(copy_dt_needed_is_refused)),
+    ),
     ("--push-state", Check(push_state)),
     ("--pop-state", Check(push_state)),
     ("--warn-backrefs", Check(backrefs)),
@@ -96,7 +101,7 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--no-dynamic-linker", Same(&["--no-dynamic-linker"], Some(no_interpreter))),
     ("--enable-new-dtags", Same(&["--enable-new-dtags"], Some(dynamic_outputs_are_refused))),
     ("--disable-new-dtags", Same(&["--disable-new-dtags"], Some(dynamic_outputs_are_refused))),
-    ("--hash-style", Same(&["--hash-style=sysv"], Some(dynamic_outputs_are_refused))),
+    ("--hash-style", Check(hash_style)),
     ("--rosegment", Same(&["--rosegment"], Some(rodata_has_its_own_load))),
     ("--error-limit", Check(error_limit)),
     ("--fatal-warnings", Check(warning_switches)),
@@ -142,7 +147,6 @@ const AUDIT: &[(&str, Proof)] = &[
     ("-z execstack", Check(execstack)),
     ("-z noexecstack", Check(execstack)),
     ("-z text", Same(&["-z", "text"], Some(dynamic_outputs_are_refused))),
-    ("-z notext", Same(&["-z", "notext"], Some(dynamic_outputs_are_refused))),
     ("-z separate-code", Check(separate_code)),
     ("-z noseparate-code", Check(separate_code)),
     ("-z defs", Same(&["-z", "defs"], Some(undefined_is_an_error))),
@@ -852,7 +856,48 @@ fn memory_seal(cx: &Cx) {
     }
 }
 
+// spec: cli.md §3.2 (`-no-pie`: the default kind, a position-dependent
+// executable; WP-042)
+fn no_pie(cx: &Cx) {
+    let plain = cx.bytes(&[], "nopie-plain");
+    let out = cx.link(&["-no-pie"], "nopie.out");
+    assert!(std::fs::read(&out).unwrap() == plain, "-no-pie changed the output");
+    assert!(cx.readelf("-hW", &out).contains("EXEC (Executable file)"));
+    let ld = cx.link_ld(&["-no-pie"], "nopie.ld");
+    assert!(cx.readelf("-hW", &ld).contains("EXEC (Executable file)"));
+}
+
+// spec: dyn.md D-20, R-C1 (`--hash-style`: `gnu` only, which a static
+// executable honours by having no hash table, as GNU ld's; the other
+// styles are refused by name; WP-042)
+fn hash_style(cx: &Cx) {
+    let plain = cx.bytes(&[], "hash-plain");
+    let out = cx.link(&["--hash-style=gnu"], "hash.out");
+    assert!(std::fs::read(&out).unwrap() == plain, "--hash-style=gnu changed the output");
+    let ld = cx.link_ld(&["--hash-style=gnu"], "hash.ld");
+    for path in [&out, &ld] {
+        let sections = cx.readelf("-SW", path);
+        assert!(!sections.contains(".gnu.hash") && !sections.contains(" .hash"), "{sections}");
+    }
+    for style in ["sysv", "both", "none"] {
+        let o = cx.mortar(&["start.o", &format!("--hash-style={style}"), "-o", "hash-x.out"]);
+        assert!(!o.success(), "{style}");
+        let want = format!("unsupported option value: --hash-style={style}");
+        assert!(o.stderr_text().contains(&want), "{style}: {}", o.stderr_text());
+        assert!(o.stderr_text().contains("dyn.md D-20"), "{}", o.stderr_text());
+    }
+}
+
 // ---- the reasons of noop rows -------------------------------------------------
+
+// The reason of `--no-copy-dt-needed-entries` (dyn.md D-15): its positive
+// form is refused by name.
+fn copy_dt_needed_is_refused(cx: &Cx) {
+    let o = cx.mortar(&["start.o", "--copy-dt-needed-entries", "-o", "cdn.out"]);
+    assert!(!o.success());
+    let text = o.stderr_text();
+    assert!(text.contains("unsupported option: --copy-dt-needed-entries"), "{text}");
+}
 
 // The reason of `--as-needed`: a shared-object input is refused by name.
 fn shared_objects_are_refused(cx: &Cx) {

@@ -1118,23 +1118,3 @@ fn s10_4_iplt_and_irelative_in_a_static_link() {
     assert_eq!(u64::from_le_bytes(rela[16..].try_into().unwrap()), resolver);
     assert_eq!(A64::M1.dyn_type(DynRole::IRelative), Some(synth::IRELATIVE));
 }
-
-/// `spec/dyn.md` R-A6: the step-0 defaults keep M1 behaviour (no lazy
-/// target, no tags, every weak use unfillable, so every weak key is
-/// `Weak0`); WP-047 fills them.
-#[test]
-fn r_a6_defaults_keep_m1() {
-    use mortar_arch::{OutputCx, WeakClass};
-    for a in [A64::M1, M2] {
-        let cx = OutputCx {
-            output: OutputKind::Pie,
-            feature_1_and: 3,
-            pac_plt: false,
-            force_bti: false,
-            bind_now: true,
-        };
-        assert_eq!(a.lazy_target(PltVariant::Bti), None);
-        assert!(a.dyn_tags(&cx).is_empty());
-        assert_eq!(a.weak_use(283, &[0; 8], 0, true), Some(WeakClass::Unfillable));
-    }
-}

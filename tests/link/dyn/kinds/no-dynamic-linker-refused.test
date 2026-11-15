@@ -24,6 +24,8 @@
 #@ spec: dyn.md "D-31"
 #@ arch: aarch64 x86_64
 #@ xfail(lld,mold,aarch64): W10: no PT_INTERP without -dynamic-linker; the program dies by SIGSEGV
+#@ anomaly(bfd): A22
+#@ anomaly(lld,mold): A23
 
 cc -O1 -fPIE hello.c -o hello.o
 link(bfd,lld,mold) ld -m %{emulation} -pie -o pie %{libdir}/Scrt1.o %{libdir}/crti.o hello.o -L%{libdir} -lc %{libdir}/crtn.o

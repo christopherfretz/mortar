@@ -325,6 +325,36 @@ pub struct Dynamic {
     /// (`false`); `None`: the default for the output kind
     /// (`spec/input.md` §8.6, `spec/resolve.md` §5.2).
     pub allow_shlib_undefined: Option<bool>,
+    /// `-init SYMBOL` (`-init=SYMBOL`); the last wins. `None`: `DT_INIT`
+    /// names `_init` when it is defined (`spec/dyn.md` D-30 row 3).
+    pub init: Option<OsString>,
+    /// `-fini SYMBOL` (`-fini=SYMBOL`); the last wins. `None`: `DT_FINI`
+    /// names `_fini` when it is defined (`spec/dyn.md` D-30 row 4).
+    pub fini: Option<OsString>,
+}
+
+impl Dynamic {
+    /// The symbol `DT_INIT` names: `-init`'s, or `_init` (`spec/dyn.md`
+    /// D-30 row 3; the tag is written only when the symbol is defined).
+    #[must_use]
+    pub fn init_symbol(&self) -> &std::ffi::OsStr {
+        self.init.as_deref().unwrap_or("_init".as_ref())
+    }
+
+    /// The symbol `DT_FINI` names: `-fini`'s, or `_fini` (`spec/dyn.md`
+    /// D-30 row 4).
+    #[must_use]
+    pub fn fini_symbol(&self) -> &std::ffi::OsStr {
+        self.fini.as_deref().unwrap_or("_fini".as_ref())
+    }
+
+    /// Whether `-rpath` writes `DT_RUNPATH` (`true`, the default:
+    /// `--enable-new-dtags`) or `DT_RPATH` (`--disable-new-dtags`; the
+    /// last of the two wins; `spec/dyn.md` D-30 row 2, §2.3).
+    #[must_use]
+    pub fn runpath(&self) -> bool {
+        self.new_dtags.unwrap_or(true)
+    }
 }
 
 /// The program interpreter.

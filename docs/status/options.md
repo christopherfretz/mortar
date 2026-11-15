@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-472 rows: 53 supported, 3 partial, 44 noop, 372 refused.
+472 rows: 54 supported, 4 partial, 43 noop, 371 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's own.
 
@@ -19,7 +19,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's
 | `-o`, `--output` | FILE | GNU, lld, mold | all | supported | `output` | Write the output to FILE (default a.out) |
 | `-shared`, `--Bshareable` |  | GNU, lld, mold | all | refused | `kind` | Produce a shared object |
 | `-pie`, `--pic-executable` |  | GNU, lld, mold | all | refused | `kind` | Produce a position-independent executable |
-| `-no-pie`, `--no-pic-executable` |  | GNU, lld, mold | all | refused | `kind` | Produce a position-dependent executable (default) |
+| `-no-pie`, `--no-pic-executable` |  | GNU, lld, mold | all | supported | `kind` | Produce a position-dependent executable (default) |
 | `-r`, `-i`, `--relocatable` |  | GNU, lld, mold | all | refused | `kind` | Produce a relocatable object |
 | `-m` | EMULATION | GNU, lld, mold | all | supported | `emulation` | Link for EMULATION: aarch64linux, aarch64elf, elf_x86_64, elf_i386 |
 | `-e`, `--entry` | SYMBOL | GNU, lld, mold | all | supported | `entry` | Start execution at SYMBOL |
@@ -92,7 +92,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's
 | `-Bstatic`, `--dn`, `--non_shared`, `--static` |  | GNU, lld, mold | all | supported | `inputs[].state.link_static` | Search -l for archives only |
 | `-Bdynamic`, `--dy`, `--call_shared` |  | GNU, lld, mold | all | refused | `inputs[].state.link_static` | Search -l for shared objects too (default) |
 | `--copy-dt-needed-entries`, `--add-needed` |  | GNU | all | refused | `inputs[].state.copy_dt_needed` | Follow the DT_NEEDED entries of the following shared objects |
-| `--no-copy-dt-needed-entries`, `--no-add-needed` |  | GNU, lld, mold | all | refused | `inputs[].state.copy_dt_needed` | Do not follow DT_NEEDED entries (default) |
+| `--no-copy-dt-needed-entries`, `--no-add-needed` |  | GNU, lld, mold | all | noop: dyn.md D-15: the default; a library reached only through another's DT_NEEDED entries never defines a symbol of the link (D-12), and --copy-dt-needed-entries is refused | `inputs[].state.copy_dt_needed` | Do not follow DT_NEEDED entries (default) |
 | `--push-state` |  | GNU, lld, mold | all | supported | `inputs[].state (saved, restored)` | Save the positional state |
 | `--pop-state` |  | GNU, lld, mold | all | supported | `inputs[].state (saved, restored)` | Restore the positional state last saved |
 | `--accept-unknown-input-arch` |  | GNU | all | refused | `other` | Accept inputs of an unknown architecture |
@@ -175,8 +175,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's
 | `--exclude-libs` | LIBS | GNU, lld, mold | all | refused | `symbols` | Do not export the symbols of the archives LIBS |
 | `-y`, `--trace-symbol` | SYMBOL | GNU, lld, mold | all | refused | `symbols` | Report each file that mentions SYMBOL |
 | `--ignore-unresolved-symbol` | SYMBOL | GNU | all | refused | `symbols` | Do not report SYMBOL as unresolved |
-| `-init` | SYMBOL | GNU, lld, mold | all | refused | `other` | Call SYMBOL when the object is loaded |
-| `-fini` | SYMBOL | GNU, lld, mold | all | refused | `other` | Call SYMBOL when the object is unloaded |
+| `-init` | SYMBOL | GNU, lld, mold | all | refused | `dynamic.init` | Call SYMBOL when the object is loaded |
+| `-fini` | SYMBOL | GNU, lld, mold | all | refused | `dynamic.fini` | Call SYMBOL when the object is unloaded |
 | `--demangle` | optional, `=` only: STYLE | GNU, lld, mold | all | refused | `other` | Demangle symbol names in messages |
 | `--no-demangle` |  | GNU, lld, mold | all | refused | `other` | Do not demangle symbol names |
 | `--default-symver` |  | GNU, mold | all | refused | `other` | Give exported symbols the output's version |
@@ -206,7 +206,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's
 | `--no-dynamic-linker` |  | GNU, lld, mold | all | noop: layout.md: only a dynamic executable has PT_INTERP, and every dynamic output is refused by name (M2) | `dynamic.dynamic_linker` | Write no program interpreter |
 | `--enable-new-dtags` |  | GNU, lld, mold | all | noop: only a dynamic output has a .dynamic section, and every dynamic output is refused by name (M2) | `dynamic.new_dtags` | Write DT_RUNPATH for -rpath |
 | `--disable-new-dtags` |  | GNU, lld, mold | all | noop: only a dynamic output has a .dynamic section, and every dynamic output is refused by name (M2) | `dynamic.new_dtags` | Write DT_RPATH for -rpath |
-| `--hash-style` | sysv \| gnu \| both \| none | GNU, lld, mold | all | noop: only a dynamic output has a symbol hash table, and every dynamic output is refused by name (M2) | `dynamic.hash_style` | Write DT_HASH (sysv), DT_GNU_HASH (gnu), both or none |
+| `--hash-style` | sysv \| gnu \| both \| none | GNU, lld, mold | all | partial: `=sysv`, `=both`, `=none` refused (dyn.md D-20: an executable gets .gnu.hash and no .hash; mortar writes =gnu) | `dynamic.hash_style` | Write DT_HASH (sysv), DT_GNU_HASH (gnu), both or none |
 | `--pack-dyn-relocs` | none \| relr \| android \| android+relr | lld, mold | all | refused | `dynamic.pack_dyn_relocs` | Pack dynamic relocations |
 | `-f`, `--auxiliary` | NAME | GNU, lld, mold | all | refused | `other` | Record NAME as DT_AUXILIARY |
 | `-F`, `--filter` | NAME | GNU, lld, mold | all | refused | `other` | Record NAME as DT_FILTER |
@@ -444,7 +444,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's
 | `-z execstack` |  | GNU, lld, mold | all | supported | `z.execstack` | Make the stack executable |
 | `-z noexecstack` |  | GNU, lld, mold | all | supported | `z.execstack` | Make the stack not executable |
 | `-z text` |  | GNU, lld, mold | all | noop: a text relocation is a dynamic relocation in a read-only section; a static executable's only dynamic relocations are IRELATIVE ones in its writable .got.plt (synth.md S-69), and every dynamic output is refused by name (M2) | `z.text` | Report text relocations as errors |
-| `-z notext`, `-z textoff` |  | GNU, lld, mold | all | noop: a text relocation is a dynamic relocation in a read-only section; a static executable's only dynamic relocations are IRELATIVE ones in its writable .got.plt (synth.md S-69), and every dynamic output is refused by name (M2) | `z.text` | Accept text relocations |
+| `-z notext`, `-z textoff` |  | GNU, lld, mold | all | refused | `z.text` | Accept text relocations |
 | `-z separate-code` |  | GNU, lld, mold | all | supported | `z.separate_code` | Put code in segments of its own pages |
 | `-z noseparate-code` |  | GNU, lld, mold | all | supported | `z.separate_code` | Let code share pages with other data |
 | `-z defs` |  | GNU, lld, mold | all | noop: resolve.md §5: an undefined symbol of an executable is an error already; the option only changes a shared object's link, refused by name (M2) | `z.defs` | Report undefined symbols of object files |
@@ -549,3 +549,34 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's
 | `--no-power10-stubs` |  | lld | all | refused | `other` | (lld, PowerPC64) |
 | `--split-stack-adjust-size` | SIZE | lld | all | refused | `other` | (lld) split-stack adjustment |
 
+## At the M2 join
+
+Dynamic output is refused by name until the M2 join (`crates/mortar/src/dynamic.rs`).
+These 23 rows take their M2 status (`spec/dyn.md` R-C1) in the change that lifts it;
+the table then counts 70 supported, 4 partial, 33 noop, 365 refused.
+
+| Option | Status today | Status at the join |
+|---|---|---|
+| `-pie`, `--pic-executable` | refused | supported |
+| `-I`, `--dynamic-linker` | refused | supported |
+| `-Bdynamic`, `--dy`, `--call_shared` | refused | supported |
+| `--as-needed` | noop: it decides only which shared objects are needed, and every shared-object input is refused by name (M2) | supported |
+| `--no-as-needed` | noop: it decides only which shared objects are needed, and every shared-object input is refused by name (M2) | supported |
+| `-E`, `--export-dynamic` | noop: a static executable has no dynamic symbol table (GNU ld and lld write none either), and every dynamic output is refused by name (M2) | supported |
+| `--no-export-dynamic` | noop: a static executable has no dynamic symbol table (GNU ld and lld write none either), and every dynamic output is refused by name (M2) | supported |
+| `--export-dynamic-symbol` | refused | supported |
+| `-rpath` | noop: only a dynamic output has a .dynamic section, and every dynamic output is refused by name (M2) | supported |
+| `--enable-new-dtags` | noop: only a dynamic output has a .dynamic section, and every dynamic output is refused by name (M2) | supported |
+| `--disable-new-dtags` | noop: only a dynamic output has a .dynamic section, and every dynamic output is refused by name (M2) | supported |
+| `-init` | refused | supported |
+| `-fini` | refused | supported |
+| `-z text` | noop: a text relocation is a dynamic relocation in a read-only section; a static executable's only dynamic relocations are IRELATIVE ones in its writable .got.plt (synth.md S-69), and every dynamic output is refused by name (M2) | supported |
+| `-rpath-link` | noop: it finds the DT_NEEDED entries of shared objects, and every shared object input is refused by name (M2) | supported |
+| `--no-dynamic-linker` | noop: layout.md: only a dynamic executable has PT_INTERP, and every dynamic output is refused by name (M2) | supported |
+| `-Bsymbolic` | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and every dynamic output is refused by name (M2) | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) |
+| `-Bsymbolic-functions` | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and every dynamic output is refused by name (M2) | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) |
+| `--Bsymbolic-non-weak` | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and every dynamic output is refused by name (M2) | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) |
+| `--Bsymbolic-non-weak-functions` | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and every dynamic output is refused by name (M2) | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) |
+| `-Bno-symbolic` | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and every dynamic output is refused by name (M2) | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4) |
+| `--no-undefined` | noop: resolve.md §5: an undefined symbol of an executable is an error already; the option only changes a shared object's link, refused by name (M2) | noop: resolve.md §5: an undefined symbol of an executable's objects is an error already; the option only changes a shared object's link (shared objects as output are M4) |
+| `-z defs` | noop: resolve.md §5: an undefined symbol of an executable is an error already; the option only changes a shared object's link, refused by name (M2) | noop: resolve.md §5: an undefined symbol of an executable's objects is an error already; the option only changes a shared object's link (shared objects as output are M4) |

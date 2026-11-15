@@ -165,8 +165,13 @@ impl Arch for X86 {
     /// `GOT32X`, the operand reading of X86-13 (`G + A` without a base);
     /// every other type refused by name (X86-14, X86-20, §6.3).
     fn classify(&self, r_type: u32, site: Site<'_>) -> Result<Howto, Refusal> {
-        match table::howto(r_type) {
+        match table::howto_of(r_type) {
             Some(mut h) if h.status == Status::M1 => {
+                // The other types' window is the row's (0, 0) and they
+                // have no form: no need to look (WP-032i).
+                if r_type >= 64 || forms::WINDOWED & (1 << r_type) == 0 {
+                    return Ok(h);
+                }
                 h.window = forms::read_window(r_type, site);
                 if matches!(r_type, forms::GOT32 | forms::GOT32X)
                     && forms::got_operand(site) == Some(forms::Operand::NoBase)

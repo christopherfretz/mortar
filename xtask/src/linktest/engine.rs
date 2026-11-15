@@ -86,26 +86,15 @@ pub type FixtureCache = Mutex<BTreeMap<(String, Arch), Arc<OnceLock<Result<PathB
 /// stage 3 (`spec/harness.md` "L3").
 pub const STAGE3_ABSENT: &str = "stage 3 absent";
 
+/// The reason a reference linker's dynamic output is not judged when the
+/// verifier finds its link outside stage 3 (`mortar_plumb::OUTSIDE`,
+/// `spec/harness.md` "L3"). A mortar output never gets it.
+pub const OUTSIDE_STAGE3: &str = "outside stage 3";
+
 /// Whether the verifier judges dynamic outputs (stage 3, `spec/plumb.md`
-/// §1, WP-050). Asked of the verifier itself, so that the day stage 3
-/// lands the dynamic outputs are judged without an edit here: stages 1
-/// and 2 answer an `ET_DYN` output with S1's `not ET_EXEC` finding
-/// (`crates/mortar_plumb/src/structure.rs`, "stage 1 checks static
-/// executables"), and stage 3 does not.
+/// §12, WP-050): the verifier's own [`mortar_plumb::STAGE`].
 pub fn stage3_present() -> bool {
-    // An ELF64 little-endian AArch64 `ET_DYN` header and nothing else.
-    let mut header = vec![0u8; 64];
-    header[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
-    header[16..18].copy_from_slice(&3u16.to_le_bytes());
-    header[18..20].copy_from_slice(&183u16.to_le_bytes());
-    header[20..24].copy_from_slice(&1u32.to_le_bytes());
-    header[52..54].copy_from_slice(&64u16.to_le_bytes());
-    let map = mortar_plumb::Map::new(mortar_plumb::Format::Gnu);
-    let report = mortar_plumb::verify(&header, &[], &map);
-    !report
-        .findings
-        .iter()
-        .any(|f| f.rule == mortar_plumb::Rule::Structure(1) && f.message.contains("not ET_EXEC"))
+    mortar_plumb::STAGE >= 3
 }
 
 impl Matrix {
@@ -175,6 +164,7 @@ fn write_wrapper(path: &Path, linker: &Path) -> Result<(), String> {
         "#!/bin/sh\n\
          # The linker of a link-test driver link (spec/harness.md \"Link tests\").\n\
          printf '%s\\n' \"$*\" >> \"${STATUS_VAR}.args\"\n\
+         printf '%s\\n' \"$@\" > \"${STATUS_VAR}.line\"\n\
          '{shown}' \"$@\"\n\
          status=$?\n\
          echo \"$status\" >> \"${STATUS_VAR}\"\n\
@@ -855,6 +845,10 @@ impl Unit<'_> {
                 return Err(Raw::Error(format!("{}: no {}", step.describe(), driver.name())));
             }
         };
+        // Stage 3's line (spec/plumb.md §12.1): a reference link's words
+        // as its linker saw them. A mortar link gets none: its map's `arg`
+        // records are the line, and a map without them is P-D2.
+        let ld_words = (link.driver == Driver::Ld).then(|| args.clone());
         full.extend(args.into_iter().map(OsString::from));
         let limits = self.limits(LINK_LIMITS);
         let output =
@@ -908,7 +902,18 @@ impl Unit<'_> {
             .map_err(|what| Raw::Fail(format!("{}: {what}", step.describe())))?;
         match map_file {
             Some(map) if self.matrix.plumb => {
-                self.verify(step, linker, &output_file, &map, dir, judged)
+                let words = match (linker, ld_words) {
+                    (Linker::Mortar, _) => None,
+                    (_, Some(words)) => Some(words),
+                    (_, None) => {
+                        let mut recorded = status_file.clone().into_os_string();
+                        recorded.push(".line");
+                        std::fs::read_to_string(&recorded)
+                            .ok()
+                            .map(|text| text.lines().map(str::to_owned).collect())
+                    }
+                };
+                self.verify(step, linker, &output_file, &map, dir, words, judged)
             }
             _ => Ok(()),
         }
@@ -950,6 +955,7 @@ impl Unit<'_> {
     /// output of a link that succeeded. A finding fails the step unless it
     /// is a recorded anomaly (`spec/plumb.md` §10.2) that the test expects
     /// of this linker.
+    #[allow(clippy::too_many_arguments)] // the step's facts and its line
     fn verify(
         &self,
         step: &Step,
@@ -957,6 +963,7 @@ impl Unit<'_> {
         output_file: &Path,
         map_file: &Path,
         dir: &Path,
+        line: Option<Vec<String>>,
         judged: &mut Judged,
     ) -> Result<(), Raw> {
         let error = |what: &dyn Display| Raw::Error(format!("{}: L3: {what}", step.describe()));
@@ -984,10 +991,22 @@ impl Unit<'_> {
             Linker::Mortar => mortar_plumb::Format::Mortar,
         };
         let started = Instant::now();
-        let verified = crate::plumb::verify_link(output_file, map_file, format, dir, None);
+        let verified =
+            crate::plumb::verify_link_line(output_file, map_file, format, dir, None, None, line);
         judged.plumb.time += started.elapsed();
         let (bytes, report, _) = verified.map_err(|e| error(&e))?;
-        judged.plumb.verified += 1;
+        // A reference's link that stage 3 does not model (P-D1 "outside
+        // stage 3": an option dyn.md refuses, static-pie, version
+        // definitions, a closure object no search finds) is counted as not
+        // judged by stage 3, by that name; what the earlier stages found
+        // is still judged below. mortar's never is: its finding fails.
+        let outside =
+            linker != Linker::Mortar && report.findings.iter().any(mortar_plumb::Finding::outside);
+        if outside {
+            *judged.plumb.not_judged.entry(OUTSIDE_STAGE3).or_default() += 1;
+        } else {
+            judged.plumb.verified += 1;
+        }
         judged.plumb.judged_by.insert((self.arch(), linker));
         let expected = anomaly_ids(&self.test.anomalies, self.arch(), linker);
         // mortar never has a default, whatever the file says.
@@ -1002,7 +1021,7 @@ impl Unit<'_> {
                 .collect()
         };
         let mut unexpected = Vec::new();
-        for f in &report.findings {
+        for f in report.findings.iter().filter(|f| !(outside && f.outside())) {
             let anomaly = mortar_plumb::anomaly::classify(format, &bytes, f);
             let id = anomaly.map(mortar_plumb::anomaly::id);
             if let Some(id) = id.filter(|id| expected.contains(id) || defaults.contains(id)) {
@@ -1640,11 +1659,10 @@ mod tests {
         );
     }
 
-    // "L3", "Stage 3": the verifier has no stage 3 until WP-050 lands. When
-    // it does, this assertion is the one line to turn round.
+    // "L3", "Stage 3": the verifier has stage 3 since WP-050.
     #[test]
-    fn stage_3_is_absent_today() {
-        assert!(!super::stage3_present());
+    fn stage_3_is_present() {
+        assert!(super::stage3_present());
     }
 
     use super::{Arch, Linker, Plumb, map_option, not_judged, output_name};
