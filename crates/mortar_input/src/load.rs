@@ -18,9 +18,7 @@ use mortar_core::intern::{self, SymName, TooManyKeys};
 use mortar_core::par::Pool;
 use mortar_core::plan::Plan;
 use mortar_diag::{Collector, Diagnostic, Key, Kind, RefusalClass};
-use mortar_elf::consts::SHT_GROUP;
 
-use crate::facts::effective_signature;
 use crate::problem::PHASE;
 use crate::steps::Steps;
 use crate::store::Store;
@@ -205,12 +203,12 @@ fn build<'s>(
     // Symbol keys and COMDAT signatures, numbered by first mention.
     let counts: Vec<u32> = std::iter::once(0).chain(rows.iter().map(|r| r.globals)).collect();
     let symbols = intern::number::<SymName<'s>, SymbolId, _, _>(pool, &counts, |u| {
-        u.checked_sub(1).and_then(|i| rows.get(i)).map_or_else(Keys::none, symbol_keys)
+        u.checked_sub(1).and_then(|i| rows.get(i)).map_or(Keys::None, symbol_keys)
     })?;
     steps.step("build.intern_symbols");
     let counts: Vec<u32> = std::iter::once(0).chain(rows.iter().map(|r| r.groups)).collect();
     let comdats = intern::number::<&'s [u8], ComdatId, _, _>(pool, &counts, |u| {
-        u.checked_sub(1).and_then(|i| rows.get(i)).map_or_else(Keys::none, signatures)
+        u.checked_sub(1).and_then(|i| rows.get(i)).map_or(Keys::None, signatures)
     })?;
     steps.step("build.intern_comdats");
     let symbol_rows: Vec<SymbolKey<'s>> = symbols
@@ -301,55 +299,67 @@ fn flags(row: &FileRow<'_>) -> InputFlags {
     f
 }
 
-/// A file's keys, streamed to the interner (no per-mention buffer).
-type Keys<'r, K> = Box<dyn Iterator<Item = K> + 'r>;
-
-trait NoKeys<'r, K> {
-    fn none() -> Self;
+/// A file's keys, streamed to the interner: an object's from the names
+/// and signatures its facts pass read (§6), a shared object's from its
+/// table and version slots.
+enum Keys<'r, 's, K> {
+    None,
+    Names(std::slice::Iter<'r, &'s [u8]>),
+    Signatures(std::slice::Iter<'r, &'s [u8]>),
+    Shared(Box<dyn Iterator<Item = K> + 'r>),
 }
 
-impl<'r, K: 'r> NoKeys<'r, K> for Keys<'r, K> {
-    fn none() -> Self {
-        Box::new(std::iter::empty())
+impl<'s> Iterator for Keys<'_, 's, SymName<'s>> {
+    type Item = SymName<'s>;
+
+    #[inline]
+    fn next(&mut self) -> Option<SymName<'s>> {
+        match self {
+            Keys::Names(names) => names.next().map(|n| SymName::parse(n)),
+            Keys::Shared(keys) => keys.next(),
+            Keys::None | Keys::Signatures(_) => None,
+        }
+    }
+}
+
+impl<'s> Iterator for Keys<'_, 's, &'s [u8]> {
+    type Item = &'s [u8];
+
+    #[inline]
+    fn next(&mut self) -> Option<&'s [u8]> {
+        match self {
+            Keys::Signatures(signatures) => signatures.next().copied(),
+            Keys::Shared(keys) => keys.next(),
+            Keys::None | Keys::Names(_) => None,
+        }
     }
 }
 
 /// The keys of a file's non-local symbol-table entries, in table order
 /// (§6, §8.1; the facts pass checked every name).
-fn symbol_keys<'r, 's>(row: &'r FileRow<'s>) -> Keys<'r, SymName<'s>> {
+fn symbol_keys<'r, 's>(row: &'r FileRow<'s>) -> Keys<'r, 's, SymName<'s>> {
     match row.reader {
-        Reader::Object(object) => {
-            let Ok(Some(table)) = object.symbols() else { return Keys::none() };
-            Box::new(
-                table
-                    .globals()
-                    .map(move |(_, s)| SymName::parse(table.name(&s).unwrap_or_default())),
-            )
-        }
+        Reader::Object(_) => Keys::Names(row.keys.names.iter()),
         Reader::Shared(dso) => {
-            let Ok(Some(table)) = dso.symbols() else { return Keys::none() };
+            let Ok(Some(table)) = dso.symbols() else { return Keys::None };
             let versions = &row.versions;
-            Box::new(
+            Keys::Shared(Box::new(
                 table
                     .globals()
                     .map(move |(i, s)| versions.key(&dso, i.0, table.name(&s).unwrap_or_default())),
-            )
+            ))
         }
-        Reader::Internal => Keys::none(),
+        Reader::Internal => Keys::None,
     }
 }
 
 /// The effective signatures of a file's `SHT_GROUP` sections, in section
-/// order (§6; `spec/resolve.md` §6.1).
-fn signatures<'r, 's>(row: &'r FileRow<'s>) -> Keys<'r, &'s [u8]> {
-    let Reader::Object(object) = row.reader else { return Keys::none() };
-    let table = object.symbols().ok().flatten();
-    Box::new(
-        object
-            .sections()
-            .filter(|s| s.sh_type() == SHT_GROUP)
-            .map(move |s| effective_signature(&object, table.as_ref(), &s).unwrap_or_default()),
-    )
+/// order (§6; `spec/resolve.md` §6.1), as the facts pass read them.
+fn signatures<'r, 's>(row: &'r FileRow<'s>) -> Keys<'r, 's, &'s [u8]> {
+    match row.reader {
+        Reader::Object(_) => Keys::Signatures(row.keys.signatures.iter()),
+        Reader::Shared(_) | Reader::Internal => Keys::None,
+    }
 }
 
 /// §10.4 from the walk's per-link table.
