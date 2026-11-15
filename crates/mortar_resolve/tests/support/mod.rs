@@ -3,7 +3,12 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::collections::BTreeSet;
 use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+
+use mortar_testutil::run_with;
 
 use mortar_core::{ArchiveId, ComdatId, FileId, OptId, SymbolId};
 use mortar_elf::archive::Archive;
@@ -461,5 +466,46 @@ impl View for Model {
     fn find_key(&self, name: &[u8]) -> Option<SymbolId> {
         self.index.get(name).copied()
     }
+}
+
+
+// ---- processes and traces ----------------------------------------------
+
+pub fn ok(out: &mortar_testutil::Outcome, what: &str) {
+    assert!(out.success(), "{what} failed:\n{}{}", out.stdout_text(), out.stderr_text());
+}
+
+pub fn exec(program: &Path, args: &[String], dir: &Path) -> mortar_testutil::Outcome {
+    let mut c = Command::new(program);
+    c.args(args).current_dir(dir);
+    run_with(&mut c, b"", Duration::from_secs(600))
+}
+
+pub fn canon(path: &str) -> String {
+    std::fs::canonicalize(path).map_or_else(|_| path.to_owned(), |p| p.display().to_string())
+}
+
+/// `archive(member)` with the archive's path canonical.
+pub fn member_label(archive: &str, member: &str) -> String {
+    format!("{}({member})", canon(archive))
+}
+
+/// `ld.bfd -t -t` (`(archive)member`) and `ld.lld --trace`
+/// (`archive(member)`).
+pub fn parse_trace(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for l in text.lines() {
+        let l = l.trim();
+        if let Some(rest) = l.strip_prefix('(')
+            && let Some(close) = rest.find(')')
+        {
+            out.insert(member_label(&rest[..close], &rest[close + 1..]));
+        } else if l.ends_with(')')
+            && let Some(open) = l.rfind('(')
+        {
+            out.insert(member_label(&l[..open], &l[open + 1..l.len() - 1]));
+        }
+    }
+    out
 }
 

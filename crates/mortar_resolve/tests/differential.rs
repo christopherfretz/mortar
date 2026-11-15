@@ -21,8 +21,6 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
 
 use mortar_core::par::Pool;
 use mortar_core::resolution::FileLive;
@@ -31,8 +29,8 @@ use mortar_elf::{Machine, SymbolSection};
 use mortar_resolve::options::{Entry, Options, Output};
 use mortar_resolve::view::{FileKind, View};
 use mortar_resolve::{Def, Resolved, resolve};
-use mortar_testutil::{Scratch, run_with, tool};
-use support::Model;
+use mortar_testutil::{Scratch, tool};
+use support::{Model, canon, exec, member_label, ok, parse_trace};
 
 #[derive(Clone, Copy)]
 struct Target {
@@ -119,16 +117,6 @@ fn tool_of(name: &str) -> Option<PathBuf> {
     tool(name)
 }
 
-fn ok(out: &mortar_testutil::Outcome, what: &str) {
-    assert!(out.success(), "{what} failed:\n{}{}", out.stdout_text(), out.stderr_text());
-}
-
-fn exec(program: &Path, args: &[String], dir: &Path) -> mortar_testutil::Outcome {
-    let mut c = Command::new(program);
-    c.args(args).current_dir(dir);
-    run_with(&mut c, b"", Duration::from_secs(600))
-}
-
 /// Splits `gcc -###` output's command line: arguments in double quotes
 /// with backslash escapes, or bare.
 fn split_quoted(text: &str) -> Vec<String> {
@@ -160,15 +148,6 @@ fn split_quoted(text: &str) -> Vec<String> {
         out.push(arg);
     }
     out
-}
-
-fn canon(path: &str) -> String {
-    std::fs::canonicalize(path).map_or_else(|_| path.to_owned(), |p| p.display().to_string())
-}
-
-/// `archive(member)` with the archive's path canonical.
-fn member_label(archive: &str, member: &str) -> String {
-    format!("{}({member})", canon(archive))
 }
 
 /// An input of the line, in command-line order.
@@ -391,25 +370,6 @@ fn parse_mold_map(text: &str) -> (Placed, BTreeSet<String>) {
         }
     }
     (placed, members)
-}
-
-/// `ld.bfd -t -t` (`(archive)member`) and `ld.lld --trace`
-/// (`archive(member)`).
-fn parse_trace(text: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for l in text.lines() {
-        let l = l.trim();
-        if let Some(rest) = l.strip_prefix('(')
-            && let Some(close) = rest.find(')')
-        {
-            out.insert(member_label(&rest[..close], &rest[close + 1..]));
-        } else if l.ends_with(')')
-            && let Some(open) = l.rfind('(')
-        {
-            out.insert(member_label(&l[..open], &l[open + 1..l.len() - 1]));
-        }
-    }
-    out
 }
 
 struct Built {
