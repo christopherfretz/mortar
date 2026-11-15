@@ -3,8 +3,7 @@
 //! `i686-linux-gnu-*`, Clang with `--target=i686-linux-gnu`), and its
 //! outputs are held to GNU ld's output of the same link line (the same
 //! standard output and exit status when run under `qemu-i386`), to the
-//! verifier (`mortar_plumb`, zero findings with mortar's own map, once
-//! it has i386's table: [`PLUMB_KNOWS_I386`]), to the readers and to
+//! verifier (`mortar_plumb`, zero findings with mortar's own map), to the readers and to
 //! eu-elflint, as `x64.rs` holds x86-64's; and the output is a function
 //! of the inputs alone.
 
@@ -20,19 +19,10 @@ use support::{Built, Source, build_by, with_output};
 
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 
-/// Whether the verifier has i386's table (WP-028e). Until it does,
-/// `mortar_plumb` runs on every output here (it must not fail to run) and
-/// its findings are not held: it decodes no `SHT_REL` record, so every
-/// relocated byte and every FDE is a finding. The merge that lands
-/// WP-028e sets this and the outputs are then held to zero findings.
-const PLUMB_KNOWS_I386: bool = false;
-
-/// The verifier on `out` (see [`PLUMB_KNOWS_I386`]).
+/// The verifier on `out`: zero findings with mortar's own map (its i386
+/// table is WP-028e's).
 fn plumb(out: &Path, map: &Path, dir: &Path) {
-    let findings = support::plumb::verify(out, map, dir);
-    if PLUMB_KNOWS_I386 {
-        assert!(findings.is_empty(), "plumb on {}: {findings:#?}", out.display());
-    }
+    support::plumb::clean(out, map, dir);
 }
 
 /// A threaded C program over every TLS model the drivers emit (GD, LD,
@@ -277,6 +267,8 @@ fn gc_matrix(name: &str, cc: Cc, program: &[Source]) {
             "{label}: no code collected"
         );
         assert!(mortar(&built, &plain, &[], &[]).success());
+        plumb(&gc, &map_of(&gc), &built.dir);
+        plumb(&plain, &map_of(&plain), &built.dir);
         let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
         assert!(size(&gc) < size(&plain), "{label}: {} >= {}", size(&gc), size(&plain));
     }
@@ -312,6 +304,7 @@ fn x86_the_output_is_a_function_of_the_inputs_alone() {
     let m = mortar(&built, &first, &["--threads=1"], &[("MORTAR_STORE", "staged")]);
     assert!(m.success(), "{}", m.stderr_text());
     let read = |p: &Path| std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    plumb(&first, &map_of(&first), &built.dir);
     let want = (read(&first), read(&map_of(&first)));
     for store in ["staged", "resident"] {
         for threads in ["1", "4", "8"] {
@@ -460,6 +453,7 @@ fn x86_5_rel_addend_selects_the_live_merge_piece() {
     let has = |s: &[u8]| b.windows(s.len()).any(|w| w == s);
     assert!(has(b"bbbb\0"), "the referenced piece is gone");
     assert!(!has(b"aaaa\0"), "the unreferenced piece is kept");
+    plumb(&out, &map_of(&out), &built.dir);
 }
 
 /// layout L-101 for a symbol table that names `_GLOBAL_OFFSET_TABLE_`
@@ -483,6 +477,7 @@ fn x86_got_symbol_named_without_a_reference() {
     let m = mortar(&built, &out, &[], &[]);
     assert!(m.success(), "{}", m.stderr_text());
     support::plumb::readers(&out);
+    plumb(&out, &map_of(&out), &built.dir);
 }
 
 /// X86-45 (layout.md L-73), X86-38: an image whose last `PT_LOAD` ends
