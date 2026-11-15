@@ -2,15 +2,18 @@
 //!
 //! `Placement` has no member list per `Body` chunk, so `place` is
 //! inverted: every live, kept, placed, unfolded section with a place,
-//! sorted by `(chunk, offset)`. Merged chunks get one row per run of
-//! fragments contiguous both in the chunk and in one input section.
-//! Synthetic, patch and structural chunks are the caller's (§13, I-40):
-//! it passes their bytes or their chunk index.
+//! sorted by `(chunk, offset)`. A `Merged` chunk is one row, filled per
+//! clip from merge's fragment order (I-38). Relocation sections are named
+//! by their table in the input, read at fill time (I-82). Synthetic,
+//! patch and structural chunks are the caller's (§13, I-40): it passes
+//! their bytes or their chunk index.
 
 use std::collections::BTreeMap;
 
 use mortar_arch::{ProofRun, Reloc};
-use mortar_core::assignment::{Assignment, OutOf};
+use mortar_merge::order::Order;
+use mortar_synth::EhSource;
+use mortar_core::assignment::Assignment;
 use mortar_core::inputs::Reader;
 use mortar_core::layout::ChunkKind;
 use mortar_core::par::Pool;
@@ -21,7 +24,10 @@ use mortar_core::{
 use mortar_diag::{Diagnostic, FileRef, Kind};
 use mortar_elf::{SectionIndex, SymbolIndex};
 
-use crate::plan::{Builder, InputUnit, Pattern, Plan, RecOrder, RelocSection, SynthUnit};
+use crate::plan::{
+    Builder, EhSection, InputUnit, MergeSource, MergedUnit, Pattern, Plan, RecRows, RelaTable,
+    RelocSection, SynthUnit,
+};
 use crate::target::Target;
 
 /// `SHF_ALLOC`, `SHF_EXECINSTR`, `SHT_NOBITS`, `PT_LOAD`.
@@ -32,7 +38,7 @@ const SHT_RELA: u32 = 4;
 const PT_LOAD: u32 = 1;
 
 /// The tables a plan is built from.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Model<'m, 's> {
     pub inputs: &'m Inputs<'s>,
     pub resolution: &'m Resolution,
@@ -40,6 +46,28 @@ pub struct Model<'m, 's> {
     pub split: &'m Split,
     pub layout: &'m Layout,
     pub assignment: &'m Assignment<'m>,
+    /// Phase 50's fragment order: the `Merged` chunks' contents (I-38).
+    pub order: Option<&'m Order>,
+    /// The `.eh_frame` source (phase 60's parse): its sections'
+    /// relocations are applied over the output `.eh_frame` (S-52).
+    pub eh: Option<&'m dyn EhSource>,
+}
+
+impl std::fmt::Debug for Model<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Model").finish_non_exhaustive()
+    }
+}
+
+/// A synthetic chunk's row in the plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SynthRow {
+    /// The index in the `chunks` slice given to fill.
+    pub index: u32,
+    /// `Division::Whole` (I-104).
+    pub whole: bool,
+    /// The output `.eh_frame` (S-52).
+    pub eh: bool,
 }
 
 /// What the image does not own: the bytes of fixed chunks (the structural
@@ -48,8 +76,7 @@ pub struct Model<'m, 's> {
 /// whether `-z separate-code` is on (I-41).
 pub struct Extras<'e> {
     pub fixed: BTreeMap<ChunkId, Box<[u8]>>,
-    /// `ChunkId` → (index in `chunks`, `Division::Whole`).
-    pub synth: BTreeMap<ChunkId, (u32, bool)>,
+    pub synth: BTreeMap<ChunkId, SynthRow>,
     /// The proof runs of input section `(file, index)` of `len` bytes, in
     /// section offsets.
     pub proof: &'e dyn Fn(FileId, SectionIndex, u64) -> Vec<ProofRun>,
@@ -192,7 +219,6 @@ pub fn from_layout(
     }
     pool.sort_by_key(&mut members, |&(c, off, _)| (c.0, off));
     let mut paths: BTreeMap<FileId, FileRef> = BTreeMap::new();
-    let mut rec_buf = Vec::new();
     for &(c, off, s) in &members {
         let chunk = &chunks[c];
         if !chunk.in_file() || !matches!(chunk.kind, ChunkKind::Body(_)) {
@@ -218,10 +244,9 @@ pub fn from_layout(
         let relocs = if rel.0 == 0 {
             None
         } else {
-            let records = records_in(m.inputs, file, rel, &mut rec_buf)?;
-            let order = RecOrder::of(&records);
+            let rows = RecRows::Rela(table(m.inputs, file, rel)?);
             let proof = (extras.proof)(file, index, size).into_boxed_slice();
-            Some(b.relocs(RelocSection { records: records.into_boxed_slice(), order, proof }))
+            Some(b.relocs(RelocSection { section: s, rows, proof }))
         };
         let addr = if alloc { chunk.addr.map_or(0, |a| a + off) } else { 0 };
         let unit = InputUnit {
@@ -242,10 +267,18 @@ pub fn from_layout(
     for (&c, bytes) in &extras.fixed {
         b.bytes(chunks[c].offset, bytes.clone());
     }
-    for (&c, &(chunk, whole)) in &extras.synth {
+    for (&c, row) in &extras.synth {
         let ch = &chunks[c];
-        let name = b.name(ch.name(m.assignment).unwrap_or(b""));
-        b.synth(ch.offset, ch.size, SynthUnit { chunk, id: c, name, whole });
+        let name = match ch.kind {
+            ChunkKind::Synthetic(s) => s.name,
+            _ => ch.name(m.assignment).unwrap_or(b""),
+        };
+        let name = b.name(name);
+        let unit = SynthUnit { chunk: row.index, id: c, name, whole: row.whole, eh: row.eh };
+        b.synth(ch.offset, ch.size, unit);
+        if row.eh {
+            eh_sections(m, &mut b, &mut paths)?;
+        }
     }
     pads(m, target, extras.separate_code, &mut b);
     for (f, p) in paths {
@@ -257,47 +290,78 @@ pub fn from_layout(
     b.finish(window, pool)
 }
 
-/// I-38: the fragment runs of every `Merged` chunk.
+/// The table of relocation section `rel` of `file` (`SHT_RELA`; REL is
+/// M3).
+fn table(inputs: &Inputs<'_>, file: FileId, rel: SectionIndex) -> Result<RelaTable, Diagnostic> {
+    let Reader::Object(obj) = &inputs.files[file].reader else {
+        return Err(internal(&format!("file {} has relocations and no object", file.0)));
+    };
+    let bad = |e: mortar_elf::Error| {
+        internal(&format!("file {}: relocation section {}: {e:?}", file.0, rel.0))
+    };
+    let sec = obj.section(rel).map_err(bad)?;
+    if sec.sh_type() != SHT_RELA {
+        // REL: the addend is in the bytes; M3 (x86).
+        return Err(Diagnostic::refused(
+            mortar_diag::RefusalClass::Feature,
+            "REL relocations in fill (M3)",
+        ));
+    }
+    let class = obj.class();
+    let entsize = match class {
+        mortar_elf::Class::Elf64 => 24,
+        mortar_elf::Class::Elf32 => 12,
+    };
+    let range = sec.file_range().map_err(bad)?.unwrap_or(0..0);
+    let len = (range.end - range.start) as u64;
+    if len % entsize != 0 {
+        return Err(internal(&format!(
+            "file {}: relocation section {} is not whole records",
+            file.0, rel.0
+        )));
+    }
+    let count = u32::try_from(len / entsize)
+        .map_err(|_| internal(&format!("file {}: relocation section {} too large", file.0, rel.0)))?;
+    Ok(RelaTable { file, offset: range.start as u64, count, class })
+}
+
+/// I-38: every `Merged` chunk is one row, and every merge section a
+/// live fragment is copied from is a source.
 fn merged(
     m: &Model<'_, '_>,
     b: &mut Builder,
     paths: &mut BTreeMap<FileId, FileRef>,
 ) -> Result<(), Diagnostic> {
     let pl = &m.layout.placement;
-    let mut merged_chunk: BTreeMap<u32, ChunkId> = BTreeMap::new();
+    let mut any = false;
     for (c, ch) in pl.chunks.iter() {
-        if let ChunkKind::Merged(o) = ch.kind {
-            merged_chunk.insert(o.0, c);
-        }
-    }
-    if merged_chunk.is_empty() {
-        return Ok(());
-    }
-    // (chunk, chunk offset, section, section offset, size)
-    let mut frags = Vec::new();
-    for (f, frag) in m.split.frags.iter() {
-        let Some(off) = m.layout.merge.offset(f) else { continue };
-        let OutOf::Out(o) = m.assignment.out_of[frag.section] else { continue };
-        let Some(&c) = merged_chunk.get(&o.0) else { continue };
-        frags.push((c, off, frag.section, u64::from(frag.offset), u64::from(frag.size)));
-    }
-    frags.sort_unstable_by_key(|f| (f.0.0, f.1));
-    let mut i = 0;
-    while i < frags.len() {
-        let (c, off, s, soff, mut size) = frags[i];
-        let mut j = i + 1;
-        while let Some(&(c2, off2, s2, soff2, size2)) = frags.get(j) {
-            if c2 != c || s2 != s || off2 != off + size || soff2 != soff + size {
-                break;
-            }
-            size += size2;
-            j += 1;
-        }
-        i = j;
-        if size == 0 {
+        let ChunkKind::Merged(o) = ch.kind else { continue };
+        if !ch.in_file() || ch.size == 0 {
             continue;
         }
-        let ch = &pl.chunks[c];
+        let Some(order) = m.order else {
+            return Err(internal(&format!("merged chunk {} and no fragment order", c.0)));
+        };
+        let Ok(k) = order.chunks.binary_search_by_key(&o, |mc| mc.out) else {
+            return Err(internal(&format!("merged chunk {} is not in the fragment order", c.0)));
+        };
+        let name = b.name(m.assignment.outsecs[o].name);
+        b.merged(ch.offset, ch.size, MergedUnit { chunk: k as u32, name });
+        any = true;
+    }
+    if !any {
+        return Ok(());
+    }
+    let mut secs: Vec<SectionId> = m
+        .split
+        .frags
+        .iter()
+        .filter(|(f, _)| m.layout.merge.offset(*f).is_some())
+        .map(|(_, frag)| frag.section)
+        .collect();
+    secs.sort_unstable();
+    secs.dedup();
+    for s in secs {
         let (file, index) = m
             .resolution
             .sh_index(s)
@@ -308,28 +372,41 @@ fn merged(
             continue;
         };
         if m.resolution.sections[s].reloc.0 != 0 {
-            // S-6: a merge section has no relocations; layout refuses one.
+            // S-6: a merge section has no relocations; resolve demotes one.
             return Err(internal(&format!(
                 "merge section {} of file {} has relocations",
                 index.0, file.0
             )));
         }
         paths.entry(file).or_insert_with(|| file_ref(m.inputs, file));
-        let alloc = sec.flags() & SHF_ALLOC != 0;
-        let name = b.name(sec.name().unwrap_or(b""));
-        let unit = InputUnit {
-            file,
-            index: index.0,
-            section: s,
-            src: range.start as u64 + soff,
-            start: soff,
-            section_size: sec.size(),
-            addr: if alloc { ch.addr.map_or(0, |a| a + off - soff) } else { 0 },
-            alloc,
-            name,
-            relocs: None,
-        };
-        b.input(ch.offset + off, size, unit);
+        b.merge_source(MergeSource { section: s, file, src: range.start as u64, size: sec.size() });
+    }
+    Ok(())
+}
+
+/// S-52: every live input `.eh_frame` section with relocations.
+fn eh_sections(
+    m: &Model<'_, '_>,
+    b: &mut Builder,
+    paths: &mut BTreeMap<FileId, FileRef>,
+) -> Result<(), Diagnostic> {
+    let Some(src) = m.eh else {
+        return Err(internal("the .eh_frame chunk and no .eh_frame source"));
+    };
+    for sec in &src.frames().sections {
+        let s = sec.section;
+        let rel = m.resolution.sections[s].reloc;
+        if rel.0 == 0 || !m.liveness.is_live(s) {
+            continue;
+        }
+        let (file, index) = m
+            .resolution
+            .sh_index(s)
+            .ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
+        paths.entry(file).or_insert_with(|| file_ref(m.inputs, file));
+        let rows = RecRows::Rela(table(m.inputs, file, rel)?);
+        let relocs = b.relocs(RelocSection { section: s, rows, proof: Box::new([]) });
+        b.eh_section(EhSection { section: s, file, index: index.0, relocs });
     }
     Ok(())
 }

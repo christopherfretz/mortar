@@ -24,10 +24,12 @@
 #![allow(clippy::result_large_err, clippy::many_single_char_names, clippy::cast_precision_loss)]
 
 pub mod digest;
+mod eh;
 pub mod fill;
 pub mod headers;
 pub mod layout_plan;
 pub mod map;
+mod merged;
 pub mod output;
 pub mod phases;
 pub mod plan;

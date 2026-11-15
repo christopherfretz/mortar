@@ -1,10 +1,12 @@
-//! The fill plan (I-27, I-28), the record index (I-29) and the jobs
-//! (I-31): data, built once before the windows and read by every worker.
+//! The fill plan (I-27, I-28) and the jobs (I-31): data, built once before
+//! the windows and read by every worker. The records' order is the scan's
+//! `RecIndex` (I-29), which fill reads beside the plan.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
 
 use mortar_arch::{ProofRun, Reloc};
+use mortar_elf::Class;
 use mortar_core::par::Pool;
 use mortar_core::{ChunkId, FileId, SectionId};
 use mortar_diag::{Diagnostic, FileRef, Kind};
@@ -77,6 +79,8 @@ pub enum Unit {
     Bytes(u32),
     /// [`Plan::synth`]`[i]`: a synthetic or patch chunk (§13, I-39).
     Synth(u32),
+    /// [`Plan::merged`]`[i]`: a merged chunk's fragments (I-38).
+    Merged(u32),
     /// A gap (I-41, I-42).
     Gap(Pattern),
 }
@@ -123,41 +127,107 @@ pub struct InputUnit {
     pub relocs: Option<u32>,
 }
 
-/// The order of one relocation section's records by `r_offset` (I-29).
-///
-/// Stand-in: WP-026s's scan writes `RecIndex`; until it lands the image
-/// computes it with [`RecOrder::of`] when it reads the records.
+/// Where one relocation section's records come from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RecOrder {
-    /// `r_offset` never decreases.
-    Sorted,
-    /// The record indexes, stably sorted by `r_offset`.
-    Permuted(Box<[u32]>),
+pub enum RecRows {
+    /// Records in memory with their keys (tests; records the image makes).
+    Decoded(Box<[Reloc]>),
+    /// A `SHT_RELA` table of an input file, read at fill time for each
+    /// clip (I-35 step 2, I-82 "read twice"): nothing per record lives in
+    /// the plan (I-28).
+    Rela(RelaTable),
 }
 
-impl RecOrder {
-    /// The order of `records` (one comparison per record, then a stable
-    /// sort of the indexes of an unsorted section).
+/// A `SHT_RELA` table in an input file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelaTable {
+    pub file: FileId,
+    /// File offset of record 0.
+    pub offset: u64,
+    pub count: u32,
+    /// The file's class: 24-byte (`ELFCLASS64`) or 12-byte records.
+    pub class: Class,
+}
+
+impl RelaTable {
+    /// The size of one record.
     #[must_use]
-    pub fn of(records: &[Reloc]) -> Self {
-        if records.windows(2).all(|w| w[0].r_offset <= w[1].r_offset) {
-            return Self::Sorted;
+    pub fn entsize(&self) -> u64 {
+        match self.class {
+            Class::Elf64 => 24,
+            Class::Elf32 => 12,
         }
-        let mut perm: Vec<u32> = (0..records.len() as u32).collect();
-        perm.sort_by_key(|&i| records[i as usize].r_offset);
-        Self::Permuted(perm.into_boxed_slice())
+    }
+
+    /// The file range of records `[lo, hi)`.
+    #[must_use]
+    pub fn range(&self, lo: u32, hi: u32) -> Range<u64> {
+        let e = self.entsize();
+        self.offset + u64::from(lo) * e..self.offset + u64::from(hi) * e
     }
 }
 
-/// The relocation records of one relocated input section.
+/// The relocation records of one relocated section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelocSection {
-    /// In record order (`RelocAt.index`).
-    pub records: Box<[Reloc]>,
-    pub order: RecOrder,
+    /// The relocated section: the key of its order and `leads` bit in the
+    /// scan's `RecIndex` (I-29).
+    pub section: SectionId,
+    pub rows: RecRows,
     /// The instruction proof of the section's bytes, in section offsets
     /// (`spec/arch.md` §3.6 rule 1).
     pub proof: Box<[ProofRun]>,
+}
+
+impl RelocSection {
+    /// The number of records.
+    #[must_use]
+    pub fn len(&self) -> u32 {
+        match &self.rows {
+            RecRows::Decoded(r) => r.len() as u32,
+            RecRows::Rela(t) => t.count,
+        }
+    }
+
+    /// Whether there are none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// A `Merged` chunk's unit (I-38): the live fragments of
+/// `Order::chunks[chunk]`, each copied from its representative.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedUnit {
+    /// The index in merge's `Order::chunks`.
+    pub chunk: u32,
+    /// The output section's name, for diagnostics.
+    pub name: u32,
+}
+
+/// Where a merge input section's bytes are, for the fragments copied
+/// from it (sorted by section in [`Plan::merge_src`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MergeSource {
+    pub section: SectionId,
+    pub file: FileId,
+    /// File offset of the section's byte 0.
+    pub src: u64,
+    pub size: u64,
+}
+
+/// An input `.eh_frame` section whose relocations the image applies over
+/// the output `.eh_frame` (`spec/synth.md` S-52, S-53), sorted by section
+/// in [`Plan::eh`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EhSection {
+    pub section: SectionId,
+    pub file: FileId,
+    /// The section's index in its file.
+    pub index: u32,
+    /// [`Plan::relocs`] index.
+    pub relocs: u32,
 }
 
 /// A synthetic chunk's row (§13).
@@ -171,6 +241,9 @@ pub struct SynthUnit {
     pub name: u32,
     /// `Division::Whole` (I-104).
     pub whole: bool,
+    /// The output `.eh_frame`: after the chunk's bytes, the relocations of
+    /// [`Plan::eh`] are applied over them (S-52).
+    pub eh: bool,
 }
 
 /// The fill plan (I-27) and its jobs (I-31).
@@ -190,6 +263,11 @@ pub struct Plan {
     pub relocs: Box<[RelocSection]>,
     pub bytes: Box<[Box<[u8]>]>,
     pub synth: Box<[SynthUnit]>,
+    pub merged: Box<[MergedUnit]>,
+    /// Sorted by section.
+    pub merge_src: Box<[MergeSource]>,
+    /// Sorted by section.
+    pub eh: Box<[EhSection]>,
     pub names: Box<[Box<[u8]>]>,
     /// The paths of the files the inputs come from, for diagnostics.
     pub paths: BTreeMap<FileId, FileRef>,
@@ -216,6 +294,20 @@ impl Plan {
         self.paths.get(&file).cloned().unwrap_or_else(|| FileRef::new(format!("<file {}>", file.0)))
     }
 
+    /// Where merge input section `section`'s bytes are.
+    #[must_use]
+    pub fn merge_source(&self, section: SectionId) -> Option<&MergeSource> {
+        let at = self.merge_src.binary_search_by_key(&section, |m| m.section).ok()?;
+        self.merge_src.get(at)
+    }
+
+    /// The input `.eh_frame` section `section`, if it has relocations.
+    #[must_use]
+    pub fn eh_section(&self, section: SectionId) -> Option<&EhSection> {
+        let at = self.eh.binary_search_by_key(&section, |e| e.section).ok()?;
+        self.eh.get(at)
+    }
+
     /// The name of [`Plan::names`]`[i]`.
     #[must_use]
     pub fn name(&self, i: u32) -> &[u8] {
@@ -235,6 +327,9 @@ pub struct Builder {
     relocs: Vec<RelocSection>,
     bytes: Vec<Box<[u8]>>,
     synth: Vec<SynthUnit>,
+    merged: Vec<MergedUnit>,
+    merge_src: Vec<MergeSource>,
+    eh: Vec<EhSection>,
     names: Vec<Box<[u8]>>,
     paths: BTreeMap<FileId, FileRef>,
     sealed: Option<Range<u64>>,
@@ -258,6 +353,9 @@ impl Builder {
             relocs: Vec::new(),
             bytes: Vec::new(),
             synth: Vec::new(),
+            merged: Vec::new(),
+            merge_src: Vec::new(),
+            eh: Vec::new(),
             names: Vec::new(),
             paths: BTreeMap::new(),
             sealed: None,
@@ -301,6 +399,22 @@ impl Builder {
         self.rows.push(Row { offset, size, unit: Unit::Synth((self.synth.len() - 1) as u32) });
     }
 
+    /// A merged chunk's fragments at `offset` (I-38).
+    pub fn merged(&mut self, offset: u64, size: u64, unit: MergedUnit) {
+        self.merged.push(unit);
+        self.rows.push(Row { offset, size, unit: Unit::Merged((self.merged.len() - 1) as u32) });
+    }
+
+    /// Where a merge input section's bytes are (I-38).
+    pub fn merge_source(&mut self, src: MergeSource) {
+        self.merge_src.push(src);
+    }
+
+    /// An input `.eh_frame` section with relocations (S-52).
+    pub fn eh_section(&mut self, eh: EhSection) {
+        self.eh.push(eh);
+    }
+
     /// The bytes of `range` no row covers are `pattern` (I-41); elsewhere
     /// gaps are zero. Pad ranges must not overlap.
     pub fn pad(&mut self, range: Range<u64>, pattern: Pattern) {
@@ -326,6 +440,9 @@ impl Builder {
             relocs,
             bytes,
             synth,
+            merged,
+            mut merge_src,
+            mut eh,
             names,
             paths,
             sealed,
@@ -393,6 +510,7 @@ impl Builder {
                 }),
                 Unit::Bytes(i) => bytes.get(i as usize).is_some_and(|b| b.len() as u64 == row.size),
                 Unit::Synth(i) => (i as usize) < synth.len(),
+                Unit::Merged(i) => (i as usize) < merged.len(),
                 Unit::Gap(_) => true,
             };
             if !ok {
@@ -401,6 +519,16 @@ impl Builder {
                     row.offset
                 )));
             }
+        }
+        merge_src.sort_by_key(|m| m.section);
+        eh.sort_by_key(|e| e.section);
+        if merge_src.windows(2).any(|w| w[0].section == w[1].section)
+            || eh.windows(2).any(|w| w[0].section == w[1].section)
+        {
+            return Err(invalid("a merge or .eh_frame source given twice"));
+        }
+        if eh.iter().any(|e| e.relocs as usize >= relocs.len()) {
+            return Err(invalid("an .eh_frame section names no relocation section"));
         }
         let jobs = jobs(&out, &synth, file_size, window);
         Ok(Plan {
@@ -413,6 +541,9 @@ impl Builder {
             relocs: relocs.into_boxed_slice(),
             bytes: bytes.into_boxed_slice(),
             synth: synth.into_boxed_slice(),
+            merged: merged.into_boxed_slice(),
+            merge_src: merge_src.into_boxed_slice(),
+            eh: eh.into_boxed_slice(),
             names: names.into_boxed_slice(),
             paths,
             sealed,
