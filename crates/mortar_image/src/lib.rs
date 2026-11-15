@@ -23,6 +23,7 @@
 #![allow(clippy::result_large_err, clippy::many_single_char_names, clippy::cast_precision_loss)]
 
 pub mod digest;
+pub mod dynamic;
 pub mod dynrel;
 mod eh;
 pub mod fill;
