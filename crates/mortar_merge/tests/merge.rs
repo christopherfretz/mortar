@@ -1,5 +1,6 @@
 //! L1 tests of S-6 to S-15 and S-28: cutting and merging, against a
 //! sequential oracle under every schedule.
+#![allow(clippy::many_single_char_names)] // b(ytes), r(elocs), t, p, s
 
 use std::collections::HashMap;
 

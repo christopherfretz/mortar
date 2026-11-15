@@ -1,5 +1,6 @@
 //! L1 tests of S-17 to S-22 (references into merge sections), S-24 to
 //! S-29 (order and offsets) and S-50 (references into `.eh_frame`).
+#![allow(clippy::many_single_char_names)] // b(ytes), r(elocs), t, p, s
 
 use mortar_core::par::{Pool, check_schedules};
 use mortar_core::{Column, FileId, FragId, MergeMap, OutSecId, SectionId, Split};

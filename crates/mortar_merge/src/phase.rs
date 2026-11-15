@@ -13,7 +13,7 @@ use mortar_core::inputs::{Reader, RelocForm};
 use mortar_core::layout::EntryDef;
 use mortar_core::par::Pool;
 use mortar_core::resolution::{Def, SectionKind};
-use mortar_core::{Assignment, FileId, Inputs, Resolution, SectionId, Split, SymbolId};
+use mortar_core::{Assignment, FileId, Inputs, OutSecId, Resolution, SectionId, Split, SymbolId};
 use mortar_diag::{Diagnostic, Key};
 use mortar_elf::consts::{SHF_COMPRESSED, SHF_STRINGS, STT_SECTION};
 use mortar_elf::raw::{Rel, Rela, Table};
@@ -95,12 +95,100 @@ pub struct Phase {
     pub whole: Box<[(SectionId, Whole)]>,
 }
 
+/// A kept section that has an output section, as phase 60 sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkSection {
+    pub id: SectionId,
+    pub kind: SectionKind,
+    pub out: OutSecId,
+    /// The relocation section applying to it; 0 for none.
+    pub reloc: SectionIndex,
+}
+
+/// What phase 60 reads of a link. [`Tables`] implements it over
+/// `Inputs`, `Resolution` and `Assignment`; a test implements it over
+/// bare objects (a library scan).
+pub trait Link<'s>: Sync {
+    /// The number of files.
+    fn files(&self) -> u32;
+    /// The relocatable object of `file`, if it is one.
+    fn object(&self, file: FileId) -> Option<Object<'s>>;
+    /// The id of section `index` of `file`, kept or not.
+    fn section_id(&self, file: FileId, index: SectionIndex) -> Option<SectionId>;
+    /// Section `index` of `file`, when it is kept and assigned an output
+    /// section.
+    fn section(&self, file: FileId, index: SectionIndex) -> Option<LinkSection>;
+    /// What global symbol `index` (at or after `first_global`) of `file`
+    /// resolves to.
+    fn global(&self, file: FileId, index: SymbolIndex, first_global: u32) -> Result<Target, What>;
+    /// The bytes of section `s` of `file`.
+    fn bytes(&self, file: FileId, s: &Section<'s>) -> Result<Cow<'s, [u8]>, What>;
+    fn class(&self) -> Class;
+    fn form(&self) -> RelocForm;
+}
+
 /// The link's tables phase 60 reads.
 #[derive(Debug, Clone, Copy)]
 pub struct Tables<'t, 's> {
     pub inputs: &'t Inputs<'s>,
     pub resolution: &'t Resolution,
     pub assignment: &'t Assignment<'t>,
+}
+
+impl<'s> Link<'s> for Tables<'_, 's> {
+    fn files(&self) -> u32 {
+        self.inputs.files.len()
+    }
+
+    fn object(&self, file: FileId) -> Option<Object<'s>> {
+        match self.inputs.files.get(file)?.reader {
+            Reader::Object(o) => Some(o),
+            _ => None,
+        }
+    }
+
+    fn section_id(&self, file: FileId, index: SectionIndex) -> Option<SectionId> {
+        self.resolution.section_id(file, index)
+    }
+
+    fn section(&self, file: FileId, index: SectionIndex) -> Option<LinkSection> {
+        let id = self.resolution.section_id(file, index)?;
+        let row = self.resolution.sections[id];
+        let out = self.assignment.out(id).filter(|_| row.is_kept())?;
+        Some(LinkSection { id, kind: row.kind, out, reloc: row.reloc })
+    }
+
+    fn global(&self, file: FileId, index: SymbolIndex, first_global: u32) -> Result<Target, What> {
+        let map = self.inputs.sym_map_of(file);
+        let Some(&id) = map.get((index.0 - first_global) as usize) else {
+            return Err(What::Malformed(format!("symbol {} has no key", index.0)));
+        };
+        let id: SymbolId = self.resolution.redirect.get(id).copied().unwrap_or(id);
+        Ok(match self.resolution.def.get(id).copied() {
+            Some(Def::Defined(e)) => match self.inputs.entry_def(e) {
+                Some(EntryDef::Section(i, v)) => match self.resolution.section_id(e.file, i) {
+                    Some(section) => Target::Section { section, value: v },
+                    None => Target::Elsewhere(id),
+                },
+                Some(EntryDef::Absolute(v)) => Target::Absolute(v),
+                None => Target::Elsewhere(id),
+            },
+            Some(Def::Undefined { weak }) => Target::Undefined { symbol: id, weak },
+            _ => Target::Elsewhere(id),
+        })
+    }
+
+    fn bytes(&self, file: FileId, s: &Section<'s>) -> Result<Cow<'s, [u8]>, What> {
+        read(self.inputs, file, s)
+    }
+
+    fn class(&self) -> Class {
+        self.inputs.target.class
+    }
+
+    fn form(&self) -> RelocForm {
+        self.inputs.target.reloc
+    }
 }
 
 /// A section of a file to split, with its data.
@@ -121,7 +209,7 @@ enum Unit<'a> {
 /// own with `Inputs::copy_to` (the staged store: bulk bytes are not
 /// resident); for a file without a store entry (tests), the parsed
 /// object's own bytes.
-fn read<'s>(inputs: &Inputs<'s>, file: FileId, s: &Section<'s>) -> Result<Cow<'s, [u8]>, What> {
+pub fn read<'s>(inputs: &Inputs<'s>, file: FileId, s: &Section<'s>) -> Result<Cow<'s, [u8]>, What> {
     let h = s.header();
     let malformed = |e: mortar_elf::Error| What::Malformed(e.to_string());
     if h.sh_type == mortar_elf::consts::SHT_NOBITS || h.sh_size == 0 {
@@ -145,8 +233,8 @@ fn read<'s>(inputs: &Inputs<'s>, file: FileId, s: &Section<'s>) -> Result<Cow<'s
 /// Phase 60: splits every kept `Merge` and `EhFrame` section that is
 /// assigned an output section, merges, and parses `.eh_frame`. Problems
 /// (sorted by key) when any input is malformed or refused.
-pub fn run(pool: &Pool, t: Tables<'_, '_>, relocs: &dyn Relocs) -> Result<Phase, Vec<Problem>> {
-    let files = t.inputs.files.len() as usize;
+pub fn run(pool: &Pool, t: &dyn Link<'_>, relocs: &dyn Relocs) -> Result<Phase, Vec<Problem>> {
+    let files = t.files() as usize;
     let per_file: Vec<Result<Vec<Unit<'_>>, Problem>> =
         pool.map(files, |f| units(t, FileId(f as u32), relocs));
     let mut problems: Vec<Problem> =
@@ -170,7 +258,7 @@ pub fn run(pool: &Pool, t: Tables<'_, '_>, relocs: &dyn Relocs) -> Result<Phase,
             }
         }
     }
-    let word = match t.inputs.target.class {
+    let word = match t.class() {
         Class::Elf32 => 4,
         Class::Elf64 => 8,
     };
@@ -206,19 +294,15 @@ pub fn run(pool: &Pool, t: Tables<'_, '_>, relocs: &dyn Relocs) -> Result<Phase,
 
 /// The units of one file, in section order.
 fn units<'s>(
-    t: Tables<'_, 's>,
+    t: &dyn Link<'s>,
     file: FileId,
     relocs: &dyn Relocs,
 ) -> Result<Vec<Unit<'s>>, Problem> {
-    let Some(range) = t.resolution.section_base.get(file).copied() else { return Ok(Vec::new()) };
-    let Reader::Object(object) = t.inputs.files[file].reader else { return Ok(Vec::new()) };
+    let Some(object) = t.object(file) else { return Ok(Vec::new()) };
     let mut out = Vec::new();
-    for (i, section) in range.iter().enumerate() {
-        let row = t.resolution.sections[section];
-        if !row.is_kept() || t.assignment.out(section).is_none() {
-            continue;
-        }
-        let index = i as u32;
+    for index in 0..object.section_count() {
+        let Some(row) = t.section(file, SectionIndex(index)) else { continue };
+        let section = row.id;
         let problem = |what: What| Problem { file, section: index, piece: 0, offset: 0, what };
         let malformed = |e: mortar_elf::Error| problem(What::Malformed(e.to_string()));
         match row.kind {
@@ -236,8 +320,8 @@ fn units<'s>(
                     out.push(Unit::Whole(section, w));
                     continue;
                 }
-                let out_sec = t.assignment.out(section).unwrap_or_else(|| unreachable!());
-                let bytes = read(t.inputs, file, &s).map_err(problem)?;
+                let out_sec = row.out;
+                let bytes = t.bytes(file, &s).map_err(problem)?;
                 out.push(Unit::Merge(
                     MergeIn {
                         section,
@@ -260,7 +344,7 @@ fn units<'s>(
                         "SHF_COMPRESSED .eh_frame".into(),
                     )));
                 }
-                let bytes = read(t.inputs, file, &s).map_err(problem)?;
+                let bytes = t.bytes(file, &s).map_err(problem)?;
                 let rel = if row.reloc.0 == 0 {
                     Vec::new()
                 } else {
@@ -277,19 +361,19 @@ fn units<'s>(
 
 /// The relocations of an `.eh_frame`, classified, resolved and sorted by
 /// offset.
-fn eh_relocs(
-    t: Tables<'_, '_>,
+fn eh_relocs<'s>(
+    t: &dyn Link<'s>,
     file: FileId,
-    object: &Object<'_>,
+    object: &Object<'s>,
     reloc: SectionIndex,
     bytes: &[u8],
     relocs: &dyn Relocs,
 ) -> Result<Vec<EhReloc>, (u64, What)> {
     let malformed = |e: mortar_elf::Error| (0, What::Malformed(e.to_string()));
-    let rs: Section<'_> = object.section(reloc).map_err(malformed)?;
-    let records = read(t.inputs, file, &rs).map_err(|w| (0, w))?;
+    let rs: Section<'s> = object.section(reloc).map_err(malformed)?;
+    let records = t.bytes(file, &rs).map_err(|w| (0, w))?;
     let class = object.class();
-    let raw: Vec<(u64, u32, u32, Option<i64>)> = match t.inputs.target.reloc {
+    let raw: Vec<(u64, u32, u32, Option<i64>)> = match t.form() {
         RelocForm::Rela => Table::<Rela>::new(&records, class)
             .iter()
             .map(|r| (r.r_offset, r.r_sym, r.r_type, Some(r.r_addend)))
@@ -332,9 +416,9 @@ fn eh_relocs(
 }
 
 /// What symbol `index` of `file` resolves to (resolve.md: locals by their
-/// section, globals through `sym_map`, `redirect` and `def`).
+/// section, globals by [`Link::global`]).
 fn target(
-    t: Tables<'_, '_>,
+    t: &dyn Link<'_>,
     file: FileId,
     symbols: &mortar_elf::SymbolTable<'_>,
     index: SymbolIndex,
@@ -342,35 +426,15 @@ fn target(
     let malformed = |e: mortar_elf::Error| What::Malformed(e.to_string());
     let sym = symbols.get(index).map_err(malformed)?;
     let first_global = symbols.first_global().0;
-    if index.0 < first_global || sym.st_info & 0xf == STT_SECTION {
-        return local(t, file, symbols.section_of(index, &sym).map_err(malformed)?, sym.st_value);
+    if index.0 >= first_global && sym.st_info & 0xf != STT_SECTION {
+        return t.global(file, index, first_global);
     }
-    let map = t.inputs.sym_map_of(file);
-    let Some(&id) = map.get((index.0 - first_global) as usize) else {
-        return Err(What::Malformed(format!("symbol {} has no key", index.0)));
-    };
-    let id: SymbolId = t.resolution.redirect.get(id).copied().unwrap_or(id);
-    Ok(match t.resolution.def.get(id).copied() {
-        Some(Def::Defined(e)) => match t.inputs.entry_def(e) {
-            Some(EntryDef::Section(i, v)) => match t.resolution.section_id(e.file, i) {
-                Some(section) => Target::Section { section, value: v },
-                None => Target::Elsewhere(id),
-            },
-            Some(EntryDef::Absolute(v)) => Target::Absolute(v),
-            None => Target::Elsewhere(id),
-        },
-        Some(Def::Undefined { weak }) => Target::Undefined { symbol: id, weak },
-        _ => Target::Elsewhere(id),
-    })
-}
-
-fn local(t: Tables<'_, '_>, file: FileId, at: SymbolSection, value: u64) -> Result<Target, What> {
-    match at {
-        SymbolSection::Section(i) => match t.resolution.section_id(file, i) {
-            Some(section) => Ok(Target::Section { section, value }),
+    match symbols.section_of(index, &sym).map_err(malformed)? {
+        SymbolSection::Section(i) => match t.section_id(file, i) {
+            Some(section) => Ok(Target::Section { section, value: sym.st_value }),
             None => Err(What::Malformed(format!("symbol in section {} which does not exist", i.0))),
         },
-        SymbolSection::Absolute | SymbolSection::Undefined => Ok(Target::Absolute(value)),
+        SymbolSection::Absolute | SymbolSection::Undefined => Ok(Target::Absolute(sym.st_value)),
         SymbolSection::Common | SymbolSection::Reserved(_) => {
             Err(What::Malformed("local symbol in a reserved section index".into()))
         }

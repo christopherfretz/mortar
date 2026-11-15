@@ -1,4 +1,5 @@
 //! L1 tests of S-34 to S-45: `.eh_frame` records from hand-made bytes.
+#![allow(clippy::many_single_char_names)] // b(ytes), r(elocs), t, p, s
 
 use mortar_core::par::{Pool, check_schedules};
 use mortar_core::split::EhPiece;
@@ -33,7 +34,7 @@ fn cie_v(version: u8, aug: &str, aug_data: &[u8]) -> Vec<u8> {
         b.extend_from_slice(aug_data);
     }
     b.extend_from_slice(&[0x0c, 0x1f, 0x00]);
-    while (b.len() + 4) % 4 != 0 {
+    while !(b.len() + 4).is_multiple_of(4) {
         b.push(0);
     }
     rec(&b)
@@ -58,7 +59,7 @@ fn fde(at: usize, cie_at: usize, pc: u32, z: bool, lsda: Option<u32>) -> Vec<u8>
             None => b.push(0),
         }
     }
-    while (b.len() + 4) % 4 != 0 {
+    while !(b.len() + 4).is_multiple_of(4) {
         b.push(0);
     }
     rec(&b)
@@ -242,7 +243,7 @@ fn s38_initial_location() {
     // Only an R_*_NONE: no relocation.
     let none =
         EhReloc { r_type: 0, name: "R_AARCH64_NONE", class: RelocClass::None, ..code(at + 8) };
-    let eh = one(&b, &[none.clone()]).unwrap();
+    let eh = one(&b, std::slice::from_ref(&none)).unwrap();
     assert_eq!(eh.records[1].fde().unwrap().code, Code::Dropped);
     // NONE next to the real one.
     let eh = one(&b, &[none, code(at + 8)]).unwrap();
