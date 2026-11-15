@@ -4,9 +4,9 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-471 rows: 43 supported, 2 partial, 27 noop, 399 refused.
+472 rows: 53 supported, 3 partial, 44 noop, 372 refused.
 
-Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's own.
+Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's own.
 
 - AArch64: 14 rows of that target only
 - x86-64: 26 rows of that target only
@@ -41,15 +41,15 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--no-nmagic` |  | lld, mold | all | refused | `shaping.magic` | Page-align sections (default) |
 | `--build-id` | optional, `=` only: STYLE (style or 0xHEX) | GNU, lld, mold | all | partial: `=md5`, `=uuid` refused (synth.md S-91: md5 is not written and uuid is M2; mortar writes --build-id, =sha1, =sha256, =fast, =none and =0xHEX) | `shaping.build_id` | Write a build-ID note: md5, sha1, sha256, fast, uuid, none or 0xHEX |
 | `--no-build-id` |  | mold | all | supported | `shaping.build_id` | Write no build-ID note |
-| `--compress-debug-sections` | none \| zlib \| zlib-gnu \| zlib-gabi \| zstd | GNU, lld, mold | all | refused | `shaping.compress_debug_sections` | Compress the debugging sections |
+| `--compress-debug-sections` | none \| zlib \| zlib-gnu \| zlib-gabi \| zstd | GNU, lld, mold | all | partial: `=zlib`, `=zlib-gnu`, `=zlib-gabi`, `=zstd` refused (image.md: debug sections are written uncompressed; mortar writes =none only) | `shaping.compress_debug_sections` | Compress the debugging sections |
 | `--eh-frame-hdr` |  | GNU, lld, mold | all | supported | `shaping.eh_frame_hdr` | Write .eh_frame_hdr and PT_GNU_EH_FRAME |
 | `--no-eh-frame-hdr` |  | GNU, lld, mold | all | supported | `shaping.eh_frame_hdr` | Write no .eh_frame_hdr |
 | `--package-metadata` | optional, `=` only: JSON | GNU, mold | all | refused | `other` | Write a .note.package note |
-| `--gc-sections` |  | GNU, lld, mold | all | refused | `shaping.gc_sections` | Remove sections nothing refers to |
+| `--gc-sections` |  | GNU, lld, mold | all | supported | `shaping.gc_sections` | Remove sections nothing refers to |
 | `--no-gc-sections` |  | GNU, lld, mold | all | supported | `shaping.gc_sections` | Keep every section (default) |
-| `--print-gc-sections` |  | GNU, lld, mold | all | refused | `other` | List the sections --gc-sections removes |
-| `--no-print-gc-sections` |  | GNU, lld, mold | all | refused | `other` | Do not list removed sections (default) |
-| `--gc-keep-exported` |  | GNU | all | refused | `other` | Keep sections that define exported symbols |
+| `--print-gc-sections` |  | GNU, lld, mold | all | supported | `shaping.print_gc_sections` | List the sections --gc-sections removes |
+| `--no-print-gc-sections` |  | GNU, lld, mold | all | supported | `shaping.print_gc_sections` | Do not list removed sections (default) |
+| `--gc-keep-exported` |  | GNU | all | supported | `shaping.gc_keep_exported` | Keep sections that define exported symbols |
 | `--icf` | all \| safe \| none | lld, mold | all | refused | `shaping.icf` | Fold identical code |
 | `--no-icf` |  | mold | all | refused | `shaping.icf` | Fold nothing (default) |
 | `--print-icf-sections` |  | lld, mold | all | refused | `other` | List the folded sections |
@@ -58,7 +58,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--ignore-data-address-equality` |  | lld, mold | all | refused | `other` | Allow folding data whose address is compared |
 | `--ignore-function-address-equality` |  | lld | all | refused | `other` | Allow folding functions whose address is compared |
 | `--gdb-index` |  | lld, mold | all | refused | `shaping.gdb_index` | Write a .gdb_index section |
-| `--no-gdb-index` |  | lld, mold | all | refused | `shaping.gdb_index` | Write no .gdb_index section (default) |
+| `--no-gdb-index` |  | lld, mold | all | noop: mortar writes no .gdb_index (the default); --gdb-index is refused | `shaping.gdb_index` | Write no .gdb_index section (default) |
 | `--debug-names` |  | lld | all | refused | `other` | Write a merged .debug_names section |
 | `--no-debug-names` |  | lld | all | refused | `other` | Write no merged .debug_names (default) |
 | `--relax` |  | GNU, lld, mold | all | refused | `other` | Relax instructions where the target allows |
@@ -93,8 +93,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-Bdynamic`, `--dy`, `--call_shared` |  | GNU, lld, mold | all | refused | `inputs[].state.link_static` | Search -l for shared objects too (default) |
 | `--copy-dt-needed-entries`, `--add-needed` |  | GNU | all | refused | `inputs[].state.copy_dt_needed` | Follow the DT_NEEDED entries of the following shared objects |
 | `--no-copy-dt-needed-entries`, `--no-add-needed` |  | GNU, lld, mold | all | refused | `inputs[].state.copy_dt_needed` | Do not follow DT_NEEDED entries (default) |
-| `--push-state` |  | GNU, lld, mold | all | refused | `inputs[].state (saved, restored)` | Save the positional state |
-| `--pop-state` |  | GNU, lld, mold | all | refused | `inputs[].state (saved, restored)` | Restore the positional state last saved |
+| `--push-state` |  | GNU, lld, mold | all | supported | `inputs[].state (saved, restored)` | Save the positional state |
+| `--pop-state` |  | GNU, lld, mold | all | supported | `inputs[].state (saved, restored)` | Restore the positional state last saved |
 | `--accept-unknown-input-arch` |  | GNU | all | refused | `other` | Accept inputs of an unknown architecture |
 | `--no-accept-unknown-input-arch` |  | GNU | all | refused | `other` | Reject inputs of an unknown architecture (default) |
 | `--no-warn-mismatch` |  | GNU, lld | all | refused | `other` | Link inputs that do not match the output's machine |
@@ -120,7 +120,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-L`, `--library-path` | DIR | GNU, lld, mold | all | supported | `library_paths` | Search DIR for -l libraries and scripts |
 | `--sysroot` | DIR | GNU, lld, mold | all | supported | `sysroot` | Use DIR as the system root |
 | `-nostdlib` |  | GNU, lld, mold | all | refused | `nostdlib` | Do not search the SEARCH_DIR directories of linker scripts |
-| `-rpath-link` | DIR | GNU, lld, mold | all | refused | `dynamic.rpath_link` | Search DIR for the DT_NEEDED entries of shared objects; a :-separated list |
+| `-rpath-link` | DIR | GNU, lld, mold | all | noop: it finds the DT_NEEDED entries of shared objects, and every shared object input is refused by name (M2) | `dynamic.rpath_link` | Search DIR for the DT_NEEDED entries of shared objects; a :-separated list |
 | `-Y` | PATH | GNU | all | refused | `other` | Default search path for Solaris compatibility |
 | `-C`, `--directory` | DIR | mold | all | refused | `other` | Change to DIR first |
 | `--chroot` | DIR | lld, mold | all | refused | `other` | Prefix every path with DIR |
@@ -193,19 +193,19 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 
 | Option | Value | Linkers | Targets | Status | Lands in | Help |
 |---|---|---|---|---|---|---|
-| `-E`, `--export-dynamic` |  | GNU, lld, mold | all | refused | `dynamic.export_dynamic` | Export every symbol |
-| `--no-export-dynamic` |  | GNU, lld, mold | all | refused | `dynamic.export_dynamic` | Export only the symbols that need it (default) |
-| `-Bsymbolic` |  | GNU, lld, mold | all | refused | `dynamic.bsymbolic` | Bind references to global symbols locally |
-| `-Bsymbolic-functions` |  | GNU, lld, mold | all | refused | `dynamic.bsymbolic` | Bind references to global functions locally |
-| `--Bsymbolic-non-weak` |  | lld, mold | all | refused | `dynamic.bsymbolic` | Bind references to non-weak globals locally |
-| `--Bsymbolic-non-weak-functions` |  | lld, mold | all | refused | `dynamic.bsymbolic` | Bind references to non-weak global functions locally |
-| `-Bno-symbolic` |  | GNU, lld, mold | all | refused | `dynamic.bsymbolic` | Undo -Bsymbolic (default) |
+| `-E`, `--export-dynamic` |  | GNU, lld, mold | all | noop: a static executable has no dynamic symbol table (GNU ld and lld write none either), and every dynamic output is refused by name (M2) | `dynamic.export_dynamic` | Export every symbol |
+| `--no-export-dynamic` |  | GNU, lld, mold | all | noop: a static executable has no dynamic symbol table (GNU ld and lld write none either), and every dynamic output is refused by name (M2) | `dynamic.export_dynamic` | Export only the symbols that need it (default) |
+| `-Bsymbolic` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and every dynamic output is refused by name (M2) | `dynamic.bsymbolic` | Bind references to global symbols locally |
+| `-Bsymbolic-functions` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and every dynamic output is refused by name (M2) | `dynamic.bsymbolic` | Bind references to global functions locally |
+| `--Bsymbolic-non-weak` |  | lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and every dynamic output is refused by name (M2) | `dynamic.bsymbolic` | Bind references to non-weak globals locally |
+| `--Bsymbolic-non-weak-functions` |  | lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and every dynamic output is refused by name (M2) | `dynamic.bsymbolic` | Bind references to non-weak global functions locally |
+| `-Bno-symbolic` |  | GNU, lld, mold | all | noop: it binds a shared object's references to its own definitions; an executable's are bound locally already, and every dynamic output is refused by name (M2) | `dynamic.bsymbolic` | Undo -Bsymbolic (default) |
 | `-h`, `-soname` | NAME | GNU, lld, mold | all | refused | `dynamic.soname` | Record NAME as DT_SONAME |
-| `-rpath` | DIR | GNU, lld, mold | all | refused | `dynamic.rpath` | Add DIR to the run-time search path |
+| `-rpath` | DIR | GNU, lld, mold | all | noop: only a dynamic output has a .dynamic section, and every dynamic output is refused by name (M2) | `dynamic.rpath` | Add DIR to the run-time search path |
 | `-I`, `--dynamic-linker` | FILE | GNU, lld, mold | all | refused | `dynamic.dynamic_linker` | Use FILE as the program interpreter |
-| `--no-dynamic-linker` |  | GNU, lld, mold | all | refused | `dynamic.dynamic_linker` | Write no program interpreter |
-| `--enable-new-dtags` |  | GNU, lld, mold | all | refused | `dynamic.new_dtags` | Write DT_RUNPATH for -rpath |
-| `--disable-new-dtags` |  | GNU, lld, mold | all | refused | `dynamic.new_dtags` | Write DT_RPATH for -rpath |
+| `--no-dynamic-linker` |  | GNU, lld, mold | all | noop: layout.md: only a dynamic executable has PT_INTERP, and every dynamic output is refused by name (M2) | `dynamic.dynamic_linker` | Write no program interpreter |
+| `--enable-new-dtags` |  | GNU, lld, mold | all | noop: only a dynamic output has a .dynamic section, and every dynamic output is refused by name (M2) | `dynamic.new_dtags` | Write DT_RUNPATH for -rpath |
+| `--disable-new-dtags` |  | GNU, lld, mold | all | noop: only a dynamic output has a .dynamic section, and every dynamic output is refused by name (M2) | `dynamic.new_dtags` | Write DT_RPATH for -rpath |
 | `--hash-style` | sysv \| gnu \| both \| none | GNU, lld, mold | all | noop: only a dynamic output has a symbol hash table, and every dynamic output is refused by name (M2) | `dynamic.hash_style` | Write DT_HASH (sysv), DT_GNU_HASH (gnu), both or none |
 | `--pack-dyn-relocs` | none \| relr \| android \| android+relr | lld, mold | all | refused | `dynamic.pack_dyn_relocs` | Pack dynamic relocations |
 | `-f`, `--auxiliary` | NAME | GNU, lld, mold | all | refused | `other` | Record NAME as DT_AUXILIARY |
@@ -261,7 +261,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-w`, `--no-warnings` |  | GNU, lld | all | supported | `diagnostics.no_warnings` | Report no warnings |
 | `--color-diagnostics` | optional, `=` only: auto \| always \| never | lld, mold | all | supported | `diagnostics.color` | Color diagnostics: always (alone), auto (default) or never |
 | `--no-color-diagnostics` |  | lld | all | supported | `diagnostics.color` | Do not color diagnostics |
-| `--no-undefined` |  | GNU, lld, mold | all | refused | `z.defs` | Report undefined symbols even in a shared object |
+| `--no-undefined` |  | GNU, lld, mold | all | noop: resolve.md §5: an undefined symbol of an executable is an error already; the option only changes a shared object's link, refused by name (M2) | `z.defs` | Report undefined symbols even in a shared object |
 | `--unresolved-symbols` | report-all \| ignore-all \| ignore-in-object-files \| ignore-in-shared-libs | GNU, lld, mold | all | refused | `diagnostics.unresolved_symbols` | How to treat unresolved symbols |
 | `--warn-unresolved-symbols` |  | GNU, lld, mold | all | refused | `diagnostics.warn_unresolved_symbols` | Report unresolved symbols as warnings |
 | `--error-unresolved-symbols` |  | GNU, lld, mold | all | refused | `diagnostics.warn_unresolved_symbols` | Report unresolved symbols as errors (default) |
@@ -308,12 +308,13 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--cref` |  | GNU, lld | all | refused | `bookkeeping.cref` | Write a cross-reference table |
 | `-t`, `--trace` |  | GNU, lld, mold | all | refused | `bookkeeping.trace` | Print the name of each input file |
 | `--verbose` | optional, `=` only: LEVEL (number) | GNU, lld, mold | all | refused | `bookkeeping.verbose` | Print what the link does |
-| `--dependency-file` | FILE | GNU, lld, mold | all | refused | `bookkeeping.dependency_file` | Write make dependencies of the link to FILE |
+| `--dependency-file` | FILE | GNU, lld, mold | all | supported | `bookkeeping.dependency_file` | Write make dependencies of the link to FILE |
 | `--reproduce` | FILE | lld | all | refused | `bookkeeping.reproduce` | Write a tar archive that reproduces the link |
 | `--repro` |  | mold | all | refused | `other` | Embed the inputs in a .repro section |
 | `--threads` | optional, `=` only: N (number) | lld, mold | all | supported | `bookkeeping.threads` | Use N threads (alone: all processors) |
 | `--thread-count` | N (number) | mold | all | refused | `bookkeeping.threads` | Use N threads |
 | `--no-threads` |  | mold | all | refused | `bookkeeping.threads` | Use one thread |
+| `--mortar-map` | FILE | mortar | all | supported | `bookkeeping.mortar_map` | Write the machine-readable map (mortar-map 1) to FILE |
 | `--time-phases` |  | mortar | all | supported | `bookkeeping.time_phases` | Report the time and memory of each phase |
 | `--verify` |  | mortar | all | refused | `bookkeeping.verify` | Check the output with mortar_plumb (reserved) |
 | `--stats` |  | GNU, lld, mold | all | refused | `other` | Print statistics |
@@ -436,17 +437,17 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 
 | Option | Value | Linkers | Targets | Status | Lands in | Help |
 |---|---|---|---|---|---|---|
-| `-z now` |  | GNU, lld, mold | all | refused | `z.now` | Resolve every symbol at load time |
-| `-z lazy` |  | GNU, lld, mold | all | refused | `z.now` | Resolve functions when first called (default) |
+| `-z now` |  | GNU, lld, mold | all | supported | `z.now` | Resolve every symbol at load time |
+| `-z lazy` |  | GNU, lld, mold | all | supported | `z.now` | Resolve functions when first called (default) |
 | `-z relro` |  | GNU, lld, mold | all | supported | `z.relro` | Write PT_GNU_RELRO (default) |
 | `-z norelro` |  | GNU, lld, mold | all | supported | `z.relro` | Write no PT_GNU_RELRO |
 | `-z execstack` |  | GNU, lld, mold | all | supported | `z.execstack` | Make the stack executable |
 | `-z noexecstack` |  | GNU, lld, mold | all | supported | `z.execstack` | Make the stack not executable |
-| `-z text` |  | GNU, lld, mold | all | refused | `z.text` | Report text relocations as errors |
-| `-z notext`, `-z textoff` |  | GNU, lld, mold | all | refused | `z.text` | Accept text relocations |
+| `-z text` |  | GNU, lld, mold | all | noop: a text relocation is a dynamic relocation in a read-only section; a static executable's only dynamic relocations are IRELATIVE ones in its writable .got.plt (synth.md S-69), and every dynamic output is refused by name (M2) | `z.text` | Report text relocations as errors |
+| `-z notext`, `-z textoff` |  | GNU, lld, mold | all | noop: a text relocation is a dynamic relocation in a read-only section; a static executable's only dynamic relocations are IRELATIVE ones in its writable .got.plt (synth.md S-69), and every dynamic output is refused by name (M2) | `z.text` | Accept text relocations |
 | `-z separate-code` |  | GNU, lld, mold | all | supported | `z.separate_code` | Put code in segments of its own pages |
 | `-z noseparate-code` |  | GNU, lld, mold | all | supported | `z.separate_code` | Let code share pages with other data |
-| `-z defs` |  | GNU, lld, mold | all | refused | `z.defs` | Report undefined symbols of object files |
+| `-z defs` |  | GNU, lld, mold | all | noop: resolve.md §5: an undefined symbol of an executable is an error already; the option only changes a shared object's link, refused by name (M2) | `z.defs` | Report undefined symbols of object files |
 | `-z undefs` |  | GNU, lld, mold | all | refused | `z.defs` | Accept undefined symbols in a shared object |
 | `-z max-page-size` | SIZE | GNU, lld, mold | all | supported | `z.max_page_size` | The largest page size the output supports |
 | `-z common-page-size` | SIZE | GNU, lld, mold | all | noop: layout.md L-75: the value is checked, and no layout rule reads it | `z.common_page_size` | The common page size |

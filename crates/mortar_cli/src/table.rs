@@ -457,6 +457,10 @@ pub enum Lands {
     Z(ZField),
     /// `shaping.gc_sections`.
     GcSections(bool),
+    /// `shaping.print_gc_sections`.
+    PrintGcSections(bool),
+    /// `shaping.gc_keep_exported`.
+    GcKeepExported,
     /// `shaping.icf`.
     Icf,
     /// `shaping.icf`, `none`.
@@ -513,6 +517,8 @@ pub enum Lands {
     Map,
     /// `bookkeeping.print_map`.
     PrintMap,
+    /// `bookkeeping.mortar_map`.
+    MortarMap,
     /// `bookkeeping.cref`.
     Cref,
     /// `bookkeeping.reproduce`.
@@ -596,6 +602,8 @@ impl Lands {
                 ZField::MemorySeal(_) => "z.memory_seal",
             },
             Self::GcSections(_) => "shaping.gc_sections",
+            Self::PrintGcSections(_) => "shaping.print_gc_sections",
+            Self::GcKeepExported => "shaping.gc_keep_exported",
             Self::Icf | Self::NoIcf => "shaping.icf",
             Self::BuildId | Self::NoBuildId => "shaping.build_id",
             Self::Strip(_) => "shaping.strip",
@@ -621,6 +629,7 @@ impl Lands {
             Self::WarnCommon(_) => "diagnostics.warn_common",
             Self::Map => "bookkeeping.map",
             Self::PrintMap => "bookkeeping.print_map",
+            Self::MortarMap => "bookkeeping.mortar_map",
             Self::Cref => "bookkeeping.cref",
             Self::Reproduce => "bookkeeping.reproduce",
             Self::Threads | Self::ThreadCount | Self::NoThreads => "bookkeeping.threads",

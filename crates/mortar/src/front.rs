@@ -339,6 +339,7 @@ pub fn front<'s>(
     let entry_warned = outcome.diagnostics.iter().any(|(_, d)| d.id() == "entry-not-found");
     let comdat_mismatch = mismatches(&outcome);
     let gnu_warnings = outcome.gnu_warning_syms.clone();
+    let roots = outcome.roots;
     let resolution = outcome.resolution;
 
     // 45: assignment (layout stage A).
@@ -404,15 +405,19 @@ pub fn front<'s>(
         resolution: &resolution,
         assignment: &assignment,
         split: &merge.split,
+        roots: &roots,
     };
-    let liveness =
-        match liveness(&live, LiveOptions { gc_sections: plan.shaping.gc_sections }, &pool) {
-            Ok(l) => l,
-            Err((k, d)) => {
-                diag.emit(k, d);
-                return None;
-            }
-        };
+    let live_options = LiveOptions {
+        gc_sections: plan.shaping.gc_sections,
+        keep_exported: plan.shaping.gc_keep_exported,
+    };
+    let liveness = match liveness(&live, live_options, &pool) {
+        Ok(l) => l,
+        Err((k, d)) => {
+            diag.emit(k, d);
+            return None;
+        }
+    };
     let order = offsets(&pool, &merge.split, &merge.meta, &liveness.frag_live);
     timer.phase(50, "liveness");
 
@@ -918,6 +923,8 @@ fn synth_chunks(
         present.push((SynthKind::Strtab, s.strtab_size()));
     }
     present.push((SynthKind::Shstrtab, p.shstrtab.size()));
+    // S-100: mortar's `.comment` piece, after the inputs' strings.
+    present.push((SynthKind::Comment, mortar_synth::COMMENT.len() as u64));
     present.sort_by_key(|c| c.0);
     let chunks = present
         .iter()

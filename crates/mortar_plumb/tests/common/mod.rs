@@ -229,6 +229,53 @@ farfunc:
 	ret
 "#;
 
+/// A BTI-marked object (WP-028d): calls beyond B/BL's reach to a target
+/// that begins with a landing pad (`padded`) and to one that does not
+/// (`padless`), and an IFUNC whose IPLT entry begins with `bti c` (GNU
+/// ld's and lld's form in a BTI output) reached by a call and a GOT load.
+/// GNU ld reaches `padless` through `__padless_veneer` and
+/// `__padless_bti_veneer` (`bti c; b padless`), lld 22 through a
+/// `__AArch64BTIThunk_padless` landing pad that falls through to it;
+/// mold writes no property note on AArch64 (§6.6).
+pub const BTI_S: &str = r#"
+	.text
+	.globl _start
+	.type _start,%function
+_start:
+	bti c
+	bl padded
+	bl padless
+	bl f
+	adrp x1, :got:f
+	ldr x1, [x1, :got_lo12:f]
+	blr x1
+	mov x8, #93
+	svc #0
+	.globl f
+	.type f, %gnu_indirect_function
+f:	bti c
+	adr x0, impl
+	ret
+impl:	bti c
+	mov x0, #42
+	ret
+	.section .fartext,"ax",%progbits
+	.globl padded
+	.type padded,%function
+padded:	bti c
+	ret
+	.globl padless
+	.type padless,%function
+padless:	nop
+	ret
+	.section .note.gnu.property,"a"
+	.p2align 3
+	.word 4, 16, 5
+	.asciz "GNU"
+	.word 0xc0000000, 4, 1, 0
+	.section .note.GNU-stack,"",@progbits
+"#;
+
 /// GOT-indirect references in the forms the linkers relax and keep.
 pub const GOT_S: &str = r"
 	.text
@@ -584,6 +631,7 @@ fn build(size: Size) -> Option<Corpus> {
     w("tbfd.s", TYPES_BFD_S);
     w("pieces_a.s", PIECES_A_S);
     w("pieces_b.s", PIECES_B_S);
+    w("bti.s", BTI_S);
     for (src, obj) in if size == Size::Tls {
         &[][..]
     } else {
@@ -598,6 +646,7 @@ fn build(size: Size) -> Option<Corpus> {
             ("tbfd.s", "tbfd.o"),
             ("pieces_a.s", "pieces_a.o"),
             ("pieces_b.s", "pieces_b.o"),
+            ("bti.s", "bti.o"),
         ][..]
     } {
         run_in(&dir, &t.gcc, &["-c", src, "-o", obj]);
@@ -658,6 +707,17 @@ fn build(size: Size) -> Option<Corpus> {
                 linkers: &Linker::ALL,
                 driver: gcc,
                 objects: vec!["far.o"],
+                flags: free.clone(),
+                per_linker: |l| match l {
+                    Linker::Bfd => vec!["-Wl,--section-start=.fartext=0x20000000"],
+                    _ => vec!["-Wl,-Ttext=0x400000", "-Wl,--section-start=.fartext=0x20000000"],
+                },
+            },
+            Case {
+                name: "bti",
+                linkers: &Linker::ALL,
+                driver: gcc,
+                objects: vec!["bti.o"],
                 flags: free.clone(),
                 per_linker: |l| match l {
                     Linker::Bfd => vec!["-Wl,--section-start=.fartext=0x20000000"],

@@ -120,6 +120,8 @@ pub struct Options {
     pub eh_frame_hdr: bool,
     /// `-z relro` (default) / `-z norelro` (§20.2).
     pub relro: bool,
+    /// `-z now` / `-z lazy` (default): `.got.plt` in the RELRO run (L-60).
+    pub now: bool,
     pub entry: EntryName,
 }
 
@@ -135,6 +137,7 @@ impl Options {
             execstack: None,
             eh_frame_hdr: false,
             relro: true,
+            now: false,
             entry: EntryName::Symbol(b"_start".to_vec()),
         }
     }
@@ -175,6 +178,7 @@ impl Options {
         o.separate_code = plan.z.separate_code.unwrap_or(false);
         o.execstack = plan.z.execstack;
         o.relro = plan.z.relro.unwrap_or(true);
+        o.now = plan.z.now.unwrap_or(false);
         o.eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
         o.fix_843419 = target.machine == Machine::AArch64
             && plan.target_options.iter().any(|t| t.option.starts_with("--fix-cortex-a53-843419"));

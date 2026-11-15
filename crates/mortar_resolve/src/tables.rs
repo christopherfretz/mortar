@@ -899,6 +899,10 @@ pub struct Outcome {
     /// `SHF_GNU_RETAIN` sections (§4.7).
     pub retained: Vec<(FileId, SectionIndex)>,
     pub entry: crate::EntryPoint,
+    /// The keys the options root (§4.2: the entry, `-u`,
+    /// `--require-defined`), in option order: their definitions are
+    /// roots of `--gc-sections` (§4.7).
+    pub roots: Vec<SymbolId>,
     /// Where the time went (`MORTAR_STEPS`; decides nothing).
     pub steps: Steps,
 }
@@ -951,6 +955,7 @@ pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome 
         gnu_warning_syms: r.gnu_warning_syms,
         retained: r.retained,
         entry: r.entry,
+        roots: opts.roots().iter().map(|root| root.key).collect(),
         steps: Steps::default(),
     };
     steps.step("drop");

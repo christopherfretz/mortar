@@ -1277,3 +1277,268 @@ fn s9_2l_build_id_mutations_are_found() {
     eprintln!("§9.2 (l) build-id mutations: {n}/{n} found, {by_b1} of the 16 bytes by B1");
     assert!(by_b1 >= 12, "only {by_b1} of 16 bytes found by B1");
 }
+
+// spec/plumb.md §5.4 R9, §4.8 (WP-028d): the `bti` case is clean for every
+// linker (the IFUNC's `bti c` IPLT entry, GNU ld's chained pad veneer,
+// lld's falling-through BTI thunk); then, in the GNU ld and lld links,
+// `padded`'s landing pad is removed from the input object and the output
+// alike, so the content still matches and only R9 can see that the
+// veneer's `BR x16` now lands on a `NOP`.
+#[test]
+fn s9_2n_a_veneer_to_no_landing_pad_is_found() {
+    const NOP: u32 = 0xd503_201f;
+    let Some(c) = small() else { return };
+    for linker in Linker::ALL {
+        let ctx = Ctx::of(c.get("bti", linker));
+        let r = ctx.verify(&ctx.output);
+        common::assert_clean(ctx.link, &r);
+        assert!(r.coverage.iplt_entries == 1, "{}: {}", ctx.link.label(), r.summary());
+        if linker == Linker::Mold {
+            continue; // no property note on AArch64 (§6.6): nothing is guarded
+        }
+        let (_, off) = symtab_entries(&ctx.output, &["padded"]).remove(0);
+        let value = le64(&ctx.output, off + 8);
+        let at = file_offset(&ctx.output, value).unwrap();
+        assert_eq!(le32(&ctx.output, at), 0xd503_245f, "padded starts with bti c");
+        let mut out = ctx.output.clone();
+        put32(&mut out, at, NOP);
+        let mut files = ctx.files.clone();
+        let (_, obj) = files.iter_mut().find(|(p, _)| p.ends_with("bti.o")).unwrap();
+        let text_off = {
+            let o = Object::parse(obj).unwrap();
+            let s = o.sections().find(|s| s.name().ok() == Some(&b".fartext"[..])).unwrap();
+            s.header().sh_offset as usize
+        };
+        put32(obj, text_off, NOP);
+        let m = verify_with(&out, &files, &ctx.map);
+        let rules: Vec<String> = unexpected(ctx.link, &m).iter().map(|f| f.rule.id()).collect();
+        assert_eq!(rules, ["R9"], "{}: {}", ctx.link.label(), m.render("bti"));
+    }
+}
+
+// spec/plumb.md §6.7 (WP-028d): B1 follows the style mortar's map states
+// on its build-id chunk. `start` by lld read as mortar's link, its id
+// replaced: (1) 20 bytes given on the command line (`--build-id=0x…`),
+// with no style in the map, are judged as a hash (B1: what maps without
+// the style still get); (2) the same map stating `given`: not judged;
+// (3) the bare tree's id under `sha1`: B1, under `default`: clean; (4) a
+// 20-byte id under `fast` (8 bytes): B1.
+#[test]
+fn s9_2l_build_id_style_from_the_map() {
+    use mortar_plumb::buildid::{Tree, seal};
+    use mortar_plumb::map::{Chunk, ChunkKind};
+    let Some(c) = small() else { return };
+    let ctx = Ctx::of(c.get("start", Linker::Lld));
+    let note = shdrs(&ctx.output).into_iter().find(|s| s.1 == ".note.gnu.build-id").unwrap();
+    let id = note.5 as usize + 16;
+    let text = mortar_plumb::map::mortar::write(&ctx.map);
+    let base = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
+    let with_style = |style: Option<&str>| {
+        let mut m = base.clone();
+        m.chunks.retain(|c| c.name != ".note.gnu.build-id");
+        m.chunks.push(Chunk {
+            kind: ChunkKind::Synthetic,
+            name: ".note.gnu.build-id".into(),
+            addr: Some(note.4),
+            size: note.6,
+            target: style.map(|s| (s.to_owned(), 0)),
+            line: 0,
+        });
+        // Through the text form: the style survives the writer and reader.
+        let text = mortar_plumb::map::mortar::write(&m);
+        mortar_plumb::map::parse(Format::Mortar, &text).unwrap()
+    };
+    let b1 = |out: &[u8], style: Option<&str>| {
+        let r = verify_with(out, &ctx.files, &with_style(style));
+        (r.with_rule("B1").count(), r.coverage.build_id.clone().unwrap_or_default())
+    };
+    let mut given = ctx.output.clone();
+    for (k, b) in given[id..id + 20].iter_mut().enumerate() {
+        *b = 0x10 + k as u8;
+    }
+    assert_eq!(b1(&given, None).0, 1, "(1) a given id with no style is judged as a hash");
+    let (n, what) = b1(&given, Some("given"));
+    assert_eq!(n, 0, "(2) {what}");
+    assert!(what.contains("given"), "(2) {what}");
+    let mut tree = ctx.output.clone();
+    assert_eq!(seal(&mut tree, Tree::L128), 1);
+    assert_eq!(b1(&tree, Some("sha1")).0, 1, "(3) the bare tree under sha1");
+    assert_eq!(b1(&tree, Some("default")).0, 0, "(3) the bare tree under default");
+    assert_eq!(b1(&tree, Some("fast")).0, 1, "(4) 20 bytes under fast");
+}
+
+// spec/plumb.md §9.5 (WP-028d): mutation coverage as a number on the small
+// corpus. Every class the harness has is run, with a fixed seed, on the
+// reference links of the cases below; the table and every missed mutant
+// are printed, and the classes §9.5 states as fully caught must be.
+#[test]
+fn s9_5_mutation_coverage_on_the_small_corpus() {
+    use mortar_plumb::mutate::{Config, Outcome, run};
+    let Some(c) = small() else { return };
+    let cfg = Config { per_class: 3, threads: 4, ..Config::default() };
+    let mut total = Outcome::default();
+    for case in ["start", "veneer", "bti", "got", "erratum", "types", "pieces"] {
+        for linker in Linker::ALL {
+            let ctx = Ctx::of(c.get(case, linker));
+            let inputs: Vec<mortar_plumb::Input<'_>> =
+                ctx.files.iter().map(|(p, b)| mortar_plumb::Input { path: p, bytes: b }).collect();
+            let o = run(&ctx.output, &inputs, &ctx.map, &cfg).unwrap();
+            total.add(&o, &ctx.link.label());
+        }
+    }
+    let table = total.render();
+    println!("{table}");
+    let applied: usize = total.classes.iter().map(|r| r.applied).sum();
+    assert!(applied > 100, "{table}");
+    // §9.5's fully caught classes on this corpus; field-off-by-one's one
+    // miss is mold's GOT load of an IFUNC moved to the IRELATIVE slot next
+    // to it, which holds the same function once applied (equivalent).
+    for class in [
+        "field-off-by-one",
+        "field-wrong-symbol",
+        "field-wrong-addend",
+        "stale-relaxation",
+        "irelative-swap",
+        "tls-segment",
+        "property-bit",
+        "section-overlap",
+        "iplt-entry",
+    ] {
+        let r = total.classes.iter().find(|r| r.class == class).unwrap();
+        let real: Vec<&String> = r
+            .missed
+            .iter()
+            .filter(|m| {
+                !(class == "field-off-by-one" && m.starts_with("bti/mold:") && m.contains("(f)"))
+            })
+            .collect();
+        assert!(real.is_empty(), "{class}: {real:?}\n{table}");
+    }
+}
+
+/// The output and input offsets of `.text` in the `erratum` case's
+/// output and `e843.o`: its `W1` is at `.text + 0xff8` (`E843_S`).
+fn e843_text(ctx: &Ctx) -> (u64, usize, usize) {
+    let text = placed(&ctx.map, ".text");
+    let at = file_offset(&ctx.output, text.addr).unwrap();
+    let (_, obj) = ctx.files.iter().find(|(p, _)| p.ends_with("e843.o")).unwrap();
+    let o = Object::parse(obj).unwrap();
+    let s = o.sections().find(|s| s.name().ok() == Some(&b".text"[..])).unwrap();
+    (text.addr, at, s.header().sh_offset as usize)
+}
+
+/// The C rules' findings of a report (§5.10), by id.
+fn c_rules(r: &Report) -> Vec<String> {
+    r.findings.iter().map(|f| f.rule.id()).filter(|r| r.starts_with('C')).collect()
+}
+
+fn rules_of(link: &Link, r: &Report) -> Vec<String> {
+    let mut v: Vec<String> = unexpected(link, r).iter().map(|f| f.rule.id()).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+// spec/plumb.md §5.10 (WP-028d item 0; a64.md §11.2-§11.3): each erratum
+// 843419 fix is judged by its meaning and by site. GNU ld writes the ADR
+// form here, lld the patch. (1) An ADR to the next page, and a patch
+// whose load lost its relocated offset (WP-032e's two mislinks): R1.
+// (2) Either fix undone, with the option known: C1; with the option
+// unknown, nothing shows it was given: not judged. (3) mold leaves the
+// site (A4): C1, classified A4, when the option is known.
+#[test]
+#[allow(clippy::many_single_char_names)] // a64.md §11's Q, F, W1
+fn s9_2o_erratum_fixes_are_judged_by_meaning_and_site() {
+    let Some(c) = small() else { return };
+    for linker in Linker::ALL {
+        let ctx = Ctx::of(c.get("erratum", linker));
+        let r = ctx.verify(&ctx.output);
+        common::assert_clean(ctx.link, &r);
+        let (addr, at, _) = e843_text(&ctx);
+        let (q, f) = (at + 0xff8, at + 0x1000);
+        let mut given = ctx.map.clone();
+        given.fix_843419 = Some(true);
+        let label = ctx.link.label();
+        if linker == Linker::Mold {
+            assert_eq!(r.coverage.erratum_not_judged, 1, "{label}: {}", r.summary());
+            let m = verify_with(&ctx.output, &ctx.files, &given);
+            assert!(m.with_rule("C1").next().is_some(), "{label}: {}", m.render("e"));
+            assert!(unexpected(ctx.link, &m).is_empty(), "{label}: C1 is A4: {}", m.render("e"));
+            continue;
+        }
+        assert_eq!(r.coverage.erratum_sites, 1, "{label}: {}", r.summary());
+        let w1 = le32(&ctx.output, q);
+        let wf = le32(&ctx.output, f);
+        let mut out = ctx.output.clone();
+        let mut undone = ctx.output.clone();
+        if let Some((d, t)) = mortar_plumb::a64::adr(w1, addr + 0xff8) {
+            assert_eq!(linker, Linker::Bfd);
+            // The next page: adr's immediate + 0x1000 (immhi bit 10).
+            put32(&mut out, q, w1 + (0x400 << 5));
+            // The ADRP of the same page, at Q.
+            let delta = ((t - ((addr + 0xff8) & !0xfff)) >> 12) as u32;
+            put32(&mut undone, q, 0x9000_0000 | (delta & 3) << 29 | (delta >> 2) << 5 | d);
+        } else {
+            assert_eq!(linker, Linker::Lld, "{label}: neither fix");
+            let (false, t) = mortar_plumb::a64::branch(wf, addr + 0x1000).unwrap() else {
+                panic!("{label}: not a b")
+            };
+            let pt = file_offset(&ctx.output, t).unwrap();
+            let moved = le32(&ctx.output, pt);
+            assert_ne!(moved & (0xfff << 10), 0, "{label}: the load has its lo12");
+            put32(&mut out, pt, moved & !(0xfff << 10));
+            put32(&mut undone, f, moved);
+        }
+        let m = ctx.verify(&out);
+        assert_eq!(rules_of(ctx.link, &m), ["R1"], "{label}: {}", m.render("e"));
+        let m = verify_with(&undone, &ctx.files, &given);
+        assert_eq!(rules_of(ctx.link, &m), ["C1"], "{label}: {}", m.render("e"));
+        let m = ctx.verify(&undone);
+        assert!(unexpected(ctx.link, &m).is_empty(), "{label}: {}", m.render("e"));
+        assert_eq!(m.coverage.erratum_not_judged, 1, "{label}: {}", m.summary());
+        eprintln!("§9.2 (o) {label}: next page / stale load R1, undone C1");
+    }
+}
+
+// spec/plumb.md §5.10 (a64.md §11.3 items 4, 5, 7, 8): the rules on
+// mortar's output only, the erratum links read as mortar's. (1) `W2` made
+// a NOP (in the input too): the site is gone, so lld's patch is a
+// redirect at no site (C3) and GNU ld's ADR a fix outside a site (C2).
+// (2) The option known off: C6 on each fix. (3) A code chunk at page
+// offset 0: C5.
+#[test]
+fn s9_2o_erratum_rules_on_mortar_output() {
+    use mortar_plumb::map::{Chunk, ChunkKind};
+    let Some(c) = small() else { return };
+    for (linker, rule) in [(Linker::Bfd, "C2"), (Linker::Lld, "C3")] {
+        let ctx = Ctx::of(c.get("erratum", linker));
+        let text = mortar_plumb::map::mortar::write(&ctx.map);
+        let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
+        let label = ctx.link.label();
+        let base = verify_with(&ctx.output, &ctx.files, &map);
+        assert!(c_rules(&base).is_empty(), "{label} as mortar: {}", base.render("e"));
+        let (addr, at, input) = e843_text(&ctx);
+        let mut out = ctx.output.clone();
+        let mut files = ctx.files.clone();
+        put32(&mut out, at + 0xffc, 0xd503_201f);
+        let (_, obj) = files.iter_mut().find(|(p, _)| p.ends_with("e843.o")).unwrap();
+        put32(obj, input + 0xffc, 0xd503_201f);
+        let m = verify_with(&out, &files, &map);
+        assert_eq!(c_rules(&m), [rule], "{label}: {}", m.render("e"));
+        let mut off = map.clone();
+        off.fix_843419 = Some(false);
+        let m = verify_with(&ctx.output, &ctx.files, &off);
+        assert_eq!(c_rules(&m), ["C6"], "{label}: {}", m.render("e"));
+        let mut chunk = map.clone();
+        chunk.chunks.push(Chunk {
+            kind: ChunkKind::Thunk,
+            name: "__test_veneer".into(),
+            addr: Some(addr + 0x1000),
+            size: 8,
+            target: None,
+            line: 0,
+        });
+        let m = verify_with(&ctx.output, &ctx.files, &chunk);
+        assert!(m.with_rule("C5").next().is_some(), "{label}: {}", m.render("e"));
+    }
+}

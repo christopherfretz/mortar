@@ -636,6 +636,8 @@ impl Parser<'_> {
             }
             Lands::Z(field) => z_field(plan, field, value),
             Lands::GcSections(on) => plan.shaping.gc_sections = on,
+            Lands::PrintGcSections(on) => plan.shaping.print_gc_sections = on,
+            Lands::GcKeepExported => plan.shaping.gc_keep_exported = true,
             Lands::Icf => {
                 plan.shaping.icf = Some(match word().as_str() {
                     "all" => Icf::All,
@@ -732,6 +734,7 @@ impl Parser<'_> {
             Lands::NoinhibitExec => plan.diagnostics.noinhibit_exec = true,
             Lands::Map => plan.bookkeeping.map = Some(text()),
             Lands::PrintMap => plan.bookkeeping.print_map = true,
+            Lands::MortarMap => plan.bookkeeping.mortar_map = Some(text()),
             Lands::Cref => plan.bookkeeping.cref = true,
             Lands::Reproduce => plan.bookkeeping.reproduce = Some(text()),
             Lands::Threads => {

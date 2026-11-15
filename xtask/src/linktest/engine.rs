@@ -583,19 +583,21 @@ impl Unit<'_> {
     ) -> Result<(), Raw> {
         let mut args = expand(&link.args, vars);
         let output_file = dir.join(output_name(&args));
-        // L3: a link that is to succeed writes a map, for the verifier.
+        // L3: a link that is to succeed writes a map, for the verifier:
+        // mortar's machine map is `--mortar-map` (image.md I-120), whatever
+        // `-Map` the test asks for; a reference's is its `-Map`.
         let map_file = if link.fails || !self.matrix.plumb {
             None
-        } else if let Some(map) = map_option(&args) {
+        } else if let Some(map) = map_option(&args).filter(|_| linker != Linker::Mortar) {
             Some(dir.join(map))
         } else {
             let name = format!(".linktest-plumb-{}.map", step.line);
-            let option = if link.driver == Driver::Ld {
-                format!("-Map={name}")
+            let option = if linker == Linker::Mortar { "--mortar-map" } else { "-Map" };
+            args.push(if link.driver == Driver::Ld {
+                format!("{option}={name}")
             } else {
-                format!("-Wl,-Map={name}")
-            };
-            args.push(option);
+                format!("-Wl,{option}={name}")
+            });
             Some(dir.join(name))
         };
         if link.fails && output_file.symlink_metadata().is_ok() {

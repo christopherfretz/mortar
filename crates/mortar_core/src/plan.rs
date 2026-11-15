@@ -413,9 +413,14 @@ pub struct ZOptions {
 
 /// Output shaping (`spec/cli.md` §3.8).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools, reason = "one field per independent option")]
 pub struct Shaping {
     /// `--gc-sections` (until `--no-gc-sections`).
     pub gc_sections: bool,
+    /// `--print-gc-sections` (until `--no-print-gc-sections`).
+    pub print_gc_sections: bool,
+    /// `--gc-keep-exported`.
+    pub gc_keep_exported: bool,
     /// `--icf=`; `--no-icf` is `none`.
     pub icf: Option<Icf>,
     /// `--build-id[=style]`; `--no-build-id` and `--build-id=none` clear it.
@@ -605,6 +610,8 @@ pub struct Bookkeeping {
     pub map: Option<OsString>,
     /// `-M`, `--print-map`.
     pub print_map: bool,
+    /// `--mortar-map file` (mortar's own): the machine map, `mortar-map 1`.
+    pub mortar_map: Option<OsString>,
     /// `--cref`.
     pub cref: bool,
     /// `--reproduce=file`.

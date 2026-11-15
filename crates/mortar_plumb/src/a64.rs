@@ -491,8 +491,15 @@ fn br(insn: u32) -> Option<u32> {
 }
 
 /// `BTI` with any target: the one hint a veneer may start with.
-fn bti(insn: u32) -> bool {
+pub(crate) fn bti(insn: u32) -> bool {
     insn & 0xffff_ff3f == 0xd503_241f
+}
+
+/// A landing pad for `BR x16`/`BR x17` in a guarded page (Arm ARM,
+/// "BTYPE"; `spec/a64.md` §9): `BTI c`, `BTI j`, `BTI jc`, `PACIASP` or
+/// `PACIBSP`. A plain `BTI` (no target) and anything else fault.
+pub fn landing_pad(insn: u32) -> bool {
+    matches!(insn, 0xd503_245f | 0xd503_249f | 0xd503_24df | 0xd503_233f | 0xd503_237f)
 }
 
 /// `MOVZ`/`MOVK`/`MOVN` (64-bit): `(opc, hw, imm16, d)`.
@@ -635,6 +642,12 @@ pub const VENEER_MAX: usize = 8;
 /// `MOVK`/`MOVN` writing x16 or x17, ending in `BR x16`/`BR x17` or a `B`.
 /// Returns where control goes, or `None` if the code is not a veneer.
 pub fn run_veneer(mem: &dyn Memory, start: u64) -> Option<u64> {
+    veneer_end(mem, start).map(|(t, _)| t)
+}
+
+/// [`run_veneer`], and whether the veneer ends in an indirect branch
+/// (`BR x16`/`BR x17`, `true`) or a direct `B` (`false`).
+pub fn veneer_end(mem: &dyn Memory, start: u64) -> Option<(u64, bool)> {
     let mut regs: [Option<u64>; 2] = [None, None];
     let reg = |r: u32| (r == 16 || r == 17).then(|| (r - 16) as usize);
     let mut pc = start;
@@ -663,9 +676,9 @@ pub fn run_veneer(mem: &dyn Memory, start: u64) -> Option<u64> {
                 _ => (regs[r]? & !(0xffff << shift)) | imm << shift,
             });
         } else if let Some(rn) = br(insn) {
-            return regs[reg(rn)?];
+            return regs[reg(rn)?].map(|t| (t, true));
         } else if let Some((false, target)) = branch(insn, pc) {
-            return Some(target);
+            return Some((target, false));
         } else {
             return None;
         }
