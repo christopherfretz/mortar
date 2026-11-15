@@ -5,8 +5,8 @@ use mortar_elf::Machine;
 use mortar_elf::consts::{
     EM_386, EM_X86_64, ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_GNU_RELRO,
     PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS,
-    SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX, SHT_NOBITS, SHT_NOTE,
-    SHT_REL, SHT_RELA, STB_GNU_UNIQUE, STT_FILE, STT_GNU_IFUNC, STT_SECTION, STT_TLS,
+    SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX, SHT_DYNSYM, SHT_NOBITS,
+    SHT_NOTE, SHT_REL, SHT_RELA, STB_GNU_UNIQUE, STT_FILE, STT_GNU_IFUNC, STT_SECTION, STT_TLS,
 };
 
 use crate::image::{Image, Phdr};
@@ -20,12 +20,34 @@ fn s(n: u8, msg: impl Into<String>) -> Finding {
     Finding::new(Rule::Structure(n), msg)
 }
 
-/// Whether the output has an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol,
-/// or an `IRELATIVE` record in an allocated relocation section.
+/// Whether the output has an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol
+/// in `.symtab` or `.dynsym` (dyn.md D-23), or an `IRELATIVE` record in an
+/// allocated relocation section.
 fn gnu_extension(image: &Image<'_>) -> bool {
     if image.symbols.iter().any(|x| {
         x.index != 0 && (x.sym.sym_type() == STT_GNU_IFUNC || x.sym.binding() == STB_GNU_UNIQUE)
     }) {
+        return true;
+    }
+    // `.dynsym`: st_info is byte 4 of an ELFCLASS64 entry (24 bytes),
+    // byte 12 of an ELFCLASS32 one (16 bytes).
+    let dynsym = image.sections.iter().any(|x| {
+        let sh = &x.shdr;
+        let (size, at) = if image.header.e_machine == EM_386 { (16, 12) } else { (24, 4) };
+        if sh.sh_type != SHT_DYNSYM {
+            return false;
+        }
+        let (Ok(o), Ok(n)) = (usize::try_from(sh.sh_offset), usize::try_from(sh.sh_size)) else {
+            return false;
+        };
+        image.data.get(o..o.saturating_add(n)).is_some_and(|b| {
+            b.chunks_exact(size).skip(1).any(|e| {
+                let info = e[at];
+                info & 0xf == STT_GNU_IFUNC || info >> 4 == STB_GNU_UNIQUE
+            })
+        })
+    });
+    if dynsym {
         return true;
     }
     let (irelative, rela, size) = match image.header.e_machine {
@@ -627,8 +649,9 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
             off >= p.p_offset && off.saturating_add(len) <= p.p_offset.saturating_add(p.p_filesz)
         })
     };
-    // S1 (mortar): EI_OSABI is ELFOSABI_GNU exactly when the output has an
-    // STT_GNU_IFUNC or STB_GNU_UNIQUE symbol or an IRELATIVE record
+    // S1 (mortar): EI_OSABI is ELFOSABI_GNU exactly when `.symtab` or
+    // `.dynsym` holds an STT_GNU_IFUNC or STB_GNU_UNIQUE symbol, or the
+    // output has an IRELATIVE record
     // (spec/image.md §5.4; a64.md Q11; x64.md X-49; x86.md X86-64).
     if format == Format::Mortar {
         let gnu = gnu_extension(image);

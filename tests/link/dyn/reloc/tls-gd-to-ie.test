@@ -14,16 +14,12 @@
 # What the references do (measured): GNU ld relaxes with the same bytes
 # as mortar; lld does not know `R_AARCH64_TLSGD_ADR_PAGE21` (513) and
 # refuses; mold keeps the module/offset pair (also D-48-conforming).
-# The verifier's rewriting list (plumb.md §5.3) has no traditional GD to
-# IE rewriting, so it reports R1 on GNU ld's output and mortar's
-# (a request to plumb.md: WP-054 finding).
-#
-# mortar: AArch64, a verifier request (WP-054 finding), in tests/link/xfails.
+# The verifier knows the rewriting as `tlsgd-to-ie` (plumb.md §5.3,
+# WP-082): GNU ld's output and mortar's are clean.
 #@ spec: dyn.md "D-48"
 #@ spec: a64.md "8.4"
 #@ arch: aarch64
 #@ fixture: reloc-libd
-#@ xfail(bfd): verifier request (WP-054 finding): plumb.md 5.3 has no traditional GD to IE rewriting (a64 R4), R1 on the relaxed sequence
 
 cc -O1 -fPIC -mtls-dialect=trad main.c -o main.o
 link(lld) gcc -pie main.o -L. -ld -o pie

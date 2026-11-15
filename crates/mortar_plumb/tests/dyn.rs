@@ -45,6 +45,13 @@ const SOURCES: &[(&str, &str)] = src![
     "canon_main.c",
     "canon_lib.c",
     "weak_main.c",
+    "tlsdesc_regs.s",
+    "libtx.c",
+    "gd_ie.c",
+    "libgdie.c",
+    "unique.h",
+    "libunique.cc",
+    "unique_main.cc",
 ];
 
 /// Small sources written by the test itself.
@@ -291,6 +298,32 @@ impl Builder<'_> {
         }
     }
 
+    /// [`Builder::link`] with the linker `k` of `Linker::ALL` only.
+    #[allow(clippy::too_many_arguments)]
+    fn link_one(
+        &mut self,
+        case: &'static str,
+        arch: Arch,
+        dir: &Path,
+        out: &str,
+        args: &[&str],
+        k: usize,
+        expect: Option<&'static [&'static str]>,
+    ) {
+        let linker = Linker::ALL[k];
+        let name = format!("{out}.{}", linker.name());
+        let map = format!("{name}.map");
+        let line = dir.join(format!("{name}.line"));
+        let bin = self.root.join(format!("ld-{}-{}", arch.name(), linker.name()));
+        let b = format!("-B{}/", bin.display());
+        let m = format!("-Wl,-Map={map}");
+        let mut a: Vec<&str> = vec![&b];
+        a.extend(args);
+        a.extend(["-o", &name, &m]);
+        let linked = run_in(dir, self.cc(arch), &a, Some(&line));
+        self.push(case, arch, dir, &name, linked, expect, linker, line, true);
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
@@ -391,6 +424,101 @@ fn build() -> Option<Corpus> {
             let zz = format!("-Wl,-z,{z}");
             b.link("hello", arch, &d, &out, &[pm, &zz, "h.o"], [CLEAN; 3]);
         }
+
+        // P-D10 (WP-082): the PLT header reads the wrong word. x86-64:
+        // PLT0's `jmp *GOT+16(%rip)` displacement (at `.plt + 8`) lowered
+        // by 0x1030 (the x86-64 join's wrong output: every lazy call
+        // crashed, stage 3 said nothing); AArch64: the header's `ldr x17`
+        // offset moved one word. Lazy and `-z now` (D-49: the shapes stay).
+        for z in ["lazy", "now"] {
+            for linker in Linker::ALL {
+                let from = format!("hello-pie.{z}.{}", linker.name());
+                let name = format!("plt0-{z}.{}", linker.name());
+                let patch: fn(&mut [u8]) =
+                    if x64 { plt0_jump_lowered } else { a64_header_ldr_moved };
+                b.patched(
+                    "PLT0",
+                    arch,
+                    &d,
+                    &from,
+                    &name,
+                    &format!("{from}.map"),
+                    &format!("{from}.line"),
+                    linker,
+                    patch,
+                    &["P-D10"],
+                );
+            }
+        }
+
+        // The PLT shapes of IBT and BTI links (WP-082: P-D10 judges them):
+        // GNU ld's `.plt.sec` with `endbr64` lazy stubs (`-z ibtplt`), lld's
+        // (`-z force-ibt`: the crt objects have no IBT property, P1), the
+        // BTI header and entries of GNU ld and lld (`-z force-bti`).
+        let d = b.dir(arch, "shapes");
+        let (prot, zs): (&str, [Option<&str>; 3]) = if x64 {
+            ("-fcf-protection=full", [Some("-Wl,-z,ibtplt"), Some("-Wl,-z,force-ibt"), None])
+        } else {
+            (
+                "-mbranch-protection=standard",
+                [Some("-Wl,-z,force-bti"), Some("-Wl,-z,force-bti"), None],
+            )
+        };
+        b.obj(arch, &d, "hello.c", &["-O1", "-fPIE", prot], "h.o");
+        for z in ["lazy", "now"] {
+            let zz = format!("-Wl,-z,{z}");
+            for (k, flag) in zs.iter().enumerate() {
+                let Some(flag) = flag else { continue };
+                let e = if x64 && k == 1 { Some(&["P1"][..]) } else { CLEAN };
+                let out = format!("shapes.{z}");
+                b.link_one("shapes", arch, &d, &out, &["-pie", &zz, flag, "h.o"], k, e);
+            }
+        }
+
+        // X-58 (WP-082 V2): a TLS descriptor relaxed to initial-exec
+        // into each of the sixteen registers (`f_R` in the source; the
+        // programs exit 0 when every one reads the library's 5).
+        if x64 {
+            let d = b.dir(arch, "tlsdesc-regs");
+            b.so(arch, &d, "libtx.c", "libtx.so", "libtx.so", &[]);
+            b.obj(arch, &d, "tlsdesc_regs.s", &[], "tr.o");
+            for pm in ["-pie", "-no-pie"] {
+                let out = format!("tr{pm}");
+                b.link("tlsdesc-regs", arch, &d, &out, &[pm, "tr.o", "-L.", "-ltx"], [CLEAN; 3]);
+            }
+        }
+
+        // tlsgd-to-ie (WP-082, WP-054's request): AArch64's traditional
+        // general-dynamic sequence against a library's variable, relaxed
+        // to initial-exec by GNU ld and kept by mold (lld refuses the
+        // traditional dialect's relocations).
+        if !x64 {
+            let d = b.dir(arch, "tlsgd-ie");
+            b.so(arch, &d, "libgdie.c", "libgdie.so", "libgdie.so", &[]);
+            b.obj(arch, &d, "gd_ie.c", &["-fPIC", "-O1", "-mtls-dialect=trad"], "gd.o");
+            for pm in ["-pie", "-no-pie"] {
+                let out = format!("gd{pm}");
+                for k in [0, 2] {
+                    b.link_one(
+                        "tlsgd-ie",
+                        arch,
+                        &d,
+                        &out,
+                        &[pm, "gd.o", "-L.", "-lgdie"],
+                        k,
+                        CLEAN,
+                    );
+                }
+            }
+        }
+
+        // D-23's export row (WP-082, WP-054 case (a)): a template's
+        // inline variable, defined STB_GNU_UNIQUE by the program and a
+        // library, exported and kept unique (mutation `dynsym-unique`).
+        let d = b.dir(arch, "unique");
+        b.so(arch, &d, "libunique.cc", "libunique.so", "libunique.so", &[]);
+        b.obj(arch, &d, "unique_main.cc", &["-O1", "-fPIE"], "um.o");
+        b.link("unique", arch, &d, "unique", &["-pie", "um.o", "-L.", "-lunique"], [CLEAN; 3]);
 
         // E1: copies, canonical PLTs, TLS from a library and the
         // executable, an IFUNC; every record type of the matrix.
@@ -821,6 +949,28 @@ fn set_dynsym_visibility(path: &Path, name: &str, vis: u8) {
     std::fs::write(path, b).unwrap();
 }
 
+/// x86-64: PLT0's `jmp *(GOT+16)(%rip)` displacement (at `.plt + 8` for
+/// GNU ld and lld, after mold's `endbr64; push %r11` at `.plt + 14`)
+/// lowered by 0x1030 (the record's reproducer).
+fn plt0_jump_lowered(b: &mut [u8]) {
+    let s = sections(b);
+    let p = section(&s, ".plt").3;
+    let o = (p..p + 16).find(|&o| b[o..o + 2] == [0xff, 0x25]).expect("PLT0's jmp") + 2;
+    let v = le32(b, o).wrapping_sub(0x1030);
+    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// AArch64: the PLT header's `ldr x17, [x16, #lo]` (its third word, after
+/// `stp` and `adrp`) reads the next word.
+fn a64_header_ldr_moved(b: &mut [u8]) {
+    let s = sections(b);
+    let o = section(&s, ".plt").3 + 8;
+    let w = le32(b, o);
+    assert_eq!(w & 0xffc0_03ff, 0xf940_0211, "the header's ldr x17, [x16, #lo]");
+    let w = (w & !(0xfff << 10)) | ((((w >> 10) & 0xfff) + 1) & 0xfff) << 10;
+    b[o..o + 4].copy_from_slice(&w.to_le_bytes());
+}
+
 /// Swaps the first two `DT_NEEDED` entries.
 fn swap_needed(b: &mut [u8]) {
     let s = sections(b);
@@ -1031,6 +1181,35 @@ fn s12_w13_exported_ifunc() {
 #[test]
 fn s12_h1_irelative_before_jump_slot_is_p_d10() {
     judge("H1");
+}
+
+// spec/plumb.md §12 P-D10 (WP-082): the PLT header and the way back.
+#[test]
+fn s12_p_d10_plt_header_reads_its_words() {
+    judge("PLT0");
+}
+
+// spec/plumb.md §12 P-D10 (WP-082): the IBT and BTI PLT shapes are judged.
+#[test]
+fn s12_p_d10_ibt_and_bti_shapes() {
+    judge("shapes");
+}
+
+// spec/x64.md X-58, plumb.md R1 (WP-082 V2): the initial-exec `mov` into
+// any register is the descriptor's relaxation, not a finding.
+#[test]
+fn r1_tlsdesc_relaxed_to_ie_into_every_register() {
+    judge("tlsdesc-regs");
+}
+
+#[test]
+fn r1_a64_tlsgd_relaxed_to_ie() {
+    judge("tlsgd-ie");
+}
+
+#[test]
+fn p_d7_unique_export_stays_unique() {
+    judge("unique");
 }
 
 #[test]

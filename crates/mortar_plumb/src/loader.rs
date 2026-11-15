@@ -414,7 +414,13 @@ pub fn plt_slot(image: &Image<'_>, addr: u64) -> Option<u64> {
             }
             let (rd, page) = crate::a64::adrp(w, a)?;
             let (rt, rn, off) = crate::a64::ldr64_imm(image.insn(a + 4)?)?;
-            (rd == 16 && rn == 16 && rt == 17).then_some(page.wrapping_add(off))
+            // Then `br x17`, after the lazy form's `add x16, x16, #lo12`
+            // when there is one (WP-082: a `.plt.got` entry's branch was
+            // judged by nothing).
+            let next = image.insn(a + 8)?;
+            let br = next == 0xd61f_0220
+                || (next & 0xffc0_03ff == 0x9100_0210 && image.insn(a + 12)? == 0xd61f_0220);
+            (rd == 16 && rn == 16 && rt == 17 && br).then_some(page.wrapping_add(off))
         }
         EM_X86_64 => {
             let b = image.bytes(addr, 16)?;
