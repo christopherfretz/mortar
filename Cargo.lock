@@ -33,6 +33,7 @@ dependencies = [
  "mortar_layout",
  "mortar_live",
  "mortar_merge",
+ "mortar_meta",
  "mortar_odr",
  "mortar_plumb",
  "mortar_resolve",
