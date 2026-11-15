@@ -145,7 +145,8 @@ symbol (every `{name}` of the area "symbols", `relocation-incompatible`,
 twice. The areas, in order: command line (`conflicting-options` to
 `unknown-option`), files (`ambiguous-sysroot-path` to
 `static-link-of-shared-object`), file formats, symbols (`archive-backref`
-to `version-reassigned`), relocations, refusals, internal. The wording column is the message of §5.2, complete: nothing
+to `version-reassigned`), relocations, layout (`executable-stack` to
+`section-conflict`), refusals, internal. The wording column is the message of §5.2, complete: nothing
 is added before or after it.
 
 | id | variant | message | wording from |
@@ -193,6 +194,9 @@ is added before or after it.
 | `relocation-incompatible` | `RelocationIncompatible { r_type, name, reason }` | `relocation {r_type} cannot be used against symbol '{name}'; {reason}` | lld's shape, with a reason (§3.2) |
 | `relocation-misaligned` | `RelocationMisaligned { r_type, value, align }` | `improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes` | lld |
 | `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation {r_type} out of range: {value} is not in [{min}, {max}]; references '{name}'` | lld |
+| `executable-stack` | `ExecutableStack { file }` | `{file}: requires executable stack (because the .note.GNU-stack section is executable)` | GNU ld |
+| `output-too-large` | `OutputTooLarge { what, limit }` | `output too large: {what} exceeds {limit}` | own (lld: `output file too large`) |
+| `section-conflict` | `SectionConflict { name, first, second }` | `section {name}: {first} and {second} inputs cannot be combined` | own (lld: `section type mismatch for {name}`) |
 | `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) |
 | `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
 
@@ -338,7 +342,7 @@ id in `Kind::id` and `Kind::IDS`, its message in the renderer, its row in
 §3.1, and a test of its exact text in `tests/kinds.rs`.
 
 - Variants, rows and tests are grouped by area (command line, files, file
-  formats, symbols, relocations, refusals, internal) and sorted by id
+  formats, symbols, relocations, layout, refusals, internal) and sorted by id
   inside an area. A new one is
   **inserted at its place, not appended**: two branches that add different
   kinds then touch different lines.

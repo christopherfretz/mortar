@@ -13,7 +13,7 @@ use mortar_core::layout::{
 use mortar_elf::consts::SHF_EXECINSTR;
 
 use crate::chunk::Staged;
-use crate::diag::{LayoutDiag, feature, internal};
+use crate::diag::{LayoutDiag, feature, internal, output_too_large};
 use crate::target::{Options, Target};
 
 /// The result of stage D.
@@ -102,10 +102,7 @@ pub fn address(
     let mut prev_run: Option<usize> = None;
     // The current PT_LOAD's (address, offset).
     let mut seg: (u128, u128) = (base, 0);
-    let too_large = |what: &str| LayoutDiag::OutputTooLarge {
-        what: what.to_owned(),
-        limit: format!("{limit:#x}"),
-    };
+    let too_large = |what: &str| output_too_large(what, limit);
     for &c in order {
         let chunk = &chunks[c];
         let cap = u128::from(chunk.capacity);

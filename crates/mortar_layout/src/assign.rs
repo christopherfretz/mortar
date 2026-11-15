@@ -23,7 +23,7 @@ use mortar_elf::consts::{
     SHT_PREINIT_ARRAY, SHT_PROGBITS, SHT_X86_64_UNWIND,
 };
 
-use crate::diag::{LayoutDiag, feature, internal, refused, text};
+use crate::diag::{LayoutDiag, feature, internal, refused, section_conflict, text};
 use crate::headers::{Header, Headers};
 use crate::target::{Options, Target};
 
@@ -477,12 +477,7 @@ pub fn finish(
         info.push(OutInfo { live: a.live, align: a.align });
         let name = text(row.name);
         if let Some((first, second)) = &a.error {
-            errors.push(LayoutDiag::SectionConflict {
-                name,
-                first: first.clone(),
-                second: second.clone(),
-                place: None,
-            });
+            errors.push(section_conflict(name, first, second));
             continue;
         }
         if a.live == 0 {
@@ -503,12 +498,7 @@ pub fn finish(
             errors.push(feature(format!("writable and executable output section {name}")));
         } else if ty == SHT_NOBITS && a.flags & SHF_EXECINSTR != 0 {
             // L-61: an exec NOBITS orphan.
-            errors.push(LayoutDiag::SectionConflict {
-                name,
-                first: "SHT_NOBITS".into(),
-                second: "executable".into(),
-                place: None,
-            });
+            errors.push(section_conflict(name, "SHT_NOBITS", "executable"));
         }
     }
     if errors.is_empty() {

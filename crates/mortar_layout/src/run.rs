@@ -112,6 +112,7 @@ pub fn place(
         commons: link.commons,
         synthetic: link.synthetic,
         keep_empty: &keep_empty,
+        relro: options.relro,
     };
     let staged = chunk(&inputs, target, &rules, pool).map_err(|e| vec![e])?;
     let fixed = fixed_point(&staged, target, options, &rules, arch, pool).map_err(|e| vec![e])?;

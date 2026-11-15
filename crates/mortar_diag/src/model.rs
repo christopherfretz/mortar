@@ -339,6 +339,20 @@ pub enum Kind {
     /// target as for [`Kind::RelocationIncompatible`].
     RelocationOutOfRange { r_type: String, value: i64, min: i64, max: i64, name: String },
 
+    // -- layout ---------------------------------------------------------
+    /// `executable-stack` (a warning, `spec/layout.md` L-84): `file` has a
+    /// `.note.GNU-stack` with `SHF_EXECINSTR`, so the stack is made
+    /// executable. GNU ld's words.
+    ExecutableStack { file: String },
+    /// `output-too-large` (`spec/layout.md` L-73): `what` (a chunk, the
+    /// file) ends beyond `limit`, the end of the class's address space.
+    OutputTooLarge { what: String, limit: String },
+    /// `section-conflict` (`spec/layout.md` L-47, L-49, L-61): two live
+    /// inputs of output section `name` cannot be combined; `first` and
+    /// `second` are class words (`TLS`, `non-TLS`, `allocated`,
+    /// `non-allocated`) or `SHT_` names.
+    SectionConflict { name: String, first: String, second: String },
+
     // -- refusals -------------------------------------------------------
     /// `refused`: a construct mortar does not implement, by name
     /// (`docs/ARCHITECTURE.md`, principle 1). Always an error.
@@ -357,7 +371,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 45] = [
+    pub const IDS: [&'static str; 48] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -401,6 +415,9 @@ impl Kind {
         "relocation-incompatible",
         "relocation-misaligned",
         "relocation-out-of-range",
+        "executable-stack",
+        "output-too-large",
+        "section-conflict",
         "refused",
         "internal-error",
     ];
@@ -453,6 +470,9 @@ impl Kind {
             Self::RelocationIncompatible { .. } => "relocation-incompatible",
             Self::RelocationMisaligned { .. } => "relocation-misaligned",
             Self::RelocationOutOfRange { .. } => "relocation-out-of-range",
+            Self::ExecutableStack { .. } => "executable-stack",
+            Self::OutputTooLarge { .. } => "output-too-large",
+            Self::SectionConflict { .. } => "section-conflict",
             Self::Refused { .. } => "refused",
             Self::InternalError { .. } => "internal-error",
         }
@@ -804,8 +824,11 @@ mod tests {
             Kind::RelocationIncompatible { .. } => 40,
             Kind::RelocationMisaligned { .. } => 41,
             Kind::RelocationOutOfRange { .. } => 42,
-            Kind::Refused { .. } => 43,
-            Kind::InternalError { .. } => 44,
+            Kind::ExecutableStack { .. } => 43,
+            Kind::OutputTooLarge { .. } => 44,
+            Kind::SectionConflict { .. } => 45,
+            Kind::Refused { .. } => 46,
+            Kind::InternalError { .. } => 47,
         }
     }
 
@@ -862,6 +885,9 @@ mod tests {
             },
             Kind::RelocationMisaligned { r_type: s(), value: 0, align: 1 },
             Kind::RelocationOutOfRange { r_type: s(), value: 0, min: 0, max: 0, name: s() },
+            Kind::ExecutableStack { file: s() },
+            Kind::OutputTooLarge { what: s(), limit: s() },
+            Kind::SectionConflict { name: s(), first: s(), second: s() },
             Kind::Refused { class: RefusalClass::Feature, name: s(), not_recognized: false },
             Kind::InternalError { what: s() },
         ];

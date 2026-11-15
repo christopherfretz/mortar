@@ -66,7 +66,7 @@ pub fn executable_stack(
         Some(exec) => (exec, None),
         None => (
             first_exec.is_some(),
-            first_exec.map(|(file, _)| LayoutDiag::ExecutableStack { file: file.clone() }),
+            first_exec.map(|(file, _)| crate::diag::executable_stack(file)),
         ),
     }
 }
@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(executable_stack(&none, Some(false)), (false, None));
         assert_eq!(executable_stack(&nonexec, None), (false, None));
         assert_eq!(executable_stack(&nonexec, Some(true)), (true, None));
-        let warn = LayoutDiag::ExecutableStack { file: f(2) };
+        let warn = crate::diag::executable_stack(&f(2));
         assert_eq!(executable_stack(&exec, None), (true, Some(warn)));
         assert_eq!(executable_stack(&exec, Some(true)), (true, None));
         assert_eq!(executable_stack(&exec, Some(false)), (false, None));
