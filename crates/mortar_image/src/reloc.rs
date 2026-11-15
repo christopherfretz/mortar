@@ -113,7 +113,14 @@ struct MemoSlot {
     /// The facts at a mention, when asked for.
     at: Option<(Option<SymEntry>, Option<SymFacts>)>,
     /// [`Tables::split_place`], when asked for.
-    place: Option<Option<SplitPlace>>,
+    place: Asked,
+}
+
+/// A memo slot's [`Tables::split_place`].
+#[derive(Debug, Clone, Copy)]
+enum Asked {
+    Not,
+    Got(Option<SplitPlace>),
 }
 
 impl Memo {
@@ -140,7 +147,7 @@ impl Memo {
             return (m.value, m.split);
         }
         let (value, split) = tables.record_sym(key);
-        *slot = Some(MemoSlot { key, value, split, at: None, place: None });
+        *slot = Some(MemoSlot { key, value, split, at: None, place: Asked::Not });
         (value, split)
     }
 
@@ -153,7 +160,14 @@ impl Memo {
     ) -> Option<Result<u64, Diagnostic>> {
         let slot = self.slot(key);
         let place = match slot {
-            Some(m) if m.key == key => *m.place.get_or_insert_with(|| tables.split_place(key)),
+            Some(m) if m.key == key => match m.place {
+                Asked::Got(p) => p,
+                Asked::Not => {
+                    let p = tables.split_place(key);
+                    m.place = Asked::Got(p);
+                    p
+                }
+            },
             _ => tables.split_place(key),
         };
         match place {
@@ -178,7 +192,7 @@ impl Memo {
             return (m.value, m.split, facts);
         }
         let (value, split, facts) = tables.record_sym_at(key, mention);
-        *slot = Some(MemoSlot { key, value, split, at: Some((mention, facts)), place: None });
+        *slot = Some(MemoSlot { key, value, split, at: Some((mention, facts)), place: Asked::Not });
         (value, split, facts)
     }
 }

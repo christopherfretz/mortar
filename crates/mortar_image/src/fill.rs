@@ -239,7 +239,7 @@ pub(crate) static FILL_STEPS: FillSteps = FillSteps {
 };
 
 impl FillSteps {
-    pub(crate) fn on(&self) -> bool {
+    pub(crate) fn on() -> bool {
         mortar_core::wp032b_steps::enabled()
     }
 
@@ -346,7 +346,7 @@ pub fn write_checked(
         let job = plan.jobs[j].clone();
         run_job(img, w, job, sink, &stop, out);
     });
-    if FILL_STEPS.on() {
+    if FillSteps::on() {
         FILL_STEPS.print();
     }
     let mut diagnostics = Vec::new();
@@ -542,7 +542,7 @@ fn run_job(
     let len = (job.end - job.start) as usize;
     w.buf.resize(len, 0);
     let Worker { buf, scratch } = w;
-    let steps = FILL_STEPS.on().then(Instant::now);
+    let steps = FillSteps::on().then(Instant::now);
     if let Err(fatal) = fill_into(img, scratch, job.start, &mut buf[..len], &mut out.errors) {
         out.fatal = Some(fatal);
         stop.store(true, Ordering::Relaxed);
@@ -563,7 +563,7 @@ fn run_job(
         if fill_failed || stop.load(Ordering::Relaxed) {
             continue;
         }
-        let steps = FILL_STEPS.on().then(Instant::now);
+        let steps = FillSteps::on().then(Instant::now);
         if let Err(e) = sink.write_at(offset, window) {
             out.write = Some((offset, e));
             stop.store(true, Ordering::Relaxed);

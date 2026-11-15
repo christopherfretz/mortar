@@ -504,11 +504,11 @@ impl LinkTables<'_, '_> {
     /// caller asks `split_target`), `s` is left 0 when the target is in a
     /// split section, and the flag says so (`Tables::record_sym`).
     fn sym_value(&self, key: SymKey, split: bool) -> (SymValue, bool) {
-        self.sym_value_of(key, split, &self.link.facts.facts(key))
+        self.sym_value_of(key, split, self.link.facts.facts(key))
     }
 
     /// [`Self::sym_value`] with the key's facts (a definition's) given.
-    fn sym_value_of(&self, key: SymKey, split: bool, facts: &SymFacts) -> (SymValue, bool) {
+    fn sym_value_of(&self, key: SymKey, split: bool, facts: SymFacts) -> (SymValue, bool) {
         let entry = self.def_entry(key);
         let read = entry.and_then(|e| self.sym_of(e).map(|(t, s)| (e, t, s)));
         let size = read.map_or(0, |r| r.2.st_size);
@@ -618,7 +618,7 @@ impl Tables for LinkTables<'_, '_> {
             debug_assert_eq!(at, self.link.facts.facts(key), "facts at a mention");
             at
         };
-        let (value, split) = self.sym_value_of(key, true, &def);
+        let (value, split) = self.sym_value_of(key, true, def);
         (value, split, Some(at))
     }
 

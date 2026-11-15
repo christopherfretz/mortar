@@ -59,7 +59,7 @@ pub(crate) fn read(
             out.copy_from_slice(bytes);
             Ok(())
         }
-        _ if crate::fill::FILL_STEPS.on() => {
+        _ if crate::fill::FillSteps::on() => {
             let t = std::time::Instant::now();
             let r = src.copy_to(file, range, out);
             crate::fill::FILL_STEPS.add_read(t, out.len());
