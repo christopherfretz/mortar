@@ -228,8 +228,10 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
     // S7: the entry point is in an executable segment, or is 0: the gABI's
     // "no associated entry point" (a link with no entry symbol warns and
     // writes 0, spec/layout.md L-103).
+    // The instruction there: 4 bytes on AArch64, at least 1 on x86.
     if h.e_type == ET_EXEC && h.e_entry != 0 {
-        match image.load_of(h.e_entry, 4) {
+        let insn = if h.e_machine == 183 { 4 } else { 1 };
+        match image.load_of(h.e_entry, insn) {
             Some(p) if p.p_flags & PF_X != 0 => {}
             _ => out.push(
                 s(7, format!("the entry point {:#x} is in no executable PT_LOAD", h.e_entry))

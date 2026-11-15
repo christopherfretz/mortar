@@ -60,8 +60,13 @@ fn rule(machine: u16, t: u32) -> Option<Merge> {
         0xb000_8000..=0xb000_ffff => Merge::Or,
         0xc000_0000 if machine == EM_AARCH64 => Merge::And,
         0xc000_0001 if machine == EM_AARCH64 => Merge::EqualOrAbsent,
-        0xc000_0002 if x86 => Merge::And,
-        0xc000_8000..=0xc000_8fff if x86 => Merge::Or,
+        // spec/x64.md X-41: the legacy COMPAT_ISA_1_USED and _NEEDED, the
+        // UINT32_AND, _OR and _OR_AND ranges (binutils' UINT32_OR_HI is
+        // 0xc000ffff; synth.md S-95's 0xc0008fff is request R-7).
+        0xc000_0000 if x86 => Merge::OrAll,
+        0xc000_0001 if x86 => Merge::Or,
+        0xc000_0002..=0xc000_7fff if x86 => Merge::And,
+        0xc000_8000..=0xc000_ffff if x86 => Merge::Or,
         0xc001_0000..=0xc001_7fff if x86 => Merge::OrAll,
         _ => return None,
     })
@@ -71,28 +76,38 @@ fn rule(machine: u16, t: u32) -> Option<Merge> {
 fn treat(format: Format, machine: u16, t: u32) -> Treat {
     let r = rule(machine, t);
     let processor = (0xc000_0000..0xe000_0000).contains(&t);
+    let x86 = machine == EM_X86_64 || machine == EM_386;
+    // X-41's two legacy types, which lld and mold drop.
+    let compat = x86 && t <= 0xc000_0001 && processor;
     match format {
         Format::Mortar => {
             r.map_or(if t == 3 { Treat::NotJudged } else { Treat::Dropped }, Treat::Merge)
         }
-        // GNU ld knows the generic and x86 types, not PAUTH; it copies or
-        // fails on an unknown type (synth.md §13), which is not judged.
+        // GNU ld knows the generic and x86 types, not PAUTH. On x86 it
+        // drops an unknown type with a warning (X-41; WP-028c measured
+        // 0xc0018000 and 0x7000); on AArch64 it copies or fails on one
+        // (synth.md §13), which is not judged.
         Format::Gnu => match r {
-            Some(Merge::EqualOrAbsent) | None => Treat::NotJudged,
+            _ if t == 3 => Treat::NotJudged,
+            Some(Merge::EqualOrAbsent) => Treat::NotJudged,
             Some(m) => Treat::Merge(m),
+            None if x86 => Treat::Dropped,
+            None => Treat::NotJudged,
         },
-        // lld keeps the processor AND types and PAUTH; it drops the rest.
+        // lld keeps the processor AND types and PAUTH; it drops the rest,
+        // the x86 OR and OR_AND ranges included (X-41).
         Format::Lld => match r {
-            Some(m @ (Merge::And | Merge::EqualOrAbsent)) if processor => Treat::Merge(m),
-            Some(Merge::OrAll) => Treat::NotJudged,
+            Some(m @ (Merge::And | Merge::EqualOrAbsent)) if processor && !compat => {
+                Treat::Merge(m)
+            }
             _ if t == 3 => Treat::NotJudged,
             _ => Treat::Dropped,
         },
         // mold writes no AArch64 property; on x86 it merges the
-        // processor types and drops the generic ones.
+        // processor types but the legacy two and drops the generic ones.
         Format::Mold => match r {
             _ if machine == EM_AARCH64 => Treat::Dropped,
-            Some(m) if processor => Treat::Merge(m),
+            Some(m) if processor && !compat => Treat::Merge(m),
             _ if t == 3 => Treat::NotJudged,
             _ => Treat::Dropped,
         },
