@@ -205,3 +205,42 @@ pub fn parse_number(text: &str) -> Option<u64> {
         t.parse().ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with(f: impl FnOnce(&mut Plan)) -> Result<Options, LayoutDiag> {
+        let mut plan = Plan { kind: OutputKind::StaticExecutable, ..Plan::default() };
+        f(&mut plan);
+        Options::from_plan(&plan, &Target::of(Machine::AArch64))
+    }
+
+    // spec: layout.md §11.4 L-74, L-75 (page sizes), L-71, L-84, §20.2
+    #[test]
+    fn l74_l75_options() {
+        let d = with(|_| {}).unwrap();
+        assert_eq!(d.max_page, 0x10000);
+        assert!(!d.separate_code && d.relro && d.execstack.is_none());
+        let o = with(|p| p.z.max_page_size = Some("0x4000".into())).unwrap();
+        assert_eq!(o.max_page, 0x4000);
+        assert_eq!(with(|p| p.z.max_page_size = Some("0".into())).unwrap().max_page, 0x10000);
+        for bad in ["4095", "0x3000", "2048", "x"] {
+            let e = with(|p| p.z.max_page_size = Some(bad.into())).unwrap_err();
+            assert_eq!(e.id(), "invalid-option-value", "{bad}");
+        }
+        let o = with(|p| p.z.common_page_size = Some("4096".into())).unwrap();
+        assert_eq!((o.common_page, o.max_page), (Some(4096), 0x10000));
+        let e = with(|p| p.z.common_page_size = Some("0x20000".into())).unwrap_err();
+        assert_eq!(e.id(), "invalid-option-value");
+        let o = with(|p| {
+            p.z.separate_code = Some(true);
+            p.z.relro = Some(false);
+            p.z.execstack = Some(true);
+        })
+        .unwrap();
+        assert!(o.separate_code && !o.relro && o.execstack == Some(true));
+        let e = with(|p| p.kind = OutputKind::Shared).unwrap_err();
+        assert_eq!(e.refusal().map(|r| r.1), Some("shared object output"));
+    }
+}
