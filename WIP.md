@@ -6,9 +6,11 @@ Done:
   `crates/mortar_core/tests/par.rs` (s6_unit_cost_*, s6_a_small_region_*,
   s6_nested_regions); spec/model.md §6 paragraph.
 
+- call sites annotated with `unit_cost` outside 032f's crates (golden
+  IDENTICAL vs 543fd4e, 36 links).
+
 Half-done / next:
-- annotate call sites with `unit_cost` (constants from the 1-thread
-  per-site table, /tmp scratch `costs.txt`; script `annotate.py`).
+- annotate mortar_image / mortar_scan sites (separate commit).
 - item 2: archive members symbol-table-only residency (`mortar_input/src/store.rs:1113-1170`).
 - items 4-7 after.
 
