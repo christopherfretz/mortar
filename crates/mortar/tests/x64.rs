@@ -261,7 +261,7 @@ fn gc_matrix(name: &str, cc: Cc, program: &[Source]) {
             "{label}: no code collected"
         );
         assert!(mortar(&built, &plain, &[], &[]).success());
-        let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
         assert!(size(&gc) < size(&plain), "{label}: {} >= {}", size(&gc), size(&plain));
     }
 }

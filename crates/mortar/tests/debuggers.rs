@@ -854,8 +854,8 @@ fn each(name: &str, driver: Driver, p: &Program, check: impl Fn(&str, &str, &Too
 /// same; the collected sections are the run-time library's).
 fn gc_sources(p: &Program) -> Vec<Source> {
     let mut v = p.sources.to_vec();
-    let unused = match p.sources.first().map(|s| s.name) {
-        Some(n) if n.ends_with(".cpp") => Some(Source {
+    let unused = match p.sources.first().and_then(|s| Path::new(s.name).extension()) {
+        Some(e) if e == "cpp" => Some(Source {
             name: "gc_unused.cpp",
             text: "struct Gone { int v; };\n\
                    __attribute__((noinline)) int gc_unused_throw(int x) { if (x) throw Gone{x}; return 1; }\n\
@@ -863,7 +863,7 @@ fn gc_sources(p: &Program) -> Vec<Source> {
                    catch (const Gone &g) { return g.v; } }\n\
                    int gc_unused_data[64] = {1};\n",
         }),
-        Some(n) if n.ends_with(".c") => Some(Source {
+        Some(e) if e == "c" => Some(Source {
             name: "gc_unused.c",
             text: "__attribute__((noinline)) int gc_unused(int x) { return x * 5 + 1; }\n\
                    int gc_unused_data[64] = {1};\n",
@@ -1243,7 +1243,8 @@ fn dwarf_gc(name: &str, driver: Driver, p: &Program) {
         symtabs_against(label, t, pair, (&eo, &et), rnglists_xfail(driver, tag));
         let ours = debug_addrs(t, pair, &pair.ours, &eo);
         assert!(ours.wrong.is_empty(), "{label}: mortar's output: {:#?}", ours.wrong);
-        if p.sources.first().is_some_and(|s| !s.name.ends_with(".f90")) {
+        if p.sources.first().is_some_and(|s| Path::new(s.name).extension() != Some("f90".as_ref()))
+        {
             let gone = ours.dead_subprograms.iter().filter(|n| n.contains("gc_unused")).count();
             assert!(gone >= 1, "{label}: tombstoned subprograms {:?}", ours.dead_subprograms);
             assert!(!eo.values.contains_key("gc_unused"), "{label}: gc_unused is in the output");
