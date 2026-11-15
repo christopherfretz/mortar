@@ -546,8 +546,10 @@ The status today:
   - `--error-limit`, `--fatal-warnings`, `--no-fatal-warnings`, `-w`;
   - `--color-diagnostics`, `--no-color-diagnostics`;
   - `--version`, `-v`, `-V`, `--help`.
-- 17 rows are `noop`.
-- 444 rows are `refused`.
+- 22 rows are `noop`; WP-024 made five of them (`-z common-page-size`,
+  `--warn-execstack`, `--rosegment`, `-z nostart-stop-gc`,
+  `-z sectionheader`; `spec/layout.md` §20.2).
+- 439 rows are `refused`.
 
 A work package that implements an option changes the row's status in the
 same change.
@@ -565,6 +567,16 @@ until the phase that honors them lands with its test:
   `--fortran-common`, whose help says "mortar's behavior, always on":
   mortar always takes an archive member for a common symbol
   (`spec/resolve.md` §3.3). `--no-fortran-common` stays `refused`.
+- WP-024 (`mortar_layout`, `spec/layout.md` §20.2): `-z max-page-size`
+  (L-74), `-z separate-code`, `-z noseparate-code` (L-71), `-z relro`,
+  `-z norelro` (L-64, L-65), `-z execstack`, `-z noexecstack` (L-84).
+  `Options::from_plan` honors them; the rows become `supported` when
+  `mortar::link` runs layout (WP-027). `-z start-stop-visibility` stays
+  `refused`: §20.2 makes only the value `protected` a no-op, and a row's
+  status cannot depend on its value. `--image-base` and `-Ttext-segment`
+  wait for M2 (L-68); `--no-rosegment`, `--no-warn-execstack`,
+  `--error-execstack`, `-z start-stop-gc`, `-Ttext`, `-Tdata`, `-Tbss`,
+  `--section-start` and `-z keep-text-section-prefix` stay `refused`.
 
 ### 4.3 What the facade does with a parse
 
