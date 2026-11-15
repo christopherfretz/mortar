@@ -1,0 +1,43 @@
+# x64.md X-28, dyn.md D-48 (x86-64's exception): a TLS descriptor
+# sequence that x86-64 does not recognise is refused by name in an
+# executable, as it is in a static link (`R_X86_64_TLSDESC`, the record
+# that would keep it, is M4). Here `R_X86_64_GOTPC32_TLSDESC` sits on a
+# `mov` (`48 8b 05`), where only `lea` is defined, against a shared
+# object's TLS symbol, in a PIE and a non-PIE.
+#
+# What the references do (measured): all three refuse (GNU ld: "must be
+# used in LEA only"; lld: "must be used in leaq x@tlsdesc(%rip), %REG";
+# mold: "illegal instruction sequence").
+#@ spec: x64.md "X-28"
+#@ arch: x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libtx.so -o libtx.so
+as main.S -o main.o
+link gcc -pie main.o -L. -ltx -o pie
+  exit: fail
+  diag(bfd): must be used in LEA only
+  diag(lld): must be used in leaq x@tlsdesc(%rip), %REG
+  diag(mold): illegal instruction sequence for R_X86_64_GOTPC32_TLSDESC
+  diag(mortar): unsupported feature: unrecognized TLS descriptor sequence
+link gcc -no-pie main.o -L. -ltx -o exec
+  exit: fail
+  diag(mortar): unsupported feature: unrecognized TLS descriptor sequence
+
+#--- lib.c
+__thread int tlsx = 5;
+#--- main.S
+	.text
+	.globl	main
+	.type	main, @function
+main:
+	pushq	%rbx
+	/* movq tlsx@TLSDESC(%rip), %rax: a mov, where X-28 knows only lea */
+	.byte	0x48, 0x8b, 0x05
+	.reloc	., R_X86_64_GOTPC32_TLSDESC, tlsx-4
+	.long	0
+	call	*tlsx@TLSCALL(%rax)
+	movl	%fs:(%rax), %eax
+	popq	%rbx
+	ret
+	.section .note.GNU-stack,"",@progbits
