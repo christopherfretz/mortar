@@ -135,11 +135,10 @@ pub struct ThunkShape {
     pub align: u32,
 }
 
-/// The errata an architecture can fix (§3.7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Erratum {
-    A53_843419,
-}
+/// The errata an architecture can fix (§3.7): the model's type
+/// (`spec/model.md` §4.4, amendment M-7). arch.md §3.7 names the variant
+/// `A53_843419`; the model names it `E843419`.
+pub use mortar_core::layout::Erratum;
 
 /// The TLS variant (§3.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -206,7 +206,7 @@ fn s11_1_superset_of_reference_linkers() {
         let code = Code { bytes: &plain.bytes, addr: plain.addr, proof: &proof };
         let mut sites: Vec<ErratumSite> = Vec::new();
         A64::new(mortar_arch::Status::M1, true)
-            .erratum_sites(Erratum::A53_843419, &code, &mut sites)
+            .erratum_sites(Erratum::E843419, &code, &mut sites)
             .expect("every word has a mapping symbol");
         let qs: BTreeSet<u64> = sites.iter().map(|s| s.q).collect();
         let fs: BTreeSet<u64> = sites.iter().map(|s| s.f).collect();

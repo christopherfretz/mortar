@@ -911,7 +911,7 @@ fn s13_3_facts_dyn_types_properties() {
     assert_eq!(a.tombstone(b".debug_loc"), 1);
     assert_eq!(a.eh().hdr_table, 0x3b);
     assert!(a.errata().is_empty());
-    assert_eq!(M2.errata(), &[mortar_arch::Erratum::A53_843419]);
+    assert_eq!(M2.errata(), &[mortar_arch::Erratum::E843419]);
     // REL is refused (§1).
     let h: Howto = table::howto(257).unwrap();
     assert!(a.write_addend(&h, &mut [0; 8], 0).is_err());

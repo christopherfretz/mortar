@@ -250,7 +250,7 @@ impl Arch for A64 {
     }
 
     fn errata(&self) -> &'static [Erratum] {
-        if self.fix_843419 { &[Erratum::A53_843419] } else { &[] }
+        if self.fix_843419 { &[Erratum::E843419] } else { &[] }
     }
 
     fn erratum_sites(
@@ -260,7 +260,9 @@ impl Arch for A64 {
         out: &mut Vec<ErratumSite>,
     ) -> Result<(), Unproved> {
         match e {
-            Erratum::A53_843419 => erratum::sites(code, out),
+            Erratum::E843419 => erratum::sites(code, out),
+            // Not in `errata()`: never asked.
+            _ => Ok(()),
         }
     }
 
@@ -268,7 +270,8 @@ impl Arch for A64 {
     /// and `cx.word` the pre-fix `W1`.
     fn erratum_in_place(&self, e: Erratum, cx: &PatchCx) -> bool {
         match e {
-            Erratum::A53_843419 => erratum::adr_fix(cx.site, cx.word).is_some(),
+            Erratum::E843419 => erratum::adr_fix(cx.site, cx.word).is_some(),
+            _ => false,
         }
     }
 
@@ -276,7 +279,8 @@ impl Arch for A64 {
     /// `cx.word` (`W4'`), then `b F + 4` (§11.2).
     fn write_patch(&self, e: Erratum, cx: &PatchCx, out: &mut [u8]) -> Result<(), FieldError> {
         match e {
-            Erratum::A53_843419 => synth::put(out, &erratum::patch(cx.addr, cx.target, cx.word)?),
+            Erratum::E843419 => synth::put(out, &erratum::patch(cx.addr, cx.target, cx.word)?),
+            _ => Err(FieldError::MissingTerm("erratum")),
         }
     }
 

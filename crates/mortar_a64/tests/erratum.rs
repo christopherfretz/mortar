@@ -15,7 +15,7 @@ const fn insn(start: u64, end: u64) -> ProofRun {
 
 fn sites(code: &Code<'_>) -> Result<Vec<ErratumSite>, Unproved> {
     let mut out = Vec::new();
-    A64::new(mortar_arch::Status::M1, true).erratum_sites(Erratum::A53_843419, code, &mut out)?;
+    A64::new(mortar_arch::Status::M1, true).erratum_sites(Erratum::E843419, code, &mut out)?;
     Ok(out)
 }
 
@@ -234,10 +234,10 @@ fn s11_2_adr_fix_and_patch() {
         target_word: None,
         target_abs: false,
     };
-    assert!(!a.erratum_in_place(Erratum::A53_843419, &PatchCx { word: far, ..cx }));
-    assert!(a.erratum_in_place(Erratum::A53_843419, &PatchCx { word: w1, ..cx }));
+    assert!(!a.erratum_in_place(Erratum::E843419, &PatchCx { word: far, ..cx }));
+    assert!(a.erratum_in_place(Erratum::E843419, &PatchCx { word: w1, ..cx }));
     let mut out = [0u8; 8];
-    a.write_patch(Erratum::A53_843419, &cx, &mut out).unwrap();
+    a.write_patch(Erratum::E843419, &cx, &mut out).unwrap();
     // W4', then b F + 4 = 0x401008 from 0x500004.
     let back = 0x40_1008 - 0x50_0004_i64;
     assert_eq!(out.to_vec(), words(&[W_FINAL, 0x1400_0000 | ((back >> 2) as u32 & 0x3FF_FFFF)]));
@@ -247,5 +247,5 @@ fn s11_2_adr_fix_and_patch() {
     );
     assert!(mortar_a64::erratum_branch(0, 0x800_0000).is_err());
     assert!(mortar_a64::erratum_branch(0, 2).is_err());
-    assert!(a.write_patch(Erratum::A53_843419, &cx, &mut [0u8; 4]).is_err());
+    assert!(a.write_patch(Erratum::E843419, &cx, &mut [0u8; 4]).is_err());
 }
