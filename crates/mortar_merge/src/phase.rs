@@ -6,6 +6,8 @@
 //! implements for any `mortar_arch::Arch` (a test gives a table for a
 //! target without one).
 
+use std::borrow::Cow;
+
 use mortar_arch::{Arch, DemandClass, Field, Site};
 use mortar_core::inputs::{Reader, RelocForm};
 use mortar_core::layout::EntryDef;
@@ -14,6 +16,7 @@ use mortar_core::resolution::{Def, SectionKind};
 use mortar_core::{Assignment, FileId, Inputs, Resolution, SectionId, Split, SymbolId};
 use mortar_diag::{Diagnostic, Key};
 use mortar_elf::consts::{SHF_COMPRESSED, SHF_STRINGS, STT_SECTION};
+use mortar_elf::raw::{Rel, Rela, Table};
 use mortar_elf::{Class, Object, Section, SectionIndex, SymbolIndex, SymbolSection};
 
 use crate::cut::{Whole, align_log2, placed_whole};
@@ -102,9 +105,41 @@ pub struct Tables<'t, 's> {
 
 /// A section of a file to split, with its data.
 enum Unit<'a> {
-    Merge(MergeIn<'a>),
+    /// A `MergeIn` without its bytes, and the bytes.
+    Merge(MergeIn<'static>, Cow<'a, [u8]>),
     Whole(SectionId, Whole),
-    Eh { section: SectionId, index: u32, bytes: &'a [u8], relocs: Vec<EhReloc> },
+    Eh {
+        section: SectionId,
+        index: u32,
+        bytes: Cow<'a, [u8]>,
+        relocs: Vec<EhReloc>,
+    },
+}
+
+/// The bytes of section `s` of `file`: borrowed when the store holds
+/// them resident (`Inputs::resident`), else read into a buffer of their
+/// own with `Inputs::copy_to` (the staged store: bulk bytes are not
+/// resident); for a file without a store entry (tests), the parsed
+/// object's own bytes.
+fn read<'s>(inputs: &Inputs<'s>, file: FileId, s: &Section<'s>) -> Result<Cow<'s, [u8]>, What> {
+    let h = s.header();
+    let malformed = |e: mortar_elf::Error| What::Malformed(e.to_string());
+    if h.sh_type == mortar_elf::consts::SHT_NOBITS || h.sh_size == 0 {
+        return Ok(Cow::Borrowed(&[]));
+    }
+    let range = h.sh_offset..h.sh_offset.saturating_add(h.sh_size);
+    if inputs.files[file].bytes.is_none() {
+        return s.data().map(Cow::Borrowed).map_err(malformed);
+    }
+    if let Some(b) = inputs.resident(file, range.clone()) {
+        return Ok(Cow::Borrowed(b));
+    }
+    let len = usize::try_from(h.sh_size).map_err(|_| What::SectionTooLarge)?;
+    let mut buf = vec![0u8; len];
+    inputs
+        .copy_to(file, range, &mut buf)
+        .map_err(|e| What::Malformed(format!("cannot read the section's bytes: {e:?}")))?;
+    Ok(Cow::Owned(buf))
 }
 
 /// Phase 60: splits every kept `Merge` and `EhFrame` section that is
@@ -127,7 +162,7 @@ pub fn run(pool: &Pool, t: Tables<'_, '_>, relocs: &dyn Relocs) -> Result<Phase,
         let Ok(units) = units else { unreachable!("problems returned above") };
         for u in units {
             match u {
-                Unit::Merge(m) => merge_in.push(m),
+                Unit::Merge(m, bytes) => merge_in.push((m, bytes)),
                 Unit::Whole(s, w) => whole.push((s, w)),
                 Unit::Eh { section, index, bytes, relocs } => {
                     eh_units.push((section, FileId(f as u32), index, bytes, relocs));
@@ -149,6 +184,8 @@ pub fn run(pool: &Pool, t: Tables<'_, '_>, relocs: &dyn Relocs) -> Result<Phase,
             relocs,
         })
         .collect();
+    let merge_in: Vec<MergeIn<'_>> =
+        merge_in.iter().map(|(m, bytes)| MergeIn { bytes, ..*m }).collect();
     let merged = merge(pool, &merge_in);
     let frames = eh::parse(pool, word, &eh_in);
     let (merged, frames) = match (merged, frames) {
@@ -200,16 +237,20 @@ fn units<'s>(
                     continue;
                 }
                 let out_sec = t.assignment.out(section).unwrap_or_else(|| unreachable!());
-                out.push(Unit::Merge(MergeIn {
-                    section,
-                    file,
-                    index,
-                    out: out_sec,
-                    strings: h.sh_flags & SHF_STRINGS != 0,
-                    entsize: h.sh_entsize as u32,
-                    align: align_log2(h.sh_addralign),
-                    bytes: s.data().map_err(malformed)?,
-                }));
+                let bytes = read(t.inputs, file, &s).map_err(problem)?;
+                out.push(Unit::Merge(
+                    MergeIn {
+                        section,
+                        file,
+                        index,
+                        out: out_sec,
+                        strings: h.sh_flags & SHF_STRINGS != 0,
+                        entsize: h.sh_entsize as u32,
+                        align: align_log2(h.sh_addralign),
+                        bytes: &[],
+                    },
+                    bytes,
+                ));
             }
             SectionKind::EhFrame => {
                 let s = object.section(SectionIndex(index)).map_err(malformed)?;
@@ -219,11 +260,11 @@ fn units<'s>(
                         "SHF_COMPRESSED .eh_frame".into(),
                     )));
                 }
-                let bytes = s.data().map_err(malformed)?;
+                let bytes = read(t.inputs, file, &s).map_err(problem)?;
                 let rel = if row.reloc.0 == 0 {
                     Vec::new()
                 } else {
-                    eh_relocs(t, file, &object, row.reloc, bytes, relocs)
+                    eh_relocs(t, file, &object, row.reloc, &bytes, relocs)
                         .map_err(|(offset, what)| Problem { offset, ..problem(what) })?
                 };
                 out.push(Unit::Eh { section, index, bytes, relocs: rel });
@@ -246,16 +287,14 @@ fn eh_relocs(
 ) -> Result<Vec<EhReloc>, (u64, What)> {
     let malformed = |e: mortar_elf::Error| (0, What::Malformed(e.to_string()));
     let rs: Section<'_> = object.section(reloc).map_err(malformed)?;
+    let records = read(t.inputs, file, &rs).map_err(|w| (0, w))?;
+    let class = object.class();
     let raw: Vec<(u64, u32, u32, Option<i64>)> = match t.inputs.target.reloc {
-        RelocForm::Rela => rs
-            .rela()
-            .map_err(malformed)?
+        RelocForm::Rela => Table::<Rela>::new(&records, class)
             .iter()
             .map(|r| (r.r_offset, r.r_sym, r.r_type, Some(r.r_addend)))
             .collect(),
-        RelocForm::Rel => rs
-            .rel()
-            .map_err(malformed)?
+        RelocForm::Rel => Table::<Rel>::new(&records, class)
             .iter()
             .map(|r| (r.r_offset, r.r_sym, r.r_type, None))
             .collect(),
