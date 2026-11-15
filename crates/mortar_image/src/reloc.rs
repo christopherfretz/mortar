@@ -239,6 +239,9 @@ struct View<'a> {
     first: u32,
     total: u32,
     base: u64,
+    /// `recs` are in `r_offset` order (found for `.debug_aranges` only:
+    /// [`tomb`]'s search; `false` elsewhere).
+    sorted: bool,
 }
 
 impl View<'_> {
@@ -633,7 +636,8 @@ pub(crate) fn relocate(
         (&site_buf[..], base)
     };
     let total = c.rs.len();
-    let view = View { recs, first, total, base };
+    let sorted = aranges && recs.is_sorted_by_key(|r| r.r_offset);
+    let view = View { recs, first, total, base, sorted };
     proof.clear();
     proof.extend(c.rs.proof.iter().filter(|p| p.end > base).map(|p| ProofRun {
         start: p.start.saturating_sub(base),
@@ -903,11 +907,13 @@ fn tomb(
         let (lo, hi) = (rec.r_offset + u64::from(width), rec.r_offset + 2 * u64::from(width));
         // Every decoded record: the following ones of a sorted section
         // (the window reaches past the clip's), all of an unsorted one.
-        let occupied = view
-            .recs
+        // In a sorted one, the records from the first at `lo` on.
+        let from = if view.sorted { view.recs.partition_point(|x| x.r_offset < lo) } else { 0 };
+        let occupied = view.recs[from..]
             .iter()
             .enumerate()
-            .any(|(k, x)| k as u32 + view.first != i && (lo..hi).contains(&x.r_offset));
+            .take_while(|(_, x)| !view.sorted || x.r_offset < hi)
+            .any(|(k, x)| (from + k) as u32 + view.first != i && (lo..hi).contains(&x.r_offset));
         if !occupied && hi <= section_size {
             out.write(at + u64::from(width), &[0u8; 8][..w]);
         }
