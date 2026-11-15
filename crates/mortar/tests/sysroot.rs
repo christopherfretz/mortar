@@ -6,6 +6,8 @@
 //! cross drivers pass on every link) and an empty `--sysroot=` changing
 //! nothing.
 
+mod support;
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -69,11 +71,22 @@ impl Cx {
         run_with(&mut c, b"", Duration::from_mins(2))
     }
 
-    /// `exe` on `line` with `-o out`.
+    /// `exe` on `line` with `-o out`. mortar also writes its map to
+    /// `out.mortar-map`, and an output it writes is judged by the
+    /// verifier, which must find nothing (`docs/VALIDATION.md` L3, WP-035).
     fn link(&self, exe: &Path, line: &[&str], out: &str) -> Outcome {
         let mut args: Vec<OsString> = line.iter().map(OsString::from).collect();
         args.extend(["-o".into(), out.into()]);
-        self.run(exe, &args)
+        let mortar = exe == Path::new(MORTAR);
+        let map = self.scratch.join(format!("{out}.mortar-map"));
+        if mortar {
+            args.push(format!("--mortar-map={}", map.display()).into());
+        }
+        let o = self.run(exe, &args);
+        if mortar && o.success() {
+            support::plumb::clean(&self.scratch.join(out), &map, self.scratch.path());
+        }
+        o
     }
 
     fn exit(&self, out: &str) -> Option<i32> {

@@ -13,6 +13,7 @@ pub mod anomaly;
 pub mod buildid;
 mod content;
 mod erratum;
+mod hasher;
 mod image;
 mod locate;
 pub mod map;

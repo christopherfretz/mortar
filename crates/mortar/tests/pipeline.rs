@@ -99,8 +99,20 @@ fn link(exe: &str, args: &[OsString], dir: &Path, env: &[(&str, &str)]) -> Outco
     run_with(&mut c, b"", Duration::from_mins(5))
 }
 
-/// mortar's link of `built` to `out`, with its map at `out.map`.
+/// mortar's link of `built` to `out`, with its map at `out.map`. An output
+/// it writes is judged by the verifier, which must find nothing
+/// (`docs/VALIDATION.md` L3, WP-035): no test here links without it.
 fn mortar(built: &Built, out: &Path, extra: &[&str], env: &[(&str, &str)]) -> Outcome {
+    let o = mortar_unverified(built, out, extra, env);
+    if o.success() && out.exists() {
+        support::plumb::clean(out, &map_of(out), &built.dir);
+    }
+    o
+}
+
+/// [`mortar`] without the verifier: for a link whose output is compared
+/// byte for byte with one [`mortar`] verified.
+fn mortar_unverified(built: &Built, out: &Path, extra: &[&str], env: &[(&str, &str)]) -> Outcome {
     let mut args = with_output(&built.args, out);
     args.push(format!("--mortar-map={}", map_of(out).display()).into());
     args.extend(extra.iter().map(OsString::from));
@@ -142,7 +154,6 @@ fn holds(label: &str, driver: Driver, flags: &[&str], program: &[Source]) -> Opt
     assert_eq!(out_m, out_b, "{label}: mortar's program against GNU ld's");
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
     Some(())
 }
 
@@ -212,7 +223,6 @@ fn c_with_clang22_branch_protection() {
     assert!(feature(&ours).is_some_and(|f| f.contains("BTI")), "{:?}", feature(&ours));
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
 
 #[test]
@@ -275,7 +285,6 @@ fn a_far_call_goes_through_a_thunk() {
     assert!(map.lines().any(|l| l.starts_with("chunk thunk ")), "a thunk in the map");
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
 
 /// The BTI property note (`GNU_PROPERTY_AARCH64_FEATURE_1_AND`, bit BTI):
@@ -348,7 +357,6 @@ fn a_bti_far_call_lands_on_each_pad() {
         let map = std::fs::read_to_string(map_of(&ours)).unwrap();
         assert!(map.lines().any(|l| l.starts_with("chunk thunk ")), "{name}: a thunk");
         support::plumb::readers(&ours);
-        support::plumb::clean(&ours, &map_of(&ours), &built.dir);
         std::fs::remove_file(&ours).unwrap();
         std::fs::remove_file(&theirs).unwrap();
     }
@@ -399,7 +407,6 @@ fn a_bti_far_call_to_an_iplt_entry_is_linked() {
     // (`objdump -d`): the verifier follows both (a BTI IPLT entry starts
     // at its BTI, `spec/plumb.md` §4.8) and finds the thunk lands on a
     // landing pad (R9).
-    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
 
 /// a64.md §9: a target that is not a landing pad, or whose pad-shaped
@@ -506,7 +513,7 @@ fn the_output_is_a_function_of_the_inputs_alone() {
                 }
                 let t = format!("--threads={threads}");
                 let tm = text_option(&out);
-                let m = mortar(&built, &out, &[t.as_str(), &tm], &env);
+                let m = mortar_unverified(&built, &out, &[t.as_str(), &tm], &env);
                 assert!(m.success(), "{store} {threads} {seed}: {}", m.stderr_text());
                 let got = (read(&out), read(&map_of(&out)), text_of(&out));
                 assert!(
@@ -530,7 +537,7 @@ fn the_output_is_a_function_of_the_inputs_alone() {
     }
     for _ in 0..3 {
         let again = built.dir.join("again.out");
-        let m = mortar(&built, &again, &[], &[]);
+        let m = mortar_unverified(&built, &again, &[], &[]);
         assert!(m.success(), "{}", m.stderr_text());
         assert!(read(&again) == want.0, "a repeated run differs");
         runs += 1;
@@ -584,7 +591,6 @@ fn print_map_writes_the_map_to_standard_output() {
     let map = format!("-Map={}", text.display());
     let m = mortar(&built, &out, &["-M", map.as_str()], &[]);
     assert!(m.success(), "{}", m.stderr_text());
-    support::plumb::clean(&out, &map_of(&out), &built.dir);
     assert_eq!(m.stdout_text().as_bytes(), read(&text));
     assert!(m.stdout_text().contains("\nLinker script and memory map\n\n"));
     assert!(
@@ -615,7 +621,6 @@ fn the_comment_names_mortar_after_the_inputs() {
     let (ours, gnu) = (built.dir.join("c.out"), built.dir.join("c.gnu"));
     let m = mortar(&built, &ours, &[], &[]);
     assert!(m.success(), "{}", m.stderr_text());
-    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
     assert!(bfd(&built, &gnu, &[]).success());
     let mut want = comment_strings(&gnu);
     assert!(!want.is_empty() && !want.contains(&ident), "{want:?}");
@@ -689,7 +694,6 @@ fn z_now_puts_the_got_plt_in_relro() {
         let out = built.dir.join(format!("now{k}.out"));
         let m = mortar(&built, &out, extra, &[]);
         assert!(m.success(), "{extra:?}: {}", m.stderr_text());
-        support::plumb::clean(&out, &map_of(&out), &built.dir);
         assert_eq!(execute(&out), want, "{extra:?}");
         let (lo, hi) = relro(&out);
         let (secs, _) = elf_facts(&out);
@@ -888,7 +892,6 @@ fn text_map_against_gnu(built: &Built) {
     let map = format!("-Map={}", text.display());
     let m = mortar(built, &out, &[map.as_str()], &[]);
     assert!(m.success(), "{}", m.stderr_text());
-    support::plumb::clean(&out, &map_of(&out), &built.dir);
     let gnu_out = built.dir.join("g.out");
     let gnu_text = built.dir.join("g.txt");
     let gmap = format!("-Map={}", gnu_text.display());
@@ -1226,7 +1229,6 @@ fn an_erratum_site_goes_through_a_patch() {
     assert_eq!(w(1) >> 26, 0b00_0101, "then a b: {:#x}", w(1));
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
 
 /// Erratum 843419 under `--gc-sections` (WP-031, `spec/image.md` I-7;
@@ -1285,7 +1287,6 @@ fn an_erratum_site_in_collected_code_gets_no_patch() {
         }
         support::plumb::readers(&ours);
         support::plumb::elflint(&ours);
-        support::plumb::clean(&ours, &map_of(&ours), &built.dir);
     }
 }
 
@@ -1332,5 +1333,4 @@ fn an_erratum_site_across_the_page_takes_its_relocated_word() {
     assert!(map.contains("chunk patch __erratum_843419_veneer "), "a patch in the map: {map}");
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }

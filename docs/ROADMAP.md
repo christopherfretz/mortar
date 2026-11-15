@@ -90,6 +90,12 @@ What every default link line of GCC, Clang and kiln needs.
 `gfortran` and `kiln++` work for the test corpus on AArch64 with the
 verifier clean, and kiln's corpus passes with mortar.
 
+Spec: `spec/dyn.md`; the package cut: `spec/landed/dyn/WP-040.md`
+(WP-040). Shared objects are inputs only: producing them (`-shared`,
+verdefs), RELR, i386 dynamic links and the IBT/PAC PLTs are M4. Joined in
+the order: C PIE on AArch64, C++, x86-64 (under qemu), the options.
+`--gc-sections` is WP-031.
+
 ## M3: libc++ with kiln and hod
 
 - The libc++ lane: kiln and hod's sweep with mortar as the linker, strict

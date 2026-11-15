@@ -1,7 +1,7 @@
 //! Non-alloc references to sections that are not in the output
 //! (`spec/plumb.md` §5.8): the tombstone each linker writes.
 
-use std::collections::HashMap;
+use crate::hasher::HashMap;
 
 use mortar_elf::consts::SHF_GROUP;
 use mortar_elf::{Class, SymbolIndex, SymbolSection};
@@ -32,7 +32,7 @@ impl Engine<'_, '_> {
     fn redirect_targets(&mut self, name: &str, size: u64) -> Vec<u64> {
         let objs = self.objs;
         let m = self.redirects.get_or_insert_with(|| {
-            let mut m: HashMap<(String, u64), Vec<u64>> = HashMap::new();
+            let mut m: HashMap<(String, u64), Vec<u64>> = HashMap::default();
             for o in objs {
                 for s in &o.secs {
                     if s.shdr.sh_flags & SHF_GROUP != 0

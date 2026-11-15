@@ -263,6 +263,8 @@ fn gc_matrix(name: &str, cc: Cc, program: &[Source]) {
         assert!(mortar(&built, &plain, &[], &[]).success());
         let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
         assert!(size(&gc) < size(&plain), "{label}: {} >= {}", size(&gc), size(&plain));
+        support::plumb::clean(&gc, &map_of(&gc), &built.dir);
+        support::plumb::clean(&plain, &map_of(&plain), &built.dir);
     }
 }
 
@@ -295,6 +297,8 @@ fn x64_the_output_is_a_function_of_the_inputs_alone() {
     let first = built.dir.join("first.out");
     let m = mortar(&built, &first, &["--threads=1"], &[("MORTAR_STORE", "staged")]);
     assert!(m.success(), "{}", m.stderr_text());
+    // The verifier on the output every other run must equal (WP-035).
+    support::plumb::clean(&first, &map_of(&first), &built.dir);
     let read = |p: &Path| std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     let want = (read(&first), read(&map_of(&first)));
     for store in ["staged", "resident"] {
