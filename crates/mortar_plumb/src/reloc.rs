@@ -1782,7 +1782,19 @@ impl<'a, 'b> Engine<'a, 'b> {
                         w1 = true;
                         Evidence::Exact(t)
                     }
-                    _ => Evidence::None,
+                    // An ADRP made NOP is W1 only with its ADD made the
+                    // ADR of its register; else the register is unset
+                    // (WP-028d: was not checked as `piece-not-locatable`).
+                    _ => {
+                        let f = Self::finding(
+                            Rule::Field,
+                            rec,
+                            &site,
+                            &symbol,
+                            "the ADRP is a NOP but the ADD after it is not the ADR of its register (W1)",
+                        );
+                        return self.fail(f);
+                    }
                 }
             }
             (Op::Page, _) => page_evidence(rec),

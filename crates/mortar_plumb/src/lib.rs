@@ -14,6 +14,7 @@ pub mod buildid;
 mod content;
 mod image;
 mod locate;
+pub mod mutate;
 pub mod map;
 mod property;
 mod reloc;

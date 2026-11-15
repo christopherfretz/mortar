@@ -1367,3 +1367,50 @@ fn s9_2l_build_id_style_from_the_map() {
     assert_eq!(b1(&bare, Some("default")).0, 0, "(3) the bare tree under default");
     assert_eq!(b1(&bare, Some("fast")).0, 1, "(4) 20 bytes under fast");
 }
+
+// spec/plumb.md §9.5 (WP-028d): mutation coverage as a number on the small
+// corpus. Every class the harness has is run, with a fixed seed, on the
+// reference links of the cases below; the table and every missed mutant
+// are printed, and the classes §9.5 states as fully caught must be.
+#[test]
+fn s9_5_mutation_coverage_on_the_small_corpus() {
+    use mortar_plumb::mutate::{Config, Outcome, run};
+    let Some(c) = small() else { return };
+    let cfg = Config { per_class: 3, threads: 4, ..Config::default() };
+    let mut total = Outcome::default();
+    for case in ["start", "veneer", "bti", "got", "erratum", "types", "pieces"] {
+        for linker in Linker::ALL {
+            let ctx = Ctx::of(c.get(case, linker));
+            let inputs: Vec<mortar_plumb::Input<'_>> =
+                ctx.files.iter().map(|(p, b)| mortar_plumb::Input { path: p, bytes: b }).collect();
+            let o = run(&ctx.output, &inputs, &ctx.map, &cfg).unwrap();
+            total.add(&o, &ctx.link.label());
+        }
+    }
+    let table = total.render();
+    println!("{table}");
+    let applied: usize = total.classes.iter().map(|r| r.applied).sum();
+    assert!(applied > 100, "{table}");
+    // §9.5's fully caught classes on this corpus; field-off-by-one's one
+    // miss is mold's GOT load of an IFUNC moved to the IRELATIVE slot next
+    // to it, which holds the same function once applied (equivalent).
+    for class in [
+        "field-off-by-one",
+        "field-wrong-symbol",
+        "field-wrong-addend",
+        "stale-relaxation",
+        "irelative-swap",
+        "tls-segment",
+        "property-bit",
+        "section-overlap",
+        "iplt-entry",
+    ] {
+        let r = total.classes.iter().find(|r| r.class == class).unwrap();
+        let real: Vec<&String> = r
+            .missed
+            .iter()
+            .filter(|m| !(class == "field-off-by-one" && m.starts_with("bti/mold:") && m.contains("(f)")))
+            .collect();
+        assert!(real.is_empty(), "{class}: {real:?}\n{table}");
+    }
+}

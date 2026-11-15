@@ -713,7 +713,11 @@ and undefined (spec/resolve.md) and the dynamic loader applies them.
   in an allocated executable section, that load the slot of an
   `IRELATIVE` record. On AArch64 the entry is `ADRP Xn, slot; LDR Xt,
   [Xn, :lo12:slot]` followed by `BR Xt` (mold's `.plt.got`), or by `ADD
-  Xn, Xn, :lo12:slot; BR Xt` (GNU ld's `.plt`, lld's `.iplt`). On x86 it is
+  Xn, Xn, :lo12:slot; BR Xt` (GNU ld's `.plt`, lld's `.iplt`). In an
+  output marked BTI, GNU ld and lld 22 put `BTI c` before the `ADRP`:
+  the entry then starts at the `BTI` (a branch or address to it is to
+  the entry; WP-028d, which removed the F4 the pipeline tests saw on
+  `-mbranch-protection` links). On x86 it is
   `jmp *slot` (`FF 25`, RIP-relative on x86-64, absolute on i386), with an
   optional `ENDBR64`/`ENDBR32` and `BND` prefix before it. The entries of
   a resolver are those whose slot is a slot of a record of that resolver.
@@ -808,6 +812,12 @@ glibc's IFUNCs):
   (glibc's `apply_irel` overwrites it), so (3) is a check of the linker's
   own convention: a different word means the slot is not the one the
   linker made.
+
+  (2) now runs on mortar's output (WP-028d): `iplt-ibt.s` linked by
+  mortar is clean, and its first entry's `endbr64` made a 4-byte NOP is
+  F5 by (1) and (2), with F4 for the five references to the entry. The
+  mutation harness's `iplt-entry` class (§9.5) makes the same mutant on
+  every IPLT entry of every mortar output.
 
 ## 5. Checking a record
 
@@ -948,8 +958,33 @@ to IE in a static link is W11, and mold's unrelaxed traditional GD is
 ordinary records (§4.7). IE to LE with `Rt ≠ Rn` is the anomaly A8;
 mold's missing 843419 fix is A4; GNU ld's fix with an ADR is W7.
 
+**Chained veneers and landing pads (WP-028d).** A veneer may end in a
+branch to another veneer, and the emulator follows up to 4 of them: GNU
+ld's `__x_veneer` (`ADRP; ADD; BR x16`) to a padless target in a BTI
+output goes to `__x_bti_veneer` (`BTI c; B x`). A destination that is a
+landing pad at the target minus 4 also reaches the target: lld 22 puts
+its `__AArch64BTIThunk_x` (`BTI c`) just before a padless `x` and falls
+through. A destination inside a placed input section other than the
+target is not a veneer's.
+
+- **R9.** In an output marked BTI (`GNU_PROPERTY_AARCH64_FEATURE_1_AND`
+  bit 0, AAELF64 "Program Property"), every veneer hop that ends in `BR
+  x16`/`BR x17` lands on a landing pad: `BTI c`, `BTI j`, `BTI jc`,
+  `PACIASP` or `PACIBSP` (Arm ARM "BTI"; a plain `BTI` is no pad for an
+  indirect branch). A direct `B` needs none. The finding is at the
+  hop's start; the record itself is still judged by §5.2.
+
+Observed: ld.lld 19 (the distribution's default `ld.lld`, not the
+corpus's lld 22) ends its veneer to a padless `x` in a BTI output in
+`LDR x16; BR x16` straight to `x`: R9 (it faults under BTI
+enforcement). lld 22, GNU ld and mold do not.
+
 Test: `a64::tests::s5_4_veneers_are_followed`,
-`tests/mutation.rs s9_2d_retargeted_veneers_are_found`.
+`tests/mutation.rs s9_2d_retargeted_veneers_are_found`,
+`s9_2n_a_veneer_to_no_landing_pad_is_found` (the `bti` case: `padded`'s
+`BTI c` made `NOP`, in the output and the input, is exactly R9 for GNU
+ld and lld; mold writes no property note on AArch64, so nothing is
+guarded).
 
 ### 5.5 GOT slots (R4)
 
@@ -1172,7 +1207,13 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   within one `PT_LOAD`'s memory. If it has bytes, they lie within that
   segment's file image, at `p_offset + (sh_addr − p_vaddr)`.
 - **S5.** A section with `SHF_WRITE` is in a `PF_W` segment, and one with
-  `SHF_EXECINSTR` is in a `PF_X` segment.
+  `SHF_EXECINSTR` is in a `PF_X` segment. A `PT_LOAD` that holds an
+  allocated section is `PF_R`, unless (AArch64) every section in it is
+  `SHF_AARCH64_PURECODE` (lld 22's execute-only `.iplt`): a text segment
+  without `PF_R` is execute-only where the hardware allows it, and its
+  literal pools fault. In mortar's output (by map format) a `PT_LOAD` is
+  `PF_W` only if it holds a writable section and `PF_X` only if it holds
+  an executable one (L-6 made a rule for mortar; WP-028d).
 - **S6.** No two sections overlap. In memory this covers allocated
   sections other than `.tbss`. In the file it covers sections with bytes,
   the file header, the program header table and the section header table.
@@ -1181,7 +1222,12 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   (`entry-not-found`) and writes 0 (`spec/layout.md` L-103, a binding
   ruling), and the verifier, which does not see the link's diagnostics,
   accepts the 0 whatever the reason (WP-028b). S7 judges `ET_EXEC` only:
-  a shared object or `-r` output has no entry rule here (L-104).
+  a shared object or `-r` output has no entry rule here (L-104). In
+  mortar's output with a `.symtab` that has a function, a nonzero
+  `e_entry` is the value of a global symbol (L-103: the entry symbol's;
+  WP-028d). The references fall back to the start of `.text` when there
+  is no entry symbol, so the clause is mortar's only; an `-e` given as an
+  address with no global there would be its one false finding.
 - **S8.** Every `.symtab` symbol defined in an allocated section, with
   `st_size > 0` and not `STT_SECTION`, lies within its section:
   `[st_value, st_value + st_size] ⊆ [sh_addr, sh_addr + sh_size]`. For a
@@ -1191,10 +1237,27 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   a `PT_LOAD`'s file image, its `p_align` is a power of two, and its
   `p_vaddr` is a multiple of `p_align` (§4.7). Every
   `SHF_TLS` section lies inside it, and TLS sections require a `PT_TLS`.
+  It is exactly the TLS sections (gABI "Thread-Local Storage"; WP-028d):
+  `p_vaddr` is the first one's address, `p_filesz` reaches the end of the
+  last one with bytes, `p_align` is their largest `sh_addralign`, and
+  `p_memsz` is at least their span and at most the span rounded up to
+  `p_align` (lld rounds it, since variant 2 puts the thread pointer after
+  the block). A wrong `p_memsz` moves every x86-64 TP offset; a wrong
+  `p_align` moves every AArch64 one (§4.7's `tcb`).
 - **S10.** There is at most one `PT_GNU_STACK`.
 - **S11.** Every `PT_NOTE` lies in the file and is a sequence of whole
   notes (gABI "Note Section"), with padding to 4, or to 8 when `p_align`
-  is 8.
+  is 8. The padding after a descriptor is there "to ensure 4-byte
+  alignment for the next note entry", so the last note of the segment
+  may end at its descriptor: GNU ld, lld and mold all write a 6-byte
+  `--build-id=0x…` so (`p_filesz` 0x16), and the verifier accepts it
+  (WP-028d; before, it was an S11 finding). A `PT_NOTE` is its note
+  sections: it starts at the first and ends at the end of the last,
+  `p_memsz` = `p_filesz`, and `p_align` is their largest `sh_addralign`
+  (at least 4): glibc ignores a property note under a `p_align` other
+  than 8. `PT_GNU_PROPERTY` is exactly `.note.gnu.property` (address,
+  offset, size, `p_memsz` = `p_filesz`, its alignment): the loader finds
+  the properties through it (Linux "Program Property").
 - **S12 (content).** Take every input section placed whole that is
   allocated, has a size, and is not mergeable, `.eh_frame`, `.tbss` or
   `.note.gnu.property`. Its output bytes must equal its input bytes
@@ -1210,7 +1273,9 @@ S18 is S17 here; its T1 is S18):
 - **S13.** At most one `PT_PHDR` and one `PT_INTERP`, each before every
   `PT_LOAD`; `PT_PHDR` lies in a `PT_LOAD`'s file image, and so does the
   program header table (L-2, L-3: glibc's static start-up finds
-  `PT_TLS` through `AT_PHDR`).
+  `PT_TLS` through `AT_PHDR`). `PT_PHDR` is the table: `p_offset` =
+  `e_phoff`, `p_filesz` at least `e_phnum × e_phentsize` (lld leaves room
+  for headers it does not write) and `p_memsz` = `p_filesz` (WP-028d).
 - **S14.** An allocated `SHT_NOBITS` section with a size, `.tbss` aside,
   lies at or past `p_vaddr + p_filesz` of its `PT_LOAD` (L-4).
 - **S15.** Every section with `sh_addralign > 1` has `sh_addr ≡ 0 (mod
@@ -1236,6 +1301,18 @@ S18 is S17 here; its T1 is S18):
   instructions (X-50): any NOP sequence for a reference linker, all 0x90
   for mortar. lld and mold pad with `int3` (W8, A16). (This S19 is the
   verifier's own id, not layout.md §20.3's S19 below.)
+
+- **S20 (RELRO extent, WP-028d).** A section that starts inside a
+  `PT_GNU_RELRO` ends inside it (`.got.plt` aside, S16), and `.got`,
+  `.init_array`, `.fini_array`, `.preinit_array`, `.dynamic` and
+  `.data.rel.ro*` lie inside it when there is one. Its end is the end of
+  a section, a multiple of 4 KiB (GNU ld pads it to the page), or inside
+  the reserved head of `.got.plt` (three words, S16). A RELRO cut short
+  leaves the end of `.got` writable; one run long makes writable data
+  read-only. (S16 judges the bytes below its start.)
+- **S21 (WP-028d).** `PT_GNU_EH_FRAME` is exactly `.eh_frame_hdr`
+  (address, offset, size, `p_memsz` = `p_filesz`): the unwinder finds the
+  search table through it (LSB "Exception Frames").
 
 Not taken from layout.md §20.3: its S19 (`ET_DYN` alignment) has no
 output to apply to while S1 accepts `ET_EXEC` only, and is stage 3; its
@@ -1584,13 +1661,29 @@ mismatch is a B1 finding at the descriptor's address. Other lengths
 (`0xHEX`, `uuid`) are not checked, and the coverage says so. Other
 linkers' ids are not checked (image.md §8.1: no tool recomputes them).
 
+**The style from the map (WP-028d).** A `--build-id=0xHEX` of 8, 20 or
+32 bytes is the user's, not a hash, and judging it as one is a false B1.
+The map says which it is: the synthetic chunk of the note carries the
+style as its target, `chunk synthetic .note.gnu.build-id <addr> <size>
+<style> 0`, where `<style>` is `default` (`L128`, 20 bytes), `fast`
+(`L128`, 8), `sha1` (20), `sha256` (32) or `given` (`0xHEX`, `uuid`).
+With a style, only that tree and length are judged (a length other than
+the style's is B1), `given` is not judged, and an unknown style is not
+judged; the coverage says which. Without one (today's mortar maps,
+`chunk synthetic .note.gnu.build-id 4001b0 18`) the lengths are judged as
+above. The writer that must carry it is `crates/mortar_image/src/link.rs`'s
+synthetic chunk loop, from `LinkOptions::build_id`: `Some(TreeStyle::…)`
+gives the tree's name and `None` (a given id) gives `given`. This is a
+request to the image package; the verifier reads both forms now.
+
 SHA-1 and SHA-256 are written from FIPS 180-4 and `L128` from I-114's
 text, in `src/buildid.rs`; none is shared with `mortar_digest`. The
 definition is the one of this mortar version (I-75): a later tag is a
 new definition, and B1 must change with it.
 
 Tests: `src/buildid.rs` (FIPS 180-4's vectors, image.md §8.4's `L128`
-and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`.
+and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`,
+`s9_2l_build_id_style_from_the_map`.
 
 ## 7. The report
 
@@ -1598,7 +1691,7 @@ and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`.
 
 A finding has:
 
-- the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R8`, `T1`,
+- the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M5`, `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6) or `B1` (§6.7);
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
@@ -1949,7 +2042,9 @@ case of `tests/x64.rs`):
   `PT_NOTE` with the 8-aligned `.note.gnu.property`, with `p_align` 8: a
   reader that pads by 8 misreads every note after the first (S11, "only
   with padding to 4"). Run-wide on x86-64 whenever there is a property
-  note.
+  note and a 4-aligned note other than the last (WP-028d: in `w6`,
+  `-nostdlib`, the build id is the last note and ends at its descriptor,
+  which S11 accepts).
 - **A14 (lld).** An x86-64 large common (`SHN_X86_64_LCOMMON`) becomes
   an absolute symbol whose value is its alignment, and nothing is
   allocated (W9): every store to it writes wherever that address is (Y3,

@@ -8,7 +8,7 @@
 //! table); under mortar's map only mortar's forms.
 
 use mortar_elf::SymbolIndex;
-use mortar_elf::consts::{SHF_EXECINSTR, SHN_ABS, SHN_UNDEF};
+use mortar_elf::consts::{ET_EXEC, PT_DYNAMIC, PT_INTERP, SHF_EXECINSTR, SHN_ABS, SHN_UNDEF};
 
 use super::{
     Engine, Pending, Rec, Target, TlsBlock, Verdict, Want, find_at, judge, verdict_finding,
@@ -91,6 +91,26 @@ impl Engine<'_, '_> {
                 SeqX::Bad(..) => self.not_checked(Reason::TlsSequence, 1),
                 SeqX::Unknown(r) => self.not_checked(r, 1),
             };
+        }
+        // X-48 (mortar): a static output makes no TLS runtime call; a
+        // branch or GOT load against `__tls_get_addr` that no GD/LD
+        // sequence consumed survives as a call (spec/x64.md X-48).
+        if symbol == TLS_GET_ADDR
+            && alloc
+            && exec
+            && self.format == Format::Mortar
+            && self.image.header.e_type == ET_EXEC
+            && !self.image.phdrs.iter().any(|p| matches!(p.p_type, PT_DYNAMIC | PT_INTERP))
+            && matches!(ty, x::PLT32 | x::PC32 | x::GOTPCREL | x::GOTPCRELX | x::REX_GOTPCRELX)
+        {
+            let f = Self::finding(
+                Rule::Insn,
+                rec,
+                &site,
+                &symbol,
+                "a call to __tls_get_addr survives in a static output (spec/x64.md X-48)",
+            );
+            return self.fail(f);
         }
         match rec.def.op {
             Op::Slot(Slot::Gd | Slot::Ld, _) => {

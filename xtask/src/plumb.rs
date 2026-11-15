@@ -3,6 +3,10 @@
 //!
 //!   cargo xtask plumb <output> --map <file> --map-format gnu|lld|mold|mortar
 //!                     [--inputs-from <response file>|map]
+//!                     [--mutate [--per-class N] [--seed S] [--threads T]]
+//!
+//! With `--mutate`, the link is not judged but mutated (§9.5): the table
+//! of mutants applied, caught and missed per class, then every missed one.
 //!
 //! The inputs are the files the map names, read from the paths it gives
 //! (relative ones from the current directory). With a response file, only
@@ -15,7 +19,8 @@ use std::path::{Path, PathBuf};
 use mortar_plumb::{Format, Input};
 
 pub const USAGE: &str = "usage: cargo xtask plumb <output> --map <file> --map-format gnu|lld|mold|mortar \
-                         [--inputs-from <response file>|map]\n";
+                         [--inputs-from <response file>|map] \
+                         [--mutate [--per-class N] [--seed S] [--threads T]]\n";
 
 /// The command line of `xtask plumb`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +30,8 @@ pub struct Args {
     pub format: Format,
     /// `None`: the map itself.
     pub inputs_from: Option<PathBuf>,
+    /// `--mutate`: the mutation run's configuration.
+    pub mutate: Option<mortar_plumb::mutate::Config>,
 }
 
 impl Args {
@@ -34,6 +41,8 @@ impl Args {
         let mut map = None;
         let mut format = None;
         let mut inputs_from = None;
+        let mut mutate: Option<mortar_plumb::mutate::Config> = None;
+        let mut cfg = mortar_plumb::mutate::Config::default();
         let mut it = args.iter();
         while let Some(a) = it.next() {
             let mut value =
@@ -50,6 +59,16 @@ impl Args {
                     let v = value("--inputs-from")?;
                     inputs_from = (v != "map").then(|| PathBuf::from(v));
                 }
+                "--mutate" => mutate = Some(cfg),
+                o @ ("--per-class" | "--seed" | "--threads") => {
+                    let v = value(o)?;
+                    let n: u64 = v.parse().map_err(|_| format!("{o}: not a number '{v}'"))?;
+                    match o {
+                        "--per-class" => cfg.per_class = n as usize,
+                        "--seed" => cfg.seed = n,
+                        _ => cfg.threads = n as usize,
+                    }
+                }
                 s if s.starts_with('-') => return Err(format!("unknown option '{s}'")),
                 s if output.is_none() => output = Some(PathBuf::from(s)),
                 s => return Err(format!("a second output '{s}'")),
@@ -60,6 +79,7 @@ impl Args {
             map: map.ok_or("no --map")?,
             format: format.ok_or("no --map-format")?,
             inputs_from,
+            mutate: mutate.map(|_| cfg),
         })
     }
 }
@@ -181,6 +201,19 @@ pub fn run(args: &Args) -> Result<bool, String> {
             )
         }
     };
+    if let Some(cfg) = &args.mutate {
+        let (output, _, files) =
+            verify_link(&args.output, &args.map, args.format, Path::new(""), allowed.as_ref())?;
+        let map_bytes = read(&args.map)?;
+        let parsed = mortar_plumb::map::parse(args.format, &String::from_utf8_lossy(&map_bytes))
+            .map_err(|e| format!("{}:{}: {}", args.map.display(), e.line, e.message))?;
+        let inputs: Vec<Input<'_>> =
+            files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+        let outcome = mortar_plumb::mutate::run(&output, &inputs, &parsed, cfg)?;
+        println!("{}: baseline findings {}", args.output.display(), outcome.baseline);
+        print!("{}", outcome.render());
+        return Ok(true);
+    }
     let (_, report, _) =
         verify_link(&args.output, &args.map, args.format, Path::new(""), allowed.as_ref())?;
     print!("{}", report.render(&args.output.display().to_string()));
@@ -228,6 +261,11 @@ mod tests {
         .unwrap();
         assert_eq!(a.inputs_from, Some(PathBuf::from("r.rsp")));
         assert!(Args::parse(&s(&["a.out", "--map", "m"])).is_err());
+        let a = Args::parse(&s(&[
+            "a.out", "--map", "m", "--map-format", "mortar", "--mutate", "--seed", "7",
+        ]))
+        .unwrap();
+        assert_eq!(a.mutate.map(|c| c.seed), Some(7));
         assert!(Args::parse(&s(&["a.out", "--map", "m", "--map-format", "x"])).is_err());
         assert!(Args::parse(&s(&["a.out", "b.out", "--map", "m", "--map-format", "gnu"])).is_err());
     }
