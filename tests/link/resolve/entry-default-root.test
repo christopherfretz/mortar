@@ -1,0 +1,25 @@
+# Without -e, the default entry _start is a root of extraction
+# (resolve.md §4.2, review finding 14): nothing on the line references
+# _start, yet all three references extract the archive member that
+# defines it (mold makes it a local symbol). R9 of the landed record.
+# The program is not run: its _start never exits.
+#@ spec: resolve.md §4.2
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 m0.c -o m0.o
+cc -O1 st.c -o st.o
+ar rcs libst.a st.o
+link ld -static m0.o -L. -lst -o prog
+check nm prog
+  has: _start$
+  has: marker$
+check readelf -hW prog
+  not: Entry point address: *0x0$
+
+#--- m0.c
+int main(void) { return 0; }
+#--- st.c
+int main(void);
+int marker = 5;
+
+void _start(void) { main(); for (;;) { } }

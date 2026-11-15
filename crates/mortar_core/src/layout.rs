@@ -77,19 +77,28 @@ pub struct CopyAlloc {
 }
 
 /// The content order of the synthetic tables whose size does not depend
-/// on addresses (§4.3). Each list's position is the slot.
+/// on addresses (§4.3). Each list's position is the slot: an index counts
+/// within its kind, and one key can be in several lists. Where the kinds
+/// lie relative to each other in the GOT is `spec/synth.md`'s rule, not
+/// stored.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Slots {
-    /// GOT slots (one per `GOT` demand).
+    /// GOT address slots (one per `GOT` demand).
     pub got: Box<[SymKey]>,
-    /// PLT entries (one per `PLT` or `CANONICAL_PLT` demand).
+    /// PLT entries (one per `PLT` or `CANON_PLT` demand).
     pub plt: Box<[SymKey]>,
-    /// TLS descriptors.
+    /// IPLT entries (one per `IPLT` demand); a key has a PLT entry or an
+    /// IPLT entry, never both.
+    pub iplt: Box<[SymKey]>,
+    /// TLS descriptors (one per `TLS_DESC` demand).
     pub tls_desc: Box<[SymKey]>,
-    /// TLS module/offset pairs.
+    /// TLS module/offset pairs (one per `TLS_GD` demand).
     pub tls_gd: Box<[SymKey]>,
-    /// Thread-pointer offset slots.
+    /// Thread-pointer offset slots (one per `GOT_TPREL` demand).
     pub tls_ie: Box<[SymKey]>,
+    /// The output's local-dynamic module slot, index 0 of its kind: present
+    /// exactly when `TLS_LD` is demanded.
+    pub tls_ld: bool,
     /// `.dynsym`, after the null entry (one per `EXPORT` demand).
     pub dynsym: Box<[SymbolId]>,
     /// The order of the sections whose dynamic relocations are emitted.
@@ -107,6 +116,40 @@ pub struct Slots {
     pub symtab_locals: Column<FileId, Span>,
     /// The size each synthetic chunk sized here has, sorted by chunk.
     pub sizes: Box<[(ChunkId, u64)]>,
+}
+
+/// A kind of slot held per key (§4.3): one list of [`Slots`] each. The
+/// output's local-dynamic module slot is [`Slots::tls_ld`], not a list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SlotKind {
+    Got,
+    Plt,
+    Iplt,
+    TlsDesc,
+    TlsGd,
+    /// The thread-pointer offset slot (`GOT_TPREL`), list `tls_ie`.
+    TlsIe,
+}
+
+impl SlotKind {
+    /// Every kind, in the order of the fields of [`Slots`].
+    pub const ALL: [Self; 6] =
+        [Self::Got, Self::Plt, Self::Iplt, Self::TlsDesc, Self::TlsGd, Self::TlsIe];
+}
+
+impl Slots {
+    /// The list of one kind of slot.
+    #[must_use]
+    pub fn list(&self, kind: SlotKind) -> &[SymKey] {
+        match kind {
+            SlotKind::Got => &self.got,
+            SlotKind::Plt => &self.plt,
+            SlotKind::Iplt => &self.iplt,
+            SlotKind::TlsDesc => &self.tls_desc,
+            SlotKind::TlsGd => &self.tls_gd,
+            SlotKind::TlsIe => &self.tls_ie,
+        }
+    }
 }
 
 /// An inverse of one slot list: key to slot.
@@ -336,13 +379,25 @@ pub enum ThunkTarget {
     Plt(SymKey),
 }
 
+/// A processor erratum the linker patches around (`spec/arch.md` §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum Erratum {
+    /// Arm Cortex-A53 erratum 843419 (`spec/a64.md` §11).
+    E843419,
+}
+
 /// What a patch is (§4.4 `patches`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatchKind {
     Thunk(ThunkTarget),
-    /// The AArch64 erratum 843419 patch of the instruction that redirects
-    /// to it.
-    Erratum843419,
+    /// An erratum patch, keyed by the site of the instruction it replaces
+    /// (M-7): the one site that may redirect to it.
+    Erratum {
+        erratum: Erratum,
+        section: SectionId,
+        offset: u64,
+    },
 }
 
 /// Code the linker adds because of addresses (§4.4 `patches`).

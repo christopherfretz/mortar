@@ -179,14 +179,42 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             return symbol_into(name, style, out).then_some(name);
         }
         Kind::UndefinedSymbol { name } => {
-            out.push_str("undefined symbol: ");
-            return symbol_into(name, style, out).then_some(name);
+            out.push_str("undefined reference to '");
+            let shown = symbol_into(name, style, out);
+            out.push('\'');
+            return shown.then_some(name);
+        }
+        Kind::RelocationIncompatible { r_type, name, reason } => {
+            out.push_str("relocation ");
+            escaped(r_type, out);
+            out.push_str(" cannot be used against symbol '");
+            let shown = symbol_into(name, style, out);
+            out.push_str("'; ");
+            out.push_str(reason.text());
+            return shown.then_some(name);
+        }
+        Kind::RelocationMisaligned { r_type, value, align } => {
+            out.push_str("improper alignment for relocation ");
+            escaped(r_type, out);
+            let _ = write!(out, ": {value} is not aligned to {align} bytes");
+        }
+        Kind::RelocationOutOfRange { r_type, value, min, max, name } => {
+            out.push_str("relocation ");
+            escaped(r_type, out);
+            let _ = write!(out, " out of range: {value} is not in [{min}, {max}]; references '");
+            let shown = symbol_into(name, style, out);
+            out.push('\'');
+            return shown.then_some(name);
         }
         Kind::Refused { class, name } => {
             out.push_str("unsupported ");
             out.push_str(class.noun());
             out.push_str(": ");
             escaped(name, out);
+        }
+        Kind::InternalError { what } => {
+            out.push_str("internal error in mortar: ");
+            escaped(what, out);
         }
     }
     None

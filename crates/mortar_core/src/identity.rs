@@ -2,7 +2,8 @@
 //! do not. A link state stores rows in identity terms; a later link
 //! translates them to its own ids. The on-disk form is `spec/incr.md`'s
 //! (M7); this module has the identity types and the two conversions, id to
-//! identity and identity to id, over one link's tables.
+//! identity and identity to id, over one link's tables, and the dependees of
+//! the dependency index (§7.2) in identity terms, [`Dependee`].
 //!
 //! Some parts of an identity are read from the input bytes, not from a
 //! table: a section's anchor (the symbol defined at its start) and the
@@ -12,11 +13,13 @@
 
 use crate::assignment::Assignment;
 use crate::column::Column;
+use crate::demands::DemandFlags;
 use crate::id::{
-    ChunkId, ComdatId, FileId, FragId, Id, LocalSym, OutSecId, SectionId, SymEntry, SymbolId,
+    ChunkId, ComdatId, FileId, FragId, Id, LocalSym, OutSecId, SectionId, SymEntry, SymKey,
+    SymKind, SymbolId,
 };
 use crate::inputs::{Comdat, ContentHash, Inputs, SymbolKey};
-use crate::layout::{ChunkKind, Placement};
+use crate::layout::{AllocKey, ChunkKind, CopyAlloc, Patch, Placement, SlotKind, Slots};
 use crate::resolution::Resolution;
 use mortar_elf::{SectionIndex, SymbolIndex};
 
@@ -457,4 +460,194 @@ pub fn frag_id(
 ) -> Option<FragId> {
     let at = lookup.binary_search_by(|row| row.0.cmp(identity)).ok()?;
     Some(lookup[at].1)
+}
+
+// ---- §7.2: the dependees of the dependency index ---------------------------
+
+/// The identity of a [`SymKey`](crate::id::SymKey): a global's key bytes or
+/// a local's file, name and ordinal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum KeyIdentity<'a> {
+    Global(SymbolIdentity<'a>),
+    Local(LocalIdentity<'a>),
+}
+
+/// The identity of a site: a section and an offset in it (a redirected
+/// branch, an erratum's key instruction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SiteIdentity<'a> {
+    pub section: SectionIdentity<'a>,
+    pub offset: u64,
+}
+
+/// The identity of a patch: its chunk and its offset there (two patches are
+/// never at one place, §4.4 rule 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PatchIdentity<'a> {
+    pub chunk: ChunkIdentity<'a>,
+    pub offset: u64,
+}
+
+/// The identity of a symbol-anchored allocation (§4.4 `sym_place`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AllocIdentity<'a> {
+    Common(SymbolIdentity<'a>),
+    /// A copy-relocation allocation: the shared object and the `st_value`.
+    Copy {
+        file: FileIdentity<'a>,
+        value: u64,
+    },
+}
+
+/// A thing whose address or content can change, in identity terms: a key
+/// of the dependency index (§7.2). The index maps each to the units whose
+/// bytes depend on it; its form on disk is `spec/incr.md`'s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Dependee<'a> {
+    Section(SectionIdentity<'a>),
+    Frag(FragIdentity<'a>),
+    /// A slot of a key.
+    Slot {
+        kind: SlotKind,
+        key: KeyIdentity<'a>,
+    },
+    /// The output's local-dynamic module slot.
+    ModuleSlot,
+    Alloc(AllocIdentity<'a>),
+    /// A global symbol's definition.
+    Definition(SymbolIdentity<'a>),
+    /// A patch: its redirected sites depend on it.
+    Patch(PatchIdentity<'a>),
+    /// A redirected site: its patch's chunk depends on it.
+    Redirect(SiteIdentity<'a>),
+    /// One flag of [`DemandFlags::CROSS_FILE`] of a key: the units of other
+    /// files whose bytes it changes depend on it (M-8).
+    Flag {
+        key: KeyIdentity<'a>,
+        flag: DemandFlags,
+    },
+}
+
+/// The [`Dependee::Flag`] rows of a key, one per flag of
+/// [`DemandFlags::CROSS_FILE`] among `flags`, in declaration order.
+pub fn flag_dependees(
+    key: KeyIdentity<'_>,
+    flags: DemandFlags,
+) -> impl Iterator<Item = Dependee<'_>> {
+    DemandFlags::NAMED
+        .iter()
+        .map(|row| row.1)
+        .filter(move |&f| DemandFlags::CROSS_FILE.contains(f) && flags.contains(f))
+        .map(move |flag| Dependee::Flag { key, flag })
+}
+
+impl<'a> Identities<'a> {
+    /// The identity of a key of this link.
+    #[must_use]
+    pub fn key(
+        &self,
+        symbols: &Column<SymbolId, SymbolKey<'a>>,
+        key: SymKey,
+    ) -> Option<KeyIdentity<'a>> {
+        match key.kind() {
+            SymKind::Global(id) => symbol_identity(symbols, id).map(KeyIdentity::Global),
+            SymKind::Local(sym) => self.local(sym).map(KeyIdentity::Local),
+        }
+    }
+
+    /// The key of this link an identity denotes.
+    #[must_use]
+    pub fn key_id(
+        &self,
+        symbols: &Column<SymbolId, SymbolKey<'_>>,
+        lookup: &Lookup<SymbolId>,
+        identity: &KeyIdentity<'a>,
+    ) -> Option<SymKey> {
+        match identity {
+            KeyIdentity::Global(g) => symbol_id(symbols, lookup, g).map(SymKey::global),
+            KeyIdentity::Local(l) => self.local_sym(l).map(SymKey::local),
+        }
+    }
+
+    /// The identity of a site of this link.
+    #[must_use]
+    pub fn site(
+        &self,
+        resolution: &Resolution,
+        section: SectionId,
+        offset: u64,
+    ) -> Option<SiteIdentity<'a>> {
+        Some(SiteIdentity { section: self.section(resolution, section)?, offset })
+    }
+
+    /// The site of this link an identity denotes.
+    #[must_use]
+    pub fn site_id(
+        &self,
+        resolution: &Resolution,
+        identity: &SiteIdentity<'a>,
+    ) -> Option<(SectionId, u64)> {
+        Some((self.section_id(resolution, &identity.section)?, identity.offset))
+    }
+
+    /// The identity of a symbol-anchored allocation of this link.
+    #[must_use]
+    pub fn alloc(
+        &self,
+        symbols: &Column<SymbolId, SymbolKey<'a>>,
+        slots: &Slots,
+        key: AllocKey,
+    ) -> Option<AllocIdentity<'a>> {
+        match key {
+            AllocKey::Common(id) => symbol_identity(symbols, id).map(AllocIdentity::Common),
+            AllocKey::Copy(at) => {
+                let row = slots.copies.get(at as usize)?;
+                Some(AllocIdentity::Copy { file: self.file(row.file)?, value: row.value })
+            }
+        }
+    }
+
+    /// The allocation of this link an identity denotes.
+    #[must_use]
+    pub fn alloc_key(
+        &self,
+        symbols: &Column<SymbolId, SymbolKey<'_>>,
+        lookup: &Lookup<SymbolId>,
+        slots: &Slots,
+        identity: &AllocIdentity<'a>,
+    ) -> Option<AllocKey> {
+        match identity {
+            AllocIdentity::Common(g) => symbol_id(symbols, lookup, g).map(AllocKey::Common),
+            AllocIdentity::Copy { file, value } => {
+                let want = CopyAlloc { file: self.file_id(file)?, value: *value };
+                let at = slots.copies.binary_search(&want).ok()?;
+                Some(AllocKey::Copy(at as u32))
+            }
+        }
+    }
+}
+
+/// The identity of a patch, given [`chunk_ordinals`].
+#[must_use]
+pub fn patch_identity<'n>(
+    ordinals: &Ordinals<(ChunkTag, Option<&'n [u8]>)>,
+    patch: &Patch,
+) -> Option<PatchIdentity<'n>> {
+    Some(PatchIdentity { chunk: chunk_identity(ordinals, patch.chunk)?, offset: patch.offset })
+}
+
+/// The patch of this link an identity denotes: its position in
+/// `Placement::patches`, which is sorted by `(chunk, offset)`.
+#[must_use]
+pub fn patch_at(
+    ordinals: &Ordinals<(ChunkTag, Option<&[u8]>)>,
+    placement: &Placement,
+    identity: &PatchIdentity<'_>,
+) -> Option<u32> {
+    let chunk = chunk_id(ordinals, &identity.chunk)?;
+    let at = placement
+        .patches
+        .binary_search_by(|p| (p.chunk, p.offset).cmp(&(chunk, identity.offset)))
+        .ok()?;
+    Some(at as u32)
 }

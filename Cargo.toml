@@ -21,7 +21,10 @@ mortar_arch     = { path = "crates/mortar_arch" }
 mortar_core     = { path = "crates/mortar_core" }
 mortar_diag     = { path = "crates/mortar_diag" }
 mortar_elf      = { path = "crates/mortar_elf" }
+mortar_input    = { path = "crates/mortar_input" }
+mortar_layout   = { path = "crates/mortar_layout" }
 mortar_plumb    = { path = "crates/mortar_plumb" }
+mortar_resolve  = { path = "crates/mortar_resolve" }
 mortar_script   = { path = "crates/mortar_script" }
 mortar_testutil = { path = "crates/mortar_testutil" }
 xtask           = { path = "xtask" }
