@@ -9,8 +9,18 @@ use std::path::Path;
 pub const MAGIC: &str = "# mortar-bench 1";
 
 /// The fields of a `workload` line after its first.
-pub const WORKLOAD_FIELDS: [&str; 8] =
-    ["name", "class", "objects", "archives", "shared", "others", "input_bytes", "input_hash"];
+pub const WORKLOAD_FIELDS: [&str; 10] = [
+    "name",
+    "class",
+    "objects",
+    "archives",
+    "shared",
+    "others",
+    "input_bytes",
+    "symbols",
+    "output_bytes",
+    "input_hash",
+];
 
 /// The fields of a `link` line after its first.
 pub const LINK_FIELDS: [&str; 15] = [
@@ -38,6 +48,9 @@ pub enum Status {
     Ok,
     /// mortar said that it does not link this, and left no output.
     Refused,
+    /// A run exceeded a limit of the harness (`spec/harness.md` "Limits"):
+    /// not an answer of the linker's, and not a time.
+    Killed,
     /// Anything else. Not a time.
     Failed,
 }
@@ -47,12 +60,13 @@ impl Status {
         match self {
             Self::Ok => "ok",
             Self::Refused => "refused",
+            Self::Killed => "killed",
             Self::Failed => "failed",
         }
     }
 
     fn parse(text: &str) -> Option<Self> {
-        [Self::Ok, Self::Refused, Self::Failed].into_iter().find(|s| s.text() == text)
+        [Self::Ok, Self::Refused, Self::Killed, Self::Failed].into_iter().find(|s| s.text() == text)
     }
 }
 
@@ -137,6 +151,10 @@ pub struct WorkloadInfo {
     pub shared: u64,
     pub others: u64,
     pub input_bytes: u64,
+    /// The `.symtab` entries and the size of GNU ld's output of the
+    /// census link.
+    pub symbols: u64,
+    pub output_bytes: u64,
     pub input_hash: String,
 }
 
@@ -202,7 +220,7 @@ impl Results {
         for w in &self.workloads {
             let _ = writeln!(
                 text,
-                "workload\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "workload\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 escape(&w.name),
                 escape(&w.class),
                 w.objects,
@@ -210,6 +228,8 @@ impl Results {
                 w.shared,
                 w.others,
                 w.input_bytes,
+                w.symbols,
+                w.output_bytes,
                 escape(&w.input_hash)
             );
         }
@@ -251,8 +271,9 @@ impl Results {
         for (at, line) in lines {
             let fail = |what: String| format!("line {at}: {what}");
             if let Some(header) = line.strip_prefix("# ") {
-                let (key, value) =
-                    header.split_once('\t').ok_or_else(|| fail("a header line without a value".into()))?;
+                let (key, value) = header
+                    .split_once('\t')
+                    .ok_or_else(|| fail("a header line without a value".into()))?;
                 let expected = match key {
                     "workload-fields" => Some(WORKLOAD_FIELDS.join("\t")),
                     "link-fields" => Some(LINK_FIELDS.join("\t")),
@@ -303,7 +324,11 @@ impl Results {
 
 fn parse_number(field: &str, name: &str) -> Result<u64, String> {
     let digits = !field.is_empty() && field.bytes().all(|b| b.is_ascii_digit());
-    field.parse().ok().filter(|_| digits).ok_or_else(|| format!("`{name}` is not a number: `{field}`"))
+    field
+        .parse()
+        .ok()
+        .filter(|_| digits)
+        .ok_or_else(|| format!("`{name}` is not a number: `{field}`"))
 }
 
 fn parse_optional(field: &str, name: &str) -> Result<Option<u64>, String> {
@@ -311,7 +336,19 @@ fn parse_optional(field: &str, name: &str) -> Result<Option<u64>, String> {
 }
 
 fn parse_workload(fields: &[&str]) -> Result<WorkloadInfo, String> {
-    let &[name, class, objects, archives, shared, others, input_bytes, input_hash] = fields else {
+    let &[
+        name,
+        class,
+        objects,
+        archives,
+        shared,
+        others,
+        input_bytes,
+        symbols,
+        output_bytes,
+        input_hash,
+    ] = fields
+    else {
         return Err(format!("a workload line has {} fields", WORKLOAD_FIELDS.len()));
     };
     Ok(WorkloadInfo {
@@ -322,21 +359,42 @@ fn parse_workload(fields: &[&str]) -> Result<WorkloadInfo, String> {
         shared: parse_number(shared, "shared")?,
         others: parse_number(others, "others")?,
         input_bytes: parse_number(input_bytes, "input_bytes")?,
+        symbols: parse_number(symbols, "symbols")?,
+        output_bytes: parse_number(output_bytes, "output_bytes")?,
         input_hash: unescape(input_hash)?,
     })
 }
 
 fn parse_link(fields: &[&str]) -> Result<Link, String> {
-    let &[status, workload, linker, threads, runs, min, wall, max, cpu, rss_min, rss, rss_max, output, spread, detail] =
-        fields
+    let &[
+        status,
+        workload,
+        linker,
+        threads,
+        runs,
+        min,
+        wall,
+        max,
+        cpu,
+        rss_min,
+        rss,
+        rss_max,
+        output,
+        spread,
+        detail,
+    ] = fields
     else {
         return Err(format!("a link line has {} fields", LINK_FIELDS.len()));
     };
     let status = Status::parse(status).ok_or_else(|| format!("unknown status `{status}`"))?;
     let threads = Threads::parse(threads).ok_or_else(|| format!("unknown threads `{threads}`"))?;
-    let runs = u32::try_from(parse_number(runs, "runs")?).map_err(|_| "too many runs".to_owned())?;
-    let walls =
-        [parse_optional(min, "wall_us_min")?, parse_optional(wall, "wall_us")?, parse_optional(max, "wall_us_max")?];
+    let runs =
+        u32::try_from(parse_number(runs, "runs")?).map_err(|_| "too many runs".to_owned())?;
+    let walls = [
+        parse_optional(min, "wall_us_min")?,
+        parse_optional(wall, "wall_us")?,
+        parse_optional(max, "wall_us_max")?,
+    ];
     let rss = [
         parse_optional(rss_min, "rss_kib_min")?,
         parse_optional(rss, "rss_kib")?,
@@ -359,7 +417,10 @@ fn parse_link(fields: &[&str]) -> Result<Link, String> {
         _ => return Err("the figures are incomplete".into()),
     };
     if (status == Status::Ok) != figures.is_some() || (status == Status::Ok) != (runs > 0) {
-        return Err(format!("a link that is `{}` has figures exactly when it is `ok`", status.text()));
+        return Err(format!(
+            "a link that is `{}` has figures exactly when it is `ok`",
+            status.text()
+        ));
     }
     Ok(Link {
         status,
@@ -378,7 +439,11 @@ pub fn escape(text: &str) -> String {
     match text {
         "" => "-".to_owned(),
         "-" => "\\-".to_owned(),
-        _ => text.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n").replace('\r', "\\r"),
+        _ => text
+            .replace('\\', "\\\\")
+            .replace('\t', "\\t")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r"),
     }
 }
 
@@ -401,7 +466,12 @@ pub fn unescape(field: &str) -> Result<String, String> {
             Some('t') => '\t',
             Some('n') => '\n',
             Some('r') => '\r',
-            other => return Err(format!("bad escape `\\{}`", other.map(String::from).unwrap_or_default())),
+            other => {
+                return Err(format!(
+                    "bad escape `\\{}`",
+                    other.map(String::from).unwrap_or_default()
+                ));
+            }
         });
     }
     Ok(text)
@@ -557,6 +627,8 @@ pub(crate) mod tests {
             shared: 3,
             others: 1,
             input_bytes: 2_345_678,
+            symbols: 1_234,
+            output_bytes: 70_000,
             input_hash: "fnv1a64:0123456789abcdef".to_owned(),
         }
     }
@@ -583,7 +655,12 @@ pub(crate) mod tests {
             ok("hello-c", "bfd", Threads::One, 9_000, 5_000),
             ok("hello-c", "lld", Threads::Default, 6_000, 9_000),
             ok("hello-c", "lld", Threads::One, 5_000, 8_000),
-            not_ok("hello-c", "mortar", Status::Refused, "mortar: error: linking is not implemented yet"),
+            not_ok(
+                "hello-c",
+                "mortar",
+                Status::Refused,
+                "mortar: error: linking is not implemented yet",
+            ),
             ok("cxx-medium-g", "bfd", Threads::One, 4_000_000, 900_000),
             not_ok("cxx-medium-g", "lld", Status::Failed, "lld: signal 11"),
         ];
@@ -599,7 +676,7 @@ pub(crate) mod tests {
         assert!(text.starts_with("# mortar-bench 1\n# date\t2026-11-14T20:00:00Z\n"), "{text}");
         assert!(text.contains("# note\ta\\ttab, a \\\\ and\\na line\n# empty\t-\n# dash\t\\-\n"));
         assert!(text.contains(
-            "workload\thello-c\tsmall\t4\t2\t3\t1\t2345678\tfnv1a64:0123456789abcdef\n"
+            "workload\thello-c\tsmall\t4\t2\t3\t1\t2345678\t1234\t70000\tfnv1a64:0123456789abcdef\n"
         ));
         assert!(text.contains(
             "link\tok\thello-c\tbfd\t1\t5\t8820\t9000\t9900\t18000\t4900\t5000\t5100\t70432\t20\t-\n"
@@ -634,8 +711,10 @@ pub(crate) mod tests {
         let path = scratch.join("deep/results.tsv");
         sample().write(&path).unwrap();
         assert_eq!(Results::read(&path).unwrap(), sample());
-        let names: Vec<_> =
-            std::fs::read_dir(scratch.join("deep")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let names: Vec<_> = std::fs::read_dir(scratch.join("deep"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(names, ["results.tsv"]);
         let missing = Results::read(&scratch.join("absent.tsv")).unwrap_err();
         assert!(missing.contains("absent.tsv"), "{missing}");
@@ -653,18 +732,35 @@ pub(crate) mod tests {
         assert!(Results::parse("# hod-bench 1\n").is_err());
         assert!(broken("# runs\t5", "# runs").contains("line 4: a header line without a value"));
         assert!(broken("# runs\t5", "# date\t5").contains("`date` appears twice"));
-        assert!(broken("\tstatus\tworkload", "\tworkload\tstatus").contains("`link-fields` are not this reader's"));
-        assert!(broken("link\tok\thello-c\tbfd", "lnk\tok\thello-c\tbfd").contains("unknown record `lnk`"));
-        assert!(broken("link\tok\thello-c\tbfd", "link\tfine\thello-c\tbfd").contains("unknown status `fine`"));
+        assert!(
+            broken("\tstatus\tworkload", "\tworkload\tstatus")
+                .contains("`link-fields` are not this reader's")
+        );
+        assert!(
+            broken("link\tok\thello-c\tbfd", "lnk\tok\thello-c\tbfd")
+                .contains("unknown record `lnk`")
+        );
+        assert!(
+            broken("link\tok\thello-c\tbfd", "link\tfine\thello-c\tbfd")
+                .contains("unknown status `fine`")
+        );
         assert!(broken("\tbfd\t1\t5\t", "\tbfd\t2\t5\t").contains("unknown threads `2`"));
         assert!(broken("\t8820\t9000", "\t8820\t9e3").contains("`wall_us` is not a number"));
         assert!(broken("\t8820\t9000", "\t8820\t-").contains("figures are incomplete"));
-        assert!(broken("\t4900\t5000\t5100", "\t4900\t-\t5100").contains("memory figures are incomplete"));
+        assert!(
+            broken("\t4900\t5000\t5100", "\t4900\t-\t5100")
+                .contains("memory figures are incomplete")
+        );
         assert!(broken("\t70432\t20\t-\n", "\t70432\t20\n").contains("a link line has 15 fields"));
-        assert!(broken("\t2345678\t", "\t").contains("a workload line has 8 fields"));
+        assert!(broken("\t2345678\t", "\t").contains("a workload line has 10 fields"));
         // A failed or refused link has no figures, and an `ok` one has them.
-        assert!(broken("link\tok\thello-c\tbfd", "link\tfailed\thello-c\tbfd").contains("exactly when"));
+        assert!(
+            broken("link\tok\thello-c\tbfd", "link\tfailed\thello-c\tbfd").contains("exactly when")
+        );
         assert!(broken("link\trefused\thello-c", "link\tok\thello-c").contains("exactly when"));
+        assert!(
+            broken("link\tok\thello-c\tbfd", "link\tkilled\thello-c\tbfd").contains("exactly when")
+        );
         assert!(broken("mortar: error", "mortar\\x error").contains("bad escape `\\x`"));
         let late = format!("{good}# late\tkey\n");
         assert!(Results::parse(&late).unwrap_err().contains("header key `late` after a record"));
@@ -678,7 +774,10 @@ pub(crate) mod tests {
         assert_eq!(permille_above(900, 1000), 0);
         assert_eq!(permille_above(3, 2), 500);
         assert_eq!(permille_above(5, 0), 5000);
-        assert_eq!(ok("w", "bfd", Threads::One, 10_000, 5_000).figures.unwrap().spread_permille(), 20);
+        assert_eq!(
+            ok("w", "bfd", Threads::One, 10_000, 5_000).figures.unwrap().spread_permille(),
+            20
+        );
     }
 
     // "Census": the hash of a workload's inputs is FNV-1a over fields.

@@ -61,15 +61,20 @@ pub fn median(values: &[u64]) -> Option<u64> {
 /// Is `now` above `base` by more than `permille` thousandths of `base`
 /// scaled by `scale.0 / scale.1`, and by more than `floor`?
 pub fn exceeds(now: u64, base: u64, permille: u64, floor: u64, scale: (u64, u64)) -> bool {
-    let allowed = u128::from(base) * u128::from(1000 + permille) * u128::from(scale.0);
-    let measured = u128::from(now) * 1000 * u128::from(scale.1.max(1));
+    // Exact in 128 bits; a product beyond them saturates, which only the
+    // extremes reach.
+    let allowed = u128::from(base)
+        .saturating_mul(u128::from(1000 + permille))
+        .saturating_mul(u128::from(scale.0));
+    let measured = (u128::from(now) * 1000).saturating_mul(u128::from(scale.1.max(1)));
     measured > allowed && now.saturating_sub(base) > floor
 }
 
 /// Did the calibration link, measured before and after the run, differ by
 /// more than `bound` thousandths of the faster of the two?
 pub fn calibration_differs(before_us: u64, after_us: u64, bound: u64) -> bool {
-    permille_above(before_us.max(after_us), before_us.min(after_us)) > bound
+    let (slow, fast) = (before_us.max(after_us), before_us.min(after_us));
+    u128::from(slow) * 1000 > u128::from(fast) * u128::from(1000 + bound)
 }
 
 /// What the gate says about one link of the judged linker.
@@ -79,7 +84,10 @@ pub enum Verdict {
     /// Faster or smaller than the baseline by more than the margins.
     Improved,
     /// Slower, larger, or both, by more than the margins. Fails the gate.
-    Regressed { time: bool, memory: bool },
+    Regressed {
+        time: bool,
+        memory: bool,
+    },
     /// Slower by more than the margin, on a measurement that cannot carry
     /// the claim. Neither a failure of the linker nor a pass.
     Noisy(String),
@@ -135,7 +143,8 @@ impl Common {
             (Some(now), Some(then)) if now == then => None,
             (_, then) => Some(format!("another machine ({})", then.unwrap_or("unknown"))),
         };
-        let same_link = run.get("calibration").is_some() && run.get("calibration") == base.get("calibration");
+        let same_link =
+            run.get("calibration").is_some() && run.get("calibration") == base.get("calibration");
         let times = |results: &Results| {
             let before = results.number("calibration_before_us")?;
             Some(before.min(results.number("calibration_after_us")?))
@@ -149,7 +158,10 @@ impl Common {
             match calibration {
                 None => Some("no common calibration link".to_owned()),
                 Some((now, then)) if permille_above(now, then) > thresholds.drift_permille => {
-                    Some(format!("the machine is {} slower than at the baseline", percent(permille_above(now, then))))
+                    Some(format!(
+                        "the machine is {} slower than at the baseline",
+                        percent(permille_above(now, then))
+                    ))
                 }
                 Some(_) => None,
             }
@@ -176,7 +188,13 @@ pub fn judge(
     if now.status == Status::Failed {
         return Verdict::NotJudged("the link failed in this run");
     }
-    let Some(base) = base.filter(|base| base.status != Status::Failed) else {
+    // Killed by a limit where the baseline linked is a lost link (below);
+    // anywhere else it is nothing to compare.
+    if now.status == Status::Killed && base.is_none_or(|base| base.status != Status::Ok) {
+        return Verdict::NotJudged("killed by a limit in this run");
+    }
+    let Some(base) = base.filter(|base| !matches!(base.status, Status::Failed | Status::Killed))
+    else {
         return Verdict::New("the baseline does not have this link");
     };
     if changed {
@@ -185,7 +203,7 @@ pub fn judge(
     let (now_figures, base_figures) = match (now.figures, base.figures) {
         (None, None) => return Verdict::NotJudged("refused, as in the baseline"),
         (Some(_), None) => return Verdict::New("mortar links this workload now"),
-        (None, Some(_)) | (Some(_), Some(_)) if common.advisory.is_some() => {
+        (None | Some(_), Some(_)) if common.advisory.is_some() => {
             return Verdict::Advisory(common.advisory.clone().unwrap_or_default());
         }
         (None, Some(_)) => return Verdict::Lost,
@@ -194,7 +212,9 @@ pub fn judge(
 
     let t = thresholds;
     let rss = now_figures.rss_kib.zip(base_figures.rss_kib).map(|(now, base)| (now[1], base[1]));
-    let memory = rss.is_some_and(|(now, base)| exceeds(now, base, t.memory_permille, t.memory_floor_kib, (1, 1)));
+    let memory = rss.is_some_and(|(now, base)| {
+        exceeds(now, base, t.memory_permille, t.memory_floor_kib, (1, 1))
+    });
     // A machine that got faster does not tighten the gate.
     let drift = common.calibration.map_or((1, 1), |(now, then)| (now.max(then), then));
     let (wall_now, wall_base) = (now_figures.wall_us, base_figures.wall_us);
@@ -211,8 +231,9 @@ pub fn judge(
         }
         _ => {
             let faster = exceeds(wall_base, wall_now, t.time_permille, t.time_floor_us, (1, 1));
-            let smaller =
-                rss.is_some_and(|(now, base)| exceeds(base, now, t.memory_permille, t.memory_floor_kib, (1, 1)));
+            let smaller = rss.is_some_and(|(now, base)| {
+                exceeds(base, now, t.memory_permille, t.memory_floor_kib, (1, 1))
+            });
             if faster || smaller { Verdict::Improved } else { Verdict::Ok }
         }
     }
@@ -245,7 +266,9 @@ impl Check {
             .filter(|link| link.linker == JUDGED)
             .map(|now| {
                 let then = base.link(&now.workload, JUDGED, now.threads);
-                let hash = |results: &Results| results.workload(&now.workload).map(|w| w.input_hash.clone());
+                let hash = |results: &Results| {
+                    results.workload(&now.workload).map(|w| w.input_hash.clone())
+                };
                 let changed = hash(run) != hash(base);
                 Judged {
                     workload: now.workload.clone(),
@@ -382,14 +405,30 @@ mod tests {
         let base = mortar(100_000, 50_000);
         let refused = not_ok("w", JUDGED, Status::Refused, "not implemented");
         let failed = not_ok("w", JUDGED, Status::Failed, "signal 11");
-        let judge = |now: &Link, base: Option<&Link>, changed| judge(now, base, changed, &steady(), &T);
-        assert_eq!(judge(&refused, Some(&refused), false).text(), "not judged: refused, as in the baseline");
-        assert_eq!(judge(&refused, None, false).text(), "new: the baseline does not have this link");
-        assert_eq!(judge(&base, Some(&failed), false).text(), "new: the baseline does not have this link");
-        assert_eq!(judge(&base, Some(&refused), false).text(), "new: mortar links this workload now");
+        let judge =
+            |now: &Link, base: Option<&Link>, changed| judge(now, base, changed, &steady(), &T);
+        assert_eq!(
+            judge(&refused, Some(&refused), false).text(),
+            "not judged: refused, as in the baseline"
+        );
+        assert_eq!(
+            judge(&refused, None, false).text(),
+            "new: the baseline does not have this link"
+        );
+        assert_eq!(
+            judge(&base, Some(&failed), false).text(),
+            "new: the baseline does not have this link"
+        );
+        assert_eq!(
+            judge(&base, Some(&refused), false).text(),
+            "new: mortar links this workload now"
+        );
         assert_eq!(judge(&refused, Some(&base), false), Verdict::Lost);
         assert!(Verdict::Lost.fails());
-        assert_eq!(judge(&failed, Some(&base), false).text(), "not judged: the link failed in this run");
+        assert_eq!(
+            judge(&failed, Some(&base), false).text(),
+            "not judged: the link failed in this run"
+        );
         // A changed workload is compared without consequence, whatever happened.
         let slow = mortar(200_000, 90_000);
         for now in [&slow, &refused] {
@@ -437,15 +476,23 @@ mod tests {
     fn the_calibration_link_is_the_control() {
         let base = mortar(100_000, 50_000);
         let drifted = |now, then| Common { calibration: Some((now, then)), ..steady() };
-        let verdict = |wall, common: &Common| judge(&mortar(wall, 50_000), Some(&base), false, common, &T);
+        let verdict =
+            |wall, common: &Common| judge(&mortar(wall, 50_000), Some(&base), false, common, &T);
         // The machine is 20% slower: 126% is within 5% of 120%, 127% is not.
         assert_eq!(verdict(126_000, &drifted(48_000, 40_000)), Verdict::Ok);
-        assert_eq!(verdict(126_001, &drifted(48_000, 40_000)), Verdict::Regressed { time: true, memory: false });
+        assert_eq!(
+            verdict(126_001, &drifted(48_000, 40_000)),
+            Verdict::Regressed { time: true, memory: false }
+        );
         // The machine is faster: the margin is the plain one.
         assert_eq!(verdict(105_000, &drifted(30_000, 40_000)), Verdict::Ok);
-        assert_eq!(verdict(105_001, &drifted(30_000, 40_000)), Verdict::Regressed { time: true, memory: false });
+        assert_eq!(
+            verdict(105_001, &drifted(30_000, 40_000)),
+            Verdict::Regressed { time: true, memory: false }
+        );
         // Memory is not scaled.
-        let larger = judge(&mortar(100_000, 52_000), Some(&base), false, &drifted(48_000, 40_000), &T);
+        let larger =
+            judge(&mortar(100_000, 52_000), Some(&base), false, &drifted(48_000, 40_000), &T);
         assert_eq!(larger, Verdict::Regressed { time: false, memory: true });
     }
 
@@ -474,14 +521,20 @@ mod tests {
         let mut run = sample();
         run.set("calibration", "mold on fnv1a64:00000000000000aa");
         let common = Common::of(&run, &base, &T);
-        assert_eq!((common.calibration, common.unsteady.as_deref()), (None, Some("no common calibration link")));
+        assert_eq!(
+            (common.calibration, common.unsteady.as_deref()),
+            (None, Some("no common calibration link"))
+        );
         // More than 25% slower than at the baseline: too busy to judge a time.
         let mut run = sample();
         run.set("calibration_before_us", "50400");
         run.set("calibration_after_us", "52000");
         let common = Common::of(&run, &base, &T);
         assert_eq!(common.calibration, Some((50_400, 40_000)));
-        assert_eq!(common.unsteady.as_deref(), Some("the machine is 26.0% slower than at the baseline"));
+        assert_eq!(
+            common.unsteady.as_deref(),
+            Some("the machine is 26.0% slower than at the baseline")
+        );
         run.set("calibration_before_us", "50000");
         assert_eq!(Common::of(&run, &base, &T).unsteady, None);
     }
@@ -498,9 +551,15 @@ mod tests {
         // A reference linker twice as slow is nobody's regression.
         run.links[0] = ok("hello-c", "bfd", Threads::One, 18_000, 9_000);
         let check = Check::new(&run, &base, &T);
-        let texts: Vec<_> =
-            check.judged.iter().map(|j| format!("{} {} {}", j.workload, j.threads.text(), j.verdict.text())).collect();
-        assert_eq!(texts, ["hello-c default not judged: refused, as in the baseline", "big default ok"]);
+        let texts: Vec<_> = check
+            .judged
+            .iter()
+            .map(|j| format!("{} {} {}", j.workload, j.threads.text(), j.verdict.text()))
+            .collect();
+        assert_eq!(
+            texts,
+            ["hello-c default not judged: refused, as in the baseline", "big default ok"]
+        );
         assert!(!check.failed() && !check.noisy());
 
         run.links.last_mut().unwrap().figures.as_mut().unwrap().wall_us = 150_000;
@@ -517,7 +576,10 @@ mod tests {
         run.workloads.last_mut().unwrap().input_hash = "fnv1a64:ffffffffffffffff".into();
         let check = Check::new(&run, &base, &T);
         assert!(!check.failed());
-        assert_eq!(check.judged[1].verdict.text(), "advisory: the workload changed since the baseline");
+        assert_eq!(
+            check.judged[1].verdict.text(),
+            "advisory: the workload changed since the baseline"
+        );
     }
 
     #[test]

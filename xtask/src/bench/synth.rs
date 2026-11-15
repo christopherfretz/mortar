@@ -36,7 +36,8 @@ pub enum Shape {
 }
 
 impl Shape {
-    pub const ALL: [Self; 5] = [Self::Objects, Self::Sections, Self::Comdat, Self::Strings, Self::Archives];
+    pub const ALL: [Self; 5] =
+        [Self::Objects, Self::Sections, Self::Comdat, Self::Strings, Self::Archives];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -96,7 +97,8 @@ impl Request {
     pub fn source(&self, index: usize) -> Source {
         let (a, b) = self.params;
         let ext = self.shape.extension();
-        let unit = |name: String, text: String| Source { name, text, compiled: true, archive: None };
+        let unit =
+            |name: String, text: String| Source { name, text, compiled: true, archive: None };
         if index + 1 == self.count() {
             return unit(format!("main.{ext}"), self.main());
         }
@@ -104,9 +106,12 @@ impl Request {
             Shape::Objects => unit(format!("o{index:05}.c"), objects_unit(index, a, b)),
             Shape::Sections => unit(format!("s{index:05}.c"), sections_unit(index, b)),
             Shape::Strings => unit(format!("t{index:05}.c"), strings_unit(index, b)),
-            Shape::Comdat if index == a => {
-                Source { name: "common.h".into(), text: comdat_header(b), compiled: false, archive: None }
-            }
+            Shape::Comdat if index == a => Source {
+                name: "common.h".into(),
+                text: comdat_header(b),
+                compiled: false,
+                archive: None,
+            },
             Shape::Comdat => unit(format!("u{index:05}.cc"), comdat_unit(index)),
             Shape::Archives => {
                 let (archive, member) = (index / b, index % b);
@@ -124,7 +129,7 @@ impl Request {
     fn main(&self) -> String {
         let (a, b) = self.params;
         let mut text = String::new();
-        let (decl, call): (fn(usize) -> String, fn(usize) -> String) = match self.shape {
+        let (decl, call): (Line, Line) = match self.shape {
             Shape::Objects => (
                 |i| format!("int {}(int);\n", objects_name(i, 0)),
                 |i| format!("  sum += {}(sum);\n", objects_name(i, 0)),
@@ -160,11 +165,15 @@ impl Request {
     }
 }
 
-/// A small deterministic mix of two numbers (SplitMix64's finalizer): what
+/// Makes one line of `main` for unit `i`.
+type Line = fn(usize) -> String;
+
+/// A small deterministic mix of two numbers (the finalizer of `SplitMix64`): what
 /// picks callees and string contents. Not a random number generator: the
 /// same arguments give the same result, always.
 fn mix(a: usize, b: usize) -> usize {
-    let mut z = (a as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ (b as u64).wrapping_add(0x632b_e59b_d9b4_e019);
+    let mut z = (a as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        ^ (b as u64).wrapping_add(0x632b_e59b_d9b4_e019);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     ((z ^ (z >> 31)) >> 16) as usize
@@ -182,7 +191,8 @@ fn objects_unit(index: usize, objects: usize, functions: usize) -> String {
     let callees = |f: usize| {
         let near = (index + 1 < objects).then(|| (index + 1, mix(index, f) % functions));
         let ahead = objects - index - 1;
-        let far = (ahead > 1).then(|| (index + 2 + mix(f, index) % (ahead - 1), mix(f, f + index) % functions));
+        let far = (ahead > 1)
+            .then(|| (index + 2 + mix(f, index) % (ahead - 1), mix(f, f + index) % functions));
         [near, far]
     };
     let mut declared = std::collections::BTreeSet::new();
@@ -193,13 +203,18 @@ fn objects_unit(index: usize, objects: usize, functions: usize) -> String {
             }
         }
     }
-    let _ = writeln!(text, "int mortar_bench_objects_o{index:05}_table[16] = {{{index}, 1, 2, 3}};");
+    let _ =
+        writeln!(text, "int mortar_bench_objects_o{index:05}_table[16] = {{{index}, 1, 2, 3}};");
     for f in 0..functions {
         let _ = write!(text, "int {}(int x) {{\n  int r = x + {f}", objects_name(index, f));
         for (object, function) in callees(f).into_iter().flatten() {
             let _ = write!(text, " + {}(x)", objects_name(object, function));
         }
-        let _ = writeln!(text, ";\n  return r + mortar_bench_objects_o{index:05}_table[{}];\n}}", f % 16);
+        let _ = writeln!(
+            text,
+            ";\n  return r + mortar_bench_objects_o{index:05}_table[{}];\n}}",
+            f % 16
+        );
     }
     text
 }
@@ -228,8 +243,22 @@ fn sections_unit(index: usize, functions: usize) -> String {
 
 /// The words the strings are made of.
 const WORDS: [&str; 16] = [
-    "section", "symbol", "relocation", "archive", "segment", "layout", "merge", "string", "table", "offset",
-    "address", "object", "linker", "output", "input", "header",
+    "section",
+    "symbol",
+    "relocation",
+    "archive",
+    "segment",
+    "layout",
+    "merge",
+    "string",
+    "table",
+    "offset",
+    "address",
+    "object",
+    "linker",
+    "output",
+    "input",
+    "header",
 ];
 
 /// Object `index`: a table of `strings` literals. Those at even positions
@@ -376,14 +405,18 @@ mod tests {
     // "Synthetic workloads": what each shape is made of.
     #[test]
     fn the_shapes() {
-        let names = |request: &Request| all(request).into_iter().map(|s| s.name).collect::<Vec<_>>();
+        let names =
+            |request: &Request| all(request).into_iter().map(|s| s.name).collect::<Vec<_>>();
 
         let objects = Request { shape: Shape::Objects, params: (3, 4) };
         assert_eq!(names(&objects), ["o00000.c", "o00001.c", "o00002.c", "main.c"]);
         let first = objects.source(0).text;
         assert_eq!(first.matches("(int x) {").count(), 4, "{first}");
         // Calls go forwards only; the last object calls nothing.
-        assert!(first.contains("mortar_bench_objects_o00001_function_") && !first.contains("o00000_function_00000(x)"));
+        assert!(
+            first.contains("mortar_bench_objects_o00001_function_")
+                && !first.contains("o00000_function_00000(x)")
+        );
         let last = objects.source(2).text;
         assert!(!last.contains("(int);") && !last.contains("(x)"), "{last}");
         let main = objects.source(3).text;
@@ -405,7 +438,9 @@ mod tests {
 
         let strings = Request { shape: Shape::Strings, params: (2, 6) };
         let (first, second) = (strings.source(0).text, strings.source(1).text);
-        let literals = |text: &str| text.lines().filter(|l| l.starts_with("  \"")).map(str::to_owned).collect::<Vec<_>>();
+        let literals = |text: &str| {
+            text.lines().filter(|l| l.starts_with("  \"")).map(str::to_owned).collect::<Vec<_>>()
+        };
         let (a, b) = (literals(&first), literals(&second));
         assert_eq!((a.len(), b.len()), (6, 6));
         // Even positions are shared, odd ones are the object's own.
@@ -413,7 +448,7 @@ mod tests {
 
         let archives = Request { shape: Shape::Archives, params: (3, 4) };
         assert_eq!(archives.count(), 13);
-        let member = |archive, member| archives.source(archive * 4 + member);
+        let member = |archive: usize, member: usize| archives.source(archive * 4 + member);
         assert_eq!(member(1, 2).name, "a00001_m00002.c");
         assert_eq!(member(1, 2).archive, Some(1));
         // The needed half calls on; the other half and the last archive do not.

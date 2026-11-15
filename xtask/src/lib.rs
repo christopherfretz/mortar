@@ -7,6 +7,8 @@
 //! child ([`process::run`], [`process::run_measured`]) or a cargo step
 //! ([`process::run_step`]), never a bare `Command`.
 
+#[cfg(unix)]
+pub mod bench;
 pub mod ci;
 pub mod jobs;
 #[cfg(unix)]

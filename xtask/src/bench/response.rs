@@ -23,8 +23,8 @@ impl Capture {
         };
         let mut fields = Vec::new();
         for field in body.split(|b| *b == 0) {
-            let text = std::str::from_utf8(field)
-                .map_err(|_| "an argument is not UTF-8".to_owned())?;
+            let text =
+                std::str::from_utf8(field).map_err(|_| "an argument is not UTF-8".to_owned())?;
             fields.push(text.to_owned());
         }
         let cwd = PathBuf::from(fields.remove(0));
@@ -322,7 +322,10 @@ mod tests {
     fn dependency_files_are_parsed() {
         let bfd = "out: \\\n  /usr/lib/crt1.o \\\n  hello.o \\\n  /usr/lib/libc.so\n\n\
                    /usr/lib/crt1.o:\n\nhello.o:\n";
-        assert_eq!(parse_depfile(bfd).unwrap(), strings(&["/usr/lib/crt1.o", "hello.o", "/usr/lib/libc.so"]));
+        assert_eq!(
+            parse_depfile(bfd).unwrap(),
+            strings(&["/usr/lib/crt1.o", "hello.o", "/usr/lib/libc.so"])
+        );
         let mold = "/s/out: /usr/lib/crt1.o hello.o my\\ lib.a cost$$.o\n\n/usr/lib/crt1.o:\n";
         assert_eq!(
             parse_depfile(mold).unwrap(),
