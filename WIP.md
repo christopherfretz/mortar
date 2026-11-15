@@ -19,6 +19,10 @@ Deleted in the final commit.
   no-start`; `.note.package` (front_diff); rustc's rust-lld and
   static-pie (census); gc's COMDAT keepers tolerated on the cross
   libstdc++ only; plumb corpus allows lld's `__CortexA53843419_*`.
-- Open: front_diff's `.eh_frame` mapping-symbol bound (4) on the cross
-  AArch64 runtime (13); then two green plain runs, the triggers and
-  spec/harness.md "Hosted CI".
+- Merged main 2a31ada (the M2 train; the second of three merges).
+  front_diff's `.eh_frame` mapping-symbol bound: 4 on the native
+  runtime, 16 on the cross one with `.eh_frame` size and CIE/FDE counts
+  lld's (ruling (a); cause suspected, not proven).
+- Open: baseline.on-x86_64.tsv from a hosted run (030d's 15 rows);
+  stage-3 findings on the x86-64 host; two green plain runs; the
+  triggers and spec/harness.md "Hosted CI".
