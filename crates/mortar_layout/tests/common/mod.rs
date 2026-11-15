@@ -2,6 +2,8 @@
 //! definitions, run through every stage, and checked by `Layout::check`.
 #![allow(dead_code)]
 
+pub mod elf;
+
 use mortar_core::assignment::Assignment;
 use mortar_core::check::{CheckContext, Violation};
 use mortar_core::column::Column;
@@ -42,6 +44,16 @@ pub const fn sec(name: &'static [u8], ty: u32, flags: u64, size: u64, align: u8)
     Sec { name, ty, flags, size, align, link: 0 }
 }
 
+/// One section of [`World::from_rows`].
+#[derive(Debug, Clone, Copy)]
+pub struct Row {
+    pub header: Header<'static>,
+    /// `sh_link` as an index in the same file (0: none).
+    pub link: u32,
+    pub kind: SectionKind,
+    pub state: SectionState,
+}
+
 /// The link.
 #[derive(Debug, Clone)]
 pub struct World {
@@ -79,6 +91,37 @@ impl World {
     /// Files 1.. hold `files` (file 0 is the internal file); every section
     /// is kept and live.
     pub fn new(machine: Machine, files: &[Vec<Sec>], symbols: &[(&'static [u8], Def)]) -> Self {
+        let rows: Vec<Vec<Row>> = files
+            .iter()
+            .map(|f| {
+                f.iter()
+                    .map(|s| Row {
+                        header: Header {
+                            name: s.name,
+                            sh_type: s.ty,
+                            flags: s.flags,
+                            size: s.size,
+                            align: s.align,
+                            link: None,
+                            entsize: 0,
+                        },
+                        link: s.link,
+                        kind: kind_of(s),
+                        state: SectionState::Kept,
+                    })
+                    .collect()
+            })
+            .collect();
+        Self::from_rows(machine, &rows, symbols)
+    }
+
+    /// [`World::new`] from section rows (index 1.. of each file; `link`
+    /// in the row, not the header, as an index in the same file).
+    pub fn from_rows(
+        machine: Machine,
+        files: &[Vec<Row>],
+        symbols: &[(&'static [u8], Def)],
+    ) -> Self {
         let mut headers = Vec::new();
         let mut rows = Vec::new();
         // File 0, the internal file, has no sections.
@@ -94,19 +137,13 @@ impl World {
                 comdat: OptId::NONE,
             });
             next += 1;
-            for s in f {
-                headers.push(Header {
-                    name: s.name,
-                    sh_type: s.ty,
-                    flags: s.flags,
-                    size: s.size,
-                    align: s.align,
-                    link: (s.link != 0).then_some(SectionId(start + s.link)),
-                    entsize: 0,
-                });
+            for r in f {
+                let mut h = r.header;
+                h.link = (r.link != 0).then_some(SectionId(start + r.link));
+                headers.push(h);
                 rows.push(SectionRow {
-                    kind: kind_of(s),
-                    state: SectionState::Kept,
+                    kind: r.kind,
+                    state: r.state,
                     reloc: SectionIndex(0),
                     comdat: OptId::NONE,
                 });
