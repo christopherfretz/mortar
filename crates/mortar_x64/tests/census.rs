@@ -216,7 +216,7 @@ fn census_object(obj: &Image, what: &str, c: &mut Census) {
                     r_offset: r.r_offset,
                     key: r.key,
                     r_type: r.r_type,
-                    addend: r.addend,
+                    addend: Some(r.addend),
                     howto: &h,
                     site,
                     records: &relocs.as_slice(),

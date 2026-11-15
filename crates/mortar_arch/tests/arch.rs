@@ -634,6 +634,46 @@ fn s3_6_section_out_clip() {
     assert_eq!(b, [0, 0, 0, 9]);
 }
 
+/// §3.6 `SectionOut::input` (`spec/x86.md` R-13 (d)): the input bytes from
+/// the resident section, or from the clip's buffer and its two margins;
+/// `false` for a byte in none of them, for every clip and read position.
+#[test]
+fn s3_6_section_out_input() {
+    let sec: Vec<u8> = (10..22).collect();
+    let len = sec.len() as u64;
+    for a in 0..=len {
+        for b in a..=len {
+            for m in [0u64, 1, 3] {
+                let lo = a.saturating_sub(m);
+                let hi = (b + m).min(len);
+                let mut clip = sec[a as usize..b as usize].to_vec();
+                let out = mortar_arch::SectionOut::new(&mut clip, a, 0, true, b".text")
+                    .with_margins(&sec[lo as usize..a as usize], &sec[b as usize..hi as usize]);
+                for off in 0..=len + 1 {
+                    for n in 0..=4u64 {
+                        let mut dst = vec![0u8; n as usize];
+                        let ok = out.input(off, &mut dst);
+                        let want = off >= lo && off + n <= hi;
+                        assert_eq!(ok, want, "clip [{a}, {b}) margin {m} read [{off}, +{n})");
+                        if ok {
+                            assert_eq!(dst, sec[off as usize..(off + n) as usize]);
+                        }
+                    }
+                }
+            }
+            // Resident: every byte of the section, whatever the clip.
+            let mut clip = vec![0u8; (b - a) as usize];
+            let out =
+                mortar_arch::SectionOut::new(&mut clip, a, 0, true, b".text").with_resident(&sec);
+            let mut dst = [0u8; 3];
+            assert!(out.input(len - 3, &mut dst));
+            assert_eq!(dst, [19, 20, 21]);
+            assert!(!out.input(len - 2, &mut dst));
+            assert!(!out.input(u64::MAX - 1, &mut dst));
+        }
+    }
+}
+
 /// §3.1 `max_reach`: the larger of each side.
 #[test]
 fn s3_1_max_window() {

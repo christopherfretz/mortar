@@ -459,7 +459,7 @@ pub(crate) fn relocate(
             r_offset: shifted,
             key: rec.key,
             r_type: rec.r_type,
-            addend: rec.addend,
+            addend: Some(rec.addend),
             howto: &howto,
             site,
             records: &view,
