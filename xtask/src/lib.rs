@@ -9,5 +9,6 @@
 
 pub mod ci;
 pub mod jobs;
+pub mod plumb;
 #[cfg(unix)]
 pub mod process;
