@@ -158,7 +158,7 @@ pub struct FakeTables {
 
 impl FakeTables {
     pub fn define(&mut self, k: SymKey, s: u64, live: bool) -> &mut Self {
-        self.syms.insert(k, SymValue { s, kind: TargetKind::Local, size: 0, live });
+        self.syms.insert(k, SymValue { s, kind: TargetKind::Local, size: 0, live, tls: false });
         self.alloc.insert(k, true);
         self
     }

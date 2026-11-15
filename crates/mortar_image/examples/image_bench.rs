@@ -68,7 +68,7 @@ impl SymNames for T {
 }
 impl FillTables for T {
     fn sym(&self, _key: SymKey) -> SymValue {
-        SymValue { s: 0x40_1000, kind: TargetKind::Local, size: 0, live: true }
+        SymValue { s: 0x40_1000, kind: TargetKind::Local, size: 0, live: true, tls: false }
     }
     fn slot(&self, _key: SymKey, _kind: SlotKind) -> Option<u64> {
         None

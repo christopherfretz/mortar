@@ -477,7 +477,7 @@ impl FillTables for Probe<'_, '_, '_, '_> {
             self.unknown.store(true, Ordering::Relaxed);
             t.fallback
         });
-        SymValue { s, kind: facts.kind, size: 0, live: true }
+        SymValue { s, kind: facts.kind, size: 0, live: true, tls: facts.tls }
     }
 
     fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {

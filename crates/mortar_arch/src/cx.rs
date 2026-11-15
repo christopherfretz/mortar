@@ -293,6 +293,10 @@ pub struct SymValue {
     /// Whether the symbol's section is live; a relocation in a non-alloc
     /// section against a dead target writes the tombstone (§3.11).
     pub live: bool,
+    /// `STT_TLS` (`SymFacts.tls`): an `AbsWord` or `AbsNarrow` relocation
+    /// at a non-alloc place against it writes `DtpRel(S + A)` (§4.3
+    /// "Non-alloc places", [`crate::writes_dtprel`]).
+    pub tls: bool,
 }
 
 /// The tables fill reads (§3.6): model §3 and §4, as the image phase
@@ -346,12 +350,24 @@ pub struct SectionOut<'a> {
     pub alloc: bool,
     /// The section's name, for the tombstone (§3.11).
     pub name: &'a [u8],
+    /// The section has `SHF_EXECINSTR`, when the caller says (§3.6):
+    /// x86-64 `DTPOFF32`/`DTPOFF64` write `TpRel` in code and `DtpRel`
+    /// elsewhere (`spec/x64.md` X-46). `None` (the default of [`Self::new`])
+    /// when unknown; an architecture that needs it refuses by name.
+    pub exec: Option<bool>,
 }
 
 impl<'a> SectionOut<'a> {
     /// The clip of `bytes.len()` bytes starting at section offset `start`.
     pub fn new(bytes: &'a mut [u8], start: u64, addr: u64, alloc: bool, name: &'a [u8]) -> Self {
-        Self { bytes, start, addr, alloc, name }
+        Self { bytes, start, addr, alloc, name, exec: None }
+    }
+
+    /// The same clip, with the section's `SHF_EXECINSTR` known.
+    #[must_use]
+    pub fn with_exec(mut self, exec: bool) -> Self {
+        self.exec = Some(exec);
+        self
     }
 
     /// The whole section: the clip starting at offset 0.
