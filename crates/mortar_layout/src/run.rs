@@ -123,9 +123,8 @@ pub fn place_again(
     };
     let staged = chunk(&inputs, target, &rules, pool).map_err(|e| vec![e])?;
     steps.step("chunk", staged.chunks.len() as u64, "chunk");
-    let reused = prev.and_then(|p| {
-        refix(&staged, &p.staged, &p.placement, p.rounds, target, options, &rules)
-    });
+    let reused = prev
+        .and_then(|p| refix(&staged, &p.staged, &p.placement, p.rounds, target, options, &rules));
     let fixed = match reused {
         // Debug builds (the tests) prove it on every link they place.
         Some(f) if cfg!(debug_assertions) => {

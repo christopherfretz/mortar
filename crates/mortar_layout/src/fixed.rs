@@ -508,7 +508,8 @@ pub fn refix(
     let addressed = address(staged, &island_sizes, target, options, rules).ok()?;
     let same = staged.order.iter().all(|&c| {
         let (a, b) = (&addressed.chunks[c], prev_fixed.chunks.get(c));
-        !a.is_alloc() || b.is_some_and(|b| a.addr == b.addr && a.offset == b.offset && a.size == b.size)
+        !a.is_alloc()
+            || b.is_some_and(|b| a.addr == b.addr && a.offset == b.offset && a.size == b.size)
     });
     if !same || addressed.chunks.len() != prev_fixed.chunks.len() {
         return None;

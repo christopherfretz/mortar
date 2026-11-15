@@ -583,25 +583,23 @@ pub fn front<'s>(
         };
         let mut a = assignment.clone();
         steps.step("assignment clone", 0, "");
-        let placed =
-            match mortar_layout::place_again(
-                &link,
-                &mut a,
-                Some(&range),
-                |e| inputs.entry_def(e),
-                &pool,
-                prev.as_ref(),
-            ) {
-                Ok(p) => p,
-                Err(errors) => {
-                    for (n, d) in errors.into_iter().enumerate() {
-                        let (k, d) =
-                            layout_diag(&inputs, &resolution, d, Key::new(90, 0, n as u64));
-                        diag.emit(k, d);
-                    }
-                    return None;
+        let placed = match mortar_layout::place_again(
+            &link,
+            &mut a,
+            Some(&range),
+            |e| inputs.entry_def(e),
+            &pool,
+            prev.as_ref(),
+        ) {
+            Ok(p) => p,
+            Err(errors) => {
+                for (n, d) in errors.into_iter().enumerate() {
+                    let (k, d) = layout_diag(&inputs, &resolution, d, Key::new(90, 0, n as u64));
+                    diag.emit(k, d);
                 }
-            };
+                return None;
+            }
+        };
         steps.step("place", u64::from(placed.rounds), "round");
         // The sizes known only now (S-90 after stage C; R-L5 after the
         // fixed point): equal, or one more run with them (they are
