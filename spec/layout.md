@@ -130,8 +130,9 @@ as S1-S12 are not repeated; §17 maps each rule here to a verifier rule.
   of the memory, however, must be the end of a section. strip and objcopy
   rebuild a `PT_LOAD`'s sizes from the sections they keep: when RELRO
   padding was not a section, strip shrank the RELRO segment's `p_memsz`
-  from 0x710 to 0x1d8 and left `PT_GNU_RELRO` at 0x710 (E-14). That
-  breaks L-8 on the stripped file. This is why lld and mold emit
+  from 0x710 to 0x1d8 and left `PT_GNU_RELRO` at 0x710 (E-14). The
+  stripped file then breaks L-7: RELRO reaches memory no `PT_LOAD`
+  maps, and glibc's `mprotect` of it fails. This is why lld and mold emit
   `.relro_padding`, and why mortar does (L-64).
 
 ## 4. Thread-local storage (generic)
