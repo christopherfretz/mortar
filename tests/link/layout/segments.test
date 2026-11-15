@@ -1,0 +1,24 @@
+# A static program's segments: code in a readable, executable PT_LOAD,
+# data in a writable one, no segment both writable and executable, and a
+# non-executable stack (PT_GNU_STACK without PF_X); every PT_LOAD is
+# aligned to the page size of the psABI's maximum, 64 KiB on AArch64.
+#@ spec: layout.md "Segments"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 main.c -o main.o
+link gcc -static -no-pie main.o -o prog
+run prog
+  exit: 0
+check readelf -lW prog
+  has: LOAD * R E
+  has: LOAD * RW
+  not: RWE
+  has: GNU_STACK * RW
+  not: GNU_STACK * RWE
+check(aarch64) readelf -lW prog
+  has: LOAD * R E 0x10000$
+
+#--- main.c
+int counter = 1;
+
+int main(void) { return counter - 1; }

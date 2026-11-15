@@ -1,0 +1,36 @@
+# A static Fortran program that calls C through BIND(C) and is called
+# back: gfortran's runtime (libgfortran.a, libquadmath where there is one)
+# comes from archives; the C symbol has no Fortran decoration.
+# (There is no i686 gfortran on the reference machine.)
+#@ spec: layout.md "Static executables"
+#@ arch: aarch64 x86_64
+#@ requires: gfortran
+#@ xfail(mortar): no linking yet (M1)
+
+fc -O1 main.f90 -o main.o
+cc -O1 sum.c -o sum.o
+link gfortran -static -no-pie main.o sum.o -o prog
+run prog
+  stdout: hello from fortran
+  stdout: sum 55
+
+#--- main.f90
+program main
+  use iso_c_binding
+  implicit none
+  interface
+    integer(c_int) function c_sum(n) bind(c, name="c_sum")
+      import :: c_int
+      integer(c_int), value :: n
+    end function
+  end interface
+  print '(A)', 'hello from fortran'
+  print '(A,I0)', 'sum ', c_sum(10_c_int)
+end program
+#--- sum.c
+int c_sum(int n) {
+  int total = 0;
+  for (int i = 1; i <= n; i++)
+    total += i;
+  return total;
+}

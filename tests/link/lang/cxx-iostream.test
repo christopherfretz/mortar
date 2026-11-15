@@ -1,0 +1,27 @@
+# Static C++ with iostreams and a global object with a constructor: the
+# constructors of libstdc++'s and the program's objects run from
+# `.init_array` before main, and a std::string crosses them.
+#@ spec: layout.md "Static executables"
+#@ requires: g++
+#@ xfail(mortar): no linking yet (M1)
+
+cxx -O1 main.cc -o main.o
+link g++ -static -no-pie main.o -o prog
+run prog
+  stdout: iostream global 42
+
+#--- main.cc
+#include <iostream>
+#include <string>
+
+struct Init {
+  std::string name;
+  Init() : name("global") {}
+};
+
+static Init init;
+
+int main() {
+  std::cout << "iostream " << init.name << ' ' << 42 << std::endl;
+  std::cerr << "to stderr\n";
+}

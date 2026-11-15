@@ -27,7 +27,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `meta.md` | `mortar_meta`: the Mason metadata container (shared with kiln, hod, tuck) | planned (M6) |
 | `odr.md` | `mortar_odr`: one-definition-rule checks | planned (M6) |
 | `incr.md` | `mortar_incr`: link state and incremental links | planned (M7) |
-| `harness.md` | `xtask`: the gate, link tests, differential runs, bench, jobserver | "ci", "Jobserver", "Limits" (WP-003); link tests and bench planned (WP-010, WP-012) |
+| `harness.md` | `xtask`: the gate, link tests, differential runs, bench, jobserver | "ci", "Jobserver", "Limits" (WP-003); "Link tests" (WP-010); bench planned (WP-012) |
 
 ## Conventions
 

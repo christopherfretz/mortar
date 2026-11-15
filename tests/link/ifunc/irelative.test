@@ -1,0 +1,42 @@
+# An IFUNC (STT_GNU_IFUNC) in a static executable: the linker emits an
+# IRELATIVE relocation that the C library's start code applies before
+# main, calling the resolver; a call and a function pointer from another
+# object reach the chosen implementation, and the address of the
+# function is the same in both objects (the psABIs' "Indirect
+# Functions"). The objects are compiled `-fno-pie`: with `-fpie` objects
+# GNU ld 2.44 on x86-64 breaks the pointer equality (the two addresses
+# differ; measured), lld and mold keep it, so the references DIFFER there.
+#@ spec: synth.md "IRELATIVE"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 -fno-pie pick.c -o pick.o
+cc -O1 -fno-pie main.c -o main.o
+link gcc -static -no-pie main.o pick.o -o prog
+run prog
+  stdout: pick 2, through a pointer 2, same address 1
+check readelf -rW prog
+  has: _IRELATIVE
+
+#--- pick.c
+static int impl_one(void) { return 1; }
+static int impl_two(void) { return 2; }
+
+static int (*resolve_pick(void))(void) {
+  return impl_one == impl_two ? impl_one : impl_two;
+}
+
+int pick(void) __attribute__((ifunc("resolve_pick")));
+
+int (*pick_address(void))(void) { return pick; }
+#--- main.c
+#include <stdio.h>
+
+int pick(void);
+int (*pick_address(void))(void);
+
+int main(void) {
+  int (*pointer)(void) = pick;
+  printf("pick %d, through a pointer %d, same address %d\n", pick(), pointer(),
+         pointer == pick_address());
+  return 0;
+}

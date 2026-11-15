@@ -1,0 +1,47 @@
+# `-Map=<file>` writes a map of the link: each output section, the input
+# sections in it with their files, and the symbols (GNU ld manual
+# "-Map"). The three references' formats DIFFER (each is matched by its
+# header); mortar's own is to be specified in plumb.md (WP-011), and
+# must at least name the input file, the section and the symbol.
+#@ spec: plumb.md "Map file"
+#@ xfail(mortar): no linking yet (M1)
+
+as start-%{arch}.s -o start.o
+link ld -Map=prog.map start.o -o prog
+check text prog.map
+  has: start.o
+  has: .text
+  has: _start
+  has(bfd): ^Linker script and memory map$
+  has(lld): ^ *VMA LMA Size Align Out In Symbol$
+  has(mold): ^ *VMA Size Align Out In Symbol$
+run prog
+  exit: 42
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.cfi_endproc
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.cfi_endproc
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.cfi_endproc

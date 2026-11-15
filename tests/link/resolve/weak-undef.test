@@ -1,0 +1,53 @@
+# A weak reference that nothing defines resolves to zero (gABI "Symbol
+# Table": "unresolved weak symbols have a zero value"), and it does not
+# extract an archive member that defines it (gABI: "the link editor does
+# not extract archive members to resolve undefined weak symbols"); a
+# strong reference to the same symbol does.
+# What `.symtab` says of the undefined weak symbol DIFFERS: GNU ld
+# leaves it out, lld keeps it as WEAK UND, mold as LOCAL UND; the test
+# checks only that no definition was pulled in.
+#@ spec: resolve.md "Weak symbols"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 main.c -o main.o
+cc -O1 maybe.c -o maybe.o
+cc -O1 strong_ref.c -o strong_ref.o
+ar rcs libmaybe.a maybe.o
+link gcc -static -no-pie main.o -L. -lmaybe -o weak_only
+link gcc -static -no-pie main.o strong_ref.o -L. -lmaybe -o with_strong
+run weak_only
+  stdout: maybe absent, maybe_data absent
+run with_strong
+  stdout: maybe present 9, maybe_data present 4
+check readelf -sW weak_only
+  not: FUNC * maybe$
+  not: OBJECT * maybe_data$
+check readelf -sW with_strong
+  has: FUNC * maybe$
+  has: OBJECT * maybe_data$
+
+#--- main.c
+#include <stdio.h>
+
+extern int maybe(void) __attribute__((weak));
+extern int maybe_data __attribute__((weak));
+
+int main(void) {
+  if (maybe)
+    printf("maybe present %d, ", maybe());
+  else
+    printf("maybe absent, ");
+  if (&maybe_data)
+    printf("maybe_data present %d\n", maybe_data);
+  else
+    printf("maybe_data absent\n");
+  return 0;
+}
+#--- maybe.c
+int maybe_data = 4;
+
+int maybe(void) { return 9; }
+#--- strong_ref.c
+int maybe(void);
+
+int (*keep_maybe)(void) = maybe;

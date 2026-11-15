@@ -1,0 +1,41 @@
+# Static TLS, local-exec model: the initialized (`.tdata`) and zeroed
+# (`.tbss`) thread-local data form the PT_TLS segment; each thread gets
+# a fresh copy of the initialization image (ELF Handling For
+# Thread-Local Storage, "Local Exec"; the psABI's TLS layout).
+#@ spec: layout.md "Thread-local storage"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 -ftls-model=local-exec -pthread tls.c -o tls.o
+link gcc -static -no-pie -pthread tls.o -o prog
+run prog
+  stdout: main 5 0
+  stdout: thread 5 0
+  stdout: main after 6 1
+check readelf -lSW prog
+  has: TLS 0x
+  has: .tdata PROGBITS
+  has: .tbss NOBITS
+
+#--- tls.c
+#include <pthread.h>
+#include <stdio.h>
+
+__thread int initialized = 5;
+__thread int zeroed;
+
+static void *worker(void *arg) {
+  (void)arg;
+  printf("thread %d %d\n", initialized, zeroed);
+  return 0;
+}
+
+int main(void) {
+  pthread_t thread;
+  printf("main %d %d\n", initialized, zeroed);
+  initialized++;
+  zeroed++;
+  pthread_create(&thread, 0, worker, 0);
+  pthread_join(thread, 0);
+  printf("main after %d %d\n", initialized, zeroed);
+  return 0;
+}
