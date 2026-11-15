@@ -10,11 +10,11 @@ former and writes down the latter: "as GNU ld" is not a specification.
 
 | file | covers | status |
 |---|---|---|
-| `model.md` | `mortar_core`: ids, the tables phases exchange, determinism rules | draft (WP-002); frozen after review against WP-004 and WP-008 |
-| `elf.md` | `mortar_elf`: readers for objects and shared objects; writer primitives | §1-§4 landed (WP-004); §6 planned (WP-006) |
+| `model.md` | `mortar_core`: ids, the tables phases exchange, determinism rules | normative (WP-002); §3.7, §4.3 and `patches` of §4.4 confirmed with `arch.md` (WP-013) |
+| `elf.md` | `mortar_elf`: readers for objects and shared objects; writer primitives | §1-§4 landed (WP-004); §6 landed (WP-006) |
 | `archive.md` | `mortar_elf::archive`: regular and thin archives, GNU and BSD names, the GNU, 64-bit and BSD symbol indexes | implemented (WP-005) |
 | `diag.md` | `mortar_diag`: diagnostics, the vocabulary of refusals, demangling | normative (WP-007); demangling planned |
-| `cli.md` | `mortar_cli`: the command line and the status of every option | planned (WP-008) |
+| `cli.md` | `mortar_cli`: the command line and the status of every option | normative (WP-008) |
 | `script.md` | `mortar_script`: linker scripts, version scripts, dynamic lists | §1-§7 normative (WP-009, stage 1: lexer, implicit-script commands, recognition); SECTIONS, expressions, version scripts planned |
 | `input.md` | `mortar_input`: finding and loading files | planned (WP-021) |
 | `resolve.md` | `mortar_resolve`: symbol resolution | planned (WP-022) |
@@ -24,11 +24,11 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `layout.md` | `mortar_layout`: output sections, segments, addresses | planned (WP-024) |
 | `synth.md` | `mortar_synth`: synthetic sections | planned (WP-025) |
 | `image.md` | `mortar_image`: image synthesis, the writer, debug sections | planned (WP-026) |
-| `plumb.md` | `mortar_plumb`: the verifier and the map-file format | planned (WP-011) |
+| `plumb.md` | `mortar_plumb`: the verifier and the map-file format | stage 1: static non-PIE AArch64 (WP-011); TLS, IFUNC, `.eh_frame` stage 2 |
 | `meta.md` | `mortar_meta`: the Mason metadata container (shared with kiln, hod, tuck) | planned (M6) |
 | `odr.md` | `mortar_odr`: one-definition-rule checks | planned (M6) |
 | `incr.md` | `mortar_incr`: link state and incremental links | planned (M7) |
-| `harness.md` | `xtask`: the gate, link tests, differential runs, bench, jobserver | "ci", "Jobserver", "Limits" (WP-003); "Link tests" (WP-010); bench planned (WP-012) |
+| `harness.md` | `xtask`: the gate, link tests, differential runs, bench, jobserver | "ci", "Jobserver", "Limits" (WP-003); "Link tests" (WP-010); "bench" (WP-012); "Hosted CI" (WP-014) |
 
 ## Conventions
 

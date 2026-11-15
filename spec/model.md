@@ -1,8 +1,10 @@
 # spec: the model (`mortar_core`)
 
-Status: **draft 2** (WP-002), after an independent design review. Frozen,
-and marked normative, after review against the reader API of WP-004 and
-the `Plan` of WP-008. Design only: the code is WP-020.
+Status: **normative** (WP-002): frozen after an independent design review
+and review against the reader API of WP-004 and the `Plan` of WP-008. The
+code is WP-020. One part may still move: `Demands` (§3.7), `Slots` (§4.3)
+and `patches` (§4.4) are confirmed or amended when `spec/arch.md` (WP-013)
+is accepted; an amendment is made here first and the code follows.
 
 The model is what the phases of a link exchange: ids and tables. It holds
 no algorithm. A phase is specified by the tables it reads and the table it
@@ -128,9 +130,18 @@ no choice. Recomputing it from the same inputs gives the same rows.
 
 ### 3.1 `Plan` (written by `mortar_cli`)
 
-The command line as data: `spec/cli.md` §plan. Immutable. Each input keeps
-its argument index; that index is the `unit` of diagnostics about the
-command line and the root of load order.
+The command line as data: `spec/cli.md` §3 specifies its fields.
+Immutable. Each input keeps its argument index; that index is the `unit`
+of diagnostics about the command line and the root of load order.
+
+The `Plan` type and the types of its fields are defined in `mortar_core`
+(module `plan`), so that every phase and the link state name them without
+depending on the parser; `mortar_cli` writes a `Plan` and re-exports the
+types. A `Plan` is what the user wrote, not what it means: values that
+need the target or a file to be judged (`-z max-page-size=`, the options
+of one target when no `-m` is given, `-R` naming a directory) are kept as
+written and judged by the phase that uses them, which reports them under
+its own phase ordinal (§8) with the argument index as the unit.
 
 ### 3.2 `Inputs` (written by `mortar_input`)
 
@@ -559,17 +570,26 @@ shape is part of principle 3:
 
 ## 10. Rust shape (informative)
 
+As landed by WP-020a (`mortar_core`; the record is
+`spec/landed/model/WP-020a.md`):
+
 ```rust
-#[repr(transparent)] pub struct FileId(u32);      // likewise the other ids
+#[repr(transparent)] pub struct FileId(pub u32);  // likewise the other ids
 pub struct Column<I, T> { /* Vec<T> indexed by I */ }
 impl<I: Id, T> Column<I, T> {
-    pub fn split_by<'a>(&'a mut self, ranges: &[IdRange<I>]) -> Vec<&'a mut [T]>; // §6.1
+    pub fn split_by<'a>(&'a mut self, ranges: &[IdRange<I>])
+        -> Result<Vec<&'a mut [T]>, SplitError>;   // §6.1: ascending, in bounds
 }
-pub enum SymKey { Global(SymbolId), Local(FileId, u32) }
-pub struct Inputs<'store> { pub target: Target, pub files: Column<FileId, File<'store>>, /* §3.2 */ }
+pub struct SymKey(u64);  // packed so that integer order is §2's order
+impl SymKey { pub fn kind(self) -> SymKind; }
+pub enum SymKind { Global(SymbolId), Local(LocalSym) }
+pub struct Inputs<'store> { pub target: LinkTarget, pub files: Column<FileId, File<'store>>, /* §3.2 */ }
 pub struct Resolution { /* §3.3 */ }
 pub struct Layout { pub folds: Folds, pub merge: MergeMap, pub slots: Slots, pub placement: Placement }
-impl Layout { pub fn check(&self, /* derived tables */) -> Result<(), Diagnostic>; }
+impl Layout {
+    // the derived tables, the page size, the section shapes
+    pub fn check(&self, cx: &CheckContext<'_, '_>) -> Result<(), Diagnostic>;
+}
 pub mod par { /* §6: for_each, map_collect, sort_by_key, the scheduling seed */ }
 ```
 
@@ -596,4 +616,3 @@ pub mod par { /* §6: for_each, map_collect, sort_by_key, the scheduling seed */
 | Version scripts and shared-object `versym` against the key of §2.3 | `spec/resolve.md` |
 | Divisible synthetic chunks, the sealing function for the build id, resident image or positioned writes | `spec/synth.md`, `spec/image.md` |
 | `-r`: relocation and group chunks, REL addends of section symbols rewritten in the bytes | `spec/layout.md`, `spec/image.md` (M4) |
-| Whether `Plan` moves into `mortar_core` or is re-exported from `mortar_cli` | this spec, at freeze, with WP-008's handback |

@@ -4,7 +4,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use mortar_testutil::{Scratch, run, run_with};
+use mortar_testutil::{DEFAULT_TIMEOUT, Scratch, run, run_with, tool};
 
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 
@@ -19,7 +19,8 @@ fn a_failed_link_reports_on_stderr_and_leaves_no_output() {
     assert_eq!(outcome.stdout_text(), "");
     assert_eq!(
         outcome.stderr_text(),
-        "mortar: error: unsupported feature: linking\n\
+        "mortar: error: unsupported option: -o\n\
+         mortar: error: unsupported feature: linking\n\
          >>> no link is implemented yet (docs/ROADMAP.md, milestone M1)\n"
     );
     assert!(!output.exists(), "a failed link leaves no output file");
@@ -55,4 +56,62 @@ fn version_goes_to_stdout() {
         format!("mortar {} (compatible with GNU ld)\n", env!("CARGO_PKG_VERSION"))
     );
     assert_eq!(outcome.stderr_text(), "");
+}
+
+// spec: cli.md §2.1 (arguments are bytes: one that is not UTF-8 is read,
+// and shown lossily)
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_argument_is_read() {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::OsStr::from_bytes(b"caf\xe9.o");
+    let option = std::ffi::OsStr::from_bytes(b"--frob\xff");
+    let outcome = run(MORTAR, [name, option]);
+    assert_eq!(outcome.status.and_then(|s| s.code()), Some(1));
+    assert_eq!(outcome.stdout_text(), "");
+    assert!(
+        outcome.stderr_text().starts_with("mortar: error: unknown argument '--frob\u{fffd}'\n"),
+        "{:?}",
+        outcome.stderr_text()
+    );
+}
+
+// spec: cli.md §5.1 (`ld.mortar --version`, as compiler drivers probe it
+// through `-fuse-ld=mortar`)
+#[cfg(unix)]
+#[test]
+fn version_through_a_symlink() {
+    let scratch = Scratch::new("cli-version-link");
+    let link = scratch.join("ld.mortar");
+    std::os::unix::fs::symlink(MORTAR, &link).expect("symlink in the scratch directory");
+    let outcome = run_with(Command::new(&link).arg("--version"), &[], Duration::from_mins(1));
+    assert!(outcome.success());
+    assert_eq!(
+        outcome.stdout_text(),
+        format!("mortar {} (compatible with GNU ld)\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(outcome.stderr_text(), "");
+}
+
+// spec: cli.md §6, diag.md §7 (gcc runs mortar as its `ld`: the link
+// fails with status 1 and leaves no output)
+#[cfg(unix)]
+#[test]
+fn a_gcc_link_through_mortar_fails_cleanly() {
+    let Some(gcc) = tool("gcc") else { return };
+    let scratch = Scratch::new("cli-gcc");
+    let bin = scratch.join("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir bin");
+    std::os::unix::fs::symlink(MORTAR, bin.join("ld")).expect("symlink in the scratch directory");
+    let src = scratch.write("h.c", "int main(void) { return 0; }\n");
+    let output = scratch.join("h");
+    let outcome = run_with(
+        Command::new(gcc).arg(format!("-B{}/", bin.display())).arg(&src).arg("-o").arg(&output),
+        &[],
+        DEFAULT_TIMEOUT,
+    );
+    assert_eq!(outcome.status.and_then(|s| s.code()), Some(1), "{}", outcome.stderr_text());
+    let stderr = outcome.stderr_text();
+    assert!(stderr.contains("ld: error: unsupported feature: linking\n"), "{stderr}");
+    assert!(!output.exists(), "a failed link leaves no output file");
 }

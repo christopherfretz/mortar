@@ -347,6 +347,13 @@ fn check_row(
                 gnu.stderr.trim()
             ));
         }
+        // lld refuses an input of another machine than OUTPUT_FORMAT
+        // names (`e.o is incompatible with elf64-littleaarch64`, measured
+        // with an x86-64 `e.o`), and `e.o` is the host's: off an AArch64
+        // host it does not witness a row that names an AArch64 format.
+        let foreign = !cfg!(target_arch = "aarch64")
+            && row.script.windows(b"aarch64".len()).any(|w| w == b"aarch64");
+        let lld = lld.filter(|_| !foreign);
         for (linker, expected) in [(lld, row.lld), (mold, row.mold)] {
             let (Some(linker), Some(expected)) = (linker, expected) else { continue };
             let witness = link(linker, dir, row.script, n);
