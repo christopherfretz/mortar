@@ -272,7 +272,15 @@ fn i14_dead_targets_are_the_tombstone_at_fill() {
             }
             let bytes = std::fs::read(&out).unwrap();
             match &first {
-                None => first = Some(bytes),
+                None => {
+                    // The verifier on the output the others must equal
+                    // (WP-035): the tombstones are its §5.8.
+                    let map = mortar::image::map_of(&f, store).expect("the map");
+                    let path = out.with_extension("map");
+                    std::fs::write(&path, mortar_image::map::render(&map, &f.pool)).unwrap();
+                    support::plumb::clean(&out, &path, dir.path());
+                    first = Some(bytes);
+                }
                 Some(b) => assert!(*b == bytes, "{policy:?} at {threads} threads differs"),
             }
         }

@@ -3,7 +3,9 @@
 //! definitions (Y3); locals against the input locals of their name (Y4); the symbols the
 //! linker defines (Y5).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+
+use crate::fnv::HashMap;
 
 use mortar_elf::consts::{
     PT_LOAD, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE, SHN_ABS, SHN_LORESERVE,
@@ -243,7 +245,7 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     let image = e.image;
     // The most constraining visibility of every non-local entry of a name,
     // defined or not.
-    let mut vis: HashMap<&str, u8> = HashMap::new();
+    let mut vis: HashMap<&str, u8> = HashMap::default();
     for o in e.objs {
         let Some(t) = &o.symtab else { continue };
         for (_, s) in t.iter() {
@@ -427,7 +429,7 @@ fn locals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             }
         }
     }
-    let mut placed: HashMap<&str, Placed> = HashMap::new();
+    let mut placed: HashMap<&str, Placed> = HashMap::default();
     let (mut checked, mut unchecked) = (0u64, 0u64);
     for out in &image.symbols {
         let s = &out.sym;
@@ -579,7 +581,7 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     let x86 = matches!(e.image.header.e_machine, 3 | 62);
     let rel_type = if e.image.header.e_machine == 3 { SHT_REL } else { SHT_RELA };
     let relas: Vec<_> = alloc().filter(|s| s.shdr.sh_type == rel_type).collect();
-    let mut input_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut input_names: crate::fnv::HashSet<&str> = crate::fnv::HashSet::default();
     for o in e.objs {
         let Some(t) = &o.symtab else { continue };
         for (_, d) in t.iter() {

@@ -124,40 +124,64 @@ fn judge(prepared: &Prepared, out: &Path, map: &Path) -> Verdict {
     let fix = std::fs::read(&prepared.response)
         .ok()
         .and_then(|t| crate::plumb::response_fix_843419(&String::from_utf8_lossy(&t)));
-    let verified = crate::plumb::verify_link_with(
-        out,
-        map,
-        mortar_plumb::Format::Mortar,
-        &prepared.cwd,
-        None,
-        fix,
-    );
-    let report = match verified {
-        Ok((_, report, _)) => report,
-        Err(e) => return Verdict::Failed(format!("the verifier cannot read the link: {e}")),
+    // The verifier runs as a child (`xtask plumb`), not in this process:
+    // what it allocates must not stay in the process that then starts the
+    // measured links. Measured in-process, mortar's medians on
+    // hello-c-static and hello-cxx-static rose by 5-10% (WP-035).
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => return Verdict::Failed(format!("cannot find xtask itself: {e}")),
     };
-    if report.clean() {
-        return Verdict::Clean { hash: h.text() };
+    let ran = process::run(
+        &exe,
+        |c| {
+            c.arg("plumb").arg(out).arg("--map").arg(map).args(["--map-format", "mortar"]);
+            match fix {
+                Some(true) => c.arg("--fix-cortex-a53-843419"),
+                Some(false) => c.arg("--no-fix-cortex-a53-843419"),
+                None => c,
+            };
+            c.current_dir(&prepared.cwd);
+        },
+        b"",
+        VERIFY_LIMITS,
+    );
+    match ran {
+        Err(e) => Verdict::Failed(format!("the verifier: {e}")),
+        Ok(o) if o.end.success() => Verdict::Clean { hash: h.text() },
+        Ok(o) if o.end == process::End::Exit(1) => {
+            read_findings(&String::from_utf8_lossy(&o.stdout), out.to_path_buf())
+        }
+        Ok(o) => Verdict::Failed(format!("the verifier: {}: {}", o.end, o.first_error_line())),
     }
+}
+
+/// The limits of the verifier's process.
+const VERIFY_LIMITS: process::Limits =
+    process::Limits { time: std::time::Duration::from_mins(10), memory_kib: 16 << 20 };
+
+/// The findings `xtask plumb` printed: one `... verifier rule <id>:
+/// <message>` line each (`spec/plumb.md` §7.3), then the summary with
+/// `findings: <n>`.
+fn read_findings(stdout: &str, kept: PathBuf) -> Verdict {
     let mut rules: BTreeMap<String, usize> = BTreeMap::new();
-    for f in &report.findings {
-        *rules.entry(f.rule.id()).or_default() += 1;
+    let mut first = Vec::new();
+    let mut lines = 0;
+    for l in stdout.lines() {
+        let Some((_, f)) = l.split_once("verifier rule ") else { continue };
+        let Some((rule, message)) = f.split_once(": ") else { continue };
+        lines += 1;
+        *rules.entry(rule.to_owned()).or_default() += 1;
+        if first.len() < SHOWN {
+            first.push(format!("{rule} {message}"));
+        }
     }
-    let first = report
-        .findings
-        .iter()
-        .take(SHOWN)
-        .map(|f| {
-            let at = f.addr.map(|a| format!(" at {a:#x}")).unwrap_or_default();
-            format!("{} {}{at}", f.rule.id(), f.message)
-        })
-        .collect();
-    Verdict::Findings {
-        count: report.findings.len(),
-        rules: rules.into_iter().collect(),
-        first,
-        kept: out.to_path_buf(),
-    }
+    let count = stdout
+        .lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("findings: ")?.trim().parse().ok())
+        .unwrap_or(lines);
+    Verdict::Findings { count, rules: rules.into_iter().collect(), first, kept }
 }
 
 /// Applies `verdict` to the workload's measured `links`: on a finding,
@@ -324,6 +348,29 @@ mod tests {
             assert_eq!(apply(&v, &mut l, Some("fnv1a64:1")), None, "{v:?}");
             assert!(l.iter().all(|l| l.status == Status::Ok));
         }
+    }
+
+    // "Verification": what `xtask plumb` prints, read back.
+    #[test]
+    fn findings_are_read_from_xtask_plumb() {
+        let out = "mortar-plumb: error: /s/o: verifier rule R1: a field: expected 0x1, found 0x2 at 0x10\n\
+                   mortar-plumb: error: /s/o: verifier rule C1: an unfixed site at 0x20\n\
+                   mortar-plumb: error: /s/o: verifier rule R1: b at 0x30\n\
+                   mortar-plumb: error: /s/o: verifier rule R1: c\n\
+                   relocation records in placed sections: 9\nfindings: 4\n";
+        assert_eq!(
+            read_findings(out, PathBuf::from("/s/o")),
+            Verdict::Findings {
+                count: 4,
+                rules: vec![("C1".to_owned(), 1), ("R1".to_owned(), 3)],
+                first: vec![
+                    "R1 a field: expected 0x1, found 0x2 at 0x10".to_owned(),
+                    "C1 an unfixed site at 0x20".to_owned(),
+                    "R1 b at 0x30".to_owned(),
+                ],
+                kept: PathBuf::from("/s/o"),
+            }
+        );
     }
 
     // "Verification": the summary names every workload under its verdict.

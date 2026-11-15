@@ -2,7 +2,7 @@
 //! header, the program headers, the section headers and `.symtab`.
 //! Memory is read through the `PT_LOAD` segments.
 
-use std::collections::HashMap;
+use crate::fnv::HashMap;
 
 use mortar_elf::consts::{PF_X, PT_LOAD, SHF_ALLOC, SHT_NOBITS, SHT_SYMTAB, STB_GLOBAL, STB_WEAK};
 use mortar_elf::{Class, FileHeader, SectionTable, Shdr, Sym};
@@ -103,7 +103,7 @@ impl<'a> Image<'a> {
                 symbols.push(OutSym { name, sym, index: i.0 });
             }
         }
-        let mut names: HashMap<String, NameEntry> = HashMap::with_capacity(symbols.len());
+        let mut names: HashMap<String, NameEntry> = HashMap::with_capacity_and_hasher(symbols.len(), Default::default());
         for (i, s) in symbols.iter().enumerate() {
             if s.name.is_empty() {
                 continue;

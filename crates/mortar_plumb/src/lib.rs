@@ -11,6 +11,7 @@
 pub mod a64;
 pub mod anomaly;
 pub mod buildid;
+mod fnv;
 mod content;
 mod erratum;
 mod image;

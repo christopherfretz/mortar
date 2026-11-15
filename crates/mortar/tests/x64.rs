@@ -240,6 +240,8 @@ fn x64_the_output_is_a_function_of_the_inputs_alone() {
     let first = built.dir.join("first.out");
     let m = mortar(&built, &first, &["--threads=1"], &[("MORTAR_STORE", "staged")]);
     assert!(m.success(), "{}", m.stderr_text());
+    // The verifier on the output every other run must equal (WP-035).
+    support::plumb::clean(&first, &map_of(&first), &built.dir);
     let read = |p: &Path| std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     let want = (read(&first), read(&map_of(&first)));
     for store in ["staged", "resident"] {

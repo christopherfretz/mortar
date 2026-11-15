@@ -1,7 +1,7 @@
 //! Resolving a map against the input files (`spec/plumb.md` §3.3): which
 //! input section each record means, and where each section is.
 
-use std::collections::HashMap;
+use crate::fnv::HashMap;
 
 use mortar_elf::archive::{Archive, Content};
 use mortar_elf::consts::{
@@ -188,7 +188,7 @@ type Members<'a> = HashMap<&'a [u8], Vec<(u64, Content<'a>)>>;
 
 fn members_of(bytes: &[u8]) -> Result<Members<'_>, String> {
     let archive = Archive::parse(bytes).map_err(|e| e.to_string())?;
-    let mut by_name: Members<'_> = HashMap::new();
+    let mut by_name: Members<'_> = HashMap::default();
     for m in archive.members() {
         let m = m.map_err(|e| e.to_string())?;
         by_name.entry(m.name()).or_default().push((m.header_offset(), m.content()));
@@ -286,7 +286,7 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
     let mut obj_of: Vec<Option<usize>> = vec![None; map.files.len()];
     let out_machine = image.header.e_machine;
     let mut missing_said: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    let mut archives = HashMap::new();
+    let mut archives = HashMap::default();
     for (i, f) in map.files.iter().enumerate() {
         let Some(bytes) = by_path.get(f.path.as_str()) else {
             if missing_said.insert(&f.path) {
@@ -313,7 +313,7 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
         .objs
         .iter()
         .map(|o| {
-            let mut m: HashMap<String, Vec<usize>> = HashMap::new();
+            let mut m: HashMap<String, Vec<usize>> = HashMap::default();
             for (i, s) in o.secs.iter().enumerate() {
                 if !s.consumed() {
                     m.entry(s.name.clone()).or_default().push(i);
@@ -325,7 +325,7 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
     let gnu = map.format == Format::Gnu;
     // mold's map gives every non-alloc row the address 0: the offsets are
     // the rows' sizes laid out in order at their alignments (§3.6).
-    let mut cursor: Option<HashMap<String, u64>> = (map.format == Format::Mold).then(HashMap::new);
+    let mut cursor: Option<HashMap<String, u64>> = (map.format == Format::Mold).then(HashMap::default);
     for p in &map.placed {
         let Some(oi) = obj_of.get(p.file as usize).copied().flatten() else { continue };
         place_one(&mut out, &names[oi], oi, p, image, gnu, cursor.as_mut());

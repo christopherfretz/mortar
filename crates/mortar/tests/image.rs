@@ -570,6 +570,7 @@ fn i40_compares_with_gnu_ld() {
     let f = front(ARGS, dir.path(), 4, StorePolicy::Staged);
     let out = dir.join("out");
     write(&f, &out).unwrap_or_else(|e| panic!("image: {:?}", e.diagnostics));
+    plumb(&f, &out, dir.path());
     let reference = dir.join("ref");
     runs(&reference);
     assert_eq!(header(&out), header(&reference));
