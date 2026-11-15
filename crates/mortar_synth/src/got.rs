@@ -740,7 +740,14 @@ impl GotPlan {
         at: &GotAddrs,
         out: &mut Window<'_>,
     ) -> Result<(), (u32, FieldError)> {
-        let got_base = at.got;
+        // `SynthCx.got_base` is the GOT base of arch.md §3.1 (`Facts.got_base`):
+        // `.got.plt`'s start on x86 (x64.md X-36), where PLT0 finds
+        // `.got.plt[1]` and `[2]` (§10.3). `.got`'s start was passed before
+        // WP-055, which no static output reads (WP-055 record §2).
+        let got_base = match arch.facts().got_base {
+            GotBase::GotStart => at.got,
+            GotBase::GotPltStart => at.got_plt,
+        };
         let w = u64::from(self.word);
         if let Some(d) = &self.dynamic
             && !d.plt.is_empty()
