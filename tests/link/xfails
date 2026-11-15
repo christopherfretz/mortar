@@ -18,7 +18,7 @@
 # each case pass for mortar (spec/landed/dyn/WP-040.md), grouped by package.
 
 # WP-042 (CLI): the command line: the refused option or value is named once the dynamic options are accepted.
-mortar,aarch64,x86_64 dyn/kinds/no-dynamic-linker-refused.test: M2: WP-042 (CLI)
+mortar,aarch64,x86_64 dyn/kinds/no-dynamic-linker-refused.test: M2: WP-053 (JOIN-C); the `-pie` link is stopped by the guard before D-31 (WP-042 record)
 
 # WP-052 (SPIE): static-pie.
 mortar,aarch64,x86_64 dyn/kinds/output-kind-table-static-pie.test: M2: WP-052 (SPIE)
