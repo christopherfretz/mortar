@@ -73,99 +73,141 @@ links from scratch and says why (§7).
 
 ## 1. The workload: what an edit changes
 
-### 1.1 The census (E1)
+### 1.1 The corpus (E2')
 
-`census.py` writes a two-unit C++ program (`a.cc`: 24 functions, string
-helpers using `std::vector<std::string>`, a class with a virtual
-function, a `thread_local`, globals; `b.cc`: 8 functions; both include
-`lib.h`: an inline function, a class template, a struct, an abstract
-class), applies one edit class at a time, recompiles both units with every
-configuration and diffs the objects with `objdiff.py` (sections matched
-by name and ordinal, relocations as multisets of `(offset, type, symbol
-name, addend)`, symbols by name). Configurations: GCC 14.2 and Clang
-19.1.7 × `-O0`/`-O2` × `-g`/none × `-ffunction-sections
--fdata-sections`/none, and kiln 1.2.1 + hod (kiln's driver with
-`KILN_BACKEND=hod KILN_HOD_STRICT=1`, hod at 7e30d7c8) at `-O0` only (hod
-takes `-O0` objects only, `kiln/spec/driver.md`). Base and edit compile
-in the same directory, so `DW_AT_comp_dir` does not differ. 600 rows
-(15 classes × 2 units × 20 configurations); load 20–30.
+The previous draft's census (E1, `census.py`: two units, no `assert` or
+`__LINE__`) is superseded: three of its claims are artefacts of the toy
+(the reviewer's M11), and its "`.text` size change" column printed the
+changed span, not a size delta (M9). This section is measured on the
+reviewer's 40-unit corpus (`corpus/`: `gen.py`, `lib.py`, `drive.py`,
+`summarize.py`, `link.py`, `unity.py`, `pch.py`) and its extension
+(`corpus2/`: `drive2.py`, `drift.py`, `hdredit.py`, `link2.py`).
 
-Table 1 (unit `a`, which the edit touches, unless the class edits the
-header; "relocations differing" counts records of the old or the new
-multiset that the other lacks, so a shifted record counts twice):
+**Corpus.** 38 small units and `big.cc` (4,957 lines, 540 functions) and
+`main.cc`, all including `common.h`: a `Widget` class, a container
+template, key-function and inline-only vtables, exceptions thrown across
+units, a `thread_local`, static constructors, strings, and `assert`,
+`__LINE__` and `__builtin_LINE()` in some functions. Twenty
+configurations: GCC 14.2 and Clang 19.1.7 × `-O0`/`-O2` × `-g`/none ×
+`-ffunction-sections -fdata-sections` ("fs")/none, and kiln 1.2.1 + hod
+(`KILN_BACKEND=hod KILN_HOD_STRICT=1`) at `-O0` × `-g`/none × fs/none.
+Base and edit compile in the same directory. 3,440 compiles (the
+reviewer's helper, load ~25) and 1,369 compiles and 54 linked programs
+(corpus2, load 1–2), none failing; every mortar-linked program prints the
+same checksum as the system linker's. Rebuilding unchanged sources gives
+byte-identical objects in all 20 configurations.
 
-| edit class | `.text` size change: gcc -O0 / gcc -O2 fs / clang -O0 / kiln -O0 | relocations differing (gcc -O0; with fs) | `.eh_frame` bytes changed (gcc -O0) | symbols added/removed (values changed: gcc -O0; with fs) | `.debug_info` changed (gcc / clang / kiln, -O0 -g) | `.debug_line` changed (gcc / clang / kiln) | unit `b` |
-|---|---|---|---|---|---|---|---|
-| comment-line (a line inserted near the top) | 0 / 0 / 0 / 0 | 0/627; 0/627 | 0/3784 | 0/0 (0; 0) | 153 B / 156 B / 130 B | 53 B / 98 B / 50 B | unchanged |
-| body-same (a constant changed) | 0 / 0 / 0 / 0 | 0; 0 | 0 | 0/0 | 0 | 0 / 0 / 16 B | unchanged |
-| body-grow (two statements added) | +56 / +24 / +64 / +56 | 344/627; 12/627 | 8 | 0/0 (15; 0) | 2 B | 27% / 21% / 32% | unchanged |
-| body-shrink (a statement removed) | −16 / +24 / −16 / −16 | 340; 12 | 2 | 0/0 (15; 0) | 1 B | 27% / 21% / 32% | unchanged |
-| fn-add (a function in the middle) | +56 / +24 / +40 / +64 | 525/630; 209/630 | 2933/3808 | 1/0 (16; 92) | 99% / 99% / 99% | 26% / 20% / 32% | unchanged |
-| fn-remove | −180 / −116 / −192 / −204 | 471; 211 | 2884 | 0/1 (14; 90) | 100% / 99% / 100% | 89% / 53% / 54% | unchanged |
-| global-add (`int g_new = 5;`) | 0 | 96; 0 | 0 | 1/0 (1; 12) | 99% / 99% / 99% | 0 | unchanged |
-| static-add (a static and its user) | +16 / +8 / +12 / +44 | 861; 241 | 3500 | 2/0 (30; 117) | 99% | 9% / 3% / 10% | unchanged |
-| string-change (a literal) | 0 | 16; 16 | 0 | 0/0 | 24 B | 16 B / 0 / 16 B | unchanged |
-| tls-add (a `thread_local` and its user) | +20 / +20 / +36 / +92 | 869; 241 | 3500 | 2/0 (30; 116) | 99% | 9% / 3% / 10% | unchanged |
-| ctor-add (a static object with a constructor) | +88 / +12 / +88 / +116 | 190; 191 | 2329/3880 | 10/0 (85; 82) | 99% | 46% / 46% / 47% | unchanged |
-| virtual-add (the vtable grows) | +28 / +12 / +32 / +52 | 170; 170 | 2309 | 2/0 (73; 75) | 99% | 45% / 53% / 54% | unchanged |
-| inline-hdr (an inline function's body in the header) | +4 / 0 / +4 / +4 | 0; 0 | 2 | 0/0 | 1 B | 8% / 38% / 11% | changed the same way |
-| template-hdr (a template member in the header) | +4 / +28 / +8 / +20 | 0; 0 | 2 | 0/0 | 1 B | 49% / 39% / 12% | changed the same way |
-| layout-hdr (a field added to a struct) | 0 (unit `b`: +12) | 0; 0 | 0 | 0/0 | 99% | 0 | `.text` +12, `.debug_info` 99% |
+Table 1 (objects that changed among those recompiled; "kiln `-g`" where
+kiln with `-g` differs from the other compilers):
 
-The per-category view (`census.py --detail`, gcc and kiln at `-O0 -g
--ffunction-sections`) adds what the table compresses:
+| edit | what | objects changed | what changed in them |
+|---|---|---|---|
+| e1 | a constant in `big.cc`, same size | 1 | with fs one section of 104–120 B of a 176–234 KB `.text`; no debug byte at GCC/Clang `-O0`; at `-O2` the caller that inlines it too |
+| e2 | two statements added to a function in the middle of `big.cc` | 1 | without fs the bytes differ from offset 776 (GCC `-O0`), 1,128 (Clang), 1,364 (kiln) of a 129 KB `.text`: GCC's assembler resolves a `bl` to an internal-linkage function in the same section without a relocation, so code growing in between changes an earlier, unedited function (220 of 820 functions differ); with fs 47 of ~1,090 allocated sections differ (`.eh_frame` and functions whose `__LINE__` moved) |
+| e3 | a comment line at the top of `big.cc` | 1 | 90 of ~800 functions (those with `assert`/`__LINE__`) in every compiler; GCC's `.text` shrinks 4 bytes |
+| e4 | a comment line in `common.h` | 40 of 40 | allocated bytes in 39 of 40 (an inline function's `__LINE__`, `Bag::at`'s `assert`) |
+| e5 | a default argument in `common.h` | 13 of 40; kiln `-g`: 40 | one function per caller; kiln `-g`: 27 more objects differ **only** in `common.h`'s DWARF 5 MD5 in `.debug_line` (E2'-B) |
+| e6 | a member added to `Widget` | 34 of 40; kiln `-g`: 40 | Widget code, `.eh_frame`, `.symtab`, debug; kiln `-g`: 6 more MD5-only |
+| e7 | a function renamed in 4 units | 4 | |
+| e8 | a line above `checked_07` in `t07.cc` | 1, same size | `checked_07` and `lineb_07` (assert, `__LINE__`), not `plain_07` |
+| e9 | a function added to `big.cc` | 1 | as e2, plus the symbol table |
+| e10 | a string literal made longer | 1 | GCC `-O2` fs: one per-function `.rodata.str` section and addends in 138–139 sections |
+| add a unit | `tx.cc` (a function, a global with a dynamic initializer, a literal) added to the link | 1 new file | 548–652 B allocated, 46–60 KB of debug (`-g`) |
+| remove a unit | the reverse | 1 file gone | |
+| archive member | e8, and a same-size constant edit, with `t00`–`t37` in `libt.a` | 1 member | regular `ar rcsD`: the archive keeps its size and every member offset; the member's header is identical before and after (`date=0 uid=0 gid=0 mode=644`, same size): **only the member's bytes differ**. Thin `ar rcsDT`: the archive file is byte-identical; the member file's mtime changes |
+| extraction | `t07.cc` now calls `tx_fn`, defined by `tx.o` in `libt.a` | 1 member + 1 newly extracted | the archive grows by 96–208 B, 31 of 39 member headers move; live files 488 → 489 |
 
-- **Every class that adds or removes a symbol or a section** changes the
-  object's symbol-table order (`symtab order changed` in every such row),
-  every `SHT_GROUP` section's member list (82 of 90 groups for gcc, 101
-  of 107 for kiln, because section indices shift), `.eh_frame` from the
-  insertion point on, and nearly all of `.debug_info` (DIE offsets
-  shift), `.debug_str` (gcc: 9,974 to 52,815 bytes of 58,344, because the
-  object's string table is reordered) and `.symtab`/`.strtab`.
-- **Without `-ffunction-sections`, `.text` is one section per object**,
-  so a body that grows shifts every later function: 344 of 627
-  relocation records move (gcc), 368 of 676 (kiln). With it, 12.
-- **A body edit with no size change** changes one byte of one section and
-  nothing else; at `-g`, kiln also changes 16 bytes of `.debug_line`
-  (the source file's MD5 in the DWARF 5 file table), GCC and Clang
-  nothing.
-- **A comment line** changes no allocated byte at all; only `.debug_info`
-  (`DW_AT_decl_line`) and `.debug_line`.
-- **hod's DWARF needs almost no relocations**: 5 relocation records in
-  `.debug_info` for the kiln unit against 2,220 for GCC's (hod uses
-  `.debug_str_offsets` and `.debug_addr`; `hod/spec/dwarf.md`), and one
-  line-table sequence per function by design (`hod/spec/dwarf.md` §5.6).
-- **A header edit** changes every including unit the same way (the
-  inline function's or template's COMDAT copy in each); the keeper of the
-  group stays the lowest live file (`spec/resolve.md` §6.1), so it is "the
-  keeper's file changed", plus every other includer changed.
-- **No edit class changed unit `b`** unless it edited the header. No
-  edit class changed anything outside the objects of the units compiled.
+Findings:
 
-### 1.2 What the census decides
+- **No edit changed an object whose source and headers were unchanged**,
+  at `-O0` and `-O2` (the one claim of the old census that holds).
+- **A comment line changes allocated bytes** wherever a function uses
+  `assert`, `__LINE__` or `__builtin_LINE()` below it (e3, e8), in every
+  compiler, kiln included.
+- **An edit outside a function can change the function's bytes**: by
+  `__LINE__` (e3, e8), by inlining at `-O2` (e1), and without fs by
+  assembler-resolved branches (e2).
+- **A header edit changes the includers that use what changed** (13 of 40
+  for e5, 34 of 40 for e6), not all of them; except **kiln `-g`, where
+  every includer changes**, measured per object (E2'-B,
+  `hdredit.py`): the 27 (e5) and 6 (e6) extra objects differ only in
+  `.debug_line`, with no relocation differences, and their
+  `llvm-dwarfdump --debug-line` dumps differ in exactly one line: the
+  `md5_checksum` of `common.h`. GCC 14 emits no MD5s. Clang emits a
+  line table with MD5s only when every file of the unit has one; in the
+  corpus 20 of 54 files (libstdc++ headers, `<stdin>`) have none, so its
+  objects carry none, but a unit including only local headers does
+  change on a header edit under Clang too (control test). kiln emits
+  MD5s for all 56 of 56 files. §8.3's kiln request follows.
+- **Debug sizes barely move on these edits**: over 745 changed `-g`
+  objects, the new debug size over the old is 1.0000 at the median,
+  1.0005 / 1.0021 / 1.0002 at p90 (GCC / Clang / kiln), 1.0149 at most
+  (`drift.py`). Contents change almost whole (DIE offsets shift), sizes
+  do not; larger edits (functions or types added) grow them more (§6).
+- **Archives**: deterministic `ar` leaves no trace of a same-size member
+  edit in the archive's headers (IN-24); a thin archive turns it into a
+  `stat` of the member file.
+- **Unity builds and PCH** (the reviewer's helper, `unity.py`, `pch.py`):
+  a unity object (`t00`–`t09` in one unit, a constant changed in `t05`)
+  is 3.7× (GCC `-O0`) to 7.7× (GCC `-O2`) larger in allocated bytes than
+  `t05.o` alone, so a file-level refill costs that much more; with fs the
+  differing sections are small either way (12 KB vs 4.6 KB). PCH does not
+  widen the change set (40, 13, 34 objects for e4, e5, e6), but no PCH
+  object is byte-identical to its non-PCH build, so switching PCH on or
+  off refills everything.
+- **hod's DWARF needs almost no relocations** (the old census, still
+  true): 5 relocation records in `.debug_info` for a kiln unit against
+  2,220 for GCC's (hod uses `.debug_str_offsets` and `.debug_addr`;
+  `hod/spec/dwarf.md`).
 
-1. **Granularity: the file.** In every class that is not a pure
-   same-size body edit, the changed object differs in symbol order,
-   section indices, group contents, `.eh_frame` and debug offsets. A
-   design that tried to reuse rows *inside* a changed file (relocation
-   indices, symbol indices, per-section `.eh_frame` pieces) would save
-   nothing in the common case and must match old to new by anchor in the
-   rest. The incremental link re-reads a changed file whole and refills
-   every unit of it. Section **identity** (model §7.1's anchor) is still
-   needed, to keep a changed file's region (IN-30) and, later, to let
-   unchanged sections of a changed file stay in place (IN-31).
-2. **Size changes are the common case.** 9 of the 15 classes change
-   `.text`'s size; a body-grow of two statements adds 24–64 bytes. A
-   design that is fast only for same-size edits (body-same, string-change
-   at equal length) covers 2 classes of 15.
-3. **The debug contribution of a changed unit changes as a whole**
-   (99–100% of `.debug_info` whenever a symbol or section is added or
-   removed). Replacement is per compile unit; a finer delta inside a unit
-   is not worth designing (§6).
-4. **Cross-file effects come only through symbols and COMDAT groups**:
-   the global symbols a changed file defines or references, the groups it
-   holds, archive extraction (which members are pulled), and synthetic
-   tables (GOT, PLT, `.init_array`, `.eh_frame_hdr`, `.symtab`).
+### 1.2 What the corpus decides
+
+1. **Granularity of change detection: the file, in v1.** Every edit
+   changes whole objects (symbol order, section indices, `.eh_frame`,
+   debug offsets); nothing outside the edited objects changes. v1
+   re-reads a changed file whole and refills every unit of it.
+2. **That is coarse exactly where the bench's defaults are.** The
+   coarseness factor (bytes a whole-file refill rewrites ÷ bytes of only
+   the sections whose bytes or relocations differ; allocated and debug,
+   allocated only in brackets; without `-g` the bracket is the figure;
+   the reviewer's helper, `summarize.py`):
+
+   | config | e1 | e2 | e3 | e4 | e5 | e6 | e7 | e8 | e9 | e10 |
+   |---|---|---|---|---|---|---|---|---|---|---|
+   | gcc-O0-g-fs | 4483 (1692) | 1.8 (5.8) | 1.8 (5.1) | 2.3 (159) | 285 (35) | 1.1 (2.6) | 1.2 (11) | 2.4 (316) | 1.5 (5.8) | 2.7 (4.6) |
+   | gcc-O0-g-nofs | 3.3 (1.4) | 1.2 (1.1) | 1.2 (1.1) | 2.3 (159) | 63 (7.9) | 1.1 (1.8) | 1.2 (10) | 2.4 (8.2) | 1.1 (1.1) | 1.6 (1.3) |
+   | gcc-O2-g-fs | 105 (9.4) | 1.1 (3.5) | 1.1 (3.3) | 1.6 (4.0) | 2.3 (2.8) | 1.0 (1.9) | 1.2 (3.2) | 1.5 (2.6) | 1.1 (3.5) | 43626 (3055) |
+   | gcc-O2-g-nofs | 18.6 (1.4) | 1.0 (1.1) | 1.0 (1.1) | 1.6 (2.6) | 2.3 (1.9) | 1.0 (1.3) | 1.3 (2.5) | 1.5 (1.8) | 1.0 (1.1) | 1.2 (1.3) |
+   | clang-O0-g-fs | 4157 (1876) | 1.8 (5.7) | 2.0 (16.7) | 2.9 (138) | 81 (25) | 1.1 (2.6) | 6.6 (9.9) | 1.3 (217) | 1.6 (5.7) | 3.1 (4.9) |
+   | clang-O0-g-nofs | 2.8 (1.3) | 1.1 (1.1) | 1.2 (1.3) | 3.0 (138) | 35 (7.2) | 1.1 (1.7) | 6.7 (9.4) | 1.3 (7.7) | 1.1 (1.1) | 1.6 (1.3) |
+   | clang-O2-g-fs | 1.6 (18.9) | 1.1 (5.3) | 1.1 (5.0) | 2.2 (4.0) | 2.8 (3.7) | 1.1 (2.4) | 2.2 (4.3) | 1.1 (2.4) | 1.1 (5.3) | 1.1 (1.4) |
+   | clang-O2-g-nofs | 1.4 (1.3) | 1.0 (1.1) | 1.0 (1.1) | 2.1 (1.8) | 2.8 (2.5) | 1.0 (1.3) | 2.2 (3.4) | 1.1 (1.9) | 1.0 (1.1) | 1.0 (1.0) |
+   | kiln-O0-g-fs | 6.8 (1946) | 2.4 (5.4) | 2.9 (15.8) | 3.1 (138) | 12.1 (112) | 1.3 (2.9) | 4.8 (10.3) | 3.1 (216) | 1.7 (5.4) | 4.0 (5.0) |
+   | kiln-O0-g-nofs | 1.9 (1.3) | 1.2 (1.1) | 1.4 (1.3) | 3.1 (138) | 11.2 (28.6) | 1.3 (2.0) | 5.0 (11.0) | 2.9 (8.9) | 1.1 (1.1) | 1.8 (1.3) |
+
+   With `-g` the factor is 1.0–3.3 for most edits, because the debug
+   contribution changes almost whole and dominates; without fs, `.text`
+   is one section per object and the factor is 1.1–1.4 for edits in big
+   units. With fs and no `-g` (the bench's GCC/Clang defaults) it is
+   2.6–316 for most edits and 1,692–4,483 for a same-size constant. So
+   the claim "section-level reuse would save nothing in the common case"
+   is wrong as a general statement, and **section-level refill is the
+   designed second step** (IN-31, its own package, §10), entered by
+   §1.5's go/no-go rule. Its benefit is bounded by the window effect of
+   §1.5 (a dirty 1 MiB window is refilled whole), which is why it is
+   second.
+3. **Size changes are the common case** for allocated sections (e2, e6,
+   e9, e10 resize; e1, e3, e8 may not), and **debug contributions change
+   in content almost whole but in size hardly at all** (§1.1): replacing
+   a debug contribution in place within a rounded size class (IN-50)
+   covers nearly every edit measured.
+4. **Cross-file effects come only through symbols, COMDAT groups, the
+   TLS layout, liveness and synthetic tables**, and through archive
+   extraction: IN-27's rows.
+5. **Nothing a compiler emits is trusted to stay put**: `__LINE__`,
+   inlining and assembler-resolved branches change functions the edit
+   did not touch, so any finer reuse (IN-31) compares bytes and
+   relocations by mortar's own hash.
 
 ### 1.3 Archives in the development loop
 
@@ -177,12 +219,16 @@ twin `cxx-medium-g-static`) links `main.cc.o`, `libprotoc.a` (116.8 MB,
 files (E3). An edit of one protobuf source rebuilds one object and then
 the **archive** (CMake's default), so the common protoc edit reaches the
 linker as "a regular archive changed". GNU `ar` rewrites the whole file;
-the unchanged members keep their bytes (Debian's `ar` is deterministic,
-`D`, so their headers too) but move. Finding the changed member means
-reading the archive: 80–160 ms for `libprotoc.a` (`cat` to `/dev/null`,
-three runs, load 29). A thin archive (`ar T`) names members as files and
-needs one `stat` each (4.3 µs measured per `stat`, E2). §8.3 asks kiln's
-driver to recommend thin archives in its development profile.
+with Debian's deterministic default (`D`) every member header carries
+date 0, uid 0, gid 0 and mode 644, so **a same-size member edit changes
+nothing in the archive but the member's bytes** (E2'-C: the archive keeps
+its size and every member offset; the header is identical before and
+after). Finding the changed member therefore means reading and hashing
+every member: 53–94 ms for `libprotobuf.a` single-threaded, 50–70 ms in
+the floor emulation (§1.5, IN-24). A thin archive (`ar T`) names members
+as files: the archive file stays byte-identical and the member's own
+`stat` (4.3 µs, E2) finds it. §8.3 asks kiln's driver to use thin
+archives in its development profile.
 
 ### 1.4 The shape of a big link (E3)
 
@@ -222,58 +268,114 @@ Three consequences:
   percentile. Patching through the index, not indirection, is the right
   mechanism (§2.7).
 
-### 1.5 The time of a full link and the floor of an incremental one (E2, E5)
+### 1.5 The time of a full link and the floor of an incremental one (E2', E1')
 
-Full mortar links of the bench's static protoc (release build of this
-branch; five runs each, load 21–23; `--time-phases`):
+**Baseline.** Full links of the bench's static protoc by mortar at main
+`2a31ada` (merged into this branch at `ae4544f`; the branch adds only
+spec text), release build, output on the container's overlay `/tmp`,
+eight runs each, load 5–6 (`baseline.sh`, `--time-phases`, `/usr/bin/time
+-v`):
 
-| link | wall (5 runs) | peak RSS |
-|---|---|---|
-| protoc `-O0 -g` static (50.3 MB out) | 781, 592, 565, 604, 571 ms | 246–254 MB |
-| protoc `-O0` static (11.8 MB out) | 471, 355, 379, 345, 316 ms | 143–147 MB |
+| link | first run | warm runs (7) | peak RSS |
+|---|---|---|---|
+| protoc `-O0 -g` static (50.3 MB out, 164 MB live input) | 0.43 s | 0.18–0.22 s | 252–258 MB |
+| protoc `-O0` static (11.8 MB out, 44 MB live input) | 0.20 s | 0.12–0.14 s | 144–151 MB |
 
-Phases of a typical `-g` run (565 ms): input 240, resolve 32, assignment
-13, split 60, liveness 2, scan 9, synthetic 5, layout 68, image 128 ms.
-Without `-g` (316 ms): input 98, resolve 24, assignment 11, split 10,
-scan 10, synthetic 17, layout 96, image 43 ms.
+Phases of a typical `-g` run (191.2 ms): input 87.1, resolve 7.9,
+assignment 3.8, split 12.9, liveness 1.1, scan 4.5, synthetic 3.2,
+layout 21.6, image 44.6 ms. Without `-g` (120.7 ms): input 57.7, resolve
+8.4, assignment 4.1, split 3.5, scan 4.4, synthetic 3.3, layout 21.8,
+image 13.5 ms. The previous draft's baseline (565–781 ms and 316–471 ms,
+load 21–23) was mortar before the M2 train's input and image work, at
+four times the load; the reviewer measured 274–295 ms and 210–355 ms at
+load ~20. Every speedup below is against 0.19 s and 0.12 s.
 
-The parts of an incremental link, measured on this host:
+**The floor, as a timed emulation** (`floor.py`, E1'): every I/O the
+design does, performed for real on the real output and inputs, and the
+CPU parts that need mortar code taken from the full link's
+`--time-phases` in proportion to the bytes they touch ("derived"). It is
+not a prototype: no relocation is applied. For each changed file (the
+largest, `descriptor.cc.o`, and the median live member), the refill is
+its own units plus the units of other files whose relocations name a
+global it defines (IN-27); the **dirty windows** are the 1 MiB windows
+(image.md I-75, IMAGE_BLOCK) those units overlap, plus the ELF header's,
+`.symtab`/`.strtab`'s (rewritten whole, S-112) and `.eh_frame_hdr`'s; a
+dirty window is filled whole (I-95), so the refill reads every unit that
+overlaps it, coalesced into one positioned read per run of units with
+gaps under 64 KiB, on 8 threads. Timed parts: `stat` of every input,
+stamps (IN-22a), reading the 9 MB state with a CRC, change detection
+(thin archive: read and hash the object; regular archive: read the
+archive and hash every member, IN-24), the refill reads, and the writes
+of IN-46 with their four `fdatasync`s (in place) or IN-47's copy, sync and
+rename (copy), plus the state's write. Derived: the resolve phase whole
+(IN-26 re-resolves everything), the input phase × changed bytes / input
+bytes, the image phase × refilled bytes / output bytes. Medians of 5,
+load 9–11, CRC-32 standing in for L128 (slower, so the hash parts are
+upper bounds):
 
-| part | measured | source |
-|---|---|---|
-| `stat` of one input | 4.3 µs (8 files × 1000) | E2 |
-| read 217 MB of inputs (all of protoc's) | 120–220 ms (`cat`, 3 runs) | E2 |
-| read `libprotoc.a` (117 MB) | 80–160 ms | E2 |
-| hash, `L128` | 85 ms per GiB on one thread (12.6 GB/s) | `spec/image.md` I-74 |
-| positioned write of 4 KiB / 64 KiB / 1 MiB / 16 MiB into a 1 GiB file | 0.02–0.76 / 0.06–0.10 / 1.4–2.0 / 20–34 ms | E5 |
-| the same followed by `fdatasync` (4 KiB / 1 MiB / 8 MiB, 50 MB file) | 0.1–0.9 / 1.3–3.4 / 6.8–9.2 ms | E5 |
-| copy of 100 MiB / 1 GiB (`copy_file_range`; read/write) | 54–142 / 1785–2913 ms; 47–65 / 2490–2831 ms | E5 |
-| reflink (`FICLONE`) on the container's overlay file system | not supported (`ENOTSUP`) | E5 |
-| `rename` of a 1 MiB file over a 1 GiB one | 198 ms (the old blocks are freed) | E5 |
-| open a running executable for writing | `ETXTBSY`; `rename` over it is allowed | E5 |
+| protoc `-g` (full link 191 ms) | thin, in place | thin, copy | regular, in place | regular, copy |
+|---|---|---|---|---|
+| `descriptor.cc.o` (5,309 own units, 456 referrer units, 18 dirty windows, 13.1 MB refilled), overlay | 63 ms (3.0×) | 112 ms (1.7×) | 132 ms (1.45×) | 178 ms (1.07×) |
+| the same, virtiofs | 88 ms (2.2×) | 105 ms (1.8×) | 169 ms (1.13×) | 144 ms (1.33×) |
+| median member `importer.cc.o` (285 own, 9 referrer units, 15 windows, 10.0 MB), overlay | 55 ms (3.5×) | 90 ms (2.1×) | 107 ms (1.8×) | 150 ms (1.27×) |
+| the same, virtiofs | 73 ms (2.6×) | 78 ms (2.5×) | 124 ms (1.5×) | 130 ms (1.5×) |
 
-The floor of "one function body grew within its region, `-g`, protoc"
-(*estimate*, the sum of the parts; the prototype that would measure it is
-stage S1's, §10):
+| protoc without `-g` (full link 122 ms) | thin, in place | thin, copy | regular, in place | regular, copy |
+|---|---|---|---|---|
+| `descriptor.cc.o` (12 windows, 6.3 MB), overlay / virtiofs | 47 / 53 ms (2.6× / 2.3×) | 54 / 68 ms | 63 / 72 ms | 76 / 76 ms (1.6×) |
+| median `primitive_field.cc.o` (10 windows, 4.2 MB), overlay / virtiofs | 38 / 48 ms (3.2× / 2.5×) | 49 / 54 ms | 56 / 66 ms | 66 / 67 ms (1.8×) |
 
-| step | thin archive or plain object | regular archive |
-|---|---|---|
-| stat the inputs and probes (~100) | < 1 ms | < 1 ms |
-| read and hash the changed input | ~1 ms (one 1–2 MB object) | 80–160 ms |
-| load and validate the state (7–11 MB) | ~10 ms | ~10 ms |
-| parse the changed file, re-resolve over stored summaries | ~5 ms (resolve is 32 ms for 784 files) | ~5 ms |
-| refill: the file's units (p99 135 KB alloc + 823 KB debug) and the fan-out (p99 1.35 MB) | ~5–10 ms | ~5–10 ms |
-| `.symtab`/`.strtab` rewritten whole (5.4 MB, S-112) | ~10 ms | ~10 ms |
-| write dirty windows (2–8 MB) | 3–15 ms | 3–15 ms |
-| write the state (7–11 MB) | ~10–15 ms | ~10–15 ms |
-| **total** | **~40–60 ms** | **~120–200 ms** |
+Where the time goes (`descriptor.cc.o`, `-g`, thin, in place, overlay):
+stat 0.5, stamps 0.0, state 3.4, detect 3.0, refill reads 12.9, writes
+19.1, derived 24.2 ms. Three findings:
 
-against 565–780 ms for the full link: about 10× and 3–5× faster.
-Without `-g` the full link is 316–471 ms and the floor about the same
-minus the debug refill. The two largest items of the regular-archive
-column (reading the archive; rewriting `.symtab`) are the first targets
-of later optimisation (IN-24's parallel member hashing; S-112's per-file
-`.symtab` capacity, synth.md Q8).
+1. **A regular archive costs 50–70 ms of detection** (`libprotobuf.a`,
+   85 MB, read and hashed; 15 ms for the 25 MB no-`-g` archive), more
+   than the rest of the update. Thin archives remove it (§8.3).
+2. **The copy costs 30–40 ms more than in place** at 50 MB (IN-47), and
+   grows with the output, not with the edit.
+3. **The window, not the edit, sets the refill.** The median member's
+   own units and referrers are 287 KB, yet 15 windows (10 MB) are
+   refilled, because a 1 MiB window is filled whole and `.symtab` and
+   `.strtab` (5.4 MB, six windows) are rewritten on every update. Neither
+   section-level change detection (IN-31) nor a smaller fan-out shrinks
+   this; smaller windows for the update (image.md I-75 is a build-id leaf
+   size, not a write size) or per-file `.symtab` ranges (synth.md Q8)
+   would.
+
+So on protoc an update is **1.1–3.5× faster** than today's full link,
+not the 3–10× the previous draft estimated against a stale baseline:
+the full link got 3× faster in the meantime, and protoc is small (a
+0.19 s link). The case for incremental linking rests on large programs,
+where the full link grows with all inputs (input and image are 69% of
+it) and the update with the edit, the windows and (on the copy path)
+the output. A 10× protoc (1.6 GB of inputs, a 500 MB output) is not in
+the bench; for it the derivation gives a full link of ~2 s and an
+update dominated by the copy (0.2–0.75 s at E7's and the reviewer's
+rates) unless it is in place or reflinked (*estimate*, linear scaling,
+not measured).
+
+**Go/no-go rule.** WP-061's first deliverable is the floor **measured
+with mortar's own code** (state read and validated, stat and stamps,
+change detection, re-resolution, refill through windows, IN-46/IN-47
+writes; relocation of refilled units through the image phase), on
+protoc `-g` and on a workload at least 5× larger in live input bytes
+(the bench has none: WP-061 adds one, e.g. a generated 200-unit program
+scaled up, or LLVM's `opt` if it builds here), thin archives, both write
+paths. Then:
+- **go** (S2–S6 as cut, §10) if on the large workload the median-file
+  update on the default write path is at most **1/3** of a plain full
+  link, and on protoc at most **1/2**;
+- **change order** if it misses only because of a named part: regular
+  archive detection → parallel member hashing and the kiln request
+  first; the copy → the operator's M4 decision is revisited with the
+  number; window refill → smaller update windows in S4; changed-file
+  refill without `-g` with `-ffunction-sections` above **25%** of the
+  update → IN-31 (section-level refill) moves before S5;
+- **no-go** if no named change brings it under 1/2 on the large
+  workload: M7 stops after S1 (the state is kept for tuck), and the
+  operator is told that a fast full link is the better investment, with
+  the numbers.
 
 ### 1.6 Debug information under replacement (E6, E6b)
 
@@ -415,11 +517,17 @@ it after M7; nothing here forecloses it.
 | hints from the build system | accepted only to force more checking, never less | a wrong "unchanged" hint would give a wrong output silently (IN-23) |
 
 The architecture's starting position ("Incremental linking",
-`docs/ARCHITECTURE.md`) is kept in shape and corrected in three places,
-each with its measurement: the index is per unit and mostly per global
-(§1.4), not "from each symbol to the fields that refer to it"; per-section
-content hashes are not needed for correctness (IN-22); and debug
-contributions are neutralized, not only tombstoned (§1.6).
+`docs/ARCHITECTURE.md`) is kept, and corrected in one sentence: its
+"index from each symbol to the fields that refer to it" becomes the
+per-unit index that `model.md` §7.2 already defines ("the units whose
+bytes depend on it"; IN-25 implements it and names its non-relocation
+targets), at 15 times fewer rows than a field-level one (§1.4). Two other
+positions the previous draft presented as overturned were already the
+model's: ids do not survive a link, identities do (model §7.1); and the
+index is per unit (§7.2). Per-section content hashes are not needed in
+v1 (the file is the unit of change detection) and are mortar's own work
+in v2 (IN-31), never a compiler's. Debug contributions are neutralized,
+not only tombstoned (§1.6).
 
 ## 3. Correctness
 
@@ -1025,26 +1133,40 @@ with each phase fed from the state for unchanged files:
   sections have one in v1, IN-50). *Test:* L10 grows one function step by
   step past its region, its section's tail and its segment's reserve,
   and checks the reasons.
-- **IN-33 [v1] How much slack** (answers layout.md Q8: per region, with
-  per-section and per-segment reserves):
+- **IN-33 [v1] How much slack** (answers layout.md Q8: per region in
+  L-143 sections, with per-section and per-segment reserves):
 
-  | where | capacity | protoc `-g` |
+  | where | capacity | protoc `-g` (measured model, `regions2.py`) |
   |---|---|---|
-  | each region (allocated) | `size + max(64 B, size/8)`, rounded up to the alignment | ~0.9 MB over 7.07 MB plus ~0.25 MB of minimums |
-  | each output section's tail | `max(4 KiB, size/16)` | ~0.3 MB |
-  | each `PT_LOAD`: gap to the next, in file and address space | `max(64 KiB, filesz/8)` rounded up to the maximum page size | ~0.6 MB (the address-space gap of `.bss` costs no file bytes) |
-  | each debug section's tail (§6) | `max(64 KiB, size/8)` | ~4.7 MB over ~38 MB |
-  | merged sections (`.rodata.str*`, `.comment`, `.debug_str`) | `size/8` at the tail (L-147) | in the rows above |
-  | `.eh_frame` per-file range (S-111), `.eh_frame_hdr` | `size/8` each | ~0.13 MB |
+  | each region (allocated, L-143 sections only) | `size + max(64 B, size/8)`, rounded up to the alignment | 797 KB over 5.28 MB in 2,936 regions (1,820 of them under 64 B, so the minimum dominates); `.bss` regions included, which cost no file bytes, so an upper bound |
+  | each allocated output section's tail | `max(4 KiB, size/16)` | 463 KB |
+  | each `PT_LOAD`: gap to the next, in file and address space | `max(64 KiB, filesz/8)` rounded up to the maximum page size (64 KiB here) | 983 KB (4 `PT_LOAD`s) |
+  | each packed (L-142) section | `size/8` past the chunk (IN-30) | 122 KB |
+  | each debug section's tail (§6) | `size/32` | 1.20 MB |
+  | each debug contribution (§6, IN-50) | its size class: `size` rounded up to `m·2^k`, `m` in 8..15, at least 32 B | 1.45 MB of rounding (+4.8% of the debug bytes) |
+  | merged sections (`.rodata.str*`, `.comment`, `.debug_str`) | their tail (L-147) | in the rows above |
   | `.symtab`, `.strtab` | none (rewritten whole, S-112) | 0 |
 
-  On protoc the output grows by about 6.5 MB (13% of 50.3 MB) with `-g`,
-  and about 1.2 MB (10% of 11.8 MB) without (*estimate*, from the sizes
-  in §1.4; S2 measures it). The reserves are written as fill bytes, not
-  left sparse (a synced or copied file would expand them anyway). A plain
-  link uses capacity = size everywhere: the same code path with a zero
-  slack function. *Test:* the bench's incremental rows report the output
-  size of an incremental-mode first link against a plain one.
+  On protoc the output grows by **5.02 MB (+10.0% of 50.3 MB) with `-g`**
+  and **2.37 MB (+20.1% of 11.8 MB) without** (`regions2.py` over the real
+  map and output; the previous draft's 13% / 10% were not a model of
+  these rules, and the reviewer's model of them gave +14.2% with `-g`).
+  Without `-g` the fixed minimums (4 `PT_LOAD` reserves of at least 64
+  KiB, 4 KiB section tails, 64-byte region minimums) are most of it; on a
+  larger program they shrink relative to the output. The debug tail was
+  sized from the M2 model (IN-57): with `size/32` plus size classes, the
+  p50 and p90 files take more than 500 consecutive corpus-drift updates
+  before compaction, the p99 file 297 and the largest 227; with no debug
+  tail, 18–121; tails of `size/8` (+17.2% in all) reach 500 for all four
+  but only on the corpus's drift, which is nearly 1.0 (IN-57 gives the
+  sensitivity to growing edits). The operator decides the overhead
+  (record (a)).
+  The reserves are written as fill bytes, not left sparse (a synced or
+  copied file would expand them anyway). A plain link uses capacity =
+  size everywhere: the same code path with a zero slack function.
+  *Test:* the bench's incremental rows report the output size of an
+  incremental-mode first link against a plain one, and S2 compares it
+  with this table.
 
 ### 5.7 Special structures
 
@@ -1316,19 +1438,35 @@ objects.
 
 What a debug contribution is: for each input file and each debug output
 section, the file's bytes in that section (`nplace` lines of the map).
-The file is the unit (§1.2): every edit class that adds or removes a
-symbol changes 99–100% of the file's `.debug_info` (§1.1). Debug
-contributions refer to their own file only (104 of 170,477 debug pairs
-name a global, §1.4), so a debug contribution is refilled when its file
-changes or when one of its file's sections moves (IN-25).
+The file is the unit (§1.2): a changed file's debug contributions change
+in content almost whole (DIE offsets shift) but in size hardly at all
+(745 corpus samples: new/old 1.000 at the median, at most 1.015, §1.1).
+Debug contributions refer to their own file only (104 of 170,477 debug
+pairs name a global, §1.4), so a debug contribution is refilled when its
+file changes or when one of its file's sections moves (IN-25).
 
-- **IN-50 [v1] Where a new contribution goes.** A changed file's new
-  debug contributions are appended at the tails of their debug sections,
-  within the tail reserve (IN-33). The old contributions become dead.
-  The order of units in `.debug_info` is then no longer the load order;
-  nothing in DWARF depends on unit order (units are found by offset,
-  through `.debug_aranges`, or by walking), and E6 links the new unit
-  last with equal gdb transcripts. *Test:* E6b in L10 (IN-59).
+- **IN-50 [v1] Where a new contribution goes.** Every debug contribution
+  (strings excepted, IN-56) is **allotted its size class**: its size
+  rounded up to `m·2^k` with `m` in 8..15 (at most 12.5% over, at least 32
+  bytes); the bytes between its end and the allotment's end are a dead
+  range in neutral form (IN-51, IN-53). A changed file's new contribution
+  goes, first fit:
+  1. **in place**, if it fits the file's current allotment (the common
+     case: sizes barely move, §1.1);
+  2. else **best fit into a dead range** of the same section, where the
+     remainder is 0 or at least the section's minimum neutral length
+     (IN-53);
+  3. else **at the section's tail** reserve (IN-33);
+  and the old allotment, if left, becomes a dead range (IN-3a). A full
+  link's first-time placement is the full-link order with every
+  contribution in its allotment. The order of units in `.debug_info` is
+  then no longer the load order; nothing in DWARF depends on unit order
+  (units are found by offset, through `.debug_aranges`, or by walking),
+  and E6 links the new unit last with equal gdb transcripts. The rounding
+  costs 1.45 MB on protoc `-g` (+4.8% of 30.4 MB of debug bytes,
+  `debug_tail_reuse.py`). *Test:* E6b in L10 (IN-59); an L10 sequence
+  that grows a file's debug contribution past its class, so that each of
+  the three placements happens, with `--incremental-report` naming which.
 - **IN-51 [v1] Dead `.debug_info` units are neutralized.** Each unit of
   a dead contribution keeps its offset and its `unit_length`; its header
   becomes a compile-unit header (DWARF 5: `DW_UT_compile`; type and
@@ -1385,14 +1523,39 @@ changes or when one of its file's sections moves (IN-25).
 - **IN-56 [v1] Strings.** `.debug_str` and `.debug_line_str` are merged
   sections: new strings are appended (S-110), dead ones stay. A neutralized
   unit names no string.
-- **IN-57 [v1] Compaction.** When the dead bytes of a debug section
-  exceed a quarter of its size, or its tail reserve is exhausted, the
-  update falls back (`debug-compaction`): the full link writes the debug
-  sections without dead units. [later] A debug-only rewrite: the
+- **IN-57 [v1] Compaction.** When the dead bytes **summed over all debug
+  sections** exceed a quarter of their summed size, or a contribution
+  fits nowhere (IN-50), the update falls back (`debug-compaction`): the
+  full link writes the debug sections without dead ranges. Measured by
+  the M2 model (`corpus2/debug_tail_reuse.py`: the real protoc `-g` map,
+  every contribution in its size class, IN-50's three placements, new
+  sizes drawn from the corpus's 745 drift samples, 500 consecutive
+  updates of one file), the updates of one file before compaction:
+
+  | debug tail | largest file (1.50 MB of debug) | p99 (748 KB) | p90 (403 KB) | p50 (214 KB) |
+  |---|---|---|---|---|
+  | `size/8` (3.98 MB) | ≥ 500 | ≥ 500 | ≥ 500 | ≥ 500 |
+  | `size/16` (1.99 MB) | 227 | ≥ 500 | ≥ 500 | ≥ 500 |
+  | **`size/32` (0.99 MB), IN-33** | 227 | 297 | ≥ 500 | ≥ 500 |
+  | none | 88 | 18 | 19 | 121 |
+
+  Reuse of dead ranges (IN-50 step 2) changed none of these numbers: in
+  a sequence of edits to one file the old allotment is the size class
+  below the new one and never fits it. It is kept because it serves
+  edits that alternate between files or that shrink and grow again (not
+  measured here). The result is sensitive to drift: with synthetic drift
+  uniform in [1.00, 1.02] per update and tails of `size/8`, the four
+  files reach compaction after 10, 19, 45 and 88 updates; in [1.00,
+  1.05], after 3, 7, 20 and 34; in [0.95, 1.05] (no net growth), ≥ 500
+  for all (`results/drift-*.tsv`). So a long run of growing edits
+  compacts every few dozen updates whatever the tail, which IN-57's fall
+  back makes a cost, not a failure. [later] A debug-only rewrite: the
   allocated part of the output is untouched (no address depends on a
   non-allocated section), and only the non-allocated sections are
-  rewritten compactly (the debug part of the image phase, about 85 ms
-  of the 128 ms on protoc, *estimate*).
+  rewritten compactly (the debug part of the image phase, ~30 of 45 ms of
+  image on protoc `-g`, *estimate* from §1.5's phases). *Test:* L10 runs
+  a growing sequence to compaction and checks the reason; the model is
+  re-run on S5's real sizes.
 - **IN-58 [v1] Debug options.** `--compress-debug-sections` other than
   `none`, `--gdb-index` and `--debug-names` (generated indexes) are not
   supported in incremental mode (IN-12): a compressed section cannot be
@@ -1428,13 +1591,14 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `state-corrupt` | the state fails validation (IN-18) | permanent |
 | `state-version` | the state's format or mortar version differs | permanent |
 | `options-changed` | the normalized plan differs: any option, the target, the emulation, the library search path, the input list's order (adding or removing an input, or an archive's members changing, is not a change of plan) | permanent; [later] options that touch no layout (`-Map`, `--time-phases`, `--threads`, `--incremental-report` are excluded already) |
-| `output-changed` | `P` is missing, or its stat tuple or build id differs from the state's (IN-21) | permanent |
+| `output-changed` | `P` is missing, or its stat tuple or build id differs from the state's, or it is racy and a build-id leaf differs (IN-21) | permanent |
 | `output-torn` | the state's "updating" flag is set (IN-46) | permanent |
 | `inputs-reordered` | two unchanged inputs' relative order changed | v1; [later] when no COMDAT keeper or placement order depends on it |
 | `too-much-changed` | IN-16's threshold | permanent (it is the compaction rule) |
 | `reserve-exhausted` | a segment reserve, a packed array's, `.eh_frame`'s, a slot region's or a dynamic table's capacity is exhausted (IN-32, IN-34) | permanent |
 | `island-exhausted` | a new thunk or patch does not fit its island | permanent |
-| `tls-layout-changed` | the TLS template's size or alignment changes (IN-34) | v1; [later] refill every TP-relative referrer through the index |
+| `tls-layout-changed` | any TLS input section's TP offset would change, in any file (IN-34) | v1; [later] refill every TP-relative referrer of every moved TLS section through the index |
+| `copy-size-changed` | a copy relocation's object changed size in its shared library (IN-34, IN-40) | v1 |
 | `new-output-section` | an output section or segment appears or disappears | v1; [later] when it can go at the end of its segment's reserve |
 | `property-changed` | `.note.gnu.property` changes size (S-114) | v1 |
 | `dynamic-changed` | `DT_NEEDED`'s order changes or `.dynamic`'s spares run out (IN-42) | v1 |
@@ -1444,10 +1608,12 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 
 Not fall-backs but plain links (IN-12; a warning, no state written):
 `-r`, `--emit-relocs`, a `SECTIONS` script, `--compress-debug-sections`
-other than `none`, `--gdb-index`, `--debug-names`, `--icf`. Not a
-fall-back but the copy path (IN-45): `ETXTBSY`, a hard-linked or
-symbolic-link output, a shared object, an output that is an input, a
-file system without enforced locks. *Test:* each row has an L10
+other than `none`, `--gdb-index`, `--debug-names`, `--icf`. The copy
+path is the default (IN-45); with `--incremental-write=in-place` these
+take it instead of a fall-back: `ETXTBSY`, a process that maps or holds
+the output, a hard-linked or symbolic-link output, a shared object, an
+output that is an input, a file system without enforced locks. Racy
+inputs and a racy output are hashed, never a fall-back (IN-21, IN-22). *Test:* each row has an L10
 scenario (IN-4).
 
 ## 8. Costs, the verifier, and the other projects
