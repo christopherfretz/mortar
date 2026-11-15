@@ -1991,13 +1991,23 @@ With `--inputs-from <file>`, only the map's files whose canonical path
 equals that of an entry in the response file are read; the others are I1.
 The response file is parsed as GNU ld parses `@file`: words separated by
 white space, with single and double quotes and backslash escapes. Words
-starting with `-` are dropped, and so is the value of `-o`.
+starting with `-` are dropped, and so is the value of an option that takes
+the next word (`-o`, `-m`, `-plugin`, `-dynamic-linker`, `-z`, ...). Each
+`-l name`, `-l:file` and `--library=name` is resolved as the linker
+resolves it (`spec/input.md` §4.2-4.4): through the `-L` and
+`--library-path` directories of the whole line in order (`=D` and
+`$SYSROOT D` under the last `--sysroot`), `libname.so` then `libname.a`
+in each directory, only `libname.a` where `-static` or `-Bstatic` is in
+effect (`-Bdynamic` and `--push-state`/`--pop-state` as the linker reads
+them). A library found nowhere adds nothing (WP-036: before it, every
+member of `libc.a` was I1 on a static hello).
 
 The command prints the rendered findings and the coverage summary. It
 exits 0 when the report is clean, 1 on any finding, and 2 on a usage error
 or an unreadable output or map.
 
-Tests: `xtask/src/plumb.rs s8_arguments`, `s8_response_files`.
+Tests: `xtask/src/plumb.rs s8_arguments`, `s8_response_files`,
+`s8_libraries_are_resolved`.
 
 ## 9. Validation
 
