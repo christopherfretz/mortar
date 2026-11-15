@@ -60,6 +60,8 @@ pub(crate) struct View<'a, 's> {
     warned: Vec<SymbolId>,
     /// `gnu_warnings`, sorted.
     pub gnu_warnings: Vec<(SymbolId, FileId, SectionIndex)>,
+    /// `closure_only` (D-12), sorted by key.
+    pub closure_only: &'a [(SymbolId, FileId)],
     /// `spec/dyn.md` D-25: the `WeakDyn` keys ([`crate::weak::classes`]);
     /// empty until it ran, and in every static link.
     pub weak_dyn: IdSet<SymbolId>,
@@ -100,6 +102,7 @@ impl<'a, 's> View<'a, 's> {
                 v.sort_unstable();
                 v
             },
+            closure_only: t.closure_only,
             weak_dyn: IdSet::new(),
             weak_refused: IdSet::new(),
         }

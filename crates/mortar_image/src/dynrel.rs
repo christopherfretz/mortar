@@ -111,40 +111,53 @@ pub fn section_records<'r>(
     let mut out = SectionRecords::default();
     for i in 0..records.len() {
         let Some(at) = at(i) else { continue };
-        let rs = roles(cx.arch, &cx.scan, &at);
-        if rs.is_empty() {
-            continue;
-        }
-        let addend = at.addend.unwrap_or(0);
-        let r_offset = cx.addr.wrapping_add(at.r_offset);
-        for role in rs {
-            let r_type = cx
-                .arch
-                .dyn_type(role)
-                .ok_or_else(|| format!("record {i}: no type for the role {role:?}"))?;
-            match role {
-                DynRole::Relative => {
-                    let v = (cx.value)(at.key, addend)
-                        .ok_or_else(|| format!("record {i}: a RELATIVE record without S + A"))?;
-                    out.relative.push(DynRecord { r_offset, r_sym: 0, r_type, addend: v as i64 });
-                }
-                DynRole::IRelative => {
-                    return Err(format!("record {i}: an IRELATIVE record in .rela.dyn (D-41)"));
-                }
-                _ => {
-                    let id = at.key.as_global().ok_or_else(|| {
-                        format!("record {i}: a {role:?} record against a local symbol")
-                    })?;
-                    let r_sym = (cx.dynsym)(id)
-                        .ok_or_else(|| format!("record {i}: symbol {} not in .dynsym", id.0))?;
-                    let a = if matches!(role, DynRole::Symbolic) { addend } else { 0 };
-                    out.other.push(DynRecord { r_offset, r_sym, r_type, addend: a });
-                }
-            }
-        }
+        push_records(cx, &at, &mut out)?;
     }
     out.relative.sort_unstable_by_key(|r| r.r_offset);
     Ok(out)
+}
+
+/// The records of the one relocation at `at` ([`section_records`]'s
+/// step), pushed onto `out` (`relative` unsorted). An error names what
+/// broke an invariant.
+pub fn push_records(
+    cx: &SectionCx<'_>,
+    at: &RelocAt<'_>,
+    out: &mut SectionRecords,
+) -> Result<(), String> {
+    let i = at.index;
+    let rs = roles(cx.arch, &cx.scan, at);
+    if rs.is_empty() {
+        return Ok(());
+    }
+    let addend = at.addend.unwrap_or(0);
+    let r_offset = cx.addr.wrapping_add(at.r_offset);
+    for role in rs {
+        let r_type = cx
+            .arch
+            .dyn_type(role)
+            .ok_or_else(|| format!("record {i}: no type for the role {role:?}"))?;
+        match role {
+            DynRole::Relative => {
+                let v = (cx.value)(at.key, addend)
+                    .ok_or_else(|| format!("record {i}: a RELATIVE record without S + A"))?;
+                out.relative.push(DynRecord { r_offset, r_sym: 0, r_type, addend: v as i64 });
+            }
+            DynRole::IRelative => {
+                return Err(format!("record {i}: an IRELATIVE record in .rela.dyn (D-41)"));
+            }
+            _ => {
+                let id = at.key.as_global().ok_or_else(|| {
+                    format!("record {i}: a {role:?} record against a local symbol")
+                })?;
+                let r_sym = (cx.dynsym)(id)
+                    .ok_or_else(|| format!("record {i}: symbol {} not in .dynsym", id.0))?;
+                let a = if matches!(role, DynRole::Symbolic) { addend } else { 0 };
+                out.other.push(DynRecord { r_offset, r_sym, r_type, addend: a });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// D-40 step 1: the `RELATIVE` part of `.rela.dyn`, its units (in address

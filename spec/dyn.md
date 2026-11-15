@@ -795,10 +795,10 @@ permutations that keep `SymbolId`s; `--threads=1` vs many).
 
 | entry | `st_info` | `st_other` | `st_shndx` | `st_value` | `st_size` |
 |---|---|---|---|---|---|
-| import, called or through the GOT | binding `STB_WEAK` iff `!ref_strong`, else `STB_GLOBAL`; type: `STT_FUNC` when the definition is `STT_FUNC` or `STT_GNU_IFUNC`, else the definition's type | `STV_DEFAULT` | `SHN_UNDEF` | 0 | 0 |
+| import, called or through the GOT | binding `STB_WEAK` iff `!ref_strong`, else `STB_GLOBAL`; type: `STT_FUNC` when the definition is `STT_FUNC` or `STT_GNU_IFUNC`, else the definition's type | `STV_DEFAULT` (plus `STO_AARCH64_VARIANT_PCS` when the definition has it; GNU ld, lld and mold keep it on a GOT-only import too, WP-053) | `SHN_UNDEF` | 0 | 0 |
 | import with `CANON_PLT` | as above, `STT_FUNC` | `STV_DEFAULT` (plus `STO_AARCH64_VARIANT_PCS` when the definition has it) | `SHN_UNDEF` | the PLT entry's address | 0 |
 | copy allocation (each alias) | binding `STB_WEAK` iff the shared definition is weak, else `STB_GLOBAL`; the definition's type | `STV_DEFAULT` | the copy's output section | the copy's address | the definition's `st_size` |
-| export | the output binding and type of `.symtab` (an exported non-preemptible IFUNC: `STT_FUNC` at its IPLT entry, a64 §10.4) | the merged visibility (`STV_PROTECTED` kept) | its output section | its address | its size |
+| export | the output binding and type of `.symtab` (an exported non-preemptible IFUNC: `STT_FUNC` at its IPLT entry, a64 §10.4) | the merged visibility (`STV_PROTECTED` kept), plus `STO_AARCH64_VARIANT_PCS` when the defining entry has it (GNU ld, lld and mold, WP-053) | its output section | its address | its size |
 | `WeakDyn` | `STB_WEAK`, `STT_NOTYPE` | `STV_DEFAULT` | `SHN_UNDEF` | 0 | 0 |
 
 The canonical PLT is `SHN_UNDEF` with the entry's address in all three

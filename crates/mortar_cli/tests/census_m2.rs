@@ -2,10 +2,9 @@
 //! 426 link lines the census's drivers pass to `ld` for a dynamic link
 //! (`tests/data/census-m2.tsv`) parses without an error, names a program
 //! interpreter, gives the kind of its variation, and uses no option the
-//! command line refuses, except the three gates of the dynamic guard
-//! (`mortar::dynamic`, which refuses the link afterwards: pinned by
-//! `crates/mortar/tests/refusals.rs`) and the options a variation asks for
-//! outside M2. At the M2 join the same lines have no refusal but those.
+//! command line refuses, except the options a variation asks for outside
+//! M2 (since the M2 join, WP-053, the three gates of a dynamic output,
+//! `-dynamic-linker`, `-pie` and `-Bdynamic`, are supported rows).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -62,8 +61,8 @@ fn kind(variation: &str) -> OutputKind {
     if variation == "no-pie" { OutputKind::Executable } else { OutputKind::PieExecutable }
 }
 
-/// The dynamic guard's gates (`mortar::dynamic::is_gate`; `spec/dyn.md`
-/// §2.7 items 1, 3, 5).
+/// The gates of a dynamic output (`spec/dyn.md` §2.7 items 1, 3, 5),
+/// `supported` rows since WP-053.
 const GATES: [&str; 3] = ["-dynamic-linker", "-pie", "-Bdynamic"];
 
 fn check(id: &str, line: &[OsString]) -> (Parsed, Vec<String>) {
@@ -78,19 +77,21 @@ fn check(id: &str, line: &[OsString]) -> (Parsed, Vec<String>) {
         "{id}: no interpreter (D-31)"
     );
     let refused = parsed.refused_uses();
-    let (gates, others): (Vec<&Use>, Vec<&Use>) =
-        refused.into_iter().partition(|u| GATES.contains(&u.spelling.as_str()));
-    assert_eq!(written(&others), refused_outside_m2(id), "{id}: refused by the command line");
-    let at_join = parsed.refused_uses_at_join();
-    assert_eq!(written(&at_join), refused_outside_m2(id), "{id}: refused at the M2 join");
-    let gates = gates.iter().map(|u| u.spelling.clone()).collect();
+    assert_eq!(written(&refused), refused_outside_m2(id), "{id}: refused by the command line");
+    // Each gate once per line, at its first use.
+    let mut gates: Vec<String> = Vec::new();
+    for u in &parsed.uses {
+        if GATES.contains(&u.spelling.as_str()) && !gates.contains(&u.spelling) {
+            gates.push(u.spelling.clone());
+        }
+    }
     (parsed, gates)
 }
 
 // spec: dyn.md §2 (426 lines), §2.7, R-C1 (no option of a default line is
-// refused by the command line; the gates are the guard's)
+// refused by the command line, the gates included)
 #[test]
-fn every_census_line_parses_and_only_the_gates_refuse() {
+fn every_census_line_parses_and_none_is_refused() {
     let lines = lines();
     assert_eq!(lines.len(), 426, "the census has 426 lines");
     let mut ids = std::collections::BTreeSet::new();

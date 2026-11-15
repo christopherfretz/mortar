@@ -587,16 +587,16 @@ fn r10_cet_rows() {
     }
 }
 
-// spec: synth.md S-70, `docs/ROADMAP.md` M1/M2 (R-9): until the
-// static-pie rows are implemented, `gcc -static-pie`'s line is a static
-// pie in the plan and refused by name (`-pie` is a refused row).
+// spec: synth.md S-70, `docs/ROADMAP.md` M1/M2 (R-9): `gcc -static-pie`'s
+// line is a static pie in the plan. Since WP-053 no row of it is refused;
+// the kind is refused by name where the layout reads it (WP-052 lifts it;
+// `mortar_layout::target`, "position-independent executable output").
 #[test]
-fn r9_static_pie_is_refused_by_name() {
+fn r9_static_pie_is_a_static_pie_in_the_plan() {
     let parsed = p(&["-static", "-pie", "--no-dynamic-linker", "a.o"]);
     assert_eq!(errors(&parsed), Vec::<String>::new());
     assert_eq!(parsed.plan.kind, OutputKind::StaticPie);
-    let refused: Vec<&str> = parsed.refused_uses().iter().map(|u| u.spelling.as_str()).collect();
-    assert!(refused.contains(&"-pie"), "{refused:?}");
+    assert!(parsed.refused_uses().is_empty(), "{:?}", parsed.refused_uses());
 }
 
 // spec: cli.md §2.8 (each emulation names its target)

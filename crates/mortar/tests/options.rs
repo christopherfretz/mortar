@@ -38,6 +38,7 @@ use Proof::{Check, Same, Test};
 /// Every row that is not `refused`, in table order.
 const AUDIT: &[(&str, Proof)] = &[
     ("-o", Check(output_is_named)),
+    ("-pie", Check(dynamic_options)),
     ("-no-pie", Check(no_pie)),
     ("-m", Check(emulation_sets_the_target)),
     ("-e", Check(entry_is_the_symbol)),
@@ -70,9 +71,10 @@ const AUDIT: &[(&str, Proof)] = &[
     ("-l", Check(libraries)),
     ("-(", Check(groups)),
     ("-)", Check(groups)),
-    ("--as-needed", Same(&["--as-needed"], Some(shared_objects_are_refused))),
-    ("--no-as-needed", Same(&["--no-as-needed"], Some(shared_objects_are_refused))),
+    ("--as-needed", Check(dynamic_options)),
+    ("--no-as-needed", Check(dynamic_options)),
     ("-Bstatic", Check(bstatic)),
+    ("-Bdynamic", Check(dynamic_options)),
     (
         "--no-copy-dt-needed-entries",
         Same(&["--no-copy-dt-needed-entries"], Some(copy_dt_needed_is_refused)),
@@ -88,21 +90,31 @@ const AUDIT: &[(&str, Proof)] = &[
         "--sysroot",
         Test("crates/mortar/tests/sysroot.rs", "sysroot_directories_and_scripts_are_under_it"),
     ),
-    ("-rpath-link", Same(&["-rpath-link", "/opt/lib"], Some(shared_objects_are_refused))),
-    ("-E", Same(&["--export-dynamic"], Some(dynamic_outputs_are_refused))),
-    ("--no-export-dynamic", Same(&["--no-export-dynamic"], Some(dynamic_outputs_are_refused))),
-    ("-Bsymbolic", Same(&["-Bsymbolic"], Some(dynamic_outputs_are_refused))),
-    ("-Bsymbolic-functions", Same(&["-Bsymbolic-functions"], Some(dynamic_outputs_are_refused))),
-    ("--Bsymbolic-non-weak", Same(&["--Bsymbolic-non-weak"], Some(dynamic_outputs_are_refused))),
+    ("-rpath-link", Check(dynamic_options)),
+    ("--export-dynamic-symbol", Check(dynamic_options)),
+    ("-init", Check(dynamic_options)),
+    ("-fini", Check(dynamic_options)),
+    ("-E", Check(dynamic_options)),
+    ("--no-export-dynamic", Check(dynamic_options)),
+    ("-Bsymbolic", Same(&["-Bsymbolic"], Some(bsymbolic_is_for_shared_objects))),
+    (
+        "-Bsymbolic-functions",
+        Same(&["-Bsymbolic-functions"], Some(bsymbolic_is_for_shared_objects)),
+    ),
+    (
+        "--Bsymbolic-non-weak",
+        Same(&["--Bsymbolic-non-weak"], Some(bsymbolic_is_for_shared_objects)),
+    ),
     (
         "--Bsymbolic-non-weak-functions",
-        Same(&["--Bsymbolic-non-weak-functions"], Some(dynamic_outputs_are_refused)),
+        Same(&["--Bsymbolic-non-weak-functions"], Some(bsymbolic_is_for_shared_objects)),
     ),
-    ("-Bno-symbolic", Same(&["-Bno-symbolic"], Some(dynamic_outputs_are_refused))),
-    ("-rpath", Same(&["-rpath", "/opt/lib"], Some(dynamic_outputs_are_refused))),
-    ("--no-dynamic-linker", Same(&["--no-dynamic-linker"], Some(no_interpreter))),
-    ("--enable-new-dtags", Same(&["--enable-new-dtags"], Some(dynamic_outputs_are_refused))),
-    ("--disable-new-dtags", Same(&["--disable-new-dtags"], Some(dynamic_outputs_are_refused))),
+    ("-Bno-symbolic", Same(&["-Bno-symbolic"], Some(bsymbolic_is_for_shared_objects))),
+    ("-rpath", Check(dynamic_options)),
+    ("-I", Check(dynamic_options)),
+    ("--no-dynamic-linker", Check(dynamic_options)),
+    ("--enable-new-dtags", Check(dynamic_options)),
+    ("--disable-new-dtags", Check(dynamic_options)),
     ("--hash-style", Check(hash_style)),
     ("--rosegment", Same(&["--rosegment"], Some(rodata_has_its_own_load))),
     ("--error-limit", Check(error_limit)),
@@ -152,7 +164,7 @@ const AUDIT: &[(&str, Proof)] = &[
     ("-z norelro", Check(relro)),
     ("-z execstack", Check(execstack)),
     ("-z noexecstack", Check(execstack)),
-    ("-z text", Same(&["-z", "text"], Some(dynamic_outputs_are_refused))),
+    ("-z text", Check(dynamic_options)),
     ("-z separate-code", Check(separate_code)),
     ("-z noseparate-code", Check(separate_code)),
     ("-z defs", Same(&["-z", "defs"], Some(undefined_is_an_error))),
@@ -736,14 +748,6 @@ fn undefined_is_an_error(cx: &Cx) {
     assert!(o.stderr_text().contains("undefined symbol: u1"), "{}", o.stderr_text());
 }
 
-// The reason of `--no-dynamic-linker`: a static executable has no
-// `PT_INTERP`.
-fn no_interpreter(cx: &Cx) {
-    let out = cx.link(&[], "ni.out");
-    assert!(!has_segment(cx, &out, "INTERP"));
-    dynamic_outputs_are_refused(cx);
-}
-
 // spec: diag.md §3.9 / cli.md §3.9 (`--error-limit`)
 fn error_limit(cx: &Cx) {
     let o = cx.mortar(&["undef.o", "-o", "el.out", "--error-limit=2"]);
@@ -895,6 +899,120 @@ fn hash_style(cx: &Cx) {
     }
 }
 
+/// `dfn` returns 5, for `libd.so`.
+const DSO: &str = "\t.text\n\t.globl dfn\n\t.type dfn, %function\ndfn:\n\tmov x0, #5\n\tret\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+/// `_start` exits through `dfn`; `ifn` and `efn` are globals nothing
+/// references.
+const DMAIN: &str = "\t.text\n\t.globl _start\n\t.type _start, %function\n_start:\n\tbl dfn\n\
+    \tmov x8, #93\n\tsvc #0\n\t.globl ifn\n\t.type ifn, %function\nifn:\n\tret\n\
+    \t.globl efn\n\t.type efn, %function\nefn:\n\tret\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+
+// spec: cli.md §3.2, §3.5, §3.7 and dyn.md D-10..D-16 (the options of a
+// dynamic executable: its kind, interpreter, DT_NEEDED, run path, init
+// and fini, and exports; WP-053)
+fn dynamic_options(cx: &Cx) {
+    const INTERP: &str = "/lib/ld-linux-aarch64.so.1";
+    for (name, text) in [("d", DSO), ("dmain", DMAIN)] {
+        let src = cx.scratch.write(&format!("{name}.s"), text);
+        let o =
+            cx.run_in(&cx.gcc, &["-c".into(), src.into(), "-o".into(), format!("{name}.o").into()]);
+        assert!(o.success(), "gcc {name}: {}", o.stderr_text());
+    }
+    for (lib, obj) in [("libd.so", "d.o"), ("libunused.so", "start.o")] {
+        let args = ["-shared", "-nostdlib", obj, "-o", lib].map(OsString::from);
+        let o = cx.run_in(&cx.gcc, &args);
+        assert!(o.success(), "gcc -shared {lib}: {}", o.stderr_text());
+    }
+    let link = |extra: &[&str], out: &str| -> PathBuf {
+        let mut args = vec!["dmain.o", "-dynamic-linker", INTERP, "-o", out];
+        args.extend_from_slice(extra);
+        let o = cx.mortar(&args);
+        assert!(o.success(), "mortar {extra:?}: {}", o.stderr_text());
+        cx.scratch.join(out)
+    };
+    let dynamic = |path: &Path| cx.readelf("-dW", path);
+
+    // -I / -dynamic-linker, and the kind: -pie writes ET_DYN.
+    let plain = link(&["libd.so"], "dyn-plain.out");
+    let plain_bytes = std::fs::read(&plain).unwrap();
+    assert!(cx.readelf("-hW", &plain).contains("EXEC (Executable file)"));
+    assert!(cx.readelf("-lW", &plain).contains(&format!("program interpreter: {INTERP}]")));
+    assert!(dynamic(&plain).contains("Shared library: [libd.so]"));
+    let alt = link(&["-I", "/lib/other-ld.so", "libd.so"], "dyn-i.out");
+    assert!(cx.readelf("-lW", &alt).contains("program interpreter: /lib/other-ld.so]"));
+    let pie = link(&["-pie", "libd.so"], "dyn-pie.out");
+    assert!(cx.readelf("-hW", &pie).contains("DYN (Position-Independent Executable file)"));
+    assert!(has_segment(cx, &pie, "INTERP") || cx.readelf("-lW", &pie).contains("INTERP"));
+
+    // -Bdynamic: -l finds the shared object.
+    let out = link(&["-Bdynamic", "-L.", "-ld"], "dyn-bd.out");
+    assert!(dynamic(&out).contains("Shared library: [libd.so]"));
+
+    // --as-needed drops the unused shared object; --no-as-needed keeps it.
+    let out = link(&["--as-needed", "libunused.so", "libd.so"], "dyn-an.out");
+    assert!(!dynamic(&out).contains("libunused.so"), "{}", dynamic(&out));
+    let out = link(&["--as-needed", "--no-as-needed", "libunused.so", "libd.so"], "dyn-nan.out");
+    assert!(dynamic(&out).contains("Shared library: [libunused.so]"), "{}", dynamic(&out));
+
+    // -rpath: DT_RUNPATH by default and with --enable-new-dtags, DT_RPATH
+    // with --disable-new-dtags.
+    let out = link(&["-rpath", "/opt/x", "libd.so"], "dyn-rp.out");
+    assert!(dynamic(&out).contains("(RUNPATH)            Library runpath: [/opt/x]"));
+    let out = link(&["--enable-new-dtags", "-rpath", "/opt/x", "libd.so"], "dyn-en.out");
+    assert!(dynamic(&out).contains("Library runpath: [/opt/x]"));
+    let out = link(&["--disable-new-dtags", "-rpath", "/opt/x", "libd.so"], "dyn-dis.out");
+    let d = dynamic(&out);
+    assert!(d.contains("Library rpath: [/opt/x]") && !d.contains("RUNPATH"), "{d}");
+
+    // -init / -fini: DT_INIT and DT_FINI are the symbols' addresses.
+    let out = link(&["-init", "ifn", "-fini", "efn", "libd.so"], "dyn-if.out");
+    let value = |name: &str| {
+        cx.readelf("-sW", &out)
+            .lines()
+            .find_map(|l| {
+                let w: Vec<&str> = l.split_whitespace().collect();
+                (w.len() >= 8 && w[7] == name).then(|| u64::from_str_radix(w[1], 16).unwrap())
+            })
+            .unwrap()
+    };
+    let d = dynamic(&out);
+    assert!(d.contains(&format!("(INIT)               {:#x}", value("ifn"))), "{d}");
+    assert!(d.contains(&format!("(FINI)               {:#x}", value("efn"))), "{d}");
+    assert!(!dynamic(&plain).contains("(INIT)"));
+
+    // -E exports every global; --export-dynamic-symbol the named one;
+    // --no-export-dynamic undoes -E.
+    let syms = cx.readelf("--dyn-syms", &plain);
+    assert!(!syms.contains("efn"), "{syms}");
+    let out = link(&["-E", "libd.so"], "dyn-e.out");
+    let syms = cx.readelf("--dyn-syms", &out);
+    assert!(syms.contains(" ifn") && syms.contains(" efn"), "{syms}");
+    let out = link(&["--export-dynamic-symbol=efn", "libd.so"], "dyn-eds.out");
+    let syms = cx.readelf("--dyn-syms", &out);
+    assert!(syms.contains(" efn") && !syms.contains(" ifn"), "{syms}");
+    let out = link(&["-E", "--no-export-dynamic", "libd.so"], "dyn-ne.out");
+    assert!(std::fs::read(&out).unwrap() == plain_bytes, "--no-export-dynamic did not undo -E");
+
+    // -z text (no text relocation here) and -rpath-link (no DT_NEEDED of
+    // libd.so to find) change nothing.
+    for (extra, out) in
+        [(&["-z", "text"][..], "dyn-zt.out"), (&["-rpath-link", "/opt"], "dyn-rl.out")]
+    {
+        let mut args = extra.to_vec();
+        args.push("libd.so");
+        let out = link(&args, out);
+        assert!(std::fs::read(&out).unwrap() == plain_bytes, "{extra:?} changed the output");
+    }
+
+    // --no-dynamic-linker: a static executable has no PT_INTERP, and
+    // the option changes nothing there.
+    let st = cx.link(&["--no-dynamic-linker"], "dyn-ndl.out");
+    assert!(!has_segment(cx, &st, "INTERP"));
+    assert!(std::fs::read(&st).unwrap() == cx.bytes(&[], "dyn-ndl-plain.out"));
+}
+
 // ---- the reasons of noop rows -------------------------------------------------
 
 // The reason of `--no-copy-dt-needed-entries` (dyn.md D-15): its positive
@@ -906,26 +1024,12 @@ fn copy_dt_needed_is_refused(cx: &Cx) {
     assert!(text.contains("unsupported option: --copy-dt-needed-entries"), "{text}");
 }
 
-// The reason of `--as-needed`: a shared-object input is refused by name.
-fn shared_objects_are_refused(cx: &Cx) {
-    let Some(libc) = ["/usr/lib/aarch64-linux-gnu/libc.so.6", "/lib/aarch64-linux-gnu/libc.so.6"]
-        .into_iter()
-        .find(|p| Path::new(p).exists())
-    else {
-        return;
-    };
-    let o = cx.mortar(&["start.o", "--as-needed", libc, "-o", "so.out"]);
+// The reason of the `-Bsymbolic` family: shared objects as output are
+// refused by name (M4).
+fn bsymbolic_is_for_shared_objects(cx: &Cx) {
+    let o = cx.mortar(&["start.o", "-shared", "-o", "dyn.out"]);
     assert!(!o.success());
-    assert!(o.stderr_text().contains("unsupported feature"), "{}", o.stderr_text());
-}
-
-// The reason of `--hash-style`: every dynamic output is refused by name.
-fn dynamic_outputs_are_refused(cx: &Cx) {
-    for opt in ["-pie", "-shared"] {
-        let o = cx.mortar(&["start.o", opt, "-o", "dyn.out"]);
-        assert!(!o.success());
-        assert!(o.stderr_text().contains(&format!("unsupported option: {opt}")), "{opt}");
-    }
+    assert!(o.stderr_text().contains("unsupported option: -shared"), "{}", o.stderr_text());
 }
 
 // The reason of `--rosegment` (layout.md L-65).
