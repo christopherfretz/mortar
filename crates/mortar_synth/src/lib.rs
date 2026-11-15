@@ -21,6 +21,8 @@
 //! | [`shstrtab`] | `.shstrtab` | S-90 |
 //! | [`notes`] | `.note.gnu.build-id`, `.note.gnu.property`, notes of mixed alignment, `.comment`'s string | S-91 to S-100, S-126 |
 //! | [`dynsym`] | `.dynsym`'s set, order and indices (stub, WP-M2-DYNSYM) | D-21, D-22, D-26 |
+//! | [`dynamic`] | `.dynamic`'s tags, order and size; the write over a value resolver (WP-M2-DYNAMIC) | D-30 |
+//! | [`interp`] | `.interp` (WP-M2-DYNAMIC) | D-31 |
 //! | [`dynstr`] | `.dynstr`'s offsets (stub, WP-M2-DYNSYM) | D-24 |
 //! | [`chunks`] | the S-3 list: names, types, flags, alignment; `Slots.sizes` | S-3, S-108 |
 //! | [`image`] | the chunk interface of `spec/image.md` §13 over every plan | S-4, I-103 to I-108 |
@@ -41,6 +43,7 @@
 #![forbid(unsafe_code)]
 
 pub mod chunks;
+pub mod dynamic;
 pub mod dynstr;
 pub mod dynsym;
 pub mod eh;
@@ -48,18 +51,21 @@ pub mod error;
 pub mod got;
 pub mod hdr;
 pub mod image;
+pub mod interp;
 pub mod notes;
 pub mod out;
 pub mod shstrtab;
 pub mod symtab;
 
 pub use chunks::{SynthKind, chunk_ids};
+pub use dynamic::{DynamicInputs, DynamicPlan};
 pub use dynstr::{DynNames, dynstr_plan};
 pub use dynsym::{DynsymPlan, dynsym_plan};
 pub use eh::{EhInfo, EhPlan, EhSource, EhValue, EhWho, MergeEh};
 pub use error::{Failed, PHASE, SynthError};
 pub use got::{GotPlan, SlotValues};
 pub use hdr::HdrPlan;
+pub use interp::InterpPlan;
 pub use image::{COMMENT, Comment, Division, FillCx, SizeCx, SynthChunk};
 pub use notes::{BuildIdPlan, PropertyPlan};
 pub use out::Window;
