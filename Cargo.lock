@@ -31,6 +31,7 @@ dependencies = [
 name = "mortar_cli"
 version = "0.0.0"
 dependencies = [
+ "mortar_core",
  "mortar_diag",
  "mortar_testutil",
 ]
@@ -115,6 +116,7 @@ dependencies = [
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "mortar_plumb",
  "mortar_testutil",
  "signal-hook",
 ]

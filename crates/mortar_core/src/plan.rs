@@ -1,10 +1,14 @@
 //! The link plan: what the command line asks for, as plain data
 //! (`spec/cli.md` §3). Nothing here reads a file or decides how to link;
 //! later phases read the plan.
+//!
+//! The types live in `mortar_core` so that every phase and the link state
+//! name them without depending on the parser (`spec/model.md` §3.1);
+//! `mortar_cli` writes a [`Plan`] and re-exports them.
 
 use std::ffi::OsString;
 
-/// What the command line asks for. Built by [`crate::parse`]; every field
+/// What the command line asks for. Built by `mortar_cli::parse`; every field
 /// is filled whatever the option's status (`spec/cli.md` §3.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Plan {
