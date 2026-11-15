@@ -209,12 +209,8 @@ pub fn response_inputs(text: &str, cwd: &Path) -> Vec<PathBuf> {
         let library = if w == "-l" || w == "--library" {
             at += 1;
             words.get(at - 1).cloned()
-        } else if let Some(name) = w.strip_prefix("--library=") {
-            Some(name.to_owned())
-        } else if let Some(name) = w.strip_prefix("-l") {
-            Some(name.to_owned())
         } else {
-            None
+            w.strip_prefix("--library=").or_else(|| w.strip_prefix("-l")).map(str::to_owned)
         };
         if let Some(name) = library {
             out.extend(find(&name, link_static));
@@ -484,8 +480,7 @@ mod tests {
     fn s8_libraries_are_resolved() {
         let scratch = mortar_testutil::Scratch::new("plumb-inputs");
         let root = scratch.path();
-        for f in ["d1/libf.a", "d2/libf.so", "d2/libf.a", "d2/libg.a", "s/lib/libq.a", "d1/crt.o"]
-        {
+        for f in ["d1/libf.a", "d2/libf.so", "d2/libf.a", "d2/libg.a", "s/lib/libq.a", "d1/crt.o"] {
             std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
             std::fs::write(root.join(f), b"x").unwrap();
         }
@@ -502,19 +497,19 @@ mod tests {
         // `-static`/`-Bstatic` take only archives; `-Bdynamic` and the
         // state stack give the shared object back.
         assert_eq!(got("-static -Ld2 -lf"), ["d2/libf.a"]);
-        assert_eq!(got("-Ld2 -Bstatic --library=f -Bdynamic --library f"), [
-            "d2/libf.a",
-            "d2/libf.so"
-        ]);
-        assert_eq!(got("-Ld2 --push-state -Bstatic -lf --pop-state -lf"), [
-            "d2/libf.a",
-            "d2/libf.so"
-        ]);
+        assert_eq!(
+            got("-Ld2 -Bstatic --library=f -Bdynamic --library f"),
+            ["d2/libf.a", "d2/libf.so"]
+        );
+        assert_eq!(
+            got("-Ld2 --push-state -Bstatic -lf --pop-state -lf"),
+            ["d2/libf.a", "d2/libf.so"]
+        );
         // `-l:file`; a library found nowhere is left out.
-        assert_eq!(got("-L d1 -l:crt.o -lnone --start-group -lf --end-group"), [
-            "d1/crt.o",
-            "d1/libf.a"
-        ]);
+        assert_eq!(
+            got("-L d1 -l:crt.o -lnone --start-group -lf --end-group"),
+            ["d1/crt.o", "d1/libf.a"]
+        );
         // The sysroot: `=D` and `$SYSROOT D` under the last `--sysroot`; an
         // unmarked directory is not prefixed.
         assert_eq!(got("--sysroot=/nowhere --sysroot s/ -L=/lib -lq"), ["s/lib/libq.a"]);

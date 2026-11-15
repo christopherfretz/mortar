@@ -13,6 +13,7 @@ pub mod prepare;
 pub mod record;
 pub mod report;
 pub mod response;
+pub mod run;
 pub mod stats;
 pub mod synth;
 pub mod verify;
@@ -42,7 +43,10 @@ actions (one at most; without one: measure and print):
   --update-baseline    measure every workload with every linker, then record
                        the run as this machine's baseline and regenerate
                        docs/status/bench.md; needs --reason
-  --report             regenerate docs/status/bench.md from the baseline
+  --report             regenerate docs/status/bench.md and docs/status/perf.md
+                       from the baseline
+  --judge <file>       judge a saved run (an earlier results.tsv) against the
+                       baseline as --check does, measuring nothing
   --prepare            prepare the workloads and print their census
   --list               list the workloads of the manifest
 
@@ -85,6 +89,8 @@ pub enum Action {
     Report,
     Prepare,
     List,
+    /// `--judge <file>`: a saved run against the baseline.
+    Judge,
 }
 
 /// The command line.
@@ -98,6 +104,8 @@ pub struct Options {
     pub baseline: Option<PathBuf>,
     pub mortar: Option<PathBuf>,
     pub work: Option<PathBuf>,
+    /// The run `--judge` reads.
+    pub judge: Option<PathBuf>,
     /// The verifier on mortar's outputs (`--no-verify` turns it off).
     pub verify: bool,
     pub help: bool,
@@ -115,6 +123,7 @@ impl Options {
             baseline: None,
             mortar: None,
             work: None,
+            judge: None,
             verify: true,
             help: false,
         };
@@ -137,6 +146,10 @@ impl Options {
                 "--report" => actions.push(Action::Report),
                 "--prepare" => actions.push(Action::Prepare),
                 "--list" => actions.push(Action::List),
+                "--judge" => {
+                    options.judge = Some(value()?.into());
+                    actions.push(Action::Judge);
+                }
                 "--workload" => options.workloads.push(value()?),
                 "--linker" => {
                     let name = value()?;
@@ -284,6 +297,11 @@ fn run_inner(options: &Options) -> Result<u8, String> {
             write_status_page(&workspace, &results, &shown, &all)?;
             return Ok(0);
         }
+        Action::Judge => {
+            let path = options.judge.clone().unwrap_or_default();
+            let results = Results::read(&path)?;
+            return check(&results, &baseline, &shown, false);
+        }
         _ => {}
     }
 
@@ -373,26 +391,18 @@ fn measure_all(
     let mut links = Vec::new();
     let mut outputs = Vec::new();
     let mut verdicts = Vec::new();
+    let mut runs = Vec::new();
     let mortar = linkers.iter().find(|l| l.judged());
     if !options.verify {
         say("--no-verify: mortar's outputs are NOT verified; no output hash is recorded");
     }
     for p in prepared {
-        // The verifier first, untimed (spec/harness.md "Verification").
-        let verdict = match mortar.filter(|_| options.verify) {
-            Some(m) => {
-                say(&format!("verifying mortar's output of {} (untimed)", p.workload.name));
-                let v = verify::verify(p, m, &scratch)?;
-                say(&format!("{}: verifier: {}", p.workload.name, v.text()));
-                Some(v)
-            }
-            None => None,
-        };
+        let (verdict, ran) = verify_first(p, mortar.filter(|_| options.verify), env)?;
         say(&format!("measuring {} ({} runs per link)", p.workload.name, options.runs));
         let (mut measured, output_hash) =
             measure::measure(p, &linkers, options.runs, &probe, &scratch)?;
         let golden = match &verdict {
-            Some(v) => verify::apply(v, &mut measured, output_hash.as_deref()),
+            Some(v) => verify::apply(v, ran.as_ref(), &mut measured, output_hash.as_deref()),
             None => None,
         };
         links.extend(measured);
@@ -401,6 +411,9 @@ fn measure_all(
         }
         if let Some(v) = verdict {
             verdicts.push((p.workload.name.clone(), v.text()));
+        }
+        if let Some(r) = ran {
+            runs.push((p.workload.name.clone(), r.text()));
         }
     }
     let after = measure::calibrate(control, &control_linker, CALIBRATION_RUNS, &probe, &scratch)?;
@@ -441,12 +454,34 @@ fn measure_all(
     for (workload, v) in verdicts {
         results.set(&format!("verify.{workload}"), v);
     }
+    for (workload, r) in runs {
+        results.set(&format!("run.{workload}"), r);
+    }
     if options.action == Action::UpdateBaseline {
         results.set("reason", options.reason.clone().unwrap_or_default());
     }
     results.workloads = prepared.iter().map(|p| p.info.clone()).collect();
     results.links = links;
     Ok(results)
+}
+
+/// The verifier on mortar's output of `p`, untimed, and its program run
+/// against GNU ld's (spec/harness.md "Verification", "Running the
+/// outputs"); nothing without `mortar`.
+fn verify_first(
+    p: &Prepared,
+    mortar: Option<&Linker>,
+    env: &Env,
+) -> Result<(Option<verify::Verdict>, Option<run::Ran>), String> {
+    let Some(m) = mortar else { return Ok((None, None)) };
+    say(&format!("verifying mortar's output of {} (untimed)", p.workload.name));
+    let sources = run::source_dir(p, &env.work, &env.workspace);
+    let (v, ran) = verify::verify(p, m, &env.scratch(), &sources)?;
+    say(&format!("{}: verifier: {}", p.workload.name, v.text()));
+    if let Some(r) = &ran {
+        say(&format!("{}: run against GNU ld's: {}", p.workload.name, r.text()));
+    }
+    Ok((Some(v), ran))
 }
 
 /// The golden output check against the baseline: per workload whose
@@ -512,7 +547,7 @@ fn conclude(
     let wrong = verify::found(results);
     if !wrong.is_empty() {
         for w in &wrong {
-            eprintln!("xtask bench: the verifier finds mortar's output WRONG: {w}");
+            eprintln!("xtask bench: mortar's output is WRONG: {w}");
         }
         if options.action == Action::UpdateBaseline {
             eprintln!("xtask bench: not recording a baseline with a wrong output");
@@ -534,22 +569,7 @@ fn conclude(
         return Ok(3);
     }
     match options.action {
-        Action::Check => {
-            let base = Results::read(baseline)
-                .map_err(|e| format!("no baseline to check against: {e}"))?;
-            let check = Check::new(results, &base, &Thresholds::default());
-            print!("\ncheck against {shown}:\n{}", report::check_lines(&check));
-            for line in output_changes(results, &base) {
-                println!("{line}");
-            }
-            Ok(if check.failed() {
-                1
-            } else if check.noisy() || killed {
-                3
-            } else {
-                0
-            })
-        }
+        Action::Check => check(results, baseline, shown, killed),
         Action::UpdateBaseline => {
             results.write(baseline)?;
             let entry = format!(
@@ -567,6 +587,24 @@ fn conclude(
     }
 }
 
+/// Judges `results` against the baseline (`--check`, `--judge`); the exit
+/// status.
+fn check(results: &Results, baseline: &Path, shown: &str, killed: bool) -> Result<u8, String> {
+    let base = Results::read(baseline).map_err(|e| format!("no baseline to check against: {e}"))?;
+    let check = Check::new(results, &base, &Thresholds::default());
+    print!("\ncheck against {shown}:\n{}", report::check_lines(&check));
+    for line in output_changes(results, &base) {
+        println!("{line}");
+    }
+    Ok(if check.failed() {
+        1
+    } else if check.noisy() || killed {
+        3
+    } else {
+        0
+    })
+}
+
 fn write_status_page(
     workspace: &Path,
     results: &Results,
@@ -581,6 +619,10 @@ fn write_status_page(
     std::fs::write(&path, report::status_page(results, shown, all))
         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     say(&format!("status page: {}", report::STATUS_PAGE));
+    let path = workspace.join(report::PERF_PAGE);
+    std::fs::write(&path, report::perf_page(results, shown))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    say(&format!("performance page: {}", report::PERF_PAGE));
     Ok(())
 }
 
@@ -723,6 +765,11 @@ mod tests {
                 .contains("only verified outputs")
         );
         assert!(parse(&["--no-verify=1"]).unwrap_err().contains("takes no value"));
+        // `--judge <file>` is an action of its own.
+        let o = parse(&["--judge", "r.tsv"]).unwrap();
+        assert_eq!((o.action, o.judge.as_deref()), (Action::Judge, Some(Path::new("r.tsv"))));
+        assert!(parse(&["--judge=r.tsv", "--check"]).unwrap_err().contains("one action"));
+        assert!(parse(&["--judge"]).unwrap_err().contains("needs a value"));
     }
 
     // "Workloads": the checked-in manifest reads, has a calibration

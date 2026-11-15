@@ -41,14 +41,8 @@ pub enum Shape {
 }
 
 impl Shape {
-    pub const ALL: [Self; 6] = [
-        Self::Objects,
-        Self::Sections,
-        Self::Comdat,
-        Self::Strings,
-        Self::Archives,
-        Self::Library,
-    ];
+    pub const ALL: [Self; 6] =
+        [Self::Objects, Self::Sections, Self::Comdat, Self::Strings, Self::Archives, Self::Library];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -98,10 +92,9 @@ impl Request {
     pub fn count(&self) -> usize {
         let (a, b) = self.params;
         match self.shape {
-            Shape::Objects | Shape::Sections | Shape::Strings => a + 1,
+            Shape::Objects | Shape::Sections | Shape::Strings | Shape::Library => a + 1,
             Shape::Comdat => a + 2,
             Shape::Archives => a * b + 1,
-            Shape::Library => a + 1,
         }
     }
 

@@ -129,8 +129,8 @@ fn keys_of(kind: &str) -> Option<&'static [&'static str]> {
         "sources" => &["sources", "driver", "cflags", "ldflags", "capture", "run"],
         "synthetic" => &["shape", "params", "driver", "cflags", "ldflags", "capture", "run"],
         "cmake" => &[
-            "url", "sha256", "root", "options", "prebuild", "target", "driver", "cflags", "capture",
-            "run",
+            "url", "sha256", "root", "options", "prebuild", "target", "driver", "cflags",
+            "capture", "run",
         ],
         "cargo" => &["rev", "package", "bin", "rustc_args", "capture", "run"],
         "planned" => &["needs"],
