@@ -12,12 +12,12 @@ use mortar_core::resolution::Resolution;
 use mortar_core::split::Split;
 
 use crate::assign::finish;
-use crate::chunk::{ChunkInputs, Common, Staged, SynthChunk, chunk, start_stop_outputs};
+use crate::chunk::{ChunkInputs, Common, CopyRow, Staged, SynthChunk, chunk, start_stop_outputs};
 use crate::diag::LayoutDiag;
 use crate::fixed::{RangeExtension, fixed_point, refix};
 use crate::headers::Headers;
 use crate::order::order;
-use crate::rank::{Rank, rank_with};
+use crate::rank::{Rank, Z, rank_in};
 use crate::stack::{StackNote, executable_stack};
 use crate::symbols::{SymbolInputs, symbols};
 use crate::target::{Options, Target};
@@ -62,11 +62,14 @@ pub fn out_ranks(assignment: &Assignment<'_>) -> Column<OutSecId, Rank> {
 /// [`out_ranks`] under `-z now` when `now` (`rank_with`).
 #[must_use]
 pub fn out_ranks_with(assignment: &Assignment<'_>, now: bool) -> Column<OutSecId, Rank> {
-    let rows = assignment
-        .outsecs
-        .iter()
-        .map(|(_, o)| rank_with(o.name, o.sh_type, o.flags, now))
-        .collect();
+    out_ranks_in(assignment, Z { now, relro: true })
+}
+
+/// [`out_ranks`] under the options `z` (`rank_in`).
+#[must_use]
+pub fn out_ranks_in(assignment: &Assignment<'_>, z: Z) -> Column<OutSecId, Rank> {
+    let rows =
+        assignment.outsecs.iter().map(|(_, o)| rank_in(o.name, o.sh_type, o.flags, z)).collect();
     Column::from_vec(rows).unwrap_or_default()
 }
 
@@ -103,11 +106,31 @@ pub fn place_again(
     pool: &Pool,
     prev: Option<&Placed>,
 ) -> Result<Placed, Vec<LayoutDiag>> {
+    place_with_copies(link, &[], assignment, range, entry_def, pool, prev)
+}
+
+/// [`place_again`] for an output with copy-relocation allocations
+/// (`spec/dyn.md` D-42; [`crate::chunk::copy_rows`]): they are placed in
+/// the synthetic chunks `.dynbss` and `.bss.rel.ro`, whose sizes in
+/// `link.synthetic` must be their extents ([`crate::chunk::copy_extent`]).
+///
+/// # Errors
+///
+/// [`place`]'s.
+pub fn place_with_copies(
+    link: &Link<'_, '_>,
+    copies: &[CopyRow],
+    assignment: &mut Assignment<'_>,
+    range: Option<&RangeExtension<'_>>,
+    entry_def: impl Fn(SymEntry) -> Option<EntryDef>,
+    pool: &Pool,
+    prev: Option<&Placed>,
+) -> Result<Placed, Vec<LayoutDiag>> {
     let (target, options) = (link.target, link.options);
     let mut steps = mortar_core::wp032b_steps::Steps::new("place");
     let info = finish(assignment, link.headers, link.liveness, target)?;
     steps.step("finish", 0, "");
-    let ranks = out_ranks_with(assignment, options.now);
+    let ranks = out_ranks_in(assignment, Z { now: options.now, relro: options.relro });
     let ordered =
         order(assignment, link.headers, link.resolution, link.liveness, link.folds, &ranks, pool)?;
     steps.step("order", 0, "");
@@ -130,6 +153,7 @@ pub fn place_again(
         keep_empty: &keep_empty,
         relro: options.relro,
         now: options.now,
+        copies,
     };
     let staged = chunk(&inputs, target, &rules, pool).map_err(|e| vec![e])?;
     steps.step("chunk", u64::from(staged.chunks.len()), "chunk");

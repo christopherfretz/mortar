@@ -87,6 +87,19 @@ impl Parsed {
     /// plan is the one the line would give without it.
     #[must_use]
     pub fn refused_uses(&self) -> Vec<&Use> {
+        self.refused_uses_by(|r| r.status)
+    }
+
+    /// [`Parsed::refused_uses`] as they will be once the M2 join lifts the
+    /// dynamic guard: the same rule over [`Row::status_at_join`]
+    /// (`spec/dyn.md` R-C1). The census test shows with it that no option
+    /// of a default dynamic line is refused by the command line then.
+    #[must_use]
+    pub fn refused_uses_at_join(&self) -> Vec<&Use> {
+        self.refused_uses_by(Row::status_at_join)
+    }
+
+    fn refused_uses_by(&self, status: impl Fn(&Row) -> Status) -> Vec<&Use> {
         let mut seen = vec![false; rows().len()];
         let mut out = Vec::new();
         let mut last: HashMap<&str, usize> = HashMap::new();
@@ -100,7 +113,7 @@ impl Parsed {
             if lands.last_wins() && last.get(lands.field()) != Some(&i) {
                 continue;
             }
-            match use_.row().status {
+            match status(use_.row()) {
                 Status::Refused if !seen[use_.row] => {
                     seen[use_.row] = true;
                     out.push(use_);
@@ -619,6 +632,8 @@ impl Parser<'_> {
             Lands::DynamicLinker => plan.dynamic.dynamic_linker = Some(DynamicLinker::Path(text())),
             Lands::NoDynamicLinker => plan.dynamic.dynamic_linker = Some(DynamicLinker::None),
             Lands::NewDtags(on) => plan.dynamic.new_dtags = Some(on),
+            Lands::Init => plan.dynamic.init = Some(text()),
+            Lands::Fini => plan.dynamic.fini = Some(text()),
             Lands::HashStyle => {
                 plan.dynamic.hash_style = Some(match word().as_str() {
                     "sysv" => HashStyle::Sysv,
