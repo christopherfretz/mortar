@@ -88,6 +88,8 @@ mortar,x86_64 dyn/shlib/shlib-hidden-dynsym.test: M2: WP-055 (X64-JOIN)
 mortar,x86_64 dyn/shlib/shlib-undefined-ldso.test: M2: WP-055 (X64-JOIN)
 mortar,x86_64 dyn/shlib/shlib-undefined-missing-closure.test: M2: WP-055 (X64-JOIN)
 mortar,x86_64 dyn/shlib/version-needs-unchecked.test: M2: WP-055 (X64-JOIN)
+mortar,x86_64 dyn/tools/gdb-break-main.test: M2: WP-055 (X64-JOIN)
+mortar,x86_64 dyn/tools/lldb-break-main.test: M2: WP-055 (X64-JOIN)
 mortar,x86_64 dyn/tools/elflint-dynamic.test: M2: WP-055 (X64-JOIN)
 mortar,x86_64 dyn/tools/ldd-lists.test: M2: WP-055 (X64-JOIN)
 
