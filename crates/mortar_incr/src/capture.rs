@@ -724,6 +724,40 @@ pub fn replay(
     for z in &s.sized {
         sized.push(Sized { chunk: chunk(z.chunk)?, size: z.size });
     }
+    // The erratum fixes (the branch at each site and its patch's words)
+    // are words the front computes from its own placement and the image
+    // writes as they are (`Front::erratum_fixes`): a stored erratum patch
+    // or redirect that is not the computed one would be a layout the
+    // image does not follow, so it is refused (a finding of the WP-061
+    // review, F8).
+    let errata = |patches: &mut dyn Iterator<Item = &Patch>, redirects: &[Redirect]| {
+        let all: Vec<&Patch> = patches.collect();
+        let mut v: Vec<(SectionId, u64, ChunkId, u64)> = redirects
+            .iter()
+            .filter_map(|r| {
+                let p = all.get(r.patch as usize)?;
+                matches!(p.kind, PatchKind::Erratum { .. })
+                    .then_some((r.section, r.offset, p.chunk, p.offset))
+            })
+            .collect();
+        v.sort_unstable();
+        let mut sites: Vec<(SectionId, u64, ChunkId, u64)> = all
+            .iter()
+            .filter_map(|p| match p.kind {
+                PatchKind::Erratum { section, offset, .. } => {
+                    Some((section, offset, p.chunk, p.offset))
+                }
+                PatchKind::Thunk(_) => None,
+            })
+            .collect();
+        sites.sort_unstable();
+        (v, sites)
+    };
+    if errata(&mut patches.iter().map(|(p, _)| p), &redirects)
+        != errata(&mut cp.patches.iter(), &cp.redirects)
+    {
+        return Err("an erratum patch or its redirect is not the one the image writes".to_owned());
+    }
     let l = &s.layout;
     let placement = Placement {
         chunks: Column::from_vec(chunks).map_err(|_| "chunks")?,

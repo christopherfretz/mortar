@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use mortar_cli::Parsed;
-use mortar_cli::table::Lands;
+use mortar_cli::table::{Lands, Status};
 use mortar_core::id::FileId;
 use mortar_core::plan::{Compression, Icf, IncrementalMode, InputSpec, OutputKind, ScriptRole};
 use mortar_diag::{Collector, Diagnostic, Key, Kind};
@@ -61,6 +61,8 @@ pub struct Session {
     stamps: Vec<DeviceStamp>,
     /// The fall-back reason, with its detail (§7).
     reason: String,
+    /// The state's target (`META` machine and class), when it was read.
+    recorded_target: Option<(u16, u8)>,
     start: Instant,
 }
 
@@ -120,7 +122,12 @@ pub fn plan_hash(parsed: &Parsed, cwd: &Path) -> [u8; 16] {
                 | Lands::NoIncremental
                 | Lands::IncrementalState
                 | Lands::IncrementalReport
-        ) || row.name().starts_with("--incremental");
+        ) || row.name().starts_with("--incremental")
+            // IN-18b: a row the table accepts and ignores (`noop`) touches
+            // no output byte (its audit links it to the same bytes), and
+            // some carry a new value on every run: gcc's
+            // `-plugin-opt=-fresolution=/tmp/ccXXXXXX.res`.
+            || matches!(row.status, Status::Noop(_));
         if excluded {
             continue;
         }
@@ -182,6 +189,37 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     }
     let start = Instant::now();
     let state_path = state_path(parsed, cwd, out_path);
+    let report = plan.incremental.report.as_ref().map(|r| match r {
+        None => Report::Stderr,
+        Some(p) => Report::File(cwd.join(p)),
+    });
+    // IN-17: neither file may be one the link reads or writes, checked
+    // before anything is written (the inputs a search finds are checked
+    // again after the front, `Session::clear_of`).
+    let mut named: Vec<(&Path, String)> = vec![(out_path, "the output".to_owned())];
+    let inputs: Vec<PathBuf> = plan
+        .inputs
+        .iter()
+        .filter_map(|i| match &i.spec {
+            InputSpec::Path(p) => Some(cwd.join(p)),
+            _ => None,
+        })
+        .collect();
+    for p in &inputs {
+        named.push((p, format!("the input {}", p.display())));
+    }
+    let ours = own_files(&state_path, report.as_ref());
+    for (option, path) in &ours {
+        if let Some(what) = clash(path, &named) {
+            let kind = Kind::IncrementalFileClash {
+                option: (*option).to_owned(),
+                path: path.display().to_string(),
+                what,
+            };
+            emit(diagnostics, 4, Diagnostic::error(kind));
+            return Start::Failed;
+        }
+    }
     let plan_hash = plan_hash(parsed, cwd);
     // IN-22a: one stamp per device, before any input is read.
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -200,9 +238,9 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     }
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
     let stamps = stamp::stamps(&dirs, &mountinfo);
-    let reason = if mode == IncrementalMode::Full {
+    let (reason, recorded_target) = if mode == IncrementalMode::Full {
         // `--incremental=full` links from scratch whatever the state says.
-        "full requested".to_owned()
+        ("full requested".to_owned(), None)
     } else {
         check(&state_path, plan_hash, out_path)
     };
@@ -210,32 +248,66 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
         emit(diagnostics, 2, Diagnostic::error(Kind::IncrementalUpdateFailed { reason }));
         return Start::Failed;
     }
-    let report = plan.incremental.report.as_ref().map(|r| match r {
-        None => Report::Stderr,
-        Some(p) => Report::File(cwd.join(p)),
-    });
-    Start::Full(Session { state_path, report, plan_hash, stamps, reason, start })
+    Start::Full(Session { state_path, report, plan_hash, stamps, reason, recorded_target, start })
+}
+
+/// The link's target as `META` records it: `e_machine` and the ELF class.
+fn target_of(f: &Front<'_>) -> (u16, u8) {
+    (f.target.machine.e_machine(), if f.target.class == mortar_elf::Class::Elf64 { 2 } else { 1 })
+}
+
+/// The files incremental mode writes, with the option naming each.
+fn own_files<'a>(
+    state_path: &'a Path,
+    report: Option<&'a Report>,
+) -> Vec<(&'static str, &'a Path)> {
+    let mut v = vec![("--incremental-state", state_path)];
+    if let Some(Report::File(p)) = report {
+        v.push(("--incremental-report", p.as_path()));
+    }
+    v
+}
+
+/// What `path` names among `named` (the same path, or the same file),
+/// if anything.
+fn clash(path: &Path, named: &[(&Path, String)]) -> Option<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let id = std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()));
+    named.iter().find_map(|(p, what)| {
+        let same = *p == path
+            || id.is_some_and(|id| {
+                std::fs::metadata(p).ok().is_some_and(|m| (m.dev(), m.ino()) == id)
+            });
+        same.then(|| what.clone())
+    })
 }
 
 /// The fall-back reason of an existing state, in §7's order: the state
-/// read and validated, the plan, the updating flag, the output.
-fn check(state_path: &Path, plan_hash: [u8; 16], out_path: &Path) -> String {
+/// read and validated, the plan, the updating flag, the output; with the
+/// state's target, which the link's is compared with once it is known
+/// (`Session::finish`).
+fn check(state_path: &Path, plan_hash: [u8; 16], out_path: &Path) -> (String, Option<(u16, u8)>) {
     let bytes = match std::fs::read(state_path) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return "no-state".to_owned(),
-        Err(e) => return format!("state-corrupt: cannot read the state: {e}"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ("no-state".to_owned(), None),
+        Err(e) => return (format!("state-corrupt: cannot read the state: {e}"), None),
     };
     let state = match format::decode(&bytes, crate::VERSION.as_bytes()) {
         Ok(s) => s,
-        Err(e) => return format!("{}: {}", e.reason(), e.detail()),
+        Err(e) => return (format!("{}: {}", e.reason(), e.detail()), None),
     };
+    let target = Some((state.meta.machine, state.meta.class));
+    (check_state(&state, plan_hash, out_path), target)
+}
+
+fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -> String {
     if state.plan_hash != plan_hash {
         return "options-changed".to_owned();
     }
     if state.flags & format::FLAG_UPDATING != 0 {
         return "output-torn".to_owned();
     }
-    if let Err(why) = output_matches(&state, out_path) {
+    if let Err(why) = output_matches(state, out_path) {
         return format!("output-changed: {why}");
     }
     "update-not-implemented".to_owned()
@@ -262,12 +334,16 @@ pub fn output_matches(state: &State, out_path: &Path) -> Result<(), String> {
         stamp::Cleanliness::Changed => Err("its stat tuple differs".to_owned()),
         stamp::Cleanliness::Clean => {
             let m = &state.meta;
-            if m.sealed_end > m.sealed_start {
-                let mut id = vec![0u8; (m.sealed_end - m.sealed_start) as usize];
+            let want = state.str(m.build_id);
+            if !want.is_empty() {
+                // The reader holds the descriptor to the id's length, at
+                // most MAX_BUILD_ID bytes: only that many are read.
+                let mut buf = [0u8; format::MAX_BUILD_ID as usize];
+                let id = buf.get_mut(..want.len()).ok_or("the build id is too long")?;
                 let file = std::fs::File::open(out_path).map_err(|e| e.to_string())?;
-                std::os::unix::fs::FileExt::read_exact_at(&file, &mut id, m.sealed_start)
+                std::os::unix::fs::FileExt::read_exact_at(&file, id, m.sealed_start)
                     .map_err(|e| e.to_string())?;
-                if id != state.str(m.build_id) {
+                if id != want {
                     return Err("its build id differs".to_owned());
                 }
             }
@@ -311,6 +387,28 @@ fn hash_bytes(h: mortar_core::inputs::ContentHash) -> [u8; 16] {
 }
 
 impl Session {
+    /// IN-17 after the front: neither file incremental mode writes is an
+    /// input the front opened (one a library search found, say). An error
+    /// is emitted and `false` returned before the output is written.
+    #[must_use]
+    pub fn clear_of(&self, store: &Store, diagnostics: &Collector) -> bool {
+        use std::os::unix::fs::MetadataExt as _;
+        let inodes = store.inodes();
+        for (option, path) in own_files(&self.state_path, self.report.as_ref()) {
+            let Ok(m) = std::fs::metadata(path) else { continue };
+            if inodes.contains(&(m.dev(), m.ino())) {
+                let kind = Kind::IncrementalFileClash {
+                    option: option.to_owned(),
+                    path: path.display().to_string(),
+                    what: "an input of the link".to_owned(),
+                };
+                emit(diagnostics, 5, Diagnostic::error(kind));
+                return false;
+            }
+        }
+        true
+    }
+
     /// The fall-back reason (for tests).
     #[must_use]
     pub fn reason(&self) -> &str {
@@ -321,7 +419,7 @@ impl Session {
     /// output, and the lines for standard error (the fall-back's, or the
     /// report's when it goes there).
     pub fn finish(
-        self,
+        mut self,
         f: &Front<'_>,
         store: &Store,
         written: &Written,
@@ -330,6 +428,14 @@ impl Session {
         diagnostics: &Collector,
     ) -> String {
         let mut stderr = String::new();
+        // §7: the target is part of the options; a state of another
+        // target is `options-changed`, ahead of the output's reasons.
+        if let Some(recorded) = self.recorded_target
+            && recorded != target_of(f)
+            && self.reason != "options-changed"
+        {
+            "options-changed".clone_into(&mut self.reason);
+        }
         if f.dyn_tables.is_some() {
             emit(
                 diagnostics,
@@ -376,10 +482,17 @@ impl Session {
         cwd: &Path,
         out_path: &Path,
     ) -> Result<(), String> {
-        let state = self.state(f, store, written, cwd)?;
-        let state = bind(state, out_path)?;
-        write_atomically(&self.state_path, &format::encode(&state))
-            .map_err(|e| format!("cannot write {}: {e}", self.state_path.display()))
+        let result = self.state(f, store, written, cwd).and_then(|state| {
+            let state = bind(state, out_path, written)?;
+            write_atomically(&self.state_path, &format::encode(&state))
+                .map_err(|e| format!("cannot write {}: {e}", self.state_path.display()))
+        });
+        if result.is_err() {
+            // No state is left that the next link could accept: an older
+            // one describes an output this link has replaced.
+            let _ = std::fs::remove_file(&self.state_path);
+        }
+        result
     }
 
     /// The state of the link `f`, all but its output row.
@@ -422,7 +535,13 @@ impl Session {
                 ..StatRow::default()
             });
         }
+        // One row per path: a path the link opens twice (`-lgfortran`
+        // named twice on gfortran's line) is one file to watch.
+        let mut seen: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
         for o in &f.inputs.link.opened {
+            if !seen.insert(o.path) {
+                continue;
+            }
             let path = PathBuf::from(<OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(o.path));
             let mut row = StatRow {
                 tag: stat_tag::INPUT,
@@ -452,8 +571,8 @@ impl Session {
         let sealed = written.sealed.clone().unwrap_or(0..0);
         state.meta = Meta {
             version: strings.add(crate::VERSION.as_bytes()),
-            machine: f.target.machine.e_machine(),
-            class: if f.target.class == mortar_elf::Class::Elf64 { 2 } else { 1 },
+            machine: target_of(f).0,
+            class: target_of(f).1,
             output_kind: 0,
             leaf_fn: match leaf_fn {
                 TreeFn::L128 => 0,
@@ -477,10 +596,19 @@ impl Session {
 }
 
 /// IN-21: the output's tuple and reference stamp, after its last write.
-fn bind(mut state: State, out_path: &Path) -> Result<State, String> {
+fn bind(mut state: State, out_path: &Path, written: &Written) -> Result<State, String> {
     let (t, stamp) = stamp::bind_output(out_path)
         .map_err(|e| format!("cannot bind the output: {e}"))?
         .ok_or("the output changed while it was bound (or no stamp could be taken)")?;
+    // IN-21: the state describes the file this link wrote, which the path
+    // may no longer name (another link renamed its own output over it).
+    let ours = written.file.ok_or("the written output's identity is unknown")?;
+    if (t.dev, t.ino) != ours || t.size != written.file_size {
+        return Err(format!(
+            "{} is no longer the file this link wrote (another link replaced it)",
+            out_path.display()
+        ));
+    }
     state.stat.push(StatRow {
         tag: stat_tag::OUTPUT,
         trust: 0,

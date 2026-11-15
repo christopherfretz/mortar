@@ -24,6 +24,8 @@ pub const RECORD_LEN: usize = 40;
 pub const FLAG_UPDATING: u32 = 1;
 /// An absent row reference.
 pub const NONE: u32 = u32::MAX;
+/// The longest build id a state records (`META.build_id`; IN-18a).
+pub const MAX_BUILD_ID: u32 = 64;
 
 /// Why a state is not used (`spec/incr.md` §7): `state-corrupt` or
 /// `state-version`, with a detail.
@@ -1121,6 +1123,12 @@ fn validate(s: &State) -> Result<(), StateError> {
     if m.sealed_start > m.sealed_end || m.sealed_end > m.file_size {
         return Err(bad(kind::META, 0, "build-id descriptor outside the output"));
     }
+    // The descriptor holds exactly the build id, which is short (I-73: 20
+    // or 32 bytes for a hash; a given id at most MAX_BUILD_ID): the output
+    // check reads that many bytes and no more.
+    if m.build_id.len > MAX_BUILD_ID || m.sealed_end - m.sealed_start != u64::from(m.build_id.len) {
+        return Err(bad(kind::META, 0, "build-id descriptor is not the build id's length"));
+    }
     // STAT: device rows by dev, then inputs, then one output row.
     let mut phase = stat_tag::DEVICE;
     let mut last_dev = None;
@@ -1145,12 +1153,28 @@ fn validate(s: &State) -> Result<(), StateError> {
     if phase != stat_tag::OUTPUT {
         return Err(corrupt("STAT: no output row"));
     }
+    let output = s.stat.last().map_or(0, |o| o.size);
+    if output != m.file_size {
+        return Err(corrupt(format!(
+            "META: output size {} but the output row says {output}",
+            m.file_size
+        )));
+    }
+    let mut paths: Vec<&[u8]> =
+        s.stat.iter().filter(|r| r.tag == stat_tag::INPUT).map(|r| s.str(r.path)).collect();
+    paths.sort_unstable();
+    if paths.windows(2).any(|w| w[0] == w[1]) {
+        return Err(corrupt("STAT: an input path appears twice"));
+    }
     for (i, f) in s.files.iter().enumerate() {
         if f.kind > 2 || f.member > 1 || !str_ok(f.path) || !str_ok(f.member_name) {
             return Err(bad(kind::FILES, i, "field out of range"));
         }
         if f.member == 0 && (f.member_name != Str::default() || f.member_ordinal != 0) {
             return Err(bad(kind::FILES, i, "member fields of a file that is not a member"));
+        }
+        if f.base.checked_add(f.len).is_none() {
+            return Err(bad(kind::FILES, i, "byte range past 2^64"));
         }
     }
     for (i, p) in s.probes.iter().enumerate() {
@@ -1216,9 +1240,21 @@ fn validate(s: &State) -> Result<(), StateError> {
             return Err(bad(kind::CHUNKS, i, "field out of range"));
         }
     }
+    let mut placed = vec![false; chunks];
     for (i, &c) in s.order.iter().enumerate() {
         if !reference(chunks, c, false) {
             return Err(bad(kind::ORDER, i, "chunk out of range"));
+        }
+        if std::mem::replace(&mut placed[c as usize], true) {
+            return Err(bad(kind::ORDER, i, "a chunk appears twice"));
+        }
+    }
+    if let Some(c) = placed.iter().position(|p| !p) {
+        return Err(corrupt(format!("ORDER: chunk {c} is not in the order")));
+    }
+    for (i, g) in s.segments.iter().enumerate() {
+        if g.align >= 64 {
+            return Err(bad(kind::SEGMENTS, i, "alignment out of range"));
         }
     }
     for (i, f) in s.frags.iter().enumerate() {
@@ -1237,6 +1273,11 @@ fn validate(s: &State) -> Result<(), StateError> {
             return Err(bad(kind::SLOTS, i, "field out of range or out of order"));
         }
         last_kind = x.kind;
+    }
+    let mut slots: Vec<(u8, u32)> = s.slots.iter().map(|x| (x.kind, x.symbol)).collect();
+    slots.sort_unstable();
+    if slots.windows(2).any(|w| w[0] == w[1]) {
+        return Err(corrupt("SLOTS: a symbol appears twice in one list"));
     }
     for (i, e) in s.eh_records.iter().enumerate() {
         if !reference(sections, e.section, false) {
@@ -1272,6 +1313,11 @@ fn validate(s: &State) -> Result<(), StateError> {
         if !ok {
             return Err(bad(kind::DEFINED, i, "field out of range"));
         }
+    }
+    let mut defined: Vec<u32> = s.defined.iter().map(|d| d.symbol).collect();
+    defined.sort_unstable();
+    if defined.windows(2).any(|w| w[0] == w[1]) {
+        return Err(corrupt("DEFINED: a symbol appears twice"));
     }
     for (i, p) in s.patches.iter().enumerate() {
         let ok = reference(chunks, p.chunk, false)

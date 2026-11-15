@@ -54,6 +54,11 @@ rules (`spec/model.md` §4.4, `Layout::check`) is reported as
 in tests, so its finding is a value to report, and the link then fails
 like any other: status 1, no output file (§7).
 
+Incremental mode's `incr-full-link` report (`spec/incr.md` IN-17) is a
+line of the report, written to standard error or the report file, not a
+diagnostic: it has no kind, no severity and no id, and `--fatal-warnings`
+does not see it.
+
 ### 2.2 Kind and id
 
 `Kind` says what the diagnostic states. Each kind has
@@ -149,7 +154,7 @@ twice. The areas, in order: command line (`conflicting-options` to
 to `version-reassigned`), one-definition rule (`meta-malformed` to
 `odr-vtable-rtti-mismatch`, M6), relocations, layout (`executable-stack` to
 `section-conflict`), incremental linking (`incremental-not-reproducible`
-to `incremental-update-failed`), refusals, internal. The wording column is the message of §5.2, complete: nothing
+to `incremental-file-clash`), refusals, internal. The wording column is the message of §5.2, complete: nothing
 is added before or after it.
 
 | id | variant | message | wording from |
@@ -216,6 +221,7 @@ is added before or after it.
 | `incremental-not-reproducible` | `IncrementalNotReproducible` | `SOURCE_DATE_EPOCH is set, but an incremental link's output depends on its edit history` | own (`spec/incr.md` IN-7) |
 | `incremental-unsupported` | `IncrementalUnsupported { option }` | `--incremental is not supported with {option}; linking without a state` | own (`spec/incr.md` IN-12) |
 | `incremental-update-failed` | `IncrementalUpdateFailed { reason }` | `--incremental=update: cannot update: {reason}` | own (`spec/incr.md` IN-10) |
+| `incremental-file-clash` | `IncrementalFileClash { option, path, what }` | `{option}={path} names {what}; nothing is written to it` | own (`spec/incr.md` IN-17) |
 | `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) |
 | `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
 

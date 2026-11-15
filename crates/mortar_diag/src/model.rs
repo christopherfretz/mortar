@@ -419,6 +419,10 @@ pub enum Kind {
     /// `--incremental=update` could not update; `reason` is the fall-back's
     /// (§7), with its detail.
     IncrementalUpdateFailed { reason: String },
+    /// `incremental-file-clash` (an error, `spec/incr.md` IN-17):
+    /// `option` (`--incremental-state` or `--incremental-report`) names
+    /// `path`, which is `what` (the output or an input); nothing is linked.
+    IncrementalFileClash { option: String, path: String, what: String },
 
     // -- refusals -------------------------------------------------------
     /// `refused`: a construct mortar does not implement, by name
@@ -438,7 +442,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 64] = [
+    pub const IDS: [&'static str; 65] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -501,6 +505,7 @@ impl Kind {
         "incremental-not-reproducible",
         "incremental-unsupported",
         "incremental-update-failed",
+        "incremental-file-clash",
         "refused",
         "internal-error",
     ];
@@ -572,6 +577,7 @@ impl Kind {
             Self::IncrementalNotReproducible => "incremental-not-reproducible",
             Self::IncrementalUnsupported { .. } => "incremental-unsupported",
             Self::IncrementalUpdateFailed { .. } => "incremental-update-failed",
+            Self::IncrementalFileClash { .. } => "incremental-file-clash",
             Self::Refused { .. } => "refused",
             Self::InternalError { .. } => "internal-error",
         }
@@ -957,8 +963,9 @@ mod tests {
             Kind::IncrementalNotReproducible => 59,
             Kind::IncrementalUnsupported { .. } => 60,
             Kind::IncrementalUpdateFailed { .. } => 61,
-            Kind::Refused { .. } => 62,
-            Kind::InternalError { .. } => 63,
+            Kind::IncrementalFileClash { .. } => 62,
+            Kind::Refused { .. } => 63,
+            Kind::InternalError { .. } => 64,
         }
     }
 
@@ -1034,6 +1041,7 @@ mod tests {
             Kind::IncrementalNotReproducible,
             Kind::IncrementalUnsupported { option: s() },
             Kind::IncrementalUpdateFailed { reason: s() },
+            Kind::IncrementalFileClash { option: s(), path: s(), what: s() },
             Kind::Refused { class: RefusalClass::Feature, name: s(), not_recognized: false },
             Kind::InternalError { what: s() },
         ];

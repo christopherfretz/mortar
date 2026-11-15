@@ -254,7 +254,10 @@ fn invoke_with(
     let mut incremental_lines = String::new();
     let mut stdout = String::new();
     let removed = front.as_ref().map_or_else(String::new, |f| removed_lines(prog, f));
-    if let Some(f) = &front {
+    // spec/incr.md IN-17: the state and the report are no input.
+    if let Some(f) = &front
+        && session.as_ref().is_none_or(|s| s.clear_of(&store, &diagnostics))
+    {
         let linked = link_image(f, &store, &out_path, &diagnostics, &mut timer);
         if let Some((maps, written)) = linked {
             // I-79, I-120: the maps of a successful link only.

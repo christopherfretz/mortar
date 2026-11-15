@@ -451,6 +451,14 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str("--incremental=update: cannot update: ");
             escaped(reason, out);
         }
+        Kind::IncrementalFileClash { option, path, what } => {
+            escaped(option, out);
+            out.push('=');
+            escaped(path, out);
+            out.push_str(" names ");
+            escaped(what, out);
+            out.push_str("; nothing is written to it");
+        }
         Kind::SectionConflict { name, first, second } => {
             out.push_str("section ");
             escaped(name, out);

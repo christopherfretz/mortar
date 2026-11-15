@@ -267,6 +267,9 @@ pub struct Written {
     pub sealed: Option<std::ops::Range<u64>>,
     /// The output file's size.
     pub file_size: u64,
+    /// With `LinkOptions::keep_leaves`: the device and inode of the file
+    /// written (`spec/incr.md` IN-21), from its descriptor.
+    pub file: Option<(u64, u64)>,
     /// The plan's size: rows and jobs (for `--time-phases` and tests).
     pub rows: usize,
     pub jobs: usize,
@@ -2050,13 +2053,19 @@ fn write_link(
     }
     steps.step("recheck", 0, "");
     on_phase(PHASE_IMAGE, "image");
-    out.commit().map_err(|kd| Failed { diagnostics: vec![kd] })?;
+    let written = if link.options.keep_leaves {
+        out.commit_identified()
+    } else {
+        out.commit().map(|()| None)
+    }
+    .map_err(|kd| Failed { diagnostics: vec![kd] })?;
     on_phase(PHASE_OUTPUT, "output file");
     Ok(Written {
         build_id: filled.build_id,
         leaves: leaf_fn.zip(filled.leaves),
         sealed,
         file_size: plan.file_size,
+        file: written,
         rows: plan.rows.len(),
         jobs: plan.jobs.len(),
     })

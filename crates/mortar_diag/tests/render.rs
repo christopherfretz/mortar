@@ -347,6 +347,10 @@ fn control_characters_are_made_visible() {
             format!("--incremental=update: cannot update: {shown}"),
         ),
         (
+            Kind::IncrementalFileClash { option: h(), path: h(), what: h() },
+            format!("{shown}={shown} names {shown}; nothing is written to it"),
+        ),
+        (
             Kind::Refused { class: RefusalClass::SectionType, name: h(), not_recognized: false },
             format!("unsupported section type: {shown}"),
         ),
@@ -434,6 +438,7 @@ fn samples() -> Vec<Diagnostic> {
             Kind::IncrementalNotReproducible,
             Kind::IncrementalUnsupported { option: s(x) },
             Kind::IncrementalUpdateFailed { reason: s(x) },
+            Kind::IncrementalFileClash { option: s(x), path: s(x), what: s(x) },
             Kind::Refused { class: RefusalClass::RelocationType, name: s(x), not_recognized: true },
             Kind::InternalError { what: s(x) },
         ]
