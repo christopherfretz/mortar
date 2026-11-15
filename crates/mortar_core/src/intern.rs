@@ -14,27 +14,27 @@
 //!
 //! # Design
 //!
-//! One lock-free open-addressing table, sized up front: an array of
-//! `AtomicU64` probe cells (linear probing from a multiply-shift reduction
-//! of the hash), each 0 or the hash's low half (a tag) and an entry index.
-//! Entries (key, hash, first mention as an `AtomicU64`) live in `OnceLock`s
-//! in fixed-size segments allocated on first use; a worker reserves entry
-//! indices in blocks ([`Inserter`]), writes its entry, and only then
-//! publishes it by a compare-exchange of an empty cell, so a reader never
-//! waits: a cell it sees holds a complete entry. A worker that loses the
-//! race for a cell leaves its entry unused (a hole, never referenced) and
-//! takes the winner's if the keys are equal. The first mention is updated
-//! with `fetch_min`, after a plain load shows it would lower it. No lock is
-//! taken anywhere, so a preempted worker never stalls the others (the
-//! sharded-mutex design this replaced did, on a loaded host: the numbers
-//! are in `spec/landed/model/WP-020b.md`).
+//! One open-addressing table, sized up front, with no lock: an array of
+//! cells, each a `OnceLock` holding an entry (key, hash, first mention as an
+//! `AtomicU64`), probed linearly from a multiply-shift reduction of the
+//! hash. A new key is written into the first empty cell of its probe
+//! sequence by `OnceLock::set`; a worker that loses the race for a cell
+//! reads the winner's entry and goes on probing if the keys differ. The
+//! first mention is updated with `fetch_min`, after a plain load shows it
+//! would lower it. A reader waits only for a cell being written at that
+//! very moment (the 48 bytes of an entry), never for a lock held across a
+//! probe: the sharded-mutex design this replaced lost its scaling on a
+//! loaded host, where a preempted lock holder stalls every thread wanting
+//! its shard (the numbers are in `spec/landed/model/WP-020b.md`, with the
+//! other designs measured).
 //!
-//! A lock-free table cannot grow, so [`number`] sizes it from a
-//! `HyperLogLog` estimate of the distinct keys (one pass that hashes every
-//! key; mold sizes its symbol table the same way) and, should the estimate
-//! fall short, starts pass 1 again with twice the size: the result is the
-//! same either way. Which slot a key gets depends on the schedule, so
-//! slots are never observable; ids are.
+//! A table of this kind cannot grow while it is shared, so [`number`]
+//! sizes it from a `HyperLogLog` estimate of the distinct keys (one pass
+//! hashing every key; mold sizes its symbol table the same way) and,
+//! should the estimate fall short, runs pass 1 again with twice the size:
+//! the result is the same either way. A slot is a cell's index: which slot
+//! a key gets depends on the schedule, so slots are never observable; ids
+//! are.
 
 use std::marker::PhantomData;
 use std::sync::OnceLock;
@@ -193,56 +193,44 @@ struct Entry<K> {
     first: AtomicU64,
 }
 
-/// log2 of the entries per segment.
-const SEGMENT_BITS: u32 = 14;
-const SEGMENT: usize = 1 << SEGMENT_BITS;
-
-/// The entry indices an [`Inserter`] reserves at a time.
-const RESERVE: usize = 256;
-
-type Segment<K> = Box<[OnceLock<Entry<K>>]>;
+/// The new keys an [`Inserter`] counts before it adds them to the shared
+/// count.
+const COUNT_BATCH: usize = 64;
 
 /// A concurrent, insert-only, fixed-size table from keys to [`Slot`]s,
 /// keeping each key's first mention. Shared by reference among workers,
 /// each inserting through an [`Inserter`] of its own; frozen into a
 /// read-only [`Frozen`] when the parallel phase ends.
 ///
-/// Cost: 8 bytes per probe cell (2 per key it is sized for), an entry per
-/// key (56 bytes for [`SymName`]) in segments of 2^14 allocated on first
-/// use; per insert one hash, a probe (one tag compare per cell visited, key
-/// bytes compared on a tag match), and for a new key one compare-exchange.
+/// Cost: 5/3 cells per key it is sized for, each an entry in a
+/// `OnceLock` (56 bytes for [`SymName`]); per insert one hash and a probe
+/// (one hash compare per cell visited, key bytes compared on a match); for
+/// a new key one `OnceLock::set`.
 #[derive(Debug)]
 pub struct Interner<K> {
-    cells: Box<[AtomicU64]>,
-    segments: Box<[OnceLock<Segment<K>>]>,
-    /// The next entry index to reserve.
-    next: AtomicUsize,
-    /// The most entries: three quarters of the cells, so that a probe ends.
+    cells: Box<[OnceLock<Entry<K>>]>,
+    /// The keys inserted, give or take what the inserters have not added
+    /// yet.
+    used: AtomicUsize,
+    /// The most keys: three quarters of the cells, so that a probe ends.
     limit: usize,
 }
 
-#[inline]
-fn cell(hash: u64, index: usize) -> u64 {
-    (hash << 32) | (index as u64 + 1)
-}
-
 impl<K: InternKey> Interner<K> {
-    /// A table for about `keys` distinct keys (it is full at 1.5 times
-    /// `keys`). Allocates its probe cells, zeroed.
+    /// A table for about `keys` distinct keys (it is full at 1.25 times
+    /// `keys`). Allocates its cells.
     pub fn with_capacity(keys: usize) -> Self {
-        let cells = keys.saturating_mul(2).max(64);
-        let limit = (cells / 4 * 3).min(u32::MAX as usize);
+        let cells = (keys.saturating_mul(5) / 3).clamp(64, u32::MAX as usize);
         Self {
-            cells: (0..cells).map(|_| AtomicU64::new(0)).collect(),
-            segments: (0..limit.div_ceil(SEGMENT)).map(|_| OnceLock::new()).collect(),
-            next: AtomicUsize::new(0),
-            limit,
+            cells: (0..cells).map(|_| OnceLock::new()).collect(),
+            used: AtomicUsize::new(0),
+            limit: cells / 4 * 3,
         }
     }
 
     /// An inserter for one worker.
     pub fn inserter(&self) -> Inserter<'_, K> {
-        Inserter { table: self, next: 0, end: 0 }
+        Inserter { table: self, fresh: 0 }
     }
 
     /// The first probe cell of `hash`.
@@ -252,30 +240,27 @@ impl<K: InternKey> Interner<K> {
     }
 
     #[inline]
-    fn entry(&self, index: usize) -> &Entry<K> {
-        self.segments[index >> SEGMENT_BITS]
-            .get()
-            .and_then(|s| s[index & (SEGMENT - 1)].get())
-            .expect("an entry is written before its cell is published")
+    fn next(&self, i: usize) -> usize {
+        if i + 1 == self.cells.len() { 0 } else { i + 1 }
+    }
+
+    #[inline]
+    fn entry(&self, slot: Slot) -> &Entry<K> {
+        self.cells[slot.0 as usize].get().expect("a slot names a full cell")
     }
 
     /// The slot of `key`, if it was inserted.
     pub fn get(&self, key: &K) -> Option<Slot> {
         let hash = key.hash();
         let mut i = self.home(hash);
-        loop {
-            let c = self.cells[i].load(atomic::Ordering::Acquire);
-            if c == 0 {
-                return None;
+        for _ in 0..self.cells.len() {
+            let e = self.cells[i].get()?;
+            if e.hash == hash && e.key == *key {
+                return Some(Slot(i as u32));
             }
-            if c >> 32 == hash & 0xffff_ffff {
-                let index = (c as u32 - 1) as usize;
-                if self.entry(index).key == *key {
-                    return Some(Slot(index as u32));
-                }
-            }
-            i = if i + 1 == self.cells.len() { 0 } else { i + 1 };
+            i = self.next(i);
         }
+        None
     }
 
     /// The table, read-only.
@@ -284,13 +269,12 @@ impl<K: InternKey> Interner<K> {
     }
 }
 
-/// One worker's handle on an [`Interner`]: it reserves entry indices in
-/// blocks, so that workers do not contend for one counter.
+/// One worker's handle on an [`Interner`]: it counts the keys it adds in
+/// batches, so that workers do not contend for one counter.
 #[derive(Debug)]
 pub struct Inserter<'t, K> {
     table: &'t Interner<K>,
-    next: usize,
-    end: usize,
+    fresh: usize,
 }
 
 impl<K: InternKey> Inserter<'_, K> {
@@ -301,52 +285,40 @@ impl<K: InternKey> Inserter<'_, K> {
         let hash = key.hash();
         let mention = mention.pack();
         let mut i = table.home(hash);
-        let mut c = table.cells[i].load(atomic::Ordering::Acquire);
-        loop {
-            if c == 0 {
-                let index = self.reserve()?;
-                let segment = table.segments[index >> SEGMENT_BITS]
-                    .get_or_init(|| (0..SEGMENT).map(|_| OnceLock::new()).collect());
-                let fresh = Entry { key, hash, first: AtomicU64::new(mention) };
-                assert!(segment[index & (SEGMENT - 1)].set(fresh).is_ok(), "an entry index is reserved once");
-                match table.cells[i].compare_exchange(
-                    0,
-                    cell(hash, index),
-                    atomic::Ordering::AcqRel,
-                    atomic::Ordering::Acquire,
-                ) {
-                    Ok(_) => return Ok(Slot(index as u32)),
-                    // Another worker took the cell: the entry is a hole.
-                    Err(now) => c = now,
-                }
-                continue;
-            }
-            if c >> 32 == hash & 0xffff_ffff {
-                let index = (c as u32 - 1) as usize;
-                let e = table.entry(index);
-                if e.key == key {
-                    if mention < e.first.load(atomic::Ordering::Relaxed) {
-                        e.first.fetch_min(mention, atomic::Ordering::Relaxed);
+        for _ in 0..table.cells.len() {
+            let cell = &table.cells[i];
+            let e = match cell.get() {
+                Some(e) => e,
+                None => match cell.set(Entry { key, hash, first: AtomicU64::new(mention) }) {
+                    Ok(()) => {
+                        self.count()?;
+                        return Ok(Slot(i as u32));
                     }
-                    return Ok(Slot(index as u32));
+                    // Another worker filled the cell first.
+                    Err(_) => cell.get().expect("a cell that refused a value holds one"),
+                },
+            };
+            if e.hash == hash && e.key == key {
+                if mention < e.first.load(atomic::Ordering::Relaxed) {
+                    e.first.fetch_min(mention, atomic::Ordering::Relaxed);
                 }
+                return Ok(Slot(i as u32));
             }
-            i = if i + 1 == table.cells.len() { 0 } else { i + 1 };
-            c = table.cells[i].load(atomic::Ordering::Acquire);
+            i = table.next(i);
         }
+        Err(Full)
     }
 
-    fn reserve(&mut self) -> Result<usize, Full> {
-        if self.next == self.end {
-            let start = self.table.next.fetch_add(RESERVE, atomic::Ordering::Relaxed);
-            if start >= self.table.limit {
+    fn count(&mut self) -> Result<(), Full> {
+        self.fresh += 1;
+        if self.fresh == COUNT_BATCH {
+            self.fresh = 0;
+            let used = self.table.used.fetch_add(COUNT_BATCH, atomic::Ordering::Relaxed);
+            if used + COUNT_BATCH > self.table.limit {
                 return Err(Full);
             }
-            self.next = start;
-            self.end = (start + RESERVE).min(self.table.limit);
         }
-        self.next += 1;
-        Ok(self.next - 1)
+        Ok(())
     }
 }
 
@@ -357,10 +329,10 @@ pub struct Frozen<K> {
 }
 
 impl<K: InternKey> Frozen<K> {
-    /// One more than the greatest slot (holes included): the size of an
-    /// array indexed by slot.
+    /// One more than the greatest slot (empty cells included): the size of
+    /// an array indexed by slot.
     pub fn slots(&self) -> usize {
-        self.table.next.load(atomic::Ordering::Relaxed).min(self.table.limit)
+        self.table.cells.len()
     }
 
     /// The slot of `key`, if it was interned.
@@ -370,25 +342,22 @@ impl<K: InternKey> Frozen<K> {
 
     /// The key of `slot`.
     pub fn key(&self, slot: Slot) -> K {
-        self.table.entry(slot.0 as usize).key
+        self.table.entry(slot).key
     }
 
     /// The hash of the key of `slot`.
     pub fn hash(&self, slot: Slot) -> u64 {
-        self.table.entry(slot.0 as usize).hash
+        self.table.entry(slot).hash
     }
 
     /// The first mention of the key of `slot`.
     pub fn first(&self, slot: Slot) -> Mention {
-        Mention::unpack(self.table.entry(slot.0 as usize).first.load(atomic::Ordering::Relaxed))
+        Mention::unpack(self.table.entry(slot).first.load(atomic::Ordering::Relaxed))
     }
 
-    /// The bytes the table holds: probe cells and the segments allocated.
+    /// The bytes the table holds.
     pub fn heap_bytes(&self) -> usize {
-        let segments = self.table.segments.iter().filter(|s| s.get().is_some()).count();
-        self.table.cells.len() * 8
-            + self.table.segments.len() * size_of::<OnceLock<Segment<K>>>()
-            + segments * SEGMENT * size_of::<OnceLock<Entry<K>>>()
+        self.table.cells.len() * size_of::<OnceLock<Entry<K>>>()
     }
 }
 
@@ -549,7 +518,31 @@ impl<K, I> Numbering<K, I> {
 ///
 /// If `keys(u)` yields a number of keys other than `counts[u]` (a bug of
 /// the caller's).
-pub fn number<K, I, F, It>(pool: &Pool, counts: &[u32], keys: F) -> Result<Numbering<K, I>, TooManyKeys>
+pub fn number<K, I, F, It>(
+    pool: &Pool,
+    counts: &[u32],
+    keys: F,
+) -> Result<Numbering<K, I>, TooManyKeys>
+where
+    K: InternKey,
+    I: Id,
+    F: Fn(usize) -> It + Sync,
+    It: IntoIterator<Item = K>,
+{
+    let size = estimate(pool, counts.len(), &keys) + 16;
+    number_sized(pool, counts, keys, size)
+}
+
+/// [`number`] with the table first sized for `size` keys instead of the
+/// estimate. Test support: a test makes it start too small, to exercise
+/// the retry.
+#[doc(hidden)]
+pub fn number_sized<K, I, F, It>(
+    pool: &Pool,
+    counts: &[u32],
+    keys: F,
+    mut size: usize,
+) -> Result<Numbering<K, I>, TooManyKeys>
 where
     K: InternKey,
     I: Id,
@@ -569,22 +562,27 @@ where
     let mut map = vec![I::from_index(0); total];
 
     // Pass 1: intern, leaving slots in the map.
-    let mut size = estimate(pool, counts.len(), &keys) + 16;
     let table = loop {
         let interner = Interner::with_capacity(size);
         let full = AtomicBool::new(false);
-        pool.for_each_part_init(split_offsets(&mut map, &offsets), || interner.inserter(), |ins, u, out| {
-            if !full.load(atomic::Ordering::Relaxed) && fill(keys(u), u, out, |k, m| ins.insert(k, m)).is_err() {
-                full.store(true, atomic::Ordering::Relaxed);
-            }
-        });
+        pool.for_each_part_init(
+            split_offsets(&mut map, &offsets),
+            || interner.inserter(),
+            |ins, u, out| {
+                if !full.load(atomic::Ordering::Relaxed)
+                    && fill(keys(u), u, out, |k, m| ins.insert(k, m)).is_err()
+                {
+                    full.store(true, atomic::Ordering::Relaxed);
+                }
+            },
+        );
         if !full.into_inner() {
             break interner.freeze();
         }
-        if interner.limit >= u32::MAX as usize {
+        if interner.cells.len() >= u32::MAX as usize {
             return Err(TooManyKeys);
         }
-        size = size.saturating_mul(2);
+        size = size.saturating_mul(2).max(64);
     };
 
     // Pass 2: the first mentions, in unit order, are the ids in order.

@@ -2,7 +2,7 @@
 //! `cargo run --release -p mortar_core --example intern_bench [files]`.
 //! Short (seconds), at most 8 threads: the host is shared.
 
-#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 
 #[path = "../tests/intern_support/mod.rs"]
 mod support;
@@ -11,10 +11,10 @@ use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::time::Instant;
 
+use mortar_core::SymbolId;
 use mortar_core::hash::FixedState;
 use mortar_core::intern::{Interner, Mention, SymName, number};
 use mortar_core::par::Pool;
-use mortar_core::SymbolId;
 
 const RUNS: usize = 7;
 
@@ -50,7 +50,8 @@ fn main() {
     let mentions = w.mentions();
     let tabs = support::Strtabs::new(&w);
     let counts = w.counts();
-    let avg_len = w.files.iter().flatten().map(|&n| w.name(n).len()).sum::<usize>() as f64 / mentions as f64;
+    let avg_len =
+        w.files.iter().flatten().map(|&n| w.name(n).len()).sum::<usize>() as f64 / mentions as f64;
     println!("{files} files, {mentions} mentions, average name {avg_len:.0} bytes");
 
     let mut distinct = 0;
@@ -72,22 +73,24 @@ fn main() {
     }
     println!("{distinct} distinct keys");
     let (reference, _) = baseline::<FixedState>(&tabs);
-    for (threads, label, key) in [
-        (1, "parse", parse as fn(&[u8]) -> SymName<'_>),
-        (1, "plain", plain),
-        (8, "parse", parse),
-    ] {
+    for (threads, label, key) in
+        [(1, "parse", parse as fn(&[u8]) -> SymName<'_>), (1, "plain", plain), (8, "parse", parse)]
+    {
         let pool = Pool::sequential().with_threads(threads);
         let times: Vec<f64> = (0..RUNS)
             .map(|_| {
                 let t = Instant::now();
                 let interner = Interner::with_capacity(distinct);
-                pool.for_each_init(w.files.len(), || interner.inserter(), |ins, f| {
-                    for (k, name) in tabs.names(f).enumerate() {
-                        let m = Mention { unit: f as u32, ordinal: k as u32 };
-                        std::hint::black_box(ins.insert(key(name), m).unwrap());
-                    }
-                });
+                pool.for_each_init(
+                    w.files.len(),
+                    || interner.inserter(),
+                    |ins, f| {
+                        for (k, name) in tabs.names(f).enumerate() {
+                            let m = Mention { unit: f as u32, ordinal: k as u32 };
+                            std::hint::black_box(ins.insert(key(name), m).unwrap());
+                        }
+                    },
+                );
                 std::hint::black_box(interner.freeze());
                 t.elapsed().as_secs_f64()
             })
@@ -102,7 +105,9 @@ fn main() {
                 let mut acc = 0u64;
                 for f in 0..w.files.len() {
                     for name in tabs.names(f) {
-                        acc = acc.wrapping_add(mortar_core::intern::InternKey::hash(&SymName::parse(name)));
+                        acc = acc.wrapping_add(mortar_core::intern::InternKey::hash(
+                            &SymName::parse(name),
+                        ));
                     }
                 }
                 std::hint::black_box(acc);
@@ -116,15 +121,20 @@ fn main() {
         let times: Vec<f64> = (0..RUNS)
             .map(|_| {
                 let t = Instant::now();
-                let tables: Vec<Interner<SymName<'_>>> = (0..8).map(|_| Interner::with_capacity(distinct)).collect();
+                let tables: Vec<Interner<SymName<'_>>> =
+                    (0..8).map(|_| Interner::with_capacity(distinct)).collect();
                 let next = std::sync::atomic::AtomicUsize::new(0);
                 let take = || &tables[next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)];
-                pool.for_each_init(w.files.len(), || take().inserter(), |ins, f| {
-                    for (k, name) in tabs.names(f).enumerate() {
-                        let m = Mention { unit: f as u32, ordinal: k as u32 };
-                        std::hint::black_box(ins.insert(SymName::parse(name), m).unwrap());
-                    }
-                });
+                pool.for_each_init(
+                    w.files.len(),
+                    || take().inserter(),
+                    |ins, f| {
+                        for (k, name) in tabs.names(f).enumerate() {
+                            let m = Mention { unit: f as u32, ordinal: k as u32 };
+                            std::hint::black_box(ins.insert(SymName::parse(name), m).unwrap());
+                        }
+                    },
+                );
                 t.elapsed().as_secs_f64()
             })
             .collect();

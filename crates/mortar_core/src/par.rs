@@ -349,11 +349,15 @@ impl Pool {
         F: Fn(usize, &mut T) + Sync,
     {
         let g = self.grain(items.len());
-        self.drive_parts(items.chunks_mut(g), || (), |(), b, chunk| {
-            for (i, x) in chunk.iter_mut().enumerate() {
-                f(b * g + i, x);
-            }
-        });
+        self.drive_parts(
+            items.chunks_mut(g),
+            || (),
+            |(), b, chunk| {
+                for (i, x) in chunk.iter_mut().enumerate() {
+                    f(b * g + i, x);
+                }
+            },
+        );
     }
 
     /// Runs `f(block_index, range)` for every block of [`blocks`]`(len,
@@ -380,11 +384,15 @@ impl Pool {
         }
         let g = self.grain(units);
         let mut outs: Vec<Vec<R>> = (0..units.div_ceil(g)).map(|_| Vec::new()).collect();
-        self.drive_parts(outs.iter_mut(), || (), |(), b, out| {
-            let range = b * g..((b + 1) * g).min(units);
-            out.reserve_exact(range.len());
-            out.extend(range.map(&f));
-        });
+        self.drive_parts(
+            outs.iter_mut(),
+            || (),
+            |(), b, out| {
+                let range = b * g..((b + 1) * g).min(units);
+                out.reserve_exact(range.len());
+                out.extend(range.map(&f));
+            },
+        );
         concat(outs, units)
     }
 
@@ -403,12 +411,16 @@ impl Pool {
         let nb = units.div_ceil(g);
         let mut outs: Vec<Vec<R>> = (0..nb).map(|_| Vec::new()).collect();
         let mut offsets = vec![0usize; units + 1];
-        self.drive_parts(outs.iter_mut().zip(offsets[1..].chunks_mut(g)), || (), |(), b, (out, ends)| {
-            for (i, end) in ends.iter_mut().enumerate() {
-                f(b * g + i, out);
-                *end = out.len();
-            }
-        });
+        self.drive_parts(
+            outs.iter_mut().zip(offsets[1..].chunks_mut(g)),
+            || (),
+            |(), b, (out, ends)| {
+                for (i, end) in ends.iter_mut().enumerate() {
+                    f(b * g + i, out);
+                    *end = out.len();
+                }
+            },
+        );
         // Each block's ends are relative to the block: make them absolute.
         let mut base = 0;
         for (out, ends) in outs.iter().zip(offsets[1..].chunks_mut(g)) {
@@ -504,9 +516,12 @@ impl Pool {
             width = width.saturating_mul(2);
         }
         if !in_v {
-            self.for_each_part(v.chunks_mut(MERGE_BLOCK).zip(scratch.chunks(MERGE_BLOCK)), |_, (to, from)| {
-                to.copy_from_slice(from);
-            });
+            self.for_each_part(
+                v.chunks_mut(MERGE_BLOCK).zip(scratch.chunks(MERGE_BLOCK)),
+                |_, (to, from)| {
+                    to.copy_from_slice(from);
+                },
+            );
         }
     }
 

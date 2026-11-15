@@ -28,18 +28,48 @@ impl Rng {
     }
 }
 
-const SPACES: [&str; 12] =
-    ["std", "__1", "llvm", "clang", "mortar", "detail", "boost", "absl", "internal", "v8", "base", "impl"];
+const SPACES: [&str; 12] = [
+    "std", "__1", "llvm", "clang", "mortar", "detail", "boost", "absl", "internal", "v8", "base",
+    "impl",
+];
 const CLASSES: [&str; 16] = [
-    "vector", "basic_string", "unique_ptr", "shared_ptr", "map", "unordered_map", "SmallVector",
-    "DenseMap", "StringRef", "Optional", "function", "allocator", "char_traits", "Twine", "APInt",
+    "vector",
+    "basic_string",
+    "unique_ptr",
+    "shared_ptr",
+    "map",
+    "unordered_map",
+    "SmallVector",
+    "DenseMap",
+    "StringRef",
+    "Optional",
+    "function",
+    "allocator",
+    "char_traits",
+    "Twine",
+    "APInt",
     "raw_ostream",
 ];
 const METHODS: [&str; 16] = [
-    "push_back", "emplace_back", "reserve", "operator[]", "find", "insert", "erase", "begin", "end",
-    "size", "data", "grow", "reset", "swap", "append", "compare",
+    "push_back",
+    "emplace_back",
+    "reserve",
+    "operator[]",
+    "find",
+    "insert",
+    "erase",
+    "begin",
+    "end",
+    "size",
+    "data",
+    "grow",
+    "reset",
+    "swap",
+    "append",
+    "compare",
 ];
-const PARAMS: [&str; 10] = ["i", "j", "m", "Ev", "RKS_", "OS_", "PKc", "mm", "NS_9allocatorIcEE", "S3_S4_"];
+const PARAMS: [&str; 10] =
+    ["i", "j", "m", "Ev", "RKS_", "OS_", "PKc", "mm", "NS_9allocatorIcEE", "S3_S4_"];
 
 fn push_ident(out: &mut Vec<u8>, ident: &str) {
     out.extend_from_slice(ident.len().to_string().as_bytes());
