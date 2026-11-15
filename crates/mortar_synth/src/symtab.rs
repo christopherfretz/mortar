@@ -684,6 +684,88 @@ impl SymtabPlan {
         })
     }
 
+    /// This plan with `patches` in place of its own: what
+    /// [`SymtabPlan::new`] gives for them with the same `cx`, without
+    /// counting the symbols again. The patches' rows are one segment
+    /// after the internal file's (S-74), so everything after it moves by
+    /// the difference in rows and string bytes.
+    #[must_use]
+    pub fn with_patches(&self, syms: &dyn SymSource, patches: &[Patch]) -> Self {
+        let (patch_syms, patch_bytes) = patch_syms(syms, patches, self.facts);
+        let Some(at) = self.segs.iter().position(|s| s.seg == Seg::Patches) else {
+            return self.clone();
+        };
+        let old = &self.segs[at];
+        let old_bytes = self.segs.get(at + 1).map_or(self.strtab, |n| n.str_off) - old.str_off;
+        let len = patch_syms.len() as u32;
+        let bytes: u64 = patch_bytes.iter().sum();
+        // Entries and bytes after the segment, in wrapping arithmetic:
+        // each shifted value is the old one plus the difference.
+        let d_entry = len.wrapping_sub(old.len);
+        let d_str = bytes.wrapping_sub(old_bytes);
+        let mut patch_str = Vec::with_capacity(patch_bytes.len());
+        let mut o = old.str_off;
+        for b in &patch_bytes {
+            patch_str.push(o);
+            o += b;
+        }
+        let mut segs = self.segs.to_vec();
+        segs[at].len = len;
+        for s in &mut segs[at + 1..] {
+            s.entry = s.entry.wrapping_add(d_entry);
+            s.str_off = s.str_off.wrapping_add(d_str);
+        }
+        // The checkpoints are all of segments after it (files 1.., the
+        // globals).
+        let checks: Box<[Check]> = self
+            .checks
+            .iter()
+            .map(|c| Check {
+                entry: c.entry.wrapping_add(d_entry),
+                str_off: c.str_off.wrapping_add(d_str),
+                ..*c
+            })
+            .collect();
+        // The internal file's demoted rows come first and before it.
+        let linker = segs.iter().find(|s| s.seg == Seg::Linker).map_or(0, |s| s.rows.end as usize);
+        let demoted_str: Box<[u64]> = self
+            .demoted_str
+            .iter()
+            .enumerate()
+            .map(|(r, &o)| if r < linker { o } else { o.wrapping_add(d_str) })
+            .collect();
+        // File 0's block holds the patches; each later block moves.
+        let locals: Vec<Span> = self
+            .symtab_locals
+            .as_slice()
+            .iter()
+            .enumerate()
+            .map(|(f, s)| {
+                if f == 0 {
+                    Span { start: s.start, len: s.len.wrapping_add(d_entry) }
+                } else {
+                    Span { start: s.start.wrapping_add(d_entry), len: s.len }
+                }
+            })
+            .collect();
+        Self {
+            class: self.class,
+            facts: self.facts,
+            segs: segs.into(),
+            checks,
+            demoted: self.demoted.clone(),
+            demoted_str,
+            patches: patches.into(),
+            patch_syms: patch_syms.into(),
+            patch_str: patch_str.into(),
+            entries: self.entries.wrapping_add(d_entry),
+            locals: self.locals.wrapping_add(d_entry),
+            strtab: self.strtab.wrapping_add(d_str),
+            symtab_locals: Column::from_vec(locals).unwrap_or_default(),
+            gnu_symbols: self.gnu_symbols,
+        }
+    }
+
     fn patch_row<'c>(&self, cx: &SymCtx<'c>, r: usize) -> Row<'c> {
         let syms: &'c dyn SymSource = cx.syms;
         match self.patch_syms[r] {

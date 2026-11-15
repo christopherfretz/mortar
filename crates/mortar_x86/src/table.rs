@@ -93,6 +93,26 @@ const fn h(
 /// The largest type number of §6.1.
 pub const MAX_TYPE: u32 = 43;
 
+/// [`howto`] of every type up to the largest it lists, read by
+/// `classify` per record: one load, where the `match` is an indirect
+/// jump that the mix of i386 types mispredicts (WP-032i).
+pub static HOWTOS: [Option<Howto>; MAX_TYPE as usize + 1] = {
+    let mut t = [None; MAX_TYPE as usize + 1];
+    let mut i = 0;
+    while i < t.len() {
+        t[i] = howto(i as u32);
+        i += 1;
+    }
+    t
+};
+
+/// [`howto`] by [`HOWTOS`].
+#[must_use]
+#[inline]
+pub fn howto_of(r_type: u32) -> Option<Howto> {
+    HOWTOS.get(r_type as usize).copied().flatten()
+}
+
 /// The `Howto` of a static type of §6.1, or `None` for a type §6.1 does
 /// not list, or lists as refused (`32PLT`, 11): the dynamic types of
 /// §6.2, the refused types of §6.3, unassigned numbers.
