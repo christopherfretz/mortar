@@ -4,9 +4,9 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-472 rows: 54 supported, 4 partial, 43 noop, 371 refused.
+479 rows: 57 supported, 4 partial, 44 noop, 374 refused.
 
-Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's own.
+Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 10 mortar's own.
 
 - AArch64: 14 rows of that target only
 - x86-64: 26 rows of that target only
@@ -290,6 +290,13 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's
 | `--no-warn-ifunc-textrel` |  | lld | all | refused | `other` | Do not warn about ifunc text relocations (default) |
 | `--vs-diagnostics` |  | lld | all | refused | `other` | Format diagnostics for Visual Studio |
 | `--why-live` | GLOB | lld | all | refused | `other` | Report what keeps the symbols GLOB matches alive |
+| `--odr` | warn \| error \| strict \| off | mortar | all | supported | `diagnostics.odr.mode` | Check the one-definition rule: warn (default), error, strict or off |
+| `--no-odr-check` |  | mortar | all | supported | `diagnostics.odr.mode` | Run no one-definition-rule check (--odr=off) |
+| `--odr-stats` |  | mortar | all | supported | `diagnostics.odr.stats` | Print one line of one-definition-rule statistics |
+| `--odr-check-archives` |  | mortar | all | refused | `other` | Also check archive members that are not linked (WP-076) |
+| `--odr-table` | off \| exported \| full | mortar | all | refused | `other` | Write a loadable one-definition-rule table (WP-075, WP-076) |
+| `--keep-mason-meta` |  | mortar | all | refused | `other` | Keep Mason metadata in the output (WP-076) |
+| `--detect-odr-violations` |  | mortar | all | noop: odr.md O-41: mortar checks the one-definition rule by default; --detect-odr-violations has no further effect | `other` | GNU gold's: check the one-definition rule |
 
 ## Maps, traces, threads and information
 
@@ -553,7 +560,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's
 
 Dynamic output is refused by name until the M2 join (`crates/mortar/src/dynamic.rs`).
 These 23 rows take their M2 status (`spec/dyn.md` R-C1) in the change that lifts it;
-the table then counts 70 supported, 4 partial, 33 noop, 365 refused.
+the table then counts 73 supported, 4 partial, 34 noop, 368 refused.
 
 | Option | Status today | Status at the join |
 |---|---|---|

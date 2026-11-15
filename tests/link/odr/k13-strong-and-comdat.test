@@ -1,0 +1,32 @@
+# K13 (spec/odr.md §3.1): an explicit specialization in one translation
+# unit (a strong definition outside any group), the implicit instantiation
+# in another (a COMDAT copy). The strong one wins for every caller. W3
+# (§8.1) reports it under --odr=strict only (its false positives are
+# N20-N22); the default link of the same objects reports nothing, which a
+# second test checks (k13-default.test).
+#@ spec: odr.md §8.1
+#@ requires: g++
+#@ diag: odr-strong-and-comdat b.o a.o
+
+cxx -O0 a.cc -o a.o
+cxx -O0 b.cc -o b.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+run prog
+  stdout: 2 2
+
+#--- t.h
+template <typename T> int pick(T) { return 1; }
+#--- a.cc
+#include "t.h"
+int fa() { return pick(0); }
+#--- b.cc
+#include "t.h"
+template <> int pick<int>(int) { return 2; }
+int fb() { return pick(0); }
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int main() { std::printf("%d %d\n", fa(), fb()); }
