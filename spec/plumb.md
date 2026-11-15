@@ -1378,10 +1378,11 @@ cases: more than 1000 globals, more than 300 locals and at least 9
 linker-defined symbols judged; not-judged names only from mold, §10.5) and
 `tests/mutation.rs s9_2h_symbol_table_mutations_are_found`.
 
-### 6.6 Program properties (stage 2, WP-028b)
+### 6.6 Program properties (stage 2, WP-028b; x86 WP-028c)
 
 `.note.gnu.property` is written from `spec/synth.md` S-94 to S-97 and
-S-126, and from the observations of synth.md §13. It is judged by two
+S-126, from the observations of synth.md §13, and for x86 from
+`spec/x64.md` X-41. It is judged by two
 rules; S12 does not compare the section's bytes (§6.2).
 
 **The inputs.** Every input object the map names counts, in map order;
@@ -1405,14 +1406,27 @@ linker that wrote it (by map format):
 
 | type | merge (S-95) | mortar | GNU ld | lld | mold |
 |---|---|---|---|---|---|
-| AArch64 `FEATURE_1_AND` 0xc0000000, x86 `FEATURE_1_AND` 0xc0000002 | `And` | merged | merged | merged | AArch64: dropped; x86: merged |
+| AArch64 `FEATURE_1_AND` 0xc0000000 | `And` | merged | merged | merged | dropped |
 | AArch64 `FEATURE_PAUTH` 0xc0000001 | `EqualOrAbsent` | merged | not judged | merged | dropped |
-| x86 0xc0008000..0xc0008fff (`ISA_1_NEEDED`) | `Or` | merged | merged | dropped | merged |
-| x86 0xc0010000..0xc0017fff (`*_USED`) | `OrAll` | merged | merged | not judged | merged |
+| x86 0xc0000002..0xc0007fff (`FEATURE_1_AND`, `UINT32_AND`) | `And` | merged | merged | merged | merged |
+| x86 0xc0008000..0xc000ffff (`ISA_1_NEEDED`, `FEATURE_2_NEEDED`, `UINT32_OR`) | `Or` | merged | merged | dropped | merged |
+| x86 0xc0010000..0xc0017fff (`*_USED`, `UINT32_OR_AND`) | `OrAll` | merged | merged | dropped | merged |
+| x86 `COMPAT_ISA_1_USED` 0xc0000000 | `OrAll` | merged | merged | dropped | dropped |
+| x86 `COMPAT_ISA_1_NEEDED` 0xc0000001 | `Or` | merged | merged | dropped | dropped |
 | generic 0xb0000000..0xb0007fff / 0xb0008000..0xb000ffff | `And` / `Or` | merged | merged | dropped | dropped |
 | `STACK_SIZE` 1, `NO_COPY_ON_PROTECTED` 2 | `Max`, `Present` | merged | merged | dropped | dropped |
 | `MEMORY_SEAL` 3 | an option | not judged | not judged | not judged | not judged |
-| any other type | unknown | dropped | not judged | dropped | dropped |
+| any other type, x86 | unknown | dropped | dropped (with a warning) | dropped | dropped |
+| any other type, AArch64 | unknown | dropped | not judged | dropped | dropped |
+
+The x86 ranges are binutils' `GNU_PROPERTY_X86_UINT32_AND_LO..` /
+`_OR_LO..OR_HI` / `_OR_AND_LO..` (X-41; synth.md S-95 as amended by
+R-7). WP-028c measured the x86 columns (two objects with 0xc0000000,
+0xc0000001, 0xc0008002, 0xc0010002, the unknown 0xc0018000 and the
+generic unknown 0x7000): GNU ld ORs 0xc0000001, keeps 0xc0000000 when
+both objects have it, and drops both unknown types with "unsupported
+GNU_PROPERTY_TYPE"; lld writes no property; mold keeps 0xc0008002 and
+0xc0010002 and drops the rest.
 
 - *merged*: the output has the type exactly when the merge gives it, with
   the merge's bytes. `And`: every object has it, ANDed, omitted if 0.
@@ -1423,9 +1437,8 @@ linker that wrote it (by map format):
 - *dropped*: the output must not have the type.
 - *not judged*: counted (`properties_not_judged`), never a finding.
   `MEMORY_SEAL` follows `-z memory-seal`, which the verifier does not
-  see; GNU ld copies or fails on an unknown type depending on the
-  inputs' order (synth.md §13), and does not know PAUTH; lld's `*_USED`
-  is not observed.
+  see; on AArch64 GNU ld copies or fails on an unknown type depending
+  on the inputs' order (synth.md §13), and does not know PAUTH.
 
 These columns are per-linker rules, not anomalies: dropping a property
 never claims what an input did not, and each column is accepted only

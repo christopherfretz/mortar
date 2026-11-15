@@ -235,21 +235,9 @@ fn plumb(f: &Front, out: &Path) {
     let inputs: Vec<mortar_plumb::Input<'_>> =
         bytes.iter().map(|(p, b)| mortar_plumb::Input { path: p, bytes: b }).collect();
     let report = mortar_plumb::verify(&std::fs::read(out).unwrap(), &inputs, &parsed);
-    // A known verifier finding, reported to WP-028b's follow-ups: for a
-    // section listed as `piece`s, plumb resolves a section symbol's
-    // `st_value` to a piece and adds A after (reloc.rs `in_section`),
-    // where S-17 resolves `st_value + A` (a merge string at A of
-    // `.rodata.str1.8`). Only mortar's map lists merge pieces.
-    let merge_section_sym = |f: &mortar_plumb::Finding| {
-        f.rule == mortar_plumb::Rule::Field
-            && f.symbol.as_deref().is_some_and(|s| s.starts_with(".rodata.str"))
-    };
-    let (known, rest): (Vec<_>, Vec<_>) =
-        report.findings.iter().partition(|f| merge_section_sym(f));
-    assert!(rest.is_empty(), "plumb: {rest:#?}\n{text}");
-    if !known.is_empty() {
-        eprintln!("plumb: {} findings of the known S-17 pieces case", known.len());
-    }
+    // synth.md S-17: a section symbol plus A names the piece holding
+    // `st_value + A` (fixed by WP-028c; it was 4014 R1 findings here).
+    assert!(report.findings.is_empty(), "plumb: {:#?}\n{text}", report.findings);
 }
 
 #[test]
