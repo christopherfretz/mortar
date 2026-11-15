@@ -19,7 +19,50 @@ fn colored(choice: Color) -> bool {
     }
 }
 
+/// `MORTAR_HUGEPAGES=1` (opt-in, WP-032e): run the link with glibc's
+/// allocator asking for transparent huge pages (`glibc.malloc.hugetlb=1`,
+/// read only at process start), by executing this same binary again
+/// (`/proc/self/exe`, with the same `argv[0]`, so the program name and
+/// `-B` lookups are unchanged) with that tunable appended to any
+/// `GLIBC_TUNABLES` already set. Not when the variable already names the
+/// tunable, nor in the executed copy (`MORTAR_HUGEPAGES_EXEC`); if the
+/// exec fails the link runs here without it. Nothing in the output depends
+/// on it: the allocator's page size changes faults, not values.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn hugepages() {
+    use std::os::unix::process::CommandExt as _;
+    const TUNABLE: &str = "glibc.malloc.hugetlb";
+    const GUARD: &str = "MORTAR_HUGEPAGES_EXEC";
+    if std::env::var_os("MORTAR_HUGEPAGES").is_none_or(|v| v != "1")
+        || std::env::var_os(GUARD).is_some()
+    {
+        return;
+    }
+    let mut tunables = std::env::var_os("GLIBC_TUNABLES").unwrap_or_default();
+    if tunables.to_string_lossy().split(':').any(|t| t.split('=').next() == Some(TUNABLE)) {
+        return;
+    }
+    if !tunables.is_empty() {
+        tunables.push(":");
+    }
+    tunables.push(TUNABLE);
+    tunables.push("=1");
+    let mut args = std::env::args_os();
+    let arg0 = args.next().unwrap_or_default();
+    // Returns only on failure, and then the link goes on in this process.
+    let _ = std::process::Command::new("/proc/self/exe")
+        .arg0(arg0)
+        .args(args)
+        .env("GLIBC_TUNABLES", tunables)
+        .env(GUARD, "1")
+        .exec();
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+const fn hugepages() {}
+
 fn main() -> ExitCode {
+    hugepages();
     let mut command_line = std::env::args_os();
     let prog = mortar::program_name(command_line.next().as_deref());
     let args: Vec<OsString> = command_line.collect();
