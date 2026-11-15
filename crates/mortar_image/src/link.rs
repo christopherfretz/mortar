@@ -76,6 +76,29 @@ const ELFOSABI_GNU: u8 = 3;
 /// that fill sees the target kind the scan decided on.
 pub trait KeyFacts: SymNames {
     fn facts(&self, key: SymKey) -> SymFacts;
+
+    /// The facts of `key` for a record whose symbol is `mention`, as
+    /// `arch.scan` sees them (an undefined key takes the mention's type):
+    /// fill's checks of the sections the scan left to it
+    /// (`RecIndex::deferred`, `spec/image.md` I-14). By default the
+    /// definition's, [`KeyFacts::facts`].
+    fn facts_at(&self, key: SymKey, mention: Option<SymEntry>) -> SymFacts {
+        let _ = mention;
+        self.facts(key)
+    }
+
+    /// The diagnostics of deferred `sections` (I-14), as the scan's walk
+    /// of them makes them, keyed at phase 100: fill found a fault in them,
+    /// or could not check them. By default one `internal-error`: these
+    /// tables cannot report them.
+    fn deferred_report(&self, sections: &[SectionId], pool: &Pool) -> Vec<(Key, Diagnostic)> {
+        let _ = pool;
+        let what = format!(
+            "image: {} section(s) left to fill's checks (I-14) and no report of them",
+            sections.len()
+        );
+        vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))]
+    }
 }
 
 /// The synthetic chunks' plans (phase 80, re-planned after layout's fixed
@@ -567,6 +590,10 @@ impl FillTables for LinkTables<'_, '_> {
 impl Tables for LinkTables<'_, '_> {
     fn record_sym(&self, key: SymKey) -> (SymValue, bool) {
         self.sym_value(key, true)
+    }
+
+    fn scan_facts(&self, key: SymKey, mention: Option<SymEntry>) -> Option<SymFacts> {
+        Some(self.link.facts.facts_at(key, mention))
     }
 
     fn target_alloc(&self, key: SymKey) -> bool {
@@ -1239,15 +1266,93 @@ impl<'a> Chunks<'a> {
 /// A failed link leaves no output file (I-65): the temporary is removed
 /// and an existing output is untouched.
 ///
+/// The sections whose checks the scan left to fill (`RecIndex::deferred`,
+/// `spec/image.md` I-14) are checked by fill; a fault, a section fill
+/// does not reach, or a link that fails before fill has checked them all
+/// adds the scan's diagnostics of them ([`KeyFacts::deferred_report`]).
+///
 /// # Errors
 ///
 /// Every diagnostic of the phase, keyed (I-43, I-64, I-68).
-#[allow(clippy::too_many_lines)]
 pub fn write(
     link: &Link<'_, '_>,
     path: &Path,
     opts: &OutputOptions,
     on_phase: &mut dyn FnMut(u16, &str),
+) -> Result<Written, Failed> {
+    let mut checked = false;
+    match write_link(link, path, opts, on_phase, &mut checked) {
+        Err(mut f) if !checked && !link.records.deferred().is_empty() => {
+            // I-14: the link failed before fill checked the sections.
+            let all = link.records.deferred();
+            f.diagnostics.extend(link.facts.deferred_report(all, link.pool));
+            Err(f)
+        }
+        r => r,
+    }
+}
+
+/// The order of the deferred sections (I-14) whose table is large and
+/// whose row is cut into several jobs' clips (`Plan::deferred_order`):
+/// found once here, in parallel, where each clip would read the table
+/// whole.
+fn deferred_orders(
+    link: &Link<'_, '_>,
+    plan: &crate::plan::Plan,
+) -> Result<crate::plan::DeferredOrders, Failed> {
+    use crate::plan::{RecRows, Unit};
+    if link.records.deferred().is_empty() {
+        return Ok(Box::new([]));
+    }
+    let job_of = |off: u64| plan.jobs.partition_point(|j| j.end <= off);
+    let mut todo = Vec::new();
+    for row in &plan.rows {
+        let Unit::Input(i) = row.unit else { continue };
+        let u = &plan.inputs[i as usize];
+        let Some(r) = u.relocs else { continue };
+        let RecRows::Rela(t) = &plan.relocs[r as usize].rows else { continue };
+        if row.size == 0
+            || !link.records.is_deferred(u.section)
+            || u64::from(t.count) * t.entsize() <= crate::reloc::WHOLE_TABLE
+            || job_of(row.offset) == job_of(row.end() - 1)
+        {
+            continue;
+        }
+        todo.push((u.section, *t));
+    }
+    let orders = link.pool.map(todo.len(), |k| {
+        crate::reloc::table_order(link.inputs, plan, &todo[k].1).map(|o| (todo[k].0, o))
+    });
+    let mut v = Vec::with_capacity(orders.len());
+    for o in orders {
+        v.push(o.map_err(failed)?);
+    }
+    v.sort_by_key(|o| o.0);
+    v.dedup_by_key(|o| o.0);
+    Ok(v.into_boxed_slice())
+}
+
+/// The deferred sections (I-14) fill does not reach: no input row with
+/// relocations in the plan (an empty section, one not in the file).
+fn unreached(link: &Link<'_, '_>, plan: &crate::plan::Plan) -> Vec<SectionId> {
+    let deferred = link.records.deferred();
+    if deferred.is_empty() {
+        return Vec::new();
+    }
+    let mut reached: Vec<SectionId> =
+        plan.inputs.iter().filter(|u| u.relocs.is_some()).map(|u| u.section).collect();
+    reached.sort_unstable();
+    deferred.iter().copied().filter(|s| reached.binary_search(s).is_err()).collect()
+}
+
+/// [`write`]; `checked` is set once fill has run (I-14).
+#[allow(clippy::too_many_lines)]
+fn write_link(
+    link: &Link<'_, '_>,
+    path: &Path,
+    opts: &OutputOptions,
+    on_phase: &mut dyn FnMut(u16, &str),
+    checked: &mut bool,
 ) -> Result<Written, Failed> {
     let mut steps = mortar_core::wp032b_steps::Steps::new("image");
     let tables = LinkTables::new(*link);
@@ -1304,8 +1409,9 @@ pub fn write(
         eh: link.eh.map(|e| e.1),
     };
     let target = Target::from_facts(link.arch.facts());
-    let plan = layout_plan::from_layout(&model, target, &extras, IMAGE_BLOCK, link.pool)
+    let mut plan = layout_plan::from_layout(&model, target, &extras, IMAGE_BLOCK, link.pool)
         .map_err(failed)?;
+    plan.deferred_order = deferred_orders(link, &plan)?;
     steps.step("plan", plan.rows.len() as u64, "row");
     let output_ref = FileRef::new(path.display().to_string());
     let code_addr = |c: CodeRef| -> Option<u64> {
@@ -1353,10 +1459,36 @@ pub fn write(
     };
     let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
     steps.step("create", 0, "");
-    let filled: Filled = match fill::write(&img, &out, out.shown(), link.pool) {
-        Ok(f) => f,
-        Err(e) => {
+    let (filled, checks) = fill::write_checked(&img, &out, out.shown(), link.pool);
+    *checked = true;
+    // I-14: the scan's diagnostics of the deferred sections fill found a
+    // fault in, or did not reach; of all of them when a job stopped early.
+    let mut report_on =
+        if checks.complete { checks.flagged.clone() } else { link.records.deferred().to_vec() };
+    report_on.extend(unreached(link, &plan));
+    report_on.sort_unstable();
+    report_on.dedup();
+    let mut report = if report_on.is_empty() {
+        Vec::new()
+    } else {
+        link.facts.deferred_report(&report_on, link.pool)
+    };
+    if checks.complete && !checks.flagged.is_empty() && report.is_empty() {
+        let what = format!(
+            "image: fill found a fault in section(s) {:?} that the scan's walk of them does not report (I-14)",
+            checks.flagged.iter().map(|s| s.0).collect::<Vec<_>>()
+        );
+        report.push((Key::new(PHASE_IMAGE, 0, 0), internal(what)));
+    }
+    let filled: Filled = match filled {
+        Ok(f) if report.is_empty() => f,
+        Ok(_) => {
             out.abort();
+            return Err(Failed { diagnostics: report });
+        }
+        Err(mut e) => {
+            out.abort();
+            e.diagnostics.append(&mut report);
             return Err(e);
         }
     };

@@ -431,6 +431,15 @@ pub fn front<'s>(
     for (k, d) in scanned.diagnostics.iter().cloned() {
         diag.emit(k, d);
     }
+    let deferred = Deferred {
+        arch,
+        inputs: &scan_inputs,
+        options: scan_options,
+        order: &scanned.order,
+        pool: &pool,
+        diag,
+        armed: true,
+    };
     timer.phase(70, "scan");
     if stop(diag) {
         return None;
@@ -674,6 +683,7 @@ pub fn front<'s>(
         return None;
     }
     timer.phase(90, "layout");
+    deferred.disarm();
     drop(walker);
     drop(merge_eh);
     Some(Front {
@@ -718,6 +728,38 @@ fn print_steps(
         let _ = writeln!(s, "mortar: time-steps: {phase}.count.{name}: {n}");
     }
     eprint!("{s}");
+}
+
+/// WP-032c (`spec/image.md` I-14): a link that fails after the scan and
+/// before fill gets the scan's diagnostics of the sections the scan left
+/// to fill's checks, which fill would have found (dropped with `armed`).
+struct Deferred<'g, 'a, 's> {
+    arch: &'a dyn Arch,
+    inputs: &'g ScanInputs<'a, 's>,
+    options: ScanOptions<'a>,
+    order: &'g mortar_scan::RecIndex,
+    pool: &'g Pool,
+    diag: &'g Collector,
+    armed: bool,
+}
+
+impl Deferred<'_, '_, '_> {
+    /// The front has succeeded: fill checks the sections.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Deferred<'_, '_, '_> {
+    fn drop(&mut self) {
+        if !self.armed || self.order.deferred().is_empty() {
+            return;
+        }
+        let walker = Walker::new(self.arch, self.inputs, self.options);
+        for (k, d) in walker.deferred_report(self.order.deferred(), self.pool) {
+            self.diag.emit(k, d);
+        }
+    }
 }
 
 /// `Slots` from `Demands` (S-64): each kind's keys in `SymKey` order.

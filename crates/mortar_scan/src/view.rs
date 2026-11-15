@@ -287,6 +287,35 @@ impl<'a, 's> View<'a, 's> {
         }
     }
 
+    /// The keys a reference to which can make an event (§4.4): those
+    /// whose target kind is `Undefined` (an undefined key, or an alias of
+    /// one), those only dropped COMDAT copies define, and those with a
+    /// `.gnu.warning` section; sorted. A record whose key is none of
+    /// these, at a place where a dead target is the tombstone, makes no
+    /// event (`spec/image.md` I-14: the sections fill checks).
+    pub fn event_keys(&self) -> Vec<SymbolId> {
+        let mut v: Vec<SymbolId> = Vec::new();
+        for i in 0..self.inputs.symbols.len() {
+            let id = SymbolId(i);
+            let undefined = match self.def(id) {
+                Def::Defined(_) | Def::Common(_) | Def::Shared(_) => false,
+                Def::Undefined { weak } => {
+                    let verdict = self.resolution.props.get(id).map(|p| p.verdict);
+                    self.undefined_kind(weak, verdict.unwrap_or_default()) == TargetKind::Undefined
+                }
+                Def::Internal(_) => self.global_facts(id, None, 0).kind == TargetKind::Undefined,
+            };
+            if undefined {
+                v.push(id);
+            }
+        }
+        v.extend_from_slice(&self.mismatch);
+        v.extend_from_slice(&self.warned);
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
     /// The target kind of an undefined key (§4.4, I-19): a weak one is
     /// zero (or dynamic); a strong one is `Undefined` unless its verdict
     /// is "nothing" (`--unresolved-symbols=ignore-*`), which makes it zero.

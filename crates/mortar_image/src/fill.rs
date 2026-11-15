@@ -52,6 +52,20 @@ pub trait Tables: FillTables {
     fn record_sym(&self, key: SymKey) -> (mortar_arch::SymValue, bool) {
         (self.sym(key), true)
     }
+
+    /// What the scan knows of `key` (`spec/arch.md` §3.4 `SymFacts`) for
+    /// a record whose symbol is `mention` (an undefined key takes its
+    /// type): fill's checks of a section the scan left to it
+    /// (`RecIndex::deferred`, `spec/image.md` I-14). `None`: the tables
+    /// cannot say, and such a section's records are faults.
+    fn scan_facts(
+        &self,
+        key: SymKey,
+        mention: Option<mortar_core::SymEntry>,
+    ) -> Option<mortar_arch::SymFacts> {
+        let _ = (key, mention);
+        None
+    }
 }
 
 /// What merged chunks are written from (I-38): phase 50's fragment order
@@ -147,6 +161,8 @@ struct JobOut {
     /// The lowest window offset whose write failed, with the error.
     write: Option<(u64, io::Error)>,
     fatal: Option<(Key, Diagnostic)>,
+    /// Deferred sections with a fault (I-14).
+    flagged: Vec<mortar_core::SectionId>,
 }
 
 /// A worker's state: its window buffer (I-32) and relocation scratch.
@@ -162,19 +178,57 @@ struct Worker {
 ///
 /// Errors are concatenated in job order; a write error is the one of the
 /// lowest failing window (I-64), keyed `(105, 0, 0)` (I-68).
+///
+/// A section whose checks are fill's (I-14) with a fault is an
+/// `internal-error` here: [`write_checked`] hands such sections to the
+/// caller, who reports them.
 pub fn write(
     img: &Image<'_>,
     sink: &dyn Sink,
     output_path: &str,
     pool: &Pool,
 ) -> Result<Filled, Failed> {
+    let (r, checked) = write_checked(img, sink, output_path, pool);
+    if checked.flagged.is_empty() {
+        return r;
+    }
+    let mut diagnostics = r.err().map(|f| f.diagnostics).unwrap_or_default();
+    let what = format!(
+        "fill: {} deferred section(s) have faults and no report (I-14)",
+        checked.flagged.len()
+    );
+    diagnostics.push((Key::new(PHASE_IMAGE, 0, 0), internal(what)));
+    Err(Failed { diagnostics })
+}
+
+/// What fill's checks of the sections the scan left to it found
+/// (`RecIndex::deferred`, I-14).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Checked {
+    /// The sections with a fault, sorted: the link has failed, and the
+    /// diagnostics are the scan's walk of them.
+    pub flagged: Vec<mortar_core::SectionId>,
+    /// Every job ran to its end: every clip was checked.
+    pub complete: bool,
+}
+
+/// [`write`], with fill's checks of the deferred sections (I-14) handed
+/// back: a fault fails the fill (nothing more is written) with no
+/// diagnostic of its own.
+pub fn write_checked(
+    img: &Image<'_>,
+    sink: &dyn Sink,
+    output_path: &str,
+    pool: &Pool,
+) -> (Result<Filled, Failed>, Checked) {
     let plan = img.plan;
     if img.build_id.is_some() && plan.window != crate::IMAGE_BLOCK {
         let what = format!(
             "fill: a build id needs W = IMAGE_BLOCK, the plan has {:#x} (I-75)",
             plan.window
         );
-        return Err(Failed { diagnostics: vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))] });
+        let d = vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))];
+        return (Err(Failed { diagnostics: d }), Checked::default());
     }
     let mut outs: Vec<JobOut> = plan.jobs.iter().map(|_| JobOut::default()).collect();
     let stop = AtomicBool::new(false);
@@ -185,9 +239,12 @@ pub fn write(
     let mut diagnostics = Vec::new();
     let mut write_err: Option<(u64, io::Error)> = None;
     let mut leaves = Vec::new();
+    let mut checked = Checked { flagged: Vec::new(), complete: true };
     for o in outs {
         diagnostics.extend(o.errors);
+        checked.complete &= o.fatal.is_none();
         diagnostics.extend(o.fatal);
+        checked.flagged.extend(o.flagged);
         leaves.extend(o.leaves);
         if let Some((off, e)) = o.write
             && write_err.as_ref().is_none_or(|(w, _)| off < *w)
@@ -195,18 +252,20 @@ pub fn write(
             write_err = Some((off, e));
         }
     }
+    checked.flagged.sort_unstable();
+    checked.flagged.dedup();
     let mut build_id = None;
     if write_err.is_none()
         && diagnostics.is_empty()
+        && checked.flagged.is_empty()
         && let Some(style) = img.build_id
     {
         let id = match digest::build_id(style, plan.file_size, &leaves) {
             Ok(id) => id,
             Err(e) => {
                 let what = format!("fill: build id: {e}");
-                return Err(Failed {
-                    diagnostics: vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))],
-                });
+                let d = vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))];
+                return (Err(Failed { diagnostics: d }), checked);
             }
         };
         if let Some(sealed) = &plan.sealed {
@@ -222,7 +281,12 @@ pub fn write(
     if let Some((_, e)) = write_err {
         diagnostics.push(write_error(output_path, &e));
     }
-    if diagnostics.is_empty() { Ok(Filled { build_id }) } else { Err(Failed { diagnostics }) }
+    let r = if diagnostics.is_empty() && checked.flagged.is_empty() {
+        Ok(Filled { build_id })
+    } else {
+        Err(Failed { diagnostics })
+    };
+    (r, checked)
 }
 
 /// `cannot-write-output` at `(105, 0, 0)` (I-64, I-68).
@@ -358,7 +422,8 @@ fn run_job(
         out.fatal = Some(fatal);
         stop.store(true, Ordering::Relaxed);
     }
-    let fill_failed = out.fatal.is_some() || !out.errors.is_empty();
+    out.flagged = std::mem::take(&mut scratch.flagged);
+    let fill_failed = out.fatal.is_some() || !out.errors.is_empty() || !out.flagged.is_empty();
     let win = plan.window as usize;
     for (k, window) in buf[..len].chunks(win).enumerate() {
         let offset = job.start + (k * win) as u64;
