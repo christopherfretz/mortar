@@ -990,6 +990,8 @@ symbols they define. `mortar_odr` (M6) may compare the kept copy with each
 dropped one (sizes and symbol sets cheaply; content by hash when kiln and
 hod supply one). Resolution keeps, per group, the list of live files with
 the group (`(ComdatId, FileId)` pairs in order) for that purpose.
+`mortar_odr` (`spec/odr.md` O-21) reads `comdat_copies`; the symbol sets
+of the copies are W1-W3's input.
 
 ## 7. Redirections
 
@@ -1341,6 +1343,7 @@ classification is per file (I-file), the state needs `comdat`:
 | `SHT_REL`, `SHT_RELA` | `Reloc` | `Dropped(Consumed)`; the section it applies to records it. A second one for a kept section: `Refused{Feature, "two relocation sections for one section"}`, never a silent drop (GNU ld applies one of two `SHT_RELA` and both of `SHT_REL`+`SHT_RELA`; lld refuses; mold asserts on two `SHT_RELA` and drops one of `SHT_REL`+`SHT_RELA`; WP-022.md) | |
 | `SHT_GROUP` | `Group` | `Dropped(Consumed)` | all |
 | a member of a group not kept (§6) | its kind | `Dropped(Comdat{keeper})` | all |
+| a container: name `.mason.meta`, `SHT_PROGBITS`, flags exactly `SHF_EXCLUDE` (`spec/meta.md` MT-6) | `Meta` | `Dropped(Consumed)`; `mortar_meta` reads it only when a check that needs it is on | GNU ld, lld, mold drop it (`meta.md` §2) |
 | `SHF_EXCLUDE` (any type) | `Excluded` | `Dropped(Excluded)` | GNU ld, lld; mold keeps an allocated one (E18): §16 |
 | name `.note.GNU-stack` | `Stack` | `Dropped(Consumed)` (layout reads its flags for `PT_GNU_STACK`) | all (E18) |
 | name `.note.gnu.property`, `SHT_NOTE` | `Note` | `Kept`; `spec/synth.md` merges the properties into one note | GNU ld, lld, mold merge (not verified here) |
@@ -1373,7 +1376,9 @@ diagnostic, since they contribute nothing to the output. Structural
 faults of a file (group flags §6.4, a section in two groups §6.5, symbol
 faults §3) apply to every live file. (A survey of the 65 archives of the
 three targets' libc and GCC directories finds no section any refusal
-row matches, kept or dropped: WP-022.md.)
+row matches, kept or dropped: WP-022.md.) A section named `.mason.meta`
+that is not a container takes the existing rows, as any other name would
+(`spec/meta.md` MT-6).
 
 **Dependent libraries** (WP-034; M1 ruling). Clang writes `#pragma
 comment(lib, "name")` as a `.deplibs` section (`SHT_LLVM_DEPENDENT_LIBRARIES`,
@@ -1513,7 +1518,8 @@ honest ones).
   common, undefined), for a definition whether it is data (§2) and TLS and
   its absolute value, its visibility, common size and alignment; its
   groups' signatures, members, and the keys defined in each group; its
-  section kinds. It is I-file.
+  section kinds. It is I-file. A file's units (its `.mason.meta`
+  containers, `spec/meta.md`) are part of its summary (I-file).
 - **The graph** (`first`, `cfirst`, the edges) depends on every file's
   summary and on `FileId` order. Replacing file `F` changes it only
   through `F`'s own entries: the targets `first(K)` and `cfirst(K)` for

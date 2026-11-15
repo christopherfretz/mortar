@@ -1,0 +1,27 @@
+# K9 (spec/odr.md §3.1): an inline variable whose initializer differs
+# between two translation units. Same size, so W1 is silent; W4 sees the
+# bytes differ, under --odr=strict only (§8.1). The program reads the kept
+# copy's value through the variable.
+#@ spec: odr.md §8.1
+#@ requires: g++
+#@ diag: odr-contents-mismatch a.o b.o
+
+cxx -O0 -std=c++17 a.cc -o a.o
+cxx -O0 -std=c++17 b.cc -o b.o
+cxx -O0 -std=c++17 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+run prog
+  stdout: 11 11
+
+#--- a.cc
+inline int value = 11;
+int* from_a() { return &value; }
+#--- b.cc
+inline int value = 21;
+int* from_b() { return &value; }
+#--- main.cc
+#include <cstdio>
+int* from_a();
+int* from_b();
+int main() { std::printf("%d %d\n", *from_a(), *from_b()); }

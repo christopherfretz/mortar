@@ -88,6 +88,10 @@ reserved section type (eu-elflint rejects it, and `spec/resolve.md` §10
 refuses unknown section types in mortar itself, so a foreign Mason
 section type would be a refusal in an old mortar); `SHF_EXCLUDE` because
 every reference linker then drops it from final outputs (K is copied).
+A reader finds the container **by name and type only** (and flags,
+MT-6), never by its position in the section table: producers do not
+agree on it (clang puts it at index 2 or 3 by target; hod does not
+promise llc's position, `spec/odr.md` H-1).
 
 **MT-2 (not in a group, no relocations).** The section is not a member of
 any group and has no relocation section. Records refer to symbols and
@@ -106,7 +110,8 @@ linked by others; the L11 corpus re-runs it (§12, T-MT-3).
 **MT-4 (how many).** An object has zero or more `.mason.meta` sections
 (a producer writes one; a `-r` of several Mason objects by mortar writes
 one, MT-30; an object assembled by hand may have several). A reader
-reads all of them in section-index order; their units are one sequence.
+reads all of them in section-index order (their relative order, never an
+absolute index, MT-1); their units are one sequence.
 
 **MT-5 (tools that keep it, tools that lose it).** Measured on objects
 (`container`, `container-adv`; binutils 2.44, llvm 19, elfutils 0.192):
