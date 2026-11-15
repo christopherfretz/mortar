@@ -306,7 +306,7 @@ impl<'a, 's> LinkTables<'a, 's> {
         };
         t.pieces = refs::PieceIndex::new(link.split, |s| t.section_size(s));
         let n = link.inputs.symbols.len() as usize;
-        let global = link.pool.map(n, |i| t.def_addr(SymbolId(i as u32)));
+        let global = link.pool.unit_cost(16).map(n, |i| t.def_addr(SymbolId(i as u32)));
         t.global = global.into();
         t
     }
