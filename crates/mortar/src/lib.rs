@@ -5,15 +5,28 @@
 //! map of the crates behind it is `docs/ARCHITECTURE.md`; the contracts are
 //! in `spec/`.
 //!
-//! Nothing is implemented yet. Until a construct is implemented, mortar
-//! refuses it by name (principle 1, "correct, or loudly refused"): it never
-//! produces a file it cannot vouch for.
+//! The front of the pipeline runs ([`front`], WP-027a): a link is laid
+//! out, then refused at the output file, which WP-027b writes. Until a
+//! construct is implemented, mortar refuses it by name (principle 1,
+//! "correct, or loudly refused"): it never produces a file it cannot
+//! vouch for.
+
+pub mod front;
+mod proof;
+mod sites;
+mod syms;
+pub mod timing;
 
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
 pub use mortar_cli::Color;
 use mortar_cli::{Exit, Plan};
+use mortar_core::par::Pool;
+use mortar_core::plan::Threads;
+use mortar_input::store::{Store, StorePolicy};
+
+use crate::timing::Timer;
 use mortar_diag::{Collector, DEFAULT_ERROR_LIMIT, Diagnostic, Key, Policy, RefusalClass, Report};
 
 /// The version of mortar, as `--version` prints it.
@@ -39,6 +52,9 @@ pub struct Invocation {
     /// `--color-diagnostics[=when]`, `--no-color-diagnostics`
     /// (`spec/cli.md` §3.9): the caller decides `Auto` from its terminal.
     pub color: Color,
+    /// `--time-phases` (`spec/image.md` I-88, I-89): the lines, each ending
+    /// in a newline, for standard error after the report; empty without it.
+    pub phases: String,
 }
 
 /// The name diagnostics start with (`spec/diag.md` §5.1): the basename
@@ -66,21 +82,47 @@ fn policy(plan: &Plan) -> Policy {
     }
 }
 
+/// Whether a refused use stops the line before the pipeline runs: every
+/// refused option does, except `-o`, which only the output file reads
+/// (`spec/cli.md` §4.3; WP-027b writes it).
+fn blocks_the_front(u: &mortar_cli::Use) -> bool {
+    !matches!(u.row().lands, mortar_cli::table::Lands::Output)
+}
+
+/// The pool a plan asks for (`--threads`, `spec/cli.md` §3.10), or the
+/// error of a malformed `MORTAR_SCHED_SEED` (`spec/model.md` §6).
+fn pool_of(plan: &Plan) -> Result<Pool, mortar_core::par::BadSeed> {
+    let threads = match plan.bookkeeping.threads {
+        None | Some(Threads::All) => Pool::available(),
+        Some(Threads::Count(n)) => (n as usize).max(1),
+    };
+    Pool::try_new(threads)
+}
+
 /// Runs one link as `prog` (the name `--help` shows), and says how its
 /// report is to be colored. `args` is the command line without the
-/// program name.
+/// program name; relative paths are relative to the current directory.
 ///
 /// The command line is parsed (`spec/cli.md`); its errors, then the
 /// options mortar refuses, are reported in argument order. `--version` and
 /// `--help` are answered; `-v` and `-V` are answered when the line names
-/// nothing to link. Every other line without errors ends, for now, in
-/// the refusal of linking itself.
+/// nothing to link. A line without errors, whose only refused option is
+/// `-o`, runs the front of the pipeline ([`front::front`]) to the final
+/// layout, and then ends, until WP-027b, in the refusal of writing the
+/// output file.
 #[must_use]
 pub fn invoke(prog: &str, args: &[OsString]) -> Invocation {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    invoke_in(prog, args, &cwd)
+}
+
+/// [`invoke`] with relative paths relative to `cwd`.
+#[must_use]
+pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let parsed = mortar_cli::parse(args);
     let plan = &parsed.plan;
     let color = plan.diagnostics.color;
-    let done = |text: String| Invocation { outcome: Outcome::Done(text), color };
+    let done = |text: String| Invocation { outcome: Outcome::Done(text), color, phases: String::new() };
     match plan.exit {
         Some(Exit::Version) if !parsed.failed() => return done(mortar_cli::version_text()),
         Some(Exit::Help) if !parsed.failed() => return done(mortar_cli::help_text(prog)),
@@ -93,19 +135,61 @@ pub fn invoke(prog: &str, args: &[OsString]) -> Invocation {
         return done(mortar_cli::print_version_text(style));
     }
     let diagnostics = Collector::new(policy(plan));
-    for (key, diagnostic) in parsed.diagnostics.iter().cloned().chain(parsed.refusals()) {
+    for (key, diagnostic) in parsed.diagnostics.iter().cloned() {
         diagnostics.emit(key, diagnostic);
     }
-    // A line with errors never gets as far as linking; refused options
-    // do not stop the refusal of linking itself.
-    if !parsed.failed() {
+    // The refusals of options come after the front, whose phases stop at
+    // the first error (the report is in key order, whatever the order of
+    // emission, `spec/diag.md` §6).
+    let refusals = parsed.refusals();
+    let failed = |diagnostics: Collector, phases: String| Invocation {
+        outcome: Outcome::Failed(diagnostics.finish()),
+        color,
+        phases,
+    };
+    let emit_refusals = |diagnostics: &Collector| {
+        for (key, diagnostic) in refusals.iter().cloned() {
+            diagnostics.emit(key, diagnostic);
+        }
+    };
+    if parsed.failed() {
+        emit_refusals(&diagnostics);
+        return failed(diagnostics, String::new());
+    }
+    // An option the pipeline does not honor stops the line here, with the
+    // refusal of linking itself (phase 11).
+    if parsed.refused_uses().into_iter().any(blocks_the_front) {
+        emit_refusals(&diagnostics);
         diagnostics.emit(
             Key::new(mortar_cli::PHASE + 1, 0, 0),
             Diagnostic::refused(RefusalClass::Feature, "linking")
-                .note("no link is implemented yet (docs/ROADMAP.md, milestone M1)"),
+                .note("an option above is refused, so nothing is linked (docs/status/options.md)"),
+        );
+        return failed(diagnostics, String::new());
+    }
+    let pool = match pool_of(plan) {
+        Ok(p) => p,
+        Err(bad) => {
+            emit_refusals(&diagnostics);
+            diagnostics.emit(mortar_core::seed::SEED_KEY, bad.into());
+            return failed(diagnostics, String::new());
+        }
+    };
+    let mut timer = Timer::new(plan.bookkeeping.time_phases);
+    timer.phase(10, "command line");
+    let store = Store::new(StorePolicy::Resident);
+    let env = front::Env { cwd, pool };
+    let front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
+    if front.is_some() {
+        diagnostics.emit(
+            Key::new(100, 0, 0),
+            Diagnostic::refused(RefusalClass::Feature, "writing the output file")
+                .note("the link was laid out; the image and the output file are WP-027b"),
         );
     }
-    Invocation { outcome: Outcome::Failed(diagnostics.finish()), color }
+    drop(front);
+    emit_refusals(&diagnostics);
+    failed(diagnostics, timer.finish())
 }
 
 #[cfg(test)]
