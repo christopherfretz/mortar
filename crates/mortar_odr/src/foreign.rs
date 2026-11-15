@@ -205,6 +205,20 @@ const fn side(sym_type: u8, common: bool) -> Option<Side> {
     }
 }
 
+/// Whether W1 and W2 cannot fire among the copies alone: every copy on
+/// the same W2 side (or none), and in each group the data copies of one
+/// size. Reads only `defs`, allocates nothing.
+fn agree(defs: &[Held]) -> bool {
+    let first = side(defs[0].sym_type, false);
+    if defs.iter().any(|d| side(d.sym_type, false) != first) {
+        return false;
+    }
+    defs.chunk_by(|a, b| a.group == b.group).all(|run| {
+        let mut data = run.iter().filter(|d| is_data(d.sym_type));
+        data.next().is_none_or(|d0| data.all(|d| d.size == d0.size))
+    })
+}
+
 const fn is_data(sym_type: u8) -> bool {
     matches!(sym_type, STT_OBJECT | STT_TLS)
 }
@@ -302,7 +316,21 @@ impl Cx<'_, '_> {
     fn key(&self, defs: &[Held], checks: Checks) -> Vec<(usize, Finding)> {
         let mut out = Vec::new();
         let key = defs[0].key;
-        let resolved = if checks.w2 || checks.w3 { self.resolved(key) } else { None };
+        // The resolved definition takes part only when it is not one of
+        // the copies (a copy's is inside a group, so `resolved` would give
+        // nothing): test by id before reading any symbol table.
+        let outside = match self.resolution.def.get(key) {
+            Some(Def::Defined(e) | Def::Common(e)) => {
+                !defs.iter().any(|d| d.file == e.file && d.index == e.index)
+            }
+            _ => false,
+        };
+        // The default mode's fast path: one definition, or copies that agree
+        // on W1's and W2's cheap tests, and nothing outside: no work.
+        if !checks.w3 && !checks.w4 && !outside && agree(defs) {
+            return out;
+        }
+        let resolved = if (checks.w2 || checks.w3) && outside { self.resolved(key) } else { None };
         if checks.w1 {
             for run in defs.chunk_by(|a, b| a.group == b.group) {
                 if let Some(f) = self.w1(key, run) {

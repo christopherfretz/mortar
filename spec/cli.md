@@ -634,15 +634,14 @@ edited:
   (= `--odr=off`): WP-072;
 - `--odr-stats`: WP-072;
 - `--detect-odr-violations` (GNU gold's spelling; not a reference
-  linker's row): `noop`, with the note of `spec/odr.md` O-41 printed
-  once; WP-072;
+  linker's row): `noop`, printing nothing; its reason is the sentence
+  of `spec/odr.md` O-41; WP-072;
 - `--odr-check-archives`, `--odr-table=off|exported|full` (default
   `off`), `--keep-mason-meta`: WP-075 and WP-076.
 
 WP-072 landed the first four: `--odr`, `--no-odr-check` and `--odr-stats`
-`supported`, `--detect-odr-violations` `noop` (its reason is O-41's note;
-nothing is printed, since `spec/diag.md` §2.1 has no note severity: the
-question is in `spec/landed/meta/WP-072.md`); the other three are
+`supported`, `--detect-odr-violations` `noop` (its reason is O-41's sentence;
+nothing is printed, since `spec/diag.md` §2.1 has no note severity); the other three are
 `refused` with their fields in `plan.diagnostics.odr` (§3.9).
 `docs/status/options.md` has the counts.
 
