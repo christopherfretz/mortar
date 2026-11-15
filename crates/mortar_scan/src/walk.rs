@@ -13,7 +13,7 @@ use mortar_diag::{Diagnostic, Key};
 use mortar_elf::SymbolIndex;
 
 use crate::driver::Sec;
-use crate::view::{RecTables, View};
+use crate::view::{RecTables, View, with_bufs};
 use crate::{ScanInputs, ScanOptions};
 
 /// The scan's view of the tables, reusable after the scan.
@@ -90,7 +90,22 @@ impl<'a, 's> Walker<'a, 's> {
         leads: bool,
         visit: &mut dyn FnMut(&Visit<'_>),
     ) -> Result<(), (Key, Diagnostic)> {
-        let sec = Sec::open(&self.view, file, sid, index, rel)?;
+        with_bufs(|bufs| self.walk_in(file, sid, index, rel, offsets, leads, visit, bufs))
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "walk's arguments and the worker's buffers")]
+    fn walk_in(
+        &self,
+        file: FileId,
+        sid: SectionId,
+        index: u32,
+        rel: u32,
+        offsets: std::ops::Range<u64>,
+        leads: bool,
+        visit: &mut dyn FnMut(&Visit<'_>),
+        bufs: &mut crate::view::Bufs,
+    ) -> Result<(), (Key, Diagnostic)> {
+        let sec = Sec::open(&self.view, file, sid, index, rel, bufs)?;
         let n = u32::try_from(sec.recs.records.len()).unwrap_or(u32::MAX);
         for i in 0..n {
             let Some(raw) = sec.recs.records.raw(i) else { continue };

@@ -70,3 +70,29 @@ compiled. Delete this file before the WP lands.
    `.comment` S-100, `EXTENT_BACK`, s3_target tests, rows.rs:103, `--build-id=0x`.
 5. Timing at 1/4/8 threads against mold/lld. Gate: `MORTAR_REQUIRE_TOOLS=1 cargo xtask ci --quick`.
 6. Landed record `spec/landed/pipeline/WP-027a.md`. Clean up `.build/scratch-wp027a`.
+
+## Session 2 (taken over after migration; paused again for a host restart)
+- Did `git merge main` (239aeba) — merge 1 of 2 used. Clean textually.
+- Fixed the join in `crates/mortar_scan/src/walk.rs`: `Sec::open` now takes
+  `&mut Bufs`; `Walker::walk` runs `walk_in` inside `with_bufs`.
+  `cargo build -p mortar --all-targets` is green after that.
+- Found (not yet fixed), WP-021b violations in the facade:
+  - `crates/mortar/src/lib.rs:180` uses `StorePolicy::Resident`; must be the
+    default (Staged).
+  - `crates/mortar/src/sites.rs` `code()`: `s.data().ok()?` and
+    `walker.walk(..).ok()?` turn a read failure / non-resident `.text`
+    (>64 KiB is NOT resident under Staged) into "no erratum sites". Plan:
+    change `mortar_layout::fixed::Sites::code` to return
+    `Result<Option<OwnedCode>, LayoutDiag>` (update NoSites and
+    `crates/mortar_layout/tests/fixed.rs:86`), add a `Walker` method that
+    reads section contents via scan's `contents` (copy_to on NotResident)
+    into a caller buffer, and propagate errors.
+  - `front.rs` `property_plan`: `if let Ok(data) = s.data()` silently skips;
+    must report (SHT_NOTE is resident; NotResident there = internal error).
+- Next concrete step: write `spec/landed/pipeline/FRONT-INTERFACE.md`
+  (the `Front<'s>` struct in `crates/mortar/src/front.rs:97` is the value;
+  field types: merge `Phase` (mortar_merge/src/phase.rs:83), `Order`
+  (order.rs:26, front keeps `order.map` in Layout and `order.chunks` as
+  `merged`), `Scanned` (mortar_scan/src/lib.rs:201), `Placed`
+  (mortar_layout/src/run.rs:45), `Layout` (mortar_core/src/layout.rs:831)),
+  commit, then the fixes above, then WIP's earlier "Next steps".
