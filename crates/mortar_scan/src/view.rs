@@ -180,12 +180,7 @@ impl<'a, 's> View<'a, 's> {
     /// a `.gnu.warning` section in a live file.
     pub fn facts(&self, key: SymKey, mention: Option<SymEntry>) -> SymFacts {
         match key.kind() {
-            SymKind::Local(e) => {
-                let mut f = self.local_facts(e);
-                f.dead = e.index.0 != 0
-                    && self.local_section(e).is_some_and(|s| !self.is_live(e.file, s));
-                f
-            }
+            SymKind::Local(e) => self.local_facts(e),
             SymKind::Global(id) => {
                 let mut f = self.global_facts(id, mention, 0);
                 f.comdat_only = self.is_mismatch(id);
@@ -208,17 +203,22 @@ impl<'a, 's> View<'a, 's> {
         let Some(p) = self.prep(e.file) else { return abs };
         let Some(t) = p.table() else { return abs };
         let Ok(s) = t.get(e.index) else { return abs };
-        let kind = match t.section_of(e.index, &s) {
+        let section = t.section_of(e.index, &s);
+        let kind = match section {
             Ok(SymbolSection::Section(_)) if s.sym_type() == STT_GNU_IFUNC => TargetKind::Ifunc,
             Ok(SymbolSection::Section(_)) => TargetKind::Local,
             _ => TargetKind::Abs,
         };
+        // §6.1: a local of a section of its file that is not live (the
+        // symbol read once for the kind and for this).
+        let dead = e.index.0 != 0
+            && matches!(section, Ok(SymbolSection::Section(i)) if !self.is_live(e.file, i));
         SymFacts {
             kind,
             sym_type: s.sym_type(),
             st_other: s.st_other,
             tls: s.sym_type() == STT_TLS,
-            dead: false,
+            dead,
             comdat_only: false,
             gnu_warning: false,
         }
@@ -337,17 +337,6 @@ impl<'a, 's> View<'a, 's> {
             .and_then(|s| s.name().ok())
             .unwrap_or_default();
         String::from_utf8_lossy(name).into_owned()
-    }
-
-    /// The section a local key is defined in, if it is a section of the
-    /// file.
-    pub fn local_section(&self, e: SymEntry) -> Option<SectionIndex> {
-        let t = self.prep(e.file)?.table()?;
-        let s = t.get(e.index).ok()?;
-        match t.section_of(e.index, &s).ok()? {
-            SymbolSection::Section(i) => Some(i),
-            _ => None,
-        }
     }
 
     pub fn section_of(&self, file: FileId, index: u32) -> Option<SectionId> {

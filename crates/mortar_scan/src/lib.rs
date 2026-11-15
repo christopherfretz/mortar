@@ -195,7 +195,9 @@ pub fn scan(
         pool.map(units.len(), |i| driver::run_unit(&view, &units[i], &global));
     if steps.on() {
         let n: u64 = results.iter().map(|o| o.records).sum();
+        let nonalloc: u64 = results.iter().map(|o| o.nonalloc).sum();
         steps.step("walk", n, "record");
+        steps.step("walk.nonalloc", nonalloc, "record");
     }
 
     // Per section: counts, order, overlaps across blocks.

@@ -369,6 +369,8 @@ pub(crate) struct UnitOut {
     /// The extent of the unit's non-empty windows.
     pub extent: Option<(u64, u64)>,
     pub records: u64,
+    /// `records` when the section is not `SHF_ALLOC` (I-14), else 0.
+    pub nonalloc: u64,
     /// Some record's type is in `Facts.seq_leads` (`RelocAt.leads`).
     pub leads: bool,
 }
@@ -449,6 +451,31 @@ fn eh_frame(sec: &Sec<'_, '_, '_, '_>) -> bool {
     sec.kind == SectionKind::EhFrame || sec.name == b".eh_frame"
 }
 
+/// Whether `windows`, in the order the walk pushed them (record order),
+/// start in non-decreasing order and no non-empty one starts before a
+/// non-empty earlier one ends: then they are already in `overlaps`' sort
+/// order and no two non-empty windows meet, so `overlaps` would report
+/// nothing. One pass, where `overlaps` sorts; the common case, since
+/// records are nearly always in offset order and their fields disjoint.
+fn disjoint_in_order(windows: &[UnitWindow]) -> bool {
+    let mut start = 0u64;
+    let mut end = 0u64;
+    for w in windows {
+        if w.start < start {
+            return false;
+        }
+        start = w.start;
+        if w.start == w.end {
+            continue;
+        }
+        if w.start < end {
+            return false;
+        }
+        end = end.max(w.end);
+    }
+    true
+}
+
 /// Walks one unit (§4.1 step 2): every record in record order.
 pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> UnitOut {
     with_bufs(|bufs| walk_unit(view, u, global, bufs))
@@ -479,7 +506,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
         errored: false,
     };
     let mut events = UnitEvents::default();
-    let mut windows: Vec<UnitWindow> = Vec::new();
+    let mut windows: Vec<UnitWindow> = Vec::with_capacity((u.hi - u.lo) as usize);
     let nsyms = sec.recs.table.map_or(0, mortar_elf::SymbolTable::len);
     let output = view.opts.output;
     let refid = |record| RefId { file: u.file, section: u.index, record };
@@ -552,7 +579,9 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
             *e = (e.0.min(w.start), e.1.max(w.end));
         }
     }
-    overlaps(&mut windows, &mut pairs);
+    if !disjoint_in_order(&windows) {
+        overlaps(&mut windows, &mut pairs);
+    }
     out.overlaps = pairs.iter().map(|p| p.0).collect();
     out.overlaps.sort_unstable();
     out.overlaps.dedup();
@@ -578,6 +607,9 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
         }
     }
     out.locals = merged;
+    if !sec.place.alloc {
+        out.nonalloc = out.records;
+    }
     out.output = sink.output;
     out.counts = DynCounts(sink.counts);
     out
@@ -619,7 +651,9 @@ pub(crate) fn rewalk(
         }
     }
     let mut pairs = Vec::new();
-    overlaps(&mut windows, &mut pairs);
+    if !disjoint_in_order(&windows) {
+        overlaps(&mut windows, &mut pairs);
+    }
     let mut v: Vec<u32> = pairs.iter().map(|p| p.0).collect();
     v.sort_unstable();
     v.dedup();
