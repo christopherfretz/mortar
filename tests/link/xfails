@@ -19,10 +19,7 @@
 
 # WP-042 (CLI): the command line: the refused option or value is named once the dynamic options are accepted.
 # WP-053 (JOIN-C): AArch64 cases the join does not yet pass (diagnosis in each reason).
-mortar,aarch64 dyn/dynamic/variant-pcs-plt.test: M2: WP-053 (JOIN-C); the variant-PCS PLT symbol is not bound at load: ProgramDef.other loses STO_AARCH64_VARIANT_PCS, so no DT_AARCH64_VARIANT_PCS / st_other (finding)
-mortar,aarch64 dyn/dynsym/environ-aliases.test: M2: WP-053 (JOIN-C); plumb P-D5/P-D7: each copy alias is twice in .dynsym (two SymbolIds of one name, the reference and the versioned shared name; dynsym_plan dedups by id)
 mortar,aarch64 dyn/dynsym/versioned-export-refused.test: M2: WP-053 (JOIN-C); the link succeeds: the refusal of a versioned export is not reached
-mortar,aarch64 dyn/reloc/mixed-mode.test: M2: WP-053 (JOIN-C); plumb P-D5: a name twice in .dynsym, as environ-aliases
 mortar,aarch64 dyn/reloc/tls-desc-large.test: M2: WP-053 (JOIN-C); plumb P-D12: a TLSDESC record is written in a PIE (D-48: descriptors are relaxed)
 mortar,aarch64 dyn/shlib/closure-not-on-command-line.test: M2: WP-053 (JOIN-C); reports undefined symbol, not D-12's "libmid.so, which is not on the command line" note
 
@@ -31,8 +28,6 @@ mortar,aarch64,x86_64 dyn/kinds/output-kind-table-static-pie.test: M2: WP-052 (S
 
 
 # WP-054 (CXX): C++ on AArch64.
-mortar,aarch64 dyn/reloc/copy-reloc.test: M2: WP-054 (CXX)
-mortar,aarch64 dyn/reloc/copy-typeinfo-relro.test: M2: WP-054 (CXX)
 
 # WP-055 (X64-JOIN): the x86-64 dynamic join (default lines).
 mortar,x86_64 dyn/census/clang-default.test: M2: WP-055 (X64-JOIN)
