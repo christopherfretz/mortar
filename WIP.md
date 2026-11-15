@@ -17,7 +17,7 @@ Experiment dir: `/tmp/mortar-wp030r-EYWFOo` (remove by explicit path at the end)
 | 9, 13 | IFUNC names (S-68), __rel_iplt_* not defined in static-pie, R-14 (S-71 exception), R-15 + §1 tag, Q9 stub; W16 (mold) found | done |
 | 10 | .got.plt word 0 in static-pie = _DYNAMIC (X86-47, R-16); patched-to-0 runs | done |
 | 11 | tombstone replaces the field, A ignored (X86-59, I-45); review.sh tomb, GCC and Clang | done |
-| 12 | existing diag classes (section-type, malformed-input) | todo |
+| 12 | existing diag kinds only: section-type, malformed-input, relocation-incompatible reasons, refused feature; R-5, R-9, R-10 withdrawn | done |
 | 14 | (with 2) | done |
 | 15 | §2.4 GOTOFF wording; X86-8 example is S-19's | todo |
 | 16 | Q1 (i386 gfortran run), Q6 (lldb) | todo |
