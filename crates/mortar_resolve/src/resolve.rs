@@ -597,6 +597,18 @@ fn section_rows<V: View>(
             });
         }
     }
+    // synth.md S-6: a `Merge` section that is not certain to merge safely
+    // is placed whole, as `Regular` (§10), so every later phase (layout's
+    // `place`, `addr_in`, the symbol stage) treats it as one piece.
+    for i in 1..n {
+        if rows[i as usize].kind != SectionKind::Merge {
+            continue;
+        }
+        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+        if sections::placed_whole(&s, rows[i as usize].reloc.0 != 0) {
+            rows[i as usize].kind = SectionKind::Regular;
+        }
+    }
     // A `SHF_LINK_ORDER` section outside the groups whose linked section
     // is dropped is dropped too (§6.5).
     if map.any {

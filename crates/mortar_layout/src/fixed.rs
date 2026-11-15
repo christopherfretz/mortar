@@ -43,14 +43,14 @@ fn cap_refusal() -> LayoutDiag {
 /// candidate's input section and the offset of `W1` in it (at `q`, an
 /// address) as a note. `LayoutDiag` carries no file place or key; the
 /// key is `diag::unproved_key` of that section's chunk.
-fn unproved_refusal(e: Erratum, at: Option<(SectionId, u64)>) -> LayoutDiag {
-    let d = mortar_arch::diag::unproved(e);
-    LayoutDiag::from(match at {
-        Some((section, offset)) => {
-            d.note(format!("W1 at offset {offset:#x} of input section {}", section.0))
-        }
+fn unproved_refusal(e: Erratum, at: Option<(ChunkId, SectionId, u64)>) -> LayoutDiag {
+    let d = LayoutDiag::from(mortar_arch::diag::unproved(e));
+    match at {
+        // `mortar_arch::diag::unproved_key`: `(90, 0, ChunkId)`; the caller
+        // names the input section and the offset of `W1` as the place.
+        Some((chunk, section, offset)) => d.on_chunk(chunk, Some((section, offset))),
         None => d,
-    })
+    }
 }
 
 /// A branch site of the link: where it is, and what `need::branch_site`
@@ -330,6 +330,15 @@ fn bodies(staged: &Staged, by_part: &BTreeMap<Part, usize>) -> Bodies {
 
 /// The section and offset of the word at `addr`, if it is in a body chunk.
 fn key_at(bodies: &Bodies, chunks: &Column<ChunkId, Chunk>, addr: u64) -> Option<(SectionId, u64)> {
+    chunk_at(bodies, chunks, addr).map(|(_, section, offset)| (section, offset))
+}
+
+/// The body chunk, section and offset of the word at `addr`.
+fn chunk_at(
+    bodies: &Bodies,
+    chunks: &Column<ChunkId, Chunk>,
+    addr: u64,
+) -> Option<(ChunkId, SectionId, u64)> {
     for (&chunk, secs) in bodies {
         let c = chunks.get(chunk)?;
         let start = c.addr?;
@@ -339,7 +348,7 @@ fn key_at(bodies: &Bodies, chunks: &Column<ChunkId, Chunk>, addr: u64) -> Option
         let off = addr - start;
         let i = secs.partition_point(|&(at, _)| at <= off).checked_sub(1)?;
         let (at, section) = secs[i];
-        return Some((section, off - at));
+        return Some((chunk, section, off - at));
     }
     None
 }
@@ -389,7 +398,7 @@ fn needs(
             let view = Code { bytes: &code.bytes, addr: code.addr, proof: &code.proof };
             let mut sites: Vec<ErratumSite> = Vec::new();
             range.arch.erratum_sites(e, &view, &mut sites).map_err(|u| {
-                unproved_refusal(e, key_at(bodies, round.chunks, code.addr.wrapping_add(u.q)))
+                unproved_refusal(e, chunk_at(bodies, round.chunks, code.addr.wrapping_add(u.q)))
             })?;
             let mut found = Vec::with_capacity(sites.len());
             for s in sites {

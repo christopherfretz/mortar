@@ -81,6 +81,25 @@ fn is_debug_name(name: &[u8]) -> bool {
     name.starts_with(b".debug")
 }
 
+/// The largest `sh_entsize` a `Merge` section is split by (synth.md S-6).
+pub const MAX_MERGE_ENTSIZE: u64 = 1 << 16;
+
+/// synth.md S-6: whether a section classified `Merge` is placed whole, as
+/// `Regular`: it is writable or code, the target of a relocation section
+/// (`relocated`), TLS, `SHF_COMPRESSED` (its bytes are not the pieces'
+/// until decompressed, S-5), or of a shape merging does not take
+/// (`sh_addralign` not a power of two, `sh_entsize` above 2^16).
+/// `mortar_merge::cut::placed_whole` is the same predicate, kept for its
+/// bare-object tests; after this, phase 60 sees no such section.
+#[must_use]
+pub fn placed_whole(s: &SectionInfo<'_>, relocated: bool) -> bool {
+    s.flags & (SHF_WRITE | SHF_EXECINSTR | SHF_TLS | SHF_COMPRESSED) != 0
+        || relocated
+        || !(s.addralign == 0 || s.addralign.is_power_of_two())
+        || s.entsize == 0
+        || s.entsize > MAX_MERGE_ENTSIZE
+}
+
 /// The kind of a section, by the first row of §10's table that matches,
 /// leaving out the rows that need the COMDAT keeper (a member of a group
 /// not kept takes its kind from the later rows; [`state`] decides its
