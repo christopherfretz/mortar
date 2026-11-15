@@ -396,6 +396,66 @@ fn check_defaults(
     }
 }
 
+/// The directory of the shared fixtures, `tests/link/fixtures`
+/// (`spec/harness.md` "Fixtures").
+pub const FIXTURES: &str = "fixtures";
+
+/// The fixture `name`, `tests/link/fixtures/<name>.fixture`, parsed; or
+/// why it cannot be.
+fn load_fixture(name: &str) -> Result<format::Fixture, String> {
+    let path = workspace_root().join("tests").join("link").join(FIXTURES).join(format!("{name}.fixture"));
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    format::parse_fixture(&text).map_err(|errors| {
+        let lines: Vec<String> =
+            errors.iter().map(|e| format!("{}:{}: {}", path.display(), e.line, e.message)).collect();
+        lines.join("; ")
+    })
+}
+
+/// The test xfails of `tests/link/xfails` against the tests: a test that
+/// also marks mortar `xfail` itself on such an architecture is an error
+/// of the test (two markers for one linker); a line naming no test of the
+/// corpus is stale, which only a run of all of it can say (as for the
+/// default anomalies).
+fn check_xfails(
+    args: &Args,
+    xfails: &[format::ArchXfail],
+    tests: &[TestFile],
+    parsed: &[(usize, &TestFile, format::Test)],
+    report: &mut Report,
+) {
+    for (_, file, test) in parsed {
+        let twice = xfails.iter().find(|x| {
+            x.test.as_deref() == Some(file.name.as_str())
+                && test.marker(x.arch, Linker::Mortar).is_some_and(|m| {
+                    m.kind == format::MarkerKind::Xfail
+                })
+        });
+        if let Some(x) = twice {
+            report.errors.push(format!(
+                "tests/link/xfails line {}: {} marks mortar xfail on {} itself as well",
+                x.line,
+                file.name,
+                x.arch.name()
+            ));
+        }
+    }
+    if args.paths.is_empty() && args.filters.is_empty() {
+        let mut stale: Vec<&format::ArchXfail> = xfails
+            .iter()
+            .filter(|x| x.test.as_ref().is_some_and(|t| !tests.iter().any(|f| &f.name == t)))
+            .collect();
+        stale.dedup_by_key(|x| x.line);
+        for x in stale {
+            report.errors.push(format!(
+                "tests/link/xfails line {}: there is no test {}: remove the line",
+                x.line,
+                x.test.as_deref().unwrap_or_default()
+            ));
+        }
+    }
+}
+
 /// The run-wide default anomalies of the file at `path`; none when there
 /// is no file.
 ///
@@ -450,8 +510,21 @@ pub fn run(args: &Args) -> Result<Report, String> {
             Vec::new()
         });
     let wrappers = work.join("bin");
-    let matrix =
-        Matrix { host, common, linkers, mortar, wrappers, plumb: !args.no_plumb, defaults, xfails };
+    let stage3 = !args.no_plumb && engine::stage3_present();
+    let mut matrix = Matrix {
+        host,
+        common,
+        linkers,
+        mortar,
+        wrappers,
+        plumb: !args.no_plumb,
+        defaults,
+        xfails,
+        stage3,
+        fixtures: std::collections::BTreeMap::new(),
+        fixture_dir: work.join("fixtures"),
+        built: engine::FixtureCache::default(),
+    };
     if let Err(e) = matrix.write_wrappers(&arches) {
         report.errors.push(e);
     }
@@ -474,6 +547,21 @@ pub fn run(args: &Args) -> Result<Report, String> {
                 spec: String::new(),
             }),
         }
+    }
+    for (_, _, test) in &parsed {
+        for name in &test.fixtures {
+            if !matrix.fixtures.contains_key(name) {
+                matrix.fixtures.insert(name.clone(), load_fixture(name));
+            }
+        }
+    }
+    check_xfails(args, &matrix.xfails, &tests, &parsed, &mut report);
+    if matrix.plumb && !matrix.stage3 {
+        report.notes.push(format!(
+            "L3: the verifier has no stage 3 (spec/plumb.md §1): dynamic outputs are not judged \
+             ('{}')",
+            engine::STAGE3_ABSENT
+        ));
     }
     let matrix = &matrix;
     let units: Vec<Unit> = if report.errors.is_empty() {

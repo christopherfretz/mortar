@@ -68,6 +68,9 @@ pub enum Raw {
     Killed(String),
     /// The harness could not do its work.
     Error(String),
+    /// A step cannot be done here, by name (`check gdb` of a program that
+    /// runs under qemu): the linker's result is `SKIP`, marker or not.
+    Skip(String),
 }
 
 /// The outcome and the detail of a linker that did `raw`, with the reason
@@ -85,6 +88,7 @@ pub fn marked(raw: &Raw, xfail: Option<&str>) -> (Outcome, String) {
         (Raw::Fail(detail), Some(reason)) => (Outcome::Xfail, format!("{reason}: {detail}")),
         (Raw::Killed(detail), _) => (Outcome::Killed, detail.clone()),
         (Raw::Error(detail), _) => (Outcome::Error, detail.clone()),
+        (Raw::Skip(detail), _) => (Outcome::Skip, detail.clone()),
     }
 }
 
@@ -134,7 +138,9 @@ pub fn self_check(references: &[Reference]) -> Verdict {
     }
     let ran = || references.iter().filter_map(|r| Some((r, r.outcome?)));
     let wrong: Vec<String> = ran()
-        .filter(|(_, outcome)| !outcome.confirms() && *outcome != Outcome::Xfail)
+        .filter(|(_, outcome)| {
+            !outcome.confirms() && !matches!(outcome, Outcome::Xfail | Outcome::Skip)
+        })
         .map(|(reference, outcome)| {
             format!("{} {}: {}", reference.linker.name(), outcome.name(), reference.detail)
         })

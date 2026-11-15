@@ -295,10 +295,31 @@ pub enum CheckTool {
     LlvmReadelf,
     /// The lines of a file the link wrote.
     Text,
+    /// `eu-elflint --gnu-ld <file>`: its complaints, each allowed by an
+    /// `allow` line or a failure.
+    Elflint,
+    /// The architecture's dynamic loader with `--list <program>` (what
+    /// `ldd` runs), under the architecture's runner.
+    Ldd,
+    /// gdb in batch mode on a program, the arguments after the program
+    /// being its commands.
+    Gdb,
+    /// lldb in batch mode, likewise.
+    Lldb,
 }
 
 impl CheckTool {
-    const ALL: [Self; 5] = [Self::Readelf, Self::Nm, Self::Objdump, Self::LlvmReadelf, Self::Text];
+    const ALL: [Self; 9] = [
+        Self::Readelf,
+        Self::Nm,
+        Self::Objdump,
+        Self::LlvmReadelf,
+        Self::Text,
+        Self::Elflint,
+        Self::Ldd,
+        Self::Gdb,
+        Self::Lldb,
+    ];
 
     /// The word after `check`.
     pub fn name(self) -> &'static str {
@@ -308,17 +329,43 @@ impl CheckTool {
             Self::Objdump => "objdump",
             Self::LlvmReadelf => "llvm-readelf",
             Self::Text => "text",
+            Self::Elflint => "elflint",
+            Self::Ldd => "ldd",
+            Self::Gdb => "gdb",
+            Self::Lldb => "lldb",
         }
+    }
+
+    /// Whether the tool runs the linked program (and so is given the run
+    /// environment of "Runs").
+    pub fn runs_program(self) -> bool {
+        matches!(self, Self::Ldd | Self::Gdb | Self::Lldb)
     }
 }
 
-/// A `has`, `not`, `diag` or `no-diag` line.
+/// What an expectation asks of the lines of a text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Want {
+    /// `has`, `diag` (some line matches) or, not `present`, `not`,
+    /// `no-diag` (no line does).
+    Line,
+    /// `then`: some line after the line the previous `has` or `then` of
+    /// the step matched.
+    Then,
+    /// `count: <n> <pattern>`: exactly `n` lines match.
+    Count(u32),
+    /// `allow` (of `check elflint`): a complaint that matches is allowed.
+    Allow,
+}
+
+/// A `has`, `not`, `then`, `count`, `allow`, `diag` or `no-diag` line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expectation {
     pub line: usize,
     pub scope: Scope,
     /// A line must match (`has`, `diag`), or none may (`not`, `no-diag`).
     pub present: bool,
+    pub want: Want,
     pub pattern: Template,
 }
 
@@ -327,6 +374,16 @@ pub struct Expectation {
 pub struct Compile {
     pub language: Language,
     pub family: Family,
+    pub args: Vec<Template>,
+}
+
+/// A `shlib` step: a fixture shared library, linked by the architecture's
+/// compiler driver with `-shared` and the system's own linker (GNU ld), the
+/// same for every linker of the matrix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shlib {
+    /// `gcc`, `g++` or `gfortran`.
+    pub driver: Driver,
     pub args: Vec<Template>,
 }
 
@@ -364,6 +421,10 @@ pub struct Run {
     pub args: Vec<Template>,
     pub exit: Exit,
     pub stdout: Stdout,
+    /// The `env: NAME=value` lines: the program's environment beyond the
+    /// harness's (`LD_LIBRARY_PATH` is the linker's directory unless one
+    /// of these sets it).
+    pub env: Vec<(String, Template)>,
 }
 
 /// A check step.
@@ -381,6 +442,7 @@ pub enum StepKind {
     Compile(Compile),
     Yaml2obj(Vec<Template>),
     Ar(Vec<Template>),
+    Shlib(Shlib),
     Link(Link),
     Run(Run),
     Check(Check),
@@ -400,7 +462,10 @@ impl Step {
     /// Whether the step builds an input: it runs once per architecture,
     /// before any linker, and its files are shared by all of them.
     pub fn is_build(&self) -> bool {
-        matches!(self.kind, StepKind::Compile(_) | StepKind::Yaml2obj(_) | StepKind::Ar(_))
+        matches!(
+            self.kind,
+            StepKind::Compile(_) | StepKind::Yaml2obj(_) | StepKind::Ar(_) | StepKind::Shlib(_)
+        )
     }
 
     /// The `requires` word the step's tool needs, if it is not a tool
@@ -414,16 +479,29 @@ impl Step {
                 (Family::Gcc, Language::C | Language::Asm) => None,
             },
             StepKind::Yaml2obj(_) => Some(Feature::Yaml2obj),
+            StepKind::Shlib(shlib) => match shlib.driver {
+                Driver::Gxx => Some(Feature::Gxx),
+                Driver::Gfortran => Some(Feature::Gfortran),
+                _ => None,
+            },
             StepKind::Link(link) => match link.driver {
                 Driver::Gxx => Some(Feature::Gxx),
                 Driver::Gfortran => Some(Feature::Gfortran),
                 Driver::Clang | Driver::Clangxx => Some(Feature::Clang),
                 Driver::Ld | Driver::Gcc => None,
             },
-            StepKind::Check(check) if check.tool == CheckTool::LlvmReadelf => {
-                Some(Feature::LlvmReadelf)
-            }
-            StepKind::Ar(_) | StepKind::Run(_) | StepKind::Check(_) => None,
+            StepKind::Check(check) => match check.tool {
+                CheckTool::LlvmReadelf => Some(Feature::LlvmReadelf),
+                CheckTool::Gdb => Some(Feature::Gdb),
+                CheckTool::Lldb => Some(Feature::Lldb),
+                CheckTool::Elflint => Some(Feature::Elflint),
+                CheckTool::Readelf
+                | CheckTool::Nm
+                | CheckTool::Objdump
+                | CheckTool::Text
+                | CheckTool::Ldd => None,
+            },
+            StepKind::Ar(_) | StepKind::Run(_) => None,
         }
     }
 
@@ -457,6 +535,19 @@ pub struct Test {
     /// The address-space limit of each link and run step in MiB, if the
     /// test sets one.
     pub memory_mib: Option<u64>,
+    pub steps: Vec<Step>,
+    pub files: Vec<Embedded>,
+    /// The `fixture` directives: the shared fixtures (`tests/link/fixtures/
+    /// <name>.fixture`) whose built files the unit's inputs start with.
+    pub fixtures: Vec<String>,
+}
+
+/// A shared fixture (`spec/harness.md` "Fixtures"): build steps and
+/// embedded files, built once per architecture in a run, whose files every
+/// test that names it gets in its inputs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fixture {
+    pub requires: Vec<Feature>,
     pub steps: Vec<Step>,
     pub files: Vec<Embedded>,
 }
@@ -644,6 +735,9 @@ struct Parser {
     /// `exit` was given for the last step.
     exit_seen: bool,
     files: Vec<Embedded>,
+    fixtures: Vec<String>,
+    /// Parsing a fixture: build steps and `requires` only.
+    fixture: bool,
 }
 
 impl Parser {
@@ -734,6 +828,9 @@ impl Parser {
         if value.is_empty() {
             return self.error(line, format!("the directive '{key}' has no value"));
         }
+        if self.fixture && key != "requires" {
+            return self.error(line, format!("a fixture has no '{key}' directive (only 'requires')"));
+        }
         let again = |what: &str| format!("a second '{what}' directive");
         match key {
             "spec" => {
@@ -806,6 +903,24 @@ impl Parser {
                     ),
                 ),
             },
+            "fixture" => {
+                for name in value.split_whitespace() {
+                    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-');
+                    if !name.chars().all(plain) {
+                        self.error(
+                            line,
+                            format!(
+                                "'{name}' is not a fixture name (letters, digits, '_', '-'): the \
+                                 fixture is tests/link/fixtures/<name>.fixture"
+                            ),
+                        );
+                    } else if self.fixtures.iter().any(|f| f == name) {
+                        self.error(line, format!("the fixture '{name}' is named twice"));
+                    } else {
+                        self.fixtures.push(name.to_owned());
+                    }
+                }
+            }
             "mem" => match value.parse::<u64>() {
                 Ok(mib) if MEMORY_RANGE.contains(&mib) => {
                     if self.memory_mib.replace(mib).is_some() {
@@ -869,6 +984,24 @@ impl Parser {
                 }
                 (keyword, if key == "ar" { StepKind::Ar(args) } else { StepKind::Yaml2obj(args) })
             }
+            "shlib" => {
+                qualifiers.no_family("'shlib'")?;
+                qualifiers.no_linker("'shlib'")?;
+                let driver = [Driver::Gcc, Driver::Gxx, Driver::Gfortran]
+                    .into_iter()
+                    .find(|driver| driver.name() == first)
+                    .ok_or_else(|| {
+                        format!(
+                            "'shlib' is followed by the compiler driver that links the shared \
+                             library (gcc, g++, gfortran), not '{first}'"
+                        )
+                    })?;
+                args.remove(0);
+                if args.is_empty() {
+                    return Err("'shlib' has no arguments".to_owned());
+                }
+                ("shlib", StepKind::Shlib(Shlib { driver, args }))
+            }
             "link" => {
                 qualifiers.no_family("'link'")?;
                 let Some(driver) = Driver::ALL.into_iter().find(|driver| driver.name() == first)
@@ -890,7 +1023,8 @@ impl Parser {
                 }
                 let program = args.remove(0);
                 let stdout = Stdout::Exact(Vec::new());
-                ("run", StepKind::Run(Run { program, args, exit: Exit::Status(0), stdout }))
+                let exit = Exit::Status(0);
+                ("run", StepKind::Run(Run { program, args, exit, stdout, env: Vec::new() }))
             }
             "check" => {
                 qualifiers.no_family("'check'")?;
@@ -903,8 +1037,10 @@ impl Parser {
                     ));
                 };
                 args.remove(0);
-                if tool == CheckTool::Text && args.len() != 1 {
-                    return Err("'check text' takes one file".to_owned());
+                if matches!(tool, CheckTool::Text | CheckTool::Elflint | CheckTool::Ldd)
+                    && args.len() != 1
+                {
+                    return Err(format!("'check {first}' takes one file"));
                 }
                 if args.is_empty() {
                     return Err(format!("'check {first}' has no arguments"));
@@ -913,10 +1049,14 @@ impl Parser {
             }
             _ => {
                 return Err(format!(
-                    "unknown step '{key}' (cc, cxx, fc, as, yaml2obj, ar, link, run, check)"
+                    "unknown step '{key}' (cc, cxx, fc, as, yaml2obj, ar, shlib, link, run, check)"
                 ));
             }
         };
+        if self.fixture && !matches!(keyword, "cc" | "cxx" | "fc" | "as" | "yaml2obj" | "ar" | "shlib")
+        {
+            return Err(format!("a fixture builds inputs only: '{keyword}' is a step of a test"));
+        }
         self.steps.push(Step { line, keyword, scope: qualifiers.scope, kind });
         Ok(())
     }
@@ -968,15 +1108,36 @@ impl Parser {
                         line,
                         scope,
                         present: key == "diag",
+                        want: Want::Line,
                         pattern,
                     });
                 }
                 Ok(())
             }
-            (StepKind::Check(check), "has" | "not") => {
+            (StepKind::Check(check), "has" | "not" | "then" | "count" | "allow") => {
+                let (want, value) = match key {
+                    "then" => (Want::Then, value),
+                    "count" => {
+                        let value = value.trim_start();
+                        let (n, rest) = value.split_once([' ', '\t']).unwrap_or((value, ""));
+                        match n.parse::<u32>() {
+                            Ok(n) if !rest.trim().is_empty() => (Want::Count(n), rest),
+                            _ => {
+                                return Err(format!(
+                                    "'count: {value}' is not 'count: <number> <pattern>'"
+                                ));
+                            }
+                        }
+                    }
+                    "allow" if check.tool != CheckTool::Elflint => {
+                        return Err("'allow' is an expectation of 'check elflint' only".to_owned());
+                    }
+                    "allow" => (Want::Allow, value),
+                    _ => (Want::Line, value),
+                };
                 if let Some(pattern) = self.pattern(line, value) {
-                    let present = key == "has";
-                    check.expectations.push(Expectation { line, scope, present, pattern });
+                    let present = key != "not";
+                    check.expectations.push(Expectation { line, scope, present, want, pattern });
                 }
                 Ok(())
             }
@@ -995,6 +1156,22 @@ impl Parser {
                     Stdout::Reference => Err(both_outputs()),
                 }
             }),
+            (StepKind::Run(run), "env") => unqualified("env").and_then(|()| {
+                let value = value.trim();
+                let Some((name, text)) = value.split_once('=') else {
+                    return Err(format!("'env: {value}' is not 'env: NAME=value'"));
+                };
+                let valid = !name.is_empty()
+                    && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+                if !valid {
+                    return Err(format!("'{name}' is not an environment variable's name"));
+                }
+                if run.env.iter().any(|(other, _)| other == name) {
+                    return Err(format!("a second 'env: {name}=' for this step"));
+                }
+                run.env.push((name.to_owned(), Template::parse(text)?));
+                Ok(())
+            }),
             (StepKind::Run(run), "output") => unqualified("output").and_then(|()| {
                 if value.trim() != "reference" {
                     return Err(format!("'output: {}' is not 'reference'", value.trim()));
@@ -1012,17 +1189,51 @@ impl Parser {
                 Err(format!("'{key}' is not an expectation of a link (exit, diag, no-diag)"))
             }
             (StepKind::Run(_), _) => {
-                Err(format!("'{key}' is not an expectation of a run (exit, stdout, output)"))
+                Err(format!("'{key}' is not an expectation of a run (exit, stdout, output, env)"))
             }
-            (StepKind::Check(_), _) => {
-                Err(format!("'{key}' is not an expectation of a check (has, not)"))
-            }
-            (StepKind::Compile(_) | StepKind::Yaml2obj(_) | StepKind::Ar(_), _) => {
+            (StepKind::Check(_), _) => Err(format!(
+                "'{key}' is not an expectation of a check (has, not, then, count, allow)"
+            )),
+            (
+                StepKind::Compile(_) | StepKind::Yaml2obj(_) | StepKind::Ar(_) | StepKind::Shlib(_),
+                _,
+            ) => {
                 Err(format!("'{keyword}' builds an input and has no expectations"))
             }
         };
         self.steps.push(Step { line: at, keyword, scope: step_scope, kind });
         result
+    }
+
+    /// What can only be said of a whole fixture file.
+    fn finish_fixture(mut self) -> Result<Fixture, Vec<Error>> {
+        self.steps.retain(|step| !step.keyword.is_empty());
+        let steps = std::mem::take(&mut self.steps);
+        self.check_requires(&steps);
+        self.check_steps(&steps, &Arch::ALL);
+        self.check_file_names();
+        if !self.errors.is_empty() {
+            self.errors.sort_by_key(|error| error.line);
+            return Err(self.errors);
+        }
+        Ok(Fixture {
+            requires: self.requires.map(|(_, features)| features).unwrap_or_default(),
+            steps,
+            files: self.files,
+        })
+    }
+
+    fn check_file_names(&mut self) {
+        let mut names: Vec<&str> = Vec::new();
+        for file in &self.files {
+            if names.contains(&file.name.as_str()) {
+                self.errors.push(Error {
+                    line: 1,
+                    message: format!("the file '{}' is embedded twice", file.name),
+                });
+            }
+            names.push(&file.name);
+        }
     }
 
     /// What can only be said of the whole file.
@@ -1058,16 +1269,7 @@ impl Parser {
         self.check_requires(&steps);
         self.check_steps(&steps, &arches);
         self.check_markers(&arches);
-        let mut names: Vec<&str> = Vec::new();
-        for file in &self.files {
-            if names.contains(&file.name.as_str()) {
-                self.errors.push(Error {
-                    line: 1,
-                    message: format!("the file '{}' is embedded twice", file.name),
-                });
-            }
-            names.push(&file.name);
-        }
+        self.check_file_names();
         if !self.errors.is_empty() {
             self.errors.sort_by_key(|error| error.line);
             return Err(self.errors);
@@ -1082,6 +1284,7 @@ impl Parser {
             memory_mib: self.memory_mib,
             steps,
             files: self.files,
+            fixtures: self.fixtures,
         })
     }
 
@@ -1146,7 +1349,8 @@ impl Parser {
             match &step.kind {
                 StepKind::Compile(Compile { args, .. })
                 | StepKind::Yaml2obj(args)
-                | StepKind::Ar(args) => {
+                | StepKind::Ar(args)
+                | StepKind::Shlib(Shlib { args, .. }) => {
                     if uses_linker(args) {
                         self.error(
                             step.line,
@@ -1155,7 +1359,12 @@ impl Parser {
                         );
                     }
                 }
-                StepKind::Check(check) if check.expectations.is_empty() => {
+                // `check elflint` checks its complaints even without a
+                // `has` or `not`.
+                StepKind::Check(check)
+                    if check.tool != CheckTool::Elflint
+                        && !check.expectations.iter().any(|e| e.want != Want::Allow) =>
+                {
                     self.error(step.line, "a check without a 'has' or a 'not' checks nothing");
                 }
                 StepKind::Link(link) if link.fails => {
@@ -1321,18 +1530,26 @@ pub fn parse_defaults(text: &str) -> Result<Vec<Anomaly>, Vec<Error>> {
     if errors.is_empty() { Ok(out) } else { Err(errors) }
 }
 
-/// A run-wide `xfail` of mortar on one architecture, `tests/link/xfails`
-/// (`spec/harness.md` "Markers"): mortar has no back end there yet, so
-/// every mortar link of that architecture is expected to fail.
+/// A mortar `xfail` of `tests/link/xfails` (`spec/harness.md` "Markers"):
+/// run-wide on one architecture (mortar has no back end there yet, so
+/// every mortar link of that architecture is expected to fail), or of one
+/// test on one architecture (the package that makes it pass has not
+/// landed: "M2: WP-053").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchXfail {
     pub line: usize,
     pub arch: Arch,
+    /// The test's name (`dyn/kinds/output-kind-table.test`), or `None` for
+    /// every test of the architecture.
+    pub test: Option<String>,
     pub reason: String,
 }
 
-/// The run-wide mortar `xfail`s: one `mortar,<arch>: <reason>` per line,
-/// `#` comments and blank lines aside; at most one per architecture.
+/// The mortar `xfail`s, `#` comments and blank lines aside: one
+/// `mortar,<arch>: <reason>` per line (run-wide, at most one per
+/// architecture), or `mortar[,<arch>...] <test>: <reason>` (one test; on
+/// every architecture when none is named; at most one per test and
+/// architecture).
 ///
 /// # Errors
 /// Every line that does not have that form, with its number.
@@ -1347,41 +1564,82 @@ pub fn parse_xfails(text: &str) -> Result<Vec<ArchXfail>, Vec<Error>> {
         }
         let mut error = |message: String| errors.push(Error { line, message });
         let Some((who, reason)) = text.split_once(':') else {
-            error(format!("'{text}' is not 'mortar,<arch>: <reason>'"));
+            error(format!(
+                "'{text}' is not 'mortar,<arch>: <reason>' or 'mortar[,<arch>...] <test>: <reason>'"
+            ));
             continue;
         };
+        // The test's name is the last word when it ends with `.test`, or
+        // when there are words after the qualifiers' list.
+        let who = who.trim();
+        let (who, test) = match who.rsplit_once([' ', '\t']) {
+            Some((rest, last)) if last.ends_with(".test") || !rest.trim_end().ends_with(',') => {
+                (rest.trim_end(), Some(last))
+            }
+            _ => (who, None),
+        };
+        if let Some(test) = test {
+            let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-');
+            let valid = test.ends_with(".test")
+                && test.split('/').all(|part| !part.is_empty() && part.chars().all(plain));
+            if !valid {
+                error(format!("'{test}' is not a test's name ('dyn/kinds/x.test')"));
+                continue;
+            }
+        }
         let words: Vec<&str> = who.split(',').map(str::trim).collect();
-        let arch = match words.as_slice() {
-            ["mortar", arch] => Arch::parse(arch),
+        let arches: Option<Vec<Arch>> = match (words.split_first(), test) {
+            (Some((&"mortar", [arch])), None) => Arch::parse(arch).map(|arch| vec![arch]),
+            (Some((&"mortar", [])), Some(_)) => Some(Arch::ALL.to_vec()),
+            (Some((&"mortar", rest)), Some(_)) => {
+                rest.iter().map(|word| Arch::parse(word)).collect()
+            }
             _ => None,
         };
-        let Some(arch) = arch else {
+        let Some(arches) = arches else {
             error(format!(
-                "'{}' is not 'mortar,<arch>': a run-wide xfail is for mortar on one architecture",
+                "'{}' is not 'mortar,<arch>': a run-wide xfail is for mortar on one \
+                 architecture, a test's for mortar on the architectures named",
                 who.trim()
             ));
             continue;
         };
         let reason = reason.trim();
         if reason.is_empty() {
-            error("a run-wide xfail needs a reason".to_owned());
+            error("an xfail needs a reason".to_owned());
             continue;
         }
-        if let Some(first) = out.iter().find(|x| x.arch == arch) {
-            error(format!(
-                "a second run-wide xfail for mortar on {} (the first is on line {})",
-                arch.name(),
-                first.line
-            ));
-            continue;
+        let test = test.map(str::to_owned);
+        for arch in arches {
+            if let Some(first) = out.iter().find(|x| x.arch == arch && x.test == test) {
+                let what = test.as_deref().map_or_else(String::new, |t| format!(" of {t}"));
+                error(format!(
+                    "a second xfail{what} for mortar on {} (the first is on line {})",
+                    arch.name(),
+                    first.line
+                ));
+                break;
+            }
+            out.push(ArchXfail { line, arch, test: test.clone(), reason: reason.to_owned() });
         }
-        out.push(ArchXfail { line, arch, reason: reason.to_owned() });
     }
     if errors.is_empty() { Ok(out) } else { Err(errors) }
 }
 
 pub fn parse(text: &str) -> Result<Test, Vec<Error>> {
-    let mut parser = Parser::default();
+    parse_with(text, Parser::default()).finish()
+}
+
+/// Parses a fixture file (`spec/harness.md` "Fixtures"): `requires` and
+/// build steps, then embedded files.
+///
+/// # Errors
+/// Every error of the file, in line order.
+pub fn parse_fixture(text: &str) -> Result<Fixture, Vec<Error>> {
+    parse_with(text, Parser { fixture: true, ..Parser::default() }).finish_fixture()
+}
+
+fn parse_with(text: &str, mut parser: Parser) -> Parser {
     // The file being read: its name, the line of its marker, its text.
     let mut file: Option<(String, usize, String)> = None;
     let mut in_files = false;
@@ -1433,7 +1691,7 @@ pub fn parse(text: &str) -> Result<Test, Vec<Error>> {
     }
     // A marker that named no file has said so.
     parser.files.retain(|file| !file.name.is_empty());
-    parser.finish()
+    parser
 }
 
 #[cfg(test)]
@@ -1656,7 +1914,24 @@ FileHeader:
         assert!(error("mortar,x86_64,i386: why\n").contains("for mortar on one architecture"));
         assert!(error("mortar,sparc: why\n").contains("for mortar on one architecture"));
         assert!(error("mortar,i386:\n").contains("needs a reason"));
-        assert!(error("mortar,i386: a\nmortar,i386: b\n").contains("a second run-wide xfail"));
+        assert!(error("mortar,i386: a\nmortar,i386: b\n").contains("a second xfail for"));
+        // A test's xfails, on the architectures named or on every one.
+        let t = parse_xfails("mortar,aarch64 dyn/a.test: M2: WP-053\nmortar dyn/b.test: M2\n")
+            .unwrap();
+        assert_eq!(t.len(), 4);
+        assert_eq!((t[0].arch, t[0].test.as_deref()), (Arch::Aarch64, Some("dyn/a.test")));
+        assert_eq!(t[0].reason, "M2: WP-053");
+        assert_eq!(t[1..].iter().map(|x| x.arch).collect::<Vec<_>>(), Arch::ALL);
+        assert!(error("mortar dyn/a: M2\n").contains("is not a test's name"));
+        assert!(error("mold dyn/a.test: M2\n").contains("for mortar on one architecture"));
+        assert!(error("mortar,arm dyn/a.test: M2\n").contains("for mortar on one architecture"));
+        assert!(
+            error("mortar dyn/a.test: x\nmortar,i386 dyn/a.test: y\n")
+                .contains("a second xfail of dyn/a.test for mortar on i386")
+        );
+        // A run-wide line and a test's line on one architecture are both
+        // allowed: the run-wide one is taken.
+        assert_eq!(parse_xfails("mortar,i386: a\nmortar dyn/a.test: b\n").unwrap().len(), 4);
     }
 
     // "Steps": the keywords, their qualifiers and their arguments.
@@ -1686,7 +1961,7 @@ FileHeader:
         assert!(has_error(&with("link(gcc) ld a.o\n"), 2, "takes no compiler family"));
         assert!(has_error(&with("link cc a.o\n"), 2, "not 'cc'"));
         assert!(has_error(&with("link ld a.o\nrun\n"), 3, "followed by the program"));
-        assert!(has_error(&with("link ld a.o\ncheck ldd a\n  has: x\n"), 3, "not 'ldd'"));
+        assert!(has_error(&with("link ld a.o\ncheck lddx a\n  has: x\n"), 3, "not 'lddx'"));
         assert!(has_error(&with("link ld a.o\ncheck nm\n  has: x\n"), 3, "has no arguments"));
         assert!(has_error(&with("link ld a.o\ncheck text a b\n  has: x\n"), 3, "one file"));
         assert!(has_error(&with("link ld a.o\ncheck nm a\n"), 3, "checks nothing"));

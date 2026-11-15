@@ -1,12 +1,31 @@
-# Run-wide xfails of mortar by architecture (spec/harness.md "Markers"):
-# mortar has no back end there yet, so every mortar link of the
-# architecture is expected to fail. One line per architecture:
+# Expected failures of mortar (spec/harness.md "Markers"), two forms:
 #
 #   mortar,<arch>: <reason>
+#     run-wide: mortar has no back end there yet, so every mortar link of
+#     the architecture is expected to fail.
+#   mortar[,<arch>...] <test>.test: <reason>
+#     one test (its path under tests/link), on the architectures named
+#     (all, when none is): the package that makes it pass, "M2: WP-0xx".
 #
-# It takes the place of a test's own xfail(mortar) on that architecture
-# (a test's skip still applies). A mortar link that passes is XPASS, so
-# the line goes when the back end lands.
+# A line takes the place of a test's own xfail(mortar) on that
+# architecture (a test's skip still applies; a test may not carry both).
+# A mortar link that passes is XPASS, so a line goes when its package
+# lands: deleting a package's lines is all it takes.
 
 # No i386 back end.
 mortar,i386: mortar: i386 back end is WP-030 stage 2
+
+# M2 (dynamic executables, spec/dyn.md section 16): the package that makes
+# each case pass for mortar (spec/landed/dyn/WP-040.md). Grouped by package.
+
+# WP-053 (JOIN-C): the AArch64 dynamic join.
+mortar,aarch64 dyn/kinds/output-kind-table.test: M2: WP-053 (JOIN-C)
+mortar,aarch64 dyn/tools/ldd-lists.test: M2: WP-053 (JOIN-C)
+mortar,aarch64 dyn/tools/gdb-break-main.test: M2: WP-053 (JOIN-C)
+mortar,aarch64 dyn/tools/lldb-break-main.test: M2: WP-053 (JOIN-C)
+mortar,aarch64 dyn/tools/elflint-dynamic.test: M2: WP-053 (JOIN-C)
+
+# WP-055 (X64-JOIN): the x86-64 dynamic join.
+mortar,x86_64 dyn/kinds/output-kind-table.test: M2: WP-055 (X64-JOIN)
+mortar,x86_64 dyn/tools/ldd-lists.test: M2: WP-055 (X64-JOIN)
+mortar,x86_64 dyn/tools/elflint-dynamic.test: M2: WP-055 (X64-JOIN)
