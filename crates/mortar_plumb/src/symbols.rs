@@ -639,7 +639,12 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             "__rela_iplt_start" | "__rela_iplt_end" | "__rel_iplt_start" | "__rel_iplt_end"
                 if name.starts_with("__rela_") == (rel_type == SHT_RELA) =>
             {
+                // A dynamic output's loader applies its IRELATIVE records;
+                // the C runtime's range is empty (stage 3; GNU ld and mold
+                // give start = end, lld does not define them).
+                let dynamic = image.phdrs.iter().any(|p| p.p_type == mortar_elf::consts::PT_DYNAMIC);
                 match relas.as_slice() {
+                    _ if dynamic => Some(Want::Equal),
                     [] => Some(Want::Equal),
                     [r] => Some(Want::Exactly(if name.ends_with("_end") {
                         end(r)

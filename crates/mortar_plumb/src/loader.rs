@@ -115,6 +115,13 @@ impl Loader<'_> {
         if !plt && s.st_value != 0 {
             return Bound::Exec(s.st_value.wrapping_add(p.bias));
         }
+        self.bind_copy(out, j, p)
+    }
+
+    /// The lookup of a `COPY` record (`ELF_RTYPE_CLASS_COPY`): the
+    /// executable is skipped.
+    pub fn bind_copy(&self, out: &DynOut, j: usize, p: &Params) -> Bound {
+        let Some(s) = out.syms.get(j) else { return Bound::Missing };
         if let Some(&f) = p.fresh.get(&s.name) {
             return Bound::Fresh(f);
         }
@@ -233,7 +240,7 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
             }
             Kind::Copy => {
                 if with_findings {
-                    let b = sym(true);
+                    let b = ld.bind_copy(out, r.sym as usize, p);
                     let own = out.syms.get(r.sym as usize);
                     match (b, own) {
                         (Bound::Lib { size, i, .. }, Some(o)) => {

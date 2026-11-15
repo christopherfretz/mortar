@@ -26,8 +26,9 @@ pub struct Ctx<'f> {
     pub files: &'f dyn Files,
 }
 
-/// The load bias of view 2 (page-aligned, far from every other address).
-pub const BIAS2: u64 = 0x5555_0000_0000;
+/// The load bias of view 2 (64 KiB-aligned, far from every other address,
+/// with low 32 bits that are not 0 so a 32-bit field cannot hide it).
+pub const BIAS2: u64 = 0x5555_5a5a_0000;
 /// Where view 3 defines the `WeakDyn` keys.
 pub const FRESH: u64 = 0x6000_0000_0000;
 
@@ -155,6 +156,8 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     engine.plt = plt.clone();
     run_engine(&mut engine, &image, map, None);
     let abs = std::mem::take(&mut engine.abs_words);
+    let chosen = std::mem::take(&mut engine.ifunc_chosen);
+    report.findings.extend(exported_ifuncs(&image, &dout, &model, &chosen, map.format));
     let view1_findings = std::mem::take(&mut engine.findings);
     report.coverage = std::mem::take(&mut engine.cov);
     drop(engine);
@@ -285,4 +288,58 @@ fn uses_of(objs: &[Obj<'_>], name: &str) -> u64 {
         }
     }
     n
+}
+
+/// An IFUNC the executable exports (W13): the loader gives a library the
+/// resolver's result, so the executable's own uses must reach it too, and
+/// x86's loader refuses a library reference to an executable IFUNC.
+fn exported_ifuncs(
+    image: &Image<'_>,
+    out: &DynOut,
+    model: &Model,
+    chosen: &std::collections::BTreeMap<u64, Option<u64>>,
+    format: crate::map::Format,
+) -> Vec<Finding> {
+    let mut v = Vec::new();
+    let x86 = image.header.e_machine != mortar_elf::consts::EM_AARCH64;
+    for s in out.syms.iter().skip(1) {
+        if !s.defined() || s.sym_type() != mortar_elf::consts::STT_GNU_IFUNC {
+            continue;
+        }
+        let mut f = |n: u8, m: String| {
+            let mut x = Finding::new(Rule::Dyn(n), m).at(s.st_value);
+            x.symbol = Some(s.name.clone());
+            v.push(x);
+        };
+        if format == crate::map::Format::Mortar {
+            f(7, format!("the executable's IFUNC '{}' is exported as STT_GNU_IFUNC (D-23, W13)", s.name));
+            continue;
+        }
+        let referenced = model.ref_dynamic.contains(&s.name);
+        if x86 && referenced {
+            f(
+                7,
+                format!(
+                    "the executable's IFUNC '{}' is exported as STT_GNU_IFUNC and a library references it: x86's loader refuses the load (D-23, W13)",
+                    s.name
+                ),
+            );
+            continue;
+        }
+        match chosen.get(&s.st_value) {
+            None => f(
+                7,
+                format!("'{}' is exported as STT_GNU_IFUNC at {:#x}, which is no resolver of the program (W13)", s.name, s.st_value),
+            ),
+            Some(Some(e)) => f(
+                9,
+                format!(
+                    "'{}' is exported as STT_GNU_IFUNC: a library gets its resolver's result, the executable takes IPLT entry {e:#x}: two addresses for one function (D-23, W13)",
+                    s.name
+                ),
+            ),
+            Some(None) => {}
+        }
+    }
+    v
 }

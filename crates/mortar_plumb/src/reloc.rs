@@ -485,6 +485,9 @@ pub(crate) struct Engine<'a, 'b> {
     /// Verified absolute words and GOT words: `(place, width, value,
     /// internal)`, for the bias view (P-D9 view 2).
     pub(crate) abs_words: Vec<(u64, u8, u64, bool)>,
+    /// Stage 3: each IFUNC resolver's canonical IPLT entry, `None` when
+    /// every reference reaches its IRELATIVE slot.
+    pub(crate) ifunc_chosen: BTreeMap<u64, Option<u64>>,
     /// The executable's extent `[lo, hi)`: a target inside it moves with
     /// the load bias.
     pub(crate) extent: (u64, u64),
@@ -588,6 +591,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             dyn_tls: std::collections::HashSet::new(),
             plt: BTreeMap::new(),
             abs_words: Vec::new(),
+            ifunc_chosen: BTreeMap::new(),
             extent: {
                 let loads = image.phdrs.iter().filter(|p| p.p_type == mortar_elf::consts::PT_LOAD);
                 let lo = loads.clone().map(|p| p.p_vaddr).min().unwrap_or(0);
@@ -1288,7 +1292,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         };
         let verdict = judge(rec, x);
         if let Verdict::Ok(rw) = verdict {
-            if op == Op::Abs && rec.def.field.width() == self.word() as u8 && !weak {
+            if op == Op::Abs && matches!(rec.def.field, a64::Field::Data(4 | 8)) && !weak {
                 let s = sa.wrapping_sub(addend as u64);
                 self.abs_words.push((rec.p, rec.def.field.width(), sa, self.internal(s)));
             }

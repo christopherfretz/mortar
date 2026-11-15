@@ -663,6 +663,10 @@ impl Engine<'_, '_> {
             }
             if x.range == 0 || x.pc == 0 {
                 self.cov.fdes_neutralised += 1;
+            } else if self.format != crate::map::Format::Mortar && in_plt(image, x.pc) {
+                // A reference linker's own unwind information for the PLT
+                // it makes (GNU ld's `--ld-generated-unwind-info`, x86).
+                self.cov.fdes_linker_plt += 1;
             } else if !unknown_inputs {
                 let mut f = e(4, "an FDE of the output's .eh_frame that no live input FDE gives")
                     .at(x.addr);
@@ -889,4 +893,12 @@ mod tests {
         bad.extend([4, 0, 0, 0, 1, 0, 0, 0]);
         assert!(parse(&bad).is_err());
     }
+}
+
+/// Whether `pc` is in a PLT section of the output.
+fn in_plt(image: &crate::image::Image<'_>, pc: u64) -> bool {
+    image.sections.iter().any(|s| {
+        matches!(s.name.as_str(), ".plt" | ".plt.got" | ".plt.sec" | ".iplt")
+            && (s.shdr.sh_addr..s.shdr.sh_addr + s.shdr.sh_size).contains(&pc)
+    })
 }

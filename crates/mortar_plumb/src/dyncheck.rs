@@ -111,7 +111,9 @@ fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, format: Format, v: &mut Vec
     match image.phdrs.iter().find(|p| p.p_type == PT_PHDR) {
         Some(p) => {
             let size = u64::from(h.e_phnum) * u64::from(h.e_phentsize);
-            if p.p_offset != h.e_phoff || p.p_filesz != size {
+            // lld reserves room for one more header (its form).
+            let covers = if format == Format::Mortar { p.p_filesz == size } else { p.p_filesz >= size };
+            if p.p_offset != h.e_phoff || !covers {
                 v.push(fd(4, "PT_PHDR does not cover exactly the program header table"));
             }
             if first_load
@@ -246,7 +248,7 @@ fn pd5(image: &Image<'_>, out: &DynOut, format: Format, v: &mut Vec<Finding>) {
     for (j, s) in out.syms.iter().enumerate().skip(1) {
         let hashed = s.defined() || s.st_value != 0;
         if (j as u32) < g.symoffset {
-            if hashed && s.defined() {
+            if hashed && s.defined() && s.sym_type() != STT_SECTION {
                 v.push(sym_finding(
                     5,
                     &s.name,
@@ -539,13 +541,6 @@ fn pd7(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, format: 
         if !s.defined() && s.st_value == 0 {
             v.push(sym_finding(7, name, format!("'{name}' is exported undefined")));
         }
-        if s.sym_type() == STT_GNU_IFUNC {
-            v.push(sym_finding(
-                7,
-                name,
-                format!("the executable's IFUNC '{name}' is exported as STT_GNU_IFUNC: the loader refuses or calls the resolver again (D-23, W13)"),
-            ));
-        }
     }
     // An export of an IFUNC at the implementation, not the IPLT entry:
     // the .symtab says the resolver.
@@ -773,12 +768,13 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
         .map(|q| (q.p_vaddr, q.p_vaddr + q.p_memsz))
         .collect();
     let mut allocs: Vec<(u64, u64, String)> = Vec::new();
+    let mut copies: BTreeMap<u64, (usize, u64, String)> = BTreeMap::new();
     for r in &out.rels {
         if kind(ld.machine, r.ty) != Kind::Copy {
             continue;
         }
         let Some(s) = out.syms.get(r.sym as usize) else { continue };
-        let b = ld.bind(out, r.sym as usize, true, &p);
+        let b = ld.bind_copy(out, r.sym as usize, &p);
         let Bound::Lib { i, .. } = b else { continue };
         let ver = out.need_of(r.sym as usize).map(|n| n.name.as_str());
         let Some((_, d)) = model.lookup(&ld.order, &s.name, ver) else { continue };
@@ -794,9 +790,9 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
             f.found = Some(s.st_size);
             v.push(f);
         }
-        let align = if d.value == 0 { 1 } else { 1u64 << d.value.trailing_zeros().min(12) };
-        if !r.offset.is_multiple_of(align.min(16)) {
-            v.push(sym_finding(11, &s.name, format!("the copy of '{}' at {:#x} is not aligned to {}", s.name, r.offset, align.min(16))).at(r.offset));
+        let align = model.dsos[i].copy_align(d.shndx, d.value);
+        if !r.offset.is_multiple_of(align) {
+            v.push(sym_finding(11, &s.name, format!("the copy of '{}' at {:#x} is not aligned to {align} (D-42)", s.name, r.offset)).at(r.offset));
         }
         let ro = model.dsos[i].read_only_at(d.value);
         let in_relro = relro.iter().any(|&(lo, hi)| lo <= r.offset && r.offset + s.st_size.max(1) <= hi);
@@ -834,6 +830,39 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
             }
         }
         allocs.push((r.offset, s.st_size, s.name.clone()));
+        copies.insert(r.offset, (i, d.value, s.name.clone()));
+    }
+    // A definition of the executable that no input gives must be a copy
+    // or an alias of one (W4: GNU ld defines a zero-size symbol at
+    // another symbol's copy).
+    for s in out.syms.iter().skip(1) {
+        if !s.defined() || model.keys.get(&s.name).is_some_and(|k| k.defined) {
+            continue;
+        }
+        if s.sym_type() == STT_SECTION || s.st_shndx == mortar_elf::consts::SHN_ABS {
+            continue;
+        }
+        let Some((i, value, copied)) = copies.get(&s.st_value) else {
+            if model.dsos.iter().any(|d| d.def(&s.name, None).is_some()) {
+                v.push(sym_finding(
+                    11,
+                    &s.name,
+                    format!("'{}' is defined by no input and is not at a copy: the libraries' definition is replaced (D-42)", s.name),
+                ));
+            }
+            continue;
+        };
+        let same = model.dsos[*i].defs.get(&s.name).is_some_and(|x| x.iter().any(|y| y.visible() && y.value == *value));
+        if !same {
+            v.push(sym_finding(
+                11,
+                &s.name,
+                format!(
+                    "'{}' is defined at the copy of '{copied}', which its own definition does not alias: the program and the libraries read another object's bytes (D-42, W4)",
+                    s.name
+                ),
+            ).at(s.st_value));
+        }
     }
     allocs.sort();
     for w in allocs.windows(2) {

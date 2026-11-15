@@ -395,6 +395,8 @@ pub struct Coverage {
     pub fdes_checked: u64,
     pub fdes_dropped: u64,
     pub fdes_neutralised: u64,
+    /// Output FDEs a reference linker made for its own PLT (stage 3).
+    pub fdes_linker_plt: u64,
     /// Search table entries of `.eh_frame_hdr` checked (§6.4).
     pub eh_frame_hdr_entries: u64,
     /// Output symbols Y3 checked against their global definitions, and
@@ -548,9 +550,13 @@ impl Report {
         let _ = writeln!(s, "content compared: {} bytes", c.content_bytes);
         let _ = writeln!(
             s,
-            "FDEs: checked {}, dropped with their function {}, neutralised {}; \
-             .eh_frame_hdr entries checked {}",
-            c.fdes_checked, c.fdes_dropped, c.fdes_neutralised, c.eh_frame_hdr_entries
+            "FDEs: checked {}, dropped with their function {}, neutralised {}, \
+             the linker's PLT FDEs {}; .eh_frame_hdr entries checked {}",
+            c.fdes_checked,
+            c.fdes_dropped,
+            c.fdes_neutralised,
+            c.fdes_linker_plt,
+            c.eh_frame_hdr_entries
         );
         let _ = writeln!(
             s,

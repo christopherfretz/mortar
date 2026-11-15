@@ -97,6 +97,18 @@ impl Dso {
                 .any(|&(a, s, f)| a <= value && value < a + s && f & mortar_elf::consts::PF_W == 0)
     }
 
+    /// D-42's copy alignment of a definition at `value` in section
+    /// `shndx`: min(the section's alignment, 2^ctz(value)).
+    pub fn copy_align(&self, shndx: u16, value: u64) -> u64 {
+        let sec = mortar_elf::FileHeader::parse(&self.bytes)
+            .ok()
+            .and_then(|h| mortar_elf::SectionTable::parse(&self.bytes, &h).ok())
+            .and_then(|t| t.iter().nth(usize::from(shndx)).map(|s| s.header().sh_addralign))
+            .unwrap_or(1)
+            .max(1);
+        if value == 0 { sec } else { sec.min(1u64 << value.trailing_zeros()) }
+    }
+
     fn read(path: &str, bytes: Vec<u8>, in_c: bool) -> Result<Dso, String> {
         let so = SharedObject::parse(&bytes).map_err(|e| format!("{path}: {e}"))?;
         let dynamic = so.dynamic().map_err(|e| format!("{path}: {e}"))?;
