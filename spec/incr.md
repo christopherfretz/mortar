@@ -1,6 +1,6 @@
 # spec: incremental linking (`mortar_incr`)
 
-Status: **draft (WP-060; awaiting review)**. Design only: no shipped code
+Status: **draft, revision 1 (WP-060), after an adversarial review**. Design only: no shipped code
 follows from this document until it is reviewed and its amendments (§9)
 are applied. Milestone M7 (`docs/ROADMAP.md`); the work-package cut is §10.
 
@@ -21,55 +21,65 @@ links from scratch and says why (§7).
 
 ## 0. Summary of the design
 
-- **The unit of change is the input file.** An edit changes the bytes,
-  the symbol-table order and the section indices of the whole object it
-  touches, in every compiler measured (§1.2): nothing positional inside a
-  changed object is reusable, and nothing outside it changes. The
-  incremental link therefore re-reads changed files whole and never
-  re-reads unchanged ones, except to refill a unit of theirs that refers
-  to something that moved.
-- **No indirection.** The output of an incremental link is a valid
-  output that a full link *given the same layout* would write byte for
-  byte (`spec/model.md` §7.3); there is no thunk table, no padding inside
-  functions and no "incremental flavour" of code (`spec/layout.md`
-  L-140, kept). Moving a definition costs refilling the units that name
-  it: measured on protoc, the units in *other* files naming any global of
-  one file are 3 at the median and 533 at the 99th percentile (8 KB and
-  1.35 MB of bytes to refill, §1.4). That is cheap enough that the
-  indirection prior art pays for (MSVC, Zig; §2) buys nothing here.
-- **Slack is per (file, output section) region**, plus a reserve at the
-  end of each output section and of each segment; a changed file is laid
-  out afresh inside its own regions, so its intra-file references never
-  need the index (§5.6).
-- **The link state is a separate file beside the output**, bound to the
-  output by its identity and its build-id root, never by a hash of its
-  bytes (§5.3). Estimated 7–11 MB for protoc `-g` (a 50 MB output).
-- **The dependency index is per unit, not per field**: one row per
-  (referring unit, global symbol or section it names) for allocated
-  sections; 118,145 rows on protoc (about 0.95 MB at 8 bytes), against
-  1,776,710 relocations (§1.4). It also carries the liveness graph, so
-  `--gc-sections` is recomputed without reading unchanged files.
-- **Debug information is replaced per compile unit**: the new
-  contribution is appended, and the old compile unit is **neutralized**
-  (rewritten as an empty unit of the same length, its abbreviation table
-  zeroed), not merely tombstoned. Merely tombstoning it is *not*
-  equivalent: lldb then picks the dead unit's stale type as the "best
-  match" and lists the dead variable (E6, §1.6). Neutralized, gdb 16.3's
-  transcript equals a from-scratch link's and lldb 19's differs only in
-  a placement offset, for GCC and Clang, DWARF 4 and 5 (E6b).
-- **Changed inputs are found by stat, then content**: an input whose
-  `(device, inode, size, mtime, ctime)` equals the state's, and whose
-  ctime is older than the previous link's start ("racily clean"
-  excluded, as git does), is unchanged; any other is read and hashed
-  (§5.4). Hashing every input on every link would cost 120–220 ms on
-  protoc (reading 217 MB, E2) of a 560 ms full link.
-- **A plain link pays nothing** for any of this (§8.1): no slack, no
-  state, no hashes, no index; ids stay per link.
-- **The floor of an incremental link** on protoc `-g` (one function body
-  edited in one object): *estimate* 40–60 ms with the object given
-  directly or in a thin archive, 120–200 ms when the object is a member
-  of a 117 MB regular archive (reading the archive to find the changed
-  member dominates), against 560–780 ms for the full mortar link (§1.5).
+- **The unit of change detection is the input file, in v1.** An edit
+  changes the bytes, symbol order and section indices of the objects it
+  touches, and nothing else (§1.1, a 40-unit corpus under GCC, Clang and
+  kiln+hod). A changed file is re-read and refilled whole; unchanged
+  files are never re-read, except to refill a unit of theirs that names
+  something that moved. Whole-file refill is coarse with
+  `-ffunction-sections` and no `-g` (up to 4,483× the differing bytes,
+  §1.2), so **section-level refill** with mortar's own per-section hash is
+  the designed second step (IN-31, WP-068), ordered by §1.5's rule.
+- **No indirection.** The output of an update is a valid output that a
+  full link *given the same layout* would write byte for byte outside
+  its recorded dead ranges (`spec/model.md` §7.3; IN-1); no thunk table,
+  no padding inside functions. Moving a definition costs refilling the
+  units that name it: 3 units at the median and 533 at the 99th
+  percentile of protoc's files (§1.4).
+- **Slack only where holes are harmless**: per (file, output section)
+  region in layout.md's hole-tolerant (L-143) sections, a tail per
+  section and a reserve per segment. Packed (L-142) sections have no
+  holes and keep full-link order, rewritten whole within their capacity
+  (IN-30); `.eh_frame`'s only holes are padding CIEs (IN-34a). Any change
+  of a TLS section's TP offset is a full link (`tls-layout-changed`).
+  Cost: +10.0% output on protoc `-g`, +20.1% without (IN-33).
+- **Dead ranges** (old debug units, holes, dead merged fragments,
+  padding CIEs) are recorded in the decision tables and checked by the
+  verifier: nothing live refers into them, each is well formed for its
+  section, allocated ones hold the fill (IN-3a).
+- **The link state is a separate file beside the output** (8.05 MB for
+  protoc `-g`, written in 7 ms, read in 3 ms; R12), bound to the output by
+  its stat tuple and build-id leaves (IN-21).
+- **Changed inputs are found by stat, stamps and content**: a file whose
+  stat tuple equals the state's and whose ctime is older than a stamp
+  taken on the same file system at the previous link is clean; a racy
+  file is hashed, never trusted, never a full link (IN-22, IN-22a; R6:
+  1,942 of 2,000 same-tick rewrites were missed by the previous rule on
+  overlay, 0 by this one). A regular archive is read and its members
+  hashed; a thin archive is a `stat` per member (IN-24).
+- **The dependency index is per unit** (`model.md` §7.2), 118,145 rows on
+  protoc against 1.78 M relocations, and carries the liveness graph.
+- **Debug contributions are allotted size classes** and replaced in
+  place when they fit (the common case: their sizes barely move, §1.1);
+  old units are **neutralized**, not merely tombstoned, because lldb
+  picks a dead unit's stale type otherwise (§1.6, §6).
+- **Writing is by copy and rename by default** (IN-45, IN-47: 18–27 ms at
+  50 MB); in place on request, with four `fdatasync`s ordering a zeroed
+  magic before the windows (IN-46), because `ETXTBSY` does not see a
+  program started through `ld.so` (R7). The default is the operator's
+  decision (record (a)).
+- **A plain link pays nothing** (§8.1): no slack, no state, no hashes, no
+  index, no stamps.
+- **The floor** of an update on protoc, emulated with real I/O (§1.5,
+  R1): 55–63 ms with a thin archive in place, 90–112 ms by copy,
+  107–178 ms with a regular archive, against a 0.19 s full link
+  (1.1–3.5×). Dirty 1 MiB windows, not the edit, set the refill. WP-061
+  measures it with mortar's code on protoc and a 5× larger workload, and
+  its **go/no-go rule** decides whether M7 continues (§1.5).
+- **Verification**: the two-full-link oracle runs on every incremental
+  test (IN-63a), the equivalence check enforces values and packed-section
+  order (IN-2, IN-62), and every delta rule has a mutation test
+  (IN-63b).
 
 ## 1. The workload: what an edit changes
 
