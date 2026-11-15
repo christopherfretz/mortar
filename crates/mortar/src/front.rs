@@ -26,7 +26,6 @@
 
 use std::path::Path;
 
-use mortar_a64::A64;
 use mortar_arch::{Arch, OutputCx, OutputKind};
 use mortar_core::assignment::Assignment;
 use mortar_core::check::CheckContext;
@@ -42,7 +41,7 @@ use mortar_core::{Liveness, SymbolId};
 use mortar_diag::{Collector, Diagnostic, Key, Kind, Place};
 use mortar_elf::consts::SHT_NOTE;
 use mortar_elf::{Class, Machine, SectionIndex};
-use mortar_input::load::{LoadEnv, load};
+use mortar_input::load::{LoadEnv, load_steps};
 use mortar_input::store::Store;
 use mortar_layout::chunk::{Common, SynthChunk, commons};
 use mortar_layout::fixed::RangeExtension;
@@ -59,7 +58,7 @@ use mortar_synth::{
     SynthKind, chunk_ids,
 };
 
-use crate::proof::A64Proof;
+use crate::arch::LinkArch;
 use crate::sites::{LinkSites, SiteInputs, SynthIds};
 use crate::syms::{CoreSyms, LinkSections};
 use crate::timing::Timer;
@@ -98,7 +97,7 @@ impl SynthPlans {
 pub struct Front<'s> {
     pub plan: Plan,
     pub pool: Pool,
-    pub arch: A64,
+    pub arch: LinkArch,
     pub target: Target,
     pub options: Options,
     pub inputs: Inputs<'s>,
@@ -299,10 +298,16 @@ pub fn front<'s>(
 
     // 20: input.
     let load_env = LoadEnv { cwd: env.cwd.to_path_buf(), pool };
-    let inputs = load(&plan, &load_env, store, diag)?;
+    let time_steps = std::env::var_os("MORTAR_TIME_STEPS").is_some();
+    let mut steps = mortar_input::steps::Steps::default();
+    let inputs = load_steps(&plan, &load_env, store, diag, &mut steps);
+    if time_steps {
+        print_steps("input", &steps.times, &steps.counts);
+    }
+    let inputs = inputs?;
     timer.phase(20, "input");
     let machine = inputs.target.machine;
-    if machine != Machine::AArch64 {
+    if machine == Machine::I386 {
         // Input's phase (20), after every file's diagnostics (their unit is
         // the file's ordinal).
         diag.emit(
@@ -311,13 +316,16 @@ pub fn front<'s>(
                 mortar_diag::RefusalClass::Feature,
                 format!("linking for {}", machine.name()),
             )
-            .note("M1 links AArch64 (docs/ROADMAP.md)"),
+            .note("M1 links AArch64 and x86-64 (docs/ROADMAP.md)"),
         );
         return None;
     }
 
     // 30: resolve.
     let outcome = mortar_resolve::resolve_inputs(&inputs, &plan, &pool);
+    if time_steps {
+        print_steps("resolve", &outcome.steps.times, &outcome.steps.counts);
+    }
     for (k, d) in outcome.diagnostics.iter().cloned() {
         diag.emit(k, d);
     }
@@ -344,7 +352,11 @@ pub fn front<'s>(
             return None;
         }
     };
-    let arch = A64::new(mortar_arch::Status::M1, options.fix_843419);
+    let Some(link_arch) = LinkArch::of(machine, options.fix_843419) else {
+        diag.emit(Key::new(45, 0, 0), internal(format!("no architecture for {}", machine.name())));
+        return None;
+    };
+    let arch = link_arch.get();
     let headers = match gather(&inputs, &resolution, &pool) {
         Ok(h) => h,
         Err(d) => {
@@ -376,7 +388,7 @@ pub fn front<'s>(
 
     // 60: split and merge.
     let tables = Tables { inputs: &inputs, resolution: &resolution, assignment: &assignment };
-    let merge = match mortar_merge::phase::run(&pool, &tables, &ArchRelocs(&arch)) {
+    let merge = match mortar_merge::phase::run(&pool, &tables, &ArchRelocs(arch)) {
         Ok(p) => p,
         Err(problems) => {
             for (k, d) in mortar_merge::phase::diagnostics(&inputs, &problems) {
@@ -419,8 +431,8 @@ pub fn front<'s>(
         comdat_mismatch: &comdat_mismatch,
         gnu_warnings: &gnu_warnings,
     };
-    let scan_options = ScanOptions { output, dynamic: false, proof: &A64Proof };
-    let scanned = scan(&arch, &scan_inputs, &scan_options, &pool);
+    let scan_options = ScanOptions { output, dynamic: false, proof: link_arch.proof() };
+    let scanned = scan(arch, &scan_inputs, &scan_options, &pool);
     for (k, d) in scanned.diagnostics.iter().cloned() {
         diag.emit(k, d);
     }
@@ -443,12 +455,12 @@ pub fn front<'s>(
     let hdr = HdrPlan::new(&merge_eh, &eh, eh_frame_hdr, &pool, diag).ok()?;
     let memory_seal = plan.z.memory_seal == Some(true);
     let property = property_plan(&inputs, &resolution, &headers, arch, memory_seal, diag).ok()?;
-    let feature_1_and = property.value_u32(mortar_a64::FEATURE_1_AND);
+    let feature_1_and = property.value_u32(link_arch.feature_1().0);
     let variant = arch
         .plt_variant(&OutputCx { output, feature_1_and, pac_plt: false, force_bti: false })
         .map_err(|r| diag.emit(mortar_synth::error::key(0), r.diagnostic()))
         .ok()?;
-    let got = GotPlan::new(&arch, &slots, scanned.demands.output, variant, diag).ok()?;
+    let got = GotPlan::new(arch, &slots, scanned.demands.output, variant, diag).ok()?;
     let build_id = BuildIdPlan::new(plan.shaping.build_id.as_ref(), diag).ok()?;
     let core = CoreSections { resolution: &resolution, liveness: &liveness, split: &merge.split };
     let sections = LinkSections { core, assignment: &assignment };
@@ -460,7 +472,7 @@ pub fn front<'s>(
         eh: Some((&eh, &merge_eh)),
         discard: plan.shaping.discard,
     };
-    let facts = PatchFacts::of(&arch);
+    let facts = PatchFacts::of(arch);
     let symtab = if strip_all {
         None
     } else {
@@ -493,7 +505,7 @@ pub fn front<'s>(
     // `SHN_LORESERVE`; the count of section headers (with the null one)
     // is estimated, then checked after the placement.
     let mut shndx = SymtabPlan::needs_shndx(names.len() as u32 + 2);
-    let walker = Walker::new(&arch, &scan_inputs, scan_options);
+    let walker = Walker::new(arch, &scan_inputs, scan_options);
     let mut attempt = 0;
     let (placement_assignment, placed, layout, erratum_fixes) = loop {
         attempt += 1;
@@ -531,14 +543,14 @@ pub fn front<'s>(
             got: &plans.got,
             ids,
         };
-        let link_sites = match LinkSites::new(site_inputs, &arch, &walker, &pool) {
+        let link_sites = match LinkSites::new(site_inputs, arch, &walker, &pool) {
             Ok(s) => s,
             Err((k, d)) => {
                 diag.emit(k, d);
                 return None;
             }
         };
-        let range = RangeExtension { arch: &arch, sites: &link_sites };
+        let range = RangeExtension { arch, sites: &link_sites };
         let link = mortar_layout::Link {
             headers: &headers,
             resolution: &resolution,
@@ -672,7 +684,7 @@ pub fn front<'s>(
     Some(Front {
         plan,
         pool,
-        arch,
+        arch: link_arch,
         target,
         options,
         inputs,
@@ -692,6 +704,25 @@ pub fn front<'s>(
         placed,
         erratum_fixes,
     })
+}
+
+/// `MORTAR_TIME_STEPS`: a phase's sub-step times and work counts, on
+/// standard error as they are taken (the bench's unit costs; nothing in
+/// the output depends on them).
+fn print_steps(
+    phase: &str,
+    times: &[(&'static str, std::time::Duration)],
+    counts: &[(&'static str, u64)],
+) {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    for (name, d) in times {
+        let _ = writeln!(s, "mortar: time-steps: {phase}.{name}: {:.2} ms", d.as_secs_f64() * 1e3);
+    }
+    for (name, n) in counts {
+        let _ = writeln!(s, "mortar: time-steps: {phase}.count.{name}: {n}");
+    }
+    eprint!("{s}");
 }
 
 /// `Slots` from `Demands` (S-64): each kind's keys in `SymKey` order.
@@ -716,7 +747,7 @@ fn property_plan(
     inputs: &Inputs<'_>,
     resolution: &Resolution,
     headers: &Headers<'_>,
-    arch: A64,
+    arch: &dyn Arch,
     memory_seal: bool,
     diag: &Collector,
 ) -> Result<PropertyPlan, mortar_synth::Failed> {

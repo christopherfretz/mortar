@@ -18,10 +18,9 @@ use mortar_core::intern::{self, SymName, TooManyKeys};
 use mortar_core::par::Pool;
 use mortar_core::plan::Plan;
 use mortar_diag::{Collector, Diagnostic, Key, Kind, RefusalClass};
-use mortar_elf::consts::SHT_GROUP;
 
-use crate::facts::effective_signature;
 use crate::problem::PHASE;
+use crate::steps::Steps;
 use crate::store::Store;
 use crate::walk::{self, FileRow, Loaded, Options, RowKind, WalkEnv};
 
@@ -43,6 +42,18 @@ pub fn load<'s>(
     store: &'s Store,
     diag: &Collector,
 ) -> Option<Inputs<'s>> {
+    load_steps(plan, env, store, diag, &mut Steps::default())
+}
+
+/// [`load`], recording where the time went into `steps`.
+pub fn load_steps<'s>(
+    plan: &Plan,
+    env: &LoadEnv,
+    store: &'s Store,
+    diag: &Collector,
+    steps: &mut Steps,
+) -> Option<Inputs<'s>> {
+    steps.restart();
     let loaded = walk::walk(
         plan,
         &WalkEnv { cwd: env.cwd.clone() },
@@ -50,6 +61,34 @@ pub fn load<'s>(
         &env.pool,
         Options { closure: true },
     );
+    let t = loaded.timing;
+    for (name, d) in [
+        ("walk.passes", t.walk),
+        ("walk.stat", t.stat),
+        ("walk.canon", t.canon),
+        ("walk.read", t.read),
+        ("walk.facts", t.facts),
+        ("walk.hash", t.hash),
+    ] {
+        steps.time(name, d);
+    }
+    steps.step("walk");
+    let st = store.stats();
+    for (name, ns) in
+        ["read.a", "read.b", "read.c", "read.d", "read.entries"].iter().zip(st.wave_ns)
+    {
+        steps.time(name, std::time::Duration::from_nanos(ns));
+    }
+    steps.count("reads", st.reads);
+    steps.count("bytes_read", st.bytes);
+    steps.count("bytes_resident", st.resident);
+    steps.count("opens", st.opens);
+    steps.count("waves", u64::from(loaded.waves));
+    steps.count("files", loaded.files.len() as u64);
+    steps.count("members", loaded.files.iter().filter(|f| f.member.is_some()).count() as u64);
+    steps.count("globals", loaded.files.iter().map(|f| u64::from(f.globals)).sum());
+    steps.count("groups", loaded.files.iter().map(|f| u64::from(f.groups)).sum());
+    steps.count("sections", loaded.files.iter().map(|f| u64::from(f.sections)).sum());
     for p in &loaded.problems {
         diag.emit(p.key(), p.diagnostic());
     }
@@ -61,16 +100,22 @@ pub fn load<'s>(
         diag.emit(Key::new(PHASE, 0, 0), Diagnostic::error(Kind::NoTarget));
         return None;
     };
-    let Ok(inputs) = build(&loaded, store, &env.pool, choice.target) else {
+    let Ok(inputs) = build(&loaded, store, &env.pool, choice.target, steps) else {
         let what = "more than 2^32 - 1 distinct symbol keys";
         diag.emit(Key::new(PHASE, 0, 0), Diagnostic::refused(RefusalClass::Feature, what));
         return None;
     };
-    if let Err(broken) = inputs.check() {
+    let checked = inputs.check();
+    steps.step("check");
+    steps.count("symbols", u64::from(inputs.symbols.len()));
+    steps.count("comdats", u64::from(inputs.comdats.len()));
+    if let Err(broken) = checked {
         let what = format!("the input phase built an invalid table: {broken}");
         diag.emit(Key::new(PHASE, u32::MAX, 0), Diagnostic::error(Kind::InternalError { what }));
         return None;
     }
+    drop(loaded);
+    steps.step("drop");
     Some(inputs)
 }
 
@@ -95,12 +140,15 @@ impl<'s> Kept<'s> {
 }
 
 /// `Inputs` from the rows of a walk that found no error.
+#[allow(clippy::too_many_lines, reason = "the tables of `Inputs` in order, each a few lines")]
 fn build<'s>(
     loaded: &Loaded<'s>,
     store: &'s Store,
     pool: &Pool,
     target: LinkTarget,
+    steps: &mut Steps,
 ) -> Result<Inputs<'s>, TooManyKeys> {
+    steps.restart();
     let mut kept = Kept { store, seen: HashMap::new() };
     let rows = &loaded.files;
     let link = &loaded.link;
@@ -150,16 +198,19 @@ fn build<'s>(
         });
         at = at.saturating_add(row.globals);
     }
+    steps.step("build.files");
 
     // Symbol keys and COMDAT signatures, numbered by first mention.
     let counts: Vec<u32> = std::iter::once(0).chain(rows.iter().map(|r| r.globals)).collect();
     let symbols = intern::number::<SymName<'s>, SymbolId, _, _>(pool, &counts, |u| {
-        u.checked_sub(1).and_then(|i| rows.get(i)).map_or_else(Keys::none, symbol_keys)
+        u.checked_sub(1).and_then(|i| rows.get(i)).map_or(Keys::None, symbol_keys)
     })?;
+    steps.step("build.intern_symbols");
     let counts: Vec<u32> = std::iter::once(0).chain(rows.iter().map(|r| r.groups)).collect();
     let comdats = intern::number::<&'s [u8], ComdatId, _, _>(pool, &counts, |u| {
-        u.checked_sub(1).and_then(|i| rows.get(i)).map_or_else(Keys::none, signatures)
+        u.checked_sub(1).and_then(|i| rows.get(i)).map_or(Keys::None, signatures)
     })?;
+    steps.step("build.intern_comdats");
     let symbol_rows: Vec<SymbolKey<'s>> = symbols
         .names
         .iter()
@@ -172,6 +223,7 @@ fn build<'s>(
     let comdat_rows: Vec<Comdat<'s>> =
         comdats.names.iter().map(|(_, name)| Comdat { name }).collect();
 
+    steps.step("build.key_rows");
     // Archives: each mention's members are contiguous files.
     let mut archives: Vec<Archive<'s>> = Vec::with_capacity(loaded.archives.len());
     for (a, row) in loaded.archives.iter().enumerate() {
@@ -194,7 +246,9 @@ fn build<'s>(
         });
     }
 
+    steps.step("build.archives");
     let link = link_inputs(loaded, &mut kept, &origin);
+    steps.step("build.link");
     Ok(Inputs {
         target,
         files: column(files),
@@ -245,55 +299,67 @@ fn flags(row: &FileRow<'_>) -> InputFlags {
     f
 }
 
-/// A file's keys, streamed to the interner (no per-mention buffer).
-type Keys<'r, K> = Box<dyn Iterator<Item = K> + 'r>;
-
-trait NoKeys<'r, K> {
-    fn none() -> Self;
+/// A file's keys, streamed to the interner: an object's from the names
+/// and signatures its facts pass read (§6), a shared object's from its
+/// table and version slots.
+enum Keys<'r, 's, K> {
+    None,
+    Names(std::slice::Iter<'r, &'s [u8]>),
+    Signatures(std::slice::Iter<'r, &'s [u8]>),
+    Shared(Box<dyn Iterator<Item = K> + 'r>),
 }
 
-impl<'r, K: 'r> NoKeys<'r, K> for Keys<'r, K> {
-    fn none() -> Self {
-        Box::new(std::iter::empty())
+impl<'s> Iterator for Keys<'_, 's, SymName<'s>> {
+    type Item = SymName<'s>;
+
+    #[inline]
+    fn next(&mut self) -> Option<SymName<'s>> {
+        match self {
+            Keys::Names(names) => names.next().map(|n| SymName::parse(n)),
+            Keys::Shared(keys) => keys.next(),
+            Keys::None | Keys::Signatures(_) => None,
+        }
+    }
+}
+
+impl<'s> Iterator for Keys<'_, 's, &'s [u8]> {
+    type Item = &'s [u8];
+
+    #[inline]
+    fn next(&mut self) -> Option<&'s [u8]> {
+        match self {
+            Keys::Signatures(signatures) => signatures.next().copied(),
+            Keys::Shared(keys) => keys.next(),
+            Keys::None | Keys::Names(_) => None,
+        }
     }
 }
 
 /// The keys of a file's non-local symbol-table entries, in table order
 /// (§6, §8.1; the facts pass checked every name).
-fn symbol_keys<'r, 's>(row: &'r FileRow<'s>) -> Keys<'r, SymName<'s>> {
+fn symbol_keys<'r, 's>(row: &'r FileRow<'s>) -> Keys<'r, 's, SymName<'s>> {
     match row.reader {
-        Reader::Object(object) => {
-            let Ok(Some(table)) = object.symbols() else { return Keys::none() };
-            Box::new(
-                table
-                    .globals()
-                    .map(move |(_, s)| SymName::parse(table.name(&s).unwrap_or_default())),
-            )
-        }
+        Reader::Object(_) => Keys::Names(row.keys.names.iter()),
         Reader::Shared(dso) => {
-            let Ok(Some(table)) = dso.symbols() else { return Keys::none() };
+            let Ok(Some(table)) = dso.symbols() else { return Keys::None };
             let versions = &row.versions;
-            Box::new(
+            Keys::Shared(Box::new(
                 table
                     .globals()
                     .map(move |(i, s)| versions.key(&dso, i.0, table.name(&s).unwrap_or_default())),
-            )
+            ))
         }
-        Reader::Internal => Keys::none(),
+        Reader::Internal => Keys::None,
     }
 }
 
 /// The effective signatures of a file's `SHT_GROUP` sections, in section
-/// order (§6; `spec/resolve.md` §6.1).
-fn signatures<'r, 's>(row: &'r FileRow<'s>) -> Keys<'r, &'s [u8]> {
-    let Reader::Object(object) = row.reader else { return Keys::none() };
-    let table = object.symbols().ok().flatten();
-    Box::new(
-        object
-            .sections()
-            .filter(|s| s.sh_type() == SHT_GROUP)
-            .map(move |s| effective_signature(&object, table.as_ref(), &s).unwrap_or_default()),
-    )
+/// order (§6; `spec/resolve.md` §6.1), as the facts pass read them.
+fn signatures<'r, 's>(row: &'r FileRow<'s>) -> Keys<'r, 's, &'s [u8]> {
+    match row.reader {
+        Reader::Object(_) => Keys::Signatures(row.keys.signatures.iter()),
+        Reader::Shared(_) | Reader::Internal => Keys::None,
+    }
 }
 
 /// §10.4 from the walk's per-link table.

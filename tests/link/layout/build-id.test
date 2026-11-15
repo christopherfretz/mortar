@@ -1,23 +1,21 @@
 # `--build-id`: a `.note.gnu.build-id` (NT_GNU_BUILD_ID) in a PT_NOTE
-# segment, with a descriptor of 20 bytes for sha1, 16 for md5, and the
-# given bytes for `0x<hex>` (GNU ld manual "--build-id"). The bare option
-# gives 20 bytes with all three references, though each computes it its
-# own way.
+# segment, with a descriptor of 20 bytes for sha1 and the given bytes for
+# `0x<hex>` (GNU ld manual "--build-id"). The bare option gives 20 bytes
+# with all three references, though each computes it its own way. md5 is
+# layout/build-id-md5.test. The hex id is 16 bytes: the verifier's B1
+# judges every 8-, 20- and 32-byte id as mortar's hash (spec/plumb.md
+# §6.7), and the map does not say the id was given (a WP-027d finding).
 #@ spec: synth.md ".note.gnu.build-id"
-#@ xfail(mortar): --build-id=md5 is refused by name (spec/synth.md S-91; owner: synth)
 
 as start-%{arch}.s -o start.o
 link ld --build-id=sha1 start.o -o sha1
-link ld --build-id=md5 start.o -o md5
-link ld --build-id=0x0123456789abcdef start.o -o hex
+link ld --build-id=0x00112233445566778899aabbccddeeff start.o -o hex
 link ld --build-id start.o -o default
 link ld start.o -o none
 check readelf -nW sha1
   has: GNU 0x00000014 NT_GNU_BUILD_ID
-check readelf -nW md5
-  has: GNU 0x00000010 NT_GNU_BUILD_ID
 check readelf -nW hex
-  has: Build ID: 0123456789abcdef$
+  has: Build ID: 00112233445566778899aabbccddeeff$
 check readelf -nW default
   has: GNU 0x00000014 NT_GNU_BUILD_ID
 check readelf -nW none

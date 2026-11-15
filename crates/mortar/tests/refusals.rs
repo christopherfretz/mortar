@@ -31,6 +31,35 @@ fn c_program(label: &str) -> Option<(Scratch, Built)> {
     Some((scratch, built))
 }
 
+/// What follows every refusal of an option (`spec/cli.md` §4.3).
+const NOT_LINKED: &str = "mortar: error: unsupported feature: linking\n\
+     >>> an option above is refused, so nothing is linked (docs/status/options.md)\n";
+
+// spec: synth.md S-91, cli.md §4.2, §4.4 (`--build-id` is partial: `=md5`
+// and `=uuid` are refused at the command line, naming the supported
+// spellings; a later `--build-id` overrides them, last wins)
+#[test]
+fn build_id_values_md5_and_uuid_are_refused_by_name() {
+    let Some((_s, built)) = c_program("refuse-build-id") else { return };
+    for v in ["md5", "uuid"] {
+        let opt = format!("--build-id={v}");
+        let (status, stderr) = link(&built, &[opt.as_str()], &[]);
+        assert_eq!(status, Some(1), "{v}");
+        assert_eq!(
+            stderr,
+            format!(
+                "mortar: error: unsupported option value: {opt}\n\
+                 >>> synth.md S-91: md5 is not written and uuid is M2; mortar writes \
+                 --build-id, =sha1, =sha256, =fast, =none and =0xHEX\n{NOT_LINKED}"
+            )
+        );
+        assert!(!built.dir.join("out").exists());
+        let (status, stderr) = link(&built, &[opt.as_str(), "--build-id=sha1"], &[]);
+        assert_eq!((status, stderr.as_str()), (Some(0), ""), "{v} then sha1");
+        std::fs::remove_file(built.dir.join("out")).unwrap();
+    }
+}
+
 // spec: layout.md L-103, resolve.md §5.5 (an undefined entry is one
 // warning, resolve's, and the link goes on with `e_entry = 0`)
 #[test]
@@ -64,9 +93,9 @@ fn a_bad_schedule_seed_is_reported() {
     assert_eq!((status, stderr.as_str()), (Some(0), ""));
 }
 
-// spec: docs/ROADMAP.md (M1 links AArch64): an x86-64 or i386 link is
-// refused by name after the input phase, and objects of two machines are
-// input.md's `incompatible-file`
+// spec: docs/ROADMAP.md (M1 links AArch64 and x86-64, WP-029b): an i386
+// link is refused by name after the input phase, an x86-64 one links, and
+// objects of two machines are input.md's `incompatible-file`
 #[test]
 fn another_machine_is_refused_by_name() {
     let Some(clang) = mortar_testutil::tool("clang") else { return };
@@ -99,18 +128,16 @@ fn another_machine_is_refused_by_name() {
         let o = run_with(&mut cmd, &[], DEFAULT_TIMEOUT);
         (o.status.and_then(|s| s.code()), o.stderr_text())
     };
-    for (obj, name) in [("x86.o", "x86-64"), ("i386.o", "i386")] {
-        assert_eq!(
-            run(&["-e", "f", obj, "-o", "out"]),
-            (
-                Some(1),
-                format!(
-                    "mortar: error: unsupported feature: linking for {name}\n\
-                     >>> M1 links AArch64 (docs/ROADMAP.md)\n"
-                )
-            )
-        );
-    }
+    assert_eq!(run(&["-e", "f", "x86.o", "-o", "out"]), (Some(0), String::new()));
+    assert_eq!(
+        run(&["-e", "f", "i386.o", "-o", "out"]),
+        (
+            Some(1),
+            "mortar: error: unsupported feature: linking for i386\n\
+             >>> M1 links AArch64 and x86-64 (docs/ROADMAP.md)\n"
+                .to_owned()
+        )
+    );
     assert_eq!(
         run(&["-e", "f", "a64.o", "x86.o", "-o", "out"]),
         (
@@ -175,7 +202,14 @@ fn erratum_workaround_values_other_than_full_are_refused() {
         let opt = format!("--fix-cortex-a53-843419={v}");
         let (status, stderr) = link(&built, &[opt.as_str()], &[]);
         assert_eq!(status, Some(1), "{v}");
-        assert_eq!(stderr, format!("mortar: error: unsupported option value: {opt}\n"));
+        assert_eq!(
+            stderr,
+            format!(
+                "mortar: error: unsupported option value: {opt}\n\
+                 >>> a64.md §11.2: GNU ld's =adr and =adrp restrict the fix, which mortar \
+                 does not do; use --fix-cortex-a53-843419 or =full\n{NOT_LINKED}"
+            )
+        );
         assert!(!built.dir.join("out").exists());
     }
     let (status, stderr) = link(&built, &["--fix-cortex-a53-843419=full"], &[]);

@@ -219,6 +219,8 @@ fn s6_1_classify_every_type_number() {
     let mut by_status = [0u32; 4];
     for r_type in 0..=0xFFFF_u32 {
         let row = table::howto(r_type);
+        // The compile-time table is the match, row for row (WP-032b).
+        assert_eq!(table::lookup(r_type).copied(), row, "{r_type}");
         if let Some(h) = row {
             by_status[h.status as usize] += 1;
             assert_eq!(Some(h.name), mortar_elf::reloc::aarch64::name(r_type), "{r_type}");
@@ -244,8 +246,10 @@ fn s6_1_classify_every_type_number() {
             }
         }
     }
-    // a64.md §1: 60 M1, 42 M2, 16 later, 22 refused.
-    assert_eq!(by_status, [60, 42, 16, 22]);
+    // a64.md §1: 61 M1, 41 M2, 16 later, 22 refused.
+    assert_eq!(by_status, [61, 41, 16, 22]);
+    // Row 313, M1 since WP-027d (GCC's `-fpie -O0` GOT loads; not in the census).
+    assert!(m1.classify(313, site).is_ok());
     // The census's 34 types: 32 M1, the traditional TLSGD pair M2.
     let census = [
         257, 258, 260, 261, 264, 266, 268, 269, 273, 274, 275, 277, 278, 280, 282, 283, 284, 285,

@@ -1,0 +1,41 @@
+# `--build-id=md5`: a `.note.gnu.build-id` with a descriptor of 16 bytes
+# (GNU ld manual "--build-id"). mortar refuses the value by name
+# (spec/synth.md S-91, spec/cli.md §4.4: `unsupported option value:
+# --build-id=md5`; crates/mortar/tests/refusals.rs holds the words).
+#@ spec: synth.md ".note.gnu.build-id"
+#@ xfail(mortar): --build-id=md5 is refused by name (spec/synth.md S-91; owner: synth)
+
+as start-%{arch}.s -o start.o
+link ld --build-id=md5 start.o -o md5
+check readelf -nW md5
+  has: GNU 0x00000010 NT_GNU_BUILD_ID
+run md5
+  exit: 42
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.cfi_endproc
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.cfi_endproc
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.cfi_endproc

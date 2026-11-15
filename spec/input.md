@@ -1296,7 +1296,12 @@ descriptor budget and compares the output with the unbudgeted link.
 
 Checks, per file: one read at offset `n` (the size from `fstat`) must
 return 0 bytes; a short read is an error; and a second `fstat` at the
-last read of loading must give the same size, `st_mtime` and `st_ctime`.
+last read of loading must give the same size, `st_mtime`, `st_ctime` and
+`st_nlink` (the link count: a held file renamed over or removed loses a
+link, which a filesystem with a coarse clock may not show in `st_ctime`
+when the unlink comes within one tick of the last write; WP-032a measured
+191 of 200 such unlinks invisible to `st_ctime` on overlayfs `/tmp`, 0 of
+200 to `st_nlink`).
 Otherwise the error `input-changed` at the file's lowest mention (§9.3):
 `file changed while it was read`. The staged store makes the checks
 after its parts are read (§11.9 wave D), so a file truncated between its

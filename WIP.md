@@ -25,9 +25,11 @@
   conservatism (every mortar-only removal is also bfd's and lld's), mold's libc .text removals.
 
 ## Half-done / next
-- merge main f0f1dcc (WP-027d: gc row refused + options.rs audit, debuggers.rs gc variant;
-  WP-029b x86-64: differential under qemu with C++ EH + TLS).
-- rerun matrix (tmpl fixed); protoc differential; cost; byte-identical no-gc; audit; record.
+- merged main f0f1dcc (merge 1 of 2): gc row supported, options.rs audit rows, cli grammar/table
+  tests, refusals' gc test dropped; debuggers.rs gc variants (gc_sessions_*, gc_dwarf_*; gdb
+  cannot read TLS under gc with GNU ld too: glibc's _thread_db_* .rodata collected);
+  x64.rs x64_gc_sections_c_and_cxx (qemu, vs GNU ld --gc-sections).
+- next: rerun matrix (tmpl fixed); protoc differential; cost; byte-identical no-gc; audit; record.
 
 ## E14 experiments (subagent, /tmp/mortar-wp031-1342893/e14, sources q*.s/c)
 - Q1 notes: kept by all (alloc+nonalloc, dead object too); note in a dead group: GNU/lld drop, mold keeps.

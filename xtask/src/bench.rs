@@ -350,9 +350,15 @@ fn measure_all(
     ));
     let before = measure::calibrate(control, &control_linker, CALIBRATION_RUNS, &probe, &scratch)?;
     let mut links = Vec::new();
+    let mut outputs = Vec::new();
     for p in prepared {
         say(&format!("measuring {} ({} runs per link)", p.workload.name, options.runs));
-        links.extend(measure::measure(p, &linkers, options.runs, &probe, &scratch)?);
+        let (measured, output_hash) =
+            measure::measure(p, &linkers, options.runs, &probe, &scratch)?;
+        links.extend(measured);
+        if let Some(h) = output_hash {
+            outputs.push((p.workload.name.clone(), h));
+        }
     }
     let after = measure::calibrate(control, &control_linker, CALIBRATION_RUNS, &probe, &scratch)?;
     let noisy = calibration_differs(before, after, Thresholds::default().calibration_permille);
@@ -383,12 +389,34 @@ fn measure_all(
     for l in &linkers {
         results.set(&format!("version.{}", l.name), l.version.clone());
     }
+    for (workload, h) in outputs {
+        results.set(&format!("output_hash.{workload}"), h);
+    }
     if options.action == Action::UpdateBaseline {
         results.set("reason", options.reason.clone().unwrap_or_default());
     }
     results.workloads = prepared.iter().map(|p| p.info.clone()).collect();
     results.links = links;
     Ok(results)
+}
+
+/// The golden output check against the baseline: per workload whose
+/// inputs are unchanged, mortar's output hash, if it changed (WP-032a: a
+/// performance commit must not change it; a feature commit may, and says
+/// so in its reason when it updates the baseline). Information, not a
+/// verdict: the check's exit status does not depend on it.
+fn output_changes(run: &Results, base: &Results) -> Vec<String> {
+    let mut lines = Vec::new();
+    for w in &run.workloads {
+        let key = format!("output_hash.{}", w.name);
+        let same_inputs = base.workload(&w.name).is_some_and(|b| b.input_hash == w.input_hash);
+        if let (Some(now), Some(then), true) = (run.get(&key), base.get(&key), same_inputs)
+            && now != then
+        {
+            lines.push(format!("OUTPUT CHANGED {}: {then} -> {now} (same inputs)", w.name));
+        }
+    }
+    lines
 }
 
 /// Prints the run, keeps it, and does the action with it.
@@ -448,6 +476,9 @@ fn conclude(
                 .map_err(|e| format!("no baseline to check against: {e}"))?;
             let check = Check::new(results, &base, &Thresholds::default());
             print!("\ncheck against {shown}:\n{}", report::check_lines(&check));
+            for line in output_changes(results, &base) {
+                println!("{line}");
+            }
             Ok(if check.failed() {
                 1
             } else if check.noisy() || killed {
@@ -654,6 +685,37 @@ mod tests {
         assert_eq!(
             baseline_path(Path::new("/w"), &machine),
             Path::new("/w/bench/baselines/aarch64-implementer-0x61-part-0x000-24c.tsv")
+        );
+    }
+
+    #[test]
+    fn output_changes_are_reported_for_unchanged_inputs() {
+        let info = |name: &str, input: &str| record::WorkloadInfo {
+            name: name.to_owned(),
+            class: "c".to_owned(),
+            objects: 1,
+            archives: 0,
+            shared: 0,
+            others: 0,
+            input_bytes: 1,
+            symbols: 1,
+            output_bytes: 1,
+            input_hash: input.to_owned(),
+        };
+        let results = |hashes: [&str; 3], inputs: [&str; 3]| {
+            let mut r = Results::default();
+            for (i, w) in ["a", "b", "c"].into_iter().enumerate() {
+                r.workloads.push(info(w, inputs[i]));
+                r.set(&format!("output_hash.{w}"), hashes[i]);
+            }
+            r
+        };
+        let base = results(["h1", "h2", "h3"], ["i1", "i2", "i3"]);
+        // a: same; b: output changed; c: output and inputs changed.
+        let run = results(["h1", "h9", "h8"], ["i1", "i2", "i7"]);
+        assert_eq!(
+            output_changes(&run, &base),
+            vec!["OUTPUT CHANGED b: h2 -> h9 (same inputs)".to_owned()]
         );
     }
 }

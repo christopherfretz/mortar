@@ -217,6 +217,15 @@ pub enum Status {
     Supported,
     /// Accepted, and correctly without effect, for the reason given.
     Noop(&'static str),
+    /// Supported, except for the values in `refused`: a use with one of
+    /// them is `Refused { class: OptionValue, "<spelling>=<value>" }` at
+    /// the command line, with `note` (which names what is supported).
+    Partial {
+        /// The refused values, as written after `=`.
+        refused: &'static [&'static str],
+        /// The refusal's note and the generated table's text.
+        note: &'static str,
+    },
     /// Parsed, but using it is `Refused { class: Option, name }`.
     Refused,
 }
@@ -228,6 +237,7 @@ impl Status {
         match self {
             Self::Supported => "supported",
             Self::Noop(_) => "noop",
+            Self::Partial { .. } => "partial",
             Self::Refused => "refused",
         }
     }
@@ -631,6 +641,33 @@ impl Lands {
             Self::PluginOpt => "plugin.options",
             Self::Other => "other",
         }
+    }
+
+    /// Whether a use of the option only assigns its field, so that a later
+    /// use landing in the same field leaves the plan as if the earlier use
+    /// were absent (`spec/cli.md` §4.4: such a use is not refused). Only
+    /// the plain switches and `--build-id`; every other field accumulates,
+    /// is positional, or is read in more than one place.
+    #[must_use]
+    pub const fn last_wins(self) -> bool {
+        matches!(
+            self,
+            Self::GcSections(_)
+                | Self::BuildId
+                | Self::NoBuildId
+                | Self::EhFrameHdr(_)
+                | Self::ExportDynamic(_)
+                | Self::NewDtags(_)
+                | Self::GdbIndex(_)
+                | Self::FatalWarnings(_)
+                | Self::WarnUnresolved(_)
+                | Self::AllowMultipleDefinition(_)
+                | Self::AllowShlibUndefined(_)
+                | Self::WarnBackrefs(_)
+                | Self::WarnCommon(_)
+                | Self::Icf
+                | Self::NoIcf
+        )
     }
 }
 

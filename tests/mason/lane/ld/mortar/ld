@@ -1,0 +1,18 @@
+#!/bin/bash
+# The lane's `ld` for mortar ($MASON_MORTAR): writes a map next to the
+# output, logs one line per link to $MASON_LOG (cwd, status, the first
+# diagnostic) and, with MASON_PLUMB=1, verifies the output
+# (`xtask mason verify`, $MASON_XTASK) and logs that too. A finding does
+# not fail the link: the report counts it.
+out=a.out; prev=
+for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
+err=$("${MASON_MORTAR:?}" "$@" -Map="$out.map" 2>&1 >/dev/null); st=$?
+plumb=-
+if [ $st = 0 ] && [ "${MASON_PLUMB:-}" = 1 ]; then
+  plumb=$("${MASON_XTASK:?}" mason verify "$out" "$out.map" 2>&1 | head -c 1000 | tr '\n\t' '  ')
+fi
+if [ -n "${MASON_LOG:-}" ]; then
+  printf '%s\tmortar\t%s\t%s\t%s\n' "$PWD" "$st" "$(printf '%s' "$err" | head -n 1 | head -c 1000 | tr '\t' ' ')" "$plumb" >> "$MASON_LOG"
+fi
+[ -n "$err" ] && printf '%s\n' "$err" >&2
+exit $st

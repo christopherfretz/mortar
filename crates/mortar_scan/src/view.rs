@@ -28,9 +28,9 @@ pub(crate) struct Prep<'s> {
     /// The symbol table (`.symtab`; `.dynsym` of a shared object), or why
     /// it cannot be read.
     pub symtab: Result<Option<SymbolTable<'s>>, String>,
-    /// The mapping marks of the file's sections, `(section, mark)` sorted
-    /// by `(section, value, index)`.
-    marks: OnceLock<Box<[(u32, Mark)]>>,
+    /// The mapping marks of the file's sections, sorted by `(section,
+    /// value, index)`, and per section index where its marks start.
+    marks: OnceLock<FileMarks>,
 }
 
 impl<'s> Prep<'s> {
@@ -118,8 +118,14 @@ impl<'a, 's> View<'a, 's> {
     pub fn marks(&self, file: FileId, section: u32) -> Vec<Mark> {
         let Some(p) = self.prep(file) else { return Vec::new() };
         let all = p.marks.get_or_init(|| file_marks(p, self.opts.proof));
-        let from = all.partition_point(|m| m.0 < section);
-        all[from..].iter().take_while(|m| m.0 == section).map(|m| m.1).collect()
+        // `starts[s]..starts[s + 1]`: the marks of section `s` (an index
+        // per section, not a search per call: the scan, the sites and the
+        // fixed point ask for every code section, some many times).
+        let s = section as usize;
+        match (all.starts.get(s), all.starts.get(s + 1)) {
+            (Some(&a), Some(&b)) => all.marks[a as usize..b as usize].to_vec(),
+            _ => Vec::new(),
+        }
     }
 
     pub fn is_mismatch(&self, id: SymbolId) -> bool {
@@ -180,12 +186,7 @@ impl<'a, 's> View<'a, 's> {
     /// a `.gnu.warning` section in a live file.
     pub fn facts(&self, key: SymKey, mention: Option<SymEntry>) -> SymFacts {
         match key.kind() {
-            SymKind::Local(e) => {
-                let mut f = self.local_facts(e);
-                f.dead = e.index.0 != 0
-                    && self.local_section(e).is_some_and(|s| !self.is_live(e.file, s));
-                f
-            }
+            SymKind::Local(e) => self.local_facts(e),
             SymKind::Global(id) => {
                 let mut f = self.global_facts(id, mention, 0);
                 f.comdat_only = self.is_mismatch(id);
@@ -205,20 +206,25 @@ impl<'a, 's> View<'a, 's> {
             comdat_only: false,
             gnu_warning: false,
         };
-        let Some(p) = self.prep(e.file) else { return abs };
-        let Some(t) = p.table() else { return abs };
-        let Ok(s) = t.get(e.index) else { return abs };
-        let kind = match t.section_of(e.index, &s) {
-            Ok(SymbolSection::Section(_)) if s.sym_type() == STT_GNU_IFUNC => TargetKind::Ifunc,
+        let Some(prep) = self.prep(e.file) else { return abs };
+        let Some(table) = prep.table() else { return abs };
+        let Ok(sym) = table.get(e.index) else { return abs };
+        let section = table.section_of(e.index, &sym);
+        let kind = match section {
+            Ok(SymbolSection::Section(_)) if sym.sym_type() == STT_GNU_IFUNC => TargetKind::Ifunc,
             Ok(SymbolSection::Section(_)) => TargetKind::Local,
             _ => TargetKind::Abs,
         };
+        // §6.1: a local of a section of its file that is not live (the
+        // symbol read once for the kind and for this).
+        let dead = e.index.0 != 0
+            && matches!(section, Ok(SymbolSection::Section(sec)) if !self.is_live(e.file, sec));
         SymFacts {
             kind,
-            sym_type: s.sym_type(),
-            st_other: s.st_other,
-            tls: s.sym_type() == STT_TLS,
-            dead: false,
+            sym_type: sym.sym_type(),
+            st_other: sym.st_other,
+            tls: sym.sym_type() == STT_TLS,
+            dead,
             comdat_only: false,
             gnu_warning: false,
         }
@@ -353,24 +359,22 @@ impl<'a, 's> View<'a, 's> {
         String::from_utf8_lossy(name).into_owned()
     }
 
-    /// The section a local key is defined in, if it is a section of the
-    /// file.
-    pub fn local_section(&self, e: SymEntry) -> Option<SectionIndex> {
-        let t = self.prep(e.file)?.table()?;
-        let s = t.get(e.index).ok()?;
-        match t.section_of(e.index, &s).ok()? {
-            SymbolSection::Section(i) => Some(i),
-            _ => None,
-        }
-    }
-
     pub fn section_of(&self, file: FileId, index: u32) -> Option<SectionId> {
         self.resolution.section_id(file, SectionIndex(index))
     }
 }
 
-fn file_marks(p: &Prep<'_>, proof: &dyn CodeProof) -> Box<[(u32, Mark)]> {
-    let Some(t) = p.table() else { return Box::new([]) };
+/// A file's mapping marks: `marks` sorted by `(section, value, index)`;
+/// those of section `s` are `starts[s]..starts[s + 1]` (`starts` ends
+/// after the last section with a mark).
+#[derive(Debug, Default)]
+pub(crate) struct FileMarks {
+    marks: Box<[Mark]>,
+    starts: Box<[u32]>,
+}
+
+fn file_marks(p: &Prep<'_>, proof: &dyn CodeProof) -> FileMarks {
+    let Some(t) = p.table() else { return FileMarks::default() };
     let mut out = Vec::new();
     for (index, s) in t.locals() {
         let Ok(name) = t.name(&s) else { continue };
@@ -380,7 +384,15 @@ fn file_marks(p: &Prep<'_>, proof: &dyn CodeProof) -> Box<[(u32, Mark)]> {
         }
     }
     out.sort_unstable_by_key(|m| (m.0, m.1.value, m.1.index));
-    out.into_boxed_slice()
+    let sections = out.last().map_or(0, |m| m.0 as usize + 1);
+    let mut starts = vec![0u32; sections + 1];
+    for m in &out {
+        starts[m.0 as usize + 1] += 1;
+    }
+    for s in 1..starts.len() {
+        starts[s] += starts[s - 1];
+    }
+    FileMarks { marks: out.into_iter().map(|m| m.1).collect(), starts: starts.into() }
 }
 
 /// One decoded record: the explicit addend of `SHT_RELA`, none for

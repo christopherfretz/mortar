@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-471 rows: 41 supported, 24 noop, 406 refused.
+471 rows: 47 supported, 2 partial, 27 noop, 395 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's own.
 
@@ -39,8 +39,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-N`, `--omagic` |  | GNU, lld, mold | all | refused | `shaping.magic` | Do not page-align sections; make text writable |
 | `--no-omagic` |  | GNU, lld, mold | all | refused | `shaping.magic` | Page-align sections; text read-only (default) |
 | `--no-nmagic` |  | lld, mold | all | refused | `shaping.magic` | Page-align sections (default) |
-| `--build-id` | optional, `=` only: STYLE (style or 0xHEX) | GNU, lld, mold | all | supported | `shaping.build_id` | Write a build-ID note: md5, sha1, sha256, fast, uuid, none or 0xHEX |
-| `--no-build-id` |  | mold | all | refused | `shaping.build_id` | Write no build-ID note |
+| `--build-id` | optional, `=` only: STYLE (style or 0xHEX) | GNU, lld, mold | all | partial: `=md5`, `=uuid` refused (synth.md S-91: md5 is not written and uuid is M2; mortar writes --build-id, =sha1, =sha256, =fast, =none and =0xHEX) | `shaping.build_id` | Write a build-ID note: md5, sha1, sha256, fast, uuid, none or 0xHEX |
+| `--no-build-id` |  | mold | all | supported | `shaping.build_id` | Write no build-ID note |
 | `--compress-debug-sections` | none \| zlib \| zlib-gnu \| zlib-gabi \| zstd | GNU, lld, mold | all | refused | `shaping.compress_debug_sections` | Compress the debugging sections |
 | `--eh-frame-hdr` |  | GNU, lld, mold | all | supported | `shaping.eh_frame_hdr` | Write .eh_frame_hdr and PT_GNU_EH_FRAME |
 | `--no-eh-frame-hdr` |  | GNU, lld, mold | all | supported | `shaping.eh_frame_hdr` | Write no .eh_frame_hdr |
@@ -85,8 +85,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-)`, `--end-group` |  | GNU, lld, mold | all | supported | `inputs[].state.group` | End a group |
 | `--start-lib` |  | lld, mold | all | refused | `inputs[].state.lib` | Read the following objects as members of an archive |
 | `--end-lib` |  | lld, mold | all | refused | `inputs[].state.lib` | End --start-lib |
-| `--as-needed` |  | GNU, lld, mold | all | supported | `inputs[].state.as_needed` | Record DT_NEEDED for the following shared objects only if used |
-| `--no-as-needed` |  | GNU, lld, mold | all | supported | `inputs[].state.as_needed` | Record DT_NEEDED for every following shared object (default) |
+| `--as-needed` |  | GNU, lld, mold | all | noop: it decides only which shared objects are needed, and every shared-object input is refused by name (M2) | `inputs[].state.as_needed` | Record DT_NEEDED for the following shared objects only if used |
+| `--no-as-needed` |  | GNU, lld, mold | all | noop: it decides only which shared objects are needed, and every shared-object input is refused by name (M2) | `inputs[].state.as_needed` | Record DT_NEEDED for every following shared object (default) |
 | `--whole-archive` |  | GNU, lld, mold | all | refused | `inputs[].state.whole_archive` | Take every member of the following archives |
 | `--no-whole-archive` |  | GNU, lld, mold | all | refused | `inputs[].state.whole_archive` | Take the members of archives that are needed (default) |
 | `-Bstatic`, `--dn`, `--non_shared`, `--static` |  | GNU, lld, mold | all | supported | `inputs[].state.link_static` | Search -l for archives only |
@@ -105,8 +105,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--no-dependent-libraries` |  | lld | all | refused | `other` | Ignore the libraries inputs ask for |
 | `--fortran-common` |  | lld | all | refused | `other` | Take archive members that define common symbols (mortar's behavior, always on) |
 | `--no-fortran-common` |  | lld | all | refused | `other` | Do not take archive members for common symbols |
-| `--warn-backrefs` |  | lld | all | refused | `diagnostics.warn_backrefs` | Warn when an archive member is taken for an earlier reference |
-| `--no-warn-backrefs` |  | lld | all | refused | `diagnostics.warn_backrefs` | Do not warn about backward references (default) |
+| `--warn-backrefs` |  | lld | all | supported | `diagnostics.warn_backrefs` | Warn when an archive member is taken for an earlier reference |
+| `--no-warn-backrefs` |  | lld | all | supported | `diagnostics.warn_backrefs` | Do not warn about backward references (default) |
 | `--warn-backrefs-exclude` | GLOB | lld | all | refused | `other` | Do not warn about backward references into GLOB |
 | `--why-extract` | FILE | lld | all | refused | `other` | Write why each archive member is taken to FILE |
 | `--print-archive-stats` | FILE | lld | all | refused | `other` | Write archive statistics to FILE |
@@ -118,7 +118,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | Option | Value | Linkers | Targets | Status | Lands in | Help |
 |---|---|---|---|---|---|---|
 | `-L`, `--library-path` | DIR | GNU, lld, mold | all | supported | `library_paths` | Search DIR for -l libraries and scripts |
-| `--sysroot` | DIR | GNU, lld, mold | all | refused | `sysroot` | Use DIR as the system root |
+| `--sysroot` | DIR | GNU, lld, mold | all | supported | `sysroot` | Use DIR as the system root |
 | `-nostdlib` |  | GNU, lld, mold | all | refused | `nostdlib` | Do not search the SEARCH_DIR directories of linker scripts |
 | `-rpath-link` | DIR | GNU, lld, mold | all | refused | `dynamic.rpath_link` | Search DIR for the DT_NEEDED entries of shared objects; a :-separated list |
 | `-Y` | PATH | GNU | all | refused | `other` | Default search path for Solaris compatibility |
@@ -206,7 +206,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--no-dynamic-linker` |  | GNU, lld, mold | all | refused | `dynamic.dynamic_linker` | Write no program interpreter |
 | `--enable-new-dtags` |  | GNU, lld, mold | all | refused | `dynamic.new_dtags` | Write DT_RUNPATH for -rpath |
 | `--disable-new-dtags` |  | GNU, lld, mold | all | refused | `dynamic.new_dtags` | Write DT_RPATH for -rpath |
-| `--hash-style` | sysv \| gnu \| both \| none | GNU, lld, mold | all | supported | `dynamic.hash_style` | Write DT_HASH (sysv), DT_GNU_HASH (gnu), both or none |
+| `--hash-style` | sysv \| gnu \| both \| none | GNU, lld, mold | all | noop: only a dynamic output has a symbol hash table, and every dynamic output is refused by name (M2) | `dynamic.hash_style` | Write DT_HASH (sysv), DT_GNU_HASH (gnu), both or none |
 | `--pack-dyn-relocs` | none \| relr \| android \| android+relr | lld, mold | all | refused | `dynamic.pack_dyn_relocs` | Pack dynamic relocations |
 | `-f`, `--auxiliary` | NAME | GNU, lld, mold | all | refused | `other` | Record NAME as DT_AUXILIARY |
 | `-F`, `--filter` | NAME | GNU, lld, mold | all | refused | `other` | Record NAME as DT_FILTER |
@@ -392,7 +392,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | Option | Value | Linkers | Targets | Status | Lands in | Help |
 |---|---|---|---|---|---|---|
 | `--fix-cortex-a53-835769` |  | GNU, mold | AArch64 | refused | `other` | Work around Cortex-A53 erratum 835769 |
-| `--fix-cortex-a53-843419` | optional, `=` only: full \| adr \| adrp | GNU, lld, mold | AArch64 | supported | `other` | Work around Cortex-A53 erratum 843419 |
+| `--fix-cortex-a53-843419` | optional, `=` only: full \| adr \| adrp | GNU, lld, mold | AArch64 | partial: `=adr`, `=adrp` refused (a64.md §11.2: GNU ld's =adr and =adrp restrict the fix, which mortar does not do; use --fix-cortex-a53-843419 or =full) | `other` | Work around Cortex-A53 erratum 843419 |
 | `--no-apply-dynamic-relocs` |  | GNU, lld, mold | AArch64 | refused | `other` | Write zero where dynamic relocations apply |
 | `--pic-veneer` |  | GNU, lld | AArch64 | refused | `other` | Always use position-independent veneers |
 | `--stub-group-size` | N | GNU | AArch64 | refused | `other` | Size of a group of sections one stub section serves |
@@ -438,17 +438,17 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 |---|---|---|---|---|---|---|
 | `-z now` |  | GNU, lld, mold | all | refused | `z.now` | Resolve every symbol at load time |
 | `-z lazy` |  | GNU, lld, mold | all | refused | `z.now` | Resolve functions when first called (default) |
-| `-z relro` |  | GNU, lld, mold | all | refused | `z.relro` | Write PT_GNU_RELRO (default) |
-| `-z norelro` |  | GNU, lld, mold | all | refused | `z.relro` | Write no PT_GNU_RELRO |
-| `-z execstack` |  | GNU, lld, mold | all | refused | `z.execstack` | Make the stack executable |
-| `-z noexecstack` |  | GNU, lld, mold | all | refused | `z.execstack` | Make the stack not executable |
+| `-z relro` |  | GNU, lld, mold | all | supported | `z.relro` | Write PT_GNU_RELRO (default) |
+| `-z norelro` |  | GNU, lld, mold | all | supported | `z.relro` | Write no PT_GNU_RELRO |
+| `-z execstack` |  | GNU, lld, mold | all | supported | `z.execstack` | Make the stack executable |
+| `-z noexecstack` |  | GNU, lld, mold | all | supported | `z.execstack` | Make the stack not executable |
 | `-z text` |  | GNU, lld, mold | all | refused | `z.text` | Report text relocations as errors |
 | `-z notext`, `-z textoff` |  | GNU, lld, mold | all | refused | `z.text` | Accept text relocations |
-| `-z separate-code` |  | GNU, lld, mold | all | refused | `z.separate_code` | Put code in segments of its own pages |
-| `-z noseparate-code` |  | GNU, lld, mold | all | refused | `z.separate_code` | Let code share pages with other data |
+| `-z separate-code` |  | GNU, lld, mold | all | supported | `z.separate_code` | Put code in segments of its own pages |
+| `-z noseparate-code` |  | GNU, lld, mold | all | supported | `z.separate_code` | Let code share pages with other data |
 | `-z defs` |  | GNU, lld, mold | all | refused | `z.defs` | Report undefined symbols of object files |
 | `-z undefs` |  | GNU, lld, mold | all | refused | `z.defs` | Accept undefined symbols in a shared object |
-| `-z max-page-size` | SIZE | GNU, lld, mold | all | refused | `z.max_page_size` | The largest page size the output supports |
+| `-z max-page-size` | SIZE | GNU, lld, mold | all | supported | `z.max_page_size` | The largest page size the output supports |
 | `-z common-page-size` | SIZE | GNU, lld, mold | all | noop: layout.md L-75: the value is checked, and no layout rule reads it | `z.common_page_size` | The common page size |
 | `-z stack-size` | SIZE | GNU, lld, mold | all | refused | `z.stack_size` | The size of the stack segment |
 | `-z pack-relative-relocs` |  | GNU, lld, mold | all | refused | `z.pack_relative_relocs` | Pack relative relocations in DT_RELR |
