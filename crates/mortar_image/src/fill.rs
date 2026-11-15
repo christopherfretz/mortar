@@ -3,7 +3,8 @@
 //! (I-33, I-63).
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use mortar_arch::{Arch, FillTables, OutputKind, TlsBlock};
 use mortar_core::par::Pool;
@@ -68,6 +69,55 @@ pub trait Tables: FillTables {
         let _ = (key, mention);
         None
     }
+
+    /// [`Tables::record_sym`] and [`Tables::scan_facts`] of one deferred
+    /// record (I-14) together, so that tables which read the key's symbol
+    /// for both can read it once (WP-032f).
+    fn record_sym_at(
+        &self,
+        key: SymKey,
+        mention: Option<mortar_core::SymEntry>,
+    ) -> (mortar_arch::SymValue, bool, Option<mortar_arch::SymFacts>) {
+        let (value, split) = self.record_sym(key);
+        (value, split, self.scan_facts(key, mention))
+    }
+
+    /// What [`Tables::split_target`] reads of `key` before it looks at
+    /// the addend, read once for many records (WP-032f); `None`: ask
+    /// `split_target`.
+    fn split_place(&self, key: SymKey) -> Option<SplitPlace> {
+        let _ = key;
+        None
+    }
+
+    /// [`Tables::split_target`] of `key`, whose place is `place`
+    /// (`split_place(key)`).
+    fn split_at(
+        &self,
+        place: &SplitPlace,
+        key: SymKey,
+        addend: i64,
+    ) -> Option<Result<Option<u64>, Diagnostic>> {
+        let _ = place;
+        self.split_target(key, addend)
+    }
+}
+
+/// Where a split target is defined ([`Tables::split_place`]): the input
+/// section, whether it is a `Merge` section (else an `.eh_frame`), the
+/// symbol's `st_value` and whether it is the section's symbol, the
+/// tables' own row of the section (`u32::MAX`: none) and, for a `Merge`
+/// section, the value of offset 0 of its output section's merged chunk
+/// when the tables know it (every fragment of the section's pieces is in
+/// that chunk: S-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplitPlace {
+    pub section: mortar_core::SectionId,
+    pub merge: bool,
+    pub value: u64,
+    pub section_sym: bool,
+    pub row: u32,
+    pub chunk_base: Option<u64>,
 }
 
 /// What merged chunks are written from (I-38): phase 50's fragment order
@@ -167,6 +217,66 @@ struct JobOut {
     flagged: Vec<mortar_core::SectionId>,
 }
 
+/// Fill's sub-step counters under `MORTAR_STEPS` (WP-032f; nothing they
+/// count reaches the output, the map or a diagnostic): CPU time summed
+/// over the workers in the jobs' fills, in copies from the store (inputs
+/// that are not resident) and in the sink's writes, with their bytes.
+#[derive(Debug)]
+pub(crate) struct FillSteps {
+    fill_ns: AtomicU64,
+    read_ns: AtomicU64,
+    read_bytes: AtomicU64,
+    reads: AtomicU64,
+    write_ns: AtomicU64,
+    write_bytes: AtomicU64,
+}
+
+pub(crate) static FILL_STEPS: FillSteps = FillSteps {
+    fill_ns: AtomicU64::new(0),
+    read_ns: AtomicU64::new(0),
+    read_bytes: AtomicU64::new(0),
+    reads: AtomicU64::new(0),
+    write_ns: AtomicU64::new(0),
+    write_bytes: AtomicU64::new(0),
+};
+
+impl FillSteps {
+    pub(crate) fn on() -> bool {
+        mortar_core::wp032b_steps::enabled()
+    }
+
+    fn since(t: Instant) -> u64 {
+        u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    pub(crate) fn add_read(&self, t: Instant, bytes: usize) {
+        self.read_ns.fetch_add(Self::since(t), Ordering::Relaxed);
+        self.read_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.reads.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Prints the counters and clears them.
+    #[allow(clippy::cast_precision_loss)] // printed durations
+    fn print(&self) {
+        let take = |a: &AtomicU64| a.swap(0, Ordering::Relaxed);
+        let ms = |ns: u64| ns as f64 / 1e6;
+        let (fill, read, rb, reads, write, wb) = (
+            take(&self.fill_ns),
+            take(&self.read_ns),
+            take(&self.read_bytes),
+            take(&self.reads),
+            take(&self.write_ns),
+            take(&self.write_bytes),
+        );
+        eprintln!("mortar: steps: image fill jobs (cpu): {:.2} ms", ms(fill));
+        eprintln!(
+            "mortar: steps: image fill reads (cpu): {:.2} ms, {rb} byte, {reads} read",
+            ms(read)
+        );
+        eprintln!("mortar: steps: image fill writes (cpu): {:.2} ms, {wb} byte", ms(write));
+    }
+}
+
 /// A worker's state: its window buffer (I-32) and relocation scratch.
 #[derive(Debug, Default)]
 struct Worker {
@@ -238,6 +348,9 @@ pub fn write_checked(
         let job = plan.jobs[j].clone();
         run_job(img, w, job, sink, &stop, out);
     });
+    if FillSteps::on() {
+        FILL_STEPS.print();
+    }
     let mut diagnostics = Vec::new();
     let mut write_err: Option<(u64, io::Error)> = None;
     let mut leaves = Vec::new();
@@ -431,9 +544,13 @@ fn run_job(
     let len = (job.end - job.start) as usize;
     w.buf.resize(len, 0);
     let Worker { buf, scratch } = w;
+    let steps = FillSteps::on().then(Instant::now);
     if let Err(fatal) = fill_into(img, scratch, job.start, &mut buf[..len], &mut out.errors) {
         out.fatal = Some(fatal);
         stop.store(true, Ordering::Relaxed);
+    }
+    if let Some(t) = steps {
+        FILL_STEPS.fill_ns.fetch_add(FillSteps::since(t), Ordering::Relaxed);
     }
     out.flagged = std::mem::take(&mut scratch.flagged);
     let fill_failed = out.fatal.is_some() || !out.errors.is_empty() || !out.flagged.is_empty();
@@ -448,9 +565,14 @@ fn run_job(
         if fill_failed || stop.load(Ordering::Relaxed) {
             continue;
         }
+        let steps = FillSteps::on().then(Instant::now);
         if let Err(e) = sink.write_at(offset, window) {
             out.write = Some((offset, e));
             stop.store(true, Ordering::Relaxed);
+        }
+        if let Some(t) = steps {
+            FILL_STEPS.write_ns.fetch_add(FillSteps::since(t), Ordering::Relaxed);
+            FILL_STEPS.write_bytes.fetch_add(window.len() as u64, Ordering::Relaxed);
         }
     }
     // A multi-window job grew the buffer: shrink it back to `W` (I-32).

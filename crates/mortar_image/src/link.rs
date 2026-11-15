@@ -19,7 +19,7 @@ use std::path::Path;
 
 use mortar_arch::{
     Arch, DemandFlags, FillTables, OutputKind, ProofRun, SlotKind, SymFacts, SymNames, SymValue,
-    TlsBlock,
+    TargetKind, TlsBlock,
 };
 use mortar_core::assignment::Assignment;
 use mortar_core::demands::Demands;
@@ -47,7 +47,7 @@ use mortar_synth::{
     BuildIdPlan, Division, EhPlan, EhSource, EhValue, EhWho, PropertyPlan, ShstrtabPlan, SynthChunk,
 };
 
-use crate::fill::{self, EhFill, Failed, Filled, Image, MergedFrags, Tables};
+use crate::fill::{self, EhFill, Failed, Filled, Image, MergedFrags, SplitPlace, Tables};
 use crate::headers::{self, Ehdr, Phdr, Shdr};
 use crate::layout_plan::{self, Extras, Model, SynthRow};
 use crate::output::{Output, OutputOptions};
@@ -522,7 +522,11 @@ impl LinkTables<'_, '_> {
     /// caller asks `split_target`), `s` is left 0 when the target is in a
     /// split section, and the flag says so (`Tables::record_sym`).
     fn sym_value(&self, key: SymKey, split: bool) -> (SymValue, bool) {
-        let facts = self.link.facts.facts(key);
+        self.sym_value_of(key, split, self.link.facts.facts(key))
+    }
+
+    /// [`Self::sym_value`] with the key's facts (a definition's) given.
+    fn sym_value_of(&self, key: SymKey, split: bool, facts: SymFacts) -> (SymValue, bool) {
         let entry = self.def_entry(key);
         let read = entry.and_then(|e| self.sym_of(e).map(|(t, s)| (e, t, s)));
         let size = read.map_or(0, |r| r.2.st_size);
@@ -622,6 +626,28 @@ impl Tables for LinkTables<'_, '_> {
         Some(self.link.facts.facts_at(key, mention))
     }
 
+    /// One read of the scan's facts where the mention cannot change them:
+    /// a mention gives only an undefined key its type, and an undefined
+    /// key's kind is `Weak0`, `WeakDyn` or `Undefined` (I-19); otherwise
+    /// the definition's facts are those at the mention.
+    fn record_sym_at(
+        &self,
+        key: SymKey,
+        mention: Option<SymEntry>,
+    ) -> (SymValue, bool, Option<SymFacts>) {
+        let at = self.link.facts.facts_at(key, mention);
+        let undefined =
+            matches!(at.kind, TargetKind::Weak0 | TargetKind::WeakDyn | TargetKind::Undefined);
+        let def = if mention.is_some() && undefined && matches!(key.kind(), SymKind::Global(_)) {
+            self.link.facts.facts(key)
+        } else {
+            debug_assert_eq!(at, self.link.facts.facts(key), "facts at a mention");
+            at
+        };
+        let (value, split) = self.sym_value_of(key, true, def);
+        (value, split, Some(at))
+    }
+
     fn target_alloc(&self, key: SymKey) -> bool {
         match self.def_entry(key).and_then(|e| self.entry_place(e)) {
             Some(Ok((s, _))) => self.section_flags(s) & SHF_ALLOC != 0,
@@ -632,56 +658,78 @@ impl Tables for LinkTables<'_, '_> {
     }
 
     fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<Option<u64>, Diagnostic>> {
+        let place = self.split_place(key)?;
+        self.split_at(&place, key, addend)
+    }
+
+    fn split_place(&self, key: SymKey) -> Option<SplitPlace> {
         let e = self.def_entry(key)?;
         let Ok((s, sym)) = self.entry_place(e)? else { return None };
         let section_sym = sym.sym_type() == STT_SECTION;
+        let merge = match self.kind_of(s)? {
+            SectionKind::Merge if section_sym => true,
+            SectionKind::EhFrame => false,
+            _ => return None,
+        };
+        let row = if merge { self.pieces.row_of(s).unwrap_or(u32::MAX) } else { u32::MAX };
+        let chunk_base = merge
+            .then(|| {
+                let chunk = self.addrs.merged_chunk(self.link.assignment.out(s)?)?;
+                Some(self.chunk_at(chunk, 0)?.1)
+            })
+            .flatten();
+        Some(SplitPlace { section: s, merge, value: sym.st_value, section_sym, row, chunk_base })
+    }
+
+    fn split_at(
+        &self,
+        place: &SplitPlace,
+        _key: SymKey,
+        addend: i64,
+    ) -> Option<Result<Option<u64>, Diagnostic>> {
+        let &SplitPlace { section: s, merge, value, section_sym, row, chunk_base } = place;
         let malformed = |what: String| Diagnostic::error(Kind::Malformed { what });
-        match self.kind_of(s)? {
-            SectionKind::Merge if section_sym => {
-                let r = (sym.st_value as i64).wrapping_add(addend);
-                let found = if let Some(found) = self.pieces.section_symbol(self.link.split, s, r) {
-                    found
-                } else {
-                    let size = self.section_size(s)?;
-                    refs::section_symbol(self.link.split, s, size, r)
-                };
-                Some(match found {
-                    Ok(p) if !self.frag_live(p.frag) => Ok(None),
-                    Ok(p) => self
-                        .frag_value(p.frag)
-                        .and_then(|a| a.checked_add(p.within))
-                        .map(Some)
-                        .ok_or_else(|| internal("fill: a live merge piece has no address")),
-                    Err(w) => Err(malformed(w.message())),
-                })
-            }
-            SectionKind::EhFrame => {
-                let Some((plan, src)) = self.link.eh else {
-                    return Some(Err(internal(
-                        "fill: a reference into .eh_frame without its plan",
-                    )));
-                };
-                let Some((_, eh)) = self.eh_frame else {
-                    return Some(Err(internal(
-                        "fill: a reference into .eh_frame without the chunk",
-                    )));
-                };
-                let r = if section_sym {
-                    (sym.st_value as i64).wrapping_add(addend)
-                } else {
-                    sym.st_value as i64
-                };
-                let tail = if section_sym { 0 } else { addend };
-                Some(match plan.value(src, s, r, EhWho::Reloc) {
-                    Ok(EhValue::Offset(o)) => {
-                        Ok(Some(eh.wrapping_add(o).wrapping_add(tail as u64)))
-                    }
-                    Ok(EhValue::Dropped) => Err(internal("fill: a relocation to a dropped symbol")),
-                    Err(e) => Err(e.into_diagnostic()),
-                })
-            }
-            _ => None,
+        if merge {
+            let r = (value as i64).wrapping_add(addend);
+            let found = if let Some(found) = self.pieces.section_symbol_in(self.link.split, row, r)
+            {
+                found
+            } else {
+                let size = self.section_size(s)?;
+                refs::section_symbol(self.link.split, s, size, r)
+            };
+            // S-13: the piece's fragment is in the section's output
+            // section's merged chunk.
+            let frag_value = |frag| match chunk_base {
+                Some(base) => {
+                    let v = self.link.layout.merge.offset(frag).and_then(|o| base.checked_add(o));
+                    debug_assert_eq!(v, self.frag_value(frag), "S-13");
+                    v
+                }
+                None => self.frag_value(frag),
+            };
+            return Some(match found {
+                Ok(p) if !self.frag_live(p.frag) => Ok(None),
+                Ok(p) => frag_value(p.frag)
+                    .and_then(|a| a.checked_add(p.within))
+                    .map(Some)
+                    .ok_or_else(|| internal("fill: a live merge piece has no address")),
+                Err(w) => Err(malformed(w.message())),
+            });
         }
+        let Some((plan, src)) = self.link.eh else {
+            return Some(Err(internal("fill: a reference into .eh_frame without its plan")));
+        };
+        let Some((_, eh)) = self.eh_frame else {
+            return Some(Err(internal("fill: a reference into .eh_frame without the chunk")));
+        };
+        let r = if section_sym { (value as i64).wrapping_add(addend) } else { value as i64 };
+        let tail = if section_sym { 0 } else { addend };
+        Some(match plan.value(src, s, r, EhWho::Reloc) {
+            Ok(EhValue::Offset(o)) => Ok(Some(eh.wrapping_add(o).wrapping_add(tail as u64))),
+            Ok(EhValue::Dropped) => Err(internal("fill: a relocation to a dropped symbol")),
+            Err(e) => Err(e.into_diagnostic()),
+        })
     }
 }
 
