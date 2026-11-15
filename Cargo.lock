@@ -129,9 +129,12 @@ dependencies = [
 name = "mortar_live"
 version = "0.0.0"
 dependencies = [
+ "mortar_cli",
  "mortar_core",
  "mortar_diag",
  "mortar_elf",
+ "mortar_input",
+ "mortar_resolve",
  "mortar_testutil",
 ]
 
@@ -170,10 +173,15 @@ dependencies = [
 name = "mortar_scan"
 version = "0.0.0"
 dependencies = [
+ "mortar_a64",
  "mortar_arch",
+ "mortar_cli",
  "mortar_core",
  "mortar_diag",
  "mortar_elf",
+ "mortar_input",
+ "mortar_live",
+ "mortar_resolve",
  "mortar_testutil",
 ]
 
