@@ -448,7 +448,22 @@ golden-hash test (a fixed corpus whose hashes are checked in, so that an
 unannounced serialization change fails kiln's tests). Rows of kinds 2
 and 3 are compared only between units whose scheme strings are equal.
 Two different scheme strings are **incomparable**: never a diagnostic,
-only an `--odr-stats` count of the unit pairs not compared (X13). In
+only an `--odr-stats` count of the unit pairs not compared (X13).
+**One exception, under `--odr=strict` only** (WP-073, a check of its own
+in O-47 that never moves to on by default): kind 3 rows of one key are
+compared across schemes, and across units without a scheme, on `size`,
+`align` and the flags `ENUM`, `UNION`, `POLYMORPHIC` and `HAS_VBASES`,
+never on `hash` or `layout`; a difference is `odr-type-mismatch` with a
+note that the schemes differ, and `--odr-stats` counts the groups so
+compared. The reason: none of these depends on the scheme. The key is
+FNV-1a 64 of the `<type>` encoding (O-4, MT-13), which is the Itanium
+mangling, not the scheme's serialization; size and alignment are the
+type's `sizeof` and `alignof` in bytes; the four flags are fixed bits of
+the row (O-17's table, versioned with the container, not with the
+scheme) and name properties of the language (`std::is_enum`,
+`std::is_union`, `std::is_polymorphic`, a virtual base). O-11's scheme
+names only the serialization, the attribute list, the provenance form
+and the hash function, so none of them can change these fields. In
 practice objects from different kiln versions will often be
 incomparable; a full rebuild makes them comparable again.
 
@@ -654,7 +669,10 @@ upper proxy [estimate until kiln writes kind 3; MT-41's numbers use it].
 Because K-4 lands before K-3 (§11's order), a unit whose scheme has no
 definition serializer yet writes `hash` as all zero bytes: "not hashed".
 Two rows are compared on `hash` only when both are non-zero and their
-schemes are equal; `layout`, `size` and `align` are compared always.
+schemes are equal; `layout`, `size`, `align` and the flags `ENUM`,
+`UNION`, `POLYMORPHIC` and `HAS_VBASES` within one scheme, and across
+schemes only `size`, `align` and those flags, under `--odr=strict`
+(O-11's exception).
 
 **O-18 (layout hash) [kiln].** 64 bits over: size, alignment; per base
 (in declaration order) its key, offset and virtuality; per non-static
@@ -963,8 +981,12 @@ warning: f(int) violates the one-definition rule
   first class (the keeper's) is "defined in", each other class's first
   file "defined differently in", with at most 3 files a class and a count
   of the rest.
-- Notes that explain, from kind 1: every key that differs between the
-  two units (`>>> a.o: abi.short-enums=on; b.o: off`, `>>> a.o: std=c++17;
+- A note naming the two units, where they carry them: kind 1's `source`
+  and `producer` (`>>> a.o: source=a.cc, producer=kiln 0.3; b.o:
+  source=b.cc, producer=gcc`), first among the notes (WP-073: a
+  developer needs "which TU, built by what").
+- Notes that explain, from kind 1: every key other than `source` and
+  `producer` that differs between the two units (`>>> a.o: abi.short-enums=on; b.o: off`, `>>> a.o: std=c++17;
   b.o: c++20`). The question in the K1 example is printed only when no
   kind 1 key differs.
 - Types: with kind 4, the first difference (`>>> member 'y' at offset 8
@@ -972,7 +994,12 @@ warning: f(int) violates the one-definition rule
 - Key (`spec/model.md` §8): phase 40, unit = the `FileId` of the first
   file of the second class, seq = its symbol-table index; for a row
   without a symbol (types, unanchored rows) `2^40 + ` the row's index in
-  its unit (amendment A-2).
+  its unit (amendment A-2); for a COMDAT group's finding (O-25, O-31)
+  `2^41 +` the group's index; for a container finding `2^42 +` its index
+  in the file. The record checks add a tag `t << 44` to seq, so that two
+  checks never share a key: 1 `ENFORCE` (O-30), 2 kind 5, 3 kind 3, 4
+  kind 2, 5 `odr-internal-reference`, 6 `isa` (O-31), 7 O-25, 8 the
+  container findings; the W checks have tag 0 (WP-073).
 
 The load-time hook's prototype messages (§10.3) would be the runtime's,
 not mortar diagnostics: `odr-violation-at-load`,
@@ -1024,7 +1051,8 @@ holds already. T-O-42 counts bytes read.
 
 **O-44 (`--odr-stats`).** One line to standard error: units read, rows by
 kind, schemes seen and the unit pairs not compared because of them,
-ambiguous anchors (O-4), unanchored rows, `SYSTEM` differences between
+the kind 3 groups compared across schemes (O-11's exception), ambiguous
+anchors (O-4), unanchored rows, `SYSTEM` differences between
 units of different `-std` (O-32), time spent and container bytes read.
 For tuning and for the oracle of §12.3.
 
@@ -1059,6 +1087,7 @@ O-47's table, by amendment.
 | kind 5 C linkage | K-5 | strict | N28 | the C corpus of O-33 at zero |
 | kind 3 `odr-type-mismatch` (layout) | K-4 (second) | strict | cannot run yet | WP-074's oracle at zero |
 | kind 3 definition-only differences | K-4 and K-3's serializer | strict | — | after layout's and after kind 2's, separately |
+| kind 3 size and alignment across schemes (O-11) | K-4 | strict | WP-073's tests only | never by default while O-11's exception stands (O-11) |
 | kind 2 `odr-violation` (hash, K13 flags) | K-3 (third) | strict | cannot run yet | WP-074's oracle at zero |
 | `odr-internal-reference` | K-3 | strict | `k12proxy`: libstdc++ sets it | Q5 |
 | `odr-abi-mismatch` (`ENFORCE` keys), `odr-isa-mismatch` | K-2 | strict | cannot run yet | WP-074's oracle at zero |
@@ -1066,15 +1095,20 @@ O-47's table, by amendment.
 | O-24 (shared-object inputs) | K-3 and libraries with tables | strict | specified, not prototyped (WP-075 starts with the prototype) | with kind 2 |
 | `.note.mason` table | K-3 | off (`--odr-table`) | `note-final` | Q2 |
 | O-34 kind 5 vs foreign sizes | K-5 | strict | cannot run yet | WP-074's oracle at zero |
-| `SYSTEM` `-std` differences (O-32) | K-3 | `--odr-stats` count only | `std-mix`: 210 in one pair of TUs | Q6 |
+| `SYSTEM` `-std` differences (O-32) | K-3 | strict (warnings, O-32); an `--odr-stats` count in any other mode that compares | `std-mix`: 210 in one pair of TUs | Q6 |
 | `odr-archive-shadow` | K-3 | opt-in flag | — | never by default |
 | load-time hook | a runtime | **none**: a prototype direction (§10.3), never in M6 | the matrix of O-58 not yet green | O-58, then Q2 and Q3 |
 
 ### 9.3 ABI and ISA summaries
 
 **O-30 (`ENFORCE` keys).** Two live units whose kind 1 rows for the same
-name both carry `ENFORCE` with different values: `odr-abi-mismatch`, one
-diagnostic per (name, value pair), naming the first unit of each value.
+name both carry `ENFORCE` with different values: `odr-abi-mismatch`. Per
+name, the **first value** is the value of the first unit in file order
+(the lowest `FileId`, then the unit's place in its file; never the order
+of threads); each distinct value other than the first gives one
+diagnostic, naming the first unit of that value and the first unit of
+the first value. The diagnostics are linear in the values: `n` distinct
+values give `n - 1`, never a diagnostic per pair (WP-073).
 Mixing is legal when no affected type or call crosses the two units, so
 the mismatch alone proves nothing; where it does cross, kind 3 sees it
 (K16a enum size) and the type's diagnostic names the key in a note. K16e

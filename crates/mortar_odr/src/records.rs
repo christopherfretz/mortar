@@ -43,6 +43,26 @@ const GROUP_SEQ: u64 = 1 << 41;
 /// `seq` of a container finding (`meta-malformed`, `meta-version`):
 /// `2^42 +` its index among the file's findings.
 const META_SEQ: u64 = 1 << 42;
+/// The check's tag sits above the `seq` bases, so that findings of
+/// different checks never share a key (WP-073; tag 0 is the W checks').
+const TAG_SHIFT: u32 = 44;
+
+/// The tag of each record check in a key's `seq`, in O-47's order.
+mod tag {
+    pub const ENFORCE: u64 = 1;
+    pub const KIND5: u64 = 2;
+    pub const KIND3: u64 = 3;
+    pub const KIND2: u64 = 4;
+    pub const INTERNAL: u64 = 5;
+    pub const ISA: u64 = 6;
+    pub const VTABLE: u64 = 7;
+    pub const META: u64 = 8;
+}
+
+/// A record check's `seq`: its tag above `base`.
+const fn seq(tag: u64, base: u64) -> u64 {
+    (tag << TAG_SHIFT) | base
+}
 
 /// Kind 1 keys a note never compares: they differ between any two units.
 const NOT_NOTED: [&[u8]; 2] = [b"producer", b"source"];
@@ -59,8 +79,11 @@ pub struct Switches {
     pub kind5_cxx: bool,
     /// O-33, C linkage.
     pub kind5_c: bool,
-    /// O-17/O-18: layouts.
+    /// O-17/O-18: layouts, within one scheme.
     pub kind3_layout: bool,
+    /// O-11's strict exception: size, alignment and the shape flags of
+    /// kind 3 rows across schemes.
+    pub kind3_shape: bool,
     /// O-17: definition-only differences.
     pub kind3_definition: bool,
     /// O-15: hashes and the K13 flags.
@@ -83,6 +106,7 @@ impl Switches {
             || self.kind5_cxx
             || self.kind5_c
             || self.kind3_layout
+            || self.kind3_shape
             || self.kind3_definition
             || self.kind2
             || self.internal
@@ -102,6 +126,9 @@ pub struct Counts {
     /// Unit pairs whose kind 2 and 3 rows are never compared: different
     /// schemes, or a unit without a scheme (O-11, X13).
     pub pairs_not_compared: u64,
+    /// Kind 3 groups whose shapes were compared across schemes (O-11's
+    /// strict exception).
+    pub cross_scheme: u64,
     /// Rows whose anchor is ambiguous (O-4).
     pub ambiguous: u64,
     /// Rows without an anchor that are not compared (O-4).
@@ -124,6 +151,7 @@ impl Counts {
         for (a, b) in self.rows.iter_mut().zip(o.rows) {
             *a += b;
         }
+        self.cross_scheme += o.cross_scheme;
         self.ambiguous += o.ambiguous;
         self.unanchored += o.unanchored;
         self.system_std += o.system_std;
@@ -437,7 +465,7 @@ fn container_finding(
     i: usize,
     finding: &Finding,
 ) -> (Key, Diagnostic) {
-    let key = Key::new(PHASE, file.0, META_SEQ + i as u64);
+    let key = Key::new(PHASE, file.0, seq(tag::META, META_SEQ + i as u64));
     let at = match finding {
         Finding::Malformed { unit, .. } => unit.unwrap_or(0),
         Finding::Version { unit, .. } => *unit,
@@ -561,7 +589,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                 });
             }
         }
-        if (s.kind3_layout || s.kind3_definition) && !info.lang_c {
+        if (s.kind3_layout || s.kind3_shape || s.kind3_definition) && !info.lang_c {
             for (i, r) in unit.types().iter().enumerate() {
                 out.push(Entry {
                     kind: 3,
@@ -731,23 +759,32 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         rows.iter().any(|e| self.info[e.unit as usize].std != first)
     }
 
-    /// Partitions `rows` into classes by `same`, in file order, the
-    /// keeper's class first.
-    fn classes(
+    /// Partitions `rows` into classes of equal `key`, each class in file
+    /// order, the classes by their first file, the keeper's class first.
+    /// `O(n log n)`: a group of `n` distinct rows stays cheap (WP-073).
+    fn classes<K: Ord>(
         &self,
         rows: &[Entry<'l>],
         keeper: Option<FileId>,
-        same: impl Fn(&Entry<'l>, &Entry<'l>) -> bool,
+        key: impl Fn(&Entry<'l>) -> K,
     ) -> Vec<Class<'l>> {
         let mut sorted = rows.to_vec();
         sorted.sort_by_key(|e| (self.file_of(e), e.unit));
-        let mut classes: Vec<Class<'l>> = Vec::new();
-        for e in sorted {
-            match classes.iter_mut().find(|c| same(&c[0], &e)) {
-                Some(c) => c.push(e),
-                None => classes.push(vec![e]),
+        let keys: Vec<K> = sorted.iter().map(&key).collect();
+        // Positions sorted by (key, position): each run is a class, and
+        // its first position is the class's place in file order.
+        let mut order: Vec<usize> = (0..sorted.len()).collect();
+        order.sort_by(|&a, &b| keys[a].cmp(&keys[b]).then(a.cmp(&b)));
+        let mut runs: Vec<Vec<usize>> = Vec::new();
+        for &p in &order {
+            match runs.last_mut() {
+                Some(r) if keys[r[0]] == keys[p] => r.push(p),
+                _ => runs.push(vec![p]),
             }
         }
+        runs.sort_by_key(|r| r[0]);
+        let mut classes: Vec<Class<'l>> =
+            runs.into_iter().map(|r| r.into_iter().map(|p| sorted[p]).collect()).collect();
         if let Some(k) = keeper
             && let Some(at) = classes.iter().position(|c| c.iter().any(|e| self.file_of(e) == k))
         {
@@ -771,8 +808,8 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             let mut files: Vec<FileId> = users.iter().map(|e| self.file_of(e)).collect();
             files.dedup();
             if files.len() >= 2 {
-                let classes = self.classes(&users, keeper, |a, b| a.unit == b.unit);
-                let name = Self::display_name(&rows[0]);
+                let classes = self.classes(&users, keeper, |e| e.unit);
+                let name = Self::display_name(rows);
                 let kind = Kind::OdrInternalReference { name };
                 let note = "each translation unit's copy refers to its own entity with internal \
                             linkage (a static function or variable, or one in an unnamed \
@@ -794,14 +831,11 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             let flag = |e: &Entry<'_>, f: u16| def(e).is_some_and(|r| r.flags & f != 0);
             let spec = rows.iter().any(|e| flag(e, flags::EXPLICIT_SPEC));
             let implicit = rows.iter().any(|e| flag(e, flags::IMPLICIT_INST));
-            let hashes = self
-                .classes(&rows, keeper, |a, b| def(a).map(|r| r.hash) == def(b).map(|r| r.hash));
+            let hashes = self.classes(&rows, keeper, |e| def(e).map(|r| r.hash));
             let (classes, k13) = if hashes.len() >= 2 {
                 (hashes, spec && implicit)
             } else if spec && implicit {
-                let c = self.classes(&rows, keeper, |a, b| {
-                    flag(a, flags::EXPLICIT_SPEC) == flag(b, flags::EXPLICIT_SPEC)
-                });
+                let c = self.classes(&rows, keeper, |e| flag(e, flags::EXPLICIT_SPEC));
                 (c, true)
             } else {
                 continue;
@@ -856,7 +890,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                     self.file_text(self.file_of(&classes[1][0])),
                 ));
             }
-            let name = Self::display_name(&rows[0]);
+            let name = Self::display_name(&rows);
             let kind = Kind::OdrViolation { name };
             let mut found = Found::report(self.diagnostic(kind, severity, &classes, keeper, notes));
             found.counts.system_std = u64::from(system);
@@ -864,28 +898,23 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         }
     }
 
-    /// The kind 3 comparison (O-17, O-18, O-32): size, alignment and kind
-    /// across schemes; the layout hash and the definition hash within one.
+    /// The kind 3 comparison (O-17, O-18, O-32): within one scheme the
+    /// layout (with size, alignment and the shape flags) and the
+    /// definition hash; across schemes, under O-11's strict exception,
+    /// size, alignment and the shape flags only.
+    #[allow(clippy::too_many_lines)] // O-17, O-18, O-11's exception, read top to bottom
     fn kind3(&self, rows: &[Entry<'l>], out: &mut Vec<Found>) {
         const SHAPE: u16 =
             flags::TYPE_ENUM | flags::TYPE_UNION | flags::TYPE_POLYMORPHIC | flags::TYPE_HAS_VBASES;
         let ty = |e: &Entry<'_>| self.type_row(e);
         let shape = |e: &Entry<'_>| ty(e).map(|r| (r.size, r.align, r.flags & SHAPE));
         let flag = |e: &Entry<'_>, f: u16| ty(e).is_some_and(|r| r.flags & f != 0);
-        let mut found: Option<(Vec<Class<'l>>, bool)> = None;
-        if self.switches.kind3_layout {
-            let c = self.classes(rows, None, |a, b| shape(a) == shape(b));
-            if c.len() >= 2 {
-                found = Some((c, true));
-            }
-        }
-        let schemes = if found.is_none() { self.by_scheme(rows) } else { Vec::new() };
-        for rows in &schemes {
+        let mut found: Option<(Vec<Class<'l>>, Compared)> = None;
+        for rows in &self.by_scheme(rows) {
             if self.switches.kind3_layout {
-                let c = self
-                    .classes(rows, None, |a, b| ty(a).map(|r| r.layout) == ty(b).map(|r| r.layout));
+                let c = self.classes(rows, None, |e| (ty(e).map(|r| r.layout), shape(e)));
                 if c.len() >= 2 {
-                    found = Some((c, true));
+                    found = Some((c, Compared::Layout));
                     break;
                 }
             }
@@ -896,15 +925,25 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                     .copied()
                     .filter(|e| ty(e).is_some_and(|r| r.hash != [0; 16]))
                     .collect();
-                let c = self
-                    .classes(&hashed, None, |a, b| ty(a).map(|r| r.hash) == ty(b).map(|r| r.hash));
+                let c = self.classes(&hashed, None, |e| ty(e).map(|r| r.hash));
                 if c.len() >= 2 {
-                    found = Some((c, false));
+                    found = Some((c, Compared::Definition));
                     break;
                 }
             }
         }
-        let Some((classes, layout)) = found else { return };
+        if found.is_none() && self.switches.kind3_shape {
+            let first = self.info[rows[0].unit as usize].scheme;
+            if rows.iter().any(|e| self.info[e.unit as usize].scheme != first) {
+                out.push(Found::count(Counts { cross_scheme: 1, ..Counts::default() }));
+                let c = self.classes(rows, None, shape);
+                if c.len() >= 2 {
+                    found = Some((c, Compared::Shape));
+                }
+            }
+        }
+        let Some((classes, compared)) = found else { return };
+        let layout = compared != Compared::Definition;
         let all: Vec<Entry<'l>> = classes.iter().flatten().copied().collect();
         let partial = all.iter().any(|e| flag(e, flags::TYPE_PARTIAL));
         let system = all.iter().all(|e| flag(e, flags::TYPE_SYSTEM)) && self.std_differs(&all);
@@ -929,8 +968,24 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             Severity::Warning
         };
         let (a, b) = (&classes[0][0], &classes[1][0]);
+        if compared == Compared::Shape {
+            notes.push(
+                "the translation units use different odr.scheme values: compared on size, \
+                 alignment and kind only (spec/odr.md O-11, strict)"
+                    .to_owned(),
+            );
+        }
         if let (Some(ra), Some(rb)) = (ty(a), ty(b)) {
-            if layout && (ra.size, ra.align) == (rb.size, rb.align) {
+            let kinds = |r: &TypeRow| r.flags & SHAPE;
+            if layout && (ra.size, ra.align) == (rb.size, rb.align) && kinds(&ra) != kinds(&rb) {
+                notes.push(format!(
+                    "{}: {}; {}: {}",
+                    self.file_text(self.file_of(a)),
+                    shape_text(kinds(&ra)),
+                    self.file_text(self.file_of(b)),
+                    shape_text(kinds(&rb)),
+                ));
+            } else if layout && (ra.size, ra.align) == (rb.size, rb.align) {
                 notes.push(format!(
                     "the layouts differ (members, offsets, bases or vtable) with the same size \
                      {} and alignment {}",
@@ -955,7 +1010,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             }
         }
         notes.extend(self.summary_notes(a, b));
-        let kind = Kind::OdrTypeMismatch { name: Self::display_name(a) };
+        let kind = Kind::OdrTypeMismatch { name: Self::display_name(&classes[0]) };
         let mut found = Found::report(self.diagnostic(kind, severity, &classes, None, notes));
         found.counts.system_std = u64::from(system);
         out.push(found);
@@ -972,21 +1027,30 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             return;
         }
         let keeper = self.keeper(rows);
-        // Classes by type; sizes split a type's class when both are known.
-        let agree = |a: &Entry<'_>, b: &Entry<'_>| match (decl(a), decl(b)) {
-            (Some(x), Some(y)) => x.ty == y.ty && (x.size == 0 || y.size == 0 || x.size == y.size),
-            _ => false,
+        // Classes by type; sizes split a type's class when both are known:
+        // a row without a size joins its type's first sized row in file
+        // order (O-35).
+        let mut sized: Vec<(u64, FileId, u32, u64)> = rows
+            .iter()
+            .filter_map(|e| {
+                decl(e).filter(|r| r.size != 0).map(|r| (r.ty, self.file_of(e), e.unit, r.size))
+            })
+            .collect();
+        sized.sort_unstable();
+        let size_of = |e: &Entry<'_>| {
+            let r = decl(e)?;
+            if r.size != 0 {
+                return Some((r.ty, r.size));
+            }
+            let at = sized.partition_point(|s| s.0 < r.ty);
+            Some((r.ty, sized.get(at).filter(|s| s.0 == r.ty).map_or(0, |s| s.3)))
         };
-        let classes = self.classes(rows, keeper, |a, b| agree(a, b));
+        let classes = self.classes(rows, keeper, size_of);
         let definition = |e: &Entry<'_>| flag(e, flags::DECL_DEFINITION);
         // Two definitions are never compared (O-35): a finding needs a
-        // declaration on one side of some disagreeing pair.
-        let disagree = classes.len() >= 2
-            && classes.iter().enumerate().any(|(i, c)| {
-                classes[i + 1..]
-                    .iter()
-                    .any(|d| c.iter().any(|x| d.iter().any(|y| !(definition(x) && definition(y)))))
-            });
+        // declaration on one side of a disagreeing pair, and with two
+        // classes any declaration is on one side of one.
+        let disagree = classes.len() >= 2 && rows.iter().any(|e| !definition(e));
         let noexcept_only = !disagree && classes.len() == 1 && {
             let first = flag(&rows[0], flags::DECL_NOEXCEPT);
             rows.iter().any(|e| flag(e, flags::DECL_NOEXCEPT) != first)
@@ -995,9 +1059,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             return;
         }
         let classes = if noexcept_only {
-            self.classes(rows, keeper, |a, b| {
-                flag(a, flags::DECL_NOEXCEPT) == flag(b, flags::DECL_NOEXCEPT)
-            })
+            self.classes(rows, keeper, |e| flag(e, flags::DECL_NOEXCEPT))
         } else {
             classes
         };
@@ -1035,17 +1097,16 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             }
         }
         notes.extend(self.summary_notes(first, second));
-        let kind = Kind::OdrDeclarationMismatch { name: Self::display_name(first) };
+        let kind = Kind::OdrDeclarationMismatch { name: Self::display_name(rows) };
         out.push(Found::report(self.diagnostic(kind, severity, &classes, keeper, notes)));
     }
 
-    /// The entity's name for a message: the anchor's or the row's; an
-    /// unanchored row's key.
-    fn display_name(e: &Entry<'_>) -> String {
-        if e.name.is_empty() {
-            format!("<unnamed entity, key {:#018x}>", e.key)
-        } else {
-            String::from_utf8_lossy(e.name).into_owned()
+    /// The entity's name for a message: the first anchor's or row's name
+    /// among `rows`; the key when every row is unanchored.
+    fn display_name(rows: &[Entry<'_>]) -> String {
+        match rows.iter().find(|e| !e.name.is_empty()) {
+            Some(e) => String::from_utf8_lossy(e.name).into_owned(),
+            None => format!("<unnamed entity, key {:#018x}>", rows[0].key),
         }
     }
 
@@ -1084,6 +1145,32 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         out
     }
 
+    /// Which translation unit each side is, and what built it: kind 1's
+    /// `source` and `producer`, where the units carry them (WP-073).
+    fn unit_note(&self, a: &Entry<'_>, b: &Entry<'_>) -> Option<String> {
+        if a.unit == b.unit {
+            return None;
+        }
+        let side = |e: &Entry<'_>| {
+            let u = self.units[e.unit as usize];
+            let parts: Vec<String> = NOT_NOTED
+                .iter()
+                .rev()
+                .filter_map(|k| {
+                    u.summary_value(k).map(|(v, _)| {
+                        format!("{}={}", String::from_utf8_lossy(k), String::from_utf8_lossy(v))
+                    })
+                })
+                .collect();
+            (!parts.is_empty())
+                .then(|| format!("{}: {}", self.file_text(self.file_of(e)), parts.join(", ")))
+        };
+        match (side(a), side(b)) {
+            (None, None) => None,
+            (x, y) => Some([x, y].into_iter().flatten().collect::<Vec<_>>().join("; ")),
+        }
+    }
+
     /// §9.1's diagnostic: the first class "defined in", the others
     /// "defined differently in", at most 3 files a class.
     fn diagnostic(
@@ -1095,8 +1182,14 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         notes: Vec<String>,
     ) -> (Key, Diagnostic) {
         let first_other = classes.get(1).and_then(|c| c.first()).unwrap_or(&classes[0][0]);
-        let seq = first_other.sym.map_or(ROW_SEQ + u64::from(first_other.row), |s| u64::from(s.0));
-        let key = Key::new(PHASE, self.file_of(first_other).0, seq);
+        let base = first_other.sym.map_or(ROW_SEQ + u64::from(first_other.row), |s| u64::from(s.0));
+        let tag = match kind {
+            Kind::OdrDeclarationMismatch { .. } => tag::KIND5,
+            Kind::OdrTypeMismatch { .. } => tag::KIND3,
+            Kind::OdrInternalReference { .. } => tag::INTERNAL,
+            _ => tag::KIND2,
+        };
+        let key = Key::new(PHASE, self.file_of(first_other).0, seq(tag, base));
         let mut d = match severity {
             Severity::Error => Diagnostic::error(kind),
             Severity::Warning => Diagnostic::warning(kind),
@@ -1119,6 +1212,9 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                 d = d.note(format!("and {rest} more {noun} with the same definition"));
             }
         }
+        if let Some(units) = self.unit_note(&classes[0][0], first_other) {
+            d = d.note(units);
+        }
         for note in notes {
             d = d.note(note);
         }
@@ -1140,7 +1236,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                 self.definition(e).and_then(|r| source(r.file, r.line)),
             ),
             3 => (None, self.type_row(e).and_then(|r| source(r.file, r.line))),
-            _ => (Some(String::from_utf8_lossy(e.name).into_owned()), None),
+            _ => ((!e.name.is_empty()).then(|| String::from_utf8_lossy(e.name).into_owned()), None),
         };
         Place::record(self.file_ref(file), name, keeper == Some(file), source)
     }
@@ -1181,7 +1277,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             }
             if let Some(base) = firsts.iter().min_by_key(|r| (r.2, r.3)).copied() {
                 for y in firsts.iter().filter(|r| r.1 != base.1) {
-                    let key = Key::new(PHASE, y.2.0, ROW_SEQ + u64::from(y.4));
+                    let key = Key::new(PHASE, y.2.0, seq(tag::ENFORCE, ROW_SEQ + u64::from(y.4)));
                     let d = Diagnostic::warning(Kind::OdrAbiMismatch {
                         option: text(name),
                         first: text(base.1),
@@ -1250,6 +1346,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         key: &[u8],
         only: impl Fn(&[u8]) -> bool,
         keeper_must_differ: bool,
+        tag: u64,
         mut make: impl FnMut(&[u8], Vec<Vec<(FileId, &'l [u8])>>) -> Option<(Kind, Vec<String>)>,
         out: &mut Vec<(Key, Diagnostic)>,
     ) {
@@ -1274,15 +1371,17 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             if keeper_must_differ && keeper_value.is_none() {
                 continue;
             }
-            let mut classes: Vec<Vec<(FileId, &'l [u8])>> = Vec::new();
+            // Classes by value, each in file order, ordered by first file.
             let mut sorted = known.clone();
-            sorted.sort_by_key(|(f, _)| *f);
+            sorted.sort_by_key(|(f, v)| (*v, *f));
+            let mut classes: Vec<Vec<(FileId, &'l [u8])>> = Vec::new();
             for k in sorted {
-                match classes.iter_mut().find(|c| c[0].1 == k.1) {
-                    Some(c) => c.push(k),
-                    None => classes.push(vec![k]),
+                match classes.last_mut() {
+                    Some(c) if c[0].1 == k.1 => c.push(k),
+                    _ => classes.push(vec![k]),
                 }
             }
+            classes.sort_by_key(|c| c[0].0);
             if classes.len() < 2 {
                 continue;
             }
@@ -1311,7 +1410,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             for n in notes {
                 d = d.note(n);
             }
-            out.push((Key::new(PHASE, first_other.0, GROUP_SEQ + u64::from(g.0)), d));
+            out.push((Key::new(PHASE, first_other.0, seq(tag, GROUP_SEQ + u64::from(g.0))), d));
         }
     }
 
@@ -1322,6 +1421,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             b"isa",
             |_| true,
             true,
+            tag::ISA,
             |sig, classes| {
                 let note = format!(
                     "{}: isa={}; {}: isa={}",
@@ -1344,6 +1444,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             b"abi.rtti",
             |sig| sig.starts_with(b"_ZTV") && sig.len() > 4,
             false,
+            tag::VTABLE,
             |sig, classes| {
                 let note = format!(
                     "{}: abi.rtti={}; {}: abi.rtti={} (every user reads the kept copy's \
@@ -1358,6 +1459,36 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             out,
         );
     }
+}
+
+/// What a kind 3 comparison compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Compared {
+    /// The layout, within one scheme.
+    Layout,
+    /// The definition hash, within one scheme.
+    Definition,
+    /// Size, alignment and the shape flags, across schemes.
+    Shape,
+}
+
+/// The shape flags of a kind 3 row in words.
+fn shape_text(f: u16) -> String {
+    let mut words = Vec::new();
+    if f & flags::TYPE_ENUM != 0 {
+        words.push("an enumeration");
+    } else if f & flags::TYPE_UNION != 0 {
+        words.push("a union");
+    } else {
+        words.push("a class");
+    }
+    if f & flags::TYPE_POLYMORPHIC != 0 {
+        words.push("polymorphic");
+    }
+    if f & flags::TYPE_HAS_VBASES != 0 {
+        words.push("with virtual bases");
+    }
+    words.join(", ")
 }
 
 fn partial_note() -> String {

@@ -60,11 +60,12 @@ pub fn switches(odr: &Odr) -> Switches {
         kind5_cxx: Check::Kind5Cxx.runs(odr),
         kind5_c: Check::Kind5C.runs(odr),
         kind3_layout: Check::Kind3Layout.runs(odr),
+        kind3_shape: Check::Kind3Shape.runs(odr),
         kind3_definition: Check::Kind3Definition.runs(odr),
         kind2: Check::Kind2.runs(odr),
         internal: Check::InternalReference.runs(odr),
-        // O-32: `--odr=strict` reports what the register only counts.
-        system_std_reported: odr.mode == OdrMode::Strict,
+        // O-32: reported under strict; counted in any mode that compares.
+        system_std_reported: Check::SystemStd.runs(odr),
         inlined_only: odr.mode == OdrMode::Strict,
     }
 }
@@ -80,7 +81,7 @@ pub fn reads_containers(odr: &Odr) -> bool {
 fn stats_line(odr: Odr, c: &Counts, r: &records::Counts, micros: u128) -> String {
     format!(
         "mortar: odr-stats: mode {}; units {}, rows {} (kind 1 {}, kind 2 {}, kind 3 {}, kind 5 \
-         {}), schemes {}, pairs not compared {}, ambiguous anchors {}, unanchored rows {}, \
+         {}), schemes {}, pairs not compared {}, type groups compared across schemes {}, ambiguous anchors {}, unanchored rows {}, \
          system -std differences {}, rows set aside {}, container bytes read {}, record \
          findings {}; files with COMDAT copies {}, groups {}, copies {}, definitions {}; \
          findings W1 {}, W2 {}, W3 {}, W4 {}; time {}.{:03} ms",
@@ -93,6 +94,7 @@ fn stats_line(odr: Odr, c: &Counts, r: &records::Counts, micros: u128) -> String
         r.rows[3],
         r.schemes,
         r.pairs_not_compared,
+        r.cross_scheme,
         r.ambiguous,
         r.unanchored,
         r.system_std,

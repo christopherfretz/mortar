@@ -120,6 +120,7 @@ summary name=lang value=c++
 summary name=odr.scheme value=model-1
 summary name=std value=c++17
 definition anchor=_Z7n12_oldv hash=cccccccccccccccccccccccccccccccc class=1 flags=1 file=v.h line=1
+declaration anchor=_Z7n12_oldv ty=0x12a size=0 type_name=FivE flags=0
 #--- n12b.cc
 __attribute__((noinline)) inline int n12_old() { return 12; }
 int f12b() { return n12_old(); }
@@ -128,6 +129,7 @@ summary name=lang value=c++
 summary name=odr.scheme value=model-1
 summary name=std value=c++17
 definition anchor=_Z7n12_oldv hash=dddddddddddddddddddddddddddddddd class=1 flags=1 file=v.h line=1
+declaration anchor=_Z7n12_oldv ty=0x12b size=0 type_name=FlvE flags=1
 #--- n13a.cc
 static int helper() { return 13; }
 int f13a() { return helper(); }
