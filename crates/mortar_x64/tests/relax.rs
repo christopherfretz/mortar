@@ -556,7 +556,7 @@ fn at<'a>(relocs: &'a [Reloc], i: usize, input: &'a [u8]) -> RelocAt<'a> {
         r_offset: r.r_offset,
         key: r.key,
         r_type: r.r_type,
-        addend: r.addend,
+        addend: Some(r.addend),
         howto: Box::leak(Box::new(h)),
         site: Site { bytes: input, offset: r.r_offset },
         records: Box::leak(Box::new(relocs)),

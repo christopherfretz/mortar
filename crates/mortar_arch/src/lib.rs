@@ -117,6 +117,14 @@ pub trait Arch: Sync + 'static {
         let _ = (records, i);
         1
     }
+    /// `spec/image.md` I-14: the relocation types that raise a demand
+    /// from a non-alloc section (x86-64 `GOTOFF64` needs the GOT base,
+    /// x86.md X-53). The scan visits deferred non-alloc records of these
+    /// types only, for their demands; their checks are fill's. Empty by
+    /// default: no non-alloc record of the architecture raises a demand.
+    fn nonalloc_demand_types(&self) -> &'static [u32] {
+        &[]
+    }
 
     /// §3.7.
     fn got(&self) -> &'static GotShape;

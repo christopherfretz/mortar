@@ -28,6 +28,10 @@ pub struct RecIndex {
     /// The sections with a record whose type is in `Facts.seq_leads`,
     /// sorted (`spec/arch.md` §3.5: fill's `RelocAt.leads`).
     leads: Box<[SectionId]>,
+    /// The sections whose records the scan did not read (`spec/image.md`
+    /// I-14, WP-032c): fill checks them as it applies them, and finds
+    /// their order itself. Sorted.
+    deferred: Box<[SectionId]>,
 }
 
 impl RecIndex {
@@ -40,7 +44,34 @@ impl RecIndex {
         permuted.dedup_by_key(|p| p.0);
         leads.sort_unstable();
         leads.dedup();
-        Self { permuted: permuted.into_boxed_slice(), leads: leads.into_boxed_slice() }
+        Self {
+            permuted: permuted.into_boxed_slice(),
+            leads: leads.into_boxed_slice(),
+            deferred: Box::new([]),
+        }
+    }
+
+    /// The index with `deferred` (in any order) as the sections the scan
+    /// left to fill (I-14).
+    #[must_use]
+    pub fn with_deferred(mut self, mut deferred: Vec<SectionId>) -> Self {
+        deferred.sort_unstable();
+        deferred.dedup();
+        self.deferred = deferred.into_boxed_slice();
+        self
+    }
+
+    /// Whether the scan left `section`'s records to fill (I-14): their
+    /// order and `leads` bit are then not in the index.
+    #[must_use]
+    pub fn is_deferred(&self, section: SectionId) -> bool {
+        self.deferred.binary_search(&section).is_ok()
+    }
+
+    /// The sections the scan left to fill, in id order.
+    #[must_use]
+    pub fn deferred(&self) -> &[SectionId] {
+        &self.deferred
     }
 
     /// The order of the records of `section`'s relocation section.
@@ -73,7 +104,7 @@ impl RecIndex {
             .iter()
             .map(|p| 4 * p.1.len() + size_of::<(SectionId, Box<[u32]>)>())
             .sum::<usize>()
-            + self.leads.len() * size_of::<SectionId>()
+            + (self.leads.len() + self.deferred.len()) * size_of::<SectionId>()
     }
 }
 

@@ -1,0 +1,25 @@
+#!/bin/bash
+# The Mason lane's compiler (tests/mason/README.md "libc++"): kiln's
+# libc++ runner calls this as its --compiler. Compiles go to kiln++
+# unchanged. Links, except in mode `dyn`, are made static (libc++ and
+# glibc), drop the runner's -Bstatic/-Bdynamic/--as-needed, and use the
+# `ld` of $MASON_LANE/ld/$MASON_LD (GNU ld, lld, mold or mortar).
+# With MASON_LIB_FROM/MASON_LIB_TO, -L$MASON_LIB_FROM becomes -L$MASON_LIB_TO.
+: "${MASON_KILN:?}" "${MASON_MODE:?}"
+link=1
+for a in "$@"; do
+  case "$a" in
+    -c|-fsyntax-only|-E|-S|--precompile|-M|-MM|--version|-dumpversion|-dumpmachine|-print-*|-###) link=0;;
+  esac
+done
+[ $# = 0 ] && link=0
+if [ $link = 0 ] || [ "$MASON_MODE" = dyn ]; then exec "$MASON_KILN" "$@"; fi
+args=()
+for a in "$@"; do
+  case "$a" in
+    -Wl,--as-needed|-Wl,-Bstatic|-Wl,-Bdynamic) ;;
+    -L"${MASON_LIB_FROM:-/nonexistent}") args+=("-L$MASON_LIB_TO");;
+    *) args+=("$a");;
+  esac
+done
+exec "$MASON_KILN" "${args[@]}" -static -B"${MASON_LANE:?}/ld/${MASON_LD:?}"

@@ -66,7 +66,8 @@ pub fn lead_form(at: &RelocAt<'_>, names: &dyn SymNames) -> Option<Form> {
     if !at.leads || !matches!(at.r_type, TLSGD | TLSLD) {
         return None;
     }
-    let lead = Reloc { r_offset: at.r_offset, key: at.key, r_type: at.r_type, addend: at.addend };
+    let lead =
+        Reloc { r_offset: at.r_offset, key: at.key, r_type: at.r_type, addend: at.rela_addend() };
     let follower = at.records.get(at.index.checked_add(1)?)?;
     matched(at.site.bytes, lead, follower, names)
 }
@@ -83,6 +84,7 @@ pub fn follower_of(at: &RelocAt<'_>, names: &dyn SymNames) -> Option<(u32, Form)
     if !matches!(lead.r_type, TLSGD | TLSLD) {
         return None;
     }
-    let me = Reloc { r_offset: at.r_offset, key: at.key, r_type: at.r_type, addend: at.addend };
+    let me =
+        Reloc { r_offset: at.r_offset, key: at.key, r_type: at.r_type, addend: at.rela_addend() };
     matched(at.site.bytes, lead, me, names).map(|f| (i, f))
 }

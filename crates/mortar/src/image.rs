@@ -47,6 +47,20 @@ impl KeyFacts for WalkFacts<'_, '_, '_> {
     fn facts(&self, key: SymKey) -> SymFacts {
         self.0.facts(key)
     }
+
+    // WP-032c (image.md I-14): fill's checks of the sections the scan
+    // left to it.
+    fn facts_at(&self, key: SymKey, mention: Option<mortar_core::SymEntry>) -> SymFacts {
+        self.0.facts_at(key, mention)
+    }
+
+    fn deferred_report(
+        &self,
+        sections: &[mortar_core::SectionId],
+        pool: &mortar_core::par::Pool,
+    ) -> Vec<(mortar_diag::Key, mortar_diag::Diagnostic)> {
+        self.0.deferred_report(sections, pool)
+    }
 }
 
 /// The output path: `-o`'s value or `a.out` (image.md I-56), relative to

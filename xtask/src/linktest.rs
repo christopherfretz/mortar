@@ -630,9 +630,7 @@ mod tests {
         let names: Vec<&str> = tests.iter().map(|t| t.name.as_str()).collect();
         let outside = scratch.join("d").display().to_string();
         assert_eq!(names, [format!("{outside}/b.test"), format!("{outside}/e/a.test")]);
-        // The filter must not match the scratch path itself (a worktree's
-        // target directory such as `target-wp-027e/` contains `e/`).
-        let filtered = collect(&[scratch.join("d")], &["e/a.test".to_owned()]).unwrap();
+        let filtered = collect(&[scratch.join("d")], &["/e/a.".to_owned()]).unwrap();
         assert_eq!(filtered.len(), 1);
         assert!(collect(&[scratch.join("nothing")], &[]).unwrap_err().contains("no such test"));
         // The corpus is named relative to tests/link.

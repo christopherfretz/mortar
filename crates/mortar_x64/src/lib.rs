@@ -224,6 +224,11 @@ impl Arch for X64 {
         relax::sequence_extent(records, i)
     }
 
+    /// X-53: `R_X86_64_GOTOFF64` at a non-alloc place needs the GOT base.
+    fn nonalloc_demand_types(&self) -> &'static [u32] {
+        &[25]
+    }
+
     fn got(&self) -> &'static GotShape {
         &GOT
     }
