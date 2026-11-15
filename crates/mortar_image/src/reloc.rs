@@ -48,7 +48,7 @@ use mortar_elf::raw::{Record, Rela};
 
 const _: () = assert!(Rela::SIZE64 == 24 && Rela::SIZE32 == 12);
 
-use crate::fill::{Image, Tables};
+use crate::fill::{Image, SplitPlace, Tables};
 use crate::plan::{InputUnit, Plan, RecRows, RelaTable, RelocSection};
 use crate::source;
 use crate::tombstone;
@@ -112,6 +112,8 @@ struct MemoSlot {
     split: bool,
     /// The facts at a mention, when asked for.
     at: Option<(Option<SymEntry>, Option<SymFacts>)>,
+    /// [`Tables::split_place`], when asked for.
+    place: Option<Option<SplitPlace>>,
 }
 
 impl Memo {
@@ -138,8 +140,26 @@ impl Memo {
             return (m.value, m.split);
         }
         let (value, split) = tables.record_sym(key);
-        *slot = Some(MemoSlot { key, value, split, at: None });
+        *slot = Some(MemoSlot { key, value, split, at: None, place: None });
         (value, split)
+    }
+
+    /// [`Tables::split_target`], with the key's place read once.
+    fn split_target(
+        &mut self,
+        tables: &dyn Tables,
+        key: SymKey,
+        addend: i64,
+    ) -> Option<Result<u64, Diagnostic>> {
+        let slot = self.slot(key);
+        let place = match slot {
+            Some(m) if m.key == key => *m.place.get_or_insert_with(|| tables.split_place(key)),
+            _ => tables.split_place(key),
+        };
+        match place {
+            Some(p) => tables.split_at(&p, key, addend),
+            None => tables.split_target(key, addend),
+        }
     }
 
     /// [`Tables::record_sym_at`].
@@ -158,7 +178,7 @@ impl Memo {
             return (m.value, m.split, facts);
         }
         let (value, split, facts) = tables.record_sym_at(key, mention);
-        *slot = Some(MemoSlot { key, value, split, at: Some((mention, facts)) });
+        *slot = Some(MemoSlot { key, value, split, at: Some((mention, facts)), place: None });
         (value, split, facts)
     }
 }
@@ -698,7 +718,7 @@ pub(crate) fn relocate(
             Ok(())
         } else {
             if split {
-                match img.tables.split_target(rec.key, rec.addend) {
+                match memo.split_target(img.tables, rec.key, rec.addend) {
                     None => sym = img.tables.sym(rec.key),
                     Some(Ok(v)) => sym.s = v.wrapping_sub(rec.addend.cast_unsigned()),
                     Some(Err(d)) => {

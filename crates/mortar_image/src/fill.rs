@@ -78,6 +78,43 @@ pub trait Tables: FillTables {
         let (value, split) = self.record_sym(key);
         (value, split, self.scan_facts(key, mention))
     }
+
+    /// What [`Tables::split_target`] reads of `key` before it looks at
+    /// the addend, read once for many records (WP-032f); `None`: ask
+    /// `split_target`.
+    fn split_place(&self, key: SymKey) -> Option<SplitPlace> {
+        let _ = key;
+        None
+    }
+
+    /// [`Tables::split_target`] of `key`, whose place is `place`
+    /// (`split_place(key)`).
+    fn split_at(
+        &self,
+        place: &SplitPlace,
+        key: SymKey,
+        addend: i64,
+    ) -> Option<Result<u64, Diagnostic>> {
+        let _ = place;
+        self.split_target(key, addend)
+    }
+}
+
+/// Where a split target is defined ([`Tables::split_place`]): the input
+/// section, whether it is a `Merge` section (else an `.eh_frame`), the
+/// symbol's `st_value` and whether it is the section's symbol, the
+/// tables' own row of the section (`u32::MAX`: none) and, for a `Merge`
+/// section, the value of offset 0 of its output section's merged chunk
+/// when the tables know it (every fragment of the section's pieces is in
+/// that chunk: S-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplitPlace {
+    pub section: mortar_core::SectionId,
+    pub merge: bool,
+    pub value: u64,
+    pub section_sym: bool,
+    pub row: u32,
+    pub chunk_base: Option<u64>,
 }
 
 /// What merged chunks are written from (I-38): phase 50's fragment order

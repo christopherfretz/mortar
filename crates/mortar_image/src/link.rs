@@ -47,7 +47,7 @@ use mortar_synth::{
     BuildIdPlan, Division, EhPlan, EhSource, EhValue, EhWho, PropertyPlan, ShstrtabPlan, SynthChunk,
 };
 
-use crate::fill::{self, EhFill, Failed, Filled, Image, MergedFrags, Tables};
+use crate::fill::{self, EhFill, Failed, Filled, Image, MergedFrags, SplitPlace, Tables};
 use crate::headers::{self, Ehdr, Phdr, Shdr};
 use crate::layout_plan::{self, Extras, Model, SynthRow};
 use crate::output::{Output, OutputOptions};
@@ -632,52 +632,76 @@ impl Tables for LinkTables<'_, '_> {
     }
 
     fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<u64, Diagnostic>> {
+        let place = self.split_place(key)?;
+        self.split_at(&place, key, addend)
+    }
+
+    fn split_place(&self, key: SymKey) -> Option<SplitPlace> {
         let e = self.def_entry(key)?;
         let Ok((s, sym)) = self.entry_place(e)? else { return None };
         let section_sym = sym.sym_type() == STT_SECTION;
+        let merge = match self.kind_of(s)? {
+            SectionKind::Merge if section_sym => true,
+            SectionKind::EhFrame => false,
+            _ => return None,
+        };
+        let row = if merge { self.pieces.row_of(s).unwrap_or(u32::MAX) } else { u32::MAX };
+        let chunk_base = merge
+            .then(|| {
+                let chunk = self.addrs.merged_chunk(self.link.assignment.out(s)?)?;
+                Some(self.chunk_at(chunk, 0)?.1)
+            })
+            .flatten();
+        Some(SplitPlace { section: s, merge, value: sym.st_value, section_sym, row, chunk_base })
+    }
+
+    fn split_at(
+        &self,
+        place: &SplitPlace,
+        _key: SymKey,
+        addend: i64,
+    ) -> Option<Result<u64, Diagnostic>> {
+        let &SplitPlace { section: s, merge, value, section_sym, row, chunk_base } = place;
         let malformed = |what: String| Diagnostic::error(Kind::Malformed { what });
-        match self.kind_of(s)? {
-            SectionKind::Merge if section_sym => {
-                let r = (sym.st_value as i64).wrapping_add(addend);
-                let found = if let Some(found) = self.pieces.section_symbol(self.link.split, s, r) {
-                    found
-                } else {
-                    let size = self.section_size(s)?;
-                    refs::section_symbol(self.link.split, s, size, r)
-                };
-                Some(match found {
-                    Ok(p) => self
-                        .frag_value(p.frag)
-                        .and_then(|a| a.checked_add(p.within))
-                        .ok_or_else(|| internal("fill: a live merge piece has no address")),
-                    Err(w) => Err(malformed(w.message())),
-                })
-            }
-            SectionKind::EhFrame => {
-                let Some((plan, src)) = self.link.eh else {
-                    return Some(Err(internal(
-                        "fill: a reference into .eh_frame without its plan",
-                    )));
-                };
-                let Some((_, eh)) = self.eh_frame else {
-                    return Some(Err(internal(
-                        "fill: a reference into .eh_frame without the chunk",
-                    )));
-                };
-                let r = if section_sym {
-                    (sym.st_value as i64).wrapping_add(addend)
-                } else {
-                    sym.st_value as i64
-                };
-                let tail = if section_sym { 0 } else { addend };
-                Some(match plan.value(src, s, r, EhWho::Reloc) {
-                    Ok(EhValue::Offset(o)) => Ok(eh.wrapping_add(o).wrapping_add(tail as u64)),
-                    Ok(EhValue::Dropped) => Err(internal("fill: a relocation to a dropped symbol")),
-                    Err(e) => Err(e.into_diagnostic()),
-                })
-            }
-            _ => None,
+        if merge {
+            let r = (value as i64).wrapping_add(addend);
+            let found = if let Some(found) = self.pieces.section_symbol_in(self.link.split, row, r)
+            {
+                found
+            } else {
+                let size = self.section_size(s)?;
+                refs::section_symbol(self.link.split, s, size, r)
+            };
+            // S-13: the piece's fragment is in the section's output
+            // section's merged chunk.
+            let frag_value = |frag| match chunk_base {
+                Some(base) => {
+                    let v = self.link.layout.merge.offset(frag).and_then(|o| base.checked_add(o));
+                    debug_assert_eq!(v, self.frag_value(frag), "S-13");
+                    v
+                }
+                None => self.frag_value(frag),
+            };
+            return Some(match found {
+                Ok(p) => frag_value(p.frag)
+                    .and_then(|a| a.checked_add(p.within))
+                    .ok_or_else(|| internal("fill: a live merge piece has no address")),
+                Err(w) => Err(malformed(w.message())),
+            });
         }
+        let Some((plan, src)) = self.link.eh else {
+            return Some(Err(internal("fill: a reference into .eh_frame without its plan")));
+        };
+        let Some((_, eh)) = self.eh_frame else {
+            return Some(Err(internal("fill: a reference into .eh_frame without the chunk")));
+        };
+        let r = if section_sym { (value as i64).wrapping_add(addend) } else { value as i64 };
+        let tail = if section_sym { 0 } else { addend };
+        Some(match plan.value(src, s, r, EhWho::Reloc) {
+            Ok(EhValue::Offset(o)) => Ok(eh.wrapping_add(o).wrapping_add(tail as u64)),
+            Ok(EhValue::Dropped) => Err(internal("fill: a relocation to a dropped symbol")),
+            Err(e) => Err(e.into_diagnostic()),
+        })
     }
 }
 
