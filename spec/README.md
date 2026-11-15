@@ -20,7 +20,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `resolve.md` | `mortar_resolve`: symbol resolution | planned (WP-022) |
 | `arch.md` | `mortar_arch`: the `Arch` trait | planned (WP-013) |
 | `a64.md`, `x64.md`, `x86.md` | the relocation tables, PLT/GOT/TLS/thunk shapes per architecture | planned (WP-013, WP-029, WP-030) |
-| `layout.md` | `mortar_layout`: output sections, segments, addresses | planned (WP-024) |
+| `layout.md` | `mortar_layout`: output sections, segments, addresses | draft (WP-024 stage 1) |
 | `synth.md` | `mortar_synth`: synthetic sections | planned (WP-025) |
 | `image.md` | `mortar_image`: image synthesis, the writer, debug sections | planned (WP-026) |
 | `plumb.md` | `mortar_plumb`: the verifier and the map-file format | stage 1: static non-PIE AArch64 (WP-011); TLS, IFUNC, `.eh_frame` stage 2 |
