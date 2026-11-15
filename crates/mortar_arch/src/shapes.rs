@@ -285,11 +285,11 @@ pub enum Weak0Rule {
 #[must_use]
 pub const fn x86_property_merge(pr_type: u32) -> Option<PropMerge> {
     match pr_type {
-        0xc000_0000 => Some(PropMerge::OrAll),
-        0xc000_0001 => Some(PropMerge::Or),
+        // COMPAT_ISA_1_NEEDED and the UINT32_OR range.
+        0xc000_0001 | 0xc000_8000..=0xc000_ffff => Some(PropMerge::Or),
         0xc000_0002..=0xc000_7fff => Some(PropMerge::And),
-        0xc000_8000..=0xc000_ffff => Some(PropMerge::Or),
-        0xc001_0000..=0xc001_7fff => Some(PropMerge::OrAll),
+        // COMPAT_ISA_1_USED and the UINT32_OR_AND range.
+        0xc000_0000 | 0xc001_0000..=0xc001_7fff => Some(PropMerge::OrAll),
         _ => None,
     }
 }
