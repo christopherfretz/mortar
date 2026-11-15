@@ -225,6 +225,12 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str("attempted static link of dynamic object ");
             escaped(path, out);
         }
+        Kind::CetReport { path, property } => {
+            escaped(path, out);
+            out.push_str(": missing ");
+            escaped(property, out);
+            out.push_str(" property (-z cet-report)");
+        }
         Kind::Malformed { what } => escaped(what, out),
         Kind::UnknownFileType => out.push_str(NOT_RECOGNIZED),
         Kind::UnknownProperty { path, pr_type } => {
@@ -345,11 +351,11 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             let _ = write!(out, ": {value} is not aligned to {align} bytes");
         }
         Kind::RelocationOutOfRange { r_type, value, min, max, name } => {
-            out.push_str("relocation ");
+            out.push_str("relocation truncated to fit: ");
             escaped(r_type, out);
-            let _ = write!(out, " out of range: {value} is not in [{min}, {max}]; references '");
+            out.push_str(" against '");
             let shown = symbol_into(name, style, out);
-            out.push('\'');
+            let _ = write!(out, "': {value} is not in [{min}, {max}]");
             return shown.then_some(name);
         }
         Kind::ExecutableStack { file } => {

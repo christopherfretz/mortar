@@ -63,6 +63,10 @@ The whole pipeline, in its final shape, on the smallest useful case.
   link is refused; it is never accepted without effect.
 - A static C hello-world, then static C++ with exceptions, link and run.
 - `--time-phases`; determinism test; first mortar rows in the bench.
+- x86-64: the static-pie rows of the architecture specs are specified
+  and tagged now, and `mortar_x64` implements and unit-tests them
+  (`spec/x64.md` X-9, X-15, X-56, §10); the end-to-end static-pie link
+  test is an M2 gate, with the generic `.dynamic`/`RELATIVE` work.
 
 **Done when:** the static subset of the link tests passes with the verifier
 clean, and static C and C++ test programs behave as with every reference.
@@ -113,7 +117,7 @@ Parallel tracks, each closing a class of real-world links.
   `-Bsymbolic*`, `--dynamic-list`, `DT_SONAME`, `DT_RUNPATH`.
 - Linker scripts: `SECTIONS`, `MEMORY`, `PHDRS`, expressions, `PROVIDE`,
   `KEEP`, `INSERT`.
-- `-r`, `-static-pie`, `--wrap`, `--defsym`, `--exclude-libs`,
+- `-r`, `-static-pie` (x86-64's rows from M1 and M2, above), `--wrap`, `--defsym`, `--exclude-libs`,
   `--start-lib`, `--push-state`, RELR, compressed debug sections,
   `.gdb_index`, `.debug_names`, identical code folding, `--emit-relocs`.
 - External suites (L9): mold's and lld's tests with recorded pass lists.

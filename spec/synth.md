@@ -43,10 +43,12 @@ are never reused. A withdrawn rule keeps its id and is marked "withdrawn".
   decide differently.
 
 **Milestones.** M1: static non-PIE AArch64 executables; M2: dynamic
-outputs; M3: x86-64; M4: i386; M7: incremental linking. A rule tagged
+outputs; M3: x86-64 (its static rules are M1 since `spec/x64.md` X-3 and
+`docs/ROADMAP.md` M1); M4: i386; M7: incremental linking. A rule tagged
 with a later milestone binds the design now: an M1 implementation must
 not make that rule hard to add. A rule with no tag applies from M1. Rules
-that name x86-64 or i386 are M3 and M4 rules; they are written now
+that name x86-64 are M1 (static) and M2 (dynamic) rules, those that name
+i386 M4 rules; they are written now
 because the shapes are shared.
 
 **Words.** A **piece** is a part of a split input section (a string, a
@@ -807,7 +809,7 @@ which values are written where.
     entry (GNU and lld keep the three in a static link with only an
     IFUNC, X-22); `_GLOBAL_OFFSET_TABLE_` is its start (layout L-101).
     Keeping them whenever `.got.plt` exists means a new `GOTOFF`
-    reference moves nothing [M3]; x86's crt files demand `GOT_BASE` anyway;
+    reference moves nothing (x86-64 [M1], `spec/x64.md` X-36); x86's crt files demand `GOT_BASE` anyway;
   - on AArch64: one word per IPLT entry (a64.md §10.2; X-22).
 
   IPLT slot `n` is word `reserved + n`. A `.got.plt` with no words does
@@ -827,7 +829,8 @@ which values are written where.
   `r_offset` the entry's `.got.plt` word, symbol 0, and:
   - RELA (AArch64, x86-64): `r_addend` the resolver's address, and the
     word itself written 0 (lld; GNU writes the PLT entry's address on
-    AArch64 and 0 on x86-64; glibc overwrites the word, X-22);
+    AArch64 and the entry's address + 6 (the lazy-PLT
+    convention) on x86-64 (`spec/x64.md` E3); glibc overwrites the word, X-22);
   - REL (i386): the word itself holds the resolver's address, which is
     the implicit addend (GNU and lld, X-22).
 
@@ -842,11 +845,13 @@ which values are written where.
   would have, layout §13). glibc's static start-up applies every entry
   between them. They are `STB_LOCAL` in `.symtab` (layout §13).
 
-  Under `-static-pie` [M2] every `IRELATIVE` is in `.rela.dyn`
+  Under `-static-pie` [the rule now; the end-to-end gate M2, `docs/ROADMAP.md`] every `IRELATIVE` is in `.rela.dyn`
   (`.rel.dyn`), applied by self-relocation, and there is no `.rela.plt`;
   `__rela_iplt_*` (`__rel_iplt_*`) are not defined, so glibc's weak
-  references are 0, an empty range (resolve.md §8.1, WP-022 ruling 7; GNU
-  and lld; mold defines them absolute 0). Bounding the entries would make
+  references are 0, an empty range (resolve.md §8.1, WP-022 ruling 7; lld. GNU ld instead keeps the
+  `IRELATIVE`s in `.rela.plt`, reached through `DT_JMPREL`, with one more
+  in `.rela.dyn`; mold puts them in `.rela.dyn` and defines the symbols
+  absolute 0; all three run; `spec/x64.md` X-56). Bounding the entries would make
   glibc apply each a second time, with an unrelocated addend.
 - **S-71 [C] (the IFUNC's address and its symbol).** Every address of an
   IFUNC `f` with an IPLT entry that a relocation writes (a call, a GOT
@@ -1227,18 +1232,24 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
   X-33):
   - **`And`**: the AND of every input's value, an absent input counting
     0; omitted if 0. AArch64 `FEATURE_1_AND` (0xc0000000: BTI 1, PAC 2,
-    GCS 4), x86 `FEATURE_1_AND` (0xc0000002: IBT 1, SHSTK 2), and the
+    GCS 4), x86 `FEATURE_1_AND` (0xc0000002: IBT 1, SHSTK 2) and the rest of 0xc0000002..
+    0xc0007fff (`UINT32_AND`), and the
     generic range 0xb0000000..0xb0007fff (`UINT32_AND`). GNU and lld
     agree, GCS included (GNU 2.44, lld 22); lld drops the generic range;
     mold writes no AArch64 property;
   - **`Or`**: the OR of the inputs that have it, present if any has it.
-    x86 `ISA_1_NEEDED` (0xc0008002) and the other 0xc0008000..0xc0008fff
-    types, and the generic range 0xb0008000..0xb000ffff (`UINT32_OR`,
+    x86 `ISA_1_NEEDED` (0xc0008002) and the other 0xc0008000..0xc000ffff types
+    (binutils `GNU_PROPERTY_X86_UINT32_OR_HI`; GNU ld and mold OR
+    0xc000f000, `spec/x64.md` E4), x86 `COMPAT_ISA_1_NEEDED`
+    (0xc0000001, no `unknown-property`: GNU ld's merge; lld and mold drop
+    it; `spec/x64.md` X-41), and the generic range 0xb0008000..0xb000ffff (`UINT32_OR`,
     whose first type is `GNU_PROPERTY_1_NEEDED`, emitted by
     `-mno-direct-extern-access`). GNU and mold agree; lld drops them;
   - **`OrAll`** (new, §14): the OR of the inputs, present only if every
     input has it. x86 `ISA_1_USED` (0xc0010002), `FEATURE_2_USED`
-    (0xc0010001) and the other 0xc0010000..0xc0017fff types (GNU, mold;
+    (0xc0010001) and the other 0xc0010000..0xc0017fff types, and x86
+    `COMPAT_ISA_1_USED` (0xc0000000, no `unknown-property`: GNU ld's
+    merge; lld and mold drop it; `spec/x64.md` X-41) (GNU, mold;
     arch.md §3.13 calls `FEATURE_2_USED` `Or`, which X-20 refutes);
   - **`Max`**: `GNU_PROPERTY_STACK_SIZE` (1), the largest value over the
     inputs that have it; absent inputs do not count (GNU; lld and mold
@@ -1481,7 +1492,7 @@ edit changes.
 | static IPLT sections | `.plt`, `.rela.plt`, `.got.plt` | `.iplt`, `.rela.dyn`, `.got.plt` | `.plt.got`, `.rela.dyn` | GNU's (S-68) | |
 | an IFUNC in `.symtab` | `IFUNC` at the resolver, always | `FUNC` at `.iplt`, size 0, when canonical; else `IFUNC` | `FUNC` locals at `.plt.got` (A1, A2) | `IFUNC` at the resolver, always (S-71) | gdb's `break f` works (X-27) |
 | `__rela_iplt_*` under `-static-pie` | not defined | not defined | absolute 0 | not defined (S-70) | resolve.md §8.1 |
-| IRELATIVE word (RELA) | AArch64: PLT address; x86-64: 0 | 0 | — | 0 (S-69) | glibc overwrites it |
+| IRELATIVE word (RELA) | AArch64: PLT address; x86-64: the entry's address + 6 (`spec/x64.md` E3) | 0 | — | 0 (S-69) | glibc overwrites it |
 | x86 static `.got.plt` reserved words | 3 | 3 | — | 3 (S-67) | |
 | section symbols in `.symtab` | AArch64 yes, x86 no | none | all | none (S-79) | |
 | `.L` locals | dropped | dropped | kept | dropped (S-78) | |
@@ -1495,6 +1506,7 @@ edit changes.
 | AArch64 `.note.gnu.property` | AND | AND | none written | AND (S-95) | BTI/PAC enforcement |
 | x86 `ISA_1_NEEDED` | OR | dropped | OR | OR (S-95) | |
 | x86 `*_USED` | OR if all have it | — | OR if all have it | OR if all have it (S-95) | |
+| x86 `COMPAT_ISA_1_USED` / `_NEEDED` (0xc0000000, 0xc0000001) | OR if all have it / OR | dropped | dropped | GNU's (S-95) | `spec/x64.md` X-41 |
 | several property notes in one object | OR within the object | OR within the object | — | as separate objects: AND for `And` types (S-126) | a BTI claim no note made could fault |
 | generic AND/OR ranges (0xb0000000..) | AND / OR | dropped | dropped | AND / OR (S-95) | GNU |
 | `STACK_SIZE`, `NO_COPY_ON_PROTECTED` | max / present if any | dropped | dropped | max / present if any (S-95) | GNU |
@@ -1679,11 +1691,14 @@ which is refused by name."
 Proposed: "`property_merge(pr_type)` gives the rule for a processor-range
 type (0xc0000000..0xdfffffff): `And` (an input without the property
 counts as 0; the property is omitted when the result is 0; AArch64
-`FEATURE_1_AND` with BTI, PAC and GCS, x86 `FEATURE_1_AND`), `Or` (the OR
+`FEATURE_1_AND` with BTI, PAC and GCS, x86 `FEATURE_1_AND` and the rest
+of `0xc0000002..0xc0007fff`), `Or` (the OR
 of the inputs that have it, present if any has it; x86 `ISA_1_NEEDED`
-and the other `0xc0008000..0xc0008fff` types), `OrAll` (the OR of the
+and the other `0xc0008000..0xc000ffff` types, and `COMPAT_ISA_1_NEEDED`
+0xc0000001), `OrAll` (the OR of the
 inputs, present only if every input has it; x86 `ISA_1_USED`,
-`FEATURE_2_USED` and the other `0xc0010000..0xc0017fff` types),
+`FEATURE_2_USED` and the other `0xc0010000..0xc0017fff` types, and
+`COMPAT_ISA_1_USED` 0xc0000000),
 `EqualOrAbsent` (AArch64 `FEATURE_PAUTH`: copied when every input that
 has it agrees, refused when two disagree) or `None` for a type the
 architecture does not know, which `spec/synth.md` S-95 drops with the

@@ -50,7 +50,8 @@ implement it:
 
 - M1: static non-PIE executables on AArch64;
 - M2: dynamic executables, PIE and shared objects;
-- M3: x86-64;
+- M3: x86-64 (its static rules are M1 since `spec/x64.md` X-3 and
+  `docs/ROADMAP.md` M1; an x86-64 `[M3]` tag here reads as M1 static, M2 dynamic);
 - M4: i386;
 - M7: incremental linking.
 
@@ -294,7 +295,7 @@ wins.
 | `.gnu.warning`, `.gnu.warning.SYM` | consumed: no output section. The text is resolve.md's `gnu-warning` (§10 there): for `.gnu.warning.SYM`, once, when a live input other than the defining file references `SYM`; for plain `.gnu.warning`, when its file is linked in (GNU). Static glibc's `libc.a` carries `.gnu.warning.dlopen` and others in members every static link extracts. lld copies them into the output as orphans, mold into one `.gnu.warning`, GNU consumes them; none warns unless the symbol is used (E-17) | L-33 |
 | `.note.gnu.property` | consumed by synthesis (`spec/arch.md` / `synth.md`), which builds the merged property note | L-34 |
 | `SHT_AARCH64_ATTRIBUTES` (`.ARM.attributes`, AArch64) | accepted and consumed: no output section. Feature marking comes only from the AND-merged `.note.gnu.property` (L-34). Clang 22 emits both for every `-mbranch-protection` value but `none`; GCC 14 and Clang 19 emit only the note (E-18). GNU drops the section, lld copies it, mold drops it and emits no property note at all (E-18) | L-35 |
-| `SHF_X86_64_LARGE` set | refused (`section-flag`, `SHF_X86_64_LARGE`) [M3] | L-36 |
+| `SHF_X86_64_LARGE` set (x86-64) | accepted: the output section is `.ltext`, `.lrodata`, `.ldata` or `.lbss` by flags and type (exec; read-only; writable `PROGBITS`; `NOBITS`), whatever the input name, and keeps the flag; with `SHF_TLS` refused (`section-flag`, `SHF_X86_64_LARGE`) [M1] | L-36 |
 | `.gnu.linkonce.*` | refused (`feature`, `.gnu.linkonce sections`): pre-COMDAT, and no current compiler emits it | L-37 |
 | non-allocated `.debug*` under `-S`/`-s` (`.debug_str`, `.debug_line_str` too) | go nowhere (resolve.md §10: `Dropped(Stripped)`) | L-158 |
 | `.zdebug_*` | refused (`compression-type`, `.zdebug`). Only `SHF_COMPRESSED` is accepted | L-38 |
@@ -346,7 +347,7 @@ wins.
 | `.data.rel.ro` | `.data.rel.ro` (`.data.rel.ro.local*` included) | M1 |
 | `.data` | `.data` | M1 |
 | `.bss.rel.ro` | `.bss.rel.ro` | M2 |
-| `.bss` | `.bss`, and the commons of §12.4 | M1 |
+| `.bss` | `.bss`, and the commons of §12.2 | M1 |
 | `.tdata` | `.tdata` | M1 |
 | `.tbss` | `.tbss` | M1 |
 | `.preinit_array` | `.preinit_array` | M1 |
@@ -364,7 +365,15 @@ wins.
     orphans in mortar;
   - GNU folds `.gnu.linkonce.*` and `.text.*_unlikely`;
   - lld's list matches the table, with `.ldata`/`.lrodata`/`.lbss` added
-    for x86-64 large sections (M3, refused by L-36).
+    for x86-64 large sections (L-36; mortar places them by L-36a, not where
+    lld does).
+- **L-36a [M1] (x86-64 large sections).** The large output sections
+  follow every other alloc section, `.bss` and the commons included, in
+  the order `.lrodata` (its own R `PT_LOAD`), `.ltext` (its own RX
+  `PT_LOAD`), `.ldata` then `.lbss` (one RW `PT_LOAD`); an empty one is
+  omitted. No other section's address depends on their size, so the
+  small-model sections stay within 2 GiB of each other however large the
+  large data is (`spec/x64.md` X-54).
 - **L-45 [C]** Notes (`SHT_NOTE`) are not merged by name. Each distinct
   note name is its own output section, with the name kept:
   `.note.ABI-tag`, `.note.stapsdt` and the rest. The synthetic notes are
@@ -882,7 +891,9 @@ order of the output sections themselves is in §10.
   order, each aligned to its `st_value` (the common alignment). GNU
   orders commons by name within the `COMMON` pattern, lld by input
   order. The order has no observable effect. `SymbolId` is
-  deterministic and needs no sort.
+  deterministic and needs no sort. A large common (x86-64
+  `SHN_X86_64_LCOMMON`, `spec/resolve.md` §3.3) is allocated the same
+  way in `.lbss` (L-36a; `spec/x64.md` X-55).
 - **L-89 [C] [M1]** A TLS common (`STT_TLS` with `SHN_COMMON`) is
   refused (`feature`, `TLS common symbol`). GCC emits it only with
   `-fcommon` on TLS variables, which no current default does.
@@ -903,9 +914,11 @@ order of the output sections themselves is in §10.
   that does not make the rule optional.
   This is a choice. GNU's AArch64 script fills `.init`, `.text` and
   `.fini` with `NOP` (`=0x1f2003d5` in `ld --verbose`), so a gap inside
-  `.text` is a slide into the next function; GNU's x86 scripts give no
-  fill (zeros, which decode as `add` on x86). lld's and mold's fill was
-  not examined. mortar's trap fill turns a fall into a gap into a crash
+  `.text` is a slide into the next function; GNU ld fills x86-64 `.text`
+  and `.init` gaps with multi-byte NOPs (`66 2e 0f 1f 84 00 …`,
+  `66 0f 1f 44 00 00`, `0f 1f 40 00`); lld 22 and mold 2.37.1 fill both
+  with `0xCC`, which inside `.init` traps at start-up when an aligned
+  `.init` fragment follows crti (`spec/x64.md` X-50, W8). mortar's trap fill turns a fall into a gap into a crash
   at the gap.
 - **L-83 [C]** The bytes between segments in the file, under
   separate-code, are zeros in data and the trap pattern in exec. Bytes
@@ -1511,7 +1524,7 @@ New refusal names (class `feature` unless noted):
 - `entry point outside code`;
 - `_TLS_MODULE_BASE_ without TLS`;
 - `non-PIE image base 0`;
-- class `section-flag`: `SHF_X86_64_LARGE`.
+- class `section-flag`: `SHF_X86_64_LARGE` with `SHF_TLS` (x86-64, L-36).
 
 (`.gnu.linkonce` and `.zdebug` are resolve.md's refusals already.)
 

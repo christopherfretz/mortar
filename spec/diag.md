@@ -172,6 +172,7 @@ is added before or after it.
 | `script-cycle` | `ScriptCycle` | `linker script names itself` | own |
 | `skipped-incompatible` | `SkippedIncompatible { path, search }` | `skipping incompatible {path} when searching for {search}` | GNU ld (§8.3) |
 | `static-link-of-shared-object` | `StaticLinkOfSharedObject { path }` | `attempted static link of dynamic object {path}` | GNU ld, lld (§8.3) |
+| `cet-report` | `CetReport { path, property }` | `{path}: missing {property} property (-z cet-report)` | own (GNU ld: `an.o: error: missing IBT and SHSTK properties`); severity from `-z cet-report` (`spec/x64.md` X-43) |
 | `malformed-input` | `Malformed { what }` | `{what}` | lld's shape |
 | `unknown-file-type` | `UnknownFileType` | `file not recognized: file format not recognized` | GNU ld (§8.3) |
 | `unknown-property` | `UnknownProperty { path, pr_type }` | `{path}: unsupported GNU_PROPERTY_TYPE {pr_type:#x}; property dropped` | GNU ld's phrase; a warning (`spec/synth.md` S-95, R-D2) |
@@ -195,7 +196,7 @@ is added before or after it.
 | `version-reassigned` | `VersionReassigned { name, first, second }` | `{name} is assigned to version {first} and {second}; {first} is kept` | own |
 | `relocation-incompatible` | `RelocationIncompatible { r_type, name, reason }` | `relocation {r_type} cannot be used against symbol '{name}'; {reason}` | lld's shape, with a reason (§3.2) |
 | `relocation-misaligned` | `RelocationMisaligned { r_type, value, align }` | `improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes` | lld |
-| `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation {r_type} out of range: {value} is not in [{min}, {max}]; references '{name}'` | lld |
+| `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation truncated to fit: {r_type} against '{name}': {value} is not in [{min}, {max}]` | lld's value and bounds; GNU ld's phrase |
 | `executable-stack` | `ExecutableStack { file }` | `{file}: requires executable stack (because the .note.GNU-stack section is executable)` | GNU ld |
 | `output-too-large` | `OutputTooLarge { what, limit }` | `output too large: {what} exceeds {limit}` | own (lld: `output file too large`) |
 | `section-conflict` | `SectionConflict { name, first, second }` | `section {name}: {first} and {second} inputs cannot be combined` | own (lld: `section type mismatch for {name}`) |
@@ -299,6 +300,11 @@ is added before or after it.
   `version-reassigned` are warnings, the others errors. `gnu-warning`'s
   `{text}` is the section's text, as written, after §5.5; it names no
   symbol for §5.4.
+- `cet-report` (`spec/x64.md` X-43, R-11): `{property}` is `IBT` or
+  `SHSTK`, one diagnostic per (live input object, missing property),
+  `.at` nothing (the path is in the message, as `unknown-property`). Its
+  severity is the option's: a warning under `-z cet-report=warning`, an
+  error under `=error`; none is emitted under `=none`.
 - The **relocation kinds** are reported with `.at` the relocation's place
   (`file:(section+0xoff)`); for a synthetic chunk (a PLT entry, a thunk, a
   patch) the place is the output section and offset. `{r_type}` is the
@@ -759,6 +765,7 @@ after it (`undefined-symbol`, `duplicate-symbol`), so both searches match.
 | `attempted static link of dynamic object` | `static-link-of-shared-object` | the whole message |
 | `needed by {path}, not found (try using -rpath or -rpath-link)` | `needed-not-found` | the whole message |
 | `cannot find entry symbol` | `entry-not-found` | the whole message (GNU ld's line goes on with `; defaulting to …`, which mortar cannot promise: the address is layout's) |
+| `relocation truncated to fit: {r_type} against` | `relocation-out-of-range` | the start of the message, then lld's value and bounds (`spec/x64.md` X-34) |
 
 Every kind in the list holds the phrase; `tests/kinds.rs` checks each
 message whole, and `tests/kinds.rs` `wording_policy_phrases` checks the
