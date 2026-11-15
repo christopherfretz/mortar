@@ -944,3 +944,372 @@ objects.
   and the state.
 - **IN-49 [v1] The map** (`--mortar-map`, plumb.md §2.3) is rewritten
   whole (image.md I-99), with `hole` and `dead` lines (§8.2).
+
+## 6. Debug information
+
+What a debug contribution is: for each input file and each debug output
+section, the file's bytes in that section (`nplace` lines of the map).
+The file is the unit (§1.2): every edit class that adds or removes a
+symbol changes 99–100% of the file's `.debug_info` (§1.1). Debug
+contributions refer to their own file only (104 of 170,477 debug pairs
+name a global, §1.4), so a debug contribution is refilled when its file
+changes or when one of its file's sections moves (IN-25).
+
+- **IN-50 [v1] Where a new contribution goes.** A changed file's new
+  debug contributions are appended at the tails of their debug sections,
+  within the tail reserve (IN-33). The old contributions become dead.
+  The order of units in `.debug_info` is then no longer the load order;
+  nothing in DWARF depends on unit order (units are found by offset,
+  through `.debug_aranges`, or by walking), and E6 links the new unit
+  last with equal gdb transcripts. *Test:* E6b in L10 (IN-59).
+- **IN-51 [v1] Dead `.debug_info` units are neutralized.** Each unit of
+  a dead contribution keeps its offset and its `unit_length`; its header
+  becomes a compile-unit header (DWARF 5: `DW_UT_compile`; type and
+  skeleton units are converted, their longer headers' extra bytes
+  becoming null entries) of the same version, address size and
+  abbreviation offset; its DIE stream becomes the byte `01` followed by
+  zero bytes (null entries) to the unit's end. The file's dead
+  `.debug_abbrev` contribution becomes, at each offset a dead unit names,
+  the six bytes `01 11 00 00 00 00` (code 1, `DW_TAG_compile_unit`,
+  `DW_CHILDREN_no`, no attributes, end of table), and zero bytes
+  everywhere else (each zero byte is an empty table). Measured (E6b, §1.6):
+  with GCC and Clang, DWARF 4 and 5, gdb 16.3's transcript equals the
+  from-scratch link's and lldb 19's differs only in a placement offset;
+  `llvm-dwarfdump --verify` passes. Zeroing only the first six bytes of
+  the dead table broke lldb (it parses `.debug_abbrev` as a sequence of
+  tables). Converted type and skeleton units were not tested here: S5
+  tests them before relying on them, and until then a changed file with
+  type units (`.debug_types`, `DW_UT_type`) or split-DWARF skeletons
+  falls back (`debug-unit-kind`). *Test:* E6/E6b's transcripts per
+  compiler and DWARF version, in L10.
+- **IN-52 [v1] Why not tombstones alone.** A dead unit left with
+  tombstoned addresses (image.md I-47, what a full link with
+  `--gc-sections` writes for a collected file's debug information) is
+  still enumerated: gdb lists its variables, and lldb lists them and picks
+  its stale type as the best match (E6, §1.6). That is acceptable for a
+  file a full link collected (its types and variables were never part of
+  the program), and not for the old version of a file whose new version
+  is live. Hence IN-51 for replaced files; a file that disappears from
+  the link (no longer extracted, removed from the command line) is
+  neutralized too, so that an update's debug information never holds
+  more than a full link's.
+- **IN-53 [v1] Contributions reached only by offset stay as written.**
+  The dead contributions in `.debug_line`, `.debug_str_offsets`,
+  `.debug_addr`, `.debug_rnglists`, `.debug_loclists`, `.debug_ranges`,
+  `.debug_loc`, `.debug_macro` and `.debug_frame` keep their bytes, with
+  every address in them tombstoned (image.md I-47) when the sections they
+  name are no longer placed; nothing that is live names them. E6b left
+  `.debug_line`, `.debug_str_offsets`, `.debug_addr`, `.debug_rnglists`
+  and `.debug_aranges` this way and measured equal transcripts; the
+  others are what a full link already writes for collected sections.
+  *Test:* `llvm-dwarfdump --verify` of every L10 step with `-g`.
+- **IN-54 [v1] Address lookup tables.** `.debug_aranges` sets of a dead
+  contribution keep their bytes with tombstoned ranges (length 0, as
+  I-47 writes them), which match no address (measured in E6b with GCC,
+  which emits the section). A new contribution's set is appended.
+- **IN-55 [v1] Name indexes fall back.** `.debug_pubnames`,
+  `.debug_pubtypes`, `.debug_gnu_pubnames`, `.debug_gnu_pubtypes` and
+  `.debug_names` are enumerated by name: a dead contribution's entries
+  would find the dead unit. A changed or removed file with any of these
+  falls back (`debug-name-index`) in v1. [later] Neutralize its sets
+  (a header with no entries, padded), once transcripts with
+  `-ggnu-pubnames` and `-gpubnames` show it equivalent. Neither hod nor
+  the bench's GCC and Clang defaults emit them (§8.3).
+- **IN-56 [v1] Strings.** `.debug_str` and `.debug_line_str` are merged
+  sections: new strings are appended (S-110), dead ones stay. A neutralized
+  unit names no string.
+- **IN-57 [v1] Compaction.** When the dead bytes of a debug section
+  exceed a quarter of its size, or its tail reserve is exhausted, the
+  update falls back (`debug-compaction`): the full link writes the debug
+  sections without dead units. [later] A debug-only rewrite: the
+  allocated part of the output is untouched (no address depends on a
+  non-allocated section), and only the non-allocated sections are
+  rewritten compactly (the debug part of the image phase, about 85 ms
+  of the 128 ms on protoc, *estimate*).
+- **IN-58 [v1] Debug options.** `--compress-debug-sections` other than
+  `none`, `--gdb-index` and `--debug-names` (generated indexes) are not
+  supported in incremental mode (IN-12): a compressed section cannot be
+  updated by window, and a generated index is a function of every unit.
+  `--strip-debug`/`-S` is supported (no debug sections at all).
+- **IN-59 [v1] What "the same debug information" means.** For IN-2,
+  debug information is compared by the debuggers' view: the transcripts
+  of fixed gdb and lldb sessions (E6's commands: break by name and line,
+  run, backtrace, `info line`/`source list`, `print`/`frame variable`,
+  `ptype`/`image lookup -t`, step, `info functions`/`image lookup -n`,
+  `info variables`/`target variable`, `info scope`), with addresses and
+  in-section offsets masked, equal for the update and a full link.
+  *Test:* L10 runs them on its `-g` projects at every step on hosts with
+  gdb and lldb.
+
+Split DWARF (`-gsplit-dwarf`): the linker then sees only skeleton units
+and `.debug_addr`, `.debug_line`, `.debug_rnglists`; the `.dwo` files are
+not its business. That shrinks the debug bytes an update refills and the
+debug reserve by most of `.debug_info` (not measured here: the bench has
+no split-DWARF build). hod supports it for DWARF 5 (`hod/spec/dwarf.md`).
+Skeleton neutralization is IN-51's untested case, so split DWARF is a
+fall-back in v1 and the first [later] item of S5's follow-up.
+
+## 7. Fall-backs
+
+Each is a full link in incremental mode (its output ready for the next
+update), reported as `incremental: full (<reason>)` (IN-10). With
+`--incremental=update` each is an error instead.
+
+| reason | when | v1 or later |
+|---|---|---|
+| `no-state` | no state at the state path (the first link); reported only by `--incremental-report` | permanent |
+| `state-corrupt` | the state fails validation (IN-18) | permanent |
+| `state-version` | the state's format or mortar version differs | permanent |
+| `options-changed` | the normalized plan differs: any option, the target, the emulation, the library search path, the input list's order (adding or removing an input, or an archive's members changing, is not a change of plan) | permanent; [later] options that touch no layout (`-Map`, `--time-phases`, `--threads`, `--incremental-report` are excluded already) |
+| `output-changed` | `P` is missing, or its stat tuple or build id differs from the state's (IN-21) | permanent |
+| `output-torn` | the state's "updating" flag is set (IN-46) | permanent |
+| `inputs-reordered` | two unchanged inputs' relative order changed | v1; [later] when no COMDAT keeper or placement order depends on it |
+| `too-much-changed` | IN-16's threshold | permanent (it is the compaction rule) |
+| `reserve-exhausted` | a segment reserve, a packed array's, `.eh_frame`'s, a slot region's or a dynamic table's capacity is exhausted (IN-32, IN-34) | permanent |
+| `island-exhausted` | a new thunk or patch does not fit its island | permanent |
+| `tls-layout-changed` | the TLS template's size or alignment changes (IN-34) | v1; [later] refill every TP-relative referrer through the index |
+| `new-output-section` | an output section or segment appears or disappears | v1; [later] when it can go at the end of its segment's reserve |
+| `property-changed` | `.note.gnu.property` changes size (S-114) | v1 |
+| `dynamic-changed` | `DT_NEEDED`'s order changes or `.dynamic`'s spares run out (IN-42) | v1 |
+| `debug-compaction` | IN-57 | v1; [later] the debug-only rewrite |
+| `debug-name-index` | IN-55 | v1; [later] neutralized sets |
+| `debug-unit-kind` | a changed file has type units or split-DWARF skeletons (IN-51) | v1; [later] after S5's tests |
+
+Not fall-backs but plain links (IN-12; a warning, no state written):
+`-r`, `--emit-relocs`, a `SECTIONS` script, `--compress-debug-sections`
+other than `none`, `--gdb-index`, `--debug-names`, `--icf`. Not a
+fall-back but the copy path (IN-45): `ETXTBSY`, a hard-linked or
+symbolic-link output, a shared object, an output that is an input, a
+file system without enforced locks. *Test:* each row has an L10
+scenario (IN-4).
+
+## 8. Costs, the verifier, and the other projects
+
+### 8.1 What a plain link pays
+
+The operator's rule (2026-11-15): a link that is not in incremental
+mode pays nothing for incremental mode. Per mechanism:
+
+| mechanism | plain link | incremental-mode full link (first link, fall-back) | update |
+|---|---|---|---|
+| slack and reserves (IN-33) | none: capacity = size, the same code with a zero slack function | ~13% larger output on protoc `-g` (~10% without `-g`), *estimate*; written as fill | consumed; holes |
+| content hashes of inputs (IN-22) | none (hash 0, `spec/input.md` §11.6, lazy) | every input hashed: 217 MB at 12.6 GB/s is ~17 ms of one thread, spread over the input workers | changed inputs only |
+| the state (IN-17–IN-20) | none: nothing opened, stat'ed or written (IN-11) | 7–11 MB written, ~10–15 ms; rows built from data the phases already hold (IN-20) | loaded and validated (~10 ms), rewritten (~10–15 ms) |
+| the dependency index (IN-25) | none | emitted by the scan's workers, sorted per unit: 238,919 alloc relocations become 118,145 rows (a few ms, *estimate*) | changed files' rows replaced |
+| ids (IN-28) | none: ids are per link in every mode | none | identity translation on load |
+| regions (IN-30) | none: layout is unchanged | a region per (file, output section, category): ~4,000 rows on protoc | as the delta needs |
+| debug neutralization (IN-51) | none | none | the dead units' bytes |
+| `fdatasync` (IN-46) | none (image.md I-61) | none (a full link renames a complete file) | two, 1–10 ms measured |
+
+"Pays nothing" is a gate, not a hope: the bench (`spec/harness.md`
+"bench") runs plain protoc links built with and without `mortar_incr`'s
+code paths compiled in (S1 adds a cargo feature for the comparison only)
+and flags a difference above its noise band. An incremental-mode full
+link is allowed to cost more than a plain one, by at most 10% of wall
+time and of peak RSS on protoc (*target*, S1 measures it).
+
+### 8.2 The verifier and L10
+
+- **IN-60 [v1] The verifier needs no state.** `mortar_plumb` checks an
+  update's output from the output and the map alone, as for any link
+  (`docs/VALIDATION.md` "independent verifier"). The map gains two line
+  kinds (plumb.md §2.3): `hole <output section> <offset> <size>` and
+  `dead <file> <debug section> <offset> <size>`. plumb checks that every
+  byte of an allocated output section is covered exactly once by a
+  `place`, `piece`, synthetic chunk or `hole`; that each hole holds its
+  fill (IN-3); that each `dead` range in `.debug_info` is a neutralized
+  unit and in `.debug_abbrev` is IN-51's pattern; and that no live unit's
+  reference lands in a hole. *Test:* plumb's mutation tests (plumb.md
+  §9.2) gain a stale byte in a hole, a dead unit not neutralized, and a
+  reference into a hole.
+- **IN-61 [v1] The replay hook.** A test-only entry (an environment
+  variable read by the test build, not an option; model §7.3) runs a
+  full link whose decision tables come from a state file; the harness
+  compares its output with the update's byte for byte (IN-1 B).
+- **IN-62 [v1] The equivalence check.** `mortar_plumb --equiv X.map
+  F.map X F` checks IN-2's items 1–6 between an update `X` and a full
+  link `F` of the same inputs (§3). It lives in `mortar_plumb` because it
+  is a verifier of the incremental linker's claim and must not share its
+  code.
+- **IN-63 [v1] L10** (`docs/VALIDATION.md`): random edit sequences.
+  - *Projects*: E1's census program; a generated program of 200 units
+    over 3 archives (thin and regular); protoc's object set with edits
+    applied by recompiling one source of the bench's tree; each with GCC,
+    Clang and kiln+hod, `-O0` and `-O2`, `-g` and none,
+    `-ffunction-sections` and none, static, PIE and (M4) shared.
+  - *Edits*: E1's fifteen classes, plus: move a definition between
+    files, change a COMDAT keeper, add and remove an archive member,
+    reorder an archive, `touch` without change, rewrite with the old
+    timestamp (with IN-23's hint), add and remove an input, flip
+    `--gc-sections` (an option change). Sequences of 20–50 steps from a
+    recorded seed; a failing sequence is minimized (delta debugging
+    over steps) and its seed kept as a regression.
+  - *After each step*: IN-1's three checks; the program run with its
+    expected output; at `-g`, IN-59's transcripts; the
+    `--incremental-report` line recorded, so the mix of updates and
+    fall-backs is a statistic (and a sequence that only ever falls back
+    is flagged).
+  - *Faults*: the crash hook of IN-46 at each step; a running copy of the
+    output during an update (the copy path); a corrupted state.
+  - *Cost*: L10 is a nightly lane at full size and a pre-merge smoke of
+    one sequence per project and compiler; it starts as soon as S1's
+    state round-trips (with every step a fall-back) and grows with the
+    stages.
+- **IN-64 [v1] The bench** gains incremental rows: for protoc `-g` and
+  without, the full link plain and in incremental mode, and an update
+  after (a) one body edit in `descriptor.cc.o` given directly, (b) the
+  same through `libprotobuf.a` regular, (c) thin; wall time, peak RSS,
+  output size and state size (§1.5's floor is the target to compare).
+
+### 8.3 What kiln and hod are asked for
+
+Ranked by value to mortar; none blocks v1, which works on GCC and Clang
+objects as they are.
+
+1. **kiln's driver: thin archives (or no archives) in its development
+   profile**, so that an edit to one source reaches the linker as one
+   changed file, not a changed 100 MB archive (§1.3: 80–160 ms of the
+   ~120–200 ms floor with a regular archive). Cost to kiln: `ar rcsT`
+   instead of `ar rcs` where its build examples make archives.
+2. **hod: keep "an edit outside a function does not change the
+   function's bytes"** as a stated guarantee (`hod/spec/object.md`). The
+   census shows it holds today (a comment line changes no allocated byte
+   in kiln's output, §1.1); mortar does not depend on it for
+   correctness, but [later] IN-31 would, for its gain.
+3. **hod: tell mortar before emitting name indexes or type units**
+   (`.debug_names`, `.debug_pubnames`, `DW_UT_type`): today it emits
+   none, and v1 falls back on them (IN-51, IN-55).
+4. **kiln's driver: `-gsplit-dwarf` in the development profile**, once
+   S5's skeleton tests pass: it moves most debug bytes out of the link.
+   Ask kiln to measure its effect on its own test links first.
+5. **kiln's driver: pass `--incremental` to mortar in the development
+   profile** when mortar is the linker, after S6. Not before: the
+   fall-back rate must be known.
+
+Not requested, against the architecture's starting position
+(`docs/ROADMAP.md` "Cross-project"): per-section content hashes from
+hod. File-level change is decided by stat and an L128 hash (IN-22), and
+nothing per section is needed (§1.2). No "unchanged" hint either
+(IN-23).
+
+## 9. Amendments to other specs
+
+Ranked by urgency: the first ones constrain code being written before
+M7, and are cheap now and expensive later.
+
+| rank | spec | amendment | why now |
+|---|---|---|---|
+| 1 | `model.md` §4, `layout.md` §18 | a chunk's capacity may be given per region (file, output section, category), and holes are decision-table entries with their fill (IN-3, IN-30); layout code must take capacities from a policy, never assume capacity = size | layout is being written; a hard-coded "no slack" would need rewriting |
+| 2 | `plumb.md` §2.3, §9 | the map's `hole` and `dead` lines; plumb's coverage check treats `hole` as covered only by fill (IN-60) | the map format is fixed early and read by tests |
+| 3 | `model.md` §7.3 | invariant (C), equivalence (IN-1, IN-2); (B)'s tables include holes and dead debug units | the harness's replay hook (S1) is designed against it |
+| 4 | `model.md` §7.2 | the dependency index is per (unit, target) pair: allocated units' pairs, and non-allocated units' global pairs only (IN-25); it is also the liveness graph | the scan's per-unit relocation walk is where the rows come from; its shape should not preclude emitting them |
+| 5 | `model.md` §7.1, `docs/ROADMAP.md` "Cross-project" | a section's content hash is not needed; drop the request to kiln and hod for it (§8.3) | avoids cross-project work no one needs |
+| 6 | `image.md` I-96 | IN-45's conditions (one link, regular file, not an input, not a shared object, lock enforced) and IN-46's order (header invalidated first, two `fdatasync`s) | I-96 is otherwise incomplete for hard links and shared objects |
+| 7 | `image.md` I-101 | liveness walks the stored graph, not the relocations (IN-29) | — |
+| 8 | `layout.md` Q4, Q8 | answered: the index records end-symbol users (IN-25); per-region slack plus section and segment reserves (IN-33) | closes two open questions |
+| 9 | `dyn.md` D-28 | fixed `nbuckets` and `.dynsym` capacity become an optimisation; v1 rewrites the symbolic tables whole (IN-40). §14's `RELATIVE` slack rule stays | removes a constraint M2 code would otherwise carry |
+| 10 | `input.md` §11.6 | in incremental mode every input's content hash is computed (IN-22) | — |
+| 11 | `cli.md`, `docs/status/options.md` | IN-10's options; IN-12's warning | — |
+| 12 | `diag.md` | keys `incr-full-link` (note), `incremental-unsupported`, `incremental-update-failed`, `incremental-not-reproducible` (warnings and error) | — |
+| 13 | `docs/ARCHITECTURE.md` "Incremental linking" | the three corrections of §2.7 | the map should match |
+| 14 | `docs/VALIDATION.md` L10 | IN-63's content | — |
+| 15 | `arch.md` "Incremental links" | `island-exhausted` as the fall-back name | — |
+
+## 10. The work-package cut
+
+M7's stages; each is one package with its own tests, and L10 grows with
+them. Stages S1 and S2 can start in parallel once amendments 1–4 are
+applied; S3 after S1; S4 after S1–S3; S5 and S6 in parallel after S4.
+
+| WP | stage | content | depends on | runs in parallel with | gate |
+|---|---|---|---|---|---|
+| WP-061 | S1 state | `mortar_incr` crate: the state's format (specified table by table in this spec), writer during an incremental-mode full link (IN-17–IN-21), reader with validation and a fuzz target, the identity translation, the replay hook (IN-61); measure state size, write time and the plain-link gate (§8.1) | amendments 1, 3, 4 | WP-062, WP-067 | a state round-trips on the link-test corpus; replay (B) is byte-identical for every first link; plain-link bench unchanged |
+| WP-062 | S2 slack | regions, tail and segment reserves, holes and their fill in layout (IN-30, IN-32, IN-33); map `hole` lines; plumb's hole checks (IN-60) | amendments 1, 2 | WP-061, WP-067 | incremental-mode first links pass plumb and are equivalent (IN-2) to plain links; output sizes measured |
+| WP-063 | S3 delta | change detection (IN-22–IN-24), delta resolution and the refill set (IN-26, IN-27), liveness from the graph (IN-29), a dry-run `--incremental-report` that says what would be refilled, compared with a diff of two full links' maps | WP-061 | WP-062 | the dry run's refill set covers every unit whose bytes differ between two full links of each L10 step |
+| WP-064 | S4 update | delta layout, refill and the writing path (IN-13, IN-14, IN-44–IN-49) for static executables, with debug information falling back; `plumb --equiv` (IN-62) | WP-061–WP-063 | WP-067 | L10 static, no `-g`: IN-1 on every step; crash injection; measured floor against §1.5 |
+| WP-065 | S5 debug | IN-50–IN-59: append, neutralize, compaction fall-back; type units and skeletons tested before enabling | WP-064 | WP-066 | L10 with `-g`: transcripts equal (IN-59), `--verify` clean |
+| WP-066 | S6 dynamic | PIE and dynamic executables (IN-40–IN-42), shared objects by copy (IN-43, M4) | WP-064, M2 (and M4 for shared objects) | WP-065 | L10 PIE and shared |
+| WP-067 | L10 | the generator, the projects, the minimizer, the fault hooks, the nightly and pre-merge lanes, the bench rows (IN-63, IN-64) | — (starts with E1's scripts; every step is a fall-back until WP-064) | all | lanes run; a seeded failure is minimized |
+
+Not cut yet, after M7: IN-31 (stable places), the hole free list,
+debug-only compaction, name-index neutralization, parallel archive
+hashing, D-28's bucket capacity. Each has its condition in its rule.
+
+## 11. Open questions
+
+Each with the default this draft takes.
+
+1. **Is the fall-back note printed by default?** Default: yes, one line
+   (`incr-full-link`), because silent fall-backs were gold's users'
+   complaint (§2.2); successful updates print nothing. Build systems
+   that treat stderr as failure would need `--no-warn`-style silencing:
+   use the diagnostic key's level control (`spec/diag.md`).
+2. **`ETXTBSY` on newer kernels.** Measured on 6.8 here: writing a
+   running executable fails. Reports (not verified here) say newer
+   kernels dropped the write denial for executables; then an in-place
+   update would change a running program's pages under it. Default: rely
+   on `ETXTBSY` where the open fails, and add a check at S4 on a newer
+   kernel; if the denial is gone there, executables use the copy path
+   when any process maps them, which needs a scan of `/proc` (cost to be
+   measured) or copy always.
+3. **This host's workspace file system does not enforce `flock`**
+   (image.md I-59), so IN-45 sends every update there to the copy path
+   (54–142 ms per 100 MiB). Default: accept (correct first); [later] an
+   advisory alternative such as an `O_EXCL` lock file with a stale-pid
+   check, if L10 on this host shows the copy dominating.
+4. **L128 is not a cryptographic hash.** It is consulted only when stat
+   already says "maybe changed", and an accidental collision of 128-bit
+   hashes is not a practical concern; a deliberate one requires an
+   attacker who writes the build's inputs, who could write the program
+   anyway. Default: L128; SHA-256 would cost 750 ms on protoc's inputs
+   (287 MB/s, image.md I-74).
+5. **The slack fractions** (1/8 per region, 1/16 per section, 1/8 per
+   segment and debug section): chosen from §1.1's growth sizes (24–116
+   bytes per edit against regions of 502 B median) without a measured
+   fall-back rate. Default: these; WP-064 tunes them from L10's
+   statistics.
+6. **Regular archives.** Default: read and hash the changed archive
+   (IN-24) and ask kiln for thin archives (§8.3); parallel member hashing
+   [later]. Whether CMake-style regular archives are common enough in
+   kiln's users' builds to make the parallel read worth doing first is a
+   question for the operator.
+7. **Where the state lives.** Default: beside the output. A build
+   directory with outputs on a slow share might prefer the state on fast
+   local disk; `--incremental-state` allows it.
+8. **Debug compaction in v1** is a full link (`debug-compaction`): on a
+   project edited all day, every quarter-turnover of `.debug_info`
+   costs one full link. Default: accept for v1; the debug-only rewrite is
+   the first [later] item if L10 shows it frequent.
+9. **Equivalence of `.symtab` order.** A full link orders `.symtab` by
+   file; the update rewrites it whole in the same order (S-112), so
+   `.symtab` is identical modulo values. No question, recorded because
+   `nm` users compare it.
+
+## 12. Appendix: experiments
+
+Scripts are in the workspace's `.build/review-incr/` (not committed, as
+the brief asks; they need the workspace's bench cache and toolchains).
+`run-all.sh WORK MORTAR` runs them all into `WORK`; each is also
+runnable alone. Tool versions: GCC 14.2.0, Clang/LLD/lldb/llvm-dwarfdump
+19.1.7, GNU ld 2.44, mold 2.37.1, gdb 16.3, kiln 1.2.1 at b6c546bd6, hod
+at 7e30d7c8, Python 3; mortar a release build of this branch's base.
+Host: aarch64, 12 cores, Linux 6.8, container on an overlay file system
+(the workspace on virtiofs); load averages 19–30 throughout.
+
+| id | what | script | output | load |
+|---|---|---|---|---|
+| E1 | the census: 15 edit classes × 2 units × 20 configurations, object diffs | `census.py WORK` (`--detail` for per-category diffs; `run-census.sh` sets up kiln+hod) using `objdiff.py` | `census.tsv` (600 rows), Table 1 | 20–30 |
+| E2 | full-link phase times of protoc `-g` and without, 5 runs each; input read, `stat` costs | `run-all.sh` part 2: `mortar --time-phases @response` with the bench's static protoc response files, `-o` moved to `WORK`; `cat` of the inputs | §1.5 | 21–29 |
+| E3 | the shape of the protoc link: files, sections, relocations, (unit, target) pairs, fan-out, per-file sizes | `linkstats.py MAP` over `--mortar-map` of E2's `-g` link | §1.4 | 19–30 |
+| E4 | the state's size | derived from E3's counts and IN-19's row widths (not a measurement of a written state) | IN-19 | — |
+| E5 | writing: copy, reflink, positioned writes, `fdatasync`, rename, `ETXTBSY` | `write_cost.py WORK EXE` | §1.5 | 19–30 |
+| E6 | dead compile units: tombstoned (emul) and neutralized (pad) against a full link, gdb and lldb transcripts, `llvm-dwarfdump --verify` | `debug_dead_cu.sh WORK MORTAR` with `dwarf_pad.py` | §1.6 | 19–30 |
+
+Incidents during the measurements, recorded for the reviewer: an early
+run of E2 overwrote the bench cache's GNU-ld-built
+`cxx-medium-g-static/build/protoc-3.21.12.0` (the response file's `-o`
+had not been redirected); it was rebuilt by the cache's own GNU ld
+command line and runs (`libprotoc 3.21.12`, 50,062,880 bytes), with a
+new timestamp. An early build of mortar for this package wrote some
+release artifacts into the main checkout's cargo target directory before
+it was stopped and redirected.

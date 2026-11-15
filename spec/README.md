@@ -29,7 +29,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `plumb.md` | `mortar_plumb`: the verifier and the map-file format | stage 1: static non-PIE AArch64 (WP-011); stage 2 (WP-028, WP-028b): static TLS, `.eh_frame`/`.eh_frame_hdr`, the symbol table, IFUNC, non-alloc relocations, properties, build id; x86-64 (WP-028c): the table, its rewritings per linker, IPLT shapes, x86 properties; i386 not judged (`machine`) |
 | `meta.md` | `mortar_meta`: the Mason metadata container (shared with kiln, hod, tuck) | planned (M6) |
 | `odr.md` | `mortar_odr`: one-definition-rule checks | planned (M6) |
-| `incr.md` | `mortar_incr`: link state and incremental links | planned (M7) |
+| `incr.md` | `mortar_incr`: link state and incremental links | draft (WP-060; awaiting review) |
 | `harness.md` | `xtask`: the gate, link tests, differential runs, bench, jobserver | "ci", "Jobserver", "Limits" (WP-003); "Link tests" (WP-010); "bench" (WP-012); "Hosted CI" (WP-014); "L3" (WP-028) |
 
 ## Conventions
