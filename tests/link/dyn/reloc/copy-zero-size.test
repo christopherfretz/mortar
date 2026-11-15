@@ -21,7 +21,7 @@ cc -O1 -fno-pie main.c -o main.o
 link gcc -no-pie main.o -L. -ld -o prog
   exit: fail
   diag(lld): cannot create a copy relocation for symbol zsym
-  diag(mortar): copy-relocation-of-zero-size
+  diag(mortar): cannot create a copy relocation for symbol zsym
 
 #--- main.c
 #include <stdio.h>

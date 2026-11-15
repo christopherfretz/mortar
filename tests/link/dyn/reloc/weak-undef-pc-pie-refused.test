@@ -32,7 +32,7 @@ link gcc -pie main.o weak.o -o pie
   diag(lld,aarch64): relocation R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol 'v'
   diag(mold,x86_64): R_X86_64_PC32 relocation at offset * against symbol `v' can not be used
   diag(mold,aarch64): R_AARCH64_ADR_PREL_PG_HI21 relocation at offset * against symbol `v' can not be used
-  diag(mortar): weak-undefined-pc-in-pie
+  diag(mortar): relocation * against undefined weak symbol `v' cannot be used in a position-independent executable; recompile with -fPIE
 link(x86_64) gcc -no-pie main.o weak.o -o exec
 run(x86_64) exec
   stdout: v absent

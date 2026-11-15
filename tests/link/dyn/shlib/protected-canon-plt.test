@@ -33,7 +33,7 @@ link gcc -no-pie pf-nopie.o -L. -lprot -o nopie
   diag(bfd,aarch64): copy relocation against non-copyable protected symbol `pf'
   diag(bfd,x86_64): non-canonical reference to canonical protected function `pf'
   diag(lld): cannot preempt symbol: pf
-  diag(mortar): copy-relocation-against-protected
+  diag(mortar): copy relocation against non-copyable protected symbol `pf' in *
 
 #--- pf.c
 #include <stdio.h>

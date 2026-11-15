@@ -767,8 +767,12 @@ fn s4_4_rule3_copy_in_read_only_memory() {
         Def::Shared(SymEntry { file: FileId(2), index: SymbolIndex(6) });
     w.resolution.props[SymbolId(3)].refs = mortar_core::resolution::RefFlags::PREEMPTIBLE;
     w.demands.global[SymbolId(3)] = DemandFlags::COPY;
-    w.layout.slots.copies = Box::new([CopyAlloc { file: FileId(2), value: 0x100 }]);
+    // D-42: the record's alias is the copied key; D-21 item 3: it is in
+    // .dynsym.
+    w.layout.slots.copies =
+        Box::new([CopyAlloc { alias: SymbolId(3), ..CopyAlloc::at(FileId(2), 0x100) }]);
     w.layout.slots.copy_of = Box::new([(SymbolId(3), 0)]);
+    w.layout.slots.dynsym = Box::new([SymbolId(3)]);
     let copy =
         SymPlace { key: AllocKey::Copy(0), chunk: ChunkId(8), offset: 0x8, size: 8, align: 3 };
     w.p().sym_place = Box::new([w.layout.placement.sym_place[0], copy]);
@@ -1222,4 +1226,40 @@ fn derive_segments_never_panics() {
         let _ = derive_segments(&chunks, &order, &rules);
         let _ = derive_segments(&chunks, &[], &rules);
     }
+}
+
+// spec: model.md §4.3; dyn.md D-21, D-22 (the .dynsym set), D-27
+// (verneed), D-24 (.dynstr): the M2 lists of `Slots`, as fixtures build them
+// (WP-041 step 0b/0h).
+#[test]
+fn s4_3_dynamic_lists() {
+    use mortar_core::idset::IdSet;
+    use mortar_core::layout::{DynStr, VerIndex};
+    let mut w = World::new();
+    w.layout.slots.dynsym = Box::new([SymbolId(3)]);
+    w.rejects(Rule::Slots, "no import, export, copy alias or WeakDyn key");
+    // A WeakDyn key (D-25, decided by the scan) is an entry.
+    w.demands.weak_dyn = IdSet::from_ids(4, [SymbolId(3)]).unwrap();
+    assert_eq!(w.validate(), Ok(()));
+    w.layout.slots.dynsym = Box::new([]);
+    w.rejects(Rule::Slots, "not in .dynsym");
+    w.demands.weak_dyn = IdSet::new();
+    w.demands.global[SymbolId(3)] = DemandFlags::EXPORT;
+    w.layout.slots.dynsym = Box::new([SymbolId(3)]);
+    w.layout.slots.dynsym_unhashed = 2;
+    w.rejects(Rule::Slots, "more unhashed");
+    w.layout.slots.dynsym_unhashed = 0;
+    w.layout.slots.gnu_hash_buckets = 1;
+    assert_eq!(w.validate(), Ok(()));
+    // D-27: a need of a file that is not needed.
+    w.layout.slots.verneed = Box::new([(FileId(2), Box::new([VerIndex(2)]) as Box<[_]>)]);
+    w.rejects(Rule::Slots, "version need of a file not needed");
+    w.layout.slots.verneed = Box::new([]);
+    // D-24: offsets into a .dynstr that is not there, then one per string.
+    w.layout.slots.dynstr = DynStr { runpath: Some(1), ..DynStr::default() };
+    w.rejects(Rule::Slots, "offsets into an empty .dynstr");
+    w.layout.slots.dynstr = DynStr { symbols: Box::new([1]), size: 6, ..DynStr::default() };
+    assert_eq!(w.validate(), Ok(()));
+    w.layout.slots.dynstr.size = 1;
+    w.rejects(Rule::Slots, "outside the section");
 }

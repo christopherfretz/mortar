@@ -27,7 +27,7 @@ link gcc -no-pie pv-nopie.o -L. -lprot -o nopie
   diag(bfd): copy relocation against non-copyable protected symbol `pv'
   diag(lld): cannot preempt symbol: pv
   diag(mold): cannot create a copy relocation for protected symbol 'pv'
-  diag(mortar): copy-relocation-against-protected
+  diag(mortar): copy relocation against non-copyable protected symbol `pv' in *
 link(aarch64) gcc -pie pv-pie.o -L. -lprot -o pie
 run(aarch64) pie
   stdout: 9 9
@@ -38,7 +38,7 @@ link(x86_64) gcc -pie pv-pie.o -L. -lprot -o pie
   diag(bfd): copy relocation against non-copyable protected symbol `pv'
   diag(lld): cannot preempt symbol: pv
   diag(mold): cannot create a copy relocation for protected symbol 'pv'
-  diag(mortar): copy-relocation-against-protected
+  diag(mortar): copy relocation against non-copyable protected symbol `pv' in *
 
 #--- pv.c
 #include <stdio.h>

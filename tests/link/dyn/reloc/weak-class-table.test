@@ -196,13 +196,13 @@ check(mortar) readelf -rW pie-arch
 
 link gcc -pie main-pie.o rodata.o -o pie-rodata
   exit: fail
-  diag(mortar): weak-undefined-pc-in-pie
+  diag(mortar): relocation * against undefined weak symbol `*' cannot be used in a position-independent executable; recompile with -fPIE
 link gcc -pie main-pie.o text.o -o pie-text
   exit: fail
-  diag(mortar): weak-undefined-pc-in-pie
+  diag(mortar): relocation * against undefined weak symbol `*' cannot be used in a position-independent executable; recompile with -fPIE
 link gcc -pie main-pie.o movw.o -o pie-movw
   exit: fail
-  diag(mortar): weak-undefined-pc-in-pie
+  diag(mortar): relocation * against undefined weak symbol `*' cannot be used in a position-independent executable; recompile with -fPIE
 
 #--- main.c
 #include <stdio.h>

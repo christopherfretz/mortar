@@ -853,15 +853,15 @@ which values are written where.
   `R_X86_64_IRELATIVE`, `R_386_IRELATIVE`), in IPLT order, with
   `r_offset` the entry's `.got.plt` word, symbol 0, and:
   - RELA (AArch64, x86-64): `r_addend` the resolver's address; the word
-    itself, per architecture (`spec/dyn.md` §15 Q7, ruled; arch.md
-    §3.10's `IRelative` row):
+    itself, per architecture (`Facts.iplt_word`, arch.md §3.1;
+    `spec/dyn.md` §15 Q7, ruled; arch.md §3.10's `IRelative` row):
     - AArch64: `S+A`, the resolver's address (a64.md §6.2, §10.2's
       rule; glibc ignores the word under RELA and reads the addend, and
       the verifier accepts it);
     - x86-64: 0 (`spec/x64.md` X-39; plumb F5(3)).
 
-    WP-041 implements this, changing the AArch64 bytes (static outputs
-    with an IFUNC included) before the M2 static baseline is cut. The
+    WP-041 implemented this, changing the AArch64 bytes (static outputs
+    with an IFUNC included) before the M2 static baseline was cut. The
     references (not the reason for the rule): GNU ld 2.44 writes the
     start of `.plt` on AArch64 (measured by WP-041; static) and the
     entry's address + 6 (the lazy-PLT convention) on x86-64

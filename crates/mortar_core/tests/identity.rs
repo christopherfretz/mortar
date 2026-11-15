@@ -291,15 +291,9 @@ fn s7_2_allocations_survive() {
     let g1 = Column::from_vec(vec![sym_key(b"buf")]).unwrap();
     let g2 = Column::from_vec(vec![sym_key(b"new"), sym_key(b"buf")]).unwrap();
     let lookup = symbol_lookup(&g2);
-    let s1 = Slots {
-        copies: Box::new([CopyAlloc { file: FileId(3), value: 0x40 }]),
-        ..Slots::default()
-    };
+    let s1 = Slots { copies: Box::new([CopyAlloc::at(FileId(3), 0x40)]), ..Slots::default() };
     let s2 = Slots {
-        copies: Box::new([
-            CopyAlloc { file: FileId(3), value: 0x10 },
-            CopyAlloc { file: FileId(4), value: 0x40 },
-        ]),
+        copies: Box::new([CopyAlloc::at(FileId(3), 0x10), CopyAlloc::at(FileId(4), 0x40)]),
         ..Slots::default()
     };
     let common = one.ids.alloc(&g1, &s1, AllocKey::Common(SymbolId(0))).unwrap();

@@ -20,6 +20,7 @@ tests ("Link tests"), the gate's hosted runs on GitHub Actions
 | `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `test` | `cargo test --workspace` |
 | `linktest` | `cargo xtask linktest --arch <host>` (`--quick`), `cargo xtask linktest` (full) |
+| `static-identical` | `cargo xtask static-identical` (both; every architecture) |
 
 Before a step it prints `[ci] <step>` on standard error. It stops at the
 first step that fails, printing `[ci] <step>: FAILED`, with exit status 1,
@@ -31,6 +32,10 @@ host's architecture only (every architecture when the host is none of the
 three), which adds well under a minute on the reference machine; the full
 gate runs every architecture (the others under qemu). The differential
 lanes join the full gate as they land (`docs/VALIDATION.md`).
+
+`static-identical` is run in-process after `linktest`, with or without
+`--quick`, on every architecture ("static-identical"); any failure fails
+it.
 
 `cargo` is the one that runs `xtask` (the `CARGO` variable cargo sets for
 what it runs), else `cargo` on `PATH`.
@@ -481,7 +486,16 @@ stdin, timeout)`, `run(program, args)` (no input, one minute) or
   next (a file this process had open for writing is inherited by every
   process another test thread forks at that moment);
 - scratch files are in `<build directory>/tmp` (`Scratch`), under a name
-  unique to the process and the call, removed on drop.
+  unique to the process and the call (`mortar-<label>-<pid>-<n>`),
+  removed on drop. A scratch held in a `static` or left by a killed test
+  is never dropped, so the first `Scratch` of a process removes the
+  entries of that form in `<build directory>/tmp` whose process no longer
+  runs (no `/proc/<pid>`; nothing is swept without `/proc`, or in the
+  system temporary directory). After a run at most the last test
+  binaries' scratch remains. Some scratch outputs are sparse files of
+  hundreds of megabytes of apparent size (a section placed far away to
+  force a veneer): a tool that copies the build directory without
+  preserving holes sees them at full size.
 
 ### Tests
 
@@ -504,7 +518,7 @@ of that; skipped with a note without GNU `time`, a failure under
 
 `crates/mortar_testutil/src/lib.rs`: `run_captures_output_and_status`,
 `scripts_are_runnable_at_once`, `run_kills_at_the_time_limit`,
-`scratch_is_created_and_removed`.
+`scratch_is_created_and_removed`, `scratch_of_dead_processes_is_swept`.
 
 ## Link tests
 
@@ -1067,6 +1081,75 @@ references; the usage errors.
 The corpus itself is the test of the format against real linkers: `cargo
 xtask linktest` must give every reference `PASS` (bar the recorded
 reference bugs, `XFAIL`) and mortar `XFAIL` on every case until M1.
+
+## static-identical
+
+`cargo xtask static-identical [--update] [-j <n>] [--mortar <binary>]` checks that mortar's
+static links are byte-identical to a checked-in baseline,
+`tests/identical/baseline.tsv`. It is the guard of milestone M2
+(`spec/landed/dyn/WP-040.md`): dynamic output lands behind one refusal
+while a static link's bytes, its `--mortar-map` and its diagnostics stay
+what they were. A package whose change is meant to change them (a fix of
+a static byte) rewrites the baseline with `--update` in the same commit,
+and its hand-back names the links that changed.
+
+**The corpus** is every test of `tests/link` but its dynamic cases
+(`tests/link/dyn`, milestone M2: none of their links is static; mortar
+refuses them until their packages land, and those refusals would churn
+the baseline at each landing; the static-pie case is one of them, an M2
+output kind of WP-052), and of `tests/identical`
+(larger static C, C++, Fortran and Clang links: `-g`, `--gc-sections`,
+`--threads=1` and the default, `--build-id`), on every architecture whose
+tools are there. `tests/identical` uses the link-test format ("The test
+file"); `cargo xtask linktest` does not run it (its tests have no
+expectations of their own). A test is named relative to `tests/link`, else
+to `tests/`.
+
+**The digest mode** of the link-test engine runs mortar alone (no
+reference, no self-check, no verifier) and only the build and link steps:
+run and check steps are not run, markers but `skip(mortar)` are ignored
+(an `xfail` link is recorded like any other, with its exit status), and a
+link that fails unexpectedly ends its unit. Compile steps get
+`-ffile-prefix-map=<inputs>=.` after `-c`, so that no object names the
+work directory. Every mortar link that is to succeed is given
+`--mortar-map=.linktest-plumb-<line>.map`, as under L3. Each link step is
+one row:
+
+| column | value |
+|---|---|
+| `test`, `arch`, `line` | the link step: test name, architecture, line in the file |
+| `end` | how the linker ended (`exit status 0`, `signal 11`, ...) |
+| `output` | SHA-256 of the output file, `-` when there is none |
+| `map` | SHA-256 of the `--mortar-map`, `-` when there is none |
+| `stderr` | SHA-256 of the linker's (the driver's) standard error |
+
+The map and the standard error are digested after replacing the link's
+directory by `.`, the unit's directory by `<unit>` and the run's work
+directory by `<work>`, so the baseline does not depend on the checkout it
+was cut in. The baseline is these rows, tab-separated, sorted by test,
+architecture and line, after `#` comment lines.
+
+**The check**: every row of the run must equal the baseline's row of the
+same link, and every link of each side must be on the other. A
+difference is printed one link per line: `~ <test> [<arch>] line <n>:
+<columns that differ>` (with the two ends when `end` differs), `+ ...` a
+link the baseline lacks, `- ...` a baseline link not made. Then a summary
+line (links, tests, architectures, how many differ, seconds) and
+`static-identical: ok` with exit status 0, or `static-identical: FAILED`
+with exit status 1. A unit that did not run because a tool is missing is
+not compared (a note says how many) unless `MORTAR_REQUIRE_TOOLS=1`. An
+error of the run itself (an input that does not build, mortar not built)
+is a failure whatever the digests. `--update` prints the same difference
+lines, then writes the baseline (it refuses when a unit did not run); a
+usage error is exit status 2. `--mortar` runs another build of mortar (another
+commit's) against the baseline instead of building the workspace's.
+
+The run is well under two minutes on the reference machine (the debug
+mortar; no program is run).
+
+Tests: `xtask/src/identical.rs` `baseline_and_diff`, `the_command_line`,
+`the_corpus_leaves_out_the_dynamic_cases`;
+the command itself in the gate.
 
 ## Hosted CI
 

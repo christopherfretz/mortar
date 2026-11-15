@@ -45,6 +45,7 @@ const DEFAULT_JOBS: usize = 8;
 
 /// What `cargo xtask linktest` is asked for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent switches of a command line
 pub struct Args {
     /// The linkers to run, in [`Linker::ALL`] order; every one when empty.
     pub linkers: Vec<Linker>,
@@ -67,6 +68,9 @@ pub struct Args {
     pub no_plumb: bool,
     /// Test files and directories; `tests/link` when empty.
     pub paths: Vec<PathBuf>,
+    /// The digest mode of `cargo xtask static-identical` (not an option of
+    /// `linktest`: [`engine::Matrix::digest`]).
+    pub digest: bool,
 }
 
 impl Args {
@@ -207,6 +211,8 @@ pub fn collect(paths: &[PathBuf], filters: &[String]) -> Result<Vec<TestFile>, S
     let base = workspace_root().join("tests").join("link");
     let paths = if paths.is_empty() { vec![base.clone()] } else { paths.to_vec() };
     let canonical_base = base.canonicalize().unwrap_or(base);
+    let tests_dir = workspace_root().join("tests");
+    let canonical_tests = tests_dir.canonicalize().unwrap_or(tests_dir);
     let mut files = Vec::new();
     for path in paths {
         if path.is_dir() {
@@ -224,7 +230,13 @@ pub fn collect(paths: &[PathBuf], filters: &[String]) -> Result<Vec<TestFile>, S
             let name = path
                 .canonicalize()
                 .ok()
-                .and_then(|full| Some(full.strip_prefix(&canonical_base).ok()?.to_path_buf()))
+                .and_then(|full| {
+                    let name = full
+                        .strip_prefix(&canonical_base)
+                        .or_else(|_| full.strip_prefix(&canonical_tests))
+                        .ok()?;
+                    Some(name.to_path_buf())
+                })
                 .unwrap_or_else(|| path.clone());
             TestFile { name: name.display().to_string(), path }
         })
@@ -333,7 +345,10 @@ fn find_tools(
             absent(report, format!("{} is not run: {tool} not found", linker.name()));
         }
     }
-    if linkers.contains(&Linker::Mortar) && !linkers.iter().any(|linker| linker.is_reference()) {
+    if linkers.contains(&Linker::Mortar)
+        && !linkers.iter().any(|linker| linker.is_reference())
+        && !args.digest
+    {
         report.notes.push(
             "no reference linker in the run: mortar is judged by the tests' expectations, which \
              the self-check has not proven"
@@ -386,6 +401,9 @@ fn check_defaults(
     defaults: &[format::Anomaly],
     report: &mut Report,
 ) {
+    if args.digest {
+        return;
+    }
     if args.paths.is_empty() && args.filters.is_empty() {
         report.errors.extend(plumb.stale_defaults(defaults));
     } else if !defaults.is_empty() && plumb.verified > 0 {
@@ -531,6 +549,7 @@ fn parse_tests<'a>(
 ///
 /// # Errors
 /// A test path that does not exist (a usage error).
+#[allow(clippy::too_many_lines)] // the tools, the matrix, the units, then the report
 pub fn run(args: &Args) -> Result<Report, String> {
     let started = Instant::now();
     let tests = collect(&args.paths, &args.filters)?;
@@ -550,7 +569,8 @@ pub fn run(args: &Args) -> Result<Report, String> {
     report.arches = arches.iter().map(|tools| tools.arch).collect();
     report.linkers.clone_from(&linkers);
     report.configuration = configuration(&report, mortar.as_deref(), jobs);
-    let defaults = if args.no_plumb { Ok(Vec::new()) } else { load_defaults(&defaults_file()) };
+    let defaults =
+        if args.no_plumb || args.digest { Ok(Vec::new()) } else { load_defaults(&defaults_file()) };
     let defaults = defaults.unwrap_or_else(|e| {
         report.errors.push(e);
         Vec::new()
@@ -568,9 +588,10 @@ pub fn run(args: &Args) -> Result<Report, String> {
         linkers,
         mortar,
         wrappers,
-        plumb: !args.no_plumb,
+        plumb: !args.no_plumb && !args.digest,
         defaults,
         xfails,
+        digest: args.digest,
         stage3,
         fixtures: std::collections::BTreeMap::new(),
         fixture_dir: work.join("fixtures"),
@@ -604,10 +625,12 @@ pub fn run(args: &Args) -> Result<Report, String> {
     for results in run_units(&units, jobs) {
         plumb.add(&results.plumb);
         report.records.extend(results.records);
+        report.digests.extend(results.digests);
         report.missing.extend(results.missing.into_iter().map(|tool| format!("{tool} not found")));
     }
     report.missing.sort();
     report.missing.dedup();
+    report.digests.sort();
     if plumb != engine::Plumb::default() {
         report.notes.push(plumb.note());
     }

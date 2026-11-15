@@ -108,13 +108,51 @@ fn build_tmp_dir() -> Option<PathBuf> {
     marked.then(|| build.join("tmp"))
 }
 
+/// Removes the scratch directories in `base` that a process no longer
+/// running left behind: entries named `mortar-<label>-<pid>-<n>` whose
+/// `<pid>` is not this process and has no `/proc/<pid>`.
+///
+/// A `Scratch` is removed on drop, but one held in a `static` (a corpus
+/// built once per test binary) is never dropped, and a killed or aborted
+/// test drops nothing. Some of those directories hold outputs that span
+/// hundreds of megabytes of address space (sparse files). Does nothing
+/// where there is no `/proc`. Errors are ignored: another process may be
+/// sweeping the same directory.
+fn sweep_dead(base: &Path) {
+    if !Path::new("/proc/self").exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(base) else { return };
+    let own = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let mut parts = name.rsplitn(3, '-');
+        let (Some(unique), Some(pid), Some(rest)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if !rest.starts_with("mortar-") || unique.parse::<u32>().is_err() {
+            continue;
+        }
+        let Ok(pid) = pid.parse::<u32>() else { continue };
+        if pid == own || Path::new("/proc").join(pid.to_string()).exists() {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+}
+
 /// A scratch directory removed on drop.
 ///
 /// Created in the build directory's `tmp` (the directory cargo calls
 /// `CARGO_TARGET_TMPDIR`), found from the running test executable, which
 /// cargo puts in `<build directory>/<profile>/deps`. Only a process that
 /// cargo did not build falls back to the system temporary directory. The
-/// name is unique to this process and call.
+/// name is unique to this process and call. The first call of a process
+/// also removes what dead processes left in the build directory's `tmp`
+/// ([`sweep_dead`]; never in the system temporary directory, which other
+/// process-id namespaces may share).
 #[derive(Debug)]
 pub struct Scratch {
     path: PathBuf,
@@ -127,10 +165,13 @@ impl Scratch {
     /// Panics if the directory cannot be created.
     pub fn new(label: &str) -> Self {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let base = std::env::var_os("CARGO_TARGET_TMPDIR")
-            .map(PathBuf::from)
-            .or_else(build_tmp_dir)
-            .unwrap_or_else(std::env::temp_dir);
+        static SWEEP: std::sync::Once = std::sync::Once::new();
+        let build =
+            std::env::var_os("CARGO_TARGET_TMPDIR").map(PathBuf::from).or_else(build_tmp_dir);
+        if let Some(build) = &build {
+            SWEEP.call_once(|| sweep_dead(build));
+        }
+        let base = build.unwrap_or_else(std::env::temp_dir);
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = base.join(format!("mortar-{label}-{}-{unique}", std::process::id()));
         std::fs::create_dir_all(&path)
@@ -345,6 +386,30 @@ mod tests {
             scratch.path().to_path_buf()
         };
         assert!(!path.exists());
+    }
+
+    // "Limits", "Children of a test binary": what a dead process left is
+    // removed; a live process's scratch and other names are not.
+    #[test]
+    fn scratch_of_dead_processes_is_swept() {
+        let base = Scratch::new("sweeptest");
+        // A process id that is no longer running: a child that has exited
+        // and been waited for.
+        let mut child = Command::new("true").spawn().expect("true runs");
+        let dead = child.id();
+        child.wait().expect("the child is waited for");
+        let own = std::process::id();
+        let left = base.join(format!("mortar-plumb-corpus-{dead}-3"));
+        let live = base.join(format!("mortar-plumb-corpus-{own}-3"));
+        let other = base.join(format!("notes-{dead}-3"));
+        let unnumbered = base.join(format!("mortar-x-{dead}-y"));
+        for dir in [&left, &live, &other, &unnumbered] {
+            std::fs::create_dir_all(dir.join("inner")).expect("created");
+            std::fs::write(dir.join("inner/file"), "x").expect("written");
+        }
+        sweep_dead(base.path());
+        assert!(!left.exists(), "a dead process's scratch is removed");
+        assert!(live.is_dir() && other.is_dir() && unnumbered.is_dir());
     }
 
     // "Limits", "Children of a test binary": input, both output streams

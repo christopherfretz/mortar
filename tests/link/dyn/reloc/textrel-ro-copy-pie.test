@@ -27,7 +27,7 @@ check(bfd,lld,mold) readelf -dW prog
   has: (TEXTREL)
 link(mortar) gcc -pie main.o -L. -ld -o prog
   exit: fail
-  diag: text-relocation
+  diag: relocation * against symbol `*' can not be used when making a PIE object; recompile with -fPIE
 
 #--- main.c
 #include <stdio.h>

@@ -216,3 +216,46 @@ fn erratum_workaround_values_other_than_full_are_refused() {
     let (status, stderr) = link(&built, &["--fix-cortex-a53-843419=full"], &[]);
     assert_eq!((status, stderr.as_str()), (Some(0), ""));
 }
+
+// spec: dyn.md §2.7 (the census's ranked refusals: `-dynamic-linker`,
+// `-pie`, `-Bdynamic`), WP-041 step 0e: one `dynamic_guard` refuses them
+// with the text the command line gave before it, each option once (the
+// first use of each row), in argument order among the other refusals,
+// and nothing is linked.
+#[test]
+fn the_dynamic_gates_keep_their_refusals() {
+    let Some((_s, built)) = c_program("refuse-dynamic") else { return };
+    let line = [
+        "-pie",
+        "--dynamic-linker",
+        "/lib/first.so.1",
+        "-Bdynamic",
+        "-dynamic-linker",
+        "/lib/ld-linux-aarch64.so.1",
+        "-Bdynamic",
+        "--build-id=md5",
+    ];
+    let (status, stderr) = link(&built, &line, &[]);
+    assert_eq!(status, Some(1));
+    assert_eq!(
+        stderr,
+        format!(
+            "mortar: error: unsupported option: -pie\n\
+             mortar: error: unsupported option: --dynamic-linker\n\
+             mortar: error: unsupported option: -Bdynamic\n\
+             mortar: error: unsupported option value: --build-id=md5\n\
+             >>> synth.md S-91: md5 is not written and uuid is M2; mortar writes --build-id, \
+             =sha1, =sha256, =fast, =none and =0xHEX\n{NOT_LINKED}"
+        )
+    );
+    assert!(!built.dir.join("out").exists());
+    for (opt, value) in
+        [("-pie", None), ("-dynamic-linker", Some("/lib/ld.so")), ("-Bdynamic", None)]
+    {
+        let mut extra = vec![opt];
+        extra.extend(value);
+        let (status, stderr) = link(&built, &extra, &[]);
+        assert_eq!(status, Some(1), "{opt}");
+        assert_eq!(stderr, format!("mortar: error: unsupported option: {opt}\n{NOT_LINKED}"));
+    }
+}

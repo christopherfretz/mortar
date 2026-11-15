@@ -71,7 +71,7 @@ run pie
 
 link(bfd,mold,mortar) gcc -pie main.pie.o a.nopic.o b.pic.o c.noplt.o -L. -lmx -o pie-nopic
   exit: fail
-  diag(mortar): canonical-plt-in-pie
+  diag(mortar): relocation * against symbol `*' cannot be used in a position-independent executable; recompile with -fPIE, or link with -no-pie
 link(lld,x86_64) gcc -pie main.pie.o a.nopic.o b.pic.o c.noplt.o -L. -lmx -o pie-nopic
   exit: fail
 link(lld,aarch64) gcc -pie main.pie.o a.nopic.o b.pic.o c.noplt.o -L. -lmx -o pie-nopic

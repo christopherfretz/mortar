@@ -30,7 +30,7 @@ link gcc -no-pie main.o -L. -ld -o prog
   exit: fail
   diag(bfd): tlsx: TLS definition in *libd.so section .tdata mismatches non-TLS reference in main.o
   diag(lld): cannot be used against symbol 'tlsx'
-  diag(mortar): tls-mismatch
+  diag(mortar): TLS attribute mismatch: tlsx
 
 #--- main.c
 #include <stdio.h>

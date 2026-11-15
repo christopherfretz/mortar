@@ -30,7 +30,7 @@ link(lld,mortar) gcc -pie main.o -o prog
   exit: fail
   diag(lld,aarch64): relocation R_AARCH64_ABS64 cannot be used against symbol 'loc'; recompile with -fPIC
   diag(lld,x86_64): relocation R_X86_64_64 cannot be used against symbol 'loc'; recompile with -fPIC
-  diag(mortar): text-relocation
+  diag(mortar): relocation * against symbol `*' can not be used when making a PIE object; recompile with -fPIE
 
 #--- main.c
 #include <stdio.h>

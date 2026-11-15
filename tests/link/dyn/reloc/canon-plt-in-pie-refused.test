@@ -26,7 +26,7 @@ link(bfd,mortar) gcc -pie main.o nopic.o -L. -ld -o prog
   exit: fail
   diag(bfd,aarch64): relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `* can not be used when making a shared object; recompile with -fPIC
   diag(bfd,x86_64): relocation R_X86_64_32 against symbol `* can not be used when making a PIE object; recompile with -fPIE
-  diag(mortar): canonical-plt-in-pie
+  diag(mortar): relocation * against symbol `*' cannot be used in a position-independent executable; recompile with -fPIE, or link with -no-pie
 link(mold,x86_64) gcc -pie main.o nopic.o -L. -ld -o prog
   exit: fail
   diag: R_X86_64_32 relocation at offset * against symbol `* can not be used; recompile with -fPIC

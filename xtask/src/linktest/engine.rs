@@ -70,6 +70,12 @@ pub struct Matrix {
     pub fixture_dir: PathBuf,
     /// The fixtures built in this run, each once per architecture.
     pub built: FixtureCache,
+    /// The digest mode of `cargo xtask static-identical` (`spec/harness.md`
+    /// "static-identical"): mortar alone, its link steps only, each
+    /// recorded as a [`DigestRow`]; compile steps get
+    /// `-ffile-prefix-map=<inputs>=.` so that no object names the work
+    /// directory.
+    pub digest: bool,
 }
 
 /// The fixtures a run has built or is building, by name and architecture:
@@ -189,6 +195,45 @@ pub struct Results {
     /// The tools the unit needed that are missing.
     pub missing: Vec<String>,
     pub plumb: Plumb,
+    /// The digest mode's rows, in step order.
+    pub digests: Vec<DigestRow>,
+}
+
+/// One mortar link of the digest mode (`spec/harness.md`
+/// "static-identical"): how the linker ended and the SHA-256 of what it
+/// wrote, `-` for a file it did not write. The map and the standard error
+/// are digested with the work directory's paths replaced (`.` for the
+/// link's directory, `<unit>`, `<work>`), so that a baseline does not
+/// depend on where it was cut.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DigestRow {
+    pub test: String,
+    pub arch: Arch,
+    /// The link step's line in the test file.
+    pub line: usize,
+    pub end: String,
+    pub output: String,
+    pub map: String,
+    pub stderr: String,
+}
+
+/// The SHA-256 of `bytes`, in hex.
+pub fn digest_hex(bytes: &[u8]) -> String {
+    mortar_digest::sha256(bytes).iter().fold(String::with_capacity(64), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// `text` with each `(path, name)` of `subs` replaced, in order.
+pub fn normalise(text: &[u8], subs: &[(String, &str)]) -> Vec<u8> {
+    let mut text = String::from_utf8_lossy(text).into_owned();
+    for (path, name) in subs {
+        if !path.is_empty() {
+            text = text.replace(path.as_str(), name);
+        }
+    }
+    text.into_bytes()
 }
 
 /// What L3, the verifier on every link's output, did (`spec/harness.md`
@@ -347,6 +392,8 @@ struct Judged {
     plumb: Plumb,
     /// The anomaly ids seen and expected.
     seen: BTreeSet<String>,
+    /// The digest mode's rows.
+    digests: Vec<DigestRow>,
 }
 
 /// The anomaly ids of `list` that apply to `arch` and `linker`.
@@ -433,6 +480,10 @@ impl Unit<'_> {
             results.records.push(self.record(None, outcome, format!("inputs: {detail}")));
             return results;
         }
+        if self.matrix.digest {
+            self.run_digests(&mut results);
+            return results;
+        }
         let linkers = self.matrix.linkers_of(self.tools);
         let mut references = Vec::new();
         for linker in linkers.iter().copied().filter(|linker| linker.is_reference()) {
@@ -462,6 +513,24 @@ impl Unit<'_> {
             results.records.push(record);
         }
         results
+    }
+
+    /// The digest mode: mortar's link steps alone, whatever the
+    /// references or the markers would say, but a `skip(mortar)` (a test
+    /// that mortar cannot run there). A link that fails unexpectedly ends
+    /// the unit, as it would a linktest run.
+    fn run_digests(&self, results: &mut Results) {
+        let mortar = Some(Linker::Mortar);
+        let marker = self.test.marker(self.arch(), Linker::Mortar);
+        if let Some(skip) = marker.filter(|m| m.kind == MarkerKind::Skip) {
+            results.records.push(self.record(mortar, Outcome::Skip, &skip.reason));
+            return;
+        }
+        let mut judged = Judged::default();
+        let (raw, _) = self.run_steps(Linker::Mortar, None, &mut judged);
+        let (outcome, detail) = outcome::marked(&raw, None);
+        results.records.push(self.record(mortar, outcome, detail));
+        results.digests = judged.digests;
     }
 
     /// Mortar's record, once the references have had their say.
@@ -600,6 +669,12 @@ impl Unit<'_> {
                     before.push(format!("--target={}", self.arch().triple()).into());
                 }
                 before.push("-c".into());
+                if self.matrix.digest {
+                    let mut map = OsString::from("-ffile-prefix-map=");
+                    map.push(self.dir.join("inputs").as_os_str());
+                    map.push("=.");
+                    before.push(map);
+                }
                 (program.ok_or_else(missing)?.clone(), before)
             }
             StepKind::Yaml2obj(_) => (common.yaml2obj.clone().ok_or_else(missing)?, Vec::new()),
@@ -674,6 +749,9 @@ impl Unit<'_> {
             if step.is_build() || !step.scope.applies(self.arch(), linker) {
                 continue;
             }
+            if self.matrix.digest && !matches!(step.kind, StepKind::Link(_)) {
+                continue;
+            }
             let result = match &step.kind {
                 StepKind::Link(link) => self.link(step, link, linker, &dir, vars, judged),
                 StepKind::Run(run) => {
@@ -709,7 +787,7 @@ impl Unit<'_> {
         // L3: a link that is to succeed writes a map, for the verifier:
         // mortar's machine map is `--mortar-map` (image.md I-120), whatever
         // `-Map` the test asks for; a reference's is its `-Map`.
-        let map_file = if link.fails || !self.matrix.plumb {
+        let map_file = if link.fails || !(self.matrix.plumb || self.matrix.digest) {
             None
         } else if let Some(map) = map_option(&args).filter(|_| linker != Linker::Mortar) {
             Some(dir.join(map))
@@ -789,6 +867,9 @@ impl Unit<'_> {
                 }
             }
         };
+        if self.matrix.digest {
+            judged.digests.push(self.digest_row(step, linker_end, &output, &output_file, dir));
+        }
         let fail = |what: &dyn Display| Raw::Fail(format!("{}: {what}", step.describe()));
         if link.fails {
             match linker_end {
@@ -816,8 +897,42 @@ impl Unit<'_> {
         self.expect(&link.diags, linker, &stderr, "the link's standard error")
             .map_err(|what| Raw::Fail(format!("{}: {what}", step.describe())))?;
         match map_file {
-            Some(map) => self.verify(step, linker, &output_file, &map, dir, judged),
-            None => Ok(()),
+            Some(map) if self.matrix.plumb => {
+                self.verify(step, linker, &output_file, &map, dir, judged)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The digest mode's row of a link step that ran in `dir`.
+    fn digest_row(
+        &self,
+        step: &Step,
+        end: End,
+        output: &Output,
+        output_file: &Path,
+        dir: &Path,
+    ) -> DigestRow {
+        let work = self.matrix.wrappers.parent().unwrap_or(&self.matrix.wrappers);
+        let subs = [
+            (dir.display().to_string(), "."),
+            (self.dir.display().to_string(), "<unit>"),
+            (work.display().to_string(), "<work>"),
+        ];
+        let file = |path: &Path, text: bool| match std::fs::read(path) {
+            Ok(bytes) if text => digest_hex(&normalise(&bytes, &subs)),
+            Ok(bytes) => digest_hex(&bytes),
+            Err(_) => "-".to_owned(),
+        };
+        let map = dir.join(format!(".linktest-plumb-{}.map", step.line));
+        DigestRow {
+            test: self.name.to_owned(),
+            arch: self.arch(),
+            line: step.line,
+            end: end.to_string(),
+            output: file(output_file, false),
+            map: file(&map, true),
+            stderr: digest_hex(&normalise(&output.stderr, &subs)),
         }
     }
 
