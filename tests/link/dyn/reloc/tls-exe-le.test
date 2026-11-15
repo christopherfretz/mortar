@@ -1,0 +1,75 @@
+# dyn.md D-48: against a TLS definition of the executable, every model
+# is relaxed to local-exec: no dynamic record, no GOT slot. The
+# executable defines `own` (`__thread`, initial value 9) and reads it
+# three ways: locally (`-fPIE`: LE already), from a `-fPIE` unit that
+# declares it `extern` (IE), and from a `-fPIC` unit (AArch64: TLSDESC;
+# x86-64: traditional GD). The program prints the values and whether
+# the three addresses agree. PIE and non-PIE.
+#
+# A library reads `own` too, so `own` is exported; the program also
+# prints whether the library sees the same address.
+#
+# lld and mold relax all three to LE, as mortar does, and so does GNU ld
+# on AArch64. GNU ld on x86-64 keeps IE with a dynamic `R_X86_64_TPOFF64`
+# against the executable's own exported symbol (valid but slower, dyn.md
+# §13.1; measured: only when `own` is exported), so it is held to that
+# record there.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-48"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE main.c -o main-pie.o
+cc -O1 -fno-pie main.c -o main-exec.o
+cc -O1 -fPIE ie.c -o ie-pie.o
+cc -O1 -fno-pie ie.c -o ie-exec.o
+cc -O1 -fPIC gd.c -o gd.o
+cc -O1 -fPIC libown.c -o libown.o
+shlib gcc libown.o -Wl,-soname,libown.so -o libown.so
+link gcc -pie main-pie.o ie-pie.o gd.o -L. -lown -o pie
+run pie
+  stdout: le 9 ie 9 gd 9 same 1 1 lib 1
+link gcc -no-pie main-exec.o ie-exec.o gd.o -L. -lown -o exec
+run exec
+  stdout: le 9 ie 9 gd 9 same 1 1 lib 1
+check readelf -rW pie
+  not: DTPMOD
+  not: DTPREL
+  not: DTPOFF
+  not: TLSDESC
+  not(lld,mold,mortar): TPREL
+  not(lld,mold,mortar): TPOFF
+  has(bfd,x86_64): R_X86_64_TPOFF64 * own + 0$
+  not(bfd,aarch64): TPREL
+check readelf -rW exec
+  not: DTPMOD
+  not: DTPREL
+  not: DTPOFF
+  not: TLSDESC
+  not(lld,mold,mortar): TPREL
+  not(lld,mold,mortar): TPOFF
+  has(bfd,x86_64): R_X86_64_TPOFF64 * own + 0$
+  not(bfd,aarch64): TPREL
+
+#--- main.c
+#include <stdio.h>
+
+__thread int own = 9;
+int *ie_addr(void), *gd_addr(void), *lib_own(void);
+
+int main(void) {
+  int *l = &own, *i = ie_addr(), *g = gd_addr();
+  printf("le %d ie %d gd %d same %d %d lib %d\n", *l, *i, *g, l == i, l == g, l == lib_own());
+  return 0;
+}
+#--- ie.c
+extern __thread int own;
+int *ie_addr(void) { return &own; }
+#--- gd.c
+extern __thread int own;
+int *gd_addr(void) { return &own; }
+#--- libown.c
+/* a library that reads the executable's TLS: `own` is exported */
+extern __thread int own;
+int *lib_own(void) { return &own; }

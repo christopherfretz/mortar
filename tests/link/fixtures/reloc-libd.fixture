@@ -1,0 +1,70 @@
+# A C shared library for the relocation tests of tests/link/dyn/reloc
+# (spec/harness.md "Fixtures"): `libd.so` (soname `libd.so`), linked by
+# the architecture's gcc with GNU ld. It defines what the executables
+# copy, call, take the address of and read as TLS:
+#
+# - `dvar` (initialized data) and `dalias`, a weak alias at the same
+#   address (an `environ`/`__environ`-style alias pair, dyn.md D-42);
+# - `al64`, a datum aligned to 64 (the copy keeps its alignment);
+# - `zsym`, a datum without `.size` (`st_size` 0: D-42's refusal);
+# - functions `fa`, `fb` and `fr` (`fr` is called by an IFUNC resolver);
+# - `tlsx`, a TLS variable (initial value 5);
+# - `lib_addr(name)`: the address the library sees for a name (its own
+#   references go through its GOT, so they bind to the executable's copy
+#   or canonical PLT entry when there is one), and getters that read the
+#   data from the library's side.
+
+cc -O1 -fPIC libd.c -o libd.o
+shlib gcc libd.o -Wl,-soname,libd.so -o libd.so
+
+#--- libd.h
+extern int dvar;
+extern int al64;
+extern __thread int tlsx;
+int fa(void);
+int fb(void);
+int fr(void);
+int lib_get_dvar(void);
+int lib_get_zsym(void);
+int *lib_tlsx(void);
+const char *lib_getenv(const char *name);
+void *lib_addr(const char *name);
+#--- libd.c
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include "libd.h"
+
+int dvar = 42;
+extern int dalias __attribute__((weak, alias("dvar")));
+__attribute__((aligned(64))) int al64 = 64;
+__thread int tlsx = 5;
+
+/* zsym: an object symbol without .size, so st_size is 0 */
+__asm__(".data\n.balign 8\n.globl zsym\n.type zsym,%object\n"
+        "zsym: .byte 0x5a,0,0,0,0,0,0,0\n.text\n");
+extern char zsym[8];
+
+int fa(void) { return 1; }
+int fb(void) { return 2; }
+int fr(void) { return 1; }
+int lib_get_dvar(void) { return dvar; }
+int lib_get_zsym(void) { return zsym[0]; }
+int *lib_tlsx(void) { return &tlsx; }
+
+/* reads the environment through the library's `environ` */
+const char *lib_getenv(const char *name) {
+  size_t n = strlen(name);
+  for (char **e = environ; *e; e++)
+    if (!strncmp(*e, name, n) && (*e)[n] == '=')
+      return *e + n + 1;
+  return "(none)";
+}
+
+void *lib_addr(const char *name) {
+#define A(n) if (!strcmp(name, #n)) return (void *)&n;
+  A(dvar) A(dalias) A(al64) A(zsym) A(fa) A(fb) A(puts) A(stdout)
+  A(environ) A(__environ)
+  return 0;
+}

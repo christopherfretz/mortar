@@ -1,0 +1,117 @@
+# dyn.md D-27, `.gnu.version` and `.gnu.version_r`: the program imports
+# `zz_fn@ZZ_1` and (weakly) `zz_weakfn@ZZ_2` from libzz.so, `aa_fn@AA_1`
+# from libaa.so (both built with version scripts) and libc's versioned
+# functions. One `Verneed` per needed object that provides a version an
+# import binds to, in `DT_NEEDED` order (libzz, libaa, libc.so.6), each
+# followed by its `Vernaux` entries in the order of the library's own
+# version definitions; `vna_flags` 0 (the weak-only reference
+# included); `vna_other` numbered from 2 in output order; each import's
+# `.gnu.version` index is its need's; `DT_VERNEEDNUM` 3; the section
+# headers of D-34 (`sh_info` the `Verneed` count, `sh_addralign` 4). The
+# run is the loader's check of every need (a wrong `vn_file`, `vna_hash`
+# or index fails the load or binds the wrong version).
+#
+# Where the references differ (dyn.md §13.1, D-27): `Verneed` order (GNU
+# ld here the `DT_NEEDED` order, lld the `DT_NEEDED` order, mold by
+# soname), `Vernaux` layout (GNU ld and mold interleaved, lld all headers
+# first), `vna_other` numbering (each its own) and `.gnu.version_r`
+# alignment (GNU ld 8). Each reference is held to its own layout below;
+# mortar's is D-27's composite, which no reference writes.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-27"
+#@ spec: dyn.md "D-34"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC zz.c -o zz.o
+shlib gcc zz.o -Wl,-soname,libzz.so -Wl,--version-script=zz.map -o libzz.so
+cc -O1 -fPIC aa.c -o aa.o
+shlib gcc aa.o -Wl,-soname,libaa.so -Wl,--version-script=aa.map -o libaa.so
+cc -O1 -fPIE main.c -o main.o
+
+link gcc -pie main.o -L. -lzz -laa -o prog
+run prog
+  stdout: aa_fn 3 zz_fn 1 zz_weakfn 2
+check readelf -dW prog
+  has: (NEEDED) Shared library: [libzz.so]
+  then: (NEEDED) Shared library: [libaa.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+  has: (VERNEEDNUM) 3
+  has: (VERNEED)
+  has: (VERSYM)
+check readelf -SW prog
+  has: .gnu.version VERSYM * 02 A * 0 2$
+  has(lld,mold,mortar): .gnu.version_r VERNEED * 00 A * 3 4$
+  has(bfd): .gnu.version_r VERNEED * 00 A * 3 8$
+check readelf -VW prog
+  has: Version needs section '.gnu.version_r' contains 3 entries
+  not: Flags: WEAK
+check(mortar,aarch64) readelf -VW prog
+  has: 000000: Version: 1 File: libzz.so Cnt: 2
+  then: 0x0010: Name: ZZ_1 Flags: none Version: 2$
+  then: 0x0020: Name: ZZ_2 Flags: none Version: 3$
+  then: 0x0030: Version: 1 File: libaa.so Cnt: 1
+  then: 0x0040: Name: AA_1 Flags: none Version: 4$
+  then: 0x0050: Version: 1 File: libc.so.6 Cnt: 2
+  then: 0x0060: Name: GLIBC_2.17 Flags: none Version: 5$
+  then: 0x0070: Name: GLIBC_2.34 Flags: none Version: 6$
+check(mortar,x86_64) readelf -VW prog
+  has: 000000: Version: 1 File: libzz.so Cnt: 2
+  then: 0x0010: Name: ZZ_1 Flags: none Version: 2$
+  then: 0x0020: Name: ZZ_2 Flags: none Version: 3$
+  then: 0x0030: Version: 1 File: libaa.so Cnt: 1
+  then: 0x0040: Name: AA_1 Flags: none Version: 4$
+  then: 0x0050: Version: 1 File: libc.so.6 Cnt: 2
+  then: 0x0060: Name: GLIBC_2.2.5 Flags: none Version: 5$
+  then: 0x0070: Name: GLIBC_2.34 Flags: none Version: 6$
+check(mortar) readelf --dyn-syms -W prog
+  has: FUNC GLOBAL DEFAULT UND zz_fn@ZZ_1 (2)$
+  has: FUNC WEAK DEFAULT UND zz_weakfn@ZZ_2 (3)$
+  has: FUNC GLOBAL DEFAULT UND aa_fn@AA_1 (4)$
+# GNU ld: interleaved, `DT_NEEDED` order, its own numbering.
+check(bfd) readelf -VW prog
+  has: 000000: Version: 1 File: libzz.so Cnt: 2
+  then: 0x0010: Name: ZZ_1 Flags: none Version: 6$
+  then: 0x0020: Name: ZZ_2 Flags: none Version: 5$
+  then: 0x0030: Version: 1 File: libaa.so Cnt: 1
+  then: 0x0040: Name: AA_1 Flags: none Version: 3$
+  then: 0x0050: Version: 1 File: libc.so.6 Cnt: 2
+  then: 0x0070: Name: GLIBC_2.34 Flags: none Version: 2$
+# lld: the three headers first, then every `Vernaux`.
+check(lld) readelf -VW prog
+  has: 000000: Version: 1 File: libzz.so Cnt: 2
+  then: 0x0030: Name: ZZ_1 Flags: none
+  then: 0x0040: Name: ZZ_2 Flags: none
+  then: 0x0010: Version: 1 File: libaa.so Cnt: 1
+  then: 0x0050: Name: AA_1 Flags: none
+  then: 0x0020: Version: 1 File: libc.so.6 Cnt: 2
+# mold: interleaved, sorted by soname, numbered from 2 in output order.
+check(mold) readelf -VW prog
+  has: 000000: Version: 1 File: libaa.so Cnt: 1
+  then: 0x0010: Name: AA_1 Flags: none Version: 2$
+  then: 0x0020: Version: 1 File: libc.so.6 Cnt: 2
+  then: 0x0050: Version: 1 File: libzz.so Cnt: 2
+  then: 0x0060: Name: ZZ_1 Flags: none Version: 5$
+  then: 0x0070: Name: ZZ_2 Flags: none Version: 6$
+
+#--- zz.c
+int zz_fn(void) { return 1; }
+int zz_weakfn(void) { return 2; }
+#--- zz.map
+ZZ_1 { global: zz_fn; local: *; };
+ZZ_2 { global: zz_weakfn; } ZZ_1;
+#--- aa.c
+int aa_fn(void) { return 3; }
+#--- aa.map
+AA_1 { global: aa_fn; local: *; };
+#--- main.c
+#include <stdio.h>
+int aa_fn(void);
+int zz_fn(void);
+extern int zz_weakfn(void) __attribute__((weak));
+
+int main(void) {
+  printf("aa_fn %d zz_fn %d zz_weakfn %d\n", aa_fn(), zz_fn(), zz_weakfn ? zz_weakfn() : -1);
+  return 0;
+}

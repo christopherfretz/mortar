@@ -1,0 +1,94 @@
+# dyn.md D-33, `.dynamic` is writable at load: `PT_DYNAMIC` is `PF_R|PF_W`
+# with `p_align` 8, starts at `_DYNAMIC`, and lies inside a `PT_LOAD`
+# with `PF_W` and inside `PT_GNU_RELRO` (the loader writes it, then
+# `mprotect`s it read-only). The program reads its own program headers
+# through `dl_iterate_phdr` and shows that the loader did write
+# `.dynamic`: `DT_DEBUG` (0 in the file, D-30) holds the loader's
+# `r_debug` (version 1, a non-empty link map), and in a PIE the address
+# tags (`DT_STRTAB` here) were moved by the load bias in place, so they
+# point into the mapped program. A read-only `.dynamic` kills the program
+# in the loader (`SIGSEGV`, E-dynamic `dyncheck`) before `main`.
+#
+# All three references agree. The `-z norelro` variant is
+# `norelro-dynamic`'s.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-33"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+
+link gcc -pie pie.o -o pie
+run pie
+  stdout: PT_DYNAMIC flags RW, align 8, at _DYNAMIC 1
+  stdout: inside a PT_LOAD 1, writable 1
+  stdout: inside PT_GNU_RELRO 1
+  stdout: DT_DEBUG set by the loader 1, r_version 1, r_map 1
+  stdout: DT_STRTAB points into the mapped program 1
+check readelf -lW pie
+  count: 1 ^ DYNAMIC * RW 0x8$
+  count: 1 ^ GNU_RELRO
+check readelf -SW pie
+  has: .dynamic DYNAMIC * WA * 8$
+
+link gcc -no-pie exec.o -o exec
+run exec
+  stdout: PT_DYNAMIC flags RW, align 8, at _DYNAMIC 1
+  stdout: inside a PT_LOAD 1, writable 1
+  stdout: inside PT_GNU_RELRO 1
+  stdout: DT_DEBUG set by the loader 1, r_version 1, r_map 1
+  stdout: DT_STRTAB points into the mapped program 1
+check readelf -lW exec
+  count: 1 ^ DYNAMIC * RW 0x8$
+
+#--- main.c
+#define _GNU_SOURCE
+#include <elf.h>
+#include <link.h>
+#include <stdio.h>
+extern ElfW(Dyn) _DYNAMIC[] __attribute__((visibility("hidden")));
+
+static int walk(struct dl_phdr_info *info, size_t size, void *arg) {
+  (void)size;
+  ElfW(Addr) strtab = *(ElfW(Addr) *)arg;
+  const ElfW(Phdr) *dyn = 0, *relro = 0;
+  for (int i = 0; i < info->dlpi_phnum; i++) {
+    if (info->dlpi_phdr[i].p_type == PT_DYNAMIC) dyn = &info->dlpi_phdr[i];
+    if (info->dlpi_phdr[i].p_type == PT_GNU_RELRO) relro = &info->dlpi_phdr[i];
+  }
+  if (!dyn) { puts("no PT_DYNAMIC"); return 1; }
+  printf("PT_DYNAMIC flags %s%s%s, align %lu, at _DYNAMIC %d\n", dyn->p_flags & PF_R ? "R" : "",
+         dyn->p_flags & PF_W ? "W" : "", dyn->p_flags & PF_X ? "X" : "",
+         (unsigned long)dyn->p_align, info->dlpi_addr + dyn->p_vaddr == (uintptr_t)_DYNAMIC);
+  int load = 0, wload = 0, mapped = 0;
+  for (int i = 0; i < info->dlpi_phnum; i++) {
+    const ElfW(Phdr) *l = &info->dlpi_phdr[i];
+    if (l->p_type != PT_LOAD) continue;
+    if (dyn->p_vaddr >= l->p_vaddr && dyn->p_vaddr + dyn->p_memsz <= l->p_vaddr + l->p_filesz) {
+      load++;
+      wload += (l->p_flags & PF_W) != 0;
+    }
+    ElfW(Addr) lo = info->dlpi_addr + l->p_vaddr;
+    mapped |= strtab >= lo && strtab < lo + l->p_memsz;
+  }
+  printf("inside a PT_LOAD %d, writable %d\n", load, wload);
+  printf("inside PT_GNU_RELRO %d\n", relro && dyn->p_vaddr >= relro->p_vaddr &&
+         dyn->p_vaddr + dyn->p_memsz <= relro->p_vaddr + relro->p_memsz);
+  const struct r_debug *r = 0;
+  for (ElfW(Dyn) *d = _DYNAMIC; d->d_tag != DT_NULL; d++)
+    if (d->d_tag == DT_DEBUG) r = (const struct r_debug *)d->d_un.d_ptr;
+  printf("DT_DEBUG set by the loader %d, r_version %d, r_map %d\n", r != 0, r ? r->r_version : 0,
+         r && r->r_map != 0);
+  printf("DT_STRTAB points into the mapped program %d\n", mapped);
+  return 1; /* the program is the first object */
+}
+
+int main(void) {
+  ElfW(Addr) strtab = 0;
+  for (ElfW(Dyn) *d = _DYNAMIC; d->d_tag != DT_NULL; d++)
+    if (d->d_tag == DT_STRTAB) strtab = d->d_un.d_ptr;
+  dl_iterate_phdr(walk, &strtab);
+  return 0;
+}
