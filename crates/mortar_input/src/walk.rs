@@ -2077,6 +2077,7 @@ impl<'c, 's> Walk<'c, 's> {
             self.push_needed(r, &mut queue);
         }
         let mut reported: HashSet<(Spelled, u32)> = HashSet::new();
+        let mut refused_runpath: HashSet<u32> = HashSet::new();
         let mut i = 0;
         while i < queue.len() {
             let (needing, index, name) = queue[i].clone();
@@ -2129,7 +2130,7 @@ impl<'c, 's> Walk<'c, 's> {
                     Got::File(b, f) => Some((name.clone(), b, f)),
                 }
             } else {
-                let dirs = self.closure_dirs(needing, &m);
+                let dirs = self.closure_dirs(needing, &m, &mut refused_runpath);
                 let candidates: Vec<Spelled> = dirs.iter().map(|d| join(d, &name)).collect();
                 match self.search(
                     &m,
@@ -2207,8 +2208,15 @@ impl<'c, 's> Walk<'c, 's> {
         }
     }
 
-    /// The five steps of the closure search (§8.6).
-    fn closure_dirs(&mut self, needing: u32, m: &Mention) -> Vec<Spelled> {
+    /// The five steps of the closure search (§8.6). A refused
+    /// `DT_RUNPATH` entry is reported once per needing file (`refused`).
+    fn closure_dirs(
+        &mut self,
+        needing: u32,
+        m: &Mention,
+        refused: &mut HashSet<u32>,
+    ) -> Vec<Spelled> {
+        let first = refused.insert(needing);
         let sysroot = self.sysroot();
         let marked = |d: &[u8]| -> Option<Spelled> {
             match sysroot_prefix(d) {
@@ -2251,9 +2259,11 @@ impl<'c, 's> Walk<'c, 's> {
                     None
                 };
                 if let Some(name) = refused {
-                    let p = Problem::refused(m.arg, m.seq, RefusalClass::Feature, name, false)
-                        .at(m.place.clone());
-                    self.problems.push(p);
+                    if first {
+                        let p = Problem::refused(m.arg, m.seq, RefusalClass::Feature, name, false)
+                            .at(m.place.clone());
+                        self.problems.push(p);
+                    }
                     continue;
                 }
                 let origin = if origin_dir.is_empty() { &b"."[..] } else { &origin_dir[..] };
