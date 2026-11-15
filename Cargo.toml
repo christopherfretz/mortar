@@ -23,9 +23,11 @@ mortar_diag     = { path = "crates/mortar_diag" }
 mortar_elf      = { path = "crates/mortar_elf" }
 mortar_input    = { path = "crates/mortar_input" }
 mortar_layout   = { path = "crates/mortar_layout" }
+mortar_merge    = { path = "crates/mortar_merge" }
 mortar_plumb    = { path = "crates/mortar_plumb" }
 mortar_resolve  = { path = "crates/mortar_resolve" }
 mortar_script   = { path = "crates/mortar_script" }
+mortar_synth    = { path = "crates/mortar_synth" }
 mortar_testutil = { path = "crates/mortar_testutil" }
 xtask           = { path = "xtask" }
 # Third-party (each approved in a work package; docs/AGENTS.md rule 3).

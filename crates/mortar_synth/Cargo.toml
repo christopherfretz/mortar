@@ -1,0 +1,21 @@
+[package]
+name = "mortar_synth"
+description = "Synthetic sections: .eh_frame and its header, symbol tables, notes, GOT and IPLT."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mortar_arch.workspace = true
+mortar_core.workspace = true
+mortar_diag.workspace = true
+mortar_elf.workspace = true
+
+[dev-dependencies]
+mortar_testutil.workspace = true
+
+[lints]
+workspace = true
