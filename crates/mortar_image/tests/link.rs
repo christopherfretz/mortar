@@ -270,3 +270,173 @@ fn i65_input_changed_at_recheck_leaves_no_output() {
     assert!(e.diagnostics.iter().any(|(_, d)| d.id() == "input-changed"), "{:?}", e.diagnostics);
     assert!(!out.exists(), "no output file after a failed link");
 }
+
+// ---- the comparison with GNU ld ---------------------------------------------
+
+/// `readelf -sW`'s `.symtab` rows: (value, size, type, bind, vis, ndx, name).
+fn symbols(file: &Path) -> Vec<(u64, u64, String, String, String, String, String)> {
+    let text = check_tool("readelf", &["-sW"], file).unwrap_or_default();
+    let mut rows = Vec::new();
+    let mut in_symtab = false;
+    for l in text.lines() {
+        if l.starts_with("Symbol table") {
+            in_symtab = l.contains("'.symtab'");
+            continue;
+        }
+        let t: Vec<&str> = l.split_whitespace().collect();
+        if !in_symtab || t.len() < 7 || !t[0].ends_with(':') || t[0] == "Num:" {
+            continue;
+        }
+        let name = t.get(7).copied().unwrap_or("").to_owned();
+        rows.push((
+            u64::from_str_radix(t[1], 16).unwrap(),
+            t[2].parse().unwrap_or(0),
+            t[3].to_owned(),
+            t[4].to_owned(),
+            t[5].to_owned(),
+            t[6].to_owned(),
+            name,
+        ));
+    }
+    rows
+}
+
+/// `readelf -SW`'s section names by index.
+fn section_names(file: &Path) -> std::collections::BTreeMap<String, String> {
+    let text = check_tool("readelf", &["-SW"], file).unwrap_or_default();
+    let mut out = std::collections::BTreeMap::new();
+    for l in text.lines() {
+        let Some(rest) = l.trim_start().strip_prefix('[') else { continue };
+        let Some((n, tail)) = rest.split_once(']') else { continue };
+        let Ok(n) = n.trim().parse::<u32>() else { continue };
+        out.insert(n.to_string(), tail.split_whitespace().next().unwrap_or("").to_owned());
+    }
+    out
+}
+
+/// The input symbols of `.symtab` as a multiset: (name, type, bind, vis,
+/// size, output section), without what the linkers make differently by
+/// design (`spec/synth.md` S-75..S-78: section symbols, `STT_FILE`, and
+/// GNU ld's own linker-defined symbols, which mortar defines only when
+/// referenced, layout §13).
+fn symtab_multiset(file: &Path) -> Vec<(String, String, String, String, u64, String)> {
+    const GNU_OWN: &[&str] = &[
+        "__bss_start",
+        "__bss_start__",
+        "_bss_end__",
+        "__bss_end__",
+        "__end__",
+        "_edata",
+        "_end",
+        "__GNU_EH_FRAME_HDR",
+        "_GLOBAL_OFFSET_TABLE_",
+    ];
+    let names = section_names(file);
+    let mut v: Vec<_> = symbols(file)
+        .into_iter()
+        .filter(|s| s.2 != "SECTION" && s.2 != "FILE" && !s.6.is_empty())
+        .filter(|s| !GNU_OWN.contains(&s.6.as_str()))
+        .map(|s| {
+            let sec = names.get(&s.5).cloned().unwrap_or(s.5.clone());
+            (s.6, s.2, s.3, s.4, s.1, sec)
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// `readelf --debug-dump=frames` with addresses replaced by the function
+/// they are in (`name+off`), the eh section's own address dropped, and
+/// mortar's terminator (S-49) removed.
+fn frames(file: &Path) -> Vec<String> {
+    let syms: Vec<(u64, u64, String)> = symbols(file)
+        .into_iter()
+        .filter(|s| s.2 == "FUNC")
+        .map(|s| (s.0, s.1, s.6))
+        .collect();
+    let at = |a: u64| -> String {
+        syms.iter()
+            .find(|s| s.0 <= a && a < s.0 + s.1)
+            .or_else(|| syms.iter().find(|s| a == s.0 + s.1))
+            .map_or_else(|| format!("{a:x}?"), |s| format!("{}+{:x}", s.2, a - s.0))
+    };
+    let hex = |t: &str| u64::from_str_radix(t, 16).unwrap_or(0);
+    let text = check_tool("readelf", &["--debug-dump=frames"], file).unwrap_or_default();
+    let mut out = Vec::new();
+    for l in text.lines() {
+        let l = l.trim();
+        if l.is_empty() || l.contains("ZERO terminator") || l.starts_with("Start of frame section")
+        {
+            continue;
+        }
+        if let Some((head, pc)) = l.split_once(" pc=") {
+            let (a, b) = pc.split_once("..").unwrap();
+            out.push(format!("{head} pc={}..{}", at(hex(a)), at(hex(b))));
+        } else if let Some(i) = l.find("(offset: ") {
+            let rest = &l[i + 9..];
+            let (a, tail) = rest.split_once(')').unwrap();
+            out.push(format!("entry {} {tail}", at(hex(a.trim_start_matches("0x")))));
+        } else {
+            out.push(l.to_owned());
+        }
+    }
+    out
+}
+
+/// readelf's ELF header lines that do not depend on the layout.
+fn header(file: &Path) -> Vec<String> {
+    let text = check_tool("readelf", &["-hW"], file).unwrap_or_default();
+    text.lines()
+        .map(str::trim)
+        .filter(|l| {
+            !["Entry point", "Start of", "Number of", "Section header string"]
+                .iter()
+                .any(|p| l.starts_with(p))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+fn entry(file: &Path) -> u64 {
+    let text = check_tool("readelf", &["-hW"], file).unwrap_or_default();
+    let l = text.lines().find(|l| l.contains("Entry point address")).unwrap();
+    u64::from_str_radix(l.rsplit("0x").next().unwrap().trim(), 16).unwrap()
+}
+
+/// The program against GNU ld's link of the same objects: the ELF header
+/// field by field (`e_entry` as "the address of `_start`"), `.symtab` as
+/// a multiset, and `.eh_frame` and `.eh_frame_hdr` decoded.
+#[test]
+fn i40_compares_with_gnu_ld() {
+    let dir = Scratch::new("image-link-gnu");
+    if objects(&dir, false).is_none() {
+        return;
+    }
+    let Some(ld) = tool("ld.bfd") else {
+        assert!(!tools_required(), "ld.bfd is required");
+        return;
+    };
+    if tool("readelf").is_none() {
+        assert!(!tools_required(), "readelf is required");
+        return;
+    }
+    let o = mortar_testutil::run_with(
+        std::process::Command::new(&ld)
+            .args(["-static", "--build-id=sha1", "--eh-frame-hdr", "-o", "ref", "a.o", "b.o"])
+            .current_dir(dir.path()),
+        b"",
+        Duration::from_mins(1),
+    );
+    assert!(o.success(), "ld: {}", o.stderr_text());
+    let f = front(ARGS, dir.path(), 4, StorePolicy::Staged);
+    let out = dir.join("out");
+    write(&f, &out).unwrap_or_else(|e| panic!("image: {:?}", e.diagnostics));
+    let reference = dir.join("ref");
+    runs(&reference);
+    assert_eq!(header(&out), header(&reference));
+    let start = |p: &Path| symbols(p).into_iter().find(|s| s.6 == "_start").unwrap().0;
+    assert_eq!(entry(&out), start(&out));
+    assert_eq!(entry(&reference), start(&reference));
+    assert_eq!(symtab_multiset(&out), symtab_multiset(&reference));
+    assert_eq!(frames(&out), frames(&reference));
+}
