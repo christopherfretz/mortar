@@ -635,8 +635,12 @@ program is the program a from-scratch link would have made.
   *Test:* `mortar_plumb --equiv X.map F.map` (an extension of the map
   checks, §8.2) checks 1–3 and 5 from the two maps and 4 by re-deriving
   each field's value through both placements; a program-level check runs
-  both (L10). R13 (`equiv.py`, §12) shows the order clause of item 5
-  rejecting the "b a" output of R4 that a check without it accepts.
+  both (L10). R13 (`equiv.py`, §12; 6,654 units, 539 KB compared, with
+  relocated fields and `.eh_frame` CIE pointers masked): a re-link with
+  six units at other addresses and the same order is accepted; R4's "b a"
+  output is rejected by the order clause (`myset` holds b, a) and
+  **accepted without it**, though it prints a different result; a
+  control flipping one non-relocated code byte is rejected.
 - **IN-3 [v1] Holes.** Every byte of an allocated output section that no
   live unit owns is a **hole** and holds its section's fill, written when
   the hole is made:
@@ -1080,10 +1084,25 @@ with each phase fed from the state for unchanged files:
   `std::terminate`. Units are refilled whole (model §7.2): relaxations,
   sorted tables and encodings need no special case. *Test:* IN-1 (B) and
   (C); a unit test per row with a two-file program; the refill oracle
-  (IN-63a) on every L10 step, which R3 (§12) runs over a body edit, both
-  directions of a keeper change, a gc kill and revive, TLS growth and a
-  value change seen only by debug information, and which catches each
-  row's removal (mutation table, §8.2).
+  (IN-63a) on every L10 step. R3 (§12) ran it over a body edit (same
+  size, +16 bytes with and without slack), both directions of a keeper
+  change (the reviewer's script and a size-neutral swap), a gc kill and
+  revive (with and without unwind tables), TLS growth on AArch64 and
+  x86-64, and a value change seen only by debug information, each at
+  GCC `-O0 -g` and `-O2 -g`: in all 32 pairs every differing unit of an
+  unchanged file is predicted (and the mutation table, IN-63b, shows
+  which row each catches). The oracle compares two *full* links, so its
+  predictor has two causes an update does not have, because an update
+  keeps them in place: a slot that moved in a re-laid synthetic table
+  (`crti.o`'s `.text` names `__gmon_start__`'s GOT slot, which moved
+  with `.got`; the synthetic-table row) and a merged fragment that moved
+  (`.debug_line_str` reordered by a changed file placed first, so an
+  unchanged file's `DW_FORM_line_strp` value changed; an update appends
+  fragments, S-110, so it does not happen there). The moved-section
+  row's "all non-allocated units of its file" applies when an
+  **allocated** section moved; the oracle applying it to every offset
+  shift in `.eh_frame` or a debug section masked the COMDAT and
+  liveness rows.
 - **IN-28 [v1] Ids are per link.** Ids are assigned afresh by each link
   in the order a full link assigns them (load order), and the state
   speaks identities (model §7.1), translated on load. No stable id is
@@ -1230,7 +1249,7 @@ with each phase fed from the state for unchanged files:
   |---|---|---|
   | `.text` and other code | regions with trap-fill holes (IN-30, IN-3) | `reserve-exhausted` |
   | `.rodata`, `.data`, `.data.rel.ro`, `.bss` | regions; zero holes; `.bss` holes cost no file bytes | `reserve-exhausted` |
-  | `.tdata`, `.tbss` (the TLS template) | a changed file's TLS contribution is refilled in place **only if no TLS input section's TP offset changes, in any file**; the update computes every TLS input section's TP offset under the new layout and compares it with the stored one. R3 (`tls_shift.sh`): making one `thread_local` initialized (`.tbss` → `.tdata`) keeps `PT_TLS`'s size and alignment yet moves an unchanged file's `c_var` from TP+0x30 to TP+0x38; two files changing by −8 and +8 move an unchanged `e_var` from TP+0x58 to TP+0x50 | `tls-layout-changed`; [later] refill every TP-relative referrer of every moved TLS section through the index |
+  | `.tdata`, `.tbss` (the TLS template) | a changed file's TLS contribution is refilled in place **only if no TLS input section's TP offset changes, in any file**; the update computes every TLS input section's TP offset under the new layout and compares it with the stored one. Measured (the reviewer's `tls_shift.sh`, and R3's oracle over it): making one `thread_local` initialized (`.tbss` → `.tdata`) keeps `PT_TLS`'s size and alignment yet moves an unchanged file's `c_var` from TP+0x30 to TP+0x38 (its `.tbss` section from TP+0x40 to TP+0x48, confirmed in the disassembly: `add x0, x0, #0x40` → `#0x48`); two files changing by −8 and +8 move an unchanged `e.o`'s `.tbss` from TP+0x68 to TP+0x60; on x86-64 (TLS variant II, negative offsets) any growth of the template moves every unchanged TLS section (`c.o` −0x78 → −0x80, `e.o` −0x50 → −0x58) with no address moving | `tls-layout-changed`; [later] refill every TP-relative referrer of every moved TLS section through the index |
   | `.init_array`, `.fini_array`, `.preinit_array`, `.ctors`, `.dtors`, `.init`, `.fini`, `.tm_clone_table`, `__start_`/`__stop_` sections (packed, L-142) | one chunk, no holes, rewritten whole in full-link order (priority, then load order; for `.init`/`.fini`, `crti.o`'s prologue first and `crtn.o`'s epilogue last) within capacity (IN-30); `__init_array_end`, `__stop_SEC` and the like move, and their users are refilled (IN-25) | growth step; `reserve-exhausted` |
   | `.eh_frame` | per-file ranges in full-link order, padding-CIE holes of 0 or ≥ 16 bytes, the terminator last; a range that overflows rewrites the section whole (IN-34a) | growth step; `reserve-exhausted` |
   | `.eh_frame_hdr` | one unit, rewritten whole when any FDE address changes (S-111); its table lists only live FDEs | growth step; `reserve-exhausted` |
@@ -1870,17 +1889,19 @@ time and of peak RSS on protoc (*target*, S1 measures it).
     corrupted state; a state on another file system (IN-22a).
   - *Cost* (R3's oracle run time, and §1.5's full-link times): one step
     costs two full links (the base is the previous step's), the update,
-    the oracle and the equivalence check. On the 40-unit corpus a full
-    link is a few ms and the oracle's Python prototype ~0.2–0.5 s per
-    scenario (R3); on protoc a full link is 0.2 s, and the oracle reads
-    two 50 MB outputs. *Estimate*: a pre-merge smoke of one 20-step
-    sequence per project and compiler at `-O0` (3 compilers × 2 small
-    projects) is about 120 updates and 240 full links, ~2–4 minutes of
-    one core plus compiles (a corpus edit recompiles one unit, ~0.2–1 s);
-    the nightly lane at full size (every configuration, 50-step
-    sequences, protoc included) is 30–60 core-minutes. S1 measures the
-    smoke's real cost; the pre-merge budget is 5 minutes of wall time on
-    the jobserver pool, else the smoke shrinks. *Test:* the lane's own
+    the oracle and the equivalence check. On small programs (R3's, about
+    390 input files with libc members) a full link is tens of ms, one
+    oracle run 0.07–0.13 s and `equiv.py` 0.04–0.05 s and 18 MB (Python
+    prototypes; R3's 32 pairs and 8 mutations, 288 oracle runs, took
+    28 s). On protoc a full link is 0.2 s and the oracle reads two 50 MB
+    outputs. *Estimate*: a pre-merge smoke of one 20-step sequence per
+    small project and compiler at `-O0` (3 compilers × 2 projects) is
+    about 120 updates, 240 full links and 120 oracle runs, ~1–2 minutes
+    of one core plus compiles (a corpus edit recompiles one unit, ~0.2–1
+    s); the nightly lane at full size (every configuration, 50-step
+    sequences, protoc included) is 30–60 core-minutes. WP-067 measures
+    the smoke's real cost; the pre-merge budget is 5 minutes of wall
+    time on the jobserver pool, else the smoke shrinks. *Test:* the lane's own
     check: a seeded wrong refill (IN-63b) is found and minimized to at
     most 3 steps.
 - **IN-63a [v1] The two-full-link oracle.** For every incremental test
@@ -1903,7 +1924,22 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   before the row is relied on. R3 measured the table below with the
   oracle's prototype as the predictor. *Test:* the lane itself (WP-069).
 
-  MUTATION_TABLE_PLACEHOLDER
+  | row dropped from the predictor | scenarios whose oracle run fails (R3) |
+  |---|---|
+  | a file changed | **none**: the oracle checks only unchanged files; this row is tested by IN-62's equivalence and IN-61's replay instead |
+  | a global's definition moved or changed | gc kill and revive (`-O0`), the debug-only referrer (`-O0`, `-O2`) |
+  | a COMDAT keeper changed | the size-neutral keeper swap, both directions, `-O0` and `-O2` |
+  | liveness changed | gc kill and revive, with and without unwind tables, both directions, `-O0` and `-O2` |
+  | a section of an unchanged file moved | +16 B body, both keeper scenarios, gc with unwind tables |
+  | a synthetic table changed (slots) | +16 B body (`-O0`), the reviewer's keeper script (`-O0`), gc with unwind tables |
+  | a merged fragment moved (oracle only) | the size-neutral keeper swap |
+  | TLS (`tls-layout-changed`) | **only x86-64 TLS growth at `-O0`**: on AArch64 every TP-offset change R3 produced also moved an address, so the global and moved-section rows caught it first |
+
+  Two gaps follow, and WP-069 closes them: the TLS row needs an AArch64
+  scenario where a TP offset changes at unchanged addresses (a `PT_TLS`
+  alignment change; R3 could not produce one through layout padding,
+  not verified), and the R3 x86-64 programs were linked but not run (no
+  x86-64 execution here).
 
 - **IN-64 [v1] The bench** gains incremental rows: for protoc `-g` and
   without, and for the go/no-go workload, the full link plain and in
@@ -2068,7 +2104,7 @@ against those, not measured.
 | WP-066 | S6 dynamic | PIE and dynamic executables (IN-40–IN-42), shared objects by copy (IN-43, M4), `copy-size-changed` | WP-064, M2 (M4 for shared objects) | WP-065 | L10 PIE and shared | 2,500–4,000 lines, 1–2 sessions |
 | WP-067 | L10 | the generator over the corpus (R2), the projects, the minimizer, the fault hooks, nightly and pre-merge lanes, the bench rows (IN-63, IN-64) | — (every step a fall-back until WP-064) | all | lanes run; a seeded failure is minimized; the lane's cost within IN-63's budget | 2,500–3,500 lines (Rust and scripts), 1–2 sessions |
 | WP-068 | v2 section-level refill (M12) | IN-31: per-section content hashes under `--incremental`, matching by anchor, kept sections in place, layout around them; plain-link gate | WP-064 (WP-065 if after it) | WP-066 | L10 with `-ffunction-sections`, no `-g`: refilled bytes against the coarseness table (§1.2); plain-link bench unchanged | 2,000–3,000 lines, 1 session |
-| WP-069 | mutation tests | the delta rules' mutation lane (IN-63b): each IN-27 row and each IN-3a check dropped in a test build, and the L10 scenario that must catch it; plumb's mutation cases (IN-60) | WP-063, WP-067 | WP-064 | every row and check caught by at least one scenario, else a scenario is added | 1,000–1,500 lines, 1 session |
+| WP-069 | mutation tests | the delta rules' mutation lane (IN-63b): each IN-27 row and each IN-3a check dropped in a test build, and the L10 scenario that must catch it; plumb's mutation cases (IN-60); the two gaps R3 left (an AArch64 TLS scenario with a TP offset change at unchanged addresses; x86-64 scenarios run, not only linked) | WP-063, WP-067 | WP-064 | every row and check caught by at least one scenario, else a scenario is added | 1,000–1,500 lines, 1 session |
 
 Total *estimate*: 27,500–38,500 lines, 12–17 sessions, with WP-061's
 go/no-go after the first 2–3. Not cut yet, after M7: the hole free list
@@ -2167,7 +2203,7 @@ The revision's experiments, numbered as the reviewer's list (its §6):
 | R2-B | kiln `-g` header edits per object, line-table dumps | `corpus2/hdredit.py B` | §1.1 | 1–2 |
 | R2-B' | MD5 mechanism: Clang, kiln, GCC, Clang `-gdwarf-4` on a same-line header edit | `corpus2/md5_check.sh WORK` | §1.1 | ~1 |
 | R2-C | add/remove a unit, archive member (regular and thin), extraction | `corpus2/link2.py B` | §1.1, §1.3, IN-24 | 1–2 |
-| R3 | the two-full-link oracle over IN-27's rows, and its mutation table | `oracle.py BASE VARIANT`, with copies of the reviewer's `comdat_keeper.sh`, `tls_shift.sh` | IN-27, IN-34, IN-63a, IN-63b | R3_LOAD |
+| R3 | the two-full-link oracle over IN-27's rows, and its mutation table | `oracle_scen.sh WORK` (builds the scenarios from copies of the reviewer's `comdat_keeper.sh` and `tls_shift.sh`), `oracle_run.sh WORK` (all pairs and the mutation table), `oracle.py BASE VARIANT [--drop ROW]` | IN-27, IN-34, IN-63a, IN-63b | not timed beyond the oracle's own run time |
 | R4 | holes in packed sections run under the program | `packed_holes.sh WORK MORTAR` (reviewer's) | IN-30, `results/e4.out` | not timed |
 | R5 | `.eh_frame` hole shapes under libgcc, gdb, lldb, readelf, llvm-dwarfdump | `eh_holes.sh WORK MORTAR` with `ehpatch.py` (modes `cie`, `absorb4`, `min16`, `min12`, …) | IN-34a, `results/e5.out` | not timed |
 | R6 | racy timestamps: the stamp rule against the old rule, 2,000 trials, overlay and virtiofs; the output rewritten within its own tick | `stamp_rule.py INPUT_DIR STATE_DIR 2000`; reviewer's `clock_race.py`, `state_tick.py` | IN-21, IN-22, IN-22a | not timed (stamp costs are medians) |
@@ -2178,7 +2214,7 @@ The revision's experiments, numbered as the reviewer's list (its §6):
 | R10 | detection of type units, split DWARF and name indexes (18 configurations) | `dwarf_detect.sh WORK` | IN-55, IN-55a | not timed |
 | R11 | PIE `[0, len)` tombstones | not run: mortar refuses `-pie` on this branch | IN-53 | — |
 | R12 | the state written as bytes, its write and read times; armap re-read cost; IN-31's hash inputs | `state_emul.py WORK MAP CWD libprotobuf.a libc.a libstdc++.a` | IN-19, IN-31, `results/e12.out` | ~14 |
-| R13 | IN-2's equivalence check with and without the order clause | `equiv.py OUT_A MAP_A OUT_B MAP_B` | IN-2, IN-62 | not timed |
+| R13 | IN-2's equivalence check with and without the order clause | `equiv_run.sh WORK` with `equiv.py OUT_A MAP_A OUT_B MAP_B [--no-order]` | IN-2, IN-62 | not timed |
 
 Incidents during the measurements, recorded for the reviewer: an early
 run of E2 overwrote the bench cache's GNU-ld-built
