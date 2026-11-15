@@ -129,6 +129,14 @@ fn cannot_open_output() {
     assert_eq!(text(kind), "ld: error: cannot open output file /no/dir/out: Permission denied\n");
 }
 
+// spec: diag.md §3.1 `cannot-write-output`; image.md I-64
+#[test]
+fn cannot_write_output() {
+    let kind = Kind::CannotWriteOutput { path: s("out"), reason: s("No space left on device") };
+    assert_eq!(kind.id(), "cannot-write-output");
+    assert_eq!(text(kind), "ld: error: cannot write output file out: No space left on device\n");
+}
+
 // spec: diag.md §3.1 `duplicate-soname`
 #[test]
 fn duplicate_soname() {

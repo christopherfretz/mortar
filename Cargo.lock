@@ -88,11 +88,15 @@ dependencies = [
 name = "mortar_image"
 version = "0.0.0"
 dependencies = [
+ "mortar_a64",
  "mortar_arch",
  "mortar_core",
  "mortar_diag",
  "mortar_digest",
  "mortar_elf",
+ "mortar_input",
+ "mortar_layout",
+ "mortar_resolve",
  "mortar_synth",
  "mortar_testutil",
 ]
@@ -138,6 +142,7 @@ dependencies = [
 name = "mortar_merge"
 version = "0.0.0"
 dependencies = [
+ "mortar_a64",
  "mortar_arch",
  "mortar_core",
  "mortar_diag",
