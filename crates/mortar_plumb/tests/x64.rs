@@ -27,6 +27,7 @@ const TLS_C: &str = include_str!("x64/tls.c");
 const TLS_MAIN_C: &str = include_str!("x64/tls_main.c");
 const IPLT_IBT_S: &str = include_str!("x64/iplt-ibt.s");
 const PC16_S: &str = include_str!("x64/pc16.s");
+const X48_S: &str = include_str!("x64/x48.s");
 const DYNTYPES_S: &str = include_str!("x64/dyntypes.s");
 const HELLO_F90: &str = include_str!("x64/hello.f90");
 const HELLO_C: &str = "#include <stdio.h>\n#include <string.h>\n\
@@ -91,6 +92,7 @@ fn gf(t: &Tools) -> &Path {
 
 const CLEAN: Option<&[&str]> = Some(&[]);
 
+#[allow(clippy::too_many_lines)] // one entry per case
 fn cases() -> Vec<Case> {
     let nostd: &[&str] = &["-static", "-nostdlib"];
     vec![
@@ -172,7 +174,17 @@ fn cases() -> Vec<Case> {
             name: "w6",
             driver: gcc,
             args: &["-static", "-nostdlib", "ibt.o"],
-            expect: [CLEAN, CLEAN, Some(&["A13", "A17"])],
+            // Not A13: mold's 4-aligned build id is the last note of its
+            // p_align-8 PT_NOTE and ends at its descriptor, which the gABI
+            // allows (S11, WP-028d).
+            expect: [CLEAN, CLEAN, Some(&["A17"])],
+        },
+        // X-48: a bare call to __tls_get_addr; mortar's rule only.
+        Case {
+            name: "x48",
+            driver: gcc,
+            args: &["-static", "-nostdlib", "x48.o"],
+            expect: [CLEAN; 3],
         },
         // W8: lld and mold trap in `.init` padding.
         Case {
@@ -238,6 +250,7 @@ fn build() -> Option<Corpus> {
         ("hello.f90", HELLO_F90),
         ("iplt-ibt.s", IPLT_IBT_S),
         ("pc16.s", PC16_S),
+        ("x48.s", X48_S),
         ("dyntypes.s", DYNTYPES_S),
         ("hello.c", HELLO_C),
     ] {
@@ -250,6 +263,7 @@ fn build() -> Option<Corpus> {
     must(&dir, as_, &["f2.s", "-o", "f2.o"]);
     must(&dir, as_, &["iplt-ibt.s", "-o", "ibt.o"]);
     must(&dir, as_, &["pc16.s", "-o", "pc16.o"]);
+    must(&dir, as_, &["x48.s", "-o", "x48.o"]);
     must(&dir, as_, &["dyntypes.s", "-o", "dyn.o"]);
     must(&dir, cc, &["-O2", "-c", "hello.c", "-o", "c-gcc.o"]);
     must(&dir, cc, &["-O2", "-fPIE", "-c", "hello.c", "-o", "c-pie.o"]);
@@ -640,4 +654,21 @@ fn x64_new_rules_are_enforced() {
     }
     let missed: Vec<_> = results.iter().filter(|(_, h, o)| h != o).collect();
     assert!(missed.is_empty(), "not found: {missed:?}");
+}
+
+// spec/x64.md X-48, spec/plumb.md §5.9 (WP-028d): under mortar's map, a
+// branch or GOT load against `__tls_get_addr` that no GD/LD sequence
+// consumed is a finding (R8) in a static output; under the reference
+// linkers' maps it is judged as an ordinary record.
+#[test]
+fn x64_x48_no_tls_runtime_call_in_a_static_output() {
+    let Some(c) = corpus() else { return };
+    let ctx = Ctx::of(link_of(c, "x48", Linker::Bfd).unwrap());
+    let x48 = |r: &Report| r.findings.iter().filter(|f| f.message.contains("X-48")).count();
+    assert_eq!(x48(&ctx.report(&ctx.output)), 0, "GNU ld's map: not mortar's rule");
+    let text = mortar_plumb::map::mortar::write(&ctx.map);
+    let map = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &text).unwrap();
+    let r = common::verify_with(&ctx.output, &ctx.files, &map);
+    assert_eq!(x48(&r), 2, "{}", r.render("x48"));
+    assert!(r.findings.iter().filter(|f| f.message.contains("X-48")).all(|f| f.rule.id() == "R8"));
 }

@@ -231,6 +231,10 @@ pub struct Map {
     pub defined: Vec<Defined>,
     /// mortar's non-alloc records (§3.2).
     pub nonalloc: Vec<NonAlloc>,
+    /// Whether the link had `--fix-cortex-a53-843419`, when the caller
+    /// knows (no map format records it); `None` infers it from the fixes
+    /// found (§5.10).
+    pub fix_843419: Option<bool>,
 }
 
 impl Map {
@@ -245,6 +249,7 @@ impl Map {
             chunks: Vec::new(),
             defined: Vec::new(),
             nonalloc: Vec::new(),
+            fix_843419: None,
         }
     }
 

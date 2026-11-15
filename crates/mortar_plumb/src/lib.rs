@@ -12,9 +12,11 @@ pub mod a64;
 pub mod anomaly;
 pub mod buildid;
 mod content;
+mod erratum;
 mod image;
 mod locate;
 pub mod map;
+pub mod mutate;
 mod property;
 mod reloc;
 pub mod report;
@@ -68,17 +70,19 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
         }
     }
     engine.finish_ifunc();
+    engine.check_landing_pads();
     engine.finish_got();
     engine.finish_pieces();
     engine.check_eh_frame();
     content::check_content(&mut engine);
+    erratum::check(&mut engine, map);
     content::check_init_padding(&mut engine);
     content::check_symbols(&mut engine);
     symbols::check(&mut engine);
     let props = property::check(&image, &objs, map.format, &mut engine.cov);
     engine.findings.extend(props);
     if map.format == Format::Mortar {
-        let ids = buildid::check(&image, &mut engine.cov);
+        let ids = buildid::check(&image, &mut engine.cov, buildid::Style::of(map));
         engine.findings.extend(ids);
     }
     if image.header.e_machine == mortar_elf::consts::EM_X86_64 {

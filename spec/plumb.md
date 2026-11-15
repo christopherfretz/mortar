@@ -713,7 +713,11 @@ and undefined (spec/resolve.md) and the dynamic loader applies them.
   in an allocated executable section, that load the slot of an
   `IRELATIVE` record. On AArch64 the entry is `ADRP Xn, slot; LDR Xt,
   [Xn, :lo12:slot]` followed by `BR Xt` (mold's `.plt.got`), or by `ADD
-  Xn, Xn, :lo12:slot; BR Xt` (GNU ld's `.plt`, lld's `.iplt`). On x86 it is
+  Xn, Xn, :lo12:slot; BR Xt` (GNU ld's `.plt`, lld's `.iplt`). In an
+  output marked BTI, GNU ld and lld 22 put `BTI c` before the `ADRP`:
+  the entry then starts at the `BTI` (a branch or address to it is to
+  the entry; WP-028d, which removed the F4 the pipeline tests saw on
+  `-mbranch-protection` links). On x86 it is
   `jmp *slot` (`FF 25`, RIP-relative on x86-64, absolute on i386), with an
   optional `ENDBR64`/`ENDBR32` and `BND` prefix before it. The entries of
   a resolver are those whose slot is a slot of a record of that resolver.
@@ -808,6 +812,12 @@ glibc's IFUNCs):
   (glibc's `apply_irel` overwrites it), so (3) is a check of the linker's
   own convention: a different word means the slot is not the one the
   linker made.
+
+  (2) now runs on mortar's output (WP-028d): `iplt-ibt.s` linked by
+  mortar is clean, and its first entry's `endbr64` made a 4-byte NOP is
+  F5 by (1) and (2), with F4 for the five references to the entry. The
+  mutation harness's `iplt-entry` class (§9.5) makes the same mutant on
+  every IPLT entry of every mortar output.
 
 ## 5. Checking a record
 
@@ -948,8 +958,33 @@ to IE in a static link is W11, and mold's unrelaxed traditional GD is
 ordinary records (§4.7). IE to LE with `Rt ≠ Rn` is the anomaly A8;
 mold's missing 843419 fix is A4; GNU ld's fix with an ADR is W7.
 
+**Chained veneers and landing pads (WP-028d).** A veneer may end in a
+branch to another veneer, and the emulator follows up to 4 of them: GNU
+ld's `__x_veneer` (`ADRP; ADD; BR x16`) to a padless target in a BTI
+output goes to `__x_bti_veneer` (`BTI c; B x`). A destination that is a
+landing pad at the target minus 4 also reaches the target: lld 22 puts
+its `__AArch64BTIThunk_x` (`BTI c`) just before a padless `x` and falls
+through. A destination inside a placed input section other than the
+target is not a veneer's.
+
+- **R9.** In an output marked BTI (`GNU_PROPERTY_AARCH64_FEATURE_1_AND`
+  bit 0, AAELF64 "Program Property"), every veneer hop that ends in `BR
+  x16`/`BR x17` lands on a landing pad: `BTI c`, `BTI j`, `BTI jc`,
+  `PACIASP` or `PACIBSP` (Arm ARM "BTI"; a plain `BTI` is no pad for an
+  indirect branch). A direct `B` needs none. The finding is at the
+  hop's start; the record itself is still judged by §5.2.
+
+Observed: ld.lld 19 (the distribution's default `ld.lld`, not the
+corpus's lld 22) ends its veneer to a padless `x` in a BTI output in
+`LDR x16; BR x16` straight to `x`: R9 (it faults under BTI
+enforcement). lld 22, GNU ld and mold do not.
+
 Test: `a64::tests::s5_4_veneers_are_followed`,
-`tests/mutation.rs s9_2d_retargeted_veneers_are_found`.
+`tests/mutation.rs s9_2d_retargeted_veneers_are_found`,
+`s9_2n_a_veneer_to_no_landing_pad_is_found` (the `bti` case: `padded`'s
+`BTI c` made `NOP`, in the output and the input, is exactly R9 for GNU
+ld and lld; mold writes no property note on AArch64, so nothing is
+guarded).
 
 ### 5.5 GOT slots (R4)
 
@@ -1133,10 +1168,97 @@ which asserts each family is accepted):
 | undefined weak TLS T | 0 | TpRel(0) | 0 | TpRel(0) |
 | `DTPOFF*` in code / alloc data / non-alloc | TP / DTP / DTP | TP / DTP / DTP | TP / TP / DTP | DTP / DTP / DTP |
 
+**X-48 (WP-028d).** In mortar's static `ET_EXEC` output (no
+`PT_DYNAMIC`, no `PT_INTERP`), a `PLT32`, `PC32`, `GOTPCREL`,
+`GOTPCRELX` or `REX_GOTPCRELX` record against `__tls_get_addr` in an
+executable section is R8, "a call to __tls_get_addr survives in a
+static output" (x64.md X-48: every GD/LD sequence is rewritten there).
+The references are not judged (GNU ld keeps a defined
+`__tls_get_addr`'s call). Test: `tests/x64.rs
+x64_x48_no_tls_runtime_call_in_a_static_output`.
+
+**x86-64 constructs, judged or not (WP-028d item 3).** Every construct
+WP-029b's linker writes has a rule and a mutation that it catches
+(§9.5's x86-64 sweep), except these, which are **not judged**:
+
+- `.got` slots no reference reaches after relaxation (X1/X2/X3 keep the
+  slot): their contents are dead, so a swapped pair is an equivalent
+  mutant (§9.5); judging them needs the map to name each slot's owner.
+- the non-`PT_LOAD` segments' `p_flags` and `p_align`, and
+  `PT_GNU_RELRO`'s `p_filesz` (the loader reads `p_memsz`);
+- `PT_GNU_STACK`'s `PF_X` (§11 item 11);
+- the large-model sections' placement (`placement_not_judged`).
+
 A record whose rewriting cannot be judged (its symbol unresolved, as in a
 stripped output; an unusable `PT_TLS`) is not checked, and its rewrite
 window (`GOTPCREL*` [P−3, P+5); `GOTTPOFF`/`GOTPC32_TLSDESC` [P−3, P);
 `TLSDESC_CALL` [P, P+2); `TLSGD`/`TLSLD` [P−4, P+18)) is left out of S12.
+
+### 5.10 Erratum 843419 by site (WP-028d)
+
+W7 and W8 (§5.3) judge a fix's **meaning** where the words are judged:
+the patch's first word is the record's relocated word (R1), or the input
+word when the final word has no record (S12); the patch must return to
+`F + 4` or it is not followed and the branch at `F` is R1/S12; an `ADR`
+over an `ADRP` must compute the page the relocated `ADRP` computes (R1),
+or, for an `ADRP` without a record, the page the input word computes at
+its output address (S12). This section judges that the fixes are **where
+the sites are** (`src/erratum.rs`, from `spec/a64.md` §11.3), on AArch64
+outputs:
+
+1. **The words.** A site reads the bytes `[P + 0xFF8, P + 0x100C)` of
+   each page `P`: `W1` at `0xFF8` or `0xFFC` and the three words after
+   it, which cross the page. The window can start in the section before
+   the one that holds its last words (WP-032e found mortar reading such
+   words unrelocated). Each word is taken from the input section placed
+   there, with its class from the input's mapping symbols (a64.md §11.1
+   condition 5: `$x`, `$d`, or unproved before the first). A word in no
+   input section (padding, a synthetic chunk) breaks every candidate
+   through it.
+2. **Undo the fixes.** At `F` (page offset `0x000`, `0x004`, `0x008`), a
+   `B` to a patch that §5.3's W8 conditions accept, over an input
+   load/store with an unsigned offset, is a redirect: the patch's first
+   word is the pre-fix word. At `Q` (`0xFF8`, `0xFFC`), an `ADR Xd` over
+   an input `ADRP Xd` is an ADR fix: the input word is the pre-fix word.
+   Other words are their output words (§8 rewritings applied, so a
+   relaxed `ADRP` is not a `W1`).
+3. **The sites** are a64.md §11.1's on the pre-fix words, both forms.
+4. **The option.** No map format records `--fix-cortex-a53-843419`. The
+   caller states it (`Map.fix_843419`: `xtask plumb
+   --fix-cortex-a53-843419`/`--no-fix-cortex-a53-843419`, or read from
+   the `--inputs-from` response file); otherwise any fix found shows it
+   was given, and a link with no fix leaves its sites not judged
+   (coverage `erratum_not_judged`). The map should carry it (request).
+
+The rules (ids C1-C6):
+
+- **C1** (every linker). A site with neither fix when the option is in
+  effect. On a reference linker's output only sites both GNU ld 2.44 and
+  lld 22 fix are judged (a64.md §11.4: `W2` a single-register load or
+  store that does not load `Xn`, or a store pair; `W3` not a branch);
+  the others, and unproved candidates, are not judged.
+- **C2** (mortar). A site with both fixes, or an ADR fix at a `W1` that
+  starts no site (§11.3 item 5).
+- **C3** (mortar). A redirect at a word that is no site's `F` (§11.3
+  item 4).
+- **C4** (mortar). A candidate with an unproved word: mortar must have
+  refused (§11.1 condition 5, §11.3 item 7).
+- **C5** (mortar, the option in effect). A map chunk in an executable
+  section starts at page offset `0xFFC`, `0x000`, `0x004` or `0x008`
+  (§11.3 item 8, `spec/layout.md` L-118).
+- **C6** (mortar). A fix in a link stated to be without the option.
+
+Coverage counts the sites found with their fix (`erratum_sites`) and the
+sites not judged.
+
+**WP-032e's mislinks** (main 4afb6df's linker, eafc050 the fix): both
+were already findings of §5.3's rules (R1 on the `ADRP` the `ADR`
+replaced, R1 on the patch's load) when the verifier was run on them, as
+was the `synthetic-sections` workload's output; the bench harness does
+not run the verifier, which is how they went unreported. Reproducers
+with each linker: `tests/mutation.rs` (`s9_2o_*`), and the stale patch
+load, the ADR to the next page and an undone fix are mutation class
+`erratum-fix` (§9.5).
 
 ## 6. Structure and content
 
@@ -1173,7 +1295,13 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   within one `PT_LOAD`'s memory. If it has bytes, they lie within that
   segment's file image, at `p_offset + (sh_addr − p_vaddr)`.
 - **S5.** A section with `SHF_WRITE` is in a `PF_W` segment, and one with
-  `SHF_EXECINSTR` is in a `PF_X` segment.
+  `SHF_EXECINSTR` is in a `PF_X` segment. A `PT_LOAD` that holds an
+  allocated section is `PF_R`, unless (AArch64) every section in it is
+  `SHF_AARCH64_PURECODE` (lld 22's execute-only `.iplt`): a text segment
+  without `PF_R` is execute-only where the hardware allows it, and its
+  literal pools fault. In mortar's output (by map format) a `PT_LOAD` is
+  `PF_W` only if it holds a writable section and `PF_X` only if it holds
+  an executable one (L-6 made a rule for mortar; WP-028d).
 - **S6.** No two sections overlap. In memory this covers allocated
   sections other than `.tbss`. In the file it covers sections with bytes,
   the file header, the program header table and the section header table.
@@ -1182,7 +1310,15 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   (`entry-not-found`) and writes 0 (`spec/layout.md` L-103, a binding
   ruling), and the verifier, which does not see the link's diagnostics,
   accepts the 0 whatever the reason (WP-028b). S7 judges `ET_EXEC` only:
-  a shared object or `-r` output has no entry rule here (L-104).
+  a shared object or `-r` output has no entry rule here (L-104). In
+  mortar's output with a `.symtab` that has a function, a nonzero
+  `e_entry` is the value of a symbol that is not a mapping symbol,
+  `STT_SECTION`, `STT_FILE` or `STT_TLS` (L-103: the entry symbol's;
+  WP-028d). The symbol may be local: glibc's `_start` is hidden, and a
+  hidden symbol is local in the output. The references fall back to the
+  start of `.text` when there is no entry symbol, so the clause is
+  mortar's only; an `-e` given as an address with no symbol there would
+  be its one false finding.
 - **S8.** Every `.symtab` symbol defined in an allocated section, with
   `st_size > 0` and not `STT_SECTION`, lies within its section:
   `[st_value, st_value + st_size] ⊆ [sh_addr, sh_addr + sh_size]`. For a
@@ -1192,10 +1328,27 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   a `PT_LOAD`'s file image, its `p_align` is a power of two, and its
   `p_vaddr` is a multiple of `p_align` (§4.7). Every
   `SHF_TLS` section lies inside it, and TLS sections require a `PT_TLS`.
+  It is exactly the TLS sections (gABI "Thread-Local Storage"; WP-028d):
+  `p_vaddr` is the first one's address, `p_filesz` reaches the end of the
+  last one with bytes, `p_align` is their largest `sh_addralign`, and
+  `p_memsz` is at least their span and at most the span rounded up to
+  `p_align` (lld rounds it, since variant 2 puts the thread pointer after
+  the block). A wrong `p_memsz` moves every x86-64 TP offset; a wrong
+  `p_align` moves every AArch64 one (§4.7's `tcb`).
 - **S10.** There is at most one `PT_GNU_STACK`.
 - **S11.** Every `PT_NOTE` lies in the file and is a sequence of whole
   notes (gABI "Note Section"), with padding to 4, or to 8 when `p_align`
-  is 8.
+  is 8. The padding after a descriptor is there "to ensure 4-byte
+  alignment for the next note entry", so the last note of the segment
+  may end at its descriptor: GNU ld, lld and mold all write a 6-byte
+  `--build-id=0x…` so (`p_filesz` 0x16), and the verifier accepts it
+  (WP-028d; before, it was an S11 finding). A `PT_NOTE` is its note
+  sections: it starts at the first and ends at the end of the last,
+  `p_memsz` = `p_filesz`, and `p_align` is their largest `sh_addralign`
+  (at least 4): glibc ignores a property note under a `p_align` other
+  than 8. `PT_GNU_PROPERTY` is exactly `.note.gnu.property` (address,
+  offset, size, `p_memsz` = `p_filesz`, its alignment): the loader finds
+  the properties through it (Linux "Program Property").
 - **S12 (content).** Take every input section placed whole that is
   allocated, has a size, and is not mergeable, `.eh_frame`, `.tbss` or
   `.note.gnu.property`. Its output bytes must equal its input bytes
@@ -1211,7 +1364,9 @@ S18 is S17 here; its T1 is S18):
 - **S13.** At most one `PT_PHDR` and one `PT_INTERP`, each before every
   `PT_LOAD`; `PT_PHDR` lies in a `PT_LOAD`'s file image, and so does the
   program header table (L-2, L-3: glibc's static start-up finds
-  `PT_TLS` through `AT_PHDR`).
+  `PT_TLS` through `AT_PHDR`). `PT_PHDR` is the table: `p_offset` =
+  `e_phoff`, `p_filesz` at least `e_phnum × e_phentsize` (lld leaves room
+  for headers it does not write) and `p_memsz` = `p_filesz` (WP-028d).
 - **S14.** An allocated `SHT_NOBITS` section with a size, `.tbss` aside,
   lies at or past `p_vaddr + p_filesz` of its `PT_LOAD` (L-4).
 - **S15.** Every section with `sh_addralign > 1` has `sh_addr ≡ 0 (mod
@@ -1237,6 +1392,18 @@ S18 is S17 here; its T1 is S18):
   instructions (X-50): any NOP sequence for a reference linker, all 0x90
   for mortar. lld and mold pad with `int3` (W8, A16). (This S19 is the
   verifier's own id, not layout.md §20.3's S19 below.)
+
+- **S20 (RELRO extent, WP-028d).** A section that starts inside a
+  `PT_GNU_RELRO` ends inside it (`.got.plt` aside, S16), and `.got`,
+  `.init_array`, `.fini_array`, `.preinit_array`, `.dynamic` and
+  `.data.rel.ro*` lie inside it when there is one. Its end is the end of
+  a section, a multiple of 4 KiB (GNU ld pads it to the page), or inside
+  the reserved head of `.got.plt` (three words, S16). A RELRO cut short
+  leaves the end of `.got` writable; one run long makes writable data
+  read-only. (S16 judges the bytes below its start.)
+- **S21 (WP-028d).** `PT_GNU_EH_FRAME` is exactly `.eh_frame_hdr`
+  (address, offset, size, `p_memsz` = `p_filesz`): the unwinder finds the
+  search table through it (LSB "Exception Frames").
 
 Not taken from layout.md §20.3: its S19 (`ET_DYN` alignment) has no
 output to apply to while S1 accepts `ET_EXEC` only, and is stage 3; its
@@ -1416,7 +1583,10 @@ rules below judge the rest. Code: `src/symbols.rs`.
   as in Y3. When none is at the output value, that is a finding, with two
   exceptions, both counted in `locals_unchecked`:
   - some input local of the name has no known place (a `rewritten` or
-    `merged` section, such as GNU ld's `.eh_frame`);
+    `merged` section, such as GNU ld's `.eh_frame`). A local in a
+    non-alloc or discarded section has no address in the output and
+    does not count (every object's `$d` in its debug sections; WP-028d:
+    without this, no output `$x` or `$d` was judged);
   - the symbol is a mapping symbol (`$x…`, `$d…`, AAELF64 "Mapping
     symbols") at an address of an allocated section that no input section
     occupies: the linker's own, marking a veneer or a patch.
@@ -1585,13 +1755,29 @@ mismatch is a B1 finding at the descriptor's address. Other lengths
 (`0xHEX`, `uuid`) are not checked, and the coverage says so. Other
 linkers' ids are not checked (image.md §8.1: no tool recomputes them).
 
+**The style from the map (WP-028d).** A `--build-id=0xHEX` of 8, 20 or
+32 bytes is the user's, not a hash, and judging it as one is a false B1.
+The map says which it is: the synthetic chunk of the note carries the
+style as its target, `chunk synthetic .note.gnu.build-id <addr> <size>
+<style> 0`, where `<style>` is `default` (`L128`, 20 bytes), `fast`
+(`L128`, 8), `sha1` (20), `sha256` (32) or `given` (`0xHEX`, `uuid`).
+With a style, only that tree and length are judged (a length other than
+the style's is B1), `given` is not judged, and an unknown style is not
+judged; the coverage says which. Without one (today's mortar maps,
+`chunk synthetic .note.gnu.build-id 4001b0 18`) the lengths are judged as
+above. The writer that must carry it is `crates/mortar_image/src/link.rs`'s
+synthetic chunk loop, from `LinkOptions::build_id`: `Some(TreeStyle::…)`
+gives the tree's name and `None` (a given id) gives `given`. This is a
+request to the image package; the verifier reads both forms now.
+
 SHA-1 and SHA-256 are written from FIPS 180-4 and `L128` from I-114's
 text, in `src/buildid.rs`; none is shared with `mortar_digest`. The
 definition is the one of this mortar version (I-75): a later tag is a
 new definition, and B1 must change with it.
 
 Tests: `src/buildid.rs` (FIPS 180-4's vectors, image.md §8.4's `L128`
-and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`.
+and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`,
+`s9_2l_build_id_style_from_the_map`.
 
 ## 7. The report
 
@@ -1599,8 +1785,9 @@ and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`.
 
 A finding has:
 
-- the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R8`, `T1`,
-  `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6) or `B1` (§6.7);
+- the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M5`, `R1`–`R9`, `T1`,
+  `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7)
+  or `C1`–`C6` (§5.10);
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -1822,6 +2009,13 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   `ISA_1_NEEDED`: P1 1/1; (6) `PT_TLS` `p_memsz` grown by its alignment:
   1/1; (7) in the `w6` links of GNU ld and lld, an IPLT entry's `endbr64`
   made a 4-byte NOP, and the IFUNC word changed: F5 2/2 each.
+- **(o)** (§5.10) The `erratum` link, by each linker: GNU ld's ADR made
+  the next page's, and lld's patch load with its offset cleared, are R1;
+  either fix undone is C1 with the option stated, and not judged
+  without it; mold's unfixed site is C1, A4. Read as mortar's (the map
+  rewritten): `W2` made a NOP in input and output is C2 (GNU ld's ADR)
+  and C3 (lld's patch), the option stated off is C6, and a chunk at
+  `.text + 0x1000` is C5.
 
 ### 9.3 Map readers
 
@@ -1842,6 +2036,82 @@ These sweeps over the `Small` corpus must never panic (`tests/hostile.rs`):
   and in mortar's.
 
 A truncated output, or an input cut short, must also produce a finding.
+
+### 9.5 Mutation coverage (WP-028d)
+
+`src/mutate.rs` takes a correct output and makes single-field edits, one
+mutant at a time, in 23 classes: a relocated field off by one, holding
+another symbol's value, or another addend; a relaxed sequence put back
+to its input bytes (`stale-relaxation`); two GOT words or two
+IRELATIVE records swapped; `.eh_frame_hdr`'s table out of order or an
+entry wrong; an FDE's `pc_begin`; a `.symtab` value or size; `e_entry`;
+a program header's `p_filesz`, `p_memsz`, `p_align` or flags; `PT_TLS`;
+a property bit; a linker-defined symbol; two sections overlapping; a
+thunk's target; an IPLT entry; an erratum fix (§5.10). A mutant is
+**caught** when the report has a finding the unmutated output's report
+does not. mortar's build id is resealed after each edit (B1 would
+otherwise catch everything). Places that carry a baseline finding are
+not mutated. The choice is a SplitMix64 sequence from a fixed seed: the
+table is the same on every run. `cargo xtask plumb <out> --map <map>
+--map-format F --mutate [--per-class N] [--seed S] [--threads T]`
+prints the table and every missed mutant; `tests/mutation.rs
+s9_5_mutation_coverage_on_the_small_corpus` runs the small corpus by
+every linker and asserts the classes that must have no miss.
+
+**mortar's outputs** (WP-028d, release build, seed default):
+
+| class | AArch64 protoc (40/class) | x86-64 C++ threads (40/class) | x86-64 static C TLS (all) |
+|---|---|---|---|
+| field-off-by-one | 40/40 | 39/40 | 11446/11448 |
+| field-wrong-symbol | 39/40 | 40/40 | 11428/11436 |
+| field-wrong-addend | 40/40 | 40/40 | 11436/11448 |
+| stale-relaxation | 10/10 | 40/40 | 268/268 |
+| got-slot-swap | 40/40 | 7/40 | 13/28 |
+| irelative-swap | 9/9 | 40/40 | 43/43 |
+| eh-hdr-order, eh-hdr-entry | — (no `--eh-frame-hdr`) | 80/80 | 3254/3254 |
+| fde-pc-begin | 40/40 | 40/40 | 1085/1085 |
+| symtab-value | 36/40 | 40/40 | 1925/1940 |
+| symtab-size | 40/40 | 40/40 | 1934/1940 |
+| e-entry | 2/2 | 2/2 | 2/2 |
+| phdr-filesz | 10/13 | 16/19 | 16/19 |
+| phdr-memsz | 12/13 | 18/19 | 18/19 |
+| phdr-align | 4/13 | 12/19 | 12/19 |
+| phdr-flags | 12/21 | 12/30 | 12/30 |
+| tls-segment | 3/3 | 3/3 | 3/3 |
+| property-bit | — | 4/4 | 4/4 |
+| linker-symbol | 9/9 | 10/10 | 10/10 |
+| section-overlap | 20/20 | 22/22 | 22/22 |
+| iplt-entry | 10/10 | 13/13 | 11/11 |
+| erratum-fix | 4/4 | — | — |
+
+**The misses, by kind:**
+
+- **Equivalent mutants** (no observable difference): dead `.got` slots
+  on x86-64 (relaxed references keep their slot); `GOTPCREL` against
+  glibc's `_nl_current_*_used` (every slot holds 1, so another slot or
+  symbol gives the same value); the non-`PT_LOAD` segments' flags and
+  alignment; `PT_LOAD` `p_align` of `ET_EXEC`; `PT_GNU_STACK`'s and
+  `PT_GNU_RELRO`'s `p_filesz`, `PT_GNU_STACK`'s `p_memsz`.
+- **Holes, cheap, closed in WP-028d:** the W1 NOP-ADRP form (§5.3), S5
+  (flags), S7 (entry), S9 (TLS), S11 (notes), S13 (`PT_PHDR`), S20
+  (RELRO), S21 (`PT_GNU_EH_FRAME`), and Y4's mapping symbols (no `$x`
+  or `$d` was judged before).
+- **Holes, by cost:**
+  1. `PT_GNU_STACK` `PF_X` flipped (the stack made executable): needs
+     the link's `-z execstack` from the map (§11 item 11). Cheap once
+     the map carries it.
+  2. Linker-defined symbols' `st_size` (`_GLOBAL_OFFSET_TABLE_`,
+     `__init_array_start`, … made 1): no spec states the size; a line
+     in synth.md (size 0) makes it a Y5 clause.
+  3. Locals in merged sections (`.rodata.str*`: `_nl_C_name`,
+     `_itoa_lower_digits`) and in `.eh_frame` (`__EH_FRAME_BEGIN__`,
+     `__FRAME_END__`), and `$d` in them: Y4 cannot place them; needs
+     the map to carry merged and `.eh_frame` pieces (§11 item 1).
+  4. A record into an `.eh_frame` mortar rewrote (crtbegin's `adrp`/
+     `add` of `__EH_FRAME_BEGIN__`, AArch64; `R_X86_64_32` at the same
+     place, x86-64): `not checked: eh-frame`; same map request.
+  5. The x86-64 dead GOT slots, if they should be judged at all: the
+     map naming each slot's owner (equivalent today).
 
 ## 10. The reference linkers, observed
 
@@ -1898,9 +2168,17 @@ corpus test accepts them by name and nothing else.
 Two more anomalies are reported here but do not reach the corpus:
 
 - **A4 (mold).** mold accepts `--fix-cortex-a53-843419` and does not patch.
-  The erratum sequence is left as it is. The fields are right, so this is
-  not a finding: the verifier checks what the program computes, not
-  whether the erratum workaround was applied.
+  The erratum sequence is left as it is. The fields are right. With the
+  option stated to the verifier, each site is C1 (§5.10), classified A4;
+  without it, no fix shows the option and the sites are not judged.
+- **A18 (GNU ld).** GNU ld 2.44 leaves an erratum 843419 site unfixed in
+  a large link: the `synthetic-sections` workload's static link has a
+  4-word site (ADRP at `0x661ff8`, `W3` an `ADRP` of the same register,
+  `F` at `0x662004`) with neither fix, after two of its own 16-byte
+  erratum stubs earlier in `.text`. Consistent with the stubs moving
+  code onto a page end after the scan; the same words at `0xFF8` in a
+  small link are fixed. C1, classified A18 when an earlier site of the
+  output is patched.
 - **A5 (lld).** lld relaxes `LDR Wt, [Xn, :got_lo12:]` (a 32-bit load,
   ill-formed with `LD64_GOT_LO12_NC`) into a 64-bit `ADR`. GNU ld writes
   the scale-8 offset into the scale-4 load. The input is R8 (§4.3), for
@@ -1950,7 +2228,9 @@ case of `tests/x64.rs`):
   `PT_NOTE` with the 8-aligned `.note.gnu.property`, with `p_align` 8: a
   reader that pads by 8 misreads every note after the first (S11, "only
   with padding to 4"). Run-wide on x86-64 whenever there is a property
-  note.
+  note and a 4-aligned note other than the last (WP-028d: in `w6`,
+  `-nostdlib`, the build id is the last note and ends at its descriptor,
+  which S11 accepts).
 - **A14 (lld).** An x86-64 large common (`SHN_X86_64_LCOMMON`) becomes
   an absolute symbol whose value is its alignment, and nothing is
   allocated (W9): every store to it writes wherever that address is (Y3,
@@ -2117,8 +2397,9 @@ DWARF's text, and each is accepted only from its own linker.
    `__bss_start` within §6.5's range even when there is no `.bss`.
 9. i386 (§4.5): the table and its rewritings need a spec of their own;
    until one exists every i386 record is `machine`.
-10. X-48 (a `__tls_get_addr` call left in a static output) has no rule:
-    a GD/LD sequence left unrewritten is its lead record's finding, but
-    a `call __tls_get_addr` without a `TLSGD`/`TLSLD` before it is
-    judged only as a branch. A rule that no call to `__tls_get_addr`
-    remains in a static executable is later.
+10. X-48: resolved (WP-028d, §5.9): in mortar's static `ET_EXEC`
+    output, a branch or GOT reference to `__tls_get_addr` is R8.
+11. The map should state the link's options that decide a rule: the
+    erratum option (§5.10) and `-z execstack`/`-z noexecstack` (with
+    them `PT_GNU_STACK`'s `PF_X` could be judged against L-84's table;
+    today a flipped `PF_X` there is not found, §9.5).
