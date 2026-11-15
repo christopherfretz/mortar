@@ -6,7 +6,7 @@ mod common;
 use common::{Eh, R, collector, fde, text, walk};
 use mortar_core::par::{Pool, check_schedules};
 use mortar_core::{FileId, SectionId};
-use mortar_synth::eh::{CieReloc, CodeRef, EhPlan, EhValue, Referrer, RelocTarget};
+use mortar_synth::eh::{CodeRef, EhPlan, EhValue, EhWho};
 use mortar_synth::hdr::{HdrAddrs, HdrPlan, OVERLAPPING};
 use mortar_synth::out::Window;
 
@@ -83,13 +83,8 @@ fn s43_cies_with_different_bytes_or_relocations_are_kept() {
     eh.add(1, 1, &[cie(0, 16), fde(0, 10, 0)]);
     eh.add(2, 2, &[cie(1, 16), fde(0, 20, 0)]);
     eh.add(3, 3, &[cie(0, 16), fde(0, 30, 0)]);
-    let personality = |s| CieReloc {
-        offset: 12,
-        r_type: 261,
-        addend: 0,
-        target: RelocTarget::Section { section: SectionId(s), offset: 0 },
-    };
-    eh.reloc(0, 0, personality(50)).reloc(2, 0, personality(51));
+    // S-43: equal bytes, relocations against different targets.
+    eh.reloc(0, 0, 12, 50).reloc(2, 0, 12, 51);
     let p = plan(&eh, &[]);
     let (recs, _) = walk(&bytes(&p, &eh));
     assert_eq!(recs.iter().filter(|r| r.2 == 0).count(), 3);
@@ -116,9 +111,9 @@ fn s47_finding14_record_lengths_are_raised_to_a_multiple_of_4() {
     let (recs, term) = walk(&out);
     assert!(term);
     assert_eq!(recs[0].1, 20, "4 + 13 raised to 20");
-    assert_eq!(recs[1].1, 16, "12 + 1 raised to 16");
+    assert_eq!(recs[1].1, 20, "16 + 1 raised to 20");
     assert_eq!(&out[4 + 17..4 + 20], &[0, 0, 0], "zero padding");
-    assert_eq!(p.size(), 24 + 20 + 4);
+    assert_eq!(p.size(), 24 + 24 + 4);
 }
 
 #[test]
@@ -155,7 +150,7 @@ fn s49_slots_eh_records_name_input_records() {
 fn s50_rule1_reference_at_zero_is_the_chunk_start() {
     let eh = two_objects();
     let p = plan(&eh, &[]);
-    assert_eq!(p.value(&eh, SectionId(2), 0, Referrer::Relocation), Ok(EhValue::Offset(0)));
+    assert_eq!(p.value(&eh, SectionId(2), 0, EhWho::Reloc), Ok(EhValue::Offset(0)));
 }
 
 #[test]
@@ -163,11 +158,8 @@ fn s50_rule2_reference_inside_a_kept_record() {
     let eh = two_objects();
     let p = plan(&eh, &[]);
     // Section 2's first FDE is at input 24; its CIE was merged away, so
-    // the FDE is output record 3 at 24 + 16 + 16 = 56.
-    assert_eq!(
-        p.value(&eh, SectionId(2), 24 + 8, Referrer::Relocation),
-        Ok(EhValue::Offset(56 + 8))
-    );
+    // the FDE is output record 3 at 24 + 20 + 20 = 64.
+    assert_eq!(p.value(&eh, SectionId(2), 24 + 8, EhWho::Reloc), Ok(EhValue::Offset(64 + 8)));
 }
 
 #[test]
@@ -178,12 +170,12 @@ fn s50_finding3_reference_at_the_end_of_an_empty_section() {
     eh.add(3, 3, &[cie(1, 16), fde(0, 30, 0)]);
     let p = plan(&eh, &[]);
     // crtbeginT's `__EH_FRAME_BEGIN__` at offset 0 of an empty section.
-    assert_eq!(p.value(&eh, SectionId(2), 0, Referrer::Relocation), Ok(EhValue::Offset(0)));
+    assert_eq!(p.value(&eh, SectionId(2), 0, EhWho::Reloc), Ok(EhValue::Offset(0)));
     // r == sh_size of a non-empty section: the next kept record.
-    assert_eq!(p.value(&eh, SectionId(1), 40, Referrer::Relocation), Ok(EhValue::Offset(40)));
+    assert_eq!(p.value(&eh, SectionId(1), 44, EhWho::Reloc), Ok(EhValue::Offset(44)));
     assert_eq!(
-        p.value(&eh, SectionId(3), 40, Referrer::Relocation),
-        Ok(EhValue::Offset(80)),
+        p.value(&eh, SectionId(3), 44, EhWho::Reloc),
+        Ok(EhValue::Offset(88)),
         "the terminator"
     );
 }
@@ -192,8 +184,8 @@ fn s50_finding3_reference_at_the_end_of_an_empty_section() {
 fn s50_finding4_mapping_symbol_in_a_removed_cie_is_dropped() {
     let eh = two_objects();
     let p = plan(&eh, &[]);
-    assert_eq!(p.value(&eh, SectionId(2), 0x16, Referrer::Mapping), Ok(EhValue::Dropped));
-    assert_eq!(p.value(&eh, SectionId(1), 0x16, Referrer::Mapping), Ok(EhValue::Offset(0x16)));
+    assert_eq!(p.value(&eh, SectionId(2), 0x16, EhWho::Mapping), Ok(EhValue::Dropped));
+    assert_eq!(p.value(&eh, SectionId(1), 0x16, EhWho::Mapping), Ok(EhValue::Offset(0x16)));
 }
 
 #[test]
@@ -202,11 +194,11 @@ fn s50_finding12_symbol_at_a_removed_record_takes_the_next_kept_record() {
     let p = plan(&eh, &[20]);
     // Section 2's CIE (merged) and first FDE (dead) are gone; a symbol at
     // the CIE's start takes the next kept record: the second FDE.
-    let next = p.value(&eh, SectionId(2), 24, Referrer::Symbol { local_unreferenced: false });
-    assert_eq!(next, Ok(EhValue::Offset(56)));
-    let inside = p.value(&eh, SectionId(2), 4, Referrer::Symbol { local_unreferenced: false });
-    assert_eq!(inside, Ok(EhValue::Offset(56)));
-    let local = p.value(&eh, SectionId(2), 4, Referrer::Symbol { local_unreferenced: true });
+    let next = p.value(&eh, SectionId(2), 24, EhWho::Symbol { droppable: false });
+    assert_eq!(next, Ok(EhValue::Offset(64)));
+    let inside = p.value(&eh, SectionId(2), 4, EhWho::Symbol { droppable: false });
+    assert_eq!(inside, Ok(EhValue::Offset(64)));
+    let local = p.value(&eh, SectionId(2), 4, EhWho::Symbol { droppable: true });
     assert_eq!(local, Ok(EhValue::Dropped));
 }
 
@@ -214,7 +206,7 @@ fn s50_finding12_symbol_at_a_removed_record_takes_the_next_kept_record() {
 fn s50_rule4_relocation_into_a_removed_record_is_refused() {
     let eh = two_objects();
     let p = plan(&eh, &[20]);
-    let e = p.value(&eh, SectionId(2), 30, Referrer::Relocation).unwrap_err();
+    let e = p.value(&eh, SectionId(2), 30, EhWho::Reloc).unwrap_err();
     let d = e.into_diagnostic();
     assert_eq!(d.id(), "malformed-input");
     let rendered = d.render(&mortar_diag::Style::plain("ld"));
@@ -225,13 +217,13 @@ fn s50_rule4_relocation_into_a_removed_record_is_refused() {
 fn s50_rule5_offset_outside_the_section_is_refused() {
     let eh = two_objects();
     let p = plan(&eh, &[]);
-    let rel = p.value(&eh, SectionId(1), 57, Referrer::Relocation).unwrap_err().into_diagnostic();
+    let rel = p.value(&eh, SectionId(1), 65, EhWho::Reloc).unwrap_err().into_diagnostic();
     assert_eq!(
         rel.render(&mortar_diag::Style::plain("ld")),
         "ld: error: offset is outside the section; refer to it through a named symbol\n"
     );
     let sym = p
-        .value(&eh, SectionId(1), -1, Referrer::Symbol { local_unreferenced: false })
+        .value(&eh, SectionId(1), -1, EhWho::Symbol { droppable: false })
         .unwrap_err()
         .into_diagnostic();
     assert_eq!(
@@ -244,17 +236,17 @@ fn s50_rule5_offset_outside_the_section_is_refused() {
 fn s52_place_of_an_input_offset() {
     let eh = two_objects();
     let p = plan(&eh, &[]);
-    assert_eq!(p.place(SectionId(2), 24 + 8), Some(56 + 8), "FDE pc field");
-    assert_eq!(p.place(SectionId(2), 4), None, "the merged CIE");
+    assert_eq!(p.place(&eh, SectionId(2), 24 + 8), Some(64 + 8), "FDE pc field");
+    assert_eq!(p.place(&eh, SectionId(2), 4), None, "the merged CIE");
 }
 
 #[test]
 fn s54_output_type_is_the_shared_type() {
     let mut eh = two_objects();
-    eh.secs[0].sh_type = 0x7000_0001;
+    eh.info[0].sh_type = 0x7000_0001;
     let p = plan(&eh, &[]);
     assert_eq!(p.sh_type(), mortar_elf::consts::SHT_PROGBITS);
-    eh.secs[1].sh_type = 0x7000_0001;
+    eh.info[1].sh_type = 0x7000_0001;
     assert_eq!(plan(&eh, &[]).sh_type(), 0x7000_0001);
 }
 
@@ -301,8 +293,9 @@ fn eh_plan_and_bytes_do_not_depend_on_the_schedule() {
 #[test]
 fn eh_plan_refuses_unsorted_sections() {
     let mut eh = Eh::default();
-    eh.add(2, 1, &[cie(0, 16)]);
     eh.add(1, 1, &[cie(0, 16)]);
+    eh.add(2, 1, &[cie(0, 16)]);
+    eh.frames.sections.swap(0, 1);
     let diag = collector();
     assert!(EhPlan::new(&eh, |_| true, &Pool::sequential(), &diag).is_err());
     assert_eq!(diag.finish().diagnostics()[0].id(), "internal-error");
@@ -319,7 +312,7 @@ fn hdr(eh: &Eh, p: &EhPlan) -> Result<Option<HdrPlan>, String> {
 
 /// Code section `s` is at `0x1000 × s`.
 fn code_addr(c: CodeRef) -> Option<u64> {
-    0x1000u64.checked_mul(u64::from(c.section.0)).map(|a| a + c.offset)
+    0x1000u64.checked_mul(u64::from(c.section.0)).map(|a| a.wrapping_add_signed(c.offset))
 }
 
 #[test]
@@ -348,7 +341,7 @@ fn s58_s59_header_and_sorted_table_without_empty_ranges() {
     assert_eq!(word(8), 2, "fde_count");
     assert_eq!(
         (word(12), word(16)),
-        (0xa000 - 0x8000, 0x9000 + 40 - 0x8000),
+        (0xa000 - 0x8000, 0x9000 + 44 - 0x8000),
         "sorted: section 10 first"
     );
     assert_eq!((word(20), word(24)), (0x1e000 - 0x8000, 0x9000 + 24 - 0x8000));

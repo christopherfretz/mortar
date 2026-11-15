@@ -1,12 +1,14 @@
-//! Test inputs: an in-memory `.eh_frame` source, a symbol source, an
+//! Test inputs: an `.eh_frame` source (bytes parsed by `mortar_merge`), a symbol source, an
 //! address oracle, and note bytes.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
 
+use mortar_core::par::Pool;
 use mortar_core::{FileId, SectionId, SymKey, SymbolId};
 use mortar_diag::{Collector, Policy, Report, Style};
-use mortar_synth::eh::{CieReloc, CodeRef, EhSection, EhSource, InRecord, RecordKind};
+use mortar_merge::eh::{EhFrames, EhIn, EhReloc, RelocClass, Target};
+use mortar_synth::eh::{EhInfo, EhSource};
 use mortar_synth::symtab::{
     GlobalIn, InternalValue, LocalIn, SecKind, Sections, SymAddrs, SymSource,
 };
@@ -27,21 +29,50 @@ pub enum R {
     /// A CIE with this body after the CIE id.
     Cie(Vec<u8>),
     /// An FDE of CIE record `cie`, initial location `code` (section,
-    /// offset), `extra` bytes after the address range, range 0 when
-    /// `empty`.
-    Fde { cie: u32, code: Option<(u32, u64)>, extra: usize, empty: bool },
+    /// offset; `None`: no relocation and a zero field, S-38), `extra`
+    /// bytes after the augmentation data, range 0 when `empty`. Its body
+    /// is the CIE pointer, the location and range (`sdata4`), a zero
+    /// augmentation length and three `DW_CFA_nop`: 16 bytes before
+    /// `extra`.
+    Fde { cie: u32, code: Option<(u32, i64)>, extra: usize, empty: bool },
 }
 
-pub fn fde(cie: u32, section: u32, offset: u64) -> R {
+pub fn fde(cie: u32, section: u32, offset: i64) -> R {
     R::Fde { cie, code: Some((section, offset)), extra: 0, empty: false }
 }
 
-#[derive(Debug, Default)]
+/// One input section: id, file, bytes, relocations, record offsets.
+type Input = (SectionId, FileId, Vec<u8>, Vec<EhReloc>, Vec<u32>);
+
+/// `.eh_frame` sections as bytes and relocations, parsed by
+/// `mortar_merge::eh::parse` after every change.
+#[derive(Debug)]
 pub struct Eh {
-    pub secs: Vec<EhSection>,
-    pub recs: Vec<Vec<InRecord>>,
-    pub bytes: Vec<Vec<u8>>,
-    pub relocs: BTreeMap<(usize, u32), Vec<CieReloc>>,
+    ins: Vec<Input>,
+    pub info: Vec<EhInfo>,
+    pub frames: EhFrames,
+}
+
+impl Default for Eh {
+    fn default() -> Self {
+        Self {
+            ins: Vec::new(),
+            info: Vec::new(),
+            frames: EhFrames { sections: Box::new([]), records: Box::new([]), classes: 0 },
+        }
+    }
+}
+
+fn pc32(offset: u64, target: Target) -> EhReloc {
+    EhReloc {
+        offset,
+        r_type: 261,
+        name: "R_AARCH64_PREL32",
+        class: RelocClass::Pc,
+        width: 4,
+        addend: 0,
+        target,
+    }
 }
 
 impl Eh {
@@ -49,7 +80,7 @@ impl Eh {
     /// in ascending id order).
     pub fn add(&mut self, id: u32, file: u32, records: &[R]) -> &mut Self {
         let mut bytes = Vec::new();
-        let mut recs = Vec::new();
+        let mut relocs = Vec::new();
         let mut offs = Vec::new();
         for r in records {
             let off = bytes.len() as u32;
@@ -60,60 +91,72 @@ impl Eh {
                     bytes.extend_from_slice(&len.to_le_bytes());
                     bytes.extend_from_slice(&0u32.to_le_bytes());
                     bytes.extend_from_slice(body);
-                    recs.push(InRecord { offset: off, len, kind: RecordKind::Cie });
                 }
                 R::Fde { cie, code, extra, empty } => {
-                    let len = 12 + *extra as u32;
+                    let len = 16 + *extra as u32;
                     bytes.extend_from_slice(&len.to_le_bytes());
                     let ptr = off + 4 - offs[*cie as usize];
                     bytes.extend_from_slice(&ptr.to_le_bytes());
-                    bytes.extend_from_slice(&0x1111_1111u32.to_le_bytes());
+                    bytes.extend_from_slice(&0u32.to_le_bytes());
                     bytes.extend_from_slice(&u32::from(!*empty).to_le_bytes());
+                    bytes.extend_from_slice(&[0; 4]);
                     bytes.extend(std::iter::repeat_n(0xee, *extra));
-                    recs.push(InRecord {
-                        offset: off,
-                        len,
-                        kind: RecordKind::Fde {
-                            cie: *cie,
-                            code: code.map(|(s, o)| CodeRef { section: SectionId(s), offset: o }),
-                            empty_range: *empty,
-                        },
-                    });
+                    if let Some((s, o)) = code {
+                        let target = Target::Section { section: SectionId(*s), value: *o as u64 };
+                        relocs.push(pc32(u64::from(off) + 8, target));
+                    }
                 }
             }
         }
-        self.secs.push(EhSection {
-            id: SectionId(id),
+        self.ins.push((SectionId(id), FileId(file), bytes, relocs, offs));
+        self.info.push(EhInfo {
             file: FileId(file),
-            size: bytes.len() as u32,
             align: 3,
             sh_type: mortar_elf::consts::SHT_PROGBITS,
         });
-        self.recs.push(recs);
-        self.bytes.push(bytes);
-        self
+        self.reparse()
     }
 
-    pub fn reloc(&mut self, section: usize, record: u32, r: CieReloc) -> &mut Self {
-        self.relocs.entry((section, record)).or_default().push(r);
+    /// A relocation at offset `at` of record `record` of section row
+    /// `section` against `target` (offset 0), as a CIE carries for its
+    /// personality (class `Other`: no pointer field of a `zR` CIE).
+    pub fn reloc(&mut self, section: usize, record: usize, at: u32, target: u32) -> &mut Self {
+        let s = &mut self.ins[section];
+        let offset = u64::from(s.4[record] + at);
+        let t = Target::Section { section: SectionId(target), value: 0 };
+        s.3.push(EhReloc { class: RelocClass::Other, ..pc32(offset, t) });
+        s.3.sort_by_key(|r| r.offset);
+        self.reparse()
+    }
+
+    fn reparse(&mut self) -> &mut Self {
+        let ins: Vec<EhIn<'_>> = self
+            .ins
+            .iter()
+            .enumerate()
+            .map(|(i, (section, file, bytes, relocs, _))| EhIn {
+                section: *section,
+                file: *file,
+                index: i as u32,
+                bytes,
+                relocs,
+            })
+            .collect();
+        self.frames = mortar_merge::eh::parse(&Pool::sequential(), 8, &ins)
+            .unwrap_or_else(|p| panic!("the test's .eh_frame does not parse: {p:?}"));
         self
     }
 }
 
 impl EhSource for Eh {
-    fn sections(&self) -> &[EhSection] {
-        &self.secs
+    fn frames(&self) -> &EhFrames {
+        &self.frames
     }
-    fn records(&self, section: usize) -> &[InRecord] {
-        &self.recs[section]
+    fn info(&self, s: usize) -> EhInfo {
+        self.info[s]
     }
-    fn bytes(&self, section: usize) -> &[u8] {
-        &self.bytes[section]
-    }
-    fn cie_relocs(&self, section: usize, record: u32, out: &mut Vec<CieReloc>) {
-        if let Some(v) = self.relocs.get(&(section, record)) {
-            out.extend_from_slice(v);
-        }
+    fn bytes(&self, s: usize) -> &[u8] {
+        &self.ins[s].2
     }
 }
 

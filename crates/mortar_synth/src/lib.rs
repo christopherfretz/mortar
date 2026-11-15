@@ -24,8 +24,10 @@
 //! | [`image`] | the chunk interface of `spec/image.md` §13 over every plan | S-4, I-103 to I-108 |
 //!
 //! Inputs come through narrow traits ([`eh::EhSource`],
-//! [`symtab::SymSource`], [`symtab::Sections`]) so that this crate depends
-//! on the tables, not on `mortar_merge`'s or `mortar_image`'s types; the
+//! [`symtab::SymSource`], [`symtab::Sections`]). `.eh_frame` is
+//! `mortar_merge`'s parse (`Phase::eh`) with each section's bytes and
+//! file ([`eh::MergeEh`] over phase 60's `Link`); its S-43 identity
+//! classes, S-44 keepers and S-50 rule are merge's helpers. The
 //! address oracles ([`got::SlotValues`], [`symtab::SymAddrs`]) are what the
 //! image phase answers.
 //!
@@ -48,7 +50,7 @@ pub mod shstrtab;
 pub mod symtab;
 
 pub use chunks::{SynthKind, chunk_ids};
-pub use eh::{EhPlan, EhSource, EhValue, Referrer};
+pub use eh::{EhInfo, EhPlan, EhSource, EhValue, EhWho, MergeEh};
 pub use error::{Failed, PHASE, SynthError};
 pub use got::{GotPlan, SlotValues};
 pub use hdr::HdrPlan;

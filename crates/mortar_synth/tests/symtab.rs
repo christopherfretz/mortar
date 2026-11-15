@@ -92,7 +92,13 @@ fn program() -> (Syms, Secs, Addrs) {
     (syms, secs, addrs)
 }
 
-const FACTS: PatchFacts = PatchFacts { thunk_size: 12, mapping: true };
+const FACTS: PatchFacts = PatchFacts { thunk_size: 12, erratum_843419_size: 8, mapping: true };
+
+#[test]
+fn s80_patch_facts_come_from_the_architecture() {
+    // WP-023b: `Arch::patch` gives the 843419 patch's shape.
+    assert_eq!(PatchFacts::of(&mortar_a64::A64::M1), FACTS);
+}
 
 fn plan(cx: &SymCtx<'_>, patches: &[Patch]) -> Result<SymtabPlan, String> {
     let diag = collector();

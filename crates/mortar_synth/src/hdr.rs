@@ -16,7 +16,7 @@ use std::cmp::Ordering;
 use mortar_core::par::Pool;
 use mortar_diag::{Collector, Diagnostic, Kind};
 
-use crate::eh::{CodeRef, EhPlan, EhSource, RecordKind};
+use crate::eh::{CodeRef, EhPlan, EhSource};
 use crate::error::{Failed, SynthError, fail, internal, malformed, record_key};
 use crate::out::Window;
 
@@ -39,14 +39,6 @@ pub struct HdrAddrs {
     pub eh: u64,
 }
 
-fn code_of<S: EhSource + ?Sized>(src: &S, eh: &EhPlan, n: usize) -> Option<(CodeRef, bool)> {
-    let (i, r) = eh.source(n);
-    match src.records(i).get(r as usize)?.kind {
-        RecordKind::Fde { code: Some(code), empty_range, .. } => Some((code, empty_range)),
-        _ => None,
-    }
-}
-
 impl HdrPlan {
     /// The table for `eh`, or `None` when there is none: S-57, it exists
     /// exactly when `eh_frame_hdr` (the last of `--eh-frame-hdr` and
@@ -67,7 +59,7 @@ impl HdrPlan {
         let n = eh.records().len();
         let entries: Vec<Option<(CodeRef, u32)>> = pool.map(n, |k| {
             eh.cie_of(k)?;
-            let (code, empty) = code_of(src, eh, k)?;
+            let (code, empty) = eh.code(src, k)?;
             (!empty).then_some((code, k as u32))
         });
         let mut keyed: Vec<(CodeRef, u32)> = entries.into_iter().flatten().collect();
@@ -130,7 +122,8 @@ impl HdrPlan {
         };
         let pairs: Vec<Result<(i32, i32), SynthError>> = pool.map(self.fdes.len(), |e| {
             let k = self.fdes[e] as usize;
-            let (code, _) = code_of(src, eh, k)
+            let (code, _) = eh
+                .code(src, k)
                 .ok_or_else(|| internal::<SynthError>(".eh_frame_hdr entry is not an FDE"))?;
             let pc = code_addr(code).ok_or_else(|| {
                 internal::<SynthError>(format!("section {} has no address", code.section.0))

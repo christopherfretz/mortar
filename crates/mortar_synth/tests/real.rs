@@ -1,179 +1,134 @@
 //! `.eh_frame` on real objects (WP-025 deliverable 2): GCC C++ with
 //! exceptions and COMDAT, the crt files, assembly with CFI before the
-//! first instruction, and an `ld -r` output, parsed by a test-only
-//! parser (stage A: `mortar_merge`'s parser takes its place in stage B),
-//! planned and written, then read back by `readelf --debug-dump=frames`
-//! and `llvm-dwarfdump --eh-frame`.
+//! first instruction, and an `ld -r` output, parsed by `mortar_merge`'s
+//! phase 60 (over a [`Link`] of bare objects), planned and written by
+//! [`EhPlan`] over [`MergeEh`], then read back by `readelf
+//! --debug-dump=frames` and `llvm-dwarfdump --eh-frame`.
 
 mod common;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use common::{collector, text};
+use mortar_core::inputs::RelocForm;
 use mortar_core::par::Pool;
-use mortar_core::{FileId, SectionId, SymbolId};
-use mortar_elf::consts::{SHF_GROUP, SHT_RELA};
-use mortar_elf::{Object, SymbolIndex, SymbolSection};
-use mortar_synth::eh::{
-    CieReloc, CodeRef, EhPlan, EhSection, EhSource, InRecord, RecordKind, RelocTarget,
-};
+use mortar_core::resolution::SectionKind;
+use mortar_core::{FileId, OutSecId, SectionId, SymbolId};
+use mortar_elf::consts::{SHF_GROUP, SHT_GROUP, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB};
+use mortar_elf::{Class, Object, Section, SectionIndex, SymbolIndex, SymbolSection};
+use mortar_merge::What;
+use mortar_merge::eh::{Code, EhFrames, Target};
+use mortar_merge::phase::{ArchRelocs, Link, LinkSection};
+use mortar_synth::eh::{EhPlan, MergeEh};
 use mortar_synth::out::Window;
 use mortar_testutil::{Scratch, run, tool};
 
-/// The `.eh_frame` of a set of objects, parsed as S-34 to S-40 describe.
-#[derive(Debug, Default)]
-struct Parsed {
-    secs: Vec<EhSection>,
-    recs: Vec<Vec<InRecord>>,
-    bytes: Vec<Vec<u8>>,
-    relocs: BTreeMap<(usize, u32), Vec<CieReloc>>,
-    /// Code sections that a COMDAT group of an earlier file already holds.
+fn sid(file: u32, index: u32) -> SectionId {
+    SectionId(file * 10_000 + index)
+}
+
+/// A link of bare objects (file 0 is the internal file, with no object):
+/// every section kept; globals resolved by name, first definition wins;
+/// the members of a COMDAT group an earlier file already gave are dead
+/// code (by section name: the test's groups have one member each).
+struct Objs {
+    /// The objects' bytes, kept for the whole test (`Link<'static>`).
+    data: Vec<&'static [u8]>,
+    /// Per global name, its definition.
+    defs: BTreeMap<Vec<u8>, Target>,
+    ids: BTreeMap<Vec<u8>, SymbolId>,
     dead: Vec<SectionId>,
-    /// Input FDEs whose code is live.
-    live_fdes: usize,
 }
 
-impl EhSource for Parsed {
-    fn sections(&self) -> &[EhSection] {
-        &self.secs
-    }
-    fn records(&self, s: usize) -> &[InRecord] {
-        &self.recs[s]
-    }
-    fn bytes(&self, s: usize) -> &[u8] {
-        &self.bytes[s]
-    }
-    fn cie_relocs(&self, s: usize, r: u32, out: &mut Vec<CieReloc>) {
-        out.extend(self.relocs.get(&(s, r)).into_iter().flatten());
-    }
-}
-
-fn sid(file: usize, index: u32) -> SectionId {
-    SectionId(file as u32 * 10_000 + index)
-}
-
-/// Marks the members of a COMDAT group an earlier file already gave
-/// (by section name: the test's groups have one member each) dead.
-fn comdat_dead(
-    obj: &Object<'_>,
-    file: usize,
-    groups: &mut BTreeMap<Vec<u8>, usize>,
-    dead: &mut Vec<SectionId>,
-) {
-    for s in obj.sections() {
-        if s.flags() & SHF_GROUP != 0 {
-            let name = s.name().unwrap().to_vec();
-            if *groups.entry(name).or_insert(file) != file {
-                dead.push(sid(file, s.index().0));
-            }
-        }
-    }
-}
-
-fn parse(files: &[Vec<u8>]) -> Parsed {
-    let mut p = Parsed::default();
-    let globals: std::cell::RefCell<BTreeMap<Vec<u8>, u32>> = std::cell::RefCell::default();
-    let mut groups: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
-    for (f, data) in files.iter().enumerate() {
-        let file = f + 1;
-        let obj = Object::parse(data).unwrap();
-        let syms = obj.symbols().unwrap().unwrap();
-        comdat_dead(&obj, file, &mut groups, &mut p.dead);
-        for s in obj.sections() {
-            if s.name().unwrap() != b".eh_frame" {
-                continue;
-            }
-            let bytes = s.data().unwrap().to_vec();
-            let rela: Vec<mortar_elf::Rela> = obj
-                .sections()
-                .filter(|r| r.sh_type() == SHT_RELA && r.info_section().ok() == Some(s.index()))
-                .flat_map(|r| r.rela().unwrap().iter().collect::<Vec<_>>())
-                .collect();
-            let target = |r: &mortar_elf::Rela| -> Option<RelocTarget> {
-                let sym = syms.get(SymbolIndex(r.r_sym)).ok()?;
-                match syms.section_of(SymbolIndex(r.r_sym), &sym).ok()? {
-                    SymbolSection::Section(i) if sym.binding() == 0 => Some(RelocTarget::Section {
-                        section: sid(file, i.0),
-                        offset: sym.st_value.wrapping_add(r.r_addend as u64),
-                    }),
-                    SymbolSection::Absolute => Some(RelocTarget::Absolute(sym.st_value)),
-                    _ => {
-                        let name = syms.name(&sym).ok()?.to_vec();
-                        let mut g = globals.borrow_mut();
-                        let n = g.len() as u32;
-                        Some(RelocTarget::Global(SymbolId(*g.entry(name).or_insert(n))))
+impl Objs {
+    fn new(data: Vec<Vec<u8>>) -> Self {
+        let data = data.into_iter().map(|d| &*Box::leak(d.into_boxed_slice())).collect();
+        let mut o = Self { data, defs: BTreeMap::new(), ids: BTreeMap::new(), dead: Vec::new() };
+        let mut groups: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+        for f in 1..=o.data.len() as u32 {
+            let obj = Object::parse(o.data[f as usize - 1]).unwrap();
+            for s in obj.sections() {
+                if s.flags() & SHF_GROUP != 0 {
+                    let name = s.name().unwrap().to_vec();
+                    if *groups.entry(name).or_insert(f) != f {
+                        o.dead.push(sid(f, s.index().0));
                     }
                 }
-            };
-            let i = p.secs.len();
-            let mut recs = Vec::new();
-            let mut at = 0usize;
-            while at + 4 <= bytes.len() {
-                let len = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-                if len == 0 {
-                    recs.push(InRecord { offset: at as u32, len: 0, kind: RecordKind::Terminator });
-                    at += 4;
-                    continue;
-                }
-                let id = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap());
-                let kind = if id == 0 {
-                    let mine: Vec<CieReloc> = rela
-                        .iter()
-                        .filter(|r| {
-                            (at as u64..(at + 4 + len as usize) as u64).contains(&r.r_offset)
-                        })
-                        .filter(|r| r.r_type != 0)
-                        .map(|r| CieReloc {
-                            offset: (r.r_offset - at as u64) as u32,
-                            r_type: r.r_type,
-                            addend: r.r_addend,
-                            target: target(r).unwrap(),
-                        })
-                        .collect();
-                    if !mine.is_empty() {
-                        p.relocs.insert((i, recs.len() as u32), mine);
-                    }
-                    RecordKind::Cie
-                } else {
-                    let cie_off = (at + 4 - id as usize) as u32;
-                    let cie =
-                        recs.iter().position(|r: &InRecord| r.offset == cie_off).unwrap() as u32;
-                    // S-38: the relocation at the initial location; R_*_NONE is none.
-                    let code = rela
-                        .iter()
-                        .find(|r| r.r_offset == (at + 8) as u64 && r.r_type != 0)
-                        .and_then(|r| match target(r)? {
-                            RelocTarget::Section { section, offset } => {
-                                Some(CodeRef { section, offset })
-                            }
-                            _ => None,
-                        });
-                    let range = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().unwrap());
-                    RecordKind::Fde { cie, code, empty_range: range == 0 }
-                };
-                recs.push(InRecord { offset: at as u32, len, kind });
-                at += 4 + len as usize;
             }
-            let align = s.alignment().unwrap().max(1).trailing_zeros() as u8;
-            p.secs.push(EhSection {
-                id: sid(file, s.index().0),
-                file: FileId(file as u32),
-                size: bytes.len() as u32,
-                align,
-                sh_type: s.sh_type(),
-            });
-            p.recs.push(recs);
-            p.bytes.push(bytes);
+            let Some(t) = obj.symbols().unwrap() else { continue };
+            for (i, sym) in t.globals() {
+                let name = t.name(&sym).unwrap().to_vec();
+                let n = o.ids.len() as u32;
+                o.ids.entry(name.clone()).or_insert(SymbolId(n));
+                if let Ok(SymbolSection::Section(s)) = t.section_of(i, &sym) {
+                    o.defs
+                        .entry(name)
+                        .or_insert(Target::Section { section: sid(f, s.0), value: sym.st_value });
+                }
+            }
         }
+        o
     }
-    p.live_fdes = live_fdes(&p);
-    p
 }
 
-fn live_fdes(p: &Parsed) -> usize {
-    let live = |r: &&InRecord| matches!(r.kind, RecordKind::Fde { code: Some(c), .. } if !p.dead.contains(&c.section));
-    p.recs.iter().flatten().filter(live).count()
+impl Link<'static> for Objs {
+    fn files(&self) -> u32 {
+        self.data.len() as u32 + 1
+    }
+    fn object(&self, file: FileId) -> Option<Object<'static>> {
+        let d = self.data.get((file.0 as usize).checked_sub(1)?)?;
+        Some(Object::parse(d).unwrap())
+    }
+    fn section_id(&self, file: FileId, index: SectionIndex) -> Option<SectionId> {
+        Some(sid(file.0, index.0))
+    }
+    fn section(&self, file: FileId, index: SectionIndex) -> Option<LinkSection> {
+        let obj = Object::parse(self.data[file.0 as usize - 1]).unwrap();
+        let s = obj.section(index).ok()?;
+        if index.0 == 0
+            || matches!(s.sh_type(), SHT_REL | SHT_RELA | SHT_SYMTAB | SHT_STRTAB | SHT_GROUP)
+        {
+            return None;
+        }
+        let kind = if s.name().unwrap() == b".eh_frame" {
+            SectionKind::EhFrame
+        } else {
+            SectionKind::Regular
+        };
+        let reloc = obj
+            .sections()
+            .find(|r| r.sh_type() == SHT_RELA && r.header().sh_info == index.0)
+            .map_or(SectionIndex(0), |r| r.index());
+        Some(LinkSection { id: sid(file.0, index.0), kind, out: OutSecId(0), reloc })
+    }
+    fn global(&self, file: FileId, index: SymbolIndex, _first: u32) -> Result<Target, What> {
+        let obj = Object::parse(self.data[file.0 as usize - 1]).unwrap();
+        let t = obj.symbols().unwrap().unwrap();
+        let sym = t.get(index).unwrap();
+        let name = t.name(&sym).unwrap();
+        Ok(self
+            .defs
+            .get(name)
+            .copied()
+            .unwrap_or(Target::Undefined { symbol: self.ids[name], weak: sym.st_info >> 4 == 2 }))
+    }
+    fn bytes(&self, _: FileId, s: &Section<'static>) -> Result<Cow<'static, [u8]>, What> {
+        s.data().map(Cow::Borrowed).map_err(|e| What::Malformed(e.to_string()))
+    }
+    fn class(&self) -> Class {
+        Class::Elf64
+    }
+    fn form(&self) -> RelocForm {
+        RelocForm::Rela
+    }
+}
+
+/// Input FDEs whose code is live.
+fn live_fdes(frames: &EhFrames, dead: &[SectionId]) -> usize {
+    let live = |c: &Code| matches!(c, Code::Section { section, .. } if !dead.contains(section));
+    frames.records.iter().filter_map(|r| r.fde()).filter(|f| live(&f.code)).count()
 }
 
 /// A relocatable ELF64 AArch64 file holding one `.eh_frame`.
@@ -275,22 +230,28 @@ fn check(
     dir: &Scratch,
 ) -> (usize, usize) {
     let files: Vec<Vec<u8>> = inputs.iter().map(|p| std::fs::read(p).unwrap()).collect();
-    let parsed = parse(&files);
+    let link = Objs::new(files);
+    let pool = Pool::new(4);
+    let a64 = mortar_a64::A64::M1;
+    let phase = mortar_merge::phase::run(&pool, &link, &ArchRelocs(&a64))
+        .unwrap_or_else(|p| panic!("{label}: phase 60: {p:?}"));
+    let src = MergeEh::new(&phase.eh, &link).unwrap();
     let diag = collector();
-    let plan = EhPlan::new(&parsed, |s| !parsed.dead.contains(&s), &Pool::new(4), &diag);
+    let plan = EhPlan::new(&src, |s| !link.dead.contains(&s), &pool, &diag);
     let report = diag.finish();
     assert!(!report.failed(), "{label}: {}", text(&report));
     let plan = plan.unwrap();
-    assert_eq!(plan.fde_count() as usize, parsed.live_fdes, "{label}: S-41");
+    let live = live_fdes(&phase.eh, &link.dead);
+    assert_eq!(plan.fde_count() as usize, live, "{label}: S-41");
     let mut out = vec![0; plan.size() as usize];
-    plan.write(&parsed, &mut Window::new(0, &mut out)).unwrap();
+    plan.write(&src, &mut Window::new(0, &mut out)).unwrap();
     let file = dir.write(&format!("{label}.eh.o"), wrap(&out));
     let (cies, fdes) = readelf_counts(readelf, &file);
-    assert_eq!(fdes, parsed.live_fdes, "{label}: readelf FDEs");
+    assert_eq!(fdes, live, "{label}: readelf FDEs");
     assert_eq!((cies, fdes), dwarfdump_counts(dd, &file), "{label}: llvm-dwarfdump agrees");
     // S-43: no two output CIEs are equal with equal relocations, and
     // every input CIE shape used by a live FDE is present.
-    let in_cies = parsed.recs.iter().flatten().filter(|r| r.kind == RecordKind::Cie).count();
+    let in_cies = phase.eh.records.iter().filter(|r| r.cie().is_some()).count();
     assert!(cies <= in_cies && cies >= 1, "{label}: {cies} CIEs from {in_cies}");
     (cies, fdes)
 }
@@ -311,8 +272,8 @@ fn eh_frame_of_real_objects_reads_back() {
     // C++ with exceptions and COMDAT (`shared` in both).
     let (c, f) = check("cxx", &objs[..2], &readelf, &dd, &dir);
     eprintln!("cxx: {c} CIEs, {f} FDEs");
-    let parsed = parse(&[std::fs::read(&objs[0]).unwrap(), std::fs::read(&objs[1]).unwrap()]);
-    assert!(!parsed.dead.is_empty(), "the second copy of `shared` is a discarded COMDAT member");
+    let link = Objs::new(vec![std::fs::read(&objs[0]).unwrap(), std::fs::read(&objs[1]).unwrap()]);
+    assert!(!link.dead.is_empty(), "the second copy of `shared` is a discarded COMDAT member");
     // Assembly with CFI before the first instruction, twice: one CIE
     // survives (review finding 4).
     let (c, f) = check("cfi", &objs[2..], &readelf, &dd, &dir);

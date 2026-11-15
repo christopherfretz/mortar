@@ -13,6 +13,8 @@ mortar_arch.workspace = true
 mortar_core.workspace = true
 mortar_diag.workspace = true
 mortar_elf.workspace = true
+# Phase 60's `.eh_frame` records (stage B of WP-025).
+mortar_merge.workspace = true
 
 [dev-dependencies]
 mortar_a64.workspace = true

@@ -29,7 +29,7 @@ use mortar_elf::consts::{
     STT_OBJECT, STT_SECTION, STT_TLS, STV_HIDDEN, STV_INTERNAL,
 };
 
-use crate::eh::{EhPlan, EhSource, EhValue, Referrer};
+use crate::eh::{EhPlan, EhSource, EhValue, EhWho};
 use crate::error::{Failed, SynthError, fail, internal, key};
 use crate::out::Window;
 
@@ -43,8 +43,6 @@ const FIXED: &[u8] = b"\0$x\0$d\0__erratum_843419_veneer\0";
 const REGION: u64 = FIXED.len() as u64;
 /// An AArch64 Cortex-A53 843419 patch's name (S-80).
 pub const ERRATUM_843419: &[u8] = b"__erratum_843419_veneer";
-/// The bytes of an 843419 patch: two instructions (`spec/a64.md` §11).
-pub const ERRATUM_843419_SIZE: u64 = 8;
 
 fn fixed_name(name: &[u8]) -> Option<u32> {
     match name {
@@ -245,8 +243,23 @@ impl std::fmt::Debug for SymCtx<'_> {
 pub struct PatchFacts {
     /// `arch.thunk()`'s size.
     pub thunk_size: u64,
+    /// `arch.patch(Erratum::E843419)`'s size (S-80's `st_size`).
+    pub erratum_843419_size: u64,
     /// AArch64: a `$x` per patch (S-80).
     pub mapping: bool,
+}
+
+impl PatchFacts {
+    /// The facts of `arch` (`spec/arch.md` §3.6, §3.7).
+    #[must_use]
+    pub fn of(arch: &dyn mortar_arch::Arch) -> Self {
+        let size = |s: Option<&mortar_arch::ThunkShape>| s.map_or(0, |s| u64::from(s.size));
+        Self {
+            thunk_size: size(arch.thunk()),
+            erratum_843419_size: size(arch.patch(mortar_core::layout::Erratum::E843419)),
+            mapping: arch.facts().machine == mortar_elf::Machine::AArch64,
+        }
+    }
 }
 
 /// One output symbol, before addresses.
@@ -363,7 +376,7 @@ impl<'a> SymCtx<'a> {
         &self,
         section: SectionId,
         value: u64,
-        who: Referrer,
+        who: EhWho,
     ) -> Result<Option<Where>, SynthError> {
         if !self.sections.live(section) {
             return Ok(None);
@@ -403,9 +416,9 @@ impl<'a> SymCtx<'a> {
             SymDef::Absolute(v) => Some(Where::Absolute(v)),
             SymDef::Section { section, value } => {
                 let who = if is_mapping(l.name) {
-                    Referrer::Mapping
+                    EhWho::Mapping
                 } else {
-                    Referrer::Symbol { local_unreferenced: !l.referenced }
+                    EhWho::Symbol { droppable: !l.referenced }
                 };
                 self.place(section, value, who)?
             }
@@ -422,7 +435,7 @@ impl<'a> SymCtx<'a> {
         let vis = g.other & 3;
         let at = match g.def {
             SymDef::Section { section, value } => {
-                self.place(section, value, Referrer::Symbol { local_unreferenced: false })?
+                self.place(section, value, EhWho::Symbol { droppable: false })?
             }
             SymDef::Absolute(v) => Some(Where::Absolute(v)),
             SymDef::Common => Some(Where::Common(id)),
@@ -672,7 +685,9 @@ impl SymtabPlan {
             PatchSym::Name(p) => {
                 let (name, size): (std::borrow::Cow<'c, [u8]>, u64) = match self.patches[p].kind {
                     PatchKind::Thunk(t) => (thunk_name(syms, t).into(), self.facts.thunk_size),
-                    PatchKind::Erratum { .. } => (ERRATUM_843419.into(), ERRATUM_843419_SIZE),
+                    PatchKind::Erratum { .. } => {
+                        (ERRATUM_843419.into(), self.facts.erratum_843419_size)
+                    }
                 };
                 Row { name, info: STB_LOCAL << 4 | STT_FUNC, other: 0, size, at: Where::Patch(p) }
             }

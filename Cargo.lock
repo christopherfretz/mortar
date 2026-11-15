@@ -190,6 +190,7 @@ dependencies = [
  "mortar_core",
  "mortar_diag",
  "mortar_elf",
+ "mortar_merge",
  "mortar_testutil",
 ]
 

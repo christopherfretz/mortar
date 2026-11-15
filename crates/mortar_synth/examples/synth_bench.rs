@@ -17,7 +17,8 @@ use mortar_core::{FileId, SectionId, SymKey, SymbolId};
 use mortar_diag::{Collector, Policy};
 use mortar_elf::Class;
 use mortar_elf::consts::{STB_GLOBAL, STT_FUNC, STV_HIDDEN};
-use mortar_synth::eh::{CieReloc, CodeRef, EhPlan, EhSection, EhSource, InRecord, RecordKind};
+use mortar_merge::eh::{EhFrames, EhIn, EhReloc, RelocClass, Target};
+use mortar_synth::eh::{EhInfo, EhPlan, EhSource};
 use mortar_synth::out::Window;
 use mortar_synth::symtab::{
     GlobalIn, InternalValue, LocalIn, PatchFacts, SecKind, Sections, SymAddrs, SymCtx, SymDef,
@@ -203,7 +204,7 @@ fn symtab(n: u32) {
         for _ in 0..REPEATS {
             let diag = Collector::new(Policy::default());
             let t = Instant::now();
-            let facts = PatchFacts { thunk_size: 12, mapping: true };
+            let facts = PatchFacts { thunk_size: 12, erratum_843419_size: 8, mapping: true };
             let plan = SymtabPlan::new(&cx, Class::Elf64, &[], facts, &pool, &diag).expect("plan");
             planned.push(t.elapsed());
             let t = Instant::now();
@@ -227,81 +228,76 @@ fn symtab(n: u32) {
 }
 
 /// `sections` sections of one CIE and `per` FDEs each; every 4th
-/// section's CIE differs.
-struct Frames {
-    secs: Vec<EhSection>,
-    recs: Vec<Vec<InRecord>>,
+/// section's CIE differs. Parsed by `mortar_merge::eh::parse` (not timed:
+/// phase 60's cost is `merge_bench`'s).
+struct EhInput {
+    frames: EhFrames,
     bytes: Vec<Vec<u8>>,
+    info: Vec<EhInfo>,
 }
 
-impl Frames {
-    fn new(sections: u32, per: u32) -> Self {
-        let mut f = Self { secs: Vec::new(), recs: Vec::new(), bytes: Vec::new() };
+impl EhInput {
+    fn new(pool: &Pool, sections: u32, per: u32) -> Self {
+        let mut bytes = Vec::new();
+        let mut relocs = Vec::new();
+        let mut info = Vec::new();
         for s in 0..sections {
             let mut b = Vec::new();
             let mut r = Vec::new();
             b.extend_from_slice(&20u32.to_le_bytes());
             b.extend_from_slice(&0u32.to_le_bytes());
-            b.extend_from_slice(&[
-                1,
-                b'z',
-                b'R',
-                0,
-                4,
-                0x78,
-                30,
-                1,
-                0x1b,
-                (s % 4) as u8,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ]);
-            r.push(InRecord { offset: 0, len: 20, kind: RecordKind::Cie });
+            b.extend_from_slice(&[1, b'z', b'R', 0, 4, 0x78, 30, 1, 0x1b, (s % 4) as u8]);
+            b.extend_from_slice(&[0; 6]);
             for k in 0..per {
                 let off = b.len() as u32;
                 b.extend_from_slice(&20u32.to_le_bytes());
                 b.extend_from_slice(&(off + 4).to_le_bytes());
                 b.extend_from_slice(&[0; 16]);
-                let code = CodeRef { section: SectionId(1_000_000 + s * per + k), offset: 0 };
-                r.push(InRecord {
-                    offset: off,
-                    len: 20,
-                    kind: RecordKind::Fde { cie: 0, code: Some(code), empty_range: false },
+                r.push(EhReloc {
+                    offset: u64::from(off) + 8,
+                    r_type: 261,
+                    name: "R_AARCH64_PREL32",
+                    class: RelocClass::Pc,
+                    width: 4,
+                    addend: 0,
+                    target: Target::Section {
+                        section: SectionId(1_000_000 + s * per + k),
+                        value: 0,
+                    },
                 });
             }
-            f.secs.push(EhSection {
-                id: SectionId(1 + s),
-                file: FileId(1 + s),
-                size: b.len() as u32,
-                align: 3,
-                sh_type: 1,
-            });
-            f.recs.push(r);
-            f.bytes.push(b);
+            bytes.push(b);
+            relocs.push(r);
+            info.push(EhInfo { file: FileId(1 + s), align: 3, sh_type: 1 });
         }
-        f
+        let ins: Vec<EhIn<'_>> = (0..sections as usize)
+            .map(|s| EhIn {
+                section: SectionId(1 + s as u32),
+                file: FileId(1 + s as u32),
+                index: 1,
+                bytes: &bytes[s],
+                relocs: &relocs[s],
+            })
+            .collect();
+        let frames = mortar_merge::eh::parse(pool, 8, &ins).expect("parse");
+        Self { frames, bytes, info }
     }
 }
 
-impl EhSource for Frames {
-    fn sections(&self) -> &[EhSection] {
-        &self.secs
+impl EhSource for EhInput {
+    fn frames(&self) -> &EhFrames {
+        &self.frames
     }
-    fn records(&self, s: usize) -> &[InRecord] {
-        &self.recs[s]
+    fn info(&self, s: usize) -> EhInfo {
+        self.info[s]
     }
     fn bytes(&self, s: usize) -> &[u8] {
         &self.bytes[s]
     }
-    fn cie_relocs(&self, _: usize, _: u32, _: &mut Vec<CieReloc>) {}
 }
 
 fn eh_frame() {
-    let src = Frames::new(10_000, 100);
+    let src = EhInput::new(&Pool::new(8), 10_000, 100);
     println!(".eh_frame, 10^6 FDEs in 10^4 sections (10^4 CIEs, 4 distinct):");
     let mut reference = None;
     for threads in THREADS {
