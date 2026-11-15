@@ -1929,8 +1929,8 @@ FileHeader:
         assert_eq!(test.odr[1].files, ["b.o", "a.o"]);
         assert_eq!(test.odr[1].line, 4);
         assert!(has_error(&with("#@ diag: undefined-symbol a.o\n"), 3, "not a one-definition"));
-        assert!(has_error(&with("#@ diag: odr-violation\n"), 3, "names no file"));
-        assert!(has_error(&with("#@ diag(mortar): odr-violation a.o\n"), 3, "no qualifiers"));
+        assert!(has_error(&with("#@ diag: odr-size-mismatch\n"), 3, "names no file"));
+        assert!(has_error(&with("#@ diag(mortar): odr-size-mismatch a.o\n"), 3, "no qualifiers"));
     }
 
     // "L3": the run-wide default anomalies.

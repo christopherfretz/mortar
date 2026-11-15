@@ -31,25 +31,17 @@ pub struct Reported {
 /// The stand-in for a kind's text fields while its wording is rendered.
 const HOLE: &str = "@@hole@@";
 
-/// The one-definition-rule kinds (`spec/diag.md` §3.1, the area of that
-/// name), each with a value whose text fields are [`HOLE`].
+/// The one-definition-rule kinds the code has (`spec/diag.md` §3.1, the
+/// area of that name), each with a value whose text fields are [`HOLE`].
+/// The package that adds a kind of the area adds it here (WP-071 the
+/// `meta-` kinds, WP-073 the record checks').
 fn kinds() -> Vec<Kind> {
     let h = || HOLE.to_owned();
     vec![
-        Kind::MetaMalformed { reason: h() },
-        Kind::MetaVersion { major: u16::MAX },
-        Kind::OdrAbiMismatch { option: h(), first: h(), second: h() },
-        Kind::OdrArchiveShadow { name: h() },
         Kind::OdrContentsMismatch { name: h() },
-        Kind::OdrDeclarationMismatch { name: h() },
-        Kind::OdrInternalReference { name: h() },
-        Kind::OdrIsaMismatch { name: h() },
         Kind::OdrSizeMismatch { name: h() },
         Kind::OdrStrongAndComdat { name: h() },
         Kind::OdrSymbolTypeMismatch { name: h() },
-        Kind::OdrTypeMismatch { name: h() },
-        Kind::OdrViolation { name: h() },
-        Kind::OdrVtableRttiMismatch { name: h() },
     ]
 }
 
@@ -67,7 +59,6 @@ fn wordings() -> Vec<(&'static str, Vec<String>)> {
             let text = Diagnostic::warning(kind).render(&Style::plain("ld"));
             let message = text.lines().next().unwrap_or_default();
             let message = message.strip_prefix("ld: warning: ").unwrap_or(message);
-            let message = message.replace(&u16::MAX.to_string(), HOLE);
             (id, message.split(HOLE).map(str::to_owned).collect())
         })
         .collect()
@@ -178,16 +169,7 @@ mod tests {
         );
         let other = "ld: error: undefined symbol: f\n>>> referenced by a.o:(.text+0x0)\n";
         assert!(reported(other).is_empty());
-        let meta = "mortar: error: Mason metadata version 7 is not supported; its records are \
-                    ignored\n>>> in a.o\n";
-        assert_eq!(reported(meta)[0].id, "meta-version");
-        let abi = "ld: warning: translation units compiled with different std: c++17 and c++20\n";
-        assert_eq!(reported(abi)[0].id, "odr-abi-mismatch");
-        let ty = "ld: warning: type S violates the one-definition rule\n";
-        assert_eq!(reported(ty)[0].id, "odr-type-mismatch");
-        let v = "ld: warning: f(int) violates the one-definition rule\n";
-        assert_eq!(reported(v)[0].id, "odr-violation");
-        assert_eq!(ids().len(), 14);
+        assert_eq!(ids().len(), 4);
     }
 
     // spec: harness.md "Directives" (a reported diagnostic no directive

@@ -342,30 +342,11 @@ pub enum Kind {
     /// definition (`.gnu.version_d`, M4).
     VersionedExport { name: String, version: String },
 
-    // -- one-definition rule (M6, `spec/odr.md` §9.1) --------------------
-    /// `meta-malformed` (`spec/meta.md`): a Mason metadata container that
-    /// breaks its format; `reason` says how.
-    MetaMalformed { reason: String },
-    /// `meta-version` (`spec/meta.md` MT-35): a unit of a major version
-    /// mortar does not read; its records are ignored.
-    MetaVersion { major: u16 },
-    /// `odr-abi-mismatch` (`spec/odr.md` O-30): two units with different
-    /// values `first` and `second` of the `ENFORCE` key `option`.
-    OdrAbiMismatch { option: String, first: String, second: String },
-    /// `odr-archive-shadow` (`spec/odr.md` O-23, opt-in): an archive
-    /// member that is not linked defines `name` differently.
-    OdrArchiveShadow { name: String },
+    // -- one-definition rule (M6, `spec/odr.md` §9.1; WP-072's W checks) --
     /// `odr-contents-mismatch` (`spec/odr.md` §8.1 W4, `--odr=strict`
     /// only): two copies of one COMDAT group define the data symbol `name`
     /// with different bytes or relocations.
     OdrContentsMismatch { name: String },
-    /// `odr-declaration-mismatch` (`spec/odr.md` O-35): `name` is declared
-    /// with a type that does not match its definition.
-    OdrDeclarationMismatch { name: String },
-    /// `odr-internal-reference` (`spec/odr.md` O-16, strict only).
-    OdrInternalReference { name: String },
-    /// `odr-isa-mismatch` (`spec/odr.md` O-31).
-    OdrIsaMismatch { name: String },
     /// `odr-size-mismatch` (`spec/odr.md` §8.1 W1, O-24 (c), O-34): two
     /// definitions of `name` with different sizes.
     OdrSizeMismatch { name: String },
@@ -376,14 +357,6 @@ pub enum Kind {
     /// `odr-symbol-type-mismatch` (`spec/odr.md` §8.1 W2): `name` is
     /// defined as a function in one file and as data in another.
     OdrSymbolTypeMismatch { name: String },
-    /// `odr-type-mismatch` (`spec/odr.md` O-17, O-18): the type `name`
-    /// (its `<type>` encoding) is defined differently.
-    OdrTypeMismatch { name: String },
-    /// `odr-violation` (`spec/odr.md` O-20, O-24): two definitions of
-    /// `name` differ.
-    OdrViolation { name: String },
-    /// `odr-vtable-rtti-mismatch` (`spec/odr.md` O-25).
-    OdrVtableRttiMismatch { name: String },
 
     // -- relocations ----------------------------------------------------
     /// `canonical-plt-in-pie` (`spec/dyn.md` D-44): the relocation
@@ -452,7 +425,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 71] = [
+    pub const IDS: [&'static str; 61] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -497,20 +470,10 @@ impl Kind {
         "undefined-version",
         "version-reassigned",
         "versioned-export",
-        "meta-malformed",
-        "meta-version",
-        "odr-abi-mismatch",
-        "odr-archive-shadow",
         "odr-contents-mismatch",
-        "odr-declaration-mismatch",
-        "odr-internal-reference",
-        "odr-isa-mismatch",
         "odr-size-mismatch",
         "odr-strong-and-comdat",
         "odr-symbol-type-mismatch",
-        "odr-type-mismatch",
-        "odr-violation",
-        "odr-vtable-rtti-mismatch",
         "canonical-plt-in-pie",
         "copy-relocation-against-protected",
         "copy-relocation-of-zero-size",
@@ -575,20 +538,10 @@ impl Kind {
             Self::UndefinedVersion { .. } => "undefined-version",
             Self::VersionReassigned { .. } => "version-reassigned",
             Self::VersionedExport { .. } => "versioned-export",
-            Self::MetaMalformed { .. } => "meta-malformed",
-            Self::MetaVersion { .. } => "meta-version",
-            Self::OdrAbiMismatch { .. } => "odr-abi-mismatch",
-            Self::OdrArchiveShadow { .. } => "odr-archive-shadow",
             Self::OdrContentsMismatch { .. } => "odr-contents-mismatch",
-            Self::OdrDeclarationMismatch { .. } => "odr-declaration-mismatch",
-            Self::OdrInternalReference { .. } => "odr-internal-reference",
-            Self::OdrIsaMismatch { .. } => "odr-isa-mismatch",
             Self::OdrSizeMismatch { .. } => "odr-size-mismatch",
             Self::OdrStrongAndComdat { .. } => "odr-strong-and-comdat",
             Self::OdrSymbolTypeMismatch { .. } => "odr-symbol-type-mismatch",
-            Self::OdrTypeMismatch { .. } => "odr-type-mismatch",
-            Self::OdrViolation { .. } => "odr-violation",
-            Self::OdrVtableRttiMismatch { .. } => "odr-vtable-rtti-mismatch",
             Self::CanonicalPltInPie { .. } => "canonical-plt-in-pie",
             Self::CopyRelocationAgainstProtected { .. } => "copy-relocation-against-protected",
             Self::CopyRelocationOfZeroSize { .. } => "copy-relocation-of-zero-size",
@@ -628,17 +581,10 @@ impl Kind {
             | Self::UndefinedVersion { name, .. }
             | Self::VersionReassigned { name, .. }
             | Self::VersionedExport { name, .. }
-            | Self::OdrArchiveShadow { name }
             | Self::OdrContentsMismatch { name }
-            | Self::OdrDeclarationMismatch { name }
-            | Self::OdrInternalReference { name }
-            | Self::OdrIsaMismatch { name }
             | Self::OdrSizeMismatch { name }
             | Self::OdrStrongAndComdat { name }
             | Self::OdrSymbolTypeMismatch { name }
-            | Self::OdrTypeMismatch { name }
-            | Self::OdrViolation { name }
-            | Self::OdrVtableRttiMismatch { name }
             | Self::CanonicalPltInPie { name, .. }
             | Self::CopyRelocationAgainstProtected { name, .. }
             | Self::CopyRelocationOfZeroSize { name }
@@ -974,33 +920,23 @@ mod tests {
             Kind::UndefinedVersion { .. } => 41,
             Kind::VersionReassigned { .. } => 42,
             Kind::VersionedExport { .. } => 43,
-            Kind::MetaMalformed { .. } => 44,
-            Kind::MetaVersion { .. } => 45,
-            Kind::OdrAbiMismatch { .. } => 46,
-            Kind::OdrArchiveShadow { .. } => 47,
-            Kind::OdrContentsMismatch { .. } => 48,
-            Kind::OdrDeclarationMismatch { .. } => 49,
-            Kind::OdrInternalReference { .. } => 50,
-            Kind::OdrIsaMismatch { .. } => 51,
-            Kind::OdrSizeMismatch { .. } => 52,
-            Kind::OdrStrongAndComdat { .. } => 53,
-            Kind::OdrSymbolTypeMismatch { .. } => 54,
-            Kind::OdrTypeMismatch { .. } => 55,
-            Kind::OdrViolation { .. } => 56,
-            Kind::OdrVtableRttiMismatch { .. } => 57,
-            Kind::CanonicalPltInPie { .. } => 58,
-            Kind::CopyRelocationAgainstProtected { .. } => 59,
-            Kind::CopyRelocationOfZeroSize { .. } => 60,
-            Kind::RelocationIncompatible { .. } => 61,
-            Kind::RelocationMisaligned { .. } => 62,
-            Kind::RelocationOutOfRange { .. } => 63,
-            Kind::TextRelocation { .. } => 64,
-            Kind::WeakUndefinedPcInPie { .. } => 65,
-            Kind::ExecutableStack { .. } => 66,
-            Kind::OutputTooLarge { .. } => 67,
-            Kind::SectionConflict { .. } => 68,
-            Kind::Refused { .. } => 69,
-            Kind::InternalError { .. } => 70,
+            Kind::OdrContentsMismatch { .. } => 44,
+            Kind::OdrSizeMismatch { .. } => 45,
+            Kind::OdrStrongAndComdat { .. } => 46,
+            Kind::OdrSymbolTypeMismatch { .. } => 47,
+            Kind::CanonicalPltInPie { .. } => 48,
+            Kind::CopyRelocationAgainstProtected { .. } => 49,
+            Kind::CopyRelocationOfZeroSize { .. } => 50,
+            Kind::RelocationIncompatible { .. } => 51,
+            Kind::RelocationMisaligned { .. } => 52,
+            Kind::RelocationOutOfRange { .. } => 53,
+            Kind::TextRelocation { .. } => 54,
+            Kind::WeakUndefinedPcInPie { .. } => 55,
+            Kind::ExecutableStack { .. } => 56,
+            Kind::OutputTooLarge { .. } => 57,
+            Kind::SectionConflict { .. } => 58,
+            Kind::Refused { .. } => 59,
+            Kind::InternalError { .. } => 60,
         }
     }
 
@@ -1054,20 +990,10 @@ mod tests {
             Kind::UndefinedVersion { name: s(), version: s() },
             Kind::VersionReassigned { name: s(), first: s(), second: s() },
             Kind::VersionedExport { name: s(), version: s() },
-            Kind::MetaMalformed { reason: s() },
-            Kind::MetaVersion { major: 2 },
-            Kind::OdrAbiMismatch { option: s(), first: s(), second: s() },
-            Kind::OdrArchiveShadow { name: s() },
             Kind::OdrContentsMismatch { name: s() },
-            Kind::OdrDeclarationMismatch { name: s() },
-            Kind::OdrInternalReference { name: s() },
-            Kind::OdrIsaMismatch { name: s() },
             Kind::OdrSizeMismatch { name: s() },
             Kind::OdrStrongAndComdat { name: s() },
             Kind::OdrSymbolTypeMismatch { name: s() },
-            Kind::OdrTypeMismatch { name: s() },
-            Kind::OdrViolation { name: s() },
-            Kind::OdrVtableRttiMismatch { name: s() },
             Kind::CanonicalPltInPie { r_type: s(), name: s() },
             Kind::CopyRelocationAgainstProtected { name: s(), file: s() },
             Kind::CopyRelocationOfZeroSize { name: s() },
