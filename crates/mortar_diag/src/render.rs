@@ -124,6 +124,12 @@ pub(crate) fn limit_line(style: &Style<'_>, out: &mut String) {
 /// message shows a demangled name in its place.
 fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'d str> {
     match kind {
+        Kind::ConflictingOptions { first, second } => {
+            escaped(first, out);
+            out.push_str(" and ");
+            escaped(second, out);
+            out.push_str(" cannot be used together");
+        }
         Kind::InvalidOptionValue { option, value } => {
             escaped(option, out);
             out.push_str(": invalid value '");
@@ -135,6 +141,16 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(": missing argument");
         }
         Kind::NoInputFiles => out.push_str("no input files"),
+        Kind::ResponseFileLimit { limit } => {
+            out.push_str("too many response files: more than ");
+            out.push_str(&limit.to_string());
+            out.push_str(" expanded");
+        }
+        Kind::UnbalancedOption { option, counterpart } => {
+            escaped(option, out);
+            out.push_str(" without a matching ");
+            escaped(counterpart, out);
+        }
         Kind::UnknownOption { option } => {
             out.push_str("unknown argument '");
             escaped(option, out);
