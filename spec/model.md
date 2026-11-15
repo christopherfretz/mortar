@@ -232,12 +232,16 @@ section".
 
 | part | row | columns |
 |---|---|---|
-| `out_of[SectionId]` | section | `OutSecId`, or `Discard` (a script's `/DISCARD/`: the section's state becomes `Dropped(by script)`), or none for sections without output |
+| `out_of[SectionId]` | section | `OutSecId`, or `Consumed` (a kept section whose contents layout or synth consume into a synthetic chunk, such as `.note.gnu.property`, `spec/layout.md` L-34), or `Discard` (a script's `/DISCARD/`: the section's state becomes `Dropped(by script)`), or none for sections without output |
 | `outsecs[OutSecId]` | output section | name, type, flags, entry size class for merging; from a script: `KEEP` on the matching pattern, fill, constraints, the script position that orders it |
 | `keep[SectionId]` | section | whether it is a root of liveness by rule or by `KEEP` |
 
 Without a script the rule is the default mapping of `spec/layout.md`
-(by name prefix, type and flags). `OutSecId`s are numbered in order of
+(by name prefix, type and flags). A section dropped because its COMDAT
+group is not kept may also carry the `OutSecId` its name maps to
+(`spec/layout.md` L-42), so that `__start_`/`__stop_` and the output
+section set do not depend on which copy of a group won; it has no place.
+`Discard` is exactly the sections a script drops. `OutSecId`s are numbered in order of
 first assignment `(FileId, sh_index)`, after any the script declares, in
 script order. The order of output sections in the file and the order of
 input sections inside one are **not** here: they are decisions (§4.4).
@@ -374,7 +378,7 @@ bucket order in `.dynsym`; ...), listed in `spec/synth.md`.
 
 | part | row | columns |
 |---|---|---|
-| `chunks[ChunkId]` | chunk | kind: file header, program headers, section headers, the body of an output section (`OutSecId`), a merged section, a synthetic section (`spec/synth.md`), and for `-r` the group and relocation chunks of an output section; name, type, flags, alignment; `size`, `capacity ≥ size`; `addr` (none for a non-alloc chunk), `offset` (file); the output section index |
+| `chunks[ChunkId]` | chunk | kind: file header, program headers, section headers, part *k* of the body of an output section (`Body(OutSecId, k)`), the patch island after part *k* (`Patches(OutSecId, k)`), a merged section, a synthetic section (`spec/synth.md`) including the RELRO padding (`.relro_padding`, below), and for `-r` the group and relocation chunks of an output section; name, type, flags, alignment; `size`, `capacity ≥ size`; `addr` (none for a non-alloc chunk), `offset` (file); the output section index |
 | `order` | — | the chunks in file order |
 | `segments[SegmentId]` | program header | type, flags, offset, address, file size, memory size, alignment |
 | `place[SectionId]` | section | `(ChunkId, offset in chunk)`, or none; a folded section has the place of its target |
@@ -385,13 +389,32 @@ bucket order in `.dynsym`; ...), listed in `spec/synth.md`.
 | `tls` | one | start, size and alignment of the TLS template |
 | `entry` | one | the entry address |
 
-`ChunkId`s are given in a fixed creation order: headers, then synthetic
-chunks in the order `spec/synth.md` lists them, then merged chunks and
-output-section bodies in `OutSecId` order. `order` is the decision; the id
-is only a name.
+`ChunkId`s are given in a fixed creation order: the file header, the
+program headers, the section headers, then synthetic chunks in the order
+`spec/synth.md` lists them, then the RELRO padding, then per `OutSecId` in
+order its chunks: `Body(o, 0)`, `Patches(o, 0)`, `Body(o, 1)`,
+`Patches(o, 1)`, …, and its merged chunk. Each part's island follows the
+part (`spec/layout.md` L-110, L-111). `order` is the decision; the id is
+only a name. (Rust form: `ChunkKind::Body(Part)` and `Patches(Part)` with
+`Part { out, part }`; the padding is `Synthetic(Synth::RELRO_PADDING)`.)
+
+The RELRO padding is a `SHT_NOBITS` synthetic chunk named `.relro_padding`
+with `relro: true`, whose size stage D writes so that the RELRO run ends on
+a maxpage boundary (`spec/layout.md` L-64). When there is a RELRO run it is
+its last chunk.
 
 `capacity − size` is slack. The default policy leaves none; an incremental
-policy leaves and consumes it. Nothing else distinguishes the two.
+policy leaves and consumes it. Nothing else distinguishes the two. Slack
+lies in no section header and under no symbol: section sizes and symbol
+values are computed from `size` (`spec/layout.md` L-86, L-92, L-141).
+
+A `defined` row `(ChunkId, offset)` on a header chunk (file header or
+program headers, as for `__ehdr_start`) is written with `st_shndx` 1, the
+first output section, as GNU ld does (`spec/layout.md` L-91).
+
+`entry` is none after the `entry-not-found` warning and for `-shared` or
+`-r` with no entry symbol; the image then writes `e_entry = 0`
+(`spec/layout.md` L-103).
 
 Layout is a fixed point: patches move code, which may need more patches,
 and change the sizes in `sized`. The table records the fixed point, not
@@ -411,37 +434,48 @@ loaded one that violates a rule is not reused (phase 15, `spec/incr.md`):
 2. chunks do not overlap in the file or in memory; `addr ≡ offset` modulo
    the page size for loaded chunks; alignments hold; non-alloc chunks
    have no address;
-3. `segments` equal what `spec/layout.md` derives from the chunks, their
-   order and the script's `PHDRS`, if any; in particular the TLS
+3. `segments` equal what `derive_segments` (`mortar_core::layout`,
+   `spec/layout.md` L-125) derives from the chunks, their order and the
+   segment rules (class, maxpage, stack flags; the script's `PHDRS` when
+   scripts land); a `PT_LOAD`'s `p_align` is `P` of `spec/layout.md` L-67,
+   the larger of maxpage and its chunks' alignments; in particular the TLS
    initialized chunks are directly followed by the uninitialized ones,
    `tls` describes them, and `tls.start` is a multiple of `tls.align` (the
    loader computes the executable's thread-pointer offsets from the
-   alignment alone, `spec/a64.md` §12.2); the RELRO run is contiguous and ends where the
-   loader's page rounding requires; a copy-relocation allocation lies in
+   alignment alone, `spec/a64.md` §12.2), and so are `PT_TLS`'s `p_offset`
+   and the first TLS chunk's file offset when it is `PROGBITS`
+   (`spec/layout.md` L-76, L-128); the RELRO run is contiguous, ends with
+   the RELRO padding and on a maxpage boundary (L-129); a copy-relocation allocation lies in
    writable memory with the alignment of the shared object's symbol;
-4. every site that needs a patch has one in range (a branch out of range
+4. (4a, needs the relocations) every site that needs a patch has one in range (a branch out of range
    of its target; an instruction at an address the erratum rule names);
    every redirect names a patch of its kind: a thunk redirect names a
    thunk of the key its site needs (and a `Plt(key)` thunk's key has a PLT
    or IPLT index), an erratum redirect names an erratum patch keyed by the
    redirect's own site; every erratum redirect names a site of that
    erratum at the layout's addresses; a patch no site uses is allowed;
+   (4b, the island policy, from the tables) an erratum patch lies in the
+   island `Patches(o, k)` of the part `Body(o, k)` its site is placed in,
+   and one island holds at most one thunk per `(kind, key, addend)` and one
+   erratum patch per site (`spec/layout.md` L-111, L-112, L-126);
 5. `sym_place`, `defined`, `sized` and `entry` are present for exactly the
-   symbols and features that need them;
-6. every relocated field of every live section holds its value at these
-   addresses (PC-relative and page-relative ranges; absolute values in
-   the field's width). A violation in a layout mortar computed is the
-   user-facing "relocation out of range"; in a loaded layout it means the
-   layout is not reused.
+   symbols and features that need them, and a `defined` offset is at most
+   the `size` of its chunk.
 
-Rules 4 and 6 cost a pass over the relocations and, for the erratum
-sites, over the code words. `fill` (§5) makes these checks anyway, on
-every field it writes, so a full link pays nothing extra; a loaded layout
-is checked for rules 1-3 and 5, and for the part of rule 4 the tables show
-(a redirect names an existing patch of its kind, keyed by its own site for
-an erratum, inside a placed section; a `Plt` thunk's key has an entry), up
-front, and for the rest of 4 and for 6 on the units that are refilled, the rest being covered by the
-state's own integrity (`spec/incr.md`).
+Rule 6 of earlier drafts (every relocated field holds its value at these
+addresses) is not a rule of the layout: it is an obligation of `fill`,
+which refuses with `relocation-out-of-range` (`spec/arch.md` §7) and never
+writes a truncated value, and of the verifier (`spec/layout.md` L-127).
+
+Rule 4a costs a pass over the relocations and, for the erratum sites,
+over the code words. `fill` (§5) makes these checks anyway, on every field
+it writes, so a full link pays nothing extra; a loaded layout is checked
+for rules 1-3, 5, 4b and the part of rule 4a the tables show (a redirect
+names an existing patch of its kind, keyed by its own site for an erratum,
+inside a placed section; a `Plt` thunk's key has an entry), up front, and
+for the rest of 4a and for `fill`'s obligation on the units that are
+refilled, the rest being covered by the state's own integrity
+(`spec/incr.md`).
 
 ### 4.5 What is derived from the layout
 

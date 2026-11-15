@@ -11,8 +11,8 @@ use mortar_core::id::{
 };
 use mortar_core::layout::{
     Addresses, AllocKey, Chunk, ChunkKind, DefValue, Defined, EntryDef, Erratum, Folds, Layout,
-    MergeMap, Patch, PatchKind, Place, Placement, Redirect, Segment, Sized, SlotKind, Slots,
-    SymPlace, ThunkTarget, Tls,
+    MergeMap, Part, Patch, PatchKind, Place, Placement, Redirect, Segment, SegmentRules, Sized,
+    SlotKind, Slots, SymPlace, Synth, ThunkTarget, Tls, derive_segments,
 };
 use mortar_core::liveness::Liveness;
 use mortar_core::resolution::{
@@ -22,12 +22,14 @@ use mortar_core::split::{Frag, Split, SplitRow};
 use mortar_core::{Id, IdRange};
 use mortar_diag::{Context, Kind, Severity};
 use mortar_elf::consts::{
-    PF_R, PF_W, PF_X, PT_LOAD, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_STRINGS, SHF_TLS,
-    SHF_WRITE, SHT_NOBITS, SHT_PROGBITS,
+    PF_R, PF_W, PF_X, PT_GNU_STACK, PT_LOAD, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE,
+    SHF_STRINGS, SHF_TLS, SHF_WRITE, SHT_NOBITS, SHT_PROGBITS,
 };
 use mortar_elf::{Class, SectionIndex, SymbolIndex};
 
 const A: u64 = SHF_ALLOC;
+const RULES: SegmentRules =
+    SegmentRules { class: Class::Elf64, max_page: 0x1000, stack: PF_R | PF_W };
 const AX: u64 = SHF_ALLOC | SHF_EXECINSTR;
 const WA: u64 = SHF_ALLOC | SHF_WRITE;
 const WAT: u64 = SHF_ALLOC | SHF_WRITE | SHF_TLS;
@@ -189,7 +191,7 @@ impl World {
             chunk(ChunkKind::FileHeader, SHT_PROGBITS, A, 3, 0x40, Some(0x40_0000), 0, None),
             chunk(ChunkKind::ProgramHeaders, SHT_PROGBITS, A, 3, 0xa8, Some(0x40_0040), 0x40, None),
             chunk(
-                ChunkKind::Body(OutSecId(0)),
+                ChunkKind::Body(Part::first(OutSecId(0))),
                 SHT_PROGBITS,
                 AX,
                 4,
@@ -199,7 +201,7 @@ impl World {
                 Some(1),
             ),
             chunk(
-                ChunkKind::Patches(OutSecId(0)),
+                ChunkKind::Patches(Part::first(OutSecId(0))),
                 SHT_PROGBITS,
                 AX,
                 2,
@@ -219,7 +221,7 @@ impl World {
                 Some(2),
             ),
             chunk(
-                ChunkKind::Body(OutSecId(2)),
+                ChunkKind::Body(Part::first(OutSecId(2))),
                 SHT_PROGBITS,
                 WAT,
                 3,
@@ -229,7 +231,7 @@ impl World {
                 Some(3),
             ),
             chunk(
-                ChunkKind::Body(OutSecId(3)),
+                ChunkKind::Body(Part::first(OutSecId(3))),
                 SHT_NOBITS,
                 WAT,
                 3,
@@ -239,7 +241,7 @@ impl World {
                 Some(4),
             ),
             chunk(
-                ChunkKind::Body(OutSecId(4)),
+                ChunkKind::Body(Part::first(OutSecId(4))),
                 SHT_PROGBITS,
                 WA,
                 3,
@@ -249,7 +251,7 @@ impl World {
                 Some(5),
             ),
             chunk(
-                ChunkKind::Body(OutSecId(5)),
+                ChunkKind::Body(Part::first(OutSecId(5))),
                 SHT_NOBITS,
                 WA,
                 3,
@@ -269,10 +271,16 @@ impl World {
             memsz,
             align,
         };
+        // The segments derive_segments gives (spec/layout.md L-125): R
+        // (headers), RX (.text and its island), R (.rodata), RW, PT_TLS,
+        // PT_GNU_STACK.
         let segments = col(vec![
-            segment(PT_LOAD, PF_R | PF_X, 0, 0x40_0000, 0x2006, 0x2006, 12),
+            segment(PT_LOAD, PF_R, 0, 0x40_0000, 0xe8, 0xe8, 12),
+            segment(PT_LOAD, PF_R | PF_X, 0x1000, 0x40_1000, 0x70, 0x70, 12),
+            segment(PT_LOAD, PF_R, 0x2000, 0x40_2000, 6, 6, 12),
             segment(PT_LOAD, PF_R | PF_W, 0x3000, 0x40_3000, 0x18, 0x50, 12),
             segment(PT_TLS, PF_R, 0x3000, 0x40_3000, 8, 0x18, 3),
+            segment(PT_GNU_STACK, PF_R | PF_W, 0, 0, 0, 0, 4),
         ]);
         let mut place = Column::filled(10, Place::NONE);
         for (s, c, off) in [(1, 2, 0), (7, 2, 0x40), (2, 7, 0), (3, 5, 0), (8, 6, 0), (9, 8, 0)] {
@@ -336,6 +344,7 @@ impl World {
             class: self.class,
             page_size: 0x1000,
             needs_entry: self.needs_entry,
+            segment_rules: RULES,
             resolution: &self.resolution,
             assignment: &self.assignment,
             split: &self.split,
@@ -351,6 +360,14 @@ impl World {
 
     fn p(&mut self) -> &mut Placement {
         &mut self.layout.placement
+    }
+
+    /// Gives the layout the segments its chunks derive (after a mutation of
+    /// chunks that a test means to be valid).
+    fn rederive(&mut self) {
+        let p = &self.layout.placement;
+        let segments = derive_segments(&p.chunks, &p.order, &RULES);
+        self.layout.placement.segments = col(segments);
     }
 
     /// The rule the layout breaks, and the message.
@@ -526,7 +543,7 @@ fn s4_4_slack_is_valid() {
     let mut w = World::new();
     w.p().chunks[ChunkId(3)].capacity = 0x20;
     w.p().chunks[ChunkId(8)].capacity = 0x40;
-    w.p().segments[SegmentId(1)].memsz = 0x58;
+    w.rederive();
     assert_eq!(w.validate(), Ok(()));
 }
 
@@ -536,7 +553,7 @@ fn s4_4_slack_is_valid() {
 #[test]
 fn s4_4_rule3_wrong_segment() {
     let mut w = World::new();
-    w.p().segments[SegmentId(1)].memsz = 0x40;
+    w.p().segments[SegmentId(3)].memsz = 0x40;
     let v = w.rejects(Rule::Segments, "not in exactly one PT_LOAD");
     assert_eq!(v.rows, [Row::Chunk(ChunkId(8))]);
 }
@@ -545,7 +562,7 @@ fn s4_4_rule3_wrong_segment() {
 #[test]
 fn s4_4_rule3_file_mapping() {
     let mut w = World::new();
-    w.p().segments[SegmentId(1)].filesz = 0x10;
+    w.p().segments[SegmentId(3)].filesz = 0x10;
     w.rejects(Rule::Segments, "where its PT_LOAD maps them");
 }
 
@@ -553,7 +570,7 @@ fn s4_4_rule3_file_mapping() {
 #[test]
 fn s4_4_rule3_segment_flags() {
     let mut w = World::new();
-    w.p().segments[SegmentId(1)].flags = PF_R;
+    w.p().segments[SegmentId(3)].flags = PF_R;
     w.rejects(Rule::Segments, "read-only PT_LOAD");
 }
 
@@ -572,7 +589,7 @@ fn s4_4_rule3_tls_template() {
     w.p().tls.as_mut().unwrap().size = 0x10;
     w.rejects(Rule::Segments, "tls does not describe");
     let mut w = World::new();
-    w.p().segments[SegmentId(2)].filesz = 0x18;
+    w.p().segments[SegmentId(4)].filesz = 0x18;
     w.rejects(Rule::Segments, "PT_TLS does not match");
     let mut w = World::new();
     w.p().tls = None;
@@ -594,7 +611,7 @@ fn tls_after_data() -> World {
     at(5, 0x40_3010);
     at(6, 0x40_3018);
     w.p().chunks[ChunkId(6)].offset = 0x3018;
-    let tls = &mut w.p().segments[SegmentId(2)];
+    let tls = &mut w.p().segments[SegmentId(4)];
     (tls.offset, tls.addr) = (0x3010, 0x40_3010);
     w.p().tls = Some(Tls { start: 0x40_3010, size: 0x18, align: 3 });
     w
@@ -610,40 +627,135 @@ fn s4_4_rule3_tls_start_aligned() {
     w.p().chunks[ChunkId(6)].addr = Some(0x40_3020);
     w.p().chunks[ChunkId(6)].offset = 0x3018;
     w.p().tls = Some(Tls { start: 0x40_3010, size: 0x20, align: 5 });
-    let tls = &mut w.p().segments[SegmentId(2)];
+    let tls = &mut w.p().segments[SegmentId(4)];
     (tls.memsz, tls.align) = (0x20, 5);
     let v = w.rejects(Rule::Segments, "start is not a multiple of its alignment");
     assert_eq!(v.rows, [Row::Chunk(ChunkId(5))]);
 }
 
-// spec: model.md §4.4 rule 3 (the RELRO run is contiguous and ends on a page boundary)
+// spec: model.md §4.4 rule 3 (the segments are exactly those derive_segments gives,
+// spec/layout.md L-125)
+#[test]
+fn s4_4_rule3_segments_are_derived() {
+    use mortar_elf::consts::PT_NOTE;
+    let mut w = World::new();
+    let extra =
+        Segment { p_type: PT_NOTE, flags: PF_R, offset: 0, addr: 0, filesz: 0, memsz: 0, align: 2 };
+    w.p().segments.push(extra).unwrap();
+    let v = w.rejects(Rule::Segments, "not derived from the chunks");
+    assert_eq!(v.rows, [Row::Segment(SegmentId(6))]);
+    let mut w = World::new();
+    w.p().segments = col(w.layout.placement.segments.as_slice()[..5].to_vec());
+    w.rejects(Rule::Segments, "a derived segment is missing");
+    let mut w = World::new();
+    w.p().segments[SegmentId(5)].flags = PF_R | PF_W | PF_X;
+    let v = w.rejects(Rule::Segments, "is not the derived one");
+    assert_eq!(v.rows, [Row::Segment(SegmentId(5))]);
+    // A PT_LOAD with an alignment other than the page size and its chunks'.
+    let mut w = World::new();
+    w.p().segments[SegmentId(1)].align = 4;
+    w.rejects(Rule::Segments, "is not the derived one");
+    // The same table under the RELRO-free rules of another stack: other flags.
+    let mut w = World::new();
+    w.p().segments[SegmentId(5)].flags = PF_R | PF_W;
+    assert_eq!(w.validate(), Ok(()));
+}
+
+// spec: model.md §4.4 rule 3 (PT_TLS's file offset is a multiple of the template's alignment,
+// spec/layout.md L-76)
+#[test]
+fn s4_4_rule3_tls_offset_aligned() {
+    // .tdata aligned to 8 KiB, above the 4 KiB page: at 0x404000 but file
+    // offset 0x3000. The derived PT_LOAD takes the 8 KiB alignment, so the
+    // chunk's bytes are not where it maps them; the TLS rule is the backstop
+    // for a PT_TLS whose load does not.
+    let mut w = World::new();
+    w.p().chunks[ChunkId(5)].align = 13;
+    for (c, addr) in [(5, 0x40_4000), (6, 0x40_4008), (7, 0x40_4008), (8, 0x40_4018)] {
+        w.p().chunks[ChunkId(c)].addr = Some(addr);
+    }
+    w.p().tls = Some(Tls { start: 0x40_4000, size: 0x18, align: 13 });
+    w.rederive();
+    w.rejects(Rule::Segments, "where its PT_LOAD maps them");
+    // At an 8 KiB-aligned offset it is valid.
+    for (c, off) in [(5, 0x4000), (6, 0x4008), (7, 0x4008), (8, 0x4018)] {
+        w.p().chunks[ChunkId(c)].offset = off;
+    }
+    w.p().chunks[ChunkId(9)].offset = 0x4018;
+    w.rederive();
+    assert_eq!(w.validate(), Ok(()));
+}
+
+/// The world with `.tdata` and `.tbss` RELRO: `.relro_padding` (chunk 10)
+/// follows them to the page end, and `.data` and `.bss` move to the next page
+/// in their own `PT_LOAD` (spec/layout.md L-64, L-70).
+fn relro_world() -> World {
+    let mut w = World::new();
+    w.p().chunks[ChunkId(5)].relro = true;
+    w.p().chunks[ChunkId(6)].relro = true;
+    let mut pad = chunk(
+        ChunkKind::Synthetic(Synth::RELRO_PADDING),
+        SHT_NOBITS,
+        WA,
+        0,
+        0xff8,
+        Some(0x40_3008),
+        0x3008,
+        None,
+    );
+    pad.relro = true;
+    w.p().chunks.push(pad).unwrap();
+    w.p().order = [0, 1, 2, 3, 4, 5, 6, 10, 7, 8, 9].into_iter().map(ChunkId).collect();
+    w.p().chunks[ChunkId(7)].addr = Some(0x40_4008);
+    w.p().chunks[ChunkId(8)].addr = Some(0x40_4018);
+    w.rederive();
+    w
+}
+
+// spec: model.md §4.4 rule 3 (the RELRO run is contiguous, ends with .relro_padding and on a
+// page boundary; PT_GNU_RELRO is the derived one)
 #[test]
 fn s4_4_rule3_relro() {
     use mortar_elf::consts::PT_GNU_RELRO;
-    let mut w = World::new();
-    // .tdata and .tbss are RELRO; PT_GNU_RELRO covers them to the page end.
-    w.p().chunks[ChunkId(5)].relro = true;
-    w.p().chunks[ChunkId(6)].relro = true;
-    let relro = Segment {
-        p_type: PT_GNU_RELRO,
-        flags: PF_R,
-        offset: 0x3000,
-        addr: 0x40_3000,
-        filesz: 8,
-        memsz: 0x1000,
-        align: 0,
-    };
-    w.p().segments.push(relro).unwrap();
-    // .data and .bss then share the RELRO page: not valid.
-    w.rejects(Rule::Segments, "not RELRO inside PT_GNU_RELRO");
-    w.p().chunks[ChunkId(7)].relro = true;
-    w.p().chunks[ChunkId(8)].relro = true;
+    let w = relro_world();
     assert_eq!(w.validate(), Ok(()));
-    w.p().chunks[ChunkId(7)].relro = false;
-    w.rejects(Rule::Segments, "RELRO run is not contiguous");
+    let relro = w.layout.placement.segments.iter().find(|(_, s)| s.p_type == PT_GNU_RELRO);
+    let (id, s) = relro.expect("a PT_GNU_RELRO is derived");
+    assert_eq!((s.addr, s.memsz), (0x40_3000, 0x1000));
+
+    // The padding is not RELRO: the run ends at .tbss.
+    let mut w = relro_world();
+    w.p().chunks[ChunkId(10)].relro = false;
+    w.rejects(Rule::Segments, "does not end with .relro_padding");
+
+    // .data RELRO after the padding: the run is contiguous, the padding not
+    // last.
+    let mut w = relro_world();
     w.p().chunks[ChunkId(7)].relro = true;
-    w.p().segments[SegmentId(3)].memsz = 0x800;
+    w.rejects(Rule::Segments, "does not end with .relro_padding");
+
+    // .rodata RELRO and .tdata not: not contiguous.
+    let mut w = relro_world();
+    w.p().chunks[ChunkId(4)].relro = true;
+    w.p().chunks[ChunkId(5)].relro = false;
+    w.rejects(Rule::Segments, "RELRO run is not contiguous");
+
+    // The padding one word short: the run ends off the page.
+    let mut w = relro_world();
+    w.p().chunks[ChunkId(10)].size = 0xff0;
+    w.p().chunks[ChunkId(10)].capacity = 0xff0;
+    w.rederive();
     w.rejects(Rule::Segments, "page boundary");
+
+    // PT_GNU_RELRO stretched over .data: a non-RELRO chunk inside it.
+    let mut w = relro_world();
+    w.p().segments[id].memsz = 0x2000;
+    w.rejects(Rule::Segments, "not RELRO inside PT_GNU_RELRO");
+
+    // PT_GNU_RELRO not the derived one.
+    let mut w = relro_world();
+    w.p().segments[id].filesz = 0;
+    w.rejects(Rule::Segments, "is not the derived one");
 }
 
 // spec: model.md §4.4 rule 3 (a copy-relocation allocation lies in writable memory)
@@ -663,7 +775,7 @@ fn s4_4_rule3_copy_in_read_only_memory() {
     w.liveness.live[SectionId(9)] = false;
     assert_eq!(w.validate(), Ok(()));
     w.p().chunks[ChunkId(8)].flags = A;
-    w.p().segments[SegmentId(1)].flags = PF_R | PF_W;
+    w.p().segments[SegmentId(3)].flags = PF_R | PF_W;
     w.rejects(Rule::Segments, "copy allocation in read-only memory");
 }
 
@@ -705,6 +817,72 @@ fn s4_4_rule4_erratum_patch_of_its_site() {
     // Unused, an erratum patch keyed by any placed site is allowed.
     w.p().redirects = Box::new([]);
     assert_eq!(w.validate(), Ok(()));
+}
+
+/// The world with a second island, `Patches(.text, 1)` (chunk 10), after the
+/// first.
+fn two_islands() -> World {
+    let mut w = World::new();
+    let island = chunk(
+        ChunkKind::Patches(Part { out: OutSecId(0), part: 1 }),
+        SHT_PROGBITS,
+        AX,
+        2,
+        0x10,
+        Some(0x40_1070),
+        0x1070,
+        Some(1),
+    );
+    w.p().chunks.push(island).unwrap();
+    w.p().order = [0, 1, 2, 3, 10, 4, 5, 6, 7, 8, 9].into_iter().map(ChunkId).collect();
+    w.p().sized = Box::new([
+        Sized { chunk: ChunkId(3), size: 0x10 },
+        Sized { chunk: ChunkId(10), size: 0x10 },
+    ]);
+    w.rederive();
+    w
+}
+
+// spec: model.md §4.4 rule 4b (an erratum patch lies in the island of its site's part,
+// spec/layout.md L-111)
+#[test]
+fn s4_4_rule4b_erratum_in_its_part() {
+    let mut w = two_islands();
+    w.p().patches[0].kind = erratum(7, 4);
+    assert_eq!(w.validate(), Ok(()), "in Patches(.text, 0), the part of the site");
+    w.p().patches[0].chunk = ChunkId(10);
+    let v = w.rejects(Rule::Patches, "outside the island of its site's part");
+    assert_eq!(v.rows[0], Row::Entry("patches", 0));
+}
+
+// spec: model.md §4.4 rule 4b (one island holds one patch per target and per site,
+// spec/layout.md L-112)
+#[test]
+fn s4_4_rule4b_no_duplicate_in_an_island() {
+    let thunk = w_patch(ChunkId(3), 8);
+    let mut w = two_islands();
+    let first = w.layout.placement.patches[0];
+    w.p().patches = Box::new([first, Patch { chunk: ChunkId(10), offset: 0, ..thunk }]);
+    assert_eq!(w.validate(), Ok(()), "one thunk of a target in each of two islands");
+    w.p().patches = Box::new([first, thunk]);
+    let v = w.rejects(Rule::Patches, "two patches of one target or site in one island");
+    assert_eq!(v.rows, [Row::Entry("patches", 0), Row::Entry("patches", 1)]);
+    // Another addend is another target.
+    let other = PatchKind::Thunk(ThunkTarget::Sym { key: SymbolId(3).into(), addend: 4 });
+    w.p().patches = Box::new([first, Patch { kind: other, ..thunk }]);
+    assert_eq!(w.validate(), Ok(()));
+    // Two erratum patches of one site in one island.
+    w.p().patches =
+        Box::new([Patch { kind: erratum(7, 4), ..first }, Patch { kind: erratum(7, 4), ..thunk }]);
+    w.rejects(Rule::Patches, "two patches of one target or site in one island");
+}
+
+fn w_patch(chunk: ChunkId, offset: u64) -> Patch {
+    Patch {
+        chunk,
+        offset,
+        kind: PatchKind::Thunk(ThunkTarget::Sym { key: SymbolId(3).into(), addend: 0 }),
+    }
 }
 
 // spec: model.md §4.4 rule 4 (a `Plt(key)` thunk's key has a PLT or IPLT index)
@@ -798,7 +976,7 @@ fn s4_4_field_out_of_range() {
     let v = w.rejects(Rule::Range, "out of range");
     assert_eq!(v.rows, [Row::Entry("patches", 0)]);
     let mut w = World::new();
-    w.p().chunks[ChunkId(2)].kind = ChunkKind::Body(OutSecId(17));
+    w.p().chunks[ChunkId(2)].kind = ChunkKind::Body(Part::first(OutSecId(17)));
     w.rejects(Rule::Range, "output section 17 out of range");
 }
 
@@ -965,4 +1143,82 @@ fn s4_5_addresses() {
         &redirected.layout,
     );
     assert_eq!(at.symbol_addr(SymbolId(0), entries), Some(0x40_1048));
+}
+
+// ---- derive_segments (spec/layout.md L-65…L-67, L-76, L-125) -------------------
+
+/// A 64 KiB-page table: headers, two notes of two alignments (one of them
+/// `.note.gnu.property`), `.eh_frame_hdr`, `.text`, and a RW run that starts
+/// with the `.tbss`-only TLS template.
+fn derive_table() -> (Column<ChunkId, Chunk>, Box<[ChunkId]>) {
+    use mortar_elf::consts::SHT_NOTE;
+    let synth = |name| ChunkKind::Synthetic(Synth { name, address_dependent: false });
+    let body = |o| ChunkKind::Body(Part::first(OutSecId(o)));
+    let chunks = col(vec![
+        chunk(ChunkKind::FileHeader, SHT_PROGBITS, A, 3, 0x40, Some(0x40_0000), 0, None),
+        chunk(ChunkKind::ProgramHeaders, SHT_PROGBITS, A, 3, 0x100, Some(0x40_0040), 0x40, None),
+        chunk(synth(b".note.gnu.property"), SHT_NOTE, A, 3, 0x20, Some(0x40_0140), 0x140, Some(1)),
+        chunk(body(0), SHT_NOTE, A, 2, 0x20, Some(0x40_0160), 0x160, Some(2)),
+        chunk(synth(b".eh_frame_hdr"), SHT_PROGBITS, A, 2, 0x14, Some(0x40_0180), 0x180, Some(3)),
+        chunk(body(1), SHT_PROGBITS, AX, 6, 0x100, Some(0x41_0000), 0x1_0000, Some(4)),
+        chunk(body(2), SHT_NOBITS, WAT, 4, 0x30, Some(0x42_0100), 0x1_0100, Some(5)),
+        chunk(body(3), SHT_NOBITS, WA, 3, 0x40, Some(0x42_0100), 0x1_0100, Some(6)),
+    ]);
+    (chunks, (0..8).map(ChunkId).collect())
+}
+
+// spec: layout.md L-65, L-66, L-67, L-76, L-125 (the derived program headers)
+#[test]
+fn derive_segments_shape() {
+    use mortar_elf::consts::{PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_NOTE};
+    let (chunks, order) = derive_table();
+    let rules = SegmentRules { class: Class::Elf64, max_page: 0x1_0000, stack: PF_R | PF_W };
+    let seg = |p_type, flags, offset, addr, filesz, memsz, align| Segment {
+        p_type,
+        flags,
+        offset,
+        addr,
+        filesz,
+        memsz,
+        align,
+    };
+    assert_eq!(
+        derive_segments(&chunks, &order, &rules),
+        [
+            seg(PT_LOAD, PF_R, 0, 0x40_0000, 0x194, 0x194, 16),
+            seg(PT_LOAD, PF_R | PF_X, 0x1_0000, 0x41_0000, 0x100, 0x100, 16),
+            // A NOBITS first chunk: the offset congruent to its address.
+            seg(PT_LOAD, PF_R | PF_W, 0x1_0100, 0x42_0100, 0, 0x40, 16),
+            seg(PT_NOTE, PF_R, 0x140, 0x40_0140, 0x20, 0x20, 3),
+            seg(PT_NOTE, PF_R, 0x160, 0x40_0160, 0x20, 0x20, 2),
+            seg(PT_TLS, PF_R, 0x1_0100, 0x42_0100, 0, 0x30, 4),
+            seg(PT_GNU_PROPERTY, PF_R, 0x140, 0x40_0140, 0x20, 0x20, 3),
+            seg(PT_GNU_EH_FRAME, PF_R, 0x180, 0x40_0180, 0x14, 0x14, 2),
+            seg(PT_GNU_STACK, PF_R | PF_W, 0, 0, 0, 0, 4),
+        ]
+    );
+    // A chunk aligned above the page raises its PT_LOAD's alignment (L-67).
+    let mut big = chunks;
+    big[ChunkId(5)].align = 20;
+    assert_eq!(derive_segments(&big, &order, &rules)[1].align, 20);
+    // ELF32: PT_GNU_PROPERTY is word (4-byte) aligned.
+    let rules32 = SegmentRules { class: Class::Elf32, ..rules };
+    assert_eq!(derive_segments(&big, &order, &rules32)[6].align, 2);
+}
+
+// spec: layout.md L-125 (derive_segments is total: any table derives some segments)
+#[test]
+fn derive_segments_never_panics() {
+    let (mut chunks, _) = derive_table();
+    chunks[ChunkId(5)].addr = None;
+    chunks[ChunkId(6)].addr = Some(u64::MAX);
+    chunks[ChunkId(6)].capacity = u64::MAX;
+    chunks[ChunkId(7)].align = 200;
+    chunks[ChunkId(7)].offset = u64::MAX;
+    let order = [ChunkId(7), ChunkId(99), ChunkId(5), ChunkId(6), ChunkId(0)];
+    for max_page in [0, 3, 1 << 63] {
+        let rules = SegmentRules { class: Class::Elf64, max_page, stack: 0 };
+        let _ = derive_segments(&chunks, &order, &rules);
+        let _ = derive_segments(&chunks, &[], &rules);
+    }
 }

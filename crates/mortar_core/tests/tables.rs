@@ -140,6 +140,64 @@ fn s3_4_assignment_check() {
     assert!(a.check(&r).unwrap_err().what.contains("discarded"));
 }
 
+// spec: model.md §3.4 (`Consumed`: a kept section the layout consumes, spec/layout.md L-34)
+#[test]
+fn s3_4_consumed() {
+    let r = resolution();
+    let mut a = assigned();
+    a.outsecs.push(text()).unwrap();
+    a.out_of[SectionId(1)] = OutOf::Consumed;
+    assert_eq!(a.check(&r), Ok(()));
+    assert_eq!(a.out_of[SectionId(1)].out(), None);
+    a.out_of[SectionId(0)] = OutOf::Consumed;
+    assert!(a.check(&r).unwrap_err().what.contains("consumed but not kept"));
+}
+
+// spec: model.md §3.4 (a COMDAT-dropped section may be assigned, spec/layout.md L-42; no other
+// dropped section may)
+#[test]
+fn s3_4_comdat_dropped_assigned() {
+    let mut r = resolution();
+    let mut a = assigned();
+    a.outsecs.push(text()).unwrap();
+    r.sections[SectionId(1)].state = SectionState::Dropped(DropReason::Comdat);
+    assert_eq!(a.check(&r), Ok(()), "assigned");
+    a.out_of[SectionId(1)] = OutOf::None;
+    assert_eq!(a.check(&r), Ok(()), "or not");
+    a.out_of[SectionId(1)] = OutOf::Out(OutSecId(0));
+    r.sections[SectionId(1)].state = SectionState::Dropped(DropReason::Excluded);
+    assert!(a.check(&r).unwrap_err().what.contains("assigned but not kept"));
+}
+
+// spec: model.md §3.4 (`Discard` exactly for the sections a script drops)
+#[test]
+fn s3_4_discard_is_script() {
+    let mut r = resolution();
+    let mut a = assigned();
+    a.outsecs.push(text()).unwrap();
+    r.sections[SectionId(1)].state = SectionState::Dropped(DropReason::Script);
+    a.out_of[SectionId(1)] = OutOf::Discard;
+    assert_eq!(a.check(&r), Ok(()));
+    a.out_of[SectionId(1)] = OutOf::None;
+    assert!(a.check(&r).unwrap_err().what.contains("dropped by the script but not discarded"));
+    r.sections[SectionId(1)].state = SectionState::Dropped(DropReason::Stripped);
+    a.out_of[SectionId(1)] = OutOf::Discard;
+    assert!(a.check(&r).unwrap_err().what.contains("discarded but not dropped"));
+}
+
+fn text() -> mortar_core::assignment::OutSec<'static> {
+    mortar_core::assignment::OutSec {
+        name: b".text",
+        sh_type: 1,
+        flags: 6,
+        merge: None,
+        keep: false,
+        fill: None,
+        constraint: None,
+        script_position: None,
+    }
+}
+
 fn split() -> Split {
     let frag = |section, offset| Frag { section: SectionId(section), offset, size: 2, align: 0 };
     Split {
