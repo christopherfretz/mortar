@@ -12,12 +12,20 @@ Deleted in the final commit.
 - Image keeps build-id leaves on request (`LinkOptions::keep_leaves`,
   `Written::{leaves, sealed, file_size}`), `Front::keep_leaves`.
 
+- CLI rows + `Plan::incremental` (cli.md §3.13), diag kinds 59-61,
+  options.md regenerated.
+- `mortar_incr`: format (encode/decode/validate), stamp, capture,
+  replay translation.
+- Facade wiring (`crates/mortar/src/incremental.rs`), `replay_link`,
+  `Env::replay` hook in front (before `layout.validate`).
+
 ## Next
-1. CLI rows + `Plan::incremental`, diag kinds, regenerate options.md.
-2. `mortar_incr`: format (encode/decode/validate), stamp, capture,
-   replay translation.
-3. Facade wiring (`crates/mortar/src/incremental.rs`), replay entry.
-4. Tests, gates, measurements, record `spec/landed/incr/WP-061.md`.
+1. `crates/mortar/tests/incremental.rs`: round trip, mutation sweep,
+   full==plain bytes, reasons, update error, SDE warning, replay +
+   one mutation per decision table, stamp case B / state_tick.
+2. Corpus round trip on 3 targets; ARCHITECTURE edges
+   (mortar_input->mortar_digest, mortar->mortar_incr, mortar->mortar_digest).
+3. protoc -g costs; record `spec/landed/incr/WP-061.md`; full gate.
 
 ## Gate state
 Not run yet.

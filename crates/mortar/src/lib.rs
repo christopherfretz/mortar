@@ -17,6 +17,7 @@ pub mod dynamic;
 pub mod dynlink;
 pub mod front;
 pub mod image;
+pub mod incremental;
 mod proof;
 mod sites;
 pub mod syms;
@@ -68,6 +69,10 @@ pub struct Invocation {
     /// in a newline, for standard error before the report; empty without
     /// it or when the link stopped before liveness.
     pub removed: String,
+    /// Incremental mode's lines for standard error (`spec/incr.md` IN-10:
+    /// a fall-back, the report when it goes there), each ending in a
+    /// newline, after the report; empty in a plain link.
+    pub incremental: String,
 }
 
 /// The name diagnostics start with (`spec/diag.md` §5.1): the basename
@@ -123,8 +128,35 @@ pub fn invoke(prog: &str, args: &[OsString]) -> Invocation {
 
 /// [`invoke`] with relative paths relative to `cwd`.
 #[must_use]
-#[allow(clippy::too_many_lines, reason = "the steps of spec/cli.md §4.3 in order")]
 pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
+    invoke_with(prog, args, cwd, None)
+}
+
+/// The replay hook of `spec/incr.md` IN-61 (model §7.3), for tests: the
+/// link of `args` in `cwd`, with the decision tables of `state`
+/// translated to its ids in place of the ones it computes. A row that does
+/// not translate fails the link (`internal-error`, `replay: ...`).
+#[must_use]
+pub fn replay_link(
+    prog: &str,
+    args: &[OsString],
+    cwd: &Path,
+    state: &mortar_incr::format::State,
+) -> Invocation {
+    let hook = |link: &mortar_incr::capture::Link<'_, '_>, computed: &mortar_core::layout::Layout| {
+        let keys = mortar_incr::capture::Keys::new(link)?;
+        mortar_incr::capture::replay(link, &keys, state, computed)
+    };
+    invoke_with(prog, args, cwd, Some(&hook))
+}
+
+#[allow(clippy::too_many_lines, reason = "the steps of spec/cli.md §4.3 in order")]
+fn invoke_with(
+    prog: &str,
+    args: &[OsString],
+    cwd: &Path,
+    replay: Option<&front::Replay<'_>>,
+) -> Invocation {
     let parsed = mortar_cli::parse(args);
     let plan = &parsed.plan;
     let color = plan.diagnostics.color;
@@ -133,6 +165,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
         color,
         phases: String::new(),
         removed: String::new(),
+        incremental: String::new(),
     };
     match plan.exit {
         Some(Exit::Version) if !parsed.failed() => return done(mortar_cli::version_text()),
@@ -158,6 +191,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
         color,
         phases,
         removed: String::new(),
+        incremental: String::new(),
     };
     let emit_refusals = |diagnostics: &Collector| {
         for (key, diagnostic) in refusals.iter().cloned() {
@@ -197,18 +231,31 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let mortar_map_path = plan.bookkeeping.mortar_map.as_deref().map(|m| cwd.join(m));
     let dependency_path = plan.bookkeeping.dependency_file.as_deref().map(|m| cwd.join(m));
     let print_map = plan.bookkeeping.print_map;
-    let env = front::Env { cwd, pool };
+    // spec/incr.md §5: nothing at all without --incremental (IN-11).
+    let session = match incremental::start(&parsed, cwd, &out_path, &diagnostics) {
+        incremental::Start::Plain => None,
+        incremental::Start::Full(s) => Some(s),
+        incremental::Start::Failed => {
+            emit_refusals(&diagnostics);
+            return failed(diagnostics, timer.finish());
+        }
+    };
+    let env = front::Env { cwd, pool, replay };
     let mut front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
     if let Some(f) = &mut front
         && f.dyn_tables.is_some()
     {
         f.args = parsed.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
     }
+    if let Some(f) = &mut front {
+        f.keep_leaves = session.is_some();
+    }
+    let mut incremental_lines = String::new();
     let mut stdout = String::new();
     let removed = front.as_ref().map_or_else(String::new, |f| removed_lines(prog, f));
     if let Some(f) = &front {
         let linked = link_image(f, &store, &out_path, &diagnostics, &mut timer);
-        if let Some(maps) = linked {
+        if let Some((maps, written)) = linked {
             // I-79, I-120: the maps of a successful link only.
             for (path, text) in [(&map_path, &maps.text), (&mortar_map_path, &maps.machine)] {
                 if let Some(m) = path
@@ -224,6 +271,12 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
             if let Some(d) = &dependency_path {
                 write_dependency_file(f, d, &diagnostics);
             }
+            // spec/incr.md IN-17, IN-21: the state, of a successful link.
+            if let Some(s) = session
+                && !diagnostics.has_errors()
+            {
+                incremental_lines = s.finish(f, &store, &written, cwd, &out_path, &diagnostics);
+            }
         }
     }
     drop(front);
@@ -232,13 +285,18 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
         // I-66: a link that fails after the command line leaves no output
         // (GNU ld's choice; never an input, never a non-regular file).
         mortar_image::output::remove_stale_output(&out_path, &store.inodes());
-        return Invocation { removed, ..failed(diagnostics, timer.finish()) };
+        return Invocation {
+            removed,
+            incremental: incremental_lines,
+            ..failed(diagnostics, timer.finish())
+        };
     }
     Invocation {
         outcome: Outcome::Linked { report: diagnostics.finish(), stdout },
         color,
         phases: timer.finish(),
         removed,
+        incremental: incremental_lines,
     }
 }
 
@@ -287,7 +345,7 @@ fn link_image(
     path: &Path,
     diagnostics: &Collector,
     timer: &mut Timer,
-) -> Option<Maps> {
+) -> Option<(Maps, mortar_image::link::Written)> {
     let b = &f.plan.bookkeeping;
     let mut maps = Maps::default();
     let failed = |e: mortar_synth::error::SynthError| {
@@ -313,7 +371,7 @@ fn link_image(
         }
     }
     match image::write(f, store, path, &|_| {}, &mut |n, name| timer.phase(n, name)) {
-        Ok(_) => Some(maps),
+        Ok(written) => Some((maps, written)),
         Err(e) => {
             for (k, d) in e.diagnostics {
                 diagnostics.emit(k, d);
