@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::format::{
-    Anomaly, Check, CheckTool, Driver, Exit, Expectation, Language, Link, MarkerKind, Run, Stdout,
-    Step, StepKind, Template, Test, Vars,
+    Anomaly, ArchXfail, Check, CheckTool, Driver, Exit, Expectation, Language, Link, Marker,
+    MarkerKind, Run, Stdout, Step, StepKind, Template, Test, Vars,
 };
 use super::outcome::{self, Outcome, Printed, Raw, Reference, Verdict};
 use super::pattern::Pattern;
@@ -55,6 +55,9 @@ pub struct Matrix {
     /// The run-wide default anomalies, `tests/link/anomalies`
     /// (`spec/harness.md` "L3").
     pub defaults: Vec<Anomaly>,
+    /// The run-wide mortar `xfail`s by architecture, `tests/link/xfails`
+    /// (`spec/harness.md` "Markers").
+    pub xfails: Vec<ArchXfail>,
 }
 
 impl Matrix {
@@ -160,9 +163,6 @@ pub struct Plumb {
     /// The default anomalies (`Matrix::defaults`) found, by architecture
     /// and linker.
     pub defaults_seen: BTreeSet<(Arch, Linker, String)>,
-    /// mortar's findings of the verifier's known merge-piece case
-    /// (`plumb::known_merge_piece`; WP-028c's fix, not yet on main).
-    pub known_merge_piece: u64,
 }
 
 impl Plumb {
@@ -175,7 +175,6 @@ impl Plumb {
         self.time += other.time;
         self.judged_by.extend(other.judged_by.iter().copied());
         self.defaults_seen.extend(other.defaults_seen.iter().cloned());
-        self.known_merge_piece += other.known_merge_piece;
     }
 
     /// The default anomalies that apply to a judged output of the run and
@@ -212,14 +211,6 @@ impl Plumb {
         if self.anomalies > 0 {
             let _ = write!(text, ", {} findings expected as anomalies", self.anomalies);
         }
-        if self.known_merge_piece > 0 {
-            let _ = write!(
-                text,
-                ", {} findings of mortar's outputs the verifier's known merge-piece case \
-                 (WP-028c)",
-                self.known_merge_piece
-            );
-        }
         if !self.not_judged.is_empty() {
             let parts: Vec<String> =
                 self.not_judged.iter().map(|(reason, n)| format!("{reason} {n}")).collect();
@@ -235,6 +226,7 @@ pub fn not_judged(bytes: &[u8]) -> Option<&'static str> {
     const ET_REL: u16 = 1;
     const ET_EXEC: u16 = 2;
     const EM_AARCH64: u16 = 183;
+    const EM_X86_64: u16 = 62;
     const PT_DYNAMIC: u32 = 2;
     const PT_INTERP: u32 = 3;
     let u16_at = |at: usize| bytes.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
@@ -248,7 +240,8 @@ pub fn not_judged(bytes: &[u8]) -> Option<&'static str> {
     if bytes.get(..4) != Some(b"\x7fELF".as_slice()) || bytes.get(4..6) != Some([2, 1].as_slice()) {
         return if bytes.get(..4) == Some(b"\x7fELF".as_slice()) { Some("machine") } else { None };
     }
-    if u16_at(18) != Some(EM_AARCH64) {
+    // AArch64 and x86-64 have tables (spec/plumb.md §4.5); i386 has none.
+    if !matches!(u16_at(18), Some(EM_AARCH64 | EM_X86_64)) {
         return Some("machine");
     }
     match u16_at(16) {
@@ -414,6 +407,7 @@ impl Unit<'_> {
         if let Some(skip) = marker.filter(|m| m.kind == MarkerKind::Skip) {
             return self.record(mortar, Outcome::Skip, &skip.reason);
         }
+        let xfail = mortar_xfail(marker, &self.matrix.xfails, self.arch());
         let expected = match verdict {
             Verdict::Unproven => {
                 return self.record(
@@ -438,7 +432,7 @@ impl Unit<'_> {
                 .unwrap_or_default(),
         };
         let (raw, _) = self.run_linker(Linker::Mortar, Some(&expected), plumb);
-        let (outcome, detail) = outcome::marked(&raw, marker.map(|m| m.reason.as_str()));
+        let (outcome, detail) = outcome::marked(&raw, xfail);
         self.record(mortar, outcome, detail)
     }
 
@@ -732,7 +726,7 @@ impl Unit<'_> {
         let started = Instant::now();
         let verified = crate::plumb::verify_link(output_file, map_file, format, dir, None);
         judged.plumb.time += started.elapsed();
-        let (bytes, report, inputs) = verified.map_err(|e| error(&e))?;
+        let (bytes, report, _) = verified.map_err(|e| error(&e))?;
         judged.plumb.verified += 1;
         judged.plumb.judged_by.insert((self.arch(), linker));
         let expected = anomaly_ids(&self.test.anomalies, self.arch(), linker);
@@ -744,10 +738,6 @@ impl Unit<'_> {
         };
         let mut unexpected = Vec::new();
         for f in &report.findings {
-            if linker == Linker::Mortar && crate::plumb::known_merge_piece(&inputs, f) {
-                judged.plumb.known_merge_piece += 1;
-                continue;
-            }
             let anomaly = mortar_plumb::anomaly::classify(format, &bytes, f);
             let id = anomaly.map(mortar_plumb::anomaly::id);
             if let Some(id) = id.filter(|id| expected.contains(id) || defaults.contains(id)) {
@@ -1092,8 +1082,42 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The reason of the `xfail` that applies to mortar on `arch`: the run-wide
+/// one of `tests/link/xfails` (mortar has no back end there), else the
+/// test's own. A test's `skip` is taken before this.
+fn mortar_xfail<'a>(
+    marker: Option<&'a Marker>,
+    xfails: &'a [ArchXfail],
+    arch: Arch,
+) -> Option<&'a str> {
+    xfails
+        .iter()
+        .find(|x| x.arch == arch)
+        .map(|x| x.reason.as_str())
+        .or_else(|| marker.filter(|m| m.kind == MarkerKind::Xfail).map(|m| m.reason.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
+    // "Markers": a run-wide mortar xfail takes the place of the test's
+    // own xfail on its architecture, and nowhere else.
+    #[test]
+    fn a_run_wide_xfail_applies_to_mortar_on_its_architecture() {
+        use super::super::format::Scope;
+        use super::{Arch, ArchXfail, Marker, MarkerKind, mortar_xfail};
+        let own = Marker {
+            line: 1,
+            kind: MarkerKind::Xfail,
+            scope: Scope::default(),
+            reason: "no linking yet (M1)".to_owned(),
+        };
+        let x = [ArchXfail { line: 3, arch: Arch::X86_64, reason: "no back end".to_owned() }];
+        assert_eq!(mortar_xfail(Some(&own), &x, Arch::X86_64), Some("no back end"));
+        assert_eq!(mortar_xfail(None, &x, Arch::X86_64), Some("no back end"));
+        assert_eq!(mortar_xfail(Some(&own), &x, Arch::Aarch64), Some("no linking yet (M1)"));
+        assert_eq!(mortar_xfail(None, &x, Arch::I386), None);
+    }
+
     use super::{Arch, Linker, Plumb, map_option, not_judged, output_name};
 
     fn strings(args: &[&str]) -> Vec<String> {
@@ -1153,7 +1177,7 @@ mod tests {
         assert_eq!(not_judged(&elf(2, 183, 2)), Some("dynamic"));
         assert_eq!(not_judged(&elf(3, 183, 1)), Some("pie-or-shared"));
         assert_eq!(not_judged(&elf(1, 183, 1)), Some("relocatable"));
-        assert_eq!(not_judged(&elf(2, 62, 1)), Some("machine"));
+        assert_eq!(not_judged(&elf(2, 62, 1)), None);
         let mut elf32 = elf(2, 3, 1);
         elf32[4] = 1;
         assert_eq!(not_judged(&elf32), Some("machine"));
