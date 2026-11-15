@@ -211,6 +211,45 @@ fn keep_by_rule(h: &Header<'_>, out: &[u8]) -> bool {
         || (h.sh_type == SHT_NOTE && h.flags & SHF_ALLOC != 0)
 }
 
+/// Whether the resolution has small commons and large ones (L-88,
+/// L-36a): `(small, large)`.
+fn common_kinds(resolution: &Resolution) -> (bool, bool) {
+    let (mut small, mut large) = (false, false);
+    for (s, d) in resolution.def.iter() {
+        if matches!(d, Def::Common(_)) {
+            if resolution.common_of(s).is_some_and(|c| c.large) {
+                large = true;
+            } else {
+                small = true;
+            }
+        }
+    }
+    (small, large)
+}
+
+/// An output section's provisional row: the commons' `.bss` (and, with
+/// large commons, `.lbss`) start as writable `NOBITS`; every other row
+/// takes its first input's type and the OR of its inputs' flags.
+fn provisional(name: &[u8], large: bool) -> OutSec<'_> {
+    let lbss = large && name == b".lbss";
+    OutSec {
+        name,
+        sh_type: if name == b".bss" || lbss { SHT_NOBITS } else { 0 },
+        flags: if name == b".bss" {
+            SHF_ALLOC | SHF_WRITE
+        } else if lbss {
+            SHF_ALLOC | SHF_WRITE | SHF_X86_64_LARGE
+        } else {
+            0
+        },
+        merge: None,
+        keep: false,
+        fill: None,
+        constraint: None,
+        script_position: None,
+    }
+}
+
 /// The output of stage A.
 #[derive(Debug, Clone)]
 pub struct Assigned<'n> {
@@ -286,16 +325,7 @@ pub fn assign<'n>(
         }
     }
     // L-88: small commons go to `.bss`, x86-64 large ones to `.lbss`.
-    let (mut small, mut large) = (false, false);
-    for (s, d) in resolution.def.iter() {
-        if matches!(d, Def::Common(_)) {
-            if resolution.common_of(s).is_some_and(|c| c.large) {
-                large = true;
-            } else {
-                small = true;
-            }
-        }
-    }
+    let (small, large) = common_kinds(resolution);
     for (has, name) in [(small, &b".bss"[..]), (large, &b".lbss"[..])] {
         if has && !ids.contains_key(name) {
             names.push(name);
@@ -308,25 +338,7 @@ pub fn assign<'n>(
     // The commons' sections start as writable `NOBITS`; `.lbss` exists
     // only on x86-64 (a large common is x86-64's, resolve.md §3.3).
     let out_flags = out_flags(target.machine);
-    let mut outsecs: Vec<OutSec<'n>> = names
-        .iter()
-        .map(|&name| OutSec {
-            name,
-            sh_type: if name == b".bss" || (large && name == b".lbss") { SHT_NOBITS } else { 0 },
-            flags: if name == b".bss" {
-                SHF_ALLOC | SHF_WRITE
-            } else if large && name == b".lbss" {
-                SHF_ALLOC | SHF_WRITE | SHF_X86_64_LARGE
-            } else {
-                0
-            },
-            merge: None,
-            keep: false,
-            fill: None,
-            constraint: None,
-            script_position: None,
-        })
-        .collect();
+    let mut outsecs: Vec<OutSec<'n>> = names.iter().map(|&name| provisional(name, large)).collect();
     let mut s = 0u32;
     for f in &per_file {
         for fate in &f.fates {

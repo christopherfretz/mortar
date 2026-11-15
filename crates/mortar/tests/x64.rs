@@ -574,10 +574,8 @@ fn x64_small_sections_do_not_move_with_the_large() {
         );
         let small_end = alloc[..first_large].iter().map(|s| s.addr + s.size).max().unwrap();
         assert!(alloc[first_large].addr >= small_end, "{label}");
-        let small: Vec<(String, u64, u64)> = alloc[..first_large]
-            .iter()
-            .map(|s| (s.name.clone(), s.addr, s.size))
-            .collect();
+        let small: Vec<(String, u64, u64)> =
+            alloc[..first_large].iter().map(|s| (s.name.clone(), s.addr, s.size)).collect();
         // The symbols GNU ld places at the end of the small data (Y5).
         let marks: Vec<Option<u64>> = ["_edata", "__bss_start", "etext"]
             .iter()
@@ -639,14 +637,25 @@ fn x64_gdb_reads_a_large_global() {
     let sum = support::summarize_elf(&out);
     let addr = sum.symbols["ld_"];
     let mut c = Command::new(gdb);
-    c.args(["-nx", "-batch", "-ex", "print ld_[0]", "-ex", "print lr[0]", "-ex", "print sizeof(ld_)"])
-        .args(["-ex", "print/x &ld_", "-ex", "info symbol lc"])
-        .arg(&out)
-        .env("DEBUGINFOD_URLS", "")
-        .env("TERM", "dumb");
+    c.args([
+        "-nx",
+        "-batch",
+        "-ex",
+        "print ld_[0]",
+        "-ex",
+        "print lr[0]",
+        "-ex",
+        "print sizeof(ld_)",
+    ])
+    .args(["-ex", "print/x &ld_", "-ex", "info symbol lc"])
+    .arg(&out)
+    .env("DEBUGINFOD_URLS", "")
+    .env("TERM", "dumb");
     let o = run_with(&mut c, b"", Duration::from_mins(2));
     let text = o.stdout_text();
     assert!(o.success(), "gdb: {}{}", text, o.stderr_text());
-    let want = format!("$1 = 1 '\\001'\n$2 = 2 '\\002'\n$3 = 1048576\n$4 = {addr:#x}\nlc in section .lbss\n");
+    let want = format!(
+        "$1 = 1 '\\001'\n$2 = 2 '\\002'\n$3 = 1048576\n$4 = {addr:#x}\nlc in section .lbss\n"
+    );
     assert_eq!(text, want, "gdb: {}", o.stderr_text());
 }

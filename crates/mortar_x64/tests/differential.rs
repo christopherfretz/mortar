@@ -183,8 +183,20 @@ const BUILDS: &[Build] = &[
     ),
     // WP-084: the medium and large models' sections and relocations
     // (`GOTOFF64`, `GOTPC64`, `GOTPC32`, `PLTOFF64`, `GOT64`, `PC64`).
-    b("large-medium", &[(Cc::Gcc, "large.c", &["-O2", "-mcmodel=medium", "-fno-pic"])], Cc::Gcc, &[], false),
-    b("large-gcc", &[(Cc::Gcc, "large.c", &["-O2", "-mcmodel=large", "-fPIC"])], Cc::Gcc, &[], false),
+    b(
+        "large-medium",
+        &[(Cc::Gcc, "large.c", &["-O2", "-mcmodel=medium", "-fno-pic"])],
+        Cc::Gcc,
+        &[],
+        false,
+    ),
+    b(
+        "large-gcc",
+        &[(Cc::Gcc, "large.c", &["-O2", "-mcmodel=large", "-fPIC"])],
+        Cc::Gcc,
+        &[],
+        false,
+    ),
     b(
         "large-clang",
         &[(Cc::Clang, "large.c", &["-O2", "-mcmodel=large", "-fno-pic"])],
@@ -192,7 +204,13 @@ const BUILDS: &[Build] = &[
         &[],
         false,
     ),
-    b("large-medium-pie", &[(Cc::Gcc, "large.c", &["-O2", "-mcmodel=medium", "-fPIE"])], Cc::Gcc, &[], true),
+    b(
+        "large-medium-pie",
+        &[(Cc::Gcc, "large.c", &["-O2", "-mcmodel=medium", "-fPIE"])],
+        Cc::Gcc,
+        &[],
+        true,
+    ),
     b("p", &[(Cc::Gcc, "p.c", &["-O2", "-g"])], Cc::Gcc, &["-pthread"], false),
     b("q", &[(Cc::Gxx, "q.cc", &["-O2", "-g"])], Cc::Gxx, &["-pthread"], false),
     b("f", &[(Cc::Gfortran, "f.f90", &["-O2"])], Cc::Gfortran, &[], false),

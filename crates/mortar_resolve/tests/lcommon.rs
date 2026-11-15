@@ -82,7 +82,7 @@ fn s3_3_lcommon_is_x86_64_only() {
     if let Some(x) = assemble(&Arch::X86_64.gnu("as"), ".largecomm lc,8,8\n", &scratch, "x64") {
         let e = errors(Machine::X86_64, x.clone());
         assert!(e.is_empty(), "{e:?}");
-        assert_eq!(commons(Machine::X86_64, &[x.clone()]), [(8, true)]);
+        assert_eq!(commons(Machine::X86_64, std::slice::from_ref(&x)), [(8, true)]);
         // Q14 / X-55: a COMMON and an LCOMMON of one name give a small
         // common of the largest size; .lbss only when every mention is
         // LCOMMON.

@@ -195,7 +195,10 @@ fn s3_3_size_and_alignment_are_maxima() {
     m.common(b, "v", 32, 4);
     let r = link(&m);
     assert_eq!(def(&m, &r, "v"), Def::Common(e(a, first)));
-    assert_eq!(r.common[0].1, mortar_core::resolution::CommonShape { size: 32, align: 4, large: false });
+    assert_eq!(
+        r.common[0].1,
+        mortar_core::resolution::CommonShape { size: 32, align: 4, large: false }
+    );
     assert!(r.problems.is_empty());
 }
 
@@ -220,7 +223,10 @@ fn s3_3_alignment_zero_is_one() {
     m.common(a, "v", 3, 0);
     let r = link(&m);
     assert!(r.problems.is_empty(), "{:?}", r.problems);
-    assert_eq!(r.common[0].1, mortar_core::resolution::CommonShape { size: 3, align: 0, large: false });
+    assert_eq!(
+        r.common[0].1,
+        mortar_core::resolution::CommonShape { size: 3, align: 0, large: false }
+    );
 }
 
 #[test]

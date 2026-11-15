@@ -1,10 +1,7 @@
 # WIP — WP-084 (x86-64 large sections)
 
-Done: layout/resolve/core code; run_class (.lbss-only joins small RW, core layout.rs);
-tests: x64.rs large-model tests (pass), lcommon.rs, stages.rs, differential large builds
-(not yet run); specs: X-52 note removed, X-54 measured, L-36a rewritten, X-52 test row.
-Measured: /tmp/mortar-wp084-2664338/e1.
-
-Next: tests/link/layout/x64-large-*.test (pie, no-pie, 4 linkers); weak-class-table xfail line;
-run differential; diag.md rows; layout.md 1575 refusal list; Q3 row; record; AArch64 large;
-baselines; CI; gate.
+Done: code, tests (x64.rs, link tests, differential, unit), specs, record spec/landed/x64/WP-084.md,
+aarch64 baseline rows, main merged once (8366315).
+Next: gate (MORTAR_REQUIRE_TOOLS=1 cargo xtask ci --quick); push branch; gh workflow run ci;
+put the x86-64 lane's static-identical rows in tests/identical/baseline.on-x86_64.tsv; rerun;
+delete WIP.md in the final commit; remove /tmp/mortar-wp084-2664338.

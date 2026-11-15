@@ -497,13 +497,17 @@ fn l93_absent_and_withdrawn() {
 fn l88_commons() {
     use mortar_layout::chunk::Common;
     let mut w = hello();
-    w.commons = vec![Common { symbol: SymbolId(1), size: 0x40, align: 5, tls: false, large: false }];
+    w.commons =
+        vec![Common { symbol: SymbolId(1), size: 0x40, align: 5, tls: false, large: false }];
     w.resolution.def[SymbolId(1)] = Def::Common(mortar_core::id::SymEntry {
         file: mortar_core::id::FileId(2),
         index: mortar_elf::SymbolIndex(9),
     });
-    w.resolution.common =
-        vec![(SymbolId(1), mortar_core::resolution::CommonShape { size: 0x40, align: 5, large: false })].into();
+    w.resolution.common = vec![(
+        SymbolId(1),
+        mortar_core::resolution::CommonShape { size: 0x40, align: 5, large: false },
+    )]
+    .into();
     let (a, placed) = w.run(&Pool::sequential()).unwrap();
     w.check(&a, &placed).unwrap();
     let sp = placed.placement.sym_place[0];

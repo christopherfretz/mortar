@@ -77,7 +77,13 @@ pub fn commons(resolution: &Resolution, inputs: Option<&Inputs<'_>>) -> Vec<Comm
                     .and_then(|t| t.get(entry.index).ok())
                     .is_some_and(|sym| sym.st_info & 0xf == STT_TLS)
             });
-            Some(Common { symbol: s, size: shape.size, align: shape.align, tls, large: shape.large })
+            Some(Common {
+                symbol: s,
+                size: shape.size,
+                align: shape.align,
+                tls,
+                large: shape.large,
+            })
         })
         .collect()
 }
