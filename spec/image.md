@@ -272,7 +272,10 @@ The design is fixed now so that the M1 tables need no change.
   the referring section has a debug name, and is
   `discarded-section-reference` otherwise (`spec/resolve.md` §6.3's
   table, applied to collected sections as to dropped COMDAT copies). The
-  scan reports it (§4.4); liveness reports nothing. Under I-7 a live
+  scan reports it (§4.4), or for a section deferred to fill fill's check
+  does (I-14); liveness reports nothing. The mark reads every live
+  section's relocation records itself (`mortar_live::read`), deferred or
+  not: it never depends on the scan's walk. Under I-7 a live
   non-debug section's references are edges, so only a debug section can
   refer to a collected one. None of the three references diagnoses the
   non-debug case: GNU ld removes the referring section, lld and mold
@@ -820,7 +823,16 @@ writes a value chosen by the referring section's name, as
   `.gnu_debuglink`): the **tombstone** of I-47, whatever the addend. Such
   a section is usually deferred to fill (I-14): the target's liveness is
   then read at fill (`SymValue::live`, from `Liveness`), which is where
-  `arch.scan` would have found the target dead.
+  `arch.scan` would have found the target dead. Under `--gc-sections` a
+  live `Merge` section can hold collected pieces (I-7, `frag_live`): a
+  reference whose target is such a piece (a section symbol plus addend,
+  or a named symbol in it) is a reference to a section that is not live,
+  and writes the tombstone too (`Tables::split_target`'s `Ok(None)`; a
+  named symbol's `SymValue::live` is false). The deferred check passes it
+  (the target is defined), so it raises no diagnostic. Found by the
+  WP-031 differential (`clang++ -O2 -g`: `.debug_info` naming an unused
+  `.rodata.str` piece); test `tests/deferred.rs`
+  `i14_dead_targets_are_the_tombstone_at_fill`.
 - **I-46 [M1]** Exactly `.gcc_except_table` (alloc or not): 0
   (`spec/resolve.md` §6.3). Any other non-alloc section: the scan
   reported `discarded-section-reference` (§4.4) and fill never runs.
