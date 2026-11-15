@@ -405,20 +405,20 @@ impl LinkSites<'_, '_> {
         if c.rel == 0 {
             return Ok(proof);
         }
-        // The candidate words (a64.md §11.1 condition 1: `W1` at an
-        // address ≡ 0xFF8 or 0xFFC mod 4096) and the three after.
-        let mut windows: Vec<(u64, u64)> = Vec::new();
-        let mut q = 0xFF8u64.wrapping_sub(addr) & 0xFFF;
-        while q < len {
-            windows.push((q, q + 4));
-            q += 0x1000;
-        }
+        // The words the erratum scan reads (a64.md §11.1 condition 1: `W1`
+        // at an address ≡ 0xFF8 or 0xFFC mod 4096, and the three words
+        // after each): `[0xFF8, 0x100C)` of every page, as offsets into
+        // this section, which may hold only the end of a window (its `W1`
+        // in the section before). A record applies to `[r, r + 8)` at most;
+        // one that touches a window is applied (applying more is fill's
+        // own words, never wrong).
+        let windows = erratum_windows(addr, len);
         if windows.is_empty() {
             return Ok(proof);
         }
         let in_window = |r: u64| {
-            let i = windows.partition_point(|w| w.0 + 16 <= r);
-            windows.get(i).is_some_and(|w| w.0 <= r)
+            let i = windows.partition_point(|w| w.1 <= r);
+            windows.get(i).is_some_and(|w| w.0 < r.saturating_add(8))
         };
         let leads = self.t.order.leads(c.sid);
         let name = self.walker.section_name(c.file, c.index);
@@ -465,6 +465,29 @@ impl LinkSites<'_, '_> {
         }
         Ok(proof)
     }
+}
+
+/// The erratum scan's windows in a section of `len` bytes at `addr`: the
+/// offset ranges, ascending and disjoint, of the bytes `[P + 0xFF8, P +
+/// 0x100C)` of each page `P` (`mortar_a64::erratum::sites` reads the words
+/// at `0xFF8` and `0xFFC` and the three after each) that lie in the
+/// section.
+fn erratum_windows(addr: u64, len: u64) -> Vec<(u64, u64)> {
+    const LO: u128 = 0xFF8;
+    const HI: u128 = 0x100C;
+    let (start, end) = (u128::from(addr), u128::from(addr) + u128::from(len));
+    let mut windows = Vec::new();
+    // The page whose window may reach `start`: the one before `start`'s.
+    let mut page = (start & !0xFFF).saturating_sub(0x1000);
+    while page + LO < end {
+        let (lo, hi) = ((page + LO).max(start), (page + HI).min(end));
+        if lo < hi {
+            // In u64: both lie in `start..=end`, `end - start = len`.
+            windows.push(((lo - start) as u64, (hi - start) as u64));
+        }
+        page += 0x1000;
+    }
+    windows
 }
 
 /// A scan diagnostic as layout carries it: its key and place kept.
@@ -609,5 +632,32 @@ impl RoundTables<'_, '_, '_> {
 
     fn plt(&self, key: SymKey) -> Option<u64> {
         self.sites.t.got.iplt_address(&self.got_addrs, key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::erratum_windows;
+
+    // spec: a64.md §11.1 (the words of a site: `W1` at 0xFF8 or 0xFFC, and
+    // up to three words after it, which may cross the page and the section)
+    #[test]
+    fn windows_cover_every_word_the_scan_reads() {
+        // A section from a page start: the tail of the window before it
+        // (the last words of a site whose `W1` is in the previous page),
+        // then the window at each 0xFF8.
+        assert_eq!(
+            erratum_windows(0x40_0000, 0x2000),
+            [(0, 0xC), (0xFF8, 0x100C), (0x1FF8, 0x2000)]
+        );
+        // A section that starts inside a window: its first bytes.
+        assert_eq!(erratum_windows(0x40_1000, 0x40), [(0, 0xC)]);
+        assert_eq!(erratum_windows(0x40_0FFC, 0x40), [(0, 0x10)]);
+        // One that ends before any window, and one that touches none.
+        assert_eq!(erratum_windows(0x40_0010, 0x40), []);
+        assert_eq!(erratum_windows(0x40_100C, 0x40), []);
+        // Low addresses do not underflow.
+        assert_eq!(erratum_windows(0, 0x1000), [(0xFF8, 0x1000)]);
+        assert_eq!(erratum_windows(0x10, 8), []);
     }
 }
