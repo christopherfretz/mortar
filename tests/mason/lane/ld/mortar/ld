@@ -1,16 +1,30 @@
 #!/bin/bash
-# The lane's `ld` for mortar ($MASON_MORTAR): writes a map next to the
-# output, logs one line per link to $MASON_LOG (cwd, status, the first
-# diagnostic) and, with MASON_PLUMB=1, verifies the output
-# (`xtask mason verify`, $MASON_XTASK) and logs that too. A finding does
-# not fail the link: the report counts it.
+# The lane's `ld` for mortar ($MASON_MORTAR). The link as the caller asked
+# for it is timed (timed.sh) and logged, one line per link to $MASON_LOG
+# (cwd, status, the first diagnostic, the verifier's result). With
+# MASON_PLUMB=1 a second link of the same command adds --mortar-map (the
+# verifier's machine map, not -Map's GNU text); its output must equal the
+# first byte for byte (determinism, and a map changes nothing), and the verifier (`xtask mason verify`, $MASON_XTASK) checks
+# it against its map. A finding or a difference does not fail the link:
+# the report counts it.
+. "${BASH_SOURCE%/*}/../timed.sh"
 out=a.out; prev=
 for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
-# The verifier reads mortar's machine map (--mortar-map), not -Map's GNU text.
-err=$("${MASON_MORTAR:?}" "$@" --mortar-map="$out.map" 2>&1 >/dev/null); st=$?
+err=$(mason_timed "${MASON_MORTAR:?}" mortar "$@" 2>&1 >/dev/null); st=$?
 plumb=-
 if [ $st = 0 ] && [ "${MASON_PLUMB:-}" = 1 ]; then
-  plumb=$("${MASON_XTASK:?}" mason verify "$out" "$out.map" 2>&1 | head -c 1000 | tr '\n\t' '  ')
+  args=(); prev=
+  for a in "$@"; do
+    if [ "$prev" = -o ]; then args+=("$out.plumb"); else args+=("$a"); fi; prev=$a
+  done
+  if ! e2=$("$MASON_MORTAR" "${args[@]}" --mortar-map="$out.map" 2>&1 >/dev/null); then
+    plumb="second link failed: $(printf '%s' "$e2" | head -n 1)"
+  elif ! cmp -s "$out" "$out.plumb"; then
+    plumb="nondeterministic: the output with --mortar-map differs"
+  else
+    plumb=$("${MASON_XTASK:?}" mason verify "$out.plumb" "$out.map" 2>&1 | head -c 1000 | tr '\n\t' '  ')
+  fi
+  rm -f "$out.plumb" "$out.map"
 fi
 if [ -n "${MASON_LOG:-}" ]; then
   printf '%s\tmortar\t%s\t%s\t%s\n' "$PWD" "$st" "$(printf '%s' "$err" | head -n 1 | head -c 1000 | tr '\t' ' ')" "$plumb" >> "$MASON_LOG"

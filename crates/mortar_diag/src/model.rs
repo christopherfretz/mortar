@@ -349,6 +349,21 @@ pub enum Kind {
     /// `meta-version` (`spec/meta.md` MT-35): a unit of a major version
     /// mortar does not read; its records are ignored.
     MetaVersion { major: u16 },
+    // -- one-definition rule (M6, `spec/odr.md` §9.1; WP-072's W checks) --
+    /// `odr-contents-mismatch` (`spec/odr.md` §8.1 W4, `--odr=strict`
+    /// only): two copies of one COMDAT group define the data symbol `name`
+    /// with different bytes or relocations.
+    OdrContentsMismatch { name: String },
+    /// `odr-size-mismatch` (`spec/odr.md` §8.1 W1, O-24 (c), O-34): two
+    /// definitions of `name` with different sizes.
+    OdrSizeMismatch { name: String },
+    /// `odr-strong-and-comdat` (`spec/odr.md` §8.1 W3, `--odr=strict`
+    /// only): `name` has a strong definition outside any COMDAT group and
+    /// a COMDAT copy.
+    OdrStrongAndComdat { name: String },
+    /// `odr-symbol-type-mismatch` (`spec/odr.md` §8.1 W2): `name` is
+    /// defined as a function in one file and as data in another.
+    OdrSymbolTypeMismatch { name: String },
 
     // -- relocations ----------------------------------------------------
     /// `canonical-plt-in-pie` (`spec/dyn.md` D-44): the relocation
@@ -417,7 +432,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 59] = [
+    pub const IDS: [&'static str; 63] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -464,6 +479,10 @@ impl Kind {
         "versioned-export",
         "meta-malformed",
         "meta-version",
+        "odr-contents-mismatch",
+        "odr-size-mismatch",
+        "odr-strong-and-comdat",
+        "odr-symbol-type-mismatch",
         "canonical-plt-in-pie",
         "copy-relocation-against-protected",
         "copy-relocation-of-zero-size",
@@ -530,6 +549,10 @@ impl Kind {
             Self::VersionedExport { .. } => "versioned-export",
             Self::MetaMalformed { .. } => "meta-malformed",
             Self::MetaVersion { .. } => "meta-version",
+            Self::OdrContentsMismatch { .. } => "odr-contents-mismatch",
+            Self::OdrSizeMismatch { .. } => "odr-size-mismatch",
+            Self::OdrStrongAndComdat { .. } => "odr-strong-and-comdat",
+            Self::OdrSymbolTypeMismatch { .. } => "odr-symbol-type-mismatch",
             Self::CanonicalPltInPie { .. } => "canonical-plt-in-pie",
             Self::CopyRelocationAgainstProtected { .. } => "copy-relocation-against-protected",
             Self::CopyRelocationOfZeroSize { .. } => "copy-relocation-of-zero-size",
@@ -569,6 +592,10 @@ impl Kind {
             | Self::UndefinedVersion { name, .. }
             | Self::VersionReassigned { name, .. }
             | Self::VersionedExport { name, .. }
+            | Self::OdrContentsMismatch { name }
+            | Self::OdrSizeMismatch { name }
+            | Self::OdrStrongAndComdat { name }
+            | Self::OdrSymbolTypeMismatch { name }
             | Self::CanonicalPltInPie { name, .. }
             | Self::CopyRelocationAgainstProtected { name, .. }
             | Self::CopyRelocationOfZeroSize { name }
@@ -676,6 +703,9 @@ impl From<FileRef> for Place {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Relation {
+    /// `defined differently in`: where a definition of the symbol is that
+    /// differs from the one before it (`spec/odr.md` §9.1).
+    DefinedDifferentlyIn,
     /// `defined in`: where a definition of the symbol is.
     DefinedIn,
     /// `in`: what contains the construct, when the head line has no place.
@@ -688,12 +718,14 @@ pub enum Relation {
 
 impl Relation {
     /// Every relation, in the order of `spec/diag.md` §2.4.
-    pub const ALL: [Self; 4] = [Self::DefinedIn, Self::In, Self::NamedBy, Self::ReferencedBy];
+    pub const ALL: [Self; 5] =
+        [Self::DefinedDifferentlyIn, Self::DefinedIn, Self::In, Self::NamedBy, Self::ReferencedBy];
 
     /// The words printed between `>>> ` and the place.
     #[must_use]
     pub const fn phrase(self) -> &'static str {
         match self {
+            Self::DefinedDifferentlyIn => "defined differently in",
             Self::DefinedIn => "defined in",
             Self::In => "in",
             Self::NamedBy => "named by",
@@ -901,19 +933,23 @@ mod tests {
             Kind::VersionedExport { .. } => 43,
             Kind::MetaMalformed { .. } => 44,
             Kind::MetaVersion { .. } => 45,
-            Kind::CanonicalPltInPie { .. } => 46,
-            Kind::CopyRelocationAgainstProtected { .. } => 47,
-            Kind::CopyRelocationOfZeroSize { .. } => 48,
-            Kind::RelocationIncompatible { .. } => 49,
-            Kind::RelocationMisaligned { .. } => 50,
-            Kind::RelocationOutOfRange { .. } => 51,
-            Kind::TextRelocation { .. } => 52,
-            Kind::WeakUndefinedPcInPie { .. } => 53,
-            Kind::ExecutableStack { .. } => 54,
-            Kind::OutputTooLarge { .. } => 55,
-            Kind::SectionConflict { .. } => 56,
-            Kind::Refused { .. } => 57,
-            Kind::InternalError { .. } => 58,
+            Kind::OdrContentsMismatch { .. } => 46,
+            Kind::OdrSizeMismatch { .. } => 47,
+            Kind::OdrStrongAndComdat { .. } => 48,
+            Kind::OdrSymbolTypeMismatch { .. } => 49,
+            Kind::CanonicalPltInPie { .. } => 50,
+            Kind::CopyRelocationAgainstProtected { .. } => 51,
+            Kind::CopyRelocationOfZeroSize { .. } => 52,
+            Kind::RelocationIncompatible { .. } => 53,
+            Kind::RelocationMisaligned { .. } => 54,
+            Kind::RelocationOutOfRange { .. } => 55,
+            Kind::TextRelocation { .. } => 56,
+            Kind::WeakUndefinedPcInPie { .. } => 57,
+            Kind::ExecutableStack { .. } => 58,
+            Kind::OutputTooLarge { .. } => 59,
+            Kind::SectionConflict { .. } => 60,
+            Kind::Refused { .. } => 61,
+            Kind::InternalError { .. } => 62,
         }
     }
 
@@ -969,6 +1005,10 @@ mod tests {
             Kind::VersionedExport { name: s(), version: s() },
             Kind::MetaMalformed { reason: s() },
             Kind::MetaVersion { major: 2 },
+            Kind::OdrContentsMismatch { name: s() },
+            Kind::OdrSizeMismatch { name: s() },
+            Kind::OdrStrongAndComdat { name: s() },
+            Kind::OdrSymbolTypeMismatch { name: s() },
             Kind::CanonicalPltInPie { r_type: s(), name: s() },
             Kind::CopyRelocationAgainstProtected { name: s(), file: s() },
             Kind::CopyRelocationOfZeroSize { name: s() },

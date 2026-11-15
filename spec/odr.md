@@ -147,8 +147,14 @@ assumed), or if it is one of these exclusions.
 - **X0** every record-based check (kinds 1, 2, 3, 5; O-24; O-25): strict
   only until O-46 moves it (O-47's register).
 
+- **X20** objects without records: a weak definition outside every
+  COMDAT group that lost resolution is not compared by W2 or W3, in any
+  mode (§8.1 compares the COMDAT copies and the resolved definition
+  only; `wcheck.py` would, and finds nothing on the corpora of §8.1).
+
 Numbers X1-X12 are those of revision 1; X7 is split into X7a and X7b;
-X13-X19 were added by the peer review of kiln and hod (2026-11-15).
+X13-X19 were added by the peer review of kiln and hod (2026-11-15); X20
+by WP-072.
 
 **Best effort (no proof).** Objects without records: W1 and W2 of §8 are
 on by default and catch K5 and K6 when two copies' sizes differ; nothing
@@ -787,9 +793,12 @@ its corpus (it needs kind 1).
 
 ### 8.1 The foreign checks (W)
 
-These read only what resolution already holds: for each live COMDAT
-group with two or more copies, the defined symbols of each copy, and for
-W3 the strong definitions of the same keys. Measured from the **rule
+These read only what resolution already holds: the defined global
+symbols of every live COMDAT copy, a group with a single copy included
+(W2 and W3 compare it with the key's resolved definition, which is
+outside the group), and for W2 and W3 each such key's resolved
+definition. A definition that is neither in a COMDAT copy nor the
+resolved one is not compared (X20). Measured from the **rule
 text** (`wcheck.py`) over the corpora of experiment 1 (§12.3, Appendix
 A): `libstdc++.a` + `libsupc++.a` (254 files, 6,990 names), `libc.a`
 (2,022 files), `libgcc.a` + `libgcc_eh.a` (409), libc++ 22 `libc++.a` +
@@ -803,7 +812,7 @@ COMMON, C tentative-definition and 12-TU mixed links:
 | W1 | an `STT_OBJECT`/`STT_TLS` symbol defined in two copies of one COMDAT group with different `st_size` | K5 (`_ZTV1B` 48/40), K6 (`_ZTI1D` 56/24, `_ZTV1D` 72/40) | 0 on every corpus above; 0 on N20-N24 | **on**, warning `odr-size-mismatch` |
 | W2 | one key defined as `STT_FUNC`/`STT_GNU_IFUNC` in one live file and as `STT_OBJECT`/`STT_TLS`/common in another; `STT_NOTYPE` never participates | (none in the catalogue) | 0 on every corpus; N23 (F4) is not a finding under this wording (the first draft's prototype flagged it) | **on**, warning `odr-symbol-type-mismatch` |
 | W3 | a strong non-COMDAT definition and a COMDAT copy of the same key | K13 | **3**: N20, N21, N22 (`legal-fp` F1-F3; protobuf ships N22's pattern) | `--odr=strict` only, warning `odr-strong-and-comdat`; never proposed as a default |
-| W4 | data contents (bytes and symbol-normalized relocations) differ between copies | K5, K6, K9 | **1**: a libstdc++ vtable (D1/D2 aliases differ between GCC and Clang) | `--odr=strict` only, warning |
+| W4 | data contents (bytes and symbol-normalized relocations) differ between copies | K5, K6, K9 | **1**: a libstdc++ vtable (D1/D2 aliases differ between GCC and Clang) | `--odr=strict` only, warning `odr-contents-mismatch` |
 | W5 | section alignment differs | — | **4**: `_ZTS*` 8 (GCC) vs 1 (Clang) | not a check |
 | F | function code bytes differ | K1, K2, K11 … | everything at different `-O` (N1) | never |
 
@@ -921,6 +930,7 @@ mode's (`--odr=warn`, O-40) for a check that is on; O-47 says which are.
 |---|---|---|---|
 | `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | warning |
 | `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | warning (opt-in) |
+| `odr-contents-mismatch` | `OdrContentsMismatch { name }` | `{name} has different contents in different files` | warning (strict only) |
 | `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | warning; error under `--odr=error`/`strict` |
 | `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | warning (strict only) |
 | `odr-isa-mismatch` | `OdrIsaMismatch { name }` | `the kept copy of {name} was compiled for other target features than a translation unit that uses it` | warning |
@@ -943,6 +953,12 @@ warning: f(int) violates the one-definition rule
 >>> the definitions differ; a.o and b.o were compiled with different -D options? (compare their command lines)
 ```
 
+- Places are `spec/diag.md` §2.4's `file:(symbol)`. The W checks
+  (no record, no source position) print `>>> defined in a.o:(f)` and
+  `>>> defined differently in b.o:(f)`, and say in a note which class is
+  kept (`the first is kept`) or used; the `(kept)` marker and `at h.h:3`
+  of the example above are the record checks' (WP-073), once a place can
+  carry a source position.
 - One diagnostic per entity: the copies are partitioned by hash; the
   first class (the keeper's) is "defined in", each other class's first
   file "defined differently in", with at most 3 files a class and a count
@@ -982,6 +998,8 @@ every warning (`spec/diag.md` §6.3).
   included, plus unanchored, `PARTIAL` and `INLINED_ONLY` rows; the
   record-based findings above are errors, every other finding a warning,
   `meta-malformed` and `meta-version` errors.
+- The W checks (§8.1) are warnings in every mode, `error` and `strict`
+  included (O-40); `--fatal-warnings` makes them errors.
 - `--odr=off`, also spelled **`--no-odr-check`**: no check runs, no
   container byte is read (O-42), the W checks do not run, and no
   loadable table is written (§10). The output is byte-identical to the
@@ -989,9 +1007,11 @@ every warning (`spec/diag.md` §6.3).
 - `--odr-check-archives` (O-23), `--odr-table=off|exported|full` (O-50),
   `--odr-stats` (O-44).
 - GNU gold's `--detect-odr-violations`: accepted as a **no-op**: mortar
-  already checks by default; it prints once `note: mortar checks the
-  one-definition rule by default; --detect-odr-violations has no further
-  effect` (it must not lower an error to a warning, review M11).
+  already checks by default. It prints nothing (`spec/diag.md` §2.1 has
+  no note severity); the option table's reason for the row is `mortar
+  checks the one-definition rule by default; --detect-odr-violations has
+  no further effect`. It must not lower an error to a warning (review
+  M11).
 
 **O-42 (a link that does not use the feature does not pay for it).** A
 hard rule. A container byte is read only when a check that needs it is
@@ -1680,7 +1700,7 @@ implementation of the verdict) is Q11.
 | O-33 | T-O-33 | N27, N28 (strict only), K14b; the canonical C type: glibc's declarations as C and as C++ `extern "C"` give zero differences (`peer/run3.sh`), and a real parameter-type difference (`int` vs `long`) still differs |
 | O-34 | T-O-34 | kind 5 against a foreign definition's size |
 | O-35 | T-O-35 | K14, N15 |
-| O-40, O-41 | T-O-41 | each mode's severities; `--odr=off` output byte-identical; `--detect-odr-violations` a no-op with its note |
+| O-40, O-41 | T-O-41 | each mode's severities; `--odr=off` output byte-identical; `--detect-odr-violations` a no-op that prints nothing |
 | O-42 | T-O-42 | `meta.md` T-MT-42: bytes read counted |
 | O-44 | T-O-44 | the stats line's fields on a corpus link |
 | O-45 | T-O-45 | the bench lane's comparison |

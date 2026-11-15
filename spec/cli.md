@@ -536,7 +536,7 @@ phase that reads it meets it.
 ### 4.1 Rows
 
 There is one row per option, in `crates/mortar_cli/src/rows.rs`. The
-table has 472 rows. A row has:
+table has 479 rows (WP-072 added the seven of M6 below). A row has:
 
 - **spellings**: each with a form (§2.2) and a flag saying whether GNU ld
   has that spelling. The flag decides which spellings abbreviate (§2.4).
@@ -593,8 +593,11 @@ does: a user may rely on every use the status admits.
 - `refused`: read and recorded, but not carried out yet. This is the
   default.
 
-The status today (WP-042; `docs/status/options.md` has the list, and
-counts 54 supported, 4 partial, 43 noop and 371 refused). The counts in
+The status today (WP-042 and WP-034; `docs/status/options.md` has the
+list, and counts 54 supported, 4 partial, 44 noop and 370 refused).
+WP-034 made `--no-dependent-libraries` `noop`: mortar never loads the
+libraries `.deplibs` sections name (`spec/resolve.md` §10);
+`--dependent-libraries` stays `refused`. The counts in
 this list are those of WP-027e; WP-031, WP-027d's later rows and WP-042
 (the M2 paragraph below) changed them since:
 - 49 rows are `supported`; each has its evidence in
@@ -634,10 +637,16 @@ edited:
   (= `--odr=off`): WP-072;
 - `--odr-stats`: WP-072;
 - `--detect-odr-violations` (GNU gold's spelling; not a reference
-  linker's row): `noop`, with the note of `spec/odr.md` O-41 printed
-  once; WP-072;
+  linker's row): `noop`, printing nothing; its reason is the sentence
+  of `spec/odr.md` O-41; WP-072;
 - `--odr-check-archives`, `--odr-table=off|exported|full` (default
   `off`), `--keep-mason-meta`: WP-075 and WP-076.
+
+WP-072 landed the first four: `--odr`, `--no-odr-check` and `--odr-stats`
+`supported`, `--detect-odr-violations` `noop` (its reason is O-41's sentence;
+nothing is printed, since `spec/diag.md` §2.1 has no note severity); the other three are
+`refused` with their fields in `plan.diagnostics.odr` (§3.9).
+`docs/status/options.md` has the counts.
 
 Rows whose status the M1 and M2 packages change (`spec/input.md` §17,
 `spec/resolve.md` §18). Their fields exist (§3); the rows stay `refused`

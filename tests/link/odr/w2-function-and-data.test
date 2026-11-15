@@ -1,0 +1,30 @@
+# W2 (spec/odr.md §8.1): one key defined as a function (STT_FUNC) in a
+# COMDAT copy of one file and as data (STT_OBJECT) in a copy of another.
+# The link keeps a.o's group; W2 reports the pair by default.
+#@ spec: odr.md §8.1
+#@ diag: odr-symbol-type-mismatch a.o b.o
+
+as a.S -o a.o
+as b.S -o b.o
+cc -O1 main.c -o main.o
+link gcc -static -no-pie main.o a.o b.o -o prog
+run prog
+
+#--- a.S
+	.section .text.shared,"axG",%progbits,shared,comdat
+	.weak shared
+	.type shared, %function
+shared:
+	ret
+	.size shared, .-shared
+	.section .note.GNU-stack,"",%progbits
+#--- b.S
+	.section .data.shared,"awG",%progbits,shared,comdat
+	.weak shared
+	.type shared, %object
+	.size shared, 4
+shared:
+	.long 0
+	.section .note.GNU-stack,"",%progbits
+#--- main.c
+int main(void) { return 0; }

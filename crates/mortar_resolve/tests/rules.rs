@@ -1564,6 +1564,7 @@ fn s9_4_second_lookup_in_objects() {
 // ---- §10 -------------------------------------------------------------------
 
 #[test]
+#[allow(clippy::too_many_lines)] // one row per line of §10's table
 fn s10_classification_table() {
     use SectionKind as K;
     type Want = Result<(SectionKind, SectionState), ()>;
@@ -1589,7 +1590,14 @@ fn s10_classification_table() {
             MSection::new(".llvm_addrsig", 0x6fff_4c03, SHF_EXCLUDE),
             Ok((K::Excluded, dropped(DropReason::Excluded))),
         ),
-        (MSection::new(".deplibs", 0x6fff_4c04, 0), Err(())),
+        // WP-034: consumed, its specifiers not honoured (GNU ld, mold).
+        (
+            MSection {
+                entsize: 1,
+                ..MSection::new(".deplibs", 0x6fff_4c04, SHF_MERGE | SHF_STRINGS)
+            },
+            Ok((K::Excluded, dropped(DropReason::Consumed))),
+        ),
         (MSection::new(".llvm.odrtab", 0x6fff_4c00, 0), Err(())),
         (
             MSection::new(".gnu.lto_.x", SHT_PROGBITS, SHF_EXCLUDE),

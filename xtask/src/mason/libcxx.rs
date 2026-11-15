@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use super::setup;
+use super::{outcomes, setup};
 
 pub const MODES: &[&str] =
     &["dyn", "bfd", "lld", "mold", "mortar", "mortar-noattrs", "mortar-stripped"];
@@ -29,6 +29,8 @@ pub const MODES: &[&str] =
 /// The samples: named sets of test directories (relative to
 /// `libcxx/test`) with a shard.
 pub const SAMPLES: &[(&str, &[&str], Option<&str>)] = &[
+    // The whole suite (`--full`), as kiln's release runs take it.
+    ("full", &["std", "libcxx"], None),
     ("vector", &["std/containers/sequences/vector"], None),
     (
         "wp033",
@@ -55,6 +57,22 @@ struct Args {
     report: Option<PathBuf>,
     mortar: Option<PathBuf>,
     keep: bool,
+    /// `--out <dir>`: the run's directory (one subdirectory per mode),
+    /// kept; else a scratch directory, removed.
+    out: Option<PathBuf>,
+    /// `--results <file>`: the per-test result file (`outcomes.rs`).
+    results: Option<PathBuf>,
+    /// `--compare <a> <b>`: compare two result files (`<file>[:<mode>]`),
+    /// run nothing.
+    compare: Option<(String, String)>,
+    /// `--collect <dir>`: the result file of an earlier `--out <dir>` run.
+    collect: Option<PathBuf>,
+    /// `--baseline <file>`: mortar's expected not-passing tests.
+    baseline: Option<PathBuf>,
+    /// `--write-baseline <file>`: write mortar mode's baseline.
+    write_baseline: Option<PathBuf>,
+    /// `--cflags <words>`: added to every compile (`MASON_CFLAGS`).
+    cflags: String,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -68,6 +86,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
         report: None,
         mortar: None,
         keep: false,
+        out: None,
+        results: None,
+        compare: None,
+        collect: None,
+        baseline: None,
+        write_baseline: None,
+        cflags: String::new(),
     };
     let mut sample = None;
     let mut it = args.iter();
@@ -88,6 +113,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 }
             }
             "--sample" => sample = Some(value("--sample")?),
+            "--full" => sample = Some("full".to_owned()),
             "--shard" => a.shard = Some(value("--shard")?),
             "-j" | "--jobs" => {
                 a.jobs = value("-j")?
@@ -100,12 +126,25 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--keep" => a.keep = true,
             "--report" => a.report = Some(PathBuf::from(value("--report")?)),
             "--mortar" => a.mortar = Some(PathBuf::from(value("--mortar")?)),
+            "--out" => a.out = Some(PathBuf::from(value("--out")?)),
+            "--cflags" => a.cflags = value("--cflags")?,
+            "--results" => a.results = Some(PathBuf::from(value("--results")?)),
+            "--collect" => a.collect = Some(PathBuf::from(value("--collect")?)),
+            "--baseline" => a.baseline = Some(PathBuf::from(value("--baseline")?)),
+            "--write-baseline" => {
+                a.write_baseline = Some(PathBuf::from(value("--write-baseline")?));
+            }
+            "--compare" => {
+                let x = value("--compare")?;
+                let y = value("--compare")?;
+                a.compare = Some((x, y));
+            }
             s if s.starts_with('-') => return Err(format!("unknown argument '{s}'")),
             s => a.dirs.push(s.to_owned()),
         }
     }
     if a.modes.is_empty() {
-        a.modes = ["bfd", "mortar", "mortar-stripped"].map(str::to_owned).into();
+        a.modes = ["bfd", "mortar"].map(str::to_owned).into();
     }
     if let Some(s) = sample {
         let (_, dirs, shard) = SAMPLES
@@ -117,8 +156,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
             a.shard = shard.map(str::to_owned);
         }
     }
-    if a.dirs.is_empty() {
-        return Err("libcxx needs test directories or --sample".into());
+    if a.dirs.is_empty() && a.compare.is_none() && a.collect.is_none() {
+        return Err(
+            "libcxx needs test directories, --sample, --full, --compare or --collect".into()
+        );
     }
     Ok(a)
 }
@@ -171,6 +212,12 @@ struct Mode {
 #[allow(clippy::too_many_lines)] // one runner invocation per mode, set up in one place
 pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let args = parse(args)?;
+    if let Some((x, y)) = &args.compare {
+        return compare_files(x, y);
+    }
+    if let Some(dir) = &args.collect {
+        return finish(&args, &collect_dir(dir, None)?);
+    }
     let Some(mason) = super::Mason::find_or_skip("libcxx")? else { return Ok(ExitCode::SUCCESS) };
     let kx = setup::kiln_xtask();
     let tree = super::lane_dir().join("libcxx-22-static");
@@ -180,7 +227,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         if super::required() {
             return Err(e);
         }
-        println!("xtask mason libcxx: skipped: {e}");
+        say!("xtask mason libcxx: skipped: {e}");
         return Ok(ExitCode::SUCCESS);
     }
     let lane_scripts = crate::linktest::workspace_root().join("tests/mason/lane");
@@ -190,8 +237,9 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         None
     };
     let me = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-    let scratch =
-        crate::linktest::build_dir().join("mason").join(format!("libcxx-{}", std::process::id()));
+    let scratch = args.out.clone().unwrap_or_else(|| {
+        crate::linktest::build_dir().join("mason").join(format!("libcxx-{}", std::process::id()))
+    });
     let mut modes = Vec::new();
     for m in &args.modes {
         let dir = scratch.join(m);
@@ -201,8 +249,12 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         let stats = dir.join("stats.jsonl");
         let results_file = dir.join("results.tsv");
         let out = std::fs::File::create(dir.join("out.log")).map_err(|e| e.to_string())?;
-        let mut c = std::process::Command::new(&kx);
-        c.arg("libcxx")
+        // Core dumps off: tests that abort by design (libc++'s death and
+        // root-only filesystem tests) would leave core files in the scratch.
+        let mut c = std::process::Command::new("/bin/sh");
+        c.args(["-c", "ulimit -c 0 && exec \"$0\" \"$@\""])
+            .arg(&kx)
+            .arg("libcxx")
             .args(["--tag", setup::TAG, "--libcxx-tests"])
             .arg(&tests)
             .arg("--compiler")
@@ -225,8 +277,10 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
             .env("MASON_LANE", &lane_scripts)
             .env("MASON_LD", if m.starts_with("mortar") { "mortar" } else { m.as_str() })
             .env("MASON_LOG", &log)
+            .env("MASON_TIMES", dir.join("times.tsv"))
             .env("MASON_XTASK", &me)
             .env("MASON_PLUMB", if args.plumb { "1" } else { "0" })
+            .env("MASON_CFLAGS", &args.cflags)
             .env("KILN_STATS_LOG", &stats);
         if let Some(p) = &mortar {
             c.env("MASON_MORTAR", p);
@@ -242,7 +296,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         if args.backend == "hod" {
             c.env("KILN_BACKEND", "hod").env("KILN_HOD", &mason.hod).env("KILN_HOD_STRICT", "1");
         }
-        println!("xtask mason libcxx: mode {m} ({} backend) ...", args.backend);
+        say!("xtask mason libcxx: mode {m} ({} backend) ...", args.backend);
         match crate::process::run_step(&mut c, false) {
             Ok((s, _)) if s.success() => {}
             Ok((s, _)) => {
@@ -259,7 +313,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
             .find(|l| l.contains(" tests: "))
             .unwrap_or("(no summary)")
             .to_owned();
-        let links = read(&log)
+        let links: Vec<_> = read(&log)
             .lines()
             .filter_map(|l| {
                 let f: Vec<&str> = l.split('\t').collect();
@@ -267,6 +321,16 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
                     .then(|| (f[2].to_owned(), f[3].to_owned(), f[4].to_owned()))
             })
             .collect();
+        // A mortar mode whose links did not reach mortar's `ld` (a lane
+        // `ld` the driver skipped) would report another linker's outcomes.
+        let link_jobs =
+            read(&stats).lines().filter(|l| l.contains("\"output_kind\":\"link\"")).count();
+        if m.starts_with("mortar") && link_jobs > 0 && links.is_empty() {
+            return Err(format!(
+                "mode {m}: kiln made {link_jobs} links and none reached mortar's lane ld (see {})",
+                dir.join("out.log").display()
+            ));
+        }
         let mut backends = BTreeMap::new();
         for l in read(&stats).lines().filter(|l| l.contains("\"output_kind\":\"obj\"")) {
             let b = l
@@ -277,7 +341,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned();
             *backends.entry(b).or_insert(0) += 1;
         }
-        println!("xtask mason libcxx: mode {m}: {summary}");
+        say!("xtask mason libcxx: mode {m}: {summary}");
         modes.push(Mode {
             name: m.clone(),
             results: results(&read(&results_file)),
@@ -287,17 +351,146 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         });
     }
     let report = render(&args, &modes);
-    print!("{report}");
+    say_raw!("{report}");
     if let Some(p) = &args.report {
         std::fs::write(p, &report).map_err(|e| format!("{}: {e}", p.display()))?;
     }
-    if args.keep {
-        println!("xtask mason libcxx: kept {}", scratch.display());
+    if args.keep || args.out.is_some() {
+        say!("xtask mason libcxx: kept {}", scratch.display());
     } else {
         let _ = std::fs::remove_dir_all(&scratch);
     }
     let wrong = modes.iter().any(|m| !wrong_outputs(&modes, m).is_empty());
-    Ok(if wrong { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+    let names: Vec<String> = modes.iter().map(|m| m.name.clone()).collect();
+    let code = if args.results.is_some() || args.baseline.is_some() || args.write_baseline.is_some()
+    {
+        finish(&args, &collect_dir(&scratch, Some(&names))?)?
+    } else {
+        ExitCode::SUCCESS
+    };
+    Ok(if wrong { ExitCode::FAILURE } else { code })
+}
+
+/// The records of the mode directories of `dir` (`names`, else every
+/// subdirectory with a `results.tsv`), in mode order.
+fn collect_dir(dir: &Path, names: Option<&[String]>) -> Result<Vec<outcomes::Rec>, String> {
+    let names: Vec<String> = if let Some(n) = names {
+        n.to_vec()
+    } else {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .filter_map(Result::ok)
+            .filter(|e| e.path().join("results.tsv").is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort_by_key(|m| MODES.iter().position(|x| x == m).unwrap_or(usize::MAX));
+        v
+    };
+    let mut recs = Vec::new();
+    for m in &names {
+        recs.extend(outcomes::collect(m, &dir.join(m))?);
+    }
+    Ok(recs)
+}
+
+/// Writes the result file, the comparisons of every mode with the
+/// reference (`bfd`), the link times, and the baseline's verdict.
+fn finish(args: &Args, recs: &[outcomes::Rec]) -> Result<ExitCode, String> {
+    if let Some(p) = &args.results {
+        std::fs::write(p, outcomes::render(recs)).map_err(|e| format!("{}: {e}", p.display()))?;
+        say!("xtask mason libcxx: results: {} ({} lines)", p.display(), recs.len());
+    }
+    let mut modes: Vec<&str> = Vec::new();
+    for r in recs {
+        if !modes.contains(&r.mode.as_str()) {
+            modes.push(&r.mode);
+        }
+    }
+    let by: Vec<(&str, BTreeMap<&str, &outcomes::Rec>)> = modes
+        .iter()
+        .map(|m| outcomes::select(recs, Some(m)).map(|s| (*m, s)))
+        .collect::<Result<_, _>>()?;
+    say!(
+        "
+{}",
+        outcomes::TIMES_HEADER
+    );
+    for (m, s) in &by {
+        say!("{}", outcomes::times(m, s));
+    }
+    if let Some((_, r)) = by.iter().find(|(m, _)| *m == "bfd") {
+        for (m, s) in by.iter().filter(|(m, _)| *m != "bfd") {
+            say!(
+                "
+### {m} against bfd
+
+{}",
+                outcomes::compare("bfd", r, m, s).0
+            );
+        }
+    }
+    let mut code = ExitCode::SUCCESS;
+    if let Some((_, m)) = by.iter().find(|(m, _)| *m == "mortar") {
+        if let Some(p) = &args.write_baseline {
+            std::fs::write(p, outcomes::baseline(m))
+                .map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+        if let Some(p) = &args.baseline {
+            let base = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
+            let (regressed, fixed) = outcomes::against_baseline(m, &base);
+            say!(
+                "
+against {}: regressed {}, fixed {}",
+                p.display(),
+                regressed.len(),
+                fixed.len()
+            );
+            for t in &regressed {
+                say!("regressed: {t}");
+            }
+            for t in &fixed {
+                say!("fixed: {t}");
+            }
+            if !regressed.is_empty() {
+                code = ExitCode::FAILURE;
+            }
+        }
+    }
+    Ok(code)
+}
+
+/// `--compare <a> <b>`: each `<file>[:<mode>]`.
+fn compare_files(a: &str, b: &str) -> Result<ExitCode, String> {
+    let load = |spec: &str| -> Result<(String, Vec<outcomes::Rec>, Option<String>), String> {
+        let (file, mode) = match spec.rsplit_once(':') {
+            Some((f, m)) if !m.contains('/') && Path::new(f).is_file() => (f, Some(m.to_owned())),
+            _ => (spec, None),
+        };
+        let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+        Ok((file.to_owned(), outcomes::parse(&text).map_err(|e| format!("{file}: {e}"))?, mode))
+    };
+    let (fa, ra, ma) = load(a)?;
+    let (fb, rb, mb) = load(b)?;
+    let sa = outcomes::select(&ra, ma.as_deref()).map_err(|e| format!("{fa}: {e}"))?;
+    let sb = outcomes::select(&rb, mb.as_deref()).map_err(|e| format!("{fb}: {e}"))?;
+    let name = |s: &BTreeMap<&str, &outcomes::Rec>| {
+        s.values().next().map_or_else(String::new, |r| r.mode.clone())
+    };
+    let (na, nb) = (name(&sa), name(&sb));
+    let (na, nb) = if na == nb { (format!("{na} (a)"), format!("{nb} (b)")) } else { (na, nb) };
+    let (text, _) = outcomes::compare(&na, &sa, &nb, &sb);
+    say!(
+        "{text}
+{}",
+        outcomes::TIMES_HEADER
+    );
+    say!(
+        "{}
+{}",
+        outcomes::times(&na, &sa),
+        outcomes::times(&nb, &sb)
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The reference mode: `bfd`, else `dyn`.
@@ -326,10 +519,11 @@ fn render(args: &Args, modes: &[Mode]) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "## libc++ through the Mason lane\n\ndirs: {}; shard: {}; backend: {}\n",
+        "## libc++ through the Mason lane\n\ndirs: {}; shard: {}; backend: {}{}\n",
         args.dirs.join(" "),
         args.shard.as_deref().unwrap_or("all"),
-        args.backend
+        args.backend,
+        if args.cflags.is_empty() { String::new() } else { format!("; cflags: {}", args.cflags) }
     );
     let _ = writeln!(s, "| mode | summary | object jobs by back end |\n|---|---|---|");
     for m in modes {

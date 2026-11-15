@@ -1,17 +1,19 @@
 //! `--time-phases` (`spec/image.md` §11, I-88, I-89): the lines of the
-//! phases that ran, printed after the diagnostics.
+//! phases that ran, printed after the diagnostics; and the lines a phase
+//! prints there on request whether or not it is timed (`--odr-stats`,
+//! `spec/odr.md` O-44).
 
 use mortar_image::phases::PhaseTimer;
 
 /// A phase timer when `--time-phases` asks for one.
 #[derive(Debug, Clone)]
-pub struct Timer(Option<PhaseTimer>);
+pub struct Timer(Option<PhaseTimer>, Vec<String>);
 
 impl Timer {
     /// Starts timing when `on`.
     #[must_use]
     pub fn new(on: bool) -> Self {
-        Self(on.then(PhaseTimer::start))
+        Self(on.then(PhaseTimer::start), Vec::new())
     }
 
     /// The phase `ordinal name` (model §8's names) ended now.
@@ -21,11 +23,19 @@ impl Timer {
         }
     }
 
-    /// The lines, each with its `mortar: time-phases: ` prefix and a
-    /// newline; empty when not timing.
+    /// A line printed after the diagnostics, before the phases' (its
+    /// own prefix included, no newline).
+    pub fn line(&mut self, line: String) {
+        self.1.push(line);
+    }
+
+    /// The lines given to [`Timer::line`], then the phases' lines, each
+    /// with its `mortar: time-phases: ` prefix; each ends with a newline.
+    /// Empty when not timing and no line was given.
     #[must_use]
     pub fn finish(self) -> String {
-        self.0.map(PhaseTimer::finish).unwrap_or_default().iter().fold(String::new(), |mut s, l| {
+        let phases = self.0.map(PhaseTimer::finish).unwrap_or_default();
+        self.1.iter().chain(phases.iter()).fold(String::new(), |mut s, l| {
             s.push_str(l);
             s.push('\n');
             s

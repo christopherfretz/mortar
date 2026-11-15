@@ -23,6 +23,9 @@ mortar_digest.workspace = true
 # The Mason metadata writer and reader behind `cargo xtask meta` (the test
 # producer and dumper of spec/meta.md §12; the format's one implementation).
 mortar_meta.workspace = true
+# The wording of the one-definition-rule diagnostics, which the link tests'
+# `diag: <id> <file>...` directive reads back (spec/harness.md "Directives").
+mortar_diag.workspace = true
 
 # Kills the children and returns the held jobserver tokens on SIGINT/SIGTERM
 # (spec/harness.md "Jobserver", "Signals").
