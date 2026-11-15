@@ -81,6 +81,13 @@ fn is_debug_name(name: &[u8]) -> bool {
     name.starts_with(b".debug")
 }
 
+/// Whether `-S`/`-s` drop the section (§10): a non-allocated `.debug*`
+/// section, of kind `Debug` or, for the string sections (`.debug_str`,
+/// `.debug_line_str`: `SHF_MERGE|SHF_STRINGS`), `Merge`.
+pub fn is_debug(s: &SectionInfo<'_>) -> bool {
+    s.flags & SHF_ALLOC == 0 && is_debug_name(s.name)
+}
+
 /// The largest `sh_entsize` a `Merge` section is split by (synth.md S-6).
 pub const MAX_MERGE_ENTSIZE: u64 = 1 << 16;
 
@@ -192,7 +199,8 @@ fn retain(s: &SectionInfo<'_>) -> Note {
 /// The state of a section of kind `kind` (§10): `Dropped(Comdat)` for a
 /// member of a group not kept that carries output, then by kind;
 /// `excluded` is the reason for an `Excluded` kind ([`excluded_reason`]);
-/// `strip_debug` (`-S`/`-s`) drops `Debug` sections.
+/// `strip_debug` (`-S`/`-s`, and the section is [`is_debug`]) drops the
+/// section.
 pub fn state(
     kind: SectionKind,
     excluded: DropReason,
@@ -208,7 +216,7 @@ pub fn state(
             SectionState::Dropped(DropReason::Consumed)
         }
         K::Excluded => SectionState::Dropped(excluded),
-        K::Debug if strip_debug => SectionState::Dropped(DropReason::Stripped),
+        K::Debug | K::Merge if strip_debug => SectionState::Dropped(DropReason::Stripped),
         _ => SectionState::Kept,
     }
 }

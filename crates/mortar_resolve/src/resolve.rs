@@ -539,7 +539,8 @@ fn section_rows<V: View>(
             Ok((kind, note)) => {
                 row.kind = kind;
                 let excluded = sections::excluded_reason(&s, note);
-                row.state = sections::state(kind, excluded, dropped, ctx.opts.strip_debug);
+                let strip = ctx.opts.strip_debug && sections::is_debug(&s);
+                row.state = sections::state(kind, excluded, dropped, strip);
                 match note {
                     Note::Retain if row.is_kept() => out.retained.push((file, SectionIndex(i))),
                     Note::GnuWarning if !dropped => out.problems.push(Problem {

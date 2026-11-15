@@ -37,7 +37,9 @@ fn explore(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
         .order
         .chunks
         .iter()
-        .map(|c| format!("{}={:#x}", String::from_utf8_lossy(f.assignment.outsecs[c.out].name), c.size))
+        .map(|c| {
+            format!("{}={:#x}", String::from_utf8_lossy(f.assignment.outsecs[c.out].name), c.size)
+        })
         .collect();
     eprintln!("merged chunks: {merged:?}");
     eprintln!(
@@ -130,6 +132,10 @@ const SAME_SIZE: &[&str] = &[
 /// The front's layout of one program against GNU ld, lld and mold: each
 /// comparison below is one the record (spec/landed/pipeline/WP-027a.md)
 /// explains; a difference outside them fails.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one assertion per compared property, in the record's order"
+)]
 fn compare(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
     let scratch = Scratch::new(label);
     let Some(built) = build(&scratch, driver, flags, program) else { return };
@@ -149,7 +155,10 @@ fn compare(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
         assert!(big(b".text") && big(b".rela.debug_info"), "{label}");
     }
     let names = |s: &Summary| s.sections.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
-    let ctx = format!("{label}\n{}", table(&[("mortar", &ours), ("bfd", bfd), ("lld", lld), ("mold", mold)]));
+    let ctx = format!(
+        "{label}\n{}",
+        table(&[("mortar", &ours), ("bfd", bfd), ("lld", lld), ("mold", mold)])
+    );
 
     // The set: GNU's, plus `.relro_padding` (layout L-64, as lld and
     // mold) and an empty `.tm_clone_table` (L-43: an output section with
@@ -190,7 +199,11 @@ fn compare(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
     // `.eh_frame`: CIE de-duplication and dead-FDE removal as lld and
     // mold (S-50..S-56); GNU keeps a terminator and pads differently.
     for (r, s) in [("lld", lld), ("mold", mold)] {
-        assert_eq!(ours.section(".eh_frame").map(|x| x.size), s.section(".eh_frame").map(|x| x.size), "{r}\n{ctx}");
+        assert_eq!(
+            ours.section(".eh_frame").map(|x| x.size),
+            s.section(".eh_frame").map(|x| x.size),
+            "{r}\n{ctx}"
+        );
     }
     for (r, s) in [("bfd", bfd), ("lld", lld), ("mold", mold)] {
         assert_eq!((ours.cies, ours.fdes), (s.cies, s.fdes), "CIEs, FDEs against {r}\n{ctx}");
@@ -202,7 +215,11 @@ fn compare(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
     // `.init`, `.fini`: crti/crtn's prologue and epilogue, as GNU and lld.
     for name in [".init", ".fini"] {
         for s in [bfd, lld] {
-            assert_eq!(ours.section(name).map(|x| x.size), s.section(name).map(|x| x.size), "{name}\n{ctx}");
+            assert_eq!(
+                ours.section(name).map(|x| x.size),
+                s.section(name).map(|x| x.size),
+                "{name}\n{ctx}"
+            );
         }
     }
     // IFUNC: GNU's names and shapes (S-67..S-69): `.plt` 32-byte IPLT
@@ -265,11 +282,15 @@ fn compare(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
     theirs.sort_unstable();
     mine.sort_unstable();
     assert!(mine == theirs, "mortar − lld: {}\n{ctx}", multiset_diff(&mine, &theirs));
-    assert!(my_eh_mapping <= eh_mapping && eh_mapping - my_eh_mapping <= 4, "{my_eh_mapping} {eh_mapping}\n{ctx}");
+    assert!(
+        my_eh_mapping <= eh_mapping && eh_mapping - my_eh_mapping <= 4,
+        "{my_eh_mapping} {eh_mapping}\n{ctx}"
+    );
     assert_eq!(ours.symtab_entries, entries.len() as u64 + 1, "{ctx}");
 
     // Segments: L-65..L-67, and GNU's base (L-68).
-    let segs: Vec<String> = ours.segments.iter().map(|g| format!("{}:{}", g.p_type, g.flags)).collect();
+    let segs: Vec<String> =
+        ours.segments.iter().map(|g| format!("{}:{}", g.p_type, g.flags)).collect();
     let mut want = vec!["LOAD:R", "LOAD:RE", "LOAD:RW", "LOAD:RW", "NOTE:R", "TLS:R"];
     if ours.hdr_fdes.is_some() {
         want.push("GNU_EH_FRAME:R");
@@ -362,4 +383,102 @@ fn the_front_does_not_depend_on_the_schedule() {
             (f.layout.clone(), f.sections(), symtab_entries(&f), report)
         });
     }
+}
+
+// spec: cli.md §3 (the rows WP-027a made Supported do what their row
+// says), synth.md S-84 (-s: no symbol table), S-78 (-x/-X), S-57
+// (.eh_frame_hdr only with --eh-frame-hdr), S-91 (build-id sizes),
+// layout.md L-102/L-103 (-e; an undefined entry is none), image.md I-5
+// (--no-gc-sections is accepted)
+#[test]
+fn the_supported_rows_shape_the_front() {
+    let scratch = Scratch::new("rows");
+    let Some(built) = build(&scratch, Driver::Gcc, &["-O2", "-g"], C_PROGRAM) else { return };
+    let store = store();
+    let base = with_output(&built.args, &built.dir.join("out.mortar"));
+    let run = |extra: &[&str]| {
+        let mut args = base.clone();
+        args.extend(extra.iter().map(std::ffi::OsString::from));
+        front_of(&args, &built.dir, &store, Pool::new(2)).unwrap_or_else(|r| {
+            panic!("{extra:?}: {}", r.render(&mortar_diag::Style::plain("mortar")))
+        })
+    };
+    let names = |f: &mortar::front::Front<'_>| -> Vec<String> {
+        f.sections().iter().map(|r| String::from_utf8_lossy(&r.name).into_owned()).collect()
+    };
+    let has = |f: &mortar::front::Front<'_>, n: &str| names(f).iter().any(|x| x == n);
+    let locals =
+        |f: &mortar::front::Front<'_>| symtab_entries(f).iter().filter(|e| e.1 == 0).count();
+
+    let plain = run(&[]);
+    assert!(has(&plain, ".symtab") && has(&plain, ".strtab") && has(&plain, ".debug_info"));
+    assert!(!has(&plain, ".eh_frame_hdr"), "gcc's static line has no --eh-frame-hdr");
+    assert_eq!(
+        plain.synth.build_id.as_ref().map(mortar_synth::BuildIdPlan::desc_size),
+        Some(20),
+        "bare --build-id"
+    );
+    assert_eq!(plain.layout.placement.entry, global_addr(&plain, "_start"));
+
+    let s = run(&["-s"]);
+    assert!(s.synth.symtab.is_none() && !has(&s, ".symtab") && !has(&s, ".strtab"));
+    assert!(!has(&s, ".debug_info"), "-s strips debugging sections too");
+    let big_s = run(&["-S"]);
+    assert!(
+        has(&big_s, ".symtab") && !names(&big_s).iter().any(|n| n.starts_with(".debug")),
+        "{:?}",
+        names(&big_s)
+    );
+
+    // gcc's line has -X; a later -x drops every local but the file and
+    // section ones the table keeps (S-78), a later --discard-none none.
+    let x = run(&["-x"]);
+    assert!(locals(&x) < locals(&plain), "{} {}", locals(&x), locals(&plain));
+    // Under -x the locals are exactly lld's: the demoted hidden globals
+    // and the internal file's (S-77), no FILE, mapping or `.L` symbol;
+    // lld's LOCAL UND entries (S-75) and section symbols (S-79) are absent.
+    if let Some(lld) = reference_with(&built, "ld.lld", &["-x"]) {
+        let mut theirs: Vec<&str> = lld
+            .entries
+            .iter()
+            .filter(|(t, b, n, _)| b == "LOCAL" && n != "UND" && t != "SECTION")
+            .map(|e| e.3.as_str())
+            .collect();
+        let entries = symtab_entries(&x);
+        let mut mine: Vec<&str> =
+            entries.iter().filter(|e| e.1 == 0).map(|e| e.3.as_str()).collect();
+        theirs.sort_unstable();
+        mine.sort_unstable();
+        assert!(mine == theirs, "-x: mortar − lld: {}", multiset_diff(&mine, &theirs));
+    }
+
+    let hdr = run(&["--eh-frame-hdr"]);
+    assert!(hdr.synth.hdr.is_some() && has(&hdr, ".eh_frame_hdr"));
+    let no_hdr = run(&["--eh-frame-hdr", "--no-eh-frame-hdr"]);
+    assert!(no_hdr.synth.hdr.is_none() && !has(&no_hdr, ".eh_frame_hdr"));
+
+    assert_eq!(
+        run(&["--build-id=sha256"])
+            .synth
+            .build_id
+            .as_ref()
+            .map(mortar_synth::BuildIdPlan::desc_size),
+        Some(32)
+    );
+    assert_eq!(
+        run(&["--build-id=0x0102ab"])
+            .synth
+            .build_id
+            .as_ref()
+            .map(mortar_synth::BuildIdPlan::desc_size),
+        Some(3)
+    );
+    assert!(run(&["--build-id=none"]).synth.build_id.is_none());
+
+    assert_eq!(names(&run(&["--no-gc-sections"])), names(&plain));
+
+    let e = run(&["-e", "main"]);
+    assert_eq!(e.layout.placement.entry, global_addr(&e, "main"));
+    assert!(e.layout.placement.entry.is_some());
+    assert_eq!(run(&["-e", "no_such_entry"]).layout.placement.entry, None, "L-103: e_entry = 0");
 }

@@ -7,6 +7,11 @@
 //! the target kinds of §4.4, the instruction proof of [`CodeProof`]); no
 //! rule is restated here.
 
+#![allow(
+    clippy::result_large_err,
+    reason = "the error is the scan's diagnostic, made once per section"
+)]
+
 use mortar_arch::{Arch, ProofRun, RelocAt, ScanTables, Site, SymFacts, SymNames};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey};
 use mortar_diag::{Diagnostic, Key, Kind, Place};
@@ -94,9 +99,7 @@ impl<'a, 's> Walker<'a, 's> {
         let key = mortar_arch::cx::scan_key(file, index, 0);
         let fref = || self.view.inputs.files[file].display();
         let place = || Place::section(fref(), self.view.section_name(file, index), 0);
-        let fault = |what: String| {
-            (key, Diagnostic::error(Kind::Malformed { what }).at(place()))
-        };
+        let fault = |what: String| (key, Diagnostic::error(Kind::Malformed { what }).at(place()));
         let obj = self
             .view
             .prep(file)
@@ -119,6 +122,10 @@ impl<'a, 's> Walker<'a, 's> {
     /// # Errors
     ///
     /// The scan's diagnostic when the section cannot be opened.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the scan's walk of one section, as the driver calls it"
+    )]
     pub fn walk(
         &self,
         file: FileId,

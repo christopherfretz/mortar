@@ -8,6 +8,8 @@
 //! ([`mortar_scan::Walker`]): the keys, howtos and target kinds are the
 //! scan's, and the words are `Arch::apply`'s at the round's addresses.
 
+#![allow(clippy::result_large_err, reason = "the error is a phase's diagnostic, made once")]
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -16,21 +18,21 @@ use mortar_arch::{
     Arch, FillCx, FillTables, OutputKind, ProofRun, SectionOut, SlotKind, SymNames, SymValue,
     TargetKind, TlsBlock,
 };
+use mortar_core::assignment::Assignment;
 use mortar_core::demands::DemandFlags;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, SymKind};
 use mortar_core::inputs::{Inputs, Reader};
+use mortar_core::layout::Slots;
 use mortar_core::layout::{ChunkKind, MergeMap, ThunkTarget};
 use mortar_core::par::Pool;
 use mortar_core::resolution::{Def, Resolution, SectionKind};
 use mortar_core::split::Split;
 use mortar_core::{Demands, Liveness};
-use mortar_core::assignment::Assignment;
-use mortar_core::layout::Slots;
 use mortar_diag::{Diagnostic, Key};
-use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS};
 use mortar_elf::SymbolSection;
-use mortar_layout::{Headers, LayoutDiag};
+use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS};
 use mortar_layout::fixed::{BranchAt, OwnedCode, Round, Sites};
+use mortar_layout::{Headers, LayoutDiag};
 use mortar_scan::{RecIndex, Walker};
 use mortar_synth::GotPlan;
 use mortar_synth::got::{GotAddrs, Region};
@@ -350,9 +352,7 @@ impl RoundTables<'_, '_, '_> {
             let piece = t.split.merge_piece_at(sid, u32::try_from(offset).ok()?)?;
             let frag = *t.split.piece_frag.get(piece.piece as usize)?;
             let base = *self.merged.get(&t.assignment.out(sid)?)?;
-            return base
-                .checked_add(t.merge.offset(frag)?)?
-                .checked_add(u64::from(piece.within));
+            return base.checked_add(t.merge.offset(frag)?)?.checked_add(u64::from(piece.within));
         }
         self.round.site_addr(sid, offset)
     }

@@ -7,8 +7,8 @@ use mortar_core::resolution::{Def, RefFlags, Resolution};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_elf::consts::{STB_GLOBAL, STB_WEAK, STT_NOTYPE, STT_OBJECT, STV_HIDDEN, STV_INTERNAL};
 use mortar_elf::{Sym, SymbolIndex, SymbolSection, SymbolTable};
-use mortar_synth::symtab::{CoreSections, GlobalIn, LocalIn, SecKind, Sections, SymDef};
 use mortar_synth::SymSource;
+use mortar_synth::symtab::{CoreSections, GlobalIn, LocalIn, SecKind, Sections, SymDef};
 
 /// [`SymSource`] over `Inputs`, `Resolution` and `Assignment`.
 pub struct CoreSyms<'a, 's> {
@@ -58,10 +58,11 @@ impl<'a, 's> CoreSyms<'a, 's> {
     /// Where entry `e` is defined, read from its file.
     fn def_of(&self, e: SymEntry, s: &Sym, t: &SymbolTable<'s>) -> SymDef {
         match t.section_of(e.index, s) {
-            Ok(SymbolSection::Section(index)) => self
-                .resolution
-                .section_id(e.file, index)
-                .map_or(SymDef::Undefined, |section| SymDef::Section { section, value: s.st_value }),
+            Ok(SymbolSection::Section(index)) => {
+                self.resolution.section_id(e.file, index).map_or(SymDef::Undefined, |section| {
+                    SymDef::Section { section, value: s.st_value }
+                })
+            }
             Ok(SymbolSection::Absolute) => SymDef::Absolute(s.st_value),
             Ok(SymbolSection::Common) => SymDef::Common,
             _ => SymDef::Undefined,

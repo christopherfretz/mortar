@@ -148,7 +148,10 @@ const REJECTED: &[(&[&str], &str)] = &[
     (&["--shared=x"], "ld: error: unknown argument '--shared=x'\n>>> --shared takes no value (spec/cli.md §2.3)\n"),
     (&["--hash-style=md5"], "ld: error: --hash-style: invalid value 'md5'\n>>> expected one of: sysv, gnu, both, none\n"),
     (&["--error-limit=many"], "ld: error: --error-limit: invalid value 'many'\n>>> expected a decimal number\n"),
-    (&["--build-id=0xZZ"], "ld: error: --build-id: invalid value '0xZZ'\n>>> expected one of: none, md5, sha1, sha256, fast, uuid, 0xHEX\n"),
+    (&["--build-id=0xZZ"], "ld: error: --build-id: invalid value '0xZZ'\n>>> expected an even number of hexadecimal digits\n"),
+    (&["--build-id=0xabc"], "ld: error: --build-id: invalid value '0xabc'\n>>> expected an even number of hexadecimal digits\n"),
+    (&["--build-id=0x"], "ld: error: --build-id: invalid value '0x'\n>>> expected an even number of hexadecimal digits\n"),
+    (&["--build-id=0XAB"], "ld: error: --build-id: invalid value '0XAB'\n>>> expected one of: none, md5, sha1, sha256, fast, uuid, 0xHEX\n"),
     // spec: cli.md §2.7 (-z)
     (&["-z", "frob"], "ld: error: unknown argument '-z frob'\n>>> GNU ld, lld and mold warn and go on; mortar does not ignore a -z keyword (spec/cli.md §2.7)\n"),
     (&["-z", "now,relro"], "ld: error: unknown argument '-z now,relro'\n>>> GNU ld, lld and mold warn and go on; mortar does not ignore a -z keyword (spec/cli.md §2.7)\n"),
@@ -409,7 +412,7 @@ fn typed_fields() {
     assert_eq!(plan.z.defs, Some(true));
     assert_eq!(plan.z.max_page_size.as_deref(), Some("65536".as_ref()));
     assert!(plan.shaping.gc_sections);
-    assert_eq!(plan.shaping.build_id, Some(BuildId::Hex("abcd".to_owned())));
+    assert_eq!(plan.shaping.build_id, Some(BuildId::Hex("0xabcd".to_owned())));
     assert_eq!(plan.diagnostics.error_limit, Some(7));
     assert!(plan.diagnostics.fatal_warnings && plan.diagnostics.no_warnings);
     assert_eq!(plan.diagnostics.color, Color::Never);

@@ -1503,8 +1503,12 @@ New refusal names (class `feature` unless noted):
 
 - §10: `SHT_AARCH64_ATTRIBUTES` becomes accepted and consumed
   (`Dropped(Consumed)`), not refused; §17 item 9 is closed (L-35).
+  Not applied yet: no compiler on this host emits the section (Clang
+  19, GCC 14; Clang 22 does) — WP-027a's record lists it.
 - §5.5: "the entry is layout's default (`spec/layout.md`: GNU's, the
-  start of `.text`)" becomes "`e_entry = 0`" (L-103).
+  start of `.text`)" becomes "`e_entry = 0`" (L-103). **Applied**
+  (WP-027a; resolve's warning is the one reported, the facade drops
+  layout's copy of it).
 
 ## 21. Where the references differ
 

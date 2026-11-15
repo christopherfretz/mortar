@@ -84,7 +84,7 @@ int other(int x) { return twice(x) + static_cast<int>(label(x).size()); }
 /// A static Fortran program: allocatable arrays and list-directed output.
 pub const FORTRAN_PROGRAM: &[Source] = &[Source {
     name: "f1.f90",
-    text: r#"program p
+    text: r"program p
   implicit none
   real, allocatable :: a(:)
   integer :: n
@@ -93,7 +93,7 @@ pub const FORTRAN_PROGRAM: &[Source] = &[Source {
   a = 2.0
   print *, sum(a), n
 end program p
-"#,
+",
 }];
 
 /// A compiler driver and its language.
@@ -165,7 +165,12 @@ fn words(line: &str) -> Vec<String> {
 
 /// Compiles `sources` with `driver` and `flags` in `scratch`, and asks the
 /// driver for its static link line. `None` when a tool is missing.
-pub fn build(scratch: &Scratch, driver: Driver, flags: &[&str], sources: &[Source]) -> Option<Built> {
+pub fn build(
+    scratch: &Scratch,
+    driver: Driver,
+    flags: &[&str],
+    sources: &[Source],
+) -> Option<Built> {
     let cc = tool(driver.tool())?;
     let mut objects = Vec::new();
     for s in sources {
@@ -190,7 +195,9 @@ pub fn build(scratch: &Scratch, driver: Driver, flags: &[&str], sources: &[Sourc
         .rev()
         .find(|l| {
             let w = words(l);
-            w.first().is_some_and(|p| p.ends_with("collect2") || p.ends_with("/ld") || p.ends_with("ld.bfd"))
+            w.first().is_some_and(|p| {
+                p.ends_with("collect2") || p.ends_with("/ld") || p.ends_with("ld.bfd")
+            })
         })
         .unwrap_or_else(|| panic!("no link line in {text}"));
     let mut args = words(line);
@@ -387,7 +394,12 @@ pub fn summarize_elf(path: &Path) -> Summary {
         }
     }
     s.symtab_entries = s.section(".symtab").map_or(0, |x| x.size / 24);
-    s.got_bytes = s.sections.iter().filter(|x| x.name == ".got" || x.name == ".got.plt").map(|x| x.size).sum();
+    s.got_bytes = s
+        .sections
+        .iter()
+        .filter(|x| x.name == ".got" || x.name == ".got.plt")
+        .map(|x| x.size)
+        .sum();
     s.irelative =
         s.sections.iter().filter(|x| x.name.starts_with(".rela")).map(|x| x.size / 24).sum();
     for line in r(&["--debug-dump=frames"]).lines() {
@@ -507,6 +519,20 @@ pub fn references(built: &Built) -> Vec<(&'static str, Summary)> {
     out
 }
 
+/// `exe`'s link of `built` with `extra` appended, or `None` without the
+/// tool.
+pub fn reference_with(built: &Built, exe: &str, extra: &[&str]) -> Option<Summary> {
+    let ld = tool(exe)?;
+    let path = built.dir.join(format!("out.{exe}.extra"));
+    let mut args = with_output(&built.args, &path);
+    args.extend(extra.iter().map(OsString::from));
+    let mut cmd = std::process::Command::new(&ld);
+    cmd.args(&args).current_dir(&built.dir);
+    let o = mortar_testutil::run_with(&mut cmd, &[], std::time::Duration::from_mins(2));
+    assert!(o.success(), "{exe} {extra:?}: {}", o.stderr_text());
+    Some(summarize_elf(&path))
+}
+
 /// A table of the sections of each link, side by side, by name.
 pub fn table(rows: &[(&str, &Summary)]) -> String {
     use std::fmt::Write;
@@ -566,24 +592,29 @@ pub fn table(rows: &[(&str, &Summary)]) -> String {
 /// (allocated ones, by address), for comparison with a GNU map file.
 pub fn places(f: &Front<'_>) -> String {
     use std::fmt::Write;
-    let p = &f.layout.placement;
+    let placement = &f.layout.placement;
     let mut rows: Vec<(u64, u64, String, String)> = Vec::new();
-    for (sid, place) in p.place.iter() {
+    for (sid, place) in placement.place.iter() {
         let Some((chunk, off)) = place.get() else { continue };
-        let Some(addr) = p.chunks.get(chunk).and_then(|c| c.addr) else { continue };
-        let h = &f.headers[sid];
+        let Some(addr) = placement.chunks.get(chunk).and_then(|c| c.addr) else { continue };
+        let header = &f.headers[sid];
         let Some((file, _)) = f.resolution.sh_index(sid) else { continue };
-        let d = f.inputs.files[file].display();
-        let name = match d.member() {
-            Some(m) => format!("{}({m})", d.path()),
-            None => d.path().to_owned(),
+        let shown = f.inputs.files[file].display();
+        let name = match shown.member() {
+            Some(m) => format!("{}({m})", shown.path()),
+            None => shown.path().to_owned(),
         };
-        rows.push((addr + off, h.size, String::from_utf8_lossy(h.name).into_owned(), name));
+        rows.push((
+            addr + off,
+            header.size,
+            String::from_utf8_lossy(header.name).into_owned(),
+            name,
+        ));
     }
     rows.sort();
     let mut out = String::new();
-    for (a, z, n, file) in rows {
-        let _ = writeln!(out, "{a:#x} {z:#x} {n} {file}");
+    for (addr, size, name, file) in rows {
+        let _ = writeln!(out, "{addr:#x} {size:#x} {name} {file}");
     }
     out
 }
@@ -593,7 +624,7 @@ pub fn strtab_names(f: &Front<'_>) -> Vec<String> {
     let Some(plan) = &f.synth.symtab else { return Vec::new() };
     let mut buf = vec![0u8; plan.strtab_size() as usize];
     f.with_sym_cx(|cx| {
-        plan.write_strtab(cx, &mut mortar_synth::out::Window::new(0, &mut buf)).expect("strtab")
+        plan.write_strtab(cx, &mut mortar_synth::out::Window::new(0, &mut buf)).expect("strtab");
     })
     .expect("sym cx");
     buf.split(|&b| b == 0).skip(1).map(|n| String::from_utf8_lossy(n).into_owned()).collect()
@@ -611,7 +642,16 @@ impl mortar_synth::symtab::SymAddrs for AnyAddrs<'_, '_> {
         let f = self.0;
         let placed = f.layout.placement.place.get(s).and_then(|p| p.get()).is_some();
         let merge = f.resolution.sections[s].kind == mortar_core::resolution::SectionKind::Merge;
-        Some((if placed { 1 } else if merge { 9 } else { 8 }, 0))
+        Some((
+            if placed {
+                1
+            } else if merge {
+                9
+            } else {
+                8
+            },
+            0,
+        ))
     }
     fn eh_frame(&self) -> Option<(u32, u64)> {
         Some((2, 0))
@@ -641,7 +681,8 @@ pub fn symtab_entries(f: &Front<'_>) -> Vec<(u8, u8, u16, String)> {
     let mut symtab = vec![0u8; plan.symtab_size() as usize];
     f.with_sym_cx(|cx| {
         plan.write_strtab(cx, &mut mortar_synth::out::Window::new(0, &mut strtab)).expect("strtab");
-        plan.write_symtab(cx, &AnyAddrs(f), &mut mortar_synth::out::Window::new(0, &mut symtab)).expect("symtab");
+        plan.write_symtab(cx, &AnyAddrs(f), &mut mortar_synth::out::Window::new(0, &mut symtab))
+            .expect("symtab");
     })
     .expect("sym cx");
     symtab
@@ -649,7 +690,8 @@ pub fn symtab_entries(f: &Front<'_>) -> Vec<(u8, u8, u16, String)> {
         .skip(1)
         .map(|e| {
             let name = u32::from_le_bytes([e[0], e[1], e[2], e[3]]) as usize;
-            let end = strtab[name..].iter().position(|&b| b == 0).map_or(strtab.len(), |p| name + p);
+            let end =
+                strtab[name..].iter().position(|&b| b == 0).map_or(strtab.len(), |p| name + p);
             let shndx = u16::from_le_bytes([e[6], e[7]]);
             (e[4] & 0xf, e[4] >> 4, shndx, String::from_utf8_lossy(&strtab[name..end]).into_owned())
         })
@@ -679,5 +721,10 @@ pub fn multiset_diff(a: &[&str], b: &[&str]) -> String {
     for x in b {
         *count.entry(x).or_default() -= 1;
     }
-    count.into_iter().filter(|c| c.1 != 0).map(|(k, v)| format!("{k}:{v:+}")).collect::<Vec<_>>().join(" ")
+    count
+        .into_iter()
+        .filter(|c| c.1 != 0)
+        .map(|(k, v)| format!("{k}:{v:+}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }

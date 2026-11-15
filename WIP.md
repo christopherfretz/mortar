@@ -122,3 +122,21 @@ compiled. Delete this file before the WP lands.
   locals (L-33) − ≤2 eh $d (S-76); undefined weak binding: refs write GLOBAL
   from a lazy archive def, we write WEAK (S-121).
 - Next: >64 KiB debug-reloc staged test; determinism; refusals; joins; timing.
+
+## Session 4 (same agent, after a context compaction)
+- 2f34523: staged-limit test (`sections_over_the_staged_limits`) and
+  `the_front_does_not_depend_on_the_schedule` (check_schedules, C++ -O2 and
+  the big -O0 -g program: Layout + sections + symtab + report identical).
+- Next commit: `tests/refusals.rs` (exact texts: --gc-sections, undefined
+  entry, bad seed, x86-64/i386/mixed machines, --time-phases rows);
+  `the_supported_rows_shape_the_front` (-s, -S, -x vs lld -x, hdr, build-id,
+  --no-gc-sections, -e). Fixed on the way: the entry warning came twice
+  (resolve + layout; front.rs keeps resolve's; resolve.md §5.5 = layout
+  §20.7 applied); `-S`/`-s` kept `.debug_str`/`.debug_line_str` (Merge
+  kind; resolve sections.rs `is_debug`; resolve.md §10 row); cli stripped
+  `0x` from `--build-id=0x…` while synth expects it (every 0xHEX failed);
+  now cli checks I-70 itself (`0x` case-sensitive, even digit count; GNU
+  ignores `0X`, lld errors, mold accepts); machine refusal at key
+  (20,MAX,0) named `x86-64`/`i386`; clippy clean workspace-wide.
+- Next: FRONT-INTERFACE changes (syms pub, with_sym_cx, LinkSections),
+  timing at 1/4/8, par spawn share, remaining joins, record, gate.

@@ -464,7 +464,9 @@ pub enum BuildId {
     Fast,
     /// `uuid`.
     Uuid,
-    /// `0x<hex>`: the given bytes, as the hexadecimal text.
+    /// `0x<hex>`: the given bytes, as the option's text (`0x` included;
+    /// `spec/image.md` I-70 is checked by the command line and again by
+    /// the note's plan).
     Hex(String),
 }
 

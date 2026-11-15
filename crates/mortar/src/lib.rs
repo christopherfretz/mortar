@@ -122,7 +122,8 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let parsed = mortar_cli::parse(args);
     let plan = &parsed.plan;
     let color = plan.diagnostics.color;
-    let done = |text: String| Invocation { outcome: Outcome::Done(text), color, phases: String::new() };
+    let done =
+        |text: String| Invocation { outcome: Outcome::Done(text), color, phases: String::new() };
     match plan.exit {
         Some(Exit::Version) if !parsed.failed() => return done(mortar_cli::version_text()),
         Some(Exit::Help) if !parsed.failed() => return done(mortar_cli::help_text(prog)),

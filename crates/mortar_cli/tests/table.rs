@@ -97,7 +97,11 @@ fn statuses() {
         }
         // A row of mortar's own is reserved, so refused; `--time-phases`
         // is mortar's own and implemented (image.md §11).
-        if !row.linkers.gnu() && !row.linkers.lld() && !row.linkers.mold() && row.name() != "--time-phases" {
+        if !row.linkers.gnu()
+            && !row.linkers.lld()
+            && !row.linkers.mold()
+            && row.name() != "--time-phases"
+        {
             assert_eq!(row.status, Status::Refused, "{}", row.name());
         }
         // An option of some targets only is GNU ld's.

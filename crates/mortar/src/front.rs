@@ -155,10 +155,17 @@ impl Front<'_> {
         &self,
         f: impl FnOnce(&SymCtx<'_>) -> T,
     ) -> Result<T, mortar_synth::error::SynthError> {
-        let tables = Tables { inputs: &self.inputs, resolution: &self.resolution, assignment: &self.assignment };
+        let tables = Tables {
+            inputs: &self.inputs,
+            resolution: &self.resolution,
+            assignment: &self.assignment,
+        };
         let merge_eh = MergeEh::new(&self.merge.eh, &tables)?;
-        let core =
-            CoreSections { resolution: &self.resolution, liveness: &self.liveness, split: &self.merge.split };
+        let core = CoreSections {
+            resolution: &self.resolution,
+            liveness: &self.liveness,
+            split: &self.merge.split,
+        };
         let sections = LinkSections { core, assignment: &self.assignment };
         let syms = CoreSyms::new(&self.inputs, &self.resolution, &self.assignment);
         let cx = SymCtx {
@@ -243,7 +250,12 @@ fn mismatches(out: &mortar_resolve::Outcome) -> Vec<Mismatch> {
 /// A layout diagnostic as the collector takes it: its own key, else
 /// `fallback` (`spec/model.md` §8: `(90, 0, ChunkId)`, or a count); its
 /// input section as the place.
-fn layout_diag(inputs: &Inputs<'_>, res: &Resolution, d: LayoutDiag, fallback: Key) -> (Key, Diagnostic) {
+fn layout_diag(
+    inputs: &Inputs<'_>,
+    res: &Resolution,
+    d: LayoutDiag,
+    fallback: Key,
+) -> (Key, Diagnostic) {
     let key = d.key().unwrap_or(fallback);
     let at = d.at();
     let mut diag = d.into_diagnostic();
@@ -288,10 +300,15 @@ pub fn front<'s>(
     timer.phase(20, "input");
     let machine = inputs.target.machine;
     if machine != Machine::AArch64 {
+        // Input's phase (20), after every file's diagnostics (their unit is
+        // the file's ordinal).
         diag.emit(
-            Key::new(90, 0, 0),
-            Diagnostic::refused(mortar_diag::RefusalClass::Feature, format!("linking for {machine:?}"))
-                .note("M1 links AArch64 (docs/ROADMAP.md)"),
+            Key::new(20, u32::MAX, 0),
+            Diagnostic::refused(
+                mortar_diag::RefusalClass::Feature,
+                format!("linking for {}", machine.name()),
+            )
+            .note("M1 links AArch64 (docs/ROADMAP.md)"),
         );
         return None;
     }
@@ -305,6 +322,10 @@ pub fn front<'s>(
     if stop(diag) {
         return None;
     }
+    // resolve reports an undefined entry symbol (resolve.md §5.5, key
+    // (30,0,argument)); layout finds the same and says so again (L-103):
+    // one diagnostic, resolve's.
+    let entry_warned = outcome.diagnostics.iter().any(|(_, d)| d.id() == "entry-not-found");
     let comdat_mismatch = mismatches(&outcome);
     let gnu_warnings = outcome.gnu_warning_syms.clone();
     let resolution = outcome.resolution;
@@ -328,19 +349,25 @@ pub fn front<'s>(
             return None;
         }
     };
-    let assignment =
-        match mortar_layout::assign::assign(&headers, &resolution, &inputs.symbols, &target, &options, &pool) {
-            Ok(a) => a.assignment,
-            Err(errors) => {
-                for (s, d) in errors {
-                    let (file, index) = resolution.sh_index(s).unwrap_or((FileId(0), SectionIndex(0)));
-                    let fallback = Key::new(45, file.0, u64::from(index.0));
-                    let (k, d) = layout_diag(&inputs, &resolution, d, fallback);
-                    diag.emit(k, d);
-                }
-                return None;
+    let assignment = match mortar_layout::assign::assign(
+        &headers,
+        &resolution,
+        &inputs.symbols,
+        &target,
+        &options,
+        &pool,
+    ) {
+        Ok(a) => a.assignment,
+        Err(errors) => {
+            for (s, d) in errors {
+                let (file, index) = resolution.sh_index(s).unwrap_or((FileId(0), SectionIndex(0)));
+                let fallback = Key::new(45, file.0, u64::from(index.0));
+                let (k, d) = layout_diag(&inputs, &resolution, d, fallback);
+                diag.emit(k, d);
             }
-        };
+            return None;
+        }
+    };
     timer.phase(45, "assignment");
 
     // 60: split and merge.
@@ -363,13 +390,14 @@ pub fn front<'s>(
         assignment: &assignment,
         split: &merge.split,
     };
-    let liveness = match liveness(&live, LiveOptions { gc_sections: plan.shaping.gc_sections }, &pool) {
-        Ok(l) => l,
-        Err((k, d)) => {
-            diag.emit(k, d);
-            return None;
-        }
-    };
+    let liveness =
+        match liveness(&live, LiveOptions { gc_sections: plan.shaping.gc_sections }, &pool) {
+            Ok(l) => l,
+            Err((k, d)) => {
+                diag.emit(k, d);
+                return None;
+            }
+        };
     let order = offsets(&pool, &merge.split, &merge.meta, &liveness.frag_live);
     timer.phase(50, "liveness");
 
@@ -405,7 +433,7 @@ pub fn front<'s>(
     let eh = EhPlan::new(&merge_eh, |s: SectionId| liveness.is_live(s), &pool, diag).ok()?;
     let eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
     let hdr = HdrPlan::new(&merge_eh, &eh, eh_frame_hdr, &pool, diag).ok()?;
-    let property = property_plan(&inputs, &resolution, &headers, &arch, diag).ok()?;
+    let property = property_plan(&inputs, &resolution, &headers, arch, diag).ok()?;
     let feature_1_and = property.value_u32(mortar_a64::FEATURE_1_AND);
     let variant = arch
         .plt_variant(&OutputCx { output, feature_1_and, pac_plt: false, force_bti: false })
@@ -460,18 +488,14 @@ pub fn front<'s>(
             diag.emit(Key::new(80, 0, 0), internal("a synthetic chunk given twice"));
             return None;
         };
-        plans.chunks = present
-            .iter()
-            .map(|p| p.0)
-            .zip(sizes.iter().map(|s| s.0))
-            .collect();
+        plans.chunks = present.iter().map(|p| p.0).zip(sizes.iter().map(|s| s.0)).collect();
         let mut slots = slots.clone();
         slots.sizes = sizes;
         slots.eh_records = eh.records().into();
         if let Some(s) = &plans.symtab {
             slots.symtab_locals = s.symtab_locals().clone();
         } else {
-            slots.symtab_locals = Column::filled(inputs.files.len(), Default::default());
+            slots.symtab_locals = Column::filled(inputs.files.len(), mortar_core::Span::default());
         }
         let ids = SynthIds {
             got: plans.chunk(SynthKind::Got),
@@ -492,14 +516,14 @@ pub fn front<'s>(
             got: &plans.got,
             ids,
         };
-        let sites = match LinkSites::new(site_inputs, &arch, &walker, &pool) {
+        let link_sites = match LinkSites::new(site_inputs, &arch, &walker, &pool) {
             Ok(s) => s,
             Err((k, d)) => {
                 diag.emit(k, d);
                 return None;
             }
         };
-        let range = RangeExtension { arch: &arch, sites: &sites };
+        let range = RangeExtension { arch: &arch, sites: &link_sites };
         let link = mortar_layout::Link {
             headers: &headers,
             resolution: &resolution,
@@ -515,16 +539,19 @@ pub fn front<'s>(
             options: &options,
         };
         let mut a = assignment.clone();
-        let placed = match mortar_layout::place(&link, &mut a, Some(&range), |e| inputs.entry_def(e), &pool) {
-            Ok(p) => p,
-            Err(errors) => {
-                for (n, d) in errors.into_iter().enumerate() {
-                    let (k, d) = layout_diag(&inputs, &resolution, d, Key::new(90, 0, n as u64));
-                    diag.emit(k, d);
+        let placed =
+            match mortar_layout::place(&link, &mut a, Some(&range), |e| inputs.entry_def(e), &pool)
+            {
+                Ok(p) => p,
+                Err(errors) => {
+                    for (n, d) in errors.into_iter().enumerate() {
+                        let (k, d) =
+                            layout_diag(&inputs, &resolution, d, Key::new(90, 0, n as u64));
+                        diag.emit(k, d);
+                    }
+                    return None;
                 }
-                return None;
-            }
-        };
+            };
         // The sizes known only now (S-90 after stage C; R-L5 after the
         // fixed point): equal, or one more run with them (they are
         // non-allocated and last, so they move no address).
@@ -539,7 +566,15 @@ pub fn front<'s>(
         if !placed.placement.patches.is_empty()
             && let Some(old) = &plans.symtab
         {
-            let new = SymtabPlan::new(&sym_cx, Class::Elf64, &placed.placement.patches, facts, &pool, diag).ok()?;
+            let new = SymtabPlan::new(
+                &sym_cx,
+                Class::Elf64,
+                &placed.placement.patches,
+                facts,
+                &pool,
+                diag,
+            )
+            .ok()?;
             again |= new.symtab_size() != old.symtab_size()
                 || new.strtab_size() != old.strtab_size()
                 || (shndx && new.shndx_size() != old.shndx_size());
@@ -560,10 +595,11 @@ pub fn front<'s>(
         };
         break (a, placed, layout);
     };
-    let mut seq = 0u64;
-    for w in placed.warnings.iter().cloned() {
+    for (seq, w) in (0u64..).zip(placed.warnings.iter().cloned()) {
         let (k, d) = layout_diag(&inputs, &resolution, w, Key::new(90, 0, u64::MAX - 1000 + seq));
-        seq += 1;
+        if entry_warned && d.id() == "entry-not-found" {
+            continue;
+        }
         diag.emit(k, d);
     }
     // Every synthetic chunk has the id its plan was given.
@@ -573,7 +609,10 @@ pub fn front<'s>(
             Some(ChunkKind::Synthetic(s)) if s.name == kind.name(false)
         );
         if !ok {
-            diag.emit(Key::new(90, 0, u64::from(id.0)), internal("a synthetic chunk's id is not its plan's"));
+            diag.emit(
+                Key::new(90, 0, u64::from(id.0)),
+                internal("a synthetic chunk's id is not its plan's"),
+            );
             return None;
         }
     }
@@ -592,7 +631,10 @@ pub fn front<'s>(
         shapes: &shapes,
     };
     if let Err(v) = layout.validate(&cx) {
-        diag.emit(Key::new(90, 0, u64::MAX), internal(format!("the layout breaks its rules: {v:?}")));
+        diag.emit(
+            Key::new(90, 0, u64::MAX),
+            internal(format!("the layout breaks its rules: {v:?}")),
+        );
         return None;
     }
     timer.phase(90, "layout");
@@ -633,7 +675,7 @@ fn slots_of(d: &mortar_core::Demands, resolution: &Resolution) -> Slots {
         tls_gd: list(DemandFlags::TLS_GD),
         tls_ie: list(DemandFlags::GOT_TPREL),
         tls_ld: d.output.contains(mortar_core::demands::GlobalFlags::TLS_LD),
-        symtab_locals: Column::filled(resolution.file_live.len(), Default::default()),
+        symtab_locals: Column::filled(resolution.file_live.len(), mortar_core::Span::default()),
         ..Slots::default()
     }
 }
@@ -644,7 +686,7 @@ fn property_plan(
     inputs: &Inputs<'_>,
     resolution: &Resolution,
     headers: &Headers<'_>,
-    arch: &A64,
+    arch: A64,
     diag: &Collector,
 ) -> Result<PropertyPlan, mortar_synth::Failed> {
     let mut paths: Vec<String> = Vec::new();
@@ -671,9 +713,11 @@ fn property_plan(
                 Ok(data) => secs.push((sid, data, 1u64 << h.align)),
                 Err(e) => {
                     let what = match e {
-                        mortar_elf::Error::NotResident { .. } => Diagnostic::error(Kind::InternalError {
-                            what: "a .note.gnu.property section is not resident".into(),
-                        }),
+                        mortar_elf::Error::NotResident { .. } => {
+                            Diagnostic::error(Kind::InternalError {
+                                what: "a .note.gnu.property section is not resident".into(),
+                            })
+                        }
                         e => Diagnostic::error(Kind::Malformed { what: e.to_string() }),
                     };
                     let place = Place::section(row.display(), ".note.gnu.property", 0);
@@ -689,11 +733,8 @@ fn property_plan(
         });
         per.push(secs);
     }
-    let objects: Vec<ObjectNotes<'_>> = paths
-        .iter()
-        .zip(&per)
-        .map(|(p, s)| ObjectNotes { path: p, sections: s })
-        .collect();
+    let objects: Vec<ObjectNotes<'_>> =
+        paths.iter().zip(&per).map(|(p, s)| ObjectNotes { path: p, sections: s }).collect();
     let processor = |t: u32| arch.property_merge(t);
     // `-z memory-seal` is refused by the command line in M1 (R-C3).
     PropertyPlan::new(&objects, Class::Elf64, &processor, false, diag)
@@ -701,7 +742,11 @@ fn property_plan(
 
 /// The synthetic chunks that exist, in S-3 order, as layout takes them,
 /// and their sizes.
-fn synth_chunks(p: &SynthPlans, eh: &EhPlan, shndx: bool) -> (Vec<SynthChunk>, Vec<(SynthKind, u64)>) {
+fn synth_chunks(
+    p: &SynthPlans,
+    eh: &EhPlan,
+    shndx: bool,
+) -> (Vec<SynthChunk>, Vec<(SynthKind, u64)>) {
     let mut present: Vec<(SynthKind, u64)> = Vec::new();
     if p.property.exists() {
         present.push((SynthKind::NoteGnuProperty, p.property.size()));
@@ -768,8 +813,12 @@ fn estimated_names<'n>(
             used[o.0 as usize] = true;
         }
     }
-    let mut names: Vec<&[u8]> =
-        a.outsecs.iter().filter(|(id, o)| used[id.0 as usize] || o.keep).map(|(_, o)| o.name).collect();
+    let mut names: Vec<&[u8]> = a
+        .outsecs
+        .iter()
+        .filter(|(id, o)| used[id.0 as usize] || o.keep)
+        .map(|(_, o)| o.name)
+        .collect();
     for k in [
         SynthKind::NoteGnuProperty,
         SynthKind::NoteGnuBuildId,

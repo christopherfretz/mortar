@@ -42,10 +42,7 @@ fn diagnostics_start_with_the_invoked_name() {
         assert_eq!(outcome.status.and_then(|s| s.code()), Some(1));
         assert_eq!(outcome.stdout_text(), "");
         let stderr = outcome.stderr_text();
-        assert!(
-            stderr.starts_with(&format!("{name}: error: a.o: cannot open a.o")),
-            "{stderr:?}"
-        );
+        assert!(stderr.starts_with(&format!("{name}: error: a.o: cannot open a.o")), "{stderr:?}");
     }
 }
 
@@ -110,7 +107,12 @@ fn a_gcc_link_through_mortar_fails_cleanly() {
     let src = scratch.write("h.c", "int main(void) { return 0; }\n");
     let output = scratch.join("h");
     let outcome = run_with(
-        Command::new(gcc).arg(format!("-B{}/", bin.display())).arg("-static").arg(&src).arg("-o").arg(&output),
+        Command::new(gcc)
+            .arg(format!("-B{}/", bin.display()))
+            .arg("-static")
+            .arg(&src)
+            .arg("-o")
+            .arg(&output),
         &[],
         DEFAULT_TIMEOUT,
     );

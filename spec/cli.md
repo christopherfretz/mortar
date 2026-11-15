@@ -108,7 +108,13 @@ An option is looked up in this order:
     `--color-diagnostics=auto|always|never`, `--icf=all|safe|none`, and
     the others in `docs/status/options.md`;
   - a decimal count: `--error-limit`, `--thread-count`;
-  - a build-ID style, or `0x` followed by hex digits.
+  - a build-ID style, or `0x` (case-sensitive) followed by one or more
+    pairs of hex digits (`spec/image.md` I-70). `0x` with an odd count,
+    no digits or a non-hex digit has the note `expected an even number
+    of hexadecimal digits`; `0X…` is not a style (GNU ld ignores it with
+    a warning, lld 22 errors `unknown --build-id style`; mold alone
+    accepts it — checked by WP-027a). `Hex` keeps the whole text, `0x`
+    included.
 
   A value that fails its check is `invalid-option-value`, with a note
   listing what is accepted. Other values (paths, symbols, addresses,
