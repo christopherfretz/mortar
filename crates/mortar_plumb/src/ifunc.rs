@@ -396,7 +396,7 @@ impl Engine<'_, '_> {
     /// or the entry itself when it starts with `endbr64`, and 0 for a word
     /// no entry loads).
     fn x64_iplt(&self, entries: &[(u64, u64)], static_exec: bool, fs: &mut Vec<Finding>) {
-        const ENDBR64: [u8; 4] = [0xf3, 0x0f, 0x1e, 0xfa];
+        use crate::x86op::ENDBR64;
         let image = self.image;
         let ibt = crate::property::x86_feature_1_and(image) & 1 != 0;
         let endbr = |e: u64| image.bytes(e, 4) == Some(&ENDBR64[..]);
