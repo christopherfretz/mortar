@@ -598,6 +598,11 @@ pub fn insn_class_ok(r_type: u32, insn: u32) -> bool {
     }
 }
 
+/// `ADD Xd, Xn, Xm` (shifted register, `LSL #0`): (rd, rn, rm).
+fn add_xreg(insn: u32) -> Option<(u32, u32, u32)> {
+    (insn & 0xffe0_fc00 == 0x8b00_0000).then_some((insn & 31, (insn >> 5) & 31, (insn >> 16) & 31))
+}
+
 /// The output memory a veneer reads.
 pub trait Memory {
     /// The instruction at `addr`, if it is in an executable segment.
@@ -610,7 +615,7 @@ pub trait Memory {
 pub const VENEER_MAX: usize = 8;
 
 /// Runs the instructions at `start` as a veneer (§5.4): a leading `BTI`,
-/// `ADRP`, `ADR`, `ADD` (immediate), `LDR` (literal, 64-bit), `MOVZ`/
+/// `ADRP`, `ADR`, `ADD` (immediate, or x16/x17 registers), `LDR` (literal, 64-bit), `MOVZ`/
 /// `MOVK`/`MOVN` writing x16 or x17, ending in `BR x16`/`BR x17` or a `B`.
 /// Returns where control goes, or `None` if the code is not a veneer.
 pub fn run_veneer(mem: &dyn Memory, start: u64) -> Option<u64> {
@@ -625,6 +630,11 @@ pub fn run_veneer(mem: &dyn Memory, start: u64) -> Option<u64> {
         } else if let Some((rd, rn, imm)) = add_imm(insn).or_else(|| add_imm_lsl12(insn)) {
             let v = regs[reg(rn)?]?;
             regs[reg(rd)?] = Some(v.wrapping_add(imm));
+        } else if let Some((rd, rn, rm)) = add_xreg(insn) {
+            // GNU ld's long veneer: ADR x17, .; ADD x16, x16, x17
+            // (spec/a64.md §8.7).
+            let v = regs[reg(rn)?]?.wrapping_add(regs[reg(rm)?]?);
+            regs[reg(rd)?] = Some(v);
         } else if let Some((rt, at)) = ldr64_lit(insn, pc) {
             let v = mem.u64_at(at)?;
             regs[reg(rt)?] = Some(v);
@@ -746,5 +756,20 @@ mod tests {
         let mov =
             Mem(vec![(0, 0xd2a4_0010), (4, 0xf280_0010 | 0x10 << 5), (8, 0xd61f_0200)], vec![]);
         assert_eq!(run_veneer(&mov, 0), Some(0x2000_0010));
+        // GNU ld's long veneer (a64.md §8.7): ldr x16, .+16; adr x17, .;
+        // add x16, x16, x17; br x16; .xword target - (the adr's place).
+        let long = Mem(
+            vec![
+                (0x1000, 0x5800_0090),
+                (0x1004, 0x1000_0011),
+                (0x1008, 0x8b11_0210),
+                (0x100c, 0xd61f_0200),
+            ],
+            vec![(0x1010, 0x1000_0000)],
+        );
+        assert_eq!(run_veneer(&long, 0x1000), Some(0x1000_1004));
+        // A register other than x16/x17 is not followed.
+        let other = Mem(vec![(0, 0x1000_0011), (4, 0x8b00_0230), (8, 0xd61f_0200)], vec![]);
+        assert_eq!(run_veneer(&other, 0), None);
     }
 }

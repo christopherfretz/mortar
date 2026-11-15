@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use mortar_elf::consts::{PF_X, PT_LOAD, SHF_ALLOC, SHT_SYMTAB, STB_GLOBAL, STB_WEAK};
+use mortar_elf::consts::{PF_X, PT_LOAD, SHF_ALLOC, SHT_NOBITS, SHT_SYMTAB, STB_GLOBAL, STB_WEAK};
 use mortar_elf::{Class, FileHeader, SectionTable, Shdr, Sym};
 
 /// A program header, widened (gABI "Program Header").
@@ -119,6 +119,36 @@ impl<'a> Image<'a> {
             phdrs.iter().enumerate().filter(|(_, p)| p.p_type == PT_LOAD).map(|(i, _)| i).collect();
         loads.sort_by_key(|&i| (phdrs[i].p_vaddr, i));
         Ok(Image { data, header, phdrs, sections, loads, symbols, names })
+    }
+
+    /// The file bytes of section `i`, when the file holds them.
+    pub fn section_data(&self, i: usize) -> Option<&'a [u8]> {
+        let s = self.sections.get(i)?;
+        if s.shdr.sh_type == SHT_NOBITS {
+            return None;
+        }
+        let o = usize::try_from(s.shdr.sh_offset).ok()?;
+        let n = usize::try_from(s.shdr.sh_size).ok()?;
+        self.data.get(o..o.checked_add(n)?)
+    }
+
+    /// The non-alloc output section named `name` (§5.8).
+    pub fn nonalloc_section(&self, name: &str) -> Option<usize> {
+        self.sections.iter().position(|s| s.name == name && !s.alloc())
+    }
+
+    /// `len` bytes at address `addr` of non-alloc section `i`, whose
+    /// address is `sh_addr` (0 in an executable).
+    pub fn nonalloc_bytes(&self, i: usize, addr: u64, len: u64) -> Option<&'a [u8]> {
+        let d = self.section_data(i)?;
+        let off = usize::try_from(addr.checked_sub(self.sections[i].shdr.sh_addr)?).ok()?;
+        d.get(off..off.checked_add(usize::try_from(len).ok()?)?)
+    }
+
+    /// The little-endian value of `width` bytes there.
+    pub fn nonalloc_value(&self, i: usize, addr: u64, width: u8) -> Option<u64> {
+        let b = self.nonalloc_bytes(i, addr, u64::from(width))?;
+        Some(b.iter().rev().fold(0u64, |a, &x| a << 8 | u64::from(x)))
     }
 
     pub fn class(&self) -> Class {

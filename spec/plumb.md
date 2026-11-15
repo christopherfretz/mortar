@@ -36,17 +36,15 @@ describes how x86-64 and i386 fit.
 On the reference corpus, a stage-1 report may give only the stage-2
 reasons in "not checked" (§9.1).
 
-Of stage 2, static TLS (§4.7), call frame information (§6.4) and the
-symbol table (§6.5) have landed. These are not yet done and keep their
-not-checked reasons:
-
-- IFUNC: IPLT entries, `.rela.iplt` and `__rela_iplt_*`, GOT slots that
-  hold a resolver or an IPLT address, address-of and pointer equality
-  (`ifunc`; Y5 already checks the `__rela_iplt_*` bounds);
-- non-alloc relocations: `.debug_*` (static values even in a PIE), the
-  tombstones for discarded targets (0, 1, −1, −2) and mortar's
-  convention (`non-alloc`). Compressed debug sections are to be named as
-  not judged.
+Of stage 2, static TLS (§4.7), call frame information (§6.4), the
+symbol table (§6.5), IFUNC (§4.8) and non-alloc relocations (§5.8) have
+landed; the last two with WP-028b. The reasons `ifunc` and `non-alloc`
+remain only for a CFI pointer to an IFUNC (§6.4) and for compatibility of
+reports; compressed debug sections are named as not judged
+(`compressed`, which is not a stage-2 reason). WP-028b also added the
+layout rules S13–S18 (§6.2), program properties (§6.6) and mortar's
+build id (§6.7). The x86 tables (stage x) are measured (§4.5), not
+written.
 
 `cargo xtask linktest` runs the verifier on every link (`spec/harness.md`
 "L3").
@@ -133,6 +131,8 @@ mortar-map 1
 file <id> <path> [<member> <member-header-offset>]
 place <file> <section> <addr> <size>
 piece <file> <section> <input-offset> <addr> <size>
+nplace <file> <section> <output-section> <offset> <size>
+merged <file> <section> <output-section>
 discard <file> <section> gc|comdat|script|unspecified
 fold <file> <section> <into-file> <into-section>
 chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
@@ -159,9 +159,21 @@ The token rules:
 - **Versions.** The version is the integer in the header. A reader refuses
   any version other than its own.
 
+`nplace` and `merged` are the non-alloc records (spec/image.md R-9,
+applied by WP-028b). `nplace`: a non-alloc input section placed whole at
+`<offset>` of the non-alloc output section named `<output-section>` (a
+string token). `merged`: an `SHF_MERGE` non-alloc input section whose
+pieces are in `<output-section>` and are not listed; references to them
+are checked by content (§5.6). The output section must exist and be
+non-alloc, and the input section must be a free non-alloc section of its
+file (M1); an `nplace` size other than the input's is M3. A `place` of a
+non-alloc section is also accepted, with `<addr>` read as the output
+section's `sh_addr` (0) plus the offset: that is what a converted GNU ld
+or lld map holds.
+
 The writer emits records in a fixed order: files by id, then places and
-pieces, discards, folds, chunks and defined symbols, each group in the
-order of the map's vectors.
+pieces, the non-alloc records, discards, folds, chunks and defined
+symbols, each group in the order of the map's vectors.
 
 Every syntax error is a `MapError { line, message }`. Line 0 means the map
 was truncated, with no `end`. Tests:
@@ -456,8 +468,7 @@ Test: `a64::tests::s4_3_fields_encode_as_the_instruction_set_says`,
 
 ### 4.4 S: resolving a symbol
 
-Symbol 0 has S = 0. An input symbol of type `STT_GNU_IFUNC` is stage 2
-(`ifunc`). A thread-local symbol (`STT_TLS`, or any symbol defined in an
+Symbol 0 has S = 0. An IFUNC symbol is resolved by §4.8. A thread-local symbol (`STT_TLS`, or any symbol defined in an
 `SHF_TLS` section, such as GCC's `.LANCHOR0` or a section symbol) resolves
 as below to its address in the TLS template, which §4.7 turns into an
 offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
@@ -480,8 +491,8 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
   of these that applies:
   1. **The output's global symbol of that name.** This is the first
      `STB_GLOBAL` or `STB_WEAK` symbol of the name in `.symtab`, and it
-     decides which definition won. If it is IFUNC or TLS, the record is
-     stage 2. If it is defined, S is its value. If it is undefined and weak
+     decides which definition won (an IFUNC is §4.8's; TLS is §4.7's).
+     If it is defined, S is its value. If it is undefined and weak
      (on either side), the symbol is an *undefined weak*.
   2. **The unique placed definition in the inputs.** Take the one strong
      definition, else the one weak definition, whose section is placed,
@@ -521,6 +532,34 @@ field. For data fields that is the place's value sign-extended to the
 field's width. The output is compared with the encoding of X into the same
 place, so REL and RELA follow one path.
 
+Measured (WP-028b, the L3 run of `tests/link` for x86-64 and i386: 243
+outputs, every one "not judged: machine"). The records of the tests' own
+objects, by type:
+
+| x86-64 | records | i386 | records |
+|---|---|---|---|
+| `PC32` | 177 | `PC32` | 194 |
+| `PLT32` | 109 | `PLT32` | 91 |
+| `64` | 19 | `GOTOFF` | 67 |
+| `TPOFF32` | 8 | `GOTPC` | 58 |
+| `REX_GOTPCRELX`, `32` | 3 each | `32` | 23 |
+| `TLSGD`, `GOTTPOFF`, `GOTPCREL`, `DTPOFF32` | 2 each | `GOT32X` | 10 |
+| `TLSLD`, `32S` | 1 each | `GOT32` | 9 |
+| | | `TLS_LE` | 8 |
+| | | `TLS_LDM`, `TLS_GOTIE`, `TLS_GD` | 2 each |
+| | | `TLS_LDO_32` | 1 |
+
+With the static C library the GOT forms dominate: x86-64's `libc.a` adds
+1732 `GOTTPOFF`, 83 `GOTPCREL`, 72 `REX_GOTPCRELX` and some `GOTPCRELX`;
+i386's adds 13158 `GOTOFF`, 2581 `GOTPC`, 1718 `TLS_GOTIE`, 884
+`GOT32X` and some `GOT32`. A table that judges only the direct types
+(`PC32`, `PLT32`, `64`, `32`, `32S`) would leave most of a driver link's
+records `type`; the x86 tables need the GOTPCRELX and TLS relaxations
+(psABI x86-64 §B.2, i386 §B) and REL's implicit addends together, and are
+not in stage 2b. Until then every x86 record is `machine` and L3 leaves
+x86 outputs not judged (`xtask/src/linktest/engine.rs`, EM_AARCH64
+only), so no x86 default belongs in `tests/link/anomalies` yet.
+
 ### 4.6 Y1: symbol values
 
 For each name that has a global, weak or unique definition in the inputs,
@@ -530,8 +569,8 @@ placed definitions, or the `st_value` of an `SHN_ABS` one. For a TLS
 symbol the value compared is `PT_TLS` `p_vaddr` + `st_value`; without a
 usable `PT_TLS` the name is unchecked.
 
-- A name with IFUNC definitions is unchecked: the output symbol is the
-  canonical PLT entry, which is stage 2.
+- A name with IFUNC definitions is judged by §4.8 ("Y1 of an IFUNC
+  name").
 - A name with no definition placed whole is unchecked.
 
 Counts: `symbols_checked`, `symbols_unchecked`. Test:
@@ -607,6 +646,101 @@ but S1 refuses `ET_DYN` today (§11).
 
 Tests: `tests/tls.rs` (§9.1), `tests/mutation.rs
 s9_2f_tls_mutations_are_found`.
+
+### 4.8 IFUNC (stage 2, WP-028b)
+
+An IFUNC (`STT_GNU_IFUNC`) symbol names a resolver; the program calls
+the function the resolver returns. In a static output the linker makes,
+for each IFUNC symbol it needs, a slot with an `IRELATIVE` record whose
+addend (RELA) or slot contents (REL, i386) is the resolver's address, and
+an *IPLT entry*: linker-made code that loads the slot and branches to what
+it holds. The C runtime of a static executable applies the records from
+`__rela_iplt_start` to `__rela_iplt_end` (`__rel_iplt_*` with REL; glibc
+`csu/libc-start.c` `apply_irel`); under static-pie the symbols are weak
+and undefined (spec/resolve.md) and the dynamic loader applies them.
+
+**The tables** come from the output alone:
+
+- the *records*: every entry of every allocated `SHT_RELA`/`SHT_REL`
+  section. An `IRELATIVE` is type 1032 (AArch64), 37 (x86-64) or 42
+  (i386);
+- the *IPLT entries*: places outside every placed input section (§5.4),
+  in an allocated executable section, that load the slot of an
+  `IRELATIVE` record. On AArch64 the entry is `ADRP Xn, slot; LDR Xt,
+  [Xn, :lo12:slot]` followed by `BR Xt` (mold's `.plt.got`), or by `ADD
+  Xn, Xn, :lo12:slot; BR Xt` (GNU ld's `.plt`, lld's `.iplt`). On x86 it is
+  `jmp *slot` (`FF 25`, RIP-relative on x86-64, absolute on i386), with an
+  optional `ENDBR64`/`ENDBR32` and `BND` prefix before it. The entries of
+  a resolver are those whose slot is a slot of a record of that resolver.
+
+**Rules on the tables** (on every output; F1's first sentence on a static
+executable only, `ET_EXEC` with no `PT_DYNAMIC` and no `PT_INTERP`):
+
+- **F1.** Every record of a static executable is an `IRELATIVE` with
+  symbol 0, since nothing else applies the others. When the output
+  defines both bounds, the records from the start to the end symbol are a
+  whole run of records, and every `IRELATIVE` lies inside it.
+- **F2.** Each `IRELATIVE` slot is a word-aligned word of a writable
+  `PT_LOAD`, outside every placed input section, and no two records share
+  one. Its resolver is the place (§4.4) of an `STT_GNU_IFUNC` definition
+  in the inputs, in an executable segment.
+
+**S of an IFUNC.** A record's symbol is an IFUNC when it is an input
+`STT_GNU_IFUNC` symbol (local, or a global this object defines), or a
+global whose §4.4 step-2 definition is one, or, failing a placed
+definition, when the output's symbol of the name is `STT_GNU_IFUNC` (its
+value is then the resolver). The symbol's identity is its name (a
+global) or its object and index (a local): two aliases of one resolver
+(`gf`, `lf` in the corpus's `ifunc` case) get an entry each on every
+reference linker, so pointer equality is per symbol. Then:
+
+- **a branch** (`CALL26`, `JUMP26`, `CONDBR19`, `TSTBR14`) must reach an
+  IPLT entry of the resolver, directly or through a veneer (W6): any
+  entry calls the same function;
+- **an address** (any other non-GOT type) has S = an IPLT entry E of the
+  resolver, with W1;
+- **a GOT-indirect pair** is W2/W3 to E, or reaches a slot (§5.5) that
+  holds E + A, or is an `IRELATIVE` slot of the resolver (*resolved*: it
+  holds the function itself once applied).
+
+Every non-branch reference to one symbol must use one E, the *canonical
+entry*: the one most references are right with (the lowest on a tie).
+
+- **F3.** A reference that is right only with another entry, or that
+  loads a resolved slot while other references take E, gives the
+  function two addresses (`&f != &f`).
+- **F4.** A reference that reaches no entry of the resolver, or a GOT
+  pair that reaches no slot of either kind; also any reference to an
+  IFUNC whose resolver has no IPLT entry. R2/R3 when every entry fails the
+  check or the alignment.
+
+Verified references count under `iplt` (§7.2); coverage also counts
+`irelative_checked` and `iplt_entries`.
+
+**Y1 of an IFUNC name** (§4.6). The output symbol is `STT_GNU_IFUNC` at
+the resolver: GNU ld's form, and mortar's (synth.md S-71). lld and mold
+make it `STT_FUNC` at the canonical IPLT entry instead, which keeps
+`&f` in a debugger equal to `&f` in the program. That is accepted from
+those two linkers as their convention, by format (a per-linker rule, not
+an anomaly: no value is wrong), and for a local of the name under Y4 as
+well. Y3 judges the GNU form like any symbol and leaves the other one to
+Y1.
+
+Observed (AArch64, static, `ifs.s` with a global and a local IFUNC, and
+glibc's `memcpy`/`strlen`/... with `pick.c`):
+
+| | records in | slots in | entries in | `.symtab` |
+|---|---|---|---|---|
+| GNU ld | `.rela.plt` | `.got.plt` | `.plt` (16 bytes) | `IFUNC` at the resolver |
+| lld | `.rela.dyn` | `.got.plt` | `.iplt` (16 bytes) | `FUNC` at the entry, size 0 |
+| mold | `.rela.dyn` | `.got` | `.plt.got` (`BR` then `BRK`) | `FUNC LOCAL` at the entry (A1, A2) |
+
+GNU ld and mold give a GOT reference a slot holding the canonical entry;
+lld rewrites it (W3) to `ADR` of the entry. No linker uses a resolved slot
+for an address.
+
+Tests: `tests/corpus.rs` (the `ifunc` case), `tests/mutation.rs
+s9_2i_ifunc_mutations_are_found`.
 
 ## 5. Checking a record
 
@@ -722,14 +856,28 @@ From T, at most 8 instructions are executed. Only these are followed:
 
 - `BTI`, as the first instruction only (a `NOP` is not followed, so a
   branch to the padding before a veneer is a finding);
-- `ADRP`, `ADR`, `ADD` (immediate, optionally `LSL #12`), `LDR` (64-bit
+- `ADRP`, `ADR`, `ADD` (immediate, optionally `LSL #12`, or the shifted
+  register form with `LSL #0` of two of x16 and x17), `LDR` (64-bit
   literal), and `MOVZ`/`MOVK`/`MOVN`, each writing x16 or x17;
 - an end: `BR x16`, `BR x17`, or `B`.
 
 The result is the destination. Anything else means the code is not a
 veneer. Every reference linker's veneer shape is handled: GNU ld's
-`ADRP; ADD; BR`, lld's `LDR literal; BR; .xword`, and mold's
+`ADRP; ADD; BR` and its 24-byte long veneer `LDR x16, .+16; ADR x17, .;
+ADD x16, x16, x17; BR x16; .xword` (seen at 256 MiB, `spec/a64.md`
+§8.7; WP-028b), lld's `LDR literal; BR; .xword`, and mold's
 `ADRP; ADD; BR`.
+
+**`spec/a64.md` §8.7's reference forms** (WP-028b) are decided so: GNU
+ld's `nop` for a branch to an undefined weak is W4, and its branch to
+itself for `CONDBR19`/`TSTBR14` is §4.4's X = A (a PC-relative
+reference to an undefined weak resolves to the place), so it is a
+direct verification, not a rewriting. The 16-byte veneer and lld's
+`AbsLongThunk` are followed here; the long veneer too, now. lld's GOT
+load to `nop; adr` is W3, mold's to `adrp; add` is W2, mold's TLSDESC
+to IE in a static link is W11, and mold's unrelaxed traditional GD is
+ordinary records (§4.7). IE to LE with `Rt ≠ Rn` is the anomaly A8;
+mold's missing 843419 fix is A4; GNU ld's fix with an ADR is W7.
 
 Test: `a64::tests::s5_4_veneers_are_followed`,
 `tests/mutation.rs s9_2d_retargeted_veneers_are_found`.
@@ -772,7 +920,11 @@ a *merged* section:
 1. **Name the piece.** The input offset is r = `st_value + A` for a
    section symbol, with extra = 0. For any other symbol, r = `st_value` and
    extra = A. The value referred to is T(r) + extra, where T(r) is the
-   output address of input byte r.
+   output address of input byte r. A section-symbol reference with r
+   outside `[0, sh_size)` names no piece: on a reference output (GNU
+   writes the end of the output section) it is `piece-not-locatable`; it
+   cannot occur in mortar's (synth.md S-18 refuses it), so there it is R6
+   (synth.md R-P2, WP-028b).
 2. **Group.** Records are grouped by (defining object, section, r, extra).
 3. **Evidence.** From each record's output field:
    - an exact value from `ABS` data, from `PREL` data and branches, from
@@ -801,7 +953,91 @@ a *merged* section:
 A relocation of a placed section whose symbol's section is discarded or
 absent is R5. This does not apply to `.eh_frame`'s own records, which
 §6.4 checks (an FDE whose function is discarded is dropped, not R5), nor
-to non-alloc records.
+to non-alloc records (§5.8).
+
+### 5.8 Non-alloc relocations (stage 2, WP-028b)
+
+A non-alloc input section (`.debug_*`, `.comment`, …) is placed at an
+offset of the non-alloc output section of its own name (every reference
+linker keeps the names). Its place is `sh_addr` of that section (0 in an
+executable) plus the offset:
+
+- GNU ld's and lld's maps give the offset as the row's address;
+- mold's map gives every non-alloc row the address 0. The offset is
+  computed as mold lays the section out: the rows of an output section
+  in map order, each at the next multiple of its input alignment. S12
+  confirms it by content;
+- mortar's map gives it with `nplace` (§3.2).
+
+A mergeable non-alloc section (`.debug_str`, `.debug_line_str`) is
+*merged* for a foreign map, as an allocated one is, and its references
+are judged by content (§5.6) in the file bytes of the output section.
+
+The records of a placed non-alloc section are judged like any other
+(§5.1): S from §4.4 (a target in a non-alloc section is at its place
+plus `st_value`, so a `.debug_info` reference to `.debug_abbrev` is an
+offset), P is the place plus `r_offset`, and the output's field is read
+from the output section's file bytes. S12 compares the section's bytes
+outside its relocated ranges in the same way.
+
+**Not judged.** A record whose input section, or whose output section,
+is `SHF_COMPRESSED` (`--compress-debug-sections`) is not checked
+(`compressed`), nor is its S12. mold's map lists no input rows for a
+compressed output section (only the output section, at its compressed
+size); a non-alloc input section absent from such a map whose output
+section of the name is compressed counts as `compressed` too, not as
+absent. An output with no non-alloc section of
+the name (a stripped `-S` output) makes the records
+`section-not-locatable`.
+
+**A target not in the output.** A data record (`ABS64`, `ABS32`,
+`PREL32`, …) of a non-alloc section whose symbol's section is discarded
+or absent holds the linker's *tombstone*, compared in the field's width:
+
+| referring section | GNU ld | lld, mold | mortar (`spec/image.md` I-47) |
+|---|---|---|---|
+| `.debug_ranges` | 1, or the redirect | 1 | 1 |
+| `.debug_loc` | 0, or the redirect | 1 | 1 |
+| `.debug_aranges` | 0, or the redirect | 0 | all ones, and the tuple's length 0 (I-112) |
+| `.debug_frame` | 0, or the redirect | 0 | all ones |
+| other debug names | 0, or the redirect | 0 | all ones (ELFCLASS64), 0 (ELFCLASS32) |
+| `.gcc_except_table` | 0, or the redirect | 0 | 0 |
+| any other name | 0, or the redirect | 0 | R5: mortar refuses the link (I-46) |
+
+- **GNU ld's redirect**: for a dead section of a group (`SHF_GROUP`, a
+  dropped COMDAT copy), the place of a placed group section of the same
+  name and size, plus the symbol's `st_value` and the addend: GNU ld's
+  "kept copy when the sizes are equal". A collected section (no group)
+  has no redirect.
+- **Per-linker rules, not anomalies.** Each column is its linker's
+  documented convention and is accepted from that linker only (by map
+  format); none is a miscompile by the standards' text, since DWARF ≤ 5
+  defines no tombstone. Mortar's column is image.md's exactly; the
+  evidence for preferring it (debugger behaviour, E9, E10, E16, E17) is
+  image.md's §6.1. GNU ld's 0 in `.debug_aranges` and elsewhere, and
+  lld's and mold's 0, are the conventions image.md I-47 rejects for
+  mortar, so they are recorded here and in §10.6 rather than accepted
+  from mortar.
+- **I-112** (mortar only): when the record is in `.debug_aranges`, its
+  type is the class's absolute address type (`ABS64`), its target
+  section is `SHF_ALLOC`, and no record has its field right after this
+  one, the `width` bytes after the field are 0. S12 accepts those bytes.
+- A non-data field in a non-alloc section with a dead target, or a dead
+  target from a non-tombstone name in a mortar link, is R5. A value
+  other than the column's is R1.
+
+Verified tombstones count under `tombstone` (§7.2).
+
+Observed (AArch64, GCC 14 `-g -O0`, the corpus's `debug-comdat`, and
+`-gdwarf-4 -O2 --gc-sections`, `debug-gc`): GNU ld redirects the dropped
+COMDAT `big`'s `.debug_info`, `.debug_aranges`, `.debug_rnglists` and
+`.debug_line` references to the kept copy (0x40073c), writes 1 in
+`.debug_ranges` and 0 in `.debug_loc` for a collected function; lld and
+mold write 0, and 1 in `.debug_ranges`/`.debug_loc`. No linker changes
+the aranges length.
+
+Tests: `tests/tls.rs s5_8_debug_references_verify_clean`,
+`tests/mutation.rs s9_2j_debug_mutations_are_found`.
 
 ## 6. Structure and content
 
@@ -829,7 +1065,9 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   - `p_align` is 0, 1 or a power of two;
   - `p_vaddr ≡ p_offset (mod p_align)`;
   - its file image lies inside the file;
-  - its memory does not wrap.
+  - its memory does not wrap;
+  - in mortar's output (by map format), `p_align` is at least 4 KiB
+    (`spec/layout.md` L-1; layout.md §20.3, WP-028b).
 - **S3.** The `PT_LOAD`s are in ascending `p_vaddr` order and do not
   overlap (gABI "Program Header").
 - **S4.** Every allocated section with a size, other than `.tbss`, lies
@@ -866,6 +1104,41 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   an erratum-patch branch (W8) and the last word of a W12 sequence. A `SHT_NOBITS` section's memory must read
   as zero. `.note.gnu.property` is excluded because linkers combine the
   property notes by definition (gABI "Program Property").
+
+The rules S13 to S18 are `spec/layout.md` §20.3's requests (WP-028b),
+renumbered where layout.md's ids were taken (its S17 is P2, §6.6; its
+S18 is S17 here; its T1 is S18):
+
+- **S13.** At most one `PT_PHDR` and one `PT_INTERP`, each before every
+  `PT_LOAD`; `PT_PHDR` lies in a `PT_LOAD`'s file image, and so does the
+  program header table (L-2, L-3: glibc's static start-up finds
+  `PT_TLS` through `AT_PHDR`).
+- **S14.** An allocated `SHT_NOBITS` section with a size, `.tbss` aside,
+  lies at or past `p_vaddr + p_filesz` of its `PT_LOAD` (L-4).
+- **S15.** Every section with `sh_addralign > 1` has `sh_addr ≡ 0 (mod
+  sh_addralign)` (L-5).
+- **S16 (RELRO safety).** For each `PT_GNU_RELRO` `[s, e)` and each page
+  size P in {4, 16, 64} KiB not above the largest `PT_LOAD` `p_align`
+  (4 KiB always), `[align_down(s, P), align_down(e, P))` holds no byte of
+  a writable allocated section outside `[s, e)` (L-8). Since
+  `align_down(e, P) ≤ e`, that is: no writable byte in
+  `[align_down(s, P), s)`. A writable section that `[s, e)` covers only in
+  part is RELRO in that part by the linker's choice: GNU ld ends RELRO 24
+  bytes into `.got.plt`, after its reserved words, which a static
+  program never writes (observed, `c-hello`).
+- **S17.** No non-allocated section with file bytes overlaps a
+  `PT_LOAD`'s file image (L-18).
+- **S18 (mortar only).** The end of every `PT_LOAD`'s memory is the end
+  of a section, or of the headers (L-9). The reference linkers do not
+  promise it (strip rebuilds `p_memsz` from the sections, E-14), so S18
+  judges mortar's map format only.
+
+Not taken from layout.md §20.3: its S19 (`ET_DYN` alignment) has no
+output to apply to while S1 accepts `ET_EXEC` only, and is stage 3; its
+S20 (`PT_TLS` alignment) is S9; its Y2 (the start-up symbol contract,
+L-13 to L-15) is Y5's table; the RWX `PT_LOAD` note of L-6 and its notes
+A7 and A8 are §10.2 notes, since they are never findings (their ids are
+taken, §10.2).
 
 ### 6.3 Relocated ranges
 
@@ -912,9 +1185,12 @@ trailing `DW_CFA_nop` padding. Anything else is unreadable.
 
 **The inputs' pointers.** A pointer field of an input record is the value
 of the relocation at its offset, resolved as §4.4 does (S + A for
-`ABS64`, `ABS32`, `PREL64` and `PREL32`). If there is no relocation, an
-absolute nonzero value is taken as written, and anything else cannot be
-judged. An input FDE is:
+`ABS64`, `ABS32`, `PREL64` and `PREL32`). A relocation of type
+`R_*_NONE` is no relocation (it counts under `none`). If there is no
+relocation, an absolute nonzero value is taken as written; an initial
+location of 0 makes the FDE **dropped** (it describes no code of the
+link, `synth.md` S-38); anything else cannot be judged (synth.md R-P7,
+WP-028b). An input FDE is:
 
 - **dropped** if its initial location resolves into a discarded or
   absent section. Its records are counted with the records of sections not
@@ -1015,7 +1291,10 @@ rules below judge the rest. Code: `src/symbols.rs`.
     Its visibility is V.
   - Its type and size are D's.
   - Its `st_shndx` names an allocated section whose range holds D's input
-    section's place. For an `SHN_ABS` definition it is `SHN_ABS`.
+    section's place. The range includes its end address: a label at the
+    end of a section, or of an empty input section placed at a section's
+    end, is held by that section (`synth.md` S-122, S-123, R-P4). For an
+    `SHN_ABS` definition it is `SHN_ABS`.
 
   A name with an IFUNC definition, with no placed definition, or a TLS
   name without a usable `PT_TLS`, is counted in `globals_unchecked`.
@@ -1051,13 +1330,13 @@ rules below judge the rest. Code: `src/symbols.rs`.
   | `__ehdr_start` | `p_vaddr` of the `PT_LOAD` at file offset 0 |
   | `__executable_start` | the lowest `PT_LOAD` `p_vaddr` |
   | `__init_array_start`/`_end`, `__fini_array_…`, `__preinit_array_…` | the section's start and end; with no section, start = end |
-  | `_GLOBAL_OFFSET_TABLE_` | the start of `.got` |
+  | `_GLOBAL_OFFSET_TABLE_` | AArch64: the start of `.got`; x86-64 and i386: the start of `.got.plt` (synth.md R-P5) |
   | `__GNU_EH_FRAME_HDR` | the start of `.eh_frame_hdr` |
   | `_edata`, `edata` | in [E, the next allocated section's start] |
   | `__bss_start`, `__bss_start__` | in [E, the first writable `NOBITS` section at or after E] |
   | `_end`, `end`, `__end__`, `_bss_end__`, `__bss_end__` | in [M, M rounded up to 8] |
   | `_etext`, `etext`, `__etext` | in [the end of `.text`, the next non-executable section's start] |
-  | `__rela_iplt_start`/`_end` | the bounds of the only allocated `SHT_RELA` section; with none, start = end |
+  | `__rela_iplt_start`/`_end` (AArch64, x86-64), `__rel_iplt_start`/`_end` (i386) | the bounds of the only allocated `SHT_RELA` (i386: `SHT_REL`) section; with none, start = end (synth.md R-P6; under `-static-pie` they are not defined, and S1 refuses an `ET_DYN` output) |
   | `_DYNAMIC` | the start of `.dynamic`, else 0 |
   | `_TLS_MODULE_BASE_` | 0, and `STT_TLS` (§4.7) |
   | `__start_X`, `__stop_X` (X a C identifier) | the bounds of section X |
@@ -1090,6 +1369,101 @@ cases: more than 1000 globals, more than 300 locals and at least 9
 linker-defined symbols judged; not-judged names only from mold, §10.5) and
 `tests/mutation.rs s9_2h_symbol_table_mutations_are_found`.
 
+### 6.6 Program properties (stage 2, WP-028b)
+
+`.note.gnu.property` is written from `spec/synth.md` S-94 to S-97 and
+S-126, and from the observations of synth.md §13. It is judged by two
+rules; S12 does not compare the section's bytes (§6.2).
+
+**The inputs.** Every input object the map names counts, in map order;
+an object without `.note.gnu.property` has every property absent. Every
+note of every such section of an object is read (S-94): name `GNU`,
+type `NT_GNU_PROPERTY_TYPE_0`, properties `(pr_type, pr_datasz, data)`
+padded to 8 (ELFCLASS64) or 4 (ELFCLASS32). Other notes are skipped. A
+note or property that runs past its container is I2, and no property is
+judged. An object's notes are combined first:
+
+- mortar: S-126, each note as if it were an object (an `And` type
+  survives only if every note has it);
+- GNU ld and lld: an `And` type is the OR of the notes that have it
+  (synth.md X-33); the other types as mortar;
+- mold: not observed; an `And` type is not judged when an object has
+  several notes.
+
+**P1 (the merge).** For every type the output or an input has, the
+output's property is the merge of the objects' by the rule of the
+linker that wrote it (by map format):
+
+| type | merge (S-95) | mortar | GNU ld | lld | mold |
+|---|---|---|---|---|---|
+| AArch64 `FEATURE_1_AND` 0xc0000000, x86 `FEATURE_1_AND` 0xc0000002 | `And` | merged | merged | merged | AArch64: dropped; x86: merged |
+| AArch64 `FEATURE_PAUTH` 0xc0000001 | `EqualOrAbsent` | merged | not judged | merged | dropped |
+| x86 0xc0008000..0xc0008fff (`ISA_1_NEEDED`) | `Or` | merged | merged | dropped | merged |
+| x86 0xc0010000..0xc0017fff (`*_USED`) | `OrAll` | merged | merged | not judged | merged |
+| generic 0xb0000000..0xb0007fff / 0xb0008000..0xb000ffff | `And` / `Or` | merged | merged | dropped | dropped |
+| `STACK_SIZE` 1, `NO_COPY_ON_PROTECTED` 2 | `Max`, `Present` | merged | merged | dropped | dropped |
+| `MEMORY_SEAL` 3 | an option | not judged | not judged | not judged | not judged |
+| any other type | unknown | dropped | not judged | dropped | dropped |
+
+- *merged*: the output has the type exactly when the merge gives it, with
+  the merge's bytes. `And`: every object has it, ANDed, omitted if 0.
+  `Or`: ORed over the objects that have it. `OrAll`: ORed, present only
+  if every object has it. `Max`: the largest. `Present`: present if any
+  object has it. `EqualOrAbsent`: the one value every object that has it
+  has; two different values must refuse the link, so an output is P1.
+- *dropped*: the output must not have the type.
+- *not judged*: counted (`properties_not_judged`), never a finding.
+  `MEMORY_SEAL` follows `-z memory-seal`, which the verifier does not
+  see; GNU ld copies or fails on an unknown type depending on the
+  inputs' order (synth.md §13), and does not know PAUTH; lld's `*_USED`
+  is not observed.
+
+These columns are per-linker rules, not anomalies: dropping a property
+never claims what an input did not, and each column is accepted only
+from its linker. The safety property is the `And` row: an output that
+claims BTI, PAC, GCS, IBT or SHSTK that one input lacks is P1 from every
+linker.
+
+**P2 (the note and its segment).** When the output has
+`.note.gnu.property`, it is the only section of the name, an allocated
+`SHT_NOTE` aligned to 8 (ELFCLASS64) or 4, holding exactly one property
+note that reads as above; exactly one `PT_GNU_PROPERTY` has its address
+and size, and a `PT_NOTE` covers it. Without the section there is no
+`PT_GNU_PROPERTY`. (S-96. The order of the properties is not judged:
+S-94 accepts a note out of order.)
+
+`synth.md` R-P1's S17 (IRELATIVE bounds) is F1 (§4.8).
+
+Observed (AArch64, GCC 14 `-mbranch-protection=standard`, Debian's
+`crt1.o` and `libc.a` all BTI and PAC): GNU ld and lld write `BTI, PAC`
+when every object has it, `BTI` when one object has only BTI, and no
+section and no `PT_GNU_PROPERTY` when one object has none. mold writes
+no `.note.gnu.property` on AArch64.
+
+Tests: `tests/tls.rs s6_6_properties_verify_clean`,
+`tests/mutation.rs s9_2k_property_mutations_are_found`.
+
+### 6.7 Mortar's build id (stage 2, WP-028b)
+
+B1 (`spec/image.md` I-72, I-114, request R-8). When the map is mortar's
+and the output has an `NT_GNU_BUILD_ID` note (`"GNU\0"`, type 3) in an
+allocated `SHT_NOTE` section, with a descriptor of 8, 20 or 32 bytes, the
+verifier recomputes I-72's function of the output: the file with the
+descriptor's bytes read as zeros, in leaves of `2^20` bytes, with the tag
+`mortar-build-id-2\0`. 8 bytes: the `L128` tree's prefix; 20: the `L128`
+tree or the SHA-1 tree, either matching; 32: the SHA-256 tree. A
+mismatch is a B1 finding at the descriptor's address. Other lengths
+(`0xHEX`, `uuid`) are not checked, and the coverage says so. Other
+linkers' ids are not checked (image.md §8.1: no tool recomputes them).
+
+SHA-1 and SHA-256 are written from FIPS 180-4 and `L128` from I-114's
+text, in `src/buildid.rs`; none is shared with `mortar_digest`. The
+definition is the one of this mortar version (I-75): a later tag is a
+new definition, and B1 must change with it.
+
+Tests: `src/buildid.rs` (FIPS 180-4's vectors, image.md §8.4's `L128`
+and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`.
+
 ## 7. The report
 
 ### 7.1 Findings
@@ -1097,7 +1471,7 @@ linker-defined symbols judged; not-judged names only from mold, §10.5) and
 A finding has:
 
 - the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R8`, `T1`,
-  `Y1`–`Y5` or `E1`–`E5`;
+  `Y1`–`Y5`, `E1`–`E5`, `F1`–`F4` (§4.8), `P1`–`P2` (§6.6) or `B1` (§6.7);
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -1117,10 +1491,11 @@ once:
 
 `records = verified + accepted + not_checked + none + failed`
 
-- **verified**, by how S was found: `direct`, `got-slot`, `piece` or
-  `eh-frame` (a pointer field of a matched CIE or FDE, §6.4);
+- **verified**, by how S was found: `direct`, `got-slot`, `piece`,
+  `eh-frame` (a pointer field of a matched CIE or FDE, §6.4), `iplt`
+  (an IFUNC reference, §4.8) or `tombstone` (§5.8);
 - **accepted**, by rewriting (W1 to W13);
-- **not checked**, by reason: `tls`, `tls-sequence`, `ifunc`, `non-alloc`, `eh-frame`,
+- **not checked**, by reason: `tls`, `tls-sequence`, `ifunc`, `non-alloc`, `eh-frame`, `compressed`,
   `type`, `machine`, `section-not-locatable`, `piece-not-locatable`,
   `in-mergeable`, `symbol-unresolved`, `got-unpaired` or
   `input-unreadable`;
@@ -1131,7 +1506,9 @@ once:
 records of sections not in the output are counted separately
 (`absent_records`). So are the sections by place, the symbols Y1 checked
 and left unchecked, the bytes S12 compared, and the FDEs and header
-entries of §6.4, and the symbols of §6.5.
+entries of §6.4, the symbols of §6.5, the IRELATIVE records and IPLT
+entries of §4.8, and the property types §6.6 judged and did not judge, and what B1 made of
+the build id (§6.7).
 
 The four stage-2 reasons are the only ones allowed on the reference
 corpus.
@@ -1273,6 +1650,37 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   - Y5: every judged linker-defined symbol moved by 0x100000.
 
   The verifier finds Y2 60/60, Y3 184/184, Y4 179/179 and Y5 78/78.
+- **(i)** IFUNC (`ifunc`, every linker; §4.8): (1) the lowest and highest
+  bit of every relocated field; (2) every IRELATIVE record's type,
+  symbol, addend and slot; (3) the words of every IPLT entry that decide
+  what it loads and where it branches; (4) the data word of `gf` made
+  `lf`'s entry, which must be F3; (5) `__rela_iplt_start` and
+  `__rela_iplt_end` each one record short, by every linker (an
+  IRELATIVE record outside the bounds, synth.md R-P3), which must be F1.
+  All must be found.
+- **(j)** Debug information (`debug-comdat` and `debug-gc`, GNU ld and
+  lld; §5.8): (1) the lowest and highest bit of every relocated
+  non-alloc field, tombstones included, with `MORTAR_PLUMB_FULL=1`
+  (588 flips; 371 s in a debug build), and by default one bit of 24
+  places spread over each link; all must be found. (2) lld's
+  `debug-comdat`, its map rewritten as mortar's (§3.2): every lld
+  tombstone is R1 against I-47; the same output with the tombstones
+  written as I-47 and I-112 say is clean; one `.debug_aranges` length
+  restored is R1 (I-112).
+- **(k)** Program properties (`prop-*`, GNU ld and lld; §6.6, synth.md
+  R-P3): (1) a feature bit no input has (GCS) set, P1; (2) PAC set where
+  one input has only BTI, P1; (3) `PT_GNU_PROPERTY` moved by 8, and made
+  `PT_NULL`, P2; (4) read as mortar's link, the property's type made an
+  unknown one (0xc0000003), P1; (5) `prop-two` read as mortar's link:
+  the OR of one object's notes is P1 against S-126, and the value S-126
+  gives is clean.
+- **(l)** Mortar's build id (`start`, lld, read as mortar's link; §6.7,
+  image.md R-8): (1) lld's own SHA-1 id, B1; (2) the id rewritten by
+  I-72's bare and `sha1` trees is clean, and is not judged under lld's
+  map; (3) the id's last byte changed, B1; (4) one byte changed at each
+  of 16 places spread over the file outside the id, B1 (or O1 where the
+  output no longer reads, or S11 where a note header changed; at least
+  12 of the 16 by B1).
 
 ### 9.3 Map readers
 
@@ -1323,7 +1731,7 @@ corpus test accepts them by name and nothing else.
   the address to the wrong section.
 - **A2 (mold).** Other aliases of an IFUNC (`__libc_memcpy`, `__memchr`,
   `__strlen`, …) get the value `2^32 + x`, an address outside every
-  segment (S8).
+  segment (S8, and Y1 by §4.8).
 - **A3 (mold).** `_TLS_MODULE_BASE_` is defined `STT_TLS` even with no
   `PT_TLS`. When there is one, its value is the segment's address rather
   than an offset (S8, and Y5 of §6.5).
@@ -1381,6 +1789,17 @@ Three symbol-table defects, found by §6.5 on the corpus:
   0 even when the program references it. A program that clears from
   `__bss_start` to `_end` would write from address 0. This was verified by
   hand with a 3-line program (Y5, found 0).
+
+**Notes, not anomalies** (`spec/layout.md` §20.3; never findings, so no
+id):
+
+- lld aligns the RELRO end to 4 KiB with a 64 KiB `p_align`, so under
+  64 KiB pages the last part of RELRO stays writable: a loss of
+  protection, not of correctness (S16 holds).
+- With no `.note.GNU-stack` in any input, GNU ld writes no
+  `PT_GNU_STACK` (L-84).
+- A `PT_LOAD` both `PF_W` and `PF_X` (L-6) is hardening, not
+  correctness; the verifier does not report it.
 
 **Where the corpus expects them.** The anomalies that a reference linker
 shows on essentially every link of a kind are run-wide defaults, listed
@@ -1454,6 +1873,31 @@ Observed on the glibc `c-hello` links:
 - **Not judged.** GNU ld and lld write no linker-defined symbol that §6.5
   does not judge. mold writes its `$` names and
   `__start_EHDR`/`__start_PHDR`.
+
+### 10.6 Tombstones
+
+Observed (AArch64; GCC 14 and Clang; the corpus's `debug-comdat`,
+`debug-comdat-clang`, `debug-gc` and `debug-zlib`; §5.8):
+
+- **GNU ld** (2.44): a reference from a dropped COMDAT copy is
+  redirected to the kept copy when the two sections have the same name
+  and size (`.debug_info`, `.debug_aranges`, `.debug_line`,
+  `.debug_rnglists`). A reference to a section collected by
+  `--gc-sections` holds 1 in `.debug_ranges` and 0 in `.debug_loc` and
+  elsewhere. `spec/image.md` §15 says GNU ld writes "the redirect or 0"
+  in `.debug_ranges`/`.debug_loc`; the experiment (`-gdwarf-4 -O2
+  -ffunction-sections`, `--gc-sections`) shows 1 in `.debug_ranges`, so
+  the table of §5.8 follows the observation.
+- **lld** and **mold**: 1 in `.debug_ranges` and `.debug_loc`, 0
+  elsewhere. Neither redirects. Neither changes the `.debug_aranges`
+  tuple's length.
+- **Compressed output** (`--compress-debug-sections=zlib`): all three
+  compress the output's debug sections (`SHF_COMPRESSED`, `ELFCOMPRESS_ZLIB`).
+  GNU ld's and lld's maps keep the input rows; mold's lists only the
+  output sections, at their compressed sizes.
+
+These are per-linker rules (§5.8), not anomalies: none is a defect by
+DWARF's text, and each is accepted only from its own linker.
 
 ## 11. Open questions
 

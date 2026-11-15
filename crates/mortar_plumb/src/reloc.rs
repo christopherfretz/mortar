@@ -8,16 +8,22 @@
 use std::collections::{BTreeMap, HashMap};
 
 use mortar_elf::consts::{
-    PT_TLS, SHF_STRINGS, SHF_TLS, SHT_NOBITS, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_GNU_IFUNC,
-    STT_SECTION, STT_TLS,
+    PT_TLS, SHF_COMPRESSED, SHF_STRINGS, SHF_TLS, SHT_NOBITS, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK,
+    STT_GNU_IFUNC, STT_SECTION, STT_TLS,
 };
 use mortar_elf::{Machine, SymbolIndex, SymbolSection};
 
 use crate::a64::{self, Def, Field, Form, Op, Slot};
 use crate::image::Image;
 use crate::locate::{Obj, Place};
+use crate::map::Format;
+#[path = "debug.rs"]
+mod debug;
 #[path = "eh.rs"]
 mod eh;
+#[path = "ifunc.rs"]
+mod ifunc;
+pub(crate) use ifunc::IfKey;
 
 use crate::report::{Coverage, Finding, Reason, Rewrite, Rule, Site, Via};
 
@@ -76,6 +82,26 @@ impl Occupied {
     pub fn contains(&self, addr: u64) -> bool {
         let i = self.0.partition_point(|r| r.0 <= addr);
         i > 0 && addr < self.0[i - 1].1
+    }
+
+    /// The parts of `[lo, hi)` no placed section occupies, in order.
+    pub fn gaps(&self, lo: u64, hi: u64) -> Vec<(u64, u64)> {
+        let mut v = Vec::new();
+        let mut at = lo;
+        let i = self.0.partition_point(|r| r.1 <= lo);
+        for &(s, e) in &self.0[i..] {
+            if s >= hi {
+                break;
+            }
+            if s > at {
+                v.push((at, s));
+            }
+            at = at.max(e);
+        }
+        if at < hi {
+            v.push((at, hi));
+        }
+        v
     }
 }
 
@@ -138,6 +164,11 @@ enum Target {
     Skip(Reason),
     /// The symbol's section is not in the output (R5).
     Discarded(String),
+    /// An IFUNC: the resolver's address and the symbol (§4.8).
+    Ifunc {
+        resolver: u64,
+        key: IfKey,
+    },
 }
 
 /// One relocation record of a placed section.
@@ -374,12 +405,22 @@ pub(crate) struct Engine<'a, 'b> {
     piece_groups: BTreeMap<(usize, usize, u64, i64), Group>,
     /// Allocated input `.eh_frame` sections, checked by record (§6.4).
     eh_sections: Vec<(usize, usize)>,
+    /// The output's IRELATIVE records and IPLT entries (§4.8).
+    pub(crate) iplt: ifunc::Iplt,
+    ifunc_groups: BTreeMap<IfKey, ifunc::IfGroup>,
+    /// The linker that wrote the map (its conventions, §10).
+    pub(crate) format: Format,
+    /// Words of non-alloc output sections a tombstone rule wrote outside
+    /// every record (I-112's aranges length): `(section, address)`.
+    pub(crate) nonalloc_rewritten: std::collections::BTreeSet<(usize, u64)>,
+    /// GNU ld's redirect targets: placed group sections by name and size.
+    redirects: Option<HashMap<(String, u64), Vec<u64>>>,
     pub cov: Coverage,
     pub findings: Vec<Finding>,
 }
 
 impl<'a, 'b> Engine<'a, 'b> {
-    pub fn new(image: &'b Image<'a>, objs: &'b [Obj<'a>]) -> Self {
+    pub fn new(image: &'b Image<'a>, objs: &'b [Obj<'a>], format: Format) -> Self {
         let mut defs: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
         for (oi, o) in objs.iter().enumerate() {
             let Some(t) = &o.symtab else { continue };
@@ -408,7 +449,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             .map(|s| (s.shdr.sh_addr, s.shdr.sh_addr.saturating_add(s.shdr.sh_size)));
         let cache =
             objs.iter().map(|o| vec![None; o.symtab.map_or(0, |t| t.len() as usize)]).collect();
-        Engine {
+        let mut e = Engine {
             image,
             objs,
             occupied: Occupied::build(objs),
@@ -421,9 +462,16 @@ impl<'a, 'b> Engine<'a, 'b> {
             rewritten_words: std::collections::BTreeSet::new(),
             piece_groups: BTreeMap::new(),
             eh_sections: Vec::new(),
+            iplt: ifunc::Iplt::default(),
+            ifunc_groups: BTreeMap::new(),
+            format,
+            nonalloc_rewritten: std::collections::BTreeSet::new(),
+            redirects: None,
             cov: Coverage::default(),
             findings: Vec::new(),
-        }
+        };
+        e.build_iplt();
+        e
     }
 
     /// Whether `addr` is in a placed input section (§5.4).
@@ -540,11 +588,12 @@ impl<'a, 'b> Engine<'a, 'b> {
         let Ok(sym) = t.get(SymbolIndex(idx)) else {
             return Target::Skip(Reason::SymbolUnresolved);
         };
-        if sym.sym_type() == STT_GNU_IFUNC {
-            return Target::Skip(Reason::Ifunc);
-        }
         let where_ = t.section_of(SymbolIndex(idx), &sym);
-        if !matches!(sym.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE) {
+        let local = !matches!(sym.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE);
+        if sym.sym_type() == STT_GNU_IFUNC && local {
+            return self.ifunc_target(oi, idx, IfKey::Local(oi, idx));
+        }
+        if local {
             return match where_ {
                 Ok(SymbolSection::Section(k)) => {
                     self.in_section(oi, k.0 as usize, sym.st_value, sym.sym_type() == STT_SECTION)
@@ -560,10 +609,27 @@ impl<'a, 'b> Engine<'a, 'b> {
         if name == "_TLS_MODULE_BASE_" && matches!(where_, Ok(SymbolSection::Undefined)) {
             return self.tls_out(0);
         }
+        // An IFUNC by its placed definition, whatever form the output's
+        // symbol has (§4.8).
+        let chosen = self.chosen_def(&name);
+        if let Some((doi, di)) = chosen
+            && self.objs[doi]
+                .symtab
+                .and_then(|dt| dt.get(SymbolIndex(di)).ok())
+                .is_some_and(|d| d.sym_type() == STT_GNU_IFUNC)
+        {
+            return self.ifunc_target(doi, di, IfKey::Global(name));
+        }
+        if chosen.is_none()
+            && sym.sym_type() == STT_GNU_IFUNC
+            && matches!(where_, Ok(SymbolSection::Section(_)))
+        {
+            return self.ifunc_target(oi, idx, IfKey::Global(name));
+        }
         // 1. The output's global symbol of the name.
         if let Some(out) = self.image.global(&name) {
-            if out.sym.sym_type() == STT_GNU_IFUNC {
-                return Target::Skip(Reason::Ifunc);
+            if out.sym.sym_type() == STT_GNU_IFUNC && out.sym.st_shndx != 0 {
+                return Target::Ifunc { resolver: out.sym.st_value, key: IfKey::Global(name) };
             }
             if out.sym.st_shndx != 0 {
                 if out.sym.sym_type() == STT_TLS {
@@ -578,7 +644,51 @@ impl<'a, 'b> Engine<'a, 'b> {
             };
         }
         // 2. The one placed strong definition, else the one placed weak one.
-        if let Some(defs) = self.defs.get(&name) {
+        if let Some((doi, di)) = chosen {
+            let dt = self.objs[doi].symtab.expect("chosen from a symbol table");
+            if let Ok(ds) = dt.get(SymbolIndex(di)) {
+                let t = match dt.section_of(SymbolIndex(di), &ds) {
+                    Ok(SymbolSection::Section(k)) => {
+                        self.in_section(doi, k.0 as usize, ds.st_value, false)
+                    }
+                    Ok(SymbolSection::Absolute) => Target::Addr(ds.st_value),
+                    _ => Target::Skip(Reason::SymbolUnresolved),
+                };
+                return match t {
+                    Target::Addr(a) if self.input_sym_is_tls(doi, di) => Target::Tls(a),
+                    t => t,
+                };
+            }
+        }
+        // 3. The one output symbol of the name, of any binding.
+        if let Some(out) = self.image.unique(&name) {
+            if out.sym.sym_type() == STT_GNU_IFUNC && out.sym.st_shndx != 0 {
+                return Target::Ifunc { resolver: out.sym.st_value, key: IfKey::Global(name) };
+            }
+            if out.sym.st_shndx != 0 {
+                if out.sym.sym_type() == STT_TLS {
+                    return self.tls_out(out.sym.st_value);
+                }
+                return Target::Addr(out.sym.st_value);
+            }
+        }
+        // 4. An undefined weak: only when the output has a `.symtab`. A
+        // stripped output (`-s`) does not say whether the linker defined
+        // the name (`__rela_iplt_start`).
+        if matches!(where_, Ok(SymbolSection::Undefined))
+            && sym.binding() == STB_WEAK
+            && !self.image.symbols.is_empty()
+        {
+            return Target::UndefWeak;
+        }
+        Target::Skip(Reason::SymbolUnresolved)
+    }
+
+    /// §4.4 step 2's choice: the one placed strong definition of `name`,
+    /// else the one placed weak one.
+    pub(crate) fn chosen_def(&self, name: &str) -> Option<(usize, u32)> {
+        {
+            let defs = self.defs.get(name)?;
             let placed: Vec<(usize, u32, bool)> = defs
                 .iter()
                 .filter_map(|&(doi, di)| {
@@ -600,53 +710,12 @@ impl<'a, 'b> Engine<'a, 'b> {
                 })
                 .collect();
             let strong: Vec<_> = placed.iter().filter(|d| d.2).collect();
-            let chosen = match (strong.as_slice(), placed.as_slice()) {
-                ([one], _) => Some(**one),
-                ([], [one]) => Some(*one),
+            match (strong.as_slice(), placed.as_slice()) {
+                ([one], _) => Some((one.0, one.1)),
+                ([], [one]) => Some((one.0, one.1)),
                 _ => None,
-            };
-            if let Some((doi, di, _)) = chosen {
-                let dt = self.objs[doi].symtab.expect("filtered above");
-                if let Ok(ds) = dt.get(SymbolIndex(di)) {
-                    if ds.sym_type() == STT_GNU_IFUNC {
-                        return Target::Skip(Reason::Ifunc);
-                    }
-                    let t = match dt.section_of(SymbolIndex(di), &ds) {
-                        Ok(SymbolSection::Section(k)) => {
-                            self.in_section(doi, k.0 as usize, ds.st_value, false)
-                        }
-                        Ok(SymbolSection::Absolute) => Target::Addr(ds.st_value),
-                        _ => Target::Skip(Reason::SymbolUnresolved),
-                    };
-                    return match t {
-                        Target::Addr(a) if self.input_sym_is_tls(doi, di) => Target::Tls(a),
-                        t => t,
-                    };
-                }
             }
         }
-        // 3. The one output symbol of the name, of any binding.
-        if let Some(out) = self.image.unique(&name) {
-            if out.sym.sym_type() == STT_GNU_IFUNC {
-                return Target::Skip(Reason::Ifunc);
-            }
-            if out.sym.st_shndx != 0 {
-                if out.sym.sym_type() == STT_TLS {
-                    return self.tls_out(out.sym.st_value);
-                }
-                return Target::Addr(out.sym.st_value);
-            }
-        }
-        // 4. An undefined weak: only when the output has a `.symtab`. A
-        // stripped output (`-s`) does not say whether the linker defined
-        // the name (`__rela_iplt_start`).
-        if matches!(where_, Ok(SymbolSection::Undefined))
-            && sym.binding() == STB_WEAK
-            && !self.image.symbols.is_empty()
-        {
-            return Target::UndefWeak;
-        }
-        Target::Skip(Reason::SymbolUnresolved)
     }
 
     fn not_checked(&mut self, r: Reason, n: u64) {
@@ -675,7 +744,16 @@ impl<'a, 'b> Engine<'a, 'b> {
 
     /// The instruction or data the program sees at a record's place
     /// (§5.3, W8: the erratum 843419 patch is followed).
-    fn out_word(&self, p: u64, def: &Def, input_word: u64) -> Option<(u64, bool)> {
+    fn out_word(
+        &self,
+        p: u64,
+        def: &Def,
+        input_word: u64,
+        nonalloc: Option<usize>,
+    ) -> Option<(u64, bool)> {
+        if let Some(i) = nonalloc {
+            return Some((self.image.nonalloc_value(i, p, def.field.width())?, false));
+        }
         let w = self.image.value(p, def.field.width())?;
         if def.field.width() != 4 || matches!(def.field, Field::Data(_)) {
             return Some((w, false));
@@ -729,6 +807,17 @@ impl<'a, 'b> Engine<'a, 'b> {
         let n = raw.len() as u64;
         let machine = o.elf.machine();
         match &s.place {
+            // §5.8: mold's map lists no input rows of a compressed output
+            // section; its records are named, not judged.
+            Place::Absent
+                if !s.alloc()
+                    && self.image.nonalloc_section(&s.name).is_some_and(|i| {
+                        self.image.sections[i].shdr.sh_flags & SHF_COMPRESSED != 0
+                    }) =>
+            {
+                self.cov.records += n;
+                return self.not_checked(Reason::Compressed, n);
+            }
             Place::Absent | Place::Discarded => {
                 self.cov.absent_records += n;
                 return;
@@ -736,9 +825,22 @@ impl<'a, 'b> Engine<'a, 'b> {
             _ => {}
         }
         self.cov.records += n;
-        if !s.alloc() {
-            return self.not_checked(Reason::NonAlloc, n);
-        }
+        // A non-alloc section is checked in the file bytes of the output
+        // section of its name (§5.8).
+        let nonalloc = if s.alloc() {
+            None
+        } else {
+            let out = self.image.nonalloc_section(&s.name);
+            if s.shdr.sh_flags & SHF_COMPRESSED != 0
+                || out.is_some_and(|i| self.image.sections[i].shdr.sh_flags & SHF_COMPRESSED != 0)
+            {
+                return self.not_checked(Reason::Compressed, n);
+            }
+            let Some(i) = out else {
+                return self.not_checked(Reason::SectionNotLocatable, n);
+            };
+            Some(i)
+        };
         let reason = match &s.place {
             Place::Ambiguous => Some(Reason::SectionNotLocatable),
             Place::Merged => Some(Reason::InMergeable),
@@ -816,7 +918,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                 continue;
             }
             let addend = addend.unwrap_or_else(|| a64::decode(def.field, input_word, 0));
-            let Some((out_word, patched)) = self.out_word(p, def, input_word) else {
+            let Some((out_word, patched)) = self.out_word(p, def, input_word, nonalloc) else {
                 let mut f = Finding::new(
                     Rule::Place,
                     "the relocated place is not in the output's loaded memory",
@@ -843,6 +945,20 @@ impl<'a, 'b> Engine<'a, 'b> {
         let rec = &recs[i];
         let site = self.objs[oi].site(si, rec.off);
         let symbol = self.sym_name(oi, rec.sym);
+        // A non-alloc reference to a section not in the output holds the
+        // linker's tombstone (§5.8).
+        if !self.objs[oi].secs[si].alloc()
+            && let Target::Discarded(_) = self.resolve(oi, rec.sym)
+        {
+            let after = find_at(
+                recs,
+                sorted,
+                rec.off.checked_add(u64::from(rec.def.field.width())),
+                |_| true,
+            )
+            .is_some();
+            return self.tombstone(oi, si, rec, &site, &symbol, after);
+        }
         let partner = |delta: i64, types: &[u32]| -> Option<&Rec> {
             find_at(recs, sorted, rec.off.checked_add_signed(delta), |r| {
                 r.sym == rec.sym && r.addend == rec.addend && types.contains(&r.def.r_type)
@@ -872,6 +988,9 @@ impl<'a, 'b> Engine<'a, 'b> {
                     format!("refers to section '{name}', which is not in the output"),
                 );
                 return self.fail(f);
+            }
+            Target::Ifunc { resolver, key } => {
+                return self.ifunc_record(oi, rec, site, symbol, resolver, key, &partner);
             }
             Target::Merge { oi: doi, sec, value, section_sym } => {
                 return self.merge_record(
@@ -994,7 +1113,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             Target::Tls(s) => s.wrapping_add(rec.addend as u64),
             Target::Skip(r) => return Err(Outcome::Skip(r)),
             Target::UndefWeak | Target::Merge { .. } => return Err(Outcome::Skip(Reason::Tls)),
-            Target::Addr(_) => {
+            Target::Addr(_) | Target::Ifunc { .. } => {
                 return Err(Outcome::Fail(
                     Rule::Insn,
                     "a thread-local relocation against a symbol that is not thread-local".into(),
@@ -1381,6 +1500,22 @@ impl<'a, 'b> Engine<'a, 'b> {
         } else {
             (value, rec.addend)
         };
+        // §5.6 step 1 (synth.md R-P2): a section-symbol reference outside
+        // the section names no piece. mortar refuses it (S-18); a
+        // reference linker writes its own choice, which is not judged.
+        if section_sym && r >= self.objs[oi].secs[sec].shdr.sh_size {
+            if self.format != Format::Mortar {
+                return self.not_checked(Reason::PieceNotLocatable, 1);
+            }
+            let f = Self::finding(
+                Rule::MergePiece,
+                rec,
+                &site,
+                &symbol,
+                "a section-symbol reference outside its mergeable section (spec/synth.md S-18 refuses it)",
+            );
+            return self.fail(f);
+        }
         let ty = rec.def.r_type;
         let out = rec.out_word as u32;
         let mut w1 = false;
@@ -1555,6 +1690,16 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// `sec` that input offset `r` is in, from `r` to the piece's end
     /// (§5.6).
     fn piece_matches(&self, oi: usize, sec: usize, r: u64, t: u64) -> bool {
+        let read = |t: u64, n: u64| {
+            let s = &self.objs[oi].secs[sec];
+            if s.alloc() {
+                self.image.bytes(t, n)
+            } else {
+                self.image
+                    .nonalloc_section(&s.name)
+                    .and_then(|i| self.image.nonalloc_bytes(i, t, n))
+            }
+        };
         let s = &self.objs[oi].secs[sec];
         let Ok(r) = usize::try_from(r) else { return false };
         if r >= s.data.len() {
@@ -1577,7 +1722,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             (r - (r % es) + es).min(s.data.len())
         };
         let want = &s.data[r..end];
-        self.image.bytes(t, want.len() as u64).is_some_and(|b| b == want)
+        read(t, want.len() as u64).is_some_and(|b| b == want)
     }
 }
 

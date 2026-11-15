@@ -10,10 +10,12 @@
 
 pub mod a64;
 pub mod anomaly;
+pub mod buildid;
 mod content;
 mod image;
 mod locate;
 pub mod map;
+mod property;
 mod reloc;
 pub mod report;
 mod structure;
@@ -42,10 +44,11 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
         }
     };
     report.findings.extend(structure::check(&image));
+    report.findings.extend(structure::check_layout(&image, map.format));
     let located = locate::locate(map, inputs, &image);
     report.findings.extend(located.findings);
     let objs = located.objs;
-    let mut engine = reloc::Engine::new(&image, &objs);
+    let mut engine = reloc::Engine::new(&image, &objs, map.format);
     for (oi, o) in objs.iter().enumerate() {
         for (si, s) in o.secs.iter().enumerate() {
             if s.consumed() {
@@ -63,12 +66,19 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
             engine.section(oi, si);
         }
     }
+    engine.finish_ifunc();
     engine.finish_got();
     engine.finish_pieces();
     engine.check_eh_frame();
     content::check_content(&mut engine);
     content::check_symbols(&mut engine);
     symbols::check(&mut engine);
+    let props = property::check(&image, &objs, map.format, &mut engine.cov);
+    engine.findings.extend(props);
+    if map.format == Format::Mortar {
+        let ids = buildid::check(&image, &mut engine.cov);
+        engine.findings.extend(ids);
+    }
     report.findings.append(&mut engine.findings);
     report.coverage = std::mem::take(&mut engine.cov);
     report.sort();

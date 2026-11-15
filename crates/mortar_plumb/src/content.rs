@@ -2,11 +2,12 @@
 //! §4.6): the bytes of every placed section are its input's outside the
 //! relocated places, and every output symbol is where its definition went.
 
-use mortar_elf::consts::{SHT_NOBITS, STT_GNU_IFUNC, STT_TLS};
+use mortar_elf::consts::{SHF_COMPRESSED, SHT_NOBITS, STT_FUNC, STT_GNU_IFUNC, STT_TLS};
 use mortar_elf::{SymbolIndex, SymbolSection};
 
 use crate::a64;
 use crate::locate::{Place, covered};
+use crate::map::Format;
 use crate::reloc::Engine;
 use crate::report::{Finding, Rule};
 
@@ -24,8 +25,11 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
         let machine = o.elf.machine();
         for (si, s) in o.secs.iter().enumerate() {
             let Place::Whole(addr) = s.place else { continue };
-            if !s.alloc()
-                || s.merge()
+            if !s.alloc() {
+                nonalloc_content(e, o, si, addr);
+                continue;
+            }
+            if s.merge()
                 || s.is_eh_frame(machine)
                 || combined(&s.name)
                 || s.shdr.sh_size == 0
@@ -85,6 +89,53 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                 e.findings.push(f);
             }
         }
+    }
+}
+
+/// S12 for a non-alloc section placed whole (§5.8): its bytes in the
+/// output section of its name, at its offset there.
+#[allow(clippy::many_single_char_names)]
+fn nonalloc_content(e: &mut Engine<'_, '_>, o: &crate::locate::Obj<'_>, si: usize, addr: u64) {
+    let s = &o.secs[si];
+    let image = e.image;
+    if s.merge() || s.shdr.sh_size == 0 || s.shdr.sh_type == SHT_NOBITS || s.consumed() {
+        return;
+    }
+    let Some(i) = image.nonalloc_section(&s.name) else { return };
+    if (s.shdr.sh_flags | image.sections[i].shdr.sh_flags) & SHF_COMPRESSED != 0 {
+        return;
+    }
+    let size = s.shdr.sh_size;
+    let Some(out) = image.nonalloc_bytes(i, addr, size) else {
+        e.findings.push(
+            Finding::new(
+                Rule::Structure(12),
+                format!(
+                    "the section is placed at [{addr:#x}, +{size:#x}), outside output section '{}'",
+                    s.name
+                ),
+            )
+            .at(addr)
+            .site(o.site(si, 0)),
+        );
+        return;
+    };
+    e.cov.content_bytes += size;
+    let cov = covered(o, si);
+    if let Some(k) =
+        first_difference(s.data, &cov, out, |k| e.nonalloc_rewritten.contains(&(i, addr + k)))
+    {
+        let mut f = Finding::new(
+            Rule::Structure(12),
+            format!(
+                "the output differs from the input at offset {k:#x}, which no relocation covers"
+            ),
+        )
+        .at(addr + k)
+        .site(o.site(si, k));
+        f.expected = Some(u64::from(s.data[k as usize]));
+        f.found = Some(u64::from(out[k as usize]));
+        e.findings.push(f);
     }
 }
 
@@ -152,11 +203,8 @@ pub(crate) fn check_symbols(e: &mut Engine<'_, '_>) {
             let o = &objs[oi];
             let Some(t) = o.symtab else { continue };
             let Ok(d) = t.get(SymbolIndex(di)) else { continue };
-            // An IFUNC's output symbol is its canonical PLT entry (stage 2).
             if d.sym_type() == STT_GNU_IFUNC {
-                values.clear();
                 ifunc = true;
-                break;
             }
             match t.section_of(SymbolIndex(di), &d) {
                 Ok(SymbolSection::Absolute) => values.push(d.st_value),
@@ -168,7 +216,34 @@ pub(crate) fn check_symbols(e: &mut Engine<'_, '_>) {
                 _ => {}
             }
         }
-        if ifunc || values.is_empty() {
+        if ifunc {
+            // §4.8: STT_GNU_IFUNC at the resolver (GNU ld, mortar), or
+            // (lld, mold) a function symbol at an IPLT entry of it.
+            let gnu = out.sym.sym_type() == STT_GNU_IFUNC && values.contains(&value);
+            let canonical = matches!(e.format, Format::Lld | Format::Mold)
+                && out.sym.sym_type() == STT_FUNC
+                && values.iter().any(|&r| e.iplt.entries_of(r).contains(&value));
+            if gnu || canonical {
+                checked += 1;
+            } else {
+                let mut f = Finding::new(
+                    Rule::SymbolValue,
+                    format!(
+                        "IFUNC symbol '{name}' is not STT_GNU_IFUNC at its resolver{}",
+                        if matches!(e.format, Format::Lld | Format::Mold) {
+                            " nor a function at an IPLT entry of it"
+                        } else {
+                            ""
+                        }
+                    ),
+                )
+                .at(value);
+                f.symbol = Some(name.clone());
+                f.expected = values.first().copied();
+                f.found = Some(value);
+                findings.push(f);
+            }
+        } else if values.is_empty() {
             unchecked += 1;
         } else if values.contains(&value) {
             checked += 1;

@@ -1412,6 +1412,8 @@ invalid computed layout as `internal-error`. Those requests are dropped.
 
 ### 20.3 `plumb.md`
 
+*Applied by WP-028b, renumbered where ids were taken (`plumb.md` §6.2): S2's clause (mortar's map only) and S7; S13 to S16 as S13 to S16; S17 as P2 (§6.6); S18 as S17; T1 as S18, mortar's map only. Not applied: S19 (`ET_DYN`, which S1 refuses until stage 3), S20 (already S9), Y2 (Y5's table; the arrays' size and alignment clause of L-13 is a follow-up). A7, A8 and the L-6 note are notes in `plumb.md` §10.2 without ids (A7 and A8 were taken).*
+
 - **S2:** congruence modulo `p_align` (already), plus `p_align ≥ 4096`
   for mortar's outputs (L-1).
 - **S7:** `e_entry` lies in an executable `PT_LOAD`, except that

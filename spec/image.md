@@ -1927,6 +1927,8 @@ Reason: I-64 needs a kind for write failures; I-66.
 
 ### R-8 `spec/plumb.md` (build-id check)
 
+*Applied by WP-028b (`plumb.md` §6.7, rule B1).*
+
 Add a check: "When the map is mortar's (`mortar-map 1`) and the output
 has an `NT_GNU_BUILD_ID` note of 8, 20 or 32 bytes, the verifier
 recomputes `spec/image.md` I-72's function as defined by the same mortar
@@ -1937,6 +1939,8 @@ mismatch as a finding at the note's address. Other lengths (`0xHEX`,
 other check covers; I-75 makes the definition per version.
 
 ### R-9 `spec/plumb.md` §3.2 (non-alloc records), M2
+
+*Applied by WP-028b (`plumb.md` §3.2, §5.8; I-47 and I-112 judged as tombstones).*
 
 Add two records, written after `piece` records:
 

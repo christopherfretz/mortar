@@ -1,14 +1,15 @@
-//! The structure rules S1 to S11 (`spec/plumb.md` §6.2): what a loader and
+//! The structure rules S1 to S11 and S13 to S18 (`spec/plumb.md` §6.2): what a loader and
 //! a debugger rely on, checked from the output alone.
 
 use mortar_elf::Machine;
 use mortar_elf::consts::{
-    ET_EXEC, PF_W, PF_X, PT_GNU_STACK, PT_LOAD, PT_NOTE, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS,
-    SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX, SHT_NOBITS, STT_SECTION,
-    STT_TLS,
+    ET_EXEC, PF_W, PF_X, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR, PT_TLS,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF,
+    SHN_XINDEX, SHT_NOBITS, STT_SECTION, STT_TLS,
 };
 
 use crate::image::{Image, Phdr};
+use crate::map::Format;
 use crate::report::{Finding, Rule};
 
 fn s(n: u8, msg: impl Into<String>) -> Finding {
@@ -368,10 +369,16 @@ fn notes_ok(b: &[u8], align: usize) -> bool {
         let Some(h) = b.get(at..at + 12) else { return false };
         let namesz = u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize;
         let descsz = u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize;
-        let Some(next) = up(namesz)
-            .and_then(|n| n.checked_add(up(descsz)?))
-            .and_then(|n| n.checked_add(12))
+        // The descriptor starts at the next multiple of the alignment after
+        // the name, and the next note after the descriptor (an 8-aligned
+        // property note pads its 4-byte name to 4 only, gABI and the Linux
+        // "Program Property" extension).
+        let Some(next) = namesz
+            .checked_add(12)
             .and_then(|n| at.checked_add(n))
+            .and_then(up)
+            .and_then(|d| d.checked_add(descsz))
+            .and_then(up)
         else {
             return false;
         };
@@ -381,4 +388,157 @@ fn notes_ok(b: &[u8], align: usize) -> bool {
         at = next;
     }
     true
+}
+
+/// S13 to S18 and mortar's S2 clause (§6.2, from `spec/layout.md` §20.3):
+/// the layout rules a loader, strip and glibc's start-up rely on.
+#[allow(clippy::too_many_lines)] // one block per rule, in the spec's order
+pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let h = &image.header;
+    let loads: Vec<&Phdr> = image.phdrs.iter().filter(|p| p.p_type == PT_LOAD).collect();
+    let in_file_image = |off: u64, len: u64| {
+        loads.iter().any(|p| {
+            off >= p.p_offset && off.saturating_add(len) <= p.p_offset.saturating_add(p.p_filesz)
+        })
+    };
+    // S2 (mortar): p_align is at least 4 KiB (L-1).
+    if format == Format::Mortar {
+        for p in loads.iter().filter(|p| p.p_align < 4096) {
+            out.push(
+                s(
+                    2,
+                    format!("PT_LOAD at {:#x}: p_align {:#x} is below 4 KiB", p.p_vaddr, p.p_align),
+                )
+                .at(p.p_vaddr),
+            );
+        }
+    }
+    // S13: PT_PHDR and PT_INTERP, at most one each, before every PT_LOAD;
+    // PT_PHDR and the program header table in a PT_LOAD's file image
+    // (L-2, L-3).
+    let first_load = image.phdrs.iter().position(|p| p.p_type == PT_LOAD);
+    for (ty, name) in [(PT_PHDR, "PT_PHDR"), (PT_INTERP, "PT_INTERP")] {
+        let at: Vec<usize> = image
+            .phdrs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.p_type == ty)
+            .map(|(i, _)| i)
+            .collect();
+        if at.len() > 1 {
+            out.push(s(13, format!("{} {name} headers", at.len())));
+        }
+        if let (Some(&i), Some(l)) = (at.first(), first_load)
+            && i > l
+        {
+            out.push(s(13, format!("{name} comes after a PT_LOAD")));
+        }
+        if ty == PT_PHDR
+            && let Some(&i) = at.first()
+            && !in_file_image(image.phdrs[i].p_offset, image.phdrs[i].p_filesz)
+        {
+            out.push(s(13, "PT_PHDR is in no PT_LOAD's file image").at(image.phdrs[i].p_vaddr));
+        }
+    }
+    if h.e_phnum > 0 {
+        let len = u64::from(h.e_phnum) * u64::from(h.e_phentsize);
+        if !in_file_image(h.e_phoff, len) {
+            out.push(s(13, "the program header table is in no PT_LOAD's file image"));
+        }
+    }
+    for sec in image.sections.iter().skip(1) {
+        let sh = &sec.shdr;
+        // S14: an allocated NOBITS section is past its PT_LOAD's file image (L-4).
+        if occupies_memory(sh)
+            && sh.sh_type == SHT_NOBITS
+            && sh.sh_size > 0
+            && let Some(p) = image.load_of(sh.sh_addr, sh.sh_size)
+            && sh.sh_addr < p.p_vaddr.saturating_add(p.p_filesz)
+        {
+            out.push(
+                s(14, format!("NOBITS section '{}' lies in its PT_LOAD's file image", sec.name))
+                    .at(sh.sh_addr),
+            );
+        }
+        // S15: sh_addr is a multiple of sh_addralign (L-5).
+        if sh.sh_addralign > 1 && !sh.sh_addr.is_multiple_of(sh.sh_addralign) {
+            out.push(
+                s(15, format!("section '{}' is not aligned to {:#x}", sec.name, sh.sh_addralign))
+                    .at(sh.sh_addr),
+            );
+        }
+        // S17: a non-allocated section is outside every PT_LOAD's file
+        // image (L-18).
+        if sh.sh_flags & SHF_ALLOC == 0 && sh.sh_type != SHT_NOBITS && sh.sh_size > 0 {
+            let (lo, hi) = (sh.sh_offset, sh.sh_offset.saturating_add(sh.sh_size));
+            if loads.iter().any(|p| lo < p.p_offset.saturating_add(p.p_filesz) && p.p_offset < hi) {
+                out.push(s(
+                    17,
+                    format!("non-allocated section '{}' lies in a PT_LOAD's file image", sec.name),
+                ));
+            }
+        }
+    }
+    // S16: RELRO safety for each page size up to the PT_LOADs' p_align (L-8).
+    let max_align = loads.iter().map(|p| p.p_align).max().unwrap_or(0);
+    for r in image.phdrs.iter().filter(|p| p.p_type == PT_GNU_RELRO) {
+        let (lo, hi) = (r.p_vaddr, r.p_vaddr.saturating_add(r.p_memsz));
+        for page in [0x1000u64, 0x4000, 0x10000].into_iter().filter(|&p| p <= max_align.max(0x1000))
+        {
+            // The protected range is [align_down(s), align_down(e)); its
+            // part at or past s is RELRO by the linker's own choice (GNU ld
+            // puts the reserved head of .got.plt there), so a breach is a
+            // writable byte in [align_down(s), s).
+            let (plo, phi) = (lo & !(page - 1), hi & !(page - 1));
+            let below = lo.min(phi);
+            for sec in image.sections.iter().skip(1) {
+                let sh = &sec.shdr;
+                let (a, b) = (sh.sh_addr, sh.sh_addr.saturating_add(sh.sh_size));
+                if occupies_memory(sh)
+                    && sh.sh_flags & SHF_WRITE != 0
+                    && sh.sh_size > 0
+                    && a < below
+                    && plo < b
+                {
+                    out.push(
+                        s(
+                            16,
+                            format!(
+                                "writable section '{}' is made read-only with RELRO under {} KiB pages",
+                                sec.name,
+                                page / 1024
+                            ),
+                        )
+                        .at(a),
+                    );
+                }
+            }
+        }
+    }
+    // S18 (mortar): every PT_LOAD's memory ends at a section's end (L-9).
+    if format == Format::Mortar {
+        let ehsize: u64 = if image.class() == mortar_elf::Class::Elf64 { 64 } else { 52 };
+        let phend = h.e_phoff.saturating_add(u64::from(h.e_phnum) * u64::from(h.e_phentsize));
+        for p in &loads {
+            let end = p.p_vaddr.saturating_add(p.p_memsz);
+            let header_end = (p.p_offset == 0).then(|| p.p_vaddr + phend.max(ehsize));
+            let ends_section = image.sections.iter().skip(1).any(|x| {
+                occupies_memory(&x.shdr) && x.shdr.sh_addr.saturating_add(x.shdr.sh_size) == end
+            });
+            if p.p_memsz > 0 && !ends_section && header_end != Some(end) {
+                out.push(
+                    s(
+                        18,
+                        format!(
+                            "PT_LOAD at {:#x} ends at {end:#x}, which is no section's end",
+                            p.p_vaddr
+                        ),
+                    )
+                    .at(p.p_vaddr),
+                );
+            }
+        }
+    }
+    out
 }
