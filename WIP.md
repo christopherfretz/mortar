@@ -30,10 +30,12 @@ linker × pie/no-pie × lazy/now with `.line` files, `r2/` IBT/BTI shapes;
 - Item 4: P-D12 accepts the kept large-model TLSDESC record exactly
   (`a64_large_desc`); xfail line removed; linktest passes.
 
+- Item 5: `reloc.rs` `patch_stubs` (filled by `erratum.rs`),
+  `symbols.rs` judges `__CortexA53843419_<site>` (value = patch, size
+  8); corpus.rs asserts them judged.
+
 ## Half-done
-- Item 5 (uncommitted): `reloc.rs` `patch_stubs`, `erratum.rs` fills it,
-  `symbols.rs` judges `__CortexA53843419_<site>`, `corpus.rs` no longer
-  allows them. Needs build + corpus test.
+- (none)
 
 ## Learned
 - All three references write the full lazy shape and lazy words under
@@ -42,5 +44,5 @@ linker × pie/no-pie × lazy/now with `.line` files, `r2/` IBT/BTI shapes;
   outputs (36/42 flags missed on a GNU ld x86-64 hello PIE): item 2 row.
 
 ## Next
-- Item 5 test; item 6 (tlsgd-to-ie a64, GNU_UNIQUE, S1 EI_OSABI);
+- Item 6 (tlsgd-to-ie a64, GNU_UNIQUE, S1 EI_OSABI);
   plumb.md §12.2/§12.3 text; cost before/after; record; gate.

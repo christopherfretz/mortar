@@ -441,6 +441,10 @@ pub(crate) struct Engine<'a, 'b> {
     pub(crate) image: &'b Image<'a>,
     pub(crate) objs: &'b [Obj<'a>],
     occupied: Occupied,
+    /// Erratum 843419 patches recognised at a site (`erratum::check`):
+    /// the patch's address -> the site's final word (WP-082: lld's
+    /// `__CortexA53843419_<site>` symbols are judged against it).
+    pub(crate) patch_stubs: BTreeMap<u64, u64>,
     /// Global and weak definitions of the inputs by name.
     pub(crate) defs: HashMap<String, Vec<(usize, u32)>>,
     /// Common definitions (`SHN_COMMON`; x86-64's `SHN_X86_64_LCOMMON`)
@@ -574,6 +578,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             image,
             objs,
             occupied: Occupied::build(objs),
+            patch_stubs: BTreeMap::new(),
             defs,
             commons,
             got,
