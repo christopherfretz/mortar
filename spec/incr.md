@@ -2137,25 +2137,54 @@ Scripts are in the workspace's `.build/review-incr/` (not committed, as
 the brief asks; they need the workspace's bench cache and toolchains).
 `run-all.sh WORK MORTAR` runs them all into `WORK`; each is also
 runnable alone. Tool versions: GCC 14.2.0, Clang/LLD/lldb/llvm-dwarfdump
-19.1.7, GNU ld 2.44, mold 2.37.1, gdb 16.3, kiln 1.2.1 at b6c546bd6, hod
-at 7e30d7c8, Python 3; mortar a release build of this branch's base.
-Host: aarch64, 12 cores, Linux 6.8, container on an overlay file system
-(the workspace on virtiofs); load averages 19–30 throughout.
+19.1.7, GNU ld 2.44, readelf 2.44, mold 2.37.1, gdb 16.3, kiln 1.2.1 at
+b6c546bd6, hod at 7e30d7c8, Python 3; mortar a release build of this
+branch (main `2a31ada` plus spec text). Host: aarch64, 12 cores, Linux
+6.8, container on an overlay file system (the workspace on virtiofs).
+The first draft's experiments ran at load 19–30. The revision's ran at
+the loads given per row; where a row has no timing, its load does not
+matter. The reviewer's scripts were copied from `.build/review-incr-adv/`
+unchanged; edited copies have new names.
+
+The first draft's experiments (still cited where they hold):
 
 | id | what | script | output | load |
 |---|---|---|---|---|
-| E1 | the census: 15 edit classes × 2 units × 20 configurations, object diffs | `census.py WORK` (`--detail` for per-category diffs; `run-census.sh` sets up kiln+hod) using `objdiff.py` | `census.tsv` (600 rows), Table 1 | 20–30 |
-| E2 | full-link phase times of protoc `-g` and without, 5 runs each; input read, `stat` costs | `run-all.sh` part 2: `mortar --time-phases @response` with the bench's static protoc response files, `-o` moved to `WORK`; `cat` of the inputs | §1.5 | 21–29 |
-| E3 | the shape of the protoc link: files, sections, relocations, (unit, target) pairs, fan-out, per-file sizes | `linkstats.py MAP` over `--mortar-map` of R2s `-g` link | §1.4 | 19–30 |
-| E4 | the state's size | derived from R3s counts and IN-19's row widths (not a measurement of a written state) | IN-19 | — |
-| E5 | writing: copy, reflink, positioned writes, `fdatasync`, rename, `ETXTBSY` | `write_cost.py WORK EXE` | §1.5 | 19–30 |
-| E6 | dead compile units: tombstoned (emul) and neutralized (pad) against a full link, gdb and lldb transcripts, `llvm-dwarfdump --verify` | `debug_dead_cu.sh WORK MORTAR` with `dwarf_pad.py` | §1.6 | 19–30 |
+| E1 | the first census: 15 edit classes × 2 units × 20 configurations (superseded by R2) | `census.py WORK` (`run-census.sh` sets up kiln+hod) using `objdiff.py` | `census.tsv` | 20–30 |
+| E2 | full-link phase times, input read and `stat` costs | `run-all.sh` part 2 | §1.3 (`stat` 4.3 µs), §1.5 (superseded by R1) | 21–29 |
+| E3 | the shape of the protoc link | `linkstats.py MAP` | §1.4 | 19–30 |
+| E4 | the state's size, derived (superseded by R12) | — | — | — |
+| E5 | writing: copy, reflink, positioned writes, `fdatasync`, rename, `ETXTBSY` | `write_cost.py WORK EXE` | IN-45, IN-47 (1 GiB copies) | 19–30 |
+| E6, E6b | dead compile units: tombstoned vs neutralized, gdb and lldb transcripts | `debug_dead_cu.sh WORK MORTAR` with `dwarf_pad.py` | §1.6 | 19–30 |
+
+The revision's experiments, numbered as the reviewer's list (its §6):
+
+| id | what | script | output | load |
+|---|---|---|---|---|
+| R1 | baseline at main `2a31ada` (8 runs each), and the floor as a timed emulation: real I/O of every update step, CPU parts derived from `--time-phases` | `baseline.sh WORK MORTAR`; `floor.py WORK MAP OUTPUT RESPONSE CWD TP_FILE --fs DIR --runs 5` | §1.5 | 5–6 (baseline), 9–11 (floor) |
+| R2 | the 40-unit corpus: e1–e10, 20 configurations, 3,440 compiles (the reviewer's helper), plus 1,369 compiles and 54 mortar-linked programs | reviewer's `corpus/` (`gen.py`, `drive.py`, `summarize.py`, `link.py`, `unity.py`, `pch.py`); `corpus2/drive2.py B`, `corpus2/link2.py B` | §1.1 Table 1, §1.2 coarseness table | ~25 (reviewer), 1–2 (corpus2) |
+| R2-A | debug size drift of 745 changed `-g` objects | `corpus2/drift.py B drift.tsv` | §1.1, IN-57 | 1–2 |
+| R2-B | kiln `-g` header edits per object, line-table dumps | `corpus2/hdredit.py B` | §1.1 | 1–2 |
+| R2-B' | MD5 mechanism: Clang, kiln, GCC, Clang `-gdwarf-4` on a same-line header edit | `corpus2/md5_check.sh WORK` | §1.1 | ~1 |
+| R2-C | add/remove a unit, archive member (regular and thin), extraction | `corpus2/link2.py B` | §1.1, §1.3, IN-24 | 1–2 |
+| R3 | the two-full-link oracle over IN-27's rows, and its mutation table | `oracle.py BASE VARIANT`, with copies of the reviewer's `comdat_keeper.sh`, `tls_shift.sh` | IN-27, IN-34, IN-63a, IN-63b | R3_LOAD |
+| R4 | holes in packed sections run under the program | `packed_holes.sh WORK MORTAR` (reviewer's) | IN-30, `results/e4.out` | not timed |
+| R5 | `.eh_frame` hole shapes under libgcc, gdb, lldb, readelf, llvm-dwarfdump | `eh_holes.sh WORK MORTAR` with `ehpatch.py` (modes `cie`, `absorb4`, `min16`, `min12`, …) | IN-34a, `results/e5.out` | not timed |
+| R6 | racy timestamps: the stamp rule against the old rule, 2,000 trials, overlay and virtiofs; the output rewritten within its own tick | `stamp_rule.py INPUT_DIR STATE_DIR 2000`; reviewer's `clock_race.py`, `state_tick.py` | IN-21, IN-22, IN-22a | not timed (stamp costs are medians) |
+| R7 | write safety: `ETXTBSY` and `F_SETLEASE` under `exec`, `ld.so`, qemu-user, gdb, lldb; `/proc` scan cost; debugger views after copy; kill at each IN-46/IN-47 step; sync costs | `write_safety.py WORK --alt DIR`; reviewer's `write_paths.py` | IN-45, IN-46, IN-47, `results/out14.txt`, `out345.txt`, `out45.txt` | 5–11; reviewer ~20 |
+| R8 | debug tail model: size classes, reuse, sum limit, 500 updates, corpus and synthetic drift | `corpus2/debug_tail_reuse.py MAP drift.tsv 500` | IN-33, IN-57, `results/drift-*.tsv` | not timed |
+| — | slack model of IN-33 on the real protoc map and output | `regions2.py MAP ELF [DEBUG_TAIL_FRAC]` | IN-33, §8.1 | not timed |
+| R9 | neutralization at depth (20 dead versions): pad and block forms; neutral forms of every debug section, spliced and appended | `debug_chain.sh WORK 20 MORTAR` with `dwarf_pad.py --form=block`; `neutral_chain.sh WORK dead`, `neutral_chain.sh WORK append` with `dwarf_neutral.py` | IN-51, IN-51b, IN-54 | not timed |
+| R10 | detection of type units, split DWARF and name indexes (18 configurations) | `dwarf_detect.sh WORK` | IN-55, IN-55a | not timed |
+| R11 | PIE `[0, len)` tombstones | not run: mortar refuses `-pie` on this branch | IN-53 | — |
+| R12 | the state written as bytes, its write and read times; armap re-read cost; IN-31's hash inputs | `state_emul.py WORK MAP CWD libprotobuf.a libc.a libstdc++.a` | IN-19, IN-31, `results/e12.out` | ~14 |
+| R13 | IN-2's equivalence check with and without the order clause | `equiv.py OUT_A MAP_A OUT_B MAP_B` | IN-2, IN-62 | not timed |
 
 Incidents during the measurements, recorded for the reviewer: an early
 run of E2 overwrote the bench cache's GNU-ld-built
 `cxx-medium-g-static/build/protoc-3.21.12.0` (the response file's `-o`
 had not been redirected); it was rebuilt by the cache's own GNU ld
 command line and runs (`libprotoc 3.21.12`, 50,062,880 bytes), with a
-new timestamp. An early build of mortar for this package wrote some
+new timestamp. An early build of mortar for the first draft wrote some
 release artifacts into the main checkout's cargo target directory before
-it was stopped and redirected.
+it was stopped and redirected. None in the revision.

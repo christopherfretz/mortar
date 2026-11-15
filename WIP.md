@@ -10,7 +10,7 @@ final commit.
 - record: drafted with (a), (b), (c) and the finding table.
 
 ## Waiting
-- dwarf helper (BRIEF-dwarf.md): IN-51 block form, IN-51b neutral forms,
+- dwarf helper: DONE, folded in.
   IN-52/54/55 Test lines, IN-55 detection (R10), R11 PIE tombstones, §1.6
   note, record's DWARF_UNVERIFIED_PLACEHOLDER.
 - then oracle helper (BRIEF-oracle.md): R3/R13 text, IN-63b
