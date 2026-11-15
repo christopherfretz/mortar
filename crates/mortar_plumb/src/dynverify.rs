@@ -1,4 +1,4 @@
-//! Stage 3's driver (`spec/plumb.md` §12, `spec/dyn.md` P-D1..P-D13): a
+//! Stage 3's driver (`spec/plumb.md` §12, P-D1..P-D13): a
 //! dynamic executable is read, its command line and shared objects are
 //! modelled, the static checks run on the output, and stage 2's engine
 //! judges every input relocation against the loader's views.

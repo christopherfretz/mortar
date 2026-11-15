@@ -1,5 +1,5 @@
 //! The verifier's own model of a dynamic link's shared-object decisions
-//! (stage 3, `spec/dyn.md` P-D2, D-10..D-13, D-19a, D-21, D-25): the
+//! (stage 3, `spec/plumb.md` P-D2; `spec/dyn.md` D-10..D-13, D-19a, D-21, D-25): the
 //! loaded objects (command line and closure, input §8.6), the needed set
 //! N, the used set U, `giver` and `bind`, the expected `DT_NEEDED` order,
 //! imports, exports and the `WeakDyn` keys. Written from the spec, never

@@ -1,4 +1,4 @@
-//! Stage 3 on the references (`spec/plumb.md` §12, `spec/dyn.md` §12):
+//! Stage 3 on the references (`spec/plumb.md` §12):
 //! dynamic executables of GNU ld, lld 22 and mold on AArch64 and x86-64,
 //! each linked through a driver whose `ld` records its words, verified
 //! with the map and the line. The clean links must be clean but for the

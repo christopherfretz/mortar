@@ -93,9 +93,9 @@ fn a_bad_schedule_seed_is_reported() {
     assert_eq!((status, stderr.as_str()), (Some(0), ""));
 }
 
-// spec: docs/ROADMAP.md (M1 links AArch64 and x86-64, WP-029b): an i386
-// link is refused by name after the input phase, an x86-64 one links, and
-// objects of two machines are input.md's `incompatible-file`
+// spec: docs/ROADMAP.md (M1 links AArch64, x86-64 and i386; WP-029b,
+// WP-030c): an x86-64 and an i386 link go through, and objects of two
+// machines (or two classes) are input.md's `incompatible-file`
 #[test]
 fn another_machine_is_refused_by_name() {
     let Some(clang) = mortar_testutil::tool("clang") else { return };
@@ -129,12 +129,13 @@ fn another_machine_is_refused_by_name() {
         (o.status.and_then(|s| s.code()), o.stderr_text())
     };
     assert_eq!(run(&["-e", "f", "x86.o", "-o", "out"]), (Some(0), String::new()));
+    assert_eq!(run(&["-e", "f", "i386.o", "-o", "out"]), (Some(0), String::new()));
     assert_eq!(
-        run(&["-e", "f", "i386.o", "-o", "out"]),
+        run(&["-e", "f", "i386.o", "x86.o", "-o", "out"]),
         (
             Some(1),
-            "mortar: error: unsupported feature: linking for i386\n\
-             >>> M1 links AArch64 and x86-64 (docs/ROADMAP.md)\n"
+            "mortar: error: x86.o: incompatible file: elf32-i386 is expected but got elf64-x86-64\n\
+             >>> the target was set by i386.o\n"
                 .to_owned()
         )
     );

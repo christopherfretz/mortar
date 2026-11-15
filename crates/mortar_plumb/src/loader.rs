@@ -1,4 +1,4 @@
-//! The loader model of stage 3 (`spec/dyn.md` P-D9, P-D10): the output's
+//! The loader model of stage 3 (`spec/plumb.md` P-D9, P-D10): the output's
 //! dynamic records applied as ld.so applies them, in a view (a load bias
 //! and the addresses the libraries' definitions get), giving the bytes the
 //! program sees after loading. Stage 2's engine then judges every input

@@ -1,5 +1,5 @@
 //! The command line of a dynamic link, read by the verifier itself
-//! (stage 3, `spec/plumb.md` §12; `spec/dyn.md` P-D2): the output kind
+//! (stage 3, `spec/plumb.md` §12, P-D2): the output kind
 //! (D-1), the interpreter, `-z now`/`-z norelro`, the run paths, and the
 //! shared-object mentions in order with their `--as-needed` state (D-11,
 //! D-19a), linker scripts expanded inline. Files are read through

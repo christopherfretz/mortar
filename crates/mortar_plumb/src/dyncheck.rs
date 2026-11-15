@@ -1,4 +1,4 @@
-//! Stage 3's static checks of a dynamic image (`spec/dyn.md` §12: P-D1,
+//! Stage 3's static checks of a dynamic image (`spec/plumb.md` §12: P-D1,
 //! P-D4..P-D8, P-D10..P-D13, and P-D9's record-order part). Where the
 //! references differ by design (`dyn.md` §13.1) a reference output is
 //! judged by its own linker's form; `Format::Mortar` is judged by the
