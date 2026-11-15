@@ -29,7 +29,12 @@ impl Source for Inputs<'_> {
 
 /// Fills `out` with the bytes `range` of `file`: a copy from the resident
 /// slice, or one `copy_to`.
-pub(crate) fn read(src: &dyn Source, file: FileId, range: Range<u64>, out: &mut [u8]) -> Result<(), CopyError> {
+pub(crate) fn read(
+    src: &dyn Source,
+    file: FileId,
+    range: Range<u64>,
+    out: &mut [u8],
+) -> Result<(), CopyError> {
     match src.resident(file, range.clone()) {
         Some(bytes) if bytes.len() == out.len() => {
             out.copy_from_slice(bytes);

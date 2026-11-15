@@ -99,10 +99,18 @@ struct Worker {
 ///
 /// Errors are concatenated in job order; a write error is the one of the
 /// lowest failing window (I-64), keyed `(105, 0, 0)` (I-68).
-pub fn write(img: &Image<'_>, sink: &dyn Sink, output_path: &str, pool: &Pool) -> Result<Filled, Failed> {
+pub fn write(
+    img: &Image<'_>,
+    sink: &dyn Sink,
+    output_path: &str,
+    pool: &Pool,
+) -> Result<Filled, Failed> {
     let plan = img.plan;
     if img.build_id.is_some() && plan.window != crate::IMAGE_BLOCK {
-        let what = format!("fill: a build id needs W = IMAGE_BLOCK, the plan has {:#x} (I-75)", plan.window);
+        let what = format!(
+            "fill: a build id needs W = IMAGE_BLOCK, the plan has {:#x} (I-75)",
+            plan.window
+        );
         return Err(Failed { diagnostics: vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))] });
     }
     let mut outs: Vec<JobOut> = plan.jobs.iter().map(|_| JobOut::default()).collect();
@@ -133,7 +141,9 @@ pub fn write(img: &Image<'_>, sink: &dyn Sink, output_path: &str, pool: &Pool) -
             Ok(id) => id,
             Err(e) => {
                 let what = format!("fill: build id: {e}");
-                return Err(Failed { diagnostics: vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))] });
+                return Err(Failed {
+                    diagnostics: vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))],
+                });
             }
         };
         if let Some(sealed) = &plan.sealed {
@@ -201,12 +211,18 @@ fn fill_into(
                     .map_err(|err| fail(source::copy_error(err, &plan.path(u.file))))?;
                 if let Some(r) = u.relocs {
                     let rs = &plan.relocs[r as usize];
-                    reloc::relocate(img, scratch, u, rs, u.start + a, u.start + b, dst, errs).map_err(fail)?;
+                    reloc::relocate(img, scratch, u, rs, u.start + a, u.start + b, dst, errs)
+                        .map_err(fail)?;
                 }
             }
             Unit::Synth(i) => {
                 let su = &plan.synth[i as usize];
-                let cx = FillCx { tables: img.tables, output: img.output, got_base: img.got_base, tls: img.tls };
+                let cx = FillCx {
+                    tables: img.tables,
+                    output: img.output,
+                    got_base: img.got_base,
+                    tls: img.tls,
+                };
                 let Some(chunk) = img.chunks.get(su.chunk as usize) else {
                     let what = format!("fill: no synthetic chunk {} (model §4.4)", su.chunk);
                     errs.push((Key::new(PHASE_IMAGE, 0, u64::from(su.id.0)), internal(what)));
@@ -233,7 +249,13 @@ fn internal(what: String) -> Diagnostic {
 }
 
 /// I-106: a synthetic chunk's error at `(100, 0, ChunkId)`.
-fn synth_error(img: &Image<'_>, id: mortar_core::ChunkId, name: u32, chunk_off: u64, err: SynthError) -> (Key, Diagnostic) {
+fn synth_error(
+    img: &Image<'_>,
+    id: mortar_core::ChunkId,
+    name: u32,
+    chunk_off: u64,
+    err: SynthError,
+) -> (Key, Diagnostic) {
     let section = String::from_utf8_lossy(img.plan.name(name)).into_owned();
     match err {
         SynthError::Field { error, offset, what, target } => {

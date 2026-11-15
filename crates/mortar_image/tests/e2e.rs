@@ -121,7 +121,18 @@ fn build(dir: &TempDir, lang: &str) -> Option<Built> {
         let s = dir.path(&format!("prog{i}.{ext}"));
         std::fs::write(&s, src).unwrap();
         let o = dir.path(&format!("prog{i}.o"));
-        let out = run(&cc, ["-g".as_ref(), opt.as_ref(), "-fno-pie".as_ref(), "-c".as_ref(), s.as_os_str(), "-o".as_ref(), o.as_os_str()]);
+        let out = run(
+            &cc,
+            [
+                "-g".as_ref(),
+                opt.as_ref(),
+                "-fno-pie".as_ref(),
+                "-c".as_ref(),
+                s.as_os_str(),
+                "-o".as_ref(),
+                o.as_os_str(),
+            ],
+        );
         assert!(out.success(), "{lang} compile: {}", out.stderr_text());
         objs.push(o);
     }
@@ -143,7 +154,10 @@ fn build(dir: &TempDir, lang: &str) -> Option<Built> {
     Some(Built {
         exe: RefExe::parse(std::fs::read(&exe).unwrap()),
         map: std::fs::read_to_string(&map).unwrap(),
-        objects: objs.iter().map(|o| (o.display().to_string(), std::fs::read(o).unwrap())).collect(),
+        objects: objs
+            .iter()
+            .map(|o| (o.display().to_string(), std::fs::read(o).unwrap()))
+            .collect(),
     })
 }
 
@@ -151,12 +165,21 @@ fn check(lang: &str) {
     let dir = TempDir::new(&format!("e2e-{lang}"));
     let Some(b) = build(&dir, lang) else { return };
     let map = parse_map(&b.map);
-    let objects: Vec<(&str, &[u8])> = b.objects.iter().map(|(n, o)| (n.as_str(), o.as_slice())).collect();
+    let objects: Vec<(&str, &[u8])> =
+        b.objects.iter().map(|(n, o)| (n.as_str(), o.as_slice())).collect();
     for window in [mortar_image::IMAGE_BLOCK, 4096] {
         let w = ref_world(&b.exe, &map, &objects, window);
-        assert!(w.disagree.is_empty(), "{lang}: map placement disagrees with the symbol table: {:?}", w.disagree);
-        let names: std::collections::BTreeSet<&str> = w.units.iter().map(|u| u.name.as_str()).collect();
-        assert!(names.contains(".text") && names.contains(".debug_info"), "{lang}: units {names:?}");
+        assert!(
+            w.disagree.is_empty(),
+            "{lang}: map placement disagrees with the symbol table: {:?}",
+            w.disagree
+        );
+        let names: std::collections::BTreeSet<&str> =
+            w.units.iter().map(|u| u.name.as_str()).collect();
+        assert!(
+            names.contains(".text") && names.contains(".debug_info"),
+            "{lang}: units {names:?}"
+        );
         let records: usize = w.units.iter().map(|u| u.records).sum();
         let img = Image {
             plan: &w.plan,
@@ -178,7 +201,12 @@ fn check(lang: &str) {
             let (compared, diffs) = compare(&w, &ours, &b.exe.bytes);
             let (tombs, bad) = check_tombstones(&w, &ours);
             assert!(bad.is_empty(), "{lang}: tombstones not I-47's: {bad:?}");
-            assert!(diffs.is_empty(), "{lang} window {window} threads {threads}: {} differences, first {:?}", diffs.len(), &diffs[..diffs.len().min(8)]);
+            assert!(
+                diffs.is_empty(),
+                "{lang} window {window} threads {threads}: {} differences, first {:?}",
+                diffs.len(),
+                &diffs[..diffs.len().min(8)]
+            );
             if threads == 1 && window == mortar_image::IMAGE_BLOCK {
                 eprintln!(
                     "e2e {lang}: {} units, {compared} bytes compared, {records} records applied ({} to dead targets, {tombs} tombstones checked), left out {:?}",
@@ -187,7 +215,10 @@ fn check(lang: &str) {
                     w.left
                 );
             }
-            assert!(compared > 1000 && records > 50, "{lang}: too little compared ({compared} bytes, {records} records)");
+            assert!(
+                compared > 1000 && records > 50,
+                "{lang}: too little compared ({compared} bytes, {records} records)"
+            );
             assert!(lang == "c" || w.dead > 0, "{lang}: no record against a discarded COMDAT copy");
         }
     }

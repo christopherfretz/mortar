@@ -33,7 +33,11 @@ fn i33_bytes_do_not_depend_on_the_window() {
             let got = fill_mem(&img, &Pool::new(4)).expect("fill");
             assert_eq!(got.len() as u64, world.plan.file_size);
             let want = reference(&img);
-            assert!(got == want, "seed {seed}, W' {w}: differs from the reference at {:?}", first_diff(&got, &want));
+            assert!(
+                got == want,
+                "seed {seed}, W' {w}: differs from the reference at {:?}",
+                first_diff(&got, &want)
+            );
             outs.push(got);
         }
         assert!(outs.windows(2).all(|p| p[0] == p[1]));
@@ -66,7 +70,10 @@ fn rewindow(w: World, window: u64) -> World {
 }
 
 fn first_diff(a: &[u8], b: &[u8]) -> Option<usize> {
-    a.iter().zip(b).position(|(x, y)| x != y).or((a.len() != b.len()).then_some(a.len().min(b.len())))
+    a.iter()
+        .zip(b)
+        .position(|(x, y)| x != y)
+        .or((a.len() != b.len()).then_some(a.len().min(b.len())))
 }
 
 // spec: image.md I-32, I-33, rule 6, §16.2: every thread count and seed of
@@ -172,7 +179,13 @@ fn i36_straddling_field_is_written_by_both_jobs_and_reported_once() {
     assert_eq!(err.diagnostics[0].1.id(), "relocation-out-of-range");
     assert_eq!(err.diagnostics[0].0, mortar_arch::cx::fill_key(FileId(1), 1, 1));
     // Without the bad call, the straddling field equals the reference.
-    let world = one_section(&words, at, vec![Reloc { r_offset: 60, key: key(1), r_type: ABS64, addend: 5 }], 2 * w, w);
+    let world = one_section(
+        &words,
+        at,
+        vec![Reloc { r_offset: 60, key: key(1), r_type: ABS64, addend: 5 }],
+        2 * w,
+        w,
+    );
     let img = image(&world, &chunks);
     let got = fill_mem(&img, &Pool::new(2)).unwrap();
     assert_eq!(got, reference(&img));
@@ -186,8 +199,15 @@ fn i36_straddling_field_is_written_by_both_jobs_and_reported_once() {
 fn i29_permuted_and_overlapping_records() {
     let w = 4096u64;
     let words = vec![0u32; 2048];
-    let mut records: Vec<Reloc> =
-        (0..200u64).rev().map(|k| Reloc { r_offset: 8 * k + 4000, key: key(1 + (k % 5) as u32), r_type: ABS64, addend: k as i64 }).collect();
+    let mut records: Vec<Reloc> = (0..200u64)
+        .rev()
+        .map(|k| Reloc {
+            r_offset: 8 * k + 4000,
+            key: key(1 + (k % 5) as u32),
+            r_type: ABS64,
+            addend: k as i64,
+        })
+        .collect();
     // Two records at overlapping fields: the later in record order wins.
     records.push(Reloc { r_offset: 4004, key: key(6), r_type: ABS32, addend: 1 });
     let world = one_section(&words, 100, records, 3 * w, w);
@@ -210,7 +230,12 @@ fn i41_gaps_patterns_and_zero_size_rows() {
     b.pad(13..22, t.trap);
     b.pad(40..50, t.nop);
     let plan = b.finish(16, &Pool::sequential()).unwrap();
-    let world = World { plan, source: MemSource::default(), tables: FakeTables::default(), chunks: Vec::new() };
+    let world = World {
+        plan,
+        source: MemSource::default(),
+        tables: FakeTables::default(),
+        chunks: Vec::new(),
+    };
     let chunks = Vec::new();
     let img = image(&world, &chunks);
     let got = fill_mem(&img, &Pool::sequential()).unwrap();
@@ -340,7 +365,12 @@ fn i47_tombstone_table() {
         (b".data", false, 8, None),
     ];
     for (name, alloc, width, want) in cases {
-        assert_eq!(field(a, name, alloc, width), want, "{} alloc {alloc} width {width}", String::from_utf8_lossy(name));
+        assert_eq!(
+            field(a, name, alloc, width),
+            want,
+            "{} alloc {alloc} width {width}",
+            String::from_utf8_lossy(name)
+        );
     }
     for name in [&b".line"[..], b".stab", b".gnu.linkonce.wi.x", b".gnu.debuglto_.debug_info"] {
         assert!(field(a, name, false, 8).is_some());
@@ -381,7 +411,12 @@ fn tomb_world(name: &[u8], second: Option<u64>) -> Vec<u8> {
     let mut tables = FakeTables::default();
     tables.define(key(1), 0x1234, false);
     tables.define(key(2), 0x40_0000, true);
-    let world = World { plan: b.finish(4096, &Pool::sequential()).unwrap(), source, tables, chunks: Vec::new() };
+    let world = World {
+        plan: b.finish(4096, &Pool::sequential()).unwrap(),
+        source,
+        tables,
+        chunks: Vec::new(),
+    };
     let chunks = Vec::new();
     let img = image(&world, &chunks);
     let got = fill_mem(&img, &Pool::sequential()).unwrap();
@@ -399,7 +434,11 @@ fn i112_aranges_length_is_zeroed() {
     assert_eq!(&got[16..], &[0x77; 16]);
     let got = tomb_world(b".debug_aranges", Some(8));
     assert_eq!(&got[0..8], &[0xff; 8]);
-    assert_eq!(u64::from_le_bytes(got[8..16].try_into().unwrap()), 0x40_0000, "a record's field is kept");
+    assert_eq!(
+        u64::from_le_bytes(got[8..16].try_into().unwrap()),
+        0x40_0000,
+        "a record's field is kept"
+    );
     let got = tomb_world(b".debug_ranges", None);
     assert_eq!(u64::from_le_bytes(got[0..8].try_into().unwrap()), 1);
     assert_eq!(&got[8..16], &[0x77; 8]);
@@ -426,7 +465,12 @@ fn i73_build_id_matches_the_reference_tree() {
         Box::new(Counting { size: 64, seed: 9, sealed: Some(16..36) }),
         Box::new(Counting { size: chunk_at, seed: 1, sealed: None }),
     ];
-    let world = World { plan: b.finish(w, &Pool::sequential()).unwrap(), source: MemSource::default(), tables: FakeTables::default(), chunks };
+    let world = World {
+        plan: b.finish(w, &Pool::sequential()).unwrap(),
+        source: MemSource::default(),
+        tables: FakeTables::default(),
+        chunks,
+    };
     let chunks = chunks_of(&world);
     for style in [TreeStyle::Default, TreeStyle::Fast, TreeStyle::Sha1, TreeStyle::Sha256] {
         let mut img = image(&world, &chunks);
@@ -449,7 +493,12 @@ fn i73_build_id_matches_the_reference_tree() {
     // A window other than IMAGE_BLOCK cannot hash leaves (I-75).
     let mut b = Builder::new(a64(), 100);
     b.bytes(0, vec![0; 100].into_boxed_slice());
-    let world = World { plan: b.finish(4096, &Pool::sequential()).unwrap(), source: MemSource::default(), tables: FakeTables::default(), chunks: Vec::new() };
+    let world = World {
+        plan: b.finish(4096, &Pool::sequential()).unwrap(),
+        source: MemSource::default(),
+        tables: FakeTables::default(),
+        chunks: Vec::new(),
+    };
     let mut img = image(&world, &[]);
     img.build_id = Some(TreeStyle::Default);
     assert!(fill_mem(&img, &Pool::sequential()).is_err());
@@ -507,16 +556,31 @@ fn i111_max_reach_bounds_every_write() {
     worlds.push(gd);
     let mut checked = 0;
     for w in &worlds {
-        let cx = FillCx { tables: &w.tables, output: OutputKind::Static, got_base: None, tls: Some(TLS) };
+        let cx = FillCx {
+            tables: &w.tables,
+            output: OutputKind::Static,
+            got_base: None,
+            tls: Some(TLS),
+        };
         for u in w.plan.inputs.iter() {
             let Some(r) = u.relocs else { continue };
             let rs = &w.plan.relocs[r as usize];
             let mut input = vec![0u8; u.section_size as usize];
-            mortar_image::source::Source::copy_to(&w.source, u.file, u.src..u.src + u.section_size, &mut input).unwrap();
+            mortar_image::source::Source::copy_to(
+                &w.source,
+                u.file,
+                u.src..u.src + u.section_size,
+                &mut input,
+            )
+            .unwrap();
             let name = w.plan.name(u.name).to_vec();
             let recs: &[Reloc] = &rs.records;
             for (i, rec) in recs.iter().enumerate() {
-                let Ok(h) = ARCH_M2.classify(rec.r_type, Site { bytes: &input, offset: rec.r_offset }) else { continue };
+                let Ok(h) =
+                    ARCH_M2.classify(rec.r_type, Site { bytes: &input, offset: rec.r_offset })
+                else {
+                    continue;
+                };
                 let at = RelocAt {
                     file: u.file,
                     section: u.section,
@@ -541,7 +605,12 @@ fn i111_max_reach_bounds_every_write() {
                     let hi = rec.r_offset + u64::from(h.field.width()) + after;
                     for (k, b) in bytes.iter().enumerate() {
                         if *b != fillb {
-                            assert!((lo..hi).contains(&(k as u64)), "{} at {:#x} wrote {k:#x}", h.name, rec.r_offset);
+                            assert!(
+                                (lo..hi).contains(&(k as u64)),
+                                "{} at {:#x} wrote {k:#x}",
+                                h.name,
+                                rec.r_offset
+                            );
                         }
                     }
                 }

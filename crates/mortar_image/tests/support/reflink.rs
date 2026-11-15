@@ -80,7 +80,13 @@ pub fn parse_map(text: &str) -> Vec<MapLine> {
                 && toks.len() >= 3
                 && let (Some(addr), Some(size)) = (hex(toks[0]), hex(toks[1]))
             {
-                out.push(MapLine { out: cur_out.clone(), input: name, addr, size, file: toks[2..].join(" ") });
+                out.push(MapLine {
+                    out: cur_out.clone(),
+                    input: name,
+                    addr,
+                    size,
+                    file: toks[2..].join(" "),
+                });
             }
             continue;
         }
@@ -96,7 +102,13 @@ pub fn parse_map(text: &str) -> Vec<MapLine> {
         if toks.len() >= 4
             && let (Some(addr), Some(size)) = (hex(toks[1]), hex(toks[2]))
         {
-            out.push(MapLine { out: cur_out.clone(), input: name.to_owned(), addr, size, file: toks[3..].join(" ") });
+            out.push(MapLine {
+                out: cur_out.clone(),
+                input: name.to_owned(),
+                addr,
+                size,
+                file: toks[3..].join(" "),
+            });
         }
         pending = None;
     }
@@ -156,7 +168,8 @@ impl RefExe {
         for i in 0..shnum {
             let h = hdr(i);
             let s = ExeSection {
-                name: String::from_utf8_lossy(cstr(b, names_off + rd(b, h, 4) as usize)).into_owned(),
+                name: String::from_utf8_lossy(cstr(b, names_off + rd(b, h, 4) as usize))
+                    .into_owned(),
                 sh_type: rd(b, h + 4, 4) as u32,
                 flags: rd(b, h + 8, 8),
                 addr: rd(b, h + 16, 8),
@@ -179,7 +192,8 @@ impl RefExe {
                 if shndx == 0 || name.is_empty() {
                     continue;
                 }
-                let sym = ExeSym { value: rd(b, e + 8, 8), st_type: info & 0xf, global: info >> 4 != 0 };
+                let sym =
+                    ExeSym { value: rd(b, e + 8, 8), st_type: info & 0xf, global: info >> 4 != 0 };
                 match syms.get(&name) {
                     Some(ExeSym { global: true, .. }) if !sym.global => {}
                     _ => {
@@ -205,10 +219,12 @@ impl RefExe {
         let b = &self.bytes;
         let phoff = rd(b, 0x20, 8) as usize;
         let phnum = rd(b, 0x38, 2) as usize;
-        (0..phnum).map(|i| phoff + 56 * i).find(|&p| rd(b, p, 4) == 7).map(|p| mortar_arch::TlsBlock {
-            start: rd(b, p + 16, 8),
-            size: rd(b, p + 40, 8),
-            align: rd(b, p + 48, 8),
+        (0..phnum).map(|i| phoff + 56 * i).find(|&p| rd(b, p, 4) == 7).map(|p| {
+            mortar_arch::TlsBlock {
+                start: rd(b, p + 16, 8),
+                size: rd(b, p + 40, 8),
+                align: rd(b, p + 48, 8),
+            }
         })
     }
 }
@@ -280,7 +296,12 @@ fn left_for(r_type: u32) -> Option<Left> {
 /// Places the input sections of `objects` (name as the map shows it, and
 /// bytes) where `map` says, and builds the plan of the whole executable.
 #[must_use]
-pub fn ref_world(exe: &RefExe, map: &[MapLine], objects: &[(&str, &[u8])], window: u64) -> RefWorld {
+pub fn ref_world(
+    exe: &RefExe,
+    map: &[MapLine],
+    objects: &[(&str, &[u8])],
+    window: u64,
+) -> RefWorld {
     let pool = mortar_core::par::Pool::new(2);
     let mut source = MemSource::default();
     let mut tables = FakeTables::default();
@@ -317,7 +338,9 @@ pub fn ref_world(exe: &RefExe, map: &[MapLine], objects: &[(&str, &[u8])], windo
             let k = seen.entry(name.clone()).or_default();
             // A same-name section of size 0 is still listed; match by order
             // among the sections listed with that name and size.
-            let Some(pos) = ls.iter().enumerate().skip(*k).find(|(_, l)| l.size == s.size()).map(|(i, _)| i) else {
+            let Some(pos) =
+                ls.iter().enumerate().skip(*k).find(|(_, l)| l.size == s.size()).map(|(i, _)| i)
+            else {
                 continue;
             };
             *k = pos + 1;
@@ -335,13 +358,18 @@ pub fn ref_world(exe: &RefExe, map: &[MapLine], objects: &[(&str, &[u8])], windo
             let sect = symtab.section_of(si, &sym).unwrap();
             let local = sym.binding() == 0;
             match sect {
-                SymbolSection::Section(SectionIndex(x)) if local || sym.st_info & 0xf == STT_SECTION => {
+                SymbolSection::Section(SectionIndex(x))
+                    if local || sym.st_info & 0xf == STT_SECTION =>
+                {
                     if let Some(&(addr, _)) = placed.get(&x) {
                         tables.define(k, addr + sym.st_value, true);
                     } else if merge.contains(&x) {
                         tables.names.insert(k, b"<merge>".to_vec());
                     } else {
-                        tables.syms.insert(k, SymValue { s: 0, kind: TargetKind::Local, size: 0, live: false });
+                        tables.syms.insert(
+                            k,
+                            SymValue { s: 0, kind: TargetKind::Local, size: 0, live: false },
+                        );
                     }
                 }
                 SymbolSection::Absolute => {
@@ -398,7 +426,10 @@ pub fn ref_world(exe: &RefExe, map: &[MapLine], objects: &[(&str, &[u8])], windo
                 }
                 if r.r_sym != 0 && !tables.syms[&k].live {
                     dead += 1;
-                    let name = String::from_utf8_lossy(obj.section(SectionIndex(target)).unwrap().name().unwrap()).into_owned();
+                    let name = String::from_utf8_lossy(
+                        obj.section(SectionIndex(target)).unwrap().name().unwrap(),
+                    )
+                    .into_owned();
                     if let Some(&(_, Some(off))) = placed.get(&target) {
                         let w = field_width(r.r_type);
                         if name == ".debug_aranges" {
@@ -436,27 +467,41 @@ pub fn ref_world(exe: &RefExe, map: &[MapLine], objects: &[(&str, &[u8])], windo
             let relocs = (!records.is_empty()).then(|| {
                 let order = RecOrder::of(&records);
                 let proof = if exec {
-                    vec![ProofRun { start: 0, end: s.size(), proof: Proof::Insn, unit: 0, unit_offset: 0 }]
+                    vec![ProofRun {
+                        start: 0,
+                        end: s.size(),
+                        proof: Proof::Insn,
+                        unit: 0,
+                        unit_offset: 0,
+                    }]
                 } else {
                     Vec::new()
                 };
-                b.relocs(RelocSection { records: records.into_boxed_slice(), order, proof: proof.into_boxed_slice() })
+                b.relocs(RelocSection {
+                    records: records.into_boxed_slice(),
+                    order,
+                    proof: proof.into_boxed_slice(),
+                })
             });
             let name_id = b.name(name.as_bytes());
             let src = s.file_range().unwrap().expect("bytes").start as u64;
             let alloc = s.flags() & SHF_ALLOC != 0;
-            b.input(off, s.size(), InputUnit {
-                file,
-                index: x,
-                section: SectionId(next_section),
-                src,
-                start: 0,
-                section_size: s.size(),
-                addr,
-                alloc,
-                name: name_id,
-                relocs,
-            });
+            b.input(
+                off,
+                s.size(),
+                InputUnit {
+                    file,
+                    index: x,
+                    section: SectionId(next_section),
+                    src,
+                    start: 0,
+                    section_size: s.size(),
+                    addr,
+                    alloc,
+                    name: name_id,
+                    relocs,
+                },
+            );
             next_section += 1;
             units.push(RefUnit { file: fi, name, offset: off, size: s.size(), records: nrec });
         }
@@ -514,7 +559,11 @@ pub fn check_tombstones(w: &RefWorld, ours: &[u8]) -> (usize, Vec<(u64, String, 
         let want = if name == LENGTH {
             0
         } else {
-            let Some(v) = mortar_image::tombstone::field(&super::ARCH, name.as_bytes(), false, *width as u8) else { continue };
+            let Some(v) =
+                mortar_image::tombstone::field(&super::ARCH, name.as_bytes(), false, *width as u8)
+            else {
+                continue;
+            };
             v
         };
         let got = rd(ours, *off as usize, *width as usize);

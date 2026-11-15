@@ -65,7 +65,11 @@ fn i113_existing_output_and_hard_link() {
     assert_eq!(fs::read(&p).unwrap(), b"new");
     assert_ne!(identity(&p).unwrap(), old);
     assert_eq!(fs::read(d.path("other")).unwrap(), b"old");
-    assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o777 & !umask(), "mode not kept");
+    assert_eq!(
+        fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+        0o777 & !umask(),
+        "mode not kept"
+    );
     assert_eq!(d.names(), vec!["a.out", "other"]);
 }
 
@@ -135,7 +139,8 @@ fn i64_dev_full_write_error() {
         return;
     }
     let world = random_world(2, 64 * 1024, 4096);
-    let chunks: Vec<&dyn mortar_image::synth::SynthChunk> = world.chunks.iter().map(|c| &**c as _).collect();
+    let chunks: Vec<&dyn mortar_image::synth::SynthChunk> =
+        world.chunks.iter().map(|c| &**c as _).collect();
     let img = image(&world, &chunks);
     let out = Output::create(p, &opts()).unwrap();
     let e = fill::write(&img, &out, out.shown(), &Pool::new(2)).unwrap_err();
@@ -163,9 +168,10 @@ fn i58_fifo_socket_block_device_refused() {
     let (_, e) = Output::create(&sock, &opts()).unwrap_err();
     assert!(format!("{e:?}").contains("output is a socket"));
     let block = fs::read_dir("/dev").ok().and_then(|it| {
-        it.filter_map(Result::ok)
-            .map(|e| e.path())
-            .find(|p| fs::metadata(p).is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_block_device(&m.file_type())))
+        it.filter_map(Result::ok).map(|e| e.path()).find(|p| {
+            fs::metadata(p)
+                .is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_block_device(&m.file_type()))
+        })
     });
     match block {
         Some(b) => {
@@ -218,7 +224,11 @@ fn i59_stale_temporary_is_reused() {
     out.commit().unwrap();
     if enforced {
         assert_eq!(d.names(), vec!["a.out"], "T0 reused and renamed");
-        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o777 & !umask(), "this link's mode");
+        assert_eq!(
+            fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o777 & !umask(),
+            "this link's mode"
+        );
     } else {
         eprintln!("flock is not enforced on {}: T0 kept", d.dir().display());
         assert_eq!(d.names(), vec![".a.out.mortar-tmp", "a.out"]);
@@ -273,12 +283,17 @@ fn i59_read_only_directory() {
     let p = sub.join("a.out");
     let probe = fs::write(sub.join("probe"), b"");
     if probe.is_ok() {
-        eprintln!("running as root: permissions are bypassed; the case is checked by its error path only");
+        eprintln!(
+            "running as root: permissions are bypassed; the case is checked by its error path only"
+        );
         let _ = fs::remove_file(sub.join("probe"));
     } else {
         let (_, e) = Output::create(&p, &opts()).unwrap_err();
         let text = format!("{:?}", e.kind());
-        assert!(text.contains(&*p.to_string_lossy()) && text.contains("Permission denied"), "{text}");
+        assert!(
+            text.contains(&*p.to_string_lossy()) && text.contains("Permission denied"),
+            "{text}"
+        );
     }
     fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
     // A missing directory: the same kind, naming P.
@@ -299,7 +314,8 @@ fn i65_failed_fill_leaves_nothing() {
     let u = world.plan.inputs.iter().find(|u| u.section_size > 64).unwrap().clone();
     world.source.fail = Some((u.file, u.src + 8));
     world.source.files.get_mut(&u.file).unwrap().1 = false;
-    let chunks: Vec<&dyn mortar_image::synth::SynthChunk> = world.chunks.iter().map(|c| &**c as _).collect();
+    let chunks: Vec<&dyn mortar_image::synth::SynthChunk> =
+        world.chunks.iter().map(|c| &**c as _).collect();
     let img = image(&world, &chunks);
     let out = Output::create(&p, &opts()).unwrap();
     let r = fill::write(&img, &out, out.shown(), &Pool::new(4));
@@ -352,7 +368,8 @@ fn i63_fill_into_the_output_file() {
     let d = TempDir::new("e2e");
     let p = d.path("a.out");
     let world = random_world(21, 3 * 1024 * 1024, 65536);
-    let chunks: Vec<&dyn mortar_image::synth::SynthChunk> = world.chunks.iter().map(|c| &**c as _).collect();
+    let chunks: Vec<&dyn mortar_image::synth::SynthChunk> =
+        world.chunks.iter().map(|c| &**c as _).collect();
     let img = image(&world, &chunks);
     let want = reference(&img);
     for threads in [1, 3, 8] {

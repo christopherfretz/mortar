@@ -172,8 +172,15 @@ impl Output {
                 return Err((key, d.note(note)));
             }
         }
-        let (file, tmp) = Self::temp(path, opts).map_err(|e| cannot_open(&shown, open_reason(&e)))?;
-        let mut out = Self { path: path.to_path_buf(), shown, target: Some(Target::Temp { file, path: tmp }), aside: None, helper: None };
+        let (file, tmp) =
+            Self::temp(path, opts).map_err(|e| cannot_open(&shown, open_reason(&e)))?;
+        let mut out = Self {
+            path: path.to_path_buf(),
+            shown,
+            target: Some(Target::Temp { file, path: tmp }),
+            aside: None,
+            helper: None,
+        };
         // I-113: set the old output aside, unless it is an input.
         if let Some(m) = link
             && (m.file_type().is_file() || m.file_type().is_symlink())

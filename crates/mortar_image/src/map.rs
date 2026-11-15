@@ -129,7 +129,9 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         let mut s = String::new();
         for p in &map.placed[id] {
             let _ = match *p {
-                Placed::Place { section, addr, size } => writeln!(s, "place {id} {section} {addr:x} {size:x}"),
+                Placed::Place { section, addr, size } => {
+                    writeln!(s, "place {id} {section} {addr:x} {size:x}")
+                }
                 Placed::Piece { section, input_offset, addr, size } => {
                     writeln!(s, "piece {id} {section} {input_offset:x} {addr:x} {size:x}")
                 }

@@ -20,7 +20,9 @@ use mortar_core::par::Pool;
 use mortar_core::{ChunkId, FileId, SectionId, SymKey, SymbolId};
 use mortar_diag::FileRef;
 use mortar_image::fill::{Image, Sink, Tables};
-use mortar_image::plan::{Builder, InputUnit, Pattern, Plan, RecOrder, RelocSection, SynthUnit, Unit};
+use mortar_image::plan::{
+    Builder, InputUnit, Pattern, Plan, RecOrder, RelocSection, SynthUnit, Unit,
+};
 use mortar_image::source::Source;
 use mortar_image::synth::{Division, SizeCx, SynthChunk, SynthError};
 use mortar_image::target::Target;
@@ -84,7 +86,8 @@ impl Source for MemSource {
             return Err(CopyError::Read(Errno(5)));
         }
         let (bytes, _) = self.files.get(&file).ok_or(CopyError::OutOfRange)?;
-        let src = bytes.get(range.start as usize..range.end as usize).ok_or(CopyError::OutOfRange)?;
+        let src =
+            bytes.get(range.start as usize..range.end as usize).ok_or(CopyError::OutOfRange)?;
         if src.len() != out.len() {
             return Err(CopyError::OutOfRange);
         }
@@ -236,7 +239,8 @@ impl SynthChunk for Summing {
 pub fn reference(img: &Image<'_>) -> Vec<u8> {
     let plan = img.plan;
     let mut file = vec![0u8; plan.file_size as usize];
-    let cx = FillCx { tables: img.tables, output: img.output, got_base: img.got_base, tls: img.tls };
+    let cx =
+        FillCx { tables: img.tables, output: img.output, got_base: img.got_base, tls: img.tls };
     for row in plan.rows.iter() {
         let dst = &mut file[row.offset as usize..row.end() as usize];
         match row.unit {
@@ -277,7 +281,8 @@ fn reference_relocs(
     let name = img.plan.name(u.name).to_vec();
     let records: &[Reloc] = &rs.records;
     for (i, rec) in records.iter().enumerate() {
-        let Ok(howto) = img.arch.classify(rec.r_type, Site { bytes: input, offset: rec.r_offset }) else {
+        let Ok(howto) = img.arch.classify(rec.r_type, Site { bytes: input, offset: rec.r_offset })
+        else {
             continue;
         };
         if let Field::Data { bytes: w } = howto.field
@@ -291,7 +296,9 @@ fn reference_relocs(
             if name == tombstone::ARANGES
                 && rec.r_type == img.plan.target.abs_addr
                 && img.tables.target_alloc(rec.key)
-                && !records.iter().any(|x| (rec.r_offset + w as u64..rec.r_offset + 2 * w as u64).contains(&x.r_offset))
+                && !records.iter().any(|x| {
+                    (rec.r_offset + w as u64..rec.r_offset + 2 * w as u64).contains(&x.r_offset)
+                })
                 && o + 2 * w <= sec.len()
             {
                 sec[o + w..o + 2 * w].fill(0);
@@ -324,7 +331,8 @@ pub struct Gen(pub u64);
 
 impl Gen {
     pub fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        self.0 =
+            self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
         self.0 >> 17
     }
     pub fn below(&mut self, n: u64) -> u64 {
@@ -393,15 +401,30 @@ fn code(g: &mut Gen, words: usize, syms: u32) -> GenSection {
         match g.below(6) {
             0 => {
                 ws[k] = BL;
-                records.push(Reloc { r_offset: 4 * k as u64, key: live_key(g, syms), r_type: CALL26, addend: 0 });
+                records.push(Reloc {
+                    r_offset: 4 * k as u64,
+                    key: live_key(g, syms),
+                    r_type: CALL26,
+                    addend: 0,
+                });
             }
             1 => {
                 ws[k] = ADRP_X0;
                 ws[k + 1] = ADD_X0_X0;
                 let s = live_key(g, syms);
                 let a = g.below(64) as i64;
-                records.push(Reloc { r_offset: 4 * k as u64, key: s, r_type: ADR_PREL_PG_HI21, addend: a });
-                records.push(Reloc { r_offset: 4 * k as u64 + 4, key: s, r_type: ADD_ABS_LO12_NC, addend: a });
+                records.push(Reloc {
+                    r_offset: 4 * k as u64,
+                    key: s,
+                    r_type: ADR_PREL_PG_HI21,
+                    addend: a,
+                });
+                records.push(Reloc {
+                    r_offset: 4 * k as u64 + 4,
+                    key: s,
+                    r_type: ADD_ABS_LO12_NC,
+                    addend: a,
+                });
                 k += 1;
             }
             _ => {}
@@ -421,11 +444,25 @@ fn data(g: &mut Gen, words: usize, syms: u32, name: &'static [u8], alloc: bool) 
     while k < words {
         // A dead target only where fill accepts one (I-45, I-46): the
         // scan refuses it from any other section.
-        let s = if alloc && name != b".gcc_except_table" { live_key(g, syms) } else { key(1 + g.below(u64::from(syms)) as u32) };
-        if g.below(3) == 0 && alloc {
-            records.push(Reloc { r_offset: 8 * k as u64, key: s, r_type: PREL32, addend: g.below(16) as i64 });
+        let s = if alloc && name != b".gcc_except_table" {
+            live_key(g, syms)
         } else {
-            records.push(Reloc { r_offset: 8 * k as u64, key: s, r_type: ABS64, addend: g.below(16) as i64 });
+            key(1 + g.below(u64::from(syms)) as u32)
+        };
+        if g.below(3) == 0 && alloc {
+            records.push(Reloc {
+                r_offset: 8 * k as u64,
+                key: s,
+                r_type: PREL32,
+                addend: g.below(16) as i64,
+            });
+        } else {
+            records.push(Reloc {
+                r_offset: 8 * k as u64,
+                key: s,
+                r_type: ABS64,
+                addend: g.below(16) as i64,
+            });
         }
         k += 1 + g.below(3) as usize;
     }
@@ -473,8 +510,12 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
                 continue;
             }
             4 | 5 => {
-                let name: &'static [u8] = [&b".debug_info"[..], b".debug_aranges", b".debug_ranges", b".gcc_except_table"]
-                    [g.below(4) as usize];
+                let name: &'static [u8] = [
+                    &b".debug_info"[..],
+                    b".debug_aranges",
+                    b".debug_ranges",
+                    b".gcc_except_table",
+                ][g.below(4) as usize];
                 let alloc = name == b".gcc_except_table";
                 let n = 1 + g.below(window / 6 + 8) as usize;
                 let s = data(&mut g, n, syms, name, alloc);
@@ -524,7 +565,11 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
             Vec::new()
         };
         let relocs = (!s.records.is_empty()).then(|| {
-            b.relocs(RelocSection { records: s.records.into_boxed_slice(), order, proof: proof.into_boxed_slice() })
+            b.relocs(RelocSection {
+                records: s.records.into_boxed_slice(),
+                order,
+                proof: proof.into_boxed_slice(),
+            })
         });
         // A leading junk region: the section is not at offset 0 of its file.
         let lead = 8 * (k as u64 % 5);
@@ -590,7 +635,8 @@ impl TempDir {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let p = std::env::temp_dir().join(format!("mortar-image-{label}-{}-{n}", std::process::id()));
+        let p =
+            std::env::temp_dir().join(format!("mortar-image-{label}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         Self(p)
@@ -603,8 +649,10 @@ impl TempDir {
     }
     /// The names in the directory, sorted.
     pub fn names(&self) -> Vec<String> {
-        let mut v: Vec<String> =
-            std::fs::read_dir(&self.0).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut v: Vec<String> = std::fs::read_dir(&self.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         v.sort();
         v
     }

@@ -317,8 +317,19 @@ impl Builder {
     /// Sorts and checks the rows (I-27), makes every gap a row (I-42) and
     /// forms the jobs for window `window` (I-31).
     pub fn finish(self, window: u64, pool: &Pool) -> Result<Plan, Diagnostic> {
-        let Self { target, file_size, mut rows, mut pads, inputs, relocs, bytes, synth, names, paths, sealed } =
-            self;
+        let Self {
+            target,
+            file_size,
+            mut rows,
+            mut pads,
+            inputs,
+            relocs,
+            bytes,
+            synth,
+            names,
+            paths,
+            sealed,
+        } = self;
         if window == 0 {
             return Err(invalid("window 0"));
         }
@@ -353,10 +364,16 @@ impl Builder {
                 return Err(invalid(&format!("row at {:#x} overflows", row.offset)));
             };
             if row.offset < at {
-                return Err(invalid(&format!("row at {:#x} overlaps the row before (ends {at:#x})", row.offset)));
+                return Err(invalid(&format!(
+                    "row at {:#x} overlaps the row before (ends {at:#x})",
+                    row.offset
+                )));
             }
             if end > file_size {
-                return Err(invalid(&format!("row at {:#x} ends past the file ({file_size:#x})", row.offset)));
+                return Err(invalid(&format!(
+                    "row at {:#x} ends past the file ({file_size:#x})",
+                    row.offset
+                )));
             }
             gap(at, row.offset, &mut out);
             out.push(*row);
@@ -379,7 +396,10 @@ impl Builder {
                 Unit::Gap(_) => true,
             };
             if !ok {
-                return Err(invalid(&format!("row at {:#x} names no unit of its size", row.offset)));
+                return Err(invalid(&format!(
+                    "row at {:#x} names no unit of its size",
+                    row.offset
+                )));
             }
         }
         let jobs = jobs(&out, &synth, file_size, window);

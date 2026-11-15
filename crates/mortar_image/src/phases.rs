@@ -176,6 +176,17 @@ impl Budget {
 /// section, 8 B per `REC_SAMPLE` records of a sorted non-resident one),
 /// the build-id leaves (`leaf` bytes per window).
 #[must_use]
-pub fn image_tables(symbols: u64, rows: u64, unsorted_records: u64, sampled_records: u64, windows: u64, leaf: u64) -> u64 {
-    8 * symbols + 24 * rows + 4 * unsorted_records + 8 * sampled_records.div_ceil(1 << 12) + leaf * windows
+pub fn image_tables(
+    symbols: u64,
+    rows: u64,
+    unsorted_records: u64,
+    sampled_records: u64,
+    windows: u64,
+    leaf: u64,
+) -> u64 {
+    8 * symbols
+        + 24 * rows
+        + 4 * unsorted_records
+        + 8 * sampled_records.div_ceil(1 << 12)
+        + leaf * windows
 }

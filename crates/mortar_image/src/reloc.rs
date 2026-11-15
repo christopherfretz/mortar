@@ -11,12 +11,12 @@
 //! section, which holds every byte `apply` reads (the GD sequence's 16
 //! bytes before and after; I-111's reach is within it).
 
+use mortar_arch::cx::fill_key;
 use mortar_arch::diag::RelocPlace;
 use mortar_arch::{
-    Field, FillCx, FillTables, ProofRun, RefName, Reloc, RelocAt, Records, SectionOut, Site,
+    Field, FillCx, FillTables, ProofRun, Records, RefName, Reloc, RelocAt, SectionOut, Site,
     SlotKind, SymNames, SymValue,
 };
-use mortar_arch::cx::fill_key;
 use mortar_core::demands::DemandFlags;
 use mortar_core::{SectionId, SymKey};
 use mortar_diag::{Diagnostic, Key, Kind};
@@ -156,7 +156,11 @@ pub(crate) fn relocate(
         let (b0, e0) = site_of(rs.records[i as usize].r_offset);
         (lo.min(b0), hi.max(e0))
     });
-    let resident = if picks.is_empty() { None } else { img.source.resident(u.file, sec_src + lo..sec_src + hi) };
+    let resident = if picks.is_empty() {
+        None
+    } else {
+        img.source.resident(u.file, sec_src + lo..sec_src + hi)
+    };
     if resident.is_none() && !picks.is_empty() {
         site_buf.resize((hi - lo) as usize, 0);
         source::read(img.source, u.file, sec_src + lo..sec_src + hi, site_buf)
@@ -178,7 +182,10 @@ pub(crate) fn relocate(
                         rec.r_type,
                         plan.path(u.file).path()
                     );
-                    errs.push((fill_key(u.file, u.index, i), Diagnostic::error(Kind::InternalError { what })));
+                    errs.push((
+                        fill_key(u.file, u.index, i),
+                        Diagnostic::error(Kind::InternalError { what }),
+                    ));
                 }
                 continue;
             }
@@ -208,7 +215,8 @@ pub(crate) fn relocate(
         };
         // The clip in the shifted view: the window buffer from `base` on,
         // or all of it starting at `a − base`.
-        let (bytes, start) = if base >= a { (&mut buf[(base - a) as usize..], 0) } else { (&mut buf[..], a - base) };
+        let (bytes, start) =
+            if base >= a { (&mut buf[(base - a) as usize..], 0) } else { (&mut buf[..], a - base) };
         let mut out = SectionOut::new(bytes, start, u.addr.wrapping_add(base), u.alloc, name);
         let value = match howto.field {
             Field::Data { bytes: width } if !img.tables.sym(rec.key).live => {
@@ -221,7 +229,8 @@ pub(crate) fn relocate(
             Ok(())
         } else {
             let shift = ShiftTables { inner: img.tables, section: u.section, base };
-            let cx = FillCx { tables: &shift, output: img.output, got_base: img.got_base, tls: img.tls };
+            let cx =
+                FillCx { tables: &shift, output: img.output, got_base: img.got_base, tls: img.tls };
             img.arch.apply(&cx, &at, &mut out)
         };
         if let Err(e) = result

@@ -25,7 +25,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use mortar_a64::A64;
-use mortar_arch::{DemandFlags, FillTables, OutputKind, Reloc, SlotKind, SymNames, SymValue, TargetKind};
+use mortar_arch::{
+    DemandFlags, FillTables, OutputKind, Reloc, SlotKind, SymNames, SymValue, TargetKind,
+};
 use mortar_core::inputs::{CopyError, Errno};
 use mortar_core::par::Pool;
 use mortar_core::{FileId, SectionId, SymKey, SymbolId};
@@ -51,7 +53,8 @@ impl Source for Store {
             return Ok(());
         }
         let f = self.files.get(file.0 as usize).ok_or(CopyError::OutOfRange)?;
-        f.read_exact_at(out, range.start).map_err(|e| CopyError::Read(Errno(e.raw_os_error().unwrap_or(5))))
+        f.read_exact_at(out, range.start)
+            .map_err(|e| CopyError::Read(Errno(e.raw_os_error().unwrap_or(5))))
     }
 }
 
@@ -136,7 +139,10 @@ fn rows_of(b: &[u8]) -> Vec<(u64, u64, u64)> {
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    assert!(a.len() >= 8, "usage: image_bench <out-dir> <MB> <threads> <fresh|exist> <resident|staged> <reps> <input>...");
+    assert!(
+        a.len() >= 8,
+        "usage: image_bench <out-dir> <MB> <threads> <fresh|exist> <resident|staged> <reps> <input>..."
+    );
     let dir = PathBuf::from(&a[1]);
     let mb: u64 = a[2].parse().unwrap();
     let threads: usize = a[3].parse().unwrap();
@@ -171,10 +177,19 @@ fn main() {
                 off = off.next_multiple_of(align);
                 let r = *rel_of.entry((fi, si)).or_insert_with(|| {
                     let records: Vec<Reloc> = (0..size.saturating_sub(7).div_ceil(64))
-                        .map(|k| Reloc { r_offset: 64 * k, key: SymKey::global(SymbolId(1)), r_type: 257, addend: k as i64 })
+                        .map(|k| Reloc {
+                            r_offset: 64 * k,
+                            key: SymKey::global(SymbolId(1)),
+                            r_type: 257,
+                            addend: k as i64,
+                        })
                         .collect();
                     records_total += records.len() as u64;
-                    b.relocs(RelocSection { records: records.into(), order: RecOrder::Sorted, proof: Vec::new().into() })
+                    b.relocs(RelocSection {
+                        records: records.into(),
+                        order: RecOrder::Sorted,
+                        proof: Vec::new().into(),
+                    })
                 });
                 rows.push((off, size, fi, src, r));
                 off += size;
@@ -182,7 +197,8 @@ fn main() {
         }
     }
     let file_size = off;
-    let mut plan_b = Builder::new(Target::from_facts(mortar_arch::Arch::facts(&A64::M1)), file_size);
+    let mut plan_b =
+        Builder::new(Target::from_facts(mortar_arch::Arch::facts(&A64::M1)), file_size);
     let _ = plan_b.name(b".data");
     // Move the relocation sections over.
     let tmp = b.finish(mortar_image::IMAGE_BLOCK, &pool).unwrap();

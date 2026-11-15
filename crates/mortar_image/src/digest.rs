@@ -6,7 +6,11 @@ use mortar_digest::{Leaf, LeafColumn, TreeError, TreeStyle};
 
 /// `id = root[0..L]` of the leaves (any order), for a file of `file_size`
 /// bytes.
-pub fn build_id(style: TreeStyle, file_size: u64, leaves: &[(u64, Leaf)]) -> Result<Vec<u8>, TreeError> {
+pub fn build_id(
+    style: TreeStyle,
+    file_size: u64,
+    leaves: &[(u64, Leaf)],
+) -> Result<Vec<u8>, TreeError> {
     let mut column = LeafColumn::new(style.tree_fn(), file_size)?;
     for (index, leaf) in leaves {
         column.set(*index, leaf)?;

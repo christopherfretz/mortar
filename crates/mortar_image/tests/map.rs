@@ -5,7 +5,9 @@
 mod support;
 
 use mortar_core::par::{self, Pool};
-use mortar_image::map::{ChunkKind, DiscardWhy, Fold, Map, MapChunk, MapFile, Placed, render, token};
+use mortar_image::map::{
+    ChunkKind, DiscardWhy, Fold, Map, MapChunk, MapFile, Placed, render, token,
+};
 use support::Gen;
 
 fn untoken(t: &str) -> Vec<u8> {
@@ -30,7 +32,10 @@ fn untoken(t: &str) -> Vec<u8> {
 }
 
 fn hex(t: &str) -> u64 {
-    assert!(t.len() <= 16 && t.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)), "{t}");
+    assert!(
+        t.len() <= 16 && t.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+        "{t}"
+    );
     u64::from_str_radix(t, 16).unwrap()
 }
 
@@ -61,7 +66,11 @@ fn parse(text: &str) -> Map {
             }
             "place" => {
                 let f = file(t[1]);
-                m.placed[f].push(Placed::Place { section: t[2].parse().unwrap(), addr: hex(t[3]), size: hex(t[4]) });
+                m.placed[f].push(Placed::Place {
+                    section: t[2].parse().unwrap(),
+                    addr: hex(t[3]),
+                    size: hex(t[4]),
+                });
             }
             "piece" => {
                 let f = file(t[1]);
@@ -106,7 +115,13 @@ fn parse(text: &str) -> Map {
                     };
                     (untoken(t[5]), v)
                 });
-                m.chunks.push(MapChunk { kind, name: untoken(t[2]), addr, size: hex(t[4]), target });
+                m.chunks.push(MapChunk {
+                    kind,
+                    name: untoken(t[2]),
+                    addr,
+                    size: hex(t[4]),
+                    target,
+                });
             }
             "define" => m.defines.push((untoken(t[1]), hex(t[2]))),
             "end" => ended = true,
@@ -127,14 +142,26 @@ fn random_map(g: &mut Gen) -> Map {
         let mut placed = Vec::new();
         for _ in 0..g.below(30) {
             placed.push(if g.below(4) == 0 {
-                Placed::Piece { section: g.below(100) as u32, input_offset: g.next(), addr: g.next(), size: g.next() }
+                Placed::Piece {
+                    section: g.below(100) as u32,
+                    input_offset: g.next(),
+                    addr: g.next(),
+                    size: g.next(),
+                }
             } else {
-                Placed::Place { section: g.below(100) as u32, addr: g.next() << 20, size: g.below(1 << 20) }
+                Placed::Place {
+                    section: g.below(100) as u32,
+                    addr: g.next() << 20,
+                    size: g.below(1 << 20),
+                }
             });
         }
         m.placed.push(placed);
-        let whys = [DiscardWhy::Gc, DiscardWhy::Comdat, DiscardWhy::Script, DiscardWhy::Unspecified];
-        m.discards.push((0..g.below(4)).map(|_| (g.below(50) as u32, whys[g.below(4) as usize])).collect());
+        let whys =
+            [DiscardWhy::Gc, DiscardWhy::Comdat, DiscardWhy::Script, DiscardWhy::Unspecified];
+        m.discards.push(
+            (0..g.below(4)).map(|_| (g.below(50) as u32, whys[g.below(4) as usize])).collect(),
+        );
     }
     for _ in 0..g.below(5) {
         let f = g.below(files as u64) as u32;
@@ -144,9 +171,21 @@ fn random_map(g: &mut Gen) -> Map {
     for _ in 0..g.below(6) {
         let target = (g.below(2) == 0).then(|| (name(g), g.next() as i64));
         let addr = (g.below(3) != 0).then(|| g.next());
-        m.chunks.push(MapChunk { kind: kinds[g.below(4) as usize], name: name(g), addr, size: g.next(), target });
+        m.chunks.push(MapChunk {
+            kind: kinds[g.below(4) as usize],
+            name: name(g),
+            addr,
+            size: g.next(),
+            target,
+        });
     }
-    m.chunks.push(MapChunk { kind: ChunkKind::Thunk, name: Vec::new(), addr: None, size: 0, target: Some((vec![b'x'], i64::MIN)) });
+    m.chunks.push(MapChunk {
+        kind: ChunkKind::Thunk,
+        name: Vec::new(),
+        addr: None,
+        size: 0,
+        target: Some((vec![b'x'], i64::MIN)),
+    });
     for _ in 0..g.below(6) {
         m.defines.push((name(g), g.next()));
     }
@@ -201,17 +240,31 @@ fn i88_time_phases_lines() {
     use mortar_image::phases::{Sample, phase_line, stat_cpu_ticks, status_kib, total_line};
     let stat = "1234 (a (b) c) S 1 2 3 4 5 6 7 8 9 10 150 25 0 0 20 0 1 0";
     assert_eq!(stat_cpu_ticks(stat), Some(175));
-    assert_eq!(status_kib("Name:\tx\nVmHWM:\t  208896 kB\nVmRSS:\t 207974 kB\n", "VmRSS"), Some(207_974));
+    assert_eq!(
+        status_kib("Name:\tx\nVmHWM:\t  208896 kB\nVmRSS:\t 207974 kB\n", "VmRSS"),
+        Some(207_974)
+    );
     let t0 = std::time::Instant::now();
     let a = Sample { at: t0, cpu_ticks: Some(100), rss_kib: Some(1024), peak_kib: Some(2048) };
-    let b = Sample { at: t0 + std::time::Duration::from_micros(112_449), cpu_ticks: Some(164), rss_kib: Some(207_974), peak_kib: Some(208_896) };
+    let b = Sample {
+        at: t0 + std::time::Duration::from_micros(112_449),
+        cpu_ticks: Some(164),
+        rss_kib: Some(207_974),
+        peak_kib: Some(208_896),
+    };
     assert_eq!(
         phase_line(20, "input", &a, &b),
         "mortar: time-phases: 20 input: wall 112.4 ms, cpu 640 ms, rss 203.1 MiB, peak 204.0 MiB"
     );
     let c = Sample { cpu_ticks: None, rss_kib: None, peak_kib: None, ..b };
-    assert_eq!(phase_line(100, "image", &a, &c), "mortar: time-phases: 100 image: wall 112.4 ms, cpu -, rss -, peak -");
-    assert_eq!(total_line(&a, &b), "mortar: time-phases: total: wall 112.4 ms, cpu 640 ms, peak 204.0 MiB");
+    assert_eq!(
+        phase_line(100, "image", &a, &c),
+        "mortar: time-phases: 100 image: wall 112.4 ms, cpu -, rss -, peak -"
+    );
+    assert_eq!(
+        total_line(&a, &b),
+        "mortar: time-phases: total: wall 112.4 ms, cpu 640 ms, peak 204.0 MiB"
+    );
     // The live reading works on Linux.
     let s = Sample::now();
     assert!(s.cpu_ticks.is_some() && s.rss_kib.is_some() && s.peak_kib.is_some());
@@ -221,7 +274,14 @@ fn i88_time_phases_lines() {
 #[test]
 fn i92_memory_formula() {
     use mortar_image::phases::{Budget, image_tables};
-    let b = Budget { resident: 100, tables: 10, threads: 8, window: 1 << 20, reloc_buffer: 3 << 19, ..Budget::default() };
+    let b = Budget {
+        resident: 100,
+        tables: 10,
+        threads: 8,
+        window: 1 << 20,
+        reloc_buffer: 3 << 19,
+        ..Budget::default()
+    };
     assert_eq!(b.peak(), 110 + 8 * ((1 << 20) + (3 << 19)));
     assert_eq!(image_tables(10, 2, 3, 4097, 5, 16), 80 + 48 + 12 + 16 + 80);
 }
@@ -232,7 +292,17 @@ fn i92_memory_formula() {
 fn i40_structural_encoders() {
     use mortar_elf::Class;
     use mortar_image::headers::{Ehdr, Phdr, Shdr, ehdr, phdrs, shdrs, shstrtab};
-    let h = Ehdr { e_type: 2, e_machine: 183, e_entry: 0x40_0000, e_phoff: 64, e_shoff: 0x1000, e_phnum: 3, e_shnum: 5, e_shstrndx: 4, ..Ehdr::default() };
+    let h = Ehdr {
+        e_type: 2,
+        e_machine: 183,
+        e_entry: 0x40_0000,
+        e_phoff: 64,
+        e_shoff: 0x1000,
+        e_phnum: 3,
+        e_shnum: 5,
+        e_shstrndx: 4,
+        ..Ehdr::default()
+    };
     let b = ehdr(Class::Elf64, &h);
     assert_eq!(b.len(), 64);
     assert_eq!(&b[..7], &[0x7f, b'E', b'L', b'F', 2, 1, 1]);
@@ -240,7 +310,16 @@ fn i40_structural_encoders() {
     assert_eq!(u16::from_le_bytes(b[54..56].try_into().unwrap()), 56);
     assert_eq!(u16::from_le_bytes(b[62..64].try_into().unwrap()), 4);
     assert_eq!(ehdr(Class::Elf32, &h).len(), 52);
-    let p = Phdr { p_type: 1, p_flags: 5, p_offset: 0, p_vaddr: 0x40_0000, p_paddr: 0x40_0000, p_filesz: 10, p_memsz: 10, p_align: 0x1_0000 };
+    let p = Phdr {
+        p_type: 1,
+        p_flags: 5,
+        p_offset: 0,
+        p_vaddr: 0x40_0000,
+        p_paddr: 0x40_0000,
+        p_filesz: 10,
+        p_memsz: 10,
+        p_align: 0x1_0000,
+    };
     let pb = phdrs(Class::Elf64, &[p, p]);
     assert_eq!(pb.len(), 112);
     assert_eq!(u32::from_le_bytes(pb[4..8].try_into().unwrap()), 5, "p_flags second in ELF64");

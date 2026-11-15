@@ -15,7 +15,9 @@ use mortar_core::inputs::Reader;
 use mortar_core::layout::ChunkKind;
 use mortar_core::par::Pool;
 use mortar_core::resolution::SectionState;
-use mortar_core::{ChunkId, FileId, Inputs, Layout, Liveness, Resolution, SectionId, Split, SymKey, SymEntry};
+use mortar_core::{
+    ChunkId, FileId, Inputs, Layout, Liveness, Resolution, SectionId, Split, SymEntry, SymKey,
+};
 use mortar_diag::{Diagnostic, FileRef, Kind};
 use mortar_elf::{SectionIndex, SymbolIndex};
 
@@ -58,7 +60,10 @@ pub struct Extras<'e> {
 
 impl std::fmt::Debug for Extras<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Extras").field("fixed", &self.fixed.len()).field("synth", &self.synth).finish_non_exhaustive()
+        f.debug_struct("Extras")
+            .field("fixed", &self.fixed.len())
+            .field("synth", &self.synth)
+            .finish_non_exhaustive()
     }
 }
 
@@ -80,11 +85,17 @@ pub fn file_ref(inputs: &Inputs<'_>, file: FileId) -> FileRef {
 /// The records of relocation section `rel` of `file`, keys resolved
 /// (`spec/arch.md` §3.5): a local entry is its own key, a global entry the
 /// `SymbolId` of `sym_map`.
-pub fn records(inputs: &Inputs<'_>, file: FileId, rel: SectionIndex) -> Result<Vec<Reloc>, Diagnostic> {
+pub fn records(
+    inputs: &Inputs<'_>,
+    file: FileId,
+    rel: SectionIndex,
+) -> Result<Vec<Reloc>, Diagnostic> {
     let Reader::Object(obj) = &inputs.files[file].reader else {
         return Err(internal(&format!("file {} has relocations and no object", file.0)));
     };
-    let bad = |e: mortar_elf::Error| internal(&format!("file {}: relocation section {}: {e:?}", file.0, rel.0));
+    let bad = |e: mortar_elf::Error| {
+        internal(&format!("file {}: relocation section {}: {e:?}", file.0, rel.0))
+    };
     let sec = obj.section(rel).map_err(bad)?;
     let first = match obj.symbols().map_err(bad)? {
         Some(t) => t.first_global().0,
@@ -103,11 +114,19 @@ pub fn records(inputs: &Inputs<'_>, file: FileId, rel: SectionIndex) -> Result<V
     let mut out = Vec::new();
     if sec.sh_type() == SHT_RELA {
         for r in sec.rela().map_err(bad)? {
-            out.push(Reloc { r_offset: r.r_offset, key: key(r.r_sym)?, r_type: r.r_type, addend: r.r_addend });
+            out.push(Reloc {
+                r_offset: r.r_offset,
+                key: key(r.r_sym)?,
+                r_type: r.r_type,
+                addend: r.r_addend,
+            });
         }
     } else {
         // REL: the addend is in the bytes; M3 (x86).
-        return Err(Diagnostic::refused(mortar_diag::RefusalClass::Feature, "REL relocations in fill (M3)"));
+        return Err(Diagnostic::refused(
+            mortar_diag::RefusalClass::Feature,
+            "REL relocations in fill (M3)",
+        ));
     }
     Ok(out)
 }
@@ -122,14 +141,22 @@ pub fn from_layout(
 ) -> Result<Plan, Diagnostic> {
     let pl = &m.layout.placement;
     let chunks = &pl.chunks;
-    let file_size = chunks.iter().filter(|(_, c)| c.in_file()).map(|(_, c)| c.offset + c.size).max().unwrap_or(0);
+    let file_size = chunks
+        .iter()
+        .filter(|(_, c)| c.in_file())
+        .map(|(_, c)| c.offset + c.size)
+        .max()
+        .unwrap_or(0);
     let mut b = Builder::new(target, file_size);
     // Placed input sections, in (chunk, offset) order.
     let mut members: Vec<(ChunkId, u64, SectionId)> = Vec::new();
     for (s, place) in pl.place.iter() {
         let Some((c, off)) = place.get() else { continue };
         let row = &m.resolution.sections[s];
-        if !matches!(row.state, SectionState::Kept) || !row.kind.is_placed() || !m.liveness.is_live(s) {
+        if !matches!(row.state, SectionState::Kept)
+            || !row.kind.is_placed()
+            || !m.liveness.is_live(s)
+        {
             continue;
         }
         if m.layout.folds.is_folded(s) {
@@ -144,14 +171,18 @@ pub fn from_layout(
         if !chunk.in_file() || !matches!(chunk.kind, ChunkKind::Body(_)) {
             continue;
         }
-        let (file, index) =
-            m.resolution.sh_index(s).ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
+        let (file, index) = m
+            .resolution
+            .sh_index(s)
+            .ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
         let Reader::Object(obj) = &m.inputs.files[file].reader else { continue };
         let sec = obj.section(index).map_err(|e| internal(&format!("{e:?}")))?;
         if sec.sh_type() == SHT_NOBITS || sec.size() == 0 {
             continue;
         }
-        let Some(range) = sec.file_range().map_err(|e| internal(&format!("{e:?}")))? else { continue };
+        let Some(range) = sec.file_range().map_err(|e| internal(&format!("{e:?}")))? else {
+            continue;
+        };
         paths.entry(file).or_insert_with(|| file_ref(m.inputs, file));
         let size = sec.size();
         let name = b.name(sec.name().unwrap_or(b""));
@@ -200,7 +231,11 @@ pub fn from_layout(
 }
 
 /// I-38: the fragment runs of every `Merged` chunk.
-fn merged(m: &Model<'_, '_>, b: &mut Builder, paths: &mut BTreeMap<FileId, FileRef>) -> Result<(), Diagnostic> {
+fn merged(
+    m: &Model<'_, '_>,
+    b: &mut Builder,
+    paths: &mut BTreeMap<FileId, FileRef>,
+) -> Result<(), Diagnostic> {
     let pl = &m.layout.placement;
     let mut merged_chunk: BTreeMap<u32, ChunkId> = BTreeMap::new();
     for (c, ch) in pl.chunks.iter() {
@@ -236,13 +271,21 @@ fn merged(m: &Model<'_, '_>, b: &mut Builder, paths: &mut BTreeMap<FileId, FileR
             continue;
         }
         let ch = &pl.chunks[c];
-        let (file, index) = m.resolution.sh_index(s).ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
+        let (file, index) = m
+            .resolution
+            .sh_index(s)
+            .ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
         let Reader::Object(obj) = &m.inputs.files[file].reader else { continue };
         let sec = obj.section(index).map_err(|e| internal(&format!("{e:?}")))?;
-        let Some(range) = sec.file_range().map_err(|e| internal(&format!("{e:?}")))? else { continue };
+        let Some(range) = sec.file_range().map_err(|e| internal(&format!("{e:?}")))? else {
+            continue;
+        };
         if m.resolution.sections[s].reloc.0 != 0 {
             // S-6: a merge section has no relocations; layout refuses one.
-            return Err(internal(&format!("merge section {} of file {} has relocations", index.0, file.0)));
+            return Err(internal(&format!(
+                "merge section {} of file {} has relocations",
+                index.0, file.0
+            )));
         }
         paths.entry(file).or_insert_with(|| file_ref(m.inputs, file));
         let alloc = sec.flags() & SHF_ALLOC != 0;
