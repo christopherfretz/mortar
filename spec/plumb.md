@@ -182,7 +182,7 @@ non-alloc section is also accepted, with `<addr>` read as the output
 section's `sh_addr` (0) plus the offset: that is what a converted GNU ld
 or lld map holds.
 
-**The dynamic records** (`spec/dyn.md` P-D3; WP-040 step 0d) follow
+**The dynamic records** (§12 P-D3; WP-040 step 0d) follow
 `define`. A static link writes none of them; a dynamic link (`Exec`,
 `Pie`, `StaticPie`) writes them, each package filling its own. Every
 string is a string token.
@@ -206,7 +206,7 @@ recomputes each from the `arg` words (or, for a reference link, from its
 response file) and reports a record that disagrees. The **hints** are
 never the expected value: every decision they name (the needed set and
 order, the copies, the export set, PLT order) is recomputed from the
-inputs (`spec/dyn.md` §12), and a hint only names what is compared. A
+inputs (§12), and a hint only names what is compared. A
 second `output`, `interp`, `runpath`/`rpath`, `bind` or `relro` record
 is a `MapError`.
 
@@ -2426,6 +2426,49 @@ case of `tests/x64.rs`):
   can hide a real FDE with the same start from the binary search. GNU
   ld drops the FDE; lld keeps it out of the table.
 
+Stage 3 (WP-050, from the dynamic link tests of WP-051, `tests/link/dyn`;
+each declared by the tests that show it). A20-A27 are wrong outputs and
+reference behaviours `spec/dyn.md` already names; A28 and A29 are new.
+
+- **A20 (lld, mold).** H1: `IRELATIVE` records in `.rela.dyn`, applied
+  before `.rela.plt`'s `JUMP_SLOT`s; a resolver that calls through the
+  PLT jumps to an unbound slot (P-D10 "(D-41, H1)").
+- **A21 (GNU ld).** W2: an alias of a copied variable (`_environ` of
+  `__environ`) is not defined at the copy and not exported (P-D11
+  "(D-21, W2)", P-D7 "(W2)").
+- **A22 (GNU ld).** W10: with no `-dynamic-linker`, its built-in
+  interpreter (right on AArch64, `/lib/ld64.so.1` on x86-64) (P-D4 "a
+  linker default (D-31, W10)").
+- **A23 (lld, mold).** W10: with no `-dynamic-linker`, no `PT_INTERP`
+  (P-D1 and P-D4 ending "(D-31, W10)").
+- **A24 (GNU ld, mold).** W6's form on AArch64 and x86-64: a record in
+  read-only memory and `DT_TEXTREL` where D-47 refuses (an address-sized
+  word in `.rodata`; WP-051's finding 5) (P-D9 "a text relocation (D-47,
+  W6)", P-D6 "(D-47, W6)").
+- **A25 (lld).** In a `-no-pie` executable lld exports an undefined weak
+  key as `WEAK UND` and writes no record for its absolute uses, so a
+  preloaded definition never reaches them (D-25: no reference writes one
+  in `-no-pie`; W12's no-record form, without a split): P-D9 view 3
+  ending "no dynamic record names it (D-25, W12)", on an `ET_EXEC`.
+- **A26 (lld, mold).** D-11 item 3 (E-shlib 2.3b, review N5): an
+  under-linked library's provider is left out of `DT_NEEDED`; the load
+  fails (P-D6 "which D-11 item 3 makes needed").
+- **A27 (GNU ld, lld, mold).** W1: a reference bound to a `STV_HIDDEN`
+  `.dynsym` entry; the output fails to load (P-D6, P-D7 or P-D9 ending
+  "(only a STV_HIDDEN entry: W1)").
+- **A28 (mold, new).** A `-fno-pic` CIE's absolute personality
+  (`R_X86_64_32` against `__gxx_personality_v0`) holds a `.plt` entry
+  while the `.dynsym` entry has `st_value` 0: the routine has two
+  addresses (E3, "differs in its personality routine", the value found
+  in `.plt`). Harmless to unwinding, which only calls it. Reproducer:
+  `tests/link/dyn/reloc/copy-typeinfo-relro.test`, x86-64.
+- **A29 (lld, new).** `.eh_frame_hdr`'s table sorted by unsigned offset
+  from the table: an FDE whose function lies below it (an x86-64
+  `.ltext` placed first, Clang `-mcmodel=large`) comes last, where the
+  unwinder's binary search cannot find it (E5 "not sorted", at an
+  address below `.eh_frame_hdr`). Reproducer:
+  `tests/link/dyn/reloc/weak-class-table.test`, x86-64 `exec` (lld 22).
+
 On i386 (WP-028e, `tests/x86.rs`; x86.md §15.2): W1 (two readings of a
 `GOT32X` operand) is R8 under every map; W3 (mold's no-base GOT value
 G − `.got`) is R4, and its no-base `mov` → `lea` R1; W4 (mold's LE form
@@ -2723,3 +2766,93 @@ record, swap two `.dynsym` entries, flip a Bloom bit, change an addend,
 shrink a copy to 0, overlap two copies, misorder `IRELATIVE`, drop a
 `DT_NEEDED`, bind a different version, patch a `WeakDyn` call to its
 `Weak0` form.
+
+### 12.1 How the verifier reaches them (WP-050)
+
+This subsection records how WP-050's verifier reaches the rules above.
+A dynamic output (`PT_DYNAMIC`) is judged with the map, the inputs and the **line** (the linker's words: `--line FILE`,
+one word per line, or `--inputs-from`; a mortar map's `arg` records when
+neither). The line gives D-1's kind, `-dynamic-linker`, `-z now`,
+`-z relro`, `-E` and the files of D-11/D-12; the shared objects are read
+from the file system (`line::Files`).
+
+- **The model** (`dynmodel.rs`): D-11's needed set, D-12's used set and
+  closure, D-19a's order (GNU ld's and mortar's keeping mention; lld's and
+  mold's first mention, `spec/dyn.md` §13.1), every key's view from the
+  placed objects. Map records are order hints only; nothing is taken from
+  the output that the model can compute.
+- **Static checks** (`dyncheck.rs`): P-D1, P-D4..P-D8, P-D10..P-D13 and
+  P-D9's record order. `Format::Mortar` is held to the D rules exactly
+  (D-22/D-24/D-26/D-30, six `DT_NULL`, RELRO ending on the maximum page);
+  a reference output to its own form where §13.1 says the references
+  differ. RELRO coverage uses the end rounded down to 4 KiB, as
+  `_dl_protect_relro` does. ld.so applies the first `DT_RELACOUNT` records
+  as `RELATIVE` whatever their type: a count above the leading `RELATIVE`
+  run is P-D6 for every linker. P-D5 also checks the chains' shape (each
+  bucket's group contiguous, the bucket word its first entry, the end bit
+  exactly on a group's last entry, each chain word the name's hash with
+  bit 0 cleared). P-D8 also checks exported definitions with a version
+  index of 2 or more (a copy or an interposition): glibc's versioned
+  lookup skips the executable's definition unless a library defines the
+  name under that version; and an import nothing defines carries no
+  version. H1 (P-D10) is every `IRELATIVE` after every symbolic record
+  (`JUMP_SLOT`, `GLOB_DAT`, `COPY`, absolute), D-41's reason.
+- **P-D2 stops stage 3**: a line word or a `DT_NEEDED` object the
+  verifier cannot read is reported and nothing computed without it is
+  judged.
+- **Outside stage 3** (P-D1, a finding starting "outside stage 3: ",
+  `mortar_plumb::OUTSIDE`): a link stage 3 does not model is named and
+  nothing of stage 3 is judged: an option `spec/dyn.md` refuses
+  (`--hash-style` other than `gnu`, `--copy-dt-needed-entries`,
+  `-shared`), static-pie (WP-052), an output with version definitions
+  (`DT_VERDEF`, M4), and a `DT_NEEDED` object of the closure no search
+  finds (a link D-13 refuses, which lld and mold make). It is a finding,
+  so mortar's output fails with it; the link-test harness counts a
+  reference's output that has it as not judged, "outside stage 3"
+  (`spec/harness.md` "L3").
+- **A reference to its own form** where `spec/dyn.md` records its rule:
+  besides §13.1's order rules, GNU ld may leave out an as-needed object
+  needed by D-11 item 2 alone whose keys all bind to an object before it
+  in D-19a's order (D-11: GNU ld decides neededness by its binding), and
+  mold records the giver of a key referenced only weakly (D-11, E-shlib
+  2.2a).
+- **The loader model** (`loader.rs`): the output's records applied as
+  ld.so applies them (symbols looked up in the executable, then the
+  needed objects breadth-first; `COPY` lookups skip the executable;
+  `JUMP_SLOT` lookups skip a canonical PLT), giving the bytes the program
+  sees. Library `i` is at `0x7f00_0000_0000 + (i << 32)`. TLS: a
+  library's block sits at `start + ((i + 1) << 32)` in the program's
+  TLS address space, module `2 + i`; `DTPOFF`/`TPOFF` follow from that;
+  a `TLSDESC` pair is `[0x7e5c_0000_0000_0001, TPOFF]` (the static-TLS
+  resolver). An executable's TLS `st_value` is a segment offset (gABI).
+- **The views** (`dynverify.rs`): stage 2's engine judges every input
+  relocation against the loaded bytes of view 1 (bias 0), view 2 (bias
+  `0x5555_5a5a_0000`: its low 32 bits are not 0, so a 32-bit word cannot
+  hide a missing record) and view 3 (every `WeakDyn` key defined at
+  `0x6000_0000_0000 + 0x1000·n`). In view 3 every use must reach the
+  definition, except a use whose field cannot hold any library address
+  (R2: an input's 32-bit absolute use in a no-PIE executable), which
+  fails only when another use does reach it (a split: W12, F2). An import
+  is `Target::Tls` at its fake TLS address; the kept GD, LD and
+  descriptor sequences are judged against the GOT pair the loader wrote;
+  GNU ld's x86-64 GD to IE form (`mov %fs:0,%rax; add G(%rip),%rax`) is
+  the rewriting `tlsgd-to-ie`.
+- **Exported IFUNCs** (D-23, W13): on x86 a library reference to an
+  executable's IFUNC exported as `STT_GNU_IFUNC` makes the loader refuse
+  (P-D7); on AArch64 such an export is P-D9 when the executable's own uses
+  take an IPLT entry (two addresses), and accepted when every use is the
+  `IRELATIVE` slot.
+- **Mutations** (`dynmutate.rs`, §9.5's table): `dyn-needed`, `dyn-tag`,
+  `dyn-rel-offset`, `dyn-rel-drop`, `dyn-rel-addend`, `dyn-rel-symbol`,
+  `dyn-rel-order` (only swaps that move a `RELATIVE` or `IRELATIVE`),
+  `dynsym-value`, `dynsym-visibility`, `gnu-hash`, `versym`,
+  `version-need`, `interp`, `relro`, `lazy-slot` (lazy binding only),
+  `copy-size`. `xtask plumb --mutate --line` judges each mutant with
+  stage 3. The kill table and its survivors are WP-050's record.
+- **Stage 2 inside a dynamic output**: `__rela_iplt_start` and
+  `__rela_iplt_end` are equal (the loader applies `IRELATIVE`); a
+  canonical `STT_FUNC` at an IPLT entry is Y1-accepted; GNU ld's AArch64
+  `-z now` `_GLOBAL_OFFSET_TABLE_` is the `.got` word holding `_DYNAMIC`
+  (GOT[0], after the PLT's slots); a GNU map's repeated `.eh_frame`
+  placement of the first input is skipped; an output FDE covering a PLT
+  section (GNU ld x86-64) is counted as the linker's.

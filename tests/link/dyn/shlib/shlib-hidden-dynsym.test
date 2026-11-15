@@ -24,6 +24,7 @@
 #@ spec: dyn.md "D-10"
 #@ arch: aarch64 x86_64
 #@ requires: yaml2obj
+#@ anomaly(bfd,lld,mold): A27
 
 yaml2obj -DVIS=STV_HIDDEN libvis-%{arch}.yaml -o libvis.so
 yaml2obj -DVIS=STV_DEFAULT libvis-%{arch}.yaml -o libvisok.so

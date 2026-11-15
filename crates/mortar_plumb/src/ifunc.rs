@@ -685,6 +685,7 @@ impl Engine<'_, '_> {
             }
             let chosen =
                 count.iter().max_by(|x, y| x.1.cmp(y.1).then(y.0.cmp(x.0))).map(|(&e, _)| e);
+            self.ifunc_chosen.insert(g.resolver, chosen);
             let unequal = |pend: &Pending, what: &str| {
                 let mut x = Self::finding(
                     Rule::Ifunc(3),

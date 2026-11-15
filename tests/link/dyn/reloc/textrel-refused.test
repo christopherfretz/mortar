@@ -19,6 +19,7 @@
 # tests/link/xfails.
 #@ spec: dyn.md "D-47"
 #@ arch: aarch64 x86_64
+#@ anomaly(bfd,mold): A24
 
 cc -O1 -fPIE main.c -o main.o
 link(bfd,mold) gcc -pie main.o -o prog

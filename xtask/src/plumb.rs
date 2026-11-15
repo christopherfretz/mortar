@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use mortar_plumb::{Format, Input};
 
 pub const USAGE: &str = "usage: cargo xtask plumb <output> --map <file> --map-format gnu|lld|mold|mortar \
-                         [--inputs-from <response file>|map] \
+                         [--inputs-from <response file>|map] [--line <file>] \
                          [--fix-cortex-a53-843419|--no-fix-cortex-a53-843419] \
                          [--mutate [--per-class N] [--seed S] [--threads T]]\n";
 
@@ -37,6 +37,9 @@ pub struct Args {
     pub fix_843419: Option<bool>,
     /// `--mutate`: the mutation run's configuration.
     pub mutate: Option<mortar_plumb::mutate::Config>,
+    /// `--line`: the linker's words, one per line (stage 3, a dynamic
+    /// output); else the response file's words, else the map's `arg`s.
+    pub line: Option<PathBuf>,
 }
 
 impl Args {
@@ -47,6 +50,7 @@ impl Args {
         let mut format = None;
         let mut inputs_from = None;
         let mut fix_843419 = None;
+        let mut line = None;
         let mut mutate: Option<mortar_plumb::mutate::Config> = None;
         let mut cfg = mortar_plumb::mutate::Config::default();
         let mut it = args.iter();
@@ -66,6 +70,7 @@ impl Args {
                     inputs_from = (v != "map").then(|| PathBuf::from(v));
                 }
                 "--mutate" => mutate = Some(cfg),
+                "--line" => line = Some(PathBuf::from(value("--line")?)),
                 "--no-fix-cortex-a53-843419" => fix_843419 = Some(false),
                 s if s == "--fix-cortex-a53-843419"
                     || s.starts_with("--fix-cortex-a53-843419=") =>
@@ -93,6 +98,7 @@ impl Args {
             inputs_from,
             fix_843419,
             mutate: mutate.map(|_| cfg),
+            line,
         })
     }
 }
@@ -202,6 +208,32 @@ pub fn verify_link_with(
     allowed: Option<&BTreeSet<PathBuf>>,
     fix_843419: Option<bool>,
 ) -> Result<Verified, String> {
+    verify_link_line(output, map, format, base, allowed, fix_843419, None)
+}
+
+/// The files of a link, read from the directory it ran in.
+struct BaseFiles<'a>(&'a Path);
+
+impl mortar_plumb::Files for BaseFiles<'_> {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.0.join(path)).ok()
+    }
+}
+
+/// [`verify_link_with`], with the linker's words for stage 3 (a dynamic
+/// output, spec/plumb.md §12).
+///
+/// # Errors
+/// As [`verify_link`].
+pub fn verify_link_line(
+    output: &Path,
+    map: &Path,
+    format: Format,
+    base: &Path,
+    allowed: Option<&BTreeSet<PathBuf>>,
+    fix_843419: Option<bool>,
+    line: Option<Vec<String>>,
+) -> Result<Verified, String> {
     let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
     let output = read(output)?;
     let map_bytes = read(map)?;
@@ -226,7 +258,13 @@ pub fn verify_link_with(
         }
     }
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
-    let report = mortar_plumb::verify(&output, &inputs, &parsed);
+    let report = if mortar_plumb::is_dynamic(&output) {
+        let files = BaseFiles(base);
+        let ctx = mortar_plumb::Ctx { line, files: &files };
+        mortar_plumb::verify_with(&output, &inputs, &parsed, &ctx)
+    } else {
+        mortar_plumb::verify(&output, &inputs, &parsed)
+    };
     drop(inputs);
     Ok((output, report, files))
 }
@@ -239,6 +277,13 @@ pub type Verified = (Vec<u8>, mortar_plumb::Report, Vec<(String, Vec<u8>)>);
 pub fn run(args: &Args) -> Result<bool, String> {
     let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut fix = args.fix_843419;
+    let line: Option<Vec<String>> = match (&args.line, &args.inputs_from) {
+        (Some(l), _) => {
+            Some(String::from_utf8_lossy(&read(l)?).lines().map(str::to_string).collect())
+        }
+        (None, Some(rsp)) => Some(response_words(&String::from_utf8_lossy(&read(rsp)?))),
+        (None, None) => None,
+    };
     let allowed: Option<BTreeSet<PathBuf>> = match &args.inputs_from {
         None => None,
         Some(rsp) => {
@@ -268,18 +313,22 @@ pub fn run(args: &Args) -> Result<bool, String> {
         parsed.fix_843419 = fix;
         let inputs: Vec<Input<'_>> =
             files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
-        let outcome = mortar_plumb::mutate::run(&output, &inputs, &parsed, cfg)?;
+        // Stage 3 judges the mutants of a dynamic output (spec/plumb.md §12).
+        let files = BaseFiles(Path::new(""));
+        let ctx = mortar_plumb::Ctx { line: line.clone(), files: &files };
+        let outcome = mortar_plumb::mutate::run_with(&output, &inputs, &parsed, cfg, Some(&ctx))?;
         println!("{}: baseline findings {}", args.output.display(), outcome.baseline);
         print!("{}", outcome.render());
         return Ok(true);
     }
-    let (_, report, _) = verify_link_with(
+    let (_, report, _) = verify_link_line(
         &args.output,
         &args.map,
         args.format,
         Path::new(""),
         allowed.as_ref(),
         fix,
+        line,
     )?;
     print!("{}", report.render(&args.output.display().to_string()));
     print!("{}", report.summary());
