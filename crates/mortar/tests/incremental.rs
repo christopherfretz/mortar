@@ -25,11 +25,13 @@ const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 /// A static executable from assembly alone: text, data, read-only data,
 /// a merged string section, `.eh_frame` from CFI, and a GOT load.
 const ASM: &str = "\t.text\n\t.globl _start\n\t.type _start, %function\n_start:\n\t.cfi_startproc\n\
-    \tadrp x1, :got:word\n\tldr x1, [x1, :got_lo12:word]\n\tbl sfn\n\tmov x8, #93\n\tsvc #0\n\
+    \tadrp x1, :got:word\n\tldr x1, [x1, :got_lo12:word]\n\tadrp x2, :got:word2\n\
+    \tldr x2, [x2, :got_lo12:word2]\n\tbl sfn\n\tmov x8, #93\n\tsvc #0\n\
     \t.cfi_endproc\n\t.type sfn, %function\nsfn:\n\t.cfi_startproc\n\tmov x0, #42\n\tret\n\
-    \t.cfi_endproc\n\t.data\n\t.globl word\nword:\t.quad 1\n\
+    \t.cfi_endproc\n\t.data\n\t.globl word\nword:\t.quad 1\n\t.globl word2\nword2:\t.quad 2\n\
     \t.section .rodata.str1.1,\"aMS\",%progbits,1\nmsg:\t.asciz \"hello\"\nm2:\t.asciz \"lo\"\n\
-    \t.section .rodata\n\t.quad msg\n\
+    m3:\t.asciz \"world\"\nm4:\t.asciz \"again\"\n\
+    \t.section .rodata\n\t.quad msg\n\t.quad m3\n\t.quad m4\n\
     \t.section .note.GNU-stack,\"\",%progbits\n";
 
 /// An ADRP at a page's `0xff8` whose load is two words on: erratum
@@ -48,7 +50,8 @@ const ASM_X86_64: &str = "\t.text\n\t.globl _start\n\t.type _start, @function\n_
     \t.cfi_endproc\n\t.type sfn, @function\nsfn:\n\t.cfi_startproc\n\tmovl $42, %edi\n\tret\n\
     \t.cfi_endproc\n\t.data\n\t.globl word\nword:\t.quad 1\n\
     \t.section .rodata.str1.1,\"aMS\",@progbits,1\nmsg:\t.asciz \"hello\"\nm2:\t.asciz \"lo\"\n\
-    \t.section .rodata\n\t.long 7\n\
+    m3:\t.asciz \"world\"\nm4:\t.asciz \"again\"\n\
+    \t.section .rodata\n\t.long 7\n\t.quad m3\n\t.quad m4\n\
     \t.section .note.GNU-stack,\"\",@progbits\n";
 
 fn run_in(dir: &Path, exe: &Path, args: &[OsString], env: &[(&str, &str)]) -> Outcome {
@@ -384,12 +387,30 @@ fn read_full(bytes: &[u8]) -> bool {
     format::decode(bytes, mortar::VERSION.as_bytes()).is_ok()
 }
 
-/// The replay of `state` (IN-61) to `out`: `None` when the link failed.
-fn replay(prog: &Prog, out: &str, state: &State) -> Option<Vec<u8>> {
-    let inv = mortar::replay_link("mortar", &prog.args(out, &[]), &prog.built.dir, state);
+/// How a replay of a state (IN-61) ended.
+enum Replayed {
+    /// The output's bytes, and the verifier's findings on it (each as
+    /// text; empty when it accepts the output).
+    Linked(Vec<u8>, Vec<String>),
+    /// The link failed: its report.
+    Failed(String),
+}
+
+/// The replay of `state` to `out`, with a map, judged by the verifier.
+fn replay_judged(prog: &Prog, out: &str, state: &State) -> Replayed {
+    let map = format!("{out}.map");
+    let map_arg = format!("--mortar-map={}", prog.path(&map).display());
+    let inv = mortar::replay_link("mortar", &prog.args(out, &[&map_arg]), &prog.built.dir, state);
     match inv.outcome {
-        mortar::Outcome::Linked { .. } => Some(prog.bytes(out)),
-        _ => None,
+        mortar::Outcome::Linked { .. } => {
+            let findings =
+                support::plumb::verify(&prog.path(out), &prog.path(&map), &prog.built.dir);
+            Replayed::Linked(prog.bytes(out), findings.iter().map(|f| format!("{f:?}")).collect())
+        }
+        mortar::Outcome::Failed(r) => {
+            Replayed::Failed(r.render(&mortar_diag::Style::plain("mortar")))
+        }
+        mortar::Outcome::Done(t) => Replayed::Failed(t),
     }
 }
 
@@ -398,13 +419,57 @@ fn first<T>(v: &mut [T], f: impl FnOnce(&mut T)) -> bool {
     v.first_mut().map(f).is_some()
 }
 
-/// One mutation per stored decision table: its name and whether it
-/// applied (the table is not empty).
+/// What a mutation of a stored table is: a layout the rules admit, which
+/// the image must follow (changed bytes the verifier accepts), or one
+/// they do not, which must fail by name or give bytes the verifier
+/// rejects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Valid,
+    Invalid,
+}
+
+/// One mutation of a stored decision table: its name, its kind, and the
+/// change (whether it applied: the table has the rows it needs).
+/// A change to a state and whether it applied.
 type Mutation = (&'static str, fn(&mut State) -> bool);
 
-fn mutations() -> Vec<Mutation> {
+/// A mutation of a decision table with its kind.
+type TableMutation = (&'static str, Kind, fn(&mut State) -> bool);
+
+/// The live `.eh_frame` records of one section: the positions in
+/// `EH_RECORDS` of the first section with at least `n` listed records.
+fn eh_run(s: &State, n: usize) -> Option<std::ops::Range<usize>> {
+    let mut at = 0;
+    while at < s.eh_records.len() {
+        let sec = s.eh_records[at].section;
+        let end = at + s.eh_records[at..].iter().take_while(|r| r.section == sec).count();
+        if end - at >= n {
+            return Some(at..end);
+        }
+        at = end;
+    }
+    None
+}
+
+/// Two fragments of one output section, adjacent in offset order, with
+/// the same size (the distance to the next fragment; alignment 1): their
+/// rows in `FRAGS`.
+fn same_size_frags(s: &State) -> Option<(usize, usize)> {
+    let mut rows: Vec<usize> = (0..s.frags.len()).collect();
+    rows.sort_by_key(|&i| (s.frags[i].out, s.frags[i].offset));
+    rows.windows(3).find_map(|w| {
+        let [a, b, c] = [&s.frags[w[0]], &s.frags[w[1]], &s.frags[w[2]]];
+        (a.out == b.out && b.out == c.out && b.offset - a.offset == c.offset - b.offset)
+            .then_some((w[0], w[1]))
+    })
+}
+
+#[allow(clippy::too_many_lines, reason = "one row per mutation")]
+fn mutations() -> Vec<TableMutation> {
+    use Kind::{Invalid, Valid};
     vec![
-        ("CHUNKS", |s| {
+        ("CHUNKS", Invalid, |s| {
             let Some(c) = s.chunks.iter_mut().find(|c| c.size > 0 && c.bits & 1 != 0) else {
                 return false;
             };
@@ -412,52 +477,138 @@ fn mutations() -> Vec<Mutation> {
             c.offset += 16;
             true
         }),
-        ("ORDER", |s| {
+        // Two non-allocated output sections trade section indices.
+        ("CHUNKS (shndx)", Invalid, |s| {
+            let na: Vec<usize> = (0..s.chunks.len())
+                .filter(|&i| s.chunks[i].bits & 2 != 0 && s.chunks[i].sh_flags & 2 == 0)
+                .collect();
+            na.len() >= 2 && {
+                let (a, b) = (na[0], na[na.len() - 1]);
+                let t = s.chunks[a].shndx;
+                s.chunks[a].shndx = s.chunks[b].shndx;
+                s.chunks[b].shndx = t;
+                true
+            }
+        }),
+        ("ORDER", Invalid, |s| {
             let n = s.order.len();
             n >= 3 && {
                 s.order.swap(1, n - 1);
                 true
             }
         }),
-        ("SEGMENTS", |s| first(&mut s.segments, |g| g.addr += 0x1000)),
-        ("SECTIONS", |s| {
+        ("SEGMENTS", Invalid, |s| first(&mut s.segments, |g| g.addr += 0x1000)),
+        ("SECTIONS", Invalid, |s| {
             s.sections
                 .iter_mut()
                 .find(|x| x.size > 0 && x.place_chunk != format::NONE)
                 .map(|x| x.place_offset += 4)
                 .is_some()
         }),
-        ("FRAGS", |s| s.frags.iter_mut().find(|f| f.offset > 0).map(|f| f.offset = 0).is_some()),
-        ("SLOTS", |s| {
+        ("FRAGS", Invalid, |s| {
+            s.frags.iter_mut().find(|f| f.offset > 0).map(|f| f.offset = 0).is_some()
+        }),
+        // Two strings of one size trade places: a merged map the rules
+        // admit.
+        ("FRAGS (swap)", Valid, |s| {
+            let Some((a, b)) = same_size_frags(s) else { return false };
+            let (oa, ob) = (s.frags[a].offset, s.frags[b].offset);
+            s.frags[a].offset = ob;
+            s.frags[b].offset = oa;
+            true
+        }),
+        ("SLOTS", Invalid, |s| {
             let n = s.slots.len();
             n >= 1 && {
                 s.slots.truncate(n - 1);
                 true
             }
         }),
-        ("EH_RECORDS", |s| {
+        // Two GOT slots trade places: the rules admit any order.
+        ("SLOTS (swap)", Valid, |s| {
+            let got: Vec<usize> = (0..s.slots.len()).filter(|&i| s.slots[i].kind == 0).collect();
+            got.len() >= 2 && {
+                let (a, b) = (got[0], got[got.len() - 1]);
+                let t = s.slots[a].symbol;
+                s.slots[a].symbol = s.slots[b].symbol;
+                s.slots[b].symbol = t;
+                true
+            }
+        }),
+        ("EH_RECORDS", Invalid, |s| {
             let n = s.eh_records.len();
             n >= 1 && {
                 s.eh_records.truncate(n - 1);
                 true
             }
         }),
-        ("SYMTAB_LOCALS", |s| {
+        // S-46's order broken: two records of one section swapped.
+        ("EH_RECORDS (swap)", Invalid, |s| {
+            let Some(r) = eh_run(s, 3) else { return false };
+            s.eh_records.swap(r.start + 1, r.start + 2);
+            true
+        }),
+        // A live FDE dropped (S-41).
+        ("EH_RECORDS (drop)", Invalid, |s| {
+            let Some(r) = eh_run(s, 2) else { return false };
+            s.eh_records.remove(r.start + 1);
+            true
+        }),
+        // A record given twice.
+        ("EH_RECORDS (dup)", Invalid, |s| {
+            let Some(r) = eh_run(s, 2) else { return false };
+            let row = s.eh_records[r.start + 1].clone();
+            s.eh_records.insert(r.start + 1, row);
+            true
+        }),
+        // A CIE that S-44 removed as a duplicate is kept in its section,
+        // before that section's FDEs (IN-34a keeps one per file): its FDEs
+        // point to it.
+        ("EH_RECORDS (keep a CIE)", Valid, |s| {
+            let mut at = 0;
+            while at < s.eh_records.len() {
+                let sec = s.eh_records[at].section;
+                let first = s.eh_records[at].piece;
+                if first > 0 {
+                    let row = format::EhRow { section: sec, piece: 0 };
+                    s.eh_records.insert(at, row);
+                    return true;
+                }
+                at += s.eh_records[at..].iter().take_while(|r| r.section == sec).count();
+            }
+            false
+        }),
+        ("SYMTAB_LOCALS", Invalid, |s| {
             s.symtab_locals.iter_mut().find(|x| x.len > 0).map(|x| x.len -= 1).is_some()
         }),
-        ("SIZES", |s| first(&mut s.sizes, |z| z.size += 16)),
-        ("SYM_PLACE", |s| first(&mut s.sym_place, |p| p.offset += 8)),
-        ("DEFINED", |s| first(&mut s.defined, |d| d.value += 4)),
-        ("PATCHES", |s| first(&mut s.patches, |p| p.offset += 4)),
-        ("REDIRECTS", |s| first(&mut s.redirects, |r| r.offset += 4)),
+        // Every block after the first moved by one entry.
+        ("SYMTAB_LOCALS (shift)", Invalid, |s| {
+            let n = s.symtab_locals.len();
+            n >= 2 && {
+                for x in &mut s.symtab_locals[1..] {
+                    x.start += 1;
+                }
+                true
+            }
+        }),
+        ("SIZES", Invalid, |s| first(&mut s.sizes, |z| z.size += 16)),
+        ("SYM_PLACE", Invalid, |s| first(&mut s.sym_place, |p| p.offset += 8)),
+        ("DEFINED", Invalid, |s| first(&mut s.defined, |d| d.value += 4)),
+        ("PATCHES", Invalid, |s| first(&mut s.patches, |p| p.offset += 4)),
+        ("REDIRECTS", Invalid, |s| first(&mut s.redirects, |r| r.offset += 4)),
         // The WP-061 review's F8: an erratum site's redirect dropped.
-        ("REDIRECTS (drop)", |s| s.redirects.pop().is_some()),
-        ("SIZED", |s| first(&mut s.sized, |z| z.size += 8)),
-        ("LAYOUT", |s| {
+        ("REDIRECTS (drop)", Invalid, |s| s.redirects.pop().is_some()),
+        ("SIZED", Invalid, |s| first(&mut s.sized, |z| z.size += 8)),
+        ("LAYOUT", Invalid, |s| {
             s.layout.entry += 4;
             true
         }),
     ]
+}
+
+/// The first line of a failed link's report that names the error.
+fn reason(report: &str) -> &str {
+    report.lines().find(|l| l.contains("error")).unwrap_or(report).trim()
 }
 
 // spec: incr.md IN-61 (the state alone reproduces the output, and every
@@ -467,33 +618,36 @@ fn mutations() -> Vec<Mutation> {
 fn replay_reproduces_and_each_table_matters() {
     let progs = [Prog::asm(), Prog::c(), Prog::cxx(), Prog::asm_x86_64(), Prog::erratum()];
     for prog in progs.into_iter().flatten() {
+        let dir = prog.built.dir.display().to_string();
         prog.link("plain", &[]);
         prog.link("full", &["--incremental=full"]);
         let (_, state) = prog.read_state("full");
         let plain = prog.bytes("plain");
-        let same = replay(&prog, "replayed", &state).expect("the replay failed");
-        assert!(
-            same == plain,
-            "{}: the replay differs from the plain link",
-            prog.built.dir.display()
-        );
+        match replay_judged(&prog, "replayed", &state) {
+            Replayed::Linked(same, _) => {
+                assert!(same == plain, "{dir}: the replay differs from the plain link");
+            }
+            Replayed::Failed(r) => panic!("{dir}: the replay failed: {r}"),
+        }
         let mut applied = Vec::new();
-        for (n, (table, mutate)) in mutations().into_iter().enumerate() {
+        for (n, (table, kind, mutate)) in mutations().into_iter().enumerate() {
             let mut s = state.clone();
             if !mutate(&mut s) {
                 continue;
             }
             applied.push(table);
             let out = format!("mut{n}");
-            if let Some(bytes) = replay(&prog, &out, &s) {
-                assert!(
-                    bytes != plain,
-                    "{}: a changed {table} row changed nothing",
-                    prog.built.dir.display()
-                );
-            }
+            let line = match replay_judged(&prog, &out, &s) {
+                Replayed::Linked(bytes, _) if bytes == plain => "SAME BYTES".to_owned(),
+                Replayed::Linked(_, f) if f.is_empty() => "changed, verifier accepts".to_owned(),
+                Replayed::Linked(_, f) => {
+                    format!("changed, verifier rejects ({}): {}", f.len(), f[0])
+                }
+                Replayed::Failed(r) => format!("failed: {}", reason(&r)),
+            };
+            eprintln!("OUTCOME {dir} | {table} | {kind:?} | {line}");
         }
-        eprintln!("{}: mutated {applied:?}", prog.built.dir.display());
+        eprintln!("{dir}: mutated {applied:?}");
         for need in ["CHUNKS", "ORDER", "SEGMENTS", "SECTIONS", "SIZES", "LAYOUT"] {
             assert!(applied.contains(&need), "{need} was empty");
         }
