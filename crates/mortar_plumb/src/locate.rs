@@ -248,8 +248,11 @@ fn read_obj<'a>(
     archives: &mut HashMap<String, Result<Members<'a>, String>>,
 ) -> Result<Obj<'a>, String> {
     let data = if file.member.is_some() {
-        let members =
-            archives.entry(file.path.clone()).or_insert_with(|| members_of(bytes)).as_ref().map_err(Clone::clone)?;
+        let members = archives
+            .entry(file.path.clone())
+            .or_insert_with(|| members_of(bytes))
+            .as_ref()
+            .map_err(Clone::clone)?;
         find_member(file, members, by_path)?
     } else {
         bytes

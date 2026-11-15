@@ -1168,6 +1168,27 @@ which asserts each family is accepted):
 | undefined weak TLS T | 0 | TpRel(0) | 0 | TpRel(0) |
 | `DTPOFF*` in code / alloc data / non-alloc | TP / DTP / DTP | TP / DTP / DTP | TP / TP / DTP | DTP / DTP / DTP |
 
+**X-48 (WP-028d).** In mortar's static `ET_EXEC` output (no
+`PT_DYNAMIC`, no `PT_INTERP`), a `PLT32`, `PC32`, `GOTPCREL`,
+`GOTPCRELX` or `REX_GOTPCRELX` record against `__tls_get_addr` in an
+executable section is R8, "a call to __tls_get_addr survives in a
+static output" (x64.md X-48: every GD/LD sequence is rewritten there).
+The references are not judged (GNU ld keeps a defined
+`__tls_get_addr`'s call). Test: `tests/x64.rs
+x64_x48_no_tls_runtime_call_in_a_static_output`.
+
+**x86-64 constructs, judged or not (WP-028d item 3).** Every construct
+WP-029b's linker writes has a rule and a mutation that it catches
+(§9.5's x86-64 sweep), except these, which are **not judged**:
+
+- `.got` slots no reference reaches after relaxation (X1/X2/X3 keep the
+  slot): their contents are dead, so a swapped pair is an equivalent
+  mutant (§9.5); judging them needs the map to name each slot's owner.
+- the non-`PT_LOAD` segments' `p_flags` and `p_align`, and
+  `PT_GNU_RELRO`'s `p_filesz` (the loader reads `p_memsz`);
+- `PT_GNU_STACK`'s `PF_X` (§11 item 11);
+- the large-model sections' placement (`placement_not_judged`).
+
 A record whose rewriting cannot be judged (its symbol unresolved, as in a
 stripped output; an unusable `PT_TLS`) is not checked, and its rewrite
 window (`GOTPCREL*` [P−3, P+5); `GOTTPOFF`/`GOTPC32_TLSDESC` [P−3, P);
@@ -2016,6 +2037,82 @@ These sweeps over the `Small` corpus must never panic (`tests/hostile.rs`):
 
 A truncated output, or an input cut short, must also produce a finding.
 
+### 9.5 Mutation coverage (WP-028d)
+
+`src/mutate.rs` takes a correct output and makes single-field edits, one
+mutant at a time, in 23 classes: a relocated field off by one, holding
+another symbol's value, or another addend; a relaxed sequence put back
+to its input bytes (`stale-relaxation`); two GOT words or two
+IRELATIVE records swapped; `.eh_frame_hdr`'s table out of order or an
+entry wrong; an FDE's `pc_begin`; a `.symtab` value or size; `e_entry`;
+a program header's `p_filesz`, `p_memsz`, `p_align` or flags; `PT_TLS`;
+a property bit; a linker-defined symbol; two sections overlapping; a
+thunk's target; an IPLT entry; an erratum fix (§5.10). A mutant is
+**caught** when the report has a finding the unmutated output's report
+does not. mortar's build id is resealed after each edit (B1 would
+otherwise catch everything). Places that carry a baseline finding are
+not mutated. The choice is a SplitMix64 sequence from a fixed seed: the
+table is the same on every run. `cargo xtask plumb <out> --map <map>
+--map-format F --mutate [--per-class N] [--seed S] [--threads T]`
+prints the table and every missed mutant; `tests/mutation.rs
+s9_5_mutation_coverage_on_the_small_corpus` runs the small corpus by
+every linker and asserts the classes that must have no miss.
+
+**mortar's outputs** (WP-028d, release build, seed default):
+
+| class | AArch64 protoc (40/class) | x86-64 C++ threads (40/class) | x86-64 static C TLS (all) |
+|---|---|---|---|
+| field-off-by-one | 40/40 | 39/40 | 11446/11448 |
+| field-wrong-symbol | 39/40 | 40/40 | 11428/11436 |
+| field-wrong-addend | 40/40 | 40/40 | 11436/11448 |
+| stale-relaxation | 10/10 | 40/40 | 268/268 |
+| got-slot-swap | 40/40 | 7/40 | 13/28 |
+| irelative-swap | 9/9 | 40/40 | 43/43 |
+| eh-hdr-order, eh-hdr-entry | — (no `--eh-frame-hdr`) | 80/80 | 3254/3254 |
+| fde-pc-begin | 40/40 | 40/40 | 1085/1085 |
+| symtab-value | 36/40 | 40/40 | 1925/1940 |
+| symtab-size | 40/40 | 40/40 | 1934/1940 |
+| e-entry | 2/2 | 2/2 | 2/2 |
+| phdr-filesz | 10/13 | 16/19 | 16/19 |
+| phdr-memsz | 12/13 | 18/19 | 18/19 |
+| phdr-align | 4/13 | 12/19 | 12/19 |
+| phdr-flags | 12/21 | 12/30 | 12/30 |
+| tls-segment | 3/3 | 3/3 | 3/3 |
+| property-bit | — | 4/4 | 4/4 |
+| linker-symbol | 9/9 | 10/10 | 10/10 |
+| section-overlap | 20/20 | 22/22 | 22/22 |
+| iplt-entry | 10/10 | 13/13 | 11/11 |
+| erratum-fix | 4/4 | — | — |
+
+**The misses, by kind:**
+
+- **Equivalent mutants** (no observable difference): dead `.got` slots
+  on x86-64 (relaxed references keep their slot); `GOTPCREL` against
+  glibc's `_nl_current_*_used` (every slot holds 1, so another slot or
+  symbol gives the same value); the non-`PT_LOAD` segments' flags and
+  alignment; `PT_LOAD` `p_align` of `ET_EXEC`; `PT_GNU_STACK`'s and
+  `PT_GNU_RELRO`'s `p_filesz`, `PT_GNU_STACK`'s `p_memsz`.
+- **Holes, cheap, closed in WP-028d:** the W1 NOP-ADRP form (§5.3), S5
+  (flags), S7 (entry), S9 (TLS), S11 (notes), S13 (`PT_PHDR`), S20
+  (RELRO), S21 (`PT_GNU_EH_FRAME`), and Y4's mapping symbols (no `$x`
+  or `$d` was judged before).
+- **Holes, by cost:**
+  1. `PT_GNU_STACK` `PF_X` flipped (the stack made executable): needs
+     the link's `-z execstack` from the map (§11 item 11). Cheap once
+     the map carries it.
+  2. Linker-defined symbols' `st_size` (`_GLOBAL_OFFSET_TABLE_`,
+     `__init_array_start`, … made 1): no spec states the size; a line
+     in synth.md (size 0) makes it a Y5 clause.
+  3. Locals in merged sections (`.rodata.str*`: `_nl_C_name`,
+     `_itoa_lower_digits`) and in `.eh_frame` (`__EH_FRAME_BEGIN__`,
+     `__FRAME_END__`), and `$d` in them: Y4 cannot place them; needs
+     the map to carry merged and `.eh_frame` pieces (§11 item 1).
+  4. A record into an `.eh_frame` mortar rewrote (crtbegin's `adrp`/
+     `add` of `__EH_FRAME_BEGIN__`, AArch64; `R_X86_64_32` at the same
+     place, x86-64): `not checked: eh-frame`; same map request.
+  5. The x86-64 dead GOT slots, if they should be judged at all: the
+     map naming each slot's owner (equivalent today).
+
 ## 10. The reference linkers, observed
 
 ### 10.1 The rewritings each linker performs
@@ -2300,8 +2397,9 @@ DWARF's text, and each is accepted only from its own linker.
    `__bss_start` within §6.5's range even when there is no `.bss`.
 9. i386 (§4.5): the table and its rewritings need a spec of their own;
    until one exists every i386 record is `machine`.
-10. X-48 (a `__tls_get_addr` call left in a static output) has no rule:
-    a GD/LD sequence left unrewritten is its lead record's finding, but
-    a `call __tls_get_addr` without a `TLSGD`/`TLSLD` before it is
-    judged only as a branch. A rule that no call to `__tls_get_addr`
-    remains in a static executable is later.
+10. X-48: resolved (WP-028d, §5.9): in mortar's static `ET_EXEC`
+    output, a branch or GOT reference to `__tls_get_addr` is R8.
+11. The map should state the link's options that decide a rule: the
+    erratum option (§5.10) and `-z execstack`/`-z noexecstack` (with
+    them `PT_GNU_STACK`'s `PF_X` could be judged against L-84's table;
+    today a flipped `PF_X` there is not found, §9.5).

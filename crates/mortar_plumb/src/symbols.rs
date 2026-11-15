@@ -133,9 +133,7 @@ fn not_in_memory(e: &Engine<'_, '_>, oi: usize, di: u32) -> bool {
     let Some(t) = o.symtab else { return false };
     let Ok(d) = t.get(SymbolIndex(di)) else { return false };
     let Ok(SymbolSection::Section(k)) = t.section_of(SymbolIndex(di), &d) else { return false };
-    o.secs
-        .get(k.0 as usize)
-        .is_some_and(|s| !s.alloc() || matches!(s.place, Place::Discarded))
+    o.secs.get(k.0 as usize).is_some_and(|s| !s.alloc() || matches!(s.place, Place::Discarded))
 }
 
 fn placed_def(e: &Engine<'_, '_>, oi: usize, di: u32) -> Option<Def> {
