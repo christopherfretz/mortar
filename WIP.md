@@ -9,7 +9,7 @@ Experiment dir: `/tmp/mortar-wp030r-EYWFOo` (remove by explicit path at the end)
 | 1 | T1 any destination register; unmatched GOTDESC refused; form matcher over both corpora (0 unmatched) | done |
 | 2 | X86-13: delete the moffs reading; GOT32 at non-exec place refused; prefix note (SIB check kept: flag to supervisor) | done |
 | 3 | max_reach (3, 6); Facts.seq_leads = [18, 19]; R-3 | done |
-| 4 | REL addends for non-resident bodies: new request to image.md/arch.md | todo |
+| 4 | REL addends for non-resident bodies: R-13 (image.md/arch.md), X86-5 rewritten, read windows in X86-40 | done |
 | 5 | checks on the value reduced mod 2^32; TLS_LE exception | todo |
 | 6 | lld writes IBT notes and IBT IPLT on i386 | todo |
 | 7 | GNU relaxes GOT32X in static-pie; M2 candidates | todo |
