@@ -107,4 +107,18 @@ compiled. Delete this file before the WP lands.
 - Stale tests fixed (lib.rs, tests/cli.rs, mortar_cli grammar + table,
   docs/status/options.md regenerated). The gcc -static link reaches
   "writing the output file" under the staged store.
-- Next: run the differential harness (`cargo test -p mortar --test front_diff -- --ignored --nocapture`).
+- 485db0a: differential test `tests/front_diff.rs` (`compare`, 4 tests,
+  green under both stores). Fixed on the way: `.symtab_shndx` only past
+  SHN_LORESERVE (front.rs `shndx`); hidden undefined keys have no symtab
+  entry (syms.rs; synth.md S-75); locals of consumed sections dropped
+  (`syms::LinkSections`; S-76); S-78 default = drop `.L` only in merge
+  sections (mortar_synth symtab.rs `local`; tests updated).
+- Explanations found (for the record): .text/.data/.tbss sizes = same input
+  set as GNU's map, order by input §10.1 + L-53 (padding); .got = lld Addr
+  slots + 21 IE slots (a64 R3 is M2, S-72); .got.plt S-67; .comment/.debug_str
+  S-23 (no tail merge, = lld); .rodata ±0x20 vs lld = S-24/S-25 group order
+  (lld merged total 0x6fd5 vs ours 0x6ff0); .relro_padding L-64; segments L-65.
+  Symtab = lld − section syms (S-79) − lld LOCAL UND (S-75) − .gnu.warning
+  locals (L-33) − ≤2 eh $d (S-76); undefined weak binding: refs write GLOBAL
+  from a lazy archive def, we write WEAK (S-121).
+- Next: >64 KiB debug-reloc staged test; determinism; refusals; joins; timing.
