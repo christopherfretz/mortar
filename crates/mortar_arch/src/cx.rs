@@ -36,7 +36,8 @@ pub trait Records {
     }
 }
 
-impl Records for [Reloc] {
+/// A slice: `&records` of a `&[Reloc]` is a `&dyn Records`.
+impl Records for &[Reloc] {
     fn len(&self) -> u32 {
         u32::try_from(<[Reloc]>::len(self)).unwrap_or(u32::MAX)
     }
@@ -139,6 +140,10 @@ pub enum ScanError {
     Undefined,
     /// `refused`, feature `overlapping relocations` (§3.4).
     Overlap,
+    /// The target kind cannot occur in this output kind (a blank cell of
+    /// §4.3): the generic phase's tables are inconsistent. Never a user
+    /// diagnostic.
+    Internal,
 }
 
 /// The key of a scan diagnostic (§3.4, model §8): `(70, FileId, section

@@ -21,17 +21,13 @@ pub struct UnitWindow {
 
 /// The ordinary window of a relocation: `[r_offset − before, r_offset +
 /// width + after)` (§3.6). `None` when it wraps around the address space.
-/// A marker (`Field::None`) occupies no bytes: its window is empty unless
-/// a rule rewrites its word (the architecture then gives that window).
+/// A marker (`Field::None`, width 0) occupies no bytes unless a rule
+/// rewrites its word; the architecture then gives it a window (`after`).
 #[must_use]
 pub fn field_window(r_offset: u64, h: &Howto) -> Option<(u64, u64)> {
     let start = r_offset.checked_sub(u64::from(h.window.before))?;
     let width = u64::from(h.field.width());
-    let end = if width == 0 {
-        r_offset
-    } else {
-        r_offset.checked_add(width)?.checked_add(u64::from(h.window.after))?
-    };
+    let end = r_offset.checked_add(width)?.checked_add(u64::from(h.window.after))?;
     Some((start, end))
 }
 
@@ -133,6 +129,13 @@ impl Code<'_> {
         let at = usize::try_from(off).ok()?;
         let b = self.bytes.get(at..at.checked_add(4)?)?;
         Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    /// The run that contains byte `off`, if one does.
+    #[must_use]
+    pub fn run_at(&self, off: u64) -> Option<ProofRun> {
+        let at = self.proof.partition_point(|r| r.end <= off);
+        self.proof.get(at).copied().filter(|r| r.start <= off)
     }
 
     /// The proof of the word at `off`: `Insn` when its four bytes lie in

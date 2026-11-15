@@ -428,9 +428,10 @@ fn s3_6_field_window() {
     assert_eq!(field_window(8, &h), Some((4, 20)));
     assert_eq!(field_window(2, &h), None);
     h.field = Field::None;
-    assert_eq!(field_window(8, &h), Some((4, 8)));
-    h.field = Field::Data { bytes: 8 };
+    assert_eq!(field_window(8, &h), Some((4, 16)));
     h.window = Window::default();
+    assert_eq!(field_window(8, &h), Some((8, 8)));
+    h.field = Field::Data { bytes: 8 };
     assert_eq!(field_window(u64::MAX - 3, &h), None);
 }
 
@@ -465,6 +466,10 @@ fn s3_6_word_proof() {
     // Straddling two $x runs of different units: not one $x range.
     assert_eq!(code.word_proof(54).0, Proof::Data);
     assert_eq!(code.word_proof(62).0, Proof::Data); // past the end
+    assert_eq!(code.run_at(33), None);
+    assert_eq!(code.run_at(36), Some(runs[3]));
+    assert_eq!(code.run_at(63), Some(runs[5]));
+    assert_eq!(code.run_at(64), None);
     assert_eq!(code.word(60), Some(0));
     assert_eq!(code.word(61), None);
     assert_eq!(code.word(u64::MAX), None);
