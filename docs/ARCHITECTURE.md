@@ -79,8 +79,9 @@ and over REL or RELA.
 
 Out of scope until a milestone says otherwise: Mach-O, COFF, big-endian
 ELF, the x32 ABI, other architectures (32-bit ARM included), link-time
-optimization (the plugin interface is refused by name; `-flto` objects are
-a later decision).
+optimization (an LTO object among the inputs is refused by name; the
+`-plugin` options GCC passes on every link are accepted and have no effect
+without one, `spec/cli.md`; linking `-flto` objects is a later decision).
 
 ## Pipeline
 
@@ -99,8 +100,13 @@ argv ─────── mortar_cli ────► Plan            options, i
                                 │
              mortar_odr ────────┤             one-definition-rule checks (Mason
                                 │             metadata; weaker checks without)
+             mortar_layout ─────┤             assignment: the output section of
+                                │             each input section (default rules
+                                │             or a script; KEEP, /DISCARD/)
+             mortar_merge ──────┤             split mergeable and .eh_frame
+                                │             sections into pieces
              mortar_live ───────┤             --gc-sections, identical code folding
-             mortar_merge ──────┤             mergeable strings and constants
+             mortar_merge ──────┤             place the live pieces
              mortar_arch::scan ─┤             per relocation: GOT, PLT, TLS, copy,
                                 │             dynamic relocation demands
              mortar_synth ──────┤             synthetic sections, sized
@@ -116,8 +122,11 @@ argv ─────── mortar_cli ────► Plan            options, i
 Three properties of this shape matter more than the boxes:
 
 - **Phases exchange plain data.** `Plan`, `Inputs`, `Resolution` and
-  `Layout` are tables addressed by small integer ids (`FileId`,
-  `SectionId`, `SymbolId`, `ChunkId`), not object graphs. A phase reads the
+  `Layout` (and the smaller tables between them, `spec/model.md`) are
+  tables addressed by small integer ids (`FileId`, `SectionId`,
+  `SymbolId`, `ChunkId`), not object graphs. Tables are either *derived*
+  (a pure function of the tables before them) or *decisions* (where
+  things go, in what order: the layout). A phase reads the
   tables before it and writes its own. That is what lets phases be built,
   tested and re-implemented separately, what makes parallelism safe without
   `unsafe`, and what makes the tables storable for incremental links.

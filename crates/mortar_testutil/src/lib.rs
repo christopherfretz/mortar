@@ -98,9 +98,14 @@ fn build_tmp_dir() -> Option<PathBuf> {
     if dir.file_name()? == "deps" {
         dir = dir.parent()?;
     }
-    // `dir` is the profile directory if its parent holds cargo's marker.
+    // `dir` is the profile directory if its parent holds one of cargo's
+    // markers. `CACHEDIR.TAG` is written only when cargo itself creates
+    // the directory; `.rustc_info.json` is there after any build (a
+    // directory made by `mkdir -p <build directory>/tmp` before the first
+    // build has no tag).
     let build = dir.parent()?;
-    build.join("CACHEDIR.TAG").is_file().then(|| build.join("tmp"))
+    let marked = build.join("CACHEDIR.TAG").is_file() || build.join(".rustc_info.json").is_file();
+    marked.then(|| build.join("tmp"))
 }
 
 /// A scratch directory removed on drop.

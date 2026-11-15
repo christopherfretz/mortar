@@ -1,6 +1,6 @@
 [package]
 name = "mortar_elf"
-description = "ELF64 for a linker: bounds-checked zero-copy readers for objects, archives and shared objects."
+description = "ELF for a linker: bounds-checked zero-copy readers for objects, archives and shared objects."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
