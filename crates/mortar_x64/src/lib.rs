@@ -19,11 +19,11 @@ use std::fmt::Write as _;
 
 use mortar_arch::shapes::EH_ENCODINGS;
 use mortar_arch::{
-    Arch, Branch, Code, DemandClass, DynRole, DynTag, EhEncodings, Erratum, ErratumSite, Facts, Field,
-    FieldError, GotBase, GotShape, Howto, LazyTarget, OutputCx, OutputKind, PatchCx, PltChunk, PltPart,
-    PltShape, PltVariant, PropMerge, Reach, Records, RefName, Refusal, RelForm, RelocAt, Site,
-    SlotKind, Status, SymNames, SynthCx, ThunkShape, TlsAbi, TlsVariant, UnitWindow, Unproved,
-    WeakClass, Weak0Rule, Window, max_window, x86_property_merge,
+    Arch, Branch, Code, DemandClass, DynRole, DynTag, EhEncodings, Erratum, ErratumSite, Facts,
+    Field, FieldError, GotBase, GotShape, Howto, LazyTarget, OutputCx, OutputKind, PatchCx,
+    PltChunk, PltPart, PltShape, PltVariant, PropMerge, Reach, Records, RefName, Refusal, RelForm,
+    RelocAt, Site, SlotKind, Status, SymNames, SynthCx, ThunkShape, TlsAbi, TlsVariant, UnitWindow,
+    Unproved, Weak0Rule, WeakClass, Window, max_window, x86_property_merge,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
@@ -393,8 +393,7 @@ impl Arch for X64 {
     /// D-49, §10.3: entry + 6 (the `push`) for the lazy PLT under M2; the
     /// IBT PLT is refused (Q4) and M1 writes no dynamic PLT.
     fn lazy_target(&self, v: PltVariant) -> Option<LazyTarget> {
-        (self.m2() && v == PltVariant::Lazy)
-            .then_some(LazyTarget::Entry { plus: synth::LAZY_PLUS })
+        (self.m2() && v == PltVariant::Lazy).then_some(LazyTarget::Entry { plus: synth::LAZY_PLUS })
     }
 
     /// arch.md §3.10, `spec/dyn.md` D-30: x86-64 has no tag of its own in

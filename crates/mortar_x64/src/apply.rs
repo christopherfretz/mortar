@@ -32,8 +32,7 @@ pub const TLS_TO_IE: &str = "TLS relaxation to initial-exec";
 /// `spec/dyn.md` D-25, X-57: a thread-local undefined weak key in `exec`
 /// or `pie` (every TLS type is unfillable). The generic pre-pass refuses
 /// the key first; a `weakdyn` key never reaches a TLS class.
-pub const TLS_WEAK_DYNAMIC: &str =
-    "thread-local undefined weak symbol in a dynamic executable";
+pub const TLS_WEAK_DYNAMIC: &str = "thread-local undefined weak symbol in a dynamic executable";
 /// The unrelaxed general-dynamic, local-dynamic and descriptor models
 /// (§6.1's M2 values) in an output that is not an executable.
 pub const DYNAMIC_TLS: &str = "dynamic TLS models in a shared object";
@@ -140,7 +139,12 @@ pub fn weak_use(r_type: u32, place: &[u8], offset: u64, writable: bool) -> Optio
 ///   branch, through a PLT entry.
 /// - D-47: a record against a `shlib` or `weakdyn` key in a place without
 ///   `SHF_WRITE` is a text relocation, `text-relocation`.
-fn dynamic_cell(cx: &ScanCx<'_>, at: &RelocAt<'_>, kind: TargetKind, o: ClassOutcome) -> ClassOutcome {
+fn dynamic_cell(
+    cx: &ScanCx<'_>,
+    at: &RelocAt<'_>,
+    kind: TargetKind,
+    o: ClassOutcome,
+) -> ClassOutcome {
     let pie = match cx.output {
         OutputKind::Pie => true,
         OutputKind::Exec => false,
@@ -512,7 +516,10 @@ const N16: [u8; 12] = [0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x03, 0x0
 /// `G(GTPREL(S)) − end`, checked s(32): the rel32 of an IE `add`/`mov`
 /// that ends at `end` (X-58).
 fn gtprel_rel(cx: &FillCx<'_>, at: &RelocAt<'_>, end: u64) -> Result<[u8; 4], FieldError> {
-    let g = cx.tables.slot(at.key, SlotKind::TpOff { negated: false }).ok_or(FieldError::MissingSlot)?;
+    let g = cx
+        .tables
+        .slot(at.key, SlotKind::TpOff { negated: false })
+        .ok_or(FieldError::MissingSlot)?;
     let x = checked(Check::Signed(32), g.wrapping_sub(end) as i64)?;
     Ok((x as i32).to_le_bytes())
 }
@@ -610,7 +617,10 @@ fn desc(
                 let modrm = *at
                     .site
                     .bytes
-                    .get(usize::try_from(at.r_offset - 1).map_err(|_| FieldError::MissingTerm("ModRM"))?)
+                    .get(
+                        usize::try_from(at.r_offset - 1)
+                            .map_err(|_| FieldError::MissingTerm("ModRM"))?,
+                    )
                     .ok_or(FieldError::Outside { offset: at.r_offset, width: 4 })?;
                 let p = out.addr.wrapping_add(at.r_offset);
                 let g = cx
