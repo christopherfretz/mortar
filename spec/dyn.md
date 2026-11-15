@@ -1563,11 +1563,14 @@ work within, stated so that M2's rules do not close the door.
   `review-m2-adv/unique`, `counter=1` in both, two addresses). A load-time
   ODR check needs one more export class (for example "COMDAT-key and
   unique definitions recorded in an M6 table"); D-21's list is the M2
-  set and gains classes by amendment, not by exception.
-- **M6: ODR data.** Digests travel in a note or a `meta.md` section (rank
-  2 of layout L-60), checked through an ordinary `.init_array` entry of
-  a mortar runtime object, a normal input (`meta.md`, `odr.md`). M2
-  reserves no tag and no section for it.
+  set and gains classes by amendment, not by exception. D-21 is unchanged
+  at M2; `spec/odr.md` Q8's class, if accepted, is added there by
+  amendment.
+- **M6: ODR data.** `.note.mason` (`spec/odr.md` O-52) is an allocated
+  note of alignment 8, placed with the other notes (layout L-60 rank 2),
+  written only with `--odr-table`; O-24 reads the tables of
+  shared-object inputs that stay in `DT_NEEDED`, identifying rows by
+  (name, version node). No runtime is added in M6 (`spec/odr.md` O-58).
 
 ## 15. Open questions (each with a recommendation)
 

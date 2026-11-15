@@ -188,7 +188,7 @@ Immutable once the phase ends. The `DT_NEEDED` closure (`spec/input.md`
 | part | row | columns |
 |---|---|---|
 | `target` | one | machine, class, relocation form (RELA, or REL with implicit addends); decided by `spec/input.md` §3.1 when `-m` did not; every ELF file must agree (§3.3), except candidates of a search, which are skipped (§4.4) |
-| `files[FileId]` | file | kind (internal, object, shared object); display name (`FileRef`: path, archive and member); the found path; `ArchiveId`, member name, ordinal and offset, if any, members of one archive mention being contiguous in archive order; the mention that named it (`origin`: a `Plan` input and argument, the script entry, or the closure edge) and the positional state of its own mention (as-needed, whole-archive, lazy, static, copy-dt-needed, exclude-libs; a shared object: its first mention's); the parsed reader over the file's resident parts (`spec/input.md` §11.3); where its bytes are in the store; section count; the range of `sym_map`; identity and content hash (§7.1) |
+| `files[FileId]` | file | kind (internal, object, shared object); display name (`FileRef`: path, archive and member); the found path; `ArchiveId`, member name, ordinal and offset, if any, members of one archive mention being contiguous in archive order; the mention that named it (`origin`: a `Plan` input and argument, the script entry, or the closure edge) and the positional state of its own mention (as-needed, whole-archive, lazy, static, copy-dt-needed, exclude-libs; a shared object: its first mention's); the parsed reader over the file's resident parts (`spec/input.md` §11.3); where its bytes are in the store; section count; the range of `sym_map`; identity and content hash (§7.1); the list of its `Meta` sections (Mason containers, `spec/meta.md` MT-6), so that `mortar_odr` finds the units without a rescan |
 | `sym_map` | non-local symbol-table entry of each file, per file in table order | the `SymbolId` of its key |
 | `symbols[SymbolId]` | key | name bytes, hash, version part |
 | `comdats[ComdatId]` | signature | name bytes |
@@ -244,10 +244,11 @@ need them (§5).
 `kind` classifies a section once, from its type, flags and name, for every
 later phase: `Regular` (bytes copied and relocated), `Nobits`, `Merge`
 (strings or fixed-size constants), `EhFrame`, `Note`, `Debug` (non-alloc,
-handled as data), `Metadata` (Mason records, `spec/meta.md`), and the
-kinds that carry no output of their own: `Null`, `Symtab`, `Strtab`,
-`Reloc`, `Group`, `Stack` (`.note.GNU-stack`), `Excluded`
-(`SHF_EXCLUDE`). A section whose type or flags mortar does not implement
+handled as data), and the kinds that carry no output of their own:
+`Null`, `Symtab`, `Strtab`, `Reloc`, `Group`, `Stack`
+(`.note.GNU-stack`), `Meta` (a Mason container, `spec/meta.md` MT-6;
+`Dropped(Consumed)`, read by `mortar_odr` through `mortar_meta`),
+`Excluded` (`SHF_EXCLUDE`). A section whose type or flags mortar does not implement
 is not classified: it is refused by name. Classification depends on the
 file alone (I-file) and may be computed while the file is parsed and kept
 per file until ids exist.
@@ -772,7 +773,7 @@ renumbering.
 | incremental (state load, fallback) | 15 | 0 | a count |
 | input (find, read, parse) | 20 | the `Plan` input's argument index | `k × 2^40 + offset` (`spec/input.md` §12.2): one input reaches several files (a script, a thin archive, the closure) |
 | resolve | 30 | `FileId` of the reporting mention | symbol-table index |
-| one-definition rule | 40 | `FileId` of the later definition | symbol-table index |
+| one-definition rule | 40 | `FileId` of the later definition | symbol-table index; for a row diagnostic without a symbol, `2^40 +` the row's index in its unit |
 | assignment | 45 | `FileId` | section index |
 | liveness, folding | 50 | `FileId` | section index |
 | split, merge | 60 | `FileId` | section index × 2^32 + piece |

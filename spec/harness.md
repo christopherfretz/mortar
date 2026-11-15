@@ -719,6 +719,13 @@ file with neither architecture nor linker.
   that does not parse, and on a run of the whole corpus a line naming no
   test, is a run error.
 - `timeout: <seconds>` (1 to 3600), `mem: <MiB>` (16 to 65536).
+- `diag: <id> <file>...` (M6, `spec/odr.md` §12.1): repeatable; mortar
+  only. Every mortar link step of the test reports the diagnostic `<id>`
+  (`spec/diag.md` §3.1) with these files as its places, in order. A
+  mortar link that reports a one-definition-rule diagnostic no `diag`
+  directive names fails (the legal corpus, `spec/odr.md` §12.2, has
+  none). The references have no such diagnostics; their outcome is the
+  steps' own expectations.
 - `anomaly(<qualifiers>): <id>...`: the recorded reference-linker defects
   (`spec/plumb.md` §10.2) the verifier is expected to find on these
   linkers' outputs ("L3"), beyond the run-wide defaults of
@@ -1064,6 +1071,15 @@ expected failure by a line of `tests/link/xfails` naming the package that
 makes it pass, and their references pass but for the wrong outputs of
 `dyn.md` §13.2, which are `xfail` markers citing W-n. They add about 10 s
 to the quick gate's linktest (80 tests, measured at load 13).
+
+The one-definition-rule cases (`tests/link/odr/`, M6) are the violation
+corpus and the legal corpus of `spec/odr.md` §12.1-§12.2, with the
+`diag` directive; before kiln writes records, their units come from the
+test producer (`spec/meta.md` §12). The **L11 lane** (`tests/mason/`,
+WP-074) builds them with kiln and runs the false-positive oracle of
+`spec/odr.md` §12.3 (libc++'s test suite, the open-source lanes, and the
+C corpus of O-33 for C-linkage kind 5); it joins the full gate as it
+lands (`docs/VALIDATION.md`).
 
 ### Tests
 
@@ -1592,6 +1608,13 @@ objects captured once and pinned; needs tens of GB of disk),
 `incremental-function`, `incremental-object`, `incremental-archive`
 (M7), and `cross-x86-64` (the x86-64 and i386 rows, on an x86-64 machine).
 A planned workload becomes another kind when what it needs exists.
+
+**Mason workloads** (M6, `spec/odr.md` O-45): `kiln-hod-medium` and
+`libcxx-test` compiled with kiln's records (`-fmason-metadata`), each
+linked by mortar twice, in the default mode and with `--odr=off`. The
+difference is the one-definition-rule checks' cost; above 3 % of the
+link's wall time (with the checks O-47 lists as on) it is a performance
+bug. `--odr=off` is the row compared with the other linkers.
 
 ### The cache
 

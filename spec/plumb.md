@@ -31,6 +31,7 @@ describes how x86-64 and i386 fit.
 | 1 | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
 | 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents (§6.4), the symbol table (§6.5), non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame` (except labels inside `.eh_frame`, §6.4), `non-alloc` |
 | 3 (M2) | Dynamic executables (`Exec`, `Pie`) and static PIE: the dynamic sections, dynamic relocations, PLT, copies, shared inputs (§12, P-D1-P-D13; not started). Shared-object output is M4 | — |
+| 4 (M6) | Mason metadata and the one-definition-rule table: `.mason.meta` in outputs, `.note.mason` (§13, P-M1-P-M3; **not implemented**, WP-078) | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 
 On the reference corpus, a stage-1 report may give only the stage-2
@@ -2866,3 +2867,35 @@ from the file system (`line::Files`).
   (GOT[0], after the PLT's slots); a GNU map's repeated `.eh_frame`
   placement of the first input is skipped; an output FDE covering a PLT
   section (GNU ld x86-64) is counted as the linker's.
+
+## 13. Stage 4: Mason metadata and the ODR table (M6)
+
+**Not implemented**; WP-078 implements it (amendment A-7 of
+`spec/odr.md` §14; the rules are `spec/odr.md` §12.5's, ids `P-M`*n*
+new here). It comes after stage 3: the table's rules need the dynamic
+symbol table stage 3 checks. The verifier re-reads the container format
+of `spec/meta.md` itself (about 150 lines: the format is small on
+purpose, and a second reader is the point), with `mortar_elf` and
+`mortar_diag` only.
+
+- **P-M1 (containers in outputs).** An executable or shared object
+  contains no `.mason.meta` unless `--keep-mason-meta` (`spec/meta.md`
+  MT-31, MT-32); a relocatable output's `.mason.meta` is the
+  concatenation of the live inputs' units in input order (MT-30).
+- **P-M2 (`.note.mason`).** If present, it lies in a `PT_NOTE` with
+  `p_align` 8; its rows are sorted; each row's key is the FNV-1a 64 of
+  its `.dynsym` name; each row's hash is the first 8 bytes of the kind 2
+  row of **the keeper's unit** for that name (`spec/odr.md` O-51; the
+  keeper is `comdat[G]`'s file for a vague definition, the defining file
+  otherwise); the row set equals O-50's (exported definitions, protected
+  and `-Bsymbolic` ones included, hidden ones not); each row's flags
+  equal the keeper's row's, plus `NONPREEMPTIBLE` exactly for protected
+  and locally bound definitions; each row's `.dynsym` entry carries the
+  version node the output gives the name.
+- **P-M3 (no code).** A table adds no code: no `.init_array`/
+  `.fini_array` entry and no input section that mortar did not read from
+  the command line. If a runtime ever ships (`spec/odr.md` O-58), a rule
+  for its entries and bytes is added then.
+
+Whether the verifier should also re-run the comparison (a second
+implementation of the verdict) is `spec/odr.md` Q11.
