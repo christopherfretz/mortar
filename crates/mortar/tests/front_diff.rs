@@ -477,8 +477,55 @@ fn the_supported_rows_shape_the_front() {
 
     assert_eq!(names(&run(&["--no-gc-sections"])), names(&plain));
 
+    // R-C3: `-z memory-seal` adds S-95's MEMORY_SEAL property (one 8-byte
+    // property, pr_type 3, no data, padded to 8); the last of the pair wins.
+    let size = |f: &mortar::front::Front<'_>| f.synth.property.size();
+    let sealed = run(&["-z", "memory-seal"]);
+    assert_eq!(size(&sealed), if size(&plain) == 0 { 16 + 8 } else { size(&plain) + 8 });
+    assert_eq!(size(&run(&["-z", "memory-seal", "-z", "nomemory-seal"])), size(&plain));
+    let none = run(&["--discard-none"]);
+    assert!(locals(&none) >= locals(&plain), "--discard-none keeps the -X locals too");
+    assert!(symtab_entries(&none).iter().any(|e| e.1 == 0 && e.3.starts_with(".L")) || locals(&none) == locals(&plain));
+
     let e = run(&["-e", "main"]);
     assert_eq!(e.layout.placement.entry, global_addr(&e, "main"));
     assert!(e.layout.placement.entry.is_some());
     assert_eq!(run(&["-e", "no_such_entry"]).layout.placement.entry, None, "L-103: e_entry = 0");
+}
+
+// spec: synth.md S-6 (a `Merge` section that is writable, code, TLS,
+// relocated or of an odd shape is placed whole, as `Regular`; resolve
+// demotes it, so phase 60 never cuts it), S-5 (the others are split)
+#[test]
+fn s6_unsafe_merge_sections_are_placed_whole() {
+    const SOURCES: &[Source] = &[
+        Source {
+            name: "m.s",
+            text: "\t.section .data.m,\"awM\",@progbits,4\n\t.word 7\n\t.word 7\n\
+                   \t.section .rodata.r,\"aM\",@progbits,8\n\t.xword 0\n\t.xword msg\n\
+                   \t.section .rodata.k,\"aM\",@progbits,4\n\t.word 9\n\t.word 9\n\
+                   \t.section .rodata.s,\"aMS\",@progbits,1\nmsg:\t.asciz \"s6\"\n",
+        },
+        Source { name: "main.c", text: "int main(void) { return 0; }\n" },
+    ];
+    let scratch = Scratch::new("s6");
+    let Some(built) = build(&scratch, Driver::Gcc, &["-O2"], SOURCES) else { return };
+    let store = store();
+    let args = with_output(&built.args, &built.dir.join("out.mortar"));
+    let f = front_of(&args, &built.dir, &store, Pool::new(2))
+        .unwrap_or_else(|r| panic!("{}", r.render(&mortar_diag::Style::plain("mortar"))));
+    let placed = places(&f);
+    let whole = |name: &str| placed.lines().any(|l| l.split(' ').nth(2) == Some(name));
+    assert!(whole(".data.m"), "writable: placed whole\n{placed}");
+    assert!(whole(".rodata.r"), "relocated: placed whole\n{placed}");
+    assert!(!whole(".rodata.k") && !whole(".rodata.s"), "the others are split\n{placed}");
+    let kind = |name: &str| {
+        f.resolution
+            .sections
+            .iter()
+            .find(|(sid, _)| f.headers[*sid].name == name.as_bytes())
+            .map(|(_, row)| row.kind)
+    };
+    assert_eq!(kind(".data.m"), Some(mortar_core::resolution::SectionKind::Regular));
+    assert_eq!(kind(".rodata.k"), Some(mortar_core::resolution::SectionKind::Merge));
 }

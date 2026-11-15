@@ -412,6 +412,8 @@ A line that has `-T` or `-dT` needs no input file.
 - `copyreloc`;
 - `combreloc`;
 - `sectionheader`;
+- `memory_seal` (`-z memory-seal`, `-z nomemory-seal`; the last wins;
+  `spec/synth.md` S-95's `MEMORY_SEAL`, R-C3);
 - the sizes `max-page-size`, `common-page-size` and `stack-size`, as
   text (§2.7).
 
@@ -424,8 +426,10 @@ lands in `plan.other` (§3.12).
 - `gc_sections`;
 - `icf`;
 - `build_id` (`None` means no note; `--build-id` alone means `Default`);
-- `strip` (`-s`, `-S`, `--strip-*`);
-- `discard` (`-x`, `-X`, `--discard-*`);
+- `strip` (`-s`, `-S`, `--strip-*`; the last wins, `--strip-discarded`
+  is accepted and has no effect, `spec/synth.md` S-84);
+- `discard` (`-x`, `-X`, `--discard-none`; the last wins; with none of
+  them the default of `spec/synth.md` S-78 applies, which is not `-X`);
 - `compress_debug_sections`;
 - `eh_frame_hdr`;
 - `magic` (`-n`, `-N`, `--omagic`, ...);

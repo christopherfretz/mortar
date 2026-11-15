@@ -60,6 +60,7 @@ fn statuses() {
             "-S",
             "-x",
             "-X",
+            "--discard-none",
             "--build-id",
             "--eh-frame-hdr",
             "--no-eh-frame-hdr",
@@ -85,6 +86,8 @@ fn statuses() {
             "--threads",
             "--time-phases",
             "--fix-cortex-a53-843419",
+            "-z memory-seal",
+            "-z nomemory-seal",
         ]
     );
     for row in rows() {

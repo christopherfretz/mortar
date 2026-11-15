@@ -1314,7 +1314,7 @@ classification is per file (I-file), the state needs `comdat`:
 | name `.gnu.linkonce.*` | — | refused (§6.6) | |
 | name prefix `.zdebug` | — | `Refused{Feature, ".zdebug compressed debug sections"}` | (GNU-style compression, superseded by `SHF_COMPRESSED`) |
 | `SHT_X86_64_UNWIND` (x86-64) or name `.eh_frame` | `EhFrame` | `Kept` | |
-| `SHF_MERGE` with entry size > 0 | `Merge` | `Kept`; a non-alloc `.debug*` one (`.debug_str`, `.debug_line_str`) under `-S`/`-s`: `Dropped(Stripped)`, as the `Debug` row (WP-027a: GNU ld, lld and mold drop them) | |
+| `SHF_MERGE` with entry size > 0 | `Merge`, or `Regular` when `spec/synth.md` S-6 places it whole (writable, code, TLS, relocated, `SHF_COMPRESSED`, odd shape) | `Kept`; a non-alloc `.debug*` one (`.debug_str`, `.debug_line_str`) under `-S`/`-s`: `Dropped(Stripped)`, as the `Debug` row (WP-027a: GNU ld, lld and mold drop them) | |
 | `SHF_MERGE` with entry size 0 | `Regular` | `Kept` (not merged; lld) | not verified with GNU ld |
 | non-alloc, name `.debug_*` | `Debug` | `Kept` (unless `-S`/`-s`: `Dropped(Stripped)`) | |
 | `SHT_NOTE` other | `Note` | `Kept` | |

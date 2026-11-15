@@ -296,12 +296,19 @@ wins.
 | `SHT_AARCH64_ATTRIBUTES` (`.ARM.attributes`, AArch64) | accepted and consumed: no output section. Feature marking comes only from the AND-merged `.note.gnu.property` (L-34). Clang 22 emits both for every `-mbranch-protection` value but `none`; GCC 14 and Clang 19 emit only the note (E-18). GNU drops the section, lld copies it, mold drops it and emits no property note at all (E-18) | L-35 |
 | `SHF_X86_64_LARGE` set | refused (`section-flag`, `SHF_X86_64_LARGE`) [M3] | L-36 |
 | `.gnu.linkonce.*` | refused (`feature`, `.gnu.linkonce sections`): pre-COMDAT, and no current compiler emits it | L-37 |
+| non-allocated `.debug*` under `-S`/`-s` (`.debug_str`, `.debug_line_str` too) | go nowhere (resolve.md §10: `Dropped(Stripped)`) | L-158 |
 | `.zdebug_*` | refused (`compression-type`, `.zdebug`). Only `SHF_COMPRESSED` is accepted | L-38 |
 | a name that a synthetic section owns (`.got`, `.got.plt`, `.plt`, `.iplt`, `.rela.dyn`, `.rela.plt`, `.dynamic`, `.dynsym`, `.dynstr`, `.hash`, `.gnu.hash`, `.eh_frame_hdr`, `.relr.dyn`, `.interp`) | refused (`feature`, `input section <name>`). `.interp` becomes accepted at M2, when it decides the interpreter as in GNU | L-39 |
 | `.ctors*`, `.dtors*`, non-empty | M1 refuses (`feature`, `.ctors section`); the rule from M2 is L-56 | L-40 |
 | an `sh_type` or flag that `resolve.md` §10 ("The fate of sections") refuses | refused there (`section-type`, `section-flag`); layout never sees it. resolve.md owns the classification; this table only adds layout's outcome for the classes it accepts | L-41 |
 | not live (`Liveness`), or in a discarded COMDAT group | given an output section like any other, but no place | L-42 |
 
+- **L-158 [C]** With `-S` (`--strip-debug`) or `-s`, the non-allocated
+  `.debug*` sections go nowhere, the mergeable string ones included (GNU
+  ld, lld and mold drop `.debug_str` and `.debug_line_str` too, checked
+  by WP-027a). `.comment` and non-allocated notes are kept
+  (`spec/synth.md` S-84; synth.md R-L3). `.gdb_index` is a linker output
+  no input on the matrix carries; it is not named here.
 - **L-43** Dead and discarded sections still get an `out_of` entry, so
   the assignment never depends on liveness. Their output section can
   have zero live members. An output section with no live member and no
@@ -498,10 +505,10 @@ order of the output sections themselves is in §10.
   then `SectionId`. The key uses no addresses. `__patchable_function_entries`
   and Clang's `.llvm_bb_addr_map` are the common cases. A linked section
   that is not live makes the input dead (`Liveness`).
-- **L-58 [C] (.eh_frame)** `.eh_frame` inputs keep `SectionId` order. The
-  terminator that `crtend.o` provides (a zero-length CIE) must stay last,
-  and it does, because `crtend.o` comes after the user's objects in every
-  driver's line. Static start-up with `crtbeginT.o` walks
+- **L-58 [C] (.eh_frame)** `.eh_frame` inputs keep `SectionId` order.
+  Input terminators (zero-length records, which `crtend.o` provides) are
+  dropped, and `spec/synth.md` writes one terminator at the end of
+  `.eh_frame` (S-48), wherever `crtend.o` is on the line (synth.md R-L1). Static start-up with `crtbeginT.o` walks
   `__EH_FRAME_BEGIN__` to that terminator without `.eh_frame_hdr`.
   `synth.md` owns CIE de-duplication and the removal of dead FDEs. Both
   keep this order for what remains.
@@ -825,7 +832,8 @@ order of the output sections themselves is in §10.
     section is exec and larger than the part limit;
   - `Merged(OutSecId)` after the body. It holds the live pieces of every
     merge class in the section, ordered by class (strings before
-    constants, then entsize ascending), then by `MergeMap` order. One
+    constants, then entsize ascending), then by alignment ascending, then
+    by `MergeMap` order (`spec/synth.md` S-24, S-25; synth.md R-L4). One
     merged chunk per output section;
   - `Patches(OutSecId, part)` directly after each exec body part, for
     thunks (§14). It exists in the chunk list even when it is empty
@@ -1139,7 +1147,12 @@ with the island sizes; and the order of patches inside an island.
   because patches are only added. `.relr.dyn` is padded with RELR bitmap words that
   mark nothing, which is a valid encoding of the same set. Compressed
   non-alloc chunks come after every allocated chunk, so they do not move
-  any address and are sized once, after the fixed point.
+  any address and are sized once, after the fixed point. `.symtab`,
+  `.strtab` and `.symtab_shndx` are sized after the fixed point when
+  thunks or patches exist, since each adds symbols (`spec/synth.md`
+  S-80); they are non-allocated and after every allocated chunk, so their
+  size moves no address (synth.md R-L5; the facade places once more with
+  the final sizes, `crates/mortar/src/front.rs`).
 
 ## 15. Validity: completing `model.md` §4.4
 
@@ -1490,14 +1503,13 @@ New refusal names (class `feature` unless noted):
 - a64.md §11.1 item 2's padding is specified as L-118; a64.md's "at
   most 16 bytes" holds for chunk alignments ≤ 16.
 
-### 20.6 `synth.md` (not yet written)
+### 20.6 `synth.md` — applied
 
-- `.relro_padding` is a layout chunk, not synthetic content.
-- `.eh_frame` keeps input order (L-58); its type follows L-49.
-- The IPLT goes in `.plt`/`.rela.plt`/`.got.plt` for static links (arch
-  Q9).
-- `.note.gnu.property` is the AND-merge of the inputs' notes; an input
-  without one has no features (L-35).
+`.relro_padding` is a layout chunk (synth.md does not list it, S-3);
+`.eh_frame` keeps input order (S-46) and its type follows L-49 (S-54);
+the static IPLT is in `.plt`, `.rela.plt` and `.got.plt` (S-68);
+`.note.gnu.property` is merged by S-95, which keeps the AND rule and adds
+`Or` and `OrAll` for x86. (synth.md R-L2, applied by WP-027a.)
 
 ### 20.7 `resolve.md`
 

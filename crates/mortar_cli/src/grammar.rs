@@ -861,6 +861,7 @@ fn z_field(plan: &mut Plan, field: ZField, value: Option<OsString>) {
         ZField::Copyreloc(on) => z.copyreloc = Some(on),
         ZField::Combreloc(on) => z.combreloc = Some(on),
         ZField::Sectionheader(on) => z.sectionheader = Some(on),
+        ZField::MemorySeal(on) => z.memory_seal = Some(on),
     }
 }
 

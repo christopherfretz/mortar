@@ -406,6 +406,9 @@ pub struct ZOptions {
     pub combreloc: Option<bool>,
     /// `-z sectionheader`, `-z nosectionheader`.
     pub sectionheader: Option<bool>,
+    /// `-z memory-seal`, `-z nomemory-seal` (GNU ld 2.44; `spec/synth.md`
+    /// S-95's `MEMORY_SEAL` property, R-C3).
+    pub memory_seal: Option<bool>,
 }
 
 /// Output shaping (`spec/cli.md` §3.8).

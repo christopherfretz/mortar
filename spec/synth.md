@@ -170,12 +170,20 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   - is the target of a relocation section (its bytes are not final, so
     equal bytes need not be equal pieces);
   - is `SHF_TLS`;
+  - is `SHF_COMPRESSED` (a non-alloc `.debug_str` of `-gz`: its bytes are
+    not the pieces' until decompressed, and phase 60 reads the file's
+    bytes);
   - has `sh_addralign` that is not a power of two (refused already by
     `elf.md`), or `sh_entsize` larger than 2^16.
 
   None of these occurs in the library scan (X-1); the rule exists so
   that a hand-written object cannot make a wrong merge. Such a section
   keeps `SHF_MERGE` out of its output section's flags (layout L-50).
+  Resolution decides it (resolve.md §10: the row's kind becomes
+  `Regular`, `mortar_resolve::sections::placed_whole`), so every later
+  phase — merge, layout's `addr_in`, the symbol values — sees a plain
+  section; phase 60 never cuts one (WP-027a; the test is
+  `crates/mortar/tests/front_diff.rs` `s6_unsafe_merge_sections_are_placed_whole`).
 - **S-7 [G] (malformed).** A `Merge` section whose size is not a
   multiple of `sh_entsize` is malformed (`elf.md` §3.10, `BadSize`):
   `malformed-input`, `section size is not a multiple of sh_entsize`.
@@ -1499,6 +1507,7 @@ the reason. They are written to be applied mechanically.
 ### 14.1 model.md
 
 **R-M1. §3.5, the identity of a fragment.**
+*Applied by WP-027a.*
 Current: "Two pieces have the same `FragId` exactly when they belong to
 one output section and have equal bytes and alignment."
 Proposed: "Two pieces have the same `FragId` exactly when they belong to
@@ -1509,6 +1518,7 @@ to differently (S-9, S-10), so they must not share a fragment; two
 alignments of one string stay apart in all three references (X-7).
 
 **R-M2. §4.2, the reference to `spec/merge.md`.**
+*Applied by WP-027a.*
 Current: "The default order is by `FragId`, or by a content key
 `spec/merge.md` gives (tail merging); never by a hash table's layout
 (§6.5)."
@@ -1519,6 +1529,7 @@ Reason: there is no `merge.md`; synth.md owns merging, and does not
 tail-merge.
 
 **R-M3. §4.3, the `.symtab` order.**
+*Applied by WP-027a.*
 Current: "`.symtab` (and the symbol tables of `-r` output) is ordered by
 rule, not by rows: locals per file in `FileId` and table order, then
 globals in `SymbolId` order, so that the output index of `(FileId,
@@ -1536,6 +1547,7 @@ Reason: hidden definitions become locals (resolve.md §3.7) and must be
 in the local part (gABI); lld puts them in their file's block (X-17).
 
 **R-M4. §4.3, GOT capacities.**
+*Applied by WP-027a.*
 Current: "Where the kinds lie relative to each other in the GOT, and
 which `.got.plt` word belongs to a PLT or IPLT entry, follow from the
 indices by `spec/synth.md`'s rule; they are not stored."
@@ -1548,6 +1560,7 @@ Reason: an incremental link appends a slot to one kind without moving
 the slots of the next (S-113).
 
 **R-M5. §4.4, `ChunkId` order.**
+*Applied by WP-027a.*
 Current: "`ChunkId`s are given in a fixed creation order: headers, then
 synthetic chunks in the order `spec/synth.md` lists them, then merged
 chunks and output-section bodies in `OutSecId` order."
@@ -1556,6 +1569,7 @@ its synthetic chunks (its input sections are split and have no `place`)."
 Reason: `.eh_frame` is synthesized from `Slots.eh_records`, not a body.
 
 **R-M6. §3.5, the internal file's pieces.**
+*Not applied: `.comment` (S-100) is not a merge piece yet (WP-027a record).*
 Current: (no text)
 Proposed: add after the `EhFrame` bullet: "- the internal file (`FileId`
 0) may contribute pieces: the `.comment` string of `spec/synth.md`
@@ -1564,6 +1578,7 @@ Reason: S-100 puts mortar's identification through the ordinary merge
 path rather than a new chunk kind.
 
 **R-M7. §3.5, the numbering method of `FragId`.**
+*Applied by WP-027a.*
 Current: "`FragId`s are numbered by first occurrence
 `(FileId, sh_index, piece)`, by the method of §2.3;"
 Proposed: "`FragId`s are numbered by first occurrence
@@ -1578,6 +1593,7 @@ threads, with the same `FragId`s (X-29).
 ### 14.2 layout.md
 
 **R-L1. L-58.**
+*Applied by WP-027a.*
 Current: "The terminator that `crtend.o` provides (a zero-length CIE)
 must stay last, and it does, because `crtend.o` comes after the user's
 objects in every driver's line."
@@ -1588,6 +1604,7 @@ Reason: X-13: with `crtend.o` early GNU's output crashes; lld and mold
 write the terminator last and the program runs.
 
 **R-L2. §20.6, replace the request list with its resolution.**
+*Applied by WP-027a.*
 Current: the four bullets under "### 20.6 `synth.md` (not yet written)".
 Proposed: "### 20.6 `synth.md` — applied: `.relro_padding` is a layout
 chunk (synth.md does not list it, S-3); `.eh_frame` keeps input order
@@ -1597,6 +1614,7 @@ S-95, which keeps the AND rule and adds `Or` and `OrAll` for x86."
 Reason: the requests are answered.
 
 **R-L3. §8.1 (sections that go nowhere), `-S`.**
+*Applied by WP-027a as L-158 (with the fix that also strips the mergeable `.debug_str`/`.debug_line_str`).*
 Current: (no rule for `-S`/`--strip-debug`)
 Proposed: add "- **L-n [C]** With `-S` (`--strip-debug`) or `-s`, the
 `.debug_*` sections and `.gdb_index` go nowhere.
@@ -1605,6 +1623,7 @@ Reason: S-84 needs the rule to exist in the spec that decides which
 sections are output.
 
 **R-L4. §12.1 L-85, the merged chunk's order.**
+*Applied by WP-027a.*
 Current: "ordered by class (strings before constants, then entsize
 ascending), then by `MergeMap` order."
 Proposed: "ordered by class (strings before constants, then entsize
@@ -1613,6 +1632,7 @@ ascending), then by alignment ascending, then by `MergeMap` order
 Reason: S-25.
 
 **R-L5. §14.3, symbol-table sizes after the fixed point.**
+*Applied by WP-027a (L-121).*
 Current: L-121 lists `.relr.dyn`, patch islands and compressed non-alloc
 chunks as sized chunks.
 Proposed: add to L-121: "`.symtab`, `.strtab` and `.symtab_shndx` are
@@ -1622,6 +1642,7 @@ allocated chunk, so their size moves no address."
 Reason: S-2, S-80.
 
 **R-L6. §9, empty input sections.**
+*Not applied: whether `mortar_layout` places empty input sections as proposed was not verified by WP-027a (its record lists it).*
 Current: (no rule)
 Proposed: add to §9 "- **L-n [C] (empty input sections)** A live input
 section of size 0 is placed like any other, at its output section's
@@ -1808,7 +1829,9 @@ sha256 32, fast 32). Reason: Q4 is image.md's (coordinator ruling).
 
 ### 14.8 cli.md and docs/status/options.md
 
-**R-C1.** Status changes when WP-025's code lands (M1): `-s`, `-S`,
+**R-C1.** *Applied by WP-027a* (`--strip-discarded` and `-O` are
+`noop`, the others `supported`; `--build-id=STYLE`'s check is cli.md
+§3's). Status changes when WP-025's code lands (M1): `-s`, `-S`,
 `--strip-discarded`, `-x`, `-X`, `--discard-none` (S-78, S-84),
 `--build-id[=STYLE]` with every style of S-91, `--eh-frame-hdr`,
 `--no-eh-frame-hdr` (S-57) become "implemented"; `-O LEVEL` becomes
@@ -1817,12 +1840,15 @@ sha256 32, fast 32). Reason: Q4 is image.md's (coordinator ruling).
 (GNU warns and ignores; lld refuses).
 Reason: these are the options this spec defines.
 
-**R-C3. `-z memory-seal`, `-z nomemory-seal`.** Add both as implemented
+**R-C3. `-z memory-seal`, `-z nomemory-seal`.** *Applied by WP-027a
+(`plan.z.memory_seal`; GNU ld 2.44 gives the same 0x18-byte note for a
+static C program).* Add both as implemented
 at M1, the last one winning, default `nomemory-seal`, feeding S-95's
 `MEMORY_SEAL` property (GNU ld 2.44's options; lld 22 does not know
 them).
 
-**R-C2. §3.8.** Current: "`strip` (`-s`, `-S`, `--strip-*`);" Proposed:
+**R-C2. §3.8.** *Applied by WP-027a, except "default `-X`": the
+default is S-78's own (corrected by WP-027a).* Current: "`strip` (`-s`, `-S`, `--strip-*`);" Proposed:
 "`strip` (`-s`, `-S`, `--strip-*`; the last wins, `--strip-discarded`
 is accepted and has no effect, `spec/synth.md` S-84);" and current
 "`discard` (`-x`, `-X`, `--discard-*`);" proposed "`discard` (`-x`,

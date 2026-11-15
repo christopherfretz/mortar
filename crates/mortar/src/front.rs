@@ -433,7 +433,8 @@ pub fn front<'s>(
     let eh = EhPlan::new(&merge_eh, |s: SectionId| liveness.is_live(s), &pool, diag).ok()?;
     let eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
     let hdr = HdrPlan::new(&merge_eh, &eh, eh_frame_hdr, &pool, diag).ok()?;
-    let property = property_plan(&inputs, &resolution, &headers, arch, diag).ok()?;
+    let memory_seal = plan.z.memory_seal == Some(true);
+    let property = property_plan(&inputs, &resolution, &headers, arch, memory_seal, diag).ok()?;
     let feature_1_and = property.value_u32(mortar_a64::FEATURE_1_AND);
     let variant = arch
         .plt_variant(&OutputCx { output, feature_1_and, pac_plt: false, force_bti: false })
@@ -693,6 +694,7 @@ fn property_plan(
     resolution: &Resolution,
     headers: &Headers<'_>,
     arch: A64,
+    memory_seal: bool,
     diag: &Collector,
 ) -> Result<PropertyPlan, mortar_synth::Failed> {
     let mut paths: Vec<String> = Vec::new();
@@ -742,8 +744,8 @@ fn property_plan(
     let objects: Vec<ObjectNotes<'_>> =
         paths.iter().zip(&per).map(|(p, s)| ObjectNotes { path: p, sections: s }).collect();
     let processor = |t: u32| arch.property_merge(t);
-    // `-z memory-seal` is refused by the command line in M1 (R-C3).
-    PropertyPlan::new(&objects, Class::Elf64, &processor, false, diag)
+    // `-z memory-seal` (R-C3): the last of it and `-z nomemory-seal` wins.
+    PropertyPlan::new(&objects, Class::Elf64, &processor, memory_seal, diag)
 }
 
 /// The synthetic chunks that exist, in S-3 order, as layout takes them,

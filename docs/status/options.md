@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-471 rows: 31 supported, 22 noop, 418 refused.
+471 rows: 34 supported, 24 noop, 413 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's own.
 
@@ -30,11 +30,11 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-q`, `--emit-relocs` |  | GNU, lld, mold | all | refused | `shaping.emit_relocs` | Keep relocations in the output |
 | `-s`, `--strip-all` |  | GNU, lld, mold | all | supported | `shaping.strip` | Omit all symbol information |
 | `-S`, `--strip-debug` |  | GNU, lld, mold | all | supported | `shaping.strip` | Omit debugging information |
-| `--strip-discarded` |  | GNU | all | refused | `other` | Omit symbols of discarded sections |
+| `--strip-discarded` |  | GNU | all | noop: synth.md S-76: locals of sections that are not live are always dropped (the default) | `other` | Omit symbols of discarded sections |
 | `--no-strip-discarded` |  | GNU | all | refused | `other` | Keep symbols of discarded sections |
 | `-x`, `--discard-all` |  | GNU, lld, mold | all | supported | `shaping.discard` | Omit all local symbols |
 | `-X`, `--discard-locals` |  | GNU, lld, mold | all | supported | `shaping.discard` | Omit temporary local symbols |
-| `--discard-none` |  | GNU, lld | all | refused | `shaping.discard` | Keep every local symbol |
+| `--discard-none` |  | GNU, lld | all | supported | `shaping.discard` | Keep every local symbol |
 | `-n`, `--nmagic` |  | GNU, lld, mold | all | refused | `shaping.magic` | Do not page-align sections |
 | `-N`, `--omagic` |  | GNU, lld, mold | all | refused | `shaping.magic` | Do not page-align sections; make text writable |
 | `--no-omagic` |  | GNU, lld, mold | all | refused | `shaping.magic` | Page-align sections; text read-only (default) |
@@ -479,8 +479,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-z origin` |  | GNU, lld, mold | all | refused | `other` | The object uses $ORIGIN |
 | `-z common` |  | GNU | all | refused | `other` | Give common symbols the type STT_COMMON |
 | `-z nocommon` |  | GNU | all | refused | `other` | Give common symbols the type STT_OBJECT |
-| `-z memory-seal` |  | GNU | all | refused | `other` | Mark the object for memory sealing |
-| `-z nomemory-seal` |  | GNU | all | refused | `other` | Do not mark the object for memory sealing (default) |
+| `-z memory-seal` |  | GNU | all | supported | `z.memory_seal` | Mark the object for memory sealing |
+| `-z nomemory-seal` |  | GNU | all | supported | `z.memory_seal` | Do not mark the object for memory sealing (default) |
 | `-z dead-reloc-in-nonalloc` | GLOB=VALUE | lld | all | refused | `other` | The value of relocations to discarded sections in non-alloc sections |
 | `-z execute-only-report` | none \| warning \| error | lld | all | refused | `other` | Report inputs that are not execute-only |
 | `-z force-ibt` |  | lld | all | refused | `other` | Write IBT PLT entries and mark the output for IBT |
@@ -515,7 +515,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-EB` |  | GNU, lld, mold | all | refused | `other` | Link big-endian objects |
 | `-EL` |  | GNU, lld, mold | all | noop: every target mortar links for is little-endian | `other` | Link little-endian objects |
 | `-g` |  | GNU, lld | all | noop: GNU ld ignores it too | `other` | Ignored |
-| `-O` | LEVEL | GNU, lld, mold | all | refused | `other` | Optimize the output |
+| `-O` | LEVEL | GNU, lld, mold | all | noop: synth.md S-32: mortar merges at every level, as GNU ld and mold do | `other` | Optimize the output |
 | `-Qy` |  | GNU | all | noop: GNU ld ignores it too (SVR4) | `other` | Ignored |
 | `-qmagic` |  | GNU | all | noop: GNU ld ignores it too (Linux a.out) | `other` | Ignored |
 | `-assert` | KEYWORD | GNU | all | noop: GNU ld ignores it too (SunOS) | `other` | Ignored |
