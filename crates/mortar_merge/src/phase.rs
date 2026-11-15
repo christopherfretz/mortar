@@ -60,7 +60,7 @@ impl Relocs for ArchRelocs<'_> {
         let class = match h.class {
             DemandClass::None => RelocClass::None,
             DemandClass::Pc => RelocClass::Pc,
-            DemandClass::AbsWord => RelocClass::AbsWord,
+            DemandClass::AbsWord | DemandClass::AbsNarrow => RelocClass::Abs,
             _ => RelocClass::Other,
         };
         let width = match h.field {

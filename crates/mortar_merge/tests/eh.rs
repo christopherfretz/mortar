@@ -147,7 +147,7 @@ fn s34_dwarf64_is_refused() {
 
 #[test]
 fn s35_accepted_cies() {
-    // Empty augmentation: absptr (8 bytes here) with an AbsWord relocation.
+    // Empty augmentation: absptr (8 bytes here) with an Abs relocation.
     let mut b = cie("", &[]);
     let at = b.len();
     let mut f = (at as u32 + 4).to_le_bytes().to_vec();
@@ -157,7 +157,7 @@ fn s35_accepted_cies() {
         offset: at as u64 + 8,
         r_type: 257,
         name: "R_AARCH64_ABS64",
-        class: RelocClass::AbsWord,
+        class: RelocClass::Abs,
         width: 8,
         addend: 4,
         target: Target::Section { section: TEXT, value: 0 },
@@ -167,6 +167,19 @@ fn s35_accepted_cies() {
     assert_eq!(f.code, Code::Section { section: TEXT, offset: 4 });
     let c = eh.records[0].cie().unwrap();
     assert_eq!((c.version, c.fde_enc, c.z), (1, 0, false));
+    // udata4 and sdata4 with a 4-byte absolute relocation (non-PIC
+    // x86-64: R_X86_64_32).
+    for enc in [0x03, 0x0b] {
+        let mut b = cie("zR", &[enc]);
+        let at = b.len();
+        b.extend(fde(at, 0, 0, true, None));
+        let r32 = EhReloc { r_type: 10, name: "R_X86_64_32", class: RelocClass::Abs, ..code(at as u64 + 8) };
+        let eh = one(&b, &[r32]).unwrap_or_else(|e| panic!("{enc:#x}: {e:?}"));
+        assert_eq!(eh.records[0].cie().unwrap().fde_enc, enc);
+        // An 8-byte one does not fit the 4-byte field.
+        let r64 = EhReloc { width: 8, name: "R_X86_64_64", class: RelocClass::Abs, ..code(at as u64 + 8) };
+        assert_eq!(one(&b, &[r64]).unwrap_err()[0].what, What::PointerReloc("R_X86_64_64".into()));
+    }
     // Version 3, zRS, zPLR with a personality and an LSDA, B and G.
     for (v, aug) in [(3, "zR"), (1, "zRS"), (1, "zRB"), (1, "zRG"), (1, "zRSBG")] {
         let mut b = cie_v(v, aug, &[0x1b]);
@@ -253,7 +266,7 @@ fn s38_initial_location() {
     nz[at as usize + 8] = 1;
     assert_eq!(what(&nz, &[]), (What::FdeWithoutReloc, at));
     // Class or width not the encoding's.
-    let abs = EhReloc { class: RelocClass::AbsWord, name: "R_AARCH64_ABS32", ..code(at + 8) };
+    let abs = EhReloc { class: RelocClass::Abs, name: "R_AARCH64_ABS32", ..code(at + 8) };
     assert_eq!(what(&b, &[abs]).0, What::PointerReloc("R_AARCH64_ABS32".into()));
     let wide = EhReloc { width: 8, name: "R_AARCH64_PREL64", ..code(at + 8) };
     assert_eq!(what(&b, &[wide]).0, What::PointerReloc("R_AARCH64_PREL64".into()));
@@ -353,7 +366,7 @@ fn s40_accepted_oddities() {
     b.extend(fde(at, 20, 0, true, None));
     let at2 = b.len();
     b.extend(fde(at2, 40, 0, true, None));
-    let r = [code(at as u64 + 8), EhReloc { class: RelocClass::AbsWord, ..code(at2 as u64 + 8) }];
+    let r = [code(at as u64 + 8), EhReloc { class: RelocClass::Abs, ..code(at2 as u64 + 8) }];
     let eh = one(&b, &r).unwrap();
     let cies: Vec<u32> = eh.records.iter().map(|r| r.fde().map_or(u32::MAX, |f| f.cie)).collect();
     assert_eq!(cies, [u32::MAX, u32::MAX, u32::MAX, 1, 2]);

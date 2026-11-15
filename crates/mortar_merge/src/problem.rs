@@ -43,7 +43,7 @@ pub enum What {
     FdeWithoutReloc,
     /// S-37, S-38: the relocation at a pointer (an FDE's initial
     /// location, a personality or LSDA pointer) does not fit it: its class
-    /// is not `Pc` for a `pcrel` pointer or `AbsWord` for another, its
+    /// is not `Pc` for a `pcrel` pointer or `Abs` for another, its
     /// width is not the pointer's, or it starts inside the pointer
     /// (`feature`); the relocation's name.
     PointerReloc(String),

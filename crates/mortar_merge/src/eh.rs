@@ -28,8 +28,10 @@ pub enum RelocClass {
     None,
     /// `DemandClass::Pc`.
     Pc,
-    /// `DemandClass::AbsWord`.
-    AbsWord,
+    /// `DemandClass::AbsWord` or `AbsNarrow`: an absolute address of
+    /// [`EhReloc::width`] bytes (`udata4` and `sdata4` pointers of
+    /// non-PIC x86-64 code use `R_X86_64_32`).
+    Abs,
     /// Any other class: accepted at a place that is not a pointer of S-37.
     Other,
 }
@@ -365,7 +367,7 @@ fn relocs_in(relocs: &[EhReloc], from: u64, to: u64) -> std::ops::Range<usize> {
 
 /// The relocation of a pointer field at `at..at + width` (S-37, S-38):
 /// none, or one at its start whose class fits the encoding (`pcrel`:
-/// `Pc`; otherwise `AbsWord`) and whose width is the field's.
+/// `Pc`; otherwise `Abs`) and whose width is the field's.
 fn pointer_reloc(
     relocs: &[EhReloc],
     at: u64,
@@ -377,7 +379,7 @@ fn pointer_reloc(
         if r.class == RelocClass::None {
             continue;
         }
-        let class = if enc & 0x70 == PCREL { RelocClass::Pc } else { RelocClass::AbsWord };
+        let class = if enc & 0x70 == PCREL { RelocClass::Pc } else { RelocClass::Abs };
         if r.offset != at || r.class != class || r.width != width {
             return Err(What::PointerReloc(r.name.to_owned()));
         }

@@ -204,20 +204,22 @@ impl Link<'static> for Objects {
 }
 
 /// x86-64 and i386 relocation classes, for `.eh_frame` (`spec/arch.md`
-/// §3.9: `Pc`, `AbsWord`, `None`; everything else is `Other`).
+/// §3.9: `Pc`, `AbsWord` and `AbsNarrow`, `None`; everything else is
+/// `Other`).
 pub struct X86(pub Machine);
 
 impl Relocs for X86 {
     fn classify(&self, r_type: u32, _bytes: &[u8], _offset: u64) -> Result<RelocInfo, What> {
         let (name, class, width) = match (self.0, r_type) {
             (Machine::X86_64, 0) => ("R_X86_64_NONE", RelocClass::None, 0),
-            (Machine::X86_64, 1) => ("R_X86_64_64", RelocClass::AbsWord, 8),
+            (Machine::X86_64, 1) => ("R_X86_64_64", RelocClass::Abs, 8),
             (Machine::X86_64, 2) => ("R_X86_64_PC32", RelocClass::Pc, 4),
-            (Machine::X86_64, 10) => ("R_X86_64_32", RelocClass::Other, 4),
+            (Machine::X86_64, 10) => ("R_X86_64_32", RelocClass::Abs, 4),
+            (Machine::X86_64, 11) => ("R_X86_64_32S", RelocClass::Abs, 4),
             (Machine::X86_64, 24) => ("R_X86_64_PC64", RelocClass::Pc, 8),
             (Machine::X86_64, _) => ("R_X86_64_other", RelocClass::Other, 4),
             (_, 0) => ("R_386_NONE", RelocClass::None, 0),
-            (_, 1) => ("R_386_32", RelocClass::AbsWord, 4),
+            (_, 1) => ("R_386_32", RelocClass::Abs, 4),
             (_, 2) => ("R_386_PC32", RelocClass::Pc, 4),
             (_, _) => ("R_386_other", RelocClass::Other, 4),
         };

@@ -454,11 +454,16 @@ with one terminator, and the pointers inside them rewritten.
   pointer are refused (`feature`, `.eh_frame pointer encoding 0xNN`): no
   producer emits them and their static base is not fixed by the LSB. The
   scan has FDE `0x1b`, personality `0x9b`, LSDA `0x1b` (X-1); hod's large
-  model uses `0x1c` with `PREL64` (a64.md §13.1).
+  model uses `0x1c` with `PREL64` (a64.md §13.1); GCC's non-PIC x86-64
+  code (`-fno-pic -fno-PIE`) uses `0x03` (`udata4`) with `R_X86_64_32`
+  for all three (WP-025m corpus).
 - **S-38 [C] (FDE code range).** An FDE's code section is the section of
   the target of the relocation at its initial-location field (offset 8
-  of the record). The relocation's class must be `Pc` or `AbsWord`
-  (arch.md §3.9); another is refused there. A relocation of type
+  of the record). The relocation's class must be `Pc` for a `pcrel`
+  pointer and `AbsWord` or `AbsNarrow` otherwise (arch.md §3.9), with the
+  pointer's width, at the pointer's first byte; another is refused there
+  (`feature`, `R_NAME at an .eh_frame pointer of another encoding`). The
+  same holds at personality and LSDA pointers. A relocation of type
   `R_AARCH64_NONE`, `R_X86_64_NONE` or `R_386_NONE` anywhere in
   `.eh_frame` is ignored: a field whose only relocations are of that type
   has no relocation; `ld -r` outputs carry them (X-30). An FDE whose
