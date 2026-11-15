@@ -86,7 +86,7 @@ target = protoc
 driver = g++
 cflags = -O0 -g
 capture = protoc*
-run = -I$S/src --include_imports --descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto
+run = -I$S/src --include_imports --descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto
 
 [cxx-medium]
 class = medium
@@ -101,7 +101,7 @@ target = protoc
 driver = g++
 cflags = -O0
 capture = protoc*
-run = -I$S/src --include_imports --descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto
+run = -I$S/src --include_imports --descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto
 
 # The same protoc linked static and non-PIE (`CMAKE_EXE_LINKER_FLAGS`), the
 # link mortar makes today: plain, with -g, and with every function and
@@ -122,7 +122,7 @@ target = protoc
 driver = g++
 cflags = -O0 -g
 capture = protoc*
-run = -I$S/src --include_imports --descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto
+run = -I$S/src --include_imports --descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto
 
 [cxx-medium-static]
 class = medium
@@ -137,7 +137,7 @@ target = protoc
 driver = g++
 cflags = -O0
 capture = protoc*
-run = -I$S/src --include_imports --descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto
+run = -I$S/src --include_imports --descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto
 
 [cxx-medium-gc-static]
 class = medium
@@ -152,7 +152,7 @@ target = protoc
 driver = g++
 cflags = -O0 -ffunction-sections -fdata-sections
 capture = protoc*
-run = -I$S/src --include_imports --descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto
+run = -I$S/src --include_imports --descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto
 
 # mortar's own binary as rustc links it (the dev profile: debug
 # information, many rlibs), at a pinned commit of this repository so that

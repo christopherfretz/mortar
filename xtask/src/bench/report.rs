@@ -459,7 +459,16 @@ pub fn perf_page(results: &Results, path: &str) -> String {
          wall and CPU (user + system) are medians in ms, the range is the fastest to the \
          slowest run; RSS is the median peak in MiB.\n\
          - Default threads: lld, mold and mortar each start one thread per processor they \
-         may run on ({}); GNU ld has one.",
+         may run on ({}); GNU ld has one.\n\
+         - Why this baseline: {}\n\
+         - How the gate uses it: the time margin (35%) is widened by the calibration only \
+         when a run's machine is slower than at the baseline, never narrowed. Against a \
+         baseline recorded under load (a calibration well above the host's quiet one), a \
+         run on a quieter machine is REGRESSED (time) only when it is slower than the \
+         baseline's loaded time by 35%, so the gate catches gross slowdowns, links lost \
+         (LOST) and memory growth (4%, judged whatever the load), not small time changes; \
+         a smaller change is shown by comparing mortar's time to the calibration's, or \
+         CPU time, across runs.",
         get("date"),
         get("commit"),
         get("machine"),
@@ -471,6 +480,7 @@ pub fn perf_page(results: &Results, path: &str) -> String {
         get("noisy"),
         get("runs"),
         get("cores"),
+        get("reason"),
     );
     text.push_str(&versus_section(results));
     let not_linked: Vec<String> = results

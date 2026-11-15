@@ -1434,7 +1434,7 @@ the scale this machine's disk and time allow, by `synthetic-objects` and
 
 `run` lines: `hello-*` and `fortran-static` without arguments; protoc
 (`cxx-medium*`) `-I$S/src --include_imports
---descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto`
+--descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto`
 (the descriptor set of `unittest.proto` and its imports, written to
 standard output); `rust-self*` `--version`; the `synthetic-*` workloads
 without arguments (their `main` exits 0) except `synthetic-objects*`,
@@ -1800,6 +1800,17 @@ slowdown of about a third, not one of 5%: a smaller one must be shown
 by a run on a quiet machine, or by many runs (`--runs`), not by the
 gate. A host with less noise should measure its own margins in the same
 way before narrowing them.
+
+**A baseline recorded under load.** The drift widens the time margin
+when a run's machine is slower than at the baseline and never narrows
+it, so against a baseline whose calibration is well above the host's
+quiet one (the 12-core host's first baseline: 109 ms before and 112 ms
+after, load average 23 to 20, against 33 to 36 ms in the quieter runs) a
+time is `REGRESSED` only when it is 35% above the baseline's loaded time:
+the gate still catches links lost, memory growth (judged whatever the
+load) and gross slowdowns, but not small ones. The baseline's `reason`
+says it was recorded under load, and `docs/status/perf.md` repeats it;
+it is replaced by `--update-baseline` on a quieter machine.
 
 ### Results file
 
