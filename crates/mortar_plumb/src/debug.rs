@@ -73,6 +73,8 @@ impl Engine<'_, '_> {
         let ones = trunc(u64::MAX, w);
         let class64 = self.image.class() == Class::Elf64;
         let ranges = name == ".debug_ranges" || name == ".debug_loc";
+        // DWARF 5 entries that pair an address with a length.
+        let paired = matches!(name.as_str(), ".debug_rnglists" | ".debug_loclists" | ".debug_addr");
         let debug = is_debug_name(&name);
         // The dead section the symbol is in, and the symbol's offset there.
         let dead = self.objs[oi].symtab.and_then(|t| {
@@ -85,6 +87,7 @@ impl Engine<'_, '_> {
         let mut want: Vec<u64> = match self.format {
             // spec/image.md I-47.
             Format::Mortar if ranges => vec![1],
+            Format::Mortar if paired => vec![0],
             Format::Mortar if name == ".debug_aranges" || name == ".debug_frame" => vec![ones],
             Format::Mortar if debug => vec![if class64 { ones } else { 0 }],
             Format::Mortar if name == ".gcc_except_table" => vec![0],
