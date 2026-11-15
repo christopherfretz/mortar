@@ -218,6 +218,8 @@ pub struct LinkTables<'a, 's> {
     eh_frame: Option<(u32, u64)>,
     /// Per section index (0 is the null section).
     sections: Box<[OutSection]>,
+    /// References into `Merge` sections by offset (I-119).
+    pieces: refs::PieceIndex,
 }
 
 impl std::fmt::Debug for LinkTables<'_, '_> {
@@ -275,7 +277,9 @@ impl<'a, 's> LinkTables<'a, 's> {
             got_addrs,
             eh_frame,
             sections: out_sections(link.layout).into(),
+            pieces: refs::PieceIndex::default(),
         };
+        t.pieces = refs::PieceIndex::new(link.split, |s| t.section_size(s));
         let n = link.inputs.symbols.len() as usize;
         let global = link.pool.map(n, |i| t.def_addr(SymbolId(i as u32)));
         t.global = global.into();
@@ -331,8 +335,12 @@ impl<'a, 's> LinkTables<'a, 's> {
     fn value_in(&self, s: SectionId, v: u64) -> Option<u64> {
         match self.kind_of(s)? {
             SectionKind::Merge => {
-                let size = self.section_size(s)?;
-                let p = refs::named_symbol(self.link.split, s, size, v).ok()?;
+                let p = if let Some(p) = self.pieces.named_symbol(self.link.split, s, v) {
+                    p.ok()?
+                } else {
+                    let size = self.section_size(s)?;
+                    refs::named_symbol(self.link.split, s, size, v).ok()?
+                };
                 self.frag_value(p.frag)?.checked_add(p.within)
             }
             SectionKind::EhFrame => {
@@ -575,9 +583,14 @@ impl Tables for LinkTables<'_, '_> {
         let malformed = |what: String| Diagnostic::error(Kind::Malformed { what });
         match self.kind_of(s)? {
             SectionKind::Merge if section_sym => {
-                let size = self.section_size(s)?;
                 let r = (sym.st_value as i64).wrapping_add(addend);
-                Some(match refs::section_symbol(self.link.split, s, size, r) {
+                let found = if let Some(found) = self.pieces.section_symbol(self.link.split, s, r) {
+                    found
+                } else {
+                    let size = self.section_size(s)?;
+                    refs::section_symbol(self.link.split, s, size, r)
+                };
+                Some(match found {
                     Ok(p) => self
                         .frag_value(p.frag)
                         .and_then(|a| a.checked_add(p.within))
