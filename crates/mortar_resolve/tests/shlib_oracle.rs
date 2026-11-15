@@ -61,6 +61,9 @@ pub struct Mortar {
     pub imported: BTreeSet<String>,
     /// Linker-defined keys (file 0, D-21 item 2).
     pub internal: BTreeSet<String>,
+    /// The keys bound to a shared definition: name to `bind(k)`'s needed
+    /// name (D-11).
+    pub bind: BTreeMap<String, String>,
 }
 
 impl Mortar {
@@ -72,6 +75,7 @@ impl Mortar {
             exported: BTreeSet::new(),
             imported: BTreeSet::new(),
             internal: BTreeSet::new(),
+            bind: BTreeMap::new(),
         }
     }
 
@@ -288,29 +292,26 @@ pub fn resolve_line(
         let p = PathBuf::from(p);
         if p.is_absolute() { p } else { cwd.join(p) }
     };
-    let needed = out
-        .needed
-        .iter()
-        .map(|&f| {
-            let p = path_of(f);
-            let soname =
-                sonames.entry(p.clone()).or_insert_with(|| dynamic_names(&p).1.unwrap_or_default());
-            if !soname.is_empty() {
-                return soname.clone();
-            }
-            // input §8.3: without a soname, the path as written, or the
-            // candidate's file name for `-l`.
-            match inputs.files[f].origin {
-                mortar_core::inputs::Origin::Input { input, entry: None, .. } => {
-                    match &plan.inputs[input as usize].spec {
-                        mortar_core::plan::InputSpec::Path(w) => w.to_string_lossy().into_owned(),
-                        _ => p.file_name().unwrap().to_string_lossy().into_owned(),
-                    }
+    let mut needed_name = |f: FileId| -> String {
+        let p = path_of(f);
+        let soname =
+            sonames.entry(p.clone()).or_insert_with(|| dynamic_names(&p).1.unwrap_or_default());
+        if !soname.is_empty() {
+            return soname.clone();
+        }
+        // input §8.3: without a soname, the path as written, or the
+        // candidate's file name for `-l`.
+        match inputs.files[f].origin {
+            mortar_core::inputs::Origin::Input { input, entry: None, .. } => {
+                match &plan.inputs[input as usize].spec {
+                    mortar_core::plan::InputSpec::Path(w) => w.to_string_lossy().into_owned(),
+                    _ => p.file_name().unwrap().to_string_lossy().into_owned(),
                 }
-                _ => "<sonameless>".to_owned(),
             }
-        })
-        .collect();
+            _ => "<sonameless>".to_owned(),
+        }
+    };
+    let needed: Vec<String> = out.needed.iter().map(|&f| needed_name(f)).collect();
     let name = |k| String::from_utf8_lossy(inputs.symbols[k].name).into_owned();
     // The scan reports `undefined-symbol` for the keys whose verdict is an
     // error (resolve §5.5): the link fails there.
@@ -336,7 +337,16 @@ pub fn resolve_line(
         .filter(|(_, d)| matches!(d, mortar_core::resolution::Def::Internal(_)))
         .map(|(k, _)| name(k))
         .collect();
-    Mortar { errors, warnings, needed, exported, imported, internal }
+    let bind = out
+        .resolution
+        .def
+        .iter()
+        .filter_map(|(k, d)| match d {
+            mortar_core::resolution::Def::Shared(e) => Some((name(k), needed_name(e.file))),
+            _ => None,
+        })
+        .collect();
+    Mortar { errors, warnings, needed, exported, imported, internal, bind }
 }
 
 /// Whether the oracle can run here (drivers, GNU ld, readelf).
@@ -985,4 +995,95 @@ fn e_usedset() {
         );
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// `shlib/dupdef_needed.sh` and the review's `dupdef` (N1): two needed
+/// libraries define `dv` (`libnA` `int dv[4]`, `libnB` `int dv[8]`); the
+/// `DT_NEEDED` list and the binding (GNU ld's copy size: 16 is `nA`'s, 32
+/// `nB`'s) against D-11/D-19a's table.
+fn dupdef(arch: Arch) {
+    if !tools(arch, &["gcc"]) {
+        return;
+    }
+    let dir = Scratch::new("shlib-dupdef");
+    dir.write("a.c", "int dv[4] = {1,1,1,1}; int fa(void){return dv[0];}\n");
+    dir.write(
+        "b.c",
+        "int dv[8] = {2,2,2,2,2,2,2,2}; int fb(void){int s=0; for(int i=0;i<8;i++) s+=dv[i]; return s;}\n",
+    );
+    dir.write("m.c", "#include <stdio.h>\nextern int dv[];\nint main(void){printf(\"%d %d\\n\",dv[0],dv[7]);return 0;}\n");
+    let (cflags, lflags): (&[&str], &[&str]) =
+        if arch.name == "aarch64" { (&["-fno-pic"], &["-no-pie"]) } else { (&[], &[]) };
+    for (lib, src) in [("libnA.so", "a.c"), ("libnB.so", "b.c")] {
+        let soname = format!("-Wl,-soname,{lib}");
+        let mut cmd = driver_cmd(arch, "gcc");
+        cmd.current_dir(dir.path()).env("TMPDIR", dir.path());
+        cmd.args(["-fPIC", "-shared", &soname, "-o", lib, src]);
+        let o = run_with(&mut cmd, b"", Duration::from_mins(2));
+        assert!(o.success(), "{}", o.stderr_text());
+    }
+    let mut cmd = driver_cmd(arch, "gcc");
+    cmd.current_dir(dir.path())
+        .env("TMPDIR", dir.path())
+        .args(cflags)
+        .args(["-O1", "-c", "m.c", "-o", "m.o"]);
+    assert!(run_with(&mut cmd, b"", Duration::from_mins(2)).success());
+    let an = "-Wl,--as-needed";
+    let na = "-Wl,--no-as-needed";
+    // (line, mortar's DT_NEEDED, mortar's bind(dv)); GNU ld's where they
+    // agree (dyn.md D-11's table).
+    let lines: [(&[&str], &[&str], &str); 4] = [
+        (&[an, "-lnA", na, "-lnB", "m.o", an, "-lnA"], &["nB", "nA"], "nB"),
+        (&["m.o", an, "-lnA", na, "-lnB"], &["nA", "nB"], "nA"),
+        (&[an, "-lnA", na, "-lnB", "m.o", "-lnA"], &["nB", "nA"], "nB"),
+        (&["m.o", an, "-lnA", na, "-lnB", "-lnA"], &["nA", "nB"], "nA"),
+    ];
+    let mut sonames = BTreeMap::new();
+    for (i, (line, want, bind)) in lines.iter().enumerate() {
+        let mut args: Vec<&str> = lflags.to_vec();
+        args.push("-L.");
+        args.extend_from_slice(line);
+        let g = record(arch, "gcc", &args, dir.path(), &format!("dupdef{i}"));
+        assert!(g.ok, "{}", g.stderr);
+        let m = resolve_line(&g.args, dir.path(), &mut sonames);
+        assert!(m.errors.is_empty(), "{:?}", m.errors);
+        let want: Vec<String> = names(want);
+        let bind = format!("lib{bind}.so");
+        assert_eq!(m.needed, want, "line {}: DT_NEEDED", i + 1);
+        assert_eq!(m.bind.get("dv"), Some(&bind), "line {}: bind(dv)", i + 1);
+        // GNU ld's copy of dv.
+        let dynsym = output(
+            Command::new(readelf().unwrap())
+                .args(["--dyn-syms", "-W"])
+                .arg(dir.join(format!("dupdef{i}"))),
+        );
+        let size = dynsym.lines().find_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            (f.len() >= 8 && f[7].split('@').next() == Some("dv")).then(|| f[2].to_owned())
+        });
+        let gnu_bind = match size.as_deref() {
+            Some("16") => "libnA.so",
+            Some("32") => "libnB.so",
+            other => panic!("line {}: GNU ld's dv {other:?}", i + 1),
+        };
+        // Line 1 is the deliberate superset: GNU ld drops nA (an
+        // as-needed library its binding never used); the binding agrees.
+        if i == 0 {
+            assert_eq!(g.needed, names(&["nB"]), "line 1: GNU ld");
+        } else {
+            assert_eq!(g.needed, want, "line {}: GNU ld", i + 1);
+        }
+        assert_eq!(gnu_bind, bind, "line {}: GNU ld's copy", i + 1);
+        eprintln!("dupdef {} line {}: DT_NEEDED {:?}, bind(dv) {bind}", arch.name, i + 1, m.needed);
+    }
+}
+
+#[test]
+fn d11_dupdef_needed_aarch64() {
+    dupdef(AARCH64);
+}
+
+#[test]
+fn d11_dupdef_needed_x86_64() {
+    dupdef(X86_64);
 }
