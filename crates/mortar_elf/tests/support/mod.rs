@@ -295,10 +295,10 @@ impl Built {
 
     /// Overwrites a field of section header `index`.
     pub fn set_shdr(&mut self, index: u32, edit: impl FnOnce(&mut Shdr)) {
-        let obj = Object::parse(&self.bytes).expect("a built file parses");
-        let mut shdr = *obj.section(mortar_elf::SectionIndex(index)).expect("index").header();
-        edit(&mut shdr);
         let at = self.shdr_at(index);
+        let mut shdr = <Shdr as mortar_elf::Record>::decode(self.class, &self.bytes[at..])
+            .expect("a section header");
+        edit(&mut shdr);
         let encoded = enc_shdr(self.class, &shdr);
         self.bytes[at..at + encoded.len()].copy_from_slice(&encoded);
     }
