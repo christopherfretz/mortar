@@ -39,8 +39,10 @@ mortar is never its own judge where an external judge exists.
 | L10 | **Incremental.** Random edit sequences over a project (change a function body, add or remove a symbol, grow data, reorder inputs, replace an archive member); after each step: the verifier accepts, the program behaves as a from-scratch link's does, and a full link given the incremental layout gives the same bytes. | full once M7 lands | M7 |
 | L11 | **One-definition rule.** A corpus of violations (each kind the spec lists, across objects, archives and shared objects, at load time) that must be diagnosed, and of legal programs that must not be. | full once M6 lands | M6 |
 
-Every layer runs on AArch64 natively and on x86-64 under `qemu-x86_64`
-(the host is AArch64); the hosted lanes run each architecture natively.
+Every layer runs on AArch64 natively and on x86-64 and 32-bit x86 under
+`qemu-x86_64` and `qemu-i386` (the host is AArch64); the hosted lanes run
+each architecture natively (32-bit x86 on the x86-64 runner). The layers
+that need kiln and hod (L7, L8) cover the two 64-bit architectures.
 
 ## Determinism
 
@@ -76,7 +78,7 @@ idle, or marked as noisy.
   back: fmt, clippy with warnings denied, unit tests, the link tests of the
   touched areas.
 - **`cargo xtask ci`**: what runs before a merge: everything in the "quick"
-  and "full" rows, on both architectures.
+  and "full" rows, on every architecture.
 - **Nightly / off-gate lanes**: fuzzing, external suites, open-source
   builds, bench history. A regression opens a backlog row.
 - **Release gate**: all of the above green; libc++ strict with and without
