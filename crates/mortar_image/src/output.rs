@@ -300,10 +300,28 @@ impl Output {
     /// I-60: renames `T` to `P` (while `T0`'s lock is still held), then
     /// closes it; a failed rename is `cannot-write-output` and `T` is
     /// removed. No `fsync` (I-61).
-    pub fn commit(mut self) -> Result<(), (Key, Diagnostic)> {
+    pub fn commit(self) -> Result<(), (Key, Diagnostic)> {
+        self.commit_with(false).map(|_| ())
+    }
+
+    /// [`Output::commit`], also returning the device and inode of the file
+    /// written, from `fstat` of its descriptor before the rename
+    /// (`spec/incr.md` IN-21: an incremental-mode link binds its state to
+    /// this file, not to whatever the path names later). `None` when the
+    /// `fstat` failed.
+    pub fn commit_identified(self) -> Result<Option<(u64, u64)>, (Key, Diagnostic)> {
+        self.commit_with(true)
+    }
+
+    fn commit_with(mut self, identify: bool) -> Result<Option<(u64, u64)>, (Key, Diagnostic)> {
+        let id = |f: &File| {
+            use std::os::unix::fs::MetadataExt as _;
+            if identify { f.metadata().ok().map(|m| (m.dev(), m.ino())) } else { None }
+        };
         let result = match self.target.take() {
             Some(Target::Temp { file, path }) => {
-                let r = fs::rename(&path, &self.path);
+                let written = id(&file);
+                let r = fs::rename(&path, &self.path).map(|()| written);
                 drop(file);
                 r.map_err(|e| {
                     let _ = fs::remove_file(&path);
@@ -311,10 +329,11 @@ impl Output {
                 })
             }
             Some(Target::InPlace(file)) => {
+                let written = id(&file);
                 drop(file);
-                Ok(())
+                Ok(written)
             }
-            None => Ok(()),
+            None => Ok(None),
         };
         self.join();
         result

@@ -673,7 +673,28 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
                 _ => 0,
             })),
             _ => {
-                if let Some(x) = name.strip_prefix("__start_").filter(|x| c_identifier(x)) {
+                if let Some(hex) = name.strip_prefix("__CortexA53843419_") {
+                    // lld's erratum 843419 patch (W8): at the patch of the
+                    // site whose final word the name gives in hex, 8 bytes
+                    // (the moved load or store and the branch back).
+                    let site = u64::from_str_radix(hex, 16).ok();
+                    let stub =
+                        e.patch_stubs.iter().find(|(_, f)| Some(**f) == site).map(|(t, _)| *t);
+                    match stub {
+                        Some(t) if s.st_size == 8 => Some(Want::Exactly(t)),
+                        Some(_) => {
+                            fs.push(named(
+                                y(5, format!("'{name}' has size {}, the patch 8", s.st_size)),
+                                name,
+                            ));
+                            Some(Want::Equal)
+                        }
+                        // No patched site: the site's own verdict (C1, or
+                        // erratum_not_judged) says what happened; the name
+                        // labels dead bytes and is listed as not judged.
+                        None => None,
+                    }
+                } else if let Some(x) = name.strip_prefix("__start_").filter(|x| c_identifier(x)) {
                     sec(x).map(|(lo, _)| Want::Exactly(lo))
                 } else if let Some(x) = name.strip_prefix("__stop_").filter(|x| c_identifier(x)) {
                     sec(x).map(|(_, hi)| Want::Exactly(hi))

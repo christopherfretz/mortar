@@ -57,6 +57,9 @@ pub struct Line {
     /// `-u` names (file 0 references, D-11 item 2).
     pub undefined: Vec<String>,
     pub entry: Option<String>,
+    /// `-init`/`-fini` (`DT_INIT`/`DT_FINI` name these functions, D-30).
+    pub init: Option<String>,
+    pub fini: Option<String>,
     /// What the verifier could not read (each a finding of P-D2).
     pub problems: Vec<String>,
     /// What puts the link outside stage 3 (each a P-D1 finding,
@@ -212,6 +215,8 @@ impl Line {
                     }
                 }
                 "-e" | "--entry" => l.entry = next(&mut i),
+                "-init" | "--init" => l.init = next(&mut i),
+                "-fini" | "--fini" => l.fini = next(&mut i),
                 "-l" | "--library" => {
                     if let Some(n) = next(&mut i) {
                         l.library(&n, &st, group, files);
@@ -248,6 +253,10 @@ impl Line {
                         l.undefined.push(u);
                     } else if let Some(e) = val(a, "--entry") {
                         l.entry = Some(e);
+                    } else if let Some(f) = val(a, "--init").or_else(|| val(a, "-init")) {
+                        l.init = Some(f);
+                    } else if let Some(f) = val(a, "--fini").or_else(|| val(a, "-fini")) {
+                        l.fini = Some(f);
                     } else if let Some(v) = val(a, "--hash-style").or_else(|| val(a, "-hash-style"))
                     {
                         l.hash_style(&v);

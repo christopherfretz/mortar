@@ -531,6 +531,18 @@ phase that reads it meets it.
 - `plan.target_options` is §2.9.
 - `plan.exit` and `plan.print_version` are §5.
 
+### 3.13 Incremental linking
+
+`plan.incremental` (`spec/incr.md` IN-10, mortar's own spellings):
+`mode` is `None` (`--no-incremental`, the default), `Auto`
+(`--incremental`), `Full` (`--incremental=full`) or `Update`
+(`--incremental=update`); the last use wins. `state` is
+`--incremental-state=PATH`; `report` is `--incremental-report[=FILE]`
+(`Some(None)`: standard error). `--incremental-write`,
+`--incremental-sync`, `--incremental-verify` and `--incremental-changed`
+are parsed and refused (reserved for the update, WP-064). None of them
+is part of the normalized plan (IN-18b).
+
 ## 4. The table and the status of options
 
 ### 4.1 Rows

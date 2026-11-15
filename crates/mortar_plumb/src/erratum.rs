@@ -218,6 +218,12 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
             site_starts.insert(q);
             site_ends.insert(f);
             let (patched, adr) = (redirects.contains(&f), adr_fixes.contains(&q));
+            if patched
+                && let Some(out) = e.image.insn(f)
+                && let Some((false, t)) = a64::branch(out, f)
+            {
+                e.patch_stubs.insert(t, f);
+            }
             let site = e.objs[w.obj].site(w.sec, w.offset);
             if patched && adr {
                 findings.push(

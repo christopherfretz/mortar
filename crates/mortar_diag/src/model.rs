@@ -436,6 +436,23 @@ pub enum Kind {
     /// `non-allocated`) or `SHT_` names.
     SectionConflict { name: String, first: String, second: String },
 
+    // -- incremental linking --------------------------------------------
+    /// `incremental-not-reproducible` (a warning, `spec/incr.md` IN-7):
+    /// `SOURCE_DATE_EPOCH` is set and the link is incremental.
+    IncrementalNotReproducible,
+    /// `incremental-unsupported` (a warning, `spec/incr.md` IN-12):
+    /// `--incremental` with `option`, which incremental mode does not
+    /// support; the link is plain and writes no state.
+    IncrementalUnsupported { option: String },
+    /// `incremental-update-failed` (an error, `spec/incr.md` IN-10):
+    /// `--incremental=update` could not update; `reason` is the fall-back's
+    /// (§7), with its detail.
+    IncrementalUpdateFailed { reason: String },
+    /// `incremental-file-clash` (an error, `spec/incr.md` IN-17):
+    /// `option` (`--incremental-state` or `--incremental-report`) names
+    /// `path`, which is `what` (the output or an input); nothing is linked.
+    IncrementalFileClash { option: String, path: String, what: String },
+
     // -- refusals -------------------------------------------------------
     /// `refused`: a construct mortar does not implement, by name
     /// (`docs/ARCHITECTURE.md`, principle 1). Always an error.
@@ -454,7 +471,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 70] = [
+    pub const IDS: [&'static str; 74] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -523,6 +540,10 @@ impl Kind {
         "executable-stack",
         "output-too-large",
         "section-conflict",
+        "incremental-not-reproducible",
+        "incremental-unsupported",
+        "incremental-update-failed",
+        "incremental-file-clash",
         "refused",
         "internal-error",
     ];
@@ -600,6 +621,10 @@ impl Kind {
             Self::ExecutableStack { .. } => "executable-stack",
             Self::OutputTooLarge { .. } => "output-too-large",
             Self::SectionConflict { .. } => "section-conflict",
+            Self::IncrementalNotReproducible => "incremental-not-reproducible",
+            Self::IncrementalUnsupported { .. } => "incremental-unsupported",
+            Self::IncrementalUpdateFailed { .. } => "incremental-update-failed",
+            Self::IncrementalFileClash { .. } => "incremental-file-clash",
             Self::Refused { .. } => "refused",
             Self::InternalError { .. } => "internal-error",
         }
@@ -1012,8 +1037,12 @@ mod tests {
             Kind::ExecutableStack { .. } => 65,
             Kind::OutputTooLarge { .. } => 66,
             Kind::SectionConflict { .. } => 67,
-            Kind::Refused { .. } => 68,
-            Kind::InternalError { .. } => 69,
+            Kind::IncrementalNotReproducible => 68,
+            Kind::IncrementalUnsupported { .. } => 69,
+            Kind::IncrementalUpdateFailed { .. } => 70,
+            Kind::IncrementalFileClash { .. } => 71,
+            Kind::Refused { .. } => 72,
+            Kind::InternalError { .. } => 73,
         }
     }
 
@@ -1095,6 +1124,10 @@ mod tests {
             Kind::ExecutableStack { file: s() },
             Kind::OutputTooLarge { what: s(), limit: s() },
             Kind::SectionConflict { name: s(), first: s(), second: s() },
+            Kind::IncrementalNotReproducible,
+            Kind::IncrementalUnsupported { option: s() },
+            Kind::IncrementalUpdateFailed { reason: s() },
+            Kind::IncrementalFileClash { option: s(), path: s(), what: s() },
             Kind::Refused { class: RefusalClass::Feature, name: s(), not_recognized: false },
             Kind::InternalError { what: s() },
         ];

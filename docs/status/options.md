@@ -4,9 +4,9 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-479 rows: 73 supported, 4 partial, 35 noop, 367 refused.
+487 rows: 77 supported, 4 partial, 35 noop, 371 refused.
 
-Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 10 mortar's own.
+Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
 - AArch64: 14 rows of that target only
 - x86-64: 26 rows of that target only
@@ -324,6 +324,14 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 10 mortar'
 | `--mortar-map` | FILE | mortar | all | supported | `bookkeeping.mortar_map` | Write the machine-readable map (mortar-map 1) to FILE |
 | `--time-phases` |  | mortar | all | supported | `bookkeeping.time_phases` | Report the time and memory of each phase |
 | `--verify` |  | mortar | all | refused | `bookkeeping.verify` | Check the output with mortar_plumb (reserved) |
+| `--incremental` | optional, `=` only: full \| update | mortar | all | supported | `incremental.mode` | Link incrementally: update the output from its state if possible (alone), always from scratch (full), or update or fail (update) |
+| `--no-incremental` |  | mortar | all | supported | `incremental.mode` | Link plainly, never reading or writing a state (default) |
+| `--incremental-state` | PATH | mortar | all | supported | `incremental.state` | Keep the incremental link state at PATH (default: OUTPUT.mortar-state) |
+| `--incremental-report` | optional, `=` only: FILE | mortar | all | supported | `incremental.report` | Report how each incremental link went, to FILE (default: standard error) |
+| `--incremental-write` | copy \| in-place | mortar | all | refused | `other` | How an update writes the output: copy (default) or in-place (reserved) |
+| `--incremental-sync` | full \| next-link | mortar | all | refused | `other` | Sync an update's writes: full (default) or next-link (reserved) |
+| `--incremental-verify` |  | mortar | all | refused | `other` | Hash every input of an update regardless of its stat (reserved) |
+| `--incremental-changed` | PATH | mortar | all | refused | `other` | Treat input PATH as changed (reserved) |
 | `--stats` |  | GNU, lld, mold | all | refused | `other` | Print statistics |
 | `--perf` |  | mold | all | refused | `other` | Print performance statistics |
 | `--time-trace` | optional, `=` only: FILE | lld | all | refused | `other` | Write a time trace |
