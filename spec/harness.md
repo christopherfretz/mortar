@@ -625,7 +625,7 @@ this order: directives, steps, embedded files.
 #@ skip(mold,i386): <why>                   not run there
 #@ timeout: 30                              s, of each link and run step
 #@ mem: 512                                 MiB, of each link and run step
-#@ anomaly(mold): A9                        verifier findings expected ("L3")
+#@ anomaly(mold): A11                       verifier findings expected ("L3")
 cc -O1 main.c -o main.o                     build steps, once per unit
 ar rcs libm.a m.o
 link gcc -static -no-pie main.o -L. -lm -o prog    per linker
@@ -667,7 +667,8 @@ file with neither architecture nor linker.
 - `timeout: <seconds>` (1 to 3600), `mem: <MiB>` (16 to 65536).
 - `anomaly(<qualifiers>): <id>...`: the recorded reference-linker defects
   (`spec/plumb.md` §10.2) the verifier is expected to find on these
-  linkers' outputs ("L3"). The qualifiers name at least one reference
+  linkers' outputs ("L3"), beyond the run-wide defaults of
+  `tests/link/anomalies`. The qualifiers name at least one reference
   linker and never mortar.
 
 **Qualifiers** are words in parentheses after a keyword, of three kinds:
@@ -785,8 +786,9 @@ mortar included (`docs/VALIDATION.md` layer L3).
   `cargo xtask plumb` on the kept work directory (`--keep`) for the whole
   report. The only exception is a finding that `spec/plumb.md` §10.2
   records as a defect of a reference linker
-  (`mortar_plumb::anomaly::classify`), and that the test expects of that
-  linker with the following directive:
+  (`mortar_plumb::anomaly::classify`), and that is expected of that
+  linker: by a run-wide default, or by the test with the following
+  directive:
 
   ```
   #@ anomaly(mold): A9 A11          ids of plumb.md §10.2, for these linkers
@@ -798,6 +800,28 @@ mortar included (`docs/VALIDATION.md` layer L3).
   expect it. A declared anomaly that none of the linker's judged outputs
   in the unit has is stale, and is a `FAIL` as well. A map or an output
   that cannot be read is an `ERROR`.
+- **The defaults.** `tests/link/anomalies` lists the anomalies a
+  reference linker shows on essentially every link of a kind, so that no
+  test declares them:
+
+  ```
+  # a comment; blank lines are ignored
+  mold: A1 A2 A3 A9                 <linker>[,<linker or arch>...]: <id>...
+  bfd: A10
+  ```
+
+  Each line names at least one reference linker, never mortar, and can
+  name architectures (none is every architecture); the ids are those of
+  `spec/plumb.md` §10.2. A line that does not parse is a run error (exit
+  3); without the file there are no defaults. A defaulted anomaly is
+  expected on every judged output of that linker and architecture, and is
+  not stale in a unit that does not show it. mortar has no defaults even
+  if the file named it. Instead, the run checks the file itself: a
+  default that no judged output of the run of that linker and
+  architecture shows is a run error naming the line. A run of part of the
+  corpus (paths or `--filter`) may well not meet every default, so it
+  does not check that, and says so in a note. A test declares only what
+  is outside the defaults, under the strict rule above in both directions.
 - **The note.** The summary has the note `L3: the verifier judged N link
   outputs in T s` (T is the verifier's time summed over the threads), the
   number of findings expected as anomalies, and the counts not judged by
@@ -933,8 +957,10 @@ reference machine) and `reloc/aarch64-veneer` (AArch64 only).
 `xtask/src/linktest/report.rs`: `the_exit_status_of_a_run`,
 `the_results_file`, `the_summary`, `who_a_line_is_for`.
 `xtask/src/linktest/engine.rs`: `the_output_file_of_a_link_line`,
-`the_map_of_a_link_line`, `what_the_verifier_does_not_judge`.
-`xtask/src/linktest/format.rs`: `anomaly_declarations`.
+`the_map_of_a_link_line`, `what_the_verifier_does_not_judge`,
+`a_default_anomaly_goes_stale`.
+`xtask/src/linktest/format.rs`: `anomaly_declarations`,
+`default_anomalies`.
 `xtask/src/linktest.rs`: `the_command_line`, `usage_errors`,
 `collecting_test_files`.
 

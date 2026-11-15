@@ -3,8 +3,6 @@
 # "--thin"; GNU ld reads the members from those paths).
 #@ spec: resolve.md §4.1
 #@ xfail(mortar): no linking yet (M1)
-#@ anomaly(bfd): A10
-#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O1 main.c -o main.o
 cc -O1 lib/one.c -o lib/one.o

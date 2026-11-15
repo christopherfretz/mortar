@@ -5,7 +5,6 @@
 # machine.
 #@ spec: layout.md "Entry point"
 #@ xfail(mortar): no linking yet (M1)
-#@ anomaly(mold): A3 A9
 
 as start-%{arch}.s -o start.o
 link ld start.o -o prog

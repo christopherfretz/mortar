@@ -5,8 +5,6 @@
 # addresses or relaxes away (the psABIs' relocation tables).
 #@ spec: a64.md "Static relocations"
 #@ xfail(mortar): no linking yet (M1)
-#@ anomaly(bfd): A10
-#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O0 -fpie main.c -o main.o
 cc -O0 -fno-pie target.c -o target.o

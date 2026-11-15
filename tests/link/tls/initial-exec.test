@@ -6,8 +6,6 @@
 # thread-local variable keeps its alignment.
 #@ spec: layout.md "Thread-local storage"
 #@ xfail(mortar): no linking yet (M1)
-#@ anomaly(bfd): A10
-#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O1 -ftls-model=initial-exec main.c -o main.o
 cc -O1 -ftls-model=initial-exec vars.c -o vars.o

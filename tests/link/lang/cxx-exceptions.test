@@ -9,7 +9,6 @@
 #@ spec: synth.md ".eh_frame"
 #@ requires: g++
 #@ xfail(mortar): no linking yet (M1)
-#@ anomaly(mold): A1 A2 A3 A9
 
 cxx -O1 main.cc -o main.o
 cxx -O1 thrower.cc -o thrower.o

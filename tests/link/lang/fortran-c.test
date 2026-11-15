@@ -6,8 +6,6 @@
 #@ arch: aarch64 x86_64
 #@ requires: gfortran
 #@ xfail(mortar): no linking yet (M1)
-#@ anomaly(bfd): A10
-#@ anomaly(mold): A1 A2 A3 A9
 
 fc -O1 main.f90 -o main.o
 cc -O1 sum.c -o sum.o

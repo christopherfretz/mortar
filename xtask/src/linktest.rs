@@ -344,6 +344,54 @@ fn find_tools(
     (arches, common, linkers, mortar)
 }
 
+/// The run-wide default anomalies' file, in `tests/link` (`spec/harness.md`
+/// "L3").
+pub const DEFAULTS: &str = "anomalies";
+
+/// `tests/link/anomalies` of the workspace.
+fn defaults_file() -> PathBuf {
+    workspace_root().join("tests").join("link").join(DEFAULTS)
+}
+
+/// A default no output of the run has is stale; a run of part of the
+/// corpus may well not meet it, so only a run of all of it says so
+/// (`spec/harness.md` "L3", "The defaults").
+fn check_defaults(
+    args: &Args,
+    plumb: &engine::Plumb,
+    defaults: &[format::Anomaly],
+    report: &mut Report,
+) {
+    if args.paths.is_empty() && args.filters.is_empty() {
+        report.errors.extend(plumb.stale_defaults(defaults));
+    } else if !defaults.is_empty() && plumb.verified > 0 {
+        report.notes.push(
+            "L3: a run of part of the corpus does not check that the default anomalies occur"
+                .to_owned(),
+        );
+    }
+}
+
+/// The run-wide default anomalies of the file at `path`; none when there
+/// is no file.
+///
+/// # Errors
+/// A file that cannot be read or does not parse.
+pub fn load_defaults(path: &Path) -> Result<Vec<format::Anomaly>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    format::parse_defaults(&text).map_err(|errors| {
+        let lines: Vec<String> = errors
+            .iter()
+            .map(|e| format!("{}:{}: {}", path.display(), e.line, e.message))
+            .collect();
+        lines.join("; ")
+    })
+}
+
 /// Runs the tests `args` selects.
 ///
 /// # Errors
@@ -367,8 +415,14 @@ pub fn run(args: &Args) -> Result<Report, String> {
     report.arches = arches.iter().map(|tools| tools.arch).collect();
     report.linkers.clone_from(&linkers);
     report.configuration = configuration(&report, mortar.as_deref(), jobs);
+    let defaults = if args.no_plumb { Ok(Vec::new()) } else { load_defaults(&defaults_file()) };
+    let defaults = defaults.unwrap_or_else(|e| {
+        report.errors.push(e);
+        Vec::new()
+    });
+    let wrappers = work.join("bin");
     let matrix =
-        Matrix { host, common, linkers, mortar, wrappers: work.join("bin"), plumb: !args.no_plumb };
+        Matrix { host, common, linkers, mortar, wrappers, plumb: !args.no_plumb, defaults };
     if let Err(e) = matrix.write_wrappers(&arches) {
         report.errors.push(e);
     }
@@ -417,6 +471,7 @@ pub fn run(args: &Args) -> Result<Report, String> {
     if plumb != engine::Plumb::default() {
         report.notes.push(plumb.note());
     }
+    check_defaults(args, &plumb, &matrix.defaults, &mut report);
     // Deterministic: by test, architecture, linker, and a record without a
     // linker after those with one.
     report.records.sort_by_key(|record| {

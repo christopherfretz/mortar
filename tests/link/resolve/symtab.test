@@ -6,8 +6,6 @@
 # GNU ld does.
 #@ spec: synth.md ".symtab"
 #@ xfail(mortar): no linking yet (M1)
-#@ anomaly(bfd): A10
-#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O0 main.c -o main.o
 link gcc -static -no-pie main.o -o full

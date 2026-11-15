@@ -1377,6 +1377,15 @@ Three symbol-table defects, found by §6.5 on the corpus:
   `__bss_start` to `_end` would write from address 0. This was verified by
   hand with a 3-line program (Y5, found 0).
 
+**Where the corpus expects them.** The anomalies that a reference linker
+shows on essentially every link of a kind are run-wide defaults, listed
+in `tests/link/anomalies` (format: `spec/harness.md` "L3"). It holds mold
+A1 A2 A3 A9 (A1 and A2 come from the C runtime's IFUNCs, so the
+`-nostdlib` links show only A3 and A9) and GNU ld A10 (crtbegin/crtend's
+labels, on every driver link with the C runtime). A test declares any
+other anomaly itself with `#@ anomaly(<linker>): <id>...`. mortar never
+has a default and never declares one.
+
 ### 10.3 Types each linker accepts
 
 The `types` case links every §4.2 type its assembler can emit. It records

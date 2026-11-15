@@ -719,11 +719,7 @@ impl Parser {
                 );
             }
             let ids: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
-            let valid = |id: &String| {
-                id.strip_prefix('A')
-                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-            };
-            if ids.is_empty() || !ids.iter().all(valid) {
+            if ids.is_empty() || !ids.iter().all(|id| anomaly_id(id)) {
                 return self.error(
                     line,
                     format!("'anomaly: {value}' is not a list of plumb.md anomaly ids ('A9 A11')"),
@@ -1269,6 +1265,62 @@ fn parse_exit(value: &str) -> Result<Exit, String> {
 ///
 /// # Errors
 /// Every error of the file, in line order.
+/// Whether `id` has the form of a `spec/plumb.md` §10.2 anomaly id: `A`
+/// and a number.
+fn anomaly_id(id: &str) -> bool {
+    id.strip_prefix('A').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The run-wide default anomalies, `tests/link/anomalies`
+/// (`spec/harness.md` "L3"): one `<linker>[,<more linkers or
+/// architectures>]: <id>...` per line, `#` comments and blank lines aside.
+/// Every line names at least one reference linker and never mortar.
+///
+/// # Errors
+/// Every line that does not have that form, with its number.
+pub fn parse_defaults(text: &str) -> Result<Vec<Anomaly>, Vec<Error>> {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    for (index, raw) in text.lines().enumerate() {
+        let line = index + 1;
+        let text = raw.trim();
+        if text.is_empty() || text.starts_with('#') {
+            continue;
+        }
+        let mut error = |message: String| errors.push(Error { line, message });
+        let Some((who, ids)) = text.split_once(':') else {
+            error(format!("'{text}' is not '<linker>[,<arch>...]: <id>...'"));
+            continue;
+        };
+        let mut scope = Scope::default();
+        let mut bad = false;
+        for word in who.split(',').map(str::trim) {
+            if let Some(linker) = Linker::parse(word) {
+                scope.linkers.push(linker);
+            } else if let Some(arch) = Arch::parse(word) {
+                scope.arches.push(arch);
+            } else {
+                error(format!("unknown linker or architecture '{word}'"));
+                bad = true;
+            }
+        }
+        if bad {
+            continue;
+        }
+        if scope.linkers.is_empty() || scope.linkers.contains(&Linker::Mortar) {
+            error("a default names the reference linkers it is for, never mortar".to_owned());
+            continue;
+        }
+        let ids: Vec<String> = ids.split_whitespace().map(str::to_owned).collect();
+        if ids.is_empty() || !ids.iter().all(|id| anomaly_id(id)) {
+            error(format!("'{}' is not a list of plumb.md anomaly ids ('A9 A11')", ids.join(" ")));
+            continue;
+        }
+        out.push(Anomaly { line, scope, ids });
+    }
+    if errors.is_empty() { Ok(out) } else { Err(errors) }
+}
+
 pub fn parse(text: &str) -> Result<Test, Vec<Error>> {
     let mut parser = Parser::default();
     // The file being read: its name, the line of its marker, its text.
@@ -1510,6 +1562,25 @@ FileHeader:
         assert!(has_error(&with("#@ anomaly(mold): 9\n"), 3, "not a list of plumb.md anomaly"));
         assert!(has_error(&with("#@ anomaly(mold): A\n"), 3, "not a list of plumb.md anomaly"));
         assert!(has_error(&with("#@ anomaly(mold,x86_64): A9\n"), 3, "not an architecture of"));
+    }
+
+    // "L3": the run-wide default anomalies.
+    #[test]
+    fn default_anomalies() {
+        let d = parse_defaults("# c\n\nmold: A1 A9\nbfd,aarch64: A10\n").unwrap();
+        assert_eq!(d.len(), 2);
+        assert_eq!(
+            (d[0].line, d[0].scope.linkers.as_slice(), d[0].ids.as_slice()),
+            (3, &[Linker::Mold][..], &["A1".to_owned(), "A9".to_owned()][..])
+        );
+        assert_eq!(d[1].scope.arches, [Arch::Aarch64]);
+        let error = |text: &str| parse_defaults(text).unwrap_err()[0].message.clone();
+        assert!(error("mold A9\n").contains("is not '<linker>"));
+        assert!(error("gold: A9\n").contains("unknown linker or architecture 'gold'"));
+        assert!(error("aarch64: A9\n").contains("never mortar"));
+        assert!(error("mortar: A9\n").contains("never mortar"));
+        assert!(error("mold: 9\n").contains("not a list of plumb.md anomaly ids"));
+        assert!(error("mold:\n").contains("not a list of plumb.md anomaly ids"));
     }
 
     // "Steps": the keywords, their qualifiers and their arguments.

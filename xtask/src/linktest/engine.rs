@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::format::{
-    Check, CheckTool, Driver, Exit, Expectation, Language, Link, MarkerKind, Run, Stdout, Step,
-    StepKind, Template, Test, Vars,
+    Anomaly, Check, CheckTool, Driver, Exit, Expectation, Language, Link, MarkerKind, Run, Stdout,
+    Step, StepKind, Template, Test, Vars,
 };
 use super::outcome::{self, Outcome, Printed, Raw, Reference, Verdict};
 use super::pattern::Pattern;
@@ -52,6 +52,9 @@ pub struct Matrix {
     pub wrappers: PathBuf,
     /// Whether L3 runs: the verifier on every link's output.
     pub plumb: bool,
+    /// The run-wide default anomalies, `tests/link/anomalies`
+    /// (`spec/harness.md` "L3").
+    pub defaults: Vec<Anomaly>,
 }
 
 impl Matrix {
@@ -152,6 +155,11 @@ pub struct Plumb {
     pub not_judged: BTreeMap<&'static str, u64>,
     /// The time spent in the verifier, summed over the threads.
     pub time: Duration,
+    /// The architectures and linkers of the judged outputs.
+    pub judged_by: BTreeSet<(Arch, Linker)>,
+    /// The default anomalies (`Matrix::defaults`) found, by architecture
+    /// and linker.
+    pub defaults_seen: BTreeSet<(Arch, Linker, String)>,
 }
 
 impl Plumb {
@@ -162,6 +170,32 @@ impl Plumb {
             *self.not_judged.entry(reason).or_default() += n;
         }
         self.time += other.time;
+        self.judged_by.extend(other.judged_by.iter().copied());
+        self.defaults_seen.extend(other.defaults_seen.iter().cloned());
+    }
+
+    /// The default anomalies that apply to a judged output of the run and
+    /// that no judged output of that architecture and linker has: each one
+    /// a stale default (`spec/harness.md` "L3").
+    pub fn stale_defaults(&self, defaults: &[Anomaly]) -> Vec<String> {
+        let mut stale = Vec::new();
+        for &(arch, linker) in &self.judged_by {
+            for d in defaults.iter().filter(|d| d.scope.applies(arch, linker)) {
+                for id in &d.ids {
+                    if !self.defaults_seen.contains(&(arch, linker, id.clone())) {
+                        stale.push(format!(
+                            "L3: tests/link/anomalies line {} expects {id} of {} on {}, and the \
+                             verifier found it on none of the run's outputs",
+                            d.line,
+                            linker.name(),
+                            arch.name()
+                        ));
+                    }
+                }
+            }
+        }
+        stale.dedup();
+        stale
     }
 
     /// The summary's note.
@@ -256,6 +290,14 @@ struct Judged {
     plumb: Plumb,
     /// The anomaly ids seen and expected.
     seen: BTreeSet<String>,
+}
+
+/// The anomaly ids of `list` that apply to `arch` and `linker`.
+fn anomaly_ids(list: &[Anomaly], arch: Arch, linker: Linker) -> Vec<&str> {
+    list.iter()
+        .filter(|a| a.scope.applies(arch, linker))
+        .flat_map(|a| a.ids.iter().map(String::as_str))
+        .collect()
 }
 
 /// A test on one architecture.
@@ -680,19 +722,25 @@ impl Unit<'_> {
         judged.plumb.time += started.elapsed();
         let (bytes, report) = verified.map_err(|e| error(&e))?;
         judged.plumb.verified += 1;
-        let expected: Vec<&str> = self
-            .test
-            .anomalies
-            .iter()
-            .filter(|a| a.scope.applies(self.arch(), linker))
-            .flat_map(|a| a.ids.iter().map(String::as_str))
-            .collect();
+        judged.plumb.judged_by.insert((self.arch(), linker));
+        let expected = anomaly_ids(&self.test.anomalies, self.arch(), linker);
+        // mortar never has a default, whatever the file says.
+        let defaults = if linker == Linker::Mortar {
+            Vec::new()
+        } else {
+            anomaly_ids(&self.matrix.defaults, self.arch(), linker)
+        };
         let mut unexpected = Vec::new();
         for f in &report.findings {
             let anomaly = mortar_plumb::anomaly::classify(format, &bytes, f);
             let id = anomaly.map(mortar_plumb::anomaly::id);
-            if let Some(id) = id.filter(|id| expected.contains(id)) {
-                judged.seen.insert(id.to_owned());
+            if let Some(id) = id.filter(|id| expected.contains(id) || defaults.contains(id)) {
+                if expected.contains(&id) {
+                    judged.seen.insert(id.to_owned());
+                }
+                if defaults.contains(&id) {
+                    judged.plumb.defaults_seen.insert((self.arch(), linker, id.to_owned()));
+                }
                 judged.plumb.anomalies += 1;
                 continue;
             }
@@ -1030,7 +1078,7 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_option, not_judged, output_name};
+    use super::{Arch, Linker, Plumb, map_option, not_judged, output_name};
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| (*a).to_owned()).collect()
@@ -1047,6 +1095,25 @@ mod tests {
         assert_eq!(map(&["-Wl,-Map=r", "a.o"]).as_deref(), Some("r"));
         assert_eq!(map(&["-Wl,--gc-sections,-Map,s"]).as_deref(), Some("s"));
         assert_eq!(map(&["-Wl,-Map", "a.o"]), None);
+    }
+
+    // spec/harness.md "L3", "The defaults": a default no judged output of
+    // its linker and architecture shows is stale; one for a linker the run
+    // did not judge is not.
+    #[test]
+    fn a_default_anomaly_goes_stale() {
+        let defaults =
+            super::super::format::parse_defaults("mold: A3 A9\nbfd: A10\nlld,x86_64: A1\n")
+                .unwrap();
+        let mut plumb = Plumb::default();
+        plumb.judged_by.insert((Arch::Aarch64, Linker::Mold));
+        plumb.judged_by.insert((Arch::Aarch64, Linker::Lld));
+        plumb.defaults_seen.insert((Arch::Aarch64, Linker::Mold, "A9".to_owned()));
+        let stale = plumb.stale_defaults(&defaults);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert!(stale[0].contains("line 1 expects A3 of mold on aarch64"), "{stale:?}");
+        plumb.defaults_seen.insert((Arch::Aarch64, Linker::Mold, "A3".to_owned()));
+        assert!(plumb.stale_defaults(&defaults).is_empty());
     }
 
     // spec/harness.md "L3": the outputs the verifier does not judge.
