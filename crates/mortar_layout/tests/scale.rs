@@ -15,7 +15,6 @@ use common::{Sec, World, sec};
 use mortar_core::par::Pool;
 use mortar_elf::Machine;
 use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_NOBITS, SHT_PROGBITS};
-use mortar_layout::NoRangeExtension;
 use mortar_layout::assign::{assign, finish};
 use mortar_layout::chunk::{ChunkInputs, chunk, start_stop_outputs};
 use mortar_layout::fixed::fixed_point;
@@ -109,8 +108,7 @@ fn stages(w: &World, pool: &Pool) -> [(&'static str, Duration); 7] {
     .unwrap();
     let td = t.elapsed();
     let t = Instant::now();
-    let fixed =
-        fixed_point(&staged, &w.target, &w.options, &rules, &NoRangeExtension, pool).unwrap();
+    let fixed = fixed_point(&staged, &w.target, &w.options, &rules, None, pool).unwrap();
     let te = t.elapsed();
     assert_eq!(fixed.addressed.chunks, d.chunks);
     let t = Instant::now();

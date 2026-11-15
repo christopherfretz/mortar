@@ -14,7 +14,7 @@ use mortar_core::split::Split;
 use crate::assign::finish;
 use crate::chunk::{ChunkInputs, Common, Staged, SynthChunk, chunk, start_stop_outputs};
 use crate::diag::LayoutDiag;
-use crate::fixed::{RangeArch, Round, fixed_point};
+use crate::fixed::{RangeExtension, fixed_point};
 use crate::headers::Headers;
 use crate::order::order;
 use crate::rank::{Rank, rank_of};
@@ -53,23 +53,6 @@ pub struct Placed {
     pub rounds: u32,
 }
 
-/// An architecture with no range extension (x86, and AArch64 links
-/// whose callers have no relocation scan yet): never a need.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoRangeExtension;
-
-impl RangeArch for NoRangeExtension {
-    fn needs(&self, _round: &Round<'_>, _pool: &Pool) -> Vec<crate::fixed::Need> {
-        Vec::new()
-    }
-    fn patch_shape(&self, _kind: mortar_core::layout::PatchKind) -> (u64, u8) {
-        (0, 0)
-    }
-    fn reaches(&self, _need: &crate::fixed::Need, _patch: u64) -> bool {
-        true
-    }
-}
-
 /// The ranks of the output sections (L-60).
 #[must_use]
 pub fn out_ranks(assignment: &Assignment<'_>) -> Column<OutSecId, Rank> {
@@ -86,7 +69,7 @@ pub fn out_ranks(assignment: &Assignment<'_>) -> Column<OutSecId, Rank> {
 pub fn place(
     link: &Link<'_, '_>,
     assignment: &mut Assignment<'_>,
-    arch: &impl RangeArch,
+    range: Option<&RangeExtension<'_>>,
     entry_def: impl Fn(SymEntry) -> Option<EntryDef>,
     pool: &Pool,
 ) -> Result<Placed, Vec<LayoutDiag>> {
@@ -115,7 +98,7 @@ pub fn place(
         relro: options.relro,
     };
     let staged = chunk(&inputs, target, &rules, pool).map_err(|e| vec![e])?;
-    let fixed = fixed_point(&staged, target, options, &rules, arch, pool).map_err(|e| vec![e])?;
+    let fixed = fixed_point(&staged, target, options, &rules, range, pool).map_err(|e| vec![e])?;
     let cx = SymbolInputs {
         resolution: link.resolution,
         assignment,

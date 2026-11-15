@@ -1,111 +1,160 @@
 //! Stage E, the fixed point (`spec/layout.md` §14, `spec/arch.md` §6),
-//! over a synthetic architecture: branch sites with a reach, 12-byte
-//! thunks, and an erratum site list.
+//! end to end with `mortar_a64`: its branch reach, its 12-byte thunks,
+//! its 843419 predicate, ADR fix and patch reach. The sites (what the
+//! relocation scan and fill would give) are synthetic.
 #![allow(clippy::many_single_char_names, clippy::cast_possible_truncation)]
 
 mod common;
 
 use common::{World, sec};
-use mortar_core::id::{SectionId, SymKey, SymbolId};
+use mortar_a64::A64;
+use mortar_a64::forms::{ADRP, insert};
+use mortar_arch::need::{BranchSite, ThunkNeed, reaches, thunk_need};
+use mortar_arch::{Arch, PatchCx, Proof, ProofRun, Site, Status};
+use mortar_core::id::{OutSecId, SectionId, SymKey, SymbolId};
 use mortar_core::layout::{ChunkKind, Erratum, PatchKind, ThunkTarget};
 use mortar_core::par::{Pool, check_schedules};
 use mortar_core::resolution::Def;
 use mortar_elf::Machine;
 use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHT_PROGBITS};
-use mortar_layout::fixed::{Need, NeedKind, R_MAX, RangeArch, Round};
+use mortar_layout::fixed::{BranchAt, OwnedCode, R_MAX, Round};
+use mortar_layout::{Placed, RangeExtension, Sites};
 
 const AX: u64 = SHF_ALLOC | SHF_EXECINSTR;
 const MIB: u64 = 1 << 20;
-/// The synthetic reach: B/BL's, `±2^27`, less 4 (a64.md §9).
+/// B/BL's forward reach (a64.md §9).
 const REACH: u64 = (1 << 27) - 4;
+/// `--fix-cortex-a53-843419` on.
+const FIX: A64 = A64::new(Status::M1, true);
 
-/// A branch site: `(section, offset)` to `target`'s symbol, which is
-/// defined at `(section, offset)`.
+/// Where a branch goes.
 #[derive(Debug, Clone, Copy)]
-struct Site {
-    section: SectionId,
-    offset: u64,
-    record: u32,
-    target: SymbolId,
-    at: (SectionId, u64),
+enum To {
+    At(SectionId, u64),
+    Abs(u64),
 }
 
+/// The sites of a synthetic link.
 #[derive(Debug, Clone, Default)]
 struct Synthetic {
-    sites: Vec<Site>,
-    errata: Vec<(SectionId, u64)>,
-    /// Every round asks for a thunk with a new addend (never converges).
-    oscillate: bool,
-    /// The thunk size.
-    thunk: u64,
+    branches: Vec<BranchAt>,
+    to: Vec<To>,
+    /// 843419 sequences `adrp x0; str x2, [x3]; ldr x1, [x0, #8]` at
+    /// (section, offset of `W1`), the ADRP's target far (no ADR fix) or
+    /// near.
+    errata: Vec<(SectionId, u64, bool)>,
+    /// The words of every sequence move a page further each round, so
+    /// every round has a new site (never converges).
+    moving: bool,
 }
 
-fn reach(a: u64, b: u64) -> bool {
-    a.abs_diff(b) <= REACH
+/// `R_AARCH64_CALL26`'s branch class.
+fn call26(key: ThunkTarget) -> BranchSite {
+    let h = A64::M1.classify(283, Site { bytes: &[0; 4], offset: 0 }).unwrap();
+    BranchSite { branch: A64::M1.branch(&h).unwrap(), key }
 }
 
-impl RangeArch for Synthetic {
-    fn needs(&self, round: &Round<'_>, pool: &Pool) -> Vec<Need> {
-        if self.oscillate {
-            let s = self.sites[0];
-            return vec![Need {
-                addr: round.site_addr(s.section, s.offset).unwrap(),
-                section: s.section,
-                offset: s.offset,
-                record: 0,
-                kind: NeedKind::Thunk(ThunkTarget::Sym {
-                    key: SymKey::global(s.target),
-                    addend: i64::from(round.number),
-                }),
-            }];
+/// Thunk key `i`: `_start` (the one symbol) plus `i`.
+fn sym(i: u32) -> ThunkTarget {
+    ThunkTarget::Sym { key: SymKey::global(SymbolId(0)), addend: i64::from(i) }
+}
+
+impl Synthetic {
+    fn branch(&mut self, section: SectionId, offset: u64, key: u32, to: To) {
+        let record = self.branches.len() as u32;
+        self.branches.push(BranchAt { section, offset, record, site: call26(sym(key)) });
+        self.to.push(to);
+    }
+
+    fn target_at(&self, i: usize, round: &Round<'_>) -> Option<u64> {
+        match self.to[i] {
+            To::At(s, o) => round.site_addr(s, o),
+            To::Abs(x) => Some(x),
         }
-        let mut out: Vec<Need> = pool
-            .map(self.sites.len(), |i| {
-                let s = self.sites[i];
-                let p = round.site_addr(s.section, s.offset)?;
-                let far = match round.redirect(s.section, s.offset) {
-                    Some((i, _)) => !reach(p, round.patch_addr(i)?),
-                    None => !reach(p, round.site_addr(s.at.0, s.at.1)?),
-                };
-                far.then_some(Need {
-                    addr: p,
-                    section: s.section,
-                    offset: s.offset,
-                    record: s.record,
-                    kind: NeedKind::Thunk(ThunkTarget::Sym {
-                        key: SymKey::global(s.target),
-                        addend: 0,
-                    }),
-                })
-            })
-            .into_iter()
-            .flatten()
-            .collect();
-        for &(section, offset) in &self.errata {
-            if round.redirect(section, offset).is_none() {
-                out.push(Need {
-                    addr: round.site_addr(section, offset).unwrap(),
-                    section,
-                    offset,
-                    record: 0,
-                    kind: NeedKind::Erratum(Erratum::E843419),
-                });
+    }
+}
+
+impl Sites for Synthetic {
+    fn branches(&self) -> &[BranchAt] {
+        &self.branches
+    }
+
+    fn target(&self, i: usize, round: &Round<'_>) -> Option<u64> {
+        self.target_at(i, round)
+    }
+
+    fn code(&self, out: OutSecId, round: &Round<'_>) -> Option<OwnedCode> {
+        let (start, end) = round.out_extent(out)?;
+        let mut bytes = vec![0u8; (end - start) as usize];
+        for &(s, off, far) in &self.errata {
+            let off = if self.moving { off + 0x1000 * u64::from(round.number) } else { off };
+            let Some(q) = round.site_addr(s, off) else { continue };
+            if q < start || q + 12 > end {
+                continue;
+            }
+            let v = if far { q + 0x1000_0000 } else { q + 0x1000 };
+            let w1 = insert(ADRP, 0x9000_0000, (v & !0xFFF).wrapping_sub(q & !0xFFF) as i64);
+            let at = (q - start) as usize;
+            for (k, w) in [w1, 0xf900_0062, 0xf940_0401].iter().enumerate() {
+                bytes[at + 4 * k..at + 4 * k + 4].copy_from_slice(&w.to_le_bytes());
             }
         }
-        // The driver sorts: give them reversed.
-        out.reverse();
-        out
+        let proof = vec![ProofRun {
+            start: 0,
+            end: bytes.len() as u64,
+            proof: Proof::Insn,
+            unit: 0,
+            unit_offset: 0,
+        }];
+        Some(OwnedCode { addr: start, bytes, proof })
     }
+}
 
-    fn patch_shape(&self, kind: PatchKind) -> (u64, u8) {
-        match kind {
-            PatchKind::Thunk(_) => (self.thunk, 2),
-            PatchKind::Erratum { .. } => (8, 2),
+fn run(w: &World, arch: &dyn Arch, sites: &Synthetic, pool: &Pool) -> Placed {
+    let range = RangeExtension { arch, sites };
+    let (a, placed) = w.run_with(Some(&range), pool).unwrap();
+    w.check(&a, &placed).unwrap();
+    placed
+}
+
+fn round_of(p: &Placed) -> Round<'_> {
+    let p = &p.placement;
+    Round {
+        number: 0,
+        chunks: &p.chunks,
+        place: &p.place,
+        patches: &p.patches,
+        redirects: &p.redirects,
+    }
+}
+
+/// The address of the patch a site is redirected to.
+fn via(r: &Round<'_>, section: SectionId, offset: u64) -> Option<u64> {
+    r.redirect(section, offset).and_then(|(i, _)| r.patch_addr(i))
+}
+
+/// fill's view of the fixed point: every branch site reaches its target
+/// or its thunk, and every thunk its target (a64.md §9).
+fn assert_branches_reach(placed: &Placed, sites: &Synthetic) {
+    let r = round_of(placed);
+    for (i, b) in sites.branches.iter().enumerate() {
+        let p = r.site_addr(b.section, b.offset).unwrap();
+        let t = sites.target_at(i, &r).unwrap();
+        let thunk = via(&r, b.section, b.offset);
+        assert_eq!(thunk_need(&b.site, p, t, thunk), ThunkNeed::None, "site {i}");
+        if let Some(th) = thunk {
+            assert!(reaches(b.site.branch.reach, p, th));
+            let cx = PatchCx {
+                addr: th,
+                target: t,
+                site: p,
+                word: 0,
+                bti: false,
+                target_word: None,
+                target_abs: false,
+            };
+            A64::M1.write_thunk(&cx, &mut [0u8; 12]).expect("the thunk reaches its target");
         }
-    }
-
-    fn reaches(&self, need: &Need, patch: u64) -> bool {
-        reach(need.addr, patch)
     }
 }
 
@@ -121,53 +170,50 @@ fn world_sized(a_size: u64) -> World {
         vec![sec(b".text.b", SHT_PROGBITS, AX, 100 * MIB, 2)],
         vec![sec(b".text.c", SHT_PROGBITS, AX, 100 * MIB, 2)],
     ];
-    let mut w = World::new(
-        Machine::AArch64,
-        &files,
-        &[
-            (b"_start", Def::Undefined { weak: false }),
-            (b"far", Def::Undefined { weak: false }),
-            (b"near", Def::Undefined { weak: false }),
-        ],
-    );
+    let mut w =
+        World::new(Machine::AArch64, &files, &[(b"_start", Def::Undefined { weak: false })]);
     w.define(0, 1, 1, 0);
-    w.define(1, 3, 1, 16);
     w
 }
 
-/// Site X (.text.a+0 → far in .text.c) needs a thunk in round 1; site Y
-/// (the last word of .text.a → near, just in reach across island 0) goes
-/// out of reach when island 0 grows: round 2 adds its thunk; round 3 has
-/// no need.
-fn two_round_arch(w: &World) -> Synthetic {
-    let a = w.sid(1, 1);
-    let b = w.sid(2, 1);
-    let c = w.sid(3, 1);
-    // Y at a+100M-4, near at b+off: distance 4 + off = REACH - 4.
-    let near_off = REACH - 8;
-    Synthetic {
-        sites: vec![
-            Site { section: a, offset: 0, record: 0, target: SymbolId(1), at: (c, 16) },
-            Site {
-                section: a,
-                offset: 100 * MIB - 4,
-                record: 1,
-                target: SymbolId(2),
-                at: (b, near_off),
-            },
-        ],
-        errata: Vec::new(),
-        oscillate: false,
-        thunk: 12,
-    }
+/// Site X (.text.a+0 → .text.c+16) needs a thunk in round 1; site Y (the
+/// last word of .text.a → .text.b, in reach by 4 bytes across island 0)
+/// goes out of reach when island 0 grows: round 2 adds its thunk; round 3
+/// has no need.
+fn two_round_sites(w: &World) -> Synthetic {
+    let (a, b, c) = (w.sid(1, 1), w.sid(2, 1), w.sid(3, 1));
+    let mut s = Synthetic::default();
+    s.branch(a, 0, 1, To::At(c, 16));
+    s.branch(a, 100 * MIB - 4, 2, To::At(b, REACH - 8));
+    s
+}
+
+/// A small link with two code output sections, `.init` and `.text`, each
+/// its own part and island, page-aligned when `align` is 12.
+fn small(align: u8) -> World {
+    let files = vec![
+        vec![sec(b".init", SHT_PROGBITS, AX, 0x3000, align)],
+        vec![sec(b".text", SHT_PROGBITS, AX, 0x4_0000, align)],
+    ];
+    let mut w =
+        World::new(Machine::AArch64, &files, &[(b"_start", Def::Undefined { weak: false })]);
+    w.define(0, 2, 1, 0);
+    w.options.fix_843419 = true;
+    w
+}
+
+/// The section offset whose address has page offset 0xFF8, `page` pages on.
+fn at_ff8(placed: &Placed, s: SectionId, page: u64) -> u64 {
+    let addr = round_of(placed).site_addr(s, 0).unwrap();
+    ((0xFF8 + 0x1000 - (addr & 0xFFF)) & 0xFFF) + 0x1000 * page
 }
 
 // spec: layout.md §14.1 L-110 (parts by size), L-111 (an island per part)
 #[test]
 fn l110_l111_parts_and_islands() {
     let w = world();
-    let (_, placed) = w.run(&Pool::sequential()).unwrap();
-    w.check(&placed_assignment(&w), &placed).unwrap();
+    let (a, placed) = w.run(&Pool::sequential()).unwrap();
+    w.check(&a, &placed).unwrap();
     let p = &placed.placement;
     let kinds: Vec<ChunkKind> = p.order.iter().map(|&c| p.chunks[c].kind).collect();
     let bodies = kinds.iter().filter(|k| matches!(k, ChunkKind::Body(_))).count();
@@ -180,54 +226,37 @@ fn l110_l111_parts_and_islands() {
     }
 }
 
-fn placed_assignment(w: &World) -> mortar_core::assignment::Assignment<'static> {
-    w.run(&Pool::sequential()).unwrap().0
-}
-
-// spec: arch.md §6 (rounds, monotone, 2N+1), layout.md L-111 (new thunks in the site's island), L-115
+// spec: arch.md §6 (rounds, monotone, 2N+1, one thunk per key), layout.md L-111 (new thunks in the site's island), L-115
 #[test]
 fn fixed_point_two_rounds() {
     let w = world();
-    let arch = two_round_arch(&w);
-    let (a, placed) = w.run_with(&arch, &Pool::sequential()).unwrap();
-    w.check(&a, &placed).unwrap();
+    let mut sites = two_round_sites(&w);
+    // A second site of key 1 later in .text.a reuses X's thunk.
+    sites.branch(w.sid(1, 1), 0x200, 1, To::At(w.sid(3, 1), 16));
+    let placed = run(&w, &A64::M1, &sites, &Pool::sequential());
     let p = &placed.placement;
     assert_eq!(placed.rounds, 3, "two rounds that add, one that stops");
     assert_eq!(p.patches.len(), 2);
     assert!(placed.rounds <= 2 * p.patches.len() as u32 + 1);
-    // Both thunks are in island 0 (the sites' part), in key order: far
-    // (SymbolId 1) before near (SymbolId 2).
+    // Both thunks are in island 0 (the sites' part), in key order.
     let island0 = p.patches[0].chunk;
     assert!(p.patches.iter().all(|x| x.chunk == island0));
     assert_eq!(p.chunks[island0].kind.part().unwrap().part, 0);
     let keys: Vec<_> = p.patches.iter().map(|x| x.kind).collect();
-    assert_eq!(
-        keys,
-        [
-            PatchKind::Thunk(ThunkTarget::Sym { key: SymKey::global(SymbolId(1)), addend: 0 }),
-            PatchKind::Thunk(ThunkTarget::Sym { key: SymKey::global(SymbolId(2)), addend: 0 }),
-        ]
-    );
-    assert_eq!((p.patches[0].offset, p.patches[1].offset), (0, 12));
-    assert_eq!(p.redirects.len(), 2);
-    // The fixed point: the arch has no need at the final addresses.
-    let round = Round {
-        number: 0,
-        chunks: &p.chunks,
-        place: &p.place,
-        patches: &p.patches,
-        redirects: &p.redirects,
-    };
-    assert!(arch.needs(&round, &Pool::sequential()).is_empty());
+    assert_eq!(keys, [PatchKind::Thunk(sym(1)), PatchKind::Thunk(sym(2))]);
+    assert_eq!((p.patches[0].offset, p.patches[1].offset), (0, 12), "12-byte thunks");
+    assert_eq!(p.redirects.len(), 3);
+    assert_eq!(p.redirects[0].patch, p.redirects[1].patch, "one thunk per key");
+    assert_branches_reach(&placed, &sites);
 }
 
 // spec: arch.md §6 "Determinism" (needs collected in parallel; one result)
 #[test]
 fn fixed_point_schedules() {
     let w = world();
-    let arch = two_round_arch(&w);
+    let sites = two_round_sites(&w);
     check_schedules(|pool| {
-        let (_, placed) = w.run_with(&arch, pool).unwrap();
+        let placed = run(&w, &A64::M1, &sites, pool);
         (placed.placement, placed.rounds)
     });
 }
@@ -237,14 +266,14 @@ fn fixed_point_schedules() {
 #[test]
 fn l21_function_of_patch_set() {
     let w = world();
-    let two = two_round_arch(&w);
-    let (_, by_two) = w.run_with(&two, &Pool::sequential()).unwrap();
+    let two = two_round_sites(&w);
+    let by_two = run(&w, &A64::M1, &two, &Pool::sequential());
     // One round: Y's target is far enough to need its thunk at once.
     let mut one = two.clone();
-    one.sites[1].at = (w.sid(3, 1), 100 * MIB - 4);
-    let (_, by_one) = w.run_with(&one, &Pool::sequential()).unwrap();
+    one.to[1] = To::At(w.sid(3, 1), 100 * MIB - 4);
+    let by_one = run(&w, &A64::M1, &one, &Pool::sequential());
     assert_eq!(by_one.rounds, 2);
-    let strip = |p: &mortar_layout::Placed| {
+    let strip = |p: &Placed| {
         (p.placement.chunks.clone(), p.placement.segments.clone(), p.placement.patches.len())
     };
     assert_eq!(strip(&by_one), strip(&by_two));
@@ -252,11 +281,17 @@ fn l21_function_of_patch_set() {
 
 // spec: arch.md §6 item 6 (more than R_max = 32 rounds is refused by name)
 #[test]
-fn cap_refusal_oscillating() {
-    let w = world();
-    let mut arch = two_round_arch(&w);
-    arch.oscillate = true;
-    let e = w.run_with(&arch, &Pool::sequential()).unwrap_err();
+fn cap_refusal_never_converging() {
+    let w = small(12);
+    let plain = w.run(&Pool::sequential()).unwrap().1;
+    let text = w.sid(2, 1);
+    let sites = Synthetic {
+        errata: vec![(text, at_ff8(&plain, text, 0), true)],
+        moving: true,
+        ..Synthetic::default()
+    };
+    let range = RangeExtension { arch: &FIX, sites: &sites };
+    let e = w.run_with(Some(&range), &Pool::sequential()).unwrap_err();
     assert_eq!(e[0].refusal().map(|r| r.1), Some("range-extension fixed point"));
     assert_eq!(R_MAX, 32);
 }
@@ -265,9 +300,13 @@ fn cap_refusal_oscillating() {
 #[test]
 fn l112_island_cap() {
     let w = world();
-    let mut arch = two_round_arch(&w);
-    arch.thunk = (1 << 22) + 4;
-    let e = w.run_with(&arch, &Pool::sequential()).unwrap_err();
+    let mut sites = Synthetic::default();
+    // One more 12-byte thunk than 4 MiB holds, each its own key.
+    for i in 0..=(4 * MIB / 12) as u32 {
+        sites.branch(w.sid(1, 1), 4 * u64::from(i), i, To::Abs(1 << 31));
+    }
+    let range = RangeExtension { arch: &A64::M1, sites: &sites };
+    let e = w.run_with(Some(&range), &Pool::sequential()).unwrap_err();
     assert_eq!(e[0].refusal().map(|r| r.1), Some("range-extension fixed point"));
 }
 
@@ -280,41 +319,115 @@ fn l110_section_too_large() {
     assert_eq!(e[0].refusal().map(|r| r.1), Some("code section larger than branch reach"));
 }
 
-// spec: layout.md §14.2 L-115 (thunks, then errata by site), L-117 (an erratum patch in its site's island)
+// spec: layout.md §14.2 L-117 (an ADR fix in place, else an erratum patch), a64.md §11.2 (the patch's two branches reach)
+#[test]
+fn l117_erratum_patch_end_to_end() {
+    let w = small(12);
+    let plain = w.run(&Pool::sequential()).unwrap().1;
+    let text = w.sid(2, 1);
+    let (far, near) = (at_ff8(&plain, text, 0), at_ff8(&plain, text, 1));
+    let sites =
+        Synthetic { errata: vec![(text, far, true), (text, near, false)], ..Synthetic::default() };
+    let placed = run(&w, &FIX, &sites, &Pool::sequential());
+    let p = &placed.placement;
+    assert_eq!(placed.rounds, 2, "one round adds the patch, the second has no need");
+    assert_eq!(
+        p.patches.iter().map(|x| x.kind).collect::<Vec<_>>(),
+        [PatchKind::Erratum { erratum: Erratum::E843419, section: text, offset: far + 8 }],
+        "keyed by the final word"
+    );
+    assert_eq!(p.redirects.len(), 1, "the near site is fixed in place by ADR");
+    assert_eq!((p.redirects[0].section, p.redirects[0].offset), (text, far + 8));
+    let r = round_of(&placed);
+    let island = p.patches[0].chunk;
+    assert_eq!(placed.staged.island_of(r.place[text].get().unwrap().0), Some(island));
+    let f = r.site_addr(text, far + 8).unwrap();
+    let patch = r.patch_addr(0).unwrap();
+    mortar_a64::erratum_branch(f, patch).expect("b patch from F reaches");
+    let cx = PatchCx {
+        addr: patch,
+        target: f,
+        site: f - 8,
+        word: 0xf940_0401,
+        bti: false,
+        target_word: None,
+        target_abs: false,
+    };
+    FIX.write_patch(Erratum::E843419, &cx, &mut [0u8; 8]).expect("b F + 4 reaches");
+    // Without the fix, no erratum is scanned and nothing is patched.
+    let off = run(&w, &A64::M1, &sites, &Pool::sequential());
+    assert!(off.placement.patches.is_empty());
+}
+
+// spec: layout.md §14.2 L-115 (thunks by key, then errata by site key), L-117 (an erratum patch in its site's island)
 #[test]
 fn l115_errata_after_thunks() {
-    let w = world();
-    let mut arch = two_round_arch(&w);
-    let b = w.sid(2, 1);
-    arch.errata = vec![(b, 0x1ffc), (w.sid(1, 1), 0xffc), (b, 0xffc)];
-    let (a, placed) = w.run_with(&arch, &Pool::sequential()).unwrap();
-    w.check(&a, &placed).unwrap();
+    let w = small(12);
+    let plain = w.run(&Pool::sequential()).unwrap().1;
+    let (init, text) = (w.sid(1, 1), w.sid(2, 1));
+    let mut sites = Synthetic {
+        errata: vec![
+            (text, at_ff8(&plain, text, 3), true),
+            (init, at_ff8(&plain, init, 1), true),
+            (text, at_ff8(&plain, text, 1), true),
+        ],
+        ..Synthetic::default()
+    };
+    sites.branch(text, 0x10, 2, To::Abs(1 << 31));
+    sites.branch(text, 0x20, 1, To::Abs(1 << 31));
+    let placed = run(&w, &FIX, &sites, &Pool::sequential());
     let p = &placed.placement;
-    let rows: Vec<(u32, PatchKind)> =
-        p.patches.iter().map(|x| (p.chunks[x.chunk].kind.part().unwrap().part, x.kind)).collect();
-    let thunk =
-        |s| PatchKind::Thunk(ThunkTarget::Sym { key: SymKey::global(SymbolId(s)), addend: 0 });
-    let erratum =
-        |section, offset| PatchKind::Erratum { erratum: Erratum::E843419, section, offset };
-    assert_eq!(
-        rows,
-        [
-            (0, thunk(1)),
-            (0, thunk(2)),
-            (0, erratum(w.sid(1, 1), 0xffc)),
-            (1, erratum(b, 0xffc)),
-            (1, erratum(b, 0x1ffc)),
-        ]
-    );
+    let r = round_of(&placed);
+    let island = |s: SectionId| placed.staged.island_of(r.place[s].get().unwrap().0).unwrap();
+    let erratum = |section, offset: u64| PatchKind::Erratum {
+        erratum: Erratum::E843419,
+        section,
+        offset: offset + 8,
+    };
+    let rows: Vec<_> = p.patches.iter().map(|x| (x.chunk, x.kind)).collect();
+    let mut expect = vec![
+        (island(text), PatchKind::Thunk(sym(1))),
+        (island(text), PatchKind::Thunk(sym(2))),
+        (island(text), erratum(text, at_ff8(&plain, text, 1))),
+        (island(text), erratum(text, at_ff8(&plain, text, 3))),
+        (island(init), erratum(init, at_ff8(&plain, init, 1))),
+    ];
+    expect.sort_by_key(|&(c, _)| c);
+    assert_eq!(rows, expect);
+    assert_branches_reach(&placed, &sites);
+}
+
+// spec: a64.md §11.2 "Stale redirects" (an erratum redirect whose key is no longer a site is dropped; its patch stays, L-116)
+#[test]
+fn stale_erratum_redirect_dropped() {
+    // Unaligned output sections: the first one's island moves the second.
+    let w = small(2);
+    let plain = w.run(&Pool::sequential()).unwrap().1;
+    let r = round_of(&plain);
+    let (init, text) = (w.sid(1, 1), w.sid(2, 1));
+    let (first, second) =
+        if r.site_addr(init, 0) < r.site_addr(text, 0) { (init, text) } else { (text, init) };
+    let sites = Synthetic {
+        errata: vec![
+            (first, at_ff8(&plain, first, 0), true),
+            (second, at_ff8(&plain, second, 0), true),
+        ],
+        ..Synthetic::default()
+    };
+    let placed = run(&w, &FIX, &sites, &Pool::sequential());
+    let p = &placed.placement;
+    assert_eq!(placed.rounds, 2);
+    assert_eq!(p.patches.len(), 2, "both patches stay");
+    assert_eq!(p.redirects.len(), 1, "the moved site's redirect is dropped");
+    assert_eq!(p.redirects[0].section, first);
 }
 
 // spec: layout.md §14.2 L-118 (843419 start padding of a non-empty island, at most 16 bytes)
 #[test]
 fn l118_island_padding() {
     let island0 = |w: &World| {
-        let arch = two_round_arch(w);
-        let (a, placed) = w.run_with(&arch, &Pool::sequential()).unwrap();
-        w.check(&a, &placed).unwrap();
+        let sites = two_round_sites(w);
+        let placed = run(w, &A64::M1, &sites, &Pool::sequential());
         let p = &placed.placement;
         let c = p.patches[0].chunk;
         (p.chunks[c].addr.unwrap(), p.place[w.sid(1, 1)].get().unwrap(), p.chunks.clone())

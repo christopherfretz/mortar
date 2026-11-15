@@ -20,11 +20,10 @@ use mortar_elf::consts::{SHF_ALLOC, SHT_NOBITS, SHT_NOTE};
 use mortar_elf::{Machine, SectionIndex, SymbolIndex};
 use mortar_layout::assign::assign;
 use mortar_layout::chunk::{Common, SynthChunk};
-use mortar_layout::fixed::RangeArch;
 use mortar_layout::headers::HeaderShapes;
 use mortar_layout::stack::StackNote;
 use mortar_layout::{
-    Header, Headers, LayoutDiag, Link, NoRangeExtension, Options, Placed, Target, place,
+    Header, Headers, LayoutDiag, Link, Options, Placed, RangeExtension, Target, place,
 };
 
 /// One input section.
@@ -218,10 +217,10 @@ impl World {
         }
     }
 
-    /// Every stage, with `arch`.
+    /// Every stage, with the range extension `range`.
     pub fn run_with(
         &self,
-        arch: &impl RangeArch,
+        range: Option<&RangeExtension<'_>>,
         pool: &Pool,
     ) -> Result<(Assignment<'static>, Placed), Vec<LayoutDiag>> {
         let mut a =
@@ -230,7 +229,7 @@ impl World {
         let placed = place(
             &self.link(),
             &mut a,
-            arch,
+            range,
             move |e| entries.iter().find(|(x, _)| *x == e).map(|(_, d)| *d),
             pool,
         )?;
@@ -238,7 +237,7 @@ impl World {
     }
 
     pub fn run(&self, pool: &Pool) -> Result<(Assignment<'static>, Placed), Vec<LayoutDiag>> {
-        self.run_with(&NoRangeExtension, pool)
+        self.run_with(None, pool)
     }
 
     /// `Layout::check` of a result.
