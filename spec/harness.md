@@ -1689,7 +1689,8 @@ host and no user.
 `bench/baselines/<machine id>.tsv`, checked in, one per machine, written
 only by `--update-baseline`, which measures every workload with every
 linker, refuses to write a baseline in which a reference linker did not
-link `ok`, records `--reason` in the header, appends `<date>\t<commit>\t<reason>`
+link `ok` or whose run is noisy ("Noise": a noisy baseline would make
+every later time `NOISY`; WP-036), records `--reason` in the header, appends `<date>\t<commit>\t<reason>`
 to `bench/baselines/<machine id>.log`, and regenerates
 `docs/status/bench.md`. A baseline change is reviewed like code: the
 reason says why mortar's numbers moved.

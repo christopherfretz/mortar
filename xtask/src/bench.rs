@@ -568,6 +568,13 @@ fn conclude(
         }
         return Ok(3);
     }
+    // A noisy baseline would make every later time unjudgeable
+    // (spec/harness.md "Baselines").
+    if options.action == Action::UpdateBaseline && results.get("noisy") == Some("yes") {
+        return Err("not recording a baseline from a noisy run (the calibrations before and \
+                    after differ by more than 10%); run it again"
+            .into());
+    }
     match options.action {
         Action::Check => check(results, baseline, shown, killed),
         Action::UpdateBaseline => {
