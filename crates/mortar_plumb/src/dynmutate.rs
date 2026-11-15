@@ -14,7 +14,8 @@ use crate::image::Image;
 use crate::loader::{Kind, kind};
 
 /// The classes, in the table's order, each with the rule meant to catch
-/// it.
+/// it. Read by `mutate`'s test that keeps the two lists in step.
+#[allow(dead_code)]
 pub const CLASSES: &[(&str, &str)] = &[
     ("dyn-needed", "P-D6"),
     ("dyn-tag", "P-D6"),
@@ -54,7 +55,7 @@ fn wr(v: u64, w: usize) -> Vec<u8> {
 
 /// Every candidate of the dynamic classes in `image` (none for a static
 /// output or an ELF32 one).
-#[allow(clippy::too_many_lines)] // one block per class
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one block per class
 pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
     let mut c: Vec<Cand> = Vec::new();
     if image.class() != mortar_elf::Class::Elf64 {
@@ -66,7 +67,8 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
     // .dynamic's entries.
     if let Some(pd) = image.phdrs.iter().find(|p| p.p_type == PT_DYNAMIC) {
         let base = pd.p_offset as usize;
-        let needed: Vec<u64> = out.entries.iter().filter(|e| e.0 == DT_NEEDED).map(|e| e.1).collect();
+        let needed: Vec<u64> =
+            out.entries.iter().filter(|e| e.0 == DT_NEEDED).map(|e| e.1).collect();
         for (i, &(tag, val)) in out.entries.iter().enumerate() {
             let o = base + 16 * i + 8;
             if o + 8 > b.len() {
@@ -74,14 +76,16 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
             }
             if tag == DT_NEEDED {
                 let other = needed.iter().find(|&&v| v != val).copied().unwrap_or(val + 3);
-                c.push(("dyn-needed", format!("DT_NEEDED #{i}: another name"), vec![(o, wr(other, 8))]));
+                c.push((
+                    "dyn-needed",
+                    format!("DT_NEEDED #{i}: another name"),
+                    vec![(o, wr(other, 8))],
+                ));
             }
             let w = match tag {
-                DT_STRSZ | DT_PLTRELSZ | DT_RELASZ | DT_INIT_ARRAYSZ => val + 8,
                 DT_SYMENT | DT_RELAENT => val * 2,
-                DT_SYMTAB | DT_RELA | DT_JMPREL | DT_GNU_HASH | DT_VERSYM | DT_VERNEED | DT_PLTGOT => {
-                    val + 8
-                }
+                DT_STRSZ | DT_PLTRELSZ | DT_RELASZ | DT_INIT_ARRAYSZ | DT_SYMTAB | DT_RELA
+                | DT_JMPREL | DT_GNU_HASH | DT_VERSYM | DT_VERNEED | DT_PLTGOT => val + 8,
                 DT_VERNEEDNUM => val + 1,
                 DT_FLAGS_1 => val ^ 1,
                 _ => continue,
@@ -102,7 +106,11 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
         let what = format!("{} record at {:#x} for {:#x}", r.ty, r.at, r.offset);
         c.push(("dyn-rel-offset", format!("{what}: offset + 8"), vec![(o, wr(r.offset + 8, 8))]));
         // R_*_NONE: the record dropped in place.
-        c.push(("dyn-rel-drop", format!("{what}: dropped"), vec![(o + 8, wr(u64::from(r.sym) << 32, 8))]));
+        c.push((
+            "dyn-rel-drop",
+            format!("{what}: dropped"),
+            vec![(o + 8, wr(u64::from(r.sym) << 32, 8))],
+        ));
         if let Some(a) = r.addend
             && !matches!(k, Kind::Copy | Kind::JumpSlot)
         {
@@ -114,7 +122,10 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
         }
         if r.sym != 0 {
             let other = (1..out.syms.len() as u32)
-                .find(|&j| j != r.sym && out.syms[j as usize].sym_type() == out.syms[r.sym as usize].sym_type())
+                .find(|&j| {
+                    j != r.sym
+                        && out.syms[j as usize].sym_type() == out.syms[r.sym as usize].sym_type()
+                })
                 .unwrap_or(0);
             c.push((
                 "dyn-rel-symbol",
@@ -126,7 +137,11 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
     // Order: two neighbouring records of different kinds swapped.
     for w in out.rels.windows(2) {
         let (x, y) = (&w[0], &w[1]);
-        if x.plt != y.plt || kind(m, x.ty) == kind(m, y.ty) {
+        // Only RELATIVE (D-40, DT_RELACOUNT) and IRELATIVE (D-41) have
+        // a place; two others swapped are the same load.
+        let placed = |k| matches!(k, Kind::Relative | Kind::Irelative);
+        let (kx, ky) = (kind(m, x.ty), kind(m, y.ty));
+        if x.plt != y.plt || kx == ky || !(placed(kx) || placed(ky)) {
             continue;
         }
         let (Some(ox), Some(oy)) = (off(image, x.at, 24), off(image, y.at, 24)) else { continue };
@@ -140,7 +155,7 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
     if let Some(symtab) = out.get(DT_SYMTAB) {
         for (j, s) in out.syms.iter().enumerate().skip(1) {
             let Some(o) = off(image, symtab + 24 * j as u64, 24) else { continue };
-            if s.defined() {
+            if s.defined() && s.sym_type() != mortar_elf::consts::STT_SECTION {
                 c.push((
                     "dynsym-value",
                     format!("'{}' value + 8", s.name),
@@ -175,13 +190,21 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
                 continue;
             }
             if let Some(o) = off(image, bk + 4 * i as u64, 4) {
-                c.push(("gnu-hash", format!("bucket {i} {v} -> {}", v + 1), vec![(o, wr(u64::from(v) + 1, 4))]));
+                c.push((
+                    "gnu-hash",
+                    format!("bucket {i} {v} -> {}", v + 1),
+                    vec![(o, wr(u64::from(v) + 1, 4))],
+                ));
             }
         }
         let ch = bk + 4 * u64::from(h.nbuckets);
         for (i, &v) in h.chain.iter().enumerate() {
             if let Some(o) = off(image, ch + 4 * i as u64, 4) {
-                c.push(("gnu-hash", format!("chain {i}: end bit flipped"), vec![(o, wr(u64::from(v ^ 1), 4))]));
+                c.push((
+                    "gnu-hash",
+                    format!("chain {i}: end bit flipped"),
+                    vec![(o, wr(u64::from(v ^ 1), 4))],
+                ));
             }
         }
     }
@@ -191,22 +214,35 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
         for (j, &v) in vs.iter().enumerate().skip(1) {
             let to = if v >= max { 1 } else { v + 1 };
             if let Some(o) = off(image, addr + 2 * j as u64, 2) {
-                c.push(("versym", format!("entry {j}: {v} -> {to}"), vec![(o, wr(u64::from(to), 2))]));
+                c.push((
+                    "versym",
+                    format!("entry {j}: {v} -> {to}"),
+                    vec![(o, wr(u64::from(to), 2))],
+                ));
             }
         }
     }
     // .gnu.version_r: each Vernaux's hash and index.
     if let Some(mut vn) = out.get(DT_VERNEED).and_then(|a| off(image, a, 16)) {
         for _ in 0..out.get(DT_VERNEEDNUM).unwrap_or(0).min(64) {
-            let (cnt, aux, next) = (rd(b, vn + 2, 2), rd(b, vn + 8, 4) as usize, rd(b, vn + 12, 4) as usize);
+            let (cnt, aux, next) =
+                (rd(b, vn + 2, 2), rd(b, vn + 8, 4) as usize, rd(b, vn + 12, 4) as usize);
             let mut a = vn + aux;
             for _ in 0..cnt.min(64) {
                 if a + 16 > b.len() {
                     break;
                 }
                 let (hash, other) = (rd(b, a, 4), rd(b, a + 6, 2));
-                c.push(("version-need", format!("vernaux at {a:#x}: hash"), vec![(a, wr(hash ^ 0x10, 4))]));
-                c.push(("version-need", format!("vernaux at {a:#x}: index {other} -> 1"), vec![(a + 6, wr(1, 2))]));
+                c.push((
+                    "version-need",
+                    format!("vernaux at {a:#x}: hash"),
+                    vec![(a, wr(hash ^ 0x10, 4))],
+                ));
+                c.push((
+                    "version-need",
+                    format!("vernaux at {a:#x}: index {other} -> 1"),
+                    vec![(a + 6, wr(1, 2))],
+                ));
                 let n = rd(b, a + 12, 4) as usize;
                 if n == 0 {
                     break;
@@ -233,18 +269,28 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
                     c.push((
                         "relro",
                         format!("PT_GNU_RELRO memsz - {d:#x}"),
-                        vec![(h + 0x28, wr(p.p_memsz - d, 8)), (h + 0x20, wr(p.p_filesz.saturating_sub(d), 8))],
+                        vec![
+                            (h + 0x28, wr(p.p_memsz - d, 8)),
+                            (h + 0x20, wr(p.p_filesz.saturating_sub(d), 8)),
+                        ],
                     ));
                 }
             }
         }
     }
-    // The lazy words of JUMP_SLOT records.
-    for r in out.rels.iter().filter(|r| r.plt && kind(m, r.ty) == Kind::JumpSlot) {
+    // The lazy words of JUMP_SLOT records (none under -z now: the loader
+    // binds every slot first).
+    let now = out.get(crate::dynout::DT_FLAGS).is_some_and(|f| f & crate::dynout::DF_BIND_NOW != 0)
+        || out.get(DT_FLAGS_1).is_some_and(|f| f & crate::dynout::DF_1_NOW != 0);
+    for r in out.rels.iter().filter(|r| !now && r.plt && kind(m, r.ty) == Kind::JumpSlot) {
         if let Some(o) = off(image, r.offset, 8) {
             let v = rd(b, o, 8);
             if v != 0 {
-                c.push(("lazy-slot", format!("slot {:#x}: {v:#x} + 4", r.offset), vec![(o, wr(v + 4, 8))]));
+                c.push((
+                    "lazy-slot",
+                    format!("slot {:#x}: {v:#x} + 4", r.offset),
+                    vec![(o, wr(v + 4, 8))],
+                ));
             }
         }
     }

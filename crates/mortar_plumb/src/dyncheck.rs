@@ -15,10 +15,11 @@ use mortar_elf::consts::{
 
 use crate::dynmodel::Model;
 use crate::dynout::{
-    self, DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DT_FLAGS, DT_FLAGS_1, DT_GNU_HASH, DT_JMPREL, DT_NEEDED,
-    DT_NULL, DT_PLTREL, DT_PLTRELSZ, DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RPATH,
-    DT_RUNPATH, DT_STRSZ, DT_STRTAB, DT_SYMENT, DT_SYMTAB, DT_TEXTREL, DT_VERNEED, DT_VERNEEDNUM,
-    DT_VERSYM, DynOut,
+    self, DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DT_FINI_ARRAY, DT_FINI_ARRAYSZ, DT_FLAGS, DT_FLAGS_1,
+    DT_GNU_HASH, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_JMPREL, DT_NEEDED, DT_NULL, DT_PLTREL,
+    DT_PLTRELSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ, DT_RELA, DT_RELACOUNT, DT_RELAENT,
+    DT_RELASZ, DT_RPATH, DT_RUNPATH, DT_STRSZ, DT_STRTAB, DT_SYMENT, DT_SYMTAB, DT_TEXTREL,
+    DT_VERNEED, DT_VERNEEDNUM, DT_VERSYM, DynOut,
 };
 use crate::image::Image;
 use crate::line::Line;
@@ -176,7 +177,10 @@ fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, format: Format, v: &mut Vec
         .filter(|p| p.p_type == PT_GNU_RELRO)
         .map(|p| (p.p_vaddr, p.p_vaddr + p.p_memsz))
         .collect();
-    let inside = |a: u64, z: u64| relro.iter().any(|&(lo, hi)| lo <= a && a + z <= hi);
+    // ld.so protects [start, end) with both rounded down to the page
+    // (`_dl_protect_relro`): what must be read-only is inside the
+    // rounded-down range (4 KiB, the smallest page of both machines).
+    let inside = |a: u64, z: u64| relro.iter().any(|&(lo, hi)| lo <= a && a + z <= hi & !0xfff);
     let now = out.get(DT_FLAGS).is_some_and(|f| f & DF_BIND_NOW != 0)
         || out.get(DT_FLAGS_1).is_some_and(|f| f & DF_1_NOW != 0)
         || out.has(dynout::DT_BIND_NOW);
@@ -275,6 +279,45 @@ fn pd5(image: &Image<'_>, out: &DynOut, format: Format, v: &mut Vec<Finding>) {
             )),
         }
     }
+    // The chains' shape: entries grouped by bucket, each bucket word the
+    // first entry of its group, the end bit set exactly on a group's last
+    // entry (a lookup of a name absent from a group walks to that bit).
+    let nb = g.nbuckets.max(1);
+    let n = out.syms.len();
+    let bucket = |j: usize| dynout::gnu_hash(out.syms[j].name.as_bytes()) % nb;
+    for (k, &c) in g.chain.iter().enumerate() {
+        let j = g.symoffset as usize + k;
+        if j >= n {
+            break;
+        }
+        let last = j + 1 == n || bucket(j + 1) != bucket(j);
+        if (c & 1 == 1) != last {
+            v.push(sym_finding(
+                5,
+                &out.syms[j].name,
+                format!(
+                    ".gnu.hash chain word of entry {j} {} the end bit; its bucket's group {} there",
+                    if c & 1 == 1 { "has" } else { "lacks" },
+                    if last { "ends" } else { "does not end" }
+                ),
+            ));
+        }
+        if (c | 1) != (dynout::gnu_hash(out.syms[j].name.as_bytes()) | 1) {
+            v.push(sym_finding(
+                5,
+                &out.syms[j].name,
+                format!(".gnu.hash chain word of entry {j} is not its name's hash"),
+            ));
+        }
+        let first = j == g.symoffset as usize || bucket(j - 1) != bucket(j);
+        if first && g.buckets.get(bucket(j) as usize) != Some(&(j as u32)) {
+            v.push(sym_finding(
+                5,
+                &out.syms[j].name,
+                format!("entry {j} starts its bucket's group; the bucket word does not name it"),
+            ));
+        }
+    }
     for a in ABSENT {
         if out.syms.iter().any(|s| s.name == *a) {
             continue;
@@ -361,6 +404,46 @@ fn pd6(
             }
         }
     }
+    // Address and size pairs the loader walks.
+    for (at, sz, name) in [
+        (DT_RELA, DT_RELASZ, ".rela.dyn"),
+        (DT_INIT_ARRAY, DT_INIT_ARRAYSZ, ".init_array"),
+        (DT_FINI_ARRAY, DT_FINI_ARRAYSZ, ".fini_array"),
+        (DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ, ".preinit_array"),
+    ] {
+        if let (Some(a), Some(z)) = (out.get(at), out.get(sz))
+            && let Some((sa, ss)) = sec(image, name)
+            && (a, z) != (sa, ss)
+        {
+            v.push(fd(
+                6,
+                format!(
+                    "{} {a:#x}, {} {z:#x}: {name} is [{sa:#x}, +{ss:#x})",
+                    dynout::tag_name(at),
+                    dynout::tag_name(sz)
+                ),
+            ));
+        }
+    }
+    // ld.so applies the first DT_RELACOUNT records as RELATIVE, whatever
+    // their type.
+    if let Some(n) = out.get(DT_RELACOUNT) {
+        let m = image.header.e_machine;
+        let lead = out
+            .rels
+            .iter()
+            .filter(|r| !r.plt)
+            .take_while(|r| kind(m, r.ty) == Kind::Relative)
+            .count() as u64;
+        if n > lead || (format == Format::Mortar && n != lead) {
+            v.push(fd(
+                6,
+                format!(
+                    "DT_RELACOUNT is {n}, the table starts with {lead} RELATIVE records (D-40)"
+                ),
+            ));
+        }
+    }
     if let (Some(z), Some((_, s))) = (out.get(DT_PLTRELSZ), sec(image, ".rela.plt"))
         && z != s
     {
@@ -435,7 +518,6 @@ fn pd6(
             v.push(fd(6, "a tag D-30 does not write"));
         }
     }
-    let _ = (DT_RELASZ, DT_RELACOUNT);
 }
 
 #[allow(clippy::wildcard_imports)] // every tag of D-30's table
@@ -586,8 +668,37 @@ fn pd7(
     // An export of an IFUNC at the implementation, not the IPLT entry:
     // the .symtab says the resolver.
     for s in out.syms.iter().skip(1) {
-        if !s.defined() {
+        if !s.defined() || s.sym_type() == STT_SECTION {
             continue;
+        }
+        // gABI: a hidden or internal definition is made local by the link
+        // editor; a global one in .dynsym is a lookup's answer.
+        if matches!(s.visibility(), 1 | 2) && s.binding() != mortar_elf::consts::STB_LOCAL {
+            v.push(sym_finding(
+                7,
+                &s.name,
+                format!(
+                    "'{}' is exported with visibility {} (gABI: made local)",
+                    s.name,
+                    s.visibility()
+                ),
+            ));
+        }
+        // The export is the program's definition (its .symtab's, when the
+        // output keeps one; an IFUNC's is the resolver, judged below).
+        if let Some(o) = image.global(&s.name)
+            && o.sym.st_shndx != 0
+            && o.sym.sym_type() != STT_GNU_IFUNC
+            && o.sym.st_value != s.st_value
+        {
+            v.push(sym_finding(
+                7,
+                &s.name,
+                format!(
+                    "'{}' is exported at {:#x}, the program defines it at {:#x}",
+                    s.name, s.st_value, o.sym.st_value
+                ),
+            ));
         }
         if let Some(o) = image.global(&s.name)
             && o.sym.sym_type() == STT_GNU_IFUNC
@@ -643,6 +754,46 @@ fn pd8(out: &DynOut, model: &Model, ld: &Loader<'_>, v: &mut Vec<Finding>) {
         if x & 0x8000 != 0 {
             v.push(sym_finding(8, &s.name, "a .gnu.version entry with bit 15 set (D-27)"));
         }
+        if !s.defined() && x & 0x7fff == 1 {
+            // Unversioned: D-27 records the version of a versioned
+            // definition (an asked `.symver` one, or the default).
+            let asked = model.keys.get(&s.name).and_then(|k| k.version.clone());
+            let bound = ld.model.bind_in(&ld.order, &s.name, asked.as_deref());
+            if let Some((_, d)) = bound
+                && let Some(want) = asked.or_else(|| d.version.clone())
+            {
+                v.push(sym_finding(
+                    8,
+                    &s.name,
+                    format!(
+                        "'{}' is imported unversioned; its definition is '{want}' (D-27)",
+                        s.name
+                    ),
+                ));
+            }
+        }
+        if s.defined() && x & 0x7fff >= 2 && s.binding() != mortar_elf::consts::STB_LOCAL {
+            // An exported definition standing for a library's (a COPY, an
+            // interposition): glibc's versioned lookup skips it unless its
+            // index names the version the library defines (D-27).
+            let Some(need) = out.need_of(j) else {
+                v.push(sym_finding(8, &s.name, format!("version index {x} names no Vernaux")));
+                continue;
+            };
+            if ld.model.lookup(&ld.order, &s.name, Some(&need.name)).is_none() {
+                let lib =
+                    ld.model.lookup(&ld.order, &s.name, None).and_then(|(_, d)| d.version.clone());
+                v.push(sym_finding(
+                    8,
+                    &s.name,
+                    format!(
+                        "'{}' is exported as version '{}', which no library defines it under (its default: {:?}) (D-27)",
+                        s.name, need.name, lib
+                    ),
+                ));
+            }
+            continue;
+        }
         if s.defined() || x & 0x7fff < 2 {
             continue;
         }
@@ -658,7 +809,19 @@ fn pd8(out: &DynOut, model: &Model, ld: &Loader<'_>, v: &mut Vec<Finding>) {
             .model
             .bind_in(&ld.order, &s.name, asked.as_deref())
             .or_else(|| ld.model.lookup(&ld.order, &s.name, asked.as_deref()));
-        let Some((i, d)) = bound else { continue };
+        let Some((i, d)) = bound else {
+            // Nothing defines it: the reference names a version its
+            // Vernaux file does not define the name under (D-27).
+            v.push(sym_finding(
+                8,
+                &s.name,
+                format!(
+                    "'{}' asks for '{}' of '{}', which defines no '{}' (D-27)",
+                    s.name, need.name, need.file, s.name
+                ),
+            ));
+            continue;
+        };
         let want = asked.clone().or_else(|| d.version.clone());
         if want.as_deref() != Some(need.name.as_str()) {
             v.push(sym_finding(
@@ -733,6 +896,32 @@ fn pd10(image: &Image<'_>, out: &DynOut, machine: u16, v: &mut Vec<Finding>) {
             );
         }
     }
+    // A canonical PLT entry (an import's address, D-18) jumps through the
+    // slot of that import: a call through it reaches the definition.
+    for s in out.syms.iter().skip(1).filter(|s| !s.defined() && s.st_value != 0) {
+        let Some(slot) = entries.get(&s.st_value).copied() else { continue };
+        let names: Vec<&str> = by_slot
+            .get(&slot)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter(|(_, k)| matches!(k, Kind::JumpSlot | Kind::GlobDat))
+            .filter_map(|&(i, _)| out.syms.get(out.rels[i].sym as usize))
+            .map(|x| x.name.as_str())
+            .collect();
+        if !names.is_empty() && !names.contains(&s.name.as_str()) {
+            v.push(
+                fd(
+                    10,
+                    format!(
+                        "the canonical PLT entry of '{}' jumps through {slot:#x}, which binds {}",
+                        s.name,
+                        names.join(", ")
+                    ),
+                )
+                .at(s.st_value),
+            );
+        }
+    }
     let now = out.get(DT_FLAGS).is_some_and(|f| f & DF_BIND_NOW != 0)
         || out.get(DT_FLAGS_1).is_some_and(|f| f & DF_1_NOW != 0);
     let plt0 = sec(image, ".plt").map(|s| s.0);
@@ -760,14 +949,22 @@ fn pd10(image: &Image<'_>, out: &DynOut, machine: u16, v: &mut Vec<Finding>) {
             v.push(f);
         }
     }
-    // H1: every IRELATIVE after every JUMP_SLOT, in application order.
-    let last_js = out.rels.iter().rposition(|r| kind(machine, r.ty) == Kind::JumpSlot);
-    if let Some(l) = last_js
+    // H1 (D-41): every IRELATIVE after every symbolic record, in
+    // application order, so a resolver that calls through the PLT or GOT,
+    // or reads a copied object, runs after those are bound.
+    let symbolic = |k: Kind| matches!(k, Kind::JumpSlot | Kind::GlobDat | Kind::Copy | Kind::Abs);
+    let last = out.rels.iter().rposition(|r| symbolic(kind(machine, r.ty)));
+    if let Some(l) = last
         && let Some(ir) = out.rels.iter().position(|r| kind(machine, r.ty) == Kind::Irelative)
         && ir < l
     {
+        let what = if out.rels[ir..].iter().any(|r| kind(machine, r.ty) == Kind::JumpSlot) {
+            "a JUMP_SLOT: a resolver that calls through the PLT jumps to an unbound slot"
+        } else {
+            "a symbolic record: a resolver that reads through the GOT or a copied object sees it unbound"
+        };
         v.push(
-            fd(10, "an IRELATIVE record is applied before a JUMP_SLOT: a resolver that calls through the PLT jumps to an unbound slot (D-41, H1)")
+            fd(10, format!("an IRELATIVE record is applied before {what} (D-41, H1)"))
                 .at(out.rels[ir].offset),
         );
     }

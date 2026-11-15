@@ -123,6 +123,12 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     for p in &model.problems {
         report.findings.push(Finding::new(Rule::Dyn(2), p.clone()));
     }
+    if !line.problems.is_empty() || !model.problems.is_empty() {
+        // P-D2: an input the verifier cannot read is an error; nothing
+        // computed without it is judged.
+        report.sort();
+        return report;
+    }
     // The loader's order: the image's own DT_NEEDED.
     let mut needed_idx = Vec::new();
     for n in &dout.needed {
@@ -224,13 +230,17 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
             }
             for (k, fs) in bad {
                 let n = ok.get(&k).copied().unwrap_or(0);
-                if (fs.len() as u64) < n {
-                    for f in fs {
+                // Every use must reach the definition. A use whose field
+                // is too narrow for it (an input's 32-bit absolute use in a
+                // no-PIE executable) cannot whatever the linker writes, and
+                // fails only when other uses do reach it (a split: W12, F2).
+                let split = (fs.len() as u64) < n;
+                for f in fs.into_iter().filter(|f| split || f.rule != Rule::Overflow) {
+                    {
                         let mut g = Finding::new(
                             Rule::Dyn(9),
                             format!(
-                                "view 3 ('{k}' defined by a preloaded library): this use still sees the absent definition while {} other uses see it ({})",
-                                n - 1,
+                                "view 3 ('{k}' defined by a preloaded library): this use ({n} in all) still sees the absent definition ({})",
                                 f.message
                             ),
                         );

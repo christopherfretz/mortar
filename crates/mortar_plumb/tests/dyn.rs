@@ -429,6 +429,39 @@ fn build() -> Option<Corpus> {
             }
         }
 
+        // P-D2: a library of the line the verifier cannot read; P-D12: a
+        // TLS record turned against a function.
+        let line = std::fs::read_to_string(d.join("e1.pie.now.bfd.line")).unwrap();
+        let gone = line.replace("libT.so", "libGone.so").replace("-lT\n", "-lGone\n");
+        assert_ne!(gone, line, "the line names libT");
+        std::fs::write(d.join("gone.line"), gone).unwrap();
+        b.patched(
+            "PD2",
+            arch,
+            &d,
+            "e1.pie.now.bfd",
+            "pd2.bfd",
+            "e1.pie.now.bfd.map",
+            "gone.line",
+            Linker::Bfd,
+            |_| {},
+            &["P-D2"],
+        );
+        b.patched(
+            "PD12",
+            arch,
+            &d,
+            "e1.pie.now.bfd",
+            "pd12.bfd",
+            "e1.pie.now.bfd.map",
+            "e1.pie.now.bfd.line",
+            Linker::Bfd,
+            tls_record_to_function,
+            // The program's TLS uses then see the wrong offset (R1, R4);
+            // x86-64 PIE keeps GNU ld's F3 (W3).
+            if x64 { &["F3", "P-D12", "R1", "R4"] } else { &["P-D12", "R1", "R4"] },
+        );
+
         // W1: an import whose only definition is STV_HIDDEN.
         let d = b.dir(arch, "W1");
         b.so(arch, &d, "libvis.c", "libvis.so", "libvis.so", &[]);
@@ -799,6 +832,28 @@ fn swap_needed(b: &mut [u8]) {
     b[needed[1] + 8..needed[1] + 16].copy_from_slice(&x.to_le_bytes());
 }
 
+/// Points the first symbolic TLS record (`DTPMOD`, `DTPOFF`, `TPOFF`,
+/// `TLSDESC`) at the `.dynsym` entry of `lib_get_dvar`, a function.
+fn tls_record_to_function(b: &mut [u8]) {
+    let s = sections(b);
+    let dynsym = section(&s, ".dynsym").clone();
+    let strs = s[dynsym.5].3;
+    let f = (0..dynsym.4 / 24)
+        .find(|i| cstr(b, strs + le32(b, dynsym.3 + i * 24) as usize) == "lib_get_dvar")
+        .expect("lib_get_dvar in .dynsym") as u64;
+    let tls = |ty: u64| matches!(ty, 1028..=1031 | 16..=18 | 36);
+    for r in s.iter().filter(|x| x.1 == 4) {
+        for o in (r.3..r.3 + r.4).step_by(24) {
+            let info = le64(b, o + 8);
+            if info >> 32 != 0 && tls(info & 0xffff_ffff) {
+                b[o + 8..o + 16].copy_from_slice(&((f << 32) | (info & 0xffff_ffff)).to_le_bytes());
+                return;
+            }
+        }
+    }
+    panic!("no symbolic TLS record");
+}
+
 /// Replaces the `BL` to `hook`'s PLT entry by a `NOP` (lld's AArch64 PLT:
 /// a 32-byte header, then 16 bytes per `.rela.plt` record, in order).
 fn nop_hook_call(b: &mut [u8]) {
@@ -885,7 +940,8 @@ fn judge(case: &str) {
                     .join("\n")
             ));
         }
-        assert!(r.coverage.records > 0, "{}: no records", o.label());
+        // P-D2 stops stage 3 before any record is judged.
+        assert!(r.coverage.records > 0 || o.case == "PD2", "{}: no records", o.label());
     }
     assert!(n > 0 || c.outs.is_empty(), "no outputs of case {case}");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -976,6 +1032,16 @@ fn s12_h1_irelative_before_jump_slot_is_p_d10() {
 #[test]
 fn s12_dupdef_is_p_d9() {
     judge("DUP");
+}
+
+#[test]
+fn s12_p_d2_unreadable_library_stops_stage_3() {
+    judge("PD2");
+}
+
+#[test]
+fn s12_p_d12_tls_record_against_a_function() {
+    judge("PD12");
 }
 
 #[test]

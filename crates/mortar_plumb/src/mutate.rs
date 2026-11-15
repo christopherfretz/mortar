@@ -1334,6 +1334,14 @@ pub fn run_with(
 mod tests {
     use super::*;
 
+    // spec: plumb.md §12 — stage 3's classes close the table, in order.
+    #[test]
+    fn s12_dynamic_classes_close_the_table() {
+        let tail = &CLASSES[CLASSES.len() - crate::dynmutate::CLASSES.len()..];
+        let names: Vec<&str> = crate::dynmutate::CLASSES.iter().map(|c| c.0).collect();
+        assert_eq!(tail, names.as_slice());
+    }
+
     // spec: Arm A64 ADR/ADRP encodings (a64.md §11.2's `adr` and W1).
     #[test]
     fn s9_5_adr_and_adrp_words() {

@@ -2590,3 +2590,78 @@ DWARF's text, and each is accepted only from its own linker.
     erratum option (§5.10) and `-z execstack`/`-z noexecstack` (with
     them `PT_GNU_STACK`'s `PF_X` could be judged against L-84's table;
     today a flipped `PF_X` there is not found, §9.5).
+
+## 12. Stage 3: dynamic executables (WP-050)
+
+The rules are `spec/dyn.md` §12 (P-D1..P-D13); this section records how
+the verifier reaches them. A dynamic output (`PT_DYNAMIC`) is judged with
+the map, the inputs and the **line** (the linker's words: `--line FILE`,
+one word per line, or `--inputs-from`; a mortar map's `arg` records when
+neither). The line gives D-1's kind, `-dynamic-linker`, `-z now`,
+`-z relro`, `-E` and the files of D-11/D-12; the shared objects are read
+from the file system (`line::Files`).
+
+- **The model** (`dynmodel.rs`): D-11's needed set, D-12's used set and
+  closure, D-19a's order (GNU ld's and mortar's keeping mention; lld's and
+  mold's first mention, `spec/dyn.md` §13.1), every key's view from the
+  placed objects. Map records are order hints only; nothing is taken from
+  the output that the model can compute.
+- **Static checks** (`dyncheck.rs`): P-D1, P-D4..P-D8, P-D10..P-D13 and
+  P-D9's record order. `Format::Mortar` is held to the D rules exactly
+  (D-22/D-24/D-26/D-30, six `DT_NULL`, RELRO ending on the maximum page);
+  a reference output to its own form where §13.1 says the references
+  differ. RELRO coverage uses the end rounded down to 4 KiB, as
+  `_dl_protect_relro` does. ld.so applies the first `DT_RELACOUNT` records
+  as `RELATIVE` whatever their type: a count above the leading `RELATIVE`
+  run is P-D6 for every linker. P-D5 also checks the chains' shape (each
+  bucket's group contiguous, the bucket word its first entry, the end bit
+  exactly on a group's last entry, each chain word the name's hash with
+  bit 0 cleared). P-D8 also checks exported definitions with a version
+  index of 2 or more (a copy or an interposition): glibc's versioned
+  lookup skips the executable's definition unless a library defines the
+  name under that version; and an import nothing defines carries no
+  version. H1 (P-D10) is every `IRELATIVE` after every symbolic record
+  (`JUMP_SLOT`, `GLOB_DAT`, `COPY`, absolute), D-41's reason.
+- **P-D2 stops stage 3**: a line word or a `DT_NEEDED` object the
+  verifier cannot read is reported and nothing computed without it is
+  judged.
+- **The loader model** (`loader.rs`): the output's records applied as
+  ld.so applies them (symbols looked up in the executable, then the
+  needed objects breadth-first; `COPY` lookups skip the executable;
+  `JUMP_SLOT` lookups skip a canonical PLT), giving the bytes the program
+  sees. Library `i` is at `0x7f00_0000_0000 + (i << 32)`. TLS: a
+  library's block sits at `start + ((i + 1) << 32)` in the program's
+  TLS address space, module `2 + i`; `DTPOFF`/`TPOFF` follow from that;
+  a `TLSDESC` pair is `[0x7e5c_0000_0000_0001, TPOFF]` (the static-TLS
+  resolver). An executable's TLS `st_value` is a segment offset (gABI).
+- **The views** (`dynverify.rs`): stage 2's engine judges every input
+  relocation against the loaded bytes of view 1 (bias 0), view 2 (bias
+  `0x5555_5a5a_0000`: its low 32 bits are not 0, so a 32-bit word cannot
+  hide a missing record) and view 3 (every `WeakDyn` key defined at
+  `0x6000_0000_0000 + 0x1000·n`). In view 3 every use must reach the
+  definition, except a use whose field cannot hold any library address
+  (R2: an input's 32-bit absolute use in a no-PIE executable), which
+  fails only when another use does reach it (a split: W12, F2). An import
+  is `Target::Tls` at its fake TLS address; the kept GD, LD and
+  descriptor sequences are judged against the GOT pair the loader wrote;
+  GNU ld's x86-64 GD to IE form (`mov %fs:0,%rax; add G(%rip),%rax`) is
+  the rewriting `tlsgd-to-ie`.
+- **Exported IFUNCs** (D-23, W13): on x86 a library reference to an
+  executable's IFUNC exported as `STT_GNU_IFUNC` makes the loader refuse
+  (P-D7); on AArch64 such an export is P-D9 when the executable's own uses
+  take an IPLT entry (two addresses), and accepted when every use is the
+  `IRELATIVE` slot.
+- **Mutations** (`dynmutate.rs`, §9.5's table): `dyn-needed`, `dyn-tag`,
+  `dyn-rel-offset`, `dyn-rel-drop`, `dyn-rel-addend`, `dyn-rel-symbol`,
+  `dyn-rel-order` (only swaps that move a `RELATIVE` or `IRELATIVE`),
+  `dynsym-value`, `dynsym-visibility`, `gnu-hash`, `versym`,
+  `version-need`, `interp`, `relro`, `lazy-slot` (lazy binding only),
+  `copy-size`. `xtask plumb --mutate --line` judges each mutant with
+  stage 3. The kill table and its survivors are WP-050's record.
+- **Stage 2 inside a dynamic output**: `__rela_iplt_start` and
+  `__rela_iplt_end` are equal (the loader applies `IRELATIVE`); a
+  canonical `STT_FUNC` at an IPLT entry is Y1-accepted; GNU ld's AArch64
+  `-z now` `_GLOBAL_OFFSET_TABLE_` is the `.got` word holding `_DYNAMIC`
+  (GOT[0], after the PLT's slots); a GNU map's repeated `.eh_frame`
+  placement of the first input is skipped; an output FDE covering a PLT
+  section (GNU ld x86-64) is counted as the linker's.
