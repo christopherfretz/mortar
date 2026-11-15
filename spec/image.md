@@ -453,6 +453,15 @@ only when `has_errors()` is false after layout (`spec/diag.md` §7).
     `copy_to`;
   - `Permuted(Vec<u32>)`, otherwise: the record indexes stably sorted by
     `r_offset` (4 bytes per record of an unsorted section).
+  The index is a `mortar_core` type (`mortar_core::records::{RecIndex,
+  Order}`, re-exported by `mortar_scan`; supervisor ruling for WP-027b),
+  and it also carries the scan's per-section `leads` bit (`RelocAt.leads`,
+  `spec/arch.md` §3.5), which fill passes on unchanged. The plan's records
+  are `RecRows::Rela` (the input's `SHT_RELA` table, read at fill time
+  through the store for the clip, in `RecIndex` order; I-82's "read
+  twice") or `RecRows::Decoded` (records already in memory, for tests and
+  the bench); the site bytes a record reads are taken from the window
+  buffer the clip is filled into, not read again.
   Unsorted sections are ordinary on x86. Per archive, unsorted
   relocation sections and records (E7, E22): x86-64 glibc `libc.a` 245 of
   3,962 sections (11,053 records; the largest 783; e.g. `PLT32` records
@@ -593,6 +602,67 @@ buffer; the clip only selects which of them a job writes.
   start, `spec/layout.md` L-86). Their encodings are `spec/elf.md`'s
   writer half, and the byte layout is a function of the class and the
   rows; nothing in them is filled from input bytes.
+  The fields (WP-027b, `link::structure`):
+  - `e_ident[EI_OSABI]` is `Facts.osabi` (AArch64: 0, a64.md Q11, also
+    with IFUNC symbols; eu-elflint then reads `STT_GNU_IFUNC` and
+    `R_AARCH64_IRELATIVE` as unknown, which Q11 may revisit);
+    `e_type` from the output kind; `e_machine` `Facts.e_machine`;
+    `e_flags` `Arch::e_flags` over the live objects' `e_flags`;
+  - `e_entry` is `Placement.entry`, or 0 when it is `None` (the gABI's
+    "no entry point"; layout's `entry-not-found` warning, L-103);
+  - `e_phoff`/`e_shoff` are the `ProgramHeaders`/`SectionHeaders` chunks'
+    offsets; `p_align` is `1 << align` of the segment row;
+  - `sh_name` from `.shstrtab`'s plan; `sh_type`, `sh_flags` and
+    `sh_addralign` from the section's chunks (the largest alignment);
+    `sh_addr` the first chunk's address (0 for non-alloc), `sh_offset`
+    its offset;
+  - `sh_entsize`: a synthetic chunk's from `SynthKind::header` (synth.md
+    §3); an output section that keeps `SHF_MERGE` its merge class's
+    entry size (L-50); `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY` and
+    `SHT_PREINIT_ARRAY` the word size; otherwise 0;
+  - `sh_link`/`sh_info`: `.symtab` links `.strtab`, its `sh_info` the
+    plan's first global (S-73); `.symtab_shndx` links `.symtab`;
+    `.rela.plt` has `sh_link` 0 and `sh_info` `.got.plt` (S-69);
+  - `.relro_padding` (layout's own `NOBITS` chunk, L-64) has a header
+    and no synthetic plan;
+  - extended numbering (gABI): when the section count or `.shstrtab`'s
+    index reaches `SHN_LORESERVE`, `e_shnum` 0 and `e_shstrndx`
+    `SHN_XINDEX`, with the values in section header 0;
+  - each structural chunk's size is checked against its encoding
+    (`internal-error` otherwise).
+
+- **I-116 [M1] The phase's entry point** (`link::write`, WP-027b). It
+  reads the front's tables (`Front` of `spec/landed/pipeline/
+  FRONT-INTERFACE.md`) by reference, as `link::Link`, and in order:
+  builds the fill tables (`LinkTables`: the global symbols' values in
+  parallel by `SymbolId`, I-30, without `redirect`: the record keys are
+  the scan's, already redirected); writes the structural units (I-40);
+  builds the plan (`from_layout`) with the synthetic chunks of
+  `Link.synth` (synth's own `SynthChunk`s and `FillCx`); creates the
+  output (§7.2), fills it (§5.3), rechecks the inputs (I-118), and
+  commits. `on_phase(100, "image")` and `on_phase(105, "output")` are
+  called as those phases end, for `--time-phases` (§11.2). The target
+  kind of each key is the scan's (`link::KeyFacts`, which the driver
+  answers with the scan's own view), so fill and scan cannot disagree.
+- **I-117 [M1] Values in non-allocated sections.** A symbol or fragment
+  in a non-alloc chunk (`.debug_*`, `.debug_str`'s merged chunk) has the
+  value of its offset from its output section's start (the gABI's
+  `sh_addr` 0), and a relocation of a debug section against it is
+  applied with that value (GNU ld, lld).
+- **I-118 [M1] The end of the phase** (`spec/input.md` §11.5). After
+  every window is written and before the rename, every input file the
+  store still holds open is checked again (`Store::recheck`, through the
+  driver's `Link.recheck` callback: `mortar_image` does not depend on
+  `mortar_input`). A file whose size, `st_mtime` or `st_ctime` changed
+  is `input-changed` at `(100, FileId, 0)`, and the link fails with no
+  output file (I-65).
+- **I-119 [M1] References into split sections** are resolved by the
+  fill tables (`Tables::split_target`, which gives S + A): a section
+  symbol of a `Merge` section by the piece at `st_value + A`
+  (`spec/synth.md` S-17, S-18, `mortar_merge::refs::section_symbol`); a
+  named symbol of one by its own piece, with A added after (S-19, S-22);
+  a symbol in `.eh_frame` by `EhPlan::value` (S-50), and the relocations
+  of `.eh_frame` itself at `EhPlan::place` (S-52, S-53).
 
 ### 5.5 Gaps
 
@@ -1272,11 +1342,19 @@ random input's).
     or thunk (`patch`, `thunk`), and the commons' chunk (`common`);
   - `define` per symbol of file 0 that layout defined
     (`spec/layout.md` §13), with its value;
-  - non-alloc input sections: none until `spec/plumb.md` has records for
-    them (request R-9: `nplace` for a section at an offset of a non-alloc
-    output section, `merged` for a merged non-alloc section whose pieces
-    are not listed). `mortar_plumb` stage 1 does not check non-alloc
-    relocations (`spec/plumb.md` §1), so nothing is lost in M1.
+  - non-alloc input sections (R-9, applied by WP-028b; written by
+    WP-027b): `nplace` per non-alloc input section placed whole, with
+    its output section's name and its offset from that section's start;
+    `merged` per `SHF_MERGE` non-alloc input section (its pieces are not
+    listed).
+  - Within a file, `place` and `piece` records are in address order
+    (pieces of one fragment, such as the NUL padding of a string
+    section, share an address; ties by section, then input offset).
+  - `.eh_frame`'s pieces are its kept records (S-49), each at its output
+    address with its output size.
+  - Not yet written: `fold` (M2) and the `thunk`/`patch` chunk records
+    with their targets (range extension's, WP-027c). `common` is not a
+    chunk of its own in M1 (commons are placed in `.bss`, layout §8).
 - **I-79 [M1]** The map is a function of the tables and the file names,
   written after layout and independent of fill. Each record group is
   formatted in parallel per file (`map_collect`, rule 3) and the buffers

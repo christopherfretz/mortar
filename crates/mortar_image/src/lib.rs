@@ -12,11 +12,10 @@
 //! - [`output::Output`]: the output file (§7), a [`fill::Sink`].
 //! - [`map::render`]: `mortar-map 1` (§9), written by [`output::write_whole`].
 //! - [`phases`]: `--time-phases` lines (I-88) and the memory bound (I-92).
-//!
-//! Stand-ins for interfaces other packages own (each named in
-//! `spec/landed/image/WP-026.md`): [`synth::SynthChunk`] (§13, WP-025),
-//! [`plan::RecOrder`] (I-29, WP-026s), [`fill::Tables::target_alloc`]
-//! (I-112; not in WP-023b's `FillTables`).
+//! - [`link::write`]: the phase over the front's tables, the driver's one
+//!   call: the fill tables over the layout's addresses, the synthetic
+//!   chunks through `mortar_synth`'s plans, the structural units (I-40),
+//!   fill, `input-changed` again, the rename.
 #![forbid(unsafe_code)]
 // A `Diagnostic` is the error value of every fallible step here, returned
 // once per link: its size costs nothing on the success path. The spec's
@@ -24,10 +23,13 @@
 #![allow(clippy::result_large_err, clippy::many_single_char_names, clippy::cast_precision_loss)]
 
 pub mod digest;
+mod eh;
 pub mod fill;
 pub mod headers;
 pub mod layout_plan;
+pub mod link;
 pub mod map;
+mod merged;
 pub mod output;
 pub mod phases;
 pub mod plan;

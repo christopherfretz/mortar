@@ -134,50 +134,9 @@ impl std::fmt::Debug for ScanOptions<'_> {
     }
 }
 
-/// The order of a relocation section's records by `r_offset` (I-29).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Order<'a> {
-    /// `r_offset` never decreases.
-    Sorted,
-    /// The record indexes stably sorted by `r_offset`.
-    Permuted(&'a [u32]),
-}
-
-/// The record index (I-29): per relocated section, whether its records
-/// are in `r_offset` order, and the permutation of those that are not.
-/// Kept sparse: a section not listed is `Sorted`. (The store is resident
-/// in M1, so `REC_SAMPLE` samples are not kept.)
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RecIndex {
-    permuted: Box<[(SectionId, Box<[u32]>)]>,
-    /// The sections with a record whose type is in `Facts.seq_leads`,
-    /// sorted (`spec/arch.md` §3.5: fill's `RelocAt.leads`).
-    leads: Box<[SectionId]>,
-}
-
-impl RecIndex {
-    /// The order of the records of `section`'s relocation section.
-    #[must_use]
-    pub fn get(&self, section: SectionId) -> Order<'_> {
-        match self.permuted.binary_search_by_key(&section, |p| p.0) {
-            Ok(at) => Order::Permuted(&self.permuted[at].1),
-            Err(_) => Order::Sorted,
-        }
-    }
-
-    /// `RelocAt.leads` for `section`'s records (`spec/arch.md` §3.5):
-    /// whether one has a type in `Facts.seq_leads`. Exact for every
-    /// section the scan read: the live ones, which are all fill reads.
-    #[must_use]
-    pub fn leads(&self, section: SectionId) -> bool {
-        self.leads.binary_search(&section).is_ok()
-    }
-
-    /// The sections whose records are not sorted, in id order.
-    pub fn unsorted(&self) -> impl ExactSizeIterator<Item = SectionId> + '_ {
-        self.permuted.iter().map(|p| p.0)
-    }
-}
+/// The record index (I-29) and a section's order: `mortar_core` types
+/// (so that the image need not depend on the scan), re-exported here.
+pub use mortar_core::records::{Order, RecIndex};
 
 /// What the scan did, for `--time-phases` and the benchmarks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -320,12 +279,7 @@ pub fn scan(
         output,
         dyn_relocs: dyn_relocs.into_boxed_slice(),
     };
-    Scanned {
-        demands,
-        order: RecIndex { permuted: permuted.into_boxed_slice(), leads: leads.into_boxed_slice() },
-        diagnostics,
-        stats,
-    }
+    Scanned { demands, order: RecIndex::new(permuted, leads), diagnostics, stats }
 }
 
 /// The permutations of the unsorted sections (`unsorted`: their first
