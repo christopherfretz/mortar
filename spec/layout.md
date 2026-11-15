@@ -1575,7 +1575,9 @@ New refusal names (class `feature` unless noted):
 - `entry point outside code`;
 - `_TLS_MODULE_BASE_ without TLS`;
 - `non-PIE image base 0`;
-- class `section-flag`: `SHF_X86_64_LARGE` with `SHF_TLS` (x86-64, L-36).
+- class `section-flag`: `SHF_X86_64_LARGE` with `SHF_TLS`, on a non-alloc
+  section, on a type other than `PROGBITS`/`NOBITS`, or on a read-only
+  or executable `NOBITS` (x86-64, L-36a).
 
 (`.gnu.linkonce` and `.zdebug` are resolve.md's refusals already.)
 
