@@ -1,11 +1,22 @@
 # spec: the Mason metadata container (`mortar_meta`)
 
-**Status: draft (WP-070; awaiting review).** The container is shared with
+**Status: draft (WP-070, revision 1 after the adversarial review
+`briefs/reviews/review-070-meta-odr.md`; awaiting the operator's
+decisions in `spec/odr.md` §15).** The container is shared with
 kiln (writer), hod (carrier) and tuck (future reader); the parts that bind
 them are marked **[kiln]**, **[hod]**, **[tuck]** and go to their agents
 through `spec/odr.md` §11. Rules are `MT-n`. Each rule about another tool
 names the experiment behind it (`odr.md` Appendix A: `container`,
-`dynamic`, `size`); `[unverified]` marks the rest.
+`dynamic`, `size`, and the revision's `container-adv`, `note-final`,
+`model`); `[unverified]` marks the rest and `[estimate]` every number
+no script printed.
+
+**Numbering.** Rules are numbered by section and the gaps are reserved
+for later rules of the same section, never reused: MT-7..9 (§3),
+MT-17..19 (§5), MT-22..24 (§6), MT-29 (§7), MT-34 (§11), MT-39..40
+(§9-§10), MT-43..49 (§10). The output rules MT-30..33 (§11) keep their
+numbers although §10's MT-41/42 precede them in the text. Every rule has
+a test (§12).
 
 ## 1. Scope
 
@@ -38,11 +49,13 @@ x86-64 and i386, and passed through each reference linker (final link
 and `-r`), `strip -g`, `strip --strip-unneeded`, `objcopy`, the
 `llvm-strip`/`llvm-objcopy` 19 equivalents, `eu-strip`, `objcopy
 --redefine-sym` and an `ar` round trip (`container`; identical results on
-the three targets unless stated):
+the three targets unless stated). The "strip/objcopy" column is the
+first experiment's selection of options; MT-5 has the full measured
+matrix (`container-adv`), in which the llvm strippers **drop** P:
 
 | encoding | final link (bfd, lld, mold) | `-r` (bfd, lld, mold) | binutils and llvm strip/objcopy | `eu-strip` | `ar` | `eu-elflint` |
 |---|---|---|---|---|---|---|
-| **P** `.mason.meta`, `SHT_PROGBITS`, `SHF_EXCLUDE` | dropped; program runs | kept; two inputs' sections concatenated into one, each aligned (bytes `MASONAAAA…MASONBBBBB`) | kept | **dropped** | byte-identical | clean |
+| **P** `.mason.meta`, `SHT_PROGBITS`, `SHF_EXCLUDE` | dropped; program runs | kept; two inputs' sections concatenated into one, each aligned, flags `E`, alignment 8, input order, no padding (`container-adv`: bfd, lld, mold) | kept by `strip -g`, `--strip-unneeded`, `objcopy`; **dropped** by `llvm-strip` (default and `--strip-all`) and `llvm-objcopy --strip-non-alloc` (MT-5) | **dropped** | byte-identical | clean |
 | N `.note.mason`, `SHT_NOTE`, `SHF_EXCLUDE` | dropped | kept | kept | kept | identical | error: unknown note type with owner `Mason` |
 | U `SHT_LOUSER+…`, `SHF_EXCLUDE` | dropped | kept | kept | dropped | identical | error: unsupported section type |
 | K `SHT_PROGBITS`, no `SHF_EXCLUDE` | **copied into the output** | kept | kept | dropped | identical | clean |
@@ -94,22 +107,47 @@ linked by others; the L11 corpus re-runs it (§12, T-MT-3).
 one, MT-30; an object assembled by hand may have several). A reader
 reads all of them in section-index order; their units are one sequence.
 
-**MT-5 (tools that lose it).** `eu-strip` drops the section from objects
-(P); `strip`, `objcopy`, their llvm equivalents and `ar` keep it byte for
-byte. An object that lost its container links as a foreign object
-(principle 9); nothing reports the loss. Archives are unaffected:
-archives are built with `ar` (identical bytes).
+**MT-5 (tools that keep it, tools that lose it).** Measured on objects
+(`container`, `container-adv`; binutils 2.44, llvm 19, elfutils 0.192):
 
-**MT-6 (mortar's classification).** In `spec/resolve.md` §10 a section
-that matches MT-1's name **and** has `SHF_EXCLUDE` is kind `Meta`, state
-`Dropped(Consumed)` (amendment A-1, `odr.md` §14): read by `mortar_meta`
-when a reader needs it, never copied by the `SHF_EXCLUDE` path. A
-section named `.mason.meta` that does **not** match MT-1 (no
-`SHF_EXCLUDE`, another type, `SHF_ALLOC`) is not a container: it falls
-through to the existing rows (a non-`SHF_EXCLUDE` `PROGBITS` is copied as
-any other section, as all three references do with K), and mortar warns
-`meta-malformed` (`odr.md` §9) once per file, because a producer meant
-something and got it wrong.
+| tool and option | the container | the symbols its rows anchor to |
+|---|---|---|
+| `ar` (any), thin archives | kept, byte-identical | kept |
+| `ld -r` (GNU ld, lld, mold) | kept, concatenated (§4) | kept |
+| `strip -g`, `strip -x`, `strip --strip-unneeded` | kept | kept (globals) |
+| `strip` (default), `strip --strip-all` | kept | **removed**: every row unanchored (`odr.md` O-4) |
+| `objcopy --only-keep-debug`, `--localize-hidden`, `--weaken`, `--strip-dwo` | kept | kept (`--weaken`: weak) |
+| `objcopy --prefix-symbols=…`, `--redefine-sym` | kept | renamed: rows unanchored (the safe direction) |
+| `objcopy -N <sym>` | kept | that symbol removed |
+| `objcopy --extract-dwo` | **removed** | |
+| `llvm-strip` (default), `llvm-strip --strip-all` (objects and archive members) | **removed** | |
+| `llvm-objcopy --strip-non-alloc` | **removed** | |
+| `eu-strip` | **removed** | |
+| `strip --strip-unneeded` on an archive | kept in every member | kept |
+
+Only the "kept" rows with symbols kept preserve what `odr.md` A2 assumes.
+An object that lost its container, or its symbols, links as a foreign
+object (principle 9); **nothing reports the loss** (it cannot be told from
+an object that never had one). T-MT-5 re-runs this table on the tool
+versions of the harness.
+
+**MT-6 (mortar's classification).** One predicate, used here and by
+amendment A-1 to `spec/resolve.md` §10 (`odr.md` §14): a section **is a
+container** when its name is `.mason.meta`, its `sh_type` is
+`SHT_PROGBITS` and its `sh_flags` are exactly `SHF_EXCLUDE` (MT-1; the
+alignment, `sh_entsize`, `sh_link` and `sh_info` are checked by the
+reader, MT-14, not by the classification). A container is kind `Meta`,
+state `Dropped(Consumed)`: read by `mortar_meta` only when a check that
+needs it is on (MT-42), never copied by the `SHF_EXCLUDE` path. A section
+named `.mason.meta` that is not a container (another type, `SHF_ALLOC`,
+no `SHF_EXCLUDE`, `SHF_ALLOC|SHF_EXCLUDE`, …) falls through to the
+existing rows of resolve.md §10 as if it had any other name (a
+non-`SHF_EXCLUDE` `PROGBITS` is copied, as all three references do with
+K; an `SHF_ALLOC|SHF_EXCLUDE` section is dropped by the `SHF_EXCLUDE`
+row), and mortar warns `meta-malformed` (`odr.md` §9) once per file,
+because a producer meant something and got it wrong. That warning is on
+by default: it was run on every corpus of `odr.md` §12.3 (no object there
+has such a section) with zero findings (`odr.md` O-1).
 
 ## 4. Record framing
 
@@ -275,7 +313,8 @@ a row without it is information. Names defined now [kiln]:
 | `source` | the main file's path after `-ffile-prefix-map` | no | diagnostics |
 | `odr.scheme` | the definition-hash scheme, e.g. `kiln-odr-1` | no | rows of kinds 2, 3 are compared only between equal schemes (`odr.md` O-11) |
 | `std` | the language standard, e.g. `c++20` | no | `odr.md` O-32 |
-| `abi.rtti` | `on`/`off` | yes | K16c |
+| `lang` | `c` or `c++` | no | `odr.md` O-33: C units get no kind 3 rows and C-linkage kind 5 rows are compared under C's rules |
+| `abi.rtti` | `on`/`off` | **no** (a note: mixing `-fno-rtti` libraries with RTTI code is common and legal, `odr.md` N24) | K16c: `odr.md` O-25 reads it |
 | `abi.exceptions` | `on`/`off` | no (mixing is supported; recorded for diagnostics) | |
 | `abi.short-enums` | `on`/`off` | yes | K16a |
 | `abi.stdlib` | `libc++`/`libstdc++` | yes | different `std::` layouts under the same names when inline namespaces are not used |
@@ -364,19 +403,46 @@ The container for the kiln `-O0` object, with the rows of `odr.md`:
 | kind 5, anchored | 661 | 26,440 + ~5 KB of type strings | 40 B a row, definitions and references; type strings deduplicated [estimate] |
 | kind 4 (optional) | 334 | ~40 KB [estimate: 120 B a class] | only with `-fmason-metadata=detail` |
 
-**MT-41 (budget).** Without kind 4, about 92 KB: **19 % of the `-O0`
-object, 9 % of the `-O0 -g` one** (1,039,856 B). A producer keeps the
-default container within 20 % of a `-O0` object and 10 % of a `-g`
-object on this TU; the L11 lane (`odr.md` §12) measures it on libc++'s
-suite and fails above that. What a link pays with the checks off is
-none of it: MT-42.
+Measured in that table: the object sizes, the entity counts, the 78,221
+bytes of names (`size`), the `-O0 -g` object of 1,039,856 B (kiln+hod
+with `KILN_BACKEND=hod`, reproduced by the review), and the type count
+under the widened reach of `odr.md` O-17: clang 22's DWARF of the same TU
+has 301 complete class/struct/union/enum definitions at `-g` and 334 at
+`-g -fstandalone-debug` (pointees included; `k3count`), so the 334 rows
+above stand as the upper proxy [estimate: a proxy until kiln writes kind
+3]. Everything in the "bytes" column after kind 2's is arithmetic over the
+row sizes and assumed name lengths: `[estimate]`.
 
-**MT-42 (cost when not read).** With `--odr=off` (`odr.md` O-41) mortar
-reads the section header (it reads every header anyway to classify
-sections, `spec/resolve.md` §10) and **never touches the section's
-bytes**: no page of it is faulted in through a mapping, no unit is
-parsed. The extra cost of a Mason object over a foreign one is then the
-file's size on disk and in the page cache of whoever wrote it.
+**MT-41 (budget).** Without kind 4, about 92 KB [estimate: the table's
+arithmetic; kinds 1, 2, 3 and 5]: about **19 % of the `-O0` object, 9 %
+of the `-O0 -g` one** [estimate]. (`odr.md` Q4's "3-6 %" is kinds 1 and 2
+alone, anchored.) No gate is set from these numbers: WP-071's acceptance
+test (`odr.md` §13, experiment 7) writes real units for the heavy TU and
+for protoc with the test producer at the row counts of their objects,
+and the gate of the L11 lane is set from that measurement, by kind, in
+WP-071's landed record. What a link pays with the checks off is none of
+it: MT-42.
+
+**MT-42 (a link that does not use the feature does not pay for it).**
+A hard rule (the operator's, 2026-11-15). Mortar reads a container's
+bytes only when a check that needs them is on (`odr.md` O-42): with
+`--odr=off`, and in the default mode as long as every record-based check
+is `--odr=strict` only (`odr.md` O-47), **no container byte is read**:
+mortar reads the section header (it reads every header anyway to
+classify sections) and nothing else of it; no unit is parsed. This
+needs amendment **A-8** to `spec/input.md` §11.1 (`odr.md` §14): the
+staged store's row "every other section of at most 64 KiB" excludes
+containers (MT-6's predicate); a container is never resident; when a
+check needs it, `mortar_meta` reads it with positioned reads
+(`copy_to`-style, `read_exact_at`) into memory it owns for the check's
+duration. One case is not covered by the exclusion and is stated, not
+hidden: an object of at most 64 KiB is read whole in one read today
+(`input.md` §11.1, second row), container included; splitting that read
+would cost every small Mason object a second read. A-8 keeps the single
+read and T-MT-42 bounds it (below); the operator may instead rule that a
+small file with a container is read around it (`odr.md` Q15). The cost
+the rule leaves is the file's size on disk and in the page cache of
+whoever wrote it.
 
 ## 11. The container in mortar's outputs
 
@@ -390,8 +456,10 @@ what the three references do (P) and keeps the losers' records (§6).
 
 **MT-31 (executables and shared objects).** The container is consumed
 (MT-6) and not copied. If the loadable table is on (`odr.md` O-50), the
-output gets the allocated note `.note.mason` in a `PT_NOTE` of its own
-(`odr.md` §10.2); shared-object outputs are M4.
+output gets the allocated note `.note.mason` in a `PT_NOTE` with
+`p_align` 8 (`odr.md` O-52; it may share that segment with other
+8-aligned notes, as `spec/layout.md` places notes); shared-object
+outputs are M4.
 
 **MT-32 (kept for tools).** With `--keep-mason-meta` (proposed,
 `spec/cli.md`, amendment A-5 of `odr.md` §14; default off), an executable or shared
@@ -418,9 +486,29 @@ has seen every definition (`odr.md` O-54).
 - **T-MT-30** (M4): `mortar -r` of two Mason objects, then a final link
   by mortar: the same diagnostics as linking the two objects directly.
 - **T-MT-38**: determinism, above.
-- **T-MT-42**: with `--odr=off`, a link of objects whose `.mason.meta`
-  bytes are garbage (valid header, random contents) succeeds without a
-  warning and produces the same output as with the sections removed.
+- **T-MT-42** (bytes read, not only outputs): with `--odr=off`, and in
+  the default mode while O-47 lists no record-based check as on, a link
+  of objects whose `.mason.meta` bytes are garbage (valid section
+  header, random contents) succeeds without a warning and produces the
+  same output as with the sections removed; and the store's byte counter
+  (`spec/input.md` §11, a test-only counter of bytes read per file range)
+  shows **zero** bytes read from any container range of an object larger
+  than 64 KiB, and, for an object of at most 64 KiB, one read of the
+  whole file as without the container. With a check on that needs the
+  container, the counter shows each container read once.
+- **T-MT-5**: MT-5's table, re-run on the harness's tool versions
+  (binutils, llvm, elfutils): a changed row fails the test and is a spec
+  change.
+- **T-MT-6**: one object per non-container variant (`SHF_ALLOC`, no
+  `SHF_EXCLUDE`, `SHF_ALLOC|SHF_EXCLUDE`, `SHT_NOTE`): classified by the
+  fall-through rows, one `meta-malformed` per file.
+- **T-MT-1, 2, 4, 11-16, 20, 21, 26-28, 31-33, 37, 41**: MT-1/2 by the
+  test producer's output read back; MT-4 two sections in one object;
+  MT-15/16 after `objcopy --redefine-sym` and `-r`; MT-20/21 a unit whose
+  COMDAT copy lost and a unit of a file whose sections `--gc-sections`
+  removed are both compared; MT-26..28 kind 1 keys round trip; MT-31..33
+  per output kind; MT-37 two schemes, no comparison; MT-41 the gate of
+  WP-071's record.
 
 **The test producer.** `mortar_meta` has a writer (it needs one for
 MT-30); the test harness uses it to emit `.s` files (`.section
