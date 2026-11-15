@@ -15,6 +15,7 @@ mortar_diag.workspace = true
 mortar_elf.workspace = true
 
 [dev-dependencies]
+mortar_a64.workspace = true
 mortar_testutil.workspace = true
 
 [lints]
