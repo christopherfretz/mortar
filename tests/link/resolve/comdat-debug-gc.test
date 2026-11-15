@@ -1,0 +1,37 @@
+# A COMDAT function in two C++ units with debug information, each unit
+# with a collected function under `--gc-sections`: the dropped copy's and
+# the collected functions' debug references get each linker's tombstone
+# (mortar: spec/image.md I-47, I-112), judged by the verifier on every
+# architecture (WP-030d).
+#@ spec: image.md I-45, I-47, I-112
+#@ requires: g++
+
+cxx -g -O0 -ffunction-sections -fdata-sections a.cc -o a.o
+cxx -g -O2 -gdwarf-4 -ffunction-sections -fdata-sections b.cc -o b.o
+link g++ -static -no-pie -Wl,--gc-sections a.o b.o -o prog
+run prog
+  stdout: 24 9
+check readelf -sW prog
+  has: FUNC * _Z3bigi$
+  not: unused_a
+  not: unused_b
+
+#--- big.h
+inline __attribute__((noinline)) int big(int x) {
+  int s = 0;
+  for (int i = 0; i < x; ++i) s += i * x;
+  return s;
+}
+#--- a.cc
+#include <cstdio>
+#include "big.h"
+int unused_a(int x) { return big(x) + 7; }
+int helper(int);
+int main(int argc, char **) {
+  std::printf("%d %d\n", big(argc + 3), helper(argc));
+  return 0;
+}
+#--- b.cc
+#include "big.h"
+int unused_b(int x) { return big(x) * 2; }
+int helper(int x) { return big(x + 2); }

@@ -47,7 +47,8 @@ fn congruent_at_least(lo: u128, o: u128, p: u128) -> u128 {
 ///
 /// # Errors
 ///
-/// `refused` (`feature`, `non-PIE image base 0`, L-68), `output-too-large`
+/// `refused` (`feature`, `non-PIE image base 0`, L-68; a PIE's base is 0),
+/// `output-too-large`
 /// (L-73), and `internal-error` for a table stage C cannot have made.
 #[allow(clippy::too_many_lines)]
 pub fn address(
@@ -90,10 +91,10 @@ pub fn address(
         .map(|c| c.align)
         .max();
     let first_tls = order.iter().copied().find(|&c| chunks[c].is_alloc() && chunks[c].is_tls());
-    // L-68: the base.
+    // L-68: the base; 0 for a position-independent output (D-1).
     let p1 = if runs.is_empty() { max_page } else { p_of(0) };
-    let base = u128::from(target.image_base) / p1 * p1;
-    if base == 0 {
+    let base = if options.pie { 0 } else { u128::from(target.image_base) / p1 * p1 };
+    if base == 0 && !options.pie {
         return Err(feature("non-PIE image base 0"));
     }
     let rx_run = runs.iter().position(|r| r.0 == LoadClass::Rx);

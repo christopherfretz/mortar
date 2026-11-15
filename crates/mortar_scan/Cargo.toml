@@ -19,6 +19,8 @@ mortar_a64.workspace = true
 mortar_cli.workspace = true
 mortar_input.workspace = true
 mortar_resolve.workspace = true
+# tests/dynamic.rs plans the GOT, PLT and copies from the scan's demands.
+mortar_synth.workspace = true
 mortar_live.workspace = true
 mortar_testutil.workspace = true
 
