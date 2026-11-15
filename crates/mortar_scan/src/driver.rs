@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use mortar_arch::seq::{disjoint_in_order, overlaps};
 use mortar_arch::{
     DemandOut, DemandSink, DynRefusal, DynRole, Howto, Incompatible, PlaceFacts, ProofRun, RefName,
-    RelocAt, ScanCx, ScanError, Site, UnitWindow,
+    RelocAt, ScanCx, ScanError, ScanTables, Site, UnitWindow,
 };
 use mortar_core::demands::{DemandFlags, DynCounts, DynKind, GlobalFlags};
 use mortar_core::par::SCAN_BLOCK;
@@ -504,6 +504,8 @@ pub(crate) struct UnitOut {
     pub nonalloc: u64,
     /// Some record's type is in `Facts.seq_leads` (`RelocAt.leads`).
     pub leads: bool,
+    /// The branch candidates of a code section's unit, in record order.
+    pub branches: Vec<crate::BranchRec>,
     /// The records that raised `COPY` or `CANON_PLT` on a global key, in
     /// record order (`spec/dyn.md` D-18, D-42: checked per key).
     pub copy_refs: Vec<(SymbolId, u32)>,
@@ -595,6 +597,16 @@ pub(crate) fn dynamic_error(view: &View<'_, '_>, e: ScanError) -> ScanError {
         }
         e => e,
     }
+}
+
+/// Whether `key`'s target kind is `Weak0`, from the definitions alone;
+/// checked against the full facts in debug builds.
+fn weak0(view: &View<'_, '_>, tables: &RecTables<'_, '_, '_>, key: SymKey) -> bool {
+    let w = view.is_weak0(key);
+    debug_assert_eq!(w, ScanTables::sym(tables, key).kind == mortar_arch::TargetKind::Weak0);
+    #[cfg(not(debug_assertions))]
+    let _ = tables;
+    w
 }
 
 /// Walks one unit (§4.1 step 2): every record in record order.
@@ -696,6 +708,8 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     let mut faults: Vec<(u32, Fault)> = Vec::new();
     let mut prev: Option<u64> = None;
     let seq_leads = view.arch.facts().seq_leads;
+    // The branch candidates (`crate::BranchRec`): only in live code.
+    let code = sec.place.alloc && sec.place.exec == Some(true);
     for i in u.lo..u.hi {
         out.records += 1;
         let Some(raw) = sec.recs.records.raw(i) else {
@@ -735,6 +749,24 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
             key,
             mention: SymEntry { file: u.file, index: SymbolIndex(raw.r_sym) },
         };
+        if code
+            && let Some(b) = view.arch.branch(&h)
+            && b.veneer
+            && let Some(site) = mortar_arch::need::branch_candidate(
+                view.arch,
+                output,
+                &at,
+                &tables,
+                weak0(view, &tables, key),
+            )
+        {
+            out.branches.push(crate::BranchRec {
+                section: u.section,
+                offset: raw.r_offset,
+                record: i,
+                site,
+            });
+        }
         sink.record = i;
         sink.errored = false;
         let before = sink.errors.len();

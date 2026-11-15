@@ -1,6 +1,6 @@
 # spec: dynamic executables (`mortar_synth` dynamic tables; M2)
 
-**Status: accepted (WP-040, after an adversarial review and a re-review); §11's requests applied to the owning specs and §15's questions ruled, Q1 reopened (WP-040r).**
+**Status: accepted (WP-040, after an adversarial review and a re-review); §11's requests applied to the owning specs and §15's questions ruled (WP-040r), Q1 measured and closed (WP-043).**
 
 ## 1. Scope and status
 
@@ -545,14 +545,47 @@ R-M1). Then:
   is not exported: GNU ld and mold; lld exports it, harmless, 2.5a);
   these columns are computed after D-11 and D-12 (request R-R3).
 
-Archive extraction (resolve §4.2, §4.4) and the references of an
-`--as-needed` shared object that ends up not needed: [open Q1, reopened;
-measured by WP-043 before its implementation]. Whatever the measurement,
-the rule must not be circular: extraction is decided from facts
-available at load time (whether a loaded command-line shared object's
-undefined references extract archive members is the same for needed
-and unneeded objects, as the references do it at load time), and
-neededness is computed after `def` (D-11).
+Archive extraction by the references of shared objects (Q1, measured by
+WP-043; resolve §4.4). Measured with GNU ld 2.44, lld 22 and mold 2.37.1,
+AArch64 and x86-64 alike (`libu.so` refers to `g`; `libg.a(g.o)` defines
+`g` and has a constructor; `m1.o` calls `libu.so`, `m0.o` does not):
+
+| line | GNU ld | lld | mold |
+|---|---|---|---|
+| `m0.o libu.so libg.a`, `m1.o libu.so libg.a`, `m1.o --as-needed libu.so libg.a` | `g.o` extracted, exported | the same | the same |
+| `m0.o libg.a libu.so`, `m1.o libg.a libu.so`, `m1.o --as-needed libg.a libu.so` | ``./libu.so: undefined reference to `g'`` | `g.o` extracted | `g.o` extracted |
+| `m0.o --as-needed libu.so libg.a`, `m0.o --as-needed libg.a libu.so` (`libu.so` not needed) | not extracted, `libu.so` not needed | `g.o` extracted (its constructor runs, `g` exported) | not extracted |
+| the same with `g.o` calling `u2` of `libu.so` | not extracted, not needed | extracted, `libu.so` needed | not extracted |
+
+GNU ld and mold do not let an unneeded as-needed object extract; whether
+a needed one extracts depends on its neededness, which is known only
+after `def` (D-11). The rule, decided at load time:
+
+- the undefined references of a member of C whose merged `as_needed`
+  (D-11 item 1) is off are edges of resolve §4.1 like an object's (such
+  an object is always needed, so its references are the program's);
+  where the archive precedes the object, mortar extracts as lld and mold
+  do (resolve §4.3; GNU ld refuses the line);
+- the undefined references of a member of C whose merged `as_needed` is
+  on, and of every closure file (W), are never edges: they extract
+  nothing (GNU ld and mold when the object is not needed; lld differs);
+- **`as-needed extraction`, refused by name**: after D-11, a member `s`
+  of N whose merged `as_needed` is on and that has a strong undefined
+  reference to a key `k` whose edge, were `s`'s references edges, would
+  target a lazy file that is not live (resolve §4.1 `first(k)`, counting
+  `s` as a live file), stops the link: `refused` (class `feature`, name
+  ``archive member needed by an --as-needed shared object: `k' ``),
+  phase 30, the unit and place of D-13, with the note `link the library
+  with --no-as-needed, or name the member's definition earlier (an object
+  or -u)`. All three references link such a line (`m1.o --as-needed libu.so
+  libg.a`) and extract the member; mortar refuses it rather than decide
+  extraction from a neededness that depends on it. An extension that
+  lifts the refusal (extract in a second stage and refuse only when that
+  changes N) is a follow-up, not M2.
+
+The rule is the same for needed and unneeded objects at load time (the
+references of an as-needed object never extract), so it is not
+circular; neededness is computed after `def` (D-11).
 *Tests:* `closure-export` (runs), `closure-not-on-command-line` (the
 note), `closure-unused`, `shlib-undefined-ldso` (the default hello with
 D-13 on: links, `ld-linux` used, not needed).
@@ -607,8 +640,15 @@ reason. *Test:* `copy-dt-needed-refused`.
 **D-16 [M2] (TLS against a shared definition).** A TLS class relocation
 against a key whose `def` is a non-`STT_TLS` shared definition, or a
 non-TLS class against an `STT_TLS` shared definition, is `tls-mismatch`
-(resolve §3.4 extended to shared definitions, request R-R4) [unverified
-against the references]. *Test:* `tls-mismatch-shared`.
+(resolve §3.4 extended to shared definitions, request R-R4). The judged
+mentions are those of live relocatable objects; the diagnostic is at the
+first such mention of the other kind by `≺`, with `bind(k)`'s entry as
+the first definition (text `TLS attribute mismatch: <name>`, diag.md
+§3.1). GNU ld refuses both directions (measured by WP-051: ``tv: TLS
+definition in ./libtv.so section .tdata mismatches non-TLS reference in
+data.o``; ``nv: TLS reference in tls.o mismatches non-TLS definition in
+./libnv.so section .data``); lld and mold link and the programs crash or
+read garbage. *Test:* `tls-mismatch-shared`.
 
 **D-17 [M2] (common against a shared definition).** resolve §3.2 rule 2
 stands: GNU ld and mold give the shared data definition (`5 5`), lld the
@@ -1531,21 +1571,19 @@ work within, stated so that M2's rules do not close the door.
 
 ## 15. Open questions (each with a recommendation)
 
-Every question but Q1 is closed (supervisor's rulings, written into the
-text by WP-040r); Q1 is reopened.
+Every question is closed (supervisor's rulings, written into the text by
+WP-040r; Q1 measured and written by WP-043).
 
-- **Q1. Reopened.** Can the references of an `--as-needed` library that is not
-  needed extract archive members? [unmeasured] *Recommendation:* no
-  (lld's rule; the library contributes nothing); measure GNU ld in
-  WP-M2-RES and refuse by name if they differ on a real line.
-  *Supervisor*: reopened, not closed; measured by WP-043 before its
-  implementation. The recommendation as written is circular (which
-  objects are needed is known only after `def`, which extraction
-  decides), so whatever the measurement, the rule must not be circular: extraction is decided from facts
-  available at load time (whether a loaded command-line shared object's
-  undefined references extract archive members is the same for needed
-  and unneeded objects, as the references do it at load time), and
-  neededness is computed after `def` (D-11).
+- **Q1. Closed by measurement (WP-043).** Can the references of an
+  `--as-needed` library extract archive members? Measured (D-12's table):
+  GNU ld and mold do not extract for an unneeded as-needed object, lld
+  does; all three extract for a needed one when the archive follows it.
+  *Rule* (D-12): the references of a command-line shared object whose
+  merged `as_needed` is off are edges; those of an as-needed one (and of
+  every closure file) are not, and an as-needed object found needed with
+  a strong reference that only an unextracted member would define is
+  refused by name (`archive member needed by an --as-needed shared
+  object`). Decided at load time, not circular.
 - **Q2.** Withdrawn by the review (F2): `WeakDyn` is decided per symbol
   (D-25); there is no per-class split.
 - **Q3. Closed: off.** `--eh-frame-hdr` off by default (GNU ld, lld) or on (mold)?
@@ -1638,11 +1676,11 @@ eu-elflint 0.192, Python 3.13.5, glibc 2.41 (Debian 13).
 - mortar itself past the refusals: no dynamic output exists; every rule
   is measured on the references only.
 - A 64 KiB-page AArch64 kernel (D-61's RELRO end): none available.
-- `tls-mismatch` against a shared definition (D-16): no reference
-  diagnoses it; behaviour unmeasured.
 - An input section named `.interp` (D-31) and a canonical PLT in a PIE
   (D-44): no corpus input produces them.
-- Q1 (archive extraction from unneeded libraries).
+- Q1's refusal (`archive member needed by an --as-needed shared
+  object`): measured on the six-line experiment of D-12 only; no census
+  line was found that reaches it.
 - Large-model TLSDESC kept eager (D-48): a64 Q10; produced by hand only.
 - i386: `qemu-i386 ld.so --list` dies with `SIGSEGV` (and dumps core) on
   lld's i386 non-PIE outputs, which run; whether native i386 `ldd` lists

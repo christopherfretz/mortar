@@ -262,7 +262,7 @@ pub struct CopyHint {
     pub size: u64,
 }
 
-/// The dynamic records of a map (§3.2, `spec/dyn.md` P-D3): facts of the
+/// The dynamic records of a map (§3.2, `spec/plumb.md` P-D3): facts of the
 /// command line, and **order hints** (`needed`, `copy`, `export`, `plt`,
 /// `iplt`) the verifier uses only to name what it compares, never as the
 /// expected value. Every field is optional in the text: a record that is

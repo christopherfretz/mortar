@@ -51,6 +51,23 @@ pub const CLASSES: &[&str] = &[
     "thunk-target",
     "iplt-entry",
     "erratum-fix",
+    // Stage 3 (`crate::dynmutate::CLASSES`, same order).
+    "dyn-needed",
+    "dyn-tag",
+    "dyn-rel-offset",
+    "dyn-rel-drop",
+    "dyn-rel-addend",
+    "dyn-rel-symbol",
+    "dyn-rel-order",
+    "dynsym-value",
+    "dynsym-visibility",
+    "gnu-hash",
+    "versym",
+    "version-need",
+    "interp",
+    "relro",
+    "lazy-slot",
+    "copy-size",
 ];
 
 /// How many mutants of each class to run, from which seed, on how many
@@ -1083,6 +1100,9 @@ fn candidates(
             }
         }
     }
+    for (class, what, edits) in crate::dynmutate::candidates(image) {
+        g.push(class, what, edits);
+    }
     g.out
 }
 
@@ -1206,6 +1226,26 @@ pub fn run(
     map: &Map,
     cfg: &Config,
 ) -> Result<Outcome, String> {
+    run_with(output, inputs, map, cfg, None)
+}
+
+/// [`run`], judging each mutant with stage 3 when `ctx` is given and the
+/// output is dynamic (`spec/plumb.md` §12).
+///
+/// # Errors
+///
+/// As [`run`].
+pub fn run_with(
+    output: &[u8],
+    inputs: &[Input<'_>],
+    map: &Map,
+    cfg: &Config,
+    ctx: Option<&crate::Ctx<'_>>,
+) -> Result<Outcome, String> {
+    let verify = |out: &[u8], inputs: &[Input<'_>], map: &Map| match ctx {
+        Some(c) if crate::is_dynamic(out) => crate::verify_with(out, inputs, map, c),
+        _ => verify(out, inputs, map),
+    };
     let image = Image::read(output)?;
     let mut rng = Rng(cfg.seed);
     let mut base = verify(output, inputs, map);
@@ -1293,6 +1333,14 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // spec: plumb.md §12 — stage 3's classes close the table, in order.
+    #[test]
+    fn s12_dynamic_classes_close_the_table() {
+        let tail = &CLASSES[CLASSES.len() - crate::dynmutate::CLASSES.len()..];
+        let names: Vec<&str> = crate::dynmutate::CLASSES.iter().map(|c| c.0).collect();
+        assert_eq!(tail, names.as_slice());
+    }
 
     // spec: Arm A64 ADR/ADRP encodings (a64.md §11.2's `adr` and W1).
     #[test]

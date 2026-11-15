@@ -64,7 +64,9 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
     let mut out = Vec::new();
     let h = &image.header;
     // S1: an executable of a supported machine.
-    if h.e_type != ET_EXEC {
+    // Stage 3 (§12, P-D1) judges an `ET_DYN` with `PT_DYNAMIC`.
+    let dynamic = image.phdrs.iter().any(|p| p.p_type == mortar_elf::consts::PT_DYNAMIC);
+    if h.e_type != ET_EXEC && !(dynamic && h.e_type == mortar_elf::consts::ET_DYN) {
         out.push(s(
             1,
             format!("e_type is {}, not ET_EXEC (stage 1 checks static executables)", h.e_type),

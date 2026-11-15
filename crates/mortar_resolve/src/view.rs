@@ -27,7 +27,8 @@ pub enum FileKind {
     /// An object in a `--start-lib` region (M4): lazy, an archive of its
     /// own (§4.8).
     LazyObject,
-    /// A shared object (M2): refused until then (§1.2).
+    /// A shared object (M2, `spec/dyn.md` D-10-D-13): what it is to the
+    /// link is [`View::shared`].
     Shared,
 }
 
@@ -111,6 +112,26 @@ pub const fn entry_word(file: FileId, index: SymbolIndex) -> u64 {
 #[must_use]
 pub const fn word_entry(word: u64) -> mortar_core::SymEntry {
     mortar_core::SymEntry { file: FileId((word >> 32) as u32), index: SymbolIndex(word as u32) }
+}
+
+/// What a shared object is to the link (`spec/dyn.md` D-11, D-12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SharedInfo {
+    /// A closure file (W): loaded by the `DT_NEEDED` walk, never by the
+    /// command line or a script. It never gives `def` and is never needed.
+    pub closure: bool,
+    /// For a member of C: its merged `as_needed` (on only if on at every
+    /// mention, `spec/input.md` §8.2). Its undefined references are edges
+    /// of §4.1 only when this is off (`spec/dyn.md` D-12, Q1).
+    pub as_needed: bool,
+}
+
+impl SharedInfo {
+    /// Whether its undefined references extract archive members (Q1).
+    #[must_use]
+    pub const fn extracts(self) -> bool {
+        !self.closure && !self.as_needed
+    }
 }
 
 /// One `SHT_GROUP` section of a file.
@@ -223,4 +244,28 @@ pub trait View: Sync {
 
     /// The unversioned key named `name`, if the link has a row for it.
     fn find_key(&self, name: &[u8]) -> Option<SymbolId>;
+
+    /// For a shared object, what it is to the link; `None` for every other
+    /// file. A shared object's [`View::mentions`] are its `.dynsym` entries
+    /// past `sh_info` that matter to resolution (`spec/resolve.md` §9.1):
+    /// its references and its visible definitions (hidden and internal
+    /// definitions are left out).
+    fn shared(&self, file: FileId) -> Option<SharedInfo> {
+        let _ = file;
+        None
+    }
+
+    /// The `DT_NEEDED` edges of a shared object, in table order: the
+    /// loaded object each leads to, or `None` when it was not found
+    /// (`spec/input.md` §8.6). Appended to `out`.
+    fn needed(&self, file: FileId, out: &mut Vec<Option<FileId>>) {
+        let _ = (file, out);
+    }
+
+    /// The version index (`versym & 0x7fff`) of entry `index` of a shared
+    /// object's `.dynsym`; 0 without `.gnu.version` (`spec/dyn.md` D-27).
+    fn version(&self, file: FileId, index: SymbolIndex) -> u16 {
+        let _ = (file, index);
+        0
+    }
 }

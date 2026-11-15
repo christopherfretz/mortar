@@ -25,7 +25,7 @@ pub enum SymtabEntry {
 pub fn symtab_entry(def: Def, props: Props, unique: bool) -> SymtabEntry {
     let visibility = props.visibility;
     match def {
-        Def::Undefined { .. } => SymtabEntry::Absent,
+        Def::Undefined { .. } | Def::Shared(_) => SymtabEntry::Absent,
         Def::Provide { .. } => SymtabEntry::Linker,
         _ if visibility == STV_HIDDEN => SymtabEntry::Entry { binding: STB_LOCAL, visibility },
         Def::Strong(_) => SymtabEntry::Entry {
