@@ -177,7 +177,9 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     };
     let mut timer = Timer::new(plan.bookkeeping.time_phases);
     timer.phase(10, "command line");
-    let store = Store::new(StorePolicy::Resident);
+    // The default store is the staged one (`spec/landed/input/WP-021b.md`);
+    // `MORTAR_STORE=resident` is the tests' switch to the other.
+    let store = Store::new(StorePolicy::from_env());
     let env = front::Env { cwd, pool };
     let front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
     if front.is_some() {

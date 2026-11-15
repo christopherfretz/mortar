@@ -49,7 +49,7 @@ use mortar_layout::fixed::RangeExtension;
 use mortar_layout::headers::{HeaderShapes, gather};
 use mortar_layout::{Headers, LayoutDiag, Options, Placed, Target};
 use mortar_live::{LiveInputs, LiveOptions, liveness};
-use mortar_merge::order::{MergedChunk, offsets};
+use mortar_merge::order::{Order, offsets};
 use mortar_merge::phase::{ArchRelocs, Phase, Tables};
 use mortar_scan::{Mismatch, ScanInputs, ScanOptions, Scanned, Walker, scan};
 use mortar_synth::notes::ObjectNotes;
@@ -110,8 +110,10 @@ pub struct Front<'s> {
     pub assignment: Assignment<'s>,
     /// Phase 60: `Split`, the pieces' identity, `.eh_frame` parsed.
     pub merge: Phase,
-    /// The merged chunk of each output section with live fragments.
-    pub merged: Box<[MergedChunk]>,
+    /// Phase 50's fragment order (S-24): `order.map` is `layout.merge`;
+    /// `order.chunks` the merged chunk of each output section with live
+    /// fragments; `order.order` their fragments in offset order.
+    pub order: Order,
     pub liveness: Liveness,
     pub scanned: Scanned,
     /// `.eh_frame` (S-50..S-56): its plan, apart from the others because
@@ -572,8 +574,8 @@ pub fn front<'s>(
         gnu_warnings,
         headers,
         assignment: placement_assignment,
-        merged: order.chunks.clone(),
         merge,
+        order,
         liveness,
         scanned,
         eh,
