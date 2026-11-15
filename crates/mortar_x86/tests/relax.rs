@@ -22,7 +22,7 @@ use support::{Case, Sink, Tables, all_code, key, raised, scan_all};
 const ADDR: u64 = 0x0804_9000;
 const LEN: usize = 48;
 const AT: usize = 16;
-const TEXT: PlaceFacts = PlaceFacts { alloc: true, writable: false };
+const TEXT: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
 const GOT: u64 = 0x0804_c000;
 const TLS: TlsBlock = TlsBlock { start: 0x0804_b000, size: 0x10, align: 4 };
 /// The TLS target and `T = TpRel(S) = −8` (variant II, TP at the end).
@@ -222,7 +222,7 @@ fn x86_25_no_relaxation_in_a_non_alloc_section() {
     let t = tables(TargetKind::Local, false, S);
     let input = section(&[0x8b, modrm(0, true), 0, 0, 0, 0]);
     let mut sink = Sink::default();
-    let debug = PlaceFacts { alloc: false, writable: false };
+    let debug = PlaceFacts { alloc: false, writable: false, exec: None };
     scan_all(
         X86::M1,
         &t,

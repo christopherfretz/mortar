@@ -387,20 +387,21 @@ fn needs(
     if targets.len() != branches.len() {
         return Err(internal("not one branch target per branch site"));
     }
-    let judged: Vec<Result<Option<Need>, LayoutDiag>> = pool.map(branches.len(), |i| {
-        let b = branches[i];
-        // A site in a section that is not placed is no site.
-        let Some(p) = round.site_addr(b.section, b.offset) else { return Ok(None) };
-        let t = targets[i].ok_or_else(|| internal("a branch site with no target address"))?;
-        let r = round.redirect_addr(b.section, b.offset);
-        Ok((thunk_need(&b.site, p, t, r) != ThunkNeed::None).then_some(Need {
-            addr: p,
-            section: b.section,
-            offset: b.offset,
-            record: b.record,
-            kind: NeedKind::Thunk(b.site.key, b.site.branch.reach),
-        }))
-    });
+    let judged: Vec<Result<Option<Need>, LayoutDiag>> =
+        pool.unit_cost(40).map(branches.len(), |i| {
+            let b = branches[i];
+            // A site in a section that is not placed is no site.
+            let Some(p) = round.site_addr(b.section, b.offset) else { return Ok(None) };
+            let t = targets[i].ok_or_else(|| internal("a branch site with no target address"))?;
+            let r = round.redirect_addr(b.section, b.offset);
+            Ok((thunk_need(&b.site, p, t, r) != ThunkNeed::None).then_some(Need {
+                addr: p,
+                section: b.section,
+                offset: b.offset,
+                record: b.record,
+                kind: NeedKind::Thunk(b.site.key, b.site.branch.reach),
+            }))
+        });
     let mut out = Vec::new();
     for j in judged {
         out.extend(j?);

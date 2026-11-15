@@ -22,7 +22,7 @@ use support::{Case, Sink, Tables, all_code, key, raised, scan_all};
 const ADDR: u64 = 0x40_1000;
 const LEN: usize = 64;
 const AT: usize = 16;
-const TEXT: PlaceFacts = PlaceFacts { alloc: true, writable: false };
+const TEXT: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
 const TLS: TlsBlock = TlsBlock { start: 0x40_4000, size: 0x10, align: 8 };
 /// The TLS target's address and `T = TpRel(S) = −8`.
 const TLS_S: u64 = 0x40_4008;

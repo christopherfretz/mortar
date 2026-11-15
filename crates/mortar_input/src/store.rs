@@ -1171,7 +1171,7 @@ impl Store {
 
         wave(2);
         // (D)
-        let checked = pool.map(staging.len(), |k| match &staging[k] {
+        let checked = pool.unit_cost(3000).map(staging.len(), |k| match &staging[k] {
             Ok(s) => {
                 if let Some(e) = failed[k].get() {
                     return Err(e.clone());

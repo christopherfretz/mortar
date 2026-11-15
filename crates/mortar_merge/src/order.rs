@@ -91,7 +91,7 @@ pub fn offsets(
     let mut live: Vec<FragId> =
         (0..n).map(FragId).filter(|&f| frag_live.get(f).copied().unwrap_or(false)).collect();
     steps.step("meta", u64::from(n), "frag");
-    pool.sort_by_key(&mut live, |&f| key(meta_of[f.0 as usize], f));
+    pool.unit_cost(25).sort_by_key(&mut live, |&f| key(meta_of[f.0 as usize], f));
     steps.step("sort", live.len() as u64, "frag");
     let mut off = vec![MergeMap::NONE; n as usize];
     let mut chunks: Vec<MergedChunk> = Vec::new();

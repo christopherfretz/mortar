@@ -96,13 +96,13 @@ impl<'a, 's> InputsView<'a, 's> {
         drop(hashes);
         steps.step("view.symbol_lookup");
         let names = inputs.comdats.as_slice();
-        let comdat_hashes = pool.map(names.len(), |c| hash_bytes(names[c].name));
+        let comdat_hashes = pool.unit_cost(15).map(names.len(), |c| hash_bytes(names[c].name));
         let comdats = HashIndex::new(&comdat_hashes);
         drop(comdat_hashes);
         steps.step("view.comdat_lookup");
         let n = inputs.files.len() as usize;
         let per: Vec<PerFile<'s>> =
-            pool.map(n, |f| per_file(inputs, &symbols, &comdats, FileId(f as u32)));
+            pool.unit_cost(1400).map(n, |f| per_file(inputs, &symbols, &comdats, FileId(f as u32)));
         steps.step("view.per_file");
         let sources = sources(inputs);
         let mut info = Vec::with_capacity(n);
