@@ -70,6 +70,139 @@ fn at(split: &Split, section: SectionId, r: u64) -> Option<PieceRef> {
     })
 }
 
+/// log2 of the bytes per bucket of a [`PieceIndex`].
+const BUCKET: u32 = 8;
+
+/// One `Merge` section of a [`PieceIndex`].
+#[derive(Debug, Clone, Copy)]
+struct IndexRow {
+    section: SectionId,
+    /// The section's size (`sh_size`).
+    size: u64,
+    /// Its pieces in `Split`'s columns.
+    pieces: mortar_core::Span,
+    /// Its first bucket in `PieceIndex::buckets`.
+    bucket: u32,
+}
+
+/// [`section_symbol`] and [`named_symbol`] for many references (fill's,
+/// `spec/image.md` I-119): per `Merge` section, its size and, per
+/// `2^BUCKET` bytes, the ordinal of the piece holding the bucket's first
+/// byte. A reference then searches only the pieces of its bucket (about
+/// four in `.debug_str`) instead of all of its section's, and does not
+/// read the section's header for its size. Memory: 16 bytes per section
+/// and 4 per `2^BUCKET` bytes of mergeable input (0.8 MB for 52 MB).
+/// The results are those of [`section_symbol`] and [`named_symbol`]
+/// exactly (`piece_index_agrees` checks every offset of every section of
+/// the corpus).
+#[derive(Debug, Clone, Default)]
+pub struct PieceIndex {
+    rows: Box<[IndexRow]>,
+    buckets: Box<[u32]>,
+}
+
+impl PieceIndex {
+    /// The index of `split`'s `Merge` sections, `size(section)` giving
+    /// each one's size (a section without one is left out: every
+    /// reference into it is then outside, as a section without pieces).
+    #[must_use]
+    pub fn new(split: &Split, size: impl Fn(SectionId) -> Option<u64>) -> Self {
+        let mut rows = Vec::with_capacity(split.merge_of.len());
+        let mut buckets: Vec<u32> = Vec::new();
+        for row in &split.merge_of {
+            let Some(size) = size(row.section) else { continue };
+            let Some(offsets) = split.piece_off.get(row.pieces.slots()) else { continue };
+            let Ok(bucket) = u32::try_from(buckets.len()) else { break };
+            // Offsets past u32 are never found (`at` converts first).
+            let n = size.min(1 << 32).div_ceil(1 << BUCKET);
+            let mut p = 0usize;
+            for k in 0..n {
+                let start = k << BUCKET;
+                while p + 1 < offsets.len() && u64::from(offsets[p + 1]) <= start {
+                    p += 1;
+                }
+                buckets.push(p as u32);
+            }
+            rows.push(IndexRow { section: row.section, size, pieces: row.pieces, bucket });
+        }
+        Self { rows: rows.into_boxed_slice(), buckets: buckets.into_boxed_slice() }
+    }
+
+    fn row(&self, section: SectionId) -> Option<&IndexRow> {
+        let at = self.rows.binary_search_by_key(&section, |r| r.section).ok()?;
+        self.rows.get(at)
+    }
+
+    /// The size of `section` when the index holds it.
+    #[must_use]
+    pub fn size(&self, section: SectionId) -> Option<u64> {
+        self.row(section).map(|r| r.size)
+    }
+
+    /// The bytes the index holds.
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        self.rows.len() * size_of::<IndexRow>() + self.buckets.len() * 4
+    }
+
+    /// [`section_symbol`] of `section` with the size the index holds;
+    /// `None` when the index does not hold the section.
+    #[must_use]
+    pub fn section_symbol(
+        &self,
+        split: &Split,
+        section: SectionId,
+        r: i64,
+    ) -> Option<Result<PieceRef, What>> {
+        let row = self.row(section)?;
+        Some(match u64::try_from(r).ok().filter(|&r| r < row.size) {
+            Some(r) => self.at(split, row, r).ok_or(What::OutsideSection),
+            None => Err(What::OutsideSection),
+        })
+    }
+
+    /// [`named_symbol`] of `section` with the size the index holds;
+    /// `None` when the index does not hold the section.
+    #[must_use]
+    pub fn named_symbol(
+        &self,
+        split: &Split,
+        section: SectionId,
+        v: u64,
+    ) -> Option<Result<PieceRef, What>> {
+        let row = self.row(section)?;
+        Some(if v < row.size {
+            self.at(split, row, v).ok_or(What::OutsideSection)
+        } else {
+            named_symbol(split, section, row.size, v)
+        })
+    }
+
+    fn at(&self, split: &Split, row: &IndexRow, r: u64) -> Option<PieceRef> {
+        let r32 = u32::try_from(r).ok()?;
+        let offsets = split.piece_off.get(row.pieces.slots())?;
+        let k = (r >> BUCKET) as usize;
+        let base = row.bucket as usize;
+        let lo = *self.buckets.get(base + k)? as usize;
+        // The next bucket's first piece holds its first byte, so byte `r`
+        // is in a piece at or before it.
+        let n = (row.size.min(1 << 32).div_ceil(1 << BUCKET)) as usize;
+        let hi = if k + 1 < n {
+            (*self.buckets.get(base + k + 1)? as usize + 1).min(offsets.len())
+        } else {
+            offsets.len()
+        };
+        let found = offsets.get(lo..hi)?.partition_point(|&start| start <= r32).checked_sub(1)?;
+        let ordinal = lo + found;
+        let piece = row.pieces.start as usize + ordinal;
+        Some(PieceRef {
+            frag: *split.piece_frag.get(piece)?,
+            within: u64::from(r32 - offsets[ordinal]),
+            ordinal: ordinal as u32,
+        })
+    }
+}
+
 /// S-21: a GOT-generating relocation (`got`) against a section symbol
 /// (`section_symbol`) of a split `Merge` section with a non-zero addend
 /// is refused. Through a named symbol the slot holds the S-19 value with

@@ -30,5 +30,5 @@ pub mod target;
 pub use diag::LayoutDiag;
 pub use fixed::{RangeExtension, Sites};
 pub use headers::{Header, Headers};
-pub use run::{Link, Placed, place};
+pub use run::{Link, Placed, place, place_again};
 pub use target::{Options, Target};

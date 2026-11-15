@@ -37,6 +37,32 @@ pub const fn in_section(start: u64, end: u64, len: u64) -> bool {
     start <= end && end <= len
 }
 
+/// Whether `windows`, in the order the walk pushed them (record order),
+/// start in non-decreasing order and no non-empty one starts before a
+/// non-empty earlier one ends: then they are already in `overlaps`' sort
+/// order and no two non-empty windows meet, so `overlaps` would report
+/// nothing. One pass, where `overlaps` sorts; the common case, since
+/// records are nearly always in offset order and their fields disjoint.
+#[must_use]
+pub fn disjoint_in_order(windows: &[UnitWindow]) -> bool {
+    let mut start = 0u64;
+    let mut end = 0u64;
+    for w in windows {
+        if w.start < start {
+            return false;
+        }
+        start = w.start;
+        if w.start == w.end {
+            continue;
+        }
+        if w.start < end {
+            return false;
+        }
+        end = end.max(w.end);
+    }
+    true
+}
+
 /// The records whose window overlaps the window of an earlier unit
 /// (§3.4): units are compared by window; members of one unit are exempt
 /// from each other; empty windows occupy nothing. Each offending record is

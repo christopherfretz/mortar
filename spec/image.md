@@ -250,14 +250,49 @@ relocation, and sequence recognition across neighbouring records
   instruction (`spec/arch.md` §3.4, through `RelocAt::site`). For a
   non-resident body the site is read with `copy_to` into a 16-byte
   buffer the worker owns.
-- **I-14 [M1] Non-alloc fast path.** A relocation whose place is in a
-  non-alloc section raises no demand and produces no dynamic relocation
-  (`spec/a64.md` §13.2). For it the driver calls the architecture's
-  non-alloc check only: the type is in the allowed list, the field lies
-  in the section, and the target is classified as defined, undefined
-  (an event, §4.4), or in a section that is not live (§6.1). This is
-  where the cost is: 87% of `cxx-medium-g`'s 2.2 M relocations are in
-  `.debug_*` sections (E5).
+- **I-14 [M1] Non-alloc relocations are checked by fill (supervisor
+  ruling, WP-032c).** A relocation whose place is in a non-alloc section
+  raises no demand and produces no dynamic relocation (`spec/a64.md`
+  §13.2), except the types the architecture lists in
+  `Arch::nonalloc_demand_types` (x86-64 `GOTOFF64`, X-53; AArch64
+  `GOTREL64`/`GOTREL32`, M2), which need the GOT base (`spec/arch.md`
+  §4.3). The scan **defers** a live relocated section `S` to fill
+  (`RecIndex::deferred`) when all of these hold: `S` is not `SHF_ALLOC`,
+  is `Regular` or `Debug`, and has a debug name (a reference from it to a
+  section that is not live is the tombstone, §6.1:
+  `mortar_arch::dead_reference` is `Tombstone`); its relocation section
+  is `SHT_RELA` with the class's record size, whole records, `sh_info`
+  `S` and `sh_link` the file's symbol table; and no global of `S`'s file,
+  nor what `redirect` makes of one, is a key a reference to which makes
+  an event (§4.4: target kind `Undefined`, a `comdat-mismatch` key, a
+  `gnu-warning` key). A deferred section's records can make no event, so
+  what is left of the scan's work on them is the checks of §4.3. The
+  scan reads only a deferred section's records of the listed types, and
+  calls `arch.scan` on those for their demands; it reads no other record
+  of it.
+
+  Fill checks each record of a deferred section as it applies it (§5.4),
+  in the clip whose `[a, b)` holds its `r_offset` (the last clip: or any
+  `r_offset ≥ b`): its symbol has a key; `classify` accepts the type;
+  `arch.scan`, called as the scan calls it, reports nothing, which is
+  the architecture's non-alloc check (the type is allowed at a non-alloc
+  place, the field lies in the section, the target is defined, a weak or
+  ignored undefined, or in a section that is not live, whose field is
+  the tombstone of I-47) and raises no demand outside the listed types;
+  and no two of the clip's windows overlap (`spec/arch.md` §3.4). A
+  failed check fails the link, and its diagnostics are the scan's walk
+  of the section (`Walker::deferred_report`): the same text as the
+  scan's, keyed `(100, FileId, section index × 2^32 + record index)`,
+  so after every scan diagnostic and among themselves by file, section
+  and record. Fill reports nothing of its own for such a record and does
+  not apply it. The walk also reports, so that no fault goes unseen,
+  every deferred section when the link fails after the scan and before
+  fill has run every job (a phase from 80 to 99, the image phase before
+  fill, a job stopped by a failed read), and a deferred section fill does
+  not reach (no input row with relocations). An `Undefined` from
+  non-alloc sections only (I-110) is still the scan's: its file is not
+  deferred. 87% of `cxx-medium-g`'s 2.2 M relocations are in `.debug_*`
+  sections (E5).
 - **I-15 [M1]** The scan's outputs and only these: the `Demands` flags
   (atomic or, rule 2), the per-section dynamic-relocation counts
   (written by the unit that scans the section; a section split into
@@ -276,7 +311,10 @@ relocation, and sequence recognition across neighbouring records
   a key's flags before or-ing** (`load`, and `fetch_or` only when a bit is
   missing), which keeps the cache line shared in the common case of a
   flag already set. The parallel scaling of that form is not measured
-  (E14); the benchmark gate of §16.5 is.
+  (E14); the benchmark gate of §16.5 is. The records of the sections
+  deferred to fill (I-14) are not part of this cost: fill pays one
+  `arch.scan` and one window per such record, in the pass that applies
+  it.
 
 ### 4.3 Errors
 
@@ -322,7 +360,8 @@ pub struct GroupKey { pub class: EventClass, pub file: FileId, pub group: u64 } 
 - **I-19 [M1]** An event is only reported for a **surviving** reference:
   a relocation consumed by a matched sequence reports none
   (`spec/arch.md` §3.4); a relocation in a section that is not live is
-  never scanned; an `Undefined` target whose verdict is "nothing"
+  never scanned; a section deferred to fill (I-14) makes none, by the
+  rule that defers it; an `Undefined` target whose verdict is "nothing"
   (`--unresolved-symbols=ignore-all`, `--ignore-unresolved-symbol`, weak)
   reports none. Whether the event is an error or a warning is the
   verdict's, fixed per key, and is recorded with the group, not per
@@ -720,7 +759,10 @@ writes a value chosen by the referring section's name, as
 - **I-45 [M1]** Referring section with **a GNU ld debug name**
   (`spec/resolve.md` §6.3: prefix `.debug`, `.zdebug`, `.line`, `.stab`,
   `.gnu.linkonce.wi.`, `.gnu.debuglto_.debug_`, exactly
-  `.gnu_debuglink`): the **tombstone** of I-47, whatever the addend.
+  `.gnu_debuglink`): the **tombstone** of I-47, whatever the addend. Such
+  a section is usually deferred to fill (I-14): the target's liveness is
+  then read at fill (`SymValue::live`, from `Liveness`), which is where
+  `arch.scan` would have found the target dead.
 - **I-46 [M1]** Exactly `.gcc_except_table` (alloc or not): 0
   (`spec/resolve.md` §6.3). Any other non-alloc section: the scan
   reported `discarded-section-reference` (§4.4) and fill never runs.
