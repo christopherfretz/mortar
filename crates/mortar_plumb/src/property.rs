@@ -160,6 +160,18 @@ fn notes(data: &[u8], align: usize) -> Result<Vec<Props>, String> {
     Ok(out)
 }
 
+/// The output's `GNU_PROPERTY_X86_FEATURE_1_AND` (0 when absent or
+/// unreadable): IBT is bit 0, SHSTK bit 1 (x64.md §11).
+pub(crate) fn x86_feature_1_and(image: &Image<'_>) -> u32 {
+    let align: usize = if image.class() == mortar_elf::Class::Elf64 { 8 } else { 4 };
+    (1..image.sections.len())
+        .filter(|&i| image.sections[i].name == NAME)
+        .filter_map(|i| image.section_data(i).and_then(|d| notes(d, align).ok()))
+        .flatten()
+        .find_map(|p| p.get(&0xc000_0002).map(|d| word(d) as u32))
+        .unwrap_or(0)
+}
+
 fn word(d: &[u8]) -> u64 {
     let mut a = [0u8; 8];
     let n = d.len().min(8);

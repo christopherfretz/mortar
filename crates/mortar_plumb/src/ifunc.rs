@@ -19,6 +19,7 @@ use super::{
     slot_addend, verdict_finding, x_direct, x_got,
 };
 use crate::a64::{self, Op};
+use crate::map::Format;
 use crate::report::{Finding, Reason, Rewrite, Rule, Site, Via};
 
 /// An IFUNC symbol: pointer equality holds per symbol (two aliases of one
@@ -358,6 +359,9 @@ impl Engine<'_, '_> {
         entries.sort_unstable();
         entries.dedup();
         self.cov.iplt_entries = entries.len() as u64;
+        if image.header.e_machine == EM_X86_64 && word == 8 {
+            self.x64_iplt(&entries, static_exec, &mut fs);
+        }
         for (e, slot) in entries {
             let i = self.iplt.irel.partition_point(|r| r.0 < slot);
             let rs: Vec<u64> =
@@ -371,6 +375,89 @@ impl Engine<'_, '_> {
             v.dedup();
         }
         self.findings.extend(fs);
+    }
+
+    /// F5, x86-64 (spec/x64.md X-37 to X-39): an IBT output's entries
+    /// start with `endbr64`; mortar's entries are exactly X-37 (X-38 when
+    /// IBT); a static executable's IFUNC words hold, before start-up
+    /// applies the `IRELATIVE` records, what the linker that wrote it
+    /// writes (mortar and lld 0, mold the resolver, GNU ld the entry + 6,
+    /// or the entry itself when it starts with `endbr64`, and 0 for a word
+    /// no entry loads).
+    fn x64_iplt(&self, entries: &[(u64, u64)], static_exec: bool, fs: &mut Vec<Finding>) {
+        const ENDBR64: [u8; 4] = [0xf3, 0x0f, 0x1e, 0xfa];
+        let image = self.image;
+        let ibt = crate::property::x86_feature_1_and(image) & 1 != 0;
+        let endbr = |e: u64| image.bytes(e, 4) == Some(&ENDBR64[..]);
+        for &(e, slot) in entries {
+            if ibt && !endbr(e) {
+                fs.push(
+                    f(
+                        5,
+                        "an IPLT entry of an IBT output does not start with ENDBR64: an indirect call to it faults (spec/x64.md X-38)",
+                    )
+                    .at(e),
+                );
+            }
+            if self.format == Format::Mortar {
+                let mut want = Vec::with_capacity(16);
+                let jmp = if ibt {
+                    want.extend_from_slice(&ENDBR64);
+                    e + 4
+                } else {
+                    e
+                };
+                let rel = slot.wrapping_sub(jmp + 6) as u32;
+                want.extend_from_slice(&[0xff, 0x25]);
+                want.extend_from_slice(&rel.to_le_bytes());
+                want.extend_from_slice(if ibt {
+                    &[0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00][..]
+                } else {
+                    &[0x66, 0x90][..]
+                });
+                if image.bytes(e, want.len() as u64) != Some(&want[..]) {
+                    fs.push(
+                        f(
+                            5,
+                            if ibt {
+                                "the IPLT entry is not endbr64; jmp *word(%rip); nopw (spec/x64.md X-38)"
+                            } else {
+                                "the IPLT entry is not jmp *word(%rip); xchg %ax,%ax (spec/x64.md X-37)"
+                            },
+                        )
+                        .at(e),
+                    );
+                }
+            }
+        }
+        if !static_exec {
+            return;
+        }
+        for &(slot, resolver) in &self.iplt.irel {
+            let Some(w) = image.value(slot, 8) else { continue };
+            let mut es = entries.iter().filter(|x| x.1 == slot).map(|x| x.0).peekable();
+            let none = es.peek().is_none();
+            let ok = match self.format {
+                Format::Mortar | Format::Lld => w == 0,
+                Format::Mold => w == resolver || (none && w == 0),
+                Format::Gnu => {
+                    if none {
+                        w == 0
+                    } else {
+                        es.any(|e| w == if endbr(e) { e } else { e + 6 })
+                    }
+                }
+            };
+            if !ok {
+                let mut x = f(
+                    5,
+                    "the IFUNC word does not hold, before start-up, what the linker writes there (spec/x64.md X-39)",
+                )
+                .at(slot);
+                x.found = Some(w);
+                fs.push(x);
+            }
+        }
     }
 
     /// The slot an AArch64 IPLT entry at `a` loads: `ADRP Xn, slot; LDR

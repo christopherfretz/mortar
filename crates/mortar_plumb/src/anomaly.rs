@@ -57,6 +57,11 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A16: lld and mold pad between .init or .fini fragments with int3, which traps at start-up (spec/x64.md W8)",
         );
     }
+    if mold && f.rule == Rule::Ifunc(5) && f.message.contains("does not start with ENDBR64") {
+        return Some(
+            "A17: mold marks an output IBT and writes its IPLT entries without endbr64 (spec/x64.md W6)",
+        );
+    }
     let sym = f.symbol.as_deref().unwrap_or("");
     let y = |n| f.rule == Rule::SymbolTable(n);
     if mold && y(3) && f.message.contains("binding") && f.found == Some(0) {

@@ -1,37 +1,33 @@
 # WIP — WP-028c (mortar_plumb for x86-64)
 
 ## Done
-- S-17 piece lookup: `reloc.rs` `resolve_at`/`section_piece`, S-18
-  `Target::Outside`, S-19 half-open + end case; test `tests/pieces.rs`.
-- x86-64 table `src/x64.rs`; record path `src/x64rec.rs` (GOT forms
-  X1-X4, TLS IE/desc/GD/LD per linker, X-46 DTPOFF, X-53, W4 = A12).
-- `eh.rs` x86 pointer types; `debug.rs` per-machine ABS64.
-- L3: `xtask/src/linktest/engine.rs` `not_judged` judges EM_X86_64;
-  default `mold,x86_64: A13` in `tests/link/anomalies`. Full L3: 297 PASS,
-  0 FAIL; i386 120 outputs `machine`.
-- mold relaxes IE `mov` -> I1 per symbol unless a reference is `add`
-  (then all keep GOTTP). A13: mold's PT_NOTE p_align 8 over 4-aligned
-  notes (`structure.rs` S11 message, `anomaly.rs`).
-- Unjudged x86 records exempt their rewrite window (`x64_unjudged`),
-  fixing S12 on stripped outputs.
-- Properties per X-41 (`property.rs` rule/treat): no not-judged rows but
-  MEMORY_SEAL (3) and GNU on AArch64. Experiment
-  /tmp/mortar-wp028c-main/prop: GNU drops 0xc0018000 and 0x7000 with a
-  warning; lld drops all non-AND; mold drops COMPAT.
-- S7 entry instruction 1 byte on x86 (was 4). M3/M4: `.note.gnu.property`
-  may change size (GNU's map gives the merged size).
-
-## Half-done
-- none
+- S-17 piece lookup (reloc.rs resolve_at/section_piece; tests/pieces.rs);
+  WP-027b filter removed in crates/mortar_image/tests/link.rs (passes).
+- x86-64 table src/x64.rs; record path src/x64rec.rs (GOT X1-X4, TLS
+  per linker, X-46, X-53, W4 = A12); unjudged records exempt their window.
+- eh.rs/debug.rs per machine; L3 judges EM_X86_64 (297 PASS); defaults
+  `mold,x86_64: A13`.
+- Properties per X-41 (property.rs); plumb.md §6.6 rewritten.
+- S7 1-byte entry on x86; M3/M4 property note may change size; Y5 large
+  sections; Y3 commons (W9 = A14); S19 .init/.fini padding (W8 = A16);
+  X-53 (W10 = A15); S11 (A13).
+- F5 (ifunc.rs x64_iplt): IBT entries start endbr64 (W6 = A17, mold);
+  mortar entries exactly X-37/X-38; IFUNC initial word per linker (X-39:
+  mortar/lld 0, mold resolver, GNU entry+6 or entry with endbr64, 0
+  without entry). property.rs x86_feature_1_and.
+- tests/x64.rs: 18 cases x 3 linkers, relax families, flips 384/384,
+  opcodes 161/161, S19/Y3/P1/TLS 1/1, F5 2/2 GNU and lld.
 
 ## Learned, not yet written (into plumb.md / the record)
 - GNU `_TLS_MODULE_BASE_` = p_memsz (at TP), x64.md X-47 says tls.start.
-- GNU GOT load of IFUNC: `.got` slot with IRELATIVE, no IPLT entry.
+- GNU GOT load of IFUNC: `.got` slot with IRELATIVE (word 0), no entry.
+- GNU IBT IPLT: initial word = the entry (endbr64), not entry+6.
 - lld W4 also clips the preceding GD16's last byte.
+- mold IE mov -> I1 per symbol unless a reference is `add`.
 
 ## Next
-- x86 corpus test file (tests/x64.rs): C/C++/Fortran, gcc/clang, pic/pie/
-  nopie, -fno-plt, gnu2; W1/W5/W9/W10 experiments.
-- Scope 3 IPLT shapes; scope 5 layout (.init W8, large sections); scope 7
-  mutations; plumb.md amendments; timing; record; merge main (S-17
-  acceptance: remove WP-027b filter in crates/mortar_image/tests/link.rs).
+- Scope 5: large sections "not judged: named" (X-54).
+- plumb.md: §4.5 x86 table, §4.8 F5, §5.9 per-linker forms, §6.2 S19,
+  §6.5 commons, §9.2 kill rates, §10 A12-A17, R-12.
+- Timing before/after (base xtask via git archive into
+  .build/scratch-wp028c). Record spec/landed/plumb/WP-028c.md. Gate.

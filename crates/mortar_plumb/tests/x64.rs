@@ -25,6 +25,7 @@ const SD_C: &str = include_str!("x64/sd.c");
 const HELLO_CC: &str = include_str!("x64/hello.cc");
 const TLS_C: &str = include_str!("x64/tls.c");
 const TLS_MAIN_C: &str = include_str!("x64/tls_main.c");
+const IPLT_IBT_S: &str = include_str!("x64/iplt-ibt.s");
 const HELLO_F90: &str = include_str!("x64/hello.f90");
 const HELLO_C: &str = "#include <stdio.h>\n#include <string.h>\n\
     int main(int c, char **v) { printf(\"%zu\\n\", strlen(v[0]) + c); return 0; }\n";
@@ -143,6 +144,13 @@ fn cases() -> Vec<Case> {
             args: &["-static", "gd.o"],
             expect: [CLEAN, Some(&["A12"]), CLEAN],
         },
+        // W6: mold's IBT IPLT entries have no endbr64 (F5).
+        Case {
+            name: "w6",
+            driver: gcc,
+            args: &["-static", "-nostdlib", "ibt.o"],
+            expect: [CLEAN, CLEAN, Some(&["A13", "A17"])],
+        },
         // W8: lld and mold trap in `.init` padding.
         Case {
             name: "w8",
@@ -205,6 +213,7 @@ fn build() -> Option<Corpus> {
         ("tls.c", TLS_C),
         ("tls_main.c", TLS_MAIN_C),
         ("hello.f90", HELLO_F90),
+        ("iplt-ibt.s", IPLT_IBT_S),
         ("hello.c", HELLO_C),
     ] {
         std::fs::write(dir.join(n), text).unwrap();
@@ -214,6 +223,7 @@ fn build() -> Option<Corpus> {
     must(&dir, as_, &["--defsym", "GDL=1", "relax.s", "-o", "relax-nold.o"]);
     must(&dir, as_, &["--defsym", "m1=-32769", "--defsym", "m2=-129", "bitfield.s", "-o", "bf.o"]);
     must(&dir, as_, &["f2.s", "-o", "f2.o"]);
+    must(&dir, as_, &["iplt-ibt.s", "-o", "ibt.o"]);
     must(&dir, cc, &["-O2", "-c", "hello.c", "-o", "c-gcc.o"]);
     must(&dir, cc, &["-O2", "-fPIE", "-c", "hello.c", "-o", "c-pie.o"]);
     must(&dir, cc, &["-O2", "-fPIC", "-fno-plt", "-c", "hello.c", "-o", "c-noplt.o"]);
@@ -500,6 +510,7 @@ fn sections(b: &[u8]) -> Vec<(String, u64, u64, u64)> {
 // W9), P1 (an x86 property bit), S11 (a 4-aligned note under p_align 8
 // in a GNU ld output), the TLS block (PT_TLS memsz).
 #[test]
+#[allow(clippy::many_single_char_names)]
 fn x64_new_rules_are_enforced() {
     let Some(c) = corpus() else { return };
     let mut results = Vec::new();
@@ -552,6 +563,37 @@ fn x64_new_rules_are_enforced() {
         usize::from(ctx.report(&m).with_rule("P1").next().is_some()),
         1,
     ));
+    // F5: an IBT IPLT entry's endbr64 made NOPs; the IFUNC word changed.
+    // (mold's entries have no endbr64 to remove: W6, A17.)
+    for (linker, word, what) in
+        [(Linker::Bfd, true, "F5 IBT IPLT, GNU ld"), (Linker::Lld, true, "F5 IBT IPLT, lld")]
+    {
+        let ctx = Ctx::of(link_of(c, "w6", linker).unwrap());
+        let b = &ctx.output;
+        let secs = sections(b);
+        let mut hit = 0;
+        let mut tried = 0;
+        if let Some(p) = secs.iter().find(|s| s.0 == ".plt" || s.0 == ".iplt") {
+            let (at, size) = (p.2 as usize, p.3 as usize);
+            if let Some(k) = (0..size.saturating_sub(4))
+                .find(|&k| b[at + k..at + k + 4] == [0xf3, 0x0f, 0x1e, 0xfa])
+            {
+                let mut m = b.clone();
+                m[at + k..at + k + 4].copy_from_slice(&[0x0f, 0x1f, 0x40, 0x00]);
+                tried += 1;
+                hit += usize::from(ctx.report(&m).with_rule("F5").next().is_some());
+            }
+        }
+        if word {
+            let g = secs.iter().find(|s| s.0 == ".got.plt").unwrap();
+            let mut m = b.clone();
+            let o = g.2 as usize + g.3 as usize - 8;
+            m[o] ^= 0x10;
+            tried += 1;
+            hit += usize::from(ctx.report(&m).with_rule("F5").next().is_some());
+        }
+        results.push((what, hit, tried));
+    }
     // TLS: PT_TLS memsz grown by its alignment moves every TP offset.
     let ctx = Ctx::of(link_of(c, "tls-ie", Linker::Bfd).unwrap());
     let b = &ctx.output;
