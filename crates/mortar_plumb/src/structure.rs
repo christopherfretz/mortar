@@ -382,15 +382,22 @@ fn notes_ok(b: &[u8], align: usize) -> bool {
         // the name, and the next note after the descriptor (an 8-aligned
         // property note pads its 4-byte name to 4 only, gABI and the Linux
         // "Program Property" extension).
-        let Some(next) = namesz
+        let Some(end) = namesz
             .checked_add(12)
             .and_then(|n| at.checked_add(n))
             .and_then(up)
             .and_then(|d| d.checked_add(descsz))
-            .and_then(up)
         else {
             return false;
         };
+        // The padding after a descriptor is there "to ensure 4-byte
+        // alignment for the next note entry" (gABI "Note Section"): the
+        // last note of the segment may end at its descriptor (GNU ld, lld
+        // and mold write a 6-byte build id so, p_filesz 22).
+        if end == b.len() {
+            return true;
+        }
+        let Some(next) = up(end) else { return false };
         if next > b.len() {
             return false;
         }
@@ -550,4 +557,39 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notes_ok;
+
+    /// One note: `GNU\0`, type 3, a `desc`-byte descriptor, padded to 4
+    /// when `pad`.
+    fn note(desc: usize, pad: bool) -> Vec<u8> {
+        let mut b = Vec::new();
+        for w in [4u32, desc as u32, 3] {
+            b.extend_from_slice(&w.to_le_bytes());
+        }
+        b.extend_from_slice(b"GNU\0");
+        b.extend(std::iter::repeat_n(0xab, desc));
+        if pad {
+            b.resize(b.len().next_multiple_of(4), 0);
+        }
+        b
+    }
+
+    // spec/plumb.md §6.2 S11 (WP-028d): the gABI pads a descriptor "to
+    // ensure 4-byte alignment for the next note entry", so the last note
+    // may end at its descriptor (the reference linkers' 6-byte build id,
+    // p_filesz 22); a note that follows an unpadded one is misread.
+    #[test]
+    fn s6_2_s11_the_last_note_needs_no_padding() {
+        assert!(notes_ok(&note(6, true), 4));
+        assert!(notes_ok(&note(6, false), 4), "the last note, unpadded");
+        assert!(notes_ok(&[note(8, true), note(6, false)].concat(), 4));
+        assert!(!notes_ok(&[note(6, false), note(8, true)].concat(), 4), "padding before a note");
+        let mut cut = note(6, false);
+        cut.pop();
+        assert!(!notes_ok(&cut, 4), "a descriptor cut short");
+    }
 }

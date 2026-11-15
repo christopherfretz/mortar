@@ -1277,3 +1277,93 @@ fn s9_2l_build_id_mutations_are_found() {
     eprintln!("§9.2 (l) build-id mutations: {n}/{n} found, {by_b1} of the 16 bytes by B1");
     assert!(by_b1 >= 12, "only {by_b1} of 16 bytes found by B1");
 }
+
+// spec/plumb.md §5.4 R9, §4.8 (WP-028d): the `bti` case is clean for every
+// linker (the IFUNC's `bti c` IPLT entry, GNU ld's chained pad veneer,
+// lld's falling-through BTI thunk); then, in the GNU ld and lld links,
+// `padded`'s landing pad is removed from the input object and the output
+// alike, so the content still matches and only R9 can see that the
+// veneer's `BR x16` now lands on a `NOP`.
+#[test]
+fn s9_2n_a_veneer_to_no_landing_pad_is_found() {
+    const NOP: u32 = 0xd503_201f;
+    let Some(c) = small() else { return };
+    for linker in Linker::ALL {
+        let ctx = Ctx::of(c.get("bti", linker));
+        let r = ctx.verify(&ctx.output);
+        common::assert_clean(ctx.link, &r);
+        assert!(r.coverage.iplt_entries == 1, "{}: {}", ctx.link.label(), r.summary());
+        if linker == Linker::Mold {
+            continue; // no property note on AArch64 (§6.6): nothing is guarded
+        }
+        let (_, off) = symtab_entries(&ctx.output, &["padded"]).remove(0);
+        let value = le64(&ctx.output, off + 8);
+        let at = file_offset(&ctx.output, value).unwrap();
+        assert_eq!(le32(&ctx.output, at), 0xd503_245f, "padded starts with bti c");
+        let mut out = ctx.output.clone();
+        put32(&mut out, at, NOP);
+        let mut files = ctx.files.clone();
+        let (_, obj) = files.iter_mut().find(|(p, _)| p.ends_with("bti.o")).unwrap();
+        let text_off = {
+            let o = Object::parse(obj).unwrap();
+            let s = o.sections().find(|s| s.name().ok() == Some(&b".fartext"[..])).unwrap();
+            s.header().sh_offset as usize
+        };
+        put32(obj, text_off, NOP);
+        let m = verify_with(&out, &files, &ctx.map);
+        let rules: Vec<String> =
+            unexpected(ctx.link, &m).iter().map(|f| f.rule.id()).collect();
+        assert_eq!(rules, ["R9"], "{}: {}", ctx.link.label(), m.render("bti"));
+    }
+}
+
+// spec/plumb.md §6.7 (WP-028d): B1 follows the style mortar's map states
+// on its build-id chunk. `start` by lld read as mortar's link, its id
+// replaced: (1) 20 bytes given on the command line (`--build-id=0x…`),
+// with no style in the map, are judged as a hash (B1: what maps without
+// the style still get); (2) the same map stating `given`: not judged;
+// (3) the bare tree's id under `sha1`: B1, under `default`: clean; (4) a
+// 20-byte id under `fast` (8 bytes): B1.
+#[test]
+fn s9_2l_build_id_style_from_the_map() {
+    use mortar_plumb::buildid::{Tree, seal};
+    use mortar_plumb::map::{Chunk, ChunkKind};
+    let Some(c) = small() else { return };
+    let ctx = Ctx::of(c.get("start", Linker::Lld));
+    let note = shdrs(&ctx.output).into_iter().find(|s| s.1 == ".note.gnu.build-id").unwrap();
+    let id = note.5 as usize + 16;
+    let text = mortar_plumb::map::mortar::write(&ctx.map);
+    let base = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
+    let with_style = |style: Option<&str>| {
+        let mut m = base.clone();
+        m.chunks.retain(|c| c.name != ".note.gnu.build-id");
+        m.chunks.push(Chunk {
+            kind: ChunkKind::Synthetic,
+            name: ".note.gnu.build-id".into(),
+            addr: Some(note.4),
+            size: note.6,
+            target: style.map(|s| (s.to_owned(), 0)),
+            line: 0,
+        });
+        // Through the text form: the style survives the writer and reader.
+        let text = mortar_plumb::map::mortar::write(&m);
+        mortar_plumb::map::parse(Format::Mortar, &text).unwrap()
+    };
+    let b1 = |out: &[u8], style: Option<&str>| {
+        let r = verify_with(out, &ctx.files, &with_style(style));
+        (r.with_rule("B1").count(), r.coverage.build_id.clone().unwrap_or_default())
+    };
+    let mut given = ctx.output.clone();
+    for (k, b) in given[id..id + 20].iter_mut().enumerate() {
+        *b = 0x10 + k as u8;
+    }
+    assert_eq!(b1(&given, None).0, 1, "(1) a given id with no style is judged as a hash");
+    let (n, what) = b1(&given, Some("given"));
+    assert_eq!(n, 0, "(2) {what}");
+    assert!(what.contains("given"), "(2) {what}");
+    let mut bare = ctx.output.clone();
+    assert_eq!(seal(&mut bare, Tree::L128), 1);
+    assert_eq!(b1(&bare, Some("sha1")).0, 1, "(3) the bare tree under sha1");
+    assert_eq!(b1(&bare, Some("default")).0, 0, "(3) the bare tree under default");
+    assert_eq!(b1(&bare, Some("fast")).0, 1, "(4) 20 bytes under fast");
+}

@@ -68,6 +68,7 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
         }
     }
     engine.finish_ifunc();
+    engine.check_landing_pads();
     engine.finish_got();
     engine.finish_pieces();
     engine.check_eh_frame();
@@ -78,7 +79,7 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     let props = property::check(&image, &objs, map.format, &mut engine.cov);
     engine.findings.extend(props);
     if map.format == Format::Mortar {
-        let ids = buildid::check(&image, &mut engine.cov);
+        let ids = buildid::check(&image, &mut engine.cov, buildid::Style::of(map));
         engine.findings.extend(ids);
     }
     if image.header.e_machine == mortar_elf::consts::EM_X86_64 {

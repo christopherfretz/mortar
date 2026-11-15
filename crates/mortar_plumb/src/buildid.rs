@@ -374,15 +374,81 @@ pub fn seal(file: &mut [u8], style: Tree) -> usize {
     n
 }
 
-/// B1 (§6.7), for mortar's map only: the id of an 8-, 20- or 32-byte
-/// `NT_GNU_BUILD_ID` note is I-72's function of the output.
-pub(crate) fn check(image: &Image<'_>, cov: &mut Coverage) -> Vec<Finding> {
+/// The style mortar's map states for the build id (§6.7): the target
+/// token of its `chunk synthetic .note.gnu.build-id` record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    /// The map states none (maps written before the record had a
+    /// target): any tree that fits the length is accepted, and an
+    /// 8-, 20- or 32-byte `--build-id=0xHEX` is judged as a hash.
+    Unstated,
+    /// `default`, `sha1`, `sha256` or `fast` (image.md I-69): the tree
+    /// and the length.
+    Tree(Tree, usize),
+    /// `given`: the bytes came from the command line (`0xHEX`); not judged.
+    Given,
+    /// A token this version does not know: not judged, and said so.
+    Unknown,
+}
+
+impl Style {
+    /// The style of `map`'s build-id chunk.
+    pub fn of(map: &crate::Map) -> Style {
+        let Some(c) = map.chunks.iter().find(|c| {
+            c.kind == crate::map::ChunkKind::Synthetic && c.name == ".note.gnu.build-id"
+        }) else {
+            return Style::Unstated;
+        };
+        match c.target.as_ref().map(|t| t.0.as_str()) {
+            None => Style::Unstated,
+            Some("default") => Style::Tree(Tree::L128, 20),
+            Some("fast") => Style::Tree(Tree::L128, 8),
+            Some("sha1") => Style::Tree(Tree::Sha1, 20),
+            Some("sha256") => Style::Tree(Tree::Sha256, 32),
+            Some("given") => Style::Given,
+            Some(_) => Style::Unknown,
+        }
+    }
+}
+
+/// B1 (§6.7), for mortar's map only: the id of an `NT_GNU_BUILD_ID` note
+/// is I-72's function of the output, by the tree the map's style names
+/// (or, when the map names none, any tree that fits an 8-, 20- or 32-byte
+/// id).
+pub(crate) fn check(image: &Image<'_>, cov: &mut Coverage, style: Style) -> Vec<Finding> {
     let mut out = Vec::new();
     for (addr, off, len) in ids(image) {
         if off.checked_add(len).is_none_or(|e| e > image.data.len()) {
             continue;
         }
-        let trees = trees_for(len);
+        let one;
+        let trees = match style {
+            Style::Unstated => trees_for(len),
+            Style::Given => {
+                cov.build_id = Some(format!("{len}-byte id given on the command line, not judged"));
+                continue;
+            }
+            Style::Unknown => {
+                cov.build_id = Some(format!("{len}-byte id of a style the map names and this verifier does not know, not judged"));
+                continue;
+            }
+            Style::Tree(t, want) => {
+                if want != len {
+                    cov.build_id = Some(format!("{len}-byte id wrong"));
+                    let mut x = Finding::new(
+                        Rule::BuildId,
+                        format!("the build id has {len} bytes; its style ({t:?} tree) writes {want} (spec/image.md I-69)"),
+                    )
+                    .at(addr);
+                    x.expected = Some(want as u64);
+                    x.found = Some(len as u64);
+                    out.push(x);
+                    continue;
+                }
+                one = [t];
+                &one[..]
+            }
+        };
         if trees.is_empty() {
             cov.build_id = Some(format!("{len}-byte id not judged"));
             continue;

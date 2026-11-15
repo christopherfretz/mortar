@@ -464,6 +464,9 @@ pub(crate) struct Engine<'a, 'b> {
     pub(crate) nonalloc_rewritten: std::collections::BTreeSet<(usize, u64)>,
     /// GNU ld's redirect targets: placed group sections by name and size.
     redirects: Option<HashMap<(String, u64), Vec<u64>>>,
+    /// The veneers W6 accepted, by start address, each with the first
+    /// record that branches to it (for R9, §5.4).
+    veneers: BTreeMap<u64, (Rec, Site, String, u64)>,
     pub cov: Coverage,
     pub findings: Vec<Finding>,
 }
@@ -530,6 +533,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             format,
             nonalloc_rewritten: std::collections::BTreeSet::new(),
             redirects: None,
+            veneers: BTreeMap::new(),
             cov: Coverage::default(),
             findings: Vec::new(),
         };
@@ -1194,6 +1198,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             return;
         }
         if let Some(rw) = self.direct_rewrite(rec, sa, weak, &partner) {
+            self.note_veneer(rw, rec, &site, &symbol, sa);
             self.cov.add_accepted(rw, rec.def.r_type);
             return;
         }
@@ -1590,6 +1595,81 @@ impl<'a, 'b> Engine<'a, 'b> {
         }
     }
 
+    /// Remembers the veneer a W6 record branches to (R9, §5.4).
+    fn note_veneer(&mut self, rw: Rewrite, rec: &Rec, site: &Site, symbol: &str, sa: u64) {
+        if rw != Rewrite::Veneer {
+            return;
+        }
+        if let Some((_, t)) = a64::branch(rec.out_word as u32, rec.p) {
+            self.veneers
+                .entry(t)
+                .or_insert_with(|| (rec.clone(), site.clone(), symbol.to_owned(), sa));
+        }
+    }
+
+    /// R9 (§5.4; spec/a64.md §9): in an output whose
+    /// `GNU_PROPERTY_AARCH64_FEATURE_1_AND` has BTI, the loader maps code
+    /// as guarded pages, so a veneer that ends in `BR x16`/`BR x17` must
+    /// land on `BTI c|j|jc`, `PACIASP` or `PACIBSP`. A veneer ending in a
+    /// direct `B` (GNU ld's and lld's `bti c; b T` pad veneer) needs none.
+    pub fn check_landing_pads(&mut self) {
+        if self.image.header.e_machine != mortar_elf::consts::EM_AARCH64
+            || crate::property::aarch64_feature_1_and(self.image) & 1 == 0
+        {
+            return;
+        }
+        let veneers = std::mem::take(&mut self.veneers);
+        for (t, (rec, site, symbol, sa)) in veneers {
+            let Some(hops) = self.veneer_hops(t, sa) else { continue };
+            let Some(&(t, dest, _)) = hops
+                .iter()
+                .find(|h| h.2 && !self.image.insn(h.1).is_some_and(a64::landing_pad))
+            else {
+                continue;
+            };
+            let word = self.image.insn(dest);
+            let mut f = Self::finding(
+                Rule::LandingPad,
+                &rec,
+                &site,
+                &symbol,
+                format!(
+                    "the veneer at {t:#x} branches indirectly to {dest:#x}, which is not a landing pad (BTI c|j|jc, PACIASP, PACIBSP) in a BTI output"
+                ),
+            )
+            .at(t);
+            f.expected = Some(dest);
+            f.found = word.map(u64::from);
+            self.findings.push(f);
+        }
+    }
+
+    /// The veneers from `t` to `sa` (W6, §5.4): `(start, destination,
+    /// indirect)` of each. A veneer's destination outside every placed
+    /// section may be another veneer (GNU ld's `__x_veneer` to its
+    /// `__x_bti_veneer`, `bti c; b x`), or a landing pad just before the
+    /// target that falls through to it (lld's `__AArch64BTIThunk_x`).
+    /// `None` when the chain does not reach `sa` within 4 veneers.
+    fn veneer_hops(&self, t: u64, sa: u64) -> Option<Vec<(u64, u64, bool)>> {
+        let mut hops = Vec::new();
+        let mut at = t;
+        for _ in 0..4 {
+            let (d, indirect) = a64::veneer_end(self.image, at)?;
+            hops.push((at, d, indirect));
+            if d == sa {
+                return Some(hops);
+            }
+            if self.occupied.contains(d) {
+                return None;
+            }
+            if d.wrapping_add(4) == sa && self.image.insn(d).is_some_and(a64::landing_pad) {
+                return Some(hops);
+            }
+            at = d;
+        }
+        None
+    }
+
     /// The rewritings of a non-GOT record (§5.3): W1, W4, W5, W6.
     fn direct_rewrite<'r>(
         &self,
@@ -1615,7 +1695,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             }
             if !self.occupied.contains(t)
                 && self.image.load_of(t, 4).is_some()
-                && a64::run_veneer(self.image, t) == Some(sa)
+                && self.veneer_hops(t, sa).is_some()
             {
                 return Some(Rewrite::Veneer);
             }

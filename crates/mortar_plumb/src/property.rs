@@ -163,12 +163,23 @@ fn notes(data: &[u8], align: usize) -> Result<Vec<Props>, String> {
 /// The output's `GNU_PROPERTY_X86_FEATURE_1_AND` (0 when absent or
 /// unreadable): IBT is bit 0, SHSTK bit 1 (x64.md §11).
 pub(crate) fn x86_feature_1_and(image: &Image<'_>) -> u32 {
+    feature_word(image, 0xc000_0002)
+}
+
+/// The output's `GNU_PROPERTY_AARCH64_FEATURE_1_AND` (0 when absent or
+/// unreadable): BTI is bit 0, PAC bit 1 (synth.md S-95).
+pub(crate) fn aarch64_feature_1_and(image: &Image<'_>) -> u32 {
+    feature_word(image, 0xc000_0000)
+}
+
+/// The 32-bit property `ty` of the output's `.note.gnu.property`.
+fn feature_word(image: &Image<'_>, ty: u32) -> u32 {
     let align: usize = if image.class() == mortar_elf::Class::Elf64 { 8 } else { 4 };
     (1..image.sections.len())
         .filter(|&i| image.sections[i].name == NAME)
         .filter_map(|i| image.section_data(i).and_then(|d| notes(d, align).ok()))
         .flatten()
-        .find_map(|p| p.get(&0xc000_0002).map(|d| word(d) as u32))
+        .find_map(|p| p.get(&ty).map(|d| word(d) as u32))
         .unwrap_or(0)
 }
 

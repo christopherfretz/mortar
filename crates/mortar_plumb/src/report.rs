@@ -36,6 +36,9 @@ pub enum Rule {
     /// type is defined for, or a thread-local type names a symbol that is
     /// not thread-local (§4.3, §4.7).
     Insn,
+    /// R9: in an output marked BTI, a range-extension veneer ends in an
+    /// indirect branch to a word that is not a landing pad (§5.4).
+    LandingPad,
     /// T1: a thread-local relocation in an output without `PT_TLS` (§4.7).
     NoTls,
     /// Y1: an output symbol's value is not where its definition was placed.
@@ -69,6 +72,7 @@ impl Rule {
             Rule::MergePiece => "R6".into(),
             Rule::Place => "R7".into(),
             Rule::Insn => "R8".into(),
+            Rule::LandingPad => "R9".into(),
             Rule::NoTls => "T1".into(),
             Rule::SymbolValue => "Y1".into(),
             Rule::EhFrame(n) => format!("E{n}"),
