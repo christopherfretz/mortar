@@ -752,6 +752,11 @@ impl Ctx<'_, '_, '_> {
                     | SectionRefusal::DynamicType(t)
                     | SectionRefusal::Type(t) => (C::SectionType, format!("{t:#x}")),
                     SectionRefusal::Flags(f) => (C::SectionFlag, format!("{f:#x}")),
+                    SectionRefusal::RelForm(t) => {
+                        let name =
+                            if *t == mortar_elf::consts::SHT_REL { "SHT_REL" } else { "SHT_RELA" };
+                        (C::SectionType, name.to_owned())
+                    }
                     SectionRefusal::Linkonce => (C::Feature, ".gnu.linkonce sections".to_owned()),
                     SectionRefusal::Zdebug => {
                         (C::Feature, ".zdebug compressed debug sections".to_owned())

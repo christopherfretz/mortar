@@ -12,8 +12,7 @@
 # A mortar link that passes is XPASS, so a line goes when its package
 # lands: deleting a package's lines is all it takes.
 
-# No i386 back end.
-mortar,i386: mortar: i386 back end is WP-030 stage 2
+# Run-wide: none (i386 joined with WP-030c).
 
 # M2 (dynamic executables, spec/dyn.md section 16): the package that makes
 # each case pass for mortar (spec/landed/dyn/WP-040.md), grouped by package.

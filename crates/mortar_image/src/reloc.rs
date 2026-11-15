@@ -322,20 +322,16 @@ fn internal(what: String) -> Diagnostic {
     Diagnostic::error(Kind::InternalError { what })
 }
 
-/// `r_offset` of record `i` of a raw table.
-fn raw_offset(raw: &[u8], class: Class, i: u32) -> u64 {
-    match class {
-        Class::Elf64 => {
-            let at = i as usize * 24;
-            raw.get(at..at + 8)
-                .map_or(u64::MAX, |b| u64::from_le_bytes(b.try_into().unwrap_or([0xff; 8])))
-        }
-        Class::Elf32 => {
-            let at = i as usize * 12;
-            raw.get(at..at + 4).map_or(u64::MAX, |b| {
-                u64::from(u32::from_le_bytes(b.try_into().unwrap_or([0xff; 4])))
-            })
-        }
+/// `r_offset` of record `i` of a raw table (REL or RELA: `t.entsize()`).
+fn raw_offset(raw: &[u8], t: &RelaTable, i: u32) -> u64 {
+    let at = i as usize * t.entsize() as usize;
+    match t.class {
+        Class::Elf64 => raw
+            .get(at..at + 8)
+            .map_or(u64::MAX, |b| u64::from_le_bytes(b.try_into().unwrap_or([0xff; 8]))),
+        Class::Elf32 => raw
+            .get(at..at + 4)
+            .map_or(u64::MAX, |b| u64::from(u32::from_le_bytes(b.try_into().unwrap_or([0xff; 4])))),
     }
 }
 
@@ -354,6 +350,7 @@ fn decode(
     let size = t.entsize() as usize;
     for b in raw.chunks_exact(size) {
         let r = match t.class {
+            _ if t.rel => crate::rel::decode(b, t.class),
             Class::Elf64 => Rela::decode64(b),
             Class::Elf32 => Rela::decode32(b),
         }
@@ -413,7 +410,7 @@ pub(crate) fn table_order(
         &raw
     };
     let mut perm = Vec::new();
-    Ok(match local_order(t.count, |i| raw_offset(bytes, t.class, i), &mut perm) {
+    Ok(match local_order(t.count, |i| raw_offset(bytes, t, i), &mut perm) {
         Order::Sorted => None,
         Order::Permuted(p) => Some(p.into()),
     })
@@ -455,7 +452,7 @@ fn load(
     let mut empty = Vec::new();
     let perm = perm.unwrap_or(&mut empty);
     if let Some(bytes) = img.source.resident(t.file, all.clone()) {
-        let off = |i| raw_offset(bytes, t.class, i);
+        let off = |i| raw_offset(bytes, &t, i);
         let order = match known {
             Some(o) => o,
             None => local_order(t.count, off, perm),
@@ -470,7 +467,7 @@ fn load(
     if whole || all.end - all.start <= WHOLE_TABLE || !matches!(known, Some(Order::Sorted)) {
         raw.resize((all.end - all.start) as usize, 0);
         source::read(img.source, t.file, all, raw).map_err(|e| source::copy_error(e, &path()))?;
-        let off = |i| raw_offset(raw, t.class, i);
+        let off = |i| raw_offset(raw, &t, i);
         let order = match known {
             Some(o) => o,
             None => local_order(t.count, off, perm),
@@ -582,6 +579,7 @@ pub(crate) fn relocate(
     let (a, b) = (c.a, c.b);
     let aranges = c.name == tombstone::ARANGES;
     let w = img.arch.facts().max_reach;
+    let rel = crate::rel::is_rel(img.arch);
     let mut reach = (u64::from(w.before), u64::from(w.after));
     if aranges {
         // I-112: the length after the field is written too.
@@ -693,6 +691,9 @@ pub(crate) fn relocate(
                 continue;
             }
         };
+        // A REL record's addend is its field's input bytes (rel.rs).
+        let addend =
+            if rel { crate::rel::addend(img.arch, &howto, site).unwrap_or(0) } else { rec.addend };
         let at = RelocAt {
             file: c.file,
             section: c.section,
@@ -700,7 +701,7 @@ pub(crate) fn relocate(
             r_offset: shifted,
             key: rec.key,
             r_type: rec.r_type,
-            addend: Some(rec.addend),
+            addend: (!rel).then_some(rec.addend),
             howto: &howto,
             site,
             records: &view,
@@ -730,7 +731,7 @@ pub(crate) fn relocate(
         // reference to one is the tombstone (I-47), as one to a collected
         // section is.
         let mut target =
-            (split && sym.live).then(|| memo.split_target(img.tables, rec.key, rec.addend));
+            (split && sym.live).then(|| memo.split_target(img.tables, rec.key, addend));
         let value = match howto.field {
             Field::Data { bytes: width } if !sym.live || matches!(target, Some(Some(Ok(None)))) => {
                 tombstone::field(img.arch, c.name, c.alloc, width).map(|v| (v, width))
@@ -742,12 +743,11 @@ pub(crate) fn relocate(
             Ok(())
         } else {
             if split {
-                let target = target
-                    .take()
-                    .unwrap_or_else(|| memo.split_target(img.tables, rec.key, rec.addend));
+                let target =
+                    target.take().unwrap_or_else(|| memo.split_target(img.tables, rec.key, addend));
                 match target {
                     None => sym = img.tables.sym(rec.key),
-                    Some(Ok(Some(v))) => sym.s = v.wrapping_sub(rec.addend.cast_unsigned()),
+                    Some(Ok(Some(v))) => sym.s = v.wrapping_sub(addend.cast_unsigned()),
                     Some(Ok(None)) => {
                         if reports {
                             let what = "fill: a reference to a collected merge piece".to_owned();

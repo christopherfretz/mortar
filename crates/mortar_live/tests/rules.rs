@@ -85,7 +85,14 @@ fn cols(l: &Liveness) -> (Vec<bool>, Vec<bool>) {
 fn run(r: &Resolution, split: &Split, gc: bool, pool: &Pool) -> LiveResult {
     let inputs = no_inputs();
     let a = Assignment::empty(r.sections.len());
-    let t = LiveInputs { inputs: &inputs, resolution: r, assignment: &a, split, roots: &[] };
+    let t = LiveInputs {
+        inputs: &inputs,
+        resolution: r,
+        assignment: &a,
+        split,
+        roots: &[],
+        arch: None,
+    };
     liveness(&t, LiveOptions { gc_sections: gc, keep_exported: false }, pool)
 }
 
@@ -174,8 +181,14 @@ fn i4_liveness_of_a_real_link_is_its_kept_sections() {
     let r = &outcome.resolution;
     let split = Split::default();
     let a = Assignment::empty(r.sections.len());
-    let t =
-        LiveInputs { inputs: &inputs, resolution: r, assignment: &a, split: &split, roots: &[] };
+    let t = LiveInputs {
+        inputs: &inputs,
+        resolution: r,
+        assignment: &a,
+        split: &split,
+        roots: &[],
+        arch: None,
+    };
     let (live, _) =
         check_schedules(|pool| cols(&liveness(&t, LiveOptions::default(), pool).unwrap()));
     let kept: Vec<bool> = r.sections.as_slice().iter().map(SectionRow::is_kept).collect();

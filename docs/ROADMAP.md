@@ -63,10 +63,11 @@ The whole pipeline, in its final shape, on the smallest useful case.
   link is refused; it is never accepted without effect.
 - A static C hello-world, then static C++ with exceptions, link and run.
 - `--time-phases`; determinism test; first mortar rows in the bench.
-- x86-64: the static-pie rows of the architecture specs are specified
-  and tagged now, and `mortar_x64` implements and unit-tests them
-  (`spec/x64.md` X-9, X-15, X-56, §10); the end-to-end static-pie link
-  test is an M2 gate, with the generic `.dynamic`/`RELATIVE` work.
+- x86-64 and i386: the static-pie rows of the architecture specs are
+  specified and tagged now, and `mortar_x64`/`mortar_x86` implement and
+  unit-test them (`spec/x64.md` X-9, X-15, X-56, §10; `spec/x86.md`
+  X86-27, X86-50, X86-51, §11); the end-to-end static-pie link test is an
+  M2 gate, with the generic `.dynamic`/`RELATIVE` work.
 
 **Done when:** the static subset of the link tests passes with the verifier
 clean, and static C and C++ test programs behave as with every reference.

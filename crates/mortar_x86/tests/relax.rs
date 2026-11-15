@@ -103,7 +103,9 @@ fn refused_name(e: &ScanError) -> &'static str {
     match e {
         ScanError::Refused(r) => match r.name {
             RefName::Named(n) => n,
-            other @ RefName::Hex(_) => panic!("unnamed refusal {other:?}"),
+            other @ (RefName::Hex(_) | RefName::Value { .. }) => {
+                panic!("unnamed refusal {other:?}")
+            }
         },
         other => panic!("not a refusal: {other:?}"),
     }
