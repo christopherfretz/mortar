@@ -684,7 +684,9 @@ fn s13_2_non_alloc_and_tombstones() {
         (b".debug_info", all),
         (b".debug_aranges", all),
         (b".debug_frame", all),
-        (b".debug_addr", all),
+        (b".debug_addr", 0),
+        (b".debug_rnglists", 0),
+        (b".debug_loclists", 0),
         (b".debug_line", all),
     ] {
         c.name = name;
