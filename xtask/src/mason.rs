@@ -27,7 +27,7 @@ pub mod programs;
 pub mod setup;
 
 pub const USAGE: &str = "usage: cargo xtask mason [programs] [--mortar <path>] [--filter <s>]... [--keep] [-j <n>]\n       \
-     cargo xtask mason census [--group <name> <path>...]... [--paths]\n       \
+     cargo xtask mason census [--group <name> <path>...]...\n       \
      cargo xtask mason setup\n       \
      cargo xtask mason libcxx [--mode <m>]... [--backend hod|llvm] [--sample <name>] [--shard K/N]\n                                \
      [-j <n>] [--plumb] [--report <file>] [--mortar <path>] [<dir>...]\n       \

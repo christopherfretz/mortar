@@ -138,8 +138,9 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         sh(&format!("{} {TAG} {}", q(&fetch), q(&tests)), &lane, "fetching libc++'s tests")?;
     }
     let src = lane.join("kiln-src");
+    let git = super::tool("git").ok_or("`git` is not on PATH")?;
     let commit = run_in(
-        Path::new("git"),
+        &git,
         &["-C".into(), kiln.display().to_string(), "rev-parse".into(), "HEAD".into()],
         &lane,
         &[],
