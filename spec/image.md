@@ -477,9 +477,10 @@ only when `has_errors()` is false after layout (`spec/diag.md` §7).
 ### 5.3 Windows and jobs
 
 - **I-31 [M1]** The file is filled window by window. A **job** is one
-  window, except that a *whole* synthetic chunk larger than `W` (§13,
-  I-104) makes one job of every window it touches, together with the
-  windows already in the job. The jobs are formed by one sequential pass
+  window, except that a *whole* synthetic chunk touching more than one
+  window (§13, I-104; a chunk smaller than `W` can straddle a boundary)
+  makes one job of every window it touches, together with the windows
+  already in the job. The jobs are formed by one sequential pass
   over the plan. Job boundaries are a function of the plan and `W` only
   (rule 6).
 - **I-32 [M1]** Jobs run in parallel (`for_each_part` over job indices;
@@ -823,8 +824,8 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   GNU ld fails with `Illegal seek` (§15). A block device is refused the
   same way (`output is a block device`).
 - **I-59 [M1] [C] Otherwise: a temporary file.** Let `T0 =
-  dir(P)/.<base(P)>.mortar-tmp`. The image opens `T0` with `create(true)`
-  (not `create_new`), write-only, mode `0o777` for executables and shared
+  dir(P)/.<base(P)>.mortar-tmp`. The image opens `T0` with `create_new`, or,
+  if it exists, opens the existing file, write-only, mode `0o777` for executables and shared
   objects and `0o666` for `-r` (the kernel applies the umask, which
   reproduces §7.1's modes), and then calls `File::try_lock` (an exclusive
   `flock`, stable Rust, no `unsafe`):
@@ -833,9 +834,16 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
     with `WouldBlock`. On `/tmp` (tmpfs) it does; on this host's
     workspace share (a FUSE `fakeowner` mount) it does not: `try_lock`
     succeeds on both descriptors, and across processes (E25).
-  - Enforced and acquired: no running link holds `T0`, so a `T0` that
-    existed is a stale file of a killed link. The image truncates it
-    (`set_len(0)`) and uses it. This is how a later link removes an
+  - Enforced and acquired, and `T0` still names the locked inode: no
+    running link holds `T0`, so a `T0` that existed is a stale file of a
+    killed link. The image removes it and creates `T0` again with
+    `create_new` (a truncated stale file would keep the killed link's
+    mode), locking the new inode before releasing the old one; if another
+    link wins the new name, the image falls back as for `WouldBlock`. A
+    lock acquired on an inode that `T0` no longer names (another link
+    replaced it meanwhile) is treated as `WouldBlock`. A `T0` this link
+    created on a file system that does not enforce the lock is removed
+    again. This is how a later link removes an
     interrupted link's litter (G3): the name is derivable, and the lock
     says whether its owner is alive. The kernel drops the lock when the
     owner dies, `kill -9` included (E25).
@@ -856,8 +864,11 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   Permission denied`. The lock is held until the rename (I-60). NFS and
   SMB shares were not available to test; `flock` on NFSv4 is emulated
   with byte-range locks, and the probe decides at run time either way.
-- **I-60 [M1]** After a successful fill and sealing (§8), the descriptor
-  is closed and `T` is renamed to `P` (`std::fs::rename`). This gives
+- **I-60 [M1]** After a successful fill and sealing (§8), `T` is renamed
+  to `P` (`std::fs::rename`) and then the descriptor is closed: the lock
+  of I-59 covers the rename, so no other link can take `T0` for stale
+  between the close and the rename. (A close error cannot be observed
+  through `std::fs::File`; it is not reported.) This gives
   §7.1's rows: a new inode, hard links unaffected, a symbolic link
   replaced (its target untouched), a running executable replaced. A failed
   rename is `cannot-write-output`, and `T` is removed.

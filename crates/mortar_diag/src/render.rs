@@ -178,6 +178,12 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(": ");
             escaped(reason, out);
         }
+        Kind::CannotWriteOutput { path, reason } => {
+            out.push_str("cannot write output file ");
+            escaped(path, out);
+            out.push_str(": ");
+            escaped(reason, out);
+        }
         Kind::DuplicateSoname { soname } => {
             out.push_str("DT_SONAME '");
             escaped(soname, out);
