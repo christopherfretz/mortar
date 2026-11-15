@@ -592,6 +592,12 @@ impl Engine<'_, '_> {
                 );
                 x.expected = Some(entries[0].wrapping_add(a));
                 x.found = Some(rec.out_word);
+                // GOTOFF: the address the field gives (spec/x86.md W5).
+                if let (Op::GotRel, Some(g)) = (rec.def.op, self.got) {
+                    let d = a64::decode(rec.def.field, rec.out_word, rec.p) as u64;
+                    let mask = if self.word() == 4 { u64::from(u32::MAX) } else { u64::MAX };
+                    x.found = Some(g.wrapping_add(d) & mask);
+                }
                 x
             };
             return self.fail(x);

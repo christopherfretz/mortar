@@ -57,7 +57,11 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A14: lld makes an x86-64 large common (SHN_X86_64_LCOMMON) absolute and allocates nothing (spec/x64.md W9)",
         );
     }
-    if (bfd || mold) && f.rule == Rule::Field && f.message.ends_with("(spec/x64.md X-53)") {
+    if (bfd || mold)
+        && f.rule == Rule::Field
+        && (f.message.ends_with("(spec/x64.md X-53)")
+            || f.message.ends_with("(spec/x86.md X86-62)"))
+    {
         return Some(
             "A15: GNU ld and mold write a TLS symbol's template address in .debug_addr where its DTP offset belongs (spec/x64.md W10)",
         );

@@ -322,6 +322,7 @@ impl Engine<'_, '_> {
                     .x64_window(oi, si, rec, k, 0)
                     .is_none_or(|(i, o)| i[..k as usize] == o[..k as usize]);
                 if !kept {
+                    self.x64_rewrote(rec.p.wrapping_sub(2), rec.p + 4);
                     let mut f = Self::finding(
                         Rule::Field,
                         rec,
@@ -532,10 +533,11 @@ impl Engine<'_, '_> {
         };
         let size = b.tcb.wrapping_neg() as u32;
         // (before, after, the LE bytes).
+        // The lead's A is 0 (X86-35, X86-37; the call's is the form's).
+        if lead.addend != 0 {
+            return unrec();
+        }
         let (before, after, want): (u64, u64, Vec<u8>) = if gd {
-            if lead.addend != 0 {
-                return unrec();
-            }
             let le = x::gd_le(t as u32, mold).to_vec();
             if at(-3, 3) == Some(&[0x8d, 0x04, 0x1d]) && at(4, 1) == Some(&[0xe8]) && direct(5) {
                 // D1.
@@ -692,9 +694,9 @@ impl Engine<'_, '_> {
                 0x8b | 0x03 => cands.push([&imm_form(op, m.reg).unwrap()[..], &tb].concat()),
                 _ => {}
             },
-            // T1: `8d` ModRM `10 reg rm`, rm ≠ 100 -> `leal T, %reg`;
-            // mold's `nop; movl $T, %reg`.
-            x::TLS_GOTDESC if op == 0x8d && m.md == 2 && m.rm != 4 => {
+            // T1: `8d` ModRM `10 reg rm`, rm ≠ 100, A = 0 (X86-37) ->
+            // `leal T, %reg`; mold's `nop; movl $T, %reg`.
+            x::TLS_GOTDESC if a0 && op == 0x8d && m.md == 2 && m.rm != 4 => {
                 if f == Format::Mold {
                     cands.push([&[0x90, 0xb8 | m.reg][..], &tb].concat());
                 } else {

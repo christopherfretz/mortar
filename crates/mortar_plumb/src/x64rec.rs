@@ -284,7 +284,11 @@ impl Engine<'_, '_> {
                 rec,
                 site,
                 symbol,
-                "a TLS symbol's template address where the DTP offset belongs (spec/x64.md X-53)",
+                if rec.def.r_type == crate::x86::R32 && self.word() == 4 {
+                    "a TLS symbol's template address where the DTP offset belongs (spec/x86.md X86-62)"
+                } else {
+                    "a TLS symbol's template address where the DTP offset belongs (spec/x64.md X-53)"
+                },
             );
             f.expected = Some(want as u64);
             f.found = Some(rec.out_word);
