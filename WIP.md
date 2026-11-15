@@ -1,14 +1,13 @@
 # WIP WP-052 (static-pie)
 
 Done:
-- layout: StaticPie placed as Pie on ELF64 (target.rs); i386 keeps the refusal name.
-- resolve: `_DYNAMIC` defined under static-pie (linker.rs When::Dynamic; resolve.md 8.1 row).
-- mortar front: `has_dynamic` (dynamic || StaticPie) drives the dyn tables; scan/arch stay static (M1, dynamic=false).
-- dynlink: DynKind::StaticPie, no interp (DynTables.interp Option).
-- synth got.rs: DynGotCx.static_pie -> IPLT IRELATIVE in .rela.dyn (rela_dyn_irelative, irelative_records); lazy/jump_slot only with PLT entries.
-- rela.rs/dynrel.rs/link.rs: IRELATIVE tail of .rela.dyn.
-- C hello runs on aarch64 and x86-64 (qemu); the kind test passes with --no-plumb.
+- static-pie links on AArch64 and x86-64 (layout target.rs, resolve linker.rs, front.rs has_dynamic,
+  dynlink.rs DynKind::StaticPie, synth got.rs static_pie/irelative_records, rela.rs, dynrel.rs, link.rs).
+- D-47 text-relocation in the StaticPie column (scan driver dynamic_error); --export-dynamic refused.
+- tests/link/dyn/spie/ (12 tests) + xfail lines (verifier request: P-D1 outside stage 3).
+- unit tests: dyngot s70_static_pie_irelative_in_rela_dyn, dynrel stray IRELATIVE.
+- merged main once (WP-082).
+- corpus: review-m2 corpus 94 same / 2 DIFF (aarch64 trad TLSGD refused, as M1 static) / 4 CC-FAIL;
+  static tests as static-pie: aarch64 21 same + 1 GNU ld defect, x86_64 20 same + 2 all refuse.
 
-Learned: plumb reports static-pie "outside stage 3 (WP-052)": verifier request; xfail with that reason.
-
-Next: item 1 table into record; programs of item 1 through mortar; refusals (item 3); tests (item 4); corpus (5); static-identical (6).
+Next: static-identical; linktest dyn/ after the merge; record spec/landed/dyn/WP-052.md; gate; delete WIP.md.

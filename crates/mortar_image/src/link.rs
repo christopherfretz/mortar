@@ -2246,14 +2246,7 @@ impl LinkTables<'_, '_> {
         let slots = &l.layout.slots;
         let view = DynView { t: self, d };
         let mut r = crate::map::DynRecords::default();
-        crate::dynamic::fill_records(
-            &mut r,
-            d.kind,
-            d.interp,
-            d.runpath,
-            d.bind_now,
-            d.relro,
-        );
+        crate::dynamic::fill_records(&mut r, d.kind, d.interp, d.runpath, d.bind_now, d.relro);
         r.args = d.args.to_vec();
         r.needed = slots.needed.iter().map(|&f| d.src.needed(f).to_vec()).collect();
         r.copies = slots

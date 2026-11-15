@@ -204,7 +204,8 @@ impl DynLinked {
         let dynsym = DynsymPlan::new(order, 0, 1).expect("dynsym");
         let diag = Collector::new(Policy::default());
         let kinds = Kinds(self);
-        let cx = DynGotCx { pie: self.output == OutputKind::Pie, bind_now: false, static_pie: false };
+        let cx =
+            DynGotCx { pie: self.output == OutputKind::Pie, bind_now: false, static_pie: false };
         let got = GotPlan::new_dynamic(
             &arch,
             &slots,

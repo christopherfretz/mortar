@@ -366,7 +366,7 @@ in E-dynamic (108 outputs: C, C++, Fortran hello × PIE, `-no-pie`,
 | `DT_NEEDED`, versions | no | yes | yes | no (a shared input is refused, input §8.4) |
 | `.dynsym` | none | D-21 | D-21 | the null entry only, unless `--export-dynamic` [M4] |
 | `DT_DEBUG` | — | yes | yes | yes (all three) |
-| `DT_FLAGS_1` | — | `DF_1_NOW` under `-z now` | `DF_1_PIE` (+ `DF_1_NOW`) | `DF_1_PIE` |
+| `DT_FLAGS_1` | — | `DF_1_NOW` under `-z now` | `DF_1_PIE` (+ `DF_1_NOW`) | `DF_1_PIE` (+ `DF_1_NOW` under `-z now`: all three references; WP-052) |
 | `RELATIVE` | never | never (absolute values are final) | every absolute word of a non-preemptible target | same as `Pie` |
 | `COPY` | never | shared data reached by a non-GOT class | same, x86-64 GCC code (D-43) | never |
 | canonical PLT | never | shared function whose address a non-GOT class takes | never (refused by name, D-44) | never |

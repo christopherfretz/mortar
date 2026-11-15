@@ -257,7 +257,7 @@ impl GotPlan {
         })
     }
 
-    /// The plan for an `Exec` or `Pie` with `.dynamic` (`spec/dyn.md`
+    /// The plan for an `Exec`, `Pie` or `StaticPie` with `.dynamic` (`spec/dyn.md`
     /// D-32, D-41, D-45, D-46, D-48, D-49; a64 §10.1-§10.2; synth S-107):
     ///
     /// - `.got`: on AArch64 the header word (`_DYNAMIC`) always, then the
@@ -271,7 +271,9 @@ impl GotPlan {
     /// - `.plt`: PLT0 and the entries when `Slots.plt` is not empty, then
     ///   the IPLT entries;
     /// - `.rela.plt`: one `JUMP_SLOT` per PLT entry, then one `IRELATIVE`
-    ///   per IPLT entry (D-41).
+    ///   per IPLT entry (D-41); in a `StaticPie` ([`DynGotCx::static_pie`],
+    ///   WP-052) empty: it has no PLT entry, and the IPLT's `IRELATIVE`s
+    ///   are `.rela.dyn`'s last records ([`Self::irelative_records`], S-70).
     ///
     /// Every `r_sym` is `dynsym`'s index of the key. Refused by name: a
     /// PLT shape of several sections (x86-64 IBT's `.plt.sec`; follow-up

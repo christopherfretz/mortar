@@ -1064,7 +1064,8 @@ fn dyn_chunks(
 ) -> Result<Vec<DynChunk>, LayoutDiag> {
     let Some(d) = d else { return Ok(Vec::new()) };
     // D-1: no `.interp` in a `StaticPie`.
-    let mut v: Vec<DynChunk> = d.interp.iter().map(|i| (SynthKind::Interp, i.size(), None)).collect();
+    let mut v: Vec<DynChunk> =
+        d.interp.iter().map(|i| (SynthKind::Interp, i.size(), None)).collect();
     v.extend(d.sizes.iter().map(|&(k, size)| (k, size, None)));
     if d.rela.size() > 0 {
         v.push((SynthKind::RelaDyn, d.rela.size(), None));
