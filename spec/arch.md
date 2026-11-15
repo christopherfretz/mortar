@@ -651,7 +651,9 @@ to the addend (`-z pack-relative-relocs`).
 A relocation in a non-alloc section with a debug name (`spec/resolve.md`
 §6.3) whose target is in a section that is not live writes
 `tombstone(name, class)` truncated to the field instead of `X`
-(`spec/image.md` I-47): 1 for `.debug_ranges` and `.debug_loc`; all ones
+(`spec/image.md` I-47): 1 for `.debug_ranges` and `.debug_loc`; 0 for
+`.debug_rnglists`, `.debug_loclists` and `.debug_addr` (an address there
+is paired with a length, which all ones would wrap); all ones
 for `.debug_aranges` and `.debug_frame`; for every other debug name all
 ones in ELFCLASS64 and 0 in ELFCLASS32. In `.debug_aranges` the tuple's
 length is also written 0 (I-112): that write is the image phase's, not
