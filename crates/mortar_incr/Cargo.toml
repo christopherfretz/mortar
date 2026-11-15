@@ -1,0 +1,21 @@
+[package]
+name = "mortar_incr"
+description = "Incremental linking: the link state, change detection, delta layout, patching."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mortar_core.workspace = true
+mortar_diag.workspace = true
+mortar_digest.workspace = true
+mortar_elf.workspace = true
+
+[dev-dependencies]
+mortar_testutil.workspace = true
+
+[lints]
+workspace = true

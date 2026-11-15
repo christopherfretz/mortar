@@ -23,6 +23,7 @@ mortar_diag     = { path = "crates/mortar_diag" }
 mortar_digest   = { path = "crates/mortar_digest" }
 mortar_elf      = { path = "crates/mortar_elf" }
 mortar_image    = { path = "crates/mortar_image" }
+mortar_incr     = { path = "crates/mortar_incr" }
 mortar_input    = { path = "crates/mortar_input" }
 mortar_layout   = { path = "crates/mortar_layout" }
 mortar_live     = { path = "crates/mortar_live" }
