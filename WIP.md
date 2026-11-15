@@ -7,4 +7,5 @@ ci step `static-identical`). Main's mortar (d86a0cd) vs the baseline: 42 AArch64
 Learned, not yet written: GNU ld 2.44 AArch64 static writes `.plt`'s start into IPLT words (resolver in r_addend);
 Q7 ruled S+A. x86-64 kept 0 (X-39, plumb F5(3)).
 0b: Slots needed/verneed/dynstr/dynsym_unhashed/gnu_hash_buckets; CopyAlloc{place,align,alias}; DynStr, VerIndex, CopyPlace; Demands.weak_dyn; check rules.
-Next: 0h dynstr stub, 0i dynsym stub + chunk rows (chunks.rs edited, uncommitted).
+0i: mortar_synth::dynsym (DynsymPlan, dynsym_plan stub); S-3 chunk list M2 rows + DynBss=24, BssRelRo=25, D-34 headers.
+Next: 0h dynstr stub (parked at /tmp/mortar-wp041-3943017/dynstr.rs + synth-lib.rs), then merge main.
