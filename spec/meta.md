@@ -493,6 +493,13 @@ inside those reads are read and dropped: never resident, never parsed.
 No other container byte is read: a large object's body ranges are
 clipped around its containers.
 
+The file header is always resident. GNU as on i386 puts an ELF32
+object's first container right after its 52-byte header, so bytes 52-63
+may be container bytes. The readers take an ELF32 header from its 52
+bytes when the first 64 are not resident (`mortar_elf`
+`FileHeader::head`, used by `Object::parse_view` and `facts`). Pinned by
+`t_mt_42.rs` `elf32_container_after_the_header_is_not_resident`.
+
 So a link whose inputs have no container pays nothing that grows with
 the input: the same reads, range for range, as with the containers
 wanted. (A first version read each top-level object's headers first and

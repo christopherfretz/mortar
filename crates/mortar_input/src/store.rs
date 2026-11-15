@@ -42,6 +42,7 @@ use mortar_core::hash::{combine, hash_bytes, hash_u64};
 use mortar_core::inputs::{self, ContentHash, CopyError, Errno};
 use mortar_core::par::Pool;
 use mortar_diag::os_reason;
+use mortar_elf::consts::{EI_CLASS, ELFCLASS32};
 use mortar_elf::{Part, View};
 
 use crate::staged::{self, Fetch, MemberSpan, PREFIX, SMALL, Shape};
@@ -1408,10 +1409,19 @@ impl Store {
         let mut src =
             Reader { store: self, path: s.path, file: &s.file, shared: &[], own: Vec::new(), len };
         src.read_into_own(0, len)?;
-        let shape = staged::shape(src.fetch(0, PREFIX.min(len))?);
+        let head = src.fetch(0, PREFIX.min(len))?;
+        let shape = staged::shape(head);
+        // The file header stays resident whatever a section claims (a
+        // container overlapping it is malformed, and the reader says so):
+        // 52 bytes of an ELF32 object, whose first container GNU as puts
+        // at 52; 64 of an ELF64 one.
+        let header = if head.get(EI_CLASS) == Some(&ELFCLASS32) { 52 } else { PREFIX };
         // Every fetch below lies inside the file, so inside that one read.
-        let found = if shape == Shape::Object {
-            staged::container_ranges(&mut src, 0, len)?.unwrap_or_default()
+        let found: Vec<Range<u64>> = if shape == Shape::Object {
+            let all = staged::container_ranges(&mut src, 0, len)?.unwrap_or_default();
+            all.into_iter()
+                .filter_map(|r| (r.end > header).then(|| r.start.max(header)..r.end))
+                .collect()
         } else {
             Vec::new()
         };

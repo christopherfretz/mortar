@@ -419,3 +419,45 @@ fn whole_file_paths_are_the_named_exception() {
         }
     }
 }
+
+/// An ELF32 object whose first section is its container (GNU as on i386
+/// with an empty `.text` puts it at offset 52, right after the 52-byte
+/// file header): read whole as with the containers wanted, no container
+/// byte resident (bytes 52..64 included), and the parts still parse, the
+/// header taken from its 52 resident bytes.
+// spec: meta.md MT-42; input.md §11.1 (A-8); elf.md §3.0
+#[test]
+fn elf32_container_after_the_header_is_not_resident() {
+    let s = Scratch::new("tmt42d");
+    let Some(gas) = common::need("i686-linux-gnu-as") else { return };
+    let src = format!(
+        ".section .mason.meta,\"e\",%progbits\n.p2align 3\n{}\n.section .rodata,\"a\",%progbits\n.long 42\n",
+        garbage(400, 3).replace("\\n", "\n")
+    );
+    let asm = s.write("e32.s", src);
+    let o = s.join("e32.o");
+    let r = common::tool_run(
+        &gas,
+        &["--32".into(), "-o".into(), o.clone().into_os_string(), asm.into_os_string()],
+        s.path(),
+    );
+    assert!(r.success(), "{}", r.stderr_text());
+    let cs = containers(&o);
+    assert_eq!(cs.len(), 1);
+    assert_eq!(cs[0].start, 52, "the fixture's container follows the header");
+    let files = vec![(o.clone(), cs.clone())];
+    let (store, log) = store(false);
+    let b = read_all(&store, &files)[0];
+    let (_, wanted) = both_ways(&files);
+    assert_eq!(loads_of(&log, &files), wanted, "the same reads");
+    for part in store.parts(b) {
+        let r = part.offset..part.offset + part.bytes.len() as u64;
+        assert_eq!(overlap(&r, &cs[0]), 0, "part {r:?} holds {:?}", cs[0]);
+    }
+    let whole = std::fs::read(&o).unwrap();
+    let staged = Object::parse_view(store.view(b)).unwrap();
+    let rodata = staged.sections().find(|x| x.name().unwrap() == b".rodata").unwrap();
+    assert_eq!(rodata.data().unwrap(), 42u32.to_le_bytes());
+    assert_eq!(staged.section_count(), Object::parse(&whole).unwrap().section_count());
+    assert_eq!(staged.header(), Object::parse(&whole).unwrap().header());
+}

@@ -396,7 +396,7 @@ pub fn analyse(bytes: &[u8], member: bool) -> Facts<'_> {
 /// [`analyse`] over the store's view of a file (§11.3).
 #[must_use]
 pub fn analyse_view(view: View<'_>, member: bool) -> Facts<'_> {
-    let head = view.prefix(64).unwrap_or_default();
+    let head = FileHeader::head(&view).unwrap_or_default();
     let ident = ElfIdent::of(head);
     let kind = sniff(view, head, member);
     Facts { ident, kind }
