@@ -227,6 +227,7 @@ pub fn not_judged(bytes: &[u8]) -> Option<&'static str> {
     const ET_EXEC: u16 = 2;
     const EM_AARCH64: u16 = 183;
     const EM_X86_64: u16 = 62;
+    const EM_386: u16 = 3;
     const PT_DYNAMIC: u32 = 2;
     const PT_INTERP: u32 = 3;
     let u16_at = |at: usize| bytes.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
@@ -235,23 +236,29 @@ pub fn not_judged(bytes: &[u8]) -> Option<&'static str> {
     let u64_at = |at: usize| {
         bytes.get(at..at + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap_or([0; 8])))
     };
-    // Not ELF, or not 64-bit little-endian: the verifier's own S1 says
-    // which, unless the machine is one it does not judge.
-    if bytes.get(..4) != Some(b"\x7fELF".as_slice()) || bytes.get(4..6) != Some([2, 1].as_slice()) {
+    // Not ELF, or not little-endian: the verifier's own S1 says which.
+    if bytes.get(..4) != Some(b"\x7fELF".as_slice()) || bytes.get(5) != Some(&1) {
         return if bytes.get(..4) == Some(b"\x7fELF".as_slice()) { Some("machine") } else { None };
     }
-    // AArch64 and x86-64 have tables (spec/plumb.md §4.5); i386 has none.
-    if !matches!(u16_at(18), Some(EM_AARCH64 | EM_X86_64)) {
-        return Some("machine");
-    }
+    // AArch64 and x86-64 (ELFCLASS64) and i386 (ELFCLASS32) have tables
+    // (spec/plumb.md §4.5).
+    let class64 = match (bytes.get(4), u16_at(18)) {
+        (Some(2), Some(EM_AARCH64 | EM_X86_64)) => true,
+        (Some(1), Some(EM_386)) => false,
+        _ => return Some("machine"),
+    };
     match u16_at(16) {
         Some(ET_EXEC) => {}
         Some(ET_REL) => return Some("relocatable"),
         _ => return Some("pie-or-shared"),
     }
-    let phoff = usize::try_from(u64_at(32)?).ok()?;
-    let entsize = usize::from(u16_at(54)?);
-    let dynamic = (0..usize::from(u16_at(56)?)).any(|i| {
+    let (phoff, entsize, phnum) = if class64 {
+        (usize::try_from(u64_at(32)?).ok()?, u16_at(54)?, u16_at(56)?)
+    } else {
+        (usize::try_from(u32_at(28)?).ok()?, u16_at(42)?, u16_at(44)?)
+    };
+    let entsize = usize::from(entsize);
+    let dynamic = (0..usize::from(phnum)).any(|i| {
         let at = phoff.saturating_add(i.saturating_mul(entsize));
         matches!(u32_at(at), Some(PT_DYNAMIC | PT_INTERP))
     });
@@ -1180,9 +1187,24 @@ mod tests {
         assert_eq!(not_judged(&elf(3, 183, 1)), Some("pie-or-shared"));
         assert_eq!(not_judged(&elf(1, 183, 1)), Some("relocatable"));
         assert_eq!(not_judged(&elf(2, 62, 1)), None);
-        let mut elf32 = elf(2, 3, 1);
+        // i386 is judged (ELFCLASS32, EM_386); ELFCLASS32 of another
+        // machine, or EM_386 in ELFCLASS64, is not.
+        let mut elf32 = vec![0u8; 0x80];
+        elf32[..4].copy_from_slice(b"\x7fELF");
         elf32[4] = 1;
+        elf32[5] = 1;
+        elf32[16] = 2;
+        elf32[18] = 3;
+        elf32[28] = 0x34;
+        elf32[42] = 32;
+        elf32[44] = 1;
+        elf32[0x34] = 1;
+        assert_eq!(not_judged(&elf32), None);
+        elf32[0x34] = 3;
+        assert_eq!(not_judged(&elf32), Some("dynamic"));
+        elf32[18] = 40;
         assert_eq!(not_judged(&elf32), Some("machine"));
+        assert_eq!(not_judged(&elf(2, 3, 1)), Some("machine"));
         // Not ELF: the verifier judges it (S1).
         assert_eq!(not_judged(b"#!/bin/sh"), None);
     }

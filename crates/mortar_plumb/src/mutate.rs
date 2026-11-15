@@ -16,7 +16,7 @@ use std::fmt::Write as _;
 
 use mortar_elf::Machine;
 use mortar_elf::consts::{
-    PT_LOAD, PT_TLS, SHF_TLS, SHT_NOBITS, SHT_RELA, SHT_SYMTAB, STT_FILE, STT_SECTION,
+    PT_LOAD, PT_TLS, SHF_TLS, SHT_NOBITS, SHT_REL, SHT_RELA, SHT_SYMTAB, STT_FILE, STT_SECTION,
 };
 
 use crate::a64::{self, Def, Field, Form, Op};
@@ -39,6 +39,7 @@ pub const CLASSES: &[&str] = &[
     "symtab-value",
     "symtab-size",
     "e-entry",
+    "header-ident",
     "phdr-filesz",
     "phdr-memsz",
     "phdr-align",
@@ -213,7 +214,58 @@ fn def_of(m: Machine, ty: u32) -> Option<&'static Def> {
     match m {
         Machine::AArch64 => a64::def(ty),
         Machine::X86_64 => crate::x64::def(ty),
-        Machine::I386 => None,
+        Machine::I386 => crate::x86::def(ty),
+    }
+}
+
+/// The ELF header-table layout of the output's class: entry sizes and
+/// field offsets (gABI "ELF Header", "Program Header", "Symbol Table").
+struct Lay {
+    /// An address's bytes.
+    w: usize,
+    sym: usize,
+    sym_value: usize,
+    sym_size: usize,
+    ph: usize,
+    ph_flags: usize,
+    ph_filesz: usize,
+    ph_memsz: usize,
+    ph_align: usize,
+    sh: usize,
+    sh_size: usize,
+}
+
+impl Lay {
+    const fn of(elf64: bool) -> Lay {
+        if elf64 {
+            Lay {
+                w: 8,
+                sym: 24,
+                sym_value: 8,
+                sym_size: 16,
+                ph: 56,
+                ph_flags: 4,
+                ph_filesz: 32,
+                ph_memsz: 40,
+                ph_align: 48,
+                sh: 64,
+                sh_size: 32,
+            }
+        } else {
+            Lay {
+                w: 4,
+                sym: 16,
+                sym_value: 4,
+                sym_size: 8,
+                ph: 32,
+                ph_flags: 24,
+                ph_filesz: 16,
+                ph_memsz: 20,
+                ph_align: 28,
+                sh: 40,
+                sh_size: 20,
+            }
+        }
     }
 }
 
@@ -272,10 +324,12 @@ fn places(image: &Image<'_>, map: &Map, inputs: &[Input<'_>]) -> Vec<Place_> {
             let Some(recs) = o.records(rs) else { continue };
             for (r_offset, sym, ty, _) in recs {
                 let Some(def) = def_of(machine, ty) else { continue };
-                // A marker (x86-64 TLSDESC_CALL) has no field: only its
-                // instruction's 2 bytes, for stale-relaxation.
-                let w = if def.field == Field::Insn { 2 } else { u64::from(def.field.width()) };
-                if def.field != Field::Insn && (def.field.mask() == 0 || w == 0) {
+                // A marker (x86-64 TLSDESC_CALL, i386 TLS_DESC_CALL) has no
+                // field: only its instruction's 2 bytes, for stale-relaxation.
+                let marker = def.field == Field::Insn
+                    || (machine == Machine::I386 && ty == crate::x86::TLS_DESC_CALL);
+                let w = if marker { 2 } else { u64::from(def.field.width()) };
+                if !marker && (def.field.mask() == 0 || w == 0) {
                     continue;
                 }
                 let p = match &s.place {
@@ -331,9 +385,8 @@ fn candidates(
     let mut g = Gen { image, out: vec![Vec::new(); CLASSES.len()] };
     let data = image.data;
     let elf64 = image.class() == mortar_elf::Class::Elf64;
-    if !elf64 {
-        return g.out;
-    }
+    let lay = Lay::of(elf64);
+    let i386 = image.header.e_machine == mortar_elf::consts::EM_386;
     // A place the clean link already has a finding at is not mutated: its
     // mutants would repeat that finding (an anomaly's records, A6).
     let mut places = places(image, map, inputs);
@@ -345,10 +398,13 @@ fn candidates(
     for (i, pl) in places.iter().enumerate() {
         let name = pl.def.name;
         let at = format!("{name} at {:#x} ({})", pl.p, pl.key);
-        if pl.def.field == Field::Insn {
+        if pl.def.field == Field::Insn || (i386 && pl.def.r_type == crate::x86::TLS_DESC_CALL) {
             let inp = &pl.input;
-            if image.header.e_machine == mortar_elf::consts::EM_X86_64
-                && pl.def.r_type == crate::x64::TLSDESC_CALL
+            let desc = if i386 { crate::x86::TLS_DESC_CALL } else { crate::x64::TLSDESC_CALL };
+            if matches!(
+                image.header.e_machine,
+                mortar_elf::consts::EM_X86_64 | mortar_elf::consts::EM_386
+            ) && pl.def.r_type == desc
                 && pl.at + 2 <= inp.len()
             {
                 g.push(
@@ -445,6 +501,24 @@ fn candidates(
                 }
                 g.push("stale-relaxation", format!("{at}: the input's bytes kept"), edits);
             }
+            mortar_elf::consts::EM_386 => {
+                use crate::x86 as x;
+                // spec/x86.md §8, §9: the bytes before the field, and a
+                // GD/LD sequence's call after it.
+                let (lo, hi): (usize, usize) = match pl.def.r_type {
+                    x::GOT32X | x::TLS_IE | x::TLS_GOTIE | x::TLS_GOTDESC => (2, 0),
+                    x::TLS_GD | x::TLS_LDM => (3, 6),
+                    _ => (0, 0),
+                };
+                if lo == 0 || pl.at < lo || pl.off < lo {
+                    continue;
+                }
+                let mut edits = vec![(pl.off - lo, inp[pl.at - lo..pl.at].to_vec())];
+                if hi > 0 && pl.at + 4 + hi <= inp.len() {
+                    edits.push((pl.off + 4, inp[pl.at + 4..pl.at + 4 + hi].to_vec()));
+                }
+                g.push("stale-relaxation", format!("{at}: the input's bytes kept"), edits);
+            }
             _ => {}
         }
         let _ = i;
@@ -455,13 +529,14 @@ fn candidates(
     for n in [".got", ".got.plt"] {
         let Some(s) = sec(n) else { continue };
         let Ok(o) = usize::try_from(s.shdr.sh_offset) else { continue };
-        let words = (s.shdr.sh_size / 8) as usize;
-        if o + words * 8 > data.len() {
+        let ww = lay.w;
+        let words = s.shdr.sh_size as usize / ww;
+        if o + words * ww > data.len() {
             continue;
         }
         for k in 0..words.saturating_sub(1) {
-            let (a, b) = (o + 8 * k, o + 8 * (k + 1));
-            let (wa, wb) = (data[a..a + 8].to_vec(), data[b..b + 8].to_vec());
+            let (a, b) = (o + ww * k, o + ww * (k + 1));
+            let (wa, wb) = (data[a..a + ww].to_vec(), data[b..b + ww].to_vec());
             g.push(
                 "got-slot-swap",
                 format!("{n} words {k} and {} swapped", k + 1),
@@ -473,8 +548,40 @@ fn candidates(
     // record: its resolver moved by 4).
     let irelative: u32 = match image.header.e_machine {
         mortar_elf::consts::EM_AARCH64 => 1032,
+        mortar_elf::consts::EM_386 => 42,
         _ => 37,
     };
+    if i386 {
+        // REL: the resolver is the word at r_offset (X86-50).
+        let mut words = Vec::new();
+        for s in image.sections.iter().filter(|s| s.alloc() && s.shdr.sh_type == SHT_REL) {
+            let Ok(o) = usize::try_from(s.shdr.sh_offset) else { continue };
+            for k in 0..(s.shdr.sh_size / 8) as usize {
+                let e = o + 8 * k;
+                if e + 8 <= data.len()
+                    && le(&data[e + 4..e + 5]) == u64::from(irelative)
+                    && let Some(w) = g.off(le(&data[e..e + 4]), 4)
+                {
+                    words.push(w);
+                }
+            }
+        }
+        for (k, &e) in words.iter().enumerate() {
+            let a = data[e..e + 4].to_vec();
+            if let Some(&f) = words.get(k + 1) {
+                g.push(
+                    "irelative-swap",
+                    format!("IRELATIVE records {k} and {} swap resolvers", k + 1),
+                    vec![(e, data[f..f + 4].to_vec()), (f, a.clone())],
+                );
+            }
+            g.push(
+                "irelative-swap",
+                format!("IRELATIVE record {k}: resolver + 4"),
+                vec![(e, bytes_of(le(&a).wrapping_add(4), 4))],
+            );
+        }
+    }
     let mut irel = Vec::new();
     for s in image.sections.iter().filter(|s| s.alloc() && s.shdr.sh_type == SHT_RELA) {
         let Ok(o) = usize::try_from(s.shdr.sh_offset) else { continue };
@@ -540,7 +647,7 @@ fn candidates(
         && let Ok(o) = usize::try_from(s.shdr.sh_offset)
         && let Some(b) = data.get(o..o + s.shdr.sh_size as usize)
     {
-        for (at, w) in fde_pc_begins(b) {
+        for (at, w) in fde_pc_begins(b, lay.w) {
             let v = le(&b[at..at + w]);
             g.push(
                 "fde-pc-begin",
@@ -558,20 +665,20 @@ fn candidates(
             if sym.sym.st_shndx == 0 || ty == STT_SECTION || ty == STT_FILE {
                 continue;
             }
-            let e = o + 24 * k;
-            if e + 24 > data.len() {
+            let e = o + lay.sym * k;
+            if e + lay.sym > data.len() {
                 break;
             }
             let label = format!("{} ({:#x})", sym.name, sym.sym.st_value);
             g.push(
                 "symtab-value",
                 format!("{label}: value + 4"),
-                vec![(e + 8, bytes_of(sym.sym.st_value.wrapping_add(4), 8))],
+                vec![(e + lay.sym_value, bytes_of(sym.sym.st_value.wrapping_add(4), lay.w))],
             );
             g.push(
                 "symtab-size",
                 format!("{label}: size {} + 1", sym.sym.st_size),
-                vec![(e + 16, bytes_of(sym.sym.st_size.wrapping_add(1), 8))],
+                vec![(e + lay.sym_size, bytes_of(sym.sym.st_size.wrapping_add(1), lay.w))],
             );
         }
         // linker-symbol: a symbol the linker defines (Y5's names) + 8.
@@ -603,6 +710,8 @@ fn candidates(
                     | "__etext"
                     | "__rela_iplt_start"
                     | "__rela_iplt_end"
+                    | "__rel_iplt_start"
+                    | "__rel_iplt_end"
                     | "_DYNAMIC"
                     | "_TLS_MODULE_BASE_"
             ) || n.starts_with("__start_")
@@ -610,12 +719,12 @@ fn candidates(
             if !y5 || sym.sym.st_shndx == 0 {
                 continue;
             }
-            let e = o + 24 * k;
-            if e + 24 <= data.len() {
+            let e = o + lay.sym * k;
+            if e + lay.sym <= data.len() {
                 g.push(
                     "linker-symbol",
                     format!("{n} ({:#x}) + 8", sym.sym.st_value),
-                    vec![(e + 8, bytes_of(sym.sym.st_value.wrapping_add(8), 8))],
+                    vec![(e + lay.sym_value, bytes_of(sym.sym.st_value.wrapping_add(8), lay.w))],
                 );
             }
         }
@@ -625,17 +734,36 @@ fn candidates(
     g.push(
         "e-entry",
         format!("e_entry {entry:#x} + 4"),
-        vec![(24, bytes_of(entry.wrapping_add(4), 8))],
+        vec![(24, bytes_of(entry.wrapping_add(4), lay.w))],
     );
     g.push(
         "e-entry",
         format!("e_entry {entry:#x} + 0x10000000"),
-        vec![(24, bytes_of(entry.wrapping_add(0x1000_0000), 8))],
+        vec![(24, bytes_of(entry.wrapping_add(0x1000_0000), lay.w))],
     );
+    // EI_OSABI and e_flags (S1).
+    let osabi = image.header.ei_osabi;
+    g.push(
+        "header-ident",
+        format!("EI_OSABI {osabi} made {}", osabi ^ 3),
+        vec![(7, vec![osabi ^ 3])],
+    );
+    g.push("header-ident", format!("EI_OSABI {osabi} made 9"), vec![(7, vec![9])]);
+    if matches!(image.header.e_machine, mortar_elf::consts::EM_386 | mortar_elf::consts::EM_X86_64)
+    {
+        let at = if elf64 { 48 } else { 36 };
+        let f = image.header.e_flags;
+        g.push(
+            "header-ident",
+            format!("e_flags {f:#x} | 1"),
+            vec![(at, bytes_of(u64::from(f | 1), 4))],
+        );
+    }
     // Program headers.
     let phoff = image.header.e_phoff as usize;
     for (k, p) in image.phdrs.iter().enumerate() {
-        let e = phoff + 56 * k;
+        let e = phoff + lay.ph * k;
+        let (fl, fs, ms, al, w) = (lay.ph_flags, lay.ph_filesz, lay.ph_memsz, lay.ph_align, lay.w);
         let ty = match p.p_type {
             PT_LOAD => "PT_LOAD".to_owned(),
             PT_TLS => "PT_TLS".to_owned(),
@@ -646,18 +774,18 @@ fn candidates(
             g.push(
                 "tls-segment",
                 format!("{at}: p_memsz + p_align"),
-                vec![(e + 40, bytes_of(p.p_memsz.wrapping_add(p.p_align.max(1)), 8))],
+                vec![(e + ms, bytes_of(p.p_memsz.wrapping_add(p.p_align.max(1)), w))],
             );
             g.push(
                 "tls-segment",
                 format!("{at}: p_align * 2"),
-                vec![(e + 48, bytes_of(p.p_align.max(1) * 2, 8))],
+                vec![(e + al, bytes_of(p.p_align.max(1) * 2, w))],
             );
             if p.p_filesz >= 8 {
                 g.push(
                     "tls-segment",
                     format!("{at}: p_filesz - 8"),
-                    vec![(e + 32, bytes_of(p.p_filesz - 8, 8))],
+                    vec![(e + fs, bytes_of(p.p_filesz - 8, w))],
                 );
             }
             continue;
@@ -666,43 +794,43 @@ fn candidates(
             g.push(
                 "phdr-filesz",
                 format!("{at}: p_filesz - 8"),
-                vec![(e + 32, bytes_of(p.p_filesz - 8, 8))],
+                vec![(e + fs, bytes_of(p.p_filesz - 8, w))],
             );
         }
         g.push(
             "phdr-filesz",
             format!("{at}: p_filesz + 8"),
-            vec![(e + 32, bytes_of(p.p_filesz + 8, 8))],
+            vec![(e + fs, bytes_of(p.p_filesz + 8, w))],
         );
         if p.p_memsz >= 8 {
             g.push(
                 "phdr-memsz",
                 format!("{at}: p_memsz - 8"),
-                vec![(e + 40, bytes_of(p.p_memsz - 8, 8))],
+                vec![(e + ms, bytes_of(p.p_memsz - 8, w))],
             );
         }
         g.push(
             "phdr-memsz",
             format!("{at}: p_memsz + 0x10"),
-            vec![(e + 40, bytes_of(p.p_memsz + 0x10, 8))],
+            vec![(e + ms, bytes_of(p.p_memsz + 0x10, w))],
         );
         g.push(
             "phdr-align",
             format!("{at}: p_align * 2"),
-            vec![(e + 48, bytes_of(p.p_align.max(1) * 2, 8))],
+            vec![(e + al, bytes_of(p.p_align.max(1) * 2, w))],
         );
         if p.p_align > 1 {
             g.push(
                 "phdr-align",
                 format!("{at}: p_align / 2"),
-                vec![(e + 48, bytes_of(p.p_align / 2, 8))],
+                vec![(e + al, bytes_of(p.p_align / 2, w))],
             );
         }
         for (bit, n) in [(1u32, "PF_X"), (2, "PF_W"), (4, "PF_R")] {
             g.push(
                 "phdr-flags",
                 format!("{at}: {n} toggled"),
-                vec![(e + 4, (p.p_flags ^ bit).to_le_bytes().to_vec())],
+                vec![(e + fl, (p.p_flags ^ bit).to_le_bytes().to_vec())],
             );
         }
     }
@@ -728,7 +856,7 @@ fn candidates(
                     );
                 }
             }
-            p += (8 + sz).next_multiple_of(8);
+            p += (8 + sz).next_multiple_of(lay.w);
         }
     }
     // section-overlap: an allocated section grown 8 bytes into the next.
@@ -752,7 +880,7 @@ fn candidates(
             g.push(
                 "section-overlap",
                 format!("{name} grown into {}", image.sections[j].name),
-                vec![(shoff + 64 * i + 32, bytes_of(b + 8 - a, 8))],
+                vec![(shoff + lay.sh * i + lay.sh_size, bytes_of(b + 8 - a, lay.w))],
             );
         }
     }
@@ -803,6 +931,37 @@ fn candidates(
     // iplt-entry: an IPLT entry loading the next slot, branching through
     // another register, or (x86-64 IBT) without its endbr64.
     for s in image.sections.iter().filter(|s| matches!(s.name.as_str(), ".iplt" | ".plt")) {
+        if i386 {
+            // spec/x86.md X86-48/49: `ff 25 <word>`, after `endbr32` with IBT.
+            let (Ok(o), Ok(n)) =
+                (usize::try_from(s.shdr.sh_offset), usize::try_from(s.shdr.sh_size))
+            else {
+                continue;
+            };
+            let Some(b) = data.get(o..o + n) else { continue };
+            let mut k = 0;
+            for j in 0..n.saturating_sub(5) {
+                if b[j] != 0xff || b[j + 1] != 0x25 || k >= 64 {
+                    continue;
+                }
+                let at = format!("{} entry {k} at {:#x}", s.name, s.shdr.sh_addr + j as u64);
+                if j >= 4 && b[j - 4..j] == crate::x86::ENDBR32 {
+                    g.push(
+                        "iplt-entry",
+                        format!("{at}: endbr32 made a NOP"),
+                        vec![(o + j - 4, vec![0x0f, 0x1f, 0x40, 0x00])],
+                    );
+                }
+                let d = le(&b[j + 2..j + 6]).wrapping_add(4);
+                g.push(
+                    "iplt-entry",
+                    format!("{at}: the next word"),
+                    vec![(o + j + 2, bytes_of(d, 4))],
+                );
+                k += 1;
+            }
+            continue;
+        }
         let (Ok(o), Ok(n)) = (usize::try_from(s.shdr.sh_offset), usize::try_from(s.shdr.sh_size))
         else {
             continue;
@@ -947,7 +1106,7 @@ fn adrp_word(d: u32, pc: u64, page: u64) -> Option<u32> {
 
 /// The `(offset, width)` of each FDE's initial location in `.eh_frame`'s
 /// bytes `b`, from its CIE's `R` encoding.
-fn fde_pc_begins(b: &[u8]) -> Vec<(usize, usize)> {
+fn fde_pc_begins(b: &[u8], addr: usize) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut cies: BTreeMap<usize, usize> = BTreeMap::new();
     let mut at = 0usize;
@@ -958,7 +1117,7 @@ fn fde_pc_begins(b: &[u8]) -> Vec<(usize, usize)> {
         }
         let id = le(&b[at + 4..at + 8]) as usize;
         if id == 0 {
-            if let Some(w) = cie_width(&b[at + 8..at + 4 + len]) {
+            if let Some(w) = cie_width(&b[at + 8..at + 4 + len], addr) {
                 cies.insert(at, w);
             }
         } else if let Some(cie) = (at + 4).checked_sub(id)
@@ -986,7 +1145,7 @@ fn uleb(b: &[u8], at: &mut usize) -> Option<u64> {
 }
 
 /// The width of the FDE pointers a CIE's body (after the id) gives.
-fn cie_width(b: &[u8]) -> Option<usize> {
+fn cie_width(b: &[u8], addr: usize) -> Option<usize> {
     let version = *b.first()?;
     let nul = b[1..].iter().position(|&c| c == 0)? + 1;
     let aug = &b[1..nul];
@@ -1010,18 +1169,20 @@ fn cie_width(b: &[u8]) -> Option<usize> {
                 b'L' => at += 1,
                 b'P' => {
                     let pe = *b.get(at)?;
-                    at += 1 + width_of(pe)?;
+                    at += 1 + width_of(pe, addr)?;
                 }
                 _ => {}
             }
         }
     }
-    width_of(enc)
+    width_of(enc, addr)
 }
 
-fn width_of(enc: u8) -> Option<usize> {
+/// The width of a pointer encoding; `absptr` is an address (`addr`).
+fn width_of(enc: u8, addr: usize) -> Option<usize> {
     match enc & 0x0f {
-        0x00 | 0x04 | 0x0c => Some(8),
+        0x00 => Some(addr),
+        0x04 | 0x0c => Some(8),
         0x03 | 0x0b => Some(4),
         0x02 | 0x0a => Some(2),
         _ => None,
@@ -1157,8 +1318,8 @@ mod tests {
     fn s9_5_cie_pointer_width() {
         // version 1, "zR", code 4, data -8 (0x78), ra 30, aug len 1, R = 0x1b.
         let cie = [1u8, b'z', b'R', 0, 4, 0x78, 30, 1, 0x1b];
-        assert_eq!(cie_width(&cie), Some(4));
+        assert_eq!(cie_width(&cie, 8), Some(4));
         let plain = [1u8, 0, 4, 0x78, 30];
-        assert_eq!(cie_width(&plain), Some(8));
+        assert_eq!(cie_width(&plain, 8), Some(8));
     }
 }

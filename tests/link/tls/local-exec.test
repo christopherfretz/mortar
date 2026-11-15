@@ -3,6 +3,7 @@
 # a fresh copy of the initialization image (ELF Handling For
 # Thread-Local Storage, "Local Exec"; the psABI's TLS layout).
 #@ spec: layout.md "Thread-local storage"
+#@ anomaly(mold,i386): A19
 
 cc -O1 -ftls-model=local-exec -pthread tls.c -o tls.o
 link gcc -static -no-pie -pthread tls.o -o prog
