@@ -140,8 +140,11 @@ template statics, `&std::cout`, `&typeid`, `new(nothrow)`) and Fortran
 Clang 19 and Clang 22 (gfortran for Fortran) at `-O0`/`-O2` in the modes
 default, `-fno-pic`, `-fPIC`, `-fPIE`, `-fno-plt`, `-fPIC -fno-plt`, plus
 `-mtls-dialect=trad`/`-mtls-size=48` (AArch64) and `gnu2` (x86); 75 954
-relocation rows; 120 executables linked by the four references and run,
-identical output everywhere. Every compiler defaults to PIE
+relocation rows from every mode (8 compilations fail: Clang does not
+support `-mtls-dialect=trad`). The 120 executables linked by the four
+references and run, with identical output everywhere, are of the modes
+default and `-fno-pic` only, one mode per link; the mixed-mode links
+(`corpus/mixed.sh`) are reported below the table. Every compiler defaults to PIE
 (`__PIE__ 2`).
 
 | arch | types against a shared-object target, and where |
@@ -599,9 +602,16 @@ references, on every architecture (E-dynsym §2, E-reloc §5); a64.md §10.5
 L1162 ("`st_shndx` = the PLT's section") is wrong and is corrected
 (request R-A1): a defined entry would make glibc bind the executable's own
 `JUMP_SLOT` to its own PLT entry. An `STB_GNU_UNIQUE` shared definition
-gives a copy `STB_GLOBAL` (the binding rule above), so an executable never
-holds a unique symbol [the references' choice unmeasured; harmless:
-uniqueness is the library's]. *Test:* `dynsym-fields` (one case per row,
+gives a copy `STB_GLOBAL` (the binding rule above), so `.dynsym` of an
+executable never holds a unique symbol (uniqueness is the library's).
+`EI_OSABI` follows the arch-independent rule already ruled for static
+links (a64.md Q11, x64 X-49): `ELFOSABI_GNU` when `.symtab` or `.dynsym`
+of the output holds an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or the
+output has an `IRELATIVE` record, else `ELFOSABI_NONE`. An executable's
+own unique definitions (GCC template statics, function-local statics of
+inline functions) stay `STB_GNU_UNIQUE` in `.symtab`, so a C++ PIE is
+usually `ELFOSABI_GNU`: GNU ld's output; lld and mold write 0
+(`review-m2-adv/unique`, both architectures; glibc accepts both). *Test:* `dynsym-fields` (one case per row,
 per architecture).
 
 **D-24 [M2] (`.dynstr`).** Byte 0 is NUL; then each distinct string once,
@@ -775,7 +785,11 @@ and glibc 2.41 needs none of them, E-dynamic §2); the other reserved
 the `r_debug` address into `DT_DEBUG` and, in a PIE, adds the load bias to
 the address tags in place; with the segment read-only the program dies
 (`SIGSEGV`), E-dynamic `dyncheck`. `PT_DYNAMIC` covers exactly `.dynamic`,
-`p_align` 8 (4 on ELF32), `PF_R|PF_W`. *Test:* `dynamic-writable`.
+`p_align` 8 (4 on ELF32), `PF_R|PF_W`. Under `-z norelro` (supported;
+all three link and run dynamic outputs with it, `review-m2-adv/dyntags`
+variant `relro-off`) there is no `PT_GNU_RELRO`; `.dynamic` keeps its
+place and stays writable for the whole run. *Test:* `dynamic-writable`,
+`norelro-dynamic`.
 
 **D-34 [M2] (section headers).** As GNU ld and lld write them
 (`design/shdr.sh`; mold omits `SHF_INFO_LINK`):
@@ -856,16 +870,25 @@ st_value)` (model §4.3; every alias at that address shares it, resolve
   outputs of both, E-reloc `copy/zero`);
 - alignment: `min(sh_addralign of the defining section, 2^ctz(st_value))`
   (resolve §9.6; all three honour it, E-reloc `calign`);
-- place: the chunk `.dynbss` (output section `.bss`, its first chunk) when
-  the defining address lies in a writable `PT_LOAD` of the shared object,
-  else `.bss.rel.ro` (output section `.bss.rel.ro`, inside RELRO; layout
-  L-80; lld's name and section type; GNU ld uses `.data.rel.ro`, mold
-  `.copyrel.rel.ro`, all inside RELRO and all run). a64.md §10.5's
-  `.data.rel.ro` is corrected to this (request R-A4);
+- place: the chunk `.bss.rel.ro` (output section `.bss.rel.ro`, inside
+  RELRO; layout L-80; lld's name and section type) when the defining
+  address lies in a `PT_GNU_RELRO` or in a non-writable `PT_LOAD` of the
+  shared object (lld's `isReadOnly` test), else the chunk `.dynbss`
+  (output section `.bss`, its first chunk). Copied typeinfo and vtables
+  (libstdc++ defines them in `.data.rel.ro`, a writable `PT_LOAD` inside
+  `PT_GNU_RELRO`) therefore land inside RELRO, as with all three
+  references (GNU ld `.data.rel.ro`, lld `.bss.rel.ro`, mold
+  `.copyrel.rel.ro`; `review-m2-adv/copyro`, AArch64 and x86-64, all run).
+  Under `-z norelro` there is no RELRO: `.bss.rel.ro` is still the chunk,
+  placed as an ordinary writable section (layout L-80 without the RELRO
+  run). a64.md §10.5's `.data.rel.ro` is corrected to this (request R-A4);
 - order within each chunk: by the least `SymbolId` among the aliases;
-- record: one `COPY` with `r_sym` the `.dynsym` entry of thexactly six `DT_NULL` entries at the end.
-  referenced alias (GNU ld and lld attach it to the primary name, mold to
-  an alias; all run), `r_offset` the allocation, addend 0.
+- record: one `COPY` per allocation, `r_sym` the `.dynsym` entry of the
+  alias with the least `SymbolId` among the aliases that a live
+  relocatable object references (GNU ld and lld attach the record to the
+  primary name, mold to an alias; all run), `r_offset` the allocation,
+  addend 0. Every alias at that `(file, st_value)`, referenced or not, is
+  exported at the copy's address (D-21 item 3; the fix of W2).
 
 Refused by name: a copy of an `STT_TLS` or `STT_FUNC`/`STT_GNU_IFUNC`
 definition (a function takes D-44 instead), of a protected one (D-18),
@@ -873,8 +896,9 @@ and any copy under `-z nocopyreloc` (an option that stays refused today;
 GNU ld, lld and mold refuse the link with it, E-reloc). A size mismatch
 between link time and run time is not detectable at link time (glibc
 warns and copies the link-time size). *Tests:* `copy-reloc` (stdout,
-environ aliases, `std::cout`, typeinfo, a 64-aligned value), 
-`copy-zero-size`, `copy-tls-refused`.
+environ aliases, `std::cout`, a 64-aligned value), `copy-typeinfo-relro`
+(`&typeid(std::bad_alloc)` and a vtable from `-fno-pic` code: the copy is
+inside `PT_GNU_RELRO`), `copy-zero-size`, `copy-tls-refused`.
 
 **D-43 [M2] (`COPY` in a `Pie`).** arch.md §4.3 row `Pc` against
 `Shlib{func: false}` in `Pie` is `C`, not `E` (request R-A3; a64.md Q5
@@ -892,9 +916,24 @@ demands `CANON_PLT`: the key's address in the whole executable is its PLT
 entry, and its `.dynsym` entry is `SHN_UNDEF` with that `st_value` (D-23).
 All three references, every architecture, lazy and `-z now`: the
 executable's, the library's and `dlsym`'s `&puts` agree (E-reloc §5). In
-`Pie` such a use is refused by name (arch.md §4.3 `E`; no reference
-writes a canonical PLT in a PIE [unmeasured whether one would]); a
-protected definition is D-18. *Test:* `canonical-plt-equality`.
+`Pie` such a use is refused by name, `canonical-plt-in-pie` (arch.md
+§4.3 `E`), with the message ``relocation R_AARCH64_ADR_PREL_PG_HI21
+against symbol `puts' cannot be used in a position-independent
+executable; recompile with -fPIE, or link with -no-pie``. Measured
+(`review-m2-adv/canonpie`, a `-fno-pic` object taking `&puts`, `&qsort`
+in the default PIE line): on AArch64 GNU ld refuses (``… can not be used
+when making a shared object; recompile with -fPIC``), lld and mold write
+a canonical PLT in the PIE and address equality holds; on x86-64
+(`R_X86_64_32`) GNU ld and mold refuse, and lld links a canonical PLT
+whose 32-bit absolute word gets no record, so the `-fno-pic` code sees
+the unrelocated link-time address (`pie=0 lib=0 dlsym=0`): a wrong
+output of lld (W11, §13.2). mortar takes GNU ld's behaviour on both
+architectures. A protected definition is D-18. kiln+hod `-fno-pic`
+objects use `ADR_PREL_PG_HI21` against `puts` and
+`_ZNSt13runtime_errorD1Ev` (`review-m2-adv/hodpie`), so the Mason lane's
+`-fno-pic` cells link `-no-pie` once the lane goes dynamic (record §3,
+WP-M2-LANE). *Tests:* `canonical-plt-equality`,
+`canon-plt-in-pie-refused` (AArch64 and x86-64; W11).
 
 **D-45 [M2] (IFUNCs defined in the executable).** A non-preemptible IFUNC
 has one IPLT entry, which is its address everywhere in the executable
@@ -986,7 +1025,9 @@ entry plus 6 (the `push`; GNU ld and lld; mold uses PLT0 with the index in
 E-reloc runs). Under `-z now` the shapes stay (PLT0 and the lazy stubs are
 written, as all three do), `.got.plt` moves into RELRO as its own chunk
 (layout L-60 rank 7; lld and mold; GNU ld merges it into `.got`),
-`DT_FLAGS = DF_BIND_NOW` and `DF_1_NOW` are set (D-30). No `.plt.got`
+`DT_FLAGS = DF_BIND_NOW` and `DF_1_NOW` are set (D-30); under `-z now -z
+norelro` `.got.plt` keeps its own chunk in the writable data and nothing
+is read-only after relocation. No `.plt.got`
 (lld; GNU ld and mold use it for keys with both a GOT and a PLT use):
 such a key gets a PLT entry and a GOT slot. The x86-64 IBT shapes (`-z
 ibt`, `-z ibtplt`, `.plt.sec`) stay refused at M2 (no census line passes
