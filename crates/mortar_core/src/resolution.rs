@@ -191,8 +191,6 @@ pub enum SectionKind {
     Note,
     /// Non-alloc, handled as data (`.debug_*`).
     Debug,
-    /// Mason records (`spec/meta.md`).
-    Metadata,
     // -- no output of their own ---------------------------------------
     /// Section 0.
     Null,
@@ -206,6 +204,9 @@ pub enum SectionKind {
     Stack,
     /// `SHF_EXCLUDE`.
     Excluded,
+    /// A Mason metadata container (`spec/meta.md` MT-6): read by the
+    /// checks, never output (`Dropped(Consumed)`).
+    Meta,
 }
 
 impl SectionKind {
@@ -221,6 +222,7 @@ impl SectionKind {
                 | Self::Group
                 | Self::Stack
                 | Self::Excluded
+                | Self::Meta
         )
     }
 
@@ -229,7 +231,7 @@ impl SectionKind {
     /// (`Split`, `MergeMap`, the `.eh_frame` chunk of `Slots`).
     #[must_use]
     pub const fn is_placed(self) -> bool {
-        matches!(self, Self::Regular | Self::Nobits | Self::Note | Self::Debug | Self::Metadata)
+        matches!(self, Self::Regular | Self::Nobits | Self::Note | Self::Debug)
     }
 }
 
