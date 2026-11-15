@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use mortar_elf::consts::{
-    PT_LOAD, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX,
+    PT_LOAD, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE, SHN_ABS, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX,
     SHT_NOBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_GNU_UNIQUE, STB_LOCAL,
     STB_WEAK, STT_FILE, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS, STV_HIDDEN, STV_INTERNAL,
     STV_PROTECTED,
@@ -256,6 +256,7 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             .filter_map(|&(oi, di)| placed_def(e, oi, di))
             .map(|d| (d, d.sym.binding()))
             .collect();
+
         // An IFUNC in the GNU form is judged like any symbol; the lld and
         // mold form (a function at an IPLT entry) is Y1's (§4.8).
         let canonical_ifunc = defs.iter().any(|(d, _)| d.sym.sym_type() == STT_GNU_IFUNC)
@@ -315,8 +316,72 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
         }
         attributes(image, 3, out, d, fs);
     }
+    let mut names: Vec<&String> = e.commons.keys().collect();
+    names.sort();
+    for name in names {
+        let Some(out) = image.global(name) else { continue };
+        if let Some(c) = commons(e, name) {
+            checked += 1;
+            common(image, out, c, fs);
+        }
+    }
     e.cov.globals_checked += checked;
     e.cov.globals_unchecked += unchecked;
+}
+
+/// A name defined only by common symbols (gABI `SHN_COMMON`; x86-64's
+/// `SHN_X86_64_LCOMMON`, `spec/x64.md` X-55): the largest size and
+/// alignment. `None` when a definition is not common.
+fn commons(e: &Engine<'_, '_>, name: &str) -> Option<(u64, u64)> {
+    let (mut size, mut align, mut any) = (0u64, 1u64, false);
+    if e.defs.contains_key(name) {
+        return None;
+    }
+    for &(oi, di) in e.commons.get(name)? {
+        let d = e.objs[oi].symtab?.get(SymbolIndex(di)).ok()?;
+        any = true;
+        size = size.max(d.st_size);
+        align = align.max(d.st_value);
+    }
+    any.then_some((size, align))
+}
+
+/// Y3 for a common symbol: the linker allocates it, `[value, value +
+/// size)` in a writable `SHT_NOBITS` section, aligned to the largest
+/// alignment (gABI "Symbol Table", `SHN_COMMON`). lld makes an x86-64
+/// large common absolute and allocates nothing (§10.2 A14).
+fn common(image: &Image<'_>, out: &OutSym, (size, align): (u64, u64), fs: &mut Vec<Finding>) {
+    let (name, o) = (&out.name, &out.sym);
+    let sec = (o.st_shndx != SHN_UNDEF && o.st_shndx < SHN_LORESERVE)
+        .then(|| image.sections.get(usize::from(o.st_shndx)))
+        .flatten();
+    let holds = sec.is_some_and(|s| {
+        s.alloc()
+            && s.shdr.sh_type == SHT_NOBITS
+            && s.shdr.sh_flags & SHF_WRITE != 0
+            && s.shdr.sh_addr <= o.st_value
+            && o.st_value.saturating_add(size) <= s.shdr.sh_addr.saturating_add(s.shdr.sh_size)
+    });
+    if !holds {
+        let mut f = y(
+            3,
+            format!("common symbol '{name}' is not allocated in a writable SHT_NOBITS section"),
+        );
+        f.found = Some(u64::from(o.st_shndx));
+        fs.push(named(f.at(o.st_value), name));
+        return;
+    }
+    if o.st_size != size {
+        let mut f = y(3, format!("common symbol '{name}' has another size than its largest definition"));
+        f.expected = Some(size);
+        f.found = Some(o.st_size);
+        fs.push(named(f.at(o.st_value), name));
+    }
+    if align.is_power_of_two() && o.st_value % align != 0 {
+        let mut f = y(3, format!("common symbol '{name}' is not aligned to {align:#x}"));
+        f.found = Some(o.st_value);
+        fs.push(named(f.at(o.st_value), name));
+    }
 }
 
 /// The placed input locals of one name (Y4).
@@ -474,7 +539,17 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     };
     // The initialized data ends at E; the data and bss end at M.
     let data = || alloc().filter(|s| flag(s, SHF_WRITE) && !flag(s, SHF_TLS));
-    let e_end = data().filter(|s| !nobits(s)).map(end).max();
+    // spec/x64.md X-54: an x86-64 large section (SHF_X86_64_LARGE) placed
+    // after the small data and bss (GNU ld, lld) is not initialized data
+    // for E; one placed before the bss (mold) is.
+    let large = |s: &crate::image::OutSection| {
+        e.image.header.e_machine == 62 && s.shdr.sh_flags & SHF_X86_64_LARGE != 0
+    };
+    let small_end = data().filter(|s| !large(s)).map(end).max();
+    let e_end = data()
+        .filter(|s| !nobits(s) && !(large(s) && small_end.is_some_and(|m| s.shdr.sh_addr >= m)))
+        .map(end)
+        .max();
     let m_end = data().map(end).max();
     let text_end = image
         .sections

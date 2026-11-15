@@ -434,6 +434,9 @@ pub(crate) struct Engine<'a, 'b> {
     occupied: Occupied,
     /// Global and weak definitions of the inputs by name.
     pub(crate) defs: HashMap<String, Vec<(usize, u32)>>,
+    /// Common definitions (`SHN_COMMON`; x86-64's `SHN_X86_64_LCOMMON`)
+    /// by name, for Y3.
+    pub(crate) commons: HashMap<String, Vec<(usize, u32)>>,
     got: Option<u64>,
     /// The output's `.got`, `[start, end)`: a GOT slot lies inside it when
     /// the output has one (§5.5).
@@ -465,9 +468,19 @@ pub(crate) struct Engine<'a, 'b> {
 impl<'a, 'b> Engine<'a, 'b> {
     pub fn new(image: &'b Image<'a>, objs: &'b [Obj<'a>], format: Format) -> Self {
         let mut defs: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
+        let mut commons: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
         for (oi, o) in objs.iter().enumerate() {
             let Some(t) = &o.symtab else { continue };
+            let x64 = o.elf.machine() == Machine::X86_64;
             for (i, sym) in t.iter() {
+                if matches!(sym.binding(), STB_GLOBAL | STB_WEAK)
+                    && (sym.st_shndx == mortar_elf::consts::SHN_COMMON
+                        || (x64 && sym.st_shndx == mortar_elf::consts::SHN_X86_64_LCOMMON))
+                    && let Ok(name) = t.name(&sym)
+                {
+                    commons.entry(String::from_utf8_lossy(name).into_owned()).or_default().push((oi, i.0));
+                    continue;
+                }
                 if !matches!(sym.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE)
                     || !matches!(
                         t.section_of(i, &sym),
@@ -497,6 +510,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             objs,
             occupied: Occupied::build(objs),
             defs,
+            commons,
             got,
             got_section,
             cache,

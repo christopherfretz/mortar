@@ -72,6 +72,7 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     engine.finish_pieces();
     engine.check_eh_frame();
     content::check_content(&mut engine);
+    content::check_init_padding(&mut engine);
     content::check_symbols(&mut engine);
     symbols::check(&mut engine);
     let props = property::check(&image, &objs, map.format, &mut engine.cov);
