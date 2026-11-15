@@ -9,9 +9,10 @@ use mortar_arch::{
 use mortar_diag::RefusalClass;
 use mortar_x64::{FACTS, MAX_REACH, X64, table};
 
-const M1_TYPES: [u32; 30] =
-    [0, 1, 2, 4, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 29, 31, 32,
-     33, 34, 35, 41, 42];
+const M1_TYPES: [u32; 30] = [
+    0, 1, 2, 4, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 29, 31, 32,
+    33, 34, 35, 41, 42,
+];
 const LATER: [u32; 12] = [3, 28, 30, 43, 44, 45, 46, 47, 48, 49, 50, 51];
 
 fn site() -> Site<'static> {
@@ -202,7 +203,8 @@ fn plt_variant_and_iplt_bytes() {
     assert_eq!(x.plt(PltVariant::Lazy).iplt_entry, 8);
     assert_eq!(x.plt(PltVariant::Ibt).iplt_entry, 16);
 
-    let synth = SynthCx { addr: 0x40_1000, header: 0, got_plt: 0x40_3018, got_base: 0x40_3000, index: 0 };
+    let synth =
+        SynthCx { addr: 0x40_1000, header: 0, got_plt: 0x40_3018, got_base: 0x40_3000, index: 0 };
     let mut b = [0u8; 8];
     x.write_plt(PltVariant::Lazy, PltPart::Iplt(0), &synth, &mut b).unwrap();
     // rel32 = 0x403018 − 0x401006 = 0x2012.

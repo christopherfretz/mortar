@@ -29,8 +29,8 @@ use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
 
 pub use apply::{
-    DTPOFF_PLACE, DYNAMIC_TLS, LD12, NON_ALLOC_TLS, LD13, LD22, TLS_TO_IE, UNRECOGNIZED_DESC, UNRECOGNIZED_GD,
-    UNRECOGNIZED_LD, scan_checks,
+    DTPOFF_PLACE, DYNAMIC_TLS, LD12, LD13, LD22, NON_ALLOC_TLS, TLS_TO_IE, UNRECOGNIZED_DESC,
+    UNRECOGNIZED_GD, UNRECOGNIZED_LD, scan_checks,
 };
 
 /// The x86-64 architecture (M1: static and static-pie executables,
@@ -255,7 +255,9 @@ impl Arch for X64 {
         out: &mut [u8],
     ) -> Result<(), FieldError> {
         match (v, what) {
-            (PltVariant::Lazy, PltPart::Iplt(_)) => synth::put(out, &synth::iplt(cx.addr, cx.got_plt)?),
+            (PltVariant::Lazy, PltPart::Iplt(_)) => {
+                synth::put(out, &synth::iplt(cx.addr, cx.got_plt)?)
+            }
             (PltVariant::Ibt, PltPart::Iplt(_)) => {
                 synth::put(out, &synth::iplt_ibt(cx.addr, cx.got_plt)?)
             }

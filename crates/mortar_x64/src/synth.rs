@@ -10,7 +10,8 @@ use mortar_elf::Class;
 pub const ENDBR64: [u8; 4] = [0xf3, 0x0f, 0x1e, 0xfa];
 
 /// The refusal of a lazy PLT header or entry (§10.3, M2).
-pub const LAZY_PLT: Refusal = Refusal::named(RefusalClass::Feature, "lazy PLT (shared-library calls)");
+pub const LAZY_PLT: Refusal =
+    Refusal::named(RefusalClass::Feature, "lazy PLT (shared-library calls)");
 
 /// `rel32 = word − (end)`, checked s(32).
 fn rel32(word: u64, end: u64) -> Result<[u8; 4], FieldError> {

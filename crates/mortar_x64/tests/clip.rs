@@ -29,7 +29,13 @@ fn r(r_offset: u64, k: u32, r_type: u32, addend: i64) -> Reloc {
 /// `apply` never reads the output.
 type Written = Result<Vec<Option<u8>>, FieldError>;
 
-fn at<'a>(c: &Case<'a>, relocs: &'a [Reloc], h: &'a mortar_arch::Howto, i: usize, leads: bool) -> RelocAt<'a> {
+fn at<'a>(
+    c: &Case<'a>,
+    relocs: &'a [Reloc],
+    h: &'a mortar_arch::Howto,
+    i: usize,
+    leads: bool,
+) -> RelocAt<'a> {
     let rec = relocs[i];
     RelocAt {
         file: FileId(1),

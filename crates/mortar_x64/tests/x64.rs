@@ -8,8 +8,8 @@
 mod support;
 
 use mortar_arch::{
-    Arch, DemandFlags, FieldError, GlobalFlags, Incompatible, OutputKind, PlaceFacts, Range,
-    Reloc, ScanError, SlotKind, TargetKind, TlsBlock,
+    Arch, DemandFlags, FieldError, GlobalFlags, Incompatible, OutputKind, PlaceFacts, Range, Reloc,
+    ScanError, SlotKind, TargetKind, TlsBlock,
 };
 use mortar_diag::RefusalClass;
 use mortar_x64::{DTPOFF_PLACE, X64};
@@ -109,7 +109,10 @@ fn x12_every_non_tls_row_writes_its_value() {
     assert_eq!(field(&c, 41, 0).unwrap(), le(SLOT as i64 - P, 4), "A ≠ −4: unrelaxed");
     assert_eq!(field(&c, 42, 0).unwrap(), le(SLOT as i64 - P, 4));
     // `NONE` writes nothing.
-    assert_eq!(c.apply(&[Reloc { r_offset: 8, key: key(1), r_type: 0, addend: 9 }]).unwrap(), input);
+    assert_eq!(
+        c.apply(&[Reloc { r_offset: 8, key: key(1), r_type: 0, addend: 9 }]).unwrap(),
+        input
+    );
 }
 
 #[test]

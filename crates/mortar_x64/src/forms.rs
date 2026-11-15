@@ -189,7 +189,8 @@ pub fn form(r_type: u32, site: Site<'_>) -> Option<Form> {
         }
         GOTPC32_TLSDESC => {
             let b = around(&site, 3, 3)?;
-            (rex_w(b[0]) && b[1] == 0x8d && rip(b[2])).then_some(Form::T1 { rex: b[0], reg: reg(b[2]) })
+            (rex_w(b[0]) && b[1] == 0x8d && rip(b[2]))
+                .then_some(Form::T1 { rex: b[0], reg: reg(b[2]) })
         }
         TLSDESC_CALL => (around(&site, 0, 2)? == [0xff, 0x10]).then_some(Form::T2),
         TLSGD => gd_form(&site),
@@ -212,7 +213,11 @@ fn lea_rdi(site: &Site<'_>) -> bool {
 /// (c0 | r << 3) ff d0`.
 fn large_tail(site: &Site<'_>) -> bool {
     let Some(b) = around(site, 3, 22) else { return false };
-    b[7..9] == [0x48, 0xb8] && rex_w(b[17]) && b[18] == 0x01 && b[19] & 0xC7 == 0xC0 && b[20..22] == [0xff, 0xd0]
+    b[7..9] == [0x48, 0xb8]
+        && rex_w(b[17])
+        && b[18] == 0x01
+        && b[19] & 0xC7 == 0xC0
+        && b[20..22] == [0xff, 0xd0]
 }
 
 fn gd_form(site: &Site<'_>) -> Option<Form> {

@@ -1,18 +1,22 @@
 # WIP — WP-029b mortar_x64 (stage A)
 
 ## Done
-- mortar_arch: `SymValue.tls`, `SectionOut.exec` + `with_exec`; tls set at
-  construction sites (facts.tls in crates/mortar/src/sites.rs, mortar_image
-  link.rs; false elsewhere with a stage B note).
-- crates/mortar_x64 source: table.rs (30 M1 rows), forms.rs, relax.rs,
-  apply.rs (scan/apply/relaxations), synth.rs (IPLT, static slots), lib.rs
-  (Arch impl). Clippy clean, workspace check clean.
+- mortar_arch: `SymValue.tls`, `SectionOut.exec` + `with_exec`.
+- crates/mortar_x64 source: table, forms, relax, apply, synth, lib.
+- Tests: table.rs, x64.rs, relax.rs, clip.rs (pass); differential.rs
+  (§15 steps 1-4 in lld's and GNU's layouts, GNU converted types; passes,
+  0 mismatches, every qemu run correct; gd-large not run: lld W4-corrupt).
 
 ## Half-done
-- Tests: none yet (crates/mortar_x64/tests/).
+- nothing in flight.
 
 ## Learned
-- Spec findings list lives in the hand-back draft (see landed record when written).
+- lld writes a hidden undefined weak as an undefined LOCAL in the symtab.
+- GNU ld --emit-relocs keeps TLS types on relaxed sites; converts only
+  GOTPCRELX/REX_GOTPCRELX (to PC32/32/32S; G4's PC32 sits at P-1).
+- a.c's static IFUNC resolver must not call libc (getenv crashes).
 
 ## Next
-- tests/support/mod.rs from a64's; table.rs, x64.rs, relax.rs, clip.rs, synth.rs.
+- tests/census.rs (t1/t2/t3 flag matrix; full corpus via env var).
+- Q14/X-55 GNU ld COMMON+LCOMMON measurement; spec edits (x64.md, arch.md §3.6).
+- timing example; fmt/clippy; gate; landed record; stage B after merge main.

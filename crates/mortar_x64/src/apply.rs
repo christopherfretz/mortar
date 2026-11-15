@@ -8,8 +8,8 @@ use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
     Base, Check, ClassOutcome, DeadRef, DemandClass, DemandFlags, DemandSink, EventClass, Field,
     FieldError, FillCx, GlobalFlags, Incompatible, Minus, OutputKind, Refusal, RelocAt, ScanCx,
-    ScanError, SectionOut, SymValue, TargetKind, Terms, TlsAbi, class_outcome,
-    dead_reference, writes_dtprel,
+    ScanError, SectionOut, SymValue, TargetKind, Terms, TlsAbi, class_outcome, dead_reference,
+    writes_dtprel,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::Class;
@@ -75,12 +75,7 @@ const fn uses_got_base(h: &mortar_arch::Howto) -> bool {
 
 /// I1/I2 (X-23): decided from the output kind, the target kind and the
 /// input bytes, so scan and fill agree (kind 1).
-fn ie_relaxed(
-    at: &RelocAt<'_>,
-    output: OutputKind,
-    kind: TargetKind,
-    alloc: bool,
-) -> Option<Form> {
+fn ie_relaxed(at: &RelocAt<'_>, output: OutputKind, kind: TargetKind, alloc: bool) -> Option<Form> {
     // X-32: never in a non-alloc section.
     if !alloc || !output.is_exec() || at.addend != -4 || !tls_local(kind) {
         return None;
@@ -253,7 +248,11 @@ fn t_value(cx: &FillCx<'_>, sym: SymValue) -> Result<[u8; 4], FieldError> {
 }
 
 /// `apply` (arch.md §3.6).
-pub fn apply(cx: &FillCx<'_>, at: &RelocAt<'_>, out: &mut SectionOut<'_>) -> Result<(), FieldError> {
+pub fn apply(
+    cx: &FillCx<'_>,
+    at: &RelocAt<'_>,
+    out: &mut SectionOut<'_>,
+) -> Result<(), FieldError> {
     let h = at.howto;
     let exec = cx.output.is_exec();
     // X-25: the lead writes the follower's bytes; the follower nothing.
@@ -318,8 +317,11 @@ fn value(
     let p = out.addr.wrapping_add(at.r_offset);
     // X-53 (arch.md §4.3): `64`/`32`/… against a TLS symbol at a non-alloc
     // place is the offset in the TLS block.
-    if writes_dtprel(h.class, mortar_arch::PlaceFacts { alloc: out.alloc, writable: false }, sym.tls)
-    {
+    if writes_dtprel(
+        h.class,
+        mortar_arch::PlaceFacts { alloc: out.alloc, writable: false },
+        sym.tls,
+    ) {
         return checked(h.check, tls_off(cx, sym, a, TlsAbi::dtp_rel)?);
     }
     // §7 (`Facts`' `weak0` rule): `S = 0` for every class.
@@ -395,7 +397,11 @@ fn lead(
 ) -> Result<(), FieldError> {
     let gd = at.r_type == TLSGD;
     let Some(form) = relax::lead_form(at, cx.tables) else {
-        return Err(FieldError::Refused(feature(if gd { UNRECOGNIZED_GD } else { UNRECOGNIZED_LD })));
+        return Err(FieldError::Refused(feature(if gd {
+            UNRECOGNIZED_GD
+        } else {
+            UNRECOGNIZED_LD
+        })));
     };
     let mut buf = [0u8; 22];
     let (start, n) = match form {

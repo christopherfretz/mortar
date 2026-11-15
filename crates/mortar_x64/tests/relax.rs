@@ -275,7 +275,11 @@ fn i1_i2_every_register() {
                     let input = section(&[rex, op, modrm, 0, 0, 0, 0]);
                     let relocs = [rel(p, SYM, 22, -4)];
                     let out = applied(&t, &input, output, &relocs);
-                    let want = with(&input, AT, &[rex_prime(rex), new, 0xc0 | reg, T[0], T[1], T[2], T[3]]);
+                    let want = with(
+                        &input,
+                        AT,
+                        &[rex_prime(rex), new, 0xc0 | reg, T[0], T[1], T[2], T[3]],
+                    );
                     assert_eq!(out, want, "{output:?} op {op:#x} rex {rex:#x} reg {reg}");
                     // Kind 1: no `GTPREL` slot.
                     let s = scan(&t, output, &input, &relocs);
@@ -300,7 +304,8 @@ fn x18_ie_against_thread_local_weak0_writes_0() {
 fn x24_other_gottpoff_keeps_ie() {
     let t = tables(TargetKind::Local, true, TLS_S);
     // `movq x@gottpoff(%rip), %xmm0` (`66 48 0f 7e 05`) and `subq`.
-    for (form, p) in [(&[0x66, 0x48, 0x0f, 0x7e, 0x05][..], AT + 5), (&[0x48, 0x2b, 0x05], AT + 3)] {
+    for (form, p) in [(&[0x66, 0x48, 0x0f, 0x7e, 0x05][..], AT + 5), (&[0x48, 0x2b, 0x05], AT + 3)]
+    {
         let mut b = form.to_vec();
         b.extend([0; 4]);
         let input = section(&b);
@@ -411,21 +416,55 @@ fn x26_unmatched_sequences_are_refused_by_name() {
         let want = if lead == 19 { UNRECOGNIZED_GD } else { UNRECOGNIZED_LD };
         let wrong_type = if follower == 31 { 4 } else { 31 };
         let broken: [(&str, &Tables, Vec<u8>, [Reloc; 2]); 5] = [
-            ("A", &t, input.clone(), [rel(p, SYM, lead, -5), rel(p + delta, GET_ADDR, follower, -4)]),
-            ("offset", &t, input.clone(), [rel(p, SYM, lead, -4), rel(p + delta + 1, GET_ADDR, follower, -4)]),
-            ("type", &t, input.clone(), [rel(p, SYM, lead, -4), rel(p + delta, GET_ADDR, wrong_type, -4)]),
-            ("name", &other, input.clone(), [rel(p, SYM, lead, -4), rel(p + delta, GET_ADDR, follower, -4)]),
-            ("bytes", &t, with(&input, p - 1, &[0x35]), [rel(p, SYM, lead, -4), rel(p + delta, GET_ADDR, follower, -4)]),
+            (
+                "A",
+                &t,
+                input.clone(),
+                [rel(p, SYM, lead, -5), rel(p + delta, GET_ADDR, follower, -4)],
+            ),
+            (
+                "offset",
+                &t,
+                input.clone(),
+                [rel(p, SYM, lead, -4), rel(p + delta + 1, GET_ADDR, follower, -4)],
+            ),
+            (
+                "type",
+                &t,
+                input.clone(),
+                [rel(p, SYM, lead, -4), rel(p + delta, GET_ADDR, wrong_type, -4)],
+            ),
+            (
+                "name",
+                &other,
+                input.clone(),
+                [rel(p, SYM, lead, -4), rel(p + delta, GET_ADDR, follower, -4)],
+            ),
+            (
+                "bytes",
+                &t,
+                with(&input, p - 1, &[0x35]),
+                [rel(p, SYM, lead, -4), rel(p + delta, GET_ADDR, follower, -4)],
+            ),
         ];
         for (what, tb, input, relocs) in broken {
             let s = scan(tb, OutputKind::Static, &input, &relocs);
-            let lead_err = s.errors.iter().find(|(i, _)| *i == 0).unwrap_or_else(|| panic!("{name} {what}: {s:?}"));
+            let lead_err = s
+                .errors
+                .iter()
+                .find(|(i, _)| *i == 0)
+                .unwrap_or_else(|| panic!("{name} {what}: {s:?}"));
             assert_eq!(refused_name(&lead_err.1), want, "{name} {what}");
             let c = case(tb, &input, OutputKind::Static);
-            let Err(FieldError::Refused(r)) = c.apply_at(&relocs, 0) else { panic!("{name} {what}") };
+            let Err(FieldError::Refused(r)) = c.apply_at(&relocs, 0) else {
+                panic!("{name} {what}")
+            };
             assert_eq!(r.name, RefName::Named(want));
             // The follower is not consumed: it is an ordinary reference.
-            assert!(!X64::M1.consumed(OutputKind::Static, &at(&relocs, 1, &input), tb), "{name} {what}");
+            assert!(
+                !X64::M1.consumed(OutputKind::Static, &at(&relocs, 1, &input), tb),
+                "{name} {what}"
+            );
         }
     }
 }
@@ -496,7 +535,8 @@ fn x28_unmatched_descriptor_members_are_refused() {
         let relocs = [rel(AT + p, SYM, r_type, a)];
         let s = scan(&t, OutputKind::Static, &input, &relocs);
         assert_eq!(refused_name(&s.errors[0].1), UNRECOGNIZED_DESC, "{form:x?}");
-        let Err(FieldError::Refused(r)) = case(&t, &input, OutputKind::Static).apply(&relocs) else {
+        let Err(FieldError::Refused(r)) = case(&t, &input, OutputKind::Static).apply(&relocs)
+        else {
             panic!()
         };
         assert_eq!(r.name, RefName::Named(UNRECOGNIZED_DESC));
@@ -660,6 +700,9 @@ fn consumed_follower_against_undefined_is_not_an_error() {
 #[test]
 fn shown_bytes_are_the_reach_clipped() {
     let input: Vec<u8> = (0u8..40).collect();
-    assert_eq!(shown_bytes(&input, 2), "00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14");
+    assert_eq!(
+        shown_bytes(&input, 2),
+        "00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14"
+    );
     assert_eq!(shown_bytes(&input, 36), "20 21 22 23 24 25 26 27");
 }

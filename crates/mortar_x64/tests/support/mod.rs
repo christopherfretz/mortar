@@ -3,13 +3,13 @@
 
 use std::collections::HashMap;
 
-use mortar_x64::X64;
 use mortar_arch::{
     Arch, DemandFlags, DemandOut, DemandSink, DynRole, EventClass, FieldError, FillCx, FillTables,
     GlobalFlags, Howto, OutputKind, PlaceFacts, Proof, ProofRun, Reloc, RelocAt, ScanCx, ScanError,
     ScanTables, SectionOut, Site, SlotKind, SymFacts, SymNames, SymValue, TargetKind, TlsBlock,
 };
 use mortar_core::{FileId, SectionId, SymKey, SymbolId};
+use mortar_x64::X64;
 
 #[must_use]
 pub fn key(n: u32) -> SymKey {
