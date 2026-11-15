@@ -1378,15 +1378,20 @@ fn s3_11_tables_iterate_the_same_either_way() {
 fn s3_11_the_reader_names_no_allocating_type() {
     let sources = [
         ("consts.rs", include_str!("../src/consts.rs")),
+        ("dso.rs", include_str!("../src/dso.rs")),
+        ("dynamic.rs", include_str!("../src/dynamic.rs")),
         ("error.rs", include_str!("../src/error.rs")),
+        ("hash.rs", include_str!("../src/hash.rs")),
         ("header.rs", include_str!("../src/header.rs")),
         ("note.rs", include_str!("../src/note.rs")),
         ("object.rs", include_str!("../src/object.rs")),
         ("raw.rs", include_str!("../src/raw.rs")),
         ("reloc.rs", include_str!("../src/reloc.rs")),
         ("section.rs", include_str!("../src/section.rs")),
+        ("segment.rs", include_str!("../src/segment.rs")),
         ("strtab.rs", include_str!("../src/strtab.rs")),
         ("symbol.rs", include_str!("../src/symbol.rs")),
+        ("version.rs", include_str!("../src/version.rs")),
     ];
     let banned = [
         "std::",

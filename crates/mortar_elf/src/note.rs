@@ -1,11 +1,29 @@
-//! Notes and GNU program properties (`spec/elf.md` §3.8). Shared by every
-//! reader of this crate.
+//! Notes and GNU program properties (`spec/elf.md` §3.8, §6.8). Shared by
+//! every reader of this crate.
 
 use core::iter::FusedIterator;
 
 use crate::consts::{ELF_NOTE_GNU, NT_GNU_PROPERTY_TYPE_0};
 use crate::error::{Error, NotePart};
 use crate::raw::{Class, Nhdr, Record};
+
+/// Where a sequence of notes is: the contents of a section, or of a
+/// segment. Errors name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Section(u32),
+    Segment(u32),
+}
+
+impl Origin {
+    fn bad_note(self, offset: usize, part: NotePart) -> Error {
+        let offset = offset as u64;
+        match self {
+            Origin::Section(section) => Error::BadNote { section, offset, part },
+            Origin::Segment(segment) => Error::BadSegmentNote { segment, offset, part },
+        }
+    }
+}
 
 /// `value` rounded up to a multiple of `align` (a power of two).
 fn align_up(value: usize, align: usize) -> Option<usize> {
@@ -23,7 +41,7 @@ pub struct Notes<'a> {
     offset: usize,
     align: usize,
     class: Class,
-    section: u32,
+    origin: Origin,
 }
 
 impl<'a> Notes<'a> {
@@ -32,12 +50,20 @@ impl<'a> Notes<'a> {
     /// index errors name (0 for bytes that are not a section's).
     pub fn new(data: &'a [u8], align: usize, class: Class, section: u32) -> Self {
         let align = if align == 8 { 8 } else { 4 };
-        Notes { data, offset: 0, align, class, section }
+        Notes { data, offset: 0, align, class, origin: Origin::Section(section) }
+    }
+
+    /// The notes in `data`, the contents of program header `segment`, as
+    /// [`Notes::new`]. Errors are [`Error::BadSegmentNote`], with offsets
+    /// from the start of the segment.
+    pub fn in_segment(data: &'a [u8], align: usize, class: Class, segment: u32) -> Self {
+        let align = if align == 8 { 8 } else { 4 };
+        Notes { data, offset: 0, align, class, origin: Origin::Segment(segment) }
     }
 
     fn fail(&mut self, offset: usize, part: NotePart) -> Error {
         self.offset = self.data.len();
-        Error::BadNote { section: self.section, offset: offset as u64, part }
+        self.origin.bad_note(offset, part)
     }
 }
 
@@ -74,7 +100,7 @@ impl<'a> Iterator for Notes<'a> {
             desc,
             desc_offset: offset + desc_start.unwrap_or(0),
             class: self.class,
-            section: self.section,
+            origin: self.origin,
         }))
     }
 }
@@ -90,7 +116,7 @@ pub struct Note<'a> {
     desc: &'a [u8],
     desc_offset: usize,
     class: Class,
-    section: u32,
+    origin: Origin,
 }
 
 impl<'a> Note<'a> {
@@ -119,7 +145,7 @@ impl<'a> Note<'a> {
                 offset: 0,
                 base: self.desc_offset,
                 word: self.class.word_size(),
-                section: self.section,
+                origin: self.origin,
             },
         )
     }
@@ -136,7 +162,7 @@ pub struct Properties<'a> {
     offset: usize,
     base: usize,
     word: usize,
-    section: u32,
+    origin: Origin,
 }
 
 impl<'a> Iterator for Properties<'a> {
@@ -154,11 +180,7 @@ impl<'a> Iterator for Properties<'a> {
         });
         let Some((property, end)) = property else {
             self.offset = self.data.len();
-            return Some(Err(Error::BadNote {
-                section: self.section,
-                offset: (self.base + offset) as u64,
-                part: NotePart::Property,
-            }));
+            return Some(Err(self.origin.bad_note(self.base + offset, NotePart::Property)));
         };
         // The padding after the last property may be missing.
         let size = align_up(end, self.word).map_or(rest.len(), |end| end.min(rest.len()));

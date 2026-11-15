@@ -1,16 +1,19 @@
 # `mortar_elf`: ELF files
 
 This spec covers the ELF readers and writer primitives of `mortar_elf`. §1 to §4
-cover the constants and the reader for relocatable objects. The shared-object
-reader (§6) and the writer primitives are specified separately, and
-`archive.md` covers archives.
+cover the constants and the reader for relocatable objects, and §6 the reader
+for shared objects. §5 is reserved for the writer primitives, which are
+specified separately, and `archive.md` covers archives.
 
 The reference documents are the System V ABI generic ELF specification
 ("gABI", by chapter name: "ELF Header", "Sections", "String Table", "Symbol
 Table", "Relocation"), the Linux gABI extensions ("Program Property"), the
 processor supplements AAELF64 (ELF for the Arm 64-bit Architecture), the SysV
 x86-64 psABI and the i386 psABI, and the GNU gABI extensions for
-`SHT_GNU_*`, `STB_GNU_UNIQUE`, `STT_GNU_IFUNC` and `SHT_RELR`.
+`SHT_GNU_*`, `STB_GNU_UNIQUE`, `STT_GNU_IFUNC` and `SHT_RELR`. §6 also uses
+the gABI chapters "Program Header", "Dynamic Section" and "Hash Table", the
+Linux Standard Base "Symbol Versioning" chapter, and the GNU hash table as
+glibc and binutils define it (`DT_GNU_HASH`).
 
 ## 1. Scope
 
@@ -39,7 +42,8 @@ What the reader does **not** do:
 - resolve symbols, or decide what a group signature means: that is
   `resolve.md`;
 - decompress sections;
-- read program headers or dynamic tables: that is §6.
+- read program headers or dynamic tables: that is the shared-object reader
+  of §6, which reads `ET_DYN` files of the same three targets.
 
 ## 2. Constants and names
 
@@ -553,6 +557,443 @@ read.
 - The descriptors of `stapsdt` notes, which readelf prints on continuation
   lines, are not compared.
 
+## 5. The writer primitives
+
+Reserved: the writer primitives are specified by a later work package.
+
+## 6. The shared-object reader
+
+The shared-object reader reads what a linker needs from a shared object
+(`ET_DYN`) of one of the three targets of §1: the program headers, the
+dynamic table, the dynamic symbols and their versions, and the program
+properties. Like the object reader, it is a set of `Copy` views over a
+borrowed `&[u8]`:
+
+- It does not copy or allocate (§6.10).
+- `SharedObject::parse` costs time bounded by the section and program header
+  tables (§6.3). Every part's contents are checked when the part is asked
+  for, and an error in one part is the error of that part's accessor only.
+- Every malformed shape is an `Error` that names what is wrong and where
+  (§6.11). The reader never panics, and the work it does is bounded by the
+  size of the file (§6.12).
+
+It has no policy. What a linker does with a symbol's version, a `DT_SONAME`
+or a segment's alignment is `resolve.md`'s; which files a link accepts as
+shared objects is `input.md`'s.
+
+### 6.1 Identification
+
+`SharedObject::parse` checks, in this order, and refuses the file with the
+first error it finds:
+
+1. Steps 1 to 5 of §3.1 (`FileHeader::parse`).
+2. Steps 6 and 7 of §3.1: the machine and the machine's class, with the same
+   errors.
+3. **File type:** `ET_DYN`. Otherwise `NotSharedObject`, which names the type
+   as `NotRelocatable` does ("not a shared object: e_type is ET_REL").
+   A position-independent executable is an `ET_DYN` file and is read like any
+   other; whether a link accepts one is `input.md`'s.
+4. The section header table and its name table, exactly as §3.2.
+5. The program header table (§6.2).
+6. The parts are located (§6.3). Errors in locating a part are that part's.
+
+`SharedObject` reports `class()`, `machine()`, `header()`, `data()` (the whole
+file), `entry()` (§6.3), `program_headers()` and `section_table()`. The
+object reader of §3 still refuses every `ET_DYN` file.
+
+### 6.2 Program headers
+
+**The table.** `ProgramHeaders::parse` locates it in constant time:
+
+- `e_phoff` 0 means no table. With `e_phnum` not 0 as well, that is
+  `MissingProgramHeaderTable`.
+- `e_phnum` `PN_XNUM` (0xffff) means the count is `sh_info` of section
+  header 0 (gABI "Program Header"). A file without section header 0 is
+  `PhnumEscapeWithoutSections`.
+- A count of 0 is an empty table, whatever `e_phentsize` says. Otherwise
+  `e_phentsize` must be 32 (`ELFCLASS32`) or 56 (`ELFCLASS64`), or it is
+  `BadPhentsize`.
+- The whole table must lie within the file (overflow-checked), or it is
+  `ProgramHeadersOutOfBounds`.
+
+**Segments.** Program headers are numbered from 0 in table order. `get(i)`
+returns segment `i`, and an index past the table is `SegmentIndexOutOfRange`.
+`iter()` (also `IntoIterator` for the table and a reference to it) is
+exact-size. A `Segment` exposes the widened `Phdr` as stored (`header()`),
+`p_type()`, `flags()`, `is_readable()`, `is_writable()` and
+`is_executable()`, and:
+
+- `alignment()`: `p_align`, with 0 read as 1. A value that is not a power of
+  two is `BadSegmentAlignment`.
+- `contains(addr)`: whether the memory image, `p_vaddr` to `p_vaddr +
+  p_memsz`, holds `addr`, without overflow.
+- `file_range()` and `data()`: `p_filesz` bytes at `p_offset`, which must lie
+  within the file, or it is `SegmentOutOfBounds`.
+- `notes()`: §6.8.
+
+**Lookups.** On the table:
+
+- `unique(p_type)` is the one segment of a type a file has at most once
+  (`PT_DYNAMIC`, `PT_TLS`, `PT_GNU_PROPERTY`, `PT_GNU_RELRO`,
+  `PT_GNU_STACK`, `PT_INTERP`, ...), or `None`. A second is
+  `MultipleSegments`, naming both.
+- `load_containing(addr)` is the first `PT_LOAD` whose memory image holds
+  `addr`: the segment a symbol of that value is in.
+- `file_range(addr, size)` maps addresses to file offsets. It uses the first
+  `PT_LOAD` whose **file** image, `p_vaddr` to `p_vaddr + p_filesz`, holds the
+  whole range, and the result must lie in the file. Otherwise `None`.
+- `file_bytes_from(addr)` gives the file bytes from `addr` to the end of the
+  file image of the first `PT_LOAD` that holds it, and their file offset: for
+  tables whose size the file does not state.
+
+The reader keeps no segment types of its own: every type is reached by
+`unique` or by iterating, and is named by `consts::pt_name`.
+
+### 6.3 The entry paths and the rule
+
+The parts of a shared object are the dynamic table, the dynamic symbols, the
+version table, the version definitions and the version needs. There are two
+ways to find them, `Entry::Sections` and `Entry::Dynamic`. Both give the same
+views.
+
+**By the section headers** (`Entry::Sections`):
+
+- The dynamic table is the one `SHT_DYNAMIC` section. Its records are checked
+  as §3.4 checks a record table (`sh_entsize` and size), and its string
+  table is the `sh_link` section.
+- The dynamic symbols are the `SHT_DYNSYM` table, read exactly as §3.5 reads
+  a symbol table: `sh_info` is the first global, and `sh_link` is the string
+  table.
+- The version table is the one `SHT_GNU_versym` section. Its `sh_link` must
+  be the `SHT_DYNSYM` section, or it is `VersymLink`. It must have one entry
+  per dynamic symbol, or it is `VersymCountMismatch`.
+- The version definitions and needs are the one `SHT_GNU_verdef` and
+  `SHT_GNU_verneed` sections. `sh_info` is the number of records and
+  `sh_link` the string table of their names.
+
+A second section of any of these types is `MultipleSections`.
+
+**By the dynamic table alone** (`Entry::Dynamic`):
+
+- The dynamic table is the contents of the one `PT_DYNAMIC` segment. A file
+  without one has no parts.
+- An address that a `DT_*` entry gives is mapped to file bytes by the
+  `PT_LOAD` segments (`file_range`, §6.2). An address whose bytes are not
+  there is `AddressNotMapped`, naming the tag, the address and the size.
+- The string table is `DT_STRSZ` bytes at `DT_STRTAB`. `DT_STRTAB` without
+  `DT_STRSZ` is `MissingDynamicTag`.
+- The dynamic symbols are at `DT_SYMTAB`. Their number is the count of §6.6.
+  `DT_SYMENT`, when present, must be the class's symbol size, or it is
+  `BadDynamicEntsize`. `DT_SYMTAB` needs `DT_STRTAB`. `DT_SYMTAB_SHNDX`, when
+  present, holds one word per symbol.
+- The version table is one 2-byte entry per dynamic symbol at `DT_VERSYM`.
+  `DT_VERSYM` needs `DT_SYMTAB`.
+- The version definitions are at `DT_VERDEF`, with `DT_VERDEFNUM` records;
+  the needs are at `DT_VERNEED`, with `DT_VERNEEDNUM`. Each needs its count
+  tag and `DT_STRTAB`. The bytes run from the address to the end of the
+  `PT_LOAD` file image that holds it.
+- **Two facts the dynamic table does not have.** The first global symbol is
+  the first symbol whose binding is not `STB_LOCAL`, since there is no
+  `sh_info`. Symbols' section indexes are not range-checked, since there is
+  no section count. Errors about the string table name "the dynamic string
+  table (DT_STRTAB)", and their `section()` is `None`
+  (`strtab::DYNAMIC_STRINGS`).
+
+**The rule.** `SharedObject::parse` finds the parts by the section headers
+when the file has a section header table with any section in it, and by the
+dynamic table when it has none. `SharedObject::parse_by(data, entry)` uses
+the given path whether or not the file has sections. Through
+`Entry::Sections`, a file without sections has no parts. `entry()` says which
+path was taken. The reader does not cross-check the two paths.
+
+This is what the three reference linkers do, and it goes no further. GNU ld
+2.44, lld 22 and mold read a shared object's dynamic symbols, versions and
+`DT_SONAME` through its section headers only. Given a shared object stripped
+by `llvm-objcopy --strip-sections`:
+
+- GNU ld refuses it: "file in wrong format";
+- lld and mold accept it, but find no symbols in it.
+
+So when the paths could disagree, the sections decide, as they do for every
+reference linker. The dynamic-only path is first class: `input.md` decides
+whether mortar links a section-less shared object, and the reader gives the
+same view it would have given with sections (§6.13). Where the dynamic table
+alone cannot give the view, the reader says so by name (§6.6).
+
+### 6.4 The dynamic table
+
+`DynamicTable` holds the entries up to and including the first `DT_NULL`.
+The entries after it are padding, not entries. A table without `DT_NULL` is
+`DynamicNotTerminated`. Each entry is a widened `Dyn`: `d_tag` is an `i64`
+(sign-extended from `Elf32_Sword` in `ELFCLASS32`), and `d_val` is a `u64`.
+Every tag is kept, known or not.
+
+It offers:
+
+- `len`, `is_empty`, `offset` (the table's file offset), `entries` (a
+  `Table<Dyn>`) and `iter`, plus `IntoIterator` for a reference;
+- `strings()`: the string table its string-valued tags index (§6.3), or
+  `None`;
+- `value(tag)`: the value of the one entry with that tag, or `None`. A tag
+  that appears twice is `DuplicateDynamicTag`, naming both entries;
+- `values(tag)`: every value of a tag that may repeat (`DT_NEEDED`,
+  `DT_AUXILIARY`, `DT_FILTER`), in order;
+- `string_at(tag, offset)` and `string(tag)`: a string of the string table,
+  for an entry of `tag`. Without a string table, this is
+  `MissingDynamicTag { DT_STRTAB, needed_by: tag }`;
+- `soname()`, `rpath()` and `runpath()`: `DT_SONAME`, `DT_RPATH` and
+  `DT_RUNPATH`, each refused if it repeats;
+- `needed()`: the `DT_NEEDED` names in table order. An unreadable name is an
+  error item, and iteration goes on after it;
+- `flags()` and `flags_1()`: `DT_FLAGS` and `DT_FLAGS_1`, 0 when absent.
+
+The address- and count-valued tags (`DT_STRTAB`, `DT_STRSZ`, `DT_SYMTAB`,
+`DT_SYMENT`, `DT_HASH`, `DT_GNU_HASH`, `DT_VERSYM`, `DT_VERDEF`,
+`DT_VERDEFNUM`, `DT_VERNEED`, `DT_VERNEEDNUM`) are read by `value`, and
+interpreted by §6.3 and §6.6. A linker that needs the last `DT_SONAME` of a
+file that repeats it (lld takes the last) uses `values`.
+
+### 6.5 Dynamic symbols
+
+`SharedObject::symbols()` is a `SymbolTable` (§3.5) over the dynamic
+symbols, or `None` when there are none. Every accessor of §3.5 applies: names,
+`first_global`, `locals` and `globals`, extended indexes and `section_of`.
+§6.3 gives the two facts the dynamic-table path computes rather than reads.
+
+### 6.6 The symbol count from the hash tables
+
+Through the dynamic table, the number of dynamic symbols is stated only by
+the hash tables:
+
+- **`DT_HASH`** (gABI "Hash Table"): the count is `nchain`. The header and
+  the `nbucket + nchain` words it states must lie in the file image of the
+  `PT_LOAD` segment that holds the table.
+- **`DT_GNU_HASH`**: the header is `nbuckets`, `symoffset`, `bloom_size` and
+  `bloom_shift`. The bloom words are 4 bytes in `ELFCLASS32` and 8 in
+  `ELFCLASS64`, and every other word is 4 bytes. The hashed symbols come
+  last, so the count is one past the last symbol of the chain that starts at
+  the highest bucket: the entry whose low bit is set. A bucket that is not 0
+  but below `symoffset`, or a chain that does not end within the segment, is
+  `BadHashTable`, as is a table that does not fit.
+- **A GNU table that hashes nothing.** When every bucket is 0, no symbol is
+  hashed, and the table says only that there are at least `symoffset`
+  symbols. It is not a count: GNU ld writes `symoffset` 1 in a PIE whose 31
+  dynamic symbols are all undefined, and so unhashed. The count is then
+  `DT_HASH`'s, which must be at least `symoffset`. Without `DT_HASH` it is
+  `UnhashedSymbolCount`, and the symbols cannot be read by the dynamic table.
+  `readelf -D` cannot list them either, and `llvm-readobj` lists none.
+- **Both tables.** They must give the same count (or `DT_HASH` must meet the
+  GNU table's bound), or it is `SymbolCountMismatch`.
+- **Neither table.** With `DT_SYMTAB`, that is `NoSymbolCount`.
+
+The path by sections does not read the hash tables.
+
+### 6.7 Symbol versions
+
+The structures are those of the LSB "Symbol Versioning" chapter. They are the
+same in both classes.
+
+**The version table.** `versym()` is a `Table<Versym>`, one entry per dynamic
+symbol. `Versym::index()` is the low 15 bits, and `hidden()` is bit 15
+(`VERSYM_HIDDEN`).
+
+**Definitions.** `version_definitions()` iterates the `Elf_Verdef` chain in
+order (`declared()` is the record count). A `VersionDefinition` has
+`record()`, `offset()` (its file offset), `index()` (`vd_ndx`), `flags()`,
+`is_base()` (`VER_FLG_BASE`), `is_weak()` (`VER_FLG_WEAK`), `name()` (its
+first `Elf_Verdaux`), and `names()`: the `vd_cnt` names in order, its own
+first and then the versions it inherits from.
+
+**Needs.** `version_needs()` iterates the `Elf_Verneed` chain, one record per
+file. A `VersionNeed` has `record()`, `offset()`, `file()` (`vn_file`) and
+`entries()`: its `vn_cnt` `Elf_Vernaux` records. A `VersionNeedEntry` has
+`record()`, `offset()`, `index()` (`vna_other`), `flags()`, `is_weak()` and
+`name()`.
+
+**Walks.** Every chain is walked by its count, following the next-record
+offsets from the start of the table (`vd_next`, `vda_next`, `vn_next`,
+`vna_next`), and is bounded:
+
+- the count must fit in the bytes from the chain's start, at the record's
+  size (20, 8, 16 and 16 bytes), checked before the walk;
+- a next-record offset of 0 with records left ends the chain;
+- `vd_version` and `vn_version` must be 1;
+- a definition must have at least one name.
+
+These are `BadVersion { record, offset, fault }`. `record` is a
+`VersionRecord` (`Definition`, `DefinitionName`, `Need` or `NeedEntry`).
+`offset` is the record's file offset. `fault` is a `VersionFault`:
+`Truncated`, `ChainEnds`, `Revision(v)`, `TooMany(count)` or `NoName`. The
+error is the last item of its iteration.
+
+**Which version a symbol carries.** `versions()` puts the three parts
+together. `Versions::version(symbol, index)` is what an index names:
+
+- 0 is `Version::Local`, and 1 is `Version::Global`;
+- any other index must be the `vd_ndx` of exactly one definition or the
+  `vna_other` of exactly one need entry, giving `Version::Defined(def)` or
+  `Version::Needed { need, entry }`;
+- an index no record has is `UnknownVersionIndex`, naming the symbol, and an
+  index two records have is `AmbiguousVersionIndex`.
+
+`Versions::of(symbol)` is the `SymbolVersion { versym, version }` of a
+dynamic symbol, or `None` when the object has no version table.
+`SymbolVersion::is_default()` is true for a defined version without the
+hidden bit: `name@@VERSION`, the one an unversioned reference binds to. A
+hidden one is `name@VERSION`. `name()` is the version's name, or `None` for
+`Local` and `Global`. A definition's index is resolved by walking both
+chains, so the cost is bounded by their size.
+
+### 6.8 Notes and program properties
+
+`Segment::notes()` iterates the notes of a `PT_NOTE` or `PT_GNU_PROPERTY`
+segment, as §3.8 iterates a note section's. Names and descriptors are padded
+to 8 bytes when `p_align` is 8, and to 4 bytes when it is 0 to 4. Any other
+alignment is `SegmentNoteAlignment`. Another type of segment is
+`WrongSegmentType`. A note that does not fit is `BadSegmentNote`, naming the
+segment and the `NotePart`.
+
+`SharedObject::gnu_property_note()` is the `GNU` note of type
+`NT_GNU_PROPERTY_TYPE_0` in the one `PT_GNU_PROPERTY` segment, or `None`.
+Its properties are read as §3.8 reads them.
+
+### 6.9 Facts for copy relocations
+
+A linker that makes a copy relocation for a shared object's data symbol needs
+the symbol's alignment and whether its home is read-only. The reader gives
+the facts and makes no decision:
+
+- the symbol's value and size (§6.5);
+- `ProgramHeaders::load_containing(st_value)`: its `PT_LOAD` segment, with
+  `alignment()` and `is_writable()`;
+- with sections, `SymbolTable::section_of` and the section's
+  `alignment()` and flags (§3.4);
+- `PT_GNU_RELRO` through `unique`.
+
+How the facts become an alignment and a read-only answer is `resolve.md`'s.
+lld, mold and GNU ld take the alignment from the section's `sh_addralign`,
+bounded by the trailing zeros of the value. lld calls a symbol read-only when
+its `PT_LOAD` has no `PF_W`.
+
+### 6.10 Records and allocation
+
+The widened records of §6 are `Phdr`, `Dyn`, `Versym`, `Verdef`, `Verdaux`,
+`Verneed` and `Vernaux`. Each implements `Record` (§3.11). The version
+records have one layout in both classes, so their two decoders agree.
+Program headers and dynamic entries are read through `Table`.
+
+The modules `dso`, `dynamic`, `hash`, `segment` and `version` are held to
+§3.11's rule: no allocation, `core` only, no allocating type or method
+outside their tests. The §3.11 source scan covers them.
+
+### 6.11 Errors
+
+The errors follow §4. An error about a segment starts with `segment N: `,
+and `Error::segment()` returns `N`. Dynamic tags are named per §2.2 and
+shown in hex when unnamed.
+
+| group | variants |
+|---|---|
+| identification (§6.1) | `NotSharedObject` |
+| program headers (§6.2) | `BadPhentsize`, `MissingProgramHeaderTable`, `PhnumEscapeWithoutSections`, `ProgramHeadersOutOfBounds`, `SegmentIndexOutOfRange`, `SegmentOutOfBounds`, `BadSegmentAlignment`, `WrongSegmentType`, `MultipleSegments` |
+| locating the parts (§6.3) | `MultipleSections`, `VersymLink`, `VersymCountMismatch`, `AddressNotMapped`, `MissingDynamicTag`, `BadDynamicEntsize` |
+| dynamic table (§6.4) | `DynamicNotTerminated`, `DuplicateDynamicTag` |
+| hash tables (§6.6) | `NoSymbolCount`, `UnhashedSymbolCount`, `BadHashTable`, `SymbolCountMismatch` |
+| versions (§6.7) | `BadVersion` (with `VersionRecord`, `VersionFault`), `UnknownVersionIndex`, `AmbiguousVersionIndex` |
+| notes (§6.8) | `SegmentNoteAlignment`, `BadSegmentNote` |
+
+The errors of §4.1 also arise, from the parts read as sections, symbols and
+strings.
+
+A well-formed shared object walks clean. Every accessor, applied to every
+segment, dynamic entry, symbol, version, definition, need and note of the
+test samples (by both paths, and stripped), returns `Ok`. The exceptions are
+the errors the walk asks for on purpose: `unique(PT_LOAD)`, the notes of
+segments that are not notes, and `value` of a repeated `DT_NEEDED`.
+
+### 6.12 Hostile input
+
+§4.2's contract holds for `SharedObject::parse` and every accessor of §6: no
+panic, no overflow, and work bounded by the size of the file. No walk visits
+more records than its bytes can hold. Version chains are checked against
+their bytes before they are walked (§6.7), and a hash chain ends within its
+segment (§6.6).
+
+The tests take the sample shared object of each target, one hash style each.
+Each sample is read three ways: by its sections, by its dynamic table, and
+stripped of its sections. On each they test:
+
+- every prefix;
+- every field-sized slot of the file header, the program and section header
+  tables and every decoded part (dynamic symbols, hash tables, version
+  table, definitions, needs, notes, dynamic table), set to every edge value
+  in every width;
+- 20 000 rounds of combined pseudo-random mutations.
+
+The walk's steps must stay under 16 × (file size + 64).
+
+### 6.13 Agreement with the tools
+
+The reader's view is compared field by field with GNU `readelf` (binutils
+2.44, `-dW --dyn-syms -V -lW -n`) and with `llvm-readobj` (LLVM 22,
+`--dynamic-table --dyn-syms --version-info --program-headers --notes`). It
+must agree with both tools.
+
+**What is compared:**
+
+- every program header field;
+- every dynamic entry's tag and value, with the strings of `DT_NEEDED`,
+  `DT_SONAME`, `DT_RPATH` and `DT_RUNPATH` and the flag names of `DT_FLAGS`
+  and `DT_FLAGS_1`;
+- every dynamic symbol (value, size, type, binding, visibility, section and
+  name) with its version, and every version table entry (index and hidden
+  bit);
+- every version definition (index, flags, hash and names) and need (file,
+  and each entry's name, index, flags and hash);
+- the program properties.
+
+**The corpus.** Nothing binary is checked in.
+
+- Every `ET_DYN` file of each target on the host, each inode once:
+  `/usr/lib/aarch64-linux-gnu`, `/lib/aarch64-linux-gnu`,
+  `/usr/x86_64-linux-gnu/lib`, `/usr/i686-linux-gnu/lib`, `/usr/lib/gcc*`
+  and `/usr/lib/llvm-*/lib`. Every file that has sections is also read by
+  its dynamic table, and the two views must be identical.
+- A deterministic sample of it (every *n*th file by path, files over 64 MiB
+  left out) stripped of its sections by `llvm-objcopy --strip-sections`. The
+  view must be identical to the original's, and its symbols must agree with
+  `readelf -D -W -s`.
+- A versioned C library, built for each target by GNU ld, lld and mold with
+  each of `--hash-style=sysv`, `gnu` and `both`. It has hidden and default
+  versions of one name, an inherited version, a needed weak version, data,
+  read-only data and TLS.
+
+`MORTAR_REQUIRE_TOOLS=1` makes a missing tool, linker or corpus a failure.
+
+**How the tools differ from the reader's view.** The test accounts for each
+of these differences explicitly. None of them is a difference in the bytes
+read.
+
+- `readelf` prints version indexes in hex without `0x`, with an `h` suffix
+  for a hidden one. `llvm-readobj` masks the hidden bit.
+- `readelf` prints a needed version as `name@VERSION (n)`; `llvm-readobj`
+  prints `name@VERSION`.
+- `readelf` prints a version's own absolute symbol (named as the version)
+  without its version; `llvm-readobj` prints `name@@name`.
+- `readelf` prints no value for `DT_AARCH64_BTI_PLT`, `DT_AARCH64_PAC_PLT`
+  and `DT_AARCH64_VARIANT_PCS`, on AArch64 only. The same number is another
+  tag on other machines (0x70000001 is `DT_X86_64_PLTSZ`), and
+  `llvm-readobj` names some processor tags after other machines.
+- For an unnamed section symbol, `readelf` shows the section's name; a
+  stripped file has none to show.
+- A file whose GNU hash table hashes nothing and that has no `DT_HASH`
+  (§6.6) has no symbol count by its dynamic table. The reader refuses with
+  `UnhashedSymbolCount`. Once the file is stripped, `readelf -D` cannot list
+  its symbols, and `llvm-readobj` lists none. Through its sections, it is
+  compared like any other file.
+- The linkers differ, not the tools: GNU ld records that a version inherits
+  from its parent (`vd_cnt` 2), and lld and mold do not.
+
 ## Interface (outline)
 
 ```rust
@@ -593,6 +1034,34 @@ pub struct Properties<'a>;   // Iterator<Item = Result<Property>>
 pub struct Property<'a> { pub pr_type: u32, pub data: &'a [u8] } // as_u32
 pub enum Error { .. }  pub enum NotePart { Header, Name, Descriptor, Property }
 pub mod consts; pub mod reloc;   // §2
+
+// §6: shared objects
+pub struct Phdr, Dyn, Versym, Verdef, Verdaux, Verneed, Vernaux;  // widened
+pub enum Entry { Sections, Dynamic }
+pub struct SharedObject<'a>; // parse, parse_by, data, header, class, machine,
+    // entry, program_headers, section_table, dynamic, symbols, versym,
+    // version_definitions, version_needs, versions, gnu_property_note
+pub struct ProgramHeaders<'a>; // parse, len, is_empty, class, file, headers,
+    // get, iter, unique, load_containing, file_range, file_bytes_from
+pub struct Segment<'a>;      // index, header, p_type, flags, is_readable,
+    // is_writable, is_executable, alignment, contains, file_range, data, notes
+pub struct DynamicTable<'a>; // len, is_empty, offset, entries, iter, strings,
+    // value, values, string_at, string, soname, rpath, runpath, needed,
+    // flags, flags_1
+pub struct Needed<'a>;       // Iterator<Item = Result<&[u8]>>
+pub struct Versions<'a>;     // versym, definitions, needs, version, of
+pub enum Version<'a> { Local, Global, Defined(VersionDefinition),
+                       Needed { need: VersionNeed, entry: VersionNeedEntry } }
+pub struct SymbolVersion<'a> { pub versym: Versym, pub version: Version }
+                             // is_default, name
+pub struct VersionDefinitions<'a>; // declared; Iterator<Item = Result<..>>
+pub struct VersionDefinition<'a>;  // record, offset, index, flags, is_base,
+                                   // is_weak, name, names
+pub struct VersionNeeds<'a>;       // declared; Iterator<Item = Result<..>>
+pub struct VersionNeed<'a>;        // record, offset, file, entries
+pub struct VersionNeedEntry<'a>;   // record, offset, index, flags, is_weak, name
+pub enum VersionRecord { .. }  pub enum VersionFault { .. }
+pub const DYNAMIC_STRINGS: u32;
 ```
 
 ## Tests
@@ -615,3 +1084,16 @@ pub mod consts; pub mod reloc;   // §2
 | §4 | `spec.rs`: `s4_errors_say_what_and_where`, `s4_a_well_formed_object_walks_clean` |
 | §4.2 | `hostile.rs`: `s4_2_every_truncation_is_an_answer`, `s4_2_every_field_at_every_edge_is_an_answer`, `s4_2_random_mutations_are_answers`, `s4_2_huge_claims_cost_nothing` |
 | §4.3 | `tools.rs`: `s4_3_crt_objects_{aarch64,x86_64,i386}`, `s4_3_libc_members_*`, `s4_3_libstdcxx_members_*`, `s4_3_compiled_{c,cxx,fortran}`, `s4_3_built_samples`, `s4_3_extended_section_numbering` |
+| §6.1 | `dso.rs`: `s6_1_*` |
+| §6.2 | `dso.rs`: `s6_2_*` |
+| §6.3 | `dso.rs`: `s6_3_*`; `dso_tools.rs`: `s6_13_corpus_*`, `s6_13_stripped_*` |
+| §6.4 | `dso.rs`: `s6_4_*` |
+| §6.5 | `dso.rs`: `s6_5_*` |
+| §6.6 | `dso.rs`: `s6_6_the_symbol_count_from_the_hash_tables`; `src/hash.rs`: `s6_6_*` |
+| §6.7 | `dso.rs`: `s6_7_*` |
+| §6.8 | `dso.rs`: `s6_8_*` |
+| §6.9 | `dso.rs`: `s6_9_*` |
+| §6.10 | `spec.rs`: `s3_11_the_reader_names_no_allocating_type` |
+| §6.11 | `dso.rs`: `s6_11_every_accessor_of_the_samples_is_clean`, `s6_11_errors_name_their_place` |
+| §6.12 | `dso_hostile.rs`: `s6_12_every_truncation_is_an_answer`, `s6_12_every_field_at_every_edge_is_an_answer_{aarch64,x86_64,i386}`, `s6_12_random_mutations_are_answers` |
+| §6.13 | `dso_tools.rs`: `s6_13_corpus_{aarch64,x86_64,i386}`, `s6_13_stripped_{aarch64,x86_64,i386}`, `s6_13_versioned_library_{aarch64,x86_64,i386}` |

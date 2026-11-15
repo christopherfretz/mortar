@@ -12,6 +12,9 @@ use mortar_elf::{
     SymbolTable,
 };
 
+pub mod dso;
+pub mod oracle;
+
 // ---- encoders (the inverse of the reader's decoders, written from the
 // gABI's structure definitions) ---------------------------------------------
 
