@@ -434,3 +434,30 @@ fn x86_5_overlapping_read_windows_are_refused() {
         assert!(m.stderr_text().contains(&want), "{label}: {}", m.stderr_text());
     }
 }
+
+/// I-7 with REL addends (x86.md X86-5; synth S-17): under
+/// `--gc-sections` a section-symbol reference into a split string
+/// section keeps the piece its implicit addend selects, and only that
+/// piece; `mortar_live` reads the addend through the architecture.
+#[test]
+fn x86_5_rel_addend_selects_the_live_merge_piece() {
+    if host().is_none() {
+        return;
+    }
+    const MS: &str = "\t.section .rodata.str1.1,\"aMS\",@progbits,1\n\t.string \"aaaa\"\n\
+                      \t.string \"bbbb\"\n\t.text\n\t.globl main\n\
+                      main:\tmovl $.rodata.str1.1+5, %eax\n\tret\n\
+                      \t.section .note.GNU-stack,\"\",@progbits\n";
+    let scratch = Scratch::new("x86-5-piece");
+    let program = [Source { name: "ms.s", text: MS }];
+    let Some(built) = compile(&scratch, GCC, &["-nostdlib", "-Wl,-e,main"], &program) else {
+        return;
+    };
+    let out = built.dir.join("out.mortar");
+    let m = mortar(&built, &out, &["--gc-sections"], &[]);
+    assert!(m.success(), "{}", m.stderr_text());
+    let b = std::fs::read(&out).unwrap();
+    let has = |s: &[u8]| b.windows(s.len()).any(|w| w == s);
+    assert!(has(b"bbbb\0"), "the referenced piece is gone");
+    assert!(!has(b"aaaa\0"), "the unreferenced piece is kept");
+}

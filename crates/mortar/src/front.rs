@@ -394,6 +394,7 @@ pub fn front<'s>(
         assignment: &assignment,
         split: &merge.split,
         roots: &roots,
+        arch: Some(arch),
     };
     let live_options = LiveOptions {
         gc_sections: plan.shaping.gc_sections,

@@ -42,7 +42,7 @@ pub const PHASE: u16 = 50;
 /// `Assignment` and `Split`. M1 reads `resolution` and `split` only;
 /// `inputs` (the relocation edges) and `assignment` (`keep`, the start-up
 /// tables) are the roots and edges of M2's mark (I-6, I-7).
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct LiveInputs<'a, 's> {
     pub inputs: &'a Inputs<'s>,
     pub resolution: &'a Resolution,
@@ -52,6 +52,24 @@ pub struct LiveInputs<'a, 's> {
     /// `-u`, `--require-defined`): their definitions' sections are roots
     /// under `--gc-sections` (I-6). Unused without it.
     pub roots: &'a [SymbolId],
+    /// The architecture, whose `read_addend` gives a `SHT_REL` record's
+    /// implicit addend where a piece selection needs it (I-7; i386,
+    /// WP-030c). `None`: such a reference marks every piece of its
+    /// section (more than needed, never less).
+    pub arch: Option<&'a dyn mortar_arch::Arch>,
+}
+
+impl std::fmt::Debug for LiveInputs<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveInputs")
+            .field("inputs", &self.inputs)
+            .field("resolution", &self.resolution)
+            .field("assignment", &self.assignment)
+            .field("split", &self.split)
+            .field("roots", &self.roots)
+            .field("arch", &self.arch.map(|a| a.facts().machine))
+            .finish()
+    }
 }
 
 /// The options liveness depends on.
