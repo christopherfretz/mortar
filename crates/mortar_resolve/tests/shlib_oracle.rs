@@ -1087,3 +1087,205 @@ fn d11_dupdef_needed_aarch64() {
 fn d11_dupdef_needed_x86_64() {
     dupdef(X86_64);
 }
+
+/// Runs `bash -c script` in `dir` (inputs of an experiment).
+fn shell(dir: &Path, script: &str) {
+    let mut cmd = Command::new("bash");
+    cmd.current_dir(dir).env("TMPDIR", dir).env_remove("LD_LIBRARY_PATH").args(["-c", script]);
+    let o = run_with(&mut cmd, b"", Duration::from_mins(5));
+    assert!(o.success(), "{script}: {}", o.stderr_text());
+}
+
+/// The review's `neededorder` (F5, `.build/review-m2-adv/neededorder`):
+/// twelve lines of D-19a with scripts, groups and under-linking; mortar's
+/// `DT_NEEDED` equals the review's model of the text on every line, and
+/// GNU ld's on every line GNU ld links (it refuses `underlink-after`,
+/// whose image mortar's order runs: D-19a).
+fn review_neededorder(arch: Arch) {
+    if !tools(arch, &["gcc"]) {
+        return;
+    }
+    let dir = Scratch::new("shlib-review-neededorder");
+    let cc = tool(&format!("{}gcc", arch.prefix)).unwrap();
+    let cc = cc.display();
+    shell(
+        dir.path(),
+        &format!(
+            "set -e
+for l in na nb nc nx ny nq; do echo \"int fn_$l(void){{return 1;}}\" > $l.c; {cc} -fPIC -shared -Wl,-soname,lib$l.so -o lib$l.so $l.c; done
+echo 'int fn_nq(void); int fn_np(void){{return fn_nq();}}' > np.c; {cc} -fPIC -shared -Wl,-soname,libnp.so -o libnp.so np.c
+mk() {{ local o=$1; shift; {{ for f in \"$@\"; do echo \"int fn_$f(void);\"; done; echo 'int main(void){{return 0'; for f in \"$@\"; do echo \"+fn_$f()\"; done; echo ';}}'; }} > $o.c; {cc} -c $o.c -o $o.o; }}
+mk m0; mk mx nx; mk mp np; mk mxy nx ny
+echo 'INPUT ( AS_NEEDED ( libnx.so ) libny.so libnx.so )' > libs1.so
+echo 'INPUT ( libnx.so AS_NEEDED ( libnx.so ) libny.so )' > libs2.so
+echo 'GROUP ( AS_NEEDED ( libnx.so ) libna.so )' > libs3.so"
+        ),
+    );
+    let na = "-Wl,--no-as-needed";
+    let an = "-Wl,--as-needed";
+    let (sg, eg) = ("-Wl,--start-group", "-Wl,--end-group");
+    // (name, line, the model's DT_NEEDED)
+    let cases: Vec<(&str, Vec<&str>, &[&str])> = vec![
+        (
+            "thrice-ref",
+            vec![na, "-lna", an, "-lnx", na, "-lnb", an, "mx.o", "-lnx", na, "-lnc", "-lnx"],
+            &["na", "nb", "nx", "nc"],
+        ),
+        (
+            "thrice-unref",
+            vec![na, "-lna", an, "-lnx", na, "-lnb", an, "m0.o", "-lnx", na, "-lnc", "-lnx"],
+            &["na", "nb", "nc", "nx"],
+        ),
+        ("group", vec![na, "-lnb", an, sg, "-lnx", "mx.o", eg, na, "-lnc"], &["nb", "nx", "nc"]),
+        (
+            "group-after",
+            vec![na, "-lnb", an, sg, "-lnx", eg, "mx.o", "-lnx", na, "-lnc"],
+            &["nb", "nx", "nc"],
+        ),
+        ("script1-unref", vec![na, "-lna", "m0.o", "libs1.so", "-lnc"], &["na", "ny", "nx", "nc"]),
+        ("script1-ref", vec![na, "-lna", "mx.o", "libs1.so", "-lnc"], &["na", "nx", "ny", "nc"]),
+        ("script2", vec![na, "-lna", "m0.o", "libs2.so", "-lnc"], &["na", "nx", "ny", "nc"]),
+        ("script3-ref", vec![na, "-lnb", "mx.o", "libs3.so", "-lnc"], &["nb", "nx", "na", "nc"]),
+        ("script3-unref", vec![na, "-lnb", "m0.o", "libs3.so", "-lnc"], &["nb", "na", "nc"]),
+        ("underlink-before", vec![na, "mp.o", "-lnp", an, "-lnq", na, "-lnc"], &["np", "nq", "nc"]),
+        ("underlink-after", vec![na, "mp.o", an, "-lnq", na, "-lnp", "-lnc"], &["nq", "np", "nc"]),
+        (
+            "underlink-after2",
+            vec![na, "mp.o", an, "-lnq", na, "-lnp", an, "-lnq", na, "-lnc"],
+            &["np", "nq", "nc"],
+        ),
+    ];
+    let mut sonames = BTreeMap::new();
+    for (i, (name, line, model)) in cases.iter().enumerate() {
+        let mut args = vec!["-L.", "-Wl,-rpath-link,."];
+        args.extend(line.iter().copied());
+        let g = record(arch, "gcc", &args, dir.path(), &format!("no{i}"));
+        let m = resolve_line(&g.args, dir.path(), &mut sonames);
+        assert!(m.errors.is_empty(), "{name}: {:?}", m.errors);
+        let model: Vec<String> = model.iter().map(|n| format!("lib{n}.so")).collect();
+        // `-lnc` is the last library of every line: libc.so.6 follows.
+        let mut want = model.clone();
+        want.push("libc.so.6".to_owned());
+        assert_eq!(m.needed, want, "{name}: mortar vs the model");
+        if *name == "underlink-after" {
+            assert!(!g.ok, "{name}: GNU ld refuses it");
+        } else {
+            assert!(g.ok, "{name}: {}", g.stderr);
+            assert_eq!(g.needed, want, "{name}: GNU ld");
+        }
+    }
+    eprintln!(
+        "review neededorder {}: 12 lines, 11 agree with GNU ld, 1 deliberate (underlink-after), 12 = model",
+        arch.name
+    );
+}
+
+#[test]
+fn d19a_review_neededorder_aarch64() {
+    review_neededorder(AARCH64);
+}
+
+#[test]
+fn d19a_review_neededorder_x86_64() {
+    review_neededorder(X86_64);
+}
+
+/// The review's `usedset2` (F1, `.build/review-m2-adv/usedset2`): default
+/// lines E-usedset lacks (clang, clang++, `-static-libstdc++`, duplicate
+/// `-pthread -ldl -lm`, `--as-needed` before `libgcc_s`), an under-linked
+/// library whose provider only a script's `AS_NEEDED` names, and a script
+/// naming `ld-linux` plainly.
+fn review_usedset2(arch: Arch) {
+    if !tools(arch, &["gcc", "g++", "gfortran", "clang", "clang++"]) {
+        return;
+    }
+    let dir = Scratch::new("shlib-review-usedset2");
+    let pfx = arch.prefix;
+    let ldso = if arch.name == "aarch64" {
+        "/lib/ld-linux-aarch64.so.1"
+    } else {
+        "/usr/x86_64-linux-gnu/lib64/ld-linux-x86-64.so.2"
+    };
+    let ct = format!("--target={}-linux-gnu", arch.name);
+    let here = dir.path().display();
+    shell(
+        dir.path(),
+        &format!(
+            r#"set -e
+mkdir -p s
+printf '#include <stdio.h>\n#include <math.h>\n#include <pthread.h>\n#include <dlfcn.h>\nint main(int c,char**v){{(void)v;puts("hi");printf("%%g %%p\\n",sin(c),(void*)dlsym);return 0;}}\n' > h.c
+printf '#include <iostream>\n#include <thread>\nthread_local int t=1; int main(){{std::thread th([]{{t=2;}}); th.join(); try{{throw 1;}}catch(int){{}} std::cout<<t<<std::endl;}}\n' > h.cc
+printf 'program h\n print *, "hi"\nend program h\n' > h.f90
+echo 'int q_fn(void){{return 7;}}' > s/q.c
+echo 'int q_fn(void); int p_fn(void){{return 100+q_fn();}}' > s/p.c
+printf '#include <stdio.h>\nint p_fn(void); int main(void){{printf("%%d\\n",p_fn());return 0;}}\n' > s/m.c
+{pfx}gcc -fPIC -shared -Wl,-soname,libq.so -o s/libq.so s/q.c
+{pfx}gcc -fPIC -shared -Wl,-soname,libp.so -o s/libp.so s/p.c
+echo "GROUP ( {here}/s/libp.so AS_NEEDED ( {here}/s/libq.so ) )" > s/libpq.so
+echo "GROUP ( {ldso} )" > s/libldso.so
+{pfx}gcc -c h.c -o hc.o; {pfx}g++ -c h.cc -o hcc.o; {pfx}gfortran -c h.f90 -o hf.o; {pfx}gcc -c s/m.c -o s/m.o
+clang {ct} -c h.c -o hcl.o; clang++ {ct} -c h.cc -o hccl.o"#
+        ),
+    );
+    let lines: Vec<(&str, &str, Vec<&str>)> = vec![
+        ("gcc-default", "gcc", vec!["hc.o", "-lm"]),
+        (
+            "gcc-dups",
+            "gcc",
+            vec!["-pthread", "hc.o", "-ldl", "-lm", "-lpthread", "-ldl", "-lm", "-lpthread"],
+        ),
+        (
+            "gcc-asn-gcc_s",
+            "gcc",
+            vec!["-Wl,--as-needed", "hc.o", "-lm", "-shared-libgcc", "-Wl,--no-as-needed"],
+        ),
+        ("gpp-default", "g++", vec!["hcc.o"]),
+        ("gpp-static-stdcxx", "g++", vec!["-static-libstdc++", "hcc.o"]),
+        ("gpp-static-libgcc", "g++", vec!["-static-libstdc++", "-static-libgcc", "hcc.o"]),
+        ("gpp-asn-all", "g++", vec!["-Wl,--as-needed", "hcc.o", "-Wl,--no-as-needed", "-lgcc_s"]),
+        (
+            "gpp-pthread-dups",
+            "g++",
+            vec!["-pthread", "hcc.o", "-lpthread", "-ldl", "-lm", "-lpthread"],
+        ),
+        ("gfortran-default", "gfortran", vec!["hf.o"]),
+        ("gfortran-nopie", "gfortran", vec!["-no-pie", "hf.o"]),
+        ("clang-default", "clang", vec!["hcl.o", "-lm"]),
+        ("clangpp-default", "clang++", vec!["hccl.o"]),
+        ("clangpp-static", "clang++", vec!["-static-libstdc++", "hccl.o"]),
+        ("script-underlink", "gcc", vec!["s/m.o", "-Ls", "-lpq"]),
+        (
+            "script-underlink-rev",
+            "gcc",
+            vec!["s/m.o", "-Wl,--as-needed", "s/libpq.so", "-Wl,--no-as-needed"],
+        ),
+        ("script-ldso-plain", "gcc", vec!["hc.o", "-lm", "s/libldso.so"]),
+    ];
+    let mut sonames = BTreeMap::new();
+    let mut table = Vec::new();
+    for (i, (name, driver, args)) in lines.iter().enumerate() {
+        let g = record(arch, driver, args, dir.path(), &format!("u2-{i}"));
+        let m = resolve_line(&g.args, dir.path(), &mut sonames);
+        let v = judge(&g, &m);
+        if v != Verdict::Agree {
+            eprintln!(
+                "{} {name}: {v:?}\n  gnu: {}\n  mortar: {:?}",
+                arch.name,
+                g.stderr.trim(),
+                m.errors
+            );
+        }
+        table.push((*name, v));
+    }
+    report(arch, "review usedset2", &table, &[]);
+}
+
+#[test]
+fn d11_review_usedset2_aarch64() {
+    review_usedset2(AARCH64);
+}
+
+#[test]
+fn d11_review_usedset2_x86_64() {
+    review_usedset2(X86_64);
+}
