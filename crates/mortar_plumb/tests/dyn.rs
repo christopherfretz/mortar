@@ -45,6 +45,8 @@ const SOURCES: &[(&str, &str)] = src![
     "canon_main.c",
     "canon_lib.c",
     "weak_main.c",
+    "tlsdesc_regs.s",
+    "libtx.c",
 ];
 
 /// Small sources written by the test itself.
@@ -465,6 +467,19 @@ fn build() -> Option<Corpus> {
                 let e = if x64 && k == 1 { Some(&["P1"][..]) } else { CLEAN };
                 let out = format!("shapes.{z}");
                 b.link_one("shapes", arch, &d, &out, &["-pie", &zz, flag, "h.o"], k, e);
+            }
+        }
+
+        // X-58 (WP-082 V2): a TLS descriptor relaxed to initial-exec
+        // into each of the sixteen registers (`f_R` in the source; the
+        // programs exit 0 when every one reads the library's 5).
+        if x64 {
+            let d = b.dir(arch, "tlsdesc-regs");
+            b.so(arch, &d, "libtx.c", "libtx.so", "libtx.so", &[]);
+            b.obj(arch, &d, "tlsdesc_regs.s", &[], "tr.o");
+            for pm in ["-pie", "-no-pie"] {
+                let out = format!("tr{pm}");
+                b.link("tlsdesc-regs", arch, &d, &out, &[pm, "tr.o", "-L.", "-ltx"], [CLEAN; 3]);
             }
         }
 
@@ -1141,6 +1156,13 @@ fn s12_p_d10_plt_header_reads_its_words() {
 #[test]
 fn s12_p_d10_ibt_and_bti_shapes() {
     judge("shapes");
+}
+
+// spec/x64.md X-58, plumb.md R1 (WP-082 V2): the initial-exec `mov` into
+// any register is the descriptor's relaxation, not a finding.
+#[test]
+fn r1_tlsdesc_relaxed_to_ie_into_every_register() {
+    judge("tlsdesc-regs");
 }
 
 #[test]
