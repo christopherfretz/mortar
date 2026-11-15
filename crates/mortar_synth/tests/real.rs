@@ -53,6 +53,24 @@ fn sid(file: usize, index: u32) -> SectionId {
     SectionId(file as u32 * 10_000 + index)
 }
 
+/// Marks the members of a COMDAT group an earlier file already gave
+/// (by section name: the test's groups have one member each) dead.
+fn comdat_dead(
+    obj: &Object<'_>,
+    file: usize,
+    groups: &mut BTreeMap<Vec<u8>, usize>,
+    dead: &mut Vec<SectionId>,
+) {
+    for s in obj.sections() {
+        if s.flags() & SHF_GROUP != 0 {
+            let name = s.name().unwrap().to_vec();
+            if *groups.entry(name).or_insert(file) != file {
+                dead.push(sid(file, s.index().0));
+            }
+        }
+    }
+}
+
 fn parse(files: &[Vec<u8>]) -> Parsed {
     let mut p = Parsed::default();
     let globals: std::cell::RefCell<BTreeMap<Vec<u8>, u32>> = std::cell::RefCell::default();
@@ -61,14 +79,7 @@ fn parse(files: &[Vec<u8>]) -> Parsed {
         let file = f + 1;
         let obj = Object::parse(data).unwrap();
         let syms = obj.symbols().unwrap().unwrap();
-        for s in obj.sections() {
-            if s.flags() & u64::from(SHF_GROUP) != 0 {
-                let name = s.name().unwrap().to_vec();
-                if *groups.entry(name).or_insert(file) != file {
-                    p.dead.push(sid(file, s.index().0));
-                }
-            }
-        }
+        comdat_dead(&obj, file, &mut groups, &mut p.dead);
         for s in obj.sections() {
             if s.name().unwrap() != b".eh_frame" {
                 continue;
@@ -156,13 +167,13 @@ fn parse(files: &[Vec<u8>]) -> Parsed {
             p.bytes.push(bytes);
         }
     }
-    p.live_fdes = p
-        .recs
-        .iter()
-        .flatten()
-        .filter(|r| matches!(r.kind, RecordKind::Fde { code: Some(c), .. } if !p.dead.contains(&c.section)))
-        .count();
+    p.live_fdes = live_fdes(&p);
     p
+}
+
+fn live_fdes(p: &Parsed) -> usize {
+    let live = |r: &&InRecord| matches!(r.kind, RecordKind::Fde { code: Some(c), .. } if !p.dead.contains(&c.section));
+    p.recs.iter().flatten().filter(live).count()
 }
 
 /// A relocatable ELF64 AArch64 file holding one `.eh_frame`.

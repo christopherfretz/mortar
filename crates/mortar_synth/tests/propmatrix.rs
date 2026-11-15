@@ -6,6 +6,7 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use common::collector;
 use mortar_arch::Arch;
@@ -28,10 +29,8 @@ fn propgen(name: &str, props: &[(u32, u64, usize)]) -> String {
         ".section .note.gnu.property,\"a\",@note\n.p2align 3\n.long 4, {dsz}, 5\n.asciz \"GNU\"\n"
     );
     for (t, ds, b) in desc {
-        out += &format!(
-            ".long {t:#x}, {ds}\n.byte {}\n",
-            b.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
-        );
+        let bytes = b.iter().map(u8::to_string).collect::<Vec<_>>().join(",");
+        let _ = writeln!(out, ".long {t:#x}, {ds}\n.byte {bytes}");
     }
     if props.is_empty() {
         out.clear();
@@ -46,7 +45,7 @@ fn note_props(data: &[u8]) -> Props {
     let header = mortar_elf::FileHeader::parse(data).unwrap();
     let table = mortar_elf::SectionTable::parse(data, &header).unwrap();
     let mut out = Props::new();
-    for s in table.iter() {
+    for s in &table {
         if s.name().unwrap() == b".note.gnu.property" {
             for n in Notes::new(s.data().unwrap(), 8, Class::Elf64, 0) {
                 for p in n.unwrap().gnu_properties().into_iter().flatten() {
@@ -89,7 +88,10 @@ const GAND: u32 = 0xb000_0000;
 const GOR: u32 = 0xb000_8000;
 
 /// Each case: per object, its properties.
-fn cases() -> Vec<(&'static str, Vec<Vec<(u32, u64, usize)>>)> {
+/// A property: type, value, datasz.
+type Prop = (u32, u64, usize);
+
+fn cases() -> Vec<(&'static str, Vec<Vec<Prop>>)> {
     vec![
         ("bti all", vec![vec![(BTI, 3, 4)], vec![(BTI, 3, 4)]]),
         ("bti and", vec![vec![(BTI, 3, 4)], vec![(BTI, 1, 4)]]),
@@ -132,7 +134,7 @@ fn s95_property_matrix_against_gnu_ld() {
         assert!(out.success(), "{label}: {}", out.stderr_text());
         let gnu = note_props(&std::fs::read(&exe).unwrap());
         let mine = ours(&bytes).expect(label);
-        table += &format!("| {label} | {gnu:x?} | {mine:x?} |\n");
+        let _ = writeln!(table, "| {label} | {gnu:x?} | {mine:x?} |");
         if gnu != mine {
             differ.push(label);
         }

@@ -215,10 +215,7 @@ impl EhPlan {
             }
             (idx, n)
         });
-        let mut first: Vec<u32> = local.iter().map(|l| l.1).collect();
-        first.push(0);
-        let total = pool.prefix_sum(&mut first) as usize;
-        first[n_sec] = total as u32;
+        let (first, total) = firsts(&local, pool);
 
         let mut records = vec![EhRecord { section: SectionId(0), piece: 0 }; total];
         let mut srcs = vec![0u32; total];
@@ -538,6 +535,16 @@ where
         }
     }
     Ok(live)
+}
+
+/// The first output record of each position (an exclusive prefix sum of
+/// the kept counts), the total last; and the total.
+fn firsts(local: &[(Vec<u32>, u32)], pool: &Pool) -> (Vec<u32>, usize) {
+    let mut first: Vec<u32> = local.iter().map(|l| l.1).collect();
+    first.push(0);
+    let total = pool.prefix_sum(&mut first) as usize;
+    first[local.len()] = total as u32;
+    (first, total)
 }
 
 /// `(section, record)` of a removed duplicate CIE and of its kept

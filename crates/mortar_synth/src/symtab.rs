@@ -536,6 +536,23 @@ impl<'c> Walk<'_, 'c> {
     }
 }
 
+/// The segments and checkpoints being laid out, and the next entry and
+/// string offset.
+struct Segs {
+    list: Vec<SegRow>,
+    checks: Vec<Check>,
+    entry: u32,
+    str_off: u64,
+}
+
+impl Segs {
+    fn push(&mut self, seg: Seg, len: u32, bytes: u64, rows: Range<u32>) {
+        self.list.push(SegRow { seg, entry: self.entry, len, str_off: self.str_off, rows });
+        self.entry += len;
+        self.str_off += bytes;
+    }
+}
+
 /// The per-file result of the counting pass.
 #[derive(Debug, Default)]
 struct FileCount {
@@ -567,29 +584,16 @@ impl SymtabPlan {
         }
         let (patch_syms, patch_bytes) = patch_syms(cx.syms, patches, facts);
         // The segments, in output order (S-74, S-75).
-        let mut segs = Vec::new();
-        let mut checks = Vec::new();
+        let mut b = Segs { list: Vec::new(), checks: Vec::new(), entry: 0, str_off: REGION };
         let mut demoted_str = vec![0u64; demoted.len()];
-        let mut entry = 0u32;
-        let mut str_off = REGION;
-        let push = |segs: &mut Vec<SegRow>,
-                    seg,
-                    len: u32,
-                    bytes: u64,
-                    rows: Range<u32>,
-                    entry: &mut u32,
-                    str_off: &mut u64| {
-            segs.push(SegRow { seg, entry: *entry, len, str_off: *str_off, rows });
-            *entry += len;
-            *str_off += bytes;
-        };
         let mut symtab_locals = vec![Span::default(); n_files as usize];
-        push(&mut segs, Seg::Null, 1, 0, 0..0, &mut entry, &mut str_off);
+        b.push(Seg::Null, 1, 0, 0..0);
         let file_rows = |f: u32| {
             let lo = demoted.partition_point(|d| d.0.0 < f) as u32;
             let hi = demoted.partition_point(|d| d.0.0 <= f) as u32;
             lo..hi
         };
+        // Each demoted row's first region byte; the rows' bytes.
         let demoted_rows = |rows: Range<u32>, str_off: u64, out: &mut Vec<u64>| -> u64 {
             let mut o = str_off;
             for r in rows {
@@ -599,80 +603,42 @@ impl SymtabPlan {
             o - str_off
         };
         // The internal file's block.
-        let block_start = entry;
         let rows = file_rows(0);
-        let bytes = demoted_rows(rows.clone(), str_off, &mut demoted_str);
-        push(&mut segs, Seg::Linker, rows.len() as u32, bytes, rows, &mut entry, &mut str_off);
+        let bytes = demoted_rows(rows.clone(), b.str_off, &mut demoted_str);
+        b.push(Seg::Linker, rows.len() as u32, bytes, rows);
         let mut patch_str = Vec::with_capacity(patch_syms.len());
-        let mut o = str_off;
-        for b in &patch_bytes {
+        let mut o = b.str_off;
+        for bytes in &patch_bytes {
             patch_str.push(o);
-            o += b;
+            o += bytes;
         }
-        push(
-            &mut segs,
-            Seg::Patches,
-            patch_syms.len() as u32,
-            o - str_off,
-            0..0,
-            &mut entry,
-            &mut str_off,
-        );
-        if let Some(s) = symtab_locals.first_mut() {
-            *s = Span { start: block_start, len: entry - block_start };
-        }
+        b.push(Seg::Patches, patch_syms.len() as u32, o - b.str_off, 0..0);
+        symtab_locals[0] = Span { start: 1, len: b.entry - 1 };
         for (f, count) in files.iter().enumerate().skip(1) {
-            let file = FileId(f as u32);
-            let block_start = entry;
-            let seg = segs.len() as u32;
-            checks.push(Check { entry, seg, cursor: 0, str_off });
+            let block_start = b.entry;
+            let seg = b.list.len() as u32;
+            b.checks.push(Check { entry: b.entry, seg, cursor: 0, str_off: b.str_off });
             for &(kept, cursor, bytes) in &count.checks {
-                checks.push(Check { entry: entry + kept, seg, cursor, str_off: str_off + bytes });
+                let c = Check { entry: b.entry + kept, seg, cursor, str_off: b.str_off + bytes };
+                b.checks.push(c);
             }
-            push(
-                &mut segs,
-                Seg::Locals(file),
-                count.kept,
-                count.bytes,
-                0..0,
-                &mut entry,
-                &mut str_off,
-            );
+            b.push(Seg::Locals(FileId(f as u32)), count.kept, count.bytes, 0..0);
             let rows = file_rows(f as u32);
-            let bytes = demoted_rows(rows.clone(), str_off, &mut demoted_str);
-            push(
-                &mut segs,
-                Seg::Demoted(file),
-                rows.len() as u32,
-                bytes,
-                rows,
-                &mut entry,
-                &mut str_off,
-            );
-            symtab_locals[f] = Span { start: block_start, len: entry - block_start };
+            let bytes = demoted_rows(rows.clone(), b.str_off, &mut demoted_str);
+            b.push(Seg::Demoted(FileId(f as u32)), rows.len() as u32, bytes, rows);
+            symtab_locals[f] = Span { start: block_start, len: b.entry - block_start };
         }
-        let locals = entry;
-        let gseg = segs.len() as u32;
-        let (mut gentry, mut gstr) = (entry, str_off);
-        for (b, &(k, bytes)) in gblocks.iter().enumerate() {
-            checks.push(Check {
-                entry: gentry,
-                seg: gseg,
-                cursor: b as u32 * CHECKPOINT,
-                str_off: gstr,
-            });
-            gentry += k;
+        let locals = b.entry;
+        let gseg = b.list.len() as u32;
+        let (mut gentry, mut gstr) = (b.entry, b.str_off);
+        for (k, &(kept, bytes)) in gblocks.iter().enumerate() {
+            let cursor = k as u32 * CHECKPOINT;
+            b.checks.push(Check { entry: gentry, seg: gseg, cursor, str_off: gstr });
+            gentry += kept;
             gstr += bytes;
         }
-        push(
-            &mut segs,
-            Seg::Globals,
-            gentry - entry,
-            gstr - str_off,
-            0..0,
-            &mut entry,
-            &mut str_off,
-        );
+        b.push(Seg::Globals, gentry - b.entry, gstr - b.str_off, 0..0);
+        let Segs { list: segs, checks, entry, str_off } = b;
         let Ok(symtab_locals) = Column::from_vec(symtab_locals) else {
             return fail(diag, key(0), internal("too many files"));
         };
