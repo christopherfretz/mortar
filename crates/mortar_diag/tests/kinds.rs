@@ -572,6 +572,92 @@ fn versioned_export() {
     );
 }
 
+// -- one-definition rule ------------------------------------------------
+
+// spec: diag.md §3.1 `meta-malformed`, `meta-version`, `odr-abi-mismatch`
+#[test]
+fn odr_kinds_without_a_symbol() {
+    let kind = Kind::MetaMalformed { reason: s("record 3 runs past its section") };
+    assert_eq!(kind.id(), "meta-malformed");
+    assert_eq!(text(kind), "ld: error: malformed Mason metadata: record 3 runs past its section\n");
+    let kind = Kind::MetaVersion { major: 7 };
+    assert_eq!(kind.id(), "meta-version");
+    assert_eq!(
+        text(kind),
+        "ld: error: Mason metadata version 7 is not supported; its records are ignored\n"
+    );
+    let kind = Kind::OdrAbiMismatch { option: s("std"), first: s("c++17"), second: s("c++20") };
+    assert_eq!(kind.id(), "odr-abi-mismatch");
+    assert_eq!(
+        text(kind),
+        "ld: error: translation units compiled with different std: c++17 and c++20\n"
+    );
+}
+
+// spec: diag.md §3.1, the one-definition rule's kinds that name a symbol
+#[test]
+fn odr_kinds_with_a_symbol() {
+    let rows: [(fn(String) -> Kind, &str, &str); 11] = [
+        (
+            |name| Kind::OdrArchiveShadow { name },
+            "odr-archive-shadow",
+            "x in an archive member that is not linked is defined differently",
+        ),
+        (
+            |name| Kind::OdrContentsMismatch { name },
+            "odr-contents-mismatch",
+            "x has different contents in different files",
+        ),
+        (
+            |name| Kind::OdrDeclarationMismatch { name },
+            "odr-declaration-mismatch",
+            "x is declared with a type that does not match its definition",
+        ),
+        (
+            |name| Kind::OdrInternalReference { name },
+            "odr-internal-reference",
+            "x refers to an entity with internal linkage, which differs in each translation unit",
+        ),
+        (
+            |name| Kind::OdrIsaMismatch { name },
+            "odr-isa-mismatch",
+            "the kept copy of x was compiled for other target features than a translation unit that uses it",
+        ),
+        (
+            |name| Kind::OdrSizeMismatch { name },
+            "odr-size-mismatch",
+            "x has different sizes in different files",
+        ),
+        (
+            |name| Kind::OdrStrongAndComdat { name },
+            "odr-strong-and-comdat",
+            "x has a non-inline definition and an inline copy",
+        ),
+        (
+            |name| Kind::OdrSymbolTypeMismatch { name },
+            "odr-symbol-type-mismatch",
+            "x is a function in one file and data in another",
+        ),
+        (
+            |name| Kind::OdrTypeMismatch { name },
+            "odr-type-mismatch",
+            "type x violates the one-definition rule",
+        ),
+        (|name| Kind::OdrViolation { name }, "odr-violation", "x violates the one-definition rule"),
+        (
+            |name| Kind::OdrVtableRttiMismatch { name },
+            "odr-vtable-rtti-mismatch",
+            "the vtable of x is emitted by translation units compiled with and without RTTI",
+        ),
+    ];
+    for (make, id, message) in rows {
+        let kind = make(s("x"));
+        assert_eq!(kind.id(), id);
+        assert_eq!(kind.symbol(), Some("x"));
+        assert_eq!(symbol_text(kind), format!("ld: error: {message}\n"));
+    }
+}
+
 // spec: diag.md §3.1 `canonical-plt-in-pie` (dyn.md D-44)
 #[test]
 fn canonical_plt_in_pie() {

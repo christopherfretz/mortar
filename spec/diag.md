@@ -111,6 +111,7 @@ The relations and their words:
 
 | relation | words | use |
 |---|---|---|
+| `DefinedDifferentlyIn` | `defined differently in` | where a definition of the diagnostic's symbol is that differs from the one before it (`spec/odr.md` §9.1) |
 | `DefinedIn` | `defined in` | where a definition of the diagnostic's symbol is |
 | `In` | `in` | what contains the construct, when the head line has no place |
 | `NamedBy` | `named by` | the argument or script position that brought a file into the link |
@@ -200,6 +201,7 @@ is added before or after it.
 | `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | own |
 | `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | own |
 | `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | own |
+| `odr-contents-mismatch` | `OdrContentsMismatch { name }` | `{name} has different contents in different files` | own (`spec/odr.md` §8.1 W4; WP-072) |
 | `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | own |
 | `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | own |
 | `odr-isa-mismatch` | `OdrIsaMismatch { name }` | `the kept copy of {name} was compiled for other target features than a translation unit that uses it` | own |
@@ -373,7 +375,8 @@ is added before or after it.
   `--odr=error` and `--odr=strict`, `meta-malformed` and `meta-version`
   under `--odr=strict` (`spec/odr.md` O-40, O-41). Which checks are on
   by default is `spec/odr.md` O-47's register; `odr-internal-reference`
-  and `odr-strong-and-comdat` are reported only under `--odr=strict`,
+  `odr-strong-and-comdat` and `odr-contents-mismatch` are reported only
+  under `--odr=strict`,
   `odr-archive-shadow` only with `--odr-check-archives`. Every `{name}`
   goes through §5.4. Their context lines (§2.4) and their key (phase 40,
   `spec/model.md` §8; `2^40 +` the row's index for a row without a

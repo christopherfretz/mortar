@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 mortar_core.workspace = true
+mortar_diag.workspace = true
+mortar_elf.workspace = true
 mortar_meta.workspace = true
 
 [dev-dependencies]

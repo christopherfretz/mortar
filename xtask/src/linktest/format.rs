@@ -529,6 +529,9 @@ pub struct Test {
     pub requires: Vec<Feature>,
     pub markers: Vec<Marker>,
     pub anomalies: Vec<Anomaly>,
+    /// The `diag: <id> <file>...` directives: the one-definition-rule
+    /// diagnostics every mortar link step reports (`spec/odr.md` §12.1).
+    pub odr: Vec<super::odr::Expected>,
     /// The wall-clock limit of each link and run step, if the test sets
     /// one.
     pub timeout: Option<Duration>,
@@ -729,6 +732,7 @@ struct Parser {
     requires: Option<(usize, Vec<Feature>)>,
     markers: Vec<Marker>,
     anomalies: Vec<Anomaly>,
+    odr: Vec<super::odr::Expected>,
     timeout: Option<Duration>,
     memory_mib: Option<u64>,
     steps: Vec<Step>,
@@ -920,6 +924,27 @@ impl Parser {
                     } else {
                         self.fixtures.push(name.to_owned());
                     }
+                }
+            }
+            "diag" => {
+                let mut words = value.split_whitespace();
+                let id = words.next().unwrap_or_default();
+                let files: Vec<String> = words.map(str::to_owned).collect();
+                if !super::odr::ids().contains(&id) {
+                    self.error(
+                        line,
+                        format!(
+                            "'diag: {value}': '{id}' is not a one-definition-rule diagnostic of \
+                             diag.md §3.1"
+                        ),
+                    );
+                } else if files.is_empty() {
+                    self.error(
+                        line,
+                        format!("'diag: {value}' names no file: 'diag: <id> <file>...'"),
+                    );
+                } else {
+                    self.odr.push(super::odr::Expected { line, id: id.to_owned(), files });
                 }
             }
             "mem" => match value.parse::<u64>() {
@@ -1284,6 +1309,7 @@ impl Parser {
             requires: self.requires.map(|(_, features)| features).unwrap_or_default(),
             markers: self.markers,
             anomalies: self.anomalies,
+            odr: self.odr,
             timeout: self.timeout,
             memory_mib: self.memory_mib,
             steps,
@@ -1885,6 +1911,26 @@ FileHeader:
         assert!(has_error(&with("#@ anomaly(mold): 9\n"), 3, "not a list of plumb.md anomaly"));
         assert!(has_error(&with("#@ anomaly(mold): A\n"), 3, "not a list of plumb.md anomaly"));
         assert!(has_error(&with("#@ anomaly(mold,x86_64): A9\n"), 3, "not an architecture of"));
+    }
+
+    // "Directives": `diag: <id> <file>...` names a one-definition-rule
+    // diagnostic and its places; repeatable.
+    #[test]
+    fn odr_diag_directives() {
+        let with = |directives: &str| {
+            format!("#@ spec: odr.md \"x\"\n#@ arch: aarch64\n{directives}link ld a.o b.o\n")
+        };
+        let test = parse(&with(
+            "#@ diag: odr-size-mismatch a.o b.o\n#@ diag: odr-symbol-type-mismatch b.o a.o\n",
+        ))
+        .unwrap();
+        assert_eq!(test.odr.len(), 2);
+        assert_eq!(test.odr[0].id, "odr-size-mismatch");
+        assert_eq!(test.odr[1].files, ["b.o", "a.o"]);
+        assert_eq!(test.odr[1].line, 4);
+        assert!(has_error(&with("#@ diag: undefined-symbol a.o\n"), 3, "not a one-definition"));
+        assert!(has_error(&with("#@ diag: odr-violation\n"), 3, "names no file"));
+        assert!(has_error(&with("#@ diag(mortar): odr-violation a.o\n"), 3, "no qualifiers"));
     }
 
     // "L3": the run-wide default anomalies.

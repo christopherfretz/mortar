@@ -344,6 +344,84 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(" cannot be exported (version definitions are not supported)");
             return shown.then_some(name);
         }
+        Kind::MetaMalformed { reason } => {
+            out.push_str("malformed Mason metadata: ");
+            escaped(reason, out);
+        }
+        Kind::MetaVersion { major } => {
+            let _ = write!(
+                out,
+                "Mason metadata version {major} is not supported; its records are ignored"
+            );
+        }
+        Kind::OdrAbiMismatch { option, first, second } => {
+            out.push_str("translation units compiled with different ");
+            escaped(option, out);
+            out.push_str(": ");
+            escaped(first, out);
+            out.push_str(" and ");
+            escaped(second, out);
+        }
+        Kind::OdrArchiveShadow { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" in an archive member that is not linked is defined differently");
+            return shown.then_some(name);
+        }
+        Kind::OdrContentsMismatch { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" has different contents in different files");
+            return shown.then_some(name);
+        }
+        Kind::OdrDeclarationMismatch { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is declared with a type that does not match its definition");
+            return shown.then_some(name);
+        }
+        Kind::OdrInternalReference { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" refers to an entity with internal linkage, which differs in each translation unit");
+            return shown.then_some(name);
+        }
+        Kind::OdrIsaMismatch { name } => {
+            out.push_str("the kept copy of ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(
+                " was compiled for other target features than a translation unit that uses it",
+            );
+            return shown.then_some(name);
+        }
+        Kind::OdrSizeMismatch { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" has different sizes in different files");
+            return shown.then_some(name);
+        }
+        Kind::OdrStrongAndComdat { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" has a non-inline definition and an inline copy");
+            return shown.then_some(name);
+        }
+        Kind::OdrSymbolTypeMismatch { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is a function in one file and data in another");
+            return shown.then_some(name);
+        }
+        Kind::OdrTypeMismatch { name } => {
+            out.push_str("type ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" violates the one-definition rule");
+            return shown.then_some(name);
+        }
+        Kind::OdrViolation { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" violates the one-definition rule");
+            return shown.then_some(name);
+        }
+        Kind::OdrVtableRttiMismatch { name } => {
+            out.push_str("the vtable of ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is emitted by translation units compiled with and without RTTI");
+            return shown.then_some(name);
+        }
         Kind::CanonicalPltInPie { r_type, name } => {
             out.push_str("relocation ");
             escaped(r_type, out);

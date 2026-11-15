@@ -747,6 +747,16 @@ impl Parser<'_> {
             Lands::AllowShlibUndefined(on) => plan.dynamic.allow_shlib_undefined = Some(on),
             Lands::WarnBackrefs(on) => plan.diagnostics.warn_backrefs = on,
             Lands::WarnCommon(on) => plan.diagnostics.warn_common = on,
+            Lands::Odr => {
+                plan.diagnostics.odr.mode = match word().as_str() {
+                    "error" => crate::plan::OdrMode::Error,
+                    "strict" => crate::plan::OdrMode::Strict,
+                    "off" => crate::plan::OdrMode::Off,
+                    _ => crate::plan::OdrMode::Warn,
+                };
+            }
+            Lands::NoOdrCheck => plan.diagnostics.odr.mode = crate::plan::OdrMode::Off,
+            Lands::OdrStats => plan.diagnostics.odr.stats = true,
             Lands::NoinhibitExec => plan.diagnostics.noinhibit_exec = true,
             Lands::Map => plan.bookkeeping.map = Some(text()),
             Lands::PrintMap => plan.bookkeeping.print_map = true,
