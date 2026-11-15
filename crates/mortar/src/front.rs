@@ -125,6 +125,66 @@ pub struct Front<'s> {
     pub placed: Placed,
 }
 
+/// One output section of a [`Front`]'s layout, as its section header will
+/// show it (the chunks that share a section index, `spec/layout.md` §4.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutRow {
+    pub shndx: u32,
+    pub name: Vec<u8>,
+    pub sh_type: u32,
+    pub flags: u64,
+    /// `None`: not allocated.
+    pub addr: Option<u64>,
+    /// From the first chunk's start to the last one's end.
+    pub size: u64,
+    /// In bytes.
+    pub align: u64,
+}
+
+impl Front<'_> {
+    /// The output sections, in section index order.
+    #[must_use]
+    pub fn sections(&self) -> Vec<OutRow> {
+        let mut rows: Vec<OutRow> = Vec::new();
+        let mut span: Vec<(u64, u64)> = Vec::new();
+        let mut chunks: Vec<_> = self
+            .layout
+            .placement
+            .chunks
+            .iter()
+            .filter_map(|(_, c)| c.shndx.map(|n| (n, *c)))
+            .collect();
+        chunks.sort_by_key(|(n, c)| (*n, c.addr.unwrap_or(c.offset), c.offset));
+        for (shndx, c) in chunks {
+            let start = c.addr.unwrap_or(c.offset);
+            let end = start + c.size;
+            if let (Some(last), Some(sp)) = (rows.last_mut(), span.last_mut())
+                && last.shndx == shndx
+            {
+                sp.1 = sp.1.max(end);
+                last.size = sp.1 - sp.0;
+                last.align = last.align.max(1 << c.align);
+                continue;
+            }
+            let name: Vec<u8> = match c.kind {
+                ChunkKind::Synthetic(s) => s.name.to_vec(),
+                k => k.out().map_or_else(Vec::new, |o| self.assignment.outsecs[o].name.to_vec()),
+            };
+            rows.push(OutRow {
+                shndx,
+                name,
+                sh_type: c.sh_type,
+                flags: c.flags,
+                addr: c.addr,
+                size: c.size,
+                align: 1 << c.align,
+            });
+            span.push((start, end));
+        }
+        rows
+    }
+}
+
 /// Where a link runs.
 #[derive(Debug, Clone, Copy)]
 pub struct Env<'e> {
