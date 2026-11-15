@@ -759,8 +759,9 @@ fn s7_s10_diagnostic_texts_and_keys() {
     );
     assert_eq!(k, Key::new(100, 0, 12));
     assert!(
-        render(&d)
-            .contains("a.out:(.text+0x1000): relocation truncated to fit: R_AARCH64_ADR_PREL_PG_HI21")
+        render(&d).contains(
+            "a.out:(.text+0x1000): relocation truncated to fit: R_AARCH64_ADR_PREL_PG_HI21"
+        )
     );
 
     // The other scan errors.

@@ -158,9 +158,10 @@ const fn column(t: TargetKind) -> usize {
 }
 
 use Cell::{
-    Copy as C, Error as E, Got as G, GotBase as GB, GotIplt as GI, Impossible as X, Iplt as I,
-    ArchWeak0 as AW0, IpltGotBase as IGB, IpltRelativeTx as IRT, Nothing as N, Plt as PLT, RelativeTx as RT,
-    SymbolicTx as DT, WritableSymbolicElseCopy as WDC, WritableSymbolicElseError as WDE,
+    ArchWeak0 as AW0, Copy as C, Error as E, Got as G, GotBase as GB, GotIplt as GI,
+    Impossible as X, Iplt as I, IpltGotBase as IGB, IpltRelativeTx as IRT, Nothing as N,
+    Plt as PLT, RelativeTx as RT, SymbolicTx as DT, WritableSymbolicElseCopy as WDC,
+    WritableSymbolicElseError as WDE,
 };
 
 /// The table of §4.3 as data: per class, the row for `Static`/`Exec` and

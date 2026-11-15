@@ -19,7 +19,8 @@ use crate::{TLS, relax, weak0_rule};
 
 /// The feature a64.md §13.2's staging note refuses: `ABS*` against a TLS
 /// symbol at a non-alloc place.
-pub const NON_ALLOC_TLS_ABS: &str = "absolute relocation against a TLS symbol in a non-alloc section";
+pub const NON_ALLOC_TLS_ABS: &str =
+    "absolute relocation against a TLS symbol in a non-alloc section";
 
 /// The input-only checks of arch.md §3.4 for one relocation: the field and
 /// its window lie in the section; the addend rule (a64.md §3.1); the
@@ -83,7 +84,10 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         // has no symbol type), so the case is refused rather than written
         // as the template address.
         ClassOutcome::Demand(_) if writes_dtprel(h.class, cx.place, sym.tls) => {
-            out.error(at.index, ScanError::Refused(Refusal::named(RefusalClass::Feature, NON_ALLOC_TLS_ABS)));
+            out.error(
+                at.index,
+                ScanError::Refused(Refusal::named(RefusalClass::Feature, NON_ALLOC_TLS_ABS)),
+            );
         }
         ClassOutcome::Demand(d) => {
             out.raise(at.key, d.flags);
