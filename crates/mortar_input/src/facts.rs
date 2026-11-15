@@ -5,13 +5,14 @@
 
 use mortar_core::intern::SymName;
 use mortar_diag::{Diagnostic, RefusalClass};
-use mortar_elf::archive::{self, Archive, Content};
+use mortar_elf::archive::{self, Archive, Location};
 use mortar_elf::consts::{
     DF_1_PIE, EI_CLASS, EI_DATA, ELFDATA2MSB, EM_386, EM_AARCH64, EM_X86_64, ET_CORE, ET_DYN,
     ET_EXEC, ET_REL, SHT_GROUP, STT_SECTION, em_name, et_name,
 };
 use mortar_elf::{
     Class, Error, FileHeader, Machine, Object, Section, SharedObject, SymbolSection, SymbolTable,
+    View,
 };
 use mortar_script::Script;
 
@@ -365,14 +366,27 @@ fn e_type_name(e_type: u16) -> String {
     et_name(e_type).map_or_else(|| format!("{e_type:#x}"), str::to_owned)
 }
 
-/// Sniffs and analyses `bytes` (§2.1, §2.2): a file in input position, or,
+/// Sniffs and analyses a file (§2.1, §2.2): one in input position, or,
 /// with `member`, an archive member (§7.3: rows 1 and 8 do not apply).
 /// An archive's inline members are listed but not analysed here
 /// ([`analyse_member`] does that, in parallel).
+///
+/// `view` is the file's bytes as far as the store holds them (§11.3): the
+/// whole file, or the staged store's parts, which hold everything this
+/// analysis and the readers after it read (`spec/landed/input/WP-021b.md`).
+/// A structure that is not resident is an internal error of the store,
+/// reported as a malformed file, never a panic.
 #[must_use]
 pub fn analyse(bytes: &[u8], member: bool) -> Facts<'_> {
-    let ident = ElfIdent::of(bytes);
-    let kind = sniff(bytes, member);
+    analyse_view(View::whole(bytes), member)
+}
+
+/// [`analyse`] over the store's view of a file (§11.3).
+#[must_use]
+pub fn analyse_view(view: View<'_>, member: bool) -> Facts<'_> {
+    let head = view.prefix(64).unwrap_or_default();
+    let ident = ElfIdent::of(head);
+    let kind = sniff(view, head, member);
     Facts { ident, kind }
 }
 
@@ -382,18 +396,26 @@ pub fn analyse_member(bytes: &[u8]) -> Facts<'_> {
     analyse(bytes, true)
 }
 
-fn sniff(bytes: &[u8], member: bool) -> Kind<'_> {
-    if bytes.is_empty() {
+/// The whole of a file the analysis reads as one slice (a script, a
+/// shared object), or the store's internal error.
+fn whole(view: View<'_>) -> Result<&[u8], Kind<'_>> {
+    view.as_slice().ok_or_else(|| {
+        Kind::Bad(Bad::Malformed(Error::NotResident { offset: 0, size: view.len() }.to_string()))
+    })
+}
+
+fn sniff<'s>(view: View<'s>, bytes: &'s [u8], member: bool) -> Kind<'s> {
+    if view.is_empty() {
         return if member { Kind::NotObject("empty") } else { Kind::Empty };
     }
     if bytes.starts_with(b"\x7fELF") {
-        return elf(bytes, member);
+        return elf(view, bytes, member);
     }
     if Archive::sniff(bytes).is_some() {
         if member {
             return Kind::NotObject("an archive");
         }
-        return Kind::Archive(archive_facts(bytes));
+        return Kind::Archive(archive_facts(view));
     }
     let starts = |magic: &[&[u8]]| magic.iter().any(|m| bytes.starts_with(m));
     if starts(&[b"BC\xC0\xDE", b"\xDE\xC0\x17\x0B"]) {
@@ -411,12 +433,16 @@ fn sniff(bytes: &[u8], member: bool) -> Kind<'_> {
     if bytes.starts_with(b"\0asm") {
         return Kind::Bad(Bad::format("WebAssembly"));
     }
-    if bytes.len() >= 20 && starts(&[b"\x4C\x01", b"\x64\x86", b"\x64\xAA"]) {
+    if view.len() >= 20 && starts(&[b"\x4C\x01", b"\x64\x86", b"\x64\xAA"]) {
         return Kind::Bad(Bad::format("COFF"));
     }
     if member {
         return Kind::NotObject("not an ELF file");
     }
+    let bytes = match whole(view) {
+        Ok(bytes) => bytes,
+        Err(bad) => return bad,
+    };
     if mortar_script::looks_like_script(bytes) {
         // The path is put in place by the walk (one file, many spellings).
         return Kind::Script(ScriptFacts { parsed: mortar_script::parse(bytes, "") });
@@ -424,13 +450,13 @@ fn sniff(bytes: &[u8], member: bool) -> Kind<'_> {
     Kind::Unknown
 }
 
-fn elf(bytes: &[u8], member: bool) -> Kind<'_> {
+fn elf<'s>(view: View<'s>, bytes: &'s [u8], member: bool) -> Kind<'s> {
     let header = match FileHeader::parse(bytes) {
         Ok(header) => header,
         Err(e) => return Kind::Bad(header_error(e)),
     };
     match header.e_type {
-        ET_REL => match Object::parse(bytes) {
+        ET_REL => match Object::parse_view(view) {
             Ok(object) => object_facts(object),
             Err(e) => Kind::Bad(header_error(e)),
         },
@@ -438,7 +464,10 @@ fn elf(bytes: &[u8], member: bool) -> Kind<'_> {
         ET_EXEC if member => Kind::NotObject("an executable (ET_EXEC)"),
         ET_CORE if member => Kind::NotObject("a core file (ET_CORE)"),
         _ if member => Kind::NotObject("an ELF file that is not a relocatable object"),
-        ET_DYN => shared_facts(bytes),
+        ET_DYN => match whole(view) {
+            Ok(bytes) => shared_facts(bytes),
+            Err(bad) => bad,
+        },
         ET_EXEC => Kind::Bad(Bad::refused(RefusalClass::ObjectType, "ET_EXEC")),
         e_type => Kind::Bad(Bad::refused(RefusalClass::ObjectType, e_type_name(e_type))),
     }
@@ -570,12 +599,13 @@ fn shared_facts(bytes: &[u8]) -> Kind<'_> {
 
 /// Lists an archive's ordinary members (§7.1, §7.2); inline members are
 /// analysed later.
-fn archive_facts(bytes: &[u8]) -> ArchiveFacts<'_> {
-    let archive = match Archive::parse(bytes) {
+fn archive_facts(view: View<'_>) -> ArchiveFacts<'_> {
+    let archive = match Archive::parse_view(view) {
         Ok(a) => a,
         Err(e) => {
+            let head = view.prefix(archive::THIN_MAGIC.len() as u64).unwrap_or_default();
             return ArchiveFacts {
-                thin: bytes.starts_with(archive::THIN_MAGIC),
+                thin: head.starts_with(archive::THIN_MAGIC),
                 members: Vec::new(),
                 error: Some((e.to_string(), None)),
                 index_error: None,
@@ -585,23 +615,21 @@ fn archive_facts(bytes: &[u8]) -> ArchiveFacts<'_> {
     let thin = archive.kind() == archive::Kind::Thin;
     let mut members = Vec::new();
     let mut error = None;
-    for m in archive.members() {
+    // The headers, not the members: a member's content need not be
+    // resident (§11.3); the member pass reads what it needs of it.
+    for m in archive.headers() {
         match m {
             Ok(m) => {
-                let content = match m.content() {
-                    Content::Inline { offset, data } => {
-                        MemberContent::Inline { offset, len: data.len() as u64, facts: None }
+                let content = match m.location {
+                    Location::Inline { offset } => {
+                        MemberContent::Inline { offset, len: m.size, facts: None }
                     }
-                    Content::External { path } => MemberContent::External { path },
-                    Content::ExternalMember { archive_path, header_offset } => {
+                    Location::External { path } => MemberContent::External { path },
+                    Location::ExternalMember { archive_path, header_offset } => {
                         MemberContent::ExternalMember { archive_path, header_offset }
                     }
                 };
-                members.push(MemberFacts {
-                    header_offset: m.header_offset(),
-                    name: m.name(),
-                    content,
-                });
+                members.push(MemberFacts { header_offset: m.header_offset, name: m.name, content });
             }
             Err(e) => {
                 error = Some((e.to_string(), None));

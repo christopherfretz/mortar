@@ -102,6 +102,7 @@ version = "0.0.0"
 dependencies = [
  "mortar_a64",
  "mortar_arch",
+ "mortar_cli",
  "mortar_core",
  "mortar_diag",
  "mortar_digest",
@@ -156,9 +157,11 @@ version = "0.0.0"
 dependencies = [
  "mortar_a64",
  "mortar_arch",
+ "mortar_cli",
  "mortar_core",
  "mortar_diag",
  "mortar_elf",
+ "mortar_input",
  "mortar_testutil",
 ]
 

@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 
 use mortar_arch::{Arch, DemandClass, Field, Site};
-use mortar_core::inputs::{Reader, RelocForm};
+use mortar_core::inputs::{CopyError, Reader, RelocForm};
 use mortar_core::layout::EntryDef;
 use mortar_core::par::Pool;
 use mortar_core::resolution::{Def, SectionKind};
@@ -208,26 +208,43 @@ enum Unit<'a> {
 /// them resident (`Inputs::resident`), else read into a buffer of their
 /// own with `Inputs::copy_to` (the staged store: bulk bytes are not
 /// resident); for a file without a store entry (tests), the parsed
-/// object's own bytes.
+/// object's own bytes. Under the staged store the sections phase 60
+/// reads (`Merge`, `.eh_frame` and the relocations of an allocated
+/// section) are resident (`spec/input.md` §11.1), so the copy is the
+/// fallback; a failed copy is `input-changed` or `cannot-open-file`,
+/// never `malformed-input`.
 pub fn read<'s>(inputs: &Inputs<'s>, file: FileId, s: &Section<'s>) -> Result<Cow<'s, [u8]>, What> {
     let h = s.header();
-    let malformed = |e: mortar_elf::Error| What::Malformed(e.to_string());
     if h.sh_type == mortar_elf::consts::SHT_NOBITS || h.sh_size == 0 {
         return Ok(Cow::Borrowed(&[]));
     }
     let range = h.sh_offset..h.sh_offset.saturating_add(h.sh_size);
     if inputs.files[file].bytes.is_none() {
-        return s.data().map(Cow::Borrowed).map_err(malformed);
+        return s.data().map(Cow::Borrowed).map_err(elf_what);
     }
     if let Some(b) = inputs.resident(file, range.clone()) {
         return Ok(Cow::Borrowed(b));
     }
     let len = usize::try_from(h.sh_size).map_err(|_| What::SectionTooLarge)?;
     let mut buf = vec![0u8; len];
-    inputs
-        .copy_to(file, range, &mut buf)
-        .map_err(|e| What::Malformed(format!("cannot read the section's bytes: {e:?}")))?;
+    inputs.copy_to(file, range, &mut buf).map_err(|e| match e {
+        CopyError::Changed => What::InputChanged,
+        CopyError::Read(errno) => What::ReadFailed(errno.0),
+        // The section table's reader checked every section is inside
+        // its file (`spec/elf.md` §3.2).
+        CopyError::OutOfRange => What::Malformed("section extends past the end of the file".into()),
+    })?;
     Ok(Cow::Owned(buf))
+}
+
+/// What a reader's error is: `malformed-input` with its text, except a
+/// [`mortar_elf::Error::NotResident`], which is the store's fault
+/// ([`What::NotResident`]).
+fn elf_what(e: mortar_elf::Error) -> What {
+    match e {
+        mortar_elf::Error::NotResident { .. } => What::NotResident(e.to_string()),
+        e => What::Malformed(e.to_string()),
+    }
 }
 
 /// Phase 60: splits every kept `Merge` and `EhFrame` section that is
@@ -304,7 +321,7 @@ fn units<'s>(
         let Some(row) = t.section(file, SectionIndex(index)) else { continue };
         let section = row.id;
         let problem = |what: What| Problem { file, section: index, piece: 0, offset: 0, what };
-        let malformed = |e: mortar_elf::Error| problem(What::Malformed(e.to_string()));
+        let malformed = |e: mortar_elf::Error| problem(elf_what(e));
         match row.kind {
             SectionKind::Merge => {
                 let s = object.section(SectionIndex(index)).map_err(malformed)?;
@@ -369,7 +386,7 @@ fn eh_relocs<'s>(
     bytes: &[u8],
     relocs: &dyn Relocs,
 ) -> Result<Vec<EhReloc>, (u64, What)> {
-    let malformed = |e: mortar_elf::Error| (0, What::Malformed(e.to_string()));
+    let malformed = |e: mortar_elf::Error| (0, elf_what(e));
     let rs: Section<'s> = object.section(reloc).map_err(malformed)?;
     let records = t.bytes(file, &rs).map_err(|w| (0, w))?;
     let class = object.class();
@@ -423,7 +440,7 @@ fn target(
     symbols: &mortar_elf::SymbolTable<'_>,
     index: SymbolIndex,
 ) -> Result<Target, What> {
-    let malformed = |e: mortar_elf::Error| What::Malformed(e.to_string());
+    let malformed = elf_what;
     let sym = symbols.get(index).map_err(malformed)?;
     let first_global = symbols.first_global().0;
     if index.0 >= first_global && sym.st_info & 0xf != STT_SECTION {

@@ -2,7 +2,9 @@
 //! a [`Problem`] names the place (file, section, offset), the key of
 //! `spec/model.md` §8 (phase 60, unit `FileId`, seq `section index × 2^32 +
 //! piece`) and a [`What`], which a test compares and [`Problem::diagnostic`]
-//! turns into the `malformed-input` or `refused` diagnostic with the
+//! turns into the `malformed-input` or `refused` diagnostic (or, for a
+//! failed read of the input, `input-changed`, `cannot-open-file` or
+//! `internal-error`) with the
 //! spec's wording.
 
 use mortar_core::FileId;
@@ -72,6 +74,17 @@ pub enum What {
     Malformed(String),
     /// A refusal of the architecture's `classify` (`spec/arch.md` §3.2).
     Refused(RefusalClass, String),
+    /// The section's bytes could not be copied because the file changed
+    /// while it was read (`spec/input.md` §11.5): `input-changed`, never
+    /// `malformed-input`.
+    InputChanged,
+    /// The positioned read of the section's bytes failed with this errno
+    /// (0: unknown): `cannot-open-file`.
+    ReadFailed(i32),
+    /// `mortar_elf` found bytes not resident that the staged store's rules
+    /// (`spec/input.md` §11.1) keep resident: a bug of the store, so
+    /// `internal-error`, never `malformed-input`. The reader's text.
+    NotResident(String),
 }
 
 impl What {
@@ -130,7 +143,10 @@ impl What {
             Self::AfterTerminator => "data after the .eh_frame terminator".into(),
             Self::RelocNotInPiece => "relocation is not in any piece".into(),
             Self::IntoRemovedRecord => "reference into a removed .eh_frame record".into(),
-            Self::Malformed(s) | Self::Refused(_, s) => s.clone(),
+            Self::Malformed(s) | Self::Refused(_, s) | Self::NotResident(s) => s.clone(),
+            Self::InputChanged => "file changed while it was read".into(),
+            Self::ReadFailed(0) => "the read failed".into(),
+            Self::ReadFailed(e) => mortar_diag::os_reason(&std::io::Error::from_raw_os_error(*e)),
         }
     }
 }
@@ -161,7 +177,20 @@ impl Problem {
     /// The diagnostic, at `file:(section+0xoffset)`.
     #[must_use]
     pub fn diagnostic(&self, file: FileRef, section_name: &str) -> Diagnostic {
+        let path = file.path().to_owned();
         let place = Place::section(file, section_name, self.offset);
+        match &self.what {
+            What::InputChanged => return Diagnostic::error(Kind::InputChanged).at(place),
+            What::ReadFailed(_) => {
+                let reason = self.what.message();
+                return Diagnostic::error(Kind::CannotOpenFile { path, reason }).at(place);
+            }
+            What::NotResident(what) => {
+                let what = what.clone();
+                return Diagnostic::error(Kind::InternalError { what }).at(place);
+            }
+            _ => {}
+        }
         match self.what.refusal_class() {
             Some(class) => Diagnostic::refused(class, self.what.message()).at(place),
             None => Diagnostic::error(Kind::Malformed { what: self.what.message() }).at(place),

@@ -7,6 +7,8 @@
 mod build;
 #[path = "archive/hostile.rs"]
 mod hostile;
+#[path = "archive/parts.rs"]
+mod parts;
 #[path = "archive/spec.rs"]
 mod spec;
 #[path = "archive/tools.rs"]

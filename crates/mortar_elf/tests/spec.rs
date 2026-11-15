@@ -96,7 +96,8 @@ fn s3_1_the_three_targets_are_accepted() {
         assert_eq!(machine.e_machine(), e_machine);
         assert_eq!(object.header().e_machine, e_machine);
         assert_eq!(object.header().e_shoff, built.shoff as u64);
-        assert_eq!(object.data().len(), built.bytes.len());
+        assert_eq!(object.data().len(), built.bytes.len() as u64);
+        assert_eq!(object.data().as_slice(), Some(&built.bytes[..]));
     }
 }
 

@@ -264,10 +264,10 @@ pub fn scan(
             leads.push(us[0].section);
         }
         if parts > 1 {
-            let (records, rewalked) = block_overlaps(&view, us, os);
+            let (records, rewalked) = block_overlaps(&view, us, os, &mut late);
             stats.rewalked += u32::from(rewalked);
             for (b, r) in records {
-                late.extend(driver::overlap_diag(&view, &us[b], r));
+                late.push(driver::overlap_diag(&view, &us[b], r));
             }
         }
         at = end;
@@ -307,10 +307,7 @@ pub fn scan(
         Vec::new()
     } else {
         stats.par_calls += 1;
-        pool.map(unsorted.len(), |k| {
-            let u = &units[unsorted[k]];
-            (u.section, driver::permutation(&view, u))
-        })
+        permutations(&view, &units, &unsorted, pool, &mut diagnostics)
     };
 
     let global = global
@@ -331,6 +328,30 @@ pub fn scan(
     }
 }
 
+/// The permutations of the unsorted sections (`unsorted`: their first
+/// units), one parallel call; a section that cannot be read again is its
+/// read's diagnostic.
+fn permutations(
+    view: &view::View<'_, '_>,
+    units: &[driver::Unit],
+    unsorted: &[usize],
+    pool: &Pool,
+    diagnostics: &mut Vec<(Key, Diagnostic)>,
+) -> Vec<(SectionId, Box<[u32]>)> {
+    let all = pool.map(unsorted.len(), |k| {
+        let u = &units[unsorted[k]];
+        (u.section, driver::permutation(view, u))
+    });
+    let mut v = Vec::with_capacity(all.len());
+    for (s, p) in all {
+        match p {
+            Ok(p) => v.push((s, p)),
+            Err(d) => diagnostics.push(d),
+        }
+    }
+    v
+}
+
 /// The overlapping records of a section of several blocks, as `(block,
 /// record)` in block order: each block's own result, except for the
 /// blocks whose windows' extents intersect, which are decided together
@@ -339,6 +360,7 @@ fn block_overlaps(
     view: &view::View<'_, '_>,
     us: &[driver::Unit],
     os: &[driver::UnitOut],
+    diags: &mut Vec<(Key, Diagnostic)>,
 ) -> (Vec<(usize, u32)>, bool) {
     let mut ext: Vec<(u64, u64, usize)> =
         os.iter().enumerate().filter_map(|(b, o)| o.extent.map(|(s, e)| (s, e, b))).collect();
@@ -369,7 +391,10 @@ fn block_overlaps(
             rewalked = true;
             let blocks: Vec<(&driver::Unit, &driver::UnitOut)> =
                 members.iter().map(|&m| (&us[m], &os[m])).collect();
-            let records = driver::rewalk(view, &blocks);
+            let records = driver::rewalk(view, &blocks).unwrap_or_else(|d| {
+                diags.push(d);
+                Vec::new()
+            });
             for r in records {
                 let m =
                     members.iter().copied().find(|&m| us[m].lo <= r && r < us[m].hi).unwrap_or(b);

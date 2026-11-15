@@ -30,10 +30,10 @@ fn s11_2_chunked_read_equals_whole_read() {
         let store = Store::new(StorePolicy::Resident);
         let r = store.read_many(&Pool::new(threads), &[job(&store, &p), job(&store, &small)]);
         let b = r[0].clone().unwrap();
-        assert_eq!(store.whole(b), &bytes[..]);
+        assert_eq!(store.whole(b), Some(&bytes[..]));
         assert_eq!(store.len(b), n as u64);
-        assert_eq!(store.hash(b), content_hash(&bytes));
-        assert_eq!(store.whole(r[1].clone().unwrap()), b"abc");
+        assert_eq!(store.hash(b), Ok(content_hash(&bytes)));
+        assert_eq!(store.whole(r[1].clone().unwrap()), Some(&b"abc"[..]));
         let st = store.stats();
         // Per file: one open, two fstats, one positioned read per chunk
         // plus the read at the end, one close (§11.2).
@@ -84,7 +84,7 @@ fn s11_2_size_limit() {
 fn hooked(edit: fn(&Path)) -> Store {
     Store::with_hooks(
         StorePolicy::Resident,
-        Hooks { after_fstat: Some(Box::new(move |p: &Path| edit(p))) },
+        Hooks { after_fstat: Some(Box::new(move |p: &Path| edit(p))), ..Hooks::default() },
     )
 }
 
