@@ -690,7 +690,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         }
         for (at, &f) in slots.needed.iter().enumerate() {
             need(
-                cx.resolution.file_live[f] == FileLive::Needed,
+                matches!(cx.resolution.file_live[f], FileLive::Shared { needed: true }),
                 r,
                 || "DT_NEEDED for a file that is not a needed shared object".into(),
                 [Row::Entry("needed", at as u32)],
@@ -1443,8 +1443,12 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 [Row::Entry("defined", at)],
             );
         }
-        let internal =
-            cx.resolution.def.iter().filter(|(_, d)| matches!(d, Def::Internal)).map(|(s, _)| s);
+        let internal = cx
+            .resolution
+            .def
+            .iter()
+            .filter(|(s, d)| matches!(d, Def::Internal(_)) && !cx.assignment.is_withdrawn(*s))
+            .map(|(s, _)| s);
         if let Some((s, missing)) = difference(internal, p.defined.iter().map(|x| x.symbol)) {
             let what = if missing {
                 "a linker-defined symbol with no value"

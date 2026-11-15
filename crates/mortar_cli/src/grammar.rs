@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 
 use mortar_diag::{Diagnostic, Key, Kind, RefusalClass};
 
+use crate::PHASE;
 use crate::plan::{
     BuildId, Compression, DynamicLinker, Emulation, Exit, HashStyle, Icf, Input, InputFormat,
     InputSpec, InputState, OtherOption, OutputKind, PackDynRelocs, Plan, ScriptArg, ScriptRole,
@@ -85,7 +86,7 @@ impl Parsed {
             .into_iter()
             .map(|u| {
                 (
-                    Key::new(0, u.arg, u64::MAX),
+                    Key::new(PHASE, u.arg, u64::MAX),
                     Diagnostic::refused(RefusalClass::Option, u.spelling.clone()),
                 )
             })
@@ -105,7 +106,7 @@ pub fn check_target(plan: &Plan, target: Target) -> Vec<(Key, Diagnostic)> {
         .map(|o| {
             let names: Vec<&str> = o.targets.iter().map(|t| t.name()).collect();
             (
-                Key::new(0, o.arg, 1),
+                Key::new(PHASE, o.arg, 1),
                 Diagnostic::error(Kind::UnknownOption { option: o.option.clone() }).note(format!(
                     "{} is an option of {} only; this link is for {}",
                     o.option,
@@ -236,7 +237,7 @@ fn os(bytes: &[u8]) -> OsString {
 impl Parser<'_> {
     fn error(&mut self, at: usize, diagnostic: Diagnostic) {
         self.seq += 1;
-        let key = Key::new(0, arg_index(at), self.seq);
+        let key = Key::new(PHASE, arg_index(at), self.seq);
         self.out.diagnostics.push((key, diagnostic));
     }
 
@@ -690,6 +691,9 @@ impl Parser<'_> {
             }
             Lands::WarnUnresolved(on) => plan.diagnostics.warn_unresolved_symbols = Some(on),
             Lands::AllowMultipleDefinition(on) => plan.diagnostics.allow_multiple_definition = on,
+            Lands::AllowShlibUndefined(on) => plan.dynamic.allow_shlib_undefined = Some(on),
+            Lands::WarnBackrefs(on) => plan.diagnostics.warn_backrefs = on,
+            Lands::WarnCommon(on) => plan.diagnostics.warn_common = on,
             Lands::NoinhibitExec => plan.diagnostics.noinhibit_exec = true,
             Lands::Map => plan.bookkeeping.map = Some(text()),
             Lands::PrintMap => plan.bookkeeping.print_map = true,
