@@ -3,13 +3,15 @@
 Done: items 1-3 (every `dyn.md` §11 request applied, §15 rulings written,
 consistency pass); record `spec/landed/dyn/WP-040r.md`.
 
-Half-done: the citation check of `dyn.md` (every external rule id it
-cites) runs in a read-only helper; its fixes, if any, go in a follow-up
-commit.
+Done also: the citation check of `dyn.md` (about 120 citations fine;
+14 fixed in the follow-up commit; D-48's TLSDESC bullet vs x64 X-28 left
+as a question). main merged (WP-030c).
+
+Half-done: item 4 edits in x86.md, arch.md, layout.md (uncommitted at
+this commit).
 
 Learned, not yet written into a spec (questions for the supervisor):
-D-46 vs D-49 (RELA `JUMP_SLOT` word); D-49's i386 lazy target is
-entry + 6, not PLT0; the new diagnostic kinds are not in `diag.md`;
+the new diagnostic kinds are not in `diag.md`;
 thread-local weak undefined in a PIE (D-25 vs a64 §7); x64 X-26's
 unmatched GD against an output-defined key; `PltVariant::Now` vs BTI;
 the Q1 ruling vs D-11 computed after `def`; D-1 "[M4 end to end]" vs D-2

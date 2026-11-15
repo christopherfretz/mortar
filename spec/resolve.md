@@ -1274,7 +1274,9 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
   since shared objects load at page-aligned bases; `st_value` 0: the
   section's alignment; GNU ld uses the section's alignment, E17, which
   over-aligns; both are valid); whether it is **read-only**: the defining
-  address lies in a `PT_LOAD` without `PF_W` (all three then put the copy
+  address lies in a `PT_LOAD` without `PF_W` or inside the shared
+  object's `PT_GNU_RELRO` (`spec/dyn.md` D-42: libstdc++'s typeinfo and
+  vtables in `.data.rel.ro`) (all three then put the copy
   in RELRO: GNU ld `.data.rel.ro`, lld `.bss.rel.ro`, mold
   `.copyrel.rel.ro`, E17); and its size `st_size`. A copy relocation
   against an `STV_PROTECTED` definition is an error of the scan (not

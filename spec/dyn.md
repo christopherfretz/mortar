@@ -194,7 +194,7 @@ Consequences for the rules: an **x86-64 PIE needs copy relocations**
 (GCC's default code reads `stdout` PC-relatively; all three references
 copy `stdout`, `stderr`, `optind`, `opterr`, `environ`, `std::cout`,
 `std::cerr`, `std::nothrow` into GCC's PIEs), which arch.md §4.3's
-`Pie`/`Pc`/`Shlib` = `E` and a64.md Q5 ("no COPY in PIE") would refuse
+`Pie`/`Pc`/`Shlib` = `E` and a64.md Q5 (formerly "no COPY in PIE") would refuse
 (D-43, request R-A3); every default `printf`-to-`stdout` x86-64 program
 hits it. AArch64 PIEs reach shared data through the GOT.
 
@@ -545,7 +545,7 @@ R-M1). Then:
   is not exported: GNU ld and mold; lld exports it, harmless, 2.5a);
   these columns are computed after D-11 and D-12 (request R-R3).
 
-Archive extraction (resolve §4.2) takes the references of a loaded
+Archive extraction (resolve §4.2, §4.4) takes the references of a loaded
 shared object as edges, except those of an `--as-needed` shared object
 that is not needed: they extract nothing (Q1, ruled: lld's rule, the
 library contributes nothing; GNU ld unmeasured, to be measured by the
@@ -794,7 +794,7 @@ classify each live relocation that names it by this table (review N3),
 which covers every type of the M1 and M2 sets of a64.md, x64.md and
 x86.md; **a type not listed is unfillable**:
 
-| class | AArch64 (a64 §4) | x86-64 (x64 §3) | i386 (x86 §5) |
+| class | AArch64 (a64 §7.1) | x86-64 (x64 X-57) | i386 (x86 X86-68) |
 |---|---|---|---|
 | **GOT** | `GOTPCREL32`, `GOT_LD_PREL19`, `LD64_GOTOFF_LO15`, `ADR_GOT_PAGE`, `LD64_GOT_LO12_NC`, `LD64_GOTPAGE_LO15` | `GOTPCREL`, `GOTPCRELX`, `REX_GOTPCRELX`, `GOT64` (relaxation, x64 §8.1, is off for a `WeakDyn` key) | `GOT32`, `GOT32X` (the same) |
 | **absolute word in a writable place** | `ABS64` | `64` | `32` |
@@ -915,8 +915,8 @@ is a closed form of `n`, gives four entries per bucket on average, and
 needs no table of primes; GNU ld's empty table has `symoffset = 1`
 whatever the count (harmless to glibc). The section's `sh_entsize` is 0
 on ELF64 and 4 on ELF32 (all three; elflint complains of the i386 value).
-*Correctness:* the verifier looks up every `.dynsym` name and a fixed set
-of absent names (§12, P-D5). *Test:* `gnu-hash-sizes` (n = 0, 1, 2, 3, 10,
+*Correctness:* the verifier looks up every hashed `.dynsym` name and a
+fixed set of absent names (`spec/plumb.md` §12, P-D5). *Test:* `gnu-hash-sizes` (n = 0, 1, 2, 3, 10,
 100, 1000, 5000: the table looks up every name).
 
 **D-27 [M2] (versions).** `.gnu.version` exists when `.gnu.version_r`
@@ -1215,8 +1215,8 @@ turns it into `COPY` or a canonical PLT. GOT relaxation in `Exec` and
 `Pie` is the architecture's (a64 R5; x64 G1-G4 extended to `Exec` and
 `Pie`, G5/G6 to `Exec`, request R-X1; i386 [M4]); every reference
 relaxes the x86-64 local `GOTPCRELX` (E-reloc §3). Under RELA the place of
-a `GLOB_DAT`, symbolic or `JUMP_SLOT` record holds 0 and of a `RELATIVE`
-`S + A` (a64 §6.2 Q6); under REL (i386, [M4]) the place holds the addend:
+a `GLOB_DAT` or symbolic record holds 0, of a `JUMP_SLOT` the lazy target
+(D-49; a64 §6.2, x64 §6.2), and of a `RELATIVE` `S + A` (a64 §6.2 Q6); under REL (i386, [M4]) the place holds the addend:
 `S + A` for `RELATIVE`, `A` for `R_386_32`, 0 for `GLOB_DAT`, the lazy
 target for `JUMP_SLOT` (all three, E-reloc §1, request R-X86-2).
 
@@ -1266,8 +1266,8 @@ as rules of their own; `DTPOFF64`, `TPOFF64`, `R_X86_64_64` added to
 **D-49 [M2] (lazy binding and `-z now`).** Lazy binding is the default
 (all three). The `.got.plt` header is three words (x86 `[0] = _DYNAMIC`,
 D-32; AArch64 all 0), then one word per PLT entry, then one per IPLT
-entry (a64 §10.2, synth S-67). A `JUMP_SLOT` word initially holds its lazy
-target at the link-time address: AArch64 and i386 PLT0, x86-64 its own
+entry (a64 §10.2, synth S-107). A `JUMP_SLOT` word initially holds its lazy
+target at the link-time address: AArch64 PLT0, x86-64 and i386 [M4] its own
 entry plus 6 (the `push`; GNU ld and lld; mold uses PLT0 with the index in
 `%r11d`); in a PIE the loader adds the load bias (every lazy PIE of
 E-reloc runs). Under `-z now` the shapes stay (PLT0 and the lazy stubs are
@@ -1356,8 +1356,9 @@ are never written. *Test:* `elflint-dynamic` (the complaints are a fixed
 allow-list).
 
 **D-72 [M2] (debug sections in a PIE).** image.md I-47's open M2 item (a
-zero tombstone in a PIE, where address 0 is the file header): keep 0 for
-`.debug_*` other than `.debug_ranges`/`.debug_loc` (1), as lld, since no
+zero tombstone in a PIE, where address 0 is the file header): I-47's
+rows stand in a PIE: its 0 rows stay 0 and `.debug_ranges`/`.debug_loc`
+stay 1, as lld (its all-ones rows are unchanged), since no
 code is at 0 in a PIE either: the first `PT_LOAD` holds the headers (Q6,
 ruled; image.md I-47 states it: its rows stand in a PIE).
 ## 11. Requests to other specs
@@ -1373,7 +1374,7 @@ proposed wording or its substance; the owning spec's maintainer lands it
 | id | target | request |
 |---|---|---|
 | R-A1 | a64 §10.5 L1162 | canonical PLT in `.dynsym`: `st_shndx = SHN_UNDEF`, `st_value` = the PLT entry (D-23), not the PLT's section |
-| R-A2 | arch §2.1 L77; a64 Q4; a64/x64/x86 §2.1 | "a weak undefined key is `WeakDyn` or `Weak0` by dyn.md D-25, per key" (ends the circle with resolve §5.4); each architecture spec carries its column of D-25's class table, with the branch-opcode test in x64 and x86 (`Arch::weak_use`, WP-040 step 0k); a64 Q4's claim that lld makes an undefined weak dynamic "only with `-z dynamic-undefined-weak` or for shared outputs" is corrected: lld 19 and 22 do it in a default PIE (`WEAK UND`, `GLOB_DAT` + `JUMP_SLOT`; `review-m2-adv/weaksplit`) |
+| R-A2 | arch §2.1 L77; a64 Q4; a64 §4, §7.1; x64 §4, X-57; x86 X86-68 | "a weak undefined key is `WeakDyn` or `Weak0` by dyn.md D-25, per key" (ends the circle with resolve §5.4); each architecture spec carries its column of D-25's class table, with the branch-opcode test in x64 and x86 (`Arch::weak_use`, WP-040 step 0k); a64 Q4's claim that lld makes an undefined weak dynamic "only with `-z dynamic-undefined-weak` or for shared outputs" is corrected: lld 19 and 22 do it in a default PIE (`WEAK UND`, `GLOB_DAT` + `JUMP_SLOT`; `review-m2-adv/weaksplit`) |
 | R-A3 | arch §4.3 (`Pie` row, `Pc` against `Shlib{func: false}`) | `C`, not `E` (D-43); a64.md Q5 closed |
 | R-A4 | a64 §10.5 | copy allocations go to `.dynbss` / `.bss.rel.ro` (D-42), not `.data.rel.ro` |
 | R-A5 | a64 §6.2 | `R_AARCH64_TLS_DTPMOD64` / `DTPREL64` are written in `Exec` and `Pie` for an unrelaxed GD (D-48), not "in shared" only |
@@ -1415,7 +1416,7 @@ proposed wording or its substance; the owning spec's maintainer lands it
 | R-L2 | layout L-39 | an input section `.interp` in an output that writes one is refused (D-31) |
 | R-L3 | layout §1 L52, L-100 | "M2 … shared objects" means shared objects as inputs; producing them is M4 (ROADMAP) |
 | R-I2 | image I-40 | section-header fields of the dynamic sections are D-34; `e_type` per kind D-1 |
-| R-P1 | plumb (all of §12) | stage 3 rules P-D1-P-D12 |
+| R-P1 | plumb (all of §12) | stage 3 rules P-D1-P-D13 |
 
 ## 12. Requests to `plumb.md` (stage 3)
 

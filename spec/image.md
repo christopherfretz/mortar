@@ -720,9 +720,11 @@ buffer; the clip only selects which of them a job writes.
   writer half, and the byte layout is a function of the class and the
   rows; nothing in them is filled from input bytes.
   The fields (WP-027b, `link::structure`):
-  - `e_ident[EI_OSABI]` is `Facts.osabi` (AArch64: 0, a64.md Q11, also
-    with IFUNC symbols; eu-elflint then reads `STT_GNU_IFUNC` and
-    `R_AARCH64_IRELATIVE` as unknown, which Q11 may revisit);
+  - `e_ident[EI_OSABI]`: `ELFOSABI_GNU` when the output has an
+    `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or an `IRELATIVE` record,
+    else `ELFOSABI_NONE`, on every target (a64.md Q11, ruled by WP-027c;
+    x64.md X-49; x86.md X86-64; `spec/dyn.md` D-23 for `.dynsym`; plumb
+    S1);
     `e_type` from the output kind (`spec/dyn.md` D-1: `ET_EXEC` for
     `Static` and `Exec`, `ET_DYN` for `Pie` and `StaticPie`);
     `e_machine` `Facts.e_machine`;

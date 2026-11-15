@@ -88,7 +88,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
 - **S-2 [C] (sizes before content).** Every synthetic chunk's size is a
   function of `Split`, `Liveness`, `Demands`, `Slots`, the `Plan` and the
   architecture's shapes (arch.md §3.7), with two exceptions that
-  depend on addresses: `.relr.dyn` [M2] (model §4.4 `sized`), and the
+  depend on addresses: `.relr.dyn` [M4] (model §4.4 `sized`; `spec/dyn.md` D-27, D-62), and the
   symbol tables when thunks or patches exist (S-80, S-88: their size is fixed
   after layout's fixed point, which no address depends on, because the
   symbol tables come after every allocated chunk, layout rank 10). No
@@ -105,9 +105,9 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | 4 | `.gnu.hash` | hash table | dynamic output | M2 |
   | 5 | `.dynsym` | dynamic symbols | dynamic output | M2 |
   | 6 | `.dynstr` | dynamic strings | dynamic output | M2 |
-  | 7 | `.gnu.version` | `versym` | a version is defined or needed | M2 |
+  | 7 | `.gnu.version` | `versym` | `.gnu.version_r` exists (`spec/dyn.md` D-27) | M2 |
   | 8 | `.gnu.version_d` | version definitions | a version script defines one (never in an executable, `spec/dyn.md` D-27) | M4 |
-  | 9 | `.gnu.version_r` | version needs | a shared input has versions | M2 |
+  | 9 | `.gnu.version_r` | version needs | a needed object's definition of some imported key is versioned (`spec/dyn.md` D-27) | M2 |
   | 10 | `.rela.dyn` (`.rel.dyn`) | dynamic relocations | some dynamic relocation | M2 |
   | 11 | `.relr.dyn` | packed relative relocations | `-z pack-relative-relocs` | M4 (`spec/dyn.md` D-27, D-62) |
   | 12 | `.rela.plt` (`.rel.plt`) | `JUMP_SLOT`, `IRELATIVE` | a PLT or IPLT entry exists | M1 |
