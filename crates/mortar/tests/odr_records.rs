@@ -675,3 +675,240 @@ fn mutated_containers_never_panic_the_link() {
         assert_eq!(strip_time(&one), strip_time(&many), "seed {seed}");
     }
 }
+
+/// The legal link of the mutation tests: every record check has rows,
+/// and they agree. `a.o` keeps the COMDAT copies; `c.o` is another
+/// scheme's unit of the same type.
+fn legal_units() -> [UnitBuilder; 3] {
+    let mut a = cxx("a.cc");
+    let mut b = cxx("b.cc");
+    for (u, i) in [(&mut a, 0u8), (&mut b, 1)] {
+        let enforce = [("abi.k", "x", flags::ENFORCE), ("abi.rtti", "on", 0), ("isa", "v8a", 0)];
+        for (n, v, f) in enforce {
+            u.summary.push(Summary { name: n.into(), value: v.into(), flags: f });
+        }
+        u.definitions.push(anchored("_Z1fv", 1, flags::VAGUE));
+        u.definitions.push(def("_Z1hv", 2, flags::VAGUE));
+        u.definitions.push(def("_Z1pv", 3, flags::VAGUE | flags::PARTIAL));
+        u.definitions.push(def(
+            "_Z1gv",
+            4,
+            flags::VAGUE | if i == 0 { flags::USES_INTERNAL } else { 0 },
+        ));
+        u.definitions.push(def("_Z2k1IiEvv", 5, flags::VAGUE | flags::EXPLICIT_SPEC));
+        u.definitions.push(def("_Z3sysv", 6, flags::VAGUE | flags::SYSTEM));
+        u.types.push(Type { hash: [7; 16], ..ty("1S", 0x51, 16, 8, flags::TYPE_POLYMORPHIC) });
+        let d = if i == 0 { flags::DECL_DEFINITION } else { 0 };
+        u.declarations.push(Declaration { name: None, ..decl("_Z1fv", 1, "FvvE", d) });
+        u.declarations.push(decl("cfun", 2, "int (void)", d | flags::DECL_EXTERN_C));
+        u.declarations.push(decl("_Z1nv", 3, "FvvE", d | flags::DECL_NOEXCEPT));
+    }
+    let mut c = unit(&[("lang", "c++", 0), ("odr.scheme", "other-9", 0)]);
+    c.types.push(ty("1S", 0x99, 16, 8, flags::TYPE_POLYMORPHIC));
+    [a, b, c]
+}
+
+/// The files of the mutation tests, `b`'s and `c`'s units mutated by
+/// `mutate`, `b.o`'s section bytes by `bytes_of_b`.
+fn mutant(
+    cx: &Cx,
+    mutate: impl Fn(&mut UnitBuilder, &mut UnitBuilder),
+    bytes_of_b: impl Fn(&mut Vec<u8>),
+) {
+    let [a, mut b, mut c] = legal_units();
+    mutate(&mut b, &mut c);
+    let syms = [Sym::Comdat("_Z1fv"), Sym::Comdat("_ZTV1S")];
+    cx.object("a.o", &syms, Some(&bytes(&[a])));
+    let mut bb = bytes(&[b.clone(), b]);
+    bytes_of_b(&mut bb);
+    cx.object("b.o", &syms, Some(&bb));
+    cx.object("c.o", &[], Some(&bytes(&[c])));
+}
+
+fn set_def(u: &mut UnitBuilder, name: &str, f: impl Fn(&mut Definition)) {
+    let key = fnv1a64(name.as_bytes());
+    f(u.definitions.iter_mut().find(|d| d.key == key).unwrap());
+}
+
+fn set_decl(u: &mut UnitBuilder, name: &str, f: impl Fn(&mut Declaration)) {
+    let key = fnv1a64(name.as_bytes());
+    f(u.declarations.iter_mut().find(|d| d.key == key).unwrap());
+}
+
+fn set_summary(u: &mut UnitBuilder, name: &str, value: &str) {
+    u.summary.iter_mut().find(|s| s.name == name.as_bytes()).unwrap().value = value.into();
+}
+
+/// The diagnostics' first lines.
+fn heads(e: &str) -> Vec<&str> {
+    e.lines()
+        .filter(|l| l.starts_with("mortar: error: ") || l.starts_with("mortar: warning: "))
+        .collect()
+}
+
+type Mutation = (&'static str, fn(&mut UnitBuilder, &mut UnitBuilder), &'static [&'static str]);
+
+// spec: odr.md §12.4 (each check has a mutation of a legal link's units
+// that it must report; the legal original stays silent: the kill table
+// of spec/landed/meta/WP-073.md)
+#[test]
+#[allow(clippy::too_many_lines)] // the kill table, one row a mutation
+fn mutations_are_killed() {
+    let Some(cx) = Cx::new("odr-kill") else { return };
+    mutant(&cx, |_, _| {}, |_| {});
+    let (ok, e) = cx.strict(&["a.o", "b.o", "c.o"], &[]);
+    assert!(ok && heads(&e).is_empty(), "the legal link: {e}");
+    assert!(e.contains("units 4,") && e.contains("record findings 0;"), "{e}");
+    let mutations: &[Mutation] = &[
+        (
+            "kind 2: one hash byte flipped",
+            |b, _| set_def(b, "_Z1fv", |d| d.hash[3] ^= 1),
+            &["error: _Z1fv violates the one-definition rule"],
+        ),
+        (
+            "kind 2: two rows' hashes swapped",
+            |b, _| {
+                set_def(b, "_Z1fv", |d| d.hash = [2; 16]);
+                set_def(b, "_Z1hv", |d| d.hash = [1; 16]);
+            },
+            &["error: _Z1fv violates", "error: _Z1hv violates"],
+        ),
+        (
+            "kind 2: K13 flags",
+            |b, _| set_def(b, "_Z2k1IiEvv", |d| d.flags = flags::VAGUE | flags::IMPLICIT_INST),
+            &["error: _Z2k1IiEvv violates"],
+        ),
+        (
+            "kind 2: PARTIAL hash",
+            |b, _| set_def(b, "_Z1pv", |d| d.hash[0] ^= 1),
+            &["warning: _Z1pv violates"],
+        ),
+        (
+            "O-16: USES_INTERNAL",
+            |b, _| set_def(b, "_Z1gv", |d| d.flags |= flags::USES_INTERNAL),
+            &["warning: _Z1gv refers to an entity with internal linkage"],
+        ),
+        (
+            "O-32: SYSTEM hash, -std",
+            |b, _| {
+                set_def(b, "_Z3sysv", |d| d.hash[0] ^= 1);
+                set_summary(b, "std", "c++17");
+            },
+            &["warning: _Z3sysv violates"],
+        ),
+        ("kind 3: layout", |b, _| b.types[0].layout ^= 1, &["error: type 1S violates"]),
+        ("kind 3: definition hash", |b, _| b.types[0].hash[0] ^= 1, &["warning: type 1S violates"]),
+        ("kind 3 across schemes: size", |_, c| c.types[0].size = 24, &["error: type 1S violates"]),
+        ("kind 5: type", |b, _| set_decl(b, "_Z1fv", |d| d.ty = 9), &["error: _Z1fv is declared"]),
+        (
+            "kind 5: C linkage type",
+            |b, _| set_decl(b, "cfun", |d| d.ty = 9),
+            &["warning: cfun is declared"],
+        ),
+        (
+            "kind 5: noexcept",
+            |b, _| set_decl(b, "_Z1nv", |d| d.flags &= !flags::DECL_NOEXCEPT),
+            &["warning: _Z1nv is declared"],
+        ),
+        (
+            "O-30: ENFORCE value",
+            |b, _| set_summary(b, "abi.k", "y"),
+            &["warning: translation units compiled with different abi.k: x and y"],
+        ),
+        (
+            "O-31: isa",
+            |b, _| set_summary(b, "isa", "v8a+sve"),
+            &[
+                "warning: the kept copy of _Z1fv was compiled",
+                "warning: the kept copy of _ZTV1S was compiled",
+            ],
+        ),
+        (
+            "O-25: abi.rtti",
+            |b, _| set_summary(b, "abi.rtti", "off"),
+            &["warning: the vtable of 1S is emitted"],
+        ),
+        (
+            "O-11: scheme renamed (with a hash flipped): not compared",
+            |b, _| {
+                set_summary(b, "odr.scheme", "test-2");
+                set_def(b, "_Z1fv", |d| d.hash[3] ^= 1);
+            },
+            &[],
+        ),
+    ];
+    for (what, m, expected) in mutations {
+        mutant(&cx, m, |_| {});
+        let (_, e) = cx.strict(&["a.o", "b.o", "c.o"], &[]);
+        let got = heads(&e);
+        assert_eq!(got.len(), expected.len(), "{what}: {e}");
+        for (g, x) in got.iter().zip(*expected) {
+            assert!(g.contains(x), "{what}: {g} is not {x}: {e}");
+        }
+    }
+    // Bytes: the second unit of b.o truncated, the first still read.
+    mutant(&cx, |b, _| set_def(b, "_Z1fv", |d| d.hash[3] ^= 1), |bb| bb.truncate(bb.len() - 8));
+    let (_, e) = cx.strict(&["a.o", "b.o", "c.o"], &[]);
+    let got = heads(&e);
+    assert_eq!(got.len(), 2, "truncated: {e}");
+    assert!(got[0].contains("error: _Z1fv violates"), "truncated: {e}");
+    assert!(got[1].contains("malformed Mason metadata: unit at offset"), "truncated: {e}");
+    // Rows unsorted: b.o's first unit's first two kind 2 rows swapped.
+    mutant(
+        &cx,
+        |_, _| {},
+        |bb| {
+            let at = 32 + 16 + 8 * 16 + 16;
+            assert_eq!(u16::from_le_bytes([bb[at - 16], bb[at - 15]]), 2);
+            let (x, y) = bb[at..at + 96].split_at_mut(48);
+            x.swap_with_slice(y);
+        },
+    );
+    let (_, e) = cx.strict(&["a.o", "b.o", "c.o"], &[]);
+    let got = heads(&e);
+    assert_eq!(got.len(), 1, "unsorted: {e}");
+    assert!(got[0].contains("malformed Mason metadata") && e.contains("out of order"), "unsorted: {e}");
+}
+
+/// `tool` on `b.o` in place, with `args` before the file.
+fn edit_b(cx: &Cx, tool_name: &str, args: &[&str]) -> bool {
+    let Some(t) = tool(tool_name) else {
+        assert!(!tools_required(), "{tool_name} is required");
+        return false;
+    };
+    let mut words: Vec<OsString> = args.iter().map(OsString::from).collect();
+    words.push("b.o".into());
+    let mut c = Command::new(t);
+    c.args(&words).current_dir(cx.scratch.path());
+    let o = run_with(&mut c, b"", Duration::from_mins(1));
+    assert!(o.success(), "{tool_name} {args:?}: {}", o.stderr_text());
+    true
+}
+
+// spec: odr.md §12.4, N12 (a symbol renamed by objcopy --redefine-sym; the
+// container removed by eu-strip, llvm-strip, llvm-objcopy; the symbols
+// removed by strip: no report and no warning, with a hash flipped)
+#[test]
+fn tools_that_drop_or_rename_are_silent() {
+    let Some(cx) = Cx::new("odr-tools") else { return };
+    let flip = |b: &mut UnitBuilder, _: &mut UnitBuilder| set_def(b, "_Z1fv", |d| d.hash[3] ^= 1);
+    let cases: [(&str, &[&str]); 6] = [
+        ("objcopy", &["--redefine-sym", "_Z1fv=_Z8vendoredv"]),
+        ("eu-strip", &["--remove-section=.mason.meta"]),
+        ("llvm-strip", &[]),
+        ("llvm-strip", &["--strip-all"]),
+        ("llvm-objcopy", &["--strip-non-alloc"]),
+        ("strip", &[]),
+    ];
+    for (t, args) in cases {
+        mutant(&cx, flip, |_| {});
+        if !edit_b(&cx, t, args) {
+            continue;
+        }
+        let (ok, e) = cx.strict(&["a.o", "b.o", "c.o"], &[]);
+        assert!(ok, "{t} {args:?}: {e}");
+        let got = heads(&e);
+        assert!(got.iter().all(|g| !g.contains("_Z1fv violates")), "{t} {args:?}: {e}");
+        assert!(got.iter().all(|g| !g.contains("Mason metadata")), "{t} {args:?}: {e}");
+    }
+}
