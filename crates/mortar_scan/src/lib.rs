@@ -116,6 +116,11 @@ pub struct ScanInputs<'a, 's> {
     pub comdat_mismatch: &'a [Mismatch],
     /// Resolution's `.gnu.warning.<key>` sections of live files.
     pub gnu_warnings: &'a [(SymbolId, FileId, SectionIndex)],
+    /// Resolution's keys that only a closure file defines, with that file
+    /// (`spec/dyn.md` D-12): their `undefined-symbol` gets the note
+    /// `defined in <file>, which is not on the command line`. Sorted by
+    /// key; empty in a static link.
+    pub closure_only: &'a [(SymbolId, FileId)],
 }
 
 /// The options the scan depends on.

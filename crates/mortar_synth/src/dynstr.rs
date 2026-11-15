@@ -99,7 +99,7 @@ pub struct DynstrChunk<'a> {
     pub verneed: &'a [(FileId, Box<[VerIndex]>)],
     pub rpath: Option<&'a [u8]>,
     pub dynstr: &'a DynStr,
-    pub names: &'a dyn DynNames,
+    pub names: &'a (dyn DynNames + Sync),
 }
 
 impl std::fmt::Debug for DynstrChunk<'_> {

@@ -696,8 +696,10 @@ impl RoundTables<'_, '_, '_> {
         Some(self.got_addrs.got + self.sites.t.got.got_offset(region, index))
     }
 
+    /// A PLT entry (dynamic, D-44, D-49) or an IPLT one, as fill's
+    /// tables answer it.
     fn plt(&self, key: SymKey) -> Option<u64> {
-        self.sites.t.got.iplt_address(&self.got_addrs, key)
+        self.sites.t.got.plt_address(&self.got_addrs, key)
     }
 }
 

@@ -217,13 +217,12 @@ fn erratum_workaround_values_other_than_full_are_refused() {
     assert_eq!((status, stderr.as_str()), (Some(0), ""));
 }
 
-// spec: dyn.md §2.7 (the census's ranked refusals: `-dynamic-linker`,
-// `-pie`, `-Bdynamic`), WP-041 step 0e: one `dynamic_guard` refuses them
-// with the text the command line gave before it, each option once (the
-// first use of each row), in argument order among the other refusals,
-// and nothing is linked.
+// spec: dyn.md §2.7 (the census's ranked gates: `-dynamic-linker`,
+// `-pie`, `-Bdynamic`), WP-053: since the join no row refuses them; on a
+// line with a refused option only that one is named, and alone each gate
+// is not an unsupported option (what it asks for is judged by the link).
 #[test]
-fn the_dynamic_gates_keep_their_refusals() {
+fn the_dynamic_gates_are_not_refused() {
     let Some((_s, built)) = c_program("refuse-dynamic") else { return };
     let line = [
         "-pie",
@@ -240,10 +239,7 @@ fn the_dynamic_gates_keep_their_refusals() {
     assert_eq!(
         stderr,
         format!(
-            "mortar: error: unsupported option: -pie\n\
-             mortar: error: unsupported option: --dynamic-linker\n\
-             mortar: error: unsupported option: -Bdynamic\n\
-             mortar: error: unsupported option value: --build-id=md5\n\
+            "mortar: error: unsupported option value: --build-id=md5\n\
              >>> synth.md S-91: md5 is not written and uuid is M2; mortar writes --build-id, \
              =sha1, =sha256, =fast, =none and =0xHEX\n{NOT_LINKED}"
         )
@@ -254,8 +250,7 @@ fn the_dynamic_gates_keep_their_refusals() {
     {
         let mut extra = vec![opt];
         extra.extend(value);
-        let (status, stderr) = link(&built, &extra, &[]);
-        assert_eq!(status, Some(1), "{opt}");
-        assert_eq!(stderr, format!("mortar: error: unsupported option: {opt}\n{NOT_LINKED}"));
+        let (_, stderr) = link(&built, &extra, &[]);
+        assert!(!stderr.contains("unsupported option"), "{opt}: {stderr}");
     }
 }

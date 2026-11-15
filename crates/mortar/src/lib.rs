@@ -14,6 +14,7 @@
 pub mod arch;
 pub mod depfile;
 pub mod dynamic;
+pub mod dynlink;
 pub mod front;
 pub mod image;
 mod proof;
@@ -122,6 +123,7 @@ pub fn invoke(prog: &str, args: &[OsString]) -> Invocation {
 
 /// [`invoke`] with relative paths relative to `cwd`.
 #[must_use]
+#[allow(clippy::too_many_lines, reason = "the steps of spec/cli.md §4.3 in order")]
 pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let parsed = mortar_cli::parse(args);
     let plan = &parsed.plan;
@@ -150,8 +152,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     // The refusals of options come after the front, whose phases stop at
     // the first error (the report is in key order, whatever the order of
     // emission, `spec/diag.md` §6).
-    // The dynamic gates are the guard's (WP-041 step 0e).
-    let refusals = dynamic::option_refusals(plan, &parsed);
+    let refusals = parsed.refusals();
     let failed = |diagnostics: Collector, phases: String| Invocation {
         outcome: Outcome::Failed(diagnostics.finish()),
         color,
@@ -197,7 +198,12 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let dependency_path = plan.bookkeeping.dependency_file.as_deref().map(|m| cwd.join(m));
     let print_map = plan.bookkeeping.print_map;
     let env = front::Env { cwd, pool };
-    let front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
+    let mut front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
+    if let Some(f) = &mut front
+        && f.dyn_tables.is_some()
+    {
+        f.args = parsed.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
+    }
     let mut stdout = String::new();
     let removed = front.as_ref().map_or_else(String::new, |f| removed_lines(prog, f));
     if let Some(f) = &front {

@@ -29,7 +29,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `plumb.md` | `mortar_plumb`: the verifier and the map-file format | stage 1: static non-PIE AArch64 (WP-011); stage 2 (WP-028, WP-028b): static TLS, `.eh_frame`/`.eh_frame_hdr`, the symbol table, IFUNC, non-alloc relocations, properties, build id; x86-64 (WP-028c): the table, its rewritings per linker, IPLT shapes, x86 properties; i386 not judged (`machine`) |
 | `meta.md` | `mortar_meta`: the Mason metadata container (shared with kiln, hod, tuck): the section, framing, the COMDAT answer, record kinds, versioning, size, the container in outputs | final draft, revision 2 (WP-070; open operator decisions in `odr.md` §15) |
 | `odr.md` | `mortar_odr`: one-definition-rule checks: the violation catalogue, what must not be flagged, keys, hashes, layouts, comparison points, foreign checks, diagnostics and switches, the loadable table and load-time hook, requests to kiln and hod; the work-package cut in §13 | final draft, revision 2 (WP-070; open operator decisions in `odr.md` §15) |
-| `incr.md` | `mortar_incr`: link state and incremental links | planned (M7) |
+| `incr.md` | `mortar_incr`: link state and incremental links: change detection, delta layout with slack and dead ranges, writing, debug information, fall-backs, the oracle and L10; the work-package cut in §10 | draft, revision 2 (WP-060, after an adversarial review and a re-review; open operator decisions in `landed/incr/WP-060.md`) |
 | `harness.md` | `xtask`: the gate, link tests, differential runs, bench, jobserver | "ci", "Jobserver", "Limits" (WP-003); "Link tests" (WP-010); "bench" (WP-012); "Hosted CI" (WP-014); "L3" (WP-028) |
 
 ## Conventions

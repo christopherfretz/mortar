@@ -57,8 +57,7 @@ impl Use {
 
     /// The refusal of this use, keyed on its argument (see
     /// [`Parsed::refusals`]): what a caller that takes some refused uses
-    /// out of [`Parsed::refused_uses`] reports for them (`mortar`'s
-    /// `dynamic_guard`, WP-041 step 0e).
+    /// out of [`Parsed::refused_uses`] reports for them.
     #[must_use]
     pub fn refusal(&self) -> (Key, Diagnostic) {
         let d = match self.row().status {
@@ -87,19 +86,6 @@ impl Parsed {
     /// plan is the one the line would give without it.
     #[must_use]
     pub fn refused_uses(&self) -> Vec<&Use> {
-        self.refused_uses_by(|r| r.status)
-    }
-
-    /// [`Parsed::refused_uses`] as they will be once the M2 join lifts the
-    /// dynamic guard: the same rule over [`Row::status_at_join`]
-    /// (`spec/dyn.md` R-C1). The census test shows with it that no option
-    /// of a default dynamic line is refused by the command line then.
-    #[must_use]
-    pub fn refused_uses_at_join(&self) -> Vec<&Use> {
-        self.refused_uses_by(Row::status_at_join)
-    }
-
-    fn refused_uses_by(&self, status: impl Fn(&Row) -> Status) -> Vec<&Use> {
         let mut seen = vec![false; rows().len()];
         let mut out = Vec::new();
         let mut last: HashMap<&str, usize> = HashMap::new();
@@ -113,7 +99,7 @@ impl Parsed {
             if lands.last_wins() && last.get(lands.field()) != Some(&i) {
                 continue;
             }
-            match status(use_.row()) {
+            match use_.row().status {
                 Status::Refused if !seen[use_.row] => {
                     seen[use_.row] = true;
                     out.push(use_);
