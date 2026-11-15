@@ -114,8 +114,8 @@ requires `live ⇒ state == Kept`.
   replaces model §3.6's "referenced from a live section" for this mode
   (request R-4): computing references would need a relocation walk at
   phase 50 for no change in correctness, and an unreferenced string
-  costs a few bytes. That GNU ld, lld and mold also keep unreferenced
-  pieces without `--gc-sections` was not verified (E14).
+  costs a few bytes. GNU ld, lld and mold also keep unreferenced pieces
+  without `--gc-sections` (verified, WP-031 Q11).
 - **I-3 [M1]** An FDE piece is live exactly when the section its code
   range lies in is live (model §3.6; under folding, M5, also not folded
   away). A dead FDE is not written (`spec/layout.md` lays out live pieces
@@ -123,12 +123,9 @@ requires `live ⇒ state == Kept`.
 - **I-4 [M1]** Liveness emits no diagnostic in M1. Its key, when it does
   (M2, §3.3), is `(50, FileId, section index)`.
 - **I-5 [M1]** `--no-gc-sections` is the default and is `supported` in M1
-  (request R-6). `--gc-sections` is `refused` in M1 (`unsupported option:
-  --gc-sections`). Evidence for refusing rather than implementing now:
-  none of `gcc`, `g++`, `gfortran`, `clang`, `clang++` passes it by
-  default (E1); of the bench workloads only `rust-self` (rustc passes it)
-  uses it; the libc++ test suite's link lines are built by the M1 driver
-  and do not need it. It is M2's (`docs/ROADMAP.md`).
+  (request R-6). `--gc-sections` was `refused` in M1; it is `supported`
+  since WP-031 (§3.2), with `--print-gc-sections`,
+  `--no-print-gc-sections` and `--gc-keep-exported`.
 
 ### 3.2 `--gc-sections` (M2)
 
@@ -136,20 +133,47 @@ The design is fixed now so that the M1 tables need no change.
 
 - **I-6 [M2] Roots.** A section is a root when any of these holds:
   - it defines `def` of a key rooted by `spec/resolve.md` §4.7 (the entry,
-    `-u`, `--require-defined`, every key exported to `.dynsym`);
-  - it has `SHF_GNU_RETAIN` (`spec/layout.md` L-97), or a script `KEEP`
-    covers it;
-  - its output section is `.init_array`, `.fini_array`,
-    `.preinit_array`, `.init`, `.fini`, `.ctors`, `.dtors` (start-up
-    tables run by name, not by reference: `spec/layout.md` §5);
-  - its type is `SHT_NOTE` (notes are read by tools and loaders, not
-    referenced; lld keeps them: not verified for GNU ld and mold, E14);
+    `-u`, `--require-defined`, every key exported to `.dynsym`); all three
+    references root these (verified, WP-031 Q8; `-u` and
+    `--require-defined` are refused by mortar's command line today;
+    `--export-dynamic` on a static executable roots nothing in GNU ld and
+    lld 22, everything in lld 19 and mold: nothing is exported, so
+    nothing is rooted);
+  - with `--gc-keep-exported` (GNU ld only), it defines a key that is
+    defined, global or weak, of default or protected visibility (Q8);
+  - it has `SHF_GNU_RETAIN` (`spec/layout.md` L-97; GCC 14 and Clang 19/22
+    emit it for `__attribute__((retain))`, all three keep it, Q7), or a
+    script `KEEP` covers it;
+  - `Assignment.keep` holds it (`mortar_layout::assign::keep_by_rule`), its
+    output section is `.init_array`, `.fini_array`, `.preinit_array`,
+    `.init`, `.fini`, `.ctors`, `.dtors`, or its input name is one of
+    those or one of those followed by `.` (`.init_array.00100`,
+    `.ctors.65435`): start-up tables are run by name, not by reference
+    (`spec/layout.md` §5); all three keep them and what they point to,
+    in a COMDAT group too (Q5);
+  - its type is `SHT_NOTE` or it is not `SHF_ALLOC`, and it is not in a
+    section group with an allocated member (notes and non-alloc
+    sections are read by tools and loaders, not referenced). All three
+    keep notes, alloc or not, of every object (Q1). lld and mold keep
+    every non-alloc section; GNU ld drops the non-alloc sections of an
+    object none of whose allocated sections is marked, and every
+    non-alloc non-debug section with relocations (Q2, Q13): mortar keeps
+    them, the rule that cannot drop what a tool reads. A note or a
+    non-alloc section in a group with an allocated member lives and dies
+    with its group (I-7; GNU ld and lld drop such a note with its dead
+    group, mold keeps it, Q1);
+  - it is `.eh_frame` (its pieces are live by I-3), or it is kept but has
+    no place of its own (`OutOf::Consumed`);
+  - it is a section the mark could not describe (not of an object, or a
+    header `mortar_elf` cannot read): the mark never drops what it has not
+    looked at;
   - its name is a C identifier and `__start_NAME` or `__stop_NAME` is
     referenced from a live section (`spec/layout.md` L-96: GNU ld's
-    `-z nostart-stop-gc`);
-  - it is not `SHF_ALLOC` and not `SHF_LINK_ORDER` (every other non-alloc
-    section is kept whole: debug information is not collected; all three
-    linkers, not separately verified, E14).
+    `-z nostart-stop-gc`, its default; lld 19 and 22 default to
+    `start-stop-gc`, under which an undefined `__stop_` is an error; mold
+    roots every C-identifier section; all three collect an unreferenced
+    one, Q6).
+  A `SHF_LINK_ORDER` section is never a root (I-109).
 - **I-109 [M2] `SHF_LINK_ORDER` follows its link target.** A section
   with `SHF_LINK_ORDER`, alloc or not, is live exactly when the section
   its `sh_link` names is live. This rule takes precedence over I-6's
@@ -161,24 +185,40 @@ The design is fixed now so that the M1 tables need no change.
   it (18 bytes in the output against 9 for lld and GNU ld, E25). M1 is
   unaffected: without `--gc-sections` only COMDAT drops sections, and a
   COMDAT `.stack_sizes` or `.llvm_bb_addr_map` is a member of its group.
-- **I-7 [M2] Edges.** A live `SHF_ALLOC` section `s` makes live:
+- **I-7 [M2] Edges.** A live section `s` that is not `.eh_frame` and has
+  no debug name (`mortar_arch::is_debug_name`) makes live:
   - the section of `def` of every key that a relocation record of `s`
-    names, through `sym_map` (a `Section` definition; a `Common`
-    definition makes the commons' output live; an `Internal` definition,
-    nothing; a `Shlib` one, nothing);
+    names, through `sym_map` and `redirect` (a `Section` definition; a
+    `Common` definition, nothing: commons are never collected; an
+    `Internal` definition, nothing, but a conditional `__start_NAME` or
+    `__stop_NAME` the sections named `NAME`; a `Shlib` one, nothing).
+    Every record is an edge, `R_*_NONE` included (`.reloc ., R_*_NONE,
+    sym` asks for a dependency);
   - the section of every local or section symbol a record of `s` names;
     for a reference into a split section, the piece and its fragment
     (`frag_live`, by offset through `Split`, as model §3.5 resolves a
-    reference);
+    reference: the symbol's value, plus the addend for a section symbol;
+    under `SHT_REL`, whose addend is in the relocated bytes the mark does
+    not read, every piece). GNU ld keeps a live merge section whole; lld
+    and mold keep the referenced pieces (Q11);
   - the sections in `s`'s `SHF_LINK_ORDER` dependents, alloc or not (a
     section whose `sh_link` is `s` is live when `s` is, I-109);
-  - for a code section, its live FDEs (I-3) and, through each FDE's
-    relocations, the personality routine's and the LSDA's sections
-    (`.gcc_except_table` pieces): the FDE's edges are `s`'s edges.
-  Relocations in non-alloc sections are not edges (debug information
-  never keeps code alive); in `.eh_frame` they are edges only through
-  the FDE rule. A group's members are not made live together: each is
-  live by its own edges (lld's rule; GNU ld's not verified, E14).
+  - for a code section, its FDEs (I-3) and, through the relocations of
+    each FDE and of its CIE, the LSDA's (`.gcc_except_table`) and the
+    personality routine's sections: the FDE's edges are `s`'s edges. A
+    collected function's LSDA is collected (GNU ld and mold; lld keeps
+    it), and a personality reached only through the CIE of collected
+    FDEs is collected (GNU ld; lld and mold keep it) (Q4, Q15);
+  - every other member of `s`'s section group: a group is live as a unit.
+    GNU ld and lld keep a group whole when any member is live; mold
+    collects members one by one (Q3; the earlier "each by its own edges"
+    was lld's rule misread, refuted).
+  Relocations in debug sections are not edges (debug information never
+  keeps code alive, all three, Q14); in `.eh_frame` they are edges only
+  through the FDE rule. Relocations in other non-alloc sections are: GNU
+  ld marks through notes (`.note.stapsdt` keeps libstdc++'s
+  `.stapsdt.base`, found by WP-031's tests), and a kept section's
+  reference to a collected one would otherwise be refused (I-12).
 - **I-8 [M2] The algorithm.** A least fixed point, computed by parallel
   rounds: round 0 is the roots; round `k + 1` is the set of sections first
   marked by the edges of round `k`'s sections. `live` is a column of
@@ -200,10 +240,21 @@ The design is fixed now so that the M1 tables need no change.
   target (§6.1).
 - **I-10 [M2]** Liveness under `--gc-sections` does not change
   `Resolution`: extraction is decided before liveness
-  (`spec/resolve.md` §4.7). `discard <file> <section> gc` records go to
-  the map (§9). `--print-gc-sections` is `refused` until M2 implements
-  it; its line is then GNU ld's `removing unused section '{section}' in
-  file '{file}'` (not measured against lld or mold, E14).
+  (`spec/resolve.md` §4.7); a member every section of which is collected
+  is still extracted, and its definitions still collide (all three, Q10).
+  `discard <file> <section> gc` records go to the map (§9).
+  `--print-gc-sections` writes GNU ld's lines to standard error, before
+  the report: `<prog>: removing unused section '<section>' in file
+  '<file>'`, `<file>` as `libx.a(y.o)` for a member, `<section>` as
+  `name[signature]` for a member of a COMDAT group; one line per
+  collected section that is kept by resolution, assigned an output
+  section, not `.eh_frame`, and not of size 0; in `(FileId, section
+  index)` order (`mortar_live::removed`). GNU ld prints the same lines
+  in the same order (its program path where mortar prints its basename),
+  and also lists `.group` sections, which mortar does not output; lld
+  and mold print `removing unused section <file>:(<section>)` to
+  standard output, size-0 sections included, mold in no stable order
+  (Q9).
 - **I-11 [M2]** `-r` with `--gc-sections` is refused (M4 decides).
   `--gc-sections` with `-shared` (M4) roots every exported key (I-6).
 
@@ -213,10 +264,13 @@ The design is fixed now so that the M1 tables need no change.
   collected section is not an error: it writes the tombstone of I-47 when
   the referring section has a debug name, and is
   `discarded-section-reference` otherwise (`spec/resolve.md` §6.3's
-  table, applied to collected sections as to dropped COMDAT copies; GNU
-  ld's treatment of collected sections from non-debug non-alloc sections
-  not verified, E14). The scan reports it (§4.4); liveness reports
-  nothing.
+  table, applied to collected sections as to dropped COMDAT copies). The
+  scan reports it (§4.4); liveness reports nothing. Under I-7 a live
+  non-debug section's references are edges, so only a debug section can
+  refer to a collected one. None of the three references diagnoses the
+  non-debug case: GNU ld removes the referring section, lld and mold
+  write `0 + A` (Q13). A key whose definition is in a collected section
+  is `dead` to the scan (`mortar_scan::view`), as a local of one is.
 
 ## 4. The scan driver (phase 70)
 
@@ -1722,7 +1776,15 @@ pub trait SynthChunk {
 | build-id note size for a 2-byte id | 18 (unpadded) | 18 | 18 | 20 (padded to 4) | I-71 |
 | what the hash covers | not the whole file, not a 64 KiB/1 MiB/4 MiB tree (E12) | same | same | a public tree over 1 MiB blocks | I-72 |
 | `-Map` / `-M` format | GNU text | lld's own text | mold's own text | `mortar-map 1` | I-77 |
-| `--gc-sections` in M1 | supported | supported | supported | refused until M2 | I-5 |
+| `--gc-sections` in M1 | supported | supported | supported | supported since WP-031 | I-5 |
+| COMDAT group with one live member, `--gc-sections` | whole group kept | whole group kept | members one by one | whole group kept | I-7 |
+| non-alloc sections of an object with no marked section; non-alloc non-debug with relocations | removed | kept | kept | kept | I-6 |
+| note in a dead group with an alloc member | removed | removed | kept | removed | I-6 |
+| personality reached only from the CIE of collected FDEs | removed | kept | kept | removed | I-7 |
+| collected function's `.gcc_except_table` | removed | kept | removed | removed | I-7 |
+| unreferenced pieces of a live string section, `--gc-sections` | kept (whole section) | removed | removed | removed | I-7 |
+| `__start_`/`__stop_` default | `nostart-stop-gc` | `start-stop-gc` | every C-identifier section kept | `nostart-stop-gc` | I-6 |
+| `--print-gc-sections` | stderr, `'sec' in file 'f'`, no size 0 | stdout, `f:(sec)` | stdout, `f:(sec)`, unordered | GNU's text and order | I-10 |
 | identification string in `.comment` | none | `Linker: LLD …` | `mold …` | none from the image | I-55 |
 | default thread count | one thread | all (not measured here) | all (not measured here) | `available_parallelism()` | I-85 |
 | `--time-phases` | — | `--time-trace` (a different format) | `--perf` (a different format) | mortar's lines | I-88 |

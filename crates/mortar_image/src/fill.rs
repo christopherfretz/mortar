@@ -41,6 +41,15 @@ pub trait Tables: FillTables {
         let _ = (key, addend);
         None
     }
+    /// Whether the piece a reference to `key` with addend `addend` names
+    /// is live, when `key` is in a split `Merge` section (`frag_live`;
+    /// `true` otherwise). Under `--gc-sections` a live section can hold
+    /// collected pieces (`spec/image.md` I-7): a debug reference to one
+    /// is the tombstone (I-47), as one to a collected section is.
+    fn piece_live(&self, key: SymKey, addend: i64) -> bool {
+        let _ = (key, addend);
+        true
+    }
 }
 
 /// What merged chunks are written from (I-38): phase 50's fragment order

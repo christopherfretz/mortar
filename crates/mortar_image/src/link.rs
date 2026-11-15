@@ -533,6 +533,26 @@ impl Tables for LinkTables<'_, '_> {
         }
     }
 
+    fn piece_live(&self, key: SymKey, addend: i64) -> bool {
+        let Some(Ok((s, sym))) = self.def_entry(key).and_then(|e| self.entry_place(e)) else {
+            return true;
+        };
+        if self.kind_of(s) != Some(SectionKind::Merge) {
+            return true;
+        }
+        let at = if sym.sym_type() == STT_SECTION {
+            (sym.st_value as i64).wrapping_add(addend)
+        } else {
+            sym.st_value as i64
+        };
+        let Ok(at) = u32::try_from(at) else { return true };
+        let split = self.link.split;
+        split
+            .merge_piece_at(s, at)
+            .and_then(|p| split.piece_frag.get(p.piece as usize))
+            .is_none_or(|&f| self.link.liveness.frag_live.get(f).copied().unwrap_or(true))
+    }
+
     fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<u64, Diagnostic>> {
         let e = self.def_entry(key)?;
         let Ok((s, sym)) = self.entry_place(e)? else { return None };

@@ -16,9 +16,18 @@
   linktest layout/gc-sections un-XFAILed.
 - differential harness: /tmp/mortar-wp031-1342893/diff/{run.py,cmp.py} (results.json).
 
+- image: a debug reference to a dead merge piece is the tombstone (`Tables::piece_live`,
+  mortar_image reloc.rs/link.rs); test i47_debug_references_to_dead_merge_pieces_are_tombstones.
+- spec: image.md I-2/5/6/7/10/12 amended (E14 Q-results), resolve.md §4.7 roots.
+- differential classified (66 configs): vs bfd only `.group`, comdat losers, and COMDAT-keeper
+  differences (resolve.md §6.1 ruling C; traced on cxxfull-g++-O2: 204 via keeper, 5 losers);
+  vs lld size-0, `.stapsdt.base` (lld drops), lsda lld keeps (Q4); vs mold size-0, mold's
+  conservatism (every mortar-only removal is also bfd's and lld's), mold's libc .text removals.
+
 ## Half-done / next
-- print lines in `crates/mortar/src/lib.rs` (stderr, `{prog}: removing unused section '{s}' in file '{f}'`, skip size 0).
-- downstream: scan facts for globals in dead sections; tests; differential; cost.
+- merge main f0f1dcc (WP-027d: gc row refused + options.rs audit, debuggers.rs gc variant;
+  WP-029b x86-64: differential under qemu with C++ EH + TLS).
+- rerun matrix (tmpl fixed); protoc differential; cost; byte-identical no-gc; audit; record.
 
 ## E14 experiments (subagent, /tmp/mortar-wp031-1342893/e14, sources q*.s/c)
 - Q1 notes: kept by all (alloc+nonalloc, dead object too); note in a dead group: GNU/lld drop, mold keeps.

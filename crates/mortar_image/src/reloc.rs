@@ -465,7 +465,9 @@ pub(crate) fn relocate(
         };
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name);
         let value = match howto.field {
-            Field::Data { bytes: width } if !img.tables.sym(rec.key).live => {
+            Field::Data { bytes: width }
+                if !img.tables.sym(rec.key).live || !img.tables.piece_live(rec.key, rec.addend) =>
+            {
                 tombstone::field(img.arch, c.name, c.alloc, width).map(|v| (v, width))
             }
             _ => None,

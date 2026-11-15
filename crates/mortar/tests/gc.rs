@@ -503,6 +503,45 @@ fn i47_debug_references_to_collected_code_are_tombstones() {
     assert_ne!(words.get(2).map(String::as_str), Some("00000000"), "_start's address: {words:?}");
 }
 
+/// I-47 with S-16: a debug reference to a merge piece no live section
+/// references (a local, so the assembler writes section symbol + addend)
+/// is the tombstone; one to a live piece is its address. Found by the
+/// differential (`clang++ -O2 -g`): before it, fill's "a live merge piece
+/// has no address".
+#[test]
+fn i47_debug_references_to_dead_merge_pieces_are_tombstones() {
+    if !host() {
+        return;
+    }
+    let s = Scratch::new("gc-tomb-piece");
+    let a = format!(
+        "    .text\n    .globl _start\n_start:\n    adrp x0, live_str\n    add x0, x0, :lo12:live_str\n{}\
+         \n    .section .rodata.str1.1,\"aMS\",@progbits,1\nlive_str:\n    .asciz \"wp031-live-piece\"\n\
+         dead_str:\n    .asciz \"wp031-dead-piece\"\n\
+         \n    .section .debug_info,\"\",@progbits\n    .xword dead_str\n    .xword live_str\n",
+        exit_with(0)
+    );
+    let objs = assemble(s.path(), &[("a.s", &a)]);
+    let (got, out) = gc_link(s.path(), &objs, &[], "tomb-piece");
+    assert!(got.is_empty(), "{got:?}");
+    let Some(readelf) = tool("readelf") else { return };
+    let o = run_with(
+        Command::new(readelf).args(["-x", ".debug_info"]).arg(&out),
+        b"",
+        Duration::from_mins(1),
+    );
+    let words: Vec<String> = o
+        .stdout_text()
+        .lines()
+        .filter(|l| l.starts_with("  0x"))
+        .flat_map(|l| l.split_whitespace().skip(1).take(4).map(str::to_owned).collect::<Vec<_>>())
+        .collect();
+    assert_eq!(words.first().map(String::as_str), Some("ffffffff"), "{words:?}");
+    assert_eq!(words.get(1).map(String::as_str), Some("ffffffff"), "{words:?}");
+    assert_ne!(words.get(2).map(String::as_str), Some("ffffffff"), "the live piece: {words:?}");
+    assert_ne!(words.get(2).map(String::as_str), Some("00000000"), "the live piece: {words:?}");
+}
+
 // ---- --print-gc-sections, the option pair, determinism ----------------------
 
 /// I-10: the lines are GNU ld's text on standard error, one per removed
