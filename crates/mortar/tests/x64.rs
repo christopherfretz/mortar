@@ -293,3 +293,59 @@ fn x64_tls_module_base() {
     ];
     holds(&ld, "x64-tls-base", GCC, &["-O2"], program);
 }
+
+/// W8 (x64.md §14.2): a `.init` fragment aligned above crti's end. The
+/// gap before it runs, so it is `code_nop` (0x90, X-50, layout L-82), not
+/// the trap fill lld and mold write; the program runs as GNU ld's does.
+#[test]
+fn x64_w8_init_padding_runs() {
+    let Some(ld) = host() else { return };
+    let program: &[Source] = &[
+        Source {
+            name: "init.s",
+            text: "\t.section .init,\"ax\",@progbits\n\t.p2align 4\n\
+                   \tmovl $7, init_ran(%rip)\n\t.data\n\t.globl init_ran\n\
+                   init_ran:\t.long 0\n\t.section .note.GNU-stack,\"\",@progbits\n",
+        },
+        Source {
+            name: "main.c",
+            text: "#include <stdio.h>\nextern int init_ran;\n\
+                   int main(void) { printf(\"init %d\\n\", init_ran); return init_ran; }\n",
+        },
+    ];
+    holds(&ld, "x64-w8", GCC, &["-O2"], program);
+}
+
+/// The medium code model's large data (x64.md X-54, X-55; W9: lld makes a
+/// large common absolute): `SHF_X86_64_LARGE` sections and
+/// `SHN_X86_64_LCOMMON` symbols are refused by name until layout places
+/// them (L-36a, `.lbss`), never linked wrong.
+#[test]
+fn x64_large_data_is_refused_by_name() {
+    if host().is_none() {
+        return;
+    }
+    for (label, flags, text, want) in [
+        (
+            "x64-lcommon",
+            &["-O2", "-mcmodel=medium", "-fcommon"][..],
+            "char lc[100000];\nint main(void) { lc[99999] = 3; return lc[99999]; }\n",
+            "unsupported feature: SHN_X86_64_LCOMMON",
+        ),
+        (
+            "x64-ldata",
+            &["-O2", "-mcmodel=medium"][..],
+            "char ld[100000] = {1};\nint main(void) { return ld[0]; }\n",
+            "SHF_X86_64_LARGE",
+        ),
+    ] {
+        let scratch = Scratch::new(label);
+        let program = [Source { name: "large.c", text }];
+        let Some(built) = compile(&scratch, GCC, flags, &program) else { return };
+        let out = built.dir.join("out.mortar");
+        let m = mortar(&built, &out, &[], &[]);
+        assert!(!m.success(), "{label}: mortar linked large data");
+        assert!(m.stderr_text().contains(want), "{label}: {}", m.stderr_text());
+        assert!(!out.exists(), "{label}: an output was left behind");
+    }
+}
