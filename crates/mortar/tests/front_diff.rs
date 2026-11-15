@@ -485,7 +485,10 @@ fn the_supported_rows_shape_the_front() {
     assert_eq!(size(&run(&["-z", "memory-seal", "-z", "nomemory-seal"])), size(&plain));
     let none = run(&["--discard-none"]);
     assert!(locals(&none) >= locals(&plain), "--discard-none keeps the -X locals too");
-    assert!(symtab_entries(&none).iter().any(|e| e.1 == 0 && e.3.starts_with(".L")) || locals(&none) == locals(&plain));
+    assert!(
+        symtab_entries(&none).iter().any(|e| e.1 == 0 && e.3.starts_with(".L"))
+            || locals(&none) == locals(&plain)
+    );
 
     let e = run(&["-e", "main"]);
     assert_eq!(e.layout.placement.entry, global_addr(&e, "main"));
