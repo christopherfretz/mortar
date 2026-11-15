@@ -12,6 +12,15 @@ on:
   # By hand only (Actions, "ci", "Run workflow") while the repository is
   # private, where every runner minute is billed.
   workflow_dispatch:
+    inputs:
+      # A diagnosis run: every step of the gate and every test binary
+      # runs whatever failed before it (`cargo xtask ci --no-fail-fast`),
+      # so one run shows every failure. Pushes and pull requests always
+      # run the plain gate.
+      no_fail_fast:
+        description: Run every step and test binary (cargo xtask ci --no-fail-fast)
+        type: boolean
+        default: false
   # Enable these (uncomment the four lines) when the repository is public.
   # push:
   #   branches: [main]
@@ -30,10 +39,10 @@ concurrency:
 jobs:
   arm:
     uses: ./.github/workflows/ci-lane.yml
-    with: { runner: ubuntu-24.04-arm, cache-key: ci-arm }
+    with: { runner: ubuntu-24.04-arm, cache-key: ci-arm, no-fail-fast: "${{ inputs.no_fail_fast == true }}" }
   x86_64:
     uses: ./.github/workflows/ci-lane.yml
-    with: { runner: ubuntu-24.04, cache-key: ci-x86_64 }
+    with: { runner: ubuntu-24.04, cache-key: ci-x86_64, no-fail-fast: "${{ inputs.no_fail_fast == true }}" }
   # Fan-in: passes only if every job of the lane succeeded. `always()` so
   # a failed, cancelled or skipped lane makes this job FAIL (a skipped
   # required check would otherwise count as passing).

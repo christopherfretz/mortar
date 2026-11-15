@@ -292,7 +292,7 @@ fn find_tools(
     let absent = |report: &mut Report, text: String| {
         if required { report.missing.push(text) } else { report.notes.push(text) }
     };
-    let find = mortar_testutil::find_tool;
+    let find = mortar_testutil::find_listed_tool;
     let wanted_arches =
         if args.arches.is_empty() { Arch::ALL.to_vec() } else { args.arches.clone() };
     let mut arches: Vec<ArchTools> = Vec::new();

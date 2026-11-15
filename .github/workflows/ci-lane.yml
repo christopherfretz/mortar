@@ -13,6 +13,8 @@ on:
       runner: { type: string, required: true }
       # rust-cache's shared-key: one cache per architecture.
       cache-key: { type: string, required: true }
+      # "true": `cargo xtask ci --no-fail-fast` (ci.yml's by-hand input).
+      no-fail-fast: { type: string, required: false, default: "false" }
 permissions:
   contents: read
 # A missing tool (a reference linker, a compiler, the other architectures'
@@ -51,7 +53,11 @@ jobs:
           # job at a time without saying so.
           scripts/jobserver.sh status
           source scripts/env.sh
-          cargo xtask ci
+          set --
+          if [ "$NO_FAIL_FAST" = true ]; then set -- --no-fail-fast; fi
+          cargo xtask ci "$@"
+        env:
+          NO_FAIL_FAST: ${{ inputs.no-fail-fast }}
       # The link tests' table of outcomes in the job summary, and the
       # whole results file (spec/harness.md "Results and exit status") as
       # an artifact, also when the gate failed.

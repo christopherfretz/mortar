@@ -32,7 +32,9 @@ fn the_hosted_lanes_run_the_gate_as_the_development_machine_does() {
     let lane = lines(&lane);
     assert!(lane.contains(&"MORTAR_REQUIRE_TOOLS: \"1\""), "the lane requires the tools");
     let gate: Vec<&&str> = lane.iter().filter(|line| line.starts_with("cargo xtask")).collect();
-    assert_eq!(gate, [&"cargo xtask ci"], "the lane runs the whole gate, once");
+    // `"$@"` is empty but on a by-hand run that asks for `--no-fail-fast`.
+    assert_eq!(gate, [&"cargo xtask ci \"$@\""], "the lane runs the whole gate, once");
+    assert!(lane.contains(&"if [ \"$NO_FAIL_FAST\" = true ]; then set -- --no-fail-fast; fi"));
     assert!(lane.contains(&"source scripts/env.sh"));
 
     let setup = read(".github/actions/mortar-ci/action.yml");
@@ -50,8 +52,8 @@ fn the_hosted_lanes_run_the_gate_as_the_development_machine_does() {
     let entry = read(".github/workflows/ci.yml");
     let entry = lines(&entry);
     for call in [
-        "with: { runner: ubuntu-24.04-arm, cache-key: ci-arm }",
-        "with: { runner: ubuntu-24.04, cache-key: ci-x86_64 }",
+        "with: { runner: ubuntu-24.04-arm, cache-key: ci-arm, no-fail-fast: \"${{ inputs.no_fail_fast == true }}\" }",
+        "with: { runner: ubuntu-24.04, cache-key: ci-x86_64, no-fail-fast: \"${{ inputs.no_fail_fast == true }}\" }",
         "check:",
         "check-x86_64:",
         "uses: ./.github/workflows/ci-lane.yml",
