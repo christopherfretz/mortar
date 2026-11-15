@@ -44,9 +44,9 @@ pub use error::{FieldError, Incompatible, Range, RefName, Refusal};
 pub use flags::{DemandFlags, GlobalFlags};
 pub use seq::{Code, ErratumSite, Proof, ProofRun, UnitWindow, Unproved};
 pub use shapes::{
-    Branch, DynRole, EhEncodings, Erratum, Facts, GotBase, GotShape, PltChunk, PltPart, PltShape,
-    PltVariant, PropMerge, Reach, RelForm, ThunkShape, TlsAbi, TlsBlock, TlsVariant, Weak0Rule,
-    max_window, x86_property_merge,
+    Branch, DynRole, EhEncodings, Erratum, Facts, GotBase, GotShape, IpltWord, PltChunk, PltPart,
+    PltShape, PltVariant, PropMerge, Reach, RelForm, ThunkShape, TlsAbi, TlsBlock, TlsVariant,
+    Weak0Rule, max_window, x86_property_merge,
 };
 pub use vocab::{
     AddendRule, Base, Check, Field, Howto, Implicit, Minus, OutputKind, Site, SlotKind, Status,

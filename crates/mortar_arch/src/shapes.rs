@@ -21,6 +21,18 @@ pub enum GotBase {
     GotPltStart,
 }
 
+/// What an IPLT entry's `.got.plt` word holds before start-up, beside its
+/// `IRELATIVE` (`spec/synth.md` S-69; `spec/dyn.md` Q7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IpltWord {
+    /// The record's `S + A`, the resolver's address: AArch64
+    /// (`spec/a64.md` §6.2, §10.2) and i386 (where REL makes it the
+    /// implicit addend, `spec/x86.md` §6.2).
+    Resolver,
+    /// 0: x86-64 (`spec/x64.md` X-39).
+    Zero,
+}
+
 /// The architecture's constants (§3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Facts {
@@ -46,6 +58,8 @@ pub struct Facts {
     /// Words reserved at the start of `.got.plt`: with `.dynamic` on every
     /// target; also in static outputs on x86 (`spec/synth.md` S-67).
     pub got_plt_reserved: u8,
+    /// The initial content of an IPLT entry's `.got.plt` word (S-69).
+    pub iplt_word: IpltWord,
     /// The largest `before` and `after` of any write window of the
     /// architecture, over every `Howto` window (§3.2) and every member
     /// window of a recognized form (`unit_window`, §3.5). Computed from

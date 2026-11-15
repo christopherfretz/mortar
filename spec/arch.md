@@ -221,6 +221,8 @@ pub struct Facts {
     pub got_header: u8,                      // words reserved at the start of .got with .dynamic
     pub got_plt_reserved: u8,                // words reserved at the start of .got.plt: with .dynamic
                                              // on every target; also in static outputs on x86 (synth.md S-67)
+    pub iplt_word: IpltWord,                 // an IPLT .got.plt word before start-up (synth.md S-69):
+                                             // Resolver (S + A; AArch64, i386) or Zero (x86-64, x64.md X-39)
     pub max_reach: Window,                   // (before, after): derived, see below
     pub code_fill: &'static [u8],            // the trap pattern (layout.md L-82): AArch64 4 zero bytes, x86 0xCC
     pub code_nop: &'static [u8],             // the no-op of .init/.fini padding (L-82): AArch64 NOP, x86 0x90

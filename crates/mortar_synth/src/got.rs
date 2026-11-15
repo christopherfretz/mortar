@@ -13,8 +13,8 @@
 //! [`SlotValues`] oracle gives.
 
 use mortar_arch::{
-    Arch, DynRole, FieldError, GotBase, PltPart, PltVariant, RelForm, SlotKind, SynthCx, TlsAbi,
-    TlsBlock,
+    Arch, DynRole, FieldError, GotBase, IpltWord, PltPart, PltVariant, RelForm, SlotKind, SynthCx,
+    TlsAbi, TlsBlock,
 };
 use mortar_core::layout::{SlotIndex, Slots};
 use mortar_core::{SymKey, demands::GlobalFlags};
@@ -82,6 +82,9 @@ pub struct GotPlan {
     word: u8,
     class: Class,
     rel: RelForm,
+    /// Whether an IPLT word holds its resolver's address (S-69: REL's
+    /// implicit addend, or the architecture's `IpltWord::Resolver`).
+    iplt_resolver: bool,
     /// Per region of [`Region::ALL`]: its first byte in `.got` and its
     /// slot size in bytes; `bases[6]` is the size.
     bases: [u64; 7],
@@ -153,6 +156,7 @@ impl GotPlan {
             word: facts.word,
             class: facts.class,
             rel: facts.rel_form,
+            iplt_resolver: facts.rel_form == RelForm::Rel || facts.iplt_word == IpltWord::Resolver,
             bases,
             slot,
             got: slots.got.clone(),
@@ -318,7 +322,8 @@ impl GotPlan {
     }
 
     /// Fills the window's range of `.got.plt` (S-67, S-69): reserved
-    /// words 0; an IPLT word 0 for RELA, the resolver's address for REL.
+    /// words 0; an IPLT word the resolver's address (REL, and AArch64's
+    /// `S + A`), or 0 (x86-64).
     pub fn write_got_plt(
         &self,
         values: &dyn SlotValues,
@@ -329,7 +334,7 @@ impl GotPlan {
         let last = out.end().min(self.got_plt_size()).div_ceil(w);
         for i in first..last {
             let v = match i.checked_sub(self.reserved) {
-                Some(n) if self.rel == RelForm::Rel => self.resolver(n, values)?,
+                Some(n) if self.iplt_resolver => self.resolver(n, values)?,
                 _ => 0,
             };
             out.word(i * w, self.word, v);

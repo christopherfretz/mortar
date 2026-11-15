@@ -827,10 +827,15 @@ which values are written where.
   relocation in `.rela.plt` (`R_AARCH64_IRELATIVE`,
   `R_X86_64_IRELATIVE`, `R_386_IRELATIVE`), in IPLT order, with
   `r_offset` the entry's `.got.plt` word, symbol 0, and:
-  - RELA (AArch64, x86-64): `r_addend` the resolver's address, and the
-    word itself written 0 (lld; GNU writes the PLT entry's address on
-    AArch64 and the entry's address + 6 (the lazy-PLT
-    convention) on x86-64 (`spec/x64.md` E3); glibc overwrites the word, X-22);
+  - RELA (AArch64, x86-64): `r_addend` the resolver's address. The word
+    itself is written per architecture (`Facts.iplt_word`, arch.md §3.1):
+    on AArch64 the record's `S + A`, the resolver's address (`spec/a64.md`
+    §6.2, §10.2; `spec/dyn.md` Q7, ruled by WP-041); on x86-64 0
+    (`spec/x64.md` X-39). The references differ (lld writes 0; GNU writes
+    the `.plt` section's start on AArch64, measured on a static `gcc
+    -static` IFUNC link by WP-041, and the entry's address + 6, the
+    lazy-PLT convention, on x86-64, `spec/x64.md` E3); glibc overwrites
+    the word, X-22;
   - REL (i386): the word itself holds the resolver's address, which is
     the implicit addend (GNU and lld, X-22).
 
@@ -1506,7 +1511,7 @@ edit changes.
 | static IPLT sections | `.plt`, `.rela.plt`, `.got.plt` | `.iplt`, `.rela.dyn`, `.got.plt` | `.plt.got`, `.rela.dyn` | GNU's (S-68) | |
 | an IFUNC in `.symtab` | `IFUNC` at the resolver, always | `FUNC` at `.iplt`, size 0, when canonical; else `IFUNC` | `FUNC` locals at `.plt.got` (A1, A2) | `IFUNC` at the resolver, always (S-71) | gdb's `break f` works (X-27) |
 | `__rela_iplt_*` under `-static-pie` | not defined | not defined | absolute 0 | not defined (S-70) | resolve.md §8.1 |
-| IRELATIVE word (RELA) | AArch64: PLT address; x86-64: the entry's address + 6 (`spec/x64.md` E3) | 0 | — | 0 (S-69) | glibc overwrites it |
+| IRELATIVE word (RELA) | AArch64: `.plt`'s address; x86-64: the entry's address + 6 (`spec/x64.md` E3) | 0 | — | AArch64: the resolver (`S + A`); x86-64: 0 (S-69) | glibc overwrites it |
 | x86 static `.got.plt` reserved words | 3 | 3 | — | 3 (S-67) | |
 | section symbols in `.symtab` | AArch64 yes, x86 no | none | all | none (S-79) | |
 | `.L` locals | dropped | dropped | kept | dropped (S-78) | |
