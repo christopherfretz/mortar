@@ -21,8 +21,8 @@ use crate::{PHASE_IMAGE, PHASE_OUTPUT};
 /// The tables fill reads (`FillTables`), plus what §6.1 needs and
 /// `SymValue` does not carry.
 ///
-/// Stand-in: WP-023b's `FillTables` gains the target's section flags
-/// (request R-5); until then the image asks for them here.
+/// `FillTables` (WP-023b) does not carry the target's section flags, so
+/// the image asks for them here; the driver answers from `Resolution`.
 pub trait Tables: FillTables {
     /// Whether the key's definition is in an `SHF_ALLOC` section (I-112).
     fn target_alloc(&self, key: SymKey) -> bool;

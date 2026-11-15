@@ -156,7 +156,7 @@ fn main() {
 
     // The plan: rows until the target size; relocation sections shared
     // between copies.
-    let mut b = Builder::new(Target::of(mortar_elf::Machine::AArch64), 0);
+    let mut b = Builder::new(Target::from_facts(mortar_arch::Arch::facts(&A64::M1)), 0);
     let name = b.name(b".data");
     let mut rel_of: BTreeMap<(usize, usize), u32> = BTreeMap::new();
     let mut rows = Vec::new();
@@ -182,7 +182,7 @@ fn main() {
         }
     }
     let file_size = off;
-    let mut plan_b = Builder::new(Target::of(mortar_elf::Machine::AArch64), file_size);
+    let mut plan_b = Builder::new(Target::from_facts(mortar_arch::Arch::facts(&A64::M1)), file_size);
     let _ = plan_b.name(b".data");
     // Move the relocation sections over.
     let tmp = b.finish(mortar_image::IMAGE_BLOCK, &pool).unwrap();

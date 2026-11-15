@@ -10,13 +10,13 @@
 //! - [`fill::write`]: fills the plan's jobs in parallel and hands each
 //!   window to a [`fill::Sink`] (I-33, I-63).
 //! - [`output::Output`]: the output file (§7), a [`fill::Sink`].
-//! - [`map::write_map`]: `mortar-map 1` (§9).
+//! - [`map::render`]: `mortar-map 1` (§9), written by [`output::write_whole`].
 //! - [`phases`]: `--time-phases` lines (I-88) and the memory bound (I-92).
 //!
 //! Stand-ins for interfaces other packages own (each named in
 //! `spec/landed/image/WP-026.md`): [`synth::SynthChunk`] (§13, WP-025),
-//! the clipped `apply` wrapper, `target::Target` and the tombstone table
-//! (WP-023b), [`plan::RecOrder`] (I-29, WP-026s).
+//! [`plan::RecOrder`] (I-29, WP-026s), [`fill::Tables::target_alloc`]
+//! (I-112; not in WP-023b's `FillTables`).
 #![forbid(unsafe_code)]
 // A `Diagnostic` is the error value of every fallible step here, returned
 // once per link: its size costs nothing on the success path. The spec's

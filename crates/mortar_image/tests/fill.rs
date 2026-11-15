@@ -314,36 +314,41 @@ fn i64_write_error_is_reported_once() {
 }
 
 // spec: image.md I-47, I-48, I-45, I-46: the tombstone per referring
-// section and class, truncated to the field.
+// section, truncated to the field (the values are `mortar_arch::dead`'s;
+// the truncation and the referring-section rule as fill applies them are
+// the image's). ELFCLASS32's values are checked on the arch's function.
 #[test]
 fn i47_tombstone_table() {
-    use mortar_image::tombstone::{Rule, Tomb, rule, value};
-    let cases: [(&[u8], Option<Rule>); 9] = [
-        (b".debug_ranges", Some(Rule::Debug(Tomb::One))),
-        (b".debug_loc", Some(Rule::Debug(Tomb::One))),
-        (b".debug_aranges", Some(Rule::Debug(Tomb::Aranges))),
-        (b".debug_frame", Some(Rule::Debug(Tomb::Ones))),
-        (b".debug_info", Some(Rule::Debug(Tomb::ClassOnes))),
-        (b".zdebug_info", Some(Rule::Debug(Tomb::ClassOnes))),
-        (b".gnu_debuglink", Some(Rule::Debug(Tomb::ClassOnes))),
-        (b".gcc_except_table", Some(Rule::Zero)),
-        (b".data", None),
+    use mortar_image::tombstone::field;
+    let a = arch();
+    let cases: [(&[u8], bool, u8, Option<u64>); 14] = [
+        (b".debug_ranges", false, 8, Some(1)),
+        (b".debug_loc", false, 4, Some(1)),
+        (b".debug_aranges", false, 8, Some(u64::MAX)),
+        (b".debug_aranges", false, 4, Some(0xffff_ffff)),
+        (b".debug_frame", false, 4, Some(0xffff_ffff)),
+        (b".debug_info", false, 8, Some(u64::MAX)),
+        (b".debug_info", false, 4, Some(0xffff_ffff)),
+        (b".debug_info", false, 2, Some(0xffff)),
+        (b".zdebug_info", false, 8, Some(u64::MAX)),
+        (b".gnu_debuglink", false, 8, Some(u64::MAX)),
+        (b".gcc_except_table", true, 8, Some(0)),
+        (b".gcc_except_table", false, 4, Some(0)),
+        // An alloc section with a debug name, and any other section: the
+        // scan's `DiscardedSection` (I-46); fill applies the record.
+        (b".debug_info", true, 8, None),
+        (b".data", false, 8, None),
     ];
-    for (name, want) in cases {
-        assert_eq!(rule(name), want, "{}", String::from_utf8_lossy(name));
+    for (name, alloc, width, want) in cases {
+        assert_eq!(field(a, name, alloc, width), want, "{} alloc {alloc} width {width}", String::from_utf8_lossy(name));
     }
     for name in [&b".line"[..], b".stab", b".gnu.linkonce.wi.x", b".gnu.debuglto_.debug_info"] {
-        assert!(rule(name).is_some());
+        assert!(field(a, name, false, 8).is_some());
     }
-    assert_eq!(value(Rule::Debug(Tomb::One), 8, true), 1);
-    assert_eq!(value(Rule::Debug(Tomb::One), 4, false), 1);
-    assert_eq!(value(Rule::Debug(Tomb::Aranges), 8, true), u64::MAX);
-    assert_eq!(value(Rule::Debug(Tomb::Aranges), 4, false), 0xffff_ffff);
-    assert_eq!(value(Rule::Debug(Tomb::Ones), 4, false), 0xffff_ffff);
-    assert_eq!(value(Rule::Debug(Tomb::ClassOnes), 8, true), u64::MAX);
-    assert_eq!(value(Rule::Debug(Tomb::ClassOnes), 4, true), 0xffff_ffff);
-    assert_eq!(value(Rule::Debug(Tomb::ClassOnes), 4, false), 0);
-    assert_eq!(value(Rule::Zero, 8, true), 0);
+    use mortar_elf::Class::Elf32;
+    assert_eq!(mortar_arch::tombstone(b".debug_info", Elf32), 0);
+    assert_eq!(mortar_arch::tombstone(b".debug_ranges", Elf32), 1);
+    assert_eq!(mortar_arch::tombstone(b".debug_frame", Elf32) & 0xffff_ffff, 0xffff_ffff);
 }
 
 /// A non-alloc section `name` with an `ABS64` record against a dead target
@@ -524,12 +529,13 @@ fn i111_max_reach_bounds_every_write() {
                     site: Site { bytes: &input, offset: rec.r_offset },
                     records: &recs,
                     proof: &rs.proof,
+                    leads: true,
                 };
                 // A sentinel buffer: every byte apply writes differs from it
                 // in at least one of two fills.
                 for fillb in [0x00u8, 0xff] {
                     let mut bytes = vec![fillb; input.len()];
-                    let mut out = SectionOut { bytes: &mut bytes, addr: u.addr, alloc: u.alloc, name: &name };
+                    let mut out = SectionOut::whole(&mut bytes, u.addr, u.alloc, &name);
                     let _ = ARCH_M2.apply(&cx, &at, &mut out);
                     let lo = rec.r_offset.saturating_sub(before);
                     let hi = rec.r_offset + u64::from(h.field.width()) + after;

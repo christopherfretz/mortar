@@ -1,12 +1,9 @@
-//! What fill needs of the target beyond `mortar_arch::Arch` on main: the
-//! derived `max_reach` (I-111), the fill patterns (I-41, `spec/layout.md`
-//! L-82), the class (I-47) and the address-sized absolute type (I-112).
-//!
-//! Stand-in: `Facts.max_reach` and `Facts.code_fill` are request R-2 of
-//! `spec/image.md` (WP-023b). Until they land the values are stated here,
-//! per machine, from the same spec text; the test `i111_max_reach_bounds_
-//! every_write` checks the AArch64 value against `apply`.
+//! What the plan needs of the target: the arch's derived `max_reach`
+//! (I-111) and fill patterns (I-41, `spec/layout.md` L-82) from
+//! `mortar_arch::Facts`, the class (I-47) and the address-sized absolute
+//! type (I-112), which `Facts` does not carry.
 
+use mortar_arch::Facts;
 use mortar_elf::{Class, Machine};
 
 use crate::plan::Pattern;
@@ -29,34 +26,28 @@ pub struct Target {
 }
 
 impl Target {
-    /// The facts of `machine` (I-111's values; L-82's patterns).
+    /// The facts of the arch (`Facts.max_reach`, derived by the arch,
+    /// I-111; `code_fill` and `code_nop`, L-82), with the address-sized
+    /// absolute type of its machine (I-112).
+    ///
+    /// # Panics
+    /// If a pattern is not 1 or 4 bytes long (no arch has one).
     #[must_use]
-    pub const fn of(machine: Machine) -> Self {
-        match machine {
-            Machine::AArch64 => Self {
-                machine,
-                class: Class::Elf64,
-                max_reach: (0, 4),
-                trap: Pattern::ZERO4,
-                // `nop` = 0xd503201f, little-endian.
-                nop: Pattern::word([0x1f, 0x20, 0x03, 0xd5]),
-                abs_addr: 257,
-            },
-            Machine::X86_64 => Self {
-                machine,
-                class: Class::Elf64,
-                max_reach: (4, 8),
-                trap: Pattern::byte(0xcc),
-                nop: Pattern::byte(0x90),
-                abs_addr: 1,
-            },
-            Machine::I386 => Self {
-                machine,
-                class: Class::Elf32,
-                max_reach: (4, 8),
-                trap: Pattern::byte(0xcc),
-                nop: Pattern::byte(0x90),
-                abs_addr: 1,
+    pub fn from_facts(f: &Facts) -> Self {
+        let pattern = |b: &[u8]| match *b {
+            [x] => Pattern::byte(x),
+            [a, b, c, d] => Pattern::word([a, b, c, d]),
+            _ => panic!("fill pattern of {} bytes", b.len()),
+        };
+        Self {
+            machine: f.machine,
+            class: f.class,
+            max_reach: (u64::from(f.max_reach.before), u64::from(f.max_reach.after)),
+            trap: pattern(f.code_fill),
+            nop: pattern(f.code_nop),
+            abs_addr: match f.machine {
+                Machine::AArch64 => 257,
+                Machine::X86_64 | Machine::I386 => 1,
             },
         }
     }

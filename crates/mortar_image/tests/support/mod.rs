@@ -24,7 +24,7 @@ use mortar_image::plan::{Builder, InputUnit, Pattern, Plan, RecOrder, RelocSecti
 use mortar_image::source::Source;
 use mortar_image::synth::{Division, SizeCx, SynthChunk, SynthError};
 use mortar_image::target::Target;
-use mortar_image::tombstone::{self, Rule, Tomb};
+use mortar_image::tombstone;
 
 pub mod reflink;
 
@@ -53,7 +53,7 @@ pub fn key(n: u32) -> SymKey {
 /// A target with AArch64's facts.
 #[must_use]
 pub fn a64() -> Target {
-    Target::of(mortar_elf::Machine::AArch64)
+    Target::from_facts(Arch::facts(&A64::M1))
 }
 
 // ---- the store -------------------------------------------------------------
@@ -275,21 +275,20 @@ fn reference_relocs(
     sec: &mut [u8],
 ) {
     let name = img.plan.name(u.name).to_vec();
-    let rule = tombstone::rule(&name);
     let records: &[Reloc] = &rs.records;
     for (i, rec) in records.iter().enumerate() {
         let Ok(howto) = img.arch.classify(rec.r_type, Site { bytes: input, offset: rec.r_offset }) else {
             continue;
         };
-        if let (Some(rule), Field::Data { bytes: w }) = (rule, howto.field)
-            && (rule == Rule::Zero || !u.alloc)
+        if let Field::Data { bytes: w } = howto.field
             && !img.tables.sym(rec.key).live
+            && let Some(v) = tombstone::field(img.arch, &name, u.alloc, w)
         {
-            let v = tombstone::value(rule, w, img.plan.target.is_64()).to_le_bytes();
+            let v = v.to_le_bytes();
             let o = rec.r_offset as usize;
             let w = usize::from(w);
             sec[o..o + w].copy_from_slice(&v[..w]);
-            if rule == Rule::Debug(Tomb::Aranges)
+            if name == tombstone::ARANGES
                 && rec.r_type == img.plan.target.abs_addr
                 && img.tables.target_alloc(rec.key)
                 && !records.iter().any(|x| (rec.r_offset + w as u64..rec.r_offset + 2 * w as u64).contains(&x.r_offset))
@@ -311,8 +310,9 @@ fn reference_relocs(
             site: Site { bytes: input, offset: rec.r_offset },
             records: &records,
             proof: &rs.proof,
+            leads: true,
         };
-        let mut out = SectionOut { bytes: sec, addr: u.addr, alloc: u.alloc, name: &name };
+        let mut out = SectionOut::whole(sec, u.addr, u.alloc, &name);
         let _ = img.arch.apply(cx, &at, &mut out);
     }
 }
@@ -373,6 +373,16 @@ pub fn image<'a>(w: &'a World, chunks: &'a [&'a dyn SynthChunk]) -> Image<'a> {
 
 const TEXT_ADDR: u64 = 0x40_0000;
 
+/// A key whose target is live (`random_world` makes every seventh dead).
+fn live_key(g: &mut Gen, syms: u32) -> SymKey {
+    loop {
+        let n = 1 + g.below(u64::from(syms)) as u32;
+        if n % 7 != 0 {
+            return key(n);
+        }
+    }
+}
+
 /// A code section of `words` words: random data words, and relocations of
 /// the forms the M1 apply accepts, at random places.
 fn code(g: &mut Gen, words: usize, syms: u32) -> GenSection {
@@ -383,12 +393,12 @@ fn code(g: &mut Gen, words: usize, syms: u32) -> GenSection {
         match g.below(6) {
             0 => {
                 ws[k] = BL;
-                records.push(Reloc { r_offset: 4 * k as u64, key: key(1 + g.below(u64::from(syms)) as u32), r_type: CALL26, addend: 0 });
+                records.push(Reloc { r_offset: 4 * k as u64, key: live_key(g, syms), r_type: CALL26, addend: 0 });
             }
             1 => {
                 ws[k] = ADRP_X0;
                 ws[k + 1] = ADD_X0_X0;
-                let s = key(1 + g.below(u64::from(syms)) as u32);
+                let s = live_key(g, syms);
                 let a = g.below(64) as i64;
                 records.push(Reloc { r_offset: 4 * k as u64, key: s, r_type: ADR_PREL_PG_HI21, addend: a });
                 records.push(Reloc { r_offset: 4 * k as u64 + 4, key: s, r_type: ADD_ABS_LO12_NC, addend: a });
@@ -409,7 +419,9 @@ fn data(g: &mut Gen, words: usize, syms: u32, name: &'static [u8], alloc: bool) 
     let mut records = Vec::new();
     let mut k = 0usize;
     while k < words {
-        let s = key(1 + g.below(u64::from(syms)) as u32);
+        // A dead target only where fill accepts one (I-45, I-46): the
+        // scan refuses it from any other section.
+        let s = if alloc && name != b".gcc_except_table" { live_key(g, syms) } else { key(1 + g.below(u64::from(syms)) as u32) };
         if g.below(3) == 0 && alloc {
             records.push(Reloc { r_offset: 8 * k as u64, key: s, r_type: PREL32, addend: g.below(16) as i64 });
         } else {

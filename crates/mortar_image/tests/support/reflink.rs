@@ -514,8 +514,8 @@ pub fn check_tombstones(w: &RefWorld, ours: &[u8]) -> (usize, Vec<(u64, String, 
         let want = if name == LENGTH {
             0
         } else {
-            let Some(rule) = mortar_image::tombstone::rule(name.as_bytes()) else { continue };
-            mortar_image::tombstone::value(rule, *width as u8, true)
+            let Some(v) = mortar_image::tombstone::field(&super::ARCH, name.as_bytes(), false, *width as u8) else { continue };
+            v
         };
         let got = rd(ours, *off as usize, *width as usize);
         if got != want {
