@@ -583,8 +583,9 @@ program is the program a from-scratch link would have made.
      tables) have the same entries, and **every packed section of
      layout.md L-142** (`.init_array`, `.fini_array`, `.preinit_array`,
      `.ctors`, `.dtors`, `.init`, `.fini`, every section reached through
-     `__start_`/`__stop_` symbols, `.tm_clone_table`, notes) holds the
-     same contributions **in the same order** as in `F`, as do
+     `__start_`/`__stop_` symbols, `.tm_clone_table`, notes, and
+     `.eh_frame`'s records with padding CIEs (dead ranges) passed over)
+     holds the same contributions **in the same order** as in `F`, as do
      `.rela.plt`'s `IRELATIVE`s and `DT_NEEDED`; all up to the placement
      mapping. (The order of other code and data, and so the relative
      order of function addresses, may differ; a program that sorts or
@@ -615,7 +616,8 @@ program is the program a from-scratch link would have made.
   - `.rela.dyn`'s `RELATIVE` prefix: a `RELATIVE` record aimed at the
     scratch word (dyn.md §14); after the prefix, `R_*_NONE`.
   Holes exist only in hole-tolerant sections (layout.md L-143, IN-30);
-  a packed section (L-142) never has one (IN-34). A hole is an entry of
+  a packed section (L-142) never has one (IN-34), except `.eh_frame`,
+  whose holes are padding CIEs: records its walkers parse (IN-34a). A hole is an entry of
   the decision tables (its section, offset, size), so (B) reproduces its
   fill and the map lists it (`hole` lines, §8.2). Holes are the
   allocated case of a dead range (IN-3a). *Test:* remove a function and
@@ -1179,7 +1181,7 @@ with each phase fed from the state for unchanged files:
   | `.rodata`, `.data`, `.data.rel.ro`, `.bss` | regions; zero holes; `.bss` holes cost no file bytes | `reserve-exhausted` |
   | `.tdata`, `.tbss` (the TLS template) | a changed file's TLS contribution is refilled in place **only if no TLS input section's TP offset changes, in any file**; the update computes every TLS input section's TP offset under the new layout and compares it with the stored one. E3' (`tls_shift.sh`): making one `thread_local` initialized (`.tbss` → `.tdata`) keeps `PT_TLS`'s size and alignment yet moves an unchanged file's `c_var` from TP+0x30 to TP+0x38; two files changing by −8 and +8 move an unchanged `e_var` from TP+0x58 to TP+0x50 | `tls-layout-changed`; [later] refill every TP-relative referrer of every moved TLS section through the index |
   | `.init_array`, `.fini_array`, `.preinit_array`, `.ctors`, `.dtors`, `.init`, `.fini`, `.tm_clone_table`, `__start_`/`__stop_` sections (packed, L-142) | one chunk, no holes, rewritten whole in full-link order (priority, then load order; for `.init`/`.fini`, `crti.o`'s prologue first and `crtn.o`'s epilogue last) within capacity (IN-30); `__init_array_end`, `__stop_SEC` and the like move, and their users are refilled (IN-25) | growth step; `reserve-exhausted` |
-  | `.eh_frame` | per-file ranges, padding-CIE holes of 0 or ≥ 16 bytes, the terminator last (IN-34a) | growth step; `reserve-exhausted` |
+  | `.eh_frame` | per-file ranges in full-link order, padding-CIE holes of 0 or ≥ 16 bytes, the terminator last; a range that overflows rewrites the section whole (IN-34a) | growth step; `reserve-exhausted` |
   | `.eh_frame_hdr` | one unit, rewritten whole when any FDE address changes (S-111); its table lists only live FDEs | growth step; `reserve-exhausted` |
   | `.gcc_except_table` | regions; zero holes (reached only through LSDA pointers) | `reserve-exhausted` |
   | merged strings and constants | fragments appended (L-147, S-110); dead fragments keep their bytes and are dead ranges (IN-3a: a live reference may share a suffix) | `reserve-exhausted` |
@@ -1218,11 +1220,17 @@ with each phase fed from the state for unchanged files:
     12 the ruling proposed: a whole CIE is 13 bytes, so the smallest
     4-aligned one is 16; a 12-byte CIE must drop the return-address
     register.
-  - **Overflow.** A range that does not fit its capacity becomes a hole
-    (a padding CIE) and its records go to the section's tail; **the
-    terminator moves with the tail**: S-48's zero word is always the
-    section's last 4 bytes, and the old terminator's word becomes part of
-    a padding CIE (or of the last record's padding).
+  - **Overflow.** A range that does not fit its capacity does not go to
+    a tail: the whole section is rewritten in full-link order with fresh
+    range capacities (IN-30's rule for packed sections), so IN-2 item 5
+    holds for `.eh_frame` too (B2 and B5 together; moving the range to a
+    tail would put its FDEs out of full-link order). On protoc that is
+    0.97 MB, one or two dirty windows, and `.eh_frame_hdr` is rewritten
+    whenever an FDE address changes anyway (S-111). **The terminator is
+    always last**: S-48's zero word is the last 4 bytes of the section's
+    content, and when the content's end moves the old terminator's word
+    becomes part of a padding CIE (or of the last record's padding); E5
+    shows a terminator left before live FDEs aborts a throw.
   - Measured (E5, `eh_holes.sh` with `ehpatch.py`, a g++ `-O0 -g` static
     program whose `f_dead` FDE is turned into a hole, linked by mortar
     with `.eh_frame_hdr` and by GNU ld without; throw/catch under
@@ -1552,8 +1560,8 @@ file changes or when one of its file's sections moves (IN-25).
   back makes a cost, not a failure. [later] A debug-only rewrite: the
   allocated part of the output is untouched (no address depends on a
   non-allocated section), and only the non-allocated sections are
-  rewritten compactly (the debug part of the image phase, ~30 of 45 ms of
-  image on protoc `-g`, *estimate* from §1.5's phases). *Test:* L10 runs
+  rewritten compactly (the debug part of the image phase, ~31 of 45 ms of
+  image on protoc `-g`: the phase with `-g` less without, §1.5, *estimate*). *Test:* L10 runs
   a growing sequence to compaction and checks the reason; the model is
   re-run on S5's real sizes.
 - **IN-58 [v1] Debug options.** `--compress-debug-sections` other than
@@ -1625,14 +1633,18 @@ mode pays nothing for incremental mode. Per mechanism:
 
 | mechanism | plain link | incremental-mode full link (first link, fall-back) | update |
 |---|---|---|---|
-| slack and reserves (IN-33) | none: capacity = size, the same code with a zero slack function | ~13% larger output on protoc `-g` (~10% without `-g`), *estimate*; written as fill | consumed; holes |
-| content hashes of inputs (IN-22) | none (hash 0, `spec/input.md` §11.6, lazy) | every input hashed: 217 MB at 12.6 GB/s is ~17 ms of one thread, spread over the input workers | changed inputs only |
-| the state (IN-17–IN-20) | none: nothing opened, stat'ed or written (IN-11) | 7–11 MB written, ~10–15 ms; rows built from data the phases already hold (IN-20) | loaded and validated (~10 ms), rewritten (~10–15 ms) |
+| slack and reserves (IN-33) | none: capacity = size, the same code with a zero slack function | +5.02 MB (+10.0%) output on protoc `-g`, +2.37 MB (+20.1%) without (`regions2.py`); written as fill | consumed; dead ranges |
+| content hashes of inputs (IN-22) | none (hash 0, `spec/input.md` §11.6, lazy) | every input hashed: 217 MB at 12.6 GB/s is ~17 ms of one thread, spread over the input workers (*estimate*) | changed and racy inputs only |
+| stamps (IN-22a) | none | one per file system: 8–10 µs on overlay, 0.3–0.5 ms on virtiofs (E6') | the same, plus the tick wait for the output (IN-21): 0.9–1.0 ms overlay, 0.08–0.12 ms virtiofs |
+| the state (IN-17–IN-20) | none: nothing opened, stat'ed or written (IN-11) | 8.05 MB written in 7.0 ms (E12); rows built from data the phases already hold (IN-20) | read and validated in 3.1 ms, rewritten in ~7 ms |
+| section content hashes (IN-31, [v2]) | none | 0.44 MB of state; 13–33 ms of CPU, 2–5 ms of wall time on 8 workers (*estimate*, E12) | changed files' sections only |
 | the dependency index (IN-25) | none | emitted by the scan's workers, sorted per unit: 238,919 alloc relocations become 118,145 rows (a few ms, *estimate*) | changed files' rows replaced |
+| armaps (IN-19) | none | 0.53 MB stored for protoc's three large archives | read from the state (~1 ms) instead of re-parsed (~10 ms, E12) |
 | ids (IN-28) | none: ids are per link in every mode | none | identity translation on load |
-| regions (IN-30) | none: layout is unchanged | a region per (file, output section, category): ~4,000 rows on protoc | as the delta needs |
+| regions (IN-30) | none: layout is unchanged | a region per (file, hole-tolerant output section, category): 2,936 on protoc | as the delta needs |
+| debug size classes (IN-50) | none | +1.45 MB of rounding on protoc `-g` (inside the +10.0% above) | in place within the class |
 | debug neutralization (IN-51) | none | none | the dead units' bytes |
-| `fdatasync` (IN-46) | none (image.md I-61) | none (a full link renames a complete file) | two, 1–10 ms measured |
+| `fdatasync` (IN-46, IN-47) | none (image.md I-61) | none (a full link renames a complete file) | in place: about 8.2 ms on overlay, 2.3 ms on virtiofs; copy path: 27.0 / 17.8 ms for copy, sync and rename at 50 MB (E7) |
 
 "Pays nothing" is a gate, not a hope: the bench (`spec/harness.md`
 "bench") runs plain protoc links built with and without `mortar_incr`'s
@@ -1697,18 +1709,25 @@ time and of peak RSS on protoc (*target*, S1 measures it).
 ### 8.3 What kiln and hod are asked for
 
 Ranked by value to mortar; none blocks v1, which works on GCC and Clang
-objects as they are.
+objects as they are. The standalone texts, ready to send, are in the
+record (`spec/landed/incr/WP-060.md`, (c)).
 
 1. **kiln's driver: thin archives (or no archives) in its development
    profile**, so that an edit to one source reaches the linker as one
-   changed file, not a changed 100 MB archive (§1.3: 80–160 ms of the
-   ~120–200 ms floor with a regular archive). Cost to kiln: `ar rcsT`
-   instead of `ar rcs` where its build examples make archives.
-2. **hod: keep "an edit outside a function does not change the
-   function's bytes"** as a stated guarantee (`hod/spec/object.md`). The
-   census shows it holds today (a comment line changes no allocated byte
-   in kiln's output, §1.1); mortar does not depend on it for
-   correctness, but [later] IN-31 would, for its gain.
+   changed file, not a changed 85–117 MB archive: a deterministic regular
+   archive hides a same-size member edit from everything but a read of
+   every member (§1.3), 50–70 ms of a 107–178 ms update on protoc `-g`
+   (§1.5). Cost to kiln: `ar rcsT` instead of `ar rcs` where its build
+   examples make archives.
+2. **kiln (`-g`, at least in the development profile): do not emit
+   `DW_LNCT_MD5` in the `.debug_line` file table.** Measured (§1.1,
+   E2'-B): a header edit changes every includer's object under kiln
+   `-g` (40 of 40), against 13 or 34 of 40 under GCC and Clang, and the
+   extra 27 (e5) and 6 (e6) objects differ only in `common.h`'s MD5. Each
+   is a changed file for mortar (whole-file refill, §1.2) and a
+   recompile for the build system's own content checks. GCC 14 emits no
+   MD5s; Clang emits them only when every file has one. Alternative if
+   kiln wants checksums: emit them only for the primary source file.
 3. **hod: tell mortar before emitting name indexes or type units**
    (`.debug_names`, `.debug_pubnames`, `DW_UT_type`): today it emits
    none, and v1 falls back on them (IN-51, IN-55).
@@ -1716,57 +1735,134 @@ objects as they are.
    S5's skeleton tests pass: it moves most debug bytes out of the link.
    Ask kiln to measure its effect on its own test links first.
 5. **kiln's driver: pass `--incremental` to mortar in the development
-   profile** when mortar is the linker, after S6. Not before: the
-   fall-back rate must be known.
+   profile** when mortar is the linker, after §1.5's go/no-go result and
+   S6. Not before: the speedup and the fall-back rate must be known
+   (record (a)).
+
+**Withdrawn**: the previous draft's request 2 ("hod: keep 'an edit
+outside a function does not change the function's bytes' as a stated
+guarantee"). No compiler gives it: `__LINE__`, `assert` and
+`__builtin_LINE()` change functions below a comment line in every
+compiler, kiln included, and so do inlining and assembler-resolved
+branches (§1.1). Mortar does not need it: IN-31 compares bytes and
+relocations by its own hash and trusts no compiler guarantee.
 
 Not requested, against the architecture's starting position
 (`docs/ROADMAP.md` "Cross-project"): per-section content hashes from
 hod. File-level change is decided by stat and an L128 hash (IN-22), and
-nothing per section is needed (§1.2). No "unchanged" hint either
-(IN-23).
+IN-31's section hashes are mortar's own (a compiler's could not be
+trusted, and computing them costs 2–5 ms of wall time). No "unchanged"
+hint either (IN-23).
 
 ## 9. Amendments to other specs
 
-Ranked by urgency: the first ones constrain code being written before
-M7, and are cheap now and expensive later.
+Ranked by the conflict each removes: the first five contradict a rule
+this spec needs (the reviewer's M7), the rest add to a spec without
+contradicting it. On main, `model.md` §4 already allows `capacity ≥
+size` per chunk and plumb's checks already accept gaps between
+placements, so no shipped code assumes "no slack"; none of these is
+urgent for M2 code.
 
-| rank | spec | amendment | why now |
+| rank | spec | amendment | conflict it removes |
 |---|---|---|---|
-| 1 | `model.md` §4, `layout.md` §18 | a chunk's capacity may be given per region (file, output section, category), and holes are decision-table entries with their fill (IN-3, IN-30); layout code must take capacities from a policy, never assume capacity = size | layout is being written; a hard-coded "no slack" would need rewriting |
-| 2 | `plumb.md` §2.3, §9 | the map's `hole` and `dead` lines; plumb's coverage check treats `hole` as covered only by fill (IN-60) | the map format is fixed early and read by tests |
-| 3 | `model.md` §7.3 | invariant (C), equivalence (IN-1, IN-2); (B)'s tables include holes and dead debug units | the harness's replay hook (S1) is designed against it |
-| 4 | `model.md` §7.2 | the dependency index is per (unit, target) pair: allocated units' pairs, and non-allocated units' global pairs only (IN-25); it is also the liveness graph | the scan's per-unit relocation walk is where the rows come from; its shape should not preclude emitting them |
-| 5 | `model.md` §7.1, `docs/ROADMAP.md` "Cross-project" | a section's content hash is not needed; drop the request to kiln and hod for it (§8.3) | avoids cross-project work no one needs |
-| 6 | `image.md` I-96 | IN-45's conditions (one link, regular file, not an input, not a shared object, lock enforced) and IN-46's order (header invalidated first, two `fdatasync`s) | I-96 is otherwise incomplete for hard links and shared objects |
-| 7 | `image.md` I-101 | liveness walks the stored graph, not the relocations (IN-29) | — |
-| 8 | `layout.md` Q4, Q8 | answered: the index records end-symbol users (IN-25); per-region slack plus section and segment reserves (IN-33) | closes two open questions |
-| 9 | `dyn.md` D-28 | fixed `nbuckets` and `.dynsym` capacity become an optimisation; v1 rewrites the symbolic tables whole (IN-40). §14's `RELATIVE` slack rule stays | removes a constraint M2 code would otherwise carry |
-| 10 | `input.md` §11.6 | in incremental mode every input's content hash is computed (IN-22) | — |
-| 11 | `cli.md`, `docs/status/options.md` | IN-10's options; IN-12's warning | — |
-| 12 | `diag.md` | keys `incr-full-link` (note), `incremental-unsupported`, `incremental-update-failed`, `incremental-not-reproducible` (warnings and error) | — |
-| 13 | `docs/ARCHITECTURE.md` "Incremental linking" | the three corrections of §2.7 | the map should match |
-| 14 | `docs/VALIDATION.md` L10 | IN-63's content | — |
-| 15 | `arch.md` "Incremental links" | `island-exhausted` as the fall-back name | — |
+| 1 | `layout.md` L-142 | text A below | L-142 lists `.debug_*` and `.eh_frame` as hole-free; this spec gives them dead ranges that are well-formed records (IN-3a, IN-34a, §6), and requires full-link order (IN-2 item 5) |
+| 2 | `layout.md` L-141 | text B | "a percentage per output section, as in gold" vs IN-33's per-region capacities in L-143 sections and size classes in debug sections |
+| 3 | `layout.md` L-144 | text C | L-144's growth order (in place → slack of the chunk → relayout the chunk → full relayout) vs IN-32's (region → section tail → segment reserve → `reserve-exhausted`) |
+| 4 | `synth.md` S-111 | text D | "`.eh_frame` grows by layout L-144" and "a CIE that becomes unused stays" vs IN-34a's per-file ranges, padding CIEs and rewrite in full-link order |
+| 5 | `layout.md` L-147, `synth.md` S-110 | text E | L-147's "every hole is a valid piece" says nothing of the verifier; IN-3a makes dead fragments dead ranges with its three checks |
+| 6 | `model.md` §7.3 | invariant (C) and equivalence (IN-1, IN-2); (B) holds modulo the dead ranges of IN-3a, which the decision tables record | — |
+| 7 | `plumb.md` §2.3, §9 | the map's `hole` and `dead` lines; plumb's dead-range checker (IN-3a's three checks) and its mutation cases (IN-60); `--equiv` (IN-62) | — |
+| 8 | `model.md` §7.2 | IN-25 implements §7.2's per-unit index; it adds the liveness graph and names the non-relocation targets (slots, patches' redirected sites, demand flags) | — |
+| 9 | `image.md` I-96 | IN-45's default (copy) and conditions for in place; IN-46's order with four `fdatasync`s; IN-47's sync before rename | — |
+| 10 | `model.md` §7.1, `docs/ROADMAP.md` "Cross-project" | drop the request to kiln and hod for per-section content hashes (§8.3); IN-31 computes its own | — |
+| 11 | `image.md` I-101 | liveness walks the stored graph, not the relocations (IN-29) | — |
+| 12 | `layout.md` Q4, Q8 | answered: the index records end-symbol users (IN-25); per-region slack plus section and segment reserves (IN-33) | — |
+| 13 | `dyn.md` D-28 | stays an [M7 hook]: v1 rewrites the symbolic tables whole (IN-40); fixed `nbuckets` and `.dynsym` capacity are a [later] optimisation | — |
+| 14 | `input.md` §11.6 | in incremental mode every input's content hash is computed (IN-22) | — |
+| 15 | `cli.md`, `docs/status/options.md` | IN-10's options, `--incremental-write`, `--incremental-sync`; IN-12's warning | — |
+| 16 | `diag.md` | keys `incr-full-link` (note), `incremental-unsupported`, `incremental-update-failed`, `incremental-not-reproducible` (warnings and error) | — |
+| 17 | `docs/ARCHITECTURE.md` "Incremental linking" | the one correction of §2.7 | — |
+| 18 | `docs/VALIDATION.md` L10 | IN-63's content, the two-full-link oracle (IN-63a) | — |
+| 19 | `arch.md` "Incremental links" | `island-exhausted` as the fall-back name | — |
+
+**Text A (L-142, replaces the last paragraph).** "Each is one chunk
+whose contributions keep the full link's order. Its slack is only its
+capacity beyond `size`, which is beyond `sh_size` (L-86, L-141); an edit
+inside it rewrites the whole chunk in the full link's order, within its
+capacity. Two packed sections admit dead ranges that are records of
+their own grammar rather than holes: `.eh_frame`, whose per-file ranges
+may end in a padding CIE (`spec/incr.md` IN-34a), and the `.debug_*`
+sections, whose dead contributions are neutral units (IN-50–IN-53). Both
+are dead ranges in the sense of IN-3a, recorded in the decision tables
+and checked by the verifier. No other packed section has a dead range.
+Growing such a section changes its end symbol's value, and the
+dependency index records the symbol's users (`spec/incr.md` IN-25)."
+
+**Text B (L-141, replaces "Its reserve is a percentage … open (Q8).").**
+"Its capacities are `spec/incr.md` IN-33's: per (file, output section,
+category) region in the hole-tolerant sections of L-143, a tail per
+output section, a reserve per `PT_LOAD`, `size/8` past each packed
+chunk, and a size class per debug contribution. Q8 is answered there."
+
+**Text C (L-144, replaces the list).** "When a contribution changes
+size, the incremental link tries, in order: (1) in place, within its
+region's capacity (a shrink leaves a hole, L-143 sections only); (2) the
+output section's tail reserve, the old region becoming a hole; (3) a
+growth step of the output section into its `PT_LOAD`'s reserve, moving
+the sections after it in the segment and refilling their units and
+referrers; (4) a full link with the reason `reserve-exhausted`. A packed
+chunk (L-142) skips (1) and (2): it is rewritten whole within its
+capacity, then (3), then (4). Each step yields a valid layout or reports
+why it gave up (`spec/incr.md` IN-32)."
+
+**Text D (S-111, replaces "When it grows … no FDE uses.").** "In
+incremental mode `.eh_frame` is grouped in per-file ranges in S-46's
+order, CIEs are deduplicated within a file only, and a range's unused
+tail is 0 bytes, absorbed `DW_CFA_nop` padding of the range's last
+record (4, 8 or 12 bytes), or one padding CIE of at least 16 bytes
+(`spec/incr.md` IN-34a, with its bytes). A range that outgrows its
+capacity makes the whole section be rewritten in full-link order. The
+terminator is always the section's last word. `.eh_frame_hdr` is one
+unit, refilled whenever an FDE's address changes (a sort of 10^6
+entries, about 10 ms)."
+
+**Text E (L-147 and S-110, appended).** "An unused piece is a dead
+range (`spec/incr.md` IN-3a): recorded in the decision tables, never
+the target of a live reference, and exempt from fill, because a live
+reference may share its suffix."
 
 ## 10. The work-package cut
 
 M7's stages; each is one package with its own tests, and L10 grows with
-them. Stages S1 and S2 can start in parallel once amendments 1–4 are
-applied; S3 after S1; S4 after S1–S3; S5 and S6 in parallel after S4.
+them. WP-061 comes first and ends in §1.5's go/no-go decision; WP-062
+and WP-067 may start beside it (they are useful whatever the decision:
+plumb's dead-range checker and L10's oracle check plain links too).
+WP-063 after WP-061; WP-064 after WP-061–WP-063 and a "go"; WP-065 and
+WP-066 in parallel after WP-064; WP-068 when §1.5's rule triggers it,
+else after WP-065. Estimates are *estimates*: lines of Rust including
+tests, and implementer sessions, one session being one package of the
+size M2's took: six merged M2 packages (WP-043, WP-044, WP-046, WP-047,
+WP-049, WP-050) added 1,318–6,055 lines of Rust each, median ~2,800
+(`git diff --shortstat` of their merges). The sizes here are judged
+against those, not measured.
 
-| WP | stage | content | depends on | runs in parallel with | gate |
-|---|---|---|---|---|---|
-| WP-061 | S1 state | `mortar_incr` crate: the state's format (specified table by table in this spec), writer during an incremental-mode full link (IN-17–IN-21), reader with validation and a fuzz target, the identity translation, the replay hook (IN-61); measure state size, write time and the plain-link gate (§8.1) | amendments 1, 3, 4 | WP-062, WP-067 | a state round-trips on the link-test corpus; replay (B) is byte-identical for every first link; plain-link bench unchanged |
-| WP-062 | S2 slack | regions, tail and segment reserves, holes and their fill in layout (IN-30, IN-32, IN-33); map `hole` lines; plumb's hole checks (IN-60) | amendments 1, 2 | WP-061, WP-067 | incremental-mode first links pass plumb and are equivalent (IN-2) to plain links; output sizes measured |
-| WP-063 | S3 delta | change detection (IN-22–IN-24), delta resolution and the refill set (IN-26, IN-27), liveness from the graph (IN-29), a dry-run `--incremental-report` that says what would be refilled, compared with a diff of two full links' maps | WP-061 | WP-062 | the dry run's refill set covers every unit whose bytes differ between two full links of each L10 step |
-| WP-064 | S4 update | delta layout, refill and the writing path (IN-13, IN-14, IN-44–IN-49) for static executables, with debug information falling back; `plumb --equiv` (IN-62) | WP-061–WP-063 | WP-067 | L10 static, no `-g`: IN-1 on every step; crash injection; measured floor against §1.5 |
-| WP-065 | S5 debug | IN-50–IN-59: append, neutralize, compaction fall-back; type units and skeletons tested before enabling | WP-064 | WP-066 | L10 with `-g`: transcripts equal (IN-59), `--verify` clean |
-| WP-066 | S6 dynamic | PIE and dynamic executables (IN-40–IN-42), shared objects by copy (IN-43, M4) | WP-064, M2 (and M4 for shared objects) | WP-065 | L10 PIE and shared |
-| WP-067 | L10 | the generator, the projects, the minimizer, the fault hooks, the nightly and pre-merge lanes, the bench rows (IN-63, IN-64) | — (starts with E1's scripts; every step is a fall-back until WP-064) | all | lanes run; a seeded failure is minimized |
+| WP | stage | content | depends on | parallel with | gate | estimate |
+|---|---|---|---|---|---|---|
+| WP-061 | S1 state + measured floor | `mortar_incr`: the state's format (IN-17–IN-20, armaps, IN-19), writer in an incremental-mode full link, reader with validation and a fuzz target, stamps and the clean / racy / hashed rule (IN-21, IN-22, IN-22a), the identity translation, the replay hook (IN-61); then the **floor measurement**: a test-only update path for a same-size body edit (the layout is the previous one, so no delta layout is needed) that does every step of §1.5's emulation with mortar's code, through the image phase and IN-46/IN-47's writes, on protoc `-g` and a workload ≥ 5× larger (added to the bench) | amendments 6, 8 | WP-062, WP-067 | state round-trips on the link-test corpus; replay (B) byte-identical for every first link; plain-link bench unchanged (§8.1); **the go/no-go numbers of §1.5, reported to the operator** | 5,000–7,000 lines, 2–3 sessions |
+| WP-062 | S2 slack and dead ranges | regions in L-143 sections, packed chunks with capacity, tails and segment reserves (IN-30, IN-32, IN-33), `.eh_frame` ranges and padding CIEs (IN-34a), debug size classes (IN-50), holes and their fill; map `hole`/`dead` lines; plumb's dead-range checker (IN-3a) | amendments 1–5, 7 | WP-061, WP-067 | incremental-mode first links pass plumb and are equivalent (IN-2) to plain links; output sizes against IN-33's table; E4 and E5 as plumb negative cases | 3,000–4,500 lines, 1–2 sessions |
+| WP-063 | S3 delta | change detection (IN-22–IN-24, parallel member hashing), delta resolution and the refill set (IN-25–IN-29), TLS and copy-size detectors, a dry-run `--incremental-report`; the **two-full-link oracle** (IN-63a) as a test lane | WP-061 | WP-062 | the dry run's refill set covers every unit the oracle finds differing, on every L10 step and E3's scenarios | 3,500–5,000 lines, 2 sessions |
+| WP-064 | S4 update | delta layout, refill and writing (IN-13, IN-14, IN-44–IN-49a) for static executables, `-g` falling back; copy path by default, in place on request; crash hooks; `plumb --equiv` (IN-62) | WP-061–WP-063, "go" | WP-067 | L10 static, no `-g`: IN-1 on every step; crash injection at each IN-46/IN-47 step; floor against WP-061's | 5,000–7,000 lines, 2–3 sessions |
+| WP-065 | S5 debug | IN-50–IN-59: size classes in use, reuse, neutralization of every debug section (IN-51, IN-51b), compaction fall-back; type units and skeletons tested before enabling | WP-064 | WP-066 | L10 with `-g`: transcripts equal (IN-59), `--verify` clean, readelf warning-free | 3,000–4,000 lines, 1–2 sessions |
+| WP-066 | S6 dynamic | PIE and dynamic executables (IN-40–IN-42), shared objects by copy (IN-43, M4), `copy-size-changed` | WP-064, M2 (M4 for shared objects) | WP-065 | L10 PIE and shared | 2,500–4,000 lines, 1–2 sessions |
+| WP-067 | L10 | the generator over the corpus (E2'), the projects, the minimizer, the fault hooks, nightly and pre-merge lanes, the bench rows (IN-63, IN-64) | — (every step a fall-back until WP-064) | all | lanes run; a seeded failure is minimized; the lane's cost within IN-63's budget | 2,500–3,500 lines (Rust and scripts), 1–2 sessions |
+| WP-068 | v2 section-level refill (M12) | IN-31: per-section content hashes under `--incremental`, matching by anchor, kept sections in place, layout around them; plain-link gate | WP-064 (WP-065 if after it) | WP-066 | L10 with `-ffunction-sections`, no `-g`: refilled bytes against the coarseness table (§1.2); plain-link bench unchanged | 2,000–3,000 lines, 1 session |
+| WP-069 | mutation tests | the delta rules' mutation lane (IN-63b): each IN-27 row and each IN-3a check dropped in a test build, and the L10 scenario that must catch it; plumb's mutation cases (IN-60) | WP-063, WP-067 | WP-064 | every row and check caught by at least one scenario, else a scenario is added | 1,000–1,500 lines, 1 session |
 
-Not cut yet, after M7: IN-31 (stable places), the hole free list,
-debug-only compaction, name-index neutralization, parallel archive
-hashing, D-28's bucket capacity. Each has its condition in its rule.
+Total *estimate*: 27,500–38,500 lines, 12–17 sessions, with WP-061's
+go/no-go after the first 2–3. Not cut yet, after M7: the hole free list
+for allocated sections, debug-only compaction, name-index neutralization,
+D-28's bucket capacity, scrubbing (IN-3b), smaller update windows (§1.5),
+per-file `.symtab` ranges. Each has its condition in its rule.
 
 ## 11. Open questions
 
