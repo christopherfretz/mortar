@@ -334,6 +334,19 @@ fn control_characters_are_made_visible() {
             format!("section {shown}: {shown} and {shown} inputs cannot be combined"),
         ),
         (
+            Kind::IncrementalNotReproducible,
+            "SOURCE_DATE_EPOCH is set, but an incremental link's output depends on its edit history"
+                .to_owned(),
+        ),
+        (
+            Kind::IncrementalUnsupported { option: h() },
+            format!("--incremental is not supported with {shown}; linking without a state"),
+        ),
+        (
+            Kind::IncrementalUpdateFailed { reason: h() },
+            format!("--incremental=update: cannot update: {shown}"),
+        ),
+        (
             Kind::Refused { class: RefusalClass::SectionType, name: h(), not_recognized: false },
             format!("unsupported section type: {shown}"),
         ),
@@ -418,6 +431,9 @@ fn samples() -> Vec<Diagnostic> {
             Kind::ExecutableStack { file: s(x) },
             Kind::OutputTooLarge { what: s(x), limit: s(x) },
             Kind::SectionConflict { name: s(x), first: s(x), second: s(x) },
+            Kind::IncrementalNotReproducible,
+            Kind::IncrementalUnsupported { option: s(x) },
+            Kind::IncrementalUpdateFailed { reason: s(x) },
             Kind::Refused { class: RefusalClass::RelocationType, name: s(x), not_recognized: true },
             Kind::InternalError { what: s(x) },
         ]

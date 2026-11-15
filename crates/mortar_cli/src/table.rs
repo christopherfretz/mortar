@@ -543,6 +543,14 @@ pub enum Lands {
     TimePhases,
     /// `bookkeeping.verify`.
     Verify,
+    /// `incremental.mode` (`--incremental[=MODE]`).
+    Incremental,
+    /// `incremental.mode`, `None`.
+    NoIncremental,
+    /// `incremental.state`.
+    IncrementalState,
+    /// `incremental.report`.
+    IncrementalReport,
     /// `exit`, `--version`.
     Version,
     /// `print_version`.
@@ -649,6 +657,9 @@ impl Lands {
             Self::Threads | Self::ThreadCount | Self::NoThreads => "bookkeeping.threads",
             Self::TimePhases => "bookkeeping.time_phases",
             Self::Verify => "bookkeeping.verify",
+            Self::Incremental | Self::NoIncremental => "incremental.mode",
+            Self::IncrementalState => "incremental.state",
+            Self::IncrementalReport => "incremental.report",
             Self::Version | Self::Help => "exit",
             Self::PrintVersion(_) => "print_version",
             Self::Verbose => "bookkeeping.verbose",

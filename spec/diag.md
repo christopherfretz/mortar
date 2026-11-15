@@ -148,7 +148,8 @@ twice. The areas, in order: command line (`conflicting-options` to
 `static-link-of-shared-object`), file formats, symbols (`archive-backref`
 to `version-reassigned`), one-definition rule (`meta-malformed` to
 `odr-vtable-rtti-mismatch`, M6), relocations, layout (`executable-stack` to
-`section-conflict`), refusals, internal. The wording column is the message of §5.2, complete: nothing
+`section-conflict`), incremental linking (`incremental-not-reproducible`
+to `incremental-update-failed`), refusals, internal. The wording column is the message of §5.2, complete: nothing
 is added before or after it.
 
 | id | variant | message | wording from |
@@ -212,6 +213,9 @@ is added before or after it.
 | `executable-stack` | `ExecutableStack { file }` | `{file}: requires executable stack (because the .note.GNU-stack section is executable)` | GNU ld |
 | `output-too-large` | `OutputTooLarge { what, limit }` | `output too large: {what} exceeds {limit}` | own (lld: `output file too large`) |
 | `section-conflict` | `SectionConflict { name, first, second }` | `section {name}: {first} and {second} inputs cannot be combined` | own (lld: `section type mismatch for {name}`) |
+| `incremental-not-reproducible` | `IncrementalNotReproducible` | `SOURCE_DATE_EPOCH is set, but an incremental link's output depends on its edit history` | own (`spec/incr.md` IN-7) |
+| `incremental-unsupported` | `IncrementalUnsupported { option }` | `--incremental is not supported with {option}; linking without a state` | own (`spec/incr.md` IN-12) |
+| `incremental-update-failed` | `IncrementalUpdateFailed { reason }` | `--incremental=update: cannot update: {reason}` | own (`spec/incr.md` IN-10) |
 | `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) |
 | `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
 
@@ -367,6 +371,14 @@ compares with the code.
 
   A reason is added like a refusal class (§4.1): the variant, the row, the
   test.
+- An incremental link that falls back to a full link (`spec/incr.md`
+  §7) is not a diagnostic: §2.1 has no note severity, and a warning
+  would fail `--fatal-warnings` builds on every fall-back, which is not a
+  problem with the link. It is one line on standard error in the
+  report's words, `incremental: full (<reason>)` (IN-10's
+  `incr-full-link`; with `--incremental-report` the report line instead),
+  and the link's status is unchanged. Under `--incremental=update` the
+  same reason is the error `incremental-update-failed`.
 - `internal-error` is a bug of mortar's that a check of its own data
   found (§2.1): today, a layout mortar computed that `Layout::check`
   rejects (`spec/model.md` §4.4). `{what}` names the table, the rule and

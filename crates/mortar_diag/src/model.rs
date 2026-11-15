@@ -407,6 +407,19 @@ pub enum Kind {
     /// `non-allocated`) or `SHT_` names.
     SectionConflict { name: String, first: String, second: String },
 
+    // -- incremental linking --------------------------------------------
+    /// `incremental-not-reproducible` (a warning, `spec/incr.md` IN-7):
+    /// `SOURCE_DATE_EPOCH` is set and the link is incremental.
+    IncrementalNotReproducible,
+    /// `incremental-unsupported` (a warning, `spec/incr.md` IN-12):
+    /// `--incremental` with `option`, which incremental mode does not
+    /// support; the link is plain and writes no state.
+    IncrementalUnsupported { option: String },
+    /// `incremental-update-failed` (an error, `spec/incr.md` IN-10):
+    /// `--incremental=update` could not update; `reason` is the fall-back's
+    /// (§7), with its detail.
+    IncrementalUpdateFailed { reason: String },
+
     // -- refusals -------------------------------------------------------
     /// `refused`: a construct mortar does not implement, by name
     /// (`docs/ARCHITECTURE.md`, principle 1). Always an error.
@@ -425,7 +438,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 61] = [
+    pub const IDS: [&'static str; 64] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -485,6 +498,9 @@ impl Kind {
         "executable-stack",
         "output-too-large",
         "section-conflict",
+        "incremental-not-reproducible",
+        "incremental-unsupported",
+        "incremental-update-failed",
         "refused",
         "internal-error",
     ];
@@ -553,6 +569,9 @@ impl Kind {
             Self::ExecutableStack { .. } => "executable-stack",
             Self::OutputTooLarge { .. } => "output-too-large",
             Self::SectionConflict { .. } => "section-conflict",
+            Self::IncrementalNotReproducible => "incremental-not-reproducible",
+            Self::IncrementalUnsupported { .. } => "incremental-unsupported",
+            Self::IncrementalUpdateFailed { .. } => "incremental-update-failed",
             Self::Refused { .. } => "refused",
             Self::InternalError { .. } => "internal-error",
         }
@@ -935,8 +954,11 @@ mod tests {
             Kind::ExecutableStack { .. } => 56,
             Kind::OutputTooLarge { .. } => 57,
             Kind::SectionConflict { .. } => 58,
-            Kind::Refused { .. } => 59,
-            Kind::InternalError { .. } => 60,
+            Kind::IncrementalNotReproducible => 59,
+            Kind::IncrementalUnsupported { .. } => 60,
+            Kind::IncrementalUpdateFailed { .. } => 61,
+            Kind::Refused { .. } => 62,
+            Kind::InternalError { .. } => 63,
         }
     }
 
@@ -1009,6 +1031,9 @@ mod tests {
             Kind::ExecutableStack { file: s() },
             Kind::OutputTooLarge { what: s(), limit: s() },
             Kind::SectionConflict { name: s(), first: s(), second: s() },
+            Kind::IncrementalNotReproducible,
+            Kind::IncrementalUnsupported { option: s() },
+            Kind::IncrementalUpdateFailed { reason: s() },
             Kind::Refused { class: RefusalClass::Feature, name: s(), not_recognized: false },
             Kind::InternalError { what: s() },
         ];
