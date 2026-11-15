@@ -1,0 +1,164 @@
+# An object with an odd but legal shape, written with yaml2obj: no
+# `.text`, an sh_addralign of 0 (gABI "Sections": 0 and 1 mean no
+# constraint), an empty allocated section with a global symbol, a
+# non-allocated section without flags, a 256-byte aligned section whose
+# global symbol is at offset 4, and an absolute (SHN_ABS) symbol. The
+# program exits 42 only if the alignment and both values hold.
+#@ spec: input.md "Relocatable objects"
+#@ requires: yaml2obj
+#@ xfail(mortar): no linking yet (M1)
+
+yaml2obj odd-%{arch}.yaml -o odd.o
+cc -O1 main.c -o main.o
+link gcc -static -no-pie main.o odd.o -o prog
+run prog
+  exit: 42
+check readelf -sW prog
+  has: OBJECT * odd_value$
+  has: ABS odd_absolute$
+
+#--- main.c
+#include <stdint.h>
+
+extern const unsigned char odd_value;
+extern char odd_absolute[];
+extern char odd_empty[];
+
+int main(void) {
+  if ((uintptr_t)&odd_value % 256 != 4)
+    return 1;
+  if ((uintptr_t)odd_absolute != 42)
+    return 2;
+  if (odd_empty == 0)
+    return 3;
+  return odd_value;
+}
+#--- odd-aarch64.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS64
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_AARCH64
+Sections:
+  - Name:         .comment.odd
+    Type:         SHT_PROGBITS
+    AddressAlign: 0x0
+    Content:      "6f646400"
+  - Name:         .empty.odd
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_ALLOC, SHF_WRITE ]
+    AddressAlign: 0x0
+    Size:         0
+  - Name:         .rodata.odd
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_ALLOC ]
+    AddressAlign: 0x100
+    Content:      "000000002a000000"
+Symbols:
+  - Name:    odd.yaml
+    Type:    STT_FILE
+    Index:   SHN_ABS
+  - Name:    odd_local
+    Type:    STT_OBJECT
+    Section: .rodata.odd
+    Size:    4
+  - Name:    odd_empty
+    Section: .empty.odd
+    Binding: STB_GLOBAL
+  - Name:    odd_value
+    Type:    STT_OBJECT
+    Section: .rodata.odd
+    Value:   0x4
+    Size:    1
+    Binding: STB_GLOBAL
+  - Name:    odd_absolute
+    Index:   SHN_ABS
+    Value:   0x2a
+    Binding: STB_GLOBAL
+#--- odd-x86_64.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS64
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_X86_64
+Sections:
+  - Name:         .comment.odd
+    Type:         SHT_PROGBITS
+    AddressAlign: 0x0
+    Content:      "6f646400"
+  - Name:         .empty.odd
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_ALLOC, SHF_WRITE ]
+    AddressAlign: 0x0
+    Size:         0
+  - Name:         .rodata.odd
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_ALLOC ]
+    AddressAlign: 0x100
+    Content:      "000000002a000000"
+Symbols:
+  - Name:    odd.yaml
+    Type:    STT_FILE
+    Index:   SHN_ABS
+  - Name:    odd_local
+    Type:    STT_OBJECT
+    Section: .rodata.odd
+    Size:    4
+  - Name:    odd_empty
+    Section: .empty.odd
+    Binding: STB_GLOBAL
+  - Name:    odd_value
+    Type:    STT_OBJECT
+    Section: .rodata.odd
+    Value:   0x4
+    Size:    1
+    Binding: STB_GLOBAL
+  - Name:    odd_absolute
+    Index:   SHN_ABS
+    Value:   0x2a
+    Binding: STB_GLOBAL
+#--- odd-i386.yaml
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS32
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_386
+Sections:
+  - Name:         .comment.odd
+    Type:         SHT_PROGBITS
+    AddressAlign: 0x0
+    Content:      "6f646400"
+  - Name:         .empty.odd
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_ALLOC, SHF_WRITE ]
+    AddressAlign: 0x0
+    Size:         0
+  - Name:         .rodata.odd
+    Type:         SHT_PROGBITS
+    Flags:        [ SHF_ALLOC ]
+    AddressAlign: 0x100
+    Content:      "000000002a000000"
+Symbols:
+  - Name:    odd.yaml
+    Type:    STT_FILE
+    Index:   SHN_ABS
+  - Name:    odd_local
+    Type:    STT_OBJECT
+    Section: .rodata.odd
+    Size:    4
+  - Name:    odd_empty
+    Section: .empty.odd
+    Binding: STB_GLOBAL
+  - Name:    odd_value
+    Type:    STT_OBJECT
+    Section: .rodata.odd
+    Value:   0x4
+    Size:    1
+    Binding: STB_GLOBAL
+  - Name:    odd_absolute
+    Index:   SHN_ABS
+    Value:   0x2a
+    Binding: STB_GLOBAL

@@ -1,0 +1,28 @@
+# Objects from GCC and from Clang in one program, linked through the
+# Clang driver (`--ld-path`): both compilers' output follows the same
+# psABI, and the driver's own link line works with each linker.
+#@ spec: layout.md "Static executables"
+#@ requires: clang
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 gcc_part.c -o gcc_part.o
+cc(clang) -O1 clang_part.c -o clang_part.o
+link clang -static -no-pie gcc_part.o clang_part.o -o prog
+run prog
+  stdout: gcc 1, clang 2
+
+#--- gcc_part.c
+#include <stdio.h>
+
+int from_clang(void);
+
+int from_gcc(void) { return 1; }
+
+int main(void) {
+  printf("gcc %d, clang %d\n", from_gcc(), from_clang());
+  return 0;
+}
+#--- clang_part.c
+int from_gcc(void);
+
+int from_clang(void) { return from_gcc() + 1; }

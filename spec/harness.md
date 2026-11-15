@@ -3,10 +3,10 @@
 `xtask` is the project's harness: `cargo xtask <command>`. This file is the
 contract of its commands and of the rules every process it starts lives
 under: the gate (`ci`), the machine's pool of parallelism tokens
-("Jobserver"), and the limits of a child process ("Limits"). The test
-binaries start processes too, through `mortar_testutil`, and the same rules
-bind them. Still to be specified here: the link tests (WP-010) and `bench`
-(WP-012).
+("Jobserver"), the limits of a child process ("Limits"), and the link
+tests ("Link tests"). The test binaries start processes too, through
+`mortar_testutil`, and the same rules bind them. Still to be specified
+here: `bench` (WP-012).
 
 ## ci
 
@@ -18,12 +18,18 @@ bind them. Still to be specified here: the link tests (WP-010) and `bench`
 | `fmt` | `cargo fmt --all --check` |
 | `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `test` | `cargo test --workspace` |
+| `linktest` | `cargo xtask linktest --arch <host>` (`--quick`), `cargo xtask linktest` (full) |
 
 Before a step it prints `[ci] <step>` on standard error. It stops at the
 first step that fails, printing `[ci] <step>: FAILED`, with exit status 1,
 and ends with `[ci] ok` and exit status 0 only if every step it ran passed.
-`--quick` and the full gate run the same steps until a later work package
-gives the full gate more.
+
+`linktest` is run in-process, after the cargo steps ("Link tests"): any
+exit status but 0 fails it. With `--quick` it runs the corpus on the
+host's architecture only (every architecture when the host is none of the
+three), which adds well under a minute on the reference machine; the full
+gate runs every architecture (the others under qemu). The differential
+lanes join the full gate as they land (`docs/VALIDATION.md`).
 
 `cargo` is the one that runs `xtask` (the `CARGO` variable cargo sets for
 what it runs), else `cargo` on `PATH`.
@@ -65,11 +71,13 @@ name, is a usage error: `xtask ci: <what>` and the usage on standard
 error, exit status 2, and no step runs.
 
 Tests: `xtask/src/ci.rs` `steps_are_selected_by_name`,
-`the_steps_are_fmt_clippy_and_test`, `retries_only_missing_crates_once`,
+`the_steps_are_fmt_clippy_test_and_linktest`, `retries_only_missing_crates_once`,
 `retries_a_crate_seen_only_as_rmeta_once`; `xtask/tests/jobserver.rs`
 `ci_runs_its_cargo_steps_in_order_and_stops_at_a_failure` (the command,
 with a stand-in for cargo: the order, the lines, the stop at a failure,
-the one rerun, the usage errors).
+the one rerun, the usage errors; its passing run names the three cargo
+steps, as the link-test step is `xtask linktest`'s own, tested in "Link
+tests").
 
 ## Jobserver
 
@@ -496,3 +504,382 @@ of that; skipped with a note without GNU `time`, a failure under
 `crates/mortar_testutil/src/lib.rs`: `run_captures_output_and_status`,
 `scripts_are_runnable_at_once`, `run_kills_at_the_time_limit`,
 `scratch_is_created_and_removed`.
+
+## Link tests
+
+`cargo xtask linktest` runs the link-test corpus, `tests/link/**/*.test`
+(`docs/VALIDATION.md` layer L2): each test builds its inputs from sources
+or `yaml2obj` text, links them with every linker of the run, runs what
+came out and checks it with the binutils. The **reference linkers** (GNU
+ld, `bfd`; LLVM's `lld`; `mold`) run a test first, and mortar is judged by
+it only when they establish it ("The self-check"). A test is a statement
+about ELF and the psABIs, not about mortar: a case none of the references
+can pass is a wrong case.
+
+### The command
+
+```
+cargo xtask linktest [--linker bfd,lld,mold,mortar] [--arch aarch64,x86_64,i386]
+                     [--filter <text>]... [-j <n>] [--mortar <binary>]
+                     [--results <file>] [--keep] [-v] [<file or directory>...]
+```
+
+- `--linker`, `--arch`: comma lists (repeatable; `--opt=v` works too);
+  every linker and every architecture by default.
+- `--filter <text>` (repeatable): only the tests whose name contains one
+  of the texts.
+- paths: test files, or directories searched recursively for `*.test`;
+  `tests/link` by default. A test under `tests/link` is named by its path
+  relative to it (`resolve/weak-undef.test`), any other by the path as
+  given. A path that does not exist is a usage error.
+- `-j <n>` (also `-jN`, `--jobs`; 1 to 64): worker threads, by default
+  the processors, at most 8. Every child holds a jobserver token
+  ("Jobserver") whatever the number of threads, so `-j` bounds the
+  harness's own concurrency, not the machine's.
+- `--mortar <binary>`: the mortar to judge; by default the workspace's is
+  built first (`cargo build --package mortar --bin mortar`, a cargo step
+  as in "ci") and `<build directory>/debug/mortar` is used.
+- `--results <file>`: where the results file goes (default `<build
+  directory>/linktest/results.tsv`).
+- `--keep`: keep the work directory, `<build directory>/linktest/run-<pid>`
+  (otherwise removed at the end), which has a directory per unit,
+  `<NNNN>-<test name>/<arch>/`, with the built `inputs/` and a copy of
+  them per linker in which that linker's steps ran.
+- `-v`: list the PASS results too.
+
+A usage error prints `xtask linktest: <what>` and the usage on standard
+error, with exit status 2.
+
+### The matrix
+
+A **unit** is one test on one architecture; the units run on the worker
+threads, each start to finish. In a unit:
+
+1. the embedded files are written to `inputs/` and the build steps run
+   there, once. A build step that fails or is killed gives the unit one
+   `ERROR` or `KILLED` record without a linker (`inputs: ...`);
+2. each linker runs the link, run and check steps in a copy of `inputs/`
+   of its own (a copy: a linker that damages its inputs reaches no other
+   linker; members of a thin archive are copied beside it). It stops at
+   its first step that does not pass. The references run in the order
+   bfd, lld, mold;
+3. the self-check; then mortar, if it holds.
+
+The architectures and their tools:
+
+| architecture | GNU tools | runs | `%{triple}` |
+|---|---|---|---|
+| `aarch64` | `gcc`, `g++`, `gfortran`, `ld.bfd`, `ar`, `nm`, `objdump`, `readelf` | natively on an AArch64 host | `aarch64-linux-gnu` |
+| `x86_64` | the same, prefixed `x86_64-linux-gnu-` off an x86-64 host | `qemu-x86_64 -L /usr/x86_64-linux-gnu` | `x86_64-linux-gnu` |
+| `i386` | the same, prefixed `i686-linux-gnu-` | `qemu-i386 -L /usr/i686-linux-gnu` | `i686-linux-gnu` |
+
+(On a host of the architecture the tools are unprefixed and the program
+runs natively.) The cross `ar`, `nm`, `objdump` and `readelf` are used
+for the cross architectures because the native ones do not know x86
+objects: the native `ar` writes an archive without a symbol index. The
+LLVM tools (`clang`, `clang++`, `yaml2obj`, `llvm-readelf`, `ld.lld`) are
+those of the newest pinned LLVM major (`mortar_testutil::LLVM_MAJORS`),
+never an unversioned one; `mold` is `mold` or `ld.mold`.
+
+**Missing tools.** An architecture whose GNU tools, emulator or system
+root are missing is not run, with a note naming the Debian package; a
+missing linker is left out of the matrix with a note; a test that
+`requires:` a missing tool gives a `SKIP` record without a linker
+(`requires X: not found`). Under `MORTAR_REQUIRE_TOOLS=1` each of those is
+an `error:` line in the summary and exit status 3 (the run goes on with
+what there is). A run of mortar without any reference notes that nothing
+is proven.
+
+**Every child** is started through `xtask::process::run` ("Limits"), with
+a jobserver token and `LC_ALL=C` (diagnostics and tool output are
+matched as text), in its unit's directory. Its limits:
+
+| child | time | address space |
+|---|---|---|
+| a build step, a check tool | 120 s | 4 GiB |
+| a link step | 60 s | 4 GiB |
+| a run step | 10 s; ×6 under qemu | 1 GiB; +4 GiB under `qemu-i386` |
+
+`#@ timeout:` and `#@ mem:` replace the link and run limits of a test.
+`qemu-i386` reserves the guest's whole 4 GiB of address space, which
+counts against `ulimit -v`: under 4 GiB it dies with "Unable to find a
+guest_base" (measured), so its run gets the program's limit plus 4 GiB.
+`qemu-x86_64` runs in the program's limit.
+
+### The test file
+
+A test is a text file, `tests/link/<area>/<name>.test`, of three parts in
+this order: directives, steps, embedded files.
+
+```
+# What it checks, in prose, with the gABI or psABI point it rests on.
+#@ spec: resolve.md "Weak symbols"          the spec section (one or more)
+#@ arch: aarch64 x86_64                     default: all three
+#@ requires: g++                            tools beyond gcc and binutils
+#@ xfail(mortar): no linking yet (M1)       expected to fail, with why
+#@ skip(mold,i386): <why>                   not run there
+#@ timeout: 30                              s, of each link and run step
+#@ mem: 512                                 MiB, of each link and run step
+cc -O1 main.c -o main.o                     build steps, once per unit
+ar rcs libm.a m.o
+link gcc -static -no-pie main.o -L. -lm -o prog    per linker
+  exit: fail                                expectations, indented
+  diag(bfd): undefined reference to `m'
+run prog arg
+  stdout: line one
+check readelf -sW prog
+  has: FUNC * main$
+  not(mold): ...
+
+#--- main.c                                 an embedded file
+int main(void) { return 0; }
+```
+
+A line whose first character is `#` and that is neither a directive nor
+an embedded-file marker is a comment. Blank lines are ignored. Every
+error of a file is reported, with its line, as one `ERROR` record of the
+file with neither architecture nor linker.
+
+**Directives** (`#@ <key>: <value>`), before the first step:
+
+- `spec: <file>.md <section>`: required, repeatable. The value must have
+  that form (a lower-case `.md` name, then the section); the section is
+  where the behavior is specified, which may still be to be written.
+- `arch: <arch>...`: once; the architectures the test runs on.
+- `requires: <word>...`: once; exactly the tools the steps use beyond
+  `gcc` and the binutils: `g++` (a `cxx` step or `link g++`), `gfortran`,
+  `clang` (a `(clang)` compile step or `link clang`/`clang++`),
+  `yaml2obj`, `llvm-readelf`. A missing word and an unused one are both
+  errors.
+- `xfail(<qualifiers>): <reason>`, `skip(<qualifiers>): <reason>`: a
+  marker. Its qualifiers must name at least one linker; at most one
+  marker applies to a (linker, architecture); every architecture keeps a
+  reference linker without a marker. A reference whose output
+  legitimately differs under `output: reference` is left out with `skip`,
+  not `xfail` (a run step does not fail when its output differs, so
+  `xfail` would be `XPASS`).
+- `timeout: <seconds>` (1 to 3600), `mem: <MiB>` (16 to 65536).
+
+**Qualifiers** are words in parentheses after a keyword, of three kinds:
+compiler (`gcc`, the default, or `clang`) on compile steps only; linker
+(`bfd lld mold mortar`) and architecture on link, run and check steps, on
+expectations and on markers. Words of one kind are alternatives; kinds
+are conjoined: `cc(clang,i386)` is "with Clang, on i386"; `has(bfd,lld)`
+applies to bfd and to lld. An architecture outside the test's `arch` is
+an error.
+
+**Steps** start in column 1. Their words are split on blanks; `"..."`
+keeps blanks (with `\"` and `\\`).
+
+| step | what |
+|---|---|
+| `cc`, `cxx`, `fc` `<args>` | the C, C++, Fortran compiler of the architecture, with `-c` added |
+| `as <args>` | the C driver with `-c` (so `.S` files are preprocessed) |
+| `yaml2obj <args>` | `yaml2obj` |
+| `ar <args>` | the architecture's `ar` |
+| `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
+| `run <program> [<args>]` | runs a linked program |
+| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, or `text` (the file named by the one argument, read) |
+
+The build steps come before every link, run and check step. Expectations
+are the indented lines under a step:
+
+| step | expectation | meaning |
+|---|---|---|
+| link | `exit: 0` (default) | the link succeeds |
+| link | `exit: fail` | it fails ("Expected failures") |
+| link | `diag: <pattern>` | some line of its standard error matches |
+| link | `no-diag: <pattern>` | no line does |
+| run | `exit: <n>` (default 0), `exit: signal <n>` | how the program ends |
+| run | `stdout: <text>` | its standard output, one line per expectation, exactly; with none, it prints nothing |
+| run | `output: reference` | prints what the references printed ("The self-check") |
+| check | `has: <pattern>` | some line of the tool's output matches (at least one `has` or `not`) |
+| check | `not: <pattern>` | no line does |
+
+A check tool that does not exit with status 0 fails the step.
+
+**Embedded files**: `#--- <relative name>` starts one, which runs
+verbatim to the next `#---` line or the end of the file (LLVM's
+`split-file` marker; a bare `---` would collide with `yaml2obj`
+documents). The name may have directories; it may not leave the unit.
+
+**Substitutions**, in step arguments and expectation values (not in
+embedded files): `%{arch}`, `%{triple}`, `%{emulation}` (the `-m` of
+GNU ld), `%{dynamic-linker}`, `%{sysroot}`, `%{libdir}`, `%{elf-class}`
+(`ELF64`/`ELF32`), `%{machine}` (readelf's `Machine:` text), `%{linker}`
+(not in build steps); `%%` is `%`. A value substituted into a pattern is
+matched literally.
+
+**Patterns** match one line, anywhere in it: a run of blanks matches one
+or more blanks, `*` matches any text, `^` and `$` at the ends anchor the
+match, and `\` makes the next `\ * ^ $` literal (before any other
+character it is an error).
+
+### Links
+
+A `link ld` step runs the linker with the arguments as written:
+`ld.bfd` of the architecture, `ld.lld`, `mold`, or mortar. A driver link
+gives the driver a linker of the matrix:
+
+- the GCC drivers get `-B<wrapper directory>/`, where `ld` is a wrapper
+  script of the linker (GCC cannot be given a linker path, and
+  `-fuse-ld=` takes fixed names);
+- the Clang drivers get `--target=<triple> --ld-path=<wrapper
+  directory>/ld` (which names the linker and nothing else; `-B` would also
+  move Clang's search for the GCC installation).
+
+The wrappers are `/bin/sh` scripts written when the run starts, before any
+child: one per (architecture, linker). A wrapper runs its linker, appends
+the linker's exit status (and, to `<file>.args`, its arguments) to the
+file named by `MORTAR_LINKTEST_STATUS`, and exits with that status. The
+step's own end is the linker's: a recorded status above 128 is that
+signal; no status at all means the driver never ran the linker, which is
+an `ERROR` of the step (the driver's message quoted).
+
+**Expected failures** (`exit: fail`). The harness removes the output
+file (the last `-o X`, `-oX`, `--output X`, `--output=X`; else `a.out`)
+before the link. The linker must exit with a non-zero status, not by a
+signal; a link killed at its limit is `KILLED`, never a met
+expectation; and the output file must not exist afterwards, for every
+linker: a failed link leaves no output. (Measured: none of the references
+writes one in a fresh directory; GNU ld also removes a stale one, lld and
+mold leave a stale one alone.) The test must give a `diag` that applies
+to mortar on every architecture: a refusal names its reason
+(`docs/ARCHITECTURE.md`, correct-or-refused-by-name).
+
+**L3** (WP-028): the verifier, `mortar_plumb`, is to check every output a
+link step produced, by every linker, where the link step ends
+(`xtask/src/linktest/engine.rs`, marked `L3 (WP-028)`).
+
+**Runs**. A program on the host's architecture is run natively after a
+check that it is a file beginning with `\x7fELF` (`process::run` starts a
+program through `/bin/sh`, which would run a file the kernel refuses as a
+shell script). Any other runs under the architecture's qemu with `-L
+<system root>`.
+
+### Outcomes
+
+Each (test, architecture, linker) gets one **record**:
+
+| outcome | when |
+|---|---|
+| `PASS` | every step passed |
+| `FAIL` | a step did not pass, without a marker |
+| `XFAIL` | a step did not pass, and an `xfail` marker applies |
+| `XPASS` | every step passed, and an `xfail` marker applies: the marker is stale |
+| `SKIP` | a `skip` marker applies; or a requirement is missing; or the references did not prove the test |
+| `KILLED` | a child of the linker's steps was killed at a limit, marker or not |
+| `ERROR` | the harness could not do what the test says (a tool missing for a step, a driver that did not run the linker, a file that does not parse) |
+| `ORACLE` | the references refuted the test: one record per (test, architecture) without a linker |
+
+`KILLED` and `ERROR` are not covered by markers: a marker says how mortar
+answers, and neither is an answer.
+
+### The self-check
+
+Once the references of a unit have run:
+
+- **Refuted**, if a reference that ran was `FAIL`, `XPASS`, `KILLED` or
+  `ERROR`, or if two references that passed printed differently under
+  `output: reference`: the unit gets an `ORACLE` record naming them, the
+  references keep their own records, and mortar is not run.
+- **Unproven**, if no reference passed (all skipped or xfail): mortar is
+  `SKIP`.
+- **Established** otherwise: mortar runs, and under `output: reference` it
+  must print what the references printed.
+- **Unchecked**, when no reference is in the run (`--linker mortar`):
+  mortar runs against the test's own expectations, and the run says so in
+  a note; an `output: reference` test cannot judge it and gives `SKIP`.
+
+A reference `XFAIL` (a known bug of that reference, which the test
+records) is not a refutation.
+
+### Results and exit status
+
+The **summary**, on standard output: the configuration line (tests,
+architectures, linkers, jobs, mortar), the notes, the `error:` lines, one
+line per result that is not `PASS` (`<OUTCOME> <test> [<linker>:
+<arches>]: <what>`; results of a test with the same outcome and text share
+a line), the table of counts (a row per linker, a `-` row for the records
+without a linker, a column per architecture), and the totals with the wall
+time. The **results file** has one line per record, six tab-separated
+fields: outcome, test, architecture (`-`), linker (`-`), detail, spec.
+Records are in a fixed order: test name, then architecture, then linker
+(bfd, lld, mold, mortar), a record without a linker last; so a run's
+results do not depend on the threads.
+
+| exit status | when |
+|---|---|
+| 0 | none of the below |
+| 1 | a `FAIL` or `XPASS` (of a reference, only if its unit is not `ORACLE`), or any `KILLED` |
+| 3 | otherwise an `ERROR` or `ORACLE`, a missing tool under `MORTAR_REQUIRE_TOOLS=1`, or an error of the run |
+| 2 | a usage error |
+
+A reference's `FAIL` under an `ORACLE` counts as the `ORACLE`: the test is
+wrong, not a linker.
+
+### Where the references differ
+
+Measured with GNU ld 2.44, lld 22.1.8 and mold 2.37.1; each test that
+meets a difference says so in its comment and holds each linker to its
+own behavior with qualified expectations (or a marker), and the column
+says what mortar does.
+
+| what | bfd | lld | mold | mortar | test |
+|---|---|---|---|---|---|
+| a later archive's member needs an earlier archive (`-lh -lu`) | undefined | resolved | resolved | as bfd (open question) | `resolve/archive-backref` |
+| an executable's global symbols in `.symtab` | GLOBAL | GLOBAL | LOCAL | GLOBAL | `resolve/symtab` |
+| `.eh_frame_hdr` without `--eh-frame-hdr` | none | none | always | none | `layout/eh-frame-hdr`, `lang/cxx-exceptions` |
+| map file format | `Linker script and memory map` | `VMA LMA Size Align Out In Symbol` | `VMA Size Align Out In Symbol` | plumb.md (WP-011) | `layout/map-file` |
+| AArch64 range veneer name | `__far_veneer` | `__AArch64AbsLongThunk_far` | `far$thunk1` | a64.md | `reloc/aarch64-veneer` |
+| an undefined weak symbol in a static executable's `.symtab` | absent | WEAK UND | LOCAL UND | not checked | `resolve/weak-undef` |
+| merged common symbols of different sizes | largest | largest | **first** (a bug) | largest | `resolve/common` (`xfail(mold)`) |
+| IFUNC address equality with `-fpie` objects in a `-no-pie` link, x86-64 | **broken** | kept | kept | kept | `ifunc/irelative` uses `-fno-pie` |
+| IRELATIVE relocations of a static executable | `.rela.plt` | `.rela.dyn` | `.rela.dyn` | not checked | `ifunc/irelative` |
+| `.text` not placed while another section is (`--section-start`) | at its default | next to it | next to it | not checked | `reloc/aarch64-veneer` places both |
+
+### The corpus
+
+Every case states the spec section (`#@ spec`) and the gABI or psABI
+point it checks. Until mortar links (M1), every case is `xfail(mortar):
+no linking yet (M1)`; a case that mortar starts passing is `XPASS` and
+fails the gate until its marker goes. All cases run on all three
+architectures except `lang/fortran-c` (no i686 `gfortran` on the
+reference machine) and `reloc/aarch64-veneer` (AArch64 only).
+
+### Tests
+
+`xtask/src/linktest/format.rs`: `a_whole_test`,
+`defaults_and_directive_forms`, `markers`, `steps`,
+`requires_names_exactly_the_tools_used`, `expectations`,
+`a_failing_link_names_mortars_diagnostic`, `embedded_files`,
+`substitutions`, `words_of_a_step`. `xtask/src/linktest/pattern.rs`:
+`a_pattern_is_a_literal_substring`, `blanks_match_any_run_of_blanks`,
+`a_star_matches_any_text`, `anchors_tie_the_match_to_the_ends`,
+`a_backslash_makes_a_special_character_literal`, `pattern_errors`,
+`any_line_of_a_text`, `escaped_text_matches_itself_only`.
+`xtask/src/linktest/target.rs`: `names_of_an_architectures_tools`,
+`the_matrix_has_three_architectures_and_four_linkers`,
+`what_an_architecture_substitutes`, `finding_an_architectures_tools`.
+`xtask/src/linktest/outcome.rs`: `a_marker_turns_a_result_into_an_outcome`,
+`which_outcomes_fail_a_run`, `the_references_establish_a_test_or_do_not`,
+`references_that_disagree_on_output_refute_a_test`.
+`xtask/src/linktest/report.rs`: `the_exit_status_of_a_run`,
+`the_results_file`, `the_summary`, `who_a_line_is_for`.
+`xtask/src/linktest/engine.rs`: `the_output_file_of_a_link_line`.
+`xtask/src/linktest.rs`: `the_command_line`, `usage_errors`,
+`collecting_test_files`.
+
+`xtask/tests/linktest.rs`
+`every_outcome_is_reachable_and_the_references_go_first`: the command
+with fake linkers (scripts that run GNU ld unless told to fail or to
+sleep): every outcome; a failing reference gives `ORACLE` and mortar is
+not run; a passing mortar under `xfail(mortar)` is `XPASS` and exit
+status 1; a child killed at the time limit is `KILLED` whatever the
+marker; an expected failure with its diagnostic; `output: reference`;
+exit status 3 for a refuted test alone, 0 for a good one; a run without
+references; the usage errors.
+
+The corpus itself is the test of the format against real linkers: `cargo
+xtask linktest` must give every reference `PASS` (bar the recorded
+reference bugs, `XFAIL`) and mortar `XFAIL` on every case until M1.

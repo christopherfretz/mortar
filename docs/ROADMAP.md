@@ -57,6 +57,10 @@ The whole pipeline, in its final shape, on the smallest useful case.
   extraction, COMDAT, common symbols, default layout, the AArch64 static
   relocations, `.eh_frame` and `.eh_frame_hdr`, IRELATIVE for the IFUNCs of
   a static glibc, static TLS, `.init_array`, `.symtab`, build id, map file.
+- The AArch64 erratum 843419 fix: Debian's and Ubuntu's GCC pass
+  `--fix-cortex-a53-843419` on every link, so the option is honored (the
+  scan for the sequence and the patches, `spec/model.md` §4.4) or the
+  link is refused; it is never accepted without effect.
 - A static C hello-world, then static C++ with exceptions, link and run.
 - `--time-phases`; determinism test; first mortar rows in the bench.
 

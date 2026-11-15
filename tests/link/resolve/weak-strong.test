@@ -1,0 +1,43 @@
+# A global definition takes precedence over a weak one of the same name,
+# in either command-line order, for functions and for data; two weak
+# definitions and no strong one are not an error, the first is taken
+# (gABI "Symbol Table", STB_WEAK).
+#@ spec: resolve.md "Weak symbols"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O0 main.c -o main.o
+cc -O0 weak.c -o weak.o
+cc -O0 strong.c -o strong.o
+cc -O0 weak2.c -o weak2.o
+link gcc -static -no-pie main.o weak.o strong.o -o weak_first
+link gcc -static -no-pie main.o strong.o weak.o -o strong_first
+link gcc -static -no-pie main.o weak.o weak2.o -o two_weak
+run weak_first
+  stdout: value 2, level 5
+run strong_first
+  stdout: value 2, level 5
+run two_weak
+  stdout: value 1, level 1
+
+#--- main.c
+#include <stdio.h>
+
+int value(void);
+extern int level;
+
+int main(void) {
+  printf("value %d, level %d\n", value(), level);
+  return 0;
+}
+#--- weak.c
+__attribute__((weak)) int level = 1;
+
+__attribute__((weak)) int value(void) { return 1; }
+#--- weak2.c
+__attribute__((weak)) int level = 3;
+
+__attribute__((weak)) int value(void) { return 3; }
+#--- strong.c
+int level = 5;
+
+int value(void) { return 2; }

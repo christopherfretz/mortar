@@ -1,0 +1,24 @@
+# Zero-initialized data goes to `.bss` (SHT_NOBITS): it takes no space
+# in the file, the segment's memory size covers it, and the loader
+# gives zeroes (gABI "Special Sections"). 8 MiB of it here.
+#@ spec: layout.md "Segments"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 main.c -o main.o
+link gcc -static -no-pie main.o -o prog
+run prog
+  stdout: zero 0, written 7
+check readelf -SW prog
+  has: .bss NOBITS
+
+#--- main.c
+#include <stdio.h>
+
+static char big[8 << 20];
+
+int main(void) {
+  int zero = big[0] + big[sizeof big - 1];
+  big[sizeof big - 1] = 7;
+  printf("zero %d, written %d\n", zero, big[sizeof big - 1]);
+  return 0;
+}
