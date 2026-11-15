@@ -447,10 +447,16 @@ with one terminator, and the pointers inside them rewritten.
   the target of the relocation at its initial-location field (offset 8
   of the record). The relocation's class must be `Pc` or `AbsWord`
   (arch.md §3.9); another is refused there. An FDE whose initial
-  location has no relocation is dropped (lld and mold drop it; GNU keeps
-  it and gives up on `.eh_frame_hdr`, X-14): it describes no code of
-  this link. None occurs in the scan. An FDE whose target is undefined
-  weak, absolute, or in a section that is not live is dead (S-41).
+  location has no relocation is dropped when the field is zero (lld and
+  mold drop such FDEs; GNU keeps them and gives up on `.eh_frame_hdr`,
+  X-14): it describes no code of this link, and the verifier cannot
+  judge it either (`plumb.md` §6.4, "anything else cannot be judged").
+  When the field is non-zero the FDE claims an absolute code address,
+  which the verifier would expect in the output (E2) and no section of
+  the link holds: it is refused (`feature`, `FDE without a relocation
+  for its initial location`). Neither occurs in the scan. An FDE whose
+  target is undefined weak, absolute, or in a section that is not live
+  is dead (S-41).
 - **S-39 [C] (malformed records).** These are `malformed-input`, with
   lld's wording:
   - a record whose length runs past the section end: `CIE/FDE ends past
@@ -470,7 +476,8 @@ with one terminator, and the pointers inside them rewritten.
   (X-14): a record length that is not a multiple of 4 (records are
   copied byte for byte; the scan has none, X-24); a CIE that no FDE uses
   (it is kept if live, S-42); several CIEs in one section (up to three in
-  the scan); FDEs with the same initial location (§5 handles the table).
+  the scan); FDEs with the same initial location when no table is
+  written (S-59 refuses them with one).
 
 ### 4.2 Liveness and de-duplication
 
@@ -479,7 +486,11 @@ with one terminator, and the pointers inside them rewritten.
   by S-38. FDEs whose code section was discarded as a losing COMDAT copy
   are therefore dead (resolve.md §6.3), as are those of sections removed
   by `--gc-sections`. All three references agree on the count of live
-  FDEs (X-10).
+  FDEs (X-10). A dead FDE is **absent** from the output: mortar never
+  writes a neutralised FDE (initial location 0 or range 0 standing in for
+  a dropped one), so every output FDE answers for exactly one live input
+  FDE, which is what `plumb.md` §6.4 E2 to E4 check. The terminator of
+  S-48 is written whatever is dropped.
 - **S-42 [C] (live CIEs).** A CIE is live when a live FDE uses it. A CIE
   that no live FDE uses is dropped. (lld and mold drop unused CIEs; GNU
   keeps CIEs of sections it keeps. Nothing reads a CIE except through an
@@ -644,10 +655,16 @@ a local symbol at offset 0 of `crtbeginT.o`'s `.eh_frame`), from
     X-15). It covers no address, and when it shares its initial location
     with a real FDE that follows it, an entry for it would hide the real
     one from the binary search;
-  - of several FDEs with the same initial location, only the first in
-    output order has an entry (lld; GNU fails the link with
-    `.eh_frame_hdr refers to overlapping FDEs`; mold keeps all, so its
-    search finds an arbitrary one, X-15).
+  - two live FDEs with the same initial location and non-zero ranges,
+    when the table is written, are refused: `malformed-input`,
+    `.eh_frame_hdr refers to overlapping FDEs` (GNU's message and
+    behavior; lld keeps one entry, mold both, X-15). The table must be
+    strictly sorted and must list every FDE that is not neutralised
+    (`plumb.md` §6.4 E5), and each output FDE must answer for its own
+    input FDE (E3), so no output satisfies the verifier with two such
+    FDEs and a table; without `--eh-frame-hdr` both are kept. A zero-range
+    FDE is not a duplicate: it has no entry (above), which is what E5
+    calls neutralised.
 
   The count of entries is fixed in phase 80: initial locations are
   `(section, offset)` pairs before layout, and two FDEs share one exactly
@@ -660,8 +677,9 @@ a local symbol at offset 0 of `crtbeginT.o`'s `.eh_frame`), from
   mold; GNU fails the link, X-15). A lookup for an address in the overlap
   finds the FDE with the greater initial location not above it, which is
   the libgcc binary search's answer whatever the linker does. Overlap
-  arises only in hand-written assembly; the verifier reports it as an
-  anomaly, not an error.
+  arises only in hand-written assembly; the verifier does not judge
+  overlap (`plumb.md` §6.4 E5 checks only that starts strictly
+  increase).
 - **S-61 [G] (sorted).** The table is sorted by initial location,
   ascending, as signed 32-bit offsets from the header (which is the same
   as by address, since all code lies within ±2 GiB of the header on every
@@ -782,6 +800,14 @@ which values are written where.
   TLSDESC in a static output (a64.md §10.6), so `TlsDesc` regions are
   empty at M1.
 
+### 6.4 Undefined symbols
+
+- **S-125 [C].** `mortar_synth` reports no undefined-symbol diagnostic.
+  A strong reference to an undefined symbol is reported once per key by
+  the scan driver (`spec/image.md`), whatever demands (GOT, PLT, IPLT)
+  the reference makes; synth sees only the demands that survive, and a
+  slot for an undefined weak key holds 0 (a64.md §10.1 `weak0`).
+
 ## 7. .symtab, .strtab, .shstrtab, .symtab_shndx
 
 ### 7.1 .symtab
@@ -817,6 +843,17 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   their binding (GNU and lld keep `STB_GNU_UNIQUE` in a static output,
   X-17; resolve.md §3.7). mold makes every symbol local in a static
   output; GNU and lld do not (`tests/link/resolve/symtab`).
+- **S-121 [G] (bindings are the inputs').** A global's output binding
+  is resolve.md §3.7's and nothing else: `STB_LOCAL` only for a
+  definition whose combined visibility is hidden or internal (S-77), and
+  otherwise the binding of the chosen definition (`STB_WEAK` when every
+  definition is weak). A static executable's default-visibility globals
+  (`main`, `_start`, libc's) stay `STB_GLOBAL`. mold makes them all
+  `STB_LOCAL` (`plumb.md` §10.2 anomaly A9; X-17), which `nm` and the
+  debuggers then show as locals; mortar must not, and the verifier's Y3
+  checks it. Type, size and visibility are the chosen definition's, the
+  visibility being the most constraining over every non-local input
+  entry of the name (gABI "Symbol Visibility"; Y3).
 - **S-76 [C] (which locals).** A local of an input file is kept when:
   - it is not `STT_SECTION` (S-79);
   - its section is live (or it is `SHN_ABS`), and, if its section is
@@ -856,14 +893,17 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   - on AArch64, a `$x` mapping symbol at its start (AAELF64 "Mapping
     symbols"), so that objdump disassembles it as code; and a `$d` at
     any literal word inside it;
-  - an `STT_FUNC` local named `__thunk_` followed by the target's name
-    (and `+0x<addend>` in lower-case hex when the addend is not 0, and
+  - an `STT_FUNC` local named `__<target>_veneer` (GNU's form for
+    AArch64 veneers; `<target>` is the target's name, followed by
+    `+0x<addend>` in lower-case hex when the addend is not 0 and by
     `@plt` for a `Plt` target), with `st_size` the thunk's size; an
-    erratum patch is named `__erratum_843419`. gdb and perf then attribute
-    samples and frames in a thunk to a named function rather than to the
-    end of the preceding one; lld names its thunks
+    erratum patch is named `__erratum_843419_veneer`. gdb and perf then
+    attribute samples and frames in a thunk to a named function rather
+    than to the end of the preceding one; lld names its thunks
     `__AArch64ADRPThunk_<target>` and `__AArch64AbsLongThunk_<target>`
-    for the same reason.
+    for the same reason. Both forms are in the verifier's not-judged
+    list (`__*_veneer`, `__erratum_*`; `plumb.md` §6.5), and the `$x`
+    at an address no input section occupies is Y4's second exception.
 - **S-81 [G] (values).** `st_value` is the symbol's output address:
   `place(section) + st_value` for a symbol in a placed section; the S-19
   or S-50 value in a split section; `SHN_ABS` values unchanged; for
@@ -877,6 +917,44 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   and linker-defined absolute symbols, `SHN_UNDEF` for an undefined weak.
   An index ≥ `SHN_LORESERVE` (0xff00) is written as `SHN_XINDEX`, with
   the real index in `.symtab_shndx` (S-85).
+- **S-122 [G] (the index names the section that holds the address).**
+  For every defined symbol that is not `SHN_ABS` (input-defined, demoted,
+  linker-defined, thunk), `st_shndx` names an allocated output section
+  `X` with `X.addr ≤ st_value ≤ X.addr + X.size` (non-alloc symbols: the
+  same with offsets in their section). The end is included: a label at
+  the end of a section (an end symbol, L-91; a label after the last
+  byte of an input section that ends its output section) takes that
+  section's index. When the value is both the end of one section and
+  the start of the next, the index is the section the symbol's anchor
+  chunk belongs to (L-91 for linker-defined symbols; the defining input
+  section's output section otherwise), which always holds the address
+  under this inclusive rule once layout places empty input sections as
+  §14.2 R-L6 asks.
+  GNU breaks this for crtend.o's `__TMC_END__`, a label of the empty
+  `.tm_clone_table` whose output section GNU removes: its index names a
+  section that ends below its value (`plumb.md` §10.2 anomaly A10).
+  mortar never writes an index that does not hold the value; the
+  verifier's Y3 checks it.
+- **S-123 [C] (labels of empty input sections).** A symbol defined in a
+  live input section of size 0 (`__TMC_LIST__`, `__TMC_END__` in the
+  crtstuff `.tm_clone_table`; `__start_`-style markers in hand-written
+  objects) is valued at the empty section's place, which layout gives
+  as an address inside or at the end of an existing output section of
+  the same segment class (R-L6), and its `st_shndx` is that section's.
+  Two labels of empty sections that would share one output section get
+  the same value, so `__TMC_LIST__ == __TMC_END__` holds in a program
+  without transactional-memory clones, which crtstuff's
+  `deregister_tm_clones` relies on.
+- **S-124 [G] (linker-defined symbols).** Every linker-defined symbol
+  that is defined (layout L-90) gets layout §13.1's value and section
+  index whether or not the section it is named after exists: with no
+  `.bss`, `__bss_start` is `edata` in `edata`'s section (layout §13.1),
+  never 0. mold writes `__bss_start = 0` when `--gc-sections` leaves no
+  `.bss` (`plumb.md` §10.2 anomaly A11); a program that clears from
+  `__bss_start` to `_end` would then write from address 0. Symbols that
+  layout calls absolute are `SHN_ABS`; every other one follows S-122.
+  The values the verifier's Y5 table admits are a superset of layout
+  §13.1's, so S-124 satisfies Y5.
 - **S-83 [C] (`STT_FILE`).** An input's `STT_FILE` entries are copied in
   place, so each starts its file's block, and a file with several (an
   object made by `ld -r`) keeps each in front of the locals that
@@ -908,7 +986,7 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   name), then a fixed table of common names, then one region per block
   of S-74 and one for the globals, in `.symtab` order. A name is written
   once per entry that uses it, except that names in the fixed table are
-  shared: `$x`, `$d`, the empty string, `__erratum_843419`. No other
+  shared: `$x`, `$d`, the empty string, `__erratum_843419_veneer`. No other
   de-duplication is done.
 - **S-87 [C] (why little de-duplication).** On a static C++ program
   (X-18), de-duplicating all names saves 13% of `.strtab` (47.0 KB to
@@ -1259,8 +1337,9 @@ edit changes.
 | `__EH_FRAME_BEGIN__` in `.symtab` | 16 bytes before `.eh_frame` | `.eh_frame` start | dropped | its relocation's value (S-50) | one rule |
 | CIE version 2, 4; unknown augmentation | warning, no hdr | error | accepted | refused (S-36) | |
 | truncated record, bad CIE pointer, data after terminator | warning, no hdr | error | crash or accepted | refused (S-39) | |
-| FDE without pc relocation | kept, no hdr | dropped | dropped | dropped (S-38) | |
-| FDEs with the same start | link fails | one entry | all entries | one entry (S-59) | |
+| FDE without pc relocation | kept, no hdr | dropped | dropped | dropped if zero, else refused (S-38) | verifier E2 |
+| FDEs with the same start, with a table | link fails | one entry | all entries | refused (S-59) | verifier E3, E5 |
+| dead FDEs | removed | removed | removed | absent, never neutralised (S-41) | verifier E4 |
 | zero-length FDE | no entry | entry | entry | no entry (S-59) | it would shadow |
 | overlapping FDEs | link fails | accepted | accepted | accepted (S-60) | |
 | `.eh_frame_hdr` without the option | none | none | always | none (S-57) | |
@@ -1270,7 +1349,9 @@ edit changes.
 | section symbols in `.symtab` | AArch64 yes, x86 no | none | all | none (S-79) | |
 | `.L` locals | dropped | dropped | kept | dropped (S-78) | |
 | hidden definitions | `STB_GLOBAL STV_HIDDEN` | local, in its file's block | local | local, in its file's block (S-77) | resolve.md §3.7 |
-| globals in a static executable | global | global | local | global (S-75) | |
+| globals in a static executable | global | global | local (A9) | global (S-75, S-121) | verifier Y3 |
+| label of an empty input section (`__TMC_END__`) | index of a section below it (A10) | — | — | index of the section holding it (S-122, S-123) | verifier Y3 |
+| `__bss_start` with no `.bss` | `edata` | `edata` | 0 under gc (A11) | `edata` (S-124) | verifier Y5 |
 | `.strtab` de-duplication | full, tail merged | almost none | none | fixed table only (S-86) | |
 | `.comment` | inputs only | adds `Linker: LLD` | adds `mold` | adds `mortar <version>` (S-100) | |
 | `--build-id=sha256` | not recognized | refused | 32 bytes | 32 bytes (S-91) | |
@@ -1401,6 +1482,21 @@ symbols (`spec/synth.md` S-80); they are non-allocated and after every
 allocated chunk, so their size moves no address."
 Reason: S-2, S-80.
 
+**R-L6. §9, empty input sections.**
+Current: (no rule)
+Proposed: add to §9 "- **L-n [C] (empty input sections)** A live input
+section of size 0 is placed like any other, at its output section's
+position in stage B order. When its output section has no other content
+(so no chunk), it is placed at the end of the last chunk before it in
+`order` within the same rank and segment class, or, when there is none,
+at the start of the first chunk after it; its labels take that chunk's
+output section index. Two empty sections that map to one absent output
+section get one address. (`spec/synth.md` S-122, S-123.)"
+Reason: crtend.o's `__TMC_END__` and crtbegin's `__TMC_LIST__` label
+empty `.tm_clone_table` sections in every C and C++ link; GNU gives
+`__TMC_END__` an index that does not hold its value (`plumb.md` §10.2
+A10), and the verifier's Y3 rejects that.
+
 ### 14.3 arch.md
 
 **R-A1. §3.13, the `Or` rule and a new `OrAll` rule.**
@@ -1449,29 +1545,29 @@ Reason: `0x9c` is `sdata8`, not `sdata4`; the scan has only `0x9b`.
 
 ### 14.5 plumb.md
 
-**R-P1. §6, new structure rules (stage 2).** Add:
-- "**S13 (.eh_frame).** `.eh_frame` parses as records (synth.md S-34)
-  ending with exactly one terminator, at its end; every FDE's CIE
-  pointer lands on a CIE of the section; every FDE's initial location
-  lies in an executable section of the output."
-- "**S14 (.eh_frame_hdr).** When present: version 1, the encodings of
-  arch.md §3.9, `eh_frame_ptr` equal to `.eh_frame`'s address,
-  `fde_count` entries strictly increasing by initial location, each
-  pointing at an FDE whose initial location equals the entry's, and no
-  live FDE with a non-zero range missing from the table unless another
-  FDE with the same initial location precedes it."
-- "**S15 (.symtab).** Entry 0 zero; every `STB_LOCAL` entry before every
-  other; `sh_info` one past the last local; every `st_shndx` that is not
-  reserved names an existing section and `st_value` lies in it (or at its
-  end) unless `STT_TLS`; `SHN_XINDEX` entries have a `.symtab_shndx`."
+These requests are against `plumb.md` as WP-028 (verifier stage 2) leaves
+it: §6.4 (E1 to E5, call frame information) and §6.5 (Y2 to Y5, the
+symbol table) already check `.eh_frame`, `.eh_frame_hdr` and `.symtab`,
+and this spec is written to pass them (S-41, S-59, S-121 to S-124).
+
+**R-P1. §6, two new structure rules (stage 3).** Add:
 - "**S16 (.note.gnu.property).** The output's properties equal the merge
-  of the inputs' by synth.md S-95."
-- "**S17 (IRELATIVE).** In a static output, `__rela_iplt_start` and
-  `__rela_iplt_end` (or `__rel_iplt_*`) bound exactly the `IRELATIVE`
-  entries of `.rela.plt`, and each entry's `r_offset` is a `.got.plt`
-  word."
-Reason: these are the [G] rules of this spec; plumb.md lists
-`.eh_frame` as stage 2.
+  of the inputs' by `synth.md` S-95, and `PT_GNU_PROPERTY` covers the
+  note."
+- "**S17 (IRELATIVE).** In a static output every `IRELATIVE` entry lies
+  between `__rela_iplt_start` and `__rela_iplt_end` (or `__rel_iplt_*`),
+  every entry between them is an `IRELATIVE`, and each entry's
+  `r_offset` is a word of `.got.plt`."
+Reason: these are [G] rules of this spec that E1 to E5 and Y2 to Y5 do
+not cover (Y5 checks only the bounds of the `SHT_RELA` section).
+
+**R-P4. §6.5 Y3, the inclusive end.** Current: "Its `st_shndx` names an
+allocated section whose range holds D's input section's place."
+Proposed: append "The range includes its end address: a label at the end
+of a section, or of an empty input section placed at a section's end,
+is held by that section (`synth.md` S-122, S-123)."
+Reason: S-122; without the clause a label of an empty `.tm_clone_table`
+placed at the end of `.data` has no section that holds it.
 
 **R-P2. §5.6 step 1, out-of-range section references.**
 Current: "The input offset is r = `st_value + A` for a section symbol,
@@ -1481,10 +1577,9 @@ sh_size)` is an anomaly on a reference output (GNU writes the end of the
 output section) and cannot occur in mortar's (synth.md S-18)."
 Reason: S-18.
 
-**R-P3. Mutations (§9.2).** Add: drop the `.eh_frame` terminator; move it
-to the middle; swap two `.eh_frame_hdr` entries; point an FDE's CIE
-pointer 4 bytes off; put a global before a local in `.symtab`; set
-`sh_info` one too small; set a property bit not in every input's AND.
+**R-P3. Mutations (§9.2).** Add those WP-028 lacks: move the
+`.eh_frame` terminator to the middle; set a property bit not in every
+input's AND; leave a stray `IRELATIVE` outside `__rela_iplt_*`.
 
 ### 14.6 diag.md
 
@@ -1532,6 +1627,7 @@ Ranked by how much depends on each.
 | Q7 | The `.comment` string's exact form (`mortar X.Y.Z` against `Linker: mortar X.Y.Z`, lld's style). | `mortar X.Y.Z` | tools that grep `.comment` |
 | Q8 | Per-file capacity in `.symtab` for incremental links. | rewrite whole (S-112) | M7 time for 10^7-symbol programs |
 | Q9 | `GNU_PROPERTY_AARCH64_FEATURE_PAUTH` (0xc0000001) and GCS-only inputs. | refused / AND | AArch64 pointer-authentication ABI binaries |
+| Q10 | Whether any ordinary input gives two live FDEs one initial location (S-59 refuses them when a table is written). The scan counted no FDE without a relocation, but did not look for shared starts; COMDAT copies, the usual source, are dead. | refused with a table | `--eh-frame-hdr` links of hand-written assembly |
 
 ## 16. Tests
 
@@ -1558,7 +1654,10 @@ The plan per family:
   and catches); X-12 (`__EH_FRAME_BEGIN__` value equals the
   `__register_frame_info` argument, read by gdb); X-11 (two personality
   CIEs survive); the X-15 hdr cases.
-- **symtab** (`tests/link/symtab/`): S-74 order (`readelf -s`: locals
+- **symtab** (`tests/link/symtab/`): S-121 (`main` and libc globals
+  `GLOBAL` in a static link; `skip(mold)`); S-122 and S-123
+  (`__TMC_END__`'s index holds its value; `__TMC_LIST__ == __TMC_END__`);
+  S-124 (`__bss_start` with `--gc-sections` and no `.bss`); S-74 order (`readelf -s`: locals
   per file, demoted hidden after its file's locals); S-78 for each of
   `-X`, `-x`, `--discard-none`; S-79 (no `SECTION` entries); S-81 TLS
   value; S-80 a thunk symbol in a link with a far call; S-85 with a
@@ -1567,8 +1666,9 @@ The plan per family:
   S-99 refusal; S-91 sizes for every style; S-100 `.comment` string.
 - **GOT/IPLT** (`tests/link/ifunc/`, `tests/link/tls/`): S-67 to S-70 per
   architecture (sections, words, `readelf -r`), run under qemu for x86.
-- **verifier**: the plumb S13 to S17 rules (R-P1) with the mutations of
-  R-P3; every link test's output passes them.
+- **verifier**: every link test's output passes `plumb.md` §6.4 E1 to E5
+  and §6.5 Y2 to Y5 (WP-028), and the S16 and S17 rules of R-P1 with the
+  mutations of R-P3.
 - **unit tests** (`mortar_merge`, `mortar_synth`): S-28 determinism (the
   same `Split` and `MergeMap` with 1, 2, 8 and 64 threads, and with the
   input files' contents permuted among equal names); S-46 and S-49 on

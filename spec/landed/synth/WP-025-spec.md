@@ -475,3 +475,28 @@ symbols    __rela_iplt_start/end (i386 __rel_iplt_*) LOCAL in all three
   observed beyond the counts.
 - Whether any toolchain emits a reference into the inside of an
   `.eh_frame` record other than the record's own fields (Q3).
+
+## 9. Input from the verifier (WP-028)
+
+After the first draft, the supervisor relayed the verifier's stage 2
+(`plumb.md` §6.4 E1 to E5, §6.5 Y2 to Y5, §10.2 anomalies, on branch
+`wp/028-plumb-stage2`). The draft was changed to pass those rules:
+
+- **E2 to E4:** dead FDEs are absent, never neutralised (S-41); an FDE
+  without a relocation for its initial location is dropped only when the
+  field is zero, which E2 cannot judge, and refused otherwise (S-38).
+- **E5:** the table must be strictly sorted and list every FDE that is
+  not neutralised, so two live FDEs with one start and non-zero ranges
+  cannot share an output with a table. The first draft kept one entry
+  (lld); S-59 now refuses them, as GNU does (X-15). Zero-range FDEs are
+  neutralised in E5's terms and have no entry, as before.
+- **A9** (mold makes every global of a static executable local; seen in
+  X-17 too), **A10** (GNU's `__TMC_END__` index names a section below its
+  value) and **A11** (mold's `__bss_start = 0` with no `.bss`) are the
+  verifier's observations, not re-measured here. S-121, S-122 to S-123
+  (with layout request R-L6) and S-124 exclude them.
+- Thunk names follow GNU's `__<target>_veneer`, which the verifier's
+  not-judged list already names (S-80).
+- Undefined-symbol diagnostics belong to the scan driver (S-125).
+- Not checked: whether any library object holds two FDEs with one
+  initial location (Q10); the scan did not look.
