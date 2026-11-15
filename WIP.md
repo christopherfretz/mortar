@@ -24,11 +24,7 @@ review `briefs/reviews/review-060-incr-re.md` (context repo), the first review
 1. Split DWARF on protoc: run a helper with `.build/review-incr/BRIEF-split.md`;
    fill §6 "Split DWARF" (sizes, slack, refill), §1.5 note, record (a) 9's
    measured gain, record §3 item.
-2. N2 protoc edge counts per kind: command in the fix helper's report (copy in
-   `.build/review-incr/results/fx/` README if added; else: link protoc with
-   `--mortar-map` into a scratch dir, symlink the build tree's files beside it,
-   `python3 .build/review-incr/livemodel.py DIR --stats --quiet`); fill IN-29's
-   size column ("pending").
+2. (done: protoc edge counts in IN-29, `results/fx/protoc-edges-stats.txt`)
 3. N2 dedicated gc scenarios for startstop, linkorder (`"ao"` section),
    group (second member only via group), nonalloc, local; add to
    `oracle_scen.sh`, rerun `livemodel.py --drop KIND`; fill IN-29 text.

@@ -1452,13 +1452,13 @@ with each phase fed from the state for unchanged files:
 
   | I-7 edge (image.md text) | stored as | resolved at walk time | protoc `-g`, rows / bytes at 8 B a row |
   |---|---|---|---|
-  | `reloc`: a record of a live, non-debug, non-`.eh_frame` section names a global key → the section of its `def` (through `sym_map` and `redirect`; `Common`, `Internal`, `Shlib`: nothing), `R_*_NONE` included | (source section, key) | the key's definition from the update's resolution (IN-26), so a moved definer is followed | pending (record §3) |
-  | `startstop`: a conditional `__start_NAME`/`__stop_NAME` (`Internal`) → every section named `NAME` | (source section, key) like `reloc` | the sections named `NAME` from the sections table (IN-19), the changed files' included | pending |
-  | `local`: a local or section symbol → its section; into a split section, the piece by offset (`frag_live`: value, plus addend for a section symbol); under `SHT_REL`, every piece | (source section, target section, offset or "all pieces") | — (both ends in one file) | pending |
-  | `linkorder`: a section whose `sh_link` is `s` and has `SHF_LINK_ORDER`, alloc or not, is live with `s` (I-109) | a column of the sections table (the dependent's `sh_link` target) | — | one per `SHF_LINK_ORDER` section |
-  | `fde`: a code section → its FDEs → the LSDA's and personality's sections through the relocations of the FDE and of its CIE; the FDE's edges are `s`'s | (code section, target section or key) rows, from the file's own `.eh_frame`, which an update does not re-read | keys as `reloc` | pending |
-  | `group`: every other member of `s`'s group | the sections table's group column (IN-19) | the group's keeper from the update's resolution | — |
-  | `nonalloc`: records of non-alloc, non-debug sections (notes; `.note.stapsdt` → `.stapsdt.base`) | (source section, key) and (source section, target section) | as `reloc` | pending |
+  | `reloc`: a record of a live, non-debug, non-`.eh_frame` section names a global key → the section of its `def` (through `sym_map` and `redirect`; `Common`, `Internal`, `Shlib`: nothing), `R_*_NONE` included | (source section, key) | the key's definition from the update's resolution (IN-26), so a moved definer is followed | 52,400 / 419 KB |
+  | `startstop`: a conditional `__start_NAME`/`__stop_NAME` (`Internal`) → every section named `NAME` | (source section, key) like `reloc` | the sections named `NAME` from the sections table (IN-19), the changed files' included | 0 (counted with `reloc`) |
+  | `local`: a local or section symbol → its section; into a split section, the piece by offset (`frag_live`: value, plus addend for a section symbol); under `SHT_REL`, every piece | (source section, target section, offset or "all pieces") | — (both ends in one file) | 2,192 / 17.5 KB |
+  | `linkorder`: a section whose `sh_link` is `s` and has `SHF_LINK_ORDER`, alloc or not, is live with `s` (I-109) | a column of the sections table (the dependent's `sh_link` target) | — | 0 on protoc (a column) |
+  | `fde`: a code section → its FDEs → the LSDA's and personality's sections through the relocations of the FDE and of its CIE; the FDE's edges are `s`'s | (code section, target section or key) rows, from the file's own `.eh_frame`, which an update does not re-read | keys as `reloc` | 4,210 / 33.7 KB |
+  | `group`: every other member of `s`'s group | the sections table's group column (IN-19) | the group's keeper from the update's resolution | 1,164 member pairs / 9.3 KB as rows (a column) |
+  | `nonalloc`: records of non-alloc, non-debug sections (notes; `.note.stapsdt` → `.stapsdt.base`) | (source section, key) and (source section, target section) | as `reloc` | 5 / 40 B |
   | roots (I-6): rooted keys (entry, `-u`, exported), `SHF_GNU_RETAIN` and script `KEEP`, start-up tables, notes and non-alloc sections not grouped with an alloc member | flags in the sections table; rooted keys from the plan | the plan's options (a change is `options-changed`) | — |
 
   Debug relocations are not edges (I-7) and are not stored. A future
@@ -1479,8 +1479,12 @@ with each phase fed from the state for unchanged files:
   `linkorder` and `group` are caught by **no scenario yet** (their
   dedicated scenarios are pending, record §3). Rows on the `-O2` l
   link, for scale: `reloc` 2,135, `local` 326, `fde` 42, `group` 4,
-  `nonalloc` 5 (2,512 rows, 20 KB at 8 B a row); protoc's counts are
-  pending; the named L10 case `lsda-edges` (the re-review's
+  `nonalloc` 5 (2,512 rows, 20 KB at 8 B a row). On protoc `-g`
+  (`livemodel.py --stats` over the bench's inputs, distinct (source,
+  target) pairs from sections live from the roots; the bench link has
+  no `--gc-sections`, so the model's live set, 24,844 of 30,348
+  sections, is the gc one, not the map's): 59,971 rows, **0.48 MB** at 8
+  B a row, against the 8.05 MB state; the named L10 case `lsda-edges` (the re-review's
   `re/lsda_edges.sh`: LSDAs reached only through `.eh_frame`, one unit
   per file: the update must keep `keep()`'s LSDA and collect
   `dropme()`'s, and a throw through `keep()` must be caught); L10 removes
