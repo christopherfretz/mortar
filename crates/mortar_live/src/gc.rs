@@ -32,7 +32,10 @@
 //! a split mergeable section marks every piece of that section (more than
 //! needed, never less).
 
-#![allow(clippy::result_large_err, reason = "the phases' diagnostic pair, made once per failed link")]
+#![allow(
+    clippy::result_large_err,
+    reason = "the phases' diagnostic pair, made once per failed link"
+)]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -44,7 +47,8 @@ use mortar_core::split::Split;
 use mortar_core::{Column, FileId, Liveness, SectionId, SymbolId};
 use mortar_diag::{Diagnostic, Key, Kind, Place};
 use mortar_elf::consts::{
-    SHF_ALLOC, SHF_LINK_ORDER, SHT_GROUP, SHT_NOTE, STB_LOCAL, STT_SECTION, STV_DEFAULT, STV_PROTECTED,
+    SHF_ALLOC, SHF_LINK_ORDER, SHT_GROUP, SHT_NOTE, STB_LOCAL, STT_SECTION, STV_DEFAULT,
+    STV_PROTECTED,
 };
 use mortar_elf::{Object, SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 
@@ -74,6 +78,13 @@ enum Target {
 const ALLOC: u8 = 1;
 /// A root by a section rule of I-6.
 const ROOT: u8 = 2;
+/// Its relocations are edges when it is live (I-7): every section but
+/// `.eh_frame` (whose edges are its FDEs') and the debug sections (whose
+/// references to collected code get the tombstone, I-47). A non-allocated
+/// section's references are edges too: GNU ld marks through notes
+/// (`.note.stapsdt` keeps `.stapsdt.base`), and a kept section's
+/// reference to a collected one would be refused (I-12) or wrong.
+const EDGES: u8 = 4;
 
 /// What phase 50 knows of one file.
 struct FileFacts<'s> {
@@ -97,7 +108,12 @@ impl Marks<'_> {
     /// when this call marked it.
     fn section(&self, s: SectionId, out: &mut Vec<SectionId>) {
         let Some(cell) = self.live.get(s.0 as usize) else { return };
-        if !self.resolution.sections.get(s).is_some_and(mortar_core::resolution::SectionRow::is_kept) {
+        if !self
+            .resolution
+            .sections
+            .get(s)
+            .is_some_and(mortar_core::resolution::SectionRow::is_kept)
+        {
             return;
         }
         if !cell.swap(true, Ordering::Relaxed) {
@@ -109,7 +125,12 @@ impl Marks<'_> {
     /// `at` (I-7: by offset through `Split`), or every piece.
     fn at(&self, s: SectionId, at: u32, out: &mut Vec<SectionId>) {
         self.section(s, out);
-        if !self.resolution.sections.get(s).is_some_and(mortar_core::resolution::SectionRow::is_kept) {
+        if !self
+            .resolution
+            .sections
+            .get(s)
+            .is_some_and(mortar_core::resolution::SectionRow::is_kept)
+        {
             return;
         }
         let rows = &self.split.merge_of;
@@ -150,9 +171,9 @@ impl Marks<'_> {
 /// name into `.init_array`/`.fini_array` (`.ctors`, `.ctors.NNNNN`, …):
 /// all three references keep them (E14 Q5).
 fn startup_input(name: &[u8]) -> bool {
-    [&b".ctors"[..], b".dtors", b".init_array", b".fini_array", b".preinit_array"]
-        .iter()
-        .any(|p| name == *p || name.strip_prefix(*p).is_some_and(|rest| rest.first() == Some(&b'.')))
+    [&b".ctors"[..], b".dtors", b".init_array", b".fini_array", b".preinit_array"].iter().any(|p| {
+        name == *p || name.strip_prefix(*p).is_some_and(|rest| rest.first() == Some(&b'.'))
+    })
 }
 
 /// Whether `name` is a C identifier (`spec/layout.md` L-96: only such
@@ -168,7 +189,13 @@ fn c_identifier(name: &[u8]) -> bool {
 fn startup_output(name: &[u8]) -> bool {
     matches!(
         name,
-        b".init" | b".fini" | b".init_array" | b".fini_array" | b".preinit_array" | b".ctors" | b".dtors"
+        b".init"
+            | b".fini"
+            | b".init_array"
+            | b".fini_array"
+            | b".preinit_array"
+            | b".ctors"
+            | b".dtors"
     )
 }
 
@@ -197,7 +224,7 @@ pub(crate) fn collect(
     // A section no file's facts describe (not of an object, or a header
     // `mortar_elf` cannot read) is a root: the mark never drops what it
     // has not looked at.
-    let mut facts = vec![ROOT; sections];
+    let mut facts = vec![ROOT | EDGES; sections];
     let mut link_order: Vec<(SectionId, SectionId)> = Vec::new();
     let mut named: Vec<(&[u8], SectionId)> = Vec::new();
     let mut group_members: Vec<SectionId> = Vec::new();
@@ -255,9 +282,8 @@ pub(crate) fn collect(
 
     // 3. Frames.
     let eh_rows = &split.eh_of;
-    let eh: Vec<Result<Vec<(u32, Target)>, Keyed>> = pool.map(eh_rows.len(), |row| {
-        eh_edges(inputs, r, split, &tables, &defs, row)
-    });
+    let eh: Vec<Result<Vec<(u32, Target)>, Keyed>> =
+        pool.map(eh_rows.len(), |row| eh_edges(inputs, r, split, &tables, &defs, row));
     let mut eh_edges_of: Vec<Vec<(u32, Target)>> = Vec::with_capacity(eh.len());
     for e in eh {
         match e {
@@ -274,7 +300,8 @@ pub(crate) fn collect(
     // (code section, eh row, FDE ordinal), sorted by code section.
     let mut by_code: Vec<(SectionId, u32, u32)> = Vec::new();
     for (row, sr) in eh_rows.iter().enumerate() {
-        for (ord, p) in split.eh_piece.get(sr.pieces.slots()).unwrap_or_default().iter().enumerate() {
+        for (ord, p) in split.eh_piece.get(sr.pieces.slots()).unwrap_or_default().iter().enumerate()
+        {
             if let Some(code) = p.code.get()
                 && !p.is_cie()
             {
@@ -393,50 +420,8 @@ fn file_facts<'s>(
         (Key::new(PHASE, file.0, 0), malformed(e.to_string()).at(Place::File(path())))
     })?;
     let len = range.len() as usize;
-    // The section groups (I-7: a group's members are live together),
-    // and which sections are in a group with an allocated member: such a
-    // member is not a root by its type (a note, a non-allocated section)
-    // but lives and dies with its group.
-    let mut groups: Vec<Vec<SectionId>> = Vec::new();
-    let mut grouped = vec![false; len];
-    for k in 1..len {
-        let sid = range.start.0 + k as u32;
-        let row = r.sections[SectionId(sid)];
-        if row.kind != SectionKind::Group {
-            continue;
-        }
-        let Ok(s) = obj.section(SectionIndex(k as u32)) else { continue };
-        if s.sh_type() != SHT_GROUP {
-            continue;
-        }
-        let key = Key::new(PHASE, file.0, k as u64);
-        let place = || Place::section(path(), String::from_utf8_lossy(s.name().unwrap_or_default()), 0);
-        let g = s.group().map_err(|e| (key, malformed(e.to_string()).at(place())))?;
-        let mut members = Vec::with_capacity(g.len());
-        let mut alloc = false;
-        for m in g.members() {
-            let m = m.map_err(|e| (key, malformed(e.to_string()).at(place())))?;
-            let Some(id) = r.section_id(file, m) else { continue };
-            if !r.sections[id].is_kept() {
-                continue;
-            }
-            if obj.section(m).is_ok_and(|ms| ms.flags() & SHF_ALLOC != 0) {
-                alloc = true;
-            }
-            members.push(id);
-        }
-        if alloc {
-            for &m in &members {
-                if let Some(slot) = grouped.get_mut((m.0 - range.start.0) as usize) {
-                    *slot = true;
-                }
-            }
-        }
-        if members.len() > 1 {
-            groups.push(members);
-        }
-    }
-    let mut bits = vec![ROOT; len];
+    let (groups, grouped) = section_groups(inputs, r, obj, file, range.start.0, len)?;
+    let mut bits = vec![ROOT | EDGES; len];
     let mut link_order = Vec::new();
     let mut named = Vec::new();
     for (k, sid) in range.iter().enumerate() {
@@ -453,7 +438,8 @@ fn file_facts<'s>(
         let out_name = out.out().and_then(|o| assignment.outsecs.get(o)).map(|o| o.name);
         // I-6, section rules (I-109 first: a `SHF_LINK_ORDER` section
         // follows its target, alloc or not).
-        let by_type = !grouped[k] && (!alloc || h.sh_type == SHT_NOTE || row.kind == SectionKind::Note);
+        let by_type =
+            !grouped[k] && (!alloc || h.sh_type == SHT_NOTE || row.kind == SectionKind::Note);
         let root = if ordered {
             false
         } else {
@@ -475,6 +461,9 @@ fn file_facts<'s>(
         if root {
             b |= ROOT;
         }
+        if row.kind != SectionKind::EhFrame && !mortar_arch::is_debug_name(name) {
+            b |= EDGES;
+        }
         bits[k] = b;
         if ordered && let Some(target) = r.section_id(file, SectionIndex(h.sh_link)) {
             link_order.push((target, sid));
@@ -484,6 +473,63 @@ fn file_facts<'s>(
         }
     }
     Ok(FileOut { obj: Some(obj), table, bits, link_order, named, groups })
+}
+
+/// The section groups of `file` (I-7: a group's members are live
+/// together), and per section of the file whether it is in a group with
+/// an allocated member: such a member is not a root by its type (a note,
+/// a non-allocated section) but lives and dies with its group (E14 Q1,
+/// Q3).
+fn section_groups(
+    inputs: &Inputs<'_>,
+    r: &Resolution,
+    obj: Object<'_>,
+    file: FileId,
+    start: u32,
+    len: usize,
+) -> Result<(Vec<Vec<SectionId>>, Vec<bool>), Keyed> {
+    let path = || inputs.files[file].display();
+    let mut groups: Vec<Vec<SectionId>> = Vec::new();
+    let mut grouped = vec![false; len];
+    for k in 1..len {
+        let sid = start + k as u32;
+        let row = r.sections[SectionId(sid)];
+        if row.kind != SectionKind::Group {
+            continue;
+        }
+        let Ok(s) = obj.section(SectionIndex(k as u32)) else { continue };
+        if s.sh_type() != SHT_GROUP {
+            continue;
+        }
+        let key = Key::new(PHASE, file.0, k as u64);
+        let place =
+            || Place::section(path(), String::from_utf8_lossy(s.name().unwrap_or_default()), 0);
+        let g = s.group().map_err(|e| (key, malformed(e.to_string()).at(place())))?;
+        let mut members = Vec::with_capacity(g.len());
+        let mut alloc = false;
+        for m in g.members() {
+            let m = m.map_err(|e| (key, malformed(e.to_string()).at(place())))?;
+            let Some(id) = r.section_id(file, m) else { continue };
+            if !r.sections[id].is_kept() {
+                continue;
+            }
+            if obj.section(m).is_ok_and(|ms| ms.flags() & SHF_ALLOC != 0) {
+                alloc = true;
+            }
+            members.push(id);
+        }
+        if alloc {
+            for &m in &members {
+                if let Some(slot) = grouped.get_mut((m.0 - start) as usize) {
+                    *slot = true;
+                }
+            }
+        }
+        if members.len() > 1 {
+            groups.push(members);
+        }
+    }
+    Ok((groups, grouped))
 }
 
 /// Where the definition of key `id` is, as a mark target (I-7).
@@ -562,13 +608,12 @@ fn record_target(
         return Target::None;
     };
     let to = r.redirect.get(id).copied().unwrap_or(id);
-    let id = if to != id
-        && table.section_of(index, &sym).is_ok_and(|s| s == SymbolSection::Undefined)
-    {
-        to
-    } else {
-        id
-    };
+    let id =
+        if to != id && table.section_of(index, &sym).is_ok_and(|s| s == SymbolSection::Undefined) {
+            to
+        } else {
+            id
+        };
     defs.get(id.0 as usize).map_or(Target::None, |d| d.0)
 }
 
@@ -672,10 +717,9 @@ impl Walk<'_, '_, '_> {
         for &s in round {
             let mut n = 0;
             let row = self.r.sections[s];
-            let alloc = self.facts.get(s.0 as usize).is_some_and(|b| b & ALLOC != 0);
-            // I-7: relocations of allocated sections are edges; those of
-            // `.eh_frame` only through the FDE rule.
-            if alloc && row.reloc.0 != 0 && row.kind != SectionKind::EhFrame {
+            // A section without facts (not read) has its records walked.
+            let edges = self.facts.get(s.0 as usize).is_none_or(|b| b & (EDGES | ALLOC) != 0);
+            if edges && row.reloc.0 != 0 && row.kind != SectionKind::EhFrame {
                 n = self.count(s).unwrap_or(1);
             }
             if n <= SCAN_BLOCK {
@@ -779,7 +823,8 @@ impl Walk<'_, '_, '_> {
                 break;
             }
             let Some(sr) = self.split.eh_of.get(row as usize) else { continue };
-            let cie = self.split.eh_piece.get(sr.pieces.start as usize + ord as usize).map(|p| p.cie);
+            let cie =
+                self.split.eh_piece.get(sr.pieces.start as usize + ord as usize).map(|p| p.cie);
             let edges = &self.eh_edges[row as usize];
             for want in [Some(ord), cie] {
                 let Some(want) = want else { continue };

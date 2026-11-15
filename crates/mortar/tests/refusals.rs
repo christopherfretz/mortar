@@ -31,17 +31,6 @@ fn c_program(label: &str) -> Option<(Scratch, Built)> {
     Some((scratch, built))
 }
 
-// spec: image.md I-5 (`--gc-sections` is refused in M1, by name, once
-// the command line says it is on; nothing is written)
-#[test]
-fn gc_sections_is_refused_by_name() {
-    let Some((_s, built)) = c_program("refuse-gc") else { return };
-    let (status, stderr) = link(&built, &["--gc-sections"], &[]);
-    assert_eq!(status, Some(1));
-    assert_eq!(stderr, "mortar: error: unsupported option: --gc-sections\n");
-    assert!(!built.dir.join("out").exists());
-}
-
 // spec: layout.md L-103, resolve.md §5.5 (an undefined entry is one
 // warning, resolve's, and the link goes on with `e_entry = 0`)
 #[test]

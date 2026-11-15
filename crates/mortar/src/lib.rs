@@ -60,6 +60,10 @@ pub struct Invocation {
     /// `--time-phases` (`spec/image.md` I-88, I-89): the lines, each ending
     /// in a newline, for standard error after the report; empty without it.
     pub phases: String,
+    /// `--print-gc-sections` (`spec/image.md` I-10): the lines, each ending
+    /// in a newline, for standard error before the report; empty without
+    /// it or when the link stopped before liveness.
+    pub removed: String,
 }
 
 /// The name diagnostics start with (`spec/diag.md` §5.1): the basename
@@ -119,8 +123,12 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let parsed = mortar_cli::parse(args);
     let plan = &parsed.plan;
     let color = plan.diagnostics.color;
-    let done =
-        |text: String| Invocation { outcome: Outcome::Done(text), color, phases: String::new() };
+    let done = |text: String| Invocation {
+        outcome: Outcome::Done(text),
+        color,
+        phases: String::new(),
+        removed: String::new(),
+    };
     match plan.exit {
         Some(Exit::Version) if !parsed.failed() => return done(mortar_cli::version_text()),
         Some(Exit::Help) if !parsed.failed() => return done(mortar_cli::help_text(prog)),
@@ -144,6 +152,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
         outcome: Outcome::Failed(diagnostics.finish()),
         color,
         phases,
+        removed: String::new(),
     };
     let emit_refusals = |diagnostics: &Collector| {
         for (key, diagnostic) in refusals.iter().cloned() {
@@ -184,6 +193,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let env = front::Env { cwd, pool };
     let front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
     let mut stdout = String::new();
+    let removed = front.as_ref().map_or_else(String::new, |f| removed_lines(prog, f));
     if let Some(f) = &front {
         let linked = link_image(f, &store, &out_path, &diagnostics, &mut timer);
         if let Some(map) = linked {
@@ -204,13 +214,23 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
         // I-66: a link that fails after the command line leaves no output
         // (GNU ld's choice; never an input, never a non-regular file).
         mortar_image::output::remove_stale_output(&out_path, &store.inodes());
-        return failed(diagnostics, timer.finish());
+        return Invocation { removed, ..failed(diagnostics, timer.finish()) };
     }
     Invocation {
         outcome: Outcome::Linked { report: diagnostics.finish(), stdout },
         color,
         phases: timer.finish(),
+        removed,
     }
+}
+
+/// `--print-gc-sections`' lines (`spec/image.md` I-10), when asked for
+/// with `--gc-sections`.
+fn removed_lines(prog: &str, f: &front::Front<'_>) -> String {
+    if !(f.plan.shaping.gc_sections && f.plan.shaping.print_gc_sections) {
+        return String::new();
+    }
+    mortar_live::print_gc_sections(prog, &f.inputs, &f.resolution, &f.assignment, &f.liveness)
 }
 
 /// The image phase of a laid-out link (100, 105): the output file at

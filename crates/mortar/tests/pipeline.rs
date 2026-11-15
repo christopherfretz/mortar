@@ -384,9 +384,9 @@ fn print_map_writes_the_map_to_standard_output() {
     assert!(m.stdout_text().starts_with("mortar-map 1\n"));
 }
 
-/// `--gc-sections` is refused by name until liveness implements it (M2,
-/// image.md §3.2), with no output; of `--gc-sections` and
-/// `--no-gc-sections`, the last one wins (`spec/cli.md`'s boolean pairs).
+/// Of `--gc-sections` and `--no-gc-sections`, the last one wins
+/// (`spec/cli.md`'s boolean pairs): with it the output is smaller and runs
+/// the same (the rest of `--gc-sections` is `tests/gc.rs`).
 #[test]
 fn gc_sections_the_last_one_wins() {
     let Some((_s, built)) =
@@ -394,27 +394,21 @@ fn gc_sections_the_last_one_wins() {
     else {
         return;
     };
-    for (extra, ok) in [
-        (&["--gc-sections"][..], false),
-        (&["--no-gc-sections", "--gc-sections"][..], false),
-        (&["--gc-sections", "--no-gc-sections"][..], true),
+    let mut sizes = Vec::new();
+    for extra in [
+        &["--gc-sections"][..],
+        &["--no-gc-sections", "--gc-sections"][..],
+        &["--gc-sections", "--no-gc-sections"][..],
     ] {
         let out = built.dir.join("gc.out");
         let m = mortar(&built, &out, extra, &[]);
-        if ok {
-            assert!(m.success(), "{extra:?}: {}", m.stderr_text());
-            assert_eq!(execute(&out).1, Some(0), "{extra:?}");
-            std::fs::remove_file(&out).unwrap();
-        } else {
-            assert_eq!(code(&m), Some(1), "{extra:?}");
-            assert!(
-                m.stderr_text().contains("error: unsupported option: --gc-sections"),
-                "{extra:?}: {}",
-                m.stderr_text()
-            );
-            assert!(!out.exists(), "{extra:?}: a refused link leaves no output");
-        }
+        assert!(m.success(), "{extra:?}: {}", m.stderr_text());
+        assert_eq!(execute(&out).1, Some(0), "{extra:?}");
+        sizes.push(read(&out).len());
+        std::fs::remove_file(&out).unwrap();
     }
+    assert_eq!(sizes[0], sizes[1]);
+    assert!(sizes[0] < sizes[2], "{sizes:?}");
 }
 
 /// I-110 through the driver: a key referenced only from `.debug_info`

@@ -8,8 +8,8 @@
 //! fails is a diagnostic, never "no records" (a section without edges
 //! would be collected and its referents with it).
 
-use mortar_core::inputs::{CopyError, Inputs};
 use mortar_core::FileId;
+use mortar_core::inputs::{CopyError, Inputs};
 use mortar_diag::{Diagnostic, Kind};
 use mortar_elf::consts::{SHT_REL, SHT_RELA};
 use mortar_elf::raw::{Rel, Rela, Table};
@@ -47,7 +47,9 @@ impl Records<'_> {
                 r_sym: r.r_sym,
                 addend: Some(r.r_addend),
             }),
-            Self::Rel(t) => t.get(i).map(|r| Raw { r_offset: r.r_offset, r_sym: r.r_sym, addend: None }),
+            Self::Rel(t) => {
+                t.get(i).map(|r| Raw { r_offset: r.r_offset, r_sym: r.r_sym, addend: None })
+            }
         }
     }
 }

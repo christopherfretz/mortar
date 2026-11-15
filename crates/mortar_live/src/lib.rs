@@ -22,16 +22,17 @@
 mod gc;
 mod read;
 
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use mortar_core::assignment::Assignment;
 use mortar_core::column::Column;
-use mortar_core::inputs::Inputs;
+use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::par::Pool;
 use mortar_core::resolution::Resolution;
+use mortar_core::resolution::SectionKind;
 use mortar_core::split::Split;
 use mortar_core::{FragId, Liveness, SectionId, SymbolId};
-use mortar_core::resolution::SectionKind;
 use mortar_diag::{Diagnostic, Key};
 
 /// The phase ordinal of liveness (`spec/model.md` §8).
@@ -153,7 +154,11 @@ pub fn eh_piece_live(
 /// the order of `--print-gc-sections`' lines and of the map's `gc`
 /// records.
 #[must_use]
-pub fn removed(resolution: &Resolution, assignment: &Assignment<'_>, liveness: &Liveness) -> Vec<SectionId> {
+pub fn removed(
+    resolution: &Resolution,
+    assignment: &Assignment<'_>,
+    liveness: &Liveness,
+) -> Vec<SectionId> {
     resolution
         .sections
         .iter()
@@ -166,4 +171,43 @@ pub fn removed(resolution: &Resolution, assignment: &Assignment<'_>, liveness: &
         })
         .map(|(s, _)| s)
         .collect()
+}
+
+/// `--print-gc-sections` (I-10): one line per removed section with bytes,
+/// in [`removed`]'s order, as GNU ld prints them to standard error:
+/// `<prog>: removing unused section '<name>' in file '<file>'`, where
+/// `<file>` is `libx.a(y.o)` for an archive member and `<name>` is
+/// `name[signature]` for a member of a COMDAT group. GNU ld skips sections
+/// of size 0 (E14 Q9); so does this. Each line ends in a newline.
+#[must_use]
+pub fn print_gc_sections(
+    prog: &str,
+    inputs: &Inputs<'_>,
+    resolution: &Resolution,
+    assignment: &Assignment<'_>,
+    liveness: &Liveness,
+) -> String {
+    let mut out = String::new();
+    for s in removed(resolution, assignment, liveness) {
+        let Some((file, index)) = resolution.sh_index(s) else { continue };
+        let Reader::Object(obj) = inputs.files[file].reader else { continue };
+        let Ok(sec) = obj.section(index) else { continue };
+        if sec.header().sh_size == 0 {
+            continue;
+        }
+        let mut name = String::from_utf8_lossy(sec.name().unwrap_or_default()).into_owned();
+        // GNU ld names a member of a COMDAT group `name[signature]`.
+        if let Some(g) = resolution.sections[s].comdat.get()
+            && let Some(c) = inputs.comdats.get(g)
+        {
+            let _ = write!(name, "[{}]", String::from_utf8_lossy(c.name));
+        }
+        let f = inputs.files[file].display();
+        let file = match f.member() {
+            Some(m) => format!("{}({m})", f.path()),
+            None => f.path().to_owned(),
+        };
+        let _ = writeln!(out, "{prog}: removing unused section '{name}' in file '{file}'");
+    }
+    out
 }

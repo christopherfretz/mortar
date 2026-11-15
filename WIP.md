@@ -9,6 +9,13 @@
 - groups live together (gc.rs file_facts, Walk::walk); unexamined sections are roots.
 - scan: a global defined in a kept, non-live section is `dead` (mortar_scan/src/view.rs Defined arm).
 
+- non-debug sections' relocations are edges (EDGES bit, gc.rs): GNU marks through notes
+  (`.note.stapsdt` -> `.stapsdt.base` in libstdc++); found by tests/gc.rs.
+- `--print-gc-sections`: mortar_live::print_gc_sections, Invocation.removed, main.rs; `name[sig]`.
+- tests: crates/mortar/tests/gc.rs (12 tests), pipeline.rs last-one-wins, refusals.rs I-5 removed,
+  linktest layout/gc-sections un-XFAILed.
+- differential harness: /tmp/mortar-wp031-1342893/diff/{run.py,cmp.py} (results.json).
+
 ## Half-done / next
 - print lines in `crates/mortar/src/lib.rs` (stderr, `{prog}: removing unused section '{s}' in file '{f}'`, skip size 0).
 - downstream: scan facts for globals in dead sections; tests; differential; cost.

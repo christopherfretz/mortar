@@ -399,14 +399,13 @@ pub fn front<'s>(
         gc_sections: plan.shaping.gc_sections,
         keep_exported: plan.shaping.gc_keep_exported,
     };
-    let liveness =
-        match liveness(&live, live_options, &pool) {
-            Ok(l) => l,
-            Err((k, d)) => {
-                diag.emit(k, d);
-                return None;
-            }
-        };
+    let liveness = match liveness(&live, live_options, &pool) {
+        Ok(l) => l,
+        Err((k, d)) => {
+            diag.emit(k, d);
+            return None;
+        }
+    };
     let order = offsets(&pool, &merge.split, &merge.meta, &liveness.frag_live);
     timer.phase(50, "liveness");
 
