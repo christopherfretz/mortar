@@ -621,6 +621,64 @@ fn print_map_writes_the_map_to_standard_output() {
     assert!(read(&map_of(&out)).starts_with(b"mortar-map 1\n"));
 }
 
+/// `PT_GNU_RELRO`'s `[start, end)` (`readelf -lW`).
+fn relro(path: &Path) -> (u64, u64) {
+    let readelf = tool("readelf").expect("readelf");
+    let o = mortar_testutil::run(&readelf, [OsString::from("-lW"), path.into()]);
+    let line = o
+        .stdout_text()
+        .lines()
+        .find(|l| l.trim_start().starts_with("GNU_RELRO"))
+        .map(str::to_owned);
+    let w: Vec<String> =
+        line.expect("a PT_GNU_RELRO").split_whitespace().map(str::to_owned).collect();
+    let start = hex(&w[2]).expect("p_vaddr");
+    (start, start + hex(&w[5]).expect("p_memsz"))
+}
+
+/// `-z now` (layout.md L-60 row 7): `.got.plt`, which a static link fills
+/// with IRELATIVE slots, moves into `PT_GNU_RELRO` after `.got`, where
+/// lld puts it (GNU ld folds the slots into `.got`: RELRO too). The
+/// program still runs: static glibc applies IRELATIVE before it protects
+/// RELRO. The last of `-z now` and `-z lazy` wins.
+#[test]
+fn z_now_puts_the_got_plt_in_relro() {
+    let Some((_s, built)) = c_program("pipe-z-now", &["-O2"]) else { return };
+    let gnu = built.dir.join("gnu.out");
+    assert!(bfd(&built, &gnu, &["-z", "now"]).success());
+    let (lo, hi) = relro(&gnu);
+    let (secs, _) = elf_facts(&gnu);
+    for (name, addr, size, _) in &secs {
+        if name.starts_with(".got") {
+            assert!(lo <= *addr && addr + size <= hi, "GNU -z now: {name} outside RELRO");
+        }
+    }
+    let want = execute(&gnu);
+    for (k, (extra, now)) in [
+        (&[][..], false),
+        (&["-z", "now"][..], true),
+        (&["-z", "now", "-z", "lazy"][..], false),
+        (&["-z", "lazy", "-z", "now"][..], true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let out = built.dir.join(format!("now{k}.out"));
+        let m = mortar(&built, &out, extra, &[]);
+        assert!(m.success(), "{extra:?}: {}", m.stderr_text());
+        support::plumb::clean(&out, &map_of(&out), &built.dir);
+        assert_eq!(execute(&out), want, "{extra:?}");
+        let (lo, hi) = relro(&out);
+        let (secs, _) = elf_facts(&out);
+        let (_, addr, size, _) =
+            secs.iter().find(|s| s.0 == ".got.plt").expect("IRELATIVE slots in .got.plt");
+        assert!(*size > 0);
+        assert_eq!(lo <= *addr && addr + size <= hi, now, "{extra:?}: .got.plt and RELRO");
+        let got = secs.iter().find(|s| s.0 == ".got").expect(".got");
+        assert!(lo <= got.1 && got.1 + got.2 <= hi, "{extra:?}: .got is RELRO");
+    }
+}
+
 /// GNU's BFD target name for the host (I-121 item 5).
 #[cfg(target_arch = "aarch64")]
 const GNU_TARGET: &str = "elf64-littleaarch64";

@@ -12,12 +12,12 @@
   bytes); archive taker differs for 129/381 members (sets equal).
 - xtask linktest.rs:632 filter "e/" -> "e/a.test" (scratch path held "e/").
 
-## Half-done
-- Item 4 `-z now`: rank.rs rank_with, target.rs Options.now, run.rs,
-  chunk.rs, scale.rs (compiles, tests pass). Still to do: rows Supported,
-  options.rs check vs GNU, layout.md L-60 row 7 + L-8.
+- Item 4 rows: -z now/lazy (layout rank_with; pipeline.rs
+  z_now_puts_the_got_plt_in_relro), push/pop-state, --dependency-file
+  (crates/mortar/src/depfile.rs), --compress-debug-sections partial, 17
+  noops; --warn-common stays refused. options.md blessed; cli.md,
+  layout.md L-60, input.md §10.4 amended.
 
 ## Next
-- Item 4 remaining rows (see brief), options.md, histogram before/after
-  (before binary: /tmp/mortar-wp027e-651725/mortar-exp).
+- Histogram before/after: scratch bin/hist.py -> hist/{before,after}.txt.
 - Item 3 .comment, item 5 BTI, landed record, gate, full linktest.

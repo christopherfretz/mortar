@@ -17,7 +17,7 @@ use crate::diag::LayoutDiag;
 use crate::fixed::{RangeExtension, fixed_point};
 use crate::headers::Headers;
 use crate::order::order;
-use crate::rank::{Rank, rank_of};
+use crate::rank::{Rank, rank_with};
 use crate::stack::{StackNote, executable_stack};
 use crate::symbols::{SymbolInputs, symbols};
 use crate::target::{Options, Target};
@@ -56,8 +56,17 @@ pub struct Placed {
 /// The ranks of the output sections (L-60).
 #[must_use]
 pub fn out_ranks(assignment: &Assignment<'_>) -> Column<OutSecId, Rank> {
-    let rows =
-        assignment.outsecs.iter().map(|(_, o)| rank_of(o.name, o.sh_type, o.flags)).collect();
+    out_ranks_with(assignment, false)
+}
+
+/// [`out_ranks`] under `-z now` when `now` (`rank_with`).
+#[must_use]
+pub fn out_ranks_with(assignment: &Assignment<'_>, now: bool) -> Column<OutSecId, Rank> {
+    let rows = assignment
+        .outsecs
+        .iter()
+        .map(|(_, o)| rank_with(o.name, o.sh_type, o.flags, now))
+        .collect();
     Column::from_vec(rows).unwrap_or_default()
 }
 
@@ -75,7 +84,7 @@ pub fn place(
 ) -> Result<Placed, Vec<LayoutDiag>> {
     let (target, options) = (link.target, link.options);
     let info = finish(assignment, link.headers, link.liveness, target)?;
-    let ranks = out_ranks(assignment);
+    let ranks = out_ranks_with(assignment, options.now);
     let ordered =
         order(assignment, link.headers, link.resolution, link.liveness, link.folds, &ranks, pool)?;
     let keep_empty = start_stop_outputs(assignment, link.resolution, link.symbols);
@@ -96,6 +105,7 @@ pub fn place(
         synthetic: link.synthetic,
         keep_empty: &keep_empty,
         relro: options.relro,
+        now: options.now,
     };
     let staged = chunk(&inputs, target, &rules, pool).map_err(|e| vec![e])?;
     let fixed = fixed_point(&staged, target, options, &rules, range, pool).map_err(|e| vec![e])?;

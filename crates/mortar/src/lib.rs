@@ -12,6 +12,7 @@
 //! vouch for.
 
 pub mod arch;
+pub mod depfile;
 pub mod front;
 pub mod image;
 mod proof;
@@ -182,6 +183,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let out_path = cwd.join(plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out")));
     let map_path = plan.bookkeeping.map.as_deref().map(|m| cwd.join(m));
     let mortar_map_path = plan.bookkeeping.mortar_map.as_deref().map(|m| cwd.join(m));
+    let dependency_path = plan.bookkeeping.dependency_file.as_deref().map(|m| cwd.join(m));
     let print_map = plan.bookkeeping.print_map;
     let env = front::Env { cwd, pool };
     let front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
@@ -200,6 +202,10 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
             if print_map {
                 stdout = String::from_utf8_lossy(&maps.text).into_owned();
             }
+            // input.md §10.4: the dependency file, of a successful link.
+            if let Some(d) = &dependency_path {
+                write_dependency_file(f, d, &diagnostics);
+            }
         }
     }
     drop(front);
@@ -214,6 +220,25 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
         outcome: Outcome::Linked { report: diagnostics.finish(), stdout },
         color,
         phases: timer.finish(),
+    }
+}
+
+/// `--dependency-file` (`spec/input.md` §10.4) of the link `f` to `path`.
+fn write_dependency_file(f: &front::Front<'_>, path: &Path, diagnostics: &Collector) {
+    let target = f.plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out"));
+    let paths = mortar_input::dependency_paths(&f.inputs.link);
+    match depfile::render(target.as_encoded_bytes(), &paths) {
+        Ok(text) => {
+            if let Err((k, d)) = mortar_image::output::write_whole(path, &text, 0o666) {
+                diagnostics.emit(k, d);
+            }
+        }
+        Err(depfile::Unwritable(p)) => diagnostics.emit(
+            Key::new(mortar_cli::PHASE + 1, 0, 0),
+            Diagnostic::refused(RefusalClass::Feature, "dependency file path with a newline").note(
+                format!("{:?} cannot be written as a Make word", String::from_utf8_lossy(&p)),
+            ),
+        ),
     }
 }
 
@@ -313,10 +338,20 @@ mod tests {
     #[test]
     fn errors_come_in_argument_order() {
         assert_eq!(
-            failed(&["--frob", "-o", "x", "a.o", "-z", "now", "-z", "now", "--hash-style"]),
+            failed(&[
+                "--frob",
+                "-o",
+                "x",
+                "a.o",
+                "-z",
+                "nodelete",
+                "-z",
+                "nodelete",
+                "--hash-style"
+            ]),
             format!(
                 "ld: error: unknown argument '--frob'\n\
-                 ld: error: unsupported option: -z now\n\
+                 ld: error: unsupported option: -z nodelete\n\
                  ld: error: --hash-style: missing argument\n"
             )
         );

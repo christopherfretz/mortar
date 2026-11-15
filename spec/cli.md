@@ -576,22 +576,30 @@ does: a user may rely on every use the status admits.
 - `refused`: read and recorded, but not carried out yet. This is the
   default.
 
-The status today (WP-027d; `docs/status/options.md` has the list):
-- 40 rows are `supported`; each has its evidence in
+The status today (WP-027e; `docs/status/options.md` has the list):
+- 49 rows are `supported`; each has its evidence in
   `crates/mortar/tests/options.rs`, an observable effect checked against
   GNU ld's output where GNU ld has the option, or the test that checks
-  it.
-- 2 rows are `partial`: `--build-id` (`=md5`, `=uuid`; `spec/synth.md`
-  S-91) and `--fix-cortex-a53-843419` (`=adr`, `=adrp`; `spec/a64.md`
-  §11.2).
-- 27 rows are `noop`; the audit links each to the same bytes as the line
+  it. WP-027e added `--push-state`, `--pop-state`, `-z now`, `-z lazy`
+  (`spec/layout.md` L-60 row 7), `--dependency-file`
+  (`spec/input.md` §10.4) and `--mortar-map`.
+- 3 rows are `partial`: `--build-id` (`=md5`, `=uuid`; `spec/synth.md`
+  S-91), `--fix-cortex-a53-843419` (`=adr`, `=adrp`; `spec/a64.md`
+  §11.2) and `--compress-debug-sections` (only `=none`, WP-027e).
+- 44 rows are `noop`; the audit links each to the same bytes as the line
   without it and checks its reason where it can be checked.
   `--as-needed`, `--no-as-needed` (only shared objects, refused by name)
   and `--hash-style` (only dynamic outputs, refused by name) were
-  `supported` before WP-027d.
-- 402 rows are `refused`, `--gc-sections` among them (`spec/image.md`
+  `supported` before WP-027d. WP-027e added the rows that act only on a
+  dynamic output or a shared-object input: `-rpath`, `-rpath-link`,
+  `--enable-new-dtags`, `--disable-new-dtags`, the five `-Bsymbolic`
+  rows, `-E`, `--no-export-dynamic`, `--no-dynamic-linker`, `-z text`,
+  `-z notext`, `--no-undefined`, `-z defs`; and `--no-gdb-index` (the
+  default).
+- 376 rows are `refused`, `--gc-sections` among them (`spec/image.md`
   I-5): it was `supported` while every link that used it was refused by
-  liveness.
+  liveness. `--warn-common` stays refused (WP-027e: it needs a resolve
+  warning with GNU's three texts).
 
 A work package that implements an option changes the row's status in the
 same change, and adds the row's evidence to the audit, which fails while
@@ -664,7 +672,7 @@ because a failed link prints nothing on standard output
   `--gc-sections --no-gc-sections` links; `--no-gc-sections
   --gc-sections` is refused.
 - `refusals()` turns them into `Refused{Option, spelling}`, for example
-  `unsupported option: -o` or `unsupported option: -z now`, and a refused
+  `unsupported option: -o` or `unsupported option: -z nodelete`, and a refused
   value into `Refused{OptionValue, spelling=value}` with the row's note,
   for example `unsupported option value: --build-id=md5`.
 
@@ -765,7 +773,12 @@ The 33 rows the census uses:
 
 The test fails when a line uses a row outside this list. These rows are
 the order in which options should become supported. Of them, `-EL`,
-`-plugin` and `-plugin-opt` are noops today; the rest are refused.
+`-plugin`, `-plugin-opt`, `--as-needed`, `--no-as-needed`,
+`--hash-style`, `--no-dynamic-linker` and `-z text` are noops today;
+`-(`, `-)`, `--build-id`, `--eh-frame-hdr`, `--fix-cortex-a53-843419`,
+`--pop-state`, `--push-state`, `--sysroot`, `-Bstatic`, `-L`, `-X`, `-l`,
+`-m`, `-o`, `-z noexecstack`, `-z now` and `-z relro` are supported or
+partial (WP-027e); the rest are refused.
 
 ## 7. Against GNU ld
 
