@@ -12,7 +12,7 @@
 //! differences named by rule id.
 //!
 //! A missing tool skips (fails under `MORTAR_REQUIRE_TOOLS=1`).
-#![allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+#![allow(clippy::cast_possible_truncation, clippy::too_many_lines, clippy::single_match_else)]
 
 mod common;
 
@@ -28,8 +28,8 @@ use mortar_core::layout::{Chunk, ChunkKind, Part, Synth};
 use mortar_core::par::Pool;
 use mortar_core::resolution::{DropReason, SectionKind, SectionState};
 use mortar_elf::consts::{
-    SHF_ALLOC, SHF_EXCLUDE, SHF_MERGE, SHF_TLS, SHT_GROUP, SHT_NOBITS, SHT_NOTE, SHT_REL,
-    SHT_RELA, SHT_STRTAB, SHT_SYMTAB,
+    SHF_ALLOC, SHF_EXCLUDE, SHF_MERGE, SHF_TLS, SHT_GROUP, SHT_NOBITS, SHT_NOTE, SHT_REL, SHT_RELA,
+    SHT_STRTAB, SHT_SYMTAB,
 };
 use mortar_elf::{Machine, Object, SectionIndex};
 use mortar_layout::Header;
@@ -192,7 +192,7 @@ fn ext(lang: Lang) -> &'static str {
     }
 }
 
-const LIMIT: Duration = Duration::from_secs(300);
+const LIMIT: Duration = Duration::from_mins(5);
 
 /// Compiles `program` for `arch` in `dir`; the object's path, or why not.
 fn compile(dir: &Path, arch: Arch, program: &Program) -> Result<PathBuf, String> {
@@ -288,7 +288,7 @@ fn parse_gnu(text: &str) -> Vec<Placement> {
         if !line.starts_with(' ') {
             // An output section (or LOAD, START GROUP, ...).
             if line.starts_with('.') || line.starts_with("/DISCARD/") || line.starts_with("__") {
-                output = tokens[0].to_owned();
+                tokens[0].clone_into(&mut output);
             } else if !line.starts_with("LOAD ") {
                 output.clear();
             }
@@ -313,10 +313,12 @@ fn parse_gnu(text: &str) -> Vec<Placement> {
             continue;
         }
         // A continuation `addr size file`, or a symbol.
-        if let Some(name) = pending.take() {
-            if tokens.len() >= 3 && tokens[0].starts_with("0x") && tokens[1].starts_with("0x") {
-                push_gnu(&mut out, &output, &name, tokens[2]);
-            }
+        if let Some(name) = pending.take()
+            && tokens.len() >= 3
+            && tokens[0].starts_with("0x")
+            && tokens[1].starts_with("0x")
+        {
+            push_gnu(&mut out, &output, &name, tokens[2]);
         }
     }
     out
@@ -343,7 +345,7 @@ fn parse_columns(text: &str) -> Vec<Placement> {
     for line in lines {
         let b = line.as_bytes();
         if b.len() > out_col && b[out_col] != b' ' && b[out_col - 1] == b' ' {
-            output = line[out_col..].trim().to_owned();
+            line[out_col..].trim().clone_into(&mut output);
         } else if b.len() > in_col && b[in_col] != b' ' && b[in_col - 1] == b' ' {
             let item = line[in_col..].trim();
             // `file:(name)`
@@ -369,13 +371,12 @@ type Cache = HashMap<PathBuf, &'static [u8]>;
 
 /// One input file's bytes.
 fn file_bytes(key: &FileKey, cache: &mut Cache) -> Option<&'static [u8]> {
-    let bytes = match cache.get(&key.path) {
-        Some(b) => *b,
-        None => {
-            let b: &'static [u8] = Box::leak(std::fs::read(&key.path).ok()?.into_boxed_slice());
-            cache.insert(key.path.clone(), b);
-            b
-        }
+    let bytes = if let Some(b) = cache.get(&key.path) {
+        *b
+    } else {
+        let b: &'static [u8] = Box::leak(std::fs::read(&key.path).ok()?.into_boxed_slice());
+        cache.insert(key.path.clone(), b);
+        b
     };
     let Some(member) = &key.member else { return Some(bytes) };
     let archive = mortar_elf::archive::Archive::parse(bytes).ok()?;
@@ -442,7 +443,7 @@ fn rows_of(bytes: &'static [u8], seen: &mut BTreeSet<Vec<u8>>) -> Option<Vec<Row
         } else {
             SectionState::Kept
         };
-        let link = s.link().map(|l| l.0).unwrap_or(0);
+        let link = s.link().map_or(0, |l| l.0);
         rows.push(Row {
             header: Header {
                 name,
@@ -475,10 +476,27 @@ struct Tally {
 /// The input-name class of a difference, for the tables.
 fn pattern(input: &str) -> String {
     for p in [
-        ".text.unlikely", ".text.hot", ".text.startup", ".text.exit", ".rodata.str",
-        ".rodata.cst", ".data.rel.ro", ".init_array", ".fini_array", ".tbss", ".tdata",
-        ".gcc_except_table", ".note", ".debug_", ".ARM.attributes", ".comment",
-        ".gnu.warning", "__libc_", "__libc_freeres", ".stapsdt", ".gnu_debuglink",
+        ".text.unlikely",
+        ".text.hot",
+        ".text.startup",
+        ".text.exit",
+        ".rodata.str",
+        ".rodata.cst",
+        ".data.rel.ro",
+        ".init_array",
+        ".fini_array",
+        ".tbss",
+        ".tdata",
+        ".gcc_except_table",
+        ".note",
+        ".debug_",
+        ".ARM.attributes",
+        ".comment",
+        ".gnu.warning",
+        "__libc_",
+        "__libc_freeres",
+        ".stapsdt",
+        ".gnu_debuglink",
     ] {
         if input.starts_with(p) {
             return format!("{p}*");
@@ -516,29 +534,35 @@ fn compare_stage_a(
     let mut files: Vec<FileKey> = Vec::new();
     let mut index: HashMap<FileKey, usize> = HashMap::new();
     for p in placements {
-        if let Some(f) = &p.file {
-            if !index.contains_key(f) {
-                index.insert(f.clone(), files.len());
-                files.push(f.clone());
-            }
+        if let Some(f) = &p.file
+            && !index.contains_key(f)
+        {
+            index.insert(f.clone(), files.len());
+            files.push(f.clone());
         }
     }
     let mut seen = BTreeSet::new();
     let mut rows = Vec::new();
     let mut readable = Vec::new();
     for f in &files {
-        match file_bytes(f, cache).and_then(|b| rows_of(b, &mut seen)) {
-            Some(r) => {
-                rows.push(r);
-                readable.push(true);
-            }
-            None => {
-                rows.push(Vec::new());
-                readable.push(false);
-            }
+        if let Some(r) = file_bytes(f, cache).and_then(|b| rows_of(b, &mut seen)) {
+            rows.push(r);
+            readable.push(true);
+        } else {
+            rows.push(Vec::new());
+            readable.push(false);
         }
     }
     let world = World::from_rows(machine, &rows, &[]);
+    if linker == Linker::Lld {
+        // (iii) stage A on real inputs under every schedule.
+        let _ = mortar_core::par::check_schedules(|pool| {
+            world.stage_a(pool).map(|a| {
+                let names: Vec<Vec<u8>> = a.outsecs.iter().map(|(_, o)| o.name.to_vec()).collect();
+                (names, a.out_of, a.keep)
+            })
+        });
+    }
     let assignment = match world.stage_a(pool) {
         Ok(a) => a,
         Err(e) => {
@@ -585,25 +609,22 @@ fn compare_stage_a(
         if p.output == "/DISCARD/" {
             continue;
         }
-        let mortar = match &p.file {
-            Some(f) => {
-                let i = index[f];
-                if !readable[i] {
-                    tally.unexplained.push(format!("{}: unreadable", f.display()));
-                    continue;
-                }
-                // A name the file does not have is the linker's own
-                // section, attributed to a file (GNU's `.iplt`, `.rela.*`).
-                let Some(n) = out_name(i, &p.input) else { continue };
-                n
+        let mortar = if let Some(f) = &p.file {
+            let i = index[f];
+            if !readable[i] {
+                tally.unexplained.push(format!("{}: unreadable", f.display()));
+                continue;
             }
-            None => {
-                let n = by_name(&p.input);
-                if n.is_empty() {
-                    continue;
-                }
-                n
+            // A name the file does not have is the linker's own
+            // section, attributed to a file (GNU's `.iplt`, `.rela.*`).
+            let Some(n) = out_name(i, &p.input) else { continue };
+            n
+        } else {
+            let n = by_name(&p.input);
+            if n.is_empty() {
+                continue;
             }
+            n
         };
         tally.compared += 1;
         let mortar_out = mortar.iter().cloned().collect::<Vec<_>>().join("|");
@@ -631,7 +652,7 @@ fn compare_stage_a(
 
 // -- stage D against lld --------------------------------------------------
 
-/// The synthetic chunk names derive_segments looks for.
+/// The synthetic chunk names `derive_segments` looks for.
 fn synth_name(name: &str) -> Option<&'static [u8]> {
     match name {
         ".relro_padding" => Some(b".relro_padding"),
@@ -645,7 +666,9 @@ fn synth_name(name: &str) -> Option<&'static [u8]> {
 fn staged_from(elf: &Elf) -> (Staged, Vec<(usize, ChunkId)>) {
     let relro = elf.segments.iter().find(|p| p.ty == PT_GNU_RELRO).copied();
     let in_relro = |s: &Shdr| {
-        relro.is_some_and(|r| s.flags & SHF_ALLOC != 0 && s.addr >= r.vaddr && s.addr < r.vaddr + r.memsz)
+        relro.is_some_and(|r| {
+            s.flags & SHF_ALLOC != 0 && s.addr >= r.vaddr && s.addr < r.vaddr + r.memsz
+        })
     };
     let hdr_align = if elf.class64 { 3 } else { 2 };
     let phdr_size = elf
@@ -697,10 +720,12 @@ fn staged_from(elf: &Elf) -> (Staged, Vec<(usize, ChunkId)>) {
     let n = chunks.len() as u32;
     // File order: lld's, the headers first; non-alloc in offset order.
     let mut order: Vec<ChunkId> = vec![ChunkId(0), ChunkId(1)];
-    let mut alloc: Vec<_> = map.iter().filter(|(i, _)| elf.sections[*i].flags & SHF_ALLOC != 0).collect();
+    let mut alloc: Vec<_> =
+        map.iter().filter(|(i, _)| elf.sections[*i].flags & SHF_ALLOC != 0).collect();
     alloc.sort_by_key(|(i, _)| (elf.sections[*i].addr, *i));
     order.extend(alloc.iter().map(|(_, c)| *c));
-    let mut rest: Vec<_> = map.iter().filter(|(i, _)| elf.sections[*i].flags & SHF_ALLOC == 0).collect();
+    let mut rest: Vec<_> =
+        map.iter().filter(|(i, _)| elf.sections[*i].flags & SHF_ALLOC == 0).collect();
     rest.sort_by_key(|(i, _)| (elf.sections[*i].offset, *i));
     order.extend(rest.iter().map(|(_, c)| *c));
     order.push(ChunkId(n - 1));
@@ -772,7 +797,7 @@ fn compare_stage_d(
             && s.align >= options.max_page
             && ch.offset == s.offset
             && addr < s.addr
-            && (s.addr - addr) % options.max_page == 0
+            && (s.addr - addr).is_multiple_of(options.max_page)
         {
             // L-70: mortar takes the least A >= up(cur, maxpage) with
             // A = o (mod P); lld picks up(cur, maxpage) + cur % maxpage first
@@ -794,8 +819,13 @@ fn compare_stage_d(
         unexplained.push(what);
     }
     // The PT_LOADs and PT_TLS.
-    let ours: Vec<_> = addressed.segments.iter().filter(|s| matches!(s.p_type, PT_LOAD | PT_TLS | PT_GNU_RELRO)).collect();
-    let theirs: Vec<_> = elf.segments.iter().filter(|s| matches!(s.ty, PT_LOAD | PT_TLS | PT_GNU_RELRO)).collect();
+    let ours: Vec<_> = addressed
+        .segments
+        .iter()
+        .filter(|s| matches!(s.p_type, PT_LOAD | PT_TLS | PT_GNU_RELRO))
+        .collect();
+    let theirs: Vec<_> =
+        elf.segments.iter().filter(|s| matches!(s.ty, PT_LOAD | PT_TLS | PT_GNU_RELRO)).collect();
     if ours.len() == theirs.len() {
         for (a, b) in ours.iter().zip(&theirs) {
             compared += 1;
@@ -827,7 +857,14 @@ fn compare_stage_d(
 
 // -- the tests ------------------------------------------------------------
 
+/// Whether the compiler driver exists. No i386 Fortran cross compiler is
+/// provisioned (the toolchain has no i686 libgfortran), so that one pair
+/// is skipped even under `MORTAR_REQUIRE_TOOLS=1`; every other driver is
+/// required there.
 fn tools_for(arch: Arch, lang: Lang) -> bool {
+    if arch.machine == Machine::I386 && matches!(lang, Lang::Fortran) {
+        return mortar_testutil::find_tool(&driver(arch, lang)).is_some();
+    }
     tool(&driver(arch, lang)).is_some()
 }
 
@@ -861,7 +898,12 @@ fn stage_a_against_references() {
                     Ok(x) => x,
                     Err(e) => {
                         let first = e.lines().next().unwrap_or("").to_owned();
-                        skipped.push(format!("{} {} {}: {first}", program.name, arch.name, linker.name()));
+                        skipped.push(format!(
+                            "{} {} {}: {first}",
+                            program.name,
+                            arch.name,
+                            linker.name()
+                        ));
                         continue;
                     }
                 };
@@ -931,15 +973,15 @@ fn stage_d_against_lld() {
                 let joined = [extra.join(",")];
                 let extra: Vec<&str> = joined.iter().map(String::as_str).collect();
                 let tag = if common_page { "lld-d-cp" } else { "lld-d" };
-                let (exe, _) =
-                    match link(dir.path(), arch, program, &obj, Linker::Lld, &extra, tag) {
-                        Ok(x) => x,
-                        Err(e) => {
-                            let first = e.lines().next().unwrap_or("").to_owned();
-                            skipped.push(format!("{} {}: {first}", program.name, arch.name));
-                            continue;
-                        }
-                    };
+                let (exe, _) = match link(dir.path(), arch, program, &obj, Linker::Lld, &extra, tag)
+                {
+                    Ok(x) => x,
+                    Err(e) => {
+                        let first = e.lines().next().unwrap_or("").to_owned();
+                        skipped.push(format!("{} {}: {first}", program.name, arch.name));
+                        continue;
+                    }
+                };
                 let elf = read_elf(&std::fs::read(&exe).unwrap());
                 let (n, ex, un) = compare_stage_d(arch.machine, &elf, common_page);
                 eprintln!(
@@ -959,13 +1001,17 @@ fn stage_d_against_lld() {
                 total.0 += n;
                 total.1 += ex.len();
                 total.2 += un.len();
-                unexplained.extend(un.into_iter().map(|w| format!("{} {}: {w}", arch.name, program.name)));
+                unexplained
+                    .extend(un.into_iter().map(|w| format!("{} {}: {w}", arch.name, program.name)));
             }
         }
     }
     for s in &skipped {
         eprintln!("  skipped: {s}");
     }
-    eprintln!("stage D total: {} compared, {} explained, {} unexplained", total.0, total.1, total.2);
+    eprintln!(
+        "stage D total: {} compared, {} explained, {} unexplained",
+        total.0, total.1, total.2
+    );
     assert!(unexplained.is_empty(), "{} unexplained stage D differences", unexplained.len());
 }

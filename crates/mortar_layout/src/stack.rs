@@ -64,10 +64,9 @@ pub fn executable_stack(
     let first_exec = notes.iter().find(|(_, n)| *n == StackNote::Exec);
     match option {
         Some(exec) => (exec, None),
-        None => (
-            first_exec.is_some(),
-            first_exec.map(|(file, _)| crate::diag::executable_stack(file)),
-        ),
+        None => {
+            (first_exec.is_some(), first_exec.map(|(file, _)| crate::diag::executable_stack(file)))
+        }
     }
 }
 

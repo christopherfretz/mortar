@@ -690,7 +690,10 @@ fn output_too_large() {
 fn section_conflict() {
     let kind = Kind::SectionConflict { name: s(".tdata"), first: s("TLS"), second: s("non-TLS") };
     assert_eq!(kind.id(), "section-conflict");
-    assert_eq!(text(kind), "ld: error: section .tdata: TLS and non-TLS inputs cannot be combined\n");
+    assert_eq!(
+        text(kind),
+        "ld: error: section .tdata: TLS and non-TLS inputs cannot be combined\n"
+    );
 }
 
 // -- refusals -----------------------------------------------------------

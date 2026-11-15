@@ -21,7 +21,7 @@ use std::time::Duration;
 use common::elf::{PT_LOAD, check_g, read_elf, write_skeleton};
 use common::{Row, Sec, World, sec};
 use mortar_core::layout::Synth;
-use mortar_core::par::Pool;
+use mortar_core::par::{Pool, check_schedules};
 use mortar_core::resolution::{SectionKind, SectionState};
 use mortar_elf::Machine;
 use mortar_elf::consts::{
@@ -110,10 +110,8 @@ fn synthetic_links() -> Vec<(String, World)> {
             sec(b".bss", SHT_NOBITS, WA, 0x10, 18),
         ]];
         out.push((format!("large-align-{arch}"), World::new(machine, &files, &[])));
-        let files = vec![vec![
-            sec(b".text", P, AX, 0x10, 2),
-            sec(b".bss", SHT_NOBITS, WA, 0x10_0000, 4),
-        ]];
+        let files =
+            vec![vec![sec(b".text", P, AX, 0x10, 2), sec(b".bss", SHT_NOBITS, WA, 0x10_0000, 4)]];
         out.push((format!("bss-only-{arch}"), World::new(machine, &files, &[])));
     }
     out
@@ -148,7 +146,12 @@ fn reference_shaped(machine: Machine, exe: &[u8]) -> World {
         let linker_made = matches!(s.ty, SHT_RELA | SHT_REL)
             || matches!(
                 s.name.as_str(),
-                ".got" | ".got.plt" | ".eh_frame_hdr" | ".note.gnu.property" | ".iplt" | ".plt"
+                ".got"
+                    | ".got.plt"
+                    | ".eh_frame_hdr"
+                    | ".note.gnu.property"
+                    | ".iplt"
+                    | ".plt"
                     | ".note.gnu.build-id"
             );
         if linker_made {
@@ -210,7 +213,7 @@ fn reference_links(dir: &Path) -> Vec<(String, World)> {
             let exe = dir.join(format!("{file}-{arch}"));
             let mut cmd = std::process::Command::new(&cc);
             cmd.args(["-O2", "-static", "-fuse-ld=lld"]).arg(&src).arg("-o").arg(&exe);
-            let o = run_with(&mut cmd, &[], Duration::from_secs(300));
+            let o = run_with(&mut cmd, &[], Duration::from_mins(5));
             assert!(o.success(), "{cc} {file}: {}", o.stderr_text());
             let bytes = std::fs::read(&exe).unwrap();
             out.push((format!("lld-shaped-{file}-{arch}"), reference_shaped(machine, &bytes)));
@@ -230,10 +233,21 @@ fn check_all(links: &[(String, World)], dir: &Path) -> usize {
     let mut problems = Vec::new();
     let mut simulated = 0;
     for (name, w) in links {
+        // (iii) the same result under every schedule of the helpers
+        // (thread counts and seeds that permute the processing order).
+        let _ = check_schedules(|pool| {
+            w.run(pool).map(|(a, p)| {
+                let names: Vec<Vec<u8>> = a.outsecs.iter().map(|(_, o)| o.name.to_vec()).collect();
+                (names, a.out_of.clone(), p.placement, p.rounds)
+            })
+        });
         let (a, placed) = match w.run(&pool) {
             Ok(x) => x,
             Err(e) => {
-                problems.push(format!("{name}: refused: {:?}", e.iter().map(|d| d.message()).collect::<Vec<_>>()));
+                problems.push(format!(
+                    "{name}: refused: {:?}",
+                    e.iter().map(mortar_layout::LayoutDiag::message).collect::<Vec<_>>()
+                ));
                 continue;
             }
         };
@@ -303,9 +317,8 @@ fn checker_finds_mutations() {
     let (a, placed) = w.run(&Pool::sequential()).unwrap();
     let good = read_elf(&write_skeleton(&placed.placement, &a, Machine::AArch64, true));
     assert!(check_g(&good).is_empty());
-    let loads: Vec<usize> = (0..good.segments.len())
-        .filter(|&i| good.segments[i].ty == PT_LOAD)
-        .collect();
+    let loads: Vec<usize> =
+        (0..good.segments.len()).filter(|&i| good.segments[i].ty == PT_LOAD).collect();
     // L-1: an offset off by 8.
     let mut e = good.clone();
     e.segments[loads[1]].offset += 8;
@@ -319,5 +332,9 @@ fn checker_finds_mutations() {
     let mut e = good.clone();
     let r = e.segments.iter().position(|p| p.ty == common::elf::PT_GNU_RELRO).unwrap();
     e.segments[r].memsz += 0x2000;
-    assert!(check_g(&e).iter().any(|v| v.starts_with("L-8") || v.starts_with("L-7")), "{:?}", check_g(&e));
+    assert!(
+        check_g(&e).iter().any(|v| v.starts_with("L-8") || v.starts_with("L-7")),
+        "{:?}",
+        check_g(&e)
+    );
 }

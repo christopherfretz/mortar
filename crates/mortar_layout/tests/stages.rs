@@ -519,6 +519,7 @@ fn norelro() {
     let p = &placed.placement;
     assert!(!names(&w, &a, &placed).iter().any(|n| n == ".relro_padding"));
     assert!(!p.segments.iter().any(|(_, s)| s.p_type == PT_GNU_RELRO));
-    let rw = p.segments.iter().filter(|(_, s)| s.p_type == PT_LOAD && s.flags == PF_R | PF_W).count();
+    let rw =
+        p.segments.iter().filter(|(_, s)| s.p_type == PT_LOAD && s.flags == PF_R | PF_W).count();
     assert_eq!(rw, 1);
 }

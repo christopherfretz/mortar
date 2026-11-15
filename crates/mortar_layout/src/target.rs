@@ -104,6 +104,7 @@ pub enum EntryName {
 
 /// The options layout reads, validated.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // one per -z keyword
 pub struct Options {
     /// maxpage (L-74).
     pub max_page: u64,

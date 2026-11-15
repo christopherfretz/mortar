@@ -3,7 +3,7 @@
 //! reference linkers, and writes a placement as a skeleton file (file
 //! header, program headers, section headers, `.shstrtab`; contents zero)
 //! for the [G] checker and the page simulator.
-#![allow(dead_code, clippy::cast_possible_truncation)]
+#![allow(dead_code, clippy::cast_possible_truncation, clippy::too_many_lines)]
 
 use mortar_core::assignment::Assignment;
 use mortar_core::layout::{ChunkKind, Placement};
@@ -129,7 +129,18 @@ pub fn read_elf(b: &[u8]) -> Elf {
             }
         });
     }
-    Elf { class64: c64, ehsize, phoff, phentsize, phnum, shentsize, shnum, shoff, sections, segments }
+    Elf {
+        class64: c64,
+        ehsize,
+        phoff,
+        phentsize,
+        phnum,
+        shentsize,
+        shnum,
+        shoff,
+        sections,
+        segments,
+    }
 }
 
 fn put(out: &mut Vec<u8>, at: usize, v: u64, n: usize) {
@@ -256,7 +267,7 @@ pub fn write_skeleton(
     let em = match machine {
         Machine::AArch64 => 183,
         Machine::X86_64 => 62,
-        _ => 3,
+        Machine::I386 => 3,
     };
     put(&mut out, 16, 2, 2);
     put(&mut out, 18, em, 2);
@@ -267,7 +278,7 @@ pub fn write_skeleton(
     let base = 24 + 3 * w + 4;
     put(&mut out, base, if class64 { 64 } else { 52 }, 2);
     put(&mut out, base + 2, phentsize, 2);
-    put(&mut out, base + 4, placement.segments.len() as u64, 2);
+    put(&mut out, base + 4, u64::from(placement.segments.len()), 2);
     put(&mut out, base + 6, shentsize, 2);
     put(&mut out, base + 8, shnum, 2);
     put(&mut out, base + 10, shnum - 1, 2);
@@ -347,8 +358,7 @@ pub fn check_g(elf: &Elf) -> Vec<String> {
             if s.addr < p.vaddr + p.filesz {
                 v.push(format!("L-4: {} at {:#x} inside p_filesz", s.name, s.addr));
             }
-        } else if s.addr + s.size > p.vaddr + p.filesz
-            || s.offset != p.offset + (s.addr - p.vaddr)
+        } else if s.addr + s.size > p.vaddr + p.filesz || s.offset != p.offset + (s.addr - p.vaddr)
         {
             v.push(format!("{}: bytes not where its PT_LOAD maps them", s.name));
         }
@@ -457,9 +467,10 @@ pub fn check_g(elf: &Elf) -> Vec<String> {
     }
     // L-17
     for p in elf.segments.iter().filter(|p| p.ty == PT_GNU_PROPERTY) {
-        let ok = elf.sections.iter().any(|s| {
-            s.name == ".note.gnu.property" && s.addr == p.vaddr && s.size == p.memsz
-        });
+        let ok = elf
+            .sections
+            .iter()
+            .any(|s| s.name == ".note.gnu.property" && s.addr == p.vaddr && s.size == p.memsz);
         if !ok {
             v.push("L-17: PT_GNU_PROPERTY is not .note.gnu.property".into());
         }
@@ -467,10 +478,9 @@ pub fn check_g(elf: &Elf) -> Vec<String> {
     // L-18
     for s in &elf.sections {
         if s.flags & SHF_ALLOC == 0 && s.ty != SHT_NOBITS && s.ty != 0 && s.size > 0 {
-            let overlap =
-                loads.iter().any(|p| {
-                    p.filesz > 0 && s.offset < p.offset + p.filesz && s.offset + s.size > p.offset
-                });
+            let overlap = loads.iter().any(|p| {
+                p.filesz > 0 && s.offset < p.offset + p.filesz && s.offset + s.size > p.offset
+            });
             if overlap {
                 v.push(format!("L-18: {} in a PT_LOAD's file image", s.name));
             }
