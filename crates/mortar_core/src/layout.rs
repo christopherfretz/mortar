@@ -410,13 +410,30 @@ impl Chunk {
         self.kind == ChunkKind::Synthetic(Synth::RELRO_PADDING)
     }
 
-    /// The `PT_LOAD` class of an alloc chunk (`spec/layout.md` L-65), `None`
-    /// for a non-alloc one.
+    /// Whether the chunk is part of an x86-64 large output section
+    /// (`SHF_X86_64_LARGE`, `spec/layout.md` L-36, L-36a). Layout keeps
+    /// the flag only on x86-64, so on another machine it is never set.
+    #[must_use]
+    pub fn is_large(&self) -> bool {
+        self.flags & mortar_elf::consts::SHF_X86_64_LARGE != 0
+    }
+
+    /// The `PT_LOAD` class of an alloc chunk (`spec/layout.md` L-65,
+    /// L-36a), `None` for a non-alloc one.
     #[must_use]
     pub fn load_class(&self) -> Option<LoadClass> {
         use mortar_elf::consts::{SHF_EXECINSTR, SHF_WRITE};
         if !self.is_alloc() {
             return None;
+        }
+        if self.is_large() {
+            return Some(if self.flags & SHF_WRITE != 0 {
+                LoadClass::LargeRw
+            } else if self.flags & SHF_EXECINSTR != 0 {
+                LoadClass::LargeRx
+            } else {
+                LoadClass::LargeR
+            });
         }
         Some(if self.relro {
             LoadClass::Relro
@@ -467,6 +484,13 @@ pub enum LoadClass {
     Relro,
     /// Writable: rank 8 (and rank 7 under `-z norelro`).
     Rw,
+    /// x86-64 `.lrodata` (L-36a): its own read-only `PT_LOAD` after every
+    /// small section.
+    LargeR,
+    /// x86-64 `.ltext` (L-36a): its own read-and-execute `PT_LOAD`.
+    LargeRx,
+    /// x86-64 `.ldata` then `.lbss` (L-36a): one writable `PT_LOAD`.
+    LargeRw,
 }
 
 impl LoadClass {
@@ -475,9 +499,9 @@ impl LoadClass {
     pub const fn p_flags(self) -> u32 {
         use mortar_elf::consts::{PF_R, PF_W, PF_X};
         match self {
-            Self::R => PF_R,
-            Self::Rx => PF_R | PF_X,
-            Self::Relro | Self::Rw => PF_R | PF_W,
+            Self::R | Self::LargeR => PF_R,
+            Self::Rx | Self::LargeRx => PF_R | PF_X,
+            Self::Relro | Self::Rw | Self::LargeRw => PF_R | PF_W,
         }
     }
 }

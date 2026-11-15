@@ -84,13 +84,33 @@ pub struct Mention {
     pub sym_type: u8,
     /// `st_other & 3`: `STV_*`.
     pub visibility: u8,
-    /// `st_shndx`, decoded.
+    /// `st_shndx`, decoded; on x86-64 `SHN_X86_64_LCOMMON` is given as
+    /// `Common` with [`Mention::large`] set (§3.3).
     pub place: SymbolSection,
     /// `st_value`: the alignment for a common, the value for an absolute,
     /// the offset in its section otherwise.
     pub value: u64,
     /// `st_size`.
     pub size: u64,
+    /// x86-64: the entry's `st_shndx` is `SHN_X86_64_LCOMMON` (a large
+    /// common, §3.3, `spec/x64.md` X-55); `place` is then `Common`.
+    pub large: bool,
+}
+
+/// `st_shndx` as a mention's place and whether it is a large common
+/// (§3.3): on x86-64, `SHN_X86_64_LCOMMON` is a common symbol, allocated
+/// in `.lbss` when every common mention of its key is one; on another
+/// machine the index stays `Reserved` and is refused (§2).
+#[must_use]
+pub fn place_of(machine: Machine, place: SymbolSection) -> (SymbolSection, bool) {
+    match place {
+        SymbolSection::Reserved(mortar_elf::consts::SHN_X86_64_LCOMMON)
+            if machine == Machine::X86_64 =>
+        {
+            (SymbolSection::Common, true)
+        }
+        p => (p, false),
+    }
 }
 
 impl Mention {

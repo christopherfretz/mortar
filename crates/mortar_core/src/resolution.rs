@@ -173,6 +173,11 @@ pub struct CommonShape {
     pub size: u64,
     /// log2 of the alignment.
     pub align: u8,
+    /// x86-64: every common mention of the key is `SHN_X86_64_LCOMMON`
+    /// (§3.3, `spec/x64.md` X-55), so it is allocated in `.lbss`
+    /// (`spec/layout.md` L-88); a key with one `SHN_COMMON` mention is a
+    /// small common. Always `false` on another machine.
+    pub large: bool,
 }
 
 /// How a section is handled, classified once (§3.3 `kind`).
