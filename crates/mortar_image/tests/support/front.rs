@@ -367,7 +367,13 @@ pub fn write_with(
             })
             .collect();
         let opts = OutputOptions::executable(ids);
-        link::write(link, out, &opts, &mut |_, _| {})
+        let mut phases = Vec::new();
+        let w = link::write(link, out, &opts, &mut |n, name| phases.push((n, name.to_owned())));
+        if w.is_ok() {
+            // I-116: the image's phases end in order, for `--time-phases`.
+            assert_eq!(phases, [(100, "image".to_owned()), (105, "output".to_owned())]);
+        }
+        w
     })
 }
 

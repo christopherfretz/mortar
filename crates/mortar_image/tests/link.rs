@@ -521,15 +521,28 @@ fn i40_compares_with_gnu_ld() {
 }
 
 /// I-40, layout L-103: with no entry symbol, `e_entry` is 0 (the gABI's
-/// "no entry point") and layout's warning says so.
+/// "no entry point") and layout's warning says so. The one object has a
+/// `.note.gnu.property` (BTI and PAC, `-mbranch-protection=standard`),
+/// which the output keeps (S-94) and plumb checks (P1, P2). `w` keeps the
+/// RW segment non-empty: layout writes an empty RW PT_LOAD when there is
+/// no writable data, which eu-elflint rejects (a layout follow-up).
 #[test]
 fn i40_no_entry_writes_zero() {
     let dir = Scratch::new("image-link-noentry");
     if objects(&dir, false).is_none() {
         return;
     }
+    std::fs::write(dir.join("p.c"), "int w = 1;\nint v(int x) { return x + w; }\n").unwrap();
+    let o = mortar_testutil::run_with(
+        std::process::Command::new(tool("gcc").unwrap())
+            .args(["-c", "-O1", "-mbranch-protection=standard", "-o", "p.o", "p.c"])
+            .current_dir(dir.path()),
+        b"",
+        Duration::from_mins(1),
+    );
+    assert!(o.success(), "gcc: {}", o.stderr_text());
     let f = front(
-        &["-maarch64linux", "-static", "-o", "out", "b.o"],
+        &["-maarch64linux", "-static", "-o", "out", "p.o"],
         dir.path(),
         2,
         StorePolicy::Staged,
@@ -539,10 +552,15 @@ fn i40_no_entry_writes_zero() {
         "{:?}",
         f.placed.warnings
     );
+    assert!(f.property.exists(), "the property note is kept");
     let out = dir.join("out");
     write(&f, &out).unwrap_or_else(|e| panic!("image: {:?}", e.diagnostics));
     let bytes = std::fs::read(&out).unwrap();
     assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 0);
+    let notes = check_tool("readelf", &["-nW"], &out).unwrap_or_default();
+    assert!(notes.is_empty() || notes.contains("BTI, PAC"), "{notes}");
+    let segs = check_tool("readelf", &["-lW"], &out).unwrap_or_default();
+    assert!(segs.is_empty() || segs.contains("GNU_PROPERTY"), "{segs}");
     elflint(&out);
     plumb(&f, &out);
 }
