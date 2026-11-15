@@ -29,6 +29,8 @@ pub const MODES: &[&str] =
 /// The samples: named sets of test directories (relative to
 /// `libcxx/test`) with a shard.
 pub const SAMPLES: &[(&str, &[&str], Option<&str>)] = &[
+    // The whole suite (`--full`), as kiln's release runs take it.
+    ("full", &["std", "libcxx"], None),
     ("vector", &["std/containers/sequences/vector"], None),
     (
         "wp033",
@@ -55,6 +57,9 @@ struct Args {
     report: Option<PathBuf>,
     mortar: Option<PathBuf>,
     keep: bool,
+    /// `--out <dir>`: the run's directory (one subdirectory per mode),
+    /// kept; else a scratch directory, removed.
+    out: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -68,6 +73,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         report: None,
         mortar: None,
         keep: false,
+        out: None,
     };
     let mut sample = None;
     let mut it = args.iter();
@@ -88,6 +94,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 }
             }
             "--sample" => sample = Some(value("--sample")?),
+            "--full" => sample = Some("full".to_owned()),
             "--shard" => a.shard = Some(value("--shard")?),
             "-j" | "--jobs" => {
                 a.jobs = value("-j")?
@@ -100,6 +107,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--keep" => a.keep = true,
             "--report" => a.report = Some(PathBuf::from(value("--report")?)),
             "--mortar" => a.mortar = Some(PathBuf::from(value("--mortar")?)),
+            "--out" => a.out = Some(PathBuf::from(value("--out")?)),
             s if s.starts_with('-') => return Err(format!("unknown argument '{s}'")),
             s => a.dirs.push(s.to_owned()),
         }
@@ -190,8 +198,9 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         None
     };
     let me = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-    let scratch =
-        crate::linktest::build_dir().join("mason").join(format!("libcxx-{}", std::process::id()));
+    let scratch = args.out.clone().unwrap_or_else(|| {
+        crate::linktest::build_dir().join("mason").join(format!("libcxx-{}", std::process::id()))
+    });
     let mut modes = Vec::new();
     for m in &args.modes {
         let dir = scratch.join(m);
@@ -225,6 +234,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
             .env("MASON_LANE", &lane_scripts)
             .env("MASON_LD", if m.starts_with("mortar") { "mortar" } else { m.as_str() })
             .env("MASON_LOG", &log)
+            .env("MASON_TIMES", dir.join("times.tsv"))
             .env("MASON_XTASK", &me)
             .env("MASON_PLUMB", if args.plumb { "1" } else { "0" })
             .env("KILN_STATS_LOG", &stats);
@@ -291,7 +301,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     if let Some(p) = &args.report {
         std::fs::write(p, &report).map_err(|e| format!("{}: {e}", p.display()))?;
     }
-    if args.keep {
+    if args.keep || args.out.is_some() {
         println!("xtask mason libcxx: kept {}", scratch.display());
     } else {
         let _ = std::fs::remove_dir_all(&scratch);

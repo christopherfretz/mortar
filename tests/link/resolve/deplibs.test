@@ -1,0 +1,46 @@
+# `.deplibs` (`SHT_LLVM_DEPENDENT_LIBRARIES`, Clang's `#pragma comment(lib,
+# ...)`): mortar consumes the section and does not load the libraries it
+# names, as GNU ld and mold (which copy it into the output as a non-alloc
+# section) do. lld loads them (`--dependent-libraries`, its default) and
+# fails when one is missing, so it is not run here. A specifier naming a
+# library that does not exist changes nothing; the section is not in
+# mortar's output. (WP-034, the reproducer of tests/mason/repro/deplibs.s.)
+#@ spec: resolve.md §10
+#@ requires: clang
+#@ skip(lld): lld loads the libraries `.deplibs` names (resolve.md §10)
+#@ anomaly(mold): A11
+
+as(clang) start-%{arch}.s -o start.o
+link ld start.o -o prog
+run prog
+  exit: 42
+check(mortar) readelf -SW prog
+  not: .deplibs
+
+#--- start-aarch64.s
+	.section .deplibs,"MS",@llvm_dependent_libraries,1
+	.asciz "mortar-no-such-library"
+	.text
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+#--- start-x86_64.s
+	.section .deplibs,"MS",@llvm_dependent_libraries,1
+	.asciz "mortar-no-such-library"
+	.text
+	.globl	_start
+_start:
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+#--- start-i386.s
+	.section .deplibs,"MS",@llvm_dependent_libraries,1
+	.asciz "mortar-no-such-library"
+	.text
+	.globl	_start
+_start:
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80

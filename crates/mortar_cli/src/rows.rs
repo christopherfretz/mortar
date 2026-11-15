@@ -156,7 +156,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("remap-inputs-file")], Arg::Required(Values::Any), "FILE", GL, &[], Group::Inputs, Refused, Lands::Other, "Remap inputs as FILE says"),
     r(&[g("remap-inputs")], Arg::Required(Values::Any), "PATTERN=FILE", GL, &[], Group::Inputs, Refused, Lands::Other, "Read FILE for the inputs matching PATTERN"),
     r(&[x("dependent-libraries")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Link the libraries inputs ask for (default)"),
-    r(&[x("no-dependent-libraries")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Ignore the libraries inputs ask for"),
+    r(&[x("no-dependent-libraries")], Arg::None, "", L, &[], Group::Inputs, Noop("mortar never loads the libraries .deplibs sections name (resolve.md §10)"), Lands::Other, "Ignore the libraries inputs ask for (mortar's behavior, always on)"),
     r(&[x("fortran-common")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Take archive members that define common symbols (mortar's behavior, always on)"),
     r(&[x("no-fortran-common")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Do not take archive members for common symbols"),
     r(&[x("warn-backrefs")], Arg::None, "", L, &[], Group::Inputs, Supported, Lands::WarnBackrefs(true), "Warn when an archive member is taken for an earlier reference"),

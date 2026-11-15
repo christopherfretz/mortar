@@ -1581,7 +1581,14 @@ fn s10_classification_table() {
             MSection::new(".llvm_addrsig", 0x6fff_4c03, SHF_EXCLUDE),
             Ok((K::Excluded, dropped(DropReason::Excluded))),
         ),
-        (MSection::new(".deplibs", 0x6fff_4c04, 0), Err(())),
+        // WP-034: consumed, its specifiers not honoured (GNU ld, mold).
+        (
+            MSection {
+                entsize: 1,
+                ..MSection::new(".deplibs", 0x6fff_4c04, SHF_MERGE | SHF_STRINGS)
+            },
+            Ok((K::Excluded, dropped(DropReason::Consumed))),
+        ),
         (MSection::new(".llvm.odrtab", 0x6fff_4c00, 0), Err(())),
         (
             MSection::new(".gnu.lto_.x", SHT_PROGBITS, SHF_EXCLUDE),

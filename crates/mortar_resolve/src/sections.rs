@@ -21,8 +21,8 @@ pub const SHF_AARCH64_PURECODE: u64 = 0x2000_0000;
 /// Why a section is refused (§10's refusal rows).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SectionRefusal {
-    /// `SHT_LLVM_DEPENDENT_LIBRARIES` or another `SHT_LLVM_*` type that
-    /// is not ignorable.
+    /// An `SHT_LLVM_*` type that is not ignorable (`SHT_LLVM_ODRTAB`,
+    /// `SHT_LLVM_LINKER_OPTIONS`, ...).
     LlvmType(u32),
     /// A dynamic-linking section type in a relocatable object.
     DynamicType(u32),
@@ -147,7 +147,10 @@ pub fn classify(
         SHT_AARCH64_ATTRIBUTES if machine == Machine::AArch64 => {
             return Ok((K::Excluded, Note::None));
         }
-        SHT_LLVM_DEPENDENT_LIBRARIES => return Err(SectionRefusal::LlvmType(s.sh_type)),
+        // §10 (WP-034): the library specifiers are not honoured (GNU ld,
+        // mold); a library not loaded can only surface as a named
+        // undefined symbol, never as a different output.
+        SHT_LLVM_DEPENDENT_LIBRARIES => return Ok((K::Excluded, Note::None)),
         t if (0x6fff_4c00..=0x6fff_4cff).contains(&t) => {
             return Err(SectionRefusal::LlvmType(t));
         }
@@ -229,14 +232,17 @@ pub fn state(
 
 /// The reason an `Excluded` kind is dropped: `Consumed` for the kinds
 /// §10 says the linker consumes (`.llvm_addrsig`, the call-graph profile,
-/// `.gnu.warning*`, AArch64's `.ARM.attributes`), `Excluded` for
+/// `.deplibs`, `.gnu.warning*`, AArch64's `.ARM.attributes`), `Excluded` for
 /// `SHF_EXCLUDE` and `.gnu.lto_*`.
 pub fn excluded_reason(s: &SectionInfo<'_>, note: Note) -> DropReason {
     let consumed = matches!(note, Note::GnuWarning | Note::GnuWarningSym)
         || (s.flags & SHF_EXCLUDE == 0
             && matches!(
                 s.sh_type,
-                SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE | SHT_AARCH64_ATTRIBUTES
+                SHT_LLVM_ADDRSIG
+                    | SHT_LLVM_CALL_GRAPH_PROFILE
+                    | SHT_LLVM_DEPENDENT_LIBRARIES
+                    | SHT_AARCH64_ATTRIBUTES
             ));
     if consumed { DropReason::Consumed } else { DropReason::Excluded }
 }

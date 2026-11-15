@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-471 rows: 43 supported, 2 partial, 27 noop, 399 refused.
+471 rows: 43 supported, 2 partial, 28 noop, 398 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's own.
 
@@ -102,7 +102,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--remap-inputs-file` | FILE | GNU, lld | all | refused | `other` | Remap inputs as FILE says |
 | `--remap-inputs` | PATTERN=FILE | GNU, lld | all | refused | `other` | Read FILE for the inputs matching PATTERN |
 | `--dependent-libraries` |  | lld | all | refused | `other` | Link the libraries inputs ask for (default) |
-| `--no-dependent-libraries` |  | lld | all | refused | `other` | Ignore the libraries inputs ask for |
+| `--no-dependent-libraries` |  | lld | all | noop: mortar never loads the libraries .deplibs sections name (resolve.md §10) | `other` | Ignore the libraries inputs ask for (mortar's behavior, always on) |
 | `--fortran-common` |  | lld | all | refused | `other` | Take archive members that define common symbols (mortar's behavior, always on) |
 | `--no-fortran-common` |  | lld | all | refused | `other` | Do not take archive members for common symbols |
 | `--warn-backrefs` |  | lld | all | supported | `diagnostics.warn_backrefs` | Warn when an archive member is taken for an earlier reference |

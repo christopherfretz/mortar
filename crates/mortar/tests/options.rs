@@ -55,6 +55,8 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--as-needed", Same(&["--as-needed"], Some(shared_objects_are_refused))),
     ("--no-as-needed", Same(&["--no-as-needed"], Some(shared_objects_are_refused))),
     ("-Bstatic", Check(bstatic)),
+    // Its reason: tests/link/resolve/deplibs.test (resolve.md §10).
+    ("--no-dependent-libraries", Same(&["--no-dependent-libraries"], None)),
     ("--warn-backrefs", Check(backrefs)),
     ("--no-warn-backrefs", Check(backrefs)),
     ("-L", Check(libraries)),

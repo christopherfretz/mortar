@@ -580,11 +580,14 @@ The status today (WP-027d; `docs/status/options.md` has the list):
 - 2 rows are `partial`: `--build-id` (`=md5`, `=uuid`; `spec/synth.md`
   S-91) and `--fix-cortex-a53-843419` (`=adr`, `=adrp`; `spec/a64.md`
   §11.2).
-- 27 rows are `noop`; the audit links each to the same bytes as the line
+- 28 rows are `noop`; the audit links each to the same bytes as the line
   without it and checks its reason where it can be checked.
   `--as-needed`, `--no-as-needed` (only shared objects, refused by name)
   and `--hash-style` (only dynamic outputs, refused by name) were
-  `supported` before WP-027d.
+  `supported` before WP-027d. `--no-dependent-libraries` became `noop`
+  in WP-034 (it is what mortar always does: `spec/resolve.md` §10
+  "Dependent libraries"); `--dependent-libraries`, lld's default, stays
+  `refused` until the specifiers are honoured (the later row there).
 - 402 rows are `refused`, `--gc-sections` among them (`spec/image.md`
   I-5): it was `supported` while every link that used it was refused by
   liveness.

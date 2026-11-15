@@ -750,7 +750,15 @@ impl Ctx<'_, '_, '_> {
                 let (class, name) = match why {
                     SectionRefusal::LlvmType(t)
                     | SectionRefusal::DynamicType(t)
-                    | SectionRefusal::Type(t) => (C::SectionType, format!("{t:#x}")),
+                    | SectionRefusal::Type(t) => (
+                        C::SectionType,
+                        // A known type by its name (`SHT_LLVM_ODRTAB`), else
+                        // the number.
+                        self.view
+                            .machine()
+                            .section_type_name(*t)
+                            .map_or_else(|| format!("{t:#x}"), str::to_owned),
+                    ),
                     SectionRefusal::Flags(f) => (C::SectionFlag, format!("{f:#x}")),
                     SectionRefusal::Linkonce => (C::Feature, ".gnu.linkonce sections".to_owned()),
                     SectionRefusal::Zdebug => {
