@@ -80,8 +80,7 @@ fn undefined(view: &View<'_, '_>, key: SymKey, acc: &Acc) -> Diagnostic {
     // D-12: a definition only a closure file has is not a candidate.
     if let Some(id) = key.as_global() {
         let c = view.closure_only;
-        if let Some(&(_, file)) = c.get(c.partition_point(|row| row.0 < id)).filter(|r| r.0 == id)
-        {
+        if let Some(&(_, file)) = c.get(c.partition_point(|row| row.0 < id)).filter(|r| r.0 == id) {
             let path = file_text(&view.inputs.files[file].display());
             d = d.note(format!("defined in {path}, which is not on the command line"));
         }
