@@ -34,6 +34,7 @@ mortar_script   = { path = "crates/mortar_script" }
 mortar_synth    = { path = "crates/mortar_synth" }
 mortar_testutil = { path = "crates/mortar_testutil" }
 mortar_x64      = { path = "crates/mortar_x64" }
+mortar_x86      = { path = "crates/mortar_x86" }
 xtask           = { path = "xtask" }
 # Third-party (each approved in a work package; docs/AGENTS.md rule 3).
 # signal-hook: xtask, and only xtask, kills its children and returns its
