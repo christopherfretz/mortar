@@ -10,6 +10,7 @@
 #@ spec: dyn.md "2.1 Default link lines"
 #@ arch: aarch64 x86_64
 #@ requires: g++
+#@ anomaly(lld): A25
 
 cxx -O2 hello.cc -o hello.o
 link g++ -static-libstdc++ hello.o -o pie

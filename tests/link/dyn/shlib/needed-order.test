@@ -33,6 +33,7 @@
 #@ spec: dyn.md "D-11"
 #@ arch: aarch64 x86_64
 #@ fixture: needed-libs
+#@ anomaly(lld,mold): A26
 
 cc -O1 -fPIE -DREFS=f_nx() main.c -o main_x.o
 cc -O1 -fPIE "-DREFS=f_na()+f_nz()" main.c -o main_z.o

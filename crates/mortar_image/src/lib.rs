@@ -24,6 +24,7 @@
 
 pub mod digest;
 pub mod dynamic;
+pub mod dynrel;
 mod eh;
 pub mod fill;
 pub mod headers;

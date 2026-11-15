@@ -21,6 +21,7 @@
 #@ arch: aarch64 x86_64
 #@ requires: g++
 #@ fixture: reloc-libd
+#@ anomaly(bfd): A21
 
 cxx -O1 -fno-pic main.cc -o main.o
 link g++ -no-pie main.o -L. -ld -o prog

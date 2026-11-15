@@ -28,7 +28,7 @@ use mortar_synth::{InterpPlan, SynthError, Window};
 use crate::map::{self, DynRecords};
 
 /// The addresses `.dynamic` names, as the image knows them after layout.
-pub trait DynAddrs: Sync {
+pub trait DynamicAddrs: Sync {
     /// A synthetic chunk's `(address, size)`; `None` when it does not
     /// exist.
     fn chunk(&self, kind: SynthKind) -> Option<(u64, u64)>;
@@ -46,7 +46,7 @@ pub trait DynAddrs: Sync {
 /// # Errors
 ///
 /// `internal-error` naming the missing chunk, section, symbol or string.
-pub fn value(v: DynValue, dynstr: &DynStr, addrs: &dyn DynAddrs) -> Result<u64, SynthError> {
+pub fn value(v: DynValue, dynstr: &DynStr, addrs: &dyn DynamicAddrs) -> Result<u64, SynthError> {
     let missing = |what: String| internal::<SynthError>(format!(".dynamic names {what}"));
     let chunk = |k: SynthKind| {
         addrs.chunk(k).ok_or_else(|| {
@@ -91,7 +91,7 @@ pub fn value(v: DynValue, dynstr: &DynStr, addrs: &dyn DynAddrs) -> Result<u64, 
 pub struct DynamicChunk<'a> {
     pub plan: &'a DynamicPlan,
     pub dynstr: &'a DynStr,
-    pub addrs: &'a dyn DynAddrs,
+    pub addrs: &'a dyn DynamicAddrs,
 }
 
 impl std::fmt::Debug for DynamicChunk<'_> {
@@ -131,7 +131,7 @@ impl SynthChunk for DynamicChunk<'_> {
 /// `_DYNAMIC`'s value (D-32; layout's table, resolve §8.1): the address
 /// of `.dynamic`, in `Exec`, `Pie` and `StaticPie`; `None` without one.
 #[must_use]
-pub fn dynamic_symbol(addrs: &dyn DynAddrs) -> Option<u64> {
+pub fn dynamic_symbol(addrs: &dyn DynamicAddrs) -> Option<u64> {
     addrs.chunk(SynthKind::Dynamic).map(|(at, _)| at)
 }
 
@@ -172,7 +172,7 @@ mod tests {
     use mortar_synth::dynamic::DynamicInputs;
 
     struct Addrs;
-    impl DynAddrs for Addrs {
+    impl DynamicAddrs for Addrs {
         fn chunk(&self, kind: SynthKind) -> Option<(u64, u64)> {
             match kind {
                 SynthKind::Dynstr => Some((0x400, 0x80)),

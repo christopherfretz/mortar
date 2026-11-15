@@ -7,7 +7,7 @@
 //! problems gathered in any order gives the order of the diagnostics.
 
 use mortar_core::{ComdatId, FileId, OptId, SymEntry, SymbolId};
-use mortar_elf::SectionIndex;
+use mortar_elf::{SectionIndex, SymbolIndex};
 
 use crate::sections::SectionRefusal;
 
@@ -67,8 +67,25 @@ pub struct DefPlace {
 /// What went wrong, with the data its message needs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum What {
-    /// `Refused{Feature, "shared objects as input"}` (§1.2, until M2).
-    SharedObject { file: FileId },
+    /// `undefined-symbol` for a judged reference of a needed or used
+    /// shared object (`spec/dyn.md` D-13): entry `index` of `file`'s
+    /// `.dynsym` refers to `key`, which nothing satisfies. A warning under
+    /// `--warn-unresolved-symbols`.
+    ShlibUndefined { file: FileId, index: SymbolIndex, key: SymbolId, warn: bool },
+    /// `non-exported-symbol` (§3.5): a needed or used shared object
+    /// (`entry`) refers to `key`, whose program definition `def` is hidden
+    /// and which no live shared object defines.
+    NonExported { key: SymbolId, def: SymEntry, entry: SymEntry },
+    /// `Refused{Feature, "archive member needed by an --as-needed shared
+    /// object"}` (`spec/dyn.md` D-12, Q1): `entry`, a strong reference of
+    /// an as-needed shared object found needed, names `key`, which only
+    /// the unextracted lazy file `member` defines.
+    AsNeededExtraction { key: SymbolId, entry: SymEntry, member: FileId },
+    /// `Refused{Feature, ..}` (`spec/dyn.md` D-19a): the keeping mention of
+    /// the needed object `file` depends on a mention whose `AS_NEEDED` or
+    /// group state the input tables do not record (a second mention of
+    /// one soname inside a linker script).
+    NeededOrderUnknown { file: FileId },
     /// `Refused{FileFormat, "GCC LTO object"}` (§10).
     LtoSlim { file: FileId },
     /// `Refused{SymbolBinding, <0x..>}` (§1.2).
@@ -149,7 +166,8 @@ impl Problem {
             | What::CommonOverridden { .. }
             | What::ArchiveBackref { .. }
             | What::ArchiveChoice { .. }
-            | What::GnuWarning { .. } => Severity::Warning,
+            | What::GnuWarning { .. }
+            | What::ShlibUndefined { warn: true, .. } => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -158,7 +176,8 @@ impl Problem {
     #[must_use]
     pub fn id(&self) -> &'static str {
         match self.what {
-            What::SharedObject { .. }
+            What::AsNeededExtraction { .. }
+            | What::NeededOrderUnknown { .. }
             | What::LtoSlim { .. }
             | What::SymbolBinding { .. }
             | What::WeakCommon { .. }
@@ -179,6 +198,8 @@ impl Problem {
             What::ArchiveBackref { .. } => "archive-backref",
             What::ArchiveChoice { .. } => "archive-choice",
             What::GnuWarning { .. } => "gnu-warning",
+            What::ShlibUndefined { .. } => "undefined-symbol",
+            What::NonExported { .. } => "non-exported-symbol",
         }
     }
 }

@@ -65,10 +65,17 @@ fn class(sh_type: u32, flags: u64) -> Class {
 
 /// The named rows of the rank table: name, rank, within, and the class the
 /// name's flags must have for the row to apply.
-const NAMED: [(&[u8], u8, u8, Class); 30] = [
+const NAMED: [(&[u8], u8, u8, Class); 38] = [
+    (b".interp", 1, 0, Class::Ro),
     (b".note.gnu.property", 2, 0, Class::Note),
     (b".note.gnu.build-id", 2, 1, Class::Note),
     (b".note.ABI-tag", 2, 2, Class::Note),
+    (b".gnu.hash", 3, 0, Class::Ro),
+    (b".dynsym", 3, 1, Class::Ro),
+    (b".dynstr", 3, 2, Class::Ro),
+    (b".gnu.version", 3, 3, Class::Ro),
+    (b".gnu.version_d", 3, 4, Class::Ro),
+    (b".gnu.version_r", 3, 5, Class::Ro),
     (b".rela.dyn", 4, 0, Class::Ro),
     (b".rel.dyn", 4, 0, Class::Ro),
     (b".relr.dyn", 4, 1, Class::Ro),
@@ -96,7 +103,39 @@ const NAMED: [(&[u8], u8, u8, Class); 30] = [
     (b".data", 8, 1, Class::Rw),
     (b".tm_clone_table", 8, 2, Class::Rw),
     (b".bss", 8, 4, Class::RwNobits),
+    (b".dynbss", 8, 4, Class::RwNobits),
 ];
+
+/// The output section a synthetic chunk joins when the output has one of
+/// that name (`spec/dyn.md` D-42, D-60): `.dynbss` is the first chunk of
+/// `.bss`; every other synthetic chunk joins the section of its own name
+/// (`.eh_frame`, `.bss.rel.ro`).
+#[must_use]
+pub fn home(name: &[u8]) -> &[u8] {
+    if name == b".dynbss" { b".bss" } else { name }
+}
+
+/// Whether a synthetic chunk leads its output section: the copy chunks
+/// come before the inputs of the section they join (D-60: `.bss` "with
+/// `.dynbss` first"; L-60 rank 7: the copy chunk of `.bss.rel.ro`, "then
+/// input `.bss.rel.ro`"). Every other joining chunk follows the inputs.
+#[must_use]
+pub fn leads(name: &[u8]) -> bool {
+    name == b".dynbss" || name == b".bss.rel.ro"
+}
+
+/// The options the rank of a name depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Z {
+    /// `-z now`: `.got.plt` is RELRO, after `.got` (L-60 rank 7).
+    pub now: bool,
+    /// `-z relro` (the default). Under `-z norelro`, `.bss.rel.ro` is
+    /// "placed as an ordinary writable section" (D-42, L-80): ranked as a
+    /// writable `NOBITS` orphan (L-48), after `.bss`, where lld 19 puts it
+    /// (measured, WP-049). Left in rank 7 it would be a `NOBITS` chunk
+    /// before the `PROGBITS` of rank 8 in one `PT_LOAD` (L-69).
+    pub relro: bool,
+}
 
 /// The non-allocated sections of rank 10 (L-63).
 const SYMBOL_TABLES: [&[u8]; 4] = [b".symtab", b".symtab_shndx", b".strtab", b".shstrtab"];
@@ -115,9 +154,19 @@ pub fn rank_of(name: &[u8], sh_type: u32, flags: u64) -> Rank {
 /// link: nothing is bound lazily).
 #[must_use]
 pub fn rank_with(name: &[u8], sh_type: u32, flags: u64, now: bool) -> Rank {
+    rank_in(name, sh_type, flags, Z { now, relro: true })
+}
+
+/// [`rank_of`] under the options `z` (`rank_with`, and `.bss.rel.ro`
+/// under `-z norelro`).
+#[must_use]
+pub fn rank_in(name: &[u8], sh_type: u32, flags: u64, z: Z) -> Rank {
     let c = class(sh_type, flags);
-    if now && name == b".got.plt" && c == Class::Rw {
+    if z.now && name == b".got.plt" && c == Class::Rw {
         return Rank::new(7, 10);
+    }
+    if !z.relro && name == b".bss.rel.ro" && c == Class::RwNobits {
+        return Rank::new(8, 5);
     }
     if c == Class::NonAlloc {
         return match SYMBOL_TABLES.iter().position(|&n| n == name) {

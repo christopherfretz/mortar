@@ -327,7 +327,10 @@ pub(crate) fn check_symbols(e: &mut Engine<'_, '_>) {
             // §4.8: STT_GNU_IFUNC at the resolver (GNU ld, mortar), or
             // (lld, mold) a function symbol at an IPLT entry of it.
             let gnu = out.sym.sym_type() == STT_GNU_IFUNC && values.contains(&value);
-            let canonical = matches!(e.format, Format::Lld | Format::Mold)
+            // A dynamic output's canonical IFUNC is that function symbol
+            // for every linker (dyn.md D-23; GNU ld on x86).
+            let dynamic = image.phdrs.iter().any(|p| p.p_type == mortar_elf::consts::PT_DYNAMIC);
+            let canonical = (matches!(e.format, Format::Lld | Format::Mold) || dynamic)
                 && out.sym.sym_type() == STT_FUNC
                 && values.iter().any(|&r| e.iplt.entries_of(r).contains(&value));
             if gnu || canonical {

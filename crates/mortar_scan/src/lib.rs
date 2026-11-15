@@ -13,7 +13,8 @@
 //!    walking its records in record order: decode, the key through
 //!    `sym_map` and `redirect`, `classify`, `arch.scan`, the events of
 //!    §4.4, the window of §3.4's overlap rule and the order check of
-//!    I-29;
+//!    I-29; in a live `SHF_ALLOC | SHF_EXECINSTR` section, the records
+//!    that may be branch sites ([`BranchRec`], for layout's fixed point);
 //! 3. the merge: global flags or-ed into atomics during the pass (I-16:
 //!    read before or); local flags, counts, diagnostics and events
 //!    concatenated in unit order, the events grouped by [`events::merge`]
@@ -30,6 +31,7 @@
 
 pub mod events;
 
+mod copies;
 mod driver;
 mod report;
 mod view;
@@ -120,10 +122,11 @@ pub struct ScanInputs<'a, 's> {
 #[derive(Clone, Copy)]
 pub struct ScanOptions<'a> {
     pub output: OutputKind,
-    /// The output has a dynamic symbol table: an undefined weak key is
-    /// `WeakDyn` rather than `Weak0` (M2). WP-046 replaces this blanket
-    /// rule with the per-key decision of [`weak::weak_classes`]
-    /// (`spec/dyn.md` D-25).
+    /// The output has a dynamic symbol table (`Exec`/`Pie` with
+    /// `.dynamic`; `false` in every static link, static PIE included): an
+    /// undefined weak key may be `WeakDyn`, per key ([`weak::weak_classes`],
+    /// `spec/dyn.md` D-25), and a record in a read-only place is
+    /// `text-relocation` (D-47).
     pub dynamic: bool,
     /// The section mapping's writability (D-25's writable place); `None`
     /// in a static link, which has no weak-dynamic key.
@@ -161,11 +164,32 @@ pub struct Stats {
     pub rewalked: u32,
 }
 
+/// A record of a live `SHF_ALLOC | SHF_EXECINSTR` section for which
+/// `need::branch_candidate` is `Some` (`spec/arch.md` §6 step 1), found by
+/// the scan's walk so that layout need not walk the code's relocations
+/// again (WP-032i). The site is `site.site(flags)` with the key's final
+/// `Demands` flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BranchRec {
+    pub section: SectionId,
+    pub offset: u64,
+    /// The record's index in its relocation section.
+    pub record: u32,
+    pub site: mortar_arch::need::BranchCandidate,
+}
+
 /// What the scan produces (I-15).
 #[derive(Debug, Clone, Default)]
 pub struct Scanned {
     pub demands: Demands,
     pub order: RecIndex,
+    /// The branch candidates of every live code section, one list per
+    /// scan unit that has any, in unit order (`(FileId, section index)`,
+    /// then record order: concatenated, `SectionId` order; kept apart so
+    /// that the scan does not copy them); `need::branch_candidate`
+    /// with the scan's output kind and `RelocAt.leads` set (§3.5: the bit
+    /// only gates a test that fails without a lead).
+    pub branches: Vec<Vec<BranchRec>>,
     /// Every diagnostic of the phase, in unit order and then by group;
     /// the collector orders them by key.
     pub diagnostics: Vec<(Key, Diagnostic)>,
@@ -190,12 +214,14 @@ pub fn scan(
     pool: &Pool,
 ) -> Scanned {
     let mut steps = mortar_core::wp032b_steps::Steps::new("scan");
-    let view = view::View::new(arch, t, *opts);
+    let mut view = view::View::new(arch, t, *opts);
     steps.step("view", 0, "");
     // `spec/dyn.md` D-25: after liveness, before the demands of the walk.
-    let weak = weak::weak_classes(arch, t, opts, opts.sections);
+    let weak = weak::classes(&view, pool);
     steps.step("weak", weak.weak_dyn.count().into(), "key");
     let mut diagnostics = weak.refused;
+    view.weak_dyn = weak.weak_dyn.clone();
+    view.weak_refused = weak.refused_keys;
     let (units, deferred) = driver::units(&view, &mut diagnostics);
     steps.step("units", units.len() as u64, "unit");
     let symbols = t.inputs.symbols.len() as usize;
@@ -255,15 +281,26 @@ pub fn scan(
     let mut locals: Vec<(LocalSym, DemandFlags)> = Vec::new();
     let mut events = Vec::with_capacity(results.len());
     let mut output = mortar_core::demands::GlobalFlags::empty();
-    for o in &mut results {
+    let mut branches: Vec<Vec<BranchRec>> = Vec::new();
+    let mut copy_refs: Vec<(SymbolId, Key, usize, u32)> = Vec::new();
+    for (k, o) in results.iter_mut().enumerate() {
+        let u = &units[k];
+        copy_refs.extend(
+            o.copy_refs.drain(..).map(|(id, r)| (id, driver::key_at(u.file, u.index, r), k, r)),
+        );
         diagnostics.append(&mut o.diags);
         locals.append(&mut o.locals);
+        if !o.branches.is_empty() {
+            branches.push(std::mem::take(&mut o.branches));
+        }
         events.push(std::mem::take(&mut o.events));
         stats.events += o.n_events;
         output |= o.output;
     }
     diagnostics.append(&mut late);
     drop(results);
+    copies::refusals(&view, &units, copy_refs, &mut diagnostics);
+    steps.step("copies", 0, "");
 
     stats.par_calls += u32::from(locals.len() > SORT_RUN);
     pool.unit_cost(10).sort_by_key(&mut locals, |l| l.0);
@@ -301,12 +338,12 @@ pub fn scan(
         local: local.into_boxed_slice(),
         output,
         dyn_relocs: dyn_relocs.into_boxed_slice(),
-        // `spec/dyn.md` D-25: `weak::weak_classes` decides it (the body is
-        // WP-046's); none in a static link.
+        // `spec/dyn.md` D-25: `weak::classes` decided it; none in a
+        // static link.
         weak_dyn: weak.weak_dyn,
     };
     let order = RecIndex::new(permuted, leads).with_deferred(deferred);
-    Scanned { demands, order, diagnostics, stats }
+    Scanned { demands, order, branches, diagnostics, stats }
 }
 
 /// The diagnostics of the sections whose checks are fill's (I-14,

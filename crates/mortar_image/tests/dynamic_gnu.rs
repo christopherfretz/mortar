@@ -35,7 +35,7 @@ use mortar_core::DynStr;
 use mortar_core::id::SymbolId;
 use mortar_elf::Class;
 use mortar_elf::consts::{DT_AARCH64_BTI_PLT, DT_AARCH64_VARIANT_PCS, DT_NULL};
-use mortar_image::dynamic::{DynAddrs, DynamicChunk, GotTable, dynamic_table, reserved_word};
+use mortar_image::dynamic::{DynamicAddrs, DynamicChunk, GotTable, dynamic_table, reserved_word};
 use mortar_synth::chunks::SynthKind;
 use mortar_synth::dynamic::{
     ArraySection, DynKind, DynamicInputs, DynamicPlan, RunpathTag, init_key,
@@ -278,7 +278,7 @@ struct GnuAddrs<'a> {
     elf: &'a Elf,
 }
 
-impl DynAddrs for GnuAddrs<'_> {
+impl DynamicAddrs for GnuAddrs<'_> {
     fn chunk(&self, kind: SynthKind) -> Option<(u64, u64)> {
         // Under `-z now` GNU ld merges `.got.plt` into `.got`, first
         // (D-49, a stated difference: mortar keeps the chunk); its words

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use super::measure::{LINK_LIMITS, Linker, Run, status_of};
 use super::prepare::Prepared;
 use super::record::{Fnv, Link, Status};
+use super::run::Ran;
 use crate::process;
 
 /// How many findings a failed row shows.
@@ -77,7 +78,12 @@ fn rule_list(rules: &[(String, usize)]) -> String {
 ///
 /// # Errors
 /// The child cannot be started.
-pub fn verify(prepared: &Prepared, mortar: &Linker, scratch: &Path) -> Result<Verdict, String> {
+pub fn verify(
+    prepared: &Prepared,
+    mortar: &Linker,
+    scratch: &Path,
+    sources: &Path,
+) -> Result<(Verdict, Option<Ran>), String> {
     let name = &prepared.workload.name;
     let out = scratch.join(format!("{name}-mortar-verify.out"));
     let map = scratch.join(format!("{name}-mortar-verify.map"));
@@ -103,10 +109,27 @@ pub fn verify(prepared: &Prepared, mortar: &Linker, scratch: &Path) -> Result<Ve
         (Status::Refused, detail) => Verdict::Refused(detail),
         (_, detail) => Verdict::Failed(detail),
     };
-    if !matches!(verdict, Verdict::Findings { .. }) {
+    // The program runs from an output the verifier did not find wrong
+    // ("Running the outputs").
+    let ran = match &verdict {
+        Verdict::Clean { .. } | Verdict::NotJudged { .. } => {
+            match super::run::run(prepared, &out, sources, scratch) {
+                Ok(Ran::Differs(how)) => {
+                    Some(Ran::Differs(format!("{how} (kept: {})", out.display())))
+                }
+                Ok(ran) => Some(ran),
+                Err(e) => {
+                    remove();
+                    return Err(e);
+                }
+            }
+        }
+        _ => None,
+    };
+    if !matches!(verdict, Verdict::Findings { .. }) && !matches!(ran, Some(Ran::Differs(_))) {
         remove();
     }
-    Ok(verdict)
+    Ok((verdict, ran))
 }
 
 /// The verifier on a link that wrote `out` and `map`.
@@ -184,12 +207,18 @@ fn read_findings(stdout: &str, kept: PathBuf) -> Verdict {
     Verdict::Findings { count, rules: rules.into_iter().collect(), first, kept }
 }
 
-/// Applies `verdict` to the workload's measured `links`: on a finding,
-/// mortar's rows are `failed` with the findings and lose their figures.
+/// Applies `verdict` and `ran` to the workload's measured `links`: on a
+/// finding, or a program that runs differently from GNU ld's, mortar's
+/// rows are `failed` with what was found and lose their figures.
 /// The golden hash to record: the verified output's, when the timed
 /// warm-up's (`timed`) is the same; a different one fails mortar's rows
 /// too (the bytes timed are not the bytes verified).
-pub fn apply(verdict: &Verdict, links: &mut [Link], timed: Option<&str>) -> Option<String> {
+pub fn apply(
+    verdict: &Verdict,
+    ran: Option<&Ran>,
+    links: &mut [Link],
+    timed: Option<&str>,
+) -> Option<String> {
     let fail = |links: &mut [Link], detail: &str| {
         for l in links.iter_mut().filter(|l| l.linker == super::stats::JUDGED) {
             l.status = Status::Failed;
@@ -198,7 +227,7 @@ pub fn apply(verdict: &Verdict, links: &mut [Link], timed: Option<&str>) -> Opti
             detail.clone_into(&mut l.detail);
         }
     };
-    if let Some(detail) = verdict.row_detail() {
+    if let Some(detail) = verdict.row_detail().or_else(|| ran.and_then(Ran::row_detail)) {
         fail(links, &detail);
         return None;
     }
@@ -251,17 +280,44 @@ pub fn summary(results: &super::record::Results) -> Option<String> {
     for (title, items) in groups.values() {
         let _ = writeln!(s, "  {title} {}: {}", items.len(), items.join(", "));
     }
+    let runs: Vec<(&str, &str)> = results
+        .header
+        .iter()
+        .filter_map(|(k, v)| Some((k.strip_prefix("run.")?, v.as_str())))
+        .collect();
+    if !runs.is_empty() {
+        let mut groups: BTreeMap<u8, (&str, Vec<String>)> = BTreeMap::new();
+        for (w, v) in &runs {
+            let (order, title, item) = if v.starts_with("same") {
+                (0, "the same as GNU ld's", (*w).to_owned())
+            } else if let Some(how) = v.strip_prefix("differs: ") {
+                (1, "DIFFERENT from GNU ld's", format!("{w} ({how})"))
+            } else {
+                (2, "not run", format!("{w} ({})", v.strip_prefix("not run: ").unwrap_or(v)))
+            };
+            groups.entry(order).or_insert((title, Vec::new())).1.push(item);
+        }
+        let _ =
+            writeln!(s, "mortar's programs run once against GNU ld's ({} workloads):", runs.len());
+        for (title, items) in groups.values() {
+            let _ = writeln!(s, "  {title} {}: {}", items.len(), items.join(", "));
+        }
+    }
     Some(s)
 }
 
-/// Whether the verifier found a mortar output wrong in this run.
+/// The workloads whose mortar output the verifier found wrong, or whose
+/// program ran differently from GNU ld's, in this run.
 pub fn found(results: &super::record::Results) -> Vec<String> {
     results
         .header
         .iter()
         .filter_map(|(k, v)| {
-            let w = k.strip_prefix("verify.")?;
-            v.starts_with("findings").then(|| format!("{w}: {v}"))
+            if let Some(w) = k.strip_prefix("verify.") {
+                return v.starts_with("findings").then(|| format!("{w}: {v}"));
+            }
+            let w = k.strip_prefix("run.")?;
+            v.starts_with("differs").then(|| format!("{w}: runs {v}"))
         })
         .collect()
 }
@@ -313,7 +369,7 @@ mod tests {
     #[test]
     fn a_finding_fails_mortars_rows() {
         let mut l = links();
-        assert_eq!(apply(&findings(), &mut l, Some("fnv1a64:1")), None);
+        assert_eq!(apply(&findings(), None, &mut l, Some("fnv1a64:1")), None);
         assert_eq!(l[0].status, Status::Ok);
         for m in &l[1..] {
             assert_eq!((m.status, m.runs, m.figures), (Status::Failed, 0, None));
@@ -332,20 +388,37 @@ mod tests {
     fn the_golden_hash_is_the_verified_outputs() {
         let clean = Verdict::Clean { hash: "fnv1a64:1".to_owned() };
         let mut l = links();
-        assert_eq!(apply(&clean, &mut l, Some("fnv1a64:1")), Some("fnv1a64:1".to_owned()));
+        assert_eq!(apply(&clean, None, &mut l, Some("fnv1a64:1")), Some("fnv1a64:1".to_owned()));
         assert!(l.iter().all(|l| l.status == Status::Ok));
-        assert_eq!(apply(&clean, &mut l, None), None);
+        assert_eq!(apply(&clean, None, &mut l, None), None);
         let mut l = links();
-        assert_eq!(apply(&clean, &mut l, Some("fnv1a64:2")), None);
+        assert_eq!(apply(&clean, None, &mut l, Some("fnv1a64:2")), None);
         assert_eq!(l[1].status, Status::Failed);
         assert!(l[1].detail.contains("is not the verified output"));
+        // "Running the outputs": a program that runs differently fails
+        // mortar's rows as a finding does; the same run changes nothing.
+        let mut l = links();
+        let differs =
+            Ran::Differs("standard output differs from byte 0 (1 bytes, GNU ld's 2)".into());
+        assert_eq!(apply(&clean, Some(&differs), &mut l, Some("fnv1a64:1")), None);
+        assert_eq!(
+            (l[0].status, l[1].status, l[2].status),
+            (Status::Ok, Status::Failed, Status::Failed)
+        );
+        assert!(
+            l[2].detail.starts_with("mortar's output runs differently from GNU ld's: standard")
+        );
+        let mut l = links();
+        let same = Ran::Same { end: process::End::Exit(0), stdout: 3 };
+        assert!(apply(&clean, Some(&same), &mut l, Some("fnv1a64:1")).is_some());
+        assert!(l.iter().all(|l| l.status == Status::Ok));
         for v in [
             Verdict::NotJudged { reason: "pie-or-shared" },
             Verdict::Refused("mortar: error: x".to_owned()),
             Verdict::Failed("killed: time".to_owned()),
         ] {
             let mut l = links();
-            assert_eq!(apply(&v, &mut l, Some("fnv1a64:1")), None, "{v:?}");
+            assert_eq!(apply(&v, None, &mut l, Some("fnv1a64:1")), None, "{v:?}");
             assert!(l.iter().all(|l| l.status == Status::Ok));
         }
     }
@@ -396,6 +469,29 @@ mod tests {
              refused by mortar 1: b (`mortar: error: unsupported option: -pie`)\n"
         );
         assert_eq!(found(&r), ["d: findings 3: C1 1, R1 2"]);
+        r.set("run.a", Ran::Same { end: process::End::Exit(0), stdout: 13 }.text());
+        r.set(
+            "run.e",
+            Ran::Differs("exit status 1 where GNU ld's ended with exit status 0".into()).text(),
+        );
+        r.set("run.c", Ran::NotRun("no `run` in the manifest".into()).text());
+        let text = summary(&r).unwrap();
+        assert!(
+            text.ends_with(
+                "mortar's programs run once against GNU ld's (3 workloads):\n  \
+                 the same as GNU ld's 1: a\n  \
+                 DIFFERENT from GNU ld's 1: e (exit status 1 where GNU ld's ended with exit status 0)\n  \
+                 not run 1: c (no `run` in the manifest)\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(
+            found(&r),
+            [
+                "d: findings 3: C1 1, R1 2",
+                "e: runs differs: exit status 1 where GNU ld's ended with exit status 0"
+            ]
+        );
         r.set("verify", "off");
         assert!(summary(&r).unwrap().contains("OFF (--no-verify)"));
     }

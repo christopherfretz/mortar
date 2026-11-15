@@ -594,14 +594,16 @@ With the reference **after** both (E4, R11), the three disagree:
 | `liba.a m.o libs.so` | `libs.so` (archive already passed) | `liba.a` | `liba.a` | `liba.a` |
 | `--as-needed libs.so m.o` | undefined (GNU drops an as-needed library no earlier object needs, E4) | `libs.so` | `libs.so` | `libs.so` |
 
-A shared object's undefined mentions are edges like an object's (an
-archive member defining a symbol a shared object needs is extracted and
-exported: all three, E4). Whether the references of an `--as-needed`
-shared object that ends up not needed extract archive members is
-`spec/dyn.md` §15 Q1, reopened and measured by WP-043 before its
-implementation; extraction is decided from facts available at load time,
-the same for needed and unneeded objects, and neededness is computed
-after `def` (`spec/dyn.md` D-11), so the rule is not circular.
+A shared object's undefined mentions are edges like an object's when it
+is a command-line shared object whose merged `as_needed` is off (an
+archive member defining a symbol such an object needs is extracted and
+exported: all three, E4). Those of an `--as-needed` shared object and of
+a closure file are never edges; an as-needed object that ends up needed
+with a strong reference only an unextracted member would define is
+refused by name (`spec/dyn.md` D-12, Q1, measured by WP-043). The rule is
+decided at load time and is the same for needed and unneeded objects, and
+neededness is computed after `def` (`spec/dyn.md` D-11), so it is not
+circular.
 
 ### 4.5 Commons and archives
 

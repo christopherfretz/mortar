@@ -603,7 +603,8 @@ impl FillTables for LinkTables<'_, '_> {
     }
 
     fn plt(&self, key: SymKey) -> Option<u64> {
-        self.link.synth.got.iplt_address(&self.got_addrs, key)
+        // `spec/dyn.md` D-44, D-49: a PLT entry (dynamic) or an IPLT one.
+        self.link.synth.got.plt_address(&self.got_addrs, key)
     }
 
     fn flags(&self, key: SymKey) -> DemandFlags {
@@ -646,6 +647,10 @@ impl Tables for LinkTables<'_, '_> {
         };
         let (value, split) = self.sym_value_of(key, true, def);
         (value, split, Some(at))
+    }
+
+    fn section_writable(&self, section: SectionId) -> Option<bool> {
+        Some(self.section_flags(section) & mortar_elf::consts::SHF_WRITE != 0)
     }
 
     fn target_alloc(&self, key: SymKey) -> bool {
