@@ -26,6 +26,7 @@ pub const CLASSES: &[(&str, &str)] = &[
     ("dyn-rel-order", "P-D9 (D-40, D-41)"),
     ("dynsym-value", "P-D5, P-D7"),
     ("dynsym-visibility", "P-D7"),
+    ("dynsym-unique", "P-D7"),
     ("gnu-hash", "P-D5"),
     ("versym", "P-D8"),
     ("version-need", "P-D8"),
@@ -33,6 +34,10 @@ pub const CLASSES: &[(&str, &str)] = &[
     ("relro", "P-D4"),
     ("lazy-slot", "P-D10"),
     ("copy-size", "P-D11"),
+    ("plt0-disp1", "P-D10"),
+    ("plt0-disp2", "P-D10"),
+    ("plt-index", "P-D10"),
+    ("plt-back-jump", "P-D10"),
 ];
 
 /// A candidate: its class, its description and its byte edits.
@@ -167,6 +172,27 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
                     vec![(o + 5, vec![(s.st_other & !3) | 2])],
                 ));
             }
+            // dynsym-unique: an exported STB_GNU_UNIQUE definition made
+            // STB_GLOBAL in `.dynsym` and in its `.symtab` entry (WP-054
+            // case (a), where both were written global).
+            if s.defined() && s.binding() == 10 {
+                let global = (1 << 4) | (s.st_info & 0xf);
+                let mut e = vec![(o + 4, vec![global])];
+                let symtab = image
+                    .sections
+                    .iter()
+                    .find(|x| x.shdr.sh_type == mortar_elf::consts::SHT_SYMTAB);
+                if let (Some(t), Some(x)) =
+                    (symtab, image.global(&s.name).or_else(|| image.unique(&s.name)))
+                    && x.sym.binding() == 10
+                {
+                    e.push((
+                        (t.shdr.sh_offset + 24 * u64::from(x.index)) as usize + 4,
+                        vec![global],
+                    ));
+                }
+                c.push(("dynsym-unique", format!("'{}' unique -> global", s.name), e));
+            }
         }
         // copy-size: the definition a COPY record copies, its size doubled.
         for r in &out.rels {
@@ -278,11 +304,9 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
             }
         }
     }
-    // The lazy words of JUMP_SLOT records (none under -z now: the loader
-    // binds every slot first).
-    let now = out.get(crate::dynout::DT_FLAGS).is_some_and(|f| f & crate::dynout::DF_BIND_NOW != 0)
-        || out.get(DT_FLAGS_1).is_some_and(|f| f & crate::dynout::DF_1_NOW != 0);
-    for r in out.rels.iter().filter(|r| !now && r.plt && kind(m, r.ty) == Kind::JumpSlot) {
+    // The lazy words of JUMP_SLOT records (under -z now too: the shapes
+    // and words stay, D-49, and P-D10 judges them there).
+    for r in out.rels.iter().filter(|r| r.plt && kind(m, r.ty) == Kind::JumpSlot) {
         if let Some(o) = off(image, r.offset, 8) {
             let v = rd(b, o, 8);
             if v != 0 {
@@ -294,5 +318,102 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
             }
         }
     }
+    plt_classes(image, &out, &mut c);
     c
+}
+
+/// The PLT header and the way back to it (WP-082): sites found by
+/// P-D10's own walk of each lazy path (`plt::traces`); a site shared by
+/// several paths (the header) is mutated once.
+#[allow(clippy::many_single_char_names)] // instruction fields
+fn plt_classes(image: &Image<'_>, out: &DynOut, c: &mut Vec<Cand>) {
+    use crate::plt::Step;
+    let b = image.data;
+    let a64 = image.header.e_machine == mortar_elf::consts::EM_AARCH64;
+    let mut done = std::collections::BTreeSet::new();
+    // A little-endian i32 at `addr + at` changed by `d`.
+    let rel = |addr: u64, at: u64, d: i64| -> Option<(usize, Vec<u8>)> {
+        let o = off(image, addr + at, 4)?;
+        let v = i64::from(i32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]));
+        Some((o, wr(v.wrapping_add(d) as u64, 4)))
+    };
+    // An A64 instruction's imm12 (bits 10..21) plus `d`.
+    let imm12 = |addr: u64, d: u32| -> Option<(usize, Vec<u8>)> {
+        let o = off(image, addr, 4)?;
+        let w = u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+        let f = ((w >> 10) & 0xfff).wrapping_add(d) & 0xfff;
+        Some((o, (w & !(0xfff << 10) | f << 10).to_le_bytes().to_vec()))
+    };
+    for (e, slot, trace) in crate::plt::traces(image, out) {
+        for &(step, at, lazy) in &trace {
+            let mut push = |class: &'static str, what: String, edit: Option<(usize, Vec<u8>)>| {
+                if let Some(edit) = edit
+                    && done.insert((class, at, edit.1.clone()))
+                {
+                    c.push((class, what, vec![edit]));
+                }
+            };
+            match (step, lazy, a64) {
+                (Step::PushWord, true, false) => {
+                    for d in [8, -8] {
+                        push(
+                            "plt0-disp1",
+                            format!("PLT0's push at {at:#x}: word {d:+}"),
+                            rel(at, 2, d),
+                        );
+                    }
+                }
+                (Step::Ldr, true, true) => {
+                    push(
+                        "plt0-disp1",
+                        format!("the header's ldr at {at:#x}: offset + 8"),
+                        imm12(at, 1),
+                    );
+                }
+                (Step::JmpInd, true, false) => {
+                    for d in [8, -8] {
+                        push(
+                            "plt0-disp2",
+                            format!("PLT0's jmp at {at:#x}: word {d:+}"),
+                            rel(at, 2, d),
+                        );
+                    }
+                }
+                (Step::Add, true, true) => {
+                    push("plt0-disp2", format!("the header's add at {at:#x}: + 8"), imm12(at, 8));
+                }
+                (Step::PushImm, true, false) => {
+                    push(
+                        "plt-index",
+                        format!("the push at {at:#x} (entry {e:#x}): n + 1"),
+                        rel(at, 1, 1),
+                    );
+                }
+                (Step::MovR11, false, false) => {
+                    push(
+                        "plt-index",
+                        format!("the mov at {at:#x} (entry {e:#x}): n + 1"),
+                        rel(at, 2, 1),
+                    );
+                }
+                (Step::Add, false, true) => {
+                    push(
+                        "plt-index",
+                        format!("the entry {e:#x}'s add at {at:#x}: + 8 (slot {slot:#x})"),
+                        imm12(at, 8),
+                    );
+                }
+                (Step::Jmp, true, false) => {
+                    for d in [16, -16] {
+                        push(
+                            "plt-back-jump",
+                            format!("the jmp at {at:#x} (entry {e:#x}): {d:+}"),
+                            rel(at, 1, d),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
