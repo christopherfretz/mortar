@@ -63,6 +63,7 @@ pub enum TargetKind {
     Ifunc,                 // non-preemptible STT_GNU_IFUNC defined in this output
     Weak0,                 // undefined weak, not dynamic: value 0
     WeakDyn,               // undefined weak, in .dynsym and preemptible
+    Undefined,             // undefined, not weak, defined nowhere and not made dynamic (§3.4)
 }
 ```
 
@@ -319,6 +320,46 @@ pub struct DemandSink<'a> { /* raise(SymKey, DemandFlags); raise_global(GlobalFl
     their word.
 - **Places in non-alloc sections** (no `SHF_ALLOC`): §4.3's
   non-alloc rule applies before the class table.
+- **Undefined symbols are reported by scan**, not by resolution.
+  - **Which symbols.** A symbol has target kind `Undefined` when it is
+    undefined and not weak, no input defines it (including shared
+    objects), and `spec/resolve.md` has not made it a dynamic undefined.
+    A dynamic undefined is a `Shlib` target, under `--unresolved-symbols`
+    or `-z undefs`, the default for `Shared`.
+  - **What is reported.** For every live relocation against an
+    `Undefined` target that still needs its symbol, scan reports
+    `undefined-symbol` once. The message contains GNU ld's phrase
+    `undefined reference to '<name>'`, and gives the place
+    `file:(section+0xoff)`.
+  - **The key** is `(70, FileId, section index × 2^32 + record index)`.
+    This is model §8's scan key: it names the place's `SectionId`
+    (`FileId`, section index), and the record index orders the places
+    within it. The record index stands in for the offset because two
+    records can share one offset.
+  - **Relocations consumed by a sequence make no reference.** A relocation
+    consumed by a matched sequence (§3.5) does not need its symbol: the
+    x86 GD→LE/IE and LD→LE call (Appendix A.3, A.4, B.5), and AArch64
+    R4's `CALL26` (a64.md §8.4). A static link in which `__tls_get_addr`
+    is undefined must therefore link when every reference to it is
+    consumed. `g++ -static` on x86-64 and i386 depends on it:
+    `libstdc++.a(eh_globals.o)` references `__tls_get_addr`, and no
+    `libc.a` member defines it. Archive extraction (`spec/resolve.md`)
+    still counts the reference, so a definition is pulled in when one
+    exists.
+  - **Only input-only facts decide.** Whether a relocation needs its
+    symbol is decided at scan from input-only facts: the pattern, the
+    output kind, and the target kind, which are the kind-1 rules of
+    §5.2. A kind-2 relaxation, one that depends on addresses or on
+    `Demands`, never decides it. Its unrelaxed form references the
+    symbol, so the reference stands. This is the conservative-demand
+    rule applied to references: scan raises the demands and reports the
+    references of every form `apply` may write (§5.2), and a consumed
+    `CALL26` is in no form.
+  - **Hidden symbols.** A `STV_HIDDEN` or `STV_INTERNAL` undefined
+    symbol with a surviving reference is `undefined-symbol` whatever
+    `--unresolved-symbols` or `-z undefs` says, because it cannot be
+    resolved at load time.
+  - **Non-alloc places** (§4.3) are reported like any other place.
 - Scan sees only live sections. A relocation in a live section against a
   symbol in a dead section is not an error at scan; `fill` writes a
   tombstone (§3.11) or `spec/image.md` reports it.
@@ -378,6 +419,23 @@ pub struct SectionOut<'a> { /* the unit's output bytes, pre-filled with the inpu
   redirect's reach. Failures return `FieldError` and become §7's
   diagnostic.
 - `apply` is not called for `Relocatable` outputs.
+- **Rule 1: proof of instruction.** A rewrite of a word that carries no
+  relocation, or a decision taken by decoding such a word, requires proof
+  that the word is an instruction. A word with a relocation is an
+  instruction of the class its field form requires (a64.md §3.2), and
+  that is checked. A word without one is proved by the architecture's
+  instruction ranges:
+  - **AArch64:** the `$x` mapping-symbol ranges of a64.md §3.4. This
+    covers R4's `o+12`, the BTI check of a thunk target, and every word
+    of the 843419 predicate.
+  - **x86:** no rule rewrites a word outside a relocation's window. The
+    window bytes are tied to the relocation and checked by its pattern.
+  - **Synthetic chunks:** every word of mortar's own code chunks is an
+    instruction.
+
+  A word that cannot be proved is not rewritten. When skipping it would
+  be unsafe (an erratum candidate), the link is refused by name (a64.md
+  §11.1).
 
 ### 3.7 Shapes
 
@@ -574,17 +632,31 @@ place in a section without `SHF_ALLOC`:
 
 - is filled with link-time addresses in every output kind;
 - raises no demand and no `E`, and never gets a dynamic relocation;
-- takes `S` as the link-time value, with 0 for a symbol not defined in
-  this output;
+- takes `S` as the link-time value. That is 0 for a `Weak0` target, and
+  0 for a `Shlib`, `Preemptible` or `WeakDyn` target that is not defined
+  in this output. An `Undefined` target is still the `undefined-symbol`
+  error of §3.4, as GNU ld 2.44 and mold 2.37 report a reference from
+  `.debug_info` (lld 22 accepts it).
 - against a target in a section that is not live, gets
   `tombstone(section name)` (§3.11) in place of `X`, truncated to the
   field.
 
-Only data classes (`AbsWord`, `AbsNarrow`, `Pc`, `TlsDtpRel`, `Size`) are
-allowed there. Any other class is `relocation-incompatible` (reason `not
+Only data relocations are allowed there:
+
+- `None`;
+- `AbsWord`, `AbsNarrow`, `Pc`, `TlsDtpRel` and `Size`, each with a
+  `Field::Data` field.
+
+An instruction form of one of those classes is not a data relocation.
+a64.md §13.2 lists the AArch64 types: `NONE`, `ABS64/32/16`,
+`PREL64/32/16`, `TLS_DTPREL64`. Any other relocation is `relocation-incompatible` (reason `not
 allowed in a non-allocated section`). This is what every `-g` PIE needs.
 GNU ld, lld and mold resolve `.debug_*` relocations statically (a64.md
 §13.2).
+
+An `Undefined` target (§2.1) has no column, because every class gives
+`undefined-symbol` (§3.4). The one exception is a relocation consumed by
+a matched sequence, which references nothing.
 
 The `Weak0` columns show demands; what is written is §3.12's rule. A
 `Got`-class relocation against `Weak0` demands a slot that holds 0 with no
@@ -654,74 +726,87 @@ list `(SectionId, offset) → patch`. Kinds: `Thunk(Sym(SymKey, addend))`,
 `Thunk(Plt(SymKey))`, `Erratum(e)` with the site key `(SectionId, offset
 of the key instruction)`.
 
-**Round** `k`, given addresses `A_k` (a pure function of the layout and
-the patches so far):
+**Addresses are a function of the patch set.** The addresses `A` are a
+pure function of the patch-free layout and of the set of patches, each
+with its island and its place in the island's order. Redirects change
+no size, so they do not enter.
 
-1. **Needs**:
-   - every branch site that has no redirect, whose class allows a veneer,
-     and whose final target `T` is out of `branch(h).reach` of `P`;
-   - every branch site whose redirect's patch is out of reach of `P`;
-   - every erratum site (`erratum_sites` over each output code section's
-     words, a64.md §11.1) that has no redirect and is not
-     `erratum_in_place` at `A_k`.
+**Round** `k`, at the addresses `A_k` it starts with:
+
+1. **Needs.** Every condition in this step is judged at `A_k`.
+   - **Unredirected branches:** every branch site with no redirect,
+     whose class allows a veneer, and whose final target `T` is out of
+     `branch(h).reach` of `P`.
+   - **Branches out of reach of their thunk:** every branch site whose
+     redirect's thunk is out of reach of `P`.
+   - **Erratum sites:** every erratum site (`erratum_sites` over each
+     output code section's words, a64.md §11.1) with no redirect, that
+     `erratum_in_place` does not fix (the ADR reach).
+   - **Erratum redirects out of range:** every erratum redirect whose
+     patch is out of range, because `b patch` from `F` or `b F + 4` from
+     the patch is outside the branch reach. It is a need like the
+     others, re-patched to a patch within range, and not a
+     `relocation-out-of-range` failure (a64.md §11.2).
 
    A branch that a matched sequence consumes (a64.md §8.4) is not a
    site.
 2. If there are no needs, stop: the layout is the fixed point.
 3. **Add.** Visit the needs in output-address order, with ties broken by
-   `(FileId, section index, record index)`.
-   - A thunk site is redirected to the existing thunk of its key that is
+   `(FileId, section index, record index)`. Every reach in this step is
+   judged at `A_k` as well, including the reach of patches added earlier
+   in the same step. A judgement that the round's own insertions make
+   wrong is caught by round `k + 1`. This is what makes the step a
+   function of `A_k` and the needs, independent of insertion effects
+   inside the step.
+   - A thunk need is redirected to the existing thunk of its key that is
      in reach of `P` and has the lowest address, if there is one. Else
      it goes to a new thunk in an island the policy chooses within reach
-     of `P`. If no island can cover the thunk shape's reach to `T`, that
-     is §7's error.
-   - An erratum site gets a new patch within reach of its final word.
-   - Sizes in `Placement.sized` grow, and addresses after each island
-     move.
-4. Next round.
+     of `P`.
+   - An erratum need gets a new patch within range of its final word.
+   - If no island within reach can be placed, that is §7's error.
+4. Recompute the addresses (`A_{k+1}`) from the new patch set, and start
+   the next round.
 
-**Monotone.**
-- Patches are only added.
-- Chunk order never changes.
-- Every size in `Placement.sized` only grows.
-- So the distance between any two points of the output never shrinks.
-
-**Redirects.** A site's redirect is replaced only when its patch fell
-out of reach of `P`. The replacement is an existing patch in reach, or a
-new one. By distance monotonicity, a patch that fell out of reach of `P`
-never comes back into reach, so a site never returns to a patch it left.
-
-No patch is removed, so a patch can end up unused (requested change M-4).
-The one removal is an erratum redirect whose final word is no longer a
-site when the iteration ends (a64.md §11.2). It is dropped after the
-last round. That moves no address and changes no other site.
+**Monotone.** Patches are only added. A redirect is replaced only when
+its patch is out of reach at the round's addresses, and the replacement
+is an existing patch in reach or a new one. No patch is removed, so a
+patch can end up unused (requested change M-4). The one removal is an
+erratum redirect whose final word is no longer a site when the iteration
+ends (a64.md §11.2). It is dropped after the last round, which moves no
+address and changes no other site.
 
 `apply` follows the redirect when one exists (the patch form), and the
 direct or in-place form otherwise. It never takes the shortcut "the
 redirect exists but the direct branch reaches, so branch directly".
 
-**Termination.**
-- **Under a policy condition (C)**, termination is proved. (C): the
-  policy places patches only in islands from a set fixed before round 1,
-  for example the gaps between input sections at every `reach − margin`
-  bytes of the patch-free layout, and with at most one thunk per key in
-  each island.
-  - Then the number of patches is at most `islands × keys` plus the
-    number of erratum keys. Both are fixed before round 1, since an
-    erratum key is an input word.
-  - Each round either adds a patch, or moves some site to a patch it
-    has never used.
-  - So the number of rounds is at most `patches + sites × patches`,
-    which is finite.
-- **Without (C)**, for example a policy that opens a new island
-  whenever one fills, no bound is claimed.
-- **The cap is part of the definition**, for every policy. If a link
-  needs more than `R_max = 32` rounds, it is refused by name:
-  `refused`, class `feature`, name `range-extension fixed point`, key
-  `(90, 0, 0)`. This is not a defence that a correct implementation
-  never reaches. It is the specified result of such a link. The output
-  is never written from a layout that has not reached the fixed point.
-- The corpus test measures the round count. The expected value is ≤ 3.
+**Termination.** Distances do not grow monotonically under alignment
+padding, so the argument does not use them. A counterexample: a chunk of
+8 bytes aligned to 4 at offset 0, then one aligned to 16 at offset 16.
+An 8-byte island before the first chunk shrinks the distance between
+them from 12 to 4. The argument that does hold:
+
+1. A round that adds no patch leaves the patch set, and so the
+   addresses, unchanged: `A_{k+1} = A_k`.
+2. Erratum needs always add a patch, so such a round had only thunk
+   needs. Each one was given a thunk in reach at `A_k`, which is
+   `A_{k+1}`. Round `k + 1` therefore finds no need and stops.
+3. So of any two consecutive rounds, the first adds a patch or the
+   second is the last. With `N` the final number of patches, the number
+   of rounds is at most `2N + 1`.
+4. **Under policy condition (C)**, `N` is bounded and the iteration
+   terminates. (C): patches are placed only in islands from a set fixed
+   before round 1, with at most one thunk per key and one erratum patch
+   per erratum key in each island. Then `N ≤ islands × (thunk keys +
+   erratum keys)`, and every term is fixed before round 1, since an
+   erratum key is an input word.
+5. **Without (C)**, `N` is not bounded by this argument.
+6. **The cap is part of the definition**, for every policy. If a link
+   needs more than `R_max = 32` rounds, it is refused by name:
+   `refused`, class `feature`, name `range-extension fixed point`, key
+   `(90, 0, 0)`. This is not a defence that a correct implementation
+   never reaches. It is the specified result of such a link. The output
+   is never written from a layout that has not reached the fixed point.
+7. The corpus test measures the round count. The expected value is ≤ 3.
 
 **Determinism.**
 - Each round is a function of the previous round's tables.
@@ -812,7 +897,9 @@ Not edited; for the model's owner.
 ## 10. Requested changes to `spec/diag.md`
 
 Three kinds, in a new area "relocations" between "symbols" and
-"refusals" (diag.md §3.3):
+"refusals" (diag.md §3.3). `undefined-symbol` belongs to the symbols
+area (`spec/resolve.md`); this spec fixes only that scan emits it at
+phase 70 (§3.4).
 
 | id | variant | message |
 |---|---|---|
@@ -839,6 +926,7 @@ are lld's; the incompatible text is lld's shape with a reason field).
 | Q5 | Thunk reuse picks "the existing thunk with the lowest address in reach". | Keep (any deterministic rule is correct); the layout policy may prefer the nearest, if measured to need fewer rounds. |
 | Q6 | x86 TLSLD sequences that match none of the recognized forms (Appendix A.4: `call` and `call *GOTPCRELX`, i386 `PLT32` and `GOT32X`), in an executable, are refused, because their `DTPOFF` fields would otherwise need per-sequence knowledge. | Keep; GCC and Clang emit only the recognized forms (the `-fno-plt` forms are in A.4 after the review). |
 | Q7 | The x86 TLS special cases (A.4, A.6: `_TLS_MODULE_BASE_` under TLSDESC) are from the review's experiment with clang `-mtls-dialect=gnu2`; GCC's gnu2 local-dynamic output was not inspected. | x64.md (WP-029) re-runs both producers before implementing. |
+| Q8 | `undefined-symbol` from a non-alloc place (§3.4) follows GNU ld and mold; lld 22 accepts it. | Keep (one experiment, 2026-11-14: `.xword undef_sym` in `.debug_info`). |
 
 ## 12. Tests
 
@@ -863,6 +951,13 @@ are lld's; the incompatible text is lld's shape with a reason field).
 - §4.2/M-8: an incremental link that adds an unpaired GOT use in one file
   refills the R5 pairs of another; likewise `TLSIE_NORELAX`.
 - §4.3: a `-g` PIE produces no dynamic relocation in `.debug_*`.
+- §3.4: `g++ -static` objects with a consumed `__tls_get_addr` call and no
+  definition link; an unconsumed call is `undefined-symbol` with the
+  phase-70 key; a hidden undefined with `--unresolved-symbols=ignore-all`
+  is still an error.
+- §6: a round that adds no patch is followed by a stopping round; the
+  alignment counterexample; an erratum patch pushed out of range is
+  re-patched.
 - Appendices: the fit checks become x64.md's and x86.md's first tests.
 
 ## Appendix A. Fit check: x86-64
