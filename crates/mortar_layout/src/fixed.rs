@@ -92,8 +92,13 @@ pub trait Sites: Sync {
 
     /// The words of output code section `out` at the round's addresses,
     /// for `Arch::erratum_sites`. Asked only when `Arch::errata()` is not
-    /// empty.
-    fn code(&self, out: OutSecId, round: &Round<'_>) -> Option<OwnedCode>;
+    /// empty. `Ok(None)`: `out` has no words at this round (no extent).
+    ///
+    /// # Errors
+    ///
+    /// A read of an input section's bytes that failed: the link fails
+    /// with it (never "no erratum sites", `spec/landed/input/WP-021b.md`).
+    fn code(&self, out: OutSecId, round: &Round<'_>) -> Result<Option<OwnedCode>, LayoutDiag>;
 }
 
 /// No branch sites and no code: nothing is ever needed.
@@ -107,8 +112,8 @@ impl Sites for NoSites {
     fn target(&self, _i: usize, _round: &Round<'_>) -> Option<u64> {
         None
     }
-    fn code(&self, _out: OutSecId, _round: &Round<'_>) -> Option<OwnedCode> {
-        None
+    fn code(&self, _out: OutSecId, _round: &Round<'_>) -> Result<Option<OwnedCode>, LayoutDiag> {
+        Ok(None)
     }
 }
 
@@ -394,7 +399,7 @@ fn needs(
         pool.map(code_outs.len() * errata.len(), |u| {
             let out_sec = code_outs[u / errata.len()];
             let e = errata[u % errata.len()];
-            let Some(code) = range.sites.code(out_sec, round) else { return Ok(Vec::new()) };
+            let Some(code) = range.sites.code(out_sec, round)? else { return Ok(Vec::new()) };
             let view = Code { bytes: &code.bytes, addr: code.addr, proof: &code.proof };
             let mut sites: Vec<ErratumSite> = Vec::new();
             range.arch.erratum_sites(e, &view, &mut sites).map_err(|u| {

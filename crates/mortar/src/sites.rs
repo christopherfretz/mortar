@@ -28,8 +28,8 @@ use mortar_core::assignment::Assignment;
 use mortar_core::layout::Slots;
 use mortar_diag::{Diagnostic, Key};
 use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS};
-use mortar_elf::{SectionIndex, SymbolSection};
-use mortar_layout::Headers;
+use mortar_elf::SymbolSection;
+use mortar_layout::{Headers, LayoutDiag};
 use mortar_layout::fixed::{BranchAt, OwnedCode, Round, Sites};
 use mortar_scan::{RecIndex, Walker};
 use mortar_synth::GotPlan;
@@ -209,12 +209,14 @@ impl Sites for LinkSites<'_, '_> {
         }
     }
 
-    fn code(&self, out: OutSecId, round: &Round<'_>) -> Option<OwnedCode> {
+    fn code(&self, out: OutSecId, round: &Round<'_>) -> Result<Option<OwnedCode>, LayoutDiag> {
         if !self.errata {
-            return None;
+            return Ok(None);
         }
-        let (start, end) = round.out_extent(out)?;
-        let mut bytes = vec![0u8; usize::try_from(end - start).ok()?];
+        let Some((start, end)) = round.out_extent(out) else { return Ok(None) };
+        let size = usize::try_from(end - start)
+            .map_err(|_| internal("an output code section larger than memory"))?;
+        let mut bytes = vec![0u8; size];
         let mut proof: Vec<ProofRun> = Vec::new();
         let tables = self.tables(round);
         let cx = FillCx {
@@ -224,14 +226,24 @@ impl Sites for LinkSites<'_, '_> {
             tls: tables.tls,
         };
         for c in self.code.iter().filter(|c| c.out == out) {
+            // A live code section with no address at this round is not in
+            // the image (folded away); it has no words here.
             let Some(addr) = round.site_addr(c.sid, 0) else { continue };
-            let Reader::Object(obj) = self.t.inputs.files.get(c.file)?.reader else { continue };
-            let s = obj.section(SectionIndex(c.index)).ok()?;
-            let data = s.data().ok()?;
-            let off = usize::try_from(addr - start).ok()?;
-            let dst = bytes.get_mut(off..off + data.len())?;
-            dst.copy_from_slice(data);
-            let len = data.len() as u64;
+            let off = usize::try_from(addr - start)
+                .map_err(|_| internal("a code section before its output section"))?;
+            // Its bytes: resident, or copied (a `.text` over the staged
+            // store's limits is not resident); a failed read fails the
+            // link, never "no sites".
+            let len = self
+                .walker
+                .section_bytes(c.file, c.index, |data| {
+                    let dst = bytes.get_mut(off..off + data.len())?;
+                    dst.copy_from_slice(data);
+                    Some(data.len())
+                })
+                .map_err(keyed)?
+                .ok_or_else(|| internal("a code section outside its output section's extent"))?;
+            let len = len as u64;
             for mut run in self.walker.proof(c.file, c.index, len, true) {
                 run.unit_offset = run.start;
                 run.start += addr - start;
@@ -258,28 +270,25 @@ impl Sites for LinkSites<'_, '_> {
                 windows.get(i).is_some_and(|w| w.0 <= r)
             };
             let leads = self.t.order.leads(c.sid);
-            let name = s.name().unwrap_or_default();
+            let name = self.walker.section_name(c.file, c.index);
             let mut forced: Vec<u64> = Vec::new();
-            let mut failed = false;
+            let section = &mut bytes[off..off + len as usize];
             self.walker
                 .walk(c.file, c.sid, c.index, c.rel, 0..u64::MAX, leads, &mut |v| {
                     if !in_window(v.at.r_offset) {
                         return;
                     }
-                    let mut so = SectionOut::new(&mut bytes[off..off + data.len()], 0, addr, true, name);
+                    let mut so = SectionOut::new(section, 0, addr, true, name.as_bytes());
                     tables.unknown.store(false, Ordering::Relaxed);
-                    if self.arch.apply(&cx, &v.at, &mut so).is_err() {
-                        failed = true;
-                    }
+                    // A relocation that does not apply is fill's to report
+                    // (the link fails there); the words are those of the
+                    // relocations that applied.
+                    let _ = self.arch.apply(&cx, &v.at, &mut so);
                     if tables.unknown.load(Ordering::Relaxed) {
                         forced.push(v.at.r_offset);
                     }
                 })
-                .ok()?;
-            if failed {
-                // Fill will report the relocation; the link fails there.
-                // The words are those of the relocations that applied.
-            }
+                .map_err(keyed)?;
             // A word whose target's address is not known at this round
             // (a linker-defined symbol, a common): when it is an ADRP at a
             // `W1` position its page is unknown, so the in-place ADR fix
@@ -287,19 +296,28 @@ impl Sites for LinkSites<'_, '_> {
             // reach, which makes the site take a patch, always correct
             // (a64.md §11.2).
             for r in forced {
-                let at = off + usize::try_from(r).ok()?;
-                let Some(w) = bytes.get(at..at + 4) else { continue };
+                let Ok(at) = usize::try_from(r) else { continue };
+                let Some(w) = section.get(at..at + 4) else { continue };
                 let w = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
                 if mortar_a64::erratum::is_adrp(w) {
                     // immlo (bits 29-30) and immhi (bits 5-23): 2^20 pages.
                     let far = (w & !0x60FF_FFE0) | (0x8_0000 << 5);
-                    bytes[at..at + 4].copy_from_slice(&far.to_le_bytes());
+                    section[at..at + 4].copy_from_slice(&far.to_le_bytes());
                 }
             }
         }
         proof.sort_by_key(|r| r.start);
-        Some(OwnedCode { addr: start, bytes, proof })
+        Ok(Some(OwnedCode { addr: start, bytes, proof }))
     }
+}
+
+/// A scan diagnostic as layout carries it: its key and place kept.
+fn keyed((key, d): (Key, Diagnostic)) -> LayoutDiag {
+    LayoutDiag::Diag { diagnostic: Box::new(d), key: Some(key), at: None }
+}
+
+fn internal(what: &str) -> LayoutDiag {
+    LayoutDiag::from(Diagnostic::error(mortar_diag::Kind::InternalError { what: what.to_owned() }))
 }
 
 /// Fill's tables at one round's addresses.

@@ -96,3 +96,15 @@ compiled. Delete this file before the WP lands.
   `merged`), `Scanned` (mortar_scan/src/lib.rs:201), `Placed`
   (mortar_layout/src/run.rs:45), `Layout` (mortar_core/src/layout.rs:831)),
   commit, then the fixes above, then WIP's earlier "Next steps".
+
+## Session 3 (third agent)
+- d0e347e: FRONT-INTERFACE.md published (spec/landed/pipeline/); `Front.merged`
+  replaced by `Front.order: Order` (image needs `order.order`); facade store is
+  `StorePolicy::from_env()` (Staged default).
+- Fixed: `Sites::code` now `Result<Option<OwnedCode>, LayoutDiag>`; sites.rs
+  reads `.text` through `Walker::section_bytes` (copy_to when not resident);
+  `property_plan` reports an unreadable note (malformed / internal).
+- Stale tests fixed (lib.rs, tests/cli.rs, mortar_cli grammar + table,
+  docs/status/options.md regenerated). The gcc -static link reaches
+  "writing the output file" under the staged store.
+- Next: run the differential harness (`cargo test -p mortar --test front_diff -- --ignored --nocapture`).

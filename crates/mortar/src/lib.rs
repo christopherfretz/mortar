@@ -209,24 +209,23 @@ mod tests {
     }
 
     // spec: diag.md §7 (a failed link is `Outcome::Failed` with the
-    // report), §4 (the refusal names what is refused)
+    // report), §4 (the refusal names what is refused); cli.md §4.3 (`-o`
+    // is refused but does not stop the front: the link runs to the input
+    // phase, which reports the missing file)
     #[test]
     fn a_link_is_refused_not_faked() {
         let Outcome::Failed(report) = link(&["a.o".into(), "-o".into(), "a.out".into()]) else {
-            panic!("no link is implemented");
+            panic!("the output file is not written yet");
         };
         assert!(report.failed());
-        let [option, linking] = report.diagnostics() else {
-            panic!("two diagnostics, got {:?}", report.diagnostics());
-        };
-        assert_eq!(option.refusal(), Some((RefusalClass::Option, "-o")));
-        assert_eq!(linking.id(), "refused");
-        assert_eq!(linking.refusal(), Some((RefusalClass::Feature, "linking")));
+        let ids: Vec<&str> = report.diagnostics().iter().map(Diagnostic::id).collect();
+        assert_eq!(ids, ["refused", "cannot-open-file", "no-target"]);
+        assert_eq!(report.diagnostics()[0].refusal(), Some((RefusalClass::Option, "-o")));
         assert_eq!(
             report.render(&Style::plain("ld")),
             "ld: error: unsupported option: -o\n\
-             ld: error: unsupported feature: linking\n\
-             >>> no link is implemented yet (docs/ROADMAP.md, milestone M1)\n"
+             ld: error: a.o: cannot open a.o: No such file or directory\n\
+             ld: error: target emulation unknown: -m or at least one .o file required\n"
         );
     }
 
@@ -235,9 +234,6 @@ mod tests {
         let Outcome::Failed(report) = link(&args) else { panic!("{args:?} must fail") };
         report.render(&Style::plain("ld"))
     }
-
-    const LINKING: &str = "ld: error: unsupported feature: linking\n\
-                           >>> no link is implemented yet (docs/ROADMAP.md, milestone M1)\n";
 
     // spec: cli.md §2.1 (errors in argument order, refusals among them),
     // §4.4 (each refused option once), §4.3 (a line with errors is not
@@ -283,7 +279,8 @@ mod tests {
         assert_eq!(done(&["--help"]), Some(mortar_cli::help_text("ld")));
         assert_eq!(done(&["-v", "a.o"]), None);
         assert_eq!(done(&["--frob", "--version"]), None);
-        assert_eq!(failed(&["-v", "a.o"]), LINKING);
+        // `-v` with an input links it (here: the input is missing).
+        assert!(failed(&["-v", "a.o"]).contains("ld: error: a.o: cannot open a.o"));
     }
 
     // spec: cli.md §3.9 (the color choice is the caller's to apply)

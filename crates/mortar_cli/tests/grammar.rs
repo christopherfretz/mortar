@@ -533,7 +533,7 @@ fn refused_uses_in_argument_order() {
         "0",
         "-o",
         "y",
-        "--as-needed",
+        "--push-state",
         "-z",
         "relro",
         "-EL",
@@ -543,7 +543,7 @@ fn refused_uses_in_argument_order() {
         "p.so",
     ]);
     let refused: Vec<&str> = parsed.refused_uses().iter().map(|u| u.spelling.as_str()).collect();
-    assert_eq!(refused, ["-o", "-Tdata", "--as-needed", "-z relro"]);
+    assert_eq!(refused, ["-o", "-Tdata", "--push-state", "-z relro"]);
     let rendered: Vec<String> =
         parsed.refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect();
     assert_eq!(rendered[0], "ld: error: unsupported option: -o\n");

@@ -9,11 +9,11 @@
 
 use mortar_arch::{Arch, ProofRun, RelocAt, ScanTables, Site, SymFacts, SymNames};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey};
-use mortar_diag::{Diagnostic, Key};
-use mortar_elf::SymbolIndex;
+use mortar_diag::{Diagnostic, Key, Kind, Place};
+use mortar_elf::{SectionIndex, SymbolIndex};
 
 use crate::driver::Sec;
-use crate::view::{RecTables, View, with_bufs};
+use crate::view::{RecTables, View, contents, with_bufs};
 use crate::{ScanInputs, ScanOptions};
 
 /// The scan's view of the tables, reusable after the scan.
@@ -54,6 +54,12 @@ impl<'a, 's> Walker<'a, 's> {
         self.view.facts(key, None)
     }
 
+    /// The name of section `index` of `file`, for diagnostics.
+    #[must_use]
+    pub fn section_name(&self, file: FileId, index: u32) -> String {
+        self.view.section_name(file, index)
+    }
+
     /// The names of the keys, as their symbol tables have them.
     #[must_use]
     pub fn names(&self) -> &dyn SymNames {
@@ -68,6 +74,39 @@ impl<'a, 's> Walker<'a, 's> {
         let mut marks = self.view.marks(file, index);
         self.view.opts.proof.runs(&mut marks, len, exec, &mut out);
         out
+    }
+
+    /// Calls `f` with the contents of section `index` of `file`: its
+    /// bytes when resident, else a copy into this worker's buffer
+    /// (`copy_to`, `spec/landed/input/WP-021b.md`).
+    ///
+    /// # Errors
+    ///
+    /// The diagnostic of a read that failed (`malformed-input`,
+    /// `input-changed`, `cannot-open-file`, `internal-error`), keyed and
+    /// placed as the scan's: never "no bytes".
+    pub fn section_bytes<T>(
+        &self,
+        file: FileId,
+        index: u32,
+        f: impl FnOnce(&[u8]) -> T,
+    ) -> Result<T, (Key, Diagnostic)> {
+        let key = mortar_arch::cx::scan_key(file, index, 0);
+        let fref = || self.view.inputs.files[file].display();
+        let place = || Place::section(fref(), self.view.section_name(file, index), 0);
+        let fault = |what: String| {
+            (key, Diagnostic::error(Kind::Malformed { what }).at(place()))
+        };
+        let obj = self
+            .view
+            .prep(file)
+            .and_then(|p| p.obj)
+            .ok_or_else(|| fault("not an object".into()))?;
+        let s = obj.section(SectionIndex(index)).map_err(|e| fault(e.to_string()))?;
+        with_bufs(|bufs| match contents(&self.view, file, &s, &mut bufs.sec) {
+            Ok(bytes) => Ok(f(bytes)),
+            Err(fail) => Err((key, fail.diagnostic(&fref()).at(place()))),
+        })
     }
 
     /// Visits, in record order, every record of relocation section `rel`

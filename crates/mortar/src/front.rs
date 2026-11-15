@@ -627,10 +627,23 @@ fn property_plan(
             if h.name != b".note.gnu.property" || h.sh_type != SHT_NOTE || !r.is_kept() {
                 continue;
             }
-            if let Ok(s) = obj.section(SectionIndex(i))
-                && let Ok(data) = s.data()
-            {
-                secs.push((sid, data, 1u64 << h.align));
+            // A note is resident under every store (`spec/landed/input/
+            // WP-021b.md`); a note that cannot be read fails the link,
+            // never "no properties".
+            let read = obj.section(SectionIndex(i)).and_then(|s| s.data());
+            match read {
+                Ok(data) => secs.push((sid, data, 1u64 << h.align)),
+                Err(e) => {
+                    let what = match e {
+                        mortar_elf::Error::NotResident { .. } => Diagnostic::error(Kind::InternalError {
+                            what: "a .note.gnu.property section is not resident".into(),
+                        }),
+                        e => Diagnostic::error(Kind::Malformed { what: e.to_string() }),
+                    };
+                    let place = Place::section(row.display(), ".note.gnu.property", 0);
+                    diag.emit(mortar_synth::error::record_key(sid, 0), what.at(place));
+                    return Err(mortar_synth::Failed);
+                }
             }
         }
         let f = row.display();

@@ -18,7 +18,7 @@ use mortar_core::resolution::Def;
 use mortar_elf::Machine;
 use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHT_PROGBITS};
 use mortar_layout::fixed::{BranchAt, OwnedCode, R_MAX, Round};
-use mortar_layout::{Placed, RangeExtension, Sites};
+use mortar_layout::{LayoutDiag, Placed, RangeExtension, Sites};
 
 const AX: u64 = SHF_ALLOC | SHF_EXECINSTR;
 const MIB: u64 = 1 << 20;
@@ -83,8 +83,8 @@ impl Sites for Synthetic {
         self.target_at(i, round)
     }
 
-    fn code(&self, out: OutSecId, round: &Round<'_>) -> Option<OwnedCode> {
-        let (start, end) = round.out_extent(out)?;
+    fn code(&self, out: OutSecId, round: &Round<'_>) -> Result<Option<OwnedCode>, LayoutDiag> {
+        let Some((start, end)) = round.out_extent(out) else { return Ok(None) };
         let mut bytes = vec![0u8; (end - start) as usize];
         for &(s, off, far) in &self.errata {
             let off = if self.moving { off + 0x1000 * u64::from(round.number) } else { off };
@@ -106,7 +106,7 @@ impl Sites for Synthetic {
             unit: 0,
             unit_offset: 0,
         }];
-        Some(OwnedCode { addr: start, bytes, proof })
+        Ok(Some(OwnedCode { addr: start, bytes, proof }))
     }
 }
 
