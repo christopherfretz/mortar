@@ -158,7 +158,7 @@ fn s9_row_sizes() {
         ("SplitRow", size_of::<SplitRow>(), 12),
         ("Frag", size_of::<Frag>(), 16),
         ("EhPiece", size_of::<EhPiece>(), 8),
-        ("DemandFlags", size_of::<DemandFlags>(), 1),
+        ("DemandFlags", size_of::<DemandFlags>(), 2),
         ("Place", size_of::<Place>(), 12),
         ("sym_map cell", size_of::<SymbolId>(), 4),
         ("merge piece", size_of::<u32>() + size_of::<mortar_core::FragId>(), 8),

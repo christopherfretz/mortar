@@ -16,10 +16,11 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `diag.md` | `mortar_diag`: diagnostics, the vocabulary of refusals, demangling | normative (WP-007); demangling planned |
 | `cli.md` | `mortar_cli`: the command line and the status of every option | normative (WP-008) |
 | `script.md` | `mortar_script`: linker scripts, version scripts, dynamic lists | §1-§7 normative (WP-009, stage 1: lexer, implicit-script commands, recognition); SECTIONS, expressions, version scripts planned |
-| `input.md` | `mortar_input`: finding and loading files | planned (WP-021) |
-| `resolve.md` | `mortar_resolve`: symbol resolution | planned (WP-022) |
-| `arch.md` | `mortar_arch`: the `Arch` trait | planned (WP-013) |
-| `a64.md`, `x64.md`, `x86.md` | the relocation tables, PLT/GOT/TLS/thunk shapes per architecture | planned (WP-013, WP-029, WP-030) |
+| `input.md` | `mortar_input`: finding and loading files | accepted for M1 (WP-021 stage 1; one independent review, dispositions in `landed/input/WP-021-spec.md`); its §17 requests to other specs are applied by WP-020d |
+| `resolve.md` | `mortar_resolve`: symbol resolution | accepted for M1 (WP-022 stage 1; one independent review with an executable model of the spec, dispositions in `landed/resolve/WP-022-spec.md`); its §18 requests to other specs are applied by WP-020d |
+| `arch.md` | `mortar_arch`: the `Arch` trait | accepted for M1 (WP-013; two independent review passes, dispositions in `landed/arch/WP-013.md`); its requested `model.md` changes M-1..M-8 are applied by WP-020c |
+| `a64.md` | AArch64: relocation table, PLT/GOT/TLS/thunk shapes, erratum 843419 | accepted for M1 (WP-013; reviewed with `arch.md`) |
+| `x64.md`, `x86.md` | the relocation tables, PLT/GOT/TLS/thunk shapes per architecture | planned (WP-029, WP-030) |
 | `layout.md` | `mortar_layout`: output sections, segments, addresses | draft (WP-024 stage 1) |
 | `synth.md` | `mortar_synth`: synthetic sections | planned (WP-025) |
 | `image.md` | `mortar_image`: image synthesis, the writer, debug sections | planned (WP-026) |

@@ -3,7 +3,7 @@
 
 use mortar_core::assignment::{Assignment, OutOf};
 use mortar_core::column::Column;
-use mortar_core::demands::{DemandFlags, Demands};
+use mortar_core::demands::{DemandFlags, Demands, GlobalFlags};
 use mortar_core::id::{
     FileId, FragId, IdRange, LocalSym, OptId, OutSecId, SectionId, Span, SymEntry, SymbolId,
 };
@@ -195,13 +195,97 @@ fn s3_7_demands() {
     let local = LocalSym { file: FileId(1), index: SymbolIndex(3) };
     let mut d = Demands::empty(2);
     d.global[SymbolId(1)] = DemandFlags::GOT | DemandFlags::PLT;
-    d.local = Box::new([(local, DemandFlags::TLS_IE)]);
+    d.local = Box::new([(local, DemandFlags::GOT_TPREL)]);
     assert_eq!(d.check(2), Ok(()));
     assert!(d.of(SymbolId(1).into()).contains(DemandFlags::PLT));
-    assert_eq!(d.of(local.into()), DemandFlags::TLS_IE);
+    assert_eq!(d.of(local.into()), DemandFlags::GOT_TPREL);
     assert_eq!(d.of(SymbolId(0).into()), DemandFlags::empty());
-    assert_eq!(d.keys_with(DemandFlags::GOT | DemandFlags::TLS_IE).count(), 2);
-    assert_eq!(DemandFlags::from_bits(0xff).map(DemandFlags::bits), Some(0xff));
-    d.local = Box::new([(local, DemandFlags::EXPORT)]);
-    assert!(d.check(2).is_err());
+    assert_eq!(d.keys_with(DemandFlags::GOT | DemandFlags::GOT_TPREL).count(), 2);
+    assert_eq!(DemandFlags::from_bits(0x7ff).map(DemandFlags::bits), Some(0x7ff));
+    assert_eq!(DemandFlags::from_bits(0x800), None);
+    for flag in [DemandFlags::COPY, DemandFlags::CANON_PLT, DemandFlags::EXPORT] {
+        d.local = Box::new([(local, flag)]);
+        assert!(d.check(2).is_err(), "a local demanding {flag:?}");
+    }
+    d.local = Box::new([(local, DemandFlags::empty())]);
+    assert!(d.check(2).is_err(), "an empty local row");
+}
+
+// spec: model.md §3.7 (the flags of one key follow from one target kind: IPLT
+// excludes PLT, CANON_PLT and COPY; COPY excludes CANON_PLT)
+#[test]
+fn s3_7_exclusive_flags() {
+    let local = LocalSym { file: FileId(1), index: SymbolIndex(3) };
+    let mut d = Demands::empty(2);
+    // Accepted: an IFUNC's GOT slot and IPLT entry; a local IFUNC; the
+    // inhibitors with anything.
+    d.global[SymbolId(0)] = DemandFlags::GOT | DemandFlags::IPLT | DemandFlags::GOT_NORELAX;
+    d.global[SymbolId(1)] = DemandFlags::COPY | DemandFlags::EXPORT | DemandFlags::TLSIE_NORELAX;
+    d.local = Box::new([(local, DemandFlags::IPLT | DemandFlags::GOT)]);
+    assert_eq!(d.check(2), Ok(()));
+    d.local = Box::new([]);
+    let bad = [
+        (DemandFlags::IPLT, DemandFlags::PLT),
+        (DemandFlags::IPLT, DemandFlags::CANON_PLT),
+        (DemandFlags::IPLT, DemandFlags::COPY),
+        (DemandFlags::COPY, DemandFlags::CANON_PLT),
+    ];
+    assert_eq!(bad, DemandFlags::EXCLUSIVE);
+    for (a, b) in bad {
+        let mut g = d.clone();
+        g.global[SymbolId(1)] = a | b | DemandFlags::GOT;
+        let err = g.check(2).expect_err("exclusive flags on a global");
+        assert!(err.what.contains("demands both"), "{err:?}");
+        assert_eq!((a | b).conflict(), Some((a, b)));
+    }
+    // The same rule holds for a local.
+    d.local = Box::new([(local, DemandFlags::IPLT | DemandFlags::PLT)]);
+    assert!(d.check(2).is_err(), "exclusive flags on a local");
+}
+
+// spec: model.md §3.7 (per-key and per-output flags merge by union, §6 rule 2)
+#[test]
+fn s3_7_flags_merge_by_union() {
+    let parts = [DemandFlags::GOT, DemandFlags::GOT_NORELAX, DemandFlags::GOT, DemandFlags::EXPORT];
+    let one = parts.iter().fold(DemandFlags::empty(), |a, &b| a | b);
+    let other = parts.iter().rev().fold(DemandFlags::empty(), |a, &b| a | b);
+    assert_eq!(one, other, "commutative");
+    assert_eq!(one | one, one, "idempotent");
+    assert_eq!(one, DemandFlags::GOT | DemandFlags::GOT_NORELAX | DemandFlags::EXPORT);
+    let mut out = GlobalFlags::empty();
+    for f in [GlobalFlags::TLS_LD, GlobalFlags::GOT_BASE, GlobalFlags::TLS_LD] {
+        out |= f;
+    }
+    assert_eq!(out, GlobalFlags::GOT_BASE | GlobalFlags::TLS_LD);
+    assert!(!out.contains(GlobalFlags::STATIC_TLS));
+    assert_eq!(GlobalFlags::from_bits(0x7).map(GlobalFlags::bits), Some(0x7));
+    assert_eq!(GlobalFlags::from_bits(0x8), None);
+    assert_eq!(Demands::empty(3).output, GlobalFlags::empty());
+}
+
+// spec: model.md §7.2 (the flags another file's bytes depend on: GOT_NORELAX,
+// TLSIE_NORELAX, CANON_PLT, COPY)
+#[test]
+fn s7_2_cross_file_flags() {
+    assert_eq!(
+        DemandFlags::CROSS_FILE,
+        DemandFlags::GOT_NORELAX
+            | DemandFlags::TLSIE_NORELAX
+            | DemandFlags::CANON_PLT
+            | DemandFlags::COPY
+    );
+    let local = LocalSym { file: FileId(1), index: SymbolIndex(3) };
+    let mut d = Demands::empty(3);
+    d.global[SymbolId(0)] = DemandFlags::GOT | DemandFlags::PLT;
+    d.global[SymbolId(1)] = DemandFlags::GOT | DemandFlags::GOT_NORELAX | DemandFlags::CANON_PLT;
+    d.global[SymbolId(2)] = DemandFlags::TLS_GD | DemandFlags::EXPORT;
+    d.local = Box::new([(local, DemandFlags::GOT_TPREL | DemandFlags::TLSIE_NORELAX)]);
+    let rows: Vec<_> = d.cross_file().collect();
+    assert_eq!(
+        rows,
+        [
+            (SymbolId(1).into(), DemandFlags::GOT_NORELAX | DemandFlags::CANON_PLT),
+            (local.into(), DemandFlags::TLSIE_NORELAX),
+        ]
+    );
 }

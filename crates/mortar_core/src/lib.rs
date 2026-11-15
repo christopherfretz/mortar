@@ -13,7 +13,9 @@
 //!   check alone in a `check` method.
 //! - The decision tables (§4), [`layout`], and their validity,
 //!   [`Layout::check`] ([`check`]).
-//! - [`identity`]: what survives between links (§7.1).
+//! - [`identity`]: what survives between links (§7.1), and the dependees
+//!   of the dependency index (§7.2).
+//! - [`seed`]: a malformed scheduling seed as a diagnostic (§6).
 
 mod flags;
 mod table;
@@ -32,6 +34,7 @@ pub mod liveness;
 pub mod par;
 pub mod plan;
 pub mod resolution;
+pub mod seed;
 pub mod split;
 
 pub use assignment::Assignment;
