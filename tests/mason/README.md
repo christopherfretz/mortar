@@ -56,7 +56,9 @@ expectation in `programs.rs` (`LIBCXX_REFUSAL`) is updated. `--census`
 also compiles the kiln sources with g++ and clang++ and prints the census
 of the three producers' objects.
 
-The run takes about two minutes at `-j 4`, so it is not in `ci --quick`.
+The run took 41 s at `-j 4` (mortar already built, a loaded shared
+machine). It is not in `ci --quick`: it needs kiln and hod builds, and
+its time is close to the one-minute budget.
 
 ## Census
 
