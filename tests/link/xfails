@@ -18,9 +18,8 @@
 # each case pass for mortar (spec/landed/dyn/WP-040.md), grouped by package.
 
 # WP-042 (CLI): the command line: the refused option or value is named once the dynamic options are accepted.
-# WP-053 (JOIN-C): AArch64 cases the join does not yet pass (diagnosis in each reason).
-mortar,aarch64 dyn/reloc/tls-desc-large.test: M2: WP-053 (JOIN-C); plumb P-D12: a TLSDESC record is written in a PIE (D-48: descriptors are relaxed)
-mortar,aarch64 dyn/shlib/closure-not-on-command-line.test: M2: WP-053 (JOIN-C); reports undefined symbol, not D-12's "libmid.so, which is not on the command line" note
+# WP-053 (JOIN-C): what the join leaves to a verifier change (P-D12 does not know D-48's large-TLSDESC record).
+mortar,aarch64 dyn/reloc/tls-desc-large.test: M2: verifier request (WP-053 finding); plumb P-D12 rejects the TLSDESC record D-48 keeps for AArch64's unrecognised large TLSDESC form (a64 R2); mortar's output follows D-48 and runs (tlsx 5 same 1 own 9 same 1)
 
 # WP-052 (SPIE): static-pie.
 mortar,aarch64,x86_64 dyn/kinds/output-kind-table-static-pie.test: M2: WP-052 (SPIE)

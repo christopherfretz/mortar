@@ -134,6 +134,7 @@ pub fn with_link<T>(
         assignment: Some(&f.assignment),
         comdat_mismatch: &f.comdat_mismatch,
         gnu_warnings: &f.gnu_warnings,
+        closure_only: &f.closure_only,
     };
     // As the scan's options (front.rs): a dynamic output's walk sees the
     // output sections' writability and the scan's `WeakDyn` keys.

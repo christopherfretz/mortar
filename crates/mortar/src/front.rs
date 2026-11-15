@@ -104,6 +104,8 @@ pub struct Front<'s> {
     pub resolution: Resolution,
     pub comdat_mismatch: Vec<Mismatch>,
     pub gnu_warnings: Vec<(SymbolId, FileId, SectionIndex)>,
+    /// D-12's closure-only keys (`Outcome.closure_only`).
+    pub closure_only: Vec<(SymbolId, FileId)>,
     pub headers: Headers<'s>,
     /// After layout's `finish` (stage A, then L-50's flags).
     pub assignment: Assignment<'s>,
@@ -359,6 +361,7 @@ pub fn front<'s>(
     let entry_warned = outcome.diagnostics.iter().any(|(_, d)| d.id() == "entry-not-found");
     let comdat_mismatch = mismatches(&outcome);
     let gnu_warnings = outcome.gnu_warning_syms.clone();
+    let closure_only = outcome.closure_only;
     let roots = outcome.roots;
     let needed = outcome.needed;
     let resolution = outcome.resolution;
@@ -464,6 +467,7 @@ pub fn front<'s>(
         assignment: Some(&assignment),
         comdat_mismatch: &comdat_mismatch,
         gnu_warnings: &gnu_warnings,
+        closure_only: &closure_only,
     };
     // D-25: a writable place, from the section mapping.
     let out_writable = crate::dynlink::OutWritable(&assignment);
@@ -868,6 +872,7 @@ pub fn front<'s>(
         resolution,
         comdat_mismatch,
         gnu_warnings,
+        closure_only,
         headers,
         assignment: placement_assignment,
         merge,

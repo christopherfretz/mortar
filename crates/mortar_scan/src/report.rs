@@ -76,7 +76,16 @@ fn undefined(view: &View<'_, '_>, key: SymKey, acc: &Acc) -> Diagnostic {
     } else {
         Diagnostic::error(kind)
     };
-    let d = with_refs(view, d, acc);
+    let mut d = with_refs(view, d, acc);
+    // D-12: a definition only a closure file has is not a candidate.
+    if let Some(id) = key.as_global() {
+        let c = view.closure_only;
+        if let Some(&(_, file)) = c.get(c.partition_point(|row| row.0 < id)).filter(|r| r.0 == id)
+        {
+            let path = file_text(&view.inputs.files[file].display());
+            d = d.note(format!("defined in {path}, which is not on the command line"));
+        }
+    }
     if hidden { d.note("the symbol has hidden visibility") } else { d }
 }
 

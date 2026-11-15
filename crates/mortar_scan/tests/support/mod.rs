@@ -109,6 +109,7 @@ impl Linked {
             assignment: None,
             comdat_mismatch: &self.mismatch,
             gnu_warnings: &self.outcome.gnu_warning_syms,
+            closure_only: &self.outcome.closure_only,
         };
         let opts = ScanOptions {
             output: output_kind(self.plan.kind),
