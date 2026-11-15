@@ -639,9 +639,10 @@ pub enum Erratum { A53_843419 }
   written and every size is the lazy variant's (D-49; all three
   references). What `-z now` changes is generic: `.got.plt` becomes its
   own chunk inside RELRO (`spec/layout.md` L-60 rank 7), and
-  `DT_FLAGS`/`DT_FLAGS_1` (D-30). The variant chosen under `-z now`
-  (`PltVariant::Now`, WP-040 step 0c) therefore has the `PltShape` and
-  the bytes of the variant it replaces. There is no `.plt.got` (D-49): a
+  `DT_FLAGS`/`DT_FLAGS_1` (D-30). `-z now` is a `now` flag beside the
+  variant (WP-040 step 0c's `PltVariant::Now`, revised so that it
+  combines with AArch64's `Bti`; WP-041), and it changes neither the
+  `PltShape` nor the bytes of the variant. There is no `.plt.got` (D-49): a
   key with both a GOT and a PLT use gets a PLT entry and a GOT slot.
 - **Thunks**: `branch(h)` says which types are branches, their reach, and
   whether a veneer may be inserted (AArch64 `CALL26`/`JUMP26`). `thunk()`
@@ -872,8 +873,16 @@ Every `Howto` names one class. The table gives, per output and target
 kind, the demands or the error. `R`: a `Relative` dynamic relocation at
 the place (counted); `D`: a `Symbolic` one, with `EXPORT`; `C`: `COPY`
 for a data symbol, `CANON_PLT` for a function; `I`: `IPLT`; `E`: the
-error `relocation-incompatible` (§7); `TX`: `E` when the place is in a
-read-only section (no `DT_TEXTREL` is ever written); `—`: nothing.
+error `relocation-incompatible` (§7; its M1 meaning: the relocation
+cannot express the target in this output kind); `TX`: the error
+`text-relocation` when the place is in a read-only section, since the
+record it needs would be a text relocation (`spec/dyn.md` D-47; no
+`DT_TEXTREL` is ever written); `—`: nothing. Two `E` cells of a dynamic
+`Pie` carry the names of their `spec/dyn.md` rules: `Pc` against
+`Shlib{func: true}` is `canonical-plt-in-pie` (D-44), and a `Weak0` key
+with an unfillable use is refused per key, `weak-undefined-pc-in-pie`
+(D-25). The kinds are registered in `mortar_diag` by WP-041 (and listed
+in `spec/diag.md` with them).
 `Static` never has `Preemptible`, `Shlib` or `WeakDyn` targets.
 
 | class | output | Local | Abs | Preemptible | Shlib | Ifunc | Weak0 | WeakDyn |

@@ -1,6 +1,6 @@
 # spec: dynamic executables (`mortar_synth` dynamic tables; M2)
 
-**Status: accepted (WP-040, after an adversarial review and a re-review); §11's requests applied to the owning specs and §15's questions ruled (WP-040r).**
+**Status: accepted (WP-040, after an adversarial review and a re-review); §11's requests applied to the owning specs and §15's questions ruled, Q1 reopened (WP-040r).**
 
 ## 1. Scope and status
 
@@ -13,7 +13,7 @@ the owning specs contradict each other (§3); everything else it cites.
 Rules are `D-n`, tagged `[M2]` or `[M4]`; a rule tagged `[M4]` is here
 only because an M2 rule needs its boundary (i386 dynamic, `-shared`,
 RELR, verdefs). Each rule names the experiment behind it (Appendix A);
-`[unmeasured]`, `[unverified]` and `[Qn]` (a question of §15, now ruled) mark the rest.
+`[unmeasured]`, `[unverified]`, `[Qn]` (a question of §15, now ruled) and `[open Q1]` mark the rest.
 
 Not in M2: producing shared objects (`-shared`, verdefs, `DT_SONAME`,
 symbol versioning of exports), RELR (`-z pack-relative-relocs`), i386
@@ -355,7 +355,7 @@ cli.md §3.2, side by side; other specs cite a row by its name. Measured
 in E-dynamic (108 outputs: C, C++, Fortran hello × PIE, `-no-pie`,
 `-static-pie` × three architectures × four references, all run).
 
-| property | `Static` | `Exec` | `Pie` | `StaticPie` [M4 end to end; rows M1] |
+| property | `Static` | `Exec` | `Pie` | `StaticPie` [rows M1; end-to-end gate M2: D-2, synth S-70, ROADMAP] |
 |---|---|---|---|---|
 | line | neither `-pie` nor `-dynamic-linker` | `-dynamic-linker` without `-pie` | `-pie -dynamic-linker` | `-pie` without `-dynamic-linker` (`-static-pie`, `--no-dynamic-linker`) |
 | `e_type` | `ET_EXEC` | `ET_EXEC` | `ET_DYN` | `ET_DYN` |
@@ -545,12 +545,14 @@ R-M1). Then:
   is not exported: GNU ld and mold; lld exports it, harmless, 2.5a);
   these columns are computed after D-11 and D-12 (request R-R3).
 
-Archive extraction (resolve §4.2, §4.4) takes the references of a loaded
-shared object as edges, except those of an `--as-needed` shared object
-that is not needed: they extract nothing (Q1, ruled: lld's rule, the
-library contributes nothing; GNU ld unmeasured, to be measured by the
-resolution package, which refuses by name a real line where GNU ld
-differs).
+Archive extraction (resolve §4.2, §4.4) and the references of an
+`--as-needed` shared object that ends up not needed: [open Q1, reopened;
+measured by WP-043 before its implementation]. Whatever the measurement,
+the rule must not be circular: extraction is decided from facts
+available at load time (whether a loaded command-line shared object's
+undefined references extract archive members is the same for needed
+and unneeded objects, as the references do it at load time), and
+neededness is computed after `def` (D-11).
 *Tests:* `closure-export` (runs), `closure-not-on-command-line` (the
 note), `closure-unused`, `shlib-undefined-ldso` (the default hello with
 D-13 on: links, `ld-linux` used, not needed).
@@ -825,6 +827,12 @@ Then:
   x86-64; D-49 has no `.plt.got`). The GOT test and the call then agree
   whether or not a library loaded later (`LD_PRELOAD`, `dlopen` with
   `RTLD_GLOBAL`) defines it;
+- in `Exec` and `Pie`, a key with a TLS-class use (a thread-local
+  undefined weak) is refused by name at M2, once per key (at its first
+  TLS relocation in input order), `Refused{Feature, "thread-local undefined weak symbol in a dynamic executable"}`: every TLS type is
+  unfillable, and the dynamic case is unmeasured (a64.md §7's
+  thread-local `weak0` rules are static links'; supervisor's ruling
+  after WP-040r);
 - in `Pie` only, a key with an unfillable use is refused by name, once
   per key (at its first unfillable relocation in input order),
   `weak-undefined-pc-in-pie`, with ``relocation R_X86_64_PC32 against
@@ -1250,7 +1258,10 @@ message), `textrel-ro-copy-pie` (mortar refuses where lld miswrites).
   AArch64 traditional GD this way, and they run); a TLSDESC sequence that
   is not recognised (AArch64's large form, a64 R2) keeps a `TLSDESC`
   record in `.rela.dyn`, applied eagerly: no `DT_TLSDESC_PLT`/`GOT` (a64
-  §10.6; no reference writes them in an executable);
+  §10.6; no reference writes them in an executable). Exception, x86-64:
+  an unrecognised TLSDESC sequence in `Exec` or `Pie` is refused by name
+  (x64.md X-28; `R_X86_64_TLSDESC`, type 36, stays M4, x64.md §6.2;
+  supervisor's ruling after WP-040r);
 - `DF_STATIC_TLS` is never set (D-30).
 
 a64.md has every rule (R1-R5, §10.1), except that DTPMOD64/DTPREL64 are
@@ -1520,14 +1531,21 @@ work within, stated so that M2's rules do not close the door.
 
 ## 15. Open questions (each with a recommendation)
 
-Every question is closed (supervisor's rulings, written into the text by
-WP-040r).
+Every question but Q1 is closed (supervisor's rulings, written into the
+text by WP-040r); Q1 is reopened.
 
-- **Q1. Closed: no.** Can the references of an `--as-needed` library that is not
+- **Q1. Reopened.** Can the references of an `--as-needed` library that is not
   needed extract archive members? [unmeasured] *Recommendation:* no
   (lld's rule; the library contributes nothing); measure GNU ld in
-  WP-M2-RES and refuse by name if they differ on a real line. *Ruled as
-  recommended*: D-12, resolve §4.4.
+  WP-M2-RES and refuse by name if they differ on a real line.
+  *Supervisor*: reopened, not closed; measured by WP-043 before its
+  implementation. The recommendation as written is circular (which
+  objects are needed is known only after `def`, which extraction
+  decides), so whatever the measurement, the rule must not be circular: extraction is decided from facts
+  available at load time (whether a loaded command-line shared object's
+  undefined references extract archive members is the same for needed
+  and unneeded objects, as the references do it at load time), and
+  neededness is computed after `def` (D-11).
 - **Q2.** Withdrawn by the review (F2): `WeakDyn` is decided per symbol
   (D-25); there is no per-class split.
 - **Q3. Closed: off.** `--eh-frame-hdr` off by default (GNU ld, lld) or on (mold)?

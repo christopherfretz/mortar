@@ -596,9 +596,12 @@ With the reference **after** both (E4, R11), the three disagree:
 
 A shared object's undefined mentions are edges like an object's (an
 archive member defining a symbol a shared object needs is extracted and
-exported: all three, E4). The references of an `--as-needed` shared
-object that is not needed extract nothing (`spec/dyn.md` §15 Q1, ruled:
-lld's rule; the library contributes nothing).
+exported: all three, E4). Whether the references of an `--as-needed`
+shared object that ends up not needed extract archive members is
+`spec/dyn.md` §15 Q1, reopened and measured by WP-043 before its
+implementation; extraction is decided from facts available at load time,
+the same for needed and unneeded objects, and neededness is computed
+after `def` (`spec/dyn.md` D-11), so the rule is not circular.
 
 ### 4.5 Commons and archives
 
