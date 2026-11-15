@@ -71,11 +71,17 @@ links from scratch and says why (§7).
 - **A plain link pays nothing** (§8.1): no slack, no state, no hashes, no
   index, no stamps.
 - **The floor** of an update on protoc, emulated with real I/O (§1.5,
-  R1): 55–63 ms with a thin archive in place, 90–112 ms by copy,
-  107–178 ms with a regular archive, against a 0.19 s full link
-  (1.1–3.5×). Dirty 1 MiB windows, not the edit, set the refill. WP-061
-  measures it with mortar's code on protoc and a 5× larger workload, and
-  its **go/no-go rule** decides whether M7 continues (§1.5).
+  R1), plus the phases the emulation leaves out (≤ 55 ms, upper bound):
+  for a one-function edit, **1.3–2.5×** faster than the 0.19 s full link
+  by copy with thin archives, 1.5–3.5× in place, 0.9–1.5× with a
+  regular archive (*estimate*). Dirty 1 MiB windows, not the edit, set
+  the refill. The **scaling model** (§1.5) projects 4.0–4.5× in place
+  and 2.3–2.5× by copy from 500 MB to 10 GB of output (*estimate*): the
+  O(symbols) and, on the copy path, O(output) terms bound the ratio, and
+  §1.5 lists what would make each O(change). WP-061 measures it with
+  mortar's code on protoc `-g` and a ≥ 10× static `-g` workload, and its
+  **go/no-go rule** (thresholds an operator decision) decides whether M7
+  continues.
 - **Verification**: the two-full-link oracle runs on every incremental
   test (IN-63a), the equivalence check enforces values and packed-section
   order (IN-2, IN-62), and every delta rule has a mutation test
@@ -124,6 +130,7 @@ kiln with `-g` differs from the other compilers):
 | e10 | a string literal made longer | 1 | GCC `-O2` fs: one per-function `.rodata.str` section and addends in 138–139 sections |
 | add a unit | `tx.cc` (a function, a global with a dynamic initializer, a literal) added to the link | 1 new file | 548–652 B allocated, 46–60 KB of debug (`-g`) |
 | remove a unit | the reverse | 1 file gone | |
+| symbol attributes | not in the corpus: a global's type, binding or visibility changes (e.g. FUNC → IFUNC) | — | IN-26: `symbol-kind-changed` (a full link) when an unchanged file references it; frequency not measured |
 | archive member | e8, and a same-size constant edit, with `t00`–`t37` in `libt.a` | 1 member | regular `ar rcsD`: the archive keeps its size and every member offset; the member's header is identical before and after (`date=0 uid=0 gid=0 mode=644`, same size): **only the member's bytes differ**. Thin `ar rcsDT`: the archive file is byte-identical; the member file's mtime changes |
 | extraction | `t07.cc` now calls `tx_fn`, defined by `tx.o` in `libt.a` | 1 member + 1 newly extracted | the archive grows by 96–208 B, 31 of 39 member headers move; live files 488 → 489 |
 
@@ -372,39 +379,184 @@ stat 0.5, stamps 0.0, state 3.4, detect 3.0, refill reads 12.9, writes
    size, not a write size) or per-file `.symtab` ranges (synth.md Q8)
    would.
 
-So on protoc an update is **1.1–3.5× faster** than today's full link,
-not the 3–10× the previous draft estimated against a stale baseline:
-the full link got 3× faster in the meantime, and protoc is small (a
-0.19 s link). The case for incremental linking rests on large programs,
-where the full link grows with all inputs (input and image are 69% of
-it) and the update with the edit, the windows and (on the copy path)
-the output. A 10× protoc (1.6 GB of inputs, a 500 MB output) is not in
-the bench; for it the derivation gives a full link of ~2 s and an
-update dominated by the copy (0.2–0.75 s at R7's and the reviewer's
-rates) unless it is in place or reflinked (*estimate*, linear scaling,
-not measured).
+**The omitted phases (the re-review's N6).** "Derived" above charges the
+resolve phase whole, the input phase by changed bytes and the image
+phase by refilled bytes. It leaves out CPU work an update also does:
+layout 21.6 ms (delta layout, region fitting, TP offsets, `.eh_frame`
+ranges), split 12.9 ms (the changed file's merged fragments against the
+stored maps), assignment 3.8, synthetic 3.2, the scan of the refill set
+(≤ 4.5) and the liveness walk (≤ 1.1), all measured as whole phases of
+the full link; IN-49a's `.symtab` merge (2–5 ms, *estimate*); decoding
+the state and translating identities (IN-28; only the read and its CRC
+are timed: ≤ 5 ms, *estimate*); the `.eh_frame_hdr` and
+`.debug_aranges` rewrites (their windows are in the dirty set, so their
+writes are timed; building them is not, < 1 ms, *estimate*). Charged as
+whole phases, that is **≤ 55 ms** (47.1 measured + ≤ 8 estimated), an
+upper bound: a delta layout and a split of one file should cost less,
+but that is not measured. With it, a one-function edit on protoc `-g`
+(full link 191 ms), as an interval *floor (measured) – floor + 55 ms
+(upper bound)*:
 
-**Go/no-go rule.** WP-061's first deliverable is the floor **measured
-with mortar's own code** (state read and validated, stat and stamps,
-change detection, re-resolution, refill through windows, IN-46/IN-47
-writes; relocation of refilled units through the image phase), on
-protoc `-g` and on a workload at least 5× larger in live input bytes
-(the bench has none: WP-061 adds one, e.g. a generated 200-unit program
-scaled up, or LLVM's `opt` if it builds here), thin archives, both write
-paths. Then:
-- **go** (S2–S6 as cut, §10) if on the large workload the median-file
-  update on the default write path is at most **1/3** of a plain full
-  link, and on protoc at most **1/2**;
-- **change order** if it misses only because of a named part: regular
-  archive detection → parallel member hashing and the kiln request
-  first; the copy → the operator's M4 decision is revisited with the
-  number; window refill → smaller update windows in S4; changed-file
-  refill without `-g` with `-ffunction-sections` above **25%** of the
-  update → IN-31 (section-level refill) moves before S5;
-- **no-go** if no named change brings it under 1/2 on the large
-  workload: M7 stops after S1 (the state is kept for tuck), and the
-  operator is told that a fast full link is the better investment, with
-  the numbers.
+| protoc `-g`, overlay / virtiofs | thin, in place | thin, copy | regular, in place | regular, copy |
+|---|---|---|---|---|
+| median `importer.cc.o` | 55–110 / 73–128 ms: 3.5–1.7× / 2.6–1.5× | 90–145 / 78–133 ms: 2.1–1.3× / 2.5–1.4× | 107–162 / 124–179 ms: 1.8–1.2× / 1.5–1.1× | 150–205 / 130–185 ms: 1.3–0.93× / 1.5–1.03× |
+| largest `descriptor.cc.o` | 63–118 / 88–143 ms: 3.0–1.6× / 2.2–1.3× | 112–167 / 105–160 ms: 1.7–1.1× / 1.8–1.2× | 132–187 / 169–224 ms: 1.45–1.02× / 1.13–0.85× | 178–233 / 144–199 ms: 1.07–0.82× / 1.33–0.96× |
+
+**What the design promises** for a one-function edit on protoc `-g`
+(the median file; the lower ends of the intervals are measured floors,
+the upper ends add the 55 ms bound, so the interval as a whole is an
+*estimate*):
+
+| write path, archives | promise | the largest file | basis |
+|---|---|---|---|
+| copy (the default, IN-47), thin archives | **1.3–2.5×** | 1.1–1.8× | floor measured, omitted phases estimated |
+| copy, regular archive | **0.9–1.5×**: can be slower than a full link | 0.8–1.3× | the same; detection measured (50–70 ms) |
+| in place (IN-46), thin archives | **1.5–3.5×** (up to ~3× typical) | 1.3–3.0× | the same |
+| in place, regular archive | 1.1–1.8× | 0.85–1.45× | the same |
+
+The reviewer's figures (copy thin ~1.5–2.5×, regular 1.1–1.5×, in place
+up to 3×) are inside these intervals; the lower ends here are lower
+because the omitted CPU is charged as whole phases (55 ms, not "some of"
+45 ms). On protoc the edit itself (≈ 0.3 MB of units) does not decide
+the time: the 1 MiB windows (10–13 MB refilled, 5.4 MB of it
+`.symtab`/`.strtab`), the copy (30–40 ms) and regular-archive detection
+(50–70 ms) do.
+
+**Scaling model** (the re-review's N6 and the operator's question on the
+cost of the delta for very large static executables). Each update cost
+is put in one of four classes, with its constant measured on protoc `-g`
+(50.3 MB output, 164 MB live input, 31,478 globals, 8.05 MB state,
+~170 input files and thin members stat'ed, 2,500 file rows with system
+archive members); a full link's phases are classed the same way:
+
+| class | update steps (constant on protoc `-g`) | full-link steps |
+|---|---|---|
+| O(change): the changed file and the windows its units and referrers touch | read and hash the changed file (3.0 ms); refill reads and relocation of ~9 dirty code/data windows (≈ 9 MB × 1.9 ms/MB ≈ 17 ms: reads 1.0 ms/MB measured, image 0.89 ms/MB derived); delta layout and split (≤ 34.5 ms, upper bound, *estimate*); in-place `fdatasync`s (8.2 ms on overlay, measured); build-id: only dirty leaves rehashed (I-76; 16 B per MiB of root input, negligible) | — |
+| O(inputs): per input file and member | `stat` (4.3 µs each; 0.5–0.7 ms); stored armaps instead of re-read (≈ 1 ms) | input phase 87.1 ms (0.53 ms/MB of live input) |
+| O(symbols): per global, section and edge, and the sections rewritten whole | state read whole and validated (3.1 ms per 8.05 MB) and rewritten whole (7.0 ms); re-resolution of every key (IN-26: 7.9 ms); assignment, synthetic, liveness walk (≤ 8.1 ms); `.symtab`/`.strtab` merged (2–5 ms, *estimate*) and rewritten whole (5.4 MB); `.debug_aranges` rewritten whole (IN-54: 0.68 MB on protoc); `.eh_frame_hdr` rewritten whole when present (≈ 8 B per FDE, ≤ 0.13 MB, *estimate*); the three sections at 1.9 ms/MB ≈ 11.8 ms | resolve 7.9, assignment 3.8, split 12.9, liveness 1.1, scan 4.5, synthetic 3.2, layout 21.6 ms |
+| O(output): every output byte | copy path only: copy, `fdatasync` of the whole new file, rename (30–40 ms per 50 MB, measured: 0.6–0.8 ms/MB) | image phase 44.6 ms (0.89 ms/MB of output) |
+
+`.gdb_index` and `.debug_names` are not generated with `--incremental`
+in v1 (§7 `options-changed`), so they add nothing. Summed: an update is
+≈ 63 ms of O(change) (with the 34.5 ms bound) plus ≈ 42 ms per protoc
+of O(inputs) + O(symbols), plus ≈ 35 ms per protoc of O(output) on the
+copy path; a full link is ≈ 191 ms per protoc. **Projection** (*estimate*:
+every class linear in the scale S, a C++ code base of protoc's shape,
+thin archives, a one-function edit to a median file; S = 10 is the
+go/no-go workload's size):
+
+| output with `-g` | S | live input | user objects (+ ~2,300 system members) | globals | state, read and written whole | full link (time, peak RSS) | update in place | update by copy | update peak RSS |
+|---|---|---|---|---|---|---|---|---|---|
+| 50 MB (protoc, measured) | 1 | 164 MB | 168 | 31 K | 8 MB | 0.19 s, 255 MB | 0.06–0.11 s (1.7–3.5×) | 0.09–0.14 s (1.4–2.1×) | ~55 MB |
+| 500 MB | 10 | 1.6 GB | 1,700 | 315 K | 80 MB | 1.9 s, 2.5 GB | 0.48 s (4.0×) | 0.83 s (2.3×) | ~0.33 GB |
+| 2 GB | 40 | 6.5 GB | 6,700 | 1.3 M | 320 MB | 7.6 s, 10 GB | 1.7 s (4.4×) | 3.1 s (2.4×) | ~1.3 GB |
+| 10 GB | 200 | 33 GB | 34,000 | 6.3 M | 1.6 GB | 38 s, 51 GB | 8.5 s (4.5×) | 15.5 s (2.5×) | ~6.2 GB |
+
+Update peak RSS is *estimated* as 3 × the state's size (decoded tables;
+not measured) plus the sections rewritten whole (6.2 MB × S) plus the
+refilled windows and the changed file (~25 MB); a full link's as 255 MB
+× S (linear in live input, *estimate*). WP-061 measures both (time and
+peak RSS, `/usr/bin/time -v`) on protoc and the go/no-go workload. The
+full link's first run (0.43 s cold on protoc) is not counted.
+
+**What bounds the ratio.** The edit's cost stays constant while every
+other term grows with S, so the ratio tends to (full link per S) /
+(update per S): **≈ 4.5× in place and ≈ 2.5× by copy** (*estimate*).
+On the copy path the O(output) term (0.6–0.8 ms/MB) is the largest
+single bound: at 500 MB it is 0.35 s of the 0.83 s. In place removes it;
+a reflink copy (`copy_file_range`, which `std::fs::copy` uses, shares
+extents on btrfs and XFS: *not verified here*, neither is on this host)
+would make it O(change). In place, the bound is the O(symbols) terms
+that v1 does whole. Each could be made O(change), in this order of
+cost per S (what it would take; none is in v1):
+
+| step (cost per S) | to make it O(change) |
+|---|---|
+| copy + whole-file sync, 30–40 ms | in place (IN-46, exists: the write-path decision), or a reflink copy where the file system shares extents |
+| `.symtab`/`.strtab` merged and rewritten, ≈ 13.5 ms | per-file `.symtab`/`.strtab` ranges with slack, filled like regions (synth.md Q8) |
+| state read and rewritten whole, 10.1 ms | a ranged state read (positioned reads of the tables an update needs, no mmap) and a state patched in place or journaled, with per-table hashes kept |
+| re-resolution of every key, 7.9 ms | re-resolve only the keys the changed files' summaries name, plus archive lookups through the stored armaps (the stored resolution already has per-key demand) |
+| assignment, synthetic, liveness walk, ≤ 8.1 ms | delta versions over the changed files' sections and symbols; a liveness walk from the changed edges only (needs reverse edges in the state) |
+| `.debug_aranges` and `.eh_frame_hdr` rewritten whole, ≈ 1.5 ms | patched in place where no address moved; `.debug_aranges` must stay whole while gdb rejects duplicate unit offsets (IN-54) |
+| `stat` of every input, 0.6 ms | a trusted change list from the build system (not in v1: hints only add work, IN-23) |
+
+**What the design buys for a very large, old C++ code base.** At 2–10 GB
+of output, a v1 update is a constant ~4.5× (in place) or ~2.5× (copy)
+faster than a full link, by the estimate; that is seconds instead of
+tens of seconds, and peak memory falls from tens of GB to the state's
+decoded size plus the windows (~12% of the full link's, *estimate*).
+Beyond that, every further gain comes from the steps in the table above
+in that order; the format of v1 does not rule any of them out (the state
+is tables with per-table hashes, the output's sections are already
+placed in regions). If an update at the scale of the operator's code
+base must be O(change) end to end, those steps are M7 work after v1 and
+the cut (§10) must make room for them; WP-061's measurement on the
+go/no-go workload is what shows which of them pays first.
+
+**Measuring the large workload.** No static `-g` link in the container
+is ≥ 10× protoc. Two candidates:
+- **`synthetic-objects-g10x`**: the bench's `synthetic-objects` shape
+  (`xtask/src/bench/synth.rs`; 80.7 MB of objects at 1,000 objects of
+  200 functions) compiled with `-g`, its object count N fixed at WP-061's
+  start as the smallest giving ≥ 1.64 GB of live input (N ≈ 10,000–20,000,
+  *estimate*), linked statically. Cheap, reproducible, generated; but C,
+  uniform, with no templates, COMDATs or `.debug_str` sharing, so it
+  under-represents the O(symbols) terms of real C++. It must be deleted
+  after measuring (the workspace disk is synced to the host).
+- **clang, linked statically with `-g`** (LLVM, public, Apache-2.0 with
+  LLVM exception; GCC builds it here): a real, old, very large C++ code
+  base, the shape the operator targets; its `-g` output is several GB
+  (*estimate*). It fits the tests' needs (public sources, a fixed
+  release tag, a deterministic build, a reference link by GNU ld and
+  lld for the oracle) on two conditions: its archives are built thin
+  (CMake's archive rule with `ar qcT`) so the gate measures the
+  thin-archive path, and the operator accepts its build cost (*estimate*:
+  hours of CPU on the shared pool and 10–30 GB of objects on the synced
+  disk; not measured). Recommendation: the synthetic workload is the
+  go/no-go gate (it can be built inside WP-061); clang static `-g`
+  confirms the decision at the scale that matters, as a bench workload
+  added when the operator approves its disk and CPU.
+
+**Go/no-go rule** (the re-review's N7). WP-061's first deliverable is
+the floor **measured with mortar's own code** (state read and validated,
+stat and stamps, change detection, re-resolution, refill through
+windows with relocation through the image phase, IN-46/IN-47 writes;
+the edit is same-size, so the previous layout stands and the delta
+layout's cost stays the §1.5 bound until S2), for a one-function edit to the median file, thin archives,
+both write paths, time and peak RSS, on **protoc `-g`** and on
+**`synthetic-objects-g10x`**, both fixed before anything is measured.
+The thresholds are an **operator decision** (record (a) 6), recommended:
+the update on the default write path at most **1/2** of a plain full
+link on protoc `-g` and at most **1/3** on the large workload. Then:
+- **go** (S2–S6 as cut, §10) if both are met;
+- **change order** if one is missed and the miss is attributed to one of
+  the named parts below. Each named part carries its own measurement,
+  done inside WP-061 or in **one time-boxed follow-up of at most one
+  session**, and the thresholds are checked again on its numbers:
+  - the copy → WP-061 already measures in place; if in place meets the
+    threshold, the operator's write-path decision (record (a) 1) is
+    revisited with that number;
+  - window refill → smaller update windows prototyped in the follow-up
+    (a write-size change only; image.md I-75's leaf size stays) and
+    measured;
+  - changed-file refill without `-g` with `-ffunction-sections` above
+    25% of the update → IN-31 (section-level refill) prototyped for the
+    changed file in the follow-up and measured;
+  - an O(symbols) term of the table above (state, `.symtab`,
+    re-resolution) above 25% of the update → that row's O(change)
+    version prototyped in the follow-up and measured;
+  - regular-archive detection does not gate (the gate uses thin
+    archives); its number is reported;
+- **no-go** if, after the named parts are measured, the update is still
+  above the threshold on the large workload: M7 stops after S1 (the
+  state is kept for tuck), and the operator is told that a fast full
+  link is the better investment, with the numbers. A miss attributed to
+  a part not named here is no-go too.
+
+By the scaling model (*estimate*), in place is predicted to pass both
+thresholds (3.5–1.7× on protoc, 4.0× at 500 MB) and the copy to miss
+1/3 on the large workload (2.3×), which triggers the first escape: the
+write-path decision would be revisited with measured numbers.
 
 ### 1.6 Debug information under replacement (E6, E6b)
 
@@ -624,7 +776,10 @@ program is the program a from-scratch link would have made.
      mapping. (The order of other code and data, and so the relative
      order of function addresses, may differ; a program that sorts or
      hashes function pointers can observe it, as it can observe any
-     relink. `docs/` says so.);
+     relink. `docs/` says so.) For an `SHF_LINK_ORDER` section the
+     full-link order is the gABI's (that of the linked-to sections), so
+     the two agree only while no linked-to region moves; a move is the
+     full link `link-order-moved` (§7; the re-review's n3);
   6. every byte of `X` not covered by 1–5 is in a **dead range**
      recorded in the decision tables (IN-3a) and passes IN-3a's three
      checks;
@@ -658,7 +813,18 @@ program is the program a from-scratch link would have made.
   whose holes are padding CIEs: records its walkers parse (IN-34a). A hole is an entry of
   the decision tables (its section, offset, size), so (B) reproduces its
   fill and the map lists it (`hole` lines, §8.2). Holes are the
-  allocated case of a dead range (IN-3a). *Test:* remove a function and
+  allocated case of a dead range (IN-3a). **Symbolization of a hole**
+  (the re-review's n4): a hole has no symbol, so a stale pointer into a
+  removed function is attributed by `addr2line -f` to the preceding
+  function (measured by the re-reviewer: `_Z7throweri` for an address in
+  `f_dead`'s old range), while gdb ("No symbol matches"), lldb and
+  llvm-symbolizer (`??`) report none. Decided: this is a **known
+  difference**, stated in `docs/` and in Tuck's notes, not fixed with a
+  symbol: a local `STT_NOTYPE` symbol per hole would cost a `.symtab`
+  entry (24 B plus a name) per hole, change `.symtab` from a full link's
+  (IN-2 item 4 would need an exception), and still leave `addr2line`
+  naming a symbol that is not a function; nothing in the output is
+  wrong, only one tool's attribution. *Test:* remove a function and
   check that its old range is all trap fill (`plumb` checks every `hole`
   line's bytes); R4 (`packed_holes.sh`) is the negative case: a hole in
   `.init` traps (SIGILL) and a zero slot in a `__start_` array crashes
@@ -672,12 +838,23 @@ program is the program a from-scratch link would have made.
   (`dead` lines, §8.2). Invariant (B) holds outside them (IN-1). Inside
   them the verifier checks, independently of the linker and of the
   replay:
-  1. **nothing live refers into the range**: no relocated field's target,
-     no DWARF form offset (`DW_FORM_ref_addr`, `DW_FORM_sec_offset`,
-     `DW_FORM_strp`, `DW_FORM_line_strp`, `DW_AT_str_offsets_base`,
-     `DW_AT_addr_base`, `DW_AT_rnglists_base`, `DW_AT_loclists_base`,
-     `DW_AT_stmt_list`, an abbreviation offset) of a live unit, no
-     `.eh_frame_hdr` entry, no symbol's value;
+  1. **nothing live names the range**, judged by what a reference
+     names, not by the address it computes (the re-review's N3): no
+     relocation of a live section names a symbol defined in a dead range
+     or a dead input section, or a section symbol of a dead input
+     section; no dynamic or synthetic table entry (GOT, PLT, `.dynsym`,
+     `.eh_frame_hdr`, `RELATIVE` targets) does; no live symbol is defined
+     in it; and no DWARF form offset of a live unit (`DW_FORM_ref_addr`,
+     `DW_FORM_sec_offset`, `DW_FORM_strp`, `DW_FORM_line_strp`,
+     `DW_AT_str_offsets_base`, `DW_AT_addr_base`, `DW_AT_rnglists_base`,
+     `DW_AT_loclists_base`, `DW_AT_stmt_list`, an abbreviation offset)
+     points into it. A reference's base is the symbol's input section,
+     or the section symbol's, whatever the addend; an offset equal to the
+     section's size belongs to the section. So an address that lands in a
+     hole through an addend from a live symbol is valid: one past the end
+     of an array (`R_X86_64_32 arr+0x28` for a 40-byte `arr`), gfortran's
+     1-based bias (`R_X86_64_PC32 blk_-8`, before the symbol), an
+     `extern char x_end[]` label at its section's end;
   2. **the range is well formed for its section's grammar**, so the
      sequential readers (`readelf`, `llvm-dwarfdump`, gdb, lldb, libgcc's
      and libunwind's `.eh_frame` walkers) pass over it: a neutral unit of
@@ -688,8 +865,13 @@ program is the program a from-scratch link would have made.
      it elsewhere in a debug section (IN-53), any bytes in a merged
      string section (reached only by offset);
   3. **in allocated sections a dead range of code or data holds IN-3's
-     fill**, except dead fragments of merged string sections, which keep
-     their bytes because a live reference may share a suffix (L-147).
+     fill**, except dead fragments of merged **string** sections
+     (`SHF_MERGE|SHF_STRINGS`), which keep their bytes because a live
+     reference may share a suffix (L-147). Dead fragments of merged
+     **constant** sections (`SHF_MERGE` without `SHF_STRINGS`,
+     `.rodata.cst*`) take the fill like any data: constants share no
+     suffixes, so zero-filling them is safe (the re-review's n2; IN-34's
+     row says the same).
   These three are the one statement IN-2 item 6, IN-3, IN-34, IN-53,
   layout.md L-147 and synth.md S-110/S-111 refer to. *Test:* plumb's
   dead-range checker over every L10 step; its mutation tests put a live
@@ -741,8 +923,16 @@ program is the program a from-scratch link would have made.
   incremental mode is for development; reproducible and release builds
   link plainly. `docs/` and `--help` say so; a link with
   `SOURCE_DATE_EPOCH` set and `--incremental` gives a warning
-  (`incremental-not-reproducible`) once per link. *Test:* a link test
-  with the variable set checks the warning.
+  (`incremental-not-reproducible`) once per link: under
+  `SOURCE_DATE_EPOCH` the bytes of an incremental output still depend on
+  the edit history (slack consumed, holes, dead ranges, region order),
+  so equal inputs give equal bytes only from the same history; a plain
+  link's bytes do not depend on history. Whether this warns or refuses
+  is an operator decision (record (a)); the default is a warning. No
+  byte-identity test (`static-identical`, the reference-output tests)
+  links with `--incremental`; L10's tests compare by IN-2. *Test:* a
+  link test with the variable set checks the warning; a lint of the test
+  suites checks no byte-identity test passes `--incremental`.
 - **IN-8 [v1] The first link.** A full link in incremental mode (no
   state, or a fall-back) is deterministic in the ordinary sense: the
   output is that of a plain link with the incremental slack policy
@@ -951,8 +1141,62 @@ with each phase fed from the state for unchanged files:
   (IN-22). Timestamps are compared only with stamps of their own file
   system, never with a clock: file systems have their own timestamp
   granularity (1 ms on this host's overlay, 82 µs on its virtiofs), and a
-  wall clock is finer than either. *Test:* `stamp_rule.py` (R6) with the
-  state and the inputs on the same and on different file systems.
+  wall clock is finer than either.
+
+  **Stamps are trusted only on an allow-list, after a probe** (the
+  re-review's N5). A file system's type is read from
+  `/proc/self/mountinfo` (the mount whose `major:minor` is the input's
+  `st_dev`; field "filesystem type"), not from `statfs`: on this host
+  `statfs` names the workspace's virtiofs `fuse` (virtiofs uses
+  `FUSE_SUPER_MAGIC`), the same as sshfs, while mountinfo names it
+  `virtiofs` (measured, `stamp_probe.py`); reading a text file also needs
+  no `unsafe` (std has no `statfs`). **The allow-list is the measured
+  types: `overlay`, `virtiofs`, `tmpfs`.** ext4, xfs and btrfs keep
+  nanosecond ctimes that change on every data write and are expected to
+  pass, but are not measured here; they join the list when R6 and the
+  probe run on them (WP-061), not before. On a type off the list the
+  file system's inputs are **always hashed**. Named as not trusted, by
+  argument, not by reproduction here: **FUSE** in general (`fuse`,
+  `fuseblk`, and so sshfs): ctime is whatever the user-space server
+  reports, and with attribute caching (sshfs `cache=yes`, the kernel's
+  `attr_timeout`) a stale ctime can be served after a rewrite; **sshfs**
+  in addition takes timestamps from the remote server's clock and
+  file system, at one-second granularity over SFTP v3; **vfat** has no
+  ctime at all (the kernel reports the modification time, 2-second
+  granularity) and **exFAT** keeps 10 ms timestamps without a separate
+  change time, so a same-size rewrite with the time set back (`touch -d`,
+  `cp -p`) is not seen. NFS is off the list too (attribute caching;
+  not measured).
+
+  **The probe**, once per file system when the state is created and
+  again when its type or `st_dev` changes: create the stamp file and
+  `fstat` it (c0); set its mtime one day back with `utimensat`, `fstat`
+  (c1); `pwrite` one byte of the same size at offset 0, restore the
+  mtime, `fstat` (c2). It passes iff c1 ≥ c0 and c2 > c1 (ctime moves
+  forward on a metadata change and strictly forward on a data write made
+  after one, regardless of mtime). Measured (`stamp_probe.py`, load ~13):
+  overlay 0.29–1.99 ms, virtiofs 2.25–3.90 ms, tmpfs 0.18–0.49 ms; it
+  passed on all three. A failed probe records the file system as
+  always hashed in the state.
+
+  **Cost of always hashing** (n9): a file system off the list, or read
+  only (no stamp can be created there: a system image, a Nix store, a
+  read-only bind mount), has its inputs read and hashed on every update.
+  Measured for the usual case, the system archives of a C++ link
+  (`libstdc++.a` 6.6 MB, `libc.a` 5.6 MB, `libgcc.a` 3.2 MB,
+  `libgcc_eh.a`, `libm.a`; 15.5 MB): 6.9–10.8 ms single-threaded, load
+  ~13. A size + mtime stamp is **not** accepted on read-only mounts in
+  v1: an image or a package can be replaced at the same mount point
+  (an upgrade, a new container layer) with an equal `(size, mtime)` and,
+  across a remount, an equal `st_dev`/inode, and nothing in the tuple
+  tells the two apart (argued). The 7–11 ms is the price of not
+  trusting that; a content-addressed store whose path names the content
+  (Nix) is a [later] exception.
+
+  *Test:* `stamp_rule.py` (R6) with the state and the inputs on the same
+  and on different file systems; `stamp_probe.py` on each allow-listed
+  type; a unit test that maps a mountinfo line to its type and an
+  off-list type (`fuse`, `vfat`) to "always hashed".
 - **IN-22 [v1] Stat, then content, per file.** An input (file or
   archive) is **clean** when its path resolves as before (the probes of
   `spec/input.md` §4.6 re-checked by `stat`), its `(dev, ino, size,
@@ -1057,9 +1301,34 @@ with each phase fed from the state for unchanged files:
   key, a new definer, a new value or size, a new kind (defined,
   undefined, common, absolute, dynamic), or a changed demand flag; per
   COMDAT group, a new keeper; per file, extracted or no longer extracted.
+  **Symbol attributes are part of the delta too** (the re-review's N1):
+  for every global key a file defines or references, the state stores
+  (IN-19 already has the columns) the definition's type (`STT_*`: FUNC,
+  GNU_IFUNC, OBJECT, TLS, NOTYPE, COMMON), binding, visibility and the
+  rest of `st_other` (e.g. AArch64's `STO_AARCH64_VARIANT_PCS`), and
+  whether it is absolute, common or in a section. **v1 rule: a change in
+  any of these, for a key that an unchanged file references, is a
+  full link named `symbol-kind-changed`**, not a refill: an unchanged
+  referrer's relocation types are not in the state, so the update cannot
+  recompute the decisions that depend on them (an IPLT entry for a
+  FUNC → IFUNC change, preemptibility and GOT/PLT choices for binding
+  and visibility on dynamic outputs). A change for a key that only
+  changed files reference needs nothing beyond their refill. How often
+  it fires is not measured: the corpus's edits e1–e10 (§1.1) contain no
+  type, binding or visibility edit of a surviving symbol, so it would
+  fire 0 times on them (derived from the edit definitions, not from the
+  objects); a renamed or added function is a key that appears, not a
+  change of attributes.
   *Test:* L10 edit classes that move a definition between files, change
   a COMDAT keeper (edit the header of the lowest file's group), and pull
-  a new archive member in.
+  a new archive member in; and the named case `ifunc-type` (the
+  re-review's `re/ifunc_type.sh`: `f` turns from `STT_FUNC` into
+  `STT_GNU_IFUNC` in `c.o` with the same definer, value and size while an
+  unchanged `u.o` calls it; an emulated update that keeps `u.o`'s bytes
+  prints `f(5)=4423704`, the full link `f(5)=10`), which must report
+  `symbol-kind-changed` and print `f(5)=10`; one L10 edit per attribute
+  (binding weak ↔ global, visibility default ↔ hidden, the variant-PCS
+  bit, a definition turned absolute or common).
 - **IN-27 [v1] What is refilled.** The units refilled are the union of:
 
   | cause | units |
@@ -1254,9 +1523,10 @@ with each phase fed from the state for unchanged files:
   | `.eh_frame` | per-file ranges in full-link order, padding-CIE holes of 0 or ≥ 16 bytes, the terminator last; a range that overflows rewrites the section whole (IN-34a) | growth step; `reserve-exhausted` |
   | `.eh_frame_hdr` | one unit, rewritten whole when any FDE address changes (S-111); its table lists only live FDEs | growth step; `reserve-exhausted` |
   | `.gcc_except_table` | regions; zero holes (reached only through LSDA pointers) | `reserve-exhausted` |
-  | merged strings and constants | fragments appended (L-147, S-110); dead fragments keep their bytes and are dead ranges (IN-3a: a live reference may share a suffix) | `reserve-exhausted` |
+  | merged strings and constants | fragments appended (L-147, S-110); dead fragments are dead ranges: a string fragment keeps its bytes (a live reference may share a suffix), a constant fragment is zero-filled (IN-3a check 3) | `reserve-exhausted` |
   | GOT, PLT, IPLT, `.got.plt`, `.rela.plt` | S-113: slots appended within capacity, dead slots written 0; `.rela.plt` compacted | `reserve-exhausted` |
-  | copy relocations (`R_*_COPY`, M2/M4) | the copy slot keeps its place and size; a shared library's object whose size changes needs a bigger slot | `copy-size-changed` |
+  | symbol attributes of a global an unchanged file references (type, binding, visibility, `st_other`, absolute/common) | no rule in v1 (IN-26) | `symbol-kind-changed` |
+| copy relocations (`R_*_COPY`, M2/M4) | the copy slot keeps its place and size; a shared library's object whose size changes needs a bigger slot | `copy-size-changed` |
   | `COMMON` symbols | the allocation is a region of the commons chunk; a size change moves it, and its referrers are refilled | `reserve-exhausted` |
   | COMDAT groups | the keeper is recomputed (IN-26); a keeper change is IN-27's row | none |
   | `.note.gnu.property`, `.note.gnu.build-id`, other notes | S-114: recomputed; the build id over the final image, with the stored leaves (image.md I-99) | `property-changed` if the property note changes size |
@@ -1655,15 +1925,25 @@ file changes or when one of its file's sections moves (IN-25).
   Nothing live names it (IN-3a check 1). E6b and R9 left `.debug_line`,
   `.debug_str_offsets`, `.debug_addr` and `.debug_rnglists` this way and
   measured equal transcripts. When part of it is reused, the remainder
-  takes IN-51b's form. **In a PIE or shared object**, the tombstone of
-  `.debug_rnglists`, `.debug_loclists` and `.debug_addr` is 0
-  (`mortar_arch`'s `dead.rs`, read, not run). A dead `[0, len)` entry
-  there names a valid unrelocated address range, and R11 could not test
-  it because mortar refuses `-pie` on this branch. So in those outputs,
-  dead contributions to these three sections are rewritten in IN-51b's
-  neutral form, never left as written, until WP-066 runs R11. *Test:*
-  `llvm-dwarfdump --verify` of every L10 step with `-g`; R11 in WP-066's
-  gate.
+  takes IN-51b's form. **Tombstones** (`mortar_arch`'s `dead.rs`, read,
+  not run; the re-review's n1): mortar writes 0 as the tombstone of
+  `.debug_rnglists`, `.debug_loclists` and `.debug_addr` in **every**
+  output, and on ELFCLASS32 0 in every debug section, `.debug_line`'s
+  `DW_LNE_set_address` included. In an executable at a fixed address 0
+  is not mapped, so a dead `[0, len)` names nothing. **In a PIE or
+  shared object** address 0 is the unrelocated base, so a dead `[0,
+  len)` entry names a real range; R11 could not test it because mortar
+  refuses `-pie` on this branch. So in a PIE or shared object no dead
+  entry of an address-bearing debug section (`.debug_rnglists`,
+  `.debug_loclists`, `.debug_addr`, and on ELFCLASS32 `.debug_line`) is
+  left as written: its contribution takes IN-51b's neutral form, until
+  WP-066 runs R11. In the same outputs: a dead GOT slot gets no
+  `RELATIVE` record; a reused slot's record is replaced by the new
+  occupant's (IN-34, IN-41); and no `RELATIVE` record targets a hole or
+  a dead range (IN-3a check 1). *Test:* `llvm-dwarfdump --verify` of
+  every L10 step with `-g`; R11 in WP-066's gate, including an i386 PIE
+  with a dead line sequence; a `RELATIVE` scan of every PIE step against
+  the holes.
 - **IN-54 [v1] `.debug_aranges` is rewritten whole.** gdb drops the
   whole section ("duplicate debug_info_offset, ignoring .debug_aranges")
   when two sets name one unit. It drops it too ("does not exist") when a
@@ -1671,8 +1951,9 @@ file changes or when one of its file's sections moves (IN-25).
   be neither split nor left naming a reused range. Nothing refers into
   `.debug_aranges` by offset, so an update rewrites it whole from the
   live units' sets, in full-link order, as it rewrites `.eh_frame_hdr`.
-  It has no dead ranges. The section is small, one set per unit with -g
-  (measured size not taken here; *estimate* under 100 KB on protoc).
+  It has no dead ranges. One set per unit with -g: 0.68 MB in the
+  bench's protoc `-g` output (`readelf -S`), so ~1.3 ms per update and
+  O(symbols) in §1.5's scaling model.
   *Test:* L10 checks `.debug_aranges` equals the full link's up to the
   placement mapping (IN-2 item 5), and gdb's transcript has no "ignoring
   .debug_aranges" line.
@@ -1785,6 +2066,8 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `island-exhausted` | a new thunk or patch does not fit its island | permanent |
 | `tls-layout-changed` | any TLS input section's TP offset would change, in any file (IN-34) | v1; [later] refill every TP-relative referrer of every moved TLS section through the index |
 | `copy-size-changed` | a copy relocation's object changed size in its shared library (IN-34, IN-40) | v1 |
+| `link-order-moved` | a region moved whose input section is the `sh_link` target of a live `SHF_LINK_ORDER` contribution (e.g. `__patchable_function_entries` with `-fpatchable-function-entry`): IN-2 item 5 keeps full-link order in packed sections, the gABI wants the order of the linked-to sections' addresses, and after a move the two differ | v1; [later] rewrite the packed section whole in the gABI order and make IN-2 item 5 say that order for `SHF_LINK_ORDER` sections; frequency not measured |
+| `symbol-kind-changed` | a global that an unchanged file references changed type, binding, visibility, `st_other`, or became absolute or common (IN-26) | v1; [later] refill the referrers when their relocation types are stored |
 | `new-output-section` | an output section or segment appears or disappears | v1; [later] when it can go at the end of its segment's reserve |
 | `property-changed` | `.note.gnu.property` changes size (S-114) | v1 |
 | `dynamic-changed` | `DT_NEEDED`'s order changes or `.dynamic`'s spares run out (IN-42) | v1 |
@@ -1846,7 +2129,10 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   range; a stale code byte in a code hole; a dead `.debug_info` unit not
   neutralized; a 12-byte CIE and a zero word in an `.eh_frame` hole
   (R5's negative rows); a hole in `.init` and a zero slot in a
-  `__start_` array (R4). Each must be rejected.
+  `__start_` array (R4). Each must be rejected. Two positive cases must
+  be **accepted** (N3): an `arr+size` reference whose address is the
+  first byte of the region's slack, and a gfortran `blk_-8` reference
+  whose address is in the hole before the common block.
 - **IN-61 [v1] The replay hook.** A test-only entry (an environment
   variable read by the test build, not an option; model §7.3) runs a
   full link whose decision tables come from a state file; the harness
@@ -1974,8 +2260,12 @@ record (`spec/landed/incr/WP-060.md`, (c)).
    refills in v1, each the file's allocated units plus its debug
    contributions (p50 0.5 KB + 210 KB on protoc, §1.4). In v2 (IN-31)
    only their `.debug_line` contributions would be refilled, so the
-   request is worth most before WP-068. Alternative: emit the MD5 only
-   for the primary source file.
+   request is worth most before WP-068. Cost to kiln's users: with the
+   switch on, debuggers lose source checksums (gdb and lldb cannot tell
+   a source file that changed since the build from the one compiled).
+   (A per-file choice is not possible: a DWARF 5 line-table header has
+   one file-entry format, so either every file has `DW_LNCT_MD5` or none
+   does, which is why Clang drops them all when one file lacks one.)
 3. **hod: tell mortar before emitting name indexes or type units**
    (`.debug_names`, `.debug_pubnames`, `DW_UT_type`): today it emits
    none, and v1 falls back on them (IN-51, IN-55).
@@ -2096,7 +2386,7 @@ against those, not measured.
 
 | WP | stage | content | depends on | parallel with | gate | estimate |
 |---|---|---|---|---|---|---|
-| WP-061 | S1 state + measured floor | `mortar_incr`: the state's format (IN-17–IN-20, armaps, IN-19), writer in an incremental-mode full link, reader with validation and a fuzz target, stamps and the clean / racy / hashed rule (IN-21, IN-22, IN-22a), the identity translation, the replay hook (IN-61); then the **floor measurement**: a test-only update path for a same-size body edit (the layout is the previous one, so no delta layout is needed) that does every step of §1.5's emulation with mortar's code, through the image phase and IN-46/IN-47's writes, on protoc `-g` and a workload ≥ 5× larger (added to the bench) | amendments 6, 8 | WP-062, WP-067 | state round-trips on the link-test corpus; replay (B) byte-identical for every first link; plain-link bench unchanged (§8.1); **the go/no-go numbers of §1.5, reported to the operator** | 5,000–7,000 lines, 2–3 sessions |
+| WP-061 | S1 state + measured floor | `mortar_incr`: the state's format (IN-17–IN-20, armaps, IN-19), writer in an incremental-mode full link, reader with validation and a fuzz target, stamps and the clean / racy / hashed rule (IN-21, IN-22, IN-22a), the identity translation, the replay hook (IN-61); then the **floor measurement**: a test-only update path for a same-size body edit (the layout is the previous one, so no delta layout is needed) that does every step of §1.5's emulation with mortar's code, through the image phase and IN-46/IN-47's writes, on protoc `-g` and `synthetic-objects-g10x` (≥ 10× protoc's live input, static, `-g`; added to the bench and its objects deleted after measuring), time and peak RSS, both write paths; any escape of the go/no-go rule is measured here or in one time-boxed follow-up of at most one session | amendments 6, 8 | WP-062, WP-067 | state round-trips on the link-test corpus; replay (B) byte-identical for every first link; plain-link bench unchanged (§8.1); **the go/no-go numbers of §1.5 against the operator's thresholds, reported to the operator** | 5,000–7,000 lines, 2–3 sessions (+ ≤ 1 session follow-up) |
 | WP-062 | S2 slack and dead ranges | regions in L-143 sections, packed chunks with capacity, tails and segment reserves (IN-30, IN-32, IN-33), `.eh_frame` ranges and padding CIEs (IN-34a), debug size classes (IN-50), holes and their fill; map `hole`/`dead` lines; plumb's dead-range checker (IN-3a) | amendments 1–5, 7 | WP-061, WP-067 | incremental-mode first links pass plumb and are equivalent (IN-2) to plain links; output sizes against IN-33's table; R4 and R5 as plumb negative cases | 3,000–4,500 lines, 1–2 sessions |
 | WP-063 | S3 delta | change detection (IN-22–IN-24, parallel member hashing), delta resolution and the refill set (IN-25–IN-29), TLS and copy-size detectors, a dry-run `--incremental-report`; the **two-full-link oracle** (IN-63a) as a test lane | WP-061 | WP-062 | the dry run's refill set covers every unit the oracle finds differing, on every L10 step and R3's scenarios | 3,500–5,000 lines, 2 sessions |
 | WP-064 | S4 update | delta layout, refill and writing (IN-13, IN-14, IN-44–IN-49a) for static executables, `-g` falling back; copy path by default, in place on request; crash hooks; `plumb --equiv` (IN-62) | WP-061–WP-063, "go" | WP-067 | L10 static, no `-g`: IN-1 on every step; crash injection at each IN-46/IN-47 step; floor against WP-061's | 5,000–7,000 lines, 2–3 sessions |
