@@ -194,6 +194,39 @@ pub fn map_of(front: &Front<'_>, store: &Store) -> Result<Map, mortar_synth::err
     with_link(front, store, &|_| {}, link::map_of)
 }
 
+/// The text map of `front`'s link (`link::text_map_of`, image.md I-121),
+/// for the output `output` names.
+///
+/// # Errors
+///
+/// [`with_link`]'s.
+pub fn text_map_of(
+    front: &Front<'_>,
+    store: &Store,
+    output: &[u8],
+) -> Result<mortar_image::textmap::TextMap, mortar_synth::error::SynthError> {
+    use mortar_core::inputs::DirectiveKind;
+    use mortar_core::plan::SymbolRole;
+    // The roots by argument index, as resolve names them (§4.2): the
+    // entry is index 0.
+    let plan = &front.plan;
+    let script_entry =
+        front.inputs.link.directives.iter().rev().find(|d| d.kind == DirectiveKind::Entry);
+    let entry = match (&plan.entry, script_entry) {
+        (Some(e), _) => e.as_encoded_bytes().to_vec(),
+        (None, Some(d)) => d.value.to_vec(),
+        (None, None) => b"_start".to_vec(),
+    };
+    let mut roots: Vec<(u32, Vec<u8>)> = vec![(0, entry)];
+    roots.extend(
+        plan.symbols
+            .iter()
+            .filter(|s| matches!(s.role, SymbolRole::Undefined | SymbolRole::RequireDefined))
+            .map(|s| (s.arg, s.value.as_encoded_bytes().to_vec())),
+    );
+    with_link(front, store, &|_| {}, |l: &link::Link<'_, '_>| link::text_map_of(l, output, &roots))
+}
+
 /// The output options of `front`'s link: the mode of an executable, and
 /// the identities of every input the store read (I-62, I-66, I-113).
 #[must_use]

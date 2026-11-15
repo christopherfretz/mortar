@@ -605,6 +605,8 @@ pub struct Bookkeeping {
     pub map: Option<OsString>,
     /// `-M`, `--print-map`.
     pub print_map: bool,
+    /// `--mortar-map file` (mortar's own): the machine map, `mortar-map 1`.
+    pub mortar_map: Option<OsString>,
     /// `--cref`.
     pub cref: bool,
     /// `--reproduce=file`.

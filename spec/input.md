@@ -1140,7 +1140,18 @@ pub struct SonameUnit {
 `opened`: found path, kind (including scripts, ignored members' archives,
 shared objects not loaded, closure files), origin. `--dependency-file`
 lists the distinct found paths of this list in its order (GNU ld lists a
-script twice, lld and mold once [E21]); `-t` prints it.
+script twice, lld and mold once [E21]); `-t` prints it. The file is
+lld's layout, `OUT: \`, then ` PATH \` per path (the last without the
+`\`), then an empty rule `PATH:` per path after a blank line, so make
+does not stop on a deleted input. Every word, the output included, is
+escaped as GCC's `-MD` escapes: `\` before a space, a tab or `#`, `$`
+doubled, and a run of backslashes before a space, a tab or the word's
+end doubled (lld 22 escapes the paths only; GNU ld 2.44 escapes none;
+mold puts the paths on one line). A path holding a newline, which make
+cannot read, is refused (`feature`, `dependency file path with a
+newline`). It is written after a successful link only (GNU ld writes
+it on failure too). Tests: `crates/mortar/src/depfile.rs`,
+`dependency_file` in `crates/mortar/tests/options.rs` (WP-027e).
 
 ## 11. The store: getting bytes into memory
 

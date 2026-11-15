@@ -71,6 +71,9 @@ fn statuses() {
             "-(",
             "-)",
             "-Bstatic",
+            // WP-027e.
+            "--push-state",
+            "--pop-state",
             "--warn-backrefs",
             "--no-warn-backrefs",
             "-L",
@@ -87,8 +90,12 @@ fn statuses() {
             "--help",
             "-Map",
             "-M",
+            "--dependency-file",
             "--threads",
+            "--mortar-map",
             "--time-phases",
+            "-z now",
+            "-z lazy",
             "-z relro",
             "-z norelro",
             "-z execstack",
@@ -109,11 +116,12 @@ fn statuses() {
             assert!(!row.meta.is_empty(), "{} names its value", row.name());
         }
         // A row of mortar's own is reserved, so refused; `--time-phases`
-        // is mortar's own and implemented (image.md §11).
+        // (image.md §11) and `--mortar-map` (I-77) are mortar's own and
+        // implemented.
         if !row.linkers.gnu()
             && !row.linkers.lld()
             && !row.linkers.mold()
-            && row.name() != "--time-phases"
+            && !matches!(row.name().as_str(), "--time-phases" | "--mortar-map")
         {
             assert_eq!(row.status, Status::Refused, "{}", row.name());
         }

@@ -37,6 +37,7 @@ mod reloc;
 pub mod source;
 pub mod synth;
 pub mod target;
+pub mod textmap;
 pub mod tombstone;
 
 /// `W = IMAGE_BLOCK` (I-31, I-75): the window, and the build id's leaf.

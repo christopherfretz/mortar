@@ -347,7 +347,7 @@ fn tools() -> Option<Tools> {
 /// The map option mortar's link writes its machine map with: the one
 /// place to change when the option is renamed.
 fn map_option(map: &Path) -> OsString {
-    format!("-Map={}", map.display()).into()
+    format!("--mortar-map={}", map.display()).into()
 }
 
 /// The two links of one set of objects.
