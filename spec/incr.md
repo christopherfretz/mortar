@@ -459,6 +459,63 @@ refilled windows and the changed file (~25 MB); a full link's as 255 MB
 peak RSS, `/usr/bin/time -v`) on protoc and the go/no-go workload. The
 full link's first run (0.43 s cold on protoc) is not counted.
 
+**The reference configuration** (the operator's target): a static
+executable with debug information always on, **0.5 GB** of output
+(typical) and **2 GB** (rare), linked from **1,000 and 3,000 static
+archives**, on a file system with clones (IN-47). Assumed, as
+*estimates* scaled from protoc: live input 3.26 × the output (1.6 and
+6.5 GB); an object of 0.4–1 MB with `-g` (protoc's members are
+1.0–1.4 MB); 90% of members extracted; globals 31,478 per 50 MB of
+output (315 K and 1.26 M); so 1,800–4,400 members at 0.5 GB and
+7,200–17,800 at 2 GB in all, a typical regular archive of 1.8 MB
+(0.5 GB, 1,000 archives), 0.6 MB (0.5 GB, 3,000), 7.2 MB (2 GB, 1,000)
+or 2.4 MB (2 GB, 3,000). Split DWARF changes the output's size and the
+debug terms (§1.7); the figures here are plain `-g`.
+
+Every per-archive and per-member step, per update (*estimate* from the
+measured constants named):
+
+| step | 0.5 GB, 1,000 archives | 0.5 GB, 3,000 | 2 GB, 1,000 | 2 GB, 3,000 | class |
+|---|---|---|---|---|---|
+| `stat`, regular archives (one per archive, 4.3 µs) | 4.3 ms | 12.9 ms | 4.3 ms | 12.9 ms | O(inputs) |
+| `stat`, thin archives (each archive's index and every member) | 12–24 ms | 21–32 ms | 35–81 ms | 44–90 ms | O(inputs) |
+| armaps stored in the state (≈ 1.4 rows per global, 12 B a row as R12 measured, names in the pool), read with it | 5.3 MB, 2 ms | 5.3 MB, 2 ms | 21 MB, 8 ms | 21 MB, 8 ms | O(symbols) |
+| (armaps re-read from the archives instead, 2.3 ms per MB of armap, R12) | ~100 ms | ~100 ms | ~410 ms | ~410 ms | — |
+| one regular archive changed: read and hash all its members (0.7 ms/MB, §1.5 finding 1) | 1.8 MB, 1.3 ms | 0.6 MB, 0.4 ms | 7.2 MB, 5.0 ms | 2.4 MB, 1.7 ms | O(change) |
+| one thin member changed: read and hash it | 0.3–0.7 ms | 0.3–0.7 ms | 0.3–0.7 ms | 0.3–0.7 ms | O(change) |
+| the state: size, read whole and validated (IN-18) and rewritten whole | 80 MB: 31 + 70 ms | 80 MB | 320 MB: 125 + 280 ms | 320 MB | O(symbols) |
+
+So at this scale a **regular archive costs 0.4–5 ms** of change
+detection and a thin one saves at most that, while costing 8–77 ms more
+`stat`s on every update: the number of archives is not the problem, the
+size of the one that changed is, and here archives are small. Thin
+archives pay off only for a few large archives (protoc's 85–117 MB:
+50–70 ms saved); §8.3 request 1 is ranked accordingly. No per-archive
+step is O(all inputs) with a constant that matters except `stat`
+(4–13 ms), which a trusted change list from the build system would make
+O(change) (not v1, IN-23).
+
+**The four terms** for the reference configuration, a one-function edit
+to a median member of a regular archive, clones available
+(*estimate*):
+
+| term | steps | 0.5 GB (S = 10) | 2 GB (S = 40) |
+|---|---|---|---|
+| per changed file | detect (the changed archive: 0.4–5 ms), refill ~9 MB of windows (17 ms), delta layout and split (≤ 34.5 ms, bound), syncs (8.2 ms) | ~60–65 ms | ~63–68 ms |
+| per input file | `stat` of each archive | 4–13 ms | 4–13 ms |
+| per output byte | the clone (O(extents), ≤ 10 ms, *estimate*, not measured); build-id: dirty leaves only (I-76); the sections rewritten whole: `.symtab`/`.strtab` (54 / 216 MB), `.debug_aranges` (IN-54: 6.8 / 27 MB), `.eh_frame_hdr` (≤ 1.3 / 5.2 MB) at 1.9 ms/MB; no `.gdb_index` or `.debug_names` (not generated with `--incremental`, §7) | ~130 ms | ~480 ms |
+| state, read and written whole, armaps included | 80 / 320 MB | ~100 ms | ~405 ms |
+| (CPU over all symbols: re-resolution, assignment, synthetic, liveness walk, `.symtab` merge) | | ~195 ms | ~780 ms |
+| **update** | | **~0.5 s** (full link ~1.9 s: **3.8×**) | **~1.75 s** (full link ~7.6 s: **4.3×**) |
+| update peak RSS (3 × state + rewritten sections + windows) | | ~0.33 GB (full link ~2.5 GB) | ~1.3 GB (full link ~10 GB) |
+
+On the reference configuration the copy is not a cost (clones); the
+update is bounded by the O(symbols) terms, and the order of the table
+"What bounds the ratio" below (by cost at 2 GB: `.symtab`/`.strtab`
+≈ 610 ms, state ≈ 405 ms, CPU passes ≈ 324 ms, re-resolution ≈ 316 ms,
+`.debug_aranges`/`.eh_frame_hdr` ≈ 60 ms, `stat` 4–13 ms) is the order in
+which they would be made O(change) after v1 (record (b)).
+
 **What bounds the ratio.** The edit's cost stays constant while every
 other term grows with S, so the ratio tends to (full link per S) /
 (update per S): **≈ 4.5× in place and ≈ 2.5× by copy** (*estimate*).
@@ -1284,8 +1341,8 @@ with each phase fed from the state for unchanged files:
   Non-allocated units naming their own file's sections are not indexed:
   when any section of a file moves, all of that file's non-allocated
   units are refilled (p99 823 KB). Read backwards (target → units), the
-  index is model §7.2's; read forwards, its allocated rows are the
-  liveness graph (IN-29). End symbols (`__init_array_end`, `_end`,
+  index is model §7.2's. The liveness graph is stored beside it, by
+  IN-29's own rule (the index's rows are not assumed to be that graph). End symbols (`__init_array_end`, `_end`,
   `__bss_start`, `__start_SEC`, `__stop_SEC`, `__rela_iplt_end`, …)
   are global targets like any other, so their users are found through
   the index: layout.md Q4 is answered by "the index records them",
@@ -1381,16 +1438,57 @@ with each phase fed from the state for unchanged files:
   appended (S-113) and recorded in the decision tables, which (B)
   replays. A plain link pays nothing. *Test:* (B) after an edit that
   adds a file in the middle of the command line.
-- **IN-29 [v1] Liveness** under `--gc-sections` is recomputed in full by
-  walking the stored graph (IN-25's allocated rows of unchanged files,
-  plus the changed files' fresh rows) from the roots, without reading
-  unchanged files. This amends image.md I-101 (which walks the
-  relocations). Its difference from the stored `live` column is IN-27's
-  liveness row. *Test:* L10 removes the last reference to a function in
-  another file and checks that the function's section became a hole and
-  that file's FDE and debug entries were refilled (tombstoned); then
-  restores the reference and checks the revived section has its FDE
-  (an exception through it is caught) and live debug entries.
+- **IN-29 [v1] Liveness** under `--gc-sections` is recomputed in full
+  from the roots, without reading unchanged files, by walking a **stored
+  graph that is, by construction, the edge set the full link's liveness
+  pass walks** (image.md I-6 roots, I-7 edges; the re-review's N2). This
+  amends image.md I-101 (which walks the relocations). The liveness pass
+  has one **edge enumerator** (for a section, every edge of every I-7
+  kind, with its kind); in an incremental-mode full link it writes the
+  enumerator's output as rows, file by file; an update walks the same
+  enumerator's output: **stored rows for unchanged files, fresh rows
+  (the enumerator run on the new bytes) for changed files**. There is no
+  second derivation of the edges. One row kind per I-7 edge kind:
+
+  | I-7 edge (image.md text) | stored as | resolved at walk time | protoc `-g`, rows / bytes at 8 B a row |
+  |---|---|---|---|
+  | `reloc`: a record of a live, non-debug, non-`.eh_frame` section names a global key → the section of its `def` (through `sym_map` and `redirect`; `Common`, `Internal`, `Shlib`: nothing), `R_*_NONE` included | (source section, key) | the key's definition from the update's resolution (IN-26), so a moved definer is followed | pending (record §3) |
+  | `startstop`: a conditional `__start_NAME`/`__stop_NAME` (`Internal`) → every section named `NAME` | (source section, key) like `reloc` | the sections named `NAME` from the sections table (IN-19), the changed files' included | pending |
+  | `local`: a local or section symbol → its section; into a split section, the piece by offset (`frag_live`: value, plus addend for a section symbol); under `SHT_REL`, every piece | (source section, target section, offset or "all pieces") | — (both ends in one file) | pending |
+  | `linkorder`: a section whose `sh_link` is `s` and has `SHF_LINK_ORDER`, alloc or not, is live with `s` (I-109) | a column of the sections table (the dependent's `sh_link` target) | — | one per `SHF_LINK_ORDER` section |
+  | `fde`: a code section → its FDEs → the LSDA's and personality's sections through the relocations of the FDE and of its CIE; the FDE's edges are `s`'s | (code section, target section or key) rows, from the file's own `.eh_frame`, which an update does not re-read | keys as `reloc` | pending |
+  | `group`: every other member of `s`'s group | the sections table's group column (IN-19) | the group's keeper from the update's resolution | — |
+  | `nonalloc`: records of non-alloc, non-debug sections (notes; `.note.stapsdt` → `.stapsdt.base`) | (source section, key) and (source section, target section) | as `reloc` | pending |
+  | roots (I-6): rooted keys (entry, `-u`, exported), `SHF_GNU_RETAIN` and script `KEEP`, start-up tables, notes and non-alloc sections not grouped with an alloc member | flags in the sections table; rooted keys from the plan | the plan's options (a change is `options-changed`) | — |
+
+  Debug relocations are not edges (I-7) and are not stored. A future
+  edge kind in I-7 is a change of the enumerator, so it changes the
+  state's format version (IN-18): an old state is refused by name, never
+  walked with a missing kind. No kind needs a fallback: every row's
+  ends are either in one file (re-enumerated when that file changes) or
+  a key resolved at walk time. Its difference from the stored `live`
+  column is IN-27's liveness row. *Test:* the stored rows of every file
+  equal the enumerator's output on replay (IN-61); one L10 mutation per
+  edge kind: drop that kind from the stored graph and a gc scenario must
+  fail (IN-63b; `livemodel.py` is the prototype: from the inputs alone
+  it walks I-7's kinds from I-6's roots and is compared with mortar's
+  live set). Measured so far: it equals mortar's live set, at section
+  and at fragment level, on all 16 gc links of R3 (c, cf, l at `-O0` and
+  `-O2`, both versions; x86-64 lx); dropping `reloc`, `local` or `fde`
+  breaks all 16, `nonalloc` breaks l on AArch64, and `startstop`,
+  `linkorder` and `group` are caught by **no scenario yet** (their
+  dedicated scenarios are pending, record §3). Rows on the `-O2` l
+  link, for scale: `reloc` 2,135, `local` 326, `fde` 42, `group` 4,
+  `nonalloc` 5 (2,512 rows, 20 KB at 8 B a row); protoc's counts are
+  pending; the named L10 case `lsda-edges` (the re-review's
+  `re/lsda_edges.sh`: LSDAs reached only through `.eh_frame`, one unit
+  per file: the update must keep `keep()`'s LSDA and collect
+  `dropme()`'s, and a throw through `keep()` must be caught); L10 removes
+  the last reference to a function in another file and checks that the
+  function's section became a hole and that file's FDE and debug entries
+  were refilled (tombstoned); then restores the reference and checks the
+  revived section has its FDE (an exception through it is caught) and
+  live debug entries.
 
 ### 5.6 Delta layout and slack
 
@@ -1677,8 +1775,9 @@ objects.
     map_files` cannot be `stat`ed here (EPERM).
   The copy costs 18–27 ms for protoc's 50 MB output at low load (first
   run 40–58 ms; R7) and 52–76 ms at load ~20 (the reviewer's
-  `write_paths.py`), i.e. ~0.4–1.5 s per GiB, and nothing where the file
-  system clones (`FICLONE`; not this host's overlay, E5). With
+  `write_paths.py`), i.e. ~0.4–1.5 s per GiB, and O(extents) where the
+  file system clones (IN-47; not this host's overlay or virtiofs, E5;
+  the operator's target does). With
   `--incremental-write=in-place`, the output is updated in place only
   if all of these hold, otherwise by copy (IN-47):
   - `P` is a regular file, not a symbolic link (a full link replaces the
@@ -1764,8 +1863,48 @@ objects.
   a power loss. Measured (R7): 27.0 ms on overlay (copy 13.6,
   `fdatasync` 11.7, rename 2.0) and 17.8 ms on virtiofs at load ~2, first
   runs 57.6 and 39.8 ms; 52–76 ms at load ~20 (`write_paths.py`); 1 GiB
-  copies took 1.8–2.9 s (E5). *Test:* the crash hook on the copy path:
-  `P` is the old or the new file after a kill at every step.
+  copies took 1.8–2.9 s (E5).
+
+  **Clones** (the operator's target file system supports reflink). The
+  call order, all through `std` (no `unsafe`, so no explicit `FICLONE`
+  ioctl): (1) create `T` beside `P` (`O_CREAT|O_EXCL`, I-59); (2)
+  `std::io::copy(&mut P, &mut T)`, which on Linux issues
+  `copy_file_range` in a loop to end of file; for two files on one file
+  system the kernel first tries the file system's `remap_file_range`
+  (a clone: btrfs, XFS with `reflink=1`, bcachefs; NFS 4.2 clones on
+  the server) and copies bytes only for what it cannot clone, and if
+  `copy_file_range` fails (`EXDEV`, `ENOSYS`, `EOPNOTSUPP`, `EINVAL`),
+  `std` falls back to a read/write loop: the byte copy measured above;
+  (3) `pwrite` the dirty windows and the true header into `T` (on a
+  clone, copy-on-write allocates new blocks only for them); (4)
+  `fdatasync(T)`; (5) `rename(T, P)`; (6) `fsync` the directory; (7) the
+  state (step 5 of IN-46). Whether step 2 cloned is not observable
+  without `FIEMAP` (an ioctl, so `unsafe`); `--incremental-report`
+  prints the copy's time, which shows it. Not verified here: this
+  host's overlay and virtiofs refuse reflink (`cp --reflink=always`:
+  "Operation not supported", measured by the coordinator on the
+  workspace), and whether `std`'s copy reaches `copy_file_range` for
+  `File` to `File` and the kernel's clone-first order are read, not
+  run. *Estimate* on a cloning file system: step 2 costs O(extents)
+  (milliseconds for a 0.5–2 GB file), not 0.6–0.8 ms/MB. What would
+  measure it: R7's `write_paths.py` and E5's 1 GiB copy on btrfs or XFS
+  (`reflink=1`), on the target machine or a loop-mounted image (WP-061).
+
+  With a clone, nothing else changes: `T` is a new inode, so IN-21's
+  `fstat` and stamps after the last write and IN-22a's stamps work as on
+  a byte copy; the sync count is the same (`fdatasync(T)`, `fsync` of
+  the directory), but `fdatasync(T)` now writes the dirty windows and the
+  clone's extent metadata, O(change), not the whole file (*estimate*,
+  not measured); and a debugger or a running process that holds `P`'s
+  old inode keeps reading the old bytes, because copy-on-write never
+  changes the shared blocks under it: the same guarantee as a byte copy.
+  So on a cloning file system the copy path loses its O(output) term and
+  "copy by default" is no longer a speed trade-off; in place
+  (`--incremental-write=in-place`, IN-45) remains the option for file
+  systems without clones. *Test:* the crash hook on the copy path:
+  `P` is the old or the new file after a kill at every step; on a
+  cloning file system in WP-061, the copy's time for 0.5 and 2 GB
+  outputs.
 - **IN-48 [v1] The state is written only by a successful link**
   (image.md I-100). A failed update removes the output (image.md I-66)
   and the state. *Test:* an update that introduces an undefined symbol
@@ -2036,15 +2175,66 @@ file changes or when one of its file's sections moves (IN-25).
   *Test:* L10 runs them on its `-g` projects at every step on hosts with
   gdb and lldb.
 
-Split DWARF (`-gsplit-dwarf`): the linker then sees only skeleton units
-and `.debug_addr`, `.debug_line`, `.debug_rnglists`, and
-`.debug_gnu_pubnames`/`pubtypes` (R10); the `.dwo` files are not its
-business. That shrinks the debug bytes an update refills and the debug
-reserve by most of `.debug_info` (not measured here: the bench has no
-split-DWARF build). hod supports it for DWARF 5 (`hod/spec/dwarf.md`).
-v1 falls back on it twice over (IN-55's name index, IN-55a's skeleton
-units); S5's follow-up tests skeleton neutralization and the GNU name
-index sets first.
+**Split DWARF** (`-gsplit-dwarf`) **is the configuration the operator's
+target is expected to use** (debug information always on; split DWARF
+acceptable), so the go/no-go (§1.5) is measured in it as well as in
+plain `-g`. kiln and hod implement it (DWARF 5, `hod/spec/dwarf.md`).
+
+- *What still enters the link* (from R10's objects and the DWARF 5
+  standard; sizes on protoc not yet measured, see below): per object a
+  skeleton unit (`DW_UT_skeleton`: `DW_AT_dwo_name`, `DW_AT_comp_dir`,
+  the unit's `low_pc`/`high_pc` or ranges, `DW_AT_addr_base`,
+  `DW_AT_stmt_list`; the `dwo_id` in the header) in `.debug_info` with
+  its `.debug_abbrev`; `.debug_addr` (every address of the full unit, so
+  it keeps its size); `.debug_line` (the whole line table stays in the
+  object, MD5s included, so §8.3 request 2 still applies);
+  `.debug_str`/`.debug_line_str` and `.debug_str_offsets` for the
+  skeleton's strings; `.debug_rnglists` where the compiler puts the
+  skeleton's ranges there; `.debug_aranges` (GCC); and
+  `.debug_gnu_pubnames`/`.debug_gnu_pubtypes` from every `-gsplit-dwarf`
+  object (R10) or `.debug_names` with `-gpubnames`. `.debug_loclists`,
+  the types and the DIE trees are in the `.dwo`.
+- *Which rules shrink*: IN-50's allotments and IN-51's neutral units
+  apply to skeletons that are a few dozen bytes, so the debug tail and
+  the refill of a changed file's debug contributions shrink to its
+  `.debug_addr`, `.debug_line` and skeleton (most of `.debug_info`'s
+  25.9 MB and `.debug_str`'s 8.1 MB on protoc leave the link);
+  IN-53/IN-51b still govern `.debug_addr`, `.debug_line` and
+  `.debug_rnglists`; IN-54 still rewrites `.debug_aranges`; IN-57's
+  compaction pressure falls with the debug bytes. The +10.0% slack of
+  `-g` (IN-33) is expected to move towards the +20.1% of no `-g` in
+  relative terms (fixed minimums over a smaller output), smaller in
+  bytes. *Not measured*: pending the measurement below.
+- *What v1 does today*: it **falls back on every update** of a changed
+  split-DWARF object, twice over: IN-55 (`debug-name-index`, the GNU
+  name index every `-gsplit-dwarf` object carries) and IN-55a
+  (`debug-unit-kind`, the skeleton unit). In the reference
+  configuration that makes v1 a full link every time, so the skeleton
+  and GNU-name-index cases are **ordered into S5 (WP-065), not after
+  it** (record (b)): S5 tests skeleton neutralization (IN-51's block
+  form on a skeleton) and the candidate rule for
+  `.debug_gnu_pubnames`/`pubtypes` (sets keyed by unit offset, like
+  `.debug_aranges`: rewritten whole, as IN-54), and lifts the two
+  fallbacks for skeletons only when its tests pass. WP-061's floor
+  measurement does not consult the detectors (a test-only path), so it
+  measures split DWARF from the start.
+- *The `.dwo` files*: the update does nothing to them; the compiler
+  rewrote the changed object's `.dwo`, and the unchanged objects' are
+  untouched. The output names each `.dwo` through its skeleton
+  (`DW_AT_dwo_name`, `DW_AT_comp_dir`) and matches it by `dwo_id`; the
+  update keeps the skeleton of each unchanged object as it was and
+  writes the changed object's new skeleton (new `dwo_id`), so the
+  output's skeletons always match the `.dwo` files on disk, as after a
+  full link. A `.dwp` package a user built (`dwp`, `llvm-dwp`) from an
+  earlier output is **stale after any update**, as after a full link:
+  the spec promises nothing about `.dwp` files; the debugger reports the
+  `dwo_id` mismatch for the changed unit. `docs/` says so.
+- *Measurement* (pending at this revision; brief and commands in the
+  workspace's `.build/review-incr/BRIEF-split.md`): protoc built with
+  `-O0 -g -gsplit-dwarf` by GCC and Clang (kiln if its driver passes
+  the flag), static: output size, debug bytes linked, `.dwo` bytes,
+  full-link time and peak RSS, `floor.py`'s table, `regions2.py`'s
+  slack, `state_emul.py`'s state size, beside plain `-g`'s.
 
 ## 7. Fall-backs
 
@@ -2193,16 +2383,25 @@ time and of peak RSS on protoc (*target*, S1 measures it).
 - **IN-63a [v1] The two-full-link oracle.** For every incremental test
   step: link the step's inputs fully twice (the previous inputs and the
   new ones, both with the update's options); for every unit of an
-  **unchanged** file whose placement is the same in both, compare its
-  bytes; each unit whose bytes differ must be in the refill set that
-  `--incremental-report` (or WP-063's dry run) predicted, and each unit
-  of an unchanged file that moved must be named as moved; bytes that
+  **unchanged** file, compare its bytes: in place when its placement is
+  the same in both, and **by value when it moved** (the re-review's N4):
+  the move is undone, every non-relocated byte must be equal, and every
+  relocated field must hold the same value mapped through the two
+  placements (a field naming input section `s` at offset `o` names `s`
+  at `o` in both; a slot field is compared by the slot's symbol), as
+  IN-62's equivalence check does. Each unit whose bytes differ beyond
+  that must be in the refill set that `--incremental-report` (or
+  WP-063's dry run) predicted. "Moved" is never by itself an excuse:
+  a moved unit whose relocated values changed and that no row predicts
+  fails the oracle. Bytes that
   differ outside every unit are named by output section and must belong
   to a synthetic chunk the update rewrote. It needs no state and no
   incremental code: it is the reviewer's experiment 3 made a test, and
   it is what keeps IN-27's table honest as rows are added. *Test:* R3's
   scenarios (body edit, COMDAT keeper both ways, gc kill and revive, TLS
-  growth, a debug-only referrer) on GCC `-O0 -g` and `-O2 -g`.
+  growth, a debug-only referrer) on GCC `-O0 -g` and `-O2 -g`; N1's
+  FUNC → IFUNC pair (`ifunc-type`), a weak undefined that becomes
+  defined, and `lsda-edges`.
 - **IN-63b [v1] Mutation tests of the delta rules.** Each IN-27 row, and
   each of IN-3a's checks, is dropped in turn in a test build; the lane
   records which scenario's oracle (IN-63a) or verifier run fails. A row
@@ -2221,11 +2420,45 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   | a merged fragment moved (oracle only) | the size-neutral keeper swap |
   | TLS (`tls-layout-changed`) | **only x86-64 TLS growth at `-O0`**: on AArch64 every TP-offset change R3 produced also moved an address, so the global and moved-section rows caught it first |
 
-  Two gaps follow, and WP-069 closes them: the TLS row needs an AArch64
-  scenario where a TP offset changes at unchanged addresses (a `PT_TLS`
-  alignment change; R3 could not produce one through layout padding,
-  not verified), and the R3 x86-64 programs were linked but not run (no
-  x86-64 execution here).
+  **Re-run with the by-value oracle** (IN-63a; the re-review's N4;
+  `oracle.py` compares moved units by value, 36 pairs, AArch64 and
+  x86-64, results in the workspace's `.build/review-incr/results/fx/`):
+
+  | row dropped | pairs whose oracle run fails (by value) |
+  |---|---|
+  | a file changed | none (as above) |
+  | a global's definition changed (by identity: definer, section, offset, size, live) | `-O0` b0, c, cf; `-O0`/`-O2` e |
+  | **symbol attributes (`symattr` → `symbol-kind-changed`)** | x86-64 FUNC → IFUNC (`fx`) at `-O0` and `-O2`; on AArch64 (`f`) the synthetic-table row predicts the referrers too, so `f` fails only with `symattr` and `synth` both dropped |
+  | a COMDAT keeper changed | `-O0` b0, b; `-O2` b |
+  | liveness changed | `-O0`/`-O2` c, cf; `-O0` l (`lsda-edges`) |
+  | a section of an unchanged file moved | `-O0`/`-O2` a/grow, b0, b, w (weak undefined → defined); `-O0` l; x86-64 w |
+  | a synthetic table changed | `-O0` a/grow, b0, w; `-O0`/`-O2` cf; `-O2` x86-64 w |
+  | a merged fragment moved | `-O0`/`-O2` b |
+  | TLS | x86-64 `-O0` dx |
+  | `symattr` + `global` + `synth` | the union, plus `f`, `w` and x86-64 `w` at both levels |
+
+  With every row in place, **6 of the 36 pairs still fail** and are open
+  (not diagnosed to the root): `-O2` l both directions (about 35 libc
+  and libstdc++ units whose fields name allocated merged `.rodata.str*`
+  fragments have residuals that differ by 8 or 16: a fragment's owner or
+  position changes when `dropme()`'s strings come alive, which no
+  predictor row covers, because the oracle's fragment row covers only
+  non-allocated merged sections; *unverified reading*) and x86-64 lx at
+  `-O0` and `-O2` both directions (one field in `crtbeginT.o`'s `.text`,
+  an `R_X86_64_32` to a section the map does not place). Each is either
+  a missing refill row or an oracle gap; WP-063 must resolve both before
+  the oracle gates (record §3). The re-review's N1 pair with only
+  `global` or only `synth` dropped does **not** fail: the by-value
+  comparison sees no changed value there, and only `symattr` (x86-64)
+  or `symattr` + `synth` (AArch64) is the row that matters.
+
+  The TLS row still needs an AArch64 scenario where a TP offset changes
+  at unchanged addresses (a `PT_TLS` alignment change; R3 could not
+  produce one through layout padding, not verified); WP-069 adds it. The
+  x86-64 programs now run under `qemu-x86_64` (the re-review's n5):
+  both links of each pair print the same and exit 0 (dx `3`; fx
+  `f(5)=10`; wx `-100` then `14`; lx `1 -1` then `1 -1 -2`), as the
+  AArch64 runs do.
 
 - **IN-64 [v1] The bench** gains incremental rows: for protoc `-g` and
   without, and for the go/no-go workload, the full link plain and in
@@ -2249,6 +2482,12 @@ record (`spec/landed/incr/WP-060.md`, (c)).
    every member (§1.3), 50–70 ms of a 107–178 ms update on protoc `-g`
    (§1.5). Cost to kiln: `ar rcsT` instead of `ar rcs` where its build
    examples make archives.
+   **Its rank depends on the archives' size** (the operator's reference
+   configuration, §1.5): with 1,000–3,000 archives of 0.6–7 MB a regular
+   archive costs 0.4–5 ms of detection and a thin one costs 8–77 ms more
+   `stat`s per update, so there it is worth nothing and should not be
+   sent as a default; it pays for a few large archives (protoc's
+   85–117 MB). Request 2 is then the first.
 2. **kiln: a switch to omit `DW_LNCT_MD5`, on in the development
    profile.** Measured (§1.1, R2-B, R2-B'): under kiln `-g` a header edit
    changes every includer's object (40 of 40). The objects whose code
@@ -2270,7 +2509,8 @@ record (`spec/landed/incr/WP-060.md`, (c)).
    (`.debug_names`, `.debug_pubnames`, `DW_UT_type`): today it emits
    none, and v1 falls back on them (IN-51, IN-55).
 4. **kiln's driver: `-gsplit-dwarf` in the development profile**, once
-   S5's skeleton tests pass: it moves most debug bytes out of the link.
+   S5's skeleton tests pass: it moves most debug bytes out of the link
+   (the operator's reference configuration, §6 "Split DWARF").
    Ask kiln to measure its effect on its own test links first.
 5. **kiln's driver: pass `--incremental` to mortar in the development
    profile** when mortar is the linker, after §1.5's go/no-go result and
@@ -2390,7 +2630,7 @@ against those, not measured.
 | WP-062 | S2 slack and dead ranges | regions in L-143 sections, packed chunks with capacity, tails and segment reserves (IN-30, IN-32, IN-33), `.eh_frame` ranges and padding CIEs (IN-34a), debug size classes (IN-50), holes and their fill; map `hole`/`dead` lines; plumb's dead-range checker (IN-3a) | amendments 1–5, 7 | WP-061, WP-067 | incremental-mode first links pass plumb and are equivalent (IN-2) to plain links; output sizes against IN-33's table; R4 and R5 as plumb negative cases | 3,000–4,500 lines, 1–2 sessions |
 | WP-063 | S3 delta | change detection (IN-22–IN-24, parallel member hashing), delta resolution and the refill set (IN-25–IN-29), TLS and copy-size detectors, a dry-run `--incremental-report`; the **two-full-link oracle** (IN-63a) as a test lane | WP-061 | WP-062 | the dry run's refill set covers every unit the oracle finds differing, on every L10 step and R3's scenarios | 3,500–5,000 lines, 2 sessions |
 | WP-064 | S4 update | delta layout, refill and writing (IN-13, IN-14, IN-44–IN-49a) for static executables, `-g` falling back; copy path by default, in place on request; crash hooks; `plumb --equiv` (IN-62) | WP-061–WP-063, "go" | WP-067 | L10 static, no `-g`: IN-1 on every step; crash injection at each IN-46/IN-47 step; floor against WP-061's | 5,000–7,000 lines, 2–3 sessions |
-| WP-065 | S5 debug | IN-50–IN-59: size classes in use, reuse, neutralization of every debug section (IN-51, IN-51b), compaction fall-back; type units and skeletons tested before enabling | WP-064 | WP-066 | L10 with `-g`: transcripts equal (IN-59), `--verify` clean, readelf warning-free | 3,000–4,000 lines, 1–2 sessions |
+| WP-065 | S5 debug | IN-50–IN-59: size classes in use, reuse, neutralization of every debug section (IN-51, IN-51b), compaction fall-back; type units tested before enabling; **split-DWARF skeletons and the GNU name index (`.debug_gnu_pubnames`/`pubtypes`) lifted from fallback in this package** (the operator's reference configuration, §6 "Split DWARF") | WP-064 | WP-066 | L10 with `-g`: transcripts equal (IN-59), `--verify` clean, readelf warning-free | 3,000–4,000 lines, 1–2 sessions |
 | WP-066 | S6 dynamic | PIE and dynamic executables (IN-40–IN-42), shared objects by copy (IN-43, M4), `copy-size-changed` | WP-064, M2 (M4 for shared objects) | WP-065 | L10 PIE and shared | 2,500–4,000 lines, 1–2 sessions |
 | WP-067 | L10 | the generator over the corpus (R2), the projects, the minimizer, the fault hooks, nightly and pre-merge lanes, the bench rows (IN-63, IN-64) | — (every step a fall-back until WP-064) | all | lanes run; a seeded failure is minimized; the lane's cost within IN-63's budget | 2,500–3,500 lines (Rust and scripts), 1–2 sessions |
 | WP-068 | v2 section-level refill (M12) | IN-31: per-section content hashes under `--incremental`, matching by anchor, kept sections in place, layout around them; plain-link gate | WP-064 (WP-065 if after it) | WP-066 | L10 with `-ffunction-sections`, no `-g`: refilled bytes against the coarseness table (§1.2); plain-link bench unchanged | 2,000–3,000 lines, 1 session |
