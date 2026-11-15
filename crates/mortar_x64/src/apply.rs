@@ -6,10 +6,10 @@
 
 use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
-    Base, Check, ClassOutcome, DeadRef, Demand, DemandClass, DemandFlags, DemandSink, DynRefusal,
-    EventClass, Field, FieldError, FillCx, GlobalFlags, Incompatible, Minus, OutputKind, Refusal,
-    RelocAt, ScanCx, ScanError, SectionOut, SlotKind, SymValue, TargetKind, Terms, TlsAbi,
-    WeakClass, class_outcome, dead_reference, writes_dtprel,
+    Base, Check, ClassOutcome, DeadRef, Demand, DemandClass, DemandFlags, DemandSink, EventClass,
+    Field, FieldError, FillCx, GlobalFlags, Incompatible, Minus, OutputKind, Refusal, RelocAt,
+    ScanCx, ScanError, SectionOut, SlotKind, SymValue, TargetKind, Terms, TlsAbi, WeakClass,
+    class_outcome, dead_reference, writes_dtprel,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::Class;
@@ -127,53 +127,29 @@ pub fn weak_use(r_type: u32, place: &[u8], offset: u64, writable: bool) -> Optio
     })
 }
 
-/// The cells of `spec/dyn.md` that arch.md §4.3's table (`class_outcome`)
-/// does not yet give for a dynamic `exec` or `pie` (M2), for the target
-/// kinds only a dynamic output has (`shlib`, `weakdyn`): a static link,
-/// static-pie included, never reaches them.
+/// X-57, D-25: a `PC32` whose field follows a branch opcode
+/// ([`on_branch`]) against a `weakdyn` key is a branch, through a PLT
+/// entry. Only a dynamic `exec` or `pie` has `weakdyn` keys.
 ///
-/// - D-43: `Pc` against shared data in `pie` is a copy (`C`), not `E`.
-/// - D-44: `Pc` or `AbsNarrow` (`32`, `32S`, …) against a shared
-///   function in `pie` would need a canonical PLT: `canonical-plt-in-pie`.
-/// - X-57, D-25: `PC32` on a branch opcode against a `weakdyn` key is a
-///   branch, through a PLT entry.
-/// - D-47: a record against a `shlib` or `weakdyn` key in a place without
-///   `SHF_WRITE` is a text relocation, `text-relocation`.
-fn dynamic_cell(
-    cx: &ScanCx<'_>,
-    at: &RelocAt<'_>,
-    kind: TargetKind,
-    o: ClassOutcome,
-) -> ClassOutcome {
-    let pie = match cx.output {
-        OutputKind::Pie => true,
-        OutputKind::Exec => false,
-        _ => return o,
-    };
-    if !cx.place.alloc || !matches!(kind, TargetKind::Shlib { .. } | TargetKind::WeakDyn) {
-        return o;
-    }
-    let demand = |flags| ClassOutcome::Demand(Demand { flags, ..Demand::default() });
-    match (at.howto.class, kind) {
-        (DemandClass::Pc, TargetKind::Shlib { func: false }) if pie => demand(DemandFlags::COPY),
-        (DemandClass::Pc | DemandClass::AbsNarrow, TargetKind::Shlib { func: true }) if pie => {
-            ClassOutcome::Refused(DynRefusal::CanonicalPltInPie)
-        }
-        (DemandClass::Pc, TargetKind::WeakDyn)
-            if at.r_type == PC32 && on_branch(at.site.bytes, at.r_offset) =>
-        {
-            demand(DemandFlags::PLT)
-        }
-        _ if o == ClassOutcome::Incompatible(Incompatible::ReadOnly) => {
-            ClassOutcome::Refused(DynRefusal::TextRelocation)
-        }
-        _ => o,
+/// The other dynamic cells are not x86-64's. D-43 (copy in `pie`) and
+/// D-44 (`canonical-plt-in-pie`) are `class_outcome`'s. D-47
+/// (`text-relocation` for a read-only `TX` cell of an output with
+/// `.dynamic`) is the scan driver's (`mortar_scan` `dynamic_error`).
+fn weak_branch(at: &RelocAt<'_>, kind: TargetKind, o: ClassOutcome) -> ClassOutcome {
+    if kind == TargetKind::WeakDyn
+        && at.howto.class == DemandClass::Pc
+        && at.r_type == PC32
+        && on_branch(at.site.bytes, at.r_offset)
+    {
+        ClassOutcome::Demand(Demand { flags: DemandFlags::PLT, ..Demand::default() })
+    } else {
+        o
     }
 }
 
 /// `scan` (arch.md §3.4): the checks, then the class rule of §4.3 (X-10,
 /// X-11), X-15 for `Pc` against `weak0`, and the TLS rules of §8; under
-/// M2 the dynamic cells of [`dynamic_cell`].
+/// M2 the `weakdyn` branch of [`weak_branch`].
 pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
     if let Err(e) = scan_checks(at) {
         out.error(at.index, e);
@@ -199,8 +175,8 @@ pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_
     let kind = effective(sym.kind, h.class);
     let data = matches!(h.field, Field::Data { .. });
     let mut outcome = class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls);
-    if m2 {
-        outcome = dynamic_cell(cx, at, kind, outcome);
+    if m2 && cx.place.alloc {
+        outcome = weak_branch(at, kind, outcome);
     }
     match outcome {
         ClassOutcome::Demand(d) => {
@@ -406,15 +382,6 @@ pub fn apply(
     let width = usize::from(h.field.width());
     if width == 0 {
         return Ok(());
-    }
-    // D-46: the place of a symbolic record (an `AbsWord` against a key no
-    // copy or canonical PLT gave an address in this output) holds 0.
-    if h.class == DemandClass::AbsWord
-        && out.alloc
-        && matches!(sym.kind, TargetKind::Shlib { .. } | TargetKind::WeakDyn)
-        && !cx.tables.flags(at.key).intersects(DemandFlags::COPY | DemandFlags::CANON_PLT)
-    {
-        return put(at, out, at.r_offset, &[0; 8][..width]);
     }
     let x = value(cx, at, out, sym)?;
     put(at, out, at.r_offset, &x.to_le_bytes()[..width])

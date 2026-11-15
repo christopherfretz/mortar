@@ -176,7 +176,10 @@ fn demand_cells_against_shared_functions_and_data() {
     let none = GlobalFlags::empty();
     let base = GlobalFlags::GOT_BASE;
     let sym = Got::Demand(F::EXPORT, none, Some(DynRole::Symbolic));
-    let text = Got::Dyn(DynRefusal::TextRelocation);
+    // D-47: the arch says `read-only`; the scan driver names it
+    // `text-relocation` in an output with `.dynamic` (`mortar_scan`
+    // `dynamic_error`), and a static PIE keeps the M1 diagnostic.
+    let text = Got::Inc(Incompatible::ReadOnly);
     let canon = Got::Dyn(DynRefusal::CanonicalPltInPie);
     // (type, prefix, place, output, data cell, function cell)
     let rows: &[(u32, &[u8], PlaceFacts, OutputKind, Got, Got)] = &[
@@ -285,9 +288,10 @@ fn demand_cells_against_weakdyn_keys() {
         for b in [&[0xe8][..], &[0xe9], &[0x0f, 0x80], &[0x0f, 0x84], &[0x0f, 0x8f]] {
             assert_eq!(cell(2, output, w, RO, b), d(F::PLT), "PC32 after {b:x?} {output:?}");
         }
-        // `64` in a read-only place is a text relocation in `pie`.
+        // `64` in a read-only place: `read-only` in `pie`, which the
+        // driver names `text-relocation` (D-47).
         if output == OutputKind::Pie {
-            assert_eq!(cell(1, output, w, RO, &[]), Got::Dyn(DynRefusal::TextRelocation));
+            assert_eq!(cell(1, output, w, RO, &[]), Got::Inc(Incompatible::ReadOnly));
         }
     }
 }
@@ -311,20 +315,56 @@ fn local_and_ifunc_cells_are_the_generic_table() {
     }
     assert_eq!(cell(1, Pie, i, RW, &[]), Got::Demand(F::IPLT, none, Some(DynRole::Relative)));
     assert_eq!(cell(1, Exec, i, RW, &[]), d(F::IPLT));
-    // The read-only `Local`/`Ifunc` word in `pie` keeps the generic
-    // `relocation-incompatible` (`it is in a read-only section`): the
-    // scan context cannot tell a dynamic `pie` from a static PIE, whose
-    // diagnostic must not change (record: request R-48-1).
+    // The read-only `Local`/`Ifunc` word in `pie`: `read-only` from the
+    // arch; the driver makes it `text-relocation` only in an output with
+    // `.dynamic`, so a static PIE keeps `relocation-incompatible` (D-47).
     assert_eq!(cell(1, Pie, l, RO, &[]), Got::Inc(Incompatible::ReadOnly));
 }
 
+/// The scan rules M2 adds are only for targets a dynamic output has. The
+/// one cell where M1 and M2 differ outside TLS is X-57's `PC32` on a
+/// branch against a `weakdyn` key. Every shared-key cell is the shared
+/// table's (D-43, D-44) under both.
 #[test]
-fn m1_keeps_the_m2_cells_off() {
-    // With the M2 rules off the generic table stands (D-43's copy is `E`).
-    let t = tables(SHLIB_DATA, false);
-    let input = section(&MOV);
-    let s = scan(X64::M1, &t, OutputKind::Pie, RO, &input, &[rel(AT + 2, SYM, 2, -4)]);
-    assert_eq!(outcome(&s), Got::Inc(Incompatible::RecompilePie));
+fn m1_and_m2_scan_alike_but_the_weakdyn_branch() {
+    let types: &[(u32, &[u8])] = &[
+        (1, &[]),
+        (2, &MOV),
+        (2, &CALL),
+        (4, &CALL),
+        (9, &MOV),
+        (10, &MOV),
+        (11, &MOV),
+        (24, &MOV),
+        (31, &[]),
+        (41, &[0xff, 0x15]),
+        (42, &[0x48, 0x8b, 0x05]),
+    ];
+    for kind in [SHLIB_DATA, SHLIB_FUNC, TargetKind::WeakDyn, TargetKind::Local, TargetKind::Ifunc]
+    {
+        let t = tables(kind, false);
+        for &(r_type, prefix) in types {
+            let input = section(prefix);
+            let r = [rel(AT + prefix.len(), SYM, r_type, -4)];
+            for output in [OutputKind::Static, OutputKind::Exec, OutputKind::Pie] {
+                if output == OutputKind::Static
+                    && !matches!(kind, TargetKind::Local | TargetKind::Ifunc)
+                {
+                    continue;
+                }
+                for place in [RO, RW] {
+                    let m1 = outcome(&scan(X64::M1, &t, output, place, &input, &r));
+                    let m2 = outcome(&scan(M2, &t, output, place, &input, &r));
+                    if kind == TargetKind::WeakDyn && r_type == 2 && prefix == CALL {
+                        assert_eq!(m2, d(DemandFlags::PLT));
+                        assert_ne!(m1, m2, "X-57 is M2's");
+                    } else {
+                        assert_eq!(m1, m2, "{r_type} {kind:?} {output:?} {place:?}");
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------- X-57 weak_use
@@ -727,13 +767,15 @@ fn values_against_shared_and_weakdyn_keys() {
             assert_eq!(out, with(&input, p, &rel_to(PLT, p + 4)), "PLT32");
         }
     }
-    // D-46: the place of a symbolic record holds 0 (not `A`).
+    // `64` against a shared or `weakdyn` key: the arch writes `S + A`
+    // with `S = 0`. D-46's 0 at the place of the symbolic record is the
+    // fill's (`mortar_image` `dynrel::zeroed_place`, from the roles).
     for kind in [SHLIB_DATA, SHLIB_FUNC, TargetKind::WeakDyn] {
         let t = tables(kind, false);
         let input = section(&[0xaa; 8]);
         for o in DYN {
             let out = case(&t, &input, o).apply(&[rel(AT, SYM, 1, 0x10)]).unwrap();
-            assert_eq!(out, with(&input, AT, &[0; 8]), "{kind:?} {o:?}");
+            assert_eq!(out, with(&input, AT, &0x10u64.to_le_bytes()), "{kind:?} {o:?}");
         }
     }
     // A copied (or canonical) key has an address here: `S + A`.
