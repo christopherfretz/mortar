@@ -104,15 +104,14 @@ pub struct StoreConfig {
     pub hashes: Option<bool>,
     /// Whether a check that needs the Mason containers is on (`spec/meta.md`
     /// MT-42, `spec/odr.md` O-42; the switch WP-073 connects to `--odr`).
-    /// `false` (the default, and every link today): the staged store reads
-    /// no byte of a relocatable object's container. It reads the ELF header
-    /// and the section header table of each top-level object first (and
-    /// `.shstrtab` when a section has a container's type and flags), then
-    /// its other bytes around the containers: a small object is read
-    /// around its container instead of whole. `true`: the plan of §11.9
-    /// before amendment A-8. Either way a container is never resident in
-    /// an object larger than 64 KiB; with `true` a smaller one is read
-    /// whole, container included.
+    /// `false` (the default, and every link today): the staged store makes
+    /// exactly the reads it makes with `true` (a small file whole; a large
+    /// object's head and tail windows, then its body ranges); container
+    /// bytes inside those reads are dropped, never resident, and no other
+    /// container byte is read, as a large object's body ranges are clipped
+    /// around its containers. `true`: a small object stays resident whole,
+    /// container included. Either way a container is never resident in an
+    /// object larger than 64 KiB.
     pub containers: bool,
 }
 
@@ -1195,14 +1194,30 @@ impl Store {
 
         wave(1);
         // (C)
+        let mut filled = vec![false; staging.len()];
         let mut parts: Vec<Vec<(u64, Vec<u8>)>> = staging
             .iter_mut()
-            .map(|s| match s {
+            .enumerate()
+            .map(|(k, s)| match s {
                 Ok(s) => {
                     s.scratch.sort_by_key(|(at, _)| *at);
                     s.longest = s.scratch.iter().map(|(_, b)| b.len() as u64).max().unwrap_or(0);
                     s.forbidden.sort_by_key(|r| (r.start, r.end));
-                    staged::merge(std::mem::take(&mut s.ranges), &s.forbidden)
+                    let merged = staged::merge(std::mem::take(&mut s.ranges), &s.forbidden);
+                    // A file read whole in wave (A) (a small one with no
+                    // container, `stage_small_without_containers`): that
+                    // read is its one part, with no copy.
+                    if let ([r], [(0, b)]) = (&merged[..], &s.scratch[..])
+                        && r.start == 0
+                        && r.end == s.len
+                        && b.len() as u64 == s.len
+                    {
+                        let (_, bytes) = s.scratch.pop().unwrap_or_else(|| unreachable!());
+                        s.longest = 0;
+                        filled[k] = true;
+                        return vec![(0, bytes)];
+                    }
+                    merged
                         .into_iter()
                         .map(|r| (r.start, vec![0u8; (r.end - r.start) as usize]))
                         .collect()
@@ -1213,6 +1228,9 @@ impl Store {
         let failed: Vec<OnceLock<ReadError>> = staging.iter().map(|_| OnceLock::new()).collect();
         let mut items: Vec<(usize, u64, &mut [u8])> = Vec::new();
         for (k, file_parts) in parts.iter_mut().enumerate() {
+            if filled[k] {
+                continue;
+            }
             for (offset, bytes) in file_parts.iter_mut() {
                 for (c, slice) in bytes.chunks_mut(CHUNK as usize).enumerate() {
                     items.push((k, *offset + c as u64 * CHUNK, slice));
@@ -1341,12 +1359,12 @@ impl Store {
         if len == 0 {
             return Ok(());
         }
-        if !self.config.containers {
-            return self.stage_around_containers(s);
-        }
         if len <= SMALL {
-            s.ranges.push(0..len);
-            return Ok(());
+            if self.config.containers {
+                s.ranges.push(0..len);
+                return Ok(());
+            }
+            return self.stage_small_without_containers(s);
         }
         let config = self.config;
         let head = config.head.clamp(PREFIX, len);
@@ -1377,63 +1395,28 @@ impl Store {
         Ok(())
     }
 
-    /// Wave (A) with no check that needs a container (amendment A-8 to
-    /// §11.1, `spec/meta.md` MT-42): the first [`PREFIX`] bytes; for a
-    /// relocatable object its section header table (and `.shstrtab` if a
-    /// section could be a container) before any other byte, then the plan
-    /// of §11.9 with every read clipped around the containers; a small
-    /// object is read around its container instead of whole.
-    fn stage_around_containers(&self, s: &mut Staging<'_>) -> Result<(), ReadError> {
+    /// Wave (A) of a file of at most [`SMALL`] bytes with no check that
+    /// needs a container (`spec/meta.md` MT-42, amendment A-8 to §11.1):
+    /// the read main makes, the whole file in one read, made here rather
+    /// than in wave (C) so that a relocatable object's containers are
+    /// found in its bytes and left out of its ranges. Wave (C) takes this
+    /// read as the file's one part when it has no container, and otherwise
+    /// fills the parts from it; the container bytes in it are dropped with
+    /// the scratch, never resident, never parsed.
+    fn stage_small_without_containers(&self, s: &mut Staging<'_>) -> Result<(), ReadError> {
         let len = s.len;
-        let config = self.config;
         let mut src =
             Reader { store: self, path: s.path, file: &s.file, shared: &[], own: Vec::new(), len };
-        src.read_into_own(0, PREFIX.min(len))?;
-        // The first PREFIX bytes stay resident whatever they hold: every
-        // reader starts there (`mortar_elf`'s file header, `facts`). Only
-        // an ELF32 file (a 52-byte header) can have a container start
-        // before byte 64, and then up to 12 of its bytes are read before
-        // the class is known: a named exception to MT-42's zero, in
-        // WP-071's record (reading 52 bytes first would cost every ELF64
-        // object one more read).
-        s.ranges.push(0..PREFIX.min(len));
+        src.read_into_own(0, len)?;
         let shape = staged::shape(src.fetch(0, PREFIX.min(len))?);
-        if shape == Shape::Object {
-            let Some(found) = staged::container_ranges(&mut src, 0, len)? else {
-                // Not a structure the rules follow: the whole file, for the
-                // reader to refuse as over the resident store.
-                s.ranges.push(0..len);
-                s.scratch = src.own;
-                return Ok(());
-            };
-            s.forbidden = found;
-        }
-        if len <= SMALL || shape == Shape::Other {
-            s.ranges.extend(staged::clip(0..len, &s.forbidden));
-            s.scratch = src.own;
-            return Ok(());
-        }
-        let head = config.head.clamp(PREFIX, len);
-        if shape == Shape::Archive {
-            // The chain reads from one buffer of the file's first bytes.
-            src.read_into_own(0, head)?;
-            s.scratch = src.own;
-            return self.stage_archive(s);
-        }
-        for r in staged::clip(0..head, &s.forbidden) {
-            src.read_into_own(r.start, r.end - r.start)?;
-        }
-        let tail_start = len.saturating_sub(config.tail).max(head);
-        for r in staged::clip(tail_start..len, &s.forbidden) {
-            src.read_into_own(r.start, r.end - r.start)?;
-        }
-        let mut ranges = Vec::new();
-        let mut containers = Vec::new();
-        if staged::object_ranges(&mut src, 0, len, &mut ranges, &mut containers)? {
-            s.ranges.extend(ranges);
+        // Every fetch below lies inside the file, so inside that one read.
+        let found = if shape == Shape::Object {
+            staged::container_ranges(&mut src, 0, len)?.unwrap_or_default()
         } else {
-            s.ranges.extend(staged::clip(0..len, &s.forbidden));
-        }
+            Vec::new()
+        };
+        s.ranges.extend(staged::clip(0..len, &found));
+        s.forbidden = found;
         s.scratch = src.own;
         Ok(())
     }

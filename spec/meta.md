@@ -477,36 +477,38 @@ MT-42.
 A hard rule (the operator's, 2026-11-15). Mortar reads a container's
 bytes only when a check that needs them is on (`odr.md` O-42): with
 `--odr=off`, and in the default mode as long as every record-based check
-is `--odr=strict` only (`odr.md` O-47), **no container byte is read**:
-mortar reads the section header (it reads every header anyway to
-classify sections) and nothing else of it; no unit is parsed. This
+is `--odr=strict` only (`odr.md` O-47), **a link pays nothing for the
+containers**: mortar parses no unit and keeps no container byte. This
 needs amendment **A-8** to `spec/input.md` §11.1 (`odr.md` §14): the
 staged store's row "every other section of at most 64 KiB" excludes
 containers (MT-6's predicate); a container is never resident; when a
 check needs it, `mortar_meta` reads it with positioned reads
 (`copy_to`-style, `read_exact_at`) into memory it owns for the check's
-duration. This holds for every file, small ones included: with
-`--odr=off` (and in the default mode while no record-based check is on)
-an object of at most 64 KiB that `input.md` §11.1 would read whole in
-one read is read around its container (its headers first, then the
-ranges before and after the container), so that no container byte is
-read: a small Mason object pays one or two reads more, which the
-operator's rule accepts (`odr.md` Q15, withdrawn). When a check that needs the
-container is on, a small file is read whole in one read, container
-included (it is then needed). T-MT-42 checks both. The cost the rule
-leaves is the file's size on disk and in the page cache of whoever
-wrote it.
+duration. The reads (the supervisor's ruling, 2026-11-15, WP-071):
 
-Three named exceptions (accepted 2026-11-15, WP-071); T-MT-42's byte
+With containers unwanted, mortar makes exactly the reads it would make
+if no section were a container (a small file whole; a large object's
+head and tail windows, then its body ranges). Container bytes that fall
+inside those reads are read and dropped: never resident, never parsed.
+No other container byte is read: a large object's body ranges are
+clipped around its containers.
+
+So a link whose inputs have no container pays nothing that grows with
+the input: the same reads, range for range, as with the containers
+wanted. (A first version read each top-level object's headers first and
+the rest around its containers, so that no container byte was read at
+all; it cost every container-free object three reads more, measured at
+about 5.5 ms, 7 %, on 5,000 small objects at one thread: WP-071's
+record §5.5.1.) When a check that needs the container is on, a small file
+stays resident whole, container included (it is then needed). T-MT-42
+checks both, pinned by `crates/mortar_input/tests/t_mt_42.rs`
+`container_free_files_cost_what_they_cost_without_the_rule` and
+`no_container_byte_is_resident`. The cost the rule leaves is the file's
+size on disk and in the page cache of whoever wrote it.
+
+Two named exceptions (accepted 2026-11-15, WP-071); T-MT-42's byte
 counter counts each, and a test pins each:
 
-- **E1 (the head).** The first 64 bytes of every file are read before
-  its class is known, and stay resident. No container byte past the
-  file's first 64 bytes is read; an ELF32 object whose container starts
-  before byte 64 (GNU as on i386 with an empty `.text` puts it at 0x34)
-  has up to 12 container bytes read. Pinned by
-  `crates/mortar_input/tests/t_mt_42.rs`
-  `elf32_head_is_the_named_exception`.
 - **E2 (archive members).** A regular archive's members are read before
   their section headers are known (`spec/input.md` §11.1): a member of
   at most 64 KiB is read whole and stays resident, its container with
@@ -523,6 +525,10 @@ counter counts each, and a test pins each:
   descriptors ran out (`spec/input.md` §11.4) and every file under the
   resident policy are read whole, containers included. Pinned by
   `t_mt_42.rs` `whole_file_paths_are_the_named_exception`.
+
+(E1, the first 64 bytes of a file read before its class was known, went
+with the first version: the head is now one of the reads the rule
+names.)
 
 ## 11. The container in mortar's outputs
 
@@ -570,11 +576,15 @@ has seen every definition (`odr.md` O-20).
   the default mode while O-47 lists no record-based check as on, a link
   of objects whose `.mason.meta` bytes are garbage (valid section
   header, random contents) succeeds without a warning and produces the
-  same output as with the sections removed; and the store's byte counter
-  (`spec/input.md` §11, a test-only counter of bytes read per file range)
-  shows **zero** bytes read from any container range of any object,
-  objects of at most 64 KiB included. With a check on that needs the
-  container, the counter shows each container read once.
+  same output as with the sections removed; and the store's read
+  counter (`spec/input.md` §11, a test-only counter per file range)
+  shows the same reads as with the containers wanted, no read wholly
+  inside a container, no container byte resident, and of a large
+  object's containers only the bytes inside its head and tail windows
+  read (none for a container in its body). With a check on that needs
+  the container, the counter shows each container read once (twice
+  where a large object's head or tail window covers it: the window's
+  bytes are dropped, `mortar_meta` reads the container again).
 - **T-MT-5**: MT-5's table, re-run on the harness's tool versions
   (binutils, llvm, elfutils): a changed row fails the test and is a spec
   change.

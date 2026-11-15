@@ -208,8 +208,9 @@ pub fn container_ranges(
     if count > u64::from(u32::MAX) || !within(shoff, table_size, size) {
         return Ok(None);
     }
-    let table = src.fetch(base + shoff, table_size)?.to_vec();
-    let headers: Table<'_, Shdr> = Table::new(&table, class);
+    // Borrowed, not copied: a file with no candidate (nearly every one)
+    // costs no allocation here.
+    let headers: Table<'_, Shdr> = Table::new(src.fetch(base + shoff, table_size)?, class);
     let candidates: Vec<Shdr> = headers
         .iter()
         .skip(1)
@@ -224,7 +225,8 @@ pub fn container_ranges(
     } else {
         u64::from(ehdr.e_shstrndx)
     };
-    let names = match usize::try_from(shstrndx).ok().and_then(|i| headers.get(i)) {
+    let strtab = usize::try_from(shstrndx).ok().and_then(|i| headers.get(i));
+    let names = match strtab {
         Some(t)
             if shstrndx != 0 && t.sh_type != SHT_NOBITS && within(t.sh_offset, t.sh_size, size) =>
         {

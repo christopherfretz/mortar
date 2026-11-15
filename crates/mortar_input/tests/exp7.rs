@@ -8,7 +8,7 @@
 //! exp7 -- --ignored --nocapture`
 //!
 //! Prints, for the staged store: the reads and bytes read with the
-//! containers unwanted (MT-42: zero container bytes) and wanted (each
+//! containers unwanted (MT-42: the reads of a link with no container) and wanted (each
 //! container byte once), and the cost of reading every unit and grouping
 //! its rows by key (`spec/odr.md` O-22) on one thread.
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, reason = "a measurement")]
