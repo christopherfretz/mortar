@@ -398,6 +398,10 @@ pub struct Coverage {
     /// What B1 made of the build id, when the output has one (§6.7).
     pub build_id: Option<String>,
     pub linker_defined_not_judged: Vec<String>,
+    /// Output sections whose placement no rule judges, by name: x86-64
+    /// large sections (`SHF_X86_64_LARGE`), whose order differs by linker
+    /// (spec/x64.md X-54; Y5 leaves them out of `_edata`/`_end`).
+    pub placement_not_judged: Vec<String>,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
 }
@@ -553,6 +557,13 @@ impl Report {
                 "linker-defined symbols not judged: {} ({})",
                 c.linker_defined_not_judged.len(),
                 c.linker_defined_not_judged.join(", ")
+            );
+        }
+        if !c.placement_not_judged.is_empty() {
+            let _ = writeln!(
+                s,
+                "placement not judged (large sections, X-54): {}",
+                c.placement_not_judged.join(", ")
             );
         }
         let _ = writeln!(s, "findings: {}", self.findings.len());

@@ -81,6 +81,17 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
         let ids = buildid::check(&image, &mut engine.cov);
         engine.findings.extend(ids);
     }
+    if image.header.e_machine == mortar_elf::consts::EM_X86_64 {
+        use mortar_elf::consts::{SHF_ALLOC, SHF_X86_64_LARGE};
+        engine.cov.placement_not_judged = image
+            .sections
+            .iter()
+            .filter(|s| {
+                s.shdr.sh_flags & (SHF_ALLOC | SHF_X86_64_LARGE) == SHF_ALLOC | SHF_X86_64_LARGE
+            })
+            .map(|s| s.name.to_string())
+            .collect();
+    }
     report.findings.append(&mut engine.findings);
     report.coverage = std::mem::take(&mut engine.cov);
     report.sort();

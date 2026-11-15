@@ -535,7 +535,11 @@ fn x64_new_rules_are_enforced() {
     results.push(("S19 .init padding made int3", hit, tried));
     // Y3: the large common made absolute.
     let ctx = Ctx::of(link_of(c, "w9", Linker::Bfd).unwrap());
-    let st = sections(&ctx.output).into_iter().find(|s| s.0 == ".symtab").unwrap();
+    // X-54: the large sections' placement is named as not judged.
+    let mut named = ctx.report(&ctx.output).coverage.placement_not_judged;
+    named.sort();
+    assert_eq!(named, [".lbss", ".ldata", ".lrodata"], "large sections named not judged");
+    let st =sections(&ctx.output).into_iter().find(|s| s.0 == ".symtab").unwrap();
     let strtab = sections(&ctx.output).into_iter().find(|s| s.0 == ".strtab").unwrap();
     let mut hit = 0;
     for i in 0..(st.3 / 24) as usize {
