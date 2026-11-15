@@ -5,6 +5,13 @@
 //! forms against a shared object's TLS, and 843419 with PLT-bound
 //! ADRPs. The comparisons with GNU ld and lld are `dynamic_ref.rs`.
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::match_same_arms,
+    clippy::too_many_lines,
+    clippy::cast_lossless
+)]
+
 use mortar_a64::{A64, DT_AARCH64_BTI_PLT, DT_AARCH64_VARIANT_PCS, erratum, forms, synth, table};
 use mortar_arch::{
     Arch, Code, DemandClass, DemandFlags, DynRefusal, DynRole, DynTag, Field, GlobalFlags,
@@ -205,14 +212,22 @@ fn want(class: DemandClass, out: OutputKind, kind: TargetKind, writable: bool) -
     let shlib_c = |func: bool| d(if func { DemandFlags::CANON_PLT } else { DemandFlags::COPY });
     // `TX`: the record in a read-only place is a text relocation (D-47).
     let tx = |f: DemandFlags, role: DynRole| {
-        if writable { Want::Demand(f, g0, Some(role)) } else { Want::Refused(DynRefusal::TextRelocation) }
+        if writable {
+            Want::Demand(f, g0, Some(role))
+        } else {
+            Want::Refused(DynRefusal::TextRelocation)
+        }
     };
     let sym = DynRole::Symbolic;
     match (class, kind) {
         (C::AbsWord, K::Local) if pie => tx(n, DynRole::Relative),
         (C::AbsWord, K::Local | K::Abs | K::Weak0) => d(n),
         (C::AbsWord, K::Shlib { func }) if !pie => {
-            if writable { Want::Demand(DemandFlags::EXPORT, g0, Some(sym)) } else { shlib_c(func) }
+            if writable {
+                Want::Demand(DemandFlags::EXPORT, g0, Some(sym))
+            } else {
+                shlib_c(func)
+            }
         }
         (C::AbsWord, K::Shlib { .. }) => tx(DemandFlags::EXPORT, sym),
         (C::AbsWord, K::Ifunc) if pie => tx(DemandFlags::IPLT, DynRole::Relative),
@@ -291,7 +306,9 @@ fn got(s: &Sink) -> Want {
         return match e {
             ScanError::Dynamic(r) => Want::Refused(r),
             ScanError::Incompatible(_) => Want::E,
-            ScanError::Refused(ref r) if r.name.to_string() == mortar_a64::LARGE_TLSDESC_DYNAMIC => {
+            ScanError::Refused(ref r)
+                if r.name.to_string() == mortar_a64::LARGE_TLSDESC_DYNAMIC =>
+            {
                 Want::Feature
             }
             other => panic!("{other:?}"),
@@ -386,7 +403,9 @@ fn s8_tls_cells_exec_and_pie() {
                 let s = scan_one(M2, &tables, out, place, &input, r).unwrap();
                 let local = kind == K::Local;
                 let w = match h.class {
-                    DemandClass::TlsDesc if local => Want::Demand(DemandFlags::empty(), GlobalFlags::empty(), None),
+                    DemandClass::TlsDesc if local => {
+                        Want::Demand(DemandFlags::empty(), GlobalFlags::empty(), None)
+                    }
                     DemandClass::TlsDesc if matches!(t, 565..=568) => Want::Feature,
                     DemandClass::TlsDesc | DemandClass::TlsIe => {
                         Want::Demand(tp, GlobalFlags::empty(), None)
@@ -680,7 +699,13 @@ fn s11_843419_and_plts() {
             ws.extend(buf.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())));
             for n in 0..4u32 {
                 let e = addr + hdr + ent * u64::from(n);
-                let cx = SynthCx { addr: e, header: addr, got_plt: g + 24 + 8 * u64::from(n), got_base: 0, index: n };
+                let cx = SynthCx {
+                    addr: e,
+                    header: addr,
+                    got_plt: g + 24 + 8 * u64::from(n),
+                    got_base: 0,
+                    index: n,
+                };
                 let mut buf = vec![0u8; ent as usize];
                 M2.write_plt(v, PltPart::Entry { chunk: 0, n }, &cx, &mut buf).unwrap();
                 ws.extend(buf.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())));

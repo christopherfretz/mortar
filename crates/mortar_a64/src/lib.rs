@@ -26,12 +26,14 @@ use mortar_arch::{
     Field, FieldError, GotBase, GotShape, Howto, LazyTarget, OutputCx, OutputKind, PatchCx,
     PltChunk, PltPart, PltShape, PltVariant, PropMerge, Reach, Records, RefName, Refusal, RelForm,
     RelocAt, Site, SlotKind, Status, SymNames, SynthCx, TagWhen, ThunkShape, TlsAbi, TlsVariant,
-    UnitWindow, Unproved, WeakClass, Weak0Rule, Window, max_window,
+    UnitWindow, Unproved, Weak0Rule, WeakClass, Window, max_window,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
 
-pub use apply::{ADD_X0_X1_X0, LARGE_TLSDESC_DYNAMIC, MRS_X1_TPIDR, NON_ALLOC_TLS_ABS, scan_checks};
+pub use apply::{
+    ADD_X0_X1_X0, LARGE_TLSDESC_DYNAMIC, MRS_X1_TPIDR, NON_ALLOC_TLS_ABS, scan_checks,
+};
 
 /// The AArch64 architecture, built with the milestone it enables and its
 /// options (arch.md §3.7 `errata`).

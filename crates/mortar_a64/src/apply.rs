@@ -7,9 +7,9 @@
 use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
     AddendRule, Base, Check, ClassOutcome, DeadRef, Demand, DemandClass, DemandFlags, DemandSink,
-    DynRefusal, EventClass, Field, FieldError, FillCx, Incompatible, Minus, OutputKind,
-    PlaceFacts, Refusal, RelocAt, ScanCx, ScanError, SectionOut, SlotKind, TargetKind, Terms,
-    Weak0Rule, class_outcome, dead_reference, writes_dtprel,
+    DynRefusal, EventClass, Field, FieldError, FillCx, Incompatible, Minus, OutputKind, PlaceFacts,
+    Refusal, RelocAt, ScanCx, ScanError, SectionOut, SlotKind, TargetKind, Terms, Weak0Rule,
+    class_outcome, dead_reference, writes_dtprel,
 };
 use mortar_diag::RefusalClass;
 
