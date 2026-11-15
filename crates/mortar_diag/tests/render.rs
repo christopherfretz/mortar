@@ -310,6 +310,11 @@ fn control_characters_are_made_visible() {
                  are not supported)"
             ),
         ),
+        (Kind::MetaMalformed { reason: h() }, format!("malformed Mason metadata: {shown}")),
+        (
+            Kind::MetaVersion { major: 2 },
+            "Mason metadata version 2 is not supported; its records are ignored".to_owned(),
+        ),
         (
             Kind::RelocationMisaligned { r_type: h(), value: -8, align: 16 },
             format!("improper alignment for relocation {shown}: -8 is not aligned to 16 bytes"),
@@ -352,7 +357,6 @@ fn control_characters_are_made_visible() {
 
 /// One diagnostic of every kind, plain and with every kind of context,
 /// and with fields that try to break the line structure.
-#[allow(clippy::too_many_lines)] // one row per kind
 fn samples() -> Vec<Diagnostic> {
     let s = |text: &str| text.to_owned();
     let kinds = |x: &str| {
@@ -400,17 +404,6 @@ fn samples() -> Vec<Diagnostic> {
             Kind::VersionedExport { name: s(x), version: s(x) },
             Kind::MetaMalformed { reason: s(x) },
             Kind::MetaVersion { major: u16::MAX },
-            Kind::OdrAbiMismatch { option: s(x), first: s(x), second: s(x) },
-            Kind::OdrArchiveShadow { name: s(x) },
-            Kind::OdrDeclarationMismatch { name: s(x) },
-            Kind::OdrInternalReference { name: s(x) },
-            Kind::OdrIsaMismatch { name: s(x) },
-            Kind::OdrSizeMismatch { name: s(x) },
-            Kind::OdrStrongAndComdat { name: s(x) },
-            Kind::OdrSymbolTypeMismatch { name: s(x) },
-            Kind::OdrTypeMismatch { name: s(x) },
-            Kind::OdrViolation { name: s(x) },
-            Kind::OdrVtableRttiMismatch { name: s(x) },
             Kind::CanonicalPltInPie { r_type: s(x), name: s(x) },
             Kind::CopyRelocationAgainstProtected { name: s(x), file: s(x) },
             Kind::CopyRelocationOfZeroSize { name: s(x) },

@@ -342,35 +342,13 @@ pub enum Kind {
     /// definition (`.gnu.version_d`, M4).
     VersionedExport { name: String, version: String },
 
-    // -- one-definition rule (M6, `spec/odr.md` §9.1) --------------------
+    // -- one-definition rule (M6, `spec/meta.md`, `spec/odr.md` §9.1) -------
     /// `meta-malformed` (`spec/meta.md` MT-14): a Mason metadata container
     /// that breaks its format; `reason` says how.
     MetaMalformed { reason: String },
     /// `meta-version` (`spec/meta.md` MT-35): a unit of a major version
     /// mortar does not read; its records are ignored.
     MetaVersion { major: u16 },
-    /// `odr-abi-mismatch` (`spec/odr.md` O-30).
-    OdrAbiMismatch { option: String, first: String, second: String },
-    /// `odr-archive-shadow` (`spec/odr.md` §9.1).
-    OdrArchiveShadow { name: String },
-    /// `odr-declaration-mismatch` (`spec/odr.md` §9.1).
-    OdrDeclarationMismatch { name: String },
-    /// `odr-internal-reference` (`spec/odr.md` §9.1).
-    OdrInternalReference { name: String },
-    /// `odr-isa-mismatch` (`spec/odr.md` §9.1).
-    OdrIsaMismatch { name: String },
-    /// `odr-size-mismatch` (`spec/odr.md` §9.1).
-    OdrSizeMismatch { name: String },
-    /// `odr-strong-and-comdat` (`spec/odr.md` §9.1).
-    OdrStrongAndComdat { name: String },
-    /// `odr-symbol-type-mismatch` (`spec/odr.md` §9.1).
-    OdrSymbolTypeMismatch { name: String },
-    /// `odr-type-mismatch` (`spec/odr.md` §9.1).
-    OdrTypeMismatch { name: String },
-    /// `odr-violation` (`spec/odr.md` §9.1).
-    OdrViolation { name: String },
-    /// `odr-vtable-rtti-mismatch` (`spec/odr.md` §9.1).
-    OdrVtableRttiMismatch { name: String },
 
     // -- relocations ----------------------------------------------------
     /// `canonical-plt-in-pie` (`spec/dyn.md` D-44): the relocation
@@ -439,7 +417,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 70] = [
+    pub const IDS: [&'static str; 59] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -486,17 +464,6 @@ impl Kind {
         "versioned-export",
         "meta-malformed",
         "meta-version",
-        "odr-abi-mismatch",
-        "odr-archive-shadow",
-        "odr-declaration-mismatch",
-        "odr-internal-reference",
-        "odr-isa-mismatch",
-        "odr-size-mismatch",
-        "odr-strong-and-comdat",
-        "odr-symbol-type-mismatch",
-        "odr-type-mismatch",
-        "odr-violation",
-        "odr-vtable-rtti-mismatch",
         "canonical-plt-in-pie",
         "copy-relocation-against-protected",
         "copy-relocation-of-zero-size",
@@ -563,17 +530,6 @@ impl Kind {
             Self::VersionedExport { .. } => "versioned-export",
             Self::MetaMalformed { .. } => "meta-malformed",
             Self::MetaVersion { .. } => "meta-version",
-            Self::OdrAbiMismatch { .. } => "odr-abi-mismatch",
-            Self::OdrArchiveShadow { .. } => "odr-archive-shadow",
-            Self::OdrDeclarationMismatch { .. } => "odr-declaration-mismatch",
-            Self::OdrInternalReference { .. } => "odr-internal-reference",
-            Self::OdrIsaMismatch { .. } => "odr-isa-mismatch",
-            Self::OdrSizeMismatch { .. } => "odr-size-mismatch",
-            Self::OdrStrongAndComdat { .. } => "odr-strong-and-comdat",
-            Self::OdrSymbolTypeMismatch { .. } => "odr-symbol-type-mismatch",
-            Self::OdrTypeMismatch { .. } => "odr-type-mismatch",
-            Self::OdrViolation { .. } => "odr-violation",
-            Self::OdrVtableRttiMismatch { .. } => "odr-vtable-rtti-mismatch",
             Self::CanonicalPltInPie { .. } => "canonical-plt-in-pie",
             Self::CopyRelocationAgainstProtected { .. } => "copy-relocation-against-protected",
             Self::CopyRelocationOfZeroSize { .. } => "copy-relocation-of-zero-size",
@@ -613,16 +569,6 @@ impl Kind {
             | Self::UndefinedVersion { name, .. }
             | Self::VersionReassigned { name, .. }
             | Self::VersionedExport { name, .. }
-            | Self::OdrArchiveShadow { name }
-            | Self::OdrDeclarationMismatch { name }
-            | Self::OdrInternalReference { name }
-            | Self::OdrIsaMismatch { name }
-            | Self::OdrSizeMismatch { name }
-            | Self::OdrStrongAndComdat { name }
-            | Self::OdrSymbolTypeMismatch { name }
-            | Self::OdrTypeMismatch { name }
-            | Self::OdrViolation { name }
-            | Self::OdrVtableRttiMismatch { name }
             | Self::CanonicalPltInPie { name, .. }
             | Self::CopyRelocationAgainstProtected { name, .. }
             | Self::CopyRelocationOfZeroSize { name }
@@ -955,30 +901,19 @@ mod tests {
             Kind::VersionedExport { .. } => 43,
             Kind::MetaMalformed { .. } => 44,
             Kind::MetaVersion { .. } => 45,
-            Kind::OdrAbiMismatch { .. } => 46,
-            Kind::OdrArchiveShadow { .. } => 47,
-            Kind::OdrDeclarationMismatch { .. } => 48,
-            Kind::OdrInternalReference { .. } => 49,
-            Kind::OdrIsaMismatch { .. } => 50,
-            Kind::OdrSizeMismatch { .. } => 51,
-            Kind::OdrStrongAndComdat { .. } => 52,
-            Kind::OdrSymbolTypeMismatch { .. } => 53,
-            Kind::OdrTypeMismatch { .. } => 54,
-            Kind::OdrViolation { .. } => 55,
-            Kind::OdrVtableRttiMismatch { .. } => 56,
-            Kind::CanonicalPltInPie { .. } => 57,
-            Kind::CopyRelocationAgainstProtected { .. } => 58,
-            Kind::CopyRelocationOfZeroSize { .. } => 59,
-            Kind::RelocationIncompatible { .. } => 60,
-            Kind::RelocationMisaligned { .. } => 61,
-            Kind::RelocationOutOfRange { .. } => 62,
-            Kind::TextRelocation { .. } => 63,
-            Kind::WeakUndefinedPcInPie { .. } => 64,
-            Kind::ExecutableStack { .. } => 65,
-            Kind::OutputTooLarge { .. } => 66,
-            Kind::SectionConflict { .. } => 67,
-            Kind::Refused { .. } => 68,
-            Kind::InternalError { .. } => 69,
+            Kind::CanonicalPltInPie { .. } => 46,
+            Kind::CopyRelocationAgainstProtected { .. } => 47,
+            Kind::CopyRelocationOfZeroSize { .. } => 48,
+            Kind::RelocationIncompatible { .. } => 49,
+            Kind::RelocationMisaligned { .. } => 50,
+            Kind::RelocationOutOfRange { .. } => 51,
+            Kind::TextRelocation { .. } => 52,
+            Kind::WeakUndefinedPcInPie { .. } => 53,
+            Kind::ExecutableStack { .. } => 54,
+            Kind::OutputTooLarge { .. } => 55,
+            Kind::SectionConflict { .. } => 56,
+            Kind::Refused { .. } => 57,
+            Kind::InternalError { .. } => 58,
         }
     }
 
@@ -1034,17 +969,6 @@ mod tests {
             Kind::VersionedExport { name: s(), version: s() },
             Kind::MetaMalformed { reason: s() },
             Kind::MetaVersion { major: 2 },
-            Kind::OdrAbiMismatch { option: s(), first: s(), second: s() },
-            Kind::OdrArchiveShadow { name: s() },
-            Kind::OdrDeclarationMismatch { name: s() },
-            Kind::OdrInternalReference { name: s() },
-            Kind::OdrIsaMismatch { name: s() },
-            Kind::OdrSizeMismatch { name: s() },
-            Kind::OdrStrongAndComdat { name: s() },
-            Kind::OdrSymbolTypeMismatch { name: s() },
-            Kind::OdrTypeMismatch { name: s() },
-            Kind::OdrViolation { name: s() },
-            Kind::OdrVtableRttiMismatch { name: s() },
             Kind::CanonicalPltInPie { r_type: s(), name: s() },
             Kind::CopyRelocationAgainstProtected { name: s(), file: s() },
             Kind::CopyRelocationOfZeroSize { name: s() },
