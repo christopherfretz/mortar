@@ -26,5 +26,7 @@
 - xfail reasons/owners; linktest mortar 29 PASS 6 XFAIL. Stale tests (refusals, front_diff,
   lib) updated to the writing pipeline.
 
+- protoc, debuggers, bench done; phases total peak; record written.
+
 ## Next
-- protoc; debuggers; option rows; bench; record.
+- gate, delete WIP, clean scratch, hand-back.
