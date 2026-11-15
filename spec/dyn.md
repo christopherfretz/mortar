@@ -1292,10 +1292,10 @@ proposed wording or its substance; the owning spec's maintainer lands it
 
 | id | target | request |
 |---|---|---|
-| R-M1 | model §3.3 | `file_live` of a shared object gains `Closure` (reached from a needed object) and `Dead` (D-12); `Slots.needed` is in `FileId` order (D-19a) |
+| R-M1 | model §3.3 | `file_live` of a loaded shared object is `Shared{needed}`, `Shared{used}` (U of D-12: reached by a `DT_NEEDED` edge from a needed or used object, whatever loaded it) or `Dead`; `Slots.needed` is in D-19a's order |
 | R-R1 | resolve §5.2 L769 | the shlib-undefined rule is D-13 (GNU's), replacing lld's exemption |
 | R-R2 | resolve §5.4 L819 | cite D-25 for `WeakDyn` / `Weak0` |
-| R-R3 | resolve §3.6, §12.1 | `ref_dynamic` and `defined_dynamic` are computed after D-11's needed fixed point |
+| R-R3 | resolve §3.6, §12.1 | `ref_dynamic` and `defined_dynamic` count members of N ∪ U only and are computed after D-11 and D-12 |
 | R-R4 | resolve §3.4 | `tls-mismatch` also between a shared `STT_TLS` definition and a non-TLS reference (D-16) |
 | R-R5 | resolve §9.6 | linker-defined symbols of file 0 are exported only when `ref_dynamic` (D-21) |
 | R-R6 | resolve §1.2 L63 vs L473 | `--export-dynamic-symbol` (and `--dynamic-list`) one milestone: M2 for the option, M4 for the list file (Q9) |
@@ -1449,6 +1449,7 @@ shrink a copy to 0, overlap two copies, misorder `IRELATIVE`, drop a
 | `.dynamic` tag order | its order | its own | its own | GNU ld's (D-30) |
 | `DT_NULL` entries | 5-6 | 1 | 6 | 6 (D-30) |
 | empty `.rela.dyn` | written | written | omitted | omitted (D-30) |
+| undefined weak, GOT-used, in a PIE | dynamic; call via `.plt.got` (x86-64) or PLT | dynamic; call via PLT | 0 everywhere | dynamic, call via PLT (D-25) |
 | `DT_NEEDED` order | keeping mention (D-19a) | first mention of the soname | first mention; later plain mentions of a first-as-needed soname ignored (W9) | GNU ld's (D-19a) |
 | `.dynsym` unhashed block order | hash order | first appearance | library index | `SymbolId` (D-22) |
 | Bloom words, buckets | own formula | D-26 | own | lld's (D-26) |
@@ -1596,6 +1597,11 @@ and this spec cites them by directory (`review-m2-adv/<dir>`).
 | E-reloc | `reloc/run.sh` | dynamic records, copies, canonical PLTs, IFUNCs, TLS, text relocations, lazy and `-z now`, self-checking programs | 48 programs × 4 references; 433 side experiments |
 | E-shlib | `shlib/run.sh` | needed/as-needed, closure, shlib-undefined, versions, protected, hidden entries | 3 architectures × 3 references |
 | E-shdr | `design/shdr.sh` | section headers of the dynamic sections | 3 references |
+| E-usedset | `shlib/usedset.sh` (`usedset.py`) | an independent model of D-11-D-13 against GNU ld on every E-shlib experiment, X1-X3c and the default lines (F1) | 254 links, 2 architectures |
+| E-needed | `dynamic/needed_order.sh` | GNU ld's `DT_NEEDED` order: duplicates, as-needed, scripts, groups, `-Bstatic`, under-linking; constructor order (F5) | 75 cases × 2 architectures × 4 linkers |
+| E-weakpc | `reloc/weakpc.sh` (`weakcls.py`) | weak undefined: which compilers produce which classes; the references' handling in PIE and `-no-pie`; `-z [no]dynamic-undefined-weak`; the hook program with `LD_PRELOAD`; mixed GOT/absolute uses (F2) | 1008 objects; links per combo |
+| E-mixed | `corpus/mixed.sh` | links mixing `-fno-pic`, `-fPIE`, `-fPIC`, `-fno-plt` objects; equality checks | C and C++, GCC and Clang 22, 2 architectures, 3 references, PIE and `-no-pie` |
+| review | `/Volumes/AgentWork/mortar-helper/.build/review-m2-adv/{ldso,weaksplit,copyro,canonpie,unique,dyntags,…}/run.sh` | the adversarial review's reproducers; `ldso`, `weaksplit`, `copyro`, `canonpie`, `unique`, `dyntags` re-run for this revision | — |
 
 Tools: GCC/G++/gfortran 14.2.0-19 (native and cross), clang 19.1.7 and
 22.1.8, GNU ld 2.44, ld.lld 19.1.7 and 22.1.8, mold 2.37.1, qemu-user
@@ -1621,3 +1627,15 @@ eu-elflint 0.192, Python 3.13.5, glibc 2.41 (Debian 13).
 - Natively run x86-64 and i386 programs: everything ran under qemu-user;
   a kernel-loaded run of the outputs was not available.
 - lldb under qemu for x86 (gdb-multiarch was used).
+- E-usedset takes the live relocatable objects from GNU ld's `-t -t`
+  trace, not from its own archive model; a multi-round chain of
+  under-linking (D-11 item 3 more than once) and the tie-break of
+  `giver(k)` between an earlier as-needed member of C and an object in
+  `reach(N0)` are not in the corpus.
+- D-19a's group rule rests on two cases (`grp_rescan_*`); i386, an
+  as-needed library made needed by an archive member extracted later,
+  and versioned references as the reason were not measured.
+- E-weakpc and E-mixed: no i386 or Fortran or kiln+hod objects in the
+  mixed links; `weakpc.sh` was last run stage by stage (the `weakmix`
+  stage separately), not end to end; the cause of GNU ld's x86-64 IFUNC
+  inequality (W3) is not diagnosed.
