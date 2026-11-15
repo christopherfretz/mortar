@@ -55,6 +55,8 @@ pub enum Rule {
     BuildId,
     /// C1-C6: erratum 843419 fixes by site (§5.10).
     Erratum(u8),
+    /// P-D1 .. P-D13: stage 3, dynamic executables (§12).
+    Dyn(u8),
 }
 
 impl Rule {
@@ -83,6 +85,7 @@ impl Rule {
             Rule::Property(n) => format!("P{n}"),
             Rule::BuildId => "B1".into(),
             Rule::Erratum(n) => format!("C{n}"),
+            Rule::Dyn(n) => format!("P-D{n}"),
         }
     }
 }
@@ -209,6 +212,9 @@ pub enum Reason {
     GotUnpaired,
     /// The input file of the section cannot be read.
     InputUnreadable,
+    /// Stage 3: a dynamic construct the loader model does not judge
+    /// (named in the record, `spec/plumb.md` §12).
+    Dynamic,
 }
 
 impl Reason {
@@ -228,6 +234,7 @@ impl Reason {
             Reason::SymbolUnresolved => "symbol-unresolved",
             Reason::GotUnpaired => "got-unpaired",
             Reason::InputUnreadable => "input-unreadable",
+            Reason::Dynamic => "dynamic",
         }
     }
 
@@ -254,6 +261,9 @@ pub enum Via {
     /// A non-alloc reference to a section not in the output: the
     /// linker's tombstone (§5.8).
     Tombstone,
+    /// Stage 3: a branch to a PLT entry whose `.got.plt` word holds S
+    /// after the loader's work (§12, P-D9).
+    Plt,
 }
 
 impl Via {
@@ -265,6 +275,7 @@ impl Via {
             Via::EhFrame => "eh-frame",
             Via::Iplt => "iplt",
             Via::Tombstone => "tombstone",
+            Via::Plt => "plt",
         }
     }
 }

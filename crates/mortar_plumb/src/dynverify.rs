@@ -1,0 +1,288 @@
+//! Stage 3's driver (`spec/plumb.md` §12, `spec/dyn.md` P-D1..P-D13): a
+//! dynamic executable is read, its command line and shared objects are
+//! modelled, the static checks run on the output, and stage 2's engine
+//! judges every input relocation against the loader's views.
+
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use mortar_elf::consts::{PT_DYNAMIC, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK};
+
+use crate::dynmodel::Model;
+use crate::dynout::DynOut;
+use crate::image::Image;
+use crate::line::{Files, Line};
+use crate::loader::{self, Loader, Params};
+use crate::locate::{self, Obj};
+use crate::map::{Map, OutputKind};
+use crate::report::{Finding, Report, Rule};
+use crate::{Input, reloc, run_engine, structure};
+
+/// What stage 3 needs beyond stage 2's arguments.
+#[allow(missing_debug_implementations)]
+pub struct Ctx<'f> {
+    /// The linker's words (`--inputs-from`'s line, or the mortar map's
+    /// `arg` records when `None`).
+    pub line: Option<Vec<String>>,
+    pub files: &'f dyn Files,
+}
+
+/// The load bias of view 2 (page-aligned, far from every other address).
+pub const BIAS2: u64 = 0x5555_0000_0000;
+/// Where view 3 defines the `WeakDyn` keys.
+pub const FRESH: u64 = 0x6000_0000_0000;
+
+/// Whether the output is dynamic: it has `PT_DYNAMIC` (D-1: `Exec`,
+/// `Pie`, `StaticPie`).
+pub fn is_dynamic(output: &[u8]) -> bool {
+    Image::read(output).is_ok_and(|i| i.phdrs.iter().any(|p| p.p_type == PT_DYNAMIC))
+}
+
+/// Whether section `si` of `o` has a record naming one of `names`.
+pub(crate) fn names_any(o: &Obj<'_>, si: usize, names: &HashSet<String>) -> bool {
+    let (Some(t), Some(rs)) = (o.symtab, o.secs[si].relocs) else { return false };
+    let Some(raw) = o.records(rs) else { return false };
+    raw.iter().any(|r| {
+        t.get(mortar_elf::SymbolIndex(r.1))
+            .ok()
+            .and_then(|s| t.name(&s).ok())
+            .is_some_and(|n| names.contains(String::from_utf8_lossy(n).as_ref()))
+    })
+}
+
+/// Verifies a link (§2), with stage 3 for a dynamic output. A static
+/// output is verified as [`crate::verify`] does.
+#[allow(clippy::too_many_lines)] // the views in order
+pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>) -> Report {
+    let mut report = Report::default();
+    let image = match Image::read(output) {
+        Ok(i) => i,
+        Err(e) => {
+            report.findings.push(Finding::new(Rule::OutputUnreadable, e));
+            return report;
+        }
+    };
+    let Some(dout) = DynOut::read(&image) else {
+        return crate::verify(output, inputs, map);
+    };
+    report.findings.extend(structure::check(&image));
+    report.findings.extend(structure::check_layout(&image, map.format));
+    let located = locate::locate(map, inputs, &image);
+    report.findings.extend(located.findings);
+    let objs = located.objs;
+    let args = ctx
+        .line
+        .clone()
+        .or_else(|| map.dynamic.as_ref().map(|d| d.args.clone()).filter(|a| !a.is_empty()));
+    let Some(args) = args else {
+        report.findings.push(Finding::new(
+            Rule::Dyn(2),
+            "a dynamic output and no command line: stage 3 needs the link's words",
+        ));
+        report.sort();
+        return report;
+    };
+    let line = Line::parse(&args, ctx.files);
+    for p in &line.problems {
+        report.findings.push(Finding::new(Rule::Dyn(2), format!("the command line: {p}")));
+    }
+    // file 0's definitions: the output's defined globals no input and no
+    // shared object defines (linker-defined symbols).
+    let mut input_defs: HashSet<String> = HashSet::new();
+    for o in &objs {
+        let Some(t) = o.symtab else { continue };
+        for (_, s) in t.iter() {
+            if s.st_shndx != 0
+                && matches!(s.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE)
+                && let Ok(n) = t.name(&s)
+            {
+                input_defs.insert(String::from_utf8_lossy(n).into_owned());
+            }
+        }
+    }
+    let pre: Vec<String> = image
+        .symbols
+        .iter()
+        .filter(|s| {
+            s.sym.st_shndx != 0
+                && matches!(s.sym.binding(), STB_GLOBAL | STB_WEAK)
+                && !input_defs.contains(&s.name)
+        })
+        .map(|s| s.name.clone())
+        .collect();
+    let mut model = Model::build(&line, &objs, &[], ctx.files);
+    let file0: Vec<String> = pre
+        .into_iter()
+        .filter(|n| !model.dsos.iter().any(|d| d.defs.get(n).is_some_and(|v| v.iter().any(|x| x.visible()))))
+        .collect();
+    if !file0.is_empty() {
+        model = Model::build(&line, &objs, &file0, ctx.files);
+    }
+    for p in &model.problems {
+        report.findings.push(Finding::new(Rule::Dyn(2), p.clone()));
+    }
+    // The loader's order: the image's own DT_NEEDED.
+    let mut needed_idx = Vec::new();
+    for n in &dout.needed {
+        match model.by_soname(n) {
+            Some(i) => needed_idx.push(i),
+            None => report.findings.push(Finding::new(
+                Rule::Dyn(6),
+                format!("DT_NEEDED '{n}' names no shared object of the link"),
+            )),
+        }
+    }
+    let ld = Loader {
+        model: &model,
+        order: model.loader_order(&needed_idx),
+        machine: image.header.e_machine,
+    };
+    let kind = line.kind.unwrap_or(OutputKind::Exec);
+    report.findings.extend(crate::dyncheck::check(
+        &image, &dout, &line, &model, &ld, &objs, map.format,
+    ));
+    // View 1: bias 0.
+    let p1 = Params::default();
+    let v1 = loader::apply(&image, &dout, &ld, &p1, true);
+    report.findings.extend(v1.findings.iter().cloned());
+    let Ok(img1) = Image::read(&v1.bytes) else {
+        report.sort();
+        return report;
+    };
+    let plt = loader::plt_entries(&image);
+    let mut engine = reloc::Engine::new(&img1, &objs, map.format);
+    engine.dynbind = v1.dynbind.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    engine.dyn_tls = v1.dyn_tls.clone();
+    engine.plt = plt.clone();
+    run_engine(&mut engine, &image, map, None);
+    let abs = std::mem::take(&mut engine.abs_words);
+    let view1_findings = std::mem::take(&mut engine.findings);
+    report.coverage = std::mem::take(&mut engine.cov);
+    drop(engine);
+    // View 2: a second bias (Pie): every word that holds an address of the
+    // executable moves with it, every other word does not.
+    if kind == OutputKind::Pie || image.header.e_type == mortar_elf::consts::ET_DYN {
+        let p2 = Params { bias: BIAS2, ..Params::default() };
+        let v2 = loader::apply(&image, &dout, &ld, &p2, false);
+        let mut seen = BTreeSet::new();
+        for &(at, w, v, internal) in &abs {
+            if !seen.insert(at) {
+                continue;
+            }
+            let Some(off) = file_off(&image, at, u64::from(w)) else { continue };
+            let mut b = [0u8; 8];
+            b[..w as usize].copy_from_slice(&v2.bytes[off..off + w as usize]);
+            let found = u64::from_le_bytes(b);
+            let want = if internal { v.wrapping_add(BIAS2) } else { v };
+            let mask = if w == 8 { u64::MAX } else { (1u64 << (8 * w)) - 1 };
+            if found & mask != want & mask {
+                let mut f = Finding::new(
+                    Rule::Dyn(9),
+                    format!(
+                        "view 2 (load bias {BIAS2:#x}): the word holds {found:#x}, the program needs {:#x}{}",
+                        want & mask,
+                        if internal { " (no record moves it with the executable)" } else { "" }
+                    ),
+                )
+                .at(at);
+                f.expected = Some(want & mask);
+                f.found = Some(found);
+                report.findings.push(f);
+            }
+        }
+    }
+    // View 3: every WeakDyn key (an undefined weak `.dynsym` entry the
+    // loader finds no definition for) defined at a fresh address.
+    let mut fresh: HashMap<String, u64> = HashMap::new();
+    for (j, s) in dout.syms.iter().enumerate() {
+        if j > 0
+            && !s.defined()
+            && s.binding() == STB_WEAK
+            && v1.dynbind.get(&s.name) == Some(&0)
+        {
+            let n = fresh.len() as u64;
+            fresh.insert(s.name.clone(), FRESH + n * 0x1000);
+        }
+    }
+    if !fresh.is_empty() {
+        let p3 = Params { bias: 0, fresh: fresh.clone() };
+        let v3 = loader::apply(&image, &dout, &ld, &p3, false);
+        if let Ok(img3) = Image::read(&v3.bytes) {
+            let names: HashSet<String> = fresh.keys().cloned().collect();
+            let mut e3 = reloc::Engine::new(&img3, &objs, map.format);
+            e3.dynbind = v3.dynbind.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            e3.dyn_tls = v3.dyn_tls.clone();
+            e3.plt = plt.clone();
+            run_engine(&mut e3, &image, map, Some(&names));
+            let mut bad: HashMap<String, Vec<Finding>> = HashMap::new();
+            let mut ok: HashMap<String, u64> = HashMap::new();
+            for f in e3.findings.drain(..) {
+                if let Some(s) = &f.symbol
+                    && names.contains(s)
+                {
+                    bad.entry(s.clone()).or_default().push(f);
+                }
+            }
+            for k in &names {
+                ok.insert(k.clone(), uses_of(&objs, k));
+            }
+            for (k, fs) in bad {
+                let n = ok.get(&k).copied().unwrap_or(0);
+                if (fs.len() as u64) < n {
+                    for f in fs {
+                        let mut g = Finding::new(
+                            Rule::Dyn(9),
+                            format!(
+                                "view 3 ('{k}' defined by a preloaded library): this use still sees the absent definition while {} other uses see it ({})",
+                                n - 1,
+                                f.message
+                            ),
+                        );
+                        g.addr = f.addr;
+                        g.site = f.site;
+                        g.reloc = f.reloc;
+                        g.symbol = Some(k.clone());
+                        g.expected = f.expected;
+                        g.found = f.found;
+                        report.findings.push(g);
+                    }
+                }
+            }
+        }
+    }
+    report.findings.extend(view1_findings);
+    report.sort();
+    report
+}
+
+fn file_off(image: &Image<'_>, addr: u64, len: u64) -> Option<usize> {
+    image.phdrs.iter().filter(|p| p.p_type == mortar_elf::consts::PT_LOAD).find_map(|p| {
+        let off = addr.checked_sub(p.p_vaddr)?;
+        (off.checked_add(len)? <= p.p_filesz).then(|| (p.p_offset + off) as usize)
+    })
+}
+
+/// The number of input relocation records naming `name` in placed
+/// sections.
+fn uses_of(objs: &[Obj<'_>], name: &str) -> u64 {
+    let mut n = 0;
+    for o in objs {
+        let Some(t) = o.symtab else { continue };
+        for s in &o.secs {
+            let Some(rs) = s.relocs else { continue };
+            if matches!(s.place, locate::Place::Absent | locate::Place::Discarded) || !s.alloc() {
+                continue;
+            }
+            let Some(raw) = o.records(rs) else { continue };
+            for r in raw {
+                if t.get(mortar_elf::SymbolIndex(r.1))
+                    .ok()
+                    .and_then(|x| t.name(&x).ok())
+                    .is_some_and(|x| x == name.as_bytes())
+                {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}

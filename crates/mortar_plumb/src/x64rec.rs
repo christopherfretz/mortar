@@ -246,7 +246,23 @@ impl Engine<'_, '_> {
             }
             _ => return self.not_checked(Reason::Type, 1),
         };
+        let failed = self.cov.failed;
+        // Stage 3: a call or jump through a PLT entry whose word holds S.
+        if matches!(ty, x::PLT32 | x::PC32)
+            && kind != Kind::Weak0
+            && let Verdict::Mismatch(_) = judge(rec, xv as i64)
+            && self.plt_hop(rec.p.wrapping_add(4).wrapping_add(rec.out_word as u32 as i32 as u64), s)
+        {
+            return self.cov.add_verified(Via::Plt, ty);
+        }
         self.x64_judge(rec, &site, &symbol, xv as i64);
+        if rec.def.op == Op::Abs
+            && rec.def.field.width() == 8
+            && kind != Kind::Weak0
+            && self.cov.failed == failed
+        {
+            self.abs_words.push((rec.p, 8, xv, self.internal(s)));
+        }
     }
 
     /// A record not judged for `r`: the bytes a rewriting of it may change

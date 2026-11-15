@@ -475,9 +475,33 @@ pub(crate) struct Engine<'a, 'b> {
     veneers: BTreeMap<u64, (Rec, Site, String, u64)>,
     pub cov: Coverage,
     pub findings: Vec<Finding>,
+    /// Stage 3 (§12): the run-time address of each name the output
+    /// imports, from the loader model (0: no definition, weak).
+    pub(crate) dynbind: HashMap<String, u64>,
+    /// Names bound to a library's thread-local definition: not judged.
+    pub(crate) dyn_tls: std::collections::HashSet<String>,
+    /// PLT entries: entry address -> `.got.plt` word (stage 3).
+    pub(crate) plt: BTreeMap<u64, u64>,
+    /// Verified absolute words and GOT words: `(place, width, value,
+    /// internal)`, for the bias view (P-D9 view 2).
+    pub(crate) abs_words: Vec<(u64, u8, u64, bool)>,
+    /// The executable's extent `[lo, hi)`: a target inside it moves with
+    /// the load bias.
+    pub(crate) extent: (u64, u64),
 }
 
 impl<'a, 'b> Engine<'a, 'b> {
+    /// Whether an address is the executable's (moves with the bias).
+    pub(crate) fn internal(&self, s: u64) -> bool {
+        self.extent.0 <= s && s < self.extent.1
+    }
+
+    /// A branch whose target is a PLT entry whose word holds `s` after
+    /// loading (stage 3).
+    pub(crate) fn plt_hop(&self, t: u64, s: u64) -> bool {
+        self.plt.get(&t).is_some_and(|&slot| self.image.value(slot, self.word() as u8) == Some(s))
+    }
+
     pub fn new(image: &'b Image<'a>, objs: &'b [Obj<'a>], format: Format) -> Self {
         let mut defs: HashMap<String, Vec<(usize, u32)>> = HashMap::default();
         let mut commons: HashMap<String, Vec<(usize, u32)>> = HashMap::default();
@@ -560,6 +584,16 @@ impl<'a, 'b> Engine<'a, 'b> {
             veneers: BTreeMap::new(),
             cov: Coverage::default(),
             findings: Vec::new(),
+            dynbind: HashMap::default(),
+            dyn_tls: std::collections::HashSet::new(),
+            plt: BTreeMap::new(),
+            abs_words: Vec::new(),
+            extent: {
+                let loads = image.phdrs.iter().filter(|p| p.p_type == mortar_elf::consts::PT_LOAD);
+                let lo = loads.clone().map(|p| p.p_vaddr).min().unwrap_or(0);
+                let hi = loads.map(|p| p.p_vaddr.saturating_add(p.p_memsz)).max().unwrap_or(0);
+                (lo, hi)
+            },
         };
         e.build_iplt();
         e
@@ -763,6 +797,14 @@ impl<'a, 'b> Engine<'a, 'b> {
             && matches!(where_, Ok(SymbolSection::Section(_)))
         {
             return self.ifunc_target(oi, idx, IfKey::Global(name));
+        }
+        // Stage 3: a name the output imports is where the loader binds it.
+        let undefined_out = self.image.global(&name).is_none_or(|o| o.sym.st_shndx == 0);
+        if undefined_out && let Some(&a) = self.dynbind.get(&name) {
+            if self.dyn_tls.contains(&name) {
+                return Target::Skip(Reason::Dynamic);
+            }
+            return if a == 0 { Target::UndefWeak } else { Target::Addr(a) };
         }
         // 1. The output's global symbol of the name.
         if let Some(out) = self.image.global(&name) {
@@ -1246,11 +1288,22 @@ impl<'a, 'b> Engine<'a, 'b> {
         };
         let verdict = judge(rec, x);
         if let Verdict::Ok(rw) = verdict {
+            if op == Op::Abs && rec.def.field.width() == self.word() as u8 && !weak {
+                let s = sa.wrapping_sub(addend as u64);
+                self.abs_words.push((rec.p, rec.def.field.width(), sa, self.internal(s)));
+            }
             match rw {
                 Some(r) => self.cov.add_accepted(r, rec.def.r_type),
                 None => self.cov.add_verified(Via::Direct, rec.def.r_type),
             }
             return;
+        }
+        if matches!(rec.def.r_type, JUMP26 | CALL26)
+            && let Some((_, t)) = a64::branch(rec.out_word as u32, rec.p)
+            && rec.out_word as u32 & 0xfc00_0000 == rec.input_word as u32 & 0xfc00_0000
+            && self.plt_hop(t, sa)
+        {
+            return self.cov.add_verified(Via::Plt, rec.def.r_type);
         }
         if let Some(rw) = self.direct_rewrite(rec, sa, weak, &partner) {
             self.note_veneer(rw, rec, &site, &symbol, sa);
@@ -1760,6 +1813,9 @@ impl<'a, 'b> Engine<'a, 'b> {
             if weak && t == rec.p.wrapping_add(4) {
                 return Some(Rewrite::WeakBranchNext);
             }
+            if self.plt_hop(t, sa) {
+                return None;
+            }
             if !self.occupied.contains(t)
                 && self.image.load_of(t, 4).is_some()
                 && self.veneer_hops(t, sa).is_some()
@@ -1888,7 +1944,7 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// Decides the GOT groups (§5.5).
     pub fn finish_got(&mut self) {
         let groups = std::mem::take(&mut self.got_groups);
-        for (_, g) in groups {
+        for ((_, goi, gsym, _), g) in groups {
             if g.unpaired() {
                 self.not_checked(Reason::GotUnpaired, g.members.len() as u64);
                 continue;
@@ -1936,6 +1992,17 @@ impl<'a, 'b> Engine<'a, 'b> {
                             break;
                         }
                         v => last = Some((v, x)),
+                    }
+                }
+                if ok.is_some()
+                    && let Want::Word(v) = want
+                    && !rec.def.op.is_tls()
+                {
+                    let w = self.word() as u8;
+                    let internal = self.internal(v.wrapping_sub(slot_addend(rec)))
+                        && !matches!(self.resolve_any(goi, gsym), Target::UndefWeak);
+                    for &gv in &valid {
+                        self.abs_words.push((gv, w, v, internal));
                     }
                 }
                 match ok {
