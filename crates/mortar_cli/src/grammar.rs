@@ -732,6 +732,7 @@ impl Parser<'_> {
             Lands::NoinhibitExec => plan.diagnostics.noinhibit_exec = true,
             Lands::Map => plan.bookkeeping.map = Some(text()),
             Lands::PrintMap => plan.bookkeeping.print_map = true,
+            Lands::MortarMap => plan.bookkeeping.mortar_map = Some(text()),
             Lands::Cref => plan.bookkeeping.cref = true,
             Lands::Reproduce => plan.bookkeeping.reproduce = Some(text()),
             Lands::Threads => {

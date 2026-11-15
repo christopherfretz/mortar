@@ -26,7 +26,7 @@ use crate::assign::{OutInfo, is_c_identifier};
 use crate::diag::{LayoutDiag, feature, internal};
 use crate::headers::Headers;
 use crate::order::Ordered;
-use crate::rank::{Rank, rank_of};
+use crate::rank::{Rank, rank_with};
 use crate::target::Target;
 
 /// A synthetic chunk the caller (synthesis) asks for, with its
@@ -155,6 +155,8 @@ pub struct ChunkInputs<'t, 'n> {
     /// `-z relro` (the default); `-z norelro` puts rank 7 in the RW
     /// segment with no padding and no `PT_GNU_RELRO` (§20.2).
     pub relro: bool,
+    /// `-z now`: `.got.plt` is RELRO (`rank_with`, L-60).
+    pub now: bool,
 }
 
 /// One body part: its members and their offsets, size and alignment.
@@ -301,11 +303,14 @@ pub fn chunk(
         .collect();
     let rank_of_out = |o: usize| {
         let out = &a.outsecs[OutSecId(o as u32)];
-        rank_of(out.name, out.sh_type, out.flags)
+        rank_with(out.name, out.sh_type, out.flags, inputs.now)
     };
     // RELRO padding exists when rank 7 is non-empty (L-64).
     let relro_nonempty = (0..outs).any(|o| present[o] && rank_of_out(o).is_relro())
-        || inputs.synthetic.iter().any(|s| rank_of(s.synth.name, s.sh_type, s.flags).is_relro());
+        || inputs
+            .synthetic
+            .iter()
+            .any(|s| rank_with(s.synth.name, s.sh_type, s.flags, inputs.now).is_relro());
 
     let (ehdr, phent, shent, hdr_align) = header_sizes(target.class);
     let mut chunks: Vec<Chunk> = Vec::new();
@@ -372,7 +377,7 @@ pub fn chunk(
     for (i, s) in inputs.synthetic.iter().enumerate() {
         let r = match joins[i] {
             Some(o) => rank_of_out(o.0 as usize),
-            None => rank_of(s.synth.name, s.sh_type, s.flags),
+            None => rank_with(s.synth.name, s.sh_type, s.flags, inputs.now),
         };
         let group = joins[i].map_or(u32::MAX, |o| o.0);
         let mut c = blank(ChunkKind::Synthetic(s.synth), s.sh_type, s.flags, s.align, s.size);

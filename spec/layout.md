@@ -560,8 +560,8 @@ order of the output sections themselves is in §10.
 | 4 | R | `.rela.dyn` (`.rel.dyn` on i386), `.relr.dyn`, `.rela.plt` (`.rel.plt`) | M1 for `.rela.plt` (IRELATIVE in a static link), M2 the rest |
 | 5 | R | `.rodata`, read-only orphans (`PROGBITS`, alloc, not W, not X), `.gcc_except_table`, `.eh_frame_hdr`, `.eh_frame` | M1 |
 | 6 | RX | `.init`, `.plt` (`.iplt` content in a static link), `.text`, exec orphans, `.fini` | M1 |
-| 7 | RW-RELRO | `.tdata`, `.tbss`, TLS orphans (`PROGBITS` then `NOBITS`), `.preinit_array`, `.init_array`, `.fini_array`, `.data.rel.ro`, `.dynamic`, `.got`, `.got.plt` (only with `-z now`, M2), `.bss.rel.ro`, relro padding (L-64) | M1 (`.dynamic`, `.bss.rel.ro` at M2) |
-| 8 | RW | `.got.plt`, `.data`, `.tm_clone_table`, writable `PROGBITS` orphans, `.bss`, writable `NOBITS` orphans | M1 |
+| 7 | RW-RELRO | `.tdata`, `.tbss`, TLS orphans (`PROGBITS` then `NOBITS`), `.preinit_array`, `.init_array`, `.fini_array`, `.data.rel.ro`, `.dynamic`, `.got`, `.got.plt` (only with `-z now`, after `.got` as lld places it; GNU ld folds the slots into `.got`; M1 since WP-027e), `.bss.rel.ro`, relro padding (L-64) | M1 (`.dynamic`, `.bss.rel.ro` at M2) |
+| 8 | RW | `.got.plt` (without `-z now`), `.data`, `.tm_clone_table`, writable `PROGBITS` orphans, `.bss`, writable `NOBITS` orphans | M1 |
 | 9 | none | non-allocated sections other than the four below, in `OutSecId` order (`.comment`, `.debug_*`, notes) | M1 |
 | 10 | none | `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab` | M1 |
 | 11 | none | section header table | M1 |
@@ -588,7 +588,11 @@ order of the output sections themselves is in §10.
     writable (rank 8), as in all three references. glibc applies
     IRELATIVE before it protects RELRO, but that ordering was not
     confirmed for static start-up, so mortar does not depend on it
-    (unverified, WP-024-spec §4).
+    by default (WP-024-spec §4). Under `-z now` it is RELRO (row 7), as
+    in lld (GNU ld folds the slots into `.got`, RELRO too): static glibc
+    applies IRELATIVE (`ARCH_SETUP_IREL` in `__libc_start_main`) before
+    `_dl_non_dynamic_init` protects RELRO, and
+    `z_now_puts_the_got_plt_in_relro` runs such a program (WP-027e).
   - `.preinit_array` comes before `.init_array`, as in GNU. lld puts it
     after; nothing depends on that.
   - `.tm_clone_table` is in RW because libgcc's `crtbegin` writes

@@ -54,7 +54,7 @@ pub use eh::{EhInfo, EhPlan, EhSource, EhValue, EhWho, MergeEh};
 pub use error::{Failed, PHASE, SynthError};
 pub use got::{GotPlan, SlotValues};
 pub use hdr::HdrPlan;
-pub use image::{Division, FillCx, SizeCx, SynthChunk};
+pub use image::{COMMENT, Comment, Division, FillCx, SizeCx, SynthChunk};
 pub use notes::{BuildIdPlan, PropertyPlan};
 pub use out::Window;
 pub use shstrtab::ShstrtabPlan;
