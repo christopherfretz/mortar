@@ -60,7 +60,7 @@ semantics (`spec/arch.md`).
 | a shared object among the inputs | `Refused{Feature, "shared objects as input"}` | M2 |
 | `-shared` | (already refused as an option, `spec/cli.md`) | M4 |
 | `-r` | `Refused{Feature, "relocatable output (-r)"}` (§11) | M4 |
-| `--version-script`, `--dynamic-list`, `--export-dynamic-symbol[-list]`, `-Bsymbolic*`, `--exclude-libs` | option refusals | M4 (`--export-dynamic`, `--dynamic-list` for executables: M2) |
+| `--version-script`, `--dynamic-list`, `--export-dynamic-symbol-list`, `-Bsymbolic*`, `--exclude-libs` | option refusals | M4 (`--export-dynamic` and `--export-dynamic-symbol` for executables: M2; the list files `--dynamic-list` and `--export-dynamic-symbol-list`: M4, `spec/dyn.md` §15 Q9, closed) |
 | `--wrap`, `--defsym`, `--start-lib`, `-y` | option refusals | M4 |
 | `.gnu.linkonce.*` sections | `Refused{Feature, ".gnu.linkonce sections"}` (§6.6) | an input that needs it |
 | a slim GCC LTO object (symbol `__gnu_lto_slim`) | `Refused{FileFormat, "GCC LTO object"}` (§10) | a later decision (`docs/ARCHITECTURE.md`, "Scope") |
@@ -233,7 +233,11 @@ M1 unless marked.
   definition (``TLS reference in mt.o mismatches non-TLS definition in
   d1.o``), and a TLS reference against a non-TLS reference when nothing
   defines the key (R7: ``x: TLS reference in mt.o mismatches non-TLS
-  reference in mn.o``, both weak undefined; lld and mold link). The rule
+  reference in mn.o``, both weak undefined; lld and mold link). [M2] The
+  same holds against a shared definition: a TLS class relocation against
+  a key whose `def` is a non-`STT_TLS` shared definition, or a non-TLS
+  class against an `STT_TLS` shared definition, is `tls-mismatch`
+  (`spec/dyn.md` D-16; unverified against the references). The rule
   is therefore: **a key whose live mentions (definitions, commons and
   references, in relocatable objects) are not all `STT_TLS` or all
   non-TLS is the error `tls-mismatch`**, naming the definition (or, with
@@ -294,9 +298,15 @@ Over the live mentions of a key, as unions (bitwise or):
   mention, or a root (§4.2) names the key;
 - `ref_strong`: some such reference is not weak (`STB_GLOBAL` undefined; a
   root is strong); `Undefined{weak}` is `!ref_strong`;
-- `ref_dynamic` (M2): some needed shared object has an undefined mention;
-- `defined_dynamic` (M2): some live shared object defines the key (used
-  for export, §9.6).
+- `ref_dynamic` (M2): some needed or used shared object (a member of N ∪ U
+  of `spec/dyn.md` D-11, D-12) has an undefined mention, strong or weak;
+- `defined_dynamic` (M2): some needed or used shared object defines the
+  key (used for export, §9.6).
+
+Objects outside N ∪ U (an as-needed object that is not needed and that
+no needed or used object leads to, a closure file nothing reaches) count
+for neither. Both columns are computed after the needed and used sets
+(D-11, then D-12), not during the closure (§12.1).
 
 An undefined mention with `STB_GNU_UNIQUE` binding is malformed
 (`malformed-input`).
@@ -312,8 +322,8 @@ What `spec/synth.md` writes, decided here:
 | `Common` | `STB_GLOBAL` `STT_OBJECT`, allocated by layout | as `Strong` |
 | `Weak` | `STB_WEAK` | as `.symtab` |
 | `Assign`, `Provide` | §8 | §8 |
-| `Shared` | not in `.symtab` unless referenced (then `STB_GLOBAL`, or `STB_WEAK` if `!ref_strong`, undefined) | undefined entry with the binding of the references (`STB_WEAK` iff `!ref_strong`), version needed (§9.3) |
-| `Undefined{weak}` with a live relocation | not checked (`resolve/weak-undef.test` records the three behaviors) | M2: `STB_WEAK` undefined entry in a dynamic link (§5.4) |
+| `Shared` | not in `.symtab` unless referenced (then `STB_GLOBAL`, or `STB_WEAK` if `!ref_strong`, undefined) | `spec/dyn.md` D-23: an undefined entry with the binding of the references (`STB_WEAK` iff `!ref_strong`), version needed (§9.3, D-27); a defined entry at the copy for each alias of a copy allocation (D-42); `SHN_UNDEF` with `st_value` the PLT entry for a canonical PLT (D-44) |
+| `Undefined{weak}` with a live relocation | not checked (`resolve/weak-undef.test` records the three behaviors) | M2: a `WeakDyn` key (`spec/dyn.md` D-25, §5.4) is an `STB_WEAK` `STT_NOTYPE` undefined entry (D-23); a `Weak0` key is absent |
 
 An undefined key that no live relocation uses is absent from both tables
 (all three, E15).
@@ -586,7 +596,12 @@ With the reference **after** both (E4, R11), the three disagree:
 
 A shared object's undefined mentions are edges like an object's (an
 archive member defining a symbol a shared object needs is extracted and
-exported: all three, E4).
+exported: all three, E4). Whether the references of an `--as-needed`
+shared object that ends up not needed extract archive members is
+`spec/dyn.md` §15 Q1, reopened and measured by WP-043 before its
+implementation; extraction is decided from facts available at load time,
+the same for needed and unneeded objects, and neededness is computed
+after `def` (`spec/dyn.md` D-11), so the rule is not circular.
 
 ### 4.5 Commons and archives
 
@@ -762,14 +777,14 @@ From the output kind and the options (`spec/cli.md` §3.9, §3.7):
 
 | situation | verdict |
 |---|---|
-| `Undefined{weak: true}` | resolves to zero; in a dynamic link (M2) it is exported as a weak undefined dynamic symbol where `spec/arch.md` says (a GOT entry or PLT) |
+| `Undefined{weak: true}` | resolves to zero; in a dynamic link (M2) the key is `WeakDyn` (a weak undefined dynamic symbol) or `Weak0` per key by `spec/dyn.md` D-25 |
 | `Undefined{weak: false}` in an executable | error, or warning under `--warn-unresolved-symbols` |
 | … under `--unresolved-symbols=ignore-all` or `=ignore-in-object-files` | nothing (the value is zero, as weak) |
 | … `--unresolved-symbols=ignore-in-shared-libs` | still the error for references from objects |
 | `--ignore-unresolved-symbol=SYM` | nothing for `SYM` (M1) |
 | `Undefined{weak: false}` in a shared object (M4) | nothing, unless `-z defs` / `--no-undefined`: then the error |
 | a hidden key (§3.5) not defined in an object or file 0, with a surviving reference | error, whatever the options above say (it cannot be satisfied at run time); weak hidden: zero |
-| undefined references **of shared objects** (M2) | an executable checks them by default (`--no-allow-shlib-undefined`; GNU ld and lld, E20; mold does not check, §16): a needed shared object's non-weak undefined mention of a key with `def = Undefined` is the error, unless `--allow-shlib-undefined` or the shared object has a `DT_NEEDED` that is not among the inputs (then its dependencies are unknown and it is not checked: lld's rule; not verified for GNU ld). These have no relocation in the link; resolution emits them (phase 30, unit = the shared object's `FileId`, seq = the `.dynsym` index) |
+| undefined references **of shared objects** (M2) | `spec/dyn.md` D-13 (GNU ld's rule, which replaces the exemption this row gave before): an executable checks them by default (`--no-allow-shlib-undefined`; GNU ld and lld, E20; mold does not check, §16); every strong undefined mention of every needed or used shared object (N ∪ U) is judged, and is satisfied by a non-hidden program definition or a visible definition of a member of N ∪ U at the version it requires; otherwise it is the error, unless `--allow-shlib-undefined`. A shared object whose `DT_NEEDED` library is not found is **not** exempt: the references only that library would satisfy are undefined (GNU ld; lld exempts such an object). These have no relocation in the link; resolution emits them (phase 30, unit = the shared object's `FileId`, seq = the `.dynsym` index) |
 
 `--warn-unresolved-symbols` makes the error a warning; `--error-unresolved-
 symbols` undoes it; the last one wins.
@@ -819,10 +834,13 @@ sections.
 
 ### 5.4 Weak undefined values
 
-Zero in a static executable, with no dynamic symbol. In a PIE or a dynamic
-link (M2): `spec/arch.md` (GOT entry relocated against a weak undefined
-dynamic symbol, or zero when `-z nodynamic-undefined-weak` / static-pie).
-Resolution only records `Undefined{weak: true}` and `ref_dynamic`.
+Zero in a static executable or a static PIE, with no dynamic symbol. In
+a dynamic `Exec` or `Pie` (M2): each key is `WeakDyn` or `Weak0` by
+`spec/dyn.md` D-25, decided per key from the classes of its uses
+(`spec/arch.md` §2.1, §3.12); a `Pie` key with an unfillable use is
+refused, `weak-undefined-pc-in-pie`. `-z [no]dynamic-undefined-weak` is
+refused by name at M2 (`spec/cli.md`). Resolution only records
+`Undefined{weak: true}` and `ref_dynamic`.
 
 ### 5.5 The entry symbol
 
@@ -1198,7 +1216,9 @@ foo@V``; not verified here).
 
 ### 9.5 `--as-needed` and `DT_NEEDED`
 
-A shared object is **needed** when it is not under `--as-needed`, or when
+The normative rule is `spec/dyn.md` D-11 (the needed set N), D-12 (the
+used set U, closure files) and D-19a (the order of `DT_NEEDED`); this
+section is its summary. A shared object is **needed** when it is not under `--as-needed`, or when
 some definition of it is `def` of a key that has a **strong reference from
 a live relocatable object** (`ref_strong` from objects), or from another
 needed shared object that does not itself list it in `DT_NEEDED` (GNU ld's
@@ -1213,10 +1233,11 @@ Unlike GNU ld, the position of an as-needed library relative to the
 reference does not matter (§4.4: GNU drops `--as-needed libs.so m.o`;
 lld and mold keep it; mortar keeps it).
 
-`--copy-dt-needed-entries` (`--add-needed`): refused (M4); without it, a
+`--copy-dt-needed-entries` (`--add-needed`): refused by name
+(`spec/dyn.md` D-15; only GNU ld accepts it); without it, a
 symbol defined only by a shared object's own `DT_NEEDED` dependency that is
-not on the command line is undefined (the default of GNU ld since 2.22,
-and lld's, mold's; not verified here).
+not on the command line is undefined, with the note `defined in <c>,
+which is not on the command line` (`spec/dyn.md` D-12, E-shlib 2.10a).
 
 `--no-allow-shlib-undefined`: §5.2.
 
@@ -1226,12 +1247,15 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
 
 - **Exported from an executable**: a key defined by a live object (or file
   0) with default or protected visibility, when `--export-dynamic`; or it
-  is referenced by a live shared object (`ref_dynamic`); or it is defined
-  by a live shared object too (`defined_dynamic`: the executable's
-  definition interposes; all three export `x` defined weak in the
-  executable and defined by `libso.so`, E12); or it matches
-  `--export-dynamic-symbol`, `--dynamic-list`. Hidden keys never
-  (§3.5).
+  is referenced by a needed or used shared object (`ref_dynamic`, §3.6);
+  or it is defined by a needed or used shared object too
+  (`defined_dynamic`: the executable's definition interposes; all three
+  export `x` defined weak in the executable and defined by `libso.so`,
+  E12); or it matches `--export-dynamic-symbol` (M2), `--dynamic-list`
+  (M4). Hidden keys never (§3.5). A **linker-defined key of file 0**
+  (§8: `__bss_start`, `_edata`, `_end`, …) is exported only when
+  `ref_dynamic`, never by `--export-dynamic` or a glob alone
+  (`spec/dyn.md` D-21 item 2; lld and mold; GNU ld exports them).
 - **Exported from a shared object** (M4): every defined key of default or
   protected visibility not made local by a version script (§9.7), by
   `--exclude-libs` (defined by a member of a named archive, or every
@@ -1253,7 +1277,9 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
   since shared objects load at page-aligned bases; `st_value` 0: the
   section's alignment; GNU ld uses the section's alignment, E17, which
   over-aligns; both are valid); whether it is **read-only**: the defining
-  address lies in a `PT_LOAD` without `PF_W` (all three then put the copy
+  address lies in a `PT_LOAD` without `PF_W` or inside the shared
+  object's `PT_GNU_RELRO` (`spec/dyn.md` D-42: libstdc++'s typeinfo and
+  vtables in `.data.rel.ro`) (all three then put the copy
   in RELRO: GNU ld `.data.rel.ro`, lld `.bss.rel.ro`, mold
   `.copyrel.rel.ro`, E17); and its size `st_size`. A copy relocation
   against an `STV_PROTECTED` definition is an error of the scan (not
@@ -1381,8 +1407,9 @@ names. The rows of §3 are unchanged.
 | `clash` | after `def`: each `Strong` mention that is not `def` and not part of an all-absolute equal-value set ORs a flag; the diagnostic lists the mentions by an ordered collection (`spec/model.md` §6.3) | `≺` |
 | visibility | atomic minimum over the constraint order (§3.5) | `INTERNAL < HIDDEN < PROTECTED < DEFAULT` |
 | TLS agreement | atomic or of two bits (a TLS mention, a non-TLS mention) per key | — |
-| `ref_*`, `defined_dynamic` | atomic or | — |
-| `needed` (M2) | reachability as `file_live`, over shared objects | — |
+| `ref_regular`, `ref_strong` | atomic or | — |
+| `needed`, `used` (M2) | `spec/dyn.md` D-11's monotone iteration from N0 (at most \|C\| rounds), after `def`; then U = reach(N) \\ N (D-12) once | `FileId`; `DT_NEEDED` in D-19a order |
+| `ref_dynamic`, `defined_dynamic` (M2) | atomic or over the mentions of members of N ∪ U, after `needed` and `used` | — |
 | `comdat` | atomic minimum of `FileId` per `ComdatId` over live files | `FileId` |
 | `section_base` | exclusive prefix sum in `FileId` order | — |
 | `sections` | per file, disjoint slices (`spec/model.md` §6.1) | — |
