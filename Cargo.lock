@@ -71,9 +71,29 @@ name = "mortar_diag"
 version = "0.0.0"
 
 [[package]]
+name = "mortar_digest"
+version = "0.0.0"
+dependencies = [
+ "mortar_testutil",
+]
+
+[[package]]
 name = "mortar_elf"
 version = "0.0.0"
 dependencies = [
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_image"
+version = "0.0.0"
+dependencies = [
+ "mortar_arch",
+ "mortar_core",
+ "mortar_diag",
+ "mortar_digest",
+ "mortar_elf",
+ "mortar_synth",
  "mortar_testutil",
 ]
 
@@ -93,7 +113,18 @@ dependencies = [
 name = "mortar_layout"
 version = "0.0.0"
 dependencies = [
+ "mortar_a64",
  "mortar_arch",
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_live"
+version = "0.0.0"
+dependencies = [
  "mortar_core",
  "mortar_diag",
  "mortar_elf",
@@ -104,6 +135,7 @@ dependencies = [
 name = "mortar_merge"
 version = "0.0.0"
 dependencies = [
+ "mortar_a64",
  "mortar_arch",
  "mortar_core",
  "mortar_diag",
@@ -124,6 +156,17 @@ dependencies = [
 name = "mortar_resolve"
 version = "0.0.0"
 dependencies = [
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_scan"
+version = "0.0.0"
+dependencies = [
+ "mortar_arch",
  "mortar_core",
  "mortar_diag",
  "mortar_elf",

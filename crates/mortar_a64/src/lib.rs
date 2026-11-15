@@ -23,8 +23,9 @@ use mortar_arch::shapes::EH_ENCODINGS;
 use mortar_arch::{
     Arch, Branch, Code, DemandClass, DynRole, EhEncodings, Erratum, ErratumSite, Facts, Field,
     FieldError, GotBase, GotShape, Howto, OutputCx, OutputKind, PatchCx, PltChunk, PltPart,
-    PltShape, PltVariant, PropMerge, Reach, RefName, Refusal, RelForm, RelocAt, Site, SlotKind,
-    Status, SymNames, SynthCx, ThunkShape, TlsAbi, TlsVariant, UnitWindow, Unproved, Weak0Rule,
+    PltShape, PltVariant, PropMerge, Reach, Records, RefName, Refusal, RelForm, RelocAt, Site,
+    SlotKind, Status, SymNames, SynthCx, ThunkShape, TlsAbi, TlsVariant, UnitWindow, Unproved,
+    Weak0Rule, Window, max_window,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
@@ -77,6 +78,35 @@ pub static FACTS: Facts = Facts {
     got_base: GotBase::GotStart,
     got_header: 1,
     got_plt_reserved: 3,
+    max_reach: MAX_REACH,
+    code_fill: &[0; 4],
+    code_nop: &synth::NOP.to_le_bytes(),
+    seq_leads: &relax::SEQ_LEADS,
+};
+
+/// The largest type number [`MAX_REACH`] visits: every row of §6.1 and
+/// §6.2 is below it (`tests/a64.rs` checks `classify` over `0..=0xFFFF`).
+pub const MAX_TYPE: u32 = 0x800;
+
+/// `Facts.max_reach` (arch.md §3.1, `spec/image.md` I-111): the maximum
+/// over every `Howto` window of the table and every member window of the
+/// recognized forms ([`relax::MEMBER_WINDOWS`]). `(0, 4)`: the markers'
+/// word and R4's `CALL26`.
+pub const MAX_REACH: Window = {
+    let mut w = Window { before: 0, after: 0 };
+    let mut t = 0;
+    while t <= MAX_TYPE {
+        if let Some(h) = table::howto(t) {
+            w = max_window(w, h.window);
+        }
+        t += 1;
+    }
+    let mut k = 0;
+    while k < relax::MEMBER_WINDOWS.len() {
+        w = max_window(w, relax::MEMBER_WINDOWS[k]);
+        k += 1;
+    }
+    w
 };
 
 /// The TLS ABI (§12): variant I, a 16-byte TCB.
@@ -112,9 +142,9 @@ static THUNK: ThunkShape = ThunkShape { size: 12, align: 4 };
 
 /// `GNU_PROPERTY_AARCH64_FEATURE_1_AND` and its BTI bit (§13.3).
 pub const FEATURE_1_AND: u32 = 0xc000_0000;
-/// `GNU_PROPERTY_AARCH64_FEATURE_PAUTH` (`spec/synth.md` S-95).
-pub const FEATURE_PAUTH: u32 = 0xc000_0001;
 pub const FEATURE_1_BTI: u32 = 1;
+/// `GNU_PROPERTY_AARCH64_FEATURE_PAUTH` (§13.3; `spec/synth.md` S-95).
+pub const FEATURE_PAUTH: u32 = 0xc000_0001;
 
 /// The refusal name of a type: its `R_AARCH64_*` name, or its number in
 /// hex when it has none (diag.md §4.2).
@@ -189,7 +219,8 @@ impl Arch for A64 {
         {
             w.unit = lead;
             if at.r_type == relax::CALL26 {
-                (w.start, w.end) = (o + 8, o + 16);
+                let after = u64::from(relax::MEMBER_WINDOWS[0].after);
+                (w.start, w.end) = (o + 8, o + 12 + after);
             }
         }
         Some(w)
@@ -198,6 +229,11 @@ impl Arch for A64 {
     /// R4's `CALL26` in an exec output (§8.4).
     fn consumed(&self, output: OutputKind, at: &RelocAt<'_>, names: &dyn SymNames) -> bool {
         output.is_exec() && at.r_type == relax::CALL26 && relax::gd_lead(at, names).is_some()
+    }
+
+    /// R4's three records and R5's two (§8.4, §8.5), by type alone.
+    fn sequence_extent(&self, records: &dyn Records, i: u32) -> u32 {
+        relax::sequence_extent(records, i)
     }
 
     fn got(&self) -> &'static GotShape {
@@ -314,6 +350,15 @@ impl Arch for A64 {
         }
     }
 
+    /// The 843419 patch: `W4'`, then `b F + 4`, 8 bytes aligned to 4
+    /// (§11.2).
+    fn patch(&self, e: Erratum) -> Option<&'static ThunkShape> {
+        match e {
+            Erratum::E843419 => Some(&erratum::PATCH),
+            _ => None,
+        }
+    }
+
     /// The patch at `cx.addr` for the final word at `cx.target`, holding
     /// `cx.word` (`W4'`), then `b F + 4` (§11.2).
     fn write_patch(&self, e: Erratum, cx: &PatchCx, out: &mut [u8]) -> Result<(), FieldError> {
@@ -347,10 +392,6 @@ impl Arch for A64 {
         })
     }
 
-    fn tombstone(&self, section_name: &[u8]) -> u64 {
-        mortar_arch::tombstone(section_name)
-    }
-
     /// §7, by class and field: `AW`, `AN`, `LO` (and `GT`, whose slot holds
     /// 0) take `S = 0`; `PC` and the data `PLT32` take `S = P`; the branch
     /// instructions `X = 4`. TLS classes are refused at scan.
@@ -358,8 +399,8 @@ impl Arch for A64 {
         weak0_rule(h)
     }
 
-    /// `FEATURE_1_AND` (BTI, PAC, GCS) is `And`; `FEATURE_PAUTH` is
-    /// `EqualOrAbsent` (arch.md §3.13, `spec/synth.md` S-95).
+    /// §13.3: `FEATURE_1_AND` (BTI, PAC, GCS) is `And`; `FEATURE_PAUTH`
+    /// `EqualOrAbsent`; every other processor-range type is unknown.
     fn property_merge(&self, pr_type: u32) -> Option<PropMerge> {
         match pr_type {
             FEATURE_1_AND => Some(PropMerge::And),

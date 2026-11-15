@@ -1,0 +1,17 @@
+[package]
+name = "mortar_digest"
+description = "Hash functions written from scratch and the build-id tree."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+mortar_testutil.workspace = true
+
+[lints]
+workspace = true

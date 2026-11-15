@@ -346,6 +346,27 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push('\'');
             return shown.then_some(name);
         }
+        Kind::ExecutableStack { file } => {
+            escaped(file, out);
+            out.push_str(
+                ": requires executable stack (because the .note.GNU-stack section is executable)",
+            );
+        }
+        Kind::OutputTooLarge { what, limit } => {
+            out.push_str("output too large: ");
+            escaped(what, out);
+            out.push_str(" exceeds ");
+            escaped(limit, out);
+        }
+        Kind::SectionConflict { name, first, second } => {
+            out.push_str("section ");
+            escaped(name, out);
+            out.push_str(": ");
+            escaped(first, out);
+            out.push_str(" and ");
+            escaped(second, out);
+            out.push_str(" inputs cannot be combined");
+        }
         Kind::Refused { class, name, not_recognized } => {
             out.push_str("unsupported ");
             out.push_str(class.noun());

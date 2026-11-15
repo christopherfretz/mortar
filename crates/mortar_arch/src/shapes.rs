@@ -3,7 +3,7 @@
 
 use mortar_elf::{Class, Machine};
 
-use crate::vocab::{SlotKind, align_up};
+use crate::vocab::{SlotKind, Window, align_up};
 
 /// The relocation section type an architecture accepts (§3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,8 +43,35 @@ pub struct Facts {
     pub got_base: GotBase,
     /// Words reserved at the start of `.got` with `.dynamic`.
     pub got_header: u8,
-    /// Words reserved at the start of `.got.plt` with `.dynamic`.
+    /// Words reserved at the start of `.got.plt`: with `.dynamic` on every
+    /// target; also in static outputs on x86 (`spec/synth.md` S-67).
     pub got_plt_reserved: u8,
+    /// The largest `before` and `after` of any write window of the
+    /// architecture, over every `Howto` window (§3.2) and every member
+    /// window of a recognized form (`unit_window`, §3.5). Computed from
+    /// those tables ([`max_window`]), never written by hand
+    /// (`spec/image.md` I-111).
+    pub max_reach: Window,
+    /// The trap pattern code padding is filled with, positioned by address
+    /// modulo its length (`spec/layout.md` L-82): AArch64 four zero bytes
+    /// (`UDF #0`), x86 `0xCC`.
+    pub code_fill: &'static [u8],
+    /// The no-op that pads between the inputs of `.init` and `.fini`
+    /// (L-82): AArch64 `NOP` (`0xd503201f`, little-endian), x86 `0x90`.
+    pub code_nop: &'static [u8],
+    /// The lead types of the sequences an architecture recognizes only
+    /// when `RelocAt.leads` is set (§3.5): AArch64 R4's
+    /// `TLSGD_ADR_PAGE21`.
+    pub seq_leads: &'static [u32],
+}
+
+/// The larger `before` and the larger `after` of two windows.
+#[must_use]
+pub const fn max_window(a: Window, b: Window) -> Window {
+    Window {
+        before: if a.before > b.before { a.before } else { b.before },
+        after: if a.after > b.after { a.after } else { b.after },
+    }
 }
 
 /// The size of each slot kind, in words (§3.7).
@@ -243,18 +270,18 @@ pub enum Weak0Rule {
     XConst(i64),
 }
 
-/// How a GNU property of the processor range merges over the inputs
-/// (§3.13; `spec/synth.md` S-95 applies it).
+/// How a processor-range GNU property (`0xc0000000..0xdfffffff`) merges
+/// over the inputs (§3.13; `spec/synth.md` S-95).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PropMerge {
-    /// An input without the property counts as 0; bitwise and; the
-    /// property is omitted when the result is 0.
+    /// The AND of every input's value, an input without it counting 0;
+    /// omitted when 0.
     And,
     /// The OR of the inputs that have it; present if any has it.
     Or,
     /// The OR of the inputs; present only if every input has it.
     OrAll,
-    /// Copied when every input that has it has the same bytes; two inputs
-    /// that disagree are refused (AArch64 `FEATURE_PAUTH`).
+    /// Copied when every input that has it has the same bytes (inputs
+    /// without it do not count); refused when two disagree.
     EqualOrAbsent,
 }
