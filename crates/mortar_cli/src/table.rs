@@ -491,6 +491,12 @@ pub enum Lands {
     AllowMultipleDefinition(bool),
     /// `diagnostics.noinhibit_exec`.
     NoinhibitExec,
+    /// `dynamic.allow_shlib_undefined`.
+    AllowShlibUndefined(bool),
+    /// `diagnostics.warn_backrefs`.
+    WarnBackrefs(bool),
+    /// `diagnostics.warn_common`.
+    WarnCommon(bool),
     /// `bookkeeping.map`.
     Map,
     /// `bookkeeping.print_map`.
@@ -597,6 +603,9 @@ impl Lands {
             Self::WarnUnresolved(_) => "diagnostics.warn_unresolved_symbols",
             Self::AllowMultipleDefinition(_) => "diagnostics.allow_multiple_definition",
             Self::NoinhibitExec => "diagnostics.noinhibit_exec",
+            Self::AllowShlibUndefined(_) => "dynamic.allow_shlib_undefined",
+            Self::WarnBackrefs(_) => "diagnostics.warn_backrefs",
+            Self::WarnCommon(_) => "diagnostics.warn_common",
             Self::Map => "bookkeeping.map",
             Self::PrintMap => "bookkeeping.print_map",
             Self::Cref => "bookkeeping.cref",

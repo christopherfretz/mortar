@@ -169,6 +169,10 @@ pub trait Arch: Sync + 'static {
     fn scan(&self, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>); // §3.4
     fn apply(&self, cx: &FillCx<'_>, at: &RelocAt<'_>, out: &mut SectionOut<'_>)
         -> Result<(), FieldError>;                                           // §3.6
+    fn unit_window(&self, output: OutputKind, at: &RelocAt<'_>, names: &dyn SymNames)
+        -> Option<UnitWindow>;                          // §3.4 Overlap, §3.5; default: field window
+    fn consumed(&self, output: OutputKind, at: &RelocAt<'_>, names: &dyn SymNames)
+        -> bool;                                        // §3.4, §6 step 1; default: false
 
     fn got(&self) -> &'static GotShape;                                      // §3.7
     fn plt(&self, v: PltVariant) -> &'static PltShape;
@@ -180,8 +184,10 @@ pub trait Arch: Sync + 'static {
     fn write_thunk(&self, cx: &PatchCx<'_>, out: &mut [u8]) -> Result<(), FieldError>;
     fn thunk_target_ok(&self, cx: &PatchCx<'_>) -> Result<(), Refusal>;
     fn errata(&self) -> &'static [Erratum];                                  // §3.7
-    fn erratum_sites(&self, e: Erratum, code: &[u8], addr: u64, out: &mut Vec<u32>);
+    fn erratum_sites(&self, e: Erratum, code: &Code<'_>, out: &mut Vec<ErratumSite>)
+        -> Result<(), Unproved>;
     fn erratum_in_place(&self, e: Erratum, cx: &PatchCx<'_>) -> bool;
+    fn patch_reach(&self, e: Erratum) -> Reach;                              // §3.7, §6 step 1
     fn write_patch(&self, e: Erratum, cx: &PatchCx<'_>, out: &mut [u8]) -> Result<(), FieldError>;
 
     fn tls(&self) -> &'static TlsAbi;                                        // §3.8
@@ -193,8 +199,8 @@ pub trait Arch: Sync + 'static {
 }
 ```
 
-All methods are pure: no interior mutability, no I/O, no allocation
-except into the `out` vectors given. `Site`, `RelocAt` and the contexts
+`fn e_flags` (§3.1) is also a method. All methods are pure: no interior
+mutability, no I/O, no allocation except into the `out` vectors given. `Site`, `RelocAt` and the contexts
 are read-only views; their contents are listed where they are used.
 
 ### 3.1 Facts
@@ -285,11 +291,18 @@ pub struct RelocAt<'a> {
     pub howto: &'a Howto,
     pub site: Site<'a>,
     pub records: &'a dyn Records,          // the same relocation section, §3.5
+    pub proof: &'a [ProofRun],             // the instruction proof of the section, §3.6 rule 1
 }
-pub struct ScanCx<'a> { /* Inputs, Resolution, Liveness, OutputKind, options;
-                           target_kind(SymKey); symbol type and st_other */ }
-pub struct DemandSink<'a> { /* raise(SymKey, DemandFlags); raise_global(GlobalFlags);
-                               count(DynRole, n) for this section; error(Key, Diagnostic) */ }
+impl RelocAt<'_> { pub fn is_insn(&self, off: u64) -> bool; } // a proved instruction word
+pub trait SymNames: Sync { fn name(&self, key: SymKey) -> &[u8]; } // a sequence's callee (a64.md §8.4)
+pub trait ScanTables: SymNames { fn sym(&self, key: SymKey) -> SymFacts; }
+pub trait FillTables: SymNames { /* sym, slot, plt, flags, redirect */ }
+pub struct ScanCx<'a> { /* tables: &dyn ScanTables (Inputs, Resolution, Liveness):
+                           target kind, symbol type, st_other, STT_TLS; OutputKind; PlaceFacts */ }
+pub struct DemandSink<'a> { /* over a `dyn DemandOut`, which has the same methods:
+                               raise(SymKey, DemandFlags); raise_global(GlobalFlags);
+                               count(DynRole, n) for this section; error(record, ScanError);
+                               undefined(SymKey, record): a reference event */ }
 ```
 
 - **Contract**: given one live relocation, raise the demands the forms
@@ -326,16 +339,26 @@ pub struct DemandSink<'a> { /* raise(SymKey, DemandFlags); raise_global(GlobalFl
     objects), and `spec/resolve.md` has not made it a dynamic undefined.
     A dynamic undefined is a `Shlib` target, under `--unresolved-symbols`
     or `-z undefs`, the default for `Shared`.
-  - **What is reported.** For every live relocation against an
-    `Undefined` target that still needs its symbol, scan reports
-    `undefined-symbol` once. The message contains GNU ld's phrase
-    `undefined reference to '<name>'`, and gives the place
-    `file:(section+0xoff)`.
-  - **The key** is `(70, FileId, section index × 2^32 + record index)`.
-    This is model §8's scan key: it names the place's `SectionId`
-    (`FileId`, section index), and the record index orders the places
-    within it. The record index stands in for the offset because two
-    records can share one offset.
+  - **What is reported.** Scan does not emit the diagnostic itself.
+    For every live relocation against an `Undefined` target that still
+    needs its symbol, it reports one event through the sink,
+    `undefined(SymKey, record index)`; the file and section are those of
+    the section being scanned, as for `error`. The scan driver
+    (`spec/image.md`) merges the events of all files into **one**
+    `undefined-symbol` diagnostic per `SymKey` (`spec/resolve.md` §11,
+    diag.md §3: ``undefined symbol: {name} (undefined reference to
+    `{name}')``, with up to three `>>> referenced by` contexts).
+  - **The key** of that diagnostic is `(70, FileId, section index × 2^32
+    + record index)` of the key's **first** surviving reference in
+    `(FileId, section index, record index)` order: model §8's scan key.
+    It names the place's `SectionId` (`FileId`, section index), and the
+    record index orders the places within it. The record index stands in
+    for the offset because two records can share one offset. The result
+    is independent of scheduling, because the first reference is chosen
+    by that order after all events are in.
+  - `comdat-mismatch` and `discarded-section-reference` (`spec/resolve.md`
+    §6.3) have the same shape: per-reference events, one diagnostic per
+    key, keyed by the first reference.
   - **Relocations consumed by a sequence make no reference.** A relocation
     consumed by a matched sequence (§3.5) does not need its symbol: the
     x86 GD→LE/IE and LD→LE call (Appendix A.3, A.4, B.5), and AArch64
@@ -382,6 +405,14 @@ pub trait Records { fn len(&self) -> u32; fn get(&self, i: u32) -> Option<Reloc>
   the lead it finds by looking back a fixed distance; all members
   therefore agree, in scan and in fill, in any order.
 - A member whose pattern does not hold is an ordinary relocation.
+- `unit_window` gives each relocation the window of the unit it belongs
+  to for §3.4's overlap check: by default its field window, with its own
+  record index as the unit; a member of a matched sequence has the
+  window of the words it owns (a64.md §8.4: the `CALL26` owns
+  `[o+8, o+16)`) and the lead's index as the unit. `consumed` says that
+  a member makes no reference, raises no demand and is not a branch
+  site (a64.md §8.4's `CALL26`). Both are functions of the output kind,
+  the record, its section and `SymNames` only (a kind-1 rule).
 - The look-back is bounded by the architecture (AArch64: 2; x86-64 and
   i386: 1), so `scan` and `fill` stay linear.
 - Because the pattern is input-only, a demand it removes (the follower's
@@ -471,10 +502,15 @@ pub enum Erratum { A53_843419 }
   refuses a target the thunk cannot reach correctly (AArch64 BTI landing
   pads, a64.md §9).
 - **Errata**: `errata()` lists the errata the options enable.
-  `erratum_sites` reports the sites (by their final word) in the words of
-  one whole output code section, in address order across input-section
-  and chunk boundaries, given its address and the instruction/data
-  ranges (a64.md §11.1); `erratum_in_place` says
+  `erratum_sites` reports the sites (`ErratumSite { q, f }`: the
+  addresses of `W1` and of the final word) in the words of one whole
+  output code section (`Code { bytes, addr, proof }`), in address order
+  across input-section and chunk boundaries, given its address and the
+  instruction/data ranges (a64.md §11.1), or the first candidate that is
+  neither proved code nor safely skipped (`Unproved`, a64.md §11.1
+  condition 5), which the caller refuses; `patch_reach` is the reach of
+  each of the two branches between a site's final word and its patch
+  (AArch64: `s(28)` each, so the window of a64.md §11.2); `erratum_in_place` says
   whether a site is fixed without a patch at these addresses (AArch64:
   ADRP → ADR); `write_patch` writes a patch.
 
@@ -753,15 +789,19 @@ no size, so they do not enter.
 2. If there are no needs, stop: the layout is the fixed point.
 3. **Add.** Visit the needs in output-address order, with ties broken by
    `(FileId, section index, record index)`. Every reach in this step is
-   judged at `A_k` as well, including the reach of patches added earlier
-   in the same step. A judgement that the round's own insertions make
-   wrong is caught by round `k + 1`. This is what makes the step a
-   function of `A_k` and the needs, independent of insertion effects
-   inside the step.
-   - A thunk need is redirected to the existing thunk of its key that is
-     in reach of `P` and has the lowest address, if there is one. Else
-     it goes to a new thunk in an island the policy chooses within reach
-     of `P`.
+   judged at `A_k` as well. A patch created in round `k` has no address
+   at `A_k`: its reach is judged from round `k + 1` on, where it exists,
+   and if it is out of reach there that is a need like any other. A
+   judgement that the round's own insertions make wrong is caught by
+   round `k + 1`. This is what makes the step a function of `A_k` and
+   the needs, independent of insertion effects inside the step.
+   - A thunk need is redirected to the thunk of its key that existed at
+     `A_k`, is in reach of `P` and has the lowest address, if there is
+     one. Else it goes to a thunk of its key in the island the policy
+     chooses within reach of `P` (judged at `A_k`, by the island's
+     position): the one created earlier in this step if that island
+     already has one (condition (C) allows one per key per island), else
+     a new one.
    - An erratum need gets a new patch within range of its final word.
    - If no island within reach can be placed, that is §7's error.
 4. Recompute the addresses (`A_{k+1}`) from the new patch set, and start

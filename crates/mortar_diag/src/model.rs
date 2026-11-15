@@ -220,14 +220,46 @@ pub enum Kind {
     UnknownOption { option: String },
 
     // -- files ----------------------------------------------------------
+    /// `ambiguous-sysroot-path`: a `=` (or `$SYSROOT`) path with a relative
+    /// rest while a sysroot is set, which GNU ld and lld read differently
+    /// (`spec/input.md` §4.3). `spelling` is the path as written.
+    AmbiguousSysrootPath { spelling: String },
     /// `cannot-open-file`: an input could not be opened or its bytes could
     /// not be read. `reason` is the system's ([`crate::os_reason`]).
     CannotOpenFile { path: String, reason: String },
     /// `cannot-open-output`: the output file could not be created.
     CannotOpenOutput { path: String, reason: String },
+    /// `duplicate-soname`: a shared object whose `DT_SONAME` is already
+    /// loaded from other bytes; this one is not used (`spec/input.md` §8.3).
+    DuplicateSoname { soname: String },
+    /// `ignored-member`: an archive member that is not a relocatable
+    /// object. `what` says what it is (`spec/input.md` §7.2).
+    IgnoredMember { what: String },
+    /// `incompatible-file`: an ELF file of another target than the link's
+    /// (`spec/input.md` §3.3). Both are target names (`aarch64`, `x86_64`).
+    IncompatibleFile { expected: String, found: String },
+    /// `input-changed`: a file changed while it was read
+    /// (`spec/input.md` §11.5).
+    InputChanged,
     /// `library-not-found`: no file for `-l<name>` on the search path.
     /// `name` is the text after `-l`.
     LibraryNotFound { name: String },
+    /// `needed-not-found`: the `DT_NEEDED` entry `name` of the shared
+    /// object `needed_by` was not found (`spec/input.md` §8.6).
+    NeededNotFound { name: String, needed_by: String },
+    /// `no-target`: neither `-m` nor any ELF input decides the target
+    /// (`spec/input.md` §3.1).
+    NoTarget,
+    /// `script-cycle`: a linker script names itself, directly or through
+    /// other scripts (`spec/input.md` §5.3).
+    ScriptCycle,
+    /// `skipped-incompatible`: a candidate of a search is of another
+    /// target and the search goes on (`spec/input.md` §4.4). `search` is
+    /// what was searched for: `-lname`, or the name as written.
+    SkippedIncompatible { path: String, search: String },
+    /// `static-link-of-shared-object`: a shared object in a static link
+    /// (`spec/input.md` §8.4).
+    StaticLinkOfSharedObject { path: String },
 
     // -- file formats ---------------------------------------------------
     /// `malformed-input`: a reader rejected the bytes of a file. `what` is
@@ -237,14 +269,61 @@ pub enum Kind {
     UnknownFileType,
 
     // -- symbols --------------------------------------------------------
+    /// `archive-backref`: under `--warn-backrefs`, GNU ld's walk would
+    /// leave the key undefined (`spec/resolve.md` §4.6).
+    ArchiveBackref { name: String },
+    /// `archive-choice`: under `--warn-backrefs`, GNU ld's walk would
+    /// define the key from another file (`spec/resolve.md` §4.6).
+    ArchiveChoice { name: String },
+    /// `comdat-mismatch`: a reference to a symbol that only a discarded
+    /// copy of the COMDAT group `signature` defines (`spec/resolve.md`
+    /// §6.3).
+    ComdatMismatch { name: String, signature: String },
+    /// `common-alignment`: a definition less aligned than the common
+    /// symbols of its key (`spec/resolve.md` §3.3).
+    CommonAlignment { name: String },
+    /// `common-larger-than-definition`: a common symbol larger than the
+    /// definition that wins (`spec/resolve.md` §3.3).
+    CommonLargerThanDefinition { name: String },
+    /// `common-overridden`: under `--warn-common`, a definition overrides
+    /// a common symbol (`spec/resolve.md` §3.3).
+    CommonOverridden { name: String },
+    /// `discarded-section-reference`: a relocation refers to a symbol of
+    /// a section of a discarded COMDAT copy (`spec/resolve.md` §6.3).
+    DiscardedSectionReference { name: String },
     /// `duplicate-symbol`: two definitions that may not coexist. `name` is
     /// the name as the symbol table has it (mangled).
     DuplicateSymbol { name: String },
-    /// `undefined-symbol`: a reference nothing defines, one diagnostic per
-    /// reference, at the place of the reference (the relocation scan,
-    /// `spec/arch.md` §3.4). `name` is the name as the symbol table has it
-    /// (mangled).
+    /// `entry-not-found`: the entry symbol is not defined
+    /// (`spec/resolve.md` §5.5).
+    EntryNotFound { name: String },
+    /// `gnu-warning`: the text of a `.gnu.warning` section
+    /// (`spec/resolve.md` §10).
+    GnuWarning { text: String },
+    /// `linker-symbol-redefined`: an object defines a symbol the linker
+    /// defines and does not let a file override (`spec/resolve.md` §8.2).
+    LinkerSymbolRedefined { name: String },
+    /// `multiple-common`: under `--warn-common`, a second common symbol of
+    /// one key (`spec/resolve.md` §3.3).
+    MultipleCommon { name: String },
+    /// `non-exported-symbol`: a hidden key referenced by a shared object
+    /// (`spec/resolve.md` §3.5).
+    NonExportedSymbol { name: String },
+    /// `required-symbol`: a `--require-defined` symbol is not defined.
+    RequiredSymbol { name: String },
+    /// `tls-mismatch`: a TLS and a non-TLS mention of one key
+    /// (`spec/resolve.md` §3.4).
+    TlsMismatch { name: String },
+    /// `undefined-symbol`: a key with surviving references and no
+    /// definition, one diagnostic per key (`spec/resolve.md` §5.3).
+    /// `name` is the name as the symbol table has it (mangled).
     UndefinedSymbol { name: String },
+    /// `undefined-version`: `name@version` names a version no node defines
+    /// (`spec/resolve.md` §9.4).
+    UndefinedVersion { name: String, version: String },
+    /// `version-reassigned`: a version script assigns `name` to two
+    /// versions; `first` is kept (`spec/resolve.md` §9.7).
+    VersionReassigned { name: String, first: String, second: String },
 
     // -- relocations ----------------------------------------------------
     /// `relocation-incompatible`: the relocation `r_type` (its ABI name)
@@ -260,10 +339,27 @@ pub enum Kind {
     /// target as for [`Kind::RelocationIncompatible`].
     RelocationOutOfRange { r_type: String, value: i64, min: i64, max: i64, name: String },
 
+    // -- layout ---------------------------------------------------------
+    /// `executable-stack` (a warning, `spec/layout.md` L-84): `file` has a
+    /// `.note.GNU-stack` with `SHF_EXECINSTR`, so the stack is made
+    /// executable. GNU ld's words.
+    ExecutableStack { file: String },
+    /// `output-too-large` (`spec/layout.md` L-73): `what` (a chunk, the
+    /// file) ends beyond `limit`, the end of the class's address space.
+    OutputTooLarge { what: String, limit: String },
+    /// `section-conflict` (`spec/layout.md` L-47, L-49, L-61): two live
+    /// inputs of output section `name` cannot be combined; `first` and
+    /// `second` are class words (`TLS`, `non-TLS`, `allocated`,
+    /// `non-allocated`) or `SHT_` names.
+    SectionConflict { name: String, first: String, second: String },
+
     // -- refusals -------------------------------------------------------
     /// `refused`: a construct mortar does not implement, by name
     /// (`docs/ARCHITECTURE.md`, principle 1). Always an error.
-    Refused { class: RefusalClass, name: String },
+    /// `not_recognized` is set for a file format GNU ld does not
+    /// recognize either: the message then carries GNU ld's phrase
+    /// (`spec/diag.md` §8.3).
+    Refused { class: RefusalClass, name: String, not_recognized: bool },
 
     // -- internal -------------------------------------------------------
     /// `internal-error`: mortar found its own data in a state its
@@ -275,7 +371,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 19] = [
+    pub const IDS: [&'static str; 48] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -283,16 +379,45 @@ impl Kind {
         "response-file-limit",
         "unbalanced-option",
         "unknown-option",
+        "ambiguous-sysroot-path",
         "cannot-open-file",
         "cannot-open-output",
+        "duplicate-soname",
+        "ignored-member",
+        "incompatible-file",
+        "input-changed",
         "library-not-found",
+        "needed-not-found",
+        "no-target",
+        "script-cycle",
+        "skipped-incompatible",
+        "static-link-of-shared-object",
         "malformed-input",
         "unknown-file-type",
+        "archive-backref",
+        "archive-choice",
+        "comdat-mismatch",
+        "common-alignment",
+        "common-larger-than-definition",
+        "common-overridden",
+        "discarded-section-reference",
         "duplicate-symbol",
+        "entry-not-found",
+        "gnu-warning",
+        "linker-symbol-redefined",
+        "multiple-common",
+        "non-exported-symbol",
+        "required-symbol",
+        "tls-mismatch",
         "undefined-symbol",
+        "undefined-version",
+        "version-reassigned",
         "relocation-incompatible",
         "relocation-misaligned",
         "relocation-out-of-range",
+        "executable-stack",
+        "output-too-large",
+        "section-conflict",
         "refused",
         "internal-error",
     ];
@@ -309,16 +434,45 @@ impl Kind {
             Self::ResponseFileLimit { .. } => "response-file-limit",
             Self::UnbalancedOption { .. } => "unbalanced-option",
             Self::UnknownOption { .. } => "unknown-option",
+            Self::AmbiguousSysrootPath { .. } => "ambiguous-sysroot-path",
             Self::CannotOpenFile { .. } => "cannot-open-file",
             Self::CannotOpenOutput { .. } => "cannot-open-output",
+            Self::DuplicateSoname { .. } => "duplicate-soname",
+            Self::IgnoredMember { .. } => "ignored-member",
+            Self::IncompatibleFile { .. } => "incompatible-file",
+            Self::InputChanged => "input-changed",
             Self::LibraryNotFound { .. } => "library-not-found",
+            Self::NeededNotFound { .. } => "needed-not-found",
+            Self::NoTarget => "no-target",
+            Self::ScriptCycle => "script-cycle",
+            Self::SkippedIncompatible { .. } => "skipped-incompatible",
+            Self::StaticLinkOfSharedObject { .. } => "static-link-of-shared-object",
             Self::Malformed { .. } => "malformed-input",
             Self::UnknownFileType => "unknown-file-type",
+            Self::ArchiveBackref { .. } => "archive-backref",
+            Self::ArchiveChoice { .. } => "archive-choice",
+            Self::ComdatMismatch { .. } => "comdat-mismatch",
+            Self::CommonAlignment { .. } => "common-alignment",
+            Self::CommonLargerThanDefinition { .. } => "common-larger-than-definition",
+            Self::CommonOverridden { .. } => "common-overridden",
+            Self::DiscardedSectionReference { .. } => "discarded-section-reference",
             Self::DuplicateSymbol { .. } => "duplicate-symbol",
+            Self::EntryNotFound { .. } => "entry-not-found",
+            Self::GnuWarning { .. } => "gnu-warning",
+            Self::LinkerSymbolRedefined { .. } => "linker-symbol-redefined",
+            Self::MultipleCommon { .. } => "multiple-common",
+            Self::NonExportedSymbol { .. } => "non-exported-symbol",
+            Self::RequiredSymbol { .. } => "required-symbol",
+            Self::TlsMismatch { .. } => "tls-mismatch",
             Self::UndefinedSymbol { .. } => "undefined-symbol",
+            Self::UndefinedVersion { .. } => "undefined-version",
+            Self::VersionReassigned { .. } => "version-reassigned",
             Self::RelocationIncompatible { .. } => "relocation-incompatible",
             Self::RelocationMisaligned { .. } => "relocation-misaligned",
             Self::RelocationOutOfRange { .. } => "relocation-out-of-range",
+            Self::ExecutableStack { .. } => "executable-stack",
+            Self::OutputTooLarge { .. } => "output-too-large",
+            Self::SectionConflict { .. } => "section-conflict",
             Self::Refused { .. } => "refused",
             Self::InternalError { .. } => "internal-error",
         }
@@ -329,8 +483,23 @@ impl Kind {
     #[must_use]
     pub fn symbol(&self) -> Option<&str> {
         match self {
-            Self::DuplicateSymbol { name }
+            Self::ArchiveBackref { name }
+            | Self::ArchiveChoice { name }
+            | Self::ComdatMismatch { name, .. }
+            | Self::CommonAlignment { name }
+            | Self::CommonLargerThanDefinition { name }
+            | Self::CommonOverridden { name }
+            | Self::DiscardedSectionReference { name }
+            | Self::DuplicateSymbol { name }
+            | Self::EntryNotFound { name }
+            | Self::LinkerSymbolRedefined { name }
+            | Self::MultipleCommon { name }
+            | Self::NonExportedSymbol { name }
+            | Self::RequiredSymbol { name }
+            | Self::TlsMismatch { name }
             | Self::UndefinedSymbol { name }
+            | Self::UndefinedVersion { name, .. }
+            | Self::VersionReassigned { name, .. }
             | Self::RelocationIncompatible { name, .. }
             | Self::RelocationOutOfRange { name, .. } => Some(name),
             _ => None,
@@ -521,7 +690,19 @@ impl Diagnostic {
     /// number in hexadecimal when it has none (`0x999`).
     #[must_use]
     pub fn refused(class: RefusalClass, name: impl Into<String>) -> Self {
-        Self::error(Kind::Refused { class, name: name.into() })
+        Self::error(Kind::Refused { class, name: name.into(), not_recognized: false })
+    }
+
+    /// The refusal of a file format that GNU ld does not recognize either
+    /// (`spec/diag.md` §8.3): class `file-format`, and the message ends in
+    /// GNU ld's `file not recognized: file format not recognized`.
+    #[must_use]
+    pub fn refused_unrecognized_format(name: impl Into<String>) -> Self {
+        Self::error(Kind::Refused {
+            class: RefusalClass::FileFormat,
+            name: name.into(),
+            not_recognized: true,
+        })
     }
 
     /// Sets the place the head line starts with.
@@ -568,7 +749,7 @@ impl Diagnostic {
     #[must_use]
     pub fn refusal(&self) -> Option<(RefusalClass, &str)> {
         match &self.kind {
-            Kind::Refused { class, name } => Some((*class, name)),
+            Kind::Refused { class, name, .. } => Some((*class, name)),
             _ => None,
         }
     }
@@ -607,18 +788,47 @@ mod tests {
             Kind::ResponseFileLimit { .. } => 4,
             Kind::UnbalancedOption { .. } => 5,
             Kind::UnknownOption { .. } => 6,
-            Kind::CannotOpenFile { .. } => 7,
-            Kind::CannotOpenOutput { .. } => 8,
-            Kind::LibraryNotFound { .. } => 9,
-            Kind::Malformed { .. } => 10,
-            Kind::UnknownFileType => 11,
-            Kind::DuplicateSymbol { .. } => 12,
-            Kind::UndefinedSymbol { .. } => 13,
-            Kind::RelocationIncompatible { .. } => 14,
-            Kind::RelocationMisaligned { .. } => 15,
-            Kind::RelocationOutOfRange { .. } => 16,
-            Kind::Refused { .. } => 17,
-            Kind::InternalError { .. } => 18,
+            Kind::AmbiguousSysrootPath { .. } => 7,
+            Kind::CannotOpenFile { .. } => 8,
+            Kind::CannotOpenOutput { .. } => 9,
+            Kind::DuplicateSoname { .. } => 10,
+            Kind::IgnoredMember { .. } => 11,
+            Kind::IncompatibleFile { .. } => 12,
+            Kind::InputChanged => 13,
+            Kind::LibraryNotFound { .. } => 14,
+            Kind::NeededNotFound { .. } => 15,
+            Kind::NoTarget => 16,
+            Kind::ScriptCycle => 17,
+            Kind::SkippedIncompatible { .. } => 18,
+            Kind::StaticLinkOfSharedObject { .. } => 19,
+            Kind::Malformed { .. } => 20,
+            Kind::UnknownFileType => 21,
+            Kind::ArchiveBackref { .. } => 22,
+            Kind::ArchiveChoice { .. } => 23,
+            Kind::ComdatMismatch { .. } => 24,
+            Kind::CommonAlignment { .. } => 25,
+            Kind::CommonLargerThanDefinition { .. } => 26,
+            Kind::CommonOverridden { .. } => 27,
+            Kind::DiscardedSectionReference { .. } => 28,
+            Kind::DuplicateSymbol { .. } => 29,
+            Kind::EntryNotFound { .. } => 30,
+            Kind::GnuWarning { .. } => 31,
+            Kind::LinkerSymbolRedefined { .. } => 32,
+            Kind::MultipleCommon { .. } => 33,
+            Kind::NonExportedSymbol { .. } => 34,
+            Kind::RequiredSymbol { .. } => 35,
+            Kind::TlsMismatch { .. } => 36,
+            Kind::UndefinedSymbol { .. } => 37,
+            Kind::UndefinedVersion { .. } => 38,
+            Kind::VersionReassigned { .. } => 39,
+            Kind::RelocationIncompatible { .. } => 40,
+            Kind::RelocationMisaligned { .. } => 41,
+            Kind::RelocationOutOfRange { .. } => 42,
+            Kind::ExecutableStack { .. } => 43,
+            Kind::OutputTooLarge { .. } => 44,
+            Kind::SectionConflict { .. } => 45,
+            Kind::Refused { .. } => 46,
+            Kind::InternalError { .. } => 47,
         }
     }
 
@@ -635,13 +845,39 @@ mod tests {
             Kind::ResponseFileLimit { limit: 0 },
             Kind::UnbalancedOption { option: s(), counterpart: s() },
             Kind::UnknownOption { option: s() },
+            Kind::AmbiguousSysrootPath { spelling: s() },
             Kind::CannotOpenFile { path: s(), reason: s() },
             Kind::CannotOpenOutput { path: s(), reason: s() },
+            Kind::DuplicateSoname { soname: s() },
+            Kind::IgnoredMember { what: s() },
+            Kind::IncompatibleFile { expected: s(), found: s() },
+            Kind::InputChanged,
             Kind::LibraryNotFound { name: s() },
+            Kind::NeededNotFound { name: s(), needed_by: s() },
+            Kind::NoTarget,
+            Kind::ScriptCycle,
+            Kind::SkippedIncompatible { path: s(), search: s() },
+            Kind::StaticLinkOfSharedObject { path: s() },
             Kind::Malformed { what: s() },
             Kind::UnknownFileType,
+            Kind::ArchiveBackref { name: s() },
+            Kind::ArchiveChoice { name: s() },
+            Kind::ComdatMismatch { name: s(), signature: s() },
+            Kind::CommonAlignment { name: s() },
+            Kind::CommonLargerThanDefinition { name: s() },
+            Kind::CommonOverridden { name: s() },
+            Kind::DiscardedSectionReference { name: s() },
             Kind::DuplicateSymbol { name: s() },
+            Kind::EntryNotFound { name: s() },
+            Kind::GnuWarning { text: s() },
+            Kind::LinkerSymbolRedefined { name: s() },
+            Kind::MultipleCommon { name: s() },
+            Kind::NonExportedSymbol { name: s() },
+            Kind::RequiredSymbol { name: s() },
+            Kind::TlsMismatch { name: s() },
             Kind::UndefinedSymbol { name: s() },
+            Kind::UndefinedVersion { name: s(), version: s() },
+            Kind::VersionReassigned { name: s(), first: s(), second: s() },
             Kind::RelocationIncompatible {
                 r_type: s(),
                 name: s(),
@@ -649,7 +885,10 @@ mod tests {
             },
             Kind::RelocationMisaligned { r_type: s(), value: 0, align: 1 },
             Kind::RelocationOutOfRange { r_type: s(), value: 0, min: 0, max: 0, name: s() },
-            Kind::Refused { class: RefusalClass::Feature, name: s() },
+            Kind::ExecutableStack { file: s() },
+            Kind::OutputTooLarge { what: s(), limit: s() },
+            Kind::SectionConflict { name: s(), first: s(), second: s() },
+            Kind::Refused { class: RefusalClass::Feature, name: s(), not_recognized: false },
             Kind::InternalError { what: s() },
         ];
         assert_eq!(all.len(), Kind::IDS.len());

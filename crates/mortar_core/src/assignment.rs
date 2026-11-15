@@ -2,9 +2,9 @@
 //! section. Written by `mortar_layout`'s first stage.
 
 use crate::column::Column;
-use crate::id::{OutSecId, SectionId};
-use crate::resolution::{DropReason, Resolution, SectionState};
-use crate::table::{Broken, ensure};
+use crate::id::{OutSecId, SectionId, SymbolId};
+use crate::resolution::{Def, DropReason, InternalDef, RefFlags, Resolution, SectionState};
+use crate::table::{Broken, ensure, unsorted_at};
 
 /// Where a section goes (§3.4 `out_of`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -13,6 +13,10 @@ pub enum OutOf {
     None,
     /// A script's `/DISCARD/`: the section's state is `Dropped(Script)`.
     Discard,
+    /// Kept, but consumed by the linker rather than placed
+    /// (`spec/layout.md` §8.1): `.note.gnu.property`, whose content the
+    /// synthetic property note merges (L-34). No output section, no place.
+    Consumed,
     /// Into this output section.
     Out(OutSecId),
 }
@@ -23,7 +27,7 @@ impl OutOf {
     pub fn out(self) -> Option<OutSecId> {
         match self {
             Self::Out(id) => Some(id),
-            Self::None | Self::Discard => None,
+            Self::None | Self::Discard | Self::Consumed => None,
         }
     }
 }
@@ -70,6 +74,11 @@ pub struct Assignment<'n> {
     pub outsecs: Column<OutSecId, OutSec<'n>>,
     /// Whether a section is a root of liveness by rule or by `KEEP`.
     pub keep: Column<SectionId, bool>,
+    /// The conditional linker-defined symbols (`Def::Internal(Provide {
+    /// conditional: true })`) withdrawn because what they depend on is not
+    /// in the output (`spec/resolve.md` §8.1), sorted. A withdrawn symbol
+    /// is undefined from here on; the rest are confirmed.
+    pub withdrawn: Box<[SymbolId]>,
 }
 
 impl Assignment<'_> {
@@ -80,7 +89,27 @@ impl Assignment<'_> {
             out_of: Column::filled(sections, OutOf::None),
             outsecs: Column::new(),
             keep: Column::filled(sections, false),
+            withdrawn: Box::new([]),
         }
+    }
+
+    /// Whether a conditional linker-defined symbol was withdrawn.
+    #[must_use]
+    pub fn is_withdrawn(&self, symbol: SymbolId) -> bool {
+        self.withdrawn.binary_search(&symbol).is_ok()
+    }
+
+    /// The definition of a key after assignment: `resolution`'s, except
+    /// that a withdrawn symbol is undefined, weak unless a reference to it
+    /// is strong.
+    #[must_use]
+    pub fn def(&self, resolution: &Resolution, symbol: SymbolId) -> Option<Def> {
+        let def = *resolution.def.get(symbol)?;
+        if self.is_withdrawn(symbol) {
+            let strong = resolution.props[symbol].refs.contains(RefFlags::STRONG);
+            return Some(Def::Undefined { weak: !strong });
+        }
+        Some(def)
     }
 
     /// The output section of a section, if it has one.
@@ -91,9 +120,12 @@ impl Assignment<'_> {
 
     /// The invariants of §3.4 that the table and `Resolution` show:
     /// columns per section; output sections in range; a section is assigned
-    /// to an output section only when it is kept and carries output, and is
-    /// `Discard` exactly when it was dropped by the script; `keep` only on
-    /// kept sections.
+    /// to an output section only when it carries output and is kept or
+    /// dropped with its COMDAT group (`spec/layout.md` L-42, L-43: the
+    /// assignment does not depend on which copy of a group is kept); a kept
+    /// section with output is assigned or consumed; `Discard` exactly when
+    /// the script dropped it; `keep` only on kept sections; `withdrawn`
+    /// sorted, each a conditional linker-defined symbol in range.
     pub fn check(&self, resolution: &Resolution) -> Result<(), Broken> {
         let t = "Assignment";
         let n = resolution.sections.len();
@@ -102,30 +134,58 @@ impl Assignment<'_> {
         })?;
         for (section, row) in resolution.sections.iter() {
             let s = section.0;
+            let script = row.state == SectionState::Dropped(DropReason::Script);
+            let assignable = row.kind.carries_output()
+                && (row.is_kept() || row.state == SectionState::Dropped(DropReason::Comdat));
             match self.out_of[section] {
                 OutOf::Out(out) => {
                     ensure(self.outsecs.has(out), t, || {
                         format!("section {s}: output section out of range")
                     })?;
-                    ensure(row.is_kept() && row.kind.carries_output(), t, || {
+                    ensure(assignable, t, || {
                         format!("section {s}: assigned but not kept or without output")
                     })?;
                 }
+                OutOf::Consumed => {
+                    ensure(row.is_kept() && row.kind.carries_output(), t, || {
+                        format!("section {s}: consumed but not kept or without output")
+                    })?;
+                }
                 OutOf::Discard => {
-                    ensure(row.state == SectionState::Dropped(DropReason::Script), t, || {
+                    ensure(script, t, || {
                         format!("section {s}: discarded but not dropped by the script")
                     })?;
                 }
-                OutOf::None => ensure(
-                    !(row.is_kept() && row.kind.carries_output())
-                        && row.state != SectionState::Dropped(DropReason::Script),
-                    t,
-                    || format!("section {s}: kept with output but not assigned"),
-                )?,
+                OutOf::None => {
+                    ensure(!(row.is_kept() && row.kind.carries_output()), t, || {
+                        format!("section {s}: kept with output but not assigned")
+                    })?;
+                    ensure(!script, t, || {
+                        format!("section {s}: dropped by the script but not discarded")
+                    })?;
+                }
             }
             ensure(!self.keep[section] || row.is_kept(), t, || {
                 format!("section {s}: keep on a dropped section")
             })?;
+        }
+        if let Some(at) = unsorted_at(&self.withdrawn, |s| *s) {
+            return Err(Broken { table: t, what: format!("withdrawn[{at}] out of order") });
+        }
+        for &symbol in &self.withdrawn {
+            ensure(
+                matches!(
+                    resolution.def.get(symbol),
+                    Some(Def::Internal(InternalDef::Provide { conditional: true }))
+                ),
+                t,
+                || {
+                    format!(
+                        "symbol {}: withdrawn but not a conditional linker-defined symbol",
+                        symbol.0
+                    )
+                },
+            )?;
         }
         Ok(())
     }

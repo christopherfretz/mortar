@@ -42,7 +42,8 @@ pub enum Kind {
 pub struct Archive<'a> {
     bytes: &'a [u8],
     kind: Kind,
-    index: Option<SymbolIndex<'a>>,
+    /// The symbol index member, read or failed (§6.5).
+    index: Option<Result<SymbolIndex<'a>, Error>>,
     long_names: Option<&'a [u8]>,
     /// Offset of the first ordinary member's header; the length of the
     /// archive when there is none.
@@ -76,7 +77,9 @@ impl<'a> Archive<'a> {
                     at = head.next;
                 }
                 Some(Special::Index(index_kind)) => {
-                    archive.index = Some(SymbolIndex::parse(index_kind, at as u64, head.body())?);
+                    // A malformed index does not fail the archive: the
+                    // linker does not need it (§6.5).
+                    archive.index = Some(SymbolIndex::parse(index_kind, at as u64, head.body()));
                     at = head.next;
                     if at < bytes.len() {
                         let second = archive.head(at)?;
@@ -104,8 +107,9 @@ impl<'a> Archive<'a> {
         self.kind
     }
 
-    /// The symbol index; `None` when the archive has none (§6.4).
-    pub fn symbol_index(&self) -> Option<SymbolIndex<'a>> {
+    /// The symbol index; `None` when the archive has none (§6.4),
+    /// `Some(Err(BadIndex))` when its framing is malformed (§6.5).
+    pub fn symbol_index(&self) -> Option<Result<SymbolIndex<'a>, Error>> {
         self.index
     }
 

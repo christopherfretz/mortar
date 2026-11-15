@@ -188,19 +188,46 @@ pub struct Synth {
     pub address_dependent: bool,
 }
 
+impl Synth {
+    /// The RELRO padding (`spec/layout.md` L-64): a `SHT_NOBITS`,
+    /// `SHF_ALLOC|SHF_WRITE` chunk of alignment 1 that ends the RELRO run
+    /// and makes its end a multiple of the maximum page size. Layout's
+    /// address stage writes its size; it is not in `sized` (its size is a
+    /// function of the addresses before it, not of encoding inputs).
+    pub const RELRO_PADDING: Self = Self { name: b".relro_padding", address_dependent: false };
+}
+
+/// One part of an output section (`spec/layout.md` L-110): the body of an
+/// exec output section is cut into parts in input order, each followed by
+/// its island; every other output section has the one part 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Part {
+    pub out: OutSecId,
+    pub part: u32,
+}
+
+impl Part {
+    /// Part 0 of `out`, the only part of a section that is not cut.
+    #[must_use]
+    pub const fn first(out: OutSecId) -> Self {
+        Self { out, part: 0 }
+    }
+}
+
 /// What a chunk is (§4.4 `chunks`: kind).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChunkKind {
     FileHeader,
     ProgramHeaders,
     SectionHeaders,
-    /// The body of an output section: its placed input sections.
-    Body(OutSecId),
+    /// The body of one part of an output section: its placed input
+    /// sections.
+    Body(Part),
     /// The merged fragments of an output section.
     Merged(OutSecId),
-    /// The patches (thunks, erratum patches) the linker adds to an output
-    /// section.
-    Patches(OutSecId),
+    /// The island of one body part: the patches (thunks, erratum patches)
+    /// the linker adds after it.
+    Patches(Part),
     Synthetic(Synth),
     /// `-r`: the group of an output section.
     Group(OutSecId),
@@ -213,14 +240,20 @@ impl ChunkKind {
     #[must_use]
     pub fn out(self) -> Option<OutSecId> {
         match self {
-            Self::Body(o)
-            | Self::Merged(o)
-            | Self::Patches(o)
-            | Self::Group(o)
-            | Self::Relocs(o) => Some(o),
+            Self::Body(p) | Self::Patches(p) => Some(p.out),
+            Self::Merged(o) | Self::Group(o) | Self::Relocs(o) => Some(o),
             Self::FileHeader | Self::ProgramHeaders | Self::SectionHeaders | Self::Synthetic(_) => {
                 None
             }
+        }
+    }
+
+    /// The part of a body or an island.
+    #[must_use]
+    pub fn part(self) -> Option<Part> {
+        match self {
+            Self::Body(p) | Self::Patches(p) => Some(p),
+            _ => None,
         }
     }
 }
@@ -274,6 +307,31 @@ impl Chunk {
         self.flags & mortar_elf::consts::SHF_TLS != 0
     }
 
+    /// Whether the chunk is the RELRO padding (`spec/layout.md` L-64).
+    #[must_use]
+    pub fn is_relro_padding(&self) -> bool {
+        self.kind == ChunkKind::Synthetic(Synth::RELRO_PADDING)
+    }
+
+    /// The `PT_LOAD` class of an alloc chunk (`spec/layout.md` L-65), `None`
+    /// for a non-alloc one.
+    #[must_use]
+    pub fn load_class(&self) -> Option<LoadClass> {
+        use mortar_elf::consts::{SHF_EXECINSTR, SHF_WRITE};
+        if !self.is_alloc() {
+            return None;
+        }
+        Some(if self.relro {
+            LoadClass::Relro
+        } else if self.flags & SHF_WRITE != 0 {
+            LoadClass::Rw
+        } else if self.flags & SHF_EXECINSTR != 0 {
+            LoadClass::Rx
+        } else {
+            LoadClass::R
+        })
+    }
+
     /// The chunk's name: its output section's, a synthetic chunk's own, none
     /// for the headers. (For `Group` and `Relocs`, the name of the output
     /// section they are about; the section header's name is
@@ -298,6 +356,279 @@ pub struct Segment {
     pub memsz: u64,
     /// log2 of the alignment.
     pub align: u8,
+}
+
+/// The `PT_LOAD` a chunk belongs to (`spec/layout.md` L-65): consecutive
+/// alloc chunks of one class in `order` form one `PT_LOAD`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LoadClass {
+    /// Read-only: the headers and ranks 0 to 5.
+    R,
+    /// Read and execute: rank 6.
+    Rx,
+    /// Writable, made read-only after relocation: rank 7.
+    Relro,
+    /// Writable: rank 8 (and rank 7 under `-z norelro`).
+    Rw,
+}
+
+impl LoadClass {
+    /// The `p_flags` of the class's `PT_LOAD`.
+    #[must_use]
+    pub const fn p_flags(self) -> u32 {
+        use mortar_elf::consts::{PF_R, PF_W, PF_X};
+        match self {
+            Self::R => PF_R,
+            Self::Rx => PF_R | PF_X,
+            Self::Relro | Self::Rw => PF_R | PF_W,
+        }
+    }
+}
+
+/// What [`derive_segments`] needs beyond the chunks (`spec/layout.md`
+/// L-125: the facts of the target and the options of the `Plan`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentRules {
+    /// The ELF class: the word size of `PT_GNU_PROPERTY`'s alignment.
+    pub class: mortar_elf::Class,
+    /// The maximum page size (`-z max-page-size`, or the target's): the
+    /// least `p_align` of a `PT_LOAD` (L-67).
+    pub max_page: u64,
+    /// The `p_flags` of `PT_GNU_STACK` (L-84): `PF_R|PF_W`, or with `PF_X`.
+    pub stack: u32,
+}
+
+/// The program headers of a layout (`spec/layout.md` §11, L-125): a pure
+/// function of the chunks, their order and the rules, shared by
+/// `mortar_layout` (which writes them) and [`Layout::check`] (which
+/// requires the stored ones to equal it).
+///
+/// In this order (L-67): one `PT_LOAD` per run of consecutive alloc chunks
+/// of one [`LoadClass`] (non-alloc chunks do not break a run); one
+/// `PT_NOTE` per run of consecutive alloc `SHT_NOTE` chunks of one
+/// alignment; `PT_TLS` over the TLS chunks; `PT_GNU_PROPERTY` and
+/// `PT_GNU_EH_FRAME` over the synthetic chunks of those names; one
+/// `PT_GNU_STACK`; `PT_GNU_RELRO` over the RELRO chunks.
+///
+/// - A `PT_LOAD` starts at its first chunk; its `p_offset` is the least
+///   offset at or after that chunk's offset congruent to its address modulo
+///   `p_align` (the chunk's own offset for a chunk in the file; for a
+///   `NOBITS` first chunk, L-70's offset, of which the chunk's own is the
+///   undisplaced file end, L-69). `p_filesz` runs to the end (capacity) of
+///   its last chunk in the file, `p_memsz` to the end of its last chunk
+///   that takes memory; `p_align` is `max(max_page, the largest chunk
+///   alignment in it)`.
+/// - `PT_TLS` runs from the first TLS chunk to the end (`size`) of the
+///   last, `p_filesz` to the end of the last TLS `PROGBITS` chunk;
+///   `p_align` is the largest TLS alignment. `PT_GNU_RELRO` runs from the
+///   first RELRO chunk to the end of the last (the padding), `p_filesz` to
+///   the end of the last RELRO chunk in the file; `p_align` 1.
+///
+/// The function never fails and never panics: a layout loaded from a link
+/// state may be anything, and then simply differs from its derivation.
+#[must_use]
+pub fn derive_segments(
+    chunks: &Column<ChunkId, Chunk>,
+    order: &[ChunkId],
+    rules: &SegmentRules,
+) -> Vec<Segment> {
+    use mortar_elf::consts::{
+        PF_R, PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_GNU_RELRO, PT_GNU_STACK, PT_TLS,
+    };
+    let word: u8 = match rules.class {
+        mortar_elf::Class::Elf64 => 3,
+        mortar_elf::Class::Elf32 => 2,
+    };
+    let max_page = if rules.max_page.is_power_of_two() { rules.max_page } else { 1 };
+    let page_log = max_page.trailing_zeros() as u8;
+    let ordered: Vec<&Chunk> = order.iter().filter_map(|&c| chunks.get(c)).collect();
+    let mut out = Vec::new();
+
+    let loads = derive_loads(&ordered, page_log);
+    out.extend(loads.iter().map(|l| l.0));
+    let load_page = |addr: u64| -> u64 {
+        loads
+            .iter()
+            .find(|(s, _)| s.addr <= addr && addr <= s.addr.saturating_add(s.memsz))
+            .map_or(max_page, |l| l.1)
+    };
+
+    out.extend(derive_notes(&ordered));
+
+    // PT_TLS.
+    let tls: Vec<&Chunk> = ordered.iter().copied().filter(|c| c.is_alloc() && c.is_tls()).collect();
+    if let (Some(first), Some(last)) = (tls.first(), tls.last()) {
+        let start = first.addr.unwrap_or(0);
+        let init_end = tls
+            .iter()
+            .filter(|c| c.in_file())
+            .filter_map(|c| c.addr.map(|a| a.saturating_add(c.size)))
+            .max();
+        let memsz = last.addr.unwrap_or(0).saturating_add(last.size).saturating_sub(start);
+        out.push(Segment {
+            p_type: PT_TLS,
+            flags: PF_R,
+            offset: congruent_offset(first, load_page(start)),
+            addr: start,
+            filesz: init_end.map_or(0, |e| e.saturating_sub(start)),
+            memsz,
+            align: tls.iter().map(|c| c.align).max().unwrap_or(0),
+        });
+    }
+
+    // PT_GNU_PROPERTY and PT_GNU_EH_FRAME.
+    for (name, p_type, align) in [
+        (&b".note.gnu.property"[..], PT_GNU_PROPERTY, word),
+        (&b".eh_frame_hdr"[..], PT_GNU_EH_FRAME, 2),
+    ] {
+        let found = ordered
+            .iter()
+            .find(|c| c.is_alloc() && matches!(c.kind, ChunkKind::Synthetic(s) if s.name == name));
+        if let Some(c) = found {
+            out.push(Segment {
+                p_type,
+                flags: PF_R,
+                offset: c.offset,
+                addr: c.addr.unwrap_or(0),
+                filesz: c.size,
+                memsz: c.size,
+                align,
+            });
+        }
+    }
+
+    out.push(Segment {
+        p_type: PT_GNU_STACK,
+        flags: rules.stack,
+        offset: 0,
+        addr: 0,
+        filesz: 0,
+        memsz: 0,
+        align: 4,
+    });
+
+    // PT_GNU_RELRO.
+    let relro: Vec<&Chunk> = ordered.iter().copied().filter(|c| c.relro && c.is_alloc()).collect();
+    if let Some(first) = relro.first() {
+        let start = first.addr.unwrap_or(0);
+        let offset = congruent_offset(first, load_page(start));
+        let mem_end = relro
+            .iter()
+            .filter(|c| c.takes_memory() || c.is_relro_padding())
+            .filter_map(|c| c.addr.map(|a| a.saturating_add(c.capacity)))
+            .max()
+            .unwrap_or(start);
+        let file_end = relro
+            .iter()
+            .filter(|c| c.in_file())
+            .map(|c| c.offset.saturating_add(c.capacity))
+            .max()
+            .unwrap_or(offset);
+        out.push(Segment {
+            p_type: PT_GNU_RELRO,
+            flags: PF_R,
+            offset,
+            addr: start,
+            filesz: file_end.saturating_sub(offset),
+            memsz: mem_end.saturating_sub(start),
+            align: 0,
+        });
+    }
+    out
+}
+
+/// The `PT_LOAD`s of [`derive_segments`], each with its `p_align` in bytes.
+fn derive_loads(ordered: &[&Chunk], page_log: u8) -> Vec<(Segment, u64)> {
+    use mortar_elf::consts::PT_LOAD;
+    // PT_LOAD runs.
+    let mut runs: Vec<(LoadClass, Vec<&Chunk>)> = Vec::new();
+    for &c in ordered {
+        let Some(class) = c.load_class() else { continue };
+        match runs.last_mut() {
+            Some((last, members)) if *last == class => members.push(c),
+            _ => runs.push((class, vec![c])),
+        }
+    }
+    let mut loads: Vec<(Segment, u64)> = Vec::new();
+    for (class, members) in &runs {
+        let align = members.iter().map(|c| c.align).max().unwrap_or(0).max(page_log).min(63);
+        let p = 1u64 << align;
+        let first = members[0];
+        let vaddr = first.addr.unwrap_or(0);
+        let offset = congruent_offset(first, p);
+        let file_end = members
+            .iter()
+            .filter(|c| c.in_file())
+            .map(|c| c.offset.saturating_add(c.capacity))
+            .max()
+            .unwrap_or(offset);
+        let mem_end = members
+            .iter()
+            .filter(|c| c.takes_memory())
+            .filter_map(|c| c.addr.map(|a| a.saturating_add(c.capacity)))
+            .max()
+            .unwrap_or(vaddr);
+        let filesz = file_end.saturating_sub(offset);
+        let memsz = mem_end.saturating_sub(vaddr).max(filesz);
+        let seg = Segment {
+            p_type: PT_LOAD,
+            flags: class.p_flags(),
+            offset,
+            addr: vaddr,
+            filesz,
+            memsz,
+            align,
+        };
+        loads.push((seg, p));
+    }
+    loads
+}
+
+/// The `PT_NOTE`s of [`derive_segments`]: one per run of consecutive alloc
+/// notes of one alignment.
+fn derive_notes(ordered: &[&Chunk]) -> Vec<Segment> {
+    use mortar_elf::consts::{PF_R, PT_NOTE, SHT_NOTE};
+    // PT_NOTE per run of consecutive alloc notes of one alignment.
+    let mut note: Option<(u8, &Chunk, &Chunk)> = None;
+    let mut notes = Vec::new();
+    for &c in ordered {
+        let is_note = c.is_alloc() && c.sh_type == SHT_NOTE;
+        match note {
+            Some((a, first, _)) if is_note && c.align == a => note = Some((a, first, c)),
+            _ => {
+                if let Some(run) = note.take() {
+                    notes.push(run);
+                }
+                if is_note {
+                    note = Some((c.align, c, c));
+                }
+            }
+        }
+    }
+    notes.extend(note);
+    let mut out = Vec::new();
+    for (align, first, last) in notes {
+        let size = last.offset.saturating_add(last.size).saturating_sub(first.offset);
+        out.push(Segment {
+            p_type: PT_NOTE,
+            flags: PF_R,
+            offset: first.offset,
+            addr: first.addr.unwrap_or(0),
+            filesz: size,
+            memsz: size,
+            align,
+        });
+    }
+    out
+}
+
+/// The least offset at or after `c.offset` congruent to `c.addr` modulo
+/// `p` (a power of two): `c.offset` itself for a chunk whose offset is
+/// already congruent.
+fn congruent_offset(c: &Chunk, p: u64) -> u64 {
+    let addr = c.addr.unwrap_or(c.offset);
+    let delta = addr.wrapping_sub(c.offset) & p.wrapping_sub(1);
+    c.offset.saturating_add(delta)
 }
 
 /// Where a section is (§4.4 `place`): `(ChunkId, offset in chunk)` in 12
@@ -598,7 +929,8 @@ impl<'t, 'n> Addresses<'t, 'n> {
     /// (`entry` reads the entry, [`Inputs::entry_def`]); a common through
     /// `sym_place`; a shared definition through its copy allocation, if it
     /// has one; a linker-defined one through `defined`; a weak undefined is
-    /// 0. Otherwise `None`: the symbol has no address in this output.
+    /// 0, and so is a withdrawn conditional symbol unless a reference to it
+    /// is strong (`Assignment::def`). Otherwise `None`: the symbol has no address in this output.
     #[must_use]
     pub fn symbol_addr(
         &self,
@@ -607,7 +939,7 @@ impl<'t, 'n> Addresses<'t, 'n> {
     ) -> Option<u64> {
         let symbol = *self.resolution.redirect.get(symbol)?;
         let placement = &self.layout.placement;
-        match *self.resolution.def.get(symbol)? {
+        match self.assignment.def(self.resolution, symbol)? {
             Def::Undefined { weak: true } => Some(0),
             Def::Undefined { weak: false } => None,
             Def::Defined(e) => match entry(e)? {
@@ -622,7 +954,7 @@ impl<'t, 'n> Addresses<'t, 'n> {
                 let at = copies.binary_search_by_key(&symbol, |row| row.0).ok()?;
                 self.sym_place_addr(AllocKey::Copy(copies[at].1))
             }
-            Def::Internal => placement.defined_of(symbol),
+            Def::Internal(_) => placement.defined_of(symbol),
         }
     }
 

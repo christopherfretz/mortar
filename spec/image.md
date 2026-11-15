@@ -1,6 +1,6 @@
 # spec: liveness, the scan driver, the image and the output file (`mortar_image`)
 
-Status: **draft (WP-026 stage 1, revised after review)**. Method,
+Status: **accepted for M1** (WP-026 stage 1; reviewed independently, the review's findings applied). Method,
 experiments and what was not checked are in
 `spec/landed/image/WP-026-spec.md` (cited as **E1**–**E15**, and **E16**–
 **E25** for the re-measurements made for the review). Every measurement

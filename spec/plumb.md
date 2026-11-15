@@ -28,13 +28,28 @@ describes how x86-64 and i386 fit.
 
 | stage | covers | not-checked reasons it removes |
 |---|---|---|
-| 1 (this spec) | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
-| 2 | TLS (the AAELF64 TLS types: TLSLE, TLSIE relaxed, TLSDESC relaxed), IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents, non-alloc (DWARF) relocations | `tls`, `ifunc`, `eh-frame`, `non-alloc` |
+| 1 | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
+| 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents (§6.4), the symbol table (§6.5), non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame` (except labels inside `.eh_frame`, §6.4), `non-alloc` |
 | 3 | PIE and shared objects: the dynamic sections, dynamic relocations, PLT | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 
 On the reference corpus, a stage-1 report may give only the stage-2
 reasons in "not checked" (§9.1).
+
+Of stage 2, static TLS (§4.7), call frame information (§6.4) and the
+symbol table (§6.5) have landed. These are not yet done and keep their
+not-checked reasons:
+
+- IFUNC: IPLT entries, `.rela.iplt` and `__rela_iplt_*`, GOT slots that
+  hold a resolver or an IPLT address, address-of and pointer equality
+  (`ifunc`; Y5 already checks the `__rela_iplt_*` bounds);
+- non-alloc relocations: `.debug_*` (static values even in a PIE), the
+  tombstones for discarded targets (0, 1, −1, −2) and mortar's
+  convention (`non-alloc`). Compressed debug sections are to be named as
+  not judged.
+
+`cargo xtask linktest` runs the verifier on every link (`spec/harness.md`
+"L3").
 
 ## 2. Inputs
 
@@ -68,10 +83,16 @@ report has the single finding O1 (§6.1).
 Each input is identified by the path the map spells. `Input::path` must
 match that spelling exactly. `xtask plumb` resolves paths against its
 working directory and then reads them (§8). A map file of the form
-`archive(member)` names a member of a regular archive. The member is found
+`archive(member)` names a member of an archive: the member is the text
+between the last `(` and the final `)`. The member is found
 by name, and by header offset when the map gives one (mortar's format).
 The member must be the only one with that name, or the record is refused
-(I2). Thin archives are refused (I2, stage 3).
+(I2). A member of a thin archive is the file at its stored path, from
+the archive's directory when the path is relative (GNU ar manual,
+"--thin"). That file must be among the inputs under that path, or the
+record is I2. `thin_members(path, bytes)` lists those paths for a
+caller, and `xtask plumb` reads them. A thin archive's member that is
+itself a member of another archive is refused (I2).
 
 An input object must be `ET_REL` of the output's machine. Otherwise the
 finding is I2. A file the map names that is not among the inputs is I1,
@@ -179,9 +200,9 @@ Each input section ends up with one *place*:
 | whole at `a` | a `place` record | checked, with `P = a + r_offset` |
 | pieces | `piece` records (mortar's format), or lld's `.eh_frame+0xOFF` rows | checked where a piece covers `r_offset`. A record outside every piece is in a dropped part and is counted as not in the output |
 | merged | an `SHF_MERGE` `SHF_ALLOC` section in a foreign map, placed, absent or ambiguous | not checked (`in-mergeable`). References *to* it are checked by content (§5.6) |
-| rewritten | `.eh_frame` placed whole with a size other than its input's (GNU ld) | not checked (`eh-frame`) |
+| rewritten | `.eh_frame` placed whole with a size other than its input's (GNU ld) | checked by CIE and FDE (§6.4) |
 | discarded | a `discard` record, or GNU's "Discarded input sections" and `/DISCARD/` | not in the output |
-| absent | no record | not in the output. An absent alloc `.eh_frame` (mold lists none) counts as `eh-frame` |
+| absent | no record | not in the output. An allocated `.eh_frame` is checked by CIE and FDE whatever its place (§6.4): mold lists none |
 | ambiguous | see above | not checked (`section-not-locatable`) |
 
 A fold gives a section its target's place.
@@ -302,6 +323,9 @@ Ambiguities:
   mold's spelling.
 - **Symbol names.** mold demangles them in the `Symbol` column. They are
   not read.
+- **Common symbols.** mold lists a file's common symbols as an input row
+  `file:(.common)`. This is read as lld's `COMMON`: a chunk, not an input
+  section (`resolve/common` in the link tests).
 - **Unlisted inputs.** mold lists neither `.eh_frame` input sections nor
   mergeable ones. `.eh_frame` is *absent*, which counts as `eh-frame`, and
   mergeable sections are *merged*.
@@ -390,8 +414,7 @@ it against this one and against `mortar_elf`'s names.
 | 314 | `PLT32` | S+A-P | data 4 | -2^31 <= X < 2^31 |
 
 All names take the `R_AARCH64_` prefix. Type 281 is not defined. The TLS
-types (512 to 573, and 1026 to 1031) are stage 2 (`tls`). Any other type is
-not checked (`type`).
+types are in §4.7. Any other type is not checked (`type`).
 
 ### 4.3 Fields
 
@@ -415,20 +438,39 @@ field drops must be zero: `scale` bits for imm12, 3 bits for `LO15`, 2 bits
 for the branch fields (R3). A `_NC` type has no overflow check, but its
 alignment is still checked.
 
+- **HI12** (bits [21:10]) = X[23:12], for `ADD ..., LSL #12`.
+- **Insn** (`TLSDESC_CALL`): no field; the type marks an instruction.
+
+**R8: the instruction fits the type.** The input instruction at the place
+must be of the class the type is defined for: a load or store of the
+access size its `imm12` is scaled by (`LDST8` to `LDST128`, and the TLS
+`LDST` forms), and a 64-bit `LDR` (unsigned offset) for the `LD64` GOT
+forms (310, 312, 313, 542, 563). Otherwise the record is R8 and is not
+otherwise judged. `ldr w0, [x0, :got_lo12:x]` is the case of review
+finding 4: GNU ld writes the scale-8 offset into the scale-4 load, and lld
+replaces the load with a 64-bit `ADR` (A5); the input is refused by name
+whatever the linker made of it.
+
 Test: `a64::tests::s4_3_fields_encode_as_the_instruction_set_says`,
-`s4_3_checks`.
+`s4_3_checks`, `tests/tls.rs s4_3_r8_the_instruction_must_fit_the_type`.
 
 ### 4.4 S: resolving a symbol
 
-Symbol 0 has S = 0. An input symbol of type `STT_GNU_IFUNC` or `STT_TLS`
-is stage 2 (`ifunc`, `tls`). Otherwise:
+Symbol 0 has S = 0. An input symbol of type `STT_GNU_IFUNC` is stage 2
+(`ifunc`). A thread-local symbol (`STT_TLS`, or any symbol defined in an
+`SHF_TLS` section, such as GCC's `.LANCHOR0` or a section symbol) resolves
+as below to its address in the TLS template, which §4.7 turns into an
+offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
++ `st_value` (gABI "Symbol Values"). Otherwise:
 
 - **A local symbol** (`STB_LOCAL`, including `STT_SECTION`) defined in
   section k has S = place(k) + `st_value`, which depends on k's place:
   - **whole at a:** S = a + `st_value`;
   - **pieces:** found through the piece that covers `st_value`;
   - **merged:** §5.6;
-  - **rewritten `.eh_frame`, or a dropped part of one:** `eh-frame`;
+  - **in `.eh_frame`** (a label such as crtbeginT.o's
+    `__EH_FRAME_BEGIN__`) when the section is rewritten, absent, or the
+    label is in a dropped part: `eh-frame`;
   - **ambiguous:** `section-not-locatable`;
   - **discarded or absent:** R5 (§5.7).
 
@@ -440,16 +482,27 @@ is stage 2 (`ifunc`, `tls`). Otherwise:
      `STB_GLOBAL` or `STB_WEAK` symbol of the name in `.symtab`, and it
      decides which definition won. If it is IFUNC or TLS, the record is
      stage 2. If it is defined, S is its value. If it is undefined and weak
-     (on either side), the symbol is an *undefined weak* and S = 0.
+     (on either side), the symbol is an *undefined weak*.
   2. **The unique placed definition in the inputs.** Take the one strong
      definition, else the one weak definition, whose section is placed,
      pieces or merged (or that is `SHN_ABS`). S follows from that section's
      place, as for a local symbol. This step covers hidden symbols, which
      lld and mold make local in the output.
   3. **The unique output symbol of that name**, of any binding.
-  4. **An undefined weak** in the input: S = 0.
+  4. **An undefined weak** in the input, when the output has a `.symtab`.
+     A stripped output (`-s`) does not say whether the linker defined the
+     name (glibc's weak `__rela_iplt_start`), so the record is
+     `symbol-unresolved` (`resolve/symtab` in the link tests).
 
   If none applies, the record is `symbol-unresolved`.
+
+**An undefined weak** has S = 0, except for a PC-relative type that is
+not a branch (`PREL64/32/16`, `LD_PREL_LO19`, `ADR_PREL_LO21`, the
+`MOVW_PREL` groups), for which S = P, so X = A (AAELF64: an unresolved
+weak reference is the place for a PC-relative relocation). GNU ld and lld
+write X = A; mold refuses such a record as out of range (review finding
+10; test: `tests/tls.rs s4_4_undefined_weak_pc_relative_is_the_place`).
+Branches keep S = 0 and have W4 and W5.
 
 Lookups by name go through hash maps. Nothing depends on their iteration
 order (§7.1).
@@ -472,8 +525,10 @@ place, so REL and RELA follow one path.
 
 For each name that has a global, weak or unique definition in the inputs,
 take the output symbol of that name: the global one, else the unique one.
-If it is defined and not TLS, its value must equal the place of one of the
-name's placed definitions, or the `st_value` of an `SHN_ABS` one.
+If it is defined, its value must equal the place of one of the name's
+placed definitions, or the `st_value` of an `SHN_ABS` one. For a TLS
+symbol the value compared is `PT_TLS` `p_vaddr` + `st_value`; without a
+usable `PT_TLS` the name is unchecked.
 
 - A name with IFUNC definitions is unchecked: the output symbol is the
   canonical PLT entry, which is stage 2.
@@ -481,6 +536,77 @@ name's placed definitions, or the `st_value` of an `SHN_ABS` one.
 
 Counts: `symbols_checked`, `symbols_unchecked`. Test:
 `tests/mutation.rs s9_2b_moved_symbols_are_found`.
+
+### 4.7 Thread-local storage (stage 2)
+
+A static executable has one module, its TLS block is the `PT_TLS`
+template, and on AArch64 (TLS variant 1) the block starts `tcb` bytes
+after the thread pointer:
+
+- `start` = `PT_TLS` `p_vaddr`, `tcb` = align_up(16, `p_align`);
+- TPREL(v) = v − start + tcb, DTPREL(v) = v − start, the module index is 1.
+
+More than one `PT_TLS`, an alignment that is not a power of two, or a
+`p_vaddr` that is not a multiple of `p_align` is S9 (§6.2), and the TLS
+records are then `tls`. A TLS record in an output without `PT_TLS` is
+**T1**. A TLS type against a symbol that is not thread-local is **R8**.
+`_TLS_MODULE_BASE_` (the TLSDESC ABI's name for the start of the module's
+block) resolves to `start` whatever value a linker gives its symbol
+(A3; review finding 6).
+
+The types (AAELF64 "Relocations for thread-local storage"), with the
+operation and field; checks are as AAELF64 states them:
+
+| types | operation | field |
+|---|---|---|
+| 544–548 `TLSLE_MOVW_TPREL_G2/G1/G1_NC/G0/G0_NC` | TPREL(S+A) | signed MOVW (G2, G1, G0), MOVW (`_NC`) |
+| 549 `TLSLE_ADD_TPREL_HI12`, 550/551 `_LO12(_NC)` | TPREL(S+A) | HI12; imm12 |
+| 552–559, 570/571 `TLSLE_LDST{8,16,32,64,128}_TPREL_LO12(_NC)` | TPREL(S+A) | imm12, scaled |
+| 523–527 `TLSLD_MOVW_DTPREL_*`, 528–538, 572/573 `TLSLD_ADD/LDST*_DTPREL_*` | DTPREL(S+A) | as the TPREL forms |
+| 539/540 `TLSIE_MOVW_GOTTPREL_G1/G0_NC` | G − GOT, G holding TPREL(S+A) | signed MOVW; MOVW |
+| 541 `TLSIE_ADR_GOTTPREL_PAGE21`, 542 `_LD64_GOTTPREL_LO12_NC`, 543 `_LD_GOTTPREL_PREL19` | Page(G) − Page(P); G; G − P | ADRP; imm12/8; imm19 |
+| 513/514 `TLSGD_ADR_PAGE21`, `_ADD_LO12_NC` | G of a 16-byte entry (1, DTPREL(S+A)) | ADRP; imm12 |
+| 518/519 `TLSLD_ADR_PAGE21`, `_ADD_LO12_NC` | G of a 16-byte entry (1, 0) | ADRP; imm12 |
+| 562–564 `TLSDESC_ADR_PAGE21`, `_LD64_LO12`, `_ADD_LO12`; 569 `TLSDESC_CALL` | the sequence below | ADRP; imm12/8; imm12; none |
+
+The types no reference linker or assembler produces for a static link
+(512, 515–517, 520–522, 560, 561, 565–568, the `PREL21`/`PREL19` GD, LD and
+TLSDESC forms) are `type`. The dynamic TLS types (1028–1031) are stage 3.
+
+**Decisions.** A TPREL or DTPREL record is judged as in §5.2 with X as
+above. A TLS GOT record is decided by W9 (IE), or by its sequence (GD, LD,
+TLSDESC); when it is not rewritten, its output instruction must equal the
+input outside the field (or be W7's ADR), else it is R1 ("rewritten into
+a form no specified rewriting allows"), and it then joins the GOT groups
+of §5.5 keyed by (kind, object, symbol, addend), whose valid entry holds
+the TPREL word or the 16-byte pair. `TLSIE_MOVW` records give G − GOT
+from the MOVZ/MOVN high half and the MOVK low half.
+
+**Sequences.** Partners are found by offset in the same section:
+
+- **TLSDESC**: 562, 563, 564, 569 at P, P+4, P+8, P+12, one symbol and
+  addend. The input must be `ADRP x0; LDR Xt, [x0]; ADD x0, x0; BLR Xt`
+  (else R8). A TLSDESC record outside a whole sequence is `tls-sequence`.
+  W10 or W11 accepts all four; a sequence left as it is (for a dynamic
+  loader) is `tls` (stage 3); anything else is R1 with TPREL as expected.
+- **GD and LD**: 513+514 (or 518+519) at P, P+4, `CALL26 __tls_get_addr`
+  at P+8, `NOP` in the input at P+12, input `ADRP x0; ADD x0, x0`. W12 or
+  W13 accepts the three records (the word at P+12 has no record; W12's
+  rewrite of it is exempt from S12). A sequence left as it is is decided
+  per record (GOT pair, ordinary `CALL26`). Anything else is R1, on the
+  call as well.
+
+**Not judged** (`tls`): an undefined weak TLS symbol (glibc's
+`_nl_current_LC_*`, referenced by `setlocale.o` through IE); a non-TLS
+type against a TLS symbol; a TLSDESC sequence kept for a dynamic loader;
+the TLS records of an output whose `PT_TLS` is unusable (S9).
+
+Static PIE (`ET_DYN` with no `PT_INTERP`) is stage 3: on the reference
+linkers its TLS takes the same forms and has no TLS dynamic relocation,
+but S1 refuses `ET_DYN` today (§11).
+
+Tests: `tests/tls.rs` (§9.1), `tests/mutation.rs
+s9_2f_tls_mutations_are_found`.
 
 ## 5. Checking a record
 
@@ -490,15 +616,15 @@ The records of a section are checked in index order. For each record:
 
 1. **Place.** Find P (§3.3). A record outside every piece of a sectioned
    place is not in the output.
-2. **Trivial types.** Type 0 or 256 counts as `none`. TLS types go to
-   `tls`, and types not in the table go to `type`.
+2. **Trivial types.** Type 0 or 256 counts as `none`. Types not in the
+   tables go to `type`. The input instruction must fit the type (R8, §4.3).
 3. **Place bounds.** The input's place, `width` bytes at `r_offset`, must be
    inside the section's data. If it is not, the finding is I2 (for
    `SHT_NOBITS`, the input word is taken as 0).
 4. **The output word.** Read the output's word at P. If P is outside the
    loaded memory, the finding is R7. An instruction field at an erratum
    843419 site is read through the patch (W8, §5.3).
-5. **S.** Resolve S (§4.4).
+5. **S.** Resolve S (§4.4). A TLS type is decided by §4.7.
 6. **GOT types and merged targets.** These are grouped and decided after
    every section (§5.5, §5.6).
 7. **Everything else.** Compute X and give a verdict (§5.2). A record that
@@ -566,6 +692,29 @@ The erratum rewritings (Cortex-A53 erratum 843419):
   The word at T is then the word the program executes, and it is checked
   in place of the branch. The same rule allows the branch in the content
   check (§6.2 S12).
+
+The TLS rewritings (§4.7), static executables only. X is TPREL(S+A), and
+the local-exec forms need 0 <= X < 2^32. `MOVZ x, #X[31:16], LSL #16` is
+written `hi(x)` and `MOVK x, #X[15:0]` is written `lo(x)`:
+
+- **W9 `tlsie-to-le`.** `ADRP Xd, :gottprel:S` (541) and
+  `LDR Xt, [Xn, :gottprel_lo12:S]` (542), anywhere in the section with the
+  same symbol and addend, made `hi(Xd)` and `lo(Xd)`, with Xt = Xn = Xd.
+  With Xt ≠ Xn the rewriting leaves the value in no register (A8): it is
+  not W9, and the changed instructions are R1.
+- **W10 `tlsdesc-to-le`.** The four TLSDESC words made
+  `hi(x0); lo(x0); NOP; NOP` (GNU ld, lld) or `NOP; NOP; hi(x0); lo(x0)`
+  (mold).
+- **W11 `tlsdesc-to-ie`.** The four TLSDESC words made
+  `ADRP x0, G; LDR x0, [x0, :lo12:G]; NOP; NOP` or
+  `NOP; NOP; ADRP x0, G; LDR x0, [x0, :lo12:G]` (mold), with G a GOT entry
+  (§5.5 valid-slot conditions) holding X.
+- **W12 `tlsgd-to-le`.** `ADRP x0; ADD x0, x0; BL __tls_get_addr; NOP` made
+  `hi(x0); lo(x0); MRS x1, TPIDR_EL0; ADD x0, x1, x0`.
+- **W13 `tlsld-to-le`.** The same LD sequence made
+  `MRS x0, TPIDR_EL0; ADD x0, x0, #tcb; NOP; NOP`. The DTPREL records that
+  follow keep their DTPREL values. GNU ld writes `#16` whatever `tcb` is
+  (A7).
 
 ### 5.4 The veneer emulator
 
@@ -650,8 +799,9 @@ a *merged* section:
 ### 5.7 Discarded targets (R5)
 
 A relocation of a placed section whose symbol's section is discarded or
-absent is R5. This does not apply to `.eh_frame`'s own records, which are
-stage 2, nor to non-alloc records.
+absent is R5. This does not apply to `.eh_frame`'s own records, which
+§6.4 checks (an FDE whose function is discarded is dropped, not R5), nor
+to non-alloc records.
 
 ## 6. Structure and content
 
@@ -697,7 +847,8 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   TLS symbol, `st_value + st_size <= p_memsz` of `PT_TLS`, and a TLS
   symbol requires a `PT_TLS`. Labels (`st_size == 0`) are checked by Y1.
 - **S9.** There is at most one `PT_TLS`, its initialization image lies in
-  a `PT_LOAD`'s file image, and its `p_align` is a power of two. Every
+  a `PT_LOAD`'s file image, its `p_align` is a power of two, and its
+  `p_vaddr` is a multiple of `p_align` (§4.7). Every
   `SHF_TLS` section lies inside it, and TLS sections require a `PT_TLS`.
 - **S10.** There is at most one `PT_GNU_STACK`.
 - **S11.** Every `PT_NOTE` lies in the file and is a sequence of whole
@@ -706,8 +857,8 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
 - **S12 (content).** Take every input section placed whole that is
   allocated, has a size, and is not mergeable, `.eh_frame`, `.tbss` or
   `.note.gnu.property`. Its output bytes must equal its input bytes
-  outside its relocated ranges (§6.3). The one exception is a word that is
-  an erratum-patch branch (W8). A `SHT_NOBITS` section's memory must read
+  outside its relocated ranges (§6.3). The exceptions are a word that is
+  an erratum-patch branch (W8) and the last word of a W12 sequence. A `SHT_NOBITS` section's memory must read
   as zero. `.note.gnu.property` is excluded because linkers combine the
   property notes by definition (gABI "Program Property").
 
@@ -718,13 +869,230 @@ The relocated ranges of a section are the bytes
 from the type (§4.2). A TLS type counts as 4 bytes, and an unknown type
 as 8.
 
+### 6.4 Call frame information (stage 2)
+
+The output's allocated `.eh_frame` is read as the LSB defines it
+("Exception Frames": `.eh_frame` and `.eh_frame_hdr`), with DWARF 4 §6.4
+("Call Frame Information") for the instructions. The inputs' allocated
+`.eh_frame` sections are read the same way, whatever their place (§3.3):
+the check is by record, not by address, so GNU ld's edited `.eh_frame`
+(rewritten), lld's pieces and mold's unlisted sections are checked alike.
+Test: `tests/eh.rs`, `src/eh.rs` unit tests.
+
+**Reading.** A record is a 4-byte length (0xffffffff: an 8-byte length
+follows; 0: the zero terminator), then an id, 0 for a CIE and otherwise
+the distance back from the id field to the record's CIE. A CIE has:
+
+- a version, 1 or 3;
+- an augmentation string, empty or `z` followed by any of `R`, `P`, `L`,
+  `S` (signal frame), `B` (AArch64 return addresses signed with the B
+  key) and `G` (MTE-tagged frames);
+- a code alignment (ULEB128), a data alignment (SLEB128) and a return
+  address register (a byte in version 1, ULEB128 in 3);
+- for `z`, the augmentation data: its length, then the `R` encoding of
+  the FDE pointers, the `P` encoding and personality pointer, and the `L`
+  encoding of the LSDA pointers, in the string's order;
+- the initial instructions.
+
+An FDE has the initial location (in the `R` encoding), the address range
+(in its format, with no application), for `z` the augmentation data
+length and the LSDA pointer when the CIE has `L`, and the instructions.
+Pointer formats are `absptr`, `uleb128`, `udata2`, `udata4`, `udata8`,
+`sleb128`, `sdata2`, `sdata4` and `sdata8`. Applications are absolute and
+`pcrel` in `.eh_frame`, and also `datarel` (from the start of
+`.eh_frame_hdr`) in the header. The `indirect` bit is kept, so a
+personality is the address of the slot that holds it, which is what the
+input's relocation gives too. Instructions are compared without their
+trailing `DW_CFA_nop` padding. Anything else is unreadable.
+
+**The inputs' pointers.** A pointer field of an input record is the value
+of the relocation at its offset, resolved as §4.4 does (S + A for
+`ABS64`, `ABS32`, `PREL64` and `PREL32`). If there is no relocation, an
+absolute nonzero value is taken as written, and anything else cannot be
+judged. An input FDE is:
+
+- **dropped** if its initial location resolves into a discarded or
+  absent section. Its records are counted with the records of sections not
+  in the output, and the FDE in `fdes_dropped`;
+- **unknown** if any of its pointers cannot be resolved (`eh-frame`, or
+  the §4.4 reason). Its records are not checked, and E4 is not reported
+  for the output (an unknown input could be the FDE it reports);
+- **live** otherwise.
+
+**The rules.** Each finding is at the output record's address, or the
+`.eh_frame_hdr` address, and is sited at the input record when there is
+one.
+
+- **E1.** The output's `.eh_frame` cannot be read: a record runs past the
+  section, a CIE pointer does not point at a CIE, there is an unknown
+  version, augmentation or encoding, or a record follows the zero
+  terminator. Also, an input ends its frames with a zero terminator
+  (crtend.o's `__FRAME_END__`, the end of the list `__register_frame_info`
+  walks) and the output has none.
+- **E2.** A live input FDE has no output FDE with its initial location.
+- **E3.** The output FDE at its initial location differs from it. The two
+  must have the same address range, augmentation data length and
+  instructions, the same LSDA value, and CIEs with the same version,
+  augmentation string, alignments, return address register, initial
+  instructions and personality value. The encodings may differ; the
+  values may not. Each output FDE answers for one input FDE only, so a
+  duplicate input FDE needs a duplicate output FDE.
+- **E4.** An output FDE that no live input FDE gives, unless it is
+  neutralised (initial location 0 or range 0, counted in
+  `fdes_neutralised`).
+- **E5.** `.eh_frame_hdr` (only when there is one, or a
+  `PT_GNU_EH_FRAME`):
+  - exactly one `PT_GNU_EH_FRAME` covers exactly the section;
+  - the version is 1, and `eh_frame_ptr` is the address of `.eh_frame`;
+  - `fde_count` is the number of output FDEs that are not neutralised;
+  - the table is sorted strictly by initial location;
+  - each entry gives an FDE's address and that FDE's initial location;
+  - every FDE that is not neutralised is in the table.
+
+  The `DW_EH_PE_omit` table that the LSB allows is accepted, without a
+  table.
+
+**Coverage.** The relocation records of an input `.eh_frame` are counted as
+follows:
+
+- the initial-location and LSDA records of a matched FDE are verified
+  (`eh-frame`);
+- a personality record is verified when one live FDE of its CIE is;
+- E2 and E3 fail the FDE's records;
+- a record at no pointer field of a CIE or FDE is I2;
+- a CIE whose FDEs are all dropped has its personality record counted as
+  not in the output.
+
+`fdes_checked`, `fdes_dropped`, `fdes_neutralised` and
+`eh_frame_hdr_entries` are reported.
+
+**Not judged.** These are reported by name:
+
+- relocations from other sections to a label inside an input `.eh_frame`
+  (crtbeginT.o's `__EH_FRAME_BEGIN__`, 4 records per glibc link):
+  `eh-frame`. Their value is where that input's frames begin in the
+  output, which a rewritten or unlisted `.eh_frame` does not say;
+- the instructions' meaning (they are compared byte for byte, not
+  interpreted);
+- the LSDA's contents (`.gcc_except_table` is checked by S12 and its
+  relocations by §5);
+- the frames of other machines (`machine`).
+
+### 6.5 The symbol table (stage 2)
+
+`.symtab` is what gdb, lldb, `nm`, `addr2line` and the profilers read. A
+symbol that names the wrong section or has the wrong size misleads them
+as surely as a wrong value. Y1 (§4.6) judges the values of globals. The
+rules below judge the rest. Code: `src/symbols.rs`.
+
+- **Y2. The tables.**
+  - `e_shstrndx` (through `sh_link` of section 0 for `SHN_XINDEX`), when
+    it is not 0, names an `SHT_STRTAB` section that begins and ends with a
+    NUL.
+  - `.symtab`, when there is one: `sh_entsize` is 24 (ELFCLASS64) or 16
+    (ELFCLASS32), and `sh_size` is a multiple of it. `sh_link` names an
+    `SHT_STRTAB` that begins and ends with a NUL. Entry 0 is all zeros.
+    No local follows the first non-local entry. `sh_info` is the index of
+    the first non-local entry (gABI "Symbol Table").
+- **Y3. Globals.** This rule applies to each name with a global, weak or
+  unique definition in the inputs whose output symbol (as Y1 chooses it)
+  is defined. The definition D is the placed definition at the output
+  value. A strong one comes before a weak one. When the value is no
+  placed definition's, the name is Y1's finding and Y3 does not judge it.
+  - When the name has a strong definition, the value is a strong
+    definition's: a weak definition does not override a global one.
+  - The visibility V is the most constraining one over every non-local
+    input entry of the name, defined or undefined (gABI "Symbol
+    Visibility"). If V is hidden or internal, the output symbol is
+    `STB_LOCAL`, or keeps a hidden or internal visibility (GNU ld's form,
+    §10.5). Otherwise its binding is `STB_WEAK` when every definition is
+    weak, and else D's binding. `STB_GNU_UNIQUE` may become `STB_GLOBAL`.
+    Its visibility is V.
+  - Its type and size are D's.
+  - Its `st_shndx` names an allocated section whose range holds D's input
+    section's place. For an `SHN_ABS` definition it is `SHN_ABS`.
+
+  A name with an IFUNC definition, with no placed definition, or a TLS
+  name without a usable `PT_TLS`, is counted in `globals_unchecked`.
+- **Y4. Locals.** This rule applies to each defined output local, other
+  than section and file symbols, whose name some input local has. The
+  input locals of the name are found in this order:
+  1. one at the output value, in the output's section, of the output's
+     type and size;
+  2. one at the output value, in the output's section;
+  3. when every input local of the name is placed (§3.3), one at the
+     output value.
+
+  The output local must have the input local's type, size and section,
+  as in Y3. When none is at the output value, that is a finding, with two
+  exceptions, both counted in `locals_unchecked`:
+  - some input local of the name has no known place (a `rewritten` or
+    `merged` section, such as GNU ld's `.eh_frame`);
+  - the symbol is a mapping symbol (`$x…`, `$d…`, AAELF64 "Mapping
+    symbols") at an address of an allocated section that no input section
+    occupies: the linker's own, marking a veneer or a patch.
+
+  A name the inputs also define globally, or a TLS local without a usable
+  `PT_TLS`, is also counted in `locals_unchecked`.
+- **Y5. Linker-defined symbols.** This rule applies to each defined output
+  symbol whose name no input defines. The names below have these values.
+  Here, "the section" means the allocated output section of that name;
+  E is the highest end of the writable, non-TLS, non-`NOBITS` allocated
+  sections; and M is the highest end of all the writable, non-TLS
+  allocated sections.
+
+  | name | value |
+  |---|---|
+  | `__ehdr_start` | `p_vaddr` of the `PT_LOAD` at file offset 0 |
+  | `__executable_start` | the lowest `PT_LOAD` `p_vaddr` |
+  | `__init_array_start`/`_end`, `__fini_array_…`, `__preinit_array_…` | the section's start and end; with no section, start = end |
+  | `_GLOBAL_OFFSET_TABLE_` | the start of `.got` |
+  | `__GNU_EH_FRAME_HDR` | the start of `.eh_frame_hdr` |
+  | `_edata`, `edata` | in [E, the next allocated section's start] |
+  | `__bss_start`, `__bss_start__` | in [E, the first writable `NOBITS` section at or after E] |
+  | `_end`, `end`, `__end__`, `_bss_end__`, `__bss_end__` | in [M, M rounded up to 8] |
+  | `_etext`, `etext`, `__etext` | in [the end of `.text`, the next non-executable section's start] |
+  | `__rela_iplt_start`/`_end` | the bounds of the only allocated `SHT_RELA` section; with none, start = end |
+  | `_DYNAMIC` | the start of `.dynamic`, else 0 |
+  | `_TLS_MODULE_BASE_` | 0, and `STT_TLS` (§4.7) |
+  | `__start_X`, `__stop_X` (X a C identifier) | the bounds of section X |
+
+  The data-end symbols allow a range, because the reference linkers place
+  them differently within it (§10.5). Every other name is not judged. It
+  is listed by name in `linker_defined_not_judged`.
+
+**Coverage.** `globals_checked`, `globals_unchecked`, `locals_checked`,
+`locals_unchecked`, `linker_defined_checked` and
+`linker_defined_not_judged` (a list of names) are reported. The summary
+line is "symbol attributes: …".
+
+**Not judged.** These are reported by name or count:
+
+- mold's own symbols (`$got`, `$gottp`, `$tlsgd`, `$pltgot`, `$thunk`,
+  `__start_EHDR`/`__start_PHDR`, which mold sets to 0 even when they are
+  referenced);
+- `__dso_handle` and other names given by linker scripts, where no input
+  defines them;
+- veneer and patch names (`__*_veneer`, `__erratum_*`);
+- the data-end symbols when there is no writable section;
+- locals of archive members the map does not list, which are counted in
+  `locals_unchecked` (lld under `--gc-sections`);
+- the static-pie `.dynsym`, `.hash` and `.gnu.hash`. They are stage 3,
+  with the rest of the dynamic sections (§11 item 7).
+
+Tests: `tests/corpus.rs s9_1_reference_links_verify_clean` (on the glibc
+cases: more than 1000 globals, more than 300 locals and at least 9
+linker-defined symbols judged; not-judged names only from mold, §10.5) and
+`tests/mutation.rs s9_2h_symbol_table_mutations_are_found`.
+
 ## 7. The report
 
 ### 7.1 Findings
 
 A finding has:
 
-- the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R7` or `Y1`;
+- the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R8`, `T1`,
+  `Y1`–`Y5` or `E1`–`E5`;
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -744,9 +1112,10 @@ once:
 
 `records = verified + accepted + not_checked + none + failed`
 
-- **verified**, by how S was found: `direct`, `got-slot` or `piece`;
-- **accepted**, by rewriting (W1 to W8);
-- **not checked**, by reason: `tls`, `ifunc`, `non-alloc`, `eh-frame`,
+- **verified**, by how S was found: `direct`, `got-slot`, `piece` or
+  `eh-frame` (a pointer field of a matched CIE or FDE, §6.4);
+- **accepted**, by rewriting (W1 to W13);
+- **not checked**, by reason: `tls`, `tls-sequence`, `ifunc`, `non-alloc`, `eh-frame`,
   `type`, `machine`, `section-not-locatable`, `piece-not-locatable`,
   `in-mergeable`, `symbol-unresolved`, `got-unpaired` or
   `input-unreadable`;
@@ -756,7 +1125,8 @@ once:
 `checked_types` counts the verified and accepted records by type. The
 records of sections not in the output are counted separately
 (`absent_records`). So are the sections by place, the symbols Y1 checked
-and left unchecked, and the bytes S12 compared.
+and left unchecked, the bytes S12 compared, and the FDEs and header
+entries of §6.4, and the symbols of §6.5.
 
 The four stage-2 reasons are the only ones allowed on the reference
 corpus.
@@ -812,6 +1182,7 @@ is checked in.
 | `got` | gcc (asm): GOT forms, relaxable and not, an undefined weak | `-static -nostdlib` |
 | `erratum` | gcc (asm): an `ADRP` at `0xff8` and loads | `--fix-cortex-a53-843419` |
 | `types` | gcc (asm): every §4.2 type each linker accepts | `-static -nostdlib` |
+| `cxx-eh-hdr` | `cxx-eh`'s object | `-static -Wl,--eh-frame-hdr` |
 
 Every case is linked by `ld.bfd` (GNU ld 2.44), `ld.lld-22` and mold 2.37,
 each through the gcc driver with `-Wl,-Map`.
@@ -820,11 +1191,28 @@ For each link (`tests/corpus.rs s9_1_reference_links_verify_clean`):
 
 - there are no findings, other than the anomalies recorded in §10.2;
 - `failed` counts only the records of A6, and the coverage sum holds;
-- every not-checked reason is a stage-2 reason.
+- every not-checked reason is a stage-2 reason;
+- §6.4: more than 100 FDEs are checked for the glibc C and C++ cases, an
+  FDE is dropped for `comdat` and `gc-sections`, the search table has an
+  entry for every FDE wherever there is one (mold always, GNU ld and lld
+  for `cxx-eh-hdr`), and `cxx-eh-hdr` runs.
 
 `s4_2_every_type_each_linker_accepts_is_checked` asserts that each type
 listed in §10.3 is checked for its linker. `s5_3_observed_rewritings_are_accepted`
 asserts the rewritings of §10.1.
+
+The thread-local corpus (`Size::Tls`, `tests/tls.rs`) is linked the same
+way, by the linkers that accept it, and its glibc programs are run:
+
+| case | built by | linked | asserted |
+|---|---|---|---|
+| `tls-c` | gcc -O2 (LE, IE), gcc `-fPIC` TLSDESC and traditional GD (not for lld), clang `-fPIC` TLSDESC; alignments 4 to 64 | `-static` | exits 0; clean; the §10.1 TLS rewritings |
+| `tls-types` | gcc (asm): every TLS type each linker accepts (§10.3), `_TLS_MODULE_BASE_` | `-static -nostdlib` | clean, nothing not checked, each type checked |
+| `tls-ld-64`, `tls-ld-8` | gcc (asm): LD in a block aligned to 64 and to 8 | GNU ld, `-static` | A7: the 64 case exits wrong and has three R1; the 8 case exits 42, clean, W13 |
+| `tls-ie-regs` | gcc (asm): `ADRP x4; LDR x5, [x4]` IE, TPREL >= 2^16 | `-static` | A8: GNU ld and lld exit wrong with R1 on both records; mold exits 42, clean |
+| `got-ldr-w` | gcc (asm): `LDR w0, [x0, :got_lo12:]` | `-static -nostdlib` | R8 for every linker |
+| `weak-prel` | gcc (asm): PC-relative data, `ADR` and `LDR` literal to an undefined weak | GNU ld, lld | clean (§4.4) |
+| `eh-frames` | gcc (asm): CIEs `zR`, `zPLR` (personality through `DW.ref`, LSDA), `zRS`, `zRB`; one FDE in a collected section | `-static -nostdlib --eh-frame-hdr --gc-sections` | `tests/eh.rs`: exits 0; clean; nothing not checked; 5 FDEs checked, 1 dropped, 5 table entries, 7 records verified |
 
 ### 9.2 Mutations
 
@@ -843,6 +1231,43 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   be found.
 - **(e)** Each structure rule (S1–S12) and map rule (M1–M5) is broken.
   Each must produce its own finding.
+- **(f)** Thread-local storage (`tls-types`, every linker): (1) bits 0, 5,
+  10, 16, 22 and 31 of every TLS-relocated instruction, relaxed or not,
+  are flipped, and all must be found (516/516); (2) `PT_TLS` is moved by
+  its alignment, or its alignment multiplied by 4, and each must be found
+  (6/6); (3) each `.got` word is corrupted as in (c), and at least one
+  must be found where a TLS record went through an entry.
+- **(g)** Call frame information (`eh-frames`, every linker; §6.4). The
+  mutations are: bit 0 of every byte of every CIE and FDE after the
+  length; bit 12 of every initial location and range; every record's
+  length plus 4; bit 0 of every byte of `.eh_frame_hdr`. And for
+  `tls-c`, which links crtend.o, the last FDE lengthened over the
+  terminator. The verifier finds:
+  - CIE bytes: 237/240;
+  - FDE bytes: 318/318;
+  - record lengths: 25/27;
+  - header bytes: 156/156;
+  - the terminator: 3/3.
+
+  Every rule E1 to E5 finds some mutant. The 5 that are not found are
+  equivalent, and the test lists them. The LSDA encoding `sdata4` made
+  `sdata2` decodes the same LSDA. The last FDE lengthened over a
+  terminator that lld and mold add, which no input asked for, only gains
+  `DW_CFA_nop`s.
+
+- **(h)** The symbol table (`tls-types`, `eh-frames` and `got-ldr-w`,
+  every linker; §6.5). A mutant counts as found when it adds a finding
+  that is not a recorded anomaly and that the clean link does not have.
+  (`got-ldr-w` has R8 by design.) The mutations are:
+  - Y2: `sh_info` ±1, `sh_entsize` 16, symbol 0's value, the last local
+    swapped with the first global, and the first byte of `.strtab` and of
+    `.shstrtab`;
+  - Y3 and Y4: the size + 1, the type, a section that does not hold the
+    value, the binding and the visibility of every symbol the inputs
+    define. A local counts only if moving it by 4 gives a Y4 finding;
+  - Y5: every judged linker-defined symbol moved by 0x100000.
+
+  The verifier finds Y2 60/60, Y3 184/184, Y4 179/179 and Y5 78/78.
 
 ### 9.3 Map readers
 
@@ -874,6 +1299,14 @@ A truncated output, or an input cut short, must also produce a finding.
 | lld 22 | W1, only with addend 0, Rd equal, and the pair adjacent; W2 and W3 (GOT relaxation, only when Rt = Rn and the pair is adjacent); W5 (`bl .+4` to an undefined weak); W6 (`__AArch64AbsLongThunk_x`: `LDR x16, .+8; BR x16; .xword`); W8 (`__CortexA53843419_*`: the site becomes `B patch`, and the patch holds the load and `B back`) |
 | mold 2.37 | W1, including with an addend; W2, including for an undefined weak (`ADRP` of page 0); W4; W6 (`x$thunkN`: `ADRP x16; ADD; BR x16`). Code padding is `BRK #0x3e8`. |
 
+TLS (§4.7, static executables):
+
+| linker | IE | TLSDESC | traditional GD | traditional LD |
+|---|---|---|---|---|
+| GNU ld 2.44 | W9, also with mismatched registers (A8); PREL19 and MOVW forms kept (GOT entry) | W10 (`hi; lo; NOP; NOP`) | W12 | W13 with `#16` (A7) |
+| lld 22 | W9, also with mismatched registers (A8) | W10 (`hi; lo; NOP; NOP`) | refused (513, 514) | refused (518, 519, 528) |
+| mold 2.37 | kept: a GOT entry holding TPREL | W10 (`NOP; NOP; hi; lo`) for local symbols, W11 (`NOP; NOP; ADRP; LDR`) for global ones | kept: a GOT pair (1, DTPREL), `BL __tls_get_addr` | refused |
+
 ### 10.2 Anomalies
 
 These are defects of a reference linker that the verifier reports. The
@@ -888,7 +1321,7 @@ corpus test accepts them by name and nothing else.
   segment (S8).
 - **A3 (mold).** `_TLS_MODULE_BASE_` is defined `STT_TLS` even with no
   `PT_TLS`. When there is one, its value is the segment's address rather
-  than an offset (S8).
+  than an offset (S8, and Y5 of §6.5).
 
 - **A6 (GNU ld, lld, mold).** A `:got:` reference to a local symbol, which the
   assembler writes as a section symbol plus an addend
@@ -908,8 +1341,50 @@ Two more anomalies are reported here but do not reach the corpus:
   not a finding: the verifier checks what the program computes, not
   whether the erratum workaround was applied.
 - **A5 (lld).** lld relaxes `LDR Wt, [Xn, :got_lo12:]` (a 32-bit load,
-  ill-formed with `LD64_GOT_LO12_NC`) into a 64-bit `ADR`. The corpus does
-  not contain that input.
+  ill-formed with `LD64_GOT_LO12_NC`) into a 64-bit `ADR`. GNU ld writes
+  the scale-8 offset into the scale-4 load. The input is R8 (§4.3), for
+  every linker (`got-ldr-w`).
+
+Two TLS miscompiles, each asserted by `tests/tls.rs` on its own case and
+absent from the other cases:
+
+- **A7 (GNU ld).** Local-dynamic relaxed to local-exec (W13) adds 16 to
+  the thread pointer whatever `PT_TLS` `p_align` is. With `p_align` 64 the
+  block starts at TP + 64, so every local-dynamic access is 48 bytes off:
+  `tls-ld-64` reads the variable before the one it names and exits 0
+  instead of 42. The verifier reports R1 on the three records of the
+  sequence, expecting `ADD x0, x0, #0x40`. With `p_align` <= 16 the
+  rewriting is right.
+- **A8 (GNU ld, lld).** IE relaxed to LE (W9) writes the MOVZ to the
+  ADRP's register and the MOVK to the LDR's: `ADRP x4; LDR x5, [x4]`
+  becomes `MOVZ x4, #hi; MOVK x5, #lo`, which leaves x5 without the high
+  half (review finding 1). `tls-ie-regs` exits wrong; the verifier reports
+  R1 on both records. mold keeps the GOT entry and is right.
+
+Three symbol-table defects, found by §6.5 on the corpus:
+
+- **A9 (mold).** Every global of a static executable is `STB_LOCAL` in
+  `.symtab`, including `main`, `_start` and the default-visibility globals
+  of libc. The symbols stay in the global part of the table (`sh_info` is
+  right), but `nm` and debuggers show them as locals (Y3 binding, found 0).
+- **A10 (GNU ld).** A label of an empty input section whose output
+  section GNU ld removes gets the index of another section, one that does
+  not hold the label's address. crtend.o's `__TMC_END__` labels the empty
+  `.tm_clone_table`. Its `st_shndx` names a section that ends below it
+  (Y3, "a label of an empty section").
+- **A11 (mold).** With `--gc-sections` leaving no `.bss`, `__bss_start` is
+  0 even when the program references it. A program that clears from
+  `__bss_start` to `_end` would write from address 0. This was verified by
+  hand with a 3-line program (Y5, found 0).
+
+**Where the corpus expects them.** The anomalies that a reference linker
+shows on essentially every link of a kind are run-wide defaults, listed
+in `tests/link/anomalies` (format: `spec/harness.md` "L3"). It holds mold
+A1 A2 A3 A9 (A1 and A2 come from the C runtime's IFUNCs, so the
+`-nostdlib` links show only A3 and A9) and GNU ld A10 (crtbegin/crtend's
+labels, on every driver link with the C runtime). A test declares any
+other anomaly itself with `#@ anomaly(<linker>): <id>...`. mortar never
+has a default and never declares one.
 
 ### 10.3 Types each linker accepts
 
@@ -926,6 +1401,54 @@ which types each linker refuses:
 
 The table rows that no reference linker links (`GOTREL64/32`, `PLT32`) are
 checked only by the unit tests of their encoding.
+
+The `tls-types` case does the same for §4.7:
+
+| TLS types | GNU ld | lld 22 | mold 2.37 |
+|---|---|---|---|
+| `TLSLE_MOVW_TPREL_*`, `TLSLE_ADD_TPREL_HI12`, `_LO12_NC`, `TLSIE_ADR_GOTTPREL_PAGE21`, `TLSIE_LD64_GOTTPREL_LO12_NC`, the TLSDESC sequence | yes | yes | yes |
+| `TLSLE_ADD_TPREL_LO12` (checked), traditional GD (513, 514) | yes | refused | yes |
+| `TLSLE_LDST*_TPREL_LO12_NC` | yes | yes | refused |
+| `TLSLE_LDST*_TPREL_LO12` (checked), `TLSIE_LD_GOTTPREL_PREL19`, `TLSIE_MOVW_GOTTPREL_*`, traditional LD and every `DTPREL` type | yes | refused | refused |
+| `LDST128` TLS forms | GAS cannot assemble them | | |
+| `TLSDESC` `PREL21`/`LD_PREL19`, GD/LD `PREL21` | refused | refused | refused |
+
+### 10.4 Call frame information
+
+- **The search table.** In a `-static` link through the gcc driver, GNU ld
+  and lld write no `.eh_frame_hdr` and no `PT_GNU_EH_FRAME`, because the
+  driver passes `--eh-frame-hdr` only for dynamic links. mold always
+  writes both. Unwinding in such a GNU ld or lld program goes through
+  crtbeginT.o's `__register_frame_info`, which walks from
+  `__EH_FRAME_BEGIN__` to crtend.o's terminator.
+- **The terminator.** GNU ld keeps crtend.o's terminator last, and writes
+  none when no input gives one (`-nostdlib`). lld and mold always end
+  `.eh_frame` with a terminator of their own.
+- **CIEs.** All three merge identical CIEs: a glibc `-static` hello
+  world has 2 CIEs for 950 FDEs from each of them.
+- **Dropped FDEs.** An FDE whose function is in a discarded COMDAT group
+  or a collected section is absent from all three outputs. None of them
+  writes a neutralised FDE on the corpus.
+
+### 10.5 Symbol tables
+
+Observed on the glibc `c-hello` links:
+
+- **Hidden symbols.** lld and mold make a hidden global `STB_LOCAL`, as
+  the gABI says (`_dl_argv`: `LOCAL HIDDEN`). GNU ld keeps the binding and
+  the visibility (`GLOBAL HIDDEN`). Y3 accepts both forms.
+- **Data ends.** GNU ld puts `_edata` at the end of `.data` (E) and
+  `__bss_start` at the start of `.bss`, which is E rounded up to `.bss`'s
+  alignment. mold puts `_edata` and `__bss_start` at E, which is also the
+  start of its `.bss`. lld writes none of the three in this case, because
+  nothing references them. All the values seen fall within Y5's ranges.
+- **Mapping symbols.** All three keep the inputs' `$x` and `$d`. A
+  linker's veneers and patches can carry mapping symbols of their own. A
+  `$d` of the input `.eh_frame` lands in GNU ld's rewritten `.eh_frame`,
+  at a place the map does not give, so Y4 counts it unchecked.
+- **Not judged.** GNU ld and lld write no linker-defined symbol that §6.5
+  does not judge. mold writes its `$` names and
+  `__start_EHDR`/`__start_PHDR`.
 
 ## 11. Open questions
 
@@ -944,5 +1467,18 @@ checked only by the unit tests of their encoding.
    give each (symbol, addend) its own slot holding S+A (AAELF64's
    GDAT(S+A)) or refuse the record by name. `spec/a64.md` should state
    which.
-5. Stage 2 must specify the `.eh_frame` check against the LSB, so that
-   GNU ld's edited `.eh_frame` (§3.4) can be checked.
+5. (Resolved by §6.4.) GNU ld's edited `.eh_frame` is checked record by
+   record. mortar's map may still place `.eh_frame` by pieces. The check
+   does not need it, but piece records would let crtbeginT.o's
+   `__EH_FRAME_BEGIN__` be judged.
+6. A7 and A8 (§10.2): mortar's TLS relaxations must use `tcb` =
+   align_up(16, `p_align`) and must relax IE only when Xt = Xn = Xd (else
+   keep the GOT entry, as mold does). `spec/a64.md` should state both.
+7. Static PIE: S1 accepts `ET_EXEC` only, so a static-pie output is an S1 finding
+   today. Its TLS forms are those of §4.7 with no TLS dynamic relocation;
+   accepting `ET_DYN` without `PT_INTERP` needs the `RELATIVE` relocations
+   of `.rela.dyn` judged first, which is stage 3. So are its `.dynsym`,
+   `.hash` and `.gnu.hash` (§6.5).
+8. A9 to A11 (§10.2): mortar's `.symtab` must keep the inputs' bindings,
+   name the section that holds each label (or `SHN_ABS`), and define
+   `__bss_start` within §6.5's range even when there is no `.bss`.

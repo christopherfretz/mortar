@@ -1,12 +1,13 @@
 //! `Layout::check` (`spec/model.md` §4.4 "Validity", and the rules §4.1 to
 //! §4.3 state): whether a layout may be given to `mortar_image`.
 //!
-//! Rules 1 to 3 and 5 are checked in full from the tables. Rules 4 and 6
-//! need a pass over the relocations, which `fill` makes on every field it
-//! writes (§4.4): here rule 4 is checked as far as the tables show it (the
-//! patch and redirect rows are consistent, every redirect names a patch of
-//! its kind, an erratum patch only from its own site, and a `Plt` thunk's
-//! key has an entry; an unused patch is allowed), rule 6 not at all.
+//! Rules 1 to 3, 4b and 5 are checked in full from the tables; rule 3
+//! compares the segments with [`derive_segments`]. Rule 4a needs a pass over
+//! the relocations, which `fill` makes on every field it writes (§4.4): here
+//! it is checked as far as the tables show it (the patch and redirect rows
+//! are consistent, every redirect names a patch of its kind, an erratum
+//! patch only from its own site, and a `Plt` thunk's key has an entry; an
+//! unused patch is allowed). What was rule 6 is `fill`'s obligation.
 //!
 //! The rules run in a fixed order and the first violation found is the
 //! answer, so the report is deterministic.
@@ -22,7 +23,9 @@ use crate::column::Column;
 use crate::demands::{DemandFlags, Demands, GlobalFlags};
 use crate::id::{ChunkId, FragId, Id, OptId, OutSecId, SectionId, SegmentId, SymKey, SymKind};
 use crate::inputs::{Inputs, Reader};
-use crate::layout::{AllocKey, ChunkKind, DefValue, Layout, PatchKind, ThunkTarget};
+use crate::layout::{
+    AllocKey, ChunkKind, DefValue, Layout, PatchKind, SegmentRules, ThunkTarget, derive_segments,
+};
 use crate::liveness::Liveness;
 use crate::resolution::{Def, FileLive, Resolution};
 use crate::split::Split;
@@ -175,8 +178,13 @@ pub struct CheckContext<'t, 'n> {
     pub class: Class,
     /// The page size the loader uses (`-z max-page-size`, or the target's).
     pub page_size: u64,
-    /// Whether the output needs an entry address.
+    /// Whether the output has an entry address: an executable whose entry
+    /// symbol is defined (none after `entry-not-found`, or for `-shared` and
+    /// `-r` without `-e`: `spec/layout.md` L-103).
     pub needs_entry: bool,
+    /// The facts and options [`derive_segments`] reads (rule 3,
+    /// `spec/layout.md` L-125).
+    pub segment_rules: SegmentRules,
     pub resolution: &'t Resolution,
     pub assignment: &'t Assignment<'n>,
     pub split: &'t Split,
@@ -682,7 +690,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         }
         for (at, &f) in slots.needed.iter().enumerate() {
             need(
-                cx.resolution.file_live[f] == FileLive::Needed,
+                matches!(cx.resolution.file_live[f], FileLive::Shared { needed: true }),
                 r,
                 || "DT_NEEDED for a file that is not a needed shared object".into(),
                 [Row::Entry("needed", at as u32)],
@@ -766,7 +774,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             need(needs, r, || "a section that needs no place has one".into(), [Row::Section(s)])?;
             let c = &p.chunks[chunk];
             need(
-                out.is_some_and(|o| c.kind == ChunkKind::Body(o)),
+                out.is_some_and(|o| matches!(c.kind, ChunkKind::Body(part) if part.out == o)),
                 r,
                 || "the section is not in the body of its output section".into(),
                 [Row::Section(s), Row::Chunk(chunk)],
@@ -1052,7 +1060,28 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 )?;
             }
         }
-        need(page > 0, r, || "page size 0".into(), [])
+        need(page > 0, r, || "page size 0".into(), [])?;
+        self.derived()
+    }
+
+    /// Rule 3, `spec/layout.md` L-125: the segments are exactly what
+    /// [`derive_segments`] derives from the chunks and their order.
+    fn derived(&self) -> Check {
+        let r = Rule::Segments;
+        let p = &self.layout.placement;
+        let want = derive_segments(&p.chunks, &p.order, &self.cx.segment_rules);
+        let have = p.segments.as_slice();
+        if let Some(at) = (0..want.len().max(have.len())).find(|&i| want.get(i) != have.get(i)) {
+            let what = match (want.get(at), have.get(at)) {
+                (Some(w), Some(h)) => {
+                    format!("segment {at} is not the derived one: {h:?}, derived {w:?}")
+                }
+                (Some(w), None) => format!("a derived segment is missing: {w:?}"),
+                (None, _) => format!("segment {at} is not derived from the chunks"),
+            };
+            return fail(r, what, [Row::Segment(SegmentId(at as u32))]);
+        }
+        Ok(())
     }
 
     /// Rule 3, TLS: the initialized TLS chunks are directly followed by the
@@ -1115,17 +1144,17 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         }
         let start = p.chunks[first].addr.unwrap_or(0);
         let size = prev_end.unwrap_or(0) - u128::from(start);
-        let Some(t) = p.tls else {
+        let Some(tmpl) = p.tls else {
             return fail(r, "TLS chunks without a TLS template", [Row::Chunk(first)]);
         };
         need(
-            t.start == start && u128::from(t.size) == size && t.align == align,
+            tmpl.start == start && u128::from(tmpl.size) == size && tmpl.align == align,
             r,
             || "tls does not describe the TLS chunks".into(),
             [Row::Chunk(first), Row::Chunk(last)],
         )?;
         need(
-            aligned(t.start, t.align),
+            aligned(tmpl.start, tmpl.align),
             r,
             || "the TLS template's start is not a multiple of its alignment".into(),
             [Row::Chunk(first)],
@@ -1136,13 +1165,22 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         let s = &p.segments[seg];
         let filesz = init_end.map_or(0, |e| e - u128::from(start));
         need(
-            s.addr == t.start
-                && s.memsz == t.size
+            s.addr == tmpl.start
+                && s.memsz == tmpl.size
                 && u128::from(s.filesz) == filesz
-                && s.align == t.align,
+                && s.align == tmpl.align,
             r,
             || "PT_TLS does not match the TLS template".into(),
             [Row::Segment(seg)],
+        )?;
+        // spec/layout.md L-76, L-128: the template's file image starts at a
+        // multiple of its alignment too.
+        let c = &p.chunks[first];
+        need(
+            aligned(s.offset, tmpl.align) && (!c.in_file() || aligned(c.offset, tmpl.align)),
+            r,
+            || "the TLS template's file offset is not a multiple of its alignment".into(),
+            [Row::Chunk(first), Row::Segment(seg)],
         )
     }
 
@@ -1178,6 +1216,13 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             r,
             || "the RELRO run is not contiguous".into(),
             [Row::Chunk(first), Row::Chunk(last)],
+        )?;
+        // spec/layout.md L-64, L-129: the padding ends the run.
+        need(
+            p.chunks[last].is_relro_padding(),
+            r,
+            || "the RELRO run does not end with .relro_padding".into(),
+            [Row::Chunk(last)],
         )?;
         let [seg] = segs[..] else {
             return fail(r, "not exactly one PT_GNU_RELRO", segs.iter().map(|&s| Row::Segment(s)));
@@ -1279,7 +1324,63 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 )?;
             }
         }
+        self.islands()?;
         // A patch no site uses is allowed (M-4): the fixed point only adds.
+        Ok(())
+    }
+
+    /// Rule 4, the island policy (`spec/layout.md` L-111, L-126): an
+    /// erratum patch lies in the island of its site's body part; an island
+    /// holds at most one thunk per target and one erratum patch per site.
+    fn islands(&self) -> Check {
+        let r = Rule::Patches;
+        let p = &self.layout.placement;
+        let mut keys: Vec<(ChunkId, u8, SymKey, i64, SectionId, u64, u32)> = Vec::new();
+        for (at, patch) in p.patches.iter().enumerate() {
+            let me = Row::Entry("patches", at as u32);
+            let k = match patch.kind {
+                PatchKind::Thunk(ThunkTarget::Sym { key, addend }) => {
+                    (patch.chunk, 0, key, addend, SectionId(0), 0, at as u32)
+                }
+                PatchKind::Thunk(ThunkTarget::Plt(key)) => {
+                    (patch.chunk, 1, key, 0, SectionId(0), 0, at as u32)
+                }
+                PatchKind::Erratum { section, offset, .. } => {
+                    if let Some((body, _)) = p.place[section].get()
+                        && let ChunkKind::Body(part) = p.chunks[body].kind
+                    {
+                        need(
+                            p.chunks[patch.chunk].kind == ChunkKind::Patches(part),
+                            r,
+                            || "an erratum patch outside the island of its site's part".into(),
+                            [me, Row::Section(section), Row::Chunk(patch.chunk)],
+                        )?;
+                    }
+                    (
+                        patch.chunk,
+                        2,
+                        SymKey::global(crate::id::SymbolId(0)),
+                        0,
+                        section,
+                        offset,
+                        at as u32,
+                    )
+                }
+            };
+            keys.push(k);
+        }
+        keys.sort_unstable();
+        let same = |a: &(ChunkId, u8, SymKey, i64, SectionId, u64, u32),
+                    b: &(ChunkId, u8, SymKey, i64, SectionId, u64, u32)| {
+            (a.0, a.1, a.2, a.3, a.4, a.5) == (b.0, b.1, b.2, b.3, b.4, b.5)
+        };
+        if let Some(pair) = keys.windows(2).find(|w| same(&w[0], &w[1])) {
+            return fail(
+                r,
+                "two patches of one target or site in one island",
+                [Row::Entry("patches", pair[0].6), Row::Entry("patches", pair[1].6)],
+            );
+        }
         Ok(())
     }
 
@@ -1342,8 +1443,12 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 [Row::Entry("defined", at)],
             );
         }
-        let internal =
-            cx.resolution.def.iter().filter(|(_, d)| matches!(d, Def::Internal)).map(|(s, _)| s);
+        let internal = cx
+            .resolution
+            .def
+            .iter()
+            .filter(|(s, d)| matches!(d, Def::Internal(_)) && !cx.assignment.is_withdrawn(*s))
+            .map(|(s, _)| s);
         if let Some((s, missing)) = difference(internal, p.defined.iter().map(|x| x.symbol)) {
             let what = if missing {
                 "a linker-defined symbol with no value"

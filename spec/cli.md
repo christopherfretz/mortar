@@ -1,6 +1,7 @@
 # `mortar_cli`: the command line
 
-Status: normative (WP-008).
+Status: normative (WP-008); amended by WP-020d for `spec/input.md` §17
+and `spec/resolve.md` §18 (`spec/landed/model/WP-020d.md`).
 
 `mortar_cli` reads a command line in GNU ld's dialect and turns it into a
 `Plan`, which is plain data. It also produces the texts that come from the
@@ -235,23 +236,30 @@ This is libiberty's `buildargv`, as GNU ld uses it.
 - When `-m` names the target, `check_target` runs at the end of the line.
   An option of another target is `unknown-option`, with the note
   "X is an option of T only; this link is for U".
-- When the line has no `-m`, the target comes from the first input. The
-  phase that reads it calls `check_target` (follow-up for WP-021).
+- When the line has no `-m`, the target comes from the inputs.
+  `mortar_input` calls `check_target` as `spec/input.md` §3.2 says; its
+  diagnostics take phase 20 there (the key `(20, arg, 0)`), not the
+  phase of this section.
 - GNU ld warns about another target's `-z` keyword and goes on; it
   rejects another target's long option. mortar rejects both.
 
 ### 2.10 Keys and order
 
-- The diagnostics of the grammar have the key `Key::new(0, arg, seq)`:
-  - phase 0;
+- The diagnostics of the grammar have the key `Key::new(10, arg, seq)`:
+  - phase 10, the command line's ordinal (`spec/model.md` §8;
+    `mortar_cli::PHASE`); response-file errors (§2.2) too;
   - `arg` is the index of the argument in the expanded line;
   - `seq` is a counter that keeps the order within one argument.
 - Errors that only show at the end of the line use the index one past
   the last argument: `no-input-files` and `conflicting-options`.
 - The refusals of options (§4.4) have the key
-  `Key::new(0, arg, u64::MAX)`: they come after any grammar error of the
+  `Key::new(10, arg, u64::MAX)`: they come after any grammar error of the
   same argument.
-- The facade's own refusal of linking has phase 1 (§4.3).
+- The facade's own refusal of linking has phase 11 (§4.3): after the
+  command line, before any later phase.
+- A malformed `MORTAR_SCHED_SEED` is `mortar_core::seed`'s diagnostic,
+  key `(10, 0, 0)` (`spec/model.md` §6). The grammar does not read the
+  environment; the driver reports it.
 
 ## 3. The plan
 
@@ -331,6 +339,12 @@ Unbalanced regions:
 - A region left open at the end of the line is accepted. GNU ld and lld
   accept it too.
 
+Search:
+- `library_paths` keeps each `-L` in order; `sysroot` is `--sysroot`.
+- `nostdlib` is `-nostdlib`: the `SEARCH_DIR` directories of linker
+  scripts are not searched (`spec/input.md` §4.2). mortar has no
+  built-in directories to drop.
+
 ### 3.4 Scripts and lists
 
 `plan.scripts` records each file with a role:
@@ -366,13 +380,18 @@ A line that has `-T` or `-dT` needs no input file.
 `plan.dynamic` holds:
 - `soname`;
 - `rpath` (each `-rpath`, in order);
-- `rpath_link`;
+- `rpath_link` (each `-rpath-link`, in order, as written: a
+  `:`-separated list is split by `mortar_input`, `spec/input.md` §8.6);
 - `dynamic_linker` (`Path` or `None`);
 - `new_dtags`;
 - `hash_style`;
 - `pack_dyn_relocs`;
 - `export_dynamic` (`-E`, `--export-dynamic`, `--no-export-dynamic`);
-- `bsymbolic`, one of the four `-Bsymbolic` forms.
+- `bsymbolic`, one of the four `-Bsymbolic` forms;
+- `allow_shlib_undefined`: `--allow-shlib-undefined` (`true`),
+  `--no-allow-shlib-undefined` (`false`), the last wins; `None` is the
+  default for the output kind (`spec/input.md` §8.6, `spec/resolve.md`
+  §5.2).
 
 ### 3.7 Typed `-z` keywords
 
@@ -422,7 +441,12 @@ lands in `plan.other` (§3.12).
 - `unresolved_symbols`;
 - `warn_unresolved_symbols`;
 - `allow_multiple_definition` (also `-z muldefs`);
-- `noinhibit_exec`.
+- `noinhibit_exec`;
+- `warn_backrefs`: `--warn-backrefs` until `--no-warn-backrefs`
+  (`archive-backref`, `spec/resolve.md` §4.3);
+  `--warn-backrefs-exclude` stays in `other`;
+- `warn_common`: `--warn-common` until `--no-warn-common` (the common
+  kinds, `spec/resolve.md` §3.3).
 
 The facade does two things with these:
 - It applies `error_limit`, `fatal_warnings` and `no_warnings` to the
@@ -522,11 +546,37 @@ The status today:
   - `--error-limit`, `--fatal-warnings`, `--no-fatal-warnings`, `-w`;
   - `--color-diagnostics`, `--no-color-diagnostics`;
   - `--version`, `-v`, `-V`, `--help`.
-- 17 rows are `noop`.
-- 444 rows are `refused`.
+- 22 rows are `noop`; WP-024 made five of them (`-z common-page-size`,
+  `--warn-execstack`, `--rosegment`, `-z nostart-stop-gc`,
+  `-z sectionheader`; `spec/layout.md` §20.2).
+- 439 rows are `refused`.
 
 A work package that implements an option changes the row's status in the
 same change.
+
+Rows whose status the M1 and M2 packages change (`spec/input.md` §17,
+`spec/resolve.md` §18). Their fields exist (§3); the rows stay `refused`
+until the phase that honors them lands with its test:
+- WP-021 (`mortar_input`): `-nostdlib`, `-rpath-link`,
+  `--allow-shlib-undefined`, `--no-allow-shlib-undefined` (M2).
+- WP-022 stage 2 (`mortar_resolve`): `--warn-backrefs`, `--warn-common`,
+  `--require-defined`, `-u`, `-e`, `--allow-multiple-definition`,
+  `-z muldefs`, `--unresolved-symbols`, `--warn-unresolved-symbols`,
+  `--error-unresolved-symbols`, `--ignore-unresolved-symbol`,
+  `--start-group`/`--end-group` (no-op for resolution), and
+  `--fortran-common`, whose help says "mortar's behavior, always on":
+  mortar always takes an archive member for a common symbol
+  (`spec/resolve.md` §3.3). `--no-fortran-common` stays `refused`.
+- WP-024 (`mortar_layout`, `spec/layout.md` §20.2): `-z max-page-size`
+  (L-74), `-z separate-code`, `-z noseparate-code` (L-71), `-z relro`,
+  `-z norelro` (L-64, L-65), `-z execstack`, `-z noexecstack` (L-84).
+  `Options::from_plan` honors them; the rows become `supported` when
+  `mortar::link` runs layout (WP-027). `-z start-stop-visibility` stays
+  `refused`: §20.2 makes only the value `protected` a no-op, and a row's
+  status cannot depend on its value. `--image-base` and `-Ttext-segment`
+  wait for M2 (L-68); `--no-rosegment`, `--no-warn-execstack`,
+  `--error-execstack`, `-z start-stop-gc`, `-Ttext`, `-Tdata`, `-Tbss`,
+  `--section-start` and `-z keep-text-section-prefix` stay `refused`.
 
 ### 4.3 What the facade does with a parse
 
@@ -541,7 +591,7 @@ same change.
    - the grammar diagnostics;
    - the refusals of the refused options (§4.4);
    - if the line has no error, the refusal of linking itself
-     (`Refused{Feature, "linking"}`, phase 1), which stays until M1.
+     (`Refused{Feature, "linking"}`, phase 11), which stays until M1.
 
    They go into a collector with the policy of §3.9. The result is
    `Outcome::Failed`.
@@ -695,7 +745,7 @@ The test fails when the outcome is not the recorded one.
 | an option of another target with no `-m` | error | n/a | n/a | accepted until the target is known | one mortar links for every target |
 | `-m elf_x86_64` on the AArch64 `ld.bfd` | error | n/a | n/a | accepted | the same |
 | `-G` with no size | `-shared` | `missing argument` | unknown option | `missing-argument` | `-G` is GNU's size option; the `-shared` reading is undocumented |
-| `-R` | `--just-symbols`, or `-rpath` when it names a directory | rpath | rpath | `JustSymbols` | GNU's reading; the directory case needs the file system, and is the input phase's to decide (follow-up) |
+| `-R` | `--just-symbols`, or `-rpath` when it names a directory | rpath | rpath | `JustSymbols` | GNU's reading; the directory case is `spec/input.md` §4.8 |
 | `-entry=main` | the entry option | the entry option | `-e ntry=main` | the entry option | GNU's and lld's reading |
 | `-m` inside another option's value | taken as the emulation (pre-scan) | not | not | not | §2.8 |
 | lld-only and mold-only options | error | accepted | accepted | read (refused unless supported) | one command line for every driver |

@@ -8,14 +8,17 @@
 use std::collections::{BTreeMap, HashMap};
 
 use mortar_elf::consts::{
-    SHF_STRINGS, SHT_NOBITS, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_GNU_IFUNC, STT_SECTION,
-    STT_TLS,
+    PT_TLS, SHF_STRINGS, SHF_TLS, SHT_NOBITS, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_GNU_IFUNC,
+    STT_SECTION, STT_TLS,
 };
 use mortar_elf::{Machine, SymbolIndex, SymbolSection};
 
-use crate::a64::{self, Def, Field, Op};
+use crate::a64::{self, Def, Field, Form, Op, Slot};
 use crate::image::Image;
 use crate::locate::{Obj, Place};
+#[path = "eh.rs"]
+mod eh;
+
 use crate::report::{Coverage, Finding, Reason, Rewrite, Rule, Site, Via};
 
 /// The width of a relocated place in bytes (§4.2).
@@ -40,7 +43,8 @@ impl Occupied {
         let mut v: Vec<(u64, u64)> = Vec::new();
         for o in objs {
             for s in &o.secs {
-                if !s.alloc() {
+                // `.tbss` is in the TLS template only: no memory of the image.
+                if !s.alloc() || s.tbss() {
                     continue;
                 }
                 match &s.place {
@@ -75,11 +79,53 @@ impl Occupied {
     }
 }
 
+/// The output's static TLS block (§4.7): `PT_TLS` and the offset of its
+/// start from the thread pointer.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TlsBlock {
+    /// `p_vaddr` of `PT_TLS`.
+    pub start: u64,
+    /// `align_up(16, p_align)`: TPREL of the block's first byte.
+    pub tcb: u64,
+}
+
+impl TlsBlock {
+    /// The block of the output, if it has one `PT_TLS`; `Err` names why
+    /// the TP offsets cannot be judged (§4.7).
+    fn of(image: &Image<'_>) -> Result<Option<TlsBlock>, &'static str> {
+        let mut tls = image.phdrs.iter().filter(|p| p.p_type == PT_TLS);
+        let Some(t) = tls.next() else { return Ok(None) };
+        if tls.next().is_some() {
+            return Err("the output has more than one PT_TLS");
+        }
+        let align = t.p_align.max(1);
+        if !align.is_power_of_two() {
+            return Err("the PT_TLS alignment is not a power of two");
+        }
+        if t.p_vaddr % align != 0 {
+            return Err("PT_TLS p_vaddr is not a multiple of p_align");
+        }
+        Ok(Some(TlsBlock { start: t.p_vaddr, tcb: 16u64.next_multiple_of(align) }))
+    }
+
+    /// TPREL(v) for the address v of a TLS byte.
+    pub fn tprel(self, v: u64) -> u64 {
+        v.wrapping_sub(self.start).wrapping_add(self.tcb)
+    }
+
+    /// DTPREL(v).
+    pub fn dtprel(self, v: u64) -> u64 {
+        v.wrapping_sub(self.start)
+    }
+}
+
 /// What a relocation's symbol resolves to (§4.4).
 #[derive(Debug, Clone)]
 enum Target {
     /// S.
     Addr(u64),
+    /// S, the address of a thread-local symbol in the TLS template (§4.7).
+    Tls(u64),
     /// An undefined weak symbol: S = 0, and the branch rewritings apply.
     UndefWeak,
     /// A symbol in a mergeable section: found from the fields (§5.6).
@@ -114,10 +160,33 @@ struct Pending {
     rec: Rec,
     site: Site,
     symbol: String,
-    /// S+A for a GOT-indirect record.
-    value: u64,
+    /// What the GOT entry of a GOT-indirect record holds.
+    want: Want,
     /// The record is half of an ADRP+ADD made NOP+ADR (merge path).
     w1: bool,
+}
+
+/// What a GOT entry must hold (§5.5, §4.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Want {
+    /// One 8-byte word.
+    Word(u64),
+    /// Two 8-byte words (the module index and an offset).
+    Pair(u64, u64),
+}
+
+impl Want {
+    fn size(self) -> u64 {
+        match self {
+            Want::Word(_) => 8,
+            Want::Pair(..) => 16,
+        }
+    }
+    fn first(self) -> u64 {
+        match self {
+            Want::Word(v) | Want::Pair(v, _) => v,
+        }
+    }
 }
 
 /// Evidence of a GOT slot's or a piece's address from one record.
@@ -126,6 +195,10 @@ enum Evidence {
     Exact(u64),
     Page(u64),
     Low(u64),
+    /// `G - GOT` from a MOVW group: bits 31:16 (with the sign of a MOVN).
+    MovHi(u64),
+    /// `G - GOT` bits 15:0, from a `MOVK`.
+    MovLo(u64),
     None,
 }
 
@@ -138,15 +211,31 @@ impl Group {
     /// The addresses the members' evidence allows, in order, without
     /// duplicates: every exact value, then every page with every low part.
     fn candidates(&self) -> Vec<u64> {
+        self.candidates_from(None)
+    }
+
+    /// As [`Group::candidates`], with the GOT base for MOVW evidence.
+    fn candidates_from(&self, got: Option<u64>) -> Vec<u64> {
         let mut v: Vec<u64> = Vec::new();
         let mut pages: Vec<u64> = Vec::new();
         let mut lows: Vec<u64> = Vec::new();
+        let mut highs: Vec<u64> = Vec::new();
+        let mut movk: Vec<u64> = Vec::new();
         for (_, e) in &self.members {
             match *e {
                 Evidence::Exact(x) => v.push(x),
                 Evidence::Page(x) => pages.push(x),
                 Evidence::Low(x) => lows.push(x),
+                Evidence::MovHi(x) => highs.push(x),
+                Evidence::MovLo(x) => movk.push(x),
                 Evidence::None => {}
+            }
+        }
+        if let Some(g) = got {
+            for &h in &highs {
+                for &l in &movk {
+                    v.push(g.wrapping_add((h & !0xffff) | l));
+                }
             }
         }
         pages.sort_unstable();
@@ -168,7 +257,9 @@ impl Group {
     fn unpaired(&self) -> bool {
         let has = |f: fn(&Evidence) -> bool| self.members.iter().any(|(_, e)| f(e));
         !has(|e| matches!(e, Evidence::Exact(_)))
-            && (has(|e| matches!(e, Evidence::Page(_))) != has(|e| matches!(e, Evidence::Low(_))))
+            && (has(|e| matches!(e, Evidence::Page(_))) != has(|e| matches!(e, Evidence::Low(_)))
+                || has(|e| matches!(e, Evidence::MovHi(_)))
+                    != has(|e| matches!(e, Evidence::MovLo(_))))
     }
 }
 
@@ -205,38 +296,62 @@ fn judge(rec: &Rec, x: i64) -> Verdict {
     Verdict::Mismatch(expected)
 }
 
-/// X for a non-GOT operation (§4.1).
+/// X for a non-GOT operation (§4.1). For the TLS operations `sa` is
+/// already TPREL(S+A) or DTPREL(S+A) (§4.7).
 fn x_direct(op: Op, sa: u64, p: u64, got: Option<u64>) -> Option<i64> {
     Some(match op {
-        Op::Abs => sa as i64,
+        Op::Abs | Op::TpRel | Op::DtpRel => sa as i64,
         Op::Prel => sa.wrapping_sub(p) as i64,
         Op::Page => a64::page(sa).wrapping_sub(a64::page(p)) as i64,
         Op::GotRel => sa.wrapping_sub(got?) as i64,
-        Op::None | Op::Got | Op::GotPrel | Op::GotPage | Op::GotOff | Op::GotPageOff => {
-            return None;
-        }
+        Op::None | Op::Slot(..) | Op::DescCall => return None,
     })
 }
 
 /// X for a GOT operation given the slot G (§4.1).
 fn x_got(op: Op, g: u64, p: u64, got: Option<u64>) -> Option<i64> {
-    Some(match op {
-        Op::Got => g as i64,
-        Op::GotPrel => g.wrapping_sub(p) as i64,
-        Op::GotPage => a64::page(g).wrapping_sub(a64::page(p)) as i64,
-        Op::GotOff => g.wrapping_sub(got?) as i64,
-        Op::GotPageOff => g.wrapping_sub(a64::page(got?)) as i64,
-        _ => return None,
+    let Op::Slot(_, form) = op else { return None };
+    Some(match form {
+        Form::Abs => g as i64,
+        Form::Prel => g.wrapping_sub(p) as i64,
+        Form::Page => a64::page(g).wrapping_sub(a64::page(p)) as i64,
+        Form::Off => g.wrapping_sub(got?) as i64,
+        Form::PageOff => g.wrapping_sub(a64::page(got?)) as i64,
     })
 }
 
 const ADR_PREL_PG_HI21: u32 = 275;
 const ADR_PREL_PG_HI21_NC: u32 = 276;
 const ADD_ABS_LO12_NC: u32 = 277;
+const TSTBR14: u32 = 279;
+const CONDBR19: u32 = 280;
 const JUMP26: u32 = 282;
 const CALL26: u32 = 283;
 const ADR_GOT_PAGE: u32 = 311;
 const LD64_GOT_LO12_NC: u32 = 312;
+const TLSGD_ADR_PAGE21: u32 = 513;
+const TLSGD_ADD_LO12_NC: u32 = 514;
+const TLSLD_ADR_PAGE21: u32 = 518;
+const TLSLD_ADD_LO12_NC: u32 = 519;
+const TLSIE_ADR_GOTTPREL_PAGE21: u32 = 541;
+const TLSIE_LD64_GOTTPREL_LO12_NC: u32 = 542;
+const TLS_GET_ADDR: &str = "__tls_get_addr";
+
+/// What one record comes to.
+enum Outcome {
+    Accepted(Rewrite),
+    Verified,
+    Skip(Reason),
+    Fail(Rule, String, Option<u64>),
+}
+
+/// A traditional GD or LD sequence's form (§4.7).
+enum Seq {
+    Relaxed(Rewrite),
+    /// Not rewritten, or not a whole sequence: each record on its own.
+    Kept,
+    Bad(String, Option<u64>),
+}
 
 /// The engine's state over one verification.
 pub(crate) struct Engine<'a, 'b> {
@@ -250,8 +365,15 @@ pub(crate) struct Engine<'a, 'b> {
     /// the output has one (§5.5).
     got_section: Option<(u64, u64)>,
     cache: Vec<Vec<Option<Target>>>,
-    got_groups: BTreeMap<(usize, u32, i64), Group>,
+    /// The static TLS block, or why TP offsets cannot be judged (§4.7).
+    pub(crate) tls: Result<Option<TlsBlock>, &'static str>,
+    got_groups: BTreeMap<(Slot, usize, u32, i64), Group>,
+    /// Output words a specified rewriting changed that no relocation
+    /// record covers (W12's last word): S12 accepts them (§6.2).
+    pub(crate) rewritten_words: std::collections::BTreeSet<u64>,
     piece_groups: BTreeMap<(usize, usize, u64, i64), Group>,
+    /// Allocated input `.eh_frame` sections, checked by record (§6.4).
+    eh_sections: Vec<(usize, usize)>,
     pub cov: Coverage,
     pub findings: Vec<Finding>,
 }
@@ -294,11 +416,19 @@ impl<'a, 'b> Engine<'a, 'b> {
             got,
             got_section,
             cache,
+            tls: TlsBlock::of(image),
             got_groups: BTreeMap::new(),
+            rewritten_words: std::collections::BTreeSet::new(),
             piece_groups: BTreeMap::new(),
+            eh_sections: Vec::new(),
             cov: Coverage::default(),
             findings: Vec::new(),
         }
+    }
+
+    /// Whether `addr` is in a placed input section (§5.4).
+    pub(crate) fn occupied_at(&self, addr: u64) -> bool {
+        self.occupied.contains(addr)
     }
 
     fn sym_name(&self, oi: usize, idx: u32) -> String {
@@ -364,7 +494,44 @@ impl<'a, 'b> Engine<'a, 'b> {
         t
     }
 
+    /// The address of a TLS output symbol: `st_value` is an offset in the
+    /// TLS template in an executable (gABI "Symbol Values").
+    fn tls_out(&self, st_value: u64) -> Target {
+        match self.tls {
+            Ok(Some(b)) => Target::Tls(b.start.wrapping_add(st_value)),
+            _ => Target::Skip(Reason::Tls),
+        }
+    }
+
+    /// Whether symbol `idx` of object `oi` is thread-local: `STT_TLS`, or
+    /// defined in an `SHF_TLS` section (a section symbol or a local label
+    /// of `.tdata`/`.tbss`).
+    fn input_sym_is_tls(&self, oi: usize, idx: u32) -> bool {
+        let o = &self.objs[oi];
+        let Some(t) = o.symtab else { return false };
+        let Ok(sym) = t.get(SymbolIndex(idx)) else { return false };
+        if sym.sym_type() == STT_TLS {
+            return true;
+        }
+        match t.section_of(SymbolIndex(idx), &sym) {
+            Ok(SymbolSection::Section(k)) => {
+                o.secs.get(k.0 as usize).is_some_and(|s| s.shdr.sh_flags & SHF_TLS != 0)
+            }
+            _ => false,
+        }
+    }
+
     fn resolve_uncached(&self, oi: usize, idx: u32) -> Target {
+        let t = self.resolve_any(oi, idx);
+        // A thread-local definition gives an address in the TLS template.
+        match t {
+            Target::Addr(a) if self.input_sym_is_tls(oi, idx) => Target::Tls(a),
+            t => t,
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // §4.4, its three steps in order
+    fn resolve_any(&self, oi: usize, idx: u32) -> Target {
         let o = &self.objs[oi];
         let Some(t) = o.symtab else { return Target::Skip(Reason::SymbolUnresolved) };
         if idx == 0 {
@@ -375,9 +542,6 @@ impl<'a, 'b> Engine<'a, 'b> {
         };
         if sym.sym_type() == STT_GNU_IFUNC {
             return Target::Skip(Reason::Ifunc);
-        }
-        if sym.sym_type() == STT_TLS {
-            return Target::Skip(Reason::Tls);
         }
         let where_ = t.section_of(SymbolIndex(idx), &sym);
         if !matches!(sym.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE) {
@@ -390,15 +554,21 @@ impl<'a, 'b> Engine<'a, 'b> {
             };
         }
         let name = String::from_utf8_lossy(t.name(&sym).unwrap_or(b"")).into_owned();
+        // §4.7: `_TLS_MODULE_BASE_` is, by its definition in the TLS
+        // descriptor ABI, the start of the module's TLS block, whatever
+        // value the linker gives its symbol (A3).
+        if name == "_TLS_MODULE_BASE_" && matches!(where_, Ok(SymbolSection::Undefined)) {
+            return self.tls_out(0);
+        }
         // 1. The output's global symbol of the name.
         if let Some(out) = self.image.global(&name) {
             if out.sym.sym_type() == STT_GNU_IFUNC {
                 return Target::Skip(Reason::Ifunc);
             }
-            if out.sym.sym_type() == STT_TLS {
-                return Target::Skip(Reason::Tls);
-            }
             if out.sym.st_shndx != 0 {
+                if out.sym.sym_type() == STT_TLS {
+                    return self.tls_out(out.sym.st_value);
+                }
                 return Target::Addr(out.sym.st_value);
             }
             return if out.sym.binding() == STB_WEAK || sym.binding() == STB_WEAK {
@@ -441,12 +611,16 @@ impl<'a, 'b> Engine<'a, 'b> {
                     if ds.sym_type() == STT_GNU_IFUNC {
                         return Target::Skip(Reason::Ifunc);
                     }
-                    return match dt.section_of(SymbolIndex(di), &ds) {
+                    let t = match dt.section_of(SymbolIndex(di), &ds) {
                         Ok(SymbolSection::Section(k)) => {
                             self.in_section(doi, k.0 as usize, ds.st_value, false)
                         }
                         Ok(SymbolSection::Absolute) => Target::Addr(ds.st_value),
                         _ => Target::Skip(Reason::SymbolUnresolved),
+                    };
+                    return match t {
+                        Target::Addr(a) if self.input_sym_is_tls(doi, di) => Target::Tls(a),
+                        t => t,
                     };
                 }
             }
@@ -457,10 +631,19 @@ impl<'a, 'b> Engine<'a, 'b> {
                 return Target::Skip(Reason::Ifunc);
             }
             if out.sym.st_shndx != 0 {
+                if out.sym.sym_type() == STT_TLS {
+                    return self.tls_out(out.sym.st_value);
+                }
                 return Target::Addr(out.sym.st_value);
             }
         }
-        if matches!(where_, Ok(SymbolSection::Undefined)) && sym.binding() == STB_WEAK {
+        // 4. An undefined weak: only when the output has a `.symtab`. A
+        // stripped output (`-s`) does not say whether the linker defined
+        // the name (`__rela_iplt_start`).
+        if matches!(where_, Ok(SymbolSection::Undefined))
+            && sym.binding() == STB_WEAK
+            && !self.image.symbols.is_empty()
+        {
             return Target::UndefWeak;
         }
         Target::Skip(Reason::SymbolUnresolved)
@@ -527,6 +710,11 @@ impl<'a, 'b> Engine<'a, 'b> {
         let objs = self.objs;
         let o = &objs[oi];
         let s = &o.secs[si];
+        if s.alloc() && s.is_eh_frame(o.elf.machine()) {
+            // §6.4: by CIE and FDE, after every other section.
+            self.eh_sections.push((oi, si));
+            return;
+        }
         let Some(rs) = s.relocs else { return };
         let Some(raw) = o.records(rs) else {
             self.findings.push(
@@ -541,7 +729,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         let n = raw.len() as u64;
         let machine = o.elf.machine();
         match &s.place {
-            Place::Absent | Place::Discarded if !(s.alloc() && s.is_eh_frame(machine)) => {
+            Place::Absent | Place::Discarded => {
                 self.cov.absent_records += n;
                 return;
             }
@@ -587,10 +775,6 @@ impl<'a, 'b> Engine<'a, 'b> {
                 self.cov.none += 1;
                 continue;
             }
-            if a64::is_tls(ty) {
-                self.not_checked(Reason::Tls, 1);
-                continue;
-            }
             let Some(def) = a64::def(ty) else {
                 self.not_checked(Reason::Type, 1);
                 continue;
@@ -612,6 +796,25 @@ impl<'a, 'b> Engine<'a, 'b> {
                     continue;
                 }
             };
+            // R8 (§4.3): the instruction is of the class the type is for.
+            if def.field.width() == 4
+                && !matches!(def.field, Field::Data(_))
+                && !nobits
+                && !a64::insn_class_ok(ty, input_word as u32)
+            {
+                let mut f = Finding::new(
+                    Rule::Insn,
+                    format!(
+                        "the instruction {:#010x} is not of the class {} is defined for",
+                        input_word as u32, def.name
+                    ),
+                )
+                .at(p)
+                .site(site);
+                f.reloc = Some(def.name.into());
+                self.fail(f);
+                continue;
+            }
             let addend = addend.unwrap_or_else(|| a64::decode(def.field, input_word, 0));
             let Some((out_word, patched)) = self.out_word(p, def, input_word) else {
                 let mut f = Finding::new(
@@ -639,17 +842,27 @@ impl<'a, 'b> Engine<'a, 'b> {
     fn record(&mut self, oi: usize, si: usize, recs: &[Rec], sorted: &[(u64, usize)], i: usize) {
         let rec = &recs[i];
         let site = self.objs[oi].site(si, rec.off);
-        let target = self.resolve(oi, rec.sym);
         let symbol = self.sym_name(oi, rec.sym);
         let partner = |delta: i64, types: &[u32]| -> Option<&Rec> {
-            let want = rec.off.checked_add_signed(delta)?;
-            let start = sorted.partition_point(|e| e.0 < want);
-            sorted[start..].iter().take_while(|e| e.0 == want).map(|e| &recs[e.1]).find(|r| {
+            find_at(recs, sorted, rec.off.checked_add_signed(delta), |r| {
                 r.sym == rec.sym && r.addend == rec.addend && types.contains(&r.def.r_type)
             })
         };
+        // The call of a traditional GD or LD sequence (§4.7, W12, W13).
+        if rec.def.r_type == CALL26
+            && symbol == TLS_GET_ADDR
+            && self.tls_call(oi, si, recs, sorted, rec, &site, &symbol)
+        {
+            return;
+        }
+        if rec.def.op.is_tls() {
+            return self.tls_record(oi, si, recs, sorted, rec, site, symbol);
+        }
+        let target = self.resolve(oi, rec.sym);
         let sa = match target {
             Target::Skip(r) => return self.not_checked(r, 1),
+            // A non-TLS type against a thread-local symbol (§4.7).
+            Target::Tls(_) => return self.not_checked(Reason::Tls, 1),
             Target::Discarded(name) => {
                 let f = Self::finding(
                     Rule::DiscardedTarget,
@@ -673,37 +886,33 @@ impl<'a, 'b> Engine<'a, 'b> {
                 );
             }
             Target::Addr(s) => s.wrapping_add(rec.addend as u64),
+            // An undefined weak reference resolves to zero, or to the place
+            // for a PC-relative type that is not a branch (§4.4; branches
+            // have W4 and W5).
+            Target::UndefWeak
+                if rec.def.op == Op::Prel
+                    && !matches!(rec.def.r_type, TSTBR14 | CONDBR19 | JUMP26 | CALL26) =>
+            {
+                rec.p.wrapping_add(rec.addend as u64)
+            }
             Target::UndefWeak => rec.addend as u64,
         };
         let weak = matches!(target, Target::UndefWeak);
         let op = rec.def.op;
-        if matches!(op, Op::Got | Op::GotPrel | Op::GotPage | Op::GotOff | Op::GotPageOff) {
+        if let Op::Slot(slot, _) = op {
             if let Some(rw) = got_rewrite(rec, sa, &partner) {
                 self.cov.add_accepted(rw, rec.def.r_type);
                 return;
             }
-            let ev = match op {
-                Op::GotPrel => Evidence::Exact(rec.p.wrapping_add(a64::decode(
-                    rec.def.field,
-                    rec.out_word,
-                    rec.p,
-                ) as u64)),
-                Op::GotOff | Op::GotPageOff => match self.got {
-                    Some(g) => {
-                        let base = if op == Op::GotOff { g } else { a64::page(g) };
-                        Evidence::Exact(base.wrapping_add(a64::decode(
-                            rec.def.field,
-                            rec.out_word,
-                            rec.p,
-                        ) as u64))
-                    }
-                    None => return self.not_checked(Reason::SymbolUnresolved, 1),
-                },
-                Op::GotPage => page_evidence(rec),
-                _ => Evidence::Low(a64::decode(rec.def.field, rec.out_word, rec.p) as u64 & 0xfff),
+            let Some(ev) = self.slot_evidence(rec) else {
+                return self.not_checked(Reason::SymbolUnresolved, 1);
             };
-            let pend = Pending { rec: rec.clone(), site, symbol, value: sa, w1: false };
-            self.got_groups.entry((oi, rec.sym, rec.addend)).or_default().members.push((pend, ev));
+            let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(sa), w1: false };
+            self.got_groups
+                .entry((slot, oi, rec.sym, rec.addend))
+                .or_default()
+                .members
+                .push((pend, ev));
             return;
         }
         let Some(x) = x_direct(op, sa, rec.p, self.got) else {
@@ -755,6 +964,347 @@ impl<'a, 'b> Engine<'a, 'b> {
             Verdict::Ok(_) => unreachable!("handled above"),
         };
         self.fail(f);
+    }
+
+    /// The address evidence of a GOT-indirect record (§5.5); `None` when
+    /// the GOT base it needs is unknown.
+    fn slot_evidence(&self, rec: &Rec) -> Option<Evidence> {
+        let Op::Slot(_, form) = rec.def.op else { return Some(Evidence::None) };
+        let d = a64::decode(rec.def.field, rec.out_word, rec.p);
+        Some(match (form, rec.def.field) {
+            (Form::Prel, _) => Evidence::Exact(rec.p.wrapping_add(d as u64)),
+            (Form::Off, Field::MovwSigned(16) | Field::Movw(16)) => {
+                // MOVN writes the complement (AAELF64 "MOVW" groups).
+                let w = rec.out_word as u32;
+                let v = d as u64;
+                let movn = (w >> 29).trailing_zeros() >= 2;
+                Evidence::MovHi(if movn { !v } else { v })
+            }
+            (Form::Off, Field::Movw(0)) => Evidence::MovLo(d as u64 & 0xffff),
+            (Form::Off, _) => Evidence::Exact(self.got?.wrapping_add(d as u64)),
+            (Form::PageOff, _) => Evidence::Exact(a64::page(self.got?).wrapping_add(d as u64)),
+            (Form::Page, _) => page_evidence(rec),
+            (Form::Abs, _) => Evidence::Low(d as u64 & 0xfff),
+        })
+    }
+
+    /// S+A of a TLS record and the TLS block, or what to report (§4.7).
+    fn tls_target(&mut self, oi: usize, rec: &Rec) -> Result<(TlsBlock, u64), Outcome> {
+        let sa = match self.resolve(oi, rec.sym) {
+            Target::Tls(s) => s.wrapping_add(rec.addend as u64),
+            Target::Skip(r) => return Err(Outcome::Skip(r)),
+            Target::UndefWeak | Target::Merge { .. } => return Err(Outcome::Skip(Reason::Tls)),
+            Target::Addr(_) => {
+                return Err(Outcome::Fail(
+                    Rule::Insn,
+                    "a thread-local relocation against a symbol that is not thread-local".into(),
+                    None,
+                ));
+            }
+            Target::Discarded(name) => {
+                return Err(Outcome::Fail(
+                    Rule::DiscardedTarget,
+                    format!("refers to section '{name}', which is not in the output"),
+                    None,
+                ));
+            }
+        };
+        match self.tls {
+            Ok(Some(b)) => Ok((b, sa)),
+            Ok(None) => Err(Outcome::Fail(
+                Rule::NoTls,
+                "a thread-local relocation in an output without PT_TLS".into(),
+                None,
+            )),
+            Err(_) => Err(Outcome::Skip(Reason::Tls)),
+        }
+    }
+
+    fn outcome(&mut self, rec: &Rec, site: &Site, symbol: &str, o: Outcome) {
+        match o {
+            Outcome::Accepted(rw) => self.cov.add_accepted(rw, rec.def.r_type),
+            Outcome::Verified => self.cov.add_verified(Via::Direct, rec.def.r_type),
+            Outcome::Skip(r) => self.not_checked(r, 1),
+            Outcome::Fail(rule, msg, expected) => {
+                let mut f = Self::finding(rule, rec, site, symbol, msg);
+                f.expected = expected;
+                if rule == Rule::Field {
+                    f.found = Some(rec.out_word);
+                }
+                self.fail(f);
+            }
+        }
+    }
+
+    /// A record of a thread-local type (§4.7).
+    #[allow(clippy::too_many_arguments)]
+    fn tls_record(
+        &mut self,
+        oi: usize,
+        si: usize,
+        recs: &[Rec],
+        sorted: &[(u64, usize)],
+        rec: &Rec,
+        site: Site,
+        symbol: String,
+    ) {
+        let (b, sa) = match self.tls_target(oi, rec) {
+            Ok(v) => v,
+            Err(o) => return self.outcome(rec, &site, &symbol, o),
+        };
+        let o = match rec.def.op {
+            Op::TpRel | Op::DtpRel => {
+                let x = if rec.def.op == Op::TpRel { b.tprel(sa) } else { b.dtprel(sa) } as i64;
+                match judge(rec, x) {
+                    Verdict::Ok(Some(rw)) => Outcome::Accepted(rw),
+                    Verdict::Ok(None) => Outcome::Verified,
+                    v => {
+                        let f = verdict_finding(rec, &site, &symbol, Some((v, x)));
+                        return self.fail(f);
+                    }
+                }
+            }
+            Op::Slot(Slot::TpRel, _) => {
+                let x = b.tprel(sa);
+                if ie_to_le(rec, recs, x) {
+                    Outcome::Accepted(Rewrite::TlsIeToLe)
+                } else if !same_insn(rec) {
+                    rewritten_badly()
+                } else {
+                    return self.push_slot(Slot::TpRel, oi, rec, site, symbol, Want::Word(x));
+                }
+            }
+            Op::Slot(Slot::Desc, _) | Op::DescCall => match desc_seq(rec, recs, sorted) {
+                None => Outcome::Skip(Reason::TlsSequence),
+                Some(seq) => self.desc_verdict(&seq, b, sa),
+            },
+            Op::Slot(slot @ (Slot::Gd | Slot::Ld), _) => {
+                let ld = slot == Slot::Ld;
+                match self.gd_ld(oi, si, recs, sorted, rec, ld, b, sa) {
+                    Seq::Relaxed(rw) => Outcome::Accepted(rw),
+                    Seq::Bad(msg, e) => Outcome::Fail(Rule::Field, msg, e),
+                    Seq::Kept if same_insn(rec) => {
+                        let want = Want::Pair(1, if ld { 0 } else { b.dtprel(sa) });
+                        return self.push_slot(slot, oi, rec, site, symbol, want);
+                    }
+                    Seq::Kept => rewritten_badly(),
+                }
+            }
+            Op::None | Op::Abs | Op::Prel | Op::Page | Op::GotRel | Op::Slot(Slot::Addr, _) => {
+                unreachable!("not a thread-local operation")
+            }
+        };
+        self.outcome(rec, &site, &symbol, o);
+    }
+
+    fn push_slot(
+        &mut self,
+        slot: Slot,
+        oi: usize,
+        rec: &Rec,
+        site: Site,
+        symbol: String,
+        want: Want,
+    ) {
+        let Some(ev) = self.slot_evidence(rec) else {
+            return self.not_checked(Reason::SymbolUnresolved, 1);
+        };
+        let pend = Pending { rec: rec.clone(), site, symbol, want, w1: false };
+        self.got_groups
+            .entry((slot, oi, rec.sym, rec.addend))
+            .or_default()
+            .members
+            .push((pend, ev));
+    }
+
+    /// The four words of a TLSDESC sequence (§4.7): W10 to local-exec in
+    /// either of its two forms, W11 to initial-exec.
+    fn desc_verdict(&self, seq: &[&Rec; 4], b: TlsBlock, sa: u64) -> Outcome {
+        let inw = seq.map(|r| r.input_word as u32);
+        let outw = seq.map(|r| r.out_word as u32);
+        let t = a64::ldr64_imm(inw[1]).map(|(t, n, _)| (t, n));
+        let abi = a64::adrp(inw[0], 0).is_some_and(|(d, _)| d == 0)
+            && t.is_some_and(|(_, n)| n == 0)
+            && a64::add_imm(inw[2]).is_some_and(|(d, n, _)| d == 0 && n == 0)
+            && t.is_some_and(|(t, _)| a64::blr(inw[3]) == Some(t));
+        if !abi {
+            return Outcome::Fail(
+                Rule::Insn,
+                "the TLSDESC sequence is not ADRP x0; LDR Xt, [x0]; ADD x0, x0; BLR Xt".into(),
+                None,
+            );
+        }
+        let x = b.tprel(sa);
+        if x < 1 << 32 {
+            let hi = a64::movz(0, x >> 16, 1);
+            let lo = a64::movk(0, x & 0xffff, 0);
+            if outw == [hi, lo, a64::NOP, a64::NOP] || outw == [a64::NOP, a64::NOP, hi, lo] {
+                return Outcome::Accepted(Rewrite::TlsDescToLe);
+            }
+        }
+        // W11: ADRP x0, G; LDR x0, [x0, :lo12:G], G holding TPREL, and
+        // two NOPs, after (GNU ld, lld) or before (mold).
+        for k in [0, 2] {
+            let nops = if k == 0 { [2, 3] } else { [0, 1] };
+            if let (Some((0, pg)), Some((0, 0, lo))) =
+                (a64::adrp(outw[k], seq[k].p), a64::ldr64_imm(outw[k + 1]))
+                && nops.iter().all(|&n| outw[n] == a64::NOP)
+                && self.slot_ok(pg.wrapping_add(lo), Want::Word(x))
+            {
+                return Outcome::Accepted(Rewrite::TlsDescToIe);
+            }
+        }
+        if seq[..3].iter().all(|r| same_insn(r)) && outw[3] == inw[3] {
+            // Kept for the dynamic loader: no static executable needs it,
+            // and the descriptor's dynamic relocation is stage 3's.
+            return Outcome::Skip(Reason::Tls);
+        }
+        Outcome::Fail(
+            Rule::Field,
+            "the TLSDESC sequence is neither of W10's local-exec forms nor W11's initial-exec form"
+                .into(),
+            Some(x),
+        )
+    }
+
+    /// Whether `g` is a GOT entry that holds `want` (§5.5).
+    fn slot_ok(&self, g: u64, want: Want) -> bool {
+        g.is_multiple_of(8)
+            && !self.occupied.contains(g)
+            && self
+                .got_section
+                .is_none_or(|(lo, hi)| lo <= g && g.saturating_add(want.size()) <= hi)
+            && match want {
+                Want::Word(v) => self.image.value(g, 8) == Some(v),
+                Want::Pair(m, v) => {
+                    self.image.value(g, 8) == Some(m)
+                        && self.image.value(g.wrapping_add(8), 8) == Some(v)
+                }
+            }
+    }
+
+    /// A traditional GD or LD sequence (§4.7): `ADRP x0; ADD x0, x0;
+    /// BL __tls_get_addr; NOP`, relaxed to local-exec (W12, W13) or kept.
+    #[allow(clippy::too_many_arguments)]
+    fn gd_ld(
+        &mut self,
+        oi: usize,
+        si: usize,
+        recs: &[Rec],
+        sorted: &[(u64, usize)],
+        rec: &Rec,
+        ld: bool,
+        b: TlsBlock,
+        sa: u64,
+    ) -> Seq {
+        let (t0, t1) = if ld {
+            (TLSLD_ADR_PAGE21, TLSLD_ADD_LO12_NC)
+        } else {
+            (TLSGD_ADR_PAGE21, TLSGD_ADD_LO12_NC)
+        };
+        let same = |r: &Rec| r.sym == rec.sym && r.addend == rec.addend;
+        let (head, second) = if rec.def.r_type == t0 {
+            let Some(s) =
+                find_at(recs, sorted, rec.off.checked_add(4), |r| r.def.r_type == t1 && same(r))
+            else {
+                return Seq::Kept;
+            };
+            (rec, s)
+        } else {
+            let Some(h) =
+                find_at(recs, sorted, rec.off.checked_sub(4), |r| r.def.r_type == t0 && same(r))
+            else {
+                return Seq::Kept;
+            };
+            (h, rec)
+        };
+        let Some(call) = find_at(recs, sorted, head.off.checked_add(8), |r| {
+            r.def.r_type == CALL26 && self.sym_name(oi, r.sym) == TLS_GET_ADDR
+        }) else {
+            return Seq::Kept;
+        };
+        let data = self.objs[oi].secs[si].data;
+        let in12 = usize::try_from(head.off + 12)
+            .ok()
+            .and_then(|k| data.get(k..k + 4))
+            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+        let abi = a64::adrp(head.input_word as u32, 0).is_some_and(|(d, _)| d == 0)
+            && a64::add_imm(second.input_word as u32).is_some_and(|(d, n, _)| d == 0 && n == 0)
+            && in12 == Some(a64::NOP);
+        if !abi {
+            return Seq::Kept;
+        }
+        let p12 = head.p.wrapping_add(12);
+        let Some(out12) = self.image.value(p12, 4) else { return Seq::Kept };
+        let outw =
+            [head.out_word as u32, second.out_word as u32, call.out_word as u32, out12 as u32];
+        let (want, rw, x) = if ld {
+            let Some(add) = a64::add_imm_any(0, 0, b.tcb) else { return Seq::Kept };
+            ([a64::mrs_tpidr_el0(0), add, a64::NOP, a64::NOP], Rewrite::TlsLdToLe, b.tcb)
+        } else {
+            let x = b.tprel(sa);
+            let w = [
+                a64::movz(0, x >> 16, 1),
+                a64::movk(0, x & 0xffff, 0),
+                a64::mrs_tpidr_el0(1),
+                a64::add_reg(0, 1, 0),
+            ];
+            (w, Rewrite::TlsGdToLe, x)
+        };
+        if outw == want && (ld || x < 1 << 32) {
+            if !ld {
+                self.rewritten_words.insert(p12);
+            }
+            return Seq::Relaxed(rw);
+        }
+        if same_insn(head)
+            && same_insn(second)
+            && a64::branch(outw[2], call.p).is_some_and(|(l, _)| l)
+        {
+            return Seq::Kept;
+        }
+        let what = if ld { "TLSLD" } else { "TLSGD" };
+        Seq::Bad(
+            format!(
+                "the {what} sequence is rewritten, and not to the local-exec form of {} (thread-pointer offset {x:#x})",
+                if ld { "W13" } else { "W12" }
+            ),
+            Some(x),
+        )
+    }
+
+    /// The `BL __tls_get_addr` of a GD or LD sequence: true when decided
+    /// here (relaxed, or rewritten badly), false when it is an ordinary
+    /// call (§4.7).
+    #[allow(clippy::too_many_arguments)]
+    fn tls_call(
+        &mut self,
+        oi: usize,
+        si: usize,
+        recs: &[Rec],
+        sorted: &[(u64, usize)],
+        rec: &Rec,
+        site: &Site,
+        symbol: &str,
+    ) -> bool {
+        let Some(second) = find_at(recs, sorted, rec.off.checked_sub(4), |r| {
+            matches!(r.def.r_type, TLSGD_ADD_LO12_NC | TLSLD_ADD_LO12_NC)
+        }) else {
+            return false;
+        };
+        let ld = second.def.r_type == TLSLD_ADD_LO12_NC;
+        let Ok((b, sa)) = self.tls_target(oi, second) else { return false };
+        match self.gd_ld(oi, si, recs, sorted, second, ld, b, sa) {
+            Seq::Kept => false,
+            Seq::Relaxed(rw) => {
+                self.cov.add_accepted(rw, rec.def.r_type);
+                true
+            }
+            Seq::Bad(msg, e) => {
+                self.outcome(rec, site, symbol, Outcome::Fail(Rule::Field, msg, e));
+                true
+            }
+        }
     }
 
     /// The rewritings of a non-GOT record (§5.3): W1, W4, W5, W6.
@@ -835,11 +1385,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         let out = rec.out_word as u32;
         let mut w1 = false;
         let ev = match (rec.def.op, rec.def.field) {
-            _ if matches!(
-                rec.def.op,
-                Op::Got | Op::GotPrel | Op::GotPage | Op::GotOff | Op::GotPageOff
-            ) =>
-            {
+            _ if rec.def.op.is_slot() => {
                 return self.not_checked(Reason::PieceNotLocatable, 1);
             }
             (Op::Abs, Field::Data(w)) => Evidence::Exact(trunc(rec.out_word, w)),
@@ -872,7 +1418,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             }
             _ => Evidence::None,
         };
-        let pend = Pending { rec: rec.clone(), site, symbol, value: 0, w1 };
+        let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(0), w1 };
         self.piece_groups.entry((oi, sec, r, extra)).or_default().members.push((pend, ev));
     }
 
@@ -884,20 +1430,10 @@ impl<'a, 'b> Engine<'a, 'b> {
                 self.not_checked(Reason::GotUnpaired, g.members.len() as u64);
                 continue;
             }
-            let value = g.members[0].0.value;
-            let cands = g.candidates();
-            let valid: Vec<u64> = cands
-                .iter()
-                .copied()
-                .filter(|&c| {
-                    c % 8 == 0
-                        && !self.occupied.contains(c)
-                        && self
-                            .got_section
-                            .is_none_or(|(lo, hi)| lo <= c && c.saturating_add(8) <= hi)
-                        && self.image.value(c, 8) == Some(value)
-                })
-                .collect();
+            let want = g.members[0].0.want;
+            let cands = g.candidates_from(self.got);
+            let valid: Vec<u64> =
+                cands.iter().copied().filter(|&c| self.slot_ok(c, want)).collect();
             for (pend, _) in &g.members {
                 let rec = &pend.rec;
                 if valid.is_empty() {
@@ -906,9 +1442,21 @@ impl<'a, 'b> Engine<'a, 'b> {
                         rec,
                         &pend.site,
                         &pend.symbol,
-                        "the GOT-indirect reference reaches no slot that holds S+A",
+                        match want {
+                            Want::Word(v) if !rec.def.op.is_tls() => {
+                                format!(
+                                    "the GOT-indirect reference reaches no slot that holds S+A ({v:#x})"
+                                )
+                            }
+                            Want::Word(v) => format!(
+                                "the GOT-indirect reference reaches no entry that holds the thread-pointer offset {v:#x}"
+                            ),
+                            Want::Pair(m, v) => format!(
+                                "the GOT-indirect reference reaches no entry that holds the module index {m} and the offset {v:#x}"
+                            ),
+                        },
                     );
-                    f.expected = Some(value);
+                    f.expected = Some(want.first());
                     f.found = cands.first().and_then(|&c| self.image.value(c, 8));
                     self.fail(f);
                     continue;
@@ -1047,6 +1595,87 @@ fn page_evidence(rec: &Rec) -> Evidence {
         return Evidence::Page(t);
     }
     Evidence::None
+}
+
+/// The record at offset `off` that `ok` accepts (§5.3: partners are
+/// found by offset).
+fn find_at<'r>(
+    recs: &'r [Rec],
+    sorted: &[(u64, usize)],
+    off: Option<u64>,
+    ok: impl Fn(&Rec) -> bool,
+) -> Option<&'r Rec> {
+    let off = off?;
+    let start = sorted.partition_point(|e| e.0 < off);
+    sorted[start..].iter().take_while(|e| e.0 == off).map(|e| &recs[e.1]).find(|r| ok(r))
+}
+
+/// The four records of the TLSDESC sequence `rec` is in (§4.7): types
+/// 562, 563, 564, 569 at consecutive words, one symbol and addend.
+fn desc_seq<'r>(rec: &Rec, recs: &'r [Rec], sorted: &[(u64, usize)]) -> Option<[&'r Rec; 4]> {
+    const T: [u32; 4] = [562, 563, 564, 569];
+    let k = T.iter().position(|&t| t == rec.def.r_type)?;
+    let head = rec.off.checked_sub(4 * k as u64)?;
+    let at = |j: usize| {
+        find_at(recs, sorted, head.checked_add(4 * j as u64), |r| {
+            r.def.r_type == T[j] && r.sym == rec.sym && r.addend == rec.addend
+        })
+    };
+    Some([at(0)?, at(1)?, at(2)?, at(3)?])
+}
+
+/// Whether the output instruction is the input's outside the field (the
+/// record was relocated, not rewritten), allowing W7's ADR.
+fn same_insn(rec: &Rec) -> bool {
+    let m = rec.def.field.mask();
+    rec.out_word & !m == rec.input_word & !m
+        || (rec.def.field == Field::AdrPage
+            && a64::erratum_843419_adrp(rec.p)
+            && a64::adr(rec.out_word as u32, rec.p).is_some())
+}
+
+fn rewritten_badly() -> Outcome {
+    Outcome::Fail(
+        Rule::Field,
+        "the instruction is rewritten into a form no specified rewriting allows".into(),
+        None,
+    )
+}
+
+/// W9 (§5.3): `ADRP Xd, :gottprel:S; LDR Xd, [Xd, :gottprel_lo12:S]`
+/// made `MOVZ Xd, #TPREL[31:16], LSL #16; MOVK Xd, #TPREL[15:0]`. One
+/// register throughout: with `LDR Xt, [Xd]` and t != d the rewriting does
+/// not compute the value in Xt (review finding 1).
+fn ie_to_le(rec: &Rec, recs: &[Rec], x: u64) -> bool {
+    if x >= 1 << 32 {
+        return false;
+    }
+    let hi = |r: u32| a64::movz(r, x >> 16, 1);
+    let lo = |r: u32| a64::movk(r, x & 0xffff, 0);
+    let peer = |ty: u32, ok: &dyn Fn(&Rec) -> bool| {
+        recs.iter()
+            .any(|r| r.sym == rec.sym && r.addend == rec.addend && r.def.r_type == ty && ok(r))
+    };
+    match rec.def.r_type {
+        TLSIE_ADR_GOTTPREL_PAGE21 => {
+            let Some((d, _)) = a64::adrp(rec.input_word as u32, 0) else { return false };
+            rec.out_word as u32 == hi(d)
+                && peer(TLSIE_LD64_GOTTPREL_LO12_NC, &|r| {
+                    a64::ldr64_imm(r.input_word as u32).is_some_and(|(t, n, _)| t == d && n == d)
+                        && r.out_word as u32 == lo(d)
+                })
+        }
+        TLSIE_LD64_GOTTPREL_LO12_NC => {
+            let Some((t, n, _)) = a64::ldr64_imm(rec.input_word as u32) else { return false };
+            t == n
+                && rec.out_word as u32 == lo(t)
+                && peer(TLSIE_ADR_GOTTPREL_PAGE21, &|r| {
+                    a64::adrp(r.input_word as u32, 0).is_some_and(|(d, _)| d == t)
+                        && r.out_word as u32 == hi(t)
+                })
+        }
+        _ => false,
+    }
 }
 
 fn trunc(v: u64, w: u8) -> u64 {

@@ -50,6 +50,10 @@ impl fmt::Debug for Style<'_> {
 pub(crate) const LIMIT_MESSAGE: &str =
     "too many errors emitted, stopping now (use --error-limit=0 to see all errors)";
 
+/// GNU ld's phrase for bytes of a format it cannot read, which build tools
+/// match (`spec/diag.md` §8.3).
+pub const NOT_RECOGNIZED: &str = "file not recognized: file format not recognized";
+
 const RESET: &str = "\x1b[0m";
 
 const fn color_of(severity: Severity) -> &'static str {
@@ -122,6 +126,7 @@ pub(crate) fn limit_line(style: &Style<'_>, out: &mut String) {
 
 /// Writes the message of a kind. Returns the symbol-table name when the
 /// message shows a demangled name in its place.
+#[allow(clippy::too_many_lines)] // one arm per kind, in the spec's order
 fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'d str> {
     match kind {
         Kind::ConflictingOptions { first, second } => {
@@ -156,6 +161,11 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             escaped(option, out);
             out.push('\'');
         }
+        Kind::AmbiguousSysrootPath { spelling } => {
+            out.push_str("ambiguous sysroot path '");
+            escaped(spelling, out);
+            out.push('\'');
+        }
         Kind::CannotOpenFile { path, reason } => {
             out.push_str("cannot open ");
             escaped(path, out);
@@ -168,20 +178,146 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(": ");
             escaped(reason, out);
         }
+        Kind::DuplicateSoname { soname } => {
+            out.push_str("DT_SONAME '");
+            escaped(soname, out);
+            out.push_str("' is already loaded; this file is not used");
+        }
+        Kind::IgnoredMember { what } => {
+            out.push_str("archive member is not a relocatable object: ");
+            escaped(what, out);
+        }
+        Kind::IncompatibleFile { expected, found } => {
+            out.push_str("incompatible file: ");
+            escaped(expected, out);
+            out.push_str(" is expected but got ");
+            escaped(found, out);
+        }
+        Kind::InputChanged => out.push_str("file changed while it was read"),
         Kind::LibraryNotFound { name } => {
-            out.push_str("unable to find library -l");
+            out.push_str("cannot find -l");
             escaped(name, out);
+            out.push_str(": No such file or directory");
+        }
+        Kind::NeededNotFound { name, needed_by } => {
+            escaped(name, out);
+            out.push_str(", needed by ");
+            escaped(needed_by, out);
+            out.push_str(", not found (try using -rpath or -rpath-link)");
+        }
+        Kind::NoTarget => {
+            out.push_str("target emulation unknown: -m or at least one .o file required");
+        }
+        Kind::ScriptCycle => out.push_str("linker script names itself"),
+        Kind::SkippedIncompatible { path, search } => {
+            out.push_str("skipping incompatible ");
+            escaped(path, out);
+            out.push_str(" when searching for ");
+            escaped(search, out);
+        }
+        Kind::StaticLinkOfSharedObject { path } => {
+            out.push_str("attempted static link of dynamic object ");
+            escaped(path, out);
         }
         Kind::Malformed { what } => escaped(what, out),
-        Kind::UnknownFileType => out.push_str("unknown file type"),
+        Kind::UnknownFileType => out.push_str(NOT_RECOGNIZED),
+        Kind::ArchiveBackref { name } => {
+            out.push_str("backward reference to an archive member: ");
+            return symbol_into(name, style, out).then_some(name);
+        }
+        Kind::ArchiveChoice { name } => {
+            out.push_str("GNU ld would choose another definition of ");
+            return symbol_into(name, style, out).then_some(name);
+        }
+        Kind::ComdatMismatch { name, signature } => {
+            out.push_str("symbol ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is defined only in a discarded copy of COMDAT group ");
+            escaped(signature, out);
+            return shown.then_some(name);
+        }
+        Kind::CommonAlignment { name } => {
+            out.push_str("definition of ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is less aligned than its common symbols");
+            return shown.then_some(name);
+        }
+        Kind::CommonLargerThanDefinition { name } => {
+            out.push_str("common symbol ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is larger than its definition");
+            return shown.then_some(name);
+        }
+        Kind::CommonOverridden { name } => {
+            out.push_str("common symbol ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is overridden by a definition");
+            return shown.then_some(name);
+        }
+        Kind::DiscardedSectionReference { name } => {
+            out.push_str("relocation refers to a symbol in a discarded section: ");
+            return symbol_into(name, style, out).then_some(name);
+        }
         Kind::DuplicateSymbol { name } => {
+            // GNU ld's phrase, verbatim, after lld's head (§8.3).
             out.push_str("duplicate symbol: ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" (multiple definition of `");
+            symbol_into(name, style, out);
+            out.push_str("')");
+            return shown.then_some(name);
+        }
+        Kind::EntryNotFound { name } => {
+            out.push_str("cannot find entry symbol ");
+            return symbol_into(name, style, out).then_some(name);
+        }
+        Kind::GnuWarning { text } => escaped(text, out),
+        Kind::LinkerSymbolRedefined { name } => {
+            out.push_str("cannot redefine linker-defined symbol: ");
+            return symbol_into(name, style, out).then_some(name);
+        }
+        Kind::MultipleCommon { name } => {
+            out.push_str("multiple common symbols: ");
+            return symbol_into(name, style, out).then_some(name);
+        }
+        Kind::NonExportedSymbol { name } => {
+            out.push_str("non-exported symbol referenced by a shared object: ");
+            return symbol_into(name, style, out).then_some(name);
+        }
+        Kind::RequiredSymbol { name } => {
+            out.push_str("required symbol not defined: ");
+            return symbol_into(name, style, out).then_some(name);
+        }
+        Kind::TlsMismatch { name } => {
+            out.push_str("TLS attribute mismatch: ");
             return symbol_into(name, style, out).then_some(name);
         }
         Kind::UndefinedSymbol { name } => {
-            out.push_str("undefined reference to '");
+            // GNU ld's phrase, verbatim, after lld's head (§8.3).
+            out.push_str("undefined symbol: ");
             let shown = symbol_into(name, style, out);
-            out.push('\'');
+            out.push_str(" (undefined reference to `");
+            symbol_into(name, style, out);
+            out.push_str("')");
+            return shown.then_some(name);
+        }
+        Kind::UndefinedVersion { name, version } => {
+            out.push_str("version ");
+            escaped(version, out);
+            out.push_str(" of ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is not defined");
+            return shown.then_some(name);
+        }
+        Kind::VersionReassigned { name, first, second } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is assigned to version ");
+            escaped(first, out);
+            out.push_str(" and ");
+            escaped(second, out);
+            out.push_str("; ");
+            escaped(first, out);
+            out.push_str(" is kept");
             return shown.then_some(name);
         }
         Kind::RelocationIncompatible { r_type, name, reason } => {
@@ -206,11 +342,36 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push('\'');
             return shown.then_some(name);
         }
-        Kind::Refused { class, name } => {
+        Kind::ExecutableStack { file } => {
+            escaped(file, out);
+            out.push_str(
+                ": requires executable stack (because the .note.GNU-stack section is executable)",
+            );
+        }
+        Kind::OutputTooLarge { what, limit } => {
+            out.push_str("output too large: ");
+            escaped(what, out);
+            out.push_str(" exceeds ");
+            escaped(limit, out);
+        }
+        Kind::SectionConflict { name, first, second } => {
+            out.push_str("section ");
+            escaped(name, out);
+            out.push_str(": ");
+            escaped(first, out);
+            out.push_str(" and ");
+            escaped(second, out);
+            out.push_str(" inputs cannot be combined");
+        }
+        Kind::Refused { class, name, not_recognized } => {
             out.push_str("unsupported ");
             out.push_str(class.noun());
             out.push_str(": ");
             escaped(name, out);
+            if *not_recognized {
+                out.push_str("; ");
+                out.push_str(NOT_RECOGNIZED);
+            }
         }
         Kind::InternalError { what } => {
             out.push_str("internal error in mortar: ");

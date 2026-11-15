@@ -11,6 +11,10 @@
 #![forbid(unsafe_code)]
 
 mod grammar;
+
+/// The phase ordinal of the command line's diagnostics (`spec/model.md`
+/// §8, `spec/cli.md` §2.10).
+pub const PHASE: u16 = 10;
 pub use mortar_core::plan;
 pub mod response;
 mod rows;

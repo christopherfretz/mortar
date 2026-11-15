@@ -76,7 +76,7 @@ fn path_that_is_not_utf8() {
     assert_eq!(file.path(), "caf\u{fffd}.o");
     assert_eq!(
         plain(&Diagnostic::error(Kind::UnknownFileType).at(file)),
-        "ld: error: caf\u{fffd}.o: unknown file type\n"
+        "ld: error: caf\u{fffd}.o: file not recognized: file format not recognized\n"
     );
     assert_eq!(FileRef::from_path(std::path::Path::new("a/b.o")), FileRef::new("a/b.o"));
 }
@@ -95,7 +95,7 @@ fn relations_and_notes_in_the_order_given() {
         .with(Relation::DefinedIn, Place::file("a.o"));
     assert_eq!(
         plain(&diag),
-        "ld: error: duplicate symbol: x\n\
+        "ld: error: duplicate symbol: x (multiple definition of `x')\n\
          >>> referenced by r.o\n\
          >>> a fact\n\
          >>> defined in d.o\n\
@@ -136,7 +136,7 @@ fn head_line_place() {
 fn demangling_none_prints_the_name() {
     let diag = undefined("_ZN2ns1fEic")
         .with(Relation::ReferencedBy, Place::symbol(FileRef::new("a.o"), "_ZNK2ns1S1mEv"));
-    let expected = "ld: error: undefined reference to '_ZN2ns1fEic'\n\
+    let expected = "ld: error: undefined symbol: _ZN2ns1fEic (undefined reference to `_ZN2ns1fEic')\n\
                     >>> referenced by a.o:(_ZNK2ns1S1mEv)\n";
     assert_eq!(plain(&diag), expected);
     assert_eq!(
@@ -145,7 +145,10 @@ fn demangling_none_prints_the_name() {
     );
     assert_eq!(no_demangling("_Z1fv"), None);
     // A name the hook does not know.
-    assert_eq!(demangled(&undefined("main")), "ld: error: undefined reference to 'main'\n");
+    assert_eq!(
+        demangled(&undefined("main")),
+        "ld: error: undefined symbol: main (undefined reference to `main')\n"
+    );
 }
 
 // spec: diag.md §5.4 (`Some` of the name itself is no demangling)
@@ -155,7 +158,7 @@ fn demangling_to_the_same_name_adds_no_line() {
     let diag = undefined("printf").with(Relation::ReferencedBy, Place::file("a.o"));
     assert_eq!(
         diag.render(&Style { prog: "ld", color: false, demangle: &echo }),
-        "ld: error: undefined reference to 'printf'\n>>> referenced by a.o\n"
+        "ld: error: undefined symbol: printf (undefined reference to `printf')\n>>> referenced by a.o\n"
     );
 }
 
@@ -168,7 +171,7 @@ fn demangling_shows_the_mangled_name() {
         .with(Relation::ReferencedBy, Place::symbol(FileRef::new("cxx.o"), "_ZNK2ns1S1mEv"));
     assert_eq!(
         demangled(&diag),
-        "ld: error: undefined reference to 'ns::f(int, char)'\n\
+        "ld: error: undefined symbol: ns::f(int, char) (undefined reference to `ns::f(int, char)')\n\
          >>> mangled name: _ZN2ns1fEic\n\
          >>> referenced by cxx.o:(.text+0x18)\n\
          >>> referenced by cxx.o:(ns::S::m() const)\n"
@@ -177,7 +180,8 @@ fn demangling_shows_the_mangled_name() {
         .with(Relation::DefinedIn, Place::file("a.o"));
     assert_eq!(
         demangled(&duplicate),
-        "ld: warning: duplicate symbol: ns::S::m() const\n\
+        "ld: warning: duplicate symbol: ns::S::m() const (multiple definition of \
+         `ns::S::m() const')\n\
          >>> mangled name: _ZNK2ns1S1mEv\n\
          >>> defined in a.o\n"
     );
@@ -208,8 +212,10 @@ fn demangling_hook_is_called_only_when_rendering() {
     let report = collector.finish();
     assert_eq!(calls.load(Ordering::Relaxed), 0, "collecting and ordering do not demangle");
     let text = report.render(&Style { prog: "ld", color: false, demangle: &counting });
-    assert_eq!(calls.load(Ordering::Relaxed), 3);
-    assert_eq!(text.matches("ns::f(int, char)").count(), 2);
+    // The name twice in each message (lld's head, GNU ld's phrase), once in
+    // the symbol place.
+    assert_eq!(calls.load(Ordering::Relaxed), 5);
+    assert_eq!(text.matches("ns::f(int, char)").count(), 4);
 }
 
 // spec: diag.md §5.5
@@ -229,7 +235,7 @@ fn control_characters_are_made_visible() {
     assert_eq!(
         text,
         format!(
-            "{shown}: error: {shown}({shown}):({shown}+0x1): undefined reference to 'demangled\\u{{a}}{shown}'\n\
+            "{shown}: error: {shown}({shown}):({shown}+0x1): undefined symbol: demangled\\u{{a}}{shown} (undefined reference to `demangled\\u{{a}}{shown}')\n\
              >>> mangled name: {shown}\n\
              >>> referenced by {shown}({shown}):(demangled\\u{{a}}{shown})\n\
              >>> named by argument '{shown}'\n\
@@ -251,9 +257,15 @@ fn control_characters_are_made_visible() {
             Kind::CannotOpenOutput { path: h(), reason: h() },
             format!("cannot open output file {shown}: {shown}"),
         ),
-        (Kind::LibraryNotFound { name: h() }, format!("unable to find library -l{shown}")),
+        (
+            Kind::LibraryNotFound { name: h() },
+            format!("cannot find -l{shown}: No such file or directory"),
+        ),
         (Kind::Malformed { what: h() }, shown.to_owned()),
-        (Kind::DuplicateSymbol { name: h() }, format!("duplicate symbol: {shown}")),
+        (
+            Kind::DuplicateSymbol { name: h() },
+            format!("duplicate symbol: {shown} (multiple definition of `{shown}')"),
+        ),
         (
             Kind::RelocationIncompatible {
                 r_type: h(),
@@ -273,7 +285,22 @@ fn control_characters_are_made_visible() {
             format!("relocation {shown} out of range: 9 is not in [-1, 8]; references '{shown}'"),
         ),
         (
-            Kind::Refused { class: RefusalClass::SectionType, name: h() },
+            Kind::ExecutableStack { file: h() },
+            format!(
+                "{shown}: requires executable stack (because the .note.GNU-stack section is \
+                 executable)"
+            ),
+        ),
+        (
+            Kind::OutputTooLarge { what: h(), limit: h() },
+            format!("output too large: {shown} exceeds {shown}"),
+        ),
+        (
+            Kind::SectionConflict { name: h(), first: h(), second: h() },
+            format!("section {shown}: {shown} and {shown} inputs cannot be combined"),
+        ),
+        (
+            Kind::Refused { class: RefusalClass::SectionType, name: h(), not_recognized: false },
             format!("unsupported section type: {shown}"),
         ),
         (Kind::InternalError { what: h() }, format!("internal error in mortar: {shown}")),
@@ -301,11 +328,37 @@ fn samples() -> Vec<Diagnostic> {
             Kind::UnknownOption { option: s(x) },
             Kind::CannotOpenFile { path: s(x), reason: s(x) },
             Kind::CannotOpenOutput { path: s(x), reason: s(x) },
+            Kind::AmbiguousSysrootPath { spelling: s(x) },
+            Kind::DuplicateSoname { soname: s(x) },
+            Kind::IgnoredMember { what: s(x) },
+            Kind::IncompatibleFile { expected: s(x), found: s(x) },
+            Kind::InputChanged,
             Kind::LibraryNotFound { name: s(x) },
+            Kind::NeededNotFound { name: s(x), needed_by: s(x) },
+            Kind::NoTarget,
+            Kind::ScriptCycle,
+            Kind::SkippedIncompatible { path: s(x), search: s(x) },
+            Kind::StaticLinkOfSharedObject { path: s(x) },
             Kind::Malformed { what: s(x) },
             Kind::UnknownFileType,
+            Kind::ArchiveBackref { name: s(x) },
+            Kind::ArchiveChoice { name: s(x) },
+            Kind::ComdatMismatch { name: s(x), signature: s(x) },
+            Kind::CommonAlignment { name: s(x) },
+            Kind::CommonLargerThanDefinition { name: s(x) },
+            Kind::CommonOverridden { name: s(x) },
+            Kind::DiscardedSectionReference { name: s(x) },
             Kind::DuplicateSymbol { name: s(x) },
+            Kind::EntryNotFound { name: s(x) },
+            Kind::GnuWarning { text: s(x) },
+            Kind::LinkerSymbolRedefined { name: s(x) },
+            Kind::MultipleCommon { name: s(x) },
+            Kind::NonExportedSymbol { name: s(x) },
+            Kind::RequiredSymbol { name: s(x) },
+            Kind::TlsMismatch { name: s(x) },
             Kind::UndefinedSymbol { name: s(x) },
+            Kind::UndefinedVersion { name: s(x), version: s(x) },
+            Kind::VersionReassigned { name: s(x), first: s(x), second: s(x) },
             Kind::RelocationIncompatible {
                 r_type: s(x),
                 name: s(x),
@@ -319,7 +372,10 @@ fn samples() -> Vec<Diagnostic> {
                 max: 0,
                 name: s(x),
             },
-            Kind::Refused { class: RefusalClass::RelocationType, name: s(x) },
+            Kind::ExecutableStack { file: s(x) },
+            Kind::OutputTooLarge { what: s(x), limit: s(x) },
+            Kind::SectionConflict { name: s(x), first: s(x), second: s(x) },
+            Kind::Refused { class: RefusalClass::RelocationType, name: s(x), not_recognized: true },
             Kind::InternalError { what: s(x) },
         ]
     };
@@ -394,7 +450,7 @@ fn color_on_exact_bytes() {
     let error = undefined("_ZN2ns1fEic").with(Relation::ReferencedBy, Place::file("a.o"));
     assert_eq!(
         colored(&error).as_bytes(),
-        b"ld: \x1b[0;31merror:\x1b[0m undefined reference to 'ns::f(int, char)'\n\
+        b"ld: \x1b[0;31merror:\x1b[0m undefined symbol: ns::f(int, char) (undefined reference to `ns::f(int, char)')\n\
           >>> mangled name: _ZN2ns1fEic\n\
           >>> referenced by a.o\n"
     );

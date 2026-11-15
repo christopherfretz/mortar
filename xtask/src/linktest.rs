@@ -37,7 +37,7 @@ use target::{Arch, ArchTools, CommonTools, Linker};
 
 pub const USAGE: &str = "usage: cargo xtask linktest [--linker bfd,lld,mold,mortar] \
                          [--arch aarch64,x86_64,i386] [--filter <text>]... [-j <n>] \
-                         [--mortar <binary>] [--results <file>] [--keep] [-v] \
+                         [--mortar <binary>] [--results <file>] [--keep] [--no-plumb] [-v] \
                          [<file or directory>...]\n";
 
 /// The most worker threads a run starts by default.
@@ -63,6 +63,8 @@ pub struct Args {
     pub keep: bool,
     /// List the passes too.
     pub verbose: bool,
+    /// Do not run the verifier on the links' outputs (L3).
+    pub no_plumb: bool,
     /// Test files and directories; `tests/link` when empty.
     pub paths: Vec<PathBuf>,
 }
@@ -109,6 +111,7 @@ impl Args {
                 "--mortar" => parsed.mortar = Some(PathBuf::from(value("--mortar")?)),
                 "--results" => parsed.results = Some(PathBuf::from(value("--results")?)),
                 "--keep" if inline.is_none() => parsed.keep = true,
+                "--no-plumb" if inline.is_none() => parsed.no_plumb = true,
                 "-v" | "--verbose" if inline.is_none() => parsed.verbose = true,
                 other => match other.strip_prefix("-j").filter(|n| !n.is_empty()) {
                     Some(number) => parsed.jobs = Some(jobs(number)?),
@@ -341,6 +344,54 @@ fn find_tools(
     (arches, common, linkers, mortar)
 }
 
+/// The run-wide default anomalies' file, in `tests/link` (`spec/harness.md`
+/// "L3").
+pub const DEFAULTS: &str = "anomalies";
+
+/// `tests/link/anomalies` of the workspace.
+fn defaults_file() -> PathBuf {
+    workspace_root().join("tests").join("link").join(DEFAULTS)
+}
+
+/// A default no output of the run has is stale; a run of part of the
+/// corpus may well not meet it, so only a run of all of it says so
+/// (`spec/harness.md` "L3", "The defaults").
+fn check_defaults(
+    args: &Args,
+    plumb: &engine::Plumb,
+    defaults: &[format::Anomaly],
+    report: &mut Report,
+) {
+    if args.paths.is_empty() && args.filters.is_empty() {
+        report.errors.extend(plumb.stale_defaults(defaults));
+    } else if !defaults.is_empty() && plumb.verified > 0 {
+        report.notes.push(
+            "L3: a run of part of the corpus does not check that the default anomalies occur"
+                .to_owned(),
+        );
+    }
+}
+
+/// The run-wide default anomalies of the file at `path`; none when there
+/// is no file.
+///
+/// # Errors
+/// A file that cannot be read or does not parse.
+pub fn load_defaults(path: &Path) -> Result<Vec<format::Anomaly>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    format::parse_defaults(&text).map_err(|errors| {
+        let lines: Vec<String> = errors
+            .iter()
+            .map(|e| format!("{}:{}: {}", path.display(), e.line, e.message))
+            .collect();
+        lines.join("; ")
+    })
+}
+
 /// Runs the tests `args` selects.
 ///
 /// # Errors
@@ -364,7 +415,14 @@ pub fn run(args: &Args) -> Result<Report, String> {
     report.arches = arches.iter().map(|tools| tools.arch).collect();
     report.linkers.clone_from(&linkers);
     report.configuration = configuration(&report, mortar.as_deref(), jobs);
-    let matrix = Matrix { host, common, linkers, mortar, wrappers: work.join("bin") };
+    let defaults = if args.no_plumb { Ok(Vec::new()) } else { load_defaults(&defaults_file()) };
+    let defaults = defaults.unwrap_or_else(|e| {
+        report.errors.push(e);
+        Vec::new()
+    });
+    let wrappers = work.join("bin");
+    let matrix =
+        Matrix { host, common, linkers, mortar, wrappers, plumb: !args.no_plumb, defaults };
     if let Err(e) = matrix.write_wrappers(&arches) {
         report.errors.push(e);
     }
@@ -402,12 +460,18 @@ pub fn run(args: &Args) -> Result<Report, String> {
     } else {
         Vec::new()
     };
+    let mut plumb = engine::Plumb::default();
     for results in run_units(&units, jobs) {
+        plumb.add(&results.plumb);
         report.records.extend(results.records);
         report.missing.extend(results.missing.into_iter().map(|tool| format!("{tool} not found")));
     }
     report.missing.sort();
     report.missing.dedup();
+    if plumb != engine::Plumb::default() {
+        report.notes.push(plumb.note());
+    }
+    check_defaults(args, &plumb, &matrix.defaults, &mut report);
     // Deterministic: by test, architecture, linker, and a record without a
     // linker after those with one.
     report.records.sort_by_key(|record| {
@@ -491,6 +555,7 @@ mod tests {
             "/x/mortar",
             "--results=/x/r.tsv",
             "--keep",
+            "--no-plumb",
             "-v",
             "tests/link/start",
             "a.test",
@@ -502,7 +567,8 @@ mod tests {
         assert_eq!(args.jobs, Some(3));
         assert_eq!(args.mortar.as_deref(), Some(Path::new("/x/mortar")));
         assert_eq!(args.results.as_deref(), Some(Path::new("/x/r.tsv")));
-        assert!(args.keep && args.verbose);
+        assert!(args.keep && args.verbose && args.no_plumb);
+        assert!(!parse(&[]).unwrap().no_plumb);
         assert_eq!(args.paths, [PathBuf::from("tests/link/start"), PathBuf::from("a.test")]);
         assert_eq!(parse(&["-j", "2"]).unwrap().jobs, Some(2));
         assert_eq!(parse(&["--jobs=4"]).unwrap().jobs, Some(4));

@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-471 rows: 10 supported, 17 noop, 444 refused.
+471 rows: 10 supported, 22 noop, 439 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's own.
 
@@ -103,10 +103,10 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--remap-inputs` | PATTERN=FILE | GNU, lld | all | refused | `other` | Read FILE for the inputs matching PATTERN |
 | `--dependent-libraries` |  | lld | all | refused | `other` | Link the libraries inputs ask for (default) |
 | `--no-dependent-libraries` |  | lld | all | refused | `other` | Ignore the libraries inputs ask for |
-| `--fortran-common` |  | lld | all | refused | `other` | Take archive members that define common symbols (default) |
+| `--fortran-common` |  | lld | all | refused | `other` | Take archive members that define common symbols (mortar's behavior, always on) |
 | `--no-fortran-common` |  | lld | all | refused | `other` | Do not take archive members for common symbols |
-| `--warn-backrefs` |  | lld | all | refused | `other` | Warn when an archive member is taken for an earlier reference |
-| `--no-warn-backrefs` |  | lld | all | refused | `other` | Do not warn about backward references (default) |
+| `--warn-backrefs` |  | lld | all | refused | `diagnostics.warn_backrefs` | Warn when an archive member is taken for an earlier reference |
+| `--no-warn-backrefs` |  | lld | all | refused | `diagnostics.warn_backrefs` | Do not warn about backward references (default) |
 | `--warn-backrefs-exclude` | GLOB | lld | all | refused | `other` | Do not warn about backward references into GLOB |
 | `--why-extract` | FILE | lld | all | refused | `other` | Write why each archive member is taken to FILE |
 | `--print-archive-stats` | FILE | lld | all | refused | `other` | Write archive statistics to FILE |
@@ -119,8 +119,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 |---|---|---|---|---|---|---|
 | `-L`, `--library-path` | DIR | GNU, lld, mold | all | refused | `library_paths` | Search DIR for -l libraries and scripts |
 | `--sysroot` | DIR | GNU, lld, mold | all | refused | `sysroot` | Use DIR as the system root |
-| `-nostdlib` |  | GNU, lld, mold | all | refused | `nostdlib` | Search only the -L directories |
-| `-rpath-link` | DIR | GNU, lld, mold | all | refused | `dynamic.rpath_link` | Search DIR for the DT_NEEDED entries of shared objects |
+| `-nostdlib` |  | GNU, lld, mold | all | refused | `nostdlib` | Do not search the SEARCH_DIR directories of linker scripts |
+| `-rpath-link` | DIR | GNU, lld, mold | all | refused | `dynamic.rpath_link` | Search DIR for the DT_NEEDED entries of shared objects; a :-separated list |
 | `-Y` | PATH | GNU | all | refused | `other` | Default search path for Solaris compatibility |
 | `-C`, `--directory` | DIR | mold | all | refused | `other` | Change to DIR first |
 | `--chroot` | DIR | lld, mold | all | refused | `other` | Prefix every path with DIR |
@@ -216,8 +216,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--dynamic-list-data` |  | GNU, mold | all | refused | `other` | Add the data symbols to the dynamic list |
 | `--dynamic-list-cpp-new` |  | GNU | all | refused | `other` | Add operator new and delete to the dynamic list |
 | `--dynamic-list-cpp-typeinfo` |  | GNU | all | refused | `other` | Add the C++ type information to the dynamic list |
-| `--allow-shlib-undefined` |  | GNU, lld, mold | all | refused | `other` | Accept undefined symbols in shared objects |
-| `--no-allow-shlib-undefined` |  | GNU, lld, mold | all | refused | `other` | Report undefined symbols in shared objects |
+| `--allow-shlib-undefined` |  | GNU, lld, mold | all | refused | `dynamic.allow_shlib_undefined` | Accept undefined symbols in shared objects |
+| `--no-allow-shlib-undefined` |  | GNU, lld, mold | all | refused | `dynamic.allow_shlib_undefined` | Report undefined symbols in shared objects |
 | `--spare-dynamic-tags` | COUNT (number) | GNU, mold | all | refused | `other` | Reserve COUNT entries in .dynamic |
 | `--spare-program-headers` | COUNT (number) | mold | all | refused | `other` | Reserve COUNT program headers |
 | `--apply-dynamic-relocs` |  | lld, mold | all | refused | `other` | Write link-time values where dynamic relocations apply |
@@ -239,7 +239,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-Tldata-segment` | ADDRESS | GNU | all | refused | `shaping.starts` | Place the large data segment at ADDRESS |
 | `--section-start` | SECTION=ADDRESS | GNU, lld, mold | all | refused | `shaping.starts` | Place SECTION at ADDRESS |
 | `--image-base` | ADDRESS | GNU, lld, mold | all | refused | `shaping.image_base` | Place the image at ADDRESS |
-| `--rosegment` |  | GNU, lld, mold | all | refused | `other` | Put read-only data in its own segment |
+| `--rosegment` |  | GNU, lld, mold | all | noop: layout.md L-65: read-only data always has a PT_LOAD of its own | `other` | Put read-only data in its own segment |
 | `--no-rosegment` |  | GNU, lld, mold | all | refused | `other` | Do not give read-only data its own segment |
 | `--xosegment` |  | lld | all | refused | `other` | Put execute-only sections in their own segment |
 | `--no-xosegment` |  | lld | all | refused | `other` | Do not give execute-only sections their own segment (default) |
@@ -269,8 +269,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--no-allow-multiple-definition` |  | lld | all | refused | `diagnostics.allow_multiple_definition` | Report symbols defined more than once (default) |
 | `--noinhibit-exec`, `--noinhibit_exec` |  | GNU, lld, mold | all | refused | `diagnostics.noinhibit_exec` | Write the output even after errors |
 | `--error-handling-script` | SCRIPT | GNU, lld | all | refused | `other` | Run SCRIPT for undefined symbols and missing libraries |
-| `--warn-common` |  | GNU, lld, mold | all | refused | `other` | Warn about common symbols |
-| `--no-warn-common` |  | lld, mold | all | refused | `other` | Do not warn about common symbols (default) |
+| `--warn-common` |  | GNU, lld, mold | all | refused | `diagnostics.warn_common` | Warn about common symbols |
+| `--no-warn-common` |  | lld, mold | all | refused | `diagnostics.warn_common` | Do not warn about common symbols (default) |
 | `--warn-constructors` |  | GNU, mold | all | refused | `other` | Warn about global constructors |
 | `--warn-multiple-gp` |  | GNU | all | refused | `other` | Warn about several GP values |
 | `--warn-once` |  | GNU, lld, mold | all | refused | `other` | Warn about each undefined symbol once |
@@ -278,7 +278,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--warn-textrel`, `--warn-shared-textrel` |  | GNU, lld, mold | all | refused | `other` | Warn about text relocations |
 | `--warn-alternate-em` |  | GNU | all | refused | `other` | Warn about objects with an alternate ELF machine code |
 | `--warn-execstack-objects` |  | GNU | all | refused | `other` | Warn about objects that ask for an executable stack |
-| `--warn-execstack` |  | GNU, lld, mold | all | refused | `other` | Warn when the stack is made executable |
+| `--warn-execstack` |  | GNU, lld, mold | all | noop: layout.md L-84: the executable-stack warning is the default | `other` | Warn when the stack is made executable |
 | `--no-warn-execstack` |  | GNU, mold | all | refused | `other` | Do not warn when the stack is made executable |
 | `--error-execstack` |  | GNU | all | refused | `other` | Make executable stack warnings errors |
 | `--no-error-execstack` |  | GNU | all | refused | `other` | Do not make executable stack warnings errors |
@@ -449,7 +449,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-z defs` |  | GNU, lld, mold | all | refused | `z.defs` | Report undefined symbols of object files |
 | `-z undefs` |  | GNU, lld, mold | all | refused | `z.defs` | Accept undefined symbols in a shared object |
 | `-z max-page-size` | SIZE | GNU, lld, mold | all | refused | `z.max_page_size` | The largest page size the output supports |
-| `-z common-page-size` | SIZE | GNU, lld, mold | all | refused | `z.common_page_size` | The common page size |
+| `-z common-page-size` | SIZE | GNU, lld, mold | all | noop: layout.md L-75: the value is checked, and no layout rule reads it | `z.common_page_size` | The common page size |
 | `-z stack-size` | SIZE | GNU, lld, mold | all | refused | `z.stack_size` | The size of the stack segment |
 | `-z pack-relative-relocs` |  | GNU, lld, mold | all | refused | `z.pack_relative_relocs` | Pack relative relocations in DT_RELR |
 | `-z nopack-relative-relocs` |  | GNU, lld, mold | all | refused | `z.pack_relative_relocs` | Do not pack relative relocations (default) |
@@ -457,14 +457,14 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `-z nocopyreloc` |  | GNU, lld, mold | all | refused | `z.copyreloc` | Make no copy relocations |
 | `-z combreloc` |  | GNU, lld, mold | all | refused | `z.combreloc` | Sort dynamic relocations into one section (default) |
 | `-z nocombreloc` |  | GNU, lld, mold | all | refused | `z.combreloc` | Do not sort dynamic relocations |
-| `-z sectionheader` |  | GNU, lld, mold | all | refused | `z.sectionheader` | Write the section header table (default) |
+| `-z sectionheader` |  | GNU, lld, mold | all | noop: layout.md L-63: the section header table is always written (the default) | `z.sectionheader` | Write the section header table (default) |
 | `-z nosectionheader` |  | GNU, lld, mold | all | refused | `z.sectionheader` | Write no section header table |
 | `-z muldefs` |  | GNU, lld, mold | all | refused | `diagnostics.allow_multiple_definition` | Take the first of several definitions of a symbol |
 | `-z unique-symbol` |  | GNU | all | refused | `other` | Give local symbols unique names |
 | `-z nounique-symbol` |  | GNU | all | refused | `other` | Keep duplicate local symbol names (default) |
 | `-z globalaudit` |  | GNU | all | refused | `other` | Mark the executable for global auditing |
 | `-z start-stop-gc` |  | GNU, lld | all | refused | `other` | Let __start_/__stop_ references not keep sections |
-| `-z nostart-stop-gc` |  | GNU, lld | all | refused | `other` | Let __start_/__stop_ references keep sections (default) |
+| `-z nostart-stop-gc` |  | GNU, lld | all | noop: layout.md L-96: the default | `other` | Let __start_/__stop_ references keep sections (default) |
 | `-z start-stop-visibility` | default \| internal \| hidden \| protected | GNU, lld | all | refused | `other` | Visibility of __start_ and __stop_ symbols |
 | `-z global` |  | GNU, lld | all | refused | `other` | Make the symbols of this object available to later loads |
 | `-z initfirst` |  | GNU, lld, mold | all | refused | `other` | Initialize this object first |

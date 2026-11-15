@@ -2,7 +2,7 @@
 # each object has a copy in a COMDAT group (gABI "Section Groups",
 # GRP_COMDAT); the link keeps one group, so both units share one
 # function and one counter (Itanium C++ ABI "Vague Linkage").
-#@ spec: resolve.md "COMDAT groups"
+#@ spec: resolve.md §6.1
 #@ requires: g++
 #@ xfail(mortar): no linking yet (M1)
 
