@@ -254,7 +254,7 @@ pub fn run(pool: &Pool, t: &dyn Link<'_>, relocs: &dyn Relocs) -> Result<Phase, 
     let files = t.files() as usize;
     let mut steps = mortar_core::wp032b_steps::Steps::new("split");
     let per_file: Vec<Result<Vec<Unit<'_>>, Problem>> =
-        pool.map(files, |f| units(t, FileId(f as u32), relocs));
+        pool.unit_cost(480).map(files, |f| units(t, FileId(f as u32), relocs));
     let mut problems: Vec<Problem> =
         per_file.iter().filter_map(|u| u.as_ref().err().cloned()).collect();
     if !problems.is_empty() {

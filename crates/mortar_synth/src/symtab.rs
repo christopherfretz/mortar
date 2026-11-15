@@ -602,7 +602,7 @@ impl SymtabPlan {
         let (gblocks, mut demoted, files, gnu_symbols) = count(cx, pool, diag)?;
         // S-88: a counting sort of the demoted by defining file; the
         // order within a file is `SymbolId` (stable).
-        pool.sort_by(&mut demoted, |a, b| a.0.cmp(&b.0));
+        pool.unit_cost(15).sort_by(&mut demoted, |a, b| a.0.cmp(&b.0));
         if demoted.iter().any(|d| d.0.0 >= n_files) {
             return fail(diag, key(0), internal("a demoted symbol's file is not a file"));
         }
@@ -999,7 +999,7 @@ fn count(cx: &SymCtx<'_>, pool: &Pool, diag: &Collector) -> Result<Counted, Fail
     let n_files = cx.syms.files();
     let blocks = n_globals.div_ceil(CHECKPOINT) as usize;
     let gnu = std::sync::atomic::AtomicBool::new(false);
-    let per_block: Vec<GBlock> = pool.map(blocks, |b| {
+    let per_block: Vec<GBlock> = pool.unit_cost(25000).map(blocks, |b| {
         let start = b as u32 * CHECKPOINT;
         let end = (start + CHECKPOINT).min(n_globals);
         let (mut kept, mut bytes, mut demoted) = (0, 0, Vec::new());
@@ -1040,7 +1040,7 @@ fn count(cx: &SymCtx<'_>, pool: &Pool, diag: &Collector) -> Result<Counted, Fail
     }
     // Locals per file.
     let per_file: Vec<Result<FileCount, (FileId, u32, SynthError)>> =
-        pool.map(n_files as usize, |f| {
+        pool.unit_cost(700).map(n_files as usize, |f| {
             let file = FileId(f as u32);
             let mut c = FileCount::default();
             for i in 0..cx.syms.locals(file) {

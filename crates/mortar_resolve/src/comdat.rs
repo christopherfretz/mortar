@@ -29,29 +29,30 @@ pub(crate) const fn is_comdat(flags: u32) -> bool {
 
 /// The keepers over the live files `live` (in `FileId` order).
 pub(crate) fn keepers<V: View>(view: &V, live: &[FileId], pool: &Pool) -> Keepers {
-    let found = pool.map_collect(live.len(), |u, out: &mut Vec<(ComdatId, FileId)>| {
-        let file = live[u];
-        let mut groups = Groups::default();
-        view.groups(file, &mut groups);
-        let start = out.len();
-        for g in &groups.groups {
-            if is_comdat(g.flags) {
-                out.push((g.signature, file));
+    let found =
+        pool.unit_cost(600).map_collect(live.len(), |u, out: &mut Vec<(ComdatId, FileId)>| {
+            let file = live[u];
+            let mut groups = Groups::default();
+            view.groups(file, &mut groups);
+            let start = out.len();
+            for g in &groups.groups {
+                if is_comdat(g.flags) {
+                    out.push((g.signature, file));
+                }
             }
-        }
-        out[start..].sort_unstable();
-        let mut w = start;
-        for r in start..out.len() {
-            if w == start || out[w - 1] != out[r] {
-                out[w] = out[r];
-                w += 1;
+            out[start..].sort_unstable();
+            let mut w = start;
+            for r in start..out.len() {
+                if w == start || out[w - 1] != out[r] {
+                    out[w] = out[r];
+                    w += 1;
+                }
             }
-        }
-        out.truncate(w);
-    });
+            out.truncate(w);
+        });
     let mut copies: Vec<(ComdatId, FileId)> =
         (0..found.units()).flat_map(|u| found.unit(u).iter().copied()).collect();
-    pool.sort_by_key(&mut copies, |c| *c);
+    pool.unit_cost(17).sort_by_key(&mut copies, |c| *c);
     let mut keeper = vec![OptId::NONE; view.comdats() as usize];
     for &(sig, file) in copies.iter().rev() {
         if let Some(cell) = keeper.get_mut(sig.0 as usize) {
