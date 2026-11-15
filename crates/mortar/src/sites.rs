@@ -260,6 +260,12 @@ impl Sites for LinkSites<'_, '_> {
             let (mine, tail) = tail.split_at_mut(next - off);
             rest = tail;
             at = next;
+            // The scan reads (and asks the proof of) only the bytes of the
+            // erratum windows: a section whose room touches none adds
+            // nothing (its bytes stay zero, it has no proof runs).
+            if erratum_windows(addr, (next - off) as u64).is_empty() {
+                continue;
+            }
             parts.push((c, addr - start, addr, mine, result));
         }
         pool.for_each_part(parts, |_, (c, rel_start, addr, mine, result)| {
