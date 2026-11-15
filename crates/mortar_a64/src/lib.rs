@@ -78,6 +78,7 @@ pub static FACTS: Facts = Facts {
     got_base: GotBase::GotStart,
     got_header: 1,
     got_plt_reserved: 3,
+    iplt_word: mortar_arch::IpltWord::Resolver,
     max_reach: MAX_REACH,
     code_fill: &[0; 4],
     code_nop: &synth::NOP.to_le_bytes(),
