@@ -1,6 +1,6 @@
 # `mortar_resolve`: symbol resolution
 
-Status: **draft (WP-022, stage 1)**. Written into `spec/model.md` (normative):
+Status: **accepted for M1** (WP-022; reviewed independently, implemented in `mortar_resolve`). Written into `spec/model.md` (normative):
 this spec defines how every column of `Resolution` (§3.3 there) is
 computed from `Inputs` (§3.2) and the `Plan`. The code is WP-022 stage 2.
 Every "must" has a test (§15); §16 lists where the reference linkers
