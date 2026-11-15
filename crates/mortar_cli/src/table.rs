@@ -453,6 +453,10 @@ pub enum Lands {
     HashStyle,
     /// `dynamic.pack_dyn_relocs`.
     PackDynRelocs,
+    /// `dynamic.init`.
+    Init,
+    /// `dynamic.fini`.
+    Fini,
     /// `z.*`.
     Z(ZField),
     /// `shaping.gc_sections`.
@@ -585,6 +589,8 @@ impl Lands {
             Self::NewDtags(_) => "dynamic.new_dtags",
             Self::HashStyle => "dynamic.hash_style",
             Self::PackDynRelocs => "dynamic.pack_dyn_relocs",
+            Self::Init => "dynamic.init",
+            Self::Fini => "dynamic.fini",
             Self::Z(field) => match field {
                 ZField::Now(_) => "z.now",
                 ZField::Relro(_) => "z.relro",
@@ -692,4 +698,23 @@ impl Row {
 #[must_use]
 pub fn rows() -> &'static [Row] {
     crate::rows::ROWS
+}
+
+/// The rows whose status changes when the M2 join lifts the dynamic guard,
+/// by name, with that status (`spec/dyn.md` R-C1; the list's comment in
+/// `rows.rs` says which and why).
+#[must_use]
+pub fn join_changes() -> &'static [(&'static str, Status)] {
+    crate::rows::AT_JOIN
+}
+
+impl Row {
+    /// The row's status once the M2 join lifts the dynamic guard
+    /// (`spec/dyn.md` R-C1): [`join_changes`]' status if it names the
+    /// row, otherwise [`Row::status`].
+    #[must_use]
+    pub fn status_at_join(&self) -> Status {
+        let name = self.name();
+        join_changes().iter().find(|(n, _)| *n == name).map_or(self.status, |(_, s)| *s)
+    }
 }

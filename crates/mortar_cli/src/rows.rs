@@ -23,9 +23,6 @@ const L: Linkers = Linkers::L;
 const M: Linkers = Linkers::M;
 const MORTAR: Linkers = Linkers::MORTAR;
 
-/// `--as-needed` and `--no-as-needed` decide only which shared objects
-/// are recorded as needed; every shared-object input is refused by name
-/// until dynamic outputs land (M2).
 /// The reason of the rows that only change a dynamic output's `.dynamic`.
 const DYNAMIC_ONLY: &str = "only a dynamic output has a .dynamic section, and every dynamic output is refused by name (M2)";
 /// The reason of the `-Bsymbolic` rows.
@@ -36,7 +33,21 @@ const TEXT: &str = "a text relocation is a dynamic relocation in a read-only sec
 const DEFS: &str = "resolve.md §5: an undefined symbol of an executable is an error already; the option only changes a shared object's link, refused by name (M2)";
 /// The reason of the `--export-dynamic` rows.
 const EXPORT: &str = "a static executable has no dynamic symbol table (GNU ld and lld write none either), and every dynamic output is refused by name (M2)";
+/// `--as-needed` and `--no-as-needed` decide only which shared objects
+/// are recorded as needed; every shared-object input is refused by name
+/// until dynamic outputs land (M2).
 const AS_NEEDED: &str = "it decides only which shared objects are needed, and every shared-object input is refused by name (M2)";
+/// The note of `--hash-style` (`spec/dyn.md` D-20, R-C1).
+const HASH_STYLE: &str = "dyn.md D-20: an executable gets .gnu.hash and no .hash; mortar writes =gnu";
+/// The reason of `--no-copy-dt-needed-entries` (`spec/dyn.md` D-15).
+const NO_COPY_DT_NEEDED: &str = "dyn.md D-15: the default; a library reached only through another's DT_NEEDED entries never defines a symbol of the link (D-12), and --copy-dt-needed-entries is refused";
+/// The reason of the `-Bsymbolic` rows once dynamic executables are
+/// written (`AT_JOIN`): measured, GNU ld and mold write nothing for them
+/// in a PIE (lld writes `DF_SYMBOLIC` for `-Bsymbolic`).
+const SYMBOLIC_AT_JOIN: &str = "it binds a shared object's references to its own definitions; an executable's are bound locally already, and GNU ld writes nothing for it in an executable (shared objects as output are M4)";
+/// The reason of `--no-undefined` and `-z defs` once dynamic executables
+/// are written (`AT_JOIN`).
+const DEFS_AT_JOIN: &str = "resolve.md §5: an undefined symbol of an executable's objects is an error already; the option only changes a shared object's link (shared objects as output are M4)";
 
 const A64: &[Target] = &[Target::Aarch64];
 const X86: &[Target] = &[Target::X86_64, Target::I386];
@@ -88,7 +99,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[s("o"), g("output")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Output, Supported, Lands::Output, "Write the output to FILE (default a.out)"),
     r(&[g1("shared"), g("Bshareable")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Kind(KindSet::Shared), "Produce a shared object"),
     r(&[g1("pie"), g("pic-executable")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Kind(KindSet::Pie), "Produce a position-independent executable"),
-    r(&[g1("no-pie"), x("no-pic-executable")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Kind(KindSet::NoPie), "Produce a position-dependent executable (default)"),
+    r(&[g1("no-pie"), x("no-pic-executable")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::Kind(KindSet::NoPie), "Produce a position-dependent executable (default)"),
     r(&[s("r"), s("i"), g("relocatable")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Kind(KindSet::Relocatable), "Produce a relocatable object"),
     r(&[s("m")], Arg::Required(Values::Any), "EMULATION", GLM, &[], Group::Output, Supported, Lands::Emulation, "Link for EMULATION: aarch64linux, aarch64elf, elf_x86_64, elf_i386"),
     r(&[s("e"), g("entry")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Output, Supported, Lands::Entry, "Start execution at SYMBOL"),
@@ -156,7 +167,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g1("Bstatic"), g("dn"), g("non_shared"), g("static")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::Static(true)), "Search -l for archives only"),
     r(&[g1("Bdynamic"), g("dy"), g("call_shared")], Arg::None, "", GLM, &[], Group::Inputs, Refused, Lands::State(StateOp::Static(false)), "Search -l for shared objects too (default)"),
     r(&[g("copy-dt-needed-entries"), g("add-needed")], Arg::None, "", G, &[], Group::Inputs, Refused, Lands::State(StateOp::CopyDtNeeded(true)), "Follow the DT_NEEDED entries of the following shared objects"),
-    r(&[g("no-copy-dt-needed-entries"), g("no-add-needed")], Arg::None, "", GLM, &[], Group::Inputs, Refused, Lands::State(StateOp::CopyDtNeeded(false)), "Do not follow DT_NEEDED entries (default)"),
+    r(&[g("no-copy-dt-needed-entries"), g("no-add-needed")], Arg::None, "", GLM, &[], Group::Inputs, Noop(NO_COPY_DT_NEEDED), Lands::State(StateOp::CopyDtNeeded(false)), "Do not follow DT_NEEDED entries (default)"),
     r(&[g("push-state")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::Push), "Save the positional state"),
     r(&[g("pop-state")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::Pop), "Restore the positional state last saved"),
     r(&[g("accept-unknown-input-arch")], Arg::None, "", G, &[], Group::Inputs, Refused, Lands::Other, "Accept inputs of an unknown architecture"),
@@ -224,8 +235,8 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("exclude-libs")], Arg::Required(Values::Any), "LIBS", GLM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::ExcludeLibs), "Do not export the symbols of the archives LIBS"),
     r(&[s("y"), g("trace-symbol")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::TraceSymbol), "Report each file that mentions SYMBOL"),
     r(&[g("ignore-unresolved-symbol")], Arg::Required(Values::Any), "SYMBOL", G, &[], Group::Symbols, Refused, Lands::Symbol(SymbolRole::IgnoreUnresolved), "Do not report SYMBOL as unresolved"),
-    r(&[g1("init")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Refused, Lands::Other, "Call SYMBOL when the object is loaded"),
-    r(&[g1("fini")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Refused, Lands::Other, "Call SYMBOL when the object is unloaded"),
+    r(&[g1("init")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Refused, Lands::Init, "Call SYMBOL when the object is loaded"),
+    r(&[g1("fini")], Arg::Required(Values::Any), "SYMBOL", GLM, &[], Group::Symbols, Refused, Lands::Fini, "Call SYMBOL when the object is unloaded"),
     r(&[g("demangle")], Arg::Optional(Values::Any), "STYLE", GLM, &[], Group::Symbols, Refused, Lands::Other, "Demangle symbol names in messages"),
     r(&[g("no-demangle")], Arg::None, "", GLM, &[], Group::Symbols, Refused, Lands::Other, "Do not demangle symbol names"),
     r(&[g("default-symver")], Arg::None, "", GM, &[], Group::Symbols, Refused, Lands::Other, "Give exported symbols the output's version"),
@@ -250,7 +261,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("no-dynamic-linker")], Arg::None, "", GLM, &[], Group::Dynamic, Noop("layout.md: only a dynamic executable has PT_INTERP, and every dynamic output is refused by name (M2)"), Lands::NoDynamicLinker, "Write no program interpreter"),
     r(&[g("enable-new-dtags")], Arg::None, "", GLM, &[], Group::Dynamic, Noop(DYNAMIC_ONLY), Lands::NewDtags(true), "Write DT_RUNPATH for -rpath"),
     r(&[g("disable-new-dtags")], Arg::None, "", GLM, &[], Group::Dynamic, Noop(DYNAMIC_ONLY), Lands::NewDtags(false), "Write DT_RPATH for -rpath"),
-    r(&[g("hash-style")], Arg::Required(Values::Choice(&["sysv", "gnu", "both", "none"])), "STYLE", GLM, &[], Group::Dynamic, Noop("only a dynamic output has a symbol hash table, and every dynamic output is refused by name (M2)"), Lands::HashStyle, "Write DT_HASH (sysv), DT_GNU_HASH (gnu), both or none"),
+    r(&[g("hash-style")], Arg::Required(Values::Choice(&["sysv", "gnu", "both", "none"])), "STYLE", GLM, &[], Group::Dynamic, Partial { refused: &["sysv", "both", "none"], note: HASH_STYLE }, Lands::HashStyle, "Write DT_HASH (sysv), DT_GNU_HASH (gnu), both or none"),
     r(&[x("pack-dyn-relocs")], Arg::Required(Values::Choice(&["none", "relr", "android", "android+relr"])), "FORMAT", LM, &[], Group::Dynamic, Refused, Lands::PackDynRelocs, "Pack dynamic relocations"),
     r(&[s("f"), g("auxiliary")], Arg::Required(Values::Any), "NAME", GLM, &[], Group::Dynamic, Refused, Lands::Other, "Record NAME as DT_AUXILIARY"),
     r(&[s("F"), g("filter")], Arg::Required(Values::Any), "NAME", GLM, &[], Group::Dynamic, Refused, Lands::Other, "Record NAME as DT_FILTER"),
@@ -458,7 +469,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[z("execstack")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::Execstack(true)), "Make the stack executable"),
     r(&[z("noexecstack")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::Execstack(false)), "Make the stack not executable"),
     r(&[z("text")], Arg::None, "", GLM, &[], Group::Z, Noop(TEXT), Lands::Z(ZField::Text(true)), "Report text relocations as errors"),
-    r(&[z("notext"), z("textoff")], Arg::None, "", GLM, &[], Group::Z, Noop(TEXT), Lands::Z(ZField::Text(false)), "Accept text relocations"),
+    r(&[z("notext"), z("textoff")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Text(false)), "Accept text relocations"),
     r(&[z("separate-code")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::SeparateCode(true)), "Put code in segments of its own pages"),
     r(&[z("noseparate-code")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::SeparateCode(false)), "Let code share pages with other data"),
     r(&[z("defs")], Arg::None, "", GLM, &[], Group::Z, Noop(DEFS), Lands::Z(ZField::Defs(true)), "Report undefined symbols of object files"),
@@ -557,4 +568,54 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[x("power10-stubs")], Arg::Optional(Values::Any), "MODE", L, &[], Group::Compatibility, Refused, Lands::Other, "(lld, PowerPC64)"),
     r(&[x("no-power10-stubs")], Arg::None, "", L, &[], Group::Compatibility, Refused, Lands::Other, "(lld, PowerPC64)"),
     r(&[x("split-stack-adjust-size")], Arg::Required(Values::Any), "SIZE", L, &[], Group::Compatibility, Refused, Lands::Other, "(lld) split-stack adjustment"),
+];
+
+/// The statuses the rows take when the M2 join lifts the dynamic guard
+/// (`spec/dyn.md` §11.2 R-C1, `spec/cli.md` §4.2; WP-042). Until then a
+/// row keeps the status of [`ROWS`], which never says more than the
+/// pipeline does: the gates (`-pie`, `-dynamic-linker`, `-Bdynamic`) stay
+/// `refused` and are reported by `mortar::dynamic`'s guard, and the rows
+/// that act only on a dynamic output stay `noop` with a reason that names
+/// the refusal. The join (WP-053) moves each of these into [`ROWS`] in
+/// the change that flips `mortar::dynamic::DYNAMIC_OUTPUT`, with the
+/// row's evidence in `crates/mortar/tests/options.rs`.
+///
+/// Every row whose status today rests on dynamic outputs being refused
+/// (a `noop` reason ending "(M2)", or a gate) is here, so that none of
+/// them outlives the refusal (`tests/table.rs`). R-C1's refused rows
+/// (`-z notext`, `-z nocopyreloc`, `--spare-dynamic-tags`,
+/// `--copy-dt-needed-entries`, `--dynamic-list`,
+/// `-z [no]dynamic-undefined-weak`, `-shared`, the IBT and PAC PLT
+/// keywords), `--hash-style` (partial, `gnu` only), `-no-pie` and
+/// `--no-copy-dt-needed-entries` already have their M2 status in
+/// [`ROWS`].
+#[rustfmt::skip]
+pub(crate) static AT_JOIN: &[(&str, Status)] = &[
+    // The gates (dyn.md §2.7; D-1, D-31): `mortar::dynamic::is_gate`.
+    ("-pie", Supported),
+    ("-I", Supported),
+    ("-Bdynamic", Supported),
+    // R-C1 `supported`.
+    ("--as-needed", Supported),
+    ("--no-as-needed", Supported),
+    ("-E", Supported),
+    ("--no-export-dynamic", Supported),
+    ("--export-dynamic-symbol", Supported),
+    ("-rpath", Supported),
+    ("--enable-new-dtags", Supported),
+    ("--disable-new-dtags", Supported),
+    ("-init", Supported),
+    ("-fini", Supported),
+    ("-z text", Supported),
+    // Rows R-C1 does not name whose reason today is the refusal
+    // (findings of WP-042, `spec/landed/dyn/WP-042.md`).
+    ("-rpath-link", Supported),
+    ("--no-dynamic-linker", Supported),
+    ("-Bsymbolic", Noop(SYMBOLIC_AT_JOIN)),
+    ("-Bsymbolic-functions", Noop(SYMBOLIC_AT_JOIN)),
+    ("--Bsymbolic-non-weak", Noop(SYMBOLIC_AT_JOIN)),
+    ("--Bsymbolic-non-weak-functions", Noop(SYMBOLIC_AT_JOIN)),
+    ("-Bno-symbolic", Noop(SYMBOLIC_AT_JOIN)),
+    ("--no-undefined", Noop(DEFS_AT_JOIN)),
+    ("-z defs", Noop(DEFS_AT_JOIN)),
 ];

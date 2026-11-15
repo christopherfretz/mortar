@@ -176,13 +176,7 @@ pub fn status_markdown() -> String {
         for row in rows().iter().filter(|r| r.group == group) {
             let spellings: Vec<String> =
                 row.spellings.iter().map(|s| format!("`{}`", s.display())).collect();
-            let status = match row.status {
-                Status::Noop(reason) => format!("noop: {reason}"),
-                Status::Partial { refused, note } => {
-                    format!("partial: `={}` refused ({note})", refused.join("`, `="))
-                }
-                other => other.word().to_owned(),
-            };
+            let status = status_cell(row.status);
             let _ = writeln!(
                 out,
                 "| {} | {} | {} | {} | {} | `{}` | {} |",
@@ -197,5 +191,50 @@ pub fn status_markdown() -> String {
         }
         out.push('\n');
     }
+    join_markdown(&mut out);
     out
+}
+
+/// The status column of a row's status.
+fn status_cell(status: Status) -> String {
+    match status {
+        Status::Noop(reason) => format!("noop: {reason}"),
+        Status::Partial { refused, note } => {
+            format!("partial: `={}` refused ({note})", refused.join("`, `="))
+        }
+        other => other.word().to_owned(),
+    }
+}
+
+/// The rows the M2 join changes (`spec/dyn.md` R-C1;
+/// [`crate::table::join_changes`]).
+fn join_markdown(out: &mut String) {
+    let changes = crate::table::join_changes();
+    let after = |f: &dyn Fn(Status) -> bool| rows().iter().filter(|r| f(r.status_at_join())).count();
+    let _ = writeln!(
+        out,
+        "## At the M2 join\n\n\
+         Dynamic output is refused by name until the M2 join (`crates/mortar/src/dynamic.rs`).\n\
+         These {} rows take their M2 status (`spec/dyn.md` R-C1) in the change that lifts it;\n\
+         the table then counts {} supported, {} partial, {} noop, {} refused.\n",
+        changes.len(),
+        after(&|s| s == Status::Supported),
+        after(&|s| matches!(s, Status::Partial { .. })),
+        after(&|s| matches!(s, Status::Noop(_))),
+        after(&|s| s == Status::Refused),
+    );
+    out.push_str("| Option | Status today | Status at the join |\n");
+    out.push_str("|---|---|---|\n");
+    for (name, status) in changes {
+        let Some(row) = rows().iter().find(|r| r.name() == *name) else { continue };
+        let spellings: Vec<String> =
+            row.spellings.iter().map(|s| format!("`{}`", s.display())).collect();
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} |",
+            spellings.join(", "),
+            status_cell(row.status),
+            status_cell(*status)
+        );
+    }
 }
