@@ -44,9 +44,24 @@ struct Target {
 }
 
 const TARGETS: [Target; 3] = [
-    Target { machine: Machine::AArch64, triple: "aarch64-linux-gnu", gcc: "aarch64-linux-gnu-gcc", ld: "aarch64-linux-gnu-ld" },
-    Target { machine: Machine::X86_64, triple: "x86_64-linux-gnu", gcc: "x86_64-linux-gnu-gcc", ld: "x86_64-linux-gnu-ld" },
-    Target { machine: Machine::I386, triple: "i686-linux-gnu", gcc: "i686-linux-gnu-gcc", ld: "i686-linux-gnu-ld" },
+    Target {
+        machine: Machine::AArch64,
+        triple: "aarch64-linux-gnu",
+        gcc: "aarch64-linux-gnu-gcc",
+        ld: "aarch64-linux-gnu-ld",
+    },
+    Target {
+        machine: Machine::X86_64,
+        triple: "x86_64-linux-gnu",
+        gcc: "x86_64-linux-gnu-gcc",
+        ld: "x86_64-linux-gnu-ld",
+    },
+    Target {
+        machine: Machine::I386,
+        triple: "i686-linux-gnu",
+        gcc: "i686-linux-gnu-gcc",
+        ld: "i686-linux-gnu-ld",
+    },
 ];
 
 fn need(name: &str) -> Option<PathBuf> {
@@ -97,9 +112,23 @@ impl Exe {
         let hdr = |i: u64| -> (u64, u32, u64, u64, u64, u32) {
             let h = (shoff + i * shentsize) as usize;
             if wide {
-                (u(&bytes, h, 4), u(&bytes, h + 4, 4) as u32, u(&bytes, h + 0x10, 8), u(&bytes, h + 0x18, 8), u(&bytes, h + 0x20, 8), u(&bytes, h + 0x28, 4) as u32)
+                (
+                    u(&bytes, h, 4),
+                    u(&bytes, h + 4, 4) as u32,
+                    u(&bytes, h + 0x10, 8),
+                    u(&bytes, h + 0x18, 8),
+                    u(&bytes, h + 0x20, 8),
+                    u(&bytes, h + 0x28, 4) as u32,
+                )
             } else {
-                (u(&bytes, h, 4), u(&bytes, h + 4, 4) as u32, u(&bytes, h + 0xc, 4), u(&bytes, h + 0x10, 4), u(&bytes, h + 0x14, 4), u(&bytes, h + 0x18, 4) as u32)
+                (
+                    u(&bytes, h, 4),
+                    u(&bytes, h + 4, 4) as u32,
+                    u(&bytes, h + 0xc, 4),
+                    u(&bytes, h + 0x10, 4),
+                    u(&bytes, h + 0x14, 4),
+                    u(&bytes, h + 0x18, 4) as u32,
+                )
             }
         };
         let strs = hdr(shstrndx);
@@ -117,7 +146,11 @@ impl Exe {
                 let ent = if wide { 24 } else { 16 };
                 for k in 0..size / ent {
                     let e = (off + k * ent) as usize;
-                    let (n, v) = if wide { (u(&bytes, e, 4), u(&bytes, e + 8, 8)) } else { (u(&bytes, e, 4), u(&bytes, e + 4, 4)) };
+                    let (n, v) = if wide {
+                        (u(&bytes, e, 4), u(&bytes, e + 8, 8))
+                    } else {
+                        (u(&bytes, e, 4), u(&bytes, e + 4, 4))
+                    };
                     symbols.push((cstr(strtab.3 + n), v));
                 }
             }
@@ -143,7 +176,9 @@ fn phase_of(objs: &Objects) -> Phase {
 }
 
 fn load(paths: &[PathBuf]) -> Objects {
-    Objects::new(paths.iter().map(|p| (p.display().to_string(), std::fs::read(p).unwrap())).collect())
+    Objects::new(
+        paths.iter().map(|p| (p.display().to_string(), std::fs::read(p).unwrap())).collect(),
+    )
 }
 
 /// One reference from a data section into a split string section: the
@@ -172,7 +207,9 @@ fn refs(objs: &Objects, p: &Phase) -> (Vec<Ref>, usize) {
         let o = objs.object(f);
         let syms = o.symbols().unwrap().unwrap();
         for s in o.sections() {
-            if !(s.sh_type() == mortar_elf::consts::SHT_RELA || s.sh_type() == mortar_elf::consts::SHT_REL) {
+            if !(s.sh_type() == mortar_elf::consts::SHT_RELA
+                || s.sh_type() == mortar_elf::consts::SHT_REL)
+            {
                 continue;
             }
             let target = o.section(SectionIndex(s.header().sh_info)).unwrap();
@@ -182,18 +219,37 @@ fn refs(objs: &Objects, p: &Phase) -> (Vec<Ref>, usize) {
             }
             let data = target.data().unwrap();
             let recs: Vec<(u64, u32, i64)> = if s.sh_type() == mortar_elf::consts::SHT_RELA {
-                s.rela().unwrap().records().iter().map(|r| (r.r_offset, r.r_sym, r.r_addend)).collect()
+                s.rela()
+                    .unwrap()
+                    .records()
+                    .iter()
+                    .map(|r| (r.r_offset, r.r_sym, r.r_addend))
+                    .collect()
             } else {
                 s.rel()
                     .unwrap()
                     .records()
                     .iter()
-                    .map(|r| (r.r_offset, r.r_sym, i64::from(i32::from_le_bytes(data[r.r_offset as usize..r.r_offset as usize + 4].try_into().unwrap()))))
+                    .map(|r| {
+                        (
+                            r.r_offset,
+                            r.r_sym,
+                            i64::from(i32::from_le_bytes(
+                                data[r.r_offset as usize..r.r_offset as usize + 4]
+                                    .try_into()
+                                    .unwrap(),
+                            )),
+                        )
+                    })
                     .collect()
             };
             for (off, sym, a) in recs {
                 let st = syms.get(mortar_elf::SymbolIndex(sym)).unwrap();
-                let Ok(SymbolSection::Section(i)) = syms.section_of(mortar_elf::SymbolIndex(sym), &st) else { continue };
+                let Ok(SymbolSection::Section(i)) =
+                    syms.section_of(mortar_elf::SymbolIndex(sym), &st)
+                else {
+                    continue;
+                };
                 let id: SectionId = objs.id(f, i.0);
                 if p.split.merge_pieces(id).is_none() {
                     continue;
@@ -215,7 +271,8 @@ fn refs(objs: &Objects, p: &Phase) -> (Vec<Ref>, usize) {
                 // `static` table).
                 let holder = syms.iter().find(|(gi, g)| {
                     g.st_info & 0xf == STT_OBJECT
-                        && syms.section_of(*gi, g).ok() == Some(SymbolSection::Section(target.index()))
+                        && syms.section_of(*gi, g).ok()
+                            == Some(SymbolSection::Section(target.index()))
                         && g.st_value <= off
                         && off < g.st_value + g.st_size
                 });
@@ -252,7 +309,8 @@ fn compilers(t: &Target) -> Vec<(String, PathBuf, Vec<&'static str>)> {
     v
 }
 
-const FLAGS: [&[&str]; 3] = [&["-O2", "-fno-pic"], &["-O1", "-fPIC"], &["-O2", "-fmerge-all-constants", "-fno-pic"]];
+const FLAGS: [&[&str]; 3] =
+    [&["-O2", "-fno-pic"], &["-O1", "-fPIC"], &["-O2", "-fmerge-all-constants", "-fno-pic"]];
 
 #[test]
 fn s17_s19_piece_mapping_matches_ld_lld_and_mold() {
@@ -282,10 +340,21 @@ fn s17_s19_piece_mapping_matches_ld_lld_and_mold() {
                     let exe = link(ld, extra, &paths, &dir.join(format!("out-{lname}"))).unwrap();
                     let word = if t.machine == Machine::I386 { 4 } else { 8 };
                     for r in &rs {
-                        let base = exe.symbol(&r.symbol).unwrap_or_else(|| panic!("{lname}: {}", r.symbol));
+                        let base = exe
+                            .symbol(&r.symbol)
+                            .unwrap_or_else(|| panic!("{lname}: {}", r.symbol));
                         let ptr = u(exe.at(base + r.at, word).unwrap(), 0, word);
-                        let theirs = exe.at(ptr, r.bytes.len()).unwrap_or_else(|| panic!("{lname}: {ptr:#x}"));
-                        assert_eq!(theirs, &r.bytes[..], "{} {cname} {flags:?} {lname}: {}+{}", t.triple, r.symbol, r.at);
+                        let theirs = exe
+                            .at(ptr, r.bytes.len())
+                            .unwrap_or_else(|| panic!("{lname}: {ptr:#x}"));
+                        assert_eq!(
+                            theirs,
+                            &r.bytes[..],
+                            "{} {cname} {flags:?} {lname}: {}+{}",
+                            t.triple,
+                            r.symbol,
+                            r.at
+                        );
                     }
                 }
                 table.push(format!("{} {cname} {flags:?}: {} references equal in {} linkers ({skipped} one-past-the-end skipped)", t.triple, rs.len(), linkers.len()));
@@ -309,8 +378,17 @@ fn our_strings(objs: &Objects, p: &Phase, out: OutSecId) -> Vec<(Vec<u8>, usize)
         .map(|&f| {
             let frag = p.split.frags[f];
             let file = objs.file_of(frag.section);
-            let d = objs.object(file).section(SectionIndex(frag.section.0 - objs.id(file, 0).0)).unwrap().data().unwrap().to_vec();
-            (d[frag.offset as usize..(frag.offset + frag.size) as usize].to_vec(), 1 << metas[f.0 as usize].align)
+            let d = objs
+                .object(file)
+                .section(SectionIndex(frag.section.0 - objs.id(file, 0).0))
+                .unwrap()
+                .data()
+                .unwrap()
+                .to_vec();
+            (
+                d[frag.offset as usize..(frag.offset + frag.size) as usize].to_vec(),
+                1 << metas[f.0 as usize].align,
+            )
         })
         .collect()
 }
@@ -336,7 +414,9 @@ fn x6_x7_string_order_is_gnu_minus_tail_merging() {
             let kept: Vec<&Vec<u8>> = ours
                 .iter()
                 .filter(|(x, a)| {
-                    !ours.iter().any(|(y, _)| y.len() > x.len() && y.ends_with(x) && (y.len() - x.len()) % a == 0)
+                    !ours.iter().any(|(y, _)| {
+                        y.len() > x.len() && y.ends_with(x) && (y.len() - x.len()) % a == 0
+                    })
                 })
                 .map(|(x, _)| x)
                 .collect();
@@ -355,14 +435,32 @@ fn x6_x7_string_order_is_gnu_minus_tail_merging() {
             // The empty string cannot be told from padding.
             for x in kept.iter().filter(|x| x.len() > 1) {
                 let at = alone(x);
-                assert_eq!(at.len(), 1, "{} {cname}: {:?} in GNU's .rodata", t.triple, String::from_utf8_lossy(x));
+                assert_eq!(
+                    at.len(),
+                    1,
+                    "{} {cname}: {:?} in GNU's .rodata",
+                    t.triple,
+                    String::from_utf8_lossy(x)
+                );
                 placed.push((at[0], x));
             }
             let mut theirs = placed.clone();
             theirs.sort_by_key(|p| p.0);
-            let shown = |v: &[(usize, &Vec<u8>)]| v.iter().map(|x| String::from_utf8_lossy(x.1).into_owned()).collect::<Vec<_>>();
-            assert_eq!(shown(&placed), shown(&theirs), "{} {cname}: mortar's order minus tail merging, GNU's", t.triple);
-            table.push(format!("{} {cname}: {} fragments, {} after GNU's tail merge, same order", t.triple, ours.len(), kept.len()));
+            let shown = |v: &[(usize, &Vec<u8>)]| {
+                v.iter().map(|x| String::from_utf8_lossy(x.1).into_owned()).collect::<Vec<_>>()
+            };
+            assert_eq!(
+                shown(&placed),
+                shown(&theirs),
+                "{} {cname}: mortar's order minus tail merging, GNU's",
+                t.triple
+            );
+            table.push(format!(
+                "{} {cname}: {} fragments, {} after GNU's tail merge, same order",
+                t.triple,
+                ours.len(),
+                kept.len()
+            ));
         }
     }
     eprintln!("{}", table.join("\n"));

@@ -89,12 +89,10 @@ impl Objects {
             next += o.section_count();
             let mut r: Vec<Row> = o
                 .sections()
-                .map(|s| {
-                    Row {
-                        kind: kind(machine, &s),
-                        out: out_of(s.name().unwrap_or_default()),
-                        reloc: SectionIndex(0),
-                    }
+                .map(|s| Row {
+                    kind: kind(machine, &s),
+                    out: out_of(s.name().unwrap_or_default()),
+                    reloc: SectionIndex(0),
                 })
                 .collect();
             for s in o.sections() {
@@ -232,7 +230,11 @@ impl Relocs for X86 {
         let Some(f) = bytes.get(at..at + w) else { return 0 };
         let mut v = [0u8; 8];
         v[..w].copy_from_slice(f);
-        if w == 4 { i64::from(i32::from_le_bytes(v[..4].try_into().unwrap())) } else { i64::from_le_bytes(v) }
+        if w == 4 {
+            i64::from(i32::from_le_bytes(v[..4].try_into().unwrap()))
+        } else {
+            i64::from_le_bytes(v)
+        }
     }
 }
 
@@ -286,7 +288,10 @@ pub fn lib_dirs() -> Vec<(Machine, PathBuf, PathBuf)> {
 /// Per file of `readelf --debug-dump=frames` on `path` (an object or an
 /// archive): (CIEs, FDEs, terminators), in file order.
 pub fn readelf_frames(readelf: &Path, path: &Path) -> Vec<(usize, usize, usize)> {
-    let o = mortar_testutil::run(readelf, [std::ffi::OsStr::new("--debug-dump=frames"), path.as_os_str()]);
+    let o = mortar_testutil::run(
+        readelf,
+        [std::ffi::OsStr::new("--debug-dump=frames"), path.as_os_str()],
+    );
     let text = o.stdout_text();
     let mut out: Vec<(usize, usize, usize)> = Vec::new();
     let archive = text.contains("\nFile: ") || text.starts_with("File: ");

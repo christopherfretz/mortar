@@ -108,9 +108,24 @@ struct Target {
 }
 
 const TARGETS: [Target; 3] = [
-    Target { triple: "aarch64-linux-gnu", gnu: "aarch64-linux-gnu-", hardening: "-mbranch-protection=standard", fortran: true },
-    Target { triple: "x86_64-linux-gnu", gnu: "x86_64-linux-gnu-", hardening: "-fcf-protection", fortran: true },
-    Target { triple: "i686-linux-gnu", gnu: "i686-linux-gnu-", hardening: "-fcf-protection", fortran: false },
+    Target {
+        triple: "aarch64-linux-gnu",
+        gnu: "aarch64-linux-gnu-",
+        hardening: "-mbranch-protection=standard",
+        fortran: true,
+    },
+    Target {
+        triple: "x86_64-linux-gnu",
+        gnu: "x86_64-linux-gnu-",
+        hardening: "-fcf-protection",
+        fortran: true,
+    },
+    Target {
+        triple: "i686-linux-gnu",
+        gnu: "i686-linux-gnu-",
+        hardening: "-fcf-protection",
+        fortran: false,
+    },
 ];
 
 const FLAGS: [&str; 6] = [
@@ -203,7 +218,9 @@ fn s6_s40_corpus_has_no_refusal_and_readelf_counts() {
     let s = Scratch::new("merge-corpus");
     let src = s.join("src");
     std::fs::create_dir_all(&src).unwrap();
-    for (n, b) in [("strs.c", STRS_C), ("a.cc", CXX_A), ("b.cc", CXX_B), ("f.f90", F90), ("s.S", ASM)] {
+    for (n, b) in
+        [("strs.c", STRS_C), ("a.cc", CXX_A), ("b.cc", CXX_B), ("f.f90", F90), ("s.S", ASM)]
+    {
         std::fs::write(src.join(n), b).unwrap();
     }
     let configs = configurations(s.path(), &src);
@@ -221,7 +238,13 @@ fn s6_s40_corpus_has_no_refusal_and_readelf_counts() {
                     };
                     let Some(j) = jobs.get(i) else { break };
                     let o = run(&j.program, &j.args);
-                    assert!(o.success(), "{} {:?}: {}", j.program.display(), j.args, o.stderr_text());
+                    assert!(
+                        o.success(),
+                        "{} {:?}: {}",
+                        j.program.display(),
+                        j.args,
+                        o.stderr_text()
+                    );
                 }
             });
         }

@@ -76,7 +76,12 @@ fn s34_s40_libraries_parse_with_readelf_counts_and_no_refusal() {
                         .take(10)
                         .map(|p| format!("{}: {:?}", objs.names[p.file.0 as usize], p))
                         .collect();
-                    panic!("{}: {} problems:\n{}", path.display(), problems.len(), shown.join("\n"));
+                    panic!(
+                        "{}: {} problems:\n{}",
+                        path.display(),
+                        problems.len(),
+                        shown.join("\n")
+                    );
                 }
             };
             // Our counts per file.

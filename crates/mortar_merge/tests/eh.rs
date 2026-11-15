@@ -173,11 +173,21 @@ fn s35_accepted_cies() {
         let mut b = cie("zR", &[enc]);
         let at = b.len();
         b.extend(fde(at, 0, 0, true, None));
-        let r32 = EhReloc { r_type: 10, name: "R_X86_64_32", class: RelocClass::Abs, ..code(at as u64 + 8) };
+        let r32 = EhReloc {
+            r_type: 10,
+            name: "R_X86_64_32",
+            class: RelocClass::Abs,
+            ..code(at as u64 + 8)
+        };
         let eh = one(&b, &[r32]).unwrap_or_else(|e| panic!("{enc:#x}: {e:?}"));
         assert_eq!(eh.records[0].cie().unwrap().fde_enc, enc);
         // An 8-byte one does not fit the 4-byte field.
-        let r64 = EhReloc { width: 8, name: "R_X86_64_64", class: RelocClass::Abs, ..code(at as u64 + 8) };
+        let r64 = EhReloc {
+            width: 8,
+            name: "R_X86_64_64",
+            class: RelocClass::Abs,
+            ..code(at as u64 + 8)
+        };
         assert_eq!(one(&b, &[r64]).unwrap_err()[0].what, What::PointerReloc("R_X86_64_64".into()));
     }
     // Version 3, zRS, zPLR with a personality and an LSDA, B and G.
