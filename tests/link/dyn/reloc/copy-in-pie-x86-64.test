@@ -1,0 +1,50 @@
+# dyn.md D-43: arch.md §4.3 row `Pc` against a shared data definition in
+# a `Pie` is a copy, `C`, not a refusal. GCC's x86-64 `-fPIE` code (its
+# default) reads extern data PC-relatively (`R_X86_64_PC32` against
+# `dvar`, `al64`, `stdout`), so a PIE of it copies those data, and GNU
+# ld, lld and mold all do; the program runs. It writes `dvar`, reads it
+# back through the library, and checks that the executable, the library
+# and `dlsym` see one address for each datum.
+#
+# x86-64 only: GCC's AArch64 `-fPIE` code reaches extern data through
+# the GOT (`ADR_GOT_PAGE`/`LD64_GOT_LO12_NC`), so an AArch64 PIE never
+# demands a copy (and `-fno-pic` code in an AArch64 PIE is
+# `canonical-plt-in-pie` or a text relocation, not a copy).
+#
+# mortar: x86-64 WP-055 (X64-JOIN), in tests/link/xfails.
+#@ spec: dyn.md "D-43"
+#@ spec: dyn.md "D-42"
+#@ arch: x86_64
+#@ fixture: reloc-libd
+
+cc -O1 -fPIE main.c -o main.o
+link gcc -pie main.o -L. -ld -o prog
+run prog
+  stdout: dvar 43 lib 43 same 1 alias 1
+  stdout: al64 64 aligned 1 same 1
+  stdout: stdout same 1
+check readelf -rW main.o
+  has: R_X86_64_PC32 * dvar - 4$
+check readelf -rW prog
+  has: R_X86_64_COPY * dvar + 0$
+  has: R_X86_64_COPY * al64 + 0$
+  has: R_X86_64_COPY * stdout@
+check readelf -dW prog
+  has: (FLAGS_1) Flags:*PIE
+  not: (TEXTREL)
+
+#--- main.c
+#include <dlfcn.h>
+#include <stdio.h>
+#include "libd.h"
+
+int main(void) {
+  dvar = 43;
+  printf("dvar %d lib %d same %d alias %d\n", dvar, lib_get_dvar(),
+         &dvar == lib_addr("dvar"), &dvar == lib_addr("dalias"));
+  printf("al64 %d aligned %d same %d\n", al64, (int)((unsigned long)&al64 % 64 == 0),
+         &al64 == lib_addr("al64"));
+  printf("stdout same %d\n",
+         (void *)&stdout == lib_addr("stdout") && (void *)&stdout == dlsym(RTLD_DEFAULT, "stdout"));
+  return 0;
+}

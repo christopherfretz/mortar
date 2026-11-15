@@ -1,0 +1,41 @@
+# dyn.md D-12: a definition that exists only in a closure file (found
+# through another library's `DT_NEEDED`, never named on the command line)
+# is never a candidate for a program reference: the reference is
+# undefined, `undefined-symbol` (`undefined symbol: mid_fn`) with the note `defined in <c>, which is not
+# on the command line`. `main` calls `top_fn` (`libtop.so`, named) and
+# `mid_fn`, which only `libmid.so` defines; `libmid.so` is reached through
+# `libtop.so`'s `DT_NEEDED` (`-rpath-link`). All three references refuse
+# (GNU ld: `undefined reference to symbol 'mid_fn'` and `DSO missing from
+# command line`; lld and mold: `undefined symbol: mid_fn`; E-shlib 2.10a).
+# Naming `-lmid` makes it link and run: `1103 103`.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-12"
+#@ arch: aarch64 x86_64
+#@ fixture: shlib-chain
+
+cc -O1 -fPIE main.c -o main.o
+link gcc -pie main.o -L. -ltop -Wl,-rpath-link,. -o bad
+  exit: fail
+  diag(bfd): undefined reference to symbol 'mid_fn'
+  diag(bfd): DSO missing from command line
+  diag(lld,mold): undefined symbol: mid_fn
+  diag(mortar): undefined symbol: mid_fn
+  diag(mortar): libmid.so, which is not on the command line
+link gcc -pie main.o -L. -ltop -lmid -Wl,-rpath-link,. -o prog
+run prog
+  stdout: 1103 103
+check readelf -dW prog
+  has: (NEEDED) Shared library: [libtop.so]
+  then: (NEEDED) Shared library: [libmid.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+
+#--- main.c
+#include <stdio.h>
+#include "chain.h"
+
+int main(void) {
+  printf("%d %d\n", top_fn(), mid_fn());
+  return 0;
+}

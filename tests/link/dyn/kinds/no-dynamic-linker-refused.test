@@ -1,0 +1,62 @@
+# dyn.md D-31 (input.md 8.4): an executable that loads a shared object
+# needs -dynamic-linker. A link without one is refused, `feature`
+# `dynamic executable without -dynamic-linker` (the message `unsupported
+# feature: dynamic executable without -dynamic-linker`). The links are
+# the linker run directly, as the drivers do but without the option: a
+# hello against libc, PIE (Scrt1.o, -pie) and -no-pie (crt1.o).
+#
+# W10 (dyn.md 13.2, review-m2/dynamic/interp.sh): no reference refuses.
+# GNU ld writes its built-in default interpreter, right on AArch64
+# (/lib/ld-linux-aarch64.so.1: the program runs) and wrong on x86-64
+# (/lib/ld64.so.1: the program cannot start; qemu exits 255); lld and
+# mold write no PT_INTERP at all and the program dies by SIGSEGV.
+# AArch64: GNU ld's output is the reference; lld and mold are XFAIL W10.
+# x86-64: every reference is wrong. W10: the references' output is
+# wrong; this records it, the hazard mortar must refuse (GNU ld's wrong
+# interpreter and exit 255, lld's and mold's missing PT_INTERP and
+# SIGSEGV).
+#
+# mortar: AArch64 WP-042 (CLI), x86-64 WP-042 (CLI), in
+# tests/link/xfails. (The refusal is input.md 8.4's, which mortar already
+# makes on this line without -pie/-no-pie; what it lacks is those two
+# options, which are mortar_cli's.)
+#@ spec: dyn.md "D-31"
+#@ arch: aarch64 x86_64
+#@ xfail(lld,mold,aarch64): W10: no PT_INTERP without -dynamic-linker; the program dies by SIGSEGV
+
+cc -O1 -fPIE hello.c -o hello.o
+link(bfd,lld,mold) ld -m %{emulation} -pie -o pie %{libdir}/Scrt1.o %{libdir}/crti.o hello.o -L%{libdir} -lc %{libdir}/crtn.o
+link(bfd,lld,mold) ld -m %{emulation} -no-pie -o exec %{libdir}/crt1.o %{libdir}/crti.o hello.o -L%{libdir} -lc %{libdir}/crtn.o
+run(aarch64,bfd,lld,mold) pie
+  stdout: hello
+run(aarch64,bfd,lld,mold) exec
+  stdout: hello
+check(x86_64,bfd) readelf -lW pie
+  has: Requesting program interpreter: /lib/ld64.so.1]
+run(x86_64,bfd) pie
+  exit: 255
+run(x86_64,bfd) exec
+  exit: 255
+check(x86_64,lld,mold) readelf -lW pie
+  has: ^ DYNAMIC
+  not: ^ INTERP
+check(x86_64,lld,mold) readelf -lW exec
+  not: ^ INTERP
+run(x86_64,lld,mold) pie
+  exit: signal 11
+run(x86_64,lld,mold) exec
+  exit: signal 11
+link(mortar) ld -m %{emulation} -pie -o pie %{libdir}/Scrt1.o %{libdir}/crti.o hello.o -L%{libdir} -lc %{libdir}/crtn.o
+  exit: fail
+  diag: dynamic executable without -dynamic-linker
+link(mortar) ld -m %{emulation} -no-pie -o exec %{libdir}/crt1.o %{libdir}/crti.o hello.o -L%{libdir} -lc %{libdir}/crtn.o
+  exit: fail
+  diag: dynamic executable without -dynamic-linker
+
+#--- hello.c
+#include <stdio.h>
+
+int main(void) {
+  puts("hello");
+  return 0;
+}

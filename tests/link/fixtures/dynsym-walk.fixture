@@ -1,0 +1,96 @@
+# `dynwalk.h` for the `.dynsym` and `.dynamic` tests (dyn.md §6, §7): a
+# program reads its own `.dynamic`, `.dynsym`, `.dynstr` and `.gnu.hash` as
+# the loader left them (address tags relocated in place in a PIE, D-33),
+# and looks names up through its own GNU hash table (Bloom word, bucket,
+# chain) the way glibc does. No build step: a test includes the header.
+# `count` is the `.dynsym` entry count the hash table implies (the last
+# chain entry of the highest bucket, plus one; `symoffset` when every
+# bucket is empty), which is all a loader knows of it.
+
+#--- dynwalk.h
+/* dynwalk.h: the program reads its own dynamic tables, as the loader
+   left them (address tags relocated in place in a PIE, dyn.md D-33). */
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <elf.h>
+#include <link.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+struct dw {
+  uintptr_t bias;
+  const ElfW(Sym) *sym;
+  const char *str;
+  const ElfW(Half) *versym;
+  uint32_t nbuckets, symoffset, maskwords, shift, count;
+  const ElfW(Addr) *bloom;
+  const uint32_t *buckets, *chain;
+};
+
+static int dw_first(struct dl_phdr_info *info, size_t size, void *bias) {
+  (void)size;
+  *(uintptr_t *)bias = info->dlpi_addr; /* the first object is the program */
+  return 1;
+}
+
+static uint32_t dw_hash(const char *s) {
+  uint32_t h = 5381;
+  for (; *s; s++)
+    h = h * 33 + (unsigned char)*s;
+  return h;
+}
+
+/* A d_ptr the loader may or may not have biased in place. */
+static uintptr_t dw_ptr(const struct dw *w, uintptr_t v) { return v < w->bias ? v + w->bias : v; }
+
+static int dw_open(struct dw *w) {
+  extern ElfW(Dyn) _DYNAMIC[] __attribute__((visibility("hidden")));
+  memset(w, 0, sizeof *w);
+  dl_iterate_phdr(dw_first, &w->bias);
+  const uint32_t *gh = 0;
+  for (ElfW(Dyn) *d = _DYNAMIC; d->d_tag != DT_NULL; d++) {
+    if (d->d_tag == DT_GNU_HASH) gh = (const uint32_t *)dw_ptr(w, d->d_un.d_ptr);
+    if (d->d_tag == DT_SYMTAB) w->sym = (const ElfW(Sym) *)dw_ptr(w, d->d_un.d_ptr);
+    if (d->d_tag == DT_STRTAB) w->str = (const char *)dw_ptr(w, d->d_un.d_ptr);
+    if (d->d_tag == DT_VERSYM) w->versym = (const ElfW(Half) *)dw_ptr(w, d->d_un.d_ptr);
+  }
+  if (!gh || !w->sym || !w->str) return 0;
+  w->nbuckets = gh[0];
+  w->symoffset = gh[1];
+  w->maskwords = gh[2];
+  w->shift = gh[3];
+  w->bloom = (const ElfW(Addr) *)(gh + 4);
+  w->buckets = (const uint32_t *)(w->bloom + w->maskwords);
+  w->chain = w->buckets + w->nbuckets;
+  uint32_t last = 0;
+  for (uint32_t b = 0; b < w->nbuckets; b++)
+    if (w->buckets[b] > last) last = w->buckets[b];
+  if (last == 0) {
+    w->count = w->symoffset;
+  } else {
+    while (!(w->chain[last - w->symoffset] & 1)) last++;
+    w->count = last + 1;
+  }
+  return 1;
+}
+
+static uint32_t dw_bucket(const struct dw *w, uint32_t i) {
+  return dw_hash(w->str + w->sym[i].st_name) % w->nbuckets;
+}
+
+/* The table's own lookup (Bloom filter, bucket, chain), as glibc does it. */
+static uint32_t dw_lookup(const struct dw *w, const char *name) {
+  const unsigned W = sizeof(ElfW(Addr)) * 8;
+  uint32_t h = dw_hash(name);
+  ElfW(Addr) word = w->bloom[(h / W) % w->maskwords];
+  ElfW(Addr) bits = ((ElfW(Addr))1 << (h % W)) | ((ElfW(Addr))1 << ((h >> w->shift) % W));
+  if ((word & bits) != bits) return 0;
+  uint32_t i = w->buckets[h % w->nbuckets];
+  if (i == 0) return 0;
+  for (;; i++) {
+    uint32_t c = w->chain[i - w->symoffset];
+    if ((c | 1) == (h | 1) && strcmp(w->str + w->sym[i].st_name, name) == 0) return i;
+    if (c & 1) return 0;
+  }
+}
