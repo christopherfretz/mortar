@@ -539,7 +539,7 @@ fn x64_new_rules_are_enforced() {
     let mut named = ctx.report(&ctx.output).coverage.placement_not_judged;
     named.sort();
     assert_eq!(named, [".lbss", ".ldata", ".lrodata"], "large sections named not judged");
-    let st =sections(&ctx.output).into_iter().find(|s| s.0 == ".symtab").unwrap();
+    let st = sections(&ctx.output).into_iter().find(|s| s.0 == ".symtab").unwrap();
     let strtab = sections(&ctx.output).into_iter().find(|s| s.0 == ".strtab").unwrap();
     let mut hit = 0;
     for i in 0..(st.3 / 24) as usize {
