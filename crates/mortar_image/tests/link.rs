@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use mortar_input::store::StorePolicy;
 use mortar_testutil::{Scratch, tool, tools_required};
-use support::front::{Front, front, map, write, write_with};
+use support::front::{Front, front, map, try_front, write, write_with};
 
 const A_S: &str = r#"
     .section .rodata.str1.1,"aMS",@progbits,1
@@ -330,6 +330,69 @@ fn i65_input_changed_at_recheck_leaves_no_output() {
     assert!(!out.exists(), "no output file after a failed link");
 }
 
+/// I-65, input.md §11.5: an input truncated between load and fill (here,
+/// at the recheck) fails the link with `input-changed`, and no output is
+/// left.
+#[test]
+fn i65_input_truncated_at_recheck_leaves_no_output() {
+    let dir = Scratch::new("image-link-truncated");
+    if objects(&dir, true).is_none() {
+        return;
+    }
+    let f = front(&with_big(), dir.path(), 2, StorePolicy::Staged);
+    let out = dir.join("out");
+    let big = dir.join("big.o");
+    let done = AtomicBool::new(false);
+    let e = write_with(&f, &out, &|_| {
+        if done.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let len = std::fs::metadata(&big).unwrap().len();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::OpenOptions::new().write(true).open(&big).unwrap().set_len(len / 2).unwrap();
+    })
+    .expect_err("a truncated input fails the link");
+    assert!(e.diagnostics.iter().any(|(_, d)| d.id() == "input-changed"), "{:?}", e.diagnostics);
+    assert!(!out.exists(), "no output file after a failed link");
+}
+
+/// I-110: a key referenced only from a non-alloc section (`.debug_info`
+/// naming an undefined global) fails the link with `undefined-symbol`,
+/// the same under the staged and the resident store.
+#[test]
+fn i110_undefined_from_debug_only_is_refused_by_both_stores() {
+    let dir = Scratch::new("image-link-i110");
+    if objects(&dir, false).is_none() {
+        return;
+    }
+    std::fs::write(
+        dir.join("d.s"),
+        "    .section .debug_info,\"\",@progbits\n    .xword nowhere_defined\n",
+    )
+    .unwrap();
+    let o = mortar_testutil::run_with(
+        std::process::Command::new(tool("gcc").unwrap())
+            .args(["-c", "-o", "d.o", "d.s"])
+            .current_dir(dir.path()),
+        b"",
+        Duration::from_mins(1),
+    );
+    assert!(o.success(), "gcc: {}", o.stderr_text());
+    let mut args = ARGS.to_vec();
+    args.push("d.o");
+    let mut seen = None;
+    for policy in [StorePolicy::Resident, StorePolicy::Staged] {
+        let Err(text) = try_front(&args, dir.path(), 2, policy) else {
+            panic!("{policy:?}: the link is accepted");
+        };
+        assert!(text.contains("undefined symbol: nowhere_defined"), "{text}");
+        match &seen {
+            None => seen = Some(text),
+            Some(t) => assert_eq!(*t, text, "the stores' diagnostics differ"),
+        }
+    }
+}
+
 // ---- the comparison with GNU ld ---------------------------------------------
 
 /// `readelf -sW`'s `.symtab` rows: (value, size, type, bind, vis, ndx, name).
@@ -524,7 +587,7 @@ fn i40_compares_with_gnu_ld() {
 /// "no entry point") and layout's warning says so. The one object has a
 /// `.note.gnu.property` (BTI and PAC, `-mbranch-protection=standard`),
 /// which the output keeps (S-94) and plumb checks (P1, P2). `w` keeps the
-/// RW segment non-empty: layout writes an empty RW PT_LOAD when there is
+/// RW segment non-empty: layout writes an empty RW `PT_LOAD` when there is
 /// no writable data, which eu-elflint rejects (a layout follow-up).
 #[test]
 fn i40_no_entry_writes_zero() {

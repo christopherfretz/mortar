@@ -124,6 +124,21 @@ pub fn front(args: &[&str], cwd: &Path, threads: usize, policy: StorePolicy) -> 
 }
 
 #[allow(clippy::too_many_lines)]
+/// The front, or its diagnostics rendered (for a link the front refuses).
+#[allow(dead_code)]
+pub fn try_front(
+    args: &[&str],
+    cwd: &Path,
+    threads: usize,
+    policy: StorePolicy,
+) -> Result<Front, String> {
+    let diag = Collector::new(Policy::default());
+    match front_in(args, cwd, threads, policy, &diag) {
+        Some(f) => Ok(f),
+        None => Err(diag.finish().render(&mortar_diag::Style::plain("mortar"))),
+    }
+}
+
 fn front_in(
     args: &[&str],
     cwd: &Path,
