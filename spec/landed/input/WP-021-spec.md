@@ -206,7 +206,7 @@ mkdir -p '$SYSROOT/lib'; cp sr/lib/libf.a '$SYSROOT/lib/'
 | `--sysroot=$S -L=/lib -lf` | 0 | 0 | 0 |
 | `--sysroot=$S '-L$SYSROOT/lib' -lf` | 0 | 1: not found | 0 |
 | `--sysroot=$S -L/lib -lf` | 1 | 1 | 1 (not prefixed) |
-| `--sysroot=$S -L=lib -lf` | 0 (`-t`: `.../srlib/libf.a`) | 0 (`-t`: `.../sr/lib/libf.a(f.o)`) | 0 (`-t` prints nothing for it) |
+| `--sysroot=$S -L=lib -lf` | 0 (`-t`: `.../srlib/libf.a`) | 0 (`-t`: `.../sr/lib/libf.a(f.o)`) | 0 (`--trace`: `.../srlib/libf.a`, [E37]; mold has no `-t`) |
 | `--sysroot=$S =/lib/libf.a` | 0 | 1: `cannot open =/lib/libf.a` | 1: `cannot open =/lib/libf.a` |
 | `--sysroot=$S /lib/libf.a` | 1 | 1 | 1 (not prefixed) |
 | `--sysroot=$S -L=/lib -l:libf.a` | 0 | 0 | 0 |
@@ -647,6 +647,128 @@ for v in libex.a ex/libex.a libex ALL; do for P in ...; do
 | `libex` | 0 | 1 | 1 |
 | `ALL` | 0 | 0 | 0 |
 
+### E27 The skip rule on multiarch lines (review fix, 2026-11-14)
+
+The reviewer's four lines, re-run against the new §4.4 (`imm.o` an i686
+object; `st.o` an aarch64 object):
+
+| line | bfd | lld | mold |
+|---|---|---|---|
+| (a) `i686-linux-gnu-gcc imm.o -L/usr/x86_64-linux-gnu/lib -lm` | 0, an i386 PIE; warns `skipping incompatible /usr/x86_64-linux-gnu/lib/libm.so when searching for -lm`, the same for `libm.a`, `libc.so`, `libc.a`, and `skipping incompatible /usr/x86_64-linux-gnu/lib/libgcc_s.so.1 when searching for libgcc_s.so.1` (twice) | not recorded in this round (the review: `Scrt1.o is incompatible with elf64-x86-64`) | not recorded in this round (the review: `library not found: gcc_s`) |
+| (b) `ld -maarch64linux st.o -L/usr/i686-linux-gnu/lib -L/usr/lib/aarch64-linux-gnu -lc` | 0, skipping the i686 `libc.so` (a script) and `libc.a` | 1: `st.o is incompatible with elf32-i386` | 0, `skipping incompatible file: … i386 (e_machine 183)` |
+| (c) `sB/libq.so` = `OUTPUT_FORMAT(elf32-i386) GROUP(/lib/aarch64-linux-gnu/libc.so.6)`, `sA/libq.so` the same without `OUTPUT_FORMAT`; `st.o -LsB -LsA -lq` | 0, `skipping incompatible sB/libq.so when searching for -lq` | 1 | 0, skips it as i386 |
+| (d) `st.o -L/usr/x86_64-linux-gnu/lib -L/usr/lib/aarch64-linux-gnu -l:crti.o` | 0, `skipping incompatible /usr/x86_64-linux-gnu/lib/crti.o when searching for -l:crti.o` | 1 | 0, warns |
+
+A script entry's warning names the entry without `-l`.
+
+### E28 Skip in a script's own probes
+
+`sd/s.ld` = `INPUT(libq9.so)`, `sd/libq9.so` an x86-64 shared object,
+`ad2/libq9.so` an aarch64 one. `u.o sd/s.ld -Lad2`: bfd 0, `skipping
+incompatible sd/libq9.so when searching for libq9.so`; mold 0 with a
+warning; lld 1. The same with an x86-64 `./libq9.so` in the working
+directory and `sd2/s.ld` = `INPUT(libq9.so)`: bfd and mold skip it, lld
+fails. (A same-target `libgcc_s.so.1` in the working directory is taken
+over the search path by all three: the review's result, consistent with
+these.)
+
+### E29 The closure search against GNU ld's
+
+`closure.py LINKER ARGV` runs GNU ld on a driver's captured argv
+(`getargv.py`: the collect2 argv from `-###`) with `--verbose`, collects
+`found N at P` and `attempt to open X succeeded`, and computes for every
+`DT_NEEDED` edge what the §8.6 search finds (`-rpath-link` split at `:`,
+`-rpath`, `RUNPATH`/`RPATH` with `$ORIGIN`, the needing library's
+directory, `-L`, the sysroot for `=`, a same-machine `ET_DYN` check),
+comparing by `realpath`:
+
+| line | edges | result |
+|---|---|---|
+| `g++` default dynamic link | `ld-linux-aarch64.so.1`, `libgcc_s.so.1`, `libm.so.6`; `libc.so.6` already loaded | all SAME |
+| `x86_64-linux-gnu-g++` (passes `--sysroot=/`) | `ld-linux-x86-64.so.2` | SAME, at `/usr/x86_64-linux-gnu/lib64`; `libc.so.6`, `libm.so.6` already loaded |
+| `i686-linux-gnu-g++` (passes `--sysroot=/`) | `ld-linux.so.2` | SAME; `libc.so.6` already loaded |
+| `gcc e.o -l:libelf.so.1` (`e.o` calls `elf_version`, so libelf is needed under the driver's `--as-needed`) | `libz.so.1`, `libzstd.so.1` | same files; GNU ld spells `/lib/aarch64-linux-gnu/libz.so.1`, the model `/usr/lib/gcc/aarch64-linux-gnu/14/../../../aarch64-linux-gnu/libz.so.1` (step 4) |
+
+No edge found a different file.
+
+### E30 A program symbol referenced by an indirect dependency
+
+`hk/`: `libh.so` from `int hook(void); int h(void){return hook();}`;
+`libg.so` from `int h(void); int g(void){return h();}`, linked with
+`-L. -lh`; `m.c` defines `hook` returning 42 and prints `g()`.
+`gcc -fuse-ld=X m.o -L. -lg -Wl,-rpath-link,.`, run with
+`LD_LIBRARY_PATH=.`:
+
+| | bfd | lld | mold |
+|---|---|---|---|
+| link | 0 | 0 | 0 |
+| `hook` in `.dynsym` | yes | no | no |
+| run | prints `42` | `./libh.so: undefined symbol: hook` | the same |
+
+### E31 `-rpath-link` lists, `--as-needed`, no `-rpath-link`
+
+On the E30 line, bfd only:
+
+- without `-rpath-link`: 1, `warning: libh.so, needed by ./libg.so, not
+  found (try using -rpath or -rpath-link)` and `./libg.so: undefined
+  reference to 'h'` (`libh.so` is next to `libg.so` and in `-L.`: GNU ld
+  searches neither);
+- `-Wl,-rpath-link,/nonexist:.`: 0 (the list is split at `:`);
+- `-Wl,--as-needed -lg -Wl,-rpath-link,.`: 0, `hook` still exported.
+
+### E32 `-nostdlib` and `SEARCH_DIR`
+
+`s.ld` = `SEARCH_DIR(dd)`, `dd/libq.a`; `s2.ld` = `SEARCH_DIR(dd)
+INPUT(-lq)`:
+
+| line | bfd | lld |
+|---|---|---|
+| `u.o s.ld -lq` | 0 | 0 |
+| `-nostdlib u.o s.ld -lq` | 1: `cannot find -lq: file format not recognized` | 1: `unable to find library -lq` |
+| `-nostdlib u.o s2.ld` | 1 | 1 |
+
+### E33 Inputs that are not regular files
+
+| input | bfd | lld | mold |
+|---|---|---|---|
+| `/dev/null` (`u.o f.o /dev/null`; `-r f.o /dev/null`) | 0 | 0 | 1 `unknown file type` |
+| a zero-length regular file | 0 | 0 | 1 `unknown file type` |
+| a directory | 1 `cannot find dir: file format not recognized` | 1 `cannot open dir: Is a directory` | 1 `mmap failed: No such device` |
+| a FIFO with a writer that writes nothing (one writer per linker) | killed by `timeout` (124) | 0 | 1 `unknown file type` |
+| a FIFO carrying `f.o` | 1 `fifo: file not recognized: Illegal seek` | 0, links `f` | 1 |
+
+`/dev/zero`, sockets and block devices were not run.
+
+### E34 A soname-less library in three spellings
+
+`ns2/libf.so` without `DT_SONAME`; `usef.o -Lns2 -lf ns2/libf.so
+./ns2/libf.so`: `NEEDED` `libf.so`, `ns2/libf.so`, `./ns2/libf.so` in all
+three.
+
+### E35 Found paths under a sysroot
+
+`srt/lib/libq8.a`; `usef.o --sysroot=/ -L=$PWD/srt/lib -lq8`: bfd (`-t`
+and `--dependency-file`) `/tmp/…/srt/lib/libq8.a`, one slash; lld 22
+`/tmp/…/srt/lib/libq8.a(f.o)`, dependency file one slash; mold
+(`--trace`) one slash. With `--sysroot=$PWD/` (trailing slash) and
+`-L=/srt/lib`: bfd `…//srt/lib/libq8.a`, lld `…/srt/lib/libq8.a`.
+
+### E36 `gcc -flto`
+
+`gcc -flto -###` passes `-plugin
+/usr/libexec/gcc/aarch64-linux-gnu/14/liblto_plugin.so` and
+`-plugin-opt=…lto-wrapper`, `-plugin-opt=-fresolution=…`. `gcc -flto -c`
+objects carry `__gnu_lto_slim`; `gcc -flto -fuse-ld=bfd mlto.o flto.o`
+(main calls `f` in the other file) links, exit 0, and the program runs
+correctly: GNU ld performs LTO through the plugin on a driver line.
+
+### E37 mold and `-L=lib` (corrects E6)
+
+mold rejects `-t` (`unknown command line option: -t`); its option is
+`--trace`. `usef.o -nostdlib --sysroot=$S -L=lib -lf --trace`: mold
+reports `…/srlib/libf.a` (it concatenates, as GNU ld); with `srlib`
+removed it fails `library not found: f`.
+
 ## Decisions and reasons
 
 The ranked list for review; each with the references in one line.
@@ -657,16 +779,19 @@ The ranked list for review; each with the references in one line.
    so multilib skipping works; lld's rule picks the wrong target for
    `-Lx86 -Larm -lf main.o` [E2].
 2. **No built-in search directories; the environment is never read**
-   (§4.2, §4.6). GNU ld: 7-11 built-in directories, reads
+   (§4.2, §4.7). GNU ld: 7-11 built-in directories, reads
    `LD_LIBRARY_PATH` for `DT_NEEDED`; lld and mold: none, and neither
    reads the environment for `-l` [E5, E7]. The drivers pass complete
    lists; a link must not depend on the host or the shell. `-nostdlib`
-   becomes a no-op with that reason.
+   drops the scripts' `SEARCH_DIR`s, as in GNU ld and lld [E32].
 3. **The archive symbol index is never used** (§7.4). GNU ld trusts it
    (fails without one, extracts wrongly when stale); lld and mold decide
    from the members [E12]. mortar reads every member's symbols anyway.
-4. **Incompatible `-l` candidates are skipped with a warning** (§4.4).
-   GNU ld and mold skip and warn; lld errors [E2].
+4. **One skip rule for every search** (§4.4): `-l`, `-l:`, every probe of
+   a relative script entry, every closure probe; ELF files of any type,
+   archives by their first object member, scripts by `OUTPUT_FORMAT`.
+   Explicit paths are never skipped. GNU ld and mold skip and warn; lld
+   errors [E2, E27, E28].
 5. **Shared objects: one per soname; `DF_1_PIE` refused; no section
    headers refused; `DT_SONAME` twice is malformed** (§8.1, §8.2; the
    supervisor's three questions). PIE: GNU ld refuses, lld and mold read it
@@ -678,12 +803,18 @@ The ranked list for review; each with the references in one line.
 6. **Archive members that are not objects: warning when lazy, error under
    `--whole-archive`; LTO and other-machine members refused even when
    lazy** (§7.3). The three disagree on nearly every cell [E11].
-7. **Slim GCC LTO and LLVM bitcode refused by name** (§2.1, §2.2). GNU ld
-   and lld (slim GCC) link without the code, exit 0; mold refuses [E1].
-8. **Store: read, never map; chunked parallel reads; changed files are
-   errors** (§11). Chunked reads cost about what map-and-touch costs on
-   this machine [E22]; mapping is `unsafe` and turns truncation into
-   `SIGBUS`.
+7. **Slim GCC LTO and LLVM bitcode refused by name** (§2.1, §2.2). Without
+   a plugin GNU ld and lld (slim GCC) link without the code, exit 0; mold
+   refuses [E1]. On a `gcc -flto` line GNU ld performs LTO through the
+   plugin [E36]; mortar refuses with a note naming LTO.
+8. **Store: read, never map; two stores with one interface; chunked
+   parallel reads; `input-changed` best effort** (§11). Chunked reads cost
+   about what map-and-touch costs on this machine [E22]; mapping is
+   `unsafe` and turns truncation into `SIGBUS`. `load(&'s Store)`: the
+   store is shared and immutable to its users, lazily filled parts sit in
+   once-cells; the staged store keeps descriptors open (pinning the inode)
+   and falls back to fully resident when descriptors run out, with the
+   same output.
 9. **Every mention is its own file and its own `ArchiveId`, except shared
    objects** (§9). All three treat repeated objects and archives as
    separate inputs [E15, E16]; model.md's "first appearance" is changed.
@@ -698,15 +829,60 @@ The ranked list for review; each with the references in one line.
 11. **Keys: `seq = k × 2^40 + offset`** (§12.2): one argument can reach many
     files (`-lc` reaches three), so the file's ordinal within the unit goes
     in front of the offset.
+12. **The `DT_NEEDED` closure is loaded by the input phase** for
+    executables and for shared outputs under `--no-allow-shlib-undefined`
+    (§8.6), with a deterministic search (`-rpath-link`, `-rpath`,
+    `RUNPATH`/`RPATH` with `$ORIGIN`, the needing library's directory,
+    `-L`). GNU ld loads it and exports program symbols indirect
+    dependencies reference; lld and mold do not and write a program that
+    fails at run time [E30]. The search finds the files GNU ld finds on
+    the four system lines [E29].
+13. **Per-file rows per mention; merged properties in a per-link table**
+    (§10.3, §10.4), so that I-file holds.
+14. **Every probe recorded** (§4.6): an incremental link re-checks them by
+    one `stat` each.
+15. **GNU ld's phrases kept verbatim** (§13): the wording policy.
 
 ## What could not be verified
 
-- Which directory mold uses for `-L=lib` under a sysroot (`-t` prints
-  nothing for it) [E6].
-- GNU ld's use of `LD_RUN_PATH`; sysroot prefixing of `-rpath-link`,
-  `-rpath` and `DT_RUNPATH` in the `DT_NEEDED` search.
+- GNU ld's use of `LD_RUN_PATH`; GNU ld's sysroot prefixing of
+  `-rpath-link`, `-rpath` and `DT_RUNPATH` beyond `--sysroot=/` (where
+  prefixing changes nothing).
 - `copy_dt_needed` merged over several mentions of one soname.
 - LLVM fat LTO objects (`clang -ffat-lto-objects`) in the references.
-- The references on FIFOs and devices as inputs.
+- The references on `/dev/zero`, sockets and block devices as inputs.
+- lld writing `//usr/…` under `--sysroot=/` (the review's observation):
+  lld 22 here writes one slash [E35]; which version did is not
+  established.
+- The review's timestamp-granularity measurement (199 of 200 same-size
+  in-place writes undetected on `/tmp`): accepted, not re-measured.
+- A closure file's definitions not binding a program reference (`DSO
+  missing from command line`) was measured in E7 for a direct reference;
+  not re-measured on the closure lines of E29.
 - How each reference reads `-z max-page-size=010000`.
 - Whether `STARTUP` behaves in GNU ld as its manual says (not run).
+
+## Review of 2026-11-14 and dispositions
+
+An independent adversarial review found 13 problems in the first draft.
+Every one was accepted; none was refuted.
+
+| # | finding | disposition | fixed in `spec/input.md` |
+|---|---|---|---|
+| 1 | the skip covered only shared objects and archives | accepted: one skip rule for every search; explicit paths never skipped; rule 3 stated in load order [E27, E28] | §4.4, §3.1, §3.3, §5.1, §5.2, §8.6 step 2; requests to script.md §2.4, §2.5 |
+| 2 | the `DT_NEEDED` closure | accepted: loaded in the input phase for executables and `--no-allow-shlib-undefined` shared outputs; the closure of every mentioned shared object; deterministic five-step search with the sysroot and the skip; `-rpath-link` split at `:` [E29, E30, E31] | §8.6, §10.1; requests to cli.md (`-rpath-link`, `--[no-]allow-shlib-undefined`) and resolve.md |
+| 3 | `-nostdlib` accepted without effect | accepted: it drops script `SEARCH_DIR`s [E32] | §4.2, §5.2; request to cli.md, script.md §2.6 |
+| 4 | the store and its lifetimes | accepted: `load(&'s Store)`, two stores with one interface, `Resident` tokens only inside one part, merged parts, descriptors pin the inode, fallback to resident on descriptor exhaustion, lazy whole-file hash with per-range checks | §1, §11.1-§11.4, §11.6; requests to model.md §1, §9, §10 and elf.md |
+| 5 | `input-changed` unsound | accepted: best effort, what is and is not guaranteed; errors keyed to the lowest mention | §11.5, §9.3 |
+| 6 | no search provenance | accepted: every probe recorded in load order with its outcome; re-checked by one `stat` each | §4.6, §9.4; request to model.md §7.1 |
+| 7 | I-file broken by merged columns | accepted: rows per mention; merged and numbered properties in `Inputs.link` | §10.3, §10.4, §8.2, §10.2; request to model.md §3.2 |
+| 8 | the walk's error behaviour and timing | accepted: errors do not stop the walk, a rule per case; rule 3 in load order; the closure no longer depends on resolution | §10.1, §12.3, §3.1, §8.6 |
+| 9 | `/dev/null` refused | accepted: matched to GNU ld per file type [E33] | §2.3, §2.5 |
+| 10 | soname-less library in several spellings | accepted [E34] | §8.5, §9.1 |
+| 11 | `libgcc_s.so.1` "next to the script" | accepted: found through the search path | §5.1 |
+| 12 | found paths under `--sysroot=/` | accepted: sysroot without trailing `/`, then the directory; never a doubled slash [E35] (lld's `//` not reproduced) | §4.3, §4.5 |
+| 13 | changed wording not flagged | accepted: the wording policy, GNU ld's phrases verbatim | §13, §4.4, §2.5; request to diag.md §3.1, §8.2 |
+| — | §15: `gcc -flto` passes `-plugin` | accepted: GNU ld performs LTO there [E36]; mortar refuses naming LTO | §2.2, §13, §15 |
+
+Also corrected: E6's mold column (mold has no `-t`; with `--trace` it
+concatenates `=lib` [E37]).
