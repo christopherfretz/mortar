@@ -3,6 +3,8 @@
 //! signature in a file, empty groups, 10^6 keys, a chain of 10^5 members
 //! in either archive order. The hostile tests print their timings.
 
+#![allow(clippy::many_single_char_names)]
+
 mod support;
 
 use std::time::Instant;
