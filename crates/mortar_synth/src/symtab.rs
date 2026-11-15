@@ -342,6 +342,8 @@ pub struct SymtabPlan {
     locals: u32,
     strtab: u64,
     symtab_locals: Column<FileId, Span>,
+    /// Some row is `STT_GNU_IFUNC` or `STB_GNU_UNIQUE`.
+    gnu_symbols: bool,
 }
 
 enum Class3 {
@@ -597,7 +599,7 @@ impl SymtabPlan {
         diag: &Collector,
     ) -> Result<Self, Failed> {
         let n_files = cx.syms.files();
-        let (gblocks, mut demoted, files) = count(cx, pool, diag)?;
+        let (gblocks, mut demoted, files, gnu_symbols) = count(cx, pool, diag)?;
         // S-88: a counting sort of the demoted by defining file; the
         // order within a file is `SymbolId` (stable).
         pool.sort_by(&mut demoted, |a, b| a.0.cmp(&b.0));
@@ -678,6 +680,7 @@ impl SymtabPlan {
             locals,
             strtab: str_off,
             symtab_locals,
+            gnu_symbols,
         })
     }
 
@@ -727,6 +730,13 @@ impl SymtabPlan {
             Class::Elf64 => 24,
             Class::Elf32 => 16,
         }
+    }
+
+    /// Whether `.symtab` holds an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE`
+    /// symbol (the output's `EI_OSABI`, image.md I-40).
+    #[must_use]
+    pub fn gnu_symbols(&self) -> bool {
+        self.gnu_symbols
     }
 
     /// `.symtab`'s size (S-108).
@@ -809,6 +819,11 @@ impl SymtabPlan {
     /// S-124), as `(shndx, value)` with `shndx` unreduced.
     fn resolve(addrs: &dyn SymAddrs, row: &Row<'_>) -> Result<(u32, u64), SynthError> {
         let name = || String::from_utf8_lossy(&row.name).into_owned();
+        // A linker-defined value in the file header or the program
+        // headers (layout §13.1: `__ehdr_start`, `__executable_start`, the
+        // absent arrays' base) takes index 1, below that section's start
+        // (S-122's header case; GNU, lld and mold write the same).
+        let mut in_headers = false;
         let (shndx, addr) = match row.at {
             Where::Absolute(v) => return Ok((u32::from(SHN_ABS), v)),
             Where::Undefined => return Ok((u32::from(SHN_UNDEF), 0)),
@@ -832,7 +847,10 @@ impl SymtabPlan {
             })?,
             Where::Internal(id) => match addrs.internal(id) {
                 Some(InternalValue::Absolute(v)) => return Ok((u32::from(SHN_ABS), v)),
-                Some(InternalValue::At { shndx, addr }) => (shndx, addr),
+                Some(InternalValue::At { shndx, addr }) => {
+                    in_headers = shndx == 1;
+                    (shndx, addr)
+                }
                 // S-124 (anomaly A11): a defined linker symbol has a value.
                 None => {
                     return Err(internal::<SynthError>(format!(
@@ -847,9 +865,9 @@ impl SymtabPlan {
         };
         // S-122 (anomaly A10): the index names the section holding the
         // address, its end included.
-        let held = addrs
-            .section_range(shndx)
-            .is_some_and(|(start, size)| start <= addr && addr <= start.saturating_add(size));
+        let held = addrs.section_range(shndx).is_some_and(|(start, size)| {
+            (start <= addr || in_headers) && addr <= start.saturating_add(size)
+        });
         if !held {
             return Err(internal::<SynthError>(format!(
                 "symbol {}: value {addr:#x} is outside section {shndx} (spec/synth.md S-122)",
@@ -964,7 +982,13 @@ impl SymtabPlan {
 }
 
 /// Global blocks' `(kept, name bytes)`; demoted `(file, id, name bytes)`.
-type Counted = (Vec<(u32, u64)>, Vec<(FileId, SymbolId, u64)>, Vec<FileCount>);
+type Counted = (Vec<(u32, u64)>, Vec<(FileId, SymbolId, u64)>, Vec<FileCount>, bool);
+
+/// Whether a row is a GNU extension of the gABI that `EI_OSABI` must
+/// announce (`STT_GNU_IFUNC`, `STB_GNU_UNIQUE`; image.md I-40's OS/ABI).
+fn is_gnu(info: u8) -> bool {
+    info & 0xf == 10 || info >> 4 == 10
+}
 type GBlock = Result<(u32, u64, Vec<(FileId, SymbolId, u64)>), (SymbolId, SynthError)>;
 
 /// The counting pass (S-75 to S-78): per block of [`CHECKPOINT`] global
@@ -974,6 +998,7 @@ fn count(cx: &SymCtx<'_>, pool: &Pool, diag: &Collector) -> Result<Counted, Fail
     let n_globals = cx.syms.globals();
     let n_files = cx.syms.files();
     let blocks = n_globals.div_ceil(CHECKPOINT) as usize;
+    let gnu = std::sync::atomic::AtomicBool::new(false);
     let per_block: Vec<GBlock> = pool.map(blocks, |b| {
         let start = b as u32 * CHECKPOINT;
         let end = (start + CHECKPOINT).min(n_globals);
@@ -983,8 +1008,16 @@ fn count(cx: &SymCtx<'_>, pool: &Pool, diag: &Collector) -> Result<Counted, Fail
                 (Class3::Global, Some(row)) => {
                     kept += 1;
                     bytes += region_len(&row.name);
+                    if is_gnu(row.info) {
+                        gnu.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
-                (Class3::Demoted(f), Some(row)) => demoted.push((f, id, region_len(&row.name))),
+                (Class3::Demoted(f), Some(row)) => {
+                    if is_gnu(row.info) {
+                        gnu.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    demoted.push((f, id, region_len(&row.name)));
+                }
                 _ => {}
             }
         }
@@ -1018,6 +1051,9 @@ fn count(cx: &SymCtx<'_>, pool: &Pool, diag: &Collector) -> Result<Counted, Fail
                 if let Some(row) = cx.local(file, i).map_err(|d| (file, i, d))? {
                     c.kept += 1;
                     c.bytes += region_len(&row.name);
+                    if is_gnu(row.info) {
+                        gnu.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
             }
             Ok(c)
@@ -1036,7 +1072,7 @@ fn count(cx: &SymCtx<'_>, pool: &Pool, diag: &Collector) -> Result<Counted, Fail
     if failed {
         return Err(Failed);
     }
-    Ok((gblocks, demoted, files))
+    Ok((gblocks, demoted, files, gnu.into_inner()))
 }
 
 /// S-80: per patch its `$x` (AArch64) and its name, and their bytes.

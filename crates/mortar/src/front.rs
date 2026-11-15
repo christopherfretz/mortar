@@ -594,6 +594,10 @@ pub fn front<'s>(
             diag.emit(Key::new(90, 0, 0), internal("the non-allocated sizes do not settle"));
             return None;
         }
+        // The exact names, in section index order (S-90: `sh_name` of
+        // section `n` is the plan's `n`-th name); their size is the one
+        // placed.
+        plans.shstrtab = shstrtab.clone();
         let layout = Layout {
             folds: folds.clone(),
             merge: order.map.clone(),

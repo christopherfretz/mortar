@@ -3,12 +3,27 @@
 
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::{Inputs, Reader};
-use mortar_core::resolution::{Def, RefFlags, Resolution};
+use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey, SymKind, SymbolId};
-use mortar_elf::consts::{STB_GLOBAL, STB_WEAK, STT_NOTYPE, STT_OBJECT, STV_HIDDEN, STV_INTERNAL};
+use mortar_elf::consts::{
+    STB_GLOBAL, STB_WEAK, STT_NOTYPE, STT_OBJECT, STV_DEFAULT, STV_HIDDEN, STV_INTERNAL,
+    STV_PROTECTED,
+};
 use mortar_elf::{Sym, SymbolIndex, SymbolSection, SymbolTable};
 use mortar_synth::SymSource;
 use mortar_synth::symtab::{CoreSections, GlobalIn, LocalIn, SecKind, Sections, SymDef};
+
+/// The more constraining of two visibilities (gABI "Symbol Visibility":
+/// internal, then hidden, then protected, then default).
+fn stricter(a: u8, b: u8) -> u8 {
+    let rank = |v: u8| match v & 3 {
+        STV_INTERNAL => 3,
+        STV_HIDDEN => 2,
+        STV_PROTECTED => 1,
+        _ => 0,
+    };
+    if rank(a) >= rank(b) { a & 3 } else { b & 3 }
+}
 
 /// [`SymSource`] over `Inputs`, `Resolution` and `Assignment`.
 pub struct CoreSyms<'a, 's> {
@@ -139,6 +154,24 @@ impl SymSource for CoreSyms<'_, '_> {
             Def::Common(e) => {
                 let size = self.resolution.common_of(id).map_or(0, |c| c.size);
                 row(STT_OBJECT, size, SymDef::Common, e.file, props.binding)
+            }
+            // resolve.md §8.1: the table's visibility (local hidden for
+            // `__ehdr_start`, the array bounds, `__rela_iplt_*`, ...;
+            // protected for `__start_`/`__stop_`), combined with the
+            // references' (the most constraining, gABI "Symbol
+            // Visibility"): a hidden one is demoted to a local (S-77).
+            Def::Internal(InternalDef::Provide { .. }) => {
+                let table = mortar_resolve::linker::TABLE
+                    .iter()
+                    .find(|r| r.name == key.name)
+                    .map(|r| r.visibility)
+                    .or_else(|| {
+                        mortar_resolve::linker::start_stop(key.name).map(|p| p.binding().1)
+                    })
+                    .unwrap_or(STV_DEFAULT);
+                let mut g = row(STT_NOTYPE, 0, SymDef::Internal, FileId::INTERNAL, STB_GLOBAL);
+                g.other = (g.other & !3) | stricter(other, table);
+                g
             }
             Def::Internal(_) => row(STT_NOTYPE, 0, SymDef::Internal, FileId::INTERNAL, STB_GLOBAL),
             // gABI "Symbol Visibility": a hidden or internal symbol must

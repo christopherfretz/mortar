@@ -67,6 +67,7 @@ const SHN_XINDEX: u16 = 0xffff;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 const ET_REL: u16 = 1;
+const ELFOSABI_GNU: u8 = 3;
 
 /// What the scan knows of a key (`spec/arch.md` §3.4 `SymFacts`), and
 /// its name: the driver answers with the scan's own view (`Walker`), so
@@ -766,8 +767,14 @@ pub fn structure(
     let phnum = u16::try_from(phdrs.len())
         .map_err(|_| internal(format!("image: {} program headers", phdrs.len())))?;
     let e_flags = link.arch.e_flags(&mut live_flags(link)).map_err(|r| r.diagnostic())?;
+    // `EI_OSABI` (a64.md Q11, ruled by WP-027c): `ELFOSABI_GNU` when the
+    // output uses a GNU extension of the gABI: an `STT_GNU_IFUNC` or
+    // `STB_GNU_UNIQUE` symbol, or an `IRELATIVE` record (GNU ld's rule;
+    // eu-elflint rejects the IFUNC symbol under 0); else the target's.
+    let gnu = link.synth.symtab.is_some_and(|(p, _)| p.gnu_symbols())
+        || !link.layout.slots.iplt.is_empty();
     let ehdr = Ehdr {
-        osabi: facts.osabi,
+        osabi: if gnu { ELFOSABI_GNU } else { facts.osabi },
         e_type,
         e_machine: facts.e_machine,
         e_entry: pl.entry.unwrap_or(0),
@@ -1077,7 +1084,7 @@ pub fn write(
     }
     on_phase(PHASE_IMAGE, "image");
     out.commit().map_err(|kd| Failed { diagnostics: vec![kd] })?;
-    on_phase(PHASE_OUTPUT, "output");
+    on_phase(PHASE_OUTPUT, "output file");
     Ok(Written { build_id: filled.build_id, rows: plan.rows.len(), jobs: plan.jobs.len() })
 }
 

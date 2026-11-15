@@ -1036,6 +1036,10 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   output section), which holds it once empty input sections are placed
   by R-L6. GNU breaks this for crtend.o's `__TMC_END__`, whose output
   section it removes (`plumb.md` §10.2 A10); the verifier's Y3 checks it.
+  The one exception is the headers: a linker-defined value in the file
+  header or the program headers (layout §13.1: `__ehdr_start`,
+  `__executable_start`, an absent array's base) is below section 1 and
+  takes index 1, as GNU ld, lld and mold all write it (WP-027c).
 - **S-123 [C] (labels of empty input sections).** A symbol defined in a
   live input section of size 0 (`__TMC_LIST__`, `__TMC_END__` in the
   crtstuff `.tm_clone_table`; `__start_`-style markers in hand-written

@@ -12,6 +12,7 @@
 //! vouch for.
 
 pub mod front;
+pub mod image;
 mod proof;
 mod sites;
 pub mod syms;
@@ -38,6 +39,10 @@ pub enum Outcome {
     /// The output was written, or the request (`--version`, `--help`) was
     /// answered. The text goes to standard output.
     Done(String),
+    /// The output file was written. `report` holds the link's warnings
+    /// (rendered to standard error; none is an error), `stdout` the map
+    /// under `-M` (image.md I-77). The exit status is 0.
+    Linked { report: Report, stdout: String },
     /// The link was refused or failed (`spec/diag.md` §7). The report is
     /// rendered to standard error; nothing goes to standard output, the
     /// exit status is 1, and no output file was left behind.
@@ -181,18 +186,75 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     // The default store is the staged one (`spec/landed/input/WP-021b.md`);
     // `MORTAR_STORE=resident` is the tests' switch to the other.
     let store = Store::new(StorePolicy::from_env());
+    let out_path = cwd.join(plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out")));
+    let map_path = plan.bookkeeping.map.as_deref().map(|m| cwd.join(m));
+    let print_map = plan.bookkeeping.print_map;
     let env = front::Env { cwd, pool };
     let front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
-    if front.is_some() {
-        diagnostics.emit(
-            Key::new(100, 0, 0),
-            Diagnostic::refused(RefusalClass::Feature, "writing the output file")
-                .note("the link was laid out; the image and the output file are WP-027b"),
-        );
+    let mut stdout = String::new();
+    if let Some(f) = &front {
+        let linked = link_image(f, &store, &out_path, &diagnostics, &mut timer);
+        if let Some(map) = linked {
+            // I-77, I-79: the map of a successful link only.
+            if let Some(m) = &map_path
+                && let Err((k, d)) =
+                    mortar_image::output::write_whole(m, &map, 0o666)
+            {
+                diagnostics.emit(k, d);
+            }
+            if print_map {
+                stdout = String::from_utf8_lossy(&map).into_owned();
+            }
+        }
     }
     drop(front);
     emit_refusals(&diagnostics);
-    failed(diagnostics, timer.finish())
+    if diagnostics.has_errors() {
+        // I-66: a link that fails after the command line leaves no output
+        // (GNU ld's choice; never an input, never a non-regular file).
+        mortar_image::output::remove_stale_output(&out_path, &store.inodes());
+        return failed(diagnostics, timer.finish());
+    }
+    Invocation {
+        outcome: Outcome::Linked { report: diagnostics.finish(), stdout },
+        color,
+        phases: timer.finish(),
+    }
+}
+
+/// The image phase of a laid-out link (100, 105): the output file at
+/// `path`, and the map's text when the link succeeded (rendered from the
+/// tables, I-79; empty when no map is asked for).
+fn link_image(
+    f: &front::Front<'_>,
+    store: &Store,
+    path: &Path,
+    diagnostics: &Collector,
+    timer: &mut Timer,
+) -> Option<Vec<u8>> {
+    let wants_map = f.plan.bookkeeping.map.is_some() || f.plan.bookkeeping.print_map;
+    // The map before fill (I-79: independent of it), written after the
+    // output file is.
+    let map = if wants_map {
+        match image::map_of(f, store) {
+            Ok(m) => Some(mortar_image::map::render(&m, &f.pool)),
+            Err(e) => {
+                diagnostics.emit(mortar_synth::error::key(0), e.into_diagnostic());
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    match image::write(f, store, path, &|_| {}, &mut |n, name| timer.phase(n, name)) {
+        Ok(_) => Some(map.unwrap_or_default()),
+        Err(e) => {
+            for (k, d) in e.diagnostics {
+                diagnostics.emit(k, d);
+            }
+            None
+        }
+    }
 }
 
 #[cfg(test)]
