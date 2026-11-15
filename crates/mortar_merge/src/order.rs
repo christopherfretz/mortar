@@ -86,10 +86,13 @@ pub fn offsets(
     frag_live: &Column<FragId, bool>,
 ) -> Order {
     let n = split.frags.len();
+    let mut steps = mortar_core::wp032b_steps::Steps::new("order");
     let meta_of = frag_meta(split, meta);
     let mut live: Vec<FragId> =
         (0..n).map(FragId).filter(|&f| frag_live.get(f).copied().unwrap_or(false)).collect();
+    steps.step("meta", u64::from(n), "frag");
     pool.sort_by_key(&mut live, |&f| key(meta_of[f.0 as usize], f));
+    steps.step("sort", live.len() as u64, "frag");
     let mut off = vec![MergeMap::NONE; n as usize];
     let mut chunks: Vec<MergedChunk> = Vec::new();
     for (i, &f) in live.iter().enumerate() {
@@ -109,6 +112,7 @@ pub fn offsets(
         chunk.align = chunk.align.max(m.align);
         chunk.frags.len += 1;
     }
+    steps.step("offsets", live.len() as u64, "frag");
     let frag_off = Column::from_vec(off)
         .unwrap_or_else(|_| unreachable!("one row per fragment, which fit u32"));
     Order { map: MergeMap { frag_off }, chunks: chunks.into(), order: live.into() }

@@ -9,7 +9,7 @@
 
 use crate::plan::Target;
 use crate::plan::{Bsymbolic, Discard, Magic, ScriptRole, Strip, SymbolRole, VersionStyle};
-use crate::table::Status::{Noop, Refused, Supported};
+use crate::table::Status::{Noop, Partial, Refused, Supported};
 use crate::table::{
     Arg, Group, KindSet, Lands, Linkers, Row, Spelling, StartKind, StateOp, Status, Values, ZField,
 };
@@ -22,6 +22,11 @@ const LM: Linkers = Linkers::LM;
 const L: Linkers = Linkers::L;
 const M: Linkers = Linkers::M;
 const MORTAR: Linkers = Linkers::MORTAR;
+
+/// `--as-needed` and `--no-as-needed` decide only which shared objects
+/// are recorded as needed; every shared-object input is refused by name
+/// until dynamic outputs land (M2).
+const AS_NEEDED: &str = "it decides only which shared objects are needed, and every shared-object input is refused by name (M2)";
 
 const A64: &[Target] = &[Target::Aarch64];
 const X86: &[Target] = &[Target::X86_64, Target::I386];
@@ -93,13 +98,13 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[s("N"), g("omagic")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Magic(Magic::Omagic), "Do not page-align sections; make text writable"),
     r(&[g2("no-omagic")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Magic(Magic::Paged), "Page-align sections; text read-only (default)"),
     r(&[x("no-nmagic")], Arg::None, "", LM, &[], Group::Output, Refused, Lands::Magic(Magic::Paged), "Page-align sections (default)"),
-    r(&[g("build-id")], Arg::Optional(Values::BuildId), "STYLE", GLM, &[], Group::Output, Supported, Lands::BuildId, "Write a build-ID note: md5, sha1, sha256, fast, uuid, none or 0xHEX"),
-    r(&[x("no-build-id")], Arg::None, "", M, &[], Group::Output, Refused, Lands::NoBuildId, "Write no build-ID note"),
+    r(&[g("build-id")], Arg::Optional(Values::BuildId), "STYLE", GLM, &[], Group::Output, Partial { refused: &["md5", "uuid"], note: "synth.md S-91: md5 is not written and uuid is M2; mortar writes --build-id, =sha1, =sha256, =fast, =none and =0xHEX" }, Lands::BuildId, "Write a build-ID note: md5, sha1, sha256, fast, uuid, none or 0xHEX"),
+    r(&[x("no-build-id")], Arg::None, "", M, &[], Group::Output, Supported, Lands::NoBuildId, "Write no build-ID note"),
     r(&[g("compress-debug-sections")], Arg::Required(Values::Choice(&["none", "zlib", "zlib-gnu", "zlib-gabi", "zstd"])), "TYPE", GLM, &[], Group::Output, Refused, Lands::CompressDebugSections, "Compress the debugging sections"),
     r(&[g("eh-frame-hdr")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::EhFrameHdr(true), "Write .eh_frame_hdr and PT_GNU_EH_FRAME"),
     r(&[g("no-eh-frame-hdr")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::EhFrameHdr(false), "Write no .eh_frame_hdr"),
     r(&[g("package-metadata")], Arg::Optional(Values::Any), "JSON", GM, &[], Group::Output, Refused, Lands::Other, "Write a .note.package note"),
-    r(&[g("gc-sections")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::GcSections(true), "Remove sections nothing refers to"),
+    r(&[g("gc-sections")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::GcSections(true), "Remove sections nothing refers to"),
     r(&[g("no-gc-sections")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::GcSections(false), "Keep every section (default)"),
     r(&[g("print-gc-sections")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Other, "List the sections --gc-sections removes"),
     r(&[g("no-print-gc-sections")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Other, "Do not list removed sections (default)"),
@@ -134,8 +139,8 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[s(")"), g("end-group")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::EndGroup), "End a group"),
     r(&[x("start-lib")], Arg::None, "", LM, &[], Group::Inputs, Refused, Lands::State(StateOp::StartLib), "Read the following objects as members of an archive"),
     r(&[x("end-lib")], Arg::None, "", LM, &[], Group::Inputs, Refused, Lands::State(StateOp::EndLib), "End --start-lib"),
-    r(&[g("as-needed")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::AsNeeded(true)), "Record DT_NEEDED for the following shared objects only if used"),
-    r(&[g("no-as-needed")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::AsNeeded(false)), "Record DT_NEEDED for every following shared object (default)"),
+    r(&[g("as-needed")], Arg::None, "", GLM, &[], Group::Inputs, Noop(AS_NEEDED), Lands::State(StateOp::AsNeeded(true)), "Record DT_NEEDED for the following shared objects only if used"),
+    r(&[g("no-as-needed")], Arg::None, "", GLM, &[], Group::Inputs, Noop(AS_NEEDED), Lands::State(StateOp::AsNeeded(false)), "Record DT_NEEDED for every following shared object (default)"),
     r(&[g("whole-archive")], Arg::None, "", GLM, &[], Group::Inputs, Refused, Lands::State(StateOp::WholeArchive(true)), "Take every member of the following archives"),
     r(&[g("no-whole-archive")], Arg::None, "", GLM, &[], Group::Inputs, Refused, Lands::State(StateOp::WholeArchive(false)), "Take the members of archives that are needed (default)"),
     r(&[g1("Bstatic"), g("dn"), g("non_shared"), g("static")], Arg::None, "", GLM, &[], Group::Inputs, Supported, Lands::State(StateOp::Static(true)), "Search -l for archives only"),
@@ -154,15 +159,15 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[x("no-dependent-libraries")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Ignore the libraries inputs ask for"),
     r(&[x("fortran-common")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Take archive members that define common symbols (mortar's behavior, always on)"),
     r(&[x("no-fortran-common")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Do not take archive members for common symbols"),
-    r(&[x("warn-backrefs")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::WarnBackrefs(true), "Warn when an archive member is taken for an earlier reference"),
-    r(&[x("no-warn-backrefs")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::WarnBackrefs(false), "Do not warn about backward references (default)"),
+    r(&[x("warn-backrefs")], Arg::None, "", L, &[], Group::Inputs, Supported, Lands::WarnBackrefs(true), "Warn when an archive member is taken for an earlier reference"),
+    r(&[x("no-warn-backrefs")], Arg::None, "", L, &[], Group::Inputs, Supported, Lands::WarnBackrefs(false), "Do not warn about backward references (default)"),
     r(&[x("warn-backrefs-exclude")], Arg::Required(Values::Any), "GLOB", L, &[], Group::Inputs, Refused, Lands::Other, "Do not warn about backward references into GLOB"),
     r(&[x("why-extract")], Arg::Required(Values::Any), "FILE", L, &[], Group::Inputs, Refused, Lands::Other, "Write why each archive member is taken to FILE"),
     r(&[x("print-archive-stats")], Arg::Required(Values::Any), "FILE", L, &[], Group::Inputs, Refused, Lands::Other, "Write archive statistics to FILE"),
     r(&[x("fat-lto-objects")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Read the bitcode of fat LTO objects"),
     r(&[x("no-fat-lto-objects")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Read the code of fat LTO objects (default)"),
     r(&[s("L"), g("library-path")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Search, Supported, Lands::LibraryPath, "Search DIR for -l libraries and scripts"),
-    r(&[g("sysroot")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Search, Refused, Lands::Sysroot, "Use DIR as the system root"),
+    r(&[g("sysroot")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Search, Supported, Lands::Sysroot, "Use DIR as the system root"),
     r(&[g1("nostdlib")], Arg::None, "", GLM, &[], Group::Search, Refused, Lands::NoStdlib, "Do not search the SEARCH_DIR directories of linker scripts"),
     r(&[g1("rpath-link")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Search, Refused, Lands::RpathLink, "Search DIR for the DT_NEEDED entries of shared objects; a :-separated list"),
     r(&[s("Y")], Arg::Required(Values::Any), "PATH", G, &[], Group::Search, Refused, Lands::Other, "Default search path for Solaris compatibility"),
@@ -235,7 +240,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("no-dynamic-linker")], Arg::None, "", GLM, &[], Group::Dynamic, Refused, Lands::NoDynamicLinker, "Write no program interpreter"),
     r(&[g("enable-new-dtags")], Arg::None, "", GLM, &[], Group::Dynamic, Refused, Lands::NewDtags(true), "Write DT_RUNPATH for -rpath"),
     r(&[g("disable-new-dtags")], Arg::None, "", GLM, &[], Group::Dynamic, Refused, Lands::NewDtags(false), "Write DT_RPATH for -rpath"),
-    r(&[g("hash-style")], Arg::Required(Values::Choice(&["sysv", "gnu", "both", "none"])), "STYLE", GLM, &[], Group::Dynamic, Supported, Lands::HashStyle, "Write DT_HASH (sysv), DT_GNU_HASH (gnu), both or none"),
+    r(&[g("hash-style")], Arg::Required(Values::Choice(&["sysv", "gnu", "both", "none"])), "STYLE", GLM, &[], Group::Dynamic, Noop("only a dynamic output has a symbol hash table, and every dynamic output is refused by name (M2)"), Lands::HashStyle, "Write DT_HASH (sysv), DT_GNU_HASH (gnu), both or none"),
     r(&[x("pack-dyn-relocs")], Arg::Required(Values::Choice(&["none", "relr", "android", "android+relr"])), "FORMAT", LM, &[], Group::Dynamic, Refused, Lands::PackDynRelocs, "Pack dynamic relocations"),
     r(&[s("f"), g("auxiliary")], Arg::Required(Values::Any), "NAME", GLM, &[], Group::Dynamic, Refused, Lands::Other, "Record NAME as DT_AUXILIARY"),
     r(&[s("F"), g("filter")], Arg::Required(Values::Any), "NAME", GLM, &[], Group::Dynamic, Refused, Lands::Other, "Record NAME as DT_FILTER"),
@@ -396,7 +401,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[x("thinlto-remote-compiler-arg")], Arg::Required(Values::Any), "ARG", L, &[], Group::Lto, Refused, Lands::Other, "ThinLTO remote compiler argument"),
     r(&[x("thinlto-remote-compiler-prepend-arg")], Arg::Required(Values::Any), "ARG", L, &[], Group::Lto, Refused, Lands::Other, "ThinLTO remote compiler prepended argument"),
     r(&[g("fix-cortex-a53-835769")], Arg::None, "", GM, A64, Group::TargetSpecific, Refused, Lands::Other, "Work around Cortex-A53 erratum 835769"),
-    r(&[g("fix-cortex-a53-843419")], Arg::Optional(Values::Choice(&["full", "adr", "adrp"])), "WORKAROUND", GLM, A64, Group::TargetSpecific, Supported, Lands::Other, "Work around Cortex-A53 erratum 843419"),
+    r(&[g("fix-cortex-a53-843419")], Arg::Optional(Values::Choice(&["full", "adr", "adrp"])), "WORKAROUND", GLM, A64, Group::TargetSpecific, Partial { refused: &["adr", "adrp"], note: "a64.md §11.2: GNU ld's =adr and =adrp restrict the fix, which mortar does not do; use --fix-cortex-a53-843419 or =full" }, Lands::Other, "Work around Cortex-A53 erratum 843419"),
     r(&[g("no-apply-dynamic-relocs")], Arg::None, "", GLM, A64, Group::TargetSpecific, Refused, Lands::Other, "Write zero where dynamic relocations apply"),
     r(&[g("pic-veneer")], Arg::None, "", GL, A64, Group::TargetSpecific, Refused, Lands::Other, "Always use position-independent veneers"),
     r(&[g("stub-group-size")], Arg::Required(Values::Any), "N", G, A64, Group::TargetSpecific, Refused, Lands::Other, "Size of a group of sections one stub section serves"),
@@ -437,17 +442,17 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[z("nomark-plt")], Arg::None, "", G, X64, Group::TargetSpecific, Refused, Lands::Other, "Do not mark the PLT (default)"),
     r(&[z("now")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Now(true)), "Resolve every symbol at load time"),
     r(&[z("lazy")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Now(false)), "Resolve functions when first called (default)"),
-    r(&[z("relro")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Relro(true)), "Write PT_GNU_RELRO (default)"),
-    r(&[z("norelro")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Relro(false)), "Write no PT_GNU_RELRO"),
-    r(&[z("execstack")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Execstack(true)), "Make the stack executable"),
-    r(&[z("noexecstack")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Execstack(false)), "Make the stack not executable"),
+    r(&[z("relro")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::Relro(true)), "Write PT_GNU_RELRO (default)"),
+    r(&[z("norelro")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::Relro(false)), "Write no PT_GNU_RELRO"),
+    r(&[z("execstack")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::Execstack(true)), "Make the stack executable"),
+    r(&[z("noexecstack")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::Execstack(false)), "Make the stack not executable"),
     r(&[z("text")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Text(true)), "Report text relocations as errors"),
     r(&[z("notext"), z("textoff")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Text(false)), "Accept text relocations"),
-    r(&[z("separate-code")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::SeparateCode(true)), "Put code in segments of its own pages"),
-    r(&[z("noseparate-code")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::SeparateCode(false)), "Let code share pages with other data"),
+    r(&[z("separate-code")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::SeparateCode(true)), "Put code in segments of its own pages"),
+    r(&[z("noseparate-code")], Arg::None, "", GLM, &[], Group::Z, Supported, Lands::Z(ZField::SeparateCode(false)), "Let code share pages with other data"),
     r(&[z("defs")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Defs(true)), "Report undefined symbols of object files"),
     r(&[z("undefs")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::Defs(false)), "Accept undefined symbols in a shared object"),
-    r(&[z("max-page-size")], Arg::Required(Values::Any), "SIZE", GLM, &[], Group::Z, Refused, Lands::Z(ZField::MaxPageSize), "The largest page size the output supports"),
+    r(&[z("max-page-size")], Arg::Required(Values::Any), "SIZE", GLM, &[], Group::Z, Supported, Lands::Z(ZField::MaxPageSize), "The largest page size the output supports"),
     r(&[z("common-page-size")], Arg::Required(Values::Any), "SIZE", GLM, &[], Group::Z, Noop("layout.md L-75: the value is checked, and no layout rule reads it"), Lands::Z(ZField::CommonPageSize), "The common page size"),
     r(&[z("stack-size")], Arg::Required(Values::Any), "SIZE", GLM, &[], Group::Z, Refused, Lands::Z(ZField::StackSize), "The size of the stack segment"),
     r(&[z("pack-relative-relocs")], Arg::None, "", GLM, &[], Group::Z, Refused, Lands::Z(ZField::PackRelativeRelocs(true)), "Pack relative relocations in DT_RELR"),

@@ -353,6 +353,30 @@ fn defaults_file() -> PathBuf {
     workspace_root().join("tests").join("link").join(DEFAULTS)
 }
 
+/// The run-wide mortar xfails' file, in `tests/link` (`spec/harness.md`
+/// "Markers").
+pub const XFAILS: &str = "xfails";
+
+/// The run-wide mortar xfails of the file at `path`; none when there is no
+/// file.
+///
+/// # Errors
+/// A file that cannot be read or does not parse.
+pub fn load_xfails(path: &Path) -> Result<Vec<format::ArchXfail>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    format::parse_xfails(&text).map_err(|errors| {
+        let lines: Vec<String> = errors
+            .iter()
+            .map(|e| format!("{}:{}: {}", path.display(), e.line, e.message))
+            .collect();
+        lines.join("; ")
+    })
+}
+
 /// A default no output of the run has is stale; a run of part of the
 /// corpus may well not meet it, so only a run of all of it says so
 /// (`spec/harness.md` "L3", "The defaults").
@@ -420,9 +444,14 @@ pub fn run(args: &Args) -> Result<Report, String> {
         report.errors.push(e);
         Vec::new()
     });
+    let xfails = load_xfails(&workspace_root().join("tests").join("link").join(XFAILS))
+        .unwrap_or_else(|e| {
+            report.errors.push(e);
+            Vec::new()
+        });
     let wrappers = work.join("bin");
     let matrix =
-        Matrix { host, common, linkers, mortar, wrappers, plumb: !args.no_plumb, defaults };
+        Matrix { host, common, linkers, mortar, wrappers, plumb: !args.no_plumb, defaults, xfails };
     if let Err(e) = matrix.write_wrappers(&arches) {
         report.errors.push(e);
     }

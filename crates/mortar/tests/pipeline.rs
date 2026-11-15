@@ -126,9 +126,8 @@ fn execute(exe: &Path) -> (String, Option<i32>) {
 }
 
 /// Links `program` with mortar and GNU ld, runs both, and holds mortar's
-/// output to the bar. Returns the plumb findings of the known
-/// merge-piece case that were set aside.
-fn holds(label: &str, driver: Driver, flags: &[&str], program: &[Source]) -> Option<usize> {
+/// output to the bar (`None` when a tool is missing).
+fn holds(label: &str, driver: Driver, flags: &[&str], program: &[Source]) -> Option<()> {
     let scratch = Scratch::new(label);
     let built = build(&scratch, driver, flags, program)?;
     let ours = built.dir.join("out.mortar");
@@ -142,7 +141,8 @@ fn holds(label: &str, driver: Driver, flags: &[&str], program: &[Source]) -> Opt
     assert_eq!(out_m, out_b, "{label}: mortar's program against GNU ld's");
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    Some(support::plumb::clean(&ours, &map_of(&ours), &built.dir))
+    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+    Some(())
 }
 
 const C_FLAGS: &[&[&str]] = &[
@@ -157,16 +157,11 @@ fn matrix(name: &str, driver: Driver, program: &[Source]) {
     if !host() {
         return;
     }
-    let mut known = 0;
     for (i, flags) in C_FLAGS.iter().enumerate() {
-        let Some(k) = holds(&format!("{name}-{i}"), driver, flags, program) else {
+        if holds(&format!("{name}-{i}"), driver, flags, program).is_none() {
             assert!(!tools_required(), "{} is required", driver.tool());
             return;
-        };
-        known += k;
-    }
-    if known > 0 {
-        eprintln!("{name}: {known} plumb findings of the known merge-piece case (WP-028c)");
+        }
     }
 }
 
@@ -178,6 +173,64 @@ fn c_with_gcc() {
 #[test]
 fn c_with_clang() {
     matrix("pipe-c-clang", Driver::Clang, support::C_PROGRAM);
+}
+
+/// layout.md L-35 (§20.7): Clang 22 objects built with
+/// `-mbranch-protection=standard` carry `SHT_AARCH64_ATTRIBUTES` next to
+/// the property note; the section is consumed (it was refused), the
+/// output has none and its property note keeps BTI and PAC, as GNU ld's.
+#[test]
+fn c_with_clang22_branch_protection() {
+    if !host() {
+        return;
+    }
+    let (Some(readelf), Some(_)) = (tool("readelf"), tool("clang-22")) else {
+        return; // clang-22 is not on every host the tests run on.
+    };
+    let read = |args: &[&str], path: &Path| {
+        let o = run_with(Command::new(&readelf).args(args).arg(path), b"", Duration::from_mins(1));
+        o.stdout_text()
+    };
+    let scratch = Scratch::new("pipe-c-clang22-bp");
+    let flags = ["-O2", "-mbranch-protection=standard"];
+    let built = build(&scratch, Driver::Clang22, &flags, support::C_PROGRAM).expect("clang-22");
+    let obj = built.dir.join("c1.c.o");
+    assert!(read(&["-SW"], &obj).contains("AARCH64_ATTRIBUTES"), "the input has the section");
+    let ours = built.dir.join("out.mortar");
+    let theirs = built.dir.join("out.bfd");
+    let m = mortar(&built, &ours, &[], &[]);
+    assert!(m.success() && m.stderr_text().is_empty(), "mortar: {}", m.stderr_text());
+    let b = bfd(&built, &theirs, &[]);
+    assert!(b.success(), "ld.bfd: {}", b.stderr_text());
+    assert_eq!(execute(&ours), execute(&theirs), "mortar's program against GNU ld's");
+    assert!(!read(&["-SW"], &ours).contains("AARCH64_ATTRIBUTES"), "consumed");
+    let feature = |p: &Path| {
+        read(&["-nW"], p).lines().find(|l| l.contains("AArch64 feature")).map(str::to_owned)
+    };
+    assert_eq!(feature(&ours), feature(&theirs));
+    assert!(feature(&ours).is_some_and(|f| f.contains("BTI")), "{:?}", feature(&ours));
+    support::plumb::readers(&ours);
+    support::plumb::elflint(&ours);
+    only_the_bti_iplt_gap(&support::plumb::verify(&ours, &map_of(&ours), &built.dir));
+}
+
+/// The verifier's one gap on a BTI output (a WP-027d finding for
+/// `mortar_plumb`, `src/ifunc.rs` `a64_entry` and the entry scan): it finds
+/// an IPLT entry by its `ADRP`, so it takes a BTI entry (`bti c` first,
+/// a64.md §10.3) to start 4 bytes late, and a branch to the entry's start
+/// is F4 "reaches no IPLT entry". `findings` must be only those: F4 on a
+/// `CALL26`/`JUMP26` whose branch target is 4 bytes before the entry
+/// plumb expected.
+fn only_the_bti_iplt_gap(findings: &[mortar_plumb::Finding]) {
+    for x in findings {
+        let gap = format!("{:?}", x.rule) == "Ifunc(4)"
+            && matches!(x.reloc.as_deref(), Some("R_AARCH64_CALL26" | "R_AARCH64_JUMP26"))
+            && x.addr.zip(x.found).zip(x.expected).is_some_and(|((at, word), want)| {
+                let imm = i64::from(((word as u32 & 0x03ff_ffff) << 6) as i32 >> 6);
+                at.wrapping_add_signed(imm * 4).wrapping_add(4) == want
+            });
+        assert!(gap, "not the BTI IPLT gap: {x:#?}");
+    }
 }
 
 #[test]
@@ -241,6 +294,163 @@ fn a_far_call_goes_through_a_thunk() {
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
     support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+}
+
+/// The BTI property note (`GNU_PROPERTY_AARCH64_FEATURE_1_AND`, bit BTI):
+/// the output's `PT_GNU_PROPERTY` makes the kernel enforce BTI on a host
+/// that has it (this one: a `br` to a word that is not a landing pad is
+/// `SIGILL`).
+const BTI_NOTE: &str = "    .section .note.gnu.property,\"a\"\n    .p2align 3\n\
+    .word 4, 16, 5\n    .asciz \"GNU\"\n    .word 0xc0000000, 4, 1, 0\n\
+    .section .note.GNU-stack,\"\",@progbits\n";
+
+/// `name.o`: `_start` calls `far` beyond `bl`'s reach (as in
+/// `a_far_call_goes_through_a_thunk`) in a BTI-marked object; `far`
+/// begins with `head`, sets 42 and ends with `tail` before `ret`.
+fn bti_far(scratch: &Scratch, name: &str, head: &str, tail: &str) -> Built {
+    let cc = tool("gcc").expect("gcc");
+    scratch.write(
+        &format!("{name}.s"),
+        format!(
+            "    .text\n    .globl _start\n_start:\n    bl far\n    mov x8, #93\n    svc #0\n\
+             \n    .section .text.gap1,\"ax\",@progbits\n    .skip 0x4000000\n\
+             \n    .section .text.gap2,\"ax\",@progbits\n    .skip 0x4000000\n\
+             \n    .section .text.far,\"ax\",@progbits\n    .globl far\n    .type far, %function\n\
+             far:\n    {head}\n    mov x0, #42\n    {tail}\n    ret\n{BTI_NOTE}"
+        ),
+    );
+    let o = run_with(
+        Command::new(cc)
+            .args(["-c", &format!("{name}.s"), "-o", &format!("{name}.o")])
+            .current_dir(scratch.path()),
+        b"",
+        Duration::from_mins(2),
+    );
+    assert!(o.success(), "gcc {name}: {}", o.stderr_text());
+    Built {
+        dir: scratch.path().to_path_buf(),
+        args: ["-maarch64linux", "-static", &format!("{name}.o"), "-o", "out"]
+            .map(str::to_owned)
+            .to_vec(),
+    }
+}
+
+/// a64.md §9 (BTI) and Q15: in a BTI output a thunk's `br x16` lands on
+/// `bti c`, `bti j`, `bti jc`, `paciasp` or `pacibsp` at its target, each
+/// proved an instruction (`$x`) in the input. Run with BTI enforced, each
+/// exits 42 as GNU ld's link does.
+#[test]
+fn a_bti_far_call_lands_on_each_pad() {
+    if !host() || tool("gcc").is_none() {
+        assert!(!tools_required(), "gcc is required");
+        return;
+    }
+    let scratch = Scratch::new("pipe-bti");
+    let pads = [
+        ("btic", "bti c", "nop"),
+        ("btij", "bti j", "nop"),
+        ("btijc", "bti jc", "nop"),
+        ("paciasp", "paciasp", "autiasp"),
+        ("pacibsp", "pacibsp", "autibsp"),
+    ];
+    for (name, head, tail) in pads {
+        let built = bti_far(&scratch, name, head, tail);
+        let ours = built.dir.join(format!("{name}.mortar"));
+        let theirs = built.dir.join(format!("{name}.bfd"));
+        let m = mortar(&built, &ours, &[], &[]);
+        assert!(m.success(), "mortar {name}: {}", m.stderr_text());
+        let b = bfd(&built, &theirs, &[]);
+        assert!(b.success(), "ld.bfd {name}: {}", b.stderr_text());
+        assert_eq!(execute(&ours).1, Some(42), "{name}: the far call lands");
+        assert_eq!(execute(&theirs).1, Some(42), "{name}: GNU ld");
+        let map = std::fs::read_to_string(map_of(&ours)).unwrap();
+        assert!(map.lines().any(|l| l.starts_with("chunk thunk ")), "{name}: a thunk");
+        support::plumb::readers(&ours);
+        support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+        std::fs::remove_file(&ours).unwrap();
+        std::fs::remove_file(&theirs).unwrap();
+    }
+}
+
+/// a64.md §9, §10.4: a far call to a non-preemptible IFUNC goes through a
+/// thunk to its IPLT entry, which starts with `bti c` in a BTI output, so
+/// the thunk is not refused. (Not run: nothing applies the `IRELATIVE`
+/// without a C library. GNU ld does not link the line at all: it reports
+/// `relocation truncated to fit: R_AARCH64_CALL26` against the IFUNC.)
+#[test]
+fn a_bti_far_call_to_an_iplt_entry_is_linked() {
+    if !host() || tool("gcc").is_none() {
+        assert!(!tools_required(), "gcc is required");
+        return;
+    }
+    let cc = tool("gcc").expect("gcc");
+    let scratch = Scratch::new("pipe-bti-iplt");
+    scratch.write(
+        "ifn.s",
+        format!(
+            "    .text\n    nop\n\
+             \n    .section .text.gap1,\"ax\",@progbits\n    .skip 0x4000000\n\
+             \n    .section .text.gap2,\"ax\",@progbits\n    .skip 0x4000000\n\
+             \n    .section .text.far,\"ax\",@progbits\n    .globl _start\n_start:\n\
+             bl f\n    mov x8, #93\n    svc #0\n    .globl f\n\
+             .type f, %gnu_indirect_function\nf:\n    bti c\n    adr x0, impl\n    ret\n\
+             impl:\n    bti c\n    mov x0, #42\n    ret\n{BTI_NOTE}"
+        ),
+    );
+    let o = run_with(
+        Command::new(cc).args(["-c", "ifn.s", "-o", "ifn.o"]).current_dir(scratch.path()),
+        b"",
+        Duration::from_mins(2),
+    );
+    assert!(o.success(), "gcc: {}", o.stderr_text());
+    let built = Built {
+        dir: scratch.path().to_path_buf(),
+        args: ["-maarch64linux", "-static", "ifn.o", "-o", "out"].map(str::to_owned).to_vec(),
+    };
+    let ours = built.dir.join("out.mortar");
+    let m = mortar(&built, &ours, &[], &[]);
+    assert!(m.success(), "mortar: {}", m.stderr_text());
+    let map = std::fs::read_to_string(map_of(&ours)).unwrap();
+    assert!(map.lines().any(|l| l.starts_with("chunk thunk __f@plt_veneer ")), "{map}");
+    support::plumb::readers(&ours);
+    // The verifier's one finding is its own gap ([`only_the_bti_iplt_gap`]:
+    // it takes the BTI IPLT entry to start 4 bytes late): the veneer reaches
+    // the entry's start, not plumb's entry + 4, so it reports the `CALL26`
+    // to `f` as out of range. `bl` reaches the thunk, the thunk the entry
+    // (`objdump -d`); no other finding is allowed.
+    let findings = support::plumb::verify(&ours, &map_of(&ours), &built.dir);
+    assert!(
+        findings.len() == 1
+            && format!("{:?}", findings[0].rule) == "Overflow"
+            && findings[0].reloc.as_deref() == Some("R_AARCH64_CALL26")
+            && findings[0].symbol.as_deref() == Some("f"),
+        "{findings:#?}"
+    );
+}
+
+/// a64.md §9: a target that is not a landing pad, or whose pad-shaped
+/// word is data (`.word`, a `$d` range), is refused by name (`BTI
+/// landing pad`); no output. GNU ld writes a `bti c; b far` pad veneer
+/// for the first, which mortar does not yet.
+#[test]
+fn a_bti_far_call_without_a_proved_pad_is_refused() {
+    if !host() || tool("gcc").is_none() {
+        assert!(!tools_required(), "gcc is required");
+        return;
+    }
+    let scratch = Scratch::new("pipe-bti-no");
+    for (name, head) in [("nop", "nop"), ("data", ".word 0xd503245f")] {
+        let built = bti_far(&scratch, name, head, "nop");
+        let ours = built.dir.join(format!("{name}.mortar"));
+        let m = mortar(&built, &ours, &[], &[]);
+        assert!(!m.success(), "{name}: linked");
+        assert!(
+            m.stderr_text().contains("error: unsupported feature: BTI landing pad"),
+            "{name}: {}",
+            m.stderr_text()
+        );
+        assert!(!ours.exists(), "{name}: an output");
+    }
 }
 
 // ---- the driver: identities, options and failures ---------------------------

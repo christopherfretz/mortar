@@ -157,7 +157,7 @@ pub struct FakeTables {
 
 impl FakeTables {
     pub fn define(&mut self, k: SymKey, s: u64, live: bool) -> &mut Self {
-        self.syms.insert(k, SymValue { s, kind: TargetKind::Local, size: 0, live });
+        self.syms.insert(k, SymValue { s, kind: TargetKind::Local, size: 0, live, tls: false });
         self.alloc.insert(k, true);
         self
     }
@@ -667,6 +667,7 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
             section_size: len,
             addr,
             alloc: s.alloc,
+            exec: s.exec,
             name,
             relocs,
         };

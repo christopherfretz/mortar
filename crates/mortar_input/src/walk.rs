@@ -32,7 +32,7 @@ use mortar_script::{Command, CommandKind, FileForm, InputItem, Script};
 
 use crate::facts::{
     self, ArchiveFacts, Bad, ElfIdent, Facts, Kind, MemberContent, MemberFacts, ObjectFacts,
-    SharedFacts, VersionSlots,
+    ObjectKeys, SharedFacts, VersionSlots,
 };
 use crate::problem::{Problem, seq};
 use crate::search::{
@@ -151,6 +151,8 @@ pub struct FileRow<'s> {
     pub reader: Reader<'s>,
     /// A shared object's version slots (for its keys, §6).
     pub versions: VersionSlots<'s>,
+    /// An object's names and signatures, as its facts read them (§6).
+    pub keys: ObjectKeys<'s>,
     /// The `opened` row of the file: its own, or for an archive member its
     /// archive's (a thin member: its own file's).
     pub opened: u32,
@@ -1421,6 +1423,7 @@ impl<'c, 's> Walk<'c, 's> {
             soname: None,
             reader: Reader::Object(o.object),
             versions: VersionSlots::default(),
+            keys: o.keys.clone(),
             opened,
         });
     }
@@ -1539,6 +1542,7 @@ impl<'c, 's> Walk<'c, 's> {
             soname: Some(soname),
             reader: Reader::Shared(s.dso),
             versions: s.versions.clone(),
+            keys: ObjectKeys::default(),
             opened,
         });
     }

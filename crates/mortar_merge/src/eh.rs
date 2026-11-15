@@ -417,6 +417,7 @@ fn parse_section(s: &EhIn<'_>, word: u8) -> Result<Parsed, Problem> {
     let mut records: Vec<Record> = Vec::new();
     let mut at = 0usize;
     let mut terminator = None;
+    let mut cursor = 0usize;
     while at < size {
         let n = records.len();
         let Some(head) = bytes.get(at..at + 4) else {
@@ -444,7 +445,14 @@ fn parse_section(s: &EhIn<'_>, word: u8) -> Result<Parsed, Problem> {
             return Err(problem(n, at as u64, What::PastEnd));
         }
         let fail = |what: What| problem(n, at as u64, what);
-        let span = relocs_in(relocs, at as u64, end as u64);
+        // The records and the relocations are both in offset order: the
+        // record's span continues from the previous one's end (a search
+        // over the whole section per record is two cache-missing binary
+        // searches).
+        let lo = cursor + relocs[cursor..].partition_point(|r| r.offset < at as u64);
+        let hi = lo + relocs[lo..].iter().take_while(|r| r.offset < end as u64).count();
+        cursor = hi;
+        let span = lo..hi;
         let mine = &relocs[span.clone()];
         // The length and the CIE id are the linker's (S-52).
         if let Some(r) = mine.iter().filter(real).find(|r| r.offset < at as u64 + 8) {
@@ -457,8 +465,12 @@ fn parse_section(s: &EhIn<'_>, word: u8) -> Result<Parsed, Problem> {
         } else {
             // S-39: the CIE pointer is the distance back from its own word.
             let cie_at = (at as u64 + 4).checked_sub(id);
+            // The records are in offset order: the one at `c`, if any, by
+            // binary search (a scan from the front is quadratic in the
+            // records of a section whose CIEs are not all first).
             let cie = cie_at.and_then(|c| {
-                records.iter().position(|r| u64::from(r.offset) == c && r.cie().is_some())
+                let k = records.partition_point(|r| u64::from(r.offset) < c);
+                records.get(k).filter(|r| u64::from(r.offset) == c && r.cie().is_some()).map(|_| k)
             });
             let Some(cie) = cie else {
                 return Err(problem(n, at as u64 + 4, What::BadCieReference));

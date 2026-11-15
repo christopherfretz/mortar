@@ -585,6 +585,9 @@ fn s3_4_dead_reference_by_referring_section() {
     }
     assert_eq!(dead_reference(b".gcc_except_table", true), D::Zero);
     assert_eq!(dead_reference(b".gcc_except_table", false), D::Zero);
+    // The `.eh_frame` row: the FDE is dead, no event.
+    assert_eq!(dead_reference(b".eh_frame", true), D::DeadFde);
+    assert_eq!(dead_reference(b".eh_frame.x", true), D::Discarded);
     for name in [
         &b".comment"[..],
         b".comment.x",

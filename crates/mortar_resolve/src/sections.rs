@@ -24,8 +24,6 @@ pub enum SectionRefusal {
     /// `SHT_LLVM_DEPENDENT_LIBRARIES` or another `SHT_LLVM_*` type that
     /// is not ignorable.
     LlvmType(u32),
-    /// `SHT_AARCH64_ATTRIBUTES`.
-    Aarch64Attributes,
     /// A dynamic-linking section type in a relocatable object.
     DynamicType(u32),
     /// Any other section type.
@@ -144,6 +142,11 @@ pub fn classify(
     }
     match s.sh_type {
         SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE => return Ok((K::Excluded, Note::None)),
+        // layout.md L-35 (§20.7): AArch64 build attributes are consumed;
+        // the feature marking is the property note's (L-34).
+        SHT_AARCH64_ATTRIBUTES if machine == Machine::AArch64 => {
+            return Ok((K::Excluded, Note::None));
+        }
         SHT_LLVM_DEPENDENT_LIBRARIES => return Err(SectionRefusal::LlvmType(s.sh_type)),
         t if (0x6fff_4c00..=0x6fff_4cff).contains(&t) => {
             return Err(SectionRefusal::LlvmType(t));
@@ -182,9 +185,6 @@ pub fn classify(
                 SHT_NOBITS => K::Nobits,
                 SHT_PROGBITS | SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY => K::Regular,
                 SHT_STRTAB if alloc => K::Regular,
-                SHT_AARCH64_ATTRIBUTES if machine == Machine::AArch64 => {
-                    return Err(SectionRefusal::Aarch64Attributes);
-                }
                 SHT_DYNAMIC | SHT_DYNSYM | SHT_HASH | SHT_GNU_HASH | SHT_GNU_VERDEF
                 | SHT_GNU_VERNEED | SHT_GNU_VERSYM | SHT_RELR => {
                     return Err(SectionRefusal::DynamicType(s.sh_type));
@@ -229,10 +229,14 @@ pub fn state(
 
 /// The reason an `Excluded` kind is dropped: `Consumed` for the kinds
 /// §10 says the linker consumes (`.llvm_addrsig`, the call-graph profile,
-/// `.gnu.warning*`), `Excluded` for `SHF_EXCLUDE` and `.gnu.lto_*`.
+/// `.gnu.warning*`, AArch64's `.ARM.attributes`), `Excluded` for
+/// `SHF_EXCLUDE` and `.gnu.lto_*`.
 pub fn excluded_reason(s: &SectionInfo<'_>, note: Note) -> DropReason {
     let consumed = matches!(note, Note::GnuWarning | Note::GnuWarningSym)
         || (s.flags & SHF_EXCLUDE == 0
-            && matches!(s.sh_type, SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE));
+            && matches!(
+                s.sh_type,
+                SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE | SHT_AARCH64_ATTRIBUTES
+            ));
     if consumed { DropReason::Consumed } else { DropReason::Excluded }
 }
