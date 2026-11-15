@@ -3,17 +3,15 @@
 # pools: `R_AARCH64_ABS64` words in `.text.startup` loaded by
 # `ADR_PREL_PG_HI21` + `LDST64_ABS_LO12_NC`, and calls stay `CALL26`.
 # GCC 14 refuses `-mcmodel=large` with `-fPIC`/`-fPIE` ("sorry,
-# unimplemented"), so the model exists in static and `-no-pie` links only.
+# unimplemented"), so the model exists in static and `-no-pie` links only
+# (the `-no-pie` case: dyn/layout/a64-large-model).
 #@ spec: a64.md "2. Census"
 #@ arch: aarch64
 
 cc -O2 -mcmodel=large -fno-pic -fno-common lg.c -o lg.o
 cc -O2 -fno-pic ext.c -o ext.o
 link gcc -static lg.o ext.o -o lg-static
-link gcc -no-pie lg.o ext.o -o lg
 run lg-static
-  stdout: 5 1 2 6 3 0 4 b 42
-run lg
   stdout: 5 1 2 6 3 0 4 b 42
 
 #--- lg.c
