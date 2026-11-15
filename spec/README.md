@@ -23,7 +23,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `x64.md`, `x86.md` | the relocation tables, PLT/GOT/TLS/thunk shapes per architecture | planned (WP-029, WP-030) |
 | `layout.md` | `mortar_layout`: output sections, segments, addresses | accepted for M1 (WP-024 stage 1; one independent review, dispositions in `landed/layout/WP-024-spec.md`); its §20 requests to other specs are applied by the WP-024 code package |
 | `synth.md` | `mortar_synth`: synthetic sections | planned (WP-025) |
-| `image.md` | `mortar_image`: image synthesis, the writer, debug sections | planned (WP-026) |
+| `image.md` | `mortar_image`: image synthesis, the writer, debug sections | draft (WP-026 stage 1) |
 | `plumb.md` | `mortar_plumb`: the verifier and the map-file format | stage 1: static non-PIE AArch64 (WP-011); TLS, IFUNC, `.eh_frame` stage 2 |
 | `meta.md` | `mortar_meta`: the Mason metadata container (shared with kiln, hod, tuck) | planned (M6) |
 | `odr.md` | `mortar_odr`: one-definition-rule checks | planned (M6) |
