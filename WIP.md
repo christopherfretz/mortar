@@ -6,4 +6,5 @@ ci step `static-identical`). Main's mortar (d86a0cd) vs the baseline: 42 AArch64
 0a/0j: FileLive::Shared{needed,used}, IdSet, Resolution dynamic columns + bind(), check rule 7, model.md §3.3.
 Learned, not yet written: GNU ld 2.44 AArch64 static writes `.plt`'s start into IPLT words (resolver in r_addend);
 Q7 ruled S+A. x86-64 kept 0 (X-39, plumb F5(3)).
-Next: 0b/0h/0i (Slots fields, DynStr, dynsym/dynstr stubs, chunk rows, check.rs relaxations).
+0b: Slots needed/verneed/dynstr/dynsym_unhashed/gnu_hash_buckets; CopyAlloc{place,align,alias}; DynStr, VerIndex, CopyPlace; Demands.weak_dyn; check rules.
+Next: 0h dynstr stub, 0i dynsym stub + chunk rows (chunks.rs edited, uncommitted).

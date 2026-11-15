@@ -292,6 +292,9 @@ pub fn scan(
         local: local.into_boxed_slice(),
         output,
         dyn_relocs: dyn_relocs.into_boxed_slice(),
+        // `spec/dyn.md` D-25: `weak::weak_classes` decides it (WP-M2-RELOC);
+        // none in a static link.
+        weak_dyn: mortar_core::IdSet::new(),
     };
     let order = RecIndex::new(permuted, leads).with_deferred(deferred);
     Scanned { demands, order, diagnostics, stats }

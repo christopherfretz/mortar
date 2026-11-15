@@ -52,7 +52,9 @@ pub use id::{
 };
 pub use idset::IdSet;
 pub use inputs::Inputs;
-pub use layout::{Folds, Layout, MergeMap, Placement, Slots};
+pub use layout::{
+    CopyAlloc, CopyPlace, DynStr, Folds, Layout, MergeMap, Placement, Slots, VerIndex,
+};
 pub use liveness::Liveness;
 pub use records::RecIndex;
 pub use resolution::Resolution;

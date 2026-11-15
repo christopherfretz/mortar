@@ -365,6 +365,10 @@ What the relocations of live sections require, with no placement:
   local-dynamic module slot (`TLS_LD`), static TLS (`STATIC_TLS`, written
   as `DF_STATIC_TLS`);
 - per section, the number of dynamic relocations it will carry, by kind;
+- the `WeakDyn` keys (`weak_dyn`, a bit set over `SymbolId`, empty in a
+  static link): the undefined weak keys of a dynamic executable that get a
+  `.dynsym` entry and a dynamic relocation (`spec/dyn.md` D-25, decided per
+  key by the scan's `weak` step);
 - errors found on the way (a relocation that cannot be satisfied in this
   kind of output), reported at phase 70 (§8) and not stored.
 
@@ -429,6 +433,16 @@ allocations, one per `(shared FileId, st_value)` with every `SymbolId`
 aliasing that address mapped to it; and the size each such chunk
 therefore has.
 
+The dynamic lists (`spec/dyn.md`; all empty in a static link):
+
+| field | content | rule |
+|---|---|---|
+| `needed` | the needed shared objects, in `DT_NEEDED` order | D-11, D-19a |
+| `dynsym`, `dynsym_unhashed`, `gnu_hash_buckets` | `.dynsym` after the null entry (imports, exports, copy aliases, `WeakDyn` keys): the unhashed entries first in `SymbolId` order, then the hashed by (bucket, `SymbolId`); the unhashed count; `.gnu.hash`'s `nbuckets` | D-21, D-22, D-26, D-28 |
+| `copies` | per allocation `(file, value)` (its identity and sort key), `place` (`DynBss` or `RelRo`), `align`, `alias` (the key the `COPY` record names) | D-42 |
+| `verneed` | per needed object with a version an import binds to, in `needed` order: its versions by increasing definition index (`VerIndex`) | D-27 |
+| `dynstr` | the `.dynstr` offset of every name the dynamic sections write (per `.dynsym` entry, per `needed` entry, per version of `verneed`, the run path) and the size | D-24 |
+
 An index counts within its kind: one key can hold slots of several kinds
 (`spec/a64.md` §10.1), each with its own index, and a key has a PLT index
 or an IPLT index, never both. Where the kinds lie relative to each other
@@ -447,7 +461,12 @@ local, count)` ranges are stored; `count` includes the demoted globals.
 
 Valid when every demand of §3.7 has exactly one slot of its kind (the
 module slot exists exactly when `TLS_LD` is demanded), no slot is given
-twice, and the orders satisfy the format's own rules (the `.gnu.hash`
+twice, `.dynsym` holds exactly D-21's set (every import, export, `EXPORT`
+demand, `WeakDyn` key and copied key, plus copy aliases) with the
+unhashed block inside it, each copy allocation's `alias` maps to it and
+its alignment is a power of two, `verneed` follows `needed` with
+non-empty increasing versions, `.dynstr`'s offsets match the lists they
+name and lie inside it, and the orders satisfy the format's own rules (the `.gnu.hash`
 bucket order in `.dynsym`; ...), listed in `spec/synth.md`.
 
 ### 4.4 `Placement` (written by `mortar_layout`)
