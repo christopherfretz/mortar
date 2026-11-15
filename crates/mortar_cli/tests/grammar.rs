@@ -546,10 +546,10 @@ fn refused_uses_in_argument_order() {
         "p.so",
     ]);
     let refused: Vec<&str> = parsed.refused_uses().iter().map(|u| u.spelling.as_str()).collect();
-    assert_eq!(refused, ["-o", "-Tdata", "--push-state", "-z relro"]);
+    assert_eq!(refused, ["-Tdata", "--push-state", "-z relro"]);
     let rendered: Vec<String> =
         parsed.refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect();
-    assert_eq!(rendered[0], "ld: error: unsupported option: -o\n");
+    assert_eq!(rendered[0], "ld: error: unsupported option: -Tdata\n");
 }
 
 // spec: cli.md §5 (requests: --version and --help stop the parse; -v and

@@ -175,3 +175,20 @@ fn time_phases_lists_the_front() {
     let (_, quiet) = link(&built, &["--threads=1"], &[]);
     assert!(!quiet.contains("time-phases"), "{quiet}");
 }
+
+// spec: a64.md §11.2 (`--fix-cortex-a53-843419=adr` and `=adrp` restrict
+// the fix, which mortar does not do: refused by name, no output; `=full`
+// links)
+#[test]
+fn erratum_workaround_values_other_than_full_are_refused() {
+    let Some((_s, built)) = c_program("refuse-843419") else { return };
+    for v in ["adr", "adrp"] {
+        let opt = format!("--fix-cortex-a53-843419={v}");
+        let (status, stderr) = link(&built, &[opt.as_str()], &[]);
+        assert_eq!(status, Some(1), "{v}");
+        assert_eq!(stderr, format!("mortar: error: unsupported option value: {opt}\n"));
+        assert!(!built.dir.join("out").exists());
+    }
+    let (status, stderr) = link(&built, &["--fix-cortex-a53-843419=full"], &[]);
+    assert_eq!((status, stderr.as_str()), (Some(0), ""));
+}
