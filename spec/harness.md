@@ -486,7 +486,16 @@ stdin, timeout)`, `run(program, args)` (no input, one minute) or
   next (a file this process had open for writing is inherited by every
   process another test thread forks at that moment);
 - scratch files are in `<build directory>/tmp` (`Scratch`), under a name
-  unique to the process and the call, removed on drop.
+  unique to the process and the call (`mortar-<label>-<pid>-<n>`),
+  removed on drop. A scratch held in a `static` or left by a killed test
+  is never dropped, so the first `Scratch` of a process removes the
+  entries of that form in `<build directory>/tmp` whose process no longer
+  runs (no `/proc/<pid>`; nothing is swept without `/proc`, or in the
+  system temporary directory). After a run at most the last test
+  binaries' scratch remains. Some scratch outputs are sparse files of
+  hundreds of megabytes of apparent size (a section placed far away to
+  force a veneer): a tool that copies the build directory without
+  preserving holes sees them at full size.
 
 ### Tests
 
@@ -509,7 +518,7 @@ of that; skipped with a note without GNU `time`, a failure under
 
 `crates/mortar_testutil/src/lib.rs`: `run_captures_output_and_status`,
 `scripts_are_runnable_at_once`, `run_kills_at_the_time_limit`,
-`scratch_is_created_and_removed`.
+`scratch_is_created_and_removed`, `scratch_of_dead_processes_is_swept`.
 
 ## Link tests
 
