@@ -110,11 +110,14 @@ class. The classes, strongest first:
 | 1 | `Strong` | a defined `STB_GLOBAL` or `STB_GNU_UNIQUE` mention of a live object, not demoted | M1 |
 | 2 | `Common` | a common `STB_GLOBAL` mention of a live object | M1 |
 | 3 | `Weak` | a defined `STB_WEAK` mention of a live object, not demoted | M1 |
-| 4 | `Deferred` | a lazy candidate (any defined or common mention of a lazy file); a **visible** definition in a shared object (§9.1) | M1 lazy; M2 shared |
+| 4 | `Shared` | a **visible** definition in a live shared object (§9.1) | M2 |
 | 5 | `Provide` | file 0: a linker-defined symbol (§8) | M1 |
 
 Undefined (and demoted) mentions are not candidates; they are references
-(§3.6).
+(§3.6). **Only live files have candidates**: a lazy file that §4 does not
+make live contributes nothing to `def`, whatever it defines (review
+finding 5: a key referenced only weakly whose only definer stays in an
+archive is `Undefined{weak: true}`, not the archive's definition).
 
 ### 3.2 The order
 
@@ -127,14 +130,13 @@ Undefined (and demoted) mentions are not candidates; they are references
 with these three rules on top, each a function of per-class minima (so
 still a commutative merge, §12):
 
-1. **Deferred is never final.** If the minimum is `Deferred` and it is a
-   lazy candidate, the key is the reason a member is extracted (§4.3) and
-   after the fixed point the extracted member's mention is `Strong`,
-   `Common` or `Weak`. A `Deferred` minimum that remains is a shared
-   object's definition: `def = Shared{file, st_index}`.
+1. **Extraction is decided first.** `def` is computed after `file_live`
+   (§4) is final, over the candidates of live files. Which archive member
+   provides a key is §4's question, not this order's: the order never
+   sees a lazy file.
 2. **A shared data definition beats commons alone** (M2). If the minimum
    is `Common`, the key has no `Strong` and no `Weak` candidate, and the
-   least `Deferred` *data* definition by `≺` is a shared object's, then
+   least `Shared` *data* definition by `≺` exists, then
    `def = Shared{..}` of that definition, and the commons count as
    references. (GNU ld and mold, E12; lld keeps the common. Reason: in a
    static link a real definition beats commons, §3.3, and gfortran's
@@ -156,17 +158,18 @@ The consequences, each measured (E1-E6, E12):
 - `Common` beats `Weak` (GNU ld, lld; gABI: a common is an `STB_GLOBAL`
   symbol, and "the link editor honors the global definition and ignores
   the weak ones"). mold takes the weak definition (E6): §16.
-- `Weak` beats `Deferred`: a weak definition in a live object is not
-  replaced by an archive member (no extraction, all three, E3) nor by a
-  shared object's definition (all three, E12).
+- `Weak` beats `Shared`: a weak definition in a live object is not
+  replaced by a shared object's definition (all three, E12). Whether it
+  is replaced by an archive member is §4.1: a weak definition **before**
+  the archive keeps the member out (all three, E3); one **after** it does
+  not (GNU ld and lld extract, run=2; mold does not, R1).
 - Among weak definitions the first by `≺` wins (`tests/link/resolve/
   weak-strong.test`, all three).
-- Lazy and shared candidates are **one rank, ordered by `FileId`**: an
-  archive before a shared object on the line provides the symbol, a shared
-  object before an archive does (all three when the reference precedes
-  both, E4). This is the order-independent form of what all three do in
-  the common case; where a reference follows both, the three disagree and
-  mortar is mold (§4.4, §16).
+- An archive before a shared object on the line provides the symbol, a
+  shared object before an archive does (all three when the reference
+  precedes both, E4): `first(K)` of §4.1 counts shared objects. Where a
+  reference follows both, the three disagree and mortar is mold (§4.4,
+  §16).
 
 ### 3.3 Commons
 
@@ -219,12 +222,17 @@ M1 unless marked.
   `STT_NOTYPE` one included (E6: ``TLS definition in t.o section .tdata
   mismatches non-TLS reference in m.o``), and a TLS reference to a non-TLS
   definition (``TLS reference in mt.o mismatches non-TLS definition in
-  d1.o``). The rule is therefore: **a key whose
-  `def` is TLS and that has a live non-TLS mention, or whose `def` is not
-  TLS and that has a live TLS mention, is the error `tls-mismatch`**,
-  naming the definition and the first mismatching mention by `≺`. A
-  common mention is non-TLS. lld reports only some of these (it accepts a
-  TLS reference to a non-TLS definition, E6) and mold only warns: §16.
+  d1.o``), and a TLS reference against a non-TLS reference when nothing
+  defines the key (R7: ``x: TLS reference in mt.o mismatches non-TLS
+  reference in mn.o``, both weak undefined; lld and mold link). The rule
+  is therefore: **a key whose live mentions (definitions, commons and
+  references, in relocatable objects) are not all `STT_TLS` or all
+  non-TLS is the error `tls-mismatch`**, naming the definition (or, with
+  none, the first mention by `≺`) and the first mention of the other kind
+  by `≺`. `STT_NOTYPE` undefined mentions count as non-TLS (GNU ld). A
+  common mention is non-TLS. lld reports only a typed (`STT_OBJECT`)
+  reference or a common against a TLS definition; mold warns only for an
+  `STT_OBJECT` reference and is silent for `STT_NOTYPE` (R7): §16.
   Undefined weak TLS references stay a TLS `Undefined{weak}`
   (`spec/arch.md` gives them their value).
 - **IFUNC.** `STT_GNU_IFUNC` is a `Strong` or `Weak` definition like any
@@ -257,7 +265,7 @@ contribute. `STV_INTERNAL` is treated as `STV_HIDDEN` in every rule below
   output (all three, E6).
 - A key that is hidden must be defined by a relocatable object or by file
   0. A hidden key whose `def` is `Shared` or `Undefined{weak: false}` is the
-  undefined-symbol verdict "hidden" (§5.2): GNU ld ``hidden symbol `x'
+  undefined-symbol verdict "hidden" (§5.2, with a surviving reference): GNU ld ``hidden symbol `x'
   isn't defined``, lld ``undefined hidden symbol: x`` (E12). A hidden weak
   undefined key resolves to zero.
 - `STV_PROTECTED` (M2): the definition is exported but not preemptible
@@ -296,16 +304,17 @@ What `spec/synth.md` writes, decided here:
 | `Weak` | `STB_WEAK` | as `.symtab` |
 | `Assign`, `Provide` | §8 | §8 |
 | `Shared` | not in `.symtab` unless referenced (then `STB_GLOBAL`, or `STB_WEAK` if `!ref_strong`, undefined) | undefined entry with the binding of the references (`STB_WEAK` iff `!ref_strong`), version needed (§9.3) |
-| `Undefined{weak}` with a live relocation | not checked (`resolve/weak-undef.test` records the three behaviors) | M2: `STB_WEAK` undefined entry in a dynamic link (§5.3) |
+| `Undefined{weak}` with a live relocation | not checked (`resolve/weak-undef.test` records the three behaviors) | M2: `STB_WEAK` undefined entry in a dynamic link (§5.4) |
 
 An undefined key that no live relocation uses is absent from both tables
 (all three, E15).
 
 ### 3.8 Duplicates and `--allow-multiple-definition`
 
-M1. `clash[K]` is set when two or more `Strong` candidates exist, other than
-two absolute ones with equal values (§3.4). The definition is still the
-minimum by `≺`.
+M1. Let `S` be the set of live `Strong` candidates; `clash[K]` is set when `|S| ≥ 2`, unless every
+member of `S` is absolute and all have one value (any number of them; an
+absolute definition and a section definition always clash, review finding
+21). The definition is still the minimum by `≺`.
 
 - Without `--allow-multiple-definition` / `-z muldefs`, a clash is the
   error `duplicate-symbol` (`spec/diag.md` §3.1): one diagnostic per key,
@@ -320,78 +329,119 @@ minimum by `≺`.
 - With either option, no diagnostic: the first by `≺` is the definition
   (all three, E6: `-z muldefs d2.o d1.o` takes `d2.o`'s).
 
-The wording is `spec/diag.md`'s (lld's `duplicate symbol: x`), not GNU
-ld's ``multiple definition of `x'; d1.o:(.data+0x0): first defined here``:
-§17 Q4.
+Wording (supervisor's policy of 2026-11-14, review finding 22): where GNU
+ld has a phrase that build tools match, mortar's message for the same
+condition contains it verbatim. The message is therefore
+``duplicate symbol: x (multiple definition of `x')``: `spec/diag.md`'s
+lld-style head and GNU ld's phrase (§14; requested of `spec/diag.md` in
+§18).
 
 A clash among a lazy member's definitions does not exist until the member
-is live. Duplicates that arise because the order-independent extraction
-took a member GNU ld would not have taken are reported like any other,
-with a note (§4.4).
+is live. Duplicates that arise because position-independent extraction
+took a member GNU ld would not have taken are reported like any other;
+under `--warn-backrefs` the GNU simulation (§4.6) adds a note.
 
 ## 4. Liveness of files
 
 ### 4.1 The rule
 
-M1. `file_live` is computed in **rounds**. Let `Live₀` be the roots
-(§4.2). For `k = 0, 1, …`, given `Live_k` and the files `Δ_k` that became
-live in round `k` (`Δ₀ = Live₀`):
+M1 (shared objects in it: M2). Liveness of files is **reachability over a
+graph that is a function of the inputs**: no step looks at whether a
+definer is live, so there is no "settled" test and nothing depends on the
+order in which the closure is computed (supervisor's ruling A of
+2026-11-14, after review findings 1, 4 and 5).
 
-1. **Definitions.** Every key with a `Strong`, `Common` or `Weak` candidate
-   in `Live_k` (or an `Assign` or, M2, a shared definition that wins over
-   lazy ones by `FileId`) is *settled*.
-2. **Demand.** A key `K` is *demanded* in round `k` when a file of `Δ_k`
-   has a **non-weak** undefined mention of `K` (after `--wrap`
-   redirection, §7.1), or `k = 0` and a root names `K` (§4.2). A key whose
-   live best candidate is `Common` and that has a lazy *data* definition
-   is demanded by its common mentions in `Δ_k` (§4.5).
-3. **Extraction.** For each demanded key that is not settled, let `c` be
-   its least `Deferred` candidate by `≺` (for a common-demanded key: its
-   least `Deferred` data definition). If `c` is a lazy candidate of file
-   `M`, `M ∈ Δ_{k+1}`.
-4. `Live_{k+1} = Live_k ∪ Δ_{k+1}`; stop when `Δ_{k+1}` is empty.
+For each key `K`, two targets, computed once from the per-file symbol
+tables (I-file, §13):
 
-`file_live[M]` for an extracted member records the reference that pulled it
-in: the least `(FileId, st_index)` by `≺` among the mentions of `Δ_k` that
-demanded a key for which `M` was chosen (a root: `FileId` 0 and the root's
-argument index).
+- **`first(K)`**: the file with the lowest `FileId`, live or lazy, that has
+  a **defined or common** mention of `K` of any binding (`STB_GLOBAL`,
+  `STB_WEAK`, `STB_GNU_UNIQUE`), counting a shared object's visible
+  definitions (§9.1, M2) and file 0's `Assign` candidates (M4) but not its
+  `Provide` candidates (§8). Commons count: a strong reference to a key
+  whose lowest definer is a lazy common extracts that member (all three,
+  R5: without it the reference is left undefined).
+- **`cfirst(K)`**, the target of a common: the file with the lowest
+  `FileId` among (a) files that are not lazy (objects named on the line,
+  `--whole-archive` members, shared objects, file 0) with a **non-weak,
+  non-common** definition of `K`, and (b) lazy files with a **non-weak data
+  definition** of `K` (§2: not `STT_FUNC`, not `STT_GNU_IFUNC`; not
+  common). A weak definition does not stop it (GNU ld: a common beats a
+  weak definition, so its archive scan still sees a common and extracts
+  the data definition, R6), nor does a lazy function or weak definition
+  (§4.5).
 
-The rounds are breadth-first: a key settled by a member that becomes live
-in round `k+1` for another key is not demanded again. This is what keeps a
-member out that GNU ld also never takes because something extracted at the
-same depth defines its symbol (E2: `main` needs `U` and `J`; `N` (for `U`)
-needs `K`; `M2` (for `J`) also defines `K`; the lowest definer of `K`,
-`M1`, stays out: GNU ld, and lld in one member order, link; mold, which
-fixes each key's provider before propagating, reports a duplicate `K`).
-§12.2 proves the result does not depend on how a round is computed.
+The edges, from a file `F` to a lazy file `M`:
 
-What extraction **does not** consider (each measured, E1-E4, E13):
+1. `F` has a **non-weak undefined** mention of `K` (after `--wrap`
+   redirection, §7.1) and `M = first(K)`;
+2. `F` has a **common** mention of `K` and `M = cfirst(K)`;
+3. a root option names `K` (§4.2) and `M = first(K)`: an edge from file 0.
 
-- **Weak references.** A weak undefined mention never demands (gABI:
-  "the link editor does not extract archive members to resolve undefined
-  weak symbols"; all three, `resolve/weak-undef.test`).
-- **Mentions of files that are not live.** A lazy member's references
-  count from the round after it is extracted.
-- **A key settled by a weak definition** (all three, E3) or by a common
-  that has no lazy data definition (lazy commons do not extract for
-  commons, all three, E3).
-- **Position.** Nothing in the rule depends on where the reference is
-  relative to the archive. Among several lazy definers the lowest
-  `FileId` wins (`resolve/archive-order.test`: `-lone -ltwo` gives `one`,
-  `-ltwo -lone` gives `two`, all three).
-- **Lazy commons and lazy weak definitions do extract** for a strong
-  reference (all three, E3).
+`file_live` is the set of files reachable from the roots of §4.2 (the
+lazy files reached become live; every other file is live from the start
+or never). For an extracted member it records the pulling reference: the
+least `(FileId, st_index)` by `≺` among the live mentions with an edge to
+it (a root: `FileId` 0 and the option's argument index).
+
+**After the closure**, `def[K]` is the minimum of §3.2 over the candidates
+of **live** files only; with none, `def[K]` is `Undefined{weak}`, `weak`
+being true when every live reference is weak (§3.6). A lazy file that is
+not reached contributes nothing (finding 5).
+
+Consequences, each measured (R-numbers and E-numbers in the landed
+record):
+
+- **A definition before the archive keeps the member out** (all three, E3):
+  `first(K)` is that file, not the member. This holds for a weak
+  definition too (E3).
+- **A definition after the archive does not** (finding 1): `t1m.o
+  libt1k.a t1w.o`, the member defining `K` strongly and `t1w.o` weakly:
+  `first(K)` is the member, which is extracted and wins (GNU ld and lld
+  run=2, mortar 2; mold 1, R1). With a strong definition in `t1s.o` it is
+  a duplicate (GNU ld, lld, mortar; mold links silently, R1).
+- **Weak references never demand** (gABI: "the link editor does not
+  extract archive members to resolve undefined weak symbols"; all three,
+  `resolve/weak-undef.test`). A weak reference followed by a strong one
+  from a later file demands from the strong one (R2: GNU ld fails when the
+  strong reference follows the archive, a back-reference; lld, mold and
+  mortar link).
+- **Lazy commons and lazy weak definitions are extracted** for a strong
+  reference when they are `first(K)` (all three, E3, R5). The member with
+  the lowest `FileId` is taken even if it is weak and a later member is
+  strong (all three: R3, `mk.o libKW.a libKS.a` gives the weak one's 1
+  under GNU ld and lld; mold 2).
+- **`--whole-archive` members are not lazy**: they block like named objects
+  (R4: `mk.o libKS.a --whole-archive libKW.a`: the earlier lazy member is
+  extracted and wins, GNU ld and lld 2; `--whole-archive libKW.a` first:
+  none extracted, all three 1).
+- **Among several lazy definers the lowest `FileId` wins**
+  (`resolve/archive-order.test`: `-lone -ltwo` gives `one`, `-ltwo -lone`
+  gives `two`, all three).
 - **`--wrap` targets** are not roots: with `--wrap=f`, a member defining
   only `f` is not extracted unless `__real_f` is referenced (all three,
   E13).
-- **COMDAT.** Extraction treats a definition in a group section as a
-  definition whichever copy is kept: the keeper is chosen after the fixed
-  point (§6.1). A key defined only in copies that end up dropped is not
-  re-demanded; its references are the error of §6.3.
+- **COMDAT does not feed back.** Extraction treats a definition in a group
+  section as a definition whichever copy is kept: the keeper is chosen
+  after the closure (§6.1). A key defined only in copies that end up
+  dropped is the error of §6.3.
+- **Extraction reads the members' own symbol tables, never the archive's
+  index** (finding 13): `spec/archive.md` reads every member anyway, a
+  stale index cannot mislead mortar, and an archive without an index
+  links (lld and mold link `ar rcS` archives; GNU ld refuses them with
+  ``archive has no index; run ranlib to add one``, R8: §16).
+
+**Rounds are an implementation, not the semantics.** An implementation
+computes the closure breadth-first: round 0 is the roots; round `k+1` is
+the set of lazy targets of the edges out of the files of round `k` not yet
+live. Each round is a parallel map over the files of the round and a
+union of target bits; the number of rounds is the depth of the graph.
+Any order of visiting gives the same set (§12.2); tests compare a
+sequential worklist with the parallel rounds.
 
 ### 4.2 Roots
 
-M1 unless marked. `Live₀` holds:
+M1 unless marked. The files live from the start:
 
 - file 0;
 - every relocatable object named on the command line outside a
@@ -401,65 +451,103 @@ M1 unless marked. `Live₀` holds:
 - every shared object (M2): live for resolution whatever `--as-needed`
   says; whether it is *needed* is §9.5.
 
-and the keys rooted by options, each demanded in round 0 (strong):
+and the keys rooted by options, each an edge from file 0 (a strong
+reference):
 
 | option | key | M |
 |---|---|---|
-| `-u SYM` | `SYM` | M1 |
-| `--require-defined=SYM` | `SYM`; if still undefined after the fixed point: `required-symbol` (error; GNU: ``required symbol `x' not defined``, mold: `--require-defined: undefined symbol: x`; lld 22 has no such option, E13) | M1 |
-| `-e SYM` / `ENTRY(SYM)` | `SYM` (all three extract it, E13); undefined afterwards: §5.4 | M1 |
-| `--defsym A=EXPR` | the symbols `EXPR` names (all three extract them, E13) | M4 |
+| none of `-e`, `ENTRY`, `-shared`, `-r` | the default entry `_start` (finding 14: all three extract a `_start` member from an archive with no `-e`, R9) | M1 |
+| `-e SYM` / `ENTRY(SYM)` | `SYM` (all three extract it, E13); undefined afterwards: §5.5 | M1 |
+| `-u SYM` | `SYM` (R4b: all three extract) | M1 |
+| `--require-defined=SYM` | `SYM`; if still undefined after the closure: `required-symbol` (error; GNU: ``required symbol `x' not defined``, mold: `--require-defined: undefined symbol: x`; lld 22 has no such option, E13) | M1 |
+| `--defsym A=EXPR` | the symbols `EXPR` names, wherever the option is on the line (finding 17: GNU ld extracts them only when the option precedes the archive, ``undefined symbol `k' referenced in expression`` otherwise; lld and mold in any position, R10: §16) | M4 |
 | `--export-dynamic-symbol=GLOB` | each key matching the glob that some file mentions (lld; not verified for GNU ld) | M2 |
 | a script's `EXTERN(SYM)` | `SYM` | M4 |
 
-### 4.3 Why this rule, and what GNU ld users see
+### 4.3 What GNU ld users see
 
 GNU ld reads the command line once: an archive is searched when it is
-reached, for the symbols undefined at that point, again and again until no
-member is added; `--start-group` repeats the archives of the group until a
-pass adds nothing ("Command-line Options", `-l` and `--start-group`).
-lld and mold remember every archive and extract on any later reference.
-mortar's rule is lld's and mold's (the supervisor's decision of
-2026-11-14, `spec/model.md` §3.3): it is the only one that is a fixed point
-over sets, so it is parallel and order-independent by construction
-(§12), and so an incremental link can recompute it from per-file
-summaries (§13); GNU's one-pass rule is a sequential simulation with
-positional state.
+reached, for the symbols undefined at that point, again until a pass adds
+no member; `--start-group` repeats the archives of the group until a pass
+adds nothing ("Command-line Options", `-l` and `--start-group`). lld and
+mold remember every archive and extract on any later reference. mortar's
+rule is position-independent like theirs (the supervisor's decision of
+2026-11-14): a closure over a graph that is a function of the inputs is
+parallel and order-independent by construction (§12) and is recomputable
+from per-file summaries (§13); GNU's rule is a sequential walk with state.
 
-**Every link GNU ld accepts, mortar accepts, except three cases**, each
-of which needs a key referenced only from a file that follows a lazy
-definer of it (a *back-reference*). Without back-references mortar's
-live set and every definition equal GNU ld's (proof sketch: by induction
-over GNU's left-to-right walk, every member GNU extracts is the lowest
-lazy definer of a key referenced before it, which mortar extracts at some
-round; every member mortar extracts is the lowest lazy definer of a key
-referenced before it, which GNU extracts when it reaches it).
+**The claim.** Call a demand of `K` (an edge of §4.1 from a live file `F`)
+a **back-reference** when GNU's walk has already passed `first(K)` (or
+`cfirst(K)`) for the last time before it loads `F`: `first(K)` lies in an
+archive before `F`'s position outside `F`'s archive and `--start-group`
+region, or it lies in `F`'s own archive or group and GNU's current pass
+meets another lazy definer of `K` after `F` first. **Without
+back-references, mortar's live set, every `def`, and every COMDAT keeper
+equal GNU ld's.** Proof sketch:
 
-1. **A different member** (silent, the link succeeds): GNU passed the
-   lowest definer before the key was referenced and takes a later one.
-   Measured (E1): `main.o libA.a libB.a libC.a`, `libB` needs `pick`,
-   `libA` and `libC` define it: GNU ld takes `libC`'s (exit 2), lld, mold
-   and mortar `libA`'s (exit 1). Inside **one** archive too: members
-   `a.o b.o c.o`, `b.o` needs `pick`, `a.o` and `c.o` define it: GNU ld
-   takes `c.o` (its scan of the index continues past the member it just
-   added), lld, mold, mortar `a.o` (E1). And inside `--start-group`: GNU
-   ld still takes `libC`'s (E1). The user sees a program that behaves as
-   if the libraries were ordered differently: §4.6 diagnoses it.
-2. **A duplicate GNU never saw**: the member mortar takes defines a symbol
-   another live file defines. E1: `libA2`'s member also defines `dup`,
-   which `main.o` defines: GNU ld links (exit 2), lld, mold and mortar
-   report `duplicate symbol: dup`. mortar's diagnostic carries the note
-   `>>> libA2.a(a2.o) was extracted for 'pick', referenced only by a
-   later file (libB.a(b.o)); GNU ld would not extract it` (§14).
-3. **An undefined reference GNU never saw**: the member mortar takes
-   needs a symbol nothing defines. Reported as undefined with the same
-   note.
+- *Every member GNU loads, mortar extracts.* GNU loads member `M` for key
+  `K` when its walk reaches `M` with `K` undefined (or common, with `M`
+  holding a non-weak data definition). No file before `M` that GNU loaded
+  defines `K` (else `K` would not be undefined); no lazy file before `M`
+  defines it either, or GNU would have passed it with `K` already
+  demanded (it loads the first definer it meets), which is a
+  back-reference. So `M = first(K)` (or `cfirst(K)`), and the demanding
+  file is live in mortar by induction over GNU's load order: an edge.
+- *Every member mortar extracts, GNU loads.* `M = first(K)` with a live
+  demanding file `F`. Without a back-reference GNU loads `F` before it
+  last considers `M`; then `K` is still undefined there, since no file
+  before `M` defines it, and GNU loads `M`.
+- *Definitions.* Over equal live sets, GNU's resolution among live files
+  is §3.2's order (strong, then common, then weak, the first by
+  `FileId`), measured case by case in E3, E6, E12.
+- *COMDAT.* Without back-references GNU loads files in increasing `FileId`
+  order (a later pass of a rescan loads a lower member only for a
+  reference from a later member, a back-reference), so its first-loaded
+  copy is the lowest live `FileId` (§6.1).
 
-And the converse: links GNU ld rejects as undefined because of a
-back-reference link with mortar (`resolve/archive-backref.test`: GNU ld
-fails, lld and mold link; mortar must link, §18). `--start-group` and
-`--end-group` therefore change nothing in resolution; they are accepted,
-and kept in the `Plan` for `--warn-backrefs` (§4.6).
+Back-references **inside one archive** are common in system archives
+(members are not ordered by dependency) and are mostly harmless: GNU's
+rescan reaches `first(K)` again and loads it, unless another definer of
+`K` lies after the referring member. **Re-run on the reviewer's sixteen
+system link lines** (gcc, clang, g++, clang++, gfortran, `-static-pie`,
+`-lm -lpthread -ldl`, on AArch64, x86-64 and i386; landed record "Re-run
+under ruling A"): mortar's member set equals GNU ld's on all sixteen
+(381 to 653 members), as does the simulation of §4.6.
+
+**Where mortar differs from GNU ld**, each requiring a back-reference
+except the last, which is a COMDAT case:
+
+1. **A different member** (silent, the link succeeds): GNU passed
+   `first(K)` and takes a later definer. E1: `main.o libA.a libB.a libC.a`
+   (`libB` needs `pick`, `libA` and `libC` define it): GNU ld runs `libC`'s
+   (2), lld, mold, mortar `libA`'s (1); inside one archive `[a.o b.o c.o]`
+   GNU ld takes `c.o` (its pass continues after it adds `b.o`); inside
+   `--start-group` the same; and `m2.o libA.a libCB.a` with `libCB = [c.o
+   b.o]` (finding 3's t2: GNU ld 3, mortar 1).
+2. **A duplicate GNU never saw**: the member mortar extracts defines a
+   symbol another live file defines (E1: `dup`; E2: `K`, where GNU ld links
+   with 120 and lld and mold also report the duplicate: E2 is a
+   back-reference from `n.o` to `libX.a`'s `K`).
+3. **An undefined reference GNU never saw**: the member mortar extracts
+   needs a symbol nothing defines.
+4. **A different COMDAT copy, or a symbol lost with it** (finding 2,
+   ruling C): GNU keeps the first loaded copy, mortar the lowest live
+   `FileId` (§6.1). With a back-reference in the archive the two differ:
+   `m10.o libG.a`, `libG = [gl.o: group g{g}, Z; gh.o: group g{g, hx}, Y
+   → Z]`: GNU loads `gh.o` (for `hx`, `Y`) before `gl.o` (for `Z`) and keeps
+   `gh.o`'s copy (GNU ld and lld run 140); mortar keeps `gl.o`'s, which
+   does not define `hx`: the error `comdat-mismatch` (§6.3; mold reports
+   `undefined symbol: hx`). Copies that differ in content are observable
+   only as an ODR violation (§6.7); copies that differ in their symbol
+   sets are this error. On the system lines the keepers differ from GNU
+   ld's for 35 to 45 of 60 to 67 signatures per link, with byte-identical
+   sampled copies and identical program output (the reviewer's table, in
+   the landed record).
+
+And the converse: links GNU ld rejects because of a back-reference link
+with mortar (`resolve/archive-backref.test`; R2). `--start-group` and
+`--end-group` change nothing in the closure; they are accepted and kept
+in `Inputs` for the simulation of §4.6.
 
 ### 4.4 Shared objects and archives (M2)
 
@@ -472,80 +560,130 @@ measured (E4; `libs.so` defines `f` returning 1, `liba.a` returning 2):
 | `m.o libs.so liba.a` | `libs.so` (all) | `libs.so` (all) | not needed, `f` = 0 (GNU ld, lld); `libs.so` needed (mold) |
 | `m.o liba.a libs.so` | `liba.a` (all); with `--as-needed`, `libs.so` not needed (all) | `libs.so` (all): no extraction for a weak reference | not needed, `f` = 0 (GNU ld, lld); mold's output crashes |
 
-mortar: as the table's majority in every cell (the lazy and shared
-candidates share a rank ordered by `FileId`, §3.2; a weak reference does
-not make a shared object needed, §9.5).
+mortar: as the table's majority in every cell (`first(K)` counts shared
+objects, §4.1; a weak reference does not make a shared object needed,
+§9.5). Re-run under ruling A (R11): the same four lines with a strong
+reference give `libs.so`, `liba.a` (all three), and a weak reference
+followed by a strong one after both (`mkw.o libs.so libKS.a uk.o`) gives
+`libs.so` (all three; mortar: `first(K)` is the shared object).
 
-With the reference **after** both (E4), the three disagree:
+With the reference **after** both (E4, R11), the three disagree:
 
 | line | GNU ld | lld | mold | mortar |
 |---|---|---|---|---|
-| `liba.a libs.so m.o` | `libs.so` | `libs.so` | `liba.a` | `liba.a` (lowest `FileId`) |
+| `liba.a libs.so m.o` | `libs.so` | `libs.so` | `liba.a` | `liba.a` (`first`) |
 | `liba.a m.o libs.so` | `libs.so` (archive already passed) | `liba.a` | `liba.a` | `liba.a` |
 | `--as-needed libs.so m.o` | undefined (GNU drops an as-needed library no earlier object needs, E4) | `libs.so` | `libs.so` | `libs.so` |
 
-A shared object's undefined mentions demand like an object's (an archive
-member defining a symbol a shared object needs is extracted and exported:
-all three, E4), from the round in which the shared object is live (round
-0).
+A shared object's undefined mentions are edges like an object's (an
+archive member defining a symbol a shared object needs is extracted and
+exported: all three, E4).
 
 ### 4.5 Commons and archives
 
-M1. A key whose live best candidate is `Common` is demanded by its common
-mentions, and the least lazy **non-weak data definition** by `≺` is
-extracted (GNU ld and mold, E3: a member defining `int v = 9;` replaces the
-common `int v;`). lld does this only under `--fortran-common` (its
-`--help` calls that the default; measured, lld 22's default does not
-extract, E3). The rule is what makes a gfortran `BLOCK DATA` unit in an
-archive initialize its COMMON block (E19: GNU ld and mold run the program
-correctly; lld without `--fortran-common` leaves the block zero and the
-program fails). Precisely, after GNU ld (E3):
+M1. A live common mention of `K` is an edge to `cfirst(K)` (§4.1) when that
+is a lazy file: the lowest lazy **non-weak data definition** of `K`, unless
+a file that is not lazy and has a lower `FileId` defines `K` non-weakly
+(GNU ld and mold, E3: a member defining `int v = 9;` replaces the common
+`int v;`). lld does this only under `--fortran-common` (its `--help` calls
+that the default; measured, lld 22's default does not extract, E3). The
+rule is what makes a gfortran `BLOCK DATA` unit in an archive initialize
+its COMMON block (E19: GNU ld and mold run the program correctly; lld
+without `--fortran-common` leaves the block zero and the program fails).
+Which lazy definitions are targets, after GNU ld (E3, R6):
 
-| the lazy mention | extracted for a common |
+| the lazy mention | target of a common |
 |---|---|
 | `STT_OBJECT` or `STT_NOTYPE`, in any section (data, rodata, text) | yes |
 | absolute | yes |
 | `STT_TLS` | yes, then `tls-mismatch` (GNU ld's error; §3.4) |
-| `STT_FUNC`, `STT_GNU_IFUNC` | no (mold extracts and its program reads code as data, E3) |
+| `STT_FUNC`, `STT_GNU_IFUNC` | no (mold extracts and its program reads code as data, E3, R6) |
 | weak | no |
-| common | no |
+| common | no (it is a target of a strong reference, §4.1, not of a common) |
+
+What stops it: a non-weak definition in a non-lazy file with a lower
+`FileId` (R6: `fv.o mc.o libLV.a`, `fv.o` defining `v` as a function: no
+extraction in all three). What does not: a weak definition anywhere (R6:
+`wv.o mc.o libLV.a` and `mc.o libLV.a wv.o`, GNU ld and mold extract,
+GNU ld runs 9; lld keeps the common, 0). A key both strongly referenced
+and common has both edges (to `first` and to `cfirst`); when they differ
+(`first` a lazy function or common, `cfirst` a later data definition),
+both members are extracted, as GNU ld does when the reference precedes
+the archive (R5: `mv.o libLC.a libLV.a`, GNU ld extracts both and runs
+9; lld only the common, 0; mold only the data definition, 9).
 
 `--fortran-common` and `--no-fortran-common` (lld's options) are accepted:
 the first is mortar's behavior (`supported`), the second is refused
 (`spec/cli.md` §4.2; there is no use for it that is correct).
 
-### 4.6 `--warn-backrefs` and the choice GNU would make
+### 4.6 `--warn-backrefs`: simulating GNU ld
 
-M1. Two warnings make the differences of §4.3 visible.
+M1. Opt-in (ruling B, after finding 3: a predicate over `FileId` order is
+not GNU's choice and gave both false and missing warnings). Under
+`--warn-backrefs` mortar **simulates GNU ld's archive walk** after the
+closure and reports, per key, where GNU ld would have failed or chosen
+another file. Without the option nothing below runs: the default link
+pays nothing.
 
-- **`archive-choice` (warning, on by default).** A key `K` whose `def`
-  comes from an extracted member `M`, where some other lazy file `M'`
-  has a **`Strong`-shaped definition of `K` outside any COMDAT group**,
-  and `M` precedes, and `M'` follows, the least live strong reference to
-  `K` (`r`): `M ≺ r ≺ M'`. GNU ld would have taken `M'` (or, with an
-  archive scan in between, some definer after `r`): the warning names
-  `M` (`>>> defined in`), `r` (`>>> referenced by`) and the least such
-  `M'` (note `>>> GNU ld takes the definition in <M'>`). The restriction
-  to strong non-group definitions keeps it quiet where the choice cannot
-  matter: libstdc++'s archive has 130 keys defined in more than one member,
-  all but one weak (template instantiations); glibc's `libc.a`, `libm.a`,
-  libgcc and libgfortran have no strong key defined twice (measured on
-  this machine, `spec/landed/resolve/WP-022-spec.md`).
-- **`archive-backref` (warning, `--warn-backrefs` only, lld's option).**
-  A member `M` extracted for `K` where every live strong reference to `K`
-  that demanded it lies in a later file that is neither a member of `M`'s
-  archive nor in the same `--start-group` region: GNU ld leaves `K`
-  undefined there and fails. lld's own `--warn-backrefs` words this
-  ``backward reference detected: pick in libB.a(b.o) refers to
-  libA.a(a.o)``; lld does **not** warn in case 1 of §4.3 when a later
-  archive also defines the key, because it predicts GNU's choice there
-  (E1, measured: no warning) — mortar's `archive-choice` covers that.
-  Also under `--warn-backrefs`: a key bound to a shared object under
-  `--as-needed` whose every reference follows it (GNU ld drops such a
-  library, §4.4).
+The simulation walks the inputs in command-line order with a state per
+key: `none`, `undefined` (a non-weak reference seen), `weak-undefined`,
+`common`, `defined-weak`, `defined`.
 
-Both are computed from minima over the live references (§12) and cost
-nothing when they do not fire.
+- **Adding a file** (a named object, a `--whole-archive` member, a shared
+  object, a member being loaded) applies its mentions in symbol-table
+  order: a non-weak definition makes the key `defined`, unless it is
+  already; a weak definition makes `none`, `undefined` or
+  `weak-undefined` into `defined-weak`; a common makes anything below
+  `common` (including `defined-weak`) into `common`; a non-weak undefined
+  mention makes `none` or `weak-undefined` into `undefined`; a weak one
+  makes `none` into `weak-undefined`. A shared object's definitions are
+  `defined`.
+- **An archive** (not under `--whole-archive`) is scanned in **passes**:
+  each pass visits the members not yet loaded in member order and loads a
+  member when one of its mentions is a definition or common of a key
+  that is `undefined`, or a non-weak data definition of a key that is
+  `common`; loading applies its mentions at once, so a later member of
+  the same pass sees them. Passes repeat until one loads nothing.
+- **A `--start-group` region**: its objects are added in order with its
+  archives scanned as above; then the region's archives are scanned again,
+  in order, until a full round over them loads nothing.
+- Undefined references in shared objects are `undefined` mentions;
+  `--as-needed` is ignored for loading (§4.4's last row is reported
+  separately below).
+
+The members' own symbol tables are read, as by the closure (§4.1), not
+the archive index. The simulation needs from `Inputs`, per file, its
+command-line position, its archive and member order, and its
+`--start-group` region (`spec/model.md` §3.2 has the positional state but
+not the region: finding 15, requested in §18 and being recorded by
+`spec/input.md`).
+
+It reports, for each key `K` whose `def` comes from an extracted member and
+is not in a COMDAT group (group keys are §6's):
+
+- **`archive-backref`** (warning): the simulation ends with `K`
+  `undefined`: GNU ld would fail with ``undefined reference to `K'``. The
+  message names `K`, the member mortar used and the first referring
+  file. lld's own `--warn-backrefs` words this ``backward reference
+  detected: pick in libB.a(b.o) refers to libA.a(a.o)``; it is silent when
+  a later archive also defines the key (E1).
+- **`archive-choice`** (warning): the simulation's definer of `K` is
+  another file: names both.
+- Under the same option, as notes on an existing `duplicate-symbol` or
+  `undefined-symbol`: the member that caused it was loaded by mortar but
+  not by the simulation.
+- An as-needed shared object that mortar finds needed and whose every
+  reference follows it (§4.4: GNU ld drops it): `archive-backref` naming
+  the library.
+
+**Cost.** One sequential pass per archive pass over the members' mention
+lists; with the members' summaries already in memory (§13) it is a
+fraction of resolution's reading cost, but it is not parallel. Checked
+against GNU ld (landed record, "Ruling B"): the simulated member sets
+equal `ld.bfd -t` on the sixteen system lines and on E1, E2, t1, t2, t2b,
+t10 and the `--start-group` variants; it fires `archive-choice` for t2
+(GNU 3, mortar 1) and nothing for t2b (all three 1), finding 3's two
+cases.
 
 ### 4.7 What resolution hands to `--gc-sections`
 
@@ -565,11 +703,46 @@ GNU ld 2.44 has no such option, E13).
 
 ## 5. Undefined symbols
 
-### 5.1 The verdict
+### 5.1 Who decides
 
-After the fixed point, every key with `def = Undefined{weak}` and every
-hidden key without an object definition gets a **verdict**, from the
-output kind and the options (`spec/cli.md` §3.9, §3.7):
+Ruling D (2026-11-14, review findings 6, 8, 12): **resolution only computes
+`def[K] = Undefined{weak}`**. Whether that is an error is decided **per
+surviving reference** by the relocation scan (`spec/arch.md`, phase 70):
+a reference survives when the architecture's sequence recognition leaves a
+relocation that still needs the symbol's value or a slot for it. Three
+consequences:
+
+- **Relaxed-away references are not errors.** A TLS general-dynamic
+  sequence relaxed to local-exec in a static link no longer calls
+  `__tls_get_addr`; the call's relocation is consumed by the recognizer
+  and does not survive. `libstdc++.a(eh_globals.o)` references
+  `__tls_get_addr` (i386: `___tls_get_addr`) strongly and no `libc.a`
+  member defines it: `g++ -static` links on x86-64 and i386 with all
+  three references (finding 6; `x86_64-linux-gnu-objdump -dr` of the
+  member shows `R_X86_64_PLT32 __tls_get_addr-0x4`, and
+  `x86_64-linux-gnu-nm libc.a` has no definition: R15). mortar must link
+  them too.
+- **An unused undefined key is not an error**, whatever its visibility:
+  `.globl zz` with no use links (all three, E15), and so does `.hidden zz`
+  with no use (lld and mold; GNU ld reports ``hidden symbol `zz' isn't
+  defined`` even under `--unresolved-symbols=ignore-all`, R14: §16).
+- **References from sections `--gc-sections` drops are not errors** (all
+  three, E15): the scan reads only live sections.
+
+Layout symbols whose existence depends on output sections (§8.1:
+`__start_<sec>`, `__stop_<sec>`, `_TLS_MODULE_BASE_`,
+`__GNU_EH_FRAME_HDR`) are **conditional `Provide` candidates**
+(finding 12): resolution records `def = Internal{Provide(name)}` with the
+condition; the first layout stage (`Assignment`, `spec/model.md` §3.4),
+which knows the output sections, confirms each or leaves it undefined
+(`def` reverts to `Undefined{weak}` with the references' weakness), before
+the scan runs. A conditional candidate never extracts a member and never
+beats a file's definition (rank 5). This hand-over is requested of
+`spec/model.md` §3.4 (§18).
+
+### 5.2 The verdict for a surviving reference
+
+From the output kind and the options (`spec/cli.md` §3.9, §3.7):
 
 | situation | verdict |
 |---|---|
@@ -579,43 +752,39 @@ output kind and the options (`spec/cli.md` §3.9, §3.7):
 | … `--unresolved-symbols=ignore-in-shared-libs` | still the error for references from objects |
 | `--ignore-unresolved-symbol=SYM` | nothing for `SYM` (M1) |
 | `Undefined{weak: false}` in a shared object (M4) | nothing, unless `-z defs` / `--no-undefined`: then the error |
-| a hidden key not defined in an object or file 0 | error, whatever the options above say (it cannot be satisfied at run time); weak hidden: zero |
-| undefined references **of shared objects** (M2) | an executable checks them by default (`--no-allow-shlib-undefined`; GNU ld and lld, E20; mold does not check, §16): a needed shared object's non-weak undefined mention of a key with `def = Undefined` is the error, unless `--allow-shlib-undefined` or the shared object has a `DT_NEEDED` that is not among the inputs (then its dependencies are unknown and it is not checked: lld's rule; not verified for GNU ld) |
+| a hidden key (§3.5) not defined in an object or file 0, with a surviving reference | error, whatever the options above say (it cannot be satisfied at run time); weak hidden: zero |
+| undefined references **of shared objects** (M2) | an executable checks them by default (`--no-allow-shlib-undefined`; GNU ld and lld, E20; mold does not check, §16): a needed shared object's non-weak undefined mention of a key with `def = Undefined` is the error, unless `--allow-shlib-undefined` or the shared object has a `DT_NEEDED` that is not among the inputs (then its dependencies are unknown and it is not checked: lld's rule; not verified for GNU ld). These have no relocation in the link; resolution emits them (phase 30, unit = the shared object's `FileId`, seq = the `.dynsym` index) |
 
 `--warn-unresolved-symbols` makes the error a warning; `--error-unresolved-
 symbols` undoes it; the last one wins.
 
-### 5.2 The diagnostic
+### 5.3 The diagnostic
 
-`undefined-symbol` (`spec/diag.md` §3.1, `undefined symbol: {name}`).
-Emitted by the **scan** (phase 70), not by resolution, because:
+`undefined-symbol` (`spec/diag.md` §3.1). Its message contains GNU ld's
+phrase verbatim (the policy of §3.8): ``undefined symbol: f (undefined
+reference to `f')``, requested of `spec/diag.md` (§18).
 
-- only references from **live** sections count (all three accept an
-  undefined reference from a section `--gc-sections` drops, E15);
-- an undefined key that no relocation uses is not an error (all three,
-  E15: `.globl zz` with no use links);
-- the places are relocation places, which only the scan reads.
-
-The rules the scan follows:
-
-- **One diagnostic per key**, at the least reference by `(FileId,
-  section index, relocation index)`; key phase 70, `unit` that `FileId`,
-  `seq` `section index × 2^32 + relocation index` (`spec/model.md` §8).
-  Diagnostics therefore come in order of the first reference, as GNU ld's
-  do; mold's are not (E15, `spec/diag.md` §8.1).
+- **One diagnostic per key**, grouping its surviving references; its key
+  is that of the least surviving reference by `(FileId, section index,
+  relocation index)`: phase 70, `unit` that `FileId`, `seq` `section index
+  × 2^32 + relocation index` (`spec/model.md` §8). The order of
+  diagnostics is therefore the order of first references, independent of
+  threads, as GNU ld's is; mold's is not (E15, `spec/diag.md` §8.1).
 - `>>> referenced by <file>:(<section>+0x<offset>)` for the first **3**
-  references in that order, then `>>> referenced N more times` (a note) if
-  there are more: lld's and mold's shape and count (E15). GNU ld prints
-  every reference; with the error limit (`spec/diag.md` §6.4) counted per
-  key, a link with thousands of references to one symbol does not drown.
+  surviving references in that order, then `>>> referenced N more times`
+  (a note) if there are more: lld's and mold's shape and count (E15).
+  GNU ld prints every reference; with the error limit (`spec/diag.md`
+  §6.4) counted per key, a link with thousands of references to one
+  symbol does not drown.
 - The name goes through the demangling hook (`spec/diag.md` §5.4): C++
   names are shown demangled with the `>>> mangled name:` line.
 - For a hidden key: a note `>>> the symbol has hidden visibility`.
-- For a reference from a shared object (§5.1): `>>> referenced by
+- For a reference from a shared object (§5.2): `>>> referenced by
   <shared object>` (the file place; lld's ``(disallowed by
   --no-allow-shlib-undefined)`` becomes the note `>>> a shared object's
   undefined symbol; --allow-shlib-undefined accepts it`).
-- For a member extracted under §4.3 case 3: the note of §4.3.
+- Under `--warn-backrefs`, for a member the simulation of §4.6 does not
+  load: the note of §4.6.
 - M1 prints section places. The enclosing function (lld's `m.o:(a1)`) and
   the source line (`m.c:3`, from DWARF) are `spec/diag.md` §9's planned
   place forms; mortar adds them when the DWARF line reader exists,
@@ -627,17 +796,22 @@ The rules the scan follows:
   converse). They are notes; they cost a pass over the keys only when
   there is an error.
 
-### 5.3 Weak undefined values
+Requested of `spec/arch.md` (§18): the scan emits `undefined-symbol` and
+`discarded-section-reference` (§6.3) and `comdat-mismatch` with these keys,
+after sequence recognition, from `Resolution`'s `def` and the dropped
+sections.
+
+### 5.4 Weak undefined values
 
 Zero in a static executable, with no dynamic symbol. In a PIE or a dynamic
 link (M2): `spec/arch.md` (GOT entry relocated against a weak undefined
 dynamic symbol, or zero when `-z nodynamic-undefined-weak` / static-pie).
 Resolution only records `Undefined{weak: true}` and `ref_dynamic`.
 
-### 5.4 The entry symbol
+### 5.5 The entry symbol
 
 `-e SYM` (or `ENTRY`, or the default `_start`) is a root (§4.2). If
-`SYM` is undefined after the fixed point: GNU ld warns ``cannot find entry
+`SYM` is undefined after the closure: GNU ld warns ``cannot find entry
 symbol nosuch; defaulting to 0000000000400078`` (the start of `.text`),
 lld ``cannot find entry symbol nosuch; not setting start address``, mold
 ``entry symbol is not defined: nosuch`` (E13). mortar warns
@@ -674,9 +848,19 @@ archive extracted on a later scan, or a member of an earlier archive in a
 function returning 1 and 2: `main.o --start-group libm.a liblate.a
 --end-group` gives 22 under GNU ld and lld (the later archive's copy) and
 11 under mold and mortar; inside one archive `[m.o, l.o]` the same.
-**Observable only when the copies differ**, which is an ODR violation
-(different source, or the same source compiled differently): addresses
-differ in any case. The decision is **confirmed**: the keeper must be a
+Observable in two ways (finding 2): when the copies' **contents** differ,
+an ODR violation (different source, or the same source compiled
+differently), the program behaves differently; when their **symbol sets**
+differ, a symbol defined only in the copy GNU keeps is lost and a
+reference to it is the error `comdat-mismatch` (§6.3; t10 of §4.3 case 4,
+where GNU ld and lld link). Addresses differ in any case. On the `g++
+-static` (three architectures) and `clang++ -static` lines GNU ld keeps
+another file's copy than mortar for 35 to 45 of the 60 to 67 signatures
+present in two or more live files, lld for 3 to 10, mold never; with user
+templates in two archives, GNU ld 16 and lld 14 of 17 (the reviewer's
+comparison, in the landed record); sampled copies were byte-identical and
+the programs' outputs equal. The decision is
+**kept** (ruling C): the keeper must be a
 minimum over a set for the parallel resolution of §12 and for the
 incremental link (§13: the keeper of `G` depends on the set of live files
 with `G`, not on the history of the walk); GNU's "first loaded" depends on
@@ -701,20 +885,37 @@ even with the same name). Its symbols:
 
 A relocation in a kept section of file `F` whose symbol is (a) a local
 symbol or section symbol of a dropped section of `F`, or (b) a demoted
-mention whose key the keeper does not define (`def` is `Undefined`): what
-each reference does (E9):
+mention whose key nothing live defines (`def` is `Undefined`, so the
+keeper's copy lacks it): what each reference does (E9, R13):
 
 | referring section | GNU ld | lld | mold | mortar |
 |---|---|---|---|---|
-| `.debug_*` (non-alloc) | accepted (tombstone) | accepted | accepted | accepted: `spec/image.md` writes the tombstone |
+| non-alloc, **GNU ld's debug names**: prefix `.debug` (any continuation: `.debug`, `.debug_info`, `.debugx`), `.zdebug`, `.line`, `.stab` (`.stab`, `.stabstr`, `.stab.foo`), `.gnu.linkonce.wi.`, `.gnu.debuglto_.debug_`, and exactly `.gnu_debuglink` | accepted (tombstone) | accepted | accepted | accepted: `spec/image.md` writes the tombstone |
 | `.eh_frame` | the FDE is dropped (all) | | | the FDE is dead (`spec/model.md` §3.6 rule) |
-| `.gcc_except_table` (not in the group) | accepted, the field is 0 | **error** | accepted, the field is the addend | accepted, the field is 0 (GNU ld): the table is reached only from the dead FDE |
-| any other section (`.text`, `.data`, `.rodata`, `.stapsdt.*`, …), case (a) | error ``` `lg' referenced in section `.text' of b.o: defined in discarded section `.text.g[g]' of b.o``` | error `relocation refers to a symbol in a discarded section: lg` | accepted silently, or crashes (E9: mold 2.37.1 segfaults after its own error) | error `discarded-section-reference` |
-| case (b) | ``undefined reference to `hg'`` | `relocation refers to a symbol in a discarded section: hg` | `hg refers to a discarded COMDAT section probably due to an ODR violation` | error `discarded-section-reference`, note `>>> the group <sig> kept from <keeper> does not define it` |
+| exactly `.gcc_except_table` (alloc or not; not in the group) | accepted, the field is 0 | alloc: **error**; non-alloc: accepted | accepted, the field is the addend | accepted, the field is 0 (GNU ld): the table is reached only from the dead FDE |
+| any other non-alloc section (`.comment`, `.comment.x`, `.note.x`, `.gcc_except_table.foo`, `.gnu_debugaltlink`, `.debu`, `.lin`, `.gnu.debuglto_.debug`, `.gnu.linkonce.wix`) | error | accepted | accepted | error `discarded-section-reference` (GNU ld, finding 11) |
+| an alloc section whose name is a debug name (`.debug_x`, `"a"`) | error | error | accepted | error |
+| any other alloc section (`.text`, `.data`, `.rodata`, `.stapsdt.*`, `.gcc_except_table.foo`, …), case (a) | error ``` `lg' referenced in section `.text' of b.o: defined in discarded section `.text.g[g]' of b.o``` | error `relocation refers to a symbol in a discarded section: lg` | accepted silently, or crashes (E9: mold 2.37.1 segfaults after its own error) | error `discarded-section-reference` |
+| case (b), any kept referring section | ``undefined reference to `hg'`` | `relocation refers to a symbol in a discarded section: hg` | `hg refers to a discarded COMDAT section probably due to an ODR violation` | error **`comdat-mismatch`** (below) |
+
+**`comdat-mismatch`** (ruling C): a surviving reference to a key defined
+only in dropped copies of group `G` whose kept copy does not define it.
+The diagnostic names the symbol, the group signature, the keeper's file,
+and the dropped copy's file that defines the symbol: ``symbol hx is
+defined only in a discarded copy of COMDAT group g``, `>>> kept copy:
+libG.a(gl.o)`, `>>> discarded copy defining it: libG.a(gh.o)`,
+`>>> referenced by m10.o:(.text+0x4)`. It is also an ODR signal: two copies
+of one group that define different symbols come from different sources
+or different compilations, and the note says so (`>>> the copies of g
+differ: a one-definition-rule violation, or objects compiled with
+different options`). Key: phase 70 at the least surviving reference, as
+§5.3. `mortar_odr` (M6) may later check symbol sets of all copies, used
+or not (§6.7).
 
 Resolution marks the dropped sections and the demoted mentions; the scan
-(phase 70) finds the relocations and emits, one diagnostic per (symbol,
-referring section) with the first 3 places, as §5.2. GNU ld also accepts
+(phase 70) finds the relocations and emits `discarded-section-reference`
+one diagnostic per (symbol, referring section) and `comdat-mismatch` one
+per symbol, each with the first 3 places, as §5.3. GNU ld also accepts
 case (a) from an alloc section when the kept copy's corresponding section
 has the same size (it redirects to it; measured only for a mix of sizes,
 E9): not followed, the reference is to bytes of a copy that does not
@@ -844,6 +1045,14 @@ static executable; "lld/GNU/mold" columns: defined by that linker):
 `--gc-sections` unless `-z start-stop-gc` (`spec/live.md`). Values are
 layout's (`spec/model.md` §4.4 `defined`).
 
+"Defined when" in the table is decided in two steps (§5.1, finding 12):
+the rows whose condition is the output kind (`always`, `executables`,
+`static executables`, `dynamic links only`, `AArch64 only`) are decided by
+resolution; the rows whose condition is an output section or segment
+(`__start_<sec>`/`__stop_<sec>`, `_TLS_MODULE_BASE_`,
+`__GNU_EH_FRAME_HDR`) are **conditional candidates**, confirmed or reverted
+to `Undefined` by the first layout stage (`Assignment`) before the scan.
+
 ### 8.2 When a file also defines it
 
 E14 (an object defines the name strongly and references it; which value
@@ -938,10 +1147,33 @@ symbol).
 `.symver` gives an object's entries names `foo@V` and `foo@@V`
 (`foo@@@V` is GNU as's input syntax and appears in the object as one of
 the two). For keys, `foo@@V` is `foo` (default) and `foo@V` its own row.
-In an executable (M1/M2) versions mean nothing at run time: a definition
-`foo@V` satisfies references to `foo@V` only, and appears in `.symtab`
-under its full name (not verified against the references for a static
-link). In shared-object output (M4) a definition `foo@@V` exports `foo`
+In an executable (M1/M2) versions mean nothing at run time. In a static
+link (finding 9, R12; `mv2.o` references `foo@V2` through `.symver`):
+
+| reference | definition in an object | GNU ld | lld | mold | mortar |
+|---|---|---|---|---|---|
+| `foo@V2` | `foo@V2` (non-default) | binds (4) | binds | binds | binds |
+| `foo@V2` | `foo@@V2` (default) | binds (9) | `undefined symbol: foo@V2` | undefined `foo` | **binds** (GNU ld) |
+| `foo` | `foo@@V2` | binds (9) | binds | binds | binds (same row) |
+| `foo` | `foo@V2` only | undefined | undefined | undefined | undefined |
+
+So the **second lookup** of §9.2 (a reference `name@V` also binds to a
+default definition of `name` whose version is `V`) applies to definitions
+in relocatable objects as well as in shared objects, in every link. For
+extraction, `first(name@V)` (§4.1) is taken over the definitions of both
+rows that would bind it (not verified against GNU ld for a lazy
+`foo@@V2`). A versioned definition appears in `.symtab` under its full
+name (not verified against the references).
+
+What real static links need (survey of every `*.a` under
+`/usr/lib/aarch64-linux-gnu`, `/usr/x86_64-linux-gnu/lib`,
+`/usr/i686-linux-gnu/lib` and the GCC library directories of the three
+targets, `nm -A | grep @`, R12): one versioned name, in `libmcheck.a`
+(`__malloc_initialize_hook@GLIBC_2.17` on AArch64, `@GLIBC_2.0` on i386,
+`@GLIBC_2.2.5` on x86-64), a non-default definition nothing references.
+`libc.a`, `libstdc++.a` and `libgfortran.a` have none. Static links of
+the system libraries therefore need only the plain row rule; the second
+lookup matters for user objects built with `.symver`. In shared-object output (M4) a definition `foo@@V` exports `foo`
 with version `V` and `foo@V` exports a hidden `foo@V`; `V` must be a
 version node of the version script, else the error
 `undefined-version` (GNU ld: ``version node not found for symbol
@@ -969,7 +1201,7 @@ symbol defined only by a shared object's own `DT_NEEDED` dependency that is
 not on the command line is undefined (the default of GNU ld since 2.22,
 and lld's, mold's; not verified here).
 
-`--no-allow-shlib-undefined`: §5.1.
+`--no-allow-shlib-undefined`: §5.2.
 
 ### 9.6 Export, preemption, copy relocations
 
@@ -1058,6 +1290,7 @@ classification is per file (I-file), the state needs `comdat`:
 
 | match | kind | state | references |
 |---|---|---|---|
+| a **file** with the symbol `__gnu_lto_slim` (a common symbol in GCC 14's slim LTO objects; tested before any section row, finding 10: their `.gnu.lto_*` sections are `SHF_EXCLUDE` and would match that row first) | — | the file: `Refused{FileFormat, "GCC LTO object"}` (GNU ld: `plugin needed to handle lto object`; mold refuses; lld silently ignores the file and reports `main` undefined, E18) | |
 | index 0 | `Null` | — | |
 | `SHT_SYMTAB`, `SHT_SYMTAB_SHNDX`, `SHT_STRTAB` without `SHF_ALLOC` | `Symtab` / `Strtab` | `Dropped(Consumed)` | all |
 | `SHT_REL`, `SHT_RELA` | `Reloc` | `Dropped(Consumed)`; the section it applies to records it | all |
@@ -1070,7 +1303,6 @@ classification is per file (I-file), the state needs `comdat`:
 | `SHT_LLVM_CALL_GRAPH_PROFILE` | `Excluded` | `Dropped(Consumed)`: a section-order hint; ignoring it is correct | not verified |
 | `SHT_LLVM_DEPENDENT_LIBRARIES` (`.deplibs`) | — | `Refused{SectionType, ..}`: lld adds the libraries it names, so doing nothing would differ | not verified |
 | other `SHT_LLVM_*` (`ODRTAB`, `LINKER_OPTIONS`, `SYMPART`, `PART_EHDR`, `PART_PHDR`, `BB_ADDR_MAP`, `OFFLOADING`, `LTO`, `JT_SIZES`) | — | `Refused{SectionType, ..}` | |
-| name `.gnu.lto_*` in an object with the symbol `__gnu_lto_slim` | — | the file: `Refused{FileFormat, "GCC LTO object"}` (GNU ld: `plugin needed to handle lto object`; mold refuses; lld silently ignores the file and reports `main` undefined, E18) | |
 | name `.gnu.lto_*` otherwise (a fat LTO object: GCC marks them `SHF_EXCLUDE`) | `Excluded` | `Dropped(Excluded)`: the object's real code links, as every linker does without a plugin | not verified |
 | name `.gnu.warning` / `.gnu.warning.<sym>` | `Excluded` | `Dropped(Consumed)`; the text is a warning (`gnu-warning`): for `.gnu.warning` when the file is live, for `.gnu.warning.<sym>` per key `<sym>` referenced from a live section (one diagnostic per key, first 3 references, emitted by the scan) | GNU ld (E21); lld and mold neither warn nor drop: they copy the section into the output. glibc's `libc.a` has 112 such sections (E21) |
 | name `.gnu.linkonce.*` | — | refused (§6.6) | |
@@ -1112,46 +1344,49 @@ names. The rows of §3 are unchanged.
 
 | column | merge | order |
 |---|---|---|
-| per-key class minima (`Strong`, `Common`, `Weak`, `Deferred`, `Deferred` data, `Assign`, `Provide`) | atomic minimum of `(FileId << 32) \| st_index` per class, over the mentions of files in the current live set (lazy files: over all, once) | `≺` |
-| `def` | a pure function of the class minima (§3.2 table) | — |
+| `first(K)`, `cfirst(K)` | atomic minimum of `FileId` over the qualifying mentions of **all** files (§4.1), once, before the closure | `FileId` |
+| `file_live` | reachability: per round, each file of the frontier ORs `live[M]` for the lazy targets of its edges; the next frontier is the newly set bits in `FileId` order; the pulling reference is an atomic minimum of `(FileId << 32) \| st_index` per member | `≺` |
+| per-key class minima over live files (`Strong`, `Common`, `Weak`, `Shared`, `Shared` data, `Assign`, `Provide`) | atomic minimum of `(FileId << 32) \| st_index` per class, after the closure | `≺` |
+| `def` | a pure function of the class minima (§3.2) | — |
 | `common` size and alignment | atomic maximum of each, separately | integers |
-| `clash` | after `def`: each `Strong` mention that is not `def` and not an equal absolute ORs a flag; the diagnostic lists the mentions by a second ordered collection (§6.3 of model) | `≺` |
+| `clash` | after `def`: each `Strong` mention that is not `def` and not part of an all-absolute equal-value set ORs a flag; the diagnostic lists the mentions by an ordered collection (`spec/model.md` §6.3) | `≺` |
 | visibility | atomic minimum over the constraint order (§3.5) | `INTERNAL < HIDDEN < PROTECTED < DEFAULT` |
+| TLS agreement | atomic or of two bits (a TLS mention, a non-TLS mention) per key | — |
 | `ref_*`, `defined_dynamic` | atomic or | — |
-| `file_live` | per round: (a) class minima of `Δ_k`; barrier; (b) each demand ORs `extract[M]` for the chosen `M`; `Δ_{k+1}` = the set bits, in `FileId` order; the pulling reference is an atomic minimum per member | `≺` |
-| `needed` (M2) | rounds as `file_live`, over shared objects | — |
+| `needed` (M2) | reachability as `file_live`, over shared objects | — |
 | `comdat` | atomic minimum of `FileId` per `ComdatId` over live files | `FileId` |
 | `section_base` | exclusive prefix sum in `FileId` order | — |
 | `sections` | per file, disjoint slices (`spec/model.md` §6.1) | — |
 | `redirect` | from the `Plan` only, before resolution | — |
-| `archive-choice`, `archive-backref` | minima of the reference and of the next definer per key | `≺` |
+| `archive-backref`, `archive-choice` (`--warn-backrefs` only) | the sequential simulation of §4.6, after the closure | command-line order |
 
 `(FileId << 32) | st_index` fits a `u64`, so every minimum above is one
 `AtomicU64::fetch_min`; the rank is the class, not part of the word.
 
 ### 12.2 The result equals the sequential definition
 
-- **Each round is a function of `Live_k` and `Δ_k`.** Step 1 is a set of
-  minima over the mentions of `Live_k`: commutative, associative and
-  idempotent, so any partition of the work and any arrival order gives
-  the same values (`spec/model.md` §6.2). Step 3 reads them after the
-  barrier and sets bits: a union. `Δ_{k+1}` is a set; numbering it by
-  `FileId` makes it a sequence without depending on who set which bit.
-- **Termination and uniqueness.** `Live_k` grows strictly until it stops
-  and is bounded by the files, so there are at most as many rounds as
-  lazy files; the sequence of rounds is determined by `Live₀`, so the
-  fixed point is unique. (It is not a least fixed point of a monotone
-  operator: "not settled" is anti-monotone. The breadth-first sequence is
-  what gives it a unique meaning, §4.1.)
-- **`def` after the fixed point** is a function of class minima over the
-  final live set, each order-independent.
+- **The graph is a function of the inputs.** `first` and `cfirst` are
+  minima over all files' mentions, independent of liveness, computed
+  before the closure: commutative, associative and idempotent, so any
+  partition of the work gives the same values (`spec/model.md` §6.2).
+  The edges of §4.1 are then fixed.
+- **Reachability is unique.** The set of files reachable from the roots
+  in a fixed graph does not depend on the order of the visit: any
+  worklist, depth-first or breadth-first, sequential or parallel, ends
+  with the same set (each step adds a target of an edge out of a reached
+  file, and every such target is eventually added). The rounds of §4.1
+  are one such visit; their number is bounded by the number of lazy files.
+  The pulling reference is a minimum over the live mentions with an edge
+  to the member, also order-independent.
+- **`def` after the closure** is a function of class minima over the final
+  live set.
 - **COMDAT** does not feed back into extraction (§4.1), so the keeper,
   computed once over the final live set, cannot change `file_live`.
-- **The sequential reference**: process rounds one after another, files of
-  `Δ_k` in `FileId` order, mentions in table order, with the same
-  minima. Tests run resolution under `MORTAR_SCHED_SEED` and thread counts
-  1, 2, 7 and 64 and require identical tables and diagnostics
-  (`spec/model.md` §6).
+- **The `--warn-backrefs` simulation** is sequential by definition and
+  reads only the inputs and the final `def`; it changes no table.
+- **The sequential reference**: a worklist in `FileId` order. Tests run
+  resolution under `MORTAR_SCHED_SEED` and thread counts 1, 2, 7 and 64
+  and require identical tables and diagnostics (`spec/model.md` §6).
 
 ### 12.3 Diagnostics when several rules fire
 
@@ -1161,30 +1396,42 @@ the keys (`spec/diag.md` §6.2): resolution's (phase 30: `duplicate-
 symbol` at the second definition, `tls-mismatch` at the first mismatching
 mention, `linker-symbol-redefined` at the object definition,
 `required-symbol` at unit 0 and the argument index, the common warnings at
-the second mention, `archive-*` at the referencing mention) before the
-scan's (phase 70: `undefined-symbol`, `discarded-section-reference`,
-`gnu-warning`).
+the second mention, `archive-*` at the referencing mention, a shared
+object's undefined reference at its `.dynsym` entry) before the scan's
+(phase 70: `undefined-symbol`, `comdat-mismatch`,
+`discarded-section-reference`, `gnu-warning`).
 
 ## 13. Incremental consequences (for `spec/incr.md`, M7)
 
 Stated as dependencies, so that M7 can tell what to recompute when a file
-is replaced (with the same identity, `spec/model.md` §7.1) or added:
+is replaced (with the same identity, `spec/model.md` §7.1) or added
+(finding 16: the first draft's claims were too strong; these are the
+honest ones).
 
 - **Per-file summary.** Everything resolution reads of a file is its
   **summary**: for each non-local mention, its key, class (defined, weak,
-  common, undefined, and for a definition: data or not, TLS or not,
-  absolute value), visibility, common size and alignment; its groups'
-  signatures and members; its section kinds. It is I-file.
-- **`file_live`** depends on the summaries of all files (the rounds see
-  every definition and every non-weak reference) and on `FileId` order.
-  Replacing a file whose summary's *key sets* (keys defined by class,
-  keys referenced non-weakly) are unchanged leaves `file_live` unchanged;
-  otherwise it is recomputed from the stored summaries, without reading
-  any file (it is cheap: no relocation, no symbol table).
-- **`def[K]`** depends on the mentions of `K` in the files that mention
-  `K` (`sym_map` lists them) and on their liveness. Replacing file `F`
-  can change `def[K]` only for the keys `F` mentions before or after the
-  change, unless `file_live` changes.
+  common, undefined), for a definition whether it is data (§2) and TLS and
+  its absolute value, its visibility, common size and alignment; its
+  groups' signatures, members, and the keys defined in each group; its
+  section kinds. It is I-file.
+- **The graph** (`first`, `cfirst`, the edges) depends on every file's
+  summary and on `FileId` order. Replacing file `F` changes it only
+  through `F`'s own entries: the targets `first(K)` and `cfirst(K)` for
+  the keys `F` defines (before or after), and the edges out of `F`. A
+  change of a definition's **type** between function and data, or of its
+  **binding** between weak and non-weak, changes `cfirst` of that key even
+  when the set of keys `F` defines is unchanged (finding 16).
+- **`file_live`** is then recomputed by reachability over the stored
+  summaries (no file is read). If neither any target nor `F`'s edges
+  changed, `file_live` is unchanged; otherwise the closure is redone (it
+  is cheap: no relocation, no section is read).
+- **`def[K]`** depends on the mentions of `K` in live files and on which
+  of their sections are dropped. Replacing `F` can change `def[K]` for the
+  keys `F` mentions, for every key whose liveness of definers changed
+  with `file_live`, and — when `F` gains or loses a COMDAT group or its
+  file position makes it the new lowest live holder — for every key
+  defined in a group whose keeper moved: other files' mentions in that
+  group are demoted or restored (finding 16; the t10 case of §4.3).
 - **`comdat[G]`** depends on the set of live files with group `G`; a
   file's `sections` state depends on `comdat` of its groups.
 - **`common[K]`** depends on the live common mentions of `K`.
@@ -1195,33 +1442,37 @@ is replaced (with the same identity, `spec/model.md` §7.1) or added:
 - **Identities**: `def` is stored as `(file identity, key)`, never as
   `st_index` (`spec/model.md` §7.1).
 
-Two consequences the M7 design should know: adding a file can change
-which archive member defines an unrelated key (through `FileId` order and
-through the rounds), so every change of the input list is a full
-resolution (cheap) but not necessarily a full layout; and a change that
-moves the COMDAT keeper of a group moves code between files, which is a
-layout change of both.
+Two consequences the M7 design should know: adding or removing a file
+changes `FileId`s after it and can change `first` of unrelated keys, so
+every change of the input list is a full resolution (cheap) but not
+necessarily a full layout; and a change that moves the COMDAT keeper of a
+group moves code between files, which is a layout change of both.
 
 ## 14. Diagnostics
 
 `unit`/`seq` per `spec/model.md` §8. Severity is the default; the
 switches of `spec/diag.md` §6.3 apply. New kinds are proposed for
-`spec/diag.md` §3.1 (area "symbols"); their wording follows §8.2 there.
+`spec/diag.md` §3.1 (area "symbols"); their wording follows §8.2 there,
+and, by the policy of §3.8, where GNU ld has a phrase build tools match
+for the same condition, mortar's message contains it verbatim (the
+messages below in which a GNU phrase appears in parentheses).
 
 | condition | id | severity | key | mortar's message | GNU ld's wording (for people who search for it) |
 |---|---|---|---|---|---|
-| a `Strong` clash (§3.8) | `duplicate-symbol` (exists) | error | 30, second definition | `duplicate symbol: {name}` + `>>> defined in` ×2..3 | ``multiple definition of `x'; a.o:(.data+0x0): first defined here`` |
-| unresolved strong reference (§5) | `undefined-symbol` (exists) | error / warning | 70, first reference | `undefined symbol: {name}` + `>>> referenced by` ×≤3 + note | ``undefined reference to `x'`` |
+| a `Strong` clash (§3.8) | `duplicate-symbol` (exists) | error | 30, second definition | ``duplicate symbol: {name} (multiple definition of `{name}')`` + `>>> defined in` ×2..3 | ``multiple definition of `x'; a.o:(.data+0x0): first defined here`` |
+| unresolved strong reference (§5) | `undefined-symbol` (exists) | error / warning | 70, first surviving reference | ``undefined symbol: {name} (undefined reference to `{name}')`` + `>>> referenced by` ×≤3 + note | ``undefined reference to `x'`` |
 | TLS against non-TLS (§3.4) | `tls-mismatch` (new) | error | 30, first mismatching mention | `TLS attribute mismatch: {name}` + `>>> defined in`, `>>> referenced by` (lld's) | ``x: TLS definition in t.o section .tdata mismatches non-TLS reference in m.o`` |
 | an object defines a forced linker symbol (§8.2) | `linker-symbol-redefined` (new) | error | 30, the object's mention | `cannot redefine linker-defined symbol: {name}` | (GNU accepts) lld: `u.o cannot redefine linker defined symbol` |
 | `--require-defined` not satisfied | `required-symbol` (new) | error | 30, unit 0, seq = argument index | `required symbol not defined: {name}` | ``required symbol `x' not defined`` |
-| entry symbol undefined (§5.4) | `entry-not-found` (new) | warning | 30, unit 0, seq = argument index (0 for the default) | `cannot find entry symbol {name}` | ``cannot find entry symbol x; defaulting to …`` |
+| entry symbol undefined (§5.5) | `entry-not-found` (new) | warning | 30, unit 0, seq = argument index (0 for the default) | `cannot find entry symbol {name}` | ``cannot find entry symbol x; defaulting to …`` |
+| reference to a symbol only a dropped COMDAT copy defines (§6.3) | `comdat-mismatch` (new) | error | 70, first surviving reference | `symbol {name} is defined only in a discarded copy of COMDAT group {sig}` + `>>> kept copy:`, `>>> discarded copy defining it:`, `>>> referenced by` + the ODR note | ``undefined reference to `x'`` (GNU ld keeps the other copy and links) |
 | reference into a dropped COMDAT copy (§6.3) | `discarded-section-reference` (new) | error | 70, first reference | `relocation refers to a symbol in a discarded section: {name}` + `>>> defined in`, `>>> referenced by` (lld's) | ``x referenced in section `.text' of b.o: defined in discarded section `.text.g[g]' of b.o`` |
 | common larger than the definition (§3.3) | `common-larger-than-definition` (new) | warning | 30, the definition | `common symbol {name} is larger than its definition` + places + note with both sizes | ``size of symbol `x' changed from 64 in c.o to 8 in d.o`` |
 | definition less aligned than a common (§3.3) | `common-alignment` (new) | warning | 30, the definition | `definition of {name} is less aligned than its common symbols` + note | ``alignment 8 of normal symbol `x' in d.o is smaller than 16 used by the common definition in c.o`` |
 | `--warn-common` (§3.3) | `multiple-common`, `common-overridden` (new) | warning | 30, second mention | `multiple common symbols: {name}`; `common symbol {name} is overridden by a definition` | ``common of `x' overriding smaller common``; ``definition of `x' overriding common`` |
-| member chosen against GNU's order (§4.6) | `archive-choice` (new) | warning | 30, the reference | `archive member chosen out of command-line order: {name}` + places + note | (none) |
-| `--warn-backrefs` (§4.6) | `archive-backref` (new) | warning | 30, the reference | `backward reference to an archive member: {name}` + places | (lld: `backward reference detected: x in b refers to a`) |
+| `--warn-backrefs`: GNU ld's walk would define it from another file (§4.6) | `archive-choice` (new) | warning, opt-in | 30, the first referring mention | `GNU ld would choose another definition of {name}` + `>>> mortar uses`, `>>> GNU ld uses` | (none) |
+| `--warn-backrefs`: GNU ld's walk would leave it undefined (§4.6) | `archive-backref` (new) | warning, opt-in | 30, the first referring mention | `backward reference to an archive member: {name}` + places | (lld: `backward reference detected: x in b refers to a`) |
+| a needed shared object's undefined reference (§5.2, M2) | `undefined-symbol` | error | 30, the shared object, `.dynsym` index | as above, with the note of §5.3 | ``libl.so: undefined reference to `missing'`` |
 | hidden key referenced by a shared object (§3.5) | `non-exported-symbol` (new) | error | 30, the definition | `non-exported symbol referenced by a shared object: {name}` + places | ``hidden symbol `x' in a.o is referenced by DSO`` |
 | `.gnu.warning[.sym]` (§10) | `gnu-warning` (new) | warning | 70 (per symbol) / 30 (per file) | `{text}` with `>>> referenced by` | ``warning: foo is dangerous`` (the section's text) |
 | exact version name twice (§9.7) | `version-reassigned` (new) | warning | 30, unit 0 | `{name} is assigned to version {first} and {second}; {first} is kept` | (accepted silently) |
@@ -1241,8 +1492,9 @@ Named `s<section>_<what>`; each checks the tables, not only that a link
 succeeds:
 
 - §3.2: `s3_2_strong_beats_weak_either_order`, `s3_2_first_weak_wins`,
-  `s3_2_common_beats_weak`, `s3_2_weak_beats_lazy_and_shared`,
-  `s3_2_lazy_and_shared_by_fileid`, `s3_2_shared_data_beats_commons_alone`,
+  `s3_2_common_beats_weak`, `s3_2_weak_beats_shared`,
+  `s3_2_lazy_files_have_no_candidates` (finding 5),
+  `s3_2_shared_data_beats_commons_alone`,
   `s3_2_shared_function_does_not_beat_common`, `s3_2_provide_beats_shared`,
   `s3_2_assign_beats_strong_without_clash`, `s3_2_order_is_total` (a
   property test: random candidate sets, `def` equal to the brute-force
@@ -1252,42 +1504,59 @@ succeeds:
   `s3_3_larger_common_warns_in_both_orders`,
   `s3_3_less_aligned_definition_warns`, `s3_3_warn_common`.
 - §3.4: `s3_4_tls_mismatch_each_direction` (TLS ref/non-TLS def, NOTYPE
-  ref/TLS def, common/TLS def), `s3_4_unique_duplicates_clash`,
-  `s3_4_equal_absolutes_do_not_clash`, `s3_4_unequal_absolutes_clash`,
+  ref/TLS def, common/TLS def, TLS ref/non-TLS ref with no definition),
+  `s3_4_unique_duplicates_clash`, `s3_4_equal_absolutes_do_not_clash`
+  (three equal ones too), `s3_4_unequal_absolutes_clash`,
+  `s3_4_absolute_and_section_definition_clash`,
   `s3_4_nonlocal_section_symbol_is_malformed`.
 - §3.5: `s3_5_most_constraining_visibility`, `s3_5_hidden_needs_object_definition`,
   `s3_5_hidden_weak_undefined_is_zero`, `s3_5_lazy_mentions_do_not_contribute`.
 - §3.7: `s3_7_output_binding_table` (one case per row).
 - §3.8: `s3_8_duplicate_lists_three_places`, `s3_8_muldefs_takes_first`.
-- §4.1: `s4_1_rounds_match_the_sequential_definition` (generated archives
-  with chains and cycles; the parallel result equals a sequential
-  implementation written from §4.1 in the test), `s4_1_weak_reference_does_not_extract`,
-  `s4_1_breadth_first_avoids_a_duplicate` (E2), `s4_1_lazy_common_and_weak_extract`,
-  `s4_1_wrap_target_is_not_a_root`, `s4_1_pulling_reference_is_least`.
-- §4.2: `s4_2_each_root_option_extracts`, `s4_2_require_defined_errors`,
-  `s4_2_whole_archive_members_are_roots`.
-- §4.5: `s4_5_common_extracts_data_definition` (the table of §4.5 row by
-  row).
-- §4.6: `s4_6_archive_choice_fires_exactly` (the E1 cases fire; a weak or
-  in-group second definer does not; a reference that precedes both does
-  not), `s4_6_backref_only_with_option`, `s4_6_backref_respects_groups_and_same_archive`.
-- §5: `s5_1_verdict_table`, `s5_2_one_diagnostic_three_places_and_count`
-  (in `mortar_arch`'s scan tests, against resolution's verdicts).
+- §4.1: `s4_1_closure_is_order_independent` (generated archives with
+  chains and cycles; a sequential worklist written from §4.1 in the test,
+  breadth-first rounds and a random-order worklist give the same set),
+  `s4_1_first_counts_live_and_lazy`, `s4_1_definition_before_archive_blocks`,
+  `s4_1_weak_definition_after_archive_does_not_block` (finding 1, R1),
+  `s4_1_weak_reference_does_not_extract`, `s4_1_lazy_common_is_first`
+  (R5), `s4_1_weak_member_first_wins` (R3), `s4_1_wrap_target_is_not_a_root`,
+  `s4_1_pulling_reference_is_least`, `s4_1_def_never_lazy` (finding 5),
+  `s4_1_reads_member_tables_not_index` (R8).
+- §4.2: `s4_2_each_root_option_extracts`, `s4_2_default_start_is_a_root`
+  (R9), `s4_2_require_defined_errors`, `s4_2_whole_archive_members_are_roots`
+  (R4).
+- §4.3: `s4_3_system_lines_match_gnu` (the sixteen lines of the landed
+  record, member sets against recorded `ld.bfd -t` lists).
+- §4.5: `s4_5_common_targets` (the table of §4.5 row by row, and R6's
+  weak and function blockers), `s4_5_common_and_strong_reference_both_edges`.
+- §4.6: `s4_6_simulation_matches_bfd` (E1, E2, t1, t2, t2b, t10, the group
+  variants, against recorded member lists), `s4_6_choice_fires_for_t2_not_t2b`,
+  `s4_6_nothing_runs_without_option`.
+- §5: `s5_1_relaxed_reference_is_not_undefined` (in `mortar_arch`: the
+  x86-64 and i386 TLS GD sequences against an undefined `__tls_get_addr`),
+  `s5_1_unused_hidden_undefined_is_accepted`, `s5_1_conditional_provide_reverts`,
+  `s5_2_verdict_table`, `s5_3_one_diagnostic_three_places_and_count`
+  (in `mortar_arch`'s scan tests, against resolution's `def`).
 - §6: `s6_1_keeper_is_lowest_live_file`, `s6_1_section_symbol_signature_uses_section_name`,
-  `s6_2_demoted_mentions_bind_to_keeper`, `s6_3_reference_table` (each row),
+  `s6_2_demoted_mentions_bind_to_keeper`, `s6_3_reference_table` (each row,
+  each debug name of R13), `s6_3_comdat_mismatch_names_group_and_files`
+  (t10),
   `s6_4_non_comdat_groups_are_not_merged`, `s6_6_linkonce_is_refused`.
 - §7: `s7_1_wrap_undefined_mentions_only`, `s7_1_real_extracts_target`,
   `s7_2_defsym_forms`, `s7_2_defsym_alias_redirects_all_mentions`.
 - §8: `s8_1_provided_only_when_referenced`, `s8_1_table` (one per row and
   architecture), `s8_2_object_definition_wins`, `s8_2_forced_names_refused`.
 - §9: `s9_2_versym_table` (each row, with hand-built shared objects),
+  `s9_4_second_lookup_in_objects` (R12),
   `s9_3_binding_and_needs`, `s9_5_as_needed_strong_only`,
   `s9_5_needed_is_a_fixed_point`, `s9_6_export_rules`, `s9_6_copy_alignment_and_readonly`,
   `s9_7_version_script_precedence` (the nine rules).
-- §10: `s10_classification_table` (one per row), `s10_slim_lto_refused`.
+- §10: `s10_classification_table` (one per row), `s10_slim_lto_refused`
+  (before the `SHF_EXCLUDE` row, finding 10).
 - §12: `s12_same_tables_under_seeds_and_threads` (1, 2, 7, 64 threads,
   ten seeds, over the generated corpus of §4.1 and the system archives).
-- §13: `s13_unchanged_summary_keeps_file_live`.
+- §13: `s13_unchanged_graph_keeps_file_live`,
+  `s13_type_change_moves_cfirst`, `s13_group_change_moves_keeper`.
 
 ### 15.2 Link tests to add (`tests/link/resolve/`, `tests/link/diag/`)
 
@@ -1296,11 +1565,12 @@ Each states the references' behavior it pins; until M1 each also carries
 
 | test | pins | markers |
 |---|---|---|
-| `resolve/archive-later-member.test` | E1 case 1, across archives: `-lA -lB -lC`; bfd exit 2, lld/mold exit 1; mortar 1 and `diag(mortar): archive member chosen out of command-line order` | per-linker `run` expectations |
+| `resolve/archive-later-member.test` | E1 case 1, across archives: `-lA -lB -lC`; bfd exit 2, lld/mold/mortar exit 1; with `--warn-backrefs` on mortar's line, `diag(mortar): GNU ld would choose another definition of pick` (§4.6); without it, `not(mortar)` of that text | per-linker `run` expectations |
 | `resolve/archive-same-member.test` | E1 in one archive `[a.o b.o c.o]`: bfd 2, lld/mold 1 | as above |
 | `resolve/archive-group-member.test` | E1 under `--start-group`: bfd 2, lld/mold 1 | as above |
 | `resolve/archive-extra-duplicate.test` | E1 case 2: bfd links; lld, mold fail `duplicate symbol: dup`; mortar fails with the note | `link(bfd)` and `link(lld,mold,mortar)` |
-| `resolve/archive-breadth-first.test` | E2 `main1 libX libY` and `main lib1 lib2[m2,n]`: bfd links (120); mold fails; lld fails in one member order; mortar links (120) | per linker |
+| `resolve/archive-backref-duplicate.test` | E2 `main1 libX libY`: bfd links (120, it never sees the back-reference); lld, mold and mortar fail `duplicate symbol: K` (§4.3 case 2); under `--warn-backrefs`, mortar's note that GNU ld would not load the member | `link(bfd)`, `link(lld,mold,mortar)` |
+| `resolve/archive-choice-t2.test` | finding 3: `m2.o libA.a libCB.a` gives bfd 3, the others 1, and `archive-choice` under `--warn-backrefs`; `m2.o libAB.a libC.a` gives 1 everywhere and no diagnostic | per linker |
 | `resolve/archive-dso-order.test` (M2) | E4, the twelve cases and the three disagreeing lines | per linker |
 | `resolve/common-extract.test` | E3: common vs lazy data definition (bfd, mold 9; lld 0), vs lazy function (no extraction in bfd/lld) | per-linker expectations; lld differs by design |
 | `resolve/fortran-block-data.test` | E19: `BLOCK DATA` in an archive initializes the common block (bfd, mold pass; lld fails) | `requires: gfortran`; `skip(lld)`: lld needs `--fortran-common`; `arch: aarch64 x86_64` |
@@ -1329,12 +1599,27 @@ Each states the references' behavior it pins; until M1 each also carries
 | `resolve/copy-reloc-alias.test` (M2) | E17: one copy for aliases (lld, mold); bfd two | per linker |
 | `resolve/gnu-warning.test` | E21: `.gnu.warning.foo` warns (bfd) and is not in the output | `diag(bfd,mortar)`; `not(lld,mold)` per linker |
 | `resolve/lto-slim.test` | E18: refused; bfd and mold refuse, lld fails differently | `requires`: gcc `-flto` only |
+| `resolve/weak-after-archive.test` | R1: `t1m.o libt1k.a t1w.o` (weak definition after the archive): bfd, lld, mortar 2, mold 1; with a strong one (`t1s.o`) bfd, lld, mortar fail `multiple definition of`/`duplicate symbol: K`, mold links | written (§15.3) |
+| `resolve/comdat-mismatch.test` | t10, ruling C: `m10.o libG.a`: bfd, lld run 140; mold `undefined symbol: hx`; mortar `comdat-mismatch` | written (§15.3) |
+| `resolve/entry-default-root.test` | R9: `ld -static m0.o -lst`, no `-e`, `_start` only in an archive member: all three extract it | written (§15.3) |
+| `resolve/tls-ref-mismatch.test` | R7: TLS reference vs non-TLS reference, no definition between them (bfd error, lld/mold link); mortar `tls-mismatch` | per linker |
+| `resolve/hidden-unused.test` | R14: `.hidden zz` with no use: bfd error, lld/mold/mortar link | `link(bfd)` `exit: fail` |
+| `resolve/versioned-static.test` | R12: the four rows of §9.4 | per linker |
+| `resolve/archive-noindex.test` | R8: an `ar rcS` archive: bfd ``archive has no index``; lld, mold, mortar run 7 | per linker |
+| `resolve/discarded-debug-names.test` | R13: each name of §6.3's table, one link per name, against a dropped copy | per linker; bfd's are the reference for mortar |
+| `resolve/lazy-common.test` | R5: `mv.o libLC.a` extracts the common member (all); `mv.o libLC.a libLV.a`: bfd 9, lld 0, mold 9, mortar 9 | per linker |
+| `resolve/common-weak-blocker.test` | R6: weak definition before or after `libLV.a` does not stop extraction (bfd 9, mortar 9; lld 0; mold 4); a function definition does | per linker |
+| `resolve/defsym-position.test` (M4) | R10: `--defsym K=k` after `libk.a`: bfd fails ``undefined symbol `k' referenced in expression``; lld, mold, mortar link | per linker |
 | `diag/undefined-many.test` | E15: one diagnostic per symbol, first 3 references, "referenced 3 more times" (lld, mold); bfd one line per reference | per linker |
 | `diag/duplicate-places.test` | both places in the duplicate diagnostic | per linker |
 
 ### 15.3 Seed tests
 
-`resolve/archive-backref.test` must change (§18). The others
+`resolve/archive-backref.test` must change (§18). Written with this
+revision (review of 2026-11-14), mortar rows `xfail(mortar): no linking
+yet (M1)`: `resolve/weak-after-archive.test` (finding 1, R1),
+`resolve/comdat-mismatch.test` (finding 2, t10) and
+`resolve/entry-default-root.test` (finding 14, R9). The others
 (`archive-extract`, `archive-order`, `comdat-inline`, `common`, `symtab`,
 `thin-archive`, `weak-strong`, `weak-undef`, `diag/duplicate`,
 `diag/undefined`) hold as written; their `spec:` directives name sections
@@ -1348,10 +1633,18 @@ Every disagreement found; "E" is the experiment in the landed record.
 | what | GNU ld 2.44 | lld 22.1.8 | mold 2.37.1 | mortar | E |
 |---|---|---|---|---|---|
 | back-reference to an archive (`-lhelper -luser`) | undefined | resolved | resolved | resolved (§4.3) | seed test |
-| lowest definer passed before the reference (across archives, in one archive, in a group) | later definer | lowest | lowest | lowest + `archive-choice` | E1 |
-| member taken that defines an existing symbol | not taken: links | duplicate | duplicate | duplicate + note | E1 |
-| a definer reached through a member extracted at the same depth | links | depends on member order | duplicate | links (breadth-first) | E2 |
-| `--warn-backrefs` when a later archive also defines the key | (no option) | silent | (no option) | `archive-choice` warns | E1 |
+| lowest definer passed before the reference (across archives, in one archive, in a group; t2) | later definer | lowest | lowest | lowest; `archive-choice` under `--warn-backrefs` (§4.6) | E1, finding 3 |
+| member taken that defines an existing symbol | not taken: links | duplicate | duplicate | duplicate (note under `--warn-backrefs`) | E1 |
+| a definer reached by a back-reference from a later member (`main1 libX libY`) | links (never sees it) | depends on member order | duplicate | duplicate (§4.3 case 2) | E2 |
+| `--warn-backrefs` when a later archive also defines the key | (no option) | silent | (no option) | `archive-choice` (from the simulation of GNU's walk) | E1 |
+| weak definition named after the archive, member strong | member extracted, 2 | 2 | not extracted, 1 | 2 | R1 |
+| strong definition named after the archive, member strong | duplicate | duplicate | links silently | duplicate | R1 |
+| two lazy definers, the lower weak (`libKW.a libKS.a`) | weak one, 1 | 1 | strong one, 2 | 1 | R3 |
+| lazy member before a `--whole-archive` definer | extracted, 2 | 2 | not extracted, 1 | 2 | R4 |
+| archive without an index (`ar rcS`) | error ``archive has no index; run ranlib to add one`` | links | links | links (member tables, §4.1) | R8 |
+| `--defsym K=k` after the archive defining `k` | ``undefined symbol `k' referenced in expression`` | links | links | links (M4) | R10 |
+| strong and common reference, lazy common before lazy data definition | both extracted, 9 | common only, 0 | data only, 9 | both, 9 | R5 |
+| weak definition and a common, lazy data definition | extracted, 9 | not, 0 | extracted, 4 | extracted, 9 | R6 |
 | common vs lazy data definition | extracts | does not (default; `--help` says it does) | extracts | extracts | E3 |
 | common vs lazy function definition | no | no | extracts, program reads code | no | E3 |
 | common vs weak definition | common | common | weak | common | E6 |
@@ -1361,7 +1654,10 @@ Every disagreement found; "E" is the experiment in the landed record.
 | common + weak + shared | depends on order, can fail | common | weak | common | E12 |
 | equal absolute duplicates | accepted | accepted | duplicate | accepted | E6 |
 | TLS reference to non-TLS definition | error | accepted | accepted | error | E6 |
-| non-TLS (incl. NOTYPE) reference to TLS definition | error | NOTYPE accepted, OBJECT error | warning | error | E6 |
+| non-TLS reference to TLS definition | error | NOTYPE accepted, OBJECT error | NOTYPE silent, OBJECT warning (finding 7) | error | E6, R7 |
+| TLS reference and non-TLS reference, definition elsewhere | error ``TLS reference in mt.o mismatches non-TLS reference in mn.o`` | accepted | accepted | error | R7 |
+| `.hidden` undefined with no use | error ``hidden symbol `zz' isn't defined`` (even `ignore-all`) | accepted | accepted | accepted | R14 |
+| reference `foo@V2`, object definition `foo@@V2` (static) | binds | `undefined symbol: foo@V2` | undefined `foo` | binds | R12 |
 | hidden symbol in a static executable's `.symtab` | GLOBAL HIDDEN | LOCAL | LOCAL | LOCAL | E6 |
 | executable's globals in `.symtab` | GLOBAL | GLOBAL | LOCAL | GLOBAL | seed `symtab` |
 | lazy and shared, reference after both | shared | shared | lazy | lazy | E4 |
@@ -1371,6 +1667,9 @@ Every disagreement found; "E" is the experiment in the landed record.
 | executable and a shared object's undefined symbol | error | error | accepted | error | E20 |
 | hidden definition referenced by a shared object | error | error | accepted | error | E20 |
 | COMDAT keeper | first loaded | first loaded | lowest live | lowest live | E10 |
+| kept copy lacks a symbol a dropped copy defines (t10) | links (keeps the other copy), 140 | 140 | `undefined symbol: hx` | `comdat-mismatch` (§6.3) | finding 2 |
+| reference into a dropped copy from a non-alloc section that is not a debug name (`.comment`, `.note.x`, …) | error | accepted | accepted | error | R13 |
+| the same from an alloc section with a debug name | error | error | accepted | error | R13 |
 | section-symbol group signature | section name | empty name (merges unrelated groups) | section name | section name | E18 |
 | reference into a dropped copy from `.gcc_except_table` | 0 | error | addend | 0 | E9 |
 | reference to a local of a dropped copy from alloc code/data | error | error | accepted / crash | error | E9 |
@@ -1405,10 +1704,8 @@ section-symbol signatures (E18), lld's stale `--fortran-common` help text
 
 ## 17. Open questions (with recommendations)
 
-1. **`archive-choice` on by default.** Recommended yes (it is quiet on the
-   system libraries, §4.6, and it is the only notice a GNU ld user gets
-   that mortar took another member). Alternative: only under
-   `--warn-backrefs`.
+1. **`archive-choice` on by default.** Resolved (ruling B): opt-in under
+   `--warn-backrefs`, from a simulation of GNU's walk (§4.6).
 2. **Errors for size mismatches.** `common-larger-than-definition` is a
    warning, as GNU ld's. A program that writes past an object is broken;
    recommend keeping the warning (drop-in) and offering
@@ -1417,11 +1714,10 @@ section-symbol signatures (E18), lld's stale `--fortran-common` help text
    order to match GNU ld and mold on Fortran's case. Recommended as
    written; the alternative (lld's total order) loses `BLOCK DATA`
    initialization from shared libraries.
-4. **Duplicate-symbol wording.** `spec/diag.md` fixes lld's
-   `duplicate symbol: x`. Tools that parse GNU's ``multiple definition
-   of`` will not match. Recommended: keep (the same argument as
-   `library-not-found`, `spec/diag.md` §8.2); the GNU phrase is in §14 for
-   searches.
+4. **Duplicate-symbol wording.** Resolved (policy of 2026-11-14): the
+   message keeps lld's form and contains GNU's phrase verbatim, ``duplicate
+   symbol: x (multiple definition of `x')`` (§3.8, §14); requested of
+   `spec/diag.md` (§18).
 5. **`.gnu.warning` for `-static` glibc links.** Recommended as written
    (GNU ld's behavior; 112 sections in `libc.a`); it is cheap (a per-key
    flag at resolution, a check in the scan).
@@ -1430,7 +1726,7 @@ section-symbol signatures (E18), lld's stale `--fortran-common` help text
    (GNU ld's acceptance plus visibility), decided in `spec/script.md`.
 7. **`-y` output** (M4): standard output text, not a diagnostic;
    needs a decision in `spec/diag.md` (an informational channel).
-8. **Did-you-mean hints** (§5.2): propose a small WP after M1.
+8. **Did-you-mean hints** (§5.3): propose a small WP after M1.
 9. **`SHT_AARCH64_ATTRIBUTES`**: refused until a compiler on the matrix
    emits it; then `spec/a64.md` defines the merge.
 
@@ -1442,13 +1738,17 @@ Not made by this WP (stage 1 writes only `spec/resolve.md`).
 |---|---|---|---|
 | `spec/model.md` §3.3 `def` | "`Undefined{weak}`, `Defined{file, st_index}`, `Common{..}`, `Shared{..}`, `Internal{..}`" | add that `Internal` is `Assign(expr)`, `Alias(SymbolId)` or `Provide(name)`; add to the merged properties: `ref_strong`, `defined_dynamic`, `needed` (per shared file), `exported`, `preemptible`, and the verdict | §3.2, §3.6, §5.1, §9.6 need them; the scan and synth read them |
 | `spec/model.md` §3.3 `redirect` | "the row references to this key bind to … Every consumer of `sym_map` applies it" | "the row **undefined mentions** of this key bind to (`--wrap`); for a `--defsym` alias, every mention. A defined mention binds to itself" | E13: GNU ld and mold do not wrap a reference in the defining object |
-| `spec/model.md` §3.3, last paragraph | "Archive extraction is the least fixed point of …" | "Archive extraction is the breadth-first fixed point of `spec/resolve.md` §4.1 (rounds over the newly live files; a key already defined is not demanded)" | the condition "not yet defined" is anti-monotone; §12.2 |
+| `spec/model.md` §3.3, last paragraph | "Archive extraction is the least fixed point of …" | "Archive extraction is reachability over a graph fixed by the inputs (`spec/resolve.md` §4.1: `first(K)`, `cfirst(K)` over all files, live or lazy); `def` is then computed over the live files only, and is `Undefined` when no live file defines the key. `def` is not one total order over all candidates: the common/shared rule of §3.2 is an exception" | ruling A; findings 1, 4, 5, 20 |
+| `spec/model.md` §3.2 `Inputs` | positional state per file | add each file's `--start-group` region (an index, or none) and its member order within its archive | the simulation of §4.6 needs them (finding 15) |
+| `spec/model.md` §3.4 `Assignment` | — | Assignment confirms or withdraws resolution's conditional `Provide` candidates (`__start_`/`__stop_<sec>`, `_TLS_MODULE_BASE_`, `__GNU_EH_FRAME_HDR`); a withdrawn one reverts `def` to `Undefined{weak}` before the scan | §5.1, §8.1 (finding 12) |
+| `spec/arch.md`, the scan (phase 70) | — | the scan emits `undefined-symbol`, `comdat-mismatch` and `discarded-section-reference`, per surviving reference after sequence recognition (a relaxed TLS GD/LD call to `__tls_get_addr` does not survive), keyed as `spec/resolve.md` §5.3; a hidden key with a surviving reference is an error whatever the options | ruling D; findings 6, 8, 12 |
+| `spec/diag.md` §8.2 wording | lld's `duplicate symbol: x`, `undefined symbol: x` | the message contains GNU's phrase verbatim: ``duplicate symbol: x (multiple definition of `x')``, ``undefined symbol: x (undefined reference to `x')`` | policy of 2026-11-14 (finding 22) |
 | `spec/model.md` §3.3 `comdat` | "the file whose group is kept" | add: "the least live `FileId` with the signature" and `(ComdatId, FileId)` pairs of the live copies for `mortar_odr` | §6.1, §6.7 |
 | `spec/model.md` §2.3 | "`ComdatId` likewise, over `SHT_GROUP` signatures" | "… signatures, where a signature that is an `STT_SECTION` symbol is the name of its section" | E18; WP-004's open question |
 | `spec/model.md` §2.3 | key = name before `@` plus version | add: an undefined `name@V` is its own row; resolution also binds it to a default definition of `name` whose version is `V` (`spec/resolve.md` §9.2) | a reference that requires the default version must find it |
 | `spec/model.md` §3.3 `kind` | `Note` covers `.note.gnu.property` | optional: a kind `Property` | synth merges it by kind, not by name |
 | `spec/model.md` §12 | archive semantics, version scripts, the COMDAT keeper: open | closed by `spec/resolve.md` §4, §9, §6.1 | |
-| `spec/diag.md` §3.1 | 15 kinds | add the new kinds of §14 (area "symbols"), each with its test | §14 |
+| `spec/diag.md` §3.1 | 15 kinds | add the new kinds of §14 (area "symbols"), each with its test, among them `comdat-mismatch` (an ODR signal, §6.3) and the opt-in `archive-backref`, `archive-choice` | §14, ruling C |
 | `spec/cli.md` §4 rows | `--fortran-common` "(default)" (lld's help) | the row's help: "mortar's behavior, always on"; status `supported` at M1; `--no-fortran-common` `refused` | E3: lld 22's default does not extract |
 | `spec/cli.md` §4 rows | `--warn-backrefs`, `--warn-common`, `--require-defined`, `-u`, `-e`, `--allow-multiple-definition`, `-z muldefs`, `--unresolved-symbols`, `--warn-unresolved-symbols`, `--error-unresolved-symbols`, `--ignore-unresolved-symbol`, `--start-group`/`--end-group` (no-op for resolution) | `supported` when WP-022 stage 2 lands | M1 rules of this spec |
 | `spec/input.md` (WP-021) | — | interns `ComdatId` by the effective signature (§6.1); refuses slim GCC LTO objects or leaves it to resolution (§10: one place, to be agreed) | §6.1, §10 |

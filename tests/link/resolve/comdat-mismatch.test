@@ -1,0 +1,54 @@
+# Two copies of COMDAT group g define different symbols: gh.o's copy
+# also defines hx. GNU ld loads gh.o first (for hx and Y), then gl.o
+# (for Z, which Y needs), and keeps the first loaded copy, gh.o's: GNU
+# ld and lld run 140. mortar keeps the copy of the lowest live FileId,
+# gl.o's (resolve.md §6.1, ruling C), which lacks hx, and reports
+# comdat-mismatch, an ODR signal (§6.3); mold also keeps gl.o's copy and
+# reports hx undefined. The copies differ on purpose.
+#@ spec: resolve.md §6.3
+#@ spec: resolve.md §6.1
+#@ arch: aarch64
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 m10.c -o m10.o
+as gl.s -o gl.o
+as gh.s -o gh.o
+ar rcs libG.a gl.o gh.o
+link(bfd,lld) gcc -static -no-pie m10.o -L. -lG -o prog
+run(bfd,lld) prog
+  exit: 140
+link(mold,mortar) gcc -static -no-pie m10.o -L. -lG -o prog
+  exit: fail
+  diag(mold): undefined symbol: hx
+  diag(mortar): symbol hx is defined only in a discarded copy of COMDAT group g
+
+#--- m10.c
+int hx(void);
+int Y(void);
+
+int main(void) { return hx() + Y(); }
+#--- gl.s
+	.section .text.g,"axG",@progbits,g,comdat
+	.globl g
+	.type g,%function
+g:	mov w0, #1
+	ret
+	.text
+	.globl Z
+	.type Z,%function
+Z:	mov w0, #100
+	ret
+#--- gh.s
+	.section .text.g,"axG",@progbits,g,comdat
+	.globl g
+	.type g,%function
+g:	mov w0, #2
+	ret
+	.globl hx
+	.type hx,%function
+hx:	mov w0, #40
+	ret
+	.text
+	.globl Y
+	.type Y,%function
+Y:	b Z

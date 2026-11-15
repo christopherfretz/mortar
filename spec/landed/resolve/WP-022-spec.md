@@ -118,10 +118,15 @@ mold: link=1
     mold: error: duplicate symbol: lib2r.a(m2.o): lib1.a(m1.o): K
 ```
 
-Reading: lld's result depends on member order; mold fixes each key's
-provider before extraction. The rounds of `spec/resolve.md` §4.1 extract
-`n.o` and `m2.o` together in round 1, so `K` is settled and `m1.o` stays
-out: as GNU ld, in all three lines.
+Reading (revised after the review of 2026-11-14): lld's result depends on
+member order; mold fixes each key's provider before extraction. Under
+ruling A (`spec/resolve.md` §4.1) `first(K)` is `m1.o`, the lowest
+definer, and `n.o`'s reference demands it: mortar reports the duplicate
+`K` on all three lines, as mold does. For GNU ld, `n.o`'s reference to
+`libX.a`/`lib1.a` is a back-reference it never acts on (§4.3 case 2). The
+first draft's breadth-first rounds, which linked these lines as GNU ld,
+are withdrawn: their "not yet defined" test made the result depend on the
+order of extraction (findings 1, 4, 5).
 
 ## E3. Weak and common definitions against lazy ones
 
@@ -285,6 +290,12 @@ $ for f in /usr/lib/aarch64-linux-gnu/*.a /usr/x86_64-linux-gnu/lib/*.a \
      /usr/i686-linux-gnu/lib/*.a /usr/lib/gcc*/*/*/*.[ao]; do
      readelf -SW "$f" 2>/dev/null | grep -l linkonce; done      # nothing
 ```
+
+The glob skipped the `crt*.o` files of the libc directories; the review
+re-checked every `crt*.o` and `*.a` under `/usr/lib/aarch64-linux-gnu`,
+`/usr/{x86_64,i686}-linux-gnu/lib`, `/usr/lib/gcc*` and
+`/usr/lib/gcc-cross`: zero `.gnu.linkonce` sections (finding 19). The
+claim holds on all three architectures.
 
 ## E12. Commons, weak definitions and shared objects
 
@@ -515,26 +526,206 @@ member, split by binding, with `nm -A --defined-only`:
 
 | archive | strong keys in ≥2 members | weak |
 |---|---|---|
-| `libc.a` | 0 | (not counted) |
-| `libstdc++.a` (GCC 14) | 1 | 130 |
-| `libgcc.a`, `libgcc_eh.a`, `libm.a`, `libgfortran.a` | 0 | — |
+| `libc.a` | 0 (AArch64, x86-64); i386: 7 | (not counted) |
+| `libstdc++.a` (GCC 14) | 1 (AArch64); i386: 8 | 130 |
+| `libgcc.a`, `libgcc_eh.a`, `libm.a`, `libgfortran.a` | 0; i386 `libgcc.a`: 7 | — |
+
+Corrected by the review (finding 18): the one AArch64 `libstdc++.a` key is
+`_ZZNSt19_Sp_make_shared_tag5_S_tiEvE5__tag`, `STB_GNU_UNIQUE`, in COMDAT
+groups of 5 members; the i386 keys are the `__x86.get_pc_thunk.*`
+helpers, all in COMDAT groups. Group keys are §6's, so none of them can
+make `archive-choice` fire. Across archives, `__clz_tab` is defined
+strongly outside any group in both `libgcc.a(_clz.o)` and
+`libc.a(mp_clz_tab.o)`; no link tried references it. The survey matters
+less now: `archive-choice` is opt-in (ruling B) and comes from a
+simulation, not from a predicate over these keys.
+
+## Re-run under ruling A (review of 2026-11-14)
+
+The reviewer's executable model (a Python reading of the first draft) was
+changed to the rule of `spec/resolve.md` §4.1: `first(K)` and `cfirst(K)`
+over all files, edges from non-weak undefined mentions to `first`, from
+commons to `cfirst`, from root options to `first`; the live set is
+reachability; `def` is computed over live files only. A second function
+simulates GNU's walk (§4.6). Each line's real `ld` argument vector came
+from `gcc -###` (the reviewer's `compare.py`), was linked by `ld.bfd -t
+-t`, `ld.lld-22 --trace` and `mold -M`, and the members were compared as
+sets. Columns: members each linker loads; the model's; whether it equals
+`ld.bfd`'s list; the simulation's; whether that equals it.
+
+| line | bfd | lld | mold | model | model vs bfd | simulation | vs bfd |
+|---|---|---|---|---|---|---|---|
+| chello | 381 | 381 | 381 | 381 | equal | 381 | equal |
+| clang_c | 381 | 381 | 381 | 381 | equal | 381 | equal |
+| spie | 382 | 382 | 382 | 382 | equal | 382 | equal |
+| mth | 466 | 466 | 466 | 466 | equal | 466 | equal |
+| cxx | 578 | 578 | 578 | 578 | equal | 578 | equal |
+| clang_cxx | 578 | 578 | 578 | 578 | equal | 578 | equal |
+| fort | 558 | 557 | 558 | 558 | equal | 558 | equal |
+| tpl | 431 | 431 | 431 | 431 | equal | 431 | equal |
+| c64 | 430 | 430 | 430 | 430 | equal | 430 | equal |
+| spie64 | 431 | 431 | 431 | 431 | equal | 431 | equal |
+| mth64 | 533 | 533 | 533 | 533 | equal | 533 | equal |
+| cxx64 | 653 | 653 | 653 | 653 | equal | 653 | equal |
+| fort64 | 617 | 616 | 617 | 617 | equal | 617 | equal |
+| c32 | 379 | 379 | 379 | 379 | equal | 379 | equal |
+| spie32 | 380 | 380 | 380 | 380 | equal | 380 | equal |
+| cxx32 | 599 | 599 | 599 | 599 | equal | 599 | equal |
+
+(No suffix: AArch64; `64`: x86-64; `32`: i386. `chello`, `clang_c`: `gcc`
+and `clang -static`; `spie`: `-static-pie`; `mth`: `-lm -lpthread -ldl`;
+`cxx`, `clang_cxx`: `g++`, `clang++ -static`; `fort`: `gfortran
+-static`; `tpl`: user templates.) No `archive-*`, `duplicate-symbol` or
+`comdat-mismatch` diagnostic fires on any of them. With commons left out
+of `first` (the ruling's literal text), the sixteen lines are also equal;
+R5 below is where that text fails.
+
+The reviewer's cases, `L n -static start.o …` (spec §4.3):
+
+```
+t1   t1m.o libt1k.a t1w.o   bfd run=2  lld run=2  mold run=1   model: libt1k.a(t1k.o) extracted (2)
+t1s  t1m.o libt1k.a t1s.o   bfd multiple definition of `K'  lld duplicate symbol: K  mold run=3
+                            model: duplicate K
+t2   m2.o libA.a libCB.a    bfd run=3  lld run=1  mold run=1   model: a.o (1); simulation: c.o, archive-choice pick
+t2b  m2.o libAB.a libC.a    all run=1                          model: a.o; simulation: a.o; no diagnostic
+t10  m10.o libG.a           bfd run=140  lld run=140  mold undefined symbol: hx
+                            model: keeper gl.o, comdat-mismatch hx
+t12  m0.o libst.a (no -e)   all three extract the _start member (mold: local `t _start`)
+```
+
+## Ruling B: the simulation against `ld.bfd -t`
+
+The simulated member sets equal `ld.bfd -t`'s on: `main1 libX libY`,
+`main1 lib1 lib2` (E2); `m2 libA libCB`, `m2 libAB libC`, `m2 libA2 libB1
+libC1`, and its `--start-group` variant (E1, finding 3); `m10 libG` (t10);
+t1; `emain --start-group libml liblate --end-group` (E10). One fix was
+needed on the way: a common after a weak definition makes the key
+`common` (GNU ld: a common beats a weak definition, so the next archive
+pass extracts a data definition for it). On E2's `main1 libX libY` GNU
+ld links and mortar reports the duplicate `K`; under `--warn-backrefs`
+the simulation adds that GNU ld would not load `libX.a(m1.o)`.
+
+## R1–R15: experiments for the review
+
+`L` and `start.o` as in Method; AArch64. Sources: `mk.c: int K(void); int
+main(void){return K();}`, `mkw.c: __attribute__((weak)) int K(void); int
+main(void){return K ? K() : 7;}`, `ks.c: int K(void){return 2;}`, `kw.c:
+weak … return 1`, `uk.c: int K(void); int user2(void){return K();}`,
+`mu.c: … main(void){return user2();}`, `m0.c: int main(void){return 0;}`;
+`mc.c: int v; int main(void){return v;}` (`-fcommon`), `mv.c: extern int
+v; int main(void){return v;}`, `lv.c: int v = 9;`, `lvc.c: int v; int
+other(void){return 3;}` (`-fcommon`), `lvf.c: int v(void){return 9;}`,
+`wv.c: __attribute__((weak)) int v = 4;`, `fv.c: int v(void){return 4;}`.
+Archives: `libKS=[ks.o]`, `libKW=[kw.o]`, `libUK=[uk.o]`, `libLV=[lv.o]`,
+`libLC=[lvc.o]`, `libLF=[lvf.o]`.
+
+```
+R1  = t1, t1s above (a definition after the archive; finding 1)
+R2  mkw.o libKS.a uk.o                   bfd undefined reference to `K'   lld run=2  mold run=2
+R3  mk.o libKW.a libKS.a                 bfd run=1  lld run=1  mold run=2
+    mk.o libKW.a ks.o                    all run=2
+R4  mk.o libKS.a --whole-archive libKW.a bfd run=2  lld run=2  mold run=1
+    mk.o --whole-archive libKW.a --no-whole-archive libKS.a   all run=1
+R4b -u K m0.o libKS.a                    all three extract ks.o
+R5  mv.o libLC.a                         all three extract lvc.o (`other` in the output)
+    mv.o libLC.a libLV.a                 bfd both, run=9  lld lvc.o only, run=0  mold lv.o only, run=9
+R6  mc.o libLF.a                         no extraction: bfd run=0 lld run=0; mold extracts, run=32,
+                                         warning about the symbol type
+    mc.o libLV.a                         bfd run=9  lld run=0  mold run=9
+    wv.o mc.o libLV.a / mc.o libLV.a wv.o   bfd extracts, run=9  lld run=0  mold extracts, run=4
+    fv.o mc.o libLV.a                    no extraction (all, run=128)
+```
+
+R5 refutes ruling A's "non-common definition" in `first(K)`: without the
+common, `mv.o`'s strong reference demands nothing and is left undefined,
+where all three extract. The spec counts commons in `first` and states
+the common edge separately (`cfirst`, §4.5). R6 is why weak definitions
+do not block `cfirst`.
+
+```
+R7  (adv) mt.s: TLS reference to x (tprel); mn.s: .quad x (NOTYPE); t.s: x in .tdata
+    mt.o mn.o     bfd: x: TLS reference in mt.o mismatches non-TLS reference in mn.o
+                  lld links  mold links
+    m.o t.o       (m.s: NOTYPE reference)  bfd error  lld links  mold links, silent
+    mo.o t.o      (mo.s: .type x,%object)  bfd error  lld TLS attribute mismatch  mold warning
+R8  mh2.o libnoidx.a (ar rcS)   bfd: archive has no index; run ranlib to add one
+                                lld run=7  mold run=7
+R9  = t12 (m0.o libst.a, no -e: _start extracted by all three)
+R10 libk.a --defsym K=k         bfd: undefined symbol `k' referenced in expression
+    --defsym K=k libk.a         bfd links;  lld and mold link in both positions
+R11 libs.so: K returns 5 (dynamic link, -dynamic-linker as Method)
+    mk.o libs.so libKS.a        all 5
+    mk.o libKS.a libs.so        all 2
+    libKS.a libs.so mk.o        bfd 5  lld 5  mold 2
+    libKS.a mk.o libs.so        bfd 5  lld 2  mold 2
+    mkw.o libs.so libKS.a uk.o  all 5
+R12 mv2.o: reference foo@V2 (.symver); dloc.o: foo@@V2 = 9; dv.o: foo@V2 = 4; mf.o: plain foo
+    mv2.o dloc.o   bfd run=9  lld undefined symbol: foo@V2 (did you mean foo@@V2)  mold undefined symbol: foo
+    mv2.o dv.o     all run=4
+    mf.o dloc.o    all run=9
+    mf.o dv.o      all undefined
+    survey: for f in <every *.a of the three targets' libc and GCC directories>; do nm -A "$f" | grep @; done
+            -> only libmcheck.a: __malloc_initialize_hook@GLIBC_2.17 / @GLIBC_2.0 / @GLIBC_2.2.5
+R13 a.s: COMDAT g, main: b g; bN.s: COMDAT g with a local lg, and `.section <name>,"",@progbits; .quad lg`
+    L o -static start.o a.o bN.o, one name per bN (non-alloc unless noted):
+    accepted by all three: .debug .debug_info .debug_foo .debugx .zdebug_info .zdebugx .stab .stabstr
+      .stab.foo .stabx (objcopy --rename-section) .line .line.x .linex .gnu.debuglto_.debug_info
+      .gnu.debuglto_.debug_x .gnu_debuglink .gnu.linkonce.wi.foo .gcc_except_table .debug_info.dwo
+    bfd error, lld and mold accept: .comment .comment.x .note.x .gcc_except_table.foo .lin
+      .gnu_debugaltlink .gnu.debuglto_x .gnu.debuglto_.debug .gnu.debuglto_.debugx .gnu.debuglto_.line
+      .debu .gnu.linkonce.wix .gnu_debuglinkx
+    alloc .debug_x ("a"): bfd error  lld error  mold accepts
+R14 hz.s: main, `.hidden zz; .globl zz`, no use
+    start.o hz.o   bfd: hidden symbol `zz' isn't defined (also with --unresolved-symbols=ignore-all)
+                   lld links  mold links
+R15 x86_64-linux-gnu-objdump -dr libstdc++.a (eh_globals.o): R_X86_64_PLT32 __tls_get_addr-0x4
+    x86_64-linux-gnu-nm libc.a | grep -c ' T __tls_get_addr'   -> 0
+    the cxx64 and cxx32 lines above link with ld.bfd (the call is relaxed away, finding 6)
+```
+
+The three link tests added (`tests/link/resolve/weak-after-archive.test`,
+`comdat-mismatch.test`, `entry-default-root.test`) were run by hand with
+the GCC driver and `-B` wrappers for each linker, on AArch64: t1 and t1s,
+t10 and t12 give the results above (`entry-default-root`: `ld -static
+m0.o -L. -lst`, `_start` and `marker` present for all three, entry not 0).
+
+## The COMDAT keeper against GNU ld (the reviewer's table, ruling C)
+
+Signatures present in two or more live files of a link, and for how many
+of them each linker keeps another file's copy than the lowest live
+`FileId` (mortar's rule):
+
+| link | signatures | GNU ld differs | lld differs | mold differs |
+|---|---|---|---|---|
+| `g++ -static`, AArch64 | 61 | 40 | 6 | 0 |
+| `g++ -static`, x86-64 | 60 | 40 | 6 | 0 |
+| `g++ -static`, i386 | 67 | 45 | 10 | 0 |
+| `clang++ -static`, AArch64 | 60 | 35 | 3 | 0 |
+| user templates in two archives | 17 | 16 | 14 | 0 |
+
+Sampled differing copies were byte-identical and the programs' outputs
+equal. The keeper is kept as the lowest live `FileId`: a minimum over a
+set, needed by §12 and §13; GNU's "first loaded" depends on the walk.
 
 ## Decisions and reasons
 
-1. **Position-independent extraction (supervisor's decision): confirmed.**
-   Reason: a fixed point over sets is parallel and recomputable from
-   per-file summaries; GNU's walk is a sequential simulation with state.
-   Refinement: the fixed point is computed in **breadth-first rounds**
-   (E2), which matches GNU ld where lld and mold report duplicates.
-   The three observable differences from GNU ld (E1: another member;
-   duplicates; new undefined references) are bounded by back-references
-   and each gets a diagnostic (`archive-choice` default-on, quiet on the
-   system libraries; `archive-backref` under `--warn-backrefs`).
-   `--start-group` is a no-op.
-2. **COMDAT keeper = lowest live `FileId`: confirmed** (E10). It equals
-   mold; it differs from GNU ld and lld only when a lower-`FileId` copy
-   became live later, and observably only when the copies differ (an ODR
-   violation: `mortar_odr`'s job).
+1. **Position-independent extraction (supervisor's decision): confirmed;
+   the rule replaced by ruling A.** Reason: reachability over a graph that
+   is a function of the inputs is parallel, order-independent and
+   recomputable from per-file summaries; GNU's walk is a sequential
+   simulation with state. The first draft's breadth-first rounds are
+   withdrawn (findings 1, 4, 5). The observable differences from GNU ld
+   (another member; duplicates; new undefined references) need a
+   back-reference (spec §4.3); the COMDAT difference is case 4.
+   Diagnostics for them are opt-in under `--warn-backrefs`, from a
+   simulation of GNU's walk (ruling B). `--start-group` changes nothing
+   in the closure.
+2. **COMDAT keeper = lowest live `FileId`: kept (ruling C)** (E10). It
+   equals mold; it differs from GNU ld and lld when a lower-`FileId` copy
+   became live later, which is frequent on system lines (the keeper table
+   below) but harmless when the copies agree; differing contents are an
+   ODR violation (`mortar_odr`'s job); differing symbol sets are the error
+   `comdat-mismatch` (t10).
 3. **Definition order** Assign < Strong < Common < Weak < Deferred (lazy
    and shared together, by `FileId`) < Provide, with a shared data
    definition beating commons alone and Provide beating shared
@@ -561,8 +752,76 @@ member, split by binding, with `nm -A --defined-only`:
     system library has one); `.gnu.warning` warned and dropped (E21);
     slim GCC LTO refused (E18); `SHF_EXCLUDE` dropped (E18).
 
+## Review of 2026-11-14 and dispositions
+
+An independent adversarial review found 22 problems in the first draft;
+the supervisor's rulings A–F decided them. One line per finding, with
+where the spec now answers it:
+
+1. Definition after the archive missed by §4.3: accepted (ruling A); new
+   rule §4.1, consequences §4.1, case R1, §4.3 claim and proof, §16, test
+   `weak-after-archive.test`.
+2. COMDAT keeper rejects links GNU ld accepts: accepted in part (ruling
+   C): the keeper stays the lowest live `FileId`; the case is §4.3 case 4,
+   §6.1, §16; new error `comdat-mismatch` §6.3, §14; keeper table above;
+   test `comdat-mismatch.test`.
+3. `archive-choice` predicate is not GNU's choice: accepted (ruling B):
+   opt-in under `--warn-backrefs`, a simulation of GNU's walk, §4.6
+   (specified, cost stated, checked above); §14, §17 Q1.
+4. Commons never extract under §4.1 as written: accepted (ruling A):
+   `cfirst` and the common edge, §4.1, §4.5. Ruling A's own text (commons
+   left out of `first`) is **refuted** by R5 and amended: commons count in
+   `first`.
+5. "Deferred is never final" false: accepted (ruling A): `def` over live
+   files only, Undefined when none, §3.1, §3.2, §4.1.
+6. `g++ -static` on x86-64/i386 would fail on `__tls_get_addr`: accepted
+   (ruling D): the scan decides per surviving reference after sequence
+   recognition, §5.1 (R15); §18 `spec/arch.md`.
+7. TLS reference/reference mismatch undefined; mold cell wrong: accepted
+   (ruling E): §3.4 (all mentions agree), §16 (mold NOTYPE silent, OBJECT
+   warning; the new reference/reference row), R7.
+8. §5.1 against §5.2: accepted (ruling D): hidden unused is not an error,
+   hidden used is one whatever the options, §5.1, §5.2 (R14), §16.
+9. Versioned references in static links: accepted (ruling E): the second
+   lookup applies to objects, §9.4 (R12 and the survey), §16.
+10. Slim LTO slips past §10: accepted (ruling F): the file row is first in
+    §10.
+11. Referring-section rules under-specified: accepted (ruling E): exact
+    `.gcc_except_table`; GNU ld's debug names measured (R13), §6.3, §16.
+12. `__start_<sec>` not decidable in resolution: accepted (ruling D):
+    conditional `Provide` candidates confirmed by Assignment, §5.1, §8.1,
+    §18 `spec/model.md` §3.4.
+13. Index or member tables unstated: accepted (ruling F): member tables,
+    §4.1 (R8), §4.6, §16.
+14. Default `_start` a root?: accepted (ruling E): yes, §4.2 (R9), §5.5;
+    test `entry-default-root.test`.
+15. `Inputs` lacks the group region: accepted (ruling F): §4.6 names the
+    column; §18 `spec/model.md` §3.2.
+16. Incremental claims unsound: accepted (ruling F): §13 rewritten as
+    dependencies (type and binding changes move `cfirst`; keeper moves
+    demote other files' mentions).
+17. `--defsym` position: accepted (ruling F): right-hand sides are roots
+    in any position, §4.2 (R10), §16.
+18. Library survey wrong on i386 and the libstdc++ key: accepted as
+    written: survey corrected above.
+19. E11 glob skipped `crt*.o`: accepted as written: note in E11.
+20. `model.md` still says "a total order": accepted as written: §18 asks
+    for the wording (graph, reachability, `def` over live files, not one
+    total order). The rules delegated to specs that do not exist yet stay
+    delegated; §18 lists the requests.
+21. "Strong-shaped" undefined; "two" absolutes: accepted as written: the
+    term is gone (§4.6 names the states); §3.8 states the set rule (any
+    number of equal absolutes; absolute and section definitions clash).
+22. Undefined wording not flagged: accepted (ruling F, policy): messages
+    contain GNU's phrases verbatim, §3.8, §5.3, §14, §17 Q4, §18
+    `spec/diag.md`.
+
 ## Not verified
 
+Extraction through the second version lookup for a lazy `foo@@V2` member
+(§9.4); runs of the x86-64 and i386 cases (only their link lines and
+member sets were compared: the cross qemu was not used for the R series);
+the three new link tests on x86-64 and i386 (run on AArch64 only);
 `--defsym a=b+N` in a PIE; `--export-dynamic-symbol` extraction under GNU
 ld; `SHT_LLVM_CALL_GRAPH_PROFILE`, `.deplibs`, `SHT_AARCH64_ATTRIBUTES`,
 `.note.gnu.property` merging, fat GCC LTO objects; two groups of one
