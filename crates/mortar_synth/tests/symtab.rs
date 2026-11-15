@@ -477,3 +477,41 @@ fn elf32_entries_are_16_bytes() {
     assert_eq!(u32::from_le_bytes(sym[8 * 16 + 4..8 * 16 + 8].try_into().unwrap()), 0x10110);
     assert_eq!(sym[8 * 16 + 12], STB_GLOBAL << 4 | STT_FUNC);
 }
+
+#[test]
+fn with_patches_equals_a_new_plan() {
+    // WP-032i: layout's replan after the fixed point moves the rows after
+    // the patches' segment instead of counting the symbols again.
+    let main = SymKey::global(SymbolId(0));
+    let thunk = |offset, addend| Patch {
+        chunk: ChunkId(9),
+        offset,
+        kind: PatchKind::Thunk(ThunkTarget::Sym { key: main, addend }),
+    };
+    let erratum = Patch {
+        chunk: ChunkId(9),
+        offset: 64,
+        kind: PatchKind::Erratum {
+            erratum: Erratum::E843419,
+            section: SectionId(1),
+            offset: 0xff8,
+        },
+    };
+    let sets: [&[Patch]; 5] = [
+        &[],
+        &[thunk(0, 0x10), thunk(16, -8), erratum],
+        &[erratum],
+        &[thunk(0, 0x123_4567), erratum, thunk(32, 0)],
+        &[],
+    ];
+    for (syms, secs) in [(program().0, program().1), (big(4, 900, 2500), Secs::default())] {
+        for discard in [X, DEFAULT, Some(Discard::All)] {
+            let c = cx(&syms, &secs, discard);
+            let mut p = plan(&c, &[]).unwrap();
+            for patches in sets {
+                p = p.with_patches(c.syms, patches);
+                assert_eq!(p, plan(&c, patches).unwrap(), "{} patches", patches.len());
+            }
+        }
+    }
+}
