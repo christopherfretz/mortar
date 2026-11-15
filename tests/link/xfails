@@ -21,5 +21,4 @@
 # WP-052 (SPIE): static-pie.
 mortar,aarch64,x86_64 dyn/kinds/output-kind-table-static-pie.test: M2: WP-052 (SPIE)
 
-
 # WP-056 (OPTS): the option variations.
