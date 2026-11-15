@@ -447,7 +447,10 @@ pub fn front<'s>(
     };
     let scan_options =
         ScanOptions { output, dynamic: false, sections: None, proof: link_arch.proof() };
-    let scanned = scan(arch, &scan_inputs, &scan_options, &pool);
+    let mut scanned = scan(arch, &scan_inputs, &scan_options, &pool);
+    // The branch candidates are the sites' input only: dropped once the
+    // sites are final, before the image.
+    let branch_candidates = std::mem::take(&mut scanned.branches);
     for (k, d) in scanned.diagnostics.iter().cloned() {
         diag.emit(k, d);
     }
@@ -587,13 +590,12 @@ pub fn front<'s>(
             merge: &order.map,
             demands: &scanned.demands,
             order: &scanned.order,
-            branches: &scanned.branches,
             slots: demand_slots,
             got: &plans.got,
             ids,
         };
         if kept_sites.as_ref().is_none_or(|(i, _)| *i != ids) {
-            match LinkSites::new(site_inputs, arch, &walker, &pool) {
+            match LinkSites::new(site_inputs, &branch_candidates, arch, &walker, &pool) {
                 Ok(s) => kept_sites = Some((ids, s)),
                 Err((k, d)) => {
                     diag.emit(k, d);
@@ -653,15 +655,20 @@ pub fn front<'s>(
             && planned_for.as_ref() != Some(&placed.placement.patches)
             && let Some(old) = &plans.symtab
         {
-            let new = SymtabPlan::new(
-                &sym_cx,
-                target.class,
-                &placed.placement.patches,
-                facts,
-                &pool,
-                diag,
-            )
-            .ok()?;
+            let new = old.with_patches(sym_cx.syms, &placed.placement.patches);
+            #[cfg(debug_assertions)]
+            {
+                let full = SymtabPlan::new(
+                    &sym_cx,
+                    target.class,
+                    &placed.placement.patches,
+                    facts,
+                    &pool,
+                    diag,
+                )
+                .ok()?;
+                assert_eq!(new, full, "SymtabPlan::with_patches");
+            }
             again |= new.symtab_size() != old.symtab_size()
                 || new.strtab_size() != old.strtab_size()
                 || (shndx && new.shndx_size() != old.shndx_size());
@@ -701,6 +708,7 @@ pub fn front<'s>(
         steps.step("layout clone", 0, "");
         break (a, placed, layout, fixes);
     };
+    drop(branch_candidates);
     steps.step("drop sites", 0, "");
     // X86-45, X86-38: an ELFCLASS32 TLS block of 2^31 bytes or more would
     // put a TP offset outside s(32); refused by name, as L-73 refuses an

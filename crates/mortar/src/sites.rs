@@ -65,8 +65,6 @@ pub struct SiteInputs<'a, 's> {
     pub merge: &'a MergeMap,
     pub demands: &'a Demands,
     pub order: &'a RecIndex,
-    /// The scan's branch candidates (`Scanned.branches`).
-    pub branches: &'a [Vec<BranchRec>],
     pub slots: &'a Slots,
     pub got: &'a GotPlan,
     pub ids: SynthIds,
@@ -110,6 +108,7 @@ impl<'a, 's> LinkSites<'a, 's> {
     )]
     pub fn new(
         t: SiteInputs<'a, 's>,
+        candidates: &[Vec<BranchRec>],
         arch: &'a dyn Arch,
         walker: &'a Walker<'a, 's>,
         pool: &Pool,
@@ -127,7 +126,7 @@ impl<'a, 's> LinkSites<'a, 's> {
             let Some((file, index)) = t.resolution.sh_index(sid) else { continue };
             code.push(CodeSec { file, sid, index: index.0, rel: row.reloc.0, out });
         }
-        let branches = branches_of(&t, &code);
+        let branches = branches_of(&t, candidates, &code);
         #[cfg(not(debug_assertions))]
         let _ = (walker, pool);
         #[cfg(debug_assertions)]
@@ -180,10 +179,14 @@ impl<'a, 's> LinkSites<'a, 's> {
 /// The branch sites of `code` (in `SectionId` order) from the scan's
 /// candidates: those in a section of `code`, by section and then record,
 /// each with its key's final demand flags.
-fn branches_of(t: &SiteInputs<'_, '_>, code: &[CodeSec]) -> Vec<BranchAt> {
+fn branches_of(
+    t: &SiteInputs<'_, '_>,
+    candidates: &[Vec<BranchRec>],
+    code: &[CodeSec],
+) -> Vec<BranchAt> {
     let mut out: Vec<BranchAt> = Vec::new();
     let mut last: Option<(SectionId, bool)> = None;
-    for b in t.branches.iter().flatten() {
+    for b in candidates.iter().flatten() {
         let keep = match last {
             Some((s, k)) if s == b.section => k,
             _ => {
