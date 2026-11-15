@@ -325,7 +325,8 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
     let gnu = map.format == Format::Gnu;
     // mold's map gives every non-alloc row the address 0: the offsets are
     // the rows' sizes laid out in order at their alignments (§3.6).
-    let mut cursor: Option<HashMap<String, u64>> = (map.format == Format::Mold).then(HashMap::default);
+    let mut cursor: Option<HashMap<String, u64>> =
+        (map.format == Format::Mold).then(HashMap::default);
     for p in &map.placed {
         let Some(oi) = obj_of.get(p.file as usize).copied().flatten() else { continue };
         place_one(&mut out, &names[oi], oi, p, image, gnu, cursor.as_mut());

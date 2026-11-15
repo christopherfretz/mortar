@@ -103,7 +103,8 @@ impl<'a> Image<'a> {
                 symbols.push(OutSym { name, sym, index: i.0 });
             }
         }
-        let mut names: HashMap<String, NameEntry> = HashMap::with_capacity_and_hasher(symbols.len(), Default::default());
+        let mut names: HashMap<String, NameEntry> =
+            HashMap::with_capacity_and_hasher(symbols.len(), Default::default());
         for (i, s) in symbols.iter().enumerate() {
             if s.name.is_empty() {
                 continue;
