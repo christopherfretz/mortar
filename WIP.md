@@ -2,7 +2,8 @@
 
 Checkpoint 2026-11-15 14:3x ET (supervisor restart). Briefs:
 `briefs/m6-common.md`, `briefs/wp-071.md` (workspace root). Merges of
-main used: 2 of 3 (last at main 862977c).
+main used: 3 of 3 (last at main d23258b, merge 364f466; diag conflicts
+resolved meta rows then odr rows; spec_tables green).
 
 ## Scope items (brief wp-071.md §1-6)
 
@@ -50,7 +51,9 @@ main used: 2 of 3 (last at main 862977c).
    T-MT-3 + T-MT-4 + MT-42 no-warning: `tests/link/input/mason-meta.test`
    (producer unit + garbage unit, direct and archive member): 12/12 PASS
    (bfd, lld, mold, mortar x aarch64, x86_64, i386).
-   T-MT-5 (strip/objcopy table re-run): NOT DONE (optional; say so).
+   T-MT-5: DONE. `crates/mortar/tests/meta.rs` `mt5_tools_that_keep_it_and_tools_that_lose_it`:
+   every row of MT-5 (binutils 2.44, llvm 19 AND 22, elfutils 0.192, ar/thin,
+   ld -r by bfd/lld/mold: one section, concatenated, flags E, align 8) holds.
 5. Experiment 7: NOT STARTED. Plan:
    - Objects: bench workload `cxx-medium-static` (protoc, g++ -O0) at
      `/Volumes/AgentWork/mortar-helper/.build/bench-work/workloads/cxx-medium-static/`
