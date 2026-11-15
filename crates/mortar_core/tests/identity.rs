@@ -64,7 +64,7 @@ struct Link {
     resolution: Resolution,
 }
 
-fn link(files: Vec<FileSpec>) -> Link {
+fn link(files: &[FileSpec]) -> Link {
     let n = files.len() as u32;
     let mut resolution = Resolution::empty(n, 0, 0);
     resolution.file_live = Column::from_vec(vec![FileLive::Always; files.len()]).unwrap();
@@ -88,7 +88,7 @@ fn link(files: Vec<FileSpec>) -> Link {
 }
 
 fn first() -> Link {
-    link(vec![internal(), a_o(false), member(0), member(1)])
+    link(&[internal(), a_o(false), member(0), member(1)])
 }
 
 /// An input added in front, and a function added in the middle of `a.o`.
@@ -99,7 +99,7 @@ fn second() -> Link {
         sections: vec![key(Anchor::None, b"")],
         locals: vec![b""],
     };
-    link(vec![internal(), new, a_o(true), member(0), member(1)])
+    link(&[internal(), new, a_o(true), member(0), member(1)])
 }
 
 // spec: model.md §7.1 (file identity: path, member name and ordinal)
