@@ -4,7 +4,7 @@
 # header); mortar's own is to be specified in plumb.md (WP-011), and
 # must at least name the input file, the section and the symbol.
 #@ spec: plumb.md "Map file"
-#@ xfail(mortar): no linking yet (M1)
+#@ xfail(mortar): mortar's map is mortar-map 1 (spec/plumb.md §3.2), not GNU ld's text; the test reads GNU's form (owner: supervisor, a ruling on -Map's format)
 
 as start-%{arch}.s -o start.o
 link ld -Map=prog.map start.o -o prog

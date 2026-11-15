@@ -726,7 +726,7 @@ impl Unit<'_> {
         let started = Instant::now();
         let verified = crate::plumb::verify_link(output_file, map_file, format, dir, None);
         judged.plumb.time += started.elapsed();
-        let (bytes, report) = verified.map_err(|e| error(&e))?;
+        let (bytes, report, _) = verified.map_err(|e| error(&e))?;
         judged.plumb.verified += 1;
         judged.plumb.judged_by.insert((self.arch(), linker));
         let expected = anomaly_ids(&self.test.anomalies, self.arch(), linker);

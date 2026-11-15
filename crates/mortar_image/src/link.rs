@@ -67,6 +67,7 @@ const SHN_XINDEX: u16 = 0xffff;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 const ET_REL: u16 = 1;
+const ELFOSABI_GNU: u8 = 3;
 
 /// What the scan knows of a key (`spec/arch.md` §3.4 `SymFacts`), and
 /// its name: the driver answers with the scan's own view (`Walker`), so
@@ -105,6 +106,9 @@ pub struct LinkOptions {
     /// The build id's tree ([`tree_style`] of `plan.shaping.build_id`);
     /// `None` without a hashed note.
     pub build_id: Option<TreeStyle>,
+    /// The output's BTI property is set (a thunk's target must be a
+    /// landing pad, `Arch::thunk_target_ok`).
+    pub bti: bool,
 }
 
 /// The tree of a `--build-id` style (I-72); `None` for a style the
@@ -154,6 +158,10 @@ pub struct Link<'a, 's> {
     /// read; `Ok` for one the store does not hold open.
     pub recheck: &'a (dyn Fn(FileId) -> Result<(), CopyError> + Sync),
     pub options: LinkOptions,
+    /// Words written over fill's bytes, by address, sorted: the erratum
+    /// fixes (`spec/a64.md` §11.2; the front computes them from the words
+    /// fill writes at the final addresses).
+    pub fixups: &'a [(u64, [u8; 4])],
 }
 
 impl std::fmt::Debug for Link<'_, '_> {
@@ -700,6 +708,105 @@ impl OutSection {
     }
 }
 
+/// The bytes of the `Patches` chunks with file bytes (I-39), by chunk:
+/// each thunk written by `Arch::write_thunk` at its offset, with its
+/// target `T` as layout's fixed point computed it (`S + A` of the key, the
+/// IPLT entry of an IFUNC; a `Plt` target's entry), and zero between
+/// patches.
+///
+/// An erratum patch is left zero here: its words are in `Link::fixups`.
+///
+/// # Errors
+///
+/// The refusal of a thunk target (BTI); `internal-error` when a patch lies outside its chunk or
+/// a thunk cannot be encoded.
+fn patches(
+    link: &Link<'_, '_>,
+    tables: &LinkTables<'_, '_>,
+) -> Result<std::collections::BTreeMap<ChunkId, Box<[u8]>>, Diagnostic> {
+    use mortar_core::layout::{PatchKind, ThunkTarget};
+    let pl = &link.layout.placement;
+    let mut out: std::collections::BTreeMap<ChunkId, Box<[u8]>> = std::collections::BTreeMap::new();
+    for (id, c) in pl.chunks.iter() {
+        if matches!(c.kind, ChunkKind::Patches(_)) && c.in_file() && c.size > 0 {
+            let size = usize::try_from(c.size)
+                .map_err(|_| internal("image: a patch island larger than memory"))?;
+            out.insert(id, vec![0u8; size].into_boxed_slice());
+        }
+    }
+    for p in &pl.patches {
+        let target = match p.kind {
+            PatchKind::Thunk(ThunkTarget::Plt(key)) => tables.plt(key),
+            PatchKind::Thunk(ThunkTarget::Sym { key, addend }) => {
+                Some(tables.sym(key).s.wrapping_add_signed(addend))
+            }
+            // Written by `Link::fixups` (its words are fill's).
+            PatchKind::Erratum { .. } => continue,
+        };
+        let Some(target) = target else {
+            return Err(internal(format!("image: a thunk at chunk {} has no target", p.chunk.0)));
+        };
+        let Some(shape) = link.arch.thunk() else {
+            return Err(internal("image: a thunk for an architecture without thunks"));
+        };
+        let Some(addr) = pl.chunks.get(p.chunk).and_then(|c| c.addr?.checked_add(p.offset)) else {
+            return Err(internal(format!("image: a thunk in chunk {} has no address", p.chunk.0)));
+        };
+        let cx = mortar_arch::PatchCx {
+            addr,
+            target,
+            site: 0,
+            word: 0,
+            bti: link.options.bti,
+            target_word: None,
+            target_abs: false,
+        };
+        link.arch.thunk_target_ok(&cx).map_err(|r| r.diagnostic())?;
+        let bytes = out.get_mut(&p.chunk).ok_or_else(|| {
+            internal(format!("image: a thunk in chunk {}, not a patch island", p.chunk.0))
+        })?;
+        let range = usize::try_from(p.offset)
+            .ok()
+            .and_then(|s| Some(s..s.checked_add(usize::try_from(shape.size).ok()?)?))
+            .filter(|r| r.end <= bytes.len())
+            .ok_or_else(|| internal(format!("image: a thunk past its island {}", p.chunk.0)))?;
+        link.arch.write_thunk(&cx, &mut bytes[range]).map_err(|e| {
+            internal(format!("image: the thunk at {addr:#x} to {target:#x}: {e:?}"))
+        })?;
+    }
+    Ok(out)
+}
+
+/// `Link::fixups` at file offsets, sorted: each word's address in the
+/// in-file alloc chunk that holds it.
+///
+/// # Errors
+///
+/// `internal-error` for a word in no such chunk.
+fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<(u64, [u8; 4])>, Diagnostic> {
+    let pl = &link.layout.placement;
+    let mut spans: Vec<(u64, u64, u64)> = pl
+        .chunks
+        .iter()
+        .filter(|(_, c)| c.in_file() && c.flags & SHF_ALLOC != 0)
+        .filter_map(|(_, c)| Some((c.addr?, c.size, c.offset)))
+        .collect();
+    spans.sort_unstable();
+    let mut out = Vec::with_capacity(link.fixups.len());
+    for &(addr, word) in link.fixups {
+        let at = spans.partition_point(|s| s.0 <= addr);
+        let off = at
+            .checked_sub(1)
+            .map(|i| spans[i])
+            .filter(|&(a, size, _)| addr + 4 <= a + size)
+            .map(|(a, _, off)| off + (addr - a))
+            .ok_or_else(|| internal(format!("image: a fixed word at {addr:#x} is in no chunk")))?;
+        out.push((off, word));
+    }
+    out.sort_unstable_by_key(|f| f.0);
+    Ok(out)
+}
+
 /// The bytes of the three structural chunks (I-40): the ELF header, the
 /// program header table and the section header table, by chunk.
 ///
@@ -766,8 +873,14 @@ pub fn structure(
     let phnum = u16::try_from(phdrs.len())
         .map_err(|_| internal(format!("image: {} program headers", phdrs.len())))?;
     let e_flags = link.arch.e_flags(&mut live_flags(link)).map_err(|r| r.diagnostic())?;
+    // `EI_OSABI` (a64.md Q11, ruled by WP-027c): `ELFOSABI_GNU` when the
+    // output uses a GNU extension of the gABI: an `STT_GNU_IFUNC` or
+    // `STB_GNU_UNIQUE` symbol, or an `IRELATIVE` record (GNU ld's rule;
+    // eu-elflint rejects the IFUNC symbol under 0); else the target's.
+    let gnu = link.synth.symtab.is_some_and(|(p, _)| p.gnu_symbols())
+        || !link.layout.slots.iplt.is_empty();
     let ehdr = Ehdr {
-        osabi: facts.osabi,
+        osabi: if gnu { ELFOSABI_GNU } else { facts.osabi },
         e_type,
         e_machine: facts.e_machine,
         e_entry: pl.entry.unwrap_or(0),
@@ -961,7 +1074,8 @@ pub fn write(
     on_phase: &mut dyn FnMut(u16, &str),
 ) -> Result<Written, Failed> {
     let tables = LinkTables::new(*link);
-    let fixed = structure(link).map_err(failed)?;
+    let mut fixed = structure(link).map_err(failed)?;
+    fixed.append(&mut patches(link, &tables).map_err(failed)?);
     let chunks = Chunks::new(link);
     let pl = &link.layout.placement;
     let mut list: Vec<&(dyn SynthChunk + Sync)> = Vec::new();
@@ -1027,6 +1141,7 @@ pub fn write(
         }
     };
     let build_id = if sealed.is_some() { link.options.build_id } else { None };
+    let fixups = file_fixups(link).map_err(failed)?;
     let img = Image {
         plan: &plan,
         source: link.inputs,
@@ -1054,6 +1169,7 @@ pub fn write(
             _ => None,
         },
         build_id,
+        fixups: &fixups,
     };
     let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
     let filled: Filled = match fill::write(&img, &out, out.shown(), link.pool) {
@@ -1077,15 +1193,14 @@ pub fn write(
     }
     on_phase(PHASE_IMAGE, "image");
     out.commit().map_err(|kd| Failed { diagnostics: vec![kd] })?;
-    on_phase(PHASE_OUTPUT, "output");
+    on_phase(PHASE_OUTPUT, "output file");
     Ok(Written { build_id: filled.build_id, rows: plan.rows.len(), jobs: plan.jobs.len() })
 }
 
 // ---- the map (§9.2) --------------------------------------------------------
 
 /// The map of a link (I-77, I-78; `spec/plumb.md` §3.2), from the tables
-/// alone (I-79: independent of fill). Not yet listed: thunk and patch
-/// chunks (range extension's, with their targets) and folds (M2).
+/// alone (I-79: independent of fill). Not yet listed: folds (M2).
 #[must_use]
 pub fn map_of(link: &Link<'_, '_>) -> crate::map::Map {
     LinkTables::new(*link).map()
@@ -1225,6 +1340,48 @@ impl LinkTables<'_, '_> {
                     target: None,
                 });
             }
+        }
+        // Range extension's thunks and erratum patches (I-78), in patch
+        // order, named as `.symtab` names them (S-80).
+        let thunk_size = l.arch.thunk().map_or(0, |t| u64::from(t.size));
+        for p in &pl.patches {
+            use mortar_core::layout::{PatchKind, ThunkTarget};
+            let addr = pl.chunks.get(p.chunk).and_then(|c| c.addr?.checked_add(p.offset));
+            let chunk = match p.kind {
+                PatchKind::Thunk(t) => {
+                    let (key, addend, plt) = match t {
+                        ThunkTarget::Sym { key, addend } => (key, addend, false),
+                        ThunkTarget::Plt(key) => (key, 0, true),
+                    };
+                    let mut target = l.facts.name(key).to_vec();
+                    if plt {
+                        target.extend_from_slice(b"@plt");
+                    }
+                    let mut name = b"__".to_vec();
+                    name.extend_from_slice(&target);
+                    if addend > 0 {
+                        name.extend_from_slice(format!("+{addend:#x}").as_bytes());
+                    } else if addend < 0 {
+                        name.extend_from_slice(format!("-{:#x}", addend.unsigned_abs()).as_bytes());
+                    }
+                    name.extend_from_slice(b"_veneer");
+                    MapChunk {
+                        kind: map::ChunkKind::Thunk,
+                        name,
+                        addr,
+                        size: thunk_size,
+                        target: Some((target, addend)),
+                    }
+                }
+                PatchKind::Erratum { erratum, .. } => MapChunk {
+                    kind: map::ChunkKind::Patch,
+                    name: mortar_synth::symtab::ERRATUM_843419.to_vec(),
+                    addr,
+                    size: l.arch.patch(erratum).map_or(0, |s| u64::from(s.size)),
+                    target: None,
+                },
+            };
+            m.chunks.push(chunk);
         }
         for d in &pl.defined {
             if let (Some(k), Some(v)) = (l.inputs.symbols.get(d.symbol), pl.defined_of(d.symbol)) {

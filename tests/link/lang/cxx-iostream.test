@@ -3,7 +3,6 @@
 # `.init_array` before main, and a std::string crosses them.
 #@ spec: layout.md "Static executables"
 #@ requires: g++
-#@ xfail(mortar): no linking yet (M1)
 
 cxx -O1 main.cc -o main.o
 link g++ -static -no-pie main.o -o prog

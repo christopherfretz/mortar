@@ -104,6 +104,9 @@ pub struct Image<'a> {
     /// The build id's style; `None` when no leaves are computed (I-73).
     /// Leaves are windows, so it needs `plan.window == IMAGE_BLOCK` (I-75).
     pub build_id: Option<TreeStyle>,
+    /// Words written over the rows' bytes, by file offset, sorted (the
+    /// erratum fixes, `crate::link::Link::fixups`).
+    pub fixups: &'a [(u64, [u8; 4])],
 }
 
 impl std::fmt::Debug for Image<'_> {
@@ -288,6 +291,16 @@ fn fill_into(
                         dst[(zs - a) as usize..(ze - a) as usize].fill(0);
                     }
                 }
+            }
+        }
+    }
+    // The fixed words over the rows (a word may straddle the range).
+    let first = img.fixups.partition_point(|f| f.0 + 4 <= lo);
+    for &(off, word) in img.fixups[first..].iter().take_while(|f| f.0 < hi) {
+        for (i, b) in word.iter().enumerate() {
+            let at = off + i as u64;
+            if (lo..hi).contains(&at) {
+                out[(at - lo) as usize] = *b;
             }
         }
     }

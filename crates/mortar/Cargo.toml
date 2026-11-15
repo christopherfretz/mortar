@@ -33,6 +33,9 @@ mortar_synth.workspace = true
 
 [dev-dependencies]
 mortar_testutil.workspace = true
+# The verifier on every output the pipeline tests write (VALIDATION.md;
+# a test dependency only: no phase crate depends on it).
+mortar_plumb.workspace = true
 
 [lints]
 workspace = true

@@ -29,7 +29,6 @@ use mortar_image::synth::{Division, SizeCx, SynthChunk, SynthCx, SynthError};
 use mortar_image::target::Target;
 use mortar_image::tombstone;
 
-pub mod front;
 pub mod reflink;
 
 pub const ARCH: A64 = A64::M1;
@@ -457,6 +456,7 @@ pub fn image<'a>(w: &'a World, chunks: &'a [Chunk<'a>]) -> Image<'a> {
         merged: None,
         eh: None,
         build_id: None,
+        fixups: &[],
     }
 }
 

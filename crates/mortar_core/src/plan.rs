@@ -651,6 +651,8 @@ pub struct TargetOption {
     /// The option as the user wrote it (`--fix-cortex-a53-843419`,
     /// `-z lam-u48`).
     pub option: String,
+    /// Its value, if it has one (`full` of `--fix-cortex-a53-843419=full`).
+    pub value: Option<OsString>,
     /// The targets it belongs to.
     pub targets: Vec<Target>,
 }

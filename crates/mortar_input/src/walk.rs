@@ -2389,8 +2389,13 @@ impl<'c, 's> Walk<'c, 's> {
     // ---------------------------------------------------------- final
 
     fn finish_checks(&mut self) {
-        // §3.1 rule 4.
-        if self.target.is_none() && !self.plan.inputs.is_empty() {
+        // §3.1 rule 4, when no input failed: a file that cannot be opened
+        // or is refused may be the one that names the target, and its
+        // error is the one to report (WP-027c ruling).
+        if self.target.is_none()
+            && !self.plan.inputs.is_empty()
+            && !self.problems.iter().any(Problem::is_error)
+        {
             self.problems.push(Problem::error(0, 0, Dk::NoTarget));
         }
         // §3.2: the scripts' OUTPUT_FORMAT, OUTPUT_ARCH, TARGET.

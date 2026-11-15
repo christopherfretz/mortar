@@ -7,7 +7,7 @@
 # mold (resolve.md §4.3); GNU ld rejects it. Under --warn-backrefs mortar
 # says what GNU ld would do.
 #@ spec: resolve.md §4.3
-#@ xfail(mortar): no linking yet (M1)
+#@ xfail(mortar): --warn-backrefs is refused by name (crates/mortar_cli/src/rows.rs; resolve has no back-reference report yet; owner: resolve)
 
 cc -O1 main.c -o main.o
 cc -O1 helper.c -o helper.o

@@ -133,7 +133,7 @@ pub fn verify_link(
     format: Format,
     base: &Path,
     allowed: Option<&BTreeSet<PathBuf>>,
-) -> Result<(Vec<u8>, mortar_plumb::Report), String> {
+) -> Result<Verified, String> {
     let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
     let output = read(output)?;
     let map_bytes = read(map)?;
@@ -158,8 +158,13 @@ pub fn verify_link(
     }
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
     let report = mortar_plumb::verify(&output, &inputs, &parsed);
-    Ok((output, report))
+    drop(inputs);
+    Ok((output, report, files))
 }
+
+/// [`verify_link`]'s answer: the output's bytes, the report, and the
+/// inputs read (path as the map names it, bytes).
+pub type Verified = (Vec<u8>, mortar_plumb::Report, Vec<(String, Vec<u8>)>);
 
 /// Runs the command; prints the findings and the coverage. `Ok(clean)`.
 pub fn run(args: &Args) -> Result<bool, String> {
@@ -176,7 +181,7 @@ pub fn run(args: &Args) -> Result<bool, String> {
             )
         }
     };
-    let (_, report) =
+    let (_, report, _) =
         verify_link(&args.output, &args.map, args.format, Path::new(""), allowed.as_ref())?;
     print!("{}", report.render(&args.output.display().to_string()));
     print!("{}", report.summary());

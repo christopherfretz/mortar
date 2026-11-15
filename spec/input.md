@@ -215,7 +215,10 @@ REL with implicit addends for i386) is:
    does not change which file that is (§12.1);
 4. otherwise `no-target`, an error: `target emulation unknown: -m or at
    least one .o file required` (lld's wording; GNU ld uses its built-in
-   default, mold says `-m option is missing` [E1]).
+   default, mold says `-m option is missing` [E1]). It is not reported
+   when an input already has an error (a missing file is `cannot-open-file`
+   alone): that input may be the one that would have named the target
+   (WP-027c ruling).
 
 An **ELF file** for this purpose is a relocatable object, a shared object,
 or an archive's first member that is a relocatable object (in archive

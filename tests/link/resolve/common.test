@@ -8,7 +8,6 @@
 # bytes and `_end` follows it). Marked xfail for mold until it is fixed.
 #@ spec: resolve.md §3.3
 #@ xfail(mold): mold 2.37.1 sizes a common symbol by its first definition, not the largest
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O0 -fcommon a.c -o a.o
 cc -O0 -fcommon b.c -o b.o

@@ -686,6 +686,25 @@ impl Store {
         self.by_inode.lock().unwrap_or_else(PoisonError::into_inner).get(&(dev, ino)).copied()
     }
 
+    /// The store's handle of a model handle (`FileBytes::blob`), when this
+    /// store gave it out: the direct way back for [`Store::recheck`]
+    /// (WP-027c; the image's end, input.md §11.5).
+    #[must_use]
+    pub fn blob_of_model(&self, b: inputs::Blob) -> Option<Blob> {
+        self.try_entry(b.0).map(|_| Blob(b.0))
+    }
+
+    /// The `(st_dev, st_ino)` of every file read, in ascending order (the
+    /// output file's checks against its inputs: image.md I-62, I-66,
+    /// I-113).
+    #[must_use]
+    pub fn inodes(&self) -> Vec<(u64, u64)> {
+        let map = self.by_inode.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut v: Vec<(u64, u64)> = map.keys().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
     /// The system calls made so far.
     #[must_use]
     pub fn stats(&self) -> StoreStats {

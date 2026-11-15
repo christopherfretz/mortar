@@ -2,7 +2,6 @@
 # in the file, the segment's memory size covers it, and the loader
 # gives zeroes (gABI "Special Sections"). 8 MiB of it here.
 #@ spec: layout.md "Segments"
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 main.c -o main.o
 link gcc -static -no-pie main.o -o prog
