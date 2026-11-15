@@ -161,6 +161,7 @@ is added before or after it.
 | `ambiguous-sysroot-path` | `AmbiguousSysrootPath { spelling }` | `ambiguous sysroot path '{spelling}'` | own |
 | `cannot-open-file` | `CannotOpenFile { path, reason }` | `cannot open {path}: {reason}` | lld, mold |
 | `cannot-open-output` | `CannotOpenOutput { path, reason }` | `cannot open output file {path}: {reason}` | GNU ld, lld |
+| `cannot-write-output` | `CannotWriteOutput { path, reason }` | `cannot write output file {path}: {reason}` | own |
 | `duplicate-soname` | `DuplicateSoname { soname }` | `DT_SONAME '{soname}' is already loaded; this file is not used` | own |
 | `ignored-member` | `IgnoredMember { what }` | `archive member is not a relocatable object: {what}` | own (lld: `archive member 'x' is neither ET_REL nor LLVM bitcode`) |
 | `incompatible-file` | `IncompatibleFile { expected, found }` | `incompatible file: {expected} is expected but got {found}` | mold |
@@ -202,6 +203,9 @@ is added before or after it.
 
 ### 3.2 Notes on the kinds
 
+- `cannot-open-output` and `cannot-write-output` name the output path as
+  the user gave it, never the temporary file (`spec/image.md` §7); key
+  `(105, 0, 0)`. `cannot-write-output` was added by WP-026.
 - `unknown-option` is for an argument that is not an option of GNU ld's
   command line as `spec/cli.md` lists it (a typing error, most likely). An
   option that is listed and not implemented is `refused` with class
@@ -650,7 +654,9 @@ An error means the link fails and leaves no output file.
   is true: later phases would report consequences, not causes.
 - The phase that creates the output file (`spec/image.md`) creates it only
   when `has_errors()` is false, and removes it if an error is reported
-  afterwards.
+  afterwards. A failure at any phase after the command line also removes
+  an existing regular output file that is not an input (`spec/image.md`
+  I-66).
 - `Report::failed()` is true exactly when an error was emitted.
 - The facade (`mortar::link`) returns `Outcome::Failed(report)` for a
   failed link; the `mortar` executable then writes `report.render(..)` to
