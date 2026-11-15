@@ -363,7 +363,7 @@ fn raises(arch: &dyn mortar_arch::Arch, r_type: u32) -> bool {
                     r_offset: 8,
                     key,
                     r_type,
-                    addend: 0,
+                    addend: Some(0),
                     howto: &h,
                     site: Site { bytes: &bytes, offset: 8 },
                     records: &NoRecords,
