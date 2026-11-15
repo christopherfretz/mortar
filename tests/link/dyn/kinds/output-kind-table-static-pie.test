@@ -1,0 +1,59 @@
+# dyn.md D-1, the table of output kinds, the `StaticPie` column (D-2:
+# not a dynamic link): a C hello linked `gcc -static-pie`, run, and its
+# headers held to the row: `ET_DYN`, base 0, no `.interp`/PT_INTERP, a
+# `.dynamic` with PT_DYNAMIC (for glibc's self-relocation), no DT_NEEDED,
+# DT_DEBUG and DF_1_PIE, RELATIVE records (counted by DT_RELACOUNT),
+# IRELATIVE records (glibc's own IFUNCs) in `.rela.dyn` (synth S-70),
+# `.dynsym` with the null entry only. The `Exec` and `Pie` columns are
+# `output-kind-table`.
+#
+# Where the references differ (measured, both architectures): PT_PHDR
+# (dyn.md 13.1, "static-pie PT_PHDR": GNU ld none, lld and mold one;
+# mortar none). GNU ld puts the IRELATIVE records in `.rela.plt` (with
+# DT_JMPREL), lld and mold in `.rela.dyn`, as mortar does (S-70). mold
+# writes no DT_RELACOUNT. GNU ld's AArch64 `.dynsym` has two more entries
+# (STT_SECTION symbols of `.init` and `.data`); lld's and mold's, and GNU
+# ld's on x86-64, have the null entry only.
+#
+# mortar: AArch64 WP-052 (SPIE), x86-64 WP-052 (SPIE), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-1"
+#@ spec: dyn.md "D-2"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE hello.c -o pie.o
+link gcc -static-pie pie.o -o spie
+run spie
+  stdout: hello
+check readelf -hlW spie
+  has: Type: DYN
+  has: ^ LOAD 0x000000 0x0000000000000000 0x0000000000000000
+  has: ^ DYNAMIC
+  not: ^ INTERP
+  not: Requesting program interpreter
+  not(bfd,mortar): ^ PHDR
+  has(lld,mold): ^ PHDR
+check readelf -dW spie
+  not: (NEEDED)
+  has: (DEBUG)
+  has: (FLAGS_1) Flags:*PIE
+  has(bfd,lld,mortar): (RELACOUNT)
+check readelf -W --dyn-syms spie
+  has(lld,mold,mortar): Symbol table '.dynsym' contains 1 entry:
+  has(bfd,x86_64): Symbol table '.dynsym' contains 1 entry:
+  has(bfd,aarch64): Symbol table '.dynsym' contains 3 entries:
+check readelf -rW spie
+  has: _RELATIVE
+  has(lld,mold,mortar): Relocation section '.rela.dyn'
+  then(lld,mold,mortar): _IRELATIVE
+  not(lld,mold,mortar): Relocation section '.rela.plt'
+  has(bfd): Relocation section '.rela.plt'
+  then(bfd): _IRELATIVE
+
+#--- hello.c
+#include <stdio.h>
+
+int main(void) {
+  puts("hello");
+  return 0;
+}

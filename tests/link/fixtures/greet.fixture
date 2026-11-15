@@ -1,0 +1,28 @@
+# A small C shared library for the dynamic tests (spec/harness.md
+# "Fixtures"): `libgreet.so` (soname `libgreet.so`), linked by the
+# architecture's gcc with GNU ld. It defines a function, an initialized
+# datum (a COPY candidate for `-fno-pie` code), a TLS variable and a
+# function that calls back into the program (`greet_hook`, weak), and it
+# needs libc.
+
+cc -O1 -fPIC greet.c -o greet.o
+shlib gcc greet.o -Wl,-soname,libgreet.so -o libgreet.so
+
+#--- greet.h
+extern int greet_count;
+extern __thread int greet_tls;
+int greet(const char *who);
+void greet_hook(void) __attribute__((weak));
+#--- greet.c
+#include <stdio.h>
+#include "greet.h"
+
+int greet_count = 40;
+__thread int greet_tls = 7;
+
+int greet(const char *who) {
+  printf("hello, %s\n", who);
+  if (greet_hook)
+    greet_hook();
+  return ++greet_count;
+}

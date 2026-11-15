@@ -1,0 +1,37 @@
+# dyn.md D-71, Q5: `eu-elflint --gnu-ld` passes GNU ld's dynamic outputs
+# and must pass mortar's, but for the fixed allow-list: mortar's
+# `.relro_padding` chunk (model §4.4) draws elflint's complaint about its
+# type and flags, as lld's does (Q5: kept). lld and mold draw other
+# complaints (their `.relro_padding`, headers-first `Vernaux`, `.rodata`
+# entry sizes; D-71): elflint is not their judge, and their links are
+# checked here for running only.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-71"
+#@ arch: aarch64 x86_64
+#@ requires: eu-elflint
+#@ fixture: greet
+
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+link gcc -pie pie.o -L. -lgreet -o pie
+run pie
+  stdout: hello, elflint
+link gcc -no-pie exec.o -L. -lgreet -o exec
+run exec
+  stdout: hello, elflint
+check(bfd,mortar) elflint pie
+  allow(mortar): section [*] '.relro_padding' has wrong type: expected RELR, is NOBITS
+  allow(mortar): section [*] '.relro_padding' has wrong flags: expected none and possibly ALLOC, is WRITE|ALLOC
+check(bfd,mortar) elflint exec
+  allow(mortar): section [*] '.relro_padding' has wrong type: expected RELR, is NOBITS
+  allow(mortar): section [*] '.relro_padding' has wrong flags: expected none and possibly ALLOC, is WRITE|ALLOC
+
+#--- main.c
+#include "greet.h"
+
+int main(void) {
+  greet("elflint");
+  return 0;
+}

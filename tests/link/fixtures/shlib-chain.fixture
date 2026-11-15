@@ -1,0 +1,27 @@
+# A DT_NEEDED chain for the shared-input tests (spec/dyn.md D-11, D-12,
+# D-15): `libtop.so` needs `libmid.so`, which needs `libleaf.so` (sonames
+# equal to the file names), all in one directory, linked by GNU ld.
+# `top_fn` returns 1000 + `mid_fn`, `mid_fn` 100 + `leaf_fn`, `leaf_fn` 3.
+# A program that names only `-ltop` finds the other two as closure files
+# (with `-rpath-link`, which GNU ld needs for them).
+
+cc -O1 -fPIC leaf.c -o leaf.o
+cc -O1 -fPIC mid.c -o mid.o
+cc -O1 -fPIC top.c -o top.o
+shlib gcc leaf.o -Wl,-soname,libleaf.so -o libleaf.so
+shlib gcc mid.o -Wl,-soname,libmid.so -L. -lleaf -o libmid.so
+shlib gcc top.o -Wl,-soname,libtop.so -L. -lmid -Wl,-rpath-link,. -o libtop.so
+
+#--- chain.h
+int leaf_fn(void);
+int mid_fn(void);
+int top_fn(void);
+#--- leaf.c
+#include "chain.h"
+int leaf_fn(void) { return 3; }
+#--- mid.c
+#include "chain.h"
+int mid_fn(void) { return 100 + leaf_fn(); }
+#--- top.c
+#include "chain.h"
+int top_fn(void) { return 1000 + mid_fn(); }

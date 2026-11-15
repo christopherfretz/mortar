@@ -109,6 +109,12 @@ impl Arch {
         if host == Some(self) { PathBuf::from("/") } else { Path::new("/usr").join(self.triple()) }
     }
 
+    /// The dynamic loader's file on this machine: [`Arch::dynamic_linker`]
+    /// under the system root (what `ldd` runs, as `<loader> --list`).
+    pub fn loader(self, host: Option<Self>) -> PathBuf {
+        self.sysroot(host).join(self.dynamic_linker().trim_start_matches('/'))
+    }
+
     /// The directory of the C library and its start files: Debian's
     /// multiarch `/usr/lib/<triple>` for the host's architecture, else
     /// `/usr/<triple>/lib`.
@@ -207,12 +213,26 @@ pub enum Feature {
     Clang,
     Yaml2obj,
     LlvmReadelf,
+    /// `check gdb`: GNU's debugger.
+    Gdb,
+    /// `check lldb`: LLVM's debugger, of a pinned major.
+    Lldb,
+    /// `check elflint`: elfutils' `eu-elflint`.
+    Elflint,
 }
 
 impl Feature {
     /// Every feature.
-    pub const ALL: [Self; 5] =
-        [Self::Gxx, Self::Gfortran, Self::Clang, Self::Yaml2obj, Self::LlvmReadelf];
+    pub const ALL: [Self; 8] = [
+        Self::Gxx,
+        Self::Gfortran,
+        Self::Clang,
+        Self::Yaml2obj,
+        Self::LlvmReadelf,
+        Self::Gdb,
+        Self::Lldb,
+        Self::Elflint,
+    ];
 
     /// The word of a `requires` directive.
     pub fn name(self) -> &'static str {
@@ -222,6 +242,9 @@ impl Feature {
             Self::Clang => "clang",
             Self::Yaml2obj => "yaml2obj",
             Self::LlvmReadelf => "llvm-readelf",
+            Self::Gdb => "gdb",
+            Self::Lldb => "lldb",
+            Self::Elflint => "eu-elflint",
         }
     }
 
@@ -332,6 +355,12 @@ pub struct CommonTools {
     pub llvm_readelf: Option<PathBuf>,
     pub lld: Option<PathBuf>,
     pub mold: Option<PathBuf>,
+    /// The `requires: gdb` tool (the host's gdb).
+    pub gdb: Option<PathBuf>,
+    /// The `requires: lldb` tool, of a pinned LLVM major.
+    pub lldb: Option<PathBuf>,
+    /// The `requires: eu-elflint` tool.
+    pub elflint: Option<PathBuf>,
 }
 
 impl CommonTools {
@@ -346,6 +375,9 @@ impl CommonTools {
             llvm_readelf: find("llvm-readelf"),
             lld: find("ld.lld"),
             mold: find("mold").or_else(|| find("ld.mold")),
+            gdb: find("gdb"),
+            lldb: find("lldb"),
+            elflint: find("eu-elflint"),
         }
     }
 }
@@ -360,6 +392,9 @@ pub fn feature_tool_name(feature: Feature, arch: Arch, host: Option<Arch>) -> St
         Feature::Clang => "clang and clang++ of a pinned LLVM major".to_owned(),
         Feature::Yaml2obj => "yaml2obj of a pinned LLVM major".to_owned(),
         Feature::LlvmReadelf => "llvm-readelf of a pinned LLVM major".to_owned(),
+        Feature::Gdb => "gdb".to_owned(),
+        Feature::Lldb => "lldb of a pinned LLVM major".to_owned(),
+        Feature::Elflint => "eu-elflint (Debian package elfutils)".to_owned(),
     }
 }
 
@@ -384,6 +419,11 @@ mod tests {
         assert_eq!(Arch::I386.sysroot(host), Path::new("/usr/i686-linux-gnu"));
         assert_eq!(Arch::Aarch64.libdir(host), Path::new("/usr/lib/aarch64-linux-gnu"));
         assert_eq!(Arch::I386.libdir(host), Path::new("/usr/i686-linux-gnu/lib"));
+        assert_eq!(Arch::Aarch64.loader(host), Path::new("/lib/ld-linux-aarch64.so.1"));
+        assert_eq!(
+            Arch::X86_64.loader(host),
+            Path::new("/usr/x86_64-linux-gnu/lib64/ld-linux-x86-64.so.2")
+        );
         assert_eq!(Arch::X86_64.cross_package("gcc"), "gcc-x86-64-linux-gnu");
         assert_eq!(Arch::I386.cross_package("ld.bfd"), "binutils-i686-linux-gnu");
         assert_eq!(Arch::I386.cross_package("sysroot"), "libc6-dev-i386-cross");

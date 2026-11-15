@@ -1,0 +1,80 @@
+# dyn.md D-48: a general-dynamic sequence that the architecture does not
+# recognise keeps its module/offset pair: `DTPMOD` + `DTPOFF` records
+# against the key, and the `__tls_get_addr` call stays. AArch64's
+# traditional GD is relaxed only when a64.md R4's pattern holds (`adrp`,
+# `add`, `bl __tls_get_addr`, `nop`); here the fourth word is a `mov`,
+# not the `nop` (hand-written `gd.S`), so the sequence is applied
+# unrelaxed: `R_AARCH64_TLS_DTPMOD64` and `R_AARCH64_TLS_DTPREL64`
+# against the fixture library's `tlsx`. The program prints the value and
+# whether the address equals the library's `&tlsx`. PIE and non-PIE.
+#
+# AArch64 only: every x86-64 GD form the compilers write (GD16, GD16x,
+# GD22, x64.md §8.3) matches, and all three references relax it; an
+# unmatched x86-64 `TLSGD` in an `Exec`/`Pie` has no rule in dyn.md or
+# x64.md beyond X-26 (static: refused; shared: kept) (reported).
+#
+# What the references do (measured): mold keeps the pair, as D-48 says,
+# and the program runs. lld does not know `R_AARCH64_TLSGD_ADR_PAGE21`
+# (513) and `TLSGD_ADD_LO12_NC` (514) at all, and refuses (a64.md §8.4).
+# GNU ld relaxes to IE without checking the fourth word, overwriting the
+# `mov` with its `add x0, x1, x0`, and the program reads the wrong
+# address (`same 0` and a garbage value): a wrong output of GNU ld that
+# dyn.md §13.2 does not list (reported).
+#
+# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
+#@ spec: dyn.md "D-48"
+#@ arch: aarch64
+#@ fixture: reloc-libd
+#@ xfail(bfd): relaxes a traditional GD whose fourth word is not the NOP, overwriting the code after the call (not in dyn.md 13.2)
+
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+as gd.S -o gd.o
+link(lld) gcc -pie pie.o gd.o -L. -ld -o pie
+  exit: fail
+  diag: unknown relocation (513) against symbol tlsx
+link(bfd,mold,mortar) gcc -pie pie.o gd.o -L. -ld -o pie
+run(bfd,mold,mortar) pie
+  stdout: gd 5 same 1
+check(bfd,mold,mortar) readelf -rW pie
+  count: 1 R_AARCH64_TLS_DTPMOD64 * tlsx + 0$
+  count: 1 R_AARCH64_TLS_DTPREL64 * tlsx + 0$
+  not: TLS_TPREL64
+  has: R_AARCH64_JUMP_SLOT * __tls_get_addr
+link(bfd,mold,mortar) gcc -no-pie exec.o gd.o -L. -ld -o exec
+run(bfd,mold,mortar) exec
+  stdout: gd 5 same 1
+check(bfd,mold,mortar) readelf -rW exec
+  count: 1 R_AARCH64_TLS_DTPMOD64 * tlsx + 0$
+  count: 1 R_AARCH64_TLS_DTPREL64 * tlsx + 0$
+  not: TLS_TPREL64
+
+#--- gd.S
+// The traditional GD sequence of `tlsx`, but the word after the call is
+// a `mov`, not R4's `nop`: not relaxable, kept as a module/offset pair.
+        .text
+        .globl  gd_addr
+        .type   gd_addr, %function
+gd_addr:
+        stp     x29, x30, [sp, -16]!
+        mov     x29, sp
+        adrp    x0, :tlsgd:tlsx
+        add     x0, x0, :tlsgd_lo12:tlsx
+        bl      __tls_get_addr
+        mov     x1, x0
+        mov     x0, x1
+        ldp     x29, x30, [sp], 16
+        ret
+        .size   gd_addr, .-gd_addr
+        .section .note.GNU-stack,"",%progbits
+#--- main.c
+#include <stdio.h>
+#include "libd.h"
+
+int *gd_addr(void);
+
+int main(void) {
+  int *g = gd_addr();
+  printf("gd %d same %d\n", *g, g == lib_tlsx());
+  return 0;
+}

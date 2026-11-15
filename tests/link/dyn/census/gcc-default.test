@@ -1,0 +1,43 @@
+# dyn.md §2.1, end to end: gcc's default link line, as users link — a C
+# hello compiled the default way and linked by `gcc` with no option (the
+# driver's default PIE: `-pie`, `-dynamic-linker`, `--as-needed`,
+# `--push-state`/`--pop-state` around `-lgcc_s`, `Scrt1.o`, `crtbeginS.o`)
+# and with `-no-pie` (`crt1.o`, `crtbegin.o`), each run. Needed: `libc.so.6`
+# only (§2.2; `libc_nonshared.a` gives `atexit`, `libgcc_s` is as-needed and
+# unused).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "2.1 Default link lines"
+#@ spec: dyn.md "D-1"
+#@ arch: aarch64 x86_64
+
+cc -O2 hello.c -o hello.o
+link gcc hello.o -o pie
+run pie
+  stdout: hello C, 42
+link gcc -no-pie hello.o -o exec
+run exec
+  stdout: hello C, 42
+check readelf -hdW pie
+  has: Type: DYN
+  has: (FLAGS_1) Flags: PIE
+  has: (NEEDED) Shared library: [libc.so.6]
+  count: 1 (NEEDED)
+check readelf -hdW exec
+  has: Type: EXEC
+  has: (NEEDED) Shared library: [libc.so.6]
+  count: 1 (NEEDED)
+
+#--- hello.c
+#include <stdio.h>
+#include <stdlib.h>
+
+static int answer;
+static void bye(void) { printf("hello C, %d\n", answer); }
+
+int main(void) {
+  atexit(bye);
+  answer = 42;
+  return 0;
+}

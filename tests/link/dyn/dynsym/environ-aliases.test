@@ -1,0 +1,95 @@
+# dyn.md D-21 item 3 and D-23, copy aliases: when the program's `-fno-pie`
+# code (and x86-64 `-fPIE` code, which GCC lets reach extern data directly)
+# reads libc's `environ`, the variable is copied into the program, and
+# every name libc gives that storage (`environ`, `_environ`, `__environ`,
+# one address in libc.so.6) must be exported at the copy, whether the
+# program references it or not: otherwise a library that names another
+# alias binds to libc's original, which `setenv` no longer updates. The
+# library reports the address each alias has for it and the array each
+# alias holds after `setenv` has moved it. Each alias is a defined
+# `.dynsym` entry at the copy; D-23's binding is the shared definition's
+# (libc: `environ` and `_environ` weak, `__environ` global).
+#
+# W2 (dyn.md §13.2): GNU ld exports only the referenced alias and one
+# more; the library's `_environ` is libc's stale variable (`&_environ 0`,
+# `_environ 0`) on both architectures. lld and mold export all three.
+# Bindings differ (not in §13.1; reported with WP-051): lld makes the
+# referenced `environ` global, mold makes `environ` global and `__environ`
+# weak; mortar's are D-23's.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-21"
+#@ spec: dyn.md "D-23"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd): W2: not every alias of the copied environ is exported; the library's _environ is libc's stale one after setenv
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libenv.so -o libenv.so
+cc -O1 -fno-pie main.c -o exec.o
+cc -O1 -fPIE main.c -o pie.o
+
+link gcc -no-pie exec.o -L. -lenv -o exec
+run exec
+  stdout: setenv moved environ 1
+  stdout: library &environ 1 &__environ 1 &_environ 1
+  stdout: library sees the new environment: environ 1 __environ 1 _environ 1
+  stdout: getenv 1
+check readelf --dyn-syms -W exec
+  has: 8 OBJECT * DEFAULT * environ@GLIBC_
+  has: 8 OBJECT * DEFAULT * _environ@GLIBC_
+  has: 8 OBJECT * DEFAULT * __environ@GLIBC_
+  not: UND environ@
+  not: UND _environ@
+  not: UND __environ@
+  has(mortar): 8 OBJECT WEAK DEFAULT * environ@GLIBC_
+  has(mortar): 8 OBJECT WEAK DEFAULT * _environ@GLIBC_
+  has(mortar): 8 OBJECT GLOBAL DEFAULT * __environ@GLIBC_
+
+link gcc -pie pie.o -L. -lenv -o pie
+run pie
+  stdout: setenv moved environ 1
+  stdout: library &environ 1 &__environ 1 &_environ 1
+  stdout: library sees the new environment: environ 1 __environ 1 _environ 1
+  stdout: getenv 1
+check(x86_64) readelf --dyn-syms -W pie
+  has: 8 OBJECT * DEFAULT * environ@GLIBC_
+  has: 8 OBJECT * DEFAULT * _environ@GLIBC_
+  has: 8 OBJECT * DEFAULT * __environ@GLIBC_
+  has(mortar): 8 OBJECT WEAK DEFAULT * environ@GLIBC_
+  has(mortar): 8 OBJECT WEAK DEFAULT * _environ@GLIBC_
+  has(mortar): 8 OBJECT GLOBAL DEFAULT * __environ@GLIBC_
+# AArch64 GCC reaches extern data through the GOT in a PIE: no copy.
+check(aarch64) readelf --dyn-syms -W pie
+  has: OBJECT GLOBAL DEFAULT UND environ@GLIBC_
+  not: _environ@
+
+#--- lib.c
+extern char **_environ;
+extern char **__environ;
+extern char **environ;
+void *lib_environ(void) { return &environ; }
+void *lib___environ(void) { return &__environ; }
+void *lib__environ(void) { return &_environ; }
+char **lib_environ_value(void) { return environ; }
+char **lib___environ_value(void) { return __environ; }
+char **lib__environ_value(void) { return _environ; }
+#--- main.c
+#include <stdio.h>
+#include <stdlib.h>
+extern char **environ;
+void *lib_environ(void), *lib___environ(void), *lib__environ(void);
+char **lib_environ_value(void), **lib___environ_value(void), **lib__environ_value(void);
+
+int main(void) {
+  char **before = environ;
+  setenv("MORTAR_ENVIRON_ALIASES", "1", 1); /* grows the array: a new one */
+  printf("setenv moved environ %d\n", environ != before);
+  printf("library &environ %d &__environ %d &_environ %d\n", lib_environ() == (void *)&environ,
+         lib___environ() == (void *)&environ, lib__environ() == (void *)&environ);
+  printf("library sees the new environment: environ %d __environ %d _environ %d\n",
+         lib_environ_value() == environ, lib___environ_value() == environ,
+         lib__environ_value() == environ);
+  printf("getenv %s\n", getenv("MORTAR_ENVIRON_ALIASES"));
+  return 0;
+}

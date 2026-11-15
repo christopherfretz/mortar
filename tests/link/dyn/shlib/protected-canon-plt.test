@@ -1,0 +1,45 @@
+# dyn.md D-18: a `CANON_PLT` demand (a non-PIC reference to a shared
+# function's address, which a `-no-pie` program resolves to a PLT entry
+# made the function's canonical address) on a key whose shared definition
+# is `STV_PROTECTED` is refused by name, `copy-relocation-against-protected`:
+# `libprot.so` binds its own `pf` locally, so its `&pf` would differ from
+# the program's (C's pointer equality broken). `main` prints `pf()` and
+# whether its `&pf` equals the library's `addr_pf()`.
+#
+# PIE (`-fPIE`, the address from the GOT): no canonical PLT, every linker
+# links and prints `9 1` (E-shlib 5.6c). `-no-pie` (`-fno-pie`): GNU ld
+# refuses (AArch64 ``copy relocation against non-copyable protected symbol
+# `pf'``; x86-64 ``non-canonical reference to canonical protected function
+# `pf'``), lld refuses (`cannot preempt symbol: pf`).
+#
+# W5 (dyn.md §13.2, E-shlib 5.6d): mold links the `-no-pie` line, warns
+# `direct reference to protected function` from glibc at run time, and
+# prints `9 0`.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-18"
+#@ arch: aarch64 x86_64
+#@ fixture: shlib-prot
+#@ xfail(mold): W5: canonical PLT for a protected function; links, and &pf differs from the library's
+
+cc -O1 -fPIE pf.c -o pf-pie.o
+cc -O1 -fno-pie pf.c -o pf-nopie.o
+link gcc -pie pf-pie.o -L. -lprot -o pie
+run pie
+  stdout: 9 1
+link gcc -no-pie pf-nopie.o -L. -lprot -o nopie
+  exit: fail
+  diag(bfd,aarch64): copy relocation against non-copyable protected symbol `pf'
+  diag(bfd,x86_64): non-canonical reference to canonical protected function `pf'
+  diag(lld): cannot preempt symbol: pf
+  diag(mortar): copy relocation against non-copyable protected symbol `pf' in *
+
+#--- pf.c
+#include <stdio.h>
+#include "prot.h"
+
+int main(void) {
+  printf("%d %d\n", pf(), (void *)pf == addr_pf());
+  return 0;
+}

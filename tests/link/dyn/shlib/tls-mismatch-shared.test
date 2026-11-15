@@ -1,0 +1,65 @@
+# dyn.md D-16 (resolve.md §3.4 extended to shared definitions): a non-TLS
+# relocation against a key whose definition is a shared `STT_TLS` one, or
+# a TLS relocation against a shared non-TLS definition, is `tls-mismatch`
+# (text `TLS attribute mismatch: <name>`, diag.md §3.1). `data.o` reads
+# `tv` as ordinary data while `libtv.so` defines it `__thread`; `tls.o`
+# reads `nv` as `__thread` while `libnv.so` defines it as ordinary data.
+#
+# Measured here (dyn.md App. B said no reference diagnoses it): GNU ld
+# refuses both (``tv: TLS definition in ./libtv.so section .tdata
+# mismatches non-TLS reference in data.o``, ``nv: TLS reference in tls.o
+# mismatches non-TLS definition in ./libnv.so section .data``). lld links
+# both silently (x86-64 refuses the first only by accident, `relocation
+# R_X86_64_PC32 cannot be used against symbol 'tv'; recompile with
+# -fPIC`), and mold links both with at most a warning (`symbol type
+# mismatch: nv`; on x86-64 its second link dies on an assertion, signal
+# 6). Their programs crash (SIGSEGV) or print garbage (mold: `1179403647
+# 4`): wrong outputs, not yet in dyn.md §13.2.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-16"
+#@ arch: aarch64 x86_64
+#@ xfail(lld,mold): unrecorded in dyn.md §13.2: a TLS/non-TLS mismatch against a shared definition links, and the program crashes or reads garbage
+
+cc -O1 -fPIC tv.c -o tv.o
+cc -O1 -fPIC nv.c -o nv.o
+shlib gcc tv.o -Wl,-soname,libtv.so -o libtv.so
+shlib gcc nv.o -Wl,-soname,libnv.so -o libnv.so
+cc -O1 -fPIE data.c -o data.o
+cc -O1 -fPIE tls.c -o tls.o
+link gcc -pie data.o -L. -ltv -o data
+  exit: fail
+  diag(bfd): tv: TLS definition in ./libtv.so section .tdata mismatches non-TLS reference in data.o
+  diag(mortar): TLS attribute mismatch: tv
+link gcc -pie tls.o -L. -lnv -o tls
+  exit: fail
+  diag(bfd): nv: TLS reference in tls.o mismatches non-TLS definition in ./libnv.so section .data
+  diag(mortar): TLS attribute mismatch: nv
+
+#--- tv.c
+__thread int tv = 4;
+int get_tv(void) { return tv; }
+#--- nv.c
+int nv = 5;
+int get_nv(void) { return nv; }
+#--- data.c
+#include <stdio.h>
+
+extern int tv;
+int get_tv(void);
+
+int main(void) {
+  printf("%d %d\n", tv, get_tv());
+  return 0;
+}
+#--- tls.c
+#include <stdio.h>
+
+extern __thread int nv;
+int get_nv(void);
+
+int main(void) {
+  printf("%d %d\n", nv, get_nv());
+  return 0;
+}
