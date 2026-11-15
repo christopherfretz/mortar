@@ -469,7 +469,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     if groups.iter().all(|(_, f)| f.is_empty()) {
         return Err("census needs files".into());
     }
-    print!("{}", compare(&groups)?);
+    say_raw!("{}", compare(&groups)?);
     Ok(ExitCode::SUCCESS)
 }
 

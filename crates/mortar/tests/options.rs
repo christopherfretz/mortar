@@ -79,6 +79,8 @@ const AUDIT: &[(&str, Proof)] = &[
     ),
     ("--push-state", Check(push_state)),
     ("--pop-state", Check(push_state)),
+    // Its reason: tests/link/resolve/deplibs.test (resolve.md §10).
+    ("--no-dependent-libraries", Same(&["--no-dependent-libraries"], None)),
     ("--warn-backrefs", Check(backrefs)),
     ("--no-warn-backrefs", Check(backrefs)),
     ("-L", Check(libraries)),

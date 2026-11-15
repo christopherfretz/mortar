@@ -593,8 +593,11 @@ does: a user may rely on every use the status admits.
 - `refused`: read and recorded, but not carried out yet. This is the
   default.
 
-The status today (WP-042; `docs/status/options.md` has the list, and
-counts 54 supported, 4 partial, 43 noop and 371 refused). The counts in
+The status today (WP-042 and WP-034; `docs/status/options.md` has the
+list, and counts 54 supported, 4 partial, 44 noop and 370 refused).
+WP-034 made `--no-dependent-libraries` `noop`: mortar never loads the
+libraries `.deplibs` sections name (`spec/resolve.md` §10);
+`--dependent-libraries` stays `refused`. The counts in
 this list are those of WP-027e; WP-031, WP-027d's later rows and WP-042
 (the M2 paragraph below) changed them since:
 - 49 rows are `supported`; each has its evidence in

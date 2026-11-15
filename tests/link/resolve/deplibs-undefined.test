@@ -1,0 +1,97 @@
+# A symbol whose only definer is a library that `.deplibs` names, in an
+# object and in an archive member: mortar does not load the library
+# (resolve.md §10), so the link fails with the named undefined symbol,
+# as with GNU ld and mold — never a different output. lld loads the
+# library and links, so it is not run here. (WP-034.)
+#@ spec: resolve.md §10
+#@ requires: clang
+#@ skip(lld): lld loads the libraries `.deplibs` names (resolve.md §10)
+
+as(clang) main-%{arch}.s -o main.o
+as(clang) plain-%{arch}.s -o plain.o
+as(clang) helper-%{arch}.s -o helper.o
+as(clang) foo.s -o foo.o
+ar rcs lib/libfoo.a foo.o
+ar rcs libhelper.a helper.o
+link ld -Llib main.o -o prog
+  exit: fail
+  diag: foo_fn
+link ld -Llib plain.o libhelper.a -o prog2
+  exit: fail
+  diag: foo_fn
+
+#--- main-aarch64.s
+	.section .deplibs,"MS",@llvm_dependent_libraries,1
+	.asciz "foo"
+	.text
+	.globl	_start
+_start:
+	bl	foo_fn
+	mov	x8, #93
+	svc	#0
+#--- plain-aarch64.s
+	.text
+	.globl	_start
+_start:
+	bl	helper
+	mov	x8, #93
+	svc	#0
+#--- main-x86_64.s
+	.section .deplibs,"MS",@llvm_dependent_libraries,1
+	.asciz "foo"
+	.text
+	.globl	_start
+_start:
+	call	foo_fn
+	movl	$60, %eax
+	syscall
+#--- plain-x86_64.s
+	.text
+	.globl	_start
+_start:
+	call	helper
+	movl	$60, %eax
+	syscall
+#--- main-i386.s
+	.section .deplibs,"MS",@llvm_dependent_libraries,1
+	.asciz "foo"
+	.text
+	.globl	_start
+_start:
+	call	foo_fn
+	movl	$1, %eax
+	int	$0x80
+#--- plain-i386.s
+	.text
+	.globl	_start
+_start:
+	call	helper
+	movl	$1, %eax
+	int	$0x80
+#--- helper-aarch64.s
+	.section .deplibs,"MS",@llvm_dependent_libraries,1
+	.asciz "foo"
+	.text
+	.globl	helper
+helper:
+	b	foo_fn
+#--- helper-x86_64.s
+	.section .deplibs,"MS",@llvm_dependent_libraries,1
+	.asciz "foo"
+	.text
+	.globl	helper
+helper:
+	jmp	foo_fn
+#--- helper-i386.s
+	.section .deplibs,"MS",@llvm_dependent_libraries,1
+	.asciz "foo"
+	.text
+	.globl	helper
+helper:
+	jmp	foo_fn
+#--- foo.s
+	.text
+	.globl	foo_fn
+foo_fn:
+	ret
+#--- lib/.keep
