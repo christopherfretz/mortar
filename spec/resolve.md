@@ -1329,7 +1329,7 @@ classification is per file (I-file), the state needs `comdat`:
 | `SHT_NOTE` other | `Note` | `Kept` | |
 | `SHT_NOBITS` | `Nobits` | `Kept` | |
 | `SHT_PROGBITS`, `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY`, `SHT_PREINIT_ARRAY`, alloc `SHT_STRTAB` | `Regular` | `Kept` | |
-| `SHT_AARCH64_ATTRIBUTES` (`0x70000003`, AArch64) | — | `Refused{SectionType, ..}` until `spec/a64.md` says what merging them means | not verified (no GCC 14 or Clang 22 object here has one) |
+| `SHT_AARCH64_ATTRIBUTES` (`0x70000003`, AArch64) | — | `Dropped(Consumed)` (`spec/layout.md` L-35, §20.7; applied in WP-027d): the feature marking is the property note's | Clang 22 emits it for every `-mbranch-protection` but `none`; GNU ld and mold drop it, lld copies it (E-18) |
 | `SHT_DYNAMIC`, `SHT_DYNSYM`, `SHT_HASH`, `SHT_GNU_HASH`, `SHT_GNU_verdef/verneed/versym`, `SHT_RELR` in a relocatable object | — | `Refused{SectionType, ..}` | |
 | any other type, or a flag mortar does not implement (`SHF_OS_NONCONFORMING`, unknown bits, a processor flag other than `SHF_AARCH64_PURECODE`/`SHF_X86_64_LARGE` where the arch spec admits them) | — | `Refused{SectionType or SectionFlag, ..}` (`spec/model.md` §3.3) | the references accept silently (`spec/diag.md` §8.1) |
 | `SHF_GNU_RETAIN` | its kind | `Kept`, and a root of liveness (§4.7) | |
@@ -1753,8 +1753,8 @@ section-symbol signatures (E18), lld's stale `--fortran-common` help text
 7. **`-y` output** (M4): standard output text, not a diagnostic;
    needs a decision in `spec/diag.md` (an informational channel).
 8. **Did-you-mean hints** (§5.3): propose a small WP after M1.
-9. **`SHT_AARCH64_ATTRIBUTES`**: refused until a compiler on the matrix
-   emits it; then `spec/a64.md` defines the merge.
+9. **`SHT_AARCH64_ATTRIBUTES`**: closed (`spec/layout.md` L-35, §20.7;
+   applied in WP-027d): consumed, not merged.
 
 ## 18. Requested changes to other specs and tests
 

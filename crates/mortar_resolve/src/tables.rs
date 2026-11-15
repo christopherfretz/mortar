@@ -751,9 +751,6 @@ impl Ctx<'_, '_, '_> {
                     SectionRefusal::LlvmType(t)
                     | SectionRefusal::DynamicType(t)
                     | SectionRefusal::Type(t) => (C::SectionType, format!("{t:#x}")),
-                    SectionRefusal::Aarch64Attributes => {
-                        (C::SectionType, "SHT_AARCH64_ATTRIBUTES".to_owned())
-                    }
                     SectionRefusal::Flags(f) => (C::SectionFlag, format!("{f:#x}")),
                     SectionRefusal::Linkonce => (C::Feature, ".gnu.linkonce sections".to_owned()),
                     SectionRefusal::Zdebug => {

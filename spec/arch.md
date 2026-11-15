@@ -416,8 +416,10 @@ pub enum EventClass { Undefined, ComdatMismatch, DiscardedSection, GnuWarning } 
   and is classified by `spec/resolve.md` §6.3's table of referring
   sections (`mortar_arch::dead_reference(name, alloc)`): from a debug
   name it is accepted and `fill` writes the tombstone (§3.11); from
-  `.gcc_except_table` the field is 0; from any other section scan
-  reports the event `DiscardedSection`.
+  `.gcc_except_table` the field is 0; from `.eh_frame` the FDE is dead
+  (`spec/model.md` §3.6) and nothing is reported (`DeadRef::DeadFde`,
+  WP-027d: the row was matched by name in the scan); from any other
+  section scan reports the event `DiscardedSection`.
 
 ### 3.5 Sequences
 

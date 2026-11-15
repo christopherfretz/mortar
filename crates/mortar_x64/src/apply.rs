@@ -266,7 +266,11 @@ pub fn apply(
         let x = match dead_reference(out.name, out.alloc) {
             DeadRef::Tombstone => mortar_arch::tombstone(out.name, Class::Elf64),
             DeadRef::Zero => 0,
-            DeadRef::Discarded => return Err(FieldError::MissingTerm("live target")),
+            // `.eh_frame` is written by `mortar_synth` (its dead FDEs
+            // dropped), never field by field here.
+            DeadRef::Discarded | DeadRef::DeadFde => {
+                return Err(FieldError::MissingTerm("live target"));
+            }
         };
         let width = usize::from(h.field.width());
         return put(at, out, at.r_offset, &x.to_le_bytes()[..width]);

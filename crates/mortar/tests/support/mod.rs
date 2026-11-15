@@ -106,6 +106,9 @@ pub enum Driver {
     Clang,
     Clangxx,
     Gfortran,
+    /// Clang 22: it writes AArch64 build attributes (`.ARM.attributes`)
+    /// under `-mbranch-protection` (`spec/layout.md` L-35).
+    Clang22,
 }
 
 impl Driver {
@@ -116,6 +119,7 @@ impl Driver {
             Self::Clang => "clang",
             Self::Clangxx => "clang++",
             Self::Gfortran => "gfortran",
+            Self::Clang22 => "clang-22",
         }
     }
 }

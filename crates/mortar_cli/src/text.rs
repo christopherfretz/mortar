@@ -77,7 +77,8 @@ pub fn help_text(prog: &str) -> String {
     out.push_str(
         "mortar links ELF for AArch64, x86-64 and i386 Linux; its command line is GNU ld's.\n\
          An option marked [refused] is read but not carried out yet: using it fails the\n\
-         link with \"unsupported option\". An option marked [noop] needs nothing done.\n",
+         link with \"unsupported option\". An option marked [noop] needs nothing done.\n\
+         An option marked [partial] is carried out except for the values it names.\n",
     );
     for group in Group::ALL {
         let _ = writeln!(out, "\n{}:", group.title());
@@ -90,6 +91,9 @@ pub fn help_text(prog: &str) -> String {
             match row.status {
                 Status::Supported => {}
                 Status::Noop(_) => right.push_str(" [noop]"),
+                Status::Partial { refused, .. } => {
+                    let _ = write!(right, " [partial: refused ={}]", refused.join(", ="));
+                }
                 Status::Refused => right.push_str(" [refused]"),
             }
             if left.len() < 30 {
@@ -143,10 +147,11 @@ pub fn status_markdown() -> String {
     );
     let supported = count(|r| r.status == Status::Supported);
     let noop = count(|r| matches!(r.status, Status::Noop(_)));
+    let partial = count(|r| matches!(r.status, Status::Partial { .. }));
     let refused = count(|r| r.status == Status::Refused);
     let _ = writeln!(
         out,
-        "{} rows: {supported} supported, {noop} noop, {refused} refused.\n",
+        "{} rows: {supported} supported, {partial} partial, {noop} noop, {refused} refused.\n",
         rows().len()
     );
     let gnu = count(|r| r.linkers.gnu());
@@ -173,6 +178,9 @@ pub fn status_markdown() -> String {
                 row.spellings.iter().map(|s| format!("`{}`", s.display())).collect();
             let status = match row.status {
                 Status::Noop(reason) => format!("noop: {reason}"),
+                Status::Partial { refused, note } => {
+                    format!("partial: `={}` refused ({note})", refused.join("`, `="))
+                }
                 other => other.word().to_owned(),
             };
             let _ = writeln!(

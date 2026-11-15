@@ -292,18 +292,10 @@ mod tests {
     #[test]
     fn errors_come_in_argument_order() {
         assert_eq!(
-            failed(&[
-                "--frob",
-                "-o",
-                "x",
-                "a.o",
-                "--warn-backrefs",
-                "--warn-backrefs",
-                "--hash-style"
-            ]),
+            failed(&["--frob", "-o", "x", "a.o", "-z", "now", "-z", "now", "--hash-style"]),
             format!(
                 "ld: error: unknown argument '--frob'\n\
-                 ld: error: unsupported option: --warn-backrefs\n\
+                 ld: error: unsupported option: -z now\n\
                  ld: error: --hash-style: missing argument\n"
             )
         );

@@ -1556,8 +1556,8 @@ the static IPLT is in `.plt`, `.rela.plt` and `.got.plt` (S-68);
 
 - §10: `SHT_AARCH64_ATTRIBUTES` becomes accepted and consumed
   (`Dropped(Consumed)`), not refused; §17 item 9 is closed (L-35).
-  Not applied yet: no compiler on this host emits the section (Clang
-  19, GCC 14; Clang 22 does) — WP-027a's record lists it.
+  **Applied** (WP-027d, with Clang 22's `-mbranch-protection=standard`
+  objects).
 - §5.5: "the entry is layout's default (`spec/layout.md`: GNU's, the
   start of `.text`)" becomes "`e_entry = 0`" (L-103). **Applied**
   (WP-027a; resolve's warning is the one reported, the facade drops
