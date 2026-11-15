@@ -174,6 +174,10 @@ pub struct FileMeta {
     pub mtime: (i64, i64),
     /// `st_ctime`: seconds, nanoseconds.
     pub ctime: (i64, i64),
+    /// `st_nlink`: a held file renamed over or removed drops a link even
+    /// when `st_ctime` does not move (a filesystem with a coarse clock
+    /// stamps the write and the unlink alike: §11.5).
+    pub nlink: u64,
 }
 
 impl FileMeta {
@@ -184,11 +188,13 @@ impl FileMeta {
             ino: m.ino(),
             mtime: (m.mtime(), m.mtime_nsec()),
             ctime: (m.ctime(), m.ctime_nsec()),
+            nlink: m.nlink(),
         }
     }
 
     fn same_version(&self, other: &Self) -> bool {
-        (self.size, self.mtime, self.ctime) == (other.size, other.mtime, other.ctime)
+        (self.size, self.mtime, self.ctime, self.nlink)
+            == (other.size, other.mtime, other.ctime, other.nlink)
     }
 }
 
@@ -671,8 +677,8 @@ impl Store {
     }
 
     /// The checks of §11.5 again, on a file the staged store still holds:
-    /// the same size, `st_mtime` and `st_ctime` as when it was read. For
-    /// the end of the image phase; a file the store does not hold (read
+    /// the same size, `st_mtime`, `st_ctime` and `st_nlink` as when it was
+    /// read. For the end of the image phase; a file the store does not hold (read
     /// whole, or made fully resident) needs none.
     pub fn recheck(&self, b: Blob) -> Result<(), ReadError> {
         let e = self.entry(b);
