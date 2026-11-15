@@ -11,7 +11,9 @@ use std::collections::HashMap;
 
 use mortar_core::assignment::Assignment;
 use mortar_core::column::Column;
-use mortar_core::id::{ChunkId, FileId, FragId, Id, OutSecId, SectionId, SymKey, SymKind, SymbolId};
+use mortar_core::id::{
+    ChunkId, FileId, FragId, Id, OutSecId, SectionId, SymKey, SymKind, SymbolId,
+};
 use mortar_core::identity::{
     Anchor, ChunkIdentity, ChunkTag, FileIdentity, Identities, LocalIdentity, Lookup, Ordinals,
     SectionIdentity, SectionKey, SymbolIdentity, chunk_id, chunk_ordinals, outsec_id,
@@ -25,8 +27,8 @@ use mortar_core::layout::{
 };
 use mortar_core::resolution::Resolution;
 use mortar_core::split::Split;
-use mortar_elf::{SectionIndex, SymbolSection};
 use mortar_elf::consts::{STT_FILE, STT_SECTION};
+use mortar_elf::{SectionIndex, SymbolSection};
 
 use crate::format::{
     ChunkRow, DefinedRow, EhRow, FileRow, FragRow, NONE, OutSecRow, PatchRow, ProbeRow,
@@ -124,7 +126,10 @@ impl<'s> Keys<'s> {
                         names.push(name);
                     }
                     let kind = sym.st_info & 0xf;
-                    if name.is_empty() || kind == STT_SECTION || kind == STT_FILE || sym.st_value != 0
+                    if name.is_empty()
+                        || kind == STT_SECTION
+                        || kind == STT_FILE
+                        || sym.st_value != 0
                     {
                         continue;
                     }
@@ -283,13 +288,15 @@ pub fn capture(
         s.probes.push(ProbeRow { path: strings.add(probe.path), present: u8::from(probe.present) });
     }
     for id in link.assignment.outsecs.ids().iter() {
-        let o = mortar_core::identity::outsec_identity(&keys.outsecs, id).ok_or("an output section")?;
+        let o =
+            mortar_core::identity::outsec_identity(&keys.outsecs, id).ok_or("an output section")?;
         s.outsecs.push(OutSecRow { name: strings.add(o.name), ordinal: o.ordinal });
     }
     let chunk_ord = chunk_ordinals(p, link.assignment);
     for (id, row) in link.resolution.sections.iter() {
         let _ = row;
-        let si = keys.identities.section(link.resolution, id).ok_or("a section without identity")?;
+        let si =
+            keys.identities.section(link.resolution, id).ok_or("a section without identity")?;
         let (file, index) = link.resolution.sh_index(id).ok_or("a section without index")?;
         let (anchor_kind, anchor) = anchor_row(strings, si.key.anchor);
         let mut row = SectionRow {
@@ -390,7 +397,12 @@ pub fn capture(
         }
         let group = &live[i..j];
         if group.iter().all(|g| g.3 == group[0].3) {
-            s.frags.push(FragRow { out: group[0].0, ordinal: NONE, hash: group[0].1, offset: group[0].3 });
+            s.frags.push(FragRow {
+                out: group[0].0,
+                ordinal: NONE,
+                hash: group[0].1,
+                offset: group[0].3,
+            });
         } else {
             for (n, g) in group.iter().enumerate() {
                 s.frags.push(FragRow { out: g.0, ordinal: n as u32, hash: g.1, offset: g.3 });
@@ -520,7 +532,12 @@ fn anchor_of(s: &State, kind: u8, name: Str) -> Anchor<'_> {
     }
 }
 
-fn map(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, placement: &Placement) -> Result<Map, String> {
+fn map(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    s: &State,
+    placement: &Placement,
+) -> Result<Map, String> {
     let files: Vec<Option<FileId>> =
         s.files.iter().map(|f| keys.identities.file_id(&file_identity(s, f))).collect();
     let sections = s
@@ -530,7 +547,10 @@ fn map(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, placement: &Placement) -
             let file = s.files.get(x.file as usize)?;
             let identity = SectionIdentity {
                 file: file_identity(s, file),
-                key: SectionKey { anchor: anchor_of(s, x.anchor_kind, x.anchor), name: s.str(x.name) },
+                key: SectionKey {
+                    anchor: anchor_of(s, x.anchor_kind, x.anchor),
+                    name: s.str(x.name),
+                },
                 ordinal: x.ordinal,
             };
             keys.identities.section_id(link.resolution, &identity)
@@ -557,14 +577,15 @@ fn map(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, placement: &Placement) -
         let present = placement.chunks.get(id).ok_or("a chunk")?;
         let (out, part, dep) = match present.kind {
             ChunkKind::Body(pt) | ChunkKind::Patches(pt) => (Some(pt.out), pt.part, false),
-            ChunkKind::Merged(o) | ChunkKind::Group(o) | ChunkKind::Relocs(o) => (Some(o), 0, false),
+            ChunkKind::Merged(o) | ChunkKind::Group(o) | ChunkKind::Relocs(o) => {
+                (Some(o), 0, false)
+            }
             ChunkKind::Synthetic(sy) => (None, 0, sy.address_dependent),
             _ => (None, 0, false),
         };
-        let want_out = if c.out == NONE { None } else { outsecs.get(c.out as usize).copied().flatten() };
-        if out != want_out
-            || part != c.part
-            || dep != (c.bits & chunk_bits::ADDRESS_DEPENDENT != 0)
+        let want_out =
+            if c.out == NONE { None } else { outsecs.get(c.out as usize).copied().flatten() };
+        if out != want_out || part != c.part || dep != (c.bits & chunk_bits::ADDRESS_DEPENDENT != 0)
         {
             return Err(format!("CHUNKS row {i}: not this link's chunk of that identity"));
         }
@@ -576,7 +597,11 @@ fn map(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, placement: &Placement) -
         .map(|y| match y.kind {
             sym_kind::LOCAL => {
                 let file = s.files.get(y.file as usize)?;
-                let l = LocalIdentity { file: file_identity(s, file), name: s.str(y.name), ordinal: y.ordinal };
+                let l = LocalIdentity {
+                    file: file_identity(s, file),
+                    name: s.str(y.name),
+                    ordinal: y.ordinal,
+                };
                 keys.identities.local_sym(&l).map(SymKey::local)
             }
             k => {
@@ -599,7 +624,12 @@ fn get<T: Copy>(v: &[Option<T>], i: u32, what: &str) -> Result<T, String> {
 /// failure is named. `Folds` and the dynamic tables are `computed`'s
 /// (format 1 stores none).
 #[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one block per table
-pub fn replay(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, computed: &Layout) -> Result<Layout, String> {
+pub fn replay(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    s: &State,
+    computed: &Layout,
+) -> Result<Layout, String> {
     let cp = &computed.placement;
     let m = map(link, keys, s, cp)?;
     let mut chunks: Vec<Option<Chunk>> = vec![None; cp.chunks.len() as usize];
@@ -636,12 +666,19 @@ pub fn replay(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, computed: &Layout
     for r in &s.sym_place {
         let key = get(&m.symbols, r.symbol, "SYMBOLS")?;
         let id = key.as_global().ok_or("a common allocation of a local")?;
-        sym_place.push(SymPlace { key: AllocKey::Common(id), chunk: chunk(r.chunk)?, offset: r.offset, size: r.size, align: r.align });
+        sym_place.push(SymPlace {
+            key: AllocKey::Common(id),
+            chunk: chunk(r.chunk)?,
+            offset: r.offset,
+            size: r.size,
+            align: r.align,
+        });
     }
     sym_place.sort_by_key(|r| r.key);
     let mut defined = Vec::with_capacity(s.defined.len());
     for d in &s.defined {
-        let symbol = get(&m.symbols, d.symbol, "SYMBOLS")?.as_global().ok_or("a definition of a local")?;
+        let symbol =
+            get(&m.symbols, d.symbol, "SYMBOLS")?.as_global().ok_or("a definition of a local")?;
         let value = if d.kind == 0 {
             DefValue::Absolute(d.value)
         } else {
@@ -657,7 +694,9 @@ pub fn replay(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, computed: &Layout
                 key: get(&m.symbols, r.symbol, "SYMBOLS")?,
                 addend: r.value as i64,
             }),
-            patch_kind::THUNK_PLT => PatchKind::Thunk(ThunkTarget::Plt(get(&m.symbols, r.symbol, "SYMBOLS")?)),
+            patch_kind::THUNK_PLT => {
+                PatchKind::Thunk(ThunkTarget::Plt(get(&m.symbols, r.symbol, "SYMBOLS")?))
+            }
             _ => PatchKind::Erratum {
                 erratum: Erratum::E843419,
                 section: get(&m.sections, r.section, "SECTIONS")?,
@@ -674,7 +713,11 @@ pub fn replay(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, computed: &Layout
     let mut redirects = Vec::with_capacity(s.redirects.len());
     for r in &s.redirects {
         let patch = *moved.get(r.patch as usize).ok_or("a redirect's patch")?;
-        redirects.push(Redirect { section: get(&m.sections, r.section, "SECTIONS")?, offset: r.offset, patch });
+        redirects.push(Redirect {
+            section: get(&m.sections, r.section, "SECTIONS")?,
+            offset: r.offset,
+            patch,
+        });
     }
     redirects.sort_by_key(|r| (r.section, r.offset));
     let mut sized = Vec::with_capacity(s.sized.len());
@@ -708,7 +751,11 @@ pub fn replay(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, computed: &Layout
         patches: patches.into_iter().map(|(p, _)| p).collect(),
         redirects: redirects.into(),
         sized: sized.into(),
-        tls: (l.bits & layout_bits::TLS != 0).then_some(Tls { start: l.tls_start, size: l.tls_size, align: l.tls_align }),
+        tls: (l.bits & layout_bits::TLS != 0).then_some(Tls {
+            start: l.tls_start,
+            size: l.tls_size,
+            align: l.tls_align,
+        }),
         entry: (l.bits & layout_bits::ENTRY != 0).then_some(l.entry),
     };
     // The merged map: this link's live fragments take their identity's
@@ -733,7 +780,10 @@ pub fn replay(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, computed: &Layout
         let row = if rows.len() == 1 && rows[0].ordinal == NONE {
             rows[0]
         } else {
-            rows.iter().find(|r| r.ordinal == *n).copied().ok_or("a live fragment's ordinal has no row")?
+            rows.iter()
+                .find(|r| r.ordinal == *n)
+                .copied()
+                .ok_or("a live fragment's ordinal has no row")?
         };
         *n += 1;
         *off = row.offset;
@@ -754,8 +804,20 @@ pub fn replay(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, computed: &Layout
         .iter()
         .map(|e| Ok(EhRecord { section: get(&m.sections, e.section, "SECTIONS")?, piece: e.piece }))
         .collect::<Result<_, String>>()?;
+    // The image writes `.eh_frame` from the front's plan, not from this
+    // list (a finding of WP-061): a stored list that is not the plan's
+    // would be a layout the image does not follow, so it is refused.
+    if slots.eh_records != computed.slots.eh_records {
+        return Err("EH_RECORDS is not the list of records the image writes".to_owned());
+    }
+    // Likewise `.symtab`'s local spans come from the front's symbol table
+    // plan; the stored spans must be its spans (no table: every span is
+    // empty).
     if s.symtab_locals.is_empty() {
-        slots.symtab_locals = Column::new();
+        if computed.slots.symtab_locals.iter().any(|(_, sp)| sp.len != 0) {
+            return Err("SYMTAB_LOCALS is empty but the symbol table has locals".to_owned());
+        }
+        slots.symtab_locals = computed.slots.symtab_locals.clone();
     } else {
         let mut spans = vec![mortar_core::id::Span::default(); link.inputs.files.len() as usize];
         for (i, sp) in s.symtab_locals.iter().enumerate() {
@@ -763,7 +825,11 @@ pub fn replay(link: &Link<'_, '_>, keys: &Keys<'_>, s: &State, computed: &Layout
             spans[file.slot()] = mortar_core::id::Span { start: sp.start, len: sp.len };
         }
         slots.symtab_locals = Column::from_vec(spans).map_err(|_| "files")?;
+        if slots.symtab_locals != computed.slots.symtab_locals {
+            return Err("SYMTAB_LOCALS is not the symbol table's spans".to_owned());
+        }
     }
-    slots.sizes = s.sizes.iter().map(|z| Ok((chunk(z.chunk)?, z.size))).collect::<Result<_, String>>()?;
+    slots.sizes =
+        s.sizes.iter().map(|z| Ok((chunk(z.chunk)?, z.size))).collect::<Result<_, String>>()?;
     Ok(Layout { folds: computed.folds.clone(), merge: MergeMap { frag_off }, slots, placement })
 }

@@ -148,6 +148,28 @@ const AUDIT: &[(&str, Proof)] = &[
         Test("crates/mortar/tests/pipeline.rs", "print_map_writes_the_map_to_standard_output"),
     ),
     ("--time-phases", Test("crates/mortar/tests/refusals.rs", "time_phases_lists_the_front")),
+    (
+        "--incremental",
+        Test(
+            "crates/mortar/tests/incremental.rs",
+            "a_full_link_in_incremental_mode_is_the_plain_link",
+        ),
+    ),
+    (
+        "--no-incremental",
+        Test(
+            "crates/mortar/tests/incremental.rs",
+            "a_full_link_in_incremental_mode_is_the_plain_link",
+        ),
+    ),
+    (
+        "--incremental-state",
+        Test(
+            "crates/mortar/tests/incremental.rs",
+            "a_full_link_in_incremental_mode_is_the_plain_link",
+        ),
+    ),
+    ("--incremental-report", Test("crates/mortar/tests/incremental.rs", "fall_back_reasons")),
     ("-plugin", Same(&["-plugin", "/nonexistent/liblto_plugin.so"], Some(lto_is_refused))),
     ("-plugin-opt", Same(&["-plugin-opt=-fresolution=x.res"], None)),
     ("-plugin-save-temps", Same(&["-plugin-save-temps"], None)),

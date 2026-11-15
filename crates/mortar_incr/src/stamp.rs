@@ -261,7 +261,10 @@ mod tests {
         assert_eq!(major_minor((8 << 8) | 1), (8, 1));
         // glibc's makedev.
         let makedev = |major: u64, minor: u64| {
-            ((major & 0xfff) << 8) | ((major & !0xfff) << 32) | (minor & 0xff) | ((minor & !0xff) << 12)
+            ((major & 0xfff) << 8)
+                | ((major & !0xfff) << 32)
+                | (minor & 0xff)
+                | ((minor & !0xff) << 12)
         };
         for (major, minor) in [(0, 52), (259, 3), (0x1234_5678, 0xabcd_ef01), (4095, 1 << 20)] {
             assert_eq!(major_minor(makedev(major, minor)), (major, minor));

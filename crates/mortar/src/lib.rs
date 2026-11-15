@@ -143,7 +143,8 @@ pub fn replay_link(
     cwd: &Path,
     state: &mortar_incr::format::State,
 ) -> Invocation {
-    let hook = |link: &mortar_incr::capture::Link<'_, '_>, computed: &mortar_core::layout::Layout| {
+    let hook = |link: &mortar_incr::capture::Link<'_, '_>,
+                computed: &mortar_core::layout::Layout| {
         let keys = mortar_incr::capture::Keys::new(link)?;
         mortar_incr::capture::replay(link, &keys, state, computed)
     };

@@ -383,7 +383,13 @@ impl Session {
     }
 
     /// The state of the link `f`, all but its output row.
-    fn state(&self, f: &Front<'_>, store: &Store, written: &Written, cwd: &Path) -> Result<State, String> {
+    fn state(
+        &self,
+        f: &Front<'_>,
+        store: &Store,
+        written: &Written,
+        cwd: &Path,
+    ) -> Result<State, String> {
         let link = Link {
             inputs: &f.inputs,
             resolution: &f.resolution,

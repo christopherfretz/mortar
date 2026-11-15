@@ -564,7 +564,8 @@ impl Row for Meta {
         w.pad(3).u64(self.file_size).u64(self.sealed_start).u64(self.sealed_end).s(self.build_id);
     }
     fn get(r: &mut R<'_>) -> Self {
-        let (version, machine, class, output_kind, leaf_fn) = (r.s(), r.u16(), r.u8(), r.u8(), r.u8());
+        let (version, machine, class, output_kind, leaf_fn) =
+            (r.s(), r.u16(), r.u8(), r.u8(), r.u8());
         r.pad(3);
         Self {
             version,
