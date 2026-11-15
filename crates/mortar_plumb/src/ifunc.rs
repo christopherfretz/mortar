@@ -97,7 +97,7 @@ fn f(n: u8, msg: impl Into<String>) -> Finding {
 
 impl Engine<'_, '_> {
     /// Word size of the output's class.
-    fn word(&self) -> u64 {
+    pub(super) fn word(&self) -> u64 {
         if self.image.class() == Class::Elf64 { 8 } else { 4 }
     }
 

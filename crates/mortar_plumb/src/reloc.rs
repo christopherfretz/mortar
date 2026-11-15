@@ -25,6 +25,8 @@ mod eh;
 mod ifunc;
 #[path = "x64rec.rs"]
 mod x64rec;
+#[path = "x86rec.rs"]
+mod x86rec;
 pub(crate) use ifunc::IfKey;
 
 use crate::report::{Coverage, Finding, Reason, Rewrite, Rule, Site, Via};
@@ -38,7 +40,8 @@ pub(crate) fn width(machine: Machine, r_type: u32) -> u8 {
         Machine::X86_64 => crate::x64::def(r_type)
             .map_or_else(|| crate::x64::unchecked_width(r_type), |d| d.field.width()),
         // i386 is not judged (§4.5): its records are `machine`.
-        Machine::I386 => 4,
+        Machine::I386 => crate::x86::def(r_type)
+            .map_or_else(|| crate::x86::unchecked_width(r_type), |d| d.field.width()),
     }
 }
 
@@ -364,6 +367,7 @@ fn x_got(op: Op, g: u64, p: u64, got: Option<u64>, a: i64) -> Option<i64> {
     Some(match form {
         Form::PrelA => g.wrapping_add(a as u64).wrapping_sub(p) as i64,
         Form::OffA => g.wrapping_add(a as u64).wrapping_sub(got?) as i64,
+        Form::AbsA => g.wrapping_add(a as u64) as i64,
         Form::Abs => g as i64,
         Form::Prel => g.wrapping_sub(p) as i64,
         Form::Page => a64::page(g).wrapping_sub(a64::page(p)) as i64,
@@ -507,6 +511,15 @@ impl<'a, 'b> Engine<'a, 'b> {
             .or_else(|| image.global("_GLOBAL_OFFSET_TABLE_"))
             .map(|s| s.sym.st_value)
             .or_else(|| image.sections.iter().find(|s| s.name == ".got").map(|s| s.shdr.sh_addr));
+        // spec/x86.md X86-47: mold computes the i386 GOT base (GOTPC,
+        // GOTOFF, GOT32) against the start of `.got`, not
+        // `_GLOBAL_OFFSET_TABLE_` (§5.11; its no-base GOT32 is W3).
+        let got = if format == Format::Mold && image.header.e_machine == mortar_elf::consts::EM_386
+        {
+            image.sections.iter().find(|s| s.name == ".got").map(|s| s.shdr.sh_addr).or(got)
+        } else {
+            got
+        };
         let got_section = image
             .sections
             .iter()
@@ -964,12 +977,8 @@ impl<'a, 'b> Engine<'a, 'b> {
         if let Some(r) = reason {
             return self.not_checked(r, n);
         }
-        // i386 is not judged (§4.5): every record is `machine`.
-        let x64 = match machine {
-            Machine::AArch64 => false,
-            Machine::X86_64 => true,
-            Machine::I386 => return self.not_checked(Reason::Machine, n),
-        };
+        let x64 = machine == Machine::X86_64;
+        let i386 = machine == Machine::I386;
         let place = s.place.clone();
         let data = s.data;
         let nobits = s.shdr.sh_type == SHT_NOBITS;
@@ -994,8 +1003,26 @@ impl<'a, 'b> Engine<'a, 'b> {
                 self.cov.none += 1;
                 continue;
             }
-            let def = if x64 { crate::x64::def(ty) } else { a64::def(ty) };
+            let def = match machine {
+                Machine::X86_64 => crate::x64::def(ty),
+                Machine::I386 => crate::x86::def(ty),
+                Machine::AArch64 => a64::def(ty),
+            };
             let Some(def) = def else {
+                // spec/x86.md X86-20: the same for i386 (W14).
+                if i386 && crate::x86::dynamic_only(ty) {
+                    let mut f = Finding::new(
+                        Rule::Insn,
+                        format!(
+                            "relocation type {ty} is defined for dynamic relocations only, not for an object file (spec/x86.md X86-20)"
+                        ),
+                    )
+                    .at(p)
+                    .site(o.site(si, off));
+                    f.found = Some(u64::from(ty));
+                    self.fail(f);
+                    continue;
+                }
                 // spec/x64.md X-14: the dynamic-only types have no static
                 // value; GNU ld writes S + A for them (W3).
                 if x64 && matches!(ty, 5..=8 | 16 | 36..=38) {
@@ -1091,6 +1118,10 @@ impl<'a, 'b> Engine<'a, 'b> {
             )
             .is_some();
             return self.tombstone(oi, si, rec, &site, &symbol, after);
+        }
+        // i386 (§4.5, §5.11).
+        if self.image.header.e_machine == mortar_elf::consts::EM_386 {
+            return self.x86_record(oi, si, recs, i, site, symbol);
         }
         // x86-64 (§4.5, §5.9).
         if is_x64(rec) {
@@ -1241,6 +1272,15 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// The address evidence of a GOT-indirect record (§5.5); `None` when
     /// the GOT base it needs is unknown.
     fn slot_evidence(&self, rec: &Rec) -> Option<Evidence> {
+        let e = self.slot_evidence_wide(rec)?;
+        // ELFCLASS32: an address is the value modulo 2^32.
+        Some(match e {
+            Evidence::Exact(v) if self.word() == 4 => Evidence::Exact(v & 0xffff_ffff),
+            e => e,
+        })
+    }
+
+    fn slot_evidence_wide(&self, rec: &Rec) -> Option<Evidence> {
         let Op::Slot(_, form) = rec.def.op else { return Some(Evidence::None) };
         let d = a64::decode(rec.def.field, rec.out_word, rec.p);
         Some(match (form, rec.def.field) {
@@ -1251,6 +1291,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             (Form::OffA, _) => {
                 Evidence::Exact(self.got?.wrapping_add(d as u64).wrapping_sub(rec.addend as u64))
             }
+            (Form::AbsA, _) => Evidence::Exact((d as u64).wrapping_sub(rec.addend as u64)),
             (Form::Off, Field::MovwSigned(16) | Field::Movw(16)) => {
                 // MOVN writes the complement (AAELF64 "MOVW" groups).
                 let w = rec.out_word as u32;
@@ -1456,17 +1497,20 @@ impl<'a, 'b> Engine<'a, 'b> {
     }
 
     /// Whether `g` is a GOT entry that holds `want` (§5.5).
+    /// Words are the output class's (4 bytes on ELFCLASS32, a value
+    /// compared modulo 2^32).
     fn slot_ok(&self, g: u64, want: Want) -> bool {
-        g.is_multiple_of(8)
+        let word = self.word();
+        let mask = if word == 8 { u64::MAX } else { 0xffff_ffff };
+        let size = if word == 8 { want.size() } else { want.size() / 2 };
+        g.is_multiple_of(word)
             && !self.occupied.contains(g)
-            && self
-                .got_section
-                .is_none_or(|(lo, hi)| lo <= g && g.saturating_add(want.size()) <= hi)
+            && self.got_section.is_none_or(|(lo, hi)| lo <= g && g.saturating_add(size) <= hi)
             && match want {
-                Want::Word(v) => self.image.value(g, 8) == Some(v),
+                Want::Word(v) => self.image.value(g, word as u8) == Some(v & mask),
                 Want::Pair(m, v) => {
-                    self.image.value(g, 8) == Some(m)
-                        && self.image.value(g.wrapping_add(8), 8) == Some(v)
+                    self.image.value(g, word as u8) == Some(m & mask)
+                        && self.image.value(g.wrapping_add(word), word as u8) == Some(v & mask)
                 }
             }
     }
@@ -1847,7 +1891,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                         },
                     );
                     f.expected = Some(want.first());
-                    f.found = cands.first().and_then(|&c| self.image.value(c, 8));
+                    f.found = cands.first().and_then(|&c| self.image.value(c, self.word() as u8));
                     self.fail(f);
                     continue;
                 }

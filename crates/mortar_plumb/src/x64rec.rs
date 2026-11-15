@@ -259,7 +259,7 @@ impl Engine<'_, '_> {
     }
 
     /// R1-R3 for a data value, the record counted as verified directly.
-    fn x64_judge(&mut self, rec: &Rec, site: &Site, symbol: &str, xv: i64) {
+    pub(super) fn x64_judge(&mut self, rec: &Rec, site: &Site, symbol: &str, xv: i64) {
         match judge(rec, xv) {
             Verdict::Ok(_) => self.cov.add_verified(Via::Direct, rec.def.r_type),
             v => {
@@ -272,7 +272,7 @@ impl Engine<'_, '_> {
     /// `64`/`32` against a TLS symbol at a non-alloc place (X-53): the
     /// DTP offset; GNU ld and mold write the template address `t`
     /// (`spec/x64.md` W10), which is a finding §10.2 names.
-    fn x64_debug_tls(&mut self, rec: &Rec, site: &Site, symbol: &str, t: u64) {
+    pub(super) fn x64_debug_tls(&mut self, rec: &Rec, site: &Site, symbol: &str, t: u64) {
         let Ok(Some(b)) = self.tls else { return self.not_checked(Reason::Tls, 1) };
         let want = b.dtprel(t) as i64;
         if let Verdict::Ok(_) = judge(rec, want) {
@@ -295,7 +295,7 @@ impl Engine<'_, '_> {
 
     /// Whether symbol `idx` of object `oi` is absolute: `SHN_ABS` in the
     /// input, or, undefined there, in the output.
-    fn x64_abs(&self, oi: usize, idx: u32) -> bool {
+    pub(super) fn x64_abs(&self, oi: usize, idx: u32) -> bool {
         let o = &self.objs[oi];
         let Some(t) = o.symtab else { return false };
         let Ok(sym) = t.get(SymbolIndex(idx)) else { return false };
@@ -310,7 +310,7 @@ impl Engine<'_, '_> {
     }
 
     /// Z: the size of symbol `idx`'s definition (§6.1 `SIZE32`/`SIZE64`).
-    fn x64_size(&self, oi: usize, idx: u32) -> Option<u64> {
+    pub(super) fn x64_size(&self, oi: usize, idx: u32) -> Option<u64> {
         let o = &self.objs[oi];
         let t = o.symtab?;
         let sym = t.get(SymbolIndex(idx)).ok()?;
@@ -323,7 +323,7 @@ impl Engine<'_, '_> {
 
     /// The input and output bytes of `[P - before, P + width + after)`,
     /// when the input section holds them all (X-8) and the output too.
-    fn x64_window(
+    pub(super) fn x64_window(
         &self,
         oi: usize,
         si: usize,
@@ -340,7 +340,7 @@ impl Engine<'_, '_> {
     }
 
     /// Marks output bytes `[lo, hi)` as written by a rewriting, for S12.
-    fn x64_rewrote(&mut self, lo: u64, hi: u64) {
+    pub(super) fn x64_rewrote(&mut self, lo: u64, hi: u64) {
         self.rewritten_words.extend(lo..hi);
     }
 
@@ -764,7 +764,7 @@ impl Engine<'_, '_> {
                 // (`add $T` for %rsp and %r12, which need a SIB).
                 (x::GOTTPOFF, 0x03) => match f {
                     Format::Mortar => {
-                        cands.push([&[p][..], &imm_form(0x03, r).unwrap(), &tb].concat())
+                        cands.push([&[p][..], &imm_form(0x03, r).unwrap(), &tb].concat());
                     }
                     Format::Gnu | Format::Lld if r == 4 => {
                         cands.push([&[p][..], &imm_form(0x03, r).unwrap(), &tb].concat());
@@ -822,7 +822,7 @@ impl Engine<'_, '_> {
     }
 
     /// `DTPOFF32`/`DTPOFF64` (X-46): `TpRel` or `DtpRel` by section and linker.
-    fn x64_dtprel(
+    pub(super) fn x64_dtprel(
         &mut self,
         oi: usize,
         rec: &Rec,

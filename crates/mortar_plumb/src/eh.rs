@@ -21,11 +21,13 @@ const OMIT: u8 = 0xff;
 struct Rd<'a> {
     b: &'a [u8],
     pos: usize,
+    /// The size of an `absptr` (encoding 0): the output class's address.
+    addr: usize,
 }
 
 impl<'a> Rd<'a> {
     fn new(b: &'a [u8], pos: usize) -> Self {
-        Rd { b, pos }
+        Rd { b, pos, addr: 8 }
     }
     fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         let end = self.pos.checked_add(n)?;
@@ -86,7 +88,8 @@ impl<'a> Rd<'a> {
     /// nibble), sign- or zero-extended.
     fn ptr(&mut self, enc: u8) -> Option<u64> {
         Some(match enc & 0x0f {
-            0x00 | 0x04 | 0x0c => self.uint(8)?,
+            0x00 => self.uint(self.addr)?,
+            0x04 | 0x0c => self.uint(8)?,
             0x01 => self.uleb()?,
             0x02 => self.uint(2)?,
             0x03 => self.uint(4)?,
@@ -147,8 +150,14 @@ fn strip(b: &[u8]) -> Vec<u8> {
 
 /// Parses a `.eh_frame` (LSB "The `.eh_frame` section"). The error names the
 /// first offset that cannot be read.
-#[allow(clippy::too_many_lines)] // the record format, field by field
+#[cfg(test)]
 fn parse(b: &[u8]) -> Result<Frames, String> {
+    parse_as(b, 8)
+}
+
+/// As [`parse`], with `addr`-byte absolute pointers (4 on ELFCLASS32).
+#[allow(clippy::too_many_lines)] // the record format, field by field
+fn parse_as(b: &[u8], addr: usize) -> Result<Frames, String> {
     let mut f = Frames::default();
     let mut cie_at: BTreeMap<usize, usize> = BTreeMap::new();
     let mut pos = 0usize;
@@ -161,6 +170,7 @@ fn parse(b: &[u8]) -> Result<Frames, String> {
             return Err(bad(pos, "a record after the zero terminator"));
         }
         let mut r = Rd::new(b, pos);
+        r.addr = addr;
         let Some(len32) = r.uint(4) else {
             if b[pos..].iter().all(|&x| x == 0) {
                 break;
@@ -185,6 +195,7 @@ fn parse(b: &[u8]) -> Result<Frames, String> {
             .ok_or_else(|| bad(pos, "a record longer than the section"))?;
         let rec = &b[..end];
         let mut r = Rd::new(rec, body);
+        r.addr = addr;
         let id = r.uint(idw).ok_or_else(|| bad(pos, "a truncated CIE id"))?;
         if id == 0 {
             let version = r.u8().ok_or_else(|| bad(pos, "no CIE version"))?;
@@ -353,7 +364,7 @@ impl Engine<'_, '_> {
         let out_sec = image.sections.iter().find(|s| s.name == ".eh_frame" && s.alloc());
         let out = out_sec.and_then(|s| image.bytes(s.shdr.sh_addr, s.shdr.sh_size).map(|b| (s, b)));
         let parsed = match out {
-            Some((s, b)) => match parse(b) {
+            Some((s, b)) => match parse_as(b, self.word() as usize) {
                 Ok(f) => Some((s.shdr.sh_addr, b, f)),
                 Err(m) => {
                     self.findings.push(
@@ -424,16 +435,14 @@ impl Engine<'_, '_> {
             let n = raw.len() as u64;
             self.cov.records += n;
             // The pointer types of the machine: ABS64/PREL32/ABS32/PREL64 on
-            // AArch64; 64/PC32/32/32S/PC64 on x86-64 (spec/x64.md §6.1).
+            // AArch64; 64/PC32/32/32S/PC64 on x86-64 (spec/x64.md §6.1);
+            // 32/PC32 on i386 (spec/x86.md X86-67).
             let pointer: fn(u32) -> bool = match o.elf.machine() {
                 Machine::AArch64 => |ty| matches!(ty, 257 | 258 | 260 | 261),
                 Machine::X86_64 => |ty| matches!(ty, 1 | 2 | 10 | 11 | 24),
-                Machine::I386 => {
-                    self.not_checked(Reason::Machine, n);
-                    continue;
-                }
+                Machine::I386 => |ty| matches!(ty, 1 | 2),
             };
-            let frames = match parse(s.data) {
+            let frames = match parse_as(s.data, self.word() as usize) {
                 Ok(f) => f,
                 Err(m) => {
                     self.fail_n(
@@ -453,10 +462,11 @@ impl Engine<'_, '_> {
             let is_none = |ty: u32| ty == 0 || (a64 && ty == 256);
             let nones = raw.iter().filter(|r| is_none(r.2)).count() as u64;
             self.cov.none += nones;
-            let relocs: BTreeMap<u64, (u32, u32, i64)> = raw
+            // REL (i386): the addend is the field (spec/x86.md X86-4).
+            let relocs: BTreeMap<u64, (u32, u32, Option<i64>)> = raw
                 .iter()
                 .filter(|r| !is_none(r.2))
-                .map(|&(off, sym, ty, a)| (off, (sym, ty, a.unwrap_or(0))))
+                .map(|&(off, sym, ty, a)| (off, (sym, ty, a)))
                 .collect();
             let mut claimed: BTreeMap<u64, bool> =
                 raw.iter().filter(|r| is_none(r.2)).map(|r| (r.0, true)).collect();
@@ -474,6 +484,7 @@ impl Engine<'_, '_> {
                 if !pointer(ty) {
                     return In::Unknown(Reason::Type);
                 }
+                let a = a.unwrap_or_else(|| i64::from(fl.raw as u32 as i32));
                 let (t, a) = this.resolve_at(oi, sym, a);
                 match t {
                     Target::Addr(v) => In::Value(v.wrapping_add(a as u64)),
@@ -693,6 +704,7 @@ impl Engine<'_, '_> {
             return self.findings.push(e(5, ".eh_frame_hdr is not in the file image").at(hdr));
         };
         let mut r = Rd::new(b, 0);
+        r.addr = self.word() as usize;
         let (Some(version), Some(ptr_enc), Some(count_enc), Some(table_enc)) =
             (r.u8(), r.u8(), r.u8(), r.u8())
         else {
