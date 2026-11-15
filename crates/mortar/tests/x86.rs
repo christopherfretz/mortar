@@ -400,3 +400,37 @@ fn x86_1_e_flags_is_refused_with_its_value() {
     assert!(m.stderr_text().contains("unsupported feature: e_flags 0x5"), "{}", m.stderr_text());
     assert!(!out.exists(), "an output was left behind");
 }
+
+/// R-13 (b) on i386 (x86.md X86-5; R-13's test (3)): two records at one
+/// `r_offset`, and a `GOT32X` whose operand bytes `[P − 2, P)` hold
+/// another record's field, are refused (`overlapping relocations`): no
+/// unit reads a byte another writes, so every implicit addend fill reads
+/// is an input byte.
+#[test]
+fn x86_5_overlapping_read_windows_are_refused() {
+    if host().is_none() {
+        return;
+    }
+    const DUP: &str = "\t.data\n\t.globl p\np:\t.long 0\n\t.reloc p, R_386_32, x\n\
+                       \t.reloc p, R_386_32, y\n\t.globl x, y\nx:\t.long 1\ny:\t.long 2\n\
+                       \t.text\n\t.globl main\nmain:\tret\n\
+                       \t.section .note.GNU-stack,\"\",@progbits\n";
+    const GOT: &str = "\t.text\n\t.globl main\nmain:\tcall 1f\n1:\tpopl %ebx\n\
+                       \taddl $_GLOBAL_OFFSET_TABLE_+[.-1b], %ebx\n2:\tmovl x@GOT(%ebx), %eax\n\
+                       \t.reloc 2b, R_386_8, x\n\tret\n\t.data\n\t.globl x\nx:\t.long 0\n\
+                       \t.section .note.GNU-stack,\"\",@progbits\n";
+    for (label, name, text, place) in [
+        ("x86-5-dup", "dup.s", DUP, "dup.s.o:(.data+0x0)"),
+        ("x86-5-got", "got.s", GOT, "got.s.o:(.text+0xe)"),
+    ] {
+        let scratch = Scratch::new(label);
+        let program = [Source { name, text }];
+        let flags = ["-nostdlib", "-Wl,-e,main"];
+        let Some(built) = compile(&scratch, GCC, &flags, &program) else { return };
+        let out = built.dir.join("out.mortar");
+        let m = mortar(&built, &out, &[], &[]);
+        assert!(!m.success(), "{label}: linked");
+        let want = format!("{place}: unsupported feature: overlapping relocations");
+        assert!(m.stderr_text().contains(&want), "{label}: {}", m.stderr_text());
+    }
+}
