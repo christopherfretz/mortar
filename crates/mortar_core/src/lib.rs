@@ -6,7 +6,8 @@
 //! and `par`, `hash` and `intern` (§6 and the numbering of §2.3).
 //!
 //! - [`id`] and [`column`]: ids, id ranges, [`SymKey`], and [`Column`], a
-//!   `Vec` indexed by an id, with the split of §6 rule 1.
+//!   `Vec` indexed by an id, with the split of §6 rule 1; [`idset`]: a set
+//!   of ids as bits ([`IdSet`], the dynamic columns of `Resolution`).
 //! - [`plan`]: the command line as data (§3.1), written by `mortar_cli`.
 //! - The derived tables (§3): [`inputs`], [`resolution`], [`assignment`],
 //!   [`split`], [`liveness`], [`demands`]. Each states the invariants it can
@@ -28,6 +29,7 @@ pub mod demands;
 pub mod hash;
 pub mod id;
 pub mod identity;
+pub mod idset;
 pub mod inputs;
 pub mod intern;
 pub mod layout;
@@ -48,8 +50,11 @@ pub use id::{
     ArchiveId, ChunkId, ComdatId, FileId, FragId, Id, IdOverflow, IdRange, LocalSym, OptId,
     OutSecId, SectionId, SegmentId, Span, SymEntry, SymKey, SymKind, SymbolId,
 };
+pub use idset::IdSet;
 pub use inputs::Inputs;
-pub use layout::{Folds, Layout, MergeMap, Placement, Slots};
+pub use layout::{
+    CopyAlloc, CopyPlace, DynStr, Folds, Layout, MergeMap, Placement, Slots, VerIndex,
+};
 pub use liveness::Liveness;
 pub use records::RecIndex;
 pub use resolution::Resolution;

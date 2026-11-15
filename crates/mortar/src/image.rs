@@ -115,7 +115,8 @@ pub fn with_link<T>(
         comdat_mismatch: &f.comdat_mismatch,
         gnu_warnings: &f.gnu_warnings,
     };
-    let scan_options = ScanOptions { output, dynamic: false, proof: f.arch.proof() };
+    let scan_options =
+        ScanOptions { output, dynamic: false, sections: None, proof: f.arch.proof() };
     let walker = Walker::new(f.arch.get(), &scan_inputs, scan_options);
     let facts = WalkFacts(&walker);
     let proof = |file: FileId, index: SectionIndex, len: u64| -> Vec<ProofRun> {

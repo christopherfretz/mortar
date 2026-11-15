@@ -337,8 +337,25 @@ pub enum Kind {
     /// `version-reassigned`: a version script assigns `name` to two
     /// versions; `first` is kept (`spec/resolve.md` §9.7).
     VersionReassigned { name: String, first: String, second: String },
+    /// `versioned-export` (`spec/dyn.md` D-27): an exported definition
+    /// `name@@version` of an executable, which would need a version
+    /// definition (`.gnu.version_d`, M4).
+    VersionedExport { name: String, version: String },
 
     // -- relocations ----------------------------------------------------
+    /// `canonical-plt-in-pie` (`spec/dyn.md` D-44): the relocation
+    /// `r_type` takes the address of the shared function `name` in a way
+    /// only a canonical PLT entry fills, which a `Pie` cannot have. GNU
+    /// ld's words.
+    CanonicalPltInPie { r_type: String, name: String },
+    /// `copy-relocation-against-protected` (`spec/dyn.md` D-18): a `COPY`
+    /// or canonical PLT demand on `name`, which `file` defines
+    /// `STV_PROTECTED`. GNU ld's words.
+    CopyRelocationAgainstProtected { name: String, file: String },
+    /// `copy-relocation-of-zero-size` (`spec/dyn.md` D-42): a `COPY`
+    /// demand on `name`, whose shared definition has `st_size` 0. lld's
+    /// words.
+    CopyRelocationOfZeroSize { name: String },
     /// `relocation-incompatible`: the relocation `r_type` (its ABI name)
     /// cannot be used against `name` in this output, for `reason`. `name`
     /// is the symbol-table name, or the section and offset of a section
@@ -351,6 +368,14 @@ pub enum Kind {
     /// `r_type` is outside its field's check, `[min, max]`; `name` is the
     /// target as for [`Kind::RelocationIncompatible`].
     RelocationOutOfRange { r_type: String, value: i64, min: i64, max: i64, name: String },
+    /// `text-relocation` (`spec/dyn.md` D-47): the relocation `r_type`
+    /// against `name` would need a dynamic record in a section without
+    /// `SHF_WRITE`. GNU ld's words.
+    TextRelocation { r_type: String, name: String },
+    /// `weak-undefined-pc-in-pie` (`spec/dyn.md` D-25): in a `Pie`, the
+    /// relocation `r_type` is an unfillable use of the undefined weak
+    /// `name`; once per key. GNU ld's words.
+    WeakUndefinedPcInPie { r_type: String, name: String },
 
     // -- layout ---------------------------------------------------------
     /// `executable-stack` (a warning, `spec/layout.md` L-84): `file` has a
@@ -384,7 +409,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 51] = [
+    pub const IDS: [&'static str; 57] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -428,9 +453,15 @@ impl Kind {
         "undefined-symbol",
         "undefined-version",
         "version-reassigned",
+        "versioned-export",
+        "canonical-plt-in-pie",
+        "copy-relocation-against-protected",
+        "copy-relocation-of-zero-size",
         "relocation-incompatible",
         "relocation-misaligned",
         "relocation-out-of-range",
+        "text-relocation",
+        "weak-undefined-pc-in-pie",
         "executable-stack",
         "output-too-large",
         "section-conflict",
@@ -486,9 +517,15 @@ impl Kind {
             Self::UndefinedSymbol { .. } => "undefined-symbol",
             Self::UndefinedVersion { .. } => "undefined-version",
             Self::VersionReassigned { .. } => "version-reassigned",
+            Self::VersionedExport { .. } => "versioned-export",
+            Self::CanonicalPltInPie { .. } => "canonical-plt-in-pie",
+            Self::CopyRelocationAgainstProtected { .. } => "copy-relocation-against-protected",
+            Self::CopyRelocationOfZeroSize { .. } => "copy-relocation-of-zero-size",
             Self::RelocationIncompatible { .. } => "relocation-incompatible",
             Self::RelocationMisaligned { .. } => "relocation-misaligned",
             Self::RelocationOutOfRange { .. } => "relocation-out-of-range",
+            Self::TextRelocation { .. } => "text-relocation",
+            Self::WeakUndefinedPcInPie { .. } => "weak-undefined-pc-in-pie",
             Self::ExecutableStack { .. } => "executable-stack",
             Self::OutputTooLarge { .. } => "output-too-large",
             Self::SectionConflict { .. } => "section-conflict",
@@ -519,8 +556,14 @@ impl Kind {
             | Self::UndefinedSymbol { name }
             | Self::UndefinedVersion { name, .. }
             | Self::VersionReassigned { name, .. }
+            | Self::VersionedExport { name, .. }
+            | Self::CanonicalPltInPie { name, .. }
+            | Self::CopyRelocationAgainstProtected { name, .. }
+            | Self::CopyRelocationOfZeroSize { name }
             | Self::RelocationIncompatible { name, .. }
-            | Self::RelocationOutOfRange { name, .. } => Some(name),
+            | Self::RelocationOutOfRange { name, .. }
+            | Self::TextRelocation { name, .. }
+            | Self::WeakUndefinedPcInPie { name, .. } => Some(name),
             _ => None,
         }
     }
@@ -843,14 +886,20 @@ mod tests {
             Kind::UndefinedSymbol { .. } => 40,
             Kind::UndefinedVersion { .. } => 41,
             Kind::VersionReassigned { .. } => 42,
-            Kind::RelocationIncompatible { .. } => 43,
-            Kind::RelocationMisaligned { .. } => 44,
-            Kind::RelocationOutOfRange { .. } => 45,
-            Kind::ExecutableStack { .. } => 46,
-            Kind::OutputTooLarge { .. } => 47,
-            Kind::SectionConflict { .. } => 48,
-            Kind::Refused { .. } => 49,
-            Kind::InternalError { .. } => 50,
+            Kind::VersionedExport { .. } => 43,
+            Kind::CanonicalPltInPie { .. } => 44,
+            Kind::CopyRelocationAgainstProtected { .. } => 45,
+            Kind::CopyRelocationOfZeroSize { .. } => 46,
+            Kind::RelocationIncompatible { .. } => 47,
+            Kind::RelocationMisaligned { .. } => 48,
+            Kind::RelocationOutOfRange { .. } => 49,
+            Kind::TextRelocation { .. } => 50,
+            Kind::WeakUndefinedPcInPie { .. } => 51,
+            Kind::ExecutableStack { .. } => 52,
+            Kind::OutputTooLarge { .. } => 53,
+            Kind::SectionConflict { .. } => 54,
+            Kind::Refused { .. } => 55,
+            Kind::InternalError { .. } => 56,
         }
     }
 
@@ -903,6 +952,10 @@ mod tests {
             Kind::UndefinedSymbol { name: s() },
             Kind::UndefinedVersion { name: s(), version: s() },
             Kind::VersionReassigned { name: s(), first: s(), second: s() },
+            Kind::VersionedExport { name: s(), version: s() },
+            Kind::CanonicalPltInPie { r_type: s(), name: s() },
+            Kind::CopyRelocationAgainstProtected { name: s(), file: s() },
+            Kind::CopyRelocationOfZeroSize { name: s() },
             Kind::RelocationIncompatible {
                 r_type: s(),
                 name: s(),
@@ -910,6 +963,8 @@ mod tests {
             },
             Kind::RelocationMisaligned { r_type: s(), value: 0, align: 1 },
             Kind::RelocationOutOfRange { r_type: s(), value: 0, min: 0, max: 0, name: s() },
+            Kind::TextRelocation { r_type: s(), name: s() },
+            Kind::WeakUndefinedPcInPie { r_type: s(), name: s() },
             Kind::ExecutableStack { file: s() },
             Kind::OutputTooLarge { what: s(), limit: s() },
             Kind::SectionConflict { name: s(), first: s(), second: s() },

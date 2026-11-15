@@ -20,6 +20,8 @@
 //! | [`symtab`] | `.symtab`, `.strtab`, `.symtab_shndx` | S-73 to S-89, S-121 to S-124 |
 //! | [`shstrtab`] | `.shstrtab` | S-90 |
 //! | [`notes`] | `.note.gnu.build-id`, `.note.gnu.property`, notes of mixed alignment, `.comment`'s string | S-91 to S-100, S-126 |
+//! | [`dynsym`] | `.dynsym`'s set, order and indices (stub, WP-M2-DYNSYM) | D-21, D-22, D-26 |
+//! | [`dynstr`] | `.dynstr`'s offsets (stub, WP-M2-DYNSYM) | D-24 |
 //! | [`chunks`] | the S-3 list: names, types, flags, alignment; `Slots.sizes` | S-3, S-108 |
 //! | [`image`] | the chunk interface of `spec/image.md` §13 over every plan | S-4, I-103 to I-108 |
 //!
@@ -39,6 +41,8 @@
 #![forbid(unsafe_code)]
 
 pub mod chunks;
+pub mod dynstr;
+pub mod dynsym;
 pub mod eh;
 pub mod error;
 pub mod got;
@@ -50,6 +54,8 @@ pub mod shstrtab;
 pub mod symtab;
 
 pub use chunks::{SynthKind, chunk_ids};
+pub use dynstr::{DynNames, dynstr_plan};
+pub use dynsym::{DynsymPlan, dynsym_plan};
 pub use eh::{EhInfo, EhPlan, EhSource, EhValue, EhWho, MergeEh};
 pub use error::{Failed, PHASE, SynthError};
 pub use got::{GotPlan, SlotValues};

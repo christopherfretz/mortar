@@ -560,6 +560,73 @@ fn version_reassigned() {
     assert_eq!(symbol_text(kind), "ld: error: foo is assigned to version V1 and V2; V1 is kept\n");
 }
 
+// spec: diag.md §3.1 `versioned-export` (dyn.md D-27)
+#[test]
+fn versioned_export() {
+    let kind = Kind::VersionedExport { name: s("foo"), version: s("V2") };
+    assert_eq!(kind.id(), "versioned-export");
+    assert_eq!(
+        symbol_text(kind),
+        "ld: error: versioned definition foo@@V2 cannot be exported (version definitions are \
+         not supported)\n"
+    );
+}
+
+// spec: diag.md §3.1 `canonical-plt-in-pie` (dyn.md D-44)
+#[test]
+fn canonical_plt_in_pie() {
+    let kind = Kind::CanonicalPltInPie { r_type: s("R_AARCH64_ADR_PREL_PG_HI21"), name: s("puts") };
+    assert_eq!(kind.id(), "canonical-plt-in-pie");
+    assert_eq!(
+        symbol_text(kind),
+        "ld: error: relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `puts' cannot be used \
+         in a position-independent executable; recompile with -fPIE, or link with -no-pie\n"
+    );
+}
+
+// spec: diag.md §3.1 `copy-relocation-against-protected` (dyn.md D-18)
+#[test]
+fn copy_relocation_against_protected() {
+    let kind = Kind::CopyRelocationAgainstProtected { name: s("pv"), file: s("d/libprot.so") };
+    assert_eq!(kind.id(), "copy-relocation-against-protected");
+    assert_eq!(
+        symbol_text(kind),
+        "ld: error: copy relocation against non-copyable protected symbol `pv' in d/libprot.so\n"
+    );
+}
+
+// spec: diag.md §3.1 `copy-relocation-of-zero-size` (dyn.md D-42)
+#[test]
+fn copy_relocation_of_zero_size() {
+    let kind = Kind::CopyRelocationOfZeroSize { name: s("zsym") };
+    assert_eq!(kind.id(), "copy-relocation-of-zero-size");
+    assert_eq!(symbol_text(kind), "ld: error: cannot create a copy relocation for symbol zsym\n");
+}
+
+// spec: diag.md §3.1 `text-relocation` (dyn.md D-47)
+#[test]
+fn text_relocation() {
+    let kind = Kind::TextRelocation { r_type: s("R_X86_64_32S"), name: s("ro_pfa") };
+    assert_eq!(kind.id(), "text-relocation");
+    assert_eq!(
+        symbol_text(kind),
+        "ld: error: relocation R_X86_64_32S against symbol `ro_pfa' can not be used when making \
+         a PIE object; recompile with -fPIE\n"
+    );
+}
+
+// spec: diag.md §3.1 `weak-undefined-pc-in-pie` (dyn.md D-25)
+#[test]
+fn weak_undefined_pc_in_pie() {
+    let kind = Kind::WeakUndefinedPcInPie { r_type: s("R_X86_64_PC32"), name: s("v") };
+    assert_eq!(kind.id(), "weak-undefined-pc-in-pie");
+    assert_eq!(
+        symbol_text(kind),
+        "ld: error: relocation R_X86_64_PC32 against undefined weak symbol `v' cannot be used in \
+         a position-independent executable; recompile with -fPIE\n"
+    );
+}
+
 // spec: diag.md §3.3 (a field that holds a symbol name is `Kind::symbol`)
 #[test]
 fn symbol_kinds_report_their_symbol() {

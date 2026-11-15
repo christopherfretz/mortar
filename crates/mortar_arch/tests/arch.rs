@@ -738,6 +738,7 @@ fn place(path: &FileRef) -> RelocPlace<'_> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one case per diagnostic
 fn s7_s10_diagnostic_texts_and_keys() {
     let path = FileRef::new(PLACE_FILE);
     let at = place(&path);
@@ -813,6 +814,20 @@ fn s7_s10_diagnostic_texts_and_keys() {
     assert_eq!(id(ScanError::Outside), "malformed-input");
     assert_eq!(id(ScanError::Overlap), "refused");
     assert_eq!(id(ScanError::Internal), "internal-error");
+    // The M2 names a dynamic output refuses by (dyn.md D-25, D-44, D-47).
+    let names: Vec<_> =
+        mortar_arch::DynRefusal::ALL.iter().map(|&r| id(ScanError::Dynamic(r))).collect();
+    assert_eq!(names, ["canonical-plt-in-pie", "text-relocation", "weak-undefined-pc-in-pie"]);
+    let (_, d) = diag::scan(
+        ScanError::Dynamic(mortar_arch::DynRefusal::WeakUndefinedPcInPie),
+        &at,
+        RefName::Named("R_X86_64_PC32"),
+        "v",
+    );
+    assert!(render(&d).contains(
+        "relocation R_X86_64_PC32 against undefined weak symbol `v' cannot be used in a \
+         position-independent executable; recompile with -fPIE"
+    ));
     assert_eq!(
         id(ScanError::Refused(Refusal::hex(mortar_diag::RefusalClass::RelocationType, 0x999))),
         "refused"
@@ -860,4 +875,28 @@ fn s4_2_flags() {
     assert_eq!(DemandFlags::from_bits(0x7FF).map(DemandFlags::bits), Some(0x7FF));
     assert_eq!(format!("{:?}", DemandFlags::GOT | DemandFlags::IPLT), "{GOT, IPLT}");
     assert!(DemandFlags::CROSS_FILE.contains(DemandFlags::GOT_NORELAX));
+}
+
+/// `spec/dyn.md` D-46, D-48, D-49 (R-A6 (d)): the place content of each
+/// role's record. REL is M4: no content stated.
+#[test]
+fn r_a6_record_place_per_role() {
+    use mortar_arch::{PlaceContent, RelForm};
+    let rela = |r: DynRole| r.place(RelForm::Rela);
+    assert_eq!(rela(DynRole::Relative), Some(PlaceContent::SPlusA));
+    for r in [DynRole::Symbolic, DynRole::GlobDat, DynRole::Copy, DynRole::TpOff { negated: false }]
+    {
+        assert_eq!(rela(r), Some(PlaceContent::Zero), "{r:?}");
+    }
+    assert_eq!(rela(DynRole::JumpSlot), Some(PlaceContent::LazyTarget), "D-49 over D-46");
+    for r in [
+        DynRole::IRelative,
+        DynRole::DtpMod,
+        DynRole::DtpOff,
+        DynRole::TpOff { negated: true },
+        DynRole::TlsDesc,
+    ] {
+        assert_eq!(rela(r), None, "{r:?}");
+    }
+    assert!(DynRole::ALL.iter().all(|r| r.place(RelForm::Rel).is_none()));
 }

@@ -13,7 +13,7 @@ use mortar_core::{FileId, SectionId, SymKey};
 use mortar_diag::Key;
 
 use crate::class::PlaceFacts;
-use crate::error::{Incompatible, Refusal};
+use crate::error::{DynRefusal, Incompatible, Refusal};
 use crate::flags::{DemandFlags, GlobalFlags};
 use crate::seq::{Code, Proof, ProofRun};
 use crate::shapes::{DynRole, TlsBlock};
@@ -193,6 +193,9 @@ pub enum ScanError {
     Refused(Refusal),
     /// `relocation-incompatible`.
     Incompatible(Incompatible),
+    /// A dynamic output's refusal with a kind of its own
+    /// (`spec/dyn.md` D-25, D-44, D-47).
+    Dynamic(DynRefusal),
     /// `malformed-input`: the field or its window is outside the section.
     Outside,
     /// `refused`, feature `overlapping relocations` (§3.4).
@@ -508,6 +511,11 @@ pub struct OutputCx {
     pub pac_plt: bool,
     /// `-z force-bti` / `-z force-ibt`.
     pub force_bti: bool,
+    /// `-z now` (`spec/dyn.md` D-49, R-A6 (b)): `.got.plt` moves into
+    /// RELRO and `DF_BIND_NOW` is set; the PLT shapes stay, so this is
+    /// a flag beside the variant, not a variant. Always `false` in a
+    /// static link.
+    pub bind_now: bool,
 }
 
 /// The context of `write_plt` (§3.7).

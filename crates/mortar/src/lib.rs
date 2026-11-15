@@ -13,6 +13,7 @@
 
 pub mod arch;
 pub mod depfile;
+pub mod dynamic;
 pub mod front;
 pub mod image;
 mod proof;
@@ -149,7 +150,8 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     // The refusals of options come after the front, whose phases stop at
     // the first error (the report is in key order, whatever the order of
     // emission, `spec/diag.md` §6).
-    let refusals = parsed.refusals();
+    // The dynamic gates are the guard's (WP-041 step 0e).
+    let refusals = dynamic::option_refusals(plan, &parsed);
     let failed = |diagnostics: Collector, phases: String| Invocation {
         outcome: Outcome::Failed(diagnostics.finish()),
         color,
@@ -167,7 +169,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     }
     // An option the pipeline does not honor stops the line here, with the
     // refusal of linking itself (phase 11).
-    if !parsed.refused_uses().is_empty() {
+    if !refusals.is_empty() {
         emit_refusals(&diagnostics);
         diagnostics.emit(
             Key::new(mortar_cli::PHASE + 1, 0, 0),

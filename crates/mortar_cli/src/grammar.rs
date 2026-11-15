@@ -54,6 +54,23 @@ impl Use {
     pub fn row(&self) -> &'static Row {
         &rows()[self.row]
     }
+
+    /// The refusal of this use, keyed on its argument (see
+    /// [`Parsed::refusals`]): what a caller that takes some refused uses
+    /// out of [`Parsed::refused_uses`] reports for them (`mortar`'s
+    /// `dynamic_guard`, WP-041 step 0e).
+    #[must_use]
+    pub fn refusal(&self) -> (Key, Diagnostic) {
+        let d = match self.row().status {
+            Status::Partial { note, .. } => {
+                let value = self.value.as_deref().unwrap_or_default().to_string_lossy();
+                Diagnostic::refused(RefusalClass::OptionValue, format!("{}={value}", self.spelling))
+                    .note(note)
+            }
+            _ => Diagnostic::refused(RefusalClass::Option, self.spelling.clone()),
+        };
+        (Key::new(PHASE, self.arg, u64::MAX), d)
+    }
 }
 
 impl Parsed {
@@ -101,23 +118,7 @@ impl Parsed {
     /// row's note.
     #[must_use]
     pub fn refusals(&self) -> Vec<(Key, Diagnostic)> {
-        self.refused_uses()
-            .into_iter()
-            .map(|u| {
-                let d = match u.row().status {
-                    Status::Partial { note, .. } => {
-                        let value = u.value.as_deref().unwrap_or_default().to_string_lossy();
-                        Diagnostic::refused(
-                            RefusalClass::OptionValue,
-                            format!("{}={value}", u.spelling),
-                        )
-                        .note(note)
-                    }
-                    _ => Diagnostic::refused(RefusalClass::Option, u.spelling.clone()),
-                };
-                (Key::new(PHASE, u.arg, u64::MAX), d)
-            })
-            .collect()
+        self.refused_uses().into_iter().map(Use::refusal).collect()
     }
 }
 

@@ -177,7 +177,11 @@ fn s68_plt_entries_in_a_static_output_are_refused() {
 fn s67_aarch64_got_plt_has_no_reserved_words() {
     let p = plan(&slots(), GlobalFlags::GOT_BASE).unwrap();
     assert_eq!(p.got_plt_size(), 16, "one word per IPLT entry");
-    assert_eq!(words(&fill(&p, GotPart::GotPlt)), [0, 0], "RELA: the addend carries the resolver");
+    assert_eq!(
+        words(&fill(&p, GotPart::GotPlt)),
+        [0x3333, 0x5555],
+        "AArch64: the word is the resolver S+A (dyn Q7, Facts.iplt_word)"
+    );
 }
 
 #[test]
