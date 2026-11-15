@@ -733,7 +733,7 @@ pub fn chunk(
         }
     }
     let mut first_seen: Vec<bool> = vec![false; outs];
-    for &c in order.iter() {
+    for &c in &order {
         let Some(o) = out_of[c.0 as usize] else { continue };
         if std::mem::replace(&mut first_seen[o.0 as usize], true) {
             continue;
