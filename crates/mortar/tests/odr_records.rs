@@ -469,11 +469,16 @@ fn unanchored_rows() {
 }
 
 // spec: meta.md MT-11, MT-12, MT-14 (duplicate and contradictory rows of
-// one unit, a kind no header announces, shared strings)
+// one unit, a kind no header announces, shared strings), odr.md §3 N4
+// (abi.exceptions differs without ENFORCE: silent)
 #[test]
 fn odd_but_valid_units() {
     let Some(cx) = Cx::new("odr-odd") else { return };
     let mut a = cxx("a.cc");
+    // N4: a summary key without ENFORCE that differs is a note, not a check.
+    let exceptions =
+        |v: &str| Summary { name: b"abi.exceptions".to_vec(), value: v.into(), flags: 0 };
+    a.summary.insert(0, exceptions("on"));
     // The same row twice: one row.
     a.definitions.push(def("_Z3dupv", 1, flags::VAGUE));
     a.definitions.push(def("_Z3dupv", 1, flags::VAGUE));
@@ -488,6 +493,7 @@ fn odd_but_valid_units() {
     a.raw.push(RawBlock { kind: 6, version: 1, row_size: 8, row_count: 2, body: vec![0xab; 16] });
     a.raw.push(RawBlock { kind: 0x7f00, version: 1, row_size: 0, row_count: 0, body: vec![1; 5] });
     let mut b = cxx("b.cc");
+    b.summary.insert(0, exceptions("off"));
     b.definitions.push(def("_Z3dupv", 1, flags::VAGUE));
     b.definitions.push(def("_Z3conv", 3, flags::VAGUE));
     b.types.push(ty("1S", 1, 4, 4, 0));
