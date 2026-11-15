@@ -257,7 +257,7 @@ pub fn scan(
     drop(results);
 
     stats.par_calls += u32::from(locals.len() > SORT_RUN);
-    pool.sort_by_key(&mut locals, |l| l.0);
+    pool.unit_cost(10).sort_by_key(&mut locals, |l| l.0);
     let mut local: Vec<(LocalSym, DemandFlags)> = Vec::with_capacity(locals.len());
     for (s, f) in locals {
         match local.last_mut() {

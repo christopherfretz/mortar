@@ -57,7 +57,7 @@ pub(crate) fn targets_with<V: View>(view: &V, kinds: &[FileKind], pool: &Pool) -
     let keys = view.keys() as usize;
     let first = atomics_u32(keys, NO_FILE);
     let cfirst = atomics_u32(keys, NO_FILE);
-    pool.for_each_init(kinds.len(), Vec::new, |buf: &mut Vec<Mention>, f| {
+    pool.unit_cost(280).for_each_init(kinds.len(), Vec::new, |buf: &mut Vec<Mention>, f| {
         let kind = kinds[f];
         if !takes_part(kind) || kind == FileKind::Internal {
             return;
@@ -172,7 +172,7 @@ pub(crate) fn closure<V: View>(
         }
         first = false;
         let run = if frontier.len() < INLINE_FRONTIER { &inline } else { pool };
-        run.for_each_init(
+        run.unit_cost(1500).for_each_init(
             frontier.len(),
             || (Vec::new(), Vec::new()),
             |(buf, found): &mut (Vec<Mention>, Vec<u32>), u| {

@@ -398,3 +398,69 @@ fn s6_a_worker_panic_propagates_without_deadlock() {
         assert_eq!(pool.map(5, |u| u), [0, 1, 2, 3, 4], "{pool:?} works after a panic");
     }
 }
+
+// ---- §6: how many workers (WP-032g) ----------------------------------------
+
+/// §6: a call site's cost estimate changes how many workers run, never a
+/// result: every helper under every pool, with estimates from "nothing"
+/// to "a second per unit", gives its sequential meaning.
+#[test]
+fn s6_unit_cost_changes_no_result() {
+    let input: Vec<u64> = {
+        let mut next = rng(7);
+        (0..3000).map(|_| next() % 1000).collect()
+    };
+    for ns in [1, 200, 100_000, u32::MAX] {
+        let got = check_schedules(|pool| {
+            let pool = pool.unit_cost(ns);
+            let squares = pool.map(input.len(), |u| input[u] * input[u]);
+            let rows = pool.map_collect(input.len(), |u, out| {
+                out.extend(std::iter::repeat_n(u as u64, (input[u] % 3) as usize));
+            });
+            let mut sums = input.clone();
+            let total = pool.prefix_sum(&mut sums);
+            let mut sorted = input.clone();
+            pool.sort_by_key(&mut sorted, |&x| x / 7);
+            let hits = AtomicU64::new(0);
+            pool.for_each(input.len(), |u| {
+                hits.fetch_add(input[u], Ordering::Relaxed);
+            });
+            let mut cells = vec![0u64; input.len()];
+            pool.for_each_mut(&mut cells, |u, c| *c = input[u] + 1);
+            (squares, rows, sums, total, sorted, hits.into_inner(), cells)
+        });
+        assert_eq!(got.4, {
+            let mut s = input.clone();
+            s.sort_by_key(|&x| x / 7);
+            s
+        });
+    }
+}
+
+/// §6: without a seed, a region whose estimated work is below one
+/// worker's share runs on the caller alone: nothing is spawned.
+#[test]
+fn s6_a_small_region_runs_on_the_caller() {
+    let caller = std::thread::current().id();
+    let pool = Pool::sequential().with_threads(8).unit_cost(10);
+    let others = AtomicU32::new(0);
+    pool.for_each(1000, |_| {
+        if std::thread::current().id() != caller {
+            others.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let ids = pool.map(1000, |_| std::thread::current().id());
+    assert_eq!(others.into_inner(), 0);
+    assert!(ids.iter().all(|&id| id == caller));
+}
+
+/// §6: a parallel call made from inside a worker of another (a nested
+/// region) completes and gives its sequential meaning.
+#[test]
+fn s6_nested_regions() {
+    let got = check_schedules(|pool| {
+        pool.map(20, |u| pool.map(30, |v| (u * 30 + v) as u64).iter().sum::<u64>())
+    });
+    assert_eq!(got.len(), 20);
+    assert_eq!(got[1], (30..60).sum::<u64>());
+}

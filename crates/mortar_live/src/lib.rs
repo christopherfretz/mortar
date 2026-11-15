@@ -103,7 +103,7 @@ pub fn liveness(
     let sections = t.resolution.sections.as_slice();
     // I-1: live exactly when kept.
     let mut live = vec![false; sections.len()];
-    pool.for_each_mut(&mut live, |s, cell| *cell = sections[s].is_kept());
+    pool.unit_cost(1).for_each_mut(&mut live, |s, cell| *cell = sections[s].is_kept());
     let frag_live = frag_live(t.split, &live, pool);
     let live = Column::from_vec(live).unwrap_or_default();
     Ok(Liveness { live, frag_live })

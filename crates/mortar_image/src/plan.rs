@@ -480,7 +480,7 @@ impl Builder {
             return Err(invalid("window 0"));
         }
         rows.retain(|r| r.size > 0);
-        pool.sort_by_key(&mut rows, |r| r.offset);
+        pool.unit_cost(9).sort_by_key(&mut rows, |r| r.offset);
         pads.sort_by_key(|p| p.0.start);
         for w in pads.windows(2) {
             if w[0].0.end > w[1].0.start {

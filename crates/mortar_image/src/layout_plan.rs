@@ -237,7 +237,7 @@ pub fn from_layout(
         }
         members.push((c, off, s));
     }
-    pool.sort_by_key(&mut members, |&(c, off, _)| (c.0, off));
+    pool.unit_cost(15).sort_by_key(&mut members, |&(c, off, _)| (c.0, off));
     let mut paths: BTreeMap<FileId, FileRef> = BTreeMap::new();
     for &(c, off, s) in &members {
         let chunk = &chunks[c];
