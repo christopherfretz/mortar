@@ -142,6 +142,8 @@ pub struct Resolved {
     pub sections: Vec<SectionRow>,
     /// `SHF_GNU_RETAIN` sections: roots of `--gc-sections` (§4.7).
     pub retained: Vec<(FileId, SectionIndex)>,
+    /// The Mason containers (`spec/meta.md` MT-6), sorted.
+    pub meta: Vec<(FileId, SectionIndex)>,
     /// `.gnu.warning.<sym>` sections of live files, by the key `<sym>`
     /// (§10: the scan warns per reference).
     pub gnu_warning_syms: Vec<(SymbolId, FileId, SectionIndex)>,
@@ -297,6 +299,7 @@ pub fn resolve_steps<V: View>(
     let mut found = found.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     problems.append(&mut found.problems);
     found.retained.sort_unstable();
+    found.meta.sort_unstable();
     found.gnu_warning_syms.sort_unstable();
     steps.step("resolve.d1");
 
@@ -421,6 +424,7 @@ pub fn resolve_steps<V: View>(
         section_base,
         sections,
         retained: found.retained,
+        meta: found.meta,
         gnu_warning_syms: found.gnu_warning_syms,
         entry,
         problems,
@@ -445,22 +449,47 @@ fn def_of(acc: &Acc, k: usize) -> Def {
     Def::Undefined { weak: acc.flags[k].load(Relaxed) & flags::REF_STRONG == 0 }
 }
 
+/// spec: meta.md MT-6: a section named `.mason.meta` that is not a
+/// container keeps the rows it matched and is reported once per file.
+/// Whether it reported.
+fn misnamed_container(
+    file: FileId,
+    i: u32,
+    name: &[u8],
+    class: &Result<(SectionKind, Note), SectionRefusal>,
+    out: &mut Found,
+) -> bool {
+    if name != mortar_meta::SECTION_NAME || matches!(class, Ok((SectionKind::Meta, _))) {
+        return false;
+    }
+    out.problems.push(Problem {
+        key: DiagKey::of(file, u64::from(i)),
+        what: What::MetaNotContainer { file, section: SectionIndex(i) },
+    });
+    true
+}
+
 /// What D1 gathers besides the per-key cells.
 #[derive(Debug, Default)]
 struct Found {
     problems: Vec<Problem>,
     retained: Vec<(FileId, SectionIndex)>,
+    meta: Vec<(FileId, SectionIndex)>,
     gnu_warning_syms: Vec<(SymbolId, FileId, SectionIndex)>,
 }
 
 impl Found {
     fn is_empty(&self) -> bool {
-        self.problems.is_empty() && self.retained.is_empty() && self.gnu_warning_syms.is_empty()
+        self.problems.is_empty()
+            && self.retained.is_empty()
+            && self.meta.is_empty()
+            && self.gnu_warning_syms.is_empty()
     }
 
     fn append(&mut self, mut other: Self) {
         self.problems.append(&mut other.problems);
         self.retained.append(&mut other.retained);
+        self.meta.append(&mut other.meta);
         self.gnu_warning_syms.append(&mut other.gnu_warning_syms);
     }
 }
@@ -567,6 +596,7 @@ fn section_rows<V: View>(
 ) {
     let machine = ctx.view.machine();
     let n = rows.len() as u32;
+    let mut misnamed = false;
     for i in 0..n {
         let Some(s) = ctx.view.section(file, SectionIndex(i)) else {
             continue;
@@ -575,9 +605,14 @@ fn section_rows<V: View>(
         let dropped = map.is_dropped(i);
         let row = &mut rows[i as usize];
         row.comdat = group;
-        match sections::classify(machine, i, &s) {
+        let class = sections::classify(machine, i, &s);
+        misnamed = misnamed || misnamed_container(file, i, s.name, &class, out);
+        match class {
             Ok((kind, note)) => {
                 row.kind = kind;
+                if kind == SectionKind::Meta {
+                    out.meta.push((file, SectionIndex(i)));
+                }
                 let excluded = sections::excluded_reason(&s, note);
                 let strip = ctx.opts.strip_debug && sections::is_debug(&s);
                 row.state = sections::state(kind, excluded, dropped, strip);

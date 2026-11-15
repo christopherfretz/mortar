@@ -308,6 +308,11 @@ pub struct Resolution {
     /// for files that are not live objects.
     pub section_base: Column<FileId, IdRange<SectionId>>,
     pub sections: Column<SectionId, SectionRow>,
+    /// The Mason containers of the live objects (`spec/model.md` §3.3,
+    /// `spec/meta.md` MT-6: every section of kind `Meta`), sorted by
+    /// `(FileId, SectionIndex)`, so that `mortar_odr` finds a file's units
+    /// without a rescan. Empty in a link without containers.
+    pub meta: Box<[(FileId, SectionIndex)]>,
     // ---- the dynamic columns (`spec/dyn.md` D-11, D-12, D-21; request
     // R-R3): computed by `mortar_resolve` after the needed/used fixed
     // point (D-11, D-12). Each is empty (no room, `IdSet::new`) in a
@@ -347,6 +352,7 @@ impl Resolution {
             comdat_copies: Box::new([]),
             section_base: Column::filled(files, IdRange::empty(SectionId(0))),
             sections: Column::new(),
+            meta: Box::new([]),
             exported: IdSet::new(),
             imported: IdSet::new(),
             ref_dynamic: IdSet::new(),
@@ -431,9 +437,12 @@ impl Resolution {
     /// 7. each dynamic column (`exported`, `imported`, `ref_dynamic`,
     ///    `defined_dynamic`) is empty or has one bit per key; an import's
     ///    `def` is `Shared`; an export's is the program's (`Defined`,
-    ///    `Common` or `Internal`).
+    ///    `Common` or `Internal`);
+    /// 8. `meta` is strictly sorted and lists exactly the sections of kind
+    ///    `Meta`.
     ///
     /// [`Resolution::check_against`] adds what needs `Inputs`.
+    #[allow(clippy::too_many_lines)] // the rules in order, one pass over sections
     pub fn check(&self) -> Result<(), Broken> {
         let t = "Resolution";
         let keys = self.def.len();
@@ -520,7 +529,9 @@ impl Resolution {
                 format!("rule 5: comdat {}: the keeper is not the least live copy", group.0)
             })?;
         }
+        let mut metas = 0usize;
         for (section, row) in self.sections.iter() {
+            metas += usize::from(row.kind == SectionKind::Meta);
             ensure(row.kind.carries_output() || !row.is_kept(), t, || {
                 format!("section {}: a kind without output is kept", section.0)
             })?;
@@ -533,7 +544,25 @@ impl Resolution {
                 || format!("section {}: dropped for a group it is not in", section.0),
             )?;
         }
-        Ok(())
+        self.check_meta(metas)
+    }
+
+    /// Rule 8 of [`Resolution::check`]: `meta` (`spec/meta.md` MT-6);
+    /// `metas` is the number of `Meta` sections.
+    fn check_meta(&self, metas: usize) -> Result<(), Broken> {
+        let t = "Resolution";
+        if let Some(at) = unsorted_at(&self.meta, |row| *row) {
+            return Err(Broken { table: t, what: format!("rule 8: meta[{at}] out of order") });
+        }
+        for &(file, index) in &self.meta {
+            let kind = self.section_id(file, index).and_then(|id| self.sections.get(id));
+            ensure(kind.is_some_and(|row| row.kind == SectionKind::Meta), t, || {
+                format!("rule 8: file {} section {}: in meta, not a Meta section", file.0, index.0)
+            })?;
+        }
+        ensure(metas == self.meta.len(), t, || {
+            "rule 8: a Meta section missing from meta".to_owned()
+        })
     }
 
     /// Rule 7 of [`Resolution::check`]: the dynamic columns (`spec/dyn.md`

@@ -352,6 +352,7 @@ fn control_characters_are_made_visible() {
 
 /// One diagnostic of every kind, plain and with every kind of context,
 /// and with fields that try to break the line structure.
+#[allow(clippy::too_many_lines)] // one row per kind
 fn samples() -> Vec<Diagnostic> {
     let s = |text: &str| text.to_owned();
     let kinds = |x: &str| {
