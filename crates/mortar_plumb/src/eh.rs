@@ -442,9 +442,17 @@ impl Engine<'_, '_> {
                 }
             };
             input_terminator |= frames.terminator.is_some();
-            let relocs: BTreeMap<u64, (u32, u32, i64)> =
-                raw.iter().map(|&(off, sym, ty, a)| (off, (sym, ty, a.unwrap_or(0)))).collect();
-            let mut claimed: BTreeMap<u64, bool> = BTreeMap::new();
+            // synth.md R-P7: an `R_*_NONE` record is no relocation.
+            let is_none = |ty: u32| ty == 0 || ty == 256;
+            let nones = raw.iter().filter(|r| is_none(r.2)).count() as u64;
+            self.cov.none += nones;
+            let relocs: BTreeMap<u64, (u32, u32, i64)> = raw
+                .iter()
+                .filter(|r| !is_none(r.2))
+                .map(|&(off, sym, ty, a)| (off, (sym, ty, a.unwrap_or(0))))
+                .collect();
+            let mut claimed: BTreeMap<u64, bool> =
+                raw.iter().filter(|r| is_none(r.2)).map(|r| (r.0, true)).collect();
             let mut resolve = |this: &mut Self, fl: Field| -> In {
                 let Some(&(sym, ty, a)) = relocs.get(&(fl.off as u64)) else {
                     // An absolute pointer written in place; a PC-relative
@@ -465,6 +473,7 @@ impl Engine<'_, '_> {
                     Target::Discarded(_) => In::Dead,
                     Target::Skip(r) => In::Unknown(r),
                     Target::Tls(_) => In::Unknown(Reason::Tls),
+                    Target::Ifunc { .. } => In::Unknown(Reason::Ifunc),
                     Target::Merge { .. } => In::Unknown(Reason::InMergeable),
                 }
             };
@@ -484,7 +493,13 @@ impl Engine<'_, '_> {
             let mut cie_live = vec![false; frames.cies.len()];
             for d in &frames.fdes {
                 let k = fde_records(d);
-                let pc = resolve(self, d.pc);
+                // R-P7: an initial location of 0 with no relocation
+                // describes no code of the link: dropped.
+                let pc = if d.pc.raw == 0 && !relocs.contains_key(&(d.pc.off as u64)) {
+                    In::Dead
+                } else {
+                    resolve(self, d.pc)
+                };
                 let lsda = d.lsda.map(|l| resolve(self, l));
                 let site = o.site(si, d.off as u64);
                 let want_pc = match pc {

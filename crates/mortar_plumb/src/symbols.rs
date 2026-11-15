@@ -7,13 +7,15 @@ use std::collections::{BTreeMap, HashMap};
 
 use mortar_elf::consts::{
     PT_LOAD, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX,
-    SHT_NOBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_GNU_UNIQUE, STB_LOCAL, STB_WEAK,
-    STT_FILE, STT_GNU_IFUNC, STT_SECTION, STT_TLS, STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
+    SHT_NOBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_GNU_UNIQUE, STB_LOCAL,
+    STB_WEAK, STT_FILE, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS, STV_HIDDEN, STV_INTERNAL,
+    STV_PROTECTED,
 };
 use mortar_elf::{Class, Sym, SymbolIndex, SymbolSection};
 
 use crate::image::{Image, OutSym};
 use crate::locate::Place;
+use crate::map::Format;
 use crate::reloc::Engine;
 use crate::report::{Finding, Rule};
 
@@ -247,7 +249,11 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             .filter_map(|&(oi, di)| placed_def(e, oi, di))
             .map(|d| (d, d.sym.binding()))
             .collect();
-        if defs.iter().any(|(d, _)| d.sym.sym_type() == STT_GNU_IFUNC) || defs.is_empty() {
+        // An IFUNC in the GNU form is judged like any symbol; the lld and
+        // mold form (a function at an IPLT entry) is Y1's (§4.8).
+        let canonical_ifunc = defs.iter().any(|(d, _)| d.sym.sym_type() == STT_GNU_IFUNC)
+            && out.sym.sym_type() != STT_GNU_IFUNC;
+        if canonical_ifunc || defs.is_empty() {
             unchecked += 1;
             continue;
         }
@@ -386,6 +392,18 @@ fn locals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             // A mapping symbol of a veneer or a patch: the linker's own,
             // in an output section but in no input section.
             let mapping = out.name.starts_with("$x") || out.name.starts_with("$d");
+            // A local IFUNC in the lld and mold form: a function at an
+            // IPLT entry of its resolver (§4.8).
+            let canonical_ifunc = matches!(e.format, Format::Lld | Format::Mold)
+                && s.sym_type() == STT_FUNC
+                && p.at.iter().any(|(&r, ds)| {
+                    ds.iter().any(|d| d.sym.sym_type() == STT_GNU_IFUNC)
+                        && e.iplt.entries_of(r).contains(&value)
+                });
+            if canonical_ifunc {
+                checked += 1;
+                continue;
+            }
             if unknown
                 || mapping && !e.occupied_at(value) && image.alloc_section_of(value, 0).is_some()
             {
@@ -457,7 +475,11 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
         .find(|s| s.name == ".text" && s.alloc())
         .map(end)
         .or_else(|| alloc().filter(|s| flag(s, SHF_EXECINSTR)).map(end).max());
-    let relas: Vec<_> = alloc().filter(|s| s.shdr.sh_type == SHT_RELA).collect();
+    // synth.md R-P6: i386 is REL, with `__rel_iplt_*`; R-P5: the x86 GOT
+    // base is `.got.plt`.
+    let x86 = matches!(e.image.header.e_machine, 3 | 62);
+    let rel_type = if e.image.header.e_machine == 3 { SHT_REL } else { SHT_RELA };
+    let relas: Vec<_> = alloc().filter(|s| s.shdr.sh_type == rel_type).collect();
     let mut input_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for o in e.objs {
         let Some(t) = &o.symtab else { continue };
@@ -497,7 +519,9 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             "__fini_array_end" => bounds(".fini_array", true),
             "__preinit_array_start" => bounds(".preinit_array", false),
             "__preinit_array_end" => bounds(".preinit_array", true),
-            "_GLOBAL_OFFSET_TABLE_" => sec(".got").map(|(lo, _)| Want::Exactly(lo)),
+            "_GLOBAL_OFFSET_TABLE_" => {
+                sec(if x86 { ".got.plt" } else { ".got" }).map(|(lo, _)| Want::Exactly(lo))
+            }
             "__GNU_EH_FRAME_HDR" => sec(".eh_frame_hdr").map(|(lo, _)| Want::Exactly(lo)),
             "_edata" | "edata" => e_end.map(|v| Want::Within(v, next(v, &|_| true).unwrap_or(v))),
             "__bss_start" | "__bss_start__" => e_end.map(|v| {
@@ -511,15 +535,19 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
                 let code = alloc().filter(|s| flag(s, SHF_EXECINSTR)).map(end).max().unwrap_or(t);
                 Want::Within(t, next(t, &|s| !flag(s, SHF_EXECINSTR)).unwrap_or(code))
             }),
-            "__rela_iplt_start" | "__rela_iplt_end" => match relas.as_slice() {
-                [] => Some(Want::Equal),
-                [r] => Some(Want::Exactly(if name.ends_with("_end") {
-                    end(r)
-                } else {
-                    r.shdr.sh_addr
-                })),
-                _ => None,
-            },
+            "__rela_iplt_start" | "__rela_iplt_end" | "__rel_iplt_start" | "__rel_iplt_end"
+                if name.starts_with("__rela_") == (rel_type == SHT_RELA) =>
+            {
+                match relas.as_slice() {
+                    [] => Some(Want::Equal),
+                    [r] => Some(Want::Exactly(if name.ends_with("_end") {
+                        end(r)
+                    } else {
+                        r.shdr.sh_addr
+                    })),
+                    _ => None,
+                }
+            }
             "_DYNAMIC" => Some(Want::Exactly(sec(".dynamic").map_or(0, |(lo, _)| lo))),
             "_TLS_MODULE_BASE_" => Some(Want::Exactly(0)),
             _ => {

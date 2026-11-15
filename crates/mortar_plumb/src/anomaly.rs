@@ -42,6 +42,13 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
     if mold && (y(5) || f.rule == Rule::Structure(8)) && sym == "_TLS_MODULE_BASE_" {
         return Some("A3: mold's _TLS_MODULE_BASE_ is an address, or there is no PT_TLS");
     }
+    if mold
+        && f.rule == Rule::SymbolValue
+        && f.message.starts_with("IFUNC symbol")
+        && f.found.is_some_and(|v| v >= 1 << 32)
+    {
+        return Some("A2: mold gives an alias of an IFUNC the value 2^32 + x");
+    }
     if !mold || f.rule != Rule::Structure(8) {
         return None;
     }
