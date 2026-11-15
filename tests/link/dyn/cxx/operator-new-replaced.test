@@ -1,0 +1,91 @@
+# dyn.md D-12 and D-23, replacement allocation functions: the
+# executable defines `operator new(size_t)` and both `operator delete`s
+# ([replacement.functions]); libstdc++.so defines them too, as does a
+# `-fPIC` library's caller of `new`. The executable's definitions are
+# exported (a needed library references them, D-12) and win at run time:
+# the library's `new`/`delete` and libstdc++'s own allocations
+# (`std::string`, `std::vector`) all reach the counters of the
+# executable. The second program defines its `operator new` weak (as a
+# library would to be overridable): still a definition, still exported,
+# `STB_WEAK` in `.dynsym` (the binding of `.symtab`, D-23), still the one
+# the loader binds, ahead of libstdc++'s. PIE and `-no-pie` with
+# `-fno-pic` code.
+#
+#@ spec: dyn.md "D-12"
+#@ spec: dyn.md "D-23"
+#@ arch: aarch64
+#@ requires: g++
+
+cxx -O1 -fPIC lib.cc -o lib.o
+shlib g++ lib.o -Wl,-soname,libn.so -o libn.so
+cxx -O1 -fPIE main.cc -o main-pie.o
+cxx -O1 -fno-pic main.cc -o main-exec.o
+cxx -O1 -fPIE -DWEAK_NEW main.cc -o weak-pie.o
+link g++ -pie main-pie.o -L. -ln -o pie
+run pie
+  stdout: lib 1 exe-vec 5 len 100 news>=8 1 balanced 1
+link g++ -no-pie main-exec.o -L. -ln -o exec
+run exec
+  stdout: lib 1 exe-vec 5 len 100 news>=8 1 balanced 1
+link g++ -pie weak-pie.o -L. -ln -o weak
+run weak
+  stdout: lib 1 exe-vec 5 len 100 news>=8 1 balanced 1
+check readelf --dyn-syms -W pie
+  has: FUNC * GLOBAL DEFAULT * _Znwm$
+  has: FUNC * GLOBAL DEFAULT * _ZdlPv$
+  has: FUNC * GLOBAL DEFAULT * _ZdlPvm$
+check readelf --dyn-syms -W exec
+  has: FUNC * GLOBAL DEFAULT * _Znwm$
+check readelf --dyn-syms -W weak
+  has: FUNC * WEAK * DEFAULT * _Znwm$
+  has: FUNC * GLOBAL DEFAULT * _ZdlPv$
+
+#--- lib.cc
+#include <string>
+#include <vector>
+
+int *lib_new_int() { return new int(3); }
+void lib_delete_int(int *p) { delete p; }
+std::size_t lib_vec() {
+  std::vector<std::string> v(5, std::string(40, 'x'));
+  return v.size();
+}
+#--- main.cc
+#include <cstdio>
+#include <cstdlib>
+#include <new>
+#include <string>
+
+#ifdef WEAK_NEW
+#define NEW_ATTR __attribute__((weak))
+#else
+#define NEW_ATTR
+#endif
+
+static int news, deletes;
+NEW_ATTR void *operator new(std::size_t n) {
+  ++news;
+  if (void *p = std::malloc(n ? n : 1)) return p;
+  throw std::bad_alloc();
+}
+void operator delete(void *p) noexcept {
+  if (p) ++deletes;
+  std::free(p);
+}
+void operator delete(void *p, std::size_t) noexcept {
+  if (p) ++deletes;
+  std::free(p);
+}
+int *lib_new_int();
+void lib_delete_int(int *);
+std::size_t lib_vec();
+
+int main() {
+  int *p = lib_new_int();
+  lib_delete_int(p);
+  std::size_t n = lib_vec();
+  std::string s(100, 'y');
+  std::printf("lib %d exe-vec %zu len %zu news>=8 %d balanced %d\n", news >= 1, n,
+              s.size(), news >= 8, news - deletes == 1);
+  return 0;
+}

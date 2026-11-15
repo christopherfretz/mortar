@@ -119,7 +119,8 @@ pub fn with_link<T>(
     let core =
         CoreSections { resolution: &f.resolution, liveness: &f.liveness, split: &f.merge.split };
     let sections = LinkSections { core, assignment: &f.assignment };
-    let syms = CoreSyms::new(&f.inputs, &f.resolution, &f.assignment);
+    let syms =
+        CoreSyms::new(&f.inputs, &f.resolution, &f.assignment).dynamic(f.dyn_tables.is_some());
     let cx = SymCtx {
         syms: &syms,
         sections: &sections,
