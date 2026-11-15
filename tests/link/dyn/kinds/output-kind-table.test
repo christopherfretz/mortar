@@ -1,0 +1,49 @@
+# dyn.md D-1, the table of output kinds, the `Exec` and `Pie` columns: one
+# C hello per column, linked through the driver as users do, run, and its
+# headers held to the row (gABI "Program Header", "Dynamic Section"):
+# `Exec` is `ET_EXEC` with `PT_INTERP`, `PT_PHDR`, `PT_DYNAMIC`; `Pie` is
+# `ET_DYN` with the same and `DF_1_PIE`; both need `libc.so.6` and carry
+# `DT_DEBUG` (D-30, D-70). The `StaticPie` column is
+# `output-kind-table-static-pie`.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-1"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE hello.c -o pie.o
+cc -O1 -fno-pie hello.c -o exec.o
+link gcc -no-pie exec.o -o exec
+run exec
+  stdout: hello
+link gcc -pie pie.o -o pie
+run pie
+  stdout: hello
+check readelf -hlW exec
+  has: Type: EXEC
+  has: ^ PHDR
+  has: ^ INTERP
+  has: Requesting program interpreter: %{dynamic-linker}]
+  has: ^ DYNAMIC
+check readelf -dW exec
+  has: (NEEDED) Shared library: [libc.so.6]
+  has: (DEBUG)
+  not: (FLAGS_1)
+check readelf -hlW pie
+  has: Type: DYN
+  has: ^ PHDR
+  has: ^ INTERP
+  has: Requesting program interpreter: %{dynamic-linker}]
+  has: ^ DYNAMIC
+check readelf -dW pie
+  has: (NEEDED) Shared library: [libc.so.6]
+  has: (DEBUG)
+  has: (FLAGS_1) Flags:*PIE
+
+#--- hello.c
+#include <stdio.h>
+
+int main(void) {
+  puts("hello");
+  return 0;
+}

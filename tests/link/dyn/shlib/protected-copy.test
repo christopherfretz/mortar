@@ -1,0 +1,50 @@
+# dyn.md D-18: a `COPY` demand on a key whose shared definition is
+# `STV_PROTECTED` is refused by name, `copy-relocation-against-protected`:
+# a copy would give the program its own `pv` while `libprot.so` keeps
+# reading its protected one in place (gABI "Symbol Visibility":
+# `STV_PROTECTED` is not preemptable). `main` prints `pv` and the
+# library's `get_pv()`. All three references refuse the copy
+# (E-shlib 5.6b): GNU ld ``copy relocation against non-copyable protected
+# symbol `pv'``, lld `cannot preempt symbol: pv`, mold `cannot create a
+# copy relocation for protected symbol 'pv'`.
+#
+# `-no-pie` code (`-fno-pie`, absolute or PC-relative access) needs a
+# copy on both architectures. `-fPIE` code reaches `pv` through the GOT on
+# AArch64 and needs no copy: it links and prints `9 9` (5.6a); on x86-64
+# GCC's `-fPIE` reads extern data PC-relatively, which needs a copy in a
+# PIE too, and it is refused.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-18"
+#@ arch: aarch64 x86_64
+#@ fixture: shlib-prot
+
+cc -O1 -fno-pie pv.c -o pv-nopie.o
+cc -O1 -fPIE pv.c -o pv-pie.o
+link gcc -no-pie pv-nopie.o -L. -lprot -o nopie
+  exit: fail
+  diag(bfd): copy relocation against non-copyable protected symbol `pv'
+  diag(lld): cannot preempt symbol: pv
+  diag(mold): cannot create a copy relocation for protected symbol 'pv'
+  diag(mortar): copy relocation against non-copyable protected symbol `pv' in *
+link(aarch64) gcc -pie pv-pie.o -L. -lprot -o pie
+run(aarch64) pie
+  stdout: 9 9
+check(aarch64) readelf -rW pie
+  not: R_AARCH64_COPY
+link(x86_64) gcc -pie pv-pie.o -L. -lprot -o pie
+  exit: fail
+  diag(bfd): copy relocation against non-copyable protected symbol `pv'
+  diag(lld): cannot preempt symbol: pv
+  diag(mold): cannot create a copy relocation for protected symbol 'pv'
+  diag(mortar): copy relocation against non-copyable protected symbol `pv' in *
+
+#--- pv.c
+#include <stdio.h>
+#include "prot.h"
+
+int main(void) {
+  printf("%d %d\n", pv, get_pv());
+  return 0;
+}
