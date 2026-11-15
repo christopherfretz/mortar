@@ -21,6 +21,19 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 [[package]]
 name = "mortar"
 version = "0.0.0"
+dependencies = [
+ "mortar_cli",
+ "mortar_diag",
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_cli"
+version = "0.0.0"
+dependencies = [
+ "mortar_diag",
+ "mortar_testutil",
+]
 
 [[package]]
 name = "mortar_diag"
@@ -30,6 +43,23 @@ version = "0.0.0"
 name = "mortar_elf"
 version = "0.0.0"
 dependencies = [
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_plumb"
+version = "0.0.0"
+dependencies = [
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_script"
+version = "0.0.0"
+dependencies = [
+ "mortar_diag",
  "mortar_testutil",
 ]
 

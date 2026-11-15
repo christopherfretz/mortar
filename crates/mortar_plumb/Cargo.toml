@@ -1,0 +1,20 @@
+[package]
+name = "mortar_plumb"
+description = "The independent verifier: recomputes a finished link from the specifications."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# By rule (docs/AGENTS.md, rule 10): these two and nothing else of mortar.
+[dependencies]
+mortar_diag.workspace = true
+mortar_elf.workspace = true
+
+[dev-dependencies]
+mortar_testutil.workspace = true
+
+[lints]
+workspace = true

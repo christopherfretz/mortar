@@ -12,4 +12,6 @@ pub mod bench;
 pub mod ci;
 pub mod jobs;
 #[cfg(unix)]
+pub mod linktest;
+#[cfg(unix)]
 pub mod process;

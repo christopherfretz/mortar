@@ -1,0 +1,57 @@
+# `--build-id`: a `.note.gnu.build-id` (NT_GNU_BUILD_ID) in a PT_NOTE
+# segment, with a descriptor of 20 bytes for sha1, 16 for md5, and the
+# given bytes for `0x<hex>` (GNU ld manual "--build-id"). The bare option
+# gives 20 bytes with all three references, though each computes it its
+# own way.
+#@ spec: synth.md ".note.gnu.build-id"
+#@ xfail(mortar): no linking yet (M1)
+
+as start-%{arch}.s -o start.o
+link ld --build-id=sha1 start.o -o sha1
+link ld --build-id=md5 start.o -o md5
+link ld --build-id=0x0123456789abcdef start.o -o hex
+link ld --build-id start.o -o default
+link ld start.o -o none
+check readelf -nW sha1
+  has: GNU 0x00000014 NT_GNU_BUILD_ID
+check readelf -nW md5
+  has: GNU 0x00000010 NT_GNU_BUILD_ID
+check readelf -nW hex
+  has: Build ID: 0123456789abcdef$
+check readelf -nW default
+  has: GNU 0x00000014 NT_GNU_BUILD_ID
+check readelf -nW none
+  not: NT_GNU_BUILD_ID
+check readelf -lSW sha1
+  has: .note.gnu.build-id NOTE
+  has: NOTE 0x
+run sha1
+  exit: 42
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.cfi_endproc
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.cfi_endproc
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.cfi_endproc

@@ -1,0 +1,36 @@
+# An archive member is extracted only to define a symbol that is
+# undefined at that point; an extracted member's own undefined symbols
+# extract further members of the same archive; a member that defines
+# nothing needed stays out (GNU ld manual, "Command-line Options", -l;
+# "Archives" in the System V ABI).
+#@ spec: resolve.md "Archives"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 main.c -o main.o
+cc -O1 a.c -o a.o
+cc -O1 b.c -o b.o
+cc -O1 unused.c -o unused.o
+ar rcs libparts.a unused.o b.o a.o
+link gcc -static -no-pie main.o -L. -lparts -o prog
+run prog
+  exit: 12
+check readelf -sW prog
+  has: FUNC * a_func$
+  has: FUNC * b_func$
+  not: unused_func
+  not: unused_data
+
+#--- main.c
+int a_func(void);
+
+int main(void) { return a_func(); }
+#--- a.c
+int b_func(void);
+
+int a_func(void) { return b_func() + 2; }
+#--- b.c
+int b_func(void) { return 10; }
+#--- unused.c
+int unused_data = 1;
+
+int unused_func(void) { return unused_data; }

@@ -1,0 +1,25 @@
+# A static C program, not position-independent, against glibc's libc.a:
+# the start files come from the driver, the C library from an archive.
+# The output is ET_EXEC with neither an interpreter (PT_INTERP) nor a
+# dynamic segment (gABI "Program Header"); arguments reach main.
+#@ spec: layout.md "Static executables"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O2 hello.c -o hello.o
+link gcc -static -no-pie hello.o -o hello
+run hello world
+  stdout: hello, world
+  stdout: argc 2, argv[1] world
+check readelf -hlW hello
+  has: Type: EXEC
+  not: INTERP
+  not: DYNAMIC
+
+#--- hello.c
+#include <stdio.h>
+
+int main(int argc, char **argv) {
+  puts("hello, world");
+  printf("argc %d, argv[1] %s\n", argc, argc > 1 ? argv[1] : "-");
+  return 0;
+}

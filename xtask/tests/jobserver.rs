@@ -237,7 +237,10 @@ fn ci_runs_its_cargo_steps_in_order_and_stops_at_a_failure() {
     let all = "fmt --all --check\nclippy --workspace --all-targets -- -D warnings\n\
                test --workspace\n";
 
-    let (status, ran, errors) = ci("pass", &["--quick"], &[]);
+    // The cargo steps only: the link-test step is `xtask linktest`'s own
+    // (tests/linktest.rs).
+    let cargo_steps = ["--quick", "--step", "fmt", "--step", "clippy", "--step", "test"];
+    let (status, ran, errors) = ci("pass", &cargo_steps, &[]);
     assert_eq!((status, ran.as_str()), (Some(0), all), "{errors}");
     // The step's standard error is passed on as it comes.
     let said = "[ci] fmt\n   Checking with fmt\n[ci] clippy\n   Checking with clippy\n[ci] test\n   \

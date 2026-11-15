@@ -1,0 +1,32 @@
+# Thread-local variables compiled for a shared object (`-fPIC`:
+# general-dynamic, TLS descriptors on AArch64), linked into a static
+# executable: the linker resolves or relaxes the sequences to the
+# static model, as there is no dynamic loader to call (ELF Handling For
+# Thread-Local Storage, "Linker Optimizations"; AAELF64 "TLS
+# relaxation").
+#@ spec: layout.md "Thread-local storage"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 -fPIC -ftls-model=global-dynamic main.c -o main.o
+cc -O1 -fPIC -ftls-model=global-dynamic vars.c -o vars.o
+link gcc -static -no-pie main.o vars.o -o prog
+run prog
+  stdout: shared 8, local 2
+
+#--- vars.c
+__thread int shared_var = 7;
+
+int bump(void) { return ++shared_var; }
+#--- main.c
+#include <stdio.h>
+
+extern __thread int shared_var;
+static __thread int local_var = 1;
+int bump(void);
+
+int main(void) {
+  local_var++;
+  bump();
+  printf("shared %d, local %d\n", shared_var, local_var);
+  return 0;
+}
