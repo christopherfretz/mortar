@@ -6,6 +6,27 @@ results are below. Scripts, inputs and a re-run driver are in
 brief). `/tmp/mortar-wp029-88016` has been removed, so re-run what you need
 (see "Re-running"). Delete this file before the branch is handed back.
 
+## Take-over session 2 (2026-11-15), paused for a second host restart
+
+- Read the brief, this file, a64.md, arch.md §2-§7 and Appendix A, and the
+  synth/image/layout/diag/cli rules the spec cites. **No spec text written
+  yet.**
+- Tool versions re-checked on the new (aarch64) host: all identical to the
+  table below (GCC/gfortran 14.2.0-19, binutils 2.44, lld 19.1.7/22.1.8,
+  mold 2.37.1, qemu 10.0.13, glibc 2.41-11cross1, clang 19.1.7/22.1.8,
+  gdb 16.3, lldb 19.1.7; hod 7e30d7c8, binary is native aarch64).
+- `.build/review-x64/run-all.sh` gained **E12** (re-checks of every
+  wrong-code claim: bfd narrow `16`/`8` and `PC16` values, mold's IBT
+  IPLT without `endbr64` (`asm/iplt-ibt.s`), bfd's IFUNC `.got.plt` initial
+  words vs S-69). The first full run was killed before finishing; no
+  results were recorded. The briefs/ copy is unchanged.
+- Found so far: request 5 (the "relocation truncated to fit" message)
+  belongs to `spec/diag.md` (`relocation-out-of-range`, its message row),
+  not arch.md §7, which does not define the text.
+- **Next step:** `sh .build/review-x64/run-all.sh /tmp/mortar-x64-<pid>` in
+  the background (log outside /tmp), check E2/E3/E7/E8/E12 against the
+  notes below, then write `spec/x64.md` per "Next steps".
+
 ## Next steps (in order)
 
 1. Write `spec/x64.md` in `spec/a64.md`'s structure: 1 scope, 2 census,
