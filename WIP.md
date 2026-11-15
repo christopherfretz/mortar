@@ -15,5 +15,6 @@
   dynamic types in input refused; 16/8 read signed with su checks.
 - Written: §1-§7 (commit "x86 spec: §1-§7").
 - Written: §8-§14.
-- Next: §15-§19 + appendix, commit; run-all.sh;
+- Written: §15-§19, Appendix A, README row.
+- Next: run-all.sh;
   README row; delete this file; rm -rf /tmp/mortar-wp030-1592004.
