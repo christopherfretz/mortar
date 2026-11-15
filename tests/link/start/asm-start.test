@@ -1,0 +1,39 @@
+# The smallest program: one assembler object, no C library. The entry
+# point is `_start` when nothing names another (GNU ld manual "Entry
+# Point"; gABI "ELF Header", e_entry); the program exits 42 by a system
+# call. The output is an executable (ET_EXEC) of the target's class and
+# machine.
+#@ spec: layout.md "Entry point"
+#@ xfail(mortar): no linking yet (M1)
+
+as start-%{arch}.s -o start.o
+link ld start.o -o prog
+run prog
+  exit: 42
+check readelf -hW prog
+  has: Class: %{elf-class}
+  has: Machine: %{machine}
+  has: Type: EXEC
+  has: Entry point address: 0x
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80

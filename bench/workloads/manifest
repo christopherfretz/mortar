@@ -1,0 +1,201 @@
+# The bench workloads (spec/harness.md "bench", "Workloads").
+#
+# One section per workload: how its inputs are rebuilt from pinned sources,
+# and which link of the build is the workload. Nothing built is checked in;
+# `cargo xtask bench` builds a workload into its cache the first time, and
+# again whenever this section, the tools that build it or its sources
+# change. AArch64 (the host) only for now.
+#
+# Keys: class (small, medium, large, extreme, rust, calibration), kind
+# (sources, synthetic, cmake, cargo, planned), about (one sentence), and
+# per kind: sources; shape and params; url, sha256, root, options,
+# prebuild, target; rev, package, bin, rustc_args; needs. driver, cflags,
+# ldflags and capture where the kind takes them. Values are words separated
+# by blanks: no quoting.
+
+# The control of every run (spec/harness.md "bench", "Calibration"): not
+# reported, not judged.
+[calibration]
+class = calibration
+kind = synthetic
+about = The calibration link: a fixed set of generated objects.
+shape = objects
+params = 100 50
+driver = gcc
+cflags = -O1
+
+[hello-c]
+class = small
+kind = sources
+about = Hello world in C against glibc, position-independent and dynamic: start-up dominates.
+sources = hello.c
+driver = gcc
+cflags = -O2
+ldflags = -pie
+
+[hello-c-static]
+class = small
+kind = sources
+about = Hello world in C, linked statically against glibc's archives.
+sources = hello.c
+driver = gcc
+cflags = -O2
+ldflags = -static
+
+[hello-cxx]
+class = small
+kind = sources
+about = Hello world in C++ (iostreams, a map, an exception) against the shared libstdc++.
+sources = hello.cc
+driver = g++
+cflags = -O2
+ldflags = -pie
+
+[hello-cxx-static]
+class = small
+kind = sources
+about = The same C++ program linked statically against libstdc++ and glibc.
+sources = hello.cc
+driver = g++
+cflags = -O2
+ldflags = -static
+
+# protobuf 3.21.12, the last release without abseil: protoc is main.o and
+# the static libprotoc and libprotobuf, some 200 translation units of C++.
+[cxx-medium-g]
+class = medium
+kind = cmake
+about = protoc of protobuf 3.21.12 at -O0 -g: a medium C++ program with debug information.
+url = https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12.tar.gz
+sha256 = 4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460
+root = protobuf-3.21.12
+options = -DCMAKE_BUILD_TYPE=None -DCMAKE_C_COMPILER=gcc -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_WITH_ZLIB=OFF -Dprotobuf_BUILD_SHARED_LIBS=OFF
+prebuild = libprotobuf libprotoc
+target = protoc
+driver = g++
+cflags = -O0 -g
+capture = protoc*
+
+[cxx-medium]
+class = medium
+kind = cmake
+about = The same protoc at -O0 without debug information.
+url = https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12.tar.gz
+sha256 = 4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460
+root = protobuf-3.21.12
+options = -DCMAKE_BUILD_TYPE=None -DCMAKE_C_COMPILER=gcc -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_WITH_ZLIB=OFF -Dprotobuf_BUILD_SHARED_LIBS=OFF
+prebuild = libprotobuf libprotoc
+target = protoc
+driver = g++
+cflags = -O0
+capture = protoc*
+
+# mortar's own binary as rustc links it (the dev profile: debug
+# information, many rlibs), at a pinned commit of this repository so that
+# the inputs do not move with every change. Bumped deliberately, with a
+# baseline update.
+[rust-self]
+class = rust
+kind = cargo
+about = mortar's binary (dev profile) as rustc invokes the linker, at a pinned commit.
+rev = 413481782430e79cc8b945965385a10d9b2969a2
+package = mortar
+bin = mortar
+rustc_args = -C save-temps
+capture = mortar-*
+
+# Generated extremes (xtask/src/bench/synth.rs): each takes one property
+# of a link far beyond a usual program.
+[synthetic-objects]
+class = extreme
+kind = synthetic
+about = 1000 objects of 200 functions calling across objects: symbols and relocations.
+shape = objects
+params = 1000 200
+driver = gcc
+cflags = -O1
+
+[synthetic-sections]
+class = extreme
+kind = synthetic
+about = 2 objects of 40000 functions in sections of their own: more than 0xff00 sections per object.
+shape = sections
+params = 2 40000
+driver = gcc
+cflags = -O1 -ffunction-sections -fdata-sections
+
+[synthetic-strings]
+class = extreme
+kind = synthetic
+about = 200 objects of 5000 string literals, half of them in every object: string merging.
+shape = strings
+params = 200 5000
+driver = gcc
+cflags = -O1
+
+[synthetic-comdat]
+class = extreme
+kind = synthetic
+about = 300 C++ units that all define the same 500 inline functions, with -g: COMDAT groups.
+shape = comdat
+params = 300 500
+driver = g++
+cflags = -O0 -g
+
+[synthetic-archives]
+class = extreme
+kind = synthetic
+about = A chain of 100 archives of 40 members, half of each needed by the one before.
+shape = archives
+params = 100 40
+driver = gcc
+cflags = -O1
+
+# Specified, not built (spec/harness.md "bench", "Planned workloads").
+[libcxx-test]
+class = small
+kind = planned
+about = One libc++ test program as the libc++ lane links it, nine thousand times per run.
+needs = kiln and hod objects; the libc++ build of the L8 lane (WP for M3)
+
+[cxx-large-g]
+class = large
+kind = planned
+about = A large open-source C++ program's objects with debug information, captured once and pinned.
+needs = a pinned capture of an LLVM-scale build and its disk budget (tens of GB)
+
+[cxx-large]
+class = large
+kind = planned
+about = The same large program without debug information.
+needs = as cxx-large-g
+
+[kiln-hod-medium]
+class = medium
+kind = planned
+about = The medium C++ program compiled by kiln and hod instead of GCC.
+needs = kiln and hod able to build protobuf
+
+[incremental-function]
+class = medium
+kind = planned
+about = An incremental relink after one function body changed.
+needs = mortar's incremental links (M7)
+
+[incremental-object]
+class = medium
+kind = planned
+about = An incremental relink after one object changed.
+needs = mortar's incremental links (M7)
+
+[incremental-archive]
+class = medium
+kind = planned
+about = An incremental relink after an archive was replaced.
+needs = mortar's incremental links (M7)
+
+[cross-x86-64]
+class = small
+kind = planned
+about = The workloads above for x86-64 and 32-bit x86, on an x86-64 machine.
+needs = an x86-64 bench machine (measuring under qemu-user says nothing about speed)

@@ -1,0 +1,19 @@
+# A reference that nothing defines fails the link with a diagnostic that
+# names the symbol (each linker words it its own way: matched per
+# linker), and the failed link leaves no output file.
+#@ spec: diag.md "Undefined symbols"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 main.c -o main.o
+link gcc -static -no-pie main.o -o prog
+  exit: fail
+  diag: missing_function
+  diag(bfd): main.o: in function `main':
+  diag(bfd): undefined reference to `missing_function'
+  diag(lld,mold): error: undefined symbol: missing_function
+  diag(lld,mold): >>> referenced by
+
+#--- main.c
+int missing_function(void);
+
+int main(void) { return missing_function(); }

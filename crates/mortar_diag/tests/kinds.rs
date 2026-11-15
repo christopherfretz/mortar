@@ -49,6 +49,30 @@ fn no_input_files() {
     assert_eq!(text(Kind::NoInputFiles), "ld: error: no input files\n");
 }
 
+// spec: diag.md §3.1 `conflicting-options`
+#[test]
+fn conflicting_options() {
+    let kind = Kind::ConflictingOptions { first: s("-r"), second: s("-shared") };
+    assert_eq!(kind.id(), "conflicting-options");
+    assert_eq!(text(kind), "ld: error: -r and -shared cannot be used together\n");
+}
+
+// spec: diag.md §3.1 `response-file-limit`
+#[test]
+fn response_file_limit() {
+    let kind = Kind::ResponseFileLimit { limit: 1999 };
+    assert_eq!(kind.id(), "response-file-limit");
+    assert_eq!(text(kind), "ld: error: too many response files: more than 1999 expanded\n");
+}
+
+// spec: diag.md §3.1 `unbalanced-option`
+#[test]
+fn unbalanced_option() {
+    let kind = Kind::UnbalancedOption { option: s("--pop-state"), counterpart: s("--push-state") };
+    assert_eq!(kind.id(), "unbalanced-option");
+    assert_eq!(text(kind), "ld: error: --pop-state without a matching --push-state\n");
+}
+
 // spec: diag.md §3.1 `unknown-option`
 #[test]
 fn unknown_option() {

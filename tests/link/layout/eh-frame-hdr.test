@@ -1,0 +1,50 @@
+# `--eh-frame-hdr` adds `.eh_frame_hdr`, the sorted table of the
+# `.eh_frame` FDEs, and the PT_GNU_EH_FRAME segment that points at it
+# (LSB "Exception Frames"). Without the option the references DIFFER:
+# GNU ld and lld add no header, mold always does. mortar adds it only
+# when asked, as GNU ld does (compiler drivers always ask).
+#@ spec: synth.md ".eh_frame_hdr"
+#@ requires: llvm-readelf
+#@ xfail(mortar): no linking yet (M1)
+
+as start-%{arch}.s -o start.o
+link ld --eh-frame-hdr start.o -o with
+link ld start.o -o without
+check readelf -lSW with
+  has: .eh_frame_hdr PROGBITS
+  has: GNU_EH_FRAME
+check llvm-readelf --unwind with
+  has: fde_count: 1$
+check readelf -lSW without
+  not(bfd,lld,mortar): GNU_EH_FRAME
+  has(mold): GNU_EH_FRAME
+run with
+  exit: 42
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.cfi_endproc
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.cfi_endproc
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.cfi_endproc

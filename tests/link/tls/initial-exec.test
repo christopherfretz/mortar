@@ -1,0 +1,31 @@
+# Static TLS, initial-exec model, across objects: the reference to
+# another object's thread-local variable goes through a GOT entry
+# holding its offset from the thread pointer, which a static link fills
+# in or relaxes to local-exec (ELF Handling For Thread-Local Storage,
+# "Initial Exec" and "Linker Optimizations"). A 64-byte aligned
+# thread-local variable keeps its alignment.
+#@ spec: layout.md "Thread-local storage"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 -ftls-model=initial-exec main.c -o main.o
+cc -O1 -ftls-model=initial-exec vars.c -o vars.o
+link gcc -static -no-pie main.o vars.o -o prog
+run prog
+  stdout: counter 41, aligned 0, mark 3
+
+#--- vars.c
+__thread long counter = 40;
+__thread char block[64] __attribute__((aligned(64))) = { 3 };
+#--- main.c
+#include <stdint.h>
+#include <stdio.h>
+
+extern __thread long counter;
+extern __thread char block[64];
+
+int main(void) {
+  counter++;
+  printf("counter %ld, aligned %d, mark %d\n", counter,
+         (int)((uintptr_t)block % 64), block[0]);
+  return 0;
+}

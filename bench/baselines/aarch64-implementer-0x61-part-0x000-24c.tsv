@@ -1,0 +1,118 @@
+# mortar-bench 1
+# date	2026-11-15T01:23:20Z
+# machine	aarch64-implementer-0x61-part-0x000-24c
+# cpu	implementer 0x61 part 0x000
+# cores	24
+# commit	9d5055662bcd
+# runs	5
+# probe	gnu-time (/usr/bin/time -f '%M %U %S')
+# limits	600 s, 16777216 KiB of address space
+# calibration	lld default on fnv1a64:cfaff5ee0c861737
+# calibration_before_us	115376
+# calibration_after_us	460001
+# noisy	yes
+# load_before	27.45 29.58 28.62
+# load_after	27.92 30.73 29.55
+# version.bfd	GNU ld (GNU Binutils for Debian) 2.44
+# version.lld	Debian LLD 22.1.8 (compatible with GNU linkers)
+# version.mold	mold 2.37.1 (compatible with GNU ld)
+# version.mortar	mortar 0.0.0 (compatible with GNU ld)
+# reason	first numbers for GNU ld, lld 22 and mold (WP-012); mortar refuses every link
+# workload-fields	name	class	objects	archives	shared	others	input_bytes	symbols	output_bytes	input_hash
+# link-fields	status	workload	linker	threads	runs	wall_us_min	wall_us	wall_us_max	cpu_us	rss_kib_min	rss_kib	rss_kib_max	output_bytes	spread_permille	detail
+workload	hello-c	small	6	2	3	2	5296873	89	70432	fnv1a64:cbc57d88156fcad3
+workload	hello-c-static	small	6	3	0	0	8875470	3179	704928	fnv1a64:43fc02e1f24e1ef0
+workload	hello-cxx	small	6	2	6	3	8597990	132	73448	fnv1a64:d5eb65e3e21ab1e8
+workload	hello-cxx-static	small	6	6	0	1	17553525	13330	2250264	fnv1a64:1cd0ee59cb8305a5
+workload	cxx-medium-g	medium	6	4	6	3	210582942	52450	47973432	fnv1a64:f5ec405f25aa9365
+workload	cxx-medium	medium	6	4	6	3	62134198	52443	9485520	fnv1a64:d64e3328984213c2
+workload	rust-self	rust	8	26	5	3	29151096	2881	4583424	fnv1a64:559548a1c1c6c2c1
+workload	synthetic-objects	extreme	1006	2	3	2	85973817	205087	35258704	fnv1a64:84f1f66dc6243421
+workload	synthetic-sections	extreme	8	2	3	2	61970097	320098	21097544	fnv1a64:bf31bf23e29ab80b
+workload	synthetic-strings	extreme	206	2	3	2	108874497	888	67205928	fnv1a64:75c794a27beb9c84
+workload	synthetic-comdat	extreme	306	2	6	3	165887638	2424	23005688	fnv1a64:b8d1440005d48d8e
+workload	synthetic-archives	extreme	6	102	3	2	15717545	22087	1909720	fnv1a64:d7e37e781f847a4d
+link	ok	hello-c	bfd	1	5	44135	47336	94603	0	8164	8436	8476	70432	72	-
+link	ok	hello-c	lld	default	5	36511	44923	53638	10000	67000	67536	67772	7064	230	-
+link	ok	hello-c	lld	1	5	35059	43887	47062	0	67144	67540	67812	7064	251	-
+link	ok	hello-c	mold	default	5	30427	39573	41367	100000	64556	64792	65032	9320	300	-
+link	ok	hello-c	mold	1	5	32169	35630	36569	10000	19708	19720	19896	9320	107	-
+link	refused	hello-c	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	hello-c	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	hello-c-static	bfd	1	5	256139	314501	476833	50000	25352	25400	25680	704928	227	-
+link	ok	hello-c-static	lld	default	5	50011	60575	69654	50000	70388	70456	70644	649608	211	-
+link	ok	hello-c-static	lld	1	5	38659	47984	63520	10000	71048	71216	71472	649608	241	-
+link	ok	hello-c-static	mold	default	5	44862	49896	68469	160000	76916	77232	81084	660680	112	-
+link	ok	hello-c-static	mold	1	5	34659	57027	59014	10000	27924	28208	28244	660680	645	-
+link	refused	hello-c-static	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	hello-c-static	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	hello-cxx	bfd	1	5	66921	70094	82556	20000	17656	18172	18420	73448	47	-
+link	ok	hello-cxx	lld	default	5	46291	49114	57575	20000	70116	70464	70548	15176	60	-
+link	ok	hello-cxx	lld	1	5	43475	48955	52180	10000	70412	70744	70836	15176	126	-
+link	ok	hello-cxx	mold	default	5	38332	38842	44497	120000	71500	71792	71988	20584	13	-
+link	ok	hello-cxx	mold	1	5	30490	36346	50002	10000	22592	22660	22692	20584	192	-
+link	refused	hello-cxx	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	hello-cxx	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	hello-cxx-static	bfd	1	5	2576151	3564641	4263717	410000	49628	49704	49840	2250264	383	-
+link	ok	hello-cxx-static	lld	default	5	82653	138487	231490	90000	85980	86452	86700	2243320	675	-
+link	ok	hello-cxx-static	lld	1	5	62124	65993	74626	30000	86536	86664	86784	2243320	62	-
+link	ok	hello-cxx-static	mold	default	5	60905	67650	193105	280000	111952	114456	118960	2302048	110	-
+link	ok	hello-cxx-static	mold	1	5	56423	65501	68476	30000	46080	46312	46504	2302048	160	-
+link	refused	hello-cxx-static	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	hello-cxx-static	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	cxx-medium-g	bfd	1	5	4318818	5295758	5996423	1460000	216184	217856	220932	47973432	226	-
+link	ok	cxx-medium-g	lld	default	5	714721	933842	1168916	570000	331300	332248	332688	48315688	306	-
+link	ok	cxx-medium-g	lld	1	5	1937766	2821090	3060843	540000	331324	331676	332824	48315688	455	-
+link	ok	cxx-medium-g	mold	default	5	640245	724882	1000981	1850000	402692	411156	412604	49431904	132	-
+link	ok	cxx-medium-g	mold	1	5	1867544	2495124	3068859	590000	272648	275036	277484	49431904	336	-
+link	refused	cxx-medium-g	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	cxx-medium-g	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	cxx-medium	bfd	1	5	1167087	3542811	4581012	760000	151292	152184	153608	9485520	2035	-
+link	ok	cxx-medium	lld	default	5	179776	446872	577477	180000	157956	158668	159124	9761048	1485	-
+link	ok	cxx-medium	lld	1	5	604351	719793	1357654	160000	157856	158396	159540	9761048	191	-
+link	ok	cxx-medium	mold	default	5	297318	482835	898496	1010000	224724	227552	232864	10877096	623	-
+link	ok	cxx-medium	mold	1	5	524544	1109715	1768631	230000	112432	112644	113036	10877096	1115	-
+link	refused	cxx-medium	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	cxx-medium	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	rust-self	bfd	1	5	257009	288333	311545	80000	30872	31160	31392	4583424	121	-
+link	ok	rust-self	lld	default	5	64135	71451	104411	40000	87772	88016	88516	4598376	114	-
+link	ok	rust-self	lld	1	5	67075	73998	224700	30000	87540	88548	89684	4598376	103	-
+link	ok	rust-self	mold	default	5	85851	97933	292132	520000	106628	108820	112448	4589448	140	-
+link	ok	rust-self	mold	1	5	70129	88173	209711	30000	44016	44424	44696	4589448	257	-
+link	refused	rust-self	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	rust-self	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	synthetic-objects	bfd	1	5	2766285	6254651	10960194	1940000	200896	201488	202168	35258704	1261	-
+link	ok	synthetic-objects	lld	default	5	785575	1236068	1788260	540000	271880	272740	273212	35240520	573	-
+link	ok	synthetic-objects	lld	1	5	925706	2644556	3594821	500000	274204	275288	275892	35240520	1856	-
+link	ok	synthetic-objects	mold	default	5	1398973	1718352	2116575	6210000	189784	217756	221752	35215560	228	-
+link	ok	synthetic-objects	mold	1	5	1248850	1545991	4155675	690000	165432	171696	172504	35215560	237	-
+link	refused	synthetic-objects	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	synthetic-objects	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	synthetic-sections	bfd	1	5	2978786	4037299	4431766	1910000	301168	301600	303016	21097544	355	-
+link	ok	synthetic-sections	lld	default	5	671575	792081	964511	300000	249764	251312	252520	21527704	179	-
+link	ok	synthetic-sections	lld	1	5	947736	1060184	2351267	310000	248920	250004	252688	21527704	118	-
+link	ok	synthetic-sections	mold	default	5	286965	364423	704532	500000	222012	224304	227084	21529352	269	-
+link	ok	synthetic-sections	mold	1	5	392788	2212818	3110330	420000	168644	169112	170184	21529352	4633	-
+link	refused	synthetic-sections	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	synthetic-sections	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	synthetic-strings	bfd	1	5	5675667	6958694	8201897	1460000	262912	263776	264148	67205928	226	-
+link	ok	synthetic-strings	lld	default	5	1435860	2250067	2547527	790000	390944	391436	394332	67175424	567	-
+link	ok	synthetic-strings	lld	1	5	1811339	2511218	3360922	650000	382636	383028	383364	67175424	386	-
+link	ok	synthetic-strings	mold	default	5	1592899	2123117	2942135	3130000	560852	585752	599820	67177568	332	-
+link	ok	synthetic-strings	mold	1	5	2334796	3734512	5307607	1000000	481196	481948	503328	67177568	599	-
+link	refused	synthetic-strings	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	synthetic-strings	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	synthetic-comdat	bfd	1	5	4178429	6969211	11014521	2010000	444304	445268	446676	23005688	667	-
+link	ok	synthetic-comdat	lld	default	5	557356	981895	1501376	380000	303908	304524	305112	22970920	761	-
+link	ok	synthetic-comdat	lld	1	5	1779772	2215102	3347177	320000	302932	305380	305732	22970920	244	-
+link	ok	synthetic-comdat	mold	default	5	842481	1203943	1568608	4020000	354936	359116	359600	22965024	429	-
+link	ok	synthetic-comdat	mold	1	5	1536858	2311152	4430078	490000	294740	295216	295772	22965024	503	-
+link	refused	synthetic-comdat	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	synthetic-comdat	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	ok	synthetic-archives	bfd	1	5	2815446	3115081	4871412	390000	120088	120504	120760	1909720	106	-
+link	ok	synthetic-archives	lld	default	5	255210	375826	622910	230000	91024	91208	92048	1874168	472	-
+link	ok	synthetic-archives	lld	1	5	183661	409678	727512	50000	90708	90804	91380	1874168	1230	-
+link	ok	synthetic-archives	mold	default	5	274074	323974	676299	1470000	54952	86276	88796	1822208	182	-
+link	ok	synthetic-archives	mold	1	5	368672	503925	584828	90000	46772	47272	47360	1822208	366	-
+link	refused	synthetic-archives	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)
+link	refused	synthetic-archives	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: linking is not implemented yet (docs/ROADMAP.md, milestone M1)

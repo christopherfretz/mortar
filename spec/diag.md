@@ -136,9 +136,12 @@ is added before or after it.
 
 | id | variant | message | wording from |
 |---|---|---|---|
+| `conflicting-options` | `ConflictingOptions { first, second }` | `{first} and {second} cannot be used together` | own (GNU ld: `-r and -shared may not be used together`) |
 | `invalid-option-value` | `InvalidOptionValue { option, value }` | `{option}: invalid value '{value}'` | own (§8.2) |
 | `missing-argument` | `MissingArgument { option }` | `{option}: missing argument` | lld |
 | `no-input-files` | `NoInputFiles` | `no input files` | GNU ld, lld |
+| `response-file-limit` | `ResponseFileLimit { limit }` | `too many response files: more than {limit} expanded` | own (GNU ld: `too many @-files encountered`) |
+| `unbalanced-option` | `UnbalancedOption { option, counterpart }` | `{option} without a matching {counterpart}` | own (lld: `stray --end-group`, `unbalanced --push-state/--pop-state`) |
 | `unknown-option` | `UnknownOption { option }` | `unknown argument '{option}'` | lld |
 | `cannot-open-file` | `CannotOpenFile { path, reason }` | `cannot open {path}: {reason}` | lld, mold |
 | `cannot-open-output` | `CannotOpenOutput { path, reason }` | `cannot open output file {path}: {reason}` | GNU ld, lld |
@@ -155,6 +158,11 @@ is added before or after it.
   command line as `spec/cli.md` lists it (a typing error, most likely). An
   option that is listed and not implemented is `refused` with class
   `option`: the user is told that the limit is mortar's.
+- `conflicting-options`, `response-file-limit` and `unbalanced-option`
+  were added by WP-008 (`spec/cli.md` §3.2, §2.6, §3.3): `-r` with
+  `-shared` or `-pie`; GNU ld's limit on `@file` expansions; a
+  `--pop-state`, `--end-group` or `--end-lib` with nothing to close, or a
+  nested `--start-lib`.
 - `{option}` is spelled as the user wrote it (`-o`, `--hash-style`,
   `-z stack-size`), so that the line can be found from the build log.
 - `cannot-open-file` covers failing to open an input and failing to read
@@ -612,7 +620,7 @@ pub enum Severity { Warning, Error }
 impl RefusalClass { pub const ALL: [Self; 14]; pub const fn id(self) -> &'static str;
     pub const fn noun(self) -> &'static str; }
 #[non_exhaustive] pub enum Kind { /* §3.1 */ }
-impl Kind { pub const IDS: [&'static str; 12]; pub const fn id(&self) -> &'static str;
+impl Kind { pub const IDS: [&'static str; 15]; pub const fn id(&self) -> &'static str;
     pub fn symbol(&self) -> Option<&str>; }
 
 pub struct FileRef { /* path, member */ }
