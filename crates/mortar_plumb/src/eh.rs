@@ -423,10 +423,16 @@ impl Engine<'_, '_> {
             };
             let n = raw.len() as u64;
             self.cov.records += n;
-            if o.elf.machine() != Machine::AArch64 {
-                self.not_checked(Reason::Machine, n);
-                continue;
-            }
+            // The pointer types of the machine: ABS64/PREL32/ABS32/PREL64 on
+            // AArch64; 64/PC32/32/32S/PC64 on x86-64 (spec/x64.md §6.1).
+            let pointer: fn(u32) -> bool = match o.elf.machine() {
+                Machine::AArch64 => |ty| matches!(ty, 257 | 258 | 260 | 261),
+                Machine::X86_64 => |ty| matches!(ty, 1 | 2 | 10 | 11 | 24),
+                _ => {
+                    self.not_checked(Reason::Machine, n);
+                    continue;
+                }
+            };
             let frames = match parse(s.data) {
                 Ok(f) => f,
                 Err(m) => {
@@ -443,7 +449,8 @@ impl Engine<'_, '_> {
             };
             input_terminator |= frames.terminator.is_some();
             // synth.md R-P7: an `R_*_NONE` record is no relocation.
-            let is_none = |ty: u32| ty == 0 || ty == 256;
+            let a64 = o.elf.machine() == Machine::AArch64;
+            let is_none = |ty: u32| ty == 0 || (a64 && ty == 256);
             let nones = raw.iter().filter(|r| is_none(r.2)).count() as u64;
             self.cov.none += nones;
             let relocs: BTreeMap<u64, (u32, u32, i64)> = raw
@@ -464,7 +471,7 @@ impl Engine<'_, '_> {
                     };
                 };
                 claimed.insert(fl.off as u64, true);
-                if !matches!(ty, 257 | 258 | 260 | 261) {
+                if !pointer(ty) {
                     return In::Unknown(Reason::Type);
                 }
                 let (t, a) = this.resolve_at(oi, sym, a);

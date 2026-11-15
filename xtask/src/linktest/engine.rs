@@ -223,6 +223,7 @@ pub fn not_judged(bytes: &[u8]) -> Option<&'static str> {
     const ET_REL: u16 = 1;
     const ET_EXEC: u16 = 2;
     const EM_AARCH64: u16 = 183;
+    const EM_X86_64: u16 = 62;
     const PT_DYNAMIC: u32 = 2;
     const PT_INTERP: u32 = 3;
     let u16_at = |at: usize| bytes.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
@@ -236,7 +237,8 @@ pub fn not_judged(bytes: &[u8]) -> Option<&'static str> {
     if bytes.get(..4) != Some(b"\x7fELF".as_slice()) || bytes.get(4..6) != Some([2, 1].as_slice()) {
         return if bytes.get(..4) == Some(b"\x7fELF".as_slice()) { Some("machine") } else { None };
     }
-    if u16_at(18) != Some(EM_AARCH64) {
+    // AArch64 and x86-64 have tables (spec/plumb.md §4.5); i386 has none.
+    if !matches!(u16_at(18), Some(EM_AARCH64 | EM_X86_64)) {
         return Some("machine");
     }
     match u16_at(16) {
@@ -1137,7 +1139,7 @@ mod tests {
         assert_eq!(not_judged(&elf(2, 183, 2)), Some("dynamic"));
         assert_eq!(not_judged(&elf(3, 183, 1)), Some("pie-or-shared"));
         assert_eq!(not_judged(&elf(1, 183, 1)), Some("relocatable"));
-        assert_eq!(not_judged(&elf(2, 62, 1)), Some("machine"));
+        assert_eq!(not_judged(&elf(2, 62, 1)), None);
         let mut elf32 = elf(2, 3, 1);
         elf32[4] = 1;
         assert_eq!(not_judged(&elf32), Some("machine"));
