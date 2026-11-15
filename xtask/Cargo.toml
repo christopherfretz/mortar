@@ -14,6 +14,9 @@ publish.workspace = true
 mortar_testutil.workspace = true
 # The verifier behind `cargo xtask plumb` (spec/plumb.md §8).
 mortar_plumb.workspace = true
+# Reads an input to name the verifier's known S-17 merge-piece findings
+# (`plumb::known_merge_piece`, WP-027c; removed when WP-028c lands).
+mortar_elf.workspace = true
 
 # Kills the children and returns the held jobserver tokens on SIGINT/SIGTERM
 # (spec/harness.md "Jobserver", "Signals").

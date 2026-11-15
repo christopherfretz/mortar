@@ -8,7 +8,6 @@
 # with the later one (3). mortar follows GNU ld and lld (R1 of the
 # landed record, spec/landed/resolve/WP-022-spec.md).
 #@ spec: resolve.md §4.1
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 t1m.c -o t1m.o
 cc -O1 t1k.c -o t1k.o

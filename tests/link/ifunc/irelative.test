@@ -7,7 +7,6 @@
 # GNU ld 2.44 on x86-64 breaks the pointer equality (the two addresses
 # differ; measured), lld and mold keep it, so the references DIFFER there.
 #@ spec: synth.md "IRELATIVE"
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 -fno-pie pick.c -o pick.o
 cc -O1 -fno-pie main.c -o main.o

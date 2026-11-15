@@ -160,6 +160,9 @@ pub struct Plumb {
     /// The default anomalies (`Matrix::defaults`) found, by architecture
     /// and linker.
     pub defaults_seen: BTreeSet<(Arch, Linker, String)>,
+    /// mortar's findings of the verifier's known merge-piece case
+    /// (`plumb::known_merge_piece`; WP-028c's fix, not yet on main).
+    pub known_merge_piece: u64,
 }
 
 impl Plumb {
@@ -172,6 +175,7 @@ impl Plumb {
         self.time += other.time;
         self.judged_by.extend(other.judged_by.iter().copied());
         self.defaults_seen.extend(other.defaults_seen.iter().cloned());
+        self.known_merge_piece += other.known_merge_piece;
     }
 
     /// The default anomalies that apply to a judged output of the run and
@@ -207,6 +211,14 @@ impl Plumb {
         );
         if self.anomalies > 0 {
             let _ = write!(text, ", {} findings expected as anomalies", self.anomalies);
+        }
+        if self.known_merge_piece > 0 {
+            let _ = write!(
+                text,
+                ", {} findings of mortar's outputs the verifier's known merge-piece case \
+                 (WP-028c)",
+                self.known_merge_piece
+            );
         }
         if !self.not_judged.is_empty() {
             let parts: Vec<String> =
@@ -720,7 +732,7 @@ impl Unit<'_> {
         let started = Instant::now();
         let verified = crate::plumb::verify_link(output_file, map_file, format, dir, None);
         judged.plumb.time += started.elapsed();
-        let (bytes, report) = verified.map_err(|e| error(&e))?;
+        let (bytes, report, inputs) = verified.map_err(|e| error(&e))?;
         judged.plumb.verified += 1;
         judged.plumb.judged_by.insert((self.arch(), linker));
         let expected = anomaly_ids(&self.test.anomalies, self.arch(), linker);
@@ -732,6 +744,10 @@ impl Unit<'_> {
         };
         let mut unexpected = Vec::new();
         for f in &report.findings {
+            if linker == Linker::Mortar && crate::plumb::known_merge_piece(&inputs, f) {
+                judged.plumb.known_merge_piece += 1;
+                continue;
+            }
             let anomaly = mortar_plumb::anomaly::classify(format, &bytes, f);
             let id = anomaly.map(mortar_plumb::anomaly::id);
             if let Some(id) = id.filter(|id| expected.contains(id) || defaults.contains(id)) {

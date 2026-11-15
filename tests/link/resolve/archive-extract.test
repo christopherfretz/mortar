@@ -4,7 +4,6 @@
 # nothing needed stays out (GNU ld manual, "Command-line Options", -l;
 # "Archives" in the System V ABI).
 #@ spec: resolve.md §4.1
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 main.c -o main.o
 cc -O1 a.c -o a.o

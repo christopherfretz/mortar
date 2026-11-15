@@ -5,7 +5,6 @@
 #@ spec: layout.md "Static executables"
 #@ arch: aarch64 x86_64
 #@ requires: gfortran
-#@ xfail(mortar): no linking yet (M1)
 
 fc -O1 main.f90 -o main.o
 cc -O1 sum.c -o sum.o
