@@ -20,8 +20,10 @@ could not be checked. The `X-n` labels are the ones `synth.md` cites.
   `ld.lld-19` (19.1.7), and mold 2.37.1, on an AArch64 Debian host. lld
   was driven through GCC with a `-B` directory holding an `ld.lld`
   symlink. x86-64 and i386 objects came from the Debian cross GCC 14 and
-  from Clang (`--target=x86_64-linux-gnu`); those outputs were inspected
-  with readelf and not run.
+  from Clang (`--target=x86_64-linux-gnu`); in the first round those
+  outputs were inspected with readelf only. In round 2 (§10) static x86
+  programs were run under `qemu-x86_64` and `qemu-i386`, and gdb 16 was
+  used on AArch64 outputs.
 - **Tools.** binutils readelf 2.44, `llvm-readelf-22 --unwind` (it
   decodes `.eh_frame_hdr`), and three small Python readers written for
   this package (an ELF and archive reader, the library scan of §2, a
@@ -224,7 +226,19 @@ mold:    4004 / 607
 ```
 
 Tail merging: 64 bytes of `.rodata` (0.06%); 13% of `.debug_str`, 4%
-of `.debug_line_str`.
+of `.debug_line_str`. That program has two source files, so the 13% does
+not stand for a debug build. Round 2 measured a real one: the
+`.debug_str` of every member of the bench's `cxx-medium-g` workload
+(`libprotoc.a`, `libprotobuf.a`, `main.cc.o`; 340 objects), cut and
+interned by the X-29 prototype, with and without suffix sharing:
+
+```text
+pieces 990853  bytes 64183191  fragments 95321
+de-duplicated 10208472   tail-merged 10128329   gain 0.8%
+.debug_line_str (same objects): 32 KB, gain 9.5%
+```
+
+S-23 quotes these; Q1 is closed.
 
 ### X-9 .comment
 
@@ -451,8 +465,9 @@ symbols    __rela_iplt_start/end (i386 __rel_iplt_*) LOCAL in all three
 
 ## 8. What could not be checked
 
-- No x86-64 or i386 output was run (no qemu run in this package); the
-  x86 rules rest on readelf of the outputs and on the psABIs.
+- x86 outputs were run only for X-25 (qemu); the other x86 rules,
+  IFUNC (X-27) included, rest on readelf of the outputs and the psABIs.
+  gdb was run on AArch64 outputs only.
 - gdb and lldb behavior with mortar's thunk symbols (S-80) and with
   `.symtab` lacking section symbols was not exercised; that gdb needs no
   section symbols in an executable rests on lld's outputs, which gdb
@@ -460,21 +475,29 @@ symbols    __rela_iplt_start/end (i386 __rel_iplt_*) LOCAL in all three
 - perf and valgrind were not run; §12 rests on their documentation.
 - `SHN_XINDEX` (S-85) was not exercised with any linker (it needs an
   output of more than 65279 sections).
-- The merge cost figures of S-30 and S-89 are estimates from table sizes,
-  not measurements; the bench harness must replace them.
-- `GNU_PROPERTY_STACK_SIZE`, `GNU_PROPERTY_NO_COPY_ON_PROTECTED` and the
-  x86 `FEATURE_2_USED` were not tested; their rules in S-95 follow the
-  numbering ranges that X-20 tested for `ISA_1_*`.
+- S-30's figures are measured with a safe-Rust prototype (X-29), but on
+  a host at load 29 to 34, so they are upper bounds; S-89 remains an
+  estimate. The bench harness must replace both with mortar's.
+- The x86 `FEATURE_2_USED` was not linked; its rule follows the range
+  X-20 tested for `ISA_1_USED`. (`STACK_SIZE` and
+  `NO_COPY_ON_PROTECTED` are now X-33.)
+- `MEMORY_SEAL`'s kernel and glibc semantics were not checked; S-95
+  only fixes when the property is written.
+- lld 19 was not rechecked in round 2; every lld result there is 22.1.8.
+- The libitm-linked transactional-memory program (X-31) was built with
+  GNU only; that S-123's aligned start matches libitm's expectations
+  rests on GNU's layout of it, not on a run.
 - Writable or executable `SHF_MERGE` sections and merge sections with
   relocations (S-6) were not linked with the references; mortar's rule
   (place whole) is safe by construction.
-- `--eh-frame-hdr` behavior for the GCC driver was taken from the
-  existing link test's note (`tests/link/lang/cxx-exceptions`), not
-  re-measured.
+- `--eh-frame-hdr` behavior for the GCC driver is now taken from its
+  spec string (`gcc -dumpspecs`: `%{!static|static-pie:--eh-frame-hdr}`),
+  not from a test note.
 - How lld and mold choose a CIE among equal ones (S-44) was not
   observed beyond the counts.
 - Whether any toolchain emits a reference into the inside of an
-  `.eh_frame` record other than the record's own fields (Q3).
+  `.eh_frame` record other than the record's own fields (Q3); the
+  reviewer's scan and X-30's `ld -r` outputs have none.
 
 ## 9. Input from the verifier (WP-028)
 
@@ -500,3 +523,231 @@ After the first draft, the supervisor relayed the verifier's stage 2
 - Undefined-symbol diagnostics belong to the scan driver (S-125).
 - Not checked: whether any library object holds two FDEs with one
   initial location (Q10); the scan did not look.
+
+## 10. Round 2 experiments (X-25 to X-33)
+
+Run for the adversarial review, in one directory under `/tmp` (removed).
+`L` is one of `ld` (or the cross `x86_64-linux-gnu-ld`,
+`i686-linux-gnu-ld`), `ld.lld-22`, `mold`, driven through GCC 14 with
+`-B` pointing at a directory with an `ld.lld` symlink, or with `-fuse-ld`.
+
+### X-25 An object placed before `crtbeginT.o`
+
+`pre.cc` defines `pre_call(f)`, which calls `f` and returns; `mainx.cc`
+has `main` call `pre_call(thrower)` inside `try`, where `thrower` throws
+`42`. Linked statically with the driver's line printed by `-v` and
+replayed with `pre.o` moved in front of `crtbeginT.o`, per target and
+linker; x86 binaries run under qemu:
+
+```text
+                     normal       pre.o before crtbeginT.o
+AArch64  GNU         caught 42    terminate called after throwing 'int'
+AArch64  lld, mold   caught 42    caught 42
+x86-64   GNU         caught 42    terminate called after throwing 'int'
+x86-64   lld, mold   caught 42    caught 42
+i386     GNU         caught 42    terminate called after throwing 'int'
+i386     lld, mold   caught 42    caught 42
+```
+
+`readelf -rW crtbeginT.o`: x86-64 `R_X86_64_32 .eh_frame+0`, i386
+`R_386_32 .eh_frame`, both with a 0-byte `.eh_frame`; AArch64
+`R_AARCH64_ADR_PREL_PG_HI21`/`ADD_ABS_LO12_NC` to `.eh_frame+0`, whose
+section holds a CIE equal to `crt1.o`'s. On AArch64 GNU resolves the
+reference to crtbeginT's first FDE (its CIE was de-duplicated), so the
+registered walk starts after `pre.o`'s FDE; lld reaches the start of
+`.eh_frame` through the de-duplication, and mold writes output start
+plus offset, which is the start. GNU's `.symtab` value of `__EH_FRAME_BEGIN__` lies 0x10 to
+0x28 below `.eh_frame` in these links. Basis of S-50 rule 1.
+
+### X-26 Record length not a multiple of 4
+
+`odd.s`: a CIE, an FDE whose length is 0x11 (its instructions end with
+one `DW_CFA_nop` byte), a second FDE. `odd2.s`: the same with a non-nop
+last byte. `as` then `L -e _start`; `readelf -wf` (trimmed):
+
+```text
+GNU  odd:  FDE at 0x14 length 0x10   next FDE at 0x28   (nop removed, aligned)
+GNU  odd2: FDE at 0x14 length 0x14   next FDE at 0x2c   (padded to 4)
+lld:       FDE at 0x14 length 0x11   next FDE at 0x29   (copied)
+mold:      FDE at 0x14 length 0x11   next FDE at 0x29   (copied)
+```
+
+lld's and mold's later records are left at unaligned offsets. Basis of
+S-47's padding (not run: these are bare `_start` links).
+
+### X-27 IFUNC in `.symtab` and gdb
+
+`if.c`: `f` and `g` are IFUNCs with resolver returning `f_impl`; a
+non-PIC global `pf = &f` makes `f` canonical; `main` prints `f(3)` and
+compares `pf == &f`. Built `-static -O1` per linker (AArch64) and with
+GNU per x86 target; `readelf -sW` (trimmed):
+
+```text
+GNU AArch64  f IFUNC 0x400768 size 12 (the resolver)   g IFUNC 0x400768
+GNU x86-64   f IFUNC 0x4016e9 size 6                   g IFUNC 0x4016e9
+GNU i386     f IFUNC 0x080497bd size 6                 g IFUNC 0x080497bd
+lld AArch64  f FUNC  0x28f3f0 size 0 (.iplt)           g IFUNC 0x237ce8
+```
+
+GNU's `pf` holds the IPLT entry on all three targets. gdb 16 on AArch64:
+with GNU's output `break f` stops in `f_impl` and `print f(3)` returns
+the right value; `info symbol pf`'s value finds no symbol, and in gdb
+`pf == &f` is false (gdb's `&f` is the resolver). With lld's output
+`break f` stops in the `.iplt` stub and `print f(3)` fails. Basis of
+S-71 and Q11.
+
+### X-28 i386 end-of-array references
+
+`ec.c`: pointers one past the end of string literals and of constant
+arrays. Built for i386 with
+`i686-linux-gnu-gcc` (GNU as) and `clang --target=i686-linux-gnu`, at
+`-O2 -fmerge-all-constants`, `-fno-pic` and `-fPIC`; `readelf -rW`
+filtered for relocations whose symbol is a section symbol of an
+`SHF_MERGE` section with implicit addend ≥ `sh_size`: none. GCC writes
+`"abcdefgh" + 9` as `.LC1+9`, Clang as `.L.str+9`; the arrays are in
+`.rodata`, not a merge section. The reviewer's claim (S-18 never fires on
+compiler output) holds for i386 too.
+
+### X-29 The merge prototype
+
+The reviewer's `merge_proto.rs`, completed with the partitioned
+numbering of S-28 (partition by shard in key order, one thread per
+shard, first insert is the representative, prefix-sum numbering), a
+checksum over every occurrence's `FragId`, the previous draft's
+locked-table `fetch_min` method for comparison, and a mode that runs
+only the partitioned path (to measure its peak). `rustc -O`; run with
+1, 4 and 8 threads on the synthetic input (10^7 pieces, 529 MB) and on
+the concatenated `.debug_str` of X-8's workload:
+
+```text
+checksum 2cc14160f81abe6f at 1, 4, 8 threads; equal to fetch_min's FragIds
+synthetic intern  partitioned 1661 / 527 (428 rerun) / 316 ms
+                  fetch_min   3.26 / 2.72 (1.76 rerun) / 2.59 s
+synthetic peak RSS (partitioned only) 1027 MB, of which 555 MB input
+protoc intern     92 / 28 / 17 ms; partition 7-10 ms; cut+hash 20 ms (4 thr)
+protoc locked     117 ms (4 threads)
+```
+
+Host load 29 to 34 throughout. S-30's table carries the per-step
+figures; mold's whole link of that workload has median 724,882 µs in the
+bench's `results.tsv`.
+
+### X-30 `R_*_NONE` in `ld -r` outputs
+
+`cxx.cc` and `cxx2.cc` (the reviewer's; an inline function and a
+template shared) compiled per target, combined with `L -r`, then the
+`-r` output's `.rela.eh_frame`/`.rel.eh_frame` inspected:
+
+```text
+NONE relocations in .eh_frame   GNU  lld  mold
+i386                              1    1    0
+x86-64, AArch64                   0    0    0
+lld i386:  000003d0 R_386_NONE   (an FDE's initial location; field 0)
+GNU i386:  00000389 R_386_PC32 .gcc_except_table + 00000389 R_386_NONE
+```
+
+Linking these `-r` outputs into a throwing program is §16's
+`ld-r-inputs` test (stage 2), not run here. Basis of S-38's NONE rule and R-P7.
+
+### X-31 `.tm_clone_table` and crtstuff
+
+`objdump -d crtbegin*.o` on all three targets: `deregister_tm_clones`
+and `register_tm_clones` compare `__TMC_END__` with `__TMC_LIST__` and,
+when they differ, test the weak `_ITM_deregisterTMCloneTable` /
+`_ITM_registerTMCloneTable` (0 without libitm) before calling. `tm.c`
+built with `-fgnu-tm` so that its clone table is non-empty, linked
+statically by GNU:
+
+```text
+[18] .data            0x4b0030 size 0x194c   (ends 0x4b197c)
+[19] .tm_clone_table  0x4b1980 size 0x10  align 8
+__TMC_LIST__ 0x4b1980 (19)   __TMC_END__ 0x4b1990 (19)
+```
+
+The table starts aligned, with `__TMC_LIST__` at its start. Basis of
+S-123's two cases and R-L6.
+
+### X-32 `STT_FILE` and gdb
+
+`hm.c` and `hm2.c` (statics `call_fini` of the same name in both),
+`-static -g`, GNU and lld: GNU writes 387 `STT_FILE` symbols (one per
+archive member without one), lld 3. gdb 16 on both: `break call_fini`,
+`break hm2.c:call_fini`, `info symbol`, `info line`, `info scope`,
+`list`, `print` and `info functions call_fini` give identical answers.
+The only difference: gdb's minimal symbols file libc's locals under
+`hm2.c` with lld's output. Cosmetic; S-83 keeps "none".
+
+### X-33 The property matrix
+
+`pg.py` writes an assembly file with one or more property notes (`--`
+starts a new note); objects linked with `L -e _start`, `readelf -nW` and
+the diagnostics recorded. AArch64 unless stated; condensed:
+
+```text
+STACK_SIZE 0x1000 + 0x3000 + absent   GNU 0x3000; lld, mold dropped
+NO_COPY_ON_PROTECTED one + absent     GNU present; lld, mold dropped
+0xb0000001 (AND) 3 + 1                GNU 1; with an absent input dropped
+0xb0008000 (1_NEEDED) 1 + absent      GNU 1 (OR, kept); lld, mold dropped
+FEATURE_1_AND GCS 4 + 4, 4 + 0        GNU and lld 4, dropped
+FEATURE_PAUTH equal + equal           lld copied; GNU "unsupported ... 0xc0000001"
+FEATURE_PAUTH differ                  lld "incompatible values of AArch64
+                                      PAuth core info found"
+FEATURE_PAUTH one + absent            lld copied
+unknown 0x7, 0x80000000, 0xc0001234,  GNU "unsupported GNU_PROPERTY_TYPE (5)
+  0xe0000001                          type: ..."; then the note copied
+                                      unmerged or "failed to create GNU
+                                      property section" (order-dependent);
+                                      lld, mold dropped silently
+MEMORY_SEAL in an input               GNU erratic; with -z memory-seal written
+two notes in one object, AND 3 then 1 GNU and lld 3; 1 then 3: 3; a note
+                                      without the property is ignored
+libhwasan hwasan_interceptors_vfork.o two equal notes in one section
+```
+
+Basis of S-94, S-95, S-126 and Q12.
+
+## 11. Input from the review (round 2)
+
+The coordinator's rulings on the adversarial review
+(`.build/review-025.md`), by finding, and what changed:
+
+1. **IFUNC in `.symtab`**: S-71 and S-81 take GNU's form (resolver
+   value, `STT_GNU_IFUNC`) in every case, after X-27's gdb evidence; the
+   cost is Q11.
+2. **STACK_SIZE, NO_COPY_ON_PROTECTED**: S-95 `Max` and `Present` (X-33).
+3. and 18. **Empty `.eh_frame`, `r == sh_size`, objects before
+   crtbeginT**: S-50 rewritten in five rules, rule 1 (offset 0 is the
+   output's start) general; §4.4's intro states the x86 empty case
+   [M3/M4] and the AArch64 de-duplicated CIE [M1] (X-25). S-51, §13, §16
+   `before-crtbegint` per target.
+4. and 12. **Symbols in removed records**: S-50 rule 4 and S-76
+   reconciled (mapping symbols follow their record; an unreferenced local
+   inside a removed record is dropped; other symbols take rule 3).
+5. **`R_*_NONE`**: S-38; R-P7; §16 `ld-r-inputs` for 3 linkers × 3
+   targets (X-30).
+6. **Unknown types, generic ranges, MEMORY_SEAL**: S-95's `And`/`Or`
+   generic ranges, `Option`, and the `unknown` rule with the
+   `unknown-property` warning (R-D2); R-C3. GNU does not simply drop
+   unknown types (X-33): it warns and then copies or fails.
+7. **Several notes in one object**: S-94 reads every note; S-126 combines
+   them as separate objects (AND). This differs from GNU and lld, which
+   OR them (X-33); kept as the conservative choice and raised as Q12.
+8. **S-18**: kept; the message names the fix; X-28's i386 check added.
+9. **Tail merging**: S-23 quotes the 0.8% (X-8 round 2); Q1 closed.
+10. **Partitioned merge**: S-28 rewritten, S-15 and R-M7 updated, S-30
+    with measured figures and a memory formula (X-29).
+11. **Y5 on x86**: S-124 corrected; R-P5, R-P6.
+13. **Internal-file CIEs**: S-44 and S-55 exclude them from
+    de-duplication.
+14. **S-40, S-42, S-47**: S-40 a list; S-47 pads to 4 (X-26).
+15. **STT_FILE**: verified cosmetic in gdb (X-32); S-83 keeps none.
+16. **static-pie**: S-70's paragraph, R-P6 (resolve.md §8.1).
+17. **Alignment in R-L6**: refined, not taken as given: aligned when the
+    output section has content (the `-fgnu-tm` table, X-31), unaligned
+    at the end of the attached chunk when it is absent (S-123, R-L6).
+
+Open questions: Q4 moved to image.md (R-I1; S-91 sizes from it); Q5 the
+GCC driver is the contract (S-57); Q7 `.comment` is `mortar <version>`
+(S-100); Q9 GCS ANDed, PAUTH `EqualOrAbsent` (absent inputs ignored, as
+lld). The draft was compressed to 1799 lines with every rule id kept;
+S-126 is the only new id.

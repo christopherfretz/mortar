@@ -215,9 +215,10 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   visible only to symbols defined in a piece (S-22), which are valued
   through their own piece's fragment and so do not depend on the choice.
 - **S-15 [C] (numbering).** `FragId`s number fragments by their
-  representative's key, ascending, by the method of model §2.3 (atomic
-  minimum, then a prefix count over owner marks). The numbering is a
-  function of the inputs and not of the thread count (model §6).
+  representative's key, ascending: the numbering model §2.3 defines for
+  symbols, computed by S-28's partitioned method rather than §2.3's
+  atomic minimum (R-M7). The numbering is a function of the inputs and
+  not of the thread count (model §6).
 - **S-16 [C] (live fragments).** A fragment is live when any of its
   pieces lies in a live section and (with `--gc-sections`) is referenced
   or is in a non-allocated section (`spec/live.md` owns piece-level
@@ -244,16 +245,19 @@ section symbol with an addend, and a named symbol with an addend.
   local symbols (GCC's `.LC*` on x86-64, X-1, X-5). This is the
   convention `plumb.md` §5.6 checks.
 - **S-18 [C] (outside the section).** A section-symbol reference with
-  `r < 0` or `r ≥ sh_size` is refused: `malformed-input`,
-  `offset is outside the section` (lld's wording and behavior). At
-  `r == sh_size` GNU silently writes the end of the *output* section,
-  which is the end of some other object's string, and for `r > sh_size`
-  or `r < 0` it warns `access beyond end of merged section` and does the
-  same; mold maps `r == sh_size` to the end of the last piece and writes
-  an unrelated address beyond it (X-2). No such reference occurs in the
-  library scan (X-1), and the compilers emit one-past-the-end and
-  before-the-start addresses through named symbols (X-5), which S-19
-  handles.
+  `r < 0` or `r ≥ sh_size` is refused: `malformed-input`, `offset is
+  outside the section; refer to it through a named symbol` (lld's
+  behavior, with the fix named: S-19 links the same address through any
+  symbol of the section); a known choice against GNU (§13). At `r ==
+  sh_size` GNU silently writes the end of the *output* section, the end
+  of some other object's string, and beyond it warns `access beyond end
+  of merged section` and does the same; mold writes the end of the last
+  piece, or an unrelated address (X-2). The scan has no such reference
+  (X-1), and compilers emit one-past-the-end addresses through named
+  symbols (X-5), i386 REL objects included: GCC 14 with GNU as and Clang
+  19 (`-O2 -fmerge-all-constants`, `-fno-pic` and `-fPIC`) write
+  `"abcdefgh" + 9` as `.LC1`/`.L.str` plus 9 and put constant arrays in
+  plain `.rodata` (X-28).
 - **S-19 [G] (named symbol plus addend).** For any other symbol defined
   in a split section, with value `v = st_value` and addend `A`, the
   value is `out(frag(p)) + (v − start(p)) + A`, where `p` is the piece
@@ -293,32 +297,26 @@ section symbol with an addend, and a named symbol with an addend.
 
 - **S-23 [C].** mortar does not tail-merge: a string that is a suffix of
   another is its own fragment. GNU always tail-merges `SHF_STRINGS`
-  sections; lld does at `-O2`; mold never does (X-6). Measured gains are
-  small in loaded data and moderate in debug strings (X-8): on a static
-  C++ program, 64 bytes of 114 KB of `.rodata` (lld `-O1` against `-O2`),
-  and 13% of `.debug_str` and 4% of `.debug_line_str`. The cost is a sort
-  of all strings of a class by reversed content (lld's `-O2` method), a
-  sequential step over all strings of an output section that cannot be
-  sharded by hash, and it couples pieces (one string's bytes then hold
-  another's), which would make the append-only merged chunk of layout
-  L-147 depend on which strings left. Q1 asks whether to add it later
-  behind `-O2`; the `MergeMap` validity rule (model §4.2) already allows
-  overlapping fragments, so adding it changes no table.
+  sections; lld does at `-O2`; mold never does (X-6). The gain is small:
+  on the protoc `-g` link (340 objects) 0.8% of `.debug_str` (10.21 MB
+  against 10.13 MB) and 9.5% of a 32 KB `.debug_line_str`; X-8's 13% is
+  a two-file program. The cost is a sequential sort of all strings of a
+  class by reversed content (lld's `-O2` method) that cannot be sharded
+  by hash, and it couples pieces (one string's bytes hold another's),
+  which would make layout L-147's append-only merged chunk depend on
+  which strings left. Final (Q1 closed): no tail merging at any `-O`.
 
 ### 3.7 Output order and offsets
 
 - **S-24 [C] (order).** Within a `Merged` chunk (layout L-85), the live
   fragments are grouped by merge class (strings before constants, then
   entsize ascending, then alignment ascending) and ordered by `FragId`
-  within a group. `frag_off` is assigned by one pass in that order,
-  aligning each fragment to its alignment: `frag_off(f) =
-  align_up(end of the previous fragment, align(f))`. The order is the
-  order of first occurrence, which is GNU's order for the strings that
-  survive its tail merge (X-6); lld and mold order by hash (lld by shard,
-  then hash), which no tool relies on but which makes a one-string edit
-  move every string. First-occurrence order keeps a program's strings in
-  source order and makes an incremental append (L-147) the same order a
-  full link would give when the new strings are in the last file.
+  within a group; `frag_off(f) = align_up(end of the previous fragment,
+  align(f))` in that order. This is first-occurrence order, GNU's for the
+  strings its tail merge keeps (X-6); lld and mold order by hash, which
+  makes a one-string edit move every string. It keeps strings in source
+  order, and an incremental append (L-147) gives the full link's order
+  when the new strings are in the last file.
 - **S-25 [C] (alignment groups).** Sorting by alignment inside a merge
   class keeps 8-aligned strings together so that the padding between
   them is at most 7 bytes per fragment, not once per class change. This
@@ -336,49 +334,76 @@ section symbol with an addend, and a named symbol with an addend.
 
 ### 3.8 The parallel algorithm and its cost
 
-- **S-28 [C] (method).** Phase 60 runs per section in parallel:
-  1. **cut**: find piece boundaries (a vectorizable scan for zero
-     characters, or a stride) and hash each piece's bytes with the class
-     and alignment, one 64-bit hash;
-  2. **intern**: insert `(hash, bytes)` into a table sharded by the high
-     hash bits, 2^k shards for k with 2^k ≥ 8 × threads; each entry keeps
-     the least key of the pieces that inserted it, the key being
-     `SectionId × 2^32 + piece` in one `u64` (`SectionId`s are given in
-     `(FileId, sh_index)` order, model §2.2, so this is the
-     `(FileId, sh_index, piece)` order), kept by `AtomicU64::fetch_min`
-     (safe Rust; no lock is held across the minimum);
-  3. **mark owners**: every piece whose key equals its entry's key is a
-     representative;
-  4. **number**: count representatives per section, prefix-sum in
-     section order (`SectionId` order), and give each section's
-     representatives consecutive `FragId`s in piece order; store each
-     entry's `FragId`;
-  5. **resolve**: every piece occurrence reads its entry's `FragId`.
+- **S-28 [C] (method).** Phase 60 runs in five steps, each parallel:
+  1. **cut**: per section, find piece boundaries (a vectorizable scan for
+     zero characters, or a stride) and hash each piece's bytes with the
+     class and alignment into one 64-bit hash;
+  2. **partition**: split the split sections into `C` contiguous ranges
+     in `SectionId` order (`C` = 8 × threads); per range, append each
+     occurrence's `(SectionId, piece)` to the bucket of its shard (the
+     high hash bits; 2^k shards with 2^k ≥ 8 × threads). Concatenating
+     a shard's buckets in range order lists its occurrences in key order
+     (`(FileId, sh_index, piece)`, since `SectionId`s are given in that
+     order, model §2.2);
+  3. **intern**: per shard, on one thread and with no lock, walk its
+     occurrences in key order and look each up by `(hash, bytes)` in the
+     shard's own table. A miss creates an entry whose representative is
+     that occurrence, which is the first occurrence (S-14) because the
+     walk is in key order: no atomic minimum and no pass that marks
+     owners is needed. Each occurrence records its entry (shard and
+     index, one `u32`). A shard's table belongs to one thread, so it
+     grows as needed and needs no sizing pass;
+  4. **number**: every shard's entry list is its representatives in key
+     order. Bucket them by section (a pass over fragments, not
+     occurrences), prefix-sum the counts in `SectionId` order, and give
+     each section's representatives consecutive `FragId`s in piece order;
+     store each entry's `FragId`;
+  5. **resolve**: every occurrence reads its entry's `FragId` into its
+     `Split` row.
 
-  No step depends on the order threads run in or on the table's layout;
-  the output is a function of the inputs (model §6 rules 2, 3 and 5).
-  Hashes decide only equality candidates; equal hashes compare bytes.
+  A shard depends only on bytes and its order is key order whatever the
+  threads did, so entries, representatives and `FragId`s are functions of
+  the inputs (model §6 rules 2, 3, 5); hashes only propose candidates,
+  bytes decide. The prototype (X-29) gives the same `FragId`s at 1, 4 and
+  8 threads as the previous draft's atomic-minimum method.
 - **S-29 [C] (offsets).** `frag_off` is one sequential pass per output
   section over its live fragments in S-24 order (an aligned prefix sum);
-  for 10^7 fragments it is about 10 ms on one core. A parallel prefix sum
-  with alignment is possible (block sums computed per residue of the
+  for 2.4 × 10^6 fragments it took 2 to 3 ms (X-29). A parallel prefix
+  sum with alignment is possible (block sums computed per residue of the
   largest alignment) and is not needed at that cost.
-- **S-30 [C] (cost, stated).** For 10^7 string pieces of mean length 32
-  (320 MB of input strings, a debug build of a large C++ program) on 8
-  threads: cutting and hashing is bound by memory bandwidth (about 40 ms);
-  interning is 10^7 lookups into a table of about 4×10^6 entries
-  (3×10^6 to 5×10^6 distinct strings is typical), about 0.1 s with
-  sharded locks; numbering and resolving are linear passes (about 20 ms
-  each). Memory: 8 bytes per occurrence (80 MB), 16 bytes per fragment
-  plus the table entry (about 32 bytes at load 0.5): 200 MB for that
-  link. The numbers are estimates from the table sizes, to be replaced by
-  the bench harness's figures (`docs/VALIDATION.md`).
-- **S-31 [C] (what is taken from mold and lld).** Taken: interning in a
-  concurrent, sharded table (both); piece boundaries found per section in
-  parallel (both). Rejected: output order by hash or shard (both; S-24);
-  choosing the kept copy by a race decided afterwards (mold's
-  "lowest-priority owner" is the same idea as S-14 and is taken); lld's
-  `-O0` no-merge mode (S-32).
+- **S-30 [C] (cost, measured).** With the safe-Rust prototype (X-29), on
+  the shared host at load 29 to 34, so upper bounds:
+
+  | step | synthetic, 1 / 4 / 8 threads | protoc `.debug_str`, 4 threads |
+  |---|---|---|
+  | cut and hash | 423 / 230–251 / 302 ms | 20 ms |
+  | partition | 87 / 26–31 / 50 ms | 7 ms |
+  | intern | 1661 / 428–527 / 316 ms | 28 ms (92 at 1 thread, 17 at 8) |
+  | number | 41 / 26–33 / 29 ms | 2 ms |
+  | resolve | 33 / 10–15 / 12 ms | 1 ms |
+
+  Synthetic: 10^7 string pieces, 529 MB, 2.45 × 10^6 fragments. protoc:
+  the `.debug_str` of the `cxx-medium-g` workload, 990,853 pieces,
+  64.2 MB, 95,321 fragments, 10.21 MB out; about 60 ms in all, against
+  0.72 s for mold's whole link of that workload (the bench's median).
+  The previous draft's locked table with an atomic minimum took 2.6 to
+  3.3 s to intern the synthetic input, 117 ms for protoc.
+
+  Memory: per occurrence, 8 bytes kept (the `Split` row, S-12) and 20
+  held during phase 60 (hash 8, partition record 8, entry index 4); per
+  fragment about 44 bytes (representative 8, a table slot of 12 at load
+  ≤ 0.5, `FragId` 4, `frag_off` 8). The synthetic input then peaks at
+  280 + 108 MB; the prototype, with fatter records and std's `HashMap`,
+  measures 472 MB beyond its input. The bench harness
+  (`docs/VALIDATION.md`) replaces these figures with mortar's.
+- **S-31 [C] (what is taken from mold and lld).** Taken: sharding the
+  table by hash bits (both); piece boundaries found per section in
+  parallel (both); a per-shard pass on one thread (lld's per-shard
+  finalisation). Rejected: output order by hash or shard (both; S-24); a
+  concurrent table whose kept copy is decided by a race and repaired
+  afterwards (mold's lowest-priority owner): S-28's key-ordered walk
+  makes the first insert the first occurrence; lld's `-O0` no-merge mode
+  (S-32).
 
 ### 3.9 Options
 
@@ -388,10 +413,9 @@ section symbol with an addend, and a named symbol with an addend.
   not merge at `-O0`; no build depends on that, since it only grows the
   output.
 - **S-33 [C] (no other merge options at M1).** No option turns merging
-  off. GNU ld has none; lld's `-O0` is S-32. An option to disable it
-  (for debugging the linker) is a test hook, not a user option. `-z`
-  options naming merge behavior (`-z nomerge` does not exist in any of
-  the three) remain `unknown-option` per `spec/cli.md`.
+  off (GNU has none; lld's `-O0` is S-32); a switch for debugging the
+  linker is a test hook. `-z` merge options (`-z nomerge` exists in none
+  of the three) remain `unknown-option` (`spec/cli.md`).
 
 ## 4. .eh_frame
 
@@ -408,55 +432,46 @@ with one terminator, and the pointers inside them rewritten.
   record`): the LSB format has no such records and the scan has none
   (X-1). The second word is the CIE id: 0 for a CIE; otherwise the
   distance back from that word to the record's CIE (an FDE).
-- **S-35 [C] (accepted CIEs).** A CIE is accepted when:
-  - its version is 1 or 3 (the scan has only 1; version 3 is DWARF 3's
-    `.debug_frame` CIE, which some assemblers emit in `.eh_frame`; all
-    three accept it, X-14);
-  - its augmentation string is empty, or starts with `z` and continues
-    with letters from `R`, `P`, `L`, `S`, `B`, `G` (each at most once).
-    `S` is a signal frame, `B` an AArch64 B-key frame, `G` a memory-tagged
-    stack frame (AArch64 MTE); they have no data in the augmentation and
-    the linker passes them through. The scan has `zR`, `zPLR` and one
-    `zRS` (X-1);
-  - its `R`, `P` and `L` pointer encodings (the low nibble a format, the
-    high nibble an application) are ones S-37 can relocate.
-
+- **S-35 [C] (accepted CIEs).** A CIE is accepted when its version is 1
+  or 3 (the scan has only 1; 3 is DWARF 3's `.debug_frame` version, which
+  some assemblers emit; all three accept it, X-14); its augmentation is
+  empty, or `z` followed by letters from `R`, `P`, `L`, `S`, `B`, `G`, each
+  at most once (`S` a signal frame, `B` an AArch64 B-key frame, `G` an MTE
+  stack frame; no data, passed through; the scan has `zR`, `zPLR`, one
+  `zRS`, X-1); and its `R`, `P`, `L` encodings are ones S-37 relocates.
   An empty augmentation means the FDE's initial location is `absptr`.
-- **S-36 [C] (refused CIEs).** A CIE with version other than 1 or 3, or
-  with an augmentation character outside S-35, or one whose augmentation
-  data runs past the record, is refused: `malformed-input`, `FDE version
-  1 or 3 expected, but got N` and `unknown .eh_frame augmentation string:
-  STR` (lld's wording; lld refuses exactly these, X-14). GNU warns
-  `error in FILE(.eh_frame); no .eh_frame_hdr table will be created` and
-  links without a table, which silently loses the unwinder's fast path
-  for every frame in the program; mold accepts and copies. None occurs in
-  the scan.
-- **S-37 [C] (pointer encodings).** A pointer in a CIE or FDE is located
-  by its encoding and relocated by the relocation at its place, if any.
-  The formats `absptr`, `udata2/4/8`, `sdata2/4/8` and the applications
-  none and `pcrel` (`0x10`), optionally `indirect` (`0x80`), are
-  accepted; `datarel` (`0x30`), `textrel` (`0x20`), `funcrel` (`0x40`),
-  `aligned` (`0x50`) and `uleb128`/`sleb128` formats in a pointer that
-  carries a relocation are refused (`feature`, `.eh_frame pointer
-  encoding 0xNN`): none is emitted by GCC, Clang or hod and their meaning
-  in a static executable needs a base the LSB does not fix. The scan has
-  FDE encoding `0x1b` (`pcrel|sdata4`), personality `0x9b`
-  (`indirect|pcrel|sdata4`) and LSDA `0x1b` (X-1); hod's large model
-  uses `0x1c` with `PREL64` (a64.md §13.1).
+- **S-36 [C] (refused CIEs).** Another version, an augmentation character
+  outside S-35, or augmentation data past the record is `malformed-input`:
+  `FDE version 1 or 3 expected, but got N`, `unknown .eh_frame
+  augmentation string: STR` (lld's wording and cases, X-14). GNU warns
+  and links without `.eh_frame_hdr`, silently losing the unwinder's fast
+  path; mold copies. None in the scan.
+- **S-37 [C] (pointer encodings).** A pointer is located by its encoding
+  and relocated by the relocation at its place, if any. Formats
+  `absptr`, `udata2/4/8`, `sdata2/4/8`, applications none and `pcrel`
+  (`0x10`), optionally `indirect` (`0x80`), are accepted; `datarel`,
+  `textrel`, `funcrel`, `aligned` and `uleb128`/`sleb128` in a relocated
+  pointer are refused (`feature`, `.eh_frame pointer encoding 0xNN`): no
+  producer emits them and their static base is not fixed by the LSB. The
+  scan has FDE `0x1b`, personality `0x9b`, LSDA `0x1b` (X-1); hod's large
+  model uses `0x1c` with `PREL64` (a64.md §13.1).
 - **S-38 [C] (FDE code range).** An FDE's code section is the section of
   the target of the relocation at its initial-location field (offset 8
   of the record). The relocation's class must be `Pc` or `AbsWord`
-  (arch.md §3.9); another is refused there. An FDE whose initial
-  location has no relocation is dropped when the field is zero (lld and
-  mold drop such FDEs; GNU keeps them and gives up on `.eh_frame_hdr`,
-  X-14): it describes no code of this link, and the verifier cannot
-  judge it either (`plumb.md` §6.4, "anything else cannot be judged").
-  When the field is non-zero the FDE claims an absolute code address,
-  which the verifier would expect in the output (E2) and no section of
-  the link holds: it is refused (`feature`, `FDE without a relocation
-  for its initial location`). Neither occurs in the scan. An FDE whose
-  target is undefined weak, absolute, or in a section that is not live
-  is dead (S-41).
+  (arch.md §3.9); another is refused there. A relocation of type
+  `R_AARCH64_NONE`, `R_X86_64_NONE` or `R_386_NONE` anywhere in
+  `.eh_frame` is ignored: a field whose only relocations are of that type
+  has no relocation; `ld -r` outputs carry them (X-30). An FDE whose
+  initial location has no relocation is dropped when the field is zero
+  (lld and mold drop such FDEs; GNU keeps them and gives up on
+  `.eh_frame_hdr`, X-14): it describes no code of this link, and the
+  verifier cannot judge it either (`plumb.md` §6.4, R-P7). When the
+  field is non-zero the FDE claims an absolute code address, which the
+  verifier would expect in the output (E2) and no section of the link
+  holds: it is refused (`feature`, `FDE without a relocation for its
+  initial location`). Neither occurs in the scan. An FDE whose target is
+  undefined weak, absolute, or in a section that is not live is dead
+  (S-41).
 - **S-39 [C] (malformed records).** These are `malformed-input`, with
   lld's wording:
   - a record whose length runs past the section end: `CIE/FDE ends past
@@ -473,41 +488,41 @@ with one terminator, and the pointers inside them rewritten.
   mold accepts some and crashes on a truncated record (X-14). The scan
   has terminators only at the end of `crtend.o` and `crtendS.o` (X-1).
 - **S-40 [C] (accepted oddities).** These are accepted, as by all three
-  (X-14): a record length that is not a multiple of 4 (records are
-  copied byte for byte; the scan has none, X-24); a CIE that no FDE uses
-  (it is kept if live, S-42); several CIEs in one section (up to three in
-  the scan); FDEs with the same initial location when no table is
-  written (S-59 refuses them with one).
+  (X-14):
+  - a record length that is not a multiple of 4: the output record is
+    padded by S-47 (the scan has none, X-24);
+  - a CIE that no FDE uses: accepted and dropped (S-42);
+  - several CIEs in one section (up to three in the scan);
+  - FDEs with the same initial location when no table is written (S-59
+    refuses them with one).
 
 ### 4.2 Liveness and de-duplication
 
 - **S-41 [C] (dead FDEs).** An FDE is live exactly when its code section
-  is live and not folded away (model §3.6), and the FDE is not dropped
-  by S-38. FDEs whose code section was discarded as a losing COMDAT copy
-  are therefore dead (resolve.md §6.3), as are those of sections removed
-  by `--gc-sections`. All three references agree on the count of live
-  FDEs (X-10). A dead FDE is **absent** from the output: mortar never
-  writes a neutralised FDE (initial location 0 or range 0 standing in for
-  a dropped one), so every output FDE answers for exactly one live input
-  FDE, which is what `plumb.md` §6.4 E2 to E4 check. The terminator of
-  S-48 is written whatever is dropped.
+  is live and not folded away (model §3.6) and S-38 does not drop it: FDEs
+  of losing COMDAT copies (resolve.md §6.3) and of sections removed by
+  `--gc-sections` are dead. All three references agree on the count
+  (X-10). A dead FDE is **absent**: mortar never writes a neutralised FDE
+  (initial location or range 0), so every output FDE answers for one live
+  input FDE (`plumb.md` §6.4 E2 to E4). S-48's terminator is always
+  written.
 - **S-42 [C] (live CIEs).** A CIE is live when a live FDE uses it. A CIE
   that no live FDE uses is dropped. (lld and mold drop unused CIEs; GNU
   keeps CIEs of sections it keeps. Nothing reads a CIE except through an
   FDE.)
 - **S-43 [C] (CIE identity).** Two live CIEs are one when their bytes are
-  equal and, at each relocated place, the relocations have the same
-  type, the same addend, and targets that resolve to the same final
-  symbol or the same section and offset. The personality routine is
-  usually such a target (`DW.ref.__gxx_personality_v0` through
-  `0x9b`): two `zPLR` CIEs equal in bytes but with different personality
-  targets are two CIEs (X-11). Identity is the equality of the
-  triple (bytes, relocations by place, resolved targets); it is computed
-  after resolution, so it is exact.
-- **S-44 [C] (which copy).** Among equal live CIEs the one with the least
-  `(FileId, sh_index, record)` is kept; every live FDE that used any of
-  them points to it. With C++ COMDAT and `--gc-sections` the three
-  references keep the same number of CIEs (3 in X-10).
+  equal and, at each relocated place, the relocations have the same type
+  and addend and targets resolving to the same final symbol or section
+  and offset. Two `zPLR` CIEs equal in bytes but with different
+  personality targets are two CIEs (X-11). It is computed after
+  resolution, so it is exact.
+- **S-44 [C] (which copy).** Among equal live input CIEs the one with the
+  least `(FileId, sh_index, record)` is kept, and every live FDE that used
+  any of them points to it (the three references keep the same number,
+  3 in X-10). The internal file's records (S-55 [M2]) take no part: no
+  input FDE points to a linker CIE or the reverse, so S-46 keeps every
+  CIE before its FDEs (libgcc reads the CIE pointer as an unsigned
+  distance back).
 - **S-45 [C] (piece row).** `Split` holds per record its offset (`u32`)
   and an `EhPiece` (model §3.5): `cie` (for an FDE, the index of its CIE
   among the section's records; `u32::MAX` for a CIE) and `code` (the
@@ -518,75 +533,101 @@ with one terminator, and the pointers inside them rewritten.
 
 ### 4.3 Output order and the terminator
 
-- **S-46 [C] (order).** The output records are, in `SectionId` order of
-  the input `.eh_frame` sections (layout L-58) and record order within
-  each, every live CIE that is kept (S-44) and every live FDE. A kept CIE
-  therefore precedes every FDE that uses it unless an earlier file's FDE
-  uses a CIE that a later file keeps, which cannot happen: the kept copy
-  is the earliest (S-44), and an FDE uses a CIE of its own section in the
-  input. This is GNU's order (X-10). lld groups each CIE with its FDEs;
-  mold puts all CIEs first. No unwinder depends on the order (each FDE
-  points to its CIE by offset; `.eh_frame_hdr` sorts), but the static
-  start-up of `crtbeginT.o` walks from `__EH_FRAME_BEGIN__` (S-50), and
-  input order keeps that walk covering what GNU's output covers.
+- **S-46 [C] (order).** The output records are every kept live CIE
+  (S-44) and every live FDE, in `SectionId` order of the input
+  `.eh_frame` sections (layout L-58) and record order within each. A kept
+  CIE precedes its FDEs because the kept copy is the earliest and an FDE
+  uses a CIE of its own section. This is GNU's order (X-10); lld groups
+  each CIE with its FDEs, mold puts CIEs first. No unwinder depends on it
+  (FDEs point to CIEs by offset; the hdr sorts), and `crtbeginT.o`'s walk
+  starts at the output's start (S-50, S-51).
 - **S-47 [C] (packing).** Records are written back to back, with no
   padding between them, at offsets that are the sum of the preceding
-  record sizes: input records are 4-byte multiples (X-24), so every
-  output record is 4-aligned. The chunk's alignment is the largest input
-  `.eh_frame` alignment (8 on the 64-bit targets, 4 on i386; X-24).
-- **S-48 [G] (one terminator, last).** Input terminators are dropped, and
-  the chunk ends with one 4-byte zero word. The terminator is required by
-  libgcc's `__register_frame_info` walk (static start-up through
-  `crtbeginT.o`), which stops at the first zero length. Dropping the
-  input terminators and writing one at the end makes the result
-  independent of where `crtend.o` sits on the command line: with
-  `crtend.o` before the user's objects GNU's output has the terminator in
-  the middle, and the program crashes in the unwinder; lld and mold write
-  one at the end and the program runs (X-13). A link with no `crtend.o`
-  (bare `ld`) gets a terminator too (lld and mold; GNU writes none,
-  X-13). This changes layout L-58's sentence about `crtend.o` (§14).
+  record sizes. A record's output size is `4 + align_up(L, 4)`: a body
+  whose length `L` is not a multiple of 4 gets zero bytes (`DW_CFA_nop`)
+  appended and its length raised to match. Instructions run to the end
+  of the record, so the padding changes nothing the record states, and
+  every output record stays 4-aligned. GNU pads the same way, after
+  removing trailing `DW_CFA_nop`s; lld and mold copy the bytes and leave
+  later records unaligned (X-26). The verifier ignores trailing
+  `DW_CFA_nop`s (`plumb.md` §6.4). The scan has only 4-byte multiples
+  (X-24). The chunk's alignment is the largest input `.eh_frame`
+  alignment (8 on the 64-bit targets, 4 on i386; X-24).
+- **S-48 [G] (one terminator, last).** Input terminators are dropped,
+  and the chunk ends with one 4-byte zero word, which libgcc's
+  `__register_frame_info` walk (static start-up through `crtbeginT.o`)
+  needs to stop. The result is then independent of where `crtend.o` is:
+  with it before the user's objects GNU's output has the terminator in
+  the middle and crashes in the unwinder; lld and mold write it last and
+  run (X-13). A link with no `crtend.o` gets one too (lld, mold; GNU
+  none). This changes layout L-58 (§14).
 - **S-49 [C] (Slots).** `Slots.eh_records` lists the output records in
-  output order as `(SectionId, record index)`; the terminator is implied.
-  The chunk's size is the sum of the listed records' sizes plus 4. Each
-  record's output offset is a prefix sum over the list, computed in
-  parallel by section (S-56).
+  order as `(SectionId, record index)`; the terminator is implied. The
+  size is the sum of the records' output sizes (S-47) plus 4; offsets are
+  a prefix sum, parallel by section (S-56).
 
 ### 4.4 References into .eh_frame
 
-`.eh_frame` is referenced from inside (an FDE's CIE pointer), from
-`crtbeginT.o`'s `frame_dummy` (a relocation against `__EH_FRAME_BEGIN__`,
-a local symbol at offset 0 of `crtbeginT.o`'s `.eh_frame`), from
-`.eh_frame_hdr`, and through `__EH_FRAME_BEGIN__`/`__FRAME_END__` in
-`.symtab`.
+`.eh_frame` is referenced from inside (an FDE's CIE pointer, which S-52
+rewrites and nothing resolves), from `crtbeginT.o`'s `frame_dummy` (a
+relocation against the section at offset 0, where `__EH_FRAME_BEGIN__`, a
+local symbol, also lies), from `.eh_frame_hdr`, and by symbols defined in
+`.eh_frame`: `__EH_FRAME_BEGIN__`, `__FRAME_END__` (`crtend.o`'s
+terminator) and AArch64 `$d` mapping symbols at record starts (355 in a
+static C hello; 4396 in the reviewer's scan).
 
-- **S-50 [C] (a reference to a record).** A relocation or symbol whose
-  target is input byte `r` of an `.eh_frame` section resolves to the
-  record containing `r`:
-  - a kept record: its output offset plus `r` minus its input offset;
-  - a dropped record (a CIE de-duplicated away, a dead FDE, an input
-    terminator), with `r` at the record's start: the output offset of the
-    next kept record of the same input section, or if none, of the next
-    kept record after it in output order, or the final terminator. This
-    is the place the dropped record would have started had it been kept,
-    and it is what GNU's relocation for `frame_dummy` computes (X-12): it
-    makes `__register_frame_info(__EH_FRAME_BEGIN__)` walk the records
-    that follow `crtbeginT.o`'s position to the terminator;
-  - a dropped record with `r` inside it (not at its start): refused,
-    `malformed-input`, `reference into a removed .eh_frame record`.
-    Nothing but an FDE's own fields lies inside a record, and those are
-    rewritten (S-52), not resolved.
-  GNU's `.symtab` value for `__EH_FRAME_BEGIN__` in the same link is 16
-  bytes before `.eh_frame` (a value in no section), while its relocation
-  is right (X-12); lld gives both the start of `.eh_frame`; mold drops the
-  symbol. mortar gives the symbol the value of its relocation: one rule
-  for symbols and relocations.
-- **S-51 [C] (the walk is complete enough).** With S-46, S-48 and S-50,
-  the walk from `__EH_FRAME_BEGIN__` covers every live FDE of the files
-  after `crtbeginT.o` on the command line (all user code and libraries,
-  in every GCC driver's order), and misses the FDEs of `crt1.o` and
-  `crti.o` before it (`_start`, which no exception unwinds through), as
-  in GNU's output. Static C++ programs that throw run with all three
-  references and must run with mortar (`tests/link/lang/cxx-exceptions`).
+The `crtbeginT.o` reference differs by target. On x86-64 and i386 its
+`.eh_frame` is empty, so the reference is offset 0 of a 0-byte section
+(`R_X86_64_32 .eh_frame+0`, `R_386_32 .eh_frame`): every static x86 link
+has it [M3, M4]. On AArch64 [M1] its `.eh_frame` holds a CIE and FDEs,
+and the reference is an `ADRP`/`ADD` pair to offset 0, its CIE, which is
+usually a duplicate of `crt1.o`'s and removed by S-44 (X-12, X-25).
+
+- **S-50 [C] (the value of a reference into .eh_frame).** This rule gives
+  the value of every relocation whose target is in an input `.eh_frame`
+  section `E`, and of every symbol defined in one other than a mapping
+  symbol. Let `r` be the target offset (`st_value + A` for a section
+  symbol; `st_value` for a symbol):
+  1. `r = 0`: the start of the output `.eh_frame`, whatever `E` holds
+     (nothing, a kept first record, or a removed one);
+  2. otherwise, `r` at the start of or inside a kept record: the
+     record's output offset plus `r` minus its input offset;
+  3. otherwise, `r` at the start of a removed record (a CIE de-duplicated
+     away, a dead FDE, an FDE dropped by S-38, an input terminator), or
+     `r = sh_size`: the output offset of the next kept record of `E`, or
+     if none, of the next kept record after `E`'s records in output
+     order, or the final terminator. This is where the removed record
+     would have started;
+  4. otherwise (`r` inside a removed record, not at its start): a
+     relocation is refused, `malformed-input`, `reference into a removed
+     .eh_frame record`. A symbol is never refused: a local symbol that no
+     relocation refers to is dropped from `.symtab`; any other symbol
+     takes rule 3's value for the record it lies in;
+  5. `r < 0` or `r > sh_size`: `malformed-input`, `offset is outside the
+     section` (S-18's message).
+
+  A mapping symbol is kept, at its record's output place, exactly when
+  its record is kept; otherwise it is dropped (S-76). A named symbol and
+  a relocation through it always agree, since the symbol's value is
+  computed once by these rules.
+
+  Rule 1 is the one that does not follow the record. It holds for every
+  input section, not for `crtbeginT.o` by name: a reference from code to
+  the first byte of an input `.eh_frame` is the start of a frame list to
+  walk (`__register_frame_info`), and only the output's start gives a
+  walk that sees every FDE. With GNU's value (rules 2 and 3 at `r = 0`),
+  a C++ `throw` through a function of an object placed before
+  `crtbeginT.o` calls `std::terminate` on all three targets; with lld's
+  and mold's (the start) it is caught (X-25). For offset 0 of a section
+  whose first record is kept but not first in the output, GNU and lld
+  give that record's place and mortar the start (§13); no input in the
+  scan has such a reference outside the crt files. `__EH_FRAME_BEGIN__`
+  is therefore the start of `.eh_frame` in `.symtab` too (lld's value;
+  GNU's lies 16 to 40 bytes before the section; mold drops it).
+- **S-51 [C] (the walk is complete).** With S-48 and S-50 rule 1, the
+  walk from `__EH_FRAME_BEGIN__` covers every live FDE, wherever the crt
+  files and other objects are on the line, including an object before
+  `crtbeginT.o`, which GNU's output fails (§16).
 
 ### 4.5 Contents
 
@@ -610,88 +651,72 @@ a local symbol at offset 0 of `crtbeginT.o`'s `.eh_frame`), from
   `SHT_X86_64_UNWIND` (Clang) or `SHT_PROGBITS` (GCC); both are split by
   this section, and the output type is layout L-49's.
 - **S-55 [M2] (PLT unwind information).** A dynamic output's PLT has no
-  FDE at M2 (lld writes none; GNU writes a CIE and FDE for x86-64's lazy
-  `.plt`). gdb and libgcc unwind through a PLT entry from the caller's
-  frame without one on all three targets. Q6 asks whether M2 adds them
-  for perf's benefit. The chunk shape must allow linker-generated records
-  appended after the inputs' (internal-file records, `FileId` 0, ordered
-  last by S-46's rule applied with file 0 as last for `.eh_frame` only):
-  `Slots.eh_records` already allows a record whose `SectionId` belongs to
-  the internal file.
+  FDE at M2 (lld writes none; GNU writes one for x86-64's lazy `.plt`);
+  gdb and libgcc unwind through a PLT entry without one on all three
+  targets (Q6). The shape allows linker-made records after the inputs'
+  (`FileId` 0, ordered last for `.eh_frame` only): `Slots.eh_records`
+  admits the internal file's sections. They carry their own CIE and are
+  excluded from S-44, so no FDE points forward to its CIE.
 
 ### 4.6 Cost
 
-- **S-56 [C].** For 10^6 FDEs (about 40 MB of `.eh_frame` input): parsing
-  is linear per section and parallel by section; liveness is a lookup per
-  FDE; CIE identity interns only the CIEs (thousands). The output offset
-  of each record is a per-section count followed by a prefix sum over
-  sections: two parallel passes and one sequential pass over sections.
-  `Slots.eh_records` is 8 bytes per record (8 MB). Writing is a copy plus
-  three or four field rewrites per record, parallel by record range. The
-  whole is a few tens of milliseconds on 8 threads; the largest cost is
-  reading the input bytes.
+- **S-56 [C].** For 10^6 FDEs (about 40 MB of input): parsing is linear
+  and parallel by section; liveness is a lookup per FDE; identity interns
+  only the CIEs (thousands); offsets are a per-section count and a prefix
+  sum; `Slots.eh_records` is 8 MB; writing is a copy plus three or four
+  field rewrites per record, parallel by range. A few tens of ms on 8
+  threads, dominated by reading the input.
 
 ## 5. .eh_frame_hdr
 
 - **S-57 [C] (when).** `.eh_frame_hdr` and `PT_GNU_EH_FRAME` exist
-  exactly when `--eh-frame-hdr` is given and some FDE is live. Without
-  the option there is none, as with GNU and lld; mold always writes one
-  (`tests/link/layout/eh-frame-hdr`). `--no-eh-frame-hdr` cancels an
-  earlier `--eh-frame-hdr`; the last one wins. GCC's driver passes
-  `--eh-frame-hdr` for every link except `-static` (on these Debian
-  toolchains), so a static GCC link has no table and libgcc finds the
-  FDEs through `__register_frame_info` (S-50) or through
-  `_dl_find_object`/`dl_iterate_phdr` with a linear search.
+  exactly when `--eh-frame-hdr` is given and some FDE is live; the last
+  of `--eh-frame-hdr` and `--no-eh-frame-hdr` wins. Without the option
+  there is none, as with GNU and lld; mold always writes one
+  (`tests/link/layout/eh-frame-hdr`). The GNU driver's behavior is the
+  contract: GCC passes `--eh-frame-hdr` for every link except `-static`
+  (`%{!static|static-pie:--eh-frame-hdr}`), so a static link has no table
+  and libgcc finds the FDEs through `__register_frame_info` (S-50, S-51).
 - **S-58 [G] (format).** The LSB format: version 1; `eh_frame_ptr`
   encoding `0x1b` (`pcrel|sdata4`), `fde_count` encoding `0x03`
   (`udata4`), table encoding `0x3b` (`datarel|sdata4`); then
   `eh_frame_ptr` (to the start of `.eh_frame`), `fde_count`, and
   `fde_count` pairs `(initial location, FDE address)`, each relative to
-  the start of `.eh_frame_hdr` (arch.md §3.9). Size: `12 + 8 ×
-  fde_count`, known in phase 80 from the count of table entries (S-59).
-  Alignment 4.
+  the start of `.eh_frame_hdr` (arch.md §3.9). Size `12 + 8 × entries`,
+  known in phase 80 (S-59). Alignment 4.
 - **S-59 [C] (the entries).** One entry per live FDE, except:
   - an FDE with address range 0 has no entry (GNU; lld and mold keep it,
-    X-15). It covers no address, and when it shares its initial location
-    with a real FDE that follows it, an entry for it would hide the real
-    one from the binary search;
-  - two live FDEs with the same initial location and non-zero ranges,
-    when the table is written, are refused: `malformed-input`,
-    `.eh_frame_hdr refers to overlapping FDEs` (GNU's message and
-    behavior; lld keeps one entry, mold both, X-15). The table must be
-    strictly sorted and must list every FDE that is not neutralised
-    (`plumb.md` §6.4 E5), and each output FDE must answer for its own
-    input FDE (E3), so no output satisfies the verifier with two such
-    FDEs and a table; without `--eh-frame-hdr` both are kept. A zero-range
-    FDE is not a duplicate: it has no entry (above), which is what E5
-    calls neutralised.
+    X-15): it covers no address, and an entry for it would hide a real
+    FDE with the same start from the binary search. This is what E5
+    calls neutralised;
+  - two live FDEs with the same initial location and non-zero ranges are
+    refused when the table is written: `malformed-input`, `.eh_frame_hdr
+    refers to overlapping FDEs` (GNU's message and behavior; lld keeps
+    one entry, mold both, X-15). The table must be strictly sorted and
+    list every FDE that is not neutralised (`plumb.md` §6.4 E5), and each
+    output FDE answers for one input FDE (E3), so no output with both and
+    a table passes the verifier. Without the table both are kept. The
+    reviewer's scan has no such pair anywhere.
 
-  The count of entries is fixed in phase 80: initial locations are
-  `(section, offset)` pairs before layout, and two FDEs share one exactly
-  when they name the same section and offset (or the same folded target,
-  model §4.1), which phase 80 can decide. FDEs of distinct sections
-  never share an initial location, because distinct live sections never
-  overlap (model §4.4 validity).
+  The count is fixed in phase 80: initial locations are `(section,
+  offset)` pairs before layout, and two FDEs share one exactly when they
+  name the same section and offset (or the same folded target, model
+  §4.1); distinct live sections never overlap (model §4.4).
 - **S-60 [C] (overlapping ranges).** FDEs whose ranges overlap without
-  sharing an initial location are accepted and all have entries (lld and
-  mold; GNU fails the link, X-15). A lookup for an address in the overlap
-  finds the FDE with the greater initial location not above it, which is
-  the libgcc binary search's answer whatever the linker does. Overlap
-  arises only in hand-written assembly; the verifier does not judge
-  overlap (`plumb.md` §6.4 E5 checks only that starts strictly
-  increase).
+  sharing a start are accepted, all with entries (lld and mold; GNU fails
+  the link, X-15). libgcc's binary search finds the FDE with the greatest
+  start not above the address, whatever the linker does; the verifier
+  checks only that starts strictly increase (E5).
 - **S-61 [G] (sorted).** The table is sorted by initial location,
-  ascending, as signed 32-bit offsets from the header (which is the same
-  as by address, since all code lies within ±2 GiB of the header on every
-  M1 to M4 code model; layout L-36 refuses the others). The sort is over
-  final addresses, so it is the image phase's work: the image phase
-  writes the pairs and sorts them (10^6 entries: a parallel sort of
-  8-byte keys, about 10 ms on 8 threads). The order of equal keys never
-  matters, because S-59 left none.
+  ascending, as signed 32-bit offsets from the header (the same as by
+  address: all code lies within ±2 GiB of the header in every M1 to M4
+  code model; layout L-36 refuses the others). The image phase writes
+  the pairs and sorts them (10^6 entries, about 10 ms on 8 threads); no
+  two keys are equal after S-59.
 - **S-62 [C] (an address the table cannot hold).** An offset that does
-  not fit `sdata4` is refused: `relocation-out-of-range` against
-  `.eh_frame_hdr`. With layout's placement (rank 5, before `.text`) it
-  cannot occur below 2 GiB of code.
+  not fit `sdata4` is `relocation-out-of-range` against `.eh_frame_hdr`;
+  with layout's placement (rank 5, before `.text`) it cannot occur below
+  2 GiB of code.
 
 ## 6. GOT, .got.plt, the IPLT and IRELATIVE (static, M1)
 
@@ -741,19 +766,15 @@ which values are written where.
 ### 6.2 .got.plt, .plt and .rela.plt for IFUNC
 
 - **S-67 [C] (.got.plt).** In a static output `.got.plt` holds:
-  - on x86-64 and i386: three reserved words (zero), then one word per
-    IPLT entry. GNU and lld both keep the three words in a static link
-    with only an IFUNC (X-22), and `_GLOBAL_OFFSET_TABLE_` (the x86 GOT
-    base) is `.got.plt`'s start (layout L-101). Keeping them whenever
-    `.got.plt` exists, rather than only when `GOT_BASE` is demanded,
-    means a new `GOTOFF` reference in an incremental link moves nothing
-    [M3]; x86's `crt1.o` and `crti.o` demand `GOT_BASE` in every driver
-    link anyway (L-101);
-  - on AArch64: one word per IPLT entry, no reserved words (a64.md §10.2;
-    GNU and lld agree, X-22).
+  - on x86-64 and i386: three reserved zero words, then one word per IPLT
+    entry (GNU and lld keep the three in a static link with only an
+    IFUNC, X-22); `_GLOBAL_OFFSET_TABLE_` is its start (layout L-101).
+    Keeping them whenever `.got.plt` exists means a new `GOTOFF`
+    reference moves nothing [M3]; x86's crt files demand `GOT_BASE` anyway;
+  - on AArch64: one word per IPLT entry (a64.md §10.2; X-22).
 
-  Slot `n` of the IPLT is word `reserved + n`. A `.got.plt` with no
-  entries and no reserved words does not exist.
+  IPLT slot `n` is word `reserved + n`. A `.got.plt` with no words does
+  not exist.
 - **S-68 [C] (IPLT entries).** Each key in `Slots.iplt` has one IPLT
   entry of `PltShape.iplt_entry` bytes in `.plt`, after any PLT entries
   [M2], in `Slots.iplt` order, with no PLT header in a static output
@@ -773,22 +794,40 @@ which values are written where.
   - REL (i386): the word itself holds the resolver's address, which is
     the implicit addend (GNU and lld, X-22).
 
-  The `.rela.plt` chunk's size is `count × entsize`; its contents depend
-  on addresses (image phase). `sh_link` is 0 in a static output (no
-  `.dynsym`), `sh_info` the section index of `.got.plt` and `SHF_INFO_LINK`
-  set (gABI: the section the relocations apply to). GNU writes exactly
-  this on all three targets; lld writes `sh_info` 0 and no
-  `SHF_INFO_LINK` on its `.rela.dyn` (X-22). Dynamic outputs use `.rela.plt` for `JUMP_SLOT` and put
-  `IRELATIVE` there too, after the `JUMP_SLOT`s [M2].
+  `sh_link` is 0 in a static output, `sh_info` the index of `.got.plt`
+  with `SHF_INFO_LINK` (gABI; GNU on all three targets; lld writes 0 on
+  its `.rela.dyn`, X-22). Dynamic outputs put `IRELATIVE` in `.rela.plt`
+  after the `JUMP_SLOT`s [M2].
 - **S-70 [G] (`__rela_iplt_start`, `__rela_iplt_end`).** In a static
   output these hidden symbols (on i386 `__rel_iplt_start` and
   `__rel_iplt_end`) are the start and end of `.rela.plt`'s IRELATIVE
   entries; with no IFUNC they are equal (both at the address `.rela.plt`
   would have, layout §13). glibc's static start-up applies every entry
   between them. They are `STB_LOCAL` in `.symtab` (layout §13).
-- **S-71 [C] (the IFUNC's address).** Every address of an IFUNC `f` with
-  an IPLT entry is that entry's address (a64.md §10.4), including its
-  `.symtab` value, typed `STT_FUNC` there.
+
+  Under `-static-pie` [M2] every `IRELATIVE` is in `.rela.dyn`
+  (`.rel.dyn`), applied by self-relocation, and there is no `.rela.plt`;
+  `__rela_iplt_*` (`__rel_iplt_*`) are not defined, so glibc's weak
+  references are 0, an empty range (resolve.md §8.1, WP-022 ruling 7; GNU
+  and lld; mold defines them absolute 0). Bounding the entries would make
+  glibc apply each a second time, with an unrelocated addend.
+- **S-71 [C] (the IFUNC's address and its symbol).** Every address of an
+  IFUNC `f` with an IPLT entry that a relocation writes (a call, a GOT
+  slot, an absolute or PC-relative address in code or data) is that
+  entry's address (a64.md §10.4). This includes the canonical case,
+  where non-PIC code or data takes `f`'s address and the IPLT entry
+  becomes `f`'s one address for pointer comparison.
+
+  In `.symtab`, `f` keeps `STT_GNU_IFUNC` with the resolver's value,
+  section and size in every case, the canonical one included: GNU's form
+  on all three targets. lld writes a canonical IFUNC as `STT_FUNC` at its
+  `.iplt` entry with size 0; mold writes `STT_FUNC` locals at `.plt.got`
+  (`plumb.md` §10.2 A1, A2). With GNU's form gdb's `break f` stops in
+  the implementation and `print f(3)` works; with lld's, `break f` stops
+  in the IPLT stub and `print f(3)` fails (X-27). The one cost is that
+  the address the program holds (the IPLT entry) has no symbol: `info
+  symbol` on a pointer to `f` finds nothing (Q11). The verifier's Y3
+  leaves IFUNC names unchecked, so both forms pass it.
 
 ### 6.3 Static TLS in the GOT
 
@@ -821,22 +860,17 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   (ELF64) or 16 (ELF32), alignment 8 (4), `sh_link` the index of
   `.strtab`, `sh_info` the number of local entries including the null
   entry. Entry 0 is all zeros.
-- **S-74 [C] (the local part).** After entry 0, the locals are in blocks,
-  in this order:
+- **S-74 [C] (the local part).** After entry 0, the locals are in blocks:
   1. the **internal file's block** (`FileId` 0): the linker-defined
-     symbols that are local in the output (layout §13: `__ehdr_start`,
-     `__rela_iplt_start`, `_GLOBAL_OFFSET_TABLE_`, ...), in `SymbolId`
-     order, then the thunk and patch symbols (S-80), in `Placement.patches`
-     order. They precede every `STT_FILE`, so no tool scopes them to a
-     file;
-  2. for each input file in `FileId` order that contributes a local: the
-     file's `STT_FILE` symbols and kept locals in the file's symbol table
-     order, then the file's **demoted** symbols (S-77) in `SymbolId`
-     order.
+     symbols local in the output (layout §13: `__ehdr_start`,
+     `_GLOBAL_OFFSET_TABLE_`, ...) in `SymbolId` order, then the thunk and
+     patch symbols (S-80) in `Placement.patches` order, before every
+     `STT_FILE`, so no tool scopes them to a file;
+  2. per input file in `FileId` order: its `STT_FILE` symbols and kept
+     locals in table order, then its **demoted** symbols (S-77) in
+     `SymbolId` order; a file with neither has no block.
 
-  This is lld's order (X-17: lld puts a demoted hidden symbol after its
-  file's locals; GNU keeps hidden symbols global). A file with no kept
-  local and no demoted symbol has no block.
+  This is lld's order (X-17; GNU keeps hidden symbols global).
 - **S-75 [C] (the global part).** After the locals: every global that the
   output keeps (resolve.md §3.7, its output binding not `STB_LOCAL`), in
   `SymbolId` order. `STB_GLOBAL`, `STB_WEAK` and `STB_GNU_UNIQUE` keep
@@ -857,7 +891,11 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
 - **S-76 [C] (which locals).** A local of an input file is kept when:
   - it is not `STT_SECTION` (S-79);
   - its section is live (or it is `SHN_ABS`), and, if its section is
-    split, its piece is kept (S-22, S-50);
+    split: for a `Merge` section its piece's fragment is live (S-22); for
+    `.eh_frame`, S-50 gives it a value (a mapping symbol in a removed
+    record, and a local in the interior of one that no relocation refers
+    to, are dropped; every other symbol in `.eh_frame` is kept, at S-50's
+    value);
   - it is not discarded by the `-X`/`-x` rule (S-78).
 
   Locals in sections that are not live are dropped (GNU's
@@ -888,63 +926,58 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   needs them in an executable: section symbols exist for relocations,
   and an executable has none against them. (`-r` output, M4, writes
   section symbols, since its relocations need them; that is `-r`'s spec.)
-- **S-80 [T] (thunks and patches).** Each range-extension thunk and each
-  erratum patch (layout §14) gets, in the internal file's block:
-  - on AArch64, a `$x` mapping symbol at its start (AAELF64 "Mapping
-    symbols"), so that objdump disassembles it as code; and a `$d` at
-    any literal word inside it;
-  - an `STT_FUNC` local named `__<target>_veneer` (GNU's form for
-    AArch64 veneers; `<target>` is the target's name, followed by
-    `+0x<addend>` in lower-case hex when the addend is not 0 and by
-    `@plt` for a `Plt` target), with `st_size` the thunk's size; an
-    erratum patch is named `__erratum_843419_veneer`. gdb and perf then
-    attribute samples and frames in a thunk to a named function rather
-    than to the end of the preceding one; lld names its thunks
-    `__AArch64ADRPThunk_<target>` and `__AArch64AbsLongThunk_<target>`
-    for the same reason. Both forms are in the verifier's not-judged
-    list (`__*_veneer`, `__erratum_*`; `plumb.md` §6.5), and the `$x`
-    at an address no input section occupies is Y4's second exception.
+- **S-80 [T] (thunks and patches).** Each range-extension thunk and
+  erratum patch (layout §14) gets, in the internal file's block: on
+  AArch64 a `$x` at its start and a `$d` at any literal word (AAELF64
+  "Mapping symbols"); and an `STT_FUNC` local `__<target>_veneer` (GNU's
+  AArch64 form; `+0x<addend>` in lower-case hex appended for a non-zero
+  addend, `@plt` for a `Plt` target), `st_size` the thunk's size; a patch
+  is `__erratum_843419_veneer`. gdb and perf then attribute a thunk to a
+  named function (lld names its thunks `__AArch64ADRPThunk_<target>` for
+  the same reason). Both forms are in the verifier's not-judged list
+  (`plumb.md` §6.5); the `$x` at an address no input occupies is Y4's
+  second exception.
 - **S-81 [G] (values).** `st_value` is the symbol's output address:
   `place(section) + st_value` for a symbol in a placed section; the S-19
   or S-50 value in a split section; `SHN_ABS` values unchanged; for
   `STT_TLS`, the offset from the start of the TLS template (`PT_TLS`'s
   `p_vaddr`), as all three write (X-17). A common symbol has the address
   of its `.bss` allocation (layout L-88) and is `STT_OBJECT` in `.bss`;
-  `SHN_COMMON` never appears in an executable. An IFUNC with an IPLT
-  entry is S-71. `st_size` is the input's.
+  `SHN_COMMON` never appears in an executable. An IFUNC keeps its
+  resolver's value (S-71). `st_size` is the input's.
 - **S-82 [G] (section indices).** `st_shndx` is the output section index
   of the symbol's chunk (layout L-86), `SHN_ABS` for absolute symbols
   and linker-defined absolute symbols, `SHN_UNDEF` for an undefined weak.
   An index ≥ `SHN_LORESERVE` (0xff00) is written as `SHN_XINDEX`, with
   the real index in `.symtab_shndx` (S-85).
 - **S-122 [G] (the index names the section that holds the address).**
-  For every defined symbol that is not `SHN_ABS` (input-defined, demoted,
-  linker-defined, thunk), `st_shndx` names an allocated output section
-  `X` with `X.addr ≤ st_value ≤ X.addr + X.size` (non-alloc symbols: the
-  same with offsets in their section). The end is included: a label at
-  the end of a section (an end symbol, L-91; a label after the last
-  byte of an input section that ends its output section) takes that
-  section's index. When the value is both the end of one section and
-  the start of the next, the index is the section the symbol's anchor
-  chunk belongs to (L-91 for linker-defined symbols; the defining input
-  section's output section otherwise), which always holds the address
-  under this inclusive rule once layout places empty input sections as
-  §14.2 R-L6 asks.
-  GNU breaks this for crtend.o's `__TMC_END__`, a label of the empty
-  `.tm_clone_table` whose output section GNU removes: its index names a
-  section that ends below its value (`plumb.md` §10.2 anomaly A10).
-  mortar never writes an index that does not hold the value; the
-  verifier's Y3 checks it.
+  For every defined symbol that is not `SHN_ABS`, `st_shndx` names an
+  output section `X` with `X.addr ≤ st_value ≤ X.addr + X.size` (offsets
+  for non-alloc symbols). The end is included: an end symbol (L-91) or a
+  label after the last byte of a section takes that section's index. A
+  value that ends one section and starts the next takes the section of
+  the symbol's anchor chunk (L-91; else the defining input section's
+  output section), which holds it once empty input sections are placed
+  by R-L6. GNU breaks this for crtend.o's `__TMC_END__`, whose output
+  section it removes (`plumb.md` §10.2 A10); the verifier's Y3 checks it.
 - **S-123 [C] (labels of empty input sections).** A symbol defined in a
   live input section of size 0 (`__TMC_LIST__`, `__TMC_END__` in the
   crtstuff `.tm_clone_table`; `__start_`-style markers in hand-written
-  objects) is valued at the empty section's place, which layout gives
-  as an address inside or at the end of an existing output section of
-  the same segment class (R-L6), and its `st_shndx` is that section's.
-  Two labels of empty sections that would share one output section get
-  the same value, so `__TMC_LIST__ == __TMC_END__` holds in a program
-  without transactional-memory clones, which crtstuff's
-  `deregister_tm_clones` relies on.
+  objects) is valued at the empty section's place (R-L6), and its
+  `st_shndx` is the section that holds that place:
+  - when its output section has content, the empty section is placed
+    like any other, aligned, and the section's size covers it (a
+    `-fgnu-tm` table then has `__TMC_LIST__` at its aligned start, X-31);
+  - when its output section has no content, its labels take the address
+    of the end of the chunk layout attaches it to, unaligned, and that
+    chunk's section index: aligning there could put `__TMC_END__` past
+    the end of the section that holds it (S-122). All labels of one
+    absent output section get that one address, so `__TMC_LIST__ ==
+    __TMC_END__`.
+
+  crtstuff needs nothing more: on all three targets `deregister_tm_clones`
+  and `register_tm_clones` compare the two labels and then test the weak
+  `_ITM_*TMCloneTable`, which is 0 without libitm (X-31).
 - **S-124 [G] (linker-defined symbols).** Every linker-defined symbol
   that is defined (layout L-90) gets layout §13.1's value and section
   index whether or not the section it is named after exists: with no
@@ -953,14 +986,22 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   `.bss` (`plumb.md` §10.2 anomaly A11); a program that clears from
   `__bss_start` to `_end` would then write from address 0. Symbols that
   layout calls absolute are `SHN_ABS`; every other one follows S-122.
-  The values the verifier's Y5 table admits are a superset of layout
-  §13.1's, so S-124 satisfies Y5.
+  Y5 admits layout §13.1's values on AArch64 (M1). On x86 it does not
+  yet: it puts `_GLOBAL_OFFSET_TABLE_` at `.got` (L-101, S-67, GNU and lld
+  use `.got.plt`) and knows only `__rela_iplt_*`/`SHT_RELA` (i386 has
+  `__rel_iplt_*`/`.rel.plt`); R-P5 and R-P6 fix it before M3.
 - **S-83 [C] (`STT_FILE`).** An input's `STT_FILE` entries are copied in
   place, so each starts its file's block, and a file with several (an
   object made by `ld -r`) keeps each in front of the locals that
   followed it in the input. gdb uses `STT_FILE` to scope static symbols
   of the same name in different files (layout L-155). A file with no
-  `STT_FILE` and with kept locals gets none.
+  `STT_FILE` and with kept locals gets none, as with lld: no symbol is
+  invented. GNU inserts one named after the object or member (387
+  entries against lld's 3 in a static C hello). The difference is
+  cosmetic (X-32): gdb files libc's locals under the user's last source
+  file in its minimal symbols, but `break`, `break file:func`, `info
+  symbol`, `info line`, `info scope`, `list`, `print` and `info
+  functions` answer the same on both outputs.
 - **S-84 [C] (`-s`, `-S`).** `-s` (`--strip-all`) omits `.symtab`,
   `.strtab` and `.symtab_shndx`, and every non-allocated section that
   layout's `-S` rule removes. `-S` (`--strip-debug`) omits the debug
@@ -1033,78 +1074,92 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
 ### 8.1 .note.gnu.build-id
 
 - **S-91 [C] (size).** One note, name `GNU`, type `NT_GNU_BUILD_ID` (3),
-  in an `SHT_NOTE` allocated section with alignment 4. The descriptor
-  size by style:
-
-  | `--build-id=` | bytes | GNU | lld | mold |
-  |---|---|---|---|---|
-  | (none given, or `sha1`) | 20 | 20 | 20 | 20 |
-  | `md5` | 16 | 16 | 16 | 16 |
-  | `sha256` | 32 | unrecognized, ignored with a warning | refused | 32 |
-  | `fast` | 8 | unrecognized | 8 | 32 |
-  | `uuid` | 16 | 16 | 16 | 16 |
-  | `0xHEX` | the hex bytes | same | same | same |
-  | `none` | no note | no note | no note | no note |
-
-  The section's size is `16 + n` with no padding after the descriptor
-  (all three: a 3-byte `0xabcdef` gives `0x13`, X-21). `--build-id` alone
-  is `sha1` (`tests/link/layout/build-id`). An odd number of hex digits,
-  or none, is `invalid-option-value`.
-- **S-92 [C] (content).** The descriptor is a hash of the output file
-  with the descriptor's bytes zero, computed after every other byte is
-  written (the sealing step; `spec/image.md` owns the hash and its
-  order of input bytes); `0xHEX` is copied; `uuid` is 16 random bytes
-  (RFC 4122 version 4). `uuid` is the one output byte range that is not
-  a function of the inputs (model §6): the user asked for it. `fast` is
-  an 8-byte non-cryptographic hash (lld's size); its function is
-  `image.md`'s.
+  in an `SHT_NOTE` allocated section with alignment 4. The section's size
+  is `16 + n`, with no padding after the descriptor (all three
+  references: a 3-byte `0xabcdef` gives `0x13`, X-21), where `n` is the
+  descriptor size of the style: for `0xHEX` the number of hex bytes, for
+  `none` no note, and for every other style the size `spec/image.md`
+  gives (R-I1). `--build-id` alone is `sha1`
+  (`tests/link/layout/build-id`). An odd number of hex digits, or none,
+  is `invalid-option-value`. synth.md needs only `n` before addresses.
+- **S-92 [C] (content).** The descriptor is written in the sealing step,
+  after every other byte (`spec/image.md` owns the styles, the hash
+  functions and their order of input bytes); `0xHEX` is copied.
 - **S-93 [G] (position).** The note is in the first `PT_LOAD` (layout
   rank 2), so that a core dump, which contains the first page of each
   mapping, contains it; `PT_NOTE` covers it (layout §11).
 
 ### 8.2 .note.gnu.property
 
-- **S-94 [G] (inputs).** An input `.note.gnu.property` holds one note,
-  name `GNU`, type `NT_GNU_PROPERTY_TYPE_0` (5), whose descriptor is a
-  sequence of `(pr_type u32, pr_datasz u32, data)` padded to 8 on ELF64
-  and 4 on ELF32 (gABI "Program Property", the Linux extensions). A
-  property whose `pr_datasz` runs past the descriptor, or whose datasz
+- **S-94 [G] (inputs).** An input `.note.gnu.property` holds one or more
+  notes, each with name `GNU`, type `NT_GNU_PROPERTY_TYPE_0` (5), and a
+  descriptor that is a sequence of `(pr_type u32, pr_datasz u32, data)`
+  padded to 8 on ELF64 and 4 on ELF32 (gABI "Program Property", the Linux
+  extensions). Every note of the section is read: libhwasan's
+  `hwasan_interceptors_vfork.o` on AArch64 has two in one section (X-33).
+  A property whose `pr_datasz` runs past the descriptor, or whose datasz
   is not 4 for the 32-bit-mask types below, is `malformed-input`
   (`program property is too short`, lld's wording; GNU warns `corrupt
-  GNU_PROPERTY_TYPE`, mold crashes, X-19). Properties in an input are in
-  ascending `pr_type` order; an input out of order is accepted and sorted.
+  GNU_PROPERTY_TYPE`, mold crashes, X-19). Properties in a note are in
+  ascending `pr_type` order; a note out of order is accepted and sorted.
 - **S-95 [G] (merge rules).** The output property of each type, over all
   live input objects (an object without a property note has every
-  property absent), by `arch.property_merge(pr_type)`:
-  - **`And`**: present with value the AND of every input's value, an
-    absent input counting 0; omitted if the result is 0. AArch64
-    `GNU_PROPERTY_AARCH64_FEATURE_1_AND` (0xc0000000: BTI 1, PAC 2,
-    GCS 4) and x86 `GNU_PROPERTY_X86_FEATURE_1_AND` (0xc0000002: IBT 1,
-    SHSTK 2). GNU and lld agree (X-19: `3 & 1 = 1`, `3 & 7 = 3`, an object
-    without a note removes the property; X-20); mold writes no AArch64
-    property;
-  - **`Or`**: present with value the OR of the inputs that have it, if
-    any input has it; omitted if none does. x86
-    `GNU_PROPERTY_X86_ISA_1_NEEDED` (0xc0008002) and the other
-    `0xc0008000..0xc0008fff` "needed" types. GNU and mold agree (X-20:
-    baseline OR v2 gives both; an input without the property does not
-    remove it); lld drops `ISA_1_NEEDED` altogether;
-  - **`OrAll`** (new, §14): present with value the OR of the inputs, only
-    if every input has it. x86 `GNU_PROPERTY_X86_ISA_1_USED`
-    (0xc0010002), `GNU_PROPERTY_X86_FEATURE_2_USED` (0xc0010001) and the
-    other `0xc0010000..0xc0017fff` "used" types: GNU and mold drop the
-    property when any input lacks it (X-20). arch.md §3.13 calls
-    `FEATURE_2_USED` `Or`, which is wrong by this experiment;
-  - a type the architecture does not know is refused (`feature`, the hex
-    `pr_type`; a64.md Q13). GNU warns `unsupported GNU_PROPERTY_TYPE`
-    and copies it; lld refuses `0xc0000001` on AArch64
-    (`GNU_PROPERTY_AARCH64_FEATURE_PAUTH`, which needs a matching ABI
-    tag; X-19). `GNU_PROPERTY_STACK_SIZE` (1) and
-    `GNU_PROPERTY_NO_COPY_ON_PROTECTED` (2) are known generic types:
-    `STACK_SIZE` is the maximum, `NO_COPY_ON_PROTECTED` is `OrAll`
-    [M2]. The scan has only `0xc0000000` (AArch64, values 3 and 7),
-    `0xc0000002` (value 3) and `0xc0008002` (value 1) on x86-64, and no
-    properties on i386 (X-1).
+  property absent), by `arch.property_merge(pr_type)` in the processor
+  range and by this list for the generic types (evidence: X-19, X-20,
+  X-33):
+  - **`And`**: the AND of every input's value, an absent input counting
+    0; omitted if 0. AArch64 `FEATURE_1_AND` (0xc0000000: BTI 1, PAC 2,
+    GCS 4), x86 `FEATURE_1_AND` (0xc0000002: IBT 1, SHSTK 2), and the
+    generic range 0xb0000000..0xb0007fff (`UINT32_AND`). GNU and lld
+    agree, GCS included (GNU 2.44, lld 22); lld drops the generic range;
+    mold writes no AArch64 property;
+  - **`Or`**: the OR of the inputs that have it, present if any has it.
+    x86 `ISA_1_NEEDED` (0xc0008002) and the other 0xc0008000..0xc0008fff
+    types, and the generic range 0xb0008000..0xb000ffff (`UINT32_OR`,
+    whose first type is `GNU_PROPERTY_1_NEEDED`, emitted by
+    `-mno-direct-extern-access`). GNU and mold agree; lld drops them;
+  - **`OrAll`** (new, §14): the OR of the inputs, present only if every
+    input has it. x86 `ISA_1_USED` (0xc0010002), `FEATURE_2_USED`
+    (0xc0010001) and the other 0xc0010000..0xc0017fff types (GNU, mold;
+    arch.md §3.13 calls `FEATURE_2_USED` `Or`, which X-20 refutes);
+  - **`Max`**: `GNU_PROPERTY_STACK_SIZE` (1), the largest value over the
+    inputs that have it; absent inputs do not count (GNU; lld and mold
+    drop it);
+  - **`Present`**: `GNU_PROPERTY_NO_COPY_ON_PROTECTED` (2), no data,
+    present if any input has it (GNU; lld and mold drop it) [M2: it
+    changes how a dynamic link treats protected symbols];
+  - **`Option`**: `GNU_PROPERTY_MEMORY_SEAL` (3), no data, is a request
+    of the output, not a fact about inputs: input instances are dropped
+    without a diagnostic, and the output has it exactly when `-z
+    memory-seal` is given (R-C3). GNU 2.44 has the option and treats
+    input instances erratically; lld 22 does not know it;
+  - **`EqualOrAbsent`**: AArch64 `FEATURE_PAUTH` (0xc0000001, 16 bytes,
+    the platform and version of the pointer authentication ABI): copied
+    when every input that has it has the same bytes (inputs without it do
+    not count); refused when two disagree, `feature`, `inputs with
+    different pointer authentication ABIs`. This is lld 22's behavior;
+    GNU 2.44 does not know the type;
+  - **unknown**: any other type (the rest of the processor range, the
+    user range 0xe0000000 and up, generic types 4 to 0xafffffff) is
+    dropped, with one warning per input and type, `unknown-property`:
+    `{path}: unsupported GNU_PROPERTY_TYPE {pr_type:#x}; property dropped`
+    (R-D2). It is never refused and never silent: its merge rule is
+    unknown, so no output value could be claimed true. GNU warns
+    `unsupported GNU_PROPERTY_TYPE` and then, depending on the order and
+    number of inputs, copies one input's note unmerged or fails with
+    `failed to create GNU property section`; lld and mold drop it
+    silently.
+
+  The scan has only `0xc0000000` (AArch64, values 3 and 7), and
+  `0xc0000002` (value 3) and `0xc0008002` (value 1) on x86-64 (X-1).
+- **S-126 [C] (several notes in one object).** An object's notes are
+  combined first, by S-95 applied to them as if each were an object (an
+  `And` property survives only if every note has it); the result then
+  takes part in S-95. GNU 2.44 and lld 22 instead OR a repeated
+  `FEATURE_1_AND` within an object and ignore a note that lacks it
+  (X-33; Q12). mortar's rule is the conservative one: a BTI claim that
+  some note did not make could fault at the first indirect branch. In
+  libhwasan's object the notes are equal, so all rules agree there.
 - **S-96 [G] (output).** One note in an allocated `SHT_NOTE` section
   `.note.gnu.property` with alignment 8 (ELF64) or 4 (ELF32), the
   surviving properties in ascending `pr_type`, each padded; no section
@@ -1128,81 +1183,57 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
   linker reads none of them. `.note.GNU-stack` is consumed by layout
   L-32 and `.gnu.warning.*` by layout L-33; neither reaches the output.
 - **S-99 [C] (mixed alignment).** An output note section whose live
-  inputs have different alignments is refused: `feature`, `notes of
-  different alignment in one output section`. A reader walks a note
-  section with one alignment (`PT_NOTE`'s `p_align`, or the section's),
-  and a 4-aligned note whose name size is not a multiple of 8 then
-  misparses: all three references put a 4-aligned and an 8-aligned
-  `.note.foo` in one 8-aligned section and readelf reports
-  `<corrupt - note is too small>` (X-23). No input in the scan mixes
-  alignments within one name (X-1: `.note.gnu.property` 8, `.note.ABI-tag`
-  4, `.note.package` 4, `.note.stapsdt` 4).
+  inputs differ in alignment is refused: `feature`, `notes of different
+  alignment in one output section`. A reader walks it with one alignment,
+  and a 4-aligned note whose name size is not a multiple of 8 misparses:
+  all three put a 4- and an 8-aligned `.note.foo` in one section and
+  readelf reports `<corrupt - note is too small>` (X-23). The scan never
+  mixes alignments within one name (X-1).
 
 ## 9. .comment
 
 - **S-100 [C].** `.comment` is a `Merged` chunk (`SHF_MERGE|SHF_STRINGS`,
-  entsize 1, non-allocated) of the inputs' `.comment` strings,
-  de-duplicated by §3, plus one piece of the internal file: the string
-  `mortar <version>`, where `<version>` is the crate version
-  (`MAJOR.MINOR.PATCH` from the package manifest), with no commit hash,
-  date or host. The internal file has `FileId` 0, so its piece is the
-  first fragment (S-15) and comes first. The section exists in every
-  output (lld and mold always add their identification:
-  `Linker: Debian LLD 19.1.7`, `mold 2.37.1 (compatible with GNU ld)`;
-  GNU adds nothing, X-9). It makes a binary's linker identifiable by
-  `readelf -p .comment`, which bug reports and the differential harness
-  use. The string is a function of the linker's version only, so output
-  stays deterministic across hosts and runs.
+  entsize 1, non-allocated) of the inputs' strings plus one piece of the
+  internal file (`FileId` 0, so first, S-15): `mortar <version>`, the
+  crate's `MAJOR.MINOR.PATCH`, with no hash, date or host, so output
+  stays deterministic. It exists in every output (lld and mold add theirs,
+  GNU nothing, X-9) and makes the linker identifiable by `readelf -p
+  .comment` for bug reports and the differential harness.
 
 ## 10. Dynamic outputs (M2 outline)
 
-This section names what M2 adds and the decisions that constrain the M1
-shapes. It is not the M2 specification.
+This names what M2 adds and the decisions that constrain the M1 shapes;
+it is not the M2 specification.
 
-- **S-101 [M2] (`.dynsym`).** The null entry, then the local section
-  symbols needed by dynamic relocations (none: mortar writes no
-  `STT_SECTION` dynamic symbols, as lld), then the exported and imported
-  symbols in `Slots.dynsym` order. With `--hash-style=gnu`, the symbols
-  that the hash covers come after those it does not, sorted by bucket
-  (`hash % nbuckets`), and within a bucket by `SymbolId` (a total,
-  deterministic order). `.dynsym`'s `sh_info` is 1 (no locals but the
-  null entry). The number of buckets is a function of the count only.
-- **S-102 [M2] (`.gnu.hash`).** The GNU hash table: `nbuckets`,
-  `symoffset`, the Bloom filter (size a power of two, a function of the
-  count), the buckets and the chain. `--hash-style=sysv` and `both` are
-  refused at M2 (`option-value`), as `spec/cli.md` already says;
-  `DT_HASH` is not written.
+- **S-101 [M2] (`.dynsym`).** The null entry, then the exported and
+  imported symbols in `Slots.dynsym` order (no `STT_SECTION` dynamic
+  symbols, as lld); with `--hash-style=gnu` the hashed symbols last,
+  sorted by bucket, then `SymbolId`. `sh_info` 1. The bucket count is a
+  function of the count.
+- **S-102 [M2] (`.gnu.hash`).** `nbuckets`, `symoffset`, the Bloom filter
+  (a power of two, a function of the count), buckets, chain.
+  `--hash-style=sysv` and `both` are refused (`spec/cli.md`); no `DT_HASH`.
 - **S-103 [M2] (versions).** `.gnu.version` one `u16` per `.dynsym`
   entry; `.gnu.version_d` from the version script; `.gnu.version_r` per
-  needed shared object in `Slots.needed` order, versions in the order of
-  first reference by `SymbolId`.
-- **S-104 [M2] (`.rela.dyn`).** Relative relocations first, sorted by
-  `r_offset`, then the others sorted by (symbol index, `r_offset`); the
-  count of relative relocations is `DT_RELACOUNT` (`DT_RELCOUNT` on
-  i386). With `-z pack-relative-relocs` the relative relocations that
-  qualify (arch.md §3.10) go to `.relr.dyn` (a sized chunk, layout L-121)
-  and the rest stay. `IRELATIVE` relocations of a dynamic output go to
-  `.rela.plt` after the `JUMP_SLOT`s (S-69). The relocation *set* is a
-  function of `Demands` and `Slots`; its order is a sort, so it is
-  independent of the scan's thread count.
-- **S-105 [M2] (`.dynamic`).** Entries in a fixed tag order (`DT_NEEDED`
-  in `Slots.needed` order, `DT_SONAME`, `DT_RUNPATH`, the table
-  addresses and sizes, `DT_FLAGS`, `DT_FLAGS_1`, `DT_DEBUG` for
-  executables, `DT_NULL`); its size is a function of the tags present,
+  needed object in `Slots.needed` order, versions by first reference.
+- **S-104 [M2] (`.rela.dyn`).** Relative relocations first by `r_offset`
+  (`DT_RELACOUNT`, `DT_RELCOUNT` on i386), then the others by (symbol
+  index, `r_offset`); with `-z pack-relative-relocs` the qualifying
+  relative ones (arch.md §3.10) go to `.relr.dyn` (layout L-121).
+  `IRELATIVE` goes to `.rela.plt` (S-69). The set is a function of
+  `Demands` and `Slots`, the order a sort.
+- **S-105 [M2] (`.dynamic`).** A fixed tag order (`DT_NEEDED` in
+  `Slots.needed` order, `DT_SONAME`, `DT_RUNPATH`, table addresses and
+  sizes, `DT_FLAGS`, `DT_FLAGS_1`, `DT_DEBUG`, `DT_NULL`); its size is
   known before addresses.
-- **S-106 [M2] (`.interp`).** The `--dynamic-linker` path, or the
-  target's default, NUL-terminated; first in the first `PT_LOAD`.
-- **S-107 [C] (what M1 must not preclude).**
-  - the `.got` regions of S-63 already have a place for the header word
-    with `_DYNAMIC` (S-65);
-  - `.got.plt` already puts IPLT words after PLT words (S-67), and
-    `.rela.plt` IRELATIVE after `JUMP_SLOT`s (S-69), so the static shapes
-    are the dynamic ones with zero PLT entries;
-  - `Slots.dynsym` and `.symtab` are independent: `.symtab` never takes
-    its order from `.dynsym`;
-  - every synthetic chunk of S-3 except `.relr.dyn` has its size before
-    addresses, including `.gnu.hash` (its sizes depend on counts) and
-    `.rela.dyn` (one entry per demand); M2 must keep that property.
+- **S-106 [M2] (`.interp`).** The `--dynamic-linker` path or the target's
+  default, NUL-terminated; first in the first `PT_LOAD`.
+- **S-107 [C] (what M1 must not preclude).** `.got` has a place for the
+  `_DYNAMIC` header word (S-65); IPLT words follow PLT words (S-67) and
+  `IRELATIVE` follows `JUMP_SLOT` (S-69), so the static shapes are the
+  dynamic ones with no PLT entries; `.symtab` never takes its order from
+  `.dynsym`; every S-3 chunk except `.relr.dyn` is sized before
+  addresses, `.gnu.hash` and `.rela.dyn` included, and M2 keeps that.
 
 ## 11. Sizes as data, units and incremental linking
 
@@ -1217,7 +1248,7 @@ shapes. It is not the M2 specification.
   | `.note.gnu.build-id` | `16 + n` (S-91) |
   | `.rela.plt` | `(PLT + IPLT entries) × entsize` |
   | `.eh_frame_hdr` | `12 + 8 × entries` (S-59) |
-  | `.eh_frame` | Σ live record sizes + 4 |
+  | `.eh_frame` | Σ output sizes of the live records (S-47) + 4 |
   | `.plt` | `PltShape` header + entries + `iplt_entry × IPLT` |
   | `.got` | Σ region capacities × slot size (S-63) |
   | `.got.plt` | `(reserved + PLT + IPLT) × word` |
@@ -1228,11 +1259,9 @@ shapes. It is not the M2 specification.
 
   Each is a function of counts. `Merged` chunk sizes come from
   `MergeMap` (S-24). None needs an address.
-- **S-109 [C] (no cost by default).** A non-incremental link computes
-  exactly these sizes and no capacity: every capacity equals its size
-  (model §4.4). Nothing in this spec is kept only for incremental links
-  in a full link's memory or time, except S-65's header word under an
-  incremental policy, which a full link does not have.
+- **S-109 [C] (no cost by default).** A full link computes these sizes
+  and no capacity (every capacity equals its size, model §4.4); nothing
+  here costs a full link memory or time for incremental links' sake.
 
 ### 11.2 What an incremental link redoes [M7]
 
@@ -1242,27 +1271,21 @@ through the same `fill`. The table says, per synthetic chunk, what one
 edit changes.
 
 - **S-110 [M7] (a string added or removed).** A new fragment is
-  appended to its `Merged` chunk in the capacity (layout L-147) with the
-  next `FragId` after the stored ones; its referrers are the edited
-  file's units, which are refilled anyway. A fragment no longer used
-  keeps its bytes (a valid piece). No other unit changes. A full link
-  given these tables produces the same bytes (model §7.3) because
-  `MergeMap` is a decision table, stored in identity terms (fragment =
-  output section and content hash, model §7.1).
+  appended to its `Merged` chunk within capacity (layout L-147) with the
+  next `FragId`; its referrers are the edited file's units, refilled
+  anyway. An unused fragment keeps its bytes. A full link given these
+  tables gives the same bytes (model §7.3): `MergeMap` is stored in
+  identity terms (output section and content hash, model §7.1).
 - **S-111 [M7] (an FDE added or removed).** The edited file's records
-  are a contiguous range of `.eh_frame` (S-46); the range is refilled.
-  When it grows past its capacity, `.eh_frame` grows by layout L-144;
-  records after it move, and the units that refer to them (the FDEs'
-  CIE pointers of moved FDEs are in the moved records themselves; the
-  hdr table) are refilled. A CIE that becomes unused is kept in place; a
-  CIE needed for the first time is appended in the edited file's range.
-  `.eh_frame_hdr` is one unit, refilled whenever any FDE's address
-  changes (a sort of 10^6 entries, about 10 ms); its capacity covers a
-  growth in entries. Per-file capacity in `.eh_frame` is a policy
-  decision of `spec/incr.md`; the shape allows it because records are
-  listed in `Slots.eh_records` (a decision table) and a hole is
-  expressible as a padding CIE no FDE uses (a valid CIE with no FDE,
-  S-40).
+  are a contiguous range of `.eh_frame` (S-46), refilled. When it grows
+  past its capacity, `.eh_frame` grows by layout L-144, and the moved
+  records and the hdr table are refilled (moved FDEs carry their CIE
+  pointers). A CIE that becomes unused stays; a CIE needed for the first
+  time is appended in the edited file's range. `.eh_frame_hdr` is one
+  unit, refilled whenever an FDE's address changes (a sort of 10^6
+  entries, about 10 ms). Per-file capacity is `spec/incr.md`'s policy;
+  the shape allows it because `Slots.eh_records` is a table and a hole
+  can be a linker-made CIE that no FDE uses.
 - **S-112 [M7] (a symbol added or removed).** `.symtab`, `.strtab` and
   `.symtab_shndx` are rewritten whole: they are non-allocated and last
   (layout rank 10), so their size changes no address and no other unit.
@@ -1270,56 +1293,44 @@ edit changes.
   `.symtab` (with null local entries as holes) is possible and is not
   done unless the bench shows the rewrite matters; Q8 records it.
 - **S-113 [M7] (a GOT or IPLT slot added or removed).** A new slot is
-  appended to its kind's region in the region's capacity, with the next
-  index; a removed slot stays (its word is written 0, no relocation
-  refers to it). A new IPLT entry appends to `.plt`, `.got.plt` and
-  `.rela.plt`. `.rela.plt` is one unit (a few entries) refilled whole,
-  with no holes: a hole would be an `IRELATIVE` that glibc applies, so a
-  removed entry's relocation is removed and the chunk compacted, while
-  its `.plt` and `.got.plt` words stay as dead slots. `__rela_iplt_end`
-  moves with the count, which changes only `.rela.plt`'s referrer (the
-  start-up code's unit, refilled through the dependency index).
+  appended to its kind's region within its capacity; a removed slot stays,
+  written 0. A new IPLT entry appends to `.plt`, `.got.plt` and
+  `.rela.plt`. `.rela.plt` is refilled whole with no holes (a hole would
+  be an `IRELATIVE` that glibc applies): a removed entry's relocation is
+  removed and the chunk compacted, while its `.plt` and `.got.plt` words
+  stay as dead slots. `__rela_iplt_end` moves with the count, which
+  changes only the start-up code's unit (refilled through the dependency
+  index).
 - **S-114 [M7] (properties, build id, `.comment`).** `.note.gnu.property`
   is recomputed whole when any input's notes change; if its size
   changes it grows within capacity, and if the merged value changes the
   PLT variant may change, which refills every PLT entry. The build id is
   recomputed over the final image on every link. `.comment` is a merged
   chunk and follows S-110.
-- **S-115 [C] (fixed now for M7).**
-  - every order in this spec is by ids (`FragId`, `SymKey`,
-    `SectionId`), never by hash or address, so a stored table can be
-    extended by appending with the next id;
-  - the GOT has per-kind regions with capacities (S-63), not a single
-    interleaved order;
-  - `Slots.eh_records` lists records explicitly (a table, not a rule),
-    so that an incremental link can keep a record's position;
-  - `.symtab` is last and non-allocated, so it never forces relayout;
-  - the AArch64 GOT header word is a policy, not only a demand (S-65);
-  - x86 `.got.plt` always has its reserved words (S-67).
+- **S-115 [C] (fixed now for M7).** Every order is by ids (`FragId`,
+  `SymKey`, `SectionId`), never hash or address, so tables extend by
+  appending; the GOT has per-kind regions with capacities (S-63);
+  `Slots.eh_records` lists records explicitly; `.symtab` is last and
+  non-allocated; the AArch64 GOT header word is a policy (S-65); x86
+  `.got.plt` always has its reserved words (S-67).
 
 ## 12. What tools rely on
 
-- **S-116 [T] (gdb, lldb).** Use `.symtab` for function names when there
-  is no DWARF and `STT_FILE` to scope statics (S-83); unwind with
-  `.eh_frame` (and `.debug_frame`) through the CIE/FDE format, and use
-  `.eh_frame_hdr` when present but do not need it; read `.debug_str`
-  through `DW_FORM_strp` offsets, which S-17 keeps exact. gdb's `info
-  symbol` on a thunk names it by S-80.
-- **S-117 [T] (perf).** Symbolizes with `.symtab`; needs `st_size` on
-  functions; reads the build id (S-91) to find debug files; unwinds with
-  `.eh_frame_hdr` and `.eh_frame` (`--call-graph=dwarf`), so a dynamic
-  output should have the header (compiler drivers pass
-  `--eh-frame-hdr`).
-- **S-118 [T] (objdump, nm, addr2line).** objdump uses AArch64 mapping
-  symbols to decide code from data (S-78, S-80); nm lists `.symtab`;
-  addr2line uses DWARF and falls back to `.symtab`.
-- **S-119 [T] (valgrind).** Reads `.symtab`, `.eh_frame` (it requires
-  well-formed CIEs and FDEs, S-34 to S-39) and the build id; it needs no
-  `.eh_frame_hdr`.
-- **S-120 [T] (strip, objcopy).** `strip` removes `.symtab` and
-  `.strtab` and rewrites section indices; it requires that `.symtab`
-  follow S-73 (locals first, `sh_info` right), which eu-elflint also
-  checks.
+- **S-116 [T] (gdb, lldb).** Names from `.symtab` without DWARF, statics
+  scoped by `STT_FILE` (S-83), IFUNC breakpoints through
+  `STT_GNU_IFUNC` (S-71); unwinding through `.eh_frame` (the table when
+  present, not needed); `.debug_str` through `DW_FORM_strp`, which S-17
+  keeps exact; thunks named by S-80.
+- **S-117 [T] (perf).** `.symtab` with function sizes; the build id to
+  find debug files; `.eh_frame_hdr` and `.eh_frame` for
+  `--call-graph=dwarf` (drivers pass `--eh-frame-hdr` for dynamic links).
+- **S-118 [T] (objdump, nm, addr2line).** AArch64 mapping symbols to tell
+  code from data (S-78, S-80); `.symtab`; DWARF, falling back to
+  `.symtab`.
+- **S-119 [T] (valgrind).** `.symtab`, well-formed CIEs and FDEs (S-34 to
+  S-39), the build id; no `.eh_frame_hdr`.
+- **S-120 [T] (strip, objcopy, eu-elflint).** `.symtab` per S-73 (locals
+  first, `sh_info` right).
 
 ## 13. Where the references differ
 
@@ -1328,13 +1339,16 @@ edit changes.
 | merge order | first occurrence (with tail merge) | shard, then hash | hash | first occurrence, no tail merge (S-24) | stable under edits; GNU-like |
 | tail merging | always | `-O2` | never | never (S-23) | measured gain small; cost and incrementality |
 | `-O0` | merges | does not merge | merges | merges (S-32) | nothing depends |
-| section symbol + A at `sh_size` | end of output section, silently | error | end of last piece | refused (S-18) | GNU's value is wrong |
+| section symbol + A at `sh_size` | end of output section, silently | error | end of last piece | refused, the message naming the fix (S-18) | a known choice: GNU's value is some other object's string; no compiler emits it (X-28) |
 | section symbol + A outside | warning, end of output section | error | silent garbage | refused (S-18) | |
 | unterminated string section | copied | error | error | refused (S-8) | |
 | `.eh_frame` order | input, CIE at first use | CIE then its FDEs | CIEs, then FDEs | input (S-46) | GNU; keeps crtbeginT's walk |
 | input terminators | kept in place | dropped, one at end | dropped, one at end | dropped, one at end (S-48) | crtend.o position independent |
 | no `crtend.o` | no terminator | terminator | terminator | terminator (S-48) | |
-| `__EH_FRAME_BEGIN__` in `.symtab` | 16 bytes before `.eh_frame` | `.eh_frame` start | dropped | its relocation's value (S-50) | one rule |
+| reference to offset 0 of an input `.eh_frame` | the record's place, or the next kept record's (crtbeginT: misses earlier objects' FDEs) | the record's place; the start when that CIE was de-duplicated or the section is empty | the start plus the offset | the start of `.eh_frame` (S-50 rule 1) | the registry walk sees every FDE (X-25) |
+| `__EH_FRAME_BEGIN__` in `.symtab` | 16 to 40 bytes before `.eh_frame` | `.eh_frame` start | dropped | `.eh_frame` start (S-50) | one rule for symbols and relocations |
+| record length not a multiple of 4 | trailing nops removed, padded to 4 | copied | copied | padded to 4 (S-47) | records stay aligned |
+| `R_*_NONE` in `.eh_frame` | ignored | ignored | ignored | ignored; a field with only `NONE` has no relocation (S-38) | `ld -r` outputs (X-30) |
 | CIE version 2, 4; unknown augmentation | warning, no hdr | error | accepted | refused (S-36) | |
 | truncated record, bad CIE pointer, data after terminator | warning, no hdr | error | crash or accepted | refused (S-39) | |
 | FDE without pc relocation | kept, no hdr | dropped | dropped | dropped if zero, else refused (S-38) | verifier E2 |
@@ -1344,22 +1358,28 @@ edit changes.
 | overlapping FDEs | link fails | accepted | accepted | accepted (S-60) | |
 | `.eh_frame_hdr` without the option | none | none | always | none (S-57) | |
 | static IPLT sections | `.plt`, `.rela.plt`, `.got.plt` | `.iplt`, `.rela.dyn`, `.got.plt` | `.plt.got`, `.rela.dyn` | GNU's (S-68) | |
+| an IFUNC in `.symtab` | `IFUNC` at the resolver, always | `FUNC` at `.iplt`, size 0, when canonical; else `IFUNC` | `FUNC` locals at `.plt.got` (A1, A2) | `IFUNC` at the resolver, always (S-71) | gdb's `break f` works (X-27) |
+| `__rela_iplt_*` under `-static-pie` | not defined | not defined | absolute 0 | not defined (S-70) | resolve.md §8.1 |
 | IRELATIVE word (RELA) | AArch64: PLT address; x86-64: 0 | 0 | — | 0 (S-69) | glibc overwrites it |
 | x86 static `.got.plt` reserved words | 3 | 3 | — | 3 (S-67) | |
 | section symbols in `.symtab` | AArch64 yes, x86 no | none | all | none (S-79) | |
 | `.L` locals | dropped | dropped | kept | dropped (S-78) | |
+| `STT_FILE` for an input without one | one named after the member | none | none | none (S-83) | cosmetic in gdb (X-32) |
 | hidden definitions | `STB_GLOBAL STV_HIDDEN` | local, in its file's block | local | local, in its file's block (S-77) | resolve.md §3.7 |
 | globals in a static executable | global | global | local (A9) | global (S-75, S-121) | verifier Y3 |
 | label of an empty input section (`__TMC_END__`) | index of a section below it (A10) | — | — | index of the section holding it (S-122, S-123) | verifier Y3 |
 | `__bss_start` with no `.bss` | `edata` | `edata` | 0 under gc (A11) | `edata` (S-124) | verifier Y5 |
 | `.strtab` de-duplication | full, tail merged | almost none | none | fixed table only (S-86) | |
 | `.comment` | inputs only | adds `Linker: LLD` | adds `mold` | adds `mortar <version>` (S-100) | |
-| `--build-id=sha256` | not recognized | refused | 32 bytes | 32 bytes (S-91) | |
-| `--build-id=fast` | not recognized | 8 bytes | 32 bytes | 8 bytes (S-91) | |
 | AArch64 `.note.gnu.property` | AND | AND | none written | AND (S-95) | BTI/PAC enforcement |
 | x86 `ISA_1_NEEDED` | OR | dropped | OR | OR (S-95) | |
 | x86 `*_USED` | OR if all have it | — | OR if all have it | OR if all have it (S-95) | |
-| unknown property type | warning, copied | error (PAUTH) | ignored | refused (S-95) | |
+| several property notes in one object | OR within the object | OR within the object | — | as separate objects: AND for `And` types (S-126) | a BTI claim no note made could fault |
+| generic AND/OR ranges (0xb0000000..) | AND / OR | dropped | dropped | AND / OR (S-95) | GNU |
+| `STACK_SIZE`, `NO_COPY_ON_PROTECTED` | max / present if any | dropped | dropped | max / present if any (S-95) | GNU |
+| `MEMORY_SEAL` | erratic; `-z memory-seal` | `-z` unknown | — | from `-z memory-seal` only (S-95) | |
+| AArch64 PAUTH (0xc0000001) | warning, unsupported | copied if equal, error if not | dropped | copied if equal, refused if not (S-95) | lld |
+| unknown property type | warning; copied unmerged or link fails | dropped | dropped | dropped, warning `unknown-property` (S-95) | never silent, never a false claim |
 | notes of mixed alignment in one section | corrupt output | corrupt output | corrupt output | refused (S-99) | |
 
 ## 14. Requested changes to other specs
@@ -1385,7 +1405,7 @@ Current: "The default order is by `FragId`, or by a content key
 (§6.5)."
 Proposed: "The order is by merge class, then alignment, then `FragId`
 (`spec/synth.md` S-24); never by a hash table's layout (§6.5). Fragments
-may overlap only if tail merging is added (`spec/synth.md` S-23, Q1)."
+never overlap: there is no tail merging (`spec/synth.md` S-23)."
 Reason: there is no `merge.md`; synth.md owns merging, and does not
 tail-merge.
 
@@ -1423,10 +1443,8 @@ Current: "`ChunkId`s are given in a fixed creation order: headers, then
 synthetic chunks in the order `spec/synth.md` lists them, then merged
 chunks and output-section bodies in `OutSecId` order."
 Proposed: append "The list is `spec/synth.md` S-3; `.eh_frame` is one of
-its synthetic chunks (its input sections are split, not placed, and have
-no `place`)."
-Reason: makes explicit that `.eh_frame` is synthesized from
-`Slots.eh_records`, not a body.
+its synthetic chunks (its input sections are split and have no `place`)."
+Reason: `.eh_frame` is synthesized from `Slots.eh_records`, not a body.
 
 **R-M6. §3.5, the internal file's pieces.**
 Current: (no text)
@@ -1435,6 +1453,18 @@ Proposed: add after the `EhFrame` bullet: "- the internal file (`FileId`
 S-100, and at M2 linker-generated `.eh_frame` records (S-55)."
 Reason: S-100 puts mortar's identification through the ordinary merge
 path rather than a new chunk kind.
+
+**R-M7. §3.5, the numbering method of `FragId`.**
+Current: "`FragId`s are numbered by first occurrence
+`(FileId, sh_index, piece)`, by the method of §2.3;"
+Proposed: "`FragId`s are numbered by first occurrence
+`(FileId, sh_index, piece)`: the numbering §2.3 defines, computed by the
+partitioned method of `spec/synth.md` S-28 (occurrences partitioned by
+shard in key order, each shard interned on one thread; the first insert
+is the first occurrence, so no atomic minimum is needed);"
+Reason: S-28, S-30: the locked table with an atomic minimum costs 2.6 to
+3.3 s on 10^7 pieces, the partitioned method 0.3 to 0.5 s at 4 to 8
+threads, with the same `FragId`s (X-29).
 
 ### 14.2 layout.md
 
@@ -1486,36 +1516,45 @@ Reason: S-2, S-80.
 Current: (no rule)
 Proposed: add to §9 "- **L-n [C] (empty input sections)** A live input
 section of size 0 is placed like any other, at its output section's
-position in stage B order. When its output section has no other content
-(so no chunk), it is placed at the end of the last chunk before it in
-`order` within the same rank and segment class, or, when there is none,
-at the start of the first chunk after it; its labels take that chunk's
-output section index. Two empty sections that map to one absent output
-section get one address. (`spec/synth.md` S-122, S-123.)"
-Reason: crtend.o's `__TMC_END__` and crtbegin's `__TMC_LIST__` label
-empty `.tm_clone_table` sections in every C and C++ link; GNU gives
-`__TMC_END__` an index that does not hold its value (`plumb.md` §10.2
-A10), and the verifier's Y3 rejects that.
+position in stage B order, aligned to its `sh_addralign`, and its output
+section's size covers its place. When its output section has no other
+content (so no chunk), it is placed at the end of the last chunk before
+it in `order` within the same rank and segment class, or, when there is
+none, at the start of the first chunk after it, with no alignment
+applied, so that the place is at most that chunk's end; its labels take
+that chunk's output section index. Every empty section that maps to one
+absent output section gets that one address. (`spec/synth.md` S-122,
+S-123.)"
+Reason: `__TMC_LIST__`/`__TMC_END__` label empty `.tm_clone_table`
+sections in every C and C++ link, and GNU's index for `__TMC_END__` fails
+Y3 (A10). Aligning in the absent case could pass the chunk's end; not
+aligning in the present case would put `__TMC_LIST__` before an aligned
+table (X-31).
 
 ### 14.3 arch.md
 
-**R-A1. §3.13, the `Or` rule and a new `OrAll` rule.**
+**R-A1. §3.13, the merge rules of `property_merge`.**
 Current: "`property_merge(pr_type)` is `And` (an input without the
 property counts as 0; AArch64 `FEATURE_1_AND`, x86 `FEATURE_1_AND`),
 `Or` (an input without it counts as 0; x86 `ISA_1_NEEDED`,
 `FEATURE_2_USED`) or `None` for a type the architecture does not know,
 which is refused by name."
-Proposed: "`property_merge(pr_type)` is `And` (an input without the
-property counts as 0; the property is omitted when the result is 0;
-AArch64 `FEATURE_1_AND`, x86 `FEATURE_1_AND`), `Or` (the OR of the inputs
-that have it, present if any has it; x86 `ISA_1_NEEDED` and the other
-`0xc0008000..0xc0008fff` types), `OrAll` (the OR of the inputs, present
-only if every input has it; x86 `ISA_1_USED`, `FEATURE_2_USED` and the
-other `0xc0010000..0xc0017fff` types) or `None` for a type the
-architecture does not know, which is refused by name (`spec/synth.md`
-S-95)."
-Reason: X-20: GNU and mold drop a `*_USED` property when one input lacks
-it, and keep `ISA_1_NEEDED` when one input lacks it.
+Proposed: "`property_merge(pr_type)` gives the rule for a processor-range
+type (0xc0000000..0xdfffffff): `And` (an input without the property
+counts as 0; the property is omitted when the result is 0; AArch64
+`FEATURE_1_AND` with BTI, PAC and GCS, x86 `FEATURE_1_AND`), `Or` (the OR
+of the inputs that have it, present if any has it; x86 `ISA_1_NEEDED`
+and the other `0xc0008000..0xc0008fff` types), `OrAll` (the OR of the
+inputs, present only if every input has it; x86 `ISA_1_USED`,
+`FEATURE_2_USED` and the other `0xc0010000..0xc0017fff` types),
+`EqualOrAbsent` (AArch64 `FEATURE_PAUTH`: copied when every input that
+has it agrees, refused when two disagree) or `None` for a type the
+architecture does not know, which `spec/synth.md` S-95 drops with the
+warning `unknown-property`. The generic types and ranges (below
+0xc0000000) are S-95's, not the architecture's."
+Reason: X-20 (`*_USED` dropped when one input lacks it; `ISA_1_NEEDED`
+kept), X-33 (GCS ANDs like BTI; PAUTH in lld 22; GNU drops or copies
+unknown types with a warning and never refuses them).
 
 **R-A2. §3.1, `Facts.got_plt_reserved`.**
 Current: "`got_plt_reserved: u8, // words reserved at the start of
@@ -1523,10 +1562,8 @@ Current: "`got_plt_reserved: u8, // words reserved at the start of
 Proposed: "`got_plt_reserved: u8, // words reserved at the start of
 .got.plt: with .dynamic on every target; also in static outputs on x86
 (synth.md S-67)`"
-Reason: X-22. layout.md §20.5 requests the same fact for static x86
-links "when `GOT_BASE` is demanded"; x86's `crt1.o` and `crti.o` always
-demand it (layout L-101), so the two requests agree, and this wording
-also covers a link without the crt files.
+Reason: X-22; agrees with layout.md §20.5's request (x86 crt files
+always demand `GOT_BASE`, L-101) and also covers a link without them.
 
 ### 14.4 a64.md
 
@@ -1552,8 +1589,10 @@ and this spec is written to pass them (S-41, S-59, S-121 to S-124).
 
 **R-P1. §6, two new structure rules (stage 3).** Add:
 - "**S16 (.note.gnu.property).** The output's properties equal the merge
-  of the inputs' by `synth.md` S-95, and `PT_GNU_PROPERTY` covers the
-  note."
+  of the inputs' by `synth.md` S-95 and S-126 (every note of an input
+  section read, notes of one object combined first; unknown types
+  absent; `MEMORY_SEAL` present exactly under `-z memory-seal`), and
+  `PT_GNU_PROPERTY` covers the note."
 - "**S17 (IRELATIVE).** In a static output every `IRELATIVE` entry lies
   between `__rela_iplt_start` and `__rela_iplt_end` (or `__rel_iplt_*`),
   every entry between them is an `IRELATIVE`, and each entry's
@@ -1577,24 +1616,75 @@ sh_size)` is an anomaly on a reference output (GNU writes the end of the
 output section) and cannot occur in mortar's (synth.md S-18)."
 Reason: S-18.
 
+**R-P5. §6.5 Y5, `_GLOBAL_OFFSET_TABLE_` on x86 (before M3).**
+Current: "| `_GLOBAL_OFFSET_TABLE_` | the start of `.got` |"
+Proposed: "| `_GLOBAL_OFFSET_TABLE_` | AArch64: the start of `.got`;
+x86-64 and i386: the start of `.got.plt` |"
+Reason: layout L-101 and `synth.md` S-67 put the x86 GOT base at
+`.got.plt`, as GNU and lld do (X-22); Y5 as written would report every
+x86 link of all three references.
+
+**R-P6. §6.5 Y5, the i386 IRELATIVE bounds (before M4).**
+Current: "| `__rela_iplt_start`/`_end` | the bounds of the only allocated
+`SHT_RELA` section; with none, start = end |"
+Proposed: "| `__rela_iplt_start`/`_end` (AArch64, x86-64),
+`__rel_iplt_start`/`_end` (i386) | the bounds of the only allocated
+`SHT_RELA` (i386: `SHT_REL`) section; with none, start = end; not
+defined under `-static-pie` |"
+Reason: i386 is REL (`.rel.plt`, `R_386_IRELATIVE`) and glibc's i386
+start-up references `__rel_iplt_*` (`synth.md` S-70); under
+`-static-pie` the relocations are in `.rela.dyn` and the symbols are
+weak undefined (resolve.md §8.1).
+
+**R-P7. §6.4 "The inputs' pointers", `R_*_NONE` and an initial location
+of 0.**
+Current: "If there is no relocation, an absolute nonzero value is taken
+as written, and anything else cannot be judged."
+Proposed: "A relocation of type `R_*_NONE` is no relocation. If there is
+no relocation, an absolute nonzero value is taken as written; an initial
+location of 0 makes the FDE **dropped** (it describes no code of the
+link, `synth.md` S-38); anything else cannot be judged."
+Reason: lld's i386 `ld -r` output has such an FDE (only `R_386_NONE`,
+field 0; X-30); "unknown" would turn off E4 for the whole output, though
+every linker drops it.
+
 **R-P3. Mutations (§9.2).** Add those WP-028 lacks: move the
 `.eh_frame` terminator to the middle; set a property bit not in every
-input's AND; leave a stray `IRELATIVE` outside `__rela_iplt_*`.
+input's AND; keep a property of an unknown type; leave a stray
+`IRELATIVE` outside `__rela_iplt_*`; point `__EH_FRAME_BEGIN__`'s
+relocation at a record after the first.
 
 ### 14.6 diag.md
 
-**R-D1. §3.1, no new kinds.** The malformed `.eh_frame`, merge and note
-cases use `malformed-input` with the messages of S-7, S-8, S-18, S-36,
-S-39, S-50 and S-94; the refusals use `feature` (S-12, S-21, S-34, S-37,
-S-99) and the hex `pr_type` (S-95). Add to §3.2: "The `malformed-input`
-messages of `spec/synth.md` are lld's wording where lld has one: `string
-is not null terminated`, `offset is outside the section`, `CIE/FDE ends
-past the end of the section`, `invalid CIE reference`, `FDE version 1 or
-3 expected, but got N`, `unknown .eh_frame augmentation string: S`,
-`program property is too short`."
+**R-D1. §3.1, no new error kinds.** The malformed `.eh_frame`, merge and
+note cases use `malformed-input` with the messages of S-7, S-8, S-18,
+S-36, S-39, S-50 and S-94; the refusals use `feature` (S-12, S-21, S-34,
+S-37, S-99, and S-95's disagreeing PAUTH properties). Add to §3.2: "The
+`malformed-input` messages of `spec/synth.md` are lld's wording where lld
+has one, and name the fix where there is one: `string is not null
+terminated`, `offset is outside the section; refer to it through a named
+symbol`, `CIE/FDE ends past the end of the section`, `invalid CIE
+reference`, `FDE version 1 or 3 expected, but got N`, `unknown .eh_frame
+augmentation string: S`, `program property is too short`."
 Reason: one wording per case, tested.
 
-### 14.7 cli.md and docs/status/options.md
+**R-D2. §3.1, a new warning kind.** Add the row: "| `unknown-property`
+| `UnknownProperty { path, pr_type }` | `{path}: unsupported
+GNU_PROPERTY_TYPE {pr_type:#x}; property dropped` | GNU ld's phrase |",
+a warning. Reason: S-95 drops a property whose merge rule it does not
+know, and must say so (GNU warns the same; lld and mold are silent).
+
+### 14.7 image.md (WP-026)
+
+**R-I1. The build-id styles.** image.md defines, per `--build-id=` style
+(`sha1`, `md5`, `sha256`, `uuid`, `fast`, `0xHEX`, `none`), the
+descriptor size `n` and how the bytes are computed; synth.md S-91 sizes
+the note as `16 + n` from it. X-21 measured the references' sizes
+(GNU: sha1 20, md5 16, uuid 16, no `sha256` or `fast`; lld: sha1 20,
+md5 16, uuid 16, fast 8, refuses sha256; mold: sha1 20, md5 16, uuid 16,
+sha256 32, fast 32). Reason: Q4 is image.md's (coordinator ruling).
+
+### 14.8 cli.md and docs/status/options.md
 
 **R-C1.** Status changes when WP-025's code lands (M1): `-s`, `-S`,
 `--strip-discarded`, `-x`, `-X`, `--discard-none` (S-78, S-84),
@@ -1604,6 +1694,11 @@ Reason: one wording per case, tested.
 `--build-id=STYLE` with an unknown style is `invalid-option-value`
 (GNU warns and ignores; lld refuses).
 Reason: these are the options this spec defines.
+
+**R-C3. `-z memory-seal`, `-z nomemory-seal`.** Add both as implemented
+at M1, the last one winning, default `nomemory-seal`, feeding S-95's
+`MEMORY_SEAL` property (GNU ld 2.44's options; lld 22 does not know
+them).
 
 **R-C2. §3.8.** Current: "`strip` (`-s`, `-S`, `--strip-*`);" Proposed:
 "`strip` (`-s`, `-S`, `--strip-*`; the last wins, `--strip-discarded`
@@ -1618,16 +1713,22 @@ Ranked by how much depends on each.
 
 | # | question | default taken | what depends |
 |---|---|---|---|
-| Q1 | Tail merging behind `-O2` for `.debug_str`-class sections (13% of `.debug_str` measured, X-8). | none | output size of debug builds; `MergeMap` validity already allows it |
+| Q12 | Several property notes in one object: S-126 combines them as separate objects (AND for BTI), where GNU 2.44 and lld 22 OR them (X-33). The rule matters only when the notes disagree, which no input in the scan does. | S-126 (AND) | BTI marking of objects with disagreeing notes |
+| Q3 | Whether a relocation into the interior of a removed `.eh_frame` record (S-50 rule 4) ever occurs (crtstuff variants, other libcs). | refused | static C++ links with other crt files |
 | Q2 | Piece-level liveness of merge pieces under `--gc-sections` (lld marks pieces; GNU keeps whole sections). | `spec/live.md` decides; S-16 keeps all pieces without gc | size of `.rodata` with gc; symbol drops of S-22 |
-| Q3 | Whether a reference into a removed `.eh_frame` record other than at its start (S-50 refusal) ever occurs (crtstuff variants, other libcs). | refused | static C++ links with other crt files |
-| Q4 | `--build-id=fast`: 8 bytes (lld) or 32 (mold), and its function. | 8 bytes, image.md's hash | build-id consumers only see the size |
-| Q5 | `.eh_frame_hdr` for `-static` links: GCC's driver does not pass `--eh-frame-hdr`; adding it by default would speed up static unwinding (mold does). | not by default | static C++ throw performance |
+| Q11 | A local symbol naming each IPLT entry (say `f@iplt`), so that gdb's `info symbol` on a function pointer to an IFUNC names it (S-71's one cost). No reference writes one. | none | gdb on canonical IFUNC pointers |
 | Q6 | PLT and thunk unwind info (FDEs for `.plt`, thunks) for perf. | none (lld) | perf's unwinding through PLTs [M2] |
-| Q7 | The `.comment` string's exact form (`mortar X.Y.Z` against `Linker: mortar X.Y.Z`, lld's style). | `mortar X.Y.Z` | tools that grep `.comment` |
 | Q8 | Per-file capacity in `.symtab` for incremental links. | rewrite whole (S-112) | M7 time for 10^7-symbol programs |
-| Q9 | `GNU_PROPERTY_AARCH64_FEATURE_PAUTH` (0xc0000001) and GCS-only inputs. | refused / AND | AArch64 pointer-authentication ABI binaries |
-| Q10 | Whether any ordinary input gives two live FDEs one initial location (S-59 refuses them when a table is written). The scan counted no FDE without a relocation, but did not look for shared starts; COMDAT copies, the usual source, are dead. | refused with a table | `--eh-frame-hdr` links of hand-written assembly |
+
+Closed by the coordinator's rulings on the review: Q1 (no tail merging,
+S-23); Q4 (the build-id styles are image.md's, R-I1); Q5 (no
+`.eh_frame_hdr` unless `--eh-frame-hdr` is given: the GNU driver's
+behavior is the contract, S-57); Q7 (`.comment` is `mortar <version>`,
+S-100); Q9 (GCS is ANDed like BTI; PAUTH is copied when the inputs that
+have it agree and refused when they do not, S-95); Q10 (the reviewer's
+scan of all three targets' libraries and corpus has no two live FDEs
+with one initial location, and no FDE initial-location relocation
+against a global symbol, so S-59's refusal stands untriggered).
 
 ## 16. Tests
 
@@ -1637,39 +1738,62 @@ Existing link tests cite these sections: ".symtab" (§7.1,
 `tests/link/layout/build-id`), ".eh_frame" (§4,
 `tests/link/lang/cxx-exceptions`), "IRELATIVE" (§6.2,
 `tests/link/ifunc/irelative`). This draft adds no tests (WP-025 stage 2).
-The plan per family:
+Each family runs against all references, with `skip` where §13 says they
+differ. Required, per family:
 
-- **merge** (`tests/link/merge/`): piece mapping of S-17 and S-19 with a
-  string referred to by section symbol, by local symbol with addends
-  −1, +len, and crossing (the X-2, X-3 inputs); S-18 refusal at
-  `sh_size`, beyond and negative (`refused` by message); S-8; S-11 with
-  `.rodata.str1.8`; S-13 (`abc` in `str1.1`, `str1.8`, `cst4`); S-24
-  order (strings appear in first-occurrence order, checked by
-  `readelf -p`); S-32 (`-O0` output equals `-O2`); S-6 (a writable
-  `SHF_MERGE` section placed whole). Each runs against all references
-  with `skip` where §13 says they differ.
-- **eh_frame** (`tests/link/eh/`): the X-14 matrix as one test per row
-  (accepted rows check the program unwinds through `_Unwind_Backtrace`;
-  refused rows check the message); X-13 (crtend first, program throws
-  and catches); X-12 (`__EH_FRAME_BEGIN__` value equals the
-  `__register_frame_info` argument, read by gdb); X-11 (two personality
-  CIEs survive); the X-15 hdr cases.
+- **merge** (`tests/link/merge/`): S-17 and S-19 (a string by section
+  symbol, by local symbol with addends −1, +len and crossing; X-2, X-3);
+  S-18 at `sh_size`, beyond and negative (the message); S-8; S-11
+  (`.rodata.str1.8`); S-13 (`abc` in `str1.1`, `str1.8`, `cst4`); S-24
+  (first-occurrence order, `readelf -p`); S-32 (`-O0` equals `-O2`); S-6;
+  and the S-18 corpus case (X-28): `ec.c` built for i386 by GCC with GNU
+  as and by Clang at `-O2 -fmerge-all-constants`, `-fno-pic` and
+  `-fPIC`, asserting that no relocation is a merge section's symbol
+  with `r ≥ sh_size` and that the program prints the C addresses.
+- **eh_frame** (`tests/link/eh/`): the X-14 matrix, one test per row
+  (accepted rows unwind through `_Unwind_Backtrace`, refused rows check
+  the message); X-13 (crtend first); X-11 (two personality CIEs); the
+  X-15 hdr cases; and:
+  - `before-crtbegint` (X-25), per target: a static C++ `throw` through
+    an object placed before `crtbeginT.o` is caught, and the
+    `__register_frame_info` argument (read by gdb) is the start of
+    `.eh_frame`. M1 is AArch64's non-empty `.eh_frame` whose CIE S-44
+    removes; M3 and M4 are the empty x86 `.eh_frame` that every static
+    x86 link has, so each target's ordinary static C++ link is required
+    too (`skip(gnu)` for the placed-before case);
+  - `removed-record-symbols`: `a64-cfi-undefined.s` assembled twice, so
+    a `$d` lies inside a de-duplicated CIE: the link succeeds and the
+    `$d` is absent; a global inside the removed CIE takes the next kept
+    record's address; a relocation into its interior is refused;
+  - `ld-r-inputs` (X-30): the `-r` outputs of GNU, lld and mold for
+    i386, AArch64 and x86-64 of two C++ objects sharing an inline
+    function and a template (`cxx.cc`, `cxx2.cc`), linked statically
+    into a program that throws and catches, and judged by the verifier
+    with no FDE `unknown`;
+  - `odd-length` (X-26): an FDE of length 17 and a following one; the
+    output records are 4-aligned and both unwind.
 - **symtab** (`tests/link/symtab/`): S-121 (`main` and libc globals
   `GLOBAL` in a static link; `skip(mold)`); S-122 and S-123
-  (`__TMC_END__`'s index holds its value; `__TMC_LIST__ == __TMC_END__`);
-  S-124 (`__bss_start` with `--gc-sections` and no `.bss`); S-74 order (`readelf -s`: locals
-  per file, demoted hidden after its file's locals); S-78 for each of
-  `-X`, `-x`, `--discard-none`; S-79 (no `SECTION` entries); S-81 TLS
-  value; S-80 a thunk symbol in a link with a far call; S-85 with a
-  generated object of 65300 sections (marked slow).
-- **notes** (`tests/link/notes/`): the X-19 and X-20 property matrices;
-  S-99 refusal; S-91 sizes for every style; S-100 `.comment` string.
+  (`__TMC_END__`'s index holds it; `__TMC_LIST__ == __TMC_END__`; a
+  `-fgnu-tm` program's table); S-124 (`__bss_start` with
+  `--gc-sections` and no `.bss`); S-74 order; S-78 for `-X`, `-x`,
+  `--discard-none`; S-79; S-81 TLS values; S-80 a thunk symbol; S-85
+  with 65300 generated sections (slow).
+- **notes** (`tests/link/notes/`): the X-19, X-20 and X-33 matrices
+  (`STACK_SIZE` with an input without it, `NO_COPY_ON_PROTECTED`, the
+  generic AND and OR ranges, `MEMORY_SEAL` with and without `-z
+  memory-seal`, GCS, PAUTH equal, different and absent, unknown generic,
+  processor and user types with the `unknown-property` warning); two
+  notes in one section, equal (libhwasan's `hwasan_interceptors_vfork.o`)
+  and disagreeing (S-126); S-99; S-91 sizes per style; S-100.
 - **GOT/IPLT** (`tests/link/ifunc/`, `tests/link/tls/`): S-67 to S-70 per
-  architecture (sections, words, `readelf -r`), run under qemu for x86.
-- **verifier**: every link test's output passes `plumb.md` §6.4 E1 to E5
-  and §6.5 Y2 to Y5 (WP-028), and the S16 and S17 rules of R-P1 with the
-  mutations of R-P3.
-- **unit tests** (`mortar_merge`, `mortar_synth`): S-28 determinism (the
-  same `Split` and `MergeMap` with 1, 2, 8 and 64 threads, and with the
-  input files' contents permuted among equal names); S-46 and S-49 on
-  synthetic record lists; S-88 symbol counts against a model.
+  architecture (sections, words, `readelf -r`; qemu for x86); S-71 with
+  X-27's program: `IFUNC` at the resolver in `readelf -s`, the program's
+  pointer is the IPLT entry, gdb's `break f` stops in the implementation.
+- **verifier**: every output passes `plumb.md` §6.4 E1 to E5 and §6.5 Y2
+  to Y5, and the S16 and S17 rules of R-P1 with the mutations of R-P3.
+- **unit tests** (`mortar_merge`, `mortar_synth`): S-28 determinism (one
+  `Split` and `MergeMap` at 1, 2, 4, 8 and 64 threads and with equal-named
+  inputs permuted, equal to a sequential first-occurrence numbering);
+  S-46, S-47 and S-49 on synthetic record lists; S-50's five cases; S-88
+  counts against a model; S-95 and S-126 against a table of cases.
