@@ -145,21 +145,30 @@ pub(crate) fn relocate(
     let Scratch { site: site_buf, out: out_buf, proof, picks } = s;
     pick(rs, a, b, reach, picks);
     let sec_src = u.src - u.start;
+    let site_of = |r: u64| {
+        let base = r.saturating_sub(SITE_BACK);
+        let end = r.saturating_add(SITE_FWD).min(u.section_size).max(base.min(u.section_size));
+        (base.min(end), end)
+    };
+    // The input bytes of every picked record's site: resident, or one read
+    // of their union (the staged store; one read per record would cost a
+    // system call per relocation).
+    let (lo, hi) = picks.iter().fold((u64::MAX, 0), |(lo, hi), &i| {
+        let (b0, e0) = site_of(rs.records[i as usize].r_offset);
+        (lo.min(b0), hi.max(e0))
+    });
+    let resident = if picks.is_empty() { None } else { img.source.resident(u.file, sec_src + lo..sec_src + hi) };
+    if resident.is_none() && !picks.is_empty() {
+        site_buf.resize((hi - lo) as usize, 0);
+        source::read(img.source, u.file, sec_src + lo..sec_src + hi, site_buf)
+            .map_err(|e| source::copy_error(e, &plan.path(u.file)))?;
+    }
+    let input: &[u8] = resident.unwrap_or(site_buf);
     for &i in picks.iter() {
         let rec = rs.records[i as usize];
         let r = rec.r_offset;
-        let base = r.saturating_sub(SITE_BACK);
-        let end = r.saturating_add(SITE_FWD).min(u.section_size).max(base.min(u.section_size));
-        let base = base.min(end);
-        let range = sec_src + base..sec_src + end;
-        let site: &[u8] = if let Some(bytes) = img.source.resident(u.file, range.clone()) {
-            bytes
-        } else {
-            site_buf.resize((end - base) as usize, 0);
-            source::read(img.source, u.file, range, site_buf)
-                .map_err(|e| source::copy_error(e, &plan.path(u.file)))?;
-            site_buf
-        };
+        let (base, end) = site_of(r);
+        let site: &[u8] = &input[(base - lo) as usize..(end - lo) as usize];
         let shifted = r - base;
         let howto = match img.arch.classify(rec.r_type, Site { bytes: site, offset: shifted }) {
             Ok(h) => h,
