@@ -3,8 +3,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mortar_diag::{
-    Collector, Diagnostic, FileRef, Key, Kind, Place, Policy, RefusalClass, Relation, Style,
-    no_demangling,
+    Collector, Diagnostic, FileRef, IncompatibleReason, Key, Kind, Place, Policy, RefusalClass,
+    Relation, Style, no_demangling,
 };
 
 fn plain(diagnostic: &Diagnostic) -> String {
@@ -136,7 +136,7 @@ fn head_line_place() {
 fn demangling_none_prints_the_name() {
     let diag = undefined("_ZN2ns1fEic")
         .with(Relation::ReferencedBy, Place::symbol(FileRef::new("a.o"), "_ZNK2ns1S1mEv"));
-    let expected = "ld: error: undefined symbol: _ZN2ns1fEic\n\
+    let expected = "ld: error: undefined reference to '_ZN2ns1fEic'\n\
                     >>> referenced by a.o:(_ZNK2ns1S1mEv)\n";
     assert_eq!(plain(&diag), expected);
     assert_eq!(
@@ -145,7 +145,7 @@ fn demangling_none_prints_the_name() {
     );
     assert_eq!(no_demangling("_Z1fv"), None);
     // A name the hook does not know.
-    assert_eq!(demangled(&undefined("main")), "ld: error: undefined symbol: main\n");
+    assert_eq!(demangled(&undefined("main")), "ld: error: undefined reference to 'main'\n");
 }
 
 // spec: diag.md §5.4 (`Some` of the name itself is no demangling)
@@ -155,7 +155,7 @@ fn demangling_to_the_same_name_adds_no_line() {
     let diag = undefined("printf").with(Relation::ReferencedBy, Place::file("a.o"));
     assert_eq!(
         diag.render(&Style { prog: "ld", color: false, demangle: &echo }),
-        "ld: error: undefined symbol: printf\n>>> referenced by a.o\n"
+        "ld: error: undefined reference to 'printf'\n>>> referenced by a.o\n"
     );
 }
 
@@ -168,7 +168,7 @@ fn demangling_shows_the_mangled_name() {
         .with(Relation::ReferencedBy, Place::symbol(FileRef::new("cxx.o"), "_ZNK2ns1S1mEv"));
     assert_eq!(
         demangled(&diag),
-        "ld: error: undefined symbol: ns::f(int, char)\n\
+        "ld: error: undefined reference to 'ns::f(int, char)'\n\
          >>> mangled name: _ZN2ns1fEic\n\
          >>> referenced by cxx.o:(.text+0x18)\n\
          >>> referenced by cxx.o:(ns::S::m() const)\n"
@@ -229,7 +229,7 @@ fn control_characters_are_made_visible() {
     assert_eq!(
         text,
         format!(
-            "{shown}: error: {shown}({shown}):({shown}+0x1): undefined symbol: demangled\\u{{a}}{shown}\n\
+            "{shown}: error: {shown}({shown}):({shown}+0x1): undefined reference to 'demangled\\u{{a}}{shown}'\n\
              >>> mangled name: {shown}\n\
              >>> referenced by {shown}({shown}):(demangled\\u{{a}}{shown})\n\
              >>> named by argument '{shown}'\n\
@@ -255,9 +255,28 @@ fn control_characters_are_made_visible() {
         (Kind::Malformed { what: h() }, shown.to_owned()),
         (Kind::DuplicateSymbol { name: h() }, format!("duplicate symbol: {shown}")),
         (
+            Kind::RelocationIncompatible {
+                r_type: h(),
+                name: h(),
+                reason: IncompatibleReason::ThreadLocal,
+            },
+            format!(
+                "relocation {shown} cannot be used against symbol '{shown}'; it is thread-local"
+            ),
+        ),
+        (
+            Kind::RelocationMisaligned { r_type: h(), value: -8, align: 16 },
+            format!("improper alignment for relocation {shown}: -8 is not aligned to 16 bytes"),
+        ),
+        (
+            Kind::RelocationOutOfRange { r_type: h(), value: 9, min: -1, max: 8, name: h() },
+            format!("relocation {shown} out of range: 9 is not in [-1, 8]; references '{shown}'"),
+        ),
+        (
             Kind::Refused { class: RefusalClass::SectionType, name: h() },
             format!("unsupported section type: {shown}"),
         ),
+        (Kind::InternalError { what: h() }, format!("internal error in mortar: {shown}")),
     ] {
         assert_eq!(plain(&Diagnostic::error(kind)), format!("ld: error: {expected}\n"));
     }
@@ -287,7 +306,21 @@ fn samples() -> Vec<Diagnostic> {
             Kind::UnknownFileType,
             Kind::DuplicateSymbol { name: s(x) },
             Kind::UndefinedSymbol { name: s(x) },
+            Kind::RelocationIncompatible {
+                r_type: s(x),
+                name: s(x),
+                reason: IncompatibleReason::NonAlloc,
+            },
+            Kind::RelocationMisaligned { r_type: s(x), value: i64::MIN, align: u64::MAX },
+            Kind::RelocationOutOfRange {
+                r_type: s(x),
+                value: i64::MAX,
+                min: i64::MIN,
+                max: 0,
+                name: s(x),
+            },
             Kind::Refused { class: RefusalClass::RelocationType, name: s(x) },
+            Kind::InternalError { what: s(x) },
         ]
     };
     let mut all = Vec::new();
@@ -361,7 +394,7 @@ fn color_on_exact_bytes() {
     let error = undefined("_ZN2ns1fEic").with(Relation::ReferencedBy, Place::file("a.o"));
     assert_eq!(
         colored(&error).as_bytes(),
-        b"ld: \x1b[0;31merror:\x1b[0m undefined symbol: ns::f(int, char)\n\
+        b"ld: \x1b[0;31merror:\x1b[0m undefined reference to 'ns::f(int, char)'\n\
           >>> mangled name: _ZN2ns1fEic\n\
           >>> referenced by a.o\n"
     );

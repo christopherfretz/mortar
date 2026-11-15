@@ -4,15 +4,15 @@
 use mortar_core::assignment::{Assignment, MergeClass, OutOf, OutSec};
 use mortar_core::check::{CheckContext, Row, Rule, Shape, Violation};
 use mortar_core::column::Column;
-use mortar_core::demands::{DemandFlags, Demands};
+use mortar_core::demands::{DemandFlags, Demands, GlobalFlags};
 use mortar_core::id::{
     ChunkId, FileId, FragId, OptId, OutSecId, SectionId, SegmentId, Span, SymEntry, SymKey,
     SymbolId,
 };
 use mortar_core::layout::{
-    Addresses, AllocKey, Chunk, ChunkKind, DefValue, Defined, EntryDef, Folds, Layout, MergeMap,
-    Patch, PatchKind, Place, Placement, Redirect, Segment, Sized, Slots, SymPlace, ThunkTarget,
-    Tls,
+    Addresses, AllocKey, Chunk, ChunkKind, DefValue, Defined, EntryDef, Erratum, Folds, Layout,
+    MergeMap, Patch, PatchKind, Place, Placement, Redirect, Segment, Sized, SlotKind, Slots,
+    SymPlace, ThunkTarget, Tls,
 };
 use mortar_core::liveness::Liveness;
 use mortar_core::resolution::{
@@ -20,7 +20,7 @@ use mortar_core::resolution::{
 };
 use mortar_core::split::{Frag, Split, SplitRow};
 use mortar_core::{Id, IdRange};
-use mortar_diag::{Context, Kind};
+use mortar_diag::{Context, Kind, Severity};
 use mortar_elf::consts::{
     PF_R, PF_W, PF_X, PT_LOAD, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_STRINGS, SHF_TLS,
     SHF_WRITE, SHT_NOBITS, SHT_PROGBITS,
@@ -382,8 +382,10 @@ fn s4_4_check_reports_rule_and_rows() {
     let mut w = World::new();
     w.p().place[SectionId(1)] = Place::NONE;
     let diag = w.layout.check(&w.cx()).unwrap_err();
-    assert_eq!(diag.id(), "malformed-input");
-    let Kind::Malformed { what } = diag.kind() else { panic!("{diag:?}") };
+    // A layout mortar computed that is not valid is mortar's bug (§4.4).
+    assert_eq!(diag.id(), "internal-error");
+    assert_eq!(diag.severity(), Severity::Error);
+    let Kind::InternalError { what } = diag.kind() else { panic!("{diag:?}") };
     assert_eq!(what, "invalid layout: §4.4 rule 1: a live section has no place");
     assert_eq!(diag.context(), &[Context::Note("section 1".to_owned())]);
 }
@@ -577,6 +579,43 @@ fn s4_4_rule3_tls_template() {
     w.rejects(Rule::Segments, "without a TLS template");
 }
 
+/// The world with `.data` moved in front of the TLS chunks: `.data` at
+/// 0x403000, `.tdata` at 0x403010, `.tbss` at 0x403018, so the template
+/// starts at 0x403010, a multiple of 8 but not of 16 or 32.
+fn tls_after_data() -> World {
+    let mut w = World::new();
+    w.p().order = [0, 1, 2, 3, 4, 7, 5, 6, 8, 9].into_iter().map(ChunkId).collect();
+    let mut at = |c: u32, addr: u64| {
+        let chunk = &mut w.layout.placement.chunks[ChunkId(c)];
+        chunk.addr = Some(addr);
+        chunk.offset = addr - 0x40_0000;
+    };
+    at(7, 0x40_3000);
+    at(5, 0x40_3010);
+    at(6, 0x40_3018);
+    w.p().chunks[ChunkId(6)].offset = 0x3018;
+    let tls = &mut w.p().segments[SegmentId(2)];
+    (tls.offset, tls.addr) = (0x3010, 0x40_3010);
+    w.p().tls = Some(Tls { start: 0x40_3010, size: 0x18, align: 3 });
+    w
+}
+
+// spec: model.md §4.4 rule 3 (`tls.start` is a multiple of `tls.align`, M-3)
+#[test]
+fn s4_4_rule3_tls_start_aligned() {
+    let mut w = tls_after_data();
+    assert_eq!(w.validate(), Ok(()), "a template at 0x403010 with alignment 8");
+    // .tbss aligned to 32: the template's alignment is 32, its start is not.
+    w.p().chunks[ChunkId(6)].align = 5;
+    w.p().chunks[ChunkId(6)].addr = Some(0x40_3020);
+    w.p().chunks[ChunkId(6)].offset = 0x3018;
+    w.p().tls = Some(Tls { start: 0x40_3010, size: 0x20, align: 5 });
+    let tls = &mut w.p().segments[SegmentId(2)];
+    (tls.memsz, tls.align) = (0x20, 5);
+    let v = w.rejects(Rule::Segments, "start is not a multiple of its alignment");
+    assert_eq!(v.rows, [Row::Chunk(ChunkId(5))]);
+}
+
 // spec: model.md §4.4 rule 3 (the RELRO run is contiguous and ends on a page boundary)
 #[test]
 fn s4_4_rule3_relro() {
@@ -639,13 +678,51 @@ fn s4_4_rule4_missing_patch() {
     w.rejects(Rule::Patches, "patch that does not exist");
 }
 
-// spec: model.md §4.4 rule 4 (every patch is used)
+// spec: model.md §4.4 rule 4 (a patch no site uses is allowed, M-4)
 #[test]
 fn s4_4_rule4_unused_patch() {
     let mut w = World::new();
     w.p().redirects = Box::new([]);
-    let v = w.rejects(Rule::Patches, "no site uses");
-    assert_eq!(v.rows, [Row::Entry("patches", 0)]);
+    assert_eq!(w.validate(), Ok(()));
+}
+
+fn erratum(section: u32, offset: u64) -> PatchKind {
+    PatchKind::Erratum { erratum: Erratum::E843419, section: SectionId(section), offset }
+}
+
+// spec: model.md §4.4 `patches` (an erratum patch is keyed by its site, M-7) and rule 4 (an
+// erratum redirect names the erratum patch of its own site)
+#[test]
+fn s4_4_rule4_erratum_patch_of_its_site() {
+    let mut w = World::new();
+    w.p().patches[0].kind = erratum(7, 4);
+    assert_eq!(w.validate(), Ok(()), "the site (7, 4) redirected to its own erratum patch");
+    w.p().patches[0].kind = erratum(7, 8);
+    let v = w.rejects(Rule::Patches, "erratum patch of another site");
+    assert_eq!(v.rows, [Row::Entry("redirects", 0), Row::Entry("patches", 0)]);
+    w.p().patches[0].kind = erratum(1, 4);
+    w.rejects(Rule::Patches, "erratum patch of another site");
+    // Unused, an erratum patch keyed by any placed site is allowed.
+    w.p().redirects = Box::new([]);
+    assert_eq!(w.validate(), Ok(()));
+}
+
+// spec: model.md §4.4 rule 4 (a `Plt(key)` thunk's key has a PLT or IPLT index)
+#[test]
+fn s4_4_rule4_plt_thunk_needs_an_entry() {
+    let mut w = World::new();
+    w.p().patches[0].kind = PatchKind::Thunk(ThunkTarget::Plt(SymbolId(3).into()));
+    let v = w.rejects(Rule::Patches, "no PLT or IPLT entry");
+    assert_eq!(v.rows, [Row::Entry("patches", 0), Row::Symbol(SymbolId(3).into())]);
+    w.demands.global[SymbolId(3)] = DemandFlags::PLT;
+    w.layout.slots.plt = Box::new([SymbolId(3).into()]);
+    assert_eq!(w.validate(), Ok(()), "a PLT entry");
+    w.demands.global[SymbolId(3)] = DemandFlags::CANON_PLT;
+    assert_eq!(w.validate(), Ok(()), "a canonical PLT entry");
+    w.demands.global[SymbolId(3)] = DemandFlags::IPLT;
+    w.layout.slots.plt = Box::new([]);
+    w.layout.slots.iplt = Box::new([SymbolId(3).into()]);
+    assert_eq!(w.validate(), Ok(()), "an IPLT entry");
 }
 
 // spec: model.md §4.4 rule 4 (patches lie in a patch chunk; redirected sites in their section)
@@ -716,6 +793,10 @@ fn s4_4_field_out_of_range() {
     let mut w = World::new();
     w.p().patches[0].kind = PatchKind::Thunk(ThunkTarget::Plt(SymbolId(40).into()));
     w.rejects(Rule::Range, "out of range");
+    let mut w = World::new();
+    w.p().patches[0].kind = erratum(10, 4);
+    let v = w.rejects(Rule::Range, "out of range");
+    assert_eq!(v.rows, [Row::Entry("patches", 0)]);
     let mut w = World::new();
     w.p().chunks[ChunkId(2)].kind = ChunkKind::Body(OutSecId(17));
     w.rejects(Rule::Range, "output section 17 out of range");
@@ -789,6 +870,67 @@ fn s4_3_slots() {
     w.rejects(Rule::Slots, "not in .dynsym");
     w.layout.slots.dynsym = Box::new([SymbolId(3)]);
     assert_eq!(w.validate(), Ok(()));
+}
+
+// spec: model.md §4.3 (an index per slot kind: one key holds slots of several kinds)
+#[test]
+fn s4_3_slots_per_kind() {
+    let mut w = World::new();
+    let k: SymKey = SymbolId(0).into();
+    w.demands.global[SymbolId(0)] =
+        DemandFlags::GOT | DemandFlags::GOT_TPREL | DemandFlags::TLS_GD | DemandFlags::TLS_DESC;
+    w.layout.slots.got = Box::new([k]);
+    w.layout.slots.tls_ie = Box::new([k]);
+    w.layout.slots.tls_gd = Box::new([k]);
+    w.layout.slots.tls_desc = Box::new([k]);
+    assert_eq!(w.validate(), Ok(()));
+    let one = [k];
+    for kind in SlotKind::ALL {
+        let want: &[SymKey] = match kind {
+            SlotKind::Plt | SlotKind::Iplt => &[],
+            _ => &one,
+        };
+        assert_eq!(w.layout.slots.list(kind), want, "{kind:?}");
+    }
+    w.layout.slots.tls_ie = Box::new([]);
+    w.rejects(Rule::Slots, "tls_ie demand without a slot");
+    w.layout.slots.tls_ie = Box::new([k]);
+    w.layout.slots.tls_gd = Box::new([]);
+    w.rejects(Rule::Slots, "tls_gd demand without a slot");
+    w.layout.slots.tls_gd = Box::new([k]);
+    w.layout.slots.tls_desc = Box::new([k, k]);
+    w.rejects(Rule::Slots, "tls_desc slot given twice");
+}
+
+// spec: model.md §4.3 (the IPLT index of each key that demands IPLT; a PLT index or an
+// IPLT index, never both)
+#[test]
+fn s4_3_iplt() {
+    let mut w = World::new();
+    let k: SymKey = SymbolId(3).into();
+    w.demands.global[SymbolId(3)] = DemandFlags::IPLT | DemandFlags::GOT;
+    w.layout.slots.got = Box::new([k]);
+    w.rejects(Rule::Slots, "iplt demand without a slot");
+    w.layout.slots.iplt = Box::new([k]);
+    assert_eq!(w.validate(), Ok(()));
+    w.layout.slots.plt = Box::new([k]);
+    w.rejects(Rule::Slots, "plt slot without a demand");
+    w.layout.slots.plt = Box::new([]);
+    w.demands.global[SymbolId(3)] = DemandFlags::GOT;
+    w.rejects(Rule::Slots, "iplt slot without a demand");
+}
+
+// spec: model.md §4.3 (the output's local-dynamic module slot exists exactly when TLS_LD
+// is demanded)
+#[test]
+fn s4_3_module_slot() {
+    let mut w = World::new();
+    w.demands.output = GlobalFlags::TLS_LD | GlobalFlags::GOT_BASE;
+    w.rejects(Rule::Slots, "TLS_LD demand without the module slot");
+    w.layout.slots.tls_ld = true;
+    assert_eq!(w.validate(), Ok(()));
+    w.demands.output = GlobalFlags::GOT_BASE;
+    w.rejects(Rule::Slots, "module slot without a TLS_LD demand");
 }
 
 // ---- §4.5 ---------------------------------------------------------------------
