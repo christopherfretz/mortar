@@ -105,7 +105,8 @@ ie_lv:
 lv: .zero 8
 "#;
 
-/// The traditional GD dialect (a64.md §8.4's pattern; GNU ld only).
+/// The traditional GD dialect (a64.md §8.4's pattern) and the large
+/// TLSDESC form against the executable's own TLS (R1l): GNU ld only.
 const GD: &str = r#"
     .text
     .globl gd_tv
@@ -119,6 +120,15 @@ gd_lv:
     add x0, x0, :tlsgd_lo12:lv2
     bl __tls_get_addr
     nop
+large_lv:
+    movz x0, #:tlsdesc_off_g1:lv2
+    movk x0, #:tlsdesc_off_g0_nc:lv2
+    .tlsdescldr lv2
+    ldr x1, [x2, x0]
+    .tlsdescadd lv2
+    add x0, x2, x0
+    .tlsdesccall lv2
+    blr x1
     ret
     .section .tbss, "awT", @nobits
     .p2align 3
@@ -379,11 +389,31 @@ fn check_seq(
     let theirs = bytes_at(img, at, len);
     if mine[..] == theirs[..] {
         *tally.tls.entry(what).or_default() += 1;
+    } else if what.starts_with("large") && x0_of(&mine).is_some() && x0_of(&mine) == x0_of(theirs) {
+        // R1l: GNU ld writes `T` as three words (`movz` `lsl #48`, two
+        // `movk`) where a64.md §8.1 writes two; x0 ends equal.
+        *tally.tls.entry("large TLSDESC->LE (same x0, GNU ld's 3 words)").or_default() += 1;
     } else {
         tally
             .mismatches
             .push(format!("{label} {what}: mortar {mine:02x?} reference {theirs:02x?}"));
     }
+}
+
+/// The value a run of `movz`/`movk x0` and `nop`s leaves in x0, if the
+/// words are only those.
+fn x0_of(b: &[u8]) -> Option<u64> {
+    let mut x = 0u64;
+    for w in words_of(b) {
+        let (imm, sh) = (u64::from((w >> 5) & 0xFFFF), 16 * ((w >> 21) & 3));
+        match w & 0xFF80_001F {
+            0xD280_0000 => x = imm << sh,
+            0xF280_0000 => x = (x & !(0xFFFF << sh)) | imm << sh,
+            _ if w == synth::NOP => {}
+            _ => return None,
+        }
+    }
+    Some(x)
 }
 
 fn words_of(b: &[u8]) -> Vec<u32> {
@@ -534,6 +564,19 @@ fn plt_and_tls_against_gnu_ld_and_lld() {
                                 &tt,
                                 &mut tally,
                             );
+                            let large =
+                                [(0, 4, 565), (4, 4, 566), (8, 4, 567), (12, 4, 568), (16, 4, 569)];
+                            check_seq(
+                                &label,
+                                "large TLSDESC->LE",
+                                &gd_img,
+                                &img,
+                                out,
+                                "large_lv",
+                                &large,
+                                &tt,
+                                &mut tally,
+                            );
                         }
                     }
                 }
@@ -557,5 +600,5 @@ fn plt_and_tls_against_gnu_ld_and_lld() {
     assert_eq!(tally.headers, 32);
     assert_eq!(tally.entries + tally.lld_unpadded, 144);
     assert_eq!(tally.lazy_words, 144);
-    assert_eq!(tally.tls.values().sum::<u32>(), 72);
+    assert_eq!(tally.tls.values().sum::<u32>(), 80);
 }

@@ -22,13 +22,15 @@ use crate::{TLS, relax, weak0_rule};
 pub const NON_ALLOC_TLS_ABS: &str =
     "absolute relocation against a TLS symbol in a non-alloc section";
 
-/// The feature refused for the large TLSDESC form against a TLS-dynamic
-/// target in an exec output. a64.md §8.2 keeps that form a descriptor,
-/// but its `TLSDESC_CALL` is the small form's (§8.1 rewrites each member
-/// "without looking at the others"), so a kept large sequence would lose
-/// its `blr`: refused until the spec says how the `CALL` tells the forms
-/// apart (no producer of the census emits the large form, a64.md §2).
-pub const LARGE_TLSDESC_DYNAMIC: &str = "large-model TLSDESC against a TLS-dynamic target";
+/// The feature refused for a large TLSDESC sequence kept as a descriptor
+/// (a TLS-dynamic target in an exec output, a64.md §8.2) whose
+/// `TLSDESC_ADD` is not directly followed by its `TLSDESC_CALL`: §8.1
+/// rewrites each member on its own, and a `TLSDESC_CALL` is the same
+/// record in the small and the large form, so the call is told apart by
+/// the record before it ([`relax::large_call`]); a sequence in another
+/// order would lose its `blr`.
+pub const LARGE_TLSDESC_DYNAMIC: &str =
+    "large-model TLSDESC whose TLSDESC_ADD is not followed by its TLSDESC_CALL";
 
 /// The input-only checks of arch.md §3.4 for one relocation: the field and
 /// its window lie in the section; the addend rule (a64.md §3.1); the
@@ -119,8 +121,9 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         ClassOutcome::ArchTls
             if exec
                 && h.class == DemandClass::TlsDesc
-                && matches!(at.r_type, 565..=568)
-                && !tls_local(kind) =>
+                && at.r_type == relax::TLSDESC_ADD
+                && !tls_local(kind)
+                && !relax::large_add_paired(at) =>
         {
             out.error(
                 at.index,
@@ -130,7 +133,8 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         ClassOutcome::ArchTls => {
             let gd =
                 exec && h.class == DemandClass::TlsGd && relax::gd_lead(at, cx.tables).is_some();
-            let (flags, global) = tls_demand(h.class, at.r_type, cx.output, kind, gd);
+            let large = matches!(at.r_type, 565..=568) || relax::large_call(at);
+            let (flags, global) = tls_demand(h.class, large, cx.output, kind, gd);
             out.raise(at.key, flags);
             out.raise_global(global);
         }
@@ -193,12 +197,12 @@ fn dynamic_outcome(
 /// The TLS-model demands (a64.md §8.1 to §8.4, §12). In an exec output:
 /// TLSDESC against a TLS-local target relaxes to LE (nothing), against a
 /// TLS-dynamic one to IE (`GOT_TPREL`), except the large form, which stays
-/// a descriptor (in an exec output scan refuses it first:
-/// [`LARGE_TLSDESC_DYNAMIC`]); IE keeps its slot (R3 is kind 2); GD with R4's pattern
+/// a descriptor (its `TLSDESC_CALL` is told apart by
+/// [`relax::large_call`]); IE keeps its slot (R3 is kind 2); GD with R4's pattern
 /// (`gd`) is LE or IE. Otherwise each model demands its own slots.
 fn tls_demand(
     class: DemandClass,
-    r_type: u32,
+    large: bool,
     output: OutputKind,
     kind: TargetKind,
     gd: bool,
@@ -206,7 +210,6 @@ fn tls_demand(
     use mortar_arch::GlobalFlags as GF;
     let exec = output.is_exec();
     let local = tls_local(kind);
-    let large = matches!(r_type, 565..=568);
     let none = DemandFlags::empty();
     match class {
         DemandClass::TlsDesc if exec && local => (none, GF::empty()),
@@ -287,7 +290,10 @@ pub fn apply(
     let weak0 = sym.kind == TargetKind::Weak0;
     if exec {
         match h.class {
-            DemandClass::TlsDesc if tls_local(sym.kind) || !matches!(at.r_type, 565..=568) => {
+            DemandClass::TlsDesc
+                if tls_local(sym.kind)
+                    || !(matches!(at.r_type, 565..=568) || relax::large_call(at)) =>
+            {
                 return tlsdesc_exec(cx, at, out, sym);
             }
             DemandClass::TlsGd => {

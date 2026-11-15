@@ -155,3 +155,36 @@ pub fn gd_lead(at: &RelocAt<'_>, names: &dyn SymNames) -> Option<(u32, u64)> {
         && names.name(call.key) == crate::TLS.get_addr;
     ok.then_some((i, o))
 }
+
+/// `TLSDESC_ADD` (large form, §8.1 R1l).
+pub const TLSDESC_ADD: u32 = 568;
+/// `TLSDESC_CALL`.
+pub const TLSDESC_CALL: u32 = 569;
+
+/// Whether the `TLSDESC_CALL` `at` ends a large TLSDESC sequence: the
+/// record just before it is that sequence's `TLSDESC_ADD`, against the
+/// same key, on the word before (the order SYSVABI64 gives the large
+/// sequence: `ldr`, `add`, `blr`). A large sequence kept as a descriptor
+/// (§8.2) keeps its `blr`; a small one's is a `nop` (R2). [`large_add_paired`]
+/// refuses at scan every kept `TLSDESC_ADD` this test would not find.
+#[must_use]
+pub fn large_call(at: &RelocAt<'_>) -> bool {
+    at.r_type == TLSDESC_CALL
+        && at.index.checked_sub(1).and_then(|i| at.records.get(i)).is_some_and(|p| {
+            p.r_type == TLSDESC_ADD
+                && p.key == at.key
+                && p.r_offset.checked_add(4) == Some(at.r_offset)
+        })
+}
+
+/// Whether the `TLSDESC_ADD` `at` is followed by its `TLSDESC_CALL` as
+/// [`large_call`] requires.
+#[must_use]
+pub fn large_add_paired(at: &RelocAt<'_>) -> bool {
+    at.r_type == TLSDESC_ADD
+        && at.index.checked_add(1).and_then(|i| at.records.get(i)).is_some_and(|n| {
+            n.r_type == TLSDESC_CALL
+                && n.key == at.key
+                && at.r_offset.checked_add(4) == Some(n.r_offset)
+        })
+}

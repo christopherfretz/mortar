@@ -21,7 +21,7 @@ use mortar_arch::{
 use mortar_core::SymKey;
 
 mod support;
-use support::{Case, M2, Sink, Tables, key, raised, scan_one, words};
+use support::{Case, M2, Sink, Tables, key, raised, scan_all, scan_one, words};
 
 const ALL_KINDS: [OutputKind; 5] = OutputKind::ALL;
 
@@ -406,7 +406,11 @@ fn s8_tls_cells_exec_and_pie() {
                     DemandClass::TlsDesc if local => {
                         Want::Demand(DemandFlags::empty(), GlobalFlags::empty(), None)
                     }
-                    DemandClass::TlsDesc if matches!(t, 565..=568) => Want::Feature,
+                    // A lone `TLSDESC_ADD` has no `CALL` after it.
+                    DemandClass::TlsDesc if t == 568 => Want::Feature,
+                    DemandClass::TlsDesc if matches!(t, 565..=567) => {
+                        Want::Demand(DemandFlags::TLS_DESC, GlobalFlags::empty(), None)
+                    }
                     DemandClass::TlsDesc | DemandClass::TlsIe => {
                         Want::Demand(tp, GlobalFlags::empty(), None)
                     }
@@ -545,8 +549,7 @@ fn s8_5_r5_scope_in_dynamic_outputs() {
 
 /// TLS against a shared object's TLS in `exec` and `pie` (a64.md §8.2,
 /// §8.4; `spec/dyn.md` D-48): TLSDESC → IE (small and tiny), R4's GD → IE,
-/// IE kept; an unpatterned GD stays (its pair); the large TLSDESC is
-/// refused by name (`LARGE_TLSDESC_DYNAMIC`).
+/// IE kept; the large TLSDESC and an unpatterned GD stay (their slots).
 #[test]
 fn d48_tls_against_a_shared_definition() {
     let mut t = Tables::default();
@@ -589,21 +592,47 @@ fn d48_tls_against_a_shared_definition() {
         let b = c.apply(&rs).unwrap();
         let lit = 0x5800_0000 | (((gtp - base) >> 2) as u32 & 0x7_FFFF) << 5;
         assert_eq!(b, words(&[lit, synth::NOP, synth::NOP]));
-        // Large TLSDESC: refused by name at scan (its `CALL` is the small
-        // form's, so the kept descriptor would lose its `blr`).
+        // Large TLSDESC (§8.2): kept, `G(GTLSDESC) − GOT`, the markers and
+        // the `blr` untouched (the `CALL` after its `TLSDESC_ADD` is the
+        // large form's); scan demands the descriptor only.
         let code = words(&[0xD2A0_0000, 0xF280_0000, 0xF860_6801, 0x8B00_0000, 0xD63F_0020]);
-        for (i, ty) in [565u32, 566, 567, 568].into_iter().enumerate() {
-            let r = Reloc { r_offset: 4 * i as u64, key: key(1), r_type: ty, addend: 0 };
-            let place = PlaceFacts { alloc: true, writable: false, exec: Some(true) };
-            let s = scan_one(M2, &t, out, place, &code, r).unwrap();
-            match s.errors[..] {
-                [(_, ScanError::Refused(ref r))] => {
-                    assert_eq!(r.name.to_string(), mortar_a64::LARGE_TLSDESC_DYNAMIC);
-                }
-                ref e => panic!("{ty}: {e:?}"),
+        let rs: Vec<Reloc> = [565, 566, 567, 568, 569]
+            .iter()
+            .enumerate()
+            .map(|(i, &ty)| Reloc { r_offset: 4 * i as u64, key: key(1), r_type: ty, addend: 0 })
+            .collect();
+        let mut c = Case::new(&t, &code, base);
+        c.arch = M2;
+        c.output = out;
+        c.got_base = Some(0x42_0000);
+        let b = c.apply(&rs).unwrap();
+        let off = desc - 0x42_0000;
+        assert_eq!(
+            b,
+            words(&[
+                0xD2A0_0000 | ((off >> 16) as u32 & 0xFFFF) << 5,
+                0xF280_0000 | (off as u32 & 0xFFFF) << 5,
+                0xF860_6801,
+                0x8B00_0000,
+                0xD63F_0020
+            ])
+        );
+        let place = PlaceFacts { alloc: true, writable: false, exec: Some(true) };
+        let mut s = Sink::default();
+        scan_all(M2, &t, out, place, &code, &rs, &mut s).unwrap();
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
+        assert_eq!(raised(&s, key(1)), DemandFlags::TLS_DESC);
+        // A `TLSDESC_ADD` not directly followed by its `CALL`: refused by
+        // name (the `CALL` could not be told from a small form's).
+        let mut s = Sink::default();
+        let (add, call) = (rs[3], Reloc { r_offset: 0, ..rs[4] });
+        scan_all(M2, &t, out, place, &code, &[rs[0], rs[1], rs[2], add, call], &mut s).unwrap();
+        match s.errors[..] {
+            [(3, ScanError::Refused(ref r))] => {
+                assert_eq!(r.name.to_string(), mortar_a64::LARGE_TLSDESC_DYNAMIC);
             }
+            ref e => panic!("{e:?}"),
         }
-        let _ = desc;
         // R4's GD → IE.
         let code = words(&[0x9000_0000, 0x9100_0000, 0x9400_0000, synth::NOP]);
         let rs = [
