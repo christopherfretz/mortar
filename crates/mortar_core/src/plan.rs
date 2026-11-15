@@ -413,9 +413,14 @@ pub struct ZOptions {
 
 /// Output shaping (`spec/cli.md` §3.8).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools, reason = "one field per independent option")]
 pub struct Shaping {
     /// `--gc-sections` (until `--no-gc-sections`).
     pub gc_sections: bool,
+    /// `--print-gc-sections` (until `--no-print-gc-sections`).
+    pub print_gc_sections: bool,
+    /// `--gc-keep-exported`.
+    pub gc_keep_exported: bool,
     /// `--icf=`; `--no-icf` is `none`.
     pub icf: Option<Icf>,
     /// `--build-id[=style]`; `--no-build-id` and `--build-id=none` clear it.

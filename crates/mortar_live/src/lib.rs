@@ -1,23 +1,26 @@
 //! Liveness (`spec/image.md` §3, phase 50): which sections and pieces are
 //! live, as the table `Liveness` (`spec/model.md` §3.6).
 //!
-//! M1 has one mode, `--no-gc-sections` (I-5): a section is live exactly
-//! when resolution keeps it (I-1), every fragment of a live mergeable
-//! section is live (I-2), and an FDE is live exactly when the section its
-//! code lies in is (I-3, [`Liveness::fde_live`]; a CIE by [`eh_piece_live`]).
+//! Without `--gc-sections` (the default): a section is live exactly when
+//! resolution keeps it (I-1), every fragment of a live mergeable section
+//! is live (I-2), and an FDE is live exactly when the section its code
+//! lies in is (I-3, [`Liveness::fde_live`]; a CIE by [`eh_piece_live`]).
 //! `spec/resolve.md` §10 has already dropped consumed sections,
 //! `SHF_EXCLUDE` sections, the losing copies of COMDAT groups and
-//! stripped sections, so M1's liveness is a copy of `state == Kept`.
+//! stripped sections, so this liveness is a copy of `state == Kept`.
 //!
-//! `--gc-sections` is M2's (I-6 to I-11). Its shape is fixed now: `live`
-//! is a column per `SectionId` that a parallel mark of atomic booleans
-//! fills in rounds (I-8), and nothing in this table changes for it. M1
-//! refuses it ([`liveness`] returns the refusal; the command line refuses
-//! it first, `spec/cli.md` §4.2).
+//! With `--gc-sections` (I-6 to I-10, I-109): the least set of kept
+//! sections that holds the roots and is closed under the edges of the
+//! relocation records, marked in parallel rounds of atomic booleans (I-8);
+//! fragments of allocated mergeable sections are live when referenced
+//! (S-16). The collector is `gc`; [`removed`] lists what it removed.
 //!
-//! Liveness emits no diagnostic in M1 (I-4); its key, when it does (M2),
-//! is `(50, FileId, section index)` ([`PHASE`]).
+//! The only diagnostics of liveness are those of relocation sections it
+//! cannot read; their key is `(50, FileId, section index)` ([`PHASE`]).
 #![forbid(unsafe_code)]
+
+mod gc;
+mod read;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -27,8 +30,9 @@ use mortar_core::inputs::Inputs;
 use mortar_core::par::Pool;
 use mortar_core::resolution::Resolution;
 use mortar_core::split::Split;
-use mortar_core::{FragId, Liveness, SectionId};
-use mortar_diag::{Diagnostic, Key, RefusalClass};
+use mortar_core::{FragId, Liveness, SectionId, SymbolId};
+use mortar_core::resolution::SectionKind;
+use mortar_diag::{Diagnostic, Key};
 
 /// The phase ordinal of liveness (`spec/model.md` §8).
 pub const PHASE: u16 = 50;
@@ -43,20 +47,31 @@ pub struct LiveInputs<'a, 's> {
     pub resolution: &'a Resolution,
     pub assignment: &'a Assignment<'a>,
     pub split: &'a Split,
+    /// The keys resolution roots (`spec/resolve.md` §4.2, §4.7: the entry,
+    /// `-u`, `--require-defined`): their definitions' sections are roots
+    /// under `--gc-sections` (I-6). Unused without it.
+    pub roots: &'a [SymbolId],
 }
 
 /// The options liveness depends on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LiveOptions {
-    /// `--gc-sections` (I-5: refused in M1).
+    /// `--gc-sections` (I-6 to I-10).
     pub gc_sections: bool,
+    /// `--gc-keep-exported`: every section defining a global of default or
+    /// protected visibility is a root (I-6).
+    pub keep_exported: bool,
 }
 
-/// The `Liveness` table (I-1, I-2), or the refusal of `--gc-sections`
-/// (I-5) with its key `(50, 0, 0)`.
+/// The `Liveness` table: I-1 and I-2 without `--gc-sections`, the mark of
+/// I-6 to I-8 with it. `Err`: a relocation section the mark could not read
+/// (the least-keyed one).
 ///
-/// Cost: one pass over the section rows and, when some mergeable section
-/// is not live, one over the merge pieces; both in parallel.
+/// Cost without `--gc-sections`: one pass over the section rows and, when
+/// some mergeable section is not live, one over the merge pieces; both in
+/// parallel. With it: one pass over the section headers, one over the
+/// keys, one over the `.eh_frame` relocations, and one walk of the
+/// relocation records of the live allocated sections (I-9).
 #[allow(clippy::result_large_err, reason = "the phases' diagnostic pair, returned once per link")]
 pub fn liveness(
     t: &LiveInputs<'_, '_>,
@@ -64,10 +79,7 @@ pub fn liveness(
     pool: &Pool,
 ) -> Result<Liveness, (Key, Diagnostic)> {
     if options.gc_sections {
-        return Err((
-            Key::new(PHASE, 0, 0),
-            Diagnostic::refused(RefusalClass::Option, "--gc-sections"),
-        ));
+        return gc::collect(t, options, pool);
     }
     let sections = t.resolution.sections.as_slice();
     // I-1: live exactly when kept.
@@ -133,4 +145,25 @@ pub fn eh_piece_live(
         return Some(fde(p));
     }
     Some(pieces.iter().any(|&q| !q.is_cie() && q.cie as usize == ordinal && fde(q)))
+}
+
+/// The sections `--gc-sections` removed (I-10): kept by resolution, with
+/// output of their own, assigned an output section, and not live; in
+/// `(FileId, section index)` order, which is `SectionId` order. This is
+/// the order of `--print-gc-sections`' lines and of the map's `gc`
+/// records.
+#[must_use]
+pub fn removed(resolution: &Resolution, assignment: &Assignment<'_>, liveness: &Liveness) -> Vec<SectionId> {
+    resolution
+        .sections
+        .iter()
+        .filter(|(s, row)| {
+            row.is_kept()
+                && row.kind.carries_output()
+                && row.kind != SectionKind::EhFrame
+                && assignment.out(*s).is_some()
+                && !liveness.is_live(*s)
+        })
+        .map(|(s, _)| s)
+        .collect()
 }

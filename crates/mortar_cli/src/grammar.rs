@@ -602,6 +602,8 @@ impl Parser<'_> {
             }
             Lands::Z(field) => z_field(plan, field, value),
             Lands::GcSections(on) => plan.shaping.gc_sections = on,
+            Lands::PrintGcSections(on) => plan.shaping.print_gc_sections = on,
+            Lands::GcKeepExported => plan.shaping.gc_keep_exported = true,
             Lands::Icf => {
                 plan.shaping.icf = Some(match word().as_str() {
                     "all" => Icf::All,
