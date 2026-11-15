@@ -1054,6 +1054,14 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   180-4's, written from the standard (mortar ships no dependency for
   them). Neither uses hardware instructions, which would need `unsafe`
   intrinsics. The tag names the definition's version (I-75).
+
+  Bytes exactly (WP-026h): the tag is the 17 ASCII bytes
+  `mortar-build-id-2` and one zero byte (18 bytes); `le64` is 8 bytes
+  little-endian; each `leaf_i` is its function's digest as bytes (SHA-1's
+  and SHA-256's in FIPS 180-4's big-endian word order, `L128`'s as I-114
+  ends), concatenated in index order with nothing between them. For `n =
+  0` there are no leaves, and the bare and `sha256` roots are equal (both
+  SHA-256 of the same 34 bytes); no ELF output is empty. Vectors: §8.4.
 - **I-114 [M1] `L128`**, defined here so that `mortar_plumb` and any
   re-implementation compute it bit for bit. All arithmetic is on `u64`,
   wrapping; `rotl` rotates left; words are little-endian.
@@ -1071,6 +1079,15 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
     b = fmix(round(round(round(round(n, v3), v2), v1), v0) ^ a·P3)
     L128(d) = le64(a) ‖ le64(b)
   ```
+
+  Reading the definition (WP-026h): `·` binds tighter than `+`, and both
+  tighter than `^`; `n` in the last two lines is the byte length as a
+  `u64`; `0 − P1` is `2^64 − P1`; `round(round(…(n, v3)…), v0)` passes `n`
+  as `v` and each lane as the word `w`; the stripes are taken from offset
+  0 in order, and the zero-padded tail is one more stripe, after the
+  whole ones; `a` is computed before `b`, which uses it. The lanes, their
+  initial values and `round` are XXH64's (seed 0); the finish is not.
+  Vectors: §8.4.
 
   It is our own multiply-rotate design, in the family of the published
   64-bit multiplicative hashes (the constants are their usual ones). It
@@ -1090,7 +1107,15 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
     32 bits collide 91 times (128 ± 11 expected for random 32-bit
     values) and the 128-bit values never do. For 81,602 sparse leaves
     (all zeros of each length 0 to 65,536, and single nonzero bytes)
-    there are no collisions.
+    there are no collisions. Re-measured on `mortar_digest`
+    (`tests/l128_quality.rs`, WP-026h): 118,272 single-bit flips
+    (lengths 8, 31, 64, 100, 4096; 64 random inputs each; every bit, or
+    512 sampled) give mean 0.5002 and worst |p − 0.5| = 0.0041 (the
+    sampling noise is about 0.0015 per output bit); 2^20 4 KiB zero
+    leaves with a 4-byte counter at offset 2048 collide 138 times in the
+    low 32 bits (128 ± 11 expected), never in 128; 81,857 sparse leaves
+    (zeros of each length 0 to 65,536; each byte value 1–255 at each
+    offset of a 64-byte zero leaf) do not collide.
   - The root is SHA-256 over all leaves and parameters, so the root adds
     no weakness of its own.
 - **I-73 [M1]** The leaves are window digests: a job hashes each of its
@@ -1111,14 +1136,31 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   | SHA-256 tree (`sha256`) | 5.51 s (195 MB/s) | 1.41 s | 0.85 s |
   | SHA-1 tree (`sha1`), from E12's 2 GB run | ≈ 4 s | — | ≈ 0.55 s |
 
+  Re-measured on `mortar_digest` itself (WP-026h,
+  `examples/digest_bench.rs`; 1 GiB of splitmix64 bytes, 1 MiB leaves,
+  AArch64 host, load 46; best of 3 for `L128`, one run otherwise; ids
+  equal across thread counts). `L128` agrees with E23; both SHA trees are
+  faster than E23's straightforward loops (the 16-word rolling schedule
+  and rotating variable roles of WP-026h), SHA-1 about 3×:
+
+  | function | 1 thread | 2 | 4 | 8 |
+  |---|---|---|---|---|
+  | `L128` tree | 82 ms (13.1 GB/s) | 43 ms | 24 ms | 19 ms |
+  | SHA-1 tree | 1.39 s (775 MB/s) | 0.72 s | 0.49 s | 0.29 s |
+  | SHA-256 tree | 3.74 s (287 MB/s) | 1.99 s | 0.99 s | 0.55 s |
+
+  So `sha1` costs about 17×, and `sha256` about 45×, the bare id's time
+  on one thread; the bare id remains the only one cheap enough to be the
+  default.
+
   The review measured mold's id at 107 ms and lld's at about 95 ms on a
   1 GB output (`fast` in lld: about 0); not re-run here. In E18's
   `cxx-medium-g` link (48 MB), mold spends 7–14 ms in `write_build_id`
   (load 39–41), and dropping `--build-id` moved neither linker's wall
   time beyond run-to-run noise (lld 133–160 against 145–176 ms, mold
   93–100 against 95–96 ms; load 32–40). A whole-file SHA-1 at 260–279
-  MB/s per thread would take 3.6–3.9 s at 1 GB, longer than every other
-  phase. The tree's leaves are hashed by the workers that already hold
+  MB/s per thread would take 3.6–3.9 s at 1 GB (1.3 s at `mortar_digest`'s
+  775 MB/s), longer than every other phase. The tree's leaves are hashed by the workers that already hold
   the window in cache, so the bare id costs about 1–2% of a 1 GB write.
   No tool recomputes any linker's id (§8.1), so the tree costs no
   compatibility.
@@ -1134,6 +1176,53 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   refills, and recomputes the root: its cost is proportional to the
   refilled bytes, plus `m` digests. A change of `n` changes the root
   through `le64(n)`.
+
+### 8.4 Vectors (WP-026h)
+
+`pattern(n)` is the `n` bytes whose byte `i` is `i mod 251`. `B =
+2^20`. Every value below was computed twice, by `mortar_digest` and by a
+separate implementation written from the text of I-72 and I-114 alone
+(Python, its `hashlib` for SHA-1 and SHA-256); they agree. They are
+checked by `crates/mortar_digest/tests/vectors.rs`.
+
+`L128` (I-114), as the 16 bytes in hexadecimal:
+
+| input | `L128` |
+|---|---|
+| empty | `166e5d750a9987ba700b8ae8169c08f1` |
+| `abc` | `34d9933929a69d420194f31701b62a6e` |
+| `pattern(1)` | `a9b2c13446ed2ae78d9276aa7e6a453c` |
+| `pattern(7)` | `d8ba3acb3828bf91099bcd2dc39f4672` |
+| `pattern(8)` | `8b8a2b39f5629b5caaa295deca45fa41` |
+| `pattern(31)` | `30de9b5bf64bf64bc7885eaab7d8ddd5` |
+| `pattern(32)` | `cf8b6fc0c63e046e161c68c0466a00e5` |
+| `pattern(33)` | `70094889eb36eb1e8e4f9a079d66511b` |
+| `pattern(63)` | `5bf246f31e37031982482cf3c6f97f75` |
+| `pattern(64)` | `53d570ba718049ac4882965680303b32` |
+| `pattern(65)` | `b15eb71a90c7abc48e43144b543f840e` |
+| `pattern(4096)` | `f570b658e524275c4140b619d155cab9` |
+| `pattern(B − 1)` | `cb9e12add796f4ed147b7108555b66f7` |
+| `pattern(B)` (1 MiB) | `c6e1dfc9cc045a72cf3a72032a298d32` |
+| `pattern(B + 1)` | `1234f10fe0f80d6c59c2724939331490` |
+
+The roots of I-72 over `F = pattern(n)` (the id is the first `L` bytes:
+20 for bare, 8 for `fast`, all of it for `sha1` and `sha256`); the last
+row zeroes `[B − 6, B + 14)`, a descriptor across a leaf boundary:
+
+| `n` | `L128` tree (SHA-256 root) | SHA-1 tree | SHA-256 tree |
+|---|---|---|---|
+| 0 | `598ec1d4dd3c72cee90920b43faf73a539ad84fd3eb148f8b1c5f4362be50bcb` | `e17559e60537aa8405a216c63d1680f54fe53601` | `598ec1d4dd3c72cee90920b43faf73a539ad84fd3eb148f8b1c5f4362be50bcb` |
+| 1 | `2df0b93caf760623c40f3781b8e01397e19f7230094ebf68d67a4fa922ca5082` | `f78bec69d0b07408559e32b98a419a7b111caed9` | `5b94dbbfe23e7efbfd1ccc5a410d926b54a06d828aa57ba9efa5cc4de7e0ed62` |
+| `B − 1` | `8cea389497e938a07c9945e7e8e7e43f0c6098838f993d330e0e963b2fced212` | `add0d032914772ae22c9296d55dfd93ae2297cb2` | `c6b45677bcf57dffff98e8adebf7554fbd34e1ea80259f0a1436cb3e289839d0` |
+| `B` | `059fe2c890954621d038b090876901341dcdaf92703e0a0bd27fef29ad98147f` | `0e2d57f84202376f665ed443e840c6e47b5c276e` | `99a6c7fa4d6cfed58f895c66aab64909f814a11ccc9406bfbe21ba0b5a3352e8` |
+| `B + 1` | `be75a9986f7fe460609c23a5432a777d0c5c9106721d52b09522cfd3a5162b09` | `9c9df507ac24501067432862ecf325e57b4aa0a4` | `2b2777fb577eeeed88d735f2577239e248be71cbf97b4170d1ccf34a91aad675` |
+| `3B + 5` | `4570d21375cf658f56f2d1c4f6c81b52e44c63ddc657cb18604b04470513b883` | `0b5813d4604084d007aefb48b83fa4530f15931e` | `a5d24a056a18d9f63ec9f63f3aa6589b8abcd847a7167b101d12069d30d28e9d` |
+| `3B + 5`, zeroed | `31ff17b9820dd9f21410ccd27c9bcd3993f325613f8c070cad73c613c8faed25` | `756ee545d2b48c55d0a776066dcaf96c8c02a8c6` | `80b19e7d7a46828ca58fe5e4f7368db79c755c9e90207f9d34b752db211a860e` |
+
+`uuid` (M2): `uuid_v4(16 × 0xff) = ffffffffffff4fffbfffffffffffffff`,
+`uuid_v4(16 × 0x00) = 00000000000040008000000000000000` (byte 6's high
+nibble is 4, byte 8's two high bits are `10`, every other bit is the
+random input's).
 
 ## 9. The map file
 
@@ -1575,10 +1664,11 @@ pub trait SynthChunk {
   scheduling seeds and thread counts 1, 2, 7 and 16, equal the sequential
   definition of §4.5 (first three, count, key).
 - `build_id_vectors`: SHA-1 and SHA-256 FIPS 180-4 vectors; `L128`
-  vectors for lengths 0, 1, 31, 32, 33, 4096 and `B` (fixed here once
-  the implementation lands, and checked against bh.rs of E23); the trees
-  of I-72 for `n` = 0, 1, `B − 1`, `B`, `B + 1`, `3B + 5`; `fast` equal
-  to the bare id's prefix; the descriptor zeroed (I-73).
+  vectors and the trees of I-72 of §8.4 (landed in `mortar_digest`'s
+  `tests/vectors.rs`, WP-026h); the image's own test checks that a
+  linked output's id equals `mortar_digest::tree_root` over the file with
+  the descriptor zeroed; `fast` equal to the bare id's prefix; the
+  descriptor zeroed (I-73).
 - `build_id_hex_values`: every row of I-70's table.
 - `time_phases_line_format`: the line of I-88 from fixed `/proc` texts.
 
