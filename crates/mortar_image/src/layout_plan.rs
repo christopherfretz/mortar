@@ -193,7 +193,12 @@ fn records_in(
             Err(e) => return Err(bad(e)),
         };
         for r in table {
-            out.push(Reloc { r_offset: r.r_offset, key: key(r.r_sym)?, r_type: r.r_type, addend: 0 });
+            out.push(Reloc {
+                r_offset: r.r_offset,
+                key: key(r.r_sym)?,
+                r_type: r.r_type,
+                addend: 0,
+            });
         }
     }
     Ok(out)

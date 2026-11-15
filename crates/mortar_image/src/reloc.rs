@@ -220,15 +220,12 @@ fn internal(what: String) -> Diagnostic {
 fn raw_offset(raw: &[u8], t: &RelaTable, i: u32) -> u64 {
     let at = i as usize * t.entsize() as usize;
     match t.class {
-        Class::Elf64 => {
-            raw.get(at..at + 8)
-                .map_or(u64::MAX, |b| u64::from_le_bytes(b.try_into().unwrap_or([0xff; 8])))
-        }
-        Class::Elf32 => {
-            raw.get(at..at + 4).map_or(u64::MAX, |b| {
-                u64::from(u32::from_le_bytes(b.try_into().unwrap_or([0xff; 4])))
-            })
-        }
+        Class::Elf64 => raw
+            .get(at..at + 8)
+            .map_or(u64::MAX, |b| u64::from_le_bytes(b.try_into().unwrap_or([0xff; 8]))),
+        Class::Elf32 => raw
+            .get(at..at + 4)
+            .map_or(u64::MAX, |b| u64::from(u32::from_le_bytes(b.try_into().unwrap_or([0xff; 4])))),
     }
 }
 
@@ -577,7 +574,8 @@ pub(crate) fn relocate(
             }
         };
         // A REL record's addend is its field's input bytes (rel.rs).
-        let addend = if rel { crate::rel::addend(img.arch, &howto, site).unwrap_or(0) } else { rec.addend };
+        let addend =
+            if rel { crate::rel::addend(img.arch, &howto, site).unwrap_or(0) } else { rec.addend };
         let at = RelocAt {
             file: c.file,
             section: c.section,

@@ -501,7 +501,8 @@ pub fn front<'s>(
     // input and the synthetic chunks that exist (their kinds do not depend
     // on `.shstrtab`'s size), so that one placement usually suffices; the
     // exact names are checked after it.
-    let kinds: Vec<SynthKind> = synth_chunks(&plans, &eh, false, target.class, rel).1.iter().map(|p| p.0).collect();
+    let kinds: Vec<SynthKind> =
+        synth_chunks(&plans, &eh, false, target.class, rel).1.iter().map(|p| p.0).collect();
     let names: Vec<&[u8]> =
         estimated_names(&assignment, &liveness, &resolution, &kinds, options.relro, rel);
     let mut shstrtab = ShstrtabPlan::new(&names);
