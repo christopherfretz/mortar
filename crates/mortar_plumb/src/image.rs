@@ -2,7 +2,7 @@
 //! header, the program headers, the section headers and `.symtab`.
 //! Memory is read through the `PT_LOAD` segments.
 
-use crate::fnv::HashMap;
+use crate::hasher::HashMap;
 
 use mortar_elf::consts::{PF_X, PT_LOAD, SHF_ALLOC, SHT_NOBITS, SHT_SYMTAB, STB_GLOBAL, STB_WEAK};
 use mortar_elf::{Class, FileHeader, SectionTable, Shdr, Sym};

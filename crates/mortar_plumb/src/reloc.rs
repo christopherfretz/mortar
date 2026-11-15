@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::fnv::HashMap;
+use crate::hasher::HashMap;
 
 use mortar_elf::consts::{
     PT_TLS, SHF_COMPRESSED, SHF_STRINGS, SHF_TLS, SHT_NOBITS, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK,

@@ -1,7 +1,7 @@
 //! Non-alloc references to sections that are not in the output
 //! (`spec/plumb.md` §5.8): the tombstone each linker writes.
 
-use crate::fnv::HashMap;
+use crate::hasher::HashMap;
 
 use mortar_elf::consts::SHF_GROUP;
 use mortar_elf::{Class, SymbolIndex, SymbolSection};

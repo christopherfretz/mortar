@@ -276,7 +276,7 @@ impl Map {
 /// Builds [`Map::files`] without a linear search per line.
 #[derive(Debug, Default)]
 pub(crate) struct FileInterner {
-    index: crate::fnv::HashMap<MapFile, u32>,
+    index: crate::hasher::HashMap<MapFile, u32>,
 }
 
 impl FileInterner {

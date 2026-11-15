@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::fnv::HashMap;
+use crate::hasher::HashMap;
 
 use mortar_elf::consts::{
     PT_LOAD, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE, SHN_ABS, SHN_LORESERVE,
@@ -581,7 +581,7 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     let x86 = matches!(e.image.header.e_machine, 3 | 62);
     let rel_type = if e.image.header.e_machine == 3 { SHT_REL } else { SHT_RELA };
     let relas: Vec<_> = alloc().filter(|s| s.shdr.sh_type == rel_type).collect();
-    let mut input_names: crate::fnv::HashSet<&str> = crate::fnv::HashSet::default();
+    let mut input_names: crate::hasher::HashSet<&str> = crate::hasher::HashSet::default();
     for o in e.objs {
         let Some(t) = &o.symtab else { continue };
         for (_, d) in t.iter() {

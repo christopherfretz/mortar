@@ -1,7 +1,7 @@
 //! Resolving a map against the input files (`spec/plumb.md` §3.3): which
 //! input section each record means, and where each section is.
 
-use crate::fnv::HashMap;
+use crate::hasher::HashMap;
 
 use mortar_elf::archive::{Archive, Content};
 use mortar_elf::consts::{
