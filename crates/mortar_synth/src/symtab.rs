@@ -30,7 +30,7 @@ use mortar_elf::consts::{
 };
 
 use crate::eh::{EhPlan, EhSource, EhValue, Referrer};
-use crate::error::{SynthError, Failed, fail, internal, key};
+use crate::error::{Failed, SynthError, fail, internal, key};
 use crate::out::Window;
 
 /// Entries between two checkpoints of a block (the `B` of the write cost).
@@ -195,7 +195,10 @@ pub trait SymSource: Sync {
 pub enum InternalValue {
     Absolute(u64),
     /// In the output section with this index.
-    At { shndx: u32, addr: u64 },
+    At {
+        shndx: u32,
+        addr: u64,
+    },
 }
 
 /// The addresses the write step needs (the image phase's answers).
@@ -249,7 +252,10 @@ pub struct PatchFacts {
 /// One output symbol, before addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Where {
-    Section { section: SectionId, value: u64 },
+    Section {
+        section: SectionId,
+        value: u64,
+    },
     /// `.eh_frame` at this output offset.
     Eh(u64),
     Absolute(u64),
@@ -429,7 +435,8 @@ impl<'a> SymCtx<'a> {
         // S-77, S-121: hidden and internal definitions are locals.
         let local = (vis == STV_HIDDEN || vis == STV_INTERNAL) && g.def != SymDef::Undefined;
         let binding = if local { STB_LOCAL } else { g.binding };
-        let row = Row { name: g.name.into(), info: binding << 4 | typ, other: g.other, size: g.size, at };
+        let row =
+            Row { name: g.name.into(), info: binding << 4 | typ, other: g.other, size: g.size, at };
         Ok((if local { Class3::Demoted(g.file) } else { Class3::Global }, Some(row)))
     }
 }
@@ -452,7 +459,13 @@ impl<'c> Walk<'_, 'c> {
             let row = match seg.seg {
                 Seg::Null => (self.cursor == 0).then(|| {
                     self.cursor = 1;
-                    Row { name: (&b""[..]).into(), info: 0, other: 0, size: 0, at: Where::Undefined }
+                    Row {
+                        name: (&b""[..]).into(),
+                        info: 0,
+                        other: 0,
+                        size: 0,
+                        at: Where::Undefined,
+                    }
                 }),
                 Seg::Linker | Seg::Demoted(_) => {
                     let r = seg.rows.start + self.cursor;
@@ -559,7 +572,13 @@ impl SymtabPlan {
         let mut demoted_str = vec![0u64; demoted.len()];
         let mut entry = 0u32;
         let mut str_off = REGION;
-        let push = |segs: &mut Vec<SegRow>, seg, len: u32, bytes: u64, rows: Range<u32>, entry: &mut u32, str_off: &mut u64| {
+        let push = |segs: &mut Vec<SegRow>,
+                    seg,
+                    len: u32,
+                    bytes: u64,
+                    rows: Range<u32>,
+                    entry: &mut u32,
+                    str_off: &mut u64| {
             segs.push(SegRow { seg, entry: *entry, len, str_off: *str_off, rows });
             *entry += len;
             *str_off += bytes;
@@ -590,7 +609,15 @@ impl SymtabPlan {
             patch_str.push(o);
             o += b;
         }
-        push(&mut segs, Seg::Patches, patch_syms.len() as u32, o - str_off, 0..0, &mut entry, &mut str_off);
+        push(
+            &mut segs,
+            Seg::Patches,
+            patch_syms.len() as u32,
+            o - str_off,
+            0..0,
+            &mut entry,
+            &mut str_off,
+        );
         if let Some(s) = symtab_locals.first_mut() {
             *s = Span { start: block_start, len: entry - block_start };
         }
@@ -602,21 +629,50 @@ impl SymtabPlan {
             for &(kept, cursor, bytes) in &count.checks {
                 checks.push(Check { entry: entry + kept, seg, cursor, str_off: str_off + bytes });
             }
-            push(&mut segs, Seg::Locals(file), count.kept, count.bytes, 0..0, &mut entry, &mut str_off);
+            push(
+                &mut segs,
+                Seg::Locals(file),
+                count.kept,
+                count.bytes,
+                0..0,
+                &mut entry,
+                &mut str_off,
+            );
             let rows = file_rows(f as u32);
             let bytes = demoted_rows(rows.clone(), str_off, &mut demoted_str);
-            push(&mut segs, Seg::Demoted(file), rows.len() as u32, bytes, rows, &mut entry, &mut str_off);
+            push(
+                &mut segs,
+                Seg::Demoted(file),
+                rows.len() as u32,
+                bytes,
+                rows,
+                &mut entry,
+                &mut str_off,
+            );
             symtab_locals[f] = Span { start: block_start, len: entry - block_start };
         }
         let locals = entry;
         let gseg = segs.len() as u32;
         let (mut gentry, mut gstr) = (entry, str_off);
         for (b, &(k, bytes)) in gblocks.iter().enumerate() {
-            checks.push(Check { entry: gentry, seg: gseg, cursor: b as u32 * CHECKPOINT, str_off: gstr });
+            checks.push(Check {
+                entry: gentry,
+                seg: gseg,
+                cursor: b as u32 * CHECKPOINT,
+                str_off: gstr,
+            });
             gentry += k;
             gstr += bytes;
         }
-        push(&mut segs, Seg::Globals, gentry - entry, gstr - str_off, 0..0, &mut entry, &mut str_off);
+        push(
+            &mut segs,
+            Seg::Globals,
+            gentry - entry,
+            gstr - str_off,
+            0..0,
+            &mut entry,
+            &mut str_off,
+        );
         let Ok(symtab_locals) = Column::from_vec(symtab_locals) else {
             return fail(diag, key(0), internal("too many files"));
         };
@@ -714,7 +770,8 @@ impl SymtabPlan {
     /// A walk from the last checkpoint at or before entry `target` (by
     /// `by_str`: at or before string offset `target`).
     fn walk_from<'p, 'c>(&'p self, cx: &'p SymCtx<'c>, target: u64, by_str: bool) -> Walk<'p, 'c> {
-        let seg_at = |pred: &dyn Fn(&SegRow) -> bool| self.segs.partition_point(pred).saturating_sub(1);
+        let seg_at =
+            |pred: &dyn Fn(&SegRow) -> bool| self.segs.partition_point(pred).saturating_sub(1);
         let (seg, entry, str_off) = if by_str {
             let s = seg_at(&|s: &SegRow| s.str_off <= target);
             (s, self.segs[s].entry, self.segs[s].str_off)
@@ -726,7 +783,9 @@ impl SymtabPlan {
         let row = &self.segs[seg];
         // Rows with their string offsets stored: a direct lookup.
         let stored: Option<&[u64]> = match row.seg {
-            Seg::Linker | Seg::Demoted(_) => self.demoted_str.get(row.rows.start as usize..row.rows.end as usize),
+            Seg::Linker | Seg::Demoted(_) => {
+                self.demoted_str.get(row.rows.start as usize..row.rows.end as usize)
+            }
             Seg::Patches => Some(&self.patch_str),
             _ => None,
         };
@@ -763,16 +822,24 @@ impl SymtabPlan {
         let (shndx, addr) = match row.at {
             Where::Absolute(v) => return Ok((u32::from(SHN_ABS), v)),
             Where::Undefined => return Ok((u32::from(SHN_UNDEF), 0)),
-            Where::Section { section, value } => addrs
-                .section(section, value)
-                .ok_or_else(|| internal::<SynthError>(format!("symbol {}: section {} has no place", name(), section.0)))?,
+            Where::Section { section, value } => {
+                addrs.section(section, value).ok_or_else(|| {
+                    internal::<SynthError>(format!(
+                        "symbol {}: section {} has no place",
+                        name(),
+                        section.0
+                    ))
+                })?
+            }
             Where::Eh(o) => {
-                let (s, a) = addrs.eh_frame().ok_or_else(|| internal::<SynthError>(".eh_frame has no place"))?;
+                let (s, a) = addrs
+                    .eh_frame()
+                    .ok_or_else(|| internal::<SynthError>(".eh_frame has no place"))?;
                 (s, a + o)
             }
-            Where::Common(id) => addrs
-                .common(id)
-                .ok_or_else(|| internal::<SynthError>(format!("common symbol {} has no allocation", name())))?,
+            Where::Common(id) => addrs.common(id).ok_or_else(|| {
+                internal::<SynthError>(format!("common symbol {} has no allocation", name()))
+            })?,
             Where::Internal(id) => match addrs.internal(id) {
                 Some(InternalValue::Absolute(v)) => return Ok((u32::from(SHN_ABS), v)),
                 Some(InternalValue::At { shndx, addr }) => (shndx, addr),
@@ -784,9 +851,9 @@ impl SymtabPlan {
                     )));
                 }
             },
-            Where::Patch(p) => {
-                addrs.patch(p).ok_or_else(|| internal::<SynthError>(format!("patch {p} has no place")))?
-            }
+            Where::Patch(p) => addrs
+                .patch(p)
+                .ok_or_else(|| internal::<SynthError>(format!("patch {p} has no place")))?,
         };
         // S-122 (anomaly A10): the index names the section holding the
         // address, its end included.
@@ -801,7 +868,9 @@ impl SymtabPlan {
         }
         // S-81: a TLS symbol's value is its offset in the template.
         if row.info & 0xf == STT_TLS {
-            let start = addrs.tls_start().ok_or_else(|| internal::<SynthError>("a TLS symbol without PT_TLS"))?;
+            let start = addrs
+                .tls_start()
+                .ok_or_else(|| internal::<SynthError>("a TLS symbol without PT_TLS"))?;
             return Ok((shndx, addr.wrapping_sub(start)));
         }
         Ok((shndx, addr))
@@ -824,11 +893,8 @@ impl SymtabPlan {
             if at + e <= out.start() {
                 continue;
             }
-            let (shndx, value) =
-                if entry == 0 { (0, 0) } else { Self::resolve(addrs, &row)? };
-            let shndx16 = if shndx >= u32::from(SHN_LORESERVE)
-                && shndx != u32::from(SHN_ABS)
-            {
+            let (shndx, value) = if entry == 0 { (0, 0) } else { Self::resolve(addrs, &row)? };
+            let shndx16 = if shndx >= u32::from(SHN_LORESERVE) && shndx != u32::from(SHN_ABS) {
                 SHN_XINDEX
             } else {
                 shndx as u16
@@ -984,7 +1050,11 @@ fn count(cx: &SymCtx<'_>, pool: &Pool, diag: &Collector) -> Result<Counted, Fail
 }
 
 /// S-80: per patch its `$x` (AArch64) and its name, and their bytes.
-fn patch_syms(syms: &dyn SymSource, patches: &[Patch], facts: PatchFacts) -> (Vec<PatchSym>, Vec<u64>) {
+fn patch_syms(
+    syms: &dyn SymSource,
+    patches: &[Patch],
+    facts: PatchFacts,
+) -> (Vec<PatchSym>, Vec<u64>) {
     let mut patch_syms = Vec::new();
     let mut patch_bytes = Vec::new();
     for (p, patch) in patches.iter().enumerate() {

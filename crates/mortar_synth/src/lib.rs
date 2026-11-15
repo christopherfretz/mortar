@@ -56,4 +56,4 @@ pub use image::{Division, FillCx, SizeCx, SynthChunk};
 pub use notes::{BuildIdPlan, PropertyPlan};
 pub use out::Window;
 pub use shstrtab::ShstrtabPlan;
-pub use symtab::{SymtabPlan, SymAddrs, SymSource};
+pub use symtab::{SymAddrs, SymSource, SymtabPlan};

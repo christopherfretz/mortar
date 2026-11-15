@@ -85,7 +85,8 @@ impl BuildIdPlan {
                 return fail(
                     diag,
                     key(0),
-                    Diagnostic::refused(RefusalClass::OptionValue, "--build-id=md5").note("use sha1"),
+                    Diagnostic::refused(RefusalClass::OptionValue, "--build-id=md5")
+                        .note("use sha1"),
                 );
             }
             BuildId::Hex(text) => match hex_bytes(text) {
@@ -301,7 +302,8 @@ fn merge_level(
     let mut out = BTreeMap::new();
     for t in types {
         let rule = rule_of(t);
-        let values: Vec<Option<&[u8]>> = inputs.iter().map(|m| m.get(&t).map(Vec::as_slice)).collect();
+        let values: Vec<Option<&[u8]>> =
+            inputs.iter().map(|m| m.get(&t).map(Vec::as_slice)).collect();
         match combine(rule, &values) {
             Ok(Some(v)) => {
                 out.insert(t, v);
@@ -333,8 +335,11 @@ fn note_map(
     // Only the repeated types are combined; the others pass unchanged.
     let mut out = parts[0].clone();
     for t in parts[1..].iter().flat_map(|m| m.keys().copied()).collect::<Vec<_>>() {
-        let values: Vec<Option<&[u8]>> =
-            parts.iter().filter(|m| m.contains_key(&t)).map(|m| m.get(&t).map(Vec::as_slice)).collect();
+        let values: Vec<Option<&[u8]>> = parts
+            .iter()
+            .filter(|m| m.contains_key(&t))
+            .map(|m| m.get(&t).map(Vec::as_slice))
+            .collect();
         match combine(rule_of(t), &values) {
             Ok(Some(v)) => {
                 out.insert(t, v);
@@ -416,7 +421,10 @@ impl PropertyPlan {
             for t in unknown {
                 diag.emit(
                     okey,
-                    Diagnostic::warning(Kind::UnknownProperty { path: obj.path.to_owned(), pr_type: t }),
+                    Diagnostic::warning(Kind::UnknownProperty {
+                        path: obj.path.to_owned(),
+                        pr_type: t,
+                    }),
                 );
             }
             // S-126: the object's notes, as objects. An object with no
@@ -514,7 +522,8 @@ pub fn check_note_alignment(
         Some(&(id, _)) => fail(
             diag,
             key(u64::from(id.0)),
-            feature("notes of different alignment in one output section").note(format!("in {name}")),
+            feature("notes of different alignment in one output section")
+                .note(format!("in {name}")),
         ),
         None => Ok(()),
     }

@@ -21,7 +21,7 @@ use mortar_core::{SymKey, demands::GlobalFlags};
 use mortar_diag::Collector;
 use mortar_elf::Class;
 
-use crate::error::{SynthError, Failed, fail, feature, internal, key};
+use crate::error::{Failed, SynthError, fail, feature, internal, key};
 use crate::out::Window;
 
 /// The `.got` regions of S-63, in order.
@@ -362,7 +362,8 @@ impl GotPlan {
                 index: n32,
             };
             buf.fill(0);
-            arch.write_plt(self.variant, PltPart::Iplt(n32), &cx, &mut buf).map_err(|e| (n32, e))?;
+            arch.write_plt(self.variant, PltPart::Iplt(n32), &cx, &mut buf)
+                .map_err(|e| (n32, e))?;
             out.put(self.iplt_entry(n32), &buf);
         }
         Ok(())

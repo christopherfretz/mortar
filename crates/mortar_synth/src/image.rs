@@ -84,7 +84,10 @@ pub struct FillCx<'a> {
 
 impl std::fmt::Debug for FillCx<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FillCx").field("got", &self.got).field("hdr", &self.hdr).finish_non_exhaustive()
+        f.debug_struct("FillCx")
+            .field("got", &self.got)
+            .field("hdr", &self.hdr)
+            .finish_non_exhaustive()
     }
 }
 

@@ -22,7 +22,7 @@ use mortar_core::{FileId, SectionId, SymbolId};
 use mortar_diag::Collector;
 use mortar_elf::consts::SHT_PROGBITS;
 
-use crate::error::{SynthError, Failed, fail, internal, malformed, record_key};
+use crate::error::{Failed, SynthError, fail, internal, malformed, record_key};
 use crate::out::{Window, align_up};
 
 /// A live input `.eh_frame` section (an `EhFrame` section of
@@ -183,7 +183,11 @@ impl EhPlan {
         let sections = src.sections();
         let n_sec = sections.len();
         if sections.windows(2).any(|w| w[0].id >= w[1].id) {
-            return fail(diag, record_key(SectionId(0), 0), internal(".eh_frame sections not sorted"));
+            return fail(
+                diag,
+                record_key(SectionId(0), 0),
+                internal(".eh_frame sections not sorted"),
+            );
         }
         // S-55, review finding 13: the internal file's records come last.
         let order: Vec<u32> = (0..n_sec as u32)
@@ -197,7 +201,6 @@ impl EhPlan {
 
         let mut live = mark_live(src, &code_live, pool, diag)?;
         let rep_of = dedup_cies(src, &order, &mut live, pool, diag)?;
-
 
         // S-46: per position, the kept records and their local indices.
         let local: Vec<(Vec<u32>, u32)> = pool.map(n_sec, |p| {
@@ -223,7 +226,7 @@ impl EhPlan {
         let mut len = vec![0u32; total];
         let mut cie = vec![NONE; total];
         let mut out_size = vec![0u64; total + 1];
-        let bounds: Vec<usize> = first[..n_sec].iter().map(|&f| f as usize).collect();
+        let bounds: Vec<usize> = first.iter().map(|&f| f as usize).collect();
         let parts = mortar_core::par::split_offsets(&mut records, &bounds)
             .into_iter()
             .zip(mortar_core::par::split_offsets(&mut srcs, &bounds))
@@ -232,9 +235,8 @@ impl EhPlan {
             .zip(mortar_core::par::split_offsets(&mut cie, &bounds))
             .zip(mortar_core::par::split_offsets(&mut out_size[..total], &bounds));
         let kept_cie = |i: u32, r: u32| -> u32 {
-            let (ki, kr) = rep_of
-                .binary_search_by_key(&(i, r), |row| row.0)
-                .map_or((i, r), |at| rep_of[at].1);
+            let (ki, kr) =
+                rep_of.binary_search_by_key(&(i, r), |row| row.0).map_or((i, r), |at| rep_of[at].1);
             first[pos[ki as usize] as usize] + local[pos[ki as usize] as usize].0[kr as usize]
         };
         pool.for_each_part(parts, |p, (((((recs, s), off), l), c), size)| {
@@ -412,7 +414,8 @@ impl EhPlan {
         }
         let recs = src.records(i);
         let at = recs.partition_point(|rec| u64::from(rec.offset) <= r).checked_sub(1);
-        let inside = at.map(|a| recs[a]).filter(|rec| r < u64::from(rec.offset) + 4 + u64::from(rec.len));
+        let inside =
+            at.map(|a| recs[a]).filter(|rec| r < u64::from(rec.offset) + 4 + u64::from(rec.len));
         if who == Referrer::Mapping {
             // S-50, S-76: a mapping symbol is kept exactly with its record.
             return Ok(match inside.and_then(|rec| self.kept_at(i, rec.offset)) {
@@ -495,7 +498,12 @@ fn outside(who: Referrer) -> SynthError {
 
 /// S-41, S-42: per section, per record, [`REMOVED`], [`LIVE_FDE`] or
 /// [`USED_CIE`].
-fn mark_live<S, L>(src: &S, code_live: &L, pool: &Pool, diag: &Collector) -> Result<Vec<Vec<u8>>, Failed>
+fn mark_live<S, L>(
+    src: &S,
+    code_live: &L,
+    pool: &Pool,
+    diag: &Collector,
+) -> Result<Vec<Vec<u8>>, Failed>
 where
     S: EhSource + ?Sized,
     L: Fn(SectionId) -> bool + Sync,

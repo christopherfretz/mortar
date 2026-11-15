@@ -8,8 +8,8 @@ use mortar_core::ChunkId;
 use mortar_core::layout::Synth;
 use mortar_elf::Class;
 use mortar_elf::consts::{
-    SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHF_WRITE, SHT_NOTE, SHT_PROGBITS, SHT_REL,
-    SHT_RELA, SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHF_WRITE, SHT_NOTE, SHT_PROGBITS, SHT_REL, SHT_RELA,
+    SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX,
 };
 
 /// A synthetic chunk of S-3, by its number there. The M2 chunks are named

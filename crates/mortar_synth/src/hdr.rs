@@ -17,7 +17,7 @@ use mortar_core::par::Pool;
 use mortar_diag::{Collector, Diagnostic, Kind};
 
 use crate::eh::{CodeRef, EhPlan, EhSource, RecordKind};
-use crate::error::{SynthError, Failed, fail, internal, malformed, record_key};
+use crate::error::{Failed, SynthError, fail, internal, malformed, record_key};
 use crate::out::Window;
 
 /// S-59's refusal.
@@ -130,10 +130,11 @@ impl HdrPlan {
         };
         let pairs: Vec<Result<(i32, i32), SynthError>> = pool.map(self.fdes.len(), |e| {
             let k = self.fdes[e] as usize;
-            let (code, _) =
-                code_of(src, eh, k).ok_or_else(|| internal::<SynthError>(".eh_frame_hdr entry is not an FDE"))?;
-            let pc = code_addr(code)
-                .ok_or_else(|| internal::<SynthError>(format!("section {} has no address", code.section.0)))?;
+            let (code, _) = code_of(src, eh, k)
+                .ok_or_else(|| internal::<SynthError>(".eh_frame_hdr entry is not an FDE"))?;
+            let pc = code_addr(code).ok_or_else(|| {
+                internal::<SynthError>(format!("section {} has no address", code.section.0))
+            })?;
             Ok((rel(pc)?, rel(at.eh + eh.out_offset(k))?))
         });
         let mut table = Vec::with_capacity(pairs.len());
