@@ -4,7 +4,7 @@
 # through the GOT, which a static non-PIE link fills with their
 # addresses or relaxes away (the psABIs' relocation tables).
 #@ spec: a64.md "Static relocations"
-#@ xfail(mortar): R_AARCH64_LD64_GOTPAGE_LO15 is M2 (spec/a64.md row 313; owner: a64)
+#@ xfail(mortar,aarch64): R_AARCH64_LD64_GOTPAGE_LO15 is M2 (spec/a64.md row 313; owner: a64)
 
 cc -O0 -fpie main.c -o main.o
 cc -O0 -fno-pie target.c -o target.o
