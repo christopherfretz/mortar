@@ -449,3 +449,60 @@ fn i29_overlap_across_blocks_and_permutation() {
     assert_eq!(pic.2.len(), 200);
     assert!(pic.2[0].1.contains("overlapping relocations"), "{}", pic.2[0].1);
 }
+
+/// Whether the staged store left the contents of section `name` of the
+/// link's file `file` out (`spec/input.md` §11.1).
+fn staged_not_resident(l: &Linked, file: u32, name: &[u8]) -> bool {
+    let mortar_core::inputs::Reader::Object(o) = l.inputs.files[FileId(file)].reader else {
+        panic!("file {file} is not an object")
+    };
+    let s = o.sections().find(|s| s.name().ok() == Some(name)).expect("the section");
+    let h = s.header();
+    l.inputs.resident(FileId(file), h.sh_offset..h.sh_offset + h.sh_size).is_none()
+}
+
+/// `spec/input.md` §11.1, `spec/image.md` I-81: under the staged store the
+/// relocations of a non-alloc section above 64 KiB, and the contents of a
+/// `.text` above 64 KiB, are not resident; the scan reads them with
+/// `copy_to` and is the resident store's scan (`support::link` compares
+/// the two). I-110 still fires for a reference only from such a section,
+/// past its first 64 KiB, with the record's offset in the place.
+#[test]
+fn i110_staged_non_alloc_relocations_over_64k() {
+    let mut src = String::from(".text\n.globl _start\n_start:\n  ret\n.globl f\nf:\n");
+    // A `.text` of 80 KiB with 20 000 relocations (resident: alloc).
+    src.push_str(".rept 20000\n  bl f\n.endr\n  ret\n");
+    // A `.debug_info` of 72 KiB with 9 000 relocations (216 KiB, not
+    // resident), the last one the only reference to `dbgmiss`.
+    src.push_str(".section .debug_info,\"\",@progbits\n.rept 8999\n  .xword f\n.endr\n");
+    src.push_str("  .xword dbgmiss\n");
+    let Some((_d, l)) = build("scan-i110-staged", &[("a.o", &src)], &[]) else { return };
+    assert!(staged_not_resident(&l, 1, b".rela.debug_info"));
+    assert!(staged_not_resident(&l, 1, b".text"));
+    assert!(!staged_not_resident(&l, 1, b".rela.text"));
+    assert_eq!(l.ids(), ["undefined-symbol"]);
+    assert_eq!(
+        l.rendered(),
+        "ld: error: undefined symbol: dbgmiss (undefined reference to `dbgmiss')\n\
+         >>> referenced by a.o:(.debug_info+0x11938)\n"
+    );
+    assert_eq!(l.scanned.stats.records, 20_000 + 9_000, "{:?}", l.scanned.stats);
+    // Every schedule, staged.
+    let pic = check_schedules(|pool| Linked::picture(&l.rescan(pool)));
+    assert_eq!(pic, Linked::picture(&l.scanned));
+}
+
+/// The same for a non-alloc relocation section of more than one block
+/// (`SCAN_BLOCK` records): the units cut it as the resident store does,
+/// and every block reads it.
+#[test]
+fn i13_staged_non_alloc_relocations_of_several_blocks() {
+    let mut src = String::from(".text\n.globl _start\n_start:\n  ret\n");
+    src.push_str(".section .debug_info,\"\",@progbits\n.rept 70000\n  .xword _start\n.endr\n");
+    src.push_str("  .xword dbgmiss\n");
+    let Some((_d, l)) = build("scan-i13-staged", &[("a.o", &src)], &[]) else { return };
+    assert!(staged_not_resident(&l, 1, b".rela.debug_info"));
+    assert_eq!(l.scanned.stats.units, 2, "{:?}", l.scanned.stats);
+    assert_eq!(l.ids(), ["undefined-symbol"]);
+    assert!(l.rendered().contains("a.o:(.debug_info+0x88b80)"), "{}", l.rendered());
+}

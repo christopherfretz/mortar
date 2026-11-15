@@ -477,6 +477,48 @@ impl<'a> Section<'a> {
         self.relocations(SHT_REL)
     }
 
+    /// [`Section::rela`] over `contents`, this section's contents copied
+    /// from the file by the caller: over a parts view, a relocation
+    /// section that is not resident (`spec/elf.md` §3.0). The same checks
+    /// as `rela`, in the same order; `contents` must be `sh_size` bytes
+    /// ([`Error::NotResident`] otherwise, the caller's mistake).
+    pub fn rela_in<'b>(&self, contents: &'b [u8]) -> Result<RelaSection<'b>, Error> {
+        self.relocations_in(SHT_RELA, contents)
+    }
+
+    /// [`Section::rel`] over `contents`, as [`Section::rela_in`].
+    pub fn rel_in<'b>(&self, contents: &'b [u8]) -> Result<RelSection<'b>, Error> {
+        self.relocations_in(SHT_REL, contents)
+    }
+
+    fn relocations_in<'b, R: Record>(
+        &self,
+        sh_type: u32,
+        contents: &'b [u8],
+    ) -> Result<RelocSection<'b, R>, Error> {
+        self.expect_type(sh_type)?;
+        let symtab = self.link()?;
+        let target = self.info_section()?;
+        let expected = R::size(self.class) as u64;
+        let Shdr { sh_entsize: entsize, sh_size: size, .. } = self.shdr;
+        if entsize != expected {
+            return Err(Error::BadEntsize { section: self.index, entsize, expected });
+        }
+        if size % expected != 0 {
+            return Err(Error::BadSize { section: self.index, size, entsize });
+        }
+        let range = self.file_range()?.unwrap_or(0..0);
+        if contents.len() as u64 != size {
+            return Err(Error::NotResident { offset: range.start as u64, size });
+        }
+        Ok(RelocSection {
+            symtab,
+            target,
+            records: Table::new(contents, self.class),
+            section: self.index,
+        })
+    }
+
     /// The flag word and the members of a `SHT_GROUP` section.
     pub fn group(&self) -> Result<Group<'a>, Error> {
         self.expect_type(SHT_GROUP)?;

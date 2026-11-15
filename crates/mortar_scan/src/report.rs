@@ -8,7 +8,7 @@ use mortar_elf::consts::{STT_SECTION, STV_HIDDEN, STV_INTERNAL};
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection};
 
 use crate::events::{Acc, EventClass, GroupKey, RefId, group_sym};
-use crate::view::{View, rec_table};
+use crate::view::{View, contents, rec_offset};
 
 /// `{path}` or `{archive}({member})`, as a note names a file.
 fn file_text(f: &FileRef) -> String {
@@ -19,7 +19,10 @@ fn file_text(f: &FileRef) -> String {
 }
 
 /// The place of a reference, `file:(section+0xoff)`, `r_offset` read from
-/// the record (I-22).
+/// the record (I-22): resident, or one `copy_to` of the record. The
+/// record was read by the walk that made the reference, so a read that
+/// fails now is a file that changed; the place then says offset 0 and the
+/// image phase's `recheck` reports the change (`spec/input.md` §11.5).
 fn ref_place(view: &View<'_, '_>, r: RefId) -> Place {
     let path = view.inputs.files[r.file].display();
     let section = view.section_name(r.file, r.section);
@@ -27,8 +30,7 @@ fn ref_place(view: &View<'_, '_>, r: RefId) -> Place {
         let sid = view.section_of(r.file, r.section)?;
         let rel = view.resolution.sections.get(sid)?.reloc;
         let obj = view.prep(r.file)?.obj?;
-        let (t, _, _) = rec_table(&obj, rel).ok()?;
-        Some(t.raw(r.record)?.r_offset)
+        rec_offset(view, r.file, &obj, rel, r.record).ok()?
     })()
     .unwrap_or(0);
     Place::section(path, section, off)
@@ -132,17 +134,28 @@ fn discarded(view: &View<'_, '_>, file: FileId, group: u64, acc: &Acc) -> Diagno
 fn gnu_warning(view: &View<'_, '_>, key: SymKey, acc: &Acc) -> Diagnostic {
     let id = key.as_global();
     let at = view.gnu_warnings.partition_point(|w| Some(w.0) < id);
-    let text = view
-        .gnu_warnings
-        .get(at)
-        .filter(|w| Some(w.0) == id)
-        .and_then(|w| {
-            let obj = view.prep(w.1)?.obj?;
-            obj.section(w.2).ok()?.data().ok()
-        })
-        .map_or_else(String::new, |data| {
-            let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-            String::from_utf8_lossy(&data[..end]).into_owned()
-        });
+    let mut buf = Vec::new();
+    let mut text = String::new();
+    if let Some(w) = view.gnu_warnings.get(at).filter(|w| Some(w.0) == id)
+        && let Some(obj) = view.prep(w.1).and_then(|p| p.obj)
+    {
+        // `.gnu.warning*` is resident (`spec/input.md` §11.1); a read
+        // that fails is its own diagnostic, never an empty warning.
+        let data = obj
+            .section(w.2)
+            .map_err(|e| crate::view::ReadFail::Malformed(e.to_string()))
+            .and_then(|s| contents(view, w.1, &s, &mut buf));
+        match data {
+            Ok(data) => {
+                let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+                text = String::from_utf8_lossy(&data[..end]).into_owned();
+            }
+            Err(f) => {
+                let path = view.inputs.files[w.1].display();
+                let place = Place::section(path.clone(), view.section_name(w.1, w.2.0), 0);
+                return f.diagnostic(&path).at(place);
+            }
+        }
+    }
     with_refs(view, Diagnostic::warning(Kind::GnuWarning { text }), acc)
 }
