@@ -71,3 +71,9 @@ Run dir: /tmp/mortar-wp034-1178167 (`.rundir`), binaries in its `bin/`.
 - xtask mason: stdout via say! (closed pipe -> exit 141, no abort/core);
   kiln's runner under `ulimit -c 0`.
 - Draft record: spec/landed/mason/WP-034.md (O2 section pending).
+- FOUND: the 13:41 sed on lane/ld/mortar/ld dropped its exec bit; the
+  O2 shard 1 "mortar" mode was GNU ld (0 mortar links). Fixed 68ad07d
+  (+x, kiln++ refuses a non-executable lane ld, xtask fails a mortar mode
+  with no mortar links). Full mortar run unaffected (finished 13:40, 7219
+  mortar links logged). O2 shard 2 mortar runs after the fix; O2 shard 1
+  mortar to re-run ($R/chain3.sh).
