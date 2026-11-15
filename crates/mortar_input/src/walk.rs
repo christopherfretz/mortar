@@ -142,6 +142,9 @@ pub struct FileRow<'s> {
     pub globals: u32,
     pub groups: u32,
     pub identity: Identity,
+    /// The file's hash (§11.6); `ContentHash(0)`, "not computed", when
+    /// `Store::hashes()` is false (the staged store's default). Never
+    /// trust a 0: see `mortar_core::inputs::File::hash`.
     pub hash: ContentHash,
     /// A shared object's soname (§8.2) and whether it is `DT_SONAME`.
     pub soname: Option<(Spelled, bool)>,

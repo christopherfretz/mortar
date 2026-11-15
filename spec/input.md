@@ -1338,6 +1338,18 @@ stores compute the same value for the same bytes, so the identities of
   for them the guarantee is §11.5's, `recheck` at the end of the image
   phase (`spec/landed/input/WP-021b.md`, ambiguity 3).
 
+**`File::hash` 0 is "not computed".** Under the staged store without
+`StoreConfig::hashes`, the walk does not hash and `File::hash` is
+`ContentHash(0)`. That value is a sentinel, not a hash: no code may
+read a 0 as evidence that a file is unchanged. Whether the hashes were
+computed is `Store::hashes()`; code that needs a hash (an incremental
+link) asks `Store::hash` or loads with `StoreConfig::hashes` set.
+
+**`copy_to` ranges (M1).** M1 does not record the ranges `copy_to`
+hands out. M7 (incremental linking) records them, with their hash,
+behind a `StoreConfig` flag that only an incremental link sets, so a
+plain link never pays for it.
+
 What incremental linking then requires of a staged link: one further
 read of every byte of every staged file, without memory (a sequential
 read, as fast as the resident store's first read), or the resident
@@ -1824,6 +1836,13 @@ None of these specs is edited by WP-021.
 |---|---|---|---|
 | §6 (WP-006) | — | the shared-object reader provides what §8.1 lists (`DT_SONAME`, `DT_FLAGS_1`, `DT_NEEDED` in table order, `DT_RUNPATH`, `DT_RPATH`, dynamic symbols with versions, presence of section headers); `SharedObject::parse` with section headers required is the entry `mortar_input` uses | §8.1, §8.6 |
 | §3 (later stage) | `Object` borrows the whole file | a reader over a parts view: every structure read through `resident(range) -> Option<&[u8]>`; a structure not inside one part is `malformed-input`; a section body not resident is reported to the caller as `NotResident`, which copies it with `copy_to`; parts are disjoint and non-adjacent, so no structure spans two | §11.3 |
+
+**`spec/image.md`** (WP-021b)
+
+| section | current text | proposed text | reason |
+|---|---|---|---|
+| I-93, the resident figure | the staged store's resident share of `cxx-medium-g` is 59.9 MB | 129.8 MB: the 59.9 MB plus the non-alloc `SHF_MERGE` sections (`.debug_str` and its kin, 64.6 MB) and the other merge, `.eh_frame` and note sections, which §11.1 keeps resident because phase 60 splits and interns them by their bytes (`spec/synth.md` S-5, S-28) | measured (§11.7); accepted for M1 |
+| the M2 memory items | — | add: "stream the non-alloc `SHF_MERGE` sections through `copy_to` in phase 60, keeping only the representatives' bytes (about 10 MB of `cxx-medium-g`'s 64.6 MB), and make them not resident in §11.1" | the largest resident share left after M1 |
 
 **`spec/cli.md`**
 
