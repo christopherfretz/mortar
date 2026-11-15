@@ -13,7 +13,7 @@ Experiment dir: `/tmp/mortar-wp030r-EYWFOo` (remove by explicit path at the end)
 | 5 | checks on the value reduced mod 2^32 (§3.1); X86-38 exception; W15 (mold) found; X86-10 wrap re-run | done |
 | 6 | lld writes IBT notes and IBT IPLT on i386; only -z ibt unknown (warning) | done |
 | 7 | GNU relaxes GOT32X in static-pie; M2 candidates (mold: G1 lea only when no other reference needs the slot) | done |
-| 8 | EI_OSABI ruling; §2.4 libstdc++ UNIQUE | todo |
+| 8 | EI_OSABI ruling (X86-64); §2.4 per-library OSABI-3 contents; E19 osabi32.py + review.sh osabi | done |
 | 9, 13 | IFUNC names (S-68), __rel_iplt_* undefined in static-pie, S-71 exception request, M2 tag, stub Q | todo |
 | 10 | .got.plt word 0 in static-pie = _DYNAMIC | todo |
 | 11 | tombstone replaces the field | todo |
