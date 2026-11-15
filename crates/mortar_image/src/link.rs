@@ -57,7 +57,9 @@ use crate::{IMAGE_BLOCK, PHASE_IMAGE, PHASE_OUTPUT};
 
 const SHF_ALLOC: u64 = 0x2;
 const SHF_MERGE: u64 = 0x10;
+const SHF_EXECINSTR: u64 = 0x4;
 const SHT_NOBITS: u32 = 8;
+const SHT_RELA: u32 = 4;
 const SHT_INIT_ARRAY: u32 = 14;
 const SHT_FINI_ARRAY: u32 = 15;
 const SHT_PREINIT_ARRAY: u32 = 16;
@@ -752,14 +754,25 @@ fn patches(
         let Some(addr) = pl.chunks.get(p.chunk).and_then(|c| c.addr?.checked_add(p.offset)) else {
             return Err(internal(format!("image: a thunk in chunk {} has no address", p.chunk.0)));
         };
+        let (target_word, target_abs) = if link.options.bti {
+            match p.kind {
+                PatchKind::Thunk(ThunkTarget::Sym { key, addend }) => {
+                    thunk_target_word(link, tables, key, addend)?
+                }
+                PatchKind::Thunk(ThunkTarget::Plt(_)) => (plt_first_word(link, target), false),
+                PatchKind::Erratum { .. } => (None, false),
+            }
+        } else {
+            (None, false)
+        };
         let cx = mortar_arch::PatchCx {
             addr,
             target,
             site: 0,
             word: 0,
             bti: link.options.bti,
-            target_word: None,
-            target_abs: false,
+            target_word,
+            target_abs,
         };
         link.arch.thunk_target_ok(&cx).map_err(|r| r.diagnostic())?;
         let bytes = out.get_mut(&p.chunk).ok_or_else(|| {
@@ -775,6 +788,121 @@ fn patches(
         })?;
     }
     Ok(out)
+}
+
+/// a64.md §9 (BTI): the input word at a thunk's direct target `key` +
+/// `addend` and whether the target is `SHN_ABS`. The word is `Some` only
+/// when it lies in an executable input section, inside a `$x` run of its
+/// proof (`Proof::Insn`), and no relocation record's field can overlap it
+/// (fill writes the input bytes there unchanged): anything else is `None`,
+/// which `thunk_target_ok` refuses by name.
+///
+/// # Errors
+///
+/// `input-changed` when the input changed since it was read.
+fn thunk_target_word(
+    link: &Link<'_, '_>,
+    tables: &LinkTables<'_, '_>,
+    key: SymKey,
+    addend: i64,
+) -> Result<(Option<u32>, bool), Diagnostic> {
+    let place = tables.def_entry(key).and_then(|e| tables.entry_place(e));
+    let (sec, sym) = match place {
+        None => return Ok((None, false)),
+        Some(Err(_)) => return Ok((None, true)),
+        Some(Ok(p)) => p,
+    };
+    let Some(off) = sym.st_value.checked_add_signed(addend) else { return Ok((None, false)) };
+    let Some((file, index)) = link.resolution.sh_index(sec) else { return Ok((None, false)) };
+    let Some(Reader::Object(obj)) = link.inputs.files.get(file).map(|f| &f.reader) else {
+        return Ok((None, false));
+    };
+    let Ok(s) = obj.section(index) else { return Ok((None, false)) };
+    let size = s.size();
+    if s.flags() & SHF_EXECINSTR == 0
+        || s.sh_type() == SHT_NOBITS
+        || off.checked_add(4).is_none_or(|end| end > size)
+    {
+        return Ok((None, false));
+    }
+    let insn = (link.proof)(file, index, size)
+        .iter()
+        .any(|r| matches!(r.proof, mortar_arch::Proof::Insn) && r.start <= off && off + 4 <= r.end);
+    if !insn || relocated_near(link, obj, file, sec, off)? {
+        return Ok((None, false));
+    }
+    let Ok(Some(range)) = s.file_range() else { return Ok((None, false)) };
+    let at = range.start as u64 + off;
+    let mut w = [0u8; 4];
+    link.inputs
+        .copy_to(file, at..at + 4, &mut w)
+        .map_err(|e| crate::source::copy_error(e, &layout_plan::file_ref(link.inputs, file)))?;
+    Ok((Some(u32::from_le_bytes(w)), false))
+}
+
+/// Whether a relocation record of input section `sec` (in `obj`) has an
+/// `r_offset` in `off - 7 ..= off + 3`, so that a field of up to 8 bytes
+/// could overlap the word at `off`. Found by binary search over the
+/// records in `r_offset` order (I-29, `Link::records`); a section whose
+/// records cannot be read that way (not `SHT_RELA`, ELF32) answers `true`.
+fn relocated_near(
+    link: &Link<'_, '_>,
+    obj: &mortar_elf::Object<'_>,
+    file: FileId,
+    sec: SectionId,
+    off: u64,
+) -> Result<bool, Diagnostic> {
+    let Some(rel) = link.resolution.sections.get(sec).map(|r| r.reloc) else { return Ok(true) };
+    if rel.0 == 0 {
+        return Ok(false);
+    }
+    let Ok(rs) = obj.section(rel) else { return Ok(true) };
+    if rs.sh_type() != SHT_RELA || !matches!(obj.class(), mortar_elf::Class::Elf64) {
+        return Ok(true);
+    }
+    let Ok(Some(range)) = rs.file_range() else { return Ok(true) };
+    let base = range.start as u64;
+    let count = (range.end - range.start) as u64 / 24;
+    let order = link.records.get(sec);
+    let path = || layout_plan::file_ref(link.inputs, file);
+    let r_offset = |k: u64| -> Result<u64, Diagnostic> {
+        let i = match order {
+            mortar_core::records::Order::Sorted => k,
+            mortar_core::records::Order::Permuted(p) => {
+                u64::from(*p.get(k as usize).ok_or_else(|| internal("image: a short permutation"))?)
+            }
+        };
+        let at = base + i * 24;
+        let mut b = [0u8; 8];
+        link.inputs
+            .copy_to(file, at..at + 8, &mut b)
+            .map_err(|e| crate::source::copy_error(e, &path()))?;
+        Ok(u64::from_le_bytes(b))
+    };
+    let low = off.saturating_sub(7);
+    let (mut lo, mut hi) = (0u64, count);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if r_offset(mid)? < low {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    Ok(lo < count && r_offset(lo)? < off + 4)
+}
+
+/// a64.md §9, §10.4: the first word of the IPLT entry at `target`, as
+/// `write_plt` writes it in this output (`bti c` in a BTI output); `None`
+/// when the architecture writes none.
+fn plt_first_word(link: &Link<'_, '_>, target: u64) -> Option<u32> {
+    let variant = link.synth.got.variant();
+    let size = link.arch.plt(variant).iplt_entry as usize;
+    let mut buf = vec![0u8; size.max(4)];
+    let cx =
+        mortar_arch::SynthCx { addr: target, header: 0, got_plt: target, got_base: 0, index: 0 };
+    link.arch.write_plt(variant, mortar_arch::PltPart::Iplt(0), &cx, &mut buf[..size]).ok()?;
+    Some(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]))
 }
 
 /// `Link::fixups` at file offsets, sorted: each word's address in the
