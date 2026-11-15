@@ -171,8 +171,8 @@ impl Arch for A64 {
         if table::refused(r_type) {
             return Err(refuse());
         }
-        match table::howto(r_type) {
-            Some(h) if self.enables(h.status) => Ok(h),
+        match table::lookup(r_type) {
+            Some(h) if self.enables(h.status) => Ok(*h),
             _ => Err(refuse()),
         }
     }

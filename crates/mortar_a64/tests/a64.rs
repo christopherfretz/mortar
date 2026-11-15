@@ -219,6 +219,8 @@ fn s6_1_classify_every_type_number() {
     let mut by_status = [0u32; 4];
     for r_type in 0..=0xFFFF_u32 {
         let row = table::howto(r_type);
+        // The compile-time table is the match, row for row (WP-032b).
+        assert_eq!(table::lookup(r_type).copied(), row, "{r_type}");
         if let Some(h) = row {
             by_status[h.status as usize] += 1;
             assert_eq!(Some(h.name), mortar_elf::reloc::aarch64::name(r_type), "{r_type}");

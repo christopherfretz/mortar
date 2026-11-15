@@ -176,20 +176,30 @@ const SORT_RUN: usize = 8192;
 /// parallel call, plus a parallel sort when the link has more than 8192
 /// events or local demands, plus one for unsorted sections' permutations.
 #[must_use]
+#[allow(clippy::too_many_lines)] // the steps, timed one by one
 pub fn scan(
     arch: &dyn Arch,
     t: &ScanInputs<'_, '_>,
     opts: &ScanOptions<'_>,
     pool: &Pool,
 ) -> Scanned {
+    let mut steps = mortar_core::wp032b_steps::Steps::new("scan");
     let view = view::View::new(arch, t, *opts);
+    steps.step("view", 0, "");
     let mut diagnostics = Vec::new();
     let units = driver::units(&view, &mut diagnostics);
+    steps.step("units", units.len() as u64, "unit");
     let symbols = t.inputs.symbols.len() as usize;
     let global: Vec<AtomicU16> = (0..symbols).map(|_| AtomicU16::new(0)).collect();
     let mut stats = Stats { units: units.len() as u32, par_calls: 1, ..Stats::default() };
     let mut results: Vec<driver::UnitOut> =
         pool.map(units.len(), |i| driver::run_unit(&view, &units[i], &global));
+    if steps.on() {
+        let n: u64 = results.iter().map(|o| o.records).sum();
+        let nonalloc: u64 = results.iter().map(|o| o.nonalloc).sum();
+        steps.step("walk", n, "record");
+        steps.step("walk.nonalloc", nonalloc, "record");
+    }
 
     // Per section: counts, order, overlaps across blocks.
     let mut dyn_relocs: Vec<(SectionId, DynCounts)> = Vec::new();
@@ -232,6 +242,7 @@ pub fn scan(
         at = end;
     }
 
+    steps.step("sections", u64::from(stats.sections), "section");
     let mut locals: Vec<(LocalSym, DemandFlags)> = Vec::new();
     let mut events = Vec::with_capacity(results.len());
     let mut output = mortar_core::demands::GlobalFlags::empty();
@@ -256,12 +267,14 @@ pub fn scan(
         }
     }
 
+    steps.step("locals", local.len() as u64, "local");
     let n_groups: usize = events.iter().map(Vec::len).sum();
     stats.par_calls += u32::from(n_groups > SORT_RUN);
     let groups = events::merge(events, pool);
     stats.groups = groups.len() as u32;
     diagnostics.extend(groups.iter().map(|(g, a)| report::group(&view, g, a)));
 
+    steps.step("events", stats.events, "event");
     let permuted: Vec<(SectionId, Box<[u32]>)> = if unsorted.is_empty() {
         Vec::new()
     } else {
@@ -273,6 +286,7 @@ pub fn scan(
         .into_iter()
         .map(|a| DemandFlags::from_bits(a.into_inner()).unwrap_or_default())
         .collect();
+    steps.step("finish", unsorted.len() as u64, "unsorted");
     let demands = Demands {
         global: Column::from_vec(global).unwrap_or_default(),
         local: local.into_boxed_slice(),

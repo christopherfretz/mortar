@@ -252,6 +252,7 @@ fn elf_what(e: mortar_elf::Error) -> What {
 /// (sorted by key) when any input is malformed or refused.
 pub fn run(pool: &Pool, t: &dyn Link<'_>, relocs: &dyn Relocs) -> Result<Phase, Vec<Problem>> {
     let files = t.files() as usize;
+    let mut steps = mortar_core::wp032b_steps::Steps::new("split");
     let per_file: Vec<Result<Vec<Unit<'_>>, Problem>> =
         pool.map(files, |f| units(t, FileId(f as u32), relocs));
     let mut problems: Vec<Problem> =
@@ -260,6 +261,7 @@ pub fn run(pool: &Pool, t: &dyn Link<'_>, relocs: &dyn Relocs) -> Result<Phase, 
         problems.sort();
         return Err(problems);
     }
+    steps.step("units", files as u64, "file");
     let mut merge_in = Vec::new();
     let mut whole = Vec::new();
     let mut eh_units = Vec::new();
@@ -291,8 +293,11 @@ pub fn run(pool: &Pool, t: &dyn Link<'_>, relocs: &dyn Relocs) -> Result<Phase, 
         .collect();
     let merge_in: Vec<MergeIn<'_>> =
         merge_in.iter().map(|(m, bytes)| MergeIn { bytes, ..*m }).collect();
+    steps.step("collect", (merge_in.len() + eh_in.len()) as u64, "section");
     let merged = merge(pool, &merge_in);
+    steps.step("merge", 0, "");
     let frames = eh::parse(pool, word, &eh_in);
+    steps.step("eh", eh_in.len() as u64, "section");
     let (merged, frames) = match (merged, frames) {
         (Ok(m), Ok(e)) => (m, e),
         (m, e) => {
@@ -306,6 +311,7 @@ pub fn run(pool: &Pool, t: &dyn Link<'_>, relocs: &dyn Relocs) -> Result<Phase, 
     let split = merged.into_split(frames.split_rows());
     drop(eh_in);
     let eh_relocs = eh_units.into_iter().map(|u| u.4.into_boxed_slice()).collect();
+    steps.step("finish", 0, "");
     Ok(Phase { split, meta, eh: frames, eh_relocs, whole: whole.into() })
 }
 
