@@ -19,20 +19,32 @@ use std::time::Duration;
 
 use mortar_core::FileId;
 use mortar_core::par::Pool;
+use mortar_testutil::target;
 use mortar_testutil::{Scratch, run_with, tool, tools_required};
 
-/// A target: the driver prefix and GNU ld for it.
+/// A target: its name, and its drivers and GNU ld by the host's
+/// convention ([`mortar_testutil::target`]: plain names on the
+/// architecture's own host, `<triple>-` elsewhere).
 #[derive(Clone, Copy, Debug)]
 pub struct Arch {
     pub name: &'static str,
-    /// Prefix of the cross drivers (empty for the host's).
-    pub prefix: &'static str,
-    pub ld: &'static str,
+    pub target: target::Arch,
 }
 
-pub const AARCH64: Arch = Arch { name: "aarch64", prefix: "aarch64-linux-gnu-", ld: "ld.bfd" };
-pub const X86_64: Arch =
-    Arch { name: "x86_64", prefix: "x86_64-linux-gnu-", ld: "x86_64-linux-gnu-ld.bfd" };
+impl Arch {
+    /// Prefix of the drivers and binutils (empty on the host).
+    pub fn prefix(self) -> String {
+        self.target.gnu("")
+    }
+
+    /// GNU ld's name.
+    pub fn ld(self) -> String {
+        self.target.gnu("ld.bfd")
+    }
+}
+
+pub const AARCH64: Arch = Arch { name: "aarch64", target: target::Arch::Aarch64 };
+pub const X86_64: Arch = Arch { name: "x86_64", target: target::Arch::X86_64 };
 
 /// What GNU ld did with a line.
 #[derive(Debug, Clone)]
@@ -151,7 +163,7 @@ fn parse_dynsym(text: &str) -> BTreeSet<String> {
 fn wrapper(dir: &Path, arch: Arch) -> PathBuf {
     let bin = dir.join(format!("{}-bin", arch.name));
     std::fs::create_dir_all(&bin).unwrap();
-    let ld = tool(arch.ld).expect("GNU ld");
+    let ld = tool(&arch.ld()).expect("GNU ld");
     let script = format!(
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$MORTAR_ORACLE_ARGS\"\nexec {} \"$@\"\n",
         ld.display()
@@ -195,7 +207,7 @@ pub fn driver_cmd(arch: Arch, driver: &str) -> Command {
         c.arg(format!("--target={}-linux-gnu", arch.name));
         c
     } else {
-        Command::new(tool(&format!("{}{driver}", arch.prefix)).expect("driver"))
+        Command::new(tool(&format!("{}{driver}", arch.prefix())).expect("driver"))
     }
 }
 
@@ -355,10 +367,14 @@ pub fn tools(arch: Arch, drivers: &[&str]) -> bool {
         drivers
             .iter()
             .map(|d| {
-                if d.starts_with("clang") { (*d).to_owned() } else { format!("{}{d}", arch.prefix) }
+                if d.starts_with("clang") {
+                    (*d).to_owned()
+                } else {
+                    format!("{}{d}", arch.prefix())
+                }
             })
             .collect();
-    names.push(arch.ld.to_owned());
+    names.push(arch.ld());
     names.push("readelf".to_owned());
     let missing: Vec<&String> =
         names.iter().filter(|n| mortar_testutil::find_tool(n).is_none()).collect();
@@ -479,7 +495,7 @@ fn expand(name: &str, line: &str) -> Vec<String> {
 
 /// Runs `script CC` in `dir` (the inputs of an experiment).
 fn build_inputs(arch: Arch, dir: &Path, script: &str) {
-    let cc = format!("{}gcc", arch.prefix);
+    let cc = format!("{}gcc", arch.prefix());
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oracle").join(script);
     let mut cmd = Command::new("bash");
     cmd.current_dir(dir).env("TMPDIR", dir).arg(&path).arg(tool(&cc).unwrap());
@@ -896,14 +912,16 @@ fn usedset_deliberate(arch: Arch) -> Vec<(&'static str, &'static str)> {
         ("5.6d-protected-func-nopie", "gnu-refuses"),
         ("5.7-hidden-in-dynsym", "mortar-refuses"),
     ];
-    if arch.name == "aarch64" {
-        // The native GNU ld reads the environment (D-19).
+    if arch.target.is_host() {
+        // A native GNU ld (the host's architecture) reads the environment
+        // (D-19); a cross one does not.
         v.extend([
             ("4.4c-LD_RUN_PATH-only", "mortar-refuses"),
             ("4.4f-LD_RUN_PATH-vs-LD_LIBRARY_PATH", "mortar-refuses"),
             ("4.4g-LD_LIBRARY_PATH-only", "mortar-refuses"),
         ]);
-    } else {
+    }
+    if arch.name == "x86_64" {
         // x86-64's PIE takes a copy of protected data (D-18).
         v.push(("5.6a-protected-data-pie", "gnu-refuses"));
     }
@@ -939,6 +957,8 @@ fn e_usedset() {
             .env("TMPDIR", dir.path())
             .env_remove("LD_LIBRARY_PATH")
             .env_remove("LD_RUN_PATH")
+            .env("ORACLE_PREFIX_aarch64", AARCH64.prefix())
+            .env("ORACLE_PREFIX_x86_64", X86_64.prefix())
             .arg(here.join(script))
             .arg(dir.path());
         if script == "run.sh" {
@@ -1106,7 +1126,7 @@ fn review_neededorder(arch: Arch) {
         return;
     }
     let dir = Scratch::new("shlib-review-neededorder");
-    let cc = tool(&format!("{}gcc", arch.prefix)).unwrap();
+    let cc = tool(&format!("{}gcc", arch.prefix())).unwrap();
     let cc = cc.display();
     shell(
         dir.path(),
@@ -1200,12 +1220,24 @@ fn review_usedset2(arch: Arch) {
         return;
     }
     let dir = Scratch::new("shlib-review-usedset2");
-    let pfx = arch.prefix;
-    let ldso = if arch.name == "aarch64" {
-        "/lib/ld-linux-aarch64.so.1"
-    } else {
-        "/usr/x86_64-linux-gnu/lib64/ld-linux-x86-64.so.2"
+    let pfx = arch.prefix();
+    // The dynamic linker of the C runtime the drivers use: the host's own,
+    // or the cross one under its system root.
+    let ldso = match (arch.target.is_host(), arch.name) {
+        (true, "aarch64") => "/lib/ld-linux-aarch64.so.1".to_owned(),
+        (true, _) => "/lib64/ld-linux-x86-64.so.2".to_owned(),
+        (false, "aarch64") => {
+            arch.target.sysroot().join("lib/ld-linux-aarch64.so.1").display().to_string()
+        }
+        (false, _) => {
+            arch.target.sysroot().join("lib64/ld-linux-x86-64.so.2").display().to_string()
+        }
     };
+    // clang by the path the tool guard finds (the pinned LLVM's, not
+    // necessarily on PATH).
+    let clang = tool("clang").unwrap();
+    let clangxx = tool("clang++").unwrap();
+    let (clang, clangxx) = (clang.display(), clangxx.display());
     let ct = format!("--target={}-linux-gnu", arch.name);
     let here = dir.path().display();
     shell(
@@ -1224,7 +1256,7 @@ printf '#include <stdio.h>\nint p_fn(void); int main(void){{printf("%%d\\n",p_fn
 echo "GROUP ( {here}/s/libp.so AS_NEEDED ( {here}/s/libq.so ) )" > s/libpq.so
 echo "GROUP ( {ldso} )" > s/libldso.so
 {pfx}gcc -c h.c -o hc.o; {pfx}g++ -c h.cc -o hcc.o; {pfx}gfortran -c h.f90 -o hf.o; {pfx}gcc -c s/m.c -o s/m.o
-clang {ct} -c h.c -o hcl.o; clang++ {ct} -c h.cc -o hccl.o"#
+{clang} {ct} -c h.c -o hcl.o; {clangxx} {ct} -c h.cc -o hccl.o"#
         ),
     );
     let lines: Vec<(&str, &str, Vec<&str>)> = vec![

@@ -23,6 +23,9 @@ Deleted in the final commit.
   front_diff's `.eh_frame` mapping-symbol bound: 4 on the native
   runtime, 16 on the cross one with `.eh_frame` size and CIE/FDE counts
   lld's (ruling (a); cause suspected, not proven).
-- Open: baseline.on-x86_64.tsv from a hosted run (030d's 15 rows);
-  stage-3 findings on the x86-64 host; two green plain runs; the
-  triggers and spec/harness.md "Hosted CI".
+- After the merge: main's new host-assuming tests on their subject's
+  tools (shlib_oracle and its scripts, scan dynamic, a64 dynamic_ref,
+  debug_gc, synth dynsym verneed); baseline.on-x86_64.tsv gains 030d's
+  15 rows (from run 43743521473). Stage 3 on x86-64: 0 FAIL.
+- Open: two green plain runs; the triggers and spec/harness.md
+  "Hosted CI"; the landed record.

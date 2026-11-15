@@ -13,15 +13,17 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 LINKERS=${LINKERS-"bfd lld22 lld19 mold"}
 NORUN=${NORUN:-0}
 
+source "$HERE/tools.sh"
+
 mkdir -p "$W/bin"
 mk_bin() { mkdir -p "$W/bin/$1"; ln -sf "$2" "$W/bin/$1/ld"; }
-mk_bin aarch64-bfd /usr/bin/ld.bfd
-mk_bin x86_64-bfd /usr/bin/x86_64-linux-gnu-ld.bfd
+mk_bin aarch64-bfd "$(bfd_of aarch64)"
+mk_bin x86_64-bfd "$(bfd_of x86_64)"
 for a in aarch64 x86_64; do
   mk_bin $a-lld22 /usr/bin/ld.lld-22; mk_bin $a-lld19 /usr/bin/ld.lld-19; mk_bin $a-mold /usr/bin/mold
 done
 {
-  for t in gcc x86_64-linux-gnu-gcc ld.bfd x86_64-linux-gnu-ld.bfd ld.lld-22 ld.lld-19 mold qemu-x86_64 readelf; do
+  for t in "$(pfx aarch64)gcc" "$(pfx x86_64)gcc" "$(pfx aarch64)ld.bfd" "$(pfx x86_64)ld.bfd" ld.lld-22 ld.lld-19 mold readelf; do
     echo "$t: $($t --version 2>&1 | head -1)"; done
 } > "$W/versions.txt"
 
@@ -35,8 +37,8 @@ dsym() { readelf --dyn-syms -W "$1" 2>/dev/null | awk -v n="$2" '{s=$8; sub(/@.*
 runit() { # OUT
   [ "$NORUN" = 1 ] && { echo "run skipped"; return; }
   local o
-  if [ "$ARCH" = x86_64 ]; then
-    o=$(timeout 20 qemu-x86_64 -L /usr/x86_64-linux-gnu -E LD_LIBRARY_PATH="$LLP" "$1" 2>&1); else
+  if [ -n "$(pfx $ARCH)" ]; then
+    o=$(timeout 20 qemu-$ARCH -L /usr/$(triple $ARCH) -E LD_LIBRARY_PATH="$LLP" "$1" 2>&1); else
     o=$(cd "$X" && timeout 20 env LD_LIBRARY_PATH="$LLP" "$1" 2>&1); fi
   local rc=$?
   echo "run rc=$rc out=$(echo "$o" | head -3 | paste -sd'|' -)"
@@ -213,7 +215,7 @@ source "$HERE/experiments.sh"
 for ARCH in aarch64 x86_64; do
   [ "$WHICH" != all ] && [ "$WHICH" != $ARCH ] && continue
   X=$W/$ARCH; mkdir -p $X/out $X/d; LOG=$X/log.txt; : > $LOG
-  if [ $ARCH = aarch64 ]; then CC=gcc; else CC=x86_64-linux-gnu-gcc; fi
+  CC=$(pfx $ARCH)gcc
   LLP=$X/d:$X/leafdir:$X/middir:$X/topdir:$X/q
   write_sources
   build_libs
