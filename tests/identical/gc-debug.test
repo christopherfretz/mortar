@@ -1,0 +1,47 @@
+# static-identical corpus (spec/harness.md "static-identical"): GCC's C++
+# with DWARF 4 and DWARF 5, a COMDAT function in two objects (one copy
+# dropped with its debug information), a collected function in each and a
+# collected throwing one, linked with --gc-sections: the debug tombstones
+# of spec/image.md I-47 and the aranges lengths of I-112 on every
+# architecture (WP-030d: i386's ELFCLASS32 rows).
+#@ spec: harness.md "static-identical"
+#@ requires: g++
+
+cxx -g -gdwarf-4 -O0 -ffunction-sections -fdata-sections a.cc -o a4.o
+cxx -g -gdwarf-4 -O2 -ffunction-sections -fdata-sections b.cc -o b4.o
+cxx -g -gdwarf-5 -O2 -ffunction-sections -fdata-sections a.cc -o a5.o
+cxx -g -gdwarf-5 -O0 -ffunction-sections -fdata-sections b.cc -o b5.o
+link g++ -static -no-pie -Wl,--gc-sections a4.o b4.o -o gc4
+link g++ -static -no-pie -Wl,--gc-sections a5.o b5.o -o gc5
+link g++ -static -no-pie -Wl,--gc-sections -Wl,--threads=1 a4.o b5.o -o gc45
+
+#--- big.h
+inline __attribute__((noinline)) int big(int x) {
+  int s = 0;
+  for (int i = 0; i < x; ++i) s += i * x;
+  return s;
+}
+#--- a.cc
+#include <cstdio>
+#include <stdexcept>
+#include "big.h"
+static const char *unused_s() { return "only a collected function names this"; }
+const char *(*keep)() = nullptr;
+int unused_a(int x) {
+  if (x > 3) throw std::runtime_error(unused_s());
+  return big(x) + 7;
+}
+int helper(int);
+int main(int argc, char **) {
+  try {
+    if (argc > 5) throw std::runtime_error("live");
+  } catch (const std::exception &e) {
+    std::puts(e.what());
+  }
+  std::printf("%d %d\n", big(argc + 3), helper(argc));
+  return 0;
+}
+#--- b.cc
+#include "big.h"
+int unused_b(int x) { return big(x) * 2; }
+int helper(int x) { return big(x + 2); }
