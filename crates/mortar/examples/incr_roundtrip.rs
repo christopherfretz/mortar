@@ -10,8 +10,8 @@
 
 #![forbid(unsafe_code)]
 
-use std::ffi::OsString;
-use std::path::PathBuf;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 
 fn main() {
     let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -28,12 +28,12 @@ fn main() {
         eprintln!("usage: incr_roundtrip STATE REFERENCE REPLAY -- LINK-ARGS...");
         std::process::exit(2);
     });
-    let verdict = check(&PathBuf::from(state), &PathBuf::from(reference), replay, link);
+    let verdict = check(Path::new(&state), Path::new(&reference), &replay, link);
     println!("{verdict}");
     std::process::exit(i32::from(verdict != "ok"));
 }
 
-fn check(state: &PathBuf, reference: &PathBuf, replay: OsString, link: Vec<OsString>) -> String {
+fn check(state: &Path, reference: &Path, replay: &OsStr, link: Vec<OsString>) -> String {
     let bytes = match std::fs::read(state) {
         Ok(b) => b,
         Err(e) => return format!("read {e}"),
@@ -63,20 +63,20 @@ fn check(state: &PathBuf, reference: &PathBuf, replay: OsString, link: Vec<OsStr
         }
     }
     words.push("-o".into());
-    words.push(replay.clone());
+    words.push(replay.to_owned());
     let cwd = std::env::current_dir().unwrap_or_default();
     let inv = mortar::replay_link("mortar", &words, &cwd, &s);
     let mortar::Outcome::Linked { .. } = inv.outcome else {
         return "replay the replayed link failed".to_owned();
     };
-    match (std::fs::read(reference), std::fs::read(&replay)) {
+    match (std::fs::read(reference), std::fs::read(replay)) {
         (Ok(a), Ok(b)) if a == b => "ok".to_owned(),
         (Ok(_), Ok(_)) => "differ the replay's output is not the reference".to_owned(),
         (Err(e), _) | (_, Err(e)) => format!("read {e}"),
     }
 }
 
-fn stat(path: &PathBuf) {
+fn stat(path: &Path) {
     use mortar_incr::format::{HEADER_LEN, RECORD_LEN, kind};
     let bytes = std::fs::read(path).expect("the state");
     println!("total {} bytes", bytes.len());
