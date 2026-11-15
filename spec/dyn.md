@@ -9,7 +9,79 @@ in order and committed one by one.
 ### 2.2 Inputs on a default line
 ### 2.3 Options on the lines and their status today
 ### 2.4 Relocation types sent into a dynamic context
+
+E-corpus: C, C++ (exceptions, `thread_local` with dynamic initialization,
+template statics, `&std::cout`, `&typeid`, `new(nothrow)`) and Fortran
+(module variable, allocatable, common block), compiled by GCC 14,
+Clang 19 and Clang 22 (gfortran for Fortran) at `-O0`/`-O2` in the modes
+default, `-fno-pic`, `-fPIC`, `-fPIE`, `-fno-plt`, `-fPIC -fno-plt`, plus
+`-mtls-dialect=trad`/`-mtls-size=48` (AArch64) and `gnu2` (x86); 75 954
+relocation rows; 120 executables linked by the four references and run,
+identical output everywhere. Every compiler defaults to PIE
+(`__PIE__ 2`).
+
+| arch | types against a shared-object target, and where |
+|---|---|
+| AArch64 | `ABS64` (data, RELRO, init arrays: functions, IFUNCs, data, weak undefined); `ADR_PREL_PG_HI21` + `ADD_ABS_LO12_NC`/`LDST{8,32,64,128}_ABS_LO12_NC` against **shared data and functions** in `-fno-pic` code (copy relocation, canonical PLT); `ADR_GOT_PAGE` + `LD64_GOT_LO12_NC` (every mode); `CALL26`/`JUMP26` (functions, IFUNCs, **weak undefined**); `TLSDESC_*` (`-fPIC`, GCC's default dialect; also in `libgcc_eh.a`); `TLSIE_*` against **shared TLS** (libstdc++'s `__once_call`, from `std::call_once` in a PIE); `TLSGD_*` only under `-mtls-dialect=trad`; no `TLSLD_*` from any producer |
+| x86-64 | `PC32` against **shared data in GCC's default PIE** (`stdout`, `environ`, `optind`, `std::cout`: GCC assumes copy relocations in a PIE) and in every `-fno-pic` object; `32`/`32S` in `-fno-pic` (`.eh_frame`/`.gcc_except_table` against `__gxx_personality_v0`, `_ZTISt9exception`); `64` in data and, from Clang `-O0 -fno-pic`, in `.text` (`movabs`); `REX_GOTPCRELX`, `GOTPCRELX` (`-fno-plt` calls), plain `GOTPCREL` (`-O2` weak tests); `PLT32` (functions, IFUNCs, weak undefined); `TLSGD`/`TLSLD`/`DTPOFF32` (`-fPIC`); `GOTPC32_TLSDESC`/`TLSDESC_CALL` (`gnu2`, with `_TLS_MODULE_BASE_`); `GOTTPOFF` against **shared TLS**; `TPOFF32` |
+| i386 | `32` (everywhere, `.text` in `-fno-pic`, `.eh_frame` against functions); `PC32` (`-fno-pic`); `PLT32`; plain `GOT32` (Clang and G++ `-O2`; `Scrt1.o` against `main`/`__libc_start_main`); `GOT32X`, `GOTOFF`, `GOTPC`; `TLS_GD`, `TLS_LDM`, `TLS_LDO_32` (`-fPIC`); `TLS_GOTDESC`/`TLS_DESC_CALL` (`gnu2`); `TLS_GOTIE` (PIE); `TLS_IE` (`-fno-pic`); `TLS_LE` |
+
+Targets beyond the obvious: `__dso_handle` (hidden, crtbegin), the hidden
+`DW.ref.__gxx_personality_v0` in a COMDAT group, `STB_GNU_UNIQUE` template
+statics (GCC; Clang makes them weak), a common block (gfortran), and
+`atexit`, a `GLOBAL HIDDEN` definition in `libc_nonshared.a` — the only
+archive member a default dynamic link extracts (C programs; C++ and
+Fortran links extract none: `libgcc_s` is dynamic). The crt objects add
+GOT references to `main` and `__libc_start_main` (`Scrt1.o`), weak
+references to `__gmon_start__`, `_ITM_*` (crtbegin) and, in the non-PIE
+`crtbegin.o` of x86-64, `R_X86_64_32`/`32S` against them.
+
+Consequences for the rules: an **x86-64 PIE needs copy relocations**
+(GCC's default code reads `stdout` PC-relatively; all three references
+copy `stdout`, `stderr`, `optind`, `opterr`, `environ`, `std::cout`,
+`std::cerr`, `std::nothrow` into GCC's PIEs), which arch.md §4.3's
+`Pie`/`Pc`/`Shlib` = `E` and a64.md Q5 ("no COPY in PIE") would refuse
+(D-43, request R-A3); every default `printf`-to-`stdout` x86-64 program
+hits it. AArch64 PIEs reach shared data through the GOT.
+
 ### 2.5 Dynamic features of the system's shared objects
+
+E-corpus task 2, Debian 13 (glibc 2.41, GCC 14 runtime):
+
+| feature | AArch64 | x86-64 | i386 |
+|---|---|---|---|
+| `libc.so.6` verdefs (max `vd_cnt`) | 23 (2), incl. `GLIBC_ABI_DT_RELR`, `GLIBC_PRIVATE` | 42 (2) | 53 (2) |
+| hidden `versym` entries in libc | 475 | 531 | 689 |
+| hash tables of libc | `DT_GNU_HASH` | both | both |
+| libc `DT_FLAGS` / `FLAGS_1` | `BIND_NOW` / `NOW` | `BIND_NOW|STATIC_TLS` / `NOW` | same as x86-64 |
+| `DT_RELR` | glibc's libraries and `ld.so`; not libstdc++, libgcc_s, libgfortran | same | same |
+| IFUNC exports | libc 7, libm 0 | libc 63, libm 91 | libc 48, libm 27 |
+| TLS exports | libc: `errno`, `__resp`, `__h_errno`, `__libc_dlerror_result` (all `GLIBC_PRIVATE`); libstdc++: `__once_callable`, `__once_call` | same | same |
+| `STV_PROTECTED` exports | none in any system library | none | none |
+| `STB_GNU_UNIQUE` | 106 objects in libstdc++ | 106 | 106 |
+| libstdc++ exported objects | ~850 in `.rodata`, ~495 in `.data.rel.ro` (typeinfo, vtables: copied into a non-PIE as read-only data) | same | same |
+| libgcc_s | `TLSDESC` 1 | a lone `DTPMOD64` (local-dynamic, offset 0) | a lone `DTPMOD32` |
+
+Features that inputs present and the rules must take (all measured):
+one name with a different `st_type` or `st_size` per version (x86-64
+`memcpy@GLIBC_2.2.5` `FUNC`, `memcpy@@GLIBC_2.14` `GNU_IFUNC` at another
+address; `_sys_errlist` four sizes); symbols that exist only under a
+hidden version (`__cpu_model@GCC_4.8.0`, `__rtld_version_placeholder`,
+i386 `_IO_stdout_`), which no unversioned reference may bind (resolve
+§9.2); copy-relocation candidates with aliases at one address (`environ`,
+`__environ`, `_environ`, of bindings `WEAK`, `GLOBAL`, `WEAK`); objects
+whose value is more aligned than needed (`std::cout` at a 256-aligned
+value in a 16-aligned section); libraries that bind to the executable's
+copy through their own `GLOB_DAT` and `R_X86_64_64` (libc's `__environ`,
+libstdc++'s 176 `R_X86_64_64` against
+`_ZTVN10__cxxabiv120__si_class_type_infoE`, libgfortran's `stdout`), which
+is why every alias of a copy must be exported (D-21). `libc.so` is
+`GROUP(libc.so.6 libc_nonshared.a AS_NEEDED(ld-linux-*.so.*))` with
+absolute paths (`/lib64/…` on x86-64); `libm.so` is a script with
+`AS_NEEDED(libmvec.so.1)` on AArch64 and x86-64 and a symbolic link on
+i386; `libgcc_s.so` is `GROUP(libgcc_s.so.1 -lgcc)`; libstdc++,
+libgfortran and libquadmath are symbolic links. No `libc++.so` exists on
+the host (Debian's is the script `INPUT(libc++.so.1 -lc++abi)`).
 ### 2.6 kiln's libc++ lane
 ### 2.7 What is refused today, ranked
 ## 3. Inventory of what the specs already say
