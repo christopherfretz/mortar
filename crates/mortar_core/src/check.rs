@@ -378,7 +378,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             need(ok, r, || "a field out of range".into(), [Row::Entry("patches", at as u32)])?;
         }
         for (at, row) in p.redirects.iter().enumerate() {
-            let ok = row.section.index() < sections && (row.patch as usize) < p.patches.len();
+            let ok = row.section.index() < sections;
             need(ok, r, || "a field out of range".into(), [Row::Entry("redirects", at as u32)])?;
         }
         for (at, row) in p.sized.iter().enumerate() {
@@ -1231,7 +1231,10 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 || "a redirected site outside its section".into(),
                 [me, Row::Section(row.section)],
             )?;
-            used[row.patch as usize] = true;
+            let Some(cell) = used.get_mut(row.patch as usize) else {
+                return fail(r, "a site redirected to a patch that does not exist", [me]);
+            };
+            *cell = true;
         }
         match used.iter().position(|u| !u) {
             Some(at) => fail(r, "a patch no site uses", [Row::Entry("patches", at as u32)]),
