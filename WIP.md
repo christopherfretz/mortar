@@ -6,9 +6,9 @@ mortar_odr (register.rs O-47 + test, foreign.rs W1-W4, lib.rs check + stats);
 front.rs call after resolve; Timer::line for --odr-stats; xtask `diag:`
 directive (linktest/odr.rs, format.rs, engine.rs).
 
-Half-done: options audit evidence (crates/mortar/tests/options.rs AUDIT),
-spec/cli.md §4.1 counts, docs/status/options.md regen.
+Done also: options audit, cli.md counts, options.md, crates/mortar/tests/odr.rs,
+tests/link/odr (9 tests, pass on 3 arches).
 
-Next: tests/link/odr/*.test; crates/mortar/tests/odr.rs (off byte-identity,
-stats, detect noop, threads); oracle; cost; record spec/landed/meta/WP-072.md.
+Next: oracle (wrapper runs of linktest + static-identical, design corpora),
+cost (bench), record spec/landed/meta/WP-072.md, gate.
 Scratch: /tmp/mortar-wp072-main.

@@ -1,0 +1,60 @@
+# The legal corpus's shapes the foreign checks must not report by default
+# (spec/odr.md §12.2, O-47): N21, the C99 `inline` + one `extern inline`
+# idiom in a header shared by C and C++ (a strong C definition and a C++
+# COMDAT copy: W3, strict only); and inline functions and vtables emitted
+# identically in three units (W1, W2 over equal copies). N22 is not here:
+# g++ emits the C++17 copy as STB_GNU_UNIQUE and every linker refuses the
+# pair as a duplicate (spec/odr.md N20's note); it needs Clang's weak
+# copy. N23 is n23-notype.test. No directive: a mortar link that reported
+# a one-definition-rule diagnostic would fail.
+#@ spec: odr.md §12.2
+#@ requires: g++
+
+cc -O1 -std=c99 sq.c -o sq.o
+cxx -O0 sqpp.cc -o sqpp.o
+cxx -O0 v1.cc -o v1.o
+cxx -O0 v2.cc -o v2.o
+cxx -O0 v3.cc -o v3.o
+cxx -O0 main.cc -o main.o
+link g++ -static -no-pie main.o sq.o sqpp.o v1.o v2.o v3.o -o prog
+run prog
+  stdout: 9 9 6
+
+#--- sq.h
+#ifdef __cplusplus
+extern "C" {
+#endif
+inline int sq(int x) { return x * x; }
+#ifdef __cplusplus
+}
+#endif
+#--- sq.c
+#include "sq.h"
+extern inline int sq(int x);
+int sq_c(void) { return sq(3); }
+#--- sqpp.cc
+#include "sq.h"
+int sq_cpp() { return sq(3); }
+#--- v.h
+struct V {
+  virtual int f() { return 2; }
+  virtual ~V() {}
+};
+inline int twice(int x) { return x + x; }
+#--- v1.cc
+#include "v.h"
+int v1() { V v; V* p = &v; return p->f() + twice(0); }
+#--- v2.cc
+#include "v.h"
+int v2() { V v; V* p = &v; return p->f() + twice(0); }
+#--- v3.cc
+#include "v.h"
+int v3() { V v; V* p = &v; return p->f() + twice(0); }
+#--- main.cc
+#include <cstdio>
+extern "C" int sq_c(void);
+int sq_cpp();
+int v1();
+int v2();
+int v3();
+int main() { std::printf("%d %d %d\n", sq_c(), sq_cpp(), v1() + v2() + v3()); }
