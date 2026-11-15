@@ -74,10 +74,13 @@ pub fn place(
     pool: &Pool,
 ) -> Result<Placed, Vec<LayoutDiag>> {
     let (target, options) = (link.target, link.options);
+    let mut steps = mortar_core::wp032b_steps::Steps::new("place");
     let info = finish(assignment, link.headers, link.liveness, target)?;
+    steps.step("finish", 0, "");
     let ranks = out_ranks(assignment);
     let ordered =
         order(assignment, link.headers, link.resolution, link.liveness, link.folds, &ranks, pool)?;
+    steps.step("order", 0, "");
     let keep_empty = start_stop_outputs(assignment, link.resolution, link.symbols);
     let mut warnings = Vec::new();
     let (exec, warn) = executable_stack(link.stack_notes, options.execstack);
@@ -98,7 +101,9 @@ pub fn place(
         relro: options.relro,
     };
     let staged = chunk(&inputs, target, &rules, pool).map_err(|e| vec![e])?;
+    steps.step("chunk", staged.chunks.len() as u64, "chunk");
     let fixed = fixed_point(&staged, target, options, &rules, range, pool).map_err(|e| vec![e])?;
+    steps.step("fixed point", u64::from(fixed.rounds), "round");
     let cx = SymbolInputs {
         resolution: link.resolution,
         assignment,
@@ -112,6 +117,7 @@ pub fn place(
     };
     let syms = symbols(cx, target, options, entry_def).map_err(|e| vec![e])?;
     warnings.extend(syms.warnings);
+    steps.step("symbols", 0, "");
     let placement = Placement {
         chunks: fixed.addressed.chunks,
         order: staged.order.clone(),
@@ -125,5 +131,6 @@ pub fn place(
         tls: fixed.addressed.tls,
         entry: syms.entry,
     };
+    steps.step("placement", 0, "");
     Ok(Placed { placement, rules, staged, warnings, rounds: fixed.rounds })
 }

@@ -379,9 +379,11 @@ fn needs(
     code_outs: &[OutSecId],
     bodies: &Bodies,
     pool: &Pool,
+    steps: &mut mortar_core::wp032b_steps::Steps,
 ) -> Result<(Vec<Need>, SiteKeys), LayoutDiag> {
     let branches = range.sites.branches();
     let targets = range.sites.targets(round, pool);
+    steps.step("targets", branches.len() as u64, "branch");
     if targets.len() != branches.len() {
         return Err(internal("not one branch target per branch site"));
     }
@@ -403,6 +405,7 @@ fn needs(
     for j in judged {
         out.extend(j?);
     }
+    steps.step("branch needs", branches.len() as u64, "branch");
     let mut keys = BTreeSet::new();
     let errata = range.arch.errata();
     if errata.is_empty() {
@@ -447,6 +450,7 @@ fn needs(
             }
         }
     }
+    steps.step("erratum needs", keys.len() as u64, "site");
     Ok((out, keys))
 }
 
@@ -492,6 +496,8 @@ pub fn fixed_point(
     let mut sets: Vec<BTreeSet<Key>> = vec![BTreeSet::new(); n];
     let mut redirect: BTreeMap<(SectionId, u64), (usize, Key)> = BTreeMap::new();
     let mut number = 0u32;
+    let mut steps = mortar_core::wp032b_steps::Steps::new("fixed");
+    steps.step("prepare", 0, "");
     loop {
         number += 1;
         let laid: Vec<Laid> = match range {
@@ -502,7 +508,9 @@ pub fn fixed_point(
             return Err(cap_refusal());
         }
         let island_sizes: Vec<u64> = laid.iter().map(|l| l.size).collect();
+        steps.step("lay out", 0, "");
         let addressed = address(staged, &island_sizes, target, options, rules)?;
+        steps.step("address", addressed.chunks.len() as u64, "chunk");
         // The patch table, sorted by (chunk, offset): islands are in
         // ChunkId order and each island's rows in offset order.
         let mut patches = Vec::new();
@@ -529,8 +537,9 @@ pub fn fixed_point(
             patches: &patches,
             redirects: &redirects,
         };
+        steps.step("tables", patches.len() as u64, "patch");
         let (mut needs, erratum_keys) = match range {
-            Some(r) => needs(r, &round, &code_outs, &bodies, pool)?,
+            Some(r) => needs(r, &round, &code_outs, &bodies, pool, &mut steps)?,
             None => (Vec::new(), BTreeSet::new()),
         };
         if needs.is_empty() {

@@ -425,6 +425,7 @@ pub fn front<'s>(
     }
 
     // 80: the synthetic chunks' plans, as sizes.
+    let mut steps = mortar_core::wp032b_steps::Steps::new("synthetic");
     let slots = slots_of(&scanned.demands, &resolution);
     let merge_eh = match MergeEh::new(&merge.eh, &tables) {
         Ok(m) => m,
@@ -433,9 +434,12 @@ pub fn front<'s>(
             return None;
         }
     };
+    steps.step("merge eh", 0, "");
     let eh = EhPlan::new(&merge_eh, |s: SectionId| liveness.is_live(s), &pool, diag).ok()?;
+    steps.step("eh plan", 0, "");
     let eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
     let hdr = HdrPlan::new(&merge_eh, &eh, eh_frame_hdr, &pool, diag).ok()?;
+    steps.step("hdr plan", 0, "");
     let memory_seal = plan.z.memory_seal == Some(true);
     let property = property_plan(&inputs, &resolution, &headers, arch, memory_seal, diag).ok()?;
     let feature_1_and = property.value_u32(mortar_a64::FEATURE_1_AND);
@@ -445,6 +449,7 @@ pub fn front<'s>(
         .ok()?;
     let got = GotPlan::new(&arch, &slots, scanned.demands.output, variant, diag).ok()?;
     let build_id = BuildIdPlan::new(plan.shaping.build_id.as_ref(), diag).ok()?;
+    steps.step("property got build-id", 0, "");
     let core = CoreSections { resolution: &resolution, liveness: &liveness, split: &merge.split };
     let sections = LinkSections { core, assignment: &assignment };
     let syms = CoreSyms::new(&inputs, &resolution, &assignment);
@@ -461,7 +466,9 @@ pub fn front<'s>(
     } else {
         Some(SymtabPlan::new(&sym_cx, Class::Elf64, &[], facts, &pool, diag).ok()?)
     };
+    steps.step("symtab plan", 0, "");
     timer.phase(80, "synthetic");
+    let mut steps = mortar_core::wp032b_steps::Steps::new("layout");
 
     // 90: layout, to the fixed point.
     let folds = Folds::default();
@@ -490,6 +497,7 @@ pub fn front<'s>(
     let mut shndx = SymtabPlan::needs_shndx(names.len() as u32 + 2);
     let walker = Walker::new(&arch, &scan_inputs, scan_options);
     let mut attempt = 0;
+    steps.step("prepare", 0, "");
     let (placement_assignment, placed, layout, erratum_fixes) = loop {
         attempt += 1;
         plans.shstrtab = shstrtab.clone();
@@ -533,6 +541,7 @@ pub fn front<'s>(
                 return None;
             }
         };
+        steps.step("sites", 0, "");
         let range = RangeExtension { arch: &arch, sites: &link_sites };
         let link = mortar_layout::Link {
             headers: &headers,
@@ -549,6 +558,7 @@ pub fn front<'s>(
             options: &options,
         };
         let mut a = assignment.clone();
+        steps.step("assignment clone", 0, "");
         let placed =
             match mortar_layout::place(&link, &mut a, Some(&range), |e| inputs.entry_def(e), &pool)
             {
@@ -562,6 +572,7 @@ pub fn front<'s>(
                     return None;
                 }
             };
+        steps.step("place", u64::from(placed.rounds), "round");
         // The sizes known only now (S-90 after stage C; R-L5 after the
         // fixed point): equal, or one more run with them (they are
         // non-allocated and last, so they move no address).
@@ -589,6 +600,7 @@ pub fn front<'s>(
                 || new.strtab_size() != old.strtab_size()
                 || (shndx && new.shndx_size() != old.shndx_size());
             plans.symtab = Some(new);
+            steps.step("symtab replan", placed.placement.patches.len() as u64, "patch");
         }
         if again && attempt < 3 {
             continue;
@@ -607,6 +619,7 @@ pub fn front<'s>(
                 return None;
             }
         };
+        steps.step("erratum fixes", 0, "");
         // The exact names, in section index order (S-90: `sh_name` of
         // section `n` is the plan's `n`-th name); their size is the one
         // placed.
@@ -617,8 +630,10 @@ pub fn front<'s>(
             slots,
             placement: placed.placement.clone(),
         };
+        steps.step("layout clone", 0, "");
         break (a, placed, layout, fixes);
     };
+    steps.step("drop sites", 0, "");
     for (seq, w) in (0u64..).zip(placed.warnings.iter().cloned()) {
         let (k, d) = layout_diag(&inputs, &resolution, w, Key::new(90, 0, u64::MAX - 1000 + seq));
         if entry_warned && d.id() == "entry-not-found" {
@@ -654,7 +669,10 @@ pub fn front<'s>(
         demands,
         shapes: &shapes,
     };
-    if let Err(v) = layout.validate(&cx) {
+    steps.step("checks", 0, "");
+    let validated = layout.validate(&cx);
+    steps.step("validate", 0, "");
+    if let Err(v) = validated {
         diag.emit(
             Key::new(90, 0, u64::MAX),
             internal(format!("the layout breaks its rules: {v:?}")),
