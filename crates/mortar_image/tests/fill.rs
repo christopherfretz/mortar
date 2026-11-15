@@ -478,3 +478,70 @@ fn output_kind_is_static() {
 
 #[allow(dead_code)]
 fn _unused(_: Image<'_>) {}
+
+// spec: image.md I-111: no `apply` writes outside `[r_offset − before,
+// r_offset + width + after)` with the stated `max_reach` (AArch64 (0, 4)):
+// every record of random sections, and the GD→LE sequence, applied alone
+// to the input bytes.
+#[test]
+fn i111_max_reach_bounds_every_write() {
+    use mortar_arch::{Arch, FillCx, RelocAt, SectionOut, Site};
+    let (before, after) = a64().max_reach;
+    let mut worlds = vec![random_world(17, 1 << 19, 4096)];
+    let o = 64u64;
+    let mut words = vec![0u32; 16];
+    words.extend([ADRP_X0, ADD_X0_X0, BL, NOP, 0, 0]);
+    let records = vec![
+        Reloc { r_offset: o, key: key(2), r_type: TLSGD_ADR_PAGE21, addend: 0 },
+        Reloc { r_offset: o + 4, key: key(2), r_type: TLSGD_ADD_LO12_NC, addend: 0 },
+        Reloc { r_offset: o + 8, key: key(3), r_type: CALL26, addend: 0 },
+    ];
+    let mut gd = one_section(&words, 0, records, 4096, 4096);
+    gd.tables.names.insert(key(3), b"__tls_get_addr".to_vec());
+    gd.tables.define(key(2), TLS.start + 0x10, true);
+    worlds.push(gd);
+    let mut checked = 0;
+    for w in &worlds {
+        let cx = FillCx { tables: &w.tables, output: OutputKind::Static, got_base: None, tls: Some(TLS) };
+        for u in w.plan.inputs.iter() {
+            let Some(r) = u.relocs else { continue };
+            let rs = &w.plan.relocs[r as usize];
+            let mut input = vec![0u8; u.section_size as usize];
+            mortar_image::source::Source::copy_to(&w.source, u.file, u.src..u.src + u.section_size, &mut input).unwrap();
+            let name = w.plan.name(u.name).to_vec();
+            let recs: &[Reloc] = &rs.records;
+            for (i, rec) in recs.iter().enumerate() {
+                let Ok(h) = ARCH_M2.classify(rec.r_type, Site { bytes: &input, offset: rec.r_offset }) else { continue };
+                let at = RelocAt {
+                    file: u.file,
+                    section: u.section,
+                    index: i as u32,
+                    r_offset: rec.r_offset,
+                    key: rec.key,
+                    r_type: rec.r_type,
+                    addend: rec.addend,
+                    howto: &h,
+                    site: Site { bytes: &input, offset: rec.r_offset },
+                    records: &recs,
+                    proof: &rs.proof,
+                };
+                // A sentinel buffer: every byte apply writes differs from it
+                // in at least one of two fills.
+                for fillb in [0x00u8, 0xff] {
+                    let mut bytes = vec![fillb; input.len()];
+                    let mut out = SectionOut { bytes: &mut bytes, addr: u.addr, alloc: u.alloc, name: &name };
+                    let _ = ARCH_M2.apply(&cx, &at, &mut out);
+                    let lo = rec.r_offset.saturating_sub(before);
+                    let hi = rec.r_offset + u64::from(h.field.width()) + after;
+                    for (k, b) in bytes.iter().enumerate() {
+                        if *b != fillb {
+                            assert!((lo..hi).contains(&(k as u64)), "{} at {:#x} wrote {k:#x}", h.name, rec.r_offset);
+                        }
+                    }
+                }
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 100, "{checked}");
+}
