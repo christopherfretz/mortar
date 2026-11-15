@@ -17,6 +17,10 @@ mortar_elf.workspace = true
 mortar_synth.workspace = true
 
 [dev-dependencies]
+mortar_a64.workspace = true
+mortar_input.workspace = true
+mortar_layout.workspace = true
+mortar_resolve.workspace = true
 mortar_testutil.workspace = true
 
 [lints]
