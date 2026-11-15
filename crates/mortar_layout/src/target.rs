@@ -122,6 +122,9 @@ pub struct Options {
     pub relro: bool,
     /// `-z now` / `-z lazy` (default): `.got.plt` in the RELRO run (L-60).
     pub now: bool,
+    /// A position-independent executable (`Pie`, `spec/dyn.md` D-1): image
+    /// base 0 (L-68).
+    pub pie: bool,
     pub entry: EntryName,
 }
 
@@ -138,27 +141,42 @@ impl Options {
             eh_frame_hdr: false,
             relro: true,
             now: false,
+            pie: false,
             entry: EntryName::Symbol(b"_start".to_vec()),
         }
     }
 
-    /// The options of a plan. M1 links static non-PIE executables only;
-    /// another output kind is refused by name.
+    /// The options of a plan. Layout places static executables and the
+    /// dynamic ones of `spec/dyn.md` D-1 (`Exec`, and `Pie` at base 0) on
+    /// ELF64; another output kind is refused by name. (The command line's
+    /// dynamic gates are refused before layout until the M2 join,
+    /// `mortar::dynamic`.)
     ///
     /// # Errors
     ///
     /// `invalid-option-value` for a page size L-74 or L-75 does not accept;
-    /// `refused` for an output kind M1 does not link.
+    /// `refused` for an output kind layout does not place: static-pie
+    /// (its own package, WP-M2-SPIE), shared objects and `-r` (M4), and a
+    /// dynamic executable of ELFCLASS32 (i386 dynamic links are M4,
+    /// `spec/landed/dyn/WP-040.md` §6).
     pub fn from_plan(plan: &Plan, target: &Target) -> Result<Self, LayoutDiag> {
-        match plan.kind {
-            OutputKind::StaticExecutable | OutputKind::Executable => {}
-            OutputKind::PieExecutable | OutputKind::StaticPie => {
+        let pie = match plan.kind {
+            OutputKind::StaticExecutable => false,
+            OutputKind::Executable | OutputKind::PieExecutable
+                if target.class == Class::Elf32 =>
+            {
+                return Err(feature("ELFCLASS32 dynamic executable"));
+            }
+            OutputKind::Executable => false,
+            OutputKind::PieExecutable => true,
+            OutputKind::StaticPie => {
                 return Err(feature("position-independent executable output"));
             }
             OutputKind::Shared => return Err(feature("shared object output")),
             OutputKind::Relocatable => return Err(feature("relocatable output")),
-        }
+        };
         let mut o = Self::defaults(target);
+        o.pie = pie;
         if let Some(v) = &plan.z.max_page_size {
             let text = v.to_string_lossy();
             o.max_page = match parse_number(&text) {
@@ -207,7 +225,7 @@ impl Options {
     #[must_use]
     pub fn segment_rules(&self, target: &Target, exec_stack: bool) -> SegmentRules {
         let stack = if exec_stack { PF_R | PF_W | PF_X } else { PF_R | PF_W };
-        SegmentRules { class: target.class, max_page: self.max_page, stack }
+        SegmentRules { class: target.class, max_page: self.max_page, stack, pie: self.pie }
     }
 }
 
