@@ -162,9 +162,8 @@ fn tables() -> Tables {
     t.names.insert(key(9), b"___tls_get_addr".to_vec());
     for k in 1..=7 {
         let base = GOT + 0x100 * u64::from(k);
-        for (n, kind) in [SlotKind::Addr, SlotKind::TpOff { negated: false }]
-            .into_iter()
-            .enumerate()
+        for (n, kind) in
+            [SlotKind::Addr, SlotKind::TpOff { negated: false }].into_iter().enumerate()
         {
             t.slots.insert((key(k), kind), base + 4 * n as u64);
         }

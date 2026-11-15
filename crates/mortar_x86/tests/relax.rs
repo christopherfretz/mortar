@@ -223,8 +223,16 @@ fn x86_25_no_relaxation_in_a_non_alloc_section() {
     let input = section(&[0x8b, modrm(0, true), 0, 0, 0, 0]);
     let mut sink = Sink::default();
     let debug = PlaceFacts { alloc: false, writable: false };
-    scan_all(X86::M1, &t, OutputKind::Static, debug, &input, &[rel(AT + 2, SYM, GOT32X)], &mut sink)
-        .unwrap();
+    scan_all(
+        X86::M1,
+        &t,
+        OutputKind::Static,
+        debug,
+        &input,
+        &[rel(AT + 2, SYM, GOT32X)],
+        &mut sink,
+    )
+    .unwrap();
     assert_eq!(sink.errors.len(), 1, "{sink:?}");
     let mut c = case(&t, &input, OutputKind::Static);
     c.alloc = false;
@@ -436,13 +444,7 @@ fn x86_36_review_shapes_are_refused() {
         // `leal x@tlsgd(%ebx), %ecx`.
         ("GD into %ecx", [&[0x8d, 0x8b, 0, 0, 0, 0][..], &e8, &[0x90]].concat(), TLS_GD, 2, 5),
         // D2 with `call *x(%esp)` (rm' = 100, a SIB byte).
-        (
-            "D2 rm' = 100",
-            vec![0x8d, 0x83, 0, 0, 0, 0, 0xff, 0x94, 0x24, 0, 0, 0, 0],
-            TLS_GD,
-            2,
-            7,
-        ),
+        ("D2 rm' = 100", vec![0x8d, 0x83, 0, 0, 0, 0, 0xff, 0x94, 0x24, 0, 0, 0, 0], TLS_GD, 2, 7),
     ];
     for (what, form, lead, p, delta) in shapes {
         let input = section(&form);
@@ -455,11 +457,8 @@ fn x86_36_review_shapes_are_refused() {
     // The partner two records away.
     let (_, form, lead, p, partner, delta, _) = sequences().remove(0);
     let input = section(&form);
-    let relocs = [
-        rel(AT + p, SYM, lead),
-        rel(AT + 40, SYM, 1),
-        rel(AT + p + delta, GET_ADDR, partner),
-    ];
+    let relocs =
+        [rel(AT + p, SYM, lead), rel(AT + 40, SYM, 1), rel(AT + p + delta, GET_ADDR, partner)];
     let s = scan(&t, OutputKind::Static, &input, &relocs);
     assert_eq!(refused_name(&s.errors[0].1), UNRECOGNIZED_GD, "{s:?}");
 }

@@ -11,10 +11,10 @@ use mortar_elf::{Class, Machine};
 use mortar_x86::{FACTS, MAX_REACH, TLS, X86, relax, synth, table};
 
 /// §6.1's M1 rows.
-const M1_TYPES: [u32; 20] = [0, 1, 2, 3, 4, 9, 10, 15, 16, 17, 18, 19, 20, 21, 22, 23, 32, 38, 39, 40];
-const M1_ALL: [u32; 21] = [
-    0, 1, 2, 3, 4, 9, 10, 15, 16, 17, 18, 19, 20, 21, 22, 23, 32, 38, 39, 40, 43,
-];
+const M1_TYPES: [u32; 20] =
+    [0, 1, 2, 3, 4, 9, 10, 15, 16, 17, 18, 19, 20, 21, 22, 23, 32, 38, 39, 40];
+const M1_ALL: [u32; 21] =
+    [0, 1, 2, 3, 4, 9, 10, 15, 16, 17, 18, 19, 20, 21, 22, 23, 32, 38, 39, 40, 43];
 
 fn site() -> Site<'static> {
     Site { bytes: &[0; 64], offset: 32 }
@@ -206,7 +206,13 @@ fn iplt_entries_of_x86_48_49() {
     assert_eq!(x.plt_variant(&ocx(OutputKind::Pie, 1)), Ok(PltVariant::IbtPic));
     assert_eq!(x.plt(PltVariant::Abs).iplt_entry, 8);
     assert_eq!(x.plt(PltVariant::IbtPic).iplt_entry, 16);
-    let cx = SynthCx { addr: 0x0804_9020, header: 0, got_plt: 0x0804_c00c, got_base: 0x0804_c000, index: 0 };
+    let cx = SynthCx {
+        addr: 0x0804_9020,
+        header: 0,
+        got_plt: 0x0804_c00c,
+        got_base: 0x0804_c000,
+        index: 0,
+    };
     let mut out = [0u8; 16];
     x.write_plt(PltVariant::Abs, PltPart::Iplt(0), &cx, &mut out).unwrap();
     assert_eq!(out[..8], [0xff, 0x25, 0x0c, 0xc0, 0x04, 0x08, 0x66, 0x90]);

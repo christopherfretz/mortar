@@ -297,7 +297,11 @@ fn s7_x86_21_x86_22_weak0_scan_cells() {
     // Static-pie: `Pc` and `GotRel` are E, "recompile with -fPIE".
     for r_type in [2, 9, 21, 23] {
         let s = scan(&t, OutputKind::Pie, TEXT, &z, r_type);
-        assert_eq!(s.errors, [(0, ScanError::Incompatible(Incompatible::RecompilePie))], "{r_type}");
+        assert_eq!(
+            s.errors,
+            [(0, ScanError::Incompatible(Incompatible::RecompilePie))],
+            "{r_type}"
+        );
     }
     // `32` and PLT32 are accepted in static-pie (§7).
     let s = scan(&t, OutputKind::Pie, DATA, &z, 1);
