@@ -27,3 +27,10 @@ Run dir: /tmp/mortar-wp034-1178167 (`.rundir`), binaries in its `bin/`.
   31.8/77.8/79.8/8.6(parent)/32.3/29.5 MiB. --time-phases: t1 total
   ~38-42 ms (input 27, image 4, resolve 3, layout 3); default 50-79 ms
   (input 26, layout 17, split 8, resolve 7, image 7, scan 6, synth 6).
+- Supervisor (843419 fix on main cc4efaa): the libc++ lane's link line
+  (clang++ driver via kiln, $R/linkline.txt) has NO
+  --fix-cortex-a53-843419 -> full mortar run stays on ea4a0e1. The
+  g++-driver programs cells DO carry it (g++ -### shows it): plan = merge
+  main once later, re-run programs with the merged binary, and time the
+  typical link + 2 shards with/without MORTAR_HUGEPAGES=1.
+- gate: ci --quick ok at 06d57ff.
