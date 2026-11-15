@@ -10,9 +10,15 @@
 - Stage A source: crates/mortar_x86/src/{table,forms,relax,apply,synth,lib}.rs
   compile, clippy clean. tests/support/mod.rs (REL Case::word, set_addend, rel).
 
+- Tests written and passing: table.rs (9), x86.rs (24), relax.rs (21),
+  clip.rs (4; 21 types, 11 634 cases), w.rs (14, W1-W16 minus W12 = driver),
+  elf/mod.rs (ELF32 reader). examples/apply_bench.rs: x86 scan 98 M/s,
+  apply 72 M/s vs x64 104 / 88 M/s (same host, load 12.8/12 CPUs).
+- x86.md §6.3 correction committed (0x<n> per diag.md §4.2).
+
 ## Half-done
-- Tests: table.rs, x86.rs (per type, scan cells, X86-13), relax.rs, clip.rs,
-  W-cases, qemu sites, §16 differential, census: none written yet.
+- tests/census.rs and tests/differential.rs (+ sites/mod.rs, data/) are
+  being written by two opus subagents (do not touch those files).
 
 ## Learned, not yet written (findings for the record / hand-back)
 - image.md I-111's i386 values (R-3 first half) are image.md's: not edited.
@@ -31,6 +37,10 @@
 - Relaxed GOT32X still demands its GDAT slot (harmless; kind-1 could drop it).
 - Brief lists TLS_LE_32 under LE; x86.md X86-14 refuses it: kept refused.
 
+- X86-2 (RELA refused) lives in mortar_scan/src/view.rs:542 (stage B).
+- TLS_TO_IE unreachable in M1 (no non-local TLS kind in static links).
+
 ## Next
-- Write tests/table.rs, tests/x86.rs, tests/relax.rs, tests/clip.rs.
-- Then the qemu sites, §16 differential, census (consider opus subagents).
+- Review + commit census/differential; record spec/landed/x86/WP-030b.md;
+  final gate (MORTAR_REQUIRE_TOOLS=1 cargo xtask ci --quick) in background;
+  delete WIP.md; rm /tmp/mortar-wp030b-576295 by explicit path; hand-back.
