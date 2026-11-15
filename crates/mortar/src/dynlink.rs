@@ -312,6 +312,15 @@ pub fn plan(
             return None;
         }
     };
+    // D-1: a `StaticPie`'s `.dynsym` is the null entry only; exporting
+    // into it is M4's (`--export-dynamic`; GNU ld, lld and mold export
+    // every global there).
+    if kind == DynKind::StaticPie && t.plan.dynamic.export_dynamic {
+        emit(refused("--export-dynamic in a static-pie").note(
+            "a static-pie's .dynsym holds the null entry only (spec/dyn.md D-1); exports are M4",
+        ));
+        return None;
+    }
     // D-1: a `StaticPie` names no interpreter and has no `.interp`.
     let interp = match kind {
         DynKind::StaticPie => None,
