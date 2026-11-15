@@ -125,6 +125,9 @@ pub struct Front<'s> {
     /// What `place` returned besides the placement (the segment rules
     /// `Layout::validate` used, the rounds of the fixed point).
     pub placed: Placed,
+    /// The erratum fixes (`spec/a64.md` §11.2): words written over fill's
+    /// bytes, by address, sorted (`LinkSites::erratum_fixes`).
+    pub erratum_fixes: Vec<(u64, [u8; 4])>,
 }
 
 /// One output section of a [`Front`]'s layout, as its section header will
@@ -487,7 +490,7 @@ pub fn front<'s>(
     let mut shndx = SymtabPlan::needs_shndx(names.len() as u32 + 2);
     let walker = Walker::new(&arch, &scan_inputs, scan_options);
     let mut attempt = 0;
-    let (placement_assignment, placed, layout) = loop {
+    let (placement_assignment, placed, layout, erratum_fixes) = loop {
         attempt += 1;
         plans.shstrtab = shstrtab.clone();
         let (synthetic, present) = synth_chunks(&plans, &eh, shndx);
@@ -594,6 +597,16 @@ pub fn front<'s>(
             diag.emit(Key::new(90, 0, 0), internal("the non-allocated sizes do not settle"));
             return None;
         }
+        // a64.md §11.2: the fixes, from the words fill writes at the
+        // final addresses (while the sites are at hand).
+        let fixes = match link_sites.erratum_fixes(&placed.placement, &pool) {
+            Ok(f) => f,
+            Err(d) => {
+                let (k, d) = layout_diag(&inputs, &resolution, d, Key::new(90, 0, u64::MAX - 1));
+                diag.emit(k, d);
+                return None;
+            }
+        };
         // The exact names, in section index order (S-90: `sh_name` of
         // section `n` is the plan's `n`-th name); their size is the one
         // placed.
@@ -604,7 +617,7 @@ pub fn front<'s>(
             slots,
             placement: placed.placement.clone(),
         };
-        break (a, placed, layout);
+        break (a, placed, layout, fixes);
     };
     for (seq, w) in (0u64..).zip(placed.warnings.iter().cloned()) {
         let (k, d) = layout_diag(&inputs, &resolution, w, Key::new(90, 0, u64::MAX - 1000 + seq));
@@ -672,6 +685,7 @@ pub fn front<'s>(
         commons,
         layout,
         placed,
+        erratum_fixes,
     })
 }
 

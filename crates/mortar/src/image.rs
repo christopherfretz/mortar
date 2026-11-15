@@ -164,6 +164,7 @@ pub fn with_link<T>(
             build_id: f.plan.shaping.build_id.as_ref().and_then(link::tree_style),
             bti: s.property.value_u32(mortar_a64::FEATURE_1_AND) & mortar_a64::FEATURE_1_BTI != 0,
         },
+        fixups: &f.erratum_fixes,
     };
     Ok(go(&link))
 }

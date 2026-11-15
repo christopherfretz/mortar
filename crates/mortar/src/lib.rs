@@ -291,10 +291,18 @@ mod tests {
     #[test]
     fn errors_come_in_argument_order() {
         assert_eq!(
-            failed(&["--frob", "-o", "x", "a.o", "-o", "y", "--hash-style"]),
+            failed(&[
+                "--frob",
+                "-o",
+                "x",
+                "a.o",
+                "--warn-backrefs",
+                "--warn-backrefs",
+                "--hash-style"
+            ]),
             format!(
                 "ld: error: unknown argument '--frob'\n\
-                 ld: error: unsupported option: -o\n\
+                 ld: error: unsupported option: --warn-backrefs\n\
                  ld: error: --hash-style: missing argument\n"
             )
         );
@@ -317,7 +325,7 @@ mod tests {
             let args: Vec<OsString> = args.iter().map(OsString::from).collect();
             match invoke("ld", &args).outcome {
                 Outcome::Done(text) => Some(text),
-                Outcome::Failed(_) => None,
+                Outcome::Failed(_) | Outcome::Linked { .. } => None,
             }
         };
         assert_eq!(done(&["--version", "a.o"]), Some(mortar_cli::version_text()));

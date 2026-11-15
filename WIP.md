@@ -21,5 +21,10 @@
   repeat), time-phases, -M, gc-sections last wins, I-110, over-existing output, entry
   warning, bare build-id, -gz.
 
+- erratum 843419 fixes were never written (layout computed them; fill wrote the unfixed
+  code and zero patches): LinkSites::erratum_fixes + Link::fixups; test with a forced patch.
+- xfail reasons/owners; linktest mortar 29 PASS 6 XFAIL. Stale tests (refusals, front_diff,
+  lib) updated to the writing pipeline.
+
 ## Next
-- linktest rerun, xfail reasons/owners; protoc; debuggers; option rows; bench; record.
+- protoc; debuggers; option rows; bench; record.

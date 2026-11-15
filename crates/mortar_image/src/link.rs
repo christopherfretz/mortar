@@ -158,6 +158,10 @@ pub struct Link<'a, 's> {
     /// read; `Ok` for one the store does not hold open.
     pub recheck: &'a (dyn Fn(FileId) -> Result<(), CopyError> + Sync),
     pub options: LinkOptions,
+    /// Words written over fill's bytes, by address, sorted: the erratum
+    /// fixes (`spec/a64.md` §11.2; the front computes them from the words
+    /// fill writes at the final addresses).
+    pub fixups: &'a [(u64, [u8; 4])],
 }
 
 impl std::fmt::Debug for Link<'_, '_> {
@@ -710,13 +714,11 @@ impl OutSection {
 /// IPLT entry of an IFUNC; a `Plt` target's entry), and zero between
 /// patches.
 ///
-/// An erratum patch is refused by name: its first word `W4'` is the word
-/// fill computes for the site (`spec/a64.md` §11.2), which the image does
-/// not yet hand to the patch.
+/// An erratum patch is left zero here: its words are in `Link::fixups`.
 ///
 /// # Errors
 ///
-/// The refusals; `internal-error` when a patch lies outside its chunk or
+/// The refusal of a thunk target (BTI); `internal-error` when a patch lies outside its chunk or
 /// a thunk cannot be encoded.
 fn patches(
     link: &Link<'_, '_>,
@@ -738,13 +740,8 @@ fn patches(
             PatchKind::Thunk(ThunkTarget::Sym { key, addend }) => {
                 Some(tables.sym(key).s.wrapping_add_signed(addend))
             }
-            PatchKind::Erratum { .. } => {
-                return Err(mortar_arch::Refusal::named(
-                    mortar_diag::RefusalClass::Feature,
-                    "erratum 843419 patches (a site the ADR fix cannot reach)",
-                )
-                .diagnostic());
-            }
+            // Written by `Link::fixups` (its words are fill's).
+            PatchKind::Erratum { .. } => continue,
         };
         let Some(target) = target else {
             return Err(internal(format!("image: a thunk at chunk {} has no target", p.chunk.0)));
@@ -777,6 +774,36 @@ fn patches(
             internal(format!("image: the thunk at {addr:#x} to {target:#x}: {e:?}"))
         })?;
     }
+    Ok(out)
+}
+
+/// `Link::fixups` at file offsets, sorted: each word's address in the
+/// in-file alloc chunk that holds it.
+///
+/// # Errors
+///
+/// `internal-error` for a word in no such chunk.
+fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<(u64, [u8; 4])>, Diagnostic> {
+    let pl = &link.layout.placement;
+    let mut spans: Vec<(u64, u64, u64)> = pl
+        .chunks
+        .iter()
+        .filter(|(_, c)| c.in_file() && c.flags & SHF_ALLOC != 0)
+        .filter_map(|(_, c)| Some((c.addr?, c.size, c.offset)))
+        .collect();
+    spans.sort_unstable();
+    let mut out = Vec::with_capacity(link.fixups.len());
+    for &(addr, word) in link.fixups {
+        let at = spans.partition_point(|s| s.0 <= addr);
+        let off = at
+            .checked_sub(1)
+            .map(|i| spans[i])
+            .filter(|&(a, size, _)| addr + 4 <= a + size)
+            .map(|(a, _, off)| off + (addr - a))
+            .ok_or_else(|| internal(format!("image: a fixed word at {addr:#x} is in no chunk")))?;
+        out.push((off, word));
+    }
+    out.sort_unstable_by_key(|f| f.0);
     Ok(out)
 }
 
@@ -1114,6 +1141,7 @@ pub fn write(
         }
     };
     let build_id = if sealed.is_some() { link.options.build_id } else { None };
+    let fixups = file_fixups(link).map_err(failed)?;
     let img = Image {
         plan: &plan,
         source: link.inputs,
@@ -1141,6 +1169,7 @@ pub fn write(
             _ => None,
         },
         build_id,
+        fixups: &fixups,
     };
     let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
     let filled: Filled = match fill::write(&img, &out, out.shown(), link.pool) {

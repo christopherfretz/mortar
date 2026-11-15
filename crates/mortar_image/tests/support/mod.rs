@@ -456,6 +456,7 @@ pub fn image<'a>(w: &'a World, chunks: &'a [Chunk<'a>]) -> Image<'a> {
         merged: None,
         eh: None,
         build_id: None,
+        fixups: &[],
     }
 }
 

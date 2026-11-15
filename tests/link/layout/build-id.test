@@ -4,7 +4,7 @@
 # gives 20 bytes with all three references, though each computes it its
 # own way.
 #@ spec: synth.md ".note.gnu.build-id"
-#@ xfail(mortar): no linking yet (M1)
+#@ xfail(mortar): --build-id=md5 is refused by name (spec/synth.md S-91; owner: synth)
 
 as start-%{arch}.s -o start.o
 link ld --build-id=sha1 start.o -o sha1

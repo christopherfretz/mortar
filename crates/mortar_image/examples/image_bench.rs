@@ -242,6 +242,7 @@ fn main() {
         merged: None,
         eh: None,
         build_id: None,
+        fixups: &[],
     };
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("out");

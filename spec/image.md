@@ -595,10 +595,14 @@ buffer; the clip only selects which of them a job writes.
   `write_*` (`spec/arch.md` §6), with the key `(100, 0, ChunkId)`.
   WP-027c writes them whole before fill (`link::patches`): each thunk by
   `write_thunk` with its target as the fixed point computed it, zero
-  between patches. An erratum patch is refused by name
-  (`unsupported feature: erratum 843419 patches`) until fill hands the
-  site's `W4'` to it (`spec/a64.md` §11.2). A thunk's target word is not
-  proved at this point, so in a BTI output `thunk_target_ok` refuses it.
+  between patches. The erratum fixes (`spec/a64.md` §11.2: `b patch` at
+  `F`, the patch's `W4'` and `b F + 4`, or the ADR at `Q`) are words
+  written over fill's bytes (`Link::fixups`, applied in every window
+  after its rows, so the build id covers them). The front computes them
+  from the words fill writes at the final addresses, with the same scan
+  as the fixed point (`LinkSites::erratum_fixes`). A thunk's target word
+  is not proved at this point, so in a BTI output `thunk_target_ok`
+  refuses it.
 - **I-40 [M1] Structural units.** The ELF header, the program header
   table and the section header table are written by the image from
   `Placement` and the output kind: `e_entry` from `Placement.entry`;
