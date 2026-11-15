@@ -1910,6 +1910,11 @@ fn write_link(
         if let Some(s) = chunk.sealed() {
             sealed = Some(c.offset + s.start..c.offset + s.end);
         }
+        // D-42, D-49: `.dynbss` and `.bss.rel.ro` are NOBITS; they take
+        // no file bytes, so no row of the fill plan.
+        if matches!(kind, SynthKind::DynBss | SynthKind::BssRelRo) {
+            continue;
+        }
         synth.insert(id, SynthRow { index: list.len() as u32, whole, eh });
         list.push(chunk);
     }
