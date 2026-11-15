@@ -21,6 +21,9 @@ weak_use(r_type,place,offset,writable)->Option<WeakClass> (default Unfillable), 
 defaults only (WP-047/048 fill). Six M2 kinds registered (mortar_diag + spec/diag.md §3.1): versioned-export,
 canonical-plt-in-pie, copy-relocation-against-protected, copy-relocation-of-zero-size, text-relocation,
 weak-undefined-pc-in-pie; mortar_arch DynRefusal + ClassOutcome::Refused + ScanError::Dynamic carry them.
-Next: 0k (mortar_scan/src/weak.rs, ScanOptions.sections), 0e (dynamic_guard: CLI gate rows -pie, -dynamic-linker,
+0k: mortar_scan::weak (SectionMap: Sync, WeakUses{got,abs_word,branch,unfillable:Option<Key>}.add/verdict(output,dynamic),
+WeakKeys{weak_dyn,refused}, weak_classes(arch,t,opts,sections) stub) called in scan() after View::new, before the walk;
+ScanOptions.sections: Option<&dyn SectionMap> (None everywhere).
+Next: 0e (dynamic_guard: CLI gate rows -pie, -dynamic-linker,
 -Bdynamic filtered from parsed.refusals and refused by the guard with identical text; walk's §8.4 refusal stays, D-31),
 docs/status/m2.md, spec/landed/dyn/WP-041.md.

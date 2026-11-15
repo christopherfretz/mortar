@@ -420,7 +420,8 @@ pub fn front<'s>(
         comdat_mismatch: &comdat_mismatch,
         gnu_warnings: &gnu_warnings,
     };
-    let scan_options = ScanOptions { output, dynamic: false, proof: link_arch.proof() };
+    let scan_options =
+        ScanOptions { output, dynamic: false, sections: None, proof: link_arch.proof() };
     let scanned = scan(arch, &scan_inputs, &scan_options, &pool);
     for (k, d) in scanned.diagnostics.iter().cloned() {
         diag.emit(k, d);
