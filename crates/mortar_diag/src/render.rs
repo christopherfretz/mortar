@@ -227,6 +227,10 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
         }
         Kind::Malformed { what } => escaped(what, out),
         Kind::UnknownFileType => out.push_str(NOT_RECOGNIZED),
+        Kind::UnknownProperty { path, pr_type } => {
+            escaped(path, out);
+            let _ = write!(out, ": unsupported GNU_PROPERTY_TYPE {pr_type:#x}; property dropped");
+        }
         Kind::ArchiveBackref { name } => {
             out.push_str("backward reference to an archive member: ");
             return symbol_into(name, style, out).then_some(name);

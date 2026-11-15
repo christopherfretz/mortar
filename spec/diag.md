@@ -174,6 +174,7 @@ is added before or after it.
 | `static-link-of-shared-object` | `StaticLinkOfSharedObject { path }` | `attempted static link of dynamic object {path}` | GNU ld, lld (§8.3) |
 | `malformed-input` | `Malformed { what }` | `{what}` | lld's shape |
 | `unknown-file-type` | `UnknownFileType` | `file not recognized: file format not recognized` | GNU ld (§8.3) |
+| `unknown-property` | `UnknownProperty { path, pr_type }` | `{path}: unsupported GNU_PROPERTY_TYPE {pr_type:#x}; property dropped` | GNU ld's phrase; a warning (`spec/synth.md` S-95, R-D2) |
 | `archive-backref` | `ArchiveBackref { name }` | `backward reference to an archive member: {name}` | own (lld: `backward reference detected: x in b refers to a`) |
 | `archive-choice` | `ArchiveChoice { name }` | `GNU ld would choose another definition of {name}` | own |
 | `comdat-mismatch` | `ComdatMismatch { name, signature }` | `symbol {name} is defined only in a discarded copy of COMDAT group {signature}` | own |

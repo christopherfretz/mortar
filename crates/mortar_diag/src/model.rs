@@ -271,6 +271,10 @@ pub enum Kind {
     Malformed { what: String },
     /// `unknown-file-type`: the file is no format mortar can name.
     UnknownFileType,
+    /// `unknown-property`: a GNU program property of a type whose merge
+    /// rule mortar does not know, dropped from the output
+    /// (`spec/synth.md` S-95). `path` names the input. A warning.
+    UnknownProperty { path: String, pr_type: u32 },
 
     // -- symbols --------------------------------------------------------
     /// `archive-backref`: under `--warn-backrefs`, GNU ld's walk would
@@ -375,7 +379,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 49] = [
+    pub const IDS: [&'static str; 50] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -399,6 +403,7 @@ impl Kind {
         "static-link-of-shared-object",
         "malformed-input",
         "unknown-file-type",
+        "unknown-property",
         "archive-backref",
         "archive-choice",
         "comdat-mismatch",
@@ -455,6 +460,7 @@ impl Kind {
             Self::StaticLinkOfSharedObject { .. } => "static-link-of-shared-object",
             Self::Malformed { .. } => "malformed-input",
             Self::UnknownFileType => "unknown-file-type",
+            Self::UnknownProperty { .. } => "unknown-property",
             Self::ArchiveBackref { .. } => "archive-backref",
             Self::ArchiveChoice { .. } => "archive-choice",
             Self::ComdatMismatch { .. } => "comdat-mismatch",
@@ -810,32 +816,33 @@ mod tests {
             Kind::StaticLinkOfSharedObject { .. } => 20,
             Kind::Malformed { .. } => 21,
             Kind::UnknownFileType => 22,
-            Kind::ArchiveBackref { .. } => 23,
-            Kind::ArchiveChoice { .. } => 24,
-            Kind::ComdatMismatch { .. } => 25,
-            Kind::CommonAlignment { .. } => 26,
-            Kind::CommonLargerThanDefinition { .. } => 27,
-            Kind::CommonOverridden { .. } => 28,
-            Kind::DiscardedSectionReference { .. } => 29,
-            Kind::DuplicateSymbol { .. } => 30,
-            Kind::EntryNotFound { .. } => 31,
-            Kind::GnuWarning { .. } => 32,
-            Kind::LinkerSymbolRedefined { .. } => 33,
-            Kind::MultipleCommon { .. } => 34,
-            Kind::NonExportedSymbol { .. } => 35,
-            Kind::RequiredSymbol { .. } => 36,
-            Kind::TlsMismatch { .. } => 37,
-            Kind::UndefinedSymbol { .. } => 38,
-            Kind::UndefinedVersion { .. } => 39,
-            Kind::VersionReassigned { .. } => 40,
-            Kind::RelocationIncompatible { .. } => 41,
-            Kind::RelocationMisaligned { .. } => 42,
-            Kind::RelocationOutOfRange { .. } => 43,
-            Kind::ExecutableStack { .. } => 44,
-            Kind::OutputTooLarge { .. } => 45,
-            Kind::SectionConflict { .. } => 46,
-            Kind::Refused { .. } => 47,
-            Kind::InternalError { .. } => 48,
+            Kind::UnknownProperty { .. } => 23,
+            Kind::ArchiveBackref { .. } => 24,
+            Kind::ArchiveChoice { .. } => 25,
+            Kind::ComdatMismatch { .. } => 26,
+            Kind::CommonAlignment { .. } => 27,
+            Kind::CommonLargerThanDefinition { .. } => 28,
+            Kind::CommonOverridden { .. } => 29,
+            Kind::DiscardedSectionReference { .. } => 30,
+            Kind::DuplicateSymbol { .. } => 31,
+            Kind::EntryNotFound { .. } => 32,
+            Kind::GnuWarning { .. } => 33,
+            Kind::LinkerSymbolRedefined { .. } => 34,
+            Kind::MultipleCommon { .. } => 35,
+            Kind::NonExportedSymbol { .. } => 36,
+            Kind::RequiredSymbol { .. } => 37,
+            Kind::TlsMismatch { .. } => 38,
+            Kind::UndefinedSymbol { .. } => 39,
+            Kind::UndefinedVersion { .. } => 40,
+            Kind::VersionReassigned { .. } => 41,
+            Kind::RelocationIncompatible { .. } => 42,
+            Kind::RelocationMisaligned { .. } => 43,
+            Kind::RelocationOutOfRange { .. } => 44,
+            Kind::ExecutableStack { .. } => 45,
+            Kind::OutputTooLarge { .. } => 46,
+            Kind::SectionConflict { .. } => 47,
+            Kind::Refused { .. } => 48,
+            Kind::InternalError { .. } => 49,
         }
     }
 
@@ -868,6 +875,7 @@ mod tests {
             Kind::StaticLinkOfSharedObject { path: s() },
             Kind::Malformed { what: s() },
             Kind::UnknownFileType,
+            Kind::UnknownProperty { path: s(), pr_type: 0 },
             Kind::ArchiveBackref { name: s() },
             Kind::ArchiveChoice { name: s() },
             Kind::ComdatMismatch { name: s(), signature: s() },
