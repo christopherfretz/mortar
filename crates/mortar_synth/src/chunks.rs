@@ -8,8 +8,8 @@ use mortar_core::ChunkId;
 use mortar_core::layout::Synth;
 use mortar_elf::Class;
 use mortar_elf::consts::{
-    SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHF_WRITE, SHT_NOTE, SHT_PROGBITS, SHT_REL, SHT_RELA,
-    SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHF_MERGE, SHF_STRINGS, SHF_WRITE, SHT_NOTE,
+    SHT_PROGBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX,
 };
 
 /// A synthetic chunk of S-3, by its number there. The M2 chunks are named
@@ -39,6 +39,7 @@ pub enum SynthKind {
     SymtabShndx = 20,
     Strtab = 21,
     Shstrtab = 22,
+    Comment = 23,
 }
 
 /// The section header fields of a synthetic chunk that do not depend on
@@ -96,6 +97,7 @@ impl SynthKind {
             Self::SymtabShndx => b".symtab_shndx",
             Self::Strtab => b".strtab",
             Self::Shstrtab => b".shstrtab",
+            Self::Comment => b".comment",
         }
     }
 
@@ -135,6 +137,8 @@ impl SynthKind {
             Self::Strtab | Self::Shstrtab => h(SHT_STRTAB, 0, 1, 0),
             Self::Plt => h(SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 16, 0),
             Self::EhFrame => h(SHT_PROGBITS, SHF_ALLOC, word, 0),
+            // S-100: the inputs' `.comment` flags.
+            Self::Comment => h(SHT_PROGBITS, SHF_MERGE | SHF_STRINGS, 1, 1),
             _ => None,
         }
     }

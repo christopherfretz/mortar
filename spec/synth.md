@@ -121,11 +121,11 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | 20 | `.symtab_shndx` | extended section indices | some `.symtab` entry needs one (S-85) | M1 |
   | 21 | `.strtab` | symbol names | with `.symtab` | M1 |
   | 22 | `.shstrtab` | section names | always | M1 |
+  | 23 | `.comment` | mortar's identification (S-100) | always | M1 |
 
   A chunk that does not exist gets no `ChunkId`. The numbering is a
   name, not an order: `Placement.order` (layout §10) is the order.
-  `.comment` is not in the list: it is a merged chunk with a piece of
-  the internal file (§9).
+  `.comment` is last so the earlier chunks keep their ids (WP-027e).
 - **S-4 [C] (division).** Each chunk declares its `Division`
   (`spec/image.md` §13, I-104) through the `SynthChunk` interface
   (`size`, `division`, `write(cx, range, out)`, `sealed`). `Divisible`
@@ -1330,13 +1330,21 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
 
 ## 9. .comment
 
-- **S-100 [C].** `.comment` is a `Merged` chunk (`SHF_MERGE|SHF_STRINGS`,
-  entsize 1, non-allocated) of the inputs' strings plus one piece of the
-  internal file (`FileId` 0, so first, S-15): `mortar <version>`, the
-  crate's `MAJOR.MINOR.PATCH`, with no hash, date or host, so output
-  stays deterministic. It exists in every output (lld and mold add theirs,
-  GNU nothing, X-9) and makes the linker identifiable by `readelf -p
-  .comment` for bug reports and the differential harness.
+- **S-100 [C].** `.comment` (`SHT_PROGBITS`, `SHF_MERGE|SHF_STRINGS`,
+  entsize 1, alignment 1, non-allocated) is the inputs' merged strings,
+  then synthetic chunk 23: `mortar <version>` and its NUL, where the
+  version is the crate's `MAJOR.MINOR.PATCH` with no hash, date, host or
+  path, so output stays deterministic. The chunk joins the inputs'
+  `.comment` output section after its merged chunk (layout's join of a
+  synthetic chunk named like an output section), lld's place; with no
+  input `.comment` it is the section. It exists in every output, as lld's
+  (`Linker: LLD 22.1.8` after the inputs' strings) and mold's (`mold
+  2.37.1 (compatible with GNU ld)` before them); GNU ld 2.44 adds
+  nothing (X-9; measured on a static glibc link, WP-027e). `readelf -p
+  .comment` then names the linker for bug reports and the differential
+  harness. Test: `the_comment_names_mortar_after_the_inputs` in
+  `crates/mortar/tests/pipeline.rs`. R-M6 is withdrawn: the internal
+  file needs no merge piece.
 
 ## 10. Dynamic outputs (M2 outline)
 
@@ -1508,7 +1516,7 @@ edit changes.
 | label of an empty input section (`__TMC_END__`) | index of a section below it (A10) | — | — | index of the section holding it (S-122, S-123) | verifier Y3 |
 | `__bss_start` with no `.bss` | `edata` | `edata` | 0 under gc (A11) | `edata` (S-124) | verifier Y5 |
 | `.strtab` de-duplication | full, tail merged | almost none | none | fixed table only (S-86) | |
-| `.comment` | inputs only | adds `Linker: LLD` | adds `mold` | adds `mortar <version>` (S-100) | |
+| `.comment` | inputs only | adds `Linker: LLD <version>` after them | adds `mold <version> (compatible with GNU ld)` before them | adds `mortar <version>` after them (S-100) | |
 | AArch64 `.note.gnu.property` | AND | AND | none written | AND (S-95) | BTI/PAC enforcement |
 | x86 `ISA_1_NEEDED` | OR | dropped | OR | OR (S-95) | |
 | x86 `*_USED` | OR if all have it | — | OR if all have it | OR if all have it (S-95) | |
@@ -1591,7 +1599,7 @@ its synthetic chunks (its input sections are split and have no `place`)."
 Reason: `.eh_frame` is synthesized from `Slots.eh_records`, not a body.
 
 **R-M6. §3.5, the internal file's pieces.**
-*Not applied: `.comment` (S-100) is not a merge piece yet (WP-027a record).*
+*Withdrawn (WP-027e): `.comment`'s piece is synthetic chunk 23 (S-3, S-100), not a merge piece.*
 Current: (no text)
 Proposed: add after the `EhFrame` bullet: "- the internal file (`FileId`
 0) may contribute pieces: the `.comment` string of `spec/synth.md`

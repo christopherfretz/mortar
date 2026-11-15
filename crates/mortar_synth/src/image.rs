@@ -11,6 +11,7 @@
 //! | `.symtab`, `.strtab`, `.symtab_shndx` | [`SymtabChunk`] | divisible (checkpoints every 1024 symbols) |
 //! | `.shstrtab` | [`ShstrtabPlan`] | whole, its size |
 //! | `.note.gnu.build-id` | [`BuildIdPlan`] | whole, `16 + align_up(n, 4)`; sealed = the descriptor |
+//! | `.comment` | [`Comment`] | whole, `COMMENT.len()` |
 //! | `.note.gnu.property` | [`PropertyPlan`] | whole, `16 + Σ(8 + align_up(datasz, word))` |
 //!
 //! `write` fills `out` (exactly `range.len()` bytes) with bytes
@@ -295,6 +296,30 @@ impl SynthChunk for SymtabChunk<'_> {
             SymTable::Strtab => self.plan.write_strtab(&self.cx, &mut w),
             SymTable::SymtabShndx => self.plan.write_shndx(&self.cx, cx.syms, &mut w),
         }
+    }
+}
+
+/// mortar's piece of `.comment` (S-100): `mortar <version>` and its NUL,
+/// the crate's version with no hash, date, host or path.
+pub const COMMENT: &[u8] = concat!("mortar ", env!("CARGO_PKG_VERSION"), "\0").as_bytes();
+
+/// The `.comment` chunk (S-100): [`COMMENT`], after the inputs' strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Comment;
+
+impl SynthChunk for Comment {
+    fn size(&self, _: &SizeCx<'_>) -> u64 {
+        COMMENT.len() as u64
+    }
+
+    fn division(&self) -> Division {
+        Division::Whole { max_size: COMMENT.len() as u64 }
+    }
+
+    fn write(&self, _: &FillCx<'_>, range: Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+        check(&range, out, COMMENT.len() as u64)?;
+        out.copy_from_slice(&COMMENT[range.start as usize..range.end as usize]);
+        Ok(())
     }
 }
 
