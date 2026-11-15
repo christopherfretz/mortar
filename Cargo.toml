@@ -16,6 +16,8 @@ publish = false
 [workspace.dependencies]
 mortar          = { path = "crates/mortar" }
 mortar_cli      = { path = "crates/mortar_cli" }
+mortar_a64      = { path = "crates/mortar_a64" }
+mortar_arch     = { path = "crates/mortar_arch" }
 mortar_core     = { path = "crates/mortar_core" }
 mortar_diag     = { path = "crates/mortar_diag" }
 mortar_elf      = { path = "crates/mortar_elf" }
