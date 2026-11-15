@@ -1,0 +1,72 @@
+# dyn.md D-25, W12 (second form; review N4, `review-m2-adv/weaksplit2`):
+# in `Exec`, `-fPIE` objects only, an undefined weak function `hook` with
+# a GOT use (`if (hook) hook();`) and an absolute word in writable data
+# (`void (*hp)(void) = hook;`), and an undefined weak datum `wv` read
+# through the GOT. Every use is fillable, so the key is `WeakDyn`: `GLOB_DAT`
+# on the GOT slots, a symbolic record (`ABS64`, `R_X86_64_64`) on the data
+# word, the call through a PLT entry. Under `LD_PRELOAD=./libhook.so` the
+# hook runs and `hp == hook`; without it everything is null. D-25 notes
+# this is new to mortar in `-no-pie`.
+#
+# W12 (dyn.md §13.2): GNU ld (both architectures) and lld write no record
+# for the word in `-no-pie`, so under the preload `hp` stays null while the
+# GOT sees the definition (`hp==hook 0`). mold makes the key 0 everywhere
+# (dyn.md §13.1: consistent, the hook never runs); its run is held to what
+# it prints.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-25"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd): W12: no record for the data word in -no-pie (hp==hook 0 under LD_PRELOAD)
+#@ xfail(lld): W12: no record for the data word in -no-pie (hp==hook 0 under LD_PRELOAD)
+
+cc -O2 -fPIE main.c -o main.o
+cc -O2 -fPIC hook.c -o hook.o
+shlib gcc hook.o -o libhook.so
+link gcc -no-pie main.o -o exec
+run exec
+  stdout: main: hook absent
+  stdout: hp==hook 1; wv -1
+run(bfd,lld,mortar) exec
+  env: LD_PRELOAD=./libhook.so
+  stdout: hook: RAN
+  stdout: main: hook non-null, called
+  stdout: hp==hook 1; wv 42
+run(mold) exec
+  env: LD_PRELOAD=./libhook.so
+  stdout: main: hook absent
+  stdout: hp==hook 1; wv -1
+check readelf --dyn-syms -W exec
+  has(bfd,lld,mortar): WEAK DEFAULT UND hook$
+  has(bfd,lld,mortar): WEAK DEFAULT UND wv$
+check readelf -rW exec
+  has(mortar,aarch64): R_AARCH64_ABS64 * hook + 0
+  has(mortar,aarch64): R_AARCH64_GLOB_DAT * hook + 0
+  has(mortar,aarch64): R_AARCH64_JUMP_SLOT * hook + 0
+  has(mortar,x86_64): R_X86_64_64 * hook + 0
+  has(mortar,x86_64): R_X86_64_GLOB_DAT * hook + 0
+  has(mortar,x86_64): R_X86_64_JUMP_SLOT * hook + 0
+
+#--- main.c
+#include <stdio.h>
+
+extern void hook(void) __attribute__((weak));
+extern int wv __attribute__((weak));
+void (*hp)(void) = hook;
+
+int main(void) {
+  if (hook) {
+    hook();
+    puts("main: hook non-null, called");
+  } else {
+    puts("main: hook absent");
+  }
+  printf("hp==hook %d; wv %d\n", hp == hook, &wv ? wv : -1);
+  return 0;
+}
+#--- hook.c
+#include <stdio.h>
+
+void hook(void) { puts("hook: RAN"); }
+int wv = 42;

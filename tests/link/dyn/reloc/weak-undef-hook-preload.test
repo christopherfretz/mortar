@@ -1,0 +1,90 @@
+# dyn.md D-25, the hook idiom: an undefined weak function `f` tested and
+# called (`if (f) f();`), its address compared with `dlsym`, and an
+# undefined weak datum `v` read (`&v ? v : -1`), compiled the default way
+# (gcc -O2, PIE code: GOT uses and a call). The key has GOT uses and no
+# unfillable use, so it is `WeakDyn` in `Pie` and in `Exec`: a `WEAK UND`
+# entry of `.dynsym`, `GLOB_DAT` on its GOT slots, and the call through a
+# PLT entry with a `JUMP_SLOT`. Run without a definition (null, -1) and
+# with `LD_PRELOAD=./libhook.so`, which defines both (`f: RAN`,
+# `&f == dlsym(f)`, 42): the test and the call agree either way.
+#
+# GNU ld and lld do this (GNU ld calls through `.plt.got` on x86-64, which
+# D-49 does not write). mold makes the key 0 everywhere, so the hook never
+# runs under the preload: consistent, but the idiom is lost (dyn.md §13.1
+# "undefined weak, GOT-used, in a PIE"; mold's runs are held to what it
+# prints).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-25"
+#@ arch: aarch64 x86_64
+
+cc -O2 -fPIE main.c -o main.o
+cc -O2 -fPIC hook.c -o hook.o
+shlib gcc hook.o -o libhook.so
+link gcc -pie main.o -o pie
+run pie
+  stdout: call: f null
+  stdout: addr: &f null, ==dlsym 1
+  stdout: data: -1
+run(bfd,lld,mortar) pie
+  env: LD_PRELOAD=./libhook.so
+  stdout: f: RAN
+  stdout: call: f non-null, called
+  stdout: addr: &f non-null, ==dlsym 1
+  stdout: data: 42
+run(mold) pie
+  env: LD_PRELOAD=./libhook.so
+  stdout: call: f null
+  stdout: addr: &f null, ==dlsym 0
+  stdout: data: -1
+link gcc -no-pie main.o -o exec
+run exec
+  stdout: call: f null
+  stdout: addr: &f null, ==dlsym 1
+  stdout: data: -1
+run(bfd,lld,mortar) exec
+  env: LD_PRELOAD=./libhook.so
+  stdout: f: RAN
+  stdout: call: f non-null, called
+  stdout: addr: &f non-null, ==dlsym 1
+  stdout: data: 42
+run(mold) exec
+  env: LD_PRELOAD=./libhook.so
+  stdout: call: f null
+  stdout: addr: &f null, ==dlsym 0
+  stdout: data: -1
+check readelf --dyn-syms -W pie
+  has(bfd,lld,mortar): WEAK DEFAULT UND f$
+  has(bfd,lld,mortar): WEAK DEFAULT UND v$
+check readelf -rW pie
+  has(aarch64,bfd,lld,mortar): R_AARCH64_GLOB_DAT * f + 0
+  has(aarch64,lld,mortar): R_AARCH64_JUMP_SLOT * f + 0
+  has(x86_64,bfd,lld,mortar): R_X86_64_GLOB_DAT * f + 0
+  has(x86_64,lld,mortar): R_X86_64_JUMP_SLOT * f + 0
+
+#--- main.c
+#include <dlfcn.h>
+#include <stdio.h>
+
+extern void f(void) __attribute__((weak));
+extern int v __attribute__((weak));
+
+int main(void) {
+  if (f) {
+    f();
+    puts("call: f non-null, called");
+  } else {
+    puts("call: f null");
+  }
+  void (*p)(void) = &f;
+  void *d = dlsym(RTLD_DEFAULT, "f");
+  printf("addr: &f %s, ==dlsym %d\n", p ? "non-null" : "null", (void *)p == d);
+  printf("data: %d\n", &v ? v : -1);
+  return 0;
+}
+#--- hook.c
+#include <stdio.h>
+
+void f(void) { puts("f: RAN"); }
+int v = 42;

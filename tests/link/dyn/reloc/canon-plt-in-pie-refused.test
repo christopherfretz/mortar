@@ -1,0 +1,64 @@
+# dyn.md D-44: in a `Pie`, a non-GOT address use of a shared function (a
+# canonical PLT demand) is refused by name, `canonical-plt-in-pie`. A
+# `-fno-pic` object that takes `&puts` and `&fa` (`R_AARCH64_ADR_PREL_PG_HI21`,
+# `R_X86_64_32`) is linked into the driver's default PIE with a `-fPIE`
+# main (review-m2-adv/canonpie).
+#
+# What the references do (measured): on AArch64 GNU ld refuses
+# (`... can not be used when making a shared object; recompile with
+# -fPIC`); lld and mold write a canonical PLT in the PIE, and address
+# equality holds (a valid output, the program printing 1s). On x86-64
+# GNU ld and mold refuse, and lld links a canonical PLT whose 32-bit
+# absolute word gets no record, so the `-fno-pic` code sees the
+# unrelocated link-time address: W11 (§13.2), held here to the correct
+# output, the 1s. mortar takes GNU ld's behaviour on both architectures.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-44"
+#@ arch: aarch64 x86_64
+#@ fixture: reloc-libd
+#@ xfail(lld,x86_64): W11: a canonical PLT in a PIE whose R_X86_64_32 word gets no record; the code sees the link-time address
+
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fno-pic nopic.c -o nopic.o
+link(bfd,mortar) gcc -pie main.o nopic.o -L. -ld -o prog
+  exit: fail
+  diag(bfd,aarch64): relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `* can not be used when making a shared object; recompile with -fPIC
+  diag(bfd,x86_64): relocation R_X86_64_32 against symbol `* can not be used when making a PIE object; recompile with -fPIE
+  diag(mortar): canonical-plt-in-pie
+link(mold,x86_64) gcc -pie main.o nopic.o -L. -ld -o prog
+  exit: fail
+  diag: R_X86_64_32 relocation at offset * against symbol `* can not be used; recompile with -fPIC
+link(lld) gcc -pie main.o nopic.o -L. -ld -o prog
+run(lld) prog
+  stdout: puts pie=1 lib=1 dlsym=1
+  stdout: fa pie=1 lib=1 dlsym=1
+link(mold,aarch64) gcc -pie main.o nopic.o -L. -ld -o prog
+run(mold,aarch64) prog
+  stdout: puts pie=1 lib=1 dlsym=1
+  stdout: fa pie=1 lib=1 dlsym=1
+
+#--- nopic.c
+#include <stdio.h>
+#include "libd.h"
+
+void *addr_puts_nopic(void) { return (void *)&puts; }
+void *addr_fa_nopic(void) { return (void *)&fa; }
+#--- main.c
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdio.h>
+#include "libd.h"
+
+void *addr_puts_nopic(void), *addr_fa_nopic(void);
+
+int main(void) {
+  void *a = addr_puts_nopic();
+  printf("puts pie=%d lib=%d dlsym=%d\n", a == (void *)&puts, a == lib_addr("puts"),
+         a == dlsym(RTLD_DEFAULT, "puts"));
+  a = addr_fa_nopic();
+  printf("fa pie=%d lib=%d dlsym=%d\n", a == (void *)&fa, a == lib_addr("fa"),
+         a == dlsym(RTLD_DEFAULT, "fa"));
+  return 0;
+}

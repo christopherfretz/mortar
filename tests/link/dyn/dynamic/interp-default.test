@@ -1,0 +1,122 @@
+# dyn.md D-31 and P-D4, the interpreter of an executable is the command
+# line's `-dynamic-linker`, byte for byte: `PT_INTERP` covers `.interp`,
+# which holds the string and one NUL, and is the first section after the
+# headers (layout L-60). mortar has no built-in default interpreter (W10:
+# GNU ld's default is wrong on x86-64 and i386, lld and mold have none),
+# so what the driver passes is the only source, and it is written as
+# given: not normalised (`/lib/./ld-...` stays), the last of several
+# options winning (as all three references do). The links: the driver's
+# default (`gcc` passes the target's loader), the linker run directly with
+# the target's loader (`%{dynamic-linker}`), a different spelling of the
+# same loader, and that spelling after a bogus one. The program reads its
+# own `PT_INTERP` and prints the string, whether `p_filesz` is its length
+# plus one, and whether the loader that runs it registered itself under
+# that name (glibc names its own link map after `PT_INTERP`).
+#
+# How this differs from `dyn/kinds/no-dynamic-linker-refused`: that case
+# is the link WITHOUT the option, which mortar refuses by name and where
+# every reference is wrong on x86-64 (W10's hazard is recorded there);
+# this one is the link WITH it, where all three references are right and
+# mortar must write exactly the string given. Neither falls back to a
+# default: this case is the positive half of the same rule.
+#
+# Where the references differ (D-31): GNU ld puts the notes before
+# `.interp`; lld, mold and mortar put `.interp` first.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-31"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE main.c -o main.o
+
+link gcc -pie main.o -o def
+run(aarch64) def
+  stdout: PT_INTERP /lib/ld-linux-aarch64.so.1
+  stdout: p_filesz is its length + 1: 1
+  stdout: the loader is registered under it: 1
+run(x86_64) def
+  stdout: PT_INTERP /lib64/ld-linux-x86-64.so.2
+  stdout: p_filesz is its length + 1: 1
+  stdout: the loader is registered under it: 1
+check readelf -lW def
+  count: 1 ^ INTERP
+check(lld,mold,mortar) readelf -SW def
+  has: [ 1] .interp PROGBITS
+check(bfd) readelf -SW def
+  has: [ 1] .note
+check(aarch64) readelf -SW def
+  has: .interp PROGBITS * 00001b 00 A 0 0 1$
+check(x86_64) readelf -SW def
+  has: .interp PROGBITS * 00001c 00 A 0 0 1$
+
+link ld -m %{emulation} -pie -dynamic-linker %{dynamic-linker} -o direct %{libdir}/Scrt1.o %{libdir}/crti.o main.o -L%{libdir} -lc %{libdir}/crtn.o
+run(aarch64) direct
+  stdout: PT_INTERP /lib/ld-linux-aarch64.so.1
+  stdout: p_filesz is its length + 1: 1
+  stdout: the loader is registered under it: 1
+run(x86_64) direct
+  stdout: PT_INTERP /lib64/ld-linux-x86-64.so.2
+  stdout: p_filesz is its length + 1: 1
+  stdout: the loader is registered under it: 1
+check readelf -lW direct
+  has: [Requesting program interpreter: %{dynamic-linker}]
+
+link(aarch64) gcc -pie main.o -Wl,-dynamic-linker,/lib/./ld-linux-aarch64.so.1 -o alt
+link(x86_64) gcc -pie main.o -Wl,-dynamic-linker,/lib64/./ld-linux-x86-64.so.2 -o alt
+run(aarch64) alt
+  stdout: PT_INTERP /lib/./ld-linux-aarch64.so.1
+  stdout: p_filesz is its length + 1: 1
+  stdout: the loader is registered under it: 1
+run(x86_64) alt
+  stdout: PT_INTERP /lib64/./ld-linux-x86-64.so.2
+  stdout: p_filesz is its length + 1: 1
+  stdout: the loader is registered under it: 1
+
+link(aarch64) gcc -pie main.o -Wl,-dynamic-linker,/nonexistent/ld.so -Wl,-dynamic-linker,/lib/./ld-linux-aarch64.so.1 -o twice
+link(x86_64) gcc -pie main.o -Wl,-dynamic-linker,/nonexistent/ld.so -Wl,-dynamic-linker,/lib64/./ld-linux-x86-64.so.2 -o twice
+run(aarch64) twice
+  stdout: PT_INTERP /lib/./ld-linux-aarch64.so.1
+  stdout: p_filesz is its length + 1: 1
+  stdout: the loader is registered under it: 1
+run(x86_64) twice
+  stdout: PT_INTERP /lib64/./ld-linux-x86-64.so.2
+  stdout: p_filesz is its length + 1: 1
+  stdout: the loader is registered under it: 1
+check readelf -lW twice
+  not: nonexistent
+
+#--- main.c
+#define _GNU_SOURCE
+#include <elf.h>
+#include <link.h>
+#include <stdio.h>
+#include <string.h>
+
+static const char *interp;
+static size_t filesz;
+static int named;
+
+static int walk(struct dl_phdr_info *info, size_t size, void *first) {
+  (void)size;
+  if (*(int *)first) {
+    *(int *)first = 0;
+    for (int i = 0; i < info->dlpi_phnum; i++)
+      if (info->dlpi_phdr[i].p_type == PT_INTERP) {
+        interp = (const char *)(info->dlpi_addr + info->dlpi_phdr[i].p_vaddr);
+        filesz = info->dlpi_phdr[i].p_filesz;
+      }
+    return 0;
+  }
+  named |= interp && !strcmp(info->dlpi_name, interp);
+  return 0;
+}
+
+int main(void) {
+  int first = 1;
+  dl_iterate_phdr(walk, &first);
+  printf("PT_INTERP %s\n", interp ? interp : "(none)");
+  printf("p_filesz is its length + 1: %d\n", interp && filesz == strlen(interp) + 1);
+  printf("the loader is registered under it: %d\n", named);
+  return 0;
+}

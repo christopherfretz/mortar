@@ -1,0 +1,55 @@
+# dyn.md D-44, canonical PLTs: in a non-PIE, `-fno-pic` code takes the
+# address of shared functions without the GOT (`R_AARCH64_ADR_PREL_PG_HI21`
+# + `ADD_ABS_LO12_NC`, `R_X86_64_32`), and stores them in read-only and
+# writable data (`ABS64`/`R_X86_64_64`). Each such function gets a
+# canonical PLT entry, which is its address in the whole process: the
+# executable's `.dynsym` entry is `SHN_UNDEF` with `st_value` the entry
+# (D-23), so the library's own `&fa` and `dlsym` bind to it. The program
+# compares the four views of `&fa` (code, read-only word, writable word,
+# library), `dlsym`'s, and `&puts` against libc's `dlsym`, and calls
+# through each pointer. All three references agree, lazily and with
+# `LD_BIND_NOW=1` (E-reloc §5).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-44"
+#@ spec: dyn.md "D-23"
+#@ arch: aarch64 x86_64
+#@ fixture: reloc-libd
+
+cc -O1 -fno-pie main.c -o main.o
+link gcc -no-pie main.o -L. -ld -o prog
+run prog
+  stdout: fa code=ro 1 code=rw 1 code=lib 1 code=dlsym 1 calls 1 1 1
+  stdout: puts code=dlsym 1
+run prog
+  env: LD_BIND_NOW=1
+  stdout: fa code=ro 1 code=rw 1 code=lib 1 code=dlsym 1 calls 1 1 1
+  stdout: puts code=dlsym 1
+check readelf --dyn-syms -W prog
+  has: FUNC * GLOBAL DEFAULT * UND fa$
+  not: : 0000000000000000 * UND fa$
+  has: FUNC * UND puts@
+  not: : 0000000000000000 * UND puts@
+
+#--- main.c
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdio.h>
+#include "libd.h"
+
+typedef int fn(void);
+fn *const ro_fa = fa;  /* a read-only word */
+fn *rw_fa = fa;        /* a writable word */
+
+__attribute__((noinline)) static fn *code_fa(void) { return fa; }
+
+int main(void) {
+  fn *c = code_fa(), *const *volatile r = &ro_fa, **volatile w = &rw_fa;
+  printf("fa code=ro %d code=rw %d code=lib %d code=dlsym %d calls %d %d %d\n", c == *r,
+         c == *w, (void *)c == lib_addr("fa"), (void *)c == dlsym(RTLD_DEFAULT, "fa"),
+         c(), (*r)(), (*w)());
+  void *p = (void *)&puts;
+  printf("puts code=dlsym %d\n", p == dlsym(RTLD_DEFAULT, "puts") && p == lib_addr("puts"));
+  return 0;
+}

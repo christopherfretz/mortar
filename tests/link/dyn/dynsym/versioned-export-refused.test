@@ -1,0 +1,69 @@
+# dyn.md D-27, a versioned definition that is exported: the program
+# defines `vfoo@@VERS_1` (`.symver`) and a needed library references
+# `vfoo`, so the key is exported (D-21). An executable gets no
+# `.gnu.version_d` at M2 (version scripts and verdefs are M4), so mortar
+# refuses the export by name, `versioned-export`, rather than drop the
+# version or invent a verdef. The same definition that nothing dynamic
+# references is not exported and links (`plain`).
+#
+# The references disagree (dyn.md D-27, E-dynsym §5): GNU ld writes a
+# `.gnu.version_d` (a `BASE` entry named after the output file, and
+# `VERS_1`) and exports `vfoo@@VERS_1`; lld and mold export `vfoo`
+# unversioned. All three run.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails (the refusal is resolve's, behind the dynamic output).
+#@ spec: dyn.md "D-27"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libve.so -o libve.so
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE plain.c -o plain.o
+
+link(bfd,lld,mold) gcc -pie main.o -L. -lve -o prog
+run(bfd,lld,mold) prog
+  stdout: lib_call 7
+check(bfd) readelf --dyn-syms -W prog
+  has: FUNC GLOBAL DEFAULT * vfoo@@VERS_1$
+check(bfd) readelf -VW prog
+  has: Version definition section '.gnu.version_d' contains 2 entries
+  has: Flags: none Index: 2 Cnt: 1 Name: VERS_1
+check(lld,mold) readelf --dyn-syms -W prog
+  has: FUNC GLOBAL DEFAULT * vfoo$
+check(lld,mold) readelf -VW prog
+  not: .gnu.version_d
+link(mortar) gcc -pie main.o -L. -lve -o prog-mortar
+  exit: fail
+  diag: versioned-export
+
+link gcc -pie plain.o -o plain
+run plain
+  stdout: vfoo 7
+check readelf --dyn-syms -W plain
+  not: vfoo
+check readelf -SW plain
+  not: .gnu.version_d
+
+#--- lib.c
+extern int vfoo(void);
+int lib_call(void) { return vfoo(); }
+#--- main.c
+#include <stdio.h>
+__asm__(".symver vfoo_impl, vfoo@@VERS_1");
+int vfoo_impl(void) { return 7; }
+int lib_call(void);
+
+int main(void) {
+  printf("lib_call %d\n", lib_call());
+  return 0;
+}
+#--- plain.c
+#include <stdio.h>
+__asm__(".symver vfoo_impl, vfoo@@VERS_1");
+int vfoo_impl(void) { return 7; }
+
+int main(void) {
+  printf("vfoo %d\n", vfoo_impl());
+  return 0;
+}

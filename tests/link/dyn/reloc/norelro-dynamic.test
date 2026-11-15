@@ -1,0 +1,118 @@
+# dyn.md D-33, D-42, D-49 under `-z norelro` (supported; all three
+# references link and run dynamic outputs with it): there is no
+# `PT_GNU_RELRO`; `.dynamic` keeps its place and stays writable (the
+# loader writes `DT_DEBUG`, which the program reads back); a copy
+# relocation (the fixture's `greet_count`, read by `-fno-pie` code) is
+# placed as an ordinary writable section and the program updates it;
+# under `-z now -z norelro` the `JUMP_SLOT` words stay in writable data and
+# nothing is read-only after relocation. The program reads its own headers
+# at run time (`dl_iterate_phdr`, `_DYNAMIC`, `DT_JMPREL`).
+#
+# mortar: AArch64 WP-056 (OPTS), x86-64 WP-056 (OPTS), in tests/link/xfails.
+#@ spec: dyn.md "D-33"
+#@ spec: dyn.md "D-42"
+#@ spec: dyn.md "D-49"
+#@ arch: aarch64 x86_64
+#@ fixture: greet
+
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+link gcc -pie -Wl,-z,norelro pie.o -L. -lgreet -o pie
+run pie
+  stdout: hello, norelro
+  stdout: greet 41 count 42
+  stdout: relro 0
+  stdout: bind-now 0
+  stdout: r_debug in DT_DEBUG 1
+  stdout: jump slots some, writable all
+link gcc -no-pie -Wl,-z,norelro exec.o -L. -lgreet -o exec
+run exec
+  stdout: hello, norelro
+  stdout: greet 41 count 42
+  stdout: relro 0
+  stdout: bind-now 0
+  stdout: r_debug in DT_DEBUG 1
+  stdout: jump slots some, writable all
+link gcc -no-pie -Wl,-z,now -Wl,-z,norelro exec.o -L. -lgreet -o exec-now
+run exec-now
+  stdout: hello, norelro
+  stdout: greet 41 count 42
+  stdout: relro 0
+  stdout: bind-now 1
+  stdout: r_debug in DT_DEBUG 1
+  stdout: jump slots some, writable all
+check readelf -lW pie
+  has: ^ DYNAMIC
+  not: GNU_RELRO
+check readelf -lW exec
+  not: GNU_RELRO
+check readelf -lW exec-now
+  not: GNU_RELRO
+check readelf -rW exec
+  has(aarch64): R_AARCH64_COPY * greet_count
+  has(x86_64): R_X86_64_COPY * greet_count
+check readelf -dW exec-now
+  has: (FLAGS) BIND_NOW
+
+#--- main.c
+#define _GNU_SOURCE
+#include <link.h>
+#include <stdio.h>
+#include "greet.h"
+
+/* The executable is the first object dl_iterate_phdr reports. */
+static ElfW(Addr) bias;
+static const ElfW(Phdr) *phdr;
+static int phnum;
+
+static int first(struct dl_phdr_info *info, size_t size, void *data) {
+  (void)size;
+  (void)data;
+  bias = info->dlpi_addr;
+  phdr = info->dlpi_phdr;
+  phnum = info->dlpi_phnum;
+  return 1;
+}
+
+/* An address tag of _DYNAMIC, whether or not the loader biased it. */
+static ElfW(Addr) at(ElfW(Addr) p) { return p < bias ? p + bias : p; }
+
+/* Writable for the whole run: in a PT_LOAD with PF_W and in no
+   PT_GNU_RELRO. */
+static int writable(ElfW(Addr) a) {
+  int w = 0;
+  for (int i = 0; i < phnum; i++) {
+    ElfW(Addr) lo = bias + phdr[i].p_vaddr, hi = lo + phdr[i].p_memsz;
+    if (a < lo || a >= hi) continue;
+    if (phdr[i].p_type == PT_LOAD && (phdr[i].p_flags & PF_W)) w = 1;
+    if (phdr[i].p_type == PT_GNU_RELRO) return 0;
+  }
+  return w;
+}
+
+int main(void) {
+  int g = greet("norelro");
+  greet_count++;
+  printf("greet %d count %d\n", g, greet_count);
+  dl_iterate_phdr(first, 0);
+  int relro = 0;
+  for (int i = 0; i < phnum; i++)
+    if (phdr[i].p_type == PT_GNU_RELRO) relro = 1;
+  ElfW(Addr) jmprel = 0, size = 0, flags = 0, debug = 0;
+  for (const ElfW(Dyn) *d = _DYNAMIC; d->d_tag != DT_NULL; d++) {
+    if (d->d_tag == DT_JMPREL) jmprel = at(d->d_un.d_ptr);
+    if (d->d_tag == DT_PLTRELSZ) size = d->d_un.d_val;
+    if (d->d_tag == DT_FLAGS) flags = d->d_un.d_val;
+    if (d->d_tag == DT_DEBUG) debug = d->d_un.d_ptr;
+  }
+  const ElfW(Rela) *r = (const ElfW(Rela) *)jmprel;
+  size_t n = jmprel ? size / sizeof *r : 0, w = 0;
+  for (size_t i = 0; i < n; i++)
+    w += writable(bias + r[i].r_offset);
+  printf("relro %d\n", relro);
+  printf("bind-now %d\n", !!(flags & DF_BIND_NOW));
+  printf("r_debug in DT_DEBUG %d\n", debug != 0);
+  printf("jump slots %s, writable %s\n", n ? "some" : "none",
+         w == n ? "all" : w ? "some" : "none");
+  return 0;
+}

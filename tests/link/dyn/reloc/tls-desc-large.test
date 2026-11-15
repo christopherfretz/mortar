@@ -1,0 +1,97 @@
+# dyn.md D-48: a TLSDESC sequence that the architecture does not
+# recognise for relaxation keeps a `TLSDESC` record in `.rela.dyn`,
+# applied eagerly: no `DT_TLSDESC_PLT`/`DT_TLSDESC_GOT` (a64.md §10.6).
+# AArch64's large-model form (`movz`/`movk` of `:tlsdesc_off_g1:` /
+# `:tlsdesc_off_g0_nc:`, `ldr`/`add` off the GOT base, `blr`: relocations
+# 565-569) has no IE relaxation in SYSVABI64 (a64.md §8.2), so against
+# the fixture library's `tlsx` mortar keeps the descriptor; against the
+# executable's own `own` it relaxes to LE (a64.md R1l). No compiler
+# writes the large form (GCC refuses `-mcmodel=large` with `-fPIC`, Clang
+# and hod the large model with TLS: a64.md §2), so `desc.S` is written by
+# hand (dyn.md Appendix B). The program prints both values and whether
+# the addresses equal the library's and its own. PIE and non-PIE.
+#
+# AArch64 only: x86-64 has no large TLSDESC form of its own.
+#
+# What the references do (measured): lld (`unknown relocation (565)`) and
+# mold (`unknown relocation: unknown (0x235)`) do not know relocations
+# 565-568 and refuse. GNU ld links and runs, but relaxes the large form
+# to IE against `tlsx` (`ldr x0, [x2, x0]` from a `TLS_TPREL64` slot),
+# which a64.md §8.2 says has no IE form, and to LE against `own`; so it
+# is held to its own records (reported: a64.md §8.2 and Q10).
+#
+# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
+#@ spec: dyn.md "D-48"
+#@ spec: a64.md "8.2"
+#@ arch: aarch64
+#@ fixture: reloc-libd
+
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+as desc.S -o desc.o
+link(lld) gcc -pie pie.o desc.o -L. -ld -o pie
+  exit: fail
+  diag: unknown relocation (565) against symbol tlsx
+link(mold) gcc -pie pie.o desc.o -L. -ld -o pie
+  exit: fail
+  diag: unknown relocation: unknown (0x235)
+link(bfd,mortar) gcc -pie pie.o desc.o -L. -ld -o pie
+run(bfd,mortar) pie
+  stdout: tlsx 5 same 1 own 9 same 1
+check(bfd,mortar) readelf -rW pie
+  has(mortar): R_AARCH64_TLSDESC * tlsx + 0$
+  not(mortar): TPREL64
+  has(bfd): R_AARCH64_TLS_TPREL64 * tlsx + 0$
+  not: own + 0$
+check(bfd,mortar) readelf -dW pie
+  not: (TLSDESC_PLT)
+  not: (TLSDESC_GOT)
+link(bfd,mortar) gcc -no-pie exec.o desc.o -L. -ld -o exec
+run(bfd,mortar) exec
+  stdout: tlsx 5 same 1 own 9 same 1
+check(bfd,mortar) readelf -rW exec
+  has(mortar): R_AARCH64_TLSDESC * tlsx + 0$
+  has(bfd): R_AARCH64_TLS_TPREL64 * tlsx + 0$
+  not: own + 0$
+
+#--- desc.S
+// Large-model TLSDESC (relocations 565-569): the descriptor's GOT offset
+// by MOVZ/MOVK, the GOT base in x2, then LDR/ADD off it and the call.
+        .text
+        .macro  large_desc name, sym
+        .globl  \name
+        .type   \name, %function
+\name:
+        stp     x29, x30, [sp, -16]!
+        mov     x29, sp
+        adrp    x2, _GLOBAL_OFFSET_TABLE_
+        add     x2, x2, :lo12:_GLOBAL_OFFSET_TABLE_
+        movz    x0, #:tlsdesc_off_g1:\sym
+        movk    x0, #:tlsdesc_off_g0_nc:\sym
+        .tlsdescldr \sym
+        ldr     x1, [x2, x0]
+        .tlsdescadd \sym
+        add     x0, x2, x0
+        .tlsdesccall \sym
+        blr     x1
+        mrs     x1, tpidr_el0
+        add     x0, x1, x0
+        ldp     x29, x30, [sp], 16
+        ret
+        .size   \name, .-\name
+        .endm
+        large_desc tlsx_addr, tlsx
+        large_desc own_addr, own
+        .section .note.GNU-stack,"",%progbits
+#--- main.c
+#include <stdio.h>
+#include "libd.h"
+
+__thread int own = 9;
+int *tlsx_addr(void), *own_addr(void);
+
+int main(void) {
+  int *t = tlsx_addr(), *o = own_addr();
+  printf("tlsx %d same %d own %d same %d\n", *t, t == lib_tlsx(), *o, o == &own);
+  return 0;
+}
