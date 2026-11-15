@@ -103,10 +103,10 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--remap-inputs` | PATTERN=FILE | GNU, lld | all | refused | `other` | Read FILE for the inputs matching PATTERN |
 | `--dependent-libraries` |  | lld | all | refused | `other` | Link the libraries inputs ask for (default) |
 | `--no-dependent-libraries` |  | lld | all | refused | `other` | Ignore the libraries inputs ask for |
-| `--fortran-common` |  | lld | all | refused | `other` | Take archive members that define common symbols (default) |
+| `--fortran-common` |  | lld | all | refused | `other` | Take archive members that define common symbols (mortar's behavior, always on) |
 | `--no-fortran-common` |  | lld | all | refused | `other` | Do not take archive members for common symbols |
-| `--warn-backrefs` |  | lld | all | refused | `other` | Warn when an archive member is taken for an earlier reference |
-| `--no-warn-backrefs` |  | lld | all | refused | `other` | Do not warn about backward references (default) |
+| `--warn-backrefs` |  | lld | all | refused | `diagnostics.warn_backrefs` | Warn when an archive member is taken for an earlier reference |
+| `--no-warn-backrefs` |  | lld | all | refused | `diagnostics.warn_backrefs` | Do not warn about backward references (default) |
 | `--warn-backrefs-exclude` | GLOB | lld | all | refused | `other` | Do not warn about backward references into GLOB |
 | `--why-extract` | FILE | lld | all | refused | `other` | Write why each archive member is taken to FILE |
 | `--print-archive-stats` | FILE | lld | all | refused | `other` | Write archive statistics to FILE |
@@ -119,8 +119,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 |---|---|---|---|---|---|---|
 | `-L`, `--library-path` | DIR | GNU, lld, mold | all | refused | `library_paths` | Search DIR for -l libraries and scripts |
 | `--sysroot` | DIR | GNU, lld, mold | all | refused | `sysroot` | Use DIR as the system root |
-| `-nostdlib` |  | GNU, lld, mold | all | refused | `nostdlib` | Search only the -L directories |
-| `-rpath-link` | DIR | GNU, lld, mold | all | refused | `dynamic.rpath_link` | Search DIR for the DT_NEEDED entries of shared objects |
+| `-nostdlib` |  | GNU, lld, mold | all | refused | `nostdlib` | Do not search the SEARCH_DIR directories of linker scripts |
+| `-rpath-link` | DIR | GNU, lld, mold | all | refused | `dynamic.rpath_link` | Search DIR for the DT_NEEDED entries of shared objects; a :-separated list |
 | `-Y` | PATH | GNU | all | refused | `other` | Default search path for Solaris compatibility |
 | `-C`, `--directory` | DIR | mold | all | refused | `other` | Change to DIR first |
 | `--chroot` | DIR | lld, mold | all | refused | `other` | Prefix every path with DIR |
@@ -216,8 +216,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--dynamic-list-data` |  | GNU, mold | all | refused | `other` | Add the data symbols to the dynamic list |
 | `--dynamic-list-cpp-new` |  | GNU | all | refused | `other` | Add operator new and delete to the dynamic list |
 | `--dynamic-list-cpp-typeinfo` |  | GNU | all | refused | `other` | Add the C++ type information to the dynamic list |
-| `--allow-shlib-undefined` |  | GNU, lld, mold | all | refused | `other` | Accept undefined symbols in shared objects |
-| `--no-allow-shlib-undefined` |  | GNU, lld, mold | all | refused | `other` | Report undefined symbols in shared objects |
+| `--allow-shlib-undefined` |  | GNU, lld, mold | all | refused | `dynamic.allow_shlib_undefined` | Accept undefined symbols in shared objects |
+| `--no-allow-shlib-undefined` |  | GNU, lld, mold | all | refused | `dynamic.allow_shlib_undefined` | Report undefined symbols in shared objects |
 | `--spare-dynamic-tags` | COUNT (number) | GNU, mold | all | refused | `other` | Reserve COUNT entries in .dynamic |
 | `--spare-program-headers` | COUNT (number) | mold | all | refused | `other` | Reserve COUNT program headers |
 | `--apply-dynamic-relocs` |  | lld, mold | all | refused | `other` | Write link-time values where dynamic relocations apply |
@@ -269,8 +269,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--no-allow-multiple-definition` |  | lld | all | refused | `diagnostics.allow_multiple_definition` | Report symbols defined more than once (default) |
 | `--noinhibit-exec`, `--noinhibit_exec` |  | GNU, lld, mold | all | refused | `diagnostics.noinhibit_exec` | Write the output even after errors |
 | `--error-handling-script` | SCRIPT | GNU, lld | all | refused | `other` | Run SCRIPT for undefined symbols and missing libraries |
-| `--warn-common` |  | GNU, lld, mold | all | refused | `other` | Warn about common symbols |
-| `--no-warn-common` |  | lld, mold | all | refused | `other` | Do not warn about common symbols (default) |
+| `--warn-common` |  | GNU, lld, mold | all | refused | `diagnostics.warn_common` | Warn about common symbols |
+| `--no-warn-common` |  | lld, mold | all | refused | `diagnostics.warn_common` | Do not warn about common symbols (default) |
 | `--warn-constructors` |  | GNU, mold | all | refused | `other` | Warn about global constructors |
 | `--warn-multiple-gp` |  | GNU | all | refused | `other` | Warn about several GP values |
 | `--warn-once` |  | GNU, lld, mold | all | refused | `other` | Warn about each undefined symbol once |

@@ -129,7 +129,7 @@ impl World {
         let entry = |file, index| SymEntry { file: FileId(file), index: SymbolIndex(index) };
         resolution.def = col(vec![
             Def::Defined(entry(1, 1)),
-            Def::Internal,
+            Def::Internal(mortar_core::resolution::InternalDef::Assign(0)),
             Def::Common(entry(2, 5)),
             Def::Defined(entry(2, 6)),
         ]);
@@ -653,6 +653,7 @@ fn s4_4_rule3_copy_in_read_only_memory() {
     let mut w = World::new();
     w.resolution.def[SymbolId(3)] =
         Def::Shared(SymEntry { file: FileId(2), index: SymbolIndex(6) });
+    w.resolution.props[SymbolId(3)].refs = mortar_core::resolution::RefFlags::PREEMPTIBLE;
     w.demands.global[SymbolId(3)] = DemandFlags::COPY;
     w.layout.slots.copies = Box::new([CopyAlloc { file: FileId(2), value: 0x100 }]);
     w.layout.slots.copy_of = Box::new([(SymbolId(3), 0)]);

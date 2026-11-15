@@ -119,7 +119,9 @@ pub(crate) fn add_input(
             target: None,
             line: n,
         }),
-        InputRow::Section { file, section: "COMMON", .. } => map.chunks.push(Chunk {
+        // lld's `COMMON`, mold's `.common` (§3.5, §3.6): the file's common
+        // symbols, which have no input section.
+        InputRow::Section { file, section: "COMMON" | ".common", .. } => map.chunks.push(Chunk {
             kind: ChunkKind::Common,
             name: file.to_string(),
             addr: Some(addr),

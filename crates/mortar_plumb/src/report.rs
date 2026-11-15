@@ -32,8 +32,18 @@ pub enum Rule {
     MergePiece,
     /// R7: the relocated place is not in the output's memory.
     Place,
+    /// R8: the instruction at a relocated place is not of the class the
+    /// type is defined for, or a thread-local type names a symbol that is
+    /// not thread-local (§4.3, §4.7).
+    Insn,
+    /// T1: a thread-local relocation in an output without `PT_TLS` (§4.7).
+    NoTls,
     /// Y1: an output symbol's value is not where its definition was placed.
     SymbolValue,
+    /// E1-E5: `.eh_frame` and `.eh_frame_hdr` (§6.4).
+    EhFrame(u8),
+    /// Y2-Y5: the symbol table (§6.5).
+    SymbolTable(u8),
 }
 
 impl Rule {
@@ -52,7 +62,11 @@ impl Rule {
             Rule::DiscardedTarget => "R5".into(),
             Rule::MergePiece => "R6".into(),
             Rule::Place => "R7".into(),
+            Rule::Insn => "R8".into(),
+            Rule::NoTls => "T1".into(),
             Rule::SymbolValue => "Y1".into(),
+            Rule::EhFrame(n) => format!("E{n}"),
+            Rule::SymbolTable(n) => format!("Y{n}"),
         }
     }
 }
@@ -76,10 +90,20 @@ pub enum Rewrite {
     Erratum843419Adr,
     /// W8: erratum 843419: the load or store moved to a patch.
     Erratum843419Patch,
+    /// W9: TLS initial-exec to local-exec: `ADRP`+`LDR` to `MOVZ`+`MOVK`.
+    TlsIeToLe,
+    /// W10: a TLSDESC sequence to local-exec (either of two forms).
+    TlsDescToLe,
+    /// W11: a TLSDESC sequence to initial-exec.
+    TlsDescToIe,
+    /// W12: a traditional general-dynamic sequence to local-exec.
+    TlsGdToLe,
+    /// W13: a traditional local-dynamic sequence to local-exec.
+    TlsLdToLe,
 }
 
 impl Rewrite {
-    pub const ALL: [Rewrite; 8] = [
+    pub const ALL: [Rewrite; 13] = [
         Rewrite::AdrpAddToAdr,
         Rewrite::GotToAdrpAdd,
         Rewrite::GotToAdr,
@@ -88,6 +112,11 @@ impl Rewrite {
         Rewrite::Veneer,
         Rewrite::Erratum843419Adr,
         Rewrite::Erratum843419Patch,
+        Rewrite::TlsIeToLe,
+        Rewrite::TlsDescToLe,
+        Rewrite::TlsDescToIe,
+        Rewrite::TlsGdToLe,
+        Rewrite::TlsLdToLe,
     ];
 
     pub const fn id(self) -> &'static str {
@@ -100,6 +129,11 @@ impl Rewrite {
             Rewrite::Veneer => "veneer",
             Rewrite::Erratum843419Adr => "erratum-843419-adr",
             Rewrite::Erratum843419Patch => "erratum-843419-patch",
+            Rewrite::TlsIeToLe => "tlsie-to-le",
+            Rewrite::TlsDescToLe => "tlsdesc-to-le",
+            Rewrite::TlsDescToIe => "tlsdesc-to-ie",
+            Rewrite::TlsGdToLe => "tlsgd-to-le",
+            Rewrite::TlsLdToLe => "tlsld-to-le",
         }
     }
 }
@@ -107,8 +141,12 @@ impl Rewrite {
 /// Why a relocation record of a placed section was not checked (§7.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reason {
-    /// A TLS type: stage 2.
+    /// A thread-local construct stage 2 does not judge (§4.7): an
+    /// undefined weak TLS symbol, a non-TLS type against a TLS symbol, a
+    /// TLSDESC sequence kept for the dynamic loader, an unusable `PT_TLS`.
     Tls,
+    /// A TLSDESC record that is not in a whole four-instruction sequence.
+    TlsSequence,
     /// The symbol is an IFUNC (reached through IRELATIVE): stage 2.
     Ifunc,
     /// The record is in a non-alloc section (debug information): stage 2.
@@ -141,6 +179,7 @@ impl Reason {
     pub const fn id(self) -> &'static str {
         match self {
             Reason::Tls => "tls",
+            Reason::TlsSequence => "tls-sequence",
             Reason::Ifunc => "ifunc",
             Reason::NonAlloc => "non-alloc",
             Reason::EhFrame => "eh-frame",
@@ -171,6 +210,8 @@ pub enum Via {
     GotSlot,
     /// To a mergeable piece found from the fields and checked by content.
     Piece,
+    /// A pointer field of a CIE or FDE, checked with its record (§6.4).
+    EhFrame,
 }
 
 impl Via {
@@ -179,6 +220,7 @@ impl Via {
             Via::Direct => "direct",
             Via::GotSlot => "got-slot",
             Via::Piece => "piece",
+            Via::EhFrame => "eh-frame",
         }
     }
 }
@@ -292,6 +334,25 @@ pub struct Coverage {
     pub symbols_unchecked: u64,
     /// Bytes of placed sections compared with the input (S12).
     pub content_bytes: u64,
+    /// Live input FDEs found in the output's `.eh_frame`; input FDEs
+    /// dropped with their function; output FDEs no live input gives that
+    /// are neutralised (§6.4).
+    pub fdes_checked: u64,
+    pub fdes_dropped: u64,
+    pub fdes_neutralised: u64,
+    /// Search table entries of `.eh_frame_hdr` checked (§6.4).
+    pub eh_frame_hdr_entries: u64,
+    /// Output symbols Y3 checked against their global definitions, and
+    /// those it could not (an IFUNC, an unplaced definition).
+    pub globals_checked: u64,
+    pub globals_unchecked: u64,
+    /// Output locals Y4 checked (one input local has the name), and the
+    /// others an input local names.
+    pub locals_checked: u64,
+    pub locals_unchecked: u64,
+    /// Linker-defined symbols Y5 checked, and the names it does not judge.
+    pub linker_defined_checked: u64,
+    pub linker_defined_not_judged: Vec<String>,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
 }
@@ -413,6 +474,29 @@ impl Report {
             c.symbols_checked, c.symbols_unchecked
         );
         let _ = writeln!(s, "content compared: {} bytes", c.content_bytes);
+        let _ = writeln!(
+            s,
+            "FDEs: checked {}, dropped with their function {}, neutralised {}; \
+             .eh_frame_hdr entries checked {}",
+            c.fdes_checked, c.fdes_dropped, c.fdes_neutralised, c.eh_frame_hdr_entries
+        );
+        let _ = writeln!(
+            s,
+            "symbol attributes: globals {} (unchecked {}), locals {} (unchecked {}), linker-defined {}",
+            c.globals_checked,
+            c.globals_unchecked,
+            c.locals_checked,
+            c.locals_unchecked,
+            c.linker_defined_checked
+        );
+        if !c.linker_defined_not_judged.is_empty() {
+            let _ = writeln!(
+                s,
+                "linker-defined symbols not judged: {} ({})",
+                c.linker_defined_not_judged.len(),
+                c.linker_defined_not_judged.join(", ")
+            );
+        }
         let _ = writeln!(s, "findings: {}", self.findings.len());
         s
     }

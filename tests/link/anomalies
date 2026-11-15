@@ -1,0 +1,20 @@
+# Run-wide default anomalies of the L3 verifier (spec/harness.md "L3",
+# spec/plumb.md §10.2): what a reference linker does on essentially every
+# link of a kind, so no test declares it. One line per default:
+#
+#   <linker>[,<more linkers or architectures>]: <id>...
+#
+# A defaulted anomaly is expected on every judged output of that linker
+# (and architecture), and the run fails if it is found on none of them.
+# mortar never has a default. Anything else a test meets it declares
+# with `#@ anomaly(<linker>): <id>...`, under the strict rule both ways.
+
+# mold: its canonical IFUNC symbols and their aliases (A1, A2, from the
+# C runtime's IFUNCs), its _TLS_MODULE_BASE_ (A3) and the globals it makes
+# local in a static executable's .symtab (A9). The -nostdlib links see
+# only A3 and A9, the glibc driver links all four.
+mold: A1 A2 A3 A9
+
+# GNU ld: the labels crtbegin/crtend put on sections the link leaves
+# empty (`__TMC_END__` and kin) - on every driver link with the C runtime.
+bfd: A10

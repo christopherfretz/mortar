@@ -6,14 +6,15 @@
 //! and runs the link, run and check steps there. The reference linkers go
 //! first; mortar is judged only when they establish the test.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
-use std::fmt::Display;
+use std::fmt::{Display, Write as _};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::format::{
-    Check, CheckTool, Driver, Exit, Expectation, Language, Link, MarkerKind, Run, Stdout, Step,
-    StepKind, Template, Test, Vars,
+    Anomaly, Check, CheckTool, Driver, Exit, Expectation, Language, Link, MarkerKind, Run, Stdout,
+    Step, StepKind, Template, Test, Vars,
 };
 use super::outcome::{self, Outcome, Printed, Raw, Reference, Verdict};
 use super::pattern::Pattern;
@@ -49,6 +50,11 @@ pub struct Matrix {
     pub mortar: Option<PathBuf>,
     /// The directory of the linker wrappers, `<dir>/<arch>/<linker>/ld`.
     pub wrappers: PathBuf,
+    /// Whether L3 runs: the verifier on every link's output.
+    pub plumb: bool,
+    /// The run-wide default anomalies, `tests/link/anomalies`
+    /// (`spec/harness.md` "L3").
+    pub defaults: Vec<Anomaly>,
 }
 
 impl Matrix {
@@ -134,6 +140,164 @@ pub struct Results {
     pub records: Vec<Record>,
     /// The tools the unit needed that are missing.
     pub missing: Vec<String>,
+    pub plumb: Plumb,
+}
+
+/// What L3, the verifier on every link's output, did (`spec/harness.md`
+/// "L3").
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Plumb {
+    /// The outputs the verifier judged.
+    pub verified: u64,
+    /// The findings a test's `anomaly` directive expected.
+    pub anomalies: u64,
+    /// The outputs it does not judge, by reason.
+    pub not_judged: BTreeMap<&'static str, u64>,
+    /// The time spent in the verifier, summed over the threads.
+    pub time: Duration,
+    /// The architectures and linkers of the judged outputs.
+    pub judged_by: BTreeSet<(Arch, Linker)>,
+    /// The default anomalies (`Matrix::defaults`) found, by architecture
+    /// and linker.
+    pub defaults_seen: BTreeSet<(Arch, Linker, String)>,
+}
+
+impl Plumb {
+    pub fn add(&mut self, other: &Plumb) {
+        self.verified += other.verified;
+        self.anomalies += other.anomalies;
+        for (reason, n) in &other.not_judged {
+            *self.not_judged.entry(reason).or_default() += n;
+        }
+        self.time += other.time;
+        self.judged_by.extend(other.judged_by.iter().copied());
+        self.defaults_seen.extend(other.defaults_seen.iter().cloned());
+    }
+
+    /// The default anomalies that apply to a judged output of the run and
+    /// that no judged output of that architecture and linker has: each one
+    /// a stale default (`spec/harness.md` "L3").
+    pub fn stale_defaults(&self, defaults: &[Anomaly]) -> Vec<String> {
+        let mut stale = Vec::new();
+        for &(arch, linker) in &self.judged_by {
+            for d in defaults.iter().filter(|d| d.scope.applies(arch, linker)) {
+                for id in &d.ids {
+                    if !self.defaults_seen.contains(&(arch, linker, id.clone())) {
+                        stale.push(format!(
+                            "L3: tests/link/anomalies line {} expects {id} of {} on {}, and the \
+                             verifier found it on none of the run's outputs",
+                            d.line,
+                            linker.name(),
+                            arch.name()
+                        ));
+                    }
+                }
+            }
+        }
+        stale.dedup();
+        stale
+    }
+
+    /// The summary's note.
+    pub fn note(&self) -> String {
+        let mut text = format!(
+            "L3: the verifier judged {} link outputs in {:.1} s",
+            self.verified,
+            self.time.as_secs_f64()
+        );
+        if self.anomalies > 0 {
+            let _ = write!(text, ", {} findings expected as anomalies", self.anomalies);
+        }
+        if !self.not_judged.is_empty() {
+            let parts: Vec<String> =
+                self.not_judged.iter().map(|(reason, n)| format!("{reason} {n}")).collect();
+            let _ = write!(text, "; not judged: {}", parts.join(", "));
+        }
+        text
+    }
+}
+
+/// Why the verifier does not judge an output (`spec/harness.md` "L3"),
+/// from its ELF header and program headers; `None` when it does.
+pub fn not_judged(bytes: &[u8]) -> Option<&'static str> {
+    const ET_REL: u16 = 1;
+    const ET_EXEC: u16 = 2;
+    const EM_AARCH64: u16 = 183;
+    const PT_DYNAMIC: u32 = 2;
+    const PT_INTERP: u32 = 3;
+    let u16_at = |at: usize| bytes.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at =
+        |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let u64_at = |at: usize| {
+        bytes.get(at..at + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap_or([0; 8])))
+    };
+    // Not ELF, or not 64-bit little-endian: the verifier's own S1 says
+    // which, unless the machine is one it does not judge.
+    if bytes.get(..4) != Some(b"\x7fELF".as_slice()) || bytes.get(4..6) != Some([2, 1].as_slice()) {
+        return if bytes.get(..4) == Some(b"\x7fELF".as_slice()) { Some("machine") } else { None };
+    }
+    if u16_at(18) != Some(EM_AARCH64) {
+        return Some("machine");
+    }
+    match u16_at(16) {
+        Some(ET_EXEC) => {}
+        Some(ET_REL) => return Some("relocatable"),
+        _ => return Some("pie-or-shared"),
+    }
+    let phoff = usize::try_from(u64_at(32)?).ok()?;
+    let entsize = usize::from(u16_at(54)?);
+    let dynamic = (0..usize::from(u16_at(56)?)).any(|i| {
+        let at = phoff.saturating_add(i.saturating_mul(entsize));
+        matches!(u32_at(at), Some(PT_DYNAMIC | PT_INTERP))
+    });
+    dynamic.then_some("dynamic")
+}
+
+/// The map file a link line writes already (`-Map=X`, `-Map X`,
+/// `-Wl,-Map=X`, `-Wl,-Map,X`, and the same with `--Map`).
+pub fn map_option(args: &[String]) -> Option<String> {
+    let mut found = None;
+    let mut next_is_map = false;
+    for arg in args {
+        if next_is_map {
+            found = Some(arg.clone());
+            next_is_map = false;
+            continue;
+        }
+        let words: Vec<&str> = match arg.strip_prefix("-Wl,") {
+            Some(list) => list.split(',').collect(),
+            None => vec![arg.as_str()],
+        };
+        let mut words = words.into_iter();
+        while let Some(word) = words.next() {
+            let word = word.strip_prefix('-').unwrap_or(word);
+            if let Some(file) = word.strip_prefix("-Map=").or_else(|| word.strip_prefix("Map=")) {
+                found = Some(file.to_owned());
+            } else if word == "-Map" || word == "Map" {
+                match words.next() {
+                    Some(file) => found = Some(file.to_owned()),
+                    None => next_is_map = !arg.starts_with("-Wl,"),
+                }
+            }
+        }
+    }
+    found
+}
+
+/// What L3 learned on one linker's steps of a unit.
+#[derive(Default)]
+struct Judged {
+    plumb: Plumb,
+    /// The anomaly ids seen and expected.
+    seen: BTreeSet<String>,
+}
+
+/// The anomaly ids of `list` that apply to `arch` and `linker`.
+fn anomaly_ids(list: &[Anomaly], arch: Arch, linker: Linker) -> Vec<&str> {
+    list.iter()
+        .filter(|a| a.scope.applies(arch, linker))
+        .flat_map(|a| a.ids.iter().map(String::as_str))
+        .collect()
 }
 
 /// A test on one architecture.
@@ -209,7 +373,7 @@ impl Unit<'_> {
                 });
                 continue;
             }
-            let (raw, printed) = self.run_linker(linker, None);
+            let (raw, printed) = self.run_linker(linker, None, &mut results.plumb);
             let (outcome, detail) = outcome::marked(&raw, marker.map(|m| m.reason.as_str()));
             results.records.push(self.record(Some(linker), outcome, detail.clone()));
             references.push(Reference { linker, outcome: Some(outcome), detail, printed });
@@ -220,13 +384,19 @@ impl Unit<'_> {
             return results;
         }
         if linkers.contains(&Linker::Mortar) {
-            results.records.push(self.judge_mortar(&verdict, &references));
+            let record = self.judge_mortar(&verdict, &references, &mut results.plumb);
+            results.records.push(record);
         }
         results
     }
 
     /// Mortar's record, once the references have had their say.
-    fn judge_mortar(&self, verdict: &Verdict, references: &[Reference]) -> Record {
+    fn judge_mortar(
+        &self,
+        verdict: &Verdict,
+        references: &[Reference],
+        plumb: &mut Plumb,
+    ) -> Record {
         let mortar = Some(Linker::Mortar);
         let marker = self.test.marker(self.arch(), Linker::Mortar);
         if let Some(skip) = marker.filter(|m| m.kind == MarkerKind::Skip) {
@@ -255,7 +425,7 @@ impl Unit<'_> {
                 .map(|r| r.printed.clone())
                 .unwrap_or_default(),
         };
-        let (raw, _) = self.run_linker(Linker::Mortar, Some(&expected));
+        let (raw, _) = self.run_linker(Linker::Mortar, Some(&expected), plumb);
         let (outcome, detail) = outcome::marked(&raw, marker.map(|m| m.reason.as_str()));
         self.record(mortar, outcome, detail)
     }
@@ -329,7 +499,45 @@ impl Unit<'_> {
     /// inputs. `expected` is what the programs must print where the test
     /// leaves that to the references (mortar's run); without it, what they
     /// print is returned.
-    fn run_linker(&self, linker: Linker, expected: Option<&[Printed]>) -> (Raw, Vec<Printed>) {
+    fn run_linker(
+        &self,
+        linker: Linker,
+        expected: Option<&[Printed]>,
+        plumb: &mut Plumb,
+    ) -> (Raw, Vec<Printed>) {
+        let mut judged = Judged::default();
+        let result = self.run_steps(linker, expected, &mut judged);
+        plumb.add(&judged.plumb);
+        let (raw, printed) = result;
+        if raw != Raw::Pass || judged.plumb.verified == 0 {
+            return (raw, printed);
+        }
+        // An expected anomaly that no judged output has is stale.
+        let stale: Vec<&str> = self
+            .test
+            .anomalies
+            .iter()
+            .filter(|a| a.scope.applies(self.arch(), linker))
+            .flat_map(|a| a.ids.iter().map(String::as_str))
+            .filter(|id| !judged.seen.contains(*id))
+            .collect();
+        if stale.is_empty() {
+            (raw, printed)
+        } else {
+            let detail = format!(
+                "L3: the anomaly {} is declared, and the verifier did not find it",
+                stale.join(", ")
+            );
+            (Raw::Fail(detail), printed)
+        }
+    }
+
+    fn run_steps(
+        &self,
+        linker: Linker,
+        expected: Option<&[Printed]>,
+        judged: &mut Judged,
+    ) -> (Raw, Vec<Printed>) {
         let dir = self.dir.join(linker.name());
         let mut printed = Vec::new();
         if let Err(e) = copy_dir(&self.dir.join("inputs"), &dir) {
@@ -341,7 +549,7 @@ impl Unit<'_> {
                 continue;
             }
             let result = match &step.kind {
-                StepKind::Link(link) => self.link(step, link, linker, &dir, vars),
+                StepKind::Link(link) => self.link(step, link, linker, &dir, vars, judged),
                 StepKind::Run(run) => {
                     self.run_program(step, run, &dir, vars, expected, &mut printed)
                 }
@@ -357,6 +565,7 @@ impl Unit<'_> {
         (Raw::Pass, printed)
     }
 
+    #[allow(clippy::too_many_lines)] // the driver, the end, the diagnostics, then L3
     fn link(
         &self,
         step: &Step,
@@ -364,9 +573,25 @@ impl Unit<'_> {
         linker: Linker,
         dir: &Path,
         vars: Vars,
+        judged: &mut Judged,
     ) -> Result<(), Raw> {
-        let args = expand(&link.args, vars);
+        let mut args = expand(&link.args, vars);
         let output_file = dir.join(output_name(&args));
+        // L3: a link that is to succeed writes a map, for the verifier.
+        let map_file = if link.fails || !self.matrix.plumb {
+            None
+        } else if let Some(map) = map_option(&args) {
+            Some(dir.join(map))
+        } else {
+            let name = format!(".linktest-plumb-{}.map", step.line);
+            let option = if link.driver == Driver::Ld {
+                format!("-Map={name}")
+            } else {
+                format!("-Wl,-Map={name}")
+            };
+            args.push(option);
+            Some(dir.join(name))
+        };
         if link.fails && output_file.symlink_metadata().is_ok() {
             std::fs::remove_file(&output_file).map_err(|e| {
                 Raw::Error(format!("cannot remove '{}': {e}", output_file.display()))
@@ -459,9 +684,100 @@ impl Unit<'_> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         self.expect(&link.diags, linker, &stderr, "the link's standard error")
             .map_err(|what| Raw::Fail(format!("{}: {what}", step.describe())))?;
-        // L3 (WP-028): the verifier, mortar_plumb, checks every output a
-        // link step produced, by any linker, here.
-        Ok(())
+        match map_file {
+            Some(map) => self.verify(step, linker, &output_file, &map, dir, judged),
+            None => Ok(()),
+        }
+    }
+
+    /// L3 (`spec/harness.md` "L3"): the verifier, `mortar_plumb`, on the
+    /// output of a link that succeeded. A finding fails the step unless it
+    /// is a recorded anomaly (`spec/plumb.md` §10.2) that the test expects
+    /// of this linker.
+    fn verify(
+        &self,
+        step: &Step,
+        linker: Linker,
+        output_file: &Path,
+        map_file: &Path,
+        dir: &Path,
+        judged: &mut Judged,
+    ) -> Result<(), Raw> {
+        let error = |what: &dyn Display| Raw::Error(format!("{}: L3: {what}", step.describe()));
+        let bytes = std::fs::read(output_file)
+            .map_err(|e| error(&format_args!("{}: {e}", output_file.display())))?;
+        if let Some(reason) = not_judged(&bytes) {
+            *judged.plumb.not_judged.entry(reason).or_default() += 1;
+            return Ok(());
+        }
+        drop(bytes);
+        let format = match linker {
+            Linker::Bfd => mortar_plumb::Format::Gnu,
+            Linker::Lld => mortar_plumb::Format::Lld,
+            Linker::Mold => mortar_plumb::Format::Mold,
+            Linker::Mortar => mortar_plumb::Format::Mortar,
+        };
+        let started = Instant::now();
+        let verified = crate::plumb::verify_link(output_file, map_file, format, dir, None);
+        judged.plumb.time += started.elapsed();
+        let (bytes, report) = verified.map_err(|e| error(&e))?;
+        judged.plumb.verified += 1;
+        judged.plumb.judged_by.insert((self.arch(), linker));
+        let expected = anomaly_ids(&self.test.anomalies, self.arch(), linker);
+        // mortar never has a default, whatever the file says.
+        let defaults = if linker == Linker::Mortar {
+            Vec::new()
+        } else {
+            anomaly_ids(&self.matrix.defaults, self.arch(), linker)
+        };
+        let mut unexpected = Vec::new();
+        for f in &report.findings {
+            let anomaly = mortar_plumb::anomaly::classify(format, &bytes, f);
+            let id = anomaly.map(mortar_plumb::anomaly::id);
+            if let Some(id) = id.filter(|id| expected.contains(id) || defaults.contains(id)) {
+                if expected.contains(&id) {
+                    judged.seen.insert(id.to_owned());
+                }
+                if defaults.contains(&id) {
+                    judged.plumb.defaults_seen.insert((self.arch(), linker, id.to_owned()));
+                }
+                judged.plumb.anomalies += 1;
+                continue;
+            }
+            let at = f.addr.map(|a| format!(" at {a:#x}")).unwrap_or_default();
+            let mut line = format!("{} {}{at}", f.rule.id(), f.message);
+            if let Some(id) = id {
+                let _ = write!(
+                    line,
+                    " (anomaly {id} of plumb.md §10.2; '#@ anomaly({}): {id}' expects it)",
+                    linker.name()
+                );
+            }
+            unexpected.push((id, line));
+        }
+        // A finding that is no recorded anomaly first, then the
+        // undeclared anomalies by id.
+        unexpected.sort_by_key(|(id, _)| (id.is_some(), id.map(str::to_owned)));
+        let mut ids: Vec<&str> = unexpected.iter().filter_map(|(id, _)| *id).collect();
+        ids.dedup();
+        if unexpected.is_empty() {
+            return Ok(());
+        }
+        let more = match unexpected.len() {
+            1 => String::new(),
+            n => format!(" (and {} more)", n - 1),
+        };
+        let undeclared = if ids.is_empty() {
+            String::new()
+        } else {
+            format!("; undeclared anomalies: {}", ids.join(" "))
+        };
+        Err(Raw::Fail(format!(
+            "{}: L3: the verifier finds {}: {}{more}{undeclared}",
+            step.describe(),
+            output_name_of(output_file),
+            unexpected[0].1
+        )))
     }
 
     fn run_program(
@@ -762,7 +1078,72 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::output_name;
+    use super::{Arch, Linker, Plumb, map_option, not_judged, output_name};
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    // spec/harness.md "L3": the map a link line already writes.
+    #[test]
+    fn the_map_of_a_link_line() {
+        let map = |args: &[&str]| map_option(&strings(args));
+        assert_eq!(map(&["a.o", "-o", "p"]), None);
+        assert_eq!(map(&["-Map=p.map", "a.o"]).as_deref(), Some("p.map"));
+        assert_eq!(map(&["-Map", "p.map"]).as_deref(), Some("p.map"));
+        assert_eq!(map(&["--Map=q"]).as_deref(), Some("q"));
+        assert_eq!(map(&["-Wl,-Map=r", "a.o"]).as_deref(), Some("r"));
+        assert_eq!(map(&["-Wl,--gc-sections,-Map,s"]).as_deref(), Some("s"));
+        assert_eq!(map(&["-Wl,-Map", "a.o"]), None);
+    }
+
+    // spec/harness.md "L3", "The defaults": a default no judged output of
+    // its linker and architecture shows is stale; one for a linker the run
+    // did not judge is not.
+    #[test]
+    fn a_default_anomaly_goes_stale() {
+        let defaults =
+            super::super::format::parse_defaults("mold: A3 A9\nbfd: A10\nlld,x86_64: A1\n")
+                .unwrap();
+        let mut plumb = Plumb::default();
+        plumb.judged_by.insert((Arch::Aarch64, Linker::Mold));
+        plumb.judged_by.insert((Arch::Aarch64, Linker::Lld));
+        plumb.defaults_seen.insert((Arch::Aarch64, Linker::Mold, "A9".to_owned()));
+        let stale = plumb.stale_defaults(&defaults);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert!(stale[0].contains("line 1 expects A3 of mold on aarch64"), "{stale:?}");
+        plumb.defaults_seen.insert((Arch::Aarch64, Linker::Mold, "A3".to_owned()));
+        assert!(plumb.stale_defaults(&defaults).is_empty());
+    }
+
+    // spec/harness.md "L3": the outputs the verifier does not judge.
+    #[test]
+    fn what_the_verifier_does_not_judge() {
+        // An ELF64 little-endian header, `e_type` and `e_machine` set, and
+        // one program header at 64 of type `p_type`.
+        let elf = |e_type: u16, machine: u16, p_type: u32| {
+            let mut b = vec![0u8; 64 + 56];
+            b[..6].copy_from_slice(b"\x7fELF\x02\x01");
+            b[16..18].copy_from_slice(&e_type.to_le_bytes());
+            b[18..20].copy_from_slice(&machine.to_le_bytes());
+            b[32..40].copy_from_slice(&64u64.to_le_bytes());
+            b[54..56].copy_from_slice(&56u16.to_le_bytes());
+            b[56..58].copy_from_slice(&1u16.to_le_bytes());
+            b[64..68].copy_from_slice(&p_type.to_le_bytes());
+            b
+        };
+        assert_eq!(not_judged(&elf(2, 183, 1)), None);
+        assert_eq!(not_judged(&elf(2, 183, 3)), Some("dynamic"));
+        assert_eq!(not_judged(&elf(2, 183, 2)), Some("dynamic"));
+        assert_eq!(not_judged(&elf(3, 183, 1)), Some("pie-or-shared"));
+        assert_eq!(not_judged(&elf(1, 183, 1)), Some("relocatable"));
+        assert_eq!(not_judged(&elf(2, 62, 1)), Some("machine"));
+        let mut elf32 = elf(2, 3, 1);
+        elf32[4] = 1;
+        assert_eq!(not_judged(&elf32), Some("machine"));
+        // Not ELF: the verifier judges it (S1).
+        assert_eq!(not_judged(b"#!/bin/sh"), None);
+    }
 
     // spec/harness.md "Link tests", "Steps": the output file of a link.
     #[test]
