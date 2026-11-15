@@ -91,8 +91,15 @@ pub struct Workload {
     /// The glob the basename of the captured link's output must match;
     /// exactly one recorded link matches.
     pub capture: String,
-    /// The section as written, without comments and blank lines: part of
-    /// the key the prepared workload is cached under.
+    /// `run`: the arguments the linked program is run with once, mortar's
+    /// output and GNU ld's alike, to compare their standard output and
+    /// exit status (`spec/harness.md` "bench", "Running the outputs");
+    /// `None` when the section has no `run`. `$S` in an argument is the
+    /// workload's source directory ([`Workload::run_args`]).
+    pub run: Option<Vec<String>>,
+    /// The section as written, without comments, blank lines and the `run`
+    /// key (which changes nothing that is built): part of the key the
+    /// prepared workload is cached under.
     pub text: String,
 }
 
@@ -100,6 +107,13 @@ impl Workload {
     /// Built and measured (not `planned`, not the calibration workload).
     pub fn measured(&self) -> bool {
         !matches!(self.kind, Kind::Planned { .. }) && self.class != CALIBRATION
+    }
+
+    /// The arguments of `run` with `$S` replaced by `sources`, the
+    /// directory the workload is built from (the unpacked archive's root
+    /// for `cmake`, `bench/workloads/src` for `sources`).
+    pub fn run_args(&self, sources: &str) -> Option<Vec<String>> {
+        Some(self.run.as_ref()?.iter().map(|a| a.replace("$S", sources)).collect())
     }
 }
 
@@ -112,12 +126,13 @@ const CLASSES: [&str; 6] = ["small", "medium", "large", "extreme", "rust", CALIB
 /// The keys each kind takes, besides `class`, `about`, `kind`.
 fn keys_of(kind: &str) -> Option<&'static [&'static str]> {
     Some(match kind {
-        "sources" => &["sources", "driver", "cflags", "ldflags", "capture"],
-        "synthetic" => &["shape", "params", "driver", "cflags", "ldflags", "capture"],
+        "sources" => &["sources", "driver", "cflags", "ldflags", "capture", "run"],
+        "synthetic" => &["shape", "params", "driver", "cflags", "ldflags", "capture", "run"],
         "cmake" => &[
             "url", "sha256", "root", "options", "prebuild", "target", "driver", "cflags", "capture",
+            "run",
         ],
-        "cargo" => &["rev", "package", "bin", "rustc_args", "capture"],
+        "cargo" => &["rev", "package", "bin", "rustc_args", "capture", "run"],
         "planned" => &["needs"],
         _ => return None,
     })
@@ -240,7 +255,7 @@ fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, Strin
         return Err(fail("`capture` is a file name pattern".into()));
     }
     let mut text = format!("[{name}]\n");
-    for (_, key, value) in entries {
+    for (_, key, value) in entries.iter().filter(|(_, key, _)| key != "run") {
         let _ = writeln!(text, "{key} = {value}");
     }
     Ok(Workload {
@@ -251,6 +266,7 @@ fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, Strin
         cflags: words("cflags"),
         ldflags: words("ldflags"),
         capture,
+        run: get("run").map(|v| v.split_whitespace().map(str::to_owned).collect()),
         text,
         name,
     })
@@ -271,6 +287,7 @@ sources = hello.c
 driver = gcc
 cflags = -O2 -g
 ldflags = -pie
+run =
 
 [synthetic-objects]
 class = extreme
@@ -290,6 +307,7 @@ prebuild = libp
 target = prog
 driver = g++
 capture = prog*
+run = --version -I$S/src
 
 [rust-self]
 class = rust
@@ -323,6 +341,16 @@ needs = kiln and hod
         );
         assert_eq!((hello.capture.as_str(), hello.about.as_str()), ("out", "A hello world in C."));
         assert!(hello.text.starts_with("[hello-c]\nclass = small\n") && !hello.text.contains('#'));
+        // "Running the outputs": `run =` is a run without arguments, and
+        // not part of what keys the build; no `run`, no run.
+        assert_eq!(hello.run, Some(Vec::new()));
+        assert!(!hello.text.contains("run"));
+        assert_eq!(workloads[1].run, None);
+        assert_eq!(
+            workloads[2].run_args("/c/src/p-1.0"),
+            Some(vec!["--version".to_owned(), "-I/c/src/p-1.0/src".to_owned()])
+        );
+        assert_eq!(workloads[1].run_args("/x"), None);
         assert_eq!(
             workloads[1].kind,
             Kind::Synthetic(Request { shape: Shape::Objects, params: (10, 20) })
@@ -371,5 +399,9 @@ needs = kiln and hod
                 .contains("kind `cargo` takes no `target`")
         );
         assert!(broken("capture = prog*", "capture = a/b").contains("file name pattern"));
+        assert!(
+            broken("needs = kiln and hod", "needs = kiln and hod\nrun = x")
+                .contains("kind `planned` takes no `run`")
+        );
     }
 }

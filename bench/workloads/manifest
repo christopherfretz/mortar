@@ -10,8 +10,15 @@
 # (sources, synthetic, cmake, cargo, planned), about (one sentence), and
 # per kind: sources; shape and params; url, sha256, root, options,
 # prebuild, target; rev, package, bin, rustc_args; needs. driver, cflags,
-# ldflags and capture where the kind takes them. Values are words separated
-# by blanks: no quoting.
+# ldflags and capture where the kind takes them; run (the arguments the
+# linked program is run with, mortar's output against GNU ld's: `run =`
+# is no argument, no `run` is no run; `$S` is the source directory).
+# Values are words separated by blanks: no quoting.
+#
+# mortar links static non-PIE executables only until M2: every workload
+# linked as PIE or dynamic has a `-static` twin (`<name>-static`) that
+# mortar links today. The PIE and dynamic originals stay, as M2's
+# workloads: mortar refuses them by name, which does not fail a run.
 
 # The control of every run (spec/harness.md "bench", "Calibration"): not
 # reported, not judged.
@@ -32,6 +39,7 @@ sources = hello.c
 driver = gcc
 cflags = -O2
 ldflags = -pie
+run =
 
 [hello-c-static]
 class = small
@@ -41,6 +49,7 @@ sources = hello.c
 driver = gcc
 cflags = -O2
 ldflags = -static
+run =
 
 [hello-cxx]
 class = small
@@ -50,6 +59,7 @@ sources = hello.cc
 driver = g++
 cflags = -O2
 ldflags = -pie
+run =
 
 [hello-cxx-static]
 class = small
@@ -59,6 +69,7 @@ sources = hello.cc
 driver = g++
 cflags = -O2
 ldflags = -static
+run =
 
 # protobuf 3.21.12, the last release without abseil: protoc is main.o and
 # the static libprotoc and libprotobuf, some 200 translation units of C++.
@@ -75,6 +86,7 @@ target = protoc
 driver = g++
 cflags = -O0 -g
 capture = protoc*
+run = -I$S/src --include_imports --descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto
 
 [cxx-medium]
 class = medium
@@ -89,6 +101,58 @@ target = protoc
 driver = g++
 cflags = -O0
 capture = protoc*
+run = -I$S/src --include_imports --descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto
+
+# The same protoc linked static and non-PIE (`CMAKE_EXE_LINKER_FLAGS`), the
+# link mortar makes today: plain, with -g, and with every function and
+# variable in a section of its own and --gc-sections (CMake adds
+# `CMAKE_EXE_LINKER_FLAGS_<build type>`, here NONE, to the link). Run as
+# the originals are: protoc writes the descriptor set of unittest.proto
+# and its imports to standard output.
+[cxx-medium-g-static]
+class = medium
+kind = cmake
+about = protoc at -O0 -g linked -static: debug information, static libstdc++ and glibc.
+url = https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12.tar.gz
+sha256 = 4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460
+root = protobuf-3.21.12
+options = -DCMAKE_BUILD_TYPE=None -DCMAKE_C_COMPILER=gcc -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_WITH_ZLIB=OFF -Dprotobuf_BUILD_SHARED_LIBS=OFF -DCMAKE_EXE_LINKER_FLAGS=-static
+prebuild = libprotobuf libprotoc
+target = protoc
+driver = g++
+cflags = -O0 -g
+capture = protoc*
+run = -I$S/src --include_imports --descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto
+
+[cxx-medium-static]
+class = medium
+kind = cmake
+about = protoc at -O0 linked -static.
+url = https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12.tar.gz
+sha256 = 4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460
+root = protobuf-3.21.12
+options = -DCMAKE_BUILD_TYPE=None -DCMAKE_C_COMPILER=gcc -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_WITH_ZLIB=OFF -Dprotobuf_BUILD_SHARED_LIBS=OFF -DCMAKE_EXE_LINKER_FLAGS=-static
+prebuild = libprotobuf libprotoc
+target = protoc
+driver = g++
+cflags = -O0
+capture = protoc*
+run = -I$S/src --include_imports --descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto
+
+[cxx-medium-gc-static]
+class = medium
+kind = cmake
+about = protoc at -O0 with -ffunction-sections -fdata-sections, linked -static with --gc-sections.
+url = https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12.tar.gz
+sha256 = 4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460
+root = protobuf-3.21.12
+options = -DCMAKE_BUILD_TYPE=None -DCMAKE_C_COMPILER=gcc -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_WITH_ZLIB=OFF -Dprotobuf_BUILD_SHARED_LIBS=OFF -DCMAKE_EXE_LINKER_FLAGS=-static -DCMAKE_EXE_LINKER_FLAGS_NONE=-Wl,--gc-sections
+prebuild = libprotobuf libprotoc
+target = protoc
+driver = g++
+cflags = -O0 -ffunction-sections -fdata-sections
+capture = protoc*
+run = -I$S/src --include_imports --descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto
 
 # mortar's own binary as rustc links it (the dev profile: debug
 # information, many rlibs), at a pinned commit of this repository so that
@@ -103,6 +167,21 @@ package = mortar
 bin = mortar
 rustc_args = -C save-temps
 capture = mortar-*
+run = --version
+
+# The same binary with glibc linked statically and a non-PIE executable:
+# `crt-static` makes rustc pass `-static` (with `-static-pie` unless the
+# relocation model is static).
+[rust-self-static]
+class = rust
+kind = cargo
+about = mortar's binary (dev profile) as rustc links it with crt-static, non-PIE.
+rev = 413481782430e79cc8b945965385a10d9b2969a2
+package = mortar
+bin = mortar
+rustc_args = -C save-temps -C target-feature=+crt-static -C relocation-model=static
+capture = mortar-*
+run = --version
 
 # Generated extremes (xtask/src/bench/synth.rs): each takes one property
 # of a link far beyond a usual program.
@@ -123,6 +202,7 @@ shape = sections
 params = 2 40000
 driver = gcc
 cflags = -O1 -ffunction-sections -fdata-sections
+run =
 
 [synthetic-strings]
 class = extreme
@@ -132,6 +212,7 @@ shape = strings
 params = 200 5000
 driver = gcc
 cflags = -O1
+run =
 
 [synthetic-comdat]
 class = extreme
@@ -141,6 +222,7 @@ shape = comdat
 params = 300 500
 driver = g++
 cflags = -O0 -g
+run =
 
 [synthetic-archives]
 class = extreme
@@ -150,6 +232,87 @@ shape = archives
 params = 100 40
 driver = gcc
 cflags = -O1
+run =
+
+# The static twins of the generated extremes, as mortar links them today
+# (the same sources and flags, linked -static), and one large archive of
+# which the program needs one member in fifty.
+[synthetic-objects-static]
+class = extreme
+kind = synthetic
+about = synthetic-objects linked -static. Not run: its calls fan out exponentially.
+shape = objects
+params = 1000 200
+driver = gcc
+cflags = -O1
+ldflags = -static
+
+[synthetic-sections-static]
+class = extreme
+kind = synthetic
+about = synthetic-sections linked -static.
+shape = sections
+params = 2 40000
+driver = gcc
+cflags = -O1 -ffunction-sections -fdata-sections
+ldflags = -static
+run =
+
+[synthetic-strings-static]
+class = extreme
+kind = synthetic
+about = synthetic-strings linked -static.
+shape = strings
+params = 200 5000
+driver = gcc
+cflags = -O1
+ldflags = -static
+run =
+
+[synthetic-comdat-static]
+class = extreme
+kind = synthetic
+about = synthetic-comdat linked -static.
+shape = comdat
+params = 300 500
+driver = g++
+cflags = -O0 -g
+ldflags = -static
+run =
+
+[synthetic-archives-static]
+class = extreme
+kind = synthetic
+about = synthetic-archives linked -static.
+shape = archives
+params = 100 40
+driver = gcc
+cflags = -O1
+ldflags = -static
+run =
+
+[synthetic-library-static]
+class = extreme
+kind = synthetic
+about = One archive of 20000 members of which main needs every 50th: archive search and extraction.
+shape = library
+params = 20000 50
+driver = gcc
+cflags = -O1
+ldflags = -static
+run =
+
+# A Fortran program and its C callee (tests/link/lang/fortran-c.test):
+# libgfortran from its archive.
+[fortran-static]
+class = small
+kind = sources
+about = A Fortran main calling C through BIND(C), linked -static against libgfortran.
+sources = fortran.f90 fortran-sum.c
+driver = gfortran
+cflags = -O1
+ldflags = -static
+run =
 
 # Specified, not built (spec/harness.md "bench", "Planned workloads").
 [libcxx-test]
