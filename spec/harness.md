@@ -1176,8 +1176,9 @@ They are a planned row ("Planned workloads").
 |---|---|
 | (no action) | prepare what is not current, measure, print the table, write `<cache>/results.tsv` |
 | `--check` | the same, then judge mortar's links against the baseline ("The gate") |
-| `--update-baseline --reason <text>` | the same with every workload and every linker, then write the run as the baseline, append to its log, regenerate `docs/status/bench.md` |
-| `--report` | regenerate `docs/status/bench.md` from the baseline, measuring nothing |
+| `--update-baseline --reason <text>` | the same with every workload and every linker, then write the run as the baseline, append to its log, regenerate `docs/status/bench.md` and `docs/status/perf.md` |
+| `--report` | regenerate `docs/status/bench.md` and `docs/status/perf.md` from the baseline, measuring nothing |
+| `--judge <file>` | judge a saved run (an earlier `results.tsv`) against the baseline as `--check` does, measuring nothing; the same exit status |
 | `--prepare` | prepare the workloads and print their census; measure nothing |
 | `--list` | list the manifest's workloads, the planned ones included |
 | `--workload <name>` | only this workload (repeatable); a planned one, or the calibration workload, is an error |
@@ -1186,7 +1187,7 @@ They are a planned row ("Planned workloads").
 | `--baseline <file>` | default `bench/baselines/<machine id>.tsv` |
 | `--mortar <binary>` | default: the checkout's, built by `cargo build --release -p mortar --bin mortar` (a cargo step, `process::run_step`) |
 | `--work <dir>` | the cache, default `<build directory>/bench-work` ("The cache") |
-| `--no-verify` | no verifier on mortar's outputs ("Verification"), for timing-only loops: said on standard error and in the results (`verify off`); no `output_hash` is recorded |
+| `--no-verify` | no verifier on mortar's outputs ("Verification") and no runs of them ("Running the outputs"), for timing-only loops: said on standard error and in the results (`verify off`); no `output_hash` is recorded |
 | `-h`, `--help` | the usage on standard output, status 0 |
 
 At most one action. `--update-baseline` without a non-blank `--reason`,
@@ -1195,7 +1196,8 @@ with `--workload`, `--linker` or `--no-verify`, and `--reason` without
 and every change of it says why (`docs/AGENTS.md` "Review gates").
 
 Exit status: 0; 1 when the verifier finds a mortar output wrong
-("Verification"; any action, and `--update-baseline` then writes
+("Verification") or mortar's program runs differently from GNU ld's
+("Running the outputs"; any action, and `--update-baseline` then writes
 nothing), or when `--check` finds a mortar link regressed or lost;
 3 when the run cannot be trusted: an error of the harness (a build, a
 fetch, a census, a missing tool or baseline), a reference linker that did
@@ -1229,6 +1231,7 @@ class or shape, and a missing required key, are errors naming the line.
 | `driver`, `cflags`, `ldflags` | sources, synthetic, cmake (no `ldflags`) | the compiler driver on `PATH`, compiler flags, driver flags of the link |
 | `capture` | all built | the pattern the basename of the captured link's output matches (`*` is any run of characters); default `out` |
 | `needs` | planned | what the workload waits for |
+| `run` | all built | the arguments the linked program is run with once ("Running the outputs"); `run =` runs it without arguments, no `run` does not run it; `$S` in an argument is the source directory (the unpacked archive's `root` for `cmake`, `bench/workloads/src` for `sources`, else the workload's directory) |
 
 The workloads (sizes as the census of this machine counted them are in
 `docs/status/bench.md`):
@@ -1244,6 +1247,20 @@ The workloads (sizes as the census of this machine counted them are in
 | `synthetic-strings` | extreme | 200 objects × 5000 string literals, every other one the same in every object |
 | `synthetic-comdat` | extreme | 300 C++ units that all define the same 500 inline functions, `-O0 -g` |
 | `synthetic-archives` | extreme | 100 archives × 40 members; half of each archive is needed by the one before |
+| `cxx-medium-g-static`, `cxx-medium-static` | medium | the same protoc builds with `-DCMAKE_EXE_LINKER_FLAGS=-static` |
+| `cxx-medium-gc-static` | medium | protoc at `-O0 -ffunction-sections -fdata-sections`, linked `-static` and `-Wl,--gc-sections` (`CMAKE_EXE_LINKER_FLAGS_NONE`) |
+| `rust-self-static` | rust | `rust-self` with `-C target-feature=+crt-static -C relocation-model=static`: static, not PIE |
+| `synthetic-<shape>-static` | extreme | each `synthetic-*` above with `ldflags = -static`, the same sources and flags |
+| `synthetic-library-static` | extreme | one archive of 20000 members of which `main` needs every 50th, `-static` |
+| `fortran-static` | small | `fortran.f90` (a Fortran main calling C through `BIND(C)`) and `fortran-sum.c`, gfortran `-O1`, `-static` against libgfortran |
+
+**Static twins.** Until M2 mortar links static, non-PIE executables only
+and refuses `-pie`, `-shared` and dynamic links by name. Every workload
+linked as PIE or dynamic therefore has a static twin, `<name>-static`,
+built from the same sources with the same compiler flags and linked
+`-static` (WP-036). The originals stay: they are M2's workloads, and
+until then their mortar rows are `refused` with mortar's first line,
+which fails nothing.
 | `calibration` | calibration | 100 objects × 50 functions (the `objects` shape) |
 
 The long symbol names of `synthetic-objects` (some 200 000 of 40 bytes
@@ -1251,6 +1268,15 @@ and more) are the "one huge string table" of `docs/VALIDATION.md`; the
 million-symbol and hundred-thousand-section extremes are approached, at
 the scale this machine's disk and time allow, by `synthetic-objects` and
 `synthetic-sections`. Larger sizes are a manifest change.
+
+`run` lines: `hello-*` and `fortran-static` without arguments; protoc
+(`cxx-medium*`) `-I$S/src --include_imports
+--descriptor_set_out=/dev/stdout $S/src/google/protobuf/unittest.proto`
+(the descriptor set of `unittest.proto` and its imports, written to
+standard output); `rust-self*` `--version`; the `synthetic-*` workloads
+without arguments (their `main` exits 0) except `synthetic-objects*`,
+which is not run: each of its functions calls two further on, so a run
+makes exponentially many calls.
 
 ### Planned workloads
 
@@ -1293,7 +1319,8 @@ file	<size>	<modification time, ns>	<path>     (one per file the census read)
 ```
 
 The key is FNV-1a 64 over the stamp's first line, the manifest section
-(its key lines as written, comments and blank lines dropped), the first
+(its key lines as written, comments, blank lines and `run` dropped:
+`run` changes nothing that is built), the first
 line of `<driver> --version` and of `ld.bfd --version`, and per kind: the
 name and bytes of each source; the generator's version (`GENERATOR` in
 `xtask/src/bench/synth.rs`); `cmake --version` and `make --version`;
@@ -1418,6 +1445,16 @@ checkout, and changes exactly when what the link reads changes.
 | `mold` | `mold` on `PATH` | `default`, `1` | `--no-fork` always; `--threads=1` for `1` |
 | `mortar` | `--mortar`, else the checkout's release build | `default`, `1` | `--threads=1` for `1` |
 
+**Default threads**: what each linker chooses without `--threads`. lld
+starts one thread per processor in its CPU affinity mask
+(`llvm::hardware_concurrency`); mold one per processor TBB sees (the
+affinity mask); mortar `std::thread::available_parallelism` (the
+affinity mask, and a cgroup CPU quota if one is set). On this machine
+all three are the `cores` of the results header (12; no CPU quota is
+set). GNU ld has one thread. The default configuration of a linker is
+therefore not the same number of threads on another machine; the
+machine id has the processor count in it.
+
 `--no-fork`: by default mold's process forks, the child links, and the
 parent exits once the output is written, without waiting for the child.
 GNU `time` then reports the parent: measured here, 8.6 MB for a link whose
@@ -1441,7 +1478,9 @@ results header.
 - Per workload: a **warm-up** round, every configuration once, in the
   order of the table, which decides each configuration's status and is
   discarded; then `--runs` **rounds**, each running every configuration
-  that linked once, in the same order.
+  that linked once, in the same order. The linkers are **interleaved**:
+  run N of every configuration comes before run N+1 of any, so a burst
+  of load on the shared machine falls on all of them alike.
 - **Status** of a configuration, from how a run ended:
   - `ok`: exit status 0 and a non-empty output;
   - `refused`: mortar only: a non-zero exit status (not a signal), no
@@ -1514,6 +1553,33 @@ refused by mortar (with its first line), failed. The verdicts are in the
 results header (`verify`, `verify.<workload>`). The cost and the
 before/after medians are in `spec/landed/harness/WP-035.md`.
 
+### Running the outputs
+
+A workload whose section has `run` has its program run once (WP-036),
+right after the verifier and before the warm-up, untimed, when the
+verifier judged mortar's output `clean` or `not judged`:
+
+- GNU ld links the response file once more to
+  `<scratch>/<workload>-bfd-run.out` (`process::run`, the limits of a
+  measured link); a GNU ld that does not link is an error of the
+  harness;
+- mortar's verified output and GNU ld's are each run with the `run`
+  arguments, in an empty directory of their own under the scratch
+  directory, with no input, `LC_ALL=C`, under 1 minute and 4 GiB of
+  address space and no core file (`process::run`);
+- the same exit status (or signal) and the same standard output, byte
+  for byte, is `same: <status>, <n> bytes of standard output`; anything
+  else is `differs: <how>` (the status of each, or the first byte at
+  which the outputs differ, and where mortar's output is kept); a GNU
+  ld program killed by a limit is `not run`. Standard error is not
+  compared.
+
+**A difference** fails mortar's rows of the workload as a finding does:
+`failed`, no figures, the detail `mortar's output runs differently from
+GNU ld's: <how>`; no output hash is recorded; the run exits 1, and
+`--update-baseline` writes nothing. The verdicts are in the results
+header (`run.<workload>`) and in the summary after the table.
+
 ### Calibration
 
 The workload of class `calibration` is linked by lld (22) at its default
@@ -1563,7 +1629,8 @@ link	<fields>
   `calibration_before_us`, `calibration_after_us`, `noisy` (`yes`, `no`),
   `load_before`, `load_after`, `version.<linker>`, `verify` (`on`, `off`;
   when mortar is measured), `verify.<workload>` (the verdict,
-  "Verification"), `output_hash.<workload>`
+  "Verification"), `run.<workload>` (the run's verdict, "Running the
+  outputs"), `output_hash.<workload>`
   (FNV-1a 64 of mortar's warm-up output, recorded only when the verifier
   judged that output clean; the golden output check: its
   warm-up outputs at the default and at one thread must be identical, or
@@ -1632,11 +1699,24 @@ hash) a time is unsteady. The comparisons are exact (128-bit integers).
 date, commit, runs, calibration, load, probe and reason; the linkers'
 versions; the workloads with their census; per workload a table of every
 configuration with its median wall time, the fastest-to-slowest range,
-median RSS, both as ratios to mold at its default threads (lld where mold
-did not link `ok`), and the output size, or its status and detail; and
-the planned workloads. When mortar links, its ratios against mold, lld
-and GNU ld are the ones the release gate records. A run prints the same
-per-workload table on standard output.
+median CPU time (user + system), median RSS, wall and RSS as ratios to
+mold at its default threads (lld where mold did not link `ok`), and the
+output size, or its status and detail; and the planned workloads. When
+mortar links, its ratios against mold, lld and GNU ld are the ones the
+release gate records. A run prints the same per-workload table on
+standard output, and after it one line per `ok` link of mortar: its
+figures against the fastest and the smallest of the other linkers.
+
+`docs/status/perf.md` is generated with it, from the same baseline: the
+date, commit, machine, the load average and calibration around the run;
+per `ok` link of mortar, its median wall time (range) and CPU time
+against the fastest other linker's median wall in the same thread
+configuration (`1`: every linker's one-thread link; `default`: the
+others' default links and GNU ld's one), and its median RSS against the
+smallest other's, each as mortar's over the other's; the three links
+where mortar is furthest behind by wall time and by RSS; the workloads
+mortar does not link, with the status and detail of its row; the runs'
+verdicts; and every link's figures. Numbers only.
 
 ### Generated workloads
 
@@ -1652,9 +1732,12 @@ test.
 | `strings (n, s)` | `n` objects with a table of `s` literals; even positions the same in every object | mergeable string sections |
 | `comdat (n, i)` | a header of `i` inline functions (an inline variable per eight, a class template) and `n` C++ units that all use them | COMDAT groups, duplicate debug information |
 | `archives (a, m)` | `a` archives of `m` members of eight functions; the first half of each archive's members call the same member of the next archive | archive member extraction |
+| `library (m, k)` | one archive of `m` members of eight functions that call nothing; `main` calls every `k`-th member, the first included | the search of a big archive of which little is needed |
 
 Every shape has a `main` that calls into every unit (for `archives`, into
-the needed members of the first), so a link drops nothing.
+the needed members of the first; for `library`, into its needed
+members), so a link drops nothing it was meant to keep. Adding a shape
+changes no other shape's output and so not `GENERATOR`.
 
 ### Tests
 
@@ -1676,10 +1759,12 @@ the needed members of the first), so a link drops nothing.
 `the_manifest_is_read`, `malformed_manifests`.
 `xtask/src/bench/synth.rs`: `the_generator_is_deterministic`,
 `the_generators_output_is_pinned`, `the_shapes`.
-`xtask/src/bench/report.rs`: `the_table`, `the_status_page`.
+`xtask/src/bench/report.rs`: `the_table`, `mortar_against_the_fastest`,
+`the_status_page`. `xtask/src/bench/run.rs`: `runs_are_compared`.
 `xtask/src/bench.rs`: `options`, `the_checked_in_manifest`,
 `baseline_paths`. `xtask/src/bench/verify.rs`:
-`a_finding_fails_mortars_rows`, `the_golden_hash_is_the_verified_outputs`,
+`a_finding_fails_mortars_rows`, `the_golden_hash_is_the_verified_outputs`
+(and a run that differs),
 `findings_are_read_from_xtask_plumb`, `the_summary_names_every_workload`.
 
 The end-to-end behavior (building, capturing, replaying with the real
