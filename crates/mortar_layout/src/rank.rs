@@ -107,7 +107,18 @@ const SYMBOL_TABLES: [&[u8]; 4] = [b".symtab", b".symtab_shndx", b".strtab", b".
 /// rank never contradicts its segment.
 #[must_use]
 pub fn rank_of(name: &[u8], sh_type: u32, flags: u64) -> Rank {
+    rank_with(name, sh_type, flags, false)
+}
+
+/// [`rank_of`] under `-z now` when `now`: `.got.plt` is then RELRO, after
+/// `.got` (L-60's table; GNU ld, lld and mold all do this in a static
+/// link: nothing is bound lazily).
+#[must_use]
+pub fn rank_with(name: &[u8], sh_type: u32, flags: u64, now: bool) -> Rank {
     let c = class(sh_type, flags);
+    if now && name == b".got.plt" && c == Class::Rw {
+        return Rank::new(7, 10);
+    }
     if c == Class::NonAlloc {
         return match SYMBOL_TABLES.iter().position(|&n| n == name) {
             Some(i) => Rank::new(10, i as u8),

@@ -517,6 +517,8 @@ pub enum Lands {
     Map,
     /// `bookkeeping.print_map`.
     PrintMap,
+    /// `bookkeeping.mortar_map`.
+    MortarMap,
     /// `bookkeeping.cref`.
     Cref,
     /// `bookkeeping.reproduce`.
@@ -627,6 +629,7 @@ impl Lands {
             Self::WarnCommon(_) => "diagnostics.warn_common",
             Self::Map => "bookkeeping.map",
             Self::PrintMap => "bookkeeping.print_map",
+            Self::MortarMap => "bookkeeping.mortar_map",
             Self::Cref => "bookkeeping.cref",
             Self::Reproduce => "bookkeeping.reproduce",
             Self::Threads | Self::ThreadCount | Self::NoThreads => "bookkeeping.threads",

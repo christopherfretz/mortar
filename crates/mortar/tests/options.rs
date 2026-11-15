@@ -46,6 +46,7 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--discard-none", Check(discard_none)),
     ("--build-id", Check(build_id_styles)),
     ("--no-build-id", Check(build_id_styles)),
+    ("--compress-debug-sections", Check(compress_debug_sections)),
     ("--eh-frame-hdr", Check(eh_frame_hdr)),
     ("--no-eh-frame-hdr", Check(eh_frame_hdr)),
     ("--gc-sections", Test("crates/mortar/tests/gc.rs", "differential_c_and_cxx_against_gnu_ld")),
@@ -62,12 +63,15 @@ const AUDIT: &[(&str, Proof)] = &[
         "--gc-keep-exported",
         Test("crates/mortar/tests/gc.rs", "gc_keep_exported_roots_default_visibility_globals"),
     ),
+    ("--no-gdb-index", Same(&["--no-gdb-index"], None)),
     ("-l", Check(libraries)),
     ("-(", Check(groups)),
     ("-)", Check(groups)),
     ("--as-needed", Same(&["--as-needed"], Some(shared_objects_are_refused))),
     ("--no-as-needed", Same(&["--no-as-needed"], Some(shared_objects_are_refused))),
     ("-Bstatic", Check(bstatic)),
+    ("--push-state", Check(push_state)),
+    ("--pop-state", Check(push_state)),
     ("--warn-backrefs", Check(backrefs)),
     ("--no-warn-backrefs", Check(backrefs)),
     ("-L", Check(libraries)),
@@ -75,6 +79,21 @@ const AUDIT: &[(&str, Proof)] = &[
         "--sysroot",
         Test("crates/mortar/tests/sysroot.rs", "sysroot_directories_and_scripts_are_under_it"),
     ),
+    ("-rpath-link", Same(&["-rpath-link", "/opt/lib"], Some(shared_objects_are_refused))),
+    ("-E", Same(&["--export-dynamic"], Some(dynamic_outputs_are_refused))),
+    ("--no-export-dynamic", Same(&["--no-export-dynamic"], Some(dynamic_outputs_are_refused))),
+    ("-Bsymbolic", Same(&["-Bsymbolic"], Some(dynamic_outputs_are_refused))),
+    ("-Bsymbolic-functions", Same(&["-Bsymbolic-functions"], Some(dynamic_outputs_are_refused))),
+    ("--Bsymbolic-non-weak", Same(&["--Bsymbolic-non-weak"], Some(dynamic_outputs_are_refused))),
+    (
+        "--Bsymbolic-non-weak-functions",
+        Same(&["--Bsymbolic-non-weak-functions"], Some(dynamic_outputs_are_refused)),
+    ),
+    ("-Bno-symbolic", Same(&["-Bno-symbolic"], Some(dynamic_outputs_are_refused))),
+    ("-rpath", Same(&["-rpath", "/opt/lib"], Some(dynamic_outputs_are_refused))),
+    ("--no-dynamic-linker", Same(&["--no-dynamic-linker"], Some(no_interpreter))),
+    ("--enable-new-dtags", Same(&["--enable-new-dtags"], Some(dynamic_outputs_are_refused))),
+    ("--disable-new-dtags", Same(&["--disable-new-dtags"], Some(dynamic_outputs_are_refused))),
     ("--hash-style", Same(&["--hash-style=sysv"], Some(dynamic_outputs_are_refused))),
     ("--rosegment", Same(&["--rosegment"], Some(rodata_has_its_own_load))),
     ("--error-limit", Check(error_limit)),
@@ -83,6 +102,7 @@ const AUDIT: &[(&str, Proof)] = &[
     ("-w", Check(warning_switches)),
     ("--color-diagnostics", Check(color)),
     ("--no-color-diagnostics", Check(color)),
+    ("--no-undefined", Same(&["--no-undefined"], Some(undefined_is_an_error))),
     ("--warn-execstack", Same(&["--warn-execstack"], Some(execstack_warns_by_default))),
     ("--version", Test("crates/mortar/tests/cli.rs", "version_goes_to_stdout")),
     ("-v", Test("crates/mortar/src/lib.rs", "requests_are_answered")),
@@ -90,12 +110,17 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--help", Test("crates/mortar/src/lib.rs", "requests_are_answered")),
     (
         "-Map",
-        Test("crates/mortar/tests/pipeline.rs", "print_map_writes_the_map_to_standard_output"),
+        Test("crates/mortar/tests/pipeline.rs", "the_text_map_matches_the_output_and_gnus_map"),
     ),
     ("-M", Test("crates/mortar/tests/pipeline.rs", "print_map_writes_the_map_to_standard_output")),
+    ("--dependency-file", Check(dependency_file)),
     (
         "--threads",
         Test("crates/mortar/tests/pipeline.rs", "the_output_is_a_function_of_the_inputs_alone"),
+    ),
+    (
+        "--mortar-map",
+        Test("crates/mortar/tests/pipeline.rs", "print_map_writes_the_map_to_standard_output"),
     ),
     ("--time-phases", Test("crates/mortar/tests/refusals.rs", "time_phases_lists_the_front")),
     ("-plugin", Same(&["-plugin", "/nonexistent/liblto_plugin.so"], Some(lto_is_refused))),
@@ -108,12 +133,17 @@ const AUDIT: &[(&str, Proof)] = &[
         "--fix-cortex-a53-843419",
         Test("crates/mortar/tests/pipeline.rs", "an_erratum_site_goes_through_a_patch"),
     ),
+    ("-z now", Test("crates/mortar/tests/pipeline.rs", "z_now_puts_the_got_plt_in_relro")),
+    ("-z lazy", Test("crates/mortar/tests/pipeline.rs", "z_now_puts_the_got_plt_in_relro")),
     ("-z relro", Check(relro)),
     ("-z norelro", Check(relro)),
     ("-z execstack", Check(execstack)),
     ("-z noexecstack", Check(execstack)),
+    ("-z text", Same(&["-z", "text"], Some(dynamic_outputs_are_refused))),
+    ("-z notext", Same(&["-z", "notext"], Some(dynamic_outputs_are_refused))),
     ("-z separate-code", Check(separate_code)),
     ("-z noseparate-code", Check(separate_code)),
+    ("-z defs", Same(&["-z", "defs"], Some(undefined_is_an_error))),
     ("-z max-page-size", Check(max_page_size)),
     (
         "-z common-page-size",
@@ -557,6 +587,15 @@ fn groups(cx: &Cx) {
 // spec: input.md §4 (`-Bstatic`: `-l` takes archives only, so a library
 // with only a shared object is not found)
 fn bstatic(cx: &Cx) {
+    so_dir(cx);
+    let o = cx.mortar(&["circ.o", "-Lso", "-Bstatic", "-lonly", "-lb", "-lonly", "-o", "bs.out"]);
+    assert!(o.success(), "{}", o.stderr_text());
+    let o = cx.mortar(&["circ.o", "-Lso", "-lonly", "-lb", "-o", "bs.out"]);
+    assert!(o.stderr_text().contains("libonly.so"), "without -Bstatic: {}", o.stderr_text());
+}
+
+/// `so/`: `libonly.so` and `libonly.a` (both `ca`), and `libb.a`.
+fn so_dir(cx: &Cx) {
     let dir = cx.scratch.join("so");
     std::fs::create_dir_all(&dir).unwrap();
     let o = cx.run_in(
@@ -566,10 +605,102 @@ fn bstatic(cx: &Cx) {
     assert!(o.success(), "gcc -shared: {}", o.stderr_text());
     std::fs::copy(cx.scratch.join("lib/liba.a"), dir.join("libonly.a")).unwrap();
     std::fs::copy(cx.scratch.join("lib/libb.a"), dir.join("libb.a")).unwrap();
-    let o = cx.mortar(&["circ.o", "-Lso", "-Bstatic", "-lonly", "-lb", "-lonly", "-o", "bs.out"]);
+}
+
+// spec: cli.md §3.3 (`--push-state` saves the switches, `--pop-state`
+// restores them): `-Bstatic` inside the pair chooses `libonly.a`, and
+// after it `-l` chooses `libonly.so` again (refused by name), as GNU ld
+// records it in `DT_NEEDED`; a `--pop-state` without a push is an error.
+fn push_state(cx: &Cx) {
+    so_dir(cx);
+    let inside =
+        ["circ.o", "-Lso", "--push-state", "-Bstatic", "-lonly", "-lb", "-lonly", "--pop-state"];
+    let after =
+        ["circ.o", "-Lso", "--push-state", "-Bstatic", "--pop-state", "-lonly", "-lb", "-lonly"];
+    let o = cx.mortar(&[&inside[..], &["-o", "ps.out"]].concat());
     assert!(o.success(), "{}", o.stderr_text());
-    let o = cx.mortar(&["circ.o", "-Lso", "-lonly", "-lb", "-o", "bs.out"]);
-    assert!(o.stderr_text().contains("libonly.so"), "without -Bstatic: {}", o.stderr_text());
+    assert_eq!(Cx::exit(&cx.scratch.join("ps.out")), Some(9));
+    let o = cx.mortar(&[&after[..], &["-o", "ps.out"]].concat());
+    assert!(o.stderr_text().contains("libonly.so"), "after --pop-state: {}", o.stderr_text());
+    for (line, needed) in [(&inside, false), (&after, true)] {
+        let out = cx.scratch.join("ps.ld");
+        let o = cx.ld(&[&line[..], &["-o", "ps.ld"]].concat());
+        assert!(o.success(), "ld.bfd: {}", o.stderr_text());
+        assert_eq!(cx.readelf("-dW", &out).contains("libonly.so"), needed, "GNU ld {line:?}");
+    }
+    let o = cx.mortar(&["start.o", "--pop-state", "-o", "ps.out"]);
+    assert!(!o.success());
+    assert!(o.stderr_text().contains("--push-state"), "{}", o.stderr_text());
+}
+
+// spec: cli.md §4.2 (`--compress-debug-sections` is partial): `=none` is
+// the uncompressed output mortar always writes, as GNU ld's; the others
+// are refused by value.
+fn compress_debug_sections(cx: &Cx) {
+    let plain = cx.bytes(&[], "cds-plain");
+    assert_eq!(cx.bytes(&["--compress-debug-sections=none"], "cds-none"), plain);
+    let gnu = cx.link_ld(&["--compress-debug-sections=none"], "cds.ld");
+    for out in [cx.scratch.join("cds-none"), gnu] {
+        let s = sections(cx, &out);
+        let debug: Vec<&str> = s.lines().filter(|l| l.contains(".debug_")).collect();
+        assert!(!debug.is_empty() && debug.iter().all(|l| !l.contains(" C ")), "{s}");
+    }
+    for v in ["zlib", "zlib-gnu", "zlib-gabi", "zstd"] {
+        let opt = format!("--compress-debug-sections={v}");
+        let o = cx.mortar(&["start.o", opt.as_str(), "-o", "cds.out"]);
+        assert!(!o.success() && o.stderr_text().contains(&opt), "{opt}: {}", o.stderr_text());
+    }
+}
+
+// spec: input.md §10.4 (`--dependency-file`: the output, then each found
+// path once in load order, escaped for Make; GNU ld lists the same
+// paths; nothing is written when the link fails)
+fn dependency_file(cx: &Cx) {
+    std::fs::copy(cx.scratch.join("circ.o"), cx.scratch.join("c i#r$c.o")).unwrap();
+    let line = ["c i#r$c.o", "-Llib", "-la", "-lb", "-la"];
+    let o = cx.mortar(&[&line[..], &["--dependency-file=m.d", "-o", "d p.out"]].concat());
+    assert!(o.success(), "{}", o.stderr_text());
+    let got = std::fs::read_to_string(cx.scratch.join("m.d")).unwrap();
+    assert_eq!(
+        got,
+        "d\\ p.out: \\\n c\\ i\\#r$$c.o \\\n lib/liba.a \\\n lib/libb.a\n\n\
+         c\\ i\\#r$$c.o:\n\nlib/liba.a:\n\nlib/libb.a:\n"
+    );
+    let o = cx.ld(&[&line[..], &["--dependency-file=g.d", "-o", "d p.ld"]].concat());
+    assert!(o.success(), "ld.bfd: {}", o.stderr_text());
+    let gnu = std::fs::read_to_string(cx.scratch.join("g.d")).unwrap();
+    let rules = |t: &str| -> Vec<String> {
+        t.lines().filter_map(|l| l.strip_suffix(':')).map(str::to_owned).collect()
+    };
+    let unescaped: Vec<String> = rules(&got)
+        .iter()
+        .map(|r| r.replace("\\ ", " ").replace("\\#", "#").replace("$$", "$"))
+        .collect();
+    // GNU ld lists a path once per mention; mortar once (lld's choice).
+    let mut gnu_once = rules(&gnu);
+    let mut seen = std::collections::BTreeSet::new();
+    gnu_once.retain(|p| seen.insert(p.clone()));
+    assert_eq!(unescaped, gnu_once, "GNU ld: {gnu}");
+    let _ = std::fs::remove_file(cx.scratch.join("u.d"));
+    let o = cx.mortar(&["undef.o", "--dependency-file=u.d", "-o", "u.out"]);
+    assert!(!o.success());
+    assert!(!cx.scratch.join("u.d").exists(), "a failed link writes no dependency file");
+}
+
+// The reason of `--no-undefined` and `-z defs`: an executable's undefined
+// symbol is an error without them (resolve.md §5).
+fn undefined_is_an_error(cx: &Cx) {
+    let o = cx.mortar(&["undef.o", "-o", "ud.out"]);
+    assert!(!o.success());
+    assert!(o.stderr_text().contains("undefined symbol: u1"), "{}", o.stderr_text());
+}
+
+// The reason of `--no-dynamic-linker`: a static executable has no
+// `PT_INTERP`.
+fn no_interpreter(cx: &Cx) {
+    let out = cx.link(&[], "ni.out");
+    assert!(!has_segment(cx, &out, "INTERP"));
+    dynamic_outputs_are_refused(cx);
 }
 
 // spec: diag.md §3.9 / cli.md §3.9 (`--error-limit`)
@@ -708,7 +839,7 @@ fn shared_objects_are_refused(cx: &Cx) {
 
 // The reason of `--hash-style`: every dynamic output is refused by name.
 fn dynamic_outputs_are_refused(cx: &Cx) {
-    for opt in ["-pie", "-shared", "--export-dynamic"] {
+    for opt in ["-pie", "-shared"] {
         let o = cx.mortar(&["start.o", opt, "-o", "dyn.out"]);
         assert!(!o.success());
         assert!(o.stderr_text().contains(&format!("unsupported option: {opt}")), "{opt}");
