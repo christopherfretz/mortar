@@ -28,6 +28,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "mortar_a64"
+version = "0.0.0"
+dependencies = [
+ "mortar_arch",
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_arch"
+version = "0.0.0"
+dependencies = [
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_testutil",
+]
+
+[[package]]
 name = "mortar_cli"
 version = "0.0.0"
 dependencies = [

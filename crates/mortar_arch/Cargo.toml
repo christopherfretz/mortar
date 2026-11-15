@@ -1,0 +1,20 @@
+[package]
+name = "mortar_arch"
+description = "The architecture interface: what a target tells the linker about its relocations, GOT, PLT, TLS and thunks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mortar_core.workspace = true
+mortar_diag.workspace = true
+mortar_elf.workspace = true
+
+[dev-dependencies]
+mortar_testutil.workspace = true
+
+[lints]
+workspace = true
