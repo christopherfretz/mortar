@@ -26,6 +26,8 @@ use mortar_image::synth::{Division, SizeCx, SynthChunk, SynthError};
 use mortar_image::target::Target;
 use mortar_image::tombstone::{self, Rule, Tomb};
 
+pub mod reflink;
+
 pub const ARCH: A64 = A64::M1;
 /// M2: the TLS relaxations (`spec/a64.md` §8.4).
 pub const ARCH_M2: A64 = A64::new(mortar_arch::Status::M2, true);

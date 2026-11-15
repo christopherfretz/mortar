@@ -116,6 +116,15 @@ fn create_new(path: &Path, mode: u32) -> io::Result<File> {
     OpenOptions::new().write(true).create_new(true).mode(mode).open(path)
 }
 
+/// Whether `path` names the inode `file` has open (a lock on an inode
+/// unlinked since is no lock on `path`).
+fn is_path_of(file: &File, path: &Path) -> bool {
+    match (file.metadata(), fs::metadata(path)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
 /// Whether `file`'s exclusive lock is enforced against a second descriptor
 /// of `path` (I-59's probe).
 fn enforced(path: &Path) -> bool {
@@ -202,6 +211,9 @@ impl Output {
                 Err(e) => return Err(e),
             };
             match file.try_lock() {
+                // Locked an inode another link has since unlinked (it
+                // replaced a stale `T0`): `T0` is not ours.
+                Ok(()) if !is_path_of(&file, &t0) => {}
                 Ok(()) if enforced(&t0) => {
                     if fresh {
                         return Ok((file, t0));
@@ -213,8 +225,7 @@ impl Output {
                     // until the new one is locked.
                     fs::remove_file(&t0)?;
                     if let Ok(new) = create_new(&t0, opts.mode) {
-                        drop(file);
-                        if new.try_lock().is_ok() {
+                        if new.try_lock().is_ok() && is_path_of(&new, &t0) {
                             return Ok((new, t0));
                         }
                         // Another link took it between: leave it to them.
