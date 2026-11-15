@@ -55,6 +55,8 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--as-needed", Same(&["--as-needed"], Some(shared_objects_are_refused))),
     ("--no-as-needed", Same(&["--no-as-needed"], Some(shared_objects_are_refused))),
     ("-Bstatic", Check(bstatic)),
+    ("--warn-backrefs", Check(backrefs)),
+    ("--no-warn-backrefs", Check(backrefs)),
     ("-L", Check(libraries)),
     (
         "--sysroot",
@@ -219,6 +221,14 @@ const CIRC_A: &str = "\t.text\n\t.globl ca\nca:\n\tb cb\n\t.globl cc\ncc:\n\tmov
     \t.section .note.GNU-stack,\"\",%progbits\n";
 const CIRC_B: &str =
     "\t.text\n\t.globl cb\ncb:\n\tb cc\n\t.section .note.GNU-stack,\"\",%progbits\n";
+/// A backward reference: `_start` calls `user` (in `libu.a`), which calls
+/// `helper` (in the earlier `libh.a`); the program exits 9.
+const BACK_MAIN: &str = "\t.text\n\t.globl _start\n_start:\n\tbl user\n\tmov x8, #93\n\tsvc #0\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+const BACK_USER: &str =
+    "\t.text\n\t.globl user\nuser:\n\tb helper\n\t.section .note.GNU-stack,\"\",%progbits\n";
+const BACK_HELPER: &str = "\t.text\n\t.globl helper\nhelper:\n\tmov x0, #9\n\tret\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
 
 impl Cx {
     fn new() -> Option<Self> {
@@ -240,6 +250,9 @@ impl Cx {
             ("circ", CIRC_MAIN, &[]),
             ("ca", CIRC_A, &[]),
             ("cb", CIRC_B, &[]),
+            ("bm", BACK_MAIN, &[]),
+            ("bu", BACK_USER, &[]),
+            ("bh", BACK_HELPER, &[]),
         ] {
             let src = cx.scratch.write(&format!("{name}.s"), text);
             let mut args: Vec<OsString> = extra.iter().map(OsString::from).collect();
@@ -248,7 +261,12 @@ impl Cx {
             assert!(o.success(), "gcc {name}: {}", o.stderr_text());
         }
         std::fs::create_dir_all(cx.scratch.join("lib")).unwrap();
-        for (lib, obj) in [("lib/liba.a", "ca.o"), ("lib/libb.a", "cb.o")] {
+        for (lib, obj) in [
+            ("lib/liba.a", "ca.o"),
+            ("lib/libb.a", "cb.o"),
+            ("lib/libh.a", "bh.o"),
+            ("lib/libu.a", "bu.o"),
+        ] {
             let o = cx.run_in(&ar, &["rcs", lib, obj].map(OsString::from));
             assert!(o.success(), "ar: {}", o.stderr_text());
         }
@@ -472,6 +490,45 @@ fn libraries(cx: &Cx) {
     }
     let o = cx.mortar(&["circ.o", "-la", "-o", "lib.out"]);
     assert!(o.stderr_text().contains("-la"), "without -L: {}", o.stderr_text());
+}
+
+// spec: resolve.md §4.3 (mortar searches every archive seen, as lld and
+// mold), §4.6 (`--warn-backrefs` reports what GNU ld's single pass would
+// leave undefined; `--no-warn-backrefs` after it turns it off): `cc` in
+// `liba.a` is needed by `cb` from the later `libb.a`
+fn backrefs(cx: &Cx) {
+    fn line<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+        let mut args = vec!["bm.o", "-Llib", "-lh", "-lu", "-o", "br.out"];
+        args.extend_from_slice(extra);
+        args
+    }
+    let warn = |extra: &[&str]| {
+        let o = cx.mortar(&line(extra));
+        assert!(o.success(), "{extra:?}: {}", o.stderr_text());
+        assert_eq!(Cx::exit(&cx.scratch.join("br.out")), Some(9));
+        o.stderr_text()
+    };
+    assert_eq!(warn(&[]), "");
+    let e = warn(&["--warn-backrefs"]);
+    assert_eq!(
+        e,
+        "mortar: warning: lib/libu.a(bu.o):(helper): backward reference to an archive member: \
+         helper\n>>> defined in lib/libh.a(bh.o)\n"
+    );
+    assert_eq!(warn(&["--warn-backrefs", "--no-warn-backrefs"]), "");
+    // GNU ld's single pass leaves `helper` undefined on that line.
+    let o = cx.ld(&line(&[]));
+    assert!(!o.success() && o.stderr_text().contains("helper"), "{}", o.stderr_text());
+    // With `-lh` again GNU ld finds it, and mortar does not warn; nor
+    // about the circle of `liba.a` and `libb.a`, whose `cc` comes with the
+    // member already taken.
+    for args in [
+        &["bm.o", "-Llib", "-lh", "-lu", "-lh", "--warn-backrefs", "-o", "br.out"][..],
+        &["circ.o", "-Llib", "-la", "-lb", "--warn-backrefs", "-o", "br.out"][..],
+    ] {
+        let o = cx.mortar(args);
+        assert!(o.success() && o.stderr_text().is_empty(), "{args:?}: {}", o.stderr_text());
+    }
 }
 
 // spec: resolve.md §4.3 (a group's archives are searched until nothing

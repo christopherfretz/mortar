@@ -9,7 +9,9 @@
 - [x] --sysroot (supervisor): 7e3b834 standalone, merged as 0b0a09e; main c851579 merged.
 - [ ] 3. [x] BTI thunks (link.rs thunk_target_word/relocated_near/plt_first_word; Q15
   answered; pipeline.rs a_bti_*; plumb gap: reloc.rs:1618 IPLT S+A off by 4).
-  [x] LO15 (row 313 M1; data-pointers XFAIL->PASS). [x] build-id linktest split (md5 alone XFAIL; plumb B1 hex-length gap). [ ], section-start, -gz sizing
+  [x] LO15 (row 313 M1; data-pointers XFAIL->PASS). [x] build-id split (md5 alone XFAIL; plumb B1 hex-length gap). [x] --warn-backrefs
+  supported (archive-backref XFAIL->PASS). [ ] -Ttext/--section-start stay refused (layout.md
+  §20.2: until scripts); [ ] -gz sizing
 - [ ] 4. small joins
 - [ ] 5. -Map text
 - [ ] 6. link-line histogram (measured; see hand-back)

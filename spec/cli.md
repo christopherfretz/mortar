@@ -606,6 +606,10 @@ until the phase that honors them lands with its test:
   `--fortran-common`, whose help says "mortar's behavior, always on":
   mortar always takes an archive member for a common symbol
   (`spec/resolve.md` §3.3). `--no-fortran-common` stays `refused`.
+  `--warn-backrefs` and `--no-warn-backrefs` became `supported` in
+  WP-027d (resolve.md §4.6's simulation had landed; the evidence is in
+  `crates/mortar/tests/options.rs`); `--warn-backrefs-exclude` stays
+  `refused`.
 - WP-024 (`mortar_layout`, `spec/layout.md` §20.2): `-z max-page-size`
   (L-74), `-z separate-code`, `-z noseparate-code` (L-71), `-z relro`,
   `-z norelro` (L-64, L-65), `-z execstack`, `-z noexecstack` (L-84).

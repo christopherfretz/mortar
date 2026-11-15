@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-471 rows: 41 supported, 2 partial, 27 noop, 401 refused.
+471 rows: 43 supported, 2 partial, 27 noop, 399 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's own.
 
@@ -105,8 +105,8 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--no-dependent-libraries` |  | lld | all | refused | `other` | Ignore the libraries inputs ask for |
 | `--fortran-common` |  | lld | all | refused | `other` | Take archive members that define common symbols (mortar's behavior, always on) |
 | `--no-fortran-common` |  | lld | all | refused | `other` | Do not take archive members for common symbols |
-| `--warn-backrefs` |  | lld | all | refused | `diagnostics.warn_backrefs` | Warn when an archive member is taken for an earlier reference |
-| `--no-warn-backrefs` |  | lld | all | refused | `diagnostics.warn_backrefs` | Do not warn about backward references (default) |
+| `--warn-backrefs` |  | lld | all | supported | `diagnostics.warn_backrefs` | Warn when an archive member is taken for an earlier reference |
+| `--no-warn-backrefs` |  | lld | all | supported | `diagnostics.warn_backrefs` | Do not warn about backward references (default) |
 | `--warn-backrefs-exclude` | GLOB | lld | all | refused | `other` | Do not warn about backward references into GLOB |
 | `--why-extract` | FILE | lld | all | refused | `other` | Write why each archive member is taken to FILE |
 | `--print-archive-stats` | FILE | lld | all | refused | `other` | Write archive statistics to FILE |

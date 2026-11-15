@@ -71,6 +71,8 @@ fn statuses() {
             "-(",
             "-)",
             "-Bstatic",
+            "--warn-backrefs",
+            "--no-warn-backrefs",
             "-L",
             "--sysroot",
             "--error-limit",
