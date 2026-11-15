@@ -169,7 +169,10 @@ impl DynSymSource for DynSource<'_, '_> {
             .get(key)
             .and_then(|k| k.version)
             .or_else(|| self.syms.default_version(key));
-        Some(ProgramDef { info: g.binding << 4 | typ, other: g.other, size: g.size, version })
+        // D-23's export row: the merged visibility, and the defining
+        // entry's `STO_AARCH64_VARIANT_PCS` (kept on AArch64 by `entry`).
+        let other = g.other | self.syms.defined_other_flags(key);
+        Some(ProgramDef { info: g.binding << 4 | typ, other, size: g.size, version })
     }
 
     fn bound_version(&self, entry: SymEntry) -> Option<VerIndex> {

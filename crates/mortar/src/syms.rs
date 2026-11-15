@@ -65,6 +65,15 @@ impl<'a, 's> CoreSyms<'a, 's> {
         self.tables.get(file.0 as usize)?.as_ref()
     }
 
+    /// The `st_other` bits above the visibility of the relocatable
+    /// entry that defines `id` (`STO_AARCH64_VARIANT_PCS`); 0 for any
+    /// other definition.
+    #[must_use]
+    pub fn defined_other_flags(&self, id: SymbolId) -> u8 {
+        let Some(Def::Defined(e)) = self.resolution.def.get(id).copied() else { return 0 };
+        self.sym(e).map_or(0, |(s, _)| s.st_other & !3)
+    }
+
     /// The version `V` of a key whose definition is written `foo@@V` in
     /// its relocatable object (a default-version definition, resolve
     /// §9.2: its key is `foo`, so the key's own name carries no version).

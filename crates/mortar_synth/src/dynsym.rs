@@ -411,7 +411,8 @@ impl DynsymInputs<'_> {
                 } else {
                     (p.info & 0xf, addrs.defined(k).ok_or_else(|| missing("value"))?)
                 };
-                (p.info & 0xf0 | typ, p.other, shndx, value, p.size)
+                let pcs = if machine == Machine::AArch64 { STO_AARCH64_VARIANT_PCS } else { 0 };
+                (p.info & 0xf0 | typ, p.other & (STV_MASK | pcs), shndx, value, p.size)
             }
             Form::WeakDyn => (STB_WEAK << 4 | STT_NOTYPE, 0, u32::from(SHN_UNDEF), 0, 0),
         };

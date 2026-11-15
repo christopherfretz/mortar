@@ -1,0 +1,36 @@
+# dyn.md D-23, `STO_AARCH64_VARIANT_PCS` on `.dynsym` entries other than
+# a canonical PLT: an exported program function with the vector PCS
+# (`-rdynamic`) keeps the bit at its defined entry, and an import the
+# program reaches only through the GOT (its address taken, no call, so
+# no `JUMP_SLOT` and no `DT_AARCH64_VARIANT_PCS`) keeps it at its `UND`
+# entry. GNU ld, lld and mold write both (measured with WP-053); D-23's
+# export and import rows say so since WP-053.
+#@ spec: dyn.md "D-23"
+#@ arch: aarch64
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libv.so -o libv.so
+cc -O1 -fPIE main.c -o main.o
+
+link gcc -pie -rdynamic main.o -L. -lv -o prog
+run prog
+  stdout: vex 3 vfn taken 1
+check readelf --dyn-syms -W prog
+  has: FUNC GLOBAL DEFAULT [VARIANT_PCS] * vex$
+  has: FUNC GLOBAL DEFAULT [VARIANT_PCS] UND vfn$
+check readelf -dW prog
+  not: AARCH64_VARIANT_PCS
+
+#--- lib.c
+__attribute__((aarch64_vector_pcs)) int vfn(int x) { return x + 1; }
+#--- main.c
+#include <stdio.h>
+__attribute__((aarch64_vector_pcs)) int vfn(int);
+__attribute__((aarch64_vector_pcs, noinline)) int vex(int x) { return x + 3; }
+void *volatile taken;
+
+int main(void) {
+  taken = (void *)vfn;
+  printf("vex %d vfn taken %d\n", vex(0), taken != 0);
+  return 0;
+}
