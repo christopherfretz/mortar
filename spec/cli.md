@@ -358,7 +358,10 @@ Unbalanced regions:
   accept it too.
 
 Search:
-- `library_paths` keeps each `-L` in order; `sysroot` is `--sysroot`.
+- `library_paths` keeps each `-L` in order; `sysroot` is the last
+  `--sysroot` (`=DIR` or `DIR`), and an empty value is no sysroot, as in
+  GNU ld, lld and mold (`spec/input.md` §4.3 applies it; `supported`
+  since WP-027d, `crates/mortar/tests/sysroot.rs`).
 - `nostdlib` is `-nostdlib`: the `SEARCH_DIR` directories of linker
   scripts are not searched (`spec/input.md` §4.2). mortar has no
   built-in directories to drop.
@@ -794,6 +797,7 @@ The test fails when the outcome is not the recorded one.
 | `-m` inside another option's value | taken as the emulation (pre-scan) | not | not | not | §2.8 |
 | lld-only and mold-only options | error | accepted | accepted | read (refused unless supported) | one command line for every driver |
 | `@missing` | literal argument | error | error | literal argument | GNU's reading |
+| `--sysroot DIR` (separate value) | ignored (only `--sysroot=` is read, before the parse) | sysroot | sysroot | sysroot | ignoring a sysroot silently is never wanted; lld's and mold's reading |
 
 ## 8. Tests
 

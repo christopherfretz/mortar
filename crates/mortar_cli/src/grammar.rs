@@ -604,7 +604,9 @@ impl Parser<'_> {
                 };
                 plan.library_paths.push(SearchPath { arg, path, in_sysroot });
             }
-            Lands::Sysroot => plan.sysroot = Some(text()),
+            // An empty `--sysroot=` is no sysroot, as in GNU ld, lld and
+            // mold (`spec/input.md` §4.3); the last one wins.
+            Lands::Sysroot => plan.sysroot = Some(text()).filter(|t| !t.is_empty()),
             Lands::NoStdlib => plan.nostdlib = true,
             Lands::Script(role) => plan.scripts.push(ScriptArg { arg, role, path: text() }),
             Lands::Symbol(role) => plan.symbols.push(SymbolArg { arg, role, value: text() }),

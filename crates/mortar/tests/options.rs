@@ -56,6 +56,10 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--no-as-needed", Same(&["--no-as-needed"], Some(shared_objects_are_refused))),
     ("-Bstatic", Check(bstatic)),
     ("-L", Check(libraries)),
+    (
+        "--sysroot",
+        Test("crates/mortar/tests/sysroot.rs", "sysroot_directories_and_scripts_are_under_it"),
+    ),
     ("--hash-style", Same(&["--hash-style=sysv"], Some(dynamic_outputs_are_refused))),
     ("--rosegment", Same(&["--rosegment"], Some(rodata_has_its_own_load))),
     ("--error-limit", Check(error_limit)),

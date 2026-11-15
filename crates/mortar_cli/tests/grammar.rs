@@ -639,6 +639,15 @@ fn refused_uses_in_argument_order() {
     assert_eq!(rendered[0], "ld: error: unsupported option: -Tdata\n");
 }
 
+// spec: cli.md §3.3 (`--sysroot`: the last one, either form; an empty
+// value is no sysroot)
+#[test]
+fn sysroot_is_the_last_and_empty_is_none() {
+    assert_eq!(p(&["a.o", "--sysroot=/x", "--sysroot", "/y"]).plan.sysroot, Some("/y".into()));
+    assert_eq!(p(&["a.o", "--sysroot=/x", "--sysroot="]).plan.sysroot, None);
+    assert!(p(&["a.o", "--sysroot=/"]).refusals().is_empty());
+}
+
 // spec: cli.md §4.4 (a refused use that a later use of the same
 // last-wins field overrides is not refused; a partial row's refused
 // values are refused by value, each use)

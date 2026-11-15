@@ -167,7 +167,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[x("fat-lto-objects")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Read the bitcode of fat LTO objects"),
     r(&[x("no-fat-lto-objects")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Read the code of fat LTO objects (default)"),
     r(&[s("L"), g("library-path")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Search, Supported, Lands::LibraryPath, "Search DIR for -l libraries and scripts"),
-    r(&[g("sysroot")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Search, Refused, Lands::Sysroot, "Use DIR as the system root"),
+    r(&[g("sysroot")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Search, Supported, Lands::Sysroot, "Use DIR as the system root"),
     r(&[g1("nostdlib")], Arg::None, "", GLM, &[], Group::Search, Refused, Lands::NoStdlib, "Do not search the SEARCH_DIR directories of linker scripts"),
     r(&[g1("rpath-link")], Arg::Required(Values::Any), "DIR", GLM, &[], Group::Search, Refused, Lands::RpathLink, "Search DIR for the DT_NEEDED entries of shared objects; a :-separated list"),
     r(&[s("Y")], Arg::Required(Values::Any), "PATH", G, &[], Group::Search, Refused, Lands::Other, "Default search path for Solaris compatibility"),

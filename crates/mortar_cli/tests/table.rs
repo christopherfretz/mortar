@@ -72,6 +72,7 @@ fn statuses() {
             "-)",
             "-Bstatic",
             "-L",
+            "--sysroot",
             "--error-limit",
             "--fatal-warnings",
             "--no-fatal-warnings",
