@@ -1,6 +1,6 @@
 [package]
 name = "mortar_script"
-description = "Linker scripts, version scripts and dynamic lists"
+description = "Linker scripts, version scripts and dynamic lists: text to a checked AST."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
