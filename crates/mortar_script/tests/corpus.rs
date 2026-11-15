@@ -72,9 +72,15 @@ fn text_libraries() -> Vec<(PathBuf, Vec<u8>)> {
     found
 }
 
+/// The known text libraries of this host: [`KNOWN_ON_AARCH64`], or
+/// [`KNOWN_ON_X86_64`] on an x86-64 host (the hosted x86-64 lane,
+/// `spec/harness.md` "Hosted CI").
+const KNOWN: &[(&str, &[&str])] =
+    if cfg!(target_arch = "x86_64") { KNOWN_ON_X86_64 } else { KNOWN_ON_AARCH64 };
+
 /// The ten text libraries of the reference machine (Debian, glibc 2.41,
 /// GCC 14, cross sysroots for x86-64 and i686), with their structure.
-const KNOWN: &[(&str, &[&str])] = &[
+const KNOWN_ON_AARCH64: &[(&str, &[&str])] = &[
     (
         "/usr/lib/aarch64-linux-gnu/libc.so",
         &[
@@ -119,6 +125,66 @@ const KNOWN: &[(&str, &[&str])] = &[
         ],
     ),
     ("/usr/lib/gcc-cross/x86_64-linux-gnu/14/libgcc_s.so", &["GROUP(libgcc_s.so.1 -lgcc)"]),
+    (
+        "/usr/i686-linux-gnu/lib/libc.so",
+        &[
+            "OUTPUT_FORMAT(elf32-i386)",
+            "GROUP(/usr/i686-linux-gnu/lib/libc.so.6 /usr/i686-linux-gnu/lib/libc_nonshared.a AS_NEEDED(/usr/i686-linux-gnu/lib/ld-linux.so.2))",
+        ],
+    ),
+    ("/usr/lib/gcc-cross/i686-linux-gnu/14/libgcc_s.so", &["GROUP(libgcc_s.so.1 -lgcc)"]),
+];
+
+/// The same ten on an x86-64 host with the same packages (x86-64 native,
+/// cross sysroots for AArch64 and i686): the table above with native and
+/// cross swapped, after the layout of Debian's cross packages (`/usr/<triple>/lib`,
+/// the loader under `lib64` for x86-64 only). Written by analogy, before an
+/// x86-64 host ran it; the first hosted x86-64 run confirms or corrects it.
+const KNOWN_ON_X86_64: &[(&str, &[&str])] = &[
+    (
+        "/usr/aarch64-linux-gnu/lib/libc.so",
+        &[
+            "OUTPUT_FORMAT(elf64-littleaarch64)",
+            "GROUP(/usr/aarch64-linux-gnu/lib/libc.so.6 /usr/aarch64-linux-gnu/lib/libc_nonshared.a AS_NEEDED(/usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1))",
+        ],
+    ),
+    (
+        "/usr/aarch64-linux-gnu/lib/libm.so",
+        &[
+            "OUTPUT_FORMAT(elf64-littleaarch64)",
+            "GROUP(/usr/aarch64-linux-gnu/lib/libm.so.6 AS_NEEDED(/usr/aarch64-linux-gnu/lib/libmvec.so.1))",
+        ],
+    ),
+    (
+        "/usr/aarch64-linux-gnu/lib/libm.a",
+        &[
+            "OUTPUT_FORMAT(elf64-littleaarch64)",
+            "GROUP(/usr/aarch64-linux-gnu/lib/libm-2.41.a /usr/aarch64-linux-gnu/lib/libmvec.a)",
+        ],
+    ),
+    ("/usr/lib/gcc-cross/aarch64-linux-gnu/14/libgcc_s.so", &["GROUP(libgcc_s.so.1 -lgcc)"]),
+    (
+        "/usr/lib/x86_64-linux-gnu/libc.so",
+        &[
+            "OUTPUT_FORMAT(elf64-x86-64)",
+            "GROUP(/lib/x86_64-linux-gnu/libc.so.6 /usr/lib/x86_64-linux-gnu/libc_nonshared.a AS_NEEDED(/lib64/ld-linux-x86-64.so.2))",
+        ],
+    ),
+    (
+        "/usr/lib/x86_64-linux-gnu/libm.so",
+        &[
+            "OUTPUT_FORMAT(elf64-x86-64)",
+            "GROUP(/lib/x86_64-linux-gnu/libm.so.6 AS_NEEDED(/lib/x86_64-linux-gnu/libmvec.so.1))",
+        ],
+    ),
+    (
+        "/usr/lib/x86_64-linux-gnu/libm.a",
+        &[
+            "OUTPUT_FORMAT(elf64-x86-64)",
+            "GROUP(/usr/lib/x86_64-linux-gnu/libm-2.41.a /usr/lib/x86_64-linux-gnu/libmvec.a)",
+        ],
+    ),
+    ("/usr/lib/gcc/x86_64-linux-gnu/14/libgcc_s.so", &["GROUP(libgcc_s.so.1 -lgcc)"]),
     (
         "/usr/i686-linux-gnu/lib/libc.so",
         &[
