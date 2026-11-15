@@ -7,4 +7,5 @@
 - Deliverables: `spec/dyn.md` (rules D-n, census, inventory, references
   differ, requests, open questions, tests, appendix); amendments to owning
   specs; the WP cut in `spec/landed/dyn/WP-040.md`.
-- Next: fill §2 and §3 from the census and inventory results.
+- Written: §3 inventory (from three reading passes; D-n references are forward, to be numbered).
+- Next: §2 census and §4-§9 rules from the six experiment agents (census, corpus, dynsym, dynamic, reloc, shlib).
