@@ -1562,7 +1562,10 @@ rules below judge the rest. Code: `src/symbols.rs`.
   as in Y3. When none is at the output value, that is a finding, with two
   exceptions, both counted in `locals_unchecked`:
   - some input local of the name has no known place (a `rewritten` or
-    `merged` section, such as GNU ld's `.eh_frame`);
+    `merged` section, such as GNU ld's `.eh_frame`). A local in a
+    non-alloc or discarded section has no address in the output and
+    does not count (every object's `$d` in its debug sections; WP-028d:
+    without this, no output `$x` or `$d` was judged);
   - the symbol is a mapping symbol (`$x…`, `$d…`, AAELF64 "Mapping
     symbols") at an address of an allocated section that no input section
     occupies: the linker's own, marking a veneer or a patch.
