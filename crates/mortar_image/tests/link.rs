@@ -73,7 +73,7 @@ forty:
 "#;
 
 /// An IFUNC: `pick`'s resolver returns `pick_zero`, which returns 0.
-const C_S: &str = r#"
+const C_S: &str = r"
     .text
     .globl pick
     .type pick, %gnu_indirect_function
@@ -88,7 +88,7 @@ pick_zero:
     mov w0, #0
     ret
     .size pick_zero, .-pick_zero
-"#;
+";
 
 const B_S: &str = r#"
     .text
