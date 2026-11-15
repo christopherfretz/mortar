@@ -64,6 +64,7 @@ fn main() {
                 kind: TargetKind::Local,
                 size: 8,
                 live: true,
+                tls: false,
             })
             .collect(),
         got: base + 0x80_0000,

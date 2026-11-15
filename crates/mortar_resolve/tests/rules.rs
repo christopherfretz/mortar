@@ -1448,13 +1448,17 @@ fn s8_1_table() {
                 },
                 When::Dynamic | When::Later => false,
                 When::AArch64 => machine == Machine::AArch64,
+                When::X86_64Conditional => machine == Machine::X86_64,
             };
             if want {
                 assert_eq!(
                     d,
                     Def::Provide {
                         sym: Provided::Table(n as u8),
-                        conditional: row.when == When::Conditional
+                        conditional: matches!(
+                            row.when,
+                            When::Conditional | When::X86_64Conditional
+                        )
                     },
                     "{name} on {machine:?}"
                 );

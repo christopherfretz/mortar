@@ -79,6 +79,8 @@ pub(crate) struct Clip<'p> {
     pub section: SectionId,
     pub name: &'p [u8],
     pub alloc: bool,
+    /// The input section's `SHF_EXECINSTR` (`SectionOut::exec`).
+    pub exec: bool,
     pub section_size: u64,
     /// File offset of the section's byte 0 in its input.
     pub sec_src: u64,
@@ -105,6 +107,7 @@ impl<'p> Clip<'p> {
             section: u.section,
             name: plan.name(u.name),
             alloc: u.alloc,
+            exec: u.exec,
             section_size: u.section_size,
             sec_src: u.src - u.start,
             addr: u.addr,
@@ -463,7 +466,8 @@ pub(crate) fn relocate(
             proof,
             leads,
         };
-        let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name);
+        let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name)
+            .with_exec(c.exec);
         let value = match howto.field {
             Field::Data { bytes: width } if !img.tables.sym(rec.key).live => {
                 tombstone::field(img.arch, c.name, c.alloc, width).map(|v| (v, width))

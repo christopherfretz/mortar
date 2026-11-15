@@ -120,6 +120,9 @@ pub struct InputUnit {
     /// not `SHF_ALLOC`.
     pub addr: u64,
     pub alloc: bool,
+    /// The input section's `SHF_EXECINSTR` (x64.md X-46 decides `DTPOFF`
+    /// by it).
+    pub exec: bool,
     /// [`Plan::names`] index of the section's name (the tombstone's key,
     /// the diagnostic's place).
     pub name: u32,

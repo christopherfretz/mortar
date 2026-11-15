@@ -38,6 +38,7 @@ dependencies = [
  "mortar_scan",
  "mortar_synth",
  "mortar_testutil",
+ "mortar_x64",
 ]
 
 [[package]]
@@ -224,6 +225,17 @@ dependencies = [
 [[package]]
 name = "mortar_testutil"
 version = "0.0.0"
+
+[[package]]
+name = "mortar_x64"
+version = "0.0.0"
+dependencies = [
+ "mortar_arch",
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_testutil",
+]
 
 [[package]]
 name = "signal-hook"

@@ -486,7 +486,7 @@ impl FillTables for LinkTables<'_, '_> {
         };
         // S-71: every address of an IFUNC with an IPLT entry is the entry.
         let s = self.plt(key).or(s).unwrap_or(0);
-        SymValue { s, kind: facts.kind, size, live }
+        SymValue { s, kind: facts.kind, size, live, tls: facts.tls }
     }
 
     fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {
