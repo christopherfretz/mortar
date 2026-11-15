@@ -26,8 +26,8 @@ use crate::id::{
 };
 use crate::inputs::{Inputs, Reader};
 use crate::layout::{
-    AllocKey, ChunkKind, CopyAlloc, DefValue, Layout, PatchKind, SegmentRules, ThunkTarget,
-    derive_segments,
+    AllocKey, ChunkKind, CopyAlloc, CopyPlace, DefValue, Layout, PatchKind, SegmentRules,
+    ThunkTarget, derive_segments,
 };
 use crate::liveness::Liveness;
 use crate::resolution::{Def, Resolution};
@@ -1178,7 +1178,172 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             }
         }
         need(page > 0, r, || "page size 0".into(), [])?;
+        self.dynamic()?;
+        self.copies()?;
         self.derived()
+    }
+
+    /// The first alloc synthetic chunk named `name` in order.
+    fn synthetic(&self, name: &[u8]) -> Option<(usize, ChunkId)> {
+        let p = &self.layout.placement;
+        p.order.iter().enumerate().map(|(i, &c)| (i, c)).find(|&(_, c)| {
+            let ch = &p.chunks[c];
+            ch.is_alloc() && matches!(ch.kind, ChunkKind::Synthetic(s) if s.name == name)
+        })
+    }
+
+    /// Rule 3, the dynamic output's placement (`spec/dyn.md` D-1, D-31,
+    /// D-33; `spec/layout.md` L-68): the image base is 0 exactly in a
+    /// position-independent output; `.interp` directly follows the program
+    /// header table; `.dynamic` is writable, and inside the RELRO run when
+    /// there is one.
+    fn dynamic(&self) -> Check {
+        let r = Rule::Segments;
+        let p = &self.layout.placement;
+        let pie = self.cx.segment_rules.pie;
+        let header = p.order.iter().copied().find(|&c| p.chunks[c].kind == ChunkKind::FileHeader);
+        if let Some(h) = header
+            && let Some(base) = p.chunks[h].addr
+        {
+            need(
+                (base == 0) == pie,
+                r,
+                || {
+                    if pie {
+                        format!("a position-independent output at base {base:#x}, not 0")
+                    } else {
+                        "a position-dependent output at base 0".into()
+                    }
+                },
+                [Row::Chunk(h)],
+            )?;
+        }
+        if let Some((at, interp)) = self.synthetic(b".interp") {
+            let after = at.checked_sub(1).map(|i| p.order[i]);
+            need(
+                after.is_some_and(|c| p.chunks[c].kind == ChunkKind::ProgramHeaders),
+                r,
+                || ".interp does not directly follow the program headers".into(),
+                [Row::Chunk(interp)],
+            )?;
+        }
+        if let Some((_, dynamic)) = self.synthetic(b".dynamic") {
+            let c = &p.chunks[dynamic];
+            need(
+                c.flags & SHF_WRITE != 0,
+                r,
+                || ".dynamic is not writable".into(),
+                [Row::Chunk(dynamic)],
+            )?;
+            let relro = p.chunks.iter().any(|(_, c)| c.relro);
+            need(
+                c.relro || !relro,
+                r,
+                || ".dynamic is outside the RELRO run".into(),
+                [Row::Chunk(dynamic)],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Rule 3, copy allocations (`spec/dyn.md` D-42, D-60; `spec/layout.md`
+    /// L-80): each lies in the chunk its place names (`.dynbss` or
+    /// `.bss.rel.ro`), at its alignment, inside the chunk's size; inside a
+    /// chunk the allocations do not overlap and follow the least `SymbolId`
+    /// among each one's aliases; a copy chunk is the first chunk of its
+    /// section.
+    fn copies(&self) -> Check {
+        let r = Rule::Segments;
+        let p = &self.layout.placement;
+        let slots = &self.layout.slots;
+        let mut least: Vec<Option<SymbolId>> = vec![None; slots.copies.len()];
+        for &(sym, at) in &*slots.copy_of {
+            if let Some(l) = least.get_mut(at as usize) {
+                *l = Some(l.map_or(sym, |x| x.min(sym)));
+            }
+        }
+        let mut rows: Vec<(ChunkId, u64, u64, SymbolId, u32)> = Vec::new();
+        for (at, row) in p.sym_place.iter().enumerate() {
+            let AllocKey::Copy(index) = row.key else { continue };
+            let Some(alloc) = slots.copies.get(index as usize) else { continue };
+            let me = [Row::Entry("sym_place", at as u32), Row::Chunk(row.chunk)];
+            let name: &[u8] = match alloc.place {
+                CopyPlace::DynBss => b".dynbss",
+                CopyPlace::RelRo => b".bss.rel.ro",
+            };
+            let chunk = &p.chunks[row.chunk];
+            need(
+                matches!(chunk.kind, ChunkKind::Synthetic(s) if s.name == name),
+                r,
+                || format!("a copy allocation outside its chunk {}", String::from_utf8_lossy(name)),
+                me,
+            )?;
+            need(
+                alloc.align.is_power_of_two()
+                    && u32::from(row.align) == alloc.align.trailing_zeros()
+                    && aligned(row.offset, row.align)
+                    && row.align <= chunk.align,
+                r,
+                || "a copy allocation not at its alignment".into(),
+                me,
+            )?;
+            // Extent within the chunk: the general rule of model.md §4.4
+            // (checked by `places`).
+            rows.push((
+                row.chunk,
+                row.offset,
+                row.size,
+                least[index as usize].unwrap_or(alloc.alias),
+                at as u32,
+            ));
+        }
+        rows.sort_unstable();
+        for w in rows.windows(2) {
+            let ((c0, o0, s0, k0, a0), (c1, o1, _, k1, a1)) = (w[0], w[1]);
+            if c0 != c1 {
+                continue;
+            }
+            let rows = [Row::Entry("sym_place", a0), Row::Entry("sym_place", a1)];
+            need(end(o0, s0) <= u128::from(o1), r, || "copy allocations overlap".into(), rows)?;
+            need(
+                k0 < k1,
+                r,
+                || "copy allocations are not in the order of their least alias".into(),
+                rows,
+            )?;
+        }
+        for (at, &c) in p.order.iter().enumerate() {
+            let ch = &p.chunks[c];
+            let copy = matches!(ch.kind, ChunkKind::Synthetic(s)
+                if s.name == b".dynbss" || s.name == b".bss.rel.ro");
+            if !copy || at == 0 {
+                continue;
+            }
+            let before = &p.chunks[p.order[at - 1]];
+            need(
+                ch.shndx.is_none() || before.shndx != ch.shndx,
+                r,
+                || "a copy chunk is not the first chunk of its section".into(),
+                [Row::Chunk(c)],
+            )?;
+            // L-5: the section's `sh_addr` is its first chunk's address and
+            // its `sh_addralign` the largest of its chunks'.
+            let Some(sh) = ch.shndx else { continue };
+            let widest = p.order[at..]
+                .iter()
+                .map(|&d| &p.chunks[d])
+                .take_while(|d| d.shndx == Some(sh))
+                .map(|d| d.align)
+                .max()
+                .unwrap_or(0);
+            need(
+                ch.align >= widest,
+                r,
+                || "a copy chunk less aligned than its section".into(),
+                [Row::Chunk(c)],
+            )?;
+        }
+        Ok(())
     }
 
     /// Rule 3, `spec/layout.md` L-125: the segments are exactly what
