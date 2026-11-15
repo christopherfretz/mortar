@@ -7,6 +7,7 @@
 mod support;
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -82,9 +83,11 @@ fn s11_1_phase_60_reads_only_resident_bytes_under_the_staged_store() {
     let dir = mortar_testutil::Scratch::new("merge-staged");
     let mut src = String::new();
     for i in 0..4000 {
-        src.push_str(&format!(
-            "const char *s{i}(int x) {{ return x ? \"string {i}, long enough to fill\" : 0; }}\n"
-        ));
+        writeln!(
+            src,
+            "const char *s{i}(int x) {{ return x ? \"string {i}, long enough to fill\" : 0; }}"
+        )
+        .unwrap();
     }
     std::fs::write(dir.join("big.c"), src).unwrap();
     let out = mortar_testutil::run_with(
@@ -92,7 +95,7 @@ fn s11_1_phase_60_reads_only_resident_bytes_under_the_staged_store() {
             .args(["-c", "-g", "-O1", "-o", "big.o", "big.c"])
             .current_dir(dir.path()),
         b"",
-        std::time::Duration::from_secs(120),
+        std::time::Duration::from_mins(2),
     );
     assert!(out.success(), "gcc: {}", out.stderr_text());
     let mut args: Vec<PathBuf> =
@@ -107,7 +110,7 @@ fn s11_1_phase_60_reads_only_resident_bytes_under_the_staged_store() {
     let pool = Pool::new(4);
     let store: &'static Store = Box::leak(Box::new(Store::new(StorePolicy::Staged)));
     let diag = Collector::new(Policy::default());
-    let env = LoadEnv { cwd: std::env::current_dir().unwrap(), pool: pool.clone() };
+    let env = LoadEnv { cwd: std::env::current_dir().unwrap(), pool };
     let inputs = load(&plan, &env, store, &diag).expect("the inputs load");
     let inputs: &'static Inputs<'static> = Box::leak(Box::new(inputs));
 
@@ -128,7 +131,7 @@ fn s11_1_phase_60_reads_only_resident_bytes_under_the_staged_store() {
     let own = phase::run(&pool, &objs, r.as_ref()).expect("phase 60 over the own bytes");
     let over = Over { objs: &objs, ids: &ids, inputs, copied: AtomicUsize::new(0) };
     let staged = phase::run(&pool, &over, r.as_ref()).expect("phase 60 over the staged store");
-    assert!(own.split.merge_of.len() > 0 && own.eh.sections.len() > 0);
+    assert!(!own.split.merge_of.is_empty() && !own.eh.sections.is_empty());
     let stats = store.stats();
     assert!(stats.resident < stats.bytes, "nothing was left out: {stats:?}");
     assert_eq!(format!("{own:?}"), format!("{staged:?}"), "the phase depends on the store");
