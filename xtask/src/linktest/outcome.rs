@@ -332,4 +332,28 @@ mod tests {
         assert_eq!(self_check(&two), Verdict::Established);
         assert_eq!(quoted(&[b'x'; 200]).len(), 120 + 3 + 2);
     }
+
+    // "Checks": a check that cannot run on the architecture (a debugger
+    // under qemu) is SKIP by name, and neither refutes nor proves a test.
+    #[test]
+    fn a_skipped_check_does_not_refute() {
+        let skip = Raw::Skip("check (line 9): gdb runs only programs of the host here".to_owned());
+        let (outcome, detail) = marked(&skip, Some("M2: WP-053"));
+        assert_eq!(outcome, Outcome::Skip);
+        assert!(detail.starts_with("check (line 9)"), "{detail}");
+        let reference = |linker, outcome| Reference {
+            linker,
+            outcome: Some(outcome),
+            detail: String::new(),
+            printed: Vec::new(),
+        };
+        let skipped = [
+            reference(Linker::Bfd, Outcome::Skip),
+            reference(Linker::Lld, Outcome::Skip),
+            reference(Linker::Mold, Outcome::Skip),
+        ];
+        assert_eq!(self_check(&skipped), Verdict::Unproven);
+        let one = [reference(Linker::Bfd, Outcome::Pass), reference(Linker::Lld, Outcome::Skip)];
+        assert_eq!(self_check(&one), Verdict::Established);
+    }
 }

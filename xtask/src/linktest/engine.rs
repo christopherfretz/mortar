@@ -96,9 +96,10 @@ pub fn stage3_present() -> bool {
     header[52..54].copy_from_slice(&64u16.to_le_bytes());
     let map = mortar_plumb::Map::new(mortar_plumb::Format::Gnu);
     let report = mortar_plumb::verify(&header, &[], &map);
-    !report.findings.iter().any(|f| {
-        f.rule == mortar_plumb::Rule::Structure(1) && f.message.contains("not ET_EXEC")
-    })
+    !report
+        .findings
+        .iter()
+        .any(|f| f.rule == mortar_plumb::Rule::Structure(1) && f.message.contains("not ET_EXEC"))
 }
 
 impl Matrix {
@@ -512,7 +513,8 @@ impl Unit<'_> {
         std::fs::create_dir_all(&inputs)
             .map_err(|e| Raw::Error(format!("cannot write '{}': {e}", inputs.display())))?;
         for name in &self.test.fixtures {
-            let built = self.fixture(name).map_err(|e| Raw::Error(format!("fixture {name}: {e}")))?;
+            let built =
+                self.fixture(name).map_err(|e| Raw::Error(format!("fixture {name}: {e}")))?;
             copy_dir(&built, &inputs).map_err(Raw::Error)?;
         }
         self.build(&self.test.files, &self.test.steps, &inputs)
@@ -541,7 +543,12 @@ impl Unit<'_> {
     }
 
     /// Writes `files` to `dir` and runs the build steps of `steps` there.
-    fn build(&self, files: &[super::format::Embedded], steps: &[Step], dir: &Path) -> Result<(), Raw> {
+    fn build(
+        &self,
+        files: &[super::format::Embedded],
+        steps: &[Step],
+        dir: &Path,
+    ) -> Result<(), Raw> {
         let error = |e: std::io::Error, path: &Path| {
             Raw::Error(format!("cannot write '{}': {e}", path.display()))
         };
@@ -1075,9 +1082,12 @@ impl Unit<'_> {
                             self.under_runner(&loader, &env, list)
                         }
                         CheckTool::Gdb | CheckTool::Lldb => {
-                            let (program, full) = debugger(tool, common, &args)
-                                .ok_or_else(|| {
-                                    Raw::Error(format!("{}: its tool is not there", step.describe()))
+                            let (program, full) =
+                                debugger(tool, common, &args).ok_or_else(|| {
+                                    Raw::Error(format!(
+                                        "{}: its tool is not there",
+                                        step.describe()
+                                    ))
                                 })?;
                             let host = env.iter().map(|(n, v)| (n.clone(), v.into())).collect();
                             (program, full, host)
@@ -1117,7 +1127,8 @@ impl Unit<'_> {
                     // Its complaints are judged by the `allow` lines, not
                     // by its exit status.
                     text.push_str(&String::from_utf8_lossy(&output.stderr));
-                    self.allowed(&check.expectations, linker, &text, &shown).map_err(|w| fail(&w))?;
+                    self.allowed(&check.expectations, linker, &text, &shown)
+                        .map_err(|w| fail(&w))?;
                 } else if !output.end.success() {
                     return Err(fail(&format_args!(
                         "`{shown}`: {}: {}",
@@ -1146,7 +1157,9 @@ impl Unit<'_> {
         for e in expectations.iter().filter(|e| e.want == Want::Allow) {
             if e.scope.applies(self.arch(), linker) {
                 let source = e.pattern.expand_pattern(vars);
-                allow.push(Pattern::parse(&source).map_err(|err| format!("line {}: {err}", e.line))?);
+                allow.push(
+                    Pattern::parse(&source).map_err(|err| format!("line {}: {err}", e.line))?,
+                );
             }
         }
         let complaints: Vec<&str> = text
@@ -1283,11 +1296,17 @@ pub fn program_env(dir: &Path, env: &[(String, Template)], vars: Vars) -> Vec<(S
 /// commands. gdb: no init files, no pager, no debuginfod; lldb: ASLR as
 /// the program would have it (the container refuses `personality`,
 /// `spec/dyn.md` D-70).
-fn debugger(tool: CheckTool, common: &CommonTools, args: &[String]) -> Option<(PathBuf, Vec<OsString>)> {
+fn debugger(
+    tool: CheckTool,
+    common: &CommonTools,
+    args: &[String],
+) -> Option<(PathBuf, Vec<OsString>)> {
     let (program, commands) = args.split_first()?;
     let mut full: Vec<OsString> = Vec::new();
     let path = if tool == CheckTool::Gdb {
-        for arg in ["-nx", "-batch", "-ex", "set pagination off", "-ex", "set debuginfod enabled off"] {
+        for arg in
+            ["-nx", "-batch", "-ex", "set pagination off", "-ex", "set debuginfod enabled off"]
+        {
             full.push(arg.into());
         }
         for command in commands {
@@ -1423,9 +1442,8 @@ fn mortar_xfail<'a>(
     arch: Arch,
     test: &str,
 ) -> Option<&'a str> {
-    let line = |test: Option<&str>| {
-        xfails.iter().find(|x| x.arch == arch && x.test.as_deref() == test)
-    };
+    let line =
+        |test: Option<&str>| xfails.iter().find(|x| x.arch == arch && x.test.as_deref() == test);
     line(None)
         .or_else(|| line(Some(test)))
         .map(|x| x.reason.as_str())
@@ -1447,12 +1465,7 @@ mod tests {
             reason: "no linking yet (M1)".to_owned(),
         };
         let x = [
-            ArchXfail {
-                line: 3,
-                arch: Arch::X86_64,
-                test: None,
-                reason: "no back end".to_owned(),
-            },
+            ArchXfail { line: 3, arch: Arch::X86_64, test: None, reason: "no back end".to_owned() },
             ArchXfail {
                 line: 4,
                 arch: Arch::Aarch64,
@@ -1469,6 +1482,37 @@ mod tests {
         assert_eq!(mortar_xfail(None, &x, Arch::Aarch64, "dyn/a.test"), Some("M2: WP-053"));
         assert_eq!(mortar_xfail(None, &x, Arch::X86_64, "dyn/a.test"), Some("no back end"));
         assert_eq!(mortar_xfail(None, &x, Arch::I386, "dyn/a.test"), None);
+    }
+
+    // spec/harness.md "Runs": a program finds the fixture libraries in its
+    // linker's directory; an `env` line adds a variable or replaces that.
+    #[test]
+    fn the_environment_of_a_run() {
+        use super::super::format::{Template, Vars};
+        use super::program_env;
+        let vars =
+            Vars { arch: Arch::X86_64, host: Some(Arch::Aarch64), linker: Some(Linker::Bfd) };
+        let dir = std::path::Path::new("/w/u/x86_64/bfd");
+        let none = program_env(dir, &[], vars);
+        assert_eq!(none, [("LD_LIBRARY_PATH".to_owned(), "/w/u/x86_64/bfd".to_owned())]);
+        let env = [
+            ("LD_PRELOAD".to_owned(), Template::parse("./libhook.so").unwrap()),
+            ("LD_BIND_NOW".to_owned(), Template::parse("1").unwrap()),
+        ];
+        let names: Vec<String> = program_env(dir, &env, vars).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["LD_LIBRARY_PATH", "LD_PRELOAD", "LD_BIND_NOW"]);
+        let own = [("LD_LIBRARY_PATH".to_owned(), Template::parse("%{arch}").unwrap())];
+        assert_eq!(
+            program_env(dir, &own, vars),
+            [("LD_LIBRARY_PATH".to_owned(), "x86_64".to_owned())]
+        );
+    }
+
+    // "L3", "Stage 3": the verifier has no stage 3 until WP-050 lands. When
+    // it does, this assertion is the one line to turn round.
+    #[test]
+    fn stage_3_is_absent_today() {
+        assert!(!super::stage3_present());
     }
 
     use super::{Arch, Linker, Plumb, map_option, not_judged, output_name};

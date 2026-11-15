@@ -403,11 +403,14 @@ pub const FIXTURES: &str = "fixtures";
 /// The fixture `name`, `tests/link/fixtures/<name>.fixture`, parsed; or
 /// why it cannot be.
 fn load_fixture(name: &str) -> Result<format::Fixture, String> {
-    let path = workspace_root().join("tests").join("link").join(FIXTURES).join(format!("{name}.fixture"));
+    let path =
+        workspace_root().join("tests").join("link").join(FIXTURES).join(format!("{name}.fixture"));
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     format::parse_fixture(&text).map_err(|errors| {
-        let lines: Vec<String> =
-            errors.iter().map(|e| format!("{}:{}: {}", path.display(), e.line, e.message)).collect();
+        let lines: Vec<String> = errors
+            .iter()
+            .map(|e| format!("{}:{}: {}", path.display(), e.line, e.message))
+            .collect();
         lines.join("; ")
     })
 }
@@ -427,9 +430,9 @@ fn check_xfails(
     for (_, file, test) in parsed {
         let twice = xfails.iter().find(|x| {
             x.test.as_deref() == Some(file.name.as_str())
-                && test.marker(x.arch, Linker::Mortar).is_some_and(|m| {
-                    m.kind == format::MarkerKind::Xfail
-                })
+                && test
+                    .marker(x.arch, Linker::Mortar)
+                    .is_some_and(|m| m.kind == format::MarkerKind::Xfail)
         });
         if let Some(x) = twice {
             report.errors.push(format!(
@@ -474,6 +477,54 @@ pub fn load_defaults(path: &Path) -> Result<Vec<format::Anomaly>, String> {
             .collect();
         lines.join("; ")
     })
+}
+
+/// Loads the fixtures the parsed tests name, each once.
+fn load_fixtures(matrix: &mut Matrix, parsed: &[(usize, &TestFile, format::Test)]) {
+    for (_, _, test) in parsed {
+        for name in &test.fixtures {
+            if !matrix.fixtures.contains_key(name) {
+                matrix.fixtures.insert(name.clone(), load_fixture(name));
+            }
+        }
+    }
+}
+
+/// The note of a run whose verifier has no stage 3.
+fn stage3_note() -> String {
+    format!(
+        "L3: the verifier has no stage 3 (spec/plumb.md §1): dynamic outputs are not judged \
+         ('{}')",
+        engine::STAGE3_ABSENT
+    )
+}
+
+/// Parses the test files: a file that does not parse gives one `ERROR`
+/// record of the file.
+fn parse_tests<'a>(
+    tests: &'a [TestFile],
+    report: &mut Report,
+) -> Vec<(usize, &'a TestFile, format::Test)> {
+    let mut parsed = Vec::new();
+    for (index, test) in tests.iter().enumerate() {
+        let text = std::fs::read_to_string(&test.path);
+        match text.map_err(|e| e.to_string()).and_then(|text| {
+            format::parse(&text).map_err(|errors| {
+                errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
+            })
+        }) {
+            Ok(parsed_test) => parsed.push((index, test, parsed_test)),
+            Err(why) => report.records.push(Record {
+                test: test.name.clone(),
+                arch: None,
+                linker: None,
+                outcome: Outcome::Error,
+                detail: why,
+                spec: String::new(),
+            }),
+        }
+    }
+    parsed
 }
 
 /// Runs the tests `args` selects.
@@ -529,39 +580,11 @@ pub fn run(args: &Args) -> Result<Report, String> {
         report.errors.push(e);
     }
 
-    let mut parsed = Vec::new();
-    for (index, test) in tests.iter().enumerate() {
-        let text = std::fs::read_to_string(&test.path);
-        match text.map_err(|e| e.to_string()).and_then(|text| {
-            format::parse(&text).map_err(|errors| {
-                errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
-            })
-        }) {
-            Ok(parsed_test) => parsed.push((index, test, parsed_test)),
-            Err(why) => report.records.push(Record {
-                test: test.name.clone(),
-                arch: None,
-                linker: None,
-                outcome: Outcome::Error,
-                detail: why,
-                spec: String::new(),
-            }),
-        }
-    }
-    for (_, _, test) in &parsed {
-        for name in &test.fixtures {
-            if !matrix.fixtures.contains_key(name) {
-                matrix.fixtures.insert(name.clone(), load_fixture(name));
-            }
-        }
-    }
+    let parsed = parse_tests(&tests, &mut report);
+    load_fixtures(&mut matrix, &parsed);
     check_xfails(args, &matrix.xfails, &tests, &parsed, &mut report);
     if matrix.plumb && !matrix.stage3 {
-        report.notes.push(format!(
-            "L3: the verifier has no stage 3 (spec/plumb.md §1): dynamic outputs are not judged \
-             ('{}')",
-            engine::STAGE3_ABSENT
-        ));
+        report.notes.push(stage3_note());
     }
     let matrix = &matrix;
     let units: Vec<Unit> = if report.errors.is_empty() {

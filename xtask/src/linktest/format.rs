@@ -829,7 +829,8 @@ impl Parser {
             return self.error(line, format!("the directive '{key}' has no value"));
         }
         if self.fixture && key != "requires" {
-            return self.error(line, format!("a fixture has no '{key}' directive (only 'requires')"));
+            return self
+                .error(line, format!("a fixture has no '{key}' directive (only 'requires')"));
         }
         let again = |what: &str| format!("a second '{what}' directive");
         match key {
@@ -958,6 +959,7 @@ impl Parser {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // One arm per step keyword.
     fn try_step(&mut self, line: usize, text: &str) -> Result<(), String> {
         let Keyed { key, qualifiers, rest, .. } = keyed(text)?;
         if !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
@@ -1053,7 +1055,8 @@ impl Parser {
                 ));
             }
         };
-        if self.fixture && !matches!(keyword, "cc" | "cxx" | "fc" | "as" | "yaml2obj" | "ar" | "shlib")
+        if self.fixture
+            && !matches!(keyword, "cc" | "cxx" | "fc" | "as" | "yaml2obj" | "ar" | "shlib")
         {
             return Err(format!("a fixture builds inputs only: '{keyword}' is a step of a test"));
         }
@@ -1068,6 +1071,7 @@ impl Parser {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // One arm per (step, expectation).
     fn try_expectation(&mut self, line: usize, text: &str) -> Result<(), String> {
         let Keyed { key, qualified, qualifiers, rest } = keyed(text)?;
         let Some(value) = rest.strip_prefix(':') else {
@@ -1162,7 +1166,9 @@ impl Parser {
                     return Err(format!("'env: {value}' is not 'env: NAME=value'"));
                 };
                 let valid = !name.is_empty()
-                    && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
                 if !valid {
                     return Err(format!("'{name}' is not an environment variable's name"));
                 }
@@ -1197,9 +1203,7 @@ impl Parser {
             (
                 StepKind::Compile(_) | StepKind::Yaml2obj(_) | StepKind::Ar(_) | StepKind::Shlib(_),
                 _,
-            ) => {
-                Err(format!("'{keyword}' builds an input and has no expectations"))
-            }
+            ) => Err(format!("'{keyword}' builds an input and has no expectations")),
         };
         self.steps.push(Step { line: at, keyword, scope: step_scope, kind });
         result
@@ -1558,29 +1562,31 @@ pub fn parse_xfails(text: &str) -> Result<Vec<ArchXfail>, Vec<Error>> {
     let mut errors = Vec::new();
     for (index, raw) in text.lines().enumerate() {
         let line = index + 1;
-        let text = raw.trim();
-        if text.is_empty() || text.starts_with('#') {
+        let entry = raw.trim();
+        if entry.is_empty() || entry.starts_with('#') {
             continue;
         }
         let mut error = |message: String| errors.push(Error { line, message });
-        let Some((who, reason)) = text.split_once(':') else {
+        let Some((who, reason)) = entry.split_once(':') else {
             error(format!(
-                "'{text}' is not 'mortar,<arch>: <reason>' or 'mortar[,<arch>...] <test>: <reason>'"
+                "'{entry}' is not 'mortar,<arch>: <reason>' or 'mortar[,<arch>...] <test>: <reason>'"
             ));
             continue;
         };
         // The test's name is the last word when it ends with `.test`, or
         // when there are words after the qualifiers' list.
         let who = who.trim();
-        let (who, test) = match who.rsplit_once([' ', '\t']) {
-            Some((rest, last)) if last.ends_with(".test") || !rest.trim_end().ends_with(',') => {
+        let (who, named) = match who.rsplit_once([' ', '\t']) {
+            Some((rest, last))
+                if last.strip_suffix(".test").is_some() || !rest.trim_end().ends_with(',') =>
+            {
                 (rest.trim_end(), Some(last))
             }
             _ => (who, None),
         };
-        if let Some(test) = test {
+        if let Some(test) = named {
             let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-');
-            let valid = test.ends_with(".test")
+            let valid = test.strip_suffix(".test").is_some()
                 && test.split('/').all(|part| !part.is_empty() && part.chars().all(plain));
             if !valid {
                 error(format!("'{test}' is not a test's name ('dyn/kinds/x.test')"));
@@ -1588,7 +1594,7 @@ pub fn parse_xfails(text: &str) -> Result<Vec<ArchXfail>, Vec<Error>> {
             }
         }
         let words: Vec<&str> = who.split(',').map(str::trim).collect();
-        let arches: Option<Vec<Arch>> = match (words.split_first(), test) {
+        let arches: Option<Vec<Arch>> = match (words.split_first(), named) {
             (Some((&"mortar", [arch])), None) => Arch::parse(arch).map(|arch| vec![arch]),
             (Some((&"mortar", [])), Some(_)) => Some(Arch::ALL.to_vec()),
             (Some((&"mortar", rest)), Some(_)) => {
@@ -1609,10 +1615,10 @@ pub fn parse_xfails(text: &str) -> Result<Vec<ArchXfail>, Vec<Error>> {
             error("an xfail needs a reason".to_owned());
             continue;
         }
-        let test = test.map(str::to_owned);
+        let name = named.map(str::to_owned);
         for arch in arches {
-            if let Some(first) = out.iter().find(|x| x.arch == arch && x.test == test) {
-                let what = test.as_deref().map_or_else(String::new, |t| format!(" of {t}"));
+            if let Some(first) = out.iter().find(|x| x.arch == arch && x.test == name) {
+                let what = name.as_deref().map_or_else(String::new, |t| format!(" of {t}"));
                 error(format!(
                     "a second xfail{what} for mortar on {} (the first is on line {})",
                     arch.name(),
@@ -1620,7 +1626,7 @@ pub fn parse_xfails(text: &str) -> Result<Vec<ArchXfail>, Vec<Error>> {
                 ));
                 break;
             }
-            out.push(ArchXfail { line, arch, test: test.clone(), reason: reason.to_owned() });
+            out.push(ArchXfail { line, arch, test: name.clone(), reason: reason.to_owned() });
         }
     }
     if errors.is_empty() { Ok(out) } else { Err(errors) }
@@ -1916,8 +1922,8 @@ FileHeader:
         assert!(error("mortar,i386:\n").contains("needs a reason"));
         assert!(error("mortar,i386: a\nmortar,i386: b\n").contains("a second xfail for"));
         // A test's xfails, on the architectures named or on every one.
-        let t = parse_xfails("mortar,aarch64 dyn/a.test: M2: WP-053\nmortar dyn/b.test: M2\n")
-            .unwrap();
+        let t =
+            parse_xfails("mortar,aarch64 dyn/a.test: M2: WP-053\nmortar dyn/b.test: M2\n").unwrap();
         assert_eq!(t.len(), 4);
         assert_eq!((t[0].arch, t[0].test.as_deref()), (Arch::Aarch64, Some("dyn/a.test")));
         assert_eq!(t[0].reason, "M2: WP-053");
@@ -2040,6 +2046,93 @@ FileHeader:
         assert!(has_error(&with("link ld a.o\ncheck nm a\n  diag: x\n"), 4, "of a check"));
         // An expectation of a step that did not parse is not reported again.
         assert_eq!(errors(&with("lnk ld a.o\n  exit: 0\nlink ld a.o\n")).len(), 1);
+    }
+
+    // "Steps", "Expectations", "Checks": the forms dynamic tests use.
+    #[test]
+    fn dynamic_steps_and_expectations() {
+        let with = |text: &str| format!("#@ spec: dyn.md \"D-1\"\n{text}");
+        let test = parse(&with(
+            "#@ requires: g++ gdb eu-elflint\n#@ fixture: greet hook-lib\n\
+             shlib g++ a.o -o liba.so\nlink gcc a.o\n\
+             run a.out\n  env: LD_PRELOAD=./libhook.so\n  env: LD_BIND_NOW=1\n\
+             check readelf -dW a.out\n  has: (NEEDED)\n  then: (NEEDED)\n  count: 2 (NEEDED)\n\
+             check elflint a.out\n  allow(mortar): relro_padding\n\
+             check ldd a.out\n  not: not found\n\
+             check gdb a.out \"break main\" run\n  has: Breakpoint 1\n",
+        ))
+        .unwrap();
+        assert_eq!(test.fixtures, ["greet", "hook-lib"]);
+        let StepKind::Shlib(shlib) = &test.steps[0].kind else { panic!() };
+        assert_eq!(shlib.driver, Driver::Gxx);
+        assert!(test.steps[0].is_build());
+        let StepKind::Run(run) = &test.steps[2].kind else { panic!() };
+        let vars = Vars { arch: Arch::Aarch64, host: Some(Arch::Aarch64), linker: None };
+        let env: Vec<(&str, String)> =
+            run.env.iter().map(|(n, v)| (n.as_str(), v.expand(vars))).collect();
+        assert_eq!(
+            env,
+            [("LD_PRELOAD", "./libhook.so".to_owned()), ("LD_BIND_NOW", "1".to_owned())]
+        );
+        let StepKind::Check(readelf) = &test.steps[3].kind else { panic!() };
+        let wants: Vec<Want> = readelf.expectations.iter().map(|e| e.want).collect();
+        assert_eq!(wants, [Want::Line, Want::Then, Want::Count(2)]);
+        let tools: Vec<CheckTool> = test.steps[3..]
+            .iter()
+            .map(|step| match &step.kind {
+                StepKind::Check(check) => check.tool,
+                _ => panic!(),
+            })
+            .collect();
+        assert_eq!(tools, [CheckTool::Readelf, CheckTool::Elflint, CheckTool::Ldd, CheckTool::Gdb]);
+        let StepKind::Check(elflint) = &test.steps[4].kind else { panic!() };
+        assert_eq!(elflint.expectations[0].want, Want::Allow);
+        assert_eq!(elflint.expectations[0].scope.linkers, [Linker::Mortar]);
+        // An elflint check with nothing but its allow-list.
+        assert!(
+            parse(&with("#@ requires: eu-elflint\nlink gcc a.o\ncheck elflint a.out\n")).is_ok()
+        );
+
+        let run = |e: &str| with(&format!("link gcc a.o\nrun a.out\n  {e}\n"));
+        assert!(has_error(&run("env: LD_PRELOAD"), 4, "is not 'env: NAME=value'"));
+        assert!(has_error(&run("env: ld_preload=x"), 4, "not an environment variable's name"));
+        assert!(has_error(&run("env: A=1\n  env: A=2"), 5, "a second 'env: A='"));
+        let check = |e: &str| with(&format!("link gcc a.o\ncheck readelf -d a.out\n  {e}\n"));
+        assert!(has_error(&check("count: x (NEEDED)"), 4, "is not 'count: <number> <pattern>'"));
+        assert!(has_error(&check("count: 2"), 4, "is not 'count: <number> <pattern>'"));
+        assert!(has_error(&check("allow: x"), 4, "of 'check elflint' only"));
+        assert!(has_error(&with("link gcc a.o\ncheck ldd a b\n  has: x\n"), 3, "one file"));
+        assert!(has_error(&with("link gcc a.o\ncheck gdb a\n  has: x\n"), 3, "needs 'gdb'"));
+        assert!(has_error(&with("shlib g++ a.o\nlink gcc a.o\n"), 2, "g++"));
+        assert!(has_error(&with("shlib ld a.o\nlink gcc a.o\n"), 2, "ld"));
+        assert!(has_error(&with("#@ fixture: ../x\nlink gcc a.o\n"), 2, "not a fixture name"));
+        assert!(has_error(&with("#@ fixture: x x\nlink gcc a.o\n"), 2, "named twice"));
+    }
+
+    // "Fixtures": `requires`, build steps and files only.
+    #[test]
+    fn fixtures() {
+        let fixture = parse_fixture(
+            "# libgreet\n#@ requires: g++\ncxx -fPIC g.cc -o g.o\nshlib g++ g.o -o libg.so\n\
+             #--- g.cc\nint g() { return 1; }\n",
+        )
+        .unwrap();
+        assert_eq!(fixture.requires, [Feature::Gxx]);
+        assert_eq!(fixture.steps.len(), 2);
+        assert_eq!(fixture.files[0].name, "g.cc");
+        let error = |text: &str| -> Vec<String> {
+            parse_fixture(text).unwrap_err().iter().map(ToString::to_string).collect()
+        };
+        let has = |text: &str, part: &str| {
+            let all = error(text);
+            assert!(all.iter().any(|e| e.contains(part)), "no '{part}' in {all:#?}");
+        };
+        has("#@ spec: dyn.md \"D-1\"\ncc a.c\n", "a fixture has no 'spec' directive");
+        has("cc a.c\nlink gcc a.o\n", "a fixture builds inputs only: 'link'");
+        has("cxx a.cc\n", "g++");
+        has("cc a.c\n#--- a.c\n#--- a.c\n", "embedded twice");
+        // No spec and no link are needed.
+        assert!(parse_fixture("cc a.c\n#--- a.c\nint a;\n").is_ok());
     }
 
     // "Expectations": a link expected to fail says what mortar reports, on
