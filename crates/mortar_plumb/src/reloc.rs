@@ -992,6 +992,21 @@ impl<'a, 'b> Engine<'a, 'b> {
             }
             let def = if x64 { crate::x64::def(ty) } else { a64::def(ty) };
             let Some(def) = def else {
+                // spec/x64.md X-14: the dynamic-only types have no static
+                // value; GNU ld writes S + A for them (W3).
+                if x64 && matches!(ty, 5..=8 | 16 | 36..=38) {
+                    let mut f = Finding::new(
+                        Rule::Insn,
+                        format!(
+                            "relocation type {ty} is defined for dynamic relocations only, not for an object file (spec/x64.md X-14)"
+                        ),
+                    )
+                    .at(p)
+                    .site(o.site(si, off));
+                    f.found = Some(u64::from(ty));
+                    self.fail(f);
+                    continue;
+                }
                 self.not_checked(Reason::Type, 1);
                 continue;
             };

@@ -584,7 +584,8 @@ is `src/x64rec.rs`. Fields are little-endian data of 1, 2, 4 or 8 bytes
 
 GOT is the output's `_GLOBAL_OFFSET_TABLE_`. The later types of X-13 (`GOT32`, `GOTPCREL64`, `GOTPLT64`, the
 APX `CODE_*` types 43–51) are not in the table: their records are not
-checked (`type`). `64` (and `32`) against a TLS symbol in `.debug_addr`
+checked (`type`). The dynamic-only types 5–8, 16 and 36–38 in an input
+are R8 (X-14: they have no static value; GNU ld writes S + A, W3). `64` (and `32`) against a TLS symbol in `.debug_addr`
 is `DtpRel(S + A)` (X-53); `GOTOFF64` in `.debug_info` is `S + A − GOT`
 (X-53); every other non-alloc record is §5.8's. L3 judges x86-64 outputs
 (`xtask/src/linktest/engine.rs` `not_judged`); the run-wide x86-64
@@ -1621,7 +1622,8 @@ once:
 - **verified**, by how S was found: `direct`, `got-slot`, `piece`,
   `eh-frame` (a pointer field of a matched CIE or FDE, §6.4), `iplt`
   (an IFUNC reference, §4.8) or `tombstone` (§5.8);
-- **accepted**, by rewriting (W1 to W13);
+- **accepted**, by rewriting (W1 to W13; on x86-64 §5.9's `got-to-lea`,
+  `got-to-direct`, `got-to-imm`, `got-to-mov-imm` and the TLS ones);
 - **not checked**, by reason: `tls`, `tls-sequence`, `ifunc`, `non-alloc`, `eh-frame`, `compressed`,
   `type`, `machine`, `section-not-locatable`, `piece-not-locatable`,
   `in-mergeable`, `symbol-unresolved`, `got-unpaired` or
@@ -1963,9 +1965,12 @@ case of `tests/x64.rs`):
   `endbr64` (W6): an indirect call to an IFUNC faults under IBT
   enforcement (F5).
 
-W1 (GNU ld truncates `16`/`8` fields) is a violation, R2; W5 (lld writes
+W1 (GNU ld truncates `16`/`8` fields) and W2 (GNU ld writes `PC16` one
+past either end) are violations, R2; W3 (GNU ld writes S + A for a
+dynamic-only type) is R8; W5 (lld writes
 a link-time value in a static-pie) is S1, since S1 accepts `ET_EXEC` only
-(§11 item 7). GNU ld and mold refuse W5's input; lld and mold refuse W1's.
+(§11 item 7). GNU ld and mold refuse W5's input; lld and mold refuse
+W1's, W2's and W3's.
 
 **Notes, not anomalies** (`spec/layout.md` §20.3; never findings, so no
 id):

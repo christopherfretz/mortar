@@ -26,6 +26,8 @@ const HELLO_CC: &str = include_str!("x64/hello.cc");
 const TLS_C: &str = include_str!("x64/tls.c");
 const TLS_MAIN_C: &str = include_str!("x64/tls_main.c");
 const IPLT_IBT_S: &str = include_str!("x64/iplt-ibt.s");
+const PC16_S: &str = include_str!("x64/pc16.s");
+const DYNTYPES_S: &str = include_str!("x64/dyntypes.s");
 const HELLO_F90: &str = include_str!("x64/hello.f90");
 const HELLO_C: &str = "#include <stdio.h>\n#include <string.h>\n\
     int main(int c, char **v) { printf(\"%zu\\n\", strlen(v[0]) + c); return 0; }\n";
@@ -137,6 +139,27 @@ fn cases() -> Vec<Case> {
             args: &["-static", "-nostdlib", "bf.o"],
             expect: [Some(&["R2"]), None, None],
         },
+        // W2: GNU ld writes PC16 one past each end; lld and mold refuse.
+        Case {
+            name: "w2",
+            driver: gcc,
+            args: &[
+                "-static",
+                "-nostdlib",
+                "-Wl,-Tdata=0x500000",
+                "-Wl,--defsym,far16=0x508000",
+                "-Wl,--defsym,far16b=0x500010",
+                "pc16.o",
+            ],
+            expect: [Some(&["R2"]), None, None],
+        },
+        // W3: GNU ld writes S + A for dynamic-only types; lld and mold refuse.
+        Case {
+            name: "w3",
+            driver: gcc,
+            args: &["-static", "-nostdlib", "dyn.o"],
+            expect: [Some(&["R8"]), None, None],
+        },
         // W4: lld's GD rewriting of the large model.
         Case {
             name: "w4",
@@ -214,6 +237,8 @@ fn build() -> Option<Corpus> {
         ("tls_main.c", TLS_MAIN_C),
         ("hello.f90", HELLO_F90),
         ("iplt-ibt.s", IPLT_IBT_S),
+        ("pc16.s", PC16_S),
+        ("dyntypes.s", DYNTYPES_S),
         ("hello.c", HELLO_C),
     ] {
         std::fs::write(dir.join(n), text).unwrap();
@@ -224,6 +249,8 @@ fn build() -> Option<Corpus> {
     must(&dir, as_, &["--defsym", "m1=-32769", "--defsym", "m2=-129", "bitfield.s", "-o", "bf.o"]);
     must(&dir, as_, &["f2.s", "-o", "f2.o"]);
     must(&dir, as_, &["iplt-ibt.s", "-o", "ibt.o"]);
+    must(&dir, as_, &["pc16.s", "-o", "pc16.o"]);
+    must(&dir, as_, &["dyntypes.s", "-o", "dyn.o"]);
     must(&dir, cc, &["-O2", "-c", "hello.c", "-o", "c-gcc.o"]);
     must(&dir, cc, &["-O2", "-fPIE", "-c", "hello.c", "-o", "c-pie.o"]);
     must(&dir, cc, &["-O2", "-fPIC", "-fno-plt", "-c", "hello.c", "-o", "c-noplt.o"]);
