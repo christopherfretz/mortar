@@ -20,12 +20,16 @@ mortar_a64      = { path = "crates/mortar_a64" }
 mortar_arch     = { path = "crates/mortar_arch" }
 mortar_core     = { path = "crates/mortar_core" }
 mortar_diag     = { path = "crates/mortar_diag" }
+mortar_digest   = { path = "crates/mortar_digest" }
 mortar_elf      = { path = "crates/mortar_elf" }
+mortar_image    = { path = "crates/mortar_image" }
 mortar_input    = { path = "crates/mortar_input" }
 mortar_layout   = { path = "crates/mortar_layout" }
+mortar_live     = { path = "crates/mortar_live" }
 mortar_merge    = { path = "crates/mortar_merge" }
 mortar_plumb    = { path = "crates/mortar_plumb" }
 mortar_resolve  = { path = "crates/mortar_resolve" }
+mortar_scan     = { path = "crates/mortar_scan" }
 mortar_script   = { path = "crates/mortar_script" }
 mortar_synth    = { path = "crates/mortar_synth" }
 mortar_testutil = { path = "crates/mortar_testutil" }
