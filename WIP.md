@@ -6,6 +6,22 @@ results are below. Scripts, inputs and a re-run driver are in
 brief). `/tmp/mortar-wp029-88016` has been removed, so re-run what you need
 (see "Re-running"). Delete this file before the branch is handed back.
 
+## Take-over session 3 (2026-11-15): writing `spec/x64.md`
+
+- `spec/x64.md` exists (skeleton committed; sections filled one by one,
+  see the commit log). The full run `run-all.sh /tmp/mortar-x64-40671` has
+  finished; its log is `.build/review-x64/run-all.log`. Two script bugs
+  fixed in `.build/review-x64/run-all.sh`: `corpus.sh` is bash (E1 had
+  compiled nothing) and E12's PC16 probe now fixes `.data` with
+  `-Tdata=0x500000`. E1 is being re-run alone by `run-e1.sh` (log
+  `run-e1.log`) into the same work dir.
+- Already found wrong in the notes below: "No library carries a note" —
+  libgcc.a, libgcov.a, libgfortran.a, libstdc++.a, libatomic/gomp/ssp and
+  9 crt files carry `FEATURE_1_AND = 3` (E1 props); libc.a does not.
+- **Next step:** fill x64.md sections in order, check each against
+  run-all.log; then E1 census table from run-e1.log; then requests, open
+  questions, Tests, README row; delete this file in the final commit.
+
 ## Take-over session 2 (2026-11-15), paused for a second host restart
 
 - Read the brief, this file, a64.md, arch.md §2-§7 and Appendix A, and the
