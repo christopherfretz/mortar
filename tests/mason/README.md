@@ -48,8 +48,7 @@ libc++ 22 static as shipped (`libcxx`) and with `.ARM.attributes` and
 same objects with GNU ld (the reference), lld, mold (when present) and
 mortar, runs every output, and compares standard output, standard error
 and the exit status with GNU ld's. A cell holds when mortar's program runs
-as GNU ld's and the verifier finds nothing on mortar's output (the known
-merge-piece case of WP-028c is counted, not failed), or, in `libcxx`, when
+as GNU ld's and the verifier finds nothing on mortar's output, or, in `libcxx`, when
 mortar refuses with `unsupported section type: SHT_AARCH64_ATTRIBUTES`;
 mortar linking the shipped archives fails the cell (XPASS) until the
 expectation in `programs.rs` (`LIBCXX_REFUSAL`) is updated. `--census`

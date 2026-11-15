@@ -217,20 +217,17 @@ pub fn words(line: &str) -> Vec<String> {
 /// What the verifier says about one mortar link.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Plumbed {
-    /// Findings other than the known merge-piece case.
+    /// The verifier's findings.
     pub findings: usize,
-    /// Findings of the known merge-piece case (`plumb::known_merge_piece`).
-    pub known: usize,
-    /// The first finding that is not the known case, rendered.
+    /// The first finding, rendered.
     pub first: Option<String>,
 }
 
 impl std::fmt::Display for Plumbed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match (self.findings, self.known) {
-            (0, 0) => f.write_str("clean"),
-            (0, k) => write!(f, "clean ({k} known merge-piece)"),
-            (n, k) => write!(f, "{n} findings ({k} known merge-piece)"),
+        match self.findings {
+            0 => f.write_str("clean"),
+            n => write!(f, "{n} findings"),
         }
     }
 }
@@ -238,26 +235,22 @@ impl std::fmt::Display for Plumbed {
 /// Runs the verifier on mortar's `output` and its mortar-map `map`, the
 /// inputs read relative to `base`.
 pub fn plumb(output: &Path, map: &Path, base: &Path) -> Result<Plumbed, String> {
-    let (_, report, files) =
+    let (_, report, _) =
         crate::plumb::verify_link(output, map, mortar_plumb::Format::Mortar, base, None)?;
     let mut p = Plumbed::default();
     let name = output.display().to_string();
     for f in &report.findings {
-        if crate::plumb::known_merge_piece(&files, f) {
-            p.known += 1;
-        } else {
-            p.findings += 1;
-            if p.first.is_none() {
-                let one = mortar_plumb::Report { findings: vec![f.clone()], ..report.clone() };
-                p.first = one.render(&name).lines().next().map(str::to_owned);
-            }
+        p.findings += 1;
+        if p.first.is_none() {
+            let one = mortar_plumb::Report { findings: vec![f.clone()], ..report.clone() };
+            p.first = one.render(&name).lines().next().map(str::to_owned);
         }
     }
     Ok(p)
 }
 
 /// `verify <output> <map>`: one line, `plumb: <result>[: <first>]`; exit 0
-/// when clean but for the known case.
+/// when clean.
 fn verify_main(args: &[String]) -> Result<ExitCode, String> {
     let [output, map] = args else { return Err("verify needs <output> <map>".into()) };
     let p = plumb(Path::new(output), Path::new(map), Path::new(""))?;
@@ -283,13 +276,6 @@ mod tests {
     #[test]
     fn plumbed_renders() {
         assert_eq!(Plumbed::default().to_string(), "clean");
-        assert_eq!(
-            Plumbed { known: 3, ..Plumbed::default() }.to_string(),
-            "clean (3 known merge-piece)"
-        );
-        assert_eq!(
-            Plumbed { findings: 2, known: 1, first: None }.to_string(),
-            "2 findings (1 known merge-piece)"
-        );
+        assert_eq!(Plumbed { findings: 2, first: None }.to_string(), "2 findings");
     }
 }
