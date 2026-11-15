@@ -1,0 +1,50 @@
+# Model case F5 (spec/odr.md §12.7, experiments 2 and 3), under
+# --odr=strict.
+# A -fno-rtti library with a key function and a client compiled with RTTI
+# (N24): the layout hash has no RTTI bit (O-18), abi.rtti is a note, and the
+# vtable is emitted once, so O-25 has one copy: nothing is reported.
+#@ spec: odr.md §3 N24, §12.7, "O-18", "O-25"
+#@ requires: g++
+
+cxx -O0 -fno-rtti lib.cc -o lib0.o
+meta lib.meta lib0.o -o lib.o
+cxx -O0 client.cc -o client0.o
+meta client.meta client0.o -o client.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o lib.o client.o -o prog
+link(mortar) g++ -static -no-pie main.o lib.o client.o -Wl,--odr=strict -o prog
+run prog
+  stdout: 7
+
+#--- lib.cc
+struct Base { virtual int f(); virtual ~Base(); int x = 4; };
+Base* make();
+int Base::f() { return 7; }
+Base::~Base() {}
+Base* make() { return new Base; }
+#--- lib.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=off
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++17
+type name=4Base hash=4c4b043bd8fbc1a83b9135733ba48309 layout=0xa18df6a52eb8f368 size=16 align=8 flags=4 file=h.h line=1
+declaration anchor=_Z4makev ty=0xc2b1d37d0ba9c441 size=0 type_name=FP4BasevE flags=1
+#--- client.cc
+struct Base { virtual int f(); virtual ~Base(); int x = 4; };
+Base* make();
+int fc() { return make()->f(); }
+#--- client.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++17
+type name=4Base hash=4c4b043bd8fbc1a83b9135733ba48309 layout=0xa18df6a52eb8f368 size=16 align=8 flags=4 file=h.h line=1
+declaration anchor=_Z4makev ty=0xc2b1d37d0ba9c441 size=0 type_name=FP4BasevE flags=0
+#--- main.cc
+#include <cstdio>
+int fc();
+int main() { std::printf("%d\n", fc()); }

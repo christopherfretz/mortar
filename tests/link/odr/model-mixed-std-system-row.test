@@ -1,0 +1,46 @@
+# Model case mixed-std-system-row (spec/odr.md §12.7, experiments 2 and 3), under
+# --odr=strict.
+# A system header writes constexpr under _LIBCPP_CONSTEXPR_SINCE_CXX20: the
+# hashes differ, every row is SYSTEM and the units' std differ (N26). O-32:
+# an --odr-stats count, which --odr=strict reports as a warning.
+#@ spec: odr.md §3 N26, §12.7, "O-32"
+#@ requires: g++
+#@ diag: odr-violation a.o b.o
+
+cxx -O0 -std=c++17 a.cc -o a0.o
+meta a.meta a0.o -o a.o
+cxx -O0 -std=c++20 b.cc -o b0.o
+meta b.meta b0.o -o b.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+run prog
+  stdout: 3 3
+
+#--- a.cc
+__attribute__((noinline)) inline int lib_size() { return 3; }
+int fa() { return lib_size(); }
+#--- a.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++17
+definition anchor=_Z8lib_sizev hash=096163fc6717f0281df0a1c185fadd89 class=1 flags=257 file=h.h line=1
+#--- b.cc
+__attribute__((noinline)) inline int lib_size() { return 3; }
+int fb() { return lib_size(); }
+#--- b.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++20
+definition anchor=_Z8lib_sizev hash=aa2649b672d9e94b0823374a89f0cdc2 class=1 flags=257 file=h.h line=1
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int main() { std::printf("%d %d\n", fa(), fb()); }
