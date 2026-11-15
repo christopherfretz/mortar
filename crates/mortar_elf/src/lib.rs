@@ -8,6 +8,7 @@
 
 pub mod archive;
 pub mod consts;
+pub mod dso;
 pub mod error;
 pub mod header;
 pub mod note;
