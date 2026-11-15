@@ -1,0 +1,26 @@
+# `--gc-sections` drops the sections nothing reachable from the entry
+# point refers to, and keeps a section marked SHF_GNU_RETAIN (GNU ld
+# manual "--gc-sections"; gABI extension SHF_GNU_RETAIN).
+#@ spec: layout.md "Garbage collection"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 -ffunction-sections -fdata-sections main.c -o main.o
+link gcc -static -no-pie -Wl,--gc-sections main.o -o prog
+run prog
+  exit: 3
+check readelf -sW prog
+  has: FUNC * used_func$
+  has: FUNC * kept_by_retain$
+  has: OBJECT * used_data$
+  not: dead_func
+  not: dead_data
+
+#--- main.c
+int used_data = 3;
+int dead_data = 4;
+
+__attribute__((noinline)) int used_func(void) { return used_data; }
+__attribute__((noinline)) int dead_func(void) { return dead_data; }
+__attribute__((retain, noinline)) int kept_by_retain(void) { return 5; }
+
+int main(void) { return used_func(); }

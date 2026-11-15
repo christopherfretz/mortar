@@ -1290,7 +1290,7 @@ mod tests {
     /// The errors of `text`, as `line: message` strings.
     fn errors(text: &str) -> Vec<String> {
         match parse(text) {
-            Ok(test) => panic!("parsed: {test:?}"),
+            Ok(parsed) => panic!("parsed: {parsed:?}"),
             Err(errors) => errors.iter().map(ToString::to_string).collect(),
         }
     }
@@ -1343,53 +1343,53 @@ int main(void) { return 0; }
 FileHeader:
 #--- last.txt
 ";
-        let test = parse(text).unwrap();
-        assert_eq!(test.spec, ["resolve.md \"Archives\"", "layout.md \"Entry point\""]);
-        assert_eq!(test.arches, [Arch::Aarch64, Arch::I386]);
-        assert_eq!(test.requires, [Feature::Gxx, Feature::Yaml2obj]);
-        assert_eq!(test.timeout, Some(Duration::from_secs(30)));
-        assert_eq!(test.memory_mib, Some(2048));
-        assert_eq!(test.markers.len(), 2);
-        let xfail = test.marker(Arch::I386, Linker::Mortar).unwrap();
+        let parsed = parse(text).unwrap();
+        assert_eq!(parsed.spec, ["resolve.md \"Archives\"", "layout.md \"Entry point\""]);
+        assert_eq!(parsed.arches, [Arch::Aarch64, Arch::I386]);
+        assert_eq!(parsed.requires, [Feature::Gxx, Feature::Yaml2obj]);
+        assert_eq!(parsed.timeout, Some(Duration::from_secs(30)));
+        assert_eq!(parsed.memory_mib, Some(2048));
+        assert_eq!(parsed.markers.len(), 2);
+        let xfail = parsed.marker(Arch::I386, Linker::Mortar).unwrap();
         assert_eq!((xfail.kind, xfail.reason.as_str()), (MarkerKind::Xfail, "no linking yet (M1)"));
-        assert_eq!(test.marker(Arch::I386, Linker::Mold).unwrap().kind, MarkerKind::Skip);
-        assert!(test.marker(Arch::Aarch64, Linker::Mold).is_none());
-        assert!(test.marker(Arch::Aarch64, Linker::Bfd).is_none());
+        assert_eq!(parsed.marker(Arch::I386, Linker::Mold).unwrap().kind, MarkerKind::Skip);
+        assert!(parsed.marker(Arch::Aarch64, Linker::Mold).is_none());
+        assert!(parsed.marker(Arch::Aarch64, Linker::Bfd).is_none());
 
-        let keywords: Vec<&str> = test.steps.iter().map(|step| step.keyword).collect();
+        let keywords: Vec<&str> = parsed.steps.iter().map(|step| step.keyword).collect();
         assert_eq!(keywords, ["cc", "cxx", "yaml2obj", "ar", "link", "run", "check"]);
-        let lines: Vec<usize> = test.steps.iter().map(|step| step.line).collect();
+        let lines: Vec<usize> = parsed.steps.iter().map(|step| step.line).collect();
         assert_eq!(lines, [11, 12, 13, 14, 15, 19, 23]);
         let vars = Vars { arch: Arch::I386, host: Some(Arch::Aarch64), linker: Some(Linker::Lld) };
-        let StepKind::Compile(cxx) = &test.steps[1].kind else { panic!() };
+        let StepKind::Compile(cxx) = &parsed.steps[1].kind else { panic!() };
         assert_eq!((cxx.language, cxx.family), (Language::Cxx, Family::Gcc));
-        assert_eq!(test.steps[1].scope.arches, [Arch::I386]);
+        assert_eq!(parsed.steps[1].scope.arches, [Arch::I386]);
         let args: Vec<String> = cxx.args.iter().map(|a| a.expand(vars)).collect();
         assert_eq!(args, ["-m32", "a b.cc", "-o", "ab.o"]);
-        let StepKind::Link(link) = &test.steps[4].kind else { panic!() };
+        let StepKind::Link(link) = &parsed.steps[4].kind else { panic!() };
         assert_eq!(link.driver, Driver::Gxx);
         assert!(!link.fails);
         assert_eq!(link.diags.len(), 2);
         assert!(!link.diags[0].present && link.diags[1].present);
         assert_eq!(link.diags[1].scope.linkers, [Linker::Bfd]);
-        let StepKind::Run(run) = &test.steps[5].kind else { panic!() };
+        let StepKind::Run(run) = &parsed.steps[5].kind else { panic!() };
         assert_eq!(run.exit, Exit::Signal(6));
         let args: Vec<String> = run.args.iter().map(|a| a.expand(vars)).collect();
         assert_eq!(args, ["arg%1", "i386"]);
         let Stdout::Exact(stdout) = &run.stdout else { panic!() };
         let stdout: Vec<String> = stdout.iter().map(|line| line.expand(vars)).collect();
         assert_eq!(stdout, ["hello i386", ""]);
-        let StepKind::Check(check) = &test.steps[6].kind else { panic!() };
+        let StepKind::Check(check) = &parsed.steps[6].kind else { panic!() };
         assert_eq!(check.tool, CheckTool::Nm);
-        assert_eq!(test.steps[6].scope.linkers, [Linker::Lld]);
+        assert_eq!(parsed.steps[6].scope.linkers, [Linker::Lld]);
         assert_eq!(check.expectations[1].scope.arches, [Arch::Aarch64]);
 
-        let names: Vec<&str> = test.files.iter().map(|file| file.name.as_str()).collect();
+        let names: Vec<&str> = parsed.files.iter().map(|file| file.name.as_str()).collect();
         assert_eq!(names, ["main.c", "sub/odd.yaml", "last.txt"]);
-        assert_eq!(test.files[0].contents, "int main(void) { return 0; }\n");
-        assert_eq!(test.files[1].contents, "--- !ELF\nFileHeader:\n", "'---' is a file's text");
-        assert_eq!(test.files[2].contents, "");
-        assert!(!test.compares_output());
+        assert_eq!(parsed.files[0].contents, "int main(void) { return 0; }\n");
+        assert_eq!(parsed.files[1].contents, "--- !ELF\nFileHeader:\n", "'---' is a file's text");
+        assert_eq!(parsed.files[2].contents, "");
+        assert!(!parsed.compares_output());
     }
 
     // "Directives": the defaults, and the forms of each directive.

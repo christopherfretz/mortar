@@ -42,7 +42,9 @@ fn program(arch: Arch, directives: &str, marks: &[&str]) -> String {
         arch.name()
     );
     for mark in marks {
-        text.push_str(&format!("#--- {mark}\n"));
+        text.push_str("#--- ");
+        text.push_str(mark);
+        text.push('\n');
     }
     text
 }
@@ -55,8 +57,8 @@ fn records(results: &Path) -> Vec<[String; 4]> {
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
             assert_eq!(fields.len(), 6, "{line}");
-            let test = Path::new(fields[1]).file_name().unwrap().to_string_lossy().into_owned();
-            [fields[0].to_owned(), test, fields[2].to_owned(), fields[3].to_owned()]
+            let file = Path::new(fields[1]).file_name().unwrap().to_string_lossy().into_owned();
+            [fields[0].to_owned(), file, fields[2].to_owned(), fields[3].to_owned()]
         })
         .collect()
 }
@@ -200,13 +202,13 @@ fn every_outcome_is_reachable_and_the_references_go_first() {
     // A wrong test alone: exit status 3, and the failing reference's
     // record is that wrong test's.
     let oracle = setup.scratch.join("tests/oracle.test");
-    let (status, records, summary) = setup.linktest("oracle", &[], &[oracle.clone()]);
+    let (status, records, summary) = setup.linktest("oracle", &[], std::slice::from_ref(&oracle));
     assert_eq!(status, 3, "{summary}");
     assert!(records.iter().all(|r| r[3] != "mortar"), "mortar is not judged: {records:?}");
 
     // Everything as the test says: exit status 0.
     let good = setup.scratch.join("tests/xfail.test");
-    let (status, _, summary) = setup.linktest("good", &[], &[good.clone()]);
+    let (status, _, summary) = setup.linktest("good", &[], std::slice::from_ref(&good));
     assert_eq!(status, 0, "{summary}");
     assert!(summary.contains("1 tests, 4 results: 3 PASS, 0 FAIL, 1 XFAIL"), "{summary}");
 

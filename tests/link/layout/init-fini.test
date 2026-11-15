@@ -1,0 +1,54 @@
+# Initialization and termination order (gABI "Initialization and
+# Termination Functions"): `.preinit_array` first, then `.init_array`
+# with the prioritized entries (`.init_array.NNNNN`) sorted by priority
+# before the others, which keep input order; `.fini_array` runs in
+# reverse, so the prioritized destructors run last.
+#@ spec: layout.md "Initialization and termination"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 a.c -o a.o
+cc -O1 b.c -o b.o
+cc -O1 main.c -o main.o
+link gcc -static -no-pie main.o a.o b.o -o prog
+run prog
+  stdout: preinit
+  stdout: init 101 (a)
+  stdout: init 102 (b)
+  stdout: init (a)
+  stdout: init (b)
+  stdout: main
+  stdout: fini (b)
+  stdout: fini (a)
+  stdout: fini 102 (b)
+  stdout: fini 101 (a)
+check readelf -SW prog
+  has: .preinit_array PREINIT_ARRAY
+  has: .init_array INIT_ARRAY
+  has: .fini_array FINI_ARRAY
+
+#--- a.c
+#include <stdio.h>
+#include <unistd.h>
+
+static void pre(void) { write(1, "preinit\n", 8); }
+
+__attribute__((section(".preinit_array"), used)) static void (*pre_entry)(void) = pre;
+
+__attribute__((constructor(101))) static void a101(void) { puts("init 101 (a)"); }
+__attribute__((constructor)) static void a_init(void) { puts("init (a)"); }
+__attribute__((destructor(101))) static void a_fini101(void) { puts("fini 101 (a)"); }
+__attribute__((destructor)) static void a_fini(void) { puts("fini (a)"); }
+#--- b.c
+#include <stdio.h>
+
+__attribute__((constructor(102))) static void b102(void) { puts("init 102 (b)"); }
+__attribute__((constructor)) static void b_init(void) { puts("init (b)"); }
+__attribute__((destructor(102))) static void b_fini102(void) { puts("fini 102 (b)"); }
+__attribute__((destructor)) static void b_fini(void) { puts("fini (b)"); }
+#--- main.c
+#include <stdio.h>
+
+int main(void) {
+  puts("main");
+  return 0;
+}

@@ -1,5 +1,6 @@
-//! The cargo steps of `cargo xtask ci` (`spec/harness.md` "ci"). Ported
-//! from hod's `xtask ci`, which met the same build directory.
+//! The steps of `cargo xtask ci` (`spec/harness.md` "ci"): three cargo
+//! steps, ported from hod's `xtask ci`, which met the same build directory,
+//! then the link tests, run in-process.
 
 use std::process::Command;
 
@@ -86,11 +87,28 @@ pub const STEPS: [(&str, &[&str]); 3] = [
     ("test", &["test", "--workspace"]),
 ];
 
+/// The link-test step, which runs after the cargo steps: `cargo xtask
+/// linktest` in-process (`spec/harness.md` "ci", "Link tests").
+pub const LINKTEST: &str = "linktest";
+
+/// Every step's name, in the order they run.
+pub const STEP_NAMES: [&str; 4] = [STEPS[0].0, STEPS[1].0, STEPS[2].0, LINKTEST];
+
+/// The arguments of the link-test step: the host's architecture only for
+/// `--quick` (when it is one of the three), every architecture otherwise.
+pub fn linktest_args(quick: bool) -> Vec<String> {
+    match crate::linktest::target::Arch::host() {
+        Some(host) if quick => vec!["--arch".to_owned(), host.name().to_owned()],
+        _ => Vec::new(),
+    }
+}
+
 /// What `cargo xtask ci [--quick] [--step <name>]...` asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Args {
     pub quick: bool,
-    /// The steps to run, in [`STEPS`] order; every step when none is named.
+    /// The steps to run, in [`STEP_NAMES`] order; every step when none is
+    /// named.
     pub steps: Vec<&'static str>,
 }
 
@@ -113,7 +131,7 @@ impl Args {
                 },
             }
         }
-        let known = STEPS.map(|(name, _)| name);
+        let known = STEP_NAMES;
         if let Some(unknown) = named.iter().find(|step| !known.contains(&step.as_str())) {
             return Err(format!("unknown step `{unknown}` (steps: {})", known.join(", ")));
         }
@@ -132,19 +150,25 @@ impl Args {
 
 /// Runs each selected step in order and stops at the first failure
 /// (`spec/harness.md` "ci"). `--quick` is what an implementer runs before
-/// handing back; the full gate adds the link-test corpus and the
-/// differential lanes as they land (`docs/VALIDATION.md`). Today both run
-/// the same three steps.
+/// handing back: the link tests on the host's architecture only; the full
+/// gate runs them on every architecture, and adds the differential lanes
+/// as they land (`docs/VALIDATION.md`).
 pub fn run(args: &Args) -> bool {
-    for (name, cargo_args) in STEPS {
+    for name in STEP_NAMES {
         if !args.runs(name) {
             continue;
         }
         eprintln!("[ci] {name}");
-        // A cargo step is a jobserver client of its own (spec/harness.md
-        // "Jobserver"), and is run once more if an artifact vanished under
-        // it ("ci").
-        if !cargo_step(cargo_args) {
+        let passed = match STEPS.iter().find(|(step, _)| *step == name) {
+            // A cargo step is a jobserver client of its own
+            // (spec/harness.md "Jobserver"), and is run once more if an
+            // artifact vanished under it ("ci").
+            Some((_, cargo_args)) => cargo_step(cargo_args),
+            // Any exit status but 0 fails the gate ("Link tests", "Exit
+            // status").
+            None => crate::linktest::main(&linktest_args(args.quick)) == 0,
+        };
+        if !passed {
             eprintln!("[ci] {name}: FAILED");
             return false;
         }
@@ -155,7 +179,7 @@ pub fn run(args: &Args) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, STEPS, should_retry};
+    use super::{Args, STEP_NAMES, STEPS, linktest_args, should_retry};
 
     // spec/harness.md "ci": `--step` selects steps, which run in the
     // gate's order whatever the order they are named in.
@@ -165,22 +189,28 @@ mod tests {
             |args: &[&str]| Args::parse(&args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>());
         let all = parse(&["--quick"]).unwrap();
         assert!(all.quick);
-        assert_eq!(all.steps, STEPS.map(|(name, _)| name));
-        assert_eq!(all.steps, ["fmt", "clippy", "test"]);
+        assert_eq!(all.steps, STEP_NAMES);
+        assert_eq!(all.steps, ["fmt", "clippy", "test", "linktest"]);
         assert_eq!(parse(&[]).unwrap().steps, all.steps);
         let two = parse(&["--step", "test", "--step=fmt"]).unwrap();
         assert!(!two.quick);
         assert_eq!(two.steps, ["fmt", "test"]);
-        assert!(two.runs("fmt") && !two.runs("clippy"));
+        assert!(two.runs("fmt") && !two.runs("clippy") && !two.runs("linktest"));
+        assert_eq!(parse(&["--step", "linktest"]).unwrap().steps, ["linktest"]);
         assert!(parse(&["--step", "lint"]).unwrap_err().contains("unknown step `lint`"));
         assert!(parse(&["--step"]).is_err());
         assert!(parse(&["--fast"]).unwrap_err().contains("unknown argument `--fast`"));
     }
 
     // spec/harness.md "ci": the steps are cargo's own checks of the whole
-    // workspace, with warnings denied.
+    // workspace, with warnings denied, then the link tests: on the host's
+    // architecture for `--quick`, on every one for the full gate.
     #[test]
-    fn the_steps_are_fmt_clippy_and_test() {
+    fn the_steps_are_fmt_clippy_test_and_linktest() {
+        assert!(linktest_args(false).is_empty());
+        if let Some(host) = crate::linktest::target::Arch::host() {
+            assert_eq!(linktest_args(true), ["--arch", host.name()]);
+        }
         let commands: Vec<String> = STEPS.iter().map(|(_, args)| args.join(" ")).collect();
         assert_eq!(
             commands,
