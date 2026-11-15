@@ -13,6 +13,9 @@ pub enum RefName {
     Named(&'static str),
     /// Shown as `0x…` (lowercase).
     Hex(u64),
+    /// A named field and its value, shown as `<what> 0x…` (`e_flags
+    /// 0x5`: x86.md X86-1, "the `e_flags` value shown").
+    Value { what: &'static str, value: u64 },
 }
 
 impl fmt::Display for RefName {
@@ -20,6 +23,7 @@ impl fmt::Display for RefName {
         match self {
             Self::Named(name) => f.write_str(name),
             Self::Hex(n) => write!(f, "{n:#x}"),
+            Self::Value { what, value } => write!(f, "{what} {value:#x}"),
         }
     }
 }
