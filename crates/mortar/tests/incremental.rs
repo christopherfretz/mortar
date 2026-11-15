@@ -654,6 +654,38 @@ fn replay_reproduces_and_each_table_matters() {
     }
 }
 
+// spec: incr.md IN-18a (WP-086 keeps format version 1: a state written
+// before the image read EH_RECORDS and SYMTAB_LOCALS replays to the same
+// bytes); the fixtures' README says how they were made.
+#[test]
+fn a_state_written_before_wp086_replays_identically() {
+    let root =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/incr-state-v1-51aa582");
+    for (dir, objects) in [("a64", &["a.o", "b.o"][..]), ("x86_64", &["a.o"][..])] {
+        let scratch = Scratch::new(&format!("incr-v1-{dir}"));
+        for f in objects.iter().chain(&["out", "out.mortar-state"]) {
+            std::fs::copy(root.join(dir).join(f), scratch.join(f)).unwrap();
+        }
+        let bytes = std::fs::read(scratch.join("out.mortar-state")).unwrap();
+        let state = format::decode(&bytes, mortar::VERSION.as_bytes())
+            .unwrap_or_else(|e| panic!("{dir}: {}: {}", e.reason(), e.detail()));
+        let want = std::fs::read(scratch.join("out")).unwrap();
+        let args = |out: &str| -> Vec<OsString> {
+            objects
+                .iter()
+                .map(|o| (*o).into())
+                .chain(["-static", "--eh-frame-hdr", "-o", out].map(OsString::from))
+                .collect()
+        };
+        let inv = mortar::replay_link("mortar", &args("replayed"), scratch.path(), &state);
+        assert!(matches!(inv.outcome, mortar::Outcome::Linked { .. }), "{dir}: replay failed");
+        assert!(std::fs::read(scratch.join("replayed")).unwrap() == want, "{dir}: replay differs");
+        let o = run_in(scratch.path(), Path::new(MORTAR), &args("plain"), &[]);
+        assert!(o.success(), "{dir}: {}", o.stderr_text());
+        assert!(std::fs::read(scratch.join("plain")).unwrap() == want, "{dir}: plain differs");
+    }
+}
+
 // ---- stamps ----------------------------------------------------------------
 
 /// The directories to try the stamp rule on: the build directory's
