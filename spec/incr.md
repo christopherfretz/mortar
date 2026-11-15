@@ -1367,8 +1367,9 @@ with each phase fed from the state for unchanged files:
   trust is 0 when its content hash is recorded, 1 when none could be
   (it is then changed on every update); the output row's `stamp_ns` is
   its reference stamp (IN-21). The device's major and minor numbers for
-  mountinfo are Linux's: major `(dev >> 8) & 0xfff | (dev >> 32) &
-  !0xfff`, minor `dev & 0xff | (dev >> 12) & !0xff`.
+  mountinfo are Linux's (glibc's `major`, `minor`): major `(dev >> 8)
+  & 0xfff | (dev >> 32) & 0xffff_f000`, minor `dev & 0xff | (dev >> 12)
+  & 0xffff_ff00`.
 
   *Test:* `stamp_rule.py` (R6) with the state and the inputs on the same
   and on different file systems; `stamp_probe.py` on each allow-listed
