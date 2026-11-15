@@ -899,7 +899,7 @@ pub struct Outcome {
     /// `SHF_GNU_RETAIN` sections (§4.7).
     pub retained: Vec<(FileId, SectionIndex)>,
     pub entry: crate::EntryPoint,
-    /// Where the time went (`MORTAR_TIME_STEPS`; decides nothing).
+    /// Where the time went (`MORTAR_STEPS`; decides nothing).
     pub steps: Steps,
 }
 

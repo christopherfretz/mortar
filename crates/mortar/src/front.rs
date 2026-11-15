@@ -298,7 +298,7 @@ pub fn front<'s>(
 
     // 20: input.
     let load_env = LoadEnv { cwd: env.cwd.to_path_buf(), pool };
-    let time_steps = std::env::var_os("MORTAR_TIME_STEPS").is_some();
+    let time_steps = mortar_core::wp032b_steps::enabled();
     let mut steps = mortar_input::steps::Steps::default();
     let inputs = load_steps(&plan, &load_env, store, diag, &mut steps);
     if time_steps {
@@ -741,9 +741,10 @@ pub fn front<'s>(
     })
 }
 
-/// `MORTAR_TIME_STEPS`: a phase's sub-step times and work counts, on
-/// standard error as they are taken (the bench's unit costs; nothing in
-/// the output depends on them).
+/// `MORTAR_STEPS` for the phases that collect their sub-steps (input and
+/// resolve): their times and work counts on standard error, in the format
+/// of `mortar_core::wp032b_steps` (the bench's unit costs; nothing in the
+/// output depends on them).
 fn print_steps(
     phase: &str,
     times: &[(&'static str, std::time::Duration)],
@@ -752,10 +753,10 @@ fn print_steps(
     use std::fmt::Write as _;
     let mut s = String::new();
     for (name, d) in times {
-        let _ = writeln!(s, "mortar: time-steps: {phase}.{name}: {:.2} ms", d.as_secs_f64() * 1e3);
+        let _ = writeln!(s, "mortar: steps: {phase} {name}: {:.2} ms", d.as_secs_f64() * 1e3);
     }
     for (name, n) in counts {
-        let _ = writeln!(s, "mortar: time-steps: {phase}.count.{name}: {n}");
+        let _ = writeln!(s, "mortar: steps: {phase} count {name}: {n}");
     }
     eprint!("{s}");
 }
