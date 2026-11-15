@@ -198,6 +198,7 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
         sections.windows(2).all(|w| w[0].section < w[1].section),
         "merge: sections not in SectionId order"
     );
+    let mut steps = mortar_core::wp032b_steps::Steps::new("merge");
     // 1. cut and hash.
     let cuts: Vec<Result<Cut, Problem>> = pool.map(sections.len(), |i| {
         let s = &sections[i];
@@ -216,6 +217,10 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
             .collect();
         Ok((offs, hashes))
     });
+    if steps.on() {
+        let bytes: usize = sections.iter().map(|s| s.bytes.len()).sum();
+        steps.step("cut+hash", bytes as u64, "byte");
+    }
     let mut problems: Vec<Problem> =
         cuts.iter().filter_map(|c| c.as_ref().err().cloned()).collect();
     if !problems.is_empty() {
@@ -269,6 +274,7 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
         &b[piece_off[occ] as usize..end]
     };
 
+    steps.step("rows", total as u64, "piece");
     // 2. partition.
     let bits = shard_bits(pool.threads());
     let nshards = 1usize << bits;
@@ -285,6 +291,7 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
         b
     });
 
+    steps.step("partition", total as u64, "piece");
     // 3. intern.
     let entry_of: Vec<AtomicU32> = (0..total).map(|_| AtomicU32::new(0)).collect();
     let is_rep: Vec<AtomicU64> = (0..total.div_ceil(64)).map(|_| AtomicU64::new(0)).collect();
@@ -315,6 +322,7 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
     });
     drop(buckets);
 
+    steps.step("intern", total as u64, "piece");
     // 4. number.
     let words: Vec<u64> = is_rep.into_iter().map(AtomicU64::into_inner).collect();
     let mut below: Vec<u32> = words.iter().map(|w| w.count_ones()).collect();
@@ -327,6 +335,7 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
         pool.map(nshards, |s| reps[s].iter().map(|&occ| rank(occ as usize)).collect());
     drop(reps);
 
+    steps.step("number", total as u64, "piece");
     // 5. resolve.
     let mut piece_frag = vec![FragId(0); total];
     pool.for_each_part(split_offsets(&mut piece_frag, &starts), |r, out| {
@@ -349,6 +358,7 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
         }
     });
     debug_assert_eq!(frags.items.len(), nfrags as usize, "one row per representative");
+    steps.step("resolve", u64::from(nfrags), "frag");
     let frags = Column::from_vec(frags.items)
         .unwrap_or_else(|_| unreachable!("fragments are at most the pieces, which fit u32"));
     Ok(Merged {

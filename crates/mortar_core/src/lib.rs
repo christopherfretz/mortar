@@ -38,6 +38,7 @@ pub mod records;
 pub mod resolution;
 pub mod seed;
 pub mod split;
+pub mod wp032b_steps;
 
 pub use assignment::Assignment;
 pub use check::{CheckContext, Rule, Violation};
