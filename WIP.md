@@ -21,10 +21,19 @@ linker × pie/no-pie × lazy/now with `.line` files, `r2/` IBT/BTI shapes;
   P-D10 then requires the pad). Fixed a harness panic (`iplt-entry`
   slice on mold x86-64 entries).
 
-## Half-done (uncommitted, kept in /tmp/mortar-wp082-162509/keep)
-- item 2: `sweep.rs` (byte sweep, `xtask plumb --sweep`), dynout.rs
-  robustness (bloom_shift shift, bloom_size allocation).
-- item 3: x64rec.rs accepts the kept-IE `mov` into any register.
+- V2 (item 3): x64rec.rs accepts the kept-IE `mov` into any register;
+  case `tlsdesc-regs` (15 registers run under qemu, rsp linked only).
+- Item 2: `sweep.rs` (`xtask plumb --sweep`), dynout robustness
+  (bloom_shift shift, bloom_size allocation), the closes in
+  `dyncheck.rs` `fields()` (P-D5..P-D10), Verneed shape (dynout),
+  AArch64 PLT decode requires `br x17` (loader.rs). Re-sweep: `sx-*`.
+- Item 4: P-D12 accepts the kept large-model TLSDESC record exactly
+  (`a64_large_desc`); xfail line removed; linktest passes.
+
+## Half-done
+- Item 5 (uncommitted): `reloc.rs` `patch_stubs`, `erratum.rs` fills it,
+  `symbols.rs` judges `__CortexA53843419_<site>`, `corpus.rs` no longer
+  allows them. Needs build + corpus test.
 
 ## Learned
 - All three references write the full lazy shape and lazy words under
@@ -33,5 +42,5 @@ linker × pie/no-pie × lazy/now with `.line` files, `r2/` IBT/BTI shapes;
   outputs (36/42 flags missed on a GNU ld x86-64 hello PIE): item 2 row.
 
 ## Next
-- Restore keep/ files; item 2 closes (see the sweep tables in the
-  scratch `sw-pie/`, `sw-nopie/`, `agg.py`).
+- Item 5 test; item 6 (tlsgd-to-ie a64, GNU_UNIQUE, S1 EI_OSABI);
+  plumb.md §12.2/§12.3 text; cost before/after; record; gate.

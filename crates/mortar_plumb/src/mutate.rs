@@ -82,11 +82,14 @@ pub struct Config {
     /// At most this many mutants per class (chosen by the seed); 0: all.
     pub per_class: usize,
     pub threads: usize,
+    /// The byte sweep of the synthetic sections instead of the classes
+    /// (`crate::sweep`, WP-082).
+    pub sweep: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { seed: 0x6d6f_7274_6172_0028, per_class: 16, threads: 1 }
+        Config { seed: 0x6d6f_7274_6172_0028, per_class: 16, threads: 1, sweep: false }
     }
 }
 

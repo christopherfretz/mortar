@@ -30,6 +30,7 @@ mod property;
 mod reloc;
 pub mod report;
 mod structure;
+pub mod sweep;
 mod symbols;
 pub mod x64;
 pub mod x86;

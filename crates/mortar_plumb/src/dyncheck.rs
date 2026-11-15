@@ -57,7 +57,6 @@ pub(crate) fn check(
     for p in &out.problems {
         v.push(fd(6, p.clone()));
     }
-    let _ = objs;
     pd1(image, out, line, &mut v);
     pd4(image, out, line, format, &mut v);
     pd5(image, out, format, &mut v);
@@ -67,7 +66,8 @@ pub(crate) fn check(
     pd9_order(out, ld.machine, &mut v);
     pd10(image, out, ld.machine, format, &mut v);
     pd11_13(image, out, model, ld, &mut v);
-    pd12(out, ld, format, &mut v);
+    pd12(image, out, ld, objs, format, &mut v);
+    fields(image, out, model, line, format, &mut v);
     v
 }
 
@@ -1198,9 +1198,86 @@ fn pd11_13(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &
     }
 }
 
+/// D-48's kept descriptor (a64 R2, WP-082): the slot pairs that a kept
+/// AArch64 large-model TLSDESC sequence addresses, with its symbol, and
+/// the names some recognised (small-model) TLSDESC sequence uses. The
+/// large form is `movz Xd, #:tlsdesc_off_g1:S; movk Xd,
+/// #:tlsdesc_off_g0_nc:S` (relocations 565, 566), then `ldr`/`add` off the
+/// GOT base (567, 568) and `blr` (569): the pair is at GOT + the 32-bit
+/// offset the two instructions write, GOT being `_GLOBAL_OFFSET_TABLE_`
+/// (the psABI's `G(GTLSDESC(S+A)) - GOT`).
+fn a64_large_desc(
+    image: &Image<'_>,
+    objs: &[Obj<'_>],
+) -> (BTreeMap<u64, String>, BTreeSet<String>) {
+    let mut pairs = BTreeMap::new();
+    let mut small = BTreeSet::new();
+    let got = image
+        .unique("_GLOBAL_OFFSET_TABLE_")
+        .or_else(|| image.global("_GLOBAL_OFFSET_TABLE_"))
+        .map(|s| s.sym.st_value)
+        .or_else(|| sec(image, ".got").map(|g| g.0));
+    for o in objs {
+        let Some(t) = o.symtab else { continue };
+        for sc in &o.secs {
+            let Some(recs) = sc.relocs.and_then(|r| o.records(r)) else { continue };
+            let name = |i: u32| {
+                t.get(mortar_elf::SymbolIndex(i))
+                    .ok()
+                    .and_then(|x| t.name(&x).ok().map(|n| String::from_utf8_lossy(n).into_owned()))
+            };
+            for &(off, sym, ty, addend) in &recs {
+                if (560..=564).contains(&ty) {
+                    small.extend(name(sym));
+                }
+                if ty != 565 || addend.unwrap_or(0) != 0 {
+                    continue;
+                }
+                let has = |at: Option<u64>, want: u32| {
+                    recs.iter().any(|&(o2, s2, t2, _)| {
+                        t2 == want && s2 == sym && at.is_none_or(|a| a == o2)
+                    })
+                };
+                if !(has(Some(off + 4), 566) && has(None, 567) && has(None, 569)) {
+                    continue;
+                }
+                let crate::locate::Place::Whole(base) = sc.place else { continue };
+                let (Some(hi), Some(lo), Some(g), Some(n)) =
+                    (image.insn(base + off), image.insn(base + off + 4), got, name(sym))
+                else {
+                    continue;
+                };
+                // MOVZ Xd, #imm16, LSL #16 and MOVK Xd, #imm16 (one Xd).
+                let rd = hi & 0x1f;
+                if hi & 0xffe0_0000 != 0xd2a0_0000
+                    || lo & 0xffe0_0000 != 0xf280_0000
+                    || lo & 0x1f != rd
+                {
+                    continue;
+                }
+                let at = u64::from((hi >> 5) & 0xffff) << 16 | u64::from((lo >> 5) & 0xffff);
+                pairs.insert(g.wrapping_add(at), n);
+            }
+        }
+    }
+    (pairs, small)
+}
+
 /// P-D12: TLS records.
-fn pd12(out: &DynOut, ld: &Loader<'_>, format: Format, v: &mut Vec<Finding>) {
+fn pd12(
+    image: &Image<'_>,
+    out: &DynOut,
+    ld: &Loader<'_>,
+    objs: &[Obj<'_>],
+    format: Format,
+    v: &mut Vec<Finding>,
+) {
     let p = Params::default();
+    let large = if ld.machine == EM_AARCH64 && format == Format::Mortar {
+        Some(a64_large_desc(image, objs))
+    } else {
+        None
+    };
     for r in &out.rels {
         let k = kind(ld.machine, r.ty);
         if !matches!(k, Kind::TpOff | Kind::DtpMod | Kind::DtpOff | Kind::TlsDesc) {
@@ -1242,12 +1319,354 @@ fn pd12(out: &DynOut, ld: &Loader<'_>, format: Format, v: &mut Vec<Finding>) {
             ),
             _ => {}
         }
-        if k == Kind::TlsDesc && format == Format::Mortar {
+        // D-48: descriptors are relaxed, except AArch64's large form
+        // (a64 R2), which keeps its record: right when the record is the
+        // pair the sequence addresses and no recognised sequence uses the
+        // name (that one relaxes, and the name then has an IE slot).
+        let kept = large.as_ref().is_some_and(|(pairs, small)| {
+            pairs.get(&r.offset) == Some(&s.name)
+                && !small.contains(&s.name)
+                && r.addend.unwrap_or(0) == 0
+        });
+        if k == Kind::TlsDesc && format == Format::Mortar && !kept {
             v.push(
-                sym_finding(12, &s.name, "a TLSDESC record (D-48: descriptors are relaxed)")
-                    .at(r.offset),
+                sym_finding(
+                    12,
+                    &s.name,
+                    "a TLSDESC record (D-48: descriptors are relaxed; only AArch64's large-model sequence keeps one, at the pair it addresses)",
+                )
+                .at(r.offset),
             );
         }
     }
     let _ = DT_NEEDED;
+}
+
+/// The fields WP-082's byte sweep found judged by no rule (`spec/plumb.md`
+/// §12.3): each is something glibc reads, or a value every reference
+/// writes one way that a loader would misread otherwise.
+#[allow(clippy::too_many_lines)] // one block per table
+fn fields(
+    image: &Image<'_>,
+    out: &DynOut,
+    model: &Model,
+    line: &Line,
+    format: Format,
+    v: &mut Vec<Finding>,
+) {
+    use mortar_elf::consts::{STB_GLOBAL, STV_DEFAULT};
+    const STB_GNU_UNIQUE: u8 = 10;
+    let m = image.header.e_machine;
+    // P-D8: the version tables' shape.
+    for p in &out.version_problems {
+        v.push(fd(8, p.clone()));
+    }
+    if let Some(vs) = &out.versym
+        && vs.first().is_some_and(|&x| x != 0)
+    {
+        v.push(fd(8, ".gnu.version entry 0 (the null symbol's) is not 0"));
+    }
+    // P-D7: the null symbol and every entry's fields.
+    if let Some(z) = out.syms.first()
+        && (!z.name.is_empty()
+            || z.st_info != 0
+            || z.st_other != 0
+            || z.st_shndx != 0
+            || z.st_value != 0
+            || z.st_size != 0)
+    {
+        v.push(fd(7, ".dynsym entry 0 is not all zero (gABI: the undefined symbol)"));
+    }
+    let entries = crate::loader::plt_entries(image);
+    for s in out.syms.iter().skip(1) {
+        let extra = s.st_other & !3;
+        let variant_pcs =
+            m == EM_AARCH64 && extra == 0x80 && out.has(dynout::DT_AARCH64_VARIANT_PCS);
+        if extra != 0 && !variant_pcs {
+            v.push(sym_finding(
+                7,
+                &s.name,
+                format!(
+                    "'{}' has st_other {:#x}: bits the psABI does not define{}",
+                    s.name,
+                    s.st_other,
+                    if m == EM_AARCH64 {
+                        " (or STO_AARCH64_VARIANT_PCS without DT_AARCH64_VARIANT_PCS)"
+                    } else {
+                        ""
+                    }
+                ),
+            ));
+        }
+        let b = s.binding();
+        if !s.defined() {
+            // glibc looks a reference up only when it is STV_DEFAULT;
+            // any other binds it in the executable itself (at 0).
+            if s.visibility() != STV_DEFAULT {
+                v.push(sym_finding(
+                    7,
+                    &s.name,
+                    format!(
+                        "'{}' is imported with visibility {}: the loader binds it to the executable's undefined entry",
+                        s.name,
+                        s.visibility()
+                    ),
+                ));
+            }
+            if b != STB_GLOBAL && b != STB_WEAK {
+                v.push(sym_finding(
+                    7,
+                    &s.name,
+                    format!("'{}' is imported with binding {b} (not GLOBAL or WEAK)", s.name),
+                ));
+            }
+            let refd = |n: &str| model.keys.get(n).is_some_and(|k| k.strong_ref || k.weak_ref);
+            // GNU ld also imports a library's alias (same value) of a
+            // referenced definition, as `_environ` beside `environ`.
+            let alias = || {
+                model.dsos.iter().any(|d| {
+                    d.defs.get(&s.name).is_some_and(|mine| {
+                        mine.iter().any(|m| {
+                            m.shndx != 0
+                                && d.defs.iter().any(|(n, x)| {
+                                    n != &s.name
+                                        && refd(n)
+                                        && x.iter().any(|y| y.shndx != 0 && y.value == m.value)
+                                })
+                        })
+                    })
+                })
+            };
+            let referenced = refd(&s.name) || line.undefined.contains(&s.name) || alias();
+            if !referenced {
+                v.push(sym_finding(
+                    7,
+                    &s.name,
+                    format!("'{}' is imported and no input references it (D-21)", s.name),
+                ));
+            }
+            // A non-zero value is a canonical PLT claim (D-18): the
+            // loader binds every library's reference to that address.
+            if s.st_value != 0 && !entries.contains_key(&s.st_value) {
+                v.push(
+                    sym_finding(
+                        10,
+                        &s.name,
+                        format!(
+                            "'{}' is imported with st_value {:#x}, which is no PLT entry (D-18)",
+                            s.name, s.st_value
+                        ),
+                    )
+                    .at(s.st_value),
+                );
+            }
+            continue;
+        }
+        // The section that holds the value is the one the entry names
+        // (a section symbol: at that section's start).
+        let named = image.sections.get(usize::from(s.st_shndx));
+        // (A TLS value is an offset in the TLS segment: not judged here;
+        // mold's export of an IFUNC at its IPLT entry keeps the
+        // resolver's section, which no loader reads.)
+        if s.st_shndx < mortar_elf::consts::SHN_LORESERVE
+            && s.sym_type() != mortar_elf::consts::STT_TLS
+            && !entries.contains_key(&s.st_value)
+        {
+            let holds = named.is_some_and(|x| {
+                let (lo, hi) = (x.shdr.sh_addr, x.shdr.sh_addr + x.shdr.sh_size);
+                if s.sym_type() == STT_SECTION {
+                    s.st_value == lo
+                } else {
+                    x.shdr.sh_flags & mortar_elf::consts::SHF_ALLOC != 0
+                        && lo <= s.st_value
+                        && s.st_value <= hi
+                }
+            });
+            if !holds {
+                v.push(sym_finding(
+                    7,
+                    &s.name,
+                    format!(
+                        "'{}' (st_value {:#x}) names section {}, which does not hold it",
+                        s.name, s.st_value, s.st_shndx
+                    ),
+                ));
+            }
+        }
+        if s.sym_type() == STT_SECTION {
+            continue;
+        }
+        if b != STB_GLOBAL && b != STB_WEAK && b != STB_GNU_UNIQUE {
+            v.push(sym_finding(7, &s.name, format!("'{}' is exported with binding {b}", s.name)));
+        }
+        // The export is the program's definition: its .symtab entry's
+        // section, size, binding and type (an IFUNC's is P-D7's above).
+        if let Some(o) = image.global(&s.name)
+            && o.sym.st_shndx != 0
+            && o.sym.sym_type() != STT_GNU_IFUNC
+        {
+            let mut diff = Vec::new();
+            if o.sym.st_size != s.st_size {
+                diff.push(format!("size {} (.symtab {})", s.st_size, o.sym.st_size));
+            }
+            if o.sym.st_shndx != s.st_shndx {
+                diff.push(format!("section {} (.symtab {})", s.st_shndx, o.sym.st_shndx));
+            }
+            if o.sym.st_info != s.st_info {
+                diff.push(format!("st_info {:#x} (.symtab {:#x})", s.st_info, o.sym.st_info));
+            }
+            if !diff.is_empty() {
+                v.push(sym_finding(
+                    7,
+                    &s.name,
+                    format!("'{}' is exported with {}", s.name, diff.join(", ")),
+                ));
+            }
+        }
+    }
+    // P-D5: a bucket names a hashed entry or is 0.
+    if let Some(g) = &out.gnu_hash {
+        for (i, &b) in g.buckets.iter().enumerate() {
+            if b != 0 && b < g.symoffset {
+                v.push(fd(
+                    5,
+                    format!(
+                        "bucket {i} is {b}, below symoffset {}: the loader reads before the chain",
+                        g.symoffset
+                    ),
+                ));
+            }
+        }
+    }
+    // P-D9 and P-D10: record fields the loader reads or the psABI fixes.
+    for r in &out.rels {
+        let k = kind(m, r.ty);
+        if matches!(k, Kind::Relative | Kind::Irelative) && r.sym != 0 {
+            v.push(
+                fd(9, format!("a RELATIVE or IRELATIVE record names symbol {}", r.sym))
+                    .at(r.offset),
+            );
+        }
+        if m == mortar_elf::consts::EM_X86_64
+            && matches!(k, Kind::GlobDat | Kind::JumpSlot | Kind::Copy)
+            && let Some(a) = r.addend.filter(|&a| a != 0)
+        {
+            // x86-64 psABI: GLOB_DAT and JUMP_SLOT are S, COPY has no
+            // value; glibc's lazy path adds a JUMP_SLOT's addend.
+            v.push(
+                fd(9, format!("a {k:?} record with addend {a:#x} (the x86-64 psABI computes S)"))
+                    .at(r.offset),
+            );
+        }
+        if r.plt && !matches!(k, Kind::JumpSlot | Kind::Irelative | Kind::TlsDesc) {
+            v.push(
+                fd(
+                    10,
+                    format!(
+                        "a {k:?} record in DT_JMPREL: lazy binding refuses it (glibc's elf_machine_lazy_rel)"
+                    ),
+                )
+                .at(r.offset),
+            );
+        }
+    }
+    // P-D6: tags once, known, present iff their section exists (D-30).
+    let mut count: BTreeMap<u64, usize> = BTreeMap::new();
+    for &(t, _) in &out.entries {
+        *count.entry(t).or_default() += 1;
+    }
+    for (&t, &n) in &count {
+        if n > 1 && t != DT_NEEDED && t != DT_NULL {
+            v.push(fd(6, format!("{} appears {n} times", dynout::tag_name(t))));
+        }
+        if dynout::tag_name(t).starts_with("tag ") {
+            v.push(fd(6, format!("a tag {t:#x} no executable carries (D-30)")));
+        }
+    }
+    if let Some(&(_, val)) = out.entries.iter().find(|e| e.0 == DT_NULL)
+        && val != 0
+    {
+        v.push(fd(6, format!("the DT_NULL entry has the value {val:#x}")));
+    }
+    if out.get(dynout::DT_DEBUG).is_some_and(|d| d != 0) {
+        v.push(fd(6, "DT_DEBUG is not 0 in the file (the loader writes it; D-30)"));
+    }
+    let present = |name: &str| sec(image, name).is_some();
+    let rows: [(&[u64], &str); 9] = [
+        (&[dynout::DT_INIT], ".init"),
+        (&[dynout::DT_FINI], ".fini"),
+        (&[DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ], ".preinit_array"),
+        (&[DT_INIT_ARRAY, DT_INIT_ARRAYSZ], ".init_array"),
+        (&[DT_FINI_ARRAY, DT_FINI_ARRAYSZ], ".fini_array"),
+        (&[DT_GNU_HASH], ".gnu.hash"),
+        (&[DT_VERSYM], ".gnu.version"),
+        (&[DT_VERNEED, DT_VERNEEDNUM], ".gnu.version_r"),
+        (&[DT_JMPREL, DT_PLTRELSZ, DT_PLTREL], ".rela.plt"),
+    ];
+    for (tags, name) in rows {
+        let want = present(name);
+        for &t in tags {
+            if out.has(t) != want {
+                v.push(fd(
+                    6,
+                    format!(
+                        "{} is {}, and {name} {} (D-30)",
+                        dynout::tag_name(t),
+                        if want { "missing" } else { "present" },
+                        if want { "exists" } else { "does not exist" }
+                    ),
+                ));
+            }
+        }
+    }
+    for &(t, name) in &[(dynout::DT_INIT, ".init"), (dynout::DT_FINI, ".fini")] {
+        if let (Some(val), Some((a, _))) = (out.get(t), sec(image, name))
+            && val != a
+        {
+            v.push(fd(
+                6,
+                format!("{} is {val:#x}, {name} is at {a:#x} (D-30)", dynout::tag_name(t)),
+            ));
+        }
+    }
+    if present(".rela.dyn") {
+        for t in [DT_RELA, DT_RELASZ, DT_RELAENT] {
+            if !out.has(t) {
+                v.push(fd(
+                    6,
+                    format!("{} is missing, and .rela.dyn exists (D-30)", dynout::tag_name(t)),
+                ));
+            }
+        }
+    }
+    for t in [DT_STRTAB, DT_STRSZ, DT_SYMTAB, DT_SYMENT] {
+        if !out.has(t) {
+            v.push(fd(6, format!("{} is missing (D-30: always)", dynout::tag_name(t))));
+        }
+    }
+    let fl = out.get(DT_FLAGS).unwrap_or(0);
+    let f1 = out.get(DT_FLAGS_1).unwrap_or(0);
+    let fl_ok = if format == Format::Mortar {
+        if line.now { DF_BIND_NOW } else { 0 }
+    } else {
+        dynout::DF_ORIGIN | DF_BIND_NOW | dynout::DF_STATIC_TLS
+    };
+    if fl & !fl_ok != 0 {
+        v.push(fd(6, format!("DT_FLAGS {fl:#x} has bits {:#x} (D-30)", fl & !fl_ok)));
+    }
+    if format == Format::Mortar && out.has(DT_FLAGS) != line.now {
+        v.push(fd(6, "DT_FLAGS is present iff -z now (D-30)"));
+    }
+    if f1 & !(DF_1_NOW | DF_1_PIE) != 0 {
+        v.push(fd(
+            6,
+            format!("DT_FLAGS_1 {f1:#x} has bits {:#x} (D-30)", f1 & !(DF_1_NOW | DF_1_PIE)),
+        ));
+    }
+    if format == Format::Mortar {
+        let rel = out.rels.iter().any(|r| !r.plt && kind(m, r.ty) == Kind::Relative);
+        if out.has(DT_RELACOUNT) != rel {
+            v.push(fd(6, "DT_RELACOUNT is present iff some RELATIVE record (D-30)"));
+        }
+    }
 }

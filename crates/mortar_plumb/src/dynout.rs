@@ -61,6 +61,9 @@ pub const DF_TEXTREL: u64 = 4;
 pub const DF_BIND_NOW: u64 = 8;
 pub const DF_STATIC_TLS: u64 = 0x10;
 pub const DF_1_NOW: u64 = 1;
+pub const DF_ORIGIN: u64 = 1;
+/// `vna_flags`: a weak version reference (gABI "Symbol Versioning").
+pub const VER_FLG_WEAK: u16 = 2;
 pub const DF_1_PIE: u64 = 0x0800_0000;
 
 /// The name of a `DT_*` tag, for messages.
@@ -207,6 +210,10 @@ pub struct DynOut {
     /// `DT_RELA`/`DT_REL` records, then `DT_JMPREL` records.
     pub rels: Vec<DynRel>,
     pub needed: Vec<String>,
+    /// The `Verneed`/`Vernaux` chains' shape as glibc walks them
+    /// (`vn_version` 1, `vn_cnt` entries, the last links 0, `vna_flags`
+    /// at most `VER_FLG_WEAK`): P-D8 (WP-082).
+    pub version_problems: Vec<String>,
     /// What could not be read, as messages (each a P-D6 finding).
     pub problems: Vec<String>,
 }
@@ -381,13 +388,25 @@ impl DynOut {
                     d.problems.push("a Verneed is not in the output's file image".into());
                     break;
                 };
+                let version = u16::from_le_bytes([b[0], b[1]]);
                 let cnt = u16::from_le_bytes([b[2], b[3]]);
                 let file_off = u32le(b, 4);
                 let aux = u32le(b, 8);
                 let next = u32le(b, 12);
                 let file = d.string(image, u64::from(file_off)).unwrap_or_default();
                 d.verneeds.push((file_off, file.clone(), cnt));
+                if version != 1 {
+                    // glibc refuses the object ("unsupported version of Verneed
+                    // record", `_dl_check_map_versions`).
+                    d.version_problems
+                        .push(format!("the Verneed of '{file}' has vn_version {version}, not 1"));
+                }
+                if vi + 1 == num && next != 0 {
+                    d.version_problems
+                        .push(format!("the last Verneed ('{file}') has vn_next {next:#x}, not 0"));
+                }
                 let mut x = at + u64::from(aux);
+                let mut seen = 0u16;
                 for _ in 0..cnt {
                     let Some(v) = image.bytes(x, 16) else {
                         d.problems.push("a Vernaux is not in the output's file image".into());
@@ -404,11 +423,28 @@ impl DynOut {
                         other: u16::from_le_bytes([v[6], v[7]]),
                         verneed: vi as usize,
                     });
+                    let flags = u16::from_le_bytes([v[4], v[5]]);
+                    if flags & !VER_FLG_WEAK != 0 {
+                        d.version_problems.push(format!(
+                            "a Vernaux of '{file}' has vna_flags {flags:#x} (only VER_FLG_WEAK is a reference's)"
+                        ));
+                    }
+                    seen += 1;
                     let nx = u32le(v, 12);
+                    if seen == cnt && nx != 0 {
+                        d.version_problems.push(format!(
+                            "the last Vernaux of '{file}' has vna_next {nx:#x}, not 0"
+                        ));
+                    }
                     if nx == 0 {
                         break;
                     }
                     x += u64::from(nx);
+                }
+                if seen != cnt {
+                    d.version_problems.push(format!(
+                        "the Verneed of '{file}' has vn_cnt {cnt}; its Vernaux chain has {seen}"
+                    ));
                 }
                 if next == 0 {
                     break;
@@ -492,8 +528,10 @@ fn read_gnu_hash(
     let bloom_size = u32le(h, 8);
     let bloom_shift = u32le(h, 12);
     let mut at = a + 16;
-    let mut bloom = Vec::with_capacity(bloom_size as usize);
+    // Read the words before sizing the vector: a hostile `bloom_size`
+    // must fail the read, not allocate gigabytes (WP-082's sweep).
     let bb = image.bytes(at, u64::from(bloom_size) * word)?;
+    let mut bloom = Vec::with_capacity(bb.len() / word as usize);
     for c in bb.chunks_exact(word as usize) {
         bloom.push(if word == 8 { u64le(c, 0) } else { u64::from(u32le(c, 0)) });
     }
@@ -558,7 +596,9 @@ pub fn gnu_lookup(g: &GnuHash, syms: &[DynSym], name: &str, word_bits: u32) -> O
     }
     let bw = g.bloom[((h / word_bits) % g.bloom_size) as usize];
     let m1 = 1u64 << (h % word_bits);
-    let m2 = 1u64 << ((h >> g.bloom_shift) % word_bits);
+    // A shift of 32 or more is undefined in glibc's C; a hostile table
+    // must not panic the verifier (WP-082's sweep found it): read it as 0.
+    let m2 = 1u64 << (h.checked_shr(g.bloom_shift).unwrap_or(0) % word_bits);
     if bw & m1 == 0 || bw & m2 == 0 {
         return None;
     }
