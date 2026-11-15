@@ -621,6 +621,56 @@ fn print_map_writes_the_map_to_standard_output() {
     assert!(read(&map_of(&out)).starts_with(b"mortar-map 1\n"));
 }
 
+/// `readelf -p .comment`: the strings, in offset order.
+fn comment_strings(path: &Path) -> Vec<String> {
+    let readelf = tool("readelf").expect("readelf");
+    let o = mortar_testutil::run(&readelf, [OsString::from("-p"), ".comment".into(), path.into()]);
+    o.stdout_text()
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix('[')?.split_once(']'))
+        .map(|(_, t)| t.trim().to_owned())
+        .collect()
+}
+
+/// S-100: `.comment` is the inputs' strings, as GNU ld merges them, then
+/// `mortar <version>` (lld's place for its own); with no input
+/// `.comment` it is mortar's alone.
+#[test]
+fn the_comment_names_mortar_after_the_inputs() {
+    let Some((_s, built)) = c_program("pipe-comment", &["-O2"]) else { return };
+    let ident = format!("mortar {}", env!("CARGO_PKG_VERSION"));
+    let (ours, gnu) = (built.dir.join("c.out"), built.dir.join("c.gnu"));
+    let m = mortar(&built, &ours, &[], &[]);
+    assert!(m.success(), "{}", m.stderr_text());
+    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+    assert!(bfd(&built, &gnu, &[]).success());
+    let mut want = comment_strings(&gnu);
+    assert!(!want.is_empty() && !want.contains(&ident), "{want:?}");
+    want.push(ident.clone());
+    assert_eq!(comment_strings(&ours), want);
+    if let Some(lld) = tool("ld.lld") {
+        let theirs = built.dir.join("c.lld");
+        let args = with_output(&built.args, &theirs);
+        assert!(link(lld.to_str().unwrap(), &args, &built.dir, &[]).success());
+        let l = comment_strings(&theirs);
+        assert!(l.last().is_some_and(|s| s.starts_with("Linker: ")), "{l:?}");
+        assert_eq!(l[..l.len() - 1], want[..want.len() - 1], "lld's input strings");
+    }
+    // An assembled object has no `.comment`.
+    let obj = assemble(&built.dir, "nc.s", "\t.globl _start\n_start:\n\tret\n");
+    let out = built.dir.join("nc.out");
+    let args: Vec<OsString> = vec![
+        obj.into(),
+        "-o".into(),
+        out.clone().into(),
+        format!("--mortar-map={}", map_of(&out).display()).into(),
+    ];
+    let o = link(MORTAR, &args, &built.dir, &[]);
+    assert!(o.success(), "{}", o.stderr_text());
+    support::plumb::clean(&out, &map_of(&out), &built.dir);
+    assert_eq!(comment_strings(&out), [ident]);
+}
+
 /// `PT_GNU_RELRO`'s `[start, end)` (`readelf -lW`).
 fn relro(path: &Path) -> (u64, u64) {
     let readelf = tool("readelf").expect("readelf");
@@ -1123,11 +1173,11 @@ fn compressed_debug_is_refused_by_name() {
     let Some((_s, mut built)) = c_program("pipe-gz", &["-O2", "-g", "-gz"]) else { return };
     let out = built.dir.join("z.out");
     // The driver asks for compressed output debug sections too, which is
-    // refused on the command line.
+    // refused on the command line (only `=none` is written, cli.md §4.2).
     let m = mortar(&built, &out, &[], &[]);
     assert_eq!(code(&m), Some(1));
     assert!(
-        m.stderr_text().contains("error: unsupported option: --compress-debug-sections"),
+        m.stderr_text().contains("error: unsupported option value: --compress-debug-sections=z"),
         "{}",
         m.stderr_text()
     );

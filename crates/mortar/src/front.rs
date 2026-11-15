@@ -837,6 +837,8 @@ fn synth_chunks(
         present.push((SynthKind::Strtab, s.strtab_size()));
     }
     present.push((SynthKind::Shstrtab, p.shstrtab.size()));
+    // S-100: mortar's `.comment` piece, after the inputs' strings.
+    present.push((SynthKind::Comment, mortar_synth::COMMENT.len() as u64));
     present.sort_by_key(|c| c.0);
     let chunks = present
         .iter()

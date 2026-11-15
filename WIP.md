@@ -18,6 +18,12 @@
   noops; --warn-common stays refused. options.md blessed; cli.md,
   layout.md L-60, input.md §10.4 amended.
 
+- Histogram: static 91 -> 154 of 189 (scratch bin/hist.py).
+- Item 3: .comment = synthetic chunk 23 (mortar_synth::Comment), S-100.
+- Item 5: refusal kept, measured 11.8% of bl sites padless.
+- Landed record spec/landed/pipeline/WP-027e.md drafted.
+
 ## Next
-- Histogram before/after: scratch bin/hist.py -> hist/{before,after}.txt.
-- Item 3 .comment, item 5 BTI, landed record, gate, full linktest.
+- git merge main (WP-032c/e: image fill, layout); rerun tests; gate
+  (MORTAR_REQUIRE_TOOLS=1 cargo xtask ci --quick); full linktest; fill
+  results into the record; delete WIP.md.

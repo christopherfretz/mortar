@@ -1176,6 +1176,7 @@ impl<'a> Chunks<'a> {
             SynthKind::Shstrtab => link.synth.shstrtab,
             SynthKind::NoteGnuBuildId => link.synth.build_id?,
             SynthKind::NoteGnuProperty => link.synth.property,
+            SynthKind::Comment => &mortar_synth::Comment,
             _ => return None,
         })
     }
