@@ -25,14 +25,14 @@ use mortar_core::hash::HashMap as FixedMap;
 use mortar_core::inputs::{ContentHash, LinkTarget, Reader};
 use mortar_core::par::Pool;
 use mortar_core::plan::{InputFormat, InputSpec, OutputKind, Plan, SymbolRole};
-use mortar_diag::{FileRef, Place, RefusalClass, Severity};
+use mortar_diag::{FileRef, Kind as Dk, Place, RefusalClass, Severity};
 use mortar_elf::Machine;
 use mortar_elf::consts::{EM_386, EM_AARCH64, EM_X86_64, ET_REL};
 use mortar_script::{Command, CommandKind, FileForm, InputItem, Script};
 
 use crate::facts::{
     self, ArchiveFacts, Bad, ElfIdent, Facts, Kind, MemberContent, MemberFacts, ObjectFacts,
-    SharedFacts,
+    SharedFacts, VersionSlots,
 };
 use crate::problem::{Problem, seq};
 use crate::search::{
@@ -48,7 +48,7 @@ pub const MAX_INCLUDE_DEPTH: usize = 10;
 
 /// What the phase reads besides the `Plan` (§4.7).
 #[derive(Clone, Debug)]
-pub struct LoadEnv {
+pub struct WalkEnv {
     pub cwd: PathBuf,
 }
 
@@ -146,6 +146,11 @@ pub struct FileRow<'s> {
     /// A shared object's soname (§8.2) and whether it is `DT_SONAME`.
     pub soname: Option<(Spelled, bool)>,
     pub reader: Reader<'s>,
+    /// A shared object's version slots (for its keys, §6).
+    pub versions: VersionSlots<'s>,
+    /// The `opened` row of the file: its own, or for an archive member its
+    /// archive's (a thin member: its own file's).
+    pub opened: u32,
 }
 
 /// A row of `archives` (§10.3).
@@ -154,6 +159,10 @@ pub struct ArchiveRow {
     pub path: Spelled,
     pub thin: bool,
     pub input: u32,
+    /// Its `opened` row.
+    pub opened: u32,
+    /// The mention's origin.
+    pub origin: Origin,
 }
 
 /// What an opened file was (§10.4 `opened`).
@@ -186,13 +195,10 @@ pub struct Opened {
 /// What a probe was made for (§4.6 `search`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchRef {
-    Argument(u32),
+    /// The `Plan` input of that index (`-l`, `-l:`).
+    Input(u32),
+    /// The script entry of that index (an `INCLUDE` is one too).
     ScriptEntry(u32),
-    /// An `INCLUDE`: the opened script and the command's offset.
-    Include {
-        script: u32,
-        offset: u64,
-    },
     Closure(u32),
 }
 
@@ -201,9 +207,27 @@ pub enum SearchRef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeOutcome {
     Absent,
-    Skipped(String),
+    Skipped(SkipWhy),
     Found(u32),
     Error(Option<i32>),
+}
+
+/// The target of a skipped candidate (§4.4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SkipWhy {
+    /// An ELF file, or an archive's first relocatable member.
+    Elf(ElfIdent),
+    /// A script whose `OUTPUT_FORMAT` names another target.
+    Format(Spelled),
+}
+
+impl std::fmt::Display for SkipWhy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Elf(ident) => f.write_str(&ident.target_name()),
+            Self::Format(name) => f.write_str(&text(name)),
+        }
+    }
 }
 
 /// A row of `probes`.
@@ -498,7 +522,7 @@ impl<'s> Caches<'s> {
 #[must_use]
 pub fn walk<'s>(
     plan: &Plan,
-    env: &LoadEnv,
+    env: &WalkEnv,
     store: &'s Store,
     pool: &Pool,
     options: Options,
@@ -625,7 +649,7 @@ enum Searched<'c, 's> {
         facts: &'c Facts<'s>,
     },
     NotFound {
-        skipped: Vec<(Spelled, String)>,
+        skipped: Vec<(Spelled, SkipWhy)>,
     },
     /// An error was emitted.
     Failed,
@@ -670,7 +694,7 @@ enum LateCheck {
 impl<'c, 's> Walk<'c, 's> {
     fn new(
         plan: &'c Plan,
-        env: &'c LoadEnv,
+        env: &'c WalkEnv,
         store: &'s Store,
         caches: &'c Caches<'s>,
         options: Options,
@@ -792,7 +816,7 @@ impl<'c, 's> Walk<'c, 's> {
                         name.as_bytes(),
                         &dirs,
                         &names,
-                        SearchRef::Argument(m.arg),
+                        SearchRef::Input(m.input),
                     );
                 }
                 InputSpec::LibraryFile(name) => {
@@ -805,7 +829,7 @@ impl<'c, 's> Walk<'c, 's> {
                         name.as_bytes(),
                         &dirs,
                         &names,
-                        SearchRef::Argument(m.arg),
+                        SearchRef::Input(m.input),
                     );
                 }
                 InputSpec::JustSymbols(x) => self.just_symbols(&m, x.as_bytes()),
@@ -899,18 +923,17 @@ impl<'c, 's> Walk<'c, 's> {
     }
 
     /// `incompatible-file` for an ELF ident not of the target (§3.3).
-    fn incompatible(&self, ident: Option<ElfIdent>) -> Option<(String, String)> {
+    fn incompatible(&self, ident: Option<ElfIdent>) -> Option<(Dk, String)> {
         let t = self.target.as_ref()?;
         let ident = ident?;
         if ident.is_of(t.target.machine) {
             return None;
         }
         Some((
-            format!(
-                "incompatible file: {} is expected but got {}",
-                bfd_name(t.target.machine),
-                ident.target_name()
-            ),
+            Dk::IncompatibleFile {
+                expected: bfd_name(t.target.machine).to_owned(),
+                found: ident.target_name(),
+            },
             format!("the target was set by {}", t.by),
         ))
     }
@@ -927,8 +950,12 @@ impl<'c, 's> Walk<'c, 's> {
             ));
             if d.is_empty() {
                 self.problems.push(
-                    Problem::error(l.arg, 0, "invalid-option-value", "-L: invalid value ''")
-                        .at(place),
+                    Problem::error(
+                        l.arg,
+                        0,
+                        Dk::InvalidOptionValue { option: "-L".to_owned(), value: String::new() },
+                    )
+                    .at(place),
                 );
                 continue;
             }
@@ -1009,8 +1036,10 @@ impl<'c, 's> Walk<'c, 's> {
                             Problem::error(
                                 m.arg,
                                 m.seq,
-                                "cannot-open-file",
-                                format!("cannot open {}: Is a directory", text(c)),
+                                Dk::CannotOpenFile {
+                                    path: text(c),
+                                    reason: "Is a directory".to_owned(),
+                                },
                             ),
                         ));
                     }
@@ -1028,8 +1057,7 @@ impl<'c, 's> Walk<'c, 's> {
                             Problem::error(
                                 m.arg,
                                 m.seq,
-                                "cannot-open-file",
-                                format!("cannot open {}: {reason}", text(c)),
+                                Dk::CannotOpenFile { path: text(c), reason: reason.clone() },
                             ),
                         ));
                     }
@@ -1065,8 +1093,10 @@ impl<'c, 's> Walk<'c, 's> {
                                         Problem::warning(
                                             m.arg,
                                             m.seq,
-                                            "skipped-incompatible",
-                                            format!("skipping incompatible {} when searching for {label}", text(c)),
+                                            Dk::SkippedIncompatible {
+                                                path: text(c),
+                                                search: label.clone(),
+                                            },
                                         ),
                                     ));
                                     skipped.push((c.clone(), why));
@@ -1092,10 +1122,10 @@ impl<'c, 's> Walk<'c, 's> {
     /// Why a found candidate is skipped (§4.4): `Some(None)` it is not,
     /// `None` not known yet.
     #[allow(clippy::option_option, reason = "outer None: not known yet")]
-    fn skip_reason(&mut self, path: &[u8], f: &'c Facts<'s>) -> Option<Option<String>> {
+    fn skip_reason(&mut self, path: &[u8], f: &'c Facts<'s>) -> Option<Option<SkipWhy>> {
         let target = self.target.as_ref()?.target.machine;
         if let Some(ident) = f.ident {
-            return Some((!ident.is_of(target)).then(|| ident.target_name()));
+            return Some((!ident.is_of(target)).then_some(SkipWhy::Elf(ident)));
         }
         match &f.kind {
             Kind::Archive(a) => {
@@ -1104,7 +1134,7 @@ impl<'c, 's> Walk<'c, 's> {
                         MemberGot::Pending => return None,
                         MemberGot::Facts { facts, .. } => {
                             if let Some(ident) = facts.ident.filter(|i| i.e_type == ET_REL) {
-                                return Some((!ident.is_of(target)).then(|| ident.target_name()));
+                                return Some((!ident.is_of(target)).then_some(SkipWhy::Elf(ident)));
                             }
                         }
                         MemberGot::Failed(_) => {}
@@ -1118,7 +1148,7 @@ impl<'c, 's> Walk<'c, 's> {
                     if let CommandKind::OutputFormat { default, little, .. } = &c.kind {
                         let name = self.format_in_effect(default, little.as_ref());
                         if search::is_known_bfd(name) && name != bfd_name(target).as_bytes() {
-                            return Some(Some(text(name)));
+                            return Some(Some(SkipWhy::Format(name.into())));
                         }
                     }
                 }
@@ -1161,8 +1191,9 @@ impl<'c, 's> Walk<'c, 's> {
                 let mut p = Problem::error(
                     m.arg,
                     m.seq,
-                    "library-not-found",
-                    format!("cannot find {label}: No such file or directory"),
+                    Dk::LibraryNotFound {
+                        name: label.strip_prefix("-l").unwrap_or(&label).to_owned(),
+                    },
                 );
                 if dirs.is_empty() {
                     p = p.note("the library search path is empty");
@@ -1290,7 +1321,7 @@ impl<'c, 's> Walk<'c, 's> {
                 let k = self.take_k(unit);
                 let opened = self.push_opened(m, &path, OpenedKind::Object);
                 if let Some((msg, note)) = self.incompatible(f.ident) {
-                    let p = Problem::error(unit, seq(k, 0), "incompatible-file", msg).note(note);
+                    let p = Problem::error(unit, seq(k, 0), msg).note(note);
                     self.problems.push(Self::file_problem(m, p, file));
                     return;
                 }
@@ -1325,12 +1356,7 @@ impl<'c, 's> Walk<'c, 's> {
             Kind::Unknown | Kind::NotObject(_) => {
                 let k = self.take_k(unit);
                 self.push_opened(m, &path, OpenedKind::Other);
-                let p = Problem::error(
-                    unit,
-                    seq(k, 0),
-                    "unknown-file-type",
-                    crate::problem::NOT_RECOGNIZED,
-                );
+                let p = Problem::error(unit, seq(k, 0), Dk::UnknownFileType);
                 self.problems.push(Self::file_problem(m, p, file));
             }
         }
@@ -1352,6 +1378,7 @@ impl<'c, 's> Walk<'c, 's> {
     ) {
         let group = self.group_of(&m.state);
         self.link.group.push(group);
+        let opened = u32::try_from(self.link.opened.len().saturating_sub(1)).unwrap_or(u32::MAX);
         self.files.push(FileRow {
             kind: RowKind::Object,
             name,
@@ -1376,6 +1403,8 @@ impl<'c, 's> Walk<'c, 's> {
             hash: ContentHash(0),
             soname: None,
             reader: Reader::Object(o.object),
+            versions: VersionSlots::default(),
+            opened,
         });
     }
 
@@ -1395,18 +1424,13 @@ impl<'c, 's> Walk<'c, 's> {
         let at = seq(k, 0);
         if m.state.link_static {
             self.push_opened(m, &path, OpenedKind::Shared { loaded: false });
-            let p = Problem::error(
-                unit,
-                at,
-                "static-link-of-shared-object",
-                format!("attempted static link of dynamic object {}", text(&path)),
-            );
+            let p = Problem::error(unit, at, Dk::StaticLinkOfSharedObject { path: text(&path) });
             self.problems.push(Self::file_problem(m, p, file));
             return;
         }
         if let Some((msg, note)) = self.incompatible(f.ident) {
             self.push_opened(m, &path, OpenedKind::Shared { loaded: false });
-            let p = Problem::error(unit, at, "incompatible-file", msg).note(note);
+            let p = Problem::error(unit, at, msg).note(note);
             self.problems.push(Self::file_problem(m, p, file));
             return;
         }
@@ -1434,16 +1458,8 @@ impl<'c, 's> Walk<'c, 's> {
             let first = &self.files[self.link.sonames[u].file as usize - 1];
             let same = first.blob == blob || self.store.whole(first.blob) == self.store.whole(blob);
             if !same {
-                let p = Problem::warning(
-                    unit,
-                    at,
-                    "duplicate-soname",
-                    format!(
-                        "DT_SONAME '{}' is already loaded; this file is not used",
-                        text(&soname.0)
-                    ),
-                )
-                .note(format!("loaded from {}", text(&first.path)));
+                let p = Problem::warning(unit, at, Dk::DuplicateSoname { soname: text(&soname.0) })
+                    .note(format!("loaded from {}", text(&first.path)));
                 self.problems.push(Self::file_problem(m, p, file));
             }
             let unit_row = &mut self.link.sonames[u];
@@ -1503,7 +1519,9 @@ impl<'c, 's> Walk<'c, 's> {
             identity,
             hash: ContentHash(0),
             soname: Some(soname),
-            reader: Reader::Shared(self.store.whole(blob)),
+            reader: Reader::Shared(s.dso),
+            versions: s.versions.clone(),
+            opened,
         });
     }
 
@@ -1580,14 +1598,25 @@ impl<'c, 's> Walk<'c, 's> {
         }
         let unit = m.arg;
         let k = self.take_k(unit);
-        self.push_opened(m, path, OpenedKind::Archive);
+        let opened = self.push_opened(m, path, OpenedKind::Archive);
         let archive_file = text(path);
         if let Some((e, _)) = &a.error {
-            let p = Problem::error(unit, seq(k, 0), "malformed-input", e.clone());
+            let p = Problem::error(unit, seq(k, 0), Dk::Malformed { what: e.clone() });
+            self.problems.push(Self::file_problem(m, p, FileRef::new(archive_file.clone())));
+        }
+        if let Some(e) = &a.index_error {
+            let what = format!("the symbol index is malformed and is not used: {e}");
+            let p = Problem::warning(unit, seq(k, 0), Dk::Malformed { what });
             self.problems.push(Self::file_problem(m, p, FileRef::new(archive_file.clone())));
         }
         let id = u32::try_from(self.archives.len()).unwrap_or(u32::MAX);
-        self.archives.push(ArchiveRow { path: path.clone(), thin: a.thin, input: m.input });
+        self.archives.push(ArchiveRow {
+            path: path.clone(),
+            thin: a.thin,
+            input: m.input,
+            opened,
+            origin: m.origin(),
+        });
         let archive_mention = self.mention_ordinal(path);
         let mut ordinals: FixedMap<&[u8], u32> = FixedMap::default();
         for mem in &a.members {
@@ -1608,8 +1637,11 @@ impl<'c, 's> Walk<'c, 's> {
                 }
                 MemberGot::Failed(MemberError::Malformed(text_)) => {
                     let place = FileRef::in_archive(archive_file.clone(), text(mem.name));
-                    let pr =
-                        Problem::error(unit, seq(k, mem.header_offset), "malformed-input", text_);
+                    let pr = Problem::error(
+                        unit,
+                        seq(k, mem.header_offset),
+                        Dk::Malformed { what: text_ },
+                    );
                     self.problems.push(Self::file_problem(m, pr, place));
                     continue;
                 }
@@ -1629,7 +1661,7 @@ impl<'c, 's> Walk<'c, 's> {
             match &facts.kind {
                 Kind::Object(o) => {
                     if let Some((msg, note)) = self.incompatible(facts.ident) {
-                        let p = Problem::error(unit, at, "incompatible-file", msg).note(note);
+                        let p = Problem::error(unit, at, msg).note(note);
                         self.problems.push(Self::file_problem(m, p, display));
                         continue;
                     }
@@ -1659,11 +1691,11 @@ impl<'c, 's> Walk<'c, 's> {
                     );
                 }
                 Kind::NotObject(what) => {
-                    let message = format!("archive member is not a relocatable object: {what}");
+                    let message = Dk::IgnoredMember { what: what.to_string() };
                     let p = if m.state.whole_archive {
-                        Problem::error(unit, at, "ignored-member", message)
+                        Problem::error(unit, at, message)
                     } else {
-                        Problem::warning(unit, at, "ignored-member", message)
+                        Problem::warning(unit, at, message)
                     };
                     self.problems.push(Self::file_problem(m, p, display));
                 }
@@ -1689,10 +1721,7 @@ impl<'c, 's> Walk<'c, 's> {
     fn visit_script(&mut self, m: &Mention, path: &Spelled, blob: Blob, s: &'c facts::ScriptFacts) {
         let unit = m.arg;
         if m.chain.contains(&blob) {
-            let p = Self::mention_problem(
-                m,
-                Problem::error(unit, m.seq, "script-cycle", "linker script names itself"),
-            );
+            let p = Self::mention_problem(m, Problem::error(unit, m.seq, Dk::ScriptCycle));
             self.problems.push(p);
             return;
         }
@@ -1755,15 +1784,15 @@ impl<'c, 's> Walk<'c, 's> {
                 }
                 CommandKind::OutputFormat { default, little, .. } => {
                     let name = self.format_in_effect(default, little.as_ref()).into();
-                    let p = Problem::error(unit, at, "", "").at(place).named_by(&m.named_by);
+                    let p = Problem::error(unit, at, Dk::NoTarget).at(place).named_by(&m.named_by);
                     self.late.push((p, LateCheck::Format(name)));
                 }
                 CommandKind::OutputArch(w) => {
-                    let p = Problem::error(unit, at, "", "").at(place).named_by(&m.named_by);
+                    let p = Problem::error(unit, at, Dk::NoTarget).at(place).named_by(&m.named_by);
                     self.late.push((p, LateCheck::Arch(w.text.clone().into())));
                 }
                 CommandKind::Target(w) => {
-                    let p = Problem::error(unit, at, "", "").at(place).named_by(&m.named_by);
+                    let p = Problem::error(unit, at, Dk::NoTarget).at(place).named_by(&m.named_by);
                     self.late.push((p, LateCheck::Target(w.text.clone().into())));
                 }
                 CommandKind::SearchDir(_) | CommandKind::Include(_) => {}
@@ -1877,9 +1906,15 @@ impl<'c, 's> Walk<'c, 's> {
                         let dirs = self.search_dirs(&dirs_before);
                         candidates.extend(dirs.iter().map(|d| join(d, name)));
                     }
-                    let sref =
-                        SearchRef::Include { script: file.opened, offset: c.span.start as u64 };
+                    let entry = u32::try_from(self.link.script_entries.len()).unwrap_or(u32::MAX);
+                    self.link.script_entries.push(ScriptEntry {
+                        script: file.opened,
+                        offset: c.span.start as u64,
+                        parent: m.entry,
+                    });
+                    let sref = SearchRef::ScriptEntry(entry);
                     let mut sub = m.clone();
+                    sub.entry = Some(entry);
                     sub.place = place.clone();
                     sub.seq = at;
                     sub.named_by = std::iter::once(place.clone()).chain(m.chain_places()).collect();
@@ -1889,11 +1924,10 @@ impl<'c, 's> Walk<'c, 's> {
                             let p = Problem::error(
                                 m.arg,
                                 at,
-                                "cannot-open-file",
-                                format!(
-                                    "cannot open linker script file {}: No such file or directory",
-                                    text(name)
-                                ),
+                                Dk::CannotOpenFile {
+                                    path: text(name),
+                                    reason: "No such file or directory".to_owned(),
+                                },
                             );
                             let p = Self::mention_problem(&sub, p);
                             self.problems.push(p);
@@ -1901,7 +1935,7 @@ impl<'c, 's> Walk<'c, 's> {
                         }
                         Searched::Found { path, blob, facts } => {
                             let k = self.take_k(m.arg);
-                            let opened = self.push_opened(m, &path, OpenedKind::Include);
+                            let opened = self.push_opened(&sub, &path, OpenedKind::Include);
                             let bytes = self.store.whole(blob);
                             let sf = Rc::new(ScriptFile { path: path.clone(), bytes, k, opened });
                             match &facts.kind {
@@ -1933,12 +1967,7 @@ impl<'c, 's> Walk<'c, 's> {
                                 }
                                 Kind::Empty => {}
                                 _ => {
-                                    let p = Problem::error(
-                                        m.arg,
-                                        seq(k, 0),
-                                        "unknown-file-type",
-                                        crate::problem::NOT_RECOGNIZED,
-                                    );
+                                    let p = Problem::error(m.arg, seq(k, 0), Dk::UnknownFileType);
                                     self.problems.push(Self::file_problem(
                                         &sub,
                                         p,
@@ -2066,8 +2095,10 @@ impl<'c, 's> Walk<'c, 's> {
                         let mut p = Problem::error(
                             m.arg,
                             m.seq,
-                            "cannot-open-file",
-                            format!("cannot open {}: No such file or directory", text(name)),
+                            Dk::CannotOpenFile {
+                                path: text(name),
+                                reason: "No such file or directory".to_owned(),
+                            },
                         );
                         if !script_dir.is_empty() {
                             p = p.note(format!("searched {}", text(script_dir)));
@@ -2108,7 +2139,11 @@ impl<'c, 's> Walk<'c, 's> {
 
     /// Whether §8.6 loads the closure, and of which shared objects.
     fn closure_roots(&self) -> Vec<u32> {
-        let all = matches!(self.plan.kind, OutputKind::Executable | OutputKind::PieExecutable);
+        let all = match self.plan.kind {
+            OutputKind::Executable | OutputKind::PieExecutable => true,
+            OutputKind::Shared => self.plan.dynamic.allow_shlib_undefined == Some(false),
+            _ => false,
+        };
         if matches!(self.plan.kind, OutputKind::Relocatable) {
             return Vec::new();
         }
@@ -2196,12 +2231,7 @@ impl<'c, 's> Walk<'c, 's> {
                             let mut p = Problem::warning(
                                 unit,
                                 seq0,
-                                "needed-not-found",
-                                format!(
-                                    "{}, needed by {}, not found (try using -rpath or -rpath-link)",
-                                    text(&name),
-                                    text(&s_path)
-                                ),
+                                Dk::NeededNotFound { name: text(&name), needed_by: text(&s_path) },
                             )
                             .at(Place::File(FileRef::new(text(&s_path))));
                             for d in &dirs {
@@ -2233,8 +2263,10 @@ impl<'c, 's> Walk<'c, 's> {
                 let p = Problem::error(
                     unit,
                     seq(k, 0),
-                    "malformed-input",
-                    "a DT_NEEDED entry names a file that is not a shared object",
+                    Dk::Malformed {
+                        what: "a DT_NEEDED entry names a file that is not a shared object"
+                            .to_owned(),
+                    },
                 )
                 .at(Place::File(FileRef::new(text(&path))));
                 self.problems.push(p);
@@ -2336,12 +2368,7 @@ impl<'c, 's> Walk<'c, 's> {
     fn finish_checks(&mut self) {
         // §3.1 rule 4.
         if self.target.is_none() && !self.plan.inputs.is_empty() {
-            self.problems.push(Problem::error(
-                0,
-                0,
-                "no-target",
-                "target emulation unknown: -m or at least one .o file required",
-            ));
+            self.problems.push(Problem::error(0, 0, Dk::NoTarget));
         }
         // §3.2: the scripts' OUTPUT_FORMAT, OUTPUT_ARCH, TARGET.
         if let Some(t) = &self.target {
@@ -2355,12 +2382,10 @@ impl<'c, 's> Walk<'c, 's> {
                             Problem::error(
                                 template.unit,
                                 template.seq,
-                                "incompatible-file",
-                                format!(
-                                    "incompatible file: {} is expected but got {}",
-                                    bfd_name(machine),
-                                    text(n)
-                                ),
+                                Dk::IncompatibleFile {
+                                    expected: bfd_name(machine).to_owned(),
+                                    found: text(n),
+                                },
                             )
                             .note(format!("the target was set by {}", t.by))
                         } else {
@@ -2379,12 +2404,10 @@ impl<'c, 's> Walk<'c, 's> {
                         Problem::error(
                             template.unit,
                             template.seq,
-                            "incompatible-file",
-                            format!(
-                                "incompatible file: {} is expected but got {}",
-                                arch_name(machine),
-                                text(n)
-                            ),
+                            Dk::IncompatibleFile {
+                                expected: arch_name(machine).to_owned(),
+                                found: text(n),
+                            },
                         )
                         .note(format!("the target was set by {}", t.by)),
                     ),
@@ -2447,8 +2470,10 @@ impl<'c, 's> Walk<'c, 's> {
                     Problem::error(
                         *arg,
                         0,
-                        "invalid-option-value",
-                        format!("--exclude-libs: invalid value '{}'", text(n)),
+                        Dk::InvalidOptionValue {
+                            option: "--exclude-libs".to_owned(),
+                            value: text(n),
+                        },
                     )
                     .at(Place::argument(format!("--exclude-libs {}", text(n))))
                     .note("GNU ld matches an archive name without its .a; lld and mold do not"),
@@ -2523,15 +2548,10 @@ fn script_place(f: &ScriptFile<'_>, offset: usize) -> Place {
 }
 
 fn ambiguous(unit: u32, at: u64, spelling: &str, concatenated: &[u8], joined: &[u8]) -> Problem {
-    Problem::error(
-        unit,
-        at,
-        "ambiguous-sysroot-path",
-        format!("ambiguous sysroot path '{spelling}'"),
-    )
-    .note(format!("GNU ld and mold read it as {}", text(concatenated)))
-    .note(format!("lld reads it as {}", text(joined)))
-    .note("write the directory with a leading '/' after '='")
+    Problem::error(unit, at, Dk::AmbiguousSysrootPath { spelling: spelling.to_owned() })
+        .note(format!("GNU ld and mold read it as {}", text(concatenated)))
+        .note(format!("lld reads it as {}", text(joined)))
+        .note("write the directory with a leading '/' after '='")
 }
 
 /// §13 for a read error.
@@ -2541,28 +2561,31 @@ fn read_problem(unit: u32, at: u64, path: &[u8], e: &ReadError) -> Problem {
         ReadError::Missing => Problem::error(
             unit,
             at,
-            "cannot-open-file",
-            format!("cannot open {p}: No such file or directory"),
+            Dk::CannotOpenFile { path: p, reason: "No such file or directory".to_owned() },
         ),
         ReadError::Os { reason, .. } => {
-            Problem::error(unit, at, "cannot-open-file", format!("cannot open {p}: {reason}"))
+            Problem::error(unit, at, Dk::CannotOpenFile { path: p, reason: reason.clone() })
         }
         ReadError::Directory => Problem::error(
             unit,
             at,
-            "cannot-open-file",
-            format!("cannot open {p}: Is a directory; {}", crate::problem::NOT_RECOGNIZED),
+            Dk::CannotOpenFile {
+                path: p,
+                reason: format!("Is a directory; {}", mortar_diag::NOT_RECOGNIZED),
+            },
         ),
-        ReadError::NotRegular(what) => Problem::error(unit, at, "malformed-input", *what),
-        ReadError::Changed => {
-            Problem::error(unit, at, "input-changed", "file changed while it was read")
+        ReadError::NotRegular(what) => {
+            Problem::error(unit, at, Dk::Malformed { what: (*what).to_owned() })
         }
+        ReadError::Changed => Problem::error(unit, at, Dk::InputChanged),
         ReadError::TooLarge(name) => {
             Problem::refused(unit, at, RefusalClass::Feature, *name, false)
         }
-        ReadError::OutOfRange => {
-            Problem::error(unit, at, "malformed-input", "read past the end of the file")
-        }
+        ReadError::OutOfRange => Problem::error(
+            unit,
+            at,
+            Dk::Malformed { what: "read past the end of the file".to_owned() },
+        ),
     }
 }
 
@@ -2576,7 +2599,9 @@ fn bad_problem(unit: u32, at: u64, b: &Bad) -> Problem {
                 None => p,
             }
         }
-        Bad::Malformed(t) => Problem::new(unit, at, Severity::Error, "malformed-input", t.clone()),
+        Bad::Malformed(t) => {
+            Problem::new(unit, at, Severity::Error, Dk::Malformed { what: t.clone() })
+        }
     }
 }
 

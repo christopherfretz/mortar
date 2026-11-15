@@ -368,7 +368,7 @@ fn s4_6_probes_recorded() {
             ("b/libf.a".to_owned(), ProbeOutcome::Found(0)),
         ]
     );
-    assert!(out.link.probes.iter().all(|p| p.search == SearchRef::Argument(4)));
+    assert!(out.link.probes.iter().all(|p| p.search == SearchRef::Input(0)));
 }
 
 #[test]

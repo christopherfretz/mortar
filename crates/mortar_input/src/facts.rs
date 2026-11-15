@@ -3,13 +3,16 @@
 //! (§12.1). Nothing here depends on the mention that named the file, so a
 //! file named twice is analysed once.
 
+use mortar_core::intern::SymName;
 use mortar_diag::{Diagnostic, RefusalClass};
 use mortar_elf::archive::{self, Archive, Content};
 use mortar_elf::consts::{
     DF_1_PIE, EI_CLASS, EI_DATA, ELFDATA2MSB, EM_386, EM_AARCH64, EM_X86_64, ET_CORE, ET_DYN,
-    ET_EXEC, ET_REL, SHT_GROUP, em_name, et_name,
+    ET_EXEC, ET_REL, SHT_GROUP, STT_SECTION, em_name, et_name,
 };
-use mortar_elf::{Class, Error, FileHeader, Machine, Object, SharedObject};
+use mortar_elf::{
+    Class, Error, FileHeader, Machine, Object, Section, SharedObject, SymbolSection, SymbolTable,
+};
 use mortar_script::Script;
 
 /// The name of the common symbol GCC writes into an LTO object without
@@ -129,6 +132,112 @@ pub struct SharedFacts<'s> {
     pub rpath: Option<&'s [u8]>,
     /// The non-local dynamic symbols.
     pub globals: u32,
+    /// What each version index names (`spec/resolve.md` §9.2), for the
+    /// keys of the dynamic symbols.
+    pub versions: VersionSlots<'s>,
+}
+
+/// What a version index of a shared object names: index `i` is slot `i`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerSlot<'s> {
+    /// No version (`VER_NDX_LOCAL`, `VER_NDX_GLOBAL`, the base definition).
+    None,
+    /// A version the object defines.
+    Defined(&'s [u8]),
+    /// A version the object needs from another.
+    Needed(&'s [u8]),
+}
+
+/// The version slots of a shared object; empty when it has no
+/// `.gnu.version` (every key is then unversioned).
+#[derive(Clone, Debug, Default)]
+pub struct VersionSlots<'s> {
+    pub slots: Box<[VerSlot<'s>]>,
+}
+
+impl<'s> VersionSlots<'s> {
+    /// The key of dynamic symbol `index` named `name` (§6, `spec/model.md`
+    /// §2.3, `spec/resolve.md` §9.2): a hidden defined version or a needed
+    /// version is part of the key; a default one is not.
+    #[must_use]
+    pub fn key(&self, dso: &SharedObject<'s>, index: u32, name: &'s [u8]) -> SymName<'s> {
+        let versym = dso.versym().ok().flatten().and_then(|t| t.get(index as usize));
+        let Some(versym) = versym else { return SymName::plain(name) };
+        match self.slots.get(usize::from(versym.index())) {
+            Some(VerSlot::Defined(v)) if versym.hidden() => SymName::versioned(name, v),
+            Some(VerSlot::Needed(v)) => SymName::versioned(name, v),
+            _ => SymName::plain(name),
+        }
+    }
+}
+
+/// The version slots of `dso`, every global dynamic symbol's index
+/// checked to name exactly one version.
+fn version_slots<'s>(
+    dso: &SharedObject<'s>,
+    table: Option<&SymbolTable<'s>>,
+) -> Result<VersionSlots<'s>, String> {
+    let e = |e: Error| e.to_string();
+    let Some(versym) = dso.versym().map_err(e)? else { return Ok(VersionSlots::default()) };
+    let mut slots: Vec<Option<VerSlot<'s>>> = vec![Some(VerSlot::None), Some(VerSlot::None)];
+    let mut put = |index: u16, slot: VerSlot<'s>| -> Result<(), String> {
+        let i = usize::from(index);
+        if slots.len() <= i {
+            slots.resize(i + 1, None);
+        }
+        if i >= 2 && slots[i].is_some() {
+            return Err(Error::AmbiguousVersionIndex { index }.to_string());
+        }
+        slots[i] = Some(slot);
+        Ok(())
+    };
+    for d in dso.version_definitions().map_err(e)?.into_iter().flatten() {
+        let d = d.map_err(e)?;
+        let slot = if d.is_base() { VerSlot::None } else { VerSlot::Defined(d.name().map_err(e)?) };
+        put(d.index(), slot)?;
+    }
+    for n in dso.version_needs().map_err(e)?.into_iter().flatten() {
+        for entry in n.map_err(e)?.entries().map_err(e)? {
+            let entry = entry.map_err(e)?;
+            put(entry.index(), VerSlot::Needed(entry.name().map_err(e)?))?;
+        }
+    }
+    if let Some(table) = table {
+        if versym.len() < table.len() as usize {
+            return Err(format!(
+                ".gnu.version has {} entries for {} dynamic symbols",
+                versym.len(),
+                table.len()
+            ));
+        }
+        for (index, _) in table.globals() {
+            let v = versym.get(index.0 as usize).map_or(0, mortar_elf::Versym::index);
+            if slots.get(usize::from(v)).copied().flatten().is_none() {
+                return Err(Error::UnknownVersionIndex { symbol: index.0, index: v }.to_string());
+            }
+        }
+    }
+    Ok(VersionSlots { slots: slots.into_iter().map(|s| s.unwrap_or(VerSlot::None)).collect() })
+}
+
+/// The effective signature of a `SHT_GROUP` section (`spec/model.md`
+/// §2.3, `spec/resolve.md` §6.1): its signature symbol's name, or, for an
+/// `STT_SECTION` symbol, the name of the section it refers to.
+pub fn effective_signature<'s>(
+    object: &Object<'s>,
+    table: Option<&SymbolTable<'s>>,
+    group: &Section<'s>,
+) -> Result<&'s [u8], Error> {
+    let group_info = group.group()?;
+    let table = table.ok_or(Error::SectionIndexOutOfRange { index: 0, count: 0 })?;
+    let index = group_info.signature();
+    let sym = table.get(index)?;
+    if sym.sym_type() == STT_SECTION
+        && let SymbolSection::Section(section) = table.section_of(index, &sym)?
+    {
+        return object.section(section)?.name();
+    }
+    table.name(&sym)
 }
 
 /// One ordinary member of an archive (§7.2).
@@ -161,6 +270,8 @@ pub struct ArchiveFacts<'s> {
     pub members: Vec<MemberFacts<'s>>,
     /// The reader's error: `(text, header offset of the member it names)`.
     pub error: Option<(String, Option<u64>)>,
+    /// A malformed symbol index (§7.1: a warning, the index is not used).
+    pub index_error: Option<String>,
 }
 
 impl ArchiveFacts<'_> {
@@ -373,13 +484,7 @@ fn object_facts(object: Object<'_>) -> Kind<'_> {
         if section.sh_type() != SHT_GROUP {
             continue;
         }
-        let signature = section.group().and_then(|group| {
-            let table =
-                table.as_ref().ok_or(Error::SectionIndexOutOfRange { index: 0, count: 0 })?;
-            let sym = table.get(group.signature())?;
-            table.name(&sym)
-        });
-        if let Err(e) = signature {
+        if let Err(e) = effective_signature(&object, table.as_ref(), &section) {
             return Kind::Bad(Bad::Malformed(e.to_string()));
         }
         groups += 1;
@@ -444,19 +549,23 @@ fn shared_facts(bytes: &[u8]) -> Kind<'_> {
         }
     }
     let mut globals = 0u32;
-    match dso.symbols() {
-        Ok(Some(table)) => {
-            for (_, sym) in table.globals() {
-                if let Err(e) = table.name(&sym) {
-                    return malformed(e);
-                }
-                globals += 1;
-            }
-        }
-        Ok(None) => {}
+    let table = match dso.symbols() {
+        Ok(table) => table,
         Err(e) => return malformed(e),
+    };
+    if let Some(table) = &table {
+        for (_, sym) in table.globals() {
+            if let Err(e) = table.name(&sym) {
+                return malformed(e);
+            }
+            globals += 1;
+        }
     }
-    Kind::Shared(Box::new(SharedFacts { dso, soname, needed, runpath, rpath, globals }))
+    let versions = match version_slots(&dso, table.as_ref()) {
+        Ok(v) => v,
+        Err(e) => return Kind::Bad(Bad::Malformed(e)),
+    };
+    Kind::Shared(Box::new(SharedFacts { dso, soname, needed, runpath, rpath, globals, versions }))
 }
 
 /// Lists an archive's ordinary members (§7.1, §7.2); inline members are
@@ -465,13 +574,11 @@ fn archive_facts(bytes: &[u8]) -> ArchiveFacts<'_> {
     let archive = match Archive::parse(bytes) {
         Ok(a) => a,
         Err(e) => {
-            // A malformed symbol index is a warning once `Archive::parse`
-            // can skip it (spec/archive.md change of spec/input.md §17,
-            // WP-020d); until then every reader error is fatal.
             return ArchiveFacts {
                 thin: bytes.starts_with(archive::THIN_MAGIC),
                 members: Vec::new(),
                 error: Some((e.to_string(), None)),
+                index_error: None,
             };
         }
     };
@@ -501,5 +608,9 @@ fn archive_facts(bytes: &[u8]) -> ArchiveFacts<'_> {
             }
         }
     }
-    ArchiveFacts { thin, members, error }
+    let index_error = match archive.symbol_index() {
+        Some(Err(e)) => Some(e.to_string()),
+        _ => None,
+    };
+    ArchiveFacts { thin, members, error, index_error }
 }

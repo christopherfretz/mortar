@@ -10,6 +10,18 @@ const M: &str = "-maarch64linux";
 /// `(kind id, rendered)` of each problem of a line.
 fn diags(s: &Scratch, args: &[&str]) -> Vec<(&'static str, String)> {
     let out = common::run(s.path(), args);
+    for p in &out.problems {
+        // The diagnostic handed to the collector says what the problem
+        // says (§13: the kind's own text, its place, its context).
+        let d = p.diagnostic();
+        assert_eq!(d.id(), p.id());
+        assert_eq!(d.severity(), p.severity());
+        if !matches!(p.body, mortar_input::problem::Body::Parse(_)) {
+            let text = d.render(&mortar_diag::Style::plain("mortar"));
+            assert_eq!(text, format!("mortar: {}\n", p.render()));
+        }
+        assert_eq!(p.key(), mortar_diag::Key::new(20, p.unit, p.seq));
+    }
     out.problems.iter().map(|p| (p.id(), p.render())).collect()
 }
 

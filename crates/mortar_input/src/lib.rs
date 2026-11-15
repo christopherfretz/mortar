@@ -8,7 +8,11 @@
 //!   analysis the walk consumes (§6, §7.1, §8.1).
 #![forbid(unsafe_code)]
 
+pub use load::{LoadEnv, load};
+pub use store::{Store, StorePolicy};
+
 pub mod facts;
+pub mod load;
 pub mod problem;
 pub mod search;
 pub mod store;

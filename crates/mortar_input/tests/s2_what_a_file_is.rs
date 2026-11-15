@@ -223,7 +223,7 @@ fn s2_5_fifo_not_opened() {
     let store = mortar_input::store::Store::new(mortar_input::store::StorePolicy::Resident);
     let out = mortar_input::walk::walk(
         &common::plan(&["-maarch64linux", "p"]),
-        &mortar_input::walk::LoadEnv { cwd: s.path().to_path_buf() },
+        &mortar_input::walk::WalkEnv { cwd: s.path().to_path_buf() },
         &store,
         &mortar_core::par::Pool::sequential(),
         mortar_input::walk::Options::default(),

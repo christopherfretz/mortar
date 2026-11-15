@@ -52,7 +52,6 @@ fn s7_1_archive_mentions_get_ids() {
 }
 
 #[test]
-#[ignore = "expected-fail: Archive::parse rejects a malformed symbol index until WP-020d (spec/input.md §17)"]
 fn s7_1_malformed_index_warns() {
     let s = Scratch::new("s7badidx");
     if !common::have(&["native"]) {

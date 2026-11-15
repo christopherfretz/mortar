@@ -9,7 +9,7 @@ use std::time::Duration;
 use mortar_core::par::Pool;
 use mortar_core::plan::Plan;
 use mortar_input::store::{Store, StorePolicy};
-use mortar_input::walk::{LoadEnv, Loaded, Options, walk};
+use mortar_input::walk::{Loaded, Options, WalkEnv, walk};
 
 /// The plan of a command line (no program name).
 pub fn plan<S: AsRef<OsStr>>(args: &[S]) -> Plan {
@@ -21,7 +21,7 @@ pub fn plan<S: AsRef<OsStr>>(args: &[S]) -> Plan {
 /// as the test.
 pub fn run_plan(cwd: &Path, plan: &Plan, options: Options, pool: &Pool) -> Loaded<'static> {
     let store: &'static Store = Box::leak(Box::new(Store::new(StorePolicy::Resident)));
-    walk(plan, &LoadEnv { cwd: cwd.to_path_buf() }, store, pool, options)
+    walk(plan, &WalkEnv { cwd: cwd.to_path_buf() }, store, pool, options)
 }
 
 /// [`run_plan`] on a command line, sequentially.

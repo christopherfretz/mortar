@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use mortar_core::hash::{combine, hash_bytes, hash_u64};
-use mortar_core::inputs::ContentHash;
+use mortar_core::inputs::{self, ContentHash};
 use mortar_core::par::Pool;
 use mortar_diag::os_reason;
 
@@ -211,6 +211,9 @@ struct Entry {
 
 const SEGMENTS: usize = 32;
 
+/// One kept string's slot.
+type Kept = OnceLock<Box<[u8]>>;
+
 /// The store. `Sync`, append-only.
 pub struct Store {
     policy: StorePolicy,
@@ -219,6 +222,10 @@ pub struct Store {
     by_inode: Mutex<HashMap<(u64, u64), Blob>>,
     hooks: Hooks,
     counters: Counters,
+    /// Bytes the tables borrow that are no file's: found paths, member
+    /// names of thin archives (§1: `Inputs<'s>` borrows from the store).
+    kept: [OnceLock<Box<[Kept]>>; SEGMENTS],
+    kept_len: AtomicU32,
 }
 
 #[derive(Default)]
@@ -266,6 +273,8 @@ impl Store {
             by_inode: Mutex::new(HashMap::new()),
             hooks,
             counters: Counters::default(),
+            kept: std::array::from_fn(|_| OnceLock::new()),
+            kept_len: AtomicU32::new(0),
         }
     }
 
@@ -282,11 +291,19 @@ impl Store {
     }
 
     fn entry(&self, b: Blob) -> &Entry {
-        let (k, slot) = locate(b.0);
-        self.segments[k]
-            .get()
-            .and_then(|segment| segment[slot].get())
+        self.try_entry(b.0)
             .unwrap_or_else(|| unreachable!("blob {} was handed out by this store", b.0))
+    }
+
+    fn try_entry(&self, index: u32) -> Option<&Entry> {
+        let (k, slot) = locate(index);
+        self.segments.get(k)?.get().and_then(|segment| segment.get(slot)?.get())
+    }
+
+    /// The model's handle of a blob (`spec/model.md` §3.2 `FileBytes`).
+    #[must_use]
+    pub const fn model_blob(b: Blob) -> inputs::Blob {
+        inputs::Blob(b.0)
     }
 
     fn insert(&self, entry: Entry) -> Blob {
@@ -299,6 +316,21 @@ impl Store {
             unreachable!("blob slot {index} filled twice");
         }
         Blob(index)
+    }
+
+    /// Keeps `bytes` for as long as the store lives (append-only, like
+    /// the blobs).
+    ///
+    /// # Panics
+    ///
+    /// After 2^32 - 1 calls.
+    pub fn keep(&self, bytes: &[u8]) -> &[u8] {
+        let index = self.kept_len.fetch_add(1, Ordering::AcqRel);
+        assert!(index < u32::MAX, "more than 2^32 - 1 kept strings");
+        let (k, slot) = locate(index);
+        let segment =
+            self.kept[k].get_or_init(|| (0..1usize << k).map(|_| OnceLock::new()).collect());
+        segment[slot].get_or_init(|| bytes.into())
     }
 
     /// The size of the blob's file.
@@ -705,6 +737,33 @@ fn fold_hash(len: u64, blocks: impl Iterator<Item = u64>) -> ContentHash {
         hi = combine(h, hi);
     }
     ContentHash((u128::from(hi) << 64) | u128::from(lo))
+}
+
+/// What the tables read through (`spec/model.md` §1, `InputStore`): a
+/// handle this store did not give out, or a range outside its file, is
+/// `None` or `OutOfRange`, never a panic.
+impl inputs::InputStore for Store {
+    fn resident(&self, blob: inputs::Blob, range: Range<u64>) -> Option<&[u8]> {
+        let bytes = &self.try_entry(blob.0)?.bytes;
+        let lo = usize::try_from(range.start).ok()?;
+        let hi = usize::try_from(range.end).ok()?;
+        bytes.get(lo..hi)
+    }
+
+    fn copy_to(
+        &self,
+        blob: inputs::Blob,
+        range: Range<u64>,
+        out: &mut [u8],
+    ) -> Result<(), inputs::CopyError> {
+        let bytes =
+            inputs::InputStore::resident(self, blob, range).ok_or(inputs::CopyError::OutOfRange)?;
+        if bytes.len() != out.len() {
+            return Err(inputs::CopyError::OutOfRange);
+        }
+        out.copy_from_slice(bytes);
+        Ok(())
+    }
 }
 
 /// The content hash of `bytes`, as the store computes it while reading.

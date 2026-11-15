@@ -139,7 +139,7 @@ fn s11_5_changed_is_one_diagnostic_at_the_lowest_mention() {
     let plan = common::plan(&["-maarch64linux", "f.o", "./f.o", "f.o"]);
     let out = mortar_input::walk::walk(
         &plan,
-        &mortar_input::walk::LoadEnv { cwd: s.path().to_path_buf() },
+        &mortar_input::walk::WalkEnv { cwd: s.path().to_path_buf() },
         store,
         &Pool::new(2),
         Options::default(),
@@ -170,7 +170,7 @@ fn s11_4_descriptor_bound() {
         let store: &'static Store = Box::leak(Box::new(Store::new(StorePolicy::Resident)));
         let out = mortar_input::walk::walk(
             &common::plan(&args),
-            &mortar_input::walk::LoadEnv { cwd: s.path().to_path_buf() },
+            &mortar_input::walk::WalkEnv { cwd: s.path().to_path_buf() },
             store,
             &Pool::new(threads),
             Options::default(),

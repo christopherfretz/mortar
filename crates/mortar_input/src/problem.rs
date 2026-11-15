@@ -1,14 +1,14 @@
 //! The diagnostics of the phase (`spec/input.md` §13), before they become
 //! `mortar_diag` diagnostics.
 //!
-//! Stage A of WP-021: most kinds of §13 are new (`spec/input.md` §17,
-//! WP-020d), so a problem carries its kind id, severity and exact text
-//! here; stage B maps each onto its `mortar_diag::Kind`. Problems are
-//! ordered as a `Collector` orders diagnostics: by key, then by text.
+//! A problem is a diagnostic with its key: its `mortar_diag::Kind` (the
+//! text is the kind's, `spec/diag.md` §3.1), place and context lines.
+//! Problems are ordered as a `Collector` orders diagnostics: by key, then
+//! by text; [`Problem::diagnostic`] and [`Problem::key`] hand them over.
 
 use std::fmt::Write as _;
 
-use mortar_diag::{Context, Diagnostic, Place, RefusalClass, Relation, Severity};
+use mortar_diag::{Context, Diagnostic, Key, Kind, Place, RefusalClass, Relation, Severity};
 
 /// Phase 20 (`spec/model.md` §8).
 pub const PHASE: u16 = 20;
@@ -23,8 +23,8 @@ pub const fn seq(k: u32, offset: u64) -> u64 {
 /// What a problem says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Body {
-    /// A diagnostic of this phase: its kind id (§13), its text.
-    Own { severity: Severity, id: &'static str, message: String },
+    /// A diagnostic of this phase (§13).
+    Own { severity: Severity, kind: Kind },
     /// A refusal by name (§14): `unsupported {noun}: {name}`, and GNU ld's
     /// phrase after it where §13 says so.
     Refused { class: RefusalClass, name: String, gnu_phrase: bool },
@@ -44,38 +44,23 @@ pub struct Problem {
     pub context: Vec<Context>,
 }
 
-/// The GNU ld phrase §13 adds to some messages.
-pub const NOT_RECOGNIZED: &str = "file not recognized: file format not recognized";
-
 impl Problem {
     /// A problem of the phase's own kinds.
     #[must_use]
-    pub fn new(
-        unit: u32,
-        seq: u64,
-        severity: Severity,
-        id: &'static str,
-        message: impl Into<String>,
-    ) -> Self {
-        Self {
-            unit,
-            seq,
-            body: Body::Own { severity, id, message: message.into() },
-            place: None,
-            context: Vec::new(),
-        }
+    pub fn new(unit: u32, seq: u64, severity: Severity, kind: Kind) -> Self {
+        Self { unit, seq, body: Body::Own { severity, kind }, place: None, context: Vec::new() }
     }
 
     /// An error.
     #[must_use]
-    pub fn error(unit: u32, seq: u64, id: &'static str, message: impl Into<String>) -> Self {
-        Self::new(unit, seq, Severity::Error, id, message)
+    pub fn error(unit: u32, seq: u64, kind: Kind) -> Self {
+        Self::new(unit, seq, Severity::Error, kind)
     }
 
     /// A warning.
     #[must_use]
-    pub fn warning(unit: u32, seq: u64, id: &'static str, message: impl Into<String>) -> Self {
-        Self::new(unit, seq, Severity::Warning, id, message)
+    pub fn warning(unit: u32, seq: u64, kind: Kind) -> Self {
+        Self::new(unit, seq, Severity::Warning, kind)
     }
 
     /// A refusal by name.
@@ -127,7 +112,7 @@ impl Problem {
     #[must_use]
     pub fn id(&self) -> &'static str {
         match &self.body {
-            Body::Own { id, .. } => id,
+            Body::Own { kind, .. } => kind.id(),
             Body::Refused { .. } => "refused",
             Body::Parse(d) => d.id(),
         }
@@ -153,11 +138,11 @@ impl Problem {
     #[must_use]
     pub fn message(&self) -> String {
         match &self.body {
-            Body::Own { message, .. } => message.clone(),
+            Body::Own { severity, kind } => head_message(&Diagnostic::new(*severity, kind.clone())),
             Body::Refused { class, name, gnu_phrase } => {
                 let mut s = format!("unsupported {}: {name}", class.noun());
                 if *gnu_phrase {
-                    let _ = write!(s, "; {NOT_RECOGNIZED}");
+                    let _ = write!(s, "; {}", mortar_diag::NOT_RECOGNIZED);
                 }
                 s
             }
@@ -190,6 +175,46 @@ impl Problem {
             }
         }
         out
+    }
+}
+
+/// The message of a diagnostic's head line, as `mortar_diag` renders it.
+fn head_message(d: &Diagnostic) -> String {
+    let line = d.render(&mortar_diag::Style::plain("p"));
+    let line = line.lines().next().unwrap_or_default();
+    let rest = line.split_once(": ").map_or(line, |(_, r)| r);
+    rest.split_once(": ").map_or(rest, |(_, r)| r).to_owned()
+}
+
+impl Problem {
+    /// The key (§12.2): phase 20, the argument index, the position.
+    #[must_use]
+    pub fn key(&self) -> Key {
+        Key::new(PHASE, self.unit, self.seq)
+    }
+
+    /// The `mortar_diag` diagnostic (§13).
+    #[must_use]
+    pub fn diagnostic(&self) -> Diagnostic {
+        let mut d = match &self.body {
+            Body::Own { severity, kind } => Diagnostic::new(*severity, kind.clone()),
+            Body::Refused { class, name, gnu_phrase } => Diagnostic::error(Kind::Refused {
+                class: *class,
+                name: name.clone(),
+                not_recognized: *gnu_phrase,
+            }),
+            Body::Parse(d) => return (**d).clone(),
+        };
+        if let Some(place) = &self.place {
+            d = d.at(place.clone());
+        }
+        for c in &self.context {
+            d = match c {
+                Context::At(r, p) => d.with(*r, p.clone()),
+                Context::Note(n) => d.note(n.clone()),
+            };
+        }
+        d
     }
 }
 

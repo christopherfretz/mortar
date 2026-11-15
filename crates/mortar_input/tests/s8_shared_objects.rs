@@ -330,6 +330,33 @@ fn s8_6_when_loaded() {
         &["-shared", "-maarch64linux", "dg/libg.so", "-rpath-link", "hid"],
     );
     assert_eq!(shared.files.len(), 1);
+    let checked = common::run_closure(
+        s.path(),
+        &[
+            "-shared",
+            "-maarch64linux",
+            "--no-allow-shlib-undefined",
+            "dg/libg.so",
+            "-rpath-link",
+            "hid",
+            "-L.",
+        ],
+    );
+    assert_eq!(checked.files.len(), 3, "{:?}", common::report(&checked));
+    let pie = common::run_closure(
+        s.path(),
+        &[
+            "-pie",
+            "-maarch64linux",
+            "-dynamic-linker",
+            "/l",
+            "dg/libg.so",
+            "-rpath-link",
+            "hid",
+            "-L.",
+        ],
+    );
+    assert_eq!(pie.files.len(), 3, "{:?}", common::report(&pie));
     let copy = common::run_closure(
         s.path(),
         &[
@@ -409,4 +436,211 @@ fn s8_6_closure_satisfied_by_walk() {
     // edge `libh.so` is not satisfied by it and is searched.
     let out = common::run_closure(s.path(), &args(&["dg/libg.so", "hid/libh.so", "libz.so.9"]));
     assert_eq!(common::ids(&out), ["needed-not-found"]);
+}
+
+/// `libg.so` (in `d4`, `DT_RUNPATH` `runpath`) needs `libz.so.9`; a copy
+/// of `libz.so.9` in each of `d1` .. `d5`.
+fn search_fixture(s: &Scratch, runpath: &str) -> bool {
+    for d in ["d1", "d2", "d3", "d4", "d5", "z"] {
+        std::fs::create_dir_all(s.join(d)).unwrap();
+    }
+    if !so(&s.join("z"), "libz.so.9", "int z(void){return 9;}\n", &["-Wl,-soname,libz.so.9"]) {
+        return false;
+    }
+    let z = format!("-L{}", s.join("z").display());
+    let rp = format!("-Wl,--enable-new-dtags,-rpath,{runpath}");
+    so(
+        &s.join("d4"),
+        "libg.so",
+        "extern int z(void);\nint g(void){return z();}\n",
+        &[&z, "-Wl,--no-as-needed", "-l:libz.so.9", &rp],
+    );
+    for d in ["d1", "d2", "d3", "d5"] {
+        std::fs::copy(s.join("z/libz.so.9"), s.join(d).join("libz.so.9")).unwrap();
+    }
+    std::fs::rename(s.join("z/libz.so.9"), s.join("d4/libz.so.9")).unwrap();
+    true
+}
+
+/// The found path of the closure file.
+fn found(out: &mortar_input::walk::Loaded<'_>) -> String {
+    assert!(out.problems.is_empty(), "{:?}", common::report(out));
+    common::names(out).last().cloned().unwrap_or_default()
+}
+
+#[test]
+fn s8_6_closure_search_order() {
+    let s = Scratch::new("s8order");
+    let d3 = s.join("d3").display().to_string();
+    if !search_fixture(&s, &d3) {
+        return;
+    }
+    let line = args(&["d4/libg.so", "-rpath-link", "d1", "-rpath", "d2", "-Ld5"]);
+    // Each step shadows the next: remove the file a step found, and the
+    // next step finds its own.
+    let mut want = vec![
+        "d1/libz.so.9".to_owned(),
+        "d2/libz.so.9".to_owned(),
+        format!("{d3}/libz.so.9"),
+        "d4/libz.so.9".to_owned(),
+        "d5/libz.so.9".to_owned(),
+    ];
+    want.reverse();
+    while let Some(w) = want.pop() {
+        let out = common::run_closure(s.path(), &line);
+        assert_eq!(found(&out), w);
+        std::fs::remove_file(s.join(&w)).unwrap();
+    }
+    let out = common::run_closure(s.path(), &line);
+    assert_eq!(common::ids(&out), ["needed-not-found"]);
+}
+
+#[test]
+fn s8_6_sysroot_applied() {
+    let s = Scratch::new("s8sysroot");
+    if !search_fixture(&s, "/d3") {
+        return;
+    }
+    let root = s.path().display().to_string();
+    let sysroot = format!("--sysroot={root}");
+    // An absolute DT_RUNPATH entry is a target path: inside the sysroot.
+    std::fs::remove_file(s.join("d4/libz.so.9")).unwrap();
+    let out = common::run_closure(s.path(), &args(&[&sysroot, "d4/libg.so"]));
+    assert_eq!(found(&out), format!("{root}/d3/libz.so.9"));
+    // `=` in -rpath-link is inside the sysroot; a plain directory is not.
+    let out =
+        common::run_closure(s.path(), &args(&[&sysroot, "d4/libg.so", "-rpath-link", "=/d1"]));
+    assert_eq!(found(&out), format!("{root}/d1/libz.so.9"));
+    let out = common::run_closure(s.path(), &args(&[&sysroot, "d4/libg.so", "-rpath-link", "d2"]));
+    assert_eq!(found(&out), "d2/libz.so.9");
+}
+
+#[test]
+fn s8_6_skip_applies() {
+    let s = Scratch::new("s8skip");
+    if !common::have(&["x86"]) || !search_fixture(&s, "/nonexistent") {
+        return;
+    }
+    std::fs::remove_file(s.join("d1/libz.so.9")).unwrap();
+    common::cc(
+        &s.join("d1"),
+        "x86",
+        "libz.so.9",
+        "int z(void){return 9;}\n",
+        &["-shared", "-fPIC", "-nostdlib", "-Wl,-soname,libz.so.9"],
+    );
+    let out = common::run_closure(s.path(), &args(&["d4/libg.so", "-rpath-link", "d1:d2"]));
+    assert_eq!(
+        common::report(&out),
+        ["warning: d4/libg.so: skipping incompatible d1/libz.so.9 when searching for libz.so.9"],
+    );
+    assert_eq!(common::names(&out).last().unwrap(), "d2/libz.so.9");
+}
+
+#[test]
+fn s8_6_as_needed_objects_have_closures() {
+    let s = Scratch::new("s8asneeded");
+    if !closure_fixture(&s, &[]) {
+        return;
+    }
+    // libg.so may turn out unneeded: its closure is loaded all the same.
+    let out = common::run_closure(
+        s.path(),
+        &args(&["--as-needed", "dg/libg.so", "-rpath-link", "hid", "-L."]),
+    );
+    assert!(out.problems.is_empty(), "{:?}", common::report(&out));
+    assert_eq!(common::names(&out), ["dg/libg.so", "hid/libh.so", "./libz.so.9"]);
+    assert!(out.files[0].state.as_needed);
+}
+
+/// The `found N at P` lines of GNU ld's `--verbose`: `N` and `P`'s real
+/// path.
+fn gnu_found(
+    ld: &std::path::Path,
+    args: &[std::ffi::OsString],
+    dir: &std::path::Path,
+) -> Vec<(String, std::path::PathBuf)> {
+    let mut a = args.to_vec();
+    a.push("--verbose".into());
+    let o = common::tool_run(ld, &a, dir);
+    assert!(o.success(), "{}", o.stderr_text());
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    let mut out: Vec<(String, std::path::PathBuf)> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("found "))
+        .filter_map(|l| l.split_once(" at "))
+        .map(|(n, p)| (n.to_owned(), std::fs::canonicalize(p).unwrap()))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[test]
+fn s8_6_system_lines() {
+    let s = Scratch::new("s8system");
+    let cout = "#include <iostream>\nint main(){std::cout << 1;}\n";
+    let elf =
+        "extern unsigned elf_version(unsigned);\nint main(void){return (int)elf_version(1);}\n";
+    // [E29]: driver, ld.bfd, source, the driver's extra arguments.
+    let lines: [(&str, &str, &str, &str, &[&str]); 4] = [
+        ("g++", "ld.bfd", "e.cc", cout, &[]),
+        ("x86_64-linux-gnu-g++", "x86_64-linux-gnu-ld.bfd", "e.cc", cout, &[]),
+        ("i686-linux-gnu-g++", "i686-linux-gnu-ld.bfd", "e.cc", cout, &[]),
+        ("gcc", "ld.bfd", "e.c", elf, &["-l:libelf.so.1"]),
+    ];
+    let mut checked = 0;
+    for (driver, bfd, src, text, extra) in lines {
+        let (Some(d), Some(ld)) = (common::need(driver), common::need(bfd)) else { continue };
+        let w = s.join(driver);
+        std::fs::create_dir_all(&w).unwrap();
+        std::fs::write(w.join(src), text).unwrap();
+        let c = common::tool_run(&d, &["-c".into(), src.into(), "-o".into(), "e.o".into()], &w);
+        assert!(c.success(), "{driver}: {}", c.stderr_text());
+        let mut a = vec!["e.o"];
+        a.extend_from_slice(extra);
+        a.extend(["-o", "a.out"]);
+        let Some(args) = common::driver_link_args(&d, &a, &w) else { continue };
+        let gnu = gnu_found(&ld, &args, &w);
+        let out = common::run_closure(&w, &args);
+        assert!(!out.failed(), "{driver}: {:?}", common::report(&out));
+        // Every edge GNU ld searched for is satisfied by the same file.
+        // (Its `found` lines include `-l` searches through scripts, such
+        // as `libm.so`: only `DT_NEEDED` names are edges.)
+        let mut ours: Vec<(String, std::path::PathBuf)> = Vec::new();
+        for e in &out.link.closure {
+            let Some(f) = e.satisfied else { continue };
+            let row = &out.files[f as usize - 1];
+            ours.push((
+                String::from_utf8_lossy(&e.name).into_owned(),
+                std::fs::canonicalize(w.join(
+                    <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&row.path),
+                ))
+                .unwrap(),
+            ));
+        }
+        for (n, p) in gnu.iter().filter(|(n, _)| n.contains(".so.")) {
+            assert!(
+                ours.iter().any(|(m, q)| m == n && q == p),
+                "{driver}: {n} at {}: ours {ours:?}",
+                p.display()
+            );
+        }
+        // And no closure file is one GNU ld did not find.
+        for row in out.files.iter().filter(|r| r.origin.edge.is_some()) {
+            let name = row
+                .soname
+                .as_ref()
+                .map(|s| String::from_utf8_lossy(&s.0).into_owned())
+                .unwrap_or_default();
+            assert!(
+                gnu.iter().any(|(n, _)| *n == name),
+                "{driver}: closure file {name} not found by GNU ld"
+            );
+        }
+        checked += 1;
+    }
+    if std::env::var_os("MORTAR_REQUIRE_TOOLS").is_some() {
+        assert_eq!(checked, 4, "every line of [E29] runs");
+    }
 }

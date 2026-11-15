@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use mortar_core::par::Pool;
 use mortar_input::store::{Store, StorePolicy};
-use mortar_input::walk::{LoadEnv, Options, Timing, walk};
+use mortar_input::walk::{Options, Timing, WalkEnv, walk};
 
 fn status(key: &str) -> String {
     std::fs::read_to_string("/proc/self/status")
@@ -44,7 +44,7 @@ fn child(dir: &Path, threads: usize, runs: usize) {
     let text = std::fs::read_to_string(dir.join("response.txt")).expect("response.txt");
     let args: Vec<OsString> = text.lines().filter(|l| !l.is_empty()).map(OsString::from).collect();
     let plan = mortar_cli::parse(&args).plan;
-    let env = LoadEnv { cwd: dir.join("build") };
+    let env = WalkEnv { cwd: dir.join("build") };
     let pool = Pool::new(threads);
     let load_before = loadavg();
     let mut times = Vec::new();
