@@ -316,12 +316,12 @@ impl Cx {
     /// which must find nothing (`docs/VALIDATION.md` L3, WP-035).
     fn mortar(&self, args: &[&str]) -> Outcome {
         let out = args.windows(2).filter(|w| w[0] == "-o").map(|w| w[1]).next_back();
-        let mut argv: Vec<OsString> = args.iter().map(OsString::from).collect();
+        let mut words: Vec<OsString> = args.iter().map(OsString::from).collect();
         let map = out.map(|o| self.scratch.join(format!("{o}.mortar-map")));
         if let Some(map) = &map {
-            argv.push(format!("--mortar-map={}", map.display()).into());
+            words.push(format!("--mortar-map={}", map.display()).into());
         }
-        let o = self.run_in(Path::new(MORTAR), &argv);
+        let o = self.run_in(Path::new(MORTAR), &words);
         if let (Some(out), Some(map), true) = (out, &map, o.success()) {
             let out = self.scratch.join(out);
             if out.exists() {
