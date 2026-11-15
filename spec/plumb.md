@@ -840,7 +840,12 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
 - **S6.** No two sections overlap. In memory this covers allocated
   sections other than `.tbss`. In the file it covers sections with bytes,
   the file header, the program header table and the section header table.
-- **S7.** `e_entry` lies in an executable `PT_LOAD`.
+- **S7.** `e_entry` lies in an executable `PT_LOAD`, or is 0. A 0 is the
+  gABI's "no associated entry point": a link with no entry symbol warns
+  (`entry-not-found`) and writes 0 (`spec/layout.md` L-103, a binding
+  ruling), and the verifier, which does not see the link's diagnostics,
+  accepts the 0 whatever the reason (WP-028b). S7 judges `ET_EXEC` only:
+  a shared object or `-r` output has no entry rule here (L-104).
 - **S8.** Every `.symtab` symbol defined in an allocated section, with
   `st_size > 0` and not `STT_SECTION`, lies within its section:
   `[st_value, st_value + st_size] ⊆ [sh_addr, sh_addr + sh_size]`. For a

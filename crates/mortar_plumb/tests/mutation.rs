@@ -355,8 +355,12 @@ fn s9_2e_each_structure_rule_is_enforced() {
         expect_rule(&mutate(&|m| put32(m, exec.0 + 4, exec.2 & !1)), "S5", &what);
         // S6: two sections in the same memory.
         expect_rule(&mutate(&|m| put64(m, data.0 + 16, text.4)), "S6", &what);
-        // S7: the entry point outside the code.
-        expect_rule(&mutate(&|m| put64(m, 24, 0)), "S7", &what);
+        // S7: the entry point outside the code (the data). An entry of 0
+        // means "no entry point" (gABI) and is not a finding (WP-028b).
+        expect_rule(&mutate(&|m| put64(m, 24, data.4)), "S7", &what);
+        expect_rule(&mutate(&|m| put64(m, 24, 1)), "S7", &what);
+        let r = mutate(&|m| put64(m, 24, 0));
+        assert!(r.with_rule("S7").next().is_none(), "{what}: e_entry 0 is S7\n{}", r.render("o"));
         // S8: a sized symbol outside its section.
         let msg = symtab_entries(o, &["msg"])[0].1;
         expect_rule(

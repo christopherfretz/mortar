@@ -224,8 +224,10 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
             end = Some((*stop, what));
         }
     }
-    // S7: the entry point is in an executable segment.
-    if h.e_type == ET_EXEC {
+    // S7: the entry point is in an executable segment, or is 0: the gABI's
+    // "no associated entry point" (a link with no entry symbol warns and
+    // writes 0, spec/layout.md L-103).
+    if h.e_type == ET_EXEC && h.e_entry != 0 {
         match image.load_of(h.e_entry, 4) {
             Some(p) if p.p_flags & PF_X != 0 => {}
             _ => out.push(
