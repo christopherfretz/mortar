@@ -6,7 +6,7 @@ Experiment dir: `/tmp/mortar-wp030r-EYWFOo` (remove by explicit path at the end)
 
 | # | finding | state |
 |---|---|---|
-| 1 | T1 any destination register; unmatched GOTDESC refused; form matcher over both corpora | todo |
+| 1 | T1 any destination register; unmatched GOTDESC refused; form matcher over both corpora (0 unmatched) | done |
 | 2 | X86-13: delete the moffs reading; GOT32 at non-exec place refused; prefix note | todo |
 | 3 | max_reach (3, 6); Facts.seq_leads = [18, 19]; R-3 | todo |
 | 4 | REL addends for non-resident bodies: new request to image.md/arch.md | todo |
