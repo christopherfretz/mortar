@@ -605,6 +605,66 @@ pub struct Diagnostics {
     /// `--warn-common` (until `--no-warn-common`): report the common-symbol
     /// kinds (`spec/resolve.md` §3.3).
     pub warn_common: bool,
+    /// The one-definition-rule checks (`spec/odr.md` O-40, O-41, O-44).
+    pub odr: Odr,
+}
+
+/// The one-definition-rule switches (`spec/odr.md` §9.2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Odr {
+    /// `--odr=`, `--no-odr-check`; the last one given wins.
+    pub mode: OdrMode,
+    /// `--odr-check-archives` (O-23): also compare archive members that
+    /// are not linked. Its row stays `refused` until WP-075/WP-076.
+    pub check_archives: bool,
+    /// `--odr-table=` (O-50). Its row stays `refused` until WP-075/WP-076.
+    pub table: OdrTable,
+    /// `--odr-stats` (O-44): one line to standard error.
+    pub stats: bool,
+    /// `--keep-mason-meta` (`spec/meta.md` MT-32): keep the Mason metadata in the output.
+    /// Its row stays `refused` until WP-075/WP-076.
+    pub keep_meta: bool,
+}
+
+/// `--odr-table=` (`spec/odr.md` O-50, `spec/cli.md` §3.9).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OdrTable {
+    /// `off`, the default: no table is written.
+    #[default]
+    Off,
+    /// `exported`.
+    Exported,
+    /// `full`.
+    Full,
+}
+
+/// `--odr=` (`spec/odr.md` O-40, O-41).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OdrMode {
+    /// `--odr=warn`, the default: the checks O-47 lists as on run, and
+    /// their findings are warnings.
+    #[default]
+    Warn,
+    /// `--odr=error`: as `Warn`, with the record-based findings errors.
+    Error,
+    /// `--odr=strict`: every check runs.
+    Strict,
+    /// `--odr=off`, `--no-odr-check`: no check runs and no container byte
+    /// is read (O-42).
+    Off,
+}
+
+impl OdrMode {
+    /// The word of `--odr=`.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Warn => "warn",
+            Self::Error => "error",
+            Self::Strict => "strict",
+            Self::Off => "off",
+        }
+    }
 }
 
 /// When diagnostics are colored.

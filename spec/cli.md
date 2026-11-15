@@ -481,6 +481,11 @@ lands in `plan.other` (§3.12).
   `--warn-backrefs-exclude` stays in `other`;
 - `warn_common`: `--warn-common` until `--no-warn-common` (the common
   kinds, `spec/resolve.md` §3.3).
+- `odr` (M6, `spec/odr.md` O-40, O-41): the mode, `--odr=warn|error|
+  strict|off` (default `warn`; `--no-odr-check` is `off`);
+  `check_archives` (`--odr-check-archives`); `table`
+  (`--odr-table=off|exported|full`, default `off`); `stats`
+  (`--odr-stats`); `keep_meta` (`--keep-mason-meta`).
 
 The facade does two things with these:
 - It applies `error_limit`, `fatal_warnings` and `no_warnings` to the
@@ -531,7 +536,7 @@ phase that reads it meets it.
 ### 4.1 Rows
 
 There is one row per option, in `crates/mortar_cli/src/rows.rs`. The
-table has 472 rows. A row has:
+table has 479 rows (WP-072 added the seven of M6 below). A row has:
 
 - **spellings**: each with a form (§2.2) and a flag saying whether GNU ld
   has that spelling. The flag decides which spellings abbreviate (§2.4).
@@ -588,8 +593,11 @@ does: a user may rely on every use the status admits.
 - `refused`: read and recorded, but not carried out yet. This is the
   default.
 
-The status today (WP-042; `docs/status/options.md` has the list, and
-counts 54 supported, 4 partial, 43 noop and 371 refused). The counts in
+The status today (WP-042 and WP-034; `docs/status/options.md` has the
+list, and counts 54 supported, 4 partial, 44 noop and 370 refused).
+WP-034 made `--no-dependent-libraries` `noop`: mortar never loads the
+libraries `.deplibs` sections name (`spec/resolve.md` §10);
+`--dependent-libraries` stays `refused`. The counts in
 this list are those of WP-027e; WP-031, WP-027d's later rows and WP-042
 (the M2 paragraph below) changed them since:
 - 49 rows are `supported`; each has its evidence in
@@ -619,6 +627,26 @@ this list are those of WP-027e; WP-031, WP-027d's later rows and WP-042
 A work package that implements an option changes the row's status in the
 same change, and adds the row's evidence to the audit, which fails while
 a row that is not `refused` has none.
+
+Rows of mortar's own for M6 (`spec/odr.md` O-41; amendment A-5). They
+are added to `crates/mortar_cli/src/rows.rs` by WP-072 (WP-076 for the
+opt-ins), `refused` until the package that honors each lands with its
+test, and `docs/status/options.md` is regenerated from the table, never
+edited:
+- `--odr=warn|error|strict|off` (default `warn`) and `--no-odr-check`
+  (= `--odr=off`): WP-072;
+- `--odr-stats`: WP-072;
+- `--detect-odr-violations` (GNU gold's spelling; not a reference
+  linker's row): `noop`, printing nothing; its reason is the sentence
+  of `spec/odr.md` O-41; WP-072;
+- `--odr-check-archives`, `--odr-table=off|exported|full` (default
+  `off`), `--keep-mason-meta`: WP-075 and WP-076.
+
+WP-072 landed the first four: `--odr`, `--no-odr-check` and `--odr-stats`
+`supported`, `--detect-odr-violations` `noop` (its reason is O-41's sentence;
+nothing is printed, since `spec/diag.md` §2.1 has no note severity); the other three are
+`refused` with their fields in `plan.diagnostics.odr` (§3.9).
+`docs/status/options.md` has the counts.
 
 Rows whose status the M1 and M2 packages change (`spec/input.md` §17,
 `spec/resolve.md` §18). Their fields exist (§3); the rows stay `refused`

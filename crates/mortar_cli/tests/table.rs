@@ -91,6 +91,10 @@ fn statuses() {
             "-w",
             "--color-diagnostics",
             "--no-color-diagnostics",
+            // The one-definition-rule switches (WP-072, odr.md O-41).
+            "--odr",
+            "--no-odr-check",
+            "--odr-stats",
             "--version",
             "-v",
             "-V",
@@ -123,12 +127,20 @@ fn statuses() {
             assert!(!row.meta.is_empty(), "{} names its value", row.name());
         }
         // A row of mortar's own is reserved, so refused; `--time-phases`
-        // (image.md §11) and `--mortar-map` (I-77) are mortar's own and
-        // implemented.
+        // (image.md §11), `--mortar-map` (I-77) and the one-definition-rule
+        // switches of WP-072 (odr.md O-41) are mortar's own and implemented.
         if !row.linkers.gnu()
             && !row.linkers.lld()
             && !row.linkers.mold()
-            && !matches!(row.name().as_str(), "--time-phases" | "--mortar-map")
+            && !matches!(
+                row.name().as_str(),
+                "--time-phases"
+                    | "--mortar-map"
+                    | "--odr"
+                    | "--no-odr-check"
+                    | "--odr-stats"
+                    | "--detect-odr-violations"
+            )
         {
             assert_eq!(row.status, Status::Refused, "{}", row.name());
         }

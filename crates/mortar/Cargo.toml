@@ -29,6 +29,7 @@ mortar_input.workspace = true
 mortar_layout.workspace = true
 mortar_live.workspace = true
 mortar_merge.workspace = true
+mortar_odr.workspace = true
 mortar_resolve.workspace = true
 mortar_scan.workspace = true
 mortar_synth.workspace = true

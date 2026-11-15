@@ -6,17 +6,17 @@
 
 use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
-    Base, Check, ClassOutcome, DeadRef, DemandClass, DemandFlags, DemandSink, EventClass, Field,
-    FieldError, FillCx, GlobalFlags, Incompatible, Minus, OutputKind, Refusal, RelocAt, ScanCx,
-    ScanError, SectionOut, SymValue, TargetKind, Terms, TlsAbi, class_outcome, dead_reference,
-    writes_dtprel,
+    Base, Check, ClassOutcome, DeadRef, Demand, DemandClass, DemandFlags, DemandSink, EventClass,
+    Field, FieldError, FillCx, GlobalFlags, Incompatible, Minus, OutputKind, Refusal, RelocAt,
+    ScanCx, ScanError, SectionOut, SlotKind, SymValue, TargetKind, Terms, TlsAbi, WeakClass,
+    class_outcome, dead_reference, writes_dtprel,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::Class;
 
 use crate::forms::{
-    self, DTPOFF32, DTPOFF64, Form, GOTPC32_TLSDESC, GOTPCRELX, GOTTPOFF, REX_GOTPCRELX,
-    TLSDESC_CALL, TLSGD, TLSLD, rex_prime,
+    self, DTPOFF32, DTPOFF64, Form, GOTPC32_TLSDESC, GOTPCREL, GOTPCRELX, GOTTPOFF, PC32, PLT32,
+    PLTOFF64, REX_GOTPCRELX, TLSDESC_CALL, TLSGD, TLSLD, rex_prime,
 };
 use crate::{TLS, relax};
 
@@ -26,8 +26,13 @@ pub const UNRECOGNIZED_GD: &str = "unrecognized general-dynamic TLS sequence";
 pub const UNRECOGNIZED_LD: &str = "unrecognized local-dynamic TLS sequence";
 /// X-28: a TLSDESC member that matches neither T1 nor T2.
 pub const UNRECOGNIZED_DESC: &str = "unrecognized TLS descriptor sequence";
-/// X-32: GD → IE and TLSDESC → IE, which need a TLS-dynamic target (M2).
+/// X-32: GD → IE and TLSDESC → IE, which need a TLS-dynamic target (M2;
+/// refused while the M2 rules are off).
 pub const TLS_TO_IE: &str = "TLS relaxation to initial-exec";
+/// `spec/dyn.md` D-25, X-57: a thread-local undefined weak key in `exec`
+/// or `pie` (every TLS type is unfillable). The generic pre-pass refuses
+/// the key first; a `weakdyn` key never reaches a TLS class.
+pub const TLS_WEAK_DYNAMIC: &str = "thread-local undefined weak symbol in a dynamic executable";
 /// The unrelaxed general-dynamic, local-dynamic and descriptor models
 /// (§6.1's M2 values) in an output that is not an executable.
 pub const DYNAMIC_TLS: &str = "dynamic TLS models in a shared object";
@@ -92,9 +97,60 @@ fn desc_form(at: &RelocAt<'_>) -> Option<Form> {
     }
 }
 
+/// The branch-opcode test of X-57 (`spec/dyn.md` D-25): the bytes of the
+/// input section before the field at `offset` are `e8` (call) or `e9`
+/// (jmp) at −1, or `0f 80`…`0f 8f` (jcc rel32) at −2. A field at offset
+/// 0 or 1 of its section is not on a branch unless the bytes it has say
+/// so.
+#[must_use]
+pub fn on_branch(bytes: &[u8], offset: u64) -> bool {
+    let Ok(o) = usize::try_from(offset) else { return false };
+    let at = |back: usize| o.checked_sub(back).and_then(|i| bytes.get(i)).copied();
+    matches!(at(1), Some(0xe8 | 0xe9))
+        || (at(2) == Some(0x0f) && matches!(at(1), Some(0x80..=0x8f)))
+}
+
+/// X-57: the class of one live relocation of `r_type` naming an undefined
+/// weak key, its field at `offset` of the input section `place`, the
+/// place's output section `writable` (RELRO included). `None` for the
+/// types that do not use the key; every type not listed is unfillable.
+#[must_use]
+pub fn weak_use(r_type: u32, place: &[u8], offset: u64, writable: bool) -> Option<WeakClass> {
+    Some(match r_type {
+        // `NONE`, `SIZE32`, `SIZE64` (`Z + A` = 0), `GOTPC32`, `GOTPC64`.
+        0 | 32 | 33 | 26 | 29 => return None,
+        GOTPCREL | GOTPCRELX | REX_GOTPCRELX | 27 => WeakClass::Got,
+        1 if writable => WeakClass::AbsWord,
+        PLT32 | PLTOFF64 => WeakClass::Branch,
+        PC32 if on_branch(place, offset) => WeakClass::Branch,
+        _ => WeakClass::Unfillable,
+    })
+}
+
+/// X-57, D-25: a `PC32` whose field follows a branch opcode
+/// ([`on_branch`]) against a `weakdyn` key is a branch, through a PLT
+/// entry. Only a dynamic `exec` or `pie` has `weakdyn` keys.
+///
+/// The other dynamic cells are not x86-64's. D-43 (copy in `pie`) and
+/// D-44 (`canonical-plt-in-pie`) are `class_outcome`'s. D-47
+/// (`text-relocation` for a read-only `TX` cell of an output with
+/// `.dynamic`) is the scan driver's (`mortar_scan` `dynamic_error`).
+fn weak_branch(at: &RelocAt<'_>, kind: TargetKind, o: ClassOutcome) -> ClassOutcome {
+    if kind == TargetKind::WeakDyn
+        && at.howto.class == DemandClass::Pc
+        && at.r_type == PC32
+        && on_branch(at.site.bytes, at.r_offset)
+    {
+        ClassOutcome::Demand(Demand { flags: DemandFlags::PLT, ..Demand::default() })
+    } else {
+        o
+    }
+}
+
 /// `scan` (arch.md §3.4): the checks, then the class rule of §4.3 (X-10,
-/// X-11), X-15 for `Pc` against `weak0`, and the TLS rules of §8.
-pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
+/// X-11), X-15 for `Pc` against `weak0`, and the TLS rules of §8; under
+/// M2 the `weakdyn` branch of [`weak_branch`].
+pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
     if let Err(e) = scan_checks(at) {
         out.error(at.index, e);
         return;
@@ -118,7 +174,11 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
     }
     let kind = effective(sym.kind, h.class);
     let data = matches!(h.field, Field::Data { .. });
-    match class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls) {
+    let mut outcome = class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls);
+    if m2 && cx.place.alloc {
+        outcome = weak_branch(at, kind, outcome);
+    }
+    match outcome {
         ClassOutcome::Demand(d) => {
             out.raise(at.key, d.flags);
             let base = if uses_got_base(h) { GlobalFlags::GOT_BASE } else { GlobalFlags::empty() };
@@ -145,7 +205,7 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
             };
             out.error(at.index, ScanError::Incompatible(r));
         }
-        ClassOutcome::ArchTls => match tls_scan(cx, at, kind) {
+        ClassOutcome::ArchTls => match tls_scan(m2, cx, at, kind) {
             Ok((flags, global)) => {
                 out.raise(at.key, flags);
                 out.raise_global(global);
@@ -160,7 +220,14 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
 /// TLS-local target demand nothing (kind 1); an unmatched one is refused
 /// by name; IE keeps its `GTPREL` slot unless I1/I2 is taken. Outside an
 /// executable only IE is accepted (M2 for the others).
+///
+/// Under M2, against a `shlib` key (`spec/dyn.md` D-48): a matched GD
+/// sequence or `GOTPC32_TLSDESC` relaxes to IE and demands `GOT_TPREL`
+/// (X-58; the `TLSDESC_CALL` demands nothing); an unmatched GD keeps its
+/// call and its `GTLSIDX` pair, `TLS_GD` (X-26); an unmatched LD or
+/// TLSDESC member is refused as in a static link (X-26, X-28).
 fn tls_scan(
+    m2: bool,
     cx: &ScanCx<'_>,
     at: &RelocAt<'_>,
     kind: TargetKind,
@@ -175,10 +242,17 @@ fn tls_scan(
     if !cx.place.alloc && matches!(at.r_type, TLSGD | TLSLD | GOTPC32_TLSDESC | TLSDESC_CALL) {
         return Err(feature(NON_ALLOC_TLS));
     }
+    if kind == TargetKind::WeakDyn {
+        return Err(feature(TLS_WEAK_DYNAMIC));
+    }
+    let shlib = m2 && matches!(kind, TargetKind::Shlib { .. });
+    let ie = (DemandFlags::GOT_TPREL, GlobalFlags::empty());
     match at.r_type {
         TLSGD => match relax::lead_form(at, cx.tables) {
+            None if shlib => Ok((DemandFlags::TLS_GD, GlobalFlags::empty())),
             None => Err(feature(UNRECOGNIZED_GD)),
             Some(_) if tls_local(kind) => Ok(none),
+            Some(_) if shlib => Ok(ie),
             Some(_) => Err(feature(TLS_TO_IE)),
         },
         // The LE outputs of §8.4 do not depend on the symbol.
@@ -188,6 +262,8 @@ fn tls_scan(
         GOTPC32_TLSDESC | TLSDESC_CALL => match desc_form(at) {
             None => Err(feature(UNRECOGNIZED_DESC)),
             Some(_) if tls_local(kind) => Ok(none),
+            Some(Form::T1 { .. }) if shlib => Ok(ie),
+            Some(_) if shlib => Ok(none),
             Some(_) => Err(feature(TLS_TO_IE)),
         },
         // Every TLS-model type of §6.1 that reaches the architecture's
@@ -248,8 +324,10 @@ fn t_value(cx: &FillCx<'_>, sym: SymValue) -> Result<[u8; 4], FieldError> {
     Ok((t as i32).to_le_bytes())
 }
 
-/// `apply` (arch.md §3.6).
+/// `apply` (arch.md §3.6); `m2` turns on the dynamic rules (X-26's
+/// unrelaxed GD pair, X-58's GD → IE and TLSDESC → IE, X-20 in `exec`).
 pub fn apply(
+    m2: bool,
     cx: &FillCx<'_>,
     at: &RelocAt<'_>,
     out: &mut SectionOut<'_>,
@@ -284,8 +362,8 @@ pub fn apply(
         TLSGD | TLSLD | GOTPC32_TLSDESC | TLSDESC_CALL if !out.alloc => {
             return Err(FieldError::Refused(feature(NON_ALLOC_TLS)));
         }
-        TLSGD | TLSLD => return lead(cx, at, out, sym, kind),
-        GOTPC32_TLSDESC | TLSDESC_CALL => return desc(cx, at, out, sym, kind),
+        TLSGD | TLSLD => return lead(m2, cx, at, out, sym, kind),
+        GOTPC32_TLSDESC | TLSDESC_CALL => return desc(m2, cx, at, out, sym, kind),
         GOTTPOFF => {
             if let Some(f) = ie_relaxed(at, cx.output, kind, out.alloc) {
                 return ie(cx, at, out, sym, f);
@@ -329,8 +407,15 @@ fn value(
     ) {
         return checked(h.check, tls_off(cx, sym, a, TlsAbi::dtp_rel)?);
     }
-    // §7 (`Facts`' `weak0` rule): `S = 0` for every class.
-    let s = if sym.kind == TargetKind::Weak0 { 0 } else { sym.s };
+    // §7 (`Facts`' `weak0` rule): `S = 0` for every class. X-57: a `PC32`
+    // on a branch opcode against a `weakdyn` key goes through its PLT entry.
+    let s = match sym.kind {
+        TargetKind::Weak0 => 0,
+        TargetKind::WeakDyn if h.class == DemandClass::Pc => {
+            cx.tables.plt(at.key).ok_or(FieldError::MissingTerm("PLT entry"))?
+        }
+        _ => sym.s,
+    };
     let b = match h.value.base {
         Base::Zero => 0,
         Base::S => s,
@@ -391,9 +476,27 @@ pub const LD22: [u8; 22] = [
     0, 0, 0,
 ];
 
+/// N16, N22 (X-58): `mov %fs:0, %rax; add x@gottpoff(%rip), %rax`, the
+/// rel32 at byte 12.
+const N16: [u8; 12] = [0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x03, 0x05];
+
+/// `G(GTPREL(S)) − end`, checked s(32): the rel32 of an IE `add`/`mov`
+/// that ends at `end` (X-58).
+fn gtprel_rel(cx: &FillCx<'_>, at: &RelocAt<'_>, end: u64) -> Result<[u8; 4], FieldError> {
+    let g = cx
+        .tables
+        .slot(at.key, SlotKind::TpOff { negated: false })
+        .ok_or(FieldError::MissingSlot)?;
+    let x = checked(Check::Signed(32), g.wrapping_sub(end) as i64)?;
+    Ok((x as i32).to_le_bytes())
+}
+
 /// A `TLSGD` or `TLSLD` lead in an executable (X-25, X-27): its LE output
-/// over the form's window, or refused by name (X-26).
+/// over the form's window, or refused by name (X-26). Under M2, against a
+/// `shlib` key, a GD lead writes N16 or N22 (X-58), or, unmatched, its
+/// §6.1 value `G(GTLSIDX(S)) + A − P` with the call kept (X-26).
 fn lead(
+    m2: bool,
     cx: &FillCx<'_>,
     at: &RelocAt<'_>,
     out: &mut SectionOut<'_>,
@@ -401,7 +504,12 @@ fn lead(
     kind: TargetKind,
 ) -> Result<(), FieldError> {
     let gd = at.r_type == TLSGD;
+    let shlib = m2 && matches!(kind, TargetKind::Shlib { .. });
     let Some(form) = relax::lead_form(at, cx.tables) else {
+        if gd && shlib {
+            let x = value(cx, at, out, sym)?;
+            return put(at, out, at.r_offset, &x.to_le_bytes()[..4]);
+        }
         return Err(FieldError::Refused(feature(if gd {
             UNRECOGNIZED_GD
         } else {
@@ -409,7 +517,19 @@ fn lead(
         })));
     };
     let mut buf = [0u8; 22];
+    let p = out.addr.wrapping_add(at.r_offset);
     let (start, n) = match form {
+        Form::Gd16 | Form::Gd16x | Form::Gd22 if !tls_local(kind) && shlib => {
+            buf[..12].copy_from_slice(&N16);
+            if form == Form::Gd22 {
+                buf[12..16].copy_from_slice(&gtprel_rel(cx, at, p.wrapping_add(13))?);
+                buf[16..22].copy_from_slice(&NOPW6);
+                (back(at, 3)?, 22)
+            } else {
+                buf[12..16].copy_from_slice(&gtprel_rel(cx, at, p.wrapping_add(12))?);
+                (back(at, 4)?, 16)
+            }
+        }
         Form::Gd16 | Form::Gd16x | Form::Gd22 => {
             if !tls_local(kind) {
                 return Err(FieldError::Refused(feature(TLS_TO_IE)));
@@ -441,8 +561,11 @@ fn lead(
 }
 
 /// A TLSDESC member in an executable (X-28, X-47): T1 → `REX' c7 (c0 |
-/// reg) T`, `T = 0` for `_TLS_MODULE_BASE_`; T2 → `66 90`.
+/// reg) T`, `T = 0` for `_TLS_MODULE_BASE_`; T2 → `66 90`. Under M2,
+/// against a `shlib` key (X-58): T1 → N1, `REX 8b ModRM` (a mov from the
+/// `GTPREL` slot) with the field `G(GTPREL(S)) + A − P`; T2 → `66 90`.
 fn desc(
+    m2: bool,
     cx: &FillCx<'_>,
     at: &RelocAt<'_>,
     out: &mut SectionOut<'_>,
@@ -453,7 +576,30 @@ fn desc(
         return Err(FieldError::Refused(feature(UNRECOGNIZED_DESC)));
     };
     if !tls_local(kind) {
-        return Err(FieldError::Refused(feature(TLS_TO_IE)));
+        if !(m2 && matches!(kind, TargetKind::Shlib { .. })) {
+            return Err(FieldError::Refused(feature(TLS_TO_IE)));
+        }
+        return match form {
+            Form::T1 { rex, .. } => {
+                let modrm = *at
+                    .site
+                    .bytes
+                    .get(
+                        usize::try_from(at.r_offset - 1)
+                            .map_err(|_| FieldError::MissingTerm("ModRM"))?,
+                    )
+                    .ok_or(FieldError::Outside { offset: at.r_offset, width: 4 })?;
+                let p = out.addr.wrapping_add(at.r_offset);
+                let g = cx
+                    .tables
+                    .slot(at.key, SlotKind::TpOff { negated: false })
+                    .ok_or(FieldError::MissingSlot)?;
+                let x = g.wrapping_add(at.rela_addend() as u64).wrapping_sub(p) as i64;
+                let f = (checked(Check::Signed(32), x)? as i32).to_le_bytes();
+                put(at, out, back(at, 3)?, &[rex, 0x8b, modrm, f[0], f[1], f[2], f[3]])
+            }
+            _ => put(at, out, at.r_offset, &[0x66, 0x90]),
+        };
     }
     match form {
         Form::T1 { rex, reg } => {
@@ -507,9 +653,10 @@ fn got_relaxed(
         let x = i32::try_from(x).ok()?;
         Some(x.to_le_bytes())
     };
-    // X-20: `S` in [0, 2^31), static non-PIE only.
+    // X-20: `S` in [0, 2^31), non-PIE only (static and, M2, `exec`).
     let imm = || -> Option<[u8; 4]> {
-        (output == OutputKind::Static && s < 1 << 31).then(|| (s as u32).to_le_bytes())
+        (matches!(output, OutputKind::Static | OutputKind::Exec) && s < 1 << 31)
+            .then(|| (s as u32).to_le_bytes())
     };
     let mut b = [0u8; 7];
     let mut start = at.r_offset.checked_sub(u64::from(form.window().before))?;

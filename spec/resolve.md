@@ -990,6 +990,8 @@ symbols they define. `mortar_odr` (M6) may compare the kept copy with each
 dropped one (sizes and symbol sets cheaply; content by hash when kiln and
 hod supply one). Resolution keeps, per group, the list of live files with
 the group (`(ComdatId, FileId)` pairs in order) for that purpose.
+`mortar_odr` (`spec/odr.md` O-21) reads `comdat_copies`; the symbol sets
+of the copies are W1-W3's input.
 
 ## 7. Redirections
 
@@ -1341,12 +1343,13 @@ classification is per file (I-file), the state needs `comdat`:
 | `SHT_REL`, `SHT_RELA` | `Reloc` | `Dropped(Consumed)`; the section it applies to records it. A second one for a kept section: `Refused{Feature, "two relocation sections for one section"}`, never a silent drop (GNU ld applies one of two `SHT_RELA` and both of `SHT_REL`+`SHT_RELA`; lld refuses; mold asserts on two `SHT_RELA` and drops one of `SHT_REL`+`SHT_RELA`; WP-022.md) | |
 | `SHT_GROUP` | `Group` | `Dropped(Consumed)` | all |
 | a member of a group not kept (§6) | its kind | `Dropped(Comdat{keeper})` | all |
+| a container: name `.mason.meta`, `SHT_PROGBITS`, flags exactly `SHF_EXCLUDE` (`spec/meta.md` MT-6) | `Meta` | `Dropped(Consumed)`; `mortar_meta` reads it only when a check that needs it is on | GNU ld, lld, mold drop it (`meta.md` §2) |
 | `SHF_EXCLUDE` (any type) | `Excluded` | `Dropped(Excluded)` | GNU ld, lld; mold keeps an allocated one (E18): §16 |
 | name `.note.GNU-stack` | `Stack` | `Dropped(Consumed)` (layout reads its flags for `PT_GNU_STACK`) | all (E18) |
 | name `.note.gnu.property`, `SHT_NOTE` | `Note` | `Kept`; `spec/synth.md` merges the properties into one note | GNU ld, lld, mold merge (not verified here) |
 | `SHT_LLVM_ADDRSIG` (`.llvm_addrsig`) without `SHF_EXCLUDE` | `Excluded` | `Dropped(Consumed)` (a later `--icf=safe` reads it). Clang emits it with `SHF_EXCLUDE`, so the `SHF_EXCLUDE` row above matches first: `Excluded`, `Dropped(Excluded)` | all (E18) |
 | `SHT_LLVM_CALL_GRAPH_PROFILE` | `Excluded` | `Dropped(Consumed)`: a section-order hint; ignoring it is correct | not verified |
-| `SHT_LLVM_DEPENDENT_LIBRARIES` (`.deplibs`) | — | `Refused{SectionType, ..}`: lld adds the libraries it names, so doing nothing would differ | not verified |
+| `SHT_LLVM_DEPENDENT_LIBRARIES` (`.deplibs`) | `Excluded` | `Dropped(Consumed)`: the library specifiers are not honoured (below, "Dependent libraries") | GNU ld 2.44 and mold 2.37 ignore them and copy the section; lld 19 and 22 load the libraries (WP-034) |
 | other `SHT_LLVM_*` (`ODRTAB`, `LINKER_OPTIONS`, `SYMPART`, `PART_EHDR`, `PART_PHDR`, `BB_ADDR_MAP`, `OFFLOADING`, `LTO`, `JT_SIZES`) | — | `Refused{SectionType, ..}` | |
 | name `.gnu.lto_*` otherwise (a fat LTO object: GCC marks them `SHF_EXCLUDE`) | `Excluded` | `Dropped(Excluded)`: the object's real code links, as every linker does without a plugin | not verified |
 | name `.gnu.warning` / `.gnu.warning.<sym>` | `Excluded` | `Dropped(Consumed)`; the text is a warning (`gnu-warning`): for `.gnu.warning` when the file is live, for `.gnu.warning.<sym>` per key `<sym>` referenced from a live section (one diagnostic per key, first 3 references, emitted by the scan) | GNU ld (E21); lld and mold neither warn nor drop: they copy the section into the output. glibc's `libc.a` has 112 such sections (E21) |
@@ -1373,7 +1376,51 @@ diagnostic, since they contribute nothing to the output. Structural
 faults of a file (group flags §6.4, a section in two groups §6.5, symbol
 faults §3) apply to every live file. (A survey of the 65 archives of the
 three targets' libc and GCC directories finds no section any refusal
-row matches, kept or dropped: WP-022.md.)
+row matches, kept or dropped: WP-022.md.) A section named `.mason.meta`
+that is not a container takes the existing rows, as any other name would
+(`spec/meta.md` MT-6).
+
+**Dependent libraries** (WP-034; M1 ruling). Clang writes `#pragma
+comment(lib, "name")` as a `.deplibs` section (`SHT_LLVM_DEPENDENT_LIBRARIES`,
+`SHF_MERGE | SHF_STRINGS`, entry size 1): NUL-terminated library
+specifiers. Debian's libc++ 22 archives carry `pthread` in 11 members of
+`libc++.a`, 3 of `libc++abi.a` and 1 of `libunwind.a`, so every static
+link with libc++ sees one. mortar **consumes the section and does not
+load the libraries it names**, as GNU ld and mold do (measured, with the
+section in a command-line object and in an archive member: a needed
+symbol whose only definer is the named library stays undefined; a
+specifier naming no library changes nothing; both copy the section into
+the output as a non-alloc section, mortar drops it). lld loads them by
+default (`--dependent-libraries`: each specifier is searched as `-l` in
+the `-L` directories, else as a path; one it cannot find is the error
+`unable to find library from dependent library specifier`), and
+`--no-dependent-libraries` does what mortar does. Not loading a library
+is safe by construction: the only symbols it could have supplied are
+ones the link would otherwise lack, so the difference from lld can only
+be a named `undefined-symbol` error (§5), never a different output — with
+one exception that GNU ld shares, a weak undefined reference that the
+library would have defined (§5.4 gives it 0); a reference made weak for
+that reason is the library's API, not this section's. The
+`--no-dependent-libraries` row is therefore a no-op and
+`--dependent-libraries` (lld's default) stays refused (`spec/cli.md`
+§4.2).
+
+Honouring the specifiers, as lld does, is a later row: each live object
+(a command-line object, or an archive member once extracted, §4.1) adds
+its specifiers, deduplicated in first-seen order, as `-l<name>` inputs
+appended after the command line's last input (lld's position), searched
+in the `-L` directories with the `-Bstatic`/`-Bdynamic` state at the end
+of the line. In mortar's round-based extraction (§4.1) that is a new
+input discovered during a round: the file list, `FileId`s and
+`section_base` grow while liveness runs, so the round loop must be able
+to add archives and re-run extraction on them, and the order of the
+added inputs must be a function of the inputs alone (the extraction
+order of the members whose specifiers they are, not thread order,
+§12) for the output to stay deterministic. An archive named twice
+(once on the line, once by a specifier) is searched again at its new
+position, as lld does. A `note:` listing the discarded specifiers on a
+link that fails with undefined symbols is a later improvement of the
+diagnostic (the scan reports undefined symbols, `spec/diag.md`).
 
 `.ARM.*`, `.riscv.*` and other machines' attribute sections cannot occur:
 the file's machine is checked first (`spec/input.md`). `SHF_COMPRESSED`
@@ -1471,7 +1518,8 @@ honest ones).
   common, undefined), for a definition whether it is data (§2) and TLS and
   its absolute value, its visibility, common size and alignment; its
   groups' signatures, members, and the keys defined in each group; its
-  section kinds. It is I-file.
+  section kinds. It is I-file. A file's units (its `.mason.meta`
+  containers, `spec/meta.md`) are part of its summary (I-file).
 - **The graph** (`first`, `cfirst`, the edges) depends on every file's
   summary and on `FileId` order. Replacing file `F` changes it only
   through `F`'s own entries: the targets `first(K)` and `cfirst(K)` for

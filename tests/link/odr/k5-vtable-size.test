@@ -1,0 +1,34 @@
+# K5 (spec/odr.md §3.1): a class with a different set of virtual functions
+# in two translation units. Every member is inline, so each object has its
+# own vtable in a COMDAT group; the link keeps a.o's, of 48 bytes on a
+# 64-bit target, and b.o's 40-byte copy is dropped. W1 (§8.1) reports it
+# by default, as a warning: the program still links and, here, runs.
+#@ spec: odr.md §8.1
+#@ requires: g++
+#@ diag: odr-size-mismatch a.o b.o
+
+cxx -O0 a.cc -o a.o
+cxx -O0 b.cc -o b.o
+cxx -O0 main.cc -o main.o
+link g++ -static -no-pie main.o a.o b.o -o prog
+run prog
+  stdout: 1 1
+
+#--- a.cc
+struct B {
+  virtual int f() { return 1; }
+  virtual int g() { return 2; }
+  virtual ~B() {}
+};
+int from_a() { B b; B* p = &b; return p->f(); }
+#--- b.cc
+struct B {
+  virtual int f() { return 1; }
+  virtual ~B() {}
+};
+int from_b() { B b; B* p = &b; return p->f(); }
+#--- main.cc
+#include <cstdio>
+int from_a();
+int from_b();
+int main() { std::printf("%d %d\n", from_a(), from_b()); }

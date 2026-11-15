@@ -1,0 +1,26 @@
+# N23 (spec/odr.md §3.2): a weak C default `hook` (STT_FUNC) overridden by
+# a strong assembler `hook` without `.type` (STT_NOTYPE). STT_NOTYPE never
+# takes part in W2 (§8.1), so neither mode reports anything. No directive:
+# a mortar link that reported a one-definition-rule diagnostic would fail.
+#@ spec: odr.md §8.1
+#@ skip(bfd): GNU ld keeps the overridden weak definition's st_size for the strong NOTYPE hook (the verifier's Y3)
+
+cc -O1 hook.c -o hook.o
+as hook.S -o hookasm.o
+cc -O1 main.c -o main.o
+link(lld,mold) gcc -static -no-pie main.o hook.o hookasm.o -o prog
+link(mortar) gcc -static -no-pie main.o hook.o hookasm.o -Wl,--odr=strict -o prog
+check readelf -sW prog
+  has: NOTYPE * hook$
+
+#--- hook.c
+__attribute__((weak)) int hook(void) { return 1; }
+int call_hook(void) { return hook(); }
+#--- hook.S
+	.text
+	.globl hook
+hook:
+	nop
+	.section .note.GNU-stack,"",%progbits
+#--- main.c
+int main(void) { return 0; }

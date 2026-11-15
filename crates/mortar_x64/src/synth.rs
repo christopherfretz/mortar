@@ -1,6 +1,7 @@
-//! The bytes mortar writes itself: IPLT entries (x64.md §10.4) and the
-//! static GOT slot contents (§10.1). The lazy PLT and `.plt.sec` (§10.3)
-//! are M2 and refused by name.
+//! The bytes mortar writes itself: IPLT entries (x64.md §10.4), the lazy
+//! PLT of dynamic executables (§10.3, M2) and the static GOT slot
+//! contents (§10.1). The IBT lazy PLT and `.plt.sec` stay refused by name
+//! (`spec/dyn.md` §15 Q4).
 
 use mortar_arch::{Check, FieldError, Refusal, SlotKind, TlsAbi, TlsBlock};
 use mortar_diag::RefusalClass;
@@ -9,9 +10,61 @@ use mortar_elf::Class;
 /// `endbr64`.
 pub const ENDBR64: [u8; 4] = [0xf3, 0x0f, 0x1e, 0xfa];
 
-/// The refusal of a lazy PLT header or entry (§10.3, M2).
+/// The refusal of a lazy PLT header or entry before M2 (§10.3).
 pub const LAZY_PLT: Refusal =
     Refusal::named(RefusalClass::Feature, "lazy PLT (shared-library calls)");
+
+/// The refusal of the IBT lazy PLT and `.plt.sec` (§10.3; `spec/dyn.md`
+/// D-49, §15 Q4): refused at M2, whether `-z ibt`/`-z ibtplt` or a merged
+/// `FEATURE_1_AND` with IBT chose the variant.
+pub const IBT_PLT: Refusal = Refusal::named(
+    RefusalClass::Feature,
+    "IBT PLT (-z ibt, -z ibtplt, or every input marked IBT) in a dynamic executable",
+);
+
+/// `.got.plt[1]` and `.got.plt[2]` from the GOT base (`.got.plt`'s start,
+/// X-36): the words PLT0 pushes and jumps through.
+const GOT_PLT_1: u64 = 8;
+const GOT_PLT_2: u64 = 16;
+
+/// §10.3: PLT0 at `header`, `ff 35 <GOT+8>; ff 25 <GOT+16>; 0f 1f 40 00`
+/// (`push .got.plt[1](%rip); jmp *.got.plt[2](%rip); nopl 0(%rax)`), the
+/// rel32s relative to the end of their instruction (`header + 6`,
+/// `header + 12`). GNU ld and lld write these bytes (`spec/dyn.md`
+/// E-reloc §6, request R-X3).
+pub fn plt0(header: u64, got_base: u64) -> Result<[u8; 16], FieldError> {
+    let push = rel32(got_base.wrapping_add(GOT_PLT_1), header.wrapping_add(6))?;
+    let jmp = rel32(got_base.wrapping_add(GOT_PLT_2), header.wrapping_add(12))?;
+    let mut b = [0u8; 16];
+    b[..2].copy_from_slice(&[0xff, 0x35]);
+    b[2..6].copy_from_slice(&push);
+    b[6..8].copy_from_slice(&[0xff, 0x25]);
+    b[8..12].copy_from_slice(&jmp);
+    b[12..].copy_from_slice(&[0x0f, 0x1f, 0x40, 0x00]);
+    Ok(b)
+}
+
+/// §10.3: the lazy PLT entry at `entry` for the `.got.plt` word `word`
+/// and `.rela.plt` index `n`, `ff 25 <word>; 68 <n>; e9 <PLT0>` (`jmp
+/// *word(%rip); push $n; jmp PLT0`), the rel32s relative to `entry + 6`
+/// and `entry + 16`. The word's lazy target is `entry + 6`, the `push`
+/// ([`LAZY_PLUS`]).
+pub fn plt_entry(entry: u64, word: u64, n: u32, header: u64) -> Result<[u8; 16], FieldError> {
+    let jmp = rel32(word, entry.wrapping_add(6))?;
+    let back = rel32(header, entry.wrapping_add(16))?;
+    let mut b = [0u8; 16];
+    b[..2].copy_from_slice(&[0xff, 0x25]);
+    b[2..6].copy_from_slice(&jmp);
+    b[6] = 0x68;
+    b[7..11].copy_from_slice(&n.to_le_bytes());
+    b[11] = 0xe9;
+    b[12..].copy_from_slice(&back);
+    Ok(b)
+}
+
+/// §10.3, D-49: a `JUMP_SLOT` word's lazy target is its entry plus 6,
+/// the `push` (GNU ld and lld; `Arch::lazy_target`).
+pub const LAZY_PLUS: u32 = 6;
 
 /// `rel32 = word − (end)`, checked s(32).
 fn rel32(word: u64, end: u64) -> Result<[u8; 4], FieldError> {

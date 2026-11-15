@@ -20,6 +20,9 @@ mortar_elf.workspace = true
 # SHA-256 of the outputs `cargo xtask static-identical` records
 # (spec/harness.md "static-identical").
 mortar_digest.workspace = true
+# The wording of the one-definition-rule diagnostics, which the link tests'
+# `diag: <id> <file>...` directive reads back (spec/harness.md "Directives").
+mortar_diag.workspace = true
 
 # Kills the children and returns the held jobserver tokens on SIGINT/SIGTERM
 # (spec/harness.md "Jobserver", "Signals").

@@ -1,0 +1,33 @@
+# K5 under --odr=strict (spec/odr.md §8.1, O-41): W1 as by default, and
+# W4, the copies' contents (bytes and relocations, symbols named) differ.
+#@ spec: odr.md §8.1
+#@ requires: g++
+#@ diag: odr-size-mismatch a.o b.o
+#@ diag: odr-contents-mismatch a.o b.o
+
+cxx -O0 a.cc -o a.o
+cxx -O0 b.cc -o b.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+run prog
+  stdout: 1 1
+
+#--- a.cc
+struct B {
+  virtual int f() { return 1; }
+  virtual int g() { return 2; }
+  virtual ~B() {}
+};
+int from_a() { B b; B* p = &b; return p->f(); }
+#--- b.cc
+struct B {
+  virtual int f() { return 1; }
+  virtual ~B() {}
+};
+int from_b() { B b; B* p = &b; return p->f(); }
+#--- main.cc
+#include <cstdio>
+int from_a();
+int from_b();
+int main() { std::printf("%d %d\n", from_a(), from_b()); }

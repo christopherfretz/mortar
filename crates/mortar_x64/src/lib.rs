@@ -19,29 +19,57 @@ use std::fmt::Write as _;
 
 use mortar_arch::shapes::EH_ENCODINGS;
 use mortar_arch::{
-    Arch, Branch, Code, DemandClass, DynRole, EhEncodings, Erratum, ErratumSite, Facts, Field,
-    FieldError, GotBase, GotShape, Howto, OutputCx, OutputKind, PatchCx, PltChunk, PltPart,
-    PltShape, PltVariant, PropMerge, Reach, Records, RefName, Refusal, RelForm, RelocAt, Site,
-    SlotKind, Status, SymNames, SynthCx, ThunkShape, TlsAbi, TlsVariant, UnitWindow, Unproved,
-    Weak0Rule, Window, max_window, x86_property_merge,
+    Arch, Branch, Code, DemandClass, DynRole, DynTag, EhEncodings, Erratum, ErratumSite, Facts,
+    Field, FieldError, GotBase, GotShape, Howto, LazyTarget, OutputCx, OutputKind, PatchCx,
+    PltChunk, PltPart, PltShape, PltVariant, PropMerge, Reach, Records, RefName, Refusal, RelForm,
+    RelocAt, Site, SlotKind, Status, SymNames, SynthCx, ThunkShape, TlsAbi, TlsVariant, UnitWindow,
+    Unproved, Weak0Rule, WeakClass, Window, max_window, x86_property_merge,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
 
 pub use apply::{
-    DTPOFF_PLACE, DYNAMIC_TLS, LD12, LD13, LD22, NON_ALLOC_TLS, TLS_TO_IE, UNRECOGNIZED_DESC,
-    UNRECOGNIZED_GD, UNRECOGNIZED_LD, scan_checks,
+    DTPOFF_PLACE, DYNAMIC_TLS, LD12, LD13, LD22, NON_ALLOC_TLS, TLS_TO_IE, TLS_WEAK_DYNAMIC,
+    UNRECOGNIZED_DESC, UNRECOGNIZED_GD, UNRECOGNIZED_LD, on_branch, scan_checks,
 };
 
-/// The x86-64 architecture (M1: static and static-pie executables,
-/// `docs/ROADMAP.md`). Every type of §6.1 is M1 or later, so the value
-/// has no milestone switch; the M2 parts (the lazy PLT, the dynamic TLS
-/// models) are refused by name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct X64;
+/// The x86-64 architecture. Every type of §6.1 is M1 or later; `max`
+/// says whether the M2 parts (dynamic executables, `spec/dyn.md`) are
+/// on: the lazy PLT (§10.3), the lazy target, the weak-use classes
+/// (X-57), GD → IE and TLSDESC → IE (X-58) and the unrelaxed GD pair
+/// (X-26). With `max = M1` they are refused by name, as before M2; a
+/// static link takes the same path under either value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct X64 {
+    /// The last milestone whose rules are on (`M1` or `M2`).
+    pub max: Status,
+}
+
+impl Default for X64 {
+    fn default() -> Self {
+        Self::M1
+    }
+}
 
 impl X64 {
-    pub const M1: Self = Self;
+    pub const M1: Self = Self { max: Status::M1 };
+    pub const M2: Self = Self { max: Status::M2 };
+
+    /// The architecture with the rules up to `max` (`M1` or `M2`; any
+    /// other status is `M1`).
+    #[must_use]
+    pub const fn new(max: Status) -> Self {
+        match max {
+            Status::M2 => Self::M2,
+            _ => Self::M1,
+        }
+    }
+
+    /// Whether the M2 rules are on.
+    #[must_use]
+    pub const fn m2(&self) -> bool {
+        matches!(self.max, Status::M2)
+    }
 }
 
 /// The facts of X-36, X-49 and X-50.
@@ -177,7 +205,7 @@ impl Arch for X64 {
         at: &RelocAt<'_>,
         out: &mut mortar_arch::DemandSink<'_>,
     ) {
-        apply::scan(cx, at, out);
+        apply::scan(self.m2(), cx, at, out);
     }
 
     fn apply(
@@ -186,7 +214,7 @@ impl Arch for X64 {
         at: &RelocAt<'_>,
         out: &mut mortar_arch::SectionOut<'_>,
     ) -> Result<(), FieldError> {
-        apply::apply(cx, at, out)
+        apply::apply(self.m2(), cx, at, out)
     }
 
     /// §8.6: in an executable a consumed follower owns nothing and is a
@@ -252,7 +280,11 @@ impl Arch for X64 {
         Ok(if ibt { PltVariant::Ibt } else { PltVariant::Lazy })
     }
 
-    /// The IPLT entries of X-37 and X-38; the lazy PLT is M2.
+    /// The IPLT entries of X-37 and X-38; under M2 the lazy PLT of §10.3
+    /// (PLT0 and the entries, the same bytes under `-z now`, D-49). The
+    /// IBT lazy PLT stays refused by name (Q4): `OutputCx` does not tell
+    /// a dynamic `Pie` from a static PIE, whose IBT IPLT (X-38) is M1, so
+    /// the refusal is here, at the first IBT PLT header or entry.
     fn write_plt(
         &self,
         v: PltVariant,
@@ -267,7 +299,17 @@ impl Arch for X64 {
             (PltVariant::Ibt, PltPart::Iplt(_)) => {
                 synth::put(out, &synth::iplt_ibt(cx.addr, cx.got_plt)?)
             }
-            (PltVariant::Lazy | PltVariant::Ibt, _) => Err(FieldError::Refused(synth::LAZY_PLT)),
+            (PltVariant::Lazy, PltPart::Header(0)) if self.m2() => {
+                synth::put(out, &synth::plt0(cx.addr, cx.got_base)?)
+            }
+            // `push $n`: the entry's `.rela.plt` index (§10.3).
+            (PltVariant::Lazy, PltPart::Entry { chunk: 0, .. }) if self.m2() => {
+                synth::put(out, &synth::plt_entry(cx.addr, cx.got_plt, cx.index, cx.header)?)
+            }
+            (PltVariant::Ibt, _) if self.m2() => Err(FieldError::Refused(synth::IBT_PLT)),
+            (PltVariant::Lazy | PltVariant::Ibt, _) if !self.m2() => {
+                Err(FieldError::Refused(synth::LAZY_PLT))
+            }
             _ => Err(FieldError::MissingTerm("x86-64 PLT variant")),
         }
     }
@@ -346,6 +388,34 @@ impl Arch for X64 {
             DynRole::IRelative => 37,
             DynRole::TpOff { negated: true } => return None,
         })
+    }
+
+    /// D-49, §10.3: entry + 6 (the `push`) for the lazy PLT under M2; the
+    /// IBT PLT is refused (Q4) and M1 writes no dynamic PLT.
+    fn lazy_target(&self, v: PltVariant) -> Option<LazyTarget> {
+        (self.m2() && v == PltVariant::Lazy).then_some(LazyTarget::Entry { plus: synth::LAZY_PLUS })
+    }
+
+    /// arch.md §3.10, `spec/dyn.md` D-30: x86-64 has no tag of its own in
+    /// an executable (`DT_X86_64_PLT*` is never written).
+    fn dyn_tags(&self, _cx: &OutputCx) -> &'static [DynTag] {
+        &[]
+    }
+
+    /// X-57 (D-25's x86-64 column) under M2, with the branch-opcode test;
+    /// every type is unfillable under M1 (every weak key `Weak0`).
+    fn weak_use(
+        &self,
+        r_type: u32,
+        place: &[u8],
+        offset: u64,
+        writable: bool,
+    ) -> Option<WeakClass> {
+        if self.m2() {
+            apply::weak_use(r_type, place, offset, writable)
+        } else {
+            Some(WeakClass::Unfillable)
+        }
     }
 
     /// §7: `S = 0` for every class (`Pc` in `Pie` is refused at scan,
