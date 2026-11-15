@@ -16,7 +16,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `diag.md` | `mortar_diag`: diagnostics, the vocabulary of refusals, demangling | normative (WP-007); demangling planned |
 | `cli.md` | `mortar_cli`: the command line and the status of every option | normative (WP-008) |
 | `script.md` | `mortar_script`: linker scripts, version scripts, dynamic lists | §1-§7 normative (WP-009, stage 1: lexer, implicit-script commands, recognition); SECTIONS, expressions, version scripts planned |
-| `input.md` | `mortar_input`: finding and loading files | planned (WP-021) |
+| `input.md` | `mortar_input`: finding and loading files | draft (WP-021) |
 | `resolve.md` | `mortar_resolve`: symbol resolution | planned (WP-022) |
 | `arch.md` | `mortar_arch`: the `Arch` trait | accepted for M1 (WP-013; two independent review passes, dispositions in `landed/arch/WP-013.md`); its requested `model.md` changes M-1..M-8 are applied by WP-020c |
 | `a64.md` | AArch64: relocation table, PLT/GOT/TLS/thunk shapes, erratum 843419 | accepted for M1 (WP-013; reviewed with `arch.md`) |
