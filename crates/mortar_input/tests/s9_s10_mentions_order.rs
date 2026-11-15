@@ -24,7 +24,7 @@ fn objs(s: &Scratch, names: &[&str]) -> bool {
 }
 
 #[test]
-fn s9_1_mentions_not_files() {
+fn s9_1_mentions() {
     let s = Scratch::new("s9mentions");
     if !objs(&s, &["f.o"]) {
         return;
@@ -59,7 +59,7 @@ fn s9_1_mentions_not_files() {
 }
 
 #[test]
-fn s9_3_error_once_at_lowest_mention() {
+fn s9_3_error_keyed_to_lowest_mention() {
     let s = Scratch::new("s9once");
     std::fs::create_dir(s.join("d.o")).unwrap();
     s.write("s.ld", "INPUT(d.o)\n");

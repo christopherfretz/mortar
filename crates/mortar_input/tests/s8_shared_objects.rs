@@ -12,7 +12,7 @@ fn so(dir: &std::path::Path, name: &str, src: &str, extra: &[&str]) -> bool {
 }
 
 #[test]
-fn s8_1_pie_is_refused() {
+fn s8_1_pie_refused() {
     let s = Scratch::new("s8pie");
     if common::cc(
         s.path(),
@@ -36,7 +36,7 @@ fn s8_1_pie_is_refused() {
 }
 
 #[test]
-fn s8_1_libc_so_6_is_accepted() {
+fn s8_1_libc_so_6_accepted() {
     let s = Scratch::new("s8libc");
     if !common::have(&["native"]) {
         return;
@@ -52,7 +52,7 @@ fn s8_1_libc_so_6_is_accepted() {
 }
 
 #[test]
-fn s8_1_no_section_headers_is_refused() {
+fn s8_1_no_section_headers_refused() {
     let s = Scratch::new("s8nosh");
     let Some(objcopy) = common::need("llvm-objcopy") else { return };
     if !so(s.path(), "libf.so", C, &[]) {
@@ -81,7 +81,7 @@ fn dynamic_section(dir: &std::path::Path, file: &str) -> (usize, usize) {
 }
 
 #[test]
-fn s8_1_soname_twice_is_malformed() {
+fn s8_1_soname_twice() {
     let s = Scratch::new("s8soname2");
     if !so(s.path(), "libf.so", C, &["-Wl,-soname,libf.so.1", "-Wl,--no-as-needed", "-lc"]) {
         return;
@@ -128,7 +128,7 @@ fn s8_1_static_link_of_shared_object() {
 }
 
 #[test]
-fn s8_2_one_file_per_soname() {
+fn s8_2_one_per_soname_and_duplicate_soname_warning_only_when_bytes_differ() {
     let s = Scratch::new("s8onesoname");
     std::fs::create_dir_all(s.join("d1")).unwrap();
     std::fs::create_dir_all(s.join("d2")).unwrap();
@@ -188,7 +188,7 @@ fn s8_2_as_needed_merge() {
 }
 
 #[test]
-fn s8_3_needed_names_and_s8_5_spellings() {
+fn s8_3_needed_name_table_and_s8_5_sonameless_spellings() {
     let s = Scratch::new("s8needed");
     std::fs::create_dir_all(s.join("ns2")).unwrap();
     if !so(&s.join("ns2"), "libf.so", C, &[]) {
@@ -243,7 +243,7 @@ fn s8_3_script_names_soname_less_object() {
 }
 
 #[test]
-fn s8_4_no_interpreter_is_refused() {
+fn s8_4_no_interpreter_refused() {
     let s = Scratch::new("s8nointerp");
     if !so(s.path(), "libf.so", C, &[]) {
         return;
@@ -295,7 +295,7 @@ fn closure_fixture(s: &Scratch, g_flags: &[&str]) -> bool {
 }
 
 #[test]
-fn s8_6_closure_rpath_link_and_numbering() {
+fn s8_6_numbering_and_rpath_link_colon_split() {
     let s = Scratch::new("s8closure");
     if !closure_fixture(&s, &[]) {
         return;
@@ -320,7 +320,7 @@ fn s8_6_closure_rpath_link_and_numbering() {
 }
 
 #[test]
-fn s8_6_closure_only_where_said() {
+fn s8_6_when_loaded() {
     let s = Scratch::new("s8closurewhen");
     if !closure_fixture(&s, &[]) {
         return;
@@ -354,7 +354,7 @@ fn s8_6_closure_only_where_said() {
 }
 
 #[test]
-fn s8_6_closure_origin_and_own_directory() {
+fn s8_6_origin() {
     let s = Scratch::new("s8origin");
     if !closure_fixture(&s, &["-Wl,-rpath,$ORIGIN/../hid"]) {
         return;
@@ -367,7 +367,7 @@ fn s8_6_closure_origin_and_own_directory() {
 }
 
 #[test]
-fn s8_6_closure_not_found() {
+fn s8_6_not_found_warning() {
     let s = Scratch::new("s8notfound");
     if !closure_fixture(&s, &[]) {
         return;

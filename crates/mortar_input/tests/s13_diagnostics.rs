@@ -24,7 +24,7 @@ fn one(bad: &mut Vec<String>, s: &Scratch, args: &[&str], id: &str, text: &str) 
 
 #[test]
 #[allow(clippy::too_many_lines, reason = "one case per row of the table")]
-fn s13_table() {
+fn s13_each_diagnostic() {
     let s = Scratch::new("s13");
     if !common::have(&["native", "x86"]) {
         return;

@@ -20,7 +20,7 @@ fn pattern(n: usize) -> Vec<u8> {
 }
 
 #[test]
-fn s11_2_chunked_read() {
+fn s11_2_chunked_read_equals_whole_read() {
     let s = Scratch::new("s11chunk");
     let n = (2 * CHUNK + 12_345) as usize;
     let bytes = pattern(n);
@@ -302,4 +302,21 @@ fn s12_determinism() {
     }
     assert!(reference.contains("libz.so.9"), "{reference}");
     assert!(reference.contains("cannot open missing.o"), "{reference}");
+}
+
+#[test]
+fn s12_2_keys() {
+    let s = Scratch::new("s12keys");
+    if common::cc(s.path(), "native", "a.o", "int a;\n", &[]).is_none() {
+        return;
+    }
+    // The expansion of `-lq`: the script (k 0), a.o (1), z.o (2), b.o (3).
+    // z.o's error sorts before b.o's, though its text sorts after.
+    s.write("z.o", "junk\x01\n");
+    s.write("b.o", "junk\x01\n");
+    s.write("libq.so", "INPUT(a.o z.o b.o)\n");
+    let out = common::run(s.path(), &["-maarch64linux", "-L.", "-lq"]);
+    let keys: Vec<_> = out.problems.iter().map(|p| (p.unit, p.seq >> 40)).collect();
+    assert_eq!(keys, [(2, 2), (2, 3)], "{:?}", common::report(&out));
+    assert!(common::report(&out)[0].contains("z.o"));
 }
