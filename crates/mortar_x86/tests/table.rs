@@ -242,3 +242,32 @@ fn slots_and_got_plt_of_x86_46_47() {
     assert_eq!(synth::got_plt_reserved(Some(0xa4ef4)), [0xa4ef4, 0, 0]);
     assert_eq!((X86::M1.got().slot_words)(SlotKind::Addr), 1);
 }
+
+#[test]
+fn howto_table_equals_howto() {
+    // WP-032i: `classify` reads the precomputed table.
+    for t in 0..table::MAX_TYPE + 64 {
+        assert_eq!(table::howto_of(t), table::howto(t), "type {t}");
+    }
+    assert_eq!(table::howto_of(u32::MAX), None);
+}
+
+#[test]
+fn types_outside_windowed_have_no_window_and_no_form() {
+    // WP-032i: `classify` skips `read_window` for them.
+    let bytes = [0x8b, 0x83, 0xa1, 0xff, 0x10, 0x8d, 0x04, 0x24, 0x65, 0xa1, 0, 0, 0, 0, 0, 0];
+    for t in 0..table::MAX_TYPE + 8 {
+        if t < 64 && mortar_x86::forms::WINDOWED & (1 << t) != 0 {
+            continue;
+        }
+        for offset in 0..bytes.len() as u64 {
+            let site = Site { bytes: &bytes, offset };
+            assert_eq!(mortar_x86::forms::form(t, site), None, "type {t}");
+            assert_eq!(
+                mortar_x86::forms::read_window(t, site),
+                Window { before: 0, after: 0 },
+                "type {t}"
+            );
+        }
+    }
+}
