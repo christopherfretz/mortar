@@ -220,14 +220,14 @@ fn member_container_is_not_resident() {
     }
 }
 
-/// The one exception to the zero (WP-071's record): the first 64 bytes of
-/// a file are read before its class is known and stay resident (every
-/// reader starts there). An ELF32 header is 52 bytes, so an ELF32 object
+/// Named exception (WP-071's record, pending the supervisor's ruling):
+/// the first 64 bytes of a file are read before its class is known and
+/// stay resident (every reader starts there). An ELF32 header is 52 bytes, so an ELF32 object
 /// whose container is its first section has up to 12 container bytes read;
 /// nothing past byte 64.
 // spec: meta.md MT-42 (the record's finding); input.md §11.1 (A-8)
 #[test]
-fn elf32_head_is_the_one_exception() {
+fn elf32_head_is_the_named_exception() {
     let s = Scratch::new("tmt42d");
     let Some(gas) = common::need("i686-linux-gnu-as") else { return };
     let src = format!(
@@ -257,4 +257,112 @@ fn elf32_head_is_the_one_exception() {
     let rodata = staged.sections().find(|x| x.name().unwrap() == b".rodata").unwrap();
     assert_eq!(rodata.data().unwrap(), 42u32.to_le_bytes());
     assert_eq!(staged.section_count(), Object::parse(&whole).unwrap().section_count());
+}
+
+/// The container bytes the loads of `p` read (the counter of `log`).
+fn container_bytes_loaded(log: &Mutex<Log>, p: &Path, cs: &[Range<u64>]) -> u64 {
+    let l = log.lock().unwrap();
+    l.loads
+        .iter()
+        .filter(|(q, _)| q == p)
+        .map(|(_, r)| cs.iter().map(|c| overlap(r, c)).sum::<u64>())
+        .sum()
+}
+
+/// Named exception (WP-071's record, pending the supervisor's ruling): a
+/// regular archive's members are read before their section headers are
+/// known, so a member of at most 64 KiB is read whole and stays resident,
+/// its container with it. This test pins the extent: the small member's
+/// container is read and resident, the large member's is not resident.
+// spec: meta.md MT-42 (exception: archive members); input.md §11.1 (A-8)
+#[test]
+fn small_member_container_is_the_archive_exception() {
+    let s = Scratch::new("tmt42e");
+    let Some(files) = fixtures(&s) else { return };
+    let Some(a) = common::ar(s.path(), "lib.a", &["large.o", "small.o"], false) else { return };
+    let whole = std::fs::read(&a).unwrap();
+    let at = |i: usize| {
+        let m = std::fs::read(&files[i].0).unwrap();
+        whole.windows(m.len()).position(|w| w == m).unwrap() as u64
+    };
+    let shift = |i: usize| -> Vec<Range<u64>> {
+        let base = at(i);
+        files[i].1.iter().map(|c| base + c.start..base + c.end).collect()
+    };
+    let (small, large) = (shift(0), shift(2));
+    let (store, log) = store(false);
+    let b = read_all(&store, &[(a.clone(), Vec::new())])[0];
+    let read_small = container_bytes_loaded(&log, &a, &small);
+    let total_small: u64 = small.iter().map(|c| c.end - c.start).sum();
+    assert_eq!(read_small, total_small, "the small member is read whole (the exception)");
+    let held = |cs: &[Range<u64>]| -> u64 {
+        store
+            .parts(b)
+            .iter()
+            .map(|p| {
+                let r = p.offset..p.offset + p.bytes.len() as u64;
+                cs.iter().map(|c| overlap(&r, c)).sum::<u64>()
+            })
+            .sum()
+    };
+    assert_eq!(held(&small), total_small, "and resident with its member");
+    assert_eq!(held(&large), 0, "a large member's container is never resident");
+}
+
+/// Named exception (WP-071's record, pending the supervisor's ruling): the
+/// whole-file paths read containers. A file made fully resident because
+/// the descriptor budget ran out (`input.md` §11.4, `make_full`), and
+/// every file under the resident policy, is read whole.
+// spec: meta.md MT-42 (exception: whole-file reads); input.md §11.4
+#[test]
+fn whole_file_paths_are_the_named_exception() {
+    let s = Scratch::new("tmt42f");
+    let Some(files) = fixtures(&s) else { return };
+    let large: Vec<(PathBuf, Vec<Range<u64>>)> = (0..8)
+        .map(|i| {
+            let p = s.write(&format!("l{i}.o"), std::fs::read(&files[2].0).unwrap());
+            (p, files[2].1.clone())
+        })
+        .collect();
+    for (policy, max_open) in [(StorePolicy::Staged, Some(2)), (StorePolicy::Resident, None)] {
+        let log = Arc::new(Mutex::new(Log::default()));
+        let l = Arc::clone(&log);
+        let hooks = Hooks {
+            on_read: Some(Box::new(move |site, range| {
+                let mut l = l.lock().unwrap();
+                match site {
+                    ReadSite::Load(p) => l.loads.push((p.to_path_buf(), range)),
+                    ReadSite::Copy(b) => l.copies.push((b, range)),
+                }
+            })),
+            ..Hooks::default()
+        };
+        let config = StoreConfig { max_open, ..StoreConfig::default() };
+        let store = Store::with_config(policy, config, hooks);
+        let _ = read_all(&store, &large);
+        let l = log.lock().unwrap();
+        let read: u64 = large
+            .iter()
+            .map(|(p, cs)| {
+                let loads: u64 = l
+                    .loads
+                    .iter()
+                    .filter(|(q, _)| q == p)
+                    .map(|(_, r)| cs.iter().map(|c| overlap(r, c)).sum::<u64>())
+                    .sum();
+                loads
+            })
+            .sum();
+        let copied: u64 = l
+            .copies
+            .iter()
+            .map(|(_, r)| files[2].1.iter().map(|c| overlap(r, c)).sum::<u64>())
+            .sum();
+        let one: u64 = files[2].1.iter().map(|c| c.end - c.start).sum();
+        match policy {
+            // Two files keep their descriptors; six are made full.
+            StorePolicy::Staged => assert_eq!(read + copied, 6 * one, "{policy:?}"),
+            StorePolicy::Resident => assert_eq!(read + copied, 8 * one, "{policy:?}"),
+        }
+    }
 }

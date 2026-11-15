@@ -1393,7 +1393,7 @@ impl Store {
         // reader starts there (`mortar_elf`'s file header, `facts`). Only
         // an ELF32 file (a 52-byte header) can have a container start
         // before byte 64, and then up to 12 of its bytes are read before
-        // the class is known: the one exception to MT-42's zero, in
+        // the class is known: a named exception to MT-42's zero, in
         // WP-071's record (reading 52 bytes first would cost every ELF64
         // object one more read).
         s.ranges.push(0..PREFIX.min(len));
