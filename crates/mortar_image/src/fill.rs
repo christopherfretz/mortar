@@ -9,8 +9,9 @@ use mortar_arch::{Arch, FillCx, FillTables, OutputKind, TlsBlock};
 use mortar_core::SymKey;
 use mortar_core::par::Pool;
 use mortar_diag::{Diagnostic, Key, Kind, Place};
+use mortar_digest::{Leaf, TreeStyle};
 
-use crate::digest::{self, LeafHasher};
+use crate::digest;
 use crate::plan::{Plan, Unit};
 use crate::reloc::{self, Scratch};
 use crate::source::{self, Source};
@@ -52,7 +53,8 @@ pub struct Image<'a> {
     /// The chunks [`crate::plan::SynthUnit::chunk`] indexes.
     pub chunks: &'a [&'a dyn SynthChunk],
     /// The build id's style; `None` when no leaves are computed (I-73).
-    pub hasher: Option<&'a dyn LeafHasher>,
+    /// Leaves are windows, so it needs `plan.window == IMAGE_BLOCK` (I-75).
+    pub build_id: Option<TreeStyle>,
 }
 
 impl std::fmt::Debug for Image<'_> {
@@ -78,7 +80,7 @@ pub struct Failed {
 #[derive(Debug, Default)]
 struct JobOut {
     errors: Vec<(Key, Diagnostic)>,
-    leaves: Vec<u8>,
+    leaves: Vec<(u64, Leaf)>,
     /// The lowest window offset whose write failed, with the error.
     write: Option<(u64, io::Error)>,
     fatal: Option<(Key, Diagnostic)>,
@@ -99,6 +101,10 @@ struct Worker {
 /// lowest failing window (I-64), keyed `(105, 0, 0)` (I-68).
 pub fn write(img: &Image<'_>, sink: &dyn Sink, output_path: &str, pool: &Pool) -> Result<Filled, Failed> {
     let plan = img.plan;
+    if img.build_id.is_some() && plan.window != crate::IMAGE_BLOCK {
+        let what = format!("fill: a build id needs W = IMAGE_BLOCK, the plan has {:#x} (I-75)", plan.window);
+        return Err(Failed { diagnostics: vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))] });
+    }
     let mut outs: Vec<JobOut> = plan.jobs.iter().map(|_| JobOut::default()).collect();
     let stop = AtomicBool::new(false);
     pool.for_each_part_init(outs.iter_mut(), Worker::default, |w, j, out| {
@@ -111,7 +117,7 @@ pub fn write(img: &Image<'_>, sink: &dyn Sink, output_path: &str, pool: &Pool) -
     for o in outs {
         diagnostics.extend(o.errors);
         diagnostics.extend(o.fatal);
-        leaves.extend_from_slice(&o.leaves);
+        leaves.extend(o.leaves);
         if let Some((off, e)) = o.write
             && write_err.as_ref().is_none_or(|(w, _)| off < *w)
         {
@@ -121,9 +127,15 @@ pub fn write(img: &Image<'_>, sink: &dyn Sink, output_path: &str, pool: &Pool) -
     let mut build_id = None;
     if write_err.is_none()
         && diagnostics.is_empty()
-        && let Some(h) = img.hasher
+        && let Some(style) = img.build_id
     {
-        let id = digest::build_id(h, plan.file_size, plan.window, &leaves);
+        let id = match digest::build_id(style, plan.file_size, &leaves) {
+            Ok(id) => id,
+            Err(e) => {
+                let what = format!("fill: build id: {e}");
+                return Err(Failed { diagnostics: vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))] });
+            }
+        };
         if let Some(sealed) = &plan.sealed {
             let n = (sealed.end - sealed.start) as usize;
             let mut bytes = id.clone();
@@ -257,8 +269,8 @@ fn run_job(
     let win = plan.window as usize;
     for (k, window) in buf[..len].chunks(win).enumerate() {
         let offset = job.start + (k * win) as u64;
-        if let Some(h) = img.hasher {
-            h.leaf(window, &mut out.leaves);
+        if let Some(style) = img.build_id {
+            out.leaves.push((offset / plan.window, mortar_digest::leaf(style.tree_fn(), window)));
         }
         // A failed link writes nothing more (I-64, I-65): the temporary is
         // removed anyway.

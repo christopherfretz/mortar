@@ -15,9 +15,8 @@
 //!
 //! Stand-ins for interfaces other packages own (each named in
 //! `spec/landed/image/WP-026.md`): [`synth::SynthChunk`] (§13, WP-025),
-//! [`digest::LeafHasher`] (§8, WP-026h), the clipped `apply` wrapper and
-//! the tombstone table (`reloc`, WP-023b), [`plan::RecOrder`] (I-29,
-//! WP-026s).
+//! the clipped `apply` wrapper, `target::Target` and the tombstone table
+//! (WP-023b), [`plan::RecOrder`] (I-29, WP-026s).
 #![forbid(unsafe_code)]
 // A `Diagnostic` is the error value of every fallible step here, returned
 // once per link: its size costs nothing on the success path. The spec's
@@ -39,7 +38,7 @@ pub mod target;
 pub mod tombstone;
 
 /// `W = IMAGE_BLOCK` (I-31, I-75): the window, and the build id's leaf.
-pub const IMAGE_BLOCK: u64 = 1 << 20;
+pub const IMAGE_BLOCK: u64 = mortar_digest::IMAGE_BLOCK;
 
 /// The phase ordinal of fill (model §8).
 pub const PHASE_IMAGE: u16 = 100;
