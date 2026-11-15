@@ -113,23 +113,26 @@ pub const fn is_landing_pad(w: u32) -> bool {
 pub const BTI_LANDING_PAD: Refusal = Refusal::named(RefusalClass::Feature, "BTI landing pad");
 
 /// The static content of a slot in a `static` output (§10.1, §12.5): one
-/// or two words. `s` is the symbol's address (0 for `weak0`); `tls` the
+/// or two words. `s` is the symbol's address, `None` for `weak0` (whose
+/// address is 0 and whose TP and DTP offsets are 0, §7); `tls` the
 /// template when the slot is a TLS one.
 pub fn static_slot(
     kind: mortar_arch::SlotKind,
-    s: u64,
+    s: Option<u64>,
     tls: Option<TlsBlock>,
     abi: &TlsAbi,
 ) -> Result<([u64; 2], usize), FieldError> {
     use mortar_arch::SlotKind as K;
     let tls = || tls.ok_or(FieldError::MissingTerm("PT_TLS"));
-    Ok(match kind {
-        K::Addr | K::PltGot => ([s, 0], 1),
-        K::TpOff { negated: false } => ([abi.tp_rel(s, tls()?) as u64, 0], 1),
-        K::TlsGd => ([1, TlsAbi::dtp_rel(s, tls()?) as u64], 2),
-        K::TlsLd => ([1, 0], 2),
+    Ok(match (kind, s) {
+        (K::Addr | K::PltGot, s) => ([s.unwrap_or(0), 0], 1),
+        (K::TpOff { negated: false }, Some(s)) => ([abi.tp_rel(s, tls()?) as u64, 0], 1),
+        (K::TlsGd, Some(s)) => ([1, TlsAbi::dtp_rel(s, tls()?) as u64], 2),
+        (K::TpOff { negated: false }, None) => ([0, 0], 1),
+        // The module pair; for `weak0` its offset is 0.
+        (K::TlsGd, None) | (K::TlsLd, _) => ([1, 0], 2),
         // Relaxed (R1) in a static output: never demanded.
-        K::TlsDesc | K::TpOff { negated: true } => return Err(FieldError::MissingSlot),
+        (K::TlsDesc | K::TpOff { negated: true }, _) => return Err(FieldError::MissingSlot),
     })
 }
 

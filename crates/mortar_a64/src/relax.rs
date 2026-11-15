@@ -83,10 +83,9 @@ pub fn got_pair(at: &RelocAt<'_>) -> Option<(u64, u32)> {
 /// `at` belongs to, if it holds. The 514 looks one record back, the
 /// `CALL26` two.
 ///
-/// "No other relocation in `[o, o + 16)`" is checked on the neighbouring
-/// records `i − 1` and `i + 3`; a record elsewhere in the section with its
-/// place in the window is an overlap of the matched unit, which scan
-/// refuses (arch.md §3.4), never a wrong rewrite.
+/// The pattern does not look at other records: any other record whose
+/// window meets `[o, o + 16)` overlaps the matched unit (its windows are
+/// `unit_window`'s), and the overlap check of arch.md §3.4 refuses it.
 #[must_use]
 pub fn gd_lead(at: &RelocAt<'_>, names: &dyn SymNames) -> Option<(u32, u64)> {
     let back = match at.r_type {
@@ -98,7 +97,7 @@ pub fn gd_lead(at: &RelocAt<'_>, names: &dyn SymNames) -> Option<(u32, u64)> {
     // The words first: they are the cheap test, and rule out almost every
     // ordinary `CALL26`.
     let o = at.r_offset.checked_sub(4 * u64::from(back))?;
-    let end = o.checked_add(16)?;
+    o.checked_add(16)?;
     // The `nop` after the call first: ordinary calls fail there.
     if word(at, o + 12)? != NOP {
         return None;
@@ -122,13 +121,5 @@ pub fn gd_lead(at: &RelocAt<'_>, names: &dyn SymNames) -> Option<(u32, u64)> {
         && call.r_offset == o + 8
         && at.is_insn(o + 12)
         && names.name(call.key) == crate::TLS.get_addr;
-    if !ok {
-        return None;
-    }
-    let in_window =
-        |x: Option<mortar_arch::Reloc>| x.is_some_and(|x| (o..end).contains(&x.r_offset));
-    if in_window(i.checked_sub(1).and_then(|j| r.get(j))) || in_window(r.get(i + 3)) {
-        return None;
-    }
     ok.then_some((i, o))
 }

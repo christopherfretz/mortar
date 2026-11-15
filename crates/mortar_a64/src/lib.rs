@@ -29,7 +29,7 @@ use mortar_arch::{
 use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
 
-pub use apply::{ADD_X0_X1_X0, MRS_X1_TPIDR, WEAK_TLS, scan_checks};
+pub use apply::{ADD_X0_X1_X0, MRS_X1_TPIDR, scan_checks};
 
 /// The AArch64 architecture, built with the milestone it enables and its
 /// options (arch.md §3.7 `errata`).

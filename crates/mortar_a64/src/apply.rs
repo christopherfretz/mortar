@@ -7,18 +7,13 @@
 use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
     AddendRule, Base, Check, ClassOutcome, DemandClass, DemandFlags, DemandSink, Field, FieldError,
-    FillCx, Incompatible, Minus, Refusal, RelocAt, ScanCx, ScanError, SectionOut, SlotKind,
-    TargetKind, Terms, Weak0Rule, class_outcome,
+    FillCx, Incompatible, Minus, RelocAt, ScanCx, ScanError, SectionOut, SlotKind, TargetKind,
+    Terms, Weak0Rule, class_outcome,
 };
-use mortar_diag::RefusalClass;
 
 use crate::forms::{self, B26};
 use crate::synth::{NOP, checked, page_delta};
 use crate::{TLS, relax, weak0_rule};
-
-/// A thread-local undefined weak (§7).
-pub const WEAK_TLS: Refusal =
-    Refusal::named(RefusalClass::Feature, "undefined weak thread-local symbol");
 
 /// The input-only checks of arch.md §3.4 for one relocation: the field and
 /// its window lie in the section; the addend rule (a64.md §3.1); the
@@ -57,12 +52,15 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         return;
     }
     let sym = cx.tables.sym(at.key);
-    if h.class.is_tls() && sym.kind == TargetKind::Weak0 && cx.place.alloc {
-        out.error(at.index, ScanError::Refused(WEAK_TLS));
-        return;
-    }
+    // §7: a TLS class treats `weak0` as TLS-local, its TP and DTP offsets
+    // being `A` (§12.2).
+    let kind = if h.class.is_tls() && sym.kind == TargetKind::Weak0 {
+        TargetKind::Local
+    } else {
+        sym.kind
+    };
     let data = matches!(h.field, Field::Data { .. });
-    match class_outcome(h.class, data, cx.output, sym.kind, cx.place, sym.tls) {
+    match class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls) {
         ClassOutcome::Demand(d) => {
             out.raise(at.key, d.flags);
             out.raise_global(d.global);
@@ -76,7 +74,7 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         ClassOutcome::ArchTls => {
             let gd =
                 exec && h.class == DemandClass::TlsGd && relax::gd_lead(at, cx.tables).is_some();
-            let (flags, global) = tls_demand(h.class, at.r_type, cx.output, sym.kind, gd);
+            let (flags, global) = tls_demand(h.class, at.r_type, cx.output, kind, gd);
             out.raise(at.key, flags);
             out.raise_global(global);
         }
@@ -125,10 +123,11 @@ fn tls_demand(
     }
 }
 
-/// TLS-local (a64.md §8): defined in this output, its TP offset a
-/// link-time constant (the caller has checked the output is an exec).
+/// TLS-local (a64.md §8): defined in this output, or `weak0` (§7), its TP
+/// offset a link-time constant (the caller has checked the output is an
+/// exec).
 const fn tls_local(kind: TargetKind) -> bool {
-    matches!(kind, TargetKind::Local | TargetKind::Abs)
+    matches!(kind, TargetKind::Local | TargetKind::Abs | TargetKind::Weak0)
 }
 
 /// The bytes of the field at `r_offset`.
@@ -174,17 +173,14 @@ pub fn apply(
     }
     let sym = cx.tables.sym(at.key);
     let weak0 = sym.kind == TargetKind::Weak0;
-    if h.class.is_tls() && weak0 && out.alloc {
-        return Err(FieldError::Refused(WEAK_TLS));
-    }
     if exec {
         match h.class {
             DemandClass::TlsDesc if tls_local(sym.kind) || !matches!(at.r_type, 565..=568) => {
-                return tlsdesc_exec(cx, at, out, sym.s, sym.kind);
+                return tlsdesc_exec(cx, at, out, sym);
             }
             DemandClass::TlsGd => {
                 if let Some((_, o)) = relax::gd_lead(at, cx.tables) {
-                    return gd_exec(cx, at, out, sym.s, sym.kind, o);
+                    return gd_exec(cx, at, out, sym, o);
                 }
             }
             DemandClass::TlsIe
@@ -196,7 +192,7 @@ pub fn apply(
                     )
                     && !cx.tables.flags(at.key).contains(DemandFlags::TLSIE_NORELAX) =>
             {
-                return ie_to_le(cx, at, out, sym.s);
+                return ie_to_le(cx, at, out, sym);
             }
             _ => {}
         }
@@ -243,14 +239,34 @@ pub const ADD_X0_X1_X0: u32 = 0x8B00_0020;
 const MOVZ_X0_16: u32 = 0xD2A0_0000;
 const MOVK_X0: u32 = 0xF280_0000;
 
-/// `T = TPREL(S + A)`, checked `u(32)` when `check` (§8.1, §8.3, §8.4).
-fn tprel(cx: &FillCx<'_>, s: u64, a: i64, check: bool) -> Result<u64, FieldError> {
-    let tls = cx.tls.ok_or(FieldError::MissingTerm("PT_TLS"))?;
-    let t = TLS.tp_rel(s.wrapping_add(a as u64), tls);
+/// `T = TPREL(S + A)`, checked `u(32)` when `check` (§8.1, §8.3, §8.4);
+/// `A` for `weak0` (§7).
+fn tprel(
+    cx: &FillCx<'_>,
+    sym: mortar_arch::SymValue,
+    a: i64,
+    check: bool,
+) -> Result<u64, FieldError> {
+    let t = tls_off(cx, sym, a, |x, tls| TLS.tp_rel(x, tls))?;
     if check {
         checked(Check::Unsigned(32), 1, t)?;
     }
     Ok(t as u64)
+}
+
+/// A TLS offset of `S + A` by `f` (`TPREL` or `DTPREL`), and `A` itself
+/// for `weak0` (§7: its TP and DTP offsets are 0; no template needed).
+fn tls_off(
+    cx: &FillCx<'_>,
+    sym: mortar_arch::SymValue,
+    a: i64,
+    f: impl Fn(u64, mortar_arch::TlsBlock) -> i64,
+) -> Result<i64, FieldError> {
+    if sym.kind == TargetKind::Weak0 {
+        return Ok(a);
+    }
+    let tls = cx.tls.ok_or(FieldError::MissingTerm("PT_TLS"))?;
+    Ok(f(sym.s.wrapping_add(a as u64), tls))
 }
 
 const fn hi16(t: u64) -> u32 {
@@ -297,7 +313,7 @@ fn ie_to_le(
     cx: &FillCx<'_>,
     at: &RelocAt<'_>,
     out: &mut SectionOut<'_>,
-    s: u64,
+    sym: mortar_arch::SymValue,
 ) -> Result<(), FieldError> {
     let w = input_word(
         at,
@@ -306,7 +322,7 @@ fn ie_to_le(
             _ => return Err(FieldError::MissingTerm("IE field")),
         },
     )?;
-    let t = tprel(cx, s, at.addend, true)?;
+    let t = tprel(cx, sym, at.addend, true)?;
     let r = w & 0x1F;
     let word = if at.r_type == relax::ADR_GOTTPREL_PAGE21 {
         MOVZ_X0_16 | hi16(t) << 5 | r
@@ -322,13 +338,12 @@ fn gd_exec(
     cx: &FillCx<'_>,
     at: &RelocAt<'_>,
     out: &mut SectionOut<'_>,
-    s: u64,
-    kind: TargetKind,
+    sym: mortar_arch::SymValue,
     o: u64,
 ) -> Result<(), FieldError> {
     let lead = at.r_type == relax::TLSGD_ADR_PAGE21;
-    let word = if tls_local(kind) {
-        let t = tprel(cx, s, at.addend, true)?;
+    let word = if tls_local(sym.kind) {
+        let t = tprel(cx, sym, at.addend, true)?;
         if lead { MOVZ_X0_16 | hi16(t) << 5 } else { MOVK_X0 | lo16(t) << 5 }
     } else {
         let g = gtprel(cx, at)?;
@@ -386,14 +401,9 @@ fn value(
         }
         Base::G(k) => cx.tables.slot(at.key, k).ok_or(FieldError::MissingSlot)?,
         Base::GotBase => cx.got_base.ok_or(FieldError::MissingTerm("GOT base"))?,
-        Base::TpRel => {
-            let tls = cx.tls.ok_or(FieldError::MissingTerm("PT_TLS"))?;
-            TLS.tp_rel(s.wrapping_add(a as u64), tls) as u64
-        }
-        Base::DtpRel => {
-            let tls = cx.tls.ok_or(FieldError::MissingTerm("PT_TLS"))?;
-            mortar_arch::TlsAbi::dtp_rel(s.wrapping_add(a as u64), tls) as u64
-        }
+        // §7: `A` for `weak0`, whose TP and DTP offsets are 0.
+        Base::TpRel => tls_off(cx, sym, a, |x, tls| TLS.tp_rel(x, tls))? as u64,
+        Base::DtpRel => tls_off(cx, sym, a, mortar_arch::TlsAbi::dtp_rel)? as u64,
         Base::Size => sym.size,
     };
     let got = match h.value.minus {
@@ -414,15 +424,14 @@ fn tlsdesc_exec(
     cx: &FillCx<'_>,
     at: &RelocAt<'_>,
     out: &mut SectionOut<'_>,
-    s: u64,
-    kind: TargetKind,
+    sym: mortar_arch::SymValue,
 ) -> Result<(), FieldError> {
     let h = at.howto;
     if let Field::Insn { form } = h.field {
         input_word(at, form)?;
     }
-    let word = if tls_local(kind) {
-        let t = tprel(cx, s, at.addend, matches!(at.r_type, 562 | 560 | 565))?;
+    let word = if tls_local(sym.kind) {
+        let t = tprel(cx, sym, at.addend, matches!(at.r_type, 562 | 560 | 565))?;
         match at.r_type {
             // ADR_PAGE21, LD_PREL19 (tiny), OFF_G1 (large): movz x0, #T[31:16], lsl #16.
             562 | 560 | 565 => MOVZ_X0_16 | hi16(t) << 5,

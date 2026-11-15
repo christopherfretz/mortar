@@ -338,11 +338,42 @@ fn s8_4_pattern_fails() {
     let all = support::all_code(16);
     at.proof = &all;
     assert_eq!(mortar_a64::relax::gd_lead(&at, &t), Some((0, 0)));
-    // Another record in [o, o+16) (R_AARCH64_NONE at o+12).
-    let mut extra = gd_relocs().to_vec();
-    extra.push(r(12, 1, 0));
-    let s = scan(M2, &t, OutputKind::Static, &input, &extra);
-    assert!(raised(&s, key(1)).contains(DemandFlags::TLS_GD));
+    // Another record in [o, o+16): the pattern still holds, and the record
+    // overlaps the unit (refused by arch.md §3.4, never relaxed around).
+    // A marker's window is its word (§6.1), so `NONE` at o+12 overlaps
+    // the `CALL26`'s [o+8, o+16); one past the window does not.
+    for (extra, overlap) in
+        [(r(12, 1, 0), true), (r(12, 1, 258), true), (r(4, 1, 258), true), (r(16, 1, 0), false)]
+    {
+        let mut relocs = gd_relocs().to_vec();
+        relocs.push(extra);
+        let s = scan(M2, &t, OutputKind::Static, &input, &relocs);
+        assert!(!raised(&s, key(1)).contains(DemandFlags::TLS_GD), "{extra:?}");
+        let mut windows: Vec<UnitWindow> = (0..relocs.len())
+            .map(|i| {
+                let rr = relocs[i];
+                let h =
+                    M2.classify(rr.r_type, Site { bytes: &input, offset: rr.r_offset }).unwrap();
+                let at = RelocAt {
+                    file: FileId(1),
+                    section: SectionId(3),
+                    index: u32::try_from(i).unwrap(),
+                    r_offset: rr.r_offset,
+                    key: rr.key,
+                    r_type: rr.r_type,
+                    addend: 0,
+                    howto: &h,
+                    site: Site { bytes: &input, offset: rr.r_offset },
+                    records: &&relocs[..],
+                    proof: &all,
+                };
+                M2.unit_window(OutputKind::Static, &at, &t).unwrap()
+            })
+            .collect();
+        let mut out = Vec::new();
+        mortar_arch::seq::overlaps(&mut windows, &mut out);
+        assert_eq!(out.iter().any(|&(rec, _)| rec == 3), overlap, "{extra:?}: {out:?}");
+    }
     // A shared output: no TLS relaxation.
     let s = scan(M2, &t, OutputKind::Shared, &input, &gd_relocs());
     assert!(raised(&s, key(1)).contains(DemandFlags::TLS_GD));
@@ -445,4 +476,89 @@ fn s8_2_r2_tlsdesc_to_ie() {
     let movz = words(&[0xD2A0_0000]);
     let s = scan(M2, &t, OutputKind::Exec, &movz, &[r(0, 1, 565)]);
     assert_eq!(raised(&s, key(1)), DemandFlags::TLS_DESC);
+}
+
+// ---------------------------------------------------------------- §7 TLS
+
+/// A thread-local `weak0` (a64.md §7): accepted, TLS-local, with
+/// `TPREL(S + A) = DTPREL(S + A) = A` (the value lld writes; WP-023's
+/// experiment). Each form, in a `static` output.
+#[test]
+fn s7_thread_local_undefined_weak() {
+    let mut t = gd_tables(TargetKind::Weak0);
+    // The template is irrelevant: a weak0 offset needs none.
+    let tls = Some(TLS);
+    let le =
+        |t_: u32, r: u32| [0xD2A0_0000 | (t_ >> 16) << 5 | r, 0xF280_0000 | (t_ & 0xFFFF) << 5 | r];
+    for tls in [tls, None] {
+        // R1: TLSDESC → LE with T = A (lld: `movz x0, #0, lsl #16; movk x0, #8`).
+        let desc = words(&[0x9000_0000, 0xF940_0001, 0x9100_0000, 0xD63F_0020]);
+        let relocs = [r(0, 1, 562), r(4, 1, 563), r(8, 1, 564), r(12, 1, 569)]
+            .map(|x| Reloc { addend: 8, ..x });
+        let mut c = Case::new(&t, &desc, 0x40_0ff8);
+        c.tls = tls;
+        let [a, b] = le(8, 0);
+        assert_eq!(apply_both(&c, &relocs).unwrap(), words(&[a, b, NOP, NOP]));
+        // LE: X = A.
+        let input = words(&[0x9100_0042, 0x9140_0042, 0xD2A0_0001, 0xF280_0001]);
+        let relocs = [r(0, 1, 551), r(4, 1, 549), r(8, 1, 545), r(12, 1, 548)]
+            .map(|x| Reloc { addend: 0x10, ..x });
+        let mut c = Case::new(&t, &input, 0x40_0ff8);
+        c.tls = tls;
+        let out = c.apply(&relocs).unwrap();
+        assert_eq!(word(&out, 0), 0x9100_0042 | 0x10 << 10);
+        assert_eq!(word(&out, 4), 0x9140_0042);
+        assert_eq!(word(&out, 12), 0xF280_0001 | 0x10 << 5);
+        // R4: GD → LE with T = 0.
+        let input = words(&GD);
+        let mut c = Case::new(&t, &input, 0x40_0ff8);
+        c.arch = M2;
+        c.tls = tls;
+        let [a, b] = le(0, 0);
+        assert_eq!(
+            apply_both(&c, &gd_relocs()).unwrap(),
+            words(&[a, b, MRS_X1_TPIDR, ADD_X0_X1_X0])
+        );
+        // R3: IE → LE with T = 0.
+        let input = words(&IE_X5);
+        let ie = [r(0, 1, 541), r(4, 1, 542)];
+        let mut c = Case::new(&t, &input, 0x40_0ff8);
+        c.arch = M2;
+        c.tls = tls;
+        let [a, b] = le(0, 5);
+        assert_eq!(apply_both(&c, &ie).unwrap(), words(&[a, b]));
+    }
+    // IE kept (M1, or `TLSIE_NORELAX`): the slot, whose content is 0.
+    let input = words(&IE_X5);
+    let ie = [r(0, 1, 541), r(4, 1, 542)];
+    let mut c = Case::new(&t, &input, 0x40_0ff8);
+    c.tls = tls;
+    let out = c.apply(&ie).unwrap();
+    assert_eq!(word(&out, 0), insert(forms::ADRP, IE_X5[0], 0x43_1000 - 0x40_0000));
+    let abi = A64::M1.tls();
+    let slot = |k| mortar_a64::synth::static_slot(k, None, None, abi).unwrap();
+    assert_eq!(slot(SlotKind::TpOff { negated: false }), ([0, 0], 1));
+    assert_eq!(slot(SlotKind::TlsGd), ([1, 0], 2));
+    t.flags.insert(key(1), DemandFlags::GOT_TPREL | DemandFlags::TLSIE_NORELAX);
+    let mut c = Case::new(&t, &input, 0x40_0ff8);
+    c.arch = M2;
+    assert_eq!(c.apply(&ie).unwrap(), out);
+    // Scan: never refused; demands as for a TLS-local target, in every
+    // output kind.
+    for output in [OutputKind::Static, OutputKind::Exec, OutputKind::Pie] {
+        let s = scan(M2, &t, output, &input, &ie);
+        assert!(s.errors.is_empty(), "{output:?}: {:?}", s.errors);
+        assert_eq!(raised(&s, key(1)), DemandFlags::GOT_TPREL, "{output:?}");
+        let desc = words(&[0x9000_0000, 0xF940_0001, 0x9100_0000, 0xD63F_0020]);
+        let relocs = [r(0, 1, 562), r(4, 1, 563), r(8, 1, 564), r(12, 1, 569)];
+        let s = scan(M2, &t, output, &desc, &relocs);
+        assert!(s.errors.is_empty() && raised(&s, key(1)).is_empty(), "{output:?}");
+        let le = words(&[0x9100_0042]);
+        let s = scan(M2, &t, output, &le, &[r(0, 1, 551)]);
+        assert!(s.errors.is_empty() && raised(&s, key(1)).is_empty(), "{output:?}");
+    }
+    // LE in a shared output is refused as for any target (§5 `TE`).
+    let le = words(&[0x9100_0042]);
+    let s = scan(M2, &t, OutputKind::Shared, &le, &[r(0, 1, 551)]);
+    assert_eq!(s.errors.len(), 1);
 }

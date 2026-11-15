@@ -1,5 +1,6 @@
-//! A minimal reader of a linked ELF64 little-endian AArch64 image, for the
-//! tests that compare with reference linkers.
+//! A minimal reader of a linked ELF64 little-endian AArch64 image (or a
+//! relocatable object, and the members of an `ar` archive), for the tests
+//! that compare with reference linkers.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -58,6 +59,11 @@ impl Image {
     pub fn read(path: &Path) -> Self {
         let bytes = std::fs::read(path).unwrap();
         assert_eq!(&bytes[..5], b"\x7fELF\x02", "{}", path.display());
+        Self::parse(bytes)
+    }
+
+    /// A linked image or a relocatable object (no program headers).
+    pub fn parse(bytes: Vec<u8>) -> Self {
         assert_eq!(u16_at(&bytes, 18), 183);
         let shoff = usize::try_from(u64_at(&bytes, 0x28)).unwrap();
         let shnum = usize::from(u16_at(&bytes, 0x3C));
@@ -139,4 +145,24 @@ impl Image {
         }
         out
     }
+}
+
+/// The ELF members of a (non-thin) `ar` archive, by name.
+pub fn ar_members(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    if !bytes.starts_with(b"!<arch>\n") {
+        return out;
+    }
+    let mut o = 8;
+    while o + 60 <= bytes.len() {
+        let h = &bytes[o..o + 60];
+        let name = String::from_utf8_lossy(&h[..16]).trim_end().to_string();
+        let size: usize = String::from_utf8_lossy(&h[48..58]).trim().parse().unwrap();
+        let data = &bytes[o + 60..o + 60 + size];
+        if data.starts_with(b"\x7fELF\x02") {
+            out.push((name, data.to_vec()));
+        }
+        o += 60 + size + (size & 1);
+    }
+    out
 }

@@ -643,13 +643,13 @@ fn s7_undefined_weak() {
     assert_eq!(word(one(273, 36, 8), 36), insert(forms::LIT19, LDR_LIT_X, 8));
     // GT: the ordinary formula; the slot holds 0 (synth's).
     assert_eq!(word(one(312, 40, 0), 40), LDR_X);
-    // TLS against weak0: refused.
+    // TLS against weak0: TPREL = A (the forms: `relax.rs`).
     let mut tt = Tables::default();
     tt.tls_sym(key(1), 0, TargetKind::Weak0);
     let ci = Case::new(&tt, &input, 0x40_0ff8);
-    assert_eq!(ci.word(551, 12, key(1), 0), Err(FieldError::Refused(mortar_a64::WEAK_TLS)));
+    assert_eq!(ci.word(551, 12, key(1), 0x18), Ok(ADD_X0 | 0x18 << 10));
     let r = Reloc { r_offset: 12, key: key(1), r_type: 551, addend: 0 };
-    assert_eq!(scan_err(A64::M1, &tt, &input, r), [ScanError::Refused(mortar_a64::WEAK_TLS)]);
+    assert_eq!(scan_err(A64::M1, &tt, &input, r), []);
     // The rules by howto.
     let h = |r| table::howto(r).unwrap();
     let a = A64::M1;
@@ -862,19 +862,20 @@ fn s10_1_static_slots_and_s12_tp_offsets() {
     for (align, tcb) in [(8, 16), (16, 16), (64, 64)] {
         let tls = TlsBlock { start: 0x42_0000, size: 0x40, align };
         assert_eq!(abi.tp_rel(0x42_0010, tls), 0x10 + tcb);
-        let ie = synth::static_slot(SlotKind::TpOff { negated: false }, 0x42_0010, Some(tls), abi)
-            .unwrap();
+        let ie =
+            synth::static_slot(SlotKind::TpOff { negated: false }, Some(0x42_0010), Some(tls), abi)
+                .unwrap();
         assert_eq!(ie, ([(0x10 + tcb) as u64, 0], 1));
-        let gd = synth::static_slot(SlotKind::TlsGd, 0x42_0010, Some(tls), abi).unwrap();
+        let gd = synth::static_slot(SlotKind::TlsGd, Some(0x42_0010), Some(tls), abi).unwrap();
         assert_eq!(gd, ([1, 0x10], 2));
     }
-    assert_eq!(synth::static_slot(SlotKind::TlsLd, 0, None, abi).unwrap(), ([1, 0], 2));
+    assert_eq!(synth::static_slot(SlotKind::TlsLd, Some(0), None, abi).unwrap(), ([1, 0], 2));
     assert_eq!(
-        synth::static_slot(SlotKind::Addr, 0x41_0000, None, abi).unwrap(),
+        synth::static_slot(SlotKind::Addr, Some(0x41_0000), None, abi).unwrap(),
         ([0x41_0000, 0], 1)
     );
     assert_eq!(
-        synth::static_slot(SlotKind::TpOff { negated: false }, 0, None, abi),
+        synth::static_slot(SlotKind::TpOff { negated: false }, Some(0), None, abi),
         Err(FieldError::MissingTerm("PT_TLS"))
     );
     let got = A64::M1.got();
@@ -951,7 +952,8 @@ fn s10_4_iplt_and_irelative_in_a_static_link() {
     let out = c.apply(&[Reloc { r_offset: 0, key: key(1), r_type: 257, addend: 0 }]).unwrap();
     assert_eq!(out, entry.to_le_bytes());
     // The GOT slot of an ifunc holds S (§10.1), the entry loads its word.
-    let (slot, n) = synth::static_slot(SlotKind::Addr, entry, None, &mortar_a64::TLS).unwrap();
+    let (slot, n) =
+        synth::static_slot(SlotKind::Addr, Some(entry), None, &mortar_a64::TLS).unwrap();
     assert_eq!((slot[0], n), (entry, 1));
     let cx = SynthCx { addr: entry, header: 0, got_plt: word, got_base: 0, index: 0 };
     let mut bytes = [0u8; 16];
