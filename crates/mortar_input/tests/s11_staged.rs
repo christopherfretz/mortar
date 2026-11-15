@@ -369,9 +369,12 @@ fn s11_5_staged_truncated_between_stages() {
 }
 
 /// §11.4, §11.5: replaced (renamed over) or removed. Between the stages
-/// it is `input-changed` (the unlink changes the inode's `st_ctime`: the
+/// it is `input-changed` (the unlink drops the inode's `st_nlink`: the
 /// check is conservative); after loading, the store still reads the inode
-/// it opened, and `recheck` reports the change.
+/// it opened, and `recheck` reports the change. Not by `st_ctime`: on a
+/// filesystem with a coarse clock (overlayfs `/tmp` here) the write and the
+/// unlink a moment later have the same `st_ctime` (191 of 200 trials),
+/// which made this test fail 4 runs in 5 there.
 #[test]
 fn s11_4_rename_between_stages() {
     for remove in [false, true] {

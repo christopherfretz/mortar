@@ -24,6 +24,7 @@
 
 pub mod comdat;
 pub mod gnu;
+pub mod index;
 pub mod linker;
 pub mod live;
 pub mod mention;
@@ -31,6 +32,7 @@ pub mod options;
 pub mod problem;
 pub mod resolve;
 pub mod sections;
+pub mod steps;
 pub mod tables;
 pub mod verdict;
 pub mod view;

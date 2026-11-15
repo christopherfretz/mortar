@@ -41,7 +41,7 @@ use mortar_core::{Liveness, SymbolId};
 use mortar_diag::{Collector, Diagnostic, Key, Kind, Place};
 use mortar_elf::consts::SHT_NOTE;
 use mortar_elf::{Class, Machine, SectionIndex};
-use mortar_input::load::{LoadEnv, load};
+use mortar_input::load::{LoadEnv, load_steps};
 use mortar_input::store::Store;
 use mortar_layout::chunk::{Common, SynthChunk, commons};
 use mortar_layout::fixed::RangeExtension;
@@ -298,7 +298,13 @@ pub fn front<'s>(
 
     // 20: input.
     let load_env = LoadEnv { cwd: env.cwd.to_path_buf(), pool };
-    let inputs = load(&plan, &load_env, store, diag)?;
+    let time_steps = std::env::var_os("MORTAR_TIME_STEPS").is_some();
+    let mut steps = mortar_input::steps::Steps::default();
+    let inputs = load_steps(&plan, &load_env, store, diag, &mut steps);
+    if time_steps {
+        print_steps("input", &steps.times, &steps.counts);
+    }
+    let inputs = inputs?;
     timer.phase(20, "input");
     let machine = inputs.target.machine;
     if machine == Machine::I386 {
@@ -317,6 +323,9 @@ pub fn front<'s>(
 
     // 30: resolve.
     let outcome = mortar_resolve::resolve_inputs(&inputs, &plan, &pool);
+    if time_steps {
+        print_steps("resolve", &outcome.steps.times, &outcome.steps.counts);
+    }
     for (k, d) in outcome.diagnostics.iter().cloned() {
         diag.emit(k, d);
     }
@@ -690,6 +699,25 @@ pub fn front<'s>(
         placed,
         erratum_fixes,
     })
+}
+
+/// `MORTAR_TIME_STEPS`: a phase's sub-step times and work counts, on
+/// standard error as they are taken (the bench's unit costs; nothing in
+/// the output depends on them).
+fn print_steps(
+    phase: &str,
+    times: &[(&'static str, std::time::Duration)],
+    counts: &[(&'static str, u64)],
+) {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    for (name, d) in times {
+        let _ = writeln!(s, "mortar: time-steps: {phase}.{name}: {:.2} ms", d.as_secs_f64() * 1e3);
+    }
+    for (name, n) in counts {
+        let _ = writeln!(s, "mortar: time-steps: {phase}.count.{name}: {n}");
+    }
+    eprint!("{s}");
 }
 
 /// `Slots` from `Demands` (S-64): each kind's keys in `SymKey` order.
