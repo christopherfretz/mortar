@@ -36,6 +36,9 @@ pub enum Rule {
     /// type is defined for, or a thread-local type names a symbol that is
     /// not thread-local (§4.3, §4.7).
     Insn,
+    /// R9: in an output marked BTI, a range-extension veneer ends in an
+    /// indirect branch to a word that is not a landing pad (§5.4).
+    LandingPad,
     /// T1: a thread-local relocation in an output without `PT_TLS` (§4.7).
     NoTls,
     /// Y1: an output symbol's value is not where its definition was placed.
@@ -50,6 +53,8 @@ pub enum Rule {
     Property(u8),
     /// B1: mortar's build id (§6.7).
     BuildId,
+    /// C1-C6: erratum 843419 fixes by site (§5.10).
+    Erratum(u8),
 }
 
 impl Rule {
@@ -69,6 +74,7 @@ impl Rule {
             Rule::MergePiece => "R6".into(),
             Rule::Place => "R7".into(),
             Rule::Insn => "R8".into(),
+            Rule::LandingPad => "R9".into(),
             Rule::NoTls => "T1".into(),
             Rule::SymbolValue => "Y1".into(),
             Rule::EhFrame(n) => format!("E{n}"),
@@ -76,6 +82,7 @@ impl Rule {
             Rule::Ifunc(n) => format!("F{n}"),
             Rule::Property(n) => format!("P{n}"),
             Rule::BuildId => "B1".into(),
+            Rule::Erratum(n) => format!("C{n}"),
         }
     }
 }
@@ -402,6 +409,11 @@ pub struct Coverage {
     /// large sections (`SHF_X86_64_LARGE`), whose order differs by linker
     /// (spec/x64.md X-54; Y5 leaves them out of `_edata`/`_end`).
     pub placement_not_judged: Vec<String>,
+    /// Erratum 843419 sites found with their fix (C1), and sites not
+    /// judged: the option unknown, beyond what both references fix, or
+    /// unproved code in a reference's output (§5.10).
+    pub erratum_sites: u64,
+    pub erratum_not_judged: u64,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
 }
@@ -548,6 +560,13 @@ impl Report {
             "program properties: types judged {}, not judged {}",
             c.properties_judged, c.properties_not_judged
         );
+        if c.erratum_sites + c.erratum_not_judged > 0 {
+            let _ = writeln!(
+                s,
+                "erratum 843419 sites: fixed {}, not judged {}",
+                c.erratum_sites, c.erratum_not_judged
+            );
+        }
         if let Some(b) = &c.build_id {
             let _ = writeln!(s, "build id: {b}");
         }

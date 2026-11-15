@@ -212,26 +212,7 @@ fn c_with_clang22_branch_protection() {
     assert!(feature(&ours).is_some_and(|f| f.contains("BTI")), "{:?}", feature(&ours));
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    only_the_bti_iplt_gap(&support::plumb::verify(&ours, &map_of(&ours), &built.dir));
-}
-
-/// The verifier's one gap on a BTI output (a WP-027d finding for
-/// `mortar_plumb`, `src/ifunc.rs` `a64_entry` and the entry scan): it finds
-/// an IPLT entry by its `ADRP`, so it takes a BTI entry (`bti c` first,
-/// a64.md §10.3) to start 4 bytes late, and a branch to the entry's start
-/// is F4 "reaches no IPLT entry". `findings` must be only those: F4 on a
-/// `CALL26`/`JUMP26` whose branch target is 4 bytes before the entry
-/// plumb expected.
-fn only_the_bti_iplt_gap(findings: &[mortar_plumb::Finding]) {
-    for x in findings {
-        let gap = format!("{:?}", x.rule) == "Ifunc(4)"
-            && matches!(x.reloc.as_deref(), Some("R_AARCH64_CALL26" | "R_AARCH64_JUMP26"))
-            && x.addr.zip(x.found).zip(x.expected).is_some_and(|((at, word), want)| {
-                let imm = i64::from(((word as u32 & 0x03ff_ffff) << 6) as i32 >> 6);
-                at.wrapping_add_signed(imm * 4).wrapping_add(4) == want
-            });
-        assert!(gap, "not the BTI IPLT gap: {x:#?}");
-    }
+    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
 
 #[test]
@@ -414,19 +395,11 @@ fn a_bti_far_call_to_an_iplt_entry_is_linked() {
     let map = std::fs::read_to_string(map_of(&ours)).unwrap();
     assert!(map.lines().any(|l| l.starts_with("chunk thunk __f@plt_veneer ")), "{map}");
     support::plumb::readers(&ours);
-    // The verifier's one finding is its own gap ([`only_the_bti_iplt_gap`]:
-    // it takes the BTI IPLT entry to start 4 bytes late): the veneer reaches
-    // the entry's start, not plumb's entry + 4, so it reports the `CALL26`
-    // to `f` as out of range. `bl` reaches the thunk, the thunk the entry
-    // (`objdump -d`); no other finding is allowed.
-    let findings = support::plumb::verify(&ours, &map_of(&ours), &built.dir);
-    assert!(
-        findings.len() == 1
-            && format!("{:?}", findings[0].rule) == "Overflow"
-            && findings[0].reloc.as_deref() == Some("R_AARCH64_CALL26")
-            && findings[0].symbol.as_deref() == Some("f"),
-        "{findings:#?}"
-    );
+    // `bl` reaches the thunk, the thunk the IPLT entry's `bti c`
+    // (`objdump -d`): the verifier follows both (a BTI IPLT entry starts
+    // at its BTI, `spec/plumb.md` §4.8) and finds the thunk lands on a
+    // landing pad (R9).
+    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
 
 /// a64.md §9: a target that is not a landing pad, or whose pad-shaped
@@ -1008,9 +981,9 @@ fn text_map_against_gnu(built: &Built) {
     assert_eq!(members(&ours), members(&gnus), "the archive members taken");
 }
 
-/// `--gc-sections` is refused by name until liveness implements it (M2,
-/// image.md §3.2), with no output; of `--gc-sections` and
-/// `--no-gc-sections`, the last one wins (`spec/cli.md`'s boolean pairs).
+/// Of `--gc-sections` and `--no-gc-sections`, the last one wins
+/// (`spec/cli.md`'s boolean pairs): with it the output is smaller and runs
+/// the same (the rest of `--gc-sections` is `tests/gc.rs`).
 #[test]
 fn gc_sections_the_last_one_wins() {
     let Some((_s, built)) =
@@ -1018,27 +991,21 @@ fn gc_sections_the_last_one_wins() {
     else {
         return;
     };
-    for (extra, ok) in [
-        (&["--gc-sections"][..], false),
-        (&["--no-gc-sections", "--gc-sections"][..], false),
-        (&["--gc-sections", "--no-gc-sections"][..], true),
+    let mut sizes = Vec::new();
+    for extra in [
+        &["--gc-sections"][..],
+        &["--no-gc-sections", "--gc-sections"][..],
+        &["--gc-sections", "--no-gc-sections"][..],
     ] {
         let out = built.dir.join("gc.out");
         let m = mortar(&built, &out, extra, &[]);
-        if ok {
-            assert!(m.success(), "{extra:?}: {}", m.stderr_text());
-            assert_eq!(execute(&out).1, Some(0), "{extra:?}");
-            std::fs::remove_file(&out).unwrap();
-        } else {
-            assert_eq!(code(&m), Some(1), "{extra:?}");
-            assert!(
-                m.stderr_text().contains("error: unsupported option: --gc-sections"),
-                "{extra:?}: {}",
-                m.stderr_text()
-            );
-            assert!(!out.exists(), "{extra:?}: a refused link leaves no output");
-        }
+        assert!(m.success(), "{extra:?}: {}", m.stderr_text());
+        assert_eq!(execute(&out).1, Some(0), "{extra:?}");
+        sizes.push(read(&out).len());
+        std::fs::remove_file(&out).unwrap();
     }
+    assert_eq!(sizes[0], sizes[1]);
+    assert!(sizes[0] < sizes[2], "{sizes:?}");
 }
 
 /// I-110 through the driver: a key referenced only from `.debug_info`
@@ -1260,6 +1227,66 @@ fn an_erratum_site_goes_through_a_patch() {
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
     support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+}
+
+/// Erratum 843419 under `--gc-sections` (WP-031, `spec/image.md` I-7;
+/// WP-032e's windows): two sites, each an ADRP at a page's `0xff8` whose
+/// target is beyond the ADR's range. One is in `dead`, which nothing calls;
+/// a 2 MiB gap before `f` is collected too, and a live 2 MiB gap keeps
+/// `val` far. Without gc both sites get a patch; with gc only `f`'s does
+/// (the erratum scan reads live code only) and the program still exits 42
+/// through it, as GNU ld's with gc does.
+#[test]
+fn an_erratum_site_in_collected_code_gets_no_patch() {
+    if !host() {
+        return;
+    }
+    let scratch = Scratch::new("pipe-erratum-gc");
+    let site = |name: &str| {
+        format!(
+            "\n    .section .text.{name},\"ax\",@progbits\n    .balign 4096\n    .skip 0xff8\n\
+             \n    .globl {name}\n    .type {name}, %function\n{name}:\n    adrp x0, val\n\
+             \n    ldr x2, [sp]\n    ldr x0, [x0, #:lo12:val]\n    ret\n"
+        )
+    };
+    let src = format!(
+        "    .text\n    .globl _start\n_start:\n    bl gap_end\n    bl f\n    mov x8, #93\n    svc #0\n\
+         {}\n    .section .text.dead_gap,\"ax\",@progbits\n    .skip 0x200000\n{}\
+         \n    .section .text.gap,\"ax\",@progbits\n    .skip 0x200000\ngap_end:\n    ret\n\
+         \n    .data\n    .balign 8\nval:\n    .xword 42\n",
+        site("dead"),
+        site("f"),
+    );
+    let obj = assemble(scratch.path(), "e.s", &src);
+    let patches = |map: &str| {
+        map.lines().filter(|l| l.starts_with("chunk patch __erratum_843419_veneer ")).count()
+    };
+    for gc in [false, true] {
+        let mut args: Vec<String> = vec!["-static".into(), "--fix-cortex-a53-843419".into()];
+        if gc {
+            args.push("--gc-sections".into());
+        }
+        args.extend([obj.display().to_string(), "-o".into(), "out".into()]);
+        let built = Built { dir: scratch.path().to_path_buf(), args };
+        let ours = built.dir.join(format!("e{gc}.mortar"));
+        let theirs = built.dir.join(format!("e{gc}.bfd"));
+        let ran = mortar(&built, &ours, &[], &[]);
+        assert!(ran.success(), "mortar: {}", ran.stderr_text());
+        let gnu = bfd(&built, &theirs, &[]);
+        assert!(gnu.success(), "ld.bfd: {}", gnu.stderr_text());
+        assert_eq!(execute(&theirs).1, Some(42));
+        assert_eq!(execute(&ours).1, Some(42), "the load through the patch (gc {gc})");
+        let map = std::fs::read_to_string(map_of(&ours)).unwrap();
+        assert_eq!(patches(&map), if gc { 1 } else { 2 }, "gc {gc}: {map}");
+        if gc {
+            // `.text.dead` and `.text.dead_gap`.
+            let gc_lines = map.lines().filter(|l| l.starts_with("discard ") && l.ends_with(" gc"));
+            assert_eq!(gc_lines.count(), 2, "both dead sections are collected: {map}");
+        }
+        support::plumb::readers(&ours);
+        support::plumb::elflint(&ours);
+        support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+    }
 }
 
 /// Erratum 843419 with `W1` at a page's `0xffc` and the final word `F`

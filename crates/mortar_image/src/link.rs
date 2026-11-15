@@ -386,6 +386,24 @@ impl<'a, 's> LinkTables<'a, 's> {
     /// A live fragment's value (model §4.5): its address, or in a
     /// non-allocated merged chunk its offset from its section's start
     /// (`.debug_str`, the gABI's `sh_addr` 0).
+    /// Whether `frag` survived the mark (`frag_live`; every fragment
+    /// without `--gc-sections`).
+    fn frag_live(&self, frag: mortar_core::FragId) -> bool {
+        self.link.liveness.frag_live.get(frag).copied().unwrap_or(true)
+    }
+
+    /// Whether a named symbol at `v` in `Merge` section `s` names a
+    /// collected piece (I-7): its references are then to a dead target.
+    fn named_piece_dead(&self, s: SectionId, v: u64) -> bool {
+        let found = if let Some(p) = self.pieces.named_symbol(self.link.split, s, v) {
+            p
+        } else {
+            let Some(size) = self.section_size(s) else { return false };
+            refs::named_symbol(self.link.split, s, size, v)
+        };
+        found.is_ok_and(|p| !self.frag_live(p.frag))
+    }
+
     fn frag_value(&self, frag: mortar_core::FragId) -> Option<u64> {
         let row = self.link.split.frags.get(frag)?;
         let chunk = self.addrs.merged_chunk(self.link.assignment.out(row.section)?)?;
@@ -527,9 +545,17 @@ impl LinkTables<'_, '_> {
             _ => false,
         };
         let is_split = split && matches!(&place, Some(Ok((s, sym))) if in_split(*s, sym));
+        // A named symbol in a collected merge piece (I-7) is dead, as one
+        // in a collected section is.
+        let piece_dead = |place: &Option<Result<(SectionId, mortar_elf::raw::Sym), u64>>| {
+            matches!(place, Some(Ok((s, sym)))
+                if sym.sym_type() != STT_SECTION
+                    && self.kind_of(*s) == Some(SectionKind::Merge)
+                    && self.named_piece_dead(*s, sym.st_value))
+        };
         let (s, live) = match key.kind() {
             SymKind::Local(_) => {
-                let live = !facts.dead;
+                let live = !facts.dead && !piece_dead(&place);
                 let s = match place {
                     _ if !live || is_split => None,
                     Some(Err(abs)) => Some(abs),
@@ -540,7 +566,7 @@ impl LinkTables<'_, '_> {
             }
             SymKind::Global(id) => {
                 let live = match place {
-                    Some(Ok((sec, _))) => self.link.liveness.is_live(sec),
+                    Some(Ok((sec, _))) => self.link.liveness.is_live(sec) && !piece_dead(&place),
                     _ => true,
                 };
                 (self.global.get(id.0 as usize).copied().flatten(), live)
@@ -631,7 +657,7 @@ impl Tables for LinkTables<'_, '_> {
         }
     }
 
-    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<u64, Diagnostic>> {
+    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<Option<u64>, Diagnostic>> {
         let place = self.split_place(key)?;
         self.split_at(&place, key, addend)
     }
@@ -660,7 +686,7 @@ impl Tables for LinkTables<'_, '_> {
         place: &SplitPlace,
         _key: SymKey,
         addend: i64,
-    ) -> Option<Result<u64, Diagnostic>> {
+    ) -> Option<Result<Option<u64>, Diagnostic>> {
         let &SplitPlace { section: s, merge, value, section_sym, row, chunk_base } = place;
         let malformed = |what: String| Diagnostic::error(Kind::Malformed { what });
         if merge {
@@ -683,8 +709,10 @@ impl Tables for LinkTables<'_, '_> {
                 None => self.frag_value(frag),
             };
             return Some(match found {
+                Ok(p) if !self.frag_live(p.frag) => Ok(None),
                 Ok(p) => frag_value(p.frag)
                     .and_then(|a| a.checked_add(p.within))
+                    .map(Some)
                     .ok_or_else(|| internal("fill: a live merge piece has no address")),
                 Err(w) => Err(malformed(w.message())),
             });
@@ -698,7 +726,7 @@ impl Tables for LinkTables<'_, '_> {
         let r = if section_sym { (value as i64).wrapping_add(addend) } else { value as i64 };
         let tail = if section_sym { 0 } else { addend };
         Some(match plan.value(src, s, r, EhWho::Reloc) {
-            Ok(EhValue::Offset(o)) => Ok(eh.wrapping_add(o).wrapping_add(tail as u64)),
+            Ok(EhValue::Offset(o)) => Ok(Some(eh.wrapping_add(o).wrapping_add(tail as u64))),
             Ok(EhValue::Dropped) => Err(internal("fill: a relocation to a dropped symbol")),
             Err(e) => Err(e.into_diagnostic()),
         })

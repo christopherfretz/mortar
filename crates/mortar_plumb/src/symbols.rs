@@ -125,6 +125,20 @@ struct Def {
     sym: Sym,
 }
 
+/// Whether input symbol `di` of object `oi` is defined in a section that
+/// has no address in the output: non-alloc, or discarded by the map.
+fn not_in_memory(e: &Engine<'_, '_>, oi: usize, di: u32) -> bool {
+    let obj = &e.objs[oi];
+    let Some(table) = obj.symtab else { return false };
+    let Ok(sym) = table.get(SymbolIndex(di)) else { return false };
+    let Ok(SymbolSection::Section(idx)) = table.section_of(SymbolIndex(di), &sym) else {
+        return false;
+    };
+    obj.secs
+        .get(idx.0 as usize)
+        .is_some_and(|sec| !sec.alloc() || matches!(sec.place, Place::Discarded))
+}
+
 #[allow(clippy::many_single_char_names)] // o, t, d, s, a, p: the ELF parts
 fn placed_def(e: &Engine<'_, '_>, oi: usize, di: u32) -> Option<Def> {
     let o = &e.objs[oi];
@@ -439,8 +453,10 @@ fn locals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
                     }
                     // A definition in a section whose place is not known
                     // (GNU ld's rewritten `.eh_frame`, a merged section)
-                    // could be the one.
-                    None => p.unknown = true,
+                    // could be the one; one in a non-alloc or discarded
+                    // section has no address in the output (every
+                    // object's `$d` of its debug sections; WP-028d).
+                    None => p.unknown |= !not_in_memory(e, oi, di),
                 }
             }
             p

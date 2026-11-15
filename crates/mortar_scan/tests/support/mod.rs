@@ -186,9 +186,13 @@ pub fn link_in(cwd: &Path, args: &[OsString], pool: &Pool, policy: StorePolicy) 
         resolution: &outcome.resolution,
         assignment: &assignment,
         split: &split,
+        roots: &outcome.roots,
     };
-    let liveness =
-        liveness(&live, LiveOptions { gc_sections: plan.shaping.gc_sections }, pool).ok()?;
+    let options = LiveOptions {
+        gc_sections: plan.shaping.gc_sections,
+        keep_exported: plan.shaping.gc_keep_exported,
+    };
+    let liveness = liveness(&live, options, pool).ok()?;
     let mismatch = mismatches(&outcome);
     let mut l = Linked {
         plan,
