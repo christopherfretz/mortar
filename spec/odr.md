@@ -1633,8 +1633,8 @@ each check on against `--odr=off`.
 
 `mortar_plumb` depends on `mortar_elf` and `mortar_diag` only, so it
 re-reads `meta.md`'s format itself (about 150 lines: the format is small
-on purpose, and a second reader is the point). Proposed rules (amendment
-A-7 to `spec/plumb.md`):
+on purpose, and a second reader is the point). The rules (amendment
+A-7, applied as `spec/plumb.md` §13, P-M1-P-M3):
 
 - an executable or shared object contains no `.mason.meta` unless
   `--keep-mason-meta` (MT-31, MT-32); a relocatable output's
@@ -1782,6 +1782,29 @@ on kiln's hasher, or on the hook.
 
 `spec/layout.md` needs no amendment: O-52 no longer asks for a
 `PT_NOTE` of its own.
+
+**Applied (WP-079, 2026-11-15).** Those specs number by section, except
+`dyn.md` (D-*n*) and `plumb.md` (P-*n*), so ids are new only in
+`plumb.md`:
+
+- A-1: `resolve.md` §10, the container row before `SHF_EXCLUDE` and a
+  sentence after the table; §6.7, one sentence; §13, "per-file summary".
+- A-8: `input.md` §11.1, the two rows and the test-only byte counter;
+  §11.9 (A), the small-file exception (a fit: the read plan states the
+  whole-file rule a second time).
+- A-2: `model.md` §3.2 `files` (the `Meta` list); §3.3 `kind`: `Meta`
+  replaces `Metadata` and moves to the kinds without output (a fit); §8,
+  phase 40's `seq`.
+- A-3: `dyn.md` §14, the "M6: ODR data" bullet replaced; the D-21 bullet
+  gains the Q8 sentence. No D rule changed.
+- A-5: `cli.md` §3.9, the `odr` field; §4.2, the M6 rows and the
+  packages that add them (`rows.rs`; `docs/status/options.md`
+  regenerated, not edited).
+- A-4: `diag.md` §3.1, the area and 13 rows; §3.2, one note.
+- A-6: `harness.md` "The test file", the `diag` directive; "Planned
+  workloads", the Mason workloads; "The corpus", the ODR cases and the
+  L11 lane.
+- A-7: `plumb.md` §1, stage 4; §13, P-M1-P-M3, not implemented (WP-078).
 
 ## 15. Open questions
 
