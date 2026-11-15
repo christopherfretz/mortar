@@ -89,7 +89,7 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
             .filter(|s| {
                 s.shdr.sh_flags & (SHF_ALLOC | SHF_X86_64_LARGE) == SHF_ALLOC | SHF_X86_64_LARGE
             })
-            .map(|s| s.name.to_string())
+            .map(|s| s.name.clone())
             .collect();
     }
     report.findings.append(&mut engine.findings);
