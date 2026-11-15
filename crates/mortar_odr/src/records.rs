@@ -214,8 +214,10 @@ struct Entry<'l> {
 }
 
 impl Entry<'_> {
-    fn group(&self) -> (u8, u64, &[u8], u16) {
-        (self.kind, self.key, self.name, self.class)
+    /// The integer part of the group: a key collision between names is
+    /// split by [`groups`] inside a run of equal `run`s.
+    fn run(&self) -> (u8, u64, u16) {
+        (self.kind, self.key, self.class)
     }
 }
 
@@ -313,8 +315,10 @@ pub fn check(
     for c in &per_unit.items {
         counts.add(c);
     }
-    pool.sort_by(&mut entries, |a, b| (a.group(), a.unit, a.row).cmp(&(b.group(), b.unit, b.row)));
-    let groups = groups(&entries);
+    // Integers only (WP-073: comparing names here was a third of the
+    // checks' time); names split a run only on a key collision.
+    pool.sort_by(&mut entries, |a, b| (a.run(), a.unit, a.row).cmp(&(b.run(), b.unit, b.row)));
+    let groups = groups(&mut entries);
     let found = pool.unit_cost(2_000).map_collect(groups.len(), |g, out: &mut Vec<Found>| {
         let (a, b) = groups[g];
         cx.group(&entries[a..b], out);
@@ -423,40 +427,45 @@ fn schemes(info: &[Info<'_>]) -> (u64, u64) {
     (distinct, (units * units.saturating_sub(1) / 2).saturating_sub(same))
 }
 
-/// The runs of entries of one group (kind, key, name, class). An
-/// unanchored run (empty name) joins the one named run of its key and
-/// class when there is exactly one (WP-073).
-fn groups(entries: &[Entry<'_>]) -> Vec<(usize, usize)> {
+/// The groups (kind, key, name, class) of `entries`, sorted by
+/// (kind, key, class, unit, row): each group in (unit, row) order. A run
+/// of one (kind, key, class) whose names differ (a key collision, or
+/// unanchored rows beside named ones) is sorted by name first. An
+/// unanchored group (empty name) joins the run's one named group when
+/// there is exactly one (WP-073), in (unit, row) order.
+fn groups(entries: &mut [Entry<'_>]) -> Vec<(usize, usize)> {
     let mut out: Vec<(usize, usize)> = Vec::new();
     let mut start = 0;
-    for i in 1..=entries.len() {
-        if i == entries.len() || entries[i].group() != entries[start].group() {
-            out.push((start, i));
-            start = i;
-        }
-    }
-    // Unanchored runs sort first among their key's (empty name): merge
-    // `[unanchored][named]` when the key has exactly those two runs of
-    // one class.
-    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(out.len());
-    let mut i = 0;
-    while i < out.len() {
-        let (a, b) = out[i];
-        let e = entries[a];
-        let next = out.get(i + 1).map(|&(c, _)| entries[c]);
-        let after = out.get(i + 2).map(|&(c, _)| entries[c]);
-        let same_key = |x: Option<Entry<'_>>| {
-            x.is_some_and(|x| x.kind == e.kind && x.key == e.key && x.class == e.class)
-        };
-        if e.name.is_empty() && same_key(next) && !same_key(after) {
-            merged.push((a, out[i + 1].1));
-            i += 2;
+    while start < entries.len() {
+        let run = entries[start].run();
+        let end = entries[start..]
+            .iter()
+            .position(|e| e.run() != run)
+            .map_or(entries.len(), |p| start + p);
+        let name = entries[start].name;
+        if entries[start..end].iter().all(|e| e.name == name) {
+            out.push((start, end));
         } else {
-            merged.push((a, b));
-            i += 1;
+            let slice = &mut entries[start..end];
+            slice.sort_by(|a, b| (a.name, a.unit, a.row).cmp(&(b.name, b.unit, b.row)));
+            let mut names: Vec<(usize, usize)> = Vec::new();
+            let mut a = 0;
+            for i in 1..=slice.len() {
+                if i == slice.len() || slice[i].name != slice[a].name {
+                    names.push((start + a, start + i));
+                    a = i;
+                }
+            }
+            if names.len() == 2 && entries[names[0].0].name.is_empty() {
+                entries[start..end].sort_by_key(|e| (e.unit, e.row));
+                out.push((start, end));
+            } else {
+                out.extend(names);
+            }
         }
+        start = end;
     }
-    merged
+    out
 }
 
 fn container_finding(

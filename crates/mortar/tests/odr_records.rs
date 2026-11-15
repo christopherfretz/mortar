@@ -867,7 +867,10 @@ fn mutations_are_killed() {
     let (_, e) = cx.strict(&["a.o", "b.o", "c.o"], &[]);
     let got = heads(&e);
     assert_eq!(got.len(), 1, "unsorted: {e}");
-    assert!(got[0].contains("malformed Mason metadata") && e.contains("out of order"), "unsorted: {e}");
+    assert!(
+        got[0].contains("malformed Mason metadata") && e.contains("out of order"),
+        "unsorted: {e}"
+    );
 }
 
 /// `tool` on `b.o` in place, with `args` before the file.
