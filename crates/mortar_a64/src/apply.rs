@@ -6,10 +6,10 @@
 
 use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
-    AddendRule, Base, Check, ClassOutcome, DeadRef, Demand, DemandClass, DemandFlags, DemandSink,
-    DynRefusal, EventClass, Field, FieldError, FillCx, Incompatible, Minus, OutputKind, PlaceFacts,
-    Refusal, RelocAt, ScanCx, ScanError, SectionOut, SlotKind, TargetKind, Terms, Weak0Rule,
-    class_outcome, dead_reference, writes_dtprel,
+    AddendRule, Base, Check, ClassOutcome, DeadRef, DemandClass, DemandFlags, DemandSink,
+    EventClass, Field, FieldError, FillCx, Incompatible, Minus, OutputKind, Refusal, RelocAt,
+    ScanCx, ScanError, SectionOut, SlotKind, TargetKind, Terms, Weak0Rule, class_outcome,
+    dead_reference, writes_dtprel,
 };
 use mortar_diag::RefusalClass;
 
@@ -89,7 +89,11 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
     };
     let data = matches!(h.field, Field::Data { .. });
     let outcome = class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls);
-    match dynamic_outcome(h.class, cx.output, kind, cx.place, outcome) {
+    // a64.md §5's dynamic cells are arch.md §4.3's since WP-046 (D-43,
+    // D-44 in `mortar_arch::class`); `TX` in a read-only place becomes
+    // `text-relocation` in the scan driver, which knows whether the
+    // output has `.dynamic` (D-47; a static PIE keeps M1's reason).
+    match outcome {
         // a64.md §13.2's staging note: arch.md §4.3 writes `DtpRel(S + A)`
         // here, which fill cannot yet tell from an address (its `SymValue`
         // has no symbol type), so the case is refused rather than written
@@ -150,48 +154,6 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         _ => DemandFlags::empty(),
     };
     out.raise(at.key, inhibit);
-}
-
-/// a64.md §5's cells for `exec` and `pie` where they say more than
-/// arch.md §4.3's generic table gives (`spec/dyn.md` D-43, D-44, D-47),
-/// at a place in an `SHF_ALLOC` section (the table is for those, §5):
-///
-/// - `TX`, a dynamic record in a read-only place, is the refusal
-///   `text-relocation` (D-47), not `relocation-incompatible`;
-/// - in `pie`, `PC` and `LO` against `shlib-data` demand `COPY` (D-43;
-///   §5 "pie: `C` for `shlib-data`"), and against `shlib-func` are
-///   `canonical-plt-in-pie` (D-44): no canonical PLT in a PIE.
-///
-/// Every other outcome, and every other output kind, is the generic one.
-fn dynamic_outcome(
-    class: DemandClass,
-    output: OutputKind,
-    kind: TargetKind,
-    place: PlaceFacts,
-    outcome: ClassOutcome,
-) -> ClassOutcome {
-    if !place.alloc || !matches!(output, OutputKind::Exec | OutputKind::Pie) {
-        return outcome;
-    }
-    match outcome {
-        ClassOutcome::Incompatible(Incompatible::ReadOnly) => {
-            ClassOutcome::Refused(DynRefusal::TextRelocation)
-        }
-        ClassOutcome::Incompatible(_)
-            if output == OutputKind::Pie && matches!(class, DemandClass::Pc | DemandClass::Lo) =>
-        {
-            match kind {
-                TargetKind::Shlib { func: false } => {
-                    ClassOutcome::Demand(Demand { flags: DemandFlags::COPY, ..Demand::default() })
-                }
-                TargetKind::Shlib { func: true } => {
-                    ClassOutcome::Refused(DynRefusal::CanonicalPltInPie)
-                }
-                _ => outcome,
-            }
-        }
-        _ => outcome,
-    }
 }
 
 /// The TLS-model demands (a64.md §8.1 to §8.4, §12). In an exec output:

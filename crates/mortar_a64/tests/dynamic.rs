@@ -310,6 +310,13 @@ fn got(s: &Sink) -> Want {
     if let [(_, e)] = s.errors[..] {
         return match e {
             ScanError::Dynamic(r) => Want::Refused(r),
+            // D-47: the scan driver turns this reason into
+            // `text-relocation` in an output with `.dynamic`
+            // (`mortar_scan` `dynamic_error`); the architecture reports
+            // the generic `TX` reason.
+            ScanError::Incompatible(mortar_arch::Incompatible::ReadOnly) => {
+                Want::Refused(DynRefusal::TextRelocation)
+            }
             ScanError::Incompatible(_) => Want::E,
             ScanError::Refused(ref r)
                 if r.name.to_string() == mortar_a64::LARGE_TLSDESC_DYNAMIC =>
