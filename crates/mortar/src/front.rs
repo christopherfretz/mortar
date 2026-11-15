@@ -225,6 +225,25 @@ impl Front<'_> {
     }
 }
 
+/// The resident input bytes that repay one more worker after the input
+/// phase (WP-032h: at default threads under load 10, hello-c's 6.9 MB
+/// link went 25.7 -> 23.5 ms on 2 workers; 2, 4 and 8 MB per worker were
+/// equal on hello-cxx (15 MB) and a 68 MB link).
+const BYTES_PER_WORKER: u64 = 4 << 20;
+
+/// The pool the phases after input run on: without `--threads`, at most
+/// one worker per [`BYTES_PER_WORKER`] resident input bytes, so a small
+/// link does not pay for workers it cannot use. The count is a function
+/// of the inputs, never of a clock; an explicit `--threads` (or a
+/// scheduling seed, which exists to exercise schedules) keeps the pool.
+fn capped(pool: Pool, plan: &Plan, resident: u64) -> Pool {
+    if plan.bookkeeping.threads.is_some() || pool.seed().is_some() {
+        return pool;
+    }
+    let cap = usize::try_from(resident.div_ceil(BYTES_PER_WORKER)).unwrap_or(usize::MAX).max(1);
+    pool.with_threads(pool.threads().min(cap))
+}
+
 /// Where a link runs.
 #[derive(Debug, Clone, Copy)]
 pub struct Env<'e> {
@@ -309,6 +328,7 @@ pub fn front<'s>(
     }
     let inputs = inputs?;
     timer.phase(20, "input");
+    let pool = capped(pool, &plan, store.stats().resident);
     let machine = inputs.target.machine;
     // 30: resolve.
     let outcome = mortar_resolve::resolve_inputs(&inputs, &plan, &pool);
