@@ -138,7 +138,8 @@ impl TlsBlock {
             return Err("PT_TLS p_vaddr is not a multiple of p_align");
         }
         // Variant I (AArch64): the block starts align_up(16, p_align)
-        // above TP. Variant II (x86-64, `spec/x64.md` X-44): it ends at TP,
+        // above TP. Variant II (x86-64, `spec/x64.md` X-44; i386,
+        // `spec/x86.md` X86-57, the same on `%gs`): it ends at TP,
         // TpRel(x) = x - start - align_up(p_memsz, p_align).
         let tcb = if image.header.e_machine == mortar_elf::consts::EM_AARCH64 {
             16u64.next_multiple_of(align)
@@ -513,9 +514,14 @@ impl<'a, 'b> Engine<'a, 'b> {
         // spec/x86.md X86-47: mold computes the i386 GOT base (GOTPC,
         // GOTOFF, GOT32) against the start of `.got`, not
         // `_GLOBAL_OFFSET_TABLE_` (§5.11; its no-base GOT32 is W3).
-        let got = if format == Format::Mold && image.header.e_machine == mortar_elf::consts::EM_386
-        {
-            image.sections.iter().find(|s| s.name == ".got").map(|s| s.shdr.sh_addr).or(got)
+        // In a stripped output GNU ld's and lld's base is the start of
+        // `.got.plt` (X86-47), not `.got`.
+        let sec = |n: &str| image.sections.iter().find(|s| s.name == n).map(|s| s.shdr.sh_addr);
+        let i386 = image.header.e_machine == mortar_elf::consts::EM_386;
+        let got = if i386 && format == Format::Mold {
+            sec(".got").or(got)
+        } else if i386 && image.unique("_GLOBAL_OFFSET_TABLE_").is_none() {
+            image.global("_GLOBAL_OFFSET_TABLE_").map(|s| s.sym.st_value).or(sec(".got.plt")).or(got)
         } else {
             got
         };

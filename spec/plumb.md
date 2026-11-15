@@ -657,6 +657,12 @@ after the thread pointer:
 - `start` = `PT_TLS` `p_vaddr`, `tcb` = align_up(16, `p_align`);
 - TPREL(v) = v − start + tcb, DTPREL(v) = v − start, the module index is 1.
 
+On x86-64 and i386 (variant II, x64.md X-44, x86.md X86-57: the block
+ends at the thread pointer, `%fs` and `%gs`), `tcb` = −align_up(`p_memsz`,
+`p_align`); i386 values are compared modulo 2^32, `TLS_LE` as s32 before
+the reduction (X86-38). The four linkers place an over-aligned i386 block
+alike (x86.md E7); the corpus's TLS cases read every variable's offset.
+
 More than one `PT_TLS`, an alignment that is not a power of two, or a
 `p_vaddr` that is not a multiple of `p_align` is S9 (§6.2), and the TLS
 records are then `tls`. A TLS record in an output without `PT_TLS` is
@@ -2354,8 +2360,10 @@ in `tests/link/anomalies` (format: `spec/harness.md` "L3"). It holds mold
 A1 A2 A3 A9 (A1 and A2 come from the C runtime's IFUNCs, so the
 `-nostdlib` links show only A3 and A9) and GNU ld A10 (crtbegin/crtend's
 labels, on every driver link with the C runtime), and on x86-64 mold's
-A13. On i386 GNU ld shows no A10 (its crtbegin/crtend labels are in
-sections it keeps), so its default is `bfd,aarch64,x86_64`. A test declares any
+A13. On i386 GNU ld shows no A10 on any output of the L3 run or the corpus
+(WP-028e), so the default is `bfd,aarch64,x86_64`; i386's defaults are
+mold's A1 A2 A3 A9, and A19 is declared by the tests that pull glibc's
+`clone3.o`. A test declares any
 other anomaly itself with `#@ anomaly(<linker>): <id>...`. mortar never
 has a default and never declares one.
 
