@@ -121,7 +121,7 @@ fn bfd(built: &Built, out: &Path, extra: &[&str]) -> Outcome {
 /// Runs a program as `prog` (one argv[0] for every linker's output):
 /// (standard output, exit status).
 fn execute(exe: &Path) -> (String, Option<i32>) {
-    let o = run_with(Command::new(exe).arg0("prog"), b"", Duration::from_secs(60));
+    let o = run_with(Command::new(exe).arg0("prog"), b"", Duration::from_mins(1));
     (o.stdout_text(), o.status.and_then(|s| s.code()))
 }
 
@@ -589,7 +589,7 @@ fn an_erratum_site_goes_through_a_patch() {
         return;
     }
     let scratch = Scratch::new("pipe-erratum");
-    let o = assemble(
+    let obj = assemble(
         scratch.path(),
         "e.s",
         "    .text\n    .globl _start\n_start:\n    bl f\n    mov x8, #93\n    svc #0\n\
@@ -604,17 +604,17 @@ fn an_erratum_site_goes_through_a_patch() {
         args: vec![
             "-static".into(),
             "--fix-cortex-a53-843419".into(),
-            o.display().to_string(),
+            obj.display().to_string(),
             "-o".into(),
             "out".into(),
         ],
     };
     let ours = built.dir.join("e.mortar");
     let theirs = built.dir.join("e.bfd");
-    let m = mortar(&built, &ours, &[], &[]);
-    assert!(m.success(), "mortar: {}", m.stderr_text());
-    let b = bfd(&built, &theirs, &[]);
-    assert!(b.success(), "ld.bfd: {}", b.stderr_text());
+    let ran = mortar(&built, &ours, &[], &[]);
+    assert!(ran.success(), "mortar: {}", ran.stderr_text());
+    let gnu = bfd(&built, &theirs, &[]);
+    assert!(gnu.success(), "ld.bfd: {}", gnu.stderr_text());
     assert_eq!(execute(&ours).1, Some(42), "the load through the patch");
     assert_eq!(execute(&theirs).1, Some(42));
     let map = std::fs::read_to_string(map_of(&ours)).unwrap();
@@ -626,17 +626,18 @@ fn an_erratum_site_goes_through_a_patch() {
     // The patch's words: `ldr x0, [x0, #8]` (`val` at offset 8 of its
     // page), then a `b`.
     // `.text`'s address and offset, from `readelf -SW`.
-    let o =
+    let sections =
         mortar_testutil::run(tool("readelf").expect("readelf"), ["-SW".as_ref(), ours.as_os_str()]);
-    let line = o.stdout_text().lines().find(|l| l.contains(" .text ")).expect(".text").to_owned();
-    let f: Vec<&str> = line.split(']').nth(1).unwrap().split_whitespace().collect();
+    let line =
+        sections.stdout_text().lines().find(|l| l.contains(" .text ")).expect(".text").to_owned();
+    let fields: Vec<&str> = line.split(']').nth(1).unwrap().split_whitespace().collect();
     let (text_addr, text_off) =
-        (u64::from_str_radix(f[2], 16).unwrap(), u64::from_str_radix(f[3], 16).unwrap());
+        (u64::from_str_radix(fields[2], 16).unwrap(), u64::from_str_radix(fields[3], 16).unwrap());
     let image = read(&ours);
     let at = (text_off + (addr - text_addr)) as usize;
     let w = |i: usize| u32::from_le_bytes(image[at + 4 * i..at + 4 * i + 4].try_into().unwrap());
     assert_eq!(w(0) & 0xffc0_03ff, 0xf940_0000, "W4' is the load: {:#x}", w(0));
-    assert_eq!(w(1) >> 26, 0b000101, "then a b: {:#x}", w(1));
+    assert_eq!(w(1) >> 26, 0b00_0101, "then a b: {:#x}", w(1));
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
     support::plumb::clean(&ours, &map_of(&ours), &built.dir);

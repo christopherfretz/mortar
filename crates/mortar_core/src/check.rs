@@ -762,14 +762,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         let cx = self.cx;
         let p = &self.layout.placement;
         let mut taken = Vec::new();
-        let bodies: std::collections::BTreeSet<_> = p
-            .chunks
-            .iter()
-            .filter_map(|(_, c)| match c.kind {
-                ChunkKind::Body(part) => Some(part.out),
-                _ => None,
-            })
-            .collect();
+        let bodies = body_outs(p);
         for (s, row) in cx.resolution.sections.iter() {
             let out = cx.assignment.out(s);
             let needs =
@@ -1542,4 +1535,15 @@ fn needs_sized(c: &crate::layout::Chunk) -> bool {
     matches!(c.kind, ChunkKind::Patches(_))
         || matches!(c.kind, ChunkKind::Synthetic(s) if s.address_dependent)
         || (!c.is_alloc() && c.flags & SHF_COMPRESSED != 0)
+}
+
+/// The output sections that have a body chunk.
+fn body_outs(p: &crate::layout::Placement) -> std::collections::BTreeSet<OutSecId> {
+    p.chunks
+        .iter()
+        .filter_map(|(_, c)| match c.kind {
+            ChunkKind::Body(part) => Some(part.out),
+            _ => None,
+        })
+        .collect()
 }

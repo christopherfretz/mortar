@@ -175,7 +175,7 @@ pub fn with_link<T>(
 ///
 /// [`with_link`]'s.
 pub fn map_of(front: &Front<'_>, store: &Store) -> Result<Map, mortar_synth::error::SynthError> {
-    with_link(front, store, &|_| {}, |l| link::map_of(l))
+    with_link(front, store, &|_| {}, link::map_of)
 }
 
 /// The output options of `front`'s link: the mode of an executable, and
