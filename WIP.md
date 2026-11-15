@@ -13,6 +13,12 @@ Deleted in the final commit.
   static-identical: one baseline per host (baseline.on-<host>.tsv; a
   failed check prints the run's rows); tests/link/anomalies `cross`
   (A13 of mold is the cross x86-64 C runtime's).
-- Next: cut tests/identical/baseline.on-x86_64.tsv from the x86-64
-  lane's log; the next diagnosis run's failures; two green plain runs;
-  then the triggers and spec/harness.md "Hosted CI".
+- Done (x86-64 lane): its static-identical baseline; named skips
+  through MORTAR_NAMED_SKIPS (xtask's own gate test records into a
+  directory of its own: it had emptied the outer gate's); `exit:
+  no-start`; `.note.package` (front_diff); rustc's rust-lld and
+  static-pie (census); gc's COMDAT keepers tolerated on the cross
+  libstdc++ only; plumb corpus allows lld's `__CortexA53843419_*`.
+- Open: front_diff's `.eh_frame` mapping-symbol bound (4) on the cross
+  AArch64 runtime (13); then two green plain runs, the triggers and
+  spec/harness.md "Hosted CI".

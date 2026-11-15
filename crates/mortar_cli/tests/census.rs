@@ -300,16 +300,15 @@ fn rustc() {
     let src = scratch.write("h.rs", "fn main() { println!(\"h\"); }\n");
     let lib = scratch.write("l.rs", "#[unsafe(no_mangle)] pub extern \"C\" fn f() -> i32 { 1 }\n");
     let mut rows = BTreeSet::new();
+    // `+crt-static` is a static PIE where rustc's target supports one
+    // (x86_64-unknown-linux-gnu: `-static-pie`, which gcc passes on as
+    // `-static -pie`), a static executable elsewhere.
+    let static_kind =
+        if target == Target::X86_64 { OutputKind::StaticPie } else { OutputKind::StaticExecutable };
     let cases: &[(&str, &Path, &[&str], OutputKind, &str)] = &[
         ("default", &src, &[], OutputKind::PieExecutable, ".rcgu.o"),
         ("g", &src, &["-g"], OutputKind::PieExecutable, ".rcgu.o"),
-        (
-            "static",
-            &src,
-            &["-C", "target-feature=+crt-static"],
-            OutputKind::StaticExecutable,
-            ".rcgu.o",
-        ),
+        ("static", &src, &["-C", "target-feature=+crt-static"], static_kind, ".rcgu.o"),
         ("cdylib", &lib, &["--crate-type", "cdylib"], OutputKind::Shared, ".rcgu.o"),
         ("lto", &src, &["-C", "lto"], OutputKind::PieExecutable, ".rcgu.o"),
     ];

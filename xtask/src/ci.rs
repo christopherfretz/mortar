@@ -174,9 +174,15 @@ pub fn cargo_args(name: &str, no_fail_fast: bool) -> Option<Vec<&'static str>> {
 }
 
 /// Where the test binaries record their named skips
-/// ([`mortar_testutil::named_skip`]).
+/// ([`mortar_testutil::named_skip`]): `MORTAR_NAMED_SKIPS` when set, else
+/// `<build directory>/tmp/named-skips`. A gate run by a test (xtask's own
+/// tests) is given a directory of its own: the build directory's is the
+/// outer gate's, which it empties before its test step and counts after.
 pub fn named_skips_dir() -> std::path::PathBuf {
-    crate::linktest::build_dir().join("tmp").join(mortar_testutil::NAMED_SKIPS)
+    std::env::var_os(mortar_testutil::NAMED_SKIPS_ENV).map_or_else(
+        || crate::linktest::build_dir().join("tmp").join(mortar_testutil::NAMED_SKIPS),
+        std::path::PathBuf::from,
+    )
 }
 
 /// The named skips recorded in `dir`, one `<name>\t<reason>` line each,

@@ -212,6 +212,9 @@ if [ "$1" = "${FAKE_VANISH:-}" ] && [ ! -e "$FAKE_LOG.vanished" ]; then
   : > "$FAKE_LOG.vanished"
   echo "error[E0463]: can't find crate for \`mortar_elf\`" >&2; exit 101
 fi
+if [ "$1" = test ]; then
+  mkdir -p "$MORTAR_NAMED_SKIPS" && printf 'fake::skip\tnot here\n' > "$MORTAR_NAMED_SKIPS/fake"
+fi
 exit 0"#;
 
 // "ci": the steps run in order, each a cargo run through the harness's
@@ -226,6 +229,9 @@ fn ci_runs_its_cargo_steps_in_order_and_stops_at_a_failure() {
         let log = scratch.join(format!("{label}.log"));
         let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
         command.arg("ci").args(args).env("CARGO", &cargo).env("FAKE_LOG", &log);
+        // Its own named skips: the build directory's are those of the gate
+        // that runs this test.
+        command.env("MORTAR_NAMED_SKIPS", scratch.join(format!("{label}.skips")));
         command.env_remove("MAKEFLAGS").env_remove("FAKE_FAIL").env_remove("FAKE_VANISH");
         for (name, value) in env {
             command.env(name, value);
@@ -244,7 +250,7 @@ fn ci_runs_its_cargo_steps_in_order_and_stops_at_a_failure() {
     assert_eq!((status, ran.as_str()), (Some(0), all), "{errors}");
     // The step's standard error is passed on as it comes.
     let said = "[ci] fmt\n   Checking with fmt\n[ci] clippy\n   Checking with clippy\n[ci] test\n   \
-                Checking with test\n[ci] named skips: 0\n[ci] ok\n";
+                Checking with test\n[ci] named skips: 1\n[ci]   fake::skip: not here\n[ci] ok\n";
     assert_eq!(errors, said);
 
     let (status, ran, errors) = ci("fail", &[], &[("FAKE_FAIL", "clippy")]);
