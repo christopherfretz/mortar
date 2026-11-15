@@ -1771,7 +1771,7 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `dynamic-changed` | `DT_NEEDED`'s order changes or `.dynamic`'s spares run out (IN-42) | v1 |
 | `debug-compaction` | IN-57 | v1; [later] the debug-only rewrite |
 | `debug-name-index` | IN-55 | v1; [later] neutralized sets |
-| `debug-unit-kind` | a changed file has type units or split-DWARF skeletons (IN-51) | v1; [later] after S5's tests |
+| `debug-unit-kind` | a changed file has type units or split-DWARF skeletons (IN-55a) | v1; [later] after S5's tests |
 
 Not fall-backs but plain links (IN-12; a warning, no state written):
 `-r`, `--emit-relocs`, a `SECTIONS` script, `--compress-debug-sections`
