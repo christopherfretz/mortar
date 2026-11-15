@@ -360,6 +360,12 @@ relocation, and sequence recognition across neighbouring records
   blocks sums the blocks' counts, an integer sum, rule 2), the
   diagnostics of `spec/arch.md` §7 at their keys, and the events of
   §4.4, and the **record index** of I-29. No other table is written.
+  [M2] The per-section dynamic-relocation counts are also what places
+  the `RELATIVE` records of `.rela.dyn`: each unit's slice starts at the
+  exclusive prefix sum of the counts in address order of the placed
+  sections and GOT slots, and the unit fills it with its records sorted
+  by `r_offset` (`spec/dyn.md` D-40, synth S-4), so the counts must be
+  exact per section, not only in total.
 
 ### 4.2 Cost
 
@@ -717,7 +723,9 @@ buffer; the clip only selects which of them a job writes.
   - `e_ident[EI_OSABI]` is `Facts.osabi` (AArch64: 0, a64.md Q11, also
     with IFUNC symbols; eu-elflint then reads `STT_GNU_IFUNC` and
     `R_AARCH64_IRELATIVE` as unknown, which Q11 may revisit);
-    `e_type` from the output kind; `e_machine` `Facts.e_machine`;
+    `e_type` from the output kind (`spec/dyn.md` D-1: `ET_EXEC` for
+    `Static` and `Exec`, `ET_DYN` for `Pie` and `StaticPie`);
+    `e_machine` `Facts.e_machine`;
     `e_flags` `Arch::e_flags` over the live objects' `e_flags`;
   - `e_entry` is `Placement.entry`, or 0 when it is `None` (the gABI's
     "no entry point"; layout's `entry-not-found` warning, L-103);
@@ -733,7 +741,10 @@ buffer; the clip only selects which of them a job writes.
     `SHT_PREINIT_ARRAY` the word size; otherwise 0;
   - `sh_link`/`sh_info`: `.symtab` links `.strtab`, its `sh_info` the
     plan's first global (S-73); `.symtab_shndx` links `.symtab`;
-    `.rela.plt` has `sh_link` 0 and `sh_info` `.got.plt` (S-69);
+    `.rela.plt` has `sh_link` 0 and `sh_info` `.got.plt` (S-69) in a
+    static output; [M2] the dynamic sections' `sh_type`, `sh_flags`,
+    `sh_link`, `sh_info`, `sh_entsize` and `sh_addralign` are
+    `spec/dyn.md` D-34's table (`.rela.plt` then links `.dynsym`);
   - `.relro_padding` (layout's own `NOBITS` chunk, L-64) has a header
     and no synthetic plan;
   - extended numbering (gABI): when the section count or `.shstrtab`'s
@@ -866,9 +877,12 @@ writes a value chosen by the referring section's name, as
     lldb's breakpoints, lookups and steps are those of the all-ones
     output. It is sound because no code lies in `[0, len)`: the non-PIE
     base is at least 4 MiB (`spec/layout.md` L-68), so only a dead
-    function of 4 MiB or more could reach it. A PIE or a low layout (M2)
-    must revisit this row: E16 measured lldb losing lines there with the
-    references' 0. `llvm-dwarfdump --verify` reports `DIE has overlapping
+    function of 4 MiB or more could reach it. In a PIE [M2] the rows
+    stand (`spec/dyn.md` D-72, §15 Q6, ruled as lld): the 0 rows stay 0
+    and `.debug_ranges`/`.debug_loc` stay 1, since no code is at 0 in a
+    PIE either (the first `PT_LOAD` holds the headers). E16 measured
+    lldb losing lines with the references' 0 in a low layout; a low
+    layout stays as layout L-68 has it. `llvm-dwarfdump --verify` reports `DIE has overlapping
     ranges` for a CU's several `[0, len)` entries (lld and mold: the
     same); the debuggers are the oracle.
   - `.debug_ranges`/`.debug_loc` (DWARF ≤ 4 pairs): `(0, 0)` ends the

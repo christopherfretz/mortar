@@ -99,17 +99,17 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
 
   | # | name | content | exists when | M |
   |---|---|---|---|---|
-  | 1 | `.interp` | the interpreter path | dynamic output | M2 |
+  | 1 | `.interp` | the interpreter path | an interpreter is named (`Exec`, `Pie`; never `StaticPie`, `spec/dyn.md` D-31) | M2 |
   | 2 | `.note.gnu.property` | merged properties (§8.2) | some property survives the merge | M1 |
   | 3 | `.note.gnu.build-id` | the build id (§8.1) | `--build-id` other than `none` | M1 |
   | 4 | `.gnu.hash` | hash table | dynamic output | M2 |
   | 5 | `.dynsym` | dynamic symbols | dynamic output | M2 |
   | 6 | `.dynstr` | dynamic strings | dynamic output | M2 |
   | 7 | `.gnu.version` | `versym` | a version is defined or needed | M2 |
-  | 8 | `.gnu.version_d` | version definitions | a version script defines one | M2 |
+  | 8 | `.gnu.version_d` | version definitions | a version script defines one (never in an executable, `spec/dyn.md` D-27) | M4 |
   | 9 | `.gnu.version_r` | version needs | a shared input has versions | M2 |
   | 10 | `.rela.dyn` (`.rel.dyn`) | dynamic relocations | some dynamic relocation | M2 |
-  | 11 | `.relr.dyn` | packed relative relocations | `-z pack-relative-relocs` | M2 |
+  | 11 | `.relr.dyn` | packed relative relocations | `-z pack-relative-relocs` | M4 (`spec/dyn.md` D-27, D-62) |
   | 12 | `.rela.plt` (`.rel.plt`) | `JUMP_SLOT`, `IRELATIVE` | a PLT or IPLT entry exists | M1 |
   | 13 | `.eh_frame_hdr` | the FDE table (§5) | `--eh-frame-hdr` and some live FDE | M1 |
   | 14 | `.eh_frame` | the live records (§4) | some live record | M1 |
@@ -122,10 +122,16 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | 21 | `.strtab` | symbol names | with `.symtab` | M1 |
   | 22 | `.shstrtab` | section names | always | M1 |
   | 23 | `.comment` | mortar's identification (S-100) | always | M1 |
+  | 24 | `.dynbss` | copy allocations of writable shared data (`spec/dyn.md` D-42); the first chunk of output section `.bss` | some such allocation | M2 |
+  | 25 | `.bss.rel.ro` | copy allocations of read-only or RELRO shared data (D-42); output section `.bss.rel.ro` | some such allocation | M2 |
+
+  There is no `.hash` chunk: an executable gets `.gnu.hash` only
+  (`spec/dyn.md` D-20; `--hash-style` other than `gnu` is refused).
 
   A chunk that does not exist gets no `ChunkId`. The numbering is a
   name, not an order: `Placement.order` (layout §10) is the order.
-  `.comment` is last so the earlier chunks keep their ids (WP-027e).
+  `.comment` was last so the earlier chunks kept their ids (WP-027e); the
+  M2 rows 24-25 follow it for the same reason.
 - **S-4 [C] (division).** Each chunk declares its `Division`
   (`spec/image.md` §13, I-104) through the `SynthChunk` interface
   (`size`, `division`, `write(cx, range, out)`, `sealed`). `Divisible`
@@ -147,7 +153,17 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   row): a binary search over files, then over samples, then a walk of at
   most 1024 symbols; `.symtab` and `.symtab_shndx` likewise by entry. For
   any split of `[0, size)` the ranges' bytes concatenate to the same
-  bytes (I-103). A chunk's bytes depend only on the tables and
+  bytes (I-103).
+
+  [M2] `.rela.dyn` is `Divisible`: its `RELATIVE` region (`spec/dyn.md`
+  D-40 step 1) is the concatenation, in address order of the placed
+  sections and GOT slots, of each unit's records sorted by `r_offset`;
+  each unit's slice starts at an exclusive prefix sum of the per-section
+  record counts the scan produced (model §3.7, image I-15), so the
+  records are filled in parallel with no global sort. The records of
+  D-40 step 2 (one per imported key and place) are few, collected and
+  sorted by (`.dynsym` index, `r_offset`), and follow at the offset the
+  `RELATIVE` count gives. A chunk's bytes depend only on the tables and
   addresses; no chunk reads another chunk's output, with one exception
   the writer orders explicitly: the build id's descriptor, the `sealed`
   range (S-92, I-107), computed over the finished image.
@@ -828,9 +844,14 @@ which values are written where.
   `R_X86_64_IRELATIVE`, `R_386_IRELATIVE`), in IPLT order, with
   `r_offset` the entry's `.got.plt` word, symbol 0, and:
   - RELA (AArch64, x86-64): `r_addend` the resolver's address, and the
-    word itself written 0 (lld; GNU writes the PLT entry's address on
-    AArch64 and the entry's address + 6 (the lazy-PLT
-    convention) on x86-64 (`spec/x64.md` E3); glibc overwrites the word, X-22);
+    word itself written `S+A`, the resolver's address too (`spec/dyn.md`
+    §15 Q7, ruled; a64.md §6.2, §10.2; arch.md §3.10's `IRelative` row).
+    glibc overwrites the word under RELA, so the value is not read; GNU
+    ld writes the PLT entry's address on AArch64 and the entry's
+    address + 6 (the lazy-PLT convention) on x86-64 (`spec/x64.md` E3),
+    lld writes 0 (X-22). Until WP-041 lands, `mortar_synth` writes 0:
+    WP-041 changes these bytes (static outputs with an IFUNC included)
+    before the M2 static baseline is cut;
   - REL (i386): the word itself holds the resolver's address, which is
     the implicit addend (GNU and lld, X-22).
 
@@ -859,6 +880,11 @@ which values are written where.
   entry's address (a64.md §10.4). This includes the canonical case,
   where non-PIC code or data takes `f`'s address and the IPLT entry
   becomes `f`'s one address for pointer comparison.
+
+  This paragraph is `.symtab`'s rule. In `.dynsym` [M2] an exported
+  non-preemptible IFUNC is `STT_FUNC` at its IPLT entry (`spec/dyn.md`
+  D-23 and D-45; a64.md §10.4): the loader must not run the resolver for
+  a reference that binds to the executable.
 
   In `.symtab`, `f` keeps `STT_GNU_IFUNC` with the resolver's value,
   section and size in every case, the canonical one included: GNU's form
@@ -1346,40 +1372,44 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
   `crates/mortar/tests/pipeline.rs`. R-M6 is withdrawn: the internal
   file needs no merge piece.
 
-## 10. Dynamic outputs (M2 outline)
+## 10. Dynamic outputs (M2)
 
-This names what M2 adds and the decisions that constrain the M1 shapes;
-it is not the M2 specification.
+The M2 specification of the dynamic chunks is `spec/dyn.md` (§6-§8);
+the rules below keep their ids and cite it (request R-S1).
 
-- **S-101 [M2] (`.dynsym`).** The null entry, then the exported and
-  imported symbols in `Slots.dynsym` order (no `STT_SECTION` dynamic
-  symbols, as lld); with `--hash-style=gnu` the hashed symbols last,
-  sorted by bucket, then `SymbolId`. `sh_info` 1. The bucket count is a
-  function of the count.
-- **S-102 [M2] (`.gnu.hash`).** `nbuckets`, `symoffset`, the Bloom filter
-  (a power of two, a function of the count), buckets, chain.
-  `--hash-style=sysv` and `both` are refused (`spec/cli.md`); no `DT_HASH`.
-- **S-103 [M2] (versions).** `.gnu.version` one `u16` per `.dynsym`
-  entry; `.gnu.version_d` from the version script; `.gnu.version_r` per
-  needed object in `Slots.needed` order, versions by first reference.
-- **S-104 [M2] (`.rela.dyn`).** Relative relocations first by `r_offset`
-  (`DT_RELACOUNT`, `DT_RELCOUNT` on i386), then the others by (symbol
-  index, `r_offset`); with `-z pack-relative-relocs` the qualifying
-  relative ones (arch.md §3.10) go to `.relr.dyn` (layout L-121).
-  `IRELATIVE` goes to `.rela.plt` (S-69). The set is a function of
-  `Demands` and `Slots`, the order a sort.
-- **S-105 [M2] (`.dynamic`).** A fixed tag order (`DT_NEEDED` in
-  `Slots.needed` order, `DT_SONAME`, `DT_RUNPATH`, table addresses and
-  sizes, `DT_FLAGS`, `DT_FLAGS_1`, `DT_DEBUG`, `DT_NULL`); its size is
-  known before addresses.
-- **S-106 [M2] (`.interp`).** The `--dynamic-linker` path or the target's
-  default, NUL-terminated; first in the first `PT_LOAD`.
+- **S-101 [M2] (`.dynsym`).** `spec/dyn.md` D-21 (which symbols), D-22
+  (order: null, the unhashed undefined entries in `SymbolId` order, the
+  hashed entries by (bucket, `SymbolId`); `sh_info` 1; `Slots.dynsym`)
+  and D-23 (entry fields).
+- **S-102 [M2] (`.gnu.hash`).** `spec/dyn.md` D-20 (`.gnu.hash` only, no
+  `.hash`; `--hash-style` other than `gnu` refused) and D-26 (the
+  table, a closed form of the hashed count).
+- **S-103 [M2] (versions).** `spec/dyn.md` D-27 (`.gnu.version`,
+  `.gnu.version_r` in `Slots.needed` order; no `.gnu.version_d` in an
+  executable) and D-24 (`.dynstr`).
+- **S-104 [M2] (`.rela.dyn`).** `spec/dyn.md` D-40 (the set, a function
+  of `Demands`, `Slots` and the target kinds; `RELATIVE` first by
+  `r_offset`, counted by `DT_RELACOUNT`/`DT_RELCOUNT`; then the others by
+  (`.dynsym` index, `r_offset`); the parallel fill of S-4) and D-41
+  (`IRELATIVE` last in `.rela.plt`, S-69). `.relr.dyn` is M4 (D-27,
+  D-62).
+- **S-105 [M2] (`.dynamic`).** `spec/dyn.md` D-30 (the tags, their order
+  and presence, six `DT_NULL`s); its size is known before addresses.
+- **S-106 [M2] (`.interp`).** The `-dynamic-linker` path, NUL-terminated
+  (`spec/dyn.md` D-31: a dynamic output without one is refused; "or the
+  target's default" is withdrawn, request R-S2). It exists only when an
+  interpreter is named (never in a `StaticPie`); first in the first
+  `PT_LOAD` after the headers (layout L-60 rank 1).
 - **S-107 [C] (what M1 must not preclude).** `.got` has a place for the
   `_DYNAMIC` header word (S-65); IPLT words follow PLT words (S-67) and
-  `IRELATIVE` follows `JUMP_SLOT` (S-69), so the static shapes are the
-  dynamic ones with no PLT entries; `.symtab` never takes its order from
-  `.dynsym`; every S-3 chunk except `.relr.dyn` is sized before
-  addresses, `.gnu.hash` and `.rela.dyn` included, and M2 keeps that.
+  `IRELATIVE` follows `JUMP_SLOT` (S-69); `.symtab` never takes its
+  order from `.dynsym`; every S-3 chunk except `.relr.dyn` is sized
+  before addresses, `.gnu.hash` and `.rela.dyn` included, and M2 keeps
+  that. The static shapes are **not** the dynamic ones with no PLT
+  entries on every target: a dynamic output adds PLT0 and the
+  `.got.plt` header (three words on AArch64 too, a64 §10.2), and the
+  lazy `JUMP_SLOT` words and `-z now` placement are `spec/dyn.md` D-49's
+  (request R-S6).
 
 ## 11. Sizes as data, units and incremental linking
 
@@ -1402,6 +1432,15 @@ it is not the M2 specification.
   | `.symtab_shndx` | `4 × .symtab entries` |
   | `.strtab` | `1 + fixed table + Σ name bytes + 1 per entry` |
   | `.shstrtab` | `1 + Σ (name + 1)` over output sections |
+  | `.interp` [M2] | `len(path) + 1` (D-31) |
+  | `.gnu.hash` [M2] | `16 + (W/8) × maskwords + 4 × nbuckets + 4 × n` for `n` hashed entries (D-26; `W` the word size in bits) |
+  | `.dynsym` [M2] | `entsize × (1 + entries)` (D-21; entsize 24, ELF32 16) |
+  | `.dynstr` [M2] | `1 + Σ (string + 1)` over the distinct strings of D-24 (no tail merging) |
+  | `.gnu.version` [M2] | `2 × .dynsym entries` (D-27) |
+  | `.gnu.version_r` [M2] | `16 × (Verneed + Vernaux entries)` (D-27) |
+  | `.rela.dyn` [M2] | `records × entsize` (D-40; entsize 24, `.rel.dyn` 8) |
+  | `.dynamic` [M2] | `(tags present + 6) × (16, ELF32 8)`: D-30's rows under their conditions, plus the six `DT_NULL`s (row 32) |
+  | `.dynbss`, `.bss.rel.ro` [M2] | the end of the last allocation, each allocation placed at `align_up(end, its alignment)` in D-42's order (a function of the shared definitions' `st_size` and alignment) |
 
   Each is a function of counts. `Merged` chunk sizes come from
   `MergeMap` (S-24). None needs an address.
@@ -1506,7 +1545,7 @@ edit changes.
 | static IPLT sections | `.plt`, `.rela.plt`, `.got.plt` | `.iplt`, `.rela.dyn`, `.got.plt` | `.plt.got`, `.rela.dyn` | GNU's (S-68) | |
 | an IFUNC in `.symtab` | `IFUNC` at the resolver, always | `FUNC` at `.iplt`, size 0, when canonical; else `IFUNC` | `FUNC` locals at `.plt.got` (A1, A2) | `IFUNC` at the resolver, always (S-71) | gdb's `break f` works (X-27) |
 | `__rela_iplt_*` under `-static-pie` | not defined | not defined | absolute 0 | not defined (S-70) | resolve.md §8.1 |
-| IRELATIVE word (RELA) | AArch64: PLT address; x86-64: the entry's address + 6 (`spec/x64.md` E3) | 0 | — | 0 (S-69) | glibc overwrites it |
+| IRELATIVE word (RELA) | AArch64: PLT address; x86-64: the entry's address + 6 (`spec/x64.md` E3) | 0 | — | `S+A`, the resolver (S-69; `spec/dyn.md` Q7; written 0 until WP-041) | glibc overwrites it |
 | x86 static `.got.plt` reserved words | 3 | 3 | — | 3 (S-67) | |
 | section symbols in `.symtab` | AArch64 yes, x86 no | none | all | none (S-79) | |
 | `.L` locals | dropped | dropped | kept | dropped (S-78) | |

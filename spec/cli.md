@@ -104,7 +104,9 @@ An option is looked up in this order:
 - The "rest" form takes every argument that follows and ends the line.
   One row has it: mold's `-run COMMAND...`.
 - The value of each row is checked when the row says how:
-  - a choice of words: `--hash-style=sysv|gnu|both|none`,
+  - a choice of words: `--hash-style=sysv|gnu|both|none` (at M2 the row
+    is `partial`: only `gnu` is carried out, `spec/dyn.md` D-20; `sysv`,
+    `both` and `none` are refused values, §4.4),
     `--color-diagnostics=auto|always|never`, `--icf=all|safe|none`, and
     the others in `docs/status/options.md`;
   - a decimal count: `--error-limit`, `--thread-count`;
@@ -632,6 +634,24 @@ until the phase that honors them lands with its test:
   wait for M2 (L-68); `--no-rosegment`, `--no-warn-execstack`,
   `--error-execstack`, `-z start-stop-gc`, `-Ttext`, `-Tdata`, `-Tbss`,
   `--section-start` and `-z keep-text-section-prefix` stay `refused`.
+- M2, dynamic executables (`spec/dyn.md` §2.3 and request R-C1; WP-042
+  changes the rows of `crates/mortar_cli/src/rows.rs` and regenerates
+  `docs/status/options.md` when dynamic output is lifted, WP-053; until
+  then the statuses above stand):
+  - `supported`: `-pie`, `-dynamic-linker`, `-Bdynamic`, `--as-needed`,
+    `--no-as-needed` (`spec/dyn.md` D-11), `-E` (and
+    `--export-dynamic`), `-rpath`, `-init`, `-fini`, `-z text`, and
+    `--export-dynamic-symbol` (one more source of `exported`, D-21;
+    `spec/dyn.md` §15 Q9, closed);
+  - `partial`: `--hash-style`, `gnu` only (D-20);
+  - `-z norelro` stays `supported`; in a dynamic output it also moves
+    what RELRO would hold (D-33, D-42, D-49; plumb P-D4);
+  - `refused` by name at M2 (no census line passes them; lld 19 warns
+    that it does not know the last two): `-z notext` (D-47),
+    `-z nocopyreloc`, `--spare-dynamic-tags`, `--copy-dt-needed-entries`
+    (D-15), `--dynamic-list` (M4), `-z nodynamic-undefined-weak` and
+    `-z dynamic-undefined-weak` (D-25);
+  - `noop`: `--no-copy-dt-needed-entries` (the default; D-15).
 
 ### 4.3 What the facade does with a parse
 

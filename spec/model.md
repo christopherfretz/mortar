@@ -230,8 +230,8 @@ need them (§5).
 
 | part | row | columns |
 |---|---|---|
-| `file_live[FileId]` | file | whether the file takes part in the link and why: `Dead`; `Always`; `Extracted` by the reference `(FileId, st_index)` that pulled the lazy object in (a root, `spec/resolve.md` §4.2: file 0 and the root's argument index); `Shared{needed}`, a shared object of the command line or a script, `needed` when it is `DT_NEEDED` of the output (`spec/resolve.md` §9.5); `Closure`, a file of the `DT_NEEDED` closure that a needed shared object leads to, never `DT_NEEDED` of the output |
-| `def[SymbolId]` | key | the resolved definition: `Undefined{weak}`, `Defined{file, st_index}`, `Common{file, st_index}`, `Shared{file, st_index}`, `Internal(..)` (linker-defined: `Assign`, an assignment by its argument index or script position; `Alias(SymbolId)`, `--defsym A=B`; `Provide{conditional}`, a symbol of `spec/resolve.md` §8.1, `conditional` when its existence depends on output sections, §3.4); and the properties merged over every live mention (`spec/resolve.md` §3.6, §9.6): visibility, `ref_regular` (referenced from a relocatable object or a root), `ref_dynamic` (referenced from a needed shared object), `ref_strong` (some reference not weak), `defined_dynamic` (a live shared object defines it), `exported`, `preemptible`, binding for export, version, and the **verdict** of a surviving reference (`spec/resolve.md` §5.2: bound, error, warning, ignored) |
+| `file_live[FileId]` | file | whether the file takes part in the link and why: `Dead`; `Always`; `Extracted` by the reference `(FileId, st_index)` that pulled the lazy object in (a root, `spec/resolve.md` §4.2: file 0 and the root's argument index); `Shared{needed, used}`, a loaded shared object (of the command line, a script, or the `DT_NEEDED` closure) that takes part: `needed` when it is `DT_NEEDED` of the output (the set N of `spec/dyn.md` D-11), `used` when it is not needed but is reached by a `DT_NEEDED` edge from a needed or used object, whatever loaded it (the set U of D-12), never both; every other loaded shared object (an unneeded as-needed object that nothing needed or used leads to, a closure file nothing reaches) is `Dead` [M2] |
+| `def[SymbolId]` | key | the resolved definition: `Undefined{weak}`, `Defined{file, st_index}`, `Common{file, st_index}`, `Shared{file, st_index}`, `Internal(..)` (linker-defined: `Assign`, an assignment by its argument index or script position; `Alias(SymbolId)`, `--defsym A=B`; `Provide{conditional}`, a symbol of `spec/resolve.md` §8.1, `conditional` when its existence depends on output sections, §3.4); and the properties merged over every live mention (`spec/resolve.md` §3.6, §9.6): visibility, `ref_regular` (referenced from a relocatable object or a root), `ref_dynamic` (referenced from a needed or used shared object, a member of N ∪ U, computed after the needed/used fixed point: `spec/dyn.md` D-12), `ref_strong` (some reference not weak), `defined_dynamic` (a needed or used shared object defines it, D-12), `exported`, `preemptible`, binding for export, version, and the **verdict** of a surviving reference (`spec/resolve.md` §5.2: bound, error, warning, ignored) |
 | `common[SymbolId]` | key with a common mention | size and alignment: the maximum over the live common mentions |
 | `clash[SymbolId]` | key | whether two or more live definitions tie at the strongest rank (a duplicate definition, reported with both places) |
 | `redirect[SymbolId]` | key | the row the **undefined mentions** of this key bind to (`--wrap`); for a `--defsym` alias, every mention. A defined mention binds to itself; itself otherwise. Every consumer of `sym_map` applies it once |
@@ -272,9 +272,10 @@ output kept, a section dropped for its group in one; (5) `comdat_copies`
 sorted and live, the keeper the least copy; (6) an undefined key with a
 strong reference is not weak, a `Shared` definition is preemptible.
 `Resolution::check_against(&Inputs)` adds: (1) one row per file, key and
-signature; (2) `Shared` liveness only for a shared object not of the
-closure, `Closure` only for a closure file, `Extracted` only for a lazy
-object, `Always` for a lazy object only under `--whole-archive`; (3) a
+signature; (2) `Shared` liveness only for a loaded shared object,
+`needed` only for a shared object of the command line or a script (a
+closure file is never needed, `spec/dyn.md` D-11), never both `needed`
+and `used`, `Extracted` only for a lazy object, `Always` for a lazy object only under `--whole-archive`; (3) a
 `Defined` or `Common` definition in an object, a `Shared` one in a
 shared object.
 
@@ -420,11 +421,13 @@ module/offset pair, `TLS_GD`; descriptor, `TLS_DESC`), and of the
 output's local-dynamic module slot (`TLS_LD`, one per output); the PLT
 index of each `SymKey` that demands `PLT` or `CANON_PLT`, and the IPLT
 index of each that demands `IPLT`; the order of `.dynsym`; of dynamic
-relocations; of version definitions and needs; of `DT_NEEDED` entries; of
+relocations; of version definitions and needs; of `DT_NEEDED` entries
+(`spec/dyn.md` D-19a's order, computed by `mortar_resolve`); of
 live `.eh_frame` records after deduplication of CIEs; copy-relocation
 allocations, one per `(shared FileId, st_value)` with every `SymbolId`
-aliasing that address mapped to it; and the size each such chunk
-therefore has.
+aliasing that address mapped to it, each with its place (`.dynbss` or
+`.bss.rel.ro`), alignment and record alias (`spec/dyn.md` D-42); and the
+size each such chunk therefore has.
 
 An index counts within its kind: one key can hold slots of several kinds
 (`spec/a64.md` §10.1), each with its own index, and a key has a PLT index
