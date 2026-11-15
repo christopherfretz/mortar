@@ -86,14 +86,15 @@ impl Default for Options {
 /// A root of §4.2: a key named by an option, a strong reference from file
 /// 0 with the option's argument index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Root {
+pub struct Root {
     pub key: SymbolId,
     pub arg: u32,
 }
 
 impl Options {
     /// The roots of §4.2 that have a key row, in option order.
-    pub(crate) fn roots(&self) -> Vec<Root> {
+    #[must_use]
+    pub fn roots(&self) -> Vec<Root> {
         let mut roots = Vec::new();
         match &self.entry {
             Entry::Default(key) => {
@@ -118,7 +119,8 @@ impl Options {
 
     /// The `redirect` column (§7.1): the row an **undefined** mention of
     /// each key binds to. Several `--wrap` of one symbol are one.
-    pub(crate) fn redirect(&self, keys: u32) -> Vec<SymbolId> {
+    #[must_use]
+    pub fn redirect(&self, keys: u32) -> Vec<SymbolId> {
         let mut redirect: Vec<SymbolId> = (0..keys).map(SymbolId).collect();
         for wrap in &self.wrap {
             let ok = [wrap.sym, wrap.wrap, wrap.real].iter().all(|k| k.0 < keys);
