@@ -20,6 +20,8 @@
 #@ arch: aarch64 x86_64
 #@ xfail(bfd): W13: the library's &main_ifunc differs (AArch64 -no-pie); the loader refuses the x86-64 PIE
 #@ xfail(mold,x86_64): W13: STT_GNU_IFUNC exported from the PIE; the loader refuses it
+#@ anomaly(lld): A20
+#@ anomaly(mold,aarch64): A20
 
 cc -O2 -fPIC lib.c -o lib.o
 shlib gcc lib.o -Wl,-soname,libifx.so -o libifx.so

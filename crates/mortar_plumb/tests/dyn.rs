@@ -222,7 +222,7 @@ fn capture(program: &Path, args: &[&str]) -> String {
 
 const CLEAN: Option<&[&str]> = Some(&[]);
 /// spec/dyn.md H1: lld and mold apply `IRELATIVE` before `JUMP_SLOT`.
-const H1: Option<&[&str]> = Some(&["P-D10"]);
+const H1: Option<&[&str]> = Some(&["P-D10", "A20"]);
 /// The linker refuses the link.
 const B: Option<&[&str]> = None;
 
@@ -421,7 +421,7 @@ fn build() -> Option<Corpus> {
                 // IFUNC's GOT slot, IRELATIVE, where the other uses take
                 // the IPLT entry: F3), H1 (lld, mold: P-D10).
                 let e = if x64 && pm == "pie" {
-                    [Some(&["F3"][..]), H1, Some(&["F3", "P-D10"][..])]
+                    [Some(&["F3"][..]), H1, Some(&["F3", "P-D10", "A20"][..])]
                 } else {
                     [CLEAN, H1, H1]
                 };
@@ -467,7 +467,7 @@ fn build() -> Option<Corpus> {
         b.so(arch, &d, "libvis.c", "libvis.so", "libvis.so", &[]);
         set_dynsym_visibility(&d.join("libvis.so"), "vf", 2);
         b.obj(arch, &d, "w1.c", &["-O1"], "w1.o");
-        let w1: Option<&[&str]> = Some(&["P-D7", "P-D9"]);
+        let w1: Option<&[&str]> = Some(&["P-D7", "P-D9", "A27"]);
         b.link("W1", arch, &d, "w1", &["-Wl,--no-as-needed", "w1.o", "libvis.so"], [w1; 3]);
 
         // W2: a copied object whose alias is left behind (GNU ld).
@@ -480,7 +480,7 @@ fn build() -> Option<Corpus> {
             &d,
             "w2",
             &["-no-pie", "e.o", "libenv.so"],
-            [Some(&["P-D11", "P-D7"]), CLEAN, CLEAN],
+            [Some(&["P-D11", "P-D7", "A21"]), CLEAN, CLEAN],
         );
 
         // W3: an IFUNC's address taken in two units.
@@ -489,7 +489,7 @@ fn build() -> Option<Corpus> {
             b.obj(arch, &d, "ifeq_a.c", &[pic, "-O1"], &format!("a.{pm}.o"));
             b.obj(arch, &d, "ifeq_b.c", &[pic, "-O1"], &format!("b.{pm}.o"));
             let e = if x64 && pm == "pie" {
-                [Some(&["F3"][..]), H1, Some(&["F3", "P-D10"][..])]
+                [Some(&["F3"][..]), H1, Some(&["F3", "P-D10", "A20"][..])]
             } else {
                 [CLEAN, H1, H1]
             };
@@ -505,7 +505,7 @@ fn build() -> Option<Corpus> {
                 &d,
                 "w3.mixed",
                 &["-pie", "a.pie.o", "b.abs.o"],
-                [Some(&["F3"]), H1, Some(&["F3", "P-D10"])],
+                [Some(&["F3"]), H1, Some(&["F3", "P-D10", "A20"])],
             );
         }
 
@@ -532,14 +532,14 @@ fn build() -> Option<Corpus> {
             &d,
             "w6",
             &["-pie", "t.o", "libA.so"],
-            a([B, B, Some(&["P-D9", "P-D6"])], [B; 3]),
+            a([B, B, Some(&["P-D9", "P-D6", "A24"])], [B; 3]),
         );
 
         // W7: an import's address in a read-only section of a PIE.
         let d = b.dir(arch, "W7");
         b.so(arch, &d, "textrel_lib.c", "libtextrel.so", "libtextrel.so", &[]);
         b.obj(arch, &d, "textrel_ro.c", &["-fPIE", "-O1"], "tr.o");
-        let tr: Option<&[&str]> = Some(&["P-D9", "P-D6"]);
+        let tr: Option<&[&str]> = Some(&["P-D9", "P-D6", "A24"]);
         b.link(
             "W7",
             arch,
@@ -622,9 +622,9 @@ fn build() -> Option<Corpus> {
                 let e: Option<&'static [&'static str]> = if dl {
                     CLEAN
                 } else if k == 0 {
-                    Some(&["P-D4"])
+                    Some(&["P-D4", "A22"])
                 } else {
-                    Some(&["P-D1", "P-D4"])
+                    Some(&["P-D1", "P-D4", "A23"])
                 };
                 b.push("W10", arch, &d, &name, linked, e, *linker, line, true);
             }
@@ -670,7 +670,7 @@ fn build() -> Option<Corpus> {
             let o = format!("m.{pm}.o");
             b.obj(arch, &d, "w13.c", &[pic, "-O2"], &o);
             let e = match (x64, pm) {
-                (true, "pie") => [Some(&["P-D7"][..]), H1, Some(&["P-D7", "P-D10"][..])],
+                (true, "pie") => [Some(&["P-D7"][..]), H1, Some(&["P-D7", "P-D10", "A20"][..])],
                 (false, "nopie") => [Some(&["P-D9"][..]), H1, H1],
                 _ => [CLEAN, H1, H1],
             };
@@ -903,8 +903,12 @@ fn judge(case: &str) {
     for o in c.outs.iter().filter(|o| o.case == case) {
         n += 1;
         let r = o.verify();
+        // `found`: each finding's anomaly id, or its rule when it is none;
+        // `rules`: every finding's rule (a W row names both).
         let mut found = BTreeSet::new();
+        let mut rules = BTreeSet::new();
         for f in &r.findings {
+            rules.insert(f.rule.id());
             match known_anomaly(&o.link, f) {
                 Some(a) => found.insert(mortar_plumb::anomaly::id(a).to_string()),
                 None => found.insert(f.rule.id()),
@@ -920,7 +924,7 @@ fn judge(case: &str) {
         let missing: Vec<&&str> = expect
             .iter()
             .filter(|e| match e.split_once('@') {
-                None => !found.contains(**e),
+                None => !found.contains(**e) && !rules.contains(**e),
                 Some((id, text)) => {
                     !r.findings.iter().any(|f| f.rule.id() == id && f.message.contains(text))
                 }

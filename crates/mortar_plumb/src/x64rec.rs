@@ -261,11 +261,21 @@ impl Engine<'_, '_> {
         {
             return self.cov.add_verified(Via::Plt, ty);
         }
+        // `PLTOFF64` is `L + A − GOT` (x64.md §6.1): L a PLT entry whose
+        // word holds S (a dynamic key, `-mcmodel=large` code).
+        if ty == x::PLTOFF64
+            && !matches!(judge(rec, xv as i64), Verdict::Ok(_))
+            && let Some(g) = self.got
+            && self.plt_hop(rec.out_word.wrapping_add(g).wrapping_sub(a), s)
+        {
+            return self.cov.add_verified(Via::Plt, ty);
+        }
         self.x64_judge(rec, &site, &symbol, xv as i64);
         if rec.def.op == Op::Abs
             && rec.def.field.width() >= 4
             && kind != Kind::Weak0
             && self.cov.failed == failed
+            && self.objs[oi].secs[si].alloc()
         {
             self.abs_words.push((rec.p, rec.def.field.width(), xv, self.internal(s)));
         }

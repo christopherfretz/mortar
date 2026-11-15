@@ -2426,6 +2426,49 @@ case of `tests/x64.rs`):
   can hide a real FDE with the same start from the binary search. GNU
   ld drops the FDE; lld keeps it out of the table.
 
+Stage 3 (WP-050, from the dynamic link tests of WP-051, `tests/link/dyn`;
+each declared by the tests that show it). A20-A27 are wrong outputs and
+reference behaviours `spec/dyn.md` already names; A28 and A29 are new.
+
+- **A20 (lld, mold).** H1: `IRELATIVE` records in `.rela.dyn`, applied
+  before `.rela.plt`'s `JUMP_SLOT`s; a resolver that calls through the
+  PLT jumps to an unbound slot (P-D10 "(D-41, H1)").
+- **A21 (GNU ld).** W2: an alias of a copied variable (`_environ` of
+  `__environ`) is not defined at the copy and not exported (P-D11
+  "(D-21, W2)", P-D7 "(W2)").
+- **A22 (GNU ld).** W10: with no `-dynamic-linker`, its built-in
+  interpreter (right on AArch64, `/lib/ld64.so.1` on x86-64) (P-D4 "a
+  linker default (D-31, W10)").
+- **A23 (lld, mold).** W10: with no `-dynamic-linker`, no `PT_INTERP`
+  (P-D1 and P-D4 ending "(D-31, W10)").
+- **A24 (GNU ld, mold).** W6's form on AArch64 and x86-64: a record in
+  read-only memory and `DT_TEXTREL` where D-47 refuses (an address-sized
+  word in `.rodata`; WP-051's finding 5) (P-D9 "a text relocation (D-47,
+  W6)", P-D6 "(D-47, W6)").
+- **A25 (lld).** In a `-no-pie` executable lld exports an undefined weak
+  key as `WEAK UND` and writes no record for its absolute uses, so a
+  preloaded definition never reaches them (D-25: no reference writes one
+  in `-no-pie`; W12's no-record form, without a split): P-D9 view 3
+  ending "no dynamic record names it (D-25, W12)", on an `ET_EXEC`.
+- **A26 (lld, mold).** D-11 item 3 (E-shlib 2.3b, review N5): an
+  under-linked library's provider is left out of `DT_NEEDED`; the load
+  fails (P-D6 "which D-11 item 3 makes needed").
+- **A27 (GNU ld, lld, mold).** W1: a reference bound to a `STV_HIDDEN`
+  `.dynsym` entry; the output fails to load (P-D6, P-D7 or P-D9 ending
+  "(only a STV_HIDDEN entry: W1)").
+- **A28 (mold, new).** A `-fno-pic` CIE's absolute personality
+  (`R_X86_64_32` against `__gxx_personality_v0`) holds a `.plt` entry
+  while the `.dynsym` entry has `st_value` 0: the routine has two
+  addresses (E3, "differs in its personality routine", the value found
+  in `.plt`). Harmless to unwinding, which only calls it. Reproducer:
+  `tests/link/dyn/reloc/copy-typeinfo-relro.test`, x86-64.
+- **A29 (lld, new).** `.eh_frame_hdr`'s table sorted by unsigned offset
+  from the table: an FDE whose function lies below it (an x86-64
+  `.ltext` placed first, Clang `-mcmodel=large`) comes last, where the
+  unwinder's binary search cannot find it (E5 "not sorted", at an
+  address below `.eh_frame_hdr`). Reproducer:
+  `tests/link/dyn/reloc/weak-class-table.test`, x86-64 `exec` (lld 22).
+
 On i386 (WP-028e, `tests/x86.rs`; x86.md §15.2): W1 (two readings of a
 `GOT32X` operand) is R8 under every map; W3 (mold's no-base GOT value
 G − `.got`) is R4, and its no-base `mov` → `lea` R1; W4 (mold's LE form
@@ -2757,6 +2800,22 @@ from the file system (`line::Files`).
 - **P-D2 stops stage 3**: a line word or a `DT_NEEDED` object the
   verifier cannot read is reported and nothing computed without it is
   judged.
+- **Outside stage 3** (P-D1, a finding starting "outside stage 3: ",
+  `mortar_plumb::OUTSIDE`): a link stage 3 does not model is named and
+  nothing of stage 3 is judged: an option `spec/dyn.md` refuses
+  (`--hash-style` other than `gnu`, `--copy-dt-needed-entries`,
+  `-shared`), static-pie (WP-052), an output with version definitions
+  (`DT_VERDEF`, M4), and a `DT_NEEDED` object of the closure no search
+  finds (a link D-13 refuses, which lld and mold make). It is a finding,
+  so mortar's output fails with it; the link-test harness counts a
+  reference's output that has it as not judged, "outside stage 3"
+  (`spec/harness.md` "L3").
+- **A reference to its own form** where `spec/dyn.md` records its rule:
+  besides §13.1's order rules, GNU ld may leave out an as-needed object
+  needed by D-11 item 2 alone whose keys all bind to an object before it
+  in D-19a's order (D-11: GNU ld decides neededness by its binding), and
+  mold records the giver of a key referenced only weakly (D-11, E-shlib
+  2.2a).
 - **The loader model** (`loader.rs`): the output's records applied as
   ld.so applies them (symbols looked up in the executable, then the
   needed objects breadth-first; `COPY` lookups skip the executable;

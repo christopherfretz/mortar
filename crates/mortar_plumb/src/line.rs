@@ -30,7 +30,10 @@ pub enum Item {
     Relocatable { path: String, group: Option<usize> },
     /// A shared object mention (D-19a): the file found, the state in
     /// force, the `--start-group`/`GROUP` it is in.
-    Shared { path: String, as_needed: bool, group: Option<usize> },
+    /// `named` is the name the linker records in `DT_NEEDED` when the
+    /// object has no `DT_SONAME` (input §8.3): the file name of a `-l`
+    /// search, the path as written otherwise.
+    Shared { path: String, named: String, as_needed: bool, group: Option<usize> },
 }
 
 /// The line, read.
@@ -54,9 +57,12 @@ pub struct Line {
     /// `-u` names (file 0 references, D-11 item 2).
     pub undefined: Vec<String>,
     pub entry: Option<String>,
-    /// What the verifier could not read (each a finding of P-D2), or an
-    /// option it refuses to model.
+    /// What the verifier could not read (each a finding of P-D2).
     pub problems: Vec<String>,
+    /// What puts the link outside stage 3 (each a P-D1 finding,
+    /// [`crate::report::OUTSIDE`]): an option `spec/dyn.md` refuses, or a
+    /// kind stage 3 does not judge.
+    pub outside: Vec<String>,
 }
 
 /// Options whose value is the next word.
@@ -96,6 +102,7 @@ const WITH_ARG: &[&str] = &[
     "-mllvm",
     "--exclude-libs",
     "--chroot",
+    "--hash-style",
 ];
 
 struct State {
@@ -213,7 +220,12 @@ impl Line {
                 "-L" | "--library-path" => i += 1,
                 "--now" => l.now = true,
                 "--copy-dt-needed-entries" => {
-                    l.problems.push("--copy-dt-needed-entries (dyn.md D-15)".into());
+                    l.outside.push("--copy-dt-needed-entries (dyn.md D-15)".into());
+                }
+                "--hash-style" => {
+                    if let Some(v) = next(&mut i) {
+                        l.hash_style(&v);
+                    }
                 }
                 _ if WITH_ARG.contains(&a) => i += 1,
                 _ => {
@@ -236,17 +248,20 @@ impl Line {
                         l.undefined.push(u);
                     } else if let Some(e) = val(a, "--entry") {
                         l.entry = Some(e);
+                    } else if let Some(v) = val(a, "--hash-style").or_else(|| val(a, "-hash-style"))
+                    {
+                        l.hash_style(&v);
                     } else if a.starts_with('-') {
                         // Every other option leaves the inputs alone.
                     } else {
-                        l.file(a, &st, group, files, 0);
+                        l.file(a, a, &st, group, files, 0);
                     }
                 }
             }
             i += 1;
         }
         l.kind = Some(if shared {
-            l.problems.push("-shared (M4)".into());
+            l.outside.push("-shared (M4)".into());
             OutputKind::Pie
         } else if static_pie || (pie == Some(true) && (static_ || no_interp)) {
             OutputKind::StaticPie
@@ -262,7 +277,18 @@ impl Line {
         if no_interp {
             l.interp = None;
         }
+        if l.kind == Some(OutputKind::StaticPie) {
+            l.outside.push("static-pie (dyn.md D-2; WP-052)".into());
+        }
         l
+    }
+
+    /// `--hash-style=<v>`: `gnu` is D-20's; every other value is refused
+    /// by `spec/cli.md` §4.4.
+    fn hash_style(&mut self, v: &str) {
+        if v != "gnu" {
+            self.outside.push(format!("--hash-style={v} (dyn.md D-20; cli.md §4.4)"));
+        }
     }
 
     fn z(&mut self, z: &str) {
@@ -297,7 +323,10 @@ impl Line {
             found
         };
         match found {
-            Some(p) => self.file(&p, st, group, files, 0),
+            Some(p) => {
+                let named = p.rsplit_once('/').map_or(p.as_str(), |(_, f)| f).to_string();
+                self.file(&p, &named, st, group, files, 0);
+            }
             None => self.problems.push(format!("-l{name}: not found in the -L directories")),
         }
     }
@@ -307,6 +336,7 @@ impl Line {
     fn file(
         &mut self,
         path: &str,
+        named: &str,
         st: &State,
         group: Option<usize>,
         files: &dyn Files,
@@ -323,7 +353,12 @@ impl Line {
                     self.problems
                         .push(format!("{path}: a shared object after -Bstatic (dyn.md D-19)"));
                 }
-                self.items.push(Item::Shared { path: path.into(), as_needed: st.as_needed, group });
+                self.items.push(Item::Shared {
+                    path: path.into(),
+                    named: named.into(),
+                    as_needed: st.as_needed,
+                    group,
+                });
             } else {
                 self.items.push(Item::Relocatable { path: path.into(), group });
             }
@@ -411,7 +446,7 @@ impl Line {
                     if let Some(n) = w.strip_prefix("-l") {
                         self.library(n, &sub, grp, files);
                     } else if w.starts_with('/') || files.read(w).is_some() {
-                        self.file(w, &sub, grp, files, depth + 1);
+                        self.file(w, w, &sub, grp, files, depth + 1);
                     } else {
                         // GNU ld: a relative name is tried in the current
                         // directory, the script's, then the -L path.
@@ -422,7 +457,7 @@ impl Line {
                             .map(|d| format!("{d}/{w}"))
                             .find(|p| files.read(p).is_some());
                         match found {
-                            Some(p) => self.file(&p, &sub, grp, files, depth + 1),
+                            Some(p) => self.file(&p, w, &sub, grp, files, depth + 1),
                             None => self.problems.push(format!("{w} (in {path}): not found")),
                         }
                     }
@@ -513,5 +548,54 @@ mod tests {
         assert_eq!(k("-pie -dynamic-linker /x"), Some(OutputKind::Pie));
         assert_eq!(k("-static-pie"), Some(OutputKind::StaticPie));
         assert_eq!(k("-pie --no-dynamic-linker"), Some(OutputKind::StaticPie));
+    }
+
+    // spec: plumb.md §12.1 — a link stage 3 does not model is named
+    // (P-D1, "outside stage 3"), never judged by D rules it is outside of.
+    #[test]
+    fn s12_1_links_outside_stage_3_are_named() {
+        let m = Mem(HashMap::new());
+        let out = |s: &str| Line::parse(&words(s), &m).outside;
+        assert!(out("-pie -dynamic-linker /x --hash-style=gnu").is_empty());
+        assert_eq!(
+            out("-pie -dynamic-linker /x --hash-style=sysv"),
+            ["--hash-style=sysv (dyn.md D-20; cli.md §4.4)"]
+        );
+        assert_eq!(
+            out("-pie -dynamic-linker /x --hash-style both"),
+            ["--hash-style=both (dyn.md D-20; cli.md §4.4)"]
+        );
+        assert_eq!(out("-static-pie -o a"), ["static-pie (dyn.md D-2; WP-052)"]);
+        assert_eq!(
+            out("-dynamic-linker /x --copy-dt-needed-entries"),
+            ["--copy-dt-needed-entries (dyn.md D-15)"]
+        );
+        assert_eq!(out("-shared -o a.so"), ["-shared (M4)"]);
+    }
+
+    // spec: dyn.md D-30 (input §8.6) — a shared object without a soname is
+    // recorded in DT_NEEDED by the name the line gives: the file name of
+    // an `-l` search, the path as written otherwise.
+    #[test]
+    fn s12_1_a_soname_less_library_is_named_as_the_line_names_it() {
+        let mut m = HashMap::new();
+        m.insert("./d/libv.so".to_string(), elf(3));
+        m.insert("sub/libw.so".to_string(), elf(3));
+        let l = Line::parse(&words("-pie -dynamic-linker /x -L./d -lv sub/libw.so"), &Mem(m));
+        let named: Vec<(String, String)> = l
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Shared { path, named, .. } => Some((path.clone(), named.clone())),
+                Item::Relocatable { .. } => None,
+            })
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                ("./d/libv.so".into(), "libv.so".into()),
+                ("sub/libw.so".into(), "sub/libw.so".into())
+            ]
+        );
     }
 }

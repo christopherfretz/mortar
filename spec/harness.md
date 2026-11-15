@@ -858,13 +858,21 @@ mortar included (`docs/VALIDATION.md` layer L3).
   (`ET_EXEC` with `PT_INTERP` or `PT_DYNAMIC`, stage 3) and `relocatable`
   (`-r`). A file that is not ELF is judged, and fails S1.
 - **Stage 3.** Dynamic outputs (`pie-or-shared`, `dynamic`) are judged
-  when the verifier has stage 3, which the run finds out once at its
-  start (`engine::stage3_present`): it gives `mortar_plumb::verify` a
-  bare AArch64 `ET_DYN` header, and stage 3 is absent while the answer
-  is S1's finding that the file is not `ET_EXEC`. While it is absent they
-  are counted as not judged with the reason `stage 3 absent`, and the run
-  says so in a note; the day stage 3 lands (WP-050) they are judged, with
-  no edit to the harness or the tests.
+  when the verifier has stage 3, which the run reads once at its start
+  (`engine::stage3_present`: the verifier's constant
+  `mortar_plumb::STAGE` is 3 or more; WP-050 set it to 3). Without it
+  they are counted as not judged, `stage 3 absent`, with a note. Stage 3
+  needs the link's words (`spec/plumb.md` §12.1): the `ld` wrapper writes
+  the words the linker received, one per line, to
+  `.linktest-ld-status-<line>.line`, and a reference's output is judged
+  with them (a `link ld` step's own words directly). A mortar output is
+  judged with its map's `arg` records only; a map without them is P-D2
+  ("no command line"), a failure, so a mortar dynamic output never
+  passes unjudged. A reference's output whose link the verifier names
+  outside stage 3 (P-D1 "outside stage 3: ...": an option `spec/dyn.md`
+  refuses, static-pie, version definitions, a closure object no search
+  finds) is counted as not judged, `outside stage 3`, its other findings
+  still judged; mortar's fails on that finding like any other.
 - **The verdict.** A finding fails the step: `FAIL`, or `XFAIL` under an
   `xfail` marker, with the detail `<step>: L3: the verifier finds
   <output>: <rule> <message> at <address> (and N more)`. Run

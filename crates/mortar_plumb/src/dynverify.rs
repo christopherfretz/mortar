@@ -8,13 +8,13 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use mortar_elf::consts::{PT_DYNAMIC, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK};
 
 use crate::dynmodel::{Model, SoDef};
-use crate::dynout::DynOut;
+use crate::dynout::{DT_VERDEF, DynOut};
 use crate::image::Image;
 use crate::line::{Files, Line};
 use crate::loader::{self, Loader, Params};
 use crate::locate::{self, Obj};
 use crate::map::{Map, OutputKind};
-use crate::report::{Finding, Report, Rule};
+use crate::report::{Finding, OUTSIDE, Report, Rule};
 use crate::{Input, reloc, run_engine, structure};
 
 /// What stage 3 needs beyond stage 2's arguments.
@@ -83,6 +83,19 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         return report;
     };
     let line = Line::parse(&args, ctx.files);
+    // P-D1: a link stage 3 does not model is reported by name, as one
+    // finding each, and nothing else is judged (§12.1).
+    let mut outside: Vec<String> = line.outside.clone();
+    if dout.has(DT_VERDEF) {
+        outside.push("the output defines versions (.gnu.version_d; dyn.md D-27, M4)".into());
+    }
+    if !outside.is_empty() {
+        for o in outside {
+            report.findings.push(Finding::new(Rule::Dyn(1), format!("{OUTSIDE}{o}")));
+        }
+        report.sort();
+        return report;
+    }
     for p in &line.problems {
         report.findings.push(Finding::new(Rule::Dyn(2), format!("the command line: {p}")));
     }
@@ -126,7 +139,10 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     for p in &model.problems {
         report.findings.push(Finding::new(Rule::Dyn(2), p.clone()));
     }
-    if !line.problems.is_empty() || !model.problems.is_empty() {
+    for o in &model.outside {
+        report.findings.push(Finding::new(Rule::Dyn(1), format!("{OUTSIDE}{o}")));
+    }
+    if !line.problems.is_empty() || !model.problems.is_empty() || !model.outside.is_empty() {
         // P-D2: an input the verifier cannot read is an error; nothing
         // computed without it is judged.
         report.sort();
@@ -233,6 +249,13 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
             }
             for (k, fs) in bad {
                 let n = ok.get(&k).copied().unwrap_or(0);
+                // The cause, named: no record names the key (its `.dynsym`
+                // entry is inert; D-25 notes that no reference writes one
+                // for an absolute use in `-no-pie`).
+                let recorded = dout.rels.iter().any(|r| {
+                    r.sym != 0 && dout.syms.get(r.sym as usize).is_some_and(|s| s.name == k)
+                });
+                let cause = if recorded { "" } else { "; no dynamic record names it (D-25, W12)" };
                 // Every use must reach the definition. A use whose field
                 // is too narrow for it (an input's 32-bit absolute use in a
                 // no-PIE executable) cannot whatever the linker writes, and
@@ -243,7 +266,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
                         let mut g = Finding::new(
                             Rule::Dyn(9),
                             format!(
-                                "view 3 ('{k}' defined by a preloaded library): this use ({n} in all) still sees the absent definition ({})",
+                                "view 3 ('{k}' defined by a preloaded library): this use ({n} in all) still sees the absent definition ({}){cause}",
                                 f.message
                             ),
                         );

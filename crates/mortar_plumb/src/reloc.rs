@@ -1300,7 +1300,13 @@ impl<'a, 'b> Engine<'a, 'b> {
         };
         let verdict = judge(rec, x);
         if let Verdict::Ok(rw) = verdict {
-            if op == Op::Abs && matches!(rec.def.field, Field::Data(4 | 8)) && !weak {
+            // Stage 3's view 2 re-reads loaded words only: a non-alloc
+            // place (`.debug_*`) is not in memory and no record moves it.
+            if op == Op::Abs
+                && matches!(rec.def.field, Field::Data(4 | 8))
+                && !weak
+                && self.objs[oi].secs[si].alloc()
+            {
                 let s = sa.wrapping_sub(addend as u64);
                 self.abs_words.push((rec.p, rec.def.field.width(), sa, self.internal(s)));
             }

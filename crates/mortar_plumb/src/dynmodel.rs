@@ -254,10 +254,24 @@ pub struct Model {
     pub order_d19a: Vec<usize>,
     /// The first-mention order (lld, mold).
     pub order_first: Vec<usize>,
+    /// Needed objects GNU ld does not record (D-11: it decides neededness
+    /// by its binding in D-19a's order): as-needed, needed by item 2 alone,
+    /// and every key they give binds to an object before them, so no
+    /// binding changes without them (`needed-order-dup-def` line 1).
+    pub gnu_unbound: BTreeSet<usize>,
+    /// The givers of keys the program references only weakly, which mold
+    /// makes needed (D-11 "mold differs", E-shlib 2.2a).
+    pub mold_weak: BTreeSet<usize>,
+    /// The objects D-11 item 3 alone makes needed (an under-linked
+    /// library's providers).
+    pub item3: BTreeSet<usize>,
     /// Names of a needed or used object's references: `ref_dynamic`.
     pub ref_dynamic: HashSet<String>,
     pub def_dynamic: HashSet<String>,
     pub problems: Vec<String>,
+    /// `DT_NEEDED` objects no search finds: the link is outside stage 3
+    /// (P-D1, [`crate::report::OUTSIDE`]).
+    pub outside: Vec<String>,
 }
 
 impl Model {
@@ -318,11 +332,13 @@ impl Model {
     #[allow(clippy::too_many_lines)] // D-11, D-12, D-19a in order
     pub fn build(line: &Line, objs: &[Obj<'_>], file0: &[String], files: &dyn Files) -> Model {
         let mut m = Model::default();
-        // C: one object per soname, in mention order.
-        let mut by_path: HashMap<String, usize> = HashMap::new();
+        // C: one object per soname, in mention order. A file without a
+        // soname is named as the line names it, so two spellings are two
+        // members (two DT_NEEDED entries, D-19a).
+        let mut by_path: HashMap<(String, String), usize> = HashMap::new();
         for (pos, item) in line.items.iter().enumerate() {
-            let Item::Shared { path, as_needed, group } = item else { continue };
-            let idx = if let Some(&i) = by_path.get(path) {
+            let Item::Shared { path, named, as_needed, group } = item else { continue };
+            let idx = if let Some(&i) = by_path.get(&(path.clone(), named.clone())) {
                 i
             } else {
                 let Some(bytes) = files.read(path) else {
@@ -330,7 +346,10 @@ impl Model {
                     continue;
                 };
                 match Dso::read(path, bytes, true) {
-                    Ok(d) => {
+                    Ok(mut d) => {
+                        if d.soname == *path {
+                            d.soname.clone_from(named);
+                        }
                         let i = if let Some(j) = m.by_soname(&d.soname) {
                             j
                         } else {
@@ -338,7 +357,7 @@ impl Model {
                             m.c.push(m.dsos.len() - 1);
                             m.dsos.len() - 1
                         };
-                        by_path.insert(path.clone(), i);
+                        by_path.insert((path.clone(), named.clone()), i);
                         i
                     }
                     Err(e) => {
@@ -365,7 +384,10 @@ impl Model {
             }
             let found = m.search(line, s, &n, files);
             let Some((path, bytes)) = found else {
-                m.problems.push(format!("{n} (needed by {}): not found", m.dsos[s].path));
+                m.outside.push(format!(
+                    "{n} (needed by {}) is not found: the loader model needs it (dyn.md D-13)",
+                    m.dsos[s].path
+                ));
                 continue;
             };
             match Dso::read(&path, bytes, false) {
@@ -476,6 +498,7 @@ impl Model {
             }
             n.extend(add);
         }
+        m.item3 = n.difference(&n0).copied().collect();
         m.used = m.reach(n.iter().copied()).difference(&n).copied().collect();
         m.needed = n;
         // D-19a: each needed object at its keeping mention.
@@ -487,8 +510,11 @@ impl Model {
                 obj_reasons.entry(g).or_default().extend(m.keys[k].ref_pos.iter().copied());
             }
         }
+        // D-19a counts a shared object's reference only as D-11 item 3
+        // does: a provider outside reach(N0) and reach({x}).
         let mut dso_reasons: HashMap<usize, Vec<usize>> = HashMap::new();
         for &x in &m.needed {
+            let rx = m.reach([x]);
             for r in &m.dsos[x].refs {
                 if r.weak || m.keys.get(&r.name).is_some_and(|k| k.defined) {
                     continue;
@@ -498,6 +524,8 @@ impl Model {
                         .copied()
                         .find(|&i| m.dsos[i].def(&r.name, r.version.as_deref()).is_some())
                     && s != x
+                    && !reach_n0.contains(&s)
+                    && !rx.contains(&s)
                 {
                     dso_reasons.entry(s).or_default().push(x);
                 }
@@ -535,6 +563,36 @@ impl Model {
         order.sort_by_key(|d| (keep.get(d).copied().unwrap_or(usize::MAX), *d));
         m.order_d19a = order;
         m.order_first = m.c.iter().copied().filter(|d| m.needed.contains(d)).collect();
+        // GNU ld's and mold's own neededness, where D-11 records theirs
+        // (a reference output is held to its own form).
+        let mut gnu_unbound = BTreeSet::new();
+        for &s in &n0 {
+            if !m.dsos[s].as_needed || dso_reasons.contains_key(&s) {
+                continue;
+            }
+            let at = m.order_d19a.iter().position(|&d| d == s).unwrap_or(m.order_d19a.len());
+            let before = &m.order_d19a[..at];
+            let bound_before = |k: &String| {
+                let ver = m.keys.get(k).and_then(|x| x.version.as_deref());
+                before.iter().any(|&d| m.dsos[d].def(k, ver).is_some())
+            };
+            if strong.iter().filter(|k| m.giver(k) == Some(s)).all(bound_before) {
+                gnu_unbound.insert(s);
+            }
+        }
+        m.gnu_unbound = gnu_unbound;
+        let mut mold_weak = BTreeSet::new();
+        for (name, k) in &m.keys {
+            if k.weak_ref
+                && !k.strong_ref
+                && !k.defined
+                && let Some(g) = m.giver(name)
+                && !m.needed.contains(&g)
+            {
+                mold_weak.insert(g);
+            }
+        }
+        m.mold_weak = mold_weak;
         // ref_dynamic / def_dynamic over N ∪ U (D-12).
         for &i in m.needed.iter().chain(m.used.iter()) {
             for r in &m.dsos[i].refs {

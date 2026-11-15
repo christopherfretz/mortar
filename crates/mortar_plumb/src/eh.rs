@@ -609,8 +609,11 @@ impl Engine<'_, '_> {
                         let mut f =
                             e(3, format!("the output's FDE for this input FDE differs in {what}"))
                                 .at(x.addr);
-                        f.expected = want_lsda.filter(|_| what == "its LSDA");
-                        f.found = x.lsda.filter(|_| what == "its LSDA");
+                        (f.expected, f.found) = match what {
+                            "its LSDA" => (want_lsda, x.lsda),
+                            "its personality routine" => (want_pers, x.personality),
+                            _ => (None, None),
+                        };
                         f
                     }
                 };

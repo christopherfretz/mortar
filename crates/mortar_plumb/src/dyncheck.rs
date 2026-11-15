@@ -86,11 +86,16 @@ fn pd1(image: &Image<'_>, out: &DynOut, line: &Line, v: &mut Vec<Finding>) {
         v.push(fd(
             1,
             format!(
-                "the headers (e_type {}, PT_INTERP {}, DF_1_PIE {}) are not the D-1 row of the command line's kind '{}'",
+                "the headers (e_type {}, PT_INTERP {}, DF_1_PIE {}) are not the D-1 row of the command line's kind '{}'{}",
                 h.e_type,
                 interp,
                 pie,
-                want.name()
+                want.name(),
+                if !interp && line.interp.is_none() {
+                    " (no -dynamic-linker, no PT_INTERP: D-31, W10)"
+                } else {
+                    ""
+                }
             ),
         ));
     }
@@ -128,9 +133,13 @@ fn pd4(image: &Image<'_>, out: &DynOut, line: &Line, format: Format, v: &mut Vec
     // PT_INTERP (W10).
     let pi = image.phdrs.iter().find(|p| p.p_type == PT_INTERP);
     match (pi, &line.interp) {
-        (None, _) if dynamic_exec => v.push(fd(
+        (None, None) if dynamic_exec => v.push(fd(
             4,
-            "no PT_INTERP in a dynamic executable: the kernel cannot start it (D-31, W10)",
+            "no PT_INTERP in a dynamic executable and the command line names no -dynamic-linker: the kernel cannot start it (D-31, W10)",
+        )),
+        (None, Some(_)) if dynamic_exec => v.push(fd(
+            4,
+            "no PT_INTERP in a dynamic executable: the kernel cannot start it (D-31)",
         )),
         (Some(p), want) => {
             let s = image.bytes(p.p_vaddr, p.p_filesz).map(|b| {
@@ -356,19 +365,59 @@ fn pd6(
     v: &mut Vec<Finding>,
 ) {
     // DT_NEEDED: the set D-11 computes, in the linker's own order rule.
-    let expect: &[usize] = match format {
-        Format::Gnu | Format::Mortar => &model.order_d19a,
-        Format::Lld | Format::Mold => &model.order_first,
+    // A reference is held to its own neededness where D-11 records it:
+    // GNU ld leaves out an object that binds nothing (`gnu_unbound`, either
+    // way), mold adds the givers of weak-only keys (E-shlib 2.2a).
+    let have: Vec<&str> = out.needed.iter().map(String::as_str).collect();
+    let expect: Vec<usize> = match format {
+        Format::Mortar => model.order_d19a.clone(),
+        Format::Gnu => model
+            .order_d19a
+            .iter()
+            .copied()
+            .filter(|i| {
+                !model.gnu_unbound.contains(i) || have.contains(&model.dsos[*i].soname.as_str())
+            })
+            .collect(),
+        Format::Lld => model.order_first.clone(),
+        Format::Mold => model
+            .c
+            .iter()
+            .copied()
+            .filter(|i| model.needed.contains(i) || model.mold_weak.contains(i))
+            .collect(),
     };
     let want: Vec<&str> = expect.iter().map(|&i| model.dsos[i].soname.as_str()).collect();
-    let have: Vec<&str> = out.needed.iter().map(String::as_str).collect();
     let ws: BTreeSet<&str> = want.iter().copied().collect();
     let hs: BTreeSet<&str> = have.iter().copied().collect();
     for m in ws.difference(&hs) {
-        v.push(fd(6, format!("DT_NEEDED lacks '{m}', which D-11 makes needed (W9)")));
+        let item3 = model.by_soname(m).is_some_and(|i| model.item3.contains(&i));
+        v.push(fd(
+            6,
+            if item3 {
+                format!(
+                    "DT_NEEDED lacks '{m}', which D-11 item 3 makes needed (an under-linked library's provider; E-shlib 2.3b)"
+                )
+            } else {
+                format!("DT_NEEDED lacks '{m}', which D-11 makes needed (W9)")
+            },
+        ));
     }
     for m in hs.difference(&ws) {
-        v.push(fd(6, format!("DT_NEEDED names '{m}', which D-11 does not make needed")));
+        // W1: the linker took a STV_HIDDEN entry for a definition.
+        let hidden = model.by_soname(m).is_some_and(|i| {
+            model.dsos[i].defs.iter().any(|(name, defs)| {
+                defs.iter().any(|d| !d.visible())
+                    && model.keys.get(name).is_some_and(|k| k.strong_ref && !k.defined)
+            })
+        });
+        v.push(fd(
+            6,
+            format!(
+                "DT_NEEDED names '{m}', which D-11 does not make needed{}",
+                if hidden { " (only a STV_HIDDEN entry: W1)" } else { "" }
+            ),
+        ));
     }
     if ws == hs && want != have {
         v.push(fd(

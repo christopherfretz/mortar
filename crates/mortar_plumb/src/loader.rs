@@ -248,7 +248,7 @@ pub fn apply(
         {
             v.findings.push(f(
                 format!(
-                    "a dynamic record (type {}) writes a non-writable place outside PT_GNU_RELRO: a text relocation (D-47)",
+                    "a dynamic record (type {}) writes a non-writable place outside PT_GNU_RELRO: a text relocation (D-47, W6)",
                     r.ty
                 ),
                 r.offset,
@@ -266,8 +266,17 @@ pub fn apply(
                     if with_findings {
                         let mut x = f(
                             format!(
-                                "the loader finds no definition of '{}': the load fails",
-                                name()
+                                "the loader finds no definition of '{}': the load fails{}",
+                                name(),
+                                if ld.model.dsos.iter().any(|d| {
+                                    d.defs
+                                        .get(&name())
+                                        .is_some_and(|x| x.iter().any(|y| !y.visible()))
+                                }) {
+                                    " (only a STV_HIDDEN entry: W1)"
+                                } else {
+                                    ""
+                                }
                             ),
                             r.offset,
                         );

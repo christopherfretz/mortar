@@ -19,6 +19,7 @@
 #@ spec: dyn.md "D-45"
 #@ arch: aarch64 x86_64
 #@ xfail(bfd,mold): W3: the executable's IFUNC gets a second address through the GOT's own IRELATIVE
+#@ anomaly(lld): A20
 
 cc -O1 -fPIE a.c -o a-pie.o
 cc -O1 -fPIE b.c -o b-pie.o

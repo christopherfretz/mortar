@@ -35,10 +35,16 @@ pub mod x86;
 mod x86op;
 
 pub use dynverify::{Ctx, is_dynamic, verify_with};
+
+/// The verifier's highest stage (`spec/plumb.md` §1): 3 since WP-050 —
+/// [`verify_with`] judges dynamic executables (§12). A caller that must
+/// know whether a dynamic output is judged (the link-test harness's
+/// probe, `spec/harness.md` "L3") reads this instead of probing.
+pub const STAGE: u8 = 3;
 pub use line::{Files, HostFiles};
 pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};
-pub use report::{Coverage, Finding, Reason, Report, Rewrite, Rule, Site, Via};
+pub use report::{Coverage, Finding, OUTSIDE, Reason, Report, Rewrite, Rule, Site, Via};
 
 /// An input file of the link, by the path the map names it with (§2.1).
 #[derive(Debug, Clone, Copy)]

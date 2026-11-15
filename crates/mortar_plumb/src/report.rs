@@ -311,7 +311,20 @@ pub struct Finding {
     pub message: String,
 }
 
+/// The start of a P-D1 finding that names why an output is outside
+/// stage 3 (`spec/plumb.md` §12.1): a link the verifier does not model
+/// (an option `spec/dyn.md` refuses, static-pie, version definitions, a
+/// `DT_NEEDED` object no search finds). It is a finding, never a pass;
+/// a harness may count a reference linker's output with only such
+/// findings as not judged ([`Finding::outside`]).
+pub const OUTSIDE: &str = "outside stage 3: ";
+
 impl Finding {
+    /// Whether this is a P-D1 "outside stage 3" finding ([`OUTSIDE`]).
+    pub fn outside(&self) -> bool {
+        self.rule == Rule::Dyn(1) && self.message.starts_with(OUTSIDE)
+    }
+
     pub(crate) fn new(rule: Rule, message: impl Into<String>) -> Self {
         Finding {
             rule,
