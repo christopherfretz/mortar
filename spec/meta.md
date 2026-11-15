@@ -186,7 +186,7 @@ is additive.
 **MT-15 (by name only).** A record refers to a symbol by its name (string
 or anchor), to a type by its mangled `<type>` encoding (Itanium C++ ABI
 §5.1.5, as it appears after `_ZTS`), to a source file by a path string
-(MT-22). No record holds a symbol index, a section index, an address or
+(MT-38). No record holds a symbol index, a section index, an address or
 a relocation (MT-2).
 
 What that buys, measured (R): after `objcopy --redefine-sym f=f2` the
@@ -245,7 +245,7 @@ which copy won.
 | 0x0002 | ODR definitions | `key`, then name bytes | 48 | `odr.md` §5 |
 | 0x0003 | type definitions | `key`, then name bytes | 56 | `odr.md` §6 |
 | 0x0004 | layout details | (not rows; addressed from kind 3) | 0 | `odr.md` §6 |
-| 0x0005 | declarations | `key`, then flags | 32 | `odr.md` §8.2 |
+| 0x0005 | declarations | `key`, then flags | 40 | `odr.md` §8.2 |
 | 0x0010 | section content hashes | (reserved) | — | `spec/incr.md` (WP-060) |
 | 0x0011-0x001f | reserved for incremental linking | | | `spec/incr.md` |
 | 0x0020 | build context | (reserved) | — | tuck |
@@ -274,6 +274,7 @@ a row without it is information. Names defined now [kiln]:
 | `producer` | `kiln 0.1.0 (hod 0.1.0)` | no | diagnostics |
 | `source` | the main file's path after `-ffile-prefix-map` | no | diagnostics |
 | `odr.scheme` | the definition-hash scheme, e.g. `kiln-odr-1` | no | rows of kinds 2, 3 are compared only between equal schemes (`odr.md` O-11) |
+| `std` | the language standard, e.g. `c++20` | no | `odr.md` O-32 |
 | `abi.rtti` | `on`/`off` | yes | K16c |
 | `abi.exceptions` | `on`/`off` | no (mixing is supported; recorded for diagnostics) | |
 | `abi.short-enums` | `on`/`off` | yes | K16a |
@@ -360,11 +361,11 @@ The container for the kiln `-O0` object, with the rows of `odr.md`:
 | kind 2, anchored (MT-12) | 595 | 28,560 | 48 B a row; names in `.strtab` already |
 | kind 2, named instead | 595 | 106,781 | + the 78 KB of names: why anchoring is the default |
 | kind 3 | 334 | 18,704 + ~13 KB of type names | 56 B a row; 40 B a mangled type name assumed [estimate] |
-| kind 5, anchored | 661 | 21,152 | 32 B a row, definitions and references |
+| kind 5, anchored | 661 | 26,440 + ~5 KB of type strings | 40 B a row, definitions and references; type strings deduplicated [estimate] |
 | kind 4 (optional) | 334 | ~40 KB [estimate: 120 B a class] | only with `-fmason-metadata=detail` |
 
-**MT-41 (budget).** Without kind 4, about 82 KB: **17 % of the `-O0`
-object, 8 % of the `-O0 -g` one** (1,039,856 B). A producer keeps the
+**MT-41 (budget).** Without kind 4, about 92 KB: **19 % of the `-O0`
+object, 9 % of the `-O0 -g` one** (1,039,856 B). A producer keeps the
 default container within 20 % of a `-O0` object and 10 % of a `-g`
 object on this TU; the L11 lane (`odr.md` §12) measures it on libc++'s
 suite and fails above that. What a link pays with the checks off is
@@ -393,7 +394,7 @@ output gets the allocated note `.note.mason` in a `PT_NOTE` of its own
 (`odr.md` §10.2); shared-object outputs are M4.
 
 **MT-32 (kept for tools).** With `--keep-mason-meta` (proposed,
-`spec/cli.md` amendment A-7; default off), an executable or shared
+`spec/cli.md`, amendment A-5 of `odr.md` §14; default off), an executable or shared
 object also gets a non-allocated `.mason.meta` (`SHT_PROGBITS`, no
 flags) holding MT-30's concatenation, for tuck. Not needed for
 incremental links (`spec/incr.md` keeps state in its own file).
@@ -401,7 +402,7 @@ incremental links (`spec/incr.md` keeps state in its own file).
 
 **MT-33 (static executables).** As MT-31 without a table: a static
 executable has no other module to disagree with, and the static check
-has seen every definition (`odr.md` O-56).
+has seen every definition (`odr.md` O-54).
 
 ## 12. Tests
 
