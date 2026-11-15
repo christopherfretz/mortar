@@ -220,6 +220,7 @@ fn demangling_hook_is_called_only_when_rendering() {
 
 // spec: diag.md §5.5
 #[test]
+#[allow(clippy::too_many_lines)] // one sample per kind
 fn control_characters_are_made_visible() {
     let hostile = "a\nld: error: forged\x1b[2J\t\r\0\u{7f}\u{85}b";
     let shown = "a\\u{a}ld: error: forged\\u{1b}[2J\\u{9}\\u{d}\\u{0}\\u{7f}\\u{85}b";
@@ -282,6 +283,31 @@ fn control_characters_are_made_visible() {
             },
             format!(
                 "relocation {shown} cannot be used against symbol '{shown}'; it is thread-local"
+            ),
+        ),
+        (
+            Kind::TextRelocation { r_type: h(), name: h() },
+            format!(
+                "relocation {shown} against symbol `{shown}' can not be used when making a PIE \
+                 object; recompile with -fPIE"
+            ),
+        ),
+        (
+            Kind::WeakUndefinedPcInPie { r_type: h(), name: h() },
+            format!(
+                "relocation {shown} against undefined weak symbol `{shown}' cannot be used in a \
+                 position-independent executable; recompile with -fPIE"
+            ),
+        ),
+        (
+            Kind::CopyRelocationAgainstProtected { name: h(), file: h() },
+            format!("copy relocation against non-copyable protected symbol `{shown}' in {shown}"),
+        ),
+        (
+            Kind::VersionedExport { name: h(), version: h() },
+            format!(
+                "versioned definition {shown}@@{shown} cannot be exported (version definitions \
+                 are not supported)"
             ),
         ),
         (
@@ -370,6 +396,10 @@ fn samples() -> Vec<Diagnostic> {
             Kind::UndefinedSymbol { name: s(x) },
             Kind::UndefinedVersion { name: s(x), version: s(x) },
             Kind::VersionReassigned { name: s(x), first: s(x), second: s(x) },
+            Kind::VersionedExport { name: s(x), version: s(x) },
+            Kind::CanonicalPltInPie { r_type: s(x), name: s(x) },
+            Kind::CopyRelocationAgainstProtected { name: s(x), file: s(x) },
+            Kind::CopyRelocationOfZeroSize { name: s(x) },
             Kind::RelocationIncompatible {
                 r_type: s(x),
                 name: s(x),
@@ -383,6 +413,8 @@ fn samples() -> Vec<Diagnostic> {
                 max: 0,
                 name: s(x),
             },
+            Kind::TextRelocation { r_type: s(x), name: s(x) },
+            Kind::WeakUndefinedPcInPie { r_type: s(x), name: s(x) },
             Kind::ExecutableStack { file: s(x) },
             Kind::OutputTooLarge { what: s(x), limit: s(x) },
             Kind::SectionConflict { name: s(x), first: s(x), second: s(x) },

@@ -230,14 +230,15 @@ need them (§5).
 
 | part | row | columns |
 |---|---|---|
-| `file_live[FileId]` | file | whether the file takes part in the link and why: `Dead`; `Always`; `Extracted` by the reference `(FileId, st_index)` that pulled the lazy object in (a root, `spec/resolve.md` §4.2: file 0 and the root's argument index); `Shared{needed}`, a shared object of the command line or a script, `needed` when it is `DT_NEEDED` of the output (`spec/resolve.md` §9.5); `Closure`, a file of the `DT_NEEDED` closure that a needed shared object leads to, never `DT_NEEDED` of the output |
-| `def[SymbolId]` | key | the resolved definition: `Undefined{weak}`, `Defined{file, st_index}`, `Common{file, st_index}`, `Shared{file, st_index}`, `Internal(..)` (linker-defined: `Assign`, an assignment by its argument index or script position; `Alias(SymbolId)`, `--defsym A=B`; `Provide{conditional}`, a symbol of `spec/resolve.md` §8.1, `conditional` when its existence depends on output sections, §3.4); and the properties merged over every live mention (`spec/resolve.md` §3.6, §9.6): visibility, `ref_regular` (referenced from a relocatable object or a root), `ref_dynamic` (referenced from a needed shared object), `ref_strong` (some reference not weak), `defined_dynamic` (a live shared object defines it), `exported`, `preemptible`, binding for export, version, and the **verdict** of a surviving reference (`spec/resolve.md` §5.2: bound, error, warning, ignored) |
+| `file_live[FileId]` | file | whether the file takes part in the link and why: `Dead`; `Always`; `Extracted` by the reference `(FileId, st_index)` that pulled the lazy object in (a root, `spec/resolve.md` §4.2: file 0 and the root's argument index); `Shared{needed, used}`, a loaded shared object (of the command line, a script, or the `DT_NEEDED` closure) that takes part: `needed` when it is `DT_NEEDED` of the output (the set N of `spec/dyn.md` D-11), `used` when it is not needed but is reached by a `DT_NEEDED` edge from a needed or used object, whatever loaded it (the set U of D-12), never both; every other loaded shared object (an unneeded as-needed object that nothing needed or used leads to, a closure file nothing reaches) is `Dead` [M2] |
+| `def[SymbolId]` | key | the resolved definition: `Undefined{weak}`, `Defined{file, st_index}`, `Common{file, st_index}`, `Shared{file, st_index}`, `Internal(..)` (linker-defined: `Assign`, an assignment by its argument index or script position; `Alias(SymbolId)`, `--defsym A=B`; `Provide{conditional}`, a symbol of `spec/resolve.md` §8.1, `conditional` when its existence depends on output sections, §3.4); and the properties merged over every live mention (`spec/resolve.md` §3.6, §9.6): visibility, `ref_regular` (referenced from a relocatable object or a root), `ref_dynamic` (referenced from a needed or used shared object, a member of N ∪ U, computed after the needed/used fixed point: `spec/dyn.md` D-12), `ref_strong` (some reference not weak), `defined_dynamic` (a needed or used shared object defines it, D-12), `exported`, `preemptible`, binding for export, version, and the **verdict** of a surviving reference (`spec/resolve.md` §5.2: bound, error, warning, ignored) |
 | `common[SymbolId]` | key with a common mention | size and alignment: the maximum over the live common mentions |
 | `clash[SymbolId]` | key | whether two or more live definitions tie at the strongest rank (a duplicate definition, reported with both places) |
 | `redirect[SymbolId]` | key | the row the **undefined mentions** of this key bind to (`--wrap`); for a `--defsym` alias, every mention. A defined mention binds to itself; itself otherwise. Every consumer of `sym_map` applies it once |
 | `comdat[ComdatId]` | signature | the file whose group is kept: the least live `FileId` with the signature (`spec/resolve.md` §6.1) |
 | `comdat_copies` | live copy of a group | `(ComdatId, FileId)` pairs, sorted; the keeper first; for `mortar_odr` (`spec/resolve.md` §6.7) |
 | `section_base[FileId]` | live object | §2.2 |
+| `exported`, `imported`, `ref_dynamic`, `defined_dynamic` | key (bit sets; empty in a static link) | the dynamic columns (`spec/dyn.md` D-11, D-12, D-21): `exported`, a program definition (`Defined`, `Common`, `Internal`) in `.dynsym`; `imported`, a key whose `def` is `Shared` that a live object mentions; `ref_dynamic`, referenced by a member of N ∪ U; `defined_dynamic`, defined by one. `def`'s `Shared` entry is `bind(k)` (D-11: the first member of N ∪ U in loader order with a visible definition, never `giver(k)`), read through `Resolution::bind` |
 | `sections[SectionId]` | section | `kind` (below); the relocation section(s) applying to it; its `ComdatId`, if any; `state`: `Kept`, or `Dropped(reason)`: COMDAT group not kept (with the keeping file), excluded, consumed by the linker (the kinds without output), stripped by option |
 
 `kind` classifies a section once, from its type, flags and name, for every
@@ -270,11 +271,14 @@ extracting references and kept groups in live files, `redirect` and
 aliases in range, `common` sorted; (4) no section of a kind without
 output kept, a section dropped for its group in one; (5) `comdat_copies`
 sorted and live, the keeper the least copy; (6) an undefined key with a
-strong reference is not weak, a `Shared` definition is preemptible.
+strong reference is not weak, a `Shared` definition is preemptible;
+(7) each dynamic column empty or per key, an import's `def` `Shared`, an
+export's the program's.
 `Resolution::check_against(&Inputs)` adds: (1) one row per file, key and
-signature; (2) `Shared` liveness only for a shared object not of the
-closure, `Closure` only for a closure file, `Extracted` only for a lazy
-object, `Always` for a lazy object only under `--whole-archive`; (3) a
+signature; (2) `Shared` liveness only for a loaded shared object, with
+exactly one of `needed` and `used`, `needed` only for a shared object of
+the command line or a script (a closure file is never needed,
+`spec/dyn.md` D-11), `Extracted` only for a lazy object, `Always` for a lazy object only under `--whole-archive`; (3) a
 `Defined` or `Common` definition in an object, a `Shared` one in a
 shared object.
 
@@ -362,6 +366,10 @@ What the relocations of live sections require, with no placement:
   local-dynamic module slot (`TLS_LD`), static TLS (`STATIC_TLS`, written
   as `DF_STATIC_TLS`);
 - per section, the number of dynamic relocations it will carry, by kind;
+- the `WeakDyn` keys (`weak_dyn`, a bit set over `SymbolId`, empty in a
+  static link): the undefined weak keys of a dynamic executable that get a
+  `.dynsym` entry and a dynamic relocation (`spec/dyn.md` D-25, decided per
+  key by the scan's `weak` step);
 - errors found on the way (a relocation that cannot be satisfied in this
   kind of output), reported at phase 70 (§8) and not stored.
 
@@ -420,11 +428,23 @@ module/offset pair, `TLS_GD`; descriptor, `TLS_DESC`), and of the
 output's local-dynamic module slot (`TLS_LD`, one per output); the PLT
 index of each `SymKey` that demands `PLT` or `CANON_PLT`, and the IPLT
 index of each that demands `IPLT`; the order of `.dynsym`; of dynamic
-relocations; of version definitions and needs; of `DT_NEEDED` entries; of
+relocations; of version definitions and needs; of `DT_NEEDED` entries
+(`spec/dyn.md` D-19a's order, computed by `mortar_resolve`); of
 live `.eh_frame` records after deduplication of CIEs; copy-relocation
 allocations, one per `(shared FileId, st_value)` with every `SymbolId`
-aliasing that address mapped to it; and the size each such chunk
-therefore has.
+aliasing that address mapped to it, each with its place (`.dynbss` or
+`.bss.rel.ro`), alignment and record alias (`spec/dyn.md` D-42); and the
+size each such chunk therefore has.
+
+The dynamic lists (`spec/dyn.md`; all empty in a static link):
+
+| field | content | rule |
+|---|---|---|
+| `needed` | the needed shared objects, in `DT_NEEDED` order | D-11, D-19a |
+| `dynsym`, `dynsym_unhashed`, `gnu_hash_buckets` | `.dynsym` after the null entry (imports, exports, copy aliases, `WeakDyn` keys): the unhashed entries first in `SymbolId` order, then the hashed by (bucket, `SymbolId`); the unhashed count; `.gnu.hash`'s `nbuckets` | D-21, D-22, D-26, D-28 |
+| `copies` | per allocation `(file, value)` (its identity and sort key), `place` (`DynBss` or `RelRo`), `align`, `alias` (the key the `COPY` record names) | D-42 |
+| `verneed` | per needed object with a version an import binds to, in `needed` order: its versions by increasing definition index (`VerIndex`) | D-27 |
+| `dynstr` | the `.dynstr` offset of every name the dynamic sections write (per `.dynsym` entry, per `needed` entry, per version of `verneed`, the run path) and the size | D-24 |
 
 An index counts within its kind: one key can hold slots of several kinds
 (`spec/a64.md` §10.1), each with its own index, and a key has a PLT index
@@ -444,7 +464,12 @@ local, count)` ranges are stored; `count` includes the demoted globals.
 
 Valid when every demand of §3.7 has exactly one slot of its kind (the
 module slot exists exactly when `TLS_LD` is demanded), no slot is given
-twice, and the orders satisfy the format's own rules (the `.gnu.hash`
+twice, `.dynsym` holds exactly D-21's set (every import, export, `EXPORT`
+demand, `WeakDyn` key and copied key, plus copy aliases) with the
+unhashed block inside it, each copy allocation's `alias` maps to it and
+its alignment is a power of two, `verneed` follows `needed` with
+non-empty increasing versions, `.dynstr`'s offsets match the lists they
+name and lie inside it, and the orders satisfy the format's own rules (the `.gnu.hash`
 bucket order in `.dynsym`; ...), listed in `spec/synth.md`.
 
 ### 4.4 `Placement` (written by `mortar_layout`)
@@ -659,8 +684,10 @@ How many workers a call uses is a schedule, never an input (rule 6
 partitions by unit, never by worker): at most the thread count, at most
 the number of items, at most `units × c / 200 µs` when the call site
 states an estimated cost `c` per unit (a constant measured once, never a
-timing taken during the link), and, without a seed, a worker spawns
-another only while units are left untaken. With a seed every worker
+timing taken during the link), after the input phase of a link run
+without `--threads` or a seed at most one worker per 4 MiB of resident
+input (the store's count, `spec/input.md` §11; WP-032h), and, without a
+seed, a worker spawns another only while units are left untaken. With a seed every worker
 runs, so that the tests exercise schedules (WP-032g).
 
 `<n>` is a decimal integer below 2^64 (surrounding white space allowed).

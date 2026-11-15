@@ -1,0 +1,97 @@
+# static-identical corpus (spec/harness.md "static-identical"): static C++
+# with templates instantiated in two objects (COMDAT groups), exceptions,
+# iostreams, a global constructor and debug information; linked whole,
+# with --gc-sections and on one thread.
+#@ spec: harness.md "static-identical"
+#@ requires: g++
+
+cxx -g -O1 -ffunction-sections main.cc -o main.o
+cxx -g -O1 -ffunction-sections shapes.cc -o shapes.o
+link g++ -static -no-pie main.o shapes.o -o whole
+link g++ -static -no-pie -Wl,--gc-sections main.o shapes.o -o gc
+link g++ -static -no-pie -Wl,--threads=1 main.o shapes.o -o one
+
+#--- shapes.h
+#include <map>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+struct Shape {
+  virtual ~Shape() = default;
+  virtual double area() const = 0;
+  virtual std::string name() const = 0;
+};
+
+template <typename T> T total(const std::vector<T> &v) {
+  T sum{};
+  for (const T &x : v)
+    sum += x;
+  return sum;
+}
+
+std::vector<std::unique_ptr<Shape>> make_shapes(int n);
+std::map<std::string, int> census(const std::vector<std::unique_ptr<Shape>> &shapes);
+#--- shapes.cc
+#include "shapes.h"
+
+namespace {
+struct Square : Shape {
+  double s;
+  explicit Square(double s) : s(s) {}
+  double area() const override { return s * s; }
+  std::string name() const override { return "square"; }
+};
+struct Circle : Shape {
+  double r;
+  explicit Circle(double r) : r(r) {}
+  double area() const override { return 3.25 * r * r; }
+  std::string name() const override { return "circle"; }
+};
+} // namespace
+
+std::vector<std::unique_ptr<Shape>> make_shapes(int n) {
+  if (n < 0)
+    throw std::invalid_argument("negative count");
+  std::vector<std::unique_ptr<Shape>> out;
+  for (int i = 0; i < n; i++) {
+    if (i % 3)
+      out.push_back(std::make_unique<Square>(i));
+    else
+      out.push_back(std::make_unique<Circle>(i));
+  }
+  return out;
+}
+
+std::map<std::string, int> census(const std::vector<std::unique_ptr<Shape>> &shapes) {
+  std::map<std::string, int> m;
+  std::vector<int> counts;
+  for (const auto &s : shapes)
+    counts.push_back(++m[s->name()]);
+  m["total"] = total(counts);
+  return m;
+}
+#--- main.cc
+#include "shapes.h"
+#include <iostream>
+
+static struct Banner {
+  std::string text;
+  Banner() : text("shapes") {}
+} banner;
+
+int main(int argc, char **) {
+  auto shapes = make_shapes(10 * argc);
+  std::vector<double> areas;
+  for (const auto &s : shapes)
+    areas.push_back(s->area());
+  std::cout << banner.text << ' ' << total(areas) << '\n';
+  for (const auto &[k, v] : census(shapes))
+    std::cout << k << ' ' << v << '\n';
+  try {
+    make_shapes(-1);
+  } catch (const std::exception &e) {
+    std::cout << "caught " << e.what() << '\n';
+  }
+}

@@ -194,9 +194,15 @@ is added before or after it.
 | `undefined-symbol` | `UndefinedSymbol { name }` | ``undefined symbol: {name} (undefined reference to `{name}')`` | lld, with GNU ld's phrase (§8.3) |
 | `undefined-version` | `UndefinedVersion { name, version }` | `version {version} of {name} is not defined` | own |
 | `version-reassigned` | `VersionReassigned { name, first, second }` | `{name} is assigned to version {first} and {second}; {first} is kept` | own |
+| `versioned-export` | `VersionedExport { name, version }` | `versioned definition {name}@@{version} cannot be exported (version definitions are not supported)` | own (`spec/dyn.md` D-27: GNU ld writes a verdef, lld and mold export it unversioned; M4) |
+| `canonical-plt-in-pie` | `CanonicalPltInPie { r_type, name }` | ``relocation {r_type} against symbol `{name}' cannot be used in a position-independent executable; recompile with -fPIE, or link with -no-pie`` | GNU ld (`spec/dyn.md` D-44) |
+| `copy-relocation-against-protected` | `CopyRelocationAgainstProtected { name, file }` | ``copy relocation against non-copyable protected symbol `{name}' in {file}`` | GNU ld (`spec/dyn.md` D-18) |
+| `copy-relocation-of-zero-size` | `CopyRelocationOfZeroSize { name }` | `cannot create a copy relocation for symbol {name}` | lld (`spec/dyn.md` D-42) |
 | `relocation-incompatible` | `RelocationIncompatible { r_type, name, reason }` | `relocation {r_type} cannot be used against symbol '{name}'; {reason}` | lld's shape, with a reason (§3.2) |
 | `relocation-misaligned` | `RelocationMisaligned { r_type, value, align }` | `improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes` | lld |
 | `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation truncated to fit: {r_type} against '{name}': {value} is not in [{min}, {max}]` | lld's value and bounds; GNU ld's phrase |
+| `text-relocation` | `TextRelocation { r_type, name }` | ``relocation {r_type} against symbol `{name}' can not be used when making a PIE object; recompile with -fPIE`` | GNU ld (`spec/dyn.md` D-47) |
+| `weak-undefined-pc-in-pie` | `WeakUndefinedPcInPie { r_type, name }` | ``relocation {r_type} against undefined weak symbol `{name}' cannot be used in a position-independent executable; recompile with -fPIE`` | GNU ld (`spec/dyn.md` D-25; `Pie` only, once per key) |
 | `executable-stack` | `ExecutableStack { file }` | `{file}: requires executable stack (because the .note.GNU-stack section is executable)` | GNU ld |
 | `output-too-large` | `OutputTooLarge { what, limit }` | `output too large: {what} exceeds {limit}` | own (lld: `output file too large`) |
 | `section-conflict` | `SectionConflict { name, first, second }` | `section {name}: {first} and {second} inputs cannot be combined` | own (lld: `section type mismatch for {name}`) |

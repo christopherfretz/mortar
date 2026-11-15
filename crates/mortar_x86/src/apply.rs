@@ -193,6 +193,7 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
             }
         }
         ClassOutcome::Incompatible(r) => out.error(at.index, ScanError::Incompatible(r)),
+        ClassOutcome::Refused(r) => out.error(at.index, ScanError::Dynamic(r)),
         ClassOutcome::Undefined => {
             let class =
                 if sym.comdat_only { EventClass::ComdatMismatch } else { EventClass::Undefined };

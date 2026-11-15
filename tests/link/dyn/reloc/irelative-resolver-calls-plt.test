@@ -1,0 +1,71 @@
+# dyn.md D-41: in `Exec` and `Pie`, `.rela.plt` holds the `JUMP_SLOT`s and
+# then the `IRELATIVE`s, last. glibc applies `.rela.dyn` before
+# `.rela.plt` and `.rela.plt` in order, so an IFUNC resolver of the
+# executable that calls a shared library's function (`fr`, through the
+# PLT) runs after that function's `JUMP_SLOT` is bound. The program is
+# one such IFUNC; it prints what the resolved function returns (11 when
+# the resolver's call worked). Linked as a PIE and as a non-PIE, each run
+# lazily and with `LD_BIND_NOW=1` (the loader's `-z now`; the D-49 option
+# itself is `plt-now`).
+#
+# H1 (dyn.md §13.2, a hazard rather than a wrong output: glibc documents
+# such a resolver as unsupported): lld and mold put the `IRELATIVE` at
+# the end of `.rela.dyn`, before every `JUMP_SLOT`, and the resolver
+# calls through an unbound PLT slot: `SIGSEGV`. Measured here: the PIE
+# crashes under both on both architectures, lazily (and also with
+# `LD_BIND_NOW` on AArch64); the non-PIE survives lazily. mortar takes GNU
+# ld's order.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-41"
+#@ arch: aarch64 x86_64
+#@ fixture: reloc-libd
+#@ xfail(lld,mold): H1: IRELATIVE ends .rela.dyn, before the JUMP_SLOTs; the resolver's PLT call crashes
+
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+link gcc -pie pie.o -L. -ld -o pie
+run pie
+  stdout: ifh() = 11
+run pie
+  env: LD_BIND_NOW=1
+  stdout: ifh() = 11
+link gcc -no-pie exec.o -L. -ld -o exec
+run exec
+  stdout: ifh() = 11
+run exec
+  env: LD_BIND_NOW=1
+  stdout: ifh() = 11
+check readelf -rW pie
+  has: Relocation section '.rela.plt'
+  then(aarch64): R_AARCH64_JUMP_SLOT * fr + 0$
+  then(aarch64): R_AARCH64_IRELATIVE
+  then(x86_64): R_X86_64_JUMP_SLOT * fr + 0$
+  then(x86_64): R_X86_64_IRELATIVE
+  count(aarch64): 1 R_AARCH64_IRELATIVE
+  count(x86_64): 1 R_X86_64_IRELATIVE
+check readelf -rW exec
+  has: Relocation section '.rela.plt'
+  then(aarch64): R_AARCH64_JUMP_SLOT * fr + 0$
+  then(aarch64): R_AARCH64_IRELATIVE
+  then(x86_64): R_X86_64_JUMP_SLOT * fr + 0$
+  then(x86_64): R_X86_64_IRELATIVE
+  count(aarch64): 1 R_AARCH64_IRELATIVE
+  count(x86_64): 1 R_X86_64_IRELATIVE
+
+#--- main.c
+#include <stdio.h>
+#include "libd.h"
+
+static int good(void) { return 11; }
+static int bad(void) { return 22; }
+
+/* runs at load time, when the loader applies the IRELATIVE */
+int (*ifh_resolver(void))(void) { return fr() == 1 ? good : bad; }
+int ifh(void) __attribute__((ifunc("ifh_resolver")));
+
+int main(void) {
+  printf("ifh() = %d\n", ifh());
+  return 0;
+}

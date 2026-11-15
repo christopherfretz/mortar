@@ -1,0 +1,118 @@
+# dyn.md D-19a, input.md 8.2: a library named twice, first as-needed and
+# unreferenced, then plainly, is needed, at its plain (keeping) mention.
+# Four forms from review-m2/dynamic/variants.sh (needed_twice) and
+# needed_order.sh (names in the comments): two paths, a script's
+# AS_NEEDED list then a path, two files with one soname. Each program
+# prints its constructors (reverse of the loader's order, fixture
+# needed-libs) and "main".
+#
+# Where the references differ: lld writes each soname at its first
+# mention (dyn.md 13.1, "DT_NEEDED order"; has(lld)). mold keeps the first
+# mention's as-needed flag and drops the library (W9, dyn.md 13.2): the
+# case holds it to GNU ld's list, which mortar must write. (W9's second
+# form, a later -lname after -Bstatic ignored, is needed_order.sh
+# bstatic_first: an option variation, not ported here.)
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-19a"
+#@ arch: aarch64 x86_64
+#@ fixture: needed-libs
+#@ xfail(mold): W9: an unreferenced library first named --as-needed and later plainly is dropped from DT_NEEDED
+
+# variants.sh needed_twice (needed_order.sh f5_review_unref): nc unreferenced,
+# first as-needed, then plain: needed at its plain mention.
+link gcc -pie main_abd.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnc.so -Wl,--no-as-needed libnb.so libnc.so libnd.so -o needed-twice
+check readelf -dW needed-twice
+  count(bfd,mold,mortar): 5 (NEEDED)
+  has(bfd,mold,mortar): [libna.so]
+  then(bfd,mold,mortar): [libnb.so]
+  then(bfd,mold,mortar): [libnc.so]
+  then(bfd,mold,mortar): [libnd.so]
+  then(bfd,mold,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnc.so]
+  then(lld): [libnb.so]
+  then(lld): [libnd.so]
+  then(lld): [libc.so.6]
+run(bfd,mold,mortar) needed-twice
+  stdout: nd nc nb na main
+run(lld) needed-twice
+  stdout: nd nb nc na main
+
+# asn_unref_then_plain: the same with nx and every other library referenced.
+link gcc -pie main.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so libnx.so libnc.so libnd.so libne.so libnf.so -o as-needed-then-plain
+check readelf -dW as-needed-then-plain
+  count(bfd,mold,mortar): 8 (NEEDED)
+  has(bfd,mold,mortar): [libna.so]
+  then(bfd,mold,mortar): [libnb.so]
+  then(bfd,mold,mortar): [libnx.so]
+  then(bfd,mold,mortar): [libnc.so]
+  then(bfd,mold,mortar): [libnd.so]
+  then(bfd,mold,mortar): [libne.so]
+  then(bfd,mold,mortar): [libnf.so]
+  then(bfd,mold,mortar): [libc.so.6]
+  count(lld): 8 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libnc.so]
+  then(lld): [libnd.so]
+  then(lld): [libne.so]
+  then(lld): [libnf.so]
+  then(lld): [libc.so.6]
+run(bfd,mold,mortar) as-needed-then-plain
+  stdout: nf ne nd nc nx nb na main
+run(lld) as-needed-then-plain
+  stdout: nf ne nd nc nb nx na main
+
+# scr_asn_unref_then_plain: nx first in a script's AS_NEEDED list, then plain.
+link gcc -pie main.o -Wl,--no-as-needed libna.so grp.so libnb.so libnx.so libnc.so libne.so libnf.so -o script-as-needed-then-plain
+check readelf -dW script-as-needed-then-plain
+  count(bfd,mold,mortar): 8 (NEEDED)
+  has(bfd,mold,mortar): [libna.so]
+  then(bfd,mold,mortar): [libnd.so]
+  then(bfd,mold,mortar): [libnc.so]
+  then(bfd,mold,mortar): [libnb.so]
+  then(bfd,mold,mortar): [libnx.so]
+  then(bfd,mold,mortar): [libne.so]
+  then(bfd,mold,mortar): [libnf.so]
+  then(bfd,mold,mortar): [libc.so.6]
+  count(lld): 8 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnd.so]
+  then(lld): [libnc.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libne.so]
+  then(lld): [libnf.so]
+  then(lld): [libc.so.6]
+run(bfd,mold,mortar) script-as-needed-then-plain
+  stdout: nf ne nx nb nc nd na main
+run(lld) script-as-needed-then-plain
+  stdout: nf ne nb nx nc nd na main
+
+# two_files_asn_unref_first: the two mentions are two files with soname
+# libnc.so, the first as-needed.
+link gcc -pie main_abd.o -Wl,--no-as-needed libna.so -Wl,--as-needed d1/libnc.so -Wl,--no-as-needed libnb.so d2/libnc.so libnd.so -o two-files-as-needed-first
+check readelf -dW two-files-as-needed-first
+  count(bfd,mold,mortar): 5 (NEEDED)
+  has(bfd,mold,mortar): [libna.so]
+  then(bfd,mold,mortar): [libnb.so]
+  then(bfd,mold,mortar): [libnc.so]
+  then(bfd,mold,mortar): [libnd.so]
+  then(bfd,mold,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnc.so]
+  then(lld): [libnb.so]
+  then(lld): [libnd.so]
+  then(lld): [libc.so.6]
+run(bfd,mold,mortar) two-files-as-needed-first
+  stdout: nd nc nb na main
+run(lld) two-files-as-needed-first
+  stdout: nd nb nc na main
+
+#--- grp.so
+GROUP ( libnd.so AS_NEEDED ( libnc.so libnx.so ) )

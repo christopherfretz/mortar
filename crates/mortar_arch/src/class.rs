@@ -2,7 +2,7 @@
 //! as data, and the rules applied before it (non-alloc places, TLS
 //! mismatch, undefined targets).
 
-use crate::error::Incompatible;
+use crate::error::{DynRefusal, Incompatible};
 use crate::flags::{DemandFlags, GlobalFlags};
 use crate::shapes::DynRole;
 use crate::vocab::{OutputKind, TargetKind};
@@ -254,6 +254,9 @@ pub enum ClassOutcome {
     Demand(Demand),
     /// `relocation-incompatible` with this reason.
     Incompatible(Incompatible),
+    /// A dynamic output's refusal by its own name (`spec/dyn.md` D-25,
+    /// D-44, D-47); the generic rule does not produce it at M1.
+    Refused(DynRefusal),
     /// A TLS-model class: the architecture's table decides (§4.3).
     ArchTls,
     /// `Pc` against `Weak0` in `Pie` or `Shared`: the architecture spec's

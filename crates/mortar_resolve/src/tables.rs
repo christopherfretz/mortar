@@ -534,7 +534,10 @@ pub fn resolution<V: View>(
         .iter()
         .enumerate()
         .map(|(f, &live)| match (view.file(FileId(f as u32)).kind, live) {
-            (FileKind::Shared, l) if l.is_live() => FileLive::Shared { needed: false },
+            // Placeholder until WP-M2-RES computes N and U (`spec/dyn.md`
+            // D-11, D-12): a live shared object is used, not needed. Not
+            // reached while dynamic output is refused (`mortar`'s guard).
+            (FileKind::Shared, l) if l.is_live() => FileLive::Shared { needed: false, used: true },
             (_, l) => l,
         })
         .collect();
@@ -557,6 +560,9 @@ pub fn resolution<V: View>(
         comdat_copies: r.keepers.copies.clone().into_boxed_slice(),
         section_base: mortar_core::Column::from_vec(r.section_base.clone())?,
         sections: mortar_core::Column::from_vec(r.sections.clone())?,
+        // The dynamic columns (`spec/dyn.md` D-11, D-12, D-21): WP-M2-RES
+        // fills them; empty in a static link.
+        ..Resolution::empty(0, 0, 0)
     })
 }
 
@@ -752,6 +758,11 @@ impl Ctx<'_, '_, '_> {
                     | SectionRefusal::DynamicType(t)
                     | SectionRefusal::Type(t) => (C::SectionType, format!("{t:#x}")),
                     SectionRefusal::Flags(f) => (C::SectionFlag, format!("{f:#x}")),
+                    SectionRefusal::RelForm(t) => {
+                        let name =
+                            if *t == mortar_elf::consts::SHT_REL { "SHT_REL" } else { "SHT_RELA" };
+                        (C::SectionType, name.to_owned())
+                    }
                     SectionRefusal::Linkonce => (C::Feature, ".gnu.linkonce sections".to_owned()),
                     SectionRefusal::Zdebug => {
                         (C::Feature, ".zdebug compressed debug sections".to_owned())

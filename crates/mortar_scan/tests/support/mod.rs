@@ -108,8 +108,12 @@ impl Linked {
             comdat_mismatch: &self.mismatch,
             gnu_warnings: &self.outcome.gnu_warning_syms,
         };
-        let opts =
-            ScanOptions { output: output_kind(self.plan.kind), dynamic: false, proof: &A64Proof };
+        let opts = ScanOptions {
+            output: output_kind(self.plan.kind),
+            dynamic: false,
+            sections: None,
+            proof: &A64Proof,
+        };
         scan(&self.arch, &t, &opts, pool)
     }
 
@@ -187,6 +191,7 @@ pub fn link_in(cwd: &Path, args: &[OsString], pool: &Pool, policy: StorePolicy) 
         assignment: &assignment,
         split: &split,
         roots: &outcome.roots,
+        arch: None,
     };
     let options = LiveOptions {
         gc_sections: plan.shaping.gc_sections,

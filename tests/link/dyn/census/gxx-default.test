@@ -1,0 +1,63 @@
+# dyn.md §2.1, end to end: g++'s default link line, as users link — a C++
+# hello (iostream, an exception thrown and caught in the program, one
+# thrown by libstdc++ and caught by type, a `thread_local`) compiled the
+# default way and linked by `g++` with no option (the default PIE, the
+# C++ tail `-lstdc++ -lm` under gcc's global `--as-needed`) and with
+# `-no-pie`, each run. Needed (§2.2): `libstdc++.so.6`, `libgcc_s.so.1`
+# (`_Unwind_Resume`), `libc.so.6`, in that order; `--as-needed` drops
+# `libm.so.6`. The unwinder needs `.eh_frame_hdr` (`--eh-frame-hdr`,
+# passed by the driver).
+#
+# mortar: AArch64 WP-054 (CXX), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "2.1 Default link lines"
+#@ spec: dyn.md "D-1"
+#@ arch: aarch64 x86_64
+#@ requires: g++
+
+cxx -O2 hello.cc -o hello.o
+link g++ hello.o -o pie
+run pie
+  stdout: hello C++ boom 42
+  stdout: caught std::out_of_range
+link g++ -no-pie hello.o -o exec
+run exec
+  stdout: hello C++ boom 42
+  stdout: caught std::out_of_range
+check readelf -hdW pie
+  has: Type: DYN
+  has: (FLAGS_1) Flags: PIE
+  has: (NEEDED) Shared library: [libstdc++.so.6]
+  then: (NEEDED) Shared library: [libgcc_s.so.1]
+  then: (NEEDED) Shared library: [libc.so.6]
+  count: 3 (NEEDED)
+check readelf -hdW exec
+  has: Type: EXEC
+  has: (NEEDED) Shared library: [libstdc++.so.6]
+  then: (NEEDED) Shared library: [libgcc_s.so.1]
+  then: (NEEDED) Shared library: [libc.so.6]
+  count: 3 (NEEDED)
+check readelf -lW pie
+  has: ^ GNU_EH_FRAME
+
+#--- hello.cc
+#include <iostream>
+#include <stdexcept>
+#include <vector>
+
+thread_local int tl = 41;
+
+int main() {
+  try {
+    throw std::runtime_error("boom");
+  } catch (const std::exception &e) {
+    std::cout << "hello C++ " << e.what() << " " << ++tl << std::endl;
+  }
+  std::vector<int> v(3);
+  try {
+    std::cout << v.at(7) << std::endl;
+  } catch (const std::out_of_range &) {
+    std::cout << "caught std::out_of_range" << std::endl;
+  }
+  return 0;
+}

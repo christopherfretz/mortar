@@ -93,9 +93,9 @@ fn a_bad_schedule_seed_is_reported() {
     assert_eq!((status, stderr.as_str()), (Some(0), ""));
 }
 
-// spec: docs/ROADMAP.md (M1 links AArch64 and x86-64, WP-029b): an i386
-// link is refused by name after the input phase, an x86-64 one links, and
-// objects of two machines are input.md's `incompatible-file`
+// spec: docs/ROADMAP.md (M1 links AArch64, x86-64 and i386; WP-029b,
+// WP-030c): an x86-64 and an i386 link go through, and objects of two
+// machines (or two classes) are input.md's `incompatible-file`
 #[test]
 fn another_machine_is_refused_by_name() {
     let Some(clang) = mortar_testutil::tool("clang") else { return };
@@ -129,12 +129,13 @@ fn another_machine_is_refused_by_name() {
         (o.status.and_then(|s| s.code()), o.stderr_text())
     };
     assert_eq!(run(&["-e", "f", "x86.o", "-o", "out"]), (Some(0), String::new()));
+    assert_eq!(run(&["-e", "f", "i386.o", "-o", "out"]), (Some(0), String::new()));
     assert_eq!(
-        run(&["-e", "f", "i386.o", "-o", "out"]),
+        run(&["-e", "f", "i386.o", "x86.o", "-o", "out"]),
         (
             Some(1),
-            "mortar: error: unsupported feature: linking for i386\n\
-             >>> M1 links AArch64 and x86-64 (docs/ROADMAP.md)\n"
+            "mortar: error: x86.o: incompatible file: elf32-i386 is expected but got elf64-x86-64\n\
+             >>> the target was set by i386.o\n"
                 .to_owned()
         )
     );
@@ -214,4 +215,47 @@ fn erratum_workaround_values_other_than_full_are_refused() {
     }
     let (status, stderr) = link(&built, &["--fix-cortex-a53-843419=full"], &[]);
     assert_eq!((status, stderr.as_str()), (Some(0), ""));
+}
+
+// spec: dyn.md §2.7 (the census's ranked refusals: `-dynamic-linker`,
+// `-pie`, `-Bdynamic`), WP-041 step 0e: one `dynamic_guard` refuses them
+// with the text the command line gave before it, each option once (the
+// first use of each row), in argument order among the other refusals,
+// and nothing is linked.
+#[test]
+fn the_dynamic_gates_keep_their_refusals() {
+    let Some((_s, built)) = c_program("refuse-dynamic") else { return };
+    let line = [
+        "-pie",
+        "--dynamic-linker",
+        "/lib/first.so.1",
+        "-Bdynamic",
+        "-dynamic-linker",
+        "/lib/ld-linux-aarch64.so.1",
+        "-Bdynamic",
+        "--build-id=md5",
+    ];
+    let (status, stderr) = link(&built, &line, &[]);
+    assert_eq!(status, Some(1));
+    assert_eq!(
+        stderr,
+        format!(
+            "mortar: error: unsupported option: -pie\n\
+             mortar: error: unsupported option: --dynamic-linker\n\
+             mortar: error: unsupported option: -Bdynamic\n\
+             mortar: error: unsupported option value: --build-id=md5\n\
+             >>> synth.md S-91: md5 is not written and uuid is M2; mortar writes --build-id, \
+             =sha1, =sha256, =fast, =none and =0xHEX\n{NOT_LINKED}"
+        )
+    );
+    assert!(!built.dir.join("out").exists());
+    for (opt, value) in
+        [("-pie", None), ("-dynamic-linker", Some("/lib/ld.so")), ("-Bdynamic", None)]
+    {
+        let mut extra = vec![opt];
+        extra.extend(value);
+        let (status, stderr) = link(&built, &extra, &[]);
+        assert_eq!(status, Some(1), "{opt}");
+        assert_eq!(stderr, format!("mortar: error: unsupported option: {opt}\n{NOT_LINKED}"));
+    }
 }

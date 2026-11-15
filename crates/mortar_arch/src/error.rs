@@ -13,6 +13,12 @@ pub enum RefName {
     Named(&'static str),
     /// Shown as `0x…` (lowercase).
     Hex(u64),
+    /// A named field and its value, shown as `<what> 0x…` (`e_flags
+    /// 0x5`: x86.md X86-1, "the `e_flags` value shown").
+    Value {
+        what: &'static str,
+        value: u64,
+    },
 }
 
 impl fmt::Display for RefName {
@@ -20,6 +26,7 @@ impl fmt::Display for RefName {
         match self {
             Self::Named(name) => f.write_str(name),
             Self::Hex(n) => write!(f, "{n:#x}"),
+            Self::Value { what, value } => write!(f, "{what} {value:#x}"),
         }
     }
 }
@@ -90,6 +97,40 @@ impl FieldError {
     #[must_use]
     pub const fn is_internal(&self) -> bool {
         matches!(self, Self::MissingSlot | Self::MissingTerm(_))
+    }
+}
+
+/// A scan refusal of a dynamic output with a kind of its own (`spec/dyn.md`
+/// D-25, D-44, D-47; `spec/diag.md` §3.1), where arch.md §4.3's `E`/`TX`
+/// cells still say `relocation-incompatible`: the outcome that carries the
+/// M2 name. Nothing raises one at M1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DynRefusal {
+    /// `text-relocation` (D-47): a record in a place without `SHF_WRITE`.
+    TextRelocation,
+    /// `canonical-plt-in-pie` (D-44): a use that needs a canonical PLT,
+    /// in a `Pie`.
+    CanonicalPltInPie,
+    /// `weak-undefined-pc-in-pie` (D-25): an unfillable use of an
+    /// undefined weak key, in a `Pie`.
+    WeakUndefinedPcInPie,
+}
+
+impl DynRefusal {
+    /// Every refusal, in `spec/diag.md` §3.1's order.
+    pub const ALL: [Self; 3] =
+        [Self::CanonicalPltInPie, Self::TextRelocation, Self::WeakUndefinedPcInPie];
+
+    /// The diagnostic kind for relocation `r_type` (its ABI name) against
+    /// `name` (as `relocation-incompatible`'s).
+    #[must_use]
+    pub fn kind(self, r_type: String, name: String) -> mortar_diag::Kind {
+        use mortar_diag::Kind;
+        match self {
+            Self::TextRelocation => Kind::TextRelocation { r_type, name },
+            Self::CanonicalPltInPie => Kind::CanonicalPltInPie { r_type, name },
+            Self::WeakUndefinedPcInPie => Kind::WeakUndefinedPcInPie { r_type, name },
+        }
     }
 }
 

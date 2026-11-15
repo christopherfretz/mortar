@@ -7,14 +7,17 @@ use mortar_elf::SectionIndex;
 use crate::column::Column;
 use crate::flags::flag_set;
 use crate::id::{ComdatId, FileId, Id, IdRange, OptId, SectionId, SymEntry, SymbolId};
+use crate::idset::IdSet;
 use crate::inputs::{FileKind, InputFlags, Inputs, Origin};
 use crate::table::{Broken, ensure, unsorted_at};
 
 /// Whether a file takes part in the link, and why (§3.3 `file_live`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileLive {
-    /// Not in the link: a lazy object never extracted, a closure file no
-    /// needed shared object leads to.
+    /// Not in the link: a lazy object never extracted; a loaded shared
+    /// object that is neither needed nor used (`spec/dyn.md` D-12: an
+    /// as-needed object nothing makes needed, a closure file no needed or
+    /// used object leads to).
     Dead,
     /// Always in the link: the internal file, an object named directly, a
     /// `--whole-archive` member.
@@ -24,21 +27,35 @@ pub enum FileLive {
     /// `file` is 0 and `index` the root's argument index (0 for the
     /// default entry).
     Extracted(SymEntry),
-    /// A shared object of the command line or a script: its definitions
-    /// are candidates; `needed` when it is `DT_NEEDED` of the output
-    /// (`spec/resolve.md` §9.5).
-    Shared { needed: bool },
-    /// A file of the `DT_NEEDED` closure that a needed shared object leads
-    /// to (`spec/input.md` §8.6): its undefined references are judged and
-    /// make program symbols exported; it is never `DT_NEEDED` of the
-    /// output.
-    Closure,
+    /// A loaded shared object that takes part in the link (`spec/dyn.md`
+    /// D-11, D-12; request R-M1). Exactly one flag is set:
+    ///
+    /// - `needed`: a member of N (D-11), `DT_NEEDED` of the output, in
+    ///   `Slots.needed` (D-19a order). Only a shared object of the command
+    ///   line or a script (C) is ever needed;
+    /// - `used`: a member of U = reach(N) \ N (D-12): reached by a
+    ///   `DT_NEEDED` edge from a needed or used object, whatever loaded it
+    ///   (the command line, a script's `AS_NEEDED`, the closure walk of
+    ///   `spec/input.md` §8.6). Never `DT_NEEDED`; its definitions satisfy
+    ///   the shlib-undefined check (D-13), its references and definitions
+    ///   count for `ref_dynamic`/`defined_dynamic`.
+    ///
+    /// Every other loaded shared object is `Dead`. Computed by
+    /// `mortar_resolve` (WP-M2-RES) after the needed fixed point; a static
+    /// link has none.
+    Shared { needed: bool, used: bool },
 }
 
 impl FileLive {
     #[must_use]
     pub fn is_live(self) -> bool {
         self != Self::Dead
+    }
+
+    /// A needed shared object (D-11): `DT_NEEDED` of the output.
+    #[must_use]
+    pub fn is_needed(self) -> bool {
+        matches!(self, Self::Shared { needed: true, .. })
     }
 }
 
@@ -68,7 +85,13 @@ pub enum Def {
     Defined(SymEntry),
     /// A common symbol; its allocation is a `sym_place` row (§4.4).
     Common(SymEntry),
-    /// A definition in a shared object.
+    /// A definition in a shared object: the entry of `bind(k)`
+    /// (`spec/dyn.md` D-11), the first member of N ∪ U in loader order
+    /// with a visible definition at the version the key asks for, never
+    /// `giver(k)` (which decides neededness only). Every fact of a shared
+    /// definition (provider, `COPY` size and alignment, version,
+    /// `STV_PROTECTED`, `STT_GNU_IFUNC`, `STT_TLS`) is read from this
+    /// entry; [`Resolution::bind`].
     Shared(SymEntry),
     /// Linker-defined (`_end`, `__start_<name>`, `--defsym`, script
     /// assignments): its value is a `defined` row (§4.4).
@@ -283,6 +306,27 @@ pub struct Resolution {
     /// for files that are not live objects.
     pub section_base: Column<FileId, IdRange<SectionId>>,
     pub sections: Column<SectionId, SectionRow>,
+    // ---- the dynamic columns (`spec/dyn.md` D-11, D-12, D-21; request
+    // R-R3): computed by `mortar_resolve` after the needed/used fixed
+    // point (D-11, D-12). Each is empty (no room, `IdSet::new`) in a
+    // static link, else has one bit per key. The `WeakDyn` decision is
+    // not here: it is the scan's per-key column (`spec/dyn.md` D-25,
+    // `mortar_scan::weak`).
+    /// The program definitions in `.dynsym` (D-21 item 2; resolve §9.6):
+    /// a key defined by the program (`Defined`, `Common`, `Internal`)
+    /// that `ref_dynamic` names, or that `--export-dynamic`/
+    /// `--export-dynamic-symbol` exports; a linker-defined key of file 0
+    /// only when `ref_dynamic` (request R-R5).
+    pub exported: IdSet<SymbolId>,
+    /// The imports (D-21 item 1): a key whose `def` is `Shared` (from a
+    /// needed object, or a used one through a weak reference, D-11) and
+    /// that a live relocatable object mentions (`ref_regular`).
+    pub imported: IdSet<SymbolId>,
+    /// `ref_dynamic` (D-12): some member of N ∪ U references the key
+    /// (strong or weak). Objects outside N ∪ U never count.
+    pub ref_dynamic: IdSet<SymbolId>,
+    /// `defined_dynamic` (D-12): some member of N ∪ U defines the key.
+    pub defined_dynamic: IdSet<SymbolId>,
 }
 
 impl Resolution {
@@ -301,7 +345,33 @@ impl Resolution {
             comdat_copies: Box::new([]),
             section_base: Column::filled(files, IdRange::empty(SectionId(0))),
             sections: Column::new(),
+            exported: IdSet::new(),
+            imported: IdSet::new(),
+            ref_dynamic: IdSet::new(),
+            defined_dynamic: IdSet::new(),
         }
+    }
+
+    /// `bind(k)` (`spec/dyn.md` D-11): the shared definition key `k` binds
+    /// to, when its `def` is `Shared`. `None` for a key the program
+    /// defines or nothing defines.
+    #[must_use]
+    pub fn bind(&self, k: SymbolId) -> Option<SymEntry> {
+        match self.def.get(k)? {
+            Def::Shared(e) => Some(*e),
+            _ => None,
+        }
+    }
+
+    /// The four dynamic columns by name, for checks and dumps.
+    #[must_use]
+    pub fn dynamic_columns(&self) -> [(&'static str, &IdSet<SymbolId>); 4] {
+        [
+            ("exported", &self.exported),
+            ("imported", &self.imported),
+            ("ref_dynamic", &self.ref_dynamic),
+            ("defined_dynamic", &self.defined_dynamic),
+        ]
     }
 
     /// The file a section belongs to.
@@ -355,7 +425,11 @@ impl Resolution {
     /// 5. `comdat_copies` is sorted, names live files and groups in range,
     ///    and the keeper of a group is its least copy (none without one);
     /// 6. an undefined key with a strong reference is not weak; a `Shared`
-    ///    definition is preemptible.
+    ///    definition is preemptible;
+    /// 7. each dynamic column (`exported`, `imported`, `ref_dynamic`,
+    ///    `defined_dynamic`) is empty or has one bit per key; an import's
+    ///    `def` is `Shared`; an export's is the program's (`Defined`,
+    ///    `Common` or `Internal`).
     ///
     /// [`Resolution::check_against`] adds what needs `Inputs`.
     pub fn check(&self) -> Result<(), Broken> {
@@ -415,6 +489,7 @@ impl Resolution {
                 })?;
             }
         }
+        self.check_dynamic_columns(keys)?;
         if let Some(at) = unsorted_at(&self.common, |row| row.0) {
             return Err(Broken { table: t, what: format!("common[{at}] out of order") });
         }
@@ -459,12 +534,40 @@ impl Resolution {
         Ok(())
     }
 
+    /// Rule 7 of [`Resolution::check`]: the dynamic columns (`spec/dyn.md`
+    /// D-12, D-21).
+    fn check_dynamic_columns(&self, keys: u32) -> Result<(), Broken> {
+        let t = "Resolution";
+        for (name, set) in self.dynamic_columns() {
+            ensure(set.is_empty() || set.len() == keys, t, || {
+                format!("rule 7: {name} is neither empty nor per key")
+            })?;
+        }
+        for k in self.imported.iter() {
+            ensure(matches!(self.def.get(k), Some(Def::Shared(_))), t, || {
+                format!("rule 7: symbol {}: imported without a shared definition", k.0)
+            })?;
+        }
+        for k in self.exported.iter() {
+            let ours = matches!(
+                self.def.get(k),
+                Some(Def::Defined(_) | Def::Common(_) | Def::Internal(_))
+            );
+            ensure(ours, t, || {
+                format!("rule 7: symbol {}: exported without a program definition", k.0)
+            })?;
+        }
+        Ok(())
+    }
+
     /// The invariants of §3.3 that need `Inputs` beside the table:
     ///
     /// 1. one row per file, key and signature of `inputs`;
-    /// 2. `Shared` liveness only for a shared object not of the closure,
-    ///    `Closure` only for a closure file; `Extracted` only for a lazy
-    ///    object; `Always` for a lazy object only under `--whole-archive`;
+    /// 2. `Shared` liveness only for a shared object, with exactly one of
+    ///    `needed` and `used`, and `needed` only for one not of the closure
+    ///    (`spec/dyn.md` D-12: a closure file is at most used); `Extracted`
+    ///    only for a lazy object; `Always` for a lazy object only under
+    ///    `--whole-archive`;
     /// 3. a `Defined` or `Common` definition is in an object, a `Shared`
     ///    one in a shared object.
     pub fn check_against(&self, inputs: &Inputs<'_>) -> Result<(), Broken> {
@@ -486,8 +589,9 @@ impl Resolution {
                     !file.is_lazy() || file.state.contains(InputFlags::WHOLE_ARCHIVE)
                 }
                 FileLive::Extracted(_) => file.is_lazy(),
-                FileLive::Shared { .. } => shared && !closure,
-                FileLive::Closure => shared && closure,
+                FileLive::Shared { needed, used } => {
+                    shared && needed != used && !(*needed && closure)
+                }
             };
             ensure(ok, t, || format!("rule 2: file {}: {live:?} for this kind of file", id.0))?;
         }

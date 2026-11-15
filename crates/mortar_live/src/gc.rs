@@ -15,22 +15,27 @@
 //!    relocation of every record resolved to a target, per record, so that
 //!    a code section's FDEs (and their CIEs) contribute their edges (the
 //!    LSDA, the personality) when the code section is marked (I-7).
-//! 4. **Rounds**: round 0 is the roots; each later round walks the
-//!    relocation records of the sections first marked by the round before,
-//!    partitioned by section and by `SCAN_BLOCK` records. A section is
-//!    marked with `swap(true)` on an atomic boolean; the worker whose swap
-//!    returned `false` collects it for the next round (`spec/model.md` §6
-//!    rules 2 and 3). The set is the least fixed point whatever the
-//!    schedule; the order of a round's list is never observed.
+//! 4. **Rounds**: round 0 is the roots; a round's units are the sections
+//!    the round before left, partitioned by section and by `SCAN_BLOCK`
+//!    records. A section is marked with `swap(true)` on an atomic boolean;
+//!    the worker whose swap returned `false` owns it, walks it in turn
+//!    (depth first, up to `CONTINUE` records per unit; without limit at
+//!    one thread) and leaves the rest, and any section of more than
+//!    `SCAN_BLOCK` records, to the next round (`spec/model.md` §6 rules 2
+//!    and 3). The rounds only balance the load: every live section is
+//!    walked once, the set is the least fixed point whatever the schedule,
+//!    and the order of a round's list is never observed. A failure is
+//!    reported after the closure, the least-keyed one of all.
 //!
 //! Edges come from relocation records only, through the tables
 //! (`sym_map`, `redirect`, `def`): never from instruction bytes, so the
 //! collector is the same for every architecture. Every record is an edge,
 //! `R_*_NONE` included (a `.reloc ., R_*_NONE, sym` is how assembly asks
 //! for a dependency). For a `SHT_REL` target the addend is in the relocated
-//! bytes; the mark does not read them, so a section-symbol reference into
-//! a split mergeable section marks every piece of that section (more than
-//! needed, never less).
+//! bytes: a section-symbol reference into a split mergeable section reads
+//! them through the architecture (`read::implicit`) and marks its piece;
+//! without an architecture, or where they cannot be read, it marks every
+//! piece of that section (more than needed, never less).
 
 #![allow(
     clippy::result_large_err,
@@ -85,6 +90,20 @@ const ROOT: u8 = 2;
 /// (`.note.stapsdt` keeps `.stapsdt.base`), and a kept section's
 /// reference to a collected one would be refused (I-12) or wrong.
 const EDGES: u8 = 4;
+/// It has a row in `Split::merge_of` (a split mergeable section, whose
+/// pieces a reference marks): the only sections [`Marks::at`] looks up.
+const MERGE: u8 = 8;
+/// It is the code section of an FDE (`by_code`).
+const FDES: u8 = 16;
+/// It is the target of a `SHF_LINK_ORDER` section (`link_order`).
+const LINKED: u8 = 32;
+/// It is a member of a section group (`group_of`).
+const GROUPED: u8 = 64;
+
+/// The records a worker walks, of the sections it marked itself, before
+/// it leaves the rest to the next round (I-8: the rounds only balance the
+/// load). Inline, a worker continues to the end.
+const CONTINUE: usize = 1 << 14;
 
 /// What phase 50 knows of one file.
 struct FileFacts<'s> {
@@ -101,6 +120,8 @@ struct Marks<'t> {
     /// Per `split.merge_of` row: every piece already marked.
     whole: Vec<AtomicBool>,
     named: &'t [(&'t [u8], SectionId)],
+    /// The section facts ([`MERGE`] is the one read here).
+    facts: &'t [u8],
 }
 
 impl Marks<'_> {
@@ -108,6 +129,11 @@ impl Marks<'_> {
     /// when this call marked it.
     fn section(&self, s: SectionId, out: &mut Vec<SectionId>) {
         let Some(cell) = self.live.get(s.0 as usize) else { return };
+        // Most references go to a section already marked: a load leaves
+        // its cache line shared, where a swap would take it.
+        if cell.load(Ordering::Relaxed) {
+            return;
+        }
         if !self
             .resolution
             .sections
@@ -125,6 +151,9 @@ impl Marks<'_> {
     /// `at` (I-7: by offset through `Split`), or every piece.
     fn at(&self, s: SectionId, at: u32, out: &mut Vec<SectionId>) {
         self.section(s, out);
+        if self.facts.get(s.0 as usize).is_none_or(|&b| b & MERGE == 0) {
+            return;
+        }
         if !self
             .resolution
             .sections
@@ -136,11 +165,15 @@ impl Marks<'_> {
         let rows = &self.split.merge_of;
         let Ok(row) = rows.binary_search_by_key(&s, |r| r.section) else { return };
         if at == WHOLE {
-            if self.whole[row].swap(true, Ordering::Relaxed) {
+            if self.whole[row].load(Ordering::Relaxed)
+                || self.whole[row].swap(true, Ordering::Relaxed)
+            {
                 return;
             }
             for &f in self.split.piece_frag.get(rows[row].pieces.slots()).unwrap_or_default() {
-                if let Some(m) = self.frag.get(f.0 as usize) {
+                if let Some(m) = self.frag.get(f.0 as usize)
+                    && !m.load(Ordering::Relaxed)
+                {
                     m.store(true, Ordering::Relaxed);
                 }
             }
@@ -149,6 +182,7 @@ impl Marks<'_> {
         if let Some(p) = self.split.merge_piece_at(s, at)
             && let Some(&f) = self.split.piece_frag.get(p.piece as usize)
             && let Some(m) = self.frag.get(f.0 as usize)
+            && !m.load(Ordering::Relaxed)
         {
             m.store(true, Ordering::Relaxed);
         }
@@ -220,7 +254,7 @@ pub(crate) fn collect(
     // 1. Facts per file.
     let files = inputs.files.len() as usize;
     let per_file: Vec<Result<FileOut<'_>, Keyed>> =
-        pool.map(files, |f| file_facts(inputs, r, a, FileId(f as u32)));
+        pool.unit_cost(FILE_NS).map(files, |f| file_facts(inputs, r, a, FileId(f as u32)));
     // A section no file's facts describe (not of an object, or a header
     // `mortar_elf` cannot read) is a root: the mark never drops what it
     // has not looked at.
@@ -268,7 +302,7 @@ pub(crate) fn collect(
 
     // 2. Definitions.
     let keys = inputs.symbols.len() as usize;
-    let defs: Vec<(Target, bool)> = pool.map(keys, |k| {
+    let defs: Vec<(Target, bool)> = pool.unit_cost(KEY_NS).map(keys, |k| {
         let id = SymbolId(k as u32);
         let target = def_target(inputs, r, a, &tables, &named, id);
         let props = r.props.get(id).copied().unwrap_or_default();
@@ -282,8 +316,9 @@ pub(crate) fn collect(
 
     // 3. Frames.
     let eh_rows = &split.eh_of;
-    let eh: Vec<Result<Vec<(u32, Target)>, Keyed>> =
-        pool.map(eh_rows.len(), |row| eh_edges(inputs, r, split, &tables, &defs, row));
+    let eh: Vec<Result<Vec<(u32, Target)>, Keyed>> = pool
+        .unit_cost(EH_NS)
+        .map(eh_rows.len(), |row| eh_edges(inputs, r, split, &tables, &defs, row));
     let mut eh_edges_of: Vec<Vec<(u32, Target)>> = Vec::with_capacity(eh.len());
     for e in eh {
         match e {
@@ -310,62 +345,100 @@ pub(crate) fn collect(
         }
     }
     by_code.sort_unstable();
+    // Which lookups a section's walk needs (most need none of them).
+    let flag = |facts: &mut [u8], s: SectionId, bit: u8| {
+        if let Some(b) = facts.get_mut(s.0 as usize) {
+            *b |= bit;
+        }
+    };
+    for row in &split.merge_of {
+        flag(&mut facts, row.section, MERGE);
+    }
+    for &(code, _, _) in &by_code {
+        flag(&mut facts, code, FDES);
+    }
+    for &(target, _) in &link_order {
+        flag(&mut facts, target, LINKED);
+    }
+    for &(member, _, _) in &group_of {
+        flag(&mut facts, member, GROUPED);
+    }
 
-    let marks = Marks {
+    let new_marks = || Marks {
         resolution: r,
         split,
         live: (0..sections).map(|_| AtomicBool::new(false)).collect(),
         frag: (0..split.frags.len() as usize).map(|_| AtomicBool::new(false)).collect(),
         whole: (0..split.merge_of.len()).map(|_| AtomicBool::new(false)).collect(),
         named: &named,
-    };
-
-    // 4. Round 0: the roots, in section then key order.
-    let mut round: Vec<SectionId> = Vec::new();
-    for (s, &bits) in facts.iter().enumerate() {
-        if bits & ROOT != 0 {
-            marks.at(SectionId(s as u32), WHOLE, &mut round);
-        }
-    }
-    for &root in tables_in.roots {
-        if let Some(&(target, _)) = defs.get(root.0 as usize) {
-            marks.target(target, &mut round);
-        }
-    }
-    for &(target, rooted) in &defs {
-        if rooted {
-            marks.target(target, &mut round);
-        }
-    }
-
-    let cx = Walk {
-        inputs,
-        r,
-        split,
-        tables: &tables,
-        defs: &defs,
         facts: &facts,
-        link_order: &link_order,
-        group_of: &group_of,
-        group_members: &group_members,
-        by_code: &by_code,
-        eh_edges: &eh_edges_of,
-        marks: &marks,
     };
-    while !round.is_empty() {
-        let units = cx.units(&round);
-        let got = pool.map_collect(units.len(), |u, out| cx.walk(units[u], out));
-        let mut next = Vec::new();
-        for item in got.items {
-            match item {
-                Out::Marked(s) => next.push(s),
-                Out::Failed(e) => errors.push(*e),
+    // 4. The rounds (I-8). With a `budget`, a worker continues on the
+    // sections it marks; what it leaves (past its budget, or a section to
+    // cut into blocks) is the next round's. Every live section is walked
+    // once, whatever the schedule. Budget 0 is the breadth-first rounds:
+    // round `k + 1` is what round `k`'s edges first marked, and the mark
+    // stops after the first round with a failure.
+    let mark = |marks: &Marks<'_>, budget: usize| -> Option<Keyed> {
+        // Round 0: the roots, in section then key order.
+        let mut round: Vec<SectionId> = Vec::new();
+        for (s, &bits) in facts.iter().enumerate() {
+            if bits & ROOT != 0 {
+                marks.at(SectionId(s as u32), WHOLE, &mut round);
             }
         }
-        if let Some(e) = least(&mut errors) {
-            return Err(e);
+        for &root in tables_in.roots {
+            if let Some(&(target, _)) = defs.get(root.0 as usize) {
+                marks.target(target, &mut round);
+            }
         }
-        round = next;
+        for &(target, rooted) in &defs {
+            if rooted {
+                marks.target(target, &mut round);
+            }
+        }
+        let cx = Walk {
+            inputs,
+            r,
+            split,
+            tables: &tables,
+            defs: &defs,
+            facts: &facts,
+            link_order: &link_order,
+            group_of: &group_of,
+            group_members: &group_members,
+            by_code: &by_code,
+            eh_edges: &eh_edges_of,
+            marks,
+            arch: tables_in.arch,
+        };
+        let mut errors = Vec::new();
+        while !round.is_empty() {
+            let units = cx.units(&round);
+            let got = pool
+                .unit_cost(UNIT_NS)
+                .map_collect(units.len(), |u, out| cx.walk(units[u], budget, out));
+            let mut next = Vec::new();
+            for item in got.items {
+                match item {
+                    Out::Marked(s) => next.push(s),
+                    Out::Failed(e) => errors.push(*e),
+                }
+            }
+            if budget == 0 && !errors.is_empty() {
+                break;
+            }
+            round = next;
+        }
+        least(&mut errors)
+    };
+    let budget = if pool.is_inline() { usize::MAX } else { CONTINUE };
+    let marks = new_marks();
+    if let Some(e) = mark(&marks, budget) {
+        // A failed link reports the least failure of the first
+        // breadth-first round that has one, as before WP-032h: marked
+        // again, breadth first, to find it.
+        return Err(mark(&new_marks(), 0).unwrap_or(e));
     }
 
     let live: Vec<bool> = marks.live.into_iter().map(AtomicBool::into_inner).collect();
@@ -677,6 +750,18 @@ fn fail(
     (Key::new(PHASE, file.0, u64::from(index.0)), d)
 }
 
+// The regions' costs per unit, in ns at one thread (`par.rs`'s
+// `unit_cost`), measured on static protoc with --gc-sections (WP-032h):
+// a small link's mark stays on the caller.
+/// Step 1, a file's facts: 2.9 ms for 3,536 files.
+const FILE_NS: u32 = 800;
+/// Step 2, a symbol key's definition: 0.3 ms for 46,565 keys.
+const KEY_NS: u32 = 7;
+/// Step 3, an `.eh_frame` row's edges: 1.85 ms for 735 rows.
+const EH_NS: u32 = 2_500;
+/// Step 4, a unit of a round: ~5.5 ms for 23,186 sections.
+const UNIT_NS: u32 = 400;
+
 /// One unit of a round: records `lo..hi` of section `s`'s relocations;
 /// the first unit of a section also takes its FDEs' and `SHF_LINK_ORDER`
 /// dependents' edges.
@@ -707,6 +792,7 @@ struct Walk<'w, 't, 's> {
     by_code: &'w [(SectionId, u32, u32)],
     eh_edges: &'w [Vec<(u32, Target)>],
     marks: &'w Marks<'t>,
+    arch: Option<&'w dyn mortar_arch::Arch>,
 }
 
 impl Walk<'_, '_, '_> {
@@ -715,13 +801,7 @@ impl Walk<'_, '_, '_> {
     fn units(&self, round: &[SectionId]) -> Vec<Unit> {
         let mut units = Vec::with_capacity(round.len());
         for &s in round {
-            let mut n = 0;
-            let row = self.r.sections[s];
-            // A section without facts (not read) has its records walked.
-            let edges = self.facts.get(s.0 as usize).is_none_or(|b| b & (EDGES | ALLOC) != 0);
-            if edges && row.reloc.0 != 0 && row.kind != SectionKind::EhFrame {
-                n = self.count(s).unwrap_or(1);
-            }
+            let n = self.records_of(s);
             if n <= SCAN_BLOCK {
                 units.push(Unit { s, lo: 0, hi: n });
                 continue;
@@ -736,6 +816,20 @@ impl Walk<'_, '_, '_> {
         units
     }
 
+    /// The records of `s` the mark walks: 0 when its relocations are no
+    /// edges; 1 when its relocation section's header cannot be read (the
+    /// walk then reports it).
+    fn records_of(&self, s: SectionId) -> usize {
+        let row = self.r.sections[s];
+        // A section without facts (not read) has its records walked.
+        let edges = self.facts.get(s.0 as usize).is_none_or(|b| b & (EDGES | ALLOC) != 0);
+        if edges && row.reloc.0 != 0 && row.kind != SectionKind::EhFrame {
+            self.count(s).unwrap_or(1)
+        } else {
+            0
+        }
+    }
+
     /// The record count of `s`'s relocation section; `None` when its
     /// header cannot be read (the walk then reports it).
     fn count(&self, s: SectionId) -> Option<usize> {
@@ -744,32 +838,63 @@ impl Walk<'_, '_, '_> {
         read::count(obj, self.r.sections[s].reloc).ok()
     }
 
-    fn walk(&self, u: Unit, out: &mut Vec<Out>) {
+    /// Walks unit `u`, then the sections it marks, and theirs, until
+    /// `budget` records are walked: what is left, and a section of more
+    /// than [`SCAN_BLOCK`] records, goes to `out` for the next round.
+    fn walk(&self, u: Unit, budget: usize, out: &mut Vec<Out>) {
         let mut marked = Vec::new();
-        if let Err(e) = self.records(u, &mut marked) {
+        self.unit(u, &mut marked, out);
+        let mut done = u.hi - u.lo;
+        while let Some(s) = marked.pop() {
+            if done >= budget {
+                marked.push(s);
+                break;
+            }
+            let n = self.records_of(s);
+            if n > SCAN_BLOCK {
+                out.push(Out::Marked(s));
+                continue;
+            }
+            self.unit(Unit { s, lo: 0, hi: n }, &mut marked, out);
+            done += n.max(1);
+        }
+        out.extend(marked.into_iter().map(Out::Marked));
+    }
+
+    /// The edges of one unit: its records, and for a section's first unit
+    /// its FDEs', its `SHF_LINK_ORDER` dependents and its group mates.
+    fn unit(&self, u: Unit, marked: &mut Vec<SectionId>, out: &mut Vec<Out>) {
+        if let Err(e) = self.records(u, marked) {
             out.push(Out::Failed(Box::new(e)));
         }
-        if u.lo == 0 {
-            self.frames(u.s, &mut marked);
+        if u.lo != 0 {
+            return;
+        }
+        let bits = self.facts.get(u.s.0 as usize).copied().unwrap_or(0);
+        if bits & FDES != 0 {
+            self.frames(u.s, marked);
+        }
+        if bits & LINKED != 0 {
             let from = self.link_order.partition_point(|&(t, _)| t < u.s);
             for &(t, dep) in &self.link_order[from..] {
                 if t != u.s {
                     break;
                 }
-                self.marks.at(dep, WHOLE, &mut marked);
+                self.marks.at(dep, WHOLE, marked);
             }
-            // I-7: the members of a section group live together.
+        }
+        // I-7: the members of a section group live together.
+        if bits & GROUPED != 0 {
             let at = self.group_of.partition_point(|&(m, _, _)| m < u.s);
             if let Some(&(m, start, len)) = self.group_of.get(at)
                 && m == u.s
             {
                 let span = start as usize..(start + len) as usize;
                 for &mate in self.group_members.get(span).unwrap_or_default() {
-                    self.marks.at(mate, WHOLE, &mut marked);
+                    self.marks.at(mate, WHOLE, marked);
                 }
             }
         }
-        out.extend(marked.into_iter().map(Out::Marked));
     }
 
     fn records(&self, u: Unit, marked: &mut Vec<SectionId>) -> Result<(), Keyed> {
@@ -807,9 +932,20 @@ impl Walk<'_, '_, '_> {
             // checks it); none is an edge.
             return Ok(());
         };
+        let mut field = Vec::new();
         for i in u.lo..u.hi {
             let Some(raw) = recs.get(i) else { continue };
-            let t = record_target(self.inputs, self.r, table, self.defs, file, raw);
+            let mut t = record_target(self.inputs, self.r, table, self.defs, file, raw);
+            // A REL section-symbol reference into a split section: its
+            // piece by the implicit addend (I-7, X86-5).
+            if let (Target::At(s, WHOLE), None, Some(arch)) = (t, raw.addend, self.arch)
+                && self.split.merge_of.binary_search_by_key(&s, |r| r.section).is_ok()
+                && let Some(a) =
+                    read::implicit(arch, self.inputs, file, obj, index, raw, &mut field)
+            {
+                let raw = read::Raw { addend: Some(a), ..raw };
+                t = record_target(self.inputs, self.r, table, self.defs, file, raw);
+            }
             self.marks.target(t, marked);
         }
         Ok(())

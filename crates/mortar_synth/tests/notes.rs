@@ -336,7 +336,11 @@ fn s3_names_and_headers() {
     assert_eq!(SynthKind::RelaPlt.name(false), b".rela.plt");
     let h = SynthKind::Symtab.header(Class::Elf32, true).unwrap();
     assert_eq!((h.entsize, h.align), (16, 4));
-    assert!(SynthKind::Dynamic.header(Class::Elf64, false).is_none(), "M2");
+    // dyn.md D-34 (WP-041 step 0i): the M2 rows have their headers; the
+    // M4 row (verdef) has none.
+    let d = SynthKind::Dynamic.header(Class::Elf64, false).unwrap();
+    assert_eq!((d.entsize, d.align), (16, 8));
+    assert!(SynthKind::GnuVersionD.header(Class::Elf64, false).is_none(), "M4");
     assert!(!SynthKind::Got.synth(false).address_dependent);
     assert!(SynthKind::RelrDyn.synth(false).address_dependent);
 }

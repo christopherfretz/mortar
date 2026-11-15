@@ -1,0 +1,102 @@
+# dyn.md D-22, D-26, lookups through the program's `.gnu.hash`: every
+# `.dynsym` entry with a value (exports, copies, canonical PLTs) is found
+# by the loader, and absent names are rejected. The program walks its own
+# `.dynsym` (`dynwalk.h`) and asks `dlsym` on its own handle for every
+# global entry with a value: the address must be the entry's. It also
+# checks the cases a missing hash entry would break silently:
+# - the canonical PLT of `puts` (`-no-pie` code takes `&puts`): glibc binds
+#   the library's `GLOB_DAT` for `puts` to the program's PLT entry only
+#   through the hash table, so `&puts` must be one address in the program
+#   and in the library (D-22: the canonical-PLT entries are hashed);
+# - the copy of `lib_obj` (`-no-pie`; x86-64 `-fPIE` too): the library
+#   must see the program's copy, which it finds through the table;
+# - the exports `app_cb` and `app_var` the library uses.
+# Names that are nowhere are rejected.
+#
+# All three references agree here (their tables differ in size, D-26,
+# §13.1, and all three find every name).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-22"
+#@ spec: dyn.md "D-26"
+#@ arch: aarch64 x86_64
+#@ fixture: dynsym-walk
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,liblookup.so -o liblookup.so
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+
+link gcc -pie pie.o -L. -llookup -o pie
+run pie
+  stdout: library sees app_cb 7 app_var 8
+  stdout: &puts: program and library 1
+  stdout: &lib_obj: program and library 1
+  stdout: entries with a value dlsym does not find at their address: 0
+  stdout: exports found: app_cb 1 app_var 1
+  stdout: absent names found: 0
+
+link gcc -no-pie exec.o -L. -llookup -o exec
+run exec
+  stdout: library sees app_cb 7 app_var 8
+  stdout: &puts: program and library 1
+  stdout: &lib_obj: program and library 1
+  stdout: entries with a value dlsym does not find at their address: 0
+  stdout: exports found: app_cb 1 app_var 1
+  stdout: absent names found: 0
+  stdout: canonical PLT puts found: 1
+  stdout: copy lib_obj found: 1
+check readelf --dyn-syms -W exec
+  has: FUNC GLOBAL DEFAULT UND puts@
+  not: 0000000000000000 0 FUNC GLOBAL DEFAULT UND puts@
+  has: 4 OBJECT GLOBAL DEFAULT * lib_obj$
+
+#--- lib.c
+#include <stdio.h>
+int lib_obj = 5;
+extern int app_cb(void);
+extern int app_var;
+void *lib_puts(void) { return (void *)puts; }
+int *lib_obj_address(void) { return &lib_obj; }
+void lib_report(void) { printf("library sees app_cb %d app_var %d\n", app_cb(), app_var); }
+#--- main.c
+#include "dynwalk.h"
+void *lib_puts(void);
+int *lib_obj_address(void);
+void lib_report(void);
+extern int lib_obj;
+int app_cb(void) { return 7; }
+int app_var = 8;
+void *volatile puts_address;
+
+int main(void) {
+  struct dw w;
+  if (!dw_open(&w)) return 1;
+  void *self = dlopen(NULL, RTLD_LAZY);
+  puts_address = (void *)puts; /* -fno-pie: a canonical PLT */
+  lib_report();
+  printf("&puts: program and library %d\n", puts_address == lib_puts());
+  printf("&lib_obj: program and library %d\n", &lib_obj == lib_obj_address());
+  int wrong = 0, canon = 0, copy = 0;
+  for (uint32_t i = 1; i < w.count; i++) {
+    const ElfW(Sym) *s = &w.sym[i];
+    const char *name = w.str + s->st_name;
+    if (s->st_value == 0 || ELF64_ST_BIND(s->st_info) == STB_LOCAL) continue;
+    void *at = (void *)(w.bias + s->st_value);
+    void *found = dlsym(self, name);
+    wrong += found != at;
+    if (!strcmp(name, "puts")) canon = s->st_shndx == SHN_UNDEF && found == puts_address;
+    if (!strcmp(name, "lib_obj")) copy = found == (void *)&lib_obj;
+  }
+  printf("entries with a value dlsym does not find at their address: %d\n", wrong);
+  printf("exports found: app_cb %d app_var %d\n", dlsym(self, "app_cb") == (void *)app_cb,
+         dlsym(self, "app_var") == (void *)&app_var);
+  printf("absent names found: %d\n", (dlsym(self, "app_absent") != 0) + (dlsym(self, "cb_9999") != 0) +
+                                         (dlsym(self, "puts_") != 0) + (dlsym(self, "app_c") != 0));
+#ifndef __PIE__
+  printf("canonical PLT puts found: %d\n", canon);
+  printf("copy lib_obj found: %d\n", copy);
+#endif
+  return 0;
+}

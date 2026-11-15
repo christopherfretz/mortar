@@ -45,6 +45,8 @@ pub struct Report {
     pub results_file: Option<PathBuf>,
     /// The work directory, when `--keep` kept some of it.
     pub kept: Option<PathBuf>,
+    /// The digest mode's rows (`cargo xtask static-identical`), sorted.
+    pub digests: Vec<super::engine::DigestRow>,
 }
 
 /// A field of the results file: `\`, tab, newline and carriage return

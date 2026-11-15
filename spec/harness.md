@@ -20,6 +20,7 @@ tests ("Link tests"), the gate's hosted runs on GitHub Actions
 | `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `test` | `cargo test --workspace` |
 | `linktest` | `cargo xtask linktest --arch <host>` (`--quick`), `cargo xtask linktest` (full) |
+| `static-identical` | `cargo xtask static-identical` (both; every architecture) |
 
 Before a step it prints `[ci] <step>` on standard error. It stops at the
 first step that fails, printing `[ci] <step>: FAILED`, with exit status 1,
@@ -31,6 +32,10 @@ host's architecture only (every architecture when the host is none of the
 three), which adds well under a minute on the reference machine; the full
 gate runs every architecture (the others under qemu). The differential
 lanes join the full gate as they land (`docs/VALIDATION.md`).
+
+`static-identical` is run in-process after `linktest`, with or without
+`--quick`, on every architecture ("static-identical"); any failure fails
+it.
 
 `cargo` is the one that runs `xtask` (the `CARGO` variable cargo sets for
 what it runs), else `cargo` on `PATH`.
@@ -481,7 +486,16 @@ stdin, timeout)`, `run(program, args)` (no input, one minute) or
   next (a file this process had open for writing is inherited by every
   process another test thread forks at that moment);
 - scratch files are in `<build directory>/tmp` (`Scratch`), under a name
-  unique to the process and the call, removed on drop.
+  unique to the process and the call (`mortar-<label>-<pid>-<n>`),
+  removed on drop. A scratch held in a `static` or left by a killed test
+  is never dropped, so the first `Scratch` of a process removes the
+  entries of that form in `<build directory>/tmp` whose process no longer
+  runs (no `/proc/<pid>`; nothing is swept without `/proc`, or in the
+  system temporary directory). After a run at most the last test
+  binaries' scratch remains. Some scratch outputs are sparse files of
+  hundreds of megabytes of apparent size (a section placed far away to
+  force a veneer): a tool that copies the build directory without
+  preserving holes sees them at full size.
 
 ### Tests
 
@@ -504,7 +518,7 @@ of that; skipped with a note without GNU `time`, a failure under
 
 `crates/mortar_testutil/src/lib.rs`: `run_captures_output_and_status`,
 `scripts_are_runnable_at_once`, `run_kills_at_the_time_limit`,
-`scratch_is_created_and_removed`.
+`scratch_is_created_and_removed`, `scratch_of_dead_processes_is_swept`.
 
 ## Link tests
 
@@ -653,10 +667,13 @@ file with neither architecture nor linker.
   where the behavior is specified, which may still be to be written.
 - `arch: <arch>...`: once; the architectures the test runs on.
 - `requires: <word>...`: once; exactly the tools the steps use beyond
-  `gcc` and the binutils: `g++` (a `cxx` step or `link g++`), `gfortran`,
-  `clang` (a `(clang)` compile step or `link clang`/`clang++`),
-  `yaml2obj`, `llvm-readelf`. A missing word and an unused one are both
-  errors.
+  `gcc` and the binutils: `g++` (a `cxx` step, `link g++` or `shlib g++`),
+  `gfortran`, `clang` (a `(clang)` compile step or `link clang`/`clang++`),
+  `yaml2obj`, `llvm-readelf`, `gdb`, `lldb`, `eu-elflint` (a `check` with
+  that tool). A missing word and an unused one are both errors. A
+  fixture states its own `requires`, which every test naming it gets.
+- `fixture: <name>...`: the fixtures (each named once) whose built files the test's
+  inputs start from ("Fixtures").
 - `xfail(<qualifiers>): <reason>`, `skip(<qualifiers>): <reason>`: a
   marker. Its qualifiers must name at least one linker; at most one
   marker applies to a (linker, architecture); every architecture keeps a
@@ -664,14 +681,26 @@ file with neither architecture nor linker.
   legitimately differs under `output: reference` is left out with `skip`,
   not `xfail` (a run step does not fail when its output differs, so
   `xfail` would be `XPASS`).
-- **Run-wide mortar xfails.** `tests/link/xfails` holds one
-  `mortar,<arch>: <reason>` per line (`#` comments and blank lines
-  aside; at most one per architecture; only mortar, so a reference is
-  never masked): an architecture mortar has no back end for. On it, the
-  line's reason is mortar's `xfail` in every test, in place of the test's
-  own `xfail(mortar)`; a test's `skip(mortar)` still applies. A mortar
-  link that passes there is `XPASS`, so the line is removed when the back
-  end lands. A line that does not parse is a run error.
+- **The xfails file.** `tests/link/xfails` holds mortar's expected
+  failures that are not the tests' own (`#` comments and blank lines
+  aside; only mortar, so a reference is never masked), one per line, of
+  two forms:
+  - `mortar,<arch>: <reason>`, **run-wide**: an architecture mortar has no
+    back end for (at most one per architecture). The reason is mortar's
+    `xfail` in every test of the architecture.
+  - `mortar[,<arch>...] <test>: <reason>`, **of one test** (its name, as
+    `dyn/kinds/output-kind-table.test`), on the architectures named, every
+    architecture when none is (at most one per test and architecture):
+    the work package that makes the test pass, `M2: WP-0xx (<name>)`.
+    When the package lands, deleting its lines is all it takes.
+
+  A line takes the place of the test's own `xfail(mortar)` (the run-wide
+  line first); a test's `skip(mortar)` still applies. A test that has its
+  own `xfail(mortar)` on an architecture its line also names is a run
+  error (one place says why). A mortar link that passes under a line is
+  `XPASS`, so the line goes when the package or back end lands. A line
+  that does not parse, and on a run of the whole corpus a line naming no
+  test, is a run error.
 - `timeout: <seconds>` (1 to 3600), `mem: <MiB>` (16 to 65536).
 - `anomaly(<qualifiers>): <id>...`: the recorded reference-linker defects
   (`spec/plumb.md` §10.2) the verifier is expected to find on these
@@ -696,9 +725,10 @@ keeps blanks (with `\"` and `\\`).
 | `as <args>` | the C driver with `-c` (so `.S` files are preprocessed) |
 | `yaml2obj <args>` | `yaml2obj` |
 | `ar <args>` | the architecture's `ar` |
+| `shlib <driver> <args>` | a shared library, by the architecture's `gcc`, `g++` or `gfortran` with `-shared -fuse-ld=bfd`: GNU ld links every fixture library, whatever the run's linkers |
 | `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
 | `run <program> [<args>]` | runs a linked program |
-| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, or `text` (the file named by the one argument, read) |
+| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `text` (the file named by the one argument, read), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
 
 The build steps come before every link, run and check step. Expectations
 are the indented lines under a step:
@@ -712,15 +742,54 @@ are the indented lines under a step:
 | run | `exit: <n>` (default 0), `exit: signal <n>` | how the program ends |
 | run | `stdout: <text>` | its standard output, one line per expectation, exactly; with none, it prints nothing |
 | run | `output: reference` | prints what the references printed ("The self-check") |
-| check | `has: <pattern>` | some line of the tool's output matches (at least one `has` or `not`) |
+| run | `env: <NAME>=<value>` | runs the program with that environment variable (repeatable; `LD_PRELOAD=./libhook.so`, `LD_BIND_NOW=1`) |
+| check | `has: <pattern>` | some line of the tool's output matches (at least one `has`, `then`, `count` or `not`) |
+| check | `then: <pattern>` | some line after the line the previous `has` or `then` matched matches (an order: `DT_NEEDED` entries, `.dynamic` tags) |
+| check | `count: <n> <pattern>` | exactly `n` lines match (a relocation count by type: `count: 3 R_AARCH64_RELATIVE`) |
 | check | `not: <pattern>` | no line does |
+| check | `allow: <pattern>` | `elflint` only: a complaint that is accepted ("Checks") |
 
-A check tool that does not exit with status 0 fails the step.
+A check tool that does not exit with status 0 fails the step, except
+`elflint`.
+
+**Checks** beyond the binutils, for dynamic outputs (`spec/dyn.md` §10):
+
+- `check elflint <file>`: `eu-elflint --gnu-ld <file>`; its standard
+  output and error together. Every non-blank line that is not `No errors`
+  must match an `allow` line that applies to the linker, whatever its exit
+  status; `allow` lines are the allow-list of `spec/dyn.md` Q5 (mortar's
+  `.relro_padding`). A check with no other expectation is valid.
+- `check ldd <program>`: the architecture's dynamic loader, `<system
+  root><interpreter> --list ./<program>`, natively or under the
+  architecture's qemu, with the run's `LD_LIBRARY_PATH` ("Runs"): what
+  `ldd` prints, without trusting the `ldd` script of the host.
+- `check gdb <program> <command>...` and `check lldb <program>
+  <command>...`: the debugger in batch mode on the program, with the
+  run's `LD_LIBRARY_PATH`, each argument a command (`"break main" run bt
+  "info sharedlibrary"`): `gdb -nx -batch -ex 'set pagination off' -ex
+  'set debuginfod enabled off' -ex <command>... <program>`, `lldb
+  --no-lldbinit -b -o 'settings set target.disable-aslr false' -o
+  <command>... <program>` (the container refuses `personality`). The
+  host's debuggers run only the host's programs: on another architecture
+  the step is `SKIP` with that reason, by name, and the linker's later
+  steps do not run (a `SKIP` is not a refutation in "The self-check").
 
 **Embedded files**: `#--- <relative name>` starts one, which runs
 verbatim to the next `#---` line or the end of the file (LLVM's
 `split-file` marker; a bare `---` would collide with `yaml2obj`
 documents). The name may have directories; it may not leave the unit.
+
+**Fixtures.** `tests/link/fixtures/<name>.fixture` is a file of the same
+format with only the `requires` directive, build steps and embedded
+files: the shared libraries a dynamic test links against (sonames,
+version scripts, `DT_NEEDED` chains, `AS_NEEDED` scripts). A fixture is
+built once per run and architecture, by the first unit that names it,
+under `<work directory>/fixtures/<arch>/<name>`; a unit's `inputs/`
+starts as a copy of its fixtures' files, in the order named, then the
+test's embedded files (a test's file replaces a fixture's of the same
+name) and build steps. A fixture that does not parse gives every test
+naming it one `ERROR` record; one that fails to build, an `ERROR` of
+each unit that needs it (`inputs: fixture <name>: ...`).
 
 **Substitutions**, in step arguments and expectation values (not in
 embedded files): `%{arch}`, `%{triple}`, `%{emulation}` (the `-m` of
@@ -788,6 +857,14 @@ mortar included (`docs/VALIDATION.md` layer L3).
   (`ET_DYN`: PIE, static PIE and shared objects, stage 3), `dynamic`
   (`ET_EXEC` with `PT_INTERP` or `PT_DYNAMIC`, stage 3) and `relocatable`
   (`-r`). A file that is not ELF is judged, and fails S1.
+- **Stage 3.** Dynamic outputs (`pie-or-shared`, `dynamic`) are judged
+  when the verifier has stage 3, which the run finds out once at its
+  start (`engine::stage3_present`): it gives `mortar_plumb::verify` a
+  bare AArch64 `ET_DYN` header, and stage 3 is absent while the answer
+  is S1's finding that the file is not `ET_EXEC`. While it is absent they
+  are counted as not judged with the reason `stage 3 absent`, and the run
+  says so in a note; the day stage 3 lands (WP-050) they are judged, with
+  no edit to the harness or the tests.
 - **The verdict.** A finding fails the step: `FAIL`, or `XFAIL` under an
   `xfail` marker, with the detail `<step>: L3: the verifier finds
   <output>: <rule> <message> at <address> (and N more)`. Run
@@ -849,7 +926,12 @@ full one.
 check that it is a file beginning with `\x7fELF` (`process::run` starts a
 program through `/bin/sh`, which would run a file the kernel refuses as a
 shell script). Any other runs under the architecture's qemu with `-L
-<system root>`.
+<system root>`. Its environment has `LD_LIBRARY_PATH` set to the linker's
+directory (absolute), so a fixture library is found as it is on a user's
+machine, unless an `env:` line sets it; then the `env:` lines. Natively
+they are the process's environment; under qemu they are given as `-E
+<NAME>=<value>` (qemu's own environment is not the guest's), so
+`LD_PRELOAD` and `LD_BIND_NOW` reach the guest's loader.
 
 ### Outcomes
 
@@ -861,7 +943,7 @@ Each (test, architecture, linker) gets one **record**:
 | `FAIL` | a step did not pass, without a marker |
 | `XFAIL` | a step did not pass, and an `xfail` marker applies |
 | `XPASS` | every step passed, and an `xfail` marker applies: the marker is stale |
-| `SKIP` | a `skip` marker applies; or a requirement is missing; or the references did not prove the test |
+| `SKIP` | a `skip` marker applies; or a requirement is missing; or the references did not prove the test; or a check cannot run on the architecture (a debugger under qemu: "Checks") |
 | `KILLED` | a child of the linker's steps was killed at a limit, marker or not |
 | `ERROR` | the harness could not do what the test says (a tool missing for a step, a driver that did not run the linker, a file that does not parse) |
 | `ORACLE` | the references refuted the test: one record per (test, architecture) without a linker |
@@ -945,6 +1027,14 @@ fails the gate until its marker goes. All cases run on all three
 architectures except `lang/fortran-c` (no i686 `gfortran` on the
 reference machine) and `reloc/aarch64-veneer` (AArch64 only).
 
+The dynamic cases (`tests/link/dyn/`, M2) are the rows of `spec/dyn.md`
+§16 and the default lines of its §2.1, on AArch64 and x86-64 (i386 is
+outside M2); `spec/landed/dyn/WP-051.md` lists them. Each is mortar's
+expected failure by a line of `tests/link/xfails` naming the package that
+makes it pass, and their references pass but for the wrong outputs of
+`dyn.md` §13.2, which are `xfail` markers citing W-n. They add about 10 s
+to the quick gate's linktest (80 tests, measured at load 13).
+
 ### Tests
 
 `xtask/src/linktest/format.rs`: `a_whole_test`,
@@ -968,9 +1058,13 @@ reference machine) and `reloc/aarch64-veneer` (AArch64 only).
 `the_map_of_a_link_line`, `what_the_verifier_does_not_judge`,
 `a_default_anomaly_goes_stale`.
 `xtask/src/linktest/format.rs`: `anomaly_declarations`,
-`default_anomalies`, `arch_xfails`.
+`default_anomalies`, `arch_xfails` (both forms of the xfails file),
+`dynamic_steps_and_expectations` (`shlib`, `env`, `then`, `count`,
+`allow`, the new check tools), `fixtures`.
 `xtask/src/linktest/engine.rs`:
-`a_run_wide_xfail_applies_to_mortar_on_its_architecture`.
+`a_run_wide_xfail_applies_to_mortar_on_its_architecture` (and a test's
+line), `the_environment_of_a_run`, `stage_3_is_absent_today`.
+`xtask/src/linktest/outcome.rs`: `a_skipped_check_does_not_refute`.
 `xtask/src/linktest.rs`: `the_command_line`, `usage_errors`,
 `collecting_test_files`.
 
@@ -987,6 +1081,75 @@ references; the usage errors.
 The corpus itself is the test of the format against real linkers: `cargo
 xtask linktest` must give every reference `PASS` (bar the recorded
 reference bugs, `XFAIL`) and mortar `XFAIL` on every case until M1.
+
+## static-identical
+
+`cargo xtask static-identical [--update] [-j <n>] [--mortar <binary>]` checks that mortar's
+static links are byte-identical to a checked-in baseline,
+`tests/identical/baseline.tsv`. It is the guard of milestone M2
+(`spec/landed/dyn/WP-040.md`): dynamic output lands behind one refusal
+while a static link's bytes, its `--mortar-map` and its diagnostics stay
+what they were. A package whose change is meant to change them (a fix of
+a static byte) rewrites the baseline with `--update` in the same commit,
+and its hand-back names the links that changed.
+
+**The corpus** is every test of `tests/link` but its dynamic cases
+(`tests/link/dyn`, milestone M2: none of their links is static; mortar
+refuses them until their packages land, and those refusals would churn
+the baseline at each landing; the static-pie case is one of them, an M2
+output kind of WP-052), and of `tests/identical`
+(larger static C, C++, Fortran and Clang links: `-g`, `--gc-sections`,
+`--threads=1` and the default, `--build-id`), on every architecture whose
+tools are there. `tests/identical` uses the link-test format ("The test
+file"); `cargo xtask linktest` does not run it (its tests have no
+expectations of their own). A test is named relative to `tests/link`, else
+to `tests/`.
+
+**The digest mode** of the link-test engine runs mortar alone (no
+reference, no self-check, no verifier) and only the build and link steps:
+run and check steps are not run, markers but `skip(mortar)` are ignored
+(an `xfail` link is recorded like any other, with its exit status), and a
+link that fails unexpectedly ends its unit. Compile steps get
+`-ffile-prefix-map=<inputs>=.` after `-c`, so that no object names the
+work directory. Every mortar link that is to succeed is given
+`--mortar-map=.linktest-plumb-<line>.map`, as under L3. Each link step is
+one row:
+
+| column | value |
+|---|---|
+| `test`, `arch`, `line` | the link step: test name, architecture, line in the file |
+| `end` | how the linker ended (`exit status 0`, `signal 11`, ...) |
+| `output` | SHA-256 of the output file, `-` when there is none |
+| `map` | SHA-256 of the `--mortar-map`, `-` when there is none |
+| `stderr` | SHA-256 of the linker's (the driver's) standard error |
+
+The map and the standard error are digested after replacing the link's
+directory by `.`, the unit's directory by `<unit>` and the run's work
+directory by `<work>`, so the baseline does not depend on the checkout it
+was cut in. The baseline is these rows, tab-separated, sorted by test,
+architecture and line, after `#` comment lines.
+
+**The check**: every row of the run must equal the baseline's row of the
+same link, and every link of each side must be on the other. A
+difference is printed one link per line: `~ <test> [<arch>] line <n>:
+<columns that differ>` (with the two ends when `end` differs), `+ ...` a
+link the baseline lacks, `- ...` a baseline link not made. Then a summary
+line (links, tests, architectures, how many differ, seconds) and
+`static-identical: ok` with exit status 0, or `static-identical: FAILED`
+with exit status 1. A unit that did not run because a tool is missing is
+not compared (a note says how many) unless `MORTAR_REQUIRE_TOOLS=1`. An
+error of the run itself (an input that does not build, mortar not built)
+is a failure whatever the digests. `--update` prints the same difference
+lines, then writes the baseline (it refuses when a unit did not run); a
+usage error is exit status 2. `--mortar` runs another build of mortar (another
+commit's) against the baseline instead of building the workspace's.
+
+The run is well under two minutes on the reference machine (the debug
+mortar; no program is run).
+
+Tests: `xtask/src/identical.rs` `baseline_and_diff`, `the_command_line`,
+`the_corpus_leaves_out_the_dynamic_cases`;
+the command itself in the gate.
 
 ## Hosted CI
 
