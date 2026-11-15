@@ -261,3 +261,35 @@ fn x64_the_output_is_a_function_of_the_inputs_alone() {
         }
     }
 }
+
+/// `_TLS_MODULE_BASE_` (x64.md X-47, resolve.md §8.1): a TLS descriptor
+/// call on the module base, then a `DTPOFF32` load from it (the code a
+/// local-dynamic TLSDESC sequence is), in a static link. mortar defines the
+/// symbol, relaxes the descriptor to `mov $0` (T = 0 by name, so TP is
+/// the base), writes `TpRel` in the code, and writes the symbol `STT_TLS`
+/// at template offset 0; the program reads what GNU ld's reads.
+#[test]
+fn x64_tls_module_base() {
+    let Some(ld) = host() else { return };
+    let program: &[Source] = &[
+        Source {
+            name: "base.s",
+            text: "\t.text\n\t.globl get_b\n\t.type get_b,@function\nget_b:\n\
+                   \tleaq _TLS_MODULE_BASE_@tlsdesc(%rip), %rax\n\
+                   \tcall *_TLS_MODULE_BASE_@tlscall(%rax)\n\
+                   \tmovq %fs:0, %rdx\n\taddq %rdx, %rax\n\
+                   \tmovl tb@dtpoff(%rax), %eax\n\tret\n\
+                   \t.globl tbp\n\t.type tbp,@function\ntbp:\n\
+                   \tmovq %fs:0, %rax\n\tleaq tb@tpoff(%rax), %rax\n\tret\n\
+                   \t.section .tbss,\"awT\",@nobits\n\t.align 4\n\
+                   \t.type tb,@object\n\t.size tb,4\ntb:\t.zero 4\n\
+                   \t.section .note.GNU-stack,\"\",@progbits\n",
+        },
+        Source {
+            name: "main.c",
+            text: "#include <stdio.h>\n__thread int td = 7;\nint get_b(void);\nint *tbp(void);\n\
+                   int main(void) { *tbp() = 42; printf(\"%d %d\\n\", get_b(), td); return 0; }\n",
+        },
+    ];
+    holds(&ld, "x64-tls-base", GCC, &["-O2"], program);
+}

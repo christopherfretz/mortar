@@ -24,6 +24,10 @@ pub enum When {
     /// When an output section or segment exists: a conditional candidate
     /// that the first layout stage confirms or withdraws (§5.1).
     Conditional,
+    /// x86-64 only, and conditional as [`When::Conditional`]
+    /// (`_TLS_MODULE_BASE_`, `spec/x64.md` X-47: the TLS block exists;
+    /// layout L-98 refuses it by name when it does not).
+    X86_64Conditional,
     /// A row of a later milestone: not a candidate in M1.
     Later,
 }
@@ -81,7 +85,7 @@ pub const TABLE: &[LinkerSymbol] = &[
     row(b"__rela_iplt_end", When::StaticExecutable, true, false),
     row(b"__rel_iplt_start", When::StaticExecutable, true, false),
     row(b"__rel_iplt_end", When::StaticExecutable, true, false),
-    row(b"_TLS_MODULE_BASE_", When::Later, true, false),
+    row(b"_TLS_MODULE_BASE_", When::X86_64Conditional, true, false),
     row(b"__GNU_EH_FRAME_HDR", When::Conditional, true, false),
 ];
 
@@ -155,6 +159,10 @@ pub fn candidate(
         When::Dynamic => output.dynamic,
         When::AArch64 => machine == Machine::AArch64,
         When::Conditional => return Some((Provided::Table(n as u8), true)),
+        When::X86_64Conditional if machine == Machine::X86_64 => {
+            return Some((Provided::Table(n as u8), true));
+        }
+        When::X86_64Conditional => false,
         When::Later => false,
     };
     on.then_some((Provided::Table(n as u8), false))

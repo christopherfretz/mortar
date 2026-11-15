@@ -1050,7 +1050,7 @@ static executable; "lld/GNU/mold" columns: defined by that linker):
 | `__init_array_start/_end`, `__preinit_array_start/_end`, `__fini_array_start/_end` | always | local, hidden | yes | yes | yes | M1 |
 | `__rela_iplt_start/_end` (AArch64, x86-64), `__rel_iplt_start/_end` (i386) | static executables that are not PIE (empty range when there is no IRELATIVE); under `-static-pie` not defined, so a reference is weak undefined and zero (GNU ld, lld; mold: absolute 0; all three on the three targets, WP-022.md): the `IRELATIVE` relocations are in `.rela.dyn` | local, hidden | yes | yes | only with IRELATIVE | M1 |
 | `__start_<sec>`, `__stop_<sec>` | `<sec>` is a C identifier and an output section of that name exists | global, protected; `-z start-stop-visibility=` (M2) changes it | yes | yes | yes | M1 |
-| `_TLS_MODULE_BASE_` | a TLS segment exists and the key is referenced | local, hidden | no | x86 only | yes | M2 (TLS descriptors) |
+| `_TLS_MODULE_BASE_` | x86-64 (WP-029b; i386 with its back end): a TLS segment exists and the key is referenced (a conditional candidate; with no TLS chunk layout L-98 refuses it by name); `STT_TLS`, value 0 in the template (x64.md X-47: T = 0 by name, so only `.symtab` shows the value) | local, hidden | no | x86 only | yes | M1 (x86-64); M2 elsewhere |
 | `__GNU_EH_FRAME_HDR` | `.eh_frame_hdr` exists | local, hidden | no | no | yes | M1 |
 | `__dso_handle` | **not defined** (`crtbegin*.o` defines it) | — | no | yes (hidden) | yes | — |
 | `_PROCEDURE_LINKAGE_TABLE_`, `__global_pointer$`, `_gp`, `__tls_get_addr`, `_init`, `_fini` | not defined (RISC-V, MIPS, or libc's) | — | no | no | no | — |
