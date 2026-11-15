@@ -98,6 +98,80 @@ fn props(objects: &[Vec<Vec<u8>>]) -> Result<PropertyPlan, String> {
     p.map_err(|_| text(&r))
 }
 
+/// [`props`] with the x86 processor range's rules
+/// (`mortar_arch::x86_property_merge`, `spec/x64.md` X-41).
+fn x86_props(objects: &[Vec<Vec<u8>>]) -> (Result<PropertyPlan, ()>, String) {
+    let secs: Vec<Vec<(SectionId, &[u8], u64)>> = objects
+        .iter()
+        .enumerate()
+        .map(|(o, notes)| notes.iter().map(|n| (SectionId(o as u32 + 1), &n[..], 8)).collect())
+        .collect();
+    let paths: Vec<String> = (0..objects.len()).map(|o| format!("o{o}.o")).collect();
+    let objs: Vec<ObjectNotes<'_>> =
+        secs.iter().zip(&paths).map(|(s, p)| ObjectNotes { path: p, sections: s }).collect();
+    let diag = collector();
+    let p = PropertyPlan::new(&objs, Class::Elf64, &mortar_arch::x86_property_merge, false, &diag)
+        .map_err(|_| ());
+    (p, text(&diag.finish()))
+}
+
+// spec: synth.md S-95 (`spec/x64.md` X-41, R-7): the x86 `And` range is
+// 0xc0000002..0xc0007fff, the `Or` range 0xc0008000..0xc000ffff (GNU ld and
+// mold OR 0xc000f000), the `OrAll` range 0xc0010000..0xc0017fff; the legacy
+// `COMPAT_ISA_1_NEEDED` is `Or` and `COMPAT_ISA_1_USED` `OrAll`, neither
+// warned about; 0xc0018000 is unknown.
+#[test]
+fn s95_r7_x86_ranges_and_legacy_types() {
+    let a = prop_note(&[
+        (0xc000_0000, &u32b(1)),
+        (0xc000_0001, &u32b(2)),
+        (0xc000_0002, &u32b(3)),
+        (0xc000_0003, &u32b(7)),
+        (0xc000_8002, &u32b(1)),
+        (0xc000_9000, &u32b(4)),
+        (0xc000_f000, &u32b(8)),
+        (0xc001_0002, &u32b(1)),
+        (0xc001_7000, &u32b(2)),
+    ]);
+    let b = prop_note(&[
+        (0xc000_0001, &u32b(4)),
+        (0xc000_0002, &u32b(1)),
+        (0xc000_f000, &u32b(1)),
+        (0xc001_0002, &u32b(4)),
+        (0xc001_8000, &u32b(1)),
+    ]);
+    let (p, warnings) = x86_props(&[vec![a.clone()], vec![b]]);
+    let p = p.unwrap();
+    assert_eq!(
+        p.properties()
+            .iter()
+            .map(|p| (p.0, u32::from_le_bytes((*p.1).try_into().unwrap())))
+            .collect::<Vec<_>>(),
+        [
+            // COMPAT_ISA_1_USED (OrAll): the second lacks it, dropped.
+            // COMPAT_ISA_1_NEEDED (Or): 2 | 4.
+            (0xc000_0001, 6),
+            // FEATURE_1_AND (And): 3 & 1; 0xc0000003 dropped (one lacks it).
+            (0xc000_0002, 1),
+            // Or: kept though one lacks it; 0xc000f000 is ORed.
+            (0xc000_8002, 1),
+            (0xc000_9000, 4),
+            (0xc000_f000, 9),
+            // ISA_1_USED (OrAll): both have it; 0xc0017000 one lacks it.
+            (0xc001_0002, 5),
+        ]
+    );
+    assert_eq!(
+        warnings, "ld: warning: o1.o: unsupported GNU_PROPERTY_TYPE 0xc0018000; property dropped\n",
+        "only the type past the x86 ranges is unknown"
+    );
+    // COMPAT_ISA_1_USED survives when every input has it.
+    let c = prop_note(&[(0xc000_0000, &u32b(2))]);
+    let (p, warnings) = x86_props(&[vec![a], vec![c]]);
+    assert_eq!(p.unwrap().value_u32(0xc000_0000), 3);
+    assert_eq!(warnings, "");
+}
+
 fn u32b(v: u32) -> [u8; 4] {
     v.to_le_bytes()
 }

@@ -34,7 +34,7 @@ pub mod seq;
 pub mod shapes;
 pub mod vocab;
 
-pub use class::{ClassOutcome, Demand, DemandClass, PlaceFacts, class_outcome};
+pub use class::{ClassOutcome, Demand, DemandClass, PlaceFacts, class_outcome, writes_dtprel};
 pub use cx::{
     DemandOut, DemandSink, EventClass, FillCx, FillTables, OutputCx, PatchCx, Records, Reloc,
     RelocAt, ScanCx, ScanError, ScanTables, SectionOut, SymFacts, SymNames, SymValue, SynthCx,
@@ -46,7 +46,7 @@ pub use seq::{Code, ErratumSite, Proof, ProofRun, UnitWindow, Unproved};
 pub use shapes::{
     Branch, DynRole, EhEncodings, Erratum, Facts, GotBase, GotShape, PltChunk, PltPart, PltShape,
     PltVariant, PropMerge, Reach, RelForm, ThunkShape, TlsAbi, TlsBlock, TlsVariant, Weak0Rule,
-    max_window,
+    max_window, x86_property_merge,
 };
 pub use vocab::{
     AddendRule, Base, Check, Field, Howto, Implicit, Minus, OutputKind, Site, SlotKind, Status,

@@ -65,7 +65,6 @@ semantics (`spec/arch.md`).
 | `.gnu.linkonce.*` sections | `Refused{Feature, ".gnu.linkonce sections"}` (§6.6) | an input that needs it |
 | a slim GCC LTO object (symbol `__gnu_lto_slim`) | `Refused{FileFormat, "GCC LTO object"}` (§10) | a later decision (`docs/ARCHITECTURE.md`, "Scope") |
 | a weak common symbol (`STB_WEAK` with `SHN_COMMON`) | `Refused{SymbolBinding, "STB_WEAK common"}` | an input that needs it (no tool tested emits one; not verified) |
-| `SHN_X86_64_LCOMMON` (large common) | `Refused{Feature, "SHN_X86_64_LCOMMON"}` | M4 |
 | a symbol binding other than `STB_GLOBAL`, `STB_WEAK`, `STB_GNU_UNIQUE` among non-local entries | `Refused{SymbolBinding, <name or 0x..>}` | never planned |
 | a symbol type other than `NOTYPE`, `OBJECT`, `FUNC`, `SECTION`, `FILE`, `COMMON`, `TLS`, `GNU_IFUNC` | `Refused{SymbolType, ..}` | never planned |
 | `--warn-backrefs-exclude` | option refusal | when asked for |
@@ -81,7 +80,8 @@ Everything else in this spec is **M1** unless marked.
   and a version part. `foo`, `foo@@V2` are one key; `foo@V1` is another
   (§9.4).
 - A mention is **defined** when its section is a section of the file
-  (`Section(n)`, `elf.md` §3.5) or `Absolute`; **common** for `Common`;
+  (`Section(n)`, `elf.md` §3.5) or `Absolute`; **common** for `Common`
+  (and, on x86-64, `Reserved(SHN_X86_64_LCOMMON)`, §3.3);
   **undefined** for `Undefined`. A `Reserved(n)` other than those this
   spec names is refused (`Refused{Feature, "SHN 0x.."}`).
 - A **data definition** is a defined mention whose type is not `STT_FUNC`
@@ -187,6 +187,12 @@ M1. For a key whose `def` is `Common`:
   §16;
 - `def` is `Common{file, st_index}` of the least common mention by `≺`
   (the identity; the size and alignment are the column's).
+- `SHN_X86_64_LCOMMON` (large common, x86-64): accepted as a common
+  symbol (`st_value` the alignment), resolved as `SHN_COMMON`; allocated
+  in `.lbss` (`spec/x64.md` X-55, `spec/layout.md` L-36a); a `COMMON` and
+  an `LCOMMON` of one name give a large common. M1. On another machine
+  the index 0xff02 means nothing and is refused as any other
+  `Reserved(n)` (§2).
 
 When a `Strong` definition wins over commons, its own size and alignment
 stand. Warnings (GNU ld's, which gfortran users meet; mortar's wording is

@@ -237,6 +237,18 @@ This is libiberty's `buildargv`, as GNU ld uses it.
   - `-z lam-u48` (x86-64).
 
   The table says which.
+- The CET rows (`spec/x64.md` §11, X-43), honoured on x86-64 [M1]:
+  `-z ibt` (force IBT in `FEATURE_1_AND`; IBT IPLT), `-z force-ibt`
+  (lld's spelling, an alias of `-z ibt`), `-z shstk` (force SHSTK),
+  `-z ibtplt` (IBT IPLT without the property), `-z
+  cet-report=none|warning|error` (default `none`), each `spec/x64.md`
+  §11. `-z ibt`, `-z shstk`, `-z ibtplt` and `-z cet-report` are GNU's
+  rows of x86-64 and i386 (GNU ld takes them for both; i386 is
+  `spec/x86.md`'s), so on AArch64 each is `unknown-option` as above.
+  `-z force-ibt` is lld's, and only GNU rows have targets (§4.1): it is
+  read on every target and refused on AArch64 by §4.4. They land in
+  `plan.other` (§3.12) with their value, and stay `refused` (§4.4) until
+  `mortar_x64` honours them.
 - They are read whatever the target. Each use is recorded in
   `plan.target_options`.
 - When `-m` names the target, `check_target` runs at the end of the line.

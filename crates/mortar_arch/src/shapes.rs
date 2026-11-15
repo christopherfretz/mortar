@@ -50,7 +50,9 @@ pub struct Facts {
     /// architecture, over every `Howto` window (§3.2) and every member
     /// window of a recognized form (`unit_window`, §3.5). Computed from
     /// those tables ([`max_window`]), never written by hand
-    /// (`spec/image.md` I-111).
+    /// (`spec/image.md` I-111): AArch64 `(0, 4)`; x86-64 `(4, 15)` (the
+    /// 16-byte `TLSGD` forms' `before`, the 22-byte forms' `after`,
+    /// `spec/x64.md` §8.6).
     pub max_reach: Window,
     /// The trap pattern code padding is filled with, positioned by address
     /// modulo its length (`spec/layout.md` L-82): AArch64 four zero bytes
@@ -60,8 +62,9 @@ pub struct Facts {
     /// (L-82): AArch64 `NOP` (`0xd503201f`, little-endian), x86 `0x90`.
     pub code_nop: &'static [u8],
     /// The lead types of the sequences an architecture recognizes only
-    /// when `RelocAt.leads` is set (§3.5): AArch64 R4's
-    /// `TLSGD_ADR_PAGE21`.
+    /// when `RelocAt.leads` is set (§3.5): AArch64 `[513]` (R4's
+    /// `TLSGD_ADR_PAGE21`); x86-64 `[19, 20]` (`TLSGD`, `TLSLD`,
+    /// `spec/x64.md` §8.3, §8.4).
     pub seq_leads: &'static [u32],
 }
 
@@ -268,6 +271,27 @@ pub enum Weak0Rule {
     XZero,
     /// A constant `X` (AArch64 branches: 4).
     XConst(i64),
+}
+
+/// `property_merge` for the x86 processor range (§3.13; `spec/x64.md`
+/// X-41, `spec/synth.md` S-95), shared by x86-64 and i386: binutils'
+/// `GNU_PROPERTY_X86_UINT32_AND` range 0xc0000002..=0xc0007fff (with
+/// `FEATURE_1_AND`) is `And`, `UINT32_OR` 0xc0008000..=0xc000ffff (with
+/// `ISA_1_NEEDED`, `FEATURE_2_NEEDED`) `Or`, `UINT32_OR_AND`
+/// 0xc0010000..=0xc0017fff (with `ISA_1_USED`, `FEATURE_2_USED`) `OrAll`;
+/// the legacy `COMPAT_ISA_1_USED` (0xc0000000) is `OrAll` and
+/// `COMPAT_ISA_1_NEEDED` (0xc0000001) `Or`, as GNU ld merges them. Any
+/// other processor-range type is `None` (dropped with `unknown-property`).
+#[must_use]
+pub const fn x86_property_merge(pr_type: u32) -> Option<PropMerge> {
+    match pr_type {
+        // COMPAT_ISA_1_NEEDED and the UINT32_OR range.
+        0xc000_0001 | 0xc000_8000..=0xc000_ffff => Some(PropMerge::Or),
+        0xc000_0002..=0xc000_7fff => Some(PropMerge::And),
+        // COMPAT_ISA_1_USED and the UINT32_OR_AND range.
+        0xc000_0000 | 0xc001_0000..=0xc001_7fff => Some(PropMerge::OrAll),
+        _ => None,
+    }
 }
 
 /// How a processor-range GNU property (`0xc0000000..0xdfffffff`) merges
