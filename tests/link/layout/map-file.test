@@ -13,7 +13,7 @@ check text prog.map
   has: .text
   has: _start
   has(bfd,mortar): ^Linker script and memory map$
-  has(mortar): ^OUTPUT\(prog elf
+  has(mortar): ^OUTPUT(prog elf
   has(lld): ^ *VMA LMA Size Align Out In Symbol$
   has(mold): ^ *VMA Size Align Out In Symbol$
 run prog
