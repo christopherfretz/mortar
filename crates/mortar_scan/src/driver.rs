@@ -386,7 +386,7 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
             r_offset: raw.r_offset,
             key,
             r_type: raw.r_type,
-            addend: self.recs.addend(raw, h),
+            addend: raw.addend,
             howto: h,
             site: Site { bytes: self.recs.bytes, offset: raw.r_offset },
             records: &self.recs,

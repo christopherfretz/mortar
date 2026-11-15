@@ -25,6 +25,9 @@ pub struct Reloc {
     pub r_offset: u64,
     pub key: SymKey,
     pub r_type: u32,
+    /// RELA: `r_addend`. REL: what the caller read, or 0; an architecture
+    /// with REL relocations reads every member's addend from the input
+    /// bytes itself (§3.3, §3.5) and does not use this field.
     pub addend: i64,
 }
 
@@ -68,7 +71,11 @@ pub struct RelocAt<'a> {
     pub r_offset: u64,
     pub key: SymKey,
     pub r_type: u32,
-    pub addend: i64,
+    /// `Some(r_addend)` on RELA, `None` on REL, where the architecture
+    /// reads the implicit addend from the input bytes of the field
+    /// (`read_addend`, §3.3): from `site` at scan, through
+    /// [`SectionOut::input`] at fill.
+    pub addend: Option<i64>,
     pub howto: &'a Howto,
     pub site: Site<'a>,
     /// The same relocation section (§3.5).
@@ -86,6 +93,16 @@ pub struct RelocAt<'a> {
 }
 
 impl RelocAt<'_> {
+    /// The explicit addend of a RELA record (§3.3). A RELA architecture is
+    /// never given a REL record (§3.1 refuses the section), so `None`
+    /// cannot reach it; it reads as 0 here and is caught in debug builds.
+    #[inline]
+    #[must_use]
+    pub fn rela_addend(&self) -> i64 {
+        debug_assert!(self.addend.is_some(), "a REL record given to a RELA architecture");
+        self.addend.unwrap_or(0)
+    }
+
     /// Whether the input word at section offset `off` is a proved
     /// instruction (§3.6 rule 1).
     #[must_use]
@@ -337,13 +354,21 @@ impl std::fmt::Debug for FillCx<'_> {
 /// The output bytes of one unit (§3.6) in the clip `[start, start +
 /// bytes.len())` of section offsets, pre-filled with the input bytes;
 /// `P` of offset 0 is `addr`. `apply` writes only its window, through
-/// [`SectionOut::write`], and never reads them; the part of a write that
-/// falls outside the clip is discarded, so the bytes inside the clip are
-/// those of an unclipped call (`spec/image.md` I-35).
+/// [`SectionOut::write`]; the part of a write that falls outside the clip
+/// is discarded, so the bytes inside the clip are those of an unclipped
+/// call (`spec/image.md` I-35). It reads input bytes only through
+/// [`SectionOut::input`], inside its own read window and before its unit
+/// writes (§3.6; `spec/x86.md` R-13 (d)).
 #[derive(Debug)]
 pub struct SectionOut<'a> {
     bytes: &'a mut [u8],
     start: u64,
+    /// The whole input section, when it is resident (§3.6 `input`).
+    resident: Option<&'a [u8]>,
+    /// The input bytes just before and just after the clip:
+    /// `[start − before.len(), start)` and `[end, end + after.len())`.
+    before: &'a [u8],
+    after: &'a [u8],
     /// `P` of offset 0.
     pub addr: u64,
     /// The section has `SHF_ALLOC`.
@@ -360,7 +385,35 @@ pub struct SectionOut<'a> {
 impl<'a> SectionOut<'a> {
     /// The clip of `bytes.len()` bytes starting at section offset `start`.
     pub fn new(bytes: &'a mut [u8], start: u64, addr: u64, alloc: bool, name: &'a [u8]) -> Self {
-        Self { bytes, start, addr, alloc, name, exec: None }
+        Self {
+            bytes,
+            start,
+            addr,
+            alloc,
+            name,
+            exec: None,
+            resident: None,
+            before: &[],
+            after: &[],
+        }
+    }
+
+    /// The same clip, with the whole input section resident: [`Self::input`]
+    /// reads from it.
+    #[must_use]
+    pub fn with_resident(mut self, section: &'a [u8]) -> Self {
+        self.resident = Some(section);
+        self
+    }
+
+    /// The same clip, with the input bytes of the two margins of a
+    /// non-resident body (`spec/x86.md` R-13 (d)): `before` ends at the
+    /// clip's start, `after` starts at its end.
+    #[must_use]
+    pub fn with_margins(mut self, before: &'a [u8], after: &'a [u8]) -> Self {
+        self.before = before;
+        self.after = after;
+        self
     }
 
     /// The same clip, with the section's `SHF_EXECINSTR` known.
@@ -380,6 +433,46 @@ impl<'a> SectionOut<'a> {
     #[must_use]
     pub fn clip(&self) -> (u64, u64) {
         (self.start, self.start.saturating_add(self.bytes.len() as u64))
+    }
+
+    /// The input bytes at section offsets `[off, off + dst.len())` (§3.6;
+    /// `spec/x86.md` R-13 (d)): from the resident section, else from the
+    /// clip's buffer (pre-filled with the input bytes, and read by a unit
+    /// before it writes: no unit reads a byte another unit writes, §3.4)
+    /// and the clip's two margins. `false`, with `dst` unspecified, when a
+    /// byte is in none of them.
+    #[must_use]
+    pub fn input(&self, off: u64, dst: &mut [u8]) -> bool {
+        let Some(end) = off.checked_add(dst.len() as u64) else { return false };
+        if let Some(sec) = self.resident {
+            let got = usize::try_from(off)
+                .ok()
+                .and_then(|o| Some(o..usize::try_from(end).ok()?))
+                .and_then(|r| sec.get(r));
+            return got.is_some_and(|src| {
+                dst.copy_from_slice(src);
+                true
+            });
+        }
+        let (a, b) = self.clip();
+        let lo = a.saturating_sub(self.before.len() as u64);
+        let hi = b.saturating_add(self.after.len() as u64);
+        if off < lo || end > hi {
+            return false;
+        }
+        // Each byte from the one source that holds it: `[lo, a)` the
+        // margin before, `[a, b)` the buffer, `[b, hi)` the margin after.
+        for (i, d) in dst.iter_mut().enumerate() {
+            let x = off + i as u64;
+            *d = if x < a {
+                self.before[(x - lo) as usize]
+            } else if x < b {
+                self.bytes[(x - a) as usize]
+            } else {
+                self.after[(x - b) as usize]
+            };
+        }
+        true
     }
 
     /// Writes `data` at section offset `off`: the part inside the clip.

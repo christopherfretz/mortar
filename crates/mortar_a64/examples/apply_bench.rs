@@ -128,7 +128,7 @@ fn main() {
                 r_offset: r.r_offset,
                 key: r.key,
                 r_type: r.r_type,
-                addend: r.addend,
+                addend: Some(r.addend),
                 howto: h,
                 site: Site { bytes: &input, offset: r.r_offset },
                 records: &records,

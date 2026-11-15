@@ -33,7 +33,7 @@ pub fn scan_checks(at: &RelocAt<'_>) -> Result<(), ScanError> {
         Some((start, end)) if in_section(start, end, len) => {}
         _ => return Err(ScanError::Outside),
     }
-    if h.addend == AddendRule::MustBeZero && at.addend != 0 {
+    if h.addend == AddendRule::MustBeZero && at.rela_addend() != 0 {
         return Err(ScanError::Incompatible(Incompatible::AddendMustBeZero));
     }
     if let Field::Insn { form } = h.field {
@@ -379,7 +379,7 @@ fn ie_to_le(
             _ => return Err(FieldError::MissingTerm("IE field")),
         },
     )?;
-    let t = tprel(cx, sym, at.addend, true)?;
+    let t = tprel(cx, sym, at.rela_addend(), true)?;
     let r = w & 0x1F;
     let word = if at.r_type == relax::ADR_GOTTPREL_PAGE21 {
         MOVZ_X0_16 | hi16(t) << 5 | r
@@ -400,7 +400,7 @@ fn gd_exec(
 ) -> Result<(), FieldError> {
     let lead = at.r_type == relax::TLSGD_ADR_PAGE21;
     let word = if tls_local(sym.kind) {
-        let t = tprel(cx, sym, at.addend, true)?;
+        let t = tprel(cx, sym, at.rela_addend(), true)?;
         if lead { MOVZ_X0_16 | hi16(t) << 5 } else { MOVK_X0 | lo16(t) << 5 }
     } else {
         let g = gtprel(cx, at)?;
@@ -445,7 +445,7 @@ fn value(
     {
         return checked(h.check, h.align, t.wrapping_sub(p) as i64);
     }
-    let a = at.addend;
+    let a = at.rela_addend();
     let b = match h.value.base {
         Base::Zero => 0,
         Base::S => s,
@@ -488,7 +488,7 @@ fn tlsdesc_exec(
         input_word(at, form)?;
     }
     let word = if tls_local(sym.kind) {
-        let t = tprel(cx, sym, at.addend, matches!(at.r_type, 562 | 560 | 565))?;
+        let t = tprel(cx, sym, at.rela_addend(), matches!(at.r_type, 562 | 560 | 565))?;
         match at.r_type {
             // ADR_PAGE21, LD_PREL19 (tiny), OFF_G1 (large): movz x0, #T[31:16], lsl #16.
             562 | 560 | 565 => MOVZ_X0_16 | hi16(t) << 5,
