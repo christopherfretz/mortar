@@ -159,10 +159,9 @@ pub fn candidate(
         When::Dynamic => output.dynamic,
         When::AArch64 => machine == Machine::AArch64,
         When::Conditional => return Some((Provided::Table(n as u8), true)),
-        When::X86_64Conditional if machine == Machine::X86_64 => {
-            return Some((Provided::Table(n as u8), true));
+        When::X86_64Conditional => {
+            return (machine == Machine::X86_64).then_some((Provided::Table(n as u8), true));
         }
-        When::X86_64Conditional => false,
         When::Later => false,
     };
     on.then_some((Provided::Table(n as u8), false))
