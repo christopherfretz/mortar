@@ -41,6 +41,35 @@ fn s9_1_reference_links_verify_clean() {
                 + cov.failed,
             "{label}: the coverage counts do not add up"
         );
+        // §6.4: the libraries' and the programs' FDEs are matched one by
+        // one; a search table, where there is one, lists every live FDE.
+        if matches!(link.case, "c-hello" | "cxx-eh" | "cxx-eh-hdr" | "comdat" | "gc-sections") {
+            assert!(cov.fdes_checked > 100, "{label}: {} FDEs checked", cov.fdes_checked);
+        }
+        if matches!(link.case, "comdat" | "gc-sections") {
+            assert!(cov.fdes_dropped > 0, "{label}: no FDE dropped with its function");
+        }
+        if link.case == "cxx-eh-hdr" || (link.linker == Linker::Mold && cov.fdes_checked > 0) {
+            assert_eq!(
+                cov.eh_frame_hdr_entries,
+                cov.fdes_checked + cov.fdes_neutralised,
+                "{label}: the search table"
+            );
+        }
+        // §6.5: the symbol table. On the glibc cases every linker-defined
+        // symbol GNU ld and lld write is judged; mold's own are named.
+        if matches!(link.case, "c-hello" | "cxx-eh" | "fortran" | "comdat") {
+            assert!(cov.globals_checked > 1000, "{label}: {} globals", cov.globals_checked);
+            assert!(cov.locals_checked > 300, "{label}: {} locals", cov.locals_checked);
+            assert!(cov.linker_defined_checked >= 9, "{label}: {}", cov.linker_defined_checked);
+            for n in &cov.linker_defined_not_judged {
+                let mold_own = n.contains('$') || n.ends_with("_EHDR") || n.ends_with("_PHDR");
+                assert!(link.linker == Linker::Mold && mold_own, "{label}: '{n}' not judged");
+            }
+        }
+        if link.case == "cxx-eh-hdr" {
+            assert_eq!(link.run(), Some(0), "{label}: the program fails");
+        }
         for (reason, n) in &cov.not_checked {
             assert!(
                 reason.is_stage2(),
@@ -51,7 +80,7 @@ fn s9_1_reference_links_verify_clean() {
         }
         let _ = writeln!(
             table,
-            "{label:24} records {:6} verified {:6} accepted {:5} not-checked {:5} (tls {}, ifunc {}, eh-frame {}, non-alloc {}) anomalies {}",
+            "{label:24} records {:6} verified {:6} accepted {:5} not-checked {:5} (tls {}, ifunc {}, eh-frame {}, non-alloc {}) fdes {}/{} hdr {} anomalies {}",
             cov.records,
             cov.verified_total(),
             cov.accepted_total(),
@@ -60,6 +89,9 @@ fn s9_1_reference_links_verify_clean() {
             cov.not_checked_of(Reason::Ifunc),
             cov.not_checked_of(Reason::EhFrame),
             cov.not_checked_of(Reason::NonAlloc),
+            cov.fdes_checked,
+            cov.fdes_dropped,
+            cov.eh_frame_hdr_entries,
             r.findings.len(),
         );
     }

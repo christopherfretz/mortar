@@ -15,18 +15,67 @@ pub enum Op {
     Prel,
     /// `Page(S + A) - Page(P)`.
     Page,
-    /// `G(GDAT(S + A))`.
-    Got,
-    /// `G(GDAT(S + A)) - P`.
-    GotPrel,
-    /// `Page(G(GDAT(S + A))) - Page(P)`.
-    GotPage,
-    /// `G(GDAT(S + A)) - GOT`.
-    GotOff,
-    /// `G(GDAT(S + A)) - Page(GOT)`.
-    GotPageOff,
     /// `S + A - GOT`.
     GotRel,
+    /// `TPREL(S + A)`: the thread-pointer offset of S+A (§4.7).
+    TpRel,
+    /// `DTPREL(S + A)`: the offset of S+A in its module's TLS block (§4.7).
+    DtpRel,
+    /// An operation on the GOT entry of a [`Slot`] kind, of a [`Form`]:
+    /// `G(GDAT(S+A))`, `G(GTPREL(S+A))`, `G(GTLSDESC(S+A))`,
+    /// `G(GTLSIDX(S+A))` and `G(GLDM(S))`.
+    Slot(Slot, Form),
+    /// `R_AARCH64_TLSDESC_CALL`: marks the `BLR` of a TLS descriptor
+    /// sequence; it writes nothing.
+    DescCall,
+}
+
+/// What a GOT entry holds (AAELF64 "Relocation operations", §5.5, §4.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Slot {
+    /// `GDAT(S+A)`: 8 bytes, the address S+A.
+    Addr,
+    /// `GTPREL(S+A)`: 8 bytes, the thread-pointer offset of S+A.
+    TpRel,
+    /// `GTLSDESC(S+A)`: a 16-byte TLS descriptor.
+    Desc,
+    /// `GTLSIDX(S+A)`: 16 bytes, the module index and the offset of S+A.
+    Gd,
+    /// `GLDM(S)`: 16 bytes, the module index and 0.
+    Ld,
+}
+
+/// How a GOT operation uses the entry's address G.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Form {
+    /// `G`.
+    Abs,
+    /// `G - P`.
+    Prel,
+    /// `Page(G) - Page(P)`.
+    Page,
+    /// `G - GOT`.
+    Off,
+    /// `G - Page(GOT)`.
+    PageOff,
+}
+
+impl Op {
+    /// Whether the type goes through a GOT entry (§5.5).
+    pub const fn is_slot(self) -> bool {
+        matches!(self, Op::Slot(..))
+    }
+
+    /// Whether the type is one of AAELF64's thread-local types (§4.7).
+    pub const fn is_tls(self) -> bool {
+        matches!(
+            self,
+            Op::TpRel
+                | Op::DtpRel
+                | Op::DescCall
+                | Op::Slot(Slot::TpRel | Slot::Desc | Slot::Gd | Slot::Ld, _)
+        )
+    }
 }
 
 /// How the value is written (AAELF64 "Static AArch64 relocations").
@@ -47,6 +96,11 @@ pub enum Field {
     Lo12(u8),
     /// `imm12` = X[14:3] (the `LO15` GOT forms).
     Lo15,
+    /// `imm12` = X[23:12] (the `HI12` TLS forms of `ADD ..., LSL #12`).
+    Hi12,
+    /// No field: the type marks an instruction and writes nothing
+    /// (`TLSDESC_CALL`).
+    Insn,
     /// `imm19` (bits 23:5) = X[20:2]: LDR (literal), B.cond, CBZ/CBNZ.
     Imm19,
     /// `imm14` (bits 18:5) = X[15:2]: TBZ/TBNZ.
@@ -72,7 +126,8 @@ impl Field {
             Field::Movw(_) => 0xffff << 5,
             Field::MovwSigned(_) => 0xffff << 5 | 0x6000_0000,
             Field::Adr | Field::AdrPage => 0x6000_0000 | 0x7ffff << 5,
-            Field::Lo12(_) | Field::Lo15 => 0xfff << 10,
+            Field::Lo12(_) | Field::Lo15 | Field::Hi12 => 0xfff << 10,
+            Field::Insn => 0,
             Field::Imm19 => 0x7ffff << 5,
             Field::Imm14 => 0x3fff << 5,
             Field::Imm26 => 0x3ff_ffff,
@@ -107,6 +162,8 @@ impl Field {
             Field::AdrPage => ins(adr_bits(u >> 12)),
             Field::Lo12(s) => ins(((u & 0xfff) >> s) << 10),
             Field::Lo15 => ins(((u & 0x7fff) >> 3) << 10),
+            Field::Hi12 => ins(((u >> 12) & 0xfff) << 10),
+            Field::Insn => place,
             Field::Imm19 => ins(((u >> 2) & 0x7ffff) << 5),
             Field::Imm14 => ins(((u >> 2) & 0x3fff) << 5),
             Field::Imm26 => ins((u >> 2) & 0x3ff_ffff),
@@ -166,7 +223,10 @@ const fn d(r_type: u32, name: &'static str, op: Op, field: Field, check: Check) 
     Def { r_type, name, op, field, check }
 }
 
-/// The stage-1 table (§4.2), in type order.
+use Form as F;
+use Slot as G;
+
+/// The table (§4.2 and §4.7), in type order.
 pub const TABLE: &[Def] = &[
     d(0, "R_AARCH64_NONE", Op::None, Field::Data(8), Check::None),
     d(256, "R_AARCH64_NULL", Op::None, Field::Data(8), Check::None),
@@ -209,27 +269,137 @@ pub const TABLE: &[Def] = &[
     d(299, "R_AARCH64_LDST128_ABS_LO12_NC", Op::Abs, Field::Lo12(4), Check::None),
     d(307, "R_AARCH64_GOTREL64", Op::GotRel, Field::Data(8), Check::None),
     d(308, "R_AARCH64_GOTREL32", Op::GotRel, Field::Data(4), Check::Signed(32)),
-    d(309, "R_AARCH64_GOT_LD_PREL19", Op::GotPrel, Field::Imm19, Check::Signed(21)),
-    d(310, "R_AARCH64_LD64_GOTOFF_LO15", Op::GotOff, Field::Lo15, Check::Unsigned(15)),
-    d(311, "R_AARCH64_ADR_GOT_PAGE", Op::GotPage, Field::AdrPage, Check::Signed(33)),
-    d(312, "R_AARCH64_LD64_GOT_LO12_NC", Op::Got, Field::Lo12(3), Check::None),
-    d(313, "R_AARCH64_LD64_GOTPAGE_LO15", Op::GotPageOff, Field::Lo15, Check::Unsigned(15)),
+    d(309, "R_AARCH64_GOT_LD_PREL19", Op::Slot(G::Addr, F::Prel), Field::Imm19, Check::Signed(21)),
+    d(
+        310,
+        "R_AARCH64_LD64_GOTOFF_LO15",
+        Op::Slot(G::Addr, F::Off),
+        Field::Lo15,
+        Check::Unsigned(15),
+    ),
+    d(311, "R_AARCH64_ADR_GOT_PAGE", Op::Slot(G::Addr, F::Page), Field::AdrPage, Check::Signed(33)),
+    d(312, "R_AARCH64_LD64_GOT_LO12_NC", Op::Slot(G::Addr, F::Abs), Field::Lo12(3), Check::None),
+    d(
+        313,
+        "R_AARCH64_LD64_GOTPAGE_LO15",
+        Op::Slot(G::Addr, F::PageOff),
+        Field::Lo15,
+        Check::Unsigned(15),
+    ),
     d(314, "R_AARCH64_PLT32", Op::Prel, Field::Data(4), Check::Signed(32)),
+    // §4.7: the thread-local types, AAELF64 "Relocations for thread-local storage".
+    d(
+        513,
+        "R_AARCH64_TLSGD_ADR_PAGE21",
+        Op::Slot(G::Gd, F::Page),
+        Field::AdrPage,
+        Check::Signed(33),
+    ),
+    d(514, "R_AARCH64_TLSGD_ADD_LO12_NC", Op::Slot(G::Gd, F::Abs), Field::Lo12(0), Check::None),
+    d(
+        518,
+        "R_AARCH64_TLSLD_ADR_PAGE21",
+        Op::Slot(G::Ld, F::Page),
+        Field::AdrPage,
+        Check::Signed(33),
+    ),
+    d(519, "R_AARCH64_TLSLD_ADD_LO12_NC", Op::Slot(G::Ld, F::Abs), Field::Lo12(0), Check::None),
+    d(523, "R_AARCH64_TLSLD_MOVW_DTPREL_G2", Op::DtpRel, Field::MovwSigned(32), Check::Signed(49)),
+    d(524, "R_AARCH64_TLSLD_MOVW_DTPREL_G1", Op::DtpRel, Field::MovwSigned(16), Check::Signed(33)),
+    d(525, "R_AARCH64_TLSLD_MOVW_DTPREL_G1_NC", Op::DtpRel, Field::Movw(16), Check::None),
+    d(526, "R_AARCH64_TLSLD_MOVW_DTPREL_G0", Op::DtpRel, Field::MovwSigned(0), Check::Signed(17)),
+    d(527, "R_AARCH64_TLSLD_MOVW_DTPREL_G0_NC", Op::DtpRel, Field::Movw(0), Check::None),
+    d(528, "R_AARCH64_TLSLD_ADD_DTPREL_HI12", Op::DtpRel, Field::Hi12, Check::Unsigned(24)),
+    d(529, "R_AARCH64_TLSLD_ADD_DTPREL_LO12", Op::DtpRel, Field::Lo12(0), Check::Unsigned(12)),
+    d(530, "R_AARCH64_TLSLD_ADD_DTPREL_LO12_NC", Op::DtpRel, Field::Lo12(0), Check::None),
+    d(531, "R_AARCH64_TLSLD_LDST8_DTPREL_LO12", Op::DtpRel, Field::Lo12(0), Check::Unsigned(12)),
+    d(532, "R_AARCH64_TLSLD_LDST8_DTPREL_LO12_NC", Op::DtpRel, Field::Lo12(0), Check::None),
+    d(533, "R_AARCH64_TLSLD_LDST16_DTPREL_LO12", Op::DtpRel, Field::Lo12(1), Check::Unsigned(12)),
+    d(534, "R_AARCH64_TLSLD_LDST16_DTPREL_LO12_NC", Op::DtpRel, Field::Lo12(1), Check::None),
+    d(535, "R_AARCH64_TLSLD_LDST32_DTPREL_LO12", Op::DtpRel, Field::Lo12(2), Check::Unsigned(12)),
+    d(536, "R_AARCH64_TLSLD_LDST32_DTPREL_LO12_NC", Op::DtpRel, Field::Lo12(2), Check::None),
+    d(537, "R_AARCH64_TLSLD_LDST64_DTPREL_LO12", Op::DtpRel, Field::Lo12(3), Check::Unsigned(12)),
+    d(538, "R_AARCH64_TLSLD_LDST64_DTPREL_LO12_NC", Op::DtpRel, Field::Lo12(3), Check::None),
+    d(
+        539,
+        "R_AARCH64_TLSIE_MOVW_GOTTPREL_G1",
+        Op::Slot(G::TpRel, F::Off),
+        Field::MovwSigned(16),
+        Check::Signed(33),
+    ),
+    d(
+        540,
+        "R_AARCH64_TLSIE_MOVW_GOTTPREL_G0_NC",
+        Op::Slot(G::TpRel, F::Off),
+        Field::Movw(0),
+        Check::None,
+    ),
+    d(
+        541,
+        "R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21",
+        Op::Slot(G::TpRel, F::Page),
+        Field::AdrPage,
+        Check::Signed(33),
+    ),
+    d(
+        542,
+        "R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC",
+        Op::Slot(G::TpRel, F::Abs),
+        Field::Lo12(3),
+        Check::None,
+    ),
+    d(
+        543,
+        "R_AARCH64_TLSIE_LD_GOTTPREL_PREL19",
+        Op::Slot(G::TpRel, F::Prel),
+        Field::Imm19,
+        Check::Signed(21),
+    ),
+    d(544, "R_AARCH64_TLSLE_MOVW_TPREL_G2", Op::TpRel, Field::MovwSigned(32), Check::Signed(49)),
+    d(545, "R_AARCH64_TLSLE_MOVW_TPREL_G1", Op::TpRel, Field::MovwSigned(16), Check::Signed(33)),
+    d(546, "R_AARCH64_TLSLE_MOVW_TPREL_G1_NC", Op::TpRel, Field::Movw(16), Check::None),
+    d(547, "R_AARCH64_TLSLE_MOVW_TPREL_G0", Op::TpRel, Field::MovwSigned(0), Check::Signed(17)),
+    d(548, "R_AARCH64_TLSLE_MOVW_TPREL_G0_NC", Op::TpRel, Field::Movw(0), Check::None),
+    d(549, "R_AARCH64_TLSLE_ADD_TPREL_HI12", Op::TpRel, Field::Hi12, Check::Unsigned(24)),
+    d(550, "R_AARCH64_TLSLE_ADD_TPREL_LO12", Op::TpRel, Field::Lo12(0), Check::Unsigned(12)),
+    d(551, "R_AARCH64_TLSLE_ADD_TPREL_LO12_NC", Op::TpRel, Field::Lo12(0), Check::None),
+    d(552, "R_AARCH64_TLSLE_LDST8_TPREL_LO12", Op::TpRel, Field::Lo12(0), Check::Unsigned(12)),
+    d(553, "R_AARCH64_TLSLE_LDST8_TPREL_LO12_NC", Op::TpRel, Field::Lo12(0), Check::None),
+    d(554, "R_AARCH64_TLSLE_LDST16_TPREL_LO12", Op::TpRel, Field::Lo12(1), Check::Unsigned(12)),
+    d(555, "R_AARCH64_TLSLE_LDST16_TPREL_LO12_NC", Op::TpRel, Field::Lo12(1), Check::None),
+    d(556, "R_AARCH64_TLSLE_LDST32_TPREL_LO12", Op::TpRel, Field::Lo12(2), Check::Unsigned(12)),
+    d(557, "R_AARCH64_TLSLE_LDST32_TPREL_LO12_NC", Op::TpRel, Field::Lo12(2), Check::None),
+    d(558, "R_AARCH64_TLSLE_LDST64_TPREL_LO12", Op::TpRel, Field::Lo12(3), Check::Unsigned(12)),
+    d(559, "R_AARCH64_TLSLE_LDST64_TPREL_LO12_NC", Op::TpRel, Field::Lo12(3), Check::None),
+    d(
+        562,
+        "R_AARCH64_TLSDESC_ADR_PAGE21",
+        Op::Slot(G::Desc, F::Page),
+        Field::AdrPage,
+        Check::Signed(33),
+    ),
+    d(563, "R_AARCH64_TLSDESC_LD64_LO12", Op::Slot(G::Desc, F::Abs), Field::Lo12(3), Check::None),
+    d(564, "R_AARCH64_TLSDESC_ADD_LO12", Op::Slot(G::Desc, F::Abs), Field::Lo12(0), Check::None),
+    d(569, "R_AARCH64_TLSDESC_CALL", Op::DescCall, Field::Insn, Check::None),
+    d(570, "R_AARCH64_TLSLE_LDST128_TPREL_LO12", Op::TpRel, Field::Lo12(4), Check::Unsigned(12)),
+    d(571, "R_AARCH64_TLSLE_LDST128_TPREL_LO12_NC", Op::TpRel, Field::Lo12(4), Check::None),
+    d(572, "R_AARCH64_TLSLD_LDST128_DTPREL_LO12", Op::DtpRel, Field::Lo12(4), Check::Unsigned(12)),
+    d(573, "R_AARCH64_TLSLD_LDST128_DTPREL_LO12_NC", Op::DtpRel, Field::Lo12(4), Check::None),
 ];
 
-/// The row of `r_type`, if stage 1 covers it.
+/// The row of `r_type`, if the table has it.
 pub fn def(r_type: u32) -> Option<&'static Def> {
     TABLE.binary_search_by_key(&r_type, |d| d.r_type).ok().map(|i| &TABLE[i])
 }
 
 /// Whether `r_type` is a TLS type (AAELF64 "Thread-local storage"):
-/// 512 to 573, and the dynamic TLS types 1026 to 1031. Stage 2 (§6).
+/// 512 to 573, and the dynamic TLS types 1028 to 1031.
 pub fn is_tls(r_type: u32) -> bool {
-    (512..=573).contains(&r_type) || (1026..=1031).contains(&r_type)
+    (512..=573).contains(&r_type) || (1028..=1031).contains(&r_type)
 }
 
-/// The width of a type stage 1 does not check: every AArch64 static TLS
-/// type is an instruction; the dynamic ones are 8-byte data.
+/// The width of a type the table does not have: every AArch64 static TLS
+/// type is an instruction; the others are taken as 8-byte data (§6.3).
 pub fn unchecked_width(r_type: u32) -> u8 {
     if (512..=573).contains(&r_type) { 4 } else { 8 }
 }
@@ -350,9 +520,81 @@ pub fn decode(field: Field, word: u64, p: u64) -> i64 {
         }
         Field::Lo12(s) => (u64::from((w32 >> 10) & 0xfff) << s) as i64,
         Field::Lo15 => (u64::from((w32 >> 10) & 0xfff) << 3) as i64,
+        Field::Hi12 => (u64::from((w32 >> 10) & 0xfff) << 12) as i64,
+        Field::Insn => 0,
         Field::Imm19 => sext(u64::from((w32 >> 5) & 0x7ffff), 19) << 2,
         Field::Imm14 => sext(u64::from((w32 >> 5) & 0x3fff), 14) << 2,
         Field::Imm26 => sext(u64::from(w32 & 0x3ff_ffff), 26) << 2,
+    }
+}
+
+/// `MOVZ Xd, #imm16, LSL #(16*hw)` (64-bit).
+pub const fn movz(rd: u32, imm16: u64, hw: u32) -> u32 {
+    0xd280_0000 | hw << 21 | ((imm16 & 0xffff) as u32) << 5 | rd
+}
+
+/// `MOVK Xd, #imm16, LSL #(16*hw)` (64-bit).
+pub const fn movk(rd: u32, imm16: u64, hw: u32) -> u32 {
+    0xf280_0000 | hw << 21 | ((imm16 & 0xffff) as u32) << 5 | rd
+}
+
+/// `MRS Xt, TPIDR_EL0`.
+pub const fn mrs_tpidr_el0(rt: u32) -> u32 {
+    0xd53b_d040 | rt
+}
+
+/// `ADD Xd, Xn, Xm` (shifted register, no shift).
+pub const fn add_reg(rd: u32, rn: u32, rm: u32) -> u32 {
+    0x8b00_0000 | rm << 16 | rn << 5 | rd
+}
+
+/// `ADD Xd, Xn, #imm` for `imm` < 2^24 with the low or the high 12 bits
+/// zero: `ADD` (immediate), unshifted or with `LSL #12`.
+pub fn add_imm_any(rd: u32, rn: u32, imm: u64) -> Option<u32> {
+    if imm < 0x1000 {
+        Some(0x9100_0000 | (imm as u32) << 10 | rn << 5 | rd)
+    } else if imm.trailing_zeros() >= 12 && imm < 0x100_0000 {
+        Some(0x9140_0000 | ((imm >> 12) as u32) << 10 | rn << 5 | rd)
+    } else {
+        None
+    }
+}
+
+/// `BLR Xn`: the register.
+pub fn blr(insn: u32) -> Option<u32> {
+    (insn & 0xffff_fc1f == 0xd63f_0000).then_some((insn >> 5) & 31)
+}
+
+/// The access size of a load or store with an unsigned 12-bit offset, as
+/// the power of two its `imm12` is scaled by (Arm A64 "Load/store register
+/// (unsigned immediate)"): `size`, or 4 for a 128-bit SIMD&FP access.
+pub fn ldst_scale(insn: u32) -> Option<u8> {
+    if !is_ldst_unsigned_imm(insn) {
+        return None;
+    }
+    let size = (insn >> 30) as u8;
+    let simd = insn & (1 << 26) != 0;
+    let opc_hi = insn & (1 << 23) != 0;
+    Some(if simd && size == 0 && opc_hi { 4 } else { size })
+}
+
+/// What the instruction at a place of type `r_type` must be (§4.3, R8):
+/// the load/store types name the access size their `imm12` is scaled by,
+/// and the `LD64` GOT forms a 64-bit `LDR`. `None`: any instruction (or
+/// data).
+pub fn insn_class_ok(r_type: u32, insn: u32) -> bool {
+    let scale = |want: u8| ldst_scale(insn) == Some(want);
+    match r_type {
+        // LDST8/16/32/64/128_ABS_LO12_NC and the TLS LDST forms
+        278 | 531 | 532 | 552 | 553 => scale(0),
+        284 | 533 | 534 | 554 | 555 => scale(1),
+        285 | 535 | 536 | 556 | 557 => scale(2),
+        286 | 537 | 538 | 558 | 559 => scale(3),
+        299 | 570..=573 => scale(4),
+        // LD64_GOTOFF_LO15, LD64_GOT_LO12_NC, LD64_GOTPAGE_LO15,
+        // TLSIE_LD64_GOTTPREL_LO12_NC, TLSDESC_LD64_LO12
+        310 | 312 | 313 | 542 | 563 => ldr64_imm(insn).is_some(),
+        _ => true,
     }
 }
 

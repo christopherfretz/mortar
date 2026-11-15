@@ -120,14 +120,50 @@ fn canonical(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
+/// Verifies the link that wrote `output` and `map` (in `format`). The
+/// inputs are the files the map names, a relative path read from `base`;
+/// with `allowed`, only those of its files. An unreadable input is a
+/// missing input (I1) in the report.
+///
+/// # Errors
+/// The output or the map cannot be read, or the map does not parse.
+pub fn verify_link(
+    output: &Path,
+    map: &Path,
+    format: Format,
+    base: &Path,
+    allowed: Option<&BTreeSet<PathBuf>>,
+) -> Result<(Vec<u8>, mortar_plumb::Report), String> {
+    let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+    let output = read(output)?;
+    let map_bytes = read(map)?;
+    let text = String::from_utf8_lossy(&map_bytes);
+    let parsed = mortar_plumb::map::parse(format, &text)
+        .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?;
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for path in parsed.paths() {
+        let full = base.join(path);
+        if allowed.is_some_and(|a| !a.contains(&canonical(&full))) {
+            continue;
+        }
+        if let Ok(b) = std::fs::read(&full) {
+            // A thin archive's members are files of their own (§2.2).
+            for member in mortar_plumb::thin_members(path, &b) {
+                if let Ok(m) = std::fs::read(base.join(&member)) {
+                    files.push((member, m));
+                }
+            }
+            files.push((path.to_string(), b));
+        }
+    }
+    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+    let report = mortar_plumb::verify(&output, &inputs, &parsed);
+    Ok((output, report))
+}
+
 /// Runs the command; prints the findings and the coverage. `Ok(clean)`.
 pub fn run(args: &Args) -> Result<bool, String> {
     let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
-    let output = read(&args.output)?;
-    let map_bytes = read(&args.map)?;
-    let text = String::from_utf8_lossy(&map_bytes);
-    let map = mortar_plumb::map::parse(args.format, &text)
-        .map_err(|e| format!("{}:{}: {}", args.map.display(), e.line, e.message))?;
     let allowed: Option<BTreeSet<PathBuf>> = match &args.inputs_from {
         None => None,
         Some(rsp) => {
@@ -140,18 +176,8 @@ pub fn run(args: &Args) -> Result<bool, String> {
             )
         }
     };
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    for path in map.paths() {
-        if allowed.as_ref().is_some_and(|a| !a.contains(&canonical(Path::new(path)))) {
-            continue;
-        }
-        // An unreadable file is a missing input (I1) in the report.
-        if let Ok(b) = std::fs::read(path) {
-            files.push((path.to_string(), b));
-        }
-    }
-    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
-    let report = mortar_plumb::verify(&output, &inputs, &map);
+    let (_, report) =
+        verify_link(&args.output, &args.map, args.format, Path::new(""), allowed.as_ref())?;
     print!("{}", report.render(&args.output.display().to_string()));
     print!("{}", report.summary());
     Ok(report.clean())

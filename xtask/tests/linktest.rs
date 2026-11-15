@@ -109,7 +109,9 @@ impl Setup {
     ) -> (i32, Vec<[String; 4]>, String) {
         let results = self.scratch.join(format!("{label}.tsv"));
         let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
-        command.args(["linktest", "--arch", self.arch.name(), "-j", "4", "--mortar"]);
+        // The fake linkers are GNU ld under every name: their maps are not
+        // their names' formats, so L3 is not run (spec/harness.md "L3").
+        command.args(["linktest", "--arch", self.arch.name(), "-j", "4", "--no-plumb", "--mortar"]);
         command.arg(&self.mortar).arg("--results").arg(&results).args(args).args(paths);
         command.env("PATH", &self.path);
         let outcome = run_with(&mut command, b"", Duration::from_mins(10));

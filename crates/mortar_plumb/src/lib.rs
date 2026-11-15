@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod a64;
+pub mod anomaly;
 mod content;
 mod image;
 mod locate;
@@ -16,7 +17,9 @@ pub mod map;
 mod reloc;
 pub mod report;
 mod structure;
+mod symbols;
 
+pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};
 pub use report::{Coverage, Finding, Reason, Report, Rewrite, Rule, Site, Via};
 
@@ -62,8 +65,10 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     }
     engine.finish_got();
     engine.finish_pieces();
+    engine.check_eh_frame();
     content::check_content(&mut engine);
     content::check_symbols(&mut engine);
+    symbols::check(&mut engine);
     report.findings.append(&mut engine.findings);
     report.coverage = std::mem::take(&mut engine.cov);
     report.sort();

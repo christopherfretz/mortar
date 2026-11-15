@@ -307,6 +307,12 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
                 s(9, format!("PT_TLS p_align {:#x} is not a power of two", t.p_align))
                     .at(t.p_vaddr),
             );
+        } else if t.p_align > 1 && !t.p_vaddr.is_multiple_of(t.p_align) {
+            // The TP offsets of §4.7 assume an aligned block.
+            out.push(
+                s(9, format!("PT_TLS p_vaddr is not a multiple of p_align {:#x}", t.p_align))
+                    .at(t.p_vaddr),
+            );
         }
         for sec in &image.sections {
             let sh = &sec.shdr;
