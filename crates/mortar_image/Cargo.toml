@@ -24,7 +24,10 @@ mortar_a64.workspace = true
 mortar_cli.workspace = true
 mortar_input.workspace = true
 mortar_layout.workspace = true
+# tests/link.rs: the phases before the image (tests/support/front.rs).
+mortar_live.workspace = true
 mortar_resolve.workspace = true
+mortar_scan.workspace = true
 mortar_testutil.workspace = true
 
 [lints]

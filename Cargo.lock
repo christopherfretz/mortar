@@ -97,8 +97,10 @@ dependencies = [
  "mortar_elf",
  "mortar_input",
  "mortar_layout",
+ "mortar_live",
  "mortar_merge",
  "mortar_resolve",
+ "mortar_scan",
  "mortar_synth",
  "mortar_testutil",
 ]

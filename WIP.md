@@ -10,8 +10,15 @@ Delete this file in the final commit.
 - synth: mortar_synth's `SynthChunk`/`FillCx` (`&(dyn SynthChunk + Sync)`).
 - merged chunks by `Order::frags_in` (`merged.rs`); `.eh_frame` relocations S-53 (`eh.rs`).
 - all existing tests + bench updated, green.
+- `link` module (`link::write`, `structure`, `LinkTables`); headers from Placement (I-40);
+  `.relro_padding` (layout's NOBITS chunk) has a header, no plan.
+- non-alloc values: merged/regular non-alloc chunks give section offsets (`.debug_str`).
+- `tests/support/front.rs` (main's phases to `place`, no range extension) + `tests/link.rs`:
+  static AArch64 program runs (hello, 42); readelf/llvm-readelf/eu-elflint ok (elflint's
+  `.relro_padding` name finding filtered); staged == resident at 1/2/4/8 threads with a
+  `-g` big.o; changed input at recheck -> input-changed, no output.
 
 ## Next
-- `link` module: the driver's entry point over the front's tables (FillTables over
-  `Addresses`, SlotValues/SymAddrs/code_addr, chunk list from SynthPlans).
-- headers from Placement (I-40); from_layout test on real inputs; Store::recheck.
+- merge main (2nd) -> mortar_plumb on the written image; GNU ld comparison (headers,
+  .symtab multiset, frames).
+- unit tests: structure, split_target, S-53; timing tables; spec/image.md; landed record.

@@ -324,7 +324,7 @@ impl<'a, 's> LinkTables<'a, 's> {
             SectionKind::Merge => {
                 let size = self.section_size(s)?;
                 let p = refs::named_symbol(self.link.split, s, size, v).ok()?;
-                self.addrs.frag_addr(p.frag)?.checked_add(p.within)
+                self.frag_value(p.frag)?.checked_add(p.within)
             }
             SectionKind::EhFrame => {
                 let (plan, src) = self.link.eh?;
@@ -334,8 +334,21 @@ impl<'a, 's> LinkTables<'a, 's> {
                     EhValue::Dropped => None,
                 }
             }
-            _ => self.addrs.addr_in(s, v),
+            _ => {
+                let (c, at) = self.link.layout.placement.place.get(s)?.get()?;
+                Some(self.chunk_at(c, at.checked_add(v)?)?.1)
+            }
         }
+    }
+
+    /// A live fragment's value (model §4.5): its address, or in a
+    /// non-allocated merged chunk its offset from its section's start
+    /// (`.debug_str`, the gABI's `sh_addr` 0).
+    fn frag_value(&self, frag: mortar_core::FragId) -> Option<u64> {
+        let row = self.link.split.frags.get(frag)?;
+        let chunk = self.addrs.merged_chunk(self.link.assignment.out(row.section)?)?;
+        let offset = self.link.layout.merge.offset(frag)?;
+        Some(self.chunk_at(chunk, offset)?.1)
     }
 
     fn entry_addr(&self, e: SymEntry) -> Option<u64> {
@@ -522,8 +535,7 @@ impl Tables for LinkTables<'_, '_> {
                 let r = (sym.st_value as i64).wrapping_add(addend);
                 Some(match refs::section_symbol(self.link.split, s, size, r) {
                     Ok(p) => self
-                        .addrs
-                        .frag_addr(p.frag)
+                        .frag_value(p.frag)
                         .and_then(|a| a.checked_add(p.within))
                         .ok_or_else(|| internal("fill: a live merge piece has no address")),
                     Err(w) => Err(malformed(w.message())),
@@ -831,6 +843,8 @@ fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
         });
         row.sh_addralign = row.sh_addralign.max(1u64 << c.align);
         match c.kind {
+            // Layout's own chunk (L-74's `.relro_padding`): NOBITS, no plan.
+            ChunkKind::Synthetic(s) if s == mortar_core::layout::Synth::RELRO_PADDING => {}
             ChunkKind::Synthetic(_) => {
                 let Some(kind) = kind_of(id) else {
                     return Err(internal(format!("image: synthetic chunk {} has no plan", id.0)));
