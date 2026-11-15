@@ -18,3 +18,8 @@ mold: A1 A2 A3 A9
 # GNU ld: the labels crtbegin/crtend put on sections the link leaves
 # empty (`__TMC_END__` and kin) - on every driver link with the C runtime.
 bfd: A10
+
+# mold on x86-64: the 8-aligned .note.gnu.property and the 4-aligned
+# notes after it (ABI tag, build id) share one PT_NOTE with p_align 8
+# (A13), on every link with the C runtime's notes.
+mold,x86_64: A13

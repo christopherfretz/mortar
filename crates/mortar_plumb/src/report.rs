@@ -109,10 +109,19 @@ pub enum Rewrite {
     TlsGdToLe,
     /// W13: a traditional local-dynamic sequence to local-exec.
     TlsLdToLe,
+    /// X1 (x86-64): a GOT load made a `lea` of the address (§5.9).
+    GotToLea,
+    /// X2 (x86-64): an indirect call or jump through the GOT made direct.
+    GotToDirect,
+    /// X3 (x86-64): a GOT operand of an ALU operation or `test` made an
+    /// immediate.
+    GotToImm,
+    /// X4 (x86-64): a GOT load made `mov $S` (GNU ld).
+    GotToMovImm,
 }
 
 impl Rewrite {
-    pub const ALL: [Rewrite; 13] = [
+    pub const ALL: [Rewrite; 17] = [
         Rewrite::AdrpAddToAdr,
         Rewrite::GotToAdrpAdd,
         Rewrite::GotToAdr,
@@ -126,6 +135,10 @@ impl Rewrite {
         Rewrite::TlsDescToIe,
         Rewrite::TlsGdToLe,
         Rewrite::TlsLdToLe,
+        Rewrite::GotToLea,
+        Rewrite::GotToDirect,
+        Rewrite::GotToImm,
+        Rewrite::GotToMovImm,
     ];
 
     pub const fn id(self) -> &'static str {
@@ -143,6 +156,10 @@ impl Rewrite {
             Rewrite::TlsDescToIe => "tlsdesc-to-ie",
             Rewrite::TlsGdToLe => "tlsgd-to-le",
             Rewrite::TlsLdToLe => "tlsld-to-le",
+            Rewrite::GotToLea => "got-to-lea",
+            Rewrite::GotToDirect => "got-to-direct",
+            Rewrite::GotToImm => "got-to-imm",
+            Rewrite::GotToMovImm => "got-to-mov-imm",
         }
     }
 }
@@ -168,7 +185,7 @@ pub enum Reason {
     EhFrame,
     /// A type the stage-1 table does not have.
     Type,
-    /// The machine is not AArch64: stage 1 has only the AArch64 table.
+    /// The machine has no table: i386 (§4.5).
     Machine,
     /// The section's place could not be decided (§3.3).
     SectionNotLocatable,
@@ -381,6 +398,10 @@ pub struct Coverage {
     /// What B1 made of the build id, when the output has one (§6.7).
     pub build_id: Option<String>,
     pub linker_defined_not_judged: Vec<String>,
+    /// Output sections whose placement no rule judges, by name: x86-64
+    /// large sections (`SHF_X86_64_LARGE`), whose order differs by linker
+    /// (spec/x64.md X-54; Y5 leaves them out of `_edata`/`_end`).
+    pub placement_not_judged: Vec<String>,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
 }
@@ -536,6 +557,13 @@ impl Report {
                 "linker-defined symbols not judged: {} ({})",
                 c.linker_defined_not_judged.len(),
                 c.linker_defined_not_judged.join(", ")
+            );
+        }
+        if !c.placement_not_judged.is_empty() {
+            let _ = writeln!(
+                s,
+                "placement not judged (large sections, X-54): {}",
+                c.placement_not_judged.join(", ")
             );
         }
         let _ = writeln!(s, "findings: {}", self.findings.len());

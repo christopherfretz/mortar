@@ -20,6 +20,7 @@ mod reloc;
 pub mod report;
 mod structure;
 mod symbols;
+pub mod x64;
 
 pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};
@@ -71,6 +72,7 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     engine.finish_pieces();
     engine.check_eh_frame();
     content::check_content(&mut engine);
+    content::check_init_padding(&mut engine);
     content::check_symbols(&mut engine);
     symbols::check(&mut engine);
     let props = property::check(&image, &objs, map.format, &mut engine.cov);
@@ -78,6 +80,17 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     if map.format == Format::Mortar {
         let ids = buildid::check(&image, &mut engine.cov);
         engine.findings.extend(ids);
+    }
+    if image.header.e_machine == mortar_elf::consts::EM_X86_64 {
+        use mortar_elf::consts::{SHF_ALLOC, SHF_X86_64_LARGE};
+        engine.cov.placement_not_judged = image
+            .sections
+            .iter()
+            .filter(|s| {
+                s.shdr.sh_flags & (SHF_ALLOC | SHF_X86_64_LARGE) == SHF_ALLOC | SHF_X86_64_LARGE
+            })
+            .map(|s| s.name.clone())
+            .collect();
     }
     report.findings.append(&mut engine.findings);
     report.coverage = std::mem::take(&mut engine.cov);

@@ -428,7 +428,9 @@ fn candidates(
 
 /// Whether a section placed whole may have a size other than its input's.
 fn size_may_change(s: &Sec<'_>, machine: Machine) -> bool {
-    s.merge() || s.is_eh_frame(machine)
+    // A linker writes the merge of the inputs' property notes (§6.6) where
+    // the first one goes: GNU ld's map gives it the merged size.
+    s.merge() || s.is_eh_frame(machine) || s.name == ".note.gnu.property"
 }
 
 #[allow(clippy::too_many_lines)]
@@ -594,7 +596,9 @@ fn check_map(out: &mut Located<'_>, image: &Image<'_>) {
             if !s.alloc() || s.shdr.sh_size == 0 || s.tbss() {
                 continue;
             }
-            let len = s.shdr.sh_size;
+            // A section whose output size may differ from its input's (M3)
+            // is checked at its first byte.
+            let len = if size_may_change(s, o.elf.machine()) { 1 } else { s.shdr.sh_size };
             let align = s.shdr.sh_addralign.max(1);
             let site = o.site(si, 0);
             if align.is_power_of_two() && addr % align != 0 {
