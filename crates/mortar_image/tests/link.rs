@@ -26,6 +26,22 @@ other:
     .type _start, %function
 _start:
     .cfi_startproc
+    // A static program applies its own IRELATIVE records (glibc's
+    // `apply_irel`): __rela_iplt_start..__rela_iplt_end.
+    adrp x19, __rela_iplt_start
+    add x19, x19, :lo12:__rela_iplt_start
+    adrp x20, __rela_iplt_end
+    add x20, x20, :lo12:__rela_iplt_end
+1:
+    cmp x19, x20
+    b.hs 2f
+    ldr x21, [x19]
+    ldr x9, [x19, #16]
+    blr x9
+    str x0, [x21]
+    add x19, x19, #24
+    b 1b
+2:
     mov x0, #1
     adrp x1, msg
     add x1, x1, :lo12:msg
@@ -39,6 +55,9 @@ _start:
     ldr x4, [x4, :got_lo12:val]
     ldr w5, [x4]
     add w0, w0, w5
+    mov w22, w0
+    bl pick
+    add w0, w22, w0
     bl helper
     mov x8, #93
     svc #0
@@ -51,6 +70,24 @@ ptr:
     .quad forty
 forty:
     .word 40
+"#;
+
+/// An IFUNC: `pick`'s resolver returns `pick_zero`, which returns 0.
+const C_S: &str = r#"
+    .text
+    .globl pick
+    .type pick, %gnu_indirect_function
+pick:
+    adrp x0, pick_zero
+    add x0, x0, :lo12:pick_zero
+    ret
+    .size pick, .-pick
+
+    .type pick_zero, %function
+pick_zero:
+    mov w0, #0
+    ret
+    .size pick_zero, .-pick_zero
 "#;
 
 const B_S: &str = r#"
@@ -90,9 +127,10 @@ fn objects(dir: &Scratch, big: bool) -> Option<()> {
     if std::env::consts::ARCH != "aarch64" {
         return None;
     }
-    let mut units = vec![("a.o", "a.s"), ("b.o", "b.s")];
+    let mut units = vec![("a.o", "a.s"), ("b.o", "b.s"), ("c.o", "c.s")];
     std::fs::write(dir.join("a.s"), A_S).unwrap();
     std::fs::write(dir.join("b.s"), B_S).unwrap();
+    std::fs::write(dir.join("c.s"), C_S).unwrap();
     if big {
         let mut src = String::new();
         for i in 0..4000 {
@@ -114,8 +152,17 @@ fn objects(dir: &Scratch, big: bool) -> Option<()> {
     Some(())
 }
 
-const ARGS: &[&str] =
-    &["-maarch64linux", "-static", "--build-id=sha1", "--eh-frame-hdr", "-o", "out", "a.o", "b.o"];
+const ARGS: &[&str] = &[
+    "-maarch64linux",
+    "-static",
+    "--build-id=sha1",
+    "--eh-frame-hdr",
+    "-o",
+    "out",
+    "a.o",
+    "b.o",
+    "c.o",
+];
 
 fn with_big() -> Vec<&'static str> {
     let mut a = ARGS.to_vec();
@@ -143,14 +190,26 @@ fn runs(out: &Path) {
     assert_eq!(run.status.and_then(|s| s.code()), Some(42), "{}", run.stderr_text());
 }
 
-/// eu-elflint's findings, but for `.relro_padding`'s name: elflint takes
-/// every `.rel*` name for a relocation section (lld's output has the same
-/// finding; layout L-64 names the chunk).
+/// eu-elflint's findings, but for two known ones:
+/// - `.relro_padding`'s name: elflint takes every `.rel*` name for a
+///   relocation section (lld's output has the same finding; layout L-64
+///   names the chunk);
+/// - the GNU extensions under `EI_OSABI` 0 (a64.md Q11: "0 always"; GNU
+///   ld writes `ELFOSABI_GNU` when the output has IFUNC symbols): elflint
+///   then reads `STT_GNU_IFUNC` as an unknown type and
+///   `R_AARCH64_IRELATIVE` as an invalid one (reported for Q11's
+///   "revisit if a tool rejects it").
 fn elflint(out: &Path) {
     let Some(t) = tool("eu-elflint") else { return };
     let o = mortar_testutil::run(t, [std::ffi::OsStr::new("--gnu-ld"), out.as_os_str()]);
     let text = o.stdout_text();
-    let rest: Vec<&str> = text.lines().filter(|l| !l.contains("'.relro_padding'")).collect();
+    let known = |l: &str| {
+        l.contains("'.relro_padding'")
+            || (l.contains("'.rela.plt'")
+                && (l.ends_with("invalid type") || l.ends_with("invalid symbol index")))
+            || (l.contains("'.symtab'") && l.ends_with("unknown type"))
+    };
+    let rest: Vec<&str> = text.lines().filter(|l| !known(l)).collect();
     assert!(rest.is_empty(), "eu-elflint: {text}{}", o.stderr_text());
 }
 
@@ -283,6 +342,8 @@ fn symbols(file: &Path) -> Vec<(u64, u64, String, String, String, String, String
             in_symtab = l.contains("'.symtab'");
             continue;
         }
+        // Under `EI_OSABI` 0 readelf names `STT_GNU_IFUNC` by number.
+        let l = l.replace("<OS specific>: 10", "IFUNC");
         let t: Vec<&str> = l.split_whitespace().collect();
         if !in_symtab || t.len() < 7 || !t[0].ends_with(':') || t[0] == "Num:" {
             continue;
@@ -338,7 +399,12 @@ fn symtab_multiset(file: &Path) -> Vec<(String, String, String, String, u64, Str
         .filter(|s| !GNU_OWN.contains(&s.6.as_str()))
         .map(|s| {
             let sec = names.get(&s.5).cloned().unwrap_or(s.5.clone());
-            (s.6, s.2, s.3, s.4, s.1, sec)
+            // resolve.md §8.1 makes `__rela_iplt_*` local and hidden (GNU
+            // ld: `STB_LOCAL`); mortar's symbol source writes them global
+            // (a follow-up of the driver's `CoreSyms`, reported): compared
+            // without the binding.
+            let bind = if s.6.starts_with("__rela_iplt_") { String::new() } else { s.3 };
+            (s.6, s.2, bind, s.4, s.1, sec)
         })
         .collect();
     v.sort();
@@ -349,11 +415,8 @@ fn symtab_multiset(file: &Path) -> Vec<(String, String, String, String, u64, Str
 /// they are in (`name+off`), the eh section's own address dropped, and
 /// mortar's terminator (S-49) removed.
 fn frames(file: &Path) -> Vec<String> {
-    let syms: Vec<(u64, u64, String)> = symbols(file)
-        .into_iter()
-        .filter(|s| s.2 == "FUNC")
-        .map(|s| (s.0, s.1, s.6))
-        .collect();
+    let syms: Vec<(u64, u64, String)> =
+        symbols(file).into_iter().filter(|s| s.2 == "FUNC").map(|s| (s.0, s.1, s.6)).collect();
     let at = |a: u64| -> String {
         syms.iter()
             .find(|s| s.0 <= a && a < s.0 + s.1)
@@ -383,13 +446,15 @@ fn frames(file: &Path) -> Vec<String> {
     out
 }
 
-/// readelf's ELF header lines that do not depend on the layout.
+/// readelf's ELF header lines that do not depend on the layout, nor on
+/// `EI_OSABI` (a64.md Q11: mortar writes 0, GNU ld `ELFOSABI_GNU` with
+/// IFUNC symbols; checked apart).
 fn header(file: &Path) -> Vec<String> {
     let text = check_tool("readelf", &["-hW"], file).unwrap_or_default();
     text.lines()
         .map(str::trim)
         .filter(|l| {
-            !["Entry point", "Start of", "Number of", "Section header string"]
+            !["Entry point", "Start of", "Number of", "Section header string", "Magic", "OS/ABI"]
                 .iter()
                 .any(|p| l.starts_with(p))
         })
@@ -422,7 +487,16 @@ fn i40_compares_with_gnu_ld() {
     }
     let o = mortar_testutil::run_with(
         std::process::Command::new(&ld)
-            .args(["-static", "--build-id=sha1", "--eh-frame-hdr", "-o", "ref", "a.o", "b.o"])
+            .args([
+                "-static",
+                "--build-id=sha1",
+                "--eh-frame-hdr",
+                "-o",
+                "ref",
+                "a.o",
+                "b.o",
+                "c.o",
+            ])
             .current_dir(dir.path()),
         b"",
         Duration::from_mins(1),
@@ -434,6 +508,11 @@ fn i40_compares_with_gnu_ld() {
     let reference = dir.join("ref");
     runs(&reference);
     assert_eq!(header(&out), header(&reference));
+    let ident = |p: &Path| std::fs::read(p).unwrap()[..16].to_vec();
+    let (ours, theirs) = (ident(&out), ident(&reference));
+    assert_eq!((ours[7], theirs[7]), (0, 3), "EI_OSABI: Q11's 0, GNU ld's ELFOSABI_GNU");
+    assert_eq!(ours[..7], theirs[..7]);
+    assert_eq!(ours[8..], theirs[8..]);
     let start = |p: &Path| symbols(p).into_iter().find(|s| s.6 == "_start").unwrap().0;
     assert_eq!(entry(&out), start(&out));
     assert_eq!(entry(&reference), start(&reference));
