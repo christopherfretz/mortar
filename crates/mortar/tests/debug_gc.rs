@@ -325,7 +325,46 @@ fn holds(t: &Target, tools: &Tools, c: &Config) {
     let g_b = gdb(tools, &theirs, dir, kept, dead_fn);
     assert!(g_m.contains("Breakpoint 1 at ADDR: file "), "{label}: gdb: {g_m}");
     assert!(g_m.contains(&format!("Function \"{dead_fn}\" not defined")), "{label}: gdb: {g_m}");
+    // What lies after a function is not this test's subject: mortar puts
+    // archive members' sections in archive order, GNU ld in extraction
+    // order (spec/layout.md §21, "Archive members"), so `info line`'s
+    // "ends at ADDR <symbol>" may name another neighbour (with the cross
+    // libstdc++.a: bad_alloc.o's `~bad_alloc` against eh_alloc.o's
+    // `exception()`, spec/landed/harness/WP-015.md). The neighbour is
+    // masked in both, on every runtime (the native one hides it only by
+    // the padding before its 32-byte-aligned function sections), and
+    // every other line is compared exactly.
+    let (g_m, next_m) = mask_neighbour(&g_m);
+    let (g_b, next_b) = mask_neighbour(&g_b);
+    if next_m != next_b {
+        eprintln!("{label}: gdb: after {kept}: mortar {next_m:?}, GNU ld {next_b:?}");
+    }
     assert_eq!(g_m, g_b, "{label}: gdb on mortar's output against GNU ld's");
+}
+
+/// `transcript` with the symbol of each "and ends at ADDR <symbol>" (gdb's
+/// `info line`: the code after the line) replaced by `NEXT`, and those
+/// symbols.
+fn mask_neighbour(transcript: &str) -> (String, Vec<String>) {
+    const ENDS: &str = "and ends at ADDR <";
+    let mut out = String::new();
+    let mut names = Vec::new();
+    for line in transcript.lines() {
+        match line.find(ENDS).and_then(|i| {
+            let from = i + ENDS.len();
+            line[from..].find('>').map(|n| (from, from + n))
+        }) {
+            Some((from, to)) => {
+                names.push(line[from..to].to_owned());
+                out.push_str(&line[..from]);
+                out.push_str("NEXT");
+                out.push_str(&line[to..]);
+            }
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    (out, names)
 }
 
 fn matrix(t: &Target) {
