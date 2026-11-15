@@ -387,24 +387,31 @@ fn needs(
     if targets.len() != branches.len() {
         return Err(internal("not one branch target per branch site"));
     }
-    let judged: Vec<Result<Option<Need>, LayoutDiag>> =
-        pool.unit_cost(40).map(branches.len(), |i| {
-            let b = branches[i];
-            // A site in a section that is not placed is no site.
-            let Some(p) = round.site_addr(b.section, b.offset) else { return Ok(None) };
-            let t = targets[i].ok_or_else(|| internal("a branch site with no target address"))?;
-            let r = round.redirect_addr(b.section, b.offset);
-            Ok((thunk_need(&b.site, p, t, r) != ThunkNeed::None).then_some(Need {
+    // Only the needs (and failures) are collected, in branch order: a
+    // result per branch would be a fresh buffer of every branch's size,
+    // paid in page faults in the first round (WP-032h).
+    let judged = pool.unit_cost(40).map_collect(branches.len(), |i, out| {
+        let b = branches[i];
+        // A site in a section that is not placed is no site.
+        let Some(p) = round.site_addr(b.section, b.offset) else { return };
+        let Some(t) = targets[i] else {
+            out.push(Err(internal("a branch site with no target address")));
+            return;
+        };
+        let r = round.redirect_addr(b.section, b.offset);
+        if thunk_need(&b.site, p, t, r) != ThunkNeed::None {
+            out.push(Ok(Need {
                 addr: p,
                 section: b.section,
                 offset: b.offset,
                 record: b.record,
                 kind: NeedKind::Thunk(b.site.key, b.site.branch.reach),
-            }))
-        });
+            }));
+        }
+    });
     let mut out = Vec::new();
-    for j in judged {
-        out.extend(j?);
+    for j in judged.items {
+        out.push(j?);
     }
     steps.step("branch needs", branches.len() as u64, "branch");
     let mut keys = BTreeSet::new();

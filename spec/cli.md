@@ -497,7 +497,10 @@ The facade does two things with these:
 - `cref`;
 - `reproduce`;
 - `threads`: `--threads[=N]` (N is given) and `--thread-count N` set a
-  count; `--threads` alone means `All`; `--no-threads` is a count of 1;
+  count; `--threads` alone means `All`; `--no-threads` is a count of 1.
+  Without `threads`, the phases after input use at most one worker per
+  4 MiB of resident input (`spec/model.md` §6); any `--threads` form,
+  `--threads` alone included, sets the count exactly;
 - `mortar_map`, `time_phases` and `verify`, which are mortar's own
   options;
 - `verbose`;

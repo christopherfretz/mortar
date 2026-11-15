@@ -220,27 +220,34 @@ The design is fixed now so that the M1 tables need no change.
   ld marks through notes (`.note.stapsdt` keeps libstdc++'s
   `.stapsdt.base`, found by WP-031's tests), and a kept section's
   reference to a collected one would otherwise be refused (I-12).
-- **I-8 [M2] The algorithm.** A least fixed point, computed by parallel
-  rounds: round 0 is the roots; round `k + 1` is the set of sections first
-  marked by the edges of round `k`'s sections. `live` is a column of
+- **I-8 [M2] The algorithm.** A least fixed point. `live` is a column of
   atomic booleans marked with `swap(true)` (model §6 rule 2: idempotent,
-  commutative); the section whose swap returned `false` is collected into
-  the worker's buffer for the next round, and the buffers are
-  concatenated in unit order (rule 3). The resulting *set* is the least
-  set closed under I-7 containing the roots, whatever the schedule; the
-  order of a round's list may differ between schedules and is never
-  observed (no id, diagnostic or byte depends on it). Within a round,
-  work is partitioned by section and, for a section with more than
-  `SCAN_BLOCK` records, by `SCAN_BLOCK` records (rule 6).
+  commutative); the worker whose swap returned `false` owns the section
+  and walks its edges, every live section exactly once. The work is
+  handed out in rounds: round 0 is the roots; a round's units are the
+  sections the round before left, partitioned by section and, for a
+  section with more than `SCAN_BLOCK` records, by `SCAN_BLOCK` records
+  (rule 6). A worker continues, depth first, on the sections its own
+  swaps marked until it has walked `CONTINUE` records for the unit (no
+  limit when the pool runs inline). It leaves the rest, and any section
+  of more than `SCAN_BLOCK` records, to the next round, and the leftovers
+  are concatenated in unit order (rule 3). The rounds only balance the
+  load: the resulting *set* is the least set closed under I-7 containing
+  the roots, whatever the schedule. Which round walks a section, and the
+  order of a round's list, may differ between schedules and are never
+  observed (no id, diagnostic or byte depends on them). A failure to read
+  a section's relocations is reported after the closure: the least-keyed
+  failure of the first breadth-first round (round `k + 1` = the sections
+  first marked by round `k`'s edges) that has one, found by marking
+  again breadth first (WP-032h).
 - **I-9 [M2] Cost.** One walk of the relocation records of live alloc
   sections: 221,459 for `cxx-medium-g` (E5), about 0.8 ms at the 3.4–3.7
-  ns per record of a scan-like walk (E6). Measured (WP-031, static
-  protoc, 1/4/8 threads): the phase is 19/14/14 ms, of which the rounds
-  are 13/7/10 ms (20 rounds, 23,186 units); lld 22's `markLive` is
-  5.3/5.5/4.7 ms and mold's `gc` 7/3/2 ms. The link is no slower in
-  total (layout has less to place: 79→56, 64→43, 66→41 ms); the
-  per-round barrier is the limit at 8 threads (follow-up in the landed
-  record). It is a separate walk from the
+  ns per record of a scan-like walk (E6). Measured (WP-032h, static
+  protoc, 1/8 threads): the phase is 15.7/9.8 ms (WP-031: 19/14), the
+  rounds ~5.5/~5 ms in 3 rounds at 8 threads (20 before); lld 22's
+  `markLive` is 5.3/4.7 ms and mold's `gc` 7/2 ms. The link is no slower
+  in total (WP-031: layout has less to place: 79→56, 64→43, 66→41 ms).
+  It is a separate walk from the
   scan's (phase 70), because the scan must know liveness first: undefined
   references are reported only from live sections (`spec/resolve.md`
   §5.1), and whether a reference survives depends on liveness of its
