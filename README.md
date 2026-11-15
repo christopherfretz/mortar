@@ -6,7 +6,8 @@ mortar is the linker of the Mason toolchain:
 [kiln](https://github.com/christopherfretz/kiln) is the C++26 front end,
 [hod](https://github.com/christopherfretz/hod) the debug-build code
 generator, mortar the linker. It also links objects from GCC, Clang and
-gfortran, and takes GNU ld's command line.
+gfortran, and takes GNU ld's command line. Targets: Linux on AArch64,
+x86-64 and 32-bit x86.
 
 Goals, in order:
 

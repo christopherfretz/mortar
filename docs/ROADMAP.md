@@ -18,13 +18,14 @@ control linker.
 | T-RES | The model, inputs, symbol resolution, liveness, merging | `mortar_core`, `mortar_input`, `mortar_resolve`, `mortar_live`, `mortar_merge` |
 | T-A64 | AArch64: relocations, relaxations, PLT/GOT, TLS, thunks | `mortar_arch`, `mortar_a64` |
 | T-X64 | x86-64: the same | `mortar_x64` |
+| T-X86 | 32-bit x86: the same, on ELF32 with REL relocations | `mortar_x86` |
 | T-OUT | Synthetic sections, layout, image, debug sections | `mortar_synth`, `mortar_layout`, `mortar_image` |
 | T-V | The independent verifier | `mortar_plumb` |
 | T-META | Mason metadata, one-definition rule | `mortar_meta`, `mortar_odr` |
 | T-INC | Incremental linking | `mortar_incr` |
 | T-PERF | Speed and memory | all |
 
-T-V is staffed separately from T-A64, T-X64 and T-OUT by rule: the verifier
+T-V is staffed separately from T-A64, T-X64, T-X86 and T-OUT by rule: the verifier
 is written from the specs, not from the linker.
 
 ## M0: foundations
@@ -56,6 +57,10 @@ The whole pipeline, in its final shape, on the smallest useful case.
   extraction, COMDAT, common symbols, default layout, the AArch64 static
   relocations, `.eh_frame` and `.eh_frame_hdr`, IRELATIVE for the IFUNCs of
   a static glibc, static TLS, `.init_array`, `.symtab`, build id, map file.
+- The AArch64 erratum 843419 fix: Debian's and Ubuntu's GCC pass
+  `--fix-cortex-a53-843419` on every link, so the option is honored (the
+  scan for the sequence and the patches, `spec/model.md` §4.4) or the
+  link is refused; it is never accepted without effect.
 - A static C hello-world, then static C++ with exceptions, link and run.
 - `--time-phases`; determinism test; first mortar rows in the bench.
 
@@ -98,6 +103,12 @@ Parallel tracks, each closing a class of real-world links.
 
 - x86-64 to parity with AArch64 (starts in M1 as soon as `mortar_arch` is
   fixed; listed here because this is where it must be complete).
+- 32-bit x86 to the same parity: ELF32 output, REL relocations with their
+  implicit addends, the i386 TLS models, GOT-relative addressing and its
+  relaxations, non-PIC executables with copy relocations and canonical
+  PLTs. Inputs from GCC and Clang (kiln and hod do not target it); the
+  class-generic readers, tables and writers it needs are in place from M0
+  (`docs/ARCHITECTURE.md`, "Scope").
 - Shared-object output: symbol visibility and export rules, version scripts,
   `-Bsymbolic*`, `--dynamic-list`, `DT_SONAME`, `DT_RUNPATH`.
 - Linker scripts: `SECTIONS`, `MEMORY`, `PHDRS`, expressions, `PROVIDE`,
@@ -109,8 +120,8 @@ Parallel tracks, each closing a class of real-world links.
 - Open-source builds with GCC, Clang and gfortran objects; a Fortran lane
   (LAPACK's tests); mortar and Rust test binaries linked by mortar; musl.
 
-**Done when:** the open-source lanes build and pass their own tests on both
-architectures, and each unsupported GNU ld feature is refused by name with
+**Done when:** the open-source lanes build and pass their own tests on the
+three architectures, and each unsupported GNU ld feature is refused by name with
 a row in `docs/status/support.md`.
 
 ## M5: the fastest
