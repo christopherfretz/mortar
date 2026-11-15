@@ -8,4 +8,5 @@
   differ, requests, open questions, tests, appendix); amendments to owning
   specs; the WP cut in `spec/landed/dyn/WP-040.md`.
 - Written: §3 inventory (from three reading passes; D-n references are forward, to be numbered).
+- Written: §5 shared objects as inputs (D-10..D-19a) from E-shlib.
 - Next: §2 census and §4-§9 rules from the six experiment agents (census, corpus, dynsym, dynamic, reloc, shlib).

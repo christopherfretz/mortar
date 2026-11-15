@@ -93,6 +93,169 @@ restated.
 | Verifier | plumb §1 (stage 3 "not started"), S1 (`ET_EXEC` only), inputs `ET_REL` only, no copy or dynsym map records | **cannot verify any dynamic output**; requests in §12 | — |
 ## 4. Output kinds
 ## 5. Shared objects as inputs
+
+Most of this is specified (input.md §8, resolve.md §9); E-shlib (116
+experiments × 4 linkers, AArch64 and x86-64, every output run) confirmed
+it rule by rule. The rules below fill the gaps, settle the two
+contradictions and record what was measured. lld 19 and 22 agreed in
+every experiment.
+
+**D-10 [M2] (what is read; confirmed).** input §8.1 and resolve §9.1-§9.3
+stand. Measured: one file per soname, a later file with that soname
+ignored (E-shlib 1.5); the needed name rules of input §8.3 (1.2a-e);
+`STB_GNU_UNIQUE` binds like `STB_GLOBAL` (5.9); a reference to `foo`
+binds `foo@@V2`, `.symver` `foo@V1` binds the hidden `foo@V1`, a missing
+version is undefined, a hidden-only version never binds an unversioned
+reference (5.8a-d); an IFUNC defined in a shared object is an ordinary
+function definition, address equality holding in PIE and non-PIE (5.10).
+A `STV_HIDDEN` entry in a shared object's `.dynsym` is ignored (resolve
+§9.1 L1112): all three references bind to it and their outputs fail to
+load (`symbol lookup error: undefined symbol: vf`, 5.7, a wrong output
+of all three; `patch_vis.py`); mortar reports the reference undefined.
+*Test:* `shlib-hidden-dynsym` (the patched library; mortar refuses with
+`undefined-symbol`, never writes an output that cannot load).
+
+**D-11 [M2] (needed).** A shared object of the command line or a script
+is **needed** (`file_live = Shared{needed: true}`) when its soname unit's
+*merged* `as_needed` (input §8.2: on only if on at every mention) is
+off, or when it gives `def` to a key with
+
+1. a strong reference from a live relocatable object (any of its
+   relocations or symbol-table mentions, whether or not the section
+   holding it survives `--gc-sections`: needed is decided by resolution,
+   before liveness; GNU ld and mold agree, lld drops the library, E-shlib
+   2.6a, all three run), or from file 0 (`-u`, `--defsym`, `ENTRY`); or
+2. a strong reference from a needed shared object or a used closure file
+   (D-12) that does not itself list the defining object in its own
+   `DT_NEEDED` (an under-linked library: GNU ld makes the provider
+   needed and the program runs; lld and mold drop it and the program
+   fails with `undefined symbol: mid_fn`, a wrong output of both, E-shlib
+   2.3b).
+
+It is a least fixed point over shared objects (a needed one's references
+can make another needed), computed after `def` (resolve §12). A weak
+reference alone never makes an object needed (GNU ld and lld; mold
+differs, 2.2a); the key's output view is then `Undefined{weak: true}`
+(resolve §9.5) and D-25 gives its `.dynsym` form. A library supplying only
+a weak definition that a strong object definition beats is not needed
+(2.9). Position does not matter (resolve §9.5; GNU ld refuses
+`--as-needed liba.so m.o`, 2.8a). `libc.so`'s
+`AS_NEEDED(ld-linux-*.so.*)` makes the loader needed only when a
+reference binds to a symbol only it defines (`__tls_get_addr`, 1.8a);
+a hello needs `libc.so.6` alone (1.7). *Tests:* `as-needed-weak`,
+`as-needed-underlinked` (runs), `as-needed-gc`, `as-needed-merge`,
+`needed-ldso-tls`.
+
+**D-12 [M2] (closure files).** The `DT_NEEDED` closure is loaded (input
+§8.6). Resolution treats a closure file `c` thus:
+
+- `c` is **used** when some needed shared object or used closure file
+  lists it in `DT_NEEDED` (a reachability over closure edges from needed
+  objects only); `file_live = Closure` for a used one, `Dead` otherwise
+  (request to model.md §3.3, R-M1).
+- `c`'s definitions are never candidates for a key referenced by a
+  relocatable object or file 0: such a reference is undefined, with the
+  note `defined in <c>, which is not on the command line` (GNU ld:
+  ``undefined reference to symbol 'mid_fn'`` and `DSO missing from command
+  line`; lld and mold: `undefined symbol: mid_fn`; E-shlib 2.10a).
+- `c`'s definitions do satisfy references of shared objects when the
+  shlib-undefined check judges them (D-13), and `c`'s references set
+  `ref_dynamic`: a program symbol referenced only by a used closure file is
+  exported (GNU ld; lld and mold do not export and the program fails with
+  `symbol lookup error: … undefined symbol: hook`, a wrong output of both,
+  E-shlib 4.2a).
+- `c` is never `DT_NEEDED` (input §8.6).
+
+`ref_dynamic` and `defined_dynamic` count needed shared objects and used
+closure files only, so they are computed after D-11's fixed point (request
+R-R3 to resolve.md §3.6, §12.1; an executable definition that an
+as-needed, unneeded library also defines is not exported: GNU ld and mold;
+lld exports it, harmless, E-shlib 2.5a). Archive extraction (resolve
+§4.2) still takes every shared object's references as edges, needed or
+not, and closure files' too [open Q1: unmeasured whether GNU ld extracts
+for an unneeded as-needed library's reference].
+*Tests:* `closure-export` (runs), `closure-not-on-command-line`
+(the note), `closure-unused`.
+
+**D-13 [M2] (shared objects' undefined references).** In `Exec` and `Pie`
+the check of resolve §5.2 is on by default (`--no-allow-shlib-undefined`;
+GNU ld and lld; mold never checks, E-shlib 3.1a);
+`--allow-shlib-undefined` turns it off. It judges every strong undefined
+reference of every needed shared object and used closure file (GNU ld
+checks closure files, 3.4a; an as-needed object that is not needed is not
+judged: lld judges it and refuses a link that runs, 3.6). A reference is
+satisfied by any definition of the program, of a needed shared object or
+of a used closure file, with the version it requires (D-10). When a
+closure library is **not found** (`needed-not-found`, input §8.6), the
+references of the object that needs it are judged like the others, and
+any that only the missing library would define are undefined: GNU ld's
+rule (3.5, 4.1); lld exempts such an object. This **replaces** resolve
+§5.2 L769's exemption (request R-R1): the conservative rule is the one
+the default `gcc` line already applies, and `--allow-shlib-undefined` or
+`-rpath-link` resolves it. Message: `undefined-symbol` with the note of
+resolve §5.3 and the needing file as the place (GNU ld:
+``d/libx.so: undefined reference to `nobody'``). *Tests:*
+`shlib-undefined`, `shlib-undefined-closure`, `shlib-undefined-dropped`,
+`shlib-undefined-missing-needed`.
+
+**D-14 [M2] (versions read, versions not checked).** From a shared object
+mortar reads its `versym`, its version definitions (names, `VER_FLG_BASE`
+for the base entry, the hash it writes into a need, D-27) and nothing of
+its version needs: a shared object's own needs of its dependencies are the
+loader's to check (GNU ld, lld and mold do not check them; glibc does, at
+load). `VER_FLG_WEAK` on an input definition has no meaning to the link.
+*Test:* `version-needs-unchecked` (a library needing a version its
+dependency lacks links with every reference and mortar).
+
+**D-15 [M2] (`--copy-dt-needed-entries` refused).** Only GNU ld accepts it
+(lld: `unknown argument`, mold: `unknown command line option`, E-shlib
+2.10b), no census line passes it (§2), and GNU ld appends the closure
+library after `libc.so.6`. It stays refused by name; input §8.6 L928-934
+and input §15 L1645 ("supported (M2)") are withdrawn (request R-I1);
+`--no-copy-dt-needed-entries` is the default and becomes `noop` with that
+reason. *Test:* `copy-dt-needed-refused`.
+
+**D-16 [M2] (TLS against a shared definition).** A TLS class relocation
+against a key whose `def` is a non-`STT_TLS` shared definition, or a
+non-TLS class against an `STT_TLS` shared definition, is `tls-mismatch`
+(resolve §3.4 extended to shared definitions, request R-R4) [unverified
+against the references]. *Test:* `tls-mismatch-shared`.
+
+**D-17 [M2] (common against a shared definition).** resolve §3.2 rule 2
+stands: GNU ld and mold give the shared data definition (`5 5`), lld the
+common (`0 0`), E-shlib 5.4.
+
+**D-18 [M2] (protected definitions).** A `COPY` or `CANON_PLT` demand on a
+key whose shared definition is `STV_PROTECTED` is refused by name,
+`copy-relocation-against-protected` (scan, phase 70): all three refuse
+the copy (GNU ld: ``copy relocation against non-copyable protected symbol
+`pv' in d/libprot.so``; lld: `cannot preempt symbol: pv`; mold: `cannot
+create a copy relocation for protected symbol 'pv'; recompile with
+-fPIC`), and GNU ld and lld refuse the canonical PLT (GNU ld x86-64:
+``non-canonical reference to canonical protected function `pf'``; lld
+`cannot preempt symbol: pf`); mold links it and the program breaks
+pointer equality (prints `9 0` and glibc warns ``direct reference to
+protected function``), a wrong output of mold, E-shlib 5.6d. A PIE that
+reaches a protected datum through the GOT needs neither and links
+(AArch64, 5.6a). *Tests:* `protected-copy`, `protected-canon-plt`.
+
+**D-19 [M2] (input forms; confirmed).** `-Bstatic` before a shared object
+named by path is `static-link-of-shared-object` (GNU ld and lld; mold
+links it dynamically, 6.1f); an empty `.so` is ignored (input §2.3; GNU
+ld and lld; mold refuses, 6.5); a non-ELF text `.so` is read as a script
+and fails there; `.so` before `.a` within one directory, first directory
+wins (6.1). `LD_LIBRARY_PATH` and `LD_RUN_PATH`, which a *native* GNU ld
+searches for closure libraries ahead of `DT_RUNPATH` (and the cross GNU
+ld does not, 4.4), are never read (input §4.7): a native GNU ld link that
+finds a closure library only through them fails in mortar with
+`needed-not-found` and the D-13 consequence, which the note names.
+
+**D-19a [M2] (`DT_NEEDED` order).** `Slots.needed` holds the needed shared
+objects in `FileId` order (the command line and scripts in order, objects'
+positions irrelevant; one entry per soname). All three agree (E-shlib 1.3,
+1.6a), except that lld refuses 1.6a for D-13's reason and mold writes the
+found path for `INPUT(-lns)` of a soname-less library (6.3). *Test:*
+`needed-order`.
 ## 6. `.dynsym`, `.dynstr`, hash tables, versions
 ## 7. `.dynamic`, `.interp`, `_DYNAMIC`
 ## 8. Dynamic relocations, copy relocations, canonical PLTs, TLS
