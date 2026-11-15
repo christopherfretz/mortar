@@ -1,5 +1,5 @@
 //! The verifier's hash maps (WP-035): FNV-1a 64 instead of the standard
-//! library's SipHash, whose per-process random keys buy nothing here (the
+//! library's `SipHash`, whose per-process random keys buy nothing here (the
 //! keys are the link's own names) and cost ~11% of a run on string keys
 //! (WP-028d, "Item 4"). Deterministic; no map's iteration order decides
 //! anything the verifier reports (`docs/AGENTS.md` rule 11: findings are
