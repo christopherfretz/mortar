@@ -1,0 +1,275 @@
+# dyn.md D-30, the `.dynamic` table on default options: which tags, in
+# which order, each present exactly under its condition. A C program with
+# a `.preinit_array` entry, a constructor and a destructor, linked against
+# a library: `DT_NEEDED` (library, then libc), `DT_INIT`/`DT_FINI` (crti),
+# the three array pairs, `DT_GNU_HASH`, the string and symbol tables,
+# `DT_DEBUG`, the PLT group, the `RELA` group, `DT_FLAGS_1` (`DF_1_PIE`,
+# a PIE only), the version group, `DT_RELACOUNT` (a PIE: its `RELATIVE`
+# records), and `DT_AARCH64_BTI_PLT` when the output has the BTI property
+# (an AArch64 program compiled `-mbranch-protection=standard`, crt files
+# included). Never in an executable: `DT_SONAME`, `DT_HASH`, `DT_TEXTREL`,
+# `DT_BIND_NOW`, `DT_FLAGS` without `-z now`, `DT_RUNPATH` without
+# `-rpath`. The table ends in six `DT_NULL` entries (one terminator and
+# five spares). The run shows the loader using the tags (the preinit,
+# init and fini arrays run in order, the library is found) and prints the
+# number of `DT_NULL` entries in `PT_DYNAMIC` (readelf stops at the first).
+# The option-dependent rows (`DT_RUNPATH`, `-init`/`-fini`, `DT_FLAGS`
+# under `-z now`) are `init-fini-option`'s.
+#
+# Where the references differ (dyn.md §13.1): the tag order is GNU ld's
+# for mortar (the only one `eu-elflint --gnu-ld` passes), lld and mold
+# have their own (held below); `DT_NULL` entries: GNU ld 5 in a PIE and 6
+# otherwise (`--spare-dynamic-tags`), lld 1, mold 6, mortar 6. mold drops
+# the BTI property of its inputs, and so writes no `DT_AARCH64_BTI_PLT`
+# (not in dyn.md; reported with WP-051).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-30"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libdt.so -o libdt.so
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+cc(aarch64) -O1 -fPIE -mbranch-protection=standard main.c -o bti.o
+
+link gcc -pie pie.o -L. -ldt -o pie
+run(bfd) pie
+  stdout: preinit
+  stdout: init_array
+  stdout: main 1
+  stdout: DT_NULL entries: 5
+  stdout: fini_array
+run(lld) pie
+  stdout: preinit
+  stdout: init_array
+  stdout: main 1
+  stdout: DT_NULL entries: 1
+  stdout: fini_array
+run(mold,mortar) pie
+  stdout: preinit
+  stdout: init_array
+  stdout: main 1
+  stdout: DT_NULL entries: 6
+  stdout: fini_array
+check(bfd,mortar) readelf -dW pie
+  has: (NEEDED) Shared library: [libdt.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+  then: (INIT) 0x
+  then: (FINI) 0x
+  then: (PREINIT_ARRAY) 0x
+  then: (PREINIT_ARRAYSZ) 8 (bytes)
+  then: (INIT_ARRAY) 0x
+  then: (INIT_ARRAYSZ) 16 (bytes)
+  then: (FINI_ARRAY) 0x
+  then: (FINI_ARRAYSZ) 16 (bytes)
+  then: (GNU_HASH) 0x
+  then: (STRTAB) 0x
+  then: (SYMTAB) 0x
+  then: (STRSZ)
+  then: (SYMENT) 24 (bytes)
+  then: (DEBUG) 0x0$
+  then: (PLTGOT) 0x
+  then: (PLTRELSZ)
+  then: (PLTREL) RELA$
+  then: (JMPREL) 0x
+  then: (RELA) 0x
+  then: (RELASZ)
+  then: (RELAENT) 24 (bytes)
+  then: (FLAGS_1) Flags: PIE$
+  then: (VERNEED) 0x
+  then: (VERNEEDNUM) 1$
+  then: (VERSYM) 0x
+  then: (RELACOUNT)
+  then: (NULL) 0x0$
+check readelf -dW pie
+  count: 2 (NEEDED)
+  count: 1 (DEBUG)
+  count: 1 (FLAGS_1) Flags: PIE$
+  not: (SONAME)
+  not: (HASH)
+  not: (TEXTREL)
+  not: (BIND_NOW)
+  not: (FLAGS)
+  not: (RUNPATH)
+  not: (RPATH)
+  not: AARCH64_BTI_PLT
+  not: AARCH64_VARIANT_PCS
+check(lld) readelf -dW pie
+  has: (NEEDED) Shared library: [libdt.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+  then: (FLAGS_1)
+  then: (DEBUG)
+  then: (RELA) 0x
+  then: (RELASZ)
+  then: (RELAENT)
+  then: (RELACOUNT)
+  then: (JMPREL)
+  then: (PLTRELSZ)
+  then: (PLTGOT)
+  then: (PLTREL)
+  then: (SYMTAB)
+  then: (SYMENT)
+  then: (STRTAB)
+  then: (STRSZ)
+  then: (GNU_HASH)
+  then: (PREINIT_ARRAY)
+  then: (PREINIT_ARRAYSZ)
+  then: (INIT_ARRAY)
+  then: (INIT_ARRAYSZ)
+  then: (FINI_ARRAY)
+  then: (FINI_ARRAYSZ)
+  then: (INIT)
+  then: (FINI)
+  then: (VERSYM)
+  then: (VERNEED)
+  then: (VERNEEDNUM)
+check(mold) readelf -dW pie
+  has: (NEEDED) Shared library: [libdt.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+  then: (RELA) 0x
+  then: (RELASZ)
+  then: (RELAENT)
+  then: (JMPREL)
+  then: (PLTRELSZ)
+  then: (PLTREL)
+  then: (PLTGOT)
+  then: (SYMTAB)
+  then: (SYMENT)
+  then: (STRTAB)
+  then: (STRSZ)
+  then: (INIT_ARRAY)
+  then: (INIT_ARRAYSZ)
+  then: (PREINIT_ARRAY)
+  then: (PREINIT_ARRAYSZ)
+  then: (FINI_ARRAY)
+  then: (FINI_ARRAYSZ)
+  then: (VERSYM)
+  then: (VERNEED)
+  then: (VERNEEDNUM)
+  then: (INIT)
+  then: (FINI)
+  then: (GNU_HASH)
+  then: (FLAGS_1)
+  then: (DEBUG)
+
+link gcc -no-pie exec.o -L. -ldt -o exec
+run(lld) exec
+  stdout: preinit
+  stdout: init_array
+  stdout: main 1
+  stdout: DT_NULL entries: 1
+  stdout: fini_array
+run(bfd,mold,mortar) exec
+  stdout: preinit
+  stdout: init_array
+  stdout: main 1
+  stdout: DT_NULL entries: 6
+  stdout: fini_array
+check(bfd,mortar) readelf -dW exec
+  has: (NEEDED) Shared library: [libdt.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+  then: (INIT) 0x
+  then: (FINI) 0x
+  then: (PREINIT_ARRAY) 0x
+  then: (PREINIT_ARRAYSZ) 8 (bytes)
+  then: (INIT_ARRAY) 0x
+  then: (INIT_ARRAYSZ) 16 (bytes)
+  then: (FINI_ARRAY) 0x
+  then: (FINI_ARRAYSZ) 16 (bytes)
+  then: (GNU_HASH) 0x
+  then: (STRTAB) 0x
+  then: (SYMTAB) 0x
+  then: (STRSZ)
+  then: (SYMENT) 24 (bytes)
+  then: (DEBUG) 0x0$
+  then: (PLTGOT) 0x
+  then: (PLTRELSZ)
+  then: (PLTREL) RELA$
+  then: (JMPREL) 0x
+  then: (RELA) 0x
+  then: (RELASZ)
+  then: (RELAENT) 24 (bytes)
+  then: (VERNEED) 0x
+  then: (VERNEEDNUM) 1$
+  then: (VERSYM) 0x
+  then: (NULL) 0x0$
+check readelf -dW exec
+  count: 2 (NEEDED)
+  count: 1 (DEBUG)
+  not: (FLAGS_1)
+  not: (RELACOUNT)
+  not: (SONAME)
+  not: (HASH)
+  not: (TEXTREL)
+  not: (BIND_NOW)
+  not: (FLAGS)
+  not: (RUNPATH)
+  not: (RPATH)
+
+# AArch64, BTI: `DT_AARCH64_BTI_PLT` after the `RELA` group (D-30 row 24).
+link(aarch64) gcc -pie bti.o -L. -ldt -o bti
+run(bfd,aarch64) bti
+  stdout: preinit
+  stdout: init_array
+  stdout: main 1
+  stdout: DT_NULL entries: 5
+  stdout: fini_array
+run(lld,aarch64) bti
+  stdout: preinit
+  stdout: init_array
+  stdout: main 1
+  stdout: DT_NULL entries: 1
+  stdout: fini_array
+run(mold,mortar,aarch64) bti
+  stdout: preinit
+  stdout: init_array
+  stdout: main 1
+  stdout: DT_NULL entries: 6
+  stdout: fini_array
+check(bfd,mortar,aarch64) readelf -dW bti
+  has: (RELAENT) 24 (bytes)
+  then: (AARCH64_BTI_PLT)
+  then: (FLAGS_1) Flags: PIE$
+check(bfd,lld,mortar,aarch64) readelf -dW bti
+  count: 1 (AARCH64_BTI_PLT)
+check(bfd,lld,mortar,aarch64) readelf -nW bti
+  has: AArch64 feature: BTI
+check(mold,aarch64) readelf -dW bti
+  not: (AARCH64_BTI_PLT)
+
+#--- lib.c
+int lib_fn(void) { return 1; }
+#--- main.c
+#define _GNU_SOURCE
+#include <elf.h>
+#include <link.h>
+#include <stdio.h>
+int lib_fn(void);
+
+static void pre(void) { puts("preinit"); }
+__attribute__((section(".preinit_array"), used)) static void (*pre_p)(void) = pre;
+__attribute__((constructor)) static void ctor(void) { puts("init_array"); }
+__attribute__((destructor)) static void dtor(void) { puts("fini_array"); }
+
+/* The DT_NULL entries of the program's PT_DYNAMIC, spares included. */
+static int nulls(struct dl_phdr_info *info, size_t size, void *out) {
+  (void)size;
+  for (int i = 0; i < info->dlpi_phnum; i++) {
+    const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+    if (ph->p_type != PT_DYNAMIC) continue;
+    const ElfW(Dyn) *d = (const ElfW(Dyn) *)(info->dlpi_addr + ph->p_vaddr);
+    for (size_t k = 0; k < ph->p_memsz / sizeof *d; k++)
+      *(int *)out += d[k].d_tag == DT_NULL;
+  }
+  return 1; /* the program is the first object */
+}
+
+int main(void) {
+  printf("main %d\n", lib_fn());
+  int n = 0;
+  dl_iterate_phdr(nulls, &n);
+  printf("DT_NULL entries: %d\n", n);
+  return 0;
+}

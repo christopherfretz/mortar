@@ -1,0 +1,43 @@
+# dyn.md D-42: a copy relocation of an `STT_TLS` definition is refused.
+# `-fno-pic` code in a non-PIE that declares the fixture library's TLS
+# variable `tlsx` as ordinary data (`extern int tlsx`) reads it directly,
+# which would copy a thread-local definition into the executable's data.
+# GNU ld refuses (`TLS definition in libd.so section .tdata mismatches
+# non-TLS reference`), lld refuses (`relocation R_..._ cannot be used
+# against symbol 'tlsx'`).
+#
+# The name: D-42 says the copy is refused by name but names no refusal;
+# the reference that reaches it is a non-TLS class against an `STT_TLS`
+# shared definition, which D-16 names `tls-mismatch` (resolve.md §3.4
+# extended, request R-R4). This case expects that name (reported to the
+# supervisor as a spec finding).
+#
+# mold links it with a `COPY` of `tlsx` and the program reads the bytes
+# at the start of the library's file (`tlsx 1179403647`, "\x7fELF"),
+# measured on both architectures: a wrong output of mold that dyn.md
+# §13.2 does not list (reported).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-42"
+#@ spec: dyn.md "D-16"
+#@ arch: aarch64 x86_64
+#@ fixture: reloc-libd
+#@ xfail(mold): copies the STT_TLS definition tlsx and reads the library's ELF header (not in dyn.md 13.2)
+
+cc -O1 -fno-pie main.c -o main.o
+link gcc -no-pie main.o -L. -ld -o prog
+  exit: fail
+  diag(bfd): tlsx: TLS definition in *libd.so section .tdata mismatches non-TLS reference in main.o
+  diag(lld): cannot be used against symbol 'tlsx'
+  diag(mortar): TLS attribute mismatch: tlsx
+
+#--- main.c
+#include <stdio.h>
+
+extern int tlsx; /* thread-local in libd.so */
+
+int main(void) {
+  printf("tlsx %d\n", tlsx);
+  return 0;
+}

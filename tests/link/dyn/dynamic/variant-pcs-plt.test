@@ -1,0 +1,98 @@
+# dyn.md D-30 row 25 and D-23, `DT_AARCH64_VARIANT_PCS` (AAELF64 §10.3):
+# the program calls `vfn`, a library function with the vector PCS
+# (`aarch64_vector_pcs`, `STO_AARCH64_VARIANT_PCS` in the library's
+# `.dynsym`), through a PLT entry. The import keeps
+# `STO_AARCH64_VARIANT_PCS` in the program's `.dynsym` (`[VARIANT_PCS]`),
+# and because a `JUMP_SLOT` symbol has it, `.dynamic` holds
+# `DT_AARCH64_VARIANT_PCS`, after the `RELA` group and before
+# `DT_FLAGS_1` (GNU ld's order). The tag is what makes it safe: glibc's
+# lazy resolver saves only the base-PCS argument registers, so with the
+# tag it binds the `JUMP_SLOT` of every variant-PCS symbol at load time
+# instead of on the first call. The run shows that: before any call the
+# slot of `vfn` already holds the library's function, that of the
+# base-PCS `pfn` does not (lazy binding as usual), and both calls return.
+# Without the tag the first call of `vfn` would go through the lazy
+# resolver and could clobber the caller's `v8`-`v23`/`z` state.
+#
+# AArch64 only: the variant PCS, `STO_AARCH64_VARIANT_PCS` and the tag
+# are AArch64 ELF; x86-64 and i386 have nothing like them. All four
+# references write the tag and the `st_other` bit (E-dynamic §1); the tag
+# order differs (lld and mold put it after `DT_FLAGS_1`). The absence of
+# the tag without a variant-PCS import is `dynamic-tags`'.
+#
+# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
+#@ spec: dyn.md "D-30"
+#@ spec: dyn.md "D-23"
+#@ arch: aarch64
+#@ fixture: dynsym-walk
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libv.so -o libv.so
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+
+link gcc -pie pie.o -L. -lv -o pie
+run pie
+  stdout: vfn bound at load 1, pfn bound at load 0
+  stdout: vpcs 42 pcs 42
+check readelf -dW pie
+  count: 1 (AARCH64_VARIANT_PCS) 0x0$
+check(bfd,mortar) readelf -dW pie
+  has: (RELAENT) 24 (bytes)
+  then: (AARCH64_VARIANT_PCS) 0x0$
+  then: (FLAGS_1) Flags: PIE$
+check(lld,mold) readelf -dW pie
+  has: (FLAGS_1) Flags: PIE$
+  then: (AARCH64_VARIANT_PCS) 0x0$
+check readelf --dyn-syms -W pie
+  has: FUNC GLOBAL DEFAULT [VARIANT_PCS] UND vfn$
+  has: FUNC GLOBAL DEFAULT UND pfn$
+check readelf -rW pie
+  count: 1 R_AARCH64_JUMP_SLOT * vfn + 0$
+  count: 1 R_AARCH64_JUMP_SLOT * pfn + 0$
+
+link gcc -no-pie exec.o -L. -lv -o exec
+run exec
+  stdout: vfn bound at load 1, pfn bound at load 0
+  stdout: vpcs 42 pcs 42
+check readelf -dW exec
+  count: 1 (AARCH64_VARIANT_PCS) 0x0$
+check(bfd,mortar) readelf -dW exec
+  has: (RELAENT) 24 (bytes)
+  then: (AARCH64_VARIANT_PCS) 0x0$
+  then: (VERNEED) 0x
+check readelf --dyn-syms -W exec
+  has: FUNC GLOBAL DEFAULT [VARIANT_PCS] UND vfn$
+
+#--- lib.c
+__attribute__((aarch64_vector_pcs)) int vfn(int x) { return x + 1; }
+int pfn(int x) { return x + 2; }
+#--- main.c
+#include "dynwalk.h"
+__attribute__((aarch64_vector_pcs)) int vfn(int x);
+int pfn(int x);
+
+/* Whether NAME's JUMP_SLOT already holds the library's function. */
+static int bound(struct dw *w, const char *name) {
+  extern ElfW(Dyn) _DYNAMIC[] __attribute__((visibility("hidden")));
+  uintptr_t jmprel = 0, sz = 0;
+  for (ElfW(Dyn) *d = _DYNAMIC; d->d_tag != DT_NULL; d++) {
+    if (d->d_tag == DT_JMPREL) jmprel = dw_ptr(w, d->d_un.d_ptr);
+    if (d->d_tag == DT_PLTRELSZ) sz = d->d_un.d_val;
+  }
+  const ElfW(Rela) *r = (const ElfW(Rela) *)jmprel;
+  void *target = dlsym(RTLD_DEFAULT, name);
+  for (size_t i = 0; jmprel && i < sz / sizeof *r; i++)
+    if (!strcmp(w->str + w->sym[ELF64_R_SYM(r[i].r_info)].st_name, name))
+      return *(void **)(w->bias + r[i].r_offset) == target;
+  return -1;
+}
+
+int main(void) {
+  struct dw w;
+  if (!dw_open(&w)) return 1;
+  int bv = bound(&w, "vfn"), bp = bound(&w, "pfn");
+  printf("vfn bound at load %d, pfn bound at load %d\n", bv, bp);
+  printf("vpcs %d pcs %d\n", vfn(41), pfn(40));
+  return 0;
+}

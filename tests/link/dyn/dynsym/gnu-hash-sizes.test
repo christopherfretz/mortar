@@ -1,0 +1,267 @@
+# dyn.md D-26, the sizes of `.gnu.hash` for n hashed entries, n = 0, 1,
+# 2, 3, 10, 100, 1000, 5000: one program per n, which exports
+# `cb_0000`..`cb_<n-1>` because the library references all 5000 names
+# (weakly, so the program may define only some of them). The essential
+# claim is in the run: the library's 5000 references are resolved by the
+# loader through the program's table (n of them to the program's
+# definitions, the others to nothing), each resolved one calls, `dlsym`
+# agrees with the loader on all 5000 names, and the program's own lookup
+# of every hashed entry through its table (Bloom word, bucket, chain:
+# `dynwalk.h`) finds it.
+#
+# The sizes, read by `llvm-readelf --gnu-hash-table`: mortar's are lld's
+# closed form, `nbuckets = max(1, n/4)`, `maskwords` the least power of two
+# above `12n/64` (1 for 0), `shift` 26, `symoffset` the first hashed
+# entry; with n = 0 one empty bucket, one zero mask word, `symoffset` the
+# `.dynsym` count. Where the references differ (dyn.md §13.1, "Bloom
+# words, buckets"): GNU ld uses a prime number of buckets, a
+# size-dependent shift and `symoffset` 1 for an empty table, and hashes
+# the x86-64 PIE's `__cxa_finalize` (one more hashed entry); mold has
+# `n/8 + 1` buckets. Each is held to its own sizes below; all three
+# tables find every name.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-26"
+#@ arch: aarch64 x86_64
+#@ requires: llvm-readelf
+#@ fixture: dynsym-walk
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libcbs.so -o libcbs.so
+cc -O0 -fPIE -DN=0 main.c -o m0.o
+cc -O0 -fPIE -DN=1 main.c -o m1.o
+cc -O0 -fPIE -DN=2 main.c -o m2.o
+cc -O0 -fPIE -DN=3 main.c -o m3.o
+cc -O0 -fPIE -DN=10 main.c -o m10.o
+cc -O0 -fPIE -DN=100 main.c -o m100.o
+cc -O0 -fPIE -DN=1000 main.c -o m1000.o
+cc -O0 -fPIE -DN=5000 main.c -o m5000.o
+
+link gcc -pie m0.o -L. -lcbs -o g0
+run g0
+  stdout: n=0: the table finds 0 of 0 hashed entries
+  stdout: library: resolved 0 of 5000, called 0, dlsym agrees 5000, absent rejected 5000
+check llvm-readelf --gnu-hash-table g0
+  has(lld,mortar): Num Buckets: 1$
+  has(lld,mortar): Num Mask Words: 1$
+  has(lld,mortar): Shift Count: 26$
+  has(mold): Num Buckets: 1$
+  has(mold): Num Mask Words: 1$
+  has(bfd,aarch64): Num Buckets: 1$
+  has(bfd,aarch64): Num Mask Words: 1$
+  has(bfd,aarch64): Shift Count: 0$
+  has(bfd,x86_64): Num Buckets: 2$
+  has(bfd,x86_64): Num Mask Words: 1$
+  has(bfd,x86_64): Shift Count: 6$
+  has(lld,mortar,aarch64): First Hashed Symbol Index: 13$
+  has(lld,mortar,x86_64): First Hashed Symbol Index: 12$
+  has(bfd,aarch64): First Hashed Symbol Index: 1$
+
+check(lld,mortar,aarch64) readelf --dyn-syms -W g0
+  has: Symbol table '.dynsym' contains 13 entries
+check(lld,mortar,x86_64) readelf --dyn-syms -W g0
+  has: Symbol table '.dynsym' contains 12 entries
+
+link gcc -pie m1.o -L. -lcbs -o g1
+run g1
+  stdout: n=1: the table finds 1 of 1 hashed entries
+  stdout: library: resolved 1 of 5000, called 1, dlsym agrees 5000, absent rejected 4999
+check llvm-readelf --gnu-hash-table g1
+  has(lld,mortar): Num Buckets: 1$
+  has(lld,mortar): Num Mask Words: 1$
+  has(lld,mortar): Shift Count: 26$
+  has(mold): Num Buckets: 1$
+  has(mold): Num Mask Words: 1$
+  has(bfd,aarch64): Num Buckets: 2$
+  has(bfd,aarch64): Num Mask Words: 1$
+  has(bfd,aarch64): Shift Count: 6$
+  has(bfd,x86_64): Num Buckets: 2$
+  has(bfd,x86_64): Num Mask Words: 1$
+  has(bfd,x86_64): Shift Count: 6$
+
+link gcc -pie m2.o -L. -lcbs -o g2
+run g2
+  stdout: n=2: the table finds 2 of 2 hashed entries
+  stdout: library: resolved 2 of 5000, called 2, dlsym agrees 5000, absent rejected 4998
+check llvm-readelf --gnu-hash-table g2
+  has(lld,mortar): Num Buckets: 1$
+  has(lld,mortar): Num Mask Words: 1$
+  has(lld,mortar): Shift Count: 26$
+  has(mold): Num Buckets: 1$
+  has(mold): Num Mask Words: 1$
+  has(bfd,aarch64): Num Buckets: 2$
+  has(bfd,aarch64): Num Mask Words: 1$
+  has(bfd,aarch64): Shift Count: 6$
+  has(bfd,x86_64): Num Buckets: 3$
+  has(bfd,x86_64): Num Mask Words: 1$
+  has(bfd,x86_64): Shift Count: 6$
+
+link gcc -pie m3.o -L. -lcbs -o g3
+run g3
+  stdout: n=3: the table finds 3 of 3 hashed entries
+  stdout: library: resolved 3 of 5000, called 3, dlsym agrees 5000, absent rejected 4997
+check llvm-readelf --gnu-hash-table g3
+  has(lld,mortar): Num Buckets: 1$
+  has(lld,mortar): Num Mask Words: 1$
+  has(lld,mortar): Shift Count: 26$
+  has(mold): Num Buckets: 1$
+  has(mold): Num Mask Words: 1$
+  has(bfd,aarch64): Num Buckets: 3$
+  has(bfd,aarch64): Num Mask Words: 1$
+  has(bfd,aarch64): Shift Count: 6$
+  has(bfd,x86_64): Num Buckets: 3$
+  has(bfd,x86_64): Num Mask Words: 1$
+  has(bfd,x86_64): Shift Count: 6$
+
+link gcc -pie m10.o -L. -lcbs -o g10
+run g10
+  stdout: n=10: the table finds 10 of 10 hashed entries
+  stdout: library: resolved 10 of 5000, called 10, dlsym agrees 5000, absent rejected 4990
+check llvm-readelf --gnu-hash-table g10
+  has(lld,mortar): Num Buckets: 2$
+  has(lld,mortar): Num Mask Words: 2$
+  has(lld,mortar): Shift Count: 26$
+  has(mold): Num Buckets: 2$
+  has(mold): Num Mask Words: 1$
+  has(bfd,aarch64): Num Buckets: 3$
+  has(bfd,aarch64): Num Mask Words: 1$
+  has(bfd,aarch64): Shift Count: 6$
+  has(bfd,x86_64): Num Buckets: 3$
+  has(bfd,x86_64): Num Mask Words: 1$
+  has(bfd,x86_64): Shift Count: 6$
+
+link gcc -pie m100.o -L. -lcbs -o g100
+run g100
+  stdout: n=100: the table finds 100 of 100 hashed entries
+  stdout: library: resolved 100 of 5000, called 100, dlsym agrees 5000, absent rejected 4900
+check llvm-readelf --gnu-hash-table g100
+  has(lld,mortar): Num Buckets: 25$
+  has(lld,mortar): Num Mask Words: 32$
+  has(lld,mortar): Shift Count: 26$
+  has(mold): Num Buckets: 13$
+  has(mold): Num Mask Words: 32$
+  has(bfd,aarch64): Num Buckets: 97$
+  has(bfd,aarch64): Num Mask Words: 16$
+  has(bfd,aarch64): Shift Count: 10$
+  has(bfd,x86_64): Num Buckets: 97$
+  has(bfd,x86_64): Num Mask Words: 16$
+  has(bfd,x86_64): Shift Count: 10$
+
+link gcc -pie m1000.o -L. -lcbs -o g1000
+run g1000
+  stdout: n=1000: the table finds 1000 of 1000 hashed entries
+  stdout: library: resolved 1000 of 5000, called 1000, dlsym agrees 5000, absent rejected 4000
+check llvm-readelf --gnu-hash-table g1000
+  has(lld,mortar): Num Buckets: 250$
+  has(lld,mortar): Num Mask Words: 256$
+  has(lld,mortar): Shift Count: 26$
+  has(mold): Num Buckets: 126$
+  has(mold): Num Mask Words: 256$
+  has(bfd,aarch64): Num Buckets: 521$
+  has(bfd,aarch64): Num Mask Words: 128$
+  has(bfd,aarch64): Shift Count: 13$
+  has(bfd,x86_64): Num Buckets: 521$
+  has(bfd,x86_64): Num Mask Words: 128$
+  has(bfd,x86_64): Shift Count: 13$
+
+link gcc -pie m5000.o -L. -lcbs -o g5000
+run g5000
+  stdout: n=5000: the table finds 5000 of 5000 hashed entries
+  stdout: library: resolved 5000 of 5000, called 5000, dlsym agrees 5000, absent rejected 0
+check llvm-readelf --gnu-hash-table g5000
+  has(lld,mortar): Num Buckets: 1250$
+  has(lld,mortar): Num Mask Words: 1024$
+  has(lld,mortar): Shift Count: 26$
+  has(mold): Num Buckets: 626$
+  has(mold): Num Mask Words: 1024$
+  has(bfd,aarch64): Num Buckets: 4099$
+  has(bfd,aarch64): Num Mask Words: 512$
+  has(bfd,aarch64): Shift Count: 15$
+  has(bfd,x86_64): Num Buckets: 4099$
+  has(bfd,x86_64): Num Mask Words: 512$
+  has(bfd,x86_64): Shift Count: 15$
+
+#--- names.h
+/* cb_0000 .. cb_4999 in blocks of ten, a hundred and a thousand */
+#define D1(p) X(p##0) X(p##1) X(p##2) X(p##3) X(p##4) X(p##5) X(p##6) X(p##7) X(p##8) X(p##9)
+#define D2(p) D1(p##0) D1(p##1) D1(p##2) D1(p##3) D1(p##4) D1(p##5) D1(p##6) D1(p##7) D1(p##8) D1(p##9)
+#define D3(p) D2(p##0) D2(p##1) D2(p##2) D2(p##3) D2(p##4) D2(p##5) D2(p##6) D2(p##7) D2(p##8) D2(p##9)
+#define ALL D3(cb_0) D3(cb_1) D3(cb_2) D3(cb_3) D3(cb_4)
+#define TOTAL 5000
+#--- lib.c
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdio.h>
+#include "names.h"
+#define X(name) extern int name(void) __attribute__((weak));
+ALL
+#undef X
+#define X(name) name,
+static int (*const table[])(void) = {ALL};
+
+void lib_check(void) {
+  int resolved = 0, called = 0, agrees = 0, absent = 0;
+  char name[16];
+  for (int i = 0; i < TOTAL; i++) {
+    snprintf(name, sizeof name, "cb_%04d", i);
+    void *found = dlsym(RTLD_DEFAULT, name);
+    if (table[i]) {
+      resolved++;
+      called += table[i]() == i;
+    } else if (!found) {
+      absent++;
+    }
+    agrees += found == (void *)table[i];
+  }
+  printf("library: resolved %d of %d, called %d, dlsym agrees %d, absent rejected %d\n",
+         resolved, TOTAL, called, agrees, absent);
+}
+#--- main.c
+#include "dynwalk.h"
+#include "names.h"
+void lib_check(void);
+static int number(const char *s) {
+  int n = 0;
+  for (; *s; s++) n = n * 10 + (*s - '0');
+  return n;
+}
+/* cb_dddd returns dddd */
+#define X(name) \
+  int name(void) { return number(#name + 3); }
+#if N == 1 || N == 2 || N == 3
+X(cb_0000)
+#endif
+#if N == 2 || N == 3
+X(cb_0001)
+#endif
+#if N == 3
+X(cb_0002)
+#endif
+#if N == 10
+D1(cb_000)
+#endif
+#if N == 100
+D2(cb_00)
+#endif
+#if N == 1000
+D3(cb_0)
+#endif
+#if N == 5000
+ALL
+#endif
+
+int main(void) {
+  struct dw w;
+  if (!dw_open(&w)) return 1;
+  int found = 0, hashed = 0;
+  for (uint32_t i = w.symoffset; i < w.count; i++) {
+    const char *name = w.str + w.sym[i].st_name;
+    if (strncmp(name, "cb_", 3)) continue; /* GNU ld's x86-64 __cxa_finalize */
+    hashed++;
+    found += dw_lookup(&w, name) == i;
+  }
+  printf("n=%d: the table finds %d of %d hashed entries\n", N, found, hashed);
+  lib_check();
+  return 0;
+}

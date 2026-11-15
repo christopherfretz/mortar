@@ -1,0 +1,77 @@
+# Shared libraries for the DT_NEEDED order tests (spec/dyn.md D-11, D-19a;
+# ported from review-m2/dynamic/needed_order.sh): `lib<n>.so` for n in na
+# nb nc nd ne nf nx ny nq, soname `lib<n>.so`, each defining `f_<n>` and
+# with a constructor that prints "<n> ". `libnp.so` also defines `g_np`,
+# which calls `f_nq` without a DT_NEEDED entry for libnq.so (an
+# under-linked library). `d1/libnc.so` and `d2/libnc.so` are two more
+# files with soname `libnc.so`. ld.so runs the constructors of the needed
+# libraries in the reverse of the DT_NEEDED order (dyn.md D-19a), so a
+# program prints its run-time search order, reversed, then "main".
+#
+# `main.c` declares every function; a test builds its program with
+# `-DREFS=<calls>` (the references the object makes). Built here:
+# `main.o` (f_na..f_nf), `main_abd.o` (f_na f_nb f_nd), `main0.o` (none).
+
+cc -O1 -fPIC -DN=na lib.c -o na.o
+shlib gcc na.o -Wl,-soname,libna.so -o libna.so
+cc -O1 -fPIC -DN=nb lib.c -o nb.o
+shlib gcc nb.o -Wl,-soname,libnb.so -o libnb.so
+cc -O1 -fPIC -DN=nc lib.c -o nc.o
+shlib gcc nc.o -Wl,-soname,libnc.so -o libnc.so
+cc -O1 -fPIC -DN=nd lib.c -o nd.o
+shlib gcc nd.o -Wl,-soname,libnd.so -o libnd.so
+cc -O1 -fPIC -DN=ne lib.c -o ne.o
+shlib gcc ne.o -Wl,-soname,libne.so -o libne.so
+cc -O1 -fPIC -DN=nf lib.c -o nf.o
+shlib gcc nf.o -Wl,-soname,libnf.so -o libnf.so
+cc -O1 -fPIC -DN=nx lib.c -o nx.o
+shlib gcc nx.o -Wl,-soname,libnx.so -o libnx.so
+cc -O1 -fPIC -DN=ny lib.c -o ny.o
+shlib gcc ny.o -Wl,-soname,libny.so -o libny.so
+cc -O1 -fPIC -DN=nq lib.c -o nq.o
+shlib gcc nq.o -Wl,-soname,libnq.so -o libnq.so
+cc -O1 -fPIC -DN=np -DCALL=nq lib.c -o np.o
+shlib gcc np.o -Wl,-soname,libnp.so -o libnp.so
+cc -O1 -fPIC -DN=nc -DTAG=nc1 lib.c -o nc1.o
+shlib gcc nc1.o -Wl,-soname,libnc.so -o d1/libnc.so
+cc -O1 -fPIC -DN=nc -DTAG=nc2 lib.c -o nc2.o
+shlib gcc nc2.o -Wl,-soname,libnc.so -o d2/libnc.so
+cc -O1 -fPIE "-DREFS=f_na()+f_nb()+f_nc()+f_nd()+f_ne()+f_nf()" main.c -o main.o
+cc -O1 -fPIE "-DREFS=f_na()+f_nb()+f_nd()" main.c -o main_abd.o
+cc -O1 -fPIE main.c -o main0.o
+
+#--- lib.c
+#include <stdio.h>
+#define STR2(x) #x
+#define STR(x) STR2(x)
+#define CAT2(a, b) a##b
+#define CAT(a, b) CAT2(a, b)
+#ifndef TAG
+#define TAG N
+#endif
+
+__attribute__((constructor)) static void ctor(void) { printf(STR(TAG) " "); }
+
+int CAT(f_, N)(void) { return 1; }
+
+#ifdef CALL
+int CAT(f_, CALL)(void);
+int CAT(g_, N)(void) { return CAT(f_, CALL)(); }
+#endif
+#--- main.c
+#include <stdio.h>
+int f_na(void), f_nb(void), f_nc(void), f_nd(void), f_ne(void), f_nf(void);
+int f_nx(void), f_ny(void), f_nz(void), g_np(void);
+#ifndef REFS
+#define REFS 0
+#endif
+
+int main(void) {
+  int r = REFS;
+  printf("main\n");
+  return r < 0;
+}
+#--- d1/README
+Two files with soname libnc.so live in d1/ and d2/.
+#--- d2/README
+Two files with soname libnc.so live in d1/ and d2/.
