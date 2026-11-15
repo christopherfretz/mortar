@@ -1965,9 +1965,10 @@ fn write_link(
         }
     };
     let build_id = if sealed.is_some() { link.options.build_id } else { None };
-    let leaf_fn = link.options.keep_leaves.then(|| {
-        build_id.map_or(mortar_digest::TreeFn::L128, TreeStyle::tree_fn)
-    });
+    let leaf_fn = link
+        .options
+        .keep_leaves
+        .then(|| build_id.map_or(mortar_digest::TreeFn::L128, TreeStyle::tree_fn));
     let fixups = file_fixups(link).map_err(failed)?;
     let img = Image {
         plan: &plan,
