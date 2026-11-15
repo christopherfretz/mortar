@@ -184,7 +184,9 @@ fn s4_3_class_table() {
     assert_eq!(out(K::Lo, Pie, Abs, RO), nothing());
     assert_eq!(out(K::Lo, Exec, SHLIB_DATA, RO), fl(DemandFlags::COPY));
     assert_eq!(out(K::Lo, Shared, Preemptible, RO), inc(Incompatible::RecompilePic));
-    assert_eq!(out(K::Lo, Pie, SHLIB_DATA, RO), inc(Incompatible::RecompilePie));
+    // D-43 with WP-046's finding: the `Lo` half of AArch64's `-fno-pic`
+    // read of shared data copies in a PIE as its `Pc` half does.
+    assert_eq!(out(K::Lo, Pie, SHLIB_DATA, RO), fl(DemandFlags::COPY));
     assert_eq!(out(K::Lo, Static, Ifunc, RO), fl(DemandFlags::IPLT));
 
     // Branch.
