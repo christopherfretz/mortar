@@ -111,6 +111,7 @@ The relations and their words:
 
 | relation | words | use |
 |---|---|---|
+| `DefinedDifferentlyIn` | `defined differently in` | where a definition of the diagnostic's symbol is that differs from the one before it (`spec/odr.md` §9.1) |
 | `DefinedIn` | `defined in` | where a definition of the diagnostic's symbol is |
 | `In` | `in` | what contains the construct, when the head line has no place |
 | `NamedBy` | `named by` | the argument or script position that brought a file into the link |
@@ -145,7 +146,8 @@ symbol (every `{name}` of the area "symbols", `relocation-incompatible`,
 twice. The areas, in order: command line (`conflicting-options` to
 `unknown-option`), files (`ambiguous-sysroot-path` to
 `static-link-of-shared-object`), file formats, symbols (`archive-backref`
-to `version-reassigned`), relocations, layout (`executable-stack` to
+to `version-reassigned`), one-definition rule (`meta-malformed` to
+`odr-vtable-rtti-mismatch`, M6), relocations, layout (`executable-stack` to
 `section-conflict`), refusals, internal. The wording column is the message of §5.2, complete: nothing
 is added before or after it.
 
@@ -195,6 +197,10 @@ is added before or after it.
 | `undefined-version` | `UndefinedVersion { name, version }` | `version {version} of {name} is not defined` | own |
 | `version-reassigned` | `VersionReassigned { name, first, second }` | `{name} is assigned to version {first} and {second}; {first} is kept` | own |
 | `versioned-export` | `VersionedExport { name, version }` | `versioned definition {name}@@{version} cannot be exported (version definitions are not supported)` | own (`spec/dyn.md` D-27: GNU ld writes a verdef, lld and mold export it unversioned; M4) |
+| `odr-contents-mismatch` | `OdrContentsMismatch { name }` | `{name} has different contents in different files` | own (`spec/odr.md` §8.1 W4; WP-072) |
+| `odr-size-mismatch` | `OdrSizeMismatch { name }` | `{name} has different sizes in different files` | own |
+| `odr-strong-and-comdat` | `OdrStrongAndComdat { name }` | `{name} has a non-inline definition and an inline copy` | own |
+| `odr-symbol-type-mismatch` | `OdrSymbolTypeMismatch { name }` | `{name} is a function in one file and data in another` | own |
 | `canonical-plt-in-pie` | `CanonicalPltInPie { r_type, name }` | ``relocation {r_type} against symbol `{name}' cannot be used in a position-independent executable; recompile with -fPIE, or link with -no-pie`` | GNU ld (`spec/dyn.md` D-44) |
 | `copy-relocation-against-protected` | `CopyRelocationAgainstProtected { name, file }` | ``copy relocation against non-copyable protected symbol `{name}' in {file}`` | GNU ld (`spec/dyn.md` D-18) |
 | `copy-relocation-of-zero-size` | `CopyRelocationOfZeroSize { name }` | `cannot create a copy relocation for symbol {name}` | lld (`spec/dyn.md` D-42) |
@@ -208,6 +214,27 @@ is added before or after it.
 | `section-conflict` | `SectionConflict { name, first, second }` | `section {name}: {first} and {second} inputs cannot be combined` | own (lld: `section type mismatch for {name}`) |
 | `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) |
 | `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
+
+The kinds of M6 (the one-definition rule, `spec/odr.md` §9.1), **not yet
+in the code**. Each row moves into the table above, at the place of its
+area in the order stated before the table, with the package that
+implements its kind (§3.3): the two `meta-` kinds with WP-071, the kinds of
+the record checks with WP-073 (WP-072 moved the kinds of the checks on
+foreign objects). The table above stays the list of `Kind::IDS`, which a test
+compares with the code.
+
+| id | variant | message | wording from |
+|---|---|---|---|
+| `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | own |
+| `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | own |
+| `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | own |
+| `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | own |
+| `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | own |
+| `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | own |
+| `odr-isa-mismatch` | `OdrIsaMismatch { name }` | `the kept copy of {name} was compiled for other target features than a translation unit that uses it` | own |
+| `odr-type-mismatch` | `OdrTypeMismatch { name }` | `type {name} violates the one-definition rule` | own (GCC `-Wodr`'s shape) |
+| `odr-violation` | `OdrViolation { name }` | `{name} violates the one-definition rule` | own (GCC `-Wodr`'s shape) |
+| `odr-vtable-rtti-mismatch` | `OdrVtableRttiMismatch { name }` | `the vtable of {name} is emitted by translation units compiled with and without RTTI` | own |
 
 ### 3.2 Notes on the kinds
 
@@ -351,6 +378,21 @@ is added before or after it.
   link state* that fails the same check is not an internal error but
   untrusted input that is not reused (phase 15, `spec/incr.md`); the
   incremental phase reports it in its own terms.
+
+- The one-definition rule's kinds (M6, `spec/odr.md` §9.1; added by
+  WP-072 and WP-073 as each check lands, per §3.3) are warnings in the
+  default mode `--odr=warn`; `odr-violation`, `odr-type-mismatch`
+  (layout differences) and `odr-declaration-mismatch` are errors under
+  `--odr=error` and `--odr=strict`, `meta-malformed` and `meta-version`
+  under `--odr=strict` (`spec/odr.md` O-40, O-41). Which checks are on
+  by default is `spec/odr.md` O-47's register; `odr-internal-reference`
+  `odr-strong-and-comdat` and `odr-contents-mismatch` are reported only
+  under `--odr=strict`,
+  `odr-archive-shadow` only with `--odr-check-archives`. Every `{name}`
+  goes through §5.4. Their context lines (§2.4) and their key (phase 40,
+  `spec/model.md` §8; `2^40 +` the row's index for a row without a
+  symbol) are `spec/odr.md` §9.1's. Never a `refused`: a finding is not a
+  limit of mortar's.
 
 ### 3.3 Adding a kind
 

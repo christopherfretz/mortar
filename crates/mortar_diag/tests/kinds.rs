@@ -572,6 +572,42 @@ fn versioned_export() {
     );
 }
 
+// -- one-definition rule ------------------------------------------------
+
+// spec: diag.md §3.1, the one-definition rule's kinds that name a symbol
+#[test]
+fn odr_kinds_with_a_symbol() {
+    type Row = (fn(String) -> Kind, &'static str, &'static str);
+    let rows: [Row; 4] = [
+        (
+            |name| Kind::OdrContentsMismatch { name },
+            "odr-contents-mismatch",
+            "x has different contents in different files",
+        ),
+        (
+            |name| Kind::OdrSizeMismatch { name },
+            "odr-size-mismatch",
+            "x has different sizes in different files",
+        ),
+        (
+            |name| Kind::OdrStrongAndComdat { name },
+            "odr-strong-and-comdat",
+            "x has a non-inline definition and an inline copy",
+        ),
+        (
+            |name| Kind::OdrSymbolTypeMismatch { name },
+            "odr-symbol-type-mismatch",
+            "x is a function in one file and data in another",
+        ),
+    ];
+    for (make, id, message) in rows {
+        let kind = make(s("x"));
+        assert_eq!(kind.id(), id);
+        assert_eq!(kind.symbol(), Some("x"));
+        assert_eq!(symbol_text(kind), format!("ld: error: {message}\n"));
+    }
+}
+
 // spec: diag.md §3.1 `canonical-plt-in-pie` (dyn.md D-44)
 #[test]
 fn canonical_plt_in_pie() {

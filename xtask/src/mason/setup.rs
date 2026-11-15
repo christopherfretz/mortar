@@ -67,7 +67,7 @@ pub fn libcxx_tests() -> PathBuf {
 }
 
 fn sh(script: &str, dir: &Path, what: &str) -> Result<(), String> {
-    println!("xtask mason setup: {what}");
+    say!("xtask mason setup: {what}");
     let o = run_in(Path::new("/bin/sh"), &["-c".into(), script.into()], dir, &[], LONG)?;
     if o.end.success() {
         Ok(())
@@ -175,7 +175,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&tree, &link).map_err(|e| format!("{}: {e}", link.display()))?;
     }
-    println!("xtask mason setup: building kiln's xtask");
+    say!("xtask mason setup: building kiln's xtask");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut c = std::process::Command::new(cargo);
     c.args(["build", "--release", "--quiet", "-p", "xtask"])
@@ -186,7 +186,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         Ok((s, _)) => return Err(format!("kiln's xtask: cargo build: {s}")),
         Err(e) => return Err(format!("kiln's xtask: cannot run cargo: {e}")),
     }
-    println!("xtask mason setup: ready in {}", lane.display());
+    say!("xtask mason setup: ready in {}", lane.display());
     Ok(ExitCode::SUCCESS)
 }
 

@@ -1,0 +1,10 @@
+# The libc++ tests mortar mode does not pass (FAIL, TIMEOUT, XPASS, ...) with the reason
+# (tests/mason/README.md "Baseline"). test<TAB>outcome<TAB>detail<TAB>reason
+libcxx/depr/depr.rel_ops/rel_ops.depr_in_cxx20.verify.cpp	XPASS	-	compile-only verify test in kiln's M5_TRIAGED XFAIL list (xtask/src/libcxx/run.rs) that kiln now passes: a stale kiln ledger entry (kiln; bfd the same)
+std/input.output/file.streams/fstreams/ifstream.members/offset_range.pass.cpp	TIMEOUT	run	writes a 4 GiB file 8 KiB at a time at -O0 (the test; bfd the same)
+std/input.output/filesystems/class.directory_iterator/directory_iterator.members/ctor.pass.cpp	FAIL	run	passes as uid 65534: root in the container defeats its permission checks (environment; dyn, bfd the same)
+std/input.output/filesystems/class.rec.dir.itr/rec.dir.itr.members/ctor.pass.cpp	FAIL	run	passes as uid 65534: root in the container defeats its permission checks (environment; dyn, bfd the same)
+std/input.output/filesystems/fs.op.funcs/fs.op.copy_file/copy_file.pass.cpp	FAIL	run	passes as uid 65534: root in the container defeats its permission checks (environment; dyn, bfd the same)
+std/input.output/filesystems/fs.op.funcs/fs.op.remove/remove.pass.cpp	FAIL	run	passes as uid 65534: root in the container defeats its permission checks (environment; dyn, bfd the same)
+std/input.output/filesystems/fs.op.funcs/fs.op.remove_all/remove_all.pass.cpp	FAIL	run	passes as uid 65534: root in the container defeats its permission checks (environment; dyn, bfd the same)
+std/utilities/variant/variant.hash/hash.depr.verify.cpp	XPASS	-	compile-only verify test in kiln's M5_TRIAGED XFAIL list (xtask/src/libcxx/run.rs) that kiln now passes: a stale kiln ledger entry (kiln; bfd the same)

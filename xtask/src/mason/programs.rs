@@ -94,43 +94,57 @@ pub struct Variant {
     pub name: &'static str,
     pub flags: &'static [&'static str],
     pub stdlib: Stdlib,
+    /// A cross target (`x86_64-linux-gnu`): its objects come from the
+    /// cross compilers and kiln's `--target`, GNU ld is the target's, and
+    /// the programs run under `qemu-x86_64`. `None`: the host (AArch64).
+    pub target: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stdlib {
     /// GCC 14's libstdc++.a, the default of every driver here.
     Libstdcxx,
-    /// libc++ 22's static archives as Debian ships them.
+    /// libc++ 22's static archives as Debian ships them (with
+    /// `.ARM.attributes` and `.deplibs` in their members, which mortar
+    /// consumes: resolve.md §10).
     Libcxx,
-    /// The same archives with `.ARM.attributes` and `.deplibs` removed
-    /// (`objcopy -R`): what mortar does once those two are accepted.
-    LibcxxStripped,
 }
 
 pub const VARIANTS: &[Variant] = &[
-    Variant { name: "O0", flags: &[], stdlib: Stdlib::Libstdcxx },
-    Variant { name: "g", flags: &["-g"], stdlib: Stdlib::Libstdcxx },
+    Variant { name: "O0", flags: &[], stdlib: Stdlib::Libstdcxx, target: None },
+    Variant { name: "g", flags: &["-g"], stdlib: Stdlib::Libstdcxx, target: None },
     Variant {
         name: "sections",
         flags: &["-ffunction-sections", "-fdata-sections"],
         stdlib: Stdlib::Libstdcxx,
+        target: None,
     },
-    Variant { name: "nopic", flags: &["-fno-pic"], stdlib: Stdlib::Libstdcxx },
-    Variant { name: "libcxx", flags: &[], stdlib: Stdlib::Libcxx },
-    Variant { name: "libcxx-stripped", flags: &["-g"], stdlib: Stdlib::LibcxxStripped },
+    Variant { name: "nopic", flags: &["-fno-pic"], stdlib: Stdlib::Libstdcxx, target: None },
+    Variant { name: "libcxx", flags: &[], stdlib: Stdlib::Libcxx, target: None },
+    Variant { name: "libcxx-g", flags: &["-g"], stdlib: Stdlib::Libcxx, target: None },
+    Variant { name: "x64-O0", flags: &[], stdlib: Stdlib::Libstdcxx, target: Some(X64) },
+    Variant { name: "x64-g", flags: &["-g"], stdlib: Stdlib::Libstdcxx, target: Some(X64) },
 ];
 
-/// What mortar is expected to say about the shipped libc++ archives until
-/// `SHT_AARCH64_ATTRIBUTES` is accepted (layout.md L-35, resolve.md
-/// "Section types"): the refusal names the section type.
-pub const LIBCXX_REFUSAL: &str = "unsupported section type: SHT_AARCH64_ATTRIBUTES";
+/// The cross target of the `x64-*` variants (WP-034): libstdc++ only (no
+/// x86-64 libc++ tree here), the cross toolchains of Debian's
+/// `g++-x86-64-linux-gnu` and `gfortran-x86-64-linux-gnu`.
+pub const X64: &str = "x86_64-linux-gnu";
+
+/// The cross tools of [`X64`]: g++, gfortran, GNU ld, the emulator.
+#[derive(Clone, Debug)]
+struct Cross {
+    gxx: PathBuf,
+    gfortran: PathBuf,
+    bfd: PathBuf,
+    qemu: PathBuf,
+}
 
 /// The libc++ tree of `setup`: headers and static archives.
 #[derive(Clone, Debug)]
 pub struct LibcxxTree {
     pub include: PathBuf,
     pub lib: PathBuf,
-    pub stripped: PathBuf,
 }
 
 impl LibcxxTree {
@@ -140,12 +154,8 @@ impl LibcxxTree {
         let t = LibcxxTree {
             include: root.join("usr/lib/llvm-22/include/c++/v1"),
             lib: root.join("usr/lib/aarch64-linux-gnu"),
-            stripped: lane.join("libcxx-22-stripped"),
         };
-        (t.include.is_dir()
-            && t.lib.join("libc++.a").is_file()
-            && t.stripped.join("libc++.a").is_file())
-        .then_some(t)
+        (t.include.is_dir() && t.lib.join("libc++.a").is_file()).then_some(t)
     }
 }
 
@@ -158,6 +168,8 @@ struct Tools {
     gfortran: PathBuf,
     linkers: Vec<(&'static str, PathBuf)>,
     libcxx: Option<LibcxxTree>,
+    /// The `x64-*` variants' tools, when all are present.
+    cross: Option<Cross>,
 }
 
 #[derive(Debug, Default)]
@@ -209,11 +221,12 @@ struct Cell {
     ok: bool,
 }
 
+#[allow(clippy::too_many_lines)] // the tools, the work list and the report, in one place
 pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let args = parse(args)?;
     let Some(mason) = Mason::find_or_skip("programs")? else { return Ok(ExitCode::SUCCESS) };
     if std::env::consts::ARCH != "aarch64" {
-        println!(
+        say!(
             "xtask mason programs: skipped: kiln and hod's lane runs natively on AArch64 only here"
         );
         return Ok(ExitCode::SUCCESS);
@@ -234,9 +247,23 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         gfortran: need("gfortran")?,
         linkers,
         libcxx: LibcxxTree::find(),
+        cross: (|| {
+            Some(Cross {
+                gxx: tool(&format!("{X64}-g++"))?,
+                gfortran: tool(&format!("{X64}-gfortran"))?,
+                bfd: tool(&format!("{X64}-ld.bfd"))?,
+                qemu: tool("qemu-x86_64")?,
+            })
+        })(),
     };
+    if tools.cross.is_none() {
+        say!(
+            "xtask mason programs: no {X64} cross tools ({X64}-g++, -gfortran, -ld.bfd, \
+             qemu-x86_64): x64 variants skipped"
+        );
+    }
     if tools.libcxx.is_none() {
-        println!(
+        say!(
             "xtask mason programs: no libc++ tree (cargo xtask mason setup): libc++ variants skipped"
         );
     }
@@ -254,6 +281,9 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     for p in &programs {
         for v in VARIANTS {
             if v.stdlib != Stdlib::Libstdcxx && (!p.libcxx_ok() || tools.libcxx.is_none()) {
+                continue;
+            }
+            if v.target.is_some() && tools.cross.is_none() {
                 continue;
             }
             work.push((p, v));
@@ -278,22 +308,18 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let mut cells = cells.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     cells.sort_by_key(|(i, _)| *i);
     let cells: Vec<Cell> = cells.into_iter().map(|(_, c)| c).collect();
-    print!("{}", table(&cells, &tools));
+    say_raw!("{}", table(&cells, &tools));
     if args.census {
         let groups = census_groups(&scratch);
-        print!("{}", census::compare(&groups)?);
+        say_raw!("{}", census::compare(&groups)?);
     }
     let bad = cells.iter().filter(|c| !c.ok).count();
     if args.keep {
-        println!("xtask mason programs: kept {}", scratch.display());
+        say!("xtask mason programs: kept {}", scratch.display());
     } else {
         let _ = std::fs::remove_dir_all(&scratch);
     }
-    println!(
-        "xtask mason programs: {} cells, {} hold, {bad} do not",
-        cells.len(),
-        cells.len() - bad
-    );
+    say!("xtask mason programs: {} cells, {} hold, {bad} do not", cells.len(), cells.len() - bad);
     Ok(if bad == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
@@ -353,7 +379,7 @@ fn compile(
         ("KILN_STATS_LOG", &stats_s),
     ];
     let libcxx_flags: Vec<String> = match (&tools.libcxx, var.stdlib) {
-        (Some(tree), Stdlib::Libcxx | Stdlib::LibcxxStripped) => vec![
+        (Some(tree), Stdlib::Libcxx) => vec![
             "-stdlib=libc++".into(),
             "-nostdinc++".into(),
             "-isystem".into(),
@@ -371,19 +397,23 @@ fn compile(
         }
         argv.extend(var.flags.iter().map(|f| (*f).to_owned()));
         argv.push("-O0".into());
+        let cross = var.target.and(tools.cross.as_ref());
+        let target: Vec<String> = var.target.map(|t| format!("--target={t}")).into_iter().collect();
         let (prog, env): (&Path, &[(&str, &str)]) = match lang {
             Lang::Kiln => {
                 argv.extend(libcxx_flags.iter().cloned());
+                argv.extend(target.iter().cloned());
                 (&tools.mason.kiln, &kiln_env)
             }
             Lang::Clangxx => {
                 argv.extend(libcxx_flags.iter().cloned());
+                argv.extend(target.iter().cloned());
                 (&tools.clangxx, &[])
             }
-            Lang::Gxx => (&tools.gxx, &[]),
+            Lang::Gxx => (cross.map_or(&tools.gxx, |c| &c.gxx), &[]),
             Lang::Gfortran => {
                 argv.extend(["-J".into(), dir.display().to_string()]);
-                (&tools.gfortran, &[])
+                (cross.map_or(&tools.gfortran, |c| &c.gfortran), &[])
             }
         };
         argv.extend([
@@ -436,6 +466,10 @@ fn link_line(
     dir: &Path,
 ) -> Result<Vec<String>, String> {
     let mut argv: Vec<String> = vec!["-static".into()];
+    let cross = var.target.and(tools.cross.as_ref());
+    if !prog.gnu_driver {
+        argv.extend(var.target.map(|t| format!("--target={t}")));
+    }
     argv.extend(objects.iter().map(|o| o.display().to_string()));
     argv.extend(prog.extra.iter().cloned());
     if let Some(tree) = &tools.libcxx {
@@ -446,18 +480,11 @@ fn link_line(
                 format!("-L{}", tree.lib.display()),
                 "-lc++abi".into(),
             ]),
-            Stdlib::LibcxxStripped => {
-                argv.extend([
-                    "-stdlib=libc++".into(),
-                    format!("-L{}", tree.stripped.display()),
-                    "-lc++abi".into(),
-                ]);
-            }
         }
     }
     argv.extend(["-o".into(), "out".into(), "-###".into()]);
     let driver = if prog.gnu_driver {
-        tools.gxx.clone()
+        cross.map_or(&tools.gxx, |c| &c.gxx).clone()
     } else {
         // kiln's own link step: the clang++ it runs, asked in turn.
         let output = run_in(&tools.mason.kiln, &argv, dir, &[], TOOL_LIMITS)?;
@@ -477,7 +504,10 @@ fn link_line(
         .map(words)
         .find(|w| {
             w.first().is_some_and(|p| {
-                p.ends_with("collect2") || p.ends_with("/ld") || p.ends_with("ld.bfd")
+                p.ends_with("collect2")
+                    || p.ends_with("/ld")
+                    || p.ends_with("-ld")
+                    || p.ends_with("ld.bfd")
             })
         })
         .ok_or_else(|| format!("{} -###: no link line in {text}", driver.display()))?;
@@ -524,22 +554,32 @@ fn run_cell(
             return cell;
         }
     };
+    let cross = var.target.and(tools.cross.as_ref());
     for (name, linker) in &tools.linkers {
         let out = format!("out.{name}");
         let mut argv = with_output(&line, &out);
-        if *name == "mortar" {
-            // The verifier's map is mortar's machine map (`--mortar-map`,
-            // image.md I-120); `-Map` is the GNU text map (WP-027e).
+        // The verifier's map is mortar's machine map (`--mortar-map`,
+        // image.md I-120; `-Map` is the GNU text map, WP-027e). It judges
+        // AArch64 outputs (plumb.md §1): no map elsewhere.
+        if *name == "mortar" && cross.is_none() {
             argv.push(format!("--mortar-map={out}.map"));
         }
-        let r = match run_in(linker, &argv, dir, &[], TOOL_LIMITS) {
+        let ld = match (cross, *name) {
+            (Some(c), "bfd") => &c.bfd,
+            _ => linker,
+        };
+        let (runner, run_args) = match cross {
+            Some(c) => (c.qemu.clone(), vec![dir.join(&out).display().to_string()]),
+            None => (dir.join(&out), Vec::new()),
+        };
+        let r = match run_in(ld, &argv, dir, &[], TOOL_LIMITS) {
             Err(e) => Err(e),
             Ok(linked) if !linked.end.success() => Err(first_line(&linked)),
             Ok(linked) => {
                 if !linked.stderr.is_empty() {
                     cell.notes.push(format!("{name} warns: {}", first_line(&linked)));
                 }
-                match run_in(&dir.join(&out), &[], dir, &[], RUN_LIMITS) {
+                match run_in(&runner, &run_args, dir, &[], RUN_LIMITS) {
                     Err(e) => Err(format!("run: {e}")),
                     Ok(r) => Ok((
                         String::from_utf8_lossy(&r.stdout).into_owned(),
@@ -564,25 +604,13 @@ fn run_cell(
             cell.notes.push(format!("{name}: runs differently from GNU ld's"));
         }
     }
-    let expect_refusal = var.stdlib == Stdlib::Libcxx;
-    cell.ok = match (&ours, &reference, expect_refusal) {
-        (Some(Err(e)), _, true) => {
-            let named = e.contains(LIBCXX_REFUSAL);
-            if !named {
-                cell.notes.push(format!("expected the refusal '{LIBCXX_REFUSAL}'"));
-            }
-            named
-        }
-        (Some(Ok(_)), _, true) => {
-            cell.notes.push(
-                "XPASS: mortar linked the shipped libc++ archives; update LIBCXX_REFUSAL".into(),
-            );
-            false
-        }
-        (Some(Ok(run)), Some(refr), false) => run == refr,
+    // Every cell, the shipped libc++ archives included (WP-034): mortar
+    // links and its program runs as GNU ld's; any refusal fails the cell.
+    cell.ok = match (&ours, &reference) {
+        (Some(Ok(run)), Some(refr)) => run == refr,
         _ => false,
     };
-    if let Some(Ok(_)) = ours {
+    if let (Some(Ok(_)), None) = (ours, cross) {
         let out = dir.join("out.mortar");
         let pl = super::plumb(&out, &dir.join("out.mortar.map"), dir);
         if !matches!(&pl, Ok(p) if p.findings == 0) {

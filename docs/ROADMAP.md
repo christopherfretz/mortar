@@ -32,6 +32,18 @@ design: nothing may be built that makes a fast or an incremental linker
 impossible later (layout is data, the image a pure function of it,
 deterministic output, the pipeline's parallel shape).
 
+**The reference configuration** (operator, 2026-11-15): the codebase mortar
+is aimed at links very large STATIC executables (nearly everything is
+linked statically): typically hundreds of megabytes, rarely gigabytes; link
+lines of hundreds to low thousands of static archives; debug information
+always on, split DWARF (`-gsplit-dwarf`) acceptable; the output's file
+system supports reflink. Designs, benches and the go/no-go of incremental
+linking are sized for that: every step of a link or of an incremental
+update that is proportional to output size or to the number of inputs is
+named and costed at that scale, and split DWARF is a first-class
+configuration of every lane (WP-080), with a large real static link in
+the bench (WP-081).
+
 The first long-term goal is **M3**: the full libc++ test suite, compiled by
 kiln and hod and linked by mortar, passing wherever it passes with the
 control linker.

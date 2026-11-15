@@ -890,6 +890,12 @@ impl Unit<'_> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         self.expect(&link.diags, linker, &stderr, "the link's standard error")
             .map_err(|what| Raw::Fail(format!("{}: {what}", step.describe())))?;
+        // spec/harness.md "Directives" (`diag`): the one-definition-rule
+        // diagnostics of a mortar link are exactly those the test names.
+        if linker == Linker::Mortar {
+            super::odr::judge(&self.test.odr, &stderr)
+                .map_err(|what| Raw::Fail(format!("{}: {what}", step.describe())))?;
+        }
         match map_file {
             Some(map) if self.matrix.plumb => {
                 let words = match (linker, ld_words) {

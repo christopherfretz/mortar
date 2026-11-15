@@ -344,6 +344,26 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(" cannot be exported (version definitions are not supported)");
             return shown.then_some(name);
         }
+        Kind::OdrContentsMismatch { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" has different contents in different files");
+            return shown.then_some(name);
+        }
+        Kind::OdrSizeMismatch { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" has different sizes in different files");
+            return shown.then_some(name);
+        }
+        Kind::OdrStrongAndComdat { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" has a non-inline definition and an inline copy");
+            return shown.then_some(name);
+        }
+        Kind::OdrSymbolTypeMismatch { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is a function in one file and data in another");
+            return shown.then_some(name);
+        }
         Kind::CanonicalPltInPie { r_type, name } => {
             out.push_str("relocation ");
             escaped(r_type, out);

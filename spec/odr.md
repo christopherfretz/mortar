@@ -97,9 +97,10 @@ assumed), or if it is one of these exclusions.
   vtable (the other uses the type's `type_info` through `dynamic_cast`):
   O-25 compares two COMDAT copies of one `_ZTV` only. The model shows the
   miss and an extension that would catch it (Q16, open).
-- **X4** a type reached in some TU only through a pointer or reference to
-  it while it is incomplete there: that TU has no definition to hash, so
-  only the TUs that define it are compared (O-17).
+- **X4** a type whose layout some TU did not compute (it is incomplete
+  there, or only passed by pointer or reference): that TU writes no kind
+  3 row for it, so only the TUs that computed its layout are compared
+  (O-17).
 - **X7a** C translation units' types: C writes no kind 3 rows (O-33).
 - **X8** a TU whose container or symbols were lost (A2's tools): its rows
   are absent or unanchored; nothing reports the loss (MT-5).
@@ -112,6 +113,27 @@ assumed), or if it is one of these exclusions.
   libraries, libraries the link never named, indirect dependencies, and
   libraries without a table) is not reported: the load-time hook is a
   prototype direction, not a rule (§10.3).
+- **X13** two units with different `odr.scheme` strings (typically
+  different kiln versions): their kind 2 and 3 rows are incomparable, an
+  `--odr-stats` count only (O-11).
+- **X14** a dependent default argument of an instantiated function that
+  differs between TUs and is not used inside the definition: not hashed
+  until a serializer handles dependent nodes (O-10, K-6).
+- **X15** a definition whose declarator contains a lambda: no kind 2 row
+  (O-10, O-14).
+- **X16** attributes not on the scheme's closed list, and C++26 contracts
+  (`pre`, `post`, `contract_assert`): not hashed in scheme 1 (O-10).
+- **X17** a difference hidden inside a whole-literal placeholder: a
+  concatenated string literal with an unclassifiable piece, or a `#`/`##`
+  result, hashes as one placeholder until kiln's side table and
+  preprocessor mark exist (O-10).
+- **X18** a type that fails O-17's syntactic TU-local test without being
+  TU-local (a specialization over a pointer to a global object, a
+  typedef-named unnamed class): no kind 3 row (O-17).
+- **X19** C-linkage signature differences that O-33's conservative
+  canonical C type maps to one string (record types, `va_list`
+  spellings, `noexcept`, reference vs pointer, `restrict`): equal under
+  kind 5 by construction, so never reported.
 
 **Missed by today's default, reported under `--odr=strict`:**
 
@@ -125,7 +147,14 @@ assumed), or if it is one of these exclusions.
 - **X0** every record-based check (kinds 1, 2, 3, 5; O-24; O-25): strict
   only until O-46 moves it (O-47's register).
 
-Numbers X1-X12 are those of revision 1; X7 is split into X7a and X7b.
+- **X20** objects without records: a weak definition outside every
+  COMDAT group that lost resolution is not compared by W2 or W3, in any
+  mode (§8.1 compares the COMDAT copies and the resolved definition
+  only; `wcheck.py` would, and finds nothing on the corpora of §8.1).
+
+Numbers X1-X12 are those of revision 1; X7 is split into X7a and X7b;
+X13-X19 were added by the peer review of kiln and hod (2026-11-15); X20
+by WP-072.
 
 **Best effort (no proof).** Objects without records: W1 and W2 of §8 are
 on by default and catch K5 and K6 when two copies' sizes differ; nothing
@@ -154,10 +183,10 @@ by the model (`model`, §12.7).
 |---|---|---|---|---|
 | K1 | inline function, body differs by `-D` | silently the first object's copy for all callers: `fa=fb=1` (`a,b`), `fa=fb=2` (`b,a`) | no (code bytes differ legitimately, B1) | kind 2 hash (O-20) |
 | K2 | inline function with `assert`, `NDEBUG` in one TU | `a,b` runs; `b,a`: the assertion fires in the TU that disabled it, abort (134) | no | kind 2 hash |
-| K4 | class with an extra member in one TU | wrong values: `fb=` garbage (`a,b`), `fa=0` (`b,a`) | no: no symbol carries a size | kind 3 layout (O-18); also when the class is used only through `S*` and is complete in both TUs (model `K4-pointer-only`; O-17's reach); not when one TU sees it incomplete (X4) |
+| K4 | class with an extra member in one TU | wrong values: `fb=` garbage (`a,b`), `fa=0` (`b,a`) | no: no symbol carries a size | kind 3 layout (O-18), when both TUs computed the class's layout (O-17; the catalogue's TUs access members, so they do; model `K4-pointer-only`); not when one TU only passes `S*` along or sees `S` incomplete (X4) |
 | K5 | class with a different set of virtual functions | ran correctly by luck; `_ZTV1B` 48 vs 40 bytes | **W1** (size), W4 | kind 3 layout (vtable shape) |
 | K6 | class with different base classes | clang `a,b`: SIGBUS (135) under all three; g++ ran; `_ZTI1D` 56 vs 24, `_ZTV1D` 72 vs 40 | **W1**, W4 | kind 3 layout |
-| K7 | enum with different enumerators, used only as constants in `inline int isB(int e){ return e == B; }` | wrong results, order-dependent (`fa=1 fb=0` / `fa=0 fb=1`) | no | kind 2 hash (an enumerator hashes as type, name and **value**, O-10) and kind 3 (O-17 reaches the types of expressions) — model `K7-revised`; the first draft's rules missed it (`K7-old-rules`) |
+| K7 | enum with different enumerators, used only as constants in `inline int isB(int e){ return e == B; }` | wrong results, order-dependent (`fa=1 fb=0` / `fa=0 fb=1`) | no | kind 2 hash (an enumerator hashes as type, name and **value**, O-10) and kind 3 (O-17: the enumeration's enumerators appear in an emitted definition) — model `K7-revised`; the first draft's rules missed it (`K7-old-rules`) |
 | K8 | inline function, default argument differs | `fa=1 fb=2` in every order: each call site uses its TU's default; no visible failure | no | kind 2 hash (O-10: default arguments) |
 | K9 | inline variable, initializer differs | the variable takes the first object's value (`11`/`21`) while constant-folded uses keep each TU's value | W4 only (strict, §8) | kind 2 hash (the folded uses: X2) |
 | K11 | lambda in an inline function, body differs | the first object's closure for all callers | no | kind 2 (the enclosing function and the closure's `operator()`) |
@@ -247,8 +276,10 @@ or one of whose template arguments, involves a TU-local entity
 TUs may legally define different TU-local types of one spelling: N31
 (`kind3-tulocal`: `N12_GLOBAL__N_14ImplE` 4 vs 56 bytes,
 `St8optionalIN12_GLOBAL__N_14ImplEE` 8 vs 64, a local class
-`ZL8local_tivE5Local` 4 vs 56). How kiln decides it for kind 3 is O-17;
-kind 2 rows of instantiations over TU-local types name local symbols
+`ZL8local_tivE5Local` 4 vs 56). Kiln needs no TU-locality engine for
+this: for kind 3 it writes a row only for a type that passes O-17's
+syntactic test (a conservative under-approximation; anything it cannot
+prove non-TU-local gets no row); kind 2 rows of instantiations over TU-local types name local symbols
 (internal linkage), so they are never anchored and are not compared.
 
 **O-3 (the oracle).** Before a check is on by default, and on every
@@ -296,60 +327,130 @@ O-5 is reserved (it held a pointer in an earlier numbering).
 
 **O-10 (what it covers) [kiln].** The hash of a definition is computed
 by kiln over the definition after semantic analysis and template
-instantiation, serialized canonically:
+instantiation, serialized canonically. The rule throughout (peer review
+of kiln, 2026-11-15): **where kiln cannot tell, the item is not hashed**
+(a possible miss, a documented exclusion), never guessed (a possible
+false positive).
 
-- node kinds, operators, literal values as written (after macro
-  expansion);
-- the declarator **as written**: return and parameter types, cv- and
-  ref-qualifiers, storage, and the specifiers and attributes the source
-  spells (after macro expansion) that change meaning: `noexcept(…)`,
-  `constexpr`, `consteval`, `constinit`, `inline`, `alignas`, `packed`,
-  `no_unique_address`, calling-convention attributes, `visibility`.
-  **Only explicitly written specifiers are hashed**: a specifier a
-  member or a lambda gets implicitly from the language (an implicit
-  destructor that is `constexpr` in C++20, a lambda's `operator()` that
-  is implicitly `constexpr` from C++17, an implicit `noexcept` on a
-  destructor) is not part of the hash (N25). A specifier written through
-  a macro is written (N26 is therefore a real difference, handled by
-  O-32);
-- the **accumulated default arguments** of the function at the end of
-  the TU, and the default arguments used by calls inside the definition
-  (K8: [dcl.fct.default] requires them to agree for inline functions,
-  `[std, unverified clause]`);
-- each referenced entity by its **name**: an external entity by its
-  mangled name, a local entity (parameter, variable, label, structured
-  binding) by its declaration index in the definition, never by its
-  spelling; an internal-linkage entity by its name and the flag of O-16;
-- each **enumerator** reference as the triple (the enumeration's
-  `<type>` encoding, the enumerator's name, its value): K7's `isB` hashes
-  differently when `B`'s value differs although its name does not;
-- each type by its mangled encoding (the type's own definition is kind
-  3's business, not hashed into every user);
-- a lambda by its closure type's mangled name and its body; a local class
-  likewise;
-- implicitly defined members as kiln synthesizes them (their bodies:
-  member-wise operations; N10), under the "explicitly written" rule above
-  for their specifiers.
+- **Nodes.** Node kinds and operators of the written expressions and
+  statements. Of the implicit nodes sema adds, only the **resolved
+  function of each call and of each user-defined conversion** hashes (by
+  mangled name), so that a call that resolves to another overload in
+  another TU differs. Structural implicit nodes do **not** hash:
+  temporary materialization, lvalue-to-rvalue and other built-in
+  implicit conversions, cleanups and full-expression wrappers, constant
+  expression wrappers, elidable copies (so the hash does not move with a
+  sema refactor or with `-std` changing copy elision, C++14 vs C++17).
+- **Literals by value and type**, not spelling (kiln stores value and
+  type): `16` and `0x10` are equal, `16` and `16u` differ.
+- **The declarator**: return and parameter types, cv- and ref-qualifiers,
+  storage, and these specifiers, under a rule that needs no AST bit for
+  "written": `consteval`, `constinit` and a function's `inline` as kiln
+  records them; `constexpr` **except** on implicitly declared members,
+  defaulted functions and closure call operators (never hashed there:
+  kiln cannot tell written from implied, and C++20 makes implicit
+  destructors `constexpr`, N25); `noexcept` as the **effective** exception
+  specification (kiln stores implicit and written alike; the effective
+  one is what callers rely on); a **variable's** `inline` is not hashed
+  (not recorded; an inline variable is vague linkage either way). A
+  specifier written through a macro is written (N26 stays a real
+  difference, handled by O-32).
+- **Attributes: a closed list**, named by the scheme (O-11); every
+  attribute not on it is **not hashed** (kiln does not store unknown or
+  accepted-but-unimplemented attributes). Scheme 1's list, for kind 2:
+  `alignas` and `gnu::aligned`, `packed`, `no_unique_address`,
+  calling-convention attributes, `visibility`, `[[noreturn]]`
+  ([dcl.attr.noreturn] requires it in every TU's first declaration,
+  `[std, unverified clause]`), `gnu::target` / `target_clones`
+  (multiversioning changes which body runs), `[[assume(e)]]` (hashes `e`:
+  it changes what is undefined), `[[indeterminate]]` (C++26, a
+  cross-TU declaration rule). Considered and **not** hashed: `weak` and
+  `section` (they change the symbol, which the linker sees directly, not
+  the meaning); `trivial_abi`, `ms_struct` and `gcc_struct` are
+  properties of a class and belong to kind 3 (O-17's definition hash and
+  O-18's layout), not to every user. C++26 contracts (`pre`, `post`,
+  `contract_assert`) are **not hashed in scheme 1** (X16).
+- **Default arguments** (K8: [dcl.fct.default] requires them to agree,
+  `[std, unverified clause]`): the default arguments of the function's
+  **namespace-scope** declarations accumulated at the end of the TU
+  (block-scope redeclarations have their own set and are not hashed); for
+  an instantiated function template or member of a class template, only
+  **non-dependent** default arguments (dependent ones exist only as the
+  pattern and are not instantiated for hashing, [temp.inst]; X14); and,
+  at every call inside the definition, the arguments as sema built them,
+  default arguments included (so a default argument the definition uses is
+  hashed at the call, instantiated).
+- **Default member initializers** used inside the definition (by
+  aggregate initialization or by a constructor, including a synthesized
+  one) hash as the initializer expression at that use; the class's own
+  copy is kind 3's (O-17).
+- **Referenced entities by name**: an external entity by its mangled
+  name, a local entity (parameter, variable, label, structured binding)
+  by its declaration index in the definition, never by its spelling; an
+  internal-linkage entity by its name and the flag of O-16.
+- **Enumerators** as the triple (the enumeration's `<type>` encoding, the
+  enumerator's name, its value): K7's `isB`.
+- **Types** by mangled encoding (a type's definition is kind 3's).
+- **Lambdas**: a closure by its mangling number, or, when it has none, by
+  its index among the definition's lambdas in source order; then its
+  **resolved capture set** (each captured entity by local index and
+  capture kind, implicit captures included, so `[=]` and `[x]` capturing
+  only `x` are equal) and its body. A lambda in a default argument or a
+  default member initializer is hashed where that expression is hashed.
+  A definition whose **declarator** contains a lambda (C++20 lambdas in
+  unevaluated operands or template arguments of a signature) gets **no
+  row**: such declarations in two TUs declare different entities
+  ([temp.over.link], `[std, unverified clause]`; X15). Local classes are
+  hashed like lambdas, by index.
+- **Implicitly defined members** as kiln synthesizes them (sema builds
+  real bodies; N10), under the specifier rule above.
+- **Builtin-macro and source-location values** hash as placeholders (one
+  per kind), never as their values: `__LINE__`, `__COUNTER__`, `__DATE__`,
+  `__TIME__` and a `__FILE__` string are recognisable today from their
+  expansion record (kiln's preprocessor gives each its own
+  `ExpansionKind::Macro { name }` at the macro-name token); `__func__`,
+  `__builtin_FILE`/`_LINE`/`_FUNCTION`/`_COLUMN` and
+  `std::source_location::current()` are node kinds of their own. Two cases
+  need new kiln work (K-3): a string literal concatenated from pieces
+  (`"at " __FILE__ ":"`) keeps only bytes and its first and last piece's
+  location, so per-piece provenance needs a **sema side table**; and a
+  `#`/`##` result carries the enclosing macro's name, not its operands'
+  origin, so a stringized or pasted builtin (`STR(__FILE__)`) needs a
+  **small preprocessor mark**. Until each exists, the conservative form
+  applies: a concatenated literal any of whose pieces cannot be
+  classified, and every `#`/`##` result, hash whole as one placeholder
+  (X17); never as text, which would break must-equal across include-path
+  spellings.
+- **Modules**: a definition imported from a named module takes the hash
+  computed when the module was built and stored in its BMI (direction,
+  shared with K-6); textual inclusion, precompiled headers (identical AST
+  snapshots) and header units (in-process parses) are hashed in place and
+  must agree.
 
-It is **insensitive** to: whitespace, comments, macro names, `-O`, `-g`,
-`-fPIC`, `-ffunction-sections`, the order of unrelated declarations,
-source paths and line numbers, the expansions of `__FILE__`, `__LINE__`,
-`__DATE__`, `__TIME__`, `__COUNTER__`, `__builtin_FILE`/`_LINE`/
-`_FUNCTION`/`_COLUMN` and `std::source_location::current` (each hashes as
-its own placeholder: a preprocessor and parser change in kiln, K-3), how
-the definition was reached (textual `#include`, a precompiled header, a
-header unit), and the attributes `likely`, `unlikely`, `deprecated`,
+It is **insensitive** to: whitespace, comments, macro names, literal
+spelling, `-O`, `-g`, `-fPIC`, `-ffunction-sections`, the order of
+unrelated declarations, source paths and line numbers, the values of the
+placeholders above, how the definition was reached (textual `#include`,
+a precompiled header, a header unit, a module), and every attribute not
+on the scheme's list (among them `likely`, `unlikely`, `deprecated`,
 `nodiscard`, `maybe_unused`, `fallthrough`, `no_sanitize*`, `gnu::used`,
-`gnu::cold`, `gnu::hot` (they change neither meaning nor layout).
+`gnu::cold`, `gnu::hot`, `weak`, `section`).
 
 What it does **not** see: the code generator's choices (the reason K16d
 is kind 1's), and options that change meaning without changing tokens
 (the reason kind 1 exists).
 
-**O-11 (schemes).** Kind 1's `odr.scheme` names the serialization and
-the hash function. Rows of kinds 2 and 3 are compared only between units
-whose schemes are equal; a link with several schemes compares within
-each and `--odr-stats` reports the pairs it could not compare.
+**O-11 (schemes).** Kind 1's `odr.scheme` names the serialization, the
+attribute list of O-10, the provenance form (per-piece or whole-literal
+placeholders) and the hash function. **Bump rule**: any change to what
+is serialized or how changes the scheme string; kiln guards it with a
+golden-hash test (a fixed corpus whose hashes are checked in, so that an
+unannounced serialization change fails kiln's tests). Rows of kinds 2
+and 3 are compared only between units whose scheme strings are equal.
+Two different scheme strings are **incomparable**: never a diagnostic,
+only an `--odr-stats` count of the unit pairs not compared (X13). In
+practice objects from different kiln versions will often be
+incomparable; a full rebuild makes them comparable again.
 
 **O-12 (function, width, collisions).** The definition hash is 128 bits.
 The function is kiln's choice, named by the scheme; the recommendation
@@ -371,12 +472,40 @@ link test (K-8).
   header and a header unit** (three objects, one hash); N25's implicit
   destructor and lambda between `-std=c++14`, `c++17`, `c++20` and
   `c++23`; a strong out-of-line definition and an inline one of the same
-  static member (N22).
+  static member (N22). Added with the peer review, one per rule of O-10:
+  `16` vs `0x10` (literals by value); `return T();` at `-std=c++14` and
+  `c++17` (structural nodes and elision not hashed); a defaulted
+  (`= default`) special member and an implicit one under C++17 and C++20
+  (`constexpr` not hashed there); a destructor written `noexcept` and the
+  same destructor implicitly `noexcept` (effective `noexcept`); a
+  `static constexpr` data member's definition hashed in a C++14 and a
+  C++17 TU (implicitly `inline` only in C++17; a variable's `inline` is
+  not hashed); an unknown attribute
+  (`[[vendor::x]]`), `[[gnu::section("s")]]`, `[[deprecated]]` and
+  `pre`/`post` contracts present in one TU only (not on the list);
+  `STR(__FILE__)` and `"at " __FILE__` reached through two include
+  spellings (placeholders); a function template whose dependent default
+  argument is used by a call in one TU's other code only (dependent
+  defaults not hashed); a block-scope redeclaration adding a default
+  argument in one TU; `[=]` vs `[x]` capturing only `x`; a definition
+  from a named module, in the module's own unit and in an importer (the
+  BMI's hash).
 - **must-differ**: K1, K2, K8, K9, K11, K12, K13; **K7 in the `isB(int)`
   shape** (the enum appears only as a constant); one enumerator's value
   changed with its name kept; a changed `alignas`/`packed`; a changed
-  default member initializer; an explicitly written `constexpr` or
-  `noexcept` added.
+  default member initializer; an explicitly written `constexpr` added to
+  an ordinary inline function; an **effective** `noexcept` changed (a
+  `noexcept(false)` member making an implicit destructor potentially
+  throwing). Added with the peer review: `16` vs `16u`; a call resolving to
+  another overload because one TU declares an extra overload before the
+  definition; a default member initializer used by aggregate
+  initialization inside the definition, changed; `[[noreturn]]` added;
+  `gnu::aligned` changed; `gnu::target("avx2")` added; `[[assume(x > 0)]]`
+  vs `[[assume(x > 1)]]`; `[[indeterminate]]` added; a lambda's resolved
+  capture set changed (by copy vs by reference); a lambda body changed
+  where the enclosing function is inlined everywhere but the closure's
+  `operator()` is emitted (its own row, O-14); with per-piece provenance
+  only, `"at " __FILE__` vs `"in " __FILE__`.
 
 A must-equal failure is a false positive in every user's link: it blocks
 release of the hasher.
@@ -387,7 +516,20 @@ that clash with them: inline functions and variables, template
 instantiations (implicit or explicit), static data members of class
 templates, explicit specializations, the out-of-line members of class
 templates, and the out-of-line definition of a `static constexpr` data
-member (N22's strong row). Not for ordinary strong functions and
+member (N22's strong row). **Closure members**: the closure's
+`operator()` and each specialization of a generic lambda's call operator
+that is emitted as a symbol get a row (vague linkage), whose hash is the
+lambda's serialization of O-10 (closure number, resolved captures, body);
+the static invoker and the conversion function to a function pointer get
+**no** row (synthesized forwarding with nothing written; a difference
+shows in `operator()`). Reason, from must-equal safety: the row hashes
+exactly the sub-serialization that the enclosing definition's hash
+already contains, under the same rules (`constexpr` never hashed on a
+closure call operator), so identical source cannot make it differ where
+the enclosing hash agrees; it adds detection where the enclosing
+function was inlined everywhere and the closure's operator was emitted
+(K11 at `-O2`, X1's shape). A definition whose declarator contains a
+lambda gets no row (X15). Not for ordinary strong functions and
 variables (two of them are already `duplicate-symbol`, `spec/resolve.md`
 §3.8; their declarations are kind 5's), not for `gnu_inline` (N7), not
 for weak definitions that are not vague linkage (N5), and **not from C
@@ -444,51 +586,57 @@ user rows with `SYSTEM` rows exempt (Q5).
 
 ## 6. Layout records
 
-**O-17 (kind 3 row; reach).** A second, independent line of evidence: one
-row per class, struct, union or enumeration **that is not TU-local**
-(O-2), whose definition the TU contains (a C++ TU: O-33 excludes C) and
-that an emitted entity's definition or declarator reaches. TU-local
-types write **no row** (N31).
+**O-17 (kind 3 row; which types).** A second, independent line of
+evidence, for C++ TUs (O-33 excludes C). After the peer review the rule
+is the cheap one kiln proposed, which can only miss, never invent:
 
-*Deciding TU-locality [kiln].* On the semantic type, recursively: a
-class or enumeration is TU-local if it is declared in an unnamed
-namespace (at any depth), if it is a local class (any enclosing
-function), if it is a closure type whose lambda is not in an inline or
-templated entity with external linkage (or a default argument or
-default member initializer of one), or if it is a member of a TU-local
-class. A **template specialization** is TU-local if its template is,
-or if any of its template arguments is or involves a TU-local entity: a
-type argument that is TU-local or is built from one (a pointer,
-reference, array, function type, cv-qualified type, or another
-specialization over it), a template template argument naming a TU-local
-template, or a non-type argument that names or points to a TU-local
-entity. So `std::optional<(anonymous)::S>` and
-`std::vector<std::pair<int, (anonymous)::S*>>` are TU-local and write no
-row, while `std::optional<int>` writes one. The decision is made on the
-AST, never by parsing the mangled name; a test checks that it agrees
-with "the `<type>` encoding contains `_GLOBAL__N`, a local-entity
-`Z…E` or an unnamed closure `Ul`/`Ut` component" on the corpus (a
-cross-check, not the rule). Members and template arguments of a
-non-TU-local type that are TU-local are impossible in valid C++ for
-members of external entities (an exposure, [basic.link] p15 `[std,
-unverified clause]`), so the reach stops at TU-local types without loss. **Reach** (widened after the review's
-B2): the types of members, bases, parameters, returns, locals,
-`new`/`sizeof`/`alignof` operands, **the type of every expression**
-(K7's enumerator), **every template argument** of an instantiation, and
-the **pointee and referee** of every pointer and reference type reached,
-when that type is complete in the TU; transitively through members,
-bases and template arguments. A type that is incomplete in a TU gets no
-row from it (X4). K4 through an `S*`-only use is covered when `S` is
-complete in both TUs (model `K4-pointer-only`: kind 2 hashes equal, kind
-3 layouts differ).
+- one row per **class, struct or union whose layout this TU computed**
+  (kiln's `RecordLayout` exists for it: the TU accessed a member, took
+  `sizeof`/`alignof`, constructed, copied or destroyed it, used it by
+  value, derived from it, or emitted its vtable), and per **enumeration
+  whose definition the TU contains and whose type or enumerators appear in
+  an emitted definition** (K7's enumerator used as a constant);
+- and only if the type is **provably not TU-local** by the syntactic test
+  below. Otherwise no row (N31).
 
-Size with the wider reach: clang 22's DWARF of the heavy TU, a proxy for
-"types the TU needs complete" and "types the TU uses, pointees included",
-has 301 complete definitions at `-g` and 334 at `-g -fstandalone-debug`
-(`k3count`); the first draft's 334 rows therefore stand as the upper
-proxy (DWARF also describes TU-local types, which write no row, so the
-real count is lower) [estimate until kiln writes kind 3; MT-41's
-numbers use it].
+*The syntactic test [kiln]* (a conservative under-approximation of
+[basic.link] p13-15 that needs no TU-locality engine; `[std, unverified
+clause]`). A class or enumeration gets a row only if all hold:
+
+1. it has a name of its own: **unnamed types never get a row** (anonymous
+   structs and unions, unnamed enumerations, closure types, and an
+   unnamed class with a typedef name for linkage purposes);
+2. every enclosing scope is a **named** namespace (inline namespaces
+   included) or a class that itself passes this test: no unnamed
+   namespace at any depth, no enclosing function (local classes), no
+   enclosing lambda;
+3. if it is a template specialization: its template passes 1-2, and
+   every template argument is either a type built only from fundamental
+   types and types that pass 1-3 (through pointers, references, arrays,
+   function types, member pointers and cv-qualifiers), or an integral,
+   enumeration or `nullptr` value. A non-type argument that names or
+   points to an entity, a template template argument, or a pack
+   containing any argument that fails gives **no row**.
+
+So `std::optional<(anonymous)::S>`, `std::vector<std::pair<int,
+(anonymous)::S*>>`, `Local` and every closure write no row, while
+`std::optional<int>` and `ns::Widget<ns::Gadget*>` write one. A type that
+fails the test without being TU-local (a specialization over a pointer
+to a global object, a typedef-named unnamed class) is a miss (X18),
+never a false positive. The test is made on the AST, never by parsing the
+mangled name; a kiln test cross-checks it against "the `<type>` encoding
+contains `_GLOBAL__N`, a local-entity `Z…E` or an unnamed `Ul`/`Ut`
+component" on the corpus.
+
+K4 through an `S*`-only use is covered when both TUs computed `S`'s
+layout; a TU that only passes `S*` along does not, and is X4. The model's
+`K4-pointer-only` case is caught by kind 3 when both TUs access a member
+(they do in the catalogue's shape).
+
+Size: clang 22's DWARF of the heavy TU has 301 complete definitions at
+`-g` and 334 at `-g -fstandalone-debug` (`k3count`); "layout computed"
+is at most the former, and TU-local types write no row, so 334 is an
+upper proxy [estimate until kiln writes kind 3; MT-41's numbers use it].
 
 | offset | field | |
 |---|---|---|
@@ -503,6 +651,11 @@ numbers use it].
 | 48 | `u32 line` | |
 | 52 | `u32 details` | offset of the type's entry in the kind 4 block, `0xffffffff` none |
 
+Because K-4 lands before K-3 (§11's order), a unit whose scheme has no
+definition serializer yet writes `hash` as all zero bytes: "not hashed".
+Two rows are compared on `hash` only when both are non-zero and their
+schemes are equal; `layout`, `size` and `align` are compared always.
+
 **O-18 (layout hash) [kiln].** 64 bits over: size, alignment; per base
 (in declaration order) its key, offset and virtuality; per non-static
 data member its offset in bits, bit-field width, and type encoding; the
@@ -510,7 +663,11 @@ vptr's offset; the vtable shape: slot count and, per slot, the mangled
 name of the final overrider's declaration (not of its body); for an
 enumeration, the underlying type and the (name, value) list. **Not** the
 RTTI slot: whether a vtable's `type_info` slot is filled depends on
-`-frtti`, which is legal to mix (N24); K16c is O-25's. From kiln's
+`-frtti`, which is legal to mix (N24); K16c is O-25's. It also covers
+the class attributes of O-10's list that are a class's property:
+`trivial_abi` (changes how the class is passed), `ms_struct` /
+`gcc_struct` and `packed` (their effect on offsets is already in the
+layout; the attribute is hashed too, so the record says why). From kiln's
 `RecordLayout` (`kiln_ast/src/types/layout.rs`) and `VTableLayout`
 (`kiln_ast/src/class.rs`).
 
@@ -636,9 +793,12 @@ its corpus (it needs kind 1).
 
 ### 8.1 The foreign checks (W)
 
-These read only what resolution already holds: for each live COMDAT
-group with two or more copies, the defined symbols of each copy, and for
-W3 the strong definitions of the same keys. Measured from the **rule
+These read only what resolution already holds: the defined global
+symbols of every live COMDAT copy, a group with a single copy included
+(W2 and W3 compare it with the key's resolved definition, which is
+outside the group), and for W2 and W3 each such key's resolved
+definition. A definition that is neither in a COMDAT copy nor the
+resolved one is not compared (X20). Measured from the **rule
 text** (`wcheck.py`) over the corpora of experiment 1 (§12.3, Appendix
 A): `libstdc++.a` + `libsupc++.a` (254 files, 6,990 names), `libc.a`
 (2,022 files), `libgcc.a` + `libgcc_eh.a` (409), libc++ 22 `libc++.a` +
@@ -652,7 +812,7 @@ COMMON, C tentative-definition and 12-TU mixed links:
 | W1 | an `STT_OBJECT`/`STT_TLS` symbol defined in two copies of one COMDAT group with different `st_size` | K5 (`_ZTV1B` 48/40), K6 (`_ZTI1D` 56/24, `_ZTV1D` 72/40) | 0 on every corpus above; 0 on N20-N24 | **on**, warning `odr-size-mismatch` |
 | W2 | one key defined as `STT_FUNC`/`STT_GNU_IFUNC` in one live file and as `STT_OBJECT`/`STT_TLS`/common in another; `STT_NOTYPE` never participates | (none in the catalogue) | 0 on every corpus; N23 (F4) is not a finding under this wording (the first draft's prototype flagged it) | **on**, warning `odr-symbol-type-mismatch` |
 | W3 | a strong non-COMDAT definition and a COMDAT copy of the same key | K13 | **3**: N20, N21, N22 (`legal-fp` F1-F3; protobuf ships N22's pattern) | `--odr=strict` only, warning `odr-strong-and-comdat`; never proposed as a default |
-| W4 | data contents (bytes and symbol-normalized relocations) differ between copies | K5, K6, K9 | **1**: a libstdc++ vtable (D1/D2 aliases differ between GCC and Clang) | `--odr=strict` only, warning |
+| W4 | data contents (bytes and symbol-normalized relocations) differ between copies | K5, K6, K9 | **1**: a libstdc++ vtable (D1/D2 aliases differ between GCC and Clang) | `--odr=strict` only, warning `odr-contents-mismatch` |
 | W5 | section alignment differs | — | **4**: `_ZTS*` 8 (GCC) vs 1 (Clang) | not a check |
 | F | function code bytes differ | K1, K2, K11 … | everything at different `-O` (N1) | never |
 
@@ -711,6 +871,31 @@ unit) follow O-33. Status: `--odr=strict` until its corpus (O-47).
   the `type` hash of the canonical C type kiln writes for C-linkage rows
   (K-5), so the rules live in kiln's canonicalization and mortar compares
   bytes;
+- the canonical C type is **conservative** (peer review of kiln,
+  2026-11-15: wherever the C and the C++ spelling of one declaration can
+  legitimately differ, the canonical form erases the difference; X19):
+  typedefs are resolved; **every record type**, behind a pointer or by
+  value, is one opaque token `R` (`typedef struct {…} T;` has linkage
+  name `T` in C++ and none in C, and a namespace-qualified C++ struct is
+  a C tag; size differences of by-value records stay visible through
+  `size` for variables); `va_list` and its target spellings
+  (`std::__va_list` on AArch64 C++, `__va_list_tag[1]`, `char*`) are one
+  token `V`; `noexcept` is dropped at **every** level, including nested
+  function-pointer types; references become pointers; `restrict` is
+  dropped (other pointer-level qualifiers, `const` and `volatile`, are
+  kept); a GCC transparent union parameter becomes its first member's
+  type (glibc's `__SOCKADDR_ARG`, measured below); `(void)` and `()` in a
+  prototyped declaration are one form. *Measured* [proxy: clang's types,
+  not kiln's; T-O-33]: glibc's public declarations (24 headers,
+  `-D_GNU_SOURCE`) compiled as C17 and as C++20 `extern "C"`, clang 19
+  and 22, AArch64, x86-64 and i386: 2,573 / 2,461 / 2,461 functions per
+  target, raw type strings differ for 2,318-2,329 of them, canonical
+  strings differ for **0** (8, all socket functions, without the
+  transparent-union step). i386: GCC's C `wchar_t` is `long int`, clang's
+  `int` (both mangle `w`); kiln writes records for the 64-bit targets
+  only, so this matters only if i386 ever gets records, and then `int`
+  and `long` must be one token there. zlib, SQLite and Lua (named as the
+  C corpus below) are not in the container and were not used;
 - C-linkage findings are `odr-declaration-mismatch` under
   `--odr=strict` **only, until a C corpus** shows zero: C libraries
   compiled by kiln with records (objects without records exercise
@@ -745,6 +930,7 @@ mode's (`--odr=warn`, O-40) for a check that is on; O-47 says which are.
 |---|---|---|---|
 | `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | warning |
 | `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | warning (opt-in) |
+| `odr-contents-mismatch` | `OdrContentsMismatch { name }` | `{name} has different contents in different files` | warning (strict only) |
 | `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | warning; error under `--odr=error`/`strict` |
 | `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | warning (strict only) |
 | `odr-isa-mismatch` | `OdrIsaMismatch { name }` | `the kept copy of {name} was compiled for other target features than a translation unit that uses it` | warning |
@@ -767,6 +953,12 @@ warning: f(int) violates the one-definition rule
 >>> the definitions differ; a.o and b.o were compiled with different -D options? (compare their command lines)
 ```
 
+- Places are `spec/diag.md` §2.4's `file:(symbol)`. The W checks
+  (no record, no source position) print `>>> defined in a.o:(f)` and
+  `>>> defined differently in b.o:(f)`, and say in a note which class is
+  kept (`the first is kept`) or used; the `(kept)` marker and `at h.h:3`
+  of the example above are the record checks' (WP-073), once a place can
+  carry a source position.
 - One diagnostic per entity: the copies are partitioned by hash; the
   first class (the keeper's) is "defined in", each other class's first
   file "defined differently in", with at most 3 files a class and a count
@@ -806,6 +998,8 @@ every warning (`spec/diag.md` §6.3).
   included, plus unanchored, `PARTIAL` and `INLINED_ONLY` rows; the
   record-based findings above are errors, every other finding a warning,
   `meta-malformed` and `meta-version` errors.
+- The W checks (§8.1) are warnings in every mode, `error` and `strict`
+  included (O-40); `--fatal-warnings` makes them errors.
 - `--odr=off`, also spelled **`--no-odr-check`**: no check runs, no
   container byte is read (O-42), the W checks do not run, and no
   loadable table is written (§10). The output is byte-identical to the
@@ -813,9 +1007,11 @@ every warning (`spec/diag.md` §6.3).
 - `--odr-check-archives` (O-23), `--odr-table=off|exported|full` (O-50),
   `--odr-stats` (O-44).
 - GNU gold's `--detect-odr-violations`: accepted as a **no-op**: mortar
-  already checks by default; it prints once `note: mortar checks the
-  one-definition rule by default; --detect-odr-violations has no further
-  effect` (it must not lower an error to a warning, review M11).
+  already checks by default. It prints nothing (`spec/diag.md` §2.1 has
+  no note severity); the option table's reason for the row is `mortar
+  checks the one-definition rule by default; --detect-odr-violations has
+  no further effect`. It must not lower an error to a warning (review
+  M11).
 
 **O-42 (a link that does not use the feature does not pay for it).** A
 hard rule. A container byte is read only when a check that needs it is
@@ -844,7 +1040,9 @@ pay, and `--no-odr-check` must make mortar competitive with mold (O-42).
 by default only after O-3's oracle has run it at zero on its corpus
 (§12.2, §12.3; for C-linkage kind 5 the C corpus of O-33). A check moves
 from warning to error under the default mode only by the operator's
-decision (Q1), after it has been on at zero for a release. Each move is
+decision (Q1), after it has been on at zero for a release. Checks move
+independently, per kind, in the order kiln lands their records (§11):
+kinds 5 and 3 may move before kind 2. Each move is
 recorded in the landed record of the package that makes it and in
 O-47's table, by amendment.
 
@@ -857,11 +1055,11 @@ O-47's table, by amendment.
 | `meta-malformed`, `meta-version` | container headers | **on** (warning) | no object of the corpora has a container; they fire only on broken producers | — |
 | W3 `odr-strong-and-comdat` | foreign facts | strict | N20-N22 | never by default (Q12 withdrawn) |
 | W4 | foreign facts | strict | N3's vtable | never by default |
-| kind 2 `odr-violation` (hash, K13 flags) | kiln K-1, K-3 | strict | cannot run yet | WP-074's oracle at zero |
-| kind 3 `odr-type-mismatch` (layout) | K-4 | strict | cannot run yet | WP-074's oracle at zero |
-| kind 3 definition-only differences | K-4 | strict | — | after layout's, separately |
-| kind 5 C++ linkage `odr-declaration-mismatch` | K-5 | strict | cannot run yet | WP-074's oracle at zero |
+| kind 5 C++ linkage `odr-declaration-mismatch` | kiln K-1, K-5 (first in kiln's order) | strict | cannot run yet | WP-074's oracle at zero |
 | kind 5 C linkage | K-5 | strict | N28 | the C corpus of O-33 at zero |
+| kind 3 `odr-type-mismatch` (layout) | K-4 (second) | strict | cannot run yet | WP-074's oracle at zero |
+| kind 3 definition-only differences | K-4 and K-3's serializer | strict | — | after layout's and after kind 2's, separately |
+| kind 2 `odr-violation` (hash, K13 flags) | K-3 (third) | strict | cannot run yet | WP-074's oracle at zero |
 | `odr-internal-reference` | K-3 | strict | `k12proxy`: libstdc++ sets it | Q5 |
 | `odr-abi-mismatch` (`ENFORCE` keys), `odr-isa-mismatch` | K-2 | strict | cannot run yet | WP-074's oracle at zero |
 | `odr-vtable-rtti-mismatch` | K-2 | strict | model only | WP-074's oracle at zero |
@@ -1179,17 +1377,22 @@ in `spec/meta.md` and the checks in `spec/odr.md` of mortar's repository
 files `spec/meta.md` and `spec/odr.md`; the rule ids below are theirs).
 These requests are sent once the specs are merged to `main`. Nothing in mortar
 depends on these requests to link correctly; each one turns on a check.
-Estimates are the designer's, for the receiving agent to correct.
+Estimates are the receiving agents' own (kiln's and hod's review,
+2026-11-15), except K-2's, which kiln confirmed.
 
 ### kiln
 
-- **K-1 — the flag and the emission.** Add
-  `-fmason-metadata[=min|default|detail|all]` and `-fno-mason-metadata`
+- **K-1 — the flag and the emission.** Add a flag with levels
   (`min`: record kinds 1 and 2; `default`: 1, 2, 3, 5; `detail`: + 4;
-  `all`: + rows for definitions inlined away, flag `INLINED_ONLY`). Emit
-  one IR global per module: `@__mason_meta = private constant [N x i8]
-  c"…", section ".mason.meta", align 8, !exclude !0`, listed in
-  `@llvm.compiler.used`; llc 19 and 22 already lower exactly this to the
+  `all`: + rows for definitions inlined away, flag `INLINED_ONLY`) and
+  its negation; this spec calls it `-fmason-metadata[=…]` and the global
+  `@__mason_meta`, but **the flag's and the global's spellings are
+  kiln's to choose** (the operator's call there): mortar fixes only the
+  section name `.mason.meta` and the bytes. Emit one IR global per
+  module, e.g. `@__mason_meta = private constant [N x i8] c"…", section
+  ".mason.meta", align 8, !exclude !0`, listed in `@llvm.compiler.used`
+  (without it `opt -O2` deletes the unreferenced global: measured), with
+  no `comdat` and an initializer that needs no relocation; llc 19 and 22 already lower exactly this to the
   required section (`SHT_PROGBITS`, flags exactly `SHF_EXCLUDE`, align
   8, in no COMDAT group, no relocations: mortar `spec/meta.md` MT-1,
   MT-2). The bytes are one **unit**: a 32-byte header (`MASN`, version
@@ -1199,11 +1402,25 @@ Estimates are the designer's, for the receiving agent to correct.
   O-35. Rows of kinds 2 and 5 carry no name: they are "anchored" to the
   object's symbol whose FNV-1a 64 equals the key. Where: at the end of
   module emission, when the final set of globals (linkage, comdat) is
-  known (`kiln_codegen/src/module.rs`). Deterministic bytes (no pointer
+  known (`kiln_codegen/src/module.rs`); codegen keeps no list of the
+  emitted vague-linkage definitions today, so it **records them during
+  emission** (kiln's review, small). Deterministic bytes (no pointer
   values, no hash-map order, paths after `-ffile-prefix-map`). C
-  translation units write kinds 1 and 5 only. *Why:* nothing else
-  reaches the linker. *Test:* mortar's test producer writes the same
-  bytes for the same rows. *Estimate:* 2-3 days.
+  translation units write kinds 1 and 5 only. **Survival through the
+  optimizer, measured** (`peer/run.sh`, `run2.sh`, 2026-11-15): IR
+  carrying the global in `@llvm.compiler.used`, through `opt` 19 and 22
+  at `-O1`, `-O2`, `-O3`, `-Os` (AArch64 and x86-64), keeps the global and
+  its `!exclude`; `llc -O2` of the result, and `clang` 19 and 22 `-O2 -c`
+  of the IR for AArch64, x86-64 and i686, give `.mason.meta`,
+  `SHT_PROGBITS`, flags `E` only, align 8, the input's bytes, no
+  `.rela.mason.meta`, no group. The section's index in the section table
+  varied (2 or 3), which is why mortar finds it by name and type only
+  (MT-1). **LTO is a named non-goal** until mortar has LTO (X10). On the
+  hod route (`-fkiln-backend=hod`) H-1 is a **hard prerequisite**: before
+  it, `!exclude` makes hod fail and kiln falls back to llc with a warning
+  per TU. *Why:* nothing else reaches the linker. *Test:* mortar's test
+  producer writes the same bytes for the same rows. *Estimate:* with K-2,
+  one kiln package (about 1000 changed lines; kiln's estimate).
 - **K-2 — kind 1 (TU summary).** Rows of (name, value) strings, sorted:
   `producer`, `source`, `odr.scheme`, `std`, `lang` (`c`/`c++`),
   `abi.rtti`, `abi.exceptions`, `abi.short-enums`, `abi.stdlib`,
@@ -1211,7 +1428,7 @@ Estimates are the designer's, for the receiving agent to correct.
   `abi.char`, `abi.wchar`, `abi.long-double`, `isa`, with the `ENFORCE`
   flag on the layout-changing ones (`spec/meta.md` MT-26 lists which;
   `abi.rtti` is not enforced). From the driver's options and the target.
-  *Estimate:* 1 day.
+  *Estimate:* 1 day (kiln agrees); lands with K-1.
 - **K-3 — the definition hasher (kind 2).** A pass over the semantic AST
   after template instantiation, for every emitted definition that may
   appear in more than one TU (inline functions and variables, template
@@ -1219,59 +1436,64 @@ Estimates are the designer's, for the receiving agent to correct.
   templates, out-of-line `static constexpr` members; `spec/odr.md`
   O-14), serializing canonically what `spec/odr.md` O-10 lists, hashed
   to 128 bits (FNV-1a 128 or SipHash-1-3, named by a scheme string), with
-  the flags of O-15 and the odr-use analysis of O-16. The traps:
-  - only **explicitly written** specifiers (`constexpr`, `noexcept`, …,
-    including those a macro wrote) are hashed, never the implicit ones the
-    language adds (an implicit destructor's C++20 `constexpr`, a lambda's
-    implicit `constexpr`);
+  the flags of O-15 and the odr-use analysis of O-16. The traps (after
+  kiln's review; O-10 is normative):
+  - specifiers under the rule that needs **no new AST bit**: `constexpr`
+    is never hashed on implicitly declared members, defaulted functions
+    and closure call operators; `noexcept` is hashed as the effective
+    specification; a variable's `inline` is not hashed;
+  - literals by **value and type**; of the implicit nodes, only the
+    resolved function of each call and user-defined conversion;
   - an enumerator reference hashes as (enum type, name, **value**);
-  - local entities by declaration index, not spelling;
-  - `__FILE__`, `__LINE__`, `__DATE__`, `__TIME__`, `__COUNTER__`,
-    `__builtin_FILE` & co. and `std::source_location::current()` hash as
-    placeholders. Today kiln's preprocessor expands builtin macros into
-    scratch-buffer tokens (`kiln_pp/src/expand.rs`) whose spans are shared
-    with `#`/`##` results, so sema sees a plain literal, possibly
-    concatenated with neighbours (`__FILE__ ":"`). The hasher needs the
-    **preprocessor to mark builtin-macro provenance** on the tokens and the
-    **parser to carry it** to the literal nodes: a preprocessor and parser
-    change. A string literal formed by concatenating pieces (`"at "
-    __FILE__ ":"`) is one node; it carries **per-piece provenance** (the
-    list of its source tokens, each with its flag), and the hasher hashes
-    each piece in order, a builtin-macro piece as its placeholder and
-    every other piece as its text, so `"at " __FILE__` and `"in "
-    __FILE__` still differ. A literal produced by `#` or `##` from a
-    builtin-macro operand is hashed whole as a placeholder (a possible
-    miss, never a false positive). The minimum acceptable implementation
-    is one flag per literal node that hashes the whole node as a
-    placeholder when any piece is a builtin macro: safe (it can only hide
-    a difference in the other pieces), stated in the scheme name;
+  - local entities by declaration index, not spelling; lambdas and local
+    classes by mangling number or index, closures by resolved captures;
+  - the closed **attribute list** of O-10 (scheme 1), every other
+    attribute not hashed; contracts not hashed in scheme 1; default
+    arguments as O-10 states (namespace-scope, non-dependent only);
+  - builtin-macro and source-location values hash as placeholders. No
+    preprocessor change is needed for direct builtin results: each
+    already has its own `ExpansionKind::Macro { name }` record at the
+    macro-name token (`kiln_pp` `expand.rs`), so `__LINE__`,
+    `__COUNTER__` and a single-piece `__FILE__` are recognisable today;
+    `__func__`, `__builtin_FILE` & co. and `source_location::current()`
+    are node kinds of their own. New work is (i) a **sema side table**
+    giving a concatenated string literal per-piece provenance, so the
+    hasher hashes a builtin-macro piece as its placeholder and every other
+    piece as text, and (ii) a **small preprocessor mark** on `#`/`##`
+    results whose operand came from a builtin macro. Until each exists,
+    the conservative form (O-10, X17) hashes the whole literal, and every
+    `#`/`##` result, as one placeholder, named in the scheme;
+  - O-11's **bump rule** with a golden-hash test;
   - the same definition reached textually, through a precompiled header
-    and through a header unit hashes equally;
-  - implicitly defined members are synthesized before hashing;
+    and through a header unit hashes equally (kiln: PCH restores the
+    identical AST, header units are in-process parses); a definition
+    imported from a named module takes the hash stored in its BMI when the
+    module was built (direction, with K-6);
+  - implicitly defined members as sema synthesizes them;
     constant-evaluated initializers hash as expressions, not values (K9);
     `gnu_inline` definitions get no row.
   Keep the two corpora of O-13 (must-equal, must-differ) as kiln tests.
-  *Estimate:* 3-4 weeks with the corpora (the first estimate, 2-3 weeks,
-  omitted the preprocessor/parser provenance change and the PCH/header
-  unit cases).
-- **K-4 — kinds 3 and 4 (types).** For C++ TUs only: one row per class,
-  struct, union or enum that is **not TU-local** (C++20 [basic.link]
-  p13-15: no row for unnamed-namespace types, local classes, closure
-  types outside inline or templated external entities, and
-  specializations any of whose template arguments is or involves a
-  TU-local entity, e.g. `std::optional<(anonymous)::S>`; decided
-  recursively on the AST as `spec/odr.md` O-2 and O-17 say; two TUs may
-  legally have different private types of one spelling, which would
-  otherwise collide), whose definition the TU contains and that an
-  emitted definition reaches — through members, bases, parameters,
-  returns, locals, `new`/`sizeof`/`alignof` operands, the type of every
-  expression, every template argument, and the pointee or referee of
-  every pointer or reference, when complete (`spec/odr.md` O-17). The
-  64-bit layout hash of O-18 (size, alignment, bases with offsets,
-  members with bit offsets and types, vptr offset, vtable slots by final
-  overrider's mangled name, enumerators with values; **no RTTI slot**),
-  from `RecordLayout` and `VTableLayout`. Kind 4 (readable layout) at
-  `detail`. *Estimate:* 1-1.5 weeks.
+  **Acceptance criterion: at most 3% of front-end time at `default` on
+  kiln's benches, measured and reported** (it is one more walk over every
+  emitted body). *Estimate:* 5-7 kiln packages of about 1000 changed
+  lines (kiln's estimate; it replaces the designer's 3-4 weeks).
+- **K-4 — kinds 3 and 4 (types).** For C++ TUs only: one row per
+  class, struct or union **whose layout this TU computed** (a
+  `RecordLayout` exists), and per enumeration defined in the TU whose type
+  or enumerators appear in an emitted definition, **only if** it passes
+  O-17's **syntactic** not-TU-local test (named; every enclosing scope a
+  named namespace or a passing class; template arguments built only from
+  fundamental and passing types or integral, enumeration and `nullptr`
+  values). It is a conservative under-approximation of [basic.link]
+  p13-15: kiln needs no TU-locality engine (it has none); anything not
+  provably non-TU-local gets no row; **unnamed types never get a row**
+  (their manglings are numbered per TU). The 64-bit layout hash of O-18
+  (size, alignment, bases with offsets, members with bit offsets and
+  types, vptr offset, vtable slots by final overrider's mangled name,
+  enumerators with values; **no RTTI slot**), from `RecordLayout` and
+  `VTableLayout`, which already hold every field. Kind 4 (readable
+  layout) at `detail`. *Estimate:* 2 kiln packages (the syntactic test,
+  then the rows; kiln's estimate).
 - **K-5 — kind 5 (declarations).** One row per defined or referenced
   external function or variable: a 64-bit hash of the declared type's
   Itanium encoding with array bounds erased, `sizeof` for variables,
@@ -1283,16 +1505,29 @@ Estimates are the designer's, for the receiving agent to correct.
   typedef type, `char16_t`/`char32_t` to `uint_least16_t`/
   `uint_least32_t`, `char8_t` to `unsigned char`, `bool` = `_Bool`);
   unprototyped declarations get no row, and `f()` is prototyped only in
-  C23 and later (O-33). *Estimate:* 4-5
-  days.
-- **K-6 — modules.** Use the K-3 hash for the comparison
-  `kiln/spec/modules.md` §10 item 11 skips today (definitions merged from
-  global module fragments; the planned "ODR key / structural hash"): one
-  hash, two consumers. Mortar measured that clang 19 and 22 do not
+  C23 and later (O-33). The canonical C type is **conservative** where C
+  and C++ spellings legitimately differ (O-33): every record type opaque
+  (`R`), `va_list` one token (`V`; `std::__va_list` on AArch64 C++),
+  `noexcept` dropped at every level including nested function-pointer
+  types, references as pointers, `restrict` dropped, a transparent union
+  as its first member's type, typedefs resolved; measured at zero
+  differences on glibc's headers as C and as C++ (O-33). kiln already
+  has `mangle_type` for a bare type, the enum's chosen integer type and
+  the unprototyped flag. *Estimate:* 1 kiln package (kiln's estimate).
+- **K-6 — modules.** **Its own design, after K-3, sharing one
+  serializer** (not one hash): the comparison `kiln/spec/modules.md` §10
+  item 11 skips today (definitions merged from global module fragments;
+  the planned "ODR key / structural hash") needs hashes of everything a
+  GMF declares (class definitions as declared, enums, uninstantiated
+  templates) at import time, so the serializer must handle **dependent
+  nodes**, which K-3 does not (they are K-6's work, not K-3's); kiln's
+  expression profiler treats lambdas as unique and is not reusable as is.
+  The BMI also stores the K-3 hashes of the module's definitions (O-10). Mortar measured that clang 19 and 22 do not
   diagnose two named modules whose global module fragments define one
   inline function differently, and that the linked program runs the first
   module's copy (`spec/odr.md` K19); kiln can diagnose it at import. Rows
-  of GMF definitions carry flag `GMF`. *Estimate:* kiln's.
+  of GMF definitions carry flag `GMF`. *Estimate:* 2-3 kiln packages
+  (kiln's).
 - **K-7 — default.** On in a development profile when kiln has one, off
   otherwise until mortar's oracle (§12.3) is green.
 - **K-8 — corpora as objects.** kiln's must-equal and must-differ tests
@@ -1310,8 +1545,15 @@ Estimates are the designer's, for the receiving agent to correct.
   although nothing references it. hod's object API can already write
   such a section (`SectionKind::Elf{sh_type, sh_flags, sh_entsize}`).
   Testable against `llc -O0` with hod's irdiff oracle. Without this,
-  kiln's hod route cannot carry the records (kiln's llc route can).
-  *Estimate:* 1-2 days.
+  kiln's hod route cannot carry the records (kiln's llc route can): H-1
+  is a **hard prerequisite of K-1 on the hod route**. hod confirmed
+  (2026-11-15) that it writes one section per (name, flags, type, group)
+  as llc does, never adds a group or `SHF_MERGE`, and that the size is
+  the initializer's; the section's **position in the section table is
+  not promised** to match llc's, and mortar does not need it: it finds the
+  container by name and type only (`meta.md` MT-1). *Estimate:* half a
+  day including tests against llc 19 and 22 on both targets and a link
+  check with GNU ld, lld and mold (hod's estimate).
 - **H-2 — opacity.** hod never interprets the section's bytes: its
   contents equal the IR constant's bytes (a test).
 - Nothing else: per-section content hashes are not needed
@@ -1319,21 +1561,30 @@ Estimates are the designer's, for the receiving agent to correct.
 
 ### Landing order
 
-Each step is useful and testable alone:
+kiln's order and estimates (peer review, 2026-11-15; kiln packages of
+about 1000 changed lines). Starting any kiln or hod step is the
+operator's decision. Each step is useful and testable alone:
 
 1. **mortar** WP-071 (container reader, writer, test producer; its
    acceptance test is experiment 7) and WP-072 (W1-W3, switches): no other
    project needed.
-2. **hod** H-1: useful to any IR producer; tested by irdiff.
-3. **kiln** K-1 + K-2: units with kind 1 only.
-4. **kiln** K-3, then K-5, then K-4: each kind's mortar check runs under
-   `--odr=strict` at once (WP-073 is written against the test producer)
-   and turns on by default after the oracle (O-46).
-5. **mortar** WP-075 (O-24's prototype, then tables and O-24) after M2's
-   dynamic executable; `.so` outputs with M4. WP-077 (the hook's
-   prototype matrix) after WP-075; nothing ships from it without O-58's
-   gate and the operator's Q2 and Q3.
-6. **kiln** K-6 at any time after K-3.
+2. **hod** H-1 (half a day): useful to any IR producer; tested by irdiff;
+   needed before K-1 on the hod route.
+3. **kiln** K-1 + K-2 (1 package): units with kind 1 only.
+4. **kiln** K-5 (1 package): kind 5, C++ and C linkage.
+5. **kiln** K-4 (2 packages: the syntactic test, then the rows): kind 3.
+6. **kiln** K-3 (5-7 packages): kind 2; it carries the must-equal risk
+   and a standing maintenance cost, so it comes after the cheap kinds that
+   catch the memory-corrupting violations (K4, K14).
+7. **kiln** K-6 (2-3 packages): its own design after K-3.
+
+Each kind's mortar check runs under `--odr=strict` as soon as its kiln
+step lands (WP-073 is written against the test producer) and turns on by
+default after the oracle (O-46): kinds 5 and 3 can therefore move before
+kind 2. **mortar** WP-075 (O-24's prototype, then tables and O-24) needs
+kind 2 and follows M2's dynamic executable; `.so` outputs with M4.
+WP-077 (the hook's prototype matrix) after WP-075; nothing ships from it
+without O-58's gate and the operator's Q2 and Q3.
 
 ### tuck (nothing asked)
 
@@ -1402,8 +1653,8 @@ each check on against `--odr=off`.
 
 `mortar_plumb` depends on `mortar_elf` and `mortar_diag` only, so it
 re-reads `meta.md`'s format itself (about 150 lines: the format is small
-on purpose, and a second reader is the point). Proposed rules (amendment
-A-7 to `spec/plumb.md`):
+on purpose, and a second reader is the point). The rules (amendment
+A-7, applied as `spec/plumb.md` §13, P-M1-P-M3):
 
 - an executable or shared object contains no `.mason.meta` unless
   `--keep-mason-meta` (MT-31, MT-32); a relocatable output's
@@ -1434,10 +1685,10 @@ implementation of the verdict) is Q11.
 | O-1, O-3, O-46, O-47 | T-O-1 | a CI check that every check O-47 lists as on has a recorded zero-finding oracle run in the landed record of the package that moved it; the legal corpus has no finding of a default-on check |
 | O-2 | T-O-2 | `static` functions of one name in two TUs, with rows forced by the test producer: no comparison; extended to types: N31's unnamed-namespace type, `std::optional` of it, local class and closure write no kind 3 row and are never compared (model case and, with K-4, a kiln test) |
 | O-4 | T-O-4 | anchored, unanchored (`--redefine-sym`), ambiguous (two names, one FNV-1a 64, constructed) and versioned (N6) rows |
-| O-10..O-13 | T-O-10 (kiln) | the corpora of O-13, as kiln tests and as L11 links |
-| O-14, O-15 | T-O-14 | rows per definition kind; K13's flags; N9; N22 (strong + `VAGUE`, equal) |
+| O-10..O-13 | T-O-10 (kiln) | the corpora of O-13, as kiln tests and as L11 links; the golden-hash test of O-11; two units with different schemes give only an `--odr-stats` count (X13) |
+| O-14, O-15 | T-O-14 | rows per definition kind; K13's flags; N9; N22 (strong + `VAGUE`, equal); a closure's `operator()` and a generic lambda's specializations get rows, the static invoker none; a lambda in a declarator gives no row (X15) |
 | O-16 | T-O-16 | K12 under strict; nothing by default |
-| O-17, O-18 | T-O-17 | K4 (also pointer-only), K7, K16a, N24 (no RTTI bit) |
+| O-17, O-18 | T-O-17 | K4 (also pointer-only, layout computed in both TUs), K7, K16a, N24 (no RTTI bit); the syntactic test: `std::optional<int>` and `ns::Widget<ns::Gadget*>` get rows, `std::optional<(anonymous)::S>`, a local class, a closure and an anonymous struct none (N31); a zero `hash` compares layout only |
 | O-19 | T-O-19 | a kind 4 entry renders the first difference |
 | O-20, O-21 | T-O-21 | the optimisation and the normative rule report the same findings over the whole corpus, K13 included |
 | O-22 | T-O-22 | kind 3 and 5 rows from 3 units grouped in `FileId` order |
@@ -1446,10 +1697,10 @@ implementation of the verdict) is Q11.
 | O-25 | T-O-25 | K16c with two vtable copies; F5 silent |
 | O-30, O-31 | T-O-30 | K16a/K16e/K16d notes under strict; `abi.rtti` never a finding |
 | O-32 | T-O-32 | `mixed-std-system-row` → a stats count; `mixed-std-user-body` → a finding |
-| O-33 | T-O-33 | N27, N28 (strict only), K14b |
+| O-33 | T-O-33 | N27, N28 (strict only), K14b; the canonical C type: glibc's declarations as C and as C++ `extern "C"` give zero differences (`peer/run3.sh`), and a real parameter-type difference (`int` vs `long`) still differs |
 | O-34 | T-O-34 | kind 5 against a foreign definition's size |
 | O-35 | T-O-35 | K14, N15 |
-| O-40, O-41 | T-O-41 | each mode's severities; `--odr=off` output byte-identical; `--detect-odr-violations` a no-op with its note |
+| O-40, O-41 | T-O-41 | each mode's severities; `--odr=off` output byte-identical; `--detect-odr-violations` a no-op that prints nothing |
 | O-42 | T-O-42 | `meta.md` T-MT-42: bytes read counted |
 | O-44 | T-O-44 | the stats line's fields on a corpus link |
 | O-45 | T-O-45 | the bench lane's comparison |
@@ -1481,8 +1732,8 @@ corpus, not evidence about kiln's hasher.
 |---|---|---|---|---|---|---|
 | WP-071 | container reader and writer; MT-6 classification; `meta-malformed`/`meta-version`; the test producer; the `--odr=off` path and A-8 (MT-42, O-42). **Acceptance test = experiment 7**: real units written by the test producer at the row counts of the heavy TU's object and of protoc's 167 objects (kind 2 per vague symbol, kind 5 per defined/undefined global, kind 3 per DWARF type); unit sizes by kind; bytes read with `--odr=off` and in the default mode under the staged store (zero container bytes for every object, small ones included); the cost of reading and grouping the rows (O-22) on the bench lane against O-45. MT-41's gate is set from these numbers in its landed record | `mortar_meta`; `mortar_input` (A-8); `mortar_resolve` (A-1's row); `xtask` (producer) | A-1, A-2, A-8 applied | `.s` units assembled by GNU as | 4-5 days [estimate] | WP-072 |
 | WP-072 | W1-W3 (W1, W2 on; W3, W4 strict); the diagnostic kinds; `--odr=`, `--no-odr-check`, `--odr-stats`, `--detect-odr-violations` no-op; O-47's register as code | `mortar_odr`, `mortar_diag`, `mortar_cli` | A-4, A-5; `comdat_copies` (M1) | GCC/Clang objects of the catalogue and the legal corpus, experiment 1's corpora | 4-5 days | WP-071 |
-| WP-073 | record checks: kinds 1, 2, 3, 5 (O-4-O-35, O-25, O-33), all `--odr=strict`; notes from kind 1; the L11 static corpus (the model's 13 cases first) | `mortar_odr`, `tests/link/odr/` | WP-071, WP-072 | the test producer (no kiln) | 1.5-2 weeks | kiln K-1..K-5 |
-| WP-074 | the Mason L11 lane and the false-positive oracle (§12.3, the C corpus of O-33); moves checks per O-46 | `xtask`, `tests/mason/` | WP-073; kiln K-1-K-5; hod H-1 | kiln objects | 1-1.5 weeks | WP-075 |
+| WP-073 | record checks, all `--odr=strict`, in kiln's landing order so each is ready when its kind lands: kind 1 (notes, O-30, O-31), kind 5 (O-35, O-33's canonical rows), kind 3 (O-17, O-18), then kind 2 (O-4-O-16, O-25); the L11 static corpus (the model's 13 cases first) | `mortar_odr`, `tests/link/odr/` | WP-071, WP-072 | the test producer (no kiln) | 1.5-2 weeks | kiln K-1..K-5 |
+| WP-074 | the Mason L11 lane and the false-positive oracle (§12.3, the C corpus of O-33); moves checks per O-46, per kind as kiln lands it: kind 1 and kind 5 after K-1/K-2/K-5, kind 3 after K-4, kind 2 after K-3 (so kinds 5 and 3 can run, and turn on, before kind 2) | `xtask`, `tests/mason/` | WP-073; kiln K-1 + K-2 to start, then K-5, K-4, K-3; hod H-1 for the hod route | kiln objects | 1-1.5 weeks, spread over kiln's landings | WP-075 |
 | WP-075 | the O-24 check against `.so` inputs, **starting with its prototype** (a script over test-producer `.so`s with tables, the shapes of T-O-24: R4/R5, `--as-needed`, R6), then the loadable table (O-50-O-52) for executables and the check in mortar; `[M4]` the same for `.so` outputs | `mortar_odr`, `mortar_synth`, `mortar_layout` | WP-073; M2's dynamic executable; A-3; M4 for `.so` | test-producer units; `note-final` | 1.5-2 weeks | WP-074 |
 | WP-076 | opt-ins: `--odr-check-archives`, `--odr-table=full`, `--keep-mason-meta`, `-r` pass-through (MT-30, with M4) | `mortar_odr`, `mortar_meta` | WP-073 | | 4 days | WP-075 |
 | WP-077 | **prototype package** for the load-time hook (§10.3): evaluate the candidate mechanisms of O-54 (recorded answers via the module's own GOT with `-z now`; glibc's audit interface; initial global scope only; versioned keys with `dlvsym`) and deliver the matrix of O-58 on three targets, the quadratic conflict path at 300 plugins and K = 10, and a recommendation. Deliverable: the matrix, the measurements and a spec proposal, **not shipped code**; it reports and never aborts | `.build`-style prototype under `xtask` or `tests/hook/` only | WP-075 (tables); no operator decision needed to prototype | `hook2`, `hook-rebind`, `hook-quadratic` | 1.5-2 weeks | WP-078 |
@@ -1551,6 +1802,29 @@ on kiln's hasher, or on the hook.
 
 `spec/layout.md` needs no amendment: O-52 no longer asks for a
 `PT_NOTE` of its own.
+
+**Applied (WP-079, 2026-11-15).** Those specs number by section, except
+`dyn.md` (D-*n*) and `plumb.md` (P-*n*), so ids are new only in
+`plumb.md`:
+
+- A-1: `resolve.md` §10, the container row before `SHF_EXCLUDE` and a
+  sentence after the table; §6.7, one sentence; §13, "per-file summary".
+- A-8: `input.md` §11.1, the two rows and the test-only byte counter;
+  §11.9 (A), the small-file exception (a fit: the read plan states the
+  whole-file rule a second time).
+- A-2: `model.md` §3.2 `files` (the `Meta` list); §3.3 `kind`: `Meta`
+  replaces `Metadata` and moves to the kinds without output (a fit); §8,
+  phase 40's `seq`.
+- A-3: `dyn.md` §14, the "M6: ODR data" bullet replaced; the D-21 bullet
+  gains the Q8 sentence. No D rule changed.
+- A-5: `cli.md` §3.9, the `odr` field; §4.2, the M6 rows and the
+  packages that add them (`rows.rs`; `docs/status/options.md`
+  regenerated, not edited).
+- A-4: `diag.md` §3.1, the area and 13 rows; §3.2, one note.
+- A-6: `harness.md` "The test file", the `diag` directive; "Planned
+  workloads", the Mason workloads; "The corpus", the ODR cases and the
+  L11 lane.
+- A-7: `plumb.md` §1, stage 4; §13, P-M1-P-M3, not implemented (WP-078).
 
 ## 15. Open questions
 
@@ -1635,6 +1909,8 @@ glibc 2.41, qemu 10.0.13; kiln and hod release builds of the workspace.
 | `k19`, `n6`, `n11` | `rev/k19-n6-n11.sh` | K19 (clang 19/22 modules), N6, N11 |
 | `k3count` | `rev/k3count.sh` | O-17's row count proxy |
 | `n31` | `rev/n31.sh` (runs `adv/kind3-tulocal.sh`, then `wcheck.py`) | N31: exit 0 under g++ and clang++ 19 × GNU ld, lld, mold; W1-W3 zero (g++, clang, mixed) |
+| peer review, K-1(c) | `peer/run.sh`, `peer/run2.sh` over `peer/m.ll`, `peer/mx.ll` | `opt` 19/22 `-O1..-Os`, `llc -O2`, `clang` 19/22 `-O2 -c` × AArch64, x86-64, i686: the global survives with `@llvm.compiler.used` (deleted without it); `.mason.meta` flags `E`, align 8, bytes verbatim, no relocations, no group; section index 2 or 3 |
+| peer review, O-33 | `peer/run3.sh` + `peer/ccanon.py` over `peer/hdrs.h` (24 glibc headers) | the canonical C type of C17 vs C++20 `extern "C"` declarations, clang 19/22 × 3 targets: 0 differences (8 without the transparent-union step) |
 | re-review, REQUIRED for WP-077 | `adv/hook-rebind.sh` (R1m, R2m, R3/R3m, R4/R5, R6 `vplain`/`vhook`/`vmhook`/`vu`, R8/R8m, `LD_PRELOAD`), `adv/hook-quadratic.sh` (N plugins, K keys) | the open problem of O-54 and the matrix of O-58; not required to pass now |
 
 Experiment 7 (real units at real row counts) is WP-071's acceptance test
@@ -1669,4 +1945,9 @@ Experiment 7 (real units at real row counts) is WP-071's acceptance test
   on prototype 2), versioned lookup, the quadratic path at K = 10, its
   `secure_getenv` and `write`-only output: WP-077's matrix.
 - TU-locality (O-17) on kiln's AST: N31 is shown with `typeid`
-  encodings, not with rows.
+  encodings, not with rows; O-17's syntactic test is not prototyped.
+- O-33's canonical C type on kiln's types (measured on clang's AST dump
+  of glibc headers only; zlib, SQLite and Lua are not in the container);
+  GCC's i386 `wchar_t` (`long int`) vs clang's (`int`) at the record level.
+- K-3's cost against its 3% criterion (kiln measures it).
+- `opt`/`clang` survival with LTO (a named non-goal).

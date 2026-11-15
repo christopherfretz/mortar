@@ -33,6 +33,7 @@ dependencies = [
  "mortar_layout",
  "mortar_live",
  "mortar_merge",
+ "mortar_odr",
  "mortar_plumb",
  "mortar_resolve",
  "mortar_scan",
@@ -169,6 +170,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "mortar_meta"
+version = "0.0.0"
+dependencies = [
+ "mortar_elf",
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_odr"
+version = "0.0.0"
+dependencies = [
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_meta",
+ "mortar_testutil",
+]
+
+[[package]]
 name = "mortar_plumb"
 version = "0.0.0"
 dependencies = [
@@ -292,6 +312,7 @@ dependencies = [
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "mortar_diag",
  "mortar_digest",
  "mortar_elf",
  "mortar_plumb",

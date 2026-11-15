@@ -34,6 +34,10 @@ const SYMBOLIC: &str = "it binds a shared object's references to its own definit
 /// The reason of `--no-undefined` and `-z defs`.
 const DEFS: &str = "resolve.md §5: an undefined symbol of an executable's objects is an error already; the option only changes a shared object's link (shared objects as output are M4)";
 
+/// The reason of gold's `--detect-odr-violations` (`spec/odr.md` O-41):
+/// mortar's checks are on by default, and the option lowers nothing.
+const DETECT_ODR: &str = "odr.md O-41: mortar checks the one-definition rule by default; --detect-odr-violations has no further effect";
+
 const A64: &[Target] = &[Target::Aarch64];
 const X86: &[Target] = &[Target::X86_64, Target::I386];
 const X64: &[Target] = &[Target::X86_64];
@@ -162,7 +166,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("remap-inputs-file")], Arg::Required(Values::Any), "FILE", GL, &[], Group::Inputs, Refused, Lands::Other, "Remap inputs as FILE says"),
     r(&[g("remap-inputs")], Arg::Required(Values::Any), "PATTERN=FILE", GL, &[], Group::Inputs, Refused, Lands::Other, "Read FILE for the inputs matching PATTERN"),
     r(&[x("dependent-libraries")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Link the libraries inputs ask for (default)"),
-    r(&[x("no-dependent-libraries")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Ignore the libraries inputs ask for"),
+    r(&[x("no-dependent-libraries")], Arg::None, "", L, &[], Group::Inputs, Noop("mortar never loads the libraries .deplibs sections name (resolve.md §10)"), Lands::Other, "Ignore the libraries inputs ask for (mortar's behavior, always on)"),
     r(&[x("fortran-common")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Take archive members that define common symbols (mortar's behavior, always on)"),
     r(&[x("no-fortran-common")], Arg::None, "", L, &[], Group::Inputs, Refused, Lands::Other, "Do not take archive members for common symbols"),
     r(&[x("warn-backrefs")], Arg::None, "", L, &[], Group::Inputs, Supported, Lands::WarnBackrefs(true), "Warn when an archive member is taken for an earlier reference"),
@@ -320,6 +324,14 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[x("no-warn-ifunc-textrel")], Arg::None, "", L, &[], Group::Diagnostics, Refused, Lands::Other, "Do not warn about ifunc text relocations (default)"),
     r(&[x("vs-diagnostics")], Arg::None, "", L, &[], Group::Diagnostics, Refused, Lands::Other, "Format diagnostics for Visual Studio"),
     r(&[x("why-live")], Arg::Required(Values::Any), "GLOB", L, &[], Group::Diagnostics, Refused, Lands::Other, "Report what keeps the symbols GLOB matches alive"),
+    // The one-definition-rule switches (`spec/odr.md` O-41, amendment A-5).
+    r(&[x("odr")], Arg::Required(Values::Choice(&["warn", "error", "strict", "off"])), "MODE", MORTAR, &[], Group::Diagnostics, Supported, Lands::Odr, "Check the one-definition rule: warn (default), error, strict or off"),
+    r(&[x("no-odr-check")], Arg::None, "", MORTAR, &[], Group::Diagnostics, Supported, Lands::NoOdrCheck, "Run no one-definition-rule check (--odr=off)"),
+    r(&[x("odr-stats")], Arg::None, "", MORTAR, &[], Group::Diagnostics, Supported, Lands::OdrStats, "Print one line of one-definition-rule statistics"),
+    r(&[x("odr-check-archives")], Arg::None, "", MORTAR, &[], Group::Diagnostics, Refused, Lands::Other, "Also check archive members that are not linked (WP-076)"),
+    r(&[x("odr-table")], Arg::Required(Values::Choice(&["off", "exported", "full"])), "ROWS", MORTAR, &[], Group::Diagnostics, Refused, Lands::Other, "Write a loadable one-definition-rule table (WP-075, WP-076)"),
+    r(&[x("keep-mason-meta")], Arg::None, "", MORTAR, &[], Group::Diagnostics, Refused, Lands::Other, "Keep Mason metadata in the output (WP-076)"),
+    r(&[x("detect-odr-violations")], Arg::None, "", MORTAR, &[], Group::Diagnostics, Noop(DETECT_ODR), Lands::Other, "GNU gold's: check the one-definition rule"),
     r(&[g("version")], Arg::None, "", GLM, &[], Group::Bookkeeping, Supported, Lands::Version, "Print the version and exit"),
     r(&[s("v")], Arg::None, "", GLM, &[], Group::Bookkeeping, Supported, Lands::PrintVersion(VersionStyle::Version), "Print the version and go on"),
     r(&[s("V")], Arg::None, "", GLM, &[], Group::Bookkeeping, Supported, Lands::PrintVersion(VersionStyle::Emulations), "Print the version and the emulations and go on"),

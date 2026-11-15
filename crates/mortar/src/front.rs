@@ -344,6 +344,15 @@ pub fn front<'s>(
     if stop(diag) {
         return None;
     }
+    // 40: the one-definition rule (`spec/odr.md` §8.1, O-41); nothing is
+    // read under `--odr=off` (O-42).
+    let odr = mortar_odr::check(&inputs, &outcome.resolution, &plan.diagnostics.odr, &pool);
+    for (k, d) in odr.diagnostics {
+        diag.emit(k, d);
+    }
+    if let Some(line) = odr.stats {
+        timer.line(line);
+    }
     // resolve reports an undefined entry symbol (resolve.md §5.5, key
     // (30,0,argument)); layout finds the same and says so again (L-103):
     // one diagnostic, resolve's.

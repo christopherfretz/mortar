@@ -1,0 +1,28 @@
+# K6 (spec/odr.md §3.1): a class with different base classes in two
+# translation units. Its type_info and its vtable differ in size between
+# the copies (`_ZTI1D`, `_ZTV1D`): W1 reports each, by default.
+#@ spec: odr.md §8.1
+#@ requires: g++
+#@ diag: odr-size-mismatch a.o b.o
+#@ diag: odr-size-mismatch a.o b.o
+
+cxx -O0 a.cc -o a.o
+cxx -O0 b.cc -o b.o
+cxx -O0 main.cc -o main.o
+link g++ -static -no-pie main.o a.o b.o -o prog
+check readelf -sW prog
+  has: OBJECT * _ZTV1D$
+
+#--- a.cc
+struct X { virtual int x() { return 1; } virtual ~X() {} };
+struct Y { virtual int y() { return 2; } virtual ~Y() {} };
+struct D : X, Y { int x() override { return 3; } };
+int from_a() { D d; X* p = &d; return p->x(); }
+#--- b.cc
+struct X { virtual int x() { return 1; } virtual ~X() {} };
+struct D : X { int x() override { return 3; } };
+int from_b() { D d; X* p = &d; return p->x(); }
+#--- main.cc
+int from_a();
+int from_b();
+int main() { return from_a() + from_b() == 6 ? 0 : 1; }

@@ -342,6 +342,22 @@ pub enum Kind {
     /// definition (`.gnu.version_d`, M4).
     VersionedExport { name: String, version: String },
 
+    // -- one-definition rule (M6, `spec/odr.md` §9.1; WP-072's W checks) --
+    /// `odr-contents-mismatch` (`spec/odr.md` §8.1 W4, `--odr=strict`
+    /// only): two copies of one COMDAT group define the data symbol `name`
+    /// with different bytes or relocations.
+    OdrContentsMismatch { name: String },
+    /// `odr-size-mismatch` (`spec/odr.md` §8.1 W1, O-24 (c), O-34): two
+    /// definitions of `name` with different sizes.
+    OdrSizeMismatch { name: String },
+    /// `odr-strong-and-comdat` (`spec/odr.md` §8.1 W3, `--odr=strict`
+    /// only): `name` has a strong definition outside any COMDAT group and
+    /// a COMDAT copy.
+    OdrStrongAndComdat { name: String },
+    /// `odr-symbol-type-mismatch` (`spec/odr.md` §8.1 W2): `name` is
+    /// defined as a function in one file and as data in another.
+    OdrSymbolTypeMismatch { name: String },
+
     // -- relocations ----------------------------------------------------
     /// `canonical-plt-in-pie` (`spec/dyn.md` D-44): the relocation
     /// `r_type` takes the address of the shared function `name` in a way
@@ -409,7 +425,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 57] = [
+    pub const IDS: [&'static str; 61] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -454,6 +470,10 @@ impl Kind {
         "undefined-version",
         "version-reassigned",
         "versioned-export",
+        "odr-contents-mismatch",
+        "odr-size-mismatch",
+        "odr-strong-and-comdat",
+        "odr-symbol-type-mismatch",
         "canonical-plt-in-pie",
         "copy-relocation-against-protected",
         "copy-relocation-of-zero-size",
@@ -518,6 +538,10 @@ impl Kind {
             Self::UndefinedVersion { .. } => "undefined-version",
             Self::VersionReassigned { .. } => "version-reassigned",
             Self::VersionedExport { .. } => "versioned-export",
+            Self::OdrContentsMismatch { .. } => "odr-contents-mismatch",
+            Self::OdrSizeMismatch { .. } => "odr-size-mismatch",
+            Self::OdrStrongAndComdat { .. } => "odr-strong-and-comdat",
+            Self::OdrSymbolTypeMismatch { .. } => "odr-symbol-type-mismatch",
             Self::CanonicalPltInPie { .. } => "canonical-plt-in-pie",
             Self::CopyRelocationAgainstProtected { .. } => "copy-relocation-against-protected",
             Self::CopyRelocationOfZeroSize { .. } => "copy-relocation-of-zero-size",
@@ -557,6 +581,10 @@ impl Kind {
             | Self::UndefinedVersion { name, .. }
             | Self::VersionReassigned { name, .. }
             | Self::VersionedExport { name, .. }
+            | Self::OdrContentsMismatch { name }
+            | Self::OdrSizeMismatch { name }
+            | Self::OdrStrongAndComdat { name }
+            | Self::OdrSymbolTypeMismatch { name }
             | Self::CanonicalPltInPie { name, .. }
             | Self::CopyRelocationAgainstProtected { name, .. }
             | Self::CopyRelocationOfZeroSize { name }
@@ -664,6 +692,9 @@ impl From<FileRef> for Place {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Relation {
+    /// `defined differently in`: where a definition of the symbol is that
+    /// differs from the one before it (`spec/odr.md` §9.1).
+    DefinedDifferentlyIn,
     /// `defined in`: where a definition of the symbol is.
     DefinedIn,
     /// `in`: what contains the construct, when the head line has no place.
@@ -676,12 +707,14 @@ pub enum Relation {
 
 impl Relation {
     /// Every relation, in the order of `spec/diag.md` §2.4.
-    pub const ALL: [Self; 4] = [Self::DefinedIn, Self::In, Self::NamedBy, Self::ReferencedBy];
+    pub const ALL: [Self; 5] =
+        [Self::DefinedDifferentlyIn, Self::DefinedIn, Self::In, Self::NamedBy, Self::ReferencedBy];
 
     /// The words printed between `>>> ` and the place.
     #[must_use]
     pub const fn phrase(self) -> &'static str {
         match self {
+            Self::DefinedDifferentlyIn => "defined differently in",
             Self::DefinedIn => "defined in",
             Self::In => "in",
             Self::NamedBy => "named by",
@@ -887,19 +920,23 @@ mod tests {
             Kind::UndefinedVersion { .. } => 41,
             Kind::VersionReassigned { .. } => 42,
             Kind::VersionedExport { .. } => 43,
-            Kind::CanonicalPltInPie { .. } => 44,
-            Kind::CopyRelocationAgainstProtected { .. } => 45,
-            Kind::CopyRelocationOfZeroSize { .. } => 46,
-            Kind::RelocationIncompatible { .. } => 47,
-            Kind::RelocationMisaligned { .. } => 48,
-            Kind::RelocationOutOfRange { .. } => 49,
-            Kind::TextRelocation { .. } => 50,
-            Kind::WeakUndefinedPcInPie { .. } => 51,
-            Kind::ExecutableStack { .. } => 52,
-            Kind::OutputTooLarge { .. } => 53,
-            Kind::SectionConflict { .. } => 54,
-            Kind::Refused { .. } => 55,
-            Kind::InternalError { .. } => 56,
+            Kind::OdrContentsMismatch { .. } => 44,
+            Kind::OdrSizeMismatch { .. } => 45,
+            Kind::OdrStrongAndComdat { .. } => 46,
+            Kind::OdrSymbolTypeMismatch { .. } => 47,
+            Kind::CanonicalPltInPie { .. } => 48,
+            Kind::CopyRelocationAgainstProtected { .. } => 49,
+            Kind::CopyRelocationOfZeroSize { .. } => 50,
+            Kind::RelocationIncompatible { .. } => 51,
+            Kind::RelocationMisaligned { .. } => 52,
+            Kind::RelocationOutOfRange { .. } => 53,
+            Kind::TextRelocation { .. } => 54,
+            Kind::WeakUndefinedPcInPie { .. } => 55,
+            Kind::ExecutableStack { .. } => 56,
+            Kind::OutputTooLarge { .. } => 57,
+            Kind::SectionConflict { .. } => 58,
+            Kind::Refused { .. } => 59,
+            Kind::InternalError { .. } => 60,
         }
     }
 
@@ -953,6 +990,10 @@ mod tests {
             Kind::UndefinedVersion { name: s(), version: s() },
             Kind::VersionReassigned { name: s(), first: s(), second: s() },
             Kind::VersionedExport { name: s(), version: s() },
+            Kind::OdrContentsMismatch { name: s() },
+            Kind::OdrSizeMismatch { name: s() },
+            Kind::OdrStrongAndComdat { name: s() },
+            Kind::OdrSymbolTypeMismatch { name: s() },
             Kind::CanonicalPltInPie { r_type: s(), name: s() },
             Kind::CopyRelocationAgainstProtected { name: s(), file: s() },
             Kind::CopyRelocationOfZeroSize { name: s() },

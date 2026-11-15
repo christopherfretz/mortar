@@ -517,6 +517,12 @@ pub enum Lands {
     WarnBackrefs(bool),
     /// `diagnostics.warn_common`.
     WarnCommon(bool),
+    /// `diagnostics.odr.mode` (`--odr=`).
+    Odr,
+    /// `diagnostics.odr.mode`, `off` (`--no-odr-check`).
+    NoOdrCheck,
+    /// `diagnostics.odr.stats`.
+    OdrStats,
     /// `bookkeeping.map`.
     Map,
     /// `bookkeeping.print_map`.
@@ -633,6 +639,8 @@ impl Lands {
             Self::AllowShlibUndefined(_) => "dynamic.allow_shlib_undefined",
             Self::WarnBackrefs(_) => "diagnostics.warn_backrefs",
             Self::WarnCommon(_) => "diagnostics.warn_common",
+            Self::Odr | Self::NoOdrCheck => "diagnostics.odr.mode",
+            Self::OdrStats => "diagnostics.odr.stats",
             Self::Map => "bookkeeping.map",
             Self::PrintMap => "bookkeeping.print_map",
             Self::MortarMap => "bookkeeping.mortar_map",
@@ -674,6 +682,8 @@ impl Lands {
                 | Self::AllowShlibUndefined(_)
                 | Self::WarnBackrefs(_)
                 | Self::WarnCommon(_)
+                | Self::Odr
+                | Self::NoOdrCheck
                 | Self::Icf
                 | Self::NoIcf
         )
