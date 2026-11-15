@@ -714,7 +714,10 @@ usually a duplicate of `crt1.o`'s and removed by S-44 (X-12, X-25).
     FDE with the same start from the binary search. This is what E5
     calls neutralised;
   - two live FDEs with the same initial location and non-zero ranges are
-    refused when the table is written: `malformed-input`, `.eh_frame_hdr
+    refused when the table is planned (phase 80, where the entries are
+    first known as `(code section, offset)` pairs; supervisor's ruling on
+    WP-025), and again if two entries meet at one address when the table
+    is written: `malformed-input`, `.eh_frame_hdr
     refers to overlapping FDEs` (GNU's message and behavior; lld keeps
     one entry, mold both, X-15). The table must be strictly sorted and
     list every FDE that is not neutralised (`plumb.md` §6.4 E5), and each
@@ -900,7 +903,11 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   `SymbolId` order. `STB_GLOBAL`, `STB_WEAK` and `STB_GNU_UNIQUE` keep
   their binding (GNU and lld keep `STB_GNU_UNIQUE` in a static output,
   X-17; resolve.md §3.7). mold makes every symbol local in a static
-  output; GNU and lld do not (`tests/link/resolve/symtab`).
+  output; GNU and lld do not (`tests/link/resolve/symtab`). A global
+  defined in a section that is not live has no entry, as a local in one
+  has none (S-76): at M1 `--gc-sections` is refused, so such a section is
+  a discarded COMDAT member or a section discarded by the script
+  (supervisor's ruling on WP-025).
 - **S-121 [G] (bindings are the inputs').** A global's output binding
   is resolve.md §3.7's and nothing else: `STB_LOCAL` only for a
   definition whose combined visibility is hidden or internal (S-77), and
@@ -963,9 +970,13 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   erratum patch (layout §14) gets, in the internal file's block: on
   AArch64 a `$x` at its start and a `$d` at any literal word (AAELF64
   "Mapping symbols"); and an `STT_FUNC` local `__<target>_veneer` (GNU's
-  AArch64 form; `+0x<addend>` in lower-case hex appended for a non-zero
-  addend, `@plt` for a `Plt` target), `st_size` the thunk's size; a patch
-  is `__erratum_843419_veneer`. gdb and perf then attribute a thunk to a
+  AArch64 form; for a non-zero addend `+0x<addend>` (`-0x<magnitude>`
+  for a negative one) in lower-case hex follows the target's name, before
+  `_veneer`, as `__foo+0x10_veneer`;
+  `@plt` for a `Plt` target, in the same place), `st_size` the thunk's
+  size (`arch.thunk()`); a patch is `__erratum_843419_veneer`, `st_size`
+  its shape's (`arch.patch(E843419)`). (Placement of the addend:
+  supervisor's ruling on WP-025.) gdb and perf then attribute a thunk to a
   named function (lld names its thunks `__AArch64ADRPThunk_<target>` for
   the same reason). Both forms are in the verifier's not-judged list
   (`plumb.md` §6.5); the `$x` at an address no input occupies is Y4's
@@ -1048,8 +1059,12 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   `.symtab_shndx` (`SHT_SYMTAB_SHNDX`, entsize 4, alignment 4, `sh_link`
   the index of `.symtab`), with one word per `.symtab` entry: the real
   section index for an `SHN_XINDEX` entry and 0 for every other (gABI
-  "Extended Section Indices"). Whether it exists is known once the number
-  of output sections is known (layout stage C), before content. The scan
+  "Extended Section Indices"). It exists exactly when the output has more
+  than `SHN_LORESERVE` (65280) sections, so that some section's index
+  does not fit `st_shndx`; this is known once the number of output
+  sections is known (layout stage C), before content and before which
+  symbols land in the high sections (supervisor's ruling on WP-025: the
+  approximation by the section count is the rule). The scan
   has no input with `SHN_XINDEX` (X-1), so this is reached only by an
   output with more than 65279 sections, which needs that many distinct
   orphan names.
@@ -1225,7 +1240,7 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
   if every note has it; `Or` is the OR of the notes that have it; `Max`
   the largest); the result then takes part in S-95 across objects
   (supervisor's ruling on Q12). A type repeated within one note is
-  combined by the same rule. GNU 2.44 and lld 22 instead OR a repeated
+  combined by the same rule (supervisor's ruling on WP-025). GNU 2.44 and lld 22 instead OR a repeated
   `FEATURE_1_AND` within an object and ignore a note that lacks it
   (X-33; Q12). mortar's rule is the conservative one: a BTI claim that
   some note did not make could fault at the first indirect branch. In
