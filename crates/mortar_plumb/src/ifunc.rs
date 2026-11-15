@@ -383,6 +383,8 @@ impl Engine<'_, '_> {
         self.cov.iplt_entries = entries.len() as u64;
         if image.header.e_machine == EM_X86_64 && word == 8 {
             self.x64_iplt(&entries, static_exec, &mut fs);
+        } else if image.header.e_machine == EM_386 {
+            self.x86_iplt(&entries, &mut fs);
         }
         for (e, slot) in entries {
             let i = self.iplt.irel.partition_point(|r| r.0 < slot);

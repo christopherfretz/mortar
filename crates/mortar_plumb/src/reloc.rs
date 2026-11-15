@@ -521,7 +521,11 @@ impl<'a, 'b> Engine<'a, 'b> {
         let got = if i386 && format == Format::Mold {
             sec(".got").or(got)
         } else if i386 && image.unique("_GLOBAL_OFFSET_TABLE_").is_none() {
-            image.global("_GLOBAL_OFFSET_TABLE_").map(|s| s.sym.st_value).or(sec(".got.plt")).or(got)
+            image
+                .global("_GLOBAL_OFFSET_TABLE_")
+                .map(|s| s.sym.st_value)
+                .or(sec(".got.plt"))
+                .or(got)
         } else {
             got
         };
@@ -993,6 +997,9 @@ impl<'a, 'b> Engine<'a, 'b> {
             .site(o.site(si, 0));
             self.fail(f);
             return self.not_checked(Reason::Type, n);
+        }
+        if i386 {
+            self.x86_rel_overlaps(oi, si, &raw);
         }
         let place = s.place.clone();
         let data = s.data;

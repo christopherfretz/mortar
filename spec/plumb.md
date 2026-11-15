@@ -625,7 +625,12 @@ under every map (W1). `TLS_IE_32`, `TLS_LE_32` and the other numbered
 types outside the table are not checked (`type`). The dynamic-only types
 (5–8, 14, 35–37, 41, 42) in an input are R8 (X86-20, W14), and so is an
 `SHT_RELA` section of an `EM_386` object (X86-2, W12: the references
-disagree on it). `32` against a TLS symbol at a non-alloc place is
+disagree on it). Two records of one `SHT_REL` section at one
+`r_offset`, or whose fields overlap (`TLS_DESC_CALL` has none), are R8
+at the later one (x86.md R-13 (b): each implicit addend would be read
+from bytes the other writes; every reference linker applies both,
+WP-028e's `rel-overlap`, where the second write also leaves the first
+field R1). `32` against a TLS symbol at a non-alloc place is
 `DtpRel(S + A)` (X86-62; GNU ld and mold write the template address, A15).
 A `GOTOFF` to a piece of a mergeable section (the PIC string idiom,
 `leal .LC0@GOTOFF(%ebx)`) is grouped by its piece (§5.6) with the
@@ -1351,15 +1356,25 @@ These rules are checked from the output alone. Each one has a mutation
 that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
 
 - **S1.** `e_type` is `ET_EXEC`, and the machine is supported in its
-  class.
+  class. `EI_OSABI` is `ELFOSABI_NONE` (0) or `ELFOSABI_GNU` (3); on
+  `EM_386` and `EM_X86_64`, `e_flags` is 0 (the psABIs define none,
+  x86.md X86-1). **(mortar)** `EI_OSABI` is 3 exactly when the output has
+  an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or an `IRELATIVE` record
+  in an allocated relocation section (image.md §5.4, a64.md Q11, x64.md
+  X-49, x86.md X86-64; WP-028e). The references on i386: GNU ld writes 3
+  for every static glibc output and for `ibt` (IFUNC), 0 for the
+  `-nostdlib` ones without; lld and mold write 0 (x86.md §15.1).
 - **S2.** There is at least one `PT_LOAD`. For each one:
   - `p_filesz <= p_memsz`;
   - `p_align` is 0, 1 or a power of two;
   - `p_vaddr ≡ p_offset (mod p_align)`;
   - its file image lies inside the file;
-  - its memory does not wrap;
+  - its memory does not wrap (in an `ELFCLASS32` output, it ends at or
+    below 2^32);
   - in mortar's output (by map format), `p_align` is at least 4 KiB
-    (`spec/layout.md` L-1; layout.md §20.3, WP-028b).
+    (`spec/layout.md` L-1; layout.md §20.3, WP-028b); on i386 it is
+    0x1000, and a static executable's first `PT_LOAD` is at 0x08048000
+    (x86.md X86-65, WP-028e).
 - **S3.** The `PT_LOAD`s are in ascending `p_vaddr` order and do not
   overlap (gABI "Program Header").
 - **S4.** Every allocated section with a size, other than `.tbss`, lies
@@ -1406,7 +1421,8 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   `p_align` (lld rounds it, since variant 2 puts the thread pointer after
   the block). A wrong `p_memsz` moves every x86-64 TP offset; a wrong
   `p_align` moves every AArch64 one (§4.7's `tcb`).
-- **S10.** There is at most one `PT_GNU_STACK`.
+- **S10.** There is at most one `PT_GNU_STACK`. **(mortar, i386)** Its
+  `p_align` is 16 (x86.md X86-66).
 - **S11.** Every `PT_NOTE` lies in the file and is a sequence of whole
   notes (gABI "Note Section"), with padding to 4, or to 8 when `p_align`
   is 8. The padding after a descriptor is there "to ensure 4-byte
@@ -2112,12 +2128,12 @@ A truncated output, or an input cut short, must also produce a finding.
 ### 9.5 Mutation coverage (WP-028d)
 
 `src/mutate.rs` takes a correct output and makes single-field edits, one
-mutant at a time, in 23 classes: a relocated field off by one, holding
+mutant at a time, in 24 classes: a relocated field off by one, holding
 another symbol's value, or another addend; a relaxed sequence put back
 to its input bytes (`stale-relaxation`); two GOT words or two
 IRELATIVE records swapped; `.eh_frame_hdr`'s table out of order or an
 entry wrong; an FDE's `pc_begin`; a `.symtab` value or size; `e_entry`;
-a program header's `p_filesz`, `p_memsz`, `p_align` or flags; `PT_TLS`;
+`EI_OSABI` or `e_flags` (`header-ident`, S1, WP-028e); a program header's `p_filesz`, `p_memsz`, `p_align` or flags; `PT_TLS`;
 a property bit; a linker-defined symbol; two sections overlapping; a
 thunk's target; an IPLT entry; an erratum fix (§5.10). A mutant is
 **caught** when the report has a finding the unmutated output's report

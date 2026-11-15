@@ -747,6 +747,102 @@ impl Engine<'_, '_> {
         let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(t), w1: false };
         self.got_groups.entry((Slot::TpRel, oi, rec.sym, 0)).or_default().members.push((pend, ev));
     }
+
+    /// spec/x86.md R-13 (b) (X86-5): an i386 REL section's records may not
+    /// share an `r_offset`, and no record's field may overlap another's;
+    /// the implicit addends would then be read from bytes another record
+    /// writes. Markers (`TLS_DESC_CALL`, width 0) have no field. R8, at
+    /// the later record.
+    pub(super) fn x86_rel_overlaps(
+        &mut self,
+        oi: usize,
+        si: usize,
+        raw: &[crate::locate::RawRecord],
+    ) {
+        let o = &self.objs[oi];
+        let mut fields: Vec<(u64, u64, u32)> = raw
+            .iter()
+            .filter_map(|&(off, _, ty, _)| {
+                let w = u64::from(x::def(ty)?.field.width());
+                (w > 0).then_some((off, off + w, ty))
+            })
+            .collect();
+        fields.sort_unstable();
+        let mut fs = Vec::new();
+        for p in fields.windows(2) {
+            let ((a, ae, at), (b, _, bt)) = (p[0], p[1]);
+            let what = if a == b {
+                "two records at one r_offset"
+            } else if b < ae {
+                "a record's field overlaps another's"
+            } else {
+                continue;
+            };
+            fs.push(
+                crate::report::Finding::new(
+                    Rule::Insn,
+                    format!(
+                        "{what}: types {at} at {a:#x} and {bt} at {b:#x} (spec/x86.md R-13 (b))"
+                    ),
+                )
+                .site(o.site(si, b)),
+            );
+        }
+        for f in fs {
+            self.fail(f);
+        }
+    }
+}
+
+impl Engine<'_, '_> {
+    /// F5, i386 (spec/x86.md X86-48, X86-49): an IBT output's entries
+    /// start with `endbr32`; mortar's static entries are exactly
+    /// `ff 25 <word>; 66 90`, or with IBT `endbr32; ff 25 <word>; nopw`.
+    /// The words need no rule of their own: REL makes the `IRELATIVE`
+    /// addend the word, which every linker sets to the resolver (X86-50).
+    pub(super) fn x86_iplt(&self, entries: &[(u64, u64)], fs: &mut Vec<crate::report::Finding>) {
+        let image = self.image;
+        let ibt = crate::property::x86_feature_1_and(image) & 1 != 0;
+        for &(e, slot) in entries {
+            let endbr = image.bytes(e, 4) == Some(&x::ENDBR32[..]);
+            if ibt && !endbr {
+                fs.push(
+                    crate::report::Finding::new(
+                        Rule::Ifunc(5),
+                        "an IPLT entry of an IBT output does not start with ENDBR32: an indirect call to it faults (spec/x86.md X86-49)",
+                    )
+                    .at(e),
+                );
+            }
+            if self.format != Format::Mortar {
+                continue;
+            }
+            let mut want = Vec::with_capacity(16);
+            if ibt {
+                want.extend_from_slice(&x::ENDBR32);
+            }
+            want.extend_from_slice(&[0xff, 0x25]);
+            want.extend_from_slice(&(slot as u32).to_le_bytes());
+            want.extend_from_slice(if ibt {
+                &[0x66, 0x0f, 0x1f, 0x44, 0, 0][..]
+            } else {
+                &[0x66, 0x90][..]
+            });
+            if image.bytes(e, want.len() as u64) != Some(&want[..]) {
+                fs.push(
+                    crate::report::Finding::new(
+                        Rule::Ifunc(5),
+                        if ibt {
+                            "the IPLT entry is not endbr32; jmp *word; nopw (spec/x86.md X86-49)"
+                        } else {
+                            "the IPLT entry is not jmp *word; xchg %ax,%ax (spec/x86.md X86-48)"
+                        },
+                    )
+                    .at(e),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

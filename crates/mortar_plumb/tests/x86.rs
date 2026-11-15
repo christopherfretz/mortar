@@ -22,6 +22,8 @@ const RELAX_S: &str = include_str!("x86/relax.s");
 const WFORMS_S: &str = include_str!("x86/wforms.s");
 const BITFIELD_S: &str = include_str!("x86/bitfield.s");
 const DYNTYPES_S: &str = include_str!("x86/dyntypes.s");
+const IPLT_IBT_S: &str = include_str!("x86/iplt-ibt.s");
+const OVERLAP_S: &str = include_str!("x86/overlap.s");
 const IFUNC_C: &str = include_str!("x86/ifunc.c");
 const IFUNC_MAIN_C: &str = include_str!("x86/ifunc_main.c");
 const SD_C: &str = include_str!("x86/sd.c");
@@ -162,6 +164,13 @@ fn cases() -> Vec<Case> {
             args: &["-static", "ifunc.o", "ifunc_main.o"],
             expect: [Some(&["F4"]), CLEAN, CLEAN],
         },
+        // X86-49: IBT IPLT entries start with endbr32 (F5).
+        Case {
+            name: "ibt",
+            driver: gcc,
+            args: &["-static", "-nostdlib", "ibt.o"],
+            expect: [CLEAN; 3],
+        },
         // W1: two readings of the operand (X86-13): R8 under every map.
         Case {
             name: "w1",
@@ -170,7 +179,12 @@ fn cases() -> Vec<Case> {
             expect: [Some(&["R8"]); 3],
         },
         // W2: the moffs store reads as based (X86-13); accepted risk.
-        Case { name: "w2", driver: gcc, args: &["-static", "-nostdlib", "w2.o"], expect: [CLEAN; 3] },
+        Case {
+            name: "w2",
+            driver: gcc,
+            args: &["-static", "-nostdlib", "w2.o"],
+            expect: [CLEAN; 3],
+        },
         // W3: mold's no-base GOT forms: G − .got (R4), and a `lea` (R1).
         Case {
             name: "w3",
@@ -204,6 +218,15 @@ fn cases() -> Vec<Case> {
                 "bf.o",
             ],
             expect: [Some(&["R2"]), None, None],
+        },
+        // R-13 (b): every linker applies two records at one r_offset and
+        // overlapping fields; the REL addends are then ambiguous (R8), and
+        // the second write leaves the first field wrong (R1).
+        Case {
+            name: "rel-overlap",
+            driver: gcc,
+            args: &["-static", "-nostdlib", "overlap.o"],
+            expect: [Some(&["R1", "R8"]); 3],
         },
         // W14: GNU ld writes S + A for dynamic-only types; lld and mold refuse.
         Case {
@@ -250,6 +273,8 @@ fn build() -> Option<Corpus> {
         ("wforms.s", WFORMS_S),
         ("bitfield.s", BITFIELD_S),
         ("dyntypes.s", DYNTYPES_S),
+        ("iplt-ibt.s", IPLT_IBT_S),
+        ("overlap.s", OVERLAP_S),
         ("ifunc.c", IFUNC_C),
         ("ifunc_main.c", IFUNC_MAIN_C),
         ("sd.c", SD_C),
@@ -269,6 +294,8 @@ fn build() -> Option<Corpus> {
     }
     must(&dir, as_, &["bitfield.s", "-o", "bf.o"]);
     must(&dir, as_, &["dyntypes.s", "-o", "dyn.o"]);
+    must(&dir, as_, &["iplt-ibt.s", "-o", "ibt.o"]);
+    must(&dir, as_, &["overlap.s", "-o", "overlap.o"]);
     let c = |flags: &[&str], src: &str, out: &str| {
         let mut a: Vec<&str> = flags.to_vec();
         a.extend(["-c", src, "-o", out]);
@@ -410,5 +437,43 @@ fn x86_relax_case_accepts_every_rewriting_family() {
         for family in families {
             assert!(s.contains(family), "{}: no {family} rewriting accepted:\n{s}", link.label());
         }
+    }
+}
+
+// spec/plumb.md §9.5 (WP-028e item 7): mutation coverage on i386 outputs.
+// Every class, a fixed seed, on the cases below; the table and every
+// missed mutant are printed. The classes listed are fully caught.
+#[test]
+fn x86_mutation_coverage() {
+    use mortar_plumb::mutate::{Config, Outcome, run};
+    let Some(c) = corpus() else { return };
+    let cfg = Config { per_class: 4, threads: 4, ..Config::default() };
+    let mut total = Outcome::default();
+    for (link, ..) in c.links.iter().filter(|(l, ..)| {
+        matches!(l.case, "relax" | "ibt" | "tls-gd-ld" | "tls-desc" | "w5" | "cxx")
+    }) {
+        let map = link.parse_map();
+        let files = link.inputs(&map);
+        let inputs: Vec<mortar_plumb::Input<'_>> =
+            files.iter().map(|(p, b)| mortar_plumb::Input { path: p, bytes: b }).collect();
+        let o = run(&link.output_bytes(), &inputs, &map, &cfg).unwrap();
+        total.add(&o, &link.label());
+    }
+    let table = total.render();
+    println!("{table}");
+    let applied: usize = total.classes.iter().map(|r| r.applied).sum();
+    assert!(applied > 100, "{table}");
+    for class in [
+        "field-off-by-one",
+        "field-wrong-symbol",
+        "field-wrong-addend",
+        "stale-relaxation",
+        "irelative-swap",
+        "tls-segment",
+        "section-overlap",
+        "iplt-entry",
+    ] {
+        let r = total.classes.iter().find(|r| r.class == class).unwrap();
+        assert!(r.missed.is_empty(), "{class}: {:?}\n{table}", r.missed);
     }
 }
