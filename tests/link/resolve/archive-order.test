@@ -2,7 +2,7 @@
 # symbol is undefined provides it, and the other's member is not
 # extracted: no duplicate definition (GNU ld manual, "Command-line
 # Options", -l).
-#@ spec: resolve.md "Archives"
+#@ spec: resolve.md §4.1
 #@ xfail(mortar): no linking yet (M1)
 #@ anomaly(bfd): A10
 #@ anomaly(mold): A1 A2 A3 A9

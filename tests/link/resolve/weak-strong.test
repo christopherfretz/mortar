@@ -2,7 +2,7 @@
 # in either command-line order, for functions and for data; two weak
 # definitions and no strong one are not an error, the first is taken
 # (gABI "Symbol Table", STB_WEAK).
-#@ spec: resolve.md "Weak symbols"
+#@ spec: resolve.md §3.2
 #@ xfail(mortar): no linking yet (M1)
 #@ anomaly(bfd): A10
 #@ anomaly(mold): A1 A2 A3 A9

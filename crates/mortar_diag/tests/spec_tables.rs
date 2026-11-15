@@ -2,7 +2,7 @@
 //! is the list of ids, and a kind cannot be added to one and not the
 //! other.
 
-use mortar_diag::{Kind, RefusalClass, Relation};
+use mortar_diag::{IncompatibleReason, Kind, RefusalClass, Relation};
 
 const SPEC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../spec/diag.md"));
 
@@ -71,5 +71,27 @@ fn relations_match_the_spec_table() {
         assert_eq!(row[0], format!("{relation:?}"));
         assert_eq!(row[1], relation.phrase());
         assert!(relation.phrase().bytes().all(|b| b.is_ascii_lowercase() || b == b' '));
+    }
+}
+
+// spec: diag.md §3.2 (the reasons of `relocation-incompatible`: the table
+// is the list, in order, with its words)
+#[test]
+fn incompatible_reasons_match_the_spec_table() {
+    // The table is indented under its list item.
+    let start = SPEC.find("  | variant | words |").expect("the table of reasons");
+    let rows: Vec<Vec<String>> = SPEC[start..]
+        .lines()
+        .map(str::trim_start)
+        .take_while(|line| line.starts_with('|'))
+        .skip(2)
+        .map(|line| {
+            line.trim_matches('|').split('|').map(|cell| cell.trim().replace('`', "")).collect()
+        })
+        .collect();
+    assert_eq!(rows.len(), IncompatibleReason::ALL.len());
+    for (row, reason) in rows.iter().zip(IncompatibleReason::ALL) {
+        assert_eq!(row[0], format!("{reason:?}"));
+        assert_eq!(row[1], reason.text());
     }
 }

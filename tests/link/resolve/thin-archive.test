@@ -1,7 +1,7 @@
 # A thin archive (`ar T`) names its members by path instead of holding
 # them; members are extracted as from a regular archive (GNU ar manual,
 # "--thin"; GNU ld reads the members from those paths).
-#@ spec: resolve.md "Archives"
+#@ spec: resolve.md §4.1
 #@ xfail(mortar): no linking yet (M1)
 #@ anomaly(bfd): A10
 #@ anomaly(mold): A1 A2 A3 A9

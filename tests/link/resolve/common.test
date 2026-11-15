@@ -6,7 +6,7 @@
 # `.common` space) by the first tentative definition, 16 bytes, so the
 # program writes past the end of its data (measured: `buffer` is 16
 # bytes and `_end` follows it). Marked xfail for mold until it is fixed.
-#@ spec: resolve.md "Common symbols"
+#@ spec: resolve.md §3.3
 #@ xfail(mold): mold 2.37.1 sizes a common symbol by its first definition, not the largest
 #@ xfail(mortar): no linking yet (M1)
 #@ anomaly(bfd): A10

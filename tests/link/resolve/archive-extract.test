@@ -3,7 +3,7 @@
 # extract further members of the same archive; a member that defines
 # nothing needed stays out (GNU ld manual, "Command-line Options", -l;
 # "Archives" in the System V ABI).
-#@ spec: resolve.md "Archives"
+#@ spec: resolve.md §4.1
 #@ xfail(mortar): no linking yet (M1)
 #@ anomaly(bfd): A10
 #@ anomaly(mold): A1 A2 A3 A9

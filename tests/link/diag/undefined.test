@@ -1,7 +1,7 @@
 # A reference that nothing defines fails the link with a diagnostic that
 # names the symbol (each linker words it its own way: matched per
 # linker), and the failed link leaves no output file.
-#@ spec: diag.md "Undefined symbols"
+#@ spec: resolve.md §5.2
 #@ xfail(mortar): no linking yet (M1)
 
 cc -O1 main.c -o main.o

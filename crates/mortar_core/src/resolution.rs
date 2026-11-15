@@ -7,21 +7,32 @@ use mortar_elf::SectionIndex;
 use crate::column::Column;
 use crate::flags::flag_set;
 use crate::id::{ComdatId, FileId, Id, IdRange, OptId, SectionId, SymEntry, SymbolId};
+use crate::inputs::{FileKind, InputFlags, Inputs, Origin};
 use crate::table::{Broken, ensure, unsorted_at};
 
 /// Whether a file takes part in the link, and why (§3.3 `file_live`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileLive {
-    /// Not in the link: an archive member never extracted, a shared object
-    /// not needed.
+    /// Not in the link: a lazy object never extracted, a closure file no
+    /// needed shared object leads to.
     Dead,
     /// Always in the link: the internal file, an object named directly, a
     /// `--whole-archive` member.
     Always,
-    /// An archive member extracted by the reference `(FileId, st_index)`.
+    /// A lazy object extracted by the reference `(FileId, st_index)`; by a
+    /// root (`-u`, `--require-defined`, the entry: `spec/resolve.md` §4.2),
+    /// `file` is 0 and `index` the root's argument index (0 for the
+    /// default entry).
     Extracted(SymEntry),
-    /// A shared object that is needed.
-    Needed,
+    /// A shared object of the command line or a script: its definitions
+    /// are candidates; `needed` when it is `DT_NEEDED` of the output
+    /// (`spec/resolve.md` §9.5).
+    Shared { needed: bool },
+    /// A file of the `DT_NEEDED` closure that a needed shared object leads
+    /// to (`spec/input.md` §8.6): its undefined references are judged and
+    /// make program symbols exported; it is never `DT_NEEDED` of the
+    /// output.
+    Closure,
 }
 
 impl FileLive {
@@ -29,6 +40,23 @@ impl FileLive {
     pub fn is_live(self) -> bool {
         self != Self::Dead
     }
+}
+
+/// How the linker defines a key it defines (§3.3 `def`: `Internal`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InternalDef {
+    /// An assignment of rank 0 (`spec/resolve.md` §3.1, §7.2): the
+    /// argument index of the `--defsym`, or a script assignment's position
+    /// (M4).
+    Assign(u32),
+    /// `--defsym SYM=B`: an alias of `B` (`spec/resolve.md` §7.2).
+    Alias(SymbolId),
+    /// A linker-defined symbol of `spec/resolve.md` §8.1 (rank 5).
+    /// `conditional` for the ones whose existence depends on output
+    /// sections (`__start_`/`__stop_<sec>`, `_TLS_MODULE_BASE_`,
+    /// `__GNU_EH_FRAME_HDR`): `Assignment` confirms or withdraws them
+    /// (§3.4).
+    Provide { conditional: bool },
 }
 
 /// The resolved definition of a key (§3.3 `def`).
@@ -44,7 +72,7 @@ pub enum Def {
     Shared(SymEntry),
     /// Linker-defined (`_end`, `__start_<name>`, `--defsym`, script
     /// assignments): its value is a `defined` row (§4.4).
-    Internal,
+    Internal(InternalDef),
 }
 
 impl Def {
@@ -53,19 +81,50 @@ impl Def {
     pub fn entry(self) -> Option<SymEntry> {
         match self {
             Self::Defined(e) | Self::Common(e) | Self::Shared(e) => Some(e),
-            Self::Undefined { .. } | Self::Internal => None,
+            Self::Undefined { .. } | Self::Internal(_) => None,
         }
     }
 }
 
 flag_set! {
-    /// Where a key is referenced from (§3.3, the merged properties).
+    /// The merged properties of a key that are unions over its live
+    /// mentions (§3.3; `spec/resolve.md` §3.6, §9.6).
     pub struct RefFlags: u8 {
-        /// Referenced from a relocatable object.
+        /// `ref_regular`: referenced from a live relocatable object, or a
+        /// root names it.
         const FROM_OBJECT = 1 << 0;
-        /// Referenced from a shared object.
+        /// `ref_dynamic`: a needed shared object has an undefined mention.
         const FROM_SHARED = 1 << 1;
+        /// `ref_strong`: some reference is not weak. An undefined key with
+        /// it is `Undefined { weak: false }`.
+        const STRONG = 1 << 2;
+        /// `defined_dynamic`: a live shared object defines the key.
+        const DEFINED_SHARED = 1 << 3;
+        /// The key goes in `.dynsym` as a definition of the output
+        /// (`spec/resolve.md` §9.6).
+        const EXPORTED = 1 << 4;
+        /// The definition can be preempted at run time; always for a
+        /// `Shared` definition (`spec/resolve.md` §9.6).
+        const PREEMPTIBLE = 1 << 5;
     }
+}
+
+/// What a surviving reference to the key gets (`spec/resolve.md` §5.2),
+/// decided by resolution and reported by the scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
+pub enum Verdict {
+    /// Nothing to report: the key is defined, or every reference is weak
+    /// (a weak undefined is zero).
+    #[default]
+    Bound,
+    /// `undefined-symbol`, an error.
+    Error,
+    /// `undefined-symbol`, a warning (`--warn-unresolved-symbols`).
+    Warning,
+    /// Nothing, the value zero (`--unresolved-symbols=ignore-*`,
+    /// `--ignore-unresolved-symbol`).
+    Ignored,
 }
 
 /// The properties merged over every live mention of a key (§3.3 `def`,
@@ -78,6 +137,8 @@ pub struct SymProps {
     /// `STB_*` for export.
     pub binding: u8,
     pub refs: RefFlags,
+    /// What a surviving reference gets.
+    pub verdict: Verdict,
     /// The version the definition carries: an index whose meaning is
     /// `spec/resolve.md`'s (0: none).
     pub version: u16,
@@ -206,11 +267,18 @@ pub struct Resolution {
     pub common: Box<[(SymbolId, CommonShape)]>,
     /// Whether two or more live definitions tie at the strongest rank.
     pub clash: Column<SymbolId, bool>,
-    /// The row references to the key bind to; itself otherwise. Every
-    /// consumer of `sym_map` applies it once.
+    /// The row the key's **undefined** mentions bind to (`--wrap`); for a
+    /// `--defsym` alias, every mention. A defined mention binds to its own
+    /// row. Itself otherwise; a consumer applies it once.
     pub redirect: Column<SymbolId, SymbolId>,
-    /// The file whose group is kept, if a live file has the group.
+    /// The file whose copy of the group is kept: the least live `FileId`
+    /// with the signature (`spec/resolve.md` §6.1); none if no live file
+    /// has it.
     pub comdat: Column<ComdatId, OptId<FileId>>,
+    /// The live copies of every group, sorted by `(ComdatId, FileId)`,
+    /// for `mortar_odr` (`spec/resolve.md` §6.7). The keeper is the first
+    /// of each group.
+    pub comdat_copies: Box<[(ComdatId, FileId)]>,
     /// Per file, its section ids: `section_base` and `e_shnum` (§2.2). Empty
     /// for files that are not live objects.
     pub section_base: Column<FileId, IdRange<SectionId>>,
@@ -230,6 +298,7 @@ impl Resolution {
             clash: Column::filled(symbols, false),
             redirect: Column::from_vec((0..symbols).map(SymbolId).collect()).unwrap_or_default(),
             comdat: Column::filled(comdats, OptId::NONE),
+            comdat_copies: Box::new([]),
             section_base: Column::filled(files, IdRange::empty(SectionId(0))),
             sections: Column::new(),
         }
@@ -264,16 +333,31 @@ impl Resolution {
         Some(self.common[at].1)
     }
 
+    /// The live copies of a group, in `FileId` order; the keeper first.
+    #[must_use]
+    pub fn copies_of(&self, group: ComdatId) -> &[(ComdatId, FileId)] {
+        let start = self.comdat_copies.partition_point(|row| row.0 < group);
+        let end = self.comdat_copies.partition_point(|row| row.0 <= group);
+        &self.comdat_copies[start..end]
+    }
+
     /// The invariants of §2.2 and §3.3 that the table alone shows:
     ///
-    /// - the per-key columns have one row per key, the per-file columns one
-    ///   per file;
-    /// - section ranges are contiguous in `FileId` order (§2.2) and cover
-    ///   `sections`; only live files have sections;
-    /// - definitions, extracting references and kept groups name live files
-    ///   in range; `redirect` stays in range; `common` is sorted;
-    /// - a section of a kind without output is not `Kept`; a section
-    ///   dropped for its group is in one.
+    /// 1. the per-key columns have one row per key, the per-file columns
+    ///    one per file;
+    /// 2. section ranges are contiguous in `FileId` order (§2.2) and cover
+    ///    `sections`; only live files have sections;
+    /// 3. definitions, extracting references and kept groups name live
+    ///    files in range; `redirect` and aliases stay in range; `common` is
+    ///    sorted;
+    /// 4. a section of a kind without output is not `Kept`; a section
+    ///    dropped for its group is in one;
+    /// 5. `comdat_copies` is sorted, names live files and groups in range,
+    ///    and the keeper of a group is its least copy (none without one);
+    /// 6. an undefined key with a strong reference is not weak; a `Shared`
+    ///    definition is preemptible.
+    ///
+    /// [`Resolution::check_against`] adds what needs `Inputs`.
     pub fn check(&self) -> Result<(), Broken> {
         let t = "Resolution";
         let keys = self.def.len();
@@ -311,6 +395,25 @@ impl Resolution {
             }
             let to = self.redirect[symbol];
             ensure(to.index() < keys, t, || format!("symbol {}: redirect out of range", symbol.0))?;
+            if let Def::Internal(InternalDef::Alias(to)) = def {
+                ensure(to.index() < keys, t, || {
+                    format!("symbol {}: alias out of range", symbol.0)
+                })?;
+            }
+            let refs = self.props[symbol].refs;
+            if let Def::Undefined { weak: true } = def {
+                ensure(!refs.contains(RefFlags::STRONG), t, || {
+                    format!("rule 6: symbol {}: weak undefined with a strong reference", symbol.0)
+                })?;
+            }
+            if let Def::Shared(_) = def {
+                ensure(refs.contains(RefFlags::PREEMPTIBLE), t, || {
+                    format!(
+                        "rule 6: symbol {}: a shared definition that is not preemptible",
+                        symbol.0
+                    )
+                })?;
+            }
         }
         if let Some(at) = unsorted_at(&self.common, |row| row.0) {
             return Err(Broken { table: t, what: format!("common[{at}] out of order") });
@@ -321,6 +424,23 @@ impl Resolution {
         for (group, keeper) in self.comdat.iter() {
             ensure(keeper.get().is_none_or(live), t, || {
                 format!("comdat {}: kept by a dead file", group.0)
+            })?;
+        }
+        if let Some(at) = unsorted_at(&self.comdat_copies, |row| *row) {
+            return Err(Broken {
+                table: t,
+                what: format!("rule 5: comdat_copies[{at}] out of order"),
+            });
+        }
+        for &(group, file) in &self.comdat_copies {
+            ensure(self.comdat.has(group) && live(file), t, || {
+                format!("rule 5: comdat {}: a copy in a dead file or out of range", group.0)
+            })?;
+        }
+        for (group, keeper) in self.comdat.iter() {
+            let least = self.copies_of(group).first().map(|row| row.1);
+            ensure(keeper.get() == least, t, || {
+                format!("rule 5: comdat {}: the keeper is not the least live copy", group.0)
             })?;
         }
         for (section, row) in self.sections.iter() {
@@ -335,6 +455,52 @@ impl Resolution {
                 t,
                 || format!("section {}: dropped for a group it is not in", section.0),
             )?;
+        }
+        Ok(())
+    }
+
+    /// The invariants of §3.3 that need `Inputs` beside the table:
+    ///
+    /// 1. one row per file, key and signature of `inputs`;
+    /// 2. `Shared` liveness only for a shared object not of the closure,
+    ///    `Closure` only for a closure file; `Extracted` only for a lazy
+    ///    object; `Always` for a lazy object only under `--whole-archive`;
+    /// 3. a `Defined` or `Common` definition is in an object, a `Shared`
+    ///    one in a shared object.
+    pub fn check_against(&self, inputs: &Inputs<'_>) -> Result<(), Broken> {
+        let t = "Resolution";
+        ensure(
+            self.file_live.len() == inputs.files.len()
+                && self.def.len() == inputs.symbols.len()
+                && self.comdat.len() == inputs.comdats.len(),
+            t,
+            || "rule 1: not one row per file, key and signature of Inputs".to_owned(),
+        )?;
+        for (id, live) in self.file_live.iter() {
+            let file = &inputs.files[id];
+            let shared = file.kind() == FileKind::Shared;
+            let closure = matches!(file.origin, Origin::Closure { .. });
+            let ok = match live {
+                FileLive::Dead => true,
+                FileLive::Always => {
+                    !file.is_lazy() || file.state.contains(InputFlags::WHOLE_ARCHIVE)
+                }
+                FileLive::Extracted(_) => file.is_lazy(),
+                FileLive::Shared { .. } => shared && !closure,
+                FileLive::Closure => shared && closure,
+            };
+            ensure(ok, t, || format!("rule 2: file {}: {live:?} for this kind of file", id.0))?;
+        }
+        for (symbol, def) in self.def.iter() {
+            let kind = |e: SymEntry| inputs.files.get(e.file).map(crate::inputs::File::kind);
+            let ok = match *def {
+                Def::Defined(e) | Def::Common(e) => kind(e) == Some(FileKind::Object),
+                Def::Shared(e) => kind(e) == Some(FileKind::Shared),
+                Def::Undefined { .. } | Def::Internal(_) => true,
+            };
+            ensure(ok, t, || {
+                format!("rule 3: symbol {}: defined in a file of the wrong kind", symbol.0)
+            })?;
         }
         Ok(())
     }
