@@ -216,8 +216,18 @@ struct Entry<'l> {
 impl Entry<'_> {
     /// The integer part of the group: a key collision between names is
     /// split by [`groups`] inside a run of equal `run`s.
-    fn run(&self) -> (u8, u64, u16) {
-        (self.kind, self.key, self.class)
+    fn run(&self) -> (u64, u8, u16) {
+        (self.key, self.kind, self.class)
+    }
+
+    /// The entry's place in [`sorted`]'s order above `INDEX_BITS`.
+    fn order(&self) -> u128 {
+        let kind = match self.kind {
+            2 => 0u128,
+            3 => 1,
+            _ => 2,
+        };
+        (u128::from(self.key) << 64) | (kind << 62) | (u128::from(self.class) << INDEX_BITS)
     }
 }
 
@@ -306,7 +316,7 @@ pub fn check(
     let got = pool.unit_cost(5_000).map_collect(units.len(), |u, out: &mut Vec<Entry<'_>>| {
         cx.entries(u, out);
     });
-    let mut entries = got.items;
+    let entries = got.items;
     let per_unit = pool.unit_cost(5_000).map_collect(units.len(), |u, out: &mut Vec<Counts>| {
         let mut c = cx.unit_counts(u);
         c.add(&cx.skipped(u));
@@ -317,7 +327,7 @@ pub fn check(
     }
     // Integers only (WP-073: comparing names here was a third of the
     // checks' time); names split a run only on a key collision.
-    pool.sort_by(&mut entries, |a, b| (a.run(), a.unit, a.row).cmp(&(b.run(), b.unit, b.row)));
+    let mut entries = sorted(pool, &entries);
     let groups = groups(&mut entries);
     let found = pool.unit_cost(2_000).map_collect(groups.len(), |g, out: &mut Vec<Found>| {
         let (a, b) = groups[g];
@@ -427,8 +437,25 @@ fn schemes(info: &[Info<'_>]) -> (u64, u64) {
     (distinct, (units * units.saturating_sub(1) / 2).saturating_sub(same))
 }
 
+/// Bits of an entry's index in [`sorted`]'s sort words.
+const INDEX_BITS: u32 = 46;
+
+/// `entries` (each unit's, in unit order, each kind's rows in row order)
+/// sorted by (key, kind, class, unit, row): one word per entry, its index
+/// in the low bits, sorted, then gathered (WP-073: sorting 48-byte
+/// entries was a quarter of the checks' time at one thread). The index
+/// order within one kind is the (unit, row) order.
+fn sorted<'l>(pool: &Pool, entries: &[Entry<'l>]) -> Vec<Entry<'l>> {
+    debug_assert!((entries.len() as u64) < 1 << INDEX_BITS);
+    let mut words: Vec<u128> =
+        entries.iter().enumerate().map(|(i, e)| e.order() | i as u128).collect();
+    pool.sort_by(&mut words, Ord::cmp);
+    let mask = (1u128 << INDEX_BITS) - 1;
+    words.iter().map(|w| entries[(w & mask) as usize]).collect()
+}
+
 /// The groups (kind, key, name, class) of `entries`, sorted by
-/// (kind, key, class, unit, row): each group in (unit, row) order. A run
+/// (key, kind, class, unit, row): each group in (unit, row) order. A run
 /// of one (kind, key, class) whose names differ (a key collision, or
 /// unanchored rows beside named ones) is sorted by name first. An
 /// unanchored group (empty name) joins the run's one named group when
