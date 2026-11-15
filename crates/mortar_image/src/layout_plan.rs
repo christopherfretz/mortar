@@ -35,6 +35,7 @@ const SHF_ALLOC: u64 = 0x2;
 const SHF_EXECINSTR: u64 = 0x4;
 const SHT_NOBITS: u32 = 8;
 const SHT_RELA: u32 = 4;
+const SHT_REL: u32 = 9;
 const PT_LOAD: u32 = 1;
 
 /// The tables a plan is built from.
@@ -175,11 +176,25 @@ fn records_in(
             });
         }
     } else {
-        // REL: the addend is in the bytes; M3 (x86).
-        return Err(Diagnostic::refused(
-            mortar_diag::RefusalClass::Feature,
-            "REL relocations in fill (M3)",
-        ));
+        // REL (WP-030c): the addend is in the field; `crate::rel` reads it
+        // at fill, so the decoded addend is 0 (arch.md §3.3, `Records`).
+        let table = match sec.rel() {
+            Ok(t) => t,
+            Err(mortar_elf::Error::NotResident { offset, size }) => {
+                let len = usize::try_from(size)
+                    .map_err(|_| bad(mortar_elf::Error::NotResident { offset, size }))?;
+                buf.clear();
+                buf.resize(len, 0);
+                inputs
+                    .copy_to(file, offset..offset.saturating_add(size), buf)
+                    .map_err(|e| crate::source::copy_error(e, &file_ref(inputs, file)))?;
+                sec.rel_in(buf).map_err(bad)?
+            }
+            Err(e) => return Err(bad(e)),
+        };
+        for r in table {
+            out.push(Reloc { r_offset: r.r_offset, key: key(r.r_sym)?, r_type: r.r_type, addend: 0 });
+        }
     }
     Ok(out)
 }
@@ -302,18 +317,11 @@ fn table(inputs: &Inputs<'_>, file: FileId, rel: SectionIndex) -> Result<RelaTab
         internal(&format!("file {}: relocation section {}: {e:?}", file.0, rel.0))
     };
     let sec = obj.section(rel).map_err(bad)?;
-    if sec.sh_type() != SHT_RELA {
-        // REL: the addend is in the bytes; M3 (x86).
-        return Err(Diagnostic::refused(
-            mortar_diag::RefusalClass::Feature,
-            "REL relocations in fill (M3)",
-        ));
-    }
+    // REL (i386, WP-030c): the addend is in the relocated field, read at
+    // fill (`crate::rel`).
+    let rel_form = sec.sh_type() == SHT_REL;
     let class = obj.class();
-    let entsize = match class {
-        mortar_elf::Class::Elf64 => 24,
-        mortar_elf::Class::Elf32 => 12,
-    };
+    let entsize = RelaTable { file, offset: 0, count: 0, class, rel: rel_form }.entsize();
     let range = sec.file_range().map_err(bad)?.unwrap_or(0..0);
     let len = (range.end - range.start) as u64;
     if !len.is_multiple_of(entsize) {
@@ -325,7 +333,7 @@ fn table(inputs: &Inputs<'_>, file: FileId, rel: SectionIndex) -> Result<RelaTab
     let count = u32::try_from(len / entsize).map_err(|_| {
         internal(&format!("file {}: relocation section {} too large", file.0, rel.0))
     })?;
-    Ok(RelaTable { file, offset: range.start as u64, count, class })
+    Ok(RelaTable { file, offset: range.start as u64, count, class, rel: rel_form })
 }
 
 /// I-38: every `Merged` chunk is one row, and every merge section a

@@ -150,15 +150,20 @@ pub struct RelaTable {
     pub count: u32,
     /// The file's class: 24-byte (`ELFCLASS64`) or 12-byte records.
     pub class: Class,
+    /// `SHT_REL` (WP-030c, i386): 16- or 8-byte records, the addend in the
+    /// relocated field (`crate::rel`).
+    pub rel: bool,
 }
 
 impl RelaTable {
     /// The size of one record.
     #[must_use]
     pub fn entsize(&self) -> u64 {
-        match self.class {
-            Class::Elf64 => 24,
-            Class::Elf32 => 12,
+        match (self.rel, self.class) {
+            (false, Class::Elf64) => 24,
+            (false, Class::Elf32) => 12,
+            (true, Class::Elf64) => 16,
+            (true, Class::Elf32) => 8,
         }
     }
 

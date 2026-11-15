@@ -40,7 +40,7 @@ use mortar_core::resolution::{Resolution, SectionKind};
 use mortar_core::{Liveness, SymbolId};
 use mortar_diag::{Collector, Diagnostic, Key, Kind, Place};
 use mortar_elf::consts::SHT_NOTE;
-use mortar_elf::{Class, Machine, SectionIndex};
+use mortar_elf::{Class, SectionIndex};
 use mortar_input::load::{LoadEnv, load_steps};
 use mortar_input::store::Store;
 use mortar_layout::chunk::{Common, SynthChunk, commons};
@@ -307,20 +307,6 @@ pub fn front<'s>(
     let inputs = inputs?;
     timer.phase(20, "input");
     let machine = inputs.target.machine;
-    if machine == Machine::I386 {
-        // Input's phase (20), after every file's diagnostics (their unit is
-        // the file's ordinal).
-        diag.emit(
-            Key::new(20, u32::MAX, 0),
-            Diagnostic::refused(
-                mortar_diag::RefusalClass::Feature,
-                format!("linking for {}", machine.name()),
-            )
-            .note("M1 links AArch64 and x86-64 (docs/ROADMAP.md)"),
-        );
-        return None;
-    }
-
     // 30: resolve.
     let outcome = mortar_resolve::resolve_inputs(&inputs, &plan, &pool);
     if time_steps {
@@ -357,6 +343,8 @@ pub fn front<'s>(
         return None;
     };
     let arch = link_arch.get();
+    // S-68: an output whose relocations are REL (i386) names `.rel.plt`.
+    let rel = arch.facts().rel_form == mortar_arch::RelForm::Rel;
     let headers = match gather(&inputs, &resolution, &pool) {
         Ok(h) => h,
         Err(d) => {
@@ -490,7 +478,7 @@ pub fn front<'s>(
     let symtab = if strip_all {
         None
     } else {
-        Some(SymtabPlan::new(&sym_cx, Class::Elf64, &[], facts, &pool, diag).ok()?)
+        Some(SymtabPlan::new(&sym_cx, target.class, &[], facts, &pool, diag).ok()?)
     };
     steps.step("symtab plan", 0, "");
     timer.phase(80, "synthetic");
@@ -513,9 +501,9 @@ pub fn front<'s>(
     // input and the synthetic chunks that exist (their kinds do not depend
     // on `.shstrtab`'s size), so that one placement usually suffices; the
     // exact names are checked after it.
-    let kinds: Vec<SynthKind> = synth_chunks(&plans, &eh, false).1.iter().map(|p| p.0).collect();
+    let kinds: Vec<SynthKind> = synth_chunks(&plans, &eh, false, target.class, rel).1.iter().map(|p| p.0).collect();
     let names: Vec<&[u8]> =
-        estimated_names(&assignment, &liveness, &resolution, &kinds, options.relro);
+        estimated_names(&assignment, &liveness, &resolution, &kinds, options.relro, rel);
     let mut shstrtab = ShstrtabPlan::new(&names);
     // S-85: `.symtab_shndx` exists when some section index reaches
     // `SHN_LORESERVE`; the count of section headers (with the null one)
@@ -536,7 +524,7 @@ pub fn front<'s>(
     let (placement_assignment, placed, layout, erratum_fixes) = loop {
         attempt += 1;
         plans.shstrtab = shstrtab.clone();
-        let (synthetic, present) = synth_chunks(&plans, &eh, shndx);
+        let (synthetic, present) = synth_chunks(&plans, &eh, shndx, target.class, rel);
         let Some(sizes) = chunk_ids(FIRST_SYNTHETIC, &present) else {
             diag.emit(Key::new(80, 0, 0), internal("a synthetic chunk given twice"));
             return None;
@@ -632,7 +620,7 @@ pub fn front<'s>(
         {
             let new = SymtabPlan::new(
                 &sym_cx,
-                Class::Elf64,
+                target.class,
                 &placed.placement.patches,
                 facts,
                 &pool,
@@ -690,7 +678,7 @@ pub fn front<'s>(
     for &(kind, id) in &plans.chunks {
         let ok = matches!(
             placed.placement.chunks.get(id).map(|c| c.kind),
-            Some(ChunkKind::Synthetic(s)) if s.name == kind.name(false)
+            Some(ChunkKind::Synthetic(s)) if s.name == kind.name(rel)
         );
         if !ok {
             diag.emit(
@@ -880,7 +868,7 @@ fn property_plan(
         paths.iter().zip(&per).map(|(p, s)| ObjectNotes { path: p, sections: s }).collect();
     let processor = |t: u32| arch.property_merge(t);
     // `-z memory-seal` (R-C3): the last of it and `-z nomemory-seal` wins.
-    PropertyPlan::new(&objects, Class::Elf64, &processor, memory_seal, diag)
+    PropertyPlan::new(&objects, arch.facts().class, &processor, memory_seal, diag)
 }
 
 /// The synthetic chunks that exist, in S-3 order, as layout takes them,
@@ -889,6 +877,8 @@ fn synth_chunks(
     p: &SynthPlans,
     eh: &EhPlan,
     shndx: bool,
+    class: Class,
+    rel: bool,
 ) -> (Vec<SynthChunk>, Vec<(SynthKind, u64)>) {
     let mut present: Vec<(SynthKind, u64)> = Vec::new();
     if p.property.exists() {
@@ -929,12 +919,12 @@ fn synth_chunks(
     let chunks = present
         .iter()
         .map(|&(kind, size)| {
-            let h = kind.header(Class::Elf64, false).unwrap_or_else(|| unreachable!("an M1 chunk"));
+            let h = kind.header(class, rel).unwrap_or_else(|| unreachable!("an M1 chunk"));
             let (sh_type, align) = match kind {
                 SynthKind::EhFrame => (eh.sh_type(), eh.align()),
                 _ => (h.sh_type, h.align.trailing_zeros() as u8),
             };
-            SynthChunk { synth: kind.synth(false), sh_type, flags: h.flags, align, size }
+            SynthChunk { synth: kind.synth(rel), sh_type, flags: h.flags, align, size }
         })
         .collect();
     (chunks, present)
@@ -950,6 +940,7 @@ fn estimated_names<'n>(
     resolution: &Resolution,
     synthetic: &[SynthKind],
     relro: bool,
+    rel: bool,
 ) -> Vec<&'n [u8]> {
     let mut used = vec![false; a.outsecs.len() as usize];
     for (sid, out) in a.out_of.iter() {
@@ -967,7 +958,7 @@ fn estimated_names<'n>(
         .map(|(_, o)| o.name)
         .collect();
     for k in synthetic {
-        names.push(k.name(false));
+        names.push(k.name(rel));
     }
     // layout's `.relro_padding` (L-64), when RELRO has content: a static
     // executable's `.got` always does.

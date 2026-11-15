@@ -33,6 +33,7 @@ mod merged;
 pub mod output;
 pub mod phases;
 pub mod plan;
+mod rel;
 mod reloc;
 pub mod source;
 pub mod synth;
