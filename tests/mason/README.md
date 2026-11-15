@@ -45,7 +45,12 @@ Every program runs in each variant: libstdc++ with `-O0`, `-g`,
 kiln and Clang sources only, when `setup` has made the libc++ tree,
 libc++ 22 static as Debian ships it (`libcxx`, and `libcxx-g` with
 `-g`; their members carry `.ARM.attributes` and `.deplibs`, which mortar
-consumes, `spec/resolve.md` §10). Each cell links the
+consumes, `spec/resolve.md` §10); and x86-64 (`x64-O0`, `x64-g`,
+libstdc++ only, every program: kiln's `--target=x86_64-linux-gnu` with
+hod, Debian's `x86_64-linux-gnu-g++`/`-gfortran`, Clang's `--target`,
+GNU ld `x86_64-linux-gnu-ld.bfd`; the programs run under `qemu-x86_64`,
+and the verifier, which judges AArch64 outputs only, is not run). Each
+cell links the
 same objects with GNU ld (the reference), lld, mold (when present) and
 mortar, runs every output, and compares standard output, standard error
 and the exit status with GNU ld's. A cell holds when mortar's program runs
@@ -55,7 +60,7 @@ also compiles the kiln sources with g++ and clang++ and prints the census
 of the three producers' objects.
 
 The run took 41 s at `-j 4` (mortar already built, a loaded shared
-machine). It is not in `ci --quick`: it needs kiln and hod builds, and
+machine); with the x64 variants (80 cells), 58 s at `-j 2`. It is not in `ci --quick`: it needs kiln and hod builds, and
 its time is close to the one-minute budget.
 
 ## Census

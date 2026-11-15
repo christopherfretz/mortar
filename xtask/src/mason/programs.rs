@@ -94,6 +94,10 @@ pub struct Variant {
     pub name: &'static str,
     pub flags: &'static [&'static str],
     pub stdlib: Stdlib,
+    /// A cross target (`x86_64-linux-gnu`): its objects come from the
+    /// cross compilers and kiln's `--target`, GNU ld is the target's, and
+    /// the programs run under `qemu-x86_64`. `None`: the host (AArch64).
+    pub target: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,17 +111,34 @@ pub enum Stdlib {
 }
 
 pub const VARIANTS: &[Variant] = &[
-    Variant { name: "O0", flags: &[], stdlib: Stdlib::Libstdcxx },
-    Variant { name: "g", flags: &["-g"], stdlib: Stdlib::Libstdcxx },
+    Variant { name: "O0", flags: &[], stdlib: Stdlib::Libstdcxx, target: None },
+    Variant { name: "g", flags: &["-g"], stdlib: Stdlib::Libstdcxx, target: None },
     Variant {
         name: "sections",
         flags: &["-ffunction-sections", "-fdata-sections"],
         stdlib: Stdlib::Libstdcxx,
+        target: None,
     },
-    Variant { name: "nopic", flags: &["-fno-pic"], stdlib: Stdlib::Libstdcxx },
-    Variant { name: "libcxx", flags: &[], stdlib: Stdlib::Libcxx },
-    Variant { name: "libcxx-g", flags: &["-g"], stdlib: Stdlib::Libcxx },
+    Variant { name: "nopic", flags: &["-fno-pic"], stdlib: Stdlib::Libstdcxx, target: None },
+    Variant { name: "libcxx", flags: &[], stdlib: Stdlib::Libcxx, target: None },
+    Variant { name: "libcxx-g", flags: &["-g"], stdlib: Stdlib::Libcxx, target: None },
+    Variant { name: "x64-O0", flags: &[], stdlib: Stdlib::Libstdcxx, target: Some(X64) },
+    Variant { name: "x64-g", flags: &["-g"], stdlib: Stdlib::Libstdcxx, target: Some(X64) },
 ];
+
+/// The cross target of the `x64-*` variants (WP-034): libstdc++ only (no
+/// x86-64 libc++ tree here), the cross toolchains of Debian's
+/// `g++-x86-64-linux-gnu` and `gfortran-x86-64-linux-gnu`.
+pub const X64: &str = "x86_64-linux-gnu";
+
+/// The cross tools of [`X64`]: g++, gfortran, GNU ld, the emulator.
+#[derive(Clone, Debug)]
+struct Cross {
+    gxx: PathBuf,
+    gfortran: PathBuf,
+    bfd: PathBuf,
+    qemu: PathBuf,
+}
 
 /// The libc++ tree of `setup`: headers and static archives.
 #[derive(Clone, Debug)]
@@ -147,6 +168,8 @@ struct Tools {
     gfortran: PathBuf,
     linkers: Vec<(&'static str, PathBuf)>,
     libcxx: Option<LibcxxTree>,
+    /// The `x64-*` variants' tools, when all are present.
+    cross: Option<Cross>,
 }
 
 #[derive(Debug, Default)]
@@ -223,7 +246,21 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         gfortran: need("gfortran")?,
         linkers,
         libcxx: LibcxxTree::find(),
+        cross: (|| {
+            Some(Cross {
+                gxx: tool(&format!("{X64}-g++"))?,
+                gfortran: tool(&format!("{X64}-gfortran"))?,
+                bfd: tool(&format!("{X64}-ld.bfd"))?,
+                qemu: tool("qemu-x86_64")?,
+            })
+        })(),
     };
+    if tools.cross.is_none() {
+        println!(
+            "xtask mason programs: no {X64} cross tools ({X64}-g++, -gfortran, -ld.bfd, \
+             qemu-x86_64): x64 variants skipped"
+        );
+    }
     if tools.libcxx.is_none() {
         println!(
             "xtask mason programs: no libc++ tree (cargo xtask mason setup): libc++ variants skipped"
@@ -243,6 +280,9 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     for p in &programs {
         for v in VARIANTS {
             if v.stdlib != Stdlib::Libstdcxx && (!p.libcxx_ok() || tools.libcxx.is_none()) {
+                continue;
+            }
+            if v.target.is_some() && tools.cross.is_none() {
                 continue;
             }
             work.push((p, v));
@@ -360,19 +400,23 @@ fn compile(
         }
         argv.extend(var.flags.iter().map(|f| (*f).to_owned()));
         argv.push("-O0".into());
+        let cross = var.target.and_then(|_| tools.cross.as_ref());
+        let target: Vec<String> = var.target.map(|t| format!("--target={t}")).into_iter().collect();
         let (prog, env): (&Path, &[(&str, &str)]) = match lang {
             Lang::Kiln => {
                 argv.extend(libcxx_flags.iter().cloned());
+                argv.extend(target.iter().cloned());
                 (&tools.mason.kiln, &kiln_env)
             }
             Lang::Clangxx => {
                 argv.extend(libcxx_flags.iter().cloned());
+                argv.extend(target.iter().cloned());
                 (&tools.clangxx, &[])
             }
-            Lang::Gxx => (&tools.gxx, &[]),
+            Lang::Gxx => (cross.map_or(&tools.gxx, |c| &c.gxx), &[]),
             Lang::Gfortran => {
                 argv.extend(["-J".into(), dir.display().to_string()]);
-                (&tools.gfortran, &[])
+                (cross.map_or(&tools.gfortran, |c| &c.gfortran), &[])
             }
         };
         argv.extend([
@@ -425,6 +469,10 @@ fn link_line(
     dir: &Path,
 ) -> Result<Vec<String>, String> {
     let mut argv: Vec<String> = vec!["-static".into()];
+    let cross = var.target.and_then(|_| tools.cross.as_ref());
+    if !prog.gnu_driver {
+        argv.extend(var.target.map(|t| format!("--target={t}")));
+    }
     argv.extend(objects.iter().map(|o| o.display().to_string()));
     argv.extend(prog.extra.iter().cloned());
     if let Some(tree) = &tools.libcxx {
@@ -439,7 +487,7 @@ fn link_line(
     }
     argv.extend(["-o".into(), "out".into(), "-###".into()]);
     let driver = if prog.gnu_driver {
-        tools.gxx.clone()
+        cross.map_or(&tools.gxx, |c| &c.gxx).clone()
     } else {
         // kiln's own link step: the clang++ it runs, asked in turn.
         let output = run_in(&tools.mason.kiln, &argv, dir, &[], TOOL_LIMITS)?;
@@ -459,7 +507,10 @@ fn link_line(
         .map(words)
         .find(|w| {
             w.first().is_some_and(|p| {
-                p.ends_with("collect2") || p.ends_with("/ld") || p.ends_with("ld.bfd")
+                p.ends_with("collect2")
+                    || p.ends_with("/ld")
+                    || p.ends_with("-ld")
+                    || p.ends_with("ld.bfd")
             })
         })
         .ok_or_else(|| format!("{} -###: no link line in {text}", driver.display()))?;
@@ -506,12 +557,23 @@ fn run_cell(
             return cell;
         }
     };
+    let cross = var.target.and_then(|_| tools.cross.as_ref());
     for (name, linker) in &tools.linkers {
         let out = format!("out.{name}");
         let mut argv = with_output(&line, &out);
-        if *name == "mortar" {
+        // The verifier judges AArch64 outputs (plumb.md §1): no map
+        // elsewhere.
+        if *name == "mortar" && cross.is_none() {
             argv.push(format!("-Map={out}.map"));
         }
+        let linker = match (cross, *name) {
+            (Some(c), "bfd") => &c.bfd,
+            _ => linker,
+        };
+        let (runner, run_args) = match cross {
+            Some(c) => (c.qemu.clone(), vec![dir.join(&out).display().to_string()]),
+            None => (dir.join(&out), Vec::new()),
+        };
         let r = match run_in(linker, &argv, dir, &[], TOOL_LIMITS) {
             Err(e) => Err(e),
             Ok(linked) if !linked.end.success() => Err(first_line(&linked)),
@@ -519,7 +581,7 @@ fn run_cell(
                 if !linked.stderr.is_empty() {
                     cell.notes.push(format!("{name} warns: {}", first_line(&linked)));
                 }
-                match run_in(&dir.join(&out), &[], dir, &[], RUN_LIMITS) {
+                match run_in(&runner, &run_args, dir, &[], RUN_LIMITS) {
                     Err(e) => Err(format!("run: {e}")),
                     Ok(r) => Ok((
                         String::from_utf8_lossy(&r.stdout).into_owned(),
@@ -550,7 +612,7 @@ fn run_cell(
         (Some(Ok(run)), Some(refr)) => run == refr,
         _ => false,
     };
-    if let Some(Ok(_)) = ours {
+    if let (Some(Ok(_)), None) = (ours, cross) {
         let out = dir.join("out.mortar");
         let pl = super::plumb(&out, &dir.join("out.mortar.map"), dir);
         if !matches!(&pl, Ok(p) if p.findings == 0) {

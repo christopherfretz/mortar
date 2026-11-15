@@ -102,9 +102,8 @@ pub fn parse(text: &str) -> Result<Vec<Rec>, String> {
 pub fn collect(mode: &str, dir: &Path) -> Result<Vec<Rec>, String> {
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     let results = read(&dir.join("results.tsv"))?;
-    let index = |cwd: &str| -> Option<usize> {
-        cwd.rsplit('/').next()?.strip_prefix('t')?.parse().ok()
-    };
+    let index =
+        |cwd: &str| -> Option<usize> { cwd.rsplit('/').next()?.strip_prefix('t')?.parse().ok() };
     let mut times: BTreeMap<usize, (u64, u32, Option<u64>)> = BTreeMap::new();
     for l in read(&dir.join("times.tsv")).unwrap_or_default().lines() {
         let f: Vec<&str> = l.split('\t').collect();
@@ -155,7 +154,10 @@ pub fn collect(mode: &str, dir: &Path) -> Result<Vec<Rec>, String> {
 
 /// The records of `mode` in `recs` (any mode when `None` and the file
 /// holds one).
-pub fn select<'a>(recs: &'a [Rec], mode: Option<&str>) -> Result<BTreeMap<&'a str, &'a Rec>, String> {
+pub fn select<'a>(
+    recs: &'a [Rec],
+    mode: Option<&str>,
+) -> Result<BTreeMap<&'a str, &'a Rec>, String> {
     let modes: std::collections::BTreeSet<&str> = recs.iter().map(|r| r.mode.as_str()).collect();
     let mode = match mode {
         Some(m) if modes.contains(m) => m,
@@ -182,7 +184,9 @@ pub fn cause(a: &Rec, b: &Rec) -> String {
     if refused {
         return format!("refusal: {}", super::libcxx::refusal(&b.key));
     }
-    if matches!(b.outcome.as_str(), "TIMEOUT" | "KILLED") || matches!(a.outcome.as_str(), "TIMEOUT" | "KILLED") {
+    if matches!(b.outcome.as_str(), "TIMEOUT" | "KILLED")
+        || matches!(a.outcome.as_str(), "TIMEOUT" | "KILLED")
+    {
         return format!("timeout/killed ({} / {})", a.outcome, b.outcome);
     }
     if a.outcome == "PASS" && b.detail == "run" {
@@ -193,7 +197,12 @@ pub fn cause(a: &Rec, b: &Rec) -> String {
 
 /// The comparison of `b` against the reference `a`: counts by class and
 /// the DIFFERENT tests.
-pub fn compare(an: &str, a: &BTreeMap<&str, &Rec>, bn: &str, b: &BTreeMap<&str, &Rec>) -> (String, usize) {
+pub fn compare(
+    an: &str,
+    a: &BTreeMap<&str, &Rec>,
+    bn: &str,
+    b: &BTreeMap<&str, &Rec>,
+) -> (String, usize) {
     let mut s = String::new();
     let mut same: BTreeMap<&str, usize> = BTreeMap::new();
     let mut different = Vec::new();
@@ -229,7 +238,11 @@ pub fn compare(an: &str, a: &BTreeMap<&str, &Rec>, bn: &str, b: &BTreeMap<&str, 
         both("xfail"),
         both("unsupported"),
         different.len(),
-        if only + only_b > 0 { format!(" (only in {an}: {only}, only in {bn}: {only_b})") } else { String::new() }
+        if only + only_b > 0 {
+            format!(" (only in {an}: {only}, only in {bn}: {only_b})")
+        } else {
+            String::new()
+        }
     );
     if !different.is_empty() {
         let _ = writeln!(s, "\n| test | {an} | {bn} | cause |\n|---|---|---|---|");
@@ -256,7 +269,9 @@ pub fn times(name: &str, m: &BTreeMap<&str, &Rec>) -> String {
     ms.sort_unstable();
     rss.sort_unstable();
     let links: u32 = m.values().map(|r| r.links).sum();
-    let pick = |v: &[u64], q: f64| v.get(((v.len() as f64 - 1.0) * q).round() as usize).copied().unwrap_or(0);
+    let pick = |v: &[u64], q: f64| {
+        v.get(((v.len() as f64 - 1.0) * q).round() as usize).copied().unwrap_or(0)
+    };
     format!(
         "| {name} | {} | {links} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} |",
         ms.len(),
@@ -355,7 +370,10 @@ mod tests {
         let (am, bm) = (select(&a, None).unwrap(), select(&b, None).unwrap());
         let (text, n) = compare("bfd", &am, "mortar", &bm);
         assert_eq!(n, 2);
-        assert!(text.starts_with("mortar passes 1 of the 3 tests bfd passes; 2 DIFFERENT"), "{text}");
+        assert!(
+            text.starts_with("mortar passes 1 of the 3 tests bfd passes; 2 DIFFERENT"),
+            "{text}"
+        );
         assert!(text.contains("refusal: unsupported feature: x"), "{text}");
         assert!(text.contains("WRONG?"), "{text}");
         let base = baseline(&bm);

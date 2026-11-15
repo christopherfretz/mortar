@@ -153,7 +153,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
         }
     }
     if a.dirs.is_empty() && a.compare.is_none() && a.collect.is_none() {
-        return Err("libcxx needs test directories, --sample, --full, --compare or --collect".into());
+        return Err(
+            "libcxx needs test directories, --sample, --full, --compare or --collect".into()
+        );
     }
     Ok(a)
 }
@@ -390,29 +392,41 @@ fn finish(args: &Args, recs: &[outcomes::Rec]) -> Result<ExitCode, String> {
         .iter()
         .map(|m| outcomes::select(recs, Some(m)).map(|s| (*m, s)))
         .collect::<Result<_, _>>()?;
-    println!("
-{}", outcomes::TIMES_HEADER);
+    println!(
+        "
+{}",
+        outcomes::TIMES_HEADER
+    );
     for (m, s) in &by {
         println!("{}", outcomes::times(m, s));
     }
     if let Some((_, r)) = by.iter().find(|(m, _)| *m == "bfd") {
         for (m, s) in by.iter().filter(|(m, _)| *m != "bfd") {
-            println!("
+            println!(
+                "
 ### {m} against bfd
 
-{}", outcomes::compare("bfd", r, m, s).0);
+{}",
+                outcomes::compare("bfd", r, m, s).0
+            );
         }
     }
     let mut code = ExitCode::SUCCESS;
     if let Some((_, m)) = by.iter().find(|(m, _)| *m == "mortar") {
         if let Some(p) = &args.write_baseline {
-            std::fs::write(p, outcomes::baseline(m)).map_err(|e| format!("{}: {e}", p.display()))?;
+            std::fs::write(p, outcomes::baseline(m))
+                .map_err(|e| format!("{}: {e}", p.display()))?;
         }
         if let Some(p) = &args.baseline {
             let base = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
             let (regressed, fixed) = outcomes::against_baseline(m, &base);
-            println!("
-against {}: regressed {}, fixed {}", p.display(), regressed.len(), fixed.len());
+            println!(
+                "
+against {}: regressed {}, fixed {}",
+                p.display(),
+                regressed.len(),
+                fixed.len()
+            );
             for t in &regressed {
                 println!("regressed: {t}");
             }
@@ -447,10 +461,17 @@ fn compare_files(a: &str, b: &str) -> Result<ExitCode, String> {
     let (na, nb) = (name(&sa), name(&sb));
     let (na, nb) = if na == nb { (format!("{na} (a)"), format!("{nb} (b)")) } else { (na, nb) };
     let (text, _) = outcomes::compare(&na, &sa, &nb, &sb);
-    println!("{text}
-{}", outcomes::TIMES_HEADER);
-    println!("{}
-{}", outcomes::times(&na, &sa), outcomes::times(&nb, &sb));
+    println!(
+        "{text}
+{}",
+        outcomes::TIMES_HEADER
+    );
+    println!(
+        "{}
+{}",
+        outcomes::times(&na, &sa),
+        outcomes::times(&nb, &sb)
+    );
     Ok(ExitCode::SUCCESS)
 }
 
