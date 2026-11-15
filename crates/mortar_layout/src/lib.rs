@@ -14,13 +14,20 @@
 //! | F. symbols | [`symbols`] | `defined`, `sym_place`, `entry` |
 #![forbid(unsafe_code)]
 
+pub mod address;
 pub mod assign;
+pub mod chunk;
 pub mod diag;
+pub mod fixed;
 pub mod headers;
 pub mod order;
 pub mod rank;
+pub mod run;
+pub mod stack;
+pub mod symbols;
 pub mod target;
 
 pub use diag::LayoutDiag;
 pub use headers::{Header, Headers};
+pub use run::{Link, NoRangeExtension, Placed, place};
 pub use target::{Options, Target};
