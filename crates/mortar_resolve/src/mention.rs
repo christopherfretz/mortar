@@ -77,7 +77,8 @@ pub fn classify(m: &Mention, entry: SymEntry) -> (Class, Option<What>) {
         SymbolSection::Common => {
             if weak {
                 fault = fault.or(Some(What::WeakCommon { entry }));
-            } else if !m.value.is_power_of_two() {
+            } else if m.value != 0 && !m.value.is_power_of_two() {
+                // Alignment 0 is alignment 1 (GNU ld and mold; lld refuses).
                 fault = fault.or(Some(What::Malformed {
                     entry,
                     why: MalformedSymbol::CommonAlignment(m.value),
@@ -123,7 +124,8 @@ pub const fn rank_vis(rank: u8) -> u8 {
     }
 }
 
-/// `log2` of a common's alignment, a power of two (0 when it is not).
+/// `log2` of a common's alignment, a power of two (0 when it is not, and
+/// for alignment 0, which is alignment 1).
 #[must_use]
 pub const fn align_log2(value: u64) -> u8 {
     if value.is_power_of_two() { value.trailing_zeros() as u8 } else { 0 }

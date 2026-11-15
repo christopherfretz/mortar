@@ -31,10 +31,12 @@ pub mod options;
 pub mod problem;
 pub mod resolve;
 pub mod sections;
+pub mod tables;
 pub mod verdict;
 pub mod view;
 
 pub use options::Options;
 pub use problem::{Problem, Severity, What};
 pub use resolve::{Def, EntryPoint, Props, Resolved, resolve};
+pub use tables::{InputsView, Outcome, resolve_inputs};
 pub use view::View;

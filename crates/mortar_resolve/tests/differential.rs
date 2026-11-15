@@ -93,6 +93,10 @@ const TPL_B: &str = "#include \"tpl.h\"\nint ub(long x) { Box<long> b{x}; Box<in
 const TPL_MAIN: &str =
     "int ua(int); int ub(long);\nint main(int c, char**) { return ua(c) + ub(c); }\n";
 
+const TWICE_MAIN: &str = "int u(int*);\nint main(void){int x=0;return u(&x);}\n";
+// With -O1 GCC calls libgcc's out-of-line atomics (`__aarch64_cas4_*`).
+const TWICE_U: &str = "int u(int*p){int e=0;return __atomic_compare_exchange_n(p,&e,1,0,5,5);}\n";
+
 /// One link line: a driver, its flags, sources compiled into the named
 /// objects, and archives of sources.
 struct Line {
@@ -127,6 +131,13 @@ fn line(name: &str, target: Target) -> Line {
             vec![("main.cc", TPL_MAIN)],
             vec![("libta.a", vec![("ta.cc", TPL_A)]), ("libtb.a", vec![("tb.cc", TPL_B)])],
             vec![("tpl.h", TPL_H)],
+        ),
+        "twice" => (
+            "gcc",
+            &["-static"],
+            vec![("t.c", TWICE_MAIN)],
+            vec![("libu.a", vec![("u.c", TWICE_U)])],
+            vec![],
         ),
         other => panic!("no line {other}"),
     };
@@ -507,6 +518,55 @@ fn mortar(m: &mut Model, static_pie: bool, undefined: &[String], warn_backrefs: 
     resolve(&*m, &opts, &Pool::new(4))
 }
 
+/// Stage B on the same line: `Inputs` (as `mortar_input` would build
+/// it), the view over it, the `Resolution` table with its checks, and the
+/// diagnostics (none may be an error).
+fn over_inputs(
+    target: Target,
+    inputs: &[Input],
+    static_pie: bool,
+    undefined: &[String],
+) -> (mortar_core::Inputs<'static>, Resolved) {
+    use support::inputs::Item;
+    let items: Vec<Item> = inputs
+        .iter()
+        .map(|i| match i {
+            Input::Object(p) => Item::Object(PathBuf::from(p)),
+            Input::Archive { path, whole, group } => {
+                Item::Archive { path: PathBuf::from(path), whole: *whole, group: *group }
+            }
+        })
+        .collect();
+    let inputs = support::inputs::build(target.machine, &items).unwrap();
+    let pool = Pool::new(4);
+    let view = mortar_resolve::InputsView::new(&inputs, &pool);
+    assert!(view.faults().is_empty(), "{:?}", view.faults());
+    let key = |n: &str| view.key_of(n.as_bytes()).map_or(OptId::NONE, OptId::some);
+    let opts = Options {
+        entry: Entry::Default(key("_start")),
+        undefined: undefined
+            .iter()
+            .enumerate()
+            .map(|(i, u)| mortar_resolve::options::Named {
+                key: key(u),
+                name: u.as_bytes().into(),
+                arg: i as u32 + 1,
+            })
+            .collect(),
+        warn_backrefs: true,
+        output: Output { pie: static_pie, dynamic: false },
+        ..Options::default()
+    };
+    let r = resolve(&view, &opts, &pool);
+    let table = mortar_resolve::tables::resolution(&view, &r, &opts).unwrap();
+    table.check().unwrap();
+    table.check_against(&inputs).unwrap();
+    let diags = mortar_resolve::tables::diagnostics(&inputs, &view, &opts, &r);
+    assert!(diags.iter().all(|(_, d)| d.severity() == mortar_diag::Severity::Warning), "{diags:?}");
+    drop(view);
+    (inputs, r)
+}
+
 /// Whether the entry's definition is in a COMDAT group.
 fn in_group(m: &Model, e: mortar_core::SymEntry) -> bool {
     let Some(mention) = m.mention(e.file, e.index) else { return false };
@@ -591,6 +651,10 @@ fn check_line(name: &str, target: Target) {
     let mut m = model(target, &built.inputs);
     let static_pie = l.flags.contains(&"-static-pie");
     let r = mortar(&mut m, static_pie, &built.undefined, true);
+    let tables = over_inputs(target, &built.inputs, static_pie, &built.undefined);
+    if let Err(e) = support::inputs::same(&m, &r, &tables.0, &tables.1) {
+        panic!("{}: the Inputs view differs from the model: {e}", l.name);
+    }
     let ours: BTreeSet<String> = (0..m.files() as usize)
         .filter(|&f| matches!(r.file_live[f], FileLive::Extracted(_)))
         .map(|f| m.label(FileId(f as u32)))
@@ -722,4 +786,91 @@ fn s12_same_tables_under_seeds_and_threads_system() {
     same_tables(A64);
     same_tables(X64);
     same_tables(X86);
+}
+
+/// §4.6 archive-choice, ruling 1: the same archive named twice is one
+/// file, not two candidates. `libu.a` moved after `libgcc.a` needs an
+/// atomic helper from it (a backreference); naming `libgcc.a` again after
+/// `libu.a` gives GNU ld a later definer in the same member, and no
+/// archive-choice. A copy of `libgcc.a` under another path is a second
+/// file, and the warning fires.
+#[test]
+fn s4_6_libgcc_twice_is_no_choice() {
+    let l = line("twice", A64);
+    let Some(mut built) = build(&l) else { return };
+    let at = built
+        .inputs
+        .iter()
+        .position(|i| matches!(i, Input::Archive { path, .. } if path.ends_with("/libu.a")))
+        .unwrap();
+    let libu = built.inputs.remove(at);
+    let libgcc = built
+        .inputs
+        .iter()
+        .find(|i| matches!(i, Input::Archive { path, .. } if path.ends_with("/libgcc.a")))
+        .unwrap()
+        .clone();
+    built.inputs.push(libu);
+    let choices = |inputs: &[Input]| -> (usize, usize) {
+        let mut m = model(A64, inputs);
+        let a = mortar(&mut m, false, &built.undefined, true);
+        let (_, b) = over_inputs(A64, inputs, false, &built.undefined);
+        let count = |r: &Resolved| r.problems.iter().filter(|p| p.id() == "archive-choice").count();
+        let backrefs = b.problems.iter().filter(|p| p.id() == "archive-backref").count();
+        assert_eq!(count(&a), count(&b));
+        (count(&b), backrefs)
+    };
+    // Without a second mention, the backreference is reported.
+    let (choice, backref) = choices(&built.inputs);
+    assert_eq!(choice, 0);
+    assert!(backref > 0, "the line has no backreference to libgcc.a");
+    let mut twice = built.inputs.clone();
+    twice.push(libgcc.clone());
+    assert_eq!(choices(&twice).0, 0, "libgcc.a twice");
+    let Input::Archive { path, whole, group } = libgcc else { unreachable!() };
+    let copy = built.dir.join("libgcc-copy.a");
+    std::fs::copy(&path, &copy).unwrap();
+    let mut other = built.inputs.clone();
+    other.push(Input::Archive { path: copy.display().to_string(), whole, group });
+    assert!(choices(&other).0 > 0, "a copy of libgcc.a is another file");
+}
+
+/// §1.1, §4.2, §11: the whole phase from a `Plan` (`resolve_inputs`) on
+/// the C line. The table passes its checks (no `internal-error`), there
+/// is no diagnostic, and `-e main` picks `main`. With the program object
+/// named twice, `main` is a `duplicate-symbol` error.
+#[test]
+fn s1_1_resolve_inputs_from_a_plan() {
+    use mortar_core::plan::{OutputKind, Plan};
+    use support::inputs::Item;
+    let l = line("chello", A64);
+    let Some(built) = build(&l) else { return };
+    let items = |inputs: &[Input]| -> Vec<Item> {
+        inputs
+            .iter()
+            .map(|i| match i {
+                Input::Object(p) => Item::Object(PathBuf::from(p)),
+                Input::Archive { path, whole, group } => {
+                    Item::Archive { path: PathBuf::from(path), whole: *whole, group: *group }
+                }
+            })
+            .collect()
+    };
+    let pool = Pool::new(4);
+    let plan =
+        Plan { kind: OutputKind::StaticExecutable, entry: Some("main".into()), ..Plan::default() };
+    let inputs = support::inputs::build(A64.machine, &items(&built.inputs)).unwrap();
+    let out = mortar_resolve::resolve_inputs(&inputs, &plan, &pool);
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+    let main = inputs.symbols.iter().find(|(_, k)| k.name == b"main").unwrap().0;
+    assert_eq!(out.entry, mortar_resolve::EntryPoint::Symbol(main));
+
+    let mut twice = built.inputs.clone();
+    let obj = twice.iter().find(|i| matches!(i, Input::Object(p) if p.ends_with("h.c.o"))).unwrap();
+    twice.insert(0, obj.clone());
+    let inputs = support::inputs::build(A64.machine, &items(&twice)).unwrap();
+    let out = mortar_resolve::resolve_inputs(&inputs, &plan, &pool);
+    let ids: Vec<&str> = out.diagnostics.iter().map(|(_, d)| d.id()).collect();
+    assert_eq!(ids, ["duplicate-symbol"], "{:?}", out.diagnostics);
+    assert_eq!(out.diagnostics[0].1.severity(), mortar_diag::Severity::Error);
 }

@@ -58,6 +58,12 @@ pub struct FileInfo {
     pub group: Option<u32>,
     /// `e_shnum`, section 0 included; 0 for files without sections.
     pub sections: u32,
+    /// The file's identity without its mention ordinal
+    /// (`spec/model.md` §7.1): equal for two files exactly when they are
+    /// the same found path and, for members, the same member name and
+    /// ordinal, as when one archive is mentioned twice. Dense and
+    /// arbitrary otherwise; §4.6 compares it.
+    pub source: u32,
 }
 
 /// A non-local symbol-table entry of a file (§2 "mention").

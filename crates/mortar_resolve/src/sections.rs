@@ -36,6 +36,10 @@ pub enum SectionRefusal {
     Linkonce,
     /// `.zdebug*` (GNU-style compressed debug sections).
     Zdebug,
+    /// A second relocation section for one kept section: GNU ld applies
+    /// one of two `SHT_RELA` sections, lld refuses, mold asserts or drops
+    /// one (§10). The variant holds the section it applies to.
+    SecondReloc(u32),
 }
 
 /// What §10 makes of a section, besides its row.

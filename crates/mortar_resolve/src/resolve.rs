@@ -32,7 +32,7 @@ use crate::mention::{
 };
 use crate::options::{Entry, Options};
 use crate::problem::{ComdatMismatch, DefPlace, DiagKey, Problem, What};
-use crate::sections::{self, Note};
+use crate::sections::{self, Note, SectionRefusal};
 use crate::view::{FileKind, Mention, View, entry_word, word_entry};
 
 /// The definition of a key (§3.2), stage A's form of `def`.
@@ -554,6 +554,17 @@ fn section_rows<V: View>(
                     _ => {}
                 }
             }
+            Err(why) if dropped => {
+                // A refusal of a section's content or fate applies to kept
+                // sections only: a dropped copy contributes nothing (§10).
+                let _ = why;
+                row.kind = SectionKind::Regular;
+                row.state = SectionState::Dropped(DropReason::Comdat);
+            }
+            Err(SectionRefusal::Zdebug) if ctx.opts.strip_debug => {
+                row.kind = SectionKind::Debug;
+                row.state = SectionState::Dropped(DropReason::Stripped);
+            }
             Err(why) => {
                 // Refused; the row stays `Null`/consumed, the link fails.
                 out.problems.push(Problem {
@@ -570,11 +581,20 @@ fn section_rows<V: View>(
             continue;
         }
         let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
-        if let Some(target) = rows.get_mut(s.info as usize)
-            && s.info != 0
-            && target.reloc.0 == 0
-        {
+        let Some(target) = rows.get_mut(s.info as usize).filter(|_| s.info != 0) else {
+            continue;
+        };
+        if target.reloc.0 == 0 {
             target.reloc = SectionIndex(i);
+        } else if target.is_kept() {
+            out.problems.push(Problem {
+                key: DiagKey::of(file, u64::from(i)),
+                what: What::Section {
+                    file,
+                    section: SectionIndex(i),
+                    why: SectionRefusal::SecondReloc(s.info),
+                },
+            });
         }
     }
     // A `SHF_LINK_ORDER` section outside the groups whose linked section

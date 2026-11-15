@@ -2,6 +2,8 @@
 //! from real objects and archives (the differential tests).
 #![allow(dead_code)]
 
+pub mod inputs;
+
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::Path;
@@ -75,6 +77,8 @@ pub struct Model {
     index: HashMap<Vec<u8>, SymbolId>,
     sigs: HashMap<Vec<u8>, ComdatId>,
     archives: u32,
+    /// `(path, member, ordinal)` to the `source` of its first file.
+    sources: HashMap<(String, Vec<u8>, u32), u32>,
 }
 
 impl Model {
@@ -86,6 +90,7 @@ impl Model {
             index: HashMap::new(),
             sigs: HashMap::new(),
             archives: 0,
+            sources: HashMap::new(),
         };
         m.push_file(FileKind::Internal, "<internal>", Vec::new());
         m
@@ -99,6 +104,7 @@ impl Model {
                 archive: OptId::NONE,
                 group: None,
                 sections: sections.len() as u32,
+                source: id.0,
             },
             label: label.to_owned(),
             member: None,
@@ -151,6 +157,11 @@ impl Model {
         self.files[file.0 as usize].info.group = Some(group);
     }
 
+    /// Makes `file` the same source as `like` (one archive mentioned twice).
+    pub fn same_source(&mut self, file: FileId, like: FileId) {
+        self.files[file.0 as usize].info.source = self.files[like.0 as usize].info.source;
+    }
+
     pub fn set_kind(&mut self, file: FileId, kind: FileKind) {
         self.files[file.0 as usize].info.kind = kind;
     }
@@ -181,6 +192,16 @@ impl Model {
 
     pub fn name(&self, key: SymbolId) -> String {
         String::from_utf8_lossy(&self.names[key.0 as usize]).into_owned()
+    }
+
+    /// The signature `name`, if a group has it.
+    pub fn find_sig(&self, name: &[u8]) -> Option<ComdatId> {
+        self.sigs.get(name).copied()
+    }
+
+    /// The row of `name` as bytes.
+    pub fn try_id_bytes(&self, name: &[u8]) -> Option<SymbolId> {
+        self.index.get(name).copied()
     }
 
     pub fn sig(&mut self, name: &[u8]) -> ComdatId {
@@ -436,6 +457,7 @@ impl Model {
         let ar = Archive::parse(&bytes).map_err(|e| format!("{}: {e:?}", path.display()))?;
         let archive = self.archive();
         let mut out = Vec::new();
+        let mut ordinals: HashMap<Vec<u8>, u32> = HashMap::new();
         for member in ar.members() {
             let member = member.map_err(|e| format!("{}: {e:?}", path.display()))?;
             let Some(data) = member.data() else { continue };
@@ -445,10 +467,16 @@ impl Model {
             let kind = if whole { FileKind::WholeMember } else { FileKind::LazyMember };
             let label = path.display().to_string();
             let f = self.load_object(data, &label, kind)?;
+            let name = member.name().to_vec();
+            let ordinal = ordinals.entry(name.clone()).or_default();
+            let at = (path.display().to_string(), name, *ordinal);
+            *ordinal += 1;
+            let source = *self.sources.entry(at).or_insert(f.0);
             let file = &mut self.files[f.0 as usize];
             file.member = Some(String::from_utf8_lossy(member.name()).into_owned());
             file.info.archive = OptId::some(archive);
             file.info.group = group;
+            file.info.source = source;
             out.push(f);
         }
         Ok(out)

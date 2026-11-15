@@ -476,7 +476,10 @@ fn report<V: View>(
             }
             State::DefinedWeak | State::Common | State::Defined => {
                 let gnu = word_entry(walk.definer[k]);
-                if gnu.file != e.file {
+                // The same member of one archive mentioned twice is the
+                // same definition: no choice to report.
+                let same = view.file(gnu.file).source == view.file(e.file).source;
+                if gnu.file != e.file && !same {
                     problems.push(Problem::at(
                         e,
                         What::ArchiveChoice {

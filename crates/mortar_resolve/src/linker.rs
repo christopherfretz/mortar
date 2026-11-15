@@ -12,8 +12,10 @@ pub enum When {
     Always,
     /// Executables (every M1 output).
     Executable,
-    /// Static executables (`-static`, `-static-pie`; not verified for
-    /// `-static-pie` against the references).
+    /// Static executables that are not position-independent (`-static`).
+    /// Under `-static-pie` the name stays undefined (zero), as in GNU ld and
+    /// lld (mold defines it absolute 0): the `IRELATIVE` relocations are in
+    /// `.rela.dyn`, which the startup code applies.
     StaticExecutable,
     /// Dynamic links only (M2).
     Dynamic,
@@ -147,6 +149,7 @@ pub fn candidate(
         When::Always | When::Executable => true,
         When::StaticExecutable => {
             !output.dynamic
+                && !output.pie
                 && if machine == Machine::I386 { iplt_rel } else { iplt_rela || !iplt_rel }
         }
         When::Dynamic => output.dynamic,

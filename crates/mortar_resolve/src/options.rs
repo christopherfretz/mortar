@@ -64,6 +64,10 @@ pub struct Options {
     /// `-S` / `-s`: debug sections are `Dropped(Stripped)` (§10).
     pub strip_debug: bool,
     pub output: Output,
+    /// `--unresolved-symbols`, `--warn-unresolved-symbols` (§5.2).
+    pub unresolved: crate::verdict::Unresolved,
+    /// `--ignore-unresolved-symbol` keys, sorted (§5.2).
+    pub ignore_unresolved: Vec<SymbolId>,
 }
 
 impl Default for Options {
@@ -79,6 +83,8 @@ impl Default for Options {
             warn_backrefs: false,
             strip_debug: false,
             output: Output::default(),
+            unresolved: crate::verdict::Unresolved::Error,
+            ignore_unresolved: Vec::new(),
         }
     }
 }

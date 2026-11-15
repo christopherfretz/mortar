@@ -203,6 +203,18 @@ fn s3_3_alignment_not_power_of_two_is_malformed() {
     );
 }
 
+/// Alignment 0 is alignment 1, as GNU ld and mold take it (lld refuses;
+/// WP-022.md, "common alignment 0").
+#[test]
+fn s3_3_alignment_zero_is_one() {
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    m.common(a, "v", 3, 0);
+    let r = link(&m);
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+    assert_eq!(r.common[0].1, mortar_core::resolution::CommonShape { size: 3, align: 0 });
+}
+
 #[test]
 fn s3_3_larger_common_warns_in_both_orders() {
     for common_first in [true, false] {
@@ -1059,6 +1071,36 @@ fn s4_6_choice_fires_for_t2_not_t2b() {
     assert!(!ids(&r).iter().any(|i| i.starts_with("archive-")), "{:?}", r.problems);
 }
 
+/// `-lgcc -lc -lgcc`: GNU ld takes `cas` from the second mention of
+/// `libgcc.a`, mortar from the first. They are the same member, so there is
+/// no choice to report; two different archives still get the warning.
+#[test]
+fn s4_6_same_member_twice_is_no_choice() {
+    for same in [true, false] {
+        let mut m = Model::new(A64);
+        let main = m.obj("main.o");
+        m.undef(main, "puts");
+        let gcc1 = m.archive();
+        let cas1 = m.member(gcc1, "cas.o");
+        m.def(cas1, "cas");
+        let libc = m.archive();
+        let c = m.member(libc, "c.o");
+        m.def(c, "puts");
+        m.undef(c, "cas");
+        let gcc2 = m.archive();
+        let cas2 = m.member(gcc2, "cas.o");
+        m.def(cas2, "cas");
+        if same {
+            m.same_source(cas2, cas1);
+        }
+        let r = link_with(&m, &Options { warn_backrefs: true, ..opts() });
+        assert!(live_of(&r, cas1) && !live_of(&r, cas2));
+        assert!(r.gnu.as_ref().unwrap().loaded.contains(&cas2));
+        let fired = ids(&r).contains(&"archive-choice");
+        assert_eq!(fired, !same, "{:?}", r.problems);
+    }
+}
+
 #[test]
 fn s4_6_nothing_runs_without_option() {
     let (m, _, _) = t2(false);
@@ -1247,6 +1289,79 @@ fn s6_5_link_order_follows_dropped_section() {
     assert_eq!(row.state, SectionState::Dropped(DropReason::Comdat));
 }
 
+/// A refusal of a section's content or fate applies to kept sections only:
+/// the same unsupported section in a dropped copy is dropped with it,
+/// while structural faults still refuse (§10).
+#[test]
+fn s10_refusal_only_for_kept_sections() {
+    for keep_b in [false, true] {
+        let mut m = Model::new(A64);
+        let a = m.obj("a.o");
+        let b = m.obj("b.o");
+        if !keep_b {
+            m.comdat_def(a, "G", "x");
+        }
+        // With `keep_b`, b's copy is the only one: kept, so it is refused.
+        let sb = m.comdat_def(b, "G", "x");
+        let odd = m.section(b, MSection::new(".odd", 0x6fff_4c00, SHF_ALLOC));
+        let groups = &mut m.files[b.0 as usize].groups;
+        groups.members.push(odd);
+        groups.groups.last_mut().unwrap().len += 1;
+        let r = link(&m);
+        let row = r.sections[(r.section_base[b.0 as usize].start.0 + odd) as usize];
+        if keep_b {
+            assert_eq!(ids(&r), vec!["refused"]);
+        } else {
+            assert!(r.problems.is_empty(), "{:?}", r.problems);
+            assert_eq!(row.state, SectionState::Dropped(DropReason::Comdat));
+        }
+        let _ = sb;
+    }
+    // `-S` drops `.zdebug*`, so it is not refused.
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    m.section(a, MSection::new(".zdebug_info", SHT_PROGBITS, 0));
+    assert_eq!(ids(&link(&m)), vec!["refused"]);
+    assert!(link_with(&m, &Options { strip_debug: true, ..opts() }).problems.is_empty());
+}
+
+/// Two relocation sections for one kept section are refused by name: no
+/// reference applies both (GNU ld drops the second `SHT_RELA`, lld refuses,
+/// mold asserts or drops one; WP-022.md). For a dropped section they are
+/// dropped with it.
+#[test]
+fn s10_second_reloc_section_refused() {
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    let mut r1 = MSection::new(".rela.data", SHT_RELA, 0);
+    r1.info = DATA;
+    m.section(a, r1);
+    let mut r2 = MSection::new(".rela.data.2", SHT_RELA, 0);
+    r2.info = DATA;
+    let second = m.section(a, r2);
+    let r = link(&m);
+    assert_eq!(
+        r.problems.iter().map(|p| p.what.clone()).collect::<Vec<_>>(),
+        vec![What::Section {
+            file: a,
+            section: SectionIndex(second),
+            why: SectionRefusal::SecondReloc(DATA)
+        }]
+    );
+    // In a dropped copy: nothing.
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    let b = m.obj("b.o");
+    m.comdat_def(a, "G", "x");
+    let sb = m.comdat_def(b, "G", "x");
+    for name in [".rela.g1", ".rela.g2"] {
+        let mut rel = MSection::new(name, SHT_RELA, 0);
+        rel.info = sb;
+        m.section(b, rel);
+    }
+    assert!(link(&m).problems.is_empty());
+}
+
 #[test]
 fn s6_6_linkonce_is_refused() {
     let mut m = Model::new(A64);
@@ -1356,6 +1471,25 @@ fn s8_1_table() {
     assert!(matches!(def(&m, &r, "_DYNAMIC"), Def::Provide { .. }));
 }
 
+/// Under `-static-pie` the IPLT range names stay undefined: the
+/// `IRELATIVE` relocations are in `.rela.dyn` (GNU ld and lld leave them
+/// undefined, mold makes them absolute 0; WP-022.md, "`__rela_iplt_*`").
+#[test]
+fn s8_1_no_iplt_range_under_static_pie() {
+    for (machine, name) in [
+        (Machine::AArch64, "__rela_iplt_start"),
+        (Machine::X86_64, "__rela_iplt_end"),
+        (Machine::I386, "__rel_iplt_start"),
+    ] {
+        let mut m = Model::new(machine);
+        let a = m.obj("a.o");
+        m.weak_undef(a, name);
+        let pie = Options { output: Output { pie: true, dynamic: false }, ..opts() };
+        assert!(def(&m, &link_with(&m, &pie), name).is_undefined(), "{name}");
+        assert!(matches!(def(&m, &link(&m), name), Def::Provide { .. }), "{name}");
+    }
+}
+
 #[test]
 fn s8_2_object_definition_wins() {
     let mut m = Model::new(A64);
@@ -1437,6 +1571,11 @@ fn s10_classification_table() {
         (
             MSection::new(".llvm_addrsig", 0x6fff_4c03, 0),
             Ok((K::Excluded, dropped(DropReason::Consumed))),
+        ),
+        // As compilers emit it, with `SHF_EXCLUDE`: that row matches first.
+        (
+            MSection::new(".llvm_addrsig", 0x6fff_4c03, SHF_EXCLUDE),
+            Ok((K::Excluded, dropped(DropReason::Excluded))),
         ),
         (MSection::new(".deplibs", 0x6fff_4c04, 0), Err(())),
         (MSection::new(".llvm.odrtab", 0x6fff_4c00, 0), Err(())),

@@ -181,7 +181,8 @@ M1. For a key whose `def` is `Common`:
 - `common[K].align` is the maximum alignment over them, where a common
   mention's alignment is its `st_value` (gABI), which must be a power of
   two, else `malformed-input` ("common symbol alignment is not a power of
-  two"). GNU ld and lld take the maximum; mold 2.37.1 does not (E6: an
+  two"); `st_value` 0 is alignment 1 (GNU ld and mold place it at an odd
+  address; lld refuses it; WP-022.md). GNU ld and lld take the maximum; mold 2.37.1 does not (E6: an
   alignment of 64 met in the second common gives a 32-aligned object):
   §16;
 - `def` is `Common{file, st_index}` of the least common mention by `≺`
@@ -668,7 +669,11 @@ is not in a COMDAT group (group keys are §6's):
   detected: pick in libB.a(b.o) refers to libA.a(a.o)``; it is silent when
   a later archive also defines the key (E1).
 - **`archive-choice`** (warning): the simulation's definer of `K` is
-  another file: names both.
+  another file: names both. Not when the two files have the same file
+  identity apart from the mention ordinal (`spec/model.md` §7.1: the same
+  found path, member name and member ordinal), as when one archive is
+  mentioned twice (`-lgcc ... -lc ... -lgcc`): they are the same
+  definition.
 - Under the same option, as notes on an existing `duplicate-symbol` or
   `undefined-symbol`: the member that caused it was loaded by mortar but
   not by the simulation.
@@ -1034,7 +1039,7 @@ static executable; "lld/GNU/mold" columns: defined by that linker):
 | `_end`, `end` | always | global | yes | yes | yes | M1 |
 | `__data_start`, `__end__`, `__bss_start__`, `__bss_end__`, `_bss_end__` | AArch64 only (GNU ld's AArch64 script) | global | AArch64 | no | no | M1 |
 | `__init_array_start/_end`, `__preinit_array_start/_end`, `__fini_array_start/_end` | always | local, hidden | yes | yes | yes | M1 |
-| `__rela_iplt_start/_end` (AArch64, x86-64), `__rel_iplt_start/_end` (i386) | static executables (empty range when there is no IRELATIVE) | local, hidden | yes | yes | only with IRELATIVE | M1 |
+| `__rela_iplt_start/_end` (AArch64, x86-64), `__rel_iplt_start/_end` (i386) | static executables that are not PIE (empty range when there is no IRELATIVE); under `-static-pie` not defined, so a reference is weak undefined and zero (GNU ld, lld; mold: absolute 0; all three on the three targets, WP-022.md): the `IRELATIVE` relocations are in `.rela.dyn` | local, hidden | yes | yes | only with IRELATIVE | M1 |
 | `__start_<sec>`, `__stop_<sec>` | `<sec>` is a C identifier and an output section of that name exists | global, protected; `-z start-stop-visibility=` (M2) changes it | yes | yes | yes | M1 |
 | `_TLS_MODULE_BASE_` | a TLS segment exists and the key is referenced | local, hidden | no | x86 only | yes | M2 (TLS descriptors) |
 | `__GNU_EH_FRAME_HDR` | `.eh_frame_hdr` exists | local, hidden | no | no | yes | M1 |
@@ -1293,13 +1298,13 @@ classification is per file (I-file), the state needs `comdat`:
 | a **file** with the symbol `__gnu_lto_slim` (a common symbol in GCC 14's slim LTO objects; tested before any section row, finding 10: their `.gnu.lto_*` sections are `SHF_EXCLUDE` and would match that row first) | — | the file: `Refused{FileFormat, "GCC LTO object"}` (GNU ld: `plugin needed to handle lto object`; mold refuses; lld silently ignores the file and reports `main` undefined, E18) | |
 | index 0 | `Null` | — | |
 | `SHT_SYMTAB`, `SHT_SYMTAB_SHNDX`, `SHT_STRTAB` without `SHF_ALLOC` | `Symtab` / `Strtab` | `Dropped(Consumed)` | all |
-| `SHT_REL`, `SHT_RELA` | `Reloc` | `Dropped(Consumed)`; the section it applies to records it | all |
+| `SHT_REL`, `SHT_RELA` | `Reloc` | `Dropped(Consumed)`; the section it applies to records it. A second one for a kept section: `Refused{Feature, "two relocation sections for one section"}`, never a silent drop (GNU ld applies one of two `SHT_RELA` and both of `SHT_REL`+`SHT_RELA`; lld refuses; mold asserts on two `SHT_RELA` and drops one of `SHT_REL`+`SHT_RELA`; WP-022.md) | |
 | `SHT_GROUP` | `Group` | `Dropped(Consumed)` | all |
 | a member of a group not kept (§6) | its kind | `Dropped(Comdat{keeper})` | all |
 | `SHF_EXCLUDE` (any type) | `Excluded` | `Dropped(Excluded)` | GNU ld, lld; mold keeps an allocated one (E18): §16 |
 | name `.note.GNU-stack` | `Stack` | `Dropped(Consumed)` (layout reads its flags for `PT_GNU_STACK`) | all (E18) |
 | name `.note.gnu.property`, `SHT_NOTE` | `Note` | `Kept`; `spec/synth.md` merges the properties into one note | GNU ld, lld, mold merge (not verified here) |
-| `SHT_LLVM_ADDRSIG` (`.llvm_addrsig`) | `Excluded` | `Dropped(Consumed)` (it is `SHF_EXCLUDE` too; a later `--icf=safe` reads it) | all (E18) |
+| `SHT_LLVM_ADDRSIG` (`.llvm_addrsig`) without `SHF_EXCLUDE` | `Excluded` | `Dropped(Consumed)` (a later `--icf=safe` reads it). Clang emits it with `SHF_EXCLUDE`, so the `SHF_EXCLUDE` row above matches first: `Excluded`, `Dropped(Excluded)` | all (E18) |
 | `SHT_LLVM_CALL_GRAPH_PROFILE` | `Excluded` | `Dropped(Consumed)`: a section-order hint; ignoring it is correct | not verified |
 | `SHT_LLVM_DEPENDENT_LIBRARIES` (`.deplibs`) | — | `Refused{SectionType, ..}`: lld adds the libraries it names, so doing nothing would differ | not verified |
 | other `SHT_LLVM_*` (`ODRTAB`, `LINKER_OPTIONS`, `SYMPART`, `PART_EHDR`, `PART_PHDR`, `BB_ADDR_MAP`, `OFFLOADING`, `LTO`, `JT_SIZES`) | — | `Refused{SectionType, ..}` | |
@@ -1318,6 +1323,16 @@ classification is per file (I-file), the state needs `comdat`:
 | `SHT_DYNAMIC`, `SHT_DYNSYM`, `SHT_HASH`, `SHT_GNU_HASH`, `SHT_GNU_verdef/verneed/versym`, `SHT_RELR` in a relocatable object | — | `Refused{SectionType, ..}` | |
 | any other type, or a flag mortar does not implement (`SHF_OS_NONCONFORMING`, unknown bits, a processor flag other than `SHF_AARCH64_PURECODE`/`SHF_X86_64_LARGE` where the arch spec admits them) | — | `Refused{SectionType or SectionFlag, ..}` (`spec/model.md` §3.3) | the references accept silently (`spec/diag.md` §8.1) |
 | `SHF_GNU_RETAIN` | its kind | `Kept`, and a root of liveness (§4.7) | |
+
+A refusal of this table (a type, a flag, a name) concerns a section's
+content or fate, so it applies only to a section that would be kept: a
+member of a COMDAT group that is not kept is `Dropped(Comdat)` and a
+`.zdebug*` section under `-S`/`-s` is `Dropped(Stripped)`, without a
+diagnostic, since they contribute nothing to the output. Structural
+faults of a file (group flags §6.4, a section in two groups §6.5, symbol
+faults §3) apply to every live file. (A survey of the 65 archives of the
+three targets' libc and GCC directories finds no section any refusal
+row matches, kept or dropped: WP-022.md.)
 
 `.ARM.*`, `.riscv.*` and other machines' attribute sections cannot occur:
 the file's machine is checked first (`spec/input.md`). `SHF_COMPRESSED`
