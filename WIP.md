@@ -7,7 +7,7 @@ Experiment dir: `/tmp/mortar-wp030r-EYWFOo` (remove by explicit path at the end)
 | # | finding | state |
 |---|---|---|
 | 1 | T1 any destination register; unmatched GOTDESC refused; form matcher over both corpora (0 unmatched) | done |
-| 2 | X86-13: delete the moffs reading; GOT32 at non-exec place refused; prefix note | todo |
+| 2 | X86-13: delete the moffs reading; GOT32 at non-exec place refused; prefix note (SIB check kept: flag to supervisor) | done |
 | 3 | max_reach (3, 6); Facts.seq_leads = [18, 19]; R-3 | todo |
 | 4 | REL addends for non-resident bodies: new request to image.md/arch.md | todo |
 | 5 | checks on the value reduced mod 2^32; TLS_LE exception | todo |
@@ -18,7 +18,7 @@ Experiment dir: `/tmp/mortar-wp030r-EYWFOo` (remove by explicit path at the end)
 | 10 | .got.plt word 0 in static-pie = _DYNAMIC | todo |
 | 11 | tombstone replaces the field | todo |
 | 12 | existing diag classes (section-type, malformed-input) | todo |
-| 14 | (with 2) | todo |
+| 14 | (with 2) | done |
 | 15 | §2.4 GOTOFF wording; X86-8 example is S-19's | todo |
 | 16 | Q1 (i386 gfortran run), Q6 (lldb) | todo |
 | extra | re-derive W8, W9, W10, W12, W14; X86-10 wrap; mortar IPLT bytes run whole | todo |
