@@ -964,10 +964,17 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   (measured on AArch64, a static C program referencing each name).
   Y5 of the verifier judges the values only.
 - **S-78 [C] (`-X`, `-x`, `--discard-none`).**
-  - default, `-X` (`--discard-locals`): discard locals whose name begins
-    with `.L` (the ELF temporary-label prefix; GNU and lld both drop
-    them by default, mold keeps them; X-17). Mapping symbols (`$x`, `$d`,
-    `$x.<n>`, `$d.<n>`) and `STT_FILE` are kept;
+  - `-X` (`--discard-locals`): discard locals whose name begins
+    with `.L` (the ELF temporary-label prefix; GNU and lld; mold keeps
+    them; X-17). Mapping symbols (`$x`, `$d`, `$x.<n>`, `$d.<n>`) and
+    `STT_FILE` are kept;
+  - default (none of the three): discard the `.L` locals of split
+    `Merge` sections only (S-5), keep the others. This is GNU's default
+    (`discard_sec_merge`) and lld's: the assembler keeps a `.L` symbol in
+    a mergeable section for its relocations, and the linker drops it.
+    GCC's driver passes `-X`; Clang's does not, and lld 19 then keeps
+    libstdc++'s `.LANCHOR0` (WP-027a, Clang 19 static C link: three
+    `.LANCHOR` locals; the earlier text treated the default as `-X`);
   - `-x` (`--discard-all`): discard every local of every input file,
     `STT_FILE` and mapping symbols included (GNU and lld, X-17). Demoted
     globals (S-77) and the internal file's block are kept: they were not

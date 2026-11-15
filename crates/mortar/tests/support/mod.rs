@@ -249,6 +249,10 @@ pub struct Summary {
     pub fdes: u64,
     pub hdr_fdes: Option<u64>,
     pub entry: u64,
+    /// The `.symtab` entries after entry 0: `(type, binding, st_shndx
+    /// as readelf shows it, name)`; types and bindings as readelf names
+    /// them (`IFUNC` for `STT_GNU_IFUNC`).
+    pub entries: Vec<(String, String, String, String)>,
 }
 
 impl Summary {
@@ -359,6 +363,22 @@ pub fn summarize_elf(path: &Path) -> Summary {
     }
     for line in r(&["-sW"]).lines() {
         let t: Vec<&str> = line.split_whitespace().collect();
+        if t.len() >= 7 && t[0].ends_with(':') && t[0] != "0:" && t[1].len() == 16 {
+            // readelf shows an OS-specific type or binding (STT_GNU_IFUNC,
+            // STB_GNU_UNIQUE) as `<OS specific>: 10`: one word here.
+            let line = line.replace("<OS specific>: ", "OS");
+            let t: Vec<&str> = line.split_whitespace().collect();
+            let (typ, rest) = (t[3].to_owned(), &t[4..]);
+            let bind = rest[0].to_owned();
+            // Bind, Vis, then `[...]` notes (`[VARIANT_PCS]`), Ndx, Name.
+            let mut i = 2;
+            while rest.get(i).is_some_and(|w| w.starts_with('[') || w.ends_with(']')) {
+                i += 1;
+            }
+            let ndx = rest.get(i).map_or_else(String::new, |w| (*w).to_owned());
+            let name = rest.get(i + 1).map_or_else(String::new, |w| (*w).to_owned());
+            s.entries.push((typ, bind, ndx, name));
+        }
         if t.len() < 8 || !t[0].ends_with(':') || t[6] == "UND" {
             continue;
         }
@@ -634,4 +654,30 @@ pub fn symtab_entries(f: &Front<'_>) -> Vec<(u8, u8, u16, String)> {
             (e[4] & 0xf, e[4] >> 4, shndx, String::from_utf8_lossy(&strtab[name..end]).into_owned())
         })
         .collect()
+}
+
+/// The address of global `name`'s definition in an input section.
+pub fn global_addr(f: &Front<'_>, name: &str) -> Option<u64> {
+    use mortar_core::layout::EntryDef;
+    use mortar_core::resolution::Def;
+    let (id, _) = f.inputs.symbols.iter().find(|(_, k)| k.name == name.as_bytes())?;
+    let Def::Defined(e) = *f.resolution.def.get(id)? else { return None };
+    match f.inputs.entry_def(e)? {
+        EntryDef::Absolute(v) => Some(v),
+        EntryDef::Section(index, value) => {
+            f.layout.placement.section_addr(f.resolution.section_id(e.file, index)?, value)
+        }
+    }
+}
+
+/// `a − b` and `b − a` of two multisets, for a readable failure.
+pub fn multiset_diff(a: &[&str], b: &[&str]) -> String {
+    let mut count: BTreeMap<&str, i64> = BTreeMap::new();
+    for x in a {
+        *count.entry(x).or_default() += 1;
+    }
+    for x in b {
+        *count.entry(x).or_default() -= 1;
+    }
+    count.into_iter().filter(|c| c.1 != 0).map(|(k, v)| format!("{k}:{v:+}")).collect::<Vec<_>>().join(" ")
 }

@@ -148,6 +148,11 @@ fn names(es: &[Entry]) -> Vec<&str> {
     es.iter().map(|e| e.name.as_str()).collect()
 }
 
+/// `-X`, as GCC's driver passes it.
+const X: Option<Discard> = Some(Discard::Locals);
+/// Neither `-x`, `-X` nor `--discard-none`.
+const DEFAULT: Option<Discard> = None;
+
 fn cx<'a>(syms: &'a Syms, secs: &'a Secs, discard: Option<Discard>) -> SymCtx<'a> {
     SymCtx { syms, sections: secs, eh: None, discard }
 }
@@ -155,7 +160,7 @@ fn cx<'a>(syms: &'a Syms, secs: &'a Secs, discard: Option<Discard>) -> SymCtx<'a
 #[test]
 fn s74_s75_order_and_sh_info() {
     let (syms, secs, addrs) = program();
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &[]).unwrap();
     let (sym, str) = write_all(&p, &c, &addrs).unwrap();
     let es = entries(&sym, &str);
@@ -185,7 +190,7 @@ fn s74_s75_order_and_sh_info() {
 #[test]
 fn s88_symtab_locals_per_file() {
     let (syms, secs, _) = program();
-    let p = plan(&cx(&syms, &secs, None), &[]).unwrap();
+    let p = plan(&cx(&syms, &secs, X), &[]).unwrap();
     let spans: Vec<Span> = (0..3).map(|f| p.symtab_locals()[FileId(f)]).collect();
     assert_eq!(
         spans,
@@ -196,7 +201,7 @@ fn s88_symtab_locals_per_file() {
 #[test]
 fn s76_s79_dead_sections_and_section_symbols_are_dropped() {
     let (syms, secs, addrs) = program();
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let es = {
         let p = plan(&c, &[]).unwrap();
         let (sym, str) = write_all(&p, &c, &addrs).unwrap();
@@ -209,7 +214,7 @@ fn s76_s79_dead_sections_and_section_symbols_are_dropped() {
 #[test]
 fn s77_l91_demoted_and_linker_defined_bindings() {
     let (syms, secs, addrs) = program();
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &[]).unwrap();
     let (sym, str) = write_all(&p, &c, &addrs).unwrap();
     let es = entries(&sym, &str);
@@ -225,13 +230,15 @@ fn s77_l91_demoted_and_linker_defined_bindings() {
 }
 
 #[test]
-fn s78_default_drops_dot_l_and_keeps_file_and_mapping() {
+fn s78_dash_x_drops_dot_l_and_keeps_file_and_mapping() {
     let (syms, secs, _) = program();
     let none = plan(&cx(&syms, &secs, Some(Discard::None)), &[]).unwrap();
-    let default = plan(&cx(&syms, &secs, None), &[]).unwrap();
-    let locals = plan(&cx(&syms, &secs, Some(Discard::Locals)), &[]).unwrap();
-    assert_eq!(none.entries(), default.entries() + 1, "--discard-none keeps .Ltmp");
-    assert_eq!(locals.entries(), default.entries(), "-X is the default");
+    let default = plan(&cx(&syms, &secs, DEFAULT), &[]).unwrap();
+    let locals = plan(&cx(&syms, &secs, X), &[]).unwrap();
+    assert_eq!(none.entries(), locals.entries() + 1, "-X drops .Ltmp");
+    // `.Ltmp` is in a plain section: the default keeps it (it drops the
+    // `.L` locals of split merge sections only, as GNU and lld).
+    assert_eq!(default.entries(), none.entries(), "the default keeps .Ltmp");
 }
 
 #[test]
@@ -248,7 +255,7 @@ fn s78_discard_all_keeps_demoted_and_the_linker_block() {
 #[test]
 fn s81_values() {
     let (syms, secs, addrs) = program();
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &[]).unwrap();
     let (sym, str) = write_all(&p, &c, &addrs).unwrap();
     let es = entries(&sym, &str);
@@ -268,7 +275,7 @@ fn s81_values() {
 #[test]
 fn s81_finding1_ifunc_is_kept_at_its_resolver() {
     let (syms, secs, addrs) = program();
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &[]).unwrap();
     let (sym, str) = write_all(&p, &c, &addrs).unwrap();
     let es = entries(&sym, &str);
@@ -279,7 +286,7 @@ fn s81_finding1_ifunc_is_kept_at_its_resolver() {
 #[test]
 fn s83_finding15_a_file_without_stt_file_gets_none() {
     let (syms, secs, addrs) = program();
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &[]).unwrap();
     let (sym, str) = write_all(&p, &c, &addrs).unwrap();
     let files = entries(&sym, &str).iter().filter(|e| e.info & 0xf == STT_FILE).count();
@@ -312,7 +319,7 @@ fn s80_thunk_and_patch_symbols() {
             },
         },
     ];
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &patches).unwrap();
     let (sym, str) = write_all(&p, &c, &addrs).unwrap();
     let es = entries(&sym, &str);
@@ -337,7 +344,7 @@ fn s80_thunk_and_patch_symbols() {
 #[test]
 fn s86_strtab_fixed_table_then_names() {
     let (syms, secs, addrs) = program();
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &[]).unwrap();
     let (_, str) = write_all(&p, &c, &addrs).unwrap();
     assert!(str.starts_with(fixed_table()));
@@ -352,7 +359,7 @@ fn s86_strtab_fixed_table_then_names() {
 fn s122_a_value_outside_its_section_is_an_internal_error() {
     let (syms, secs, mut addrs) = program();
     addrs.internal.insert(8, InternalValue::At { shndx: 1, addr: 0x20001 });
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &[]).unwrap();
     let e = write_all(&p, &c, &addrs).unwrap_err();
     assert!(
@@ -365,7 +372,7 @@ fn s122_a_value_outside_its_section_is_an_internal_error() {
 fn s124_a_linker_symbol_without_a_value_is_an_internal_error() {
     let (syms, secs, mut addrs) = program();
     addrs.internal.remove(&8);
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &[]).unwrap();
     let e = write_all(&p, &c, &addrs).unwrap_err();
     assert!(e.contains("linker-defined symbol _end has no value (spec/synth.md S-124)"), "{e}");
@@ -376,7 +383,7 @@ fn s85_large_section_indices_use_shn_xindex() {
     let (mut syms, secs, mut addrs) = program();
     syms.files[2].push(local(b"far", STT_OBJECT, in_sec(800, 4)));
     addrs.high = Some(0xff10);
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &[]).unwrap();
     let (sym, str) = write_all(&p, &c, &addrs).unwrap();
     let es = entries(&sym, &str);
@@ -426,7 +433,7 @@ fn s4_i104_sub_range_writes_equal_the_whole() {
     let syms = big(3, 2500, 4100);
     let secs = Secs::default();
     let addrs = Addrs::default();
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let p = plan(&c, &[]).unwrap();
     let (sym, str) = write_all(&p, &c, &addrs).unwrap();
     for step in [24 * 7 + 5, 4096, 24 * 1024, 100_000] {
@@ -449,7 +456,7 @@ fn symtab_does_not_depend_on_the_schedule() {
     let secs = Secs::default();
     let addrs = Addrs::default();
     check_schedules(|pool| {
-        let c = cx(&syms, &secs, None);
+        let c = cx(&syms, &secs, X);
         let diag = collector();
         let p = SymtabPlan::new(&c, Class::Elf64, &[], FACTS, pool, &diag).unwrap();
         let (sym, str) = write_all(&p, &c, &addrs).unwrap();
@@ -460,7 +467,7 @@ fn symtab_does_not_depend_on_the_schedule() {
 #[test]
 fn elf32_entries_are_16_bytes() {
     let (syms, secs, addrs) = program();
-    let c = cx(&syms, &secs, None);
+    let c = cx(&syms, &secs, X);
     let diag = collector();
     let p = SymtabPlan::new(&c, Class::Elf32, &[], FACTS, &Pool::sequential(), &diag).unwrap();
     assert_eq!(p.symtab_size(), 16 * u64::from(p.entries()));
