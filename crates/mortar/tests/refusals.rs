@@ -31,15 +31,45 @@ fn c_program(label: &str) -> Option<(Scratch, Built)> {
     Some((scratch, built))
 }
 
-// spec: image.md I-5 (`--gc-sections` is refused in M1, by name, once
-// the command line says it is on; nothing is written)
+/// What follows every refusal of an option (`spec/cli.md` §4.3).
+const NOT_LINKED: &str = "mortar: error: unsupported feature: linking\n\
+     >>> an option above is refused, so nothing is linked (docs/status/options.md)\n";
+
+// spec: image.md I-5, cli.md §4.4 (`--gc-sections` is refused in M1, by
+// name, at the command line once the line says it is on; nothing is
+// written)
 #[test]
 fn gc_sections_is_refused_by_name() {
     let Some((_s, built)) = c_program("refuse-gc") else { return };
     let (status, stderr) = link(&built, &["--gc-sections"], &[]);
     assert_eq!(status, Some(1));
-    assert_eq!(stderr, "mortar: error: unsupported option: --gc-sections\n");
+    assert_eq!(stderr, format!("mortar: error: unsupported option: --gc-sections\n{NOT_LINKED}"));
     assert!(!built.dir.join("out").exists());
+}
+
+// spec: synth.md S-91, cli.md §4.2, §4.4 (`--build-id` is partial: `=md5`
+// and `=uuid` are refused at the command line, naming the supported
+// spellings; a later `--build-id` overrides them, last wins)
+#[test]
+fn build_id_values_md5_and_uuid_are_refused_by_name() {
+    let Some((_s, built)) = c_program("refuse-build-id") else { return };
+    for v in ["md5", "uuid"] {
+        let opt = format!("--build-id={v}");
+        let (status, stderr) = link(&built, &[opt.as_str()], &[]);
+        assert_eq!(status, Some(1), "{v}");
+        assert_eq!(
+            stderr,
+            format!(
+                "mortar: error: unsupported option value: {opt}\n\
+                 >>> synth.md S-91: md5 is not written and uuid is M2; mortar writes \
+                 --build-id, =sha1, =sha256, =fast, =none and =0xHEX\n{NOT_LINKED}"
+            )
+        );
+        assert!(!built.dir.join("out").exists());
+        let (status, stderr) = link(&built, &[opt.as_str(), "--build-id=sha1"], &[]);
+        assert_eq!((status, stderr.as_str()), (Some(0), ""), "{v} then sha1");
+        std::fs::remove_file(built.dir.join("out")).unwrap();
+    }
 }
 
 // spec: layout.md L-103, resolve.md §5.5 (an undefined entry is one
@@ -186,7 +216,14 @@ fn erratum_workaround_values_other_than_full_are_refused() {
         let opt = format!("--fix-cortex-a53-843419={v}");
         let (status, stderr) = link(&built, &[opt.as_str()], &[]);
         assert_eq!(status, Some(1), "{v}");
-        assert_eq!(stderr, format!("mortar: error: unsupported option value: {opt}\n"));
+        assert_eq!(
+            stderr,
+            format!(
+                "mortar: error: unsupported option value: {opt}\n\
+                 >>> a64.md §11.2: GNU ld's =adr and =adrp restrict the fix, which mortar \
+                 does not do; use --fix-cortex-a53-843419 or =full\n{NOT_LINKED}"
+            )
+        );
         assert!(!built.dir.join("out").exists());
     }
     let (status, stderr) = link(&built, &["--fix-cortex-a53-843419=full"], &[]);

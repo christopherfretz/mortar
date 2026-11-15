@@ -625,7 +625,7 @@ fn refused_uses_in_argument_order() {
         "y",
         "--push-state",
         "-z",
-        "relro",
+        "now",
         "-EL",
         "--error-limit=3",
         "--output=z",
@@ -633,10 +633,39 @@ fn refused_uses_in_argument_order() {
         "p.so",
     ]);
     let refused: Vec<&str> = parsed.refused_uses().iter().map(|u| u.spelling.as_str()).collect();
-    assert_eq!(refused, ["-Tdata", "--push-state", "-z relro"]);
+    assert_eq!(refused, ["-Tdata", "--push-state", "-z now"]);
     let rendered: Vec<String> =
         parsed.refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect();
     assert_eq!(rendered[0], "ld: error: unsupported option: -Tdata\n");
+}
+
+// spec: cli.md §4.4 (a refused use that a later use of the same
+// last-wins field overrides is not refused; a partial row's refused
+// values are refused by value, each use)
+#[test]
+fn overridden_and_partial_uses() {
+    let refused = |args: &[&str]| -> Vec<String> {
+        p(args).refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect()
+    };
+    assert_eq!(refused(&["a.o", "--gc-sections", "--no-gc-sections"]), Vec::<String>::new());
+    assert_eq!(
+        refused(&["a.o", "--no-gc-sections", "--gc-sections"]),
+        ["ld: error: unsupported option: --gc-sections\n"]
+    );
+    assert_eq!(refused(&["a.o", "--build-id=md5", "--build-id"]), Vec::<String>::new());
+    assert_eq!(refused(&["a.o", "--build-id=md5", "--no-build-id"]), Vec::<String>::new());
+    let md5 = refused(&["a.o", "--build-id", "--build-id=md5"]);
+    assert_eq!(md5.len(), 1);
+    assert!(md5[0].starts_with("ld: error: unsupported option value: --build-id=md5\n>>> "));
+    assert_eq!(
+        refused(&["a.o", "--fix-cortex-a53-843419=adr", "--fix-cortex-a53-843419=adrp"]).len(),
+        2,
+        "not last-wins: both are refused"
+    );
+    assert_eq!(
+        refused(&["a.o", "--build-id=sha1", "--fix-cortex-a53-843419=full"]),
+        Vec::<String>::new()
+    );
 }
 
 // spec: cli.md §5 (requests: --version and --help stop the parse; -v and

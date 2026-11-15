@@ -124,7 +124,10 @@ requires `live ⇒ state == Kept`.
   (M2, §3.3), is `(50, FileId, section index)`.
 - **I-5 [M1]** `--no-gc-sections` is the default and is `supported` in M1
   (request R-6). `--gc-sections` is `refused` in M1 (`unsupported option:
-  --gc-sections`). Evidence for refusing rather than implementing now:
+  --gc-sections`): its row's status is `refused`, so the command line
+  refuses it (`spec/cli.md` §4.4), unless a later `--no-gc-sections`
+  overrides it; liveness keeps the same refusal for a plan that reaches
+  it another way. Evidence for refusing rather than implementing now:
   none of `gcc`, `g++`, `gfortran`, `clang`, `clang++` passes it by
   default (E1); of the bench workloads only `rust-self` (rustc passes it)
   uses it; the libc++ test suite's link lines are built by the M1 driver
