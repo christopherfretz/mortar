@@ -327,13 +327,25 @@ mod tests {
         assert_eq!(a.inputs_from, Some(PathBuf::from("r.rsp")));
         assert!(Args::parse(&s(&["a.out", "--map", "m"])).is_err());
         let a = Args::parse(&s(&[
-            "a.out", "--map", "m", "--map-format", "mortar", "--mutate", "--seed", "7",
+            "a.out",
+            "--map",
+            "m",
+            "--map-format",
+            "mortar",
+            "--mutate",
+            "--seed",
+            "7",
         ]))
         .unwrap();
         assert_eq!(a.mutate.map(|c| c.seed), Some(7));
         assert_eq!(a.fix_843419, None);
         let a = Args::parse(&s(&[
-            "a.out", "--map", "m", "--map-format", "mortar", "--fix-cortex-a53-843419",
+            "a.out",
+            "--map",
+            "m",
+            "--map-format",
+            "mortar",
+            "--fix-cortex-a53-843419",
         ]))
         .unwrap();
         assert_eq!(a.fix_843419, Some(true));

@@ -13,8 +13,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mortar_elf::consts::{EM_AARCH64, SHF_ALLOC, SHF_EXECINSTR, SHT_NOBITS, STT_NOTYPE};
 use mortar_elf::SymbolSection;
+use mortar_elf::consts::{EM_AARCH64, SHF_ALLOC, SHF_EXECINSTR, SHT_NOBITS, STT_NOTYPE};
 
 use crate::a64;
 use crate::locate::Place;
@@ -106,6 +106,7 @@ fn both_fix(w2: u32, w3: Option<u32>, n: u32) -> bool {
 
 /// The link's `--fix-cortex-a53-843419`, as the caller knows it, or
 /// inferred from the fixes found (§5.10).
+#[allow(clippy::too_many_lines)] // §11.3's steps in order
 pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
     if e.image.header.e_machine != EM_AARCH64 {
         return;
@@ -174,8 +175,8 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
     }
     let fix = map.fix_843419.or((!redirects.is_empty() || !adr_fixes.is_empty()).then_some(true));
     // 2. The sites, on the pre-fix words (§11.1).
-    let mut site_qs: BTreeSet<u64> = BTreeSet::new();
-    let mut site_fs: BTreeSet<u64> = BTreeSet::new();
+    let mut site_starts: BTreeSet<u64> = BTreeSet::new();
+    let mut site_ends: BTreeSet<u64> = BTreeSet::new();
     let mut findings = Vec::new();
     for (&q, &w1) in &pre {
         let Some((n, _)) = a64::erratum_843419_adrp(q).then(|| a64::adrp(w1, q)).flatten() else {
@@ -192,7 +193,8 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
             }
             // Condition 5: every word is input code (a word outside every
             // input section is padding or a synthetic chunk: §11.1 1-3).
-            let span: Vec<Option<&Word>> = (0..=(f - q) / 4).map(|i| words.get(&(q + 4 * i))).collect();
+            let span: Vec<Option<&Word>> =
+                (0..=(f - q) / 4).map(|i| words.get(&(q + 4 * i))).collect();
             if span.iter().any(|w| w.is_none_or(|w| w.class == Class::Data)) {
                 continue;
             }
@@ -213,15 +215,18 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
                 }
                 continue;
             }
-            site_qs.insert(q);
-            site_fs.insert(f);
+            site_starts.insert(q);
+            site_ends.insert(f);
             let (patched, adr) = (redirects.contains(&f), adr_fixes.contains(&q));
             let site = e.objs[w.obj].site(w.sec, w.offset);
             if patched && adr {
                 findings.push(
-                    Finding::new(Rule::Erratum(2), "an erratum 843419 site has both fixes (a64.md §11.3 item 5)")
-                        .at(q)
-                        .site(site),
+                    Finding::new(
+                        Rule::Erratum(2),
+                        "an erratum 843419 site has both fixes (a64.md §11.3 item 5)",
+                    )
+                    .at(q)
+                    .site(site),
                 );
             } else if patched || adr {
                 e.cov.erratum_sites += 1;
@@ -248,7 +253,7 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
     }
     if mortar {
         // 4. Every redirect names a site; 5. no ADR fix outside a site.
-        for &f in redirects.difference(&site_fs) {
+        for &f in redirects.difference(&site_ends) {
             let w = words[&f];
             findings.push(
                 Finding::new(
@@ -260,7 +265,7 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
                 .site(e.objs[w.obj].site(w.sec, w.offset)),
             );
         }
-        for &q in adr_fixes.difference(&site_qs) {
+        for &q in adr_fixes.difference(&site_starts) {
             let w = words[&q];
             findings.push(
                 Finding::new(

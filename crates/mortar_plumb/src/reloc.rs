@@ -1621,9 +1621,8 @@ impl<'a, 'b> Engine<'a, 'b> {
         let veneers = std::mem::take(&mut self.veneers);
         for (t, (rec, site, symbol, sa)) in veneers {
             let Some(hops) = self.veneer_hops(t, sa) else { continue };
-            let Some(&(t, dest, _)) = hops
-                .iter()
-                .find(|h| h.2 && !self.image.insn(h.1).is_some_and(a64::landing_pad))
+            let Some(&(t, dest, _)) =
+                hops.iter().find(|h| h.2 && !self.image.insn(h.1).is_some_and(a64::landing_pad))
             else {
                 continue;
             };

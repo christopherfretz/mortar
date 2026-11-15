@@ -1311,8 +1311,7 @@ fn s9_2n_a_veneer_to_no_landing_pad_is_found() {
         };
         put32(obj, text_off, NOP);
         let m = verify_with(&out, &files, &ctx.map);
-        let rules: Vec<String> =
-            unexpected(ctx.link, &m).iter().map(|f| f.rule.id()).collect();
+        let rules: Vec<String> = unexpected(ctx.link, &m).iter().map(|f| f.rule.id()).collect();
         assert_eq!(rules, ["R9"], "{}: {}", ctx.link.label(), m.render("bti"));
     }
 }
@@ -1361,11 +1360,11 @@ fn s9_2l_build_id_style_from_the_map() {
     let (n, what) = b1(&given, Some("given"));
     assert_eq!(n, 0, "(2) {what}");
     assert!(what.contains("given"), "(2) {what}");
-    let mut bare = ctx.output.clone();
-    assert_eq!(seal(&mut bare, Tree::L128), 1);
-    assert_eq!(b1(&bare, Some("sha1")).0, 1, "(3) the bare tree under sha1");
-    assert_eq!(b1(&bare, Some("default")).0, 0, "(3) the bare tree under default");
-    assert_eq!(b1(&bare, Some("fast")).0, 1, "(4) 20 bytes under fast");
+    let mut tree = ctx.output.clone();
+    assert_eq!(seal(&mut tree, Tree::L128), 1);
+    assert_eq!(b1(&tree, Some("sha1")).0, 1, "(3) the bare tree under sha1");
+    assert_eq!(b1(&tree, Some("default")).0, 0, "(3) the bare tree under default");
+    assert_eq!(b1(&tree, Some("fast")).0, 1, "(4) 20 bytes under fast");
 }
 
 // spec/plumb.md §9.5 (WP-028d): mutation coverage as a number on the small
@@ -1409,7 +1408,9 @@ fn s9_5_mutation_coverage_on_the_small_corpus() {
         let real: Vec<&String> = r
             .missed
             .iter()
-            .filter(|m| !(class == "field-off-by-one" && m.starts_with("bti/mold:") && m.contains("(f)")))
+            .filter(|m| {
+                !(class == "field-off-by-one" && m.starts_with("bti/mold:") && m.contains("(f)"))
+            })
             .collect();
         assert!(real.is_empty(), "{class}: {real:?}\n{table}");
     }
@@ -1446,6 +1447,7 @@ fn rules_of(link: &Link, r: &Report) -> Vec<String> {
 // unknown, nothing shows it was given: not judged. (3) mold leaves the
 // site (A4): C1, classified A4, when the option is known.
 #[test]
+#[allow(clippy::many_single_char_names)] // a64.md §11's Q, F, W1
 fn s9_2o_erratum_fixes_are_judged_by_meaning_and_site() {
     let Some(c) = small() else { return };
     for linker in Linker::ALL {

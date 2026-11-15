@@ -92,6 +92,7 @@ fn gf(t: &Tools) -> &Path {
 
 const CLEAN: Option<&[&str]> = Some(&[]);
 
+#[allow(clippy::too_many_lines)] // one entry per case
 fn cases() -> Vec<Case> {
     let nostd: &[&str] = &["-static", "-nostdlib"];
     vec![

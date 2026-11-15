@@ -94,12 +94,11 @@ impl Outcome {
     pub fn add(&mut self, other: &Outcome, label: &str) {
         self.baseline += other.baseline;
         for c in &other.classes {
-            let mine = match self.classes.iter_mut().find(|m| m.class == c.class) {
-                Some(m) => m,
-                None => {
-                    self.classes.push(ClassResult { class: c.class, ..ClassResult::default() });
-                    self.classes.last_mut().expect("pushed")
-                }
+            let mine = if let Some(i) = self.classes.iter().position(|m| m.class == c.class) {
+                &mut self.classes[i]
+            } else {
+                self.classes.push(ClassResult { class: c.class, ..ClassResult::default() });
+                self.classes.last_mut().expect("pushed")
             };
             mine.applied += c.applied;
             mine.caught += c.caught;
@@ -112,7 +111,11 @@ impl Outcome {
     /// missed mutant.
     pub fn render(&self) -> String {
         let mut s = String::new();
-        let _ = writeln!(s, "{:22} {:>10} {:>8} {:>7} {:>7}", "class", "candidates", "applied", "caught", "missed");
+        let _ = writeln!(
+            s,
+            "{:22} {:>10} {:>8} {:>7} {:>7}",
+            "class", "candidates", "applied", "caught", "missed"
+        );
         let (mut a, mut c) = (0, 0);
         for r in &self.classes {
             let _ = writeln!(
@@ -145,7 +148,7 @@ struct Mutant {
     edits: Vec<(usize, Vec<u8>)>,
 }
 
-/// SplitMix64: the fixed-seed choice of mutants.
+/// `SplitMix64`: the fixed-seed choice of mutants.
 struct Rng(u64);
 
 impl Rng {
@@ -210,7 +213,7 @@ fn def_of(m: Machine, ty: u32) -> Option<&'static Def> {
     match m {
         Machine::AArch64 => a64::def(ty),
         Machine::X86_64 => crate::x64::def(ty),
-        _ => None,
+        Machine::I386 => None,
     }
 }
 
@@ -239,7 +242,8 @@ impl Gen<'_, '_> {
     fn push(&mut self, class: &str, what: String, edits: Vec<(usize, Vec<u8>)>) {
         let data = self.image.data;
         let changes = edits.iter().any(|(o, b)| data.get(*o..*o + b.len()).is_some_and(|d| d != b));
-        let fits = edits.iter().all(|(o, b)| o.checked_add(b.len()).is_some_and(|e| e <= data.len()));
+        let fits =
+            edits.iter().all(|(o, b)| o.checked_add(b.len()).is_some_and(|e| e <= data.len()));
         if !changes || !fits {
             return;
         }
@@ -253,6 +257,7 @@ impl Gen<'_, '_> {
 }
 
 /// The relocated places of the placed input sections.
+#[allow(clippy::many_single_char_names)] // the spec's names
 fn places(image: &Image<'_>, map: &Map, inputs: &[Input<'_>]) -> Vec<Place_> {
     let located = locate::locate(map, inputs, image);
     let g = Gen { image, out: Vec::new() };
@@ -315,7 +320,7 @@ fn places(image: &Image<'_>, map: &Map, inputs: &[Input<'_>]) -> Vec<Place_> {
 }
 
 /// Every candidate mutant of the link, by class.
-#[allow(clippy::too_many_lines)] // one block per class, in CLASSES' order
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one block per class, in CLASSES' order
 fn candidates(
     image: &Image<'_>,
     map: &Map,
@@ -403,7 +408,6 @@ fn candidates(
             f @ (Field::Movw(s) | Field::MovwSigned(s)) => {
                 f.encode(v, a64::decode(f, v, pl.p) + (16 << s))
             }
-            f @ Field::Adr => f.encode(v, a64::decode(f, v, pl.p) + 16),
             f => f.encode(v, a64::decode(f, v, pl.p) + 16),
         };
         g.push("field-wrong-addend", format!("{at}: + 16"), vec![(pl.off, bytes_of(new, w))]);
@@ -424,7 +428,10 @@ fn candidates(
             mortar_elf::consts::EM_X86_64 => {
                 use crate::x64 as x;
                 let (lo, hi): (usize, usize) = match pl.def.r_type {
-                    x::GOTPCREL | x::GOTPCRELX | x::REX_GOTPCRELX | x::GOTTPOFF
+                    x::GOTPCREL
+                    | x::GOTPCRELX
+                    | x::REX_GOTPCRELX
+                    | x::GOTTPOFF
                     | x::GOTPC32_TLSDESC => (3, 0),
                     x::TLSGD | x::TLSLD => (4, 12),
                     _ => (0, 0),
@@ -615,7 +622,11 @@ fn candidates(
     }
     // e_entry.
     let entry = image.header.e_entry;
-    g.push("e-entry", format!("e_entry {entry:#x} + 4"), vec![(24, bytes_of(entry.wrapping_add(4), 8))]);
+    g.push(
+        "e-entry",
+        format!("e_entry {entry:#x} + 4"),
+        vec![(24, bytes_of(entry.wrapping_add(4), 8))],
+    );
     g.push(
         "e-entry",
         format!("e_entry {entry:#x} + 0x10000000"),
@@ -652,16 +663,40 @@ fn candidates(
             continue;
         }
         if p.p_filesz >= 8 {
-            g.push("phdr-filesz", format!("{at}: p_filesz - 8"), vec![(e + 32, bytes_of(p.p_filesz - 8, 8))]);
+            g.push(
+                "phdr-filesz",
+                format!("{at}: p_filesz - 8"),
+                vec![(e + 32, bytes_of(p.p_filesz - 8, 8))],
+            );
         }
-        g.push("phdr-filesz", format!("{at}: p_filesz + 8"), vec![(e + 32, bytes_of(p.p_filesz + 8, 8))]);
+        g.push(
+            "phdr-filesz",
+            format!("{at}: p_filesz + 8"),
+            vec![(e + 32, bytes_of(p.p_filesz + 8, 8))],
+        );
         if p.p_memsz >= 8 {
-            g.push("phdr-memsz", format!("{at}: p_memsz - 8"), vec![(e + 40, bytes_of(p.p_memsz - 8, 8))]);
+            g.push(
+                "phdr-memsz",
+                format!("{at}: p_memsz - 8"),
+                vec![(e + 40, bytes_of(p.p_memsz - 8, 8))],
+            );
         }
-        g.push("phdr-memsz", format!("{at}: p_memsz + 0x10"), vec![(e + 40, bytes_of(p.p_memsz + 0x10, 8))]);
-        g.push("phdr-align", format!("{at}: p_align * 2"), vec![(e + 48, bytes_of(p.p_align.max(1) * 2, 8))]);
+        g.push(
+            "phdr-memsz",
+            format!("{at}: p_memsz + 0x10"),
+            vec![(e + 40, bytes_of(p.p_memsz + 0x10, 8))],
+        );
+        g.push(
+            "phdr-align",
+            format!("{at}: p_align * 2"),
+            vec![(e + 48, bytes_of(p.p_align.max(1) * 2, 8))],
+        );
         if p.p_align > 1 {
-            g.push("phdr-align", format!("{at}: p_align / 2"), vec![(e + 48, bytes_of(p.p_align / 2, 8))]);
+            g.push(
+                "phdr-align",
+                format!("{at}: p_align / 2"),
+                vec![(e + 48, bytes_of(p.p_align / 2, 8))],
+            );
         }
         for (bit, n) in [(1u32, "PF_X"), (2, "PF_W"), (4, "PF_R")] {
             g.push(
@@ -682,7 +717,8 @@ fn candidates(
         while p + 8 <= (16 + descsz).min(b.len()) {
             let ty = le(&b[p..p + 4]) as u32;
             let sz = le(&b[p + 4..p + 8]) as usize;
-            if sz == 4 && p + 12 <= b.len() && matches!(ty, 0xc000_0000 | 0xc000_0002 | 0xc000_8002) {
+            if sz == 4 && p + 12 <= b.len() && matches!(ty, 0xc000_0000 | 0xc000_0002 | 0xc000_8002)
+            {
                 let v = le(&b[p + 8..p + 12]) as u32;
                 for bit in 0..4 {
                     g.push(
@@ -701,7 +737,9 @@ fn candidates(
         .iter()
         .enumerate()
         .filter(|(_, s)| {
-            s.alloc() && s.shdr.sh_size > 0 && !(s.shdr.sh_flags & SHF_TLS != 0 && s.shdr.sh_type == SHT_NOBITS)
+            s.alloc()
+                && s.shdr.sh_size > 0
+                && !(s.shdr.sh_flags & SHF_TLS != 0 && s.shdr.sh_type == SHT_NOBITS)
         })
         .map(|(i, s)| (i, s.shdr.sh_addr, s.shdr.sh_size))
         .collect();
@@ -731,7 +769,10 @@ fn candidates(
             .iter()
             .filter(|x| {
                 let v = x.sym.st_value;
-                v >= addr && v < addr + c.size && !x.name.starts_with('$') && !x.name.is_empty()
+                v >= addr
+                    && v < addr + c.size
+                    && !x.name.starts_with('$')
+                    && !x.name.is_empty()
                     && x.sym.sym_type() != STT_SECTION
             })
             .map(|x| (format!("{} in {}", x.name, c.name), x.sym.st_value))
@@ -774,10 +815,16 @@ fn candidates(
             let at = format!("{} entry {k} at {:#x}", s.name, s.shdr.sh_addr + 16 * k as u64);
             match image.header.e_machine {
                 mortar_elf::consts::EM_AARCH64 => {
-                    for (w, what) in [(1usize, "the slot's low 12 bits + 8"), (2, "another register")] {
+                    for (w, what) in
+                        [(1usize, "the slot's low 12 bits + 8"), (2, "another register")]
+                    {
                         let v = g.word(e + 4 * w, 4) as u32;
                         let new = if w == 1 { v.wrapping_add(1 << 10) } else { v ^ 1 };
-                        g.push("iplt-entry", format!("{at}: {what}"), vec![(e + 4 * w, new.to_le_bytes().to_vec())]);
+                        g.push(
+                            "iplt-entry",
+                            format!("{at}: {what}"),
+                            vec![(e + 4 * w, new.to_le_bytes().to_vec())],
+                        );
                     }
                 }
                 mortar_elf::consts::EM_X86_64 => {
@@ -823,15 +870,23 @@ fn candidates(
                     let Some(o) = g.off(q, 4) else { continue };
                     let w = g.word(o, 4) as u32;
                     if let Some((d, t)) = a64::adr(w, q)
-                        && t & 0xFFF == 0
+                        && t.trailing_zeros() >= 12
                     {
                         let next = adr_word(d, q, t.wrapping_add(0x1000));
                         let back = adrp_word(d, q, t);
                         if let Some(n) = next {
-                            g.push("erratum-fix", format!("ADR fix at {q:#x}: the next page"), vec![(o, n.to_le_bytes().to_vec())]);
+                            g.push(
+                                "erratum-fix",
+                                format!("ADR fix at {q:#x}: the next page"),
+                                vec![(o, n.to_le_bytes().to_vec())],
+                            );
                         }
                         if let Some(b) = back {
-                            g.push("erratum-fix", format!("ADR fix at {q:#x}: undone"), vec![(o, b.to_le_bytes().to_vec())]);
+                            g.push(
+                                "erratum-fix",
+                                format!("ADR fix at {q:#x}: undone"),
+                                vec![(o, b.to_le_bytes().to_vec())],
+                            );
                         }
                     }
                 }
@@ -842,7 +897,9 @@ fn candidates(
                     let Some(o) = g.off(f, 4) else { continue };
                     let w = g.word(o, 4) as u32;
                     let Some((false, t)) = a64::branch(w, f) else { continue };
-                    let (Some(to), Some(bo)) = (g.off(t, 4), g.off(t.wrapping_add(4), 4)) else { continue };
+                    let (Some(to), Some(bo)) = (g.off(t, 4), g.off(t.wrapping_add(4), 4)) else {
+                        continue;
+                    };
                     let moved = g.word(to, 4) as u32;
                     let back = g.word(bo, 4) as u32;
                     if !a64::is_ldst_unsigned_imm(moved)
@@ -852,8 +909,16 @@ fn candidates(
                     }
                     let imm = (moved >> 10) & 0xFFF;
                     let stale = if imm == 0 { moved | 1 << 10 } else { moved & !(0xFFF << 10) };
-                    g.push("erratum-fix", format!("patch for {f:#x} at {t:#x}: offset not relocated"), vec![(to, stale.to_le_bytes().to_vec())]);
-                    g.push("erratum-fix", format!("patch for {f:#x}: undone"), vec![(o, moved.to_le_bytes().to_vec())]);
+                    g.push(
+                        "erratum-fix",
+                        format!("patch for {f:#x} at {t:#x}: offset not relocated"),
+                        vec![(to, stale.to_le_bytes().to_vec())],
+                    );
+                    g.push(
+                        "erratum-fix",
+                        format!("patch for {f:#x}: undone"),
+                        vec![(o, moved.to_le_bytes().to_vec())],
+                    );
                 }
                 page += 0x1000;
             }
@@ -974,7 +1039,12 @@ fn keys(r: &crate::Report) -> BTreeSet<(String, Option<u64>, String)> {
 /// # Errors
 ///
 /// When the output cannot be read (O1): there is nothing to mutate.
-pub fn run(output: &[u8], inputs: &[Input<'_>], map: &Map, cfg: &Config) -> Result<Outcome, String> {
+pub fn run(
+    output: &[u8],
+    inputs: &[Input<'_>],
+    map: &Map,
+    cfg: &Config,
+) -> Result<Outcome, String> {
     let image = Image::read(output)?;
     let mut rng = Rng(cfg.seed);
     let mut base = verify(output, inputs, map);
@@ -991,10 +1061,8 @@ pub fn run(output: &[u8], inputs: &[Input<'_>], map: &Map, cfg: &Config) -> Resu
     let base_keys = keys(&base);
     let style = Style::of(map);
     let mut chosen: Vec<Mutant> = Vec::new();
-    let mut classes: Vec<ClassResult> = CLASSES
-        .iter()
-        .map(|c| ClassResult { class: c, ..ClassResult::default() })
-        .collect();
+    let mut classes: Vec<ClassResult> =
+        CLASSES.iter().map(|c| ClassResult { class: c, ..ClassResult::default() }).collect();
     for (ci, mut ms) in all.into_iter().enumerate() {
         classes[ci].candidates = ms.len();
         if cfg.per_class > 0 && ms.len() > cfg.per_class {

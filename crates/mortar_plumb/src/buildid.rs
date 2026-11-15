@@ -394,9 +394,11 @@ pub enum Style {
 impl Style {
     /// The style of `map`'s build-id chunk.
     pub fn of(map: &crate::Map) -> Style {
-        let Some(c) = map.chunks.iter().find(|c| {
-            c.kind == crate::map::ChunkKind::Synthetic && c.name == ".note.gnu.build-id"
-        }) else {
+        let Some(c) = map
+            .chunks
+            .iter()
+            .find(|c| c.kind == crate::map::ChunkKind::Synthetic && c.name == ".note.gnu.build-id")
+        else {
             return Style::Unstated;
         };
         match c.target.as_ref().map(|t| t.0.as_str()) {
@@ -429,7 +431,9 @@ pub(crate) fn check(image: &Image<'_>, cov: &mut Coverage, style: Style) -> Vec<
                 continue;
             }
             Style::Unknown => {
-                cov.build_id = Some(format!("{len}-byte id of a style the map names and this verifier does not know, not judged"));
+                cov.build_id = Some(format!(
+                    "{len}-byte id of a style the map names and this verifier does not know, not judged"
+                ));
                 continue;
             }
             Style::Tree(t, want) => {

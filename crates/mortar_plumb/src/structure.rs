@@ -3,14 +3,18 @@
 
 use mortar_elf::Machine;
 use mortar_elf::consts::{
-    ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR, PT_TLS,
-    SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF,
-    SHN_XINDEX, SHT_NOBITS, SHT_NOTE, STT_FILE, STT_SECTION, STT_TLS,
+    ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_GNU_RELRO, PT_GNU_STACK,
+    PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE,
+    SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX, SHT_NOBITS, SHT_NOTE, STT_FILE,
+    STT_SECTION, STT_TLS,
 };
 
 use crate::image::{Image, Phdr};
 use crate::map::Format;
 use crate::report::{Finding, Rule};
+
+/// AArch64's execute-only section flag (AAELF64 "Section flags").
+const SHF_AARCH64_PURECODE: u64 = 0x2000_0000;
 
 fn s(n: u8, msg: impl Into<String>) -> Finding {
     Finding::new(Rule::Structure(n), msg)
@@ -178,10 +182,10 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
     // and its literal pools fault; WP-028d), unless every section in it
     // asks to be execute-only: AArch64's SHF_AARCH64_PURECODE (AAELF64
     // "Section flags"; lld 22 makes its `.iplt` so).
-    const SHF_AARCH64_PURECODE: u64 = 0x2000_0000;
     for p in &loads {
         let secs = sections_in(image, p);
-        let pure = h.e_machine == 183 && secs.iter().all(|sh| sh.sh_flags & SHF_AARCH64_PURECODE != 0);
+        let pure =
+            h.e_machine == 183 && secs.iter().all(|sh| sh.sh_flags & SHF_AARCH64_PURECODE != 0);
         if p.p_flags & PF_R == 0 && !secs.is_empty() && !pure {
             out.push(
                 s(5, format!("PT_LOAD at {:#x} holds sections and is not PF_R", p.p_vaddr))
@@ -356,7 +360,9 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
             .sections
             .iter()
             .map(|x| &x.shdr)
-            .filter(|sh| sh.sh_flags & SHF_TLS != 0 && sh.sh_flags & SHF_ALLOC != 0 && sh.sh_size > 0)
+            .filter(|sh| {
+                sh.sh_flags & SHF_TLS != 0 && sh.sh_flags & SHF_ALLOC != 0 && sh.sh_size > 0
+            })
             .collect();
         if let (Some(lo), Some(hi)) = (
             secs.iter().map(|sh| sh.sh_addr).min(),
@@ -386,7 +392,10 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
                 bad.push(format!("p_memsz {:#x}, the TLS sections span {span:#x}", t.p_memsz));
             }
             if t.p_align.max(1) != align {
-                bad.push(format!("p_align {:#x}, the TLS sections' alignment is {align:#x}", t.p_align));
+                bad.push(format!(
+                    "p_align {:#x}, the TLS sections' alignment is {align:#x}",
+                    t.p_align
+                ));
             }
             for b in bad {
                 out.push(s(9, format!("PT_TLS: {b}")).at(t.p_vaddr));
@@ -423,25 +432,40 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
             .iter()
             .map(|x| &x.shdr)
             .filter(|sh| {
-                sh.sh_type == SHT_NOTE && sh.sh_flags & SHF_ALLOC != 0 && sh.sh_size > 0
+                sh.sh_type == SHT_NOTE
+                    && sh.sh_flags & SHF_ALLOC != 0
+                    && sh.sh_size > 0
                     && sh.sh_addr >= lo
                     && sh.sh_addr < hi
             })
             .collect();
         if p.p_memsz != p.p_filesz {
             out.push(
-                s(11, format!("PT_NOTE at {:#x}: p_memsz {:#x} is not p_filesz {:#x}", p.p_vaddr, p.p_memsz, p.p_filesz))
-                    .at(p.p_vaddr),
+                s(
+                    11,
+                    format!(
+                        "PT_NOTE at {:#x}: p_memsz {:#x} is not p_filesz {:#x}",
+                        p.p_vaddr, p.p_memsz, p.p_filesz
+                    ),
+                )
+                .at(p.p_vaddr),
             );
         }
         if !notes.is_empty() {
             let want = notes.iter().map(|sh| sh.sh_addralign.max(1)).max().unwrap_or(1).max(4);
             let first = notes.iter().map(|sh| sh.sh_addr).min().unwrap_or(lo);
-            let last = notes.iter().map(|sh| sh.sh_addr.saturating_add(sh.sh_size)).max().unwrap_or(hi);
+            let last =
+                notes.iter().map(|sh| sh.sh_addr.saturating_add(sh.sh_size)).max().unwrap_or(hi);
             if p.p_align != want {
                 out.push(
-                    s(11, format!("PT_NOTE at {:#x}: p_align {:#x}, its notes are aligned to {want:#x}", p.p_vaddr, p.p_align))
-                        .at(p.p_vaddr),
+                    s(
+                        11,
+                        format!(
+                            "PT_NOTE at {:#x}: p_align {:#x}, its notes are aligned to {want:#x}",
+                            p.p_vaddr, p.p_align
+                        ),
+                    )
+                    .at(p.p_vaddr),
                 );
             }
             if first != lo || last != hi {
@@ -495,7 +519,7 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
     out
 }
 
-/// The allocated sections with memory that lie in the PT_LOAD `p`.
+/// The allocated sections with memory that lie in the `PT_LOAD` `p`.
 fn sections_in<'s>(image: &'s Image<'_>, p: &Phdr) -> Vec<&'s mortar_elf::Shdr> {
     let (lo, hi) = (p.p_vaddr, p.p_vaddr.saturating_add(p.p_memsz));
     image
@@ -595,7 +619,9 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
         }
         // PT_PHDR is the program header table (gABI "Program Header"): a
         // loader takes AT_PHDR and AT_PHNUM from it (WP-028d).
-        if ty == PT_PHDR && let Some(&i) = at.first() {
+        if ty == PT_PHDR
+            && let Some(&i) = at.first()
+        {
             let p = &image.phdrs[i];
             let len = u64::from(h.e_phnum) * u64::from(h.e_phentsize);
             // lld may leave room for more headers than it writes.
@@ -727,15 +753,17 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
     for r in image.phdrs.iter().filter(|p| p.p_type == PT_GNU_RELRO && p.p_memsz > 0) {
         let hi = r.p_vaddr.saturating_add(r.p_memsz);
         let word: u64 = if image.class() == mortar_elf::Class::Elf64 { 8 } else { 4 };
-        let ok = hi.is_multiple_of(0x1000) || image.sections.iter().skip(1).any(|x| {
-            let sh = &x.shdr;
-            occupies_memory(sh)
-                && (sh.sh_addr.saturating_add(sh.sh_size) == hi
-                    || x.name == ".got.plt" && hi > sh.sh_addr && hi <= sh.sh_addr + 3 * word)
-        });
+        let ok = hi.is_multiple_of(0x1000)
+            || image.sections.iter().skip(1).any(|x| {
+                let sh = &x.shdr;
+                occupies_memory(sh)
+                    && (sh.sh_addr.saturating_add(sh.sh_size) == hi
+                        || x.name == ".got.plt" && hi > sh.sh_addr && hi <= sh.sh_addr + 3 * word)
+            });
         if !ok {
             out.push(
-                s(20, format!("PT_GNU_RELRO ends at {hi:#x}, which is no section's end")).at(r.p_vaddr),
+                s(20, format!("PT_GNU_RELRO ends at {hi:#x}, which is no section's end"))
+                    .at(r.p_vaddr),
             );
         }
     }
@@ -778,7 +806,12 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
         })
     };
     let functions = image.symbols.iter().any(|x| x.sym.sym_type() == mortar_elf::consts::STT_FUNC);
-    if format == Format::Mortar && h.e_type == ET_EXEC && h.e_entry != 0 && functions && !labelled(h.e_entry) {
+    if format == Format::Mortar
+        && h.e_type == ET_EXEC
+        && h.e_entry != 0
+        && functions
+        && !labelled(h.e_entry)
+    {
         out.push(
             s(7, format!("the entry point {:#x} is no symbol's value", h.e_entry)).at(h.e_entry),
         );
@@ -795,8 +828,14 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
             for (bit, flag, name) in [(PF_W, SHF_WRITE, "PF_W"), (PF_X, SHF_EXECINSTR, "PF_X")] {
                 if p.p_flags & bit != 0 && !secs.iter().any(|sh| sh.sh_flags & flag != 0) {
                     out.push(
-                        s(5, format!("PT_LOAD at {:#x} is {name} and holds no section that needs it", p.p_vaddr))
-                            .at(p.p_vaddr),
+                        s(
+                            5,
+                            format!(
+                                "PT_LOAD at {:#x} is {name} and holds no section that needs it",
+                                p.p_vaddr
+                            ),
+                        )
+                        .at(p.p_vaddr),
                     );
                 }
             }
