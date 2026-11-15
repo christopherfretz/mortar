@@ -30,7 +30,7 @@ pub mod aarch64 {
         fn name(u32);
         R_AARCH64_NONE = 0;
         /// The withdrawn second code of `R_AARCH64_NONE` (AAELF64), under
-        /// the name binutils gives it; LLVM calls 256 `R_AARCH64_NONE` too.
+        /// the name binutils gives it; LLVM 22 does not name 256.
         R_AARCH64_NULL = 256;
         R_AARCH64_ABS64 = 257;
         R_AARCH64_ABS32 = 258;
