@@ -119,9 +119,11 @@ pub struct Front<'s> {
     /// the symbol tables' plan reads it.
     pub eh: EhPlan,
     pub synth: SynthPlans,
-    /// The dynamic tables' plans; `None` in a static link, and always
-    /// while `crate::dynamic::dynamic_guard` refuses dynamic output.
+    /// The dynamic tables' plans; `None` in a static link.
     pub dyn_tables: Option<crate::dynamic::DynTables>,
+    /// The command line's words, response files expanded (the map's `arg`
+    /// records, `spec/plumb.md` §3.2); set by the driver after `front`.
+    pub args: Vec<Vec<u8>>,
     pub commons: Vec<Common>,
     pub layout: Layout,
     /// What `place` returned besides the placement (the segment rules
@@ -861,6 +863,7 @@ pub fn front<'s>(
         eh,
         synth: plans,
         dyn_tables,
+        args: Vec::new(),
         commons,
         layout,
         placed,

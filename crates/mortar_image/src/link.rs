@@ -43,8 +43,15 @@ use mortar_synth::got::{GotAddrs, GotPlan, Region, SlotValues};
 use mortar_synth::hdr::{HdrAddrs, HdrPlan};
 use mortar_synth::image::{EhChunk, GotChunk, GotPart, HdrChunk, SymTable, SymtabChunk};
 use mortar_synth::symtab::{InternalValue, SymAddrs, SymCtx, SymtabPlan};
+use mortar_synth::dynamic::{ArraySection, DynKind, DynamicPlan, RunpathTag};
+use mortar_synth::dynstr::DynstrChunk;
+use mortar_synth::dynsym::{DynsymChunk, DynsymInputs};
+use mortar_synth::gnuhash::GnuHashChunk;
+use mortar_synth::version::{VerneedChunk, VersymChunk};
 use mortar_synth::{
-    BuildIdPlan, Division, EhPlan, EhSource, EhValue, EhWho, PropertyPlan, ShstrtabPlan, SynthChunk,
+    BuildIdPlan, Division, DynAddrs, DynRecord, DynSymSource, DynsymPlan, EhPlan, EhSource,
+    EhValue, EhWho, FillCx, InterpPlan, PropertyPlan, RelUnit, RelaPlan, ShstrtabPlan, SizeCx,
+    SynthChunk, SynthError, Window,
 };
 
 use crate::fill::{self, EhFill, Failed, Filled, Image, MergedFrags, SplitPlace, Tables};
@@ -99,6 +106,53 @@ pub trait KeyFacts: SymNames {
         );
         vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))]
     }
+
+    /// Walks the relocation records of section `sid` (`index` in `file`,
+    /// its relocation section `rel`) as the scan's walk sees them, with
+    /// the `ScanCx` the scan called `arch.scan` with: `.rela.dyn`'s
+    /// records (`spec/dyn.md` D-40, `crate::dynrel::roles`). By default
+    /// an `internal-error`: these tables cannot walk.
+    #[allow(clippy::too_many_arguments, reason = "the scan's walk of one section")]
+    fn walk_records(
+        &self,
+        file: FileId,
+        sid: SectionId,
+        index: u32,
+        rel: u32,
+        leads: bool,
+        visit: &mut dyn FnMut(&mortar_arch::ScanCx<'_>, &mortar_arch::RelocAt<'_>),
+    ) -> Result<(), Diagnostic> {
+        let _ = (file, sid, index, rel, leads, visit);
+        Err(internal("image: no walk of a section's records for .rela.dyn"))
+    }
+}
+
+/// The plans of an output with `.dynamic` (`spec/dyn.md`; phase 80), and
+/// what the map records of them.
+#[derive(Clone, Copy)]
+pub struct DynPlans<'a> {
+    pub kind: DynKind,
+    pub dynsym: &'a DynsymPlan,
+    pub src: &'a dyn DynSymSource,
+    pub rela: &'a RelaPlan,
+    pub dynamic: &'a DynamicPlan,
+    pub interp: &'a InterpPlan,
+    pub runpath: Option<(RunpathTag, &'a [u8])>,
+    /// Per copy allocation (as `Slots.copies`): its size (D-42).
+    pub copy_size: &'a [u64],
+    pub bind_now: bool,
+    pub relro: bool,
+    /// The context `.dynsym`'s exported values are read with, as
+    /// `.symtab`'s (D-23 "exactly as `.symtab`").
+    pub syms: SymCtx<'a>,
+    /// The command line's words (the map's `arg` records, P-D3).
+    pub args: &'a [Vec<u8>],
+}
+
+impl std::fmt::Debug for DynPlans<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DynPlans").field("kind", &self.kind).finish_non_exhaustive()
+    }
 }
 
 /// The synthetic chunks' plans (phase 80, re-planned after layout's fixed
@@ -114,6 +168,8 @@ pub struct SynthPlans<'a> {
     pub shstrtab: &'a ShstrtabPlan,
     pub build_id: Option<&'a BuildIdPlan>,
     pub property: &'a PropertyPlan,
+    /// An output with `.dynamic`'s plans; `None` in a static link.
+    pub dynamic: Option<DynPlans<'a>>,
 }
 
 impl std::fmt::Debug for SynthPlans<'_> {
@@ -241,6 +297,9 @@ pub struct LinkTables<'a, 's> {
     got_addrs: GotAddrs,
     /// `.eh_frame`'s section index and address.
     eh_frame: Option<(u32, u64)>,
+    /// `_DYNAMIC`, `.dynamic`'s address (`spec/dyn.md` D-32); `None` in a
+    /// static link.
+    dynamic: Option<u64>,
     /// Per section index (0 is the null section).
     sections: Box<[OutSection]>,
     /// References into `Merge` sections by offset (I-119).
@@ -301,6 +360,7 @@ impl<'a, 's> LinkTables<'a, 's> {
             iplt: SlotIndex::new(&slots.iplt),
             got_addrs,
             eh_frame,
+            dynamic: link.synth.dynamic.and_then(|_| chunk_addr(SynthKind::Dynamic)),
             sections: out_sections(link.layout).into(),
             pieces: refs::PieceIndex::default(),
         };
@@ -773,6 +833,10 @@ impl SlotValues for LinkTables<'_, '_> {
     fn tls(&self) -> Option<TlsBlock> {
         self.tls_block()
     }
+
+    fn dynamic(&self) -> Option<u64> {
+        self.dynamic
+    }
 }
 
 impl SymAddrs for LinkTables<'_, '_> {
@@ -1164,7 +1228,16 @@ pub fn structure(
     // `STB_GNU_UNIQUE` symbol, or an `IRELATIVE` record (GNU ld's rule;
     // eu-elflint rejects the IFUNC symbol under 0); else the target's.
     let gnu = link.synth.symtab.is_some_and(|(p, _)| p.gnu_symbols())
-        || !link.layout.slots.iplt.is_empty();
+        || !link.layout.slots.iplt.is_empty()
+        || link.synth.dynamic.is_some_and(|d| {
+            let inputs = DynsymInputs {
+                resolution: link.resolution,
+                demands: link.demands,
+                slots: &link.layout.slots,
+                src: d.src,
+            };
+            mortar_synth::dynsym::gnu_symbols(d.dynsym, &inputs)
+        });
     let ehdr = Ehdr {
         osabi: if gnu { ELFOSABI_GNU } else { facts.osabi },
         e_type,
@@ -1260,9 +1333,29 @@ fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
                     SynthKind::SymtabShndx => {
                         row.sh_link = synth_shndx(link, SynthKind::Symtab).unwrap_or(0);
                     }
-                    // S-69: `sh_link` 0 in a static output, `sh_info` `.got.plt`.
+                    // S-69: `sh_link` 0 in a static output (`.dynsym` in a
+                    // dynamic one), `sh_info` `.got.plt`.
                     SynthKind::RelaPlt => {
                         row.sh_info = synth_shndx(link, SynthKind::GotPlt).unwrap_or(0);
+                        if link.synth.dynamic.is_some() {
+                            row.sh_link = synth_shndx(link, SynthKind::Dynsym).unwrap_or(0);
+                        }
+                    }
+                    // gABI: a symbol table's and `.dynamic`'s strings, a
+                    // hash table's, versym's and relocations' symbols.
+                    SynthKind::Dynsym => {
+                        row.sh_link = synth_shndx(link, SynthKind::Dynstr).unwrap_or(0);
+                        row.sh_info = 1;
+                    }
+                    SynthKind::Dynamic => {
+                        row.sh_link = synth_shndx(link, SynthKind::Dynstr).unwrap_or(0);
+                    }
+                    SynthKind::GnuHash | SynthKind::GnuVersion | SynthKind::RelaDyn => {
+                        row.sh_link = synth_shndx(link, SynthKind::Dynsym).unwrap_or(0);
+                    }
+                    SynthKind::GnuVersionR => {
+                        row.sh_link = synth_shndx(link, SynthKind::Dynstr).unwrap_or(0);
+                        row.sh_info = link.layout.slots.verneed.len() as u32;
                     }
                     _ => {}
                 }
@@ -1286,6 +1379,332 @@ fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
             r.ok_or_else(|| internal(format!("image: section index {n} has no chunk (L-86)")))
         })
         .collect()
+}
+
+// ---- the dynamic sections (spec/dyn.md) ----------------------------------
+
+/// The image's answers to `.dynsym` (`DynAddrs`) and `.dynamic`
+/// (`DynamicAddrs`) over the layout.
+struct DynView<'t, 'a, 's> {
+    t: &'t LinkTables<'a, 's>,
+    d: DynPlans<'a>,
+}
+
+impl DynView<'_, '_, '_> {
+    /// A synthetic chunk's id.
+    fn chunk_id(&self, kind: SynthKind) -> Option<ChunkId> {
+        Some(self.t.link.synth.chunks.iter().find(|c| c.0 == kind)?.1)
+    }
+
+    /// The `.dynsym` inputs.
+    fn inputs(&self) -> DynsymInputs<'_> {
+        let l = &self.t.link;
+        DynsymInputs {
+            resolution: l.resolution,
+            demands: l.demands,
+            slots: &l.layout.slots,
+            src: self.d.src,
+        }
+    }
+}
+
+impl DynAddrs for DynView<'_, '_, '_> {
+    fn defined(&self, key: SymbolId) -> Option<(u32, u64)> {
+        mortar_synth::symtab::global_value(&self.d.syms, self.t, key).ok().flatten()
+    }
+
+    fn plt(&self, key: SymbolId) -> Option<u64> {
+        self.t.link.synth.got.plt_address(&self.t.got_addrs, SymKey::global(key))
+    }
+
+    fn iplt(&self, key: SymbolId) -> Option<(u32, u64)> {
+        let shndx = synth_shndx(&self.t.link, SynthKind::Plt)?;
+        let at = self.t.link.synth.got.iplt_address(&self.t.got_addrs, SymKey::global(key))?;
+        Some((shndx, at))
+    }
+
+    fn copy(&self, alloc: u32) -> Option<(u32, u64)> {
+        let row = self.t.link.layout.placement.sym_place_of(AllocKey::Copy(alloc))?;
+        self.t.chunk_at(row.chunk, row.offset)
+    }
+}
+
+impl crate::dynamic::DynamicAddrs for DynView<'_, '_, '_> {
+    fn chunk(&self, kind: SynthKind) -> Option<(u64, u64)> {
+        let c = self.t.link.layout.placement.chunks.get(self.chunk_id(kind)?)?;
+        Some((c.addr?, c.size))
+    }
+
+    fn section(&self, section: ArraySection) -> Option<(u64, u64)> {
+        let l = &self.t.link;
+        let shndx = l.layout.placement.chunks.iter().find_map(|(_, c)| {
+            let o = c.kind.out()?;
+            (l.assignment.outsecs.get(o)?.name == section.name()).then_some(c.shndx?)
+        })?;
+        let s = self.t.sections.get(shndx as usize)?;
+        Some((s.addr, s.size))
+    }
+
+    fn symbol(&self, key: SymbolId) -> Option<u64> {
+        self.t.global.get(key.0 as usize).copied().flatten()
+    }
+}
+
+/// `.rela.dyn` as a chunk: its bytes made before fill (D-40).
+struct RelaDynChunk(crate::dynrel::RelaDyn);
+
+impl SynthChunk for RelaDynChunk {
+    fn size(&self, _: &SizeCx<'_>) -> u64 {
+        self.0.size()
+    }
+
+    fn division(&self) -> Division {
+        Division::Divisible
+    }
+
+    fn write(&self, _: &FillCx<'_>, range: std::ops::Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+        if range.end > self.0.size() || out.len() as u64 != range.end - range.start {
+            return Err(mortar_synth::error::internal(".rela.dyn written out of its range"));
+        }
+        self.0.write(&mut Window::new(range.start, out));
+        Ok(())
+    }
+}
+
+/// A NOBITS chunk (`.dynbss`, `.bss.rel.ro`, D-42): no file bytes.
+struct Nobits(u64);
+
+impl SynthChunk for Nobits {
+    fn size(&self, _: &SizeCx<'_>) -> u64 {
+        self.0
+    }
+
+    fn division(&self) -> Division {
+        Division::Whole { max_size: 0 }
+    }
+
+    fn write(&self, _: &FillCx<'_>, _: std::ops::Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+        out.fill(0);
+        Ok(())
+    }
+}
+
+/// The dynamic sections' chunks (D-20 to D-49), over a [`DynView`].
+struct DynChunks<'v> {
+    interp: &'v InterpPlan,
+    gnu_hash: GnuHashChunk<'v>,
+    dynsym: DynsymChunk<'v>,
+    dynstr: DynstrChunk<'v>,
+    versym: VersymChunk<'v>,
+    verneed: VerneedChunk<'v>,
+    dynamic: crate::dynamic::DynamicChunk<'v>,
+    rela: RelaDynChunk,
+    dynbss: Nobits,
+    relro: Nobits,
+}
+
+impl<'v> DynChunks<'v> {
+    fn new(view: &'v DynView<'_, '_, '_>, rela: crate::dynrel::RelaDyn) -> Self {
+        let l = &view.t.link;
+        let d = view.d;
+        let slots = &l.layout.slots;
+        let facts = l.arch.facts();
+        let class = facts.class;
+        let inputs = view.inputs();
+        let nobits = |kind: SynthKind| {
+            Nobits(
+                view.chunk_id(kind)
+                    .and_then(|id| l.layout.placement.chunks.get(id))
+                    .map_or(0, |c| c.size),
+            )
+        };
+        Self {
+            interp: d.interp,
+            gnu_hash: GnuHashChunk { plan: d.dynsym, src: d.src, class },
+            dynsym: DynsymChunk {
+                plan: d.dynsym,
+                inputs,
+                dynstr: &slots.dynstr,
+                addrs: view,
+                machine: facts.machine,
+            },
+            dynstr: DynstrChunk {
+                plan: d.dynsym,
+                needed: &slots.needed,
+                verneed: &slots.verneed,
+                rpath: d.runpath.map(|r| r.1),
+                dynstr: &slots.dynstr,
+                names: d.src,
+            },
+            versym: VersymChunk { plan: d.dynsym, inputs, verneed: &slots.verneed, class },
+            verneed: VerneedChunk {
+                needed: &slots.needed,
+                verneed: &slots.verneed,
+                dynstr: &slots.dynstr,
+                names: d.src,
+                class,
+            },
+            dynamic: crate::dynamic::DynamicChunk {
+                plan: d.dynamic,
+                dynstr: &slots.dynstr,
+                addrs: view,
+            },
+            rela: RelaDynChunk(rela),
+            dynbss: nobits(SynthKind::DynBss),
+            relro: nobits(SynthKind::BssRelRo),
+        }
+    }
+
+    fn get(&self, kind: SynthKind) -> Option<&(dyn SynthChunk + Sync + 'v)> {
+        Some(match kind {
+            SynthKind::Interp => self.interp,
+            SynthKind::GnuHash => &self.gnu_hash,
+            SynthKind::Dynsym => &self.dynsym,
+            SynthKind::Dynstr => &self.dynstr,
+            SynthKind::GnuVersion => &self.versym,
+            SynthKind::GnuVersionR => &self.verneed,
+            SynthKind::Dynamic => &self.dynamic,
+            SynthKind::RelaDyn => &self.rela,
+            SynthKind::DynBss => &self.dynbss,
+            SynthKind::BssRelRo => &self.relro,
+            _ => return None,
+        })
+    }
+}
+
+/// `.rela.dyn`'s records (D-40, D-42, D-46, D-48): each relocated
+/// section's, walked as the scan walked it (`KeyFacts::walk_records`) on
+/// the pool; the GOT's (`GotPlan::got_records`); one `COPY` per copy
+/// allocation.
+///
+/// # Errors
+///
+/// `internal-error` when a record breaks an invariant or the counts
+/// differ from the plan's.
+#[allow(clippy::too_many_lines)]
+fn rela_dyn(view: &DynView<'_, '_, '_>) -> Result<crate::dynrel::RelaDyn, Diagnostic> {
+    use crate::dynrel::{SectionCx, SectionRecords};
+    use mortar_arch::DynRole;
+    let t = view.t;
+    let l = &t.link;
+    let d = view.d;
+    let arch = l.arch;
+    let facts = arch.facts();
+    let (class, form) = (facts.class, facts.rel_form);
+    let pl = &l.layout.placement;
+    let got = l.synth.got;
+    let ga = t.got_addrs;
+    let sections: Vec<SectionId> = d.rela.sections().collect();
+    // `S + A` at link time (a `RELATIVE` record's addend): a reference
+    // into a split section through its piece, else the key's value.
+    let value = |key: SymKey, addend: i64| -> Option<u64> {
+        match t.split_target(key, addend) {
+            Some(Ok(Some(v))) => Some(v),
+            Some(_) => None,
+            None => Some(t.sym(key).s.wrapping_add_signed(addend)),
+        }
+    };
+    let dynsym = |id: SymbolId| d.dynsym.index(id);
+    let per: Vec<Result<(u64, SectionRecords), Diagnostic>> = l.pool.map(sections.len(), |i| {
+        let sid = sections[i];
+        let what = |m: &str| internal(format!(".rela.dyn: section {}: {m}", sid.0));
+        let (file, index) = l.resolution.sh_index(sid).ok_or_else(|| what("no input section"))?;
+        let rel = l.resolution.sections.get(sid).ok_or_else(|| what("no row"))?.reloc.0;
+        let addr = pl.section_addr(sid, 0).ok_or_else(|| what("no address"))?;
+        let leads = l.records.leads(sid);
+        let mut out = SectionRecords::default();
+        let mut err = None;
+        l.facts.walk_records(file, sid, index.0, rel, leads, &mut |cx, at| {
+            if err.is_some() {
+                return;
+            }
+            let scx = SectionCx { arch, scan: *cx, addr, value: &value, dynsym: &dynsym };
+            if let Err(e) = crate::dynrel::push_records(&scx, at, &mut out) {
+                err = Some(e);
+            }
+        })?;
+        if let Some(e) = err {
+            return Err(what(&e));
+        }
+        out.relative.sort_unstable_by_key(|r| r.r_offset);
+        let unit = RelUnit::Section(sid);
+        if out.relative.len() != d.rela.relative_of(unit) as usize
+            || out.other.len() != d.rela.other_of(unit) as usize
+        {
+            return Err(what(&format!(
+                "{} RELATIVE and {} other records, the scan counted {} and {}",
+                out.relative.len(),
+                out.other.len(),
+                d.rela.relative_of(unit),
+                d.rela.other_of(unit)
+            )));
+        }
+        Ok((addr, out))
+    });
+    let mut recs = Vec::with_capacity(per.len());
+    for r in per {
+        recs.push(r?);
+    }
+    let mut got_relative = Vec::new();
+    let mut other = Vec::new();
+    for r in got.got_records() {
+        let r_offset = ga.got + r.offset;
+        if r.role == DynRole::Relative {
+            let v = r
+                .key
+                .and_then(|k| got.iplt_address(&ga, k).or_else(|| t.address(k)))
+                .ok_or_else(|| internal(".rela.dyn: a GOT RELATIVE record without a value"))?;
+            got_relative.push(DynRecord { r_offset, r_sym: 0, r_type: r.r_type, addend: v as i64 });
+        } else {
+            other.push(DynRecord { r_offset, r_sym: r.r_sym, r_type: r.r_type, addend: 0 });
+        }
+    }
+    got_relative.sort_unstable_by_key(|r| r.r_offset);
+    if !l.layout.slots.copies.is_empty() {
+        let r_type = arch
+            .dyn_type(DynRole::Copy)
+            .ok_or_else(|| internal(".rela.dyn: no COPY type (D-42)"))?;
+        for (a, c) in l.layout.slots.copies.iter().enumerate() {
+            let (_, r_offset) = view
+                .copy(a as u32)
+                .ok_or_else(|| internal(format!(".rela.dyn: copy {a} has no address")))?;
+            let r_sym = d
+                .dynsym
+                .index(c.alias)
+                .ok_or_else(|| internal(format!(".rela.dyn: copy {a}'s key not in .dynsym")))?;
+            other.push(DynRecord { r_offset, r_sym, r_type, addend: 0 });
+        }
+    }
+    // D-40 step 1: the units with RELATIVE records, in address order.
+    let mut units: Vec<(u64, Option<usize>)> = recs
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.1.relative.is_empty())
+        .map(|(i, r)| (r.0, Some(i)))
+        .collect();
+    if !got_relative.is_empty() {
+        units.push((ga.got, None));
+    }
+    units.sort_unstable_by_key(|u| u.0);
+    let counts: Vec<u32> = units
+        .iter()
+        .map(|u| match u.1 {
+            Some(i) => recs[i].1.relative.len() as u32,
+            None => got_relative.len() as u32,
+        })
+        .collect();
+    let relative = crate::dynrel::fill_relative(l.pool, class, form, &counts, |u| {
+        Ok(match units[u].1 {
+            Some(i) => recs[i].1.relative.clone(),
+            None => got_relative.clone(),
+        })
+    })
+    .map_err(|m| internal(format!(".rela.dyn: {m}")))?;
+    for (_, r) in recs {
+        other.extend(r.other);
+    }
+    crate::dynrel::RelaDyn::new(d.rela, class, form, relative, other)
+        .map_err(SynthError::into_diagnostic)
 }
 
 // ---- the phase -------------------------------------------------------------
@@ -1445,6 +1864,11 @@ fn write_link(
     fixed.append(&mut patches(link, &tables).map_err(failed)?);
     steps.step("structure", 0, "");
     let chunks = Chunks::new(link);
+    let view = link.synth.dynamic.map(|d| DynView { t: &tables, d });
+    let dyn_chunks = match &view {
+        Some(v) => Some(DynChunks::new(v, rela_dyn(v).map_err(failed)?)),
+        None => None,
+    };
     let pl = &link.layout.placement;
     let mut list: Vec<&(dyn SynthChunk + Sync)> = Vec::new();
     let mut synth = std::collections::BTreeMap::new();
@@ -1452,7 +1876,11 @@ fn write_link(
     let mut eh_addr = None;
     let mut hdr_addr = 0;
     for &(kind, id) in link.synth.chunks {
-        let Some(chunk) = chunks.get(link, kind) else {
+        let chunk: Option<&(dyn SynthChunk + Sync)> = match chunks.get(link, kind) {
+            Some(c) => Some(c),
+            None => dyn_chunks.as_ref().and_then(|c| c.get(kind)),
+        };
+        let Some(chunk) = chunk else {
             return Err(failed(internal(format!(
                 "image: the chunk {} has no plan (§13)",
                 String::from_utf8_lossy(kind.name(false))
@@ -1523,7 +1951,7 @@ fn write_link(
         got_base,
         tls: tables.tls_block(),
         chunks: &list,
-        synth: mortar_synth::FillCx {
+        synth: FillCx {
             arch: link.arch,
             pool: link.pool,
             output: &output_ref,
@@ -1787,7 +2215,67 @@ impl LinkTables<'_, '_> {
                 m.defines.push((k.name.to_vec(), v));
             }
         }
+        if let Some(d) = l.synth.dynamic {
+            m.dynamic = Some(self.dyn_records(d));
+        }
         m
+    }
+
+    /// The map's dynamic records (`spec/plumb.md` §3.2, P-D3).
+    fn dyn_records(&self, d: DynPlans<'_>) -> crate::map::DynRecords {
+        use crate::map::CopyHint;
+        let l = &self.link;
+        let slots = &l.layout.slots;
+        let view = DynView { t: self, d };
+        let mut r = crate::map::DynRecords::default();
+        crate::dynamic::fill_records(
+            &mut r,
+            d.kind,
+            Some(d.interp),
+            d.runpath,
+            d.bind_now,
+            d.relro,
+        );
+        r.args = d.args.to_vec();
+        r.needed = slots.needed.iter().map(|&f| d.src.needed(f).to_vec()).collect();
+        r.copies = slots
+            .copies
+            .iter()
+            .enumerate()
+            .filter_map(|(a, c)| {
+                Some(CopyHint {
+                    name: d.src.symbol(c.alias).to_vec(),
+                    addr: view.copy(a as u32)?.1,
+                    size: *d.copy_size.get(a)?,
+                })
+            })
+            .collect();
+        r.exports = d
+            .dynsym
+            .order()
+            .iter()
+            .filter(|&&k| {
+                matches!(
+                    l.resolution.def.get(k),
+                    Some(Def::Defined(_) | Def::Common(_) | Def::Internal(_))
+                )
+            })
+            .map(|&k| d.src.symbol(k).to_vec())
+            .collect();
+        let key_name = |k: SymKey| {
+            let mut n = l.facts.name(k).to_vec();
+            if let Some(id) = k.as_global()
+                && let Some(Def::Shared(e)) = l.resolution.def.get(id).copied()
+                && let Some(v) = d.src.bound_version(e).filter(|v| v.0 >= 2)
+            {
+                n.push(b'@');
+                n.extend_from_slice(d.src.version(e.file, v));
+            }
+            n
+        };
+        r.plt = slots.plt.iter().map(|&k| key_name(k)).collect();
+        r.iplt = slots.iplt.iter().map(|&k| key_name(k)).collect();
+        r
     }
 }
 

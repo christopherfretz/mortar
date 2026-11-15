@@ -1179,6 +1179,25 @@ fn patch_syms(
     (patch_syms, patch_bytes)
 }
 
+/// A global's output section index and value exactly as `.symtab`
+/// writes them (S-81, S-82, S-122 to S-124; the index unreduced): what
+/// `.dynsym` writes for a program definition (`spec/dyn.md` D-23).
+/// `None` for a global `.symtab` has no entry for.
+///
+/// # Errors
+///
+/// As `.symtab`'s write: `internal-error` for a value without a place.
+pub fn global_value(
+    cx: &SymCtx<'_>,
+    addrs: &dyn SymAddrs,
+    id: SymbolId,
+) -> Result<Option<(u32, u64)>, SynthError> {
+    match cx.classify(id)? {
+        (_, Some(row)) => SymtabPlan::resolve(addrs, &row).map(Some),
+        (_, None) => Ok(None),
+    }
+}
+
 /// The fixed table of S-86, for tests.
 #[must_use]
 pub fn fixed_table() -> &'static [u8] {

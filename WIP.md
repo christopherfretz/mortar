@@ -9,15 +9,19 @@
   `dyn_chunks`, `place_with_copies`, `rank::home` for `.dynbss`.
 - Fixes in others' code: `sites.rs` RoundTables::plt uses `plt_address`;
   `mortar_scan/src/walk.rs` `Walker::with_weak_dyn`.
-- Target 1a passes phases 20-90; fails in image: `.interp has no plan`.
+- Image wired (`mortar_image/src/link.rs`: DynPlans, DynView (DynAddrs +
+  DynamicAddrs), DynChunks, `rela_dyn`, sh_link/sh_info, EI_OSABI, map
+  DynRecords + args; `KeyFacts::walk_records`; `dynrel::push_records`).
+  `mortar_synth`: `symtab::global_value`, GotPlt `write_got_plt_at`,
+  DynstrChunk/VerneedChunk `names: &(dyn DynNames + Sync)`.
+  `mortar_scan` Visit carries place/name/output (`Visit::cx`).
+- Targets 1a and 1b: link, run, plumb findings 0, gdb + lldb break on main.
+  eu-elflint: `.relro_padding` flagged (elflint `.relr` prefix match; lld
+  same) - finding, not fixed.
 
 ## Next (in order)
-1. Image: chunk arms in `mortar_image/src/link.rs` (Interp, GnuHash, Dynsym,
-   Dynstr, GnuVersion(R), RelaDyn, Dynamic, DynBss/BssRelRo), DynAddrs /
-   DynamicAddrs, `.rela.dyn` records, sh_link/sh_info, EI_OSABI,
-   `SlotValues::dynamic`, map DynRecords + args;
-   `mortar_synth/src/image.rs:244` GotPlt -> `write_got_plt_at`.
-2. `crates/mortar/src/image.rs`: dynamic scan options, weak_dyn, plans.
-3. Targets 1a/1b checks; CLI AT_JOIN fold, docs/status/options.md, tests.
+1. Workspace tests (static-identical, image, options tests).
+2. Targets 2 (tests/link/dyn xfails tagged WP-053) and 3 (dyn.md §16 C).
+3. CLI AT_JOIN fold, docs/status/options.md, tests; record; gate.
 
 Scratch: /tmp/mortar-wp053-1856285 (hello.c/.o, w/ld wrapper, line.txt).

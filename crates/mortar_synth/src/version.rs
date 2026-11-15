@@ -209,7 +209,7 @@ pub struct VerneedChunk<'a> {
     pub needed: &'a [FileId],
     pub verneed: &'a Verneed,
     pub dynstr: &'a DynStr,
-    pub names: &'a dyn crate::dynstr::DynNames,
+    pub names: &'a (dyn crate::dynstr::DynNames + Sync),
     pub class: Class,
 }
 

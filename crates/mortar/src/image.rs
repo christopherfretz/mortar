@@ -61,6 +61,22 @@ impl KeyFacts for WalkFacts<'_, '_, '_> {
     ) -> Vec<(mortar_diag::Key, mortar_diag::Diagnostic)> {
         self.0.deferred_report(sections, pool)
     }
+
+    // WP-053 (spec/dyn.md D-40): `.rela.dyn`'s records, as the scan's
+    // walk counted them.
+    fn walk_records(
+        &self,
+        file: FileId,
+        sid: mortar_core::SectionId,
+        index: u32,
+        rel: u32,
+        leads: bool,
+        visit: &mut dyn FnMut(&mortar_arch::ScanCx<'_>, &mortar_arch::RelocAt<'_>),
+    ) -> Result<(), mortar_diag::Diagnostic> {
+        self.0
+            .walk(file, sid, index, rel, 0..u64::MAX, leads, &mut |v| visit(&v.cx(), &v.at))
+            .map_err(|(_, d)| d)
+    }
 }
 
 /// The output path: `-o`'s value or `a.out` (image.md I-56), relative to
@@ -115,9 +131,22 @@ pub fn with_link<T>(
         comdat_mismatch: &f.comdat_mismatch,
         gnu_warnings: &f.gnu_warnings,
     };
-    let scan_options =
-        ScanOptions { output, dynamic: false, sections: None, proof: f.arch.proof() };
-    let walker = Walker::new(f.arch.get(), &scan_inputs, scan_options);
+    // As the scan's options (front.rs): a dynamic output's walk sees the
+    // output sections' writability and the scan's `WeakDyn` keys.
+    let dyn_tables = f.dyn_tables.as_ref();
+    let out_writable = crate::dynlink::OutWritable(&f.assignment);
+    let scan_options = ScanOptions {
+        output,
+        dynamic: dyn_tables.is_some(),
+        sections: dyn_tables.map(|_| &out_writable as &dyn mortar_scan::weak::SectionMap),
+        proof: f.arch.proof(),
+    };
+    let mut walker = Walker::new(f.arch.get(), &scan_inputs, scan_options);
+    if dyn_tables.is_some() {
+        walker = walker.with_weak_dyn(f.scanned.demands.weak_dyn.clone());
+    }
+    let dyn_src = dyn_tables
+        .map(|_| crate::dynlink::DynSource::new(&f.inputs, &f.resolution, &f.assignment, &f.plan));
     let facts = WalkFacts(&walker);
     let proof = |file: FileId, index: SectionIndex, len: u64| -> Vec<ProofRun> {
         let exec = f
@@ -168,6 +197,23 @@ pub fn with_link<T>(
             shstrtab: &s.shstrtab,
             build_id: s.build_id.as_ref(),
             property: &s.property,
+            dynamic: match (dyn_tables, &dyn_src) {
+                (Some(d), Some(src)) => Some(link::DynPlans {
+                    kind: d.kind,
+                    dynsym: &d.dynsym,
+                    src,
+                    rela: &d.rela,
+                    dynamic: &d.dynamic,
+                    interp: &d.interp,
+                    runpath: d.runpath.as_ref().map(|(t, p)| (*t, p.as_slice())),
+                    copy_size: &d.copy.size,
+                    bind_now: d.bind_now,
+                    relro: d.relro,
+                    syms: cx,
+                    args: &f.args,
+                }),
+                _ => None,
+            },
         },
         facts: &facts,
         proof: &proof,

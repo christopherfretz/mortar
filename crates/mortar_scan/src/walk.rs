@@ -12,7 +12,7 @@
     reason = "the error is the scan's diagnostic, made once per section"
 )]
 
-use mortar_arch::{Arch, ProofRun, RelocAt, ScanTables, Site, SymFacts, SymNames};
+use mortar_arch::{Arch, PlaceFacts, ProofRun, RelocAt, ScanCx, ScanTables, Site, SymFacts, SymNames};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey};
 use mortar_diag::{Diagnostic, Key, Kind, Place};
 use mortar_elf::{SectionIndex, SymbolIndex};
@@ -38,6 +38,18 @@ pub struct Visit<'r> {
     /// The target's facts as `arch.scan` saw them (an undefined key takes
     /// the type of this record's own mention).
     pub tables: &'r dyn ScanTables,
+    /// The section's facts and name, as the scan's `ScanCx` has them.
+    pub place: PlaceFacts,
+    pub name: &'r [u8],
+    pub output: mortar_arch::OutputKind,
+}
+
+impl<'r> Visit<'r> {
+    /// The `ScanCx` the scan called `arch.scan` with for this record.
+    #[must_use]
+    pub fn cx(&self) -> ScanCx<'_> {
+        ScanCx { tables: self.tables, output: self.output, place: self.place, name: self.name }
+    }
 }
 
 impl std::fmt::Debug for Visit<'_> {
@@ -240,7 +252,13 @@ impl<'a, 's> Walker<'a, 's> {
                 key,
                 mention: SymEntry { file, index: SymbolIndex(raw.r_sym) },
             };
-            visit(&Visit { at, tables: &tables });
+            visit(&Visit {
+                at,
+                tables: &tables,
+                place: sec.place,
+                name: sec.name,
+                output: self.view.opts.output,
+            });
         }
         Ok(())
     }

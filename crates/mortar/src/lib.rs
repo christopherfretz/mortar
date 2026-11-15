@@ -198,7 +198,12 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let dependency_path = plan.bookkeeping.dependency_file.as_deref().map(|m| cwd.join(m));
     let print_map = plan.bookkeeping.print_map;
     let env = front::Env { cwd, pool };
-    let front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
+    let mut front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
+    if let Some(f) = &mut front
+        && f.dyn_tables.is_some()
+    {
+        f.args = parsed.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
+    }
     let mut stdout = String::new();
     let removed = front.as_ref().map_or_else(String::new, |f| removed_lines(prog, f));
     if let Some(f) = &front {
