@@ -203,6 +203,8 @@ is added before or after it.
 | `undefined-version` | `UndefinedVersion { name, version }` | `version {version} of {name} is not defined` | own |
 | `version-reassigned` | `VersionReassigned { name, first, second }` | `{name} is assigned to version {first} and {second}; {first} is kept` | own |
 | `versioned-export` | `VersionedExport { name, version }` | `versioned definition {name}@@{version} cannot be exported (version definitions are not supported)` | own (`spec/dyn.md` D-27: GNU ld writes a verdef, lld and mold export it unversioned; M4) |
+| `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | own |
+| `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | own |
 | `odr-contents-mismatch` | `OdrContentsMismatch { name }` | `{name} has different contents in different files` | own (`spec/odr.md` §8.1 W4; WP-072) |
 | `odr-size-mismatch` | `OdrSizeMismatch { name }` | `{name} has different sizes in different files` | own |
 | `odr-strong-and-comdat` | `OdrStrongAndComdat { name }` | `{name} has a non-inline definition and an inline copy` | own |
@@ -228,15 +230,13 @@ is added before or after it.
 The kinds of M6 (the one-definition rule, `spec/odr.md` §9.1), **not yet
 in the code**. Each row moves into the table above, at the place of its
 area in the order stated before the table, with the package that
-implements its kind (§3.3): the two `meta-` kinds with WP-071, the kinds of
-the record checks with WP-073 (WP-072 moved the kinds of the checks on
+implements its kind (§3.3): the kinds of the record checks with WP-073
+(WP-071 moved the two `meta-` kinds, WP-072 the kinds of the checks on
 foreign objects). The table above stays the list of `Kind::IDS`, which a test
 compares with the code.
 
 | id | variant | message | wording from |
 |---|---|---|---|
-| `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | own |
-| `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | own |
 | `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | own |
 | `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | own |
 | `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | own |

@@ -864,10 +864,14 @@ impl Engine<'_, '_> {
             let rw = if ty == x::GOTTPOFF { Rewrite::TlsIeToLe } else { Rewrite::TlsDescToLe };
             return self.cov.add_accepted(rw, ty);
         }
-        if ty == x::GOTPC32_TLSDESC && self.dynamic && reg == Some(0) {
+        if ty == x::GOTPC32_TLSDESC && self.dynamic && reg.is_some() && crate::x64::rex_w(rex) {
             // Kept (the descriptor pair holds the resolver and T), or
-            // relaxed to initial-exec, `mov G(%rip), %rax` (GNU ld, lld,
-            // mold), G holding T.
+            // relaxed to initial-exec, `mov G(%rip), %reg` (GNU ld, lld,
+            // mold), G holding T. The psABI's TLSDESC -> IE rewrites the
+            // `lea` into a `mov` with the REX prefix and the ModRM kept, so
+            // the destination is any of the sixteen registers (WP-082: GCC
+            // 14 schedules `__once_call`'s into %rbp; GNU ld, lld and mold
+            // write `48 8b 2d` and the programs run).
             let ie = out[0] == inp[0] && out[1] == 0x8b && out[2] == inp[2];
             if out == inp || ie {
                 let Some(ev) = self.slot_evidence(rec) else {
@@ -891,7 +895,7 @@ impl Engine<'_, '_> {
                 &site,
                 &symbol,
                 format!(
-                    "a TLS descriptor in a static output is not the local-exec form {} writes (spec/x64.md X-28)",
+                    "a TLS descriptor is not the local-exec form {} writes (spec/x64.md X-28), nor, in a dynamic output, kept or the initial-exec `mov` (X-58)",
                     linker_name(f)
                 ),
             );

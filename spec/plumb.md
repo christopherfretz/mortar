@@ -1008,6 +1008,13 @@ written `hi(x)` and `MOVK x, #X[15:0]` is written `lo(x)`:
   `MRS x0, TPIDR_EL0; ADD x0, x0, #tcb; NOP; NOP`. The DTPREL records that
   follow keep their DTPREL values. GNU ld writes `#16` whatever `tcb` is
   (A7).
+- **`tlsgd-to-ie` (AArch64, stage 3, WP-082).** The GD sequence of W12
+  made `ADRP x0, G; LDR x0, [x0, :lo12:G]; MRS x1, TPIDR_EL0; ADD x0, x1,
+  x0`, with G a GOT entry (§5.5 valid-slot conditions) holding X; in a
+  dynamic output G carries a `TLS_TPREL64` record and X is what the
+  loader writes there (§12.1's loader model; a64.md §8.4 R4). GNU ld
+  writes it for a GD reference to a library's variable; mold keeps the
+  sequence; lld refuses the traditional dialect's relocations.
 
 x86-64's rewritings are §5.9's, not W1–W13 (request R-12).
 
@@ -1408,8 +1415,9 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   class. [M2] Stage 3 widens it by P-D1 (§12): `ET_DYN` with
   `DF_1_PIE`, and `ET_EXEC` with `PT_INTERP`, are verified. `EI_OSABI` is `ELFOSABI_NONE` (0) or `ELFOSABI_GNU` (3); on
   `EM_386` and `EM_X86_64`, `e_flags` is 0 (the psABIs define none,
-  x86.md X86-1). **(mortar)** `EI_OSABI` is 3 exactly when the output has
-  an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or an `IRELATIVE` record
+  x86.md X86-1). **(mortar)** `EI_OSABI` is 3 exactly when `.symtab` or
+  `.dynsym` holds an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol (dyn.md
+  D-23; WP-082), or the output has an `IRELATIVE` record
   in an allocated relocation section (image.md §5.4, a64.md Q11, x64.md
   X-49, x86.md X86-64; WP-028e). The references on i386: GNU ld writes 3
   for every static glibc output and for `ibt` (IFUNC), 0 for the
@@ -1753,6 +1761,7 @@ rules below judge the rest. Code: `src/symbols.rs`.
   | `_DYNAMIC` | the start of `.dynamic`, else 0 |
   | `_TLS_MODULE_BASE_` | 0, and `STT_TLS` (§4.7) |
   | `__start_X`, `__stop_X` (X a C identifier) | the bounds of section X |
+  | `__CortexA53843419_H` (lld; H the hex address of a site's patched final word) | the patch W8 accepted for the 843419 site whose final word is at H, size 8; with no patched site at H the name labels dead bytes and is not judged (the site's C1 or its not-judged count reports it; WP-082) |
 
   The data-end symbols allow a range, because the reference linkers place
   them differently within it (§10.5). Every other name is not judged. It
@@ -2735,7 +2744,10 @@ own implementation of D-11-D-27 and compared with the output.
   plumb rules, already stage 2 for IPLT) to its `.got.plt` word; that
   word has one `JUMP_SLOT` against the entry's key; its initial content
   is the lazy target (D-49); IPLT words have one `IRELATIVE`, every one
-  after every `JUMP_SLOT` (D-41; H1).
+  after every `JUMP_SLOT` (D-41; H1). The lazy target leads, through
+  the PLT header, to the loader's resolver with the inputs glibc's
+  trampoline reads, and `.got.plt`'s reserved words are the loader's
+  (§12.2, WP-082).
 - **P-D11 (copies).** Each `COPY` record's place is an allocation of the
   shared definition's `st_size` (never 0: W4) and alignment, the
   allocations do not overlap each other or any other definition, the
@@ -2746,7 +2758,13 @@ own implementation of D-11-D-27 and compared with the output.
 - **P-D12 (TLS).** Every TLS slot holds the record of its model (IE:
   `TPREL`; unrelaxed GD: `DTPMOD` + `DTPOFF`; LE: none, value checked by
   stage 2) and no TLS relocation against an executable-defined symbol
-  leaves a dynamic record (D-48).
+  leaves a dynamic record (D-48). The one kept descriptor (D-48): an
+  AArch64 large-model TLSDESC sequence (`movz`/`movk` of
+  `:tlsdesc_off_g1:`/`:tlsdesc_off_g0_nc:`, relocations 565 and 566 with
+  567 and 569 against the same symbol, no small-model TLSDESC reference
+  to it) keeps one `TLSDESC` record, exactly at the pair the two
+  instructions address (`_GLOBAL_OFFSET_TABLE_` + their 32-bit offset);
+  any other `TLSDESC` record in mortar's output is P-D12 (WP-082).
 - **P-D13 (protected).** No `COPY` record and no canonical PLT
   (`SHN_UNDEF` with a non-zero `st_value`) names a key whose shared
   definition is `STV_PROTECTED` (D-18; W5): P-D9's equality cannot see
@@ -2856,9 +2874,10 @@ from the file system (`line::Files`).
 - **Mutations** (`dynmutate.rs`, §9.5's table): `dyn-needed`, `dyn-tag`,
   `dyn-rel-offset`, `dyn-rel-drop`, `dyn-rel-addend`, `dyn-rel-symbol`,
   `dyn-rel-order` (only swaps that move a `RELATIVE` or `IRELATIVE`),
-  `dynsym-value`, `dynsym-visibility`, `gnu-hash`, `versym`,
-  `version-need`, `interp`, `relro`, `lazy-slot` (lazy binding only),
-  `copy-size`. `xtask plumb --mutate --line` judges each mutant with
+  `dynsym-value`, `dynsym-visibility`, `dynsym-unique` (§12.3), `gnu-hash`, `versym`,
+  `version-need`, `interp`, `relro`, `lazy-slot` (under `-z now` too,
+  WP-082), `copy-size`, and §12.2's `plt0-disp1`, `plt0-disp2`,
+  `plt-index`, `plt-back-jump`. `xtask plumb --mutate --line` judges each mutant with
   stage 3. The kill table and its survivors are WP-050's record.
 - **Stage 2 inside a dynamic output**: `__rela_iplt_start` and
   `__rela_iplt_end` are equal (the loader applies `IRELATIVE`); a
@@ -2867,6 +2886,118 @@ from the file system (`line::Files`).
   (GOT[0], after the PLT's slots); a GNU map's repeated `.eh_frame`
   placement of the first input is skipped; an output FDE covering a PLT
   section (GNU ld x86-64) is counted as the linker's.
+
+### 12.2 The PLT header and the way back to it (WP-082)
+
+P-D10 executes every PLT entry whose word carries a `JUMP_SLOT`
+symbolically (`plt.rs`): from the entry to the indirect jump through its
+own word, then from that word's initial content (the lazy target) to
+the next indirect jump, the one into the resolver. What the resolver
+receives is what glibc's trampolines read (`dl-trampoline.h`,
+`dl-trampoline.S`). GOTPLT is `DT_PLTGOT`'s value; *k* is the index of
+the entry's `JUMP_SLOT` record in `DT_JMPREL`.
+
+- **x86-64.** The walk knows `endbr64`, `push imm32`, `push
+  *rel32(%rip)`, `mov $imm32, %r11d` with `push %r11`, `jmp rel32`/`rel8`
+  (with or without `bnd`) and `jmp *rel32(%rip)`. A `push` before the
+  entry's own jump is a finding. At the resolver's jump the stack must
+  hold, from the top, `GOTPLT[1]`'s word and *k* (GNU ld's and lld's
+  `push $k; jmp PLT0`, mold's `%r11d` pushed by its header), and the
+  jump must go through `GOTPLT + 16`. When the output's x86 feature
+  property has IBT, the lazy target starts with `endbr64`. Padding after
+  the jump is not judged.
+- **AArch64.** The walk knows `nop`, `bti`, `stp x16, x30, [sp,
+  #-16]!`, `adrp x16`, `ldr x17, [x16, #lo12]`, `add x16, x16, #lo12`
+  and `br x17`. At the resolver's jump: `x17` was loaded from `GOTPLT +
+  16` and `x16` is `GOTPLT + 16`, the link map being read at `x16 - 8`;
+  the `x16` the header pushed equals the entry's `x16`, which is `GOTPLT
+  + 24 + 8k`: the trampoline takes the index from it. When the output
+  asks for BTI (`DT_AARCH64_BTI_PLT` or the feature property), the lazy
+  target is a landing pad (`bti c`, `bti jc`, `paciasp`, `pacibsp`).
+- **The reserved words.** `GOTPLT[1]` and `GOTPLT[2]` are 0 in the file
+  and no dynamic record writes them (the loader fills them);
+  `GOTPLT[0]` is `_DYNAMIC`'s address on x86-64 (all three references)
+  and on AArch64 for mold; 0 for GNU ld and lld on AArch64 and for
+  mortar (`spec/a64.md`). No `DT_PLTGOT` with a `JUMP_SLOT` record is a
+  finding.
+- **Shapes.** Every shape the references write is judged, lazily and
+  under `-z now` (they all keep the lazy words then): GNU ld's and lld's
+  `.plt` with `push $k`, mold's `%r11d` form, GNU ld's `-z ibtplt` and
+  lld's `-z force-ibt` `.plt.sec` entries with their lazy stubs in
+  `.plt`, mold's `-z ibt` form, GNU ld's and lld's BTI headers and
+  entries. `.plt.got` entries (GNU ld, mold) jump through a `GLOB_DAT`
+  word and have no lazy path: their word is judged as before (the word's
+  record), nothing else. mortar refuses the IBT PLT and writes no
+  `.plt.got`.
+- **Mutations** (`dynmutate.rs`, sites found by the walk itself, a site
+  shared by several entries mutated once): `plt0-disp1` (x86-64: the
+  header's `push *rel32` ±8; AArch64: the header's `ldr` offset +8),
+  `plt0-disp2` (x86-64: the resolver jump's rel32 ±8; AArch64: the
+  header's `add` +8), `plt-index` (x86-64: `push $k` or `%r11d` +1;
+  AArch64: the entry's `add` +8), `plt-back-jump` (x86-64: the lazy
+  path's `jmp PLT0` ±16; AArch64 has none: the lazy word is its way
+  back), `lazy-slot` (the lazy word + 4).
+
+### 12.3 The byte sweep and the field rules (WP-082)
+
+**The sweep** (`sweep.rs`, `xtask plumb --sweep`) flips bit 0 and bit 7
+of every byte of the synthetic sections (`.dynamic`, `.dynsym`,
+`.dynstr`, `.gnu.hash`, `.gnu.version`, `.gnu.version_r`, `.rela.dyn`,
+`.rela.plt`, `.plt`, `.plt.got`, `.plt.sec`, `.iplt`, `.got`, `.got.plt`,
+`.interp`, `.eh_frame_hdr`, `.eh_frame`) one mutant at a time and
+judges each. A mutant is caught when a finding key appears that the
+unmutated output does not have (a panic counts as caught). It prints,
+per section and field range, the flips and the survivors. It is a
+measuring tool, not a gate: a survivor is either closed by a rule below
+or named as equivalent or as a follow-up row in WP-082's record.
+
+**The field rules** (`dyncheck.rs` `fields`, every format unless marked):
+
+- **P-D5.** No non-zero bucket is below `symoffset`.
+- **P-D6.** No tag repeats but `DT_NEEDED` and `DT_NULL`; no unknown tag;
+  the first `DT_NULL` has value 0; `DT_DEBUG` is 0. A tag is present
+  exactly when its section is: `DT_INIT`/`DT_FINI` (values the section
+  starts; under `-init`/`-fini` the named function's value instead, and
+  presence not judged), the three array tags with their sizes, `DT_GNU_HASH`,
+  `DT_VERSYM`, `DT_VERNEED`/`DT_VERNEEDNUM`, `DT_JMPREL`/`DT_PLTRELSZ`/
+  `DT_PLTREL`; `DT_RELA`/`DT_RELASZ`/`DT_RELAENT` with `.rela.dyn`;
+  `DT_STRTAB`, `DT_STRSZ`, `DT_SYMTAB`, `DT_SYMENT` always. `DT_FLAGS`
+  holds only `DF_ORIGIN`, `DF_TEXTREL` (references; D-47), `DF_BIND_NOW`, `DF_STATIC_TLS`, and
+  `DT_FLAGS_1` only `DF_1_NOW`, `DF_1_PIE`. **(mortar)** `DT_FLAGS` is
+  present exactly under `-z now` and is then exactly `DF_BIND_NOW`;
+  `DT_RELACOUNT` is present exactly when a `RELATIVE` record is.
+- **P-D7.** `.dynsym` entry 0 is all zero; `st_other` has no bits beyond
+  the visibility (AArch64: also `STO_AARCH64_VARIANT_PCS`, 0x80; a
+  `JUMP_SLOT` of such a symbol needs `DT_AARCH64_VARIANT_PCS`, AAELF64). An
+  import is `STV_DEFAULT`, `STB_GLOBAL` or `STB_WEAK`, and named by a
+  reference of the program (or an alias, at the same library value, of a
+  referenced name). A defined export is `STB_GLOBAL`, `STB_WEAK` or
+  `STB_GNU_UNIQUE`; the section it names holds its value (an
+  `STT_SECTION` entry: the section's start; not judged for reserved
+  indices, `STT_TLS` and a value at a PLT entry); its size, section and
+  `st_info` equal its `.symtab` entry's (an IFUNC's are P-D7's own). A
+  name every input defines `STB_GNU_UNIQUE` is exported `STB_GNU_UNIQUE`
+  (dyn.md D-23's export row: glibc's unique table then holds the
+  program's instance, which an `RTLD_DEEPBIND` library binds to); mortar's
+  `EI_OSABI` is then S1's (lld and mold write 0).
+- **P-D8.** `.gnu.version` entry 0 is 0; every Verneed has `vn_version`
+  1 and `vn_cnt` its chain's length; the last Verneed's `vn_next` and
+  each chain's last `vna_next` are 0; `vna_flags` is 0 or `VER_FLG_WEAK`.
+- **P-D9.** `RELATIVE` and `IRELATIVE` records name symbol 0; on x86-64
+  `GLOB_DAT`, `JUMP_SLOT` and `COPY` records have addend 0 (the psABI
+  computes S; glibc's lazy path adds a `JUMP_SLOT`'s addend).
+- **P-D10.** An import's non-zero `st_value` is a PLT entry; `DT_JMPREL`
+  holds only `JUMP_SLOT`, `IRELATIVE` and `TLSDESC` records. An AArch64
+  PLT entry is `adrp x16; ldr x17, [x16, #lo12]; [add x16, x16,
+  #lo12;] br x17`.
+- **R1, x86-64 (X-58).** A TLSDESC sequence relaxed to initial-exec in a
+  dynamic output is `mov G(%rip), %reg` into any of the sixteen
+  registers (REX.W and ModRM kept, `8d` made `8b`), G a GOT entry with
+  the symbol's `TPOFF64` record.
+
+**Mutations.** `dynsym-unique`: an exported `STB_GNU_UNIQUE` definition
+made `STB_GLOBAL` in `.dynsym` and in its `.symtab` entry (WP-054's case
+(a)), caught by P-D7.
 
 ## 13. Stage 4: Mason metadata and the ODR table (M6)
 

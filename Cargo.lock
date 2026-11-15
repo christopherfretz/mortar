@@ -139,6 +139,7 @@ dependencies = [
  "mortar_diag",
  "mortar_digest",
  "mortar_elf",
+ "mortar_meta",
  "mortar_script",
  "mortar_testutil",
 ]
@@ -220,6 +221,7 @@ dependencies = [
  "mortar_diag",
  "mortar_elf",
  "mortar_input",
+ "mortar_meta",
  "mortar_testutil",
 ]
 
@@ -330,6 +332,7 @@ dependencies = [
  "mortar_diag",
  "mortar_digest",
  "mortar_elf",
+ "mortar_meta",
  "mortar_plumb",
  "mortar_testutil",
  "signal-hook",

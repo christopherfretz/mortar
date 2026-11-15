@@ -342,6 +342,13 @@ pub enum Kind {
     /// definition (`.gnu.version_d`, M4).
     VersionedExport { name: String, version: String },
 
+    // -- one-definition rule (M6, `spec/meta.md`, `spec/odr.md` §9.1) -------
+    /// `meta-malformed` (`spec/meta.md` MT-14): a Mason metadata container
+    /// that breaks its format; `reason` says how.
+    MetaMalformed { reason: String },
+    /// `meta-version` (`spec/meta.md` MT-35): a unit of a major version
+    /// mortar does not read; its records are ignored.
+    MetaVersion { major: u16 },
     // -- one-definition rule (M6, `spec/odr.md` §9.1; WP-072's W checks) --
     /// `odr-contents-mismatch` (`spec/odr.md` §8.1 W4, `--odr=strict`
     /// only): two copies of one COMDAT group define the data symbol `name`
@@ -442,7 +449,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 65] = [
+    pub const IDS: [&'static str; 67] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -487,6 +494,8 @@ impl Kind {
         "undefined-version",
         "version-reassigned",
         "versioned-export",
+        "meta-malformed",
+        "meta-version",
         "odr-contents-mismatch",
         "odr-size-mismatch",
         "odr-strong-and-comdat",
@@ -559,6 +568,8 @@ impl Kind {
             Self::UndefinedVersion { .. } => "undefined-version",
             Self::VersionReassigned { .. } => "version-reassigned",
             Self::VersionedExport { .. } => "versioned-export",
+            Self::MetaMalformed { .. } => "meta-malformed",
+            Self::MetaVersion { .. } => "meta-version",
             Self::OdrContentsMismatch { .. } => "odr-contents-mismatch",
             Self::OdrSizeMismatch { .. } => "odr-size-mismatch",
             Self::OdrStrongAndComdat { .. } => "odr-strong-and-comdat",
@@ -945,27 +956,29 @@ mod tests {
             Kind::UndefinedVersion { .. } => 41,
             Kind::VersionReassigned { .. } => 42,
             Kind::VersionedExport { .. } => 43,
-            Kind::OdrContentsMismatch { .. } => 44,
-            Kind::OdrSizeMismatch { .. } => 45,
-            Kind::OdrStrongAndComdat { .. } => 46,
-            Kind::OdrSymbolTypeMismatch { .. } => 47,
-            Kind::CanonicalPltInPie { .. } => 48,
-            Kind::CopyRelocationAgainstProtected { .. } => 49,
-            Kind::CopyRelocationOfZeroSize { .. } => 50,
-            Kind::RelocationIncompatible { .. } => 51,
-            Kind::RelocationMisaligned { .. } => 52,
-            Kind::RelocationOutOfRange { .. } => 53,
-            Kind::TextRelocation { .. } => 54,
-            Kind::WeakUndefinedPcInPie { .. } => 55,
-            Kind::ExecutableStack { .. } => 56,
-            Kind::OutputTooLarge { .. } => 57,
-            Kind::SectionConflict { .. } => 58,
-            Kind::IncrementalNotReproducible => 59,
-            Kind::IncrementalUnsupported { .. } => 60,
-            Kind::IncrementalUpdateFailed { .. } => 61,
-            Kind::IncrementalFileClash { .. } => 62,
-            Kind::Refused { .. } => 63,
-            Kind::InternalError { .. } => 64,
+            Kind::MetaMalformed { .. } => 44,
+            Kind::MetaVersion { .. } => 45,
+            Kind::OdrContentsMismatch { .. } => 46,
+            Kind::OdrSizeMismatch { .. } => 47,
+            Kind::OdrStrongAndComdat { .. } => 48,
+            Kind::OdrSymbolTypeMismatch { .. } => 49,
+            Kind::CanonicalPltInPie { .. } => 50,
+            Kind::CopyRelocationAgainstProtected { .. } => 51,
+            Kind::CopyRelocationOfZeroSize { .. } => 52,
+            Kind::RelocationIncompatible { .. } => 53,
+            Kind::RelocationMisaligned { .. } => 54,
+            Kind::RelocationOutOfRange { .. } => 55,
+            Kind::TextRelocation { .. } => 56,
+            Kind::WeakUndefinedPcInPie { .. } => 57,
+            Kind::ExecutableStack { .. } => 58,
+            Kind::OutputTooLarge { .. } => 59,
+            Kind::SectionConflict { .. } => 60,
+            Kind::IncrementalNotReproducible => 61,
+            Kind::IncrementalUnsupported { .. } => 62,
+            Kind::IncrementalUpdateFailed { .. } => 63,
+            Kind::IncrementalFileClash { .. } => 64,
+            Kind::Refused { .. } => 65,
+            Kind::InternalError { .. } => 66,
         }
     }
 
@@ -1019,6 +1032,8 @@ mod tests {
             Kind::UndefinedVersion { name: s(), version: s() },
             Kind::VersionReassigned { name: s(), first: s(), second: s() },
             Kind::VersionedExport { name: s(), version: s() },
+            Kind::MetaMalformed { reason: s() },
+            Kind::MetaVersion { major: 2 },
             Kind::OdrContentsMismatch { name: s() },
             Kind::OdrSizeMismatch { name: s() },
             Kind::OdrStrongAndComdat { name: s() },

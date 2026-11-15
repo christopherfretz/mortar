@@ -31,6 +31,23 @@ impl Deref for FileHeader {
 }
 
 impl FileHeader {
+    /// The bytes a reader of the file header takes from a view: its first
+    /// 64 (the larger header), or, when those are not resident and the
+    /// file is ELF32, the first 52, the whole ELF32 header. A parts view
+    /// of an ELF32 object whose first section is a Mason container at
+    /// offset 52 holds no byte past 52 (`spec/meta.md` MT-42: a container
+    /// is never resident). `None` when neither is resident.
+    pub fn head<'a>(view: &crate::view::View<'a>) -> Option<&'a [u8]> {
+        view.prefix(64).or_else(|| {
+            let ident = view.prefix(EI_NIDENT as u64)?;
+            if ident.get(EI_CLASS) == Some(&ELFCLASS32) {
+                view.prefix(Ehdr::size(Class::Elf32) as u64)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Reads the header of any little-endian ELF file: the magic, the
     /// class, the data encoding and the versions are checked, in that
     /// order; the file type and the machine are not.

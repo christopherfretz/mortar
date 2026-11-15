@@ -1014,11 +1014,11 @@ every warning (`spec/diag.md` §6.3).
   M11).
 
 **O-42 (a link that does not use the feature does not pay for it).** A
-hard rule. A container byte is read only when a check that needs it is
-on: with `--odr=off`, and in the default mode while O-47 lists no
-record-based check as on, mortar reads no byte of any `.mason.meta`
-(`meta.md` MT-42, amendment A-8 to `spec/input.md` §11.1), objects of
-at most 64 KiB included (they are read around the container), hashes no
+hard rule. A container is read only when a check that needs it is on:
+with `--odr=off`, and in the default mode while O-47 lists no
+record-based check as on, mortar makes the reads it would make with no
+container, keeps no container byte resident and parses no unit
+(`meta.md` MT-42, amendment A-8 to `spec/input.md` §11.1), hashes no
 name (O-4) and writes no table. The W checks read only what resolution
 holds already. T-O-42 counts bytes read.
 
@@ -1773,9 +1773,10 @@ on kiln's hasher, or on the hook.
    with positioned reads, only when a check that needs it is on
    (`spec/odr.md` O-42)"; and the whole-file row for objects of at most
    64 KiB gains "when `--odr` is off, or no check that needs the
-   container is on, such a file is read around its container (headers
-   first, then the ranges before and after it)" (`meta.md` MT-42). A
-   test-only byte counter per file range for T-MT-42.
+   container is on, such a file's containers are left out of its
+   resident ranges (read with the file, dropped)" (`meta.md` MT-42, as
+   ruled 2026-11-15). A test-only byte counter per file range for
+   T-MT-42.
 3. **A-2 `spec/model.md`** — `SectionKind::Meta`; per file, the list of
    its `Meta` sections (so that `mortar_odr` finds units without a
    rescan); in §8, phase 40's `seq` for row diagnostics without a symbol:
@@ -1874,7 +1875,8 @@ decisions"); their recommendations are repeated here.
   (O-50); two libraries with private same-named types are common and
   never bind each other.
 - **Q15.** Withdrawn by the coordinator's ruling: A-8 applies to small
-  files too; with `--odr=off` no container byte is read (MT-42, O-42).
+  files too; with `--odr=off` no container byte is kept (MT-42, O-42;
+  the reads as ruled 2026-11-15, WP-071).
 - **Q16. K16c in the catalogue's shape (X3).** The ruling compares two
   `_ZTV` copies only. *Recommend:* add, under `--odr=strict`, "a vtable
   defined by an `abi.rtti=off` unit while an `abi.rtti=on` unit defines

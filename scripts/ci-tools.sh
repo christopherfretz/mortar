@@ -65,14 +65,14 @@ debian_arch() {
 # Each list is one line, `NAME=(...)`, of plain words.
 #
 # On PATH, by these names, on both hosts:
-TOOLS=(gcc g++ gfortran as ar nm objdump readelf ld ld.bfd mold gdb gdb-multiarch eu-elflint file ldd qemu-aarch64 qemu-x86_64 qemu-i386 python3 bash git dpkg-query sha1sum sha256sum mkfifo nohup realpath ps pgrep)
+TOOLS=(gcc g++ gfortran as ar nm objdump objcopy strip readelf ld ld.bfd mold gdb gdb-multiarch eu-elflint eu-strip file ldd qemu-aarch64 qemu-x86_64 qemu-i386 python3 bash git dpkg-query sha1sum sha256sum mkfifo nohup realpath ps pgrep)
 # `<triple>-<tool>` for each of the three TRIPLES (the host's own too):
-TRIPLE_TOOLS=(gcc g++ gfortran as ar nm objdump readelf ld ld.bfd)
+TRIPLE_TOOLS=(gcc g++ gfortran as ar nm objdump objcopy readelf ld ld.bfd)
 # The pinned LLVM's, /usr/lib/llvm-$LLVM_MAJOR/bin/<tool> (lldb: Debian's own,
 # DEBIAN_LLVM_MAJOR's); mortar_testutil::find_tool finds them as
 # <tool>-<major> or there. clang-19 and clang++-19 are Debian's (the
 # censuses), and so is the bare ld.lld on PATH, which gcc -fuse-ld=lld runs:
-LLVM_TOOLS=(clang clang++ ld.lld yaml2obj llvm-readelf llvm-readobj llvm-ar llvm-nm llvm-objcopy llvm-dwarfdump llvm-mc lldb)
+LLVM_TOOLS=(clang clang++ ld.lld yaml2obj llvm-readelf llvm-readobj llvm-ar llvm-nm llvm-objcopy llvm-strip llvm-dwarfdump llvm-mc lldb)
 # Given by the job's Rust set-up (.github/actions/mortar-ci), not by apt:
 SETUP_TOOLS=(rustc)
 # Looked up only when a listed name is missing (mold as ld.mold, a

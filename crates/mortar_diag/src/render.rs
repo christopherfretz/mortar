@@ -344,6 +344,16 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(" cannot be exported (version definitions are not supported)");
             return shown.then_some(name);
         }
+        Kind::MetaMalformed { reason } => {
+            out.push_str("malformed Mason metadata: ");
+            escaped(reason, out);
+        }
+        Kind::MetaVersion { major } => {
+            let _ = write!(
+                out,
+                "Mason metadata version {major} is not supported; its records are ignored"
+            );
+        }
         Kind::OdrContentsMismatch { name } => {
             let shown = symbol_into(name, style, out);
             out.push_str(" has different contents in different files");
