@@ -39,7 +39,6 @@ pub(crate) fn width(machine: Machine, r_type: u32) -> u8 {
         }
         Machine::X86_64 => crate::x64::def(r_type)
             .map_or_else(|| crate::x64::unchecked_width(r_type), |d| d.field.width()),
-        // i386 is not judged (§4.5): its records are `machine`.
         Machine::I386 => crate::x86::def(r_type)
             .map_or_else(|| crate::x86::unchecked_width(r_type), |d| d.field.width()),
     }
@@ -979,6 +978,16 @@ impl<'a, 'b> Engine<'a, 'b> {
         }
         let x64 = machine == Machine::X86_64;
         let i386 = machine == Machine::I386;
+        if i386 && raw.first().is_some_and(|r| r.3.is_some()) {
+            // spec/x86.md X86-2: refused; the references differ (W12).
+            let f = Finding::new(
+                Rule::Insn,
+                format!("{rs} is SHT_RELA in an EM_386 object (spec/x86.md X86-2)"),
+            )
+            .site(o.site(si, 0));
+            self.fail(f);
+            return self.not_checked(Reason::Type, n);
+        }
         let place = s.place.clone();
         let data = s.data;
         let nobits = s.shdr.sh_type == SHT_NOBITS;

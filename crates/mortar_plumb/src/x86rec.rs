@@ -414,7 +414,10 @@ impl Engine<'_, '_> {
                 push(rw, &head, s, &[]);
             }
         }
-        if (gnu_static || gnu_pie) && op == 0xff && defined {
+        // GNU ld in static also for weak0: a direct call or jump to 0,
+        // which faults as the slot's 0 does (X86-24 says the GOT is kept;
+        // WP-028e's relax case).
+        if (gnu_static && f == Format::Gnu || defined && (gnu_static || gnu_pie)) && op == 0xff {
             // G4: `67 e8 rel32`; G5: `e9 rel32 90` from P − 2.
             if m.reg == 2 {
                 push(Rewrite::GotToDirect, &[0x67, 0xe8], s.wrapping_sub(p + 4), &[]);
