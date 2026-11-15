@@ -27,6 +27,8 @@ mortar_input    = { path = "crates/mortar_input" }
 mortar_layout   = { path = "crates/mortar_layout" }
 mortar_live     = { path = "crates/mortar_live" }
 mortar_merge    = { path = "crates/mortar_merge" }
+mortar_meta     = { path = "crates/mortar_meta" }
+mortar_odr      = { path = "crates/mortar_odr" }
 mortar_plumb    = { path = "crates/mortar_plumb" }
 mortar_resolve  = { path = "crates/mortar_resolve" }
 mortar_scan     = { path = "crates/mortar_scan" }
