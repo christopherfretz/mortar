@@ -1,7 +1,8 @@
 //! Refusals (`spec/diag.md` §4).
 
 use mortar_diag::{
-    Collector, Diagnostic, FileRef, Key, Kind, Place, Policy, RefusalClass, Severity, Style,
+    Collector, Diagnostic, FileRef, Key, Kind, NOT_RECOGNIZED, Place, Policy, RefusalClass,
+    Severity, Style,
 };
 
 // spec: diag.md §4, §4.1 (one wording for every class)
@@ -59,7 +60,8 @@ fn class_and_name_are_data() {
         diag.kind(),
         &Kind::Refused {
             class: RefusalClass::RelocationType,
-            name: "R_AARCH64_TLSDESC_CALL".to_owned()
+            name: "R_AARCH64_TLSDESC_CALL".to_owned(),
+            not_recognized: false,
         }
     );
     assert_eq!(diag.kind().symbol(), None);
@@ -93,11 +95,34 @@ fn refusal_with_a_place() {
     );
 }
 
+// spec: diag.md §8.3 (a format GNU ld does not recognize either: its phrase
+// after the refusal's own text)
+#[test]
+fn a_format_gnu_ld_does_not_recognize_carries_its_phrase() {
+    let diag = Diagnostic::refused_unrecognized_format("Mach-O").at(Place::file("a.o"));
+    assert_eq!(diag.refusal(), Some((RefusalClass::FileFormat, "Mach-O")));
+    assert_eq!(
+        diag.render(&Style::plain("ld")),
+        "ld: error: a.o: unsupported file format: Mach-O; file not recognized: file format not \
+         recognized\n"
+    );
+    assert!(diag.render(&Style::plain("ld")).ends_with(&format!("{NOT_RECOGNIZED}\n")));
+    // A format GNU ld reads (through its plugin) has no such phrase.
+    let lto = Diagnostic::refused(RefusalClass::FileFormat, "GCC LTO object");
+    assert_eq!(
+        lto.render(&Style::plain("ld")),
+        "ld: error: unsupported file format: GCC LTO object\n"
+    );
+}
+
 // spec: diag.md §4.3
 #[test]
 fn a_refusal_is_never_a_warning() {
-    let kind =
-        Kind::Refused { class: RefusalClass::SectionFlag, name: "SHF_GNU_RETAIN".to_owned() };
+    let kind = Kind::Refused {
+        class: RefusalClass::SectionFlag,
+        name: "SHF_GNU_RETAIN".to_owned(),
+        not_recognized: false,
+    };
     for diag in [
         Diagnostic::warning(kind.clone()),
         Diagnostic::new(Severity::Warning, kind.clone()),
@@ -116,7 +141,11 @@ fn a_refusal_is_never_a_warning() {
 #[test]
 fn no_warnings_does_not_hide_a_refusal() {
     let collector = Collector::new(Policy { no_warnings: true, ..Policy::default() });
-    let kind = Kind::Refused { class: RefusalClass::Option, name: "--plugin".to_owned() };
+    let kind = Kind::Refused {
+        class: RefusalClass::Option,
+        name: "--plugin".to_owned(),
+        not_recognized: false,
+    };
     collector.emit(Key::new(0, 0, 0), Diagnostic::warning(kind));
     assert!(collector.has_errors());
     let report = collector.finish();

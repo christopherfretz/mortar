@@ -4,8 +4,9 @@
 //! Rules 1 to 3 and 5 are checked in full from the tables. Rules 4 and 6
 //! need a pass over the relocations, which `fill` makes on every field it
 //! writes (§4.4): here rule 4 is checked as far as the tables show it (the
-//! patch and redirect rows are consistent and every patch is used), rule 6
-//! not at all.
+//! patch and redirect rows are consistent, every redirect names a patch of
+//! its kind, an erratum patch only from its own site, and a `Plt` thunk's
+//! key has an entry; an unused patch is allowed), rule 6 not at all.
 //!
 //! The rules run in a fixed order and the first violation found is the
 //! answer, so the report is deterministic.
@@ -18,7 +19,7 @@ use mortar_elf::consts::{
 
 use crate::assignment::Assignment;
 use crate::column::Column;
-use crate::demands::{DemandFlags, Demands};
+use crate::demands::{DemandFlags, Demands, GlobalFlags};
 use crate::id::{ChunkId, FragId, Id, OptId, OutSecId, SectionId, SegmentId, SymKey, SymKind};
 use crate::inputs::{Inputs, Reader};
 use crate::layout::{AllocKey, ChunkKind, DefValue, Layout, PatchKind, ThunkTarget};
@@ -39,7 +40,8 @@ pub enum Rule {
     /// §4.2: live fragments are placed, inside their merged chunk, aligned,
     /// without overlap.
     Merge,
-    /// §4.3: every demand has exactly one slot, no slot is given twice.
+    /// §4.3: every demand has exactly one slot of its kind, no slot is given
+    /// twice.
     Slots,
     /// §4.4 rule 1: places.
     Places,
@@ -112,10 +114,12 @@ pub struct Violation {
 }
 
 impl From<Violation> for Diagnostic {
-    /// `malformed-input` (`spec/diag.md` §3.1): `invalid layout: <rule>:
-    /// <what>`, with one note per offending row.
+    /// `internal-error` (`spec/diag.md` §3.2): `invalid layout: <rule>:
+    /// <what>`, with one note per offending row. A layout mortar computed
+    /// that is not valid is mortar's bug (§4.4); a loaded one is not reused,
+    /// which is the caller's decision, not a diagnostic.
     fn from(v: Violation) -> Self {
-        let mut diag = Diagnostic::error(Kind::Malformed {
+        let mut diag = Diagnostic::error(Kind::InternalError {
             what: format!("invalid layout: {}: {}", v.rule.label(), v.what),
         });
         for row in v.rows {
@@ -241,7 +245,7 @@ fn end(start: u64, len: u64) -> u128 {
 
 impl Layout {
     /// Whether the layout is valid (§4.4): `Ok`, or the first violation as
-    /// a `malformed-input` diagnostic naming the rule and the rows.
+    /// an `internal-error` diagnostic naming the rule and the rows.
     #[allow(
         clippy::result_large_err,
         reason = "the signature of spec/model.md §10; fails once per link"
@@ -373,7 +377,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                     PatchKind::Thunk(ThunkTarget::Sym { key: k, .. } | ThunkTarget::Plt(k)) => {
                         key(k)
                     }
-                    PatchKind::Erratum843419 => true,
+                    PatchKind::Erratum { section, .. } => section.index() < sections,
                 };
             need(ok, r, || "a field out of range".into(), [Row::Entry("patches", at as u32)])?;
         }
@@ -451,11 +455,12 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         Ok(Self { layout, cx, merged })
     }
 
-    fn slot_lists(layout: &Layout) -> [(&'static str, &[SymKey]); 5] {
+    fn slot_lists(layout: &Layout) -> [(&'static str, &[SymKey]); 6] {
         let s = &layout.slots;
         [
             ("got", &s.got),
             ("plt", &s.plt),
+            ("iplt", &s.iplt),
             ("tls_desc", &s.tls_desc),
             ("tls_gd", &s.tls_gd),
             ("tls_ie", &s.tls_ie),
@@ -593,10 +598,11 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         let slots = &self.layout.slots;
         let flags = [
             DemandFlags::GOT,
-            DemandFlags::PLT | DemandFlags::CANONICAL_PLT,
+            DemandFlags::PLT | DemandFlags::CANON_PLT,
+            DemandFlags::IPLT,
             DemandFlags::TLS_DESC,
             DemandFlags::TLS_GD,
-            DemandFlags::TLS_IE,
+            DemandFlags::GOT_TPREL,
         ];
         for ((name, list), want) in Self::slot_lists(self.layout).into_iter().zip(flags) {
             let mut have: Vec<(SymKey, u32)> =
@@ -620,6 +626,19 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 return fail(r, what, [Row::Symbol(key)]);
             }
         }
+        let module = cx.demands.output.contains(GlobalFlags::TLS_LD);
+        need(
+            slots.tls_ld == module,
+            r,
+            || {
+                if module {
+                    "a TLS_LD demand without the module slot".into()
+                } else {
+                    "the module slot without a TLS_LD demand".into()
+                }
+            },
+            [],
+        )?;
         let mut dynsym = slots.dynsym.to_vec();
         dynsym.sort_unstable();
         if let Some(pair) = dynsym.windows(2).find(|p| p[0] == p[1]) {
@@ -663,7 +682,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         }
         for (at, &f) in slots.needed.iter().enumerate() {
             need(
-                cx.resolution.file_live[f] == FileLive::Needed,
+                matches!(cx.resolution.file_live[f], FileLive::Shared { needed: true }),
                 r,
                 || "DT_NEEDED for a file that is not a needed shared object".into(),
                 [Row::Entry("needed", at as u32)],
@@ -1105,6 +1124,12 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             || "tls does not describe the TLS chunks".into(),
             [Row::Chunk(first), Row::Chunk(last)],
         )?;
+        need(
+            aligned(t.start, t.align),
+            r,
+            || "the TLS template's start is not a multiple of its alignment".into(),
+            [Row::Chunk(first)],
+        )?;
         let [seg] = segs[..] else {
             return fail(r, "not exactly one PT_TLS", segs.iter().map(|&s| Row::Segment(s)));
         };
@@ -1215,7 +1240,18 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 [Row::Entry("redirects", at)],
             );
         }
-        let mut used = vec![false; p.patches.len()];
+        for (at, patch) in p.patches.iter().enumerate() {
+            if let PatchKind::Thunk(ThunkTarget::Plt(key)) = patch.kind {
+                // The Slots rule has run: demands and entries agree.
+                let entry = DemandFlags::PLT | DemandFlags::CANON_PLT | DemandFlags::IPLT;
+                need(
+                    self.cx.demands.of(key).intersects(entry),
+                    r,
+                    || "a thunk to the PLT entry of a key with no PLT or IPLT entry".into(),
+                    [Row::Entry("patches", at as u32), Row::Symbol(key)],
+                )?;
+            }
+        }
         for (at, row) in p.redirects.iter().enumerate() {
             let me = Row::Entry("redirects", at as u32);
             need(
@@ -1231,15 +1267,20 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 || "a redirected site outside its section".into(),
                 [me, Row::Section(row.section)],
             )?;
-            let Some(cell) = used.get_mut(row.patch as usize) else {
+            let Some(patch) = p.patches.get(row.patch as usize) else {
                 return fail(r, "a site redirected to a patch that does not exist", [me]);
             };
-            *cell = true;
+            if let PatchKind::Erratum { section, offset, .. } = patch.kind {
+                need(
+                    (section, offset) == (row.section, row.offset),
+                    r,
+                    || "a site redirected to the erratum patch of another site".into(),
+                    [me, Row::Entry("patches", row.patch)],
+                )?;
+            }
         }
-        match used.iter().position(|u| !u) {
-            Some(at) => fail(r, "a patch no site uses", [Row::Entry("patches", at as u32)]),
-            None => Ok(()),
-        }
+        // A patch no site uses is allowed (M-4): the fixed point only adds.
+        Ok(())
     }
 
     /// §4.4 rule 5.
@@ -1301,8 +1342,12 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 [Row::Entry("defined", at)],
             );
         }
-        let internal =
-            cx.resolution.def.iter().filter(|(_, d)| matches!(d, Def::Internal)).map(|(s, _)| s);
+        let internal = cx
+            .resolution
+            .def
+            .iter()
+            .filter(|(s, d)| matches!(d, Def::Internal(_)) && !cx.assignment.is_withdrawn(*s))
+            .map(|(s, _)| s);
         if let Some((s, missing)) = difference(internal, p.defined.iter().map(|x| x.symbol)) {
             let what = if missing {
                 "a linker-defined symbol with no value"
