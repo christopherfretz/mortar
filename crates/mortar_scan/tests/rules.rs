@@ -281,6 +281,39 @@ fn i19_consumed_sequence_members_make_no_event() {
     assert_eq!(l.ids(), ["undefined-symbol"], "{}", l.rendered());
 }
 
+/// §4.1 step 1 with `spec/arch.md` §3.5's `sequence_extent` (R-3): a GD
+/// sequence across the first `SCAN_BLOCK` boundary (records 65,534 to
+/// 65,536) moves the cut past it (to 65,537; a cut at the section's end
+/// would be none), and the scan is the same under every
+/// schedule. `RecIndex::leads` is the section's `seq_leads` bit.
+#[test]
+fn i13_block_cut_after_a_sequence_and_the_leads_bit() {
+    let mut src = String::from(".text\n.globl _start\n_start:\n");
+    src.push_str(".rept 65534\n  bl f\n.endr\n");
+    src.push_str(
+        "  adrp x0, :tlsgd:tv\n  add x0, x0, :tlsgd_lo12:tv\n  bl __tls_get_addr\n  nop\n",
+    );
+    src.push_str(".rept 10\n  bl f\n.endr\n");
+    src.push_str(".globl f\nf:\n  ret\n.data\n  .xword f\n.section .tbss,\"awT\",@nobits\n.globl tv\ntv:\n  .space 4\n");
+    let Some((d, mut l)) = build("scan-i13-cut", &[("a.o", &src)], &[]) else { return };
+    l.arch = mortar_a64::A64::new(mortar_arch::Status::M2, false);
+    l.scanned = l.rescan(&Pool::new(2));
+    assert!(l.scanned.diagnostics.is_empty(), "{}", l.rendered());
+    assert_eq!((l.scanned.stats.units, l.scanned.stats.records), (3, 65_548));
+    let pic = check_schedules(|pool| Linked::picture(&l.rescan(pool)));
+    assert!(pic.2.is_empty());
+    let r = &l.outcome.resolution;
+    let bytes = std::fs::read(d.path().join("a.o")).unwrap();
+    let sid = |name: &[u8]| {
+        let range = r.section_base[FileId(1)];
+        let o = Object::parse(&bytes).unwrap();
+        let idx = o.sections().find(|s| s.name().ok() == Some(name)).unwrap().index().0;
+        range.iter().nth(idx as usize).unwrap()
+    };
+    assert!(l.scanned.order.leads(sid(b".text")));
+    assert!(!l.scanned.order.leads(sid(b".data")));
+}
+
 #[test]
 fn i23_gnu_warning_per_key() {
     let w = ".text\n.globl danger\ndanger:\n  ret\n.section .gnu.warning.danger,\"\",@progbits\n  .string \"danger is dangerous\"\n";

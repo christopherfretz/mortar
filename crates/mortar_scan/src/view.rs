@@ -171,15 +171,38 @@ impl<'a, 's> View<'a, 's> {
     /// What `arch.scan` knows of `key` (`spec/arch.md` §3.4).
     /// `mention`: the referencing entry, whose type an undefined key
     /// takes.
+    ///
+    /// The three event facts (R-1): `dead`, a local of a section of its
+    /// file that is not live (§6.1); `comdat_only`, a key only dropped
+    /// COMDAT copies define (`ComdatMismatch`); `gnu_warning`, a key with
+    /// a `.gnu.warning` section in a live file.
     pub fn facts(&self, key: SymKey, mention: Option<SymEntry>) -> SymFacts {
         match key.kind() {
-            SymKind::Local(e) => self.local_facts(e),
-            SymKind::Global(id) => self.global_facts(id, mention, 0),
+            SymKind::Local(e) => {
+                let mut f = self.local_facts(e);
+                f.dead = e.index.0 != 0
+                    && self.local_section(e).is_some_and(|s| !self.is_live(e.file, s));
+                f
+            }
+            SymKind::Global(id) => {
+                let mut f = self.global_facts(id, mention, 0);
+                f.comdat_only = self.is_mismatch(id);
+                f.gnu_warning = self.is_warned(id);
+                f
+            }
         }
     }
 
     fn local_facts(&self, e: SymEntry) -> SymFacts {
-        let abs = SymFacts { kind: TargetKind::Abs, sym_type: 0, st_other: 0, tls: false };
+        let abs = SymFacts {
+            kind: TargetKind::Abs,
+            sym_type: 0,
+            st_other: 0,
+            tls: false,
+            dead: false,
+            comdat_only: false,
+            gnu_warning: false,
+        };
         let Some(p) = self.prep(e.file) else { return abs };
         let Some(t) = p.table() else { return abs };
         let Ok(s) = t.get(e.index) else { return abs };
@@ -193,6 +216,9 @@ impl<'a, 's> View<'a, 's> {
             sym_type: s.sym_type(),
             st_other: s.st_other,
             tls: s.sym_type() == STT_TLS,
+            dead: false,
+            comdat_only: false,
+            gnu_warning: false,
         }
     }
 
@@ -202,6 +228,9 @@ impl<'a, 's> View<'a, 's> {
             sym_type: s.map_or(0, |s| s.sym_type()),
             st_other: s.map_or(0, |s| s.st_other),
             tls: s.is_some_and(|s| s.sym_type() == STT_TLS),
+            dead: false,
+            comdat_only: false,
+            gnu_warning: false,
         };
         let props = self.resolution.props.get(id).copied().unwrap_or_default();
         let preemptible = props.refs.contains(RefFlags::PREEMPTIBLE);
@@ -233,7 +262,15 @@ impl<'a, 's> View<'a, 's> {
             Def::Internal(InternalDef::Provide { .. }) => {
                 let tls = self.inputs.symbols.get(id).is_some_and(|k| k.name == TLS_MODULE_BASE);
                 let sym_type = if tls { STT_TLS } else { 0 };
-                SymFacts { kind: TargetKind::Local, sym_type, st_other: 0, tls }
+                SymFacts {
+                    kind: TargetKind::Local,
+                    sym_type,
+                    st_other: 0,
+                    tls,
+                    dead: false,
+                    comdat_only: false,
+                    gnu_warning: false,
+                }
             }
             Def::Undefined { weak } => {
                 let s = mention.and_then(|m| self.sym(m.file, m.index));

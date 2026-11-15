@@ -47,8 +47,6 @@ use mortar_core::{ComdatId, Demands, FileId, Liveness, LocalSym, SectionId, SymE
 use mortar_diag::{Diagnostic, Key};
 use mortar_elf::SectionIndex;
 
-pub use driver::{discarded_is_error, is_debug_name};
-
 /// The phase ordinal of the scan (`spec/model.md` §8).
 pub const PHASE: u16 = 70;
 
@@ -149,6 +147,9 @@ pub enum Order<'a> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecIndex {
     permuted: Box<[(SectionId, Box<[u32]>)]>,
+    /// The sections with a record whose type is in `Facts.seq_leads`,
+    /// sorted (`spec/arch.md` §3.5: fill's `RelocAt.leads`).
+    leads: Box<[SectionId]>,
 }
 
 impl RecIndex {
@@ -159,6 +160,14 @@ impl RecIndex {
             Ok(at) => Order::Permuted(&self.permuted[at].1),
             Err(_) => Order::Sorted,
         }
+    }
+
+    /// `RelocAt.leads` for `section`'s records (`spec/arch.md` §3.5):
+    /// whether one has a type in `Facts.seq_leads`. Exact for every
+    /// section the scan read: the live ones, which are all fill reads.
+    #[must_use]
+    pub fn leads(&self, section: SectionId) -> bool {
+        self.leads.binary_search(&section).is_ok()
     }
 
     /// The sections whose records are not sorted, in id order.
@@ -223,6 +232,7 @@ pub fn scan(
     // Per section: counts, order, overlaps across blocks.
     let mut dyn_relocs: Vec<(SectionId, DynCounts)> = Vec::new();
     let mut unsorted: Vec<usize> = Vec::new();
+    let mut leads: Vec<SectionId> = Vec::new();
     let mut late: Vec<(Key, Diagnostic)> = Vec::new();
     let mut at = 0;
     while at < units.len() {
@@ -246,6 +256,9 @@ pub fn scan(
                 .all(|w| w[0].records == 0 || w[1].records == 0 || w[0].last <= w[1].first);
         if !sorted {
             unsorted.push(at);
+        }
+        if os.iter().any(|o| o.leads) {
+            leads.push(us[0].section);
         }
         if parts > 1 {
             let (records, rewalked) = block_overlaps(&view, us, os);
@@ -309,7 +322,7 @@ pub fn scan(
     };
     Scanned {
         demands,
-        order: RecIndex { permuted: permuted.into_boxed_slice() },
+        order: RecIndex { permuted: permuted.into_boxed_slice(), leads: leads.into_boxed_slice() },
         diagnostics,
         stats,
     }

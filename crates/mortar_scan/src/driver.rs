@@ -80,10 +80,7 @@ pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> 
             let mut cuts = vec![0u32];
             let mut cut = block;
             while cut < n {
-                let mut c = cut;
-                while c < n && continues(view, &sec, c) {
-                    c += 1;
-                }
+                let c = cut_at(view, &sec, cut, n);
                 if c >= n {
                     break;
                 }
@@ -100,22 +97,25 @@ pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> 
     out
 }
 
-/// Whether record `i` belongs to a sequence whose lead is an earlier
-/// record: a block may not start there (§4.1 step 1). Today through
-/// `unit_window`'s unit; `spec/image.md` R-3 replaces this with
-/// `sequence_extent`.
-fn continues<'a, 's>(view: &View<'a, 's>, sec: &Sec<'_, 'a, 's>, i: u32) -> bool {
-    let Some(raw) = sec.recs.records.raw(i) else { return false };
-    let Some(key) = view.key_of(sec.file, sec.recs.table, raw.r_sym) else { return false };
-    let site = Site { bytes: sec.recs.bytes, offset: raw.r_offset };
-    let Ok(h) = view.arch.classify(raw.r_type, site) else { return false };
-    let at = sec.at(i, &raw, key, &h);
-    let names = RecTables {
-        view,
-        key,
-        mention: SymEntry { file: sec.file, index: SymbolIndex(raw.r_sym) },
-    };
-    view.arch.unit_window(view.opts.output, &at, &names).is_some_and(|w| w.unit < i)
+/// The records before a cut that may still lead a sequence reaching
+/// past it: `spec/arch.md` §3.5 bounds a sequence's look-back by the
+/// architecture (AArch64 2, x86 1), so an extent is at most 3 records.
+const EXTENT_BACK: u32 = 16;
+
+/// The first block boundary at or after `c` that no sequence crosses
+/// (§4.1 step 1): every record `j` before the boundary, from
+/// `EXTENT_BACK` records back, ends its `sequence_extent` (R-3) at or
+/// before it. A record that leads nothing has extent 1, so checking
+/// every record, not only the leads, is exact.
+fn cut_at(view: &View<'_, '_>, sec: &Sec<'_, '_, '_>, c: u32, n: u32) -> u32 {
+    let mut c = c;
+    let mut j = c.saturating_sub(EXTENT_BACK);
+    while j < c && c < n {
+        let end = j.saturating_add(view.arch.sequence_extent(&sec.recs, j).max(1));
+        c = c.max(end);
+        j += 1;
+    }
+    c
 }
 
 /// A relocated section opened for the scan.
@@ -215,6 +215,8 @@ impl<'v, 'a, 's> Sec<'v, 'a, 's> {
             site: Site { bytes: self.recs.bytes, offset: raw.r_offset },
             records: &self.recs,
             proof: &self.proof,
+            // `spec/arch.md` §3.5: scan passes `true` and records the bit.
+            leads: true,
         }
     }
 
@@ -318,6 +320,8 @@ pub(crate) struct UnitOut {
     /// The extent of the unit's non-empty windows.
     pub extent: Option<(u64, u64)>,
     pub records: u64,
+    /// Some record's type is in `Facts.seq_leads` (`RelocAt.leads`).
+    pub leads: bool,
 }
 
 /// The sink one record's `arch.scan` writes (`spec/arch.md` §3.4).
@@ -327,17 +331,14 @@ struct Sink<'u> {
     output: GlobalFlags,
     counts: [u32; 4],
     errors: Vec<(u32, ScanError)>,
-    undefined: Vec<(SymKey, u32)>,
+    refs: Vec<(u32, EventClass, SymKey)>,
     record: u32,
     errored: bool,
-    /// The reference's target is in a section that is not live: its value
-    /// is a tombstone or 0 (§6.1), so it demands nothing.
-    mute: bool,
 }
 
 impl DemandOut for Sink<'_> {
     fn raise(&mut self, key: SymKey, flags: DemandFlags) {
-        if self.mute || flags.is_empty() {
+        if flags.is_empty() {
             return;
         }
         match key.kind() {
@@ -358,15 +359,10 @@ impl DemandOut for Sink<'_> {
     }
 
     fn raise_global(&mut self, flags: GlobalFlags) {
-        if !self.mute {
-            self.output |= flags;
-        }
+        self.output |= flags;
     }
 
     fn count(&mut self, role: DynRole, n: u32) {
-        if self.mute {
-            return;
-        }
         let k = dyn_kind(role) as usize;
         self.counts[k] = self.counts[k].saturating_add(n);
     }
@@ -378,8 +374,8 @@ impl DemandOut for Sink<'_> {
         self.errors.push((record, error));
     }
 
-    fn undefined(&mut self, key: SymKey, record: u32) {
-        self.undefined.push((key, record));
+    fn reference(&mut self, record: u32, class: EventClass, key: SymKey) {
+        self.refs.push((record, class, key));
     }
 }
 
@@ -397,34 +393,11 @@ pub(crate) const fn dyn_kind(role: DynRole) -> DynKind {
     }
 }
 
-/// The event class of an `undefined` report (§4.4, I-18): a key only
-/// dropped COMDAT copies define is `ComdatMismatch`, any other
-/// `Undefined`. This is where `spec/image.md` R-1's `reference(class,
-/// group)` will arrive instead.
-fn on_undefined(view: &View<'_, '_>, key: SymKey) -> EventClass {
-    match key.kind() {
-        SymKind::Global(id) if view.is_mismatch(id) => EventClass::ComdatMismatch,
-        _ => EventClass::Undefined,
-    }
-}
-
-/// GNU ld's debug section names (`spec/resolve.md` §6.3).
-pub fn is_debug_name(name: &[u8]) -> bool {
-    const PREFIXES: [&[u8]; 6] =
-        [b".debug", b".zdebug", b".line", b".stab", b".gnu.linkonce.wi.", b".gnu.debuglto_.debug_"];
-    name == b".gnu_debuglink" || PREFIXES.iter().any(|p| name.starts_with(p))
-}
-
-/// Whether a reference from section `sec` to a symbol of a section that
-/// is not live is `discarded-section-reference` (`spec/resolve.md` §6.3
-/// case (a), I-12): not from a non-alloc section with a debug name (the
-/// tombstone), `.eh_frame` (the FDE is dead) or exactly
-/// `.gcc_except_table` (0).
-pub fn discarded_is_error(kind: SectionKind, name: &[u8], alloc: bool) -> bool {
-    !(kind == SectionKind::EhFrame
-        || name == b".eh_frame"
-        || name == b".gcc_except_table"
-        || (!alloc && is_debug_name(name)))
+/// Whether a `DiscardedSection` reference from `sec` is an error: not
+/// from an `.eh_frame` (`spec/resolve.md` §6.3's table: the FDE is dead,
+/// I-3), a row `mortar_arch::dead_reference` does not have.
+fn eh_frame(sec: &Sec<'_, '_, '_>) -> bool {
+    sec.kind == SectionKind::EhFrame || sec.name == b".eh_frame"
 }
 
 /// Walks one unit (§4.1 step 2): every record in record order.
@@ -446,10 +419,9 @@ pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> U
         output: GlobalFlags::empty(),
         counts: [0; 4],
         errors: Vec::new(),
-        undefined: Vec::new(),
+        refs: Vec::new(),
         record: 0,
         errored: false,
-        mute: false,
     };
     let mut events = UnitEvents::default();
     let mut windows: Vec<UnitWindow> = Vec::new();
@@ -458,12 +430,14 @@ pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> U
     let refid = |record| RefId { file: u.file, section: u.index, record };
     let mut faults: Vec<(u32, Fault)> = Vec::new();
     let mut prev: Option<u64> = None;
+    let seq_leads = view.arch.facts().seq_leads;
     for i in u.lo..u.hi {
         out.records += 1;
         let Some(raw) = sec.recs.records.raw(i) else {
             faults.push((i, Fault::Unreadable));
             continue;
         };
+        out.leads |= seq_leads.contains(&raw.r_type);
         if let Some(p) = prev {
             out.sorted &= p <= raw.r_offset;
         } else {
@@ -489,40 +463,26 @@ pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> U
             key,
             mention: SymEntry { file: u.file, index: SymbolIndex(raw.r_sym) },
         };
-        // §6.1: a local of a section that is not live.
-        let dead = match key.kind() {
-            SymKind::Local(e) if e.index.0 != 0 => {
-                view.local_section(e).is_some_and(|s| !view.is_live(u.file, s))
-            }
-            _ => false,
-        };
         sink.record = i;
         sink.errored = false;
-        sink.mute = dead;
         let before = sink.errors.len();
-        let cx = ScanCx { tables: &tables, output, place: sec.place };
+        let cx = ScanCx { tables: &tables, output, place: sec.place, name: sec.name };
         view.arch.scan(&cx, &at, &mut DemandSink::new(&mut sink));
         for (record, e) in sink.errors.drain(before..) {
             faults.push((record, Fault::Scan(e)));
         }
-        for (k, record) in sink.undefined.drain(..) {
-            let class = on_undefined(view, k);
-            events.push(Event { class, group: sym_group(k), at: refid(record) });
-        }
-        let consumed = || view.arch.consumed(output, &at, &tables);
-        if dead && discarded_is_error(sec.kind, sec.name, sec.place.alloc) && !consumed() {
-            let group = u64::from(u.index) << 32 | u64::from(raw.r_sym);
-            events.push(Event { class: EventClass::DiscardedSection, group, at: refid(i) });
-        }
-        if let SymKind::Global(id) = key.kind()
-            && view.is_warned(id)
-            && !consumed()
-        {
-            events.push(Event {
-                class: EventClass::GnuWarning,
-                group: sym_group(key),
-                at: refid(i),
-            });
+        for (record, class, k) in sink.refs.drain(..) {
+            let group = if class == EventClass::DiscardedSection {
+                if eh_frame(&sec) {
+                    continue;
+                }
+                // (referring section index, symbol index): the record's.
+                let r_sym = sec.recs.records.raw(record).map_or(raw.r_sym, |r| r.r_sym);
+                u64::from(u.index) << 32 | u64::from(r_sym)
+            } else {
+                sym_group(k)
+            };
+            events.push(Event { class, group, at: refid(record) });
         }
         if !sink.errored
             && let Some(w) = view.arch.unit_window(output, &at, &tables)

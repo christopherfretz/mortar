@@ -12,14 +12,9 @@ use std::collections::HashMap;
 use mortar_core::par::Pool;
 use mortar_core::{FileId, SymKey};
 
-/// The four kinds of grouped reference (§4.4); ordered as declared.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum EventClass {
-    Undefined,
-    ComdatMismatch,
-    DiscardedSection,
-    GnuWarning,
-}
+/// The four kinds of grouped reference (§4.4); ordered as declared. The
+/// architecture's (`spec/arch.md` §3.4), which reports them.
+pub use mortar_arch::EventClass;
 
 /// A relocation record: `(FileId, section index, record index)`, ordered
 /// lexicographically (§2). `section` is the index of the relocated
