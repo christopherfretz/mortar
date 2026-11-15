@@ -56,6 +56,17 @@ fn s9_1_reference_links_verify_clean() {
                 "{label}: the search table"
             );
         }
+        // §6.5: the symbol table. On the glibc cases every linker-defined
+        // symbol GNU ld and lld write is judged; mold's own are named.
+        if matches!(link.case, "c-hello" | "cxx-eh" | "fortran" | "comdat") {
+            assert!(cov.globals_checked > 1000, "{label}: {} globals", cov.globals_checked);
+            assert!(cov.locals_checked > 300, "{label}: {} locals", cov.locals_checked);
+            assert!(cov.linker_defined_checked >= 9, "{label}: {}", cov.linker_defined_checked);
+            for n in &cov.linker_defined_not_judged {
+                let mold_own = n.contains('$') || n.ends_with("_EHDR") || n.ends_with("_PHDR");
+                assert!(link.linker == Linker::Mold && mold_own, "{label}: '{n}' not judged");
+            }
+        }
         if link.case == "cxx-eh-hdr" {
             assert_eq!(link.run(), Some(0), "{label}: the program fails");
         }

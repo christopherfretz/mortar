@@ -42,6 +42,8 @@ pub enum Rule {
     SymbolValue,
     /// E1-E5: `.eh_frame` and `.eh_frame_hdr` (§6.4).
     EhFrame(u8),
+    /// Y2-Y5: the symbol table (§6.5).
+    SymbolTable(u8),
 }
 
 impl Rule {
@@ -64,6 +66,7 @@ impl Rule {
             Rule::NoTls => "T1".into(),
             Rule::SymbolValue => "Y1".into(),
             Rule::EhFrame(n) => format!("E{n}"),
+            Rule::SymbolTable(n) => format!("Y{n}"),
         }
     }
 }
@@ -339,6 +342,17 @@ pub struct Coverage {
     pub fdes_neutralised: u64,
     /// Search table entries of `.eh_frame_hdr` checked (§6.4).
     pub eh_frame_hdr_entries: u64,
+    /// Output symbols Y3 checked against their global definitions, and
+    /// those it could not (an IFUNC, an unplaced definition).
+    pub globals_checked: u64,
+    pub globals_unchecked: u64,
+    /// Output locals Y4 checked (one input local has the name), and the
+    /// others an input local names.
+    pub locals_checked: u64,
+    pub locals_unchecked: u64,
+    /// Linker-defined symbols Y5 checked, and the names it does not judge.
+    pub linker_defined_checked: u64,
+    pub linker_defined_not_judged: Vec<String>,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
 }
@@ -466,6 +480,23 @@ impl Report {
              .eh_frame_hdr entries checked {}",
             c.fdes_checked, c.fdes_dropped, c.fdes_neutralised, c.eh_frame_hdr_entries
         );
+        let _ = writeln!(
+            s,
+            "symbol attributes: globals {} (unchecked {}), locals {} (unchecked {}), linker-defined {}",
+            c.globals_checked,
+            c.globals_unchecked,
+            c.locals_checked,
+            c.locals_unchecked,
+            c.linker_defined_checked
+        );
+        if !c.linker_defined_not_judged.is_empty() {
+            let _ = writeln!(
+                s,
+                "linker-defined symbols not judged: {} ({})",
+                c.linker_defined_not_judged.len(),
+                c.linker_defined_not_judged.join(", ")
+            );
+        }
         let _ = writeln!(s, "findings: {}", self.findings.len());
         s
     }

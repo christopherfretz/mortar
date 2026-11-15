@@ -662,3 +662,180 @@ fn s9_2g_eh_frame_mutations_are_found() {
     eprintln!("§9.2 (g) the terminator swallowed: {found}/{total} found");
     assert_eq!(found, total);
 }
+
+/// The output's `.symtab` entries: (file offset, name, `st_info`,
+/// `st_shndx`, `st_value`).
+fn symtab_all(b: &[u8]) -> Vec<(usize, String, u8, u16, u64)> {
+    let h = FileHeader::parse(b).unwrap();
+    let t = SectionTable::parse(b, &h).unwrap();
+    let st = t.find_symbol_table(SHT_SYMTAB).unwrap().unwrap();
+    let off = shdrs(b).into_iter().find(|s| s.2 == SHT_SYMTAB).unwrap().5 as usize;
+    st.iter()
+        .map(|(i, s)| {
+            (
+                off + i.0 as usize * 24,
+                String::from_utf8_lossy(st.name(&s).unwrap()).into_owned(),
+                s.st_info,
+                s.st_shndx,
+                s.st_value,
+            )
+        })
+        .collect()
+}
+
+// spec/plumb.md §9.2 (h), §6.5: the symbol table. Y2: the table's own
+// fields; Y3: each attribute of every global the inputs define; Y4: each
+// attribute of every local Y4 judges; Y5: every linker-defined symbol
+// moved.
+#[test]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one class after another
+fn s9_2h_symbol_table_mutations_are_found() {
+    let Some(c) = corpus(Size::Tls) else { return };
+    let mut tally: std::collections::BTreeMap<&str, (u32, u32)> = std::collections::BTreeMap::new();
+    let mut missed = Vec::new();
+    for case in ["tls-types", "eh-frames", "got-ldr-w"] {
+        for linker in Linker::ALL {
+            let link = c.get(case, linker);
+            let ctx = Ctx::of(link);
+            let base = ctx.verify(&ctx.output);
+            let key = |f: &&mortar_plumb::Finding| (f.rule, f.addr, f.message.clone());
+            let before: std::collections::BTreeSet<_> =
+                unexpected(link, &base).iter().map(key).collect();
+            let new =
+                |r: &Report| unexpected(link, r).iter().map(key).any(|k| !before.contains(&k));
+            let syms = symtab_all(&ctx.output);
+            let secs = shdrs(&ctx.output);
+            let symtab = secs.iter().find(|s| s.2 == SHT_SYMTAB).unwrap();
+            let mut muts: Vec<(&str, String, Vec<u8>)> = Vec::new();
+            let mut m = ctx.output.clone();
+            put32(&mut m, symtab.0 + 44, le32(&ctx.output, symtab.0 + 44) + 1);
+            muts.push(("Y2", "sh_info + 1".into(), m));
+            let mut m = ctx.output.clone();
+            put32(&mut m, symtab.0 + 44, le32(&ctx.output, symtab.0 + 44) - 1);
+            muts.push(("Y2", "sh_info - 1".into(), m));
+            let mut m = ctx.output.clone();
+            put64(&mut m, symtab.0 + 56, 16);
+            muts.push(("Y2", "sh_entsize 16".into(), m));
+            let mut m = ctx.output.clone();
+            put64(&mut m, syms[0].0 + 8, 1);
+            muts.push(("Y2", "symbol 0's value".into(), m));
+            let first_global = syms.iter().position(|s| s.2 >> 4 != 0).unwrap_or(syms.len());
+            if first_global < syms.len() {
+                let (a, b) = (syms[first_global - 1].0, syms[first_global].0);
+                let mut m = ctx.output.clone();
+                let (x, y) = (ctx.output[a..a + 24].to_vec(), ctx.output[b..b + 24].to_vec());
+                m[a..a + 24].copy_from_slice(&y);
+                m[b..b + 24].copy_from_slice(&x);
+                muts.push(("Y2", "last local and first global swapped".into(), m));
+            }
+            let strtab = &secs[le32(&ctx.output, symtab.0 + 40) as usize];
+            let mut m = ctx.output.clone();
+            m[strtab.5 as usize] = b'x';
+            muts.push(("Y2", ".strtab's first byte".into(), m));
+            let shstrndx = usize::from(u16::from_le_bytes([ctx.output[62], ctx.output[63]]));
+            let mut m = ctx.output.clone();
+            m[secs[shstrndx].5 as usize] = b'x';
+            muts.push(("Y2", ".shstrtab's first byte".into(), m));
+            // Y3 and Y4: the attributes of the symbols the inputs define.
+            let names = |global: bool| -> std::collections::BTreeSet<String> {
+                ctx.files
+                    .iter()
+                    .filter_map(|(_, b)| Object::parse(b).ok())
+                    .flat_map(|o| {
+                        let t = o.symbols().ok().flatten();
+                        t.into_iter().flat_map(|t| {
+                            t.iter()
+                                .filter(|(_, s)| s.st_shndx != 0 && (!global || s.binding() != 0))
+                                .filter_map(|(_, s)| {
+                                    t.name(&s).ok().map(|n| String::from_utf8_lossy(n).into_owned())
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect()
+            };
+            let defined = names(true);
+            let defined_any = names(false);
+            let other_sec = |shndx: u16, v: u64| {
+                secs.iter()
+                    .position(|s| s.3 & SHF_ALLOC != 0 && (v < s.4 || v > s.4 + s.6))
+                    .map(|i| i as u16)
+                    .filter(|&i| i != shndx)
+            };
+            for (off, name, info, shndx, value) in &syms {
+                if name.is_empty() || *shndx == 0 || matches!(info & 0xf, 3 | 4) {
+                    continue;
+                }
+                let class = if defined.contains(name) { "Y3" } else { "Y4" };
+                // A Y4 local counts when moving it by 4 is found: those Y4
+                // judges.
+                if class == "Y4" {
+                    let mut m = ctx.output.clone();
+                    put64(&mut m, off + 8, value + 4);
+                    if unexpected(link, &ctx.verify(&m)).iter().all(|f| f.rule.id() != "Y4") {
+                        continue;
+                    }
+                }
+                let mut m = ctx.output.clone();
+                put64(&mut m, off + 16, le64(&ctx.output, off + 16) + 1);
+                muts.push((class, format!("{name} size + 1"), m));
+                if class == "Y4" {
+                    let mut m = ctx.output.clone();
+                    put64(&mut m, off + 8, value + 4);
+                    muts.push((class, format!("{name} value + 4"), m));
+                    let mut m = ctx.output.clone();
+                    put64(&mut m, off + 8, value + 0x10_0000);
+                    muts.push((class, format!("{name} moved far"), m));
+                }
+                let mut m = ctx.output.clone();
+                m[off + 4] = (info & 0xf0) | if info & 0xf == 1 { 2 } else { 1 };
+                if info & 0xf != 6 {
+                    muts.push((class, format!("{name} type"), m));
+                }
+                if let Some(k) = other_sec(*shndx, *value) {
+                    let mut m = ctx.output.clone();
+                    m[off + 6..off + 8].copy_from_slice(&k.to_le_bytes());
+                    muts.push((class, format!("{name} shndx {k}"), m));
+                }
+                if class == "Y3" {
+                    let mut m = ctx.output.clone();
+                    m[off + 4] = (info & 0xf) | if info >> 4 == 2 { 0x10 } else { 0x20 };
+                    muts.push((class, format!("{name} binding"), m));
+                    let mut m = ctx.output.clone();
+                    let vis = ctx.output[off + 5] & 3;
+                    m[off + 5] = if vis == 0 { 3 } else { 0 };
+                    muts.push((class, format!("{name} visibility"), m));
+                }
+            }
+            // Y5: the linker-defined symbols, moved far.
+            for (off, name, info, shndx, value) in &syms {
+                if *shndx == 0
+                    || name.is_empty()
+                    || defined_any.contains(name)
+                    || matches!(info & 0xf, 3 | 4)
+                    || base.coverage.linker_defined_not_judged.contains(name)
+                    // A recorded anomaly already (A3).
+                    || base.findings.iter().any(|f| f.symbol.as_deref() == Some(name))
+                {
+                    continue;
+                }
+                let mut m = ctx.output.clone();
+                put64(&mut m, off + 8, value + 0x10_0000);
+                muts.push(("Y5", format!("{name} moved"), m));
+            }
+            for (class, what, m) in muts {
+                let t = tally.entry(class).or_default();
+                t.0 += 1;
+                if new(&ctx.verify(&m)) {
+                    t.1 += 1;
+                } else {
+                    missed.push(format!("{} {class}: {what}", link.label()));
+                }
+            }
+        }
+    }
+    for (k, (n, f)) in &tally {
+        eprintln!("§9.2 (h) {k}: {f}/{n} found");
+    }
+    assert!(missed.is_empty(), "not found:\n{}", missed.join("\n"));
+}

@@ -29,7 +29,7 @@ describes how x86-64 and i386 fit.
 | stage | covers | not-checked reasons it removes |
 |---|---|---|
 | 1 | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
-| 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents, non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame` (except labels inside `.eh_frame`, §6.4), `non-alloc` |
+| 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents (§6.4), the symbol table (§6.5), non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame` (except labels inside `.eh_frame`, §6.4), `non-alloc` |
 | 3 | PIE and shared objects: the dynamic sections, dynamic relocations, PLT | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 
@@ -951,6 +951,113 @@ follows:
   relocations by §5);
 - the frames of other machines (`machine`).
 
+### 6.5 The symbol table (stage 2)
+
+`.symtab` is what gdb, lldb, `nm`, `addr2line` and the profilers read. A
+symbol that names the wrong section or has the wrong size misleads them
+as surely as a wrong value. Y1 (§4.6) judges the values of globals. The
+rules below judge the rest. Code: `src/symbols.rs`.
+
+- **Y2. The tables.**
+  - `e_shstrndx` (through `sh_link` of section 0 for `SHN_XINDEX`), when
+    it is not 0, names an `SHT_STRTAB` section that begins and ends with a
+    NUL.
+  - `.symtab`, when there is one: `sh_entsize` is 24 (ELFCLASS64) or 16
+    (ELFCLASS32), and `sh_size` is a multiple of it. `sh_link` names an
+    `SHT_STRTAB` that begins and ends with a NUL. Entry 0 is all zeros.
+    No local follows the first non-local entry. `sh_info` is the index of
+    the first non-local entry (gABI "Symbol Table").
+- **Y3. Globals.** This rule applies to each name with a global, weak or
+  unique definition in the inputs whose output symbol (as Y1 chooses it)
+  is defined. The definition D is the placed definition at the output
+  value. A strong one comes before a weak one. When the value is no
+  placed definition's, the name is Y1's finding and Y3 does not judge it.
+  - When the name has a strong definition, the value is a strong
+    definition's: a weak definition does not override a global one.
+  - The visibility V is the most constraining one over every non-local
+    input entry of the name, defined or undefined (gABI "Symbol
+    Visibility"). If V is hidden or internal, the output symbol is
+    `STB_LOCAL`, or keeps a hidden or internal visibility (GNU ld's form,
+    §10.5). Otherwise its binding is `STB_WEAK` when every definition is
+    weak, and else D's binding. `STB_GNU_UNIQUE` may become `STB_GLOBAL`.
+    Its visibility is V.
+  - Its type and size are D's.
+  - Its `st_shndx` names an allocated section whose range holds D's input
+    section's place. For an `SHN_ABS` definition it is `SHN_ABS`.
+
+  A name with an IFUNC definition, with no placed definition, or a TLS
+  name without a usable `PT_TLS`, is counted in `globals_unchecked`.
+- **Y4. Locals.** This rule applies to each defined output local, other
+  than section and file symbols, whose name some input local has. The
+  input locals of the name are found in this order:
+  1. one at the output value, in the output's section, of the output's
+     type and size;
+  2. one at the output value, in the output's section;
+  3. when every input local of the name is placed (§3.3), one at the
+     output value.
+
+  The output local must have the input local's type, size and section,
+  as in Y3. When none is at the output value, that is a finding, with two
+  exceptions, both counted in `locals_unchecked`:
+  - some input local of the name has no known place (a `rewritten` or
+    `merged` section, such as GNU ld's `.eh_frame`);
+  - the symbol is a mapping symbol (`$x…`, `$d…`, AAELF64 "Mapping
+    symbols") at an address of an allocated section that no input section
+    occupies: the linker's own, marking a veneer or a patch.
+
+  A name the inputs also define globally, or a TLS local without a usable
+  `PT_TLS`, is also counted in `locals_unchecked`.
+- **Y5. Linker-defined symbols.** This rule applies to each defined output
+  symbol whose name no input defines. The names below have these values.
+  Here, "the section" means the allocated output section of that name;
+  E is the highest end of the writable, non-TLS, non-`NOBITS` allocated
+  sections; and M is the highest end of all the writable, non-TLS
+  allocated sections.
+
+  | name | value |
+  |---|---|
+  | `__ehdr_start` | `p_vaddr` of the `PT_LOAD` at file offset 0 |
+  | `__executable_start` | the lowest `PT_LOAD` `p_vaddr` |
+  | `__init_array_start`/`_end`, `__fini_array_…`, `__preinit_array_…` | the section's start and end; with no section, start = end |
+  | `_GLOBAL_OFFSET_TABLE_` | the start of `.got` |
+  | `__GNU_EH_FRAME_HDR` | the start of `.eh_frame_hdr` |
+  | `_edata`, `edata` | in [E, the next allocated section's start] |
+  | `__bss_start`, `__bss_start__` | in [E, the first writable `NOBITS` section at or after E] |
+  | `_end`, `end`, `__end__`, `_bss_end__`, `__bss_end__` | in [M, M rounded up to 8] |
+  | `_etext`, `etext`, `__etext` | in [the end of `.text`, the next non-executable section's start] |
+  | `__rela_iplt_start`/`_end` | the bounds of the only allocated `SHT_RELA` section; with none, start = end |
+  | `_DYNAMIC` | the start of `.dynamic`, else 0 |
+  | `_TLS_MODULE_BASE_` | 0, and `STT_TLS` (§4.7) |
+  | `__start_X`, `__stop_X` (X a C identifier) | the bounds of section X |
+
+  The data-end symbols allow a range, because the reference linkers place
+  them differently within it (§10.5). Every other name is not judged. It
+  is listed by name in `linker_defined_not_judged`.
+
+**Coverage.** `globals_checked`, `globals_unchecked`, `locals_checked`,
+`locals_unchecked`, `linker_defined_checked` and
+`linker_defined_not_judged` (a list of names) are reported. The summary
+line is "symbol attributes: …".
+
+**Not judged.** These are reported by name or count:
+
+- mold's own symbols (`$got`, `$gottp`, `$tlsgd`, `$pltgot`, `$thunk`,
+  `__start_EHDR`/`__start_PHDR`, which mold sets to 0 even when they are
+  referenced);
+- `__dso_handle` and other names given by linker scripts, where no input
+  defines them;
+- veneer and patch names (`__*_veneer`, `__erratum_*`);
+- the data-end symbols when there is no writable section;
+- locals of archive members the map does not list, which are counted in
+  `locals_unchecked` (lld under `--gc-sections`);
+- the static-pie `.dynsym`, `.hash` and `.gnu.hash`. They are stage 3,
+  with the rest of the dynamic sections (§11 item 7).
+
+Tests: `tests/corpus.rs s9_1_reference_links_verify_clean` (on the glibc
+cases: more than 1000 globals, more than 300 locals and at least 9
+linker-defined symbols judged; not-judged names only from mold, §10.5) and
+`tests/mutation.rs s9_2h_symbol_table_mutations_are_found`.
+
 ## 7. The report
 
 ### 7.1 Findings
@@ -958,7 +1065,7 @@ follows:
 A finding has:
 
 - the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R8`, `T1`,
-  `Y1` or `E1`–`E5`;
+  `Y1`–`Y5` or `E1`–`E5`;
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -992,7 +1099,7 @@ once:
 records of sections not in the output are counted separately
 (`absent_records`). So are the sections by place, the symbols Y1 checked
 and left unchecked, the bytes S12 compared, and the FDEs and header
-entries of §6.4.
+entries of §6.4, and the symbols of §6.5.
 
 The four stage-2 reasons are the only ones allowed on the reference
 corpus.
@@ -1121,6 +1228,20 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   terminator that lld and mold add, which no input asked for, only gains
   `DW_CFA_nop`s.
 
+- **(h)** The symbol table (`tls-types`, `eh-frames` and `got-ldr-w`,
+  every linker; §6.5). A mutant counts as found when it adds a finding
+  that is not a recorded anomaly and that the clean link does not have.
+  (`got-ldr-w` has R8 by design.) The mutations are:
+  - Y2: `sh_info` ±1, `sh_entsize` 16, symbol 0's value, the last local
+    swapped with the first global, and the first byte of `.strtab` and of
+    `.shstrtab`;
+  - Y3 and Y4: the size + 1, the type, a section that does not hold the
+    value, the binding and the visibility of every symbol the inputs
+    define. A local counts only if moving it by 4 gives a Y4 finding;
+  - Y5: every judged linker-defined symbol moved by 0x100000.
+
+  The verifier finds Y2 60/60, Y3 184/184, Y4 179/179 and Y5 78/78.
+
 ### 9.3 Map readers
 
 There are unit tests on excerpts captured from each linker (§3.4 to
@@ -1213,6 +1334,22 @@ absent from the other cases:
   half (review finding 1). `tls-ie-regs` exits wrong; the verifier reports
   R1 on both records. mold keeps the GOT entry and is right.
 
+Three symbol-table defects, found by §6.5 on the corpus:
+
+- **A9 (mold).** Every global of a static executable is `STB_LOCAL` in
+  `.symtab`, including `main`, `_start` and the default-visibility globals
+  of libc. The symbols stay in the global part of the table (`sh_info` is
+  right), but `nm` and debuggers show them as locals (Y3 binding, found 0).
+- **A10 (GNU ld).** A label of an empty input section whose output
+  section GNU ld removes gets the index of another section, one that does
+  not hold the label's address. crtend.o's `__TMC_END__` labels the empty
+  `.tm_clone_table`. Its `st_shndx` names a section that ends below it
+  (Y3, "a label of an empty section").
+- **A11 (mold).** With `--gc-sections` leaving no `.bss`, `__bss_start` is
+  0 even when the program references it. A program that clears from
+  `__bss_start` to `_end` would write from address 0. This was verified by
+  hand with a 3-line program (Y5, found 0).
+
 ### 10.3 Types each linker accepts
 
 The `types` case links every §4.2 type its assembler can emit. It records
@@ -1257,6 +1394,26 @@ The `tls-types` case does the same for §4.7:
   or a collected section is absent from all three outputs. None of them
   writes a neutralised FDE on the corpus.
 
+### 10.5 Symbol tables
+
+Observed on the glibc `c-hello` links:
+
+- **Hidden symbols.** lld and mold make a hidden global `STB_LOCAL`, as
+  the gABI says (`_dl_argv`: `LOCAL HIDDEN`). GNU ld keeps the binding and
+  the visibility (`GLOBAL HIDDEN`). Y3 accepts both forms.
+- **Data ends.** GNU ld puts `_edata` at the end of `.data` (E) and
+  `__bss_start` at the start of `.bss`, which is E rounded up to `.bss`'s
+  alignment. mold puts `_edata` and `__bss_start` at E, which is also the
+  start of its `.bss`. lld writes none of the three in this case, because
+  nothing references them. All the values seen fall within Y5's ranges.
+- **Mapping symbols.** All three keep the inputs' `$x` and `$d`. A
+  linker's veneers and patches can carry mapping symbols of their own. A
+  `$d` of the input `.eh_frame` lands in GNU ld's rewritten `.eh_frame`,
+  at a place the map does not give, so Y4 counts it unchecked.
+- **Not judged.** GNU ld and lld write no linker-defined symbol that §6.5
+  does not judge. mold writes its `$` names and
+  `__start_EHDR`/`__start_PHDR`.
+
 ## 11. Open questions
 
 1. `spec/model.md` should state that mortar's layout can write this map
@@ -1284,4 +1441,8 @@ The `tls-types` case does the same for §4.7:
 7. Static PIE: S1 accepts `ET_EXEC` only, so a static-pie output is an S1 finding
    today. Its TLS forms are those of §4.7 with no TLS dynamic relocation;
    accepting `ET_DYN` without `PT_INTERP` needs the `RELATIVE` relocations
-   of `.rela.dyn` judged first, which is stage 3.
+   of `.rela.dyn` judged first, which is stage 3. So are its `.dynsym`,
+   `.hash` and `.gnu.hash` (§6.5).
+8. A9 to A11 (§10.2): mortar's `.symtab` must keep the inputs' bindings,
+   name the section that holds each label (or `SHN_ABS`), and define
+   `__bss_start` within §6.5's range even when there is no `.bss`.

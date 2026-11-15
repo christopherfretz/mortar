@@ -7,7 +7,7 @@ mod common;
 
 use std::collections::BTreeSet;
 
-use common::{Linker, Size, assert_clean, corpus, tls_types_for};
+use common::{Linker, Size, assert_clean, corpus, tls_types_for, unexpected};
 use mortar_plumb::{Report, Rewrite, Via};
 
 fn ids(r: &Report) -> Vec<String> {
@@ -93,7 +93,8 @@ fn s10_2_a7_gnu_ld_local_dynamic_ignores_the_tls_alignment() {
     let r1: Vec<_> = r.with_rule("R1").collect();
     assert_eq!(r1.len(), 3, "{}", r.render(&bad.label()));
     assert!(r1.iter().all(|f| f.expected == Some(0x40)), "{}", r.render(&bad.label()));
-    assert!(r.findings.iter().all(|f| f.rule.id() == "R1"), "{:?}", ids(&r));
+    // Nothing else, but the recorded anomalies of every glibc link (A10).
+    assert!(unexpected(bad, &r).iter().all(|f| f.rule.id() == "R1"), "{:?}", ids(&r));
     let good = c.get("tls-ld-8", Linker::Bfd);
     assert_eq!(good.run(), Some(42), "{}", good.label());
     let r = good.verify();

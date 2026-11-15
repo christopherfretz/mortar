@@ -426,6 +426,11 @@ impl<'a, 'b> Engine<'a, 'b> {
         }
     }
 
+    /// Whether `addr` is in a placed input section (§5.4).
+    pub(crate) fn occupied_at(&self, addr: u64) -> bool {
+        self.occupied.contains(addr)
+    }
+
     fn sym_name(&self, oi: usize, idx: u32) -> String {
         let o = &self.objs[oi];
         o.symtab.and_then(|t| t.get(SymbolIndex(idx)).ok().map(|s| (t, s))).map_or_else(

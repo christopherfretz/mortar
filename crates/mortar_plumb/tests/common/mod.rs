@@ -1265,10 +1265,25 @@ pub fn known_anomaly(link: &Link, f: &mortar_plumb::Finding) -> Option<&'static 
             "A6: GNU ld, lld and mold fill the GOT slot of a section symbol plus an addend without the addend",
         );
     }
+    let sym = f.symbol.as_deref().unwrap_or("");
+    let y = |n| f.rule == mortar_plumb::Rule::SymbolTable(n);
+    if link.linker == Linker::Mold && y(3) && f.message.contains("binding") && f.found == Some(0) {
+        return Some("A9: mold makes every global of a static executable STB_LOCAL in .symtab");
+    }
+    if link.linker == Linker::Bfd && y(3) && f.message.starts_with("a label of an empty section") {
+        return Some(
+            "A10: GNU ld gives a label of an empty output section it removes the index of a section that does not hold it",
+        );
+    }
+    if link.linker == Linker::Mold && y(5) && sym == "__bss_start" && f.found == Some(0) {
+        return Some("A11: mold's __bss_start is 0 when --gc-sections leaves no .bss");
+    }
+    if link.linker == Linker::Mold && y(5) && sym == "_TLS_MODULE_BASE_" {
+        return Some("A3: mold's _TLS_MODULE_BASE_ is an address, or there is no PT_TLS");
+    }
     if link.linker != Linker::Mold || f.rule != mortar_plumb::Rule::Structure(8) {
         return None;
     }
-    let sym = f.symbol.as_deref()?;
     if sym == "_TLS_MODULE_BASE_" {
         return Some("A3: mold's _TLS_MODULE_BASE_ is an address, or there is no PT_TLS");
     }
