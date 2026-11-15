@@ -1,5 +1,5 @@
 //! Where the phase's time goes, per sub-step, and the work it counted:
-//! what `MORTAR_TIME_STEPS` prints (the bench's unit costs). Never part of
+//! what `MORTAR_STEPS` prints (the bench's unit costs). Never part of
 //! a result: the clock decides nothing.
 
 use std::time::{Duration, Instant};

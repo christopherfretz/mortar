@@ -77,7 +77,7 @@ const fn uses_got_base(h: &mortar_arch::Howto) -> bool {
 /// input bytes, so scan and fill agree (kind 1).
 fn ie_relaxed(at: &RelocAt<'_>, output: OutputKind, kind: TargetKind, alloc: bool) -> Option<Form> {
     // X-32: never in a non-alloc section.
-    if !alloc || !output.is_exec() || at.addend != -4 || !tls_local(kind) {
+    if !alloc || !output.is_exec() || at.rela_addend() != -4 || !tls_local(kind) {
         return None;
     }
     forms::form(GOTTPOFF, at.site).filter(|f| matches!(f, Form::I1 { .. } | Form::I2 { .. }))
@@ -86,7 +86,7 @@ fn ie_relaxed(at: &RelocAt<'_>, output: OutputKind, kind: TargetKind, alloc: boo
 /// T1 (with `A = −4`) or T2 (X-28).
 fn desc_form(at: &RelocAt<'_>) -> Option<Form> {
     match forms::form(at.r_type, at.site)? {
-        f @ Form::T1 { .. } if at.addend == -4 => Some(f),
+        f @ Form::T1 { .. } if at.rela_addend() == -4 => Some(f),
         f @ Form::T2 => Some(f),
         _ => None,
     }
@@ -317,7 +317,7 @@ fn value(
     sym: SymValue,
 ) -> Result<i64, FieldError> {
     let h = at.howto;
-    let a = at.addend;
+    let a = at.rela_addend();
     let p = out.addr.wrapping_add(at.r_offset);
     // X-53 (arch.md §4.3): `64`/`32`/… against a TLS symbol at a non-alloc
     // place is the offset in the TLS block.
@@ -372,9 +372,9 @@ fn dtpoff(
         false
     };
     if code {
-        tls_off(cx, sym, at.addend, |x, tls| TLS.tp_rel(x, tls))
+        tls_off(cx, sym, at.rela_addend(), |x, tls| TLS.tp_rel(x, tls))
     } else {
-        tls_off(cx, sym, at.addend, TlsAbi::dtp_rel)
+        tls_off(cx, sym, at.rela_addend(), TlsAbi::dtp_rel)
     }
 }
 
@@ -493,7 +493,7 @@ fn got_relaxed(
     sym: SymValue,
 ) -> Option<(u64, [u8; 7], usize)> {
     // X-19, X-22: a `local` target (not `abs`, `ifunc`, `weak0`), `A = −4`.
-    if sym.kind != TargetKind::Local || at.addend != -4 {
+    if sym.kind != TargetKind::Local || at.rela_addend() != -4 {
         return None;
     }
     let form = forms::form(at.r_type, at.site)?;
@@ -501,7 +501,8 @@ fn got_relaxed(
     let s = sym.s;
     // `S + A − P`, in s(32).
     let pc = |bias: i64| -> Option<[u8; 4]> {
-        let x = s.wrapping_add(at.addend as u64).wrapping_sub(p).wrapping_add(bias as u64) as i64;
+        let x = s.wrapping_add(at.rela_addend() as u64).wrapping_sub(p).wrapping_add(bias as u64)
+            as i64;
         let x = i32::try_from(x).ok()?;
         Some(x.to_le_bytes())
     };

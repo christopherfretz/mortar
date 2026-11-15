@@ -1102,6 +1102,7 @@ or absent holds the linker's *tombstone*, compared in the field's width:
 |---|---|---|---|
 | `.debug_ranges` | 1, or the redirect | 1 | 1 |
 | `.debug_loc` | 0, or the redirect | 1 | 1 |
+| `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | 0, or the redirect | 0 | 0 |
 | `.debug_aranges` | 0, or the redirect | 0 | all ones, and the tuple's length 0 (I-112) |
 | `.debug_frame` | 0, or the redirect | 0 | all ones |
 | other debug names | 0, or the redirect | 0 | all ones (ELFCLASS64), 0 (ELFCLASS32) |

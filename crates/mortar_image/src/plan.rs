@@ -276,7 +276,16 @@ pub struct Plan {
     pub paths: BTreeMap<FileId, FileRef>,
     /// The build id's descriptor in the file (I-73), when there is one.
     pub sealed: Option<Range<u64>>,
+    /// The order of the records of the sections whose checks are fill's
+    /// (`RecIndex::deferred`, I-14) and whose order fill does not find
+    /// clip by clip: those with a large table cut into several clips
+    /// (`crate::link`). Sorted by section; `None`: sorted.
+    pub deferred_order: DeferredOrders,
 }
+
+/// [`Plan::deferred_order`]: each deferred section's record order, by
+/// section.
+pub type DeferredOrders = Box<[(SectionId, Option<Box<[u32]>>)]>;
 
 impl Plan {
     /// The first row ending after `offset` (I-33 step 1).
@@ -309,6 +318,17 @@ impl Plan {
     pub fn eh_section(&self, section: SectionId) -> Option<&EhSection> {
         let at = self.eh.binary_search_by_key(&section, |e| e.section).ok()?;
         self.eh.get(at)
+    }
+
+    /// The order of deferred section `section`'s records, when the plan
+    /// holds it ([`Plan::deferred_order`]).
+    #[must_use]
+    pub fn deferred_order(&self, section: SectionId) -> Option<mortar_core::records::Order<'_>> {
+        let at = self.deferred_order.binary_search_by_key(&section, |d| d.0).ok()?;
+        Some(match &self.deferred_order[at].1 {
+            None => mortar_core::records::Order::Sorted,
+            Some(p) => mortar_core::records::Order::Permuted(p),
+        })
     }
 
     /// The name of [`Plan::names`]`[i]`.
@@ -551,6 +571,7 @@ impl Builder {
             names: names.into_boxed_slice(),
             paths,
             sealed,
+            deferred_order: Box::new([]),
         })
     }
 }

@@ -825,3 +825,49 @@ fn an_erratum_site_goes_through_a_patch() {
     support::plumb::elflint(&ours);
     support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
+
+/// Erratum 843419 with `W1` at a page's `0xffc` and the final word `F`
+/// three words after it, across the page (`0x1008`): the patch holds the
+/// load as fill writes it, its `lo12` relocation applied (WP-032e found
+/// the patch's word taken before that relocation, so the load read the
+/// page's first doubleword). Exits 42 only if the load reads `val`.
+#[test]
+fn an_erratum_site_across_the_page_takes_its_relocated_word() {
+    if !host() {
+        return;
+    }
+    let scratch = Scratch::new("pipe-erratum-ffc");
+    let obj = assemble(
+        scratch.path(),
+        "e.s",
+        "    .text\n    .globl _start\n_start:\n    bl f\n    mov x8, #93\n    svc #0\n\
+         \n    .section .text.f,\"ax\",@progbits\n    .balign 4096\n    .skip 0xffc\n\
+         \n    .globl f\n    .type f, %function\nf:\n    adrp x0, val\n    ldr x2, [sp]\n\
+         \n    nop\n    ldr x0, [x0, #:lo12:val]\n    ret\n\
+         \n    .section .text.gap,\"ax\",@progbits\n    .skip 0x200000\n\
+         \n    .data\n    .balign 8\n    .xword 7, 7, 7\nval:\n    .xword 42\n",
+    );
+    let built = Built {
+        dir: scratch.path().to_path_buf(),
+        args: vec![
+            "-static".into(),
+            "--fix-cortex-a53-843419".into(),
+            obj.display().to_string(),
+            "-o".into(),
+            "out".into(),
+        ],
+    };
+    let ours = built.dir.join("e.mortar");
+    let theirs = built.dir.join("e.bfd");
+    let ran = mortar(&built, &ours, &[], &[]);
+    assert!(ran.success(), "mortar: {}", ran.stderr_text());
+    let gnu = bfd(&built, &theirs, &[]);
+    assert!(gnu.success(), "ld.bfd: {}", gnu.stderr_text());
+    assert_eq!(execute(&theirs).1, Some(42));
+    assert_eq!(execute(&ours).1, Some(42), "the load through the patch");
+    let map = std::fs::read_to_string(map_of(&ours)).unwrap();
+    assert!(map.contains("chunk patch __erratum_843419_veneer "), "a patch in the map: {map}");
+    support::plumb::readers(&ours);
+    support::plumb::elflint(&ours);
+    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+}

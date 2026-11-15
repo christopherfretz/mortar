@@ -376,7 +376,7 @@ fn reference_relocs(
             r_offset: rec.r_offset,
             key: rec.key,
             r_type: rec.r_type,
-            addend: rec.addend,
+            addend: Some(rec.addend),
             howto: &howto,
             site: Site { bytes: input, offset: rec.r_offset },
             records: &records,

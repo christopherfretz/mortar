@@ -298,7 +298,7 @@ pub fn front<'s>(
 
     // 20: input.
     let load_env = LoadEnv { cwd: env.cwd.to_path_buf(), pool };
-    let time_steps = std::env::var_os("MORTAR_TIME_STEPS").is_some();
+    let time_steps = mortar_core::wp032b_steps::enabled();
     let mut steps = mortar_input::steps::Steps::default();
     let inputs = load_steps(&plan, &load_env, store, diag, &mut steps);
     if time_steps {
@@ -431,12 +431,22 @@ pub fn front<'s>(
     for (k, d) in scanned.diagnostics.iter().cloned() {
         diag.emit(k, d);
     }
+    let deferred = Deferred {
+        arch,
+        inputs: &scan_inputs,
+        options: scan_options,
+        order: &scanned.order,
+        pool: &pool,
+        diag,
+        armed: true,
+    };
     timer.phase(70, "scan");
     if stop(diag) {
         return None;
     }
 
     // 80: the synthetic chunks' plans, as sizes.
+    let mut steps = mortar_core::wp032b_steps::Steps::new("synthetic");
     let slots = slots_of(&scanned.demands, &resolution);
     let merge_eh = match MergeEh::new(&merge.eh, &tables) {
         Ok(m) => m,
@@ -445,9 +455,12 @@ pub fn front<'s>(
             return None;
         }
     };
+    steps.step("merge eh", 0, "");
     let eh = EhPlan::new(&merge_eh, |s: SectionId| liveness.is_live(s), &pool, diag).ok()?;
+    steps.step("eh plan", 0, "");
     let eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
     let hdr = HdrPlan::new(&merge_eh, &eh, eh_frame_hdr, &pool, diag).ok()?;
+    steps.step("hdr plan", 0, "");
     let memory_seal = plan.z.memory_seal == Some(true);
     let property = property_plan(&inputs, &resolution, &headers, arch, memory_seal, diag).ok()?;
     let feature_1_and = property.value_u32(link_arch.feature_1().0);
@@ -457,6 +470,7 @@ pub fn front<'s>(
         .ok()?;
     let got = GotPlan::new(arch, &slots, scanned.demands.output, variant, diag).ok()?;
     let build_id = BuildIdPlan::new(plan.shaping.build_id.as_ref(), diag).ok()?;
+    steps.step("property got build-id", 0, "");
     let core = CoreSections { resolution: &resolution, liveness: &liveness, split: &merge.split };
     let sections = LinkSections { core, assignment: &assignment };
     let syms = CoreSyms::new(&inputs, &resolution, &assignment);
@@ -473,7 +487,9 @@ pub fn front<'s>(
     } else {
         Some(SymtabPlan::new(&sym_cx, Class::Elf64, &[], facts, &pool, diag).ok()?)
     };
+    steps.step("symtab plan", 0, "");
     timer.phase(80, "synthetic");
+    let mut steps = mortar_core::wp032b_steps::Steps::new("layout");
 
     // 90: layout, to the fixed point.
     let folds = Folds::default();
@@ -502,6 +518,16 @@ pub fn front<'s>(
     let mut shndx = SymtabPlan::needs_shndx(names.len() as u32 + 2);
     let walker = Walker::new(arch, &scan_inputs, scan_options);
     let mut attempt = 0;
+    // The sites read the slots' key lists only, which every attempt shares
+    // (`slots`, before the sizes are set); they are found once per set of
+    // synthetic chunk ids. The placement of the attempt before is the next
+    // one's start (`mortar_layout::place_again`), and the symbol tables'
+    // plan is made once per patch table (a function of it).
+    let demand_slots = &slots;
+    let mut kept_sites: Option<(SynthIds, LinkSites<'_, '_>)> = None;
+    let mut prev: Option<Placed> = None;
+    let mut planned_for: Option<Box<[mortar_core::layout::Patch]>> = None;
+    steps.step("prepare", 0, "");
     let (placement_assignment, placed, layout, erratum_fixes) = loop {
         attempt += 1;
         plans.shstrtab = shstrtab.clone();
@@ -534,18 +560,22 @@ pub fn front<'s>(
             merge: &order.map,
             demands: &scanned.demands,
             order: &scanned.order,
-            slots: &slots,
+            slots: demand_slots,
             got: &plans.got,
             ids,
         };
-        let link_sites = match LinkSites::new(site_inputs, arch, &walker, &pool) {
-            Ok(s) => s,
-            Err((k, d)) => {
-                diag.emit(k, d);
-                return None;
+        if kept_sites.as_ref().is_none_or(|(i, _)| *i != ids) {
+            match LinkSites::new(site_inputs, arch, &walker, &pool) {
+                Ok(s) => kept_sites = Some((ids, s)),
+                Err((k, d)) => {
+                    diag.emit(k, d);
+                    return None;
+                }
             }
-        };
-        let range = RangeExtension { arch, sites: &link_sites };
+        }
+        let Some((_, link_sites)) = &kept_sites else { return None };
+        steps.step("sites", 0, "");
+        let range = RangeExtension { arch, sites: link_sites };
         let link = mortar_layout::Link {
             headers: &headers,
             resolution: &resolution,
@@ -561,19 +591,25 @@ pub fn front<'s>(
             options: &options,
         };
         let mut a = assignment.clone();
-        let placed =
-            match mortar_layout::place(&link, &mut a, Some(&range), |e| inputs.entry_def(e), &pool)
-            {
-                Ok(p) => p,
-                Err(errors) => {
-                    for (n, d) in errors.into_iter().enumerate() {
-                        let (k, d) =
-                            layout_diag(&inputs, &resolution, d, Key::new(90, 0, n as u64));
-                        diag.emit(k, d);
-                    }
-                    return None;
+        steps.step("assignment clone", 0, "");
+        let placed = match mortar_layout::place_again(
+            &link,
+            &mut a,
+            Some(&range),
+            |e| inputs.entry_def(e),
+            &pool,
+            prev.as_ref(),
+        ) {
+            Ok(p) => p,
+            Err(errors) => {
+                for (n, d) in errors.into_iter().enumerate() {
+                    let (k, d) = layout_diag(&inputs, &resolution, d, Key::new(90, 0, n as u64));
+                    diag.emit(k, d);
                 }
-            };
+                return None;
+            }
+        };
+        steps.step("place", u64::from(placed.rounds), "round");
         // The sizes known only now (S-90 after stage C; R-L5 after the
         // fixed point): equal, or one more run with them (they are
         // non-allocated and last, so they move no address).
@@ -586,6 +622,7 @@ pub fn front<'s>(
         again |= exact_shndx != shndx;
         shndx = exact_shndx;
         if !placed.placement.patches.is_empty()
+            && planned_for.as_ref() != Some(&placed.placement.patches)
             && let Some(old) = &plans.symtab
         {
             let new = SymtabPlan::new(
@@ -601,8 +638,11 @@ pub fn front<'s>(
                 || new.strtab_size() != old.strtab_size()
                 || (shndx && new.shndx_size() != old.shndx_size());
             plans.symtab = Some(new);
+            planned_for = Some(placed.placement.patches.clone());
+            steps.step("symtab replan", placed.placement.patches.len() as u64, "patch");
         }
         if again && attempt < 3 {
+            prev = Some(placed);
             continue;
         }
         if again {
@@ -619,6 +659,7 @@ pub fn front<'s>(
                 return None;
             }
         };
+        steps.step("erratum fixes", 0, "");
         // The exact names, in section index order (S-90: `sh_name` of
         // section `n` is the plan's `n`-th name); their size is the one
         // placed.
@@ -629,8 +670,10 @@ pub fn front<'s>(
             slots,
             placement: placed.placement.clone(),
         };
+        steps.step("layout clone", 0, "");
         break (a, placed, layout, fixes);
     };
+    steps.step("drop sites", 0, "");
     for (seq, w) in (0u64..).zip(placed.warnings.iter().cloned()) {
         let (k, d) = layout_diag(&inputs, &resolution, w, Key::new(90, 0, u64::MAX - 1000 + seq));
         if entry_warned && d.id() == "entry-not-found" {
@@ -666,7 +709,10 @@ pub fn front<'s>(
         demands,
         shapes: &shapes,
     };
-    if let Err(v) = layout.validate(&cx) {
+    steps.step("checks", 0, "");
+    let validated = layout.validate(&cx);
+    steps.step("validate", 0, "");
+    if let Err(v) = validated {
         diag.emit(
             Key::new(90, 0, u64::MAX),
             internal(format!("the layout breaks its rules: {v:?}")),
@@ -674,6 +720,8 @@ pub fn front<'s>(
         return None;
     }
     timer.phase(90, "layout");
+    deferred.disarm();
+    drop(kept_sites);
     drop(walker);
     drop(merge_eh);
     Some(Front {
@@ -701,9 +749,10 @@ pub fn front<'s>(
     })
 }
 
-/// `MORTAR_TIME_STEPS`: a phase's sub-step times and work counts, on
-/// standard error as they are taken (the bench's unit costs; nothing in
-/// the output depends on them).
+/// `MORTAR_STEPS` for the phases that collect their sub-steps (input and
+/// resolve): their times and work counts on standard error, in the format
+/// of `mortar_core::wp032b_steps` (the bench's unit costs; nothing in the
+/// output depends on them).
 fn print_steps(
     phase: &str,
     times: &[(&'static str, std::time::Duration)],
@@ -712,12 +761,44 @@ fn print_steps(
     use std::fmt::Write as _;
     let mut s = String::new();
     for (name, d) in times {
-        let _ = writeln!(s, "mortar: time-steps: {phase}.{name}: {:.2} ms", d.as_secs_f64() * 1e3);
+        let _ = writeln!(s, "mortar: steps: {phase} {name}: {:.2} ms", d.as_secs_f64() * 1e3);
     }
     for (name, n) in counts {
-        let _ = writeln!(s, "mortar: time-steps: {phase}.count.{name}: {n}");
+        let _ = writeln!(s, "mortar: steps: {phase} count {name}: {n}");
     }
     eprint!("{s}");
+}
+
+/// WP-032c (`spec/image.md` I-14): a link that fails after the scan and
+/// before fill gets the scan's diagnostics of the sections the scan left
+/// to fill's checks, which fill would have found (dropped with `armed`).
+struct Deferred<'g, 'a, 's> {
+    arch: &'a dyn Arch,
+    inputs: &'g ScanInputs<'a, 's>,
+    options: ScanOptions<'a>,
+    order: &'g mortar_scan::RecIndex,
+    pool: &'g Pool,
+    diag: &'g Collector,
+    armed: bool,
+}
+
+impl Deferred<'_, '_, '_> {
+    /// The front has succeeded: fill checks the sections.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Deferred<'_, '_, '_> {
+    fn drop(&mut self) {
+        if !self.armed || self.order.deferred().is_empty() {
+            return;
+        }
+        let walker = Walker::new(self.arch, self.inputs, self.options);
+        for (k, d) in walker.deferred_report(self.order.deferred(), self.pool) {
+            self.diag.emit(k, d);
+        }
+    }
 }
 
 /// `Slots` from `Demands` (S-64): each kind's keys in `SymKey` order.

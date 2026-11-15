@@ -465,6 +465,11 @@ fn x53_dead_targets() {
     assert_eq!(field(&c, 10, 0).unwrap(), le(-1, 4));
     c.name = b".debug_ranges";
     assert_eq!(field(&c, 1, 0).unwrap(), le(1, 8));
+    // An address paired with a length (`DW_RLE_start_length`): 0.
+    for name in [&b".debug_rnglists"[..], b".debug_loclists", b".debug_addr"] {
+        c.name = name;
+        assert_eq!(field(&c, 1, 0).unwrap(), le(0, 8));
+    }
     c.alloc = true;
     c.name = b".gcc_except_table";
     assert_eq!(field(&c, 10, 0).unwrap(), le(0, 4));
