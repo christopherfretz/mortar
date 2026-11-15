@@ -248,7 +248,7 @@ impl Engine<'_, '_> {
             }
             Target::Outside(_) => {
                 if self.format != Format::Mortar {
-                    return self.not_checked(Reason::PieceNotLocatable, 1);
+                    return self.x86_unjudged(rec, Reason::PieceNotLocatable);
                 }
                 let f = Self::finding(
                     Rule::MergePiece,
@@ -261,6 +261,11 @@ impl Engine<'_, '_> {
             }
             Target::Ifunc { resolver, key } => {
                 return self.ifunc_record(oi, rec, site, symbol, resolver, key, &|_, _| None);
+            }
+            // A GOT slot of a merged piece is not located (§5.6); its
+            // instruction may still be rewritten.
+            Target::Merge { .. } if rec.def.op.is_slot() => {
+                return self.x86_unjudged(rec, Reason::PieceNotLocatable);
             }
             Target::Merge { oi: doi, sec, value, section_sym } => {
                 return self.merge_record(

@@ -89,21 +89,42 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
         return Some("A3: mold's _TLS_MODULE_BASE_ is an address, or there is no PT_TLS");
     }
     if mold
-        && f.rule == Rule::SymbolValue
-        && f.message.starts_with("IFUNC symbol")
-        && f.found.is_some_and(|v| v >= 1 << 32)
+        && f.rule == Rule::EhFrame(5)
+        && f.message.starts_with("fde_count counts the FDEs of address range 0")
     {
-        return Some("A2: mold gives an alias of an IFUNC the value 2^32 + x");
+        return Some(
+            "A19: mold gives an FDE with address range 0 an entry in .eh_frame_hdr's table (spec/synth.md S-59)",
+        );
     }
-    if !mold || f.rule != Rule::Structure(8) {
+    if mold { ifunc_alias(output, f) } else { None }
+}
+
+const A2: &str = "A2: mold gives an alias of an IFUNC the value 2^32 + x";
+
+/// A1 and A2: mold's IFUNC symbols (spec/plumb.md §10.2).
+fn ifunc_alias(output: &[u8], f: &Finding) -> Option<&'static str> {
+    let ifunc_value = f.rule == Rule::SymbolValue && f.message.starts_with("IFUNC symbol");
+    if ifunc_value && f.found.is_some_and(|v| v >= 1 << 32) {
+        return Some(A2);
+    }
+    if !ifunc_value && f.rule != Rule::Structure(8) {
         return None;
     }
-    let addr = f.addr?;
+    let addr = if ifunc_value { f.found? } else { f.addr? };
     if addr >= 1 << 32 {
-        return Some("A2: mold gives an alias of an IFUNC the value 2^32 + x");
+        return Some(A2);
     }
     let h = mortar_elf::FileHeader::parse(output).ok()?;
     let table = mortar_elf::SectionTable::parse(output, &h).ok()?;
+    // ELF32: 2^32 + x is x, 16 bytes before .plt.got (spec/plumb.md §10.2).
+    let plt_got =
+        table.iter().find(|s| s.name().is_ok_and(|n| n == b".plt.got")).map(|s| s.header().sh_addr);
+    if h.class == mortar_elf::Class::Elf32 && plt_got.is_some_and(|p| p.wrapping_sub(16) == addr) {
+        return Some(A2);
+    }
+    if ifunc_value {
+        return None;
+    }
     let in_plt = table.iter().any(|s| {
         s.name().is_ok_and(|n| n == b".plt.got" || n == b".iplt" || n == b".plt")
             && (s.header().sh_addr..s.header().sh_addr.saturating_add(s.header().sh_size))

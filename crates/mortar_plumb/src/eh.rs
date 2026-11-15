@@ -513,13 +513,16 @@ impl Engine<'_, '_> {
             for d in &frames.fdes {
                 let k = fde_records(d);
                 // R-P7: an initial location of 0 with no relocation
-                // describes no code of the link: dropped.
+                // describes no code of the link: dropped. So does an
+                // address range of 0 (synth.md S-59: GNU ld drops it;
+                // glibc's i386 clone3.o has one).
                 let pc = if d.pc.raw == 0 && !relocs.contains_key(&(d.pc.off as u64)) {
                     In::Dead
                 } else {
                     resolve(self, d.pc)
                 };
                 let lsda = d.lsda.map(|l| resolve(self, l));
+                let pc = if d.range == 0 { In::Dead } else { pc };
                 let site = o.site(si, d.off as u64);
                 let want_pc = match pc {
                     In::Dead => {
@@ -751,8 +754,14 @@ impl Engine<'_, '_> {
             };
             table.push((loc, fde));
         }
+        let ranged0 = outs.iter().filter(|x| x.range == 0 && x.pc != 0).count();
         if count != live.len() as u64 {
-            let mut f = e(5, "fde_count is not the number of FDEs in .eh_frame").at(hdr);
+            let msg = if ranged0 != 0 && count == (live.len() + ranged0) as u64 {
+                "fde_count counts the FDEs of address range 0"
+            } else {
+                "fde_count is not the number of FDEs in .eh_frame"
+            };
+            let mut f = e(5, msg).at(hdr);
             f.expected = Some(live.len() as u64);
             f.found = Some(count);
             self.findings.push(f);
