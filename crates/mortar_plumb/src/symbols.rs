@@ -148,6 +148,13 @@ fn placed_def(e: &Engine<'_, '_>, oi: usize, di: u32) -> Option<Def> {
                 Place::Pieces(ps) => ps
                     .iter()
                     .find(|p| p.input_offset <= d.st_value && d.st_value < p.input_offset + p.size)
+                    // A label at the section's end: the piece ending there
+                    // (synth.md S-19).
+                    .or_else(|| {
+                        (d.st_value == s.shdr.sh_size)
+                            .then(|| ps.iter().find(|p| p.input_offset + p.size == d.st_value))
+                            .flatten()
+                    })
                     .map(|p| Def {
                         value: p.addr + (d.st_value - p.input_offset),
                         within: Some((p.addr, p.addr + p.size)),

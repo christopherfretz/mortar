@@ -477,7 +477,16 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
 - **A local symbol** (`STB_LOCAL`, including `STT_SECTION`) defined in
   section k has S = place(k) + `st_value`, which depends on k's place:
   - **whole at a:** S = a + `st_value`;
-  - **pieces:** found through the piece that covers `st_value`;
+  - **pieces:** for a section symbol, the reference's addend selects
+    the piece (`synth.md` S-17): r = `st_value` + A, S + A is the address
+    of byte r in the piece that holds it, and r outside `[0, sh_size)` is
+    R6 under mortar's map (S-18) and `piece-not-locatable` under a
+    foreign one. For any other symbol S is found through the piece that
+    holds byte `st_value` (at `st_value = sh_size`, the piece ending
+    there), and A is added after (S-19). The same order holds for every
+    consumer of a resolved target: fields, GOT slots, tombstones and
+    `.eh_frame` pointers (fixed by WP-028c; the verifier first found the
+    piece of `st_value` for section symbols too);
   - **merged:** §5.6;
   - **in `.eh_frame`** (a label such as crtbeginT.o's
     `__EH_FRAME_BEGIN__`) when the section is rewritten, absent, or the

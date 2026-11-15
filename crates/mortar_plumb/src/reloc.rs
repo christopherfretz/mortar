@@ -164,6 +164,9 @@ enum Target {
     Skip(Reason),
     /// The symbol's section is not in the output (R5).
     Discarded(String),
+    /// A section symbol plus addend outside its section, which is placed
+    /// as pieces: no piece is named (`synth.md` S-18).
+    Outside(String),
     /// An IFUNC: the resolver's address and the symbol (§4.8).
     Ifunc {
         resolver: u64,
@@ -510,7 +513,14 @@ impl<'a, 'b> Engine<'a, 'b> {
             Place::Whole(a) => Target::Addr(a.wrapping_add(value)),
             Place::Pieces(ps) => ps
                 .iter()
-                .find(|p| p.input_offset <= value && value <= p.input_offset + p.size)
+                // The piece holding byte `value` (S-17, S-19); a label at
+                // the section's end, the piece ending there (S-19).
+                .find(|p| p.input_offset <= value && value < p.input_offset + p.size)
+                .or_else(|| {
+                    (!section_sym && value == s.shdr.sh_size)
+                        .then(|| ps.iter().find(|p| p.input_offset + p.size == value))
+                        .flatten()
+                })
                 .map_or_else(
                     // A part of .eh_frame the linker dropped or rewrote.
                     || {
@@ -528,6 +538,46 @@ impl<'a, 'b> Engine<'a, 'b> {
             Place::Absent if s.is_eh_frame(o.elf.machine()) => Target::Skip(Reason::EhFrame),
             Place::Absent | Place::Discarded => Target::Discarded(s.name.clone()),
         }
+    }
+
+    /// The target of a record against symbol `idx` with addend `a`, and
+    /// the addend still to add to it. For a section symbol of a section
+    /// placed as pieces the addend selects the piece (`synth.md` S-17):
+    /// the piece holding byte `st_value + A` is found and nothing is left
+    /// to add. Any other symbol is resolved alone and keeps its addend
+    /// (S-19: the addend of a named symbol does not choose the piece).
+    fn resolve_at(&mut self, oi: usize, idx: u32, addend: i64) -> (Target, i64) {
+        if let Some(t) = self.section_piece(oi, idx, addend) {
+            return (t, 0);
+        }
+        (self.resolve(oi, idx), addend)
+    }
+
+    /// The S-17 target of section symbol `idx` plus `a`, when its section
+    /// is placed as pieces; `None` for every other symbol.
+    fn section_piece(&self, oi: usize, idx: u32, addend: i64) -> Option<Target> {
+        let obj = &self.objs[oi];
+        let table = obj.symtab?;
+        let sym = table.get(SymbolIndex(idx)).ok()?;
+        if sym.sym_type() != STT_SECTION {
+            return None;
+        }
+        let Ok(SymbolSection::Section(k)) = table.section_of(SymbolIndex(idx), &sym) else {
+            return None;
+        };
+        let sec = obj.secs.get(k.0 as usize)?;
+        if !matches!(sec.place, Place::Pieces(_)) {
+            return None;
+        }
+        let r = sym.st_value.wrapping_add(addend as u64);
+        // S-18: outside the section, no piece is named.
+        if r >= sec.shdr.sh_size {
+            return Some(Target::Outside(sec.name.clone()));
+        }
+        Some(match self.in_section(oi, k.0 as usize, r, true) {
+            Target::Addr(v) if sec.shdr.sh_flags & SHF_TLS != 0 => Target::Tls(v),
+            t => t,
+        })
     }
 
     fn resolve(&mut self, oi: usize, idx: u32) -> Target {
@@ -948,7 +998,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         // A non-alloc reference to a section not in the output holds the
         // linker's tombstone (§5.8).
         if !self.objs[oi].secs[si].alloc()
-            && let Target::Discarded(_) = self.resolve(oi, rec.sym)
+            && let (Target::Discarded(_), _) = self.resolve_at(oi, rec.sym, rec.addend)
         {
             let after = find_at(
                 recs,
@@ -974,7 +1024,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         if rec.def.op.is_tls() {
             return self.tls_record(oi, si, recs, sorted, rec, site, symbol);
         }
-        let target = self.resolve(oi, rec.sym);
+        let (target, addend) = self.resolve_at(oi, rec.sym, rec.addend);
         let sa = match target {
             Target::Skip(r) => return self.not_checked(r, 1),
             // A non-TLS type against a thread-local symbol (§4.7).
@@ -986,6 +1036,21 @@ impl<'a, 'b> Engine<'a, 'b> {
                     &site,
                     &symbol,
                     format!("refers to section '{name}', which is not in the output"),
+                );
+                return self.fail(f);
+            }
+            Target::Outside(name) => {
+                if self.format != Format::Mortar {
+                    return self.not_checked(Reason::PieceNotLocatable, 1);
+                }
+                let f = Self::finding(
+                    Rule::MergePiece,
+                    rec,
+                    &site,
+                    &symbol,
+                    format!(
+                        "a section-symbol reference outside section '{name}' (spec/synth.md S-18 refuses it)"
+                    ),
                 );
                 return self.fail(f);
             }
@@ -1004,7 +1069,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                     &partner,
                 );
             }
-            Target::Addr(s) => s.wrapping_add(rec.addend as u64),
+            Target::Addr(s) => s.wrapping_add(addend as u64),
             // An undefined weak reference resolves to zero, or to the place
             // for a PC-relative type that is not a branch (§4.4; branches
             // have W4 and W5).
@@ -1109,10 +1174,13 @@ impl<'a, 'b> Engine<'a, 'b> {
 
     /// S+A of a TLS record and the TLS block, or what to report (§4.7).
     fn tls_target(&mut self, oi: usize, rec: &Rec) -> Result<(TlsBlock, u64), Outcome> {
-        let sa = match self.resolve(oi, rec.sym) {
-            Target::Tls(s) => s.wrapping_add(rec.addend as u64),
+        let (t, a) = self.resolve_at(oi, rec.sym, rec.addend);
+        let sa = match t {
+            Target::Tls(s) => s.wrapping_add(a as u64),
             Target::Skip(r) => return Err(Outcome::Skip(r)),
-            Target::UndefWeak | Target::Merge { .. } => return Err(Outcome::Skip(Reason::Tls)),
+            Target::UndefWeak | Target::Merge { .. } | Target::Outside(_) => {
+                return Err(Outcome::Skip(Reason::Tls));
+            }
             Target::Addr(_) | Target::Ifunc { .. } => {
                 return Err(Outcome::Fail(
                     Rule::Insn,

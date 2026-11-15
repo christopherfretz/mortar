@@ -467,14 +467,15 @@ impl Engine<'_, '_> {
                 if !matches!(ty, 257 | 258 | 260 | 261) {
                     return In::Unknown(Reason::Type);
                 }
-                match this.resolve(oi, sym) {
+                let (t, a) = this.resolve_at(oi, sym, a);
+                match t {
                     Target::Addr(v) => In::Value(v.wrapping_add(a as u64)),
                     Target::UndefWeak => In::Value(a as u64),
                     Target::Discarded(_) => In::Dead,
                     Target::Skip(r) => In::Unknown(r),
                     Target::Tls(_) => In::Unknown(Reason::Tls),
                     Target::Ifunc { .. } => In::Unknown(Reason::Ifunc),
-                    Target::Merge { .. } => In::Unknown(Reason::InMergeable),
+                    Target::Merge { .. } | Target::Outside(_) => In::Unknown(Reason::InMergeable),
                 }
             };
             // The CIEs' personalities.
