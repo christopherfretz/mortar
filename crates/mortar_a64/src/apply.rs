@@ -6,9 +6,9 @@
 
 use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
-    AddendRule, Base, Check, ClassOutcome, DemandClass, DemandFlags, DemandSink, Field, FieldError,
-    FillCx, Incompatible, Minus, RelocAt, ScanCx, ScanError, SectionOut, SlotKind, TargetKind,
-    Terms, Weak0Rule, class_outcome,
+    AddendRule, Base, Check, ClassOutcome, DeadRef, DemandClass, DemandFlags, DemandSink,
+    EventClass, Field, FieldError, FillCx, Incompatible, Minus, RelocAt, ScanCx, ScanError,
+    SectionOut, SlotKind, TargetKind, Terms, Weak0Rule, class_outcome, dead_reference,
 };
 
 use crate::forms::{self, B26};
@@ -52,6 +52,17 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         return;
     }
     let sym = cx.tables.sym(at.key);
+    if sym.gnu_warning {
+        out.reference(at.index, EventClass::GnuWarning, at.key);
+    }
+    // arch.md §3.4: a dead target demands nothing; the referring section
+    // decides whether the field is the tombstone, 0, or an error.
+    if sym.dead {
+        if dead_reference(cx.name, cx.place.alloc) == DeadRef::Discarded {
+            out.reference(at.index, EventClass::DiscardedSection, at.key);
+        }
+        return;
+    }
     // §7: a TLS class treats `weak0` as TLS-local, its TP and DTP offsets
     // being `A` (§12.2).
     let kind = if h.class.is_tls() && sym.kind == TargetKind::Weak0 {
@@ -69,7 +80,11 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
             }
         }
         ClassOutcome::Incompatible(r) => out.error(at.index, ScanError::Incompatible(r)),
-        ClassOutcome::Undefined => out.undefined(at.key, at.index),
+        ClassOutcome::Undefined => {
+            let class =
+                if sym.comdat_only { EventClass::ComdatMismatch } else { EventClass::Undefined };
+            out.reference(at.index, class, at.key);
+        }
         ClassOutcome::Impossible => out.error(at.index, ScanError::Internal),
         ClassOutcome::ArchTls => {
             let gd =
@@ -130,21 +145,32 @@ const fn tls_local(kind: TargetKind) -> bool {
     matches!(kind, TargetKind::Local | TargetKind::Abs | TargetKind::Weak0)
 }
 
-/// The bytes of the field at `r_offset`.
-fn field_mut<'o>(
-    out: &'o mut SectionOut<'_>,
+/// Writes `bytes` at section offset `off`, which must lie in the input
+/// section (`at.site`); `out` keeps the part inside its clip (arch.md
+/// §3.6).
+fn put(
+    at: &RelocAt<'_>,
+    out: &mut SectionOut<'_>,
     off: u64,
-    width: u8,
-) -> Result<&'o mut [u8], FieldError> {
-    let outside = FieldError::Outside { offset: off, width };
-    let start = usize::try_from(off).map_err(|_| outside)?;
-    let end = start.checked_add(usize::from(width)).ok_or(outside)?;
-    out.bytes.get_mut(start..end).ok_or(outside)
+    bytes: &[u8],
+) -> Result<(), FieldError> {
+    let width = u8::try_from(bytes.len()).unwrap_or(u8::MAX);
+    match off.checked_add(bytes.len() as u64) {
+        Some(end) if end <= at.site.bytes.len() as u64 => {
+            out.write(off, bytes);
+            Ok(())
+        }
+        _ => Err(FieldError::Outside { offset: off, width }),
+    }
 }
 
-fn put_word(out: &mut SectionOut<'_>, off: u64, w: u32) -> Result<(), FieldError> {
-    field_mut(out, off, 4)?.copy_from_slice(&w.to_le_bytes());
-    Ok(())
+fn put_word(
+    at: &RelocAt<'_>,
+    out: &mut SectionOut<'_>,
+    off: u64,
+    w: u32,
+) -> Result<(), FieldError> {
+    put(at, out, off, &w.to_le_bytes())
 }
 
 /// The input word at the place, checked against its form.
@@ -168,8 +194,8 @@ pub fn apply(
     let exec = cx.output.is_exec();
     // §8.4: R4's `CALL26` writes `o+8` and `o+12`.
     if exec && at.r_type == relax::CALL26 && relax::gd_lead(at, cx.tables).is_some() {
-        put_word(out, off, MRS_X1_TPIDR)?;
-        return put_word(out, off + 4, ADD_X0_X1_X0);
+        put_word(at, out, off, MRS_X1_TPIDR)?;
+        return put_word(at, out, off + 4, ADD_X0_X1_X0);
     }
     let sym = cx.tables.sym(at.key);
     let weak0 = sym.kind == TargetKind::Weak0;
@@ -201,7 +227,7 @@ pub fn apply(
         && matches!(at.r_type, relax::ADR_GOT_PAGE | relax::LD64_GOT_LO12_NC)
         && let Some(words) = got_relaxed(cx, at, out.addr, sym)
     {
-        return put_word(out, off, words);
+        return put_word(at, out, off, words);
     }
     let form = match h.field {
         Field::None => return Ok(()),
@@ -213,21 +239,26 @@ pub fn apply(
         None => 0,
     };
 
-    // §13.2: a non-alloc place against a dead target gets the tombstone.
-    let x = if !out.alloc && !sym.live {
-        mortar_arch::tombstone(out.name) as i64
-    } else {
+    // §13.2 (arch.md §3.4, §3.11): against a dead target, a debug section
+    // gets the tombstone and `.gcc_except_table` 0; scan reported any
+    // other section.
+    let x = if sym.live {
         value(cx, at, sym, weak0, p, form)?
+    } else {
+        match dead_reference(out.name, out.alloc) {
+            DeadRef::Tombstone => mortar_arch::tombstone(out.name, crate::FACTS.class) as i64,
+            DeadRef::Zero => 0,
+            DeadRef::Discarded => return Err(FieldError::MissingTerm("live target")),
+        }
     };
 
     match form {
         None => {
             let width = h.field.width();
             let bytes = x.to_le_bytes();
-            field_mut(out, off, width)?.copy_from_slice(&bytes[..usize::from(width)]);
-            Ok(())
+            put(at, out, off, &bytes[..usize::from(width)])
         }
-        Some(f) => put_word(out, off, forms::insert(f, w, x)),
+        Some(f) => put_word(at, out, off, forms::insert(f, w, x)),
     }
 }
 
@@ -329,7 +360,7 @@ fn ie_to_le(
     } else {
         MOVK_X0 | lo16(t) << 5 | r
     };
-    put_word(out, at.r_offset, word)
+    put_word(at, out, at.r_offset, word)
 }
 
 /// R4 (§8.4) on the 513 or 514 of a matched GD sequence at `o`: LE for a
@@ -353,7 +384,7 @@ fn gd_exec(
             forms::insert(forms::LDX12, LDR_X0_X0, checked(Check::None, 8, g as i64)?)
         }
     };
-    put_word(out, at.r_offset, word)
+    put_word(at, out, at.r_offset, word)
 }
 
 /// `adrp x0, 0`, `ldr x0, [x0]`, `ldr x0, .`.
@@ -456,5 +487,5 @@ fn tlsdesc_exec(
             _ => NOP,
         }
     };
-    put_word(out, at.r_offset, word)
+    put_word(at, out, at.r_offset, word)
 }

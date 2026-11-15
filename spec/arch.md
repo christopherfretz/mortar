@@ -173,6 +173,7 @@ pub trait Arch: Sync + 'static {
         -> Option<UnitWindow>;                          // §3.4 Overlap, §3.5; default: field window
     fn consumed(&self, output: OutputKind, at: &RelocAt<'_>, names: &dyn SymNames)
         -> bool;                                        // §3.4, §6 step 1; default: false
+    fn sequence_extent(&self, records: &dyn Records, i: u32) -> u32; // §3.5; default: 1
 
     fn got(&self) -> &'static GotShape;                                      // §3.7
     fn plt(&self, v: PltVariant) -> &'static PltShape;
@@ -187,13 +188,14 @@ pub trait Arch: Sync + 'static {
     fn erratum_sites(&self, e: Erratum, code: &Code<'_>, out: &mut Vec<ErratumSite>)
         -> Result<(), Unproved>;
     fn erratum_in_place(&self, e: Erratum, cx: &PatchCx<'_>) -> bool;
+    fn patch(&self, e: Erratum) -> Option<&'static ThunkShape>;              // §3.7: an erratum patch's size, alignment
     fn patch_reach(&self, e: Erratum) -> Reach;                              // §3.7, §6 step 1
     fn write_patch(&self, e: Erratum, cx: &PatchCx<'_>, out: &mut [u8]) -> Result<(), FieldError>;
 
     fn tls(&self) -> &'static TlsAbi;                                        // §3.8
     fn eh(&self) -> &'static EhEncodings;                                    // §3.9
     fn dyn_type(&self, role: DynRole) -> Option<u32>;                        // §3.10
-    fn tombstone(&self, section_name: &[u8]) -> u64;                         // §3.11
+    fn tombstone(&self, section_name: &[u8]) -> u64;                         // §3.11; default: tombstone(name, Facts.class)
     fn weak0(&self, h: &Howto) -> Weak0Rule;                                 // §3.12
     fn property_merge(&self, pr_type: u32) -> Option<PropMerge>;             // §3.13
 }
@@ -217,10 +219,23 @@ pub struct Facts {
     pub page_mask: u64,                      // Page(x) = x & !page_mask (AArch64 0xFFF); 0 if unused
     pub got_base: GotBase,                   // GotStart (AArch64) or GotPltStart (x86-64, i386)
     pub got_header: u8,                      // words reserved at the start of .got with .dynamic
-    pub got_plt_reserved: u8,                // words reserved at the start of .got.plt with .dynamic
+    pub got_plt_reserved: u8,                // words reserved at the start of .got.plt: with .dynamic
+                                             // on every target; also in static outputs on x86 (synth.md S-67)
+    pub max_reach: Window,                   // (before, after): derived, see below
+    pub code_fill: &'static [u8],            // the trap pattern (layout.md L-82): AArch64 4 zero bytes, x86 0xCC
+    pub code_nop: &'static [u8],             // the no-op of .init/.fini padding (L-82): AArch64 NOP, x86 0x90
+    pub seq_leads: &'static [u32],           // the lead types RelocAt.leads gates (§3.5): AArch64 [513]
 }
 fn e_flags(&self, inputs: &mut dyn Iterator<Item = u32>) -> Result<u32, Refusal>; // 0 for all three
 ```
+
+`max_reach: Window` is the largest `before` and `after` of any write
+window of the architecture, over every `Howto` window (§3.2) and every
+member window of a recognized form (`unit_window`, §3.5). `mortar_arch`
+computes it from those tables; it is never written by hand
+(`spec/image.md` I-111). AArch64 gives `(0, 4)` (the markers' word and
+the GD→LE `CALL26` member, `spec/a64.md` §8.4); x86-64 `(4, 8)` for the
+A.3 forms. `code_fill` is positioned by address modulo its length.
 
 The output's `e_flags` is a function of the live inputs' `e_flags`; for
 the three targets it is 0. A relocation section of the other form
@@ -292,17 +307,21 @@ pub struct RelocAt<'a> {
     pub site: Site<'a>,
     pub records: &'a dyn Records,          // the same relocation section, §3.5
     pub proof: &'a [ProofRun],             // the instruction proof of the section, §3.6 rule 1
+    pub leads: bool,                       // the section may hold a record of a type in Facts.seq_leads, §3.5
 }
 impl RelocAt<'_> { pub fn is_insn(&self, off: u64) -> bool; } // a proved instruction word
 pub trait SymNames: Sync { fn name(&self, key: SymKey) -> &[u8]; } // a sequence's callee (a64.md §8.4)
 pub trait ScanTables: SymNames { fn sym(&self, key: SymKey) -> SymFacts; }
 pub trait FillTables: SymNames { /* sym, slot, plt, flags, redirect */ }
 pub struct ScanCx<'a> { /* tables: &dyn ScanTables (Inputs, Resolution, Liveness):
-                           target kind, symbol type, st_other, STT_TLS; OutputKind; PlaceFacts */ }
+                           target kind, symbol type, st_other, STT_TLS, and the event facts
+                           dead, comdat_only, gnu_warning; OutputKind; PlaceFacts;
+                           name: the place section's name */ }
 pub struct DemandSink<'a> { /* over a `dyn DemandOut`, which has the same methods:
                                raise(SymKey, DemandFlags); raise_global(GlobalFlags);
                                count(DynRole, n) for this section; error(record, ScanError);
-                               undefined(SymKey, record): a reference event */ }
+                               reference(record, EventClass, SymKey) for the record being scanned */ }
+pub enum EventClass { Undefined, ComdatMismatch, DiscardedSection, GnuWarning } // image.md §4.4
 ```
 
 - **Contract**: given one live relocation, raise the demands the forms
@@ -339,26 +358,34 @@ pub struct DemandSink<'a> { /* over a `dyn DemandOut`, which has the same method
     objects), and `spec/resolve.md` has not made it a dynamic undefined.
     A dynamic undefined is a `Shlib` target, under `--unresolved-symbols`
     or `-z undefs`, the default for `Shared`.
-  - **What is reported.** Scan does not emit the diagnostic itself.
-    For every live relocation against an `Undefined` target that still
-    needs its symbol, it reports one event through the sink,
-    `undefined(SymKey, record index)`; the file and section are those of
-    the section being scanned, as for `error`. The scan driver
-    (`spec/image.md`) merges the events of all files into **one**
-    `undefined-symbol` diagnostic per `SymKey` (`spec/resolve.md` §11,
-    diag.md §3: ``undefined symbol: {name} (undefined reference to
-    `{name}')``, with up to three `>>> referenced by` contexts).
-  - **The key** of that diagnostic is `(70, FileId, section index × 2^32
-    + record index)` of the key's **first** surviving reference in
-    `(FileId, section index, record index)` order: model §8's scan key.
+  - **What is reported.** For every live relocation against an
+    `Undefined` target that still needs its symbol, scan reports the
+    event `reference(Undefined, key)` and no diagnostic; the file and
+    section are those of the section being scanned, as for `error`. The
+    scan driver (`spec/image.md` §4.4, §4.5) turns the events into one
+    `undefined-symbol` per key: GNU ld's phrase ``undefined reference to
+    `<name>'`` in the head, the first three references in `(FileId,
+    section index, record index)` order as `>>> referenced by
+    file:(section+0xoff)`, then `>>> referenced N more times`.
+    `comdat-mismatch` (event `ComdatMismatch`, per key; reported instead
+    of `Undefined` when `SymFacts.comdat_only`),
+    `discarded-section-reference` (event `DiscardedSection`, per symbol
+    and referring section) and the per-key `gnu-warning` (event
+    `GnuWarning`, for every surviving reference to a key with
+    `SymFacts.gnu_warning`) are reported the same way. The sink names
+    the key; the driver forms the event's group from it (`spec/image.md`
+    §4.4: the key itself, or for `DiscardedSection` the referring
+    section index and the local key's symbol index). An `Undefined`
+    whose verdict is "nothing" is dropped by the driver, which holds the
+    verdict per key (`spec/image.md` I-19).
+  - **The key** of each grouped diagnostic is its least reference's
+    `(70, FileId, section index × 2^32 + record index)`: model §8's scan
+    key.
     It names the place's `SectionId` (`FileId`, section index), and the
     record index orders the places within it. The record index stands in
     for the offset because two records can share one offset. The result
     is independent of scheduling, because the first reference is chosen
     by that order after all events are in.
-  - `comdat-mismatch` and `discarded-section-reference` (`spec/resolve.md`
-    §6.3) have the same shape: per-reference events, one diagnostic per
-    key, keyed by the first reference.
   - **Relocations consumed by a sequence make no reference.** A relocation
     consumed by a matched sequence (§3.5) does not need its symbol: the
     x86 GD→LE/IE and LD→LE call (Appendix A.3, A.4, B.5), and AArch64
@@ -384,8 +411,12 @@ pub struct DemandSink<'a> { /* over a `dyn DemandOut`, which has the same method
     resolved at load time.
   - **Non-alloc places** (§4.3) are reported like any other place.
 - Scan sees only live sections. A relocation in a live section against a
-  symbol in a dead section is not an error at scan; `fill` writes a
-  tombstone (§3.11) or `spec/image.md` reports it.
+  symbol in a section that is not live (`SymFacts.dead`) demands nothing
+  and is classified by `spec/resolve.md` §6.3's table of referring
+  sections (`mortar_arch::dead_reference(name, alloc)`): from a debug
+  name it is accepted and `fill` writes the tombstone (§3.11); from
+  `.gcc_except_table` the field is 0; from any other section scan
+  reports the event `DiscardedSection`.
 
 ### 3.5 Sequences
 
@@ -415,6 +446,19 @@ pub trait Records { fn len(&self) -> u32; fn get(&self, i: u32) -> Option<Reloc>
   the record, its section and `SymNames` only (a kind-1 rule).
 - The look-back is bounded by the architecture (AArch64: 2; x86-64 and
   i386: 1), so `scan` and `fill` stay linear.
+- `sequence_extent(records, i) -> u32`: the number of records from `i`
+  that a sequence recognized at `i` may consume (1 for a record that
+  starts no sequence). It reads only the records. The scan driver does
+  not split a section's records between blocks inside an extent
+  (`spec/image.md` §4.1). AArch64: 3 at a 513 followed by a 514 and a
+  `CALL26`, 2 at a 311 followed by a 312.
+- **`RelocAt.leads`** is `false` only when no record of the relocation
+  section has a type in `Facts.seq_leads`; `true` is always correct.
+  Scan passes `true`, and records the exact bit per section (one
+  comparison per record, as `spec/image.md` I-29's order check) for
+  fill. An architecture skips the patterns of the sequences those types
+  lead when it is `false`, so an ordinary `CALL26` in an output with no
+  GD sequence pays no pattern test (AArch64 R4).
 - Because the pattern is input-only, a demand it removes (the follower's
   `PLT` for `__tls_get_addr`) may be removed (model §3.7 rule for
   resolution-only conditions).
@@ -426,15 +470,23 @@ pub struct FillCx<'a> { /* the tables of model §3, §4: sym(SymKey) -> address,
                            slot(SymKey, SlotKind) -> address; plt(SymKey) -> address;
                            got_base(); tls(); flags(SymKey) -> DemandFlags;
                            redirect(SectionId, offset) -> patch address; output kind; options */ }
-pub struct SectionOut<'a> { /* the unit's output bytes, pre-filled with the input bytes;
-                               P of offset 0 */ }
+pub struct SectionOut<'a> { /* the unit's output bytes in the clip [a, b) of section
+                               offsets, pre-filled with the input bytes; P of offset 0;
+                               written through write(off, bytes); writes outside the
+                               clip are discarded */ }
 ```
 
 - **Contract**: compute `X` for one relocation and write it, or write the
   relaxed form when the architecture's rule says so. Reads: the
   context, the input bytes (`at.site`), the relocation records. Writes
   only `[r_offset − window.before, r_offset + width + window.after)` of
-  `out`. Never reads `out`.
+  `out`. Never reads `out`. `out` may hold only a clip of the section
+  (`spec/image.md` I-35): `apply` writes through `SectionOut`'s methods,
+  and the bytes it writes inside the clip are those of an unclipped
+  call. A relocation whose window straddles two clips is applied once
+  per clip, and the union is the unclipped result. The field lying
+  outside the section is judged against the input section (`at.site`),
+  never against the clip.
 - **Order independence**: windows of different sequences do not overlap
   (checked at scan), and within a sequence each member writes its own
   words (the architecture spec assigns every rewritten word to exactly
@@ -512,7 +564,26 @@ pub enum Erratum { A53_843419 }
   each of the two branches between a site's final word and its patch
   (AArch64: `s(28)` each, so the window of a64.md §11.2); `erratum_in_place` says
   whether a site is fixed without a patch at these addresses (AArch64:
-  ADRP → ADR); `write_patch` writes a patch.
+  ADRP → ADR); `patch(e)` gives a patch's size and alignment as
+  `thunk()` gives a thunk's (AArch64 843419: 8 bytes, alignment 4);
+  `write_patch` writes a patch.
+- **The unproved refusal.** `Unproved` names the unit of the unproved
+  word, `W1`'s code offset `q`, and the unit and offset of `W1`
+  (`q_unit`, `q_unit_offset`): the caller tags the proof runs with its
+  units, so it maps them to the candidate's input section. The
+  diagnostic is `mortar_arch::diag::unproved(e)` (a64.md §11.1's name
+  and the option that turns the fix off) at that place, key
+  `diag::unproved_key(ChunkId of the section)`, `(90, 0, ChunkId)`.
+- **Sites in synthetic chunks cannot occur.** a64.md §11.1 ("Sites and
+  synthetic chunks") proves that no site has a word in a synthetic code
+  chunk: no shape mortar writes (PLT header and entries, IPLT entries,
+  thunks, erratum patches) holds a `W1` that starts one, and layout
+  never starts a synthetic code chunk of non-zero size at a page offset
+  `0xFFC`, `0x000`, `0x004` or `0x008` (`spec/layout.md` L-118), so no
+  input `W1` runs into one; the padding is data and breaks the
+  candidate. A site whose final word is not in an input section is
+  therefore an internal error (`internal-error`), never a user
+  diagnostic, and tests enforce both halves (a64.md §16).
 
 ### 3.8 TLS
 
@@ -563,11 +634,18 @@ to the addend (`-z pack-relative-relocs`).
 
 ### 3.11 Tombstones
 
-A relocation in a non-alloc section whose target is in a section that is
-not live writes `tombstone(name)` truncated to the field instead of `X`:
-1 for `.debug_ranges` and `.debug_loc`, 0 for every other section, on all
-three targets (a64.md §13.2 for the experiment). `-z
-dead-reloc-in-nonalloc=` is refused by name, later.
+A relocation in a non-alloc section with a debug name (`spec/resolve.md`
+§6.3) whose target is in a section that is not live writes
+`tombstone(name, class)` truncated to the field instead of `X`
+(`spec/image.md` I-47): 1 for `.debug_ranges` and `.debug_loc`; all ones
+for `.debug_aranges` and `.debug_frame`; for every other debug name all
+ones in ELFCLASS64 and 0 in ELFCLASS32. In `.debug_aranges` the tuple's
+length is also written 0 (I-112): that write is the image phase's, not
+`apply`'s, because it depends on whether another record has its field
+there; `apply` writes only its field, `max_reach` does not include it,
+and the image raises its own search bound (I-35). `.gcc_except_table`
+writes 0, and other names are refused at scan (`spec/resolve.md` §6.3,
+§3.4 above). `-z dead-reloc-in-nonalloc=` is refused by name, later.
 
 ### 3.12 Undefined weak
 
@@ -581,10 +659,19 @@ the AArch64 table; x86 uses `SZero` for every class.
 
 ### 3.13 GNU properties
 
-`property_merge(pr_type)` is `And` (an input without the property counts
-as 0; AArch64 `FEATURE_1_AND`, x86 `FEATURE_1_AND`), `Or` (an input
-without it counts as 0; x86 `ISA_1_NEEDED`, `FEATURE_2_USED`) or `None`
-for a type the architecture does not know, which is refused by name.
+`property_merge(pr_type)` gives the rule for a processor-range type
+(0xc0000000..0xdfffffff): `And` (an input without the property counts as
+0; the property is omitted when the result is 0; AArch64 `FEATURE_1_AND`
+with BTI, PAC and GCS, x86 `FEATURE_1_AND`), `Or` (the OR of the inputs
+that have it, present if any has it; x86 `ISA_1_NEEDED` and the other
+`0xc0008000..0xc0008fff` types), `OrAll` (the OR of the inputs, present
+only if every input has it; x86 `ISA_1_USED`, `FEATURE_2_USED` and the
+other `0xc0010000..0xc0017fff` types), `EqualOrAbsent` (AArch64
+`FEATURE_PAUTH`: copied when every input that has it agrees, refused
+when two disagree) or `None` for a type the architecture does not know,
+which `spec/synth.md` S-95 drops with the warning `unknown-property`.
+The generic types and ranges (below 0xc0000000, including `Max` for
+`GNU_PROPERTY_STACK_SIZE`) are S-95's, not the architecture's.
 
 ## 4. Demands
 

@@ -5,9 +5,9 @@ use std::collections::HashMap;
 
 use mortar_a64::A64;
 use mortar_arch::{
-    Arch, DemandFlags, DemandOut, DemandSink, DynRole, FieldError, FillCx, FillTables, GlobalFlags,
-    Howto, OutputKind, PlaceFacts, Proof, ProofRun, Reloc, RelocAt, ScanCx, ScanError, ScanTables,
-    SectionOut, Site, SlotKind, SymFacts, SymNames, SymValue, TargetKind, TlsBlock,
+    Arch, DemandFlags, DemandOut, DemandSink, DynRole, EventClass, FieldError, FillCx, FillTables,
+    GlobalFlags, Howto, OutputKind, PlaceFacts, Proof, ProofRun, Reloc, RelocAt, ScanCx, ScanError,
+    ScanTables, SectionOut, Site, SlotKind, SymFacts, SymNames, SymValue, TargetKind, TlsBlock,
 };
 use mortar_core::{FileId, SectionId, SymKey, SymbolId};
 
@@ -32,7 +32,18 @@ pub struct Tables {
 impl Tables {
     pub fn sym(&mut self, k: SymKey, s: u64, kind: TargetKind) -> &mut Self {
         self.syms.insert(k, SymValue { s, kind, size: 0, live: true });
-        self.facts.insert(k, SymFacts { kind, sym_type: 0, st_other: 0, tls: false });
+        self.facts.insert(
+            k,
+            SymFacts {
+                kind,
+                sym_type: 0,
+                st_other: 0,
+                tls: false,
+                dead: false,
+                comdat_only: false,
+                gnu_warning: false,
+            },
+        );
         self
     }
 
@@ -155,8 +166,9 @@ impl<'a> Case<'a> {
                 site: Site { bytes: self.input, offset: r.r_offset },
                 records: &relocs,
                 proof: &self.proof,
+                leads: true,
             };
-            let mut out = SectionOut { bytes, addr: self.addr, alloc: self.alloc, name: self.name };
+            let mut out = SectionOut::whole(bytes, self.addr, self.alloc, self.name);
             self.arch.apply(&cx, &at, &mut out)?;
         }
         Ok(())
@@ -182,7 +194,10 @@ pub struct Sink {
     pub global: GlobalFlags,
     pub counts: Vec<(DynRole, u32)>,
     pub errors: Vec<(u32, ScanError)>,
+    /// The `Undefined` events, as `(key, record)`.
     pub undefined: Vec<(SymKey, u32)>,
+    /// Every event, as `(record, class, key)`.
+    pub events: Vec<(u32, EventClass, SymKey)>,
 }
 
 impl DemandOut for Sink {
@@ -198,8 +213,11 @@ impl DemandOut for Sink {
     fn error(&mut self, record: u32, error: ScanError) {
         self.errors.push((record, error));
     }
-    fn undefined(&mut self, key: SymKey, record: u32) {
-        self.undefined.push((key, record));
+    fn reference(&mut self, record: u32, class: EventClass, key: SymKey) {
+        if class == EventClass::Undefined {
+            self.undefined.push((key, record));
+        }
+        self.events.push((record, class, key));
     }
 }
 
@@ -217,12 +235,29 @@ pub fn scan_one(
     Ok(sink)
 }
 
-/// Scans every record of one section over `input`, in order.
+/// Scans every record of one section over `input`, in order; the
+/// section is `.text` when `place` is alloc, else `.debug_info`.
 pub fn scan_all(
     arch: A64,
     tables: &Tables,
     output: OutputKind,
     place: PlaceFacts,
+    input: &[u8],
+    relocs: &[Reloc],
+    sink: &mut Sink,
+) -> Result<(), mortar_arch::Refusal> {
+    let name: &[u8] = if place.alloc { b".text" } else { b".debug_info" };
+    scan_named(arch, tables, output, place, name, input, relocs, sink)
+}
+
+/// [`scan_all`] of a section called `name`.
+#[allow(clippy::too_many_arguments)]
+pub fn scan_named(
+    arch: A64,
+    tables: &Tables,
+    output: OutputKind,
+    place: PlaceFacts,
+    name: &[u8],
     input: &[u8],
     relocs: &[Reloc],
     sink: &mut Sink,
@@ -242,8 +277,9 @@ pub fn scan_all(
             site: Site { bytes: input, offset: r.r_offset },
             records: &relocs,
             proof: &proof,
+            leads: true,
         };
-        let cx = ScanCx { tables, output, place };
+        let cx = ScanCx { tables, output, place, name };
         arch.scan(&cx, &at, &mut DemandSink::new(sink));
     }
     Ok(())
