@@ -135,6 +135,25 @@ pub struct Implicit { pub bytes: u8, pub signed: bool, pub shift: u8 }
 Checks are a64.md §3.3's (`Signed(n)` is `s(n)`, `Either(n)` is
 `su(n)`, `MovSigned(n)` is `ms(n)`).
 
+**Values and checks by ELF class.**
+
+- **ELFCLASS64.** `X` is computed in 64-bit two's complement, and the
+  check applies to that value.
+- **ELFCLASS32** (i386). Addresses are 32-bit, and the processor's
+  arithmetic on them wraps modulo 2^32. `X` is computed modulo 2^32 and
+  then read as a 32-bit value, signed for `Signed` checks and unsigned
+  for `Unsigned` checks. `Either(32)` and `Data{4}` with `Check::None`
+  accept every 32-bit value. Checks on narrower fields (16, 8 bits)
+  apply to that 32-bit-reduced value.
+- Two valid i386 links the 64-bit reading would refuse, and which GNU ld
+  and lld accept:
+  - `call tgt` with `tgt = 0xF0000000` at `P = 0x1000`. The
+    mathematical `X = 0xEFFFEFFB` is above 2^31, but modulo 2^32 it is
+    `−0x10001005`, which satisfies `Signed(32)`. At run time the branch
+    wraps to `tgt`.
+  - `.long sym − 16` with `sym < 16`. The value is negative and stored
+    as its 32-bit two's complement, which `Either(32)` accepts.
+
 ## 3. The trait
 
 ```rust
@@ -208,10 +227,20 @@ pub struct Site<'a> { pub bytes: &'a [u8], pub offset: u64 } // the input sectio
 ```
 
 - **Contract**: a total function of `(r_type, the bytes of the
-  section)`; reads only `bytes[offset − window.before .. offset + width
-  + window.after]` of the window it returns (and none, for most types).
-  The window is part of the type's definition, not computed from the
-  bytes.
+  section)`. It reads at most `max_window(r_type)` bytes around the
+  field, a per-type constant, and none at all for most types.
+- **The window depends on the matched form**, not only on the type.
+  - i386 `TLS_GD` has a 7-byte SIB `lea` and a 6-byte
+    `leal x@tlsgd(%reg)`.
+  - Its call is 5 bytes with `PLT32` and 6 bytes with `GOT32X`.
+  - x86-64 `TLSLD` is followed by a 5-byte `call` or a 6-byte
+    `call *…(%rip)`.
+
+  `classify` returns the window of the unrelaxed form, which is the
+  field alone for every type here except the single-relocation x86
+  rewrites of Appendix A.2/A.5. A sequence (§3.5) whose pattern matches
+  has a window of its own, the union of the bytes it rewrites. The
+  architecture spec states that window per matched form.
 - Returns the `Howto` of §2.3. `status` is the type's milestone;
   `classify` returns `Refusal{RelocationType, name}` for `Refused` types
   and for `Later` and future-milestone types the build does not enable
@@ -274,11 +303,22 @@ pub struct DemandSink<'a> { /* raise(SymKey, DemandFlags); raise_global(GlobalFl
   `(70, FileId, section index × 2^32 + record index)` (model §8). The
   result is independent of scheduling and thread count.
 - **Checks made at scan** (they need no address): the type's status; the
-  addend rule; the window lies in the section; the target kind against the
-  class table (`relocation-incompatible`); overlapping windows (two
-  relocations whose write ranges overlap are refused, feature
-  `overlapping relocations`, except markers on a word that a relaxation
-  of the same sequence owns).
+  addend rule; the instruction the field form requires (a64.md §3.2); the
+  window lies in the section; the target kind against the class table
+  (`relocation-incompatible`); overlapping windows.
+- **Overlap.** Each relocation, and each matched sequence taken as one
+  unit, has the window of the form `apply` will write. Two units whose
+  windows overlap are refused (feature `overlapping relocations`).
+  - The members of one matched sequence are exempt from each other.
+    The x86-64 `TLSGD` lead's window `[P − 4, P + 12)` contains the
+    field of its own `PLT32`, which is not an overlap.
+  - A sequence whose pattern does not match is not a unit. Each member
+    then has its ordinary field window, and an unmatched x86-64 `TLSGD`
+    with its call does not overlap.
+  - Markers (`Field::None`) occupy no bytes unless a rule rewrites
+    their word.
+- **Places in non-alloc sections** (no `SHF_ALLOC`): §4.3's
+  non-alloc rule applies before the class table.
 - Scan sees only live sections. A relocation in a live section against a
   symbol in a dead section is not an error at scan; `fill` writes a
   tombstone (§3.11) or `spec/image.md` reports it.
@@ -373,8 +413,10 @@ pub enum Erratum { A53_843419 }
   refuses a target the thunk cannot reach correctly (AArch64 BTI landing
   pads, a64.md §9).
 - **Errata**: `errata()` lists the errata the options enable.
-  `erratum_sites` reports the offsets (of the key instruction) of the
-  sites in one code chunk given its address; `erratum_in_place` says
+  `erratum_sites` reports the sites (by their final word) in the words of
+  one whole output code section, in address order across input-section
+  and chunk boundaries, given its address and the instruction/data
+  ranges (a64.md §11.1); `erratum_in_place` says
   whether a site is fixed without a patch at these addresses (AArch64:
   ADRP → ADR); `write_patch` writes a patch.
 
@@ -465,6 +507,7 @@ bitflags DemandFlags: u16 {          // per SymKey (model §3.7)
     IPLT,                            // non-preemptible IFUNC: an IPLT entry, its address everywhere
     GOT_TPREL, TLS_GD, TLS_DESC,
     GOT_NORELAX,                     // some use forbids the GOT relaxation (a64.md R5)
+    TLSIE_NORELAX,                   // some use forbids IE -> LE (a64.md R3)
 }
 bitflags GlobalFlags: u8 {           // per output
     GOT_BASE,                        // the GOT base symbol is referenced
@@ -473,9 +516,27 @@ bitflags GlobalFlags: u8 {           // per output
 }
 ```
 
-`IPLT` and `GOT_NORELAX` and the global word are additions to model §3.7
-(§9, M-1). A flag means "some valid layout may use this"; it is never
-cleared.
+`IPLT`, `GOT_NORELAX`, `TLSIE_NORELAX` and the global word are additions
+to model §3.7 (§9, M-1). A flag means "some valid layout may use this"
+(or, for the `*_NORELAX` flags, "some use forbids this rewrite"); it is
+never cleared within a link.
+
+**Flags that reach other files' bytes.** For some flags, a flag raised
+by a relocation in file F changes the bytes `fill` writes for a
+relocation in another file G, even with no change in G:
+
+| flag | why it reaches other files' bytes |
+|---|---|
+| `GOT_NORELAX` | It turns every R5 pair against the symbol back into a GOT load. |
+| `TLSIE_NORELAX` | It turns every R3 use back into IE. |
+| `CANON_PLT` | It changes `S` of a function, for every file, to its PLT entry. |
+| `COPY` | It moves the symbol to the copy allocation. |
+
+These four must be in the incremental dependency index (model M-8, §9).
+`GOT`, `PLT`, `IPLT`, `TLS_GD`, `TLS_DESC`, `GOT_TPREL` and `EXPORT`
+reach other files only through `Slots` and addresses, which the index
+already covers. `IPLT` is raised by every reference to a non-preemptible
+IFUNC, so any file that uses the entry raised the flag itself.
 
 ### 4.3 Demand classes
 
@@ -507,6 +568,23 @@ read-only section (no `DT_TEXTREL` is ever written); `—`: nothing.
 | | Shared | `E` | | | | | | |
 | `TlsDtpRel` | any | — if defined here, else `E` | | | | | | |
 | `None` | any | — | | | | | | |
+
+**Non-alloc places.** The table is for places in `SHF_ALLOC` sections. A
+place in a section without `SHF_ALLOC`:
+
+- is filled with link-time addresses in every output kind;
+- raises no demand and no `E`, and never gets a dynamic relocation;
+- takes `S` as the link-time value, with 0 for a symbol not defined in
+  this output;
+- against a target in a section that is not live, gets
+  `tombstone(section name)` (§3.11) in place of `X`, truncated to the
+  field.
+
+Only data classes (`AbsWord`, `AbsNarrow`, `Pc`, `TlsDtpRel`, `Size`) are
+allowed there. Any other class is `relocation-incompatible` (reason `not
+allowed in a non-allocated section`). This is what every `-g` PIE needs.
+GNU ld, lld and mold resolve `.debug_*` relocations statically (a64.md
+§13.2).
 
 The `Weak0` columns show demands; what is written is §3.12's rule. A
 `Got`-class relocation against `Weak0` demands a slot that holds 0 with no
@@ -555,8 +633,9 @@ rule `ρ` with precondition `ρ_in ∧ ρ_addr`:
 
 **Obligation**: `needs(f) ⊆ Demands` for the `f` that `apply` writes,
 for every layout valid for the tables. Each architecture spec states,
-per rule, whether it is of kind 1 or 2 (a64.md §8: R1-R4 kind 1, R5 kind
-2), which discharges it rule by rule. It is checked at run time for free:
+per rule, whether it is of kind 1 or 2 (a64.md §8: R1, R2, R4 kind 1;
+R3 and R5 kind 2, because they read `TLSIE_NORELAX`/`GOT_NORELAX`), which
+discharges it rule by rule. It is checked at run time for free:
 `apply` looks every slot it uses up in `Slots`, and a missing one is an
 internal error (a bug of the scan rule, never a user diagnostic); the
 test of §12 links every relocation of the corpus in every output kind
@@ -578,44 +657,98 @@ of the key instruction)`.
 **Round** `k`, given addresses `A_k` (a pure function of the layout and
 the patches so far):
 
-1. **Needs**: every branch site whose class allows a veneer and that has
-   no redirect, with its final target `T` out of `branch(h).reach` of
-   `P`; every branch site whose redirect's patch is out of reach of `P`;
-   every erratum site (`erratum_sites` over each code chunk) that has no
-   redirect and is not `erratum_in_place` at `A_k`.
-2. If there are none, stop: the layout is the fixed point.
-3. **Add**, visiting the needs in output-address order (ties by
-   `(FileId, section index, record index)`): a thunk site is redirected to
-   an existing thunk with its key in reach of `P` if one exists (the one
-   with the lowest address), else to a new thunk in an island the policy
-   chooses within reach of `P` (the policy must not choose an island whose
-   reach to `T` the thunk shape cannot cover; that is §7's error); an
-   erratum site gets a new patch within reach of its key instruction.
-   Sizes in `Placement.sized` grow; addresses after each island move.
+1. **Needs**:
+   - every branch site that has no redirect, whose class allows a veneer,
+     and whose final target `T` is out of `branch(h).reach` of `P`;
+   - every branch site whose redirect's patch is out of reach of `P`;
+   - every erratum site (`erratum_sites` over each output code section's
+     words, a64.md §11.1) that has no redirect and is not
+     `erratum_in_place` at `A_k`.
+
+   A branch that a matched sequence consumes (a64.md §8.4) is not a
+   site.
+2. If there are no needs, stop: the layout is the fixed point.
+3. **Add.** Visit the needs in output-address order, with ties broken by
+   `(FileId, section index, record index)`.
+   - A thunk site is redirected to the existing thunk of its key that is
+     in reach of `P` and has the lowest address, if there is one. Else
+     it goes to a new thunk in an island the policy chooses within reach
+     of `P`. If no island can cover the thunk shape's reach to `T`, that
+     is §7's error.
+   - An erratum site gets a new patch within reach of its final word.
+   - Sizes in `Placement.sized` grow, and addresses after each island
+     move.
 4. Next round.
 
-**Monotone**: patches and redirects are only added. A redirect is
-replaced only when its patch fell out of reach, by a redirect to a
-patch created in that round. No patch is removed, so a patch can end up
-unused (requested change M-4: validity rule 4 allows unused patches).
-`apply` follows the redirect when one exists (the patch form) and the
-direct or in-place form otherwise; never "the redirect exists but the
-direct branch reaches, so branch directly".
+**Monotone.**
+- Patches are only added.
+- Chunk order never changes.
+- Every size in `Placement.sized` only grows.
+- So the distance between any two points of the output never shrinks.
 
-**Bound**: each round adds at least one patch. Patches are at most one
-per (island, key) for thunks plus one per erratum site key, and both sets
-are finite for a finite input, so the iteration terminates. Policies keep
-it short by reserving slack: islands every `reach − margin` bytes of code
-and thunks placed against the reach shrunk by the island budget. As a
-defence against a policy bug, more than 32 rounds is a refusal (feature
-`range-extension fixed point`), checked by a test on the corpus never to
-happen.
+**Redirects.** A site's redirect is replaced only when its patch fell
+out of reach of `P`. The replacement is an existing patch in reach, or a
+new one. By distance monotonicity, a patch that fell out of reach of `P`
+never comes back into reach, so a site never returns to a patch it left.
 
-**Determinism**: each round is a function of the previous round's
-tables; needs are collected in parallel and sorted (model §6.3); thread
-count and scheduling do not enter. An incremental link starts from the
-previous layout's patches (they are part of the layout) and runs the
-same rounds.
+No patch is removed, so a patch can end up unused (requested change M-4).
+The one removal is an erratum redirect whose final word is no longer a
+site when the iteration ends (a64.md §11.2). It is dropped after the
+last round. That moves no address and changes no other site.
+
+`apply` follows the redirect when one exists (the patch form), and the
+direct or in-place form otherwise. It never takes the shortcut "the
+redirect exists but the direct branch reaches, so branch directly".
+
+**Termination.**
+- **Under a policy condition (C)**, termination is proved. (C): the
+  policy places patches only in islands from a set fixed before round 1,
+  for example the gaps between input sections at every `reach − margin`
+  bytes of the patch-free layout, and with at most one thunk per key in
+  each island.
+  - Then the number of patches is at most `islands × keys` plus the
+    number of erratum keys. Both are fixed before round 1, since an
+    erratum key is an input word.
+  - Each round either adds a patch, or moves some site to a patch it
+    has never used.
+  - So the number of rounds is at most `patches + sites × patches`,
+    which is finite.
+- **Without (C)**, for example a policy that opens a new island
+  whenever one fills, no bound is claimed.
+- **The cap is part of the definition**, for every policy. If a link
+  needs more than `R_max = 32` rounds, it is refused by name:
+  `refused`, class `feature`, name `range-extension fixed point`, key
+  `(90, 0, 0)`. This is not a defence that a correct implementation
+  never reaches. It is the specified result of such a link. The output
+  is never written from a layout that has not reached the fixed point.
+- The corpus test measures the round count. The expected value is ≤ 3.
+
+**Determinism.**
+- Each round is a function of the previous round's tables.
+- Needs are collected in parallel and sorted (model §6.3).
+- Thread count and scheduling do not enter.
+
+**Incremental links.** An incremental link starts from the previous
+layout's patches, which are part of the layout, and runs the same rounds.
+Before round 1 it must invalidate the following:
+
+- **Redirects whose key names an input section that was edited or
+  removed.** The key no longer names the same word. Their patches stay
+  as unused chunks wherever the old layout region is reused.
+- **Redirects of sites whose relocation record changed:** a different
+  target, type or addend under the same key.
+- **Thunks whose key's symbol now resolves to a PLT entry or back.**
+  Their kind is `Sym` or `Plt`, so the key changed.
+- **Every reach.** This needs no special step: round 1 re-evaluates
+  every site against the new addresses.
+
+The dependency index (model §7.2) lists:
+- for each patch, the units holding its redirected sites;
+- for each site, its patch chunk.
+
+The result need not equal the patches a fresh link would choose. Model
+§7.3 requires only that a full link given these tables produce the same
+bytes, and that the verifier accept them.
 
 **What `Placement.patches` records**: per patch its chunk and offset (the
 address follows), its kind and target; and the sorted redirects. The
@@ -623,7 +756,8 @@ patch's bytes are not recorded: `write_thunk`/`write_patch` compute them
 from the addresses in `fill`. The verifier checks: every redirected site
 branches to its patch; every thunk reaches its target; every erratum
 patch holds the replaced instruction, relocated at its new address, and
-branches back; no erratum site remains unfixed in the output.
+branches back; every erratum redirect names a site; no erratum site
+remains unfixed in the output (a64.md §11.3 states the exact rule).
 
 ## 7. Diagnostics
 
@@ -634,10 +768,11 @@ new kinds requested of `spec/diag.md` (§10):
 |---|---|---|---|
 | `relocation-out-of-range` | `apply` or `write_*` computes `X` outside the check of its field | the relocation `file:(section+0xoff)`; for a synthetic chunk (PLT entry, thunk, patch) the output section and offset | `(100, FileId, section index × 2^32 + record index)`; `(100, 0, ChunkId)` for synthetic chunks |
 | `relocation-misaligned` | `X mod align ≠ 0` | as above | as above |
-| `relocation-incompatible` | scan: the class table gives `E`; a non-zero addend on a `MustBeZero` type; a TLS class against a non-TLS symbol or the reverse | the relocation | `(70, FileId, section index × 2^32 + record index)` |
+| `relocation-incompatible` | scan: the class table gives `E`; a non-zero addend on a `MustBeZero` type; a TLS class against a non-TLS symbol or the reverse; the instruction at the place does not match the field form; a disallowed class in a non-alloc section | the relocation | `(70, FileId, section index × 2^32 + record index)` |
 
 - The value and range in the message are those of the check (`X` and
-  the check's bounds), in decimal, as lld prints them.
+  the check's bounds), in decimal, as lld prints them; for ELFCLASS32 the
+  32-bit-reduced value (§2.3).
 - Layout does not report overflow: a layout mortar computes is filled,
   and the fill reports it; a layout loaded from a link state that
   violates rule 6 is not reused (phase 15, `spec/incr.md`). So each
@@ -665,13 +800,14 @@ Not edited; for the model's owner.
 
 | # | section | current text | proposed text | reason |
 |---|---|---|---|---|
-| M-1 | §3.7 | "per `SymKey`, a set of flags (needs a GOT slot, a PLT entry, a TLS descriptor, a TLS module/offset pair, a thread-pointer offset slot, a copy relocation, a canonical PLT address, export to the dynamic symbol table);" | "per `SymKey`, a set of flags (needs a GOT slot, a PLT entry, an IPLT entry, a TLS descriptor, a TLS module/offset pair, a thread-pointer offset slot, a copy relocation, a canonical PLT address, export to the dynamic symbol table, and the inhibitor of a GOT relaxation); per output, a set of flags (the GOT base is referenced, a local-dynamic module slot, static TLS);" | IPLT entries are demanded by references to non-preemptible IFUNCs (a64.md §10.4); AArch64's GOT relaxation is valid only if every use is paired, a fact over all relocations of a symbol (a64.md R5); the module slot and the GOT base are not per symbol. |
+| M-1 | §3.7 | "per `SymKey`, a set of flags (needs a GOT slot, a PLT entry, a TLS descriptor, a TLS module/offset pair, a thread-pointer offset slot, a copy relocation, a canonical PLT address, export to the dynamic symbol table);" | "per `SymKey`, a set of flags (needs a GOT slot, a PLT entry, an IPLT entry, a TLS descriptor, a TLS module/offset pair, a thread-pointer offset slot, a copy relocation, a canonical PLT address, export to the dynamic symbol table, and the inhibitors of the GOT and the IE-to-LE relaxations); per output, a set of flags (the GOT base is referenced, a local-dynamic module slot, static TLS);" | IPLT entries are demanded by references to non-preemptible IFUNCs (a64.md §10.4); AArch64's GOT relaxation is valid only if every use is paired, a fact over all relocations of a symbol (a64.md R5); IE→LE is correct only all-or-none per symbol (a64.md R3, review finding 1); the module slot and the GOT base are not per symbol. |
 | M-2 | §3.7 | "A relaxation that depends on distance (§5) never removes a demand; one that depends only on `Resolution` (the symbol is local to the output) may." | "A relaxation that depends on distance, or on `Demands` themselves, never removes a demand; one that depends only on `Resolution`, the output kind and the bytes and relocation records of its own section may (`spec/arch.md` §5.2)." | Sequence patterns (a64.md R4, x86 TLSGD) are input-only and must be allowed to remove the `__tls_get_addr` PLT demand; R5's inhibitor is read from `Demands`. |
 | M-3 | §4.4 rule 3 | "… in particular the TLS initialized chunks are directly followed by the uninitialized ones and `tls` describes them; …" | "… in particular the TLS initialized chunks are directly followed by the uninitialized ones, `tls` describes them, and `tls.start` is a multiple of `tls.align`; …" | glibc computes the executable's TP offset from `p_align` alone (a64.md §12.2); a misaligned template gives wrong offsets at run time. |
-| M-4 | §4.4 rule 4 | "every site that needs a patch has one in range (…), and every patch is used;" | "every site that needs a patch has one in range (…); every redirect names a patch of the kind its site needs; a patch no site uses is allowed;" | The fixed point is monotone and never removes a patch (arch.md §6); requiring use would make it non-monotone or need a removal pass whose result depends on iteration history. |
+| M-4 | §4.4 rule 4 | "every site that needs a patch has one in range (…), and every patch is used;" | "every site that needs a patch has one in range (…); every thunk redirect names a thunk of the key its site needs; every erratum redirect names a site of that erratum at the layout's addresses; a patch no site uses is allowed;" | The fixed point is monotone and never removes a patch (arch.md §6); requiring use would make it non-monotone. Erratum redirects that stopped being sites are dropped at the end, without moving any address (a64.md §11.2), so the stronger rule holds for them. |
 | M-5 | §4.3 | "the GOT and PLT index of each `SymKey` that demands one;" | "the index of each slot of each `SymKey` that demands one, per slot kind (address, thread-pointer offset, module/offset pair, descriptor), of the output's local-dynamic module slot, and the PLT or IPLT index of each `SymKey` that demands one;" | One key can demand several slots (a64.md §10.1); the module slot is per output. |
 | M-6 | §5, "Relaxations are functions of the tables" | "… is decided by a rule in `spec/arch.md` from `Resolution`, `Demands` and the addresses the layout gives, evaluated in `fill`." | "… is decided by a rule in `spec/arch.md` from `Resolution`, `Demands`, the addresses the layout gives, and the bytes and relocation records of the same input section, evaluated in `fill`." | Sequences (arch.md §3.5) read neighboring records; this is input data, not a table. |
 | M-7 | §4.4 `patches` row | "an erratum patch (AArch64 843419);" | "an erratum patch (AArch64 843419), keyed by the `(SectionId, offset)` of the instruction it replaces;" | Makes the redirect of an erratum patch the same shape as a thunk's. |
+| M-8 | §7.2, the dependency index | "for each thing whose address or content can change (a section, a fragment, a slot, a symbol-anchored allocation, a symbol's definition), the **units** (§5) whose bytes depend on it." | "for each thing whose address or content can change (a section, a fragment, a slot, a symbol-anchored allocation, a symbol's definition, a patch and its redirects, and each per-symbol demand flag that another file's bytes depend on: `GOT_NORELAX`, `TLSIE_NORELAX`, `CANON_PLT`, `COPY`, `spec/arch.md` §4.2), the **units** (§5) whose bytes depend on it." | These flags are unions over every file. An edit in one file can set or clear one, and that changes the bytes of an unchanged unit (an R5 pair turning back into a GOT load, an IE use staying IE, a function's address becoming its PLT entry), which the index as written does not track. Patches: arch.md §6, incremental invalidation. |
 
 ## 10. Requested changes to `spec/diag.md`
 
@@ -687,7 +823,8 @@ Three kinds, in a new area "relocations" between "symbols" and
 `{reason}` is one of: `recompile with -fPIC`; `recompile with -fPIE`;
 `it is in a read-only section` (a text relocation); `the addend must be
 0`; `it is not thread-local`; `it is thread-local`; `local-exec TLS in a
-shared object`. Wording after lld (the out-of-range and alignment texts
+shared object`; `the instruction does not match the relocation`; `not
+allowed in a non-allocated section`. Wording after lld (the out-of-range and alignment texts
 are lld's; the incompatible text is lld's shape with a reason field).
 `name` goes through the demangling hook.
 
@@ -696,11 +833,12 @@ are lld's; the incompatible text is lld's shape with a reason field).
 | # | question | recommendation |
 |---|---|---|
 | Q1 | The class table (§4.3) is written from AArch64 and checked against x86 on paper (Appendices). x64.md and x86.md may find a case the table does not express. | Their WPs may add a class; changing an existing row needs this spec's review. |
-| Q2 | 32 rounds as the fixed point's defensive cap is a guess (lld uses a similar bound). | Keep; the corpus test measures the actual maximum, expected ≤ 3. |
+| Q2 | `R_max = 32` is part of the fixed point's definition (§6), and its value is a choice: a link that needs more is refused. Termination is proved only under policy condition (C). | Keep 32; `spec/layout.md` adopts (C) so that the cap is never reached for a terminating policy; the corpus test measures the actual maximum, expected ≤ 3. |
 | Q3 | `--emit-relocs` on REL outputs: GNU ld leaves the final value in the field, so the emitted addend is lost. | Do the same; consumers of `--emit-relocs` (BOLT, post-link tools) target RELA platforms. Confirm in x86.md. |
 | Q4 | Keeping the GOT slot of a relaxed GOT load (AArch64 R5, x86 `GOTPCRELX`) costs one word per symbol; lld drops it when every use is relaxed. | Keep (conservative demand, model §3.7); measure in the bench and revisit with an address-independent criterion if it matters. |
 | Q5 | Thunk reuse picks "the existing thunk with the lowest address in reach". | Keep (any deterministic rule is correct); the layout policy may prefer the nearest, if measured to need fewer rounds. |
-| Q6 | x86 TLSLD sequences that do not match the pattern, in an executable, are refused (Appendix A.4) because their `DTPOFF` fields would otherwise need per-sequence knowledge. | Keep; GCC and Clang always emit the canonical sequences. |
+| Q6 | x86 TLSLD sequences that match none of the recognized forms (Appendix A.4: `call` and `call *GOTPCRELX`, i386 `PLT32` and `GOT32X`), in an executable, are refused, because their `DTPOFF` fields would otherwise need per-sequence knowledge. | Keep; GCC and Clang emit only the recognized forms (the `-fno-plt` forms are in A.4 after the review). |
+| Q7 | The x86 TLS special cases (A.4, A.6: `_TLS_MODULE_BASE_` under TLSDESC) are from the review's experiment with clang `-mtls-dialect=gnu2`; GCC's gnu2 local-dynamic output was not inspected. | x64.md (WP-029) re-runs both producers before implementing. |
 
 ## 12. Tests
 
@@ -718,6 +856,13 @@ are lld's; the incompatible text is lld's shape with a reason field).
   the result equal under thread counts 1, 2, 7, 64; the cap refusal on a
   policy injected to oscillate.
 - §7: each diagnostic's exact text and key.
+- §2.3: the two i386 wrap-around links are accepted; a 64-bit value just
+  outside `Signed(32)` is refused.
+- §3.4: an unmatched x86-64 `TLSGD`+call is not an overlap; two
+  matched sequences sharing a byte are.
+- §4.2/M-8: an incremental link that adds an unpaired GOT use in one file
+  refills the R5 pairs of another; likewise `TLSIE_NORELAX`.
+- §4.3: a `-g` PIE produces no dynamic relocation in `.debug_*`.
 - Appendices: the fit checks become x64.md's and x86.md's first tests.
 
 ## Appendix A. Fit check: x86-64
@@ -764,10 +909,13 @@ The precondition has an address part (`S + A − P` in `Signed(32)`; the
 absolute value in range), so the rule is kind 2 of §5.2: the GOT slot
 stays demanded. Single-relocation rewrites: fits with the window.
 
-**A.3 `TLSGD` (19).** The sequence `66 48 8d 3d <TLSGD>` (`data16 lea
-x@tlsgd(%rip), %rdi`) then `66 66 48 e8 <PLT32 __tls_get_addr>` (or `66
-48 ff 15 <GOTPCRELX __tls_get_addr>` with `-fno-plt`): lead `TLSGD`,
-follower the call relocation at record `+1`, field at `P + 8` (`P + 9`).
+**A.3 `TLSGD` (19).** The sequence is `66 48 8d 3d <TLSGD>` (`data16 lea
+x@tlsgd(%rip), %rdi`) followed by the call. The call is `66 66 48 e8
+<PLT32 __tls_get_addr>`, or with `-fno-plt` `66 48 ff 15 <GOTPCRELX
+__tls_get_addr>`. The lead is the `TLSGD`, and the follower is the call
+relocation at record `+1`. In both forms the follower's field is at
+`P + 8`. GCC 14's `-fno-plt` output was checked: the lead is at 0x8 and
+the follower at 0x10. Both forms are 16 bytes, `[P − 4, P + 12)`.
 In an executable: LE `64 48 8b 04 25 00 00 00 00 48 8d 80 <tpoff32>`
 (`mov %fs:0, %rax; lea x@tpoff(%rax), %rax`) over `[P − 4, P + 12)`,
 written entirely by the lead (window `before: 4, after: 8`); IE `mov
@@ -775,14 +923,38 @@ written entirely by the lead (window `before: 4, after: 8`); IE `mov
 the pattern holds and raises no `PLT` demand (input-only, §3.5). Fits;
 this case and AArch64 R4 are why §3.5 exists.
 
-**A.4 `TLSLD` (20) with `DTPOFF32` (21).** `48 8d 3d <TLSLD>; e8
-<PLT32 __tls_get_addr>` → `66 66 66 64 48 8b 04 25 00 00 00 00` in an
-executable. The `DTPOFF32` fields that follow use the module base the
+**A.4 `TLSLD` (20) with `DTPOFF32` (21).** There are two forms, each with
+its own window.
+
+- `48 8d 3d <TLSLD>; e8 <PLT32 __tls_get_addr>` (12 bytes, follower field
+  at `P + 5`) becomes `66 66 66 64 48 8b 04 25 00 00 00 00` in an
+  executable.
+- The `-fno-plt` form `48 8d 3d <TLSLD>; ff 15 <GOTPCRELX
+  __tls_get_addr>` (13 bytes, follower field at `P + 6`) becomes `66 66
+  66 66 64 48 8b 04 25 00 00 00 00`.
+
+Both were checked with GCC 14, GNU ld 2.44 and lld 19, which write the
+same words. The `DTPOFF32` fields that follow use the module base the
 call returned: once the sequence is relaxed they must hold `TpRel`
 instead of `DtpRel`. They are not linked to a particular `TLSLD`, so the
 rule is per output: in an executable every `TLSLD` is relaxed and every
 `DTPOFF32`/`DTPOFF64` in code is written as `TpRel` (a kind-1 rule: output
-kind only). A `TLSLD` that does not match the pattern in an executable is
+kind only).
+
+**The `_TLS_MODULE_BASE_` special case (x86-64 TLSDESC
+local-dynamic).** Clang's `-mtls-dialect=gnu2 -ftls-model=local-dynamic`
+takes a descriptor for `_TLS_MODULE_BASE_` and adds `DTPOFF32` offsets
+to its result. In an executable, A.6's LE rewrite of a descriptor for
+`_TLS_MODULE_BASE_` writes `0` (`mov $0x0, %rax`), **not** the TP offset
+of the symbol. The `DTPOFF32` fields hold the full `TpRel`, as with
+`TLSLD`. The sum is `0 + TpRel(x)`.
+
+The review's experiment ran this: GNU ld and lld write exactly this
+(`mov $0, %rax`, then `%fs:-0x80`), and the program printed the expected
+value. Writing `TpRel(_TLS_MODULE_BASE_)` there would count the offset
+twice. This is the opposite of AArch64, where the base's descriptor
+becomes `TPREL(tls.start)` and DTPREL fields keep `DtpRel` (a64.md
+§12.4). Each architecture spec states its convention. A `TLSLD` that does not match the pattern in an executable is
 refused by name (feature `unrecognized local-dynamic TLS sequence`,
 §11 Q6). Fits; no trait change.
 
@@ -795,7 +967,8 @@ $tpoff, %reg` (`48 c7 c0+r`, REX.R → REX.B); `add x@gottpoff(%rip), %reg`
 x@tlsdesc(%rip), %rax` (`48 8d 05`) → LE `mov $tpoff, %rax` (`48 c7 c0`),
 IE `mov x@gottpoff(%rip), %rax` (`48 8b 05`); `call *x@tlscall(%rax)`
 (`ff 10`, a marker: `Field::None`, window `after: 2`) → `xchg %ax, %ax`
-(`66 90`). Members rewrite independently, as AArch64 R1. Fits.
+(`66 90`). Members rewrite independently, as AArch64 R1. The LE value is
+`TpRel(S + A)`, except for `_TLS_MODULE_BASE_`, which gives 0 (A.4). Fits.
 
 **A.7 `32S` (11), `32` (10) in a PIE.** Class `AbsNarrow`: `E` in `Pie`
 and `Shared` (`recompile with -fPIE`) except against `Abs`; checks
@@ -871,12 +1044,18 @@ per-output-kind variant (Appendix C, 4).
 **B.5 The TLS family.** `TLS_GD` (18): `leal x@tlsgd(,%ebx,1), %eax`
 (`8d 04 1d`) or `leal x@tlsgd(%reg), %eax` (`8d 80+r`) followed by `call
 ___tls_get_addr@PLT` (`PLT32`) or `call *___tls_get_addr@GOT(%reg)`
-(`GOT32X`): a sequence with the call at record `+1`. LE in an executable:
-`65 a1 00 00 00 00 81 e8 <tpoff>` (`movl %gs:0, %eax; subl $x@tpoff,
-%eax`) written by the lead over its window; IE: `movl %gs:0, %eax; addl
+(`GOT32X`): a sequence with the call at record `+1`. The four forms have
+different lengths: a 7-byte SIB `lea` or a 6-byte base-register `lea`,
+then a 5-byte `PLT32` call or a 6-byte `GOT32X` call. So the matched
+window is 12, 13, 11 or 12 bytes. `classify` tells the `lea` forms apart
+by the ModRM byte (§3.2). LE in an executable, for the 6 + 5 form
+(checked with GNU ld and lld): `65 a1 00 00 00 00 81 e8 <tpoff>` (`movl
+%gs:0, %eax; subl $x@tpoff, %eax`), written by the lead over its window.
+The longer forms add `nop` padding, and x86.md (WP-030) gives the words
+per form; IE: `movl %gs:0, %eax; addl
 x@gotntpoff(%reg), %eax`. `TLS_LDM` (19) with `TLS_LDO_32` (32): as A.4.
 `TLS_IE` (15): `G(TpOff{negated: false})`, absolute (`movl x@indntpoff,
-%reg`, `a1` or `8b 05+r`, `03` for `addl`) → `movl $x@ntpoff, %reg` (`c7
+%reg`, `a1` or `8b 05+8r`, `03` for `addl`) → `movl $x@ntpoff, %reg` (`c7
 c0+r`) or `addl $…` (`81 c0+r`). `TLS_GOTIE` (16): `G(TpOff{false}) −
 GOT`. `TLS_IE_32` (33): `G(TpOff{negated: true}) − GOT`. `TLS_LE` (17):
 `TpRel`; `TLS_LE_32` (34): `TpRel` with `negate`. `TLS_GOTDESC` (39) and
@@ -897,7 +1076,9 @@ places; each change is in §2-§3 above.
 1. `classify` takes the section bytes (`Site`): i386 `GOT32`/`GOT32X`
    select the formula from the ModRM byte.
 2. `Howto.window`: x86 rewrites change opcode bytes before the field,
-   and `jmp *GOT` → `jmp` moves the field.
+   and `jmp *GOT` → `jmp` moves the field. After the review: the window
+   is per matched form (i386 `TLS_GD`'s four lengths, x86-64 `TLSLD`'s
+   two), and the overlap check exempts a sequence's own members.
 3. Sequences with neighboring records (§3.5): x86 `TLSGD`/`TLSLD` with
    their call. AArch64 needed them too (R4, R5), but only the x86 cases
    fixed the look-back bound and the "lead writes the whole window" rule.
@@ -913,6 +1094,9 @@ places; each change is in §2-§3 above.
 9. `property_merge` with an `Or` rule (x86 `ISA_1_NEEDED`).
 10. `weak0` per architecture (AArch64 branches to the next instruction;
     x86 uses `S = 0`).
+11. After the review: checks modulo 2^32 for ELFCLASS32 (§2.3); the
+    non-alloc rule (§4.3); the `_TLS_MODULE_BASE_` convention as an
+    architecture fact (A.4).
 
 Nothing in the AArch64 table had to change for x86. The rule "every
 `DTPOFF` in an executable is a `TpRel`" (A.4) is an x86 rule inside
