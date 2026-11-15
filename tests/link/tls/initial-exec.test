@@ -5,7 +5,6 @@
 # "Initial Exec" and "Linker Optimizations"). A 64-byte aligned
 # thread-local variable keeps its alignment.
 #@ spec: layout.md "Thread-local storage"
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 -ftls-model=initial-exec main.c -o main.o
 cc -O1 -ftls-model=initial-exec vars.c -o vars.o

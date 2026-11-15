@@ -15,6 +15,8 @@ use mortar_diag::{Collector, Policy, Report};
 use mortar_input::store::{Store, StorePolicy};
 use mortar_testutil::{Scratch, run, tool};
 
+pub mod plumb;
+
 pub const SHT_NOBITS: u32 = 8;
 pub const SHF_ALLOC: u64 = 2;
 

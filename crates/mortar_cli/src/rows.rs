@@ -70,7 +70,7 @@ const fn zx(text: &'static str) -> Spelling {
 /// The table.
 #[rustfmt::skip]
 pub(crate) static ROWS: &[Row] = &[
-    r(&[s("o"), g("output")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Output, Refused, Lands::Output, "Write the output to FILE (default a.out)"),
+    r(&[s("o"), g("output")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Output, Supported, Lands::Output, "Write the output to FILE (default a.out)"),
     r(&[g1("shared"), g("Bshareable")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Kind(KindSet::Shared), "Produce a shared object"),
     r(&[g1("pie"), g("pic-executable")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Kind(KindSet::Pie), "Produce a position-independent executable"),
     r(&[g1("no-pie"), x("no-pic-executable")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Kind(KindSet::NoPie), "Produce a position-dependent executable (default)"),
@@ -99,7 +99,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("eh-frame-hdr")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::EhFrameHdr(true), "Write .eh_frame_hdr and PT_GNU_EH_FRAME"),
     r(&[g("no-eh-frame-hdr")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::EhFrameHdr(false), "Write no .eh_frame_hdr"),
     r(&[g("package-metadata")], Arg::Optional(Values::Any), "JSON", GM, &[], Group::Output, Refused, Lands::Other, "Write a .note.package note"),
-    r(&[g("gc-sections")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::GcSections(true), "Remove sections nothing refers to"),
+    r(&[g("gc-sections")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::GcSections(true), "Remove sections nothing refers to"),
     r(&[g("no-gc-sections")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::GcSections(false), "Keep every section (default)"),
     r(&[g("print-gc-sections")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Other, "List the sections --gc-sections removes"),
     r(&[g("no-print-gc-sections")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Other, "Do not list removed sections (default)"),
@@ -313,8 +313,8 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[s("v")], Arg::None, "", GLM, &[], Group::Bookkeeping, Supported, Lands::PrintVersion(VersionStyle::Version), "Print the version and go on"),
     r(&[s("V")], Arg::None, "", GLM, &[], Group::Bookkeeping, Supported, Lands::PrintVersion(VersionStyle::Emulations), "Print the version and the emulations and go on"),
     r(&[g("help")], Arg::None, "", GLM, &[], Group::Bookkeeping, Supported, Lands::Help, "Print this help and exit"),
-    r(&[g1("Map")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Bookkeeping, Refused, Lands::Map, "Write a link map to FILE"),
-    r(&[s("M"), g("print-map")], Arg::None, "", GLM, &[], Group::Bookkeeping, Refused, Lands::PrintMap, "Write a link map to standard output"),
+    r(&[g1("Map")], Arg::Required(Values::Any), "FILE", GLM, &[], Group::Bookkeeping, Supported, Lands::Map, "Write a link map to FILE"),
+    r(&[s("M"), g("print-map")], Arg::None, "", GLM, &[], Group::Bookkeeping, Supported, Lands::PrintMap, "Write a link map to standard output"),
     r(&[g("print-map-discarded")], Arg::None, "", G, &[], Group::Bookkeeping, Refused, Lands::Other, "Show discarded sections in the map (default)"),
     r(&[g("no-print-map-discarded")], Arg::None, "", G, &[], Group::Bookkeeping, Refused, Lands::Other, "Do not show discarded sections in the map"),
     r(&[g("print-map-locals")], Arg::None, "", G, &[], Group::Bookkeeping, Refused, Lands::Other, "Show local symbols in the map"),

@@ -4,7 +4,6 @@
 # before the others, which keep input order; `.fini_array` runs in
 # reverse, so the prioritized destructors run last.
 #@ spec: layout.md "Initialization and termination"
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 a.c -o a.o
 cc -O1 b.c -o b.o

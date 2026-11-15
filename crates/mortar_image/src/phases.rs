@@ -116,26 +116,33 @@ pub struct PhaseTimer {
     first: Sample,
     last: Sample,
     lines: Vec<String>,
+    /// The largest `peak_kib` of the phase samples.
+    peak: Option<u64>,
 }
 
 impl PhaseTimer {
     #[must_use]
     pub fn start() -> Self {
         let s = Sample::now();
-        Self { first: s, last: s, lines: Vec::new() }
+        Self { first: s, last: s, lines: Vec::new(), peak: s.peak_kib }
     }
 
     /// The phase `ordinal name` ended now.
     pub fn phase(&mut self, ordinal: u16, name: &str) {
         let now = Sample::now();
         self.lines.push(phase_line(ordinal, name, &self.last, &now));
+        self.peak = self.peak.max(now.peak_kib);
         self.last = now;
     }
 
-    /// Every line, then the total.
+    /// Every line, then the total. The total's peak is the largest peak
+    /// any sample read: the kernel's `VmHWM` is folded from per-thread
+    /// counters, so a later read can be a little lower than an earlier
+    /// one (WP-027c measured 232.5 MiB after a phase line's 233.6).
     #[must_use]
     pub fn finish(mut self) -> Vec<String> {
-        let now = Sample::now();
+        let mut now = Sample::now();
+        now.peak_kib = now.peak_kib.max(self.peak);
         self.lines.push(total_line(&self.first, &now));
         self.lines
     }

@@ -189,12 +189,16 @@ pub fn address(
         chunk.addr = Some(addr as u64);
         chunk.offset = off as u64;
         // L-77: .tbss takes no address space; the next chunk starts at
-        // the end of the chunk before it.
-        if chunk.takes_memory() {
-            cur = addr + cap;
+        // the end of the chunk before it. Every other chunk ends at
+        // `addr + cap`, an empty one at its aligned address (L-69's
+        // `prev_end`): the cursors never move back, or an empty chunk's
+        // alignment would leave a later chunk below it and the segment's
+        // file image would cover a non-alloc chunk's first bytes.
+        if chunk.in_file() || !chunk.is_tls() {
+            cur = cur.max(addr + cap);
         }
         if chunk.in_file() {
-            fcur = off + cap;
+            fcur = fcur.max(off + cap);
         }
     }
     let segments = derive_segments(&chunks, order, rules);

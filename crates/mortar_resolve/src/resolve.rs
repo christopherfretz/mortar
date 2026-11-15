@@ -566,6 +566,10 @@ fn section_rows<V: View>(
                 row.kind = SectionKind::Debug;
                 row.state = SectionState::Dropped(DropReason::Stripped);
             }
+            Err(SectionRefusal::Compressed) if ctx.opts.strip_debug && sections::is_debug(&s) => {
+                row.kind = SectionKind::Debug;
+                row.state = SectionState::Dropped(DropReason::Stripped);
+            }
             Err(why) => {
                 // Refused; the row stays `Null`/consumed, the link fails.
                 out.problems.push(Problem {

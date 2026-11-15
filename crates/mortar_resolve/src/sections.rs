@@ -36,6 +36,9 @@ pub enum SectionRefusal {
     Linkonce,
     /// `.zdebug*` (GNU-style compressed debug sections).
     Zdebug,
+    /// `SHF_COMPRESSED` (GCC's `-gz`): refused until the store
+    /// decompresses (layout.md L-52; WP-027c ruling).
+    Compressed,
     /// A second relocation section for one kept section: GNU ld applies
     /// one of two `SHT_RELA` sections, lld refuses, mold asserts or drops
     /// one (§10). The variant holds the section it applies to.
@@ -161,6 +164,9 @@ pub fn classify(
     }
     if name.starts_with(b".zdebug") {
         return Err(SectionRefusal::Zdebug);
+    }
+    if s.flags & SHF_COMPRESSED != 0 {
+        return Err(SectionRefusal::Compressed);
     }
     let unknown = s.flags & !known_flags(machine);
     let kind =

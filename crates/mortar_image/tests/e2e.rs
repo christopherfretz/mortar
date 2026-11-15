@@ -203,6 +203,7 @@ fn check(lang: &str) {
             merged: None,
             eh: None,
             build_id: None,
+            fixups: &[],
         };
         for threads in [1, 4] {
             let pool = Pool::new(threads);

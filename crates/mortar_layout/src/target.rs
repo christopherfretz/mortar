@@ -178,6 +178,20 @@ impl Options {
         o.eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
         o.fix_843419 = target.machine == Machine::AArch64
             && plan.target_options.iter().any(|t| t.option.starts_with("--fix-cortex-a53-843419"));
+        // `full` (the default) is spec/a64.md §11.2's choice per site; GNU
+        // ld's `adr` and `adrp` restrict it, which mortar does not do
+        // (WP-027c: refused by name rather than linked as `full`).
+        if o.fix_843419
+            && let Some((t, v)) = plan.target_options.iter().find_map(|t| {
+                let v = t.value.as_ref()?;
+                (t.option.starts_with("--fix-cortex-a53-843419") && v != "full").then_some((t, v))
+            })
+        {
+            return Err(crate::diag::refused(
+                mortar_diag::RefusalClass::OptionValue,
+                format!("{}={}", t.option, v.to_string_lossy()),
+            ));
+        }
         if let Some(e) = &plan.entry {
             o.entry = EntryName::Symbol(e.as_encoded_bytes().to_vec());
         }

@@ -33,6 +33,7 @@ dependencies = [
  "mortar_layout",
  "mortar_live",
  "mortar_merge",
+ "mortar_plumb",
  "mortar_resolve",
  "mortar_scan",
  "mortar_synth",
@@ -108,12 +109,7 @@ dependencies = [
  "mortar_digest",
  "mortar_elf",
  "mortar_input",
- "mortar_layout",
- "mortar_live",
  "mortar_merge",
- "mortar_plumb",
- "mortar_resolve",
- "mortar_scan",
  "mortar_synth",
  "mortar_testutil",
 ]
@@ -268,6 +264,7 @@ dependencies = [
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "mortar_elf",
  "mortar_plumb",
  "mortar_testutil",
  "signal-hook",

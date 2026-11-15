@@ -707,6 +707,9 @@ impl Ctx<'_, '_, '_> {
                     SectionRefusal::Zdebug => {
                         (C::Feature, ".zdebug compressed debug sections".to_owned())
                     }
+                    SectionRefusal::Compressed => {
+                        (C::Feature, "SHF_COMPRESSED input sections".to_owned())
+                    }
                     SectionRefusal::SecondReloc(target) => (
                         C::Feature,
                         format!(

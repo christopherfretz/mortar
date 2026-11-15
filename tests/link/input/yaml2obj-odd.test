@@ -6,7 +6,6 @@
 # program exits 42 only if the alignment and both values hold.
 #@ spec: input.md "Relocatable objects"
 #@ requires: yaml2obj
-#@ xfail(mortar): no linking yet (M1)
 
 yaml2obj odd-%{arch}.yaml -o odd.o
 cc -O1 main.c -o main.o

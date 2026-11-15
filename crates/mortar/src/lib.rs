@@ -5,13 +5,14 @@
 //! map of the crates behind it is `docs/ARCHITECTURE.md`; the contracts are
 //! in `spec/`.
 //!
-//! The front of the pipeline runs ([`front`], WP-027a): a link is laid
-//! out, then refused at the output file, which WP-027b writes. Until a
+//! The whole pipeline runs: [`front`] (WP-027a) lays a link out, and
+//! [`image`] (WP-027b, joined by WP-027c) writes the output file. Until a
 //! construct is implemented, mortar refuses it by name (principle 1,
 //! "correct, or loudly refused"): it never produces a file it cannot
 //! vouch for.
 
 pub mod front;
+pub mod image;
 mod proof;
 mod sites;
 pub mod syms;
@@ -38,6 +39,10 @@ pub enum Outcome {
     /// The output was written, or the request (`--version`, `--help`) was
     /// answered. The text goes to standard output.
     Done(String),
+    /// The output file was written. `report` holds the link's warnings
+    /// (rendered to standard error; none is an error), `stdout` the map
+    /// under `-M` (image.md I-77). The exit status is 0.
+    Linked { report: Report, stdout: String },
     /// The link was refused or failed (`spec/diag.md` §7). The report is
     /// rendered to standard error; nothing goes to standard output, the
     /// exit status is 1, and no output file was left behind.
@@ -82,13 +87,6 @@ fn policy(plan: &Plan) -> Policy {
     }
 }
 
-/// Whether a refused use stops the line before the pipeline runs: every
-/// refused option does, except `-o`, which only the output file reads
-/// (`spec/cli.md` §4.3; WP-027b writes it).
-fn blocks_the_front(u: &mortar_cli::Use) -> bool {
-    !matches!(u.row().lands, mortar_cli::table::Lands::Output)
-}
-
 /// The pool a plan asks for (`--threads`, `spec/cli.md` §3.10), or the
 /// error of a malformed `MORTAR_SCHED_SEED` (`spec/model.md` §6).
 fn pool_of(plan: &Plan) -> Result<Pool, mortar_core::par::BadSeed> {
@@ -106,10 +104,9 @@ fn pool_of(plan: &Plan) -> Result<Pool, mortar_core::par::BadSeed> {
 /// The command line is parsed (`spec/cli.md`); its errors, then the
 /// options mortar refuses, are reported in argument order. `--version` and
 /// `--help` are answered; `-v` and `-V` are answered when the line names
-/// nothing to link. A line without errors, whose only refused option is
-/// `-o`, runs the front of the pipeline ([`front::front`]) to the final
-/// layout, and then ends, until WP-027b, in the refusal of writing the
-/// output file.
+/// nothing to link. A line without errors or refused options runs the
+/// pipeline: the front ([`front::front`]), then the image phase and the
+/// output file ([`image::write`]), then the map (`-Map`, `-M`).
 #[must_use]
 pub fn invoke(prog: &str, args: &[OsString]) -> Invocation {
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -159,7 +156,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     }
     // An option the pipeline does not honor stops the line here, with the
     // refusal of linking itself (phase 11).
-    if parsed.refused_uses().into_iter().any(blocks_the_front) {
+    if !parsed.refused_uses().is_empty() {
         emit_refusals(&diagnostics);
         diagnostics.emit(
             Key::new(mortar_cli::PHASE + 1, 0, 0),
@@ -181,18 +178,74 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     // The default store is the staged one (`spec/landed/input/WP-021b.md`);
     // `MORTAR_STORE=resident` is the tests' switch to the other.
     let store = Store::new(StorePolicy::from_env());
+    let out_path = cwd.join(plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out")));
+    let map_path = plan.bookkeeping.map.as_deref().map(|m| cwd.join(m));
+    let print_map = plan.bookkeeping.print_map;
     let env = front::Env { cwd, pool };
     let front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
-    if front.is_some() {
-        diagnostics.emit(
-            Key::new(100, 0, 0),
-            Diagnostic::refused(RefusalClass::Feature, "writing the output file")
-                .note("the link was laid out; the image and the output file are WP-027b"),
-        );
+    let mut stdout = String::new();
+    if let Some(f) = &front {
+        let linked = link_image(f, &store, &out_path, &diagnostics, &mut timer);
+        if let Some(map) = linked {
+            // I-77, I-79: the map of a successful link only.
+            if let Some(m) = &map_path
+                && let Err((k, d)) = mortar_image::output::write_whole(m, &map, 0o666)
+            {
+                diagnostics.emit(k, d);
+            }
+            if print_map {
+                stdout = String::from_utf8_lossy(&map).into_owned();
+            }
+        }
     }
     drop(front);
     emit_refusals(&diagnostics);
-    failed(diagnostics, timer.finish())
+    if diagnostics.has_errors() {
+        // I-66: a link that fails after the command line leaves no output
+        // (GNU ld's choice; never an input, never a non-regular file).
+        mortar_image::output::remove_stale_output(&out_path, &store.inodes());
+        return failed(diagnostics, timer.finish());
+    }
+    Invocation {
+        outcome: Outcome::Linked { report: diagnostics.finish(), stdout },
+        color,
+        phases: timer.finish(),
+    }
+}
+
+/// The image phase of a laid-out link (100, 105): the output file at
+/// `path`, and the map's text when the link succeeded (rendered from the
+/// tables, I-79; empty when no map is asked for).
+fn link_image(
+    f: &front::Front<'_>,
+    store: &Store,
+    path: &Path,
+    diagnostics: &Collector,
+    timer: &mut Timer,
+) -> Option<Vec<u8>> {
+    let wants_map = f.plan.bookkeeping.map.is_some() || f.plan.bookkeeping.print_map;
+    // The map before fill (I-79: independent of it), written after the
+    // output file is.
+    let map = if wants_map {
+        match image::map_of(f, store) {
+            Ok(m) => Some(mortar_image::map::render(&m, &f.pool)),
+            Err(e) => {
+                diagnostics.emit(mortar_synth::error::key(0), e.into_diagnostic());
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    match image::write(f, store, path, &|_| {}, &mut |n, name| timer.phase(n, name)) {
+        Ok(_) => Some(map.unwrap_or_default()),
+        Err(e) => {
+            for (k, d) in e.diagnostics {
+                diagnostics.emit(k, d);
+            }
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -210,23 +263,19 @@ mod tests {
     }
 
     // spec: diag.md §7 (a failed link is `Outcome::Failed` with the
-    // report), §4 (the refusal names what is refused); cli.md §4.3 (`-o`
-    // is refused but does not stop the front: the link runs to the input
-    // phase, which reports the missing file)
+    // report); input.md §3.1 rule 4 (a missing file is `cannot-open-file`
+    // alone, not also `no-target`)
     #[test]
-    fn a_link_is_refused_not_faked() {
+    fn a_missing_input_is_cannot_open_alone() {
         let Outcome::Failed(report) = link(&["a.o".into(), "-o".into(), "a.out".into()]) else {
-            panic!("the output file is not written yet");
+            panic!("a missing input fails the link");
         };
         assert!(report.failed());
         let ids: Vec<&str> = report.diagnostics().iter().map(Diagnostic::id).collect();
-        assert_eq!(ids, ["refused", "cannot-open-file", "no-target"]);
-        assert_eq!(report.diagnostics()[0].refusal(), Some((RefusalClass::Option, "-o")));
+        assert_eq!(ids, ["cannot-open-file"]);
         assert_eq!(
             report.render(&Style::plain("ld")),
-            "ld: error: unsupported option: -o\n\
-             ld: error: a.o: cannot open a.o: No such file or directory\n\
-             ld: error: target emulation unknown: -m or at least one .o file required\n"
+            "ld: error: a.o: cannot open a.o: No such file or directory\n"
         );
     }
 
@@ -242,10 +291,18 @@ mod tests {
     #[test]
     fn errors_come_in_argument_order() {
         assert_eq!(
-            failed(&["--frob", "-o", "x", "a.o", "-o", "y", "--hash-style"]),
+            failed(&[
+                "--frob",
+                "-o",
+                "x",
+                "a.o",
+                "--warn-backrefs",
+                "--warn-backrefs",
+                "--hash-style"
+            ]),
             format!(
                 "ld: error: unknown argument '--frob'\n\
-                 ld: error: unsupported option: -o\n\
+                 ld: error: unsupported option: --warn-backrefs\n\
                  ld: error: --hash-style: missing argument\n"
             )
         );
@@ -268,7 +325,7 @@ mod tests {
             let args: Vec<OsString> = args.iter().map(OsString::from).collect();
             match invoke("ld", &args).outcome {
                 Outcome::Done(text) => Some(text),
-                Outcome::Failed(_) => None,
+                Outcome::Failed(_) | Outcome::Linked { .. } => None,
             }
         };
         assert_eq!(done(&["--version", "a.o"]), Some(mortar_cli::version_text()));
