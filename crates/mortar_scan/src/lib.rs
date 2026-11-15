@@ -33,6 +33,9 @@ pub mod events;
 mod driver;
 mod report;
 mod view;
+mod walk;
+
+pub use walk::{Visit, Walker};
 
 use std::sync::atomic::AtomicU16;
 

@@ -16,8 +16,20 @@ name = "mortar"
 path = "src/main.rs"
 
 [dependencies]
+mortar_a64.workspace = true
+mortar_arch.workspace = true
 mortar_cli.workspace = true
+mortar_core.workspace = true
 mortar_diag.workspace = true
+mortar_elf.workspace = true
+mortar_image.workspace = true
+mortar_input.workspace = true
+mortar_layout.workspace = true
+mortar_live.workspace = true
+mortar_merge.workspace = true
+mortar_resolve.workspace = true
+mortar_scan.workspace = true
+mortar_synth.workspace = true
 
 [dev-dependencies]
 mortar_testutil.workspace = true
