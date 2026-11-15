@@ -119,6 +119,9 @@ pub struct Front<'s> {
     /// the symbol tables' plan reads it.
     pub eh: EhPlan,
     pub synth: SynthPlans,
+    /// The dynamic tables' plans; `None` in a static link, and always
+    /// while `crate::dynamic::dynamic_guard` refuses dynamic output.
+    pub dyn_tables: Option<crate::dynamic::DynTables>,
     pub commons: Vec<Common>,
     pub layout: Layout,
     /// What `place` returned besides the placement (the segment rules
@@ -338,7 +341,9 @@ pub fn front<'s>(
             return None;
         }
     };
-    let Some(link_arch) = LinkArch::of(machine, options.fix_843419) else {
+    let Some(link_arch) =
+        LinkArch::of(machine, options.fix_843419, crate::dynamic::arch_status(&plan))
+    else {
         diag.emit(Key::new(45, 0, 0), internal(format!("no architecture for {}", machine.name())));
         return None;
     };
@@ -760,6 +765,7 @@ pub fn front<'s>(
         scanned,
         eh,
         synth: plans,
+        dyn_tables: None,
         commons,
         layout,
         placed,

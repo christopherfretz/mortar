@@ -24,6 +24,9 @@ weak-undefined-pc-in-pie; mortar_arch DynRefusal + ClassOutcome::Refused + ScanE
 0k: mortar_scan::weak (SectionMap: Sync, WeakUses{got,abs_word,branch,unfillable:Option<Key>}.add/verdict(output,dynamic),
 WeakKeys{weak_dyn,refused}, weak_classes(arch,t,opts,sections) stub) called in scan() after View::new, before the walk;
 ScanOptions.sections: Option<&dyn SectionMap> (None everywhere).
-Next: 0e (dynamic_guard: CLI gate rows -pie, -dynamic-linker,
+0e done: crates/mortar/src/dynamic.rs (is_gate, dynamic_guard, option_refusals, arch_status, DynTables); mortar_cli Use::refusal; Front.dyn_tables; LinkArch::of(..,status); tests/refusals.rs the_dynamic_gates_keep_their_refusals (pinned before the change).
+Was planned as 0e (dynamic_guard: CLI gate rows -pie, -dynamic-linker,
 -Bdynamic filtered from parsed.refusals and refused by the guard with identical text; walk's §8.4 refusal stays, D-31),
 docs/status/m2.md, spec/landed/dyn/WP-041.md.
+
+Next: commit docs/status/m2.md + spec/landed/dyn/WP-041.md (fill 0e hash), gate `MORTAR_REQUIRE_TOOLS=1 cargo xtask ci --quick`, delete WIP.md, remove /tmp/mortar-wp041-3943017, hand back.
