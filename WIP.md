@@ -1,0 +1,10 @@
+# WP-035 work in progress
+
+- [x] item 1: `xtask/src/bench/verify.rs` + bench.rs wiring, `--no-verify`
+- [ ] item 1: bench run evidence (hello-*-static), before/after medians
+- [ ] item 2: experiment (static twin of synthetic-sections, window fix reverted in scratch)
+- [ ] item 3: audit table, holes (pipeline/options/sysroot/x64 tests, mason -Map)
+- [ ] item 4: plumb hasher
+- [ ] item 5: ci --quick delta
+- [ ] spec/harness.md "Verification", spec/landed/harness/WP-035.md
+Finding: every bench workload but hello-c-static/hello-cxx-static is -pie: mortar refuses them.

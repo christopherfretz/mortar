@@ -15,6 +15,7 @@ pub mod report;
 pub mod response;
 pub mod stats;
 pub mod synth;
+pub mod verify;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -55,10 +56,16 @@ options:
   --mortar <binary>    the mortar to measure (default: the checkout's, built
                        with the release profile)
   --work <dir>         the cache (default: <build directory>/bench-work)
+  --no-verify          do not have the verifier judge mortar's outputs (for
+                       timing-only loops; no output hash is recorded; not
+                       with --update-baseline)
   -h, --help           this text
 
-exit status: 0; 1 when --check finds a mortar link slower, larger or lost
-against the baseline; 3 when the run cannot be trusted (a build or a
+Before a workload's measured runs, mortar links it once more, untimed,
+with --mortar-map, and the verifier (mortar_plumb) judges that output.
+
+exit status: 0; 1 when the verifier finds a mortar output wrong, or when
+--check finds a mortar link slower, larger or lost against the baseline; 3 when the run cannot be trusted (a build or a
 reference linker failed, no baseline, a slower time on an unsteady
 machine); 2 for a usage error.
 ";
@@ -91,6 +98,8 @@ pub struct Options {
     pub baseline: Option<PathBuf>,
     pub mortar: Option<PathBuf>,
     pub work: Option<PathBuf>,
+    /// The verifier on mortar's outputs (`--no-verify` turns it off).
+    pub verify: bool,
     pub help: bool,
 }
 
@@ -106,6 +115,7 @@ impl Options {
             baseline: None,
             mortar: None,
             work: None,
+            verify: true,
             help: false,
         };
         let mut actions = Vec::new();
@@ -149,13 +159,19 @@ impl Options {
                 "--baseline" => options.baseline = Some(value()?.into()),
                 "--mortar" => options.mortar = Some(value()?.into()),
                 "--work" => options.work = Some(value()?.into()),
+                "--no-verify" => options.verify = false,
                 "-h" | "--help" => options.help = true,
                 _ => return Err(format!("unknown argument `{arg}`")),
             }
             if joined.is_some()
                 && matches!(
                     flag,
-                    "--check" | "--update-baseline" | "--report" | "--prepare" | "--list"
+                    "--check"
+                        | "--update-baseline"
+                        | "--report"
+                        | "--prepare"
+                        | "--list"
+                        | "--no-verify"
                 )
             {
                 return Err(format!("`{flag}` takes no value"));
@@ -172,6 +188,11 @@ impl Options {
             }
             if !options.workloads.is_empty() || !options.linkers.is_empty() {
                 return Err("`--update-baseline` measures every workload with every linker: no `--workload` or `--linker`".into());
+            }
+            if !options.verify {
+                return Err(
+                    "`--update-baseline` records only verified outputs: no `--no-verify`".into()
+                );
             }
         } else if options.reason.is_some() {
             return Err("`--reason` goes with `--update-baseline`".into());
@@ -351,13 +372,35 @@ fn measure_all(
     let before = measure::calibrate(control, &control_linker, CALIBRATION_RUNS, &probe, &scratch)?;
     let mut links = Vec::new();
     let mut outputs = Vec::new();
+    let mut verdicts = Vec::new();
+    let mortar = linkers.iter().find(|l| l.judged());
+    if !options.verify {
+        say("--no-verify: mortar's outputs are NOT verified; no output hash is recorded");
+    }
     for p in prepared {
+        // The verifier first, untimed (spec/harness.md "Verification").
+        let verdict = match mortar.filter(|_| options.verify) {
+            Some(m) => {
+                say(&format!("verifying mortar's output of {} (untimed)", p.workload.name));
+                let v = verify::verify(p, m, &scratch)?;
+                say(&format!("{}: verifier: {}", p.workload.name, v.text()));
+                Some(v)
+            }
+            None => None,
+        };
         say(&format!("measuring {} ({} runs per link)", p.workload.name, options.runs));
-        let (measured, output_hash) =
+        let (mut measured, output_hash) =
             measure::measure(p, &linkers, options.runs, &probe, &scratch)?;
+        let golden = match &verdict {
+            Some(v) => verify::apply(v, &mut measured, output_hash.as_deref()),
+            None => None,
+        };
         links.extend(measured);
-        if let Some(h) = output_hash {
+        if let Some(h) = golden {
             outputs.push((p.workload.name.clone(), h));
+        }
+        if let Some(v) = verdict {
+            verdicts.push((p.workload.name.clone(), v.text()));
         }
     }
     let after = measure::calibrate(control, &control_linker, CALIBRATION_RUNS, &probe, &scratch)?;
@@ -391,6 +434,12 @@ fn measure_all(
     }
     for (workload, h) in outputs {
         results.set(&format!("output_hash.{workload}"), h);
+    }
+    if mortar.is_some() {
+        results.set("verify", if options.verify { "on" } else { "off" });
+    }
+    for (workload, v) in verdicts {
+        results.set(&format!("verify.{workload}"), v);
     }
     if options.action == Action::UpdateBaseline {
         results.set("reason", options.reason.clone().unwrap_or_default());
@@ -437,6 +486,9 @@ fn conclude(
         report::ms(number("calibration_after_us")),
         if noisy { ": NOISY (more than 10% apart)" } else { "" }
     );
+    if let Some(s) = verify::summary(results) {
+        print!("{s}");
+    }
     let results_path = env.work.join("results.tsv");
     results.write(&results_path)?;
     say(&format!("results: {}", results_path.display()));
@@ -455,6 +507,17 @@ fn conclude(
     for l in results.links.iter().filter(|l| l.status == Status::Killed) {
         eprintln!("xtask bench: KILLED by a limit: {}", line(l));
         killed = true;
+    }
+    // A wrong output outranks every other verdict of the run.
+    let wrong = verify::found(results);
+    if !wrong.is_empty() {
+        for w in &wrong {
+            eprintln!("xtask bench: the verifier finds mortar's output WRONG: {w}");
+        }
+        if options.action == Action::UpdateBaseline {
+            eprintln!("xtask bench: not recording a baseline with a wrong output");
+        }
+        return Ok(1);
     }
     let broken: Vec<&Link> = results
         .links
@@ -650,6 +713,16 @@ mod tests {
         assert!(parse(&["--check=yes"]).unwrap_err().contains("takes no value"));
         assert!(parse(&["-j4"]).unwrap_err().contains("unknown argument"));
         assert!(parse(&["--help"]).unwrap().help);
+        // "Verification": on by default; `--no-verify` for timing loops,
+        // never for a baseline.
+        assert!(plain.verify);
+        assert!(!parse(&["--check", "--no-verify"]).unwrap().verify);
+        assert!(
+            parse(&["--update-baseline", "--reason", "x", "--no-verify"])
+                .unwrap_err()
+                .contains("only verified outputs")
+        );
+        assert!(parse(&["--no-verify=1"]).unwrap_err().contains("takes no value"));
     }
 
     // "Workloads": the checked-in manifest reads, has a calibration
