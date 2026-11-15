@@ -200,24 +200,24 @@ impl<'a, 's> View<'a, 's> {
             comdat_only: false,
             gnu_warning: false,
         };
-        let Some(p) = self.prep(e.file) else { return abs };
-        let Some(t) = p.table() else { return abs };
-        let Ok(s) = t.get(e.index) else { return abs };
-        let section = t.section_of(e.index, &s);
+        let Some(prep) = self.prep(e.file) else { return abs };
+        let Some(table) = prep.table() else { return abs };
+        let Ok(sym) = table.get(e.index) else { return abs };
+        let section = table.section_of(e.index, &sym);
         let kind = match section {
-            Ok(SymbolSection::Section(_)) if s.sym_type() == STT_GNU_IFUNC => TargetKind::Ifunc,
+            Ok(SymbolSection::Section(_)) if sym.sym_type() == STT_GNU_IFUNC => TargetKind::Ifunc,
             Ok(SymbolSection::Section(_)) => TargetKind::Local,
             _ => TargetKind::Abs,
         };
         // §6.1: a local of a section of its file that is not live (the
         // symbol read once for the kind and for this).
         let dead = e.index.0 != 0
-            && matches!(section, Ok(SymbolSection::Section(i)) if !self.is_live(e.file, i));
+            && matches!(section, Ok(SymbolSection::Section(sec)) if !self.is_live(e.file, sec));
         SymFacts {
             kind,
-            sym_type: s.sym_type(),
-            st_other: s.st_other,
-            tls: s.sym_type() == STT_TLS,
+            sym_type: sym.sym_type(),
+            st_other: sym.st_other,
+            tls: sym.sym_type() == STT_TLS,
             dead,
             comdat_only: false,
             gnu_warning: false,

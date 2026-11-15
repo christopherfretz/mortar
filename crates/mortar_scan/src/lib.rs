@@ -176,6 +176,7 @@ const SORT_RUN: usize = 8192;
 /// parallel call, plus a parallel sort when the link has more than 8192
 /// events or local demands, plus one for unsorted sections' permutations.
 #[must_use]
+#[allow(clippy::too_many_lines)] // the steps, timed one by one
 pub fn scan(
     arch: &dyn Arch,
     t: &ScanInputs<'_, '_>,
