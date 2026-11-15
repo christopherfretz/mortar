@@ -71,7 +71,7 @@ fn need(name: &str) -> Option<PathBuf> {
 }
 
 /// Compiles the three sources with `cc` (plus `args`) into `dir`.
-fn compile(dir: &Path, cc: &Path, args: &[&str]) -> Option<Vec<PathBuf>> {
+fn compile(dir: &Path, cc: &Path, args: &[&str]) -> Vec<PathBuf> {
     let mut objs = Vec::new();
     for (name, src) in [("a", A), ("b", B), ("c", C)] {
         let c = dir.join(format!("{name}.c"));
@@ -83,7 +83,7 @@ fn compile(dir: &Path, cc: &Path, args: &[&str]) -> Option<Vec<PathBuf>> {
         assert!(out.success(), "{} {a:?}: {}", cc.display(), out.stderr_text());
         objs.push(o);
     }
-    Some(objs)
+    objs
 }
 
 /// A linked executable's sections and symbols (ELF32 or ELF64 LE).
@@ -288,13 +288,13 @@ fn refs(objs: &Objects, p: &Phase) -> (Vec<Ref>, usize) {
     (out, skipped)
 }
 
-fn link(ld: &Path, extra: &[&str], objs: &[PathBuf], out: &Path) -> Option<Exe> {
+fn link(ld: &Path, extra: &[&str], objs: &[PathBuf], out: &Path) -> Exe {
     let mut a: Vec<String> = extra.iter().map(|s| (*s).to_owned()).collect();
     a.extend(["-static".into(), "-e".into(), "0".into(), "-o".into(), out.display().to_string()]);
     a.extend(objs.iter().map(|o| o.display().to_string()));
     let r = run(ld, &a);
     assert!(r.success(), "{} {a:?}: {}", ld.display(), r.stderr_text());
-    Some(Exe::read(out))
+    Exe::read(out)
 }
 
 fn compilers(t: &Target) -> Vec<(String, PathBuf, Vec<&'static str>)> {
@@ -331,13 +331,13 @@ fn s17_s19_piece_mapping_matches_ld_lld_and_mold() {
                 std::fs::create_dir_all(&dir).unwrap();
                 let mut args = cargs.clone();
                 args.extend_from_slice(flags);
-                let Some(paths) = compile(&dir, &cc, &args) else { continue };
+                let paths = compile(&dir, &cc, &args);
                 let objs = load(&paths);
                 let p = phase_of(&objs);
                 let (rs, skipped) = refs(&objs, &p);
                 assert!(rs.len() >= 10, "{} {cname} {flags:?}: {} references", t.triple, rs.len());
                 for (lname, ld, extra) in &linkers {
-                    let exe = link(ld, extra, &paths, &dir.join(format!("out-{lname}"))).unwrap();
+                    let exe = link(ld, extra, &paths, &dir.join(format!("out-{lname}")));
                     let word = if t.machine == Machine::I386 { 4 } else { 8 };
                     for r in &rs {
                         let base = exe
@@ -404,7 +404,7 @@ fn x6_x7_string_order_is_gnu_minus_tail_merging() {
             std::fs::create_dir_all(&dir).unwrap();
             let mut args = cargs.clone();
             args.extend_from_slice(&["-O2", "-fno-pic"]);
-            let Some(mut paths) = compile(&dir, &cc, &args) else { continue };
+            let mut paths = compile(&dir, &cc, &args);
             paths.truncate(2); // a.c and b.c: 1-byte strings only
             let objs = load(&paths);
             let p = phase_of(&objs);
@@ -420,7 +420,7 @@ fn x6_x7_string_order_is_gnu_minus_tail_merging() {
                 })
                 .map(|(x, _)| x)
                 .collect();
-            let exe = link(&ld, &[], &paths, &dir.join("out")).unwrap();
+            let exe = link(&ld, &[], &paths, &dir.join("out"));
             let ro = exe.sections.iter().find(|s| s.0 == ".rodata").expect(".rodata");
             let bytes = &exe.bytes[ro.2 as usize..(ro.2 + ro.3) as usize];
             // GNU's order: where each kept string stands alone (after a

@@ -127,7 +127,13 @@ fn bench(what: &str, sections: &[Vec<u8>]) {
         })
         .collect();
     let bytes: usize = sections.iter().map(Vec::len).sum();
-    let reference = merge(&Pool::sequential(), &ins).expect("no refusal");
+    // The first merge of the process measures memory: later ones reuse
+    // heap that earlier ones freed, so their peaks read low.
+    let base = status_kb("VmRSS:");
+    reset_peak();
+    let reference = merge(&Pool::new(8), &ins).expect("no refusal");
+    let first_peak = status_kb("VmHWM:").saturating_sub(base);
+    let kept = status_kb("VmRSS:").saturating_sub(base);
     let pieces = reference.piece_frag.len();
     let frags = reference.frags.len();
     let meta = reference.meta.clone();
@@ -139,6 +145,12 @@ fn bench(what: &str, sections: &[Vec<u8>]) {
         sections.len(),
         bytes as f64 / 1e6,
         out.chunks[0].size as f64 / 1e6
+    );
+    println!(
+        "  first merge (8 threads): peak +{:.0} MB beyond the input ({:.1} bytes per piece), +{:.0} MB kept",
+        first_peak as f64 / 1e3,
+        first_peak as f64 * 1e3 / pieces as f64,
+        kept as f64 / 1e3,
     );
     drop(out);
     for threads in THREADS {
@@ -164,7 +176,7 @@ fn bench(what: &str, sections: &[Vec<u8>]) {
         merges.sort();
         orders.sort();
         println!(
-            "  {threads} threads: merge median {:.0} ms (min {:.0}), offsets median {:.0} ms, peak +{:.0} MB, load {}",
+            "  {threads} threads: merge median {:.0} ms (min {:.0}), offsets median {:.0} ms, peak +{:.0} MB (heap reused), load {}",
             ms(merges[REPEATS / 2]),
             ms(merges[0]),
             ms(orders[REPEATS / 2]),
@@ -183,11 +195,14 @@ fn main() {
         PathBuf::from,
     );
     println!("load average at start: {}", load_average());
+    // The synthetic input first: its memory figure is the one compared
+    // with S-30.
+    let s = synthetic();
+    bench("synthetic 10^7 strings", &s);
+    drop(s);
     match debug_str(&dir) {
         Ok(s) => bench(&format!("{} .debug_str", dir.display()), &s),
         Err(e) => println!("{}: not run: {e}", dir.display()),
     }
-    let s = synthetic();
-    bench("synthetic 10^7 strings", &s);
     println!("load average at end: {}", load_average());
 }

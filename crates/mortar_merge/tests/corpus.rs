@@ -150,13 +150,15 @@ fn need(name: &str) -> Option<PathBuf> {
     t
 }
 
+/// A compiler: name, C and C++ drivers, base arguments.
+type Compiler = (&'static str, Option<PathBuf>, Option<PathBuf>, Vec<String>);
+
 /// The configurations: (label, directory, compile jobs).
 fn configurations(root: &Path, src: &Path) -> Vec<(String, PathBuf, Vec<Job>)> {
     let mut v = Vec::new();
     for t in &TARGETS {
         let gnu = |n: &str| need(&format!("{}{n}", t.gnu));
-        let mut compilers: Vec<(&str, Option<PathBuf>, Option<PathBuf>, Vec<String>)> =
-            vec![("gcc", gnu("gcc"), gnu("g++"), vec![])];
+        let mut compilers: Vec<Compiler> = vec![("gcc", gnu("gcc"), gnu("g++"), vec![])];
         for c in ["19", "22"] {
             compilers.push((
                 if c == "19" { "clang-19" } else { "clang-22" },

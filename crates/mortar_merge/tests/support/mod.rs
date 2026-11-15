@@ -276,10 +276,10 @@ pub fn lib_dirs() -> Vec<(Machine, PathBuf, PathBuf)> {
         (Machine::X86_64, "/usr/lib/gcc-cross/x86_64-linux-gnu", "/usr/x86_64-linux-gnu/lib"),
         (Machine::I386, "/usr/lib/gcc-cross/i686-linux-gnu", "/usr/i686-linux-gnu/lib"),
     ] {
-        if let Some(g) = gcc(g) {
-            if Path::new(c).join("libc.a").exists() {
-                out.push((m, g, PathBuf::from(c)));
-            }
+        if let Some(g) = gcc(g)
+            && Path::new(c).join("libc.a").exists()
+        {
+            out.push((m, g, PathBuf::from(c)));
         }
     }
     out
