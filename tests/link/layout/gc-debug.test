@@ -1,0 +1,35 @@
+# Debug information with `--gc-sections` and dead code: the references
+# from `.debug_*` (and the `.debug_aranges` tuples GCC writes) to a
+# collected function, a collected data object and a collected string
+# piece get each linker's tombstone; mortar's are spec/image.md I-47's
+# (with I-112's zero aranges length), which the verifier judges on every
+# architecture (WP-030d: on i386 it judged the aranges length wrongly).
+#@ spec: image.md I-45, I-47, I-112
+
+cc -g -O0 -ffunction-sections -fdata-sections main.c -o main.o
+cc -g -O2 -gdwarf-4 -ffunction-sections -fdata-sections other.c -o other.o
+link gcc -static -no-pie -Wl,--gc-sections main.o other.o -o prog
+run prog
+  stdout: 42 live
+check readelf -sW prog
+  has: FUNC * used_f$
+  not: unused_g
+  not: unused_s
+  not: dead_data
+check readelf --debug-dump=aranges prog
+  has: Length:
+  has: Pointer Size:
+
+#--- main.c
+#include <stdio.h>
+int used_f(int);
+int main(void) {
+  printf("%d %s\n", used_f(40), "live");
+  return 0;
+}
+#--- other.c
+static int counter;
+int dead_data[16] = {1, 2, 3};
+int unused_g(int x) { counter += x; return x * 3 + 1; }
+const char *unused_s(void) { return "only a collected function names this"; }
+__attribute__((noinline)) int used_f(int x) { return x + 2; }
