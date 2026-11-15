@@ -145,14 +145,16 @@ pub fn compiler(target: &str) -> Option<PathBuf> {
 }
 
 /// Compiles `src` (C) into `dir/name` with `flags`; `None` when the
-/// compiler is missing.
+/// compiler is missing. Compiles only (`-c`) unless `flags` has
+/// `-shared` or the pseudo-flag `--link` (a linked executable).
 pub fn cc(dir: &Path, target: &str, name: &str, src: &str, flags: &[&str]) -> Option<PathBuf> {
     let gcc = compiler(target)?;
     let c = dir.join(format!("{name}.src.c"));
     std::fs::write(&c, src).unwrap();
-    let mut a: Vec<OsString> = flags.iter().map(OsString::from).collect();
+    let mut a: Vec<OsString> =
+        flags.iter().filter(|f| **f != "--link").map(OsString::from).collect();
     a.extend(["-o".into(), dir.join(name).into_os_string(), c.into_os_string()]);
-    if !flags.iter().any(|f| *f == "-shared") {
+    if !flags.iter().any(|f| *f == "-shared" || *f == "--link") {
         a.insert(0, "-c".into());
     }
     let o = tool_run(&gcc, &a, dir);
