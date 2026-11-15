@@ -164,6 +164,44 @@ restated.
 | Debug tombstone in a PIE | image I-47 note | open M2 item (lldb lost lines at low addresses) | E-dynamic |
 | Verifier | plumb §1 (stage 3 "not started"), S1 (`ET_EXEC` only), inputs `ET_REL` only, no copy or dynsym map records | **cannot verify any dynamic output**; requests in §12 | — |
 ## 4. Output kinds
+
+**D-1 [M2] (the table).** The four executable kinds of arch.md §2.1 and
+cli.md §3.2, side by side; other specs cite a row by its name. Measured
+in E-dynamic (108 outputs: C, C++, Fortran hello × PIE, `-no-pie`,
+`-static-pie` × three architectures × four references, all run).
+
+| property | `Static` | `Exec` | `Pie` | `StaticPie` [M4 end to end; rows M1] |
+|---|---|---|---|---|
+| line | neither `-pie` nor `-dynamic-linker` | `-dynamic-linker` without `-pie` | `-pie -dynamic-linker` | `-pie` without `-dynamic-linker` (`-static-pie`, `--no-dynamic-linker`) |
+| `e_type` | `ET_EXEC` | `ET_EXEC` | `ET_DYN` | `ET_DYN` |
+| base (layout L-68) | 0x400000 (i386 0x08048000) | same | 0 | 0 |
+| `.interp`, `PT_INTERP` | no | yes (D-31) | yes | no |
+| `PT_PHDR` | no | yes | yes | no (GNU ld; lld and mold write one; layout L-67 "iff `PT_INTERP`") |
+| `.dynamic`, `PT_DYNAMIC`, `_DYNAMIC` | no | yes | yes | yes |
+| `DT_NEEDED`, versions | no | yes | yes | no (a shared input is refused, input §8.4) |
+| `.dynsym` | none | D-21 | D-21 | the null entry only, unless `--export-dynamic` [M4] |
+| `DT_DEBUG` | — | yes | yes | yes (all three) |
+| `DT_FLAGS_1` | — | `DF_1_NOW` under `-z now` | `DF_1_PIE` (+ `DF_1_NOW`) | `DF_1_PIE` |
+| `RELATIVE` | never | never (absolute values are final) | every absolute word of a non-preemptible target | same as `Pie` |
+| `COPY` | never | shared data reached by a non-GOT class | same, x86-64 GCC code (D-43) | never |
+| canonical PLT | never | shared function whose address a non-GOT class takes | never (refused by name, D-44) | never |
+| `IRELATIVE` | `.rela.plt`, bracketed by `__rela_iplt_*` (synth S-69) | last in `.rela.plt` (D-41) | last in `.rela.plt` | `.rela.dyn` (synth S-70) |
+| text relocation | n/a | refused (D-47) | refused | refused |
+| TLS against a shared definition | n/a | IE (D-48) | IE | n/a |
+| verifier (plumb) | stage 1-2 | stage 3 (§12) | stage 3 | stage 3 |
+
+*Test:* `output-kind-table`: one hello per column and architecture,
+`readelf -hld` against the row.
+
+**D-2 [M2] (static-pie is not a dynamic link).** `StaticPie` has a
+`.dynamic` for the self-relocation of glibc's `_dl_relocate_static_pie`,
+and nothing a loader reads: rules of this spec that say "dynamic
+executable" mean `Exec` and `Pie`. The end-to-end static-pie gate the
+ROADMAP gives M2 (x64.md X-9, X-56; x86.md R-15) needs only D-30's
+`.dynamic` subset (`DT_RELA*`, `DT_RELACOUNT`, `DT_FLAGS_1`, `DT_DEBUG`,
+the empty `.dynsym`/`.dynstr`/`.gnu.hash` triplet lld writes) and §8's
+`RELATIVE` rules; it is cut as its own package (WP-M2-SPIE, §D of the
+record).
 ## 5. Shared objects as inputs
 
 Most of this is specified (input.md §8, resolve.md §9); E-shlib (116
@@ -503,9 +541,374 @@ added export moves only its own bucket's entries, and reserves `.dynsym`,
 `.dynstr` and `.gnu.version` capacity; nothing in this section prevents
 it.
 ## 7. `.dynamic`, `.interp`, `_DYNAMIC`
+
+Owner: `mortar_synth` (`.dynamic`, `.interp`) with the address-dependent
+values filled by `mortar_image`. Measured in E-dynamic (tag order per
+reference, presence per condition, loader behaviour).
+
+**D-30 [M2] (tags, order, presence).** `.dynamic` of `Exec` and `Pie` holds
+these tags in this order (GNU ld's order: the only references' outputs
+that `eu-elflint --gnu-ld` passes clean are GNU ld's, E-dynamic §3, and
+`readelf -d` of a mortar output then reads like the default toolchain's);
+each is present exactly under its condition, which depends on no address:
+
+| # | tag | present when | value |
+|---|---|---|---|
+| 1 | `DT_NEEDED` × n | per needed object, `Slots.needed` order (D-19a) | `.dynstr` offset of the needed name |
+| 2 | `DT_RUNPATH` (or `DT_RPATH` under `--disable-new-dtags`) | some `-rpath`/`-R` | the paths joined by `:` in order (input §4.8), as written (`$ORIGIN` kept) |
+| 3 | `DT_INIT` | `_init` is defined (crti), or `-init=SYM` names a defined symbol | its address |
+| 4 | `DT_FINI` | `_fini`, or `-fini=SYM` | its address |
+| 5-6 | `DT_PREINIT_ARRAY`, `DT_PREINIT_ARRAYSZ` | the output section `.preinit_array` exists | address, size |
+| 7-8 | `DT_INIT_ARRAY`, `DT_INIT_ARRAYSZ` | `.init_array` exists | address, size |
+| 9-10 | `DT_FINI_ARRAY`, `DT_FINI_ARRAYSZ` | `.fini_array` exists | address, size |
+| 11 | `DT_GNU_HASH` | always | `.gnu.hash` |
+| 12-15 | `DT_STRTAB`, `DT_SYMTAB`, `DT_STRSZ`, `DT_SYMENT` | always | `.dynstr`, `.dynsym`, size, 24 (16 on ELF32) |
+| 16 | `DT_DEBUG` | always (executables) | 0 |
+| 17 | `DT_PLTGOT` | `.got.plt` exists (some PLT or IPLT entry) | `.got.plt` |
+| 18-20 | `DT_PLTRELSZ`, `DT_PLTREL`, `DT_JMPREL` | `.rela.plt` is not empty | size, `DT_RELA` (`DT_REL` on i386), address |
+| 21-23 | `DT_RELA`, `DT_RELASZ`, `DT_RELAENT` (i386: `DT_REL`, `DT_RELSZ`, `DT_RELENT`) | `.rela.dyn` is not empty (mold; GNU ld and lld also write an empty one) | address, size, 24 (8) |
+| 24 | `DT_AARCH64_BTI_PLT` | a64 §10.3 (the output has the BTI property) | 0 |
+| 25 | `DT_AARCH64_VARIANT_PCS` | a64 §10.3 (a `JUMP_SLOT` symbol is `STO_AARCH64_VARIANT_PCS`; all four references, E-dynamic §1) | 0 |
+| 26 | `DT_FLAGS` | `-z now` | `DF_BIND_NOW` |
+| 27 | `DT_FLAGS_1` | `Pie`, or `-z now` | `DF_1_PIE` if `Pie`, `DF_1_NOW` if `-z now` |
+| 28-30 | `DT_VERNEED`, `DT_VERNEEDNUM`, `DT_VERSYM` | `.gnu.version_r` exists (D-27) | address, count, address |
+| 31 | `DT_RELACOUNT` (i386 `DT_RELCOUNT`) | some `RELATIVE` record | their count (they lead `.rela.dyn`, D-40) |
+| 32 | `DT_NULL` × 6 | always | 0: the terminator and five spare entries (mold; GNU ld's `--spare-dynamic-tags` default of 5 gives 5 or 6, lld 1) for post-link tools and for an incremental link that adds a tag in place (D-28) |
+
+Never written in an executable: `DT_SONAME`, `DT_HASH` (D-20),
+`DT_BIND_NOW` (no reference writes it; `DF_BIND_NOW` says the same),
+`DT_TEXTREL` and `DF_TEXTREL` (D-47), `DF_STATIC_TLS` (GNU ld and lld
+never; mold in every executable, E-reloc §7; it would forbid `dlopen` of
+the executable), `DT_AARCH64_PAC_PLT` (`-z pac-plt` stays refused: the
+outputs of GNU ld and lld die with `SIGILL` at `autia1716` on this host's
+glibc, E-dynamic §5), `DT_X86_64_PLT*` (no reference writes it in an
+executable), `DT_TLSDESC_PLT`/`GOT` (TLS descriptors are eager, D-48),
+the `prelink` tags `DT_CHECKSUM`, `DT_GNU_PRELINKED`, `DT_GNU_CONFLICT*`,
+`DT_GNU_LIBLIST*` (no reference writes them; nothing reads them). The
+entry count is therefore a function of the inputs and options, known
+before addresses (synth S-2). `-init`, `-fini` and `--spare-dynamic-tags`
+are refused today: `-init`/`-fini` become supported with rows 3-4 (all
+three honour them, E-dynamic §1), `--spare-dynamic-tags` stays refused
+(request R-C1). *Tests:* `dynamic-tags` (the table per condition, each
+architecture), `init-fini-option`, `variant-pcs-plt`.
+
+**D-31 [M2] (interpreter).** `Exec` and `Pie` need `-dynamic-linker`; a
+dynamic output without one is refused (input §8.4 stands, with its
+diagnostic; synth S-106's "or the target's default" is withdrawn, request
+R-S2). Measured: GNU ld's built-in default is `/lib/ld-linux-aarch64.so.1`
+(right) on AArch64, but `/lib/ld64.so.1` on x86-64 and `/usr/lib/libc.so.1`
+on i386, whose outputs fail to start (exit 255); lld and mold write no
+`PT_INTERP` at all and the output crashes (exit 139), E-dynamic `interp`.
+Every driver passes the option (§2.1). `.interp` holds the string and a
+NUL; it is the first section of the first `PT_LOAD` after the headers
+(layout L-60 rank 1; lld and mold; GNU ld puts the notes first). An
+input section named `.interp` is refused by name in an executable that
+writes one [unmeasured; no corpus input has one] (request R-L2: layout
+L-39). *Test:* `no-dynamic-linker-refused`.
+
+**D-32 [M2] (`_DYNAMIC` and the GOT headers).** `_DYNAMIC` is the address
+of `.dynamic`, local and hidden (resolve §8.1), in `Exec`, `Pie` and
+`StaticPie`. The first word of the GOT the architecture names holds it:
+x86-64 and i386 `.got.plt[0]` (psABI; all three references), AArch64
+`.got[0]` (a64 §10.1 Q8 stands: GNU ld writes it; lld writes it nowhere
+and glibc 2.41 needs none of them, E-dynamic §2); the other reserved
+`.got.plt` words are 0. `_GLOBAL_OFFSET_TABLE_` is a64.md's and x64.md's
+(layout L-101). *Test:* `got-header`.
+
+**D-33 [M2] (`.dynamic` is writable at load).** `.dynamic` is in a
+`PT_LOAD` with `PF_W` and inside `PT_GNU_RELRO` (all three). glibc writes
+the `r_debug` address into `DT_DEBUG` and, in a PIE, adds the load bias to
+the address tags in place; with the segment read-only the program dies
+(`SIGSEGV`), E-dynamic `dyncheck`. `PT_DYNAMIC` covers exactly `.dynamic`,
+`p_align` 8 (4 on ELF32), `PF_R|PF_W`. *Test:* `dynamic-writable`.
+
+**D-34 [M2] (section headers).** As GNU ld and lld write them
+(`design/shdr.sh`; mold omits `SHF_INFO_LINK`):
+
+| section | `sh_type` | `sh_flags` | `sh_link` | `sh_info` | `sh_entsize` | `sh_addralign` |
+|---|---|---|---|---|---|---|
+| `.interp` | `PROGBITS` | `A` | 0 | 0 | 0 | 1 |
+| `.gnu.hash` | `GNU_HASH` | `A` | `.dynsym` | 0 | 0 (ELF32: 4) | word |
+| `.dynsym` | `DYNSYM` | `A` | `.dynstr` | 1 | 24 (16) | word |
+| `.dynstr` | `STRTAB` | `A` | 0 | 0 | 0 | 1 |
+| `.gnu.version` | `GNU_versym` | `A` | `.dynsym` | 0 | 2 | 2 |
+| `.gnu.version_r` | `GNU_verneed` | `A` | `.dynstr` | the `Verneed` count | 0 | 4 (lld and mold; GNU ld 8) |
+| `.rela.dyn` | `RELA` (`REL`) | `A` | `.dynsym` | 0 | 24 (8) | word |
+| `.rela.plt` | `RELA` (`REL`) | `A` + `SHF_INFO_LINK` | `.dynsym` | `.got.plt` | 24 (8) | word |
+| `.dynamic` | `DYNAMIC` | `WA` | `.dynstr` | 0 | 16 (8) | word |
+
+`e_type` per kind is D-1's. This fills image.md I-40 (request R-I2).
+*Test:* `dyn-shdr`.
 ## 8. Dynamic relocations, copy relocations, canonical PLTs, TLS
+
+Owner: the demand rules are arch.md §4.3 and the architecture specs; the
+records are `mortar_synth`'s (sizes, order) and `mortar_image`'s (bytes).
+Measured in E-reloc: 48 self-checking programs (3 architectures × PIE /
+non-PIE × lazy / `-z now` × 4 references) comparing every address three
+ways (in the executable, in a library, through `dlsym`), and 433 side
+experiments, all run.
+
+**D-40 [M2] (`.rela.dyn`: set and order).** The records are a function of
+`Demands`, `Slots` and the target kinds, never of addresses: for each
+relocation of a live section that needs a dynamic record (arch.md §4.3's
+`R`, `D` cells and the GOT slots of §4.4), one record. Order:
+
+1. every `RELATIVE`, by `r_offset` (all three references); their count is
+   `DT_RELACOUNT` (GNU ld and lld write it, mold never);
+2. then every other record except `IRELATIVE`, by (`.dynsym` index,
+   `r_offset`) (lld and mold; GNU ld sorts by offset with the `COPY`s
+   last; synth S-104 stands): `GLOB_DAT`, symbolic (`R_AARCH64_ABS64`,
+   `R_X86_64_64`, `R_386_32`), `COPY`, `TLS_TPREL64`/`TPOFF64`/`TLS_TPOFF`,
+   `DTPMOD`/`DTPOFF`, `TLSDESC`.
+
+The order in step 1 is computable in parallel without a global sort:
+sections are placed in increasing address order within each chunk
+(model §4.4), so the `RELATIVE` region is the concatenation, in address
+order of the placed sections and GOT slots, of each unit's records sorted
+by offset; each unit's slice starts at a prefix sum of the per-section
+counts the scan produced (model §3.7, image I-15). The step-2 records are
+few (one per imported key and place) and are collected and sorted. This
+is the divisible form request R-S3 asks synth S-4 to state. *Tests:*
+`rela-dyn-order` (sorted, counted; `--threads=1` vs many), a large PIE
+(10^6 `RELATIVE`) in the bench set.
+
+**D-41 [M2] (`.rela.plt` and `IRELATIVE`).** `.rela.plt` holds one
+`JUMP_SLOT` per PLT entry in PLT order, then one `IRELATIVE` per IPLT
+entry in IPLT order. PLT order is the `SymbolId` order of the keys that
+demand `PLT` or `CANON_PLT` (`Slots`, model §4.3; GNU ld uses a hash
+order, lld first reference, mold its `.dynsym` order). In `Exec` and
+`Pie`, `IRELATIVE` goes last in `.rela.plt` (GNU ld; synth S-69, a64
+§6.2): glibc applies `.rela.dyn` before `.rela.plt`, so an IFUNC resolver
+that calls a shared-object function through its PLT or GOT runs after
+those are bound. lld and mold put `IRELATIVE` at the end of `.rela.dyn`,
+and such a resolver crashes (`SIGSEGV` in 7 of 12 configurations each,
+E-reloc `ifh_plt`); glibc documents the resolver as unsupported, so this
+is a hazard of theirs rather than a wrong output, and mortar takes the
+order that does not have it. `StaticPie` keeps S-70 (all `IRELATIVE` in
+`.rela.dyn`; it has no `.rela.plt`). *Test:* `irelative-resolver-calls-plt`
+(runs on the three architectures, lazy and `-z now`).
+
+**D-42 [M2] (copy relocations).** A `COPY` demand (arch.md §4.3 `C` on a
+shared data definition) gives one allocation per `(shared FileId,
+st_value)` (model §4.3; every alias at that address shares it, resolve
+§7.3, and is exported, D-21). The allocation:
+
+- size: the defining entry's `st_size`; an `st_size` of 0 is refused,
+  `copy-relocation-of-zero-size` (lld: `cannot create a copy relocation
+  for symbol zsym`; GNU ld silently gives the symbol the address of
+  another copy and the program reads the wrong object; mold makes a
+  0-byte copy outside every section and the program reads 0: wrong
+  outputs of both, E-reloc `copy/zero`);
+- alignment: `min(sh_addralign of the defining section, 2^ctz(st_value))`
+  (resolve §9.6; all three honour it, E-reloc `calign`);
+- place: the chunk `.dynbss` (output section `.bss`, its first chunk) when
+  the defining address lies in a writable `PT_LOAD` of the shared object,
+  else `.bss.rel.ro` (output section `.bss.rel.ro`, inside RELRO; layout
+  L-80; lld's name and section type; GNU ld uses `.data.rel.ro`, mold
+  `.copyrel.rel.ro`, all inside RELRO and all run). a64.md §10.5's
+  `.data.rel.ro` is corrected to this (request R-A4);
+- order within each chunk: by the least `SymbolId` among the aliases;
+- record: one `COPY` with `r_sym` the `.dynsym` entry of that least
+  referenced alias (GNU ld and lld attach it to the primary name, mold to
+  an alias; all run), `r_offset` the allocation, addend 0.
+
+Refused by name: a copy of an `STT_TLS` or `STT_FUNC`/`STT_GNU_IFUNC`
+definition (a function takes D-44 instead), of a protected one (D-18),
+and any copy under `-z nocopyreloc` (an option that stays refused today;
+GNU ld, lld and mold refuse the link with it, E-reloc). A size mismatch
+between link time and run time is not detectable at link time (glibc
+warns and copies the link-time size). *Tests:* `copy-reloc` (stdout,
+environ aliases, `std::cout`, typeinfo, a 64-aligned value), 
+`copy-zero-size`, `copy-tls-refused`.
+
+**D-43 [M2] (`COPY` in a `Pie`).** arch.md §4.3 row `Pc` against
+`Shlib{func: false}` in `Pie` is `C`, not `E` (request R-A3; a64.md Q5
+answered): GCC's x86-64 `-fPIE` code (its default) reads shared data with
+`R_X86_64_PC32` (`stdout`, `std::cout`), and GNU ld, lld and mold all
+copy it into the PIE, which runs (E-corpus §2.4, E-reloc §4; Clang reaches
+the same data through `GOTPCRELX` unless `-fdirect-access-external-data`).
+`Pc` against `Shlib{func: true}` in `Pie` stays `E` (D-44). *Test:*
+`copy-in-pie-x86-64`.
+
+**D-44 [M2] (canonical PLTs).** In `Exec`, a non-GOT address use of a
+shared function (`C` against `Shlib{func: true}`: `R_AARCH64_ADR_PREL_PG_HI21`,
+`ABS64` in a read-only place, `R_X86_64_32S`/`PC32`, `R_386_32` in code)
+demands `CANON_PLT`: the key's address in the whole executable is its PLT
+entry, and its `.dynsym` entry is `SHN_UNDEF` with that `st_value` (D-23).
+All three references, every architecture, lazy and `-z now`: the
+executable's, the library's and `dlsym`'s `&puts` agree (E-reloc §5). In
+`Pie` such a use is refused by name (arch.md §4.3 `E`; no reference
+writes a canonical PLT in a PIE [unmeasured whether one would]); a
+protected definition is D-18. *Test:* `canonical-plt-equality`.
+
+**D-45 [M2] (IFUNCs defined in the executable).** A non-preemptible IFUNC
+has one IPLT entry, which is its address everywhere in the executable
+(arch.md §4.3 `I`; a64 §10.4): a GOT slot of it holds the IPLT entry's
+address (`Exec`: the value; `Pie`: a `RELATIVE`), never an `IRELATIVE` of
+its own; the IPLT entry's `.got.plt` word carries the only `IRELATIVE`.
+This is lld's rule (one `IRELATIVE` per function); GNU ld and mold give
+the GOT slot its own `IRELATIVE` to the implementation, so in an x86-64
+PIE `&f` differs between a translation unit that takes it PC-relatively
+and one that loads it from the GOT (`a != b`, E-reloc `ifeq`, a wrong
+output of both). An exported IFUNC is `STT_FUNC` at its IPLT entry in
+`.dynsym` (D-23). x86.md X86-50's static-pie rule (every address word an
+`IRELATIVE` to the resolved function) does not extend to `Pie`: there
+the IPLT entry is canonical as on the other architectures (request R-X86-1).
+*Test:* `ifunc-equality-pie` (two translation units, three
+architectures).
+
+**D-46 [M2] (GOT slots and data words: which record).**
+
+| target kind | GOT slot in `Exec` | GOT slot in `Pie` | absolute word, writable place, `Exec` | same, `Pie` |
+|---|---|---|---|---|
+| `Local` | `S`, no record | `S`, `RELATIVE` | value | `RELATIVE` |
+| `Abs` | `S` | `S` | value | value |
+| `Shlib`, `WeakDyn` | 0, `GLOB_DAT` | 0, `GLOB_DAT` | symbolic record, `r_sym` the key, addend `A` (RELA) | same |
+| `Ifunc` | the IPLT entry | the entry, `RELATIVE` | the entry | the entry, `RELATIVE` |
+| `Weak0` | 0 | 0 | `A` | `A`, no record |
+
+All three agree (E-reloc §3). A word in a read-only place that would need
+a record is a text relocation (D-47), except in `Exec` where arch.md §4.3
+turns it into `COPY` or a canonical PLT. GOT relaxation in `Exec` and
+`Pie` is the architecture's (a64 R5; x64 G1-G4 extended to `Exec` and
+`Pie`, G5/G6 to `Exec`, request R-X1; i386 [M4]); every reference
+relaxes the x86-64 local `GOTPCRELX` (E-reloc §3). Under RELA the place of
+a `GLOB_DAT`, symbolic or `JUMP_SLOT` record holds 0 and of a `RELATIVE`
+`S + A` (a64 §6.2 Q6); under REL (i386, [M4]) the place holds the addend:
+`S + A` for `RELATIVE`, `A` for `R_386_32`, 0 for `GLOB_DAT`, the lazy
+target for `JUMP_SLOT` (all three, E-reloc §1, request R-X86-2).
+
+**D-47 [M2] (text relocations refused).** A dynamic record whose place is
+in a section without `SHF_WRITE` is refused by name, `text-relocation`,
+with GNU ld's wording as the message: ``relocation R_X86_64_32S against
+symbol `ro_pfa' can not be used when making a PIE object; recompile with
+-fPIE``. `-z text` is the default and `supported` (noop today);
+`-z notext` is refused (request R-C1). The references disagree three
+ways (GNU ld writes `DT_TEXTREL` with a warning on i386, refuses on
+x86-64 and AArch64; lld refuses unless `-z notext`; mold writes
+`DT_TEXTREL` silently, and its i386 output then crashes, E-reloc §8, a
+wrong output of mold). lld also writes a wrong output here: an absolute
+word in a read-only section against a shared object's data, in a PIE,
+links silently with a copy relocation and no record, and the program
+crashes on the unrelocated pointer (12 of 12 cases, three architectures,
+E-dynamic `lld_textrel_copyrel.sh`). *Tests:* `textrel-refused` (the
+message), `textrel-ro-copy-pie` (mortar refuses where lld miswrites).
+
+**D-48 [M2] (TLS).** In `Exec` and `Pie`:
+
+- against a TLS definition of the executable: LE, every model relaxed
+  (lld and mold; GNU ld keeps IE with a dynamic `TPOFF` against the
+  executable's own symbol, valid but slower, E-reloc §7);
+- against a shared object's TLS: IE. GD and TLSDESC sequences that the
+  architecture recognises relax to IE (all three, every architecture); the
+  slot is a `GOT_TPREL` slot with a `TLS_TPREL64`/`TPOFF64`/`TLS_TPOFF`
+  record against the key, addend 0, place 0;
+- a GD sequence that is not recognised keeps its module/offset pair:
+  `DTPMOD` + `DTPOFF` records against the key (mold keeps i386 GD and
+  AArch64 traditional GD this way, and they run); a TLSDESC sequence that
+  is not recognised (AArch64's large form, a64 R2) keeps a `TLSDESC`
+  record in `.rela.dyn`, applied eagerly: no `DT_TLSDESC_PLT`/`GOT` (a64
+  §10.6; no reference writes them in an executable);
+- `DF_STATIC_TLS` is never set (D-30).
+
+a64.md has every rule (R1-R5, §10.1), except that DTPMOD64/DTPREL64 are
+listed "in shared" in its §6.2 (request R-A5). x64.md and x86.md scope
+every TLS relaxation to static and static-pie: requests R-X2 (x86-64:
+X-23, X-25, X-27, X-28, X-46, X-47 apply to `Exec` and `Pie`; GD→IE and
+TLSDESC→IE bytes, which the references' outputs in E-reloc `tls/` give,
+as rules of their own; `DTPOFF64`, `TPOFF64`, `R_X86_64_64` added to
+§6.2 with the word, `r_sym` and addend columns) and R-X86-3 (i386, [M4]).
+*Tests:* `tls-shared-ie`, `tls-exe-le`, `tls-gd-unrelaxed`,
+`tls-desc-large` (AArch64), each run.
+
+**D-49 [M2] (lazy binding and `-z now`).** Lazy binding is the default
+(all three). The `.got.plt` header is three words (x86 `[0] = _DYNAMIC`,
+D-32; AArch64 all 0), then one word per PLT entry, then one per IPLT
+entry (a64 §10.2, synth S-67). A `JUMP_SLOT` word initially holds its lazy
+target at the link-time address: AArch64 and i386 PLT0, x86-64 its own
+entry plus 6 (the `push`; GNU ld and lld; mold uses PLT0 with the index in
+`%r11d`); in a PIE the loader adds the load bias (every lazy PIE of
+E-reloc runs). Under `-z now` the shapes stay (PLT0 and the lazy stubs are
+written, as all three do), `.got.plt` moves into RELRO as its own chunk
+(layout L-60 rank 7; lld and mold; GNU ld merges it into `.got`),
+`DT_FLAGS = DF_BIND_NOW` and `DF_1_NOW` are set (D-30). No `.plt.got`
+(lld; GNU ld and mold use it for keys with both a GOT and a PLT use):
+such a key gets a PLT entry and a GOT slot. The x86-64 IBT shapes (`-z
+ibt`, `-z ibtplt`, `.plt.sec`) stay refused at M2 (no census line passes
+them; Debian's GCC does not enable `-fcf-protection`) [open Q4: the
+merged IBT property of all-IBT inputs]. *Tests:* `plt-lazy`, `plt-now`
+(each architecture, run, `readelf -r`).
+
+**D-50 [M2] (preemption).** No definition of an executable is preemptible
+(resolve §9.6); a reference from the executable to its own exported
+definition is bound at link time, and a shared object's reference to it
+binds to the executable's at run time (E-shlib 5.1, 5.3, 5.8e).
 ## 9. Layout
+
+layout.md specified most of this with M2 in view; E-dynamic measured it.
+
+**D-60 [M2] (section order; confirmed).** layout L-60's ranks give, for a
+PIE: headers, `.interp`, notes, `.gnu.hash`, `.dynsym`, `.dynstr`,
+`.gnu.version`, `.gnu.version_r`, `.rela.dyn`, `.rela.plt`, read-only
+data, `.eh_frame_hdr`, `.eh_frame` | `.init`, `.plt`, `.text`, `.fini` |
+TLS, `.init_array`, `.fini_array`, `.data.rel.ro`, `.dynamic`, `.got`,
+`.got.plt` (`-z now`), `.bss.rel.ro`, `.relro_padding` (RELRO) |
+`.got.plt` (lazy), `.data`, `.bss` (with `.dynbss` first). That is lld's
+order with GNU ld's placement of the dynamic tables (E-dynamic §2); the
+two missing slots are added: `.dynbss` (D-42) and `.bss.rel.ro`'s copy
+chunk (request R-L1). `.hash` is removed from rank 3 (D-20).
+
+**D-61 [M2] (segments; confirmed).** `PT_PHDR`, `PT_INTERP`, the
+`PT_LOAD`s, `PT_DYNAMIC`, `PT_NOTE`s, `PT_TLS`, `PT_GNU_PROPERTY`,
+`PT_GNU_EH_FRAME`, `PT_GNU_STACK`, `PT_GNU_RELRO`, in that order (layout
+L-67; GNU ld's order, measured on dynamic links now). `PT_INTERP` and
+`PT_PHDR` exist iff an interpreter is named (layout L-67's "dynamic, not
+-shared" would give static-pie a `PT_INTERP`; request R-L1). The four
+`PT_LOAD`s R, RX, RW (RELRO), RW (layout L-65; lld and mold; GNU ld's
+`-z separate-code` default differs on x86, layout L-71 Q2 stands). PIE
+base 0 (L-68). The RELRO run ends on a maxpage boundary (L-64): 64 KiB on
+AArch64, which mold also does and lld does not (lld's AArch64 RELRO ends
+mid-page, unsafe on a 64 KiB-page kernel [not run: no such kernel]).
+
+**D-62 [M2] (layout is a pure function).** Nothing in this spec makes a
+size depend on an address: `.dynsym`, `.dynstr`, `.gnu.hash`,
+`.gnu.version*`, `.rela.dyn`, `.rela.plt`, `.dynamic`, `.interp`, PLT and
+GOT sizes are functions of `Resolution`, `Demands` and `Slots` (D-30's
+presence rules, D-40's record set). The only address-dependent dynamic
+chunk is `.relr.dyn`, which is M4 (D-27). The RELATIVE/symbolic split
+depends on the target kind, not on addresses; a `RELATIVE` whose place is
+not word-aligned is refused (a64 §6.2's `relocation-misaligned`, applied
+to every architecture: GCC and Clang never emit one, E-corpus).
+
 ## 10. Debuggers and tools
+
+**D-70 [M2] (what debuggers need).** gdb 16.3 and lldb 19 set `break main`
+before `run`, stop there, and list the shared libraries on every
+reference's PIE, non-PIE and static-pie, natively on AArch64 and through
+`qemu -g` for x86-64 and i386 (E-dynamic §3). They need: `DT_DEBUG`
+(present, D-30; with it patched out, native gdb and lldb list only the
+loader and miss libc), `.dynamic` writable at load (D-33), `PT_PHDR` and
+`PT_INTERP` (D-61), and `.symtab` (synth §7). Nothing else is read before
+relocation; gdb computes the PIE's bias from the auxiliary vector.
+lldb needs `settings set target.disable-aslr false` in this container
+(personality is refused); that is the harness's, not the output's.
+
+**D-71 [M2] (tools).** `ldd` lists every reference's output correctly
+(static-pie: "statically linked"). `eu-elflint --gnu-ld` passes only GNU
+ld's outputs; its complaints about lld and mold are about their
+`.relro_padding` (`NOBITS`/`WA`), all-headers-first `Vernaux` layout,
+`.gnu.hash` `sh_entsize` 4 on ELF32 and `.rodata` entry sizes. mortar
+writes `Vernaux` interleaved (D-27) and the ELF32 `sh_entsize` 4 of every
+reference; its `.relro_padding` chunk (model §4.4) will draw the same
+complaint as lld's [open Q5]. The `prelink` fields nobody reads (D-30)
+are never written. *Test:* `elflint-dynamic` (the complaints are a fixed
+allow-list).
+
+**D-72 [M2] (debug sections in a PIE).** image.md I-47's open M2 item (a
+zero tombstone in a PIE, where address 0 is the file header): [open Q6;
+recommendation: keep 0 for `.debug_*` other than `.debug_ranges`/
+`.debug_loc` (as lld), since no code is at 0 in a PIE either: the first
+`PT_LOAD` holds the headers].
 ## 11. Requests to the architecture specs and `arch.md`
 ## 12. Requests to `plumb.md`
 ## 13. Where the references differ; wrong outputs

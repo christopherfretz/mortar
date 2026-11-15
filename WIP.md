@@ -11,4 +11,5 @@
 - Written: §5 shared objects as inputs (D-10..D-19a) from E-shlib.
 - Written: §6 dynsym/hash/versions (D-20..D-28) from E-dynsym; D-25 weak-undef pending E-reloc confirmation.
 - Written: §2.4, §2.5 from E-corpus (x86-64 PIE needs COPY: D-43, R-A3 to write).
-- Next: §2 census and §4-§9 rules from the six experiment agents (census, corpus, dynsym, dynamic, reloc, shlib).
+- Written: §4 output kinds, §7 .dynamic, §8 dynamic relocations, §9 layout, §10 debuggers (from E-dynamic, E-reloc).
+- Next: §2 census (agent still running), §11 arch requests, §12 plumb requests, §13 differences, §14-§16, appendix; WP cut in spec/landed/dyn/WP-040.md; amend owning specs (requests R-*). and §4-§9 rules from the six experiment agents (census, corpus, dynsym, dynamic, reloc, shlib).
