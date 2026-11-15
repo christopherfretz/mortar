@@ -1,6 +1,6 @@
 # spec: synthetic sections (`mortar_merge`, `mortar_synth`)
 
-Status: draft (WP-025 stage 1). The evidence for each non-obvious rule is
+Status: **accepted for M1** (WP-025 stage 1; reviewed independently, the review's findings applied). The evidence for each non-obvious rule is
 in `spec/landed/synth/WP-025-spec.md` ("X-n" below names an experiment
 there).
 
