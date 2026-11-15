@@ -14,7 +14,7 @@
 pub mod front;
 mod proof;
 mod sites;
-mod syms;
+pub mod syms;
 pub mod timing;
 
 use std::ffi::{OsStr, OsString};

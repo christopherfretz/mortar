@@ -4,10 +4,10 @@
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::resolution::{Def, RefFlags, Resolution};
-use mortar_core::{FileId, SymEntry, SymKey, SymKind, SymbolId};
-use mortar_elf::consts::{STB_GLOBAL, STB_WEAK, STT_NOTYPE, STT_OBJECT};
+use mortar_core::{FileId, SectionId, SymEntry, SymKey, SymKind, SymbolId};
+use mortar_elf::consts::{STB_GLOBAL, STB_WEAK, STT_NOTYPE, STT_OBJECT, STV_HIDDEN, STV_INTERNAL};
 use mortar_elf::{Sym, SymbolIndex, SymbolSection, SymbolTable};
-use mortar_synth::symtab::{GlobalIn, LocalIn, SymDef};
+use mortar_synth::symtab::{CoreSections, GlobalIn, LocalIn, SecKind, Sections, SymDef};
 use mortar_synth::SymSource;
 
 /// [`SymSource`] over `Inputs`, `Resolution` and `Assignment`.
@@ -140,6 +140,11 @@ impl SymSource for CoreSyms<'_, '_> {
                 row(STT_OBJECT, size, SymDef::Common, e.file, props.binding)
             }
             Def::Internal(_) => row(STT_NOTYPE, 0, SymDef::Internal, FileId::INTERNAL, STB_GLOBAL),
+            // gABI "Symbol Visibility": a hidden or internal symbol must
+            // be removed or made local in an executable; an undefined one
+            // has no file block to be local in, so it is removed (GNU's
+            // form; lld writes it `STB_LOCAL` undefined). synth.md S-75.
+            Def::Undefined { .. } if matches!(other, STV_INTERNAL | STV_HIDDEN) => return None,
             Def::Undefined { weak } if referenced => {
                 let binding = if weak { STB_WEAK } else { STB_GLOBAL };
                 row(STT_NOTYPE, 0, SymDef::Undefined, FileId::INTERNAL, binding)
@@ -155,5 +160,29 @@ impl SymSource for CoreSyms<'_, '_> {
             SymKind::Global(id) => self.inputs.symbols.get(id).map_or(&[][..], |k| k.name),
             SymKind::Local(e) => self.sym(e).and_then(|(s, t)| t.name(&s).ok()).unwrap_or_default(),
         }
+    }
+}
+
+/// [`Sections`] of a link: `CoreSections`, where a section consumed by
+/// the link (no output section, layout §8.1: `.note.gnu.property`,
+/// `.note.GNU-stack`, `.gnu.warning*`, `.ARM.attributes`) counts as not
+/// live, so its locals have no entry (synth.md S-76).
+#[derive(Debug, Clone, Copy)]
+pub struct LinkSections<'a> {
+    pub core: CoreSections<'a>,
+    pub assignment: &'a Assignment<'a>,
+}
+
+impl Sections for LinkSections<'_> {
+    fn live(&self, section: SectionId) -> bool {
+        self.core.live(section) && self.assignment.out(section).is_some()
+    }
+
+    fn kind(&self, section: SectionId) -> SecKind {
+        self.core.kind(section)
+    }
+
+    fn merge_live(&self, section: SectionId, offset: u64) -> bool {
+        self.core.merge_live(section, offset)
     }
 }

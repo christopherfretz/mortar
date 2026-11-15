@@ -910,6 +910,14 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   has none (S-76): at M1 `--gc-sections` is refused, so such a section is
   a discarded COMDAT member or a section discarded by the script
   (supervisor's ruling on WP-025).
+  An undefined key whose combined visibility is `STV_HIDDEN` or
+  `STV_INTERNAL` (a weak hidden reference no object defines, as glibc's
+  `_nl_current_LC_*` and `_IO_cookie_*` in a static link) has no entry:
+  the gABI ("Symbol Visibility") requires a hidden symbol to be removed
+  or made `STB_LOCAL` in an executable, and an undefined key has no
+  file block to be local in. This is GNU's form; lld writes it as an
+  `STB_LOCAL` `SHN_UNDEF` entry (WP-027a, GCC 14 static C program:
+  `_IO_cookie_close` absent in GNU 2.44, `LOCAL HIDDEN UND` in lld 19).
 - **S-121 [G] (bindings are the inputs').** A global's output binding
   is resolve.md §3.7's and nothing else: `STB_LOCAL` only for a
   definition whose combined visibility is hidden or internal (S-77), and
@@ -932,7 +940,14 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   - it is not discarded by the `-X`/`-x` rule (S-78).
 
   Locals in sections that are not live are dropped (GNU's
-  `--strip-discarded`, its default, and lld). Locals in a folded section
+  `--strip-discarded`, its default, and lld). A section the link
+  consumes (layout §8.1: `.note.gnu.property`, `.note.GNU-stack`,
+  `.gnu.warning*`, `.ARM.attributes`) counts as not live here: it has
+  no output section, so a symbol in it has no value. glibc's and
+  libgcc's objects each carry a `$d` at the start of their
+  `.note.gnu.property`; GNU and lld drop them (WP-027a: 386 such
+  entries in a GCC 14 static C link, which also had no address to
+  write). Locals in a folded section
   [ICF] take the place of the fold's target.
 - **S-77 [C] (demoted globals).** A global whose output binding is
   `STB_LOCAL` (a hidden or internal definition, resolve.md §3.7) is a

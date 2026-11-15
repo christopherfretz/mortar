@@ -61,7 +61,7 @@ use mortar_synth::{
 
 use crate::proof::A64Proof;
 use crate::sites::{LinkSites, SiteInputs, SynthIds};
-use crate::syms::CoreSyms;
+use crate::syms::{CoreSyms, LinkSections};
 use crate::timing::Timer;
 
 /// The first `ChunkId` after the file header, the program headers and
@@ -144,6 +144,32 @@ pub struct OutRow {
 }
 
 impl Front<'_> {
+    /// Calls `f` with the symbol tables' context (`spec/synth.md` §7.1)
+    /// as phase 80 built it: what `SymtabPlan::write_symtab` and
+    /// `write_strtab` read.
+    ///
+    /// # Errors
+    ///
+    /// `MergeEh::new`'s, which phase 80 already passed on these tables.
+    pub fn with_sym_cx<T>(
+        &self,
+        f: impl FnOnce(&SymCtx<'_>) -> T,
+    ) -> Result<T, mortar_synth::error::SynthError> {
+        let tables = Tables { inputs: &self.inputs, resolution: &self.resolution, assignment: &self.assignment };
+        let merge_eh = MergeEh::new(&self.merge.eh, &tables)?;
+        let core =
+            CoreSections { resolution: &self.resolution, liveness: &self.liveness, split: &self.merge.split };
+        let sections = LinkSections { core, assignment: &self.assignment };
+        let syms = CoreSyms::new(&self.inputs, &self.resolution, &self.assignment);
+        let cx = SymCtx {
+            syms: &syms,
+            sections: &sections,
+            eh: Some((&self.eh, &merge_eh)),
+            discard: self.plan.shaping.discard,
+        };
+        Ok(f(&cx))
+    }
+
     /// The output sections, in section index order.
     #[must_use]
     pub fn sections(&self) -> Vec<OutRow> {
@@ -387,7 +413,8 @@ pub fn front<'s>(
         .ok()?;
     let got = GotPlan::new(&arch, &slots, scanned.demands.output, variant, diag).ok()?;
     let build_id = BuildIdPlan::new(plan.shaping.build_id.as_ref(), diag).ok()?;
-    let sections = CoreSections { resolution: &resolution, liveness: &liveness, split: &merge.split };
+    let core = CoreSections { resolution: &resolution, liveness: &liveness, split: &merge.split };
+    let sections = LinkSections { core, assignment: &assignment };
     let syms = CoreSyms::new(&inputs, &resolution, &assignment);
     let strip_all = plan.shaping.strip == Some(Strip::All);
     let sym_cx = SymCtx {
@@ -410,6 +437,10 @@ pub fn front<'s>(
     let stack_notes = mortar_layout::stack::notes(&inputs, &resolution);
     let names: Vec<&[u8]> = estimated_names(&assignment, &liveness, &resolution);
     let mut shstrtab = ShstrtabPlan::new(&names);
+    // S-85: `.symtab_shndx` exists when some section index reaches
+    // `SHN_LORESERVE`; the count of section headers (with the null one)
+    // is estimated, then checked after the placement.
+    let mut shndx = SymtabPlan::needs_shndx(names.len() as u32 + 2);
     let mut plans = SynthPlans {
         hdr,
         got,
@@ -424,7 +455,7 @@ pub fn front<'s>(
     let (placement_assignment, placed, layout) = loop {
         attempt += 1;
         plans.shstrtab = shstrtab.clone();
-        let (synthetic, present) = synth_chunks(&plans, &eh);
+        let (synthetic, present) = synth_chunks(&plans, &eh, shndx);
         let Some(sizes) = chunk_ids(FIRST_SYNTHETIC, &present) else {
             diag.emit(Key::new(80, 0, 0), internal("a synthetic chunk given twice"));
             return None;
@@ -497,16 +528,21 @@ pub fn front<'s>(
         // The sizes known only now (S-90 after stage C; R-L5 after the
         // fixed point): equal, or one more run with them (they are
         // non-allocated and last, so they move no address).
-        let exact = ShstrtabPlan::new(&placed_names(&placed, &a));
+        let exact_names = placed_names(&placed, &a);
+        let exact = ShstrtabPlan::new(&exact_names);
         let mut again = exact.size() != shstrtab.size();
         shstrtab = exact;
+        // The headers: the null one and one per output section.
+        let exact_shndx = SymtabPlan::needs_shndx(exact_names.len() as u32 + 1);
+        again |= exact_shndx != shndx;
+        shndx = exact_shndx;
         if !placed.placement.patches.is_empty()
             && let Some(old) = &plans.symtab
         {
             let new = SymtabPlan::new(&sym_cx, Class::Elf64, &placed.placement.patches, facts, &pool, diag).ok()?;
             again |= new.symtab_size() != old.symtab_size()
                 || new.strtab_size() != old.strtab_size()
-                || new.shndx_size() != old.shndx_size();
+                || (shndx && new.shndx_size() != old.shndx_size());
             plans.symtab = Some(new);
         }
         if again && attempt < 3 {
@@ -665,7 +701,7 @@ fn property_plan(
 
 /// The synthetic chunks that exist, in S-3 order, as layout takes them,
 /// and their sizes.
-fn synth_chunks(p: &SynthPlans, eh: &EhPlan) -> (Vec<SynthChunk>, Vec<(SynthKind, u64)>) {
+fn synth_chunks(p: &SynthPlans, eh: &EhPlan, shndx: bool) -> (Vec<SynthChunk>, Vec<(SynthKind, u64)>) {
     let mut present: Vec<(SynthKind, u64)> = Vec::new();
     if p.property.exists() {
         present.push((SynthKind::NoteGnuProperty, p.property.size()));
@@ -693,7 +729,7 @@ fn synth_chunks(p: &SynthPlans, eh: &EhPlan) -> (Vec<SynthChunk>, Vec<(SynthKind
     }
     if let Some(s) = &p.symtab {
         present.push((SynthKind::Symtab, s.symtab_size()));
-        if s.shndx_size() > 0 {
+        if shndx {
             present.push((SynthKind::SymtabShndx, s.shndx_size()));
         }
         present.push((SynthKind::Strtab, s.strtab_size()));

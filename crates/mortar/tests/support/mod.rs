@@ -402,7 +402,7 @@ pub fn front_of<'s>(
 }
 
 pub fn store() -> Store {
-    Store::new(StorePolicy::Resident)
+    Store::new(StorePolicy::from_env())
 }
 
 /// The front's layout, summarized as [`summarize_elf`] summarizes a file.
@@ -540,4 +540,98 @@ pub fn table(rows: &[(&str, &Summary)]) -> String {
         t.push('\n');
     }
     t
+}
+
+/// The front's placed input sections, one line each: `addr size name file`
+/// (allocated ones, by address), for comparison with a GNU map file.
+pub fn places(f: &Front<'_>) -> String {
+    use std::fmt::Write;
+    let p = &f.layout.placement;
+    let mut rows: Vec<(u64, u64, String, String)> = Vec::new();
+    for (sid, place) in p.place.iter() {
+        let Some((chunk, off)) = place.get() else { continue };
+        let Some(addr) = p.chunks.get(chunk).and_then(|c| c.addr) else { continue };
+        let h = &f.headers[sid];
+        let Some((file, _)) = f.resolution.sh_index(sid) else { continue };
+        let d = f.inputs.files[file].display();
+        let name = match d.member() {
+            Some(m) => format!("{}({m})", d.path()),
+            None => d.path().to_owned(),
+        };
+        rows.push((addr + off, h.size, String::from_utf8_lossy(h.name).into_owned(), name));
+    }
+    rows.sort();
+    let mut out = String::new();
+    for (a, z, n, file) in rows {
+        let _ = writeln!(out, "{a:#x} {z:#x} {n} {file}");
+    }
+    out
+}
+
+/// The names `.strtab` holds, in entry order (`spec/synth.md` S-86).
+pub fn strtab_names(f: &Front<'_>) -> Vec<String> {
+    let Some(plan) = &f.synth.symtab else { return Vec::new() };
+    let mut buf = vec![0u8; plan.strtab_size() as usize];
+    f.with_sym_cx(|cx| {
+        plan.write_strtab(cx, &mut mortar_synth::out::Window::new(0, &mut buf)).expect("strtab")
+    })
+    .expect("sym cx");
+    buf.split(|&b| b == 0).skip(1).map(|n| String::from_utf8_lossy(n).into_owned()).collect()
+}
+
+/// Addresses that place everything at 0, in section 1 for an input
+/// section's symbol, 2 for `.eh_frame`'s, 3 for a common, 4 for a patch:
+/// enough to read the entries' names, types, bindings and kinds.
+struct AnyAddrs<'f, 's>(&'f Front<'s>);
+
+impl mortar_synth::symtab::SymAddrs for AnyAddrs<'_, '_> {
+    fn section(&self, s: mortar_core::SectionId, _: u64) -> Option<(u32, u64)> {
+        // 9: a merge section (placed by fragments); 8: any other section
+        // with no place in the layout.
+        let f = self.0;
+        let placed = f.layout.placement.place.get(s).and_then(|p| p.get()).is_some();
+        let merge = f.resolution.sections[s].kind == mortar_core::resolution::SectionKind::Merge;
+        Some((if placed { 1 } else if merge { 9 } else { 8 }, 0))
+    }
+    fn eh_frame(&self) -> Option<(u32, u64)> {
+        Some((2, 0))
+    }
+    fn common(&self, _: mortar_core::SymbolId) -> Option<(u32, u64)> {
+        Some((3, 0))
+    }
+    fn internal(&self, _: mortar_core::SymbolId) -> Option<mortar_synth::symtab::InternalValue> {
+        Some(mortar_synth::symtab::InternalValue::Absolute(0))
+    }
+    fn patch(&self, _: usize) -> Option<(u32, u64)> {
+        Some((4, 0))
+    }
+    fn tls_start(&self) -> Option<u64> {
+        Some(0)
+    }
+    fn section_range(&self, _: u32) -> Option<(u64, u64)> {
+        Some((0, u64::MAX))
+    }
+}
+
+/// The `.symtab` entries as `(type, binding, st_shndx, name)` under
+/// `AnyAddrs`, entry 0 left out.
+pub fn symtab_entries(f: &Front<'_>) -> Vec<(u8, u8, u16, String)> {
+    let Some(plan) = &f.synth.symtab else { return Vec::new() };
+    let mut strtab = vec![0u8; plan.strtab_size() as usize];
+    let mut symtab = vec![0u8; plan.symtab_size() as usize];
+    f.with_sym_cx(|cx| {
+        plan.write_strtab(cx, &mut mortar_synth::out::Window::new(0, &mut strtab)).expect("strtab");
+        plan.write_symtab(cx, &AnyAddrs(f), &mut mortar_synth::out::Window::new(0, &mut symtab)).expect("symtab");
+    })
+    .expect("sym cx");
+    symtab
+        .chunks_exact(24)
+        .skip(1)
+        .map(|e| {
+            let name = u32::from_le_bytes([e[0], e[1], e[2], e[3]]) as usize;
+            let end = strtab[name..].iter().position(|&b| b == 0).map_or(strtab.len(), |p| name + p);
+            let shndx = u16::from_le_bytes([e[6], e[7]]);
+            (e[4] & 0xf, e[4] >> 4, shndx, String::from_utf8_lossy(&strtab[name..end]).into_owned())
+        })
+        .collect()
 }
