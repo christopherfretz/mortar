@@ -200,6 +200,10 @@ impl Table<'_, '_> {
             b"__GNU_EH_FRAME_HDR" => self
                 .section_start(b".eh_frame_hdr")
                 .ok_or_else(|| internal("__GNU_EH_FRAME_HDR confirmed with no .eh_frame_hdr"))?,
+            // §13.1: M2, the start of `.dynamic` (spec/dyn.md D-32).
+            b"_DYNAMIC" => self
+                .section_start(b".dynamic")
+                .ok_or_else(|| internal("_DYNAMIC defined with no .dynamic"))?,
             b"_TLS_MODULE_BASE_" => {
                 // L-98: tls.start, in .tdata's index or .tbss's.
                 let first = self.alloc_order().find(|&c| self.chunks()[c].is_tls());

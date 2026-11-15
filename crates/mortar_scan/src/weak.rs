@@ -4,15 +4,27 @@
 //! of the relocation class) from every live relocation that names it,
 //! before the scan's demands, which read the decision.
 //!
-//! Step 0 (WP-041) states the contract and the place in the driver; the
-//! walk that fills [`WeakUses`] from `Arch::weak_use` is WP-046's. Until
-//! then [`weak_classes`] returns no weak-dynamic key, so every undefined
-//! weak key is `Weak0`, as at M1.
+//! [`classes`] walks the relocations of the live allocated sections of
+//! the files that mention an undefined weak key (none in most links: the
+//! walk costs nothing then), classes each one that names such a key with
+//! `Arch::weak_use`, and decides each key from the union of its classes
+//! ([`WeakUses::verdict`]). Two refusals are made here, once per key, at
+//! the key's first relocation of the refused class in input order:
+//! `weak-undefined-pc-in-pie` (`Pie` only) and a thread-local undefined
+//! weak key in a dynamic executable (D-25, supervisor's ruling after
+//! WP-040r). A static link, a static PIE included, does no walk: every
+//! undefined weak key is `Weak0` there.
 
-use mortar_arch::{Arch, OutputKind, WeakClass};
-use mortar_core::{IdSet, SectionId, SymbolId};
-use mortar_diag::{Diagnostic, Key};
+use mortar_arch::{Arch, DynRefusal, OutputKind, Refusal, ScanError, WeakClass};
+use mortar_core::par::Pool;
+use mortar_core::resolution::Def;
+use mortar_core::{FileId, IdSet, SectionId, SymKind, SymbolId};
+use mortar_diag::{Diagnostic, Key, RefusalClass};
+use mortar_elf::SectionIndex;
+use mortar_elf::consts::SHF_ALLOC;
 
+use crate::driver::{Fault, Sec, key_at};
+use crate::view::{Bufs, View};
 use crate::{ScanInputs, ScanOptions};
 
 /// What the weak classes need of the section mapping (D-25: "a writable
@@ -85,17 +97,29 @@ impl WeakUses {
 #[derive(Debug, Clone, Default)]
 pub struct WeakKeys {
     /// The `WeakDyn` keys: `Demands.weak_dyn` (`spec/model.md` §3.7).
+    /// With room for every key in an `Exec` or `Pie` with `.dynamic`,
+    /// empty (no room) otherwise.
     pub weak_dyn: IdSet<SymbolId>,
-    /// One `weak-undefined-pc-in-pie` per refused key, at its first
-    /// unfillable relocation.
+    /// One diagnostic per refused key, at its first relocation of the
+    /// refused class: `weak-undefined-pc-in-pie`, or the thread-local
+    /// refusal ([`TLS_WEAK`]).
     pub refused: Vec<(Key, Diagnostic)>,
+    /// The refused keys. The walk drops what the architecture's scan
+    /// says of their relocations (the `Weak0` cell of `Pc` in a `Pie`,
+    /// arch.md §4.3: the refusal precedes it).
+    pub refused_keys: IdSet<SymbolId>,
 }
+
+/// D-25: a thread-local undefined weak key in a dynamic executable,
+/// refused once per key (supervisor's ruling after WP-040r).
+pub const TLS_WEAK: &str = "thread-local undefined weak symbol in a dynamic executable";
 
 /// `spec/dyn.md` D-25: the weak classes of every undefined weak key of
 /// the link, from each live relocation that names it through
 /// `arch.weak_use` and `sections`. Runs after liveness and before the
-/// scan's walk (the demands read [`WeakKeys::weak_dyn`]). Step 0: no
-/// weak-dynamic key, no refusal; a static link never has one.
+/// scan's walk (the demands read [`WeakKeys::weak_dyn`]); [`crate::scan`]
+/// runs it on its own view. A static link (and a static PIE) never has a
+/// weak-dynamic key and does no walk.
 #[must_use]
 pub fn weak_classes(
     arch: &dyn Arch,
@@ -103,8 +127,162 @@ pub fn weak_classes(
     opts: &ScanOptions<'_>,
     sections: Option<&dyn SectionMap>,
 ) -> WeakKeys {
-    let _ = (arch, t, opts, sections);
-    WeakKeys::default()
+    let opts = ScanOptions { sections, ..*opts };
+    let view = View::new(arch, t, opts);
+    classes(&view, &Pool::sequential())
+}
+
+/// One use of an undefined weak key: the relocation's scan key, its
+/// class, whether its class is a TLS one, and where it is (to report it).
+#[derive(Debug, Clone, Copy)]
+struct Use {
+    id: SymbolId,
+    at: Key,
+    class: Option<WeakClass>,
+    tls: bool,
+    site: Site,
+}
+
+/// A relocation record: enough to open its section again and report it.
+#[derive(Debug, Clone, Copy)]
+struct Site {
+    file: FileId,
+    sid: SectionId,
+    index: u32,
+    rel: u32,
+    record: u32,
+}
+
+/// What [`classes`] gathers per key.
+#[derive(Debug, Clone, Copy, Default)]
+struct Acc {
+    uses: WeakUses,
+    unfillable: Option<Site>,
+    tls: Option<(Key, Site)>,
+}
+
+/// [`weak_classes`] on the scan's own view, the files walked on `pool`
+/// (one unit per file that mentions an undefined weak key).
+pub(crate) fn classes(view: &View<'_, '_>, pool: &Pool) -> WeakKeys {
+    let output = view.opts.output;
+    if !(view.opts.dynamic && matches!(output, OutputKind::Exec | OutputKind::Pie)) {
+        return WeakKeys::default();
+    }
+    let n = view.inputs.symbols.len();
+    let mut weak = IdSet::with_len(n);
+    let mut any = false;
+    for i in 0..n {
+        let id = SymbolId(i);
+        if matches!(view.def(id), Def::Undefined { weak: true }) {
+            weak.insert(id);
+            any = true;
+        }
+    }
+    let mut keys = WeakKeys {
+        weak_dyn: IdSet::with_len(n),
+        refused: Vec::new(),
+        refused_keys: IdSet::with_len(n),
+    };
+    if !any {
+        return keys;
+    }
+    let r = view.resolution;
+    let files: Vec<FileId> = r
+        .section_base
+        .iter()
+        .map(|(f, _)| f)
+        .filter(|&f| {
+            r.file_live.get(f).is_some_and(|l| l.is_live())
+                && view.prep(f).is_some_and(|p| p.obj.is_some())
+                && view.inputs.sym_map_of(f).iter().any(|&id| {
+                    weak.contains(id) || r.redirect.get(id).is_some_and(|&to| weak.contains(to))
+                })
+        })
+        .collect();
+    let uses: Vec<Vec<Use>> = pool.map(files.len(), |k| file_uses(view, files[k], &weak));
+    let mut acc: std::collections::BTreeMap<SymbolId, Acc> = std::collections::BTreeMap::new();
+    for u in uses.iter().flatten() {
+        let a = acc.entry(u.id).or_default();
+        let before = a.uses.unfillable;
+        a.uses.add(u.class, u.at);
+        if a.uses.unfillable != before {
+            a.unfillable = Some(u.site);
+        }
+        if u.tls && a.tls.is_none_or(|(k, _)| u.at < k) {
+            a.tls = Some((u.at, u.site));
+        }
+    }
+    let mut bufs = Bufs::default();
+    for (id, a) in acc {
+        let refusal = if let Some((_, site)) = a.tls {
+            Some((site, ScanError::Refused(Refusal::named(RefusalClass::Feature, TLS_WEAK))))
+        } else {
+            match a.uses.verdict(output, view.opts.dynamic) {
+                WeakVerdict::WeakDyn => {
+                    keys.weak_dyn.insert(id);
+                    None
+                }
+                WeakVerdict::Weak0 => None,
+                WeakVerdict::Refused(_) => a
+                    .unfillable
+                    .map(|site| (site, ScanError::Dynamic(DynRefusal::WeakUndefinedPcInPie))),
+            }
+        };
+        if let Some((site, e)) = refusal {
+            keys.refused_keys.insert(id);
+            if let Ok(sec) = Sec::open(view, site.file, site.sid, site.index, site.rel, &mut bufs) {
+                keys.refused.push(sec.fault(site.record, Fault::Scan(e)));
+            }
+        }
+    }
+    keys
+}
+
+/// The uses of undefined weak keys (`weak`) in the live allocated
+/// sections of `file`, in input order.
+fn file_uses(view: &View<'_, '_>, file: FileId, weak: &IdSet<SymbolId>) -> Vec<Use> {
+    let r = view.resolution;
+    let mut out = Vec::new();
+    let mut bufs = Bufs::default();
+    let Some(range) = r.section_base.get(file).copied() else { return out };
+    for (k, sid) in range.iter().enumerate() {
+        let Some(row) = r.sections.get(sid) else { continue };
+        if row.reloc.0 == 0 || !view.liveness.is_live(sid) {
+            continue;
+        }
+        let index = k as u32;
+        let alloc = view
+            .prep(file)
+            .and_then(|p| p.obj)
+            .and_then(|o| o.section(SectionIndex(index)).ok())
+            .is_some_and(|s| s.flags() & SHF_ALLOC != 0);
+        if !alloc {
+            continue;
+        }
+        // A section that cannot be read is the walk's diagnostic.
+        let Ok(sec) = Sec::open(view, file, sid, index, row.reloc.0, &mut bufs) else { continue };
+        let writable = view.opts.sections.map_or(sec.place.writable, |m| m.writable(sid));
+        let n = u32::try_from(sec.recs.records.len()).unwrap_or(u32::MAX);
+        for i in 0..n {
+            let Some(raw) = sec.recs.records.raw(i) else { continue };
+            let Some(key) = view.key_of(file, sec.recs.table, raw.r_sym) else { continue };
+            let SymKind::Global(id) = key.kind() else { continue };
+            if !weak.contains(id) {
+                continue;
+            }
+            let site = mortar_arch::Site { bytes: sec.recs.bytes, offset: raw.r_offset };
+            let tls = view.arch.classify(raw.r_type, site).is_ok_and(|h| h.class.is_tls());
+            let class = view.arch.weak_use(raw.r_type, sec.recs.bytes, raw.r_offset, writable);
+            out.push(Use {
+                id,
+                at: key_at(file, index, i),
+                class,
+                tls,
+                site: Site { file, sid, index, rel: row.reloc.0, record: i },
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -493,6 +493,41 @@ pub struct SegmentRules {
     pub max_page: u64,
     /// The `p_flags` of `PT_GNU_STACK` (L-84): `PF_R|PF_W`, or with `PF_X`.
     pub stack: u32,
+    /// The output is position-independent (`ET_DYN`, `spec/dyn.md` D-1):
+    /// its image base is 0 (`spec/layout.md` L-68), so the file header is
+    /// at address 0; otherwise it is at a non-zero base. [`Layout::check`]
+    /// requires it (rule 3).
+    pub pie: bool,
+}
+
+/// `PT_PHDR` and `PT_INTERP` (exactly when an interpreter is named), and
+/// `PT_DYNAMIC` (`spec/dyn.md` D-33, D-61): each over its chunk.
+fn derive_dynamic(ordered: &[&Chunk], word: u8) -> (Vec<Segment>, Option<Segment>) {
+    use mortar_elf::consts::{PF_R, PF_W, PT_DYNAMIC, PT_INTERP, PT_PHDR};
+    let synthetic = |name: &[u8]| {
+        ordered
+            .iter()
+            .copied()
+            .find(|c| c.is_alloc() && matches!(c.kind, ChunkKind::Synthetic(s) if s.name == name))
+    };
+    let covering = |c: &Chunk, p_type, flags, align| Segment {
+        p_type,
+        flags,
+        offset: c.offset,
+        addr: c.addr.unwrap_or(0),
+        filesz: c.size,
+        memsz: c.size,
+        align,
+    };
+    let mut head = Vec::new();
+    if let Some(interp) = synthetic(b".interp") {
+        if let Some(ph) = ordered.iter().find(|c| c.kind == ChunkKind::ProgramHeaders) {
+            head.push(covering(ph, PT_PHDR, PF_R, word));
+        }
+        head.push(covering(interp, PT_INTERP, PF_R, 0));
+    }
+    let dynamic = synthetic(b".dynamic").map(|d| covering(d, PT_DYNAMIC, PF_R | PF_W, word));
+    (head, dynamic)
 }
 
 /// The program headers of a layout (`spec/layout.md` §11, L-125): a pure
@@ -500,12 +535,19 @@ pub struct SegmentRules {
 /// `mortar_layout` (which writes them) and [`Layout::check`] (which
 /// requires the stored ones to equal it).
 ///
-/// In this order (L-67): one `PT_LOAD` per run of consecutive alloc chunks
-/// of one [`LoadClass`] (non-alloc chunks do not break a run); one
-/// `PT_NOTE` per run of consecutive alloc `SHT_NOTE` chunks of one
-/// alignment; `PT_TLS` over the TLS chunks; `PT_GNU_PROPERTY` and
-/// `PT_GNU_EH_FRAME` over the synthetic chunks of those names; one
-/// `PT_GNU_STACK`; `PT_GNU_RELRO` over the RELRO chunks.
+/// In this order (L-67, `spec/dyn.md` D-61): `PT_PHDR` over the program
+/// header table and `PT_INTERP` over the synthetic chunk `.interp`, both
+/// exactly when that chunk exists (an interpreter is named); one `PT_LOAD`
+/// per run of consecutive alloc chunks of one [`LoadClass`] (non-alloc
+/// chunks do not break a run); `PT_DYNAMIC` over the synthetic chunk
+/// `.dynamic` when it exists; one `PT_NOTE` per run of consecutive alloc
+/// `SHT_NOTE` chunks of one alignment; `PT_TLS` over the TLS chunks;
+/// `PT_GNU_PROPERTY` and `PT_GNU_EH_FRAME` over the synthetic chunks of
+/// those names; one `PT_GNU_STACK`; `PT_GNU_RELRO` over the RELRO chunks.
+///
+/// - `PT_PHDR` is `PF_R`, `p_align` the word; `PT_INTERP` `PF_R`,
+///   `p_align` 1; `PT_DYNAMIC` `PF_R|PF_W`, `p_align` the word (D-33).
+///   Each covers its chunk's `size` exactly (file and memory).
 ///
 /// - A `PT_LOAD` starts at its first chunk; its `p_offset` is the least
 ///   offset at or after that chunk's offset congruent to its address modulo
@@ -541,8 +583,13 @@ pub fn derive_segments(
     let ordered: Vec<&Chunk> = order.iter().filter_map(|&c| chunks.get(c)).collect();
     let mut out = Vec::new();
 
+    let (head, dynamic) = derive_dynamic(&ordered, word);
+    out.extend(head);
+
     let loads = derive_loads(&ordered, page_log);
     out.extend(loads.iter().map(|l| l.0));
+
+    out.extend(dynamic);
     let load_page = |addr: u64| -> u64 {
         loads
             .iter()
