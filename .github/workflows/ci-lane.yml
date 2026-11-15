@@ -28,10 +28,9 @@ defaults:
 jobs:
   # The whole gate in one job: `cargo xtask ci` (fmt, clippy, the tests,
   # the link tests on all three architectures; the runner's natively, the
-  # others under qemu-user). It takes minutes, not the hour of hod's or
-  # kiln's, so it is not split by `--step`: a job of its own per step
-  # would pay the set-up again for each, and a private repository pays
-  # for every job's minutes rounded up.
+  # others under qemu-user). It takes about a quarter of an hour, not the
+  # hour of hod's or kiln's, so it is not split by `--step`: a job of its
+  # own per step would pay the set-up (2 to 3 minutes) again for each.
   gate:
     name: gate
     runs-on: ${{ inputs.runner }}

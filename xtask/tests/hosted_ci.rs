@@ -25,7 +25,8 @@ fn lines(text: &str) -> Vec<&str> {
 // `--quick` nor `--step`) through `scripts/env.sh`, with tools required;
 // the set-up installs the tools from `scripts/ci-tools.sh`, starts the
 // jobserver pool and installs the Rust that `rust-toolchain.toml` pins;
-// both architectures are called and have their fan-in checks.
+// both architectures are called and have their fan-in checks; ci.yml
+// runs on a push to main, pull requests, the merge queue and by hand.
 #[test]
 fn the_hosted_lanes_run_the_gate_as_the_development_machine_does() {
     let lane = read(".github/workflows/ci-lane.yml");
@@ -59,6 +60,16 @@ fn the_hosted_lanes_run_the_gate_as_the_development_machine_does() {
         "uses: ./.github/workflows/ci-lane.yml",
     ] {
         assert!(entry.contains(&call), "ci.yml: {call}");
+    }
+    // The triggers: a push to main, pull requests, the merge queue, and by
+    // hand (rule 6).
+    let on = entry.iter().position(|line| *line == "on:").expect("ci.yml: on:");
+    let end = entry.iter().position(|line| *line == "permissions:").expect("ci.yml: permissions:");
+    let triggers = &entry[on + 1..end];
+    for trigger in
+        ["push:", "branches: [main]", "pull_request:", "merge_group:", "workflow_dispatch:"]
+    {
+        assert!(triggers.contains(&trigger), "ci.yml triggers: {trigger}: {triggers:?}");
     }
 }
 

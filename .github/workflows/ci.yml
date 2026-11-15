@@ -9,23 +9,21 @@ name: ci
 # check names, `check` and `check-x86_64`, whatever the lanes' jobs are:
 # they are plain jobs, since a matrix axis would rename them.
 on:
-  # By hand only (Actions, "ci", "Run workflow") while the repository is
-  # private, where every runner minute is billed.
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  # By hand (Actions, "ci", "Run workflow"), on any branch.
   workflow_dispatch:
     inputs:
       # A diagnosis run: every step of the gate and every test binary
       # runs whatever failed before it (`cargo xtask ci --no-fail-fast`),
-      # so one run shows every failure. Pushes and pull requests always
-      # run the plain gate.
+      # so one run shows every failure. Pushes, pull requests and the
+      # merge queue always run the plain gate.
       no_fail_fast:
         description: Run every step and test binary (cargo xtask ci --no-fail-fast)
         type: boolean
         default: false
-  # Enable these (uncomment the four lines) when the repository is public.
-  # push:
-  #   branches: [main]
-  # pull_request:
-  # merge_group:
 permissions:
   contents: read
 # One run per ref at a time. A newer run cancels a pull request's or a
@@ -55,9 +53,8 @@ jobs:
         run: |
           echo "arm lane: ${{ needs.arm.result }}"
           test "${{ needs.arm.result }}" = success
-  # The x86-64 lane's own check, so that it can stay non-required until
-  # the lane has passed once (spec/harness.md "Hosted CI": the code base
-  # was written on an AArch64 host).
+  # The x86-64 lane's own check, so that each lane can be required on
+  # its own (spec/harness.md "Hosted CI", rule 9).
   check-x86_64:
     needs: [x86_64]
     if: always()

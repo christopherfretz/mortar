@@ -27,5 +27,9 @@ Deleted in the final commit.
   tools (shlib_oracle and its scripts, scan dynamic, a64 dynamic_ref,
   debug_gc, synth dynsym verneed); baseline.on-x86_64.tsv gains 030d's
   15 rows (from run 43743521473). Stage 3 on x86-64: 0 FAIL.
-- Open: two green plain runs; the triggers and spec/harness.md
-  "Hosted CI"; the landed record.
+- Triggers switched (push main, pull_request, merge_group, by hand);
+  spec/harness.md "ci" (--no-fail-fast, named skips) and "Hosted CI"
+  (rules 2, 4, 6, 9-11; a test's subject, native and cross runtimes, the
+  tool guard, named skips, tests); hosted_ci.rs checks the triggers.
+- Open: debug_gc_aarch64 gdb `info line` end symbol on the cross runtime
+  (ruling asked); two green plain runs; the landed record.
