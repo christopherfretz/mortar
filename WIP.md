@@ -30,5 +30,5 @@ review `briefs/reviews/review-060-incr-re.md` (context repo), the first review
    `oracle_scen.sh`, rerun `livemodel.py --drop KIND`; fill IN-29 text.
 4. Oracle: diagnose the 6 failing pairs (O2 l merged `.rodata.str*`; lx
    `crtbeginT.o` R_X86_64_32) – row gap or oracle gap; update IN-63b and §3.
-5. `run-all.sh`: add stamp_probe.py, livemodel.py, the new oracle pairs.
-6. Final commit: delete WIP.md; remove `.build/target-wp-060`.
+5. (done: run-all.sh lists them)
+6. Final commit: delete WIP.md; reset spec/README.md row 32 to "revision 2"; remove `.build/target-wp-060` (kept for now: the split-DWARF run needs the binary).
