@@ -75,6 +75,7 @@ fn statuses() {
             "--no-as-needed",
             "-Bstatic",
             "-L",
+            "--sysroot",
             "--hash-style",
             "--error-limit",
             "--fatal-warnings",

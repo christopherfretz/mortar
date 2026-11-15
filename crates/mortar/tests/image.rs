@@ -247,7 +247,7 @@ fn elflint(out: &Path) {
 }
 
 /// `mortar_plumb` (`spec/plumb.md` §2) on the written image, its inputs
-/// and mortar's map: no finding but the verifier's known merge-piece case.
+/// and mortar's map: no finding.
 fn plumb(l: &Linked, out: &Path, dir: &Path) {
     let map = write_map(l, out);
     support::plumb::clean(out, &map, dir);

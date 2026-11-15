@@ -26,8 +26,12 @@ pub enum Op {
     /// `G(GTLSIDX(S+A))` and `G(GLDM(S))`.
     Slot(Slot, Form),
     /// `R_AARCH64_TLSDESC_CALL`: marks the `BLR` of a TLS descriptor
-    /// sequence; it writes nothing.
+    /// sequence; it writes nothing (`R_X86_64_TLSDESC_CALL` too).
     DescCall,
+    /// `Z + A`: the symbol's size (x86-64 `SIZE32`, `SIZE64`).
+    Size,
+    /// `GOT + A - P` (x86-64 `GOTPC32`, `GOTPC64`).
+    GotPc,
 }
 
 /// What a GOT entry holds (AAELF64 "Relocation operations", §5.5, §4.7).
@@ -58,6 +62,18 @@ pub enum Form {
     Off,
     /// `G - Page(GOT)`.
     PageOff,
+    /// `G + A - P`: the slot holds S and A is added outside it (x86-64,
+    /// `spec/x64.md` X-4).
+    PrelA,
+    /// `G + A - GOT` (x86-64 `GOT64`).
+    OffA,
+}
+
+impl Form {
+    /// Whether the addend is outside the slot: the slot holds S, not S+A.
+    pub const fn addend_outside(self) -> bool {
+        matches!(self, Form::PrelA | Form::OffA)
+    }
 }
 
 impl Op {
@@ -511,6 +527,7 @@ pub fn decode(field: Field, word: u64, p: u64) -> i64 {
     let w32 = word as u32;
     match field {
         Field::Data(8) => word as i64,
+        Field::Data(0) | Field::Insn => 0,
         Field::Data(w) => sext(word, 8 * u32::from(w)),
         Field::Movw(s) | Field::MovwSigned(s) => (u64::from((w32 >> 5) & 0xffff) << s) as i64,
         Field::Adr => adr(w32 & !0x8000_0000, p).map_or(0, |(_, t)| t.wrapping_sub(p) as i64),
@@ -521,7 +538,6 @@ pub fn decode(field: Field, word: u64, p: u64) -> i64 {
         Field::Lo12(s) => (u64::from((w32 >> 10) & 0xfff) << s) as i64,
         Field::Lo15 => (u64::from((w32 >> 10) & 0xfff) << 3) as i64,
         Field::Hi12 => (u64::from((w32 >> 10) & 0xfff) << 12) as i64,
-        Field::Insn => 0,
         Field::Imm19 => sext(u64::from((w32 >> 5) & 0x7ffff), 19) << 2,
         Field::Imm14 => sext(u64::from((w32 >> 5) & 0x3fff), 14) << 2,
         Field::Imm26 => sext(u64::from(w32 & 0x3ff_ffff), 26) << 2,

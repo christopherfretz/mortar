@@ -664,6 +664,14 @@ file with neither architecture nor linker.
   legitimately differs under `output: reference` is left out with `skip`,
   not `xfail` (a run step does not fail when its output differs, so
   `xfail` would be `XPASS`).
+- **Run-wide mortar xfails.** `tests/link/xfails` holds one
+  `mortar,<arch>: <reason>` per line (`#` comments and blank lines
+  aside; at most one per architecture; only mortar, so a reference is
+  never masked): an architecture mortar has no back end for. On it, the
+  line's reason is mortar's `xfail` in every test, in place of the test's
+  own `xfail(mortar)`; a test's `skip(mortar)` still applies. A mortar
+  link that passes there is `XPASS`, so the line is removed when the back
+  end lands. A line that does not parse is a run error.
 - `timeout: <seconds>` (1 to 3600), `mem: <MiB>` (16 to 65536).
 - `anomaly(<qualifiers>): <id>...`: the recorded reference-linker defects
   (`spec/plumb.md` §10.2) the verifier is expected to find on these
@@ -960,7 +968,9 @@ reference machine) and `reloc/aarch64-veneer` (AArch64 only).
 `the_map_of_a_link_line`, `what_the_verifier_does_not_judge`,
 `a_default_anomaly_goes_stale`.
 `xtask/src/linktest/format.rs`: `anomaly_declarations`,
-`default_anomalies`.
+`default_anomalies`, `arch_xfails`.
+`xtask/src/linktest/engine.rs`:
+`a_run_wide_xfail_applies_to_mortar_on_its_architecture`.
 `xtask/src/linktest.rs`: `the_command_line`, `usage_errors`,
 `collecting_test_files`.
 
