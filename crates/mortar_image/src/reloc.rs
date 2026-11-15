@@ -92,6 +92,75 @@ pub(crate) struct Scratch {
     /// The deferred sections a fault was found in (I-14), in the order
     /// found; taken by the job.
     pub flagged: Vec<SectionId>,
+    /// Recent keys' values (and a deferred record's facts), direct-mapped.
+    memo: Memo,
+}
+
+/// A worker's memo of [`Tables::record_sym`] (and [`Tables::scan_facts`]
+/// at a mention) by key: both are functions of the key (and the mention)
+/// alone over one link, and a section's records name few keys many
+/// times (a `.debug_info`'s: its file's `.debug_str` section symbol).
+#[derive(Debug, Default)]
+struct Memo {
+    slots: Vec<Option<MemoSlot>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MemoSlot {
+    key: SymKey,
+    value: SymValue,
+    split: bool,
+    /// The facts at a mention, when asked for.
+    at: Option<(Option<SymEntry>, Option<SymFacts>)>,
+}
+
+impl Memo {
+    const SLOTS: usize = 1024;
+
+    fn slot(&mut self, key: SymKey) -> &mut Option<MemoSlot> {
+        if self.slots.is_empty() {
+            self.slots.resize(Self::SLOTS, None);
+        }
+        let h = match key.kind() {
+            mortar_core::SymKind::Global(id) => id.0,
+            mortar_core::SymKind::Local(e) => e.file.0.wrapping_mul(0x9e37_79b9) ^ e.index.0,
+        };
+        let i = (h.wrapping_mul(0x85eb_ca6b) >> 22) as usize % Self::SLOTS;
+        &mut self.slots[i]
+    }
+
+    /// [`Tables::record_sym`].
+    fn record_sym(&mut self, tables: &dyn Tables, key: SymKey) -> (SymValue, bool) {
+        let slot = self.slot(key);
+        if let Some(m) = slot
+            && m.key == key
+        {
+            return (m.value, m.split);
+        }
+        let (value, split) = tables.record_sym(key);
+        *slot = Some(MemoSlot { key, value, split, at: None });
+        (value, split)
+    }
+
+    /// [`Tables::record_sym_at`].
+    fn record_sym_at(
+        &mut self,
+        tables: &dyn Tables,
+        key: SymKey,
+        mention: Option<SymEntry>,
+    ) -> (SymValue, bool, Option<SymFacts>) {
+        let slot = self.slot(key);
+        if let Some(m) = slot
+            && m.key == key
+            && let Some((at, facts)) = m.at
+            && at == mention
+        {
+            return (m.value, m.split, facts);
+        }
+        let (value, split, facts) = tables.record_sym_at(key, mention);
+        *slot = Some(MemoSlot { key, value, split, at: Some((mention, facts)) });
+        (value, split, facts)
+    }
 }
 
 /// One clip of a relocated section: `[a, b)` in section offsets, held by
@@ -487,8 +556,19 @@ pub(crate) fn relocate(
     // its end too (each such record is a fault).
     let last = deferred && b >= c.section_size;
     let hi = if last { u64::MAX } else { b.saturating_add(reach.0) };
-    let Scratch { site: site_buf, proof, picks, raw, recs, syms, perm, windows, pairs, flagged } =
-        s;
+    let Scratch {
+        site: site_buf,
+        proof,
+        picks,
+        raw,
+        recs,
+        syms,
+        perm,
+        windows,
+        pairs,
+        flagged,
+        memo,
+    } = s;
     picks.clear();
     syms.clear();
     windows.clear();
@@ -592,7 +672,7 @@ pub(crate) fn relocate(
         // A deferred record's value and its check's facts: one read.
         let (mut sym, split) = if deferred {
             let mention = r_sym.map(|s| SymEntry { file: c.file, index: SymbolIndex(s) });
-            let (sym, split, facts) = img.tables.record_sym_at(rec.key, mention);
+            let (sym, split, facts) = memo.record_sym_at(img.tables, rec.key, mention);
             let check = check(img, c, &at, mention, facts);
             fault |= check.fault && reports;
             if check.errored {
@@ -603,7 +683,7 @@ pub(crate) fn relocate(
             }
             (sym, split)
         } else {
-            img.tables.record_sym(rec.key)
+            memo.record_sym(img.tables, rec.key)
         };
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name)
             .with_exec(c.exec);
