@@ -15,7 +15,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `archive.md` | `mortar_elf::archive`: GNU, thin and BSD-named archives | planned (WP-005) |
 | `diag.md` | `mortar_diag`: diagnostics, the vocabulary of refusals, demangling | normative (WP-007); demangling planned |
 | `cli.md` | `mortar_cli`: the command line and the status of every option | planned (WP-008) |
-| `script.md` | `mortar_script`: linker scripts, version scripts, dynamic lists | planned (WP-009) |
+| `script.md` | `mortar_script`: linker scripts, version scripts, dynamic lists | §1-§7 normative (WP-009, stage 1: lexer, implicit-script commands, recognition); SECTIONS, expressions, version scripts planned |
 | `input.md` | `mortar_input`: finding and loading files | planned (WP-021) |
 | `resolve.md` | `mortar_resolve`: symbol resolution | planned (WP-022) |
 | `arch.md` | `mortar_arch`: the `Arch` trait | planned (WP-013) |
