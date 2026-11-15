@@ -19,7 +19,6 @@ use mortar_cli::{Parsed, Plan, Use};
 use mortar_core::plan::OutputKind;
 use mortar_diag::{Diagnostic, Key, RefusalClass};
 use mortar_elf::Machine;
-use mortar_synth::DynsymPlan;
 
 /// Whether mortar writes `Exec` and `Pie` outputs: `true` since the M2
 /// join (WP-053), on the architectures [`arch_status`] admits; the
@@ -103,14 +102,7 @@ pub fn arch_status(plan: &Plan, machine: Machine) -> Result<Status, Diagnostic> 
     }
 }
 
-/// The plans of a dynamic output's tables, which a static link does not
-/// have (`Front.dyn_tables` is `None`). Step 0 holds `.dynsym`'s plan;
-/// the M2 packages add theirs (`spec/landed/dyn/WP-040.md` §3).
-#[derive(Debug, Clone, Default)]
-pub struct DynTables {
-    /// D-21, D-22, D-26 (`mortar_synth::dynsym_plan`).
-    pub dynsym: DynsymPlan,
-}
+pub use crate::dynlink::DynTables;
 
 #[cfg(test)]
 mod tests {

@@ -53,6 +53,16 @@ impl<'a, 's> Walker<'a, 's> {
         Self { view: View::new(arch, t, opts) }
     }
 
+    /// The view with the scan's `WeakDyn` keys (`Demands::weak_dyn`,
+    /// `spec/dyn.md` D-25): a walk after the scan sees each undefined weak
+    /// key as the scan decided it. Without them every such key is `Weak0`
+    /// (a static link has none).
+    #[must_use]
+    pub fn with_weak_dyn(mut self, weak_dyn: mortar_core::IdSet<mortar_core::SymbolId>) -> Self {
+        self.view.weak_dyn = weak_dyn;
+        self
+    }
+
     /// The output kind the scan judged the records for
     /// (`ScanOptions.output`).
     #[must_use]

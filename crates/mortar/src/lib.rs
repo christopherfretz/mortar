@@ -14,6 +14,7 @@
 pub mod arch;
 pub mod depfile;
 pub mod dynamic;
+pub mod dynlink;
 pub mod front;
 pub mod image;
 mod proof;

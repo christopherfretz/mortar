@@ -207,7 +207,7 @@ impl Front<'_> {
                 continue;
             }
             let name: Vec<u8> = match c.kind {
-                ChunkKind::Synthetic(s) => s.name.to_vec(),
+                ChunkKind::Synthetic(s) => mortar_layout::rank::home(s.name).to_vec(),
                 k => k.out().map_or_else(Vec::new, |o| self.assignment.outsecs[o].name.to_vec()),
             };
             rows.push(OutRow {
@@ -349,6 +349,7 @@ pub fn front<'s>(
     let comdat_mismatch = mismatches(&outcome);
     let gnu_warnings = outcome.gnu_warning_syms.clone();
     let roots = outcome.roots;
+    let needed = outcome.needed;
     let resolution = outcome.resolution;
 
     // 45: assignment (layout stage A). A dynamic output on an
@@ -369,6 +370,8 @@ pub fn front<'s>(
             return None;
         }
     };
+    // An output with `.dynamic` (`Exec`, `Pie`; WP-053).
+    let dynamic = status == mortar_arch::Status::M2;
     let Some(link_arch) = LinkArch::of(machine, options.fix_843419, status) else {
         diag.emit(Key::new(45, 0, 0), internal(format!("no architecture for {}", machine.name())));
         return None;
@@ -451,8 +454,11 @@ pub fn front<'s>(
         comdat_mismatch: &comdat_mismatch,
         gnu_warnings: &gnu_warnings,
     };
-    let scan_options =
-        ScanOptions { output, dynamic: false, sections: None, proof: link_arch.proof() };
+    // D-25: a writable place, from the section mapping.
+    let out_writable = crate::dynlink::OutWritable(&assignment);
+    let sections: Option<&dyn mortar_scan::weak::SectionMap> =
+        if dynamic { Some(&out_writable) } else { None };
+    let scan_options = ScanOptions { output, dynamic, sections, proof: link_arch.proof() };
     let mut scanned = scan(arch, &scan_inputs, &scan_options, &pool);
     // The branch candidates are the sites' input only: dropped once the
     // sites are final, before the image.
@@ -465,6 +471,7 @@ pub fn front<'s>(
         inputs: &scan_inputs,
         options: scan_options,
         order: &scanned.order,
+        weak_dyn: &scanned.demands.weak_dyn,
         pool: &pool,
         diag,
         armed: true,
@@ -476,7 +483,7 @@ pub fn front<'s>(
 
     // 80: the synthetic chunks' plans, as sizes.
     let mut steps = mortar_core::wp032b_steps::Steps::new("synthetic");
-    let slots = slots_of(&scanned.demands, &resolution);
+    let mut slots = slots_of(&scanned.demands, &resolution);
     let merge_eh = match MergeEh::new(&merge.eh, &tables) {
         Ok(m) => m,
         Err(e) => {
@@ -493,18 +500,48 @@ pub fn front<'s>(
     let memory_seal = plan.z.memory_seal == Some(true);
     let property = property_plan(&inputs, &resolution, &headers, arch, memory_seal, diag).ok()?;
     let feature_1_and = property.value_u32(link_arch.feature_1().0);
+    // D-49: `-z now` binds every PLT entry at load (always `false` in a
+    // static link).
+    let bind_now = dynamic && plan.z.now == Some(true);
     let variant = arch
         .plt_variant(&OutputCx {
             output,
             feature_1_and,
             pac_plt: false,
             force_bti: false,
-            bind_now: false,
+            bind_now,
         })
         .map_err(|r| diag.emit(mortar_synth::error::key(0), r.diagnostic()))
         .ok()?;
     let got_output = got_base_defined(&inputs, &resolution, scanned.demands.output);
-    let got = GotPlan::new(arch, &slots, got_output, variant, diag).ok()?;
+    let walker = Walker::new(arch, &scan_inputs, scan_options)
+        .with_weak_dyn(scanned.demands.weak_dyn.clone());
+    let (got, dyn_tables) = if dynamic {
+        let src = crate::dynlink::DynSource::new(&inputs, &resolution, &assignment, &plan);
+        let kinds = crate::dynlink::ScanKinds(&walker);
+        let t = crate::dynlink::PlanIn {
+            plan: &plan,
+            arch,
+            inputs: &inputs,
+            resolution: &resolution,
+            assignment: &assignment,
+            demands: &scanned.demands,
+            liveness: &liveness,
+            headers: &headers,
+            src: &src,
+            kinds: &kinds,
+            needed: &needed,
+            variant,
+            output_cx: OutputCx { output, feature_1_and, pac_plt: false, force_bti: false, bind_now },
+            got_output,
+            relro: options.relro,
+            pool: &pool,
+        };
+        let (got, tables) = crate::dynlink::plan(&t, &mut slots, diag)?;
+        (got, Some(tables))
+    } else {
+        (GotPlan::new(arch, &slots, got_output, variant, diag).ok()?, None)
+    };
     let build_id = BuildIdPlan::new(plan.shaping.build_id.as_ref(), diag).ok()?;
     steps.step("property got build-id", 0, "");
     let core = CoreSections { resolution: &resolution, liveness: &liveness, split: &merge.split };
@@ -544,8 +581,31 @@ pub fn front<'s>(
     // input and the synthetic chunks that exist (their kinds do not depend
     // on `.shstrtab`'s size), so that one placement usually suffices; the
     // exact names are checked after it.
-    let kinds: Vec<SynthKind> =
-        synth_chunks(&plans, &eh, false, target.class, rel).1.iter().map(|p| p.0).collect();
+    // The copy allocations as layout places them (D-42, D-60).
+    let copy_rows = match &dyn_tables {
+        Some(d) => match mortar_layout::chunk::copy_rows(&slots, |i, _| d.copy.size[i as usize]) {
+            Ok(r) => r,
+            Err(e) => {
+                let (k, e) = layout_diag(&inputs, &resolution, e, Key::new(80, 0, 0));
+                diag.emit(k, e);
+                return None;
+            }
+        },
+        None => Vec::new(),
+    };
+    let dyn_chunks = match dyn_chunks(dyn_tables.as_ref(), &copy_rows) {
+        Ok(c) => c,
+        Err(e) => {
+            let (k, e) = layout_diag(&inputs, &resolution, e, Key::new(80, 0, 0));
+            diag.emit(k, e);
+            return None;
+        }
+    };
+    let kinds: Vec<SynthKind> = synth_chunks(&plans, &dyn_chunks, &eh, false, target.class, rel)
+        .1
+        .iter()
+        .map(|p| p.0)
+        .collect();
     let names: Vec<&[u8]> =
         estimated_names(&assignment, &liveness, &resolution, &kinds, options.relro, rel);
     let mut shstrtab = ShstrtabPlan::new(&names);
@@ -553,7 +613,6 @@ pub fn front<'s>(
     // `SHN_LORESERVE`; the count of section headers (with the null one)
     // is estimated, then checked after the placement.
     let mut shndx = SymtabPlan::needs_shndx(names.len() as u32 + 2);
-    let walker = Walker::new(arch, &scan_inputs, scan_options);
     let mut attempt = 0;
     // The sites read the slots' key lists only, which every attempt shares
     // (`slots`, before the sizes are set); they are found once per set of
@@ -568,7 +627,8 @@ pub fn front<'s>(
     let (placement_assignment, placed, layout, erratum_fixes) = loop {
         attempt += 1;
         plans.shstrtab = shstrtab.clone();
-        let (synthetic, present) = synth_chunks(&plans, &eh, shndx, target.class, rel);
+        let (synthetic, present) =
+            synth_chunks(&plans, &dyn_chunks, &eh, shndx, target.class, rel);
         let Some(sizes) = chunk_ids(FIRST_SYNTHETIC, &present) else {
             diag.emit(Key::new(80, 0, 0), internal("a synthetic chunk given twice"));
             return None;
@@ -628,8 +688,9 @@ pub fn front<'s>(
         };
         let mut a = assignment.clone();
         steps.step("assignment clone", 0, "");
-        let placed = match mortar_layout::place_again(
+        let placed = match mortar_layout::run::place_with_copies(
             &link,
+            &copy_rows,
             &mut a,
             Some(&range),
             |e| inputs.entry_def(e),
@@ -799,7 +860,7 @@ pub fn front<'s>(
         scanned,
         eh,
         synth: plans,
-        dyn_tables: None,
+        dyn_tables,
         commons,
         layout,
         placed,
@@ -835,6 +896,7 @@ struct Deferred<'g, 'a, 's> {
     inputs: &'g ScanInputs<'a, 's>,
     options: ScanOptions<'a>,
     order: &'g mortar_scan::RecIndex,
+    weak_dyn: &'g mortar_core::IdSet<SymbolId>,
     pool: &'g Pool,
     diag: &'g Collector,
     armed: bool,
@@ -852,7 +914,8 @@ impl Drop for Deferred<'_, '_, '_> {
         if !self.armed || self.order.deferred().is_empty() {
             return;
         }
-        let walker = Walker::new(self.arch, self.inputs, self.options);
+        let walker = Walker::new(self.arch, self.inputs, self.options)
+            .with_weak_dyn(self.weak_dyn.clone());
         for (k, d) in walker.deferred_report(self.order.deferred(), self.pool) {
             self.diag.emit(k, d);
         }
@@ -959,10 +1022,41 @@ fn got_base_defined(
     if defined { output | GlobalFlags::GOT_BASE } else { output }
 }
 
+/// A dynamic output's synthetic chunk: its kind and size, and for a copy
+/// chunk (`.dynbss`, `.bss.rel.ro`, whose header no plan fixes, D-42) its
+/// alignment (log2).
+type DynChunk = (SynthKind, u64, Option<u8>);
+
+/// The synthetic chunks of an output with `.dynamic` (S-3, D-30 to D-42):
+/// none in a static link.
+fn dyn_chunks(
+    d: Option<&crate::dynamic::DynTables>,
+    rows: &[mortar_layout::chunk::CopyRow],
+) -> Result<Vec<DynChunk>, LayoutDiag> {
+    let Some(d) = d else { return Ok(Vec::new()) };
+    let mut v: Vec<DynChunk> = vec![(SynthKind::Interp, d.interp.size(), None)];
+    v.extend(d.sizes.iter().map(|&(k, size)| (k, size, None)));
+    if d.rela.size() > 0 {
+        v.push((SynthKind::RelaDyn, d.rela.size(), None));
+    }
+    v.push((SynthKind::Dynamic, d.dynamic.size(), None));
+    for (kind, place) in [
+        (SynthKind::DynBss, mortar_core::CopyPlace::DynBss),
+        (SynthKind::BssRelRo, mortar_core::CopyPlace::RelRo),
+    ] {
+        let (_, size, align) = mortar_layout::chunk::copy_extent(rows, place)?;
+        if size > 0 {
+            v.push((kind, size, Some(align)));
+        }
+    }
+    Ok(v)
+}
+
 /// The synthetic chunks that exist, in S-3 order, as layout takes them,
 /// and their sizes.
 fn synth_chunks(
     p: &SynthPlans,
+    dynamic: &[DynChunk],
     eh: &EhPlan,
     shndx: bool,
     class: Class,
@@ -1003,16 +1097,26 @@ fn synth_chunks(
     present.push((SynthKind::Shstrtab, p.shstrtab.size()));
     // S-100: mortar's `.comment` piece, after the inputs' strings.
     present.push((SynthKind::Comment, mortar_synth::COMMENT.len() as u64));
+    present.extend(dynamic.iter().map(|d| (d.0, d.1)));
     present.sort_by_key(|c| c.0);
+    let copy_align = |kind: SynthKind| dynamic.iter().find(|d| d.0 == kind).and_then(|d| d.2);
     let chunks = present
         .iter()
         .map(|&(kind, size)| {
-            let h = kind.header(class, rel).unwrap_or_else(|| unreachable!("an M1 chunk"));
+            let synth = kind.synth(rel);
+            // D-42: a copy chunk is NOBITS, writable, aligned as its
+            // allocations.
+            if let Some(align) = copy_align(kind) {
+                let flags = mortar_elf::consts::SHF_ALLOC | mortar_elf::consts::SHF_WRITE;
+                let sh_type = mortar_elf::consts::SHT_NOBITS;
+                return SynthChunk { synth, sh_type, flags, align, size };
+            }
+            let h = kind.header(class, rel).unwrap_or_else(|| unreachable!("a chunk with a header"));
             let (sh_type, align) = match kind {
                 SynthKind::EhFrame => (eh.sh_type(), eh.align()),
                 _ => (h.sh_type, h.align.trailing_zeros() as u8),
             };
-            SynthChunk { synth: kind.synth(rel), sh_type, flags: h.flags, align, size }
+            SynthChunk { synth, sh_type, flags: h.flags, align, size }
         })
         .collect();
     (chunks, present)
@@ -1046,7 +1150,8 @@ fn estimated_names<'n>(
         .map(|(_, o)| o.name)
         .collect();
     for k in synthetic {
-        names.push(k.name(rel));
+        // `.dynbss` is a chunk of `.bss` (D-42, D-60).
+        names.push(mortar_layout::rank::home(k.name(rel)));
     }
     // layout's `.relro_padding` (L-64), when RELRO has content: a static
     // executable's `.got` always does.
@@ -1066,7 +1171,7 @@ fn placed_names<'n>(placed: &Placed, a: &Assignment<'n>) -> Vec<&'n [u8]> {
     for (_, c) in placed.placement.chunks.iter() {
         let Some(shndx) = c.shndx else { continue };
         let name: &'n [u8] = match c.kind {
-            ChunkKind::Synthetic(s) => s.name,
+            ChunkKind::Synthetic(s) => mortar_layout::rank::home(s.name),
             k => match k.part().map(|p| p.out).or(match k {
                 ChunkKind::Merged(o) => Some(o),
                 _ => None,
