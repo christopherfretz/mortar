@@ -9,7 +9,7 @@
 
 mod support;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -763,7 +763,8 @@ fn differential(label: &str, built: &Built) {
     // copy of that group (`discard ... comdat`: it kept another file's).
     // That the section is reachable in GNU's link only through F's copy
     // (iii) is not shown: it belongs to F, which is what is checked.
-    let keepers = keeper_differences(dir, &map, &std::fs::read_to_string(&gnu_map).unwrap());
+    let (keepers, our_keepers) =
+        keeper_differences(dir, &map, &std::fs::read_to_string(&gnu_map).unwrap());
     let (tolerated, only_ours): (Vec<_>, Vec<_>) =
         only_ours.into_iter().partition(|(_, file)| keepers.contains_key(file.as_str()));
     eprintln!(
@@ -783,29 +784,45 @@ fn differential(label: &str, built: &Built) {
     assert!(only_ours.is_empty(), "{label}: mortar removes what GNU ld keeps: {only_ours:?}");
     let comdat =
         map.lines().filter(|l| l.starts_with("discard ") && l.ends_with(" comdat")).count();
+    // The other way round: a section of file F that mortar keeps and GNU
+    // ld removes, where mortar keeps F's copy of a group whose copy GNU
+    // keeps from another file (and discards F's), under the same
+    // conditions.
+    let mut tolerated_gnu = Vec::new();
     for (sec, file) in gnu.difference(&mine) {
         // `.group` sections (mortar outputs none, so lists none), and
         // COMDAT copies mortar dropped in resolution (GNU ld lists its
         // losers of archive members as collected).
         let allowed = sec == ".group" || (comdat > 0 && sec.contains('['));
+        if !allowed && let Some(path) = our_keepers.get(file.as_str()) {
+            assert!(
+                path.contains("/gcc-cross/"),
+                "{label}: {sec} in {file} ({path}): COMDAT keepers differ outside the cross \
+                 libraries"
+            );
+            tolerated_gnu.push((sec, file));
+            continue;
+        }
         assert!(allowed, "{label}: GNU ld removes {sec} in {file}, mortar keeps it");
     }
+    eprintln!(
+        "{label}: {} sections GNU ld removes tolerated (COMDAT keepers differ): {tolerated_gnu:?}",
+        tolerated_gnu.len()
+    );
     let size = |p: &Path| std::fs::metadata(p).unwrap().len();
     assert!(size(&ours) < size(&nogc), "{label}: gc does not shrink the output");
     support::plumb::readers(&ours);
 }
 
-/// The files whose copy of some COMDAT group GNU ld keeps and mortar
-/// drops (`discard <file> <section> comdat` in mortar's `map`, the same
-/// section name kept from the file in GNU ld's `gnu_map`), by the name
-/// `--print-gc-sections` gives them (`libstdc++.a(random.o)`), with the
-/// path of the file or archive.
-fn keeper_differences(
-    dir: &Path,
-    map: &str,
-    gnu_map: &str,
-) -> std::collections::BTreeMap<String, String> {
-    use std::collections::BTreeMap;
+/// The files whose COMDAT copies the two links keep differently, by the
+/// name `--print-gc-sections` gives them (`libstdc++.a(random.o)`), each
+/// with the path of the file or archive: first the files whose copy of
+/// some group GNU ld keeps and mortar drops (`discard <file> <section>
+/// comdat` in mortar's `map`, the same section name kept from the file in
+/// GNU ld's `gnu_map`), then the files whose copy of such a group mortar
+/// keeps and GNU ld discards (its "Discarded input sections", not dropped
+/// by mortar).
+fn keeper_differences(dir: &Path, map: &str, gnu_map: &str) -> (Keepers, Keepers) {
     // mortar's files: id -> (path, member).
     let mut files: BTreeMap<&str, (&str, Option<&str>)> = BTreeMap::new();
     let mut dropped: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
@@ -824,11 +841,49 @@ fn keeper_differences(
             _ => {}
         }
     }
-    // GNU's kept input sections: (name, file name), from its memory map.
-    let mut kept: BTreeSet<(String, String)> = BTreeSet::new();
-    let body = gnu_map.split_once("Linker script and memory map").map_or("", |(_, b)| b);
+    let (discarded, body) = gnu_map.split_once("Linker script and memory map").unwrap_or(("", ""));
+    let discarded = discarded.split_once("Discarded input sections").map_or("", |(_, d)| d);
+    // GNU's kept and discarded input sections: (name, file name).
+    let kept = gnu_map_sections(body);
+    let gnu_dropped = gnu_map_sections(discarded);
+    // mortar's dropped copies: (name, file name).
+    let mut ours_dropped: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut gnu_side = Keepers::new();
+    let mut groups: BTreeSet<String> = BTreeSet::new();
+    for (id, indices) in &dropped {
+        let Some(&(path, member)) = files.get(id) else { continue };
+        let base = path.rsplit('/').next().unwrap_or(path);
+        let shown = member.map_or_else(|| base.to_owned(), |m| format!("{base}({m})"));
+        let names = section_names(dir, path, member);
+        for name in indices.iter().filter_map(|&i| names.get(i)) {
+            ours_dropped.insert((name.clone(), shown.clone()));
+            if kept.contains_key(&(name.clone(), shown.clone())) {
+                groups.insert(name.clone());
+                gnu_side.insert(shown.clone(), path.to_owned());
+            }
+        }
+    }
+    let mut mortar_side = Keepers::new();
+    for ((name, shown), path) in &gnu_dropped {
+        if groups.contains(name) && !ours_dropped.contains(&(name.clone(), shown.clone())) {
+            mortar_side.insert(shown.clone(), path.clone());
+        }
+    }
+    (gnu_side, mortar_side)
+}
+
+/// File name (`lib.a(member)` or the file's) -> path of the file or
+/// archive.
+type Keepers = BTreeMap<String, String>;
+
+/// The input sections a part of a GNU ld map lists: (section name, file
+/// name as `--print-gc-sections` gives it) -> the file's or archive's
+/// path. A section line is ` .name addr size file`, or ` .name` alone
+/// with the rest on the next line.
+fn gnu_map_sections(text: &str) -> BTreeMap<(String, String), String> {
+    let mut out = BTreeMap::new();
     let mut pending: Option<&str> = None;
-    for line in body.lines() {
+    for line in text.lines() {
         let words: Vec<&str> = line.split_whitespace().collect();
         let (name, rest) = match (pending.take(), words.as_slice()) {
             (Some(name), [addr, _, ..]) if addr.starts_with("0x") => (name, &words[..]),
@@ -843,21 +898,8 @@ fn keeper_differences(
         };
         if let [_, _, file, ..] = rest {
             let base = file.rsplit('/').next().unwrap_or(file);
-            kept.insert((name.to_owned(), base.to_owned()));
-        }
-    }
-    let mut out = BTreeMap::new();
-    for (id, indices) in &dropped {
-        let Some(&(path, member)) = files.get(id) else { continue };
-        let base = path.rsplit('/').next().unwrap_or(path);
-        let shown = member.map_or_else(|| base.to_owned(), |m| format!("{base}({m})"));
-        let names = section_names(dir, path, member);
-        let differs = indices
-            .iter()
-            .filter_map(|&i| names.get(i))
-            .any(|name| kept.contains(&(name.clone(), shown.clone())));
-        if differs {
-            out.insert(shown, path.to_owned());
+            let path = file.split_once('(').map_or(*file, |(p, _)| p);
+            out.insert((name.to_owned(), base.to_owned()), path.to_owned());
         }
     }
     out
