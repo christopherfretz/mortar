@@ -111,7 +111,9 @@ Samples: `vector` (`std/containers/sequences/vector`, 83 tests);
 `wp033` (`std/algorithms`, `strings`, `input.output`,
 `language.support`, `thread`, `localization`, shard 1/4); `full`
 (`--full`: `std` and `libcxx`, the 9247 tests of kiln's release runs).
-Run directories are kept with `--out <dir>` (one subdirectory per mode;
+kiln's runner runs with core dumps off (`ulimit -c 0`: death tests and
+the root-only filesystem tests abort by design). Run directories are
+kept with `--out <dir>` (one subdirectory per mode;
 keep the path short: libc++'s filesystem tests build paths under its
 `TMPDIR`).
 

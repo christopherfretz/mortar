@@ -60,3 +60,14 @@ Run dir: /tmp/mortar-wp034-1178167 (`.rundir`), binaries in its `bin/`.
   layout 1.3, split 1.2, synthetic 1.0, scan 0.8); t1 55.2 (input 44.5).
 - programs at da61bbc (843419 cells via g++ carry the flag): 80 cells,
   80 hold, plumb clean ($R/programs-da61bbc.txt).
+- mortar full at da61bbc (plumb, -j 6, 13:21-13:40): identical outcomes
+  to bfd for all 9247 (0 DIFFERENT); 7193 linked, all plumb clean; 26
+  refused = __atomic_* undefined in XFAIL atomics tests (bfd XFAIL too).
+  Link sum 304.7 s, median 38.8 ms, median RSS 32.4 MiB. Baseline
+  committed (8 lines). bfd's in-suite times are the synced /Volumes
+  mount (~0.5 s per GNU ld output there vs 55-75 ms in /tmp).
+- lld+mold shards 1/6, 2/6: equal to bfd. dyn shards 1/6, 2/6: equal too.
+- -O2 --backend llvm shards (chain2.sh): running, $R/o2-1, $R/o2-2.
+- xtask mason: stdout via say! (closed pipe -> exit 141, no abort/core);
+  kiln's runner under `ulimit -c 0`.
+- Draft record: spec/landed/mason/WP-034.md (O2 section pending).
