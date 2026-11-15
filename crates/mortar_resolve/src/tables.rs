@@ -22,8 +22,9 @@ use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 
 use crate::options::{Entry, Named, Options, Output};
 use crate::problem::{DefPlace, MalformedSymbol, Problem, What};
-use crate::resolve::{Def, Resolved, flags, resolve};
+use crate::resolve::{Def, Resolved, flags, resolve_steps};
 use crate::sections::SectionRefusal;
+use crate::steps::Steps;
 use crate::verdict::{SymtabEntry, Unresolved, Verdict, symtab_entry, verdict};
 use crate::view::{FileInfo, FileKind, Groups, Mention, SectionInfo, View};
 
@@ -77,11 +78,20 @@ impl<'a, 's> InputsView<'a, 's> {
     /// symbol table and groups.
     #[must_use]
     pub fn new(inputs: &'a Inputs<'s>, pool: &Pool) -> Self {
+        Self::new_steps(inputs, pool, &mut Steps::default())
+    }
+
+    /// [`InputsView::new`], recording where the time went.
+    pub fn new_steps(inputs: &'a Inputs<'s>, pool: &Pool, steps: &mut Steps) -> Self {
+        steps.restart();
         let symbols = symbol_lookup(&inputs.symbols);
+        steps.step("view.symbol_lookup");
         let comdats = comdat_lookup(&inputs.comdats);
+        steps.step("view.comdat_lookup");
         let n = inputs.files.len() as usize;
         let per: Vec<PerFile<'s>> =
             pool.map(n, |f| per_file(inputs, &symbols, &comdats, FileId(f as u32)));
+        steps.step("view.per_file");
         let sources = sources(inputs);
         let mut info = Vec::with_capacity(n);
         let mut symtab = Vec::with_capacity(n);
@@ -109,6 +119,7 @@ impl<'a, 's> InputsView<'a, 's> {
             faults.extend(p.faults.into_iter().map(|what| Fault { file: id, what }));
         }
         group_at.push(groups.len() as u32);
+        steps.step("view.assemble");
         Self { inputs, info, symtab, groups, group_members, group_at, also, symbols, faults }
     }
 
@@ -850,6 +861,8 @@ pub struct Outcome {
     /// `SHF_GNU_RETAIN` sections (§4.7).
     pub retained: Vec<(FileId, SectionIndex)>,
     pub entry: crate::EntryPoint,
+    /// Where the time went (`MORTAR_TIME_STEPS`; decides nothing).
+    pub steps: Steps,
 }
 
 /// Resolution of a link (`spec/resolve.md`): the view, the options, the
@@ -857,17 +870,22 @@ pub struct Outcome {
 /// `check_against`) and the diagnostics.
 #[must_use]
 pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome {
-    let view = InputsView::new(inputs, pool);
+    let mut steps = Steps::default();
+    let view = InputsView::new_steps(inputs, pool, &mut steps);
     let opts = options(plan, inputs, &view);
-    let r = resolve(&view, &opts, pool);
+    steps.step("options");
+    let r = resolve_steps(&view, &opts, pool, &mut steps);
     let mut diagnostics = diagnostics(inputs, &view, &opts, &r);
+    steps.step("diagnostics");
     let internal = |what: String| {
         (
             Key::new(u16::from(crate::problem::PHASE), u32::MAX, 0),
             Diagnostic::error(Kind::InternalError { what }),
         )
     };
-    let resolution = match resolution(&view, &r, &opts) {
+    let table = resolution(&view, &r, &opts);
+    steps.step("table");
+    let resolution = match table {
         Ok(t) => {
             if let Err(e) = t.check().and_then(|()| t.check_against(inputs)) {
                 diagnostics.push(internal(e.to_string()));
@@ -879,12 +897,24 @@ pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome 
             Resolution::empty(inputs.files.len(), inputs.symbols.len(), inputs.comdats.len())
         }
     };
-    Outcome {
+    steps.step("check");
+    steps.count("files", u64::from(inputs.files.len()));
+    steps.count("live", r.file_live.iter().filter(|l| l.is_live()).count() as u64);
+    steps.count("keys", u64::from(inputs.symbols.len()));
+    steps.count("mentions", inputs.sym_map.len() as u64);
+    steps.count("comdats", u64::from(inputs.comdats.len()));
+    steps.count("sections", r.sections.len() as u64);
+    steps.count("rounds", u64::from(r.rounds));
+    drop(view);
+    let outcome = Outcome {
         resolution,
         diagnostics,
         comdat_mismatch: r.comdat_mismatch,
         gnu_warning_syms: r.gnu_warning_syms,
         retained: r.retained,
         entry: r.entry,
-    }
+        steps: Steps::default(),
+    };
+    steps.step("drop");
+    Outcome { steps, ..outcome }
 }

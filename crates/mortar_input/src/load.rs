@@ -22,6 +22,7 @@ use mortar_elf::consts::SHT_GROUP;
 
 use crate::facts::effective_signature;
 use crate::problem::PHASE;
+use crate::steps::Steps;
 use crate::store::Store;
 use crate::walk::{self, FileRow, Loaded, Options, RowKind, WalkEnv};
 
@@ -43,6 +44,18 @@ pub fn load<'s>(
     store: &'s Store,
     diag: &Collector,
 ) -> Option<Inputs<'s>> {
+    load_steps(plan, env, store, diag, &mut Steps::default())
+}
+
+/// [`load`], recording where the time went into `steps`.
+pub fn load_steps<'s>(
+    plan: &Plan,
+    env: &LoadEnv,
+    store: &'s Store,
+    diag: &Collector,
+    steps: &mut Steps,
+) -> Option<Inputs<'s>> {
+    steps.restart();
     let loaded = walk::walk(
         plan,
         &WalkEnv { cwd: env.cwd.clone() },
@@ -50,6 +63,34 @@ pub fn load<'s>(
         &env.pool,
         Options { closure: true },
     );
+    let t = loaded.timing;
+    for (name, d) in [
+        ("walk.passes", t.walk),
+        ("walk.stat", t.stat),
+        ("walk.canon", t.canon),
+        ("walk.read", t.read),
+        ("walk.facts", t.facts),
+        ("walk.hash", t.hash),
+    ] {
+        steps.time(name, d);
+    }
+    steps.step("walk");
+    let st = store.stats();
+    for (name, ns) in
+        ["read.a", "read.b", "read.c", "read.d", "read.entries"].iter().zip(st.wave_ns)
+    {
+        steps.time(name, std::time::Duration::from_nanos(ns));
+    }
+    steps.count("reads", st.reads);
+    steps.count("bytes_read", st.bytes);
+    steps.count("bytes_resident", st.resident);
+    steps.count("opens", st.opens);
+    steps.count("waves", u64::from(loaded.waves));
+    steps.count("files", loaded.files.len() as u64);
+    steps.count("members", loaded.files.iter().filter(|f| f.member.is_some()).count() as u64);
+    steps.count("globals", loaded.files.iter().map(|f| u64::from(f.globals)).sum());
+    steps.count("groups", loaded.files.iter().map(|f| u64::from(f.groups)).sum());
+    steps.count("sections", loaded.files.iter().map(|f| u64::from(f.sections)).sum());
     for p in &loaded.problems {
         diag.emit(p.key(), p.diagnostic());
     }
@@ -61,16 +102,22 @@ pub fn load<'s>(
         diag.emit(Key::new(PHASE, 0, 0), Diagnostic::error(Kind::NoTarget));
         return None;
     };
-    let Ok(inputs) = build(&loaded, store, &env.pool, choice.target) else {
+    let Ok(inputs) = build(&loaded, store, &env.pool, choice.target, steps) else {
         let what = "more than 2^32 - 1 distinct symbol keys";
         diag.emit(Key::new(PHASE, 0, 0), Diagnostic::refused(RefusalClass::Feature, what));
         return None;
     };
-    if let Err(broken) = inputs.check() {
+    let checked = inputs.check();
+    steps.step("check");
+    steps.count("symbols", u64::from(inputs.symbols.len()));
+    steps.count("comdats", u64::from(inputs.comdats.len()));
+    if let Err(broken) = checked {
         let what = format!("the input phase built an invalid table: {broken}");
         diag.emit(Key::new(PHASE, u32::MAX, 0), Diagnostic::error(Kind::InternalError { what }));
         return None;
     }
+    drop(loaded);
+    steps.step("drop");
     Some(inputs)
 }
 
@@ -95,12 +142,15 @@ impl<'s> Kept<'s> {
 }
 
 /// `Inputs` from the rows of a walk that found no error.
+#[allow(clippy::too_many_lines, reason = "the tables of `Inputs` in order, each a few lines")]
 fn build<'s>(
     loaded: &Loaded<'s>,
     store: &'s Store,
     pool: &Pool,
     target: LinkTarget,
+    steps: &mut Steps,
 ) -> Result<Inputs<'s>, TooManyKeys> {
+    steps.restart();
     let mut kept = Kept { store, seen: HashMap::new() };
     let rows = &loaded.files;
     let link = &loaded.link;
@@ -150,16 +200,19 @@ fn build<'s>(
         });
         at = at.saturating_add(row.globals);
     }
+    steps.step("build.files");
 
     // Symbol keys and COMDAT signatures, numbered by first mention.
     let counts: Vec<u32> = std::iter::once(0).chain(rows.iter().map(|r| r.globals)).collect();
     let symbols = intern::number::<SymName<'s>, SymbolId, _, _>(pool, &counts, |u| {
         u.checked_sub(1).and_then(|i| rows.get(i)).map_or_else(Keys::none, symbol_keys)
     })?;
+    steps.step("build.intern_symbols");
     let counts: Vec<u32> = std::iter::once(0).chain(rows.iter().map(|r| r.groups)).collect();
     let comdats = intern::number::<&'s [u8], ComdatId, _, _>(pool, &counts, |u| {
         u.checked_sub(1).and_then(|i| rows.get(i)).map_or_else(Keys::none, signatures)
     })?;
+    steps.step("build.intern_comdats");
     let symbol_rows: Vec<SymbolKey<'s>> = symbols
         .names
         .iter()
@@ -172,6 +225,7 @@ fn build<'s>(
     let comdat_rows: Vec<Comdat<'s>> =
         comdats.names.iter().map(|(_, name)| Comdat { name }).collect();
 
+    steps.step("build.key_rows");
     // Archives: each mention's members are contiguous files.
     let mut archives: Vec<Archive<'s>> = Vec::with_capacity(loaded.archives.len());
     for (a, row) in loaded.archives.iter().enumerate() {
@@ -194,7 +248,9 @@ fn build<'s>(
         });
     }
 
+    steps.step("build.archives");
     let link = link_inputs(loaded, &mut kept, &origin);
+    steps.step("build.link");
     Ok(Inputs {
         target,
         files: column(files),

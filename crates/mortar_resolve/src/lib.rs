@@ -31,6 +31,7 @@ pub mod options;
 pub mod problem;
 pub mod resolve;
 pub mod sections;
+pub mod steps;
 pub mod tables;
 pub mod verdict;
 pub mod view;
