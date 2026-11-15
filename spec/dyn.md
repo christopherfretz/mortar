@@ -1,13 +1,137 @@
 # spec: dynamic executables (`mortar_synth` dynamic tables; M2)
 
-**Status: draft (WP-040; awaiting review).** Skeleton; sections are filled
-in order and committed one by one.
+**Status: draft (WP-040; awaiting review).**
 
 ## 1. Scope and status
+
+M2 is the dynamic executable: `Exec` (`-no-pie` with an interpreter) and
+`Pie` (every compiler driver's default), on AArch64 and x86-64, with
+shared objects as inputs, linked from the lines GCC, Clang and kiln
+produce by default (§2.1), run, and checked by the verifier. This spec
+holds the rules that no other spec holds and rules on the places where
+the owning specs contradict each other (§3); everything else it cites.
+Rules are `D-n`, tagged `[M2]` or `[M4]`; a rule tagged `[M4]` is here
+only because an M2 rule needs its boundary (i386 dynamic, `-shared`,
+RELR, verdefs). Each rule names the experiment behind it (Appendix A);
+`[unmeasured]`, `[unverified]` and `[open Qn]` mark the rest.
+
+Not in M2: producing shared objects (`-shared`, verdefs, `DT_SONAME`,
+symbol versioning of exports), RELR (`-z pack-relative-relocs`), i386
+dynamic links (they follow `mortar_x86`'s static M1 work, request
+R-X86-*), x86 IBT and AArch64 PAC PLTs, `--whole-archive` (M3 with
+sanitizers), LTO. The hooks M6 (incremental) and M7 (ODR at load time)
+need are in §14; they are not designed here.
+
+Owners. `mortar_resolve` (§5, D-21, D-25), the architecture crates (§8's
+demand and slot rules, through arch.md), `mortar_synth` (the dynamic
+chunks: §6, §7, D-40-D-42), `mortar_layout` (§9), `mortar_image` (bytes),
+`mortar_plumb` (§12). Every M1 rule stands; a static link's output is
+byte-identical before and after M2 (§D of the record,
+`spec/landed/dyn/WP-040.md`).
+
 ## 2. Census (measured)
+
+E-census: 22 driver configurations (gcc, g++, gfortran on three
+architectures; clang 19 and clang 22, C and C++, three architectures;
+kiln++ on AArch64) × 20 variations (`-pie`, `-no-pie`, `-rdynamic`,
+`-pthread`, `-static-libgcc`, `-shared-libgcc`, `-static-libstdc++`,
+`-Wl,` options, `-fuse-ld=lld|mold`, …) = 426 linker lines, captured
+through `-B` wrappers, linked by GNU ld and run. Every one ran (the
+asan lines aside, out of scope).
+
 ### 2.1 Default link lines
+
+Abbreviations: `$G` the GCC library directory of the architecture, `$S`
+its system library directory. gcc, AArch64, C (other architectures differ
+only in the emulation, the interpreter and the `-L` list; x86 gcc adds
+`--sysroot=/`):
+
+```
+-plugin … -plugin-opt=… (LTO plugin; noop)
+--build-id --eh-frame-hdr --hash-style=gnu --as-needed
+-dynamic-linker /lib/ld-linux-aarch64.so.1 -X -EL -maarch64linux
+--fix-cortex-a53-843419 -pie -o OUT
+$S/Scrt1.o $S/crti.o $G/crtbeginS.o -L… OBJ
+-lgcc --push-state --as-needed -lgcc_s --pop-state -lc
+-lgcc --push-state --as-needed -lgcc_s --pop-state
+$G/crtendS.o $S/crtn.o
+```
+
+clang 19 and 22 (identical) and kiln++ (which runs clang++ 22):
+
+```
+-EL --hash-style=gnu --build-id --eh-frame-hdr -m aarch64linux -pie
+-dynamic-linker /lib/ld-linux-aarch64.so.1 -o OUT
+$S/Scrt1.o $S/crti.o $G/crtbeginS.o -L… OBJ
+-lgcc --as-needed -lgcc_s --no-as-needed -lc -lgcc --as-needed -lgcc_s --no-as-needed
+$G/crtendS.o $S/crtn.o
+```
+
+- C++ tail (gcc and clang): `-lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc`
+  (no `--as-needed` wrapping; gcc's global `--as-needed` still drops
+  `libm.so.6`, clang's lines keep it).
+- gfortran tail: `-lgfortran -lm -lgcc_s -lgcc [--as-needed -lquadmath
+  --no-as-needed] -lm -lc -lgcc_s -lgcc` (`-lquadmath` on x86 only).
+- Interpreters: `/lib/ld-linux-aarch64.so.1`, `/lib64/ld-linux-x86-64.so.2`,
+  `/lib/ld-linux.so.2`; every driver passes `-dynamic-linker`.
+- `-no-pie`: `-pie` dropped (no `-no-pie` is passed), `crt1.o`,
+  `crtbegin.o`, `crtend.o`. `-rdynamic`: `-export-dynamic`.
+  `-static-libgcc`: `-lgcc_eh` replaces `libgcc_s`. `-static-libstdc++`:
+  `-Bstatic -lstdc++ -Bdynamic`. `-fuse-ld=lld|mold`: the same line.
+- gcc puts `-dynamic-linker` before `-pie`, clang after.
+
 ### 2.2 Inputs on a default line
+
+- `-lc` is the script `GROUP(libc.so.6 libc_nonshared.a
+  AS_NEEDED(ld-linux-….so.N))` with absolute paths; `-lm` a script with
+  `AS_NEEDED(libmvec.so.1)` (AArch64, x86-64) or a link (i386);
+  `-lgcc_s` the script `GROUP(libgcc_s.so.1 -lgcc)`; libstdc++,
+  libgfortran, libquadmath are ELF shared objects; `-lpthread` resolves
+  to an 8-byte empty `libpthread.a` (glibc 2.34+).
+- GNU ld `-t`: the group is scanned twice; the interpreter is reached only
+  through `AS_NEEDED`, and is not needed by a hello.
+- Archive members used by a default hello: none from `libgcc.a`; from
+  `libc_nonshared.a` only `atexit` (C, E-corpus) or none (C++, Fortran).
+- Needed objects of the outputs: C `libc.so.6`; C++ `libstdc++.so.6`,
+  (`libm.so.6` on clang lines), `libgcc_s.so.1`, `libc.so.6`; Fortran
+  `libgfortran.so.5`, `libc.so.6` (+ `libm`, `libgcc_s`, `libquadmath` on
+  x86, whose tail switches `--as-needed` off again).
+- mortar's reader already resolves `-l` to `.so`, expands the scripts,
+  `AS_NEEDED` inside `GROUP` included, and opens the shared object: with
+  the refused options stripped, every non-LTO line stops at
+  `<first shared object>: unsupported feature: dynamic executable without
+  -dynamic-linker`.
+
 ### 2.3 Options on the lines and their status today
+
+Statuses of `docs/status/options.md` (472 rows) on a mortar built from
+main after WP-027e (the shared release binary predates WP-027e and still
+refuses `--push-state`, `-z now`, `-E` and `-rpath`).
+
+| option | lines of 426 | status today | M2 status (rule) |
+|---|---|---|---|
+| `-dynamic-linker` | 426 | **refused** | supported (D-31) |
+| `-pie` | 404 | **refused** | supported (D-1) |
+| `--hash-style=gnu` | 426 | noop "dynamic is refused" | supported; `sysv`/`both`/`none` refused (D-20, R-C1) |
+| `--as-needed`, `--no-as-needed` | 282, 155 | noop "shared inputs refused" | supported (D-11) |
+| `--push-state`, `--pop-state` | 57 | supported | supported (they carry the as-needed state) |
+| `--build-id` | 426 | partial (bare form) | partial; the note is in the first `PT_LOAD` after `.interp` |
+| `--eh-frame-hdr` | 426 | supported | supported; off unless given (GNU ld, lld; open Q3) |
+| `-export-dynamic`/`-E` | 22 | noop | supported (D-21) |
+| `-rpath` | 22 | noop | supported (D-30 row 2); `--enable-new-dtags` default |
+| `-z now` | 22 | supported (static) | supported (D-49) |
+| `-z relro` | 22 | supported | supported; RELRO is the default (all three) |
+| `-Bdynamic` (`-call_shared`, `-dy`) | 9 | **refused** | supported: the inverse of `-Bstatic` |
+| `-Bstatic` | 9 | supported | supported; a shared object found under it is never chosen |
+| `-init`, `-fini` | 0 | refused | supported (D-30) |
+| `--no-copy-dt-needed-entries` | 0 | — | noop; the positive form refused (D-15) |
+| `--whole-archive` | 12 (asan) | refused | out of M2 |
+| `-plugin`, `-plugin-opt`, `-X`, `-EL`, `-m`, `--sysroot=/`, `--fix-cortex-a53-843419` | | supported / noop | unchanged |
+
+No driver on this host passes `-z relro`, `-z now`, `-z text`,
+`--no-undefined` or `--hash-style=both` by default; RELRO, lazy binding,
+`-z text` and `--allow-shlib-undefined`-off are the linkers' own
+defaults, and mortar's defaults are GNU ld's on each (D-13, D-47, D-49).
 ### 2.4 Relocation types sent into a dynamic context
 
 E-corpus: C, C++ (exceptions, `thread_local` with dynamic initialization,
@@ -83,7 +207,38 @@ i386; `libgcc_s.so` is `GROUP(libgcc_s.so.1 -lgcc)`; libstdc++,
 libgfortran and libquadmath are symbolic links. No `libc++.so` exists on
 the host (Debian's is the script `INPUT(libc++.so.1 -lc++abi)`).
 ### 2.6 kiln's libc++ lane
+
+kiln's libc++ test runner (`kiln/xtask/src/libcxx/run.rs`, `link_flags`)
+links each test with clang++ 22, given a libc++ package tree, as
+`-stdlib=libc++ -pthread -L<tree> -Wl,--as-needed -Wl,-Bstatic
+-lc++experimental -lc++ -lc++abi -Wl,-Bdynamic`: a dynamic PIE against
+glibc and libgcc_s with libc++ linked statically, so the lane needs
+`-pie`, `-dynamic-linker`, `--as-needed`, `-Bstatic`/`-Bdynamic` and
+nothing beyond the C++ target of §D. Without a tree it names
+`-lc++abi` dynamically, and the host has no `libc++.so` (Debian's would
+be a script, `INPUT(libc++.so.1 -lc++abi)`). mortar's Mason lane
+(WP-034) links the suite `-static`; it moves to the dynamic line once
+the C++ target is met, and the static and dynamic suites then run side
+by side, which is M2's end-to-end acceptance on AArch64.
+
 ### 2.7 What is refused today, ranked
+
+By lines blocked (of 426):
+
+1. `-dynamic-linker` (option): 426.
+2. A dynamic output itself (shared-object inputs, `.dynamic`, every
+   table of this spec): 426 (384 measured behind the options; the 42 LTO
+   lines stop at LTO first).
+3. `-pie` (option): 404.
+4. i386 linking: 137 (every i686 line; static i386 is `mortar_x86`'s
+   WP-030b, dynamic i386 is M4 here).
+5. `-Bdynamic`: 9 (`-static-libstdc++`, and kiln's libc++ lane).
+6. Out of M2: `--whole-archive` (12, asan), LLVM bitcode and GCC LTO
+   objects (21, `-flto`).
+
+The noop rows whose reason is "dynamic is refused" (`--hash-style`,
+`--as-needed`, `--no-as-needed`, `-E`, `-rpath`) are wrong the moment
+items 1-3 lift: each becomes supported in the same package (WP-M2-CLI).
 ## 3. Inventory of what the specs already say
 
 Read at 7bfe1af. Status: **ok** complete and consistent; **unmeasured**
@@ -112,16 +267,16 @@ restated.
 | Preemption in an executable | resolve §9.6 L1237 | ok | — |
 | Copy-relocation inputs | resolve §9.6 L1245-1257, §7.3 aliases | ok; unmeasured: protected (L1256); incomplete: `STT_TLS`, `st_size` 0, IFUNC-typed (D-42) | E-reloc |
 | Weak undefined, dynamic or not | resolve §5.4 L819 "arch.md says" | **contradicts** arch §2.1 L77 "resolve.md's" (circular); ruled in D-25 | E-reloc |
-| `STB_GNU_UNIQUE` from a shared object | resolve §3.4 L251, §9.1 | incomplete: output binding of a copied unique, `EI_OSABI` (D-24) | E-corpus |
+| `STB_GNU_UNIQUE` from a shared object | resolve §3.4 L251, §9.1 | incomplete: output binding of a copied unique, `EI_OSABI` (D-23) | E-corpus |
 | `tls-mismatch` | resolve §3.4 L230-245 | incomplete: a shared `STT_TLS` definition vs a non-TLS object reference (D-16) | — |
-| `_DYNAMIC`, `_TLS_MODULE_BASE_` | resolve §8.1 L1042, L1053 | ok; static-pie counts as dynamic (D-30) | E-dynamic |
+| `_DYNAMIC`, `_TLS_MODULE_BASE_` | resolve §8.1 L1042, L1053 | ok; static-pie counts as dynamic (D-2, D-32) | E-dynamic |
 | Output kind from the line | cli §3.2 L297-317 | ok (`-pie` without an interpreter is static-pie) | E-census |
 | Default interpreter | input §8.4 L807-817 (refused: none) | **contradicts** synth S-106 "or the target's default"; ruled in D-31 | E-census |
-| `plan.dynamic` fields | cli §3.6 L399-415 | incomplete: defaults of `new_dtags` and `hash_style` (D-33, D-20) | E-dynamic |
+| `plan.dynamic` fields | cli §3.6 L399-415 | incomplete: defaults of `new_dtags` and `hash_style` (D-30 row 2, D-20) | E-dynamic |
 | `--hash-style` | cli §2.3 L107, options row L209 (noop, all values) | **contradicts** synth S-102 ("sysv/both refused (cli.md)"); ruled in D-20 | E-dynsym |
 | Option rows | cli §4.2 L586-631, `docs/status/options.md` | the dynamic rows are noop only "because dynamic is refused": each re-judged in §2.3 | E-census |
 | Implicit scripts | script §2.3-§2.5, §6; input §5 | ok (libc.so, libm.so, libgcc_s.so for the three targets) | E-corpus |
-| Model columns | model §3.3 `file_live`, `def`; §3.7; §4.3 `Slots` | ok; incomplete: no `file_live` state for a closure file reached only from unneeded objects; two sources of export (`exported`, `EXPORT`) (D-12, D-22) | — |
+| Model columns | model §3.3 `file_live`, `def`; §3.7; §4.3 `Slots` | ok; incomplete: no `file_live` state for a closure file reached only from unneeded objects; two sources of export (`exported`, `EXPORT`) (D-12, D-21) | — |
 
 ### 3.2 Architecture: `arch.md`, `a64.md`, `x64.md`, `x86.md`
 
@@ -139,7 +294,7 @@ restated.
 | GOT relaxation in Exec/PIE | a64 R5; x64 X-19 ("every M1 output") vs arch A.2 ("every output kind"); x86 X86-25 (static), X86-27 (candidates) | a64 ok; x64/x86 incomplete and mildly contradictory | E-reloc |
 | IFUNC in a dynamic output | a64 §10.4 (`STT_FUNC` at the IPLT entry in `.dynsym`); synth S-71 (`STT_GNU_IFUNC` at the resolver in `.symtab`) | **contradicts** (S-71 vs a64 §10.4; only `.symtab` is S-71's); x86 Exec/PIE unspecified | E-reloc |
 | AArch64 dynamic tags | a64 §10.3 L1124-1128 (BTI_PLT, PAC_PLT, VARIANT_PCS) | ok; incomplete: VARIANT_PCS for an IRELATIVE in `.rela.plt` | E-dynamic |
-| RELR | a64 §6.3, arch §3.10 | eligibility "place aligned to word" is address-dependent on x86 (D-46) | E-dynamic |
+| RELR | a64 §6.3, arch §3.10 | eligibility "place aligned to word" is address-dependent on x86 (D-27, D-62; M4) | E-dynamic |
 | Generic contract | arch §3.7 `PltShape`, §3.10 `DynRole` | incomplete: lazy-word target, `-z now` variant, per-arch dynamic tags, record format per role (REL vs RELA), WeakDyn decision (§11) | — |
 
 ### 3.3 Output side: `synth.md`, `layout.md`, `image.md`, `plumb.md`
