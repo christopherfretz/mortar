@@ -570,17 +570,26 @@ shape is part of principle 3:
 
 ## 10. Rust shape (informative)
 
+As landed by WP-020a (`mortar_core`; the record is
+`spec/landed/model/WP-020a.md`):
+
 ```rust
-#[repr(transparent)] pub struct FileId(u32);      // likewise the other ids
+#[repr(transparent)] pub struct FileId(pub u32);  // likewise the other ids
 pub struct Column<I, T> { /* Vec<T> indexed by I */ }
 impl<I: Id, T> Column<I, T> {
-    pub fn split_by<'a>(&'a mut self, ranges: &[IdRange<I>]) -> Vec<&'a mut [T]>; // §6.1
+    pub fn split_by<'a>(&'a mut self, ranges: &[IdRange<I>])
+        -> Result<Vec<&'a mut [T]>, SplitError>;   // §6.1: ascending, in bounds
 }
-pub enum SymKey { Global(SymbolId), Local(FileId, u32) }
-pub struct Inputs<'store> { pub target: Target, pub files: Column<FileId, File<'store>>, /* §3.2 */ }
+pub struct SymKey(u64);  // packed so that integer order is §2's order
+impl SymKey { pub fn kind(self) -> SymKind; }
+pub enum SymKind { Global(SymbolId), Local(LocalSym) }
+pub struct Inputs<'store> { pub target: LinkTarget, pub files: Column<FileId, File<'store>>, /* §3.2 */ }
 pub struct Resolution { /* §3.3 */ }
 pub struct Layout { pub folds: Folds, pub merge: MergeMap, pub slots: Slots, pub placement: Placement }
-impl Layout { pub fn check(&self, /* derived tables */) -> Result<(), Diagnostic>; }
+impl Layout {
+    // the derived tables, the page size, the section shapes
+    pub fn check(&self, cx: &CheckContext<'_, '_>) -> Result<(), Diagnostic>;
+}
 pub mod par { /* §6: for_each, map_collect, sort_by_key, the scheduling seed */ }
 ```
 

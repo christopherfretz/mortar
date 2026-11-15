@@ -11,7 +11,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | file | covers | status |
 |---|---|---|
 | `model.md` | `mortar_core`: ids, the tables phases exchange, determinism rules | normative (WP-002); §3.7, §4.3 and `patches` of §4.4 confirmed with `arch.md` (WP-013) |
-| `elf.md` | `mortar_elf`: readers for objects and shared objects; writer primitives | §1-§4 landed (WP-004); §6 planned (WP-006) |
+| `elf.md` | `mortar_elf`: readers for objects and shared objects; writer primitives | §1-§4 landed (WP-004); §6 landed (WP-006) |
 | `archive.md` | `mortar_elf::archive`: regular and thin archives, GNU and BSD names, the GNU, 64-bit and BSD symbol indexes | implemented (WP-005) |
 | `diag.md` | `mortar_diag`: diagnostics, the vocabulary of refusals, demangling | normative (WP-007); demangling planned |
 | `cli.md` | `mortar_cli`: the command line and the status of every option | normative (WP-008) |
@@ -23,7 +23,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `layout.md` | `mortar_layout`: output sections, segments, addresses | planned (WP-024) |
 | `synth.md` | `mortar_synth`: synthetic sections | planned (WP-025) |
 | `image.md` | `mortar_image`: image synthesis, the writer, debug sections | planned (WP-026) |
-| `plumb.md` | `mortar_plumb`: the verifier and the map-file format | planned (WP-011) |
+| `plumb.md` | `mortar_plumb`: the verifier and the map-file format | stage 1: static non-PIE AArch64 (WP-011); TLS, IFUNC, `.eh_frame` stage 2 |
 | `meta.md` | `mortar_meta`: the Mason metadata container (shared with kiln, hod, tuck) | planned (M6) |
 | `odr.md` | `mortar_odr`: one-definition-rule checks | planned (M6) |
 | `incr.md` | `mortar_incr`: link state and incremental links | planned (M7) |
