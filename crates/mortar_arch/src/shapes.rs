@@ -243,11 +243,18 @@ pub enum Weak0Rule {
     XConst(i64),
 }
 
-/// How a GNU property merges over the inputs (§3.13).
+/// How a GNU property of the processor range merges over the inputs
+/// (§3.13; `spec/synth.md` S-95 applies it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PropMerge {
-    /// An input without the property counts as 0; bitwise and.
+    /// An input without the property counts as 0; bitwise and; the
+    /// property is omitted when the result is 0.
     And,
-    /// An input without the property counts as 0; bitwise or.
+    /// The OR of the inputs that have it; present if any has it.
     Or,
+    /// The OR of the inputs; present only if every input has it.
+    OrAll,
+    /// Copied when every input that has it has the same bytes; two inputs
+    /// that disagree are refused (AArch64 `FEATURE_PAUTH`).
+    EqualOrAbsent,
 }

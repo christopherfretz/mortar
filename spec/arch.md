@@ -581,10 +581,20 @@ the AArch64 table; x86 uses `SZero` for every class.
 
 ### 3.13 GNU properties
 
-`property_merge(pr_type)` is `And` (an input without the property counts
-as 0; AArch64 `FEATURE_1_AND`, x86 `FEATURE_1_AND`), `Or` (an input
-without it counts as 0; x86 `ISA_1_NEEDED`, `FEATURE_2_USED`) or `None`
-for a type the architecture does not know, which is refused by name.
+`property_merge(pr_type)` gives the rule for a processor-range
+type (0xc0000000..0xdfffffff): `And` (an input without the property
+counts as 0; the property is omitted when the result is 0; AArch64
+`FEATURE_1_AND` with BTI, PAC and GCS, x86 `FEATURE_1_AND`), `Or` (the OR
+of the inputs that have it, present if any has it; x86 `ISA_1_NEEDED`
+and the other `0xc0008000..0xc0008fff` types), `OrAll` (the OR of the
+inputs, present only if every input has it; x86 `ISA_1_USED`,
+`FEATURE_2_USED` and the other `0xc0010000..0xc0017fff` types),
+`EqualOrAbsent` (AArch64 `FEATURE_PAUTH`: copied when every input that
+has it agrees, refused when two disagree) or `None` for a type the
+architecture does not know, which `spec/synth.md` S-95 drops with the
+warning `unknown-property`. The generic types and ranges (below
+0xc0000000) are S-95's, not the architecture's. (Applied from
+`spec/synth.md` R-A1 by WP-025.)
 
 ## 4. Demands
 

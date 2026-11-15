@@ -298,6 +298,17 @@ fn malformed_input() {
 }
 
 // spec: diag.md §3.1 `unknown-file-type`, §3.2 (emitted with a place)
+// spec: diag.md §3.1 `unknown-property` (synth.md S-95, R-D2)
+#[test]
+fn unknown_property() {
+    let kind = Kind::UnknownProperty { path: s("a.o"), pr_type: 0xc000_0002 };
+    assert_eq!(kind.id(), "unknown-property");
+    assert_eq!(
+        text(kind),
+        "ld: error: a.o: unsupported GNU_PROPERTY_TYPE 0xc0000002; property dropped\n"
+    );
+}
+
 #[test]
 fn unknown_file_type() {
     assert_eq!(Kind::UnknownFileType.id(), "unknown-file-type");

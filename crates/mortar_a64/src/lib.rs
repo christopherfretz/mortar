@@ -112,6 +112,8 @@ static THUNK: ThunkShape = ThunkShape { size: 12, align: 4 };
 
 /// `GNU_PROPERTY_AARCH64_FEATURE_1_AND` and its BTI bit (§13.3).
 pub const FEATURE_1_AND: u32 = 0xc000_0000;
+/// `GNU_PROPERTY_AARCH64_FEATURE_PAUTH` (`spec/synth.md` S-95).
+pub const FEATURE_PAUTH: u32 = 0xc000_0001;
 pub const FEATURE_1_BTI: u32 = 1;
 
 /// The refusal name of a type: its `R_AARCH64_*` name, or its number in
@@ -356,8 +358,14 @@ impl Arch for A64 {
         weak0_rule(h)
     }
 
+    /// `FEATURE_1_AND` (BTI, PAC, GCS) is `And`; `FEATURE_PAUTH` is
+    /// `EqualOrAbsent` (arch.md §3.13, `spec/synth.md` S-95).
     fn property_merge(&self, pr_type: u32) -> Option<PropMerge> {
-        (pr_type == FEATURE_1_AND).then_some(PropMerge::And)
+        match pr_type {
+            FEATURE_1_AND => Some(PropMerge::And),
+            FEATURE_PAUTH => Some(PropMerge::EqualOrAbsent),
+            _ => None,
+        }
     }
 }
 

@@ -326,6 +326,7 @@ fn samples() -> Vec<Diagnostic> {
             Kind::StaticLinkOfSharedObject { path: s(x) },
             Kind::Malformed { what: s(x) },
             Kind::UnknownFileType,
+            Kind::UnknownProperty { path: s(x), pr_type: u32::MAX },
             Kind::ArchiveBackref { name: s(x) },
             Kind::ArchiveChoice { name: s(x) },
             Kind::ComdatMismatch { name: s(x), signature: s(x) },

@@ -911,7 +911,8 @@ fn s13_3_facts_dyn_types_properties() {
         ]
     );
     assert_eq!(a.property_merge(0xc000_0000), Some(PropMerge::And));
-    assert_eq!(a.property_merge(0xc000_0001), None);
+    assert_eq!(a.property_merge(0xc000_0001), Some(PropMerge::EqualOrAbsent));
+    assert_eq!(a.property_merge(0xc000_0002), None);
     assert_eq!(a.tombstone(b".debug_loc"), 1);
     assert_eq!(a.eh().hdr_table, 0x3b);
     assert!(a.errata().is_empty());
