@@ -917,7 +917,7 @@ with each phase fed from the state for unchanged files:
   is not older than the reference stamp (a write in the stamp's own tick,
   after the link) is **racy**: the output's bytes are re-hashed against
   the stored build-id leaves (image.md I-76; one read of the output, ~10–
-  20 ms for protoc's 50 MB from the page cache, *estimate* from R1s read
+  20 ms for protoc's 50 MB from the page cache, *estimate* from R1's read
   rates) and the update proceeds if every leaf matches, else
   `output-changed`; racy is never by itself a full link. Without a
   build id (`--build-id=none`) the leaves are still stored in the state
@@ -1511,7 +1511,7 @@ objects.
   from their parsed symbol tables; neither the state (which would need
   7.4 MB of local names, IN-19) nor the unchanged inputs are read for
   them. Cost: one read of 5.4 MB from the output (*estimate* 2–5 ms from
-  R1s read rates) and the windows they occupy written whole (in the
+  R1's read rates) and the windows they occupy written whole (in the
   floor's dirty windows, §1.5). *Test:* (B) of IN-1 covers it (a replay
   builds `.symtab` from the inputs); `nm` of the update equals `nm` of a
   full link modulo values (Q9).
@@ -1747,7 +1747,7 @@ file changes or when one of its file's sections moves (IN-25).
   as IN-12, per option; an L10 project linked with `-S` updates.
 - **IN-59 [v1] What "the same debug information" means.** For IN-2,
   debug information is compared by the debuggers' view: the transcripts
-  of fixed gdb and lldb sessions (R6s commands: break by name and line,
+  of fixed gdb and lldb sessions (E6's commands: break by name and line,
   run, backtrace, `info line`/`source list`, `print`/`frame variable`,
   `ptype`/`image lookup -t`, step, `info functions`/`image lookup -n`,
   `info variables`/`target variable`, `info scope`), with addresses and
@@ -2098,7 +2098,7 @@ against those, not measured.
 |---|---|---|---|---|---|---|
 | WP-061 | S1 state + measured floor | `mortar_incr`: the state's format (IN-17–IN-20, armaps, IN-19), writer in an incremental-mode full link, reader with validation and a fuzz target, stamps and the clean / racy / hashed rule (IN-21, IN-22, IN-22a), the identity translation, the replay hook (IN-61); then the **floor measurement**: a test-only update path for a same-size body edit (the layout is the previous one, so no delta layout is needed) that does every step of §1.5's emulation with mortar's code, through the image phase and IN-46/IN-47's writes, on protoc `-g` and a workload ≥ 5× larger (added to the bench) | amendments 6, 8 | WP-062, WP-067 | state round-trips on the link-test corpus; replay (B) byte-identical for every first link; plain-link bench unchanged (§8.1); **the go/no-go numbers of §1.5, reported to the operator** | 5,000–7,000 lines, 2–3 sessions |
 | WP-062 | S2 slack and dead ranges | regions in L-143 sections, packed chunks with capacity, tails and segment reserves (IN-30, IN-32, IN-33), `.eh_frame` ranges and padding CIEs (IN-34a), debug size classes (IN-50), holes and their fill; map `hole`/`dead` lines; plumb's dead-range checker (IN-3a) | amendments 1–5, 7 | WP-061, WP-067 | incremental-mode first links pass plumb and are equivalent (IN-2) to plain links; output sizes against IN-33's table; R4 and R5 as plumb negative cases | 3,000–4,500 lines, 1–2 sessions |
-| WP-063 | S3 delta | change detection (IN-22–IN-24, parallel member hashing), delta resolution and the refill set (IN-25–IN-29), TLS and copy-size detectors, a dry-run `--incremental-report`; the **two-full-link oracle** (IN-63a) as a test lane | WP-061 | WP-062 | the dry run's refill set covers every unit the oracle finds differing, on every L10 step and R3s scenarios | 3,500–5,000 lines, 2 sessions |
+| WP-063 | S3 delta | change detection (IN-22–IN-24, parallel member hashing), delta resolution and the refill set (IN-25–IN-29), TLS and copy-size detectors, a dry-run `--incremental-report`; the **two-full-link oracle** (IN-63a) as a test lane | WP-061 | WP-062 | the dry run's refill set covers every unit the oracle finds differing, on every L10 step and R3's scenarios | 3,500–5,000 lines, 2 sessions |
 | WP-064 | S4 update | delta layout, refill and writing (IN-13, IN-14, IN-44–IN-49a) for static executables, `-g` falling back; copy path by default, in place on request; crash hooks; `plumb --equiv` (IN-62) | WP-061–WP-063, "go" | WP-067 | L10 static, no `-g`: IN-1 on every step; crash injection at each IN-46/IN-47 step; floor against WP-061's | 5,000–7,000 lines, 2–3 sessions |
 | WP-065 | S5 debug | IN-50–IN-59: size classes in use, reuse, neutralization of every debug section (IN-51, IN-51b), compaction fall-back; type units and skeletons tested before enabling | WP-064 | WP-066 | L10 with `-g`: transcripts equal (IN-59), `--verify` clean, readelf warning-free | 3,000–4,000 lines, 1–2 sessions |
 | WP-066 | S6 dynamic | PIE and dynamic executables (IN-40–IN-42), shared objects by copy (IN-43, M4), `copy-size-changed` | WP-064, M2 (M4 for shared objects) | WP-065 | L10 PIE and shared | 2,500–4,000 lines, 1–2 sessions |
