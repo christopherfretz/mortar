@@ -747,7 +747,12 @@ Ids do not survive a link; identities do, and a later link translates.
   (`.eh_frame_hdr`, `.gnu.hash`), whole-chunk encodings (`.relr.dyn`)
   and symbol tables need no special case. The index is derived data,
   stored because recomputing it costs a scan of every relocation, and
-  written by a streaming pass, never held as a table.
+  written by a streaming pass, never held as a table. `spec/incr.md`
+  IN-25 implements it per unit (a section's bytes, not a relocation
+  field), names its non-relocation targets (slots, the redirected sites
+  of patches, the demand flags above) and adds beside it the **liveness
+  graph** (IN-29), which a `--gc-sections` update walks instead of the
+  relocations; IN-18a has the bytes of the parts stored so far.
 
 A link state is untrusted input: it is read with the same care as an
 object file, validated (§4.4, identities against the present inputs), and
@@ -759,7 +764,15 @@ For every incremental link the harness makes: the verifier accepts the
 output; and a full link *given the incremental link's decision tables*
 produces the same bytes. The second needs an entry to the pipeline that
 takes decision tables instead of computing them (a test hook, not an
-option users see), which §5 makes well-defined.
+option users see), which §5 makes well-defined. The second holds
+exactly outside the **dead ranges** (`spec/incr.md` IN-3a: slack, holes,
+dead fragments and records), which the decision tables record and which
+are compared by the verifier's checks instead of byte for byte (IN-1
+(B)). A third invariant is tested beside them, because the second alone
+would accept stale tables that replay faithfully: (C) the update's
+output is equivalent to a from-scratch full link of the same inputs
+(`spec/incr.md` IN-1 (C), the items of IN-2). The hook is
+`spec/incr.md` IN-61.
 
 ## 8. Diagnostic keys
 

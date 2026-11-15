@@ -38,7 +38,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use mortar_core::hash::{combine, hash_bytes, hash_u64};
 use mortar_core::inputs::{self, ContentHash, CopyError, Errno};
 use mortar_core::par::Pool;
 use mortar_diag::os_reason;
@@ -715,7 +714,7 @@ impl Store {
             if !parts_agree(&e.parts, at, out) {
                 return Err(ReadError::Changed);
             }
-            hashes.push(hash_bytes(out));
+            hashes.push(block_hash(out));
             at += n;
         }
         Ok(fold_hash(len, hashes.into_iter()))
@@ -1089,7 +1088,9 @@ impl Store {
                 match file.read_exact_at(slice, c as u64 * CHUNK) {
                     Ok(()) => {
                         self.counters.bytes.fetch_add(slice.len() as u64, Ordering::Relaxed);
-                        live.hashes[c].store(hash_bytes(slice), Ordering::Relaxed);
+                        let h = block_hash(slice);
+                        live.hashes[c][0].store(h as u64, Ordering::Relaxed);
+                        live.hashes[c][1].store((h >> 64) as u64, Ordering::Relaxed);
                     }
                     Err(e) => live.fail(ReadError::read(&e)),
                 }
@@ -1751,7 +1752,8 @@ struct Live {
     file: Mutex<Option<Arc<File>>>,
     remaining: AtomicUsize,
     failed: Mutex<Option<ReadError>>,
-    hashes: Vec<AtomicU64>,
+    /// Per chunk, its block hash as (low, high) halves.
+    hashes: Vec<[AtomicU64; 2]>,
 }
 
 impl Live {
@@ -1762,7 +1764,7 @@ impl Live {
             file: Mutex::new(None),
             remaining: AtomicUsize::new(chunks),
             failed: Mutex::new(None),
-            hashes: (0..chunks).map(|_| AtomicU64::new(0)).collect(),
+            hashes: (0..chunks).map(|_| [AtomicU64::new(0), AtomicU64::new(0)]).collect(),
         }
     }
 
@@ -1784,7 +1786,10 @@ impl Live {
         let len = buffer.len() as u64;
         let hash = fold_hash(
             len,
-            self.hashes.iter().take(chunk_count(len)).map(|h| h.load(Ordering::Relaxed)),
+            self.hashes.iter().take(chunk_count(len)).map(|h| {
+                u128::from(h[0].load(Ordering::Relaxed))
+                    | u128::from(h[1].load(Ordering::Relaxed)) << 64
+            }),
         );
         Ok((buffer.into_boxed_slice(), meta, hash))
     }
@@ -1852,17 +1857,23 @@ fn parts_agree(parts: &[Part], at: u64, bytes: &[u8]) -> bool {
     })
 }
 
-/// The content hash (§11.6) of bytes from the hashes of their [`CHUNK`]
-/// blocks. Provisional: the function is `spec/incr.md`'s (M7); both stores
-/// compute this one.
-fn fold_hash(len: u64, blocks: impl Iterator<Item = u64>) -> ContentHash {
-    let mut lo = hash_u64(len);
-    let mut hi = hash_u64(!len);
-    for h in blocks {
-        lo = combine(lo, h);
-        hi = combine(h, hi);
+/// The content hash (§11.6; `spec/incr.md` §5.3, "Content hash") of
+/// bytes from the block hashes of their [`CHUNK`]-byte blocks:
+/// `L128(le64(len) ‖ L128(block_0) ‖ … ‖ L128(block_k−1))`, read as a
+/// little-endian `u128`. The blocks are hashed in parallel by the resident
+/// store's read jobs; the fold is one pass over 16 bytes per 4 MiB.
+fn fold_hash(len: u64, blocks: impl Iterator<Item = u128>) -> ContentHash {
+    let mut h = mortar_digest::L128::new();
+    h.update(&len.to_le_bytes());
+    for b in blocks {
+        h.update(&b.to_le_bytes());
     }
-    ContentHash((u128::from(hi) << 64) | u128::from(lo))
+    ContentHash(u128::from_le_bytes(h.finish()))
+}
+
+/// The hash of one block of [`fold_hash`].
+fn block_hash(bytes: &[u8]) -> u128 {
+    u128::from_le_bytes(mortar_digest::l128(bytes))
 }
 
 /// What the tables read through (`spec/model.md` §1, `InputStore`): a
@@ -1893,5 +1904,5 @@ impl inputs::InputStore for Store {
 /// The content hash of `bytes`, as the store computes it.
 #[must_use]
 pub fn content_hash(bytes: &[u8]) -> ContentHash {
-    fold_hash(bytes.len() as u64, bytes.chunks(CHUNK as usize).map(hash_bytes))
+    fold_hash(bytes.len() as u64, bytes.chunks(CHUNK as usize).map(block_hash))
 }

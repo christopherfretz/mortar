@@ -151,7 +151,7 @@ parallel work on them starts.
 | `mortar_core` | The shared vocabulary: ids, the `Plan`/`Inputs`/`Resolution`/`Layout` tables, interning, the parallel helpers with their deterministic merges. No algorithms. | `mortar_elf`, `mortar_diag` |
 | `mortar_cli` | GNU ld's command line to a `Plan`: the option table with a status per option, response files, emulation names. | `mortar_core` |
 | `mortar_script` | Linker scripts (including the implicit ones: `libc.so` is a text file), version scripts, dynamic lists: text to a checked AST. | `mortar_diag` |
-| `mortar_input` | Search paths and sysroot, file reading, format sniffing, parallel parsing into `Inputs`. Owns how bytes get into memory. | `mortar_core`, `mortar_script`, `mortar_meta` (MT-6's predicate: the byte rule of `spec/meta.md` MT-42) |
+| `mortar_input` | Search paths and sysroot, file reading, format sniffing, parallel parsing into `Inputs`. Owns how bytes get into memory. | `mortar_core`, `mortar_script`, `mortar_meta` (MT-6's predicate: the byte rule of `spec/meta.md` MT-42), `mortar_digest` (a file's content hash, `spec/incr.md` IN-22) |
 | `mortar_resolve` | Symbol resolution: binding and visibility rules, archive extraction, COMDAT, common symbols, versions, `--wrap`, `--defsym`. | `mortar_core`, `mortar_meta` (MT-6's predicate: `SectionKind::Meta`) |
 | `mortar_live` | Section liveness (`--gc-sections`), identical code folding. | `mortar_core` |
 | `mortar_scan` | The relocation scan driver: `Arch::scan` over every live relocation in parallel, the deterministic merge of demands, one diagnostic per undefined key (`spec/image.md` §4). The record index it produces (`RecIndex`, `Order`) is a `mortar_core` type, so that `mortar_image` need not depend on the scan. | `mortar_core`, `mortar_arch` |
@@ -164,7 +164,7 @@ parallel work on them starts.
 | `mortar_image` | Image synthesis and the file writer; debug section handling (tombstones, compression). | `mortar_core`, `mortar_arch`, `mortar_merge` (fragment runs: `Order::frags_in`), `mortar_synth`, `mortar_digest` |
 | `mortar_meta` | The Mason metadata container: reader and writer of the format shared with kiln, hod and tuck (`spec/meta.md`). | `mortar_elf` |
 | `mortar_odr` | One-definition-rule checks at static link time; the tables and the load-time hook for dynamic checks. | `mortar_core`, `mortar_meta`, `mortar_diag` (its diagnostics), `mortar_elf` (the symbol tables of the COMDAT copies, as `mortar_resolve` reads them) |
-| `mortar_incr` | The link state, change detection, delta layout, patching. | everything above |
+| `mortar_incr` | The link state, change detection, delta layout, patching. | everything above; today `mortar_core`, `mortar_diag`, `mortar_digest`, `mortar_elf`; never `mortar_plumb` |
 | `mortar_plumb` | The independent verifier. Depends on `mortar_elf` and `mortar_diag` only, by rule: it shares no algorithm with the linker. | `mortar_elf`, `mortar_diag` |
 | `mortar` | The facade (`mortar::link`) and the `mortar` executable (also invoked as `ld.mortar` or `ld`). | all |
 | `mortar_testutil`, `xtask` | Test support and the harness: link tests, differential runs against the reference linkers, external suites, benchmarks, the jobserver client. | `xtask`: `mortar_diag` (the wording a `#@ diag:` directive matches, `spec/harness.md`), `mortar_meta` (the test producer and dumper of `spec/meta.md` §12, `cargo xtask meta`) |

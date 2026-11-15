@@ -232,6 +232,7 @@ pub fn with_link<T>(
                 let (ty, bit) = f.arch.feature_1();
                 s.property.value_u32(ty) & bit != 0
             },
+            keep_leaves: f.keep_leaves,
         },
         fixups: &f.erratum_fixes,
     };

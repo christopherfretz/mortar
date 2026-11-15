@@ -190,6 +190,11 @@ pub struct Image<'a> {
     /// The build id's style; `None` when no leaves are computed (I-73).
     /// Leaves are windows, so it needs `plan.window == IMAGE_BLOCK` (I-75).
     pub build_id: Option<TreeStyle>,
+    /// Keep the leaves (`spec/incr.md` IN-21: an incremental-mode link
+    /// stores them in its state even without a build id), hashed with this
+    /// function; it is the build id's tree function when one is computed.
+    /// `None`: leaves are kept for nothing (a plain link).
+    pub leaf_fn: Option<mortar_digest::TreeFn>,
     /// Words written over the rows' bytes, by file offset, sorted (the
     /// erratum fixes, `crate::link::Link::fixups`).
     pub fixups: &'a [(u64, [u8; 4])],
@@ -206,6 +211,8 @@ impl std::fmt::Debug for Image<'_> {
 pub struct Filled {
     /// The build id, written at the sealed range, when one was computed.
     pub build_id: Option<Vec<u8>>,
+    /// The leaves in window order, when `Image::leaf_fn` asked for them.
+    pub leaves: Option<Vec<Leaf>>,
 }
 
 /// The diagnostics of a failed fill, keyed (I-43, I-64, I-68).
@@ -406,7 +413,11 @@ pub fn write_checked(
         diagnostics.push(write_error(output_path, &e));
     }
     let r = if diagnostics.is_empty() && checked.flagged.is_empty() {
-        Ok(Filled { build_id })
+        let leaves = img.leaf_fn.map(|_| {
+            leaves.sort_unstable_by_key(|l| l.0);
+            leaves.into_iter().map(|l| l.1).collect()
+        });
+        Ok(Filled { build_id, leaves })
     } else {
         Err(Failed { diagnostics })
     };
@@ -566,8 +577,8 @@ fn run_job(
     let win = plan.window as usize;
     for (k, window) in buf[..len].chunks(win).enumerate() {
         let offset = job.start + (k * win) as u64;
-        if let Some(style) = img.build_id {
-            out.leaves.push((offset / plan.window, mortar_digest::leaf(style.tree_fn(), window)));
+        if let Some(f) = img.build_id.map(TreeStyle::tree_fn).or(img.leaf_fn) {
+            out.leaves.push((offset / plan.window, mortar_digest::leaf(f, window)));
         }
         // A failed link writes nothing more (I-64, I-65): the temporary is
         // removed anyway.
