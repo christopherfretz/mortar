@@ -60,6 +60,15 @@ impl<'a, 's> Walker<'a, 's> {
         self.view.opts.output
     }
 
+    /// The symbol table of `file` when it is a relocatable object with
+    /// one (`Object::symbols`, found once per file and kept by the view).
+    #[must_use]
+    pub fn symbols(&self, file: FileId) -> Option<mortar_elf::SymbolTable<'s>> {
+        let p = self.view.prep(file)?;
+        p.obj?;
+        p.table().copied()
+    }
+
     /// The facts of `key` with no mention (a definition's).
     #[must_use]
     pub fn facts(&self, key: SymKey) -> SymFacts {

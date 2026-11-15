@@ -567,7 +567,6 @@ pub fn front<'s>(
             plt: plans.chunk(SynthKind::Plt),
         };
         let site_inputs = SiteInputs {
-            inputs: &inputs,
             resolution: &resolution,
             assignment: &assignment,
             headers: &headers,

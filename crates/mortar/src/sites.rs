@@ -20,7 +20,6 @@ use mortar_arch::{
 use mortar_core::assignment::Assignment;
 use mortar_core::demands::DemandFlags;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, SymKind};
-use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::layout::Slots;
 use mortar_core::layout::{ChunkKind, MergeMap, ThunkTarget};
 use mortar_core::par::Pool;
@@ -28,8 +27,8 @@ use mortar_core::resolution::{Def, Resolution, SectionKind};
 use mortar_core::split::Split;
 use mortar_core::{Demands, Liveness};
 use mortar_diag::{Diagnostic, Key};
+use mortar_elf::SymbolSection;
 use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS};
-use mortar_elf::{SymbolSection, SymbolTable};
 use mortar_layout::fixed::{BranchAt, OwnedCode, Round, Sites};
 use mortar_layout::{Headers, LayoutDiag};
 use mortar_scan::{BranchRec, RecIndex, Walker};
@@ -58,7 +57,6 @@ pub struct SynthIds {
 /// The tables the sites read.
 #[derive(Clone, Copy)]
 pub struct SiteInputs<'a, 's> {
-    pub inputs: &'a Inputs<'s>,
     pub resolution: &'a Resolution,
     pub assignment: &'a Assignment<'a>,
     pub headers: &'a Headers<'s>,
@@ -81,10 +79,6 @@ pub struct LinkSites<'a, 's> {
     walker: &'a Walker<'a, 's>,
     code: Vec<CodeSec>,
     branches: Vec<BranchAt>,
-    /// Each object's symbol table, found once (`Object::symbols` scans the
-    /// section headers: per branch target and round it cost ~2 µs, 245 ms
-    /// a round in a protoc link — WP-027a).
-    symtabs: Vec<Option<SymbolTable<'s>>>,
     /// Whether `code` is asked (`Arch::errata()` is not empty).
     errata: bool,
 }
@@ -135,13 +129,7 @@ impl<'a, 's> LinkSites<'a, 's> {
             let by_walk = walk_branches(&t, arch, walker, pool, &code)?;
             assert!(by_walk == branches, "the scan's branch sites differ from a walk's");
         }
-        let files: Vec<&mortar_core::inputs::File<'s>> =
-            t.inputs.files.iter().map(|(_, f)| f).collect();
-        let symtabs = pool.unit_cost(500).map(files.len(), |i| match files[i].reader {
-            Reader::Object(obj) => obj.symbols().ok().flatten(),
-            _ => None,
-        });
-        Ok(Self { t, arch, walker, code, branches, symtabs, errata: !arch.errata().is_empty() })
+        Ok(Self { t, arch, walker, code, branches, errata: !arch.errata().is_empty() })
     }
 
     /// The addresses of a round, as fill's tables.
@@ -603,7 +591,11 @@ impl RoundTables<'_, '_, '_> {
     /// The value of a file's entry: its section's place plus `st_value`.
     fn entry_value(&self, e: SymEntry) -> Option<u64> {
         let t = &self.sites.t;
-        let table = self.sites.symtabs.get(e.file.0 as usize)?.as_ref()?;
+        // Each object's symbol table, found once per file by the walker's
+        // view (`Object::symbols` scans the section headers: per branch
+        // target and round it cost ~2 µs, 245 ms a round in a protoc link —
+        // WP-027a).
+        let table = self.sites.walker.symbols(e.file)?;
         let s = table.get(e.index).ok()?;
         match table.section_of(e.index, &s).ok()? {
             SymbolSection::Section(index) => {
