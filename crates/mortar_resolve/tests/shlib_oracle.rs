@@ -274,14 +274,22 @@ pub fn resolve_line(
         .iter()
         .map(|&f| {
             let p = path_of(f);
-            sonames
-                .entry(p.clone())
-                .or_insert_with(|| {
-                    dynamic_names(&p)
-                        .1
-                        .unwrap_or_else(|| p.file_name().unwrap().to_string_lossy().into_owned())
-                })
-                .clone()
+            let soname =
+                sonames.entry(p.clone()).or_insert_with(|| dynamic_names(&p).1.unwrap_or_default());
+            if !soname.is_empty() {
+                return soname.clone();
+            }
+            // input §8.3: without a soname, the path as written, or the
+            // candidate's file name for `-l`.
+            match inputs.files[f].origin {
+                mortar_core::inputs::Origin::Input { input, entry: None, .. } => {
+                    match &plan.inputs[input as usize].spec {
+                        mortar_core::plan::InputSpec::Path(w) => w.to_string_lossy().into_owned(),
+                        _ => p.file_name().unwrap().to_string_lossy().into_owned(),
+                    }
+                }
+                _ => "<sonameless>".to_owned(),
+            }
         })
         .collect();
     let name = |k| String::from_utf8_lossy(inputs.symbols[k].name).into_owned();
@@ -367,4 +375,409 @@ fn d2_1_default_lines_aarch64() {
 #[test]
 fn d2_1_default_lines_x86_64() {
     default_lines(X86_64);
+}
+
+/// How mortar's resolution of one line compares with GNU ld's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// Same verdict, same `DT_NEEDED`, same exports (less D-21's pinned
+    /// differences).
+    Agree,
+    /// GNU ld refuses, mortar resolves (with mortar's `DT_NEEDED`).
+    GnuRefuses(Vec<String>),
+    /// mortar refuses (ids), GNU ld links.
+    MortarRefuses(Vec<String>),
+    /// Both link, `DT_NEEDED` differs: (GNU ld, mortar).
+    Needed(Vec<String>, Vec<String>),
+    /// Both link, exports differ: (only GNU ld, only mortar).
+    Exports(Vec<String>, Vec<String>),
+}
+
+/// Compares one recorded line.
+pub fn judge(g: &Gnu, m: &Mortar) -> Verdict {
+    let refused = !m.errors.is_empty();
+    match (g.ok, refused) {
+        (false, true) => Verdict::Agree,
+        (false, false) => Verdict::GnuRefuses(m.needed.clone()),
+        (true, true) => Verdict::MortarRefuses(m.errors.iter().map(|e| e.0.clone()).collect()),
+        (true, false) => {
+            if g.needed != m.needed {
+                return Verdict::Needed(g.needed.clone(), m.needed.clone());
+            }
+            let want = m.gnu_exports(&g.exported);
+            if want != m.exported {
+                return Verdict::Exports(
+                    want.difference(&m.exported).cloned().collect(),
+                    m.exported.difference(&want).cloned().collect(),
+                );
+            }
+            Verdict::Agree
+        }
+    }
+}
+
+/// Splits a mini line (`dynamic/needed_order.sh`): a token starting with
+/// `-` other than `-l`/`-L` goes to the linker (`-Wl,`).
+fn expand(name: &str, line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if !name.starts_with("drv_") {
+        out.push("-Wl,--no-as-needed".to_owned());
+    }
+    for t in line.split_whitespace() {
+        if t.starts_with('-') && !t.starts_with("-l") && !t.starts_with("-L") {
+            out.push(format!("-Wl,{t}"));
+        } else {
+            out.push(t.to_owned());
+        }
+    }
+    out
+}
+
+/// Runs `script CC` in `dir` (the inputs of an experiment).
+fn build_inputs(arch: Arch, dir: &Path, script: &str) {
+    let cc = format!("{}gcc", arch.prefix);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oracle").join(script);
+    let mut cmd = Command::new("bash");
+    cmd.current_dir(dir).env("TMPDIR", dir).arg(&path).arg(tool(&cc).unwrap());
+    let o = run_with(&mut cmd, b"", Duration::from_mins(5));
+    assert!(o.success(), "{script}: {}", o.stderr_text());
+}
+
+/// `dynamic/needed_order.sh`'s cases (F5): name, mini line.
+const NEEDED_ORDER: &[(&str, &str)] = &[
+    (
+        "drv_f5_review",
+        "main_abd.o libna.so --as-needed libnc.so --no-as-needed libnb.so libnc.so libnd.so",
+    ),
+    (
+        "f5_review_unref",
+        "main_abd.o libna.so --as-needed libnc.so --no-as-needed libnb.so libnc.so libnd.so",
+    ),
+    ("drv_obj_after_all", "libnd.so libna.so libnc.so libnb.so libnf.so libne.so main.o"),
+    (
+        "drv_obj_mid",
+        "libnd.so libna.so main.o libnc.so libnb.so libnf.so libne.so libna.so libnd.so",
+    ),
+    ("base_plain", "main.o libna.so libnb.so libnc.so libnd.so libne.so libnf.so"),
+    (
+        "f5_review",
+        "main.o libna.so --as-needed libnc.so --no-as-needed libnb.so libnc.so libnd.so libne.so libnf.so",
+    ),
+    ("twice_plain", "main.o libna.so libnc.so libnb.so libnc.so libnd.so libne.so libnf.so"),
+    (
+        "plain_then_asn",
+        "main.o libna.so libnc.so libnb.so --as-needed libnc.so --no-as-needed libnd.so libne.so libnf.so",
+    ),
+    (
+        "asn_then_plain",
+        "main.o libna.so --as-needed libnc.so --no-as-needed libnb.so libnc.so libnd.so libne.so libnf.so",
+    ),
+    (
+        "asn_twice_ref",
+        "main.o libna.so --as-needed libnc.so --no-as-needed libnb.so --as-needed libnc.so --no-as-needed libnd.so libne.so libnf.so",
+    ),
+    (
+        "asn_unref_then_plain",
+        "main.o libna.so --as-needed libnx.so --no-as-needed libnb.so libnx.so libnc.so libnd.so libne.so libnf.so",
+    ),
+    (
+        "asn_unref_twice",
+        "main.o libna.so --as-needed libnx.so --no-as-needed libnb.so --as-needed libnx.so --no-as-needed libnc.so libnd.so libne.so libnf.so",
+    ),
+    ("all_asn_ref", "main.o --as-needed libnf.so libne.so libnd.so libnc.so libnb.so libna.so"),
+    (
+        "three_a_p_a",
+        "main.o libna.so --as-needed libnc.so --no-as-needed libnb.so libnc.so libnd.so --as-needed libnc.so --no-as-needed libne.so libnf.so",
+    ),
+    (
+        "three_a_a_p",
+        "main.o libna.so --as-needed libnc.so --no-as-needed libnb.so --as-needed libnc.so --no-as-needed libnd.so libnc.so libne.so libnf.so",
+    ),
+    (
+        "three_p_a_p",
+        "main.o libna.so libnc.so libnb.so --as-needed libnc.so --no-as-needed libnd.so libnc.so libne.so libnf.so",
+    ),
+    (
+        "three_a_p_p",
+        "main.o libna.so --as-needed libnc.so --no-as-needed libnb.so libnc.so libnd.so libnc.so libne.so libnf.so",
+    ),
+    (
+        "two_libs_swap",
+        "main.o --as-needed libnc.so libnd.so --no-as-needed libna.so libnd.so libnb.so libnc.so libne.so libnf.so",
+    ),
+    (
+        "obj_after_asn",
+        "--as-needed libnc.so --no-as-needed libna.so libnb.so libnd.so libne.so libnf.so main.o",
+    ),
+    (
+        "obj_after_asn_plain",
+        "--as-needed libnc.so --no-as-needed libna.so libnb.so main.o libnc.so libnd.so libne.so libnf.so",
+    ),
+    (
+        "obj_between",
+        "libna.so --as-needed libnc.so --no-as-needed main.o libnb.so libnc.so libnd.so libne.so libnf.so",
+    ),
+    ("obj_after_all", "libnd.so libna.so libnc.so libnb.so libnf.so libne.so main.o"),
+    (
+        "asn_unref_obj_asn",
+        "--as-needed libnc.so --no-as-needed libna.so libnb.so --as-needed main.o libnc.so --no-as-needed libnd.so libne.so libnf.so",
+    ),
+    (
+        "asn_unref_obj_asn2",
+        "--as-needed libnc.so libnd.so --no-as-needed libna.so main.o libnb.so --as-needed libnd.so libnc.so --no-as-needed libne.so libnf.so",
+    ),
+    (
+        "pushpop",
+        "main.o libna.so --push-state --as-needed libnc.so --pop-state libnb.so libnc.so libnd.so libne.so libnf.so",
+    ),
+    (
+        "pushpop_nested",
+        "main.o --push-state --as-needed libna.so --push-state --no-as-needed libnc.so --pop-state libnb.so --pop-state libnd.so libne.so libnf.so",
+    ),
+    ("l_and_path", "-L. main.o libna.so -lnc libnb.so ./libnc.so libnd.so libne.so libnf.so"),
+    (
+        "l_asn_then_path",
+        "-L. main.o libna.so --as-needed -lnc --no-as-needed libnb.so ./libnc.so libnd.so libne.so libnf.so",
+    ),
+    (
+        "two_files_soname",
+        "main.o libna.so d1/libnc.so libnb.so d2/libnc.so libnd.so libne.so libnf.so",
+    ),
+    (
+        "two_files_asn_first",
+        "main.o libna.so --as-needed d1/libnc.so --no-as-needed libnb.so d2/libnc.so libnd.so libne.so libnf.so",
+    ),
+    (
+        "two_files_asn_second",
+        "main.o libna.so d1/libnc.so libnb.so --as-needed d2/libnc.so --no-as-needed libnd.so libne.so libnf.so",
+    ),
+    (
+        "bstatic_first",
+        "-L. main.o libna.so -Bstatic -lnc -Bdynamic libnb.so -lnc libnd.so libne.so libnf.so",
+    ),
+    (
+        "bstatic_second",
+        "-L. main.o libna.so -lnc libnb.so -Bstatic -lnc -Bdynamic libnd.so libne.so libnf.so",
+    ),
+    (
+        "bstatic_asn",
+        "-L. main.o libna.so --as-needed -Bstatic -lnc -Bdynamic -lnc --no-as-needed libnb.so libnd.so libne.so libnf.so",
+    ),
+    ("scr_group", "main.o libnd.so s_grp_ab.so libnc.so libne.so libnf.so"),
+    ("scr_input", "main.o libna.so s_inp_cd.so libnb.so libne.so libnf.so"),
+    ("scr_before_plain", "main.o s_inp_cd.so libna.so libnb.so libnc.so libne.so libnf.so"),
+    ("scr_after_plain", "main.o libna.so libnc.so libnb.so s_inp_cd.so libne.so libnf.so"),
+    ("scr_asn_in_group", "main.o libna.so s_grp_d_asn_cx.so libnb.so libne.so libnf.so"),
+    ("scr_asn_then_plain", "main.o libna.so s_grp_d_asn_cx.so libnb.so libnc.so libne.so libnf.so"),
+    (
+        "scr_asn_unref_then_plain",
+        "main.o libna.so s_grp_d_asn_cx.so libnb.so libnx.so libnc.so libne.so libnf.so",
+    ),
+    (
+        "scr_inp_asn_then_plain",
+        "main.o libna.so s_inp_asn_c.so libnb.so libnc.so libnd.so libne.so libnf.so",
+    ),
+    (
+        "scr_plain_then_inp_asn",
+        "main.o libna.so libnc.so libnb.so s_inp_asn_c.so libnd.so libne.so libnf.so",
+    ),
+    (
+        "scr_asn_flag_then_script",
+        "main.o libna.so --as-needed libnc.so --no-as-needed libnb.so s_inp_cd.so libne.so libnf.so",
+    ),
+    (
+        "scr_under_asn_flag",
+        "main.o libna.so --as-needed s_inp_cd.so --no-as-needed libnb.so libnc.so libne.so libnf.so",
+    ),
+    (
+        "scr_under_asn_flag_unref",
+        "main_abd.o libna.so --as-needed s_inp_cd.so --no-as-needed libnb.so libnc.so",
+    ),
+    (
+        "scr_under_asn_then_flag",
+        "main_abd.o libna.so --as-needed s_nest.so --no-as-needed libnc.so",
+    ),
+    ("scr_nested", "main.o libna.so s_nest.so libnc.so libne.so libnf.so"),
+    ("scr_nested2", "main.o libna.so libnb.so s_nest2.so libnc.so"),
+    ("scr_inp_l", "-L. main.o libna.so s_inp_lc.so libnb.so libnc.so libnd.so libne.so libnf.so"),
+    ("grp_rescan_script", "main_abd.o libna.so s_grp_rescan.so libnb.so libnd.so"),
+    (
+        "grp_rescan_flags",
+        "main_abd.o libna.so --start-group --as-needed libnc.so --no-as-needed usec.o libnd.so --end-group libnb.so",
+    ),
+    (
+        "grp_rescan_time_vs_pos",
+        "main_abd.o libna.so libnb.so --start-group --as-needed libnc.so libnd.so --no-as-needed usec.o --end-group",
+    ),
+    (
+        "grp_no_group",
+        "main_abd.o libna.so --as-needed libnc.so --no-as-needed usec.o libnd.so libnb.so",
+    ),
+    (
+        "grp_rescan_later_plain",
+        "main_abd.o libna.so --start-group --as-needed libnc.so --no-as-needed usec.o libnd.so --end-group libnb.so libnc.so",
+    ),
+    ("plain_unref", "main.o libna.so libnx.so libnb.so libnc.so libnd.so libne.so libnf.so"),
+    ("weak_ref_asn", "main_wk.o libna.so --as-needed libnc.so --no-as-needed libnb.so"),
+    (
+        "weak_ref_asn_plain",
+        "main_wk.o libna.so --as-needed libnc.so --no-as-needed libnb.so libnc.so",
+    ),
+    (
+        "archive_path_then_so",
+        "main.o libna.so libnc.a libnb.so libnc.so libnd.so libne.so libnf.so",
+    ),
+    (
+        "two_files_asn_unref_first",
+        "main_abd.o libna.so --as-needed d1/libnc.so --no-as-needed libnb.so d2/libnc.so libnd.so",
+    ),
+    ("nosoname_spellings", "-L. main_z.o libnz.so libna.so -lnz ./libnz.so"),
+    ("nosoname_asn_then", "-L. main_z.o libna.so --as-needed ./libnz.so --no-as-needed libnz.so"),
+    (
+        "under_asn_before",
+        "mainu.o libna.so libnb.so libnc.so libnu.so --as-needed libny.so --no-as-needed",
+    ),
+    (
+        "under_asn_first",
+        "mainu.o libna.so --as-needed libny.so --no-as-needed libnb.so libnc.so libnu.so",
+    ),
+    (
+        "under_asn_first2",
+        "mainu.o libna.so --as-needed libny.so --no-as-needed libnb.so libnu.so libnc.so",
+    ),
+    (
+        "under_asn_first_then_plain",
+        "mainu.o libna.so --as-needed libny.so --no-as-needed libnb.so libnu.so libnc.so libny.so",
+    ),
+    (
+        "under_asn_both",
+        "mainu.o --as-needed libna.so libny.so libnb.so libnu.so libnc.so --no-as-needed",
+    ),
+    (
+        "under_asn_both_rev",
+        "mainu.o --as-needed libnu.so libna.so libny.so libnb.so libnc.so --no-as-needed",
+    ),
+    (
+        "under_asn_mid",
+        "mainu.o libna.so libnu.so --as-needed libny.so --no-as-needed libnb.so libnc.so",
+    ),
+    (
+        "under_asn_first_allow",
+        "mainu.o libna.so --as-needed libny.so --no-as-needed libnb.so libnc.so libnu.so --allow-shlib-undefined",
+    ),
+    (
+        "under_asn_first_asn_again",
+        "mainu.o libna.so --as-needed libny.so --no-as-needed libnb.so libnu.so libnc.so --as-needed libny.so --no-as-needed",
+    ),
+    ("under_unref_lib", "mainw.o libna.so --as-needed libnx.so --no-as-needed libnb.so libnw.so"),
+    (
+        "properly_linked_asn",
+        "mainv.o libna.so --as-needed libny.so --no-as-needed libnb.so libnv.so",
+    ),
+    (
+        "properly_linked_asn_after",
+        "mainv.o libna.so libnb.so libnv.so --as-needed libny.so --no-as-needed",
+    ),
+    (
+        "main_refs_y_after_v",
+        "mainy.o libna.so libnb.so libnv.so --as-needed libny.so --no-as-needed",
+    ),
+];
+
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|n| format!("lib{n}.so")).chain(["libc.so.6".to_owned()]).collect()
+}
+
+/// The cases where mortar deliberately differs from GNU ld (D-19a): GNU
+/// ld refuses a line whose as-needed library is referenced (by an object
+/// or by a needed shared object) only after its last mention, or drops it
+/// under `--allow-shlib-undefined`; D-11 does not depend on positions, so
+/// mortar needs it, at its first mention.
+fn needed_order_deliberate() -> Vec<(&'static str, Verdict)> {
+    let g = |l: &[&str]| Verdict::GnuRefuses(names(l));
+    vec![
+        ("drv_obj_after_all", g(&["nd", "na", "nc", "nb", "nf", "ne"])),
+        ("obj_after_asn", g(&["nc", "na", "nb", "nd", "ne", "nf"])),
+        ("grp_no_group", g(&["na", "nc", "nd", "nb"])),
+        ("under_asn_first", g(&["na", "ny", "nb", "nc", "nu"])),
+        ("under_asn_first2", g(&["na", "ny", "nb", "nu", "nc"])),
+        ("under_asn_both", g(&["na", "ny", "nb", "nu", "nc"])),
+        ("under_unref_lib", g(&["na", "nx", "nb", "nw"])),
+        (
+            "under_asn_first_allow",
+            Verdict::Needed(
+                names(&["na", "nb", "nc", "nu"]),
+                names(&["na", "ny", "nb", "nc", "nu"]),
+            ),
+        ),
+    ]
+}
+
+fn needed_order(arch: Arch) {
+    if !tools(arch, &["gcc"]) {
+        return;
+    }
+    let dir = Scratch::new("shlib-needed-order");
+    build_inputs(arch, dir.path(), "needed_order_inputs.sh");
+    let rpath = format!("-Wl,-rpath,{}", dir.path().display());
+    let mut sonames = BTreeMap::new();
+    let mut table = Vec::new();
+    for (i, &(name, line)) in NEEDED_ORDER.iter().enumerate() {
+        let mut args = vec![rpath.clone()];
+        args.extend(expand(name, line));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let g = record(arch, "gcc", &args, dir.path(), &format!("out{i}"));
+        let m = resolve_line(&g.args, dir.path(), &mut sonames);
+        let v = judge(&g, &m);
+        if v != Verdict::Agree {
+            eprintln!(
+                "{} {name}: {v:?}\n  gnu: {}\n  mortar: {:?}",
+                arch.name,
+                g.stderr.trim(),
+                m.errors
+            );
+        }
+        table.push((name, v));
+    }
+    report(arch, "needed_order", &table, &needed_order_deliberate());
+}
+
+/// Prints the counts and checks every difference is pinned.
+fn report(arch: Arch, what: &str, table: &[(&str, Verdict)], pinned: &[(&str, Verdict)]) {
+    let agree = table.iter().filter(|(_, v)| *v == Verdict::Agree).count();
+    let mut deliberate = 0;
+    let mut unexplained = Vec::new();
+    for (name, v) in table {
+        if *v == Verdict::Agree {
+            continue;
+        }
+        if pinned.iter().any(|(n, p)| n == name && p == v) {
+            deliberate += 1;
+        } else {
+            unexplained.push((*name, v.clone()));
+        }
+    }
+    eprintln!(
+        "{what} {}: {} lines, {agree} agree, {deliberate} deliberate, {} unexplained",
+        arch.name,
+        table.len(),
+        unexplained.len()
+    );
+    assert!(unexplained.is_empty(), "{what} {}: unexplained {unexplained:#?}", arch.name);
+    let stale: Vec<&str> = pinned
+        .iter()
+        .filter(|(n, p)| !table.iter().any(|(m, v)| m == n && v == p))
+        .map(|(n, _)| *n)
+        .collect();
+    assert!(stale.is_empty(), "{what} {}: pinned but not seen {stale:?}", arch.name);
+}
+
+#[test]
+fn d19a_needed_order_aarch64() {
+    needed_order(AARCH64);
+}
+
+#[test]
+fn d19a_needed_order_x86_64() {
+    needed_order(X86_64);
 }
