@@ -34,7 +34,8 @@ use mortar_core::DynStr;
 use mortar_core::id::SymbolId;
 use mortar_elf::Class;
 use mortar_elf::consts::{DT_AARCH64_BTI_PLT, DT_AARCH64_VARIANT_PCS, DT_NULL};
-use mortar_image::dynamic::{DynAddrs, DynamicChunk};
+use mortar_arch::{Facts, GotBase};
+use mortar_image::dynamic::{DynAddrs, DynamicChunk, GotTable, dynamic_table, reserved_word};
 use mortar_synth::chunks::SynthKind;
 use mortar_synth::dynamic::{ArraySection, DynKind, DynamicInputs, DynamicPlan, RunpathTag};
 use mortar_synth::image::{SizeCx, SynthChunk};
@@ -492,6 +493,9 @@ fn dynamic_equals_gnu_ld_per_condition() {
             }
             // Run it: the loader (or glibc's static-pie start-up) reads it.
             run_program(target, &name, &spliced);
+            if let Some(why) = got_header(&elf, var) {
+                failures.push(format!("{name}: D-32: {why}"));
+            }
             checked += 1;
         }
     }
@@ -502,6 +506,45 @@ fn dynamic_equals_gnu_ld_per_condition() {
         failures.join("\n")
     );
     eprintln!("dynamic_equals_gnu_ld_per_condition: {checked} outputs equal GNU ld's and run");
+}
+
+/// D-32 against GNU ld: the word [`reserved_word`] puts `_DYNAMIC` in
+/// holds `.dynamic`'s address in GNU ld's output, and the other reserved
+/// `.got.plt` words are 0. Under AArch64 `-z now` GNU ld merges `.got.plt`
+/// in front of `.got`'s header word, which is then not at a section start:
+/// those outputs are skipped. Returns the disagreement.
+fn got_header(elf: &Elf, var: &Variant) -> Option<String> {
+    let dynamic = elf.sec(b".dynamic")?.addr;
+    let facts = match elf.machine {
+        183 => mortar_a64::FACTS,
+        _ => Facts { got_base: GotBase::GotPltStart, ..mortar_a64::FACTS },
+    };
+    let word = elf.wide.then_some(8).unwrap_or(4);
+    let addrs = GnuAddrs { elf };
+    for table in [GotTable::Got, GotTable::GotPlt] {
+        let (sec, reserved) = match table {
+            GotTable::Got if var.now => continue,
+            GotTable::Got => (elf.sec(b".got"), facts.got_header),
+            GotTable::GotPlt => {
+                let at = addrs.chunk(SynthKind::GotPlt)?.0;
+                (elf.secs.iter().find(|s| s.addr == at && s.size > 0), 3)
+            }
+        };
+        let Some(sec) = sec else { continue };
+        for k in 0..reserved {
+            if dynamic_table(&facts) != table && k == 0 && table == GotTable::Got {
+                continue;
+            }
+            let at = sec.offset as usize + usize::from(k) * word;
+            let gnu = elf.word(at);
+            let ours = reserved_word(&facts, table, k, dynamic);
+            if gnu != ours {
+                let n = String::from_utf8_lossy(&sec.name);
+                return Some(format!("{n}[{k}]: GNU ld {gnu:#x}, mortar {ours:#x}"));
+            }
+        }
+    }
+    None
 }
 
 fn run_program(target: &Target, name: &str, exe: &Path) {
