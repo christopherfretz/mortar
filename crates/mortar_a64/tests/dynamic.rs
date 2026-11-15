@@ -235,6 +235,11 @@ fn want(class: DemandClass, out: OutputKind, kind: TargetKind, writable: bool) -
         (C::AbsWord, K::WeakDyn) if !pie && !writable => Want::E,
         (C::AbsWord, K::WeakDyn) => tx(DemandFlags::EXPORT, sym),
         (C::AbsNarrow, K::Abs | K::Weak0) => d(n),
+        // D-44 (F-6): a non-GOT address use of a shared function with no
+        // record of its own is `canonical-plt-in-pie`, before its width.
+        (C::AbsNarrow, K::Shlib { func: true }) if pie => {
+            Want::Refused(DynRefusal::CanonicalPltInPie)
+        }
         (C::AbsNarrow, _) if pie => Want::E,
         (C::AbsNarrow, K::Local) => d(n),
         (C::AbsNarrow, K::Shlib { func }) => shlib_c(func),
