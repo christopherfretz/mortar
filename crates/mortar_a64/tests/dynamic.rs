@@ -15,8 +15,8 @@
 use mortar_a64::{A64, DT_AARCH64_BTI_PLT, DT_AARCH64_VARIANT_PCS, erratum, forms, synth, table};
 use mortar_arch::{
     Arch, Code, DemandClass, DemandFlags, DynRefusal, DynRole, DynTag, Field, GlobalFlags,
-    LazyTarget, OutputCx, OutputKind, PlaceFacts, PltPart, PltVariant, Proof, ProofRun, Reloc,
-    ScanError, SlotKind, Status, SynthCx, TagWhen, TargetKind, WeakClass,
+    LazyTarget, OutputCx, OutputKind, PatchCx, PlaceFacts, PltPart, PltVariant, Proof, ProofRun,
+    Reloc, ScanError, SlotKind, Status, SynthCx, TagWhen, TargetKind, WeakClass,
 };
 use mortar_core::SymKey;
 
@@ -727,4 +727,45 @@ fn s11_843419_and_plts() {
     assert_eq!(sites_of(0x40_0ff8, &[w1, 0xF940_0021, 0xF940_0000, synth::NOP]), 1);
     let adr = mortar_a64::erratum_adr(0x40_0ff8, w1).expect("in ADR reach");
     assert_eq!(forms::extract(forms::ADR, adr) as u64, 0x40_0000u64.wrapping_sub(0x40_0ff8));
+}
+
+// ---------------------------------------------------------------- §9
+
+/// a64.md §9 with PLT targets: a range thunk to a PLT entry is
+/// `adrp x16; add x16; br x16` to the entry, and in a BTI output the
+/// entry's first word (`bti c`) is the landing pad `thunk_target_ok`
+/// requires; a plain entry's first word (`adrp`) is not, so a plain shape
+/// in a BTI output could not be reached (the variant follows the property,
+/// §10.3).
+#[test]
+fn s9_thunks_to_plt_entries() {
+    let entry = 0x40_0230u64;
+    let first = |v: PltVariant| {
+        let cx =
+            SynthCx { addr: entry, header: 0x40_0200, got_plt: 0x43_0018, got_base: 0, index: 0 };
+        let mut b = [0u8; 24];
+        M2.write_plt(v, PltPart::Entry { chunk: 0, n: 0 }, &cx, &mut b).unwrap();
+        u32::from_le_bytes(b[..4].try_into().unwrap())
+    };
+    let (bti_word, plain_word) = (first(PltVariant::Bti), first(PltVariant::Plain));
+    let cx = |bti: bool, w: u32| PatchCx {
+        addr: 0x800_0000,
+        target: entry,
+        site: 0,
+        word: 0,
+        bti,
+        target_word: Some(w),
+        target_abs: false,
+    };
+    assert_eq!(M2.thunk_target_ok(&cx(true, bti_word)), Ok(()));
+    assert_eq!(M2.thunk_target_ok(&cx(false, plain_word)), Ok(()));
+    assert!(M2.thunk_target_ok(&cx(true, plain_word)).is_err());
+    let mut t = [0u8; 12];
+    M2.write_thunk(&cx(true, bti_word), &mut t).unwrap();
+    let w: Vec<u32> =
+        t.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+    let page = (entry & !0xFFF).wrapping_sub(0x800_0000) as i64;
+    assert_eq!(w[0], forms::insert(forms::ADRP, 0x9000_0010, page));
+    assert_eq!(w[1], 0x9100_0210 | ((entry & 0xFFF) as u32) << 10);
+    assert_eq!(w[2], 0xD61F_0200);
 }
