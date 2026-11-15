@@ -1,8 +1,11 @@
 # spec: one-definition-rule checks (`mortar_odr`)
 
-**Status: draft (WP-070, revision 1 after the adversarial review
-`briefs/reviews/review-070-meta-odr.md` and the coordinator's rulings;
-awaiting the operator's decisions of §15).** Rules are `O-n`. The
+**Status: final draft (WP-070, revision 2 after the adversarial review
+and re-review, `briefs/reviews/review-070-meta-odr.md` and
+`review-070-meta-odr-re.md`, and the coordinator's rulings). The
+container and the static checks (§1-§9, §10.1-§10.2, O-24) are accepted
+for implementation; the load-time hook (§10.3) is a design direction for
+a prototype package, not a rule; the operator's decisions are §15.** Rules are `O-n`. The
 container they read is `spec/meta.md` (`MT-n`). Every statement about
 what a compiler, linker or loader does names its experiment (Appendix A;
 scripts in the WP-070 review directory, record in
@@ -29,9 +32,10 @@ one entity that differ, one declaration that does not match its
 definition, translation units compiled for incompatible ABIs. It reports
 them as diagnostics of phase 40 (`spec/model.md` §8). It never changes
 the output: a link that succeeds with the checks on produces the same
-bytes as with them off (`--odr=off`, O-41), except the loadable table and
-the runtime object (§10) when the table is on (the runtime is an input,
-so it shifts every later `FileId` and address).
+bytes as with them off (`--odr=off`, O-41), except the loadable table
+(§10.1) when `--odr-table` asks for it, and, if a runtime ever ships
+(§10.3), the runtime object (an input, so it would shift every later
+`FileId` and address).
 
 Evidence comes in two strengths:
 
@@ -48,12 +52,14 @@ found zero findings** there. A check that cannot yet be run (it needs
 kiln's hasher, K-3) or whose false-positive rate is unmeasured runs only
 under `--odr=strict` until its corpus exists. A check that is on by
 default never reports on a legal program. A **missed violation is a
-documented exclusion** (X1-X12 below); a **false positive is a defect**:
+documented exclusion** (X0-X12 below); a **false positive is a defect**:
 the check is fixed or moved back to `--odr=strict`, and the program joins
 the legal corpus (§3, §12.2). O-47 is the register of which checks are on
 today and why; O-46 is how a check moves.
 
-**The guarantee.** Assume
+**The guarantee (of `--odr=strict`).** This paragraph describes what
+`--odr=strict` guarantees; the default mode guarantees the subset that
+O-47 lists as on (below). Assume
 
 - **A1** every TU that defines or declares entity `E` was compiled by
   kiln with `-fmason-metadata` at the default level or above, with one
@@ -67,56 +73,69 @@ today and why; O-46 is how a check moves.
   the container) or a default `strip` (it removes the symbols the rows
   anchor to);
 - **A3** kiln's hasher meets O-13 (its must-equal and must-differ tests);
-- **A4** the link runs with `--odr=strict`, or with the default once O-47
-  lists the check as on.
+- **A4** the link runs with `--odr=strict`.
 
-Then every violation of kinds K1, K2, K4-K9, K11, K13-K14b, K16a, K16b,
-K19 of §2 **between definitions emitted as symbols in at least two live
-files** of a static link, and between a dynamic output and a shared-object
-input that carries a table (O-24), is reported, by the check named in §2.
-A violation is missed only if two different definitions have equal
-128-bit hashes (O-12; about 2^-128 per pair, no adversary assumed), or if
-it is one of these **exclusions**:
+Then every violation of kinds K1, K2, K4-K9, K11-K14b, K16a-K16e, K19 of
+§2 **between definitions emitted as symbols in at least two live files**
+of a static link is reported, by the check named in §2; and K18 at
+static link time **between the output and a shared-object input that
+stays in its `DT_NEEDED` and whose table has a row for the same name and
+version** (O-24, O-50: exported definitions, protected and `-Bsymbolic`
+ones included). A violation is missed only if two different definitions
+have equal 128-bit hashes (O-12; about 2^-128 per pair, no adversary
+assumed), or if it is one of these exclusions.
 
-- **X1** a definition inlined in every TU that uses it (no symbol): its
-  row exists only at `-fmason-metadata=all` (`INLINED_ONLY`) and is
-  compared only under `--odr=strict` (O-4). K1, K2, K8 and K11 at `-O2`
-  are often of this shape.
+**Missed even under `--odr=strict`:**
+
+- **X1** a definition inlined in every TU that uses it (no symbol), unless
+  the TUs were compiled with `-fmason-metadata=all` (`INLINED_ONLY` rows,
+  compared under strict only, O-4). K1, K2, K8 and K11 at `-O2` are often
+  of this shape.
 - **X2** a variable whose every use was constant-folded, so that no TU
   emits it (K9's folded uses): no symbol, no row.
 - **X3** K16c in the catalogue's shape, where only one TU emits the
   vtable (the other uses the type's `type_info` through `dynamic_cast`):
   O-25 compares two COMDAT copies of one `_ZTV` only. The model shows the
-  miss and an extension that would catch it (Q16).
+  miss and an extension that would catch it (Q16, open).
 - **X4** a type reached in some TU only through a pointer or reference to
   it while it is incomplete there: that TU has no definition to hash, so
   only the TUs that define it are compared (O-17).
-- **X5** K12 (`USES_INTERNAL`) by default: `odr-internal-reference` is
-  `--odr=strict` only (O-16; libstdc++'s own `std::mutex` sets it).
-- **X6** differences in `SYSTEM` rows between units of different `-std`:
-  counted by `--odr-stats`, never reported (O-32).
-- **X7** C translation units: no type rows at all, and C-linkage
-  declaration mismatches only under `--odr=strict` (O-33).
+- **X7a** C translation units' types: C writes no kind 3 rows (O-33).
 - **X8** a TU whose container or symbols were lost (A2's tools): its rows
   are absent or unanchored; nothing reports the loss (MT-5).
 - **X9** objects without records (GCC, Clang, foreign archives): only the
   W checks of §8 apply (best effort, below).
 - **X10** `-flto` objects (bitcode) carry no unit.
-- **X11** K16d, K16e (ISA and struct-return conventions): kind 1 notes
-  (O-30, O-31), `--odr=strict` only until their corpus exists.
 - **X12** K17 (a definition in an archive member that is not linked) is
-  reported only on request (O-23); K18 between shared objects at run time
-  only by the hook (§10.3), which is off by default (O-58).
+  reported only with `--odr-check-archives` (O-23); K18 that only load
+  time sees (a different build of a library at run time, `dlopen`ed
+  libraries, libraries the link never named, indirect dependencies, and
+  libraries without a table) is not reported: the load-time hook is a
+  prototype direction, not a rule (§10.3).
+
+**Missed by today's default, reported under `--odr=strict`:**
+
+- **X5** K12 (`USES_INTERNAL`): `odr-internal-reference` is strict only
+  (O-16; libstdc++'s own `std::mutex` sets it).
+- **X6** differences in `SYSTEM` rows between units of different `-std`:
+  an `--odr-stats` count by default, warnings under strict (O-32).
+- **X7b** C-linkage declaration mismatches (O-33).
+- **X11** K16d, K16e (ISA and struct-return conventions): kind 1 notes
+  (O-30, O-31).
+- **X0** every record-based check (kinds 1, 2, 3, 5; O-24; O-25): strict
+  only until O-46 moves it (O-47's register).
+
+Numbers X1-X12 are those of revision 1; X7 is split into X7a and X7b.
 
 **Best effort (no proof).** Objects without records: W1 and W2 of §8 are
 on by default and catch K5 and K6 when two copies' sizes differ; nothing
 else measured. Mixed links (one side with records): O-34.
 
-**What is on by default today.** Following O-1, only checks that have run
-on a corpus: W1, W2, `meta-malformed`, `meta-version` (O-47). Every
-record-based check is `--odr=strict` until kiln emits records and the
-oracle of §12.3 runs it at zero. The guarantee above is therefore, today,
-the guarantee of `--odr=strict`; it becomes the default check by check.
+**What the default guarantees today.** Following O-1, only checks that
+have run on a corpus are on: W1, W2, `meta-malformed`, `meta-version`
+(O-47). The default mode guarantees what those checks find and nothing
+more; it grows into the guarantee above check by check, as O-46 moves
+each one and records it in O-47.
 
 ## 2. The catalogue (measured)
 
@@ -152,7 +171,7 @@ by the model (`model`, §12.7).
 | K16d | inline function compiled with `-mavx2` in one TU (x86-64) | `a,b`: every linker keeps the AVX2 copy (5 `ymm` instructions in the linked `sum`) for every caller, the baseline TU's included; `b,a`: 0. A CPU without AVX2 would fault [unverified: qemu-user executes AVX2 whatever `-cpu` says] | no | kind 1 `isa` (O-31), strict until its corpus |
 | K16e | `-freg-struct-return` in one TU (i386) | SIGSEGV under all three | no | kind 1 `abi.struct-return` (O-30), strict until its corpus |
 | K17 | the same symbol in two archives / an object and an archive | link order picks silently: `liba,libb` 1, `libb,liba` 2, `x.o libb.a` 1 | yes, if unextracted members are read | kind 2, opt-in (O-23); legal by archive semantics |
-| K18 | inline function in two shared objects, different bodies | default visibility: the first in lookup order wins for both libraries (`-lA -lB`: 1,1; `-lB -lA`: 2,2); with `-fvisibility-inlines-hidden` each keeps its own (1,2) | no | at static link time when both are inputs of one link (O-24 b); otherwise the hook (§10.3) |
+| K18 | inline function in two shared objects, different bodies | default visibility: the first in lookup order wins for both libraries (`-lA -lB`: 1,1; `-lB -lA`: 2,2); with `-fvisibility-inlines-hidden` each keeps its own (1,2) | no | at static link time when both libraries stay in the output's `DT_NEEDED` and carry tables (O-24 b); at load time not reported (X12; the hook is a prototype, §10.3) |
 | K18b | copy-relocated array whose size grows in the shared object | glibc at run time: ``Symbol `arr' has different size in shared object, consider re-linking``, then wrong values (`last=0`) | the sizes, at static link time only | kind 5 size vs `st_size` (O-24 c) |
 | K18c | template static data member in a library loaded with `dlopen(RTLD_LOCAL)` | g++ binds it `STB_GNU_UNIQUE`, clang `STB_WEAK`; the library gets its own instance (sees 1) unless the executable is linked `-rdynamic` (sees 2) | — | not a source violation: one entity, two objects (`spec/dyn.md` §14; Q8) |
 | K19 | modules: one header included in the global module fragments of two named modules under different `-D` | **built** (`k19`): clang 19 and 22 compile the importer without a diagnostic; both module objects emit a `WEAK` COMDAT copy of `val()`; `ma,mb`: `fa=fb=1`, `mb,ma`: `fa=fb=2` under all three linkers | no | kind 2 hash, as K1 (rows carry `GMF`); kiln's own compile-time check is K-6 |
@@ -210,11 +229,27 @@ mold; "measured" names the experiment that ran the checks on it.
 | N26 | library headers declaring a function `constexpr` from C++20 (`_LIBCPP_CONSTEXPR_SINCE_CXX20`), used from TUs of different `-std` | the written declarator differs: at least 210 of the 541 vague definitions of the heavy TU at `-std=c++17` and `c++20` (`std-mix`) | the rows are `SYSTEM` and the units' `std` differ: an `--odr-stats` count, not a finding (O-32; model `mixed-std-system-row`) |
 | N27 | two unrelated C libraries, each with its own `struct node` | the same tag, different members | C units write no kind 3 rows (O-33; model `C-struct-node-two-libs`) |
 | N28 | `enum mode get(void)` defined in one C TU, declared `unsigned get(void)` in another | the Itanium type encodings differ | GCC documents such an enum as compatible with `unsigned int`; C-linkage kind 5 rows are compared under C's rules and only under `--odr=strict` (O-33; model `C-enum-compatible-type`: a strict-only finding today, until O-33's compatibility table covers it) |
-| N29 | two `dlopen(RTLD_LOCAL)` plugins, each with its own version of a header-only library's inline function at default visibility | one key, two hashes in one process (the first draft's hook aborted, exit 134) | each binds its own copy; the hook compares a key only where a module binds another's definition (O-54; `hook2` A2, A3; three targets) |
-| N30 | the same plugin loaded in the base namespace and in a `dlmopen(LM_ID_NEWLM)` namespace | one key, two hashes | namespaces never share an index (O-54; `hook2` E) |
+| N29 | two `dlopen(RTLD_LOCAL)` plugins, each with its own version of a header-only library's inline function at default visibility | one key, two hashes in one process (the first draft's hook aborted, exit 134) | no static check sees it (no link has both); a must-not-report case of the hook's prototype matrix (§10.3; `hook2` A2, A3 pass on three targets) |
+| N30 | the same plugin loaded in the base namespace and in a `dlmopen(LM_ID_NEWLM)` namespace | one key, two hashes | a must-not-report case of the hook's prototype matrix (§10.3; `hook2` E passes) |
+| N31 | two TUs, each with its own unnamed-namespace `struct Impl`, a `std::optional<Impl>`, a local class `Local` of a `static` function, and a namespace-scope `static` lambda, with different members (`kind3-tulocal`) | equal `<type>` encodings, different layouts (`N12_GLOBAL__N_14ImplE` 4 vs 56 bytes, `St8optionalIN12_GLOBAL__N_14ImplEE` 8 vs 64, `ZL8local_tivE5Local` 4 vs 56; closures `NL3lamMUlvE_E` (g++), `3$_0` (clang)) | TU-local types are never keys and write no kind 3 row (O-2, O-17). Built (`n31`): links and runs (exit 0) with g++ and clang++ 19 under GNU ld, lld and mold; W1-W3 zero with each compiler and mixed |
 
-**O-2 (keys never compared).** Local symbols, internal-linkage entities,
-and names of a file's `STB_LOCAL` symbols are never keys.
+**O-2 (keys never compared).** Local symbols, names of a file's
+`STB_LOCAL` symbols, and **translation-unit-local** entities are never
+keys, for every record kind. TU-local (C++20 [basic.link] p13-15,
+`[std, unverified clause]`): an entity with internal linkage (an
+unnamed-namespace member, a `static` function or variable); an entity
+with no linkage (a local class, including one of an internal-linkage or
+TU-local function); a closure type that is not declared in an inline or
+templated entity with external linkage, or in a default argument or
+initializer of one; and every type, function or variable whose name,
+or one of whose template arguments, involves a TU-local entity
+(`std::optional<(anonymous)::S>`, `std::vector<decltype(lam)>`). Two
+TUs may legally define different TU-local types of one spelling: N31
+(`kind3-tulocal`: `N12_GLOBAL__N_14ImplE` 4 vs 56 bytes,
+`St8optionalIN12_GLOBAL__N_14ImplEE` 8 vs 64, a local class
+`ZL8local_tivE5Local` 4 vs 56). How kiln decides it for kind 3 is O-17;
+kind 2 rows of instantiations over TU-local types name local symbols
+(internal linkage), so they are never anchored and are not compared.
 
 **O-3 (the oracle).** Before a check is on by default, and on every
 release after: the false-positive oracle of §12.3 runs the check and
@@ -228,8 +263,11 @@ the measurement is recorded where O-46 says.
 
 - the **name** is the mangled name as it appears in the symbol table,
   including ABI tags (`B5cxx11`), module attachment (`W`, Itanium modules
-  mangling as kiln writes it) and a symbol version if the name has one
-  (`foo@V1` and `foo@@V2` are two keys, N6); for a type, the Itanium
+  mangling as kiln writes it) and a symbol version that `.symver` wrote
+  into the object (`foo@V1` and `foo@@V2` are two keys, N6); a version
+  that a version script assigns at link time is not part of the key but
+  is part of the identity where it exists (`meta.md` MT-13, the one
+  statement of the rule; O-24, O-51); for a type, the Itanium
   `<type>` encoding of the class or enum (what follows `_ZTS`);
 - the **class** is function, variable or type: two rows with one name
   and different classes are W2's finding (§8), not a definition
@@ -375,7 +413,9 @@ Flags: bit 0 `VAGUE` (vague linkage), 1 `IMPLICIT_INST`, 2
 compared, and a difference is a warning, never an error), 6
 `INLINED_ONLY` (no symbol emitted; written only with
 `-fmason-metadata=all`), 7 `GMF` (declared in a global module fragment),
-8 `SYSTEM` (defined in a system header). An `EXPLICIT_SPEC` row and an
+8 `SYSTEM` (defined in a system header); bits 9-14 reserved (0); bit 15
+is reserved for `.note.mason` rows (`NONPREEMPTIBLE`, O-51) and is 0 in
+kind 2 rows. An `EXPLICIT_SPEC` row and an
 `IMPLICIT_INST` row for one key are a violation whatever the hashes
 (K13: the implicit instantiation was used where the specialization was
 not visible, [temp.expl.spec] `[std, unverified clause]`);
@@ -405,9 +445,33 @@ user rows with `SYSTEM` rows exempt (Q5).
 ## 6. Layout records
 
 **O-17 (kind 3 row; reach).** A second, independent line of evidence: one
-row per class, struct, union or enumeration whose definition the TU
-contains (a C++ TU: O-33 excludes C) and that an emitted entity's
-definition or declarator reaches. **Reach** (widened after the review's
+row per class, struct, union or enumeration **that is not TU-local**
+(O-2), whose definition the TU contains (a C++ TU: O-33 excludes C) and
+that an emitted entity's definition or declarator reaches. TU-local
+types write **no row** (N31).
+
+*Deciding TU-locality [kiln].* On the semantic type, recursively: a
+class or enumeration is TU-local if it is declared in an unnamed
+namespace (at any depth), if it is a local class (any enclosing
+function), if it is a closure type whose lambda is not in an inline or
+templated entity with external linkage (or a default argument or
+default member initializer of one), or if it is a member of a TU-local
+class. A **template specialization** is TU-local if its template is,
+or if any of its template arguments is or involves a TU-local entity: a
+type argument that is TU-local or is built from one (a pointer,
+reference, array, function type, cv-qualified type, or another
+specialization over it), a template template argument naming a TU-local
+template, or a non-type argument that names or points to a TU-local
+entity. So `std::optional<(anonymous)::S>` and
+`std::vector<std::pair<int, (anonymous)::S*>>` are TU-local and write no
+row, while `std::optional<int>` writes one. The decision is made on the
+AST, never by parsing the mangled name; a test checks that it agrees
+with "the `<type>` encoding contains `_GLOBAL__N`, a local-entity
+`Z…E` or an unnamed closure `Ul`/`Ut` component" on the corpus (a
+cross-check, not the rule). Members and template arguments of a
+non-TU-local type that are TU-local are impossible in valid C++ for
+members of external entities (an exposure, [basic.link] p15 `[std,
+unverified clause]`), so the reach stops at TU-local types without loss. **Reach** (widened after the review's
 B2): the types of members, bases, parameters, returns, locals,
 `new`/`sizeof`/`alignof` operands, **the type of every expression**
 (K7's enumerator), **every template argument** of an instantiation, and
@@ -422,7 +486,9 @@ Size with the wider reach: clang 22's DWARF of the heavy TU, a proxy for
 "types the TU needs complete" and "types the TU uses, pointees included",
 has 301 complete definitions at `-g` and 334 at `-g -fstandalone-debug`
 (`k3count`); the first draft's 334 rows therefore stand as the upper
-proxy [estimate until kiln writes kind 3; MT-41's numbers use it].
+proxy (DWARF also describes TU-local types, which write no row, so the
+real count is lower) [estimate until kiln writes kind 3; MT-41's
+numbers use it].
 
 | offset | field | |
 |---|---|---|
@@ -496,41 +562,63 @@ archive size; for a 100 MB archive, ~20 ms].
 
 **O-24 (the static check against shared-object inputs: "dynamic link
 time" without a runtime).** `[M6]` for executables, `[M4]` for
-shared-object outputs. When the output is dynamic and a shared object
-that mortar reads as an input (named on the command line or found by
-`-l`; not the indirect `DT_NEEDED` closure, which mortar does not read)
-carries a `.note.mason` table (O-50..O-52), mortar compares, before it
-writes anything:
+shared-object outputs. Specified, not prototyped: its package (WP-075,
+§13) starts with a prototype over test-producer outputs and the shapes
+below. When the output is dynamic, mortar compares, before it writes
+anything, the output's rows with the tables (`.note.mason`, O-50..O-52)
+of the shared objects that are **in the output's scope**: those it reads
+as inputs (named on the command line or found by `-l`) **and** that end
+up in the output's `DT_NEEDED`. A library that `--as-needed` dropped is
+never loaded with this output and is not compared; the indirect
+`DT_NEEDED` closure is not read. Identity is (name, version node)
+(`meta.md` MT-13): a table row's version is its `.dynsym` entry's
+`.gnu.version` node; the output's own definition's version is the one
+its version script or `.symver` gives; two definitions of one name with
+different version nodes are different entities and are never compared
+(R6: one node per library, the `libLLVM`/`libclang-cpp` practice, is
+legal). Unversioned definitions, and definitions with the same node
+name, are one entity.
 
-- **(a) output against library.** For each row of the library's table
-  (key, 64-bit hash, name from its `.dynsym`, O-51) whose name the output
-  defines from a live unit with a kind 2 row: if the output **exports**
-  the name (it is in the output's `.dynsym` by `spec/dyn.md`'s export
-  rule, which exports a definition that a shared input defines or
-  references), the library binds the output's definition at load time,
-  so the keeper's row hash (its first 8 bytes) is compared with the
-  table's: a difference is `odr-violation` naming the library as the
-  other place. If the output does not export it (hidden, protected,
-  `-Bsymbolic`, a version script's `local:`), the library binds its own
-  copy and nothing is compared.
-- **(b) library against library.** Two shared-object inputs whose tables
-  carry one name (both rows are preemptible, O-50) and that the output
-  does not define: at load time the one earlier in the output's
-  `DT_NEEDED` order provides the definition to both; their hashes are
-  compared and a difference is `odr-violation` naming both, the first as
-  the one that runs (K18 at static link time).
-- **(c) sizes.** A variable the output references and the library
-  defines, with a kind 5 row of the output carrying a size: compared with
-  the library's `st_size` (`odr-size-mismatch`, K18b's copy relocation
-  would truncate).
+- **(a) output against library.** For each row of a library's table whose
+  (name, version) the output defines from a live unit with a kind 2 row
+  and **exports** (in the output's `.dynsym`, `STV_DEFAULT` or
+  `STV_PROTECTED`, not reduced to local by a version script): the
+  keeper's row hash (its first 8 bytes, O-51) is compared with the
+  table's; a difference is `odr-violation` naming the library as the
+  other place. Protected and `-Bsymbolic` definitions are compared like
+  any other: they stop only the defining module from being preempted,
+  and other modules still bind them (re-review R4/R5). A name the output
+  does not export at all (hidden, version-script `local:`) is not
+  compared: no other module can bind it. The diagnostic's note says
+  which module runs which copy, from the rows' `NONPREEMPTIBLE` flags
+  (O-51) and the lookup order.
+- **(b) library against library.** Two in-scope libraries whose tables
+  carry one (name, version) that the output does not define: their
+  hashes are compared, and a difference is `odr-violation` naming both.
+  Only when neither row is `NONPREEMPTIBLE` and the definitions are
+  unversioned or of one version node does the note say "the one earlier
+  in `DT_NEEDED` order provides the definition to both" (K18 at static
+  link time); a `NONPREEMPTIBLE` library runs its own copy and the other
+  binds it if it comes first in lookup order (R4/R5).
+- **(c) sizes.** A variable the output references and an in-scope
+  library defines, with a kind 5 row of the output carrying a size:
+  compared with the library's `st_size` (`odr-size-mismatch`, K18b's
+  copy relocation would truncate).
 
 `SYSTEM` rows follow O-32. Cost: merges of sorted sequences (the tables
-and the output's kind 2 rows are sorted by key) [estimate: the hook's
-measured 2.3 ns a row for a merge, `dynamic`]. Status: like kind 2
-(`--odr=strict` until its corpus, O-47). What only load time can see: a
-different build of the library at run time (K18b's v2), libraries loaded
-by `dlopen`, libraries the link never named, indirect dependencies (the
-hook, §10.3).
+and the output's kind 2 rows are sorted by key) [estimate: about 2.3 ns
+a row for a merge, measured by the first draft's hook prototype,
+`dynamic`]. Status: like kind 2 (`--odr=strict` until its corpus,
+O-47). T-O-24's shapes: (a) an executable exporting a vague definition
+that a mortar-made `.so` defines differently, and the same unexported
+(hidden): one finding, then none; (b) two `.so` inputs, differing; a
+`.so` linked `-Bsymbolic`, `-Bsymbolic-functions`, and one with a
+`protected` definition, each against a default-visibility library
+(R4/R5: findings); a differing library that `--as-needed` drops (no
+finding); two libraries with one version node each (R6: no finding) and
+with one shared node (a finding); (c) K18b. What only load time can see
+(a different build of the library at run time, `dlopen`ed libraries,
+libraries the link never named, indirect dependencies) is X12.
 
 **O-25 (vtables emitted with and without RTTI; K16c).** For each `_ZTV`
 symbol defined by COMDAT copies in two or more live files whose units'
@@ -611,15 +699,24 @@ unit) follow O-33. Status: `--odr=strict` until its corpus (O-47).
   enumeration is equal to its compatible integer type (GCC: `unsigned
   int` for an enum without negative values, else `int`; kiln records the
   compatible type it chose, K-5), top-level qualifiers of parameters are
-  ignored, an unprototyped declaration is never compared. Mortar compares
+  ignored, an unprototyped declaration is never compared (before C23,
+  `f()` is unprototyped; from C23 it means `f(void)` and is compared,
+  decided by the unit's `std`). The C++ side of an `extern "C"` row is
+  canonicalized to the same C type, with C++'s builtin types mapped to
+  their C equivalents for the target: `wchar_t` to the target's
+  `wchar_t` typedef (`unsigned int` on AArch64 Linux, `int` on x86-64 and
+  i386 Linux), `char16_t` to `uint_least16_t` (`unsigned short`),
+  `char32_t` to `uint_least32_t` (`unsigned int`), `char8_t` to `unsigned
+  char` (C23's `char8_t`), and `bool` and `_Bool` to one type. Mortar compares
   the `type` hash of the canonical C type kiln writes for C-linkage rows
   (K-5), so the rules live in kiln's canonicalization and mortar compares
   bytes;
 - C-linkage findings are `odr-declaration-mismatch` under
-  `--odr=strict` **only, until a C corpus** (glibc's headers against
-  `libc.a`'s objects, and two or three C libraries' headers against
-  their objects, e.g. zlib, sqlite, libpng [the selection is WP-074's])
-  shows zero. Model `C-enum-compatible-type` shows today's Itanium-type
+  `--odr=strict` **only, until a C corpus** shows zero: C libraries
+  compiled by kiln with records (objects without records exercise
+  nothing here, so glibc's `libc.a` is not a corpus), with their test
+  programs and a C++ client of each through `extern "C"`. Candidates:
+  zlib, SQLite (amalgamation) and Lua; WP-074 fixes the selection. Model `C-enum-compatible-type` shows today's Itanium-type
   comparison flagging N28: the reason for the canonical C type.
 
 K14b, two C++ TUs that disagree about an `extern "C"` function, is also
@@ -685,9 +782,9 @@ warning: f(int) violates the one-definition rule
   without a symbol (types, unanchored rows) `2^40 + ` the row's index in
   its unit (amendment A-2).
 
-The load-time hook's messages (§10.3) are the runtime's, not mortar
-diagnostics: `odr-violation-at-load`, `odr-hook-out-of-memory`,
-`odr-hook-stopped`.
+The load-time hook's prototype messages (§10.3) would be the runtime's,
+not mortar diagnostics: `odr-violation-at-load`,
+`odr-hook-out-of-memory`, `odr-hook-stopped`.
 
 ### 9.2 Severity and switches
 
@@ -724,7 +821,8 @@ every warning (`spec/diag.md` §6.3).
 hard rule. A container byte is read only when a check that needs it is
 on: with `--odr=off`, and in the default mode while O-47 lists no
 record-based check as on, mortar reads no byte of any `.mason.meta`
-(`meta.md` MT-42, amendment A-8 to `spec/input.md` §11.1), hashes no
+(`meta.md` MT-42, amendment A-8 to `spec/input.md` §11.1), objects of
+at most 64 KiB included (they are read around the container), hashes no
 name (O-4) and writes no table. The W checks read only what resolution
 holds already. T-O-42 counts bytes read.
 
@@ -767,11 +865,12 @@ O-47's table, by amendment.
 | `odr-internal-reference` | K-3 | strict | `k12proxy`: libstdc++ sets it | Q5 |
 | `odr-abi-mismatch` (`ENFORCE` keys), `odr-isa-mismatch` | K-2 | strict | cannot run yet | WP-074's oracle at zero |
 | `odr-vtable-rtti-mismatch` | K-2 | strict | model only | WP-074's oracle at zero |
-| O-24 (shared-object inputs) | K-3 and mortar-made libraries | strict | cannot run yet | with kind 2 |
+| O-24 (shared-object inputs) | K-3 and libraries with tables | strict | specified, not prototyped (WP-075 starts with the prototype) | with kind 2 |
+| `.note.mason` table | K-3 | off (`--odr-table`) | `note-final` | Q2 |
 | O-34 kind 5 vs foreign sizes | K-5 | strict | cannot run yet | WP-074's oracle at zero |
 | `SYSTEM` `-std` differences (O-32) | K-3 | `--odr-stats` count only | `std-mix`: 210 in one pair of TUs | Q6 |
 | `odr-archive-shadow` | K-3 | opt-in flag | — | never by default |
-| load-time hook | the table and runtime | **off** (no table is written by default) | experiment 5 | Q2 |
+| load-time hook | a runtime | **none**: a prototype direction (§10.3), never in M6 | the matrix of O-58 not yet green | O-58, then Q2 and Q3 |
 
 ### 9.3 ABI and ISA summaries
 
@@ -809,16 +908,21 @@ operator's Q6.
 
 ### 10.1 What the table holds
 
-**O-50 (which rows).** With `--odr-table=exported` (not the default:
-O-58), a mortar-made executable `[M6]` or shared object `[M4]` carries
-one row per definition it **exports preemptibly**: in `.dynsym`,
-defined, `STV_DEFAULT`, not bound locally by `-Bsymbolic`,
-`-Bsymbolic-functions` (for functions) or a version script's `local:`;
-and that has a kind 2 row with `VAGUE` or `EXPLICIT_SPEC`. Protected and
-hidden definitions are never bound by another module (K18's second
-row), so they have no row. With `=full`, also hidden vague definitions
-and kind 3 types (strict use only, Q14). With `=off`, no table and no
-runtime.
+**O-50 (which rows).** With `--odr-table=exported` (not the default,
+Q2), a mortar-made executable `[M6]` or shared object `[M4]` carries
+one row per definition it **exports**: in `.dynsym`, defined,
+`STV_DEFAULT` or `STV_PROTECTED`, not reduced to local by a version
+script; and that has a kind 2 row with `VAGUE` or `EXPLICIT_SPEC`.
+Protected definitions and definitions bound locally by `-Bsymbolic` or
+`-Bsymbolic-functions` **have rows**: they stop only the defining module
+from being preempted, and other modules still bind them (re-review
+R4/R5: `liby` binds `libx`'s copy in all three variants); their rows
+carry `NONPREEMPTIBLE` (O-51). Hidden definitions are never bound by
+another module and have no row. With `=full`, also hidden vague
+definitions and kind 3 types (strict use only, Q14). With `=off` (the
+default), no table. The table is data only: it adds no code to the
+output. The runtime of §10.3 is added only by the prototype option of
+WP-077, never by `--odr-table`.
 
 **O-51 (row).** `{u64 key; u64 hash; u32 dynsym; u16 flags; u16
 reserved}` (24 bytes), sorted by key: the key of MT-13; the first 8 bytes
@@ -826,8 +930,12 @@ of the kind 2 hash of the **keeper's unit's** row (the copy that runs:
 when several units have rows for the key, possibly with different hashes
 after a link that only warned, the keeper's is written, never another);
 the `.dynsym` index of the symbol (the name comes from
-`.dynsym`/`.dynstr`, so the table carries no strings); O-15's flags as a
-`u16`, so `SYSTEM` (bit 8) reaches the runtime. Header `{u32 version =
+`.dynsym`/`.dynstr`, and its version node from `.gnu.version`, so the
+table carries no strings and the identity is (name, version), MT-13);
+O-15's flags as a `u16`, so `SYSTEM` (bit 8) reaches readers, plus bit
+15 `NONPREEMPTIBLE` (table rows only: the module binds its own copy,
+because the definition is protected or bound by `-Bsymbolic`/
+`-Bsymbolic-functions`). Header `{u32 version =
 1; u32 count; u32 row_size = 24; u32 reserved}`.
 
 Size: 24 bytes per exported vague definition. Measured counts of
@@ -881,122 +989,110 @@ inspection (`readelf -n`), and it is what `dyn.md` §14 anticipated.
 `PT_LOOS+0xd736e00` (`PT_MASON`) stays unused, recorded so that nobody
 takes it.
 
-### 10.3 The load-time hook
+### 10.3 The load-time hook (a design direction, not a rule)
 
-**O-53 (the runtime and how it ships).** A small object, the runtime,
-added by mortar as an ordinary input of every output that gets a table.
-It is C (about 250 lines; prototype 2, `hook2/mason_rt2.c`, is 230), and
-mortar itself stays `forbid(unsafe_code)`: the runtime is bytes it links,
-not code it runs. How the bytes are produced and verified is the
-operator's Q3 (three options with their costs; the recommendation is the
-C source and the generated object bytes for each target **checked in**,
-embedded in mortar, with a byte-identical rebuild check in CI). In no
-option does building mortar need a cross compiler. Its tests: the matrix
-of O-54 (cases A-J) under qemu-user for x86-64 and i386 and natively on
-AArch64, per release (WP-077); the verifier checks that the runtime's
-section bytes in an output equal the embedded ones (§12.5).
+Nothing in this section is a rule an implementation follows. It records
+the direction a prototype package (WP-077) explores, what two
+prototypes measured, the open problem that stops it, and the matrix the
+prototype must pass before any rule is written. No mortar output gets a
+runtime in M6 without a further decision (O-58, Q2).
 
-**O-54 (behavior).** Measured on prototype 2 (`hook2`), glibc 2.41,
-natively on AArch64 and under qemu-user for x86-64 and i386, identical
-outcomes on the three targets:
+**O-53 (the runtime, if one ships).** A small object, the runtime, that
+mortar would add as an ordinary input of an output that asks for it. It
+is C (prototype 2, `hook2/mason_rt2.c`, is 230 lines), and mortar stays
+`forbid(unsafe_code)`: the runtime is bytes it links, not code it runs.
+How its bytes would be produced and verified is the operator's Q3 (three
+options with costs; recommended: the C source and the generated object
+bytes per target checked in, embedded in mortar, a byte-identical
+rebuild check in CI). In no option does building mortar need a cross
+compiler.
 
-- **Entry.** One `.init_array.00000` entry and one `.fini_array.00000`
-  entry in every module with a table, executable and shared object
-  alike (the priority range 0-100 is the implementation's; user code
-  starts at 101). Measured with GNU ld, lld and mold, shared object and
-  executable: the runtime runs before a user `constructor(101)` and
-  before default constructors. No `.preinit_array` entry: nothing needs
-  to run before the libraries' constructors (below).
-- **One index per scope, learned from the loader's own binding.** Every
-  runtime copy defines one exported, default-visibility object,
-  `__mason_odr_state` (a pointer), and reads it through its GOT, so each
-  module binds the first definition its lookup scope reaches. All modules
-  of the global scope (the executable, its `DT_NEEDED` closure,
-  `RTLD_GLOBAL` modules) share the index of the first of them; a module
-  loaded with `RTLD_LOCAL` shares it if the global scope has one, and
-  otherwise has its own; a `dlmopen` namespace never sees another
-  namespace's. The first module to run creates the index. No loader
-  internal is read.
-- **Registration.** At its init entry a module records (load base and
-  end, name, table, its `.dynsym`/`.dynstr`, its own `resolve` function)
-  in a registry, and inserts its rows into an open-addressing hash index
-  of `{key, hash, count, multi}`. A key seen with two different hashes is
-  `MULTI` from then on.
-- **Comparison only where the loader binds.** For each `MULTI` key the
-  new module carries, every registered module `X` that has the key
-  (binary search of `X`'s sorted table) is asked where its references
-  bind: `X`'s own copy of `resolve(name)` calls `dlsym(RTLD_DEFAULT,
-  name)`, which glibc resolves in the **caller's** lookup scope (the
-  call is not a tail call, so the caller is `X`); a versioned name uses
-  `dlvsym` [not prototyped]. If `X` binds a definition inside another
-  registered module `Y` whose row hash differs from `X`'s: a violation
-  between `X` and `Y`. A module that binds its own definition is never in
-  violation. Two `RTLD_LOCAL` modules are therefore never compared unless
-  one binds the other's definition, which glibc does only through a
-  dependency of the dlopen'ed module (case D below).
-- **`SYSTEM` rows** are skipped unless `MASON_ODR=strict`, so the hook
-  never reports what O-32 only counts.
-- **Report.** `mason: error: odr-violation-at-load: <name>: <X> binds the
-  definition in <Y>, which differs from its own`, written to file
-  descriptor 2 with `write` (the shipped runtime; the prototype uses
-  stdio), then `abort()`; `MASON_ODR=warn` writes and continues;
-  `MASON_ODR=off` skips the check. Read with `secure_getenv`, so a
-  set-user-ID program always checks.
-- **`dlclose`.** The `.fini_array.00000` entry marks the module's
-  registry entry dead and decrements its keys' counts. glibc does not
-  unload a module whose definitions another module bound (its
-  dependency tracking), so the state object outlives the modules that use
-  it [glibc behavior, exercised by case J, not proved].
-- **Threads and `fork`.** glibc runs constructors and destructors under
-  its load lock (`dl_load_lock`, recursive, so `dlsym` inside is
-  allowed); all mutation of the index happens there. Case J: 8 threads ×
-  300 `dlopen`/`dlclose` of 4 hooked libraries alternating `RTLD_LOCAL`
-  and `RTLD_GLOBAL`, a `fork` every 10th iteration: three runs per
-  target, no crash, no hang.
-- **Memory and bounds.** The registry and the index live in `mmap`ed
-  memory, no `malloc`, grown by doubling; there is no fixed module or
-  row limit [estimate: 48 B a row at half load plus 64 B a module]. When
-  an `mmap` fails: `mason: warning: odr-hook-out-of-memory: the
-  load-time ODR check stopped at <module>; this module and every module
-  loaded after it are NOT checked`, once, then `mason: warning:
-  odr-hook-stopped: <module> not checked` for each later module: never
-  silence (case H, with a test limit at 300 modules: one warning and 291
-  "not checked" lines).
-- **`DT_STRTAB`/`DT_SYMTAB`.** The runtime reads its own module's
-  `_DYNAMIC` (a hidden symbol). glibc relocates these `d_ptr`s in place
+**O-54 (the direction, and what the prototypes measured).**
+
+*What holds* (prototype 2, glibc 2.41, AArch64 natively, x86-64 and
+i386 under qemu-user, identical outcomes; the re-review re-ran it
+natively):
+
+- **Entry** in `.init_array.00000` and `.fini_array.00000` of every
+  module that carries the runtime, executable and shared object alike
+  (priorities 0-100 are the implementation's; user code starts at 101).
+  Case I: the runtime runs before a user `constructor(101)` and before
+  default constructors, under GNU ld, lld and mold.
+- **One index per scope, found through the loader's own binding**: every
+  runtime copy defines one exported `__mason_odr_state` and reads it
+  through its GOT, so each module binds the first copy its lookup scope
+  reaches; a `dlmopen` namespace never sees another's (case E). No
+  loader internal is read. Under a version script the state object must
+  be exempt or carry a fixed node (`MASON_1`): with per-library nodes
+  each library binds its own versioned copy and is silently compared
+  with nothing (re-review R6, `vhook`).
+- **Memory**: registry and hash index in `mmap`ed memory, no `malloc`, no
+  module limit; an `mmap` failure prints `odr-hook-out-of-memory` once
+  and `odr-hook-stopped` for each later module, never silence (cases G,
+  H).
+- **`SYSTEM` rows** are skipped unless `MASON_ODR=strict`.
+- **`DT_STRTAB`/`DT_SYMTAB`**: glibc relocates these `d_ptr`s in place
   for the executable, libc and ld.so but not for the vDSO
-  (`preinit-dynamic`); other loaders (musl) do not relocate them
-  [unverified: musl is not installed]. Rule: when `d_ptr` is below the
-  module's load base, add the base.
-- **Other C libraries.** glibc resolves `RTLD_DEFAULT` in the caller's
-  scope; musl resolves it in the global scope only [unverified], which
-  would miss case D (never a false report). The runtime calls
-  `gnu_get_libc_version` through a weak reference; on any other C library
-  it only ever **warns** for dlopen'ed modules and never aborts.
-- **Static executables** (and static PIE) get no table and no runtime:
-  the static check saw every definition (MT-33). A static executable
-  that `dlopen`s is not covered (recorded, not refused).
+  (`preinit-dynamic`); a reader adds the load base when `d_ptr` is below
+  it. Other loaders (musl) [unverified].
+- **Threads and `fork`**: glibc runs constructors and destructors under
+  its load lock (`dl_load_lock`, recursive); case J (8 threads × 300
+  `dlopen`/`dlclose`, `fork`) ran clean three times per target.
 
-Detection matrix (`hook2`, cases A-J, every case on all three targets):
+*The open problem.* **The runtime can ask where a module would bind now,
+not where it bound.** Prototype 2 asks, for a key seen with two hashes,
+each holder `X` to call `dlsym(RTLD_DEFAULT, name)` from its own code.
+That answers where a lookup from `X` would go at this moment, which is
+not where `X`'s GOT and PLT went:
 
-| case | shape | outcome |
-|---|---|---|
-| A1 | two plain plugins with private versions of `fmtlite::version`, `RTLD_LOCAL` | each runs its own copy (1, 2) |
-| A2 | the same with tables, non-Mason host | no report (N29) |
-| A3 | the same, host carries the runtime (one shared index) | no report (N29) |
-| B1 | Mason host exports `fmtlite::version` v1; plugin v2 loaded `RTLD_LOCAL` binds it | report naming both, exit 134 |
-| B2 | B1 with `MASON_ODR=warn` | report; the plugin returns 1 (the bug the report names) |
-| C1 | plugin 1 `RTLD_GLOBAL`, then plugin 2 `RTLD_LOCAL` (binds plugin 1's) | report |
-| C2 | plugin 2 `RTLD_LOCAL`, then plugin 1 `RTLD_GLOBAL` (plugin 2 already bound its own) | no report |
-| D | an `RTLD_LOCAL` plugin whose dependency defines the key differently (the dependency binds the plugin's copy) | report naming the dependency and the plugin |
-| E | plugin 1 in the base namespace (global), plugin 2 in `dlmopen(LM_ID_NEWLM)` | no report (N30) |
-| F | plugin 1 `RTLD_GLOBAL`, `dlclose`d, then plugin 2 `RTLD_GLOBAL` | no report |
-| G | 300 shared objects at start-up (`DT_NEEDED`), 1,250 rows each, a violation in module 300 | detected, exit 134 (the first draft's prototype missed it past module 256) |
-| H | G with `mmap` failing after 4 maps | one `odr-hook-out-of-memory`, 291 `odr-hook-stopped` |
-| I | init order in a `.so` and an executable, bfd/lld/mold (qemu targets: bfd) | runtime, `constructor(101)`, default constructor |
-| J | 8 threads × 300 `dlopen`/`dlclose` + `fork` | three runs, exit 0 |
+- **immediate vs lazy binding.** An `RTLD_NOW` module bound its
+  references at its load; a later global module changes the answer to
+  the question but not the binding: R1m (`h2` `LOCAL|NOW` bound its own
+  copy, then `h1` `GLOBAL` and `h1b`) is a correct process that
+  prototype 2 aborts. A lazy module binds at first call, after its init
+  ran: R3m (`h2lazy` `LOCAL|LAZY`, then `h1lazy` `GLOBAL|LAZY`, then the
+  call) really binds the other body and prototype 2 does not see it.
+  Debian links lazily by default.
+- **promotion.** `dlopen(h1, RTLD_NOLOAD|RTLD_GLOBAL)` moves a loaded
+  module into the global scope without loading anything: R2m is a
+  correct process that prototype 2 aborts.
+- **per-library version nodes.** References carry the version of the
+  definition they were linked against (`.gnu.version` of the referencing
+  module); an unversioned `dlsym` finds another library's default
+  version: R6 (`vmhook`, two libraries with nodes `LIB1_1`, `LIB2_1`) is a
+  correct process that prototype 2 aborts.
+- **protected and `-Bsymbolic` definitions** are bound by other modules
+  (R4/R5); prototype 2's tables had no rows for them (fixed in O-50).
 
-Cost (AArch64, in-process time summed over every module's init entry, three runs; `MASON_ODR_TIME`):
+In M6 the hook **never aborts**: whatever WP-077 produces reports and
+continues. `MASON_ODR=abort` is a later decision, after its matrix is
+green.
+
+*Candidate mechanisms WP-077 must evaluate, without this spec choosing:*
+
+1. **Recorded answers**: each module records, once at its own init (or
+   at first need), where each of its keyed references bound, by reading
+   its own GOT entry for the symbol (filled at load for data, and for
+   functions under `-z now`, which mortar could force for modules with a
+   table) and never re-asks. Evaluate: lazy PLT entries (R3m) unless
+   `-z now`; the cost of forcing `-z now`; promotion (R2m).
+2. **glibc's audit interface** (`LD_AUDIT`, `la_symbind32/64`,
+   `la_objopen`): reports actual bindings, lazy ones included, with the
+   binding module and the version. Evaluate: it needs a separate audit
+   library named in the environment (it cannot be a linked-in object of
+   the program), it disables some lazy-binding fast paths, it is
+   glibc-only, and whether that is usable for development builds at all.
+3. **Comparing only within the initial global scope** (the executable
+   and its `DT_NEEDED` closure, bound before any user code runs) and
+   treating every `dlopen`ed module as a named exclusion or a warning
+   only. Evaluate: what it misses (C1, B1, D) against what it avoids
+   (R1m, R2m, R3m).
+4. **Versioned keys**: rows identified by (name, version node) as in
+   O-24, lookups with `dlvsym` using the version the reference names.
+   Evaluate together with 1-3; it is needed by every option (R6).
+
+*Measurements of prototype 2* (AArch64, in-process time summed over every
+module's init entry, three runs; `MASON_ODR_TIME`):
 
 | modules × rows | prototype 2 | first draft's pairwise prototype |
 |---|---|---|
@@ -1006,43 +1102,69 @@ Cost (AArch64, in-process time summed over every module's init entry, three runs
 | 300 × 1,250, clean | 6.4-6.9 ms | 143 ms (review), and missed past 256 |
 | 300 × 1,250, one violating key | 43.8-47.4 ms (one `dlsym` per module holding the key) | |
 
-Linear in rows (about 17-35 ns a row: the index misses the cache at
-large sizes), independent of the module count, and dearer than the
-merge for few modules; the conflict path costs one `dlsym` per holder,
-paid only when a key has two hashes. A clang-sized process (~35,000
-rows) [estimate: ~1 ms]. Wall time per start with 4 × 125,000 rows:
-0.76 ms off, 21 ms on (two runs). The x86-64 and i386 timings under qemu
-emulate the code and are not costs. Making the index cheaper (a
-pre-sized table from the summed row counts, a smaller slot) is WP-077's,
-measured by the same script.
+The clean path is linear in rows and independent of the module count;
+the **conflict path is quadratic** in the number of holders of one key:
+N legal `RTLD_LOCAL` plugins with private versions of one key make the
+key `MULTI` from the second on, and each load asks every earlier holder
+(re-review `hook-quadratic`: 0.1 ms at 50 plugins, 0.6 ms at 100,
+3.2-3.4 ms at 200). WP-077 measures it at 300 with K = 10 keys and
+either bounds it or caches each holder's answer (candidate 1 needs the
+cache anyway). The x86-64 and i386 timings under qemu emulate the code
+and are not costs.
+
+*The matrix* (Appendix A, experiment 5 and the re-review's cases;
+REQUIRED for WP-077, on AArch64, x86-64 and i386; R cases need not pass
+today):
+
+| case | shape | required outcome | prototype 2 |
+|---|---|---|---|
+| A1-A3 | two `RTLD_LOCAL` plugins with private versions, non-Mason and Mason host (N29) | no report | pass |
+| E | `dlmopen(LM_ID_NEWLM)` (N30) | no report | pass |
+| F | `dlclose`, then another global plugin | no report | pass |
+| C2 | plugin 2 `RTLD_LOCAL`, then plugin 1 `RTLD_GLOBAL` | no report | pass |
+| R1m | `h2` `LOCAL\|NOW`, `h1` `GLOBAL`, `h1b` `LOCAL` (same body as `h1`), Mason host | no report | **fails** (abort) |
+| R2m | `h2` `LOCAL`, `h1` `LOCAL`, `h1` `NOLOAD\|GLOBAL`, `h1b` `LOCAL`, Mason host | no report | **fails** (abort) |
+| R6 | two libraries, one version node each, different bodies, Mason executable (`vmhook`) and none (`vhook`) | no report; `vhook` must not be silently unchecked | **fails** (abort; `vhook` silent) |
+| R8m | `RTLD_DEEPBIND` plugin binding its own copy | no report | measured by the re-review's script |
+| B1, B2 | Mason host exports v1, `RTLD_LOCAL` plugin v2 binds it | report | pass |
+| C1 | plugin 1 `GLOBAL`, plugin 2 `LOCAL` binds it | report | pass |
+| D | a plugin's dependency binds the plugin's different copy | report | pass |
+| G | 300 modules × 1,250 rows, a violation in module 300 | report; cost recorded | pass |
+| R3m | lazy binding of another module's different body after init | report, or a named exclusion of the prototype's rule | **fails** (silent) |
+| R4/R5 | `-Bsymbolic`, `-Bsymbolic-functions`, `protected` definition bound by a later library's references | report, or a named exclusion | **fails** (no rows) |
+| versioned | `dlvsym` with the reference's version; the version in the key | per (name, version) | not prototyped |
+| H | `mmap` failure | named warnings, never silence | pass |
+| I | init order, three linkers, `.so` and executable | runtime first | pass |
+| J | threads, `dlopen`/`dlclose`, `fork` | no crash, no hang | pass |
+| quadratic | `hook-quadratic` at 300 plugins, K = 10 | cost recorded and bounded | not run at K = 10 |
 
 **O-55 (what only load time sees).** The static link proves what O-24
-says; the hook adds a different build of a library at run time,
-`dlopen`ed libraries and indirect dependencies.
+says; only a runtime could add a different build of a library at run
+time, `dlopen`ed libraries and indirect dependencies (X12 until then).
 
-**O-56 (compatibility).** A mortar-made executable with foreign
-libraries: they have no table and are not checked. A mortar-made shared
-object in a foreign executable: its init entry checks it against
-whatever registered modules share its index. Intentional interposition
-of a vague definition (`LD_PRELOAD` of a library that redefines an
-inline function differently) is a violation the hook reports:
-`MASON_ODR=warn` or `off` is the escape; interposing strong definitions
-(`malloc`) is not in any table (N5).
+**O-56 (compatibility, for the prototype).** A mortar-made executable
+with foreign libraries: they have no table and are not checked. Intentional
+interposition of a vague definition (`LD_PRELOAD`) would be reported;
+interposing strong definitions (`malloc`) is in no table (N5).
 
 **O-57 (the D-21 boundary).** K18c shows that a library loaded with
 `RTLD_LOCAL` gets its own instance of a vague definition the executable
 does not export (`spec/dyn.md` §14). The table does not change that; Q8
 asks whether an M6 export class should.
 
-**O-58 (off by default; when the hook is built).** No output gets a
-table or the runtime unless `--odr-table=exported|full` is given (Q2 is
-the operator's question whether a profile turns it on). The package that
-ships the runtime (WP-077, §13) is cut only after experiment 5 passes
-(it passed on prototype 2 on three targets, cases A-J above) **and** the
-operator has decided Q2 and Q3.
+**O-58 (the gate).** No output gets the runtime in M6. WP-077 is a
+**prototype package**: its deliverable is the matrix above, green on
+three targets with the candidate mechanism it chose and the reasons it
+rejected the others, not shipped code. Experiment 5 does **not** count
+as passed until the matrix's must-not-report cases (A1-A3, E, F, C2,
+R1m, R2m, R6, R8m) give no report and its must-report cases (B1, C1, D,
+G, R3m, R4/R5) report or are named exclusions, with versioned lookup and
+the quadratic cost measured. A package that ships a runtime is cut only
+after that **and** the operator's decisions Q2 and Q3; `MASON_ODR=abort`
+after a further decision.
 
 **O-59 (what the verifier checks of the dynamic side).** §12.5's rules
-for the table and the runtime.
+for the table; the runtime rule applies only if a runtime ships.
 
 ## 11. Requests to kiln and hod
 
@@ -1053,8 +1175,9 @@ Mortar checks the one-definition rule across translation units at link
 time from records the compiler writes into each object, in a section
 `.mason.meta` that every other linker drops. The container is specified
 in `spec/meta.md` and the checks in `spec/odr.md` of mortar's repository
-(`git@github.com:christopherfretz/mortar.git`, branch `main` once this
-draft is accepted; the rule ids below are theirs). Nothing in mortar
+(`git@github.com:christopherfretz/mortar.git`, default branch `main`,
+files `spec/meta.md` and `spec/odr.md`; the rule ids below are theirs).
+These requests are sent once the specs are merged to `main`. Nothing in mortar
 depends on these requests to link correctly; each one turns on a check.
 Estimates are the designer's, for the receiving agent to correct.
 
@@ -1110,8 +1233,18 @@ Estimates are the designer's, for the receiving agent to correct.
     with `#`/`##` results, so sema sees a plain literal, possibly
     concatenated with neighbours (`__FILE__ ":"`). The hasher needs the
     **preprocessor to mark builtin-macro provenance** on the tokens and the
-    **parser to carry it** to the literal nodes (a token flag and a
-    literal-node flag): a preprocessor and parser change;
+    **parser to carry it** to the literal nodes: a preprocessor and parser
+    change. A string literal formed by concatenating pieces (`"at "
+    __FILE__ ":"`) is one node; it carries **per-piece provenance** (the
+    list of its source tokens, each with its flag), and the hasher hashes
+    each piece in order, a builtin-macro piece as its placeholder and
+    every other piece as its text, so `"at " __FILE__` and `"in "
+    __FILE__` still differ. A literal produced by `#` or `##` from a
+    builtin-macro operand is hashed whole as a placeholder (a possible
+    miss, never a false positive). The minimum acceptable implementation
+    is one flag per literal node that hashes the whole node as a
+    placeholder when any piece is a builtin macro: safe (it can only hide
+    a difference in the other pieces), stated in the scheme name;
   - the same definition reached textually, through a precompiled header
     and through a header unit hashes equally;
   - implicitly defined members are synthesized before hashing;
@@ -1122,7 +1255,14 @@ Estimates are the designer's, for the receiving agent to correct.
   omitted the preprocessor/parser provenance change and the PCH/header
   unit cases).
 - **K-4 — kinds 3 and 4 (types).** For C++ TUs only: one row per class,
-  struct, union or enum whose definition the TU contains and that an
+  struct, union or enum that is **not TU-local** (C++20 [basic.link]
+  p13-15: no row for unnamed-namespace types, local classes, closure
+  types outside inline or templated external entities, and
+  specializations any of whose template arguments is or involves a
+  TU-local entity, e.g. `std::optional<(anonymous)::S>`; decided
+  recursively on the AST as `spec/odr.md` O-2 and O-17 say; two TUs may
+  legally have different private types of one spelling, which would
+  otherwise collide), whose definition the TU contains and that an
   emitted definition reaches — through members, bases, parameters,
   returns, locals, `new`/`sizeof`/`alignof` operands, the type of every
   expression, every template argument, and the pointee or referee of
@@ -1135,10 +1275,15 @@ Estimates are the designer's, for the receiving agent to correct.
 - **K-5 — kind 5 (declarations).** One row per defined or referenced
   external function or variable: a 64-bit hash of the declared type's
   Itanium encoding with array bounds erased, `sizeof` for variables,
-  flags (`spec/odr.md` O-35). For **C-linkage** entities, hash a
-  canonical **C** type instead: an enumeration replaced by its compatible
-  integer type (the one kiln chose), top-level parameter qualifiers
-  dropped; unprototyped declarations get no row (O-33). *Estimate:* 4-5
+  flags (`spec/odr.md` O-35). For **C-linkage** entities (in C units, and
+  `extern "C"` in C++ units), hash a canonical **C** type instead: an
+  enumeration replaced by its compatible integer type (the one kiln
+  chose), top-level parameter qualifiers dropped, C++'s builtin types
+  mapped to C's for the target (`wchar_t` to the target's `wchar_t`
+  typedef type, `char16_t`/`char32_t` to `uint_least16_t`/
+  `uint_least32_t`, `char8_t` to `unsigned char`, `bool` = `_Bool`);
+  unprototyped declarations get no row, and `f()` is prototyped only in
+  C23 and later (O-33). *Estimate:* 4-5
   days.
 - **K-6 — modules.** Use the K-3 hash for the comparison
   `kiln/spec/modules.md` §10 item 11 skips today (definitions merged from
@@ -1184,8 +1329,10 @@ Each step is useful and testable alone:
 4. **kiln** K-3, then K-5, then K-4: each kind's mortar check runs under
    `--odr=strict` at once (WP-073 is written against the test producer)
    and turns on by default after the oracle (O-46).
-5. **mortar** WP-075 (tables and O-24) after M2's dynamic executable;
-   `.so` outputs with M4. WP-077 (the runtime) after O-58's gate.
+5. **mortar** WP-075 (O-24's prototype, then tables and O-24) after M2's
+   dynamic executable; `.so` outputs with M4. WP-077 (the hook's
+   prototype matrix) after WP-075; nothing ships from it without O-58's
+   gate and the operator's Q2 and Q3.
 6. **kiln** K-6 at any time after K-3.
 
 ### tuck (nothing asked)
@@ -1202,7 +1349,8 @@ in an output. Reserved now so that no other use takes the numbers.
 Every K of §2, per boundary: two objects; one object and an extracted
 archive member; an object made by `-r` (each reference linker, and
 mortar at M4); executable and mortar-made shared object at static link
-time (O-24); at load time (cases A-J of O-54). Per producer: kiln
+time (O-24, with the shapes of T-O-24); at load time, the prototype
+matrix of O-54 (WP-077 only). Per producer: kiln
 (records: the expected diagnostic, by id and places, under
 `--odr=strict` and, once O-47 lists the check, by default) and, before
 kiln emits, the test producer of `meta.md` §12 writing the rows kiln
@@ -1214,7 +1362,7 @@ format (`spec/harness.md` "Link tests") with a new directive `#@ diag:
 
 ### 12.2 The legal corpus
 
-N1-N30 of §3 as link tests that must link with **no finding of any
+N1-N31 of §3 as link tests that must link with **no finding of any
 default-on check**, and with no finding at `--odr=strict` except where §3
 names one as a known strict-only finding (N20-N22: W3; N28: C-linkage
 kind 5 until O-33's canonical C type lands). The corpora of experiment
@@ -1266,12 +1414,15 @@ A-7 to `spec/plumb.md`):
   each row's hash is the first 8 bytes of the kind 2 row of **the
   keeper's unit** for that name (O-51; the keeper is `comdat[G]`'s file
   for a vague definition, the defining file otherwise); the row set
-  equals O-50's (preemptible exports only); each row's flags equal the
-  keeper's row's;
-- with a table, the output has exactly one `.init_array.00000` and one
-  `.fini_array.00000` entry pointing into the runtime's input section,
-  and that section's bytes equal mortar's embedded runtime for the target
-  (O-53).
+  equals O-50's (exported definitions, protected and `-Bsymbolic` ones
+  included, hidden ones not); each row's flags equal the keeper's row's,
+  plus `NONPREEMPTIBLE` exactly for protected and locally bound
+  definitions; each row's `.dynsym` entry carries the version node the
+  output gives the name;
+- a table adds no code: no `.init_array`/`.fini_array` entry and no
+  input section that mortar did not read from the command line. If a
+  runtime ever ships (O-58), a rule for its entries and bytes is added
+  then.
 
 Whether `mortar_plumb` should also re-run the comparison (a second
 implementation of the verdict) is Q11.
@@ -1281,7 +1432,7 @@ implementation of the verdict) is Q11.
 | rule | test | what it shows |
 |---|---|---|
 | O-1, O-3, O-46, O-47 | T-O-1 | a CI check that every check O-47 lists as on has a recorded zero-finding oracle run in the landed record of the package that moved it; the legal corpus has no finding of a default-on check |
-| O-2 | T-O-2 | `static` functions of one name in two TUs, with rows forced by the test producer: no comparison |
+| O-2 | T-O-2 | `static` functions of one name in two TUs, with rows forced by the test producer: no comparison; extended to types: N31's unnamed-namespace type, `std::optional` of it, local class and closure write no kind 3 row and are never compared (model case and, with K-4, a kiln test) |
 | O-4 | T-O-4 | anchored, unanchored (`--redefine-sym`), ambiguous (two names, one FNV-1a 64, constructed) and versioned (N6) rows |
 | O-10..O-13 | T-O-10 (kiln) | the corpora of O-13, as kiln tests and as L11 links |
 | O-14, O-15 | T-O-14 | rows per definition kind; K13's flags; N9; N22 (strong + `VAGUE`, equal) |
@@ -1291,7 +1442,7 @@ implementation of the verdict) is Q11.
 | O-20, O-21 | T-O-21 | the optimisation and the normative rule report the same findings over the whole corpus, K13 included |
 | O-22 | T-O-22 | kind 3 and 5 rows from 3 units grouped in `FileId` order |
 | O-23 | T-O-23 | K17 with and without `--odr-check-archives` |
-| O-24 | T-O-24 | (a) an executable exporting a vague definition a mortar-made `.so` also defines differently; the same unexported; (b) two `.so` inputs; (c) K18b |
+| O-24 | T-O-24 | the shapes listed in O-24: (a) exported and hidden; (b) two libraries; `-Bsymbolic`, `-Bsymbolic-functions` and `protected` libraries (R4/R5, findings); an `--as-needed`-dropped library (none); one version node per library (R6, none) and a shared node (a finding); (c) K18b |
 | O-25 | T-O-25 | K16c with two vtable copies; F5 silent |
 | O-30, O-31 | T-O-30 | K16a/K16e/K16d notes under strict; `abi.rtti` never a finding |
 | O-32 | T-O-32 | `mixed-std-system-row` → a stats count; `mixed-std-user-body` → a finding |
@@ -1302,11 +1453,11 @@ implementation of the verdict) is Q11.
 | O-42 | T-O-42 | `meta.md` T-MT-42: bytes read counted |
 | O-44 | T-O-44 | the stats line's fields on a corpus link |
 | O-45 | T-O-45 | the bench lane's comparison |
-| O-50, O-51 | T-O-50 | the row set (preemptible only; protected, hidden, `-Bsymbolic` excluded); the keeper's hash after a warned link |
+| O-50, O-51 | T-O-50 | the row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link |
 | O-52 | T-O-52 | `note-final`'s tolerance matrix |
-| O-53, O-54, O-56 | T-O-54 | `hook2` cases A-J on three targets (WP-077), the verifier's runtime-bytes rule |
+| O-53, O-54, O-56 | T-O-54 | WP-077's prototype matrix (O-58) on three targets; not a release test until a runtime ships |
 | O-55, O-57 | T-O-57 | K18c's two outcomes unchanged by the table |
-| O-58 | T-O-58 | no table and no runtime without `--odr-table` |
+| O-58 | T-O-58 | no output carries a runtime in M6; no table without `--odr-table` |
 | O-59 | T-O-59 | §12.5's rules on good and mutated outputs |
 
 ### 12.7 The model (experiments 2 and 3)
@@ -1328,19 +1479,31 @@ corpus, not evidence about kiln's hasher.
 
 | WP | what | crates / files | depends on | tests alone against | estimate | parallel with |
 |---|---|---|---|---|---|---|
-| WP-071 | container reader and writer; MT-6 classification; `meta-malformed`/`meta-version`; the test producer; the `--odr=off` path and A-8 (MT-42, O-42). **Acceptance test = experiment 7**: real units written by the test producer at the row counts of the heavy TU's object and of protoc's 167 objects (kind 2 per vague symbol, kind 5 per defined/undefined global, kind 3 per DWARF type); unit sizes by kind; bytes read with `--odr=off` and in the default mode under the staged store (zero container bytes for objects over 64 KiB); the cost of reading and grouping the rows (O-22) on the bench lane against O-45. MT-41's gate is set from these numbers in its landed record | `mortar_meta`; `mortar_input` (A-8); `mortar_resolve` (A-1's row); `xtask` (producer) | A-1, A-2, A-8 applied | `.s` units assembled by GNU as | 4-5 days [estimate] | WP-072 |
+| WP-071 | container reader and writer; MT-6 classification; `meta-malformed`/`meta-version`; the test producer; the `--odr=off` path and A-8 (MT-42, O-42). **Acceptance test = experiment 7**: real units written by the test producer at the row counts of the heavy TU's object and of protoc's 167 objects (kind 2 per vague symbol, kind 5 per defined/undefined global, kind 3 per DWARF type); unit sizes by kind; bytes read with `--odr=off` and in the default mode under the staged store (zero container bytes for every object, small ones included); the cost of reading and grouping the rows (O-22) on the bench lane against O-45. MT-41's gate is set from these numbers in its landed record | `mortar_meta`; `mortar_input` (A-8); `mortar_resolve` (A-1's row); `xtask` (producer) | A-1, A-2, A-8 applied | `.s` units assembled by GNU as | 4-5 days [estimate] | WP-072 |
 | WP-072 | W1-W3 (W1, W2 on; W3, W4 strict); the diagnostic kinds; `--odr=`, `--no-odr-check`, `--odr-stats`, `--detect-odr-violations` no-op; O-47's register as code | `mortar_odr`, `mortar_diag`, `mortar_cli` | A-4, A-5; `comdat_copies` (M1) | GCC/Clang objects of the catalogue and the legal corpus, experiment 1's corpora | 4-5 days | WP-071 |
 | WP-073 | record checks: kinds 1, 2, 3, 5 (O-4-O-35, O-25, O-33), all `--odr=strict`; notes from kind 1; the L11 static corpus (the model's 13 cases first) | `mortar_odr`, `tests/link/odr/` | WP-071, WP-072 | the test producer (no kiln) | 1.5-2 weeks | kiln K-1..K-5 |
 | WP-074 | the Mason L11 lane and the false-positive oracle (§12.3, the C corpus of O-33); moves checks per O-46 | `xtask`, `tests/mason/` | WP-073; kiln K-1-K-5; hod H-1 | kiln objects | 1-1.5 weeks | WP-075 |
-| WP-075 | loadable table (O-50-O-52) for executables, the O-24 check against `.so` inputs; `[M4]` the same for `.so` outputs | `mortar_odr`, `mortar_synth`, `mortar_layout` | WP-073; M2's dynamic executable; A-3; M4 for `.so` | test-producer units; `note-final` | 1-1.5 weeks | WP-074 |
+| WP-075 | the O-24 check against `.so` inputs, **starting with its prototype** (a script over test-producer `.so`s with tables, the shapes of T-O-24: R4/R5, `--as-needed`, R6), then the loadable table (O-50-O-52) for executables and the check in mortar; `[M4]` the same for `.so` outputs | `mortar_odr`, `mortar_synth`, `mortar_layout` | WP-073; M2's dynamic executable; A-3; M4 for `.so` | test-producer units; `note-final` | 1.5-2 weeks | WP-074 |
 | WP-076 | opt-ins: `--odr-check-archives`, `--odr-table=full`, `--keep-mason-meta`, `-r` pass-through (MT-30, with M4) | `mortar_odr`, `mortar_meta` | WP-073 | | 4 days | WP-075 |
-| WP-077 | the runtime (O-53, O-54) and the hook; its qemu test matrix (cases A-J, three targets); the cheaper index | `runtime/mason_rt/`, `mortar_odr`, `xtask` | **gated (O-58)**: experiment 5 passed (prototype 2) **and** the operator's Q2 and Q3; WP-075 | `hook2` | 1.5-2 weeks | WP-078 |
-| WP-078 | verifier rules (§12.5) | `mortar_plumb` | A-7; WP-071 (format only) | the outputs of WP-073/075/077 | 3-4 days | WP-077 |
+| WP-077 | **prototype package** for the load-time hook (§10.3): evaluate the candidate mechanisms of O-54 (recorded answers via the module's own GOT with `-z now`; glibc's audit interface; initial global scope only; versioned keys with `dlvsym`) and deliver the matrix of O-58 on three targets, the quadratic conflict path at 300 plugins and K = 10, and a recommendation. Deliverable: the matrix, the measurements and a spec proposal, **not shipped code**; it reports and never aborts | `.build`-style prototype under `xtask` or `tests/hook/` only | WP-075 (tables); no operator decision needed to prototype | `hook2`, `hook-rebind`, `hook-quadratic` | 1.5-2 weeks | WP-078 |
+| WP-078 | verifier rules (§12.5) | `mortar_plumb` | A-7; WP-071 (format only) | the outputs of WP-073/075 | 3-4 days | WP-077 |
 | WP-079 | apply the amendments of §14 | specs | this draft accepted | — | 1 day | first |
 
 WP-071 and WP-072 need no other project and can start the day this
 draft is accepted. M6's "done when" (`docs/ROADMAP.md`) is WP-074's
-oracle green with WP-075 landed; WP-077 is not on M6's path.
+oracle green with WP-075 landed; WP-077 is not on M6's path, and a
+package that ships a runtime is cut only after O-58's gate and the
+operator's Q2 and Q3.
+
+**What an implementer may start on today, without any open decision:**
+the container reader and writer with its classification, the
+`--odr=off` path and A-8's byte rule, and the test producer (WP-071);
+the verifier's container rules (the `.mason.meta`-absent and `-r`
+concatenation rules of §12.5, part of WP-078); W1 and W2, on by default
+as warnings, with the switches and diagnostics (WP-072); and the record
+comparison engine behind `--odr=strict` (WP-073: kinds 1, 2, 3, 5, O-25,
+O-33, against test-producer units). None of these depends on Q1-Q16,
+on kiln's hasher, or on the hook.
 
 ## 14. Requests to other specs (ranked: cheapest now, dearest later)
 
@@ -1357,21 +1520,21 @@ oracle green with WP-075 landed; WP-077 is not on M6's path.
    section of at most 64 KiB" gains "except a Mason container
    (`spec/meta.md` MT-6), which is never resident; `mortar_meta` reads it
    with positioned reads, only when a check that needs it is on
-   (`spec/odr.md` O-42)". The whole-file row for objects of at most 64 KiB
-   is unchanged (one read, container included; `meta.md` MT-42 states the
-   cost and Q15 the alternative). A test-only byte counter per file range
-   for T-MT-42.
+   (`spec/odr.md` O-42)"; and the whole-file row for objects of at most
+   64 KiB gains "when `--odr` is off, or no check that needs the
+   container is on, such a file is read around its container (headers
+   first, then the ranges before and after it)" (`meta.md` MT-42). A
+   test-only byte counter per file range for T-MT-42.
 3. **A-2 `spec/model.md`** — `SectionKind::Meta`; per file, the list of
    its `Meta` sections (so that `mortar_odr` finds units without a
    rescan); in §8, phase 40's `seq` for row diagnostics without a symbol:
    "`2^40 +` the row's index in its unit". `comdat_copies` stays as it is.
 4. **A-3 `spec/dyn.md`** — §14 "M6: ODR data" becomes: "`.note.mason`
    (`spec/odr.md` O-52) is an allocated note of alignment 8, placed with
-   the other notes (layout L-60 rank 2); the runtime object is an input
-   mortar adds (O-53) whose `.init_array.00000` and `.fini_array.00000`
-   entries are ordinary; the exported object `__mason_odr_state` is
-   exported like any default-visibility definition; O-24 reads the
-   tables of shared-object inputs". D-21 unchanged at M2; Q8's class, if
+   the other notes (layout L-60 rank 2), written only with
+   `--odr-table`; O-24 reads the tables of shared-object inputs that
+   stay in `DT_NEEDED`, identifying rows by (name, version node)". No
+   runtime is added in M6 (O-58). D-21 unchanged at M2; Q8's class, if
    accepted, is added there by amendment.
 5. **A-5 `spec/cli.md`** — rows `--odr=warn|error|strict|off` (default
    `warn`), `--no-odr-check` (= `--odr=off`), `--odr-check-archives`,
@@ -1398,12 +1561,14 @@ decisions"); their recommendations are repeated here.
 - **Q1. Default severity.** *Recommend:* `--odr=warn` until each check
   has been on at zero for a release, then the operator decides the move
   to error per check (O-40, O-46).
-- **Q2. The loadable table and hook by default.** *Recommend:* off
-  everywhere (O-58) until WP-077 has run a release in the lanes; then on
-  in a development profile with `MASON_ODR=warn`.
-- **Q3. How the runtime's bytes are made.** *Recommend:* C source and
-  generated object bytes checked in, embedded in mortar, byte-identical
-  rebuild check in CI (O-53).
+- **Q2. The table and the hook.** The hook is a prototype package
+  (WP-077); nothing ships in M6 without a further decision. *Recommend:*
+  the table (data only) off by default, opt-in with `--odr-table`; decide
+  a runtime only after WP-077's matrix is green, and then only reporting
+  (`MASON_ODR=abort` later still).
+- **Q3. How the runtime's bytes would be made, if one ships.**
+  *Recommend:* C source and generated object bytes checked in, embedded
+  in mortar, byte-identical rebuild check in CI (O-53).
 - **Q4. Anchored rows vs own strings.** *Recommend:* anchored (MT-12):
   kinds 1 and 2 cost 3-6 % of an object anchored, ~20 % named (`size`,
   kind 2 only, measured counts; percentages [estimate]); the cost is that
@@ -1434,11 +1599,8 @@ decisions"); their recommendations are repeated here.
 - **Q14. Type rows in the loadable table.** *Recommend:* `=full` only
   (O-50); two libraries with private same-named types are common and
   never bind each other.
-- **Q15. Small objects and A-8.** An object of at most 64 KiB is read
-  whole in one read today, container included. *Recommend:* keep the
-  single read (a second read per small object costs more than the bytes
-  it saves); the alternative is to read around the container once the
-  section headers are known.
+- **Q15.** Withdrawn by the coordinator's ruling: A-8 applies to small
+  files too; with `--odr=off` no container byte is read (MT-42, O-42).
 - **Q16. K16c in the catalogue's shape (X3).** The ruling compares two
   `_ZTV` copies only. *Recommend:* add, under `--odr=strict`, "a vtable
   defined by an `abi.rtti=off` unit while an `abi.rtti=on` unit defines
@@ -1472,6 +1634,8 @@ glibc 2.41, qemu 10.0.13; kiln and hod release builds of the workspace.
 | experiment 8 | `adv/container-adv.sh` | MT-5's matrix |
 | `k19`, `n6`, `n11` | `rev/k19-n6-n11.sh` | K19 (clang 19/22 modules), N6, N11 |
 | `k3count` | `rev/k3count.sh` | O-17's row count proxy |
+| `n31` | `rev/n31.sh` (runs `adv/kind3-tulocal.sh`, then `wcheck.py`) | N31: exit 0 under g++ and clang++ 19 × GNU ld, lld, mold; W1-W3 zero (g++, clang, mixed) |
+| re-review, REQUIRED for WP-077 | `adv/hook-rebind.sh` (R1m, R2m, R3/R3m, R4/R5, R6 `vplain`/`vhook`/`vmhook`/`vu`, R8/R8m, `LD_PRELOAD`), `adv/hook-quadratic.sh` (N plugins, K keys) | the open problem of O-54 and the matrix of O-58; not required to pass now |
 
 Experiment 7 (real units at real row counts) is WP-071's acceptance test
 (§13).
@@ -1499,5 +1663,10 @@ Experiment 7 (real units at real row counts) is WP-071's acceptance test
   record checks, of the odr-use analysis and of the C canonical types;
   the model (§12.7) checks the rules, not the hasher.
 - The O-24 check itself (specified, not prototyped).
-- The hook's `dlvsym` path for versioned names and its `secure_getenv`
-  and `write`-only output (the prototype uses stdio).
+- The O-24 shapes R4/R5, `--as-needed` and R6 at static link time (the
+  re-review ran them at load time only).
+- The hook as a whole: the open problem of O-54 (R1m, R2m, R3m, R6 fail
+  on prototype 2), versioned lookup, the quadratic path at K = 10, its
+  `secure_getenv` and `write`-only output: WP-077's matrix.
+- TU-locality (O-17) on kiln's AST: N31 is shown with `typeid`
+  encodings, not with rows.

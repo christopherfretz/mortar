@@ -1,8 +1,9 @@
 # spec: the Mason metadata container (`mortar_meta`)
 
-**Status: draft (WP-070, revision 1 after the adversarial review
-`briefs/reviews/review-070-meta-odr.md`; awaiting the operator's
-decisions in `spec/odr.md` §15).** The container is shared with
+**Status: final draft (WP-070, revision 2 after the adversarial review
+and re-review, `briefs/reviews/review-070-meta-odr.md` and
+`review-070-meta-odr-re.md`; the container is accepted for
+implementation; the operator's open decisions are `spec/odr.md` §15).** The container is shared with
 kiln (writer), hod (carrier) and tuck (future reader); the parts that bind
 them are marked **[kiln]**, **[hod]**, **[tuck]** and go to their agents
 through `spec/odr.md` §11. Rules are `MT-n`. Each rule about another tool
@@ -207,7 +208,15 @@ cost no string bytes; MT-41 measures the difference.
 `0xcbf29ce484222325`, prime `0x100000001b3`) over the name's bytes
 without the NUL. A key is an index, never an identity: every reader that
 groups rows by key confirms equality by comparing the names (`odr.md`
-O-4).
+O-4). **Versions** (one rule, also `odr.md` O-4): the name is the
+symbol's name as the object's symbol table spells it, so a version that
+`.symver` wrote into the object (`foo@V1`, `foo@@V2`) is part of the
+name and of the key; a version that a version script assigns at link
+time is not in any object and is not part of the key. It is part of the
+identity wherever it exists, in a shared object's `.dynsym` (through
+`.gnu.version`): a `.note.mason` row (`odr.md` O-51) is identified by
+(name, version node), and two rows of one name with different version
+nodes are different entities (`odr.md` O-24, O-54).
 
 **MT-14 (validity).** A unit is malformed if its magic is wrong,
 `unit_size` runs past the section or is not a multiple of 8, a block runs
@@ -435,14 +444,17 @@ staged store's row "every other section of at most 64 KiB" excludes
 containers (MT-6's predicate); a container is never resident; when a
 check needs it, `mortar_meta` reads it with positioned reads
 (`copy_to`-style, `read_exact_at`) into memory it owns for the check's
-duration. One case is not covered by the exclusion and is stated, not
-hidden: an object of at most 64 KiB is read whole in one read today
-(`input.md` §11.1, second row), container included; splitting that read
-would cost every small Mason object a second read. A-8 keeps the single
-read and T-MT-42 bounds it (below); the operator may instead rule that a
-small file with a container is read around it (`odr.md` Q15). The cost
-the rule leaves is the file's size on disk and in the page cache of
-whoever wrote it.
+duration. This holds for every file, small ones included: with
+`--odr=off` (and in the default mode while no record-based check is on)
+an object of at most 64 KiB that `input.md` §11.1 would read whole in
+one read is read around its container (its headers first, then the
+ranges before and after the container), so that no container byte is
+read: a small Mason object pays one or two reads more, which the
+operator's rule accepts (`odr.md` Q15, withdrawn). When a check that needs the
+container is on, a small file is read whole in one read, container
+included (it is then needed). T-MT-42 checks both. The cost the rule
+leaves is the file's size on disk and in the page cache of whoever
+wrote it.
 
 ## 11. The container in mortar's outputs
 
@@ -470,7 +482,7 @@ incremental links (`spec/incr.md` keeps state in its own file).
 
 **MT-33 (static executables).** As MT-31 without a table: a static
 executable has no other module to disagree with, and the static check
-has seen every definition (`odr.md` O-54).
+has seen every definition (`odr.md` O-20).
 
 ## 12. Tests
 
@@ -492,9 +504,8 @@ has seen every definition (`odr.md` O-54).
   header, random contents) succeeds without a warning and produces the
   same output as with the sections removed; and the store's byte counter
   (`spec/input.md` §11, a test-only counter of bytes read per file range)
-  shows **zero** bytes read from any container range of an object larger
-  than 64 KiB, and, for an object of at most 64 KiB, one read of the
-  whole file as without the container. With a check on that needs the
+  shows **zero** bytes read from any container range of any object,
+  objects of at most 64 KiB included. With a check on that needs the
   container, the counter shows each container read once.
 - **T-MT-5**: MT-5's table, re-run on the harness's tool versions
   (binutils, llvm, elfutils): a changed row fails the test and is a spec
