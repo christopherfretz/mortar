@@ -28,8 +28,8 @@ fn demangled(diagnostic: &Diagnostic) -> String {
     diagnostic.render(&Style { prog: "ld", color: false, demangle: &toy_demangler })
 }
 
-// spec: diag.md §2.3 (each form, and a file inside the section and symbol
-// forms is either file form)
+// spec: diag.md §2.3 (each form, and a file inside the section, symbol and
+// record forms is either file form)
 #[test]
 fn place_forms() {
     let object = FileRef::new("dir/foo.o");
@@ -57,7 +57,18 @@ fn place_forms() {
         text(Place::section(object.clone(), ".bss", u64::MAX)),
         "dir/foo.o:(.bss+0xffffffffffffffff)"
     );
-    assert_eq!(text(Place::symbol(object, "main")), "dir/foo.o:(main)");
+    assert_eq!(text(Place::symbol(object.clone(), "main")), "dir/foo.o:(main)");
+    // The record form (WP-073): kept marker and source position optional.
+    let at = Some(("h.h".to_owned(), 3));
+    let f = Some("f".to_owned());
+    assert_eq!(
+        text(Place::record(object.clone(), f.clone(), true, at.clone())),
+        "dir/foo.o:(f) (kept), at h.h:3"
+    );
+    assert_eq!(text(Place::record(member.clone(), f, false, None)), "/usr/lib/libx.a(y.o):(f)");
+    assert_eq!(text(Place::record(object.clone(), None, false, at)), "dir/foo.o, at h.h:3");
+    let no_line = Some(("h.h".to_owned(), 0));
+    assert_eq!(text(Place::record(object, None, true, no_line)), "dir/foo.o (kept), at h.h");
     assert_eq!(text(Place::symbol(member, "_start")), "/usr/lib/libx.a(y.o):(_start)");
     assert_eq!(text(Place::argument("--entry=main")), "argument '--entry=main'");
     assert_eq!(text(Place::argument("-e main")), "argument '-e main'");

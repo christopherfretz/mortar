@@ -82,6 +82,7 @@ never concatenate a place into a string. The forms and their text:
 | symbol | file, symbol-table name | `foo.o:(main)` |
 | argument | the argument's text | `argument '--entry=main'` |
 | script | path, line, column | `libc.so:5:9` |
+| record | file, symbol-table name (optional), kept, source path and line (optional) | `foo.o:(f) (kept), at h.h:3`; `foo.o, at h.h:3` |
 
 - A "file" inside the section and symbol forms is either file form, so
   `libx.a(y.o):(.text+0x10)`.
@@ -95,6 +96,11 @@ never concatenate a place into a string. The forms and their text:
 - The argument's text is what identifies it to the user: one argument
   (`--entry=main`) or an option and its separate value (`-e main`).
 - Script lines and columns start at 1. A column counts bytes.
+- The record form is a Mason metadata record's (`spec/odr.md` §9.1,
+  WP-073): `(kept)` when the file's copy is the one the link keeps, and
+  `, at {path}:{line}` from the record's own source position (`:{line}`
+  left out when the record gives line 0). Its name goes through the hook
+  of §5.4 like the symbol form's.
 
 `Place` is `#[non_exhaustive]`: §9 lists the forms that are planned.
 
@@ -199,10 +205,17 @@ is added before or after it.
 | `versioned-export` | `VersionedExport { name, version }` | `versioned definition {name}@@{version} cannot be exported (version definitions are not supported)` | own (`spec/dyn.md` D-27: GNU ld writes a verdef, lld and mold export it unversioned; M4) |
 | `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | own |
 | `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | own |
+| `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | own (WP-073) |
 | `odr-contents-mismatch` | `OdrContentsMismatch { name }` | `{name} has different contents in different files` | own (`spec/odr.md` §8.1 W4; WP-072) |
+| `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | own (WP-073) |
+| `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | own (WP-073) |
+| `odr-isa-mismatch` | `OdrIsaMismatch { name }` | `the kept copy of {name} was compiled for other target features than a translation unit that uses it` | own (WP-073) |
 | `odr-size-mismatch` | `OdrSizeMismatch { name }` | `{name} has different sizes in different files` | own |
 | `odr-strong-and-comdat` | `OdrStrongAndComdat { name }` | `{name} has a non-inline definition and an inline copy` | own |
 | `odr-symbol-type-mismatch` | `OdrSymbolTypeMismatch { name }` | `{name} is a function in one file and data in another` | own |
+| `odr-type-mismatch` | `OdrTypeMismatch { name }` | `type {name} violates the one-definition rule` | own (GCC `-Wodr`'s shape; WP-073) |
+| `odr-violation` | `OdrViolation { name }` | `{name} violates the one-definition rule` | own (GCC `-Wodr`'s shape; WP-073) |
+| `odr-vtable-rtti-mismatch` | `OdrVtableRttiMismatch { name }` | `the vtable of {name} is emitted by translation units compiled with and without RTTI` | own (WP-073) |
 | `canonical-plt-in-pie` | `CanonicalPltInPie { r_type, name }` | ``relocation {r_type} against symbol `{name}' cannot be used in a position-independent executable; recompile with -fPIE, or link with -no-pie`` | GNU ld (`spec/dyn.md` D-44) |
 | `copy-relocation-against-protected` | `CopyRelocationAgainstProtected { name, file }` | ``copy relocation against non-copyable protected symbol `{name}' in {file}`` | GNU ld (`spec/dyn.md` D-18) |
 | `copy-relocation-of-zero-size` | `CopyRelocationOfZeroSize { name }` | `cannot create a copy relocation for symbol {name}` | lld (`spec/dyn.md` D-42) |
@@ -217,24 +230,17 @@ is added before or after it.
 | `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) |
 | `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
 
-The kinds of M6 (the one-definition rule, `spec/odr.md` §9.1), **not yet
-in the code**. Each row moves into the table above, at the place of its
+The kind of M6 (the one-definition rule, `spec/odr.md` §9.1) **not yet
+in the code**. Its row moves into the table above, at the place of its
 area in the order stated before the table, with the package that
-implements its kind (§3.3): the kinds of the record checks with WP-073
-(WP-071 moved the two `meta-` kinds, WP-072 the kinds of the checks on
-foreign objects). The table above stays the list of `Kind::IDS`, which a test
-compares with the code.
+implements it (§3.3): WP-076, with `--odr-check-archives` (WP-071 moved
+the two `meta-` kinds, WP-072 the kinds of the checks on foreign objects,
+WP-073 those of the record checks). The table above stays the list of
+`Kind::IDS`, which a test compares with the code.
 
 | id | variant | message | wording from |
 |---|---|---|---|
-| `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | own |
 | `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | own |
-| `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | own |
-| `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | own |
-| `odr-isa-mismatch` | `OdrIsaMismatch { name }` | `the kept copy of {name} was compiled for other target features than a translation unit that uses it` | own |
-| `odr-type-mismatch` | `OdrTypeMismatch { name }` | `type {name} violates the one-definition rule` | own (GCC `-Wodr`'s shape) |
-| `odr-violation` | `OdrViolation { name }` | `{name} violates the one-definition rule` | own (GCC `-Wodr`'s shape) |
-| `odr-vtable-rtti-mismatch` | `OdrVtableRttiMismatch { name }` | `the vtable of {name} is emitted by translation units compiled with and without RTTI` | own |
 
 ### 3.2 Notes on the kinds
 

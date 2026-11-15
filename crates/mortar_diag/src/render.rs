@@ -354,6 +354,52 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
                 "Mason metadata version {major} is not supported; its records are ignored"
             );
         }
+        Kind::OdrAbiMismatch { option, first, second } => {
+            out.push_str("translation units compiled with different ");
+            escaped(option, out);
+            out.push_str(": ");
+            escaped(first, out);
+            out.push_str(" and ");
+            escaped(second, out);
+        }
+        Kind::OdrDeclarationMismatch { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is declared with a type that does not match its definition");
+            return shown.then_some(name);
+        }
+        Kind::OdrInternalReference { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(
+                " refers to an entity with internal linkage, which differs in each translation \
+                 unit",
+            );
+            return shown.then_some(name);
+        }
+        Kind::OdrIsaMismatch { name } => {
+            out.push_str("the kept copy of ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(
+                " was compiled for other target features than a translation unit that uses it",
+            );
+            return shown.then_some(name);
+        }
+        Kind::OdrTypeMismatch { name } => {
+            out.push_str("type ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" violates the one-definition rule");
+            return shown.then_some(name);
+        }
+        Kind::OdrViolation { name } => {
+            let shown = symbol_into(name, style, out);
+            out.push_str(" violates the one-definition rule");
+            return shown.then_some(name);
+        }
+        Kind::OdrVtableRttiMismatch { name } => {
+            out.push_str("the vtable of ");
+            let shown = symbol_into(name, style, out);
+            out.push_str(" is emitted by translation units compiled with and without RTTI");
+            return shown.then_some(name);
+        }
         Kind::OdrContentsMismatch { name } => {
             let shown = symbol_into(name, style, out);
             out.push_str(" has different contents in different files");
@@ -524,6 +570,24 @@ fn place_into(place: &Place, style: &Style<'_>, out: &mut String) {
         Place::Script { path, line, column } => {
             escaped(path, out);
             let _ = write!(out, ":{line}:{column}");
+        }
+        Place::Record { file, name, kept, source } => {
+            file_into(file, out);
+            if let Some(name) = name {
+                out.push_str(":(");
+                symbol_into(name, style, out);
+                out.push(')');
+            }
+            if *kept {
+                out.push_str(" (kept)");
+            }
+            if let Some((path, line)) = source {
+                out.push_str(", at ");
+                escaped(path, out);
+                if *line != 0 {
+                    let _ = write!(out, ":{line}");
+                }
+            }
         }
     }
 }

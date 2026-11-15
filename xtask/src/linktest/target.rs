@@ -278,6 +278,8 @@ pub struct ArchTools {
     pub nm: PathBuf,
     pub objdump: PathBuf,
     pub readelf: PathBuf,
+    /// The `meta` step's tool.
+    pub objcopy: PathBuf,
     pub runner: Runner,
     /// The `requires: g++` tool.
     pub gxx: Option<PathBuf>,
@@ -328,6 +330,7 @@ impl ArchTools {
             nm: need("nm")?,
             objdump: need("objdump")?,
             readelf: need("readelf")?,
+            objcopy: need("objcopy")?,
             runner,
             gxx: find(&arch.gnu_tool(host, "g++")),
             gfortran: find(&arch.gnu_tool(host, "gfortran")),
