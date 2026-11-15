@@ -18,6 +18,8 @@ mortar_synth.workspace = true
 
 [dev-dependencies]
 mortar_a64.workspace = true
+# tests/staged.rs builds a plan from a command line.
+mortar_cli.workspace = true
 mortar_input.workspace = true
 mortar_layout.workspace = true
 mortar_resolve.workspace = true

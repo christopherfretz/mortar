@@ -122,14 +122,47 @@ names are pinned, so that a change in either tool shows up:
 
 ## 3. The object reader
 
-*Later stage (a package after WP-021; `spec/input.md` §11.3, §17).* The
-reader of this section borrows the whole file. A later stage adds a reader
-over a **parts view**: every structure is read through `resident(range) ->
-Option<&[u8]>`; a structure not inside one part is `malformed-input`; a
-section body that is not resident is reported to the caller as
-`NotResident`, which copies it with `copy_to`. Parts are disjoint and not
-adjacent, so no structure spans two. Until then `mortar_input` keeps every
-object it parses wholly resident.
+### 3.0 The parts view (WP-021b)
+
+The reader reads a [`View`]: a file of a known length of which some
+ranges, the **parts** (`Part { offset, bytes }`), are in memory
+(`spec/input.md` §11.3). Parts are sorted, disjoint and not adjacent, so
+a structure lies inside one part or in none. `View::get(start, size)`
+gives the bytes exactly when one part holds them (an empty range within
+the view always); `View::whole(bytes)`, or a view of one part covering
+the file, is the whole file; `View::sub(start, size)` is a range of one
+as a view of its own, offsets relative to it (an archive member).
+
+- `Object::parse(&[u8])` is `Object::parse_view(View::whole(..))`, with
+  no change of behaviour; `SectionTable::parse` likewise
+  (`SectionTable::parse_view`).
+- Bounds come first: every check of §3.2 to §3.9 against the file's size
+  is made against the view's length, and gives the same error as over
+  the whole file. Then residency: a structure within bounds that is not
+  inside one part (the file header, the section header table, a string,
+  symbol, relocation, group or note table, a compression header) is
+  `Error::NotResident { offset, size }` (offsets in the view). The input
+  store's rules (`spec/input.md` §11.1 (b)) make every structure the
+  readers read resident, so the error is an internal one, never a panic.
+- `Section::data()` of a section within bounds whose body is not resident
+  is `NotResident { offset, size }` with the body's range; the caller
+  copies it with the store's `copy_to`. `Section::is_resident()` says
+  which, without the error.
+- `Object::data()` and `SectionTable::file()` give the view (they gave
+  `&[u8]`); `View::as_slice()` is the whole file when it is resident.
+- Archives (`spec/archive.md`): `Archive::parse_view(View)` reads the
+  magic and the special members through the view; `Archive::headers()`
+  iterates the ordinary members' headers (`MemberHeader { header_offset,
+  name, size, location }`) without their contents, so it works over a
+  view that holds only the headers; `Archive::members()` reads each
+  member's content and is `archive::Error::NotResident` at the first that
+  is not resident. `archive::header_span(offset, raw, len)` is what a
+  staged store keeps of the header at `offset`, decoded from its 60 bytes:
+  the content's range, the bytes of it the reader decodes itself (a
+  special or BSD-named member's whole content, else none), and the next
+  header's offset; or the error the reader gives at that header.
+- Shared objects keep the whole-slice reader (§6): the input store holds
+  a shared object whole in both stores.
 
 ### 3.1 Identification
 

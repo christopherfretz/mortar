@@ -237,7 +237,12 @@ pub struct File<'s> {
     pub sections: u32,
     /// The file's entries in `sym_map`.
     pub syms: Span,
-    /// The hash of the file's bytes (`spec/input.md` §11.6).
+    /// The hash of the file's bytes (`spec/input.md` §11.6), **or
+    /// `ContentHash(0)` when it was not computed**: the staged store (the
+    /// default) does not hash unless `StoreConfig::hashes` asks it to.
+    /// A 0 is never evidence that a file is unchanged; whether the hash was
+    /// computed is the store's `hashes()`, not this value, and code that
+    /// needs one (an incremental link, M7) asks the store for it.
     pub hash: ContentHash,
 }
 

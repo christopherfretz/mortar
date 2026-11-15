@@ -16,6 +16,8 @@
 use std::fmt;
 use std::iter::FusedIterator;
 
+use crate::view::View;
+
 /// The first eight bytes of a regular archive (`spec/archive.md` §2).
 pub const MAGIC: &[u8; 8] = b"!<arch>\n";
 /// The first eight bytes of a thin archive (`spec/archive.md` §2).
@@ -37,17 +39,20 @@ pub enum Kind {
     Thin,
 }
 
-/// An archive, borrowed from the bytes of its file.
+/// An archive, borrowed from the bytes of its file: the whole file, or a
+/// parts view of it in which the front of the archive (the magic and the
+/// special members) and every member header are resident
+/// ([`Archive::parse_view`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Archive<'a> {
-    bytes: &'a [u8],
+    bytes: View<'a>,
     kind: Kind,
     /// The symbol index member, read or failed (§6.5).
     index: Option<Result<SymbolIndex<'a>, Error>>,
     long_names: Option<&'a [u8]>,
     /// Offset of the first ordinary member's header; the length of the
     /// archive when there is none.
-    first_member: usize,
+    first_member: u64,
 }
 
 impl<'a> Archive<'a> {
@@ -65,31 +70,46 @@ impl<'a> Archive<'a> {
     /// Reads the magic and the special members at the front of the archive
     /// (§5). The cost does not depend on the number of members or symbols.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
-        let kind = Self::sniff(bytes).ok_or(Error::NotAnArchive)?;
+        Self::parse_view(View::whole(bytes))
+    }
+
+    /// [`Archive::parse`] over a parts view: the same checks and errors as
+    /// long as the bytes the reader decodes are resident (the magic, the
+    /// special members, the member headers and BSD names);
+    /// [`Error::NotResident`] otherwise. Over a parts view, iterate with
+    /// [`Archive::headers`]: [`Archive::members`] gives a member's content
+    /// as a slice, which needs the whole content resident.
+    pub fn parse_view(bytes: View<'a>) -> Result<Self, Error> {
+        let magic = bytes
+            .prefix(MAGIC.len() as u64)
+            .ok_or(Error::NotResident { offset: 0, size: MAGIC.len() as u64 })?;
+        let kind = Self::sniff(magic).ok_or(Error::NotAnArchive)?;
         let mut archive =
-            Self { bytes, kind, index: None, long_names: None, first_member: MAGIC.len() };
-        let mut at = MAGIC.len();
-        if at < bytes.len() {
+            Self { bytes, kind, index: None, long_names: None, first_member: MAGIC.len() as u64 };
+        let len = bytes.len();
+        let mut at = MAGIC.len() as u64;
+        if at < len {
             let head = archive.head(at)?;
             match head.special {
                 Some(Special::LongNames) => {
-                    archive.long_names = Some(head.body());
+                    archive.long_names = Some(archive.body(&head)?);
                     at = head.next;
                 }
                 Some(Special::Index(index_kind)) => {
                     // A malformed index does not fail the archive: the
                     // linker does not need it (§6.5).
-                    archive.index = Some(SymbolIndex::parse(index_kind, at as u64, head.body()));
+                    let body = archive.body(&head)?;
+                    archive.index = Some(SymbolIndex::parse(index_kind, at, body));
                     at = head.next;
-                    if at < bytes.len() {
+                    if at < len {
                         let second = archive.head(at)?;
                         match second.special {
                             Some(Special::LongNames) => {
-                                archive.long_names = Some(second.body());
+                                archive.long_names = Some(archive.body(&second)?);
                                 at = second.next;
                             }
                             Some(Special::Index(IndexKind::Gnu)) if index_kind.is_gnu() => {
-                                return Err(Error::CoffArchive { offset: at as u64 });
+                                return Err(Error::CoffArchive { offset: at });
                             }
                             _ => {}
                         }
@@ -113,35 +133,58 @@ impl<'a> Archive<'a> {
         self.index
     }
 
+    /// The offset of the first ordinary member's header (the length of
+    /// the archive when there is none): where the front ends (§5).
+    pub fn first_member(&self) -> u64 {
+        self.first_member
+    }
+
     /// The ordinary members in file order (§7). The iterator ends after the
     /// first error.
     pub fn members(&self) -> Members<'a> {
         Members { archive: *self, next: self.first_member }
     }
 
+    /// The headers of the ordinary members in file order, without their
+    /// contents (§7): what a parts view can give. The iterator ends after
+    /// the first error.
+    pub fn headers(&self) -> Headers<'a> {
+        Headers { archive: *self, next: self.first_member }
+    }
+
     /// The ordinary member whose header starts at `header_offset`, which is
     /// what the symbol index gives (§7).
     pub fn member_at(&self, header_offset: u64) -> Result<Member<'a>, Error> {
-        let first = self.first_member as u64;
-        let end = self.bytes.len() as u64;
+        let first = self.first_member;
+        let end = self.bytes.len();
         if header_offset < first || header_offset >= end {
             return Err(Error::NoMemberAt { offset: header_offset, first, end });
         }
         if !header_offset.is_multiple_of(2) {
             return Err(Error::OddMemberOffset { offset: header_offset });
         }
-        // In range of the archive, hence of `usize`.
-        self.ordinary(header_offset as usize).map(|(member, _)| member)
+        self.ordinary(header_offset).map(|(member, _)| member)
     }
 
-    /// Decodes the header at `offset` (at most the length of the archive)
+    /// The stored bytes of a special member.
+    fn body(&self, head: &Head<'a>) -> Result<&'a [u8], Error> {
+        let Some((start, size)) = head.content else { return Ok(&[]) };
+        self.bytes.get(start, size).ok_or(Error::NotResident { offset: start, size })
+    }
+
+    /// Decodes the header at `offset` (less than the length of the archive)
     /// without resolving a long-name reference.
-    fn head(&self, offset: usize) -> Result<Head<'a>, Error> {
-        let at = offset as u64;
-        let rest = self.bytes.get(offset..).unwrap_or_default();
-        let Some((raw, after)) = rest.split_first_chunk::<HEADER>() else {
-            return Err(Error::TruncatedHeader { offset: at, available: rest.len() as u64 });
-        };
+    fn head(&self, offset: u64) -> Result<Head<'a>, Error> {
+        let at = offset;
+        let len = self.bytes.len();
+        let rest = len.saturating_sub(offset);
+        if rest < HEADER_LEN {
+            return Err(Error::TruncatedHeader { offset: at, available: rest });
+        }
+        let raw = self
+            .bytes
+            .get(offset, HEADER_LEN)
+            .ok_or(Error::NotResident { offset, size: HEADER_LEN })?;
         let terminator = &raw[TERMINATOR_FIELD];
         if terminator != b"`\n" {
             return Err(Error::BadHeaderTerminator { offset: at, found: array(terminator) });
@@ -153,7 +196,7 @@ impl<'a> Archive<'a> {
 
         // The bytes after the header belong to the member unless it is an
         // ordinary member of a thin archive.
-        let after_header = offset + HEADER;
+        let after_header = offset + HEADER_LEN;
         if self.kind == Kind::Thin && !matches!(form, Form::Special(_)) {
             let name = match form {
                 Form::Short(name) => Name::Direct(name),
@@ -164,37 +207,42 @@ impl<'a> Archive<'a> {
             };
             return Ok(Head { special: None, name, size, content: None, next: after_header });
         }
-        let available = after.len() as u64;
+        let available = len - after_header;
         if size > available {
             return Err(Error::TruncatedMember { offset: at, size, available });
         }
-        // At most `after.len()`: in range of `usize`, and the sums below
-        // stay within the archive.
-        let stored = &after[..size as usize];
-        let end = after_header + stored.len();
+        let end = after_header + size;
         // The last member's padding byte may be missing (§3).
-        let next = (end + (end & 1)).min(self.bytes.len());
+        let next = (end + (end & 1)).min(len);
 
-        let (special, name, content_start, content) = match form {
-            Form::Special(special) => (Some(special), Name::Direct(&[]), after_header, stored),
-            Form::Short(name) => (None, Name::Direct(name), after_header, stored),
+        let (special, name, content_start, content_size) = match form {
+            Form::Special(special) => (Some(special), Name::Direct(&[]), after_header, size),
+            Form::Short(name) => (None, Name::Direct(name), after_header, size),
             Form::Long { name_offset, origin } => {
-                (None, Name::Long { name_offset, origin }, after_header, stored)
+                (None, Name::Long { name_offset, origin }, after_header, size)
             }
             Form::Bsd(name_len) => {
                 if name_len > size {
                     return Err(Error::BsdNameTooLong { offset: at, name_len, size });
                 }
-                let (padded, content) = stored.split_at(name_len as usize);
+                let padded = self
+                    .bytes
+                    .get(after_header, name_len)
+                    .ok_or(Error::NotResident { offset: after_header, size: name_len })?;
                 let name = padded.iter().position(|&b| b == 0).map_or(padded, |nul| &padded[..nul]);
-                (bsd_index_named(name), Name::Direct(name), after_header + padded.len(), content)
+                (
+                    bsd_index_named(name),
+                    Name::Direct(name),
+                    after_header + name_len,
+                    size - name_len,
+                )
             }
         };
         Ok(Head {
             special,
             name,
-            size: content.len() as u64,
-            content: Some((content_start, content)),
+            size: content_size,
+            content: Some((content_start, content_size)),
             next,
         })
     }
@@ -273,10 +321,10 @@ impl<'a> Archive<'a> {
             .ok_or(Error::LongNameUnterminated { offset: at, name_offset })
     }
 
-    /// The ordinary member at `offset` and the offset of the header after
-    /// it.
-    fn ordinary(&self, offset: usize) -> Result<(Member<'a>, usize), Error> {
-        let at = offset as u64;
+    /// The header of the ordinary member at `offset` and the offset of the
+    /// header after it.
+    fn entry(&self, offset: u64) -> Result<(MemberHeader<'a>, u64), Error> {
+        let at = offset;
         let head = self.head(offset)?;
         if let Some(special) = head.special {
             return Err(Error::MisplacedSpecialMember { offset: at, special });
@@ -285,14 +333,39 @@ impl<'a> Archive<'a> {
             Name::Direct(name) => (name, None),
             Name::Long { name_offset, origin } => (self.long_name(at, name_offset)?, origin),
         };
-        let content = match (head.content, origin) {
-            (Some((start, data)), _) => Content::Inline { offset: start as u64, data },
-            (None, None) => Content::External { path: name },
+        let location = match (head.content, origin) {
+            (Some((start, _)), _) => Location::Inline { offset: start },
+            (None, None) => Location::External { path: name },
             (None, Some(header_offset)) => {
-                Content::ExternalMember { archive_path: name, header_offset }
+                Location::ExternalMember { archive_path: name, header_offset }
             }
         };
-        Ok((Member { header_offset: at, name, size: head.size, content }, head.next))
+        Ok((MemberHeader { header_offset: at, name, size: head.size, location }, head.next))
+    }
+
+    /// The ordinary member at `offset` and the offset of the header after
+    /// it.
+    fn ordinary(&self, offset: u64) -> Result<(Member<'a>, u64), Error> {
+        let (header, next) = self.entry(offset)?;
+        let content = match header.location {
+            Location::Inline { offset } => {
+                let size = header.size;
+                let data =
+                    self.bytes.get(offset, size).ok_or(Error::NotResident { offset, size })?;
+                Content::Inline { offset, data }
+            }
+            Location::External { path } => Content::External { path },
+            Location::ExternalMember { archive_path, header_offset } => {
+                Content::ExternalMember { archive_path, header_offset }
+            }
+        };
+        let member = Member {
+            header_offset: header.header_offset,
+            name: header.name,
+            size: header.size,
+            content,
+        };
+        Ok((member, next))
     }
 }
 
@@ -321,18 +394,11 @@ struct Head<'a> {
     name: Name<'a>,
     /// The size of the content: the header's size, less a BSD name.
     size: u64,
-    /// Where the content starts in the archive, and the content; `None`
-    /// for an ordinary member of a thin archive.
-    content: Option<(usize, &'a [u8])>,
+    /// Where the content starts in the archive and its size; `None` for an
+    /// ordinary member of a thin archive.
+    content: Option<(u64, u64)>,
     /// Offset of the next header, at most the length of the archive.
-    next: usize,
-}
-
-impl<'a> Head<'a> {
-    /// The stored bytes of a special member.
-    fn body(&self) -> &'a [u8] {
-        self.content.map_or(&[], |(_, bytes)| bytes)
-    }
+    next: u64,
 }
 
 /// A BSD symbol index is a member with one of four names (§6.3).
@@ -342,6 +408,30 @@ fn bsd_index_named(name: &[u8]) -> Option<Special> {
         b"__.SYMDEF_64" | b"__.SYMDEF_64 SORTED" => Some(Special::Index(IndexKind::Bsd64)),
         _ => None,
     }
+}
+
+/// The header of an ordinary member (§7): everything [`Member`] says but
+/// its content's bytes. [`Archive::headers`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberHeader<'a> {
+    pub header_offset: u64,
+    /// The member's name. In a thin archive, the stored path (§7.2).
+    pub name: &'a [u8],
+    /// The size of the member's content in bytes.
+    pub size: u64,
+    pub location: Location<'a>,
+}
+
+/// Where the bytes of a member are, without them ([`MemberHeader`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Location<'a> {
+    /// In the archive: `size` bytes starting at `offset`.
+    Inline { offset: u64 },
+    /// Thin archive: the whole file at `path` ([`Content::External`]).
+    External { path: &'a [u8] },
+    /// Thin archive, a member of a regular archive it refers to
+    /// ([`Content::ExternalMember`]).
+    ExternalMember { archive_path: &'a [u8], header_offset: u64 },
 }
 
 /// An ordinary member (§7).
@@ -403,7 +493,7 @@ pub enum Content<'a> {
 #[derive(Debug, Clone)]
 pub struct Members<'a> {
     archive: Archive<'a>,
-    next: usize,
+    next: u64,
 }
 
 impl<'a> Iterator for Members<'a> {
@@ -428,6 +518,92 @@ impl<'a> Iterator for Members<'a> {
 }
 
 impl FusedIterator for Members<'_> {}
+
+/// The headers of the ordinary members of an archive in file order
+/// ([`Archive::headers`]).
+#[derive(Debug, Clone)]
+pub struct Headers<'a> {
+    archive: Archive<'a>,
+    next: u64,
+}
+
+impl<'a> Iterator for Headers<'a> {
+    type Item = Result<MemberHeader<'a>, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let end = self.archive.bytes.len();
+        if self.next >= end {
+            return None;
+        }
+        Some(match self.archive.entry(self.next) {
+            Ok((header, next)) => {
+                self.next = next;
+                Ok(header)
+            }
+            Err(error) => {
+                self.next = end;
+                Err(error)
+            }
+        })
+    }
+}
+
+impl FusedIterator for Headers<'_> {}
+
+/// What a staged reader must keep resident of the header at `offset` of a
+/// regular archive of `len` bytes, decoded from `raw`, the header's bytes
+/// (60, or fewer at the end of the archive): `Ok` with the header's span
+/// when the reader accepts the header's framing, `Err` with the error the
+/// reader gives at that header otherwise (`spec/input.md` §11.3).
+pub fn header_span(offset: u64, raw: &[u8], len: u64) -> Result<HeaderSpan, Error> {
+    if raw.len() < HEADER || len.saturating_sub(offset) < HEADER_LEN {
+        return Err(Error::TruncatedHeader { offset, available: len.saturating_sub(offset) });
+    }
+    let raw = &raw[..HEADER];
+    let terminator = &raw[TERMINATOR_FIELD];
+    if terminator != b"`\n" {
+        return Err(Error::BadHeaderTerminator { offset, found: array(terminator) });
+    }
+    let size_field = &raw[SIZE_FIELD];
+    let size = decimal(trim_spaces(size_field))
+        .ok_or(Error::BadSize { offset, field: array(size_field) })?;
+    let after_header = offset + HEADER_LEN;
+    let available = len - after_header;
+    if size > available {
+        return Err(Error::TruncatedMember { offset, size, available });
+    }
+    let field = &raw[NAME_FIELD];
+    let word = field.iter().position(|&b| b == b' ').map_or(field, |space| &field[..space]);
+    let trimmed = trim_spaces(field);
+    let bsd_name = word.strip_prefix(b"#1/").and_then(decimal).unwrap_or(0).min(size);
+    let special = matches!(word, b"/" | b"/SYM64/" | b"//")
+        || trimmed == b"__.SYMDEF SORTED"
+        || bsd_index_named(trimmed).is_some()
+        || bsd_name > 0;
+    let end = after_header + size;
+    Ok(HeaderSpan {
+        content: after_header,
+        size,
+        front: if special { size } else { bsd_name },
+        next: (end + (end & 1)).min(len),
+    })
+}
+
+/// [`header_span`]'s answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderSpan {
+    /// Where the member's stored bytes start (after the 60-byte header).
+    pub content: u64,
+    /// The number of stored bytes.
+    pub size: u64,
+    /// How many of the stored bytes the reader decodes itself and must
+    /// find resident: all of a special member (a symbol index or the
+    /// long-name table, and a BSD-named member, whose name may make it an
+    /// index), the BSD name of any other member, 0 for an ordinary one.
+    pub front: u64,
+    /// The offset of the next header.
+    pub next: u64,
+}
 
 /// The form of a symbol index (§6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -767,9 +943,13 @@ pub enum Error {
     NoMemberAt { offset: u64, first: u64, end: u64 },
     /// [`Archive::member_at`]: the offset is odd (§7).
     OddMemberOffset { offset: u64 },
+    /// Over a parts view: bytes the reader decodes are not resident (an
+    /// internal error of the store that made the view).
+    NotResident { offset: u64, size: u64 },
 }
 
 impl fmt::Display for Error {
+    #[allow(clippy::too_many_lines)] // one arm per error
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotAnArchive => {
@@ -869,6 +1049,9 @@ impl fmt::Display for Error {
             ),
             Self::OddMemberOffset { offset } => {
                 write!(f, "no member header at offset {offset}: member headers are at even offsets")
+            }
+            Self::NotResident { offset, size } => {
+                write!(f, "{size} bytes at offset {offset} are not resident (an input store error)")
             }
         }
     }

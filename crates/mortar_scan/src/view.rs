@@ -6,16 +6,18 @@
 //! it (a pure function of the file, so the schedule never shows), the
 //! parsed symbol table and the file's mapping marks.
 
+use std::cell::RefCell;
 use std::sync::OnceLock;
 
 use mortar_arch::{Arch, Records, Reloc, ScanTables, Site, SymFacts, SymNames, TargetKind};
 use mortar_core::assignment::Assignment;
-use mortar_core::inputs::{Inputs, Reader};
+use mortar_core::inputs::{CopyError, Inputs, Reader};
 use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution, Verdict};
 use mortar_core::{FileId, Liveness, SectionId, SymEntry, SymKey, SymKind, SymbolId};
+use mortar_diag::{Diagnostic, FileRef, Kind};
 use mortar_elf::consts::{SHT_REL, SHT_RELA, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS};
 use mortar_elf::{
-    Object, Rel, Rela, SectionIndex, Sym, SymbolIndex, SymbolSection, SymbolTable, Table,
+    Object, Rel, Rela, Section, SectionIndex, Sym, SymbolIndex, SymbolSection, SymbolTable, Table,
 };
 
 use crate::{CodeProof, Mark, Mismatch, ScanInputs, ScanOptions};
@@ -410,37 +412,204 @@ impl RecTable<'_> {
     }
 }
 
-/// The records of relocation section `rel` of `obj`, with its `sh_link`
-/// and `sh_info`, or why they cannot be read.
-pub(crate) fn rec_table<'s>(
+/// Why the bytes of a section could not be had (`spec/input.md` §11.3,
+/// §11.5). None of these is ever read as "no bytes".
+#[derive(Debug, Clone)]
+pub(crate) enum ReadFail {
+    /// `mortar_elf`'s statement: `malformed-input`.
+    Malformed(String),
+    /// The copy of bytes that are not resident failed: `input-changed`,
+    /// or `cannot-open-file` for a read error.
+    Copy(CopyError),
+    /// Bytes the store's rules keep resident, or a file without a store
+    /// entry, were not resident: `internal-error`.
+    Internal(String),
+}
+
+impl ReadFail {
+    fn elf(e: mortar_elf::Error) -> Self {
+        Self::Malformed(e.to_string())
+    }
+
+    /// The diagnostic, before its place.
+    pub fn diagnostic(&self, path: &FileRef) -> Diagnostic {
+        match self {
+            Self::Malformed(what) => Diagnostic::error(Kind::Malformed { what: what.clone() }),
+            Self::Copy(CopyError::Changed) => Diagnostic::error(Kind::InputChanged),
+            Self::Copy(CopyError::Read(errno)) => {
+                let reason = if errno.0 == 0 {
+                    "the read failed".to_owned()
+                } else {
+                    mortar_diag::os_reason(&std::io::Error::from_raw_os_error(errno.0))
+                };
+                Diagnostic::error(Kind::CannotOpenFile { path: path.path().to_owned(), reason })
+            }
+            Self::Copy(CopyError::OutOfRange) => Diagnostic::error(Kind::InternalError {
+                what: format!("scan: a copy outside {}", path.path()),
+            }),
+            Self::Internal(what) => Diagnostic::error(Kind::InternalError { what: what.clone() }),
+        }
+    }
+}
+
+/// The scan's buffers for bytes the store does not hold resident: the
+/// records of a relocation section and the contents of the section they
+/// apply to. One per worker, reused unit after unit ([`with_bufs`]).
+#[derive(Debug, Default)]
+pub(crate) struct Bufs {
+    pub rel: Vec<u8>,
+    pub sec: Vec<u8>,
+}
+
+thread_local! {
+    static BUFS: RefCell<Bufs> = RefCell::default();
+}
+
+/// Runs `f` with this worker's [`Bufs`] (fresh ones if they are in use).
+pub(crate) fn with_bufs<T>(f: impl FnOnce(&mut Bufs) -> T) -> T {
+    BUFS.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut b) => f(&mut b),
+        Err(_) => f(&mut Bufs::default()),
+    })
+}
+
+/// Copies `offset..offset + size` of `file` into `buf` (one `copy_to`).
+fn copy(
+    view: &View<'_, '_>,
+    file: FileId,
+    offset: u64,
+    size: u64,
+    buf: &mut Vec<u8>,
+) -> Result<(), ReadFail> {
+    if view.inputs.files[file].bytes.is_none() {
+        return Err(ReadFail::Internal(format!(
+            "scan: {size} bytes at offset {offset} of file {} are not resident and it has no store entry",
+            file.0
+        )));
+    }
+    let len = usize::try_from(size).map_err(|_| ReadFail::Copy(CopyError::OutOfRange))?;
+    buf.clear();
+    buf.resize(len, 0);
+    let end = offset.checked_add(size).ok_or(ReadFail::Copy(CopyError::OutOfRange))?;
+    view.inputs.copy_to(file, offset..end, buf).map_err(ReadFail::Copy)
+}
+
+/// The contents of section `s` of `file`: the resident slice, or one
+/// `copy_to` into `buf` when they are not resident (`spec/input.md`
+/// §11.3).
+pub(crate) fn contents<'b, 's: 'b>(
+    view: &View<'_, 's>,
+    file: FileId,
+    s: &Section<'s>,
+    buf: &'b mut Vec<u8>,
+) -> Result<&'b [u8], ReadFail> {
+    match s.data() {
+        Ok(d) => Ok(d),
+        Err(mortar_elf::Error::NotResident { offset, size }) => {
+            copy(view, file, offset, size, buf)?;
+            let buf: &'b Vec<u8> = buf;
+            Ok(buf)
+        }
+        Err(e) => Err(ReadFail::elf(e)),
+    }
+}
+
+/// The records of relocation section `rel` of `file`, with its `sh_link`
+/// and `sh_info`, or why they cannot be read: resident, or copied into
+/// `buf` (one `copy_to`) when the store does not hold them (the
+/// relocations of a non-alloc section, `spec/input.md` §11.1).
+pub(crate) fn rec_table<'b, 's: 'b>(
+    view: &View<'_, 's>,
+    file: FileId,
     obj: &Object<'s>,
     rel: SectionIndex,
-) -> Result<(RecTable<'s>, SectionIndex, SectionIndex), String> {
-    let s = obj.section(rel).map_err(|e| e.to_string())?;
-    match s.sh_type() {
-        SHT_RELA => {
-            let r = s.rela().map_err(|e| e.to_string())?;
-            Ok((RecTable::Rela(r.records()), r.symtab(), r.target()))
+    buf: &'b mut Vec<u8>,
+) -> Result<(RecTable<'b>, SectionIndex, SectionIndex), ReadFail> {
+    let s = obj.section(rel).map_err(ReadFail::elf)?;
+    let rela = match s.sh_type() {
+        SHT_RELA => true,
+        SHT_REL => false,
+        t => {
+            return Err(ReadFail::Malformed(format!(
+                "section {rel} applies relocations but has type {t:#x}"
+            )));
         }
-        SHT_REL => {
-            let r = s.rel().map_err(|e| e.to_string())?;
-            Ok((RecTable::Rel(r.records()), r.symtab(), r.target()))
+    };
+    let resident = if rela {
+        s.rela().map(|r| (RecTable::Rela(r.records()), r.symtab(), r.target()))
+    } else {
+        s.rel().map(|r| (RecTable::Rel(r.records()), r.symtab(), r.target()))
+    };
+    match resident {
+        Ok(t) => Ok(t),
+        Err(mortar_elf::Error::NotResident { offset, size }) => {
+            copy(view, file, offset, size, buf)?;
+            let buf: &'b Vec<u8> = buf;
+            if rela {
+                let r = s.rela_in(buf).map_err(ReadFail::elf)?;
+                Ok((RecTable::Rela(r.records()), r.symtab(), r.target()))
+            } else {
+                let r = s.rel_in(buf).map_err(ReadFail::elf)?;
+                Ok((RecTable::Rel(r.records()), r.symtab(), r.target()))
+            }
         }
-        t => Err(format!("section {rel} applies relocations but has type {t:#x}")),
+        Err(e) => Err(ReadFail::elf(e)),
+    }
+}
+
+/// The `r_offset` of record `record` of relocation section `rel` of
+/// `file`: from the resident records, or one `copy_to` of that record.
+pub(crate) fn rec_offset(
+    view: &View<'_, '_>,
+    file: FileId,
+    obj: &Object<'_>,
+    rel: SectionIndex,
+    record: u32,
+) -> Result<Option<u64>, ReadFail> {
+    let s = obj.section(rel).map_err(ReadFail::elf)?;
+    let resident = match s.sh_type() {
+        SHT_RELA => s.rela().map(|r| RecTable::Rela(r.records())),
+        SHT_REL => s.rel().map(|r| RecTable::Rel(r.records())),
+        t => {
+            return Err(ReadFail::Malformed(format!(
+                "section {rel} applies relocations but has type {t:#x}"
+            )));
+        }
+    };
+    match resident {
+        Ok(t) => Ok(t.raw(record).map(|r| r.r_offset)),
+        Err(mortar_elf::Error::NotResident { offset, size }) => {
+            let entsize = s.header().sh_entsize;
+            let at = u64::from(record) * entsize;
+            if at >= size {
+                return Ok(None);
+            }
+            let mut buf = Vec::new();
+            copy(view, file, offset + at, entsize, &mut buf)?;
+            let t = if s.sh_type() == SHT_RELA {
+                RecTable::Rela(Table::new(&buf, obj.class()))
+            } else {
+                RecTable::Rel(Table::new(&buf, obj.class()))
+            };
+            Ok(t.raw(0).map(|r| r.r_offset))
+        }
+        Err(e) => Err(ReadFail::elf(e)),
     }
 }
 
 /// The records of one relocation section as `mortar_arch` reads them
 /// (§3.5): each record's symbol resolved to its key.
-pub(crate) struct Recs<'v, 'a, 's> {
+pub(crate) struct Recs<'v, 'a, 's, 'b> {
     pub view: &'v View<'a, 's>,
     pub file: FileId,
     pub table: Option<&'v SymbolTable<'s>>,
-    pub records: RecTable<'s>,
-    pub bytes: &'s [u8],
+    pub records: RecTable<'b>,
+    /// The contents of the section the records apply to: resident, or
+    /// copied into the worker's [`Bufs`].
+    pub bytes: &'b [u8],
 }
 
-impl Recs<'_, '_, '_> {
+impl Recs<'_, '_, '_, '_> {
     /// The addend of a record: explicit, or read from the field (REL).
     pub fn addend(&self, raw: &Raw, h: &mortar_arch::Howto) -> i64 {
         raw.addend.unwrap_or_else(|| {
@@ -450,7 +619,7 @@ impl Recs<'_, '_, '_> {
     }
 }
 
-impl Records for Recs<'_, '_, '_> {
+impl Records for Recs<'_, '_, '_, '_> {
     fn len(&self) -> u32 {
         u32::try_from(self.records.len()).unwrap_or(u32::MAX)
     }

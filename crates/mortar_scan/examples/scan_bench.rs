@@ -12,6 +12,9 @@
 //! generated AArch64 objects written to `SCRATCH` (created; removed at
 //! the end), linked `-static`.
 //!
+//! `SCAN_STORE=resident` loads the inputs with the resident store; the
+//! default is the staged store (`spec/input.md` §11.1).
+//!
 //! Thread counts default to 1 2 4 8. Each runs in its own process, so its
 //! peak RSS is its own; each process runs the phases before the scan
 //! once and the scan `RUNS` times (default 5), reporting the median and
@@ -67,7 +70,11 @@ fn child(cwd: &Path, args: &[OsString], threads: usize, runs: usize) {
     let pool = Pool::new(threads);
     let load_before = loadavg();
     let t = Instant::now();
-    let Some(l) = support::link(cwd, args, &pool) else {
+    let policy = match std::env::var("SCAN_STORE").as_deref() {
+        Ok("resident") => mortar_input::store::StorePolicy::Resident,
+        _ => mortar_input::store::StorePolicy::Staged,
+    };
+    let Some(l) = support::link_in(cwd, args, &pool, policy) else {
         eprintln!("threads {threads}: the inputs do not load");
         std::process::exit(1);
     };
@@ -100,7 +107,7 @@ fn child(cwd: &Path, args: &[OsString], threads: usize, runs: usize) {
     #[allow(clippy::cast_precision_loss, reason = "a rate")]
     let per_s = stats.records as f64 / median.as_secs_f64();
     println!(
-        "threads {threads}: scan median {:.1} ms (min {:.1}); {:.1} M records/s; \
+        "{policy:?} threads {threads}: scan median {:.1} ms (min {:.1}); {:.1} M records/s; \
          records {}, sections {}, units {}, par calls {}, rewalked {}, events {}, diagnostics {diags} \
          (phases before: {:.0} ms, {} before-diagnostics); VmHWM {}; load {load_before} -> {}",
         ms(median),

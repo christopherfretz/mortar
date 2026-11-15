@@ -6,6 +6,7 @@ use crate::header::{FileHeader, Machine};
 use crate::raw::Class;
 use crate::section::{Section, SectionIndex, SectionIter, SectionTable};
 use crate::symbol::SymbolTable;
+use crate::view::View;
 
 /// A relocatable object (`ET_REL`) for one of the machines mortar links.
 ///
@@ -27,17 +28,28 @@ impl<'a> Object<'a> {
     /// `ET_REL`, and that the section header table and the section name
     /// string table lie within the file ([`SectionTable::parse`]).
     pub fn parse(data: &'a [u8]) -> Result<Object<'a>, Error> {
-        let header = FileHeader::parse(data)?;
+        Self::parse_view(View::whole(data))
+    }
+
+    /// [`Object::parse`] over a parts view (`spec/elf.md` §3.0): the same
+    /// checks in the same order, with the same errors, as long as the file
+    /// header, the section header table and the section name string table
+    /// are resident ([`Error::NotResident`] otherwise). Section contents
+    /// that are not resident are reported by [`Section::data`].
+    pub fn parse_view(data: View<'a>) -> Result<Object<'a>, Error> {
+        let head = data.prefix(64).ok_or(Error::NotResident { offset: 0, size: 64 })?;
+        let header = FileHeader::parse(head)?;
         let machine = Machine::of(&header)?;
         if header.e_type != ET_REL {
             return Err(Error::NotRelocatable { e_type: header.e_type });
         }
-        let sections = SectionTable::parse(data, &header)?;
+        let sections = SectionTable::parse_view(data, &header)?;
         Ok(Object { header, machine, sections })
     }
 
-    /// The whole file.
-    pub fn data(&self) -> &'a [u8] {
+    /// The file, as far as it is resident; [`View::as_slice`] gives the
+    /// whole file when it is.
+    pub fn data(&self) -> View<'a> {
         self.sections.file()
     }
 

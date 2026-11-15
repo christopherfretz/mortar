@@ -138,13 +138,38 @@ pub fn render(diags: &[(Key, Diagnostic)], policy: Policy) -> String {
 }
 
 /// The phases before and including the scan, on a command line (no
-/// program name) run in `cwd`. `None` when loading fails (its
+/// program name) run in `cwd`, under both stores (`spec/input.md`
+/// §11.1): the scan over the staged store's inputs must be the scan over
+/// the resident store's (the same demands, record index, diagnostics and
+/// statistics, and the same diagnostics before the scan); the staged
+/// link, the default, is returned. `None` when loading fails (its
 /// diagnostics are printed).
 pub fn link(cwd: &Path, args: &[OsString], pool: &Pool) -> Option<Linked> {
+    let resident = link_in(cwd, args, pool, StorePolicy::Resident);
+    let staged = link_in(cwd, args, pool, StorePolicy::Staged);
+    match (&resident, &staged) {
+        (Some(r), Some(s)) => {
+            assert_eq!(
+                Linked::picture(&r.scanned),
+                Linked::picture(&s.scanned),
+                "the scan differs between the resident and the staged store"
+            );
+            assert_eq!(r.scanned.stats, s.scanned.stats, "scan statistics differ by store");
+            let text = |l: &Linked| render(&l.before, Policy::default());
+            assert_eq!(text(r), text(s), "the phases before the scan differ by store");
+        }
+        (None, None) => {}
+        _ => panic!("loading succeeded under one store only"),
+    }
+    staged
+}
+
+/// [`link`] under one store.
+pub fn link_in(cwd: &Path, args: &[OsString], pool: &Pool, policy: StorePolicy) -> Option<Linked> {
     let parsed = mortar_cli::parse(args);
     let plan = parsed.plan;
     let mut before = parsed.diagnostics;
-    let store: &'static Store = Box::leak(Box::new(Store::new(StorePolicy::Resident)));
+    let store: &'static Store = Box::leak(Box::new(Store::new(policy)));
     let diag = Collector::new(Policy::default());
     let env = LoadEnv { cwd: cwd.to_path_buf(), pool: *pool };
     let Some(inputs) = load(&plan, &env, store, &diag) else {
