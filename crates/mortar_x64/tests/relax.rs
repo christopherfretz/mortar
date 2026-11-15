@@ -89,7 +89,7 @@ fn refused_name(e: &ScanError) -> &'static str {
     match e {
         ScanError::Refused(r) => match r.name {
             RefName::Named(n) => n,
-            other => panic!("unnamed refusal {other:?}"),
+            other @ RefName::Hex(_) => panic!("unnamed refusal {other:?}"),
         },
         other => panic!("not a refusal: {other:?}"),
     }
@@ -338,6 +338,7 @@ fn large(rex: u8, r: u8) -> Vec<u8> {
 /// The sequences of §8.3 and §8.4: (name, input form, lead type, `P`
 /// offset in the form, follower type, follower offset from `P`, output
 /// from the form's start).
+#[allow(clippy::type_complexity)]
 fn sequences() -> Vec<(&'static str, Vec<u8>, u32, usize, u32, usize, Vec<u8>)> {
     let mut d16 = D16.to_vec();
     d16.extend(T);

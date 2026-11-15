@@ -22,13 +22,14 @@
 //! objects (the relaxation sites print "N checks, 0 failures"). GNU ld's
 //! own `--emit-relocs` output is classified as §15 step 3 says.
 
-#![allow(clippy::many_single_char_names, clippy::too_many_lines)]
+#![allow(clippy::many_single_char_names, clippy::too_many_lines, clippy::struct_excessive_bools)]
 
 mod elf;
 mod sites;
 mod support;
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use elf::{
@@ -513,7 +514,7 @@ fn compare(
             let used = (forms[i].is_none() && p + 4 <= lld.len()).then(|| {
                 let f = i32::from_le_bytes(lld[p..p + 4].try_into().unwrap());
                 (sec.addr + rec.r.r_offset)
-                    .wrapping_add(f as i64 as u64)
+                    .wrapping_add(i64::from(f) as u64)
                     .wrapping_sub(rec.r.addend as u64)
             });
             let used = used.filter(|u| match got_word(img, *u) {
@@ -690,7 +691,7 @@ fn compare_object(
         let ty = s.info & 0xF;
         let in_tls =
             obj.sections.get(usize::from(s.shndx)).is_some_and(|x| x.flags & elf::SHF_TLS != 0);
-        let (kind, v, is_tls) = if s.shndx == SHN_ABS {
+        let (kind, v, thread_local) = if s.shndx == SHN_ABS {
             (TargetKind::Abs, s.value, false)
         } else if s.shndx == 0 {
             match by_name.get(s.name.as_str()) {
@@ -720,7 +721,7 @@ fn compare_object(
                 (TargetKind::Local, v, false)
             }
         };
-        if is_tls {
+        if thread_local {
             tables.tls_sym(k, v, kind)
         } else {
             tables.sym(k, v, kind)
@@ -778,8 +779,9 @@ fn compare_object(
                 let f = reference.get(p..p + 4)?;
                 (p >= 2 && reference[p - 2] == view[p - 2]).then_some(())?;
                 let f = i32::from_le_bytes(f.try_into().unwrap());
-                let g =
-                    (addr + r.r_offset).wrapping_add(f as i64 as u64).wrapping_sub(r.addend as u64);
+                let g = (addr + r.r_offset)
+                    .wrapping_add(i64::from(f) as u64)
+                    .wrapping_sub(r.addend as u64);
                 got_word(img, g).map(|_| (r.r_offset, g))
             })
             .collect();
@@ -944,7 +946,7 @@ fn got_word(img: &Image, addr: u64) -> Option<u64> {
         .iter()
         .find(|s| s.name == ".got" && s.addr <= addr && addr + 8 <= s.addr + s.size as u64)?;
     let o = (addr - s.addr) as usize;
-    (o % 8 == 0).then(|| u64_at(&img.data(s)[o..o + 8], 0))
+    o.is_multiple_of(8).then(|| u64_at(&img.data(s)[o..o + 8], 0))
 }
 
 /// x64.md §15 step 3: GNU ld's `--emit-relocs` records of `obj`'s
@@ -1051,7 +1053,6 @@ fn gnu_converted(img: &Image, obj: &Image, out: &mut BTreeMap<(u32, u32, &'stati
                 (22, 23) if op(2) == Some(0xc7) => "mov $T",
                 (22, 23) if op(2) == Some(0x8d) => "lea T",
                 (22, 23) if op(2) == Some(0x81) => "add $T",
-                (19 | 34, 23) => "LE",
                 _ => "?",
             };
             *out.entry((tin, tout, form)).or_default() += 1;
@@ -1154,7 +1155,7 @@ fn s15_apply_in_reference_layouts() {
             let exe = write_exe(&dir, &format!("{}.bfd-mortar", b.name), &bfd, &p);
             let (ok, out) = qemu(&t, &exe);
             let good = check("mortar in GNU ld's layout", ok, &out, &mut failures);
-            line += &format!(" | mortar-in-bfd {good:<5}");
+            let _ = write!(line, " | mortar-in-bfd {good:<5}");
         }
         if b.lld {
             let lld_exe = dir.join(format!("{}.lld", b.name));
@@ -1168,7 +1169,7 @@ fn s15_apply_in_reference_layouts() {
             let before = w4(&lld_rep);
             let p = compare(b.name, &img, output, &mut lld_rep);
             let exe = write_exe(&dir, &format!("{}.lld-mortar", b.name), &img, &p);
-            line += &format!(" | lld {lld_ok:<5}");
+            let _ = write!(line, " | lld {lld_ok:<5}");
             if !lld_ok && !b.sites && w4(&lld_rep) > before {
                 // W4 clobbered a byte of an instruction no record covers
                 // (`sub $0x64, %rsp`): lld's input bytes are lost there.
@@ -1176,7 +1177,7 @@ fn s15_apply_in_reference_layouts() {
             } else {
                 let (ok, out) = qemu(&t, &exe);
                 let good = check("mortar in lld's layout (rebuilt input)", ok, &out, &mut failures);
-                line += &format!(" mortar-in-lld {good:<5}");
+                let _ = write!(line, " mortar-in-lld {good:<5}");
             }
             if b.sites {
                 let obj = Image::read(&objs[0]);
@@ -1185,7 +1186,7 @@ fn s15_apply_in_reference_layouts() {
                 let exe = write_exe(&dir, &format!("{}.lld-mortar-obj", b.name), &img, &p);
                 let (ok, out) = qemu(&t, &exe);
                 let good = check("mortar in lld's layout (object)", ok, &out, &mut failures);
-                line += &format!(" mortar-obj-in-lld {good:<5}");
+                let _ = write!(line, " mortar-obj-in-lld {good:<5}");
             }
         }
         eprintln!("{line}");

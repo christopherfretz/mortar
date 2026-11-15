@@ -100,7 +100,7 @@ fn x12_every_non_tls_row_writes_its_value() {
     for (r_type, a, want, w) in cases {
         let got = match r_type {
             // The narrow types need targets they can reach.
-            12 | 13 | 14 | 15 => continue,
+            12..=15 => continue,
             _ => field(&c, r_type, a).unwrap(),
         };
         assert_eq!(got, le(want, w), "type {r_type}");

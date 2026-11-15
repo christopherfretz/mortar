@@ -50,7 +50,7 @@ fn status_counts_and_names() {
             Status::M1 => assert!(M1_TYPES.contains(&t)),
             Status::Later => later.push(t),
             Status::Refused => assert!(h.is_none(), "{t}"),
-            s => panic!("{t}: unexpected status {s:?}"),
+            s @ Status::M2 => panic!("{t}: unexpected status {s:?}"),
         }
         if let Some(h) = h {
             assert_eq!(Some(h.name), mortar_elf::reloc::x86_64::name(t), "{t}");

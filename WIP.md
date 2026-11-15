@@ -22,5 +22,8 @@
 - Q14 measured (GNU: COMMON+LCOMMON → small, .bss); x64.md X-55/Q14/§15,
   resolve.md §3.3, layout.md L-88, arch.md §3.6 updated.
 
+- examples/apply_bench.rs: x64 scan 121 M/s, apply ~100 M/s; a64 apply ~78 M/s.
+
 ## Next
-- timing example; fmt/clippy; gate; landed record; stage B after merge main.
+- gate stage A (running); then `git merge main` (WP-027c, WP-028c on main)
+  and stage B per brief items 5-8; landed record at the end.

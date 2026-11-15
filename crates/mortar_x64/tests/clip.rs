@@ -53,7 +53,7 @@ fn at<'a>(
     }
 }
 
-fn relocs_dyn<'a>(relocs: &'a [Reloc]) -> &'a dyn mortar_arch::Records {
+fn relocs_dyn(relocs: &[Reloc]) -> &dyn mortar_arch::Records {
     Box::leak(Box::new(relocs))
 }
 
@@ -72,8 +72,8 @@ fn run(c: &Case<'_>, relocs: &[Reloc], leads: bool, clip: (u64, u64)) -> Written
     let cx = FillCx { tables: c.tables, output: c.output, got_base: c.got_base, tls: c.tls };
     let howtos: Vec<_> = relocs.iter().map(|x| c.howto(x.r_type, x.r_offset)).collect();
     for fill in &mut fills {
-        for i in 0..relocs.len() {
-            let at = at(c, relocs, &howtos[i], i, leads);
+        for (i, h) in howtos.iter().enumerate() {
+            let at = at(c, relocs, h, i, leads);
             let mut o = out(c, fill, a);
             assert_eq!(o.clip(), clip);
             c.arch.apply(&cx, &at, &mut o)?;
