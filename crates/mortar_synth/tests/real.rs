@@ -15,7 +15,9 @@ use mortar_core::par::Pool;
 use mortar_core::{FileId, SectionId, SymbolId};
 use mortar_elf::consts::{SHF_GROUP, SHT_RELA};
 use mortar_elf::{Object, SymbolIndex, SymbolSection};
-use mortar_synth::eh::{CieReloc, CodeRef, EhPlan, EhSection, EhSource, InRecord, RecordKind, RelocTarget};
+use mortar_synth::eh::{
+    CieReloc, CodeRef, EhPlan, EhSection, EhSource, InRecord, RecordKind, RelocTarget,
+};
 use mortar_synth::out::Window;
 use mortar_testutil::{Scratch, run, tool};
 
@@ -107,7 +109,9 @@ fn parse(files: &[Vec<u8>]) -> Parsed {
                 let kind = if id == 0 {
                     let mine: Vec<CieReloc> = rela
                         .iter()
-                        .filter(|r| (at as u64..(at + 4 + len as usize) as u64).contains(&r.r_offset))
+                        .filter(|r| {
+                            (at as u64..(at + 4 + len as usize) as u64).contains(&r.r_offset)
+                        })
                         .filter(|r| r.r_type != 0)
                         .map(|r| CieReloc {
                             offset: (r.r_offset - at as u64) as u32,
@@ -122,14 +126,18 @@ fn parse(files: &[Vec<u8>]) -> Parsed {
                     RecordKind::Cie
                 } else {
                     let cie_off = (at + 4 - id as usize) as u32;
-                    let cie = recs.iter().position(|r: &InRecord| r.offset == cie_off).unwrap() as u32;
+                    let cie =
+                        recs.iter().position(|r: &InRecord| r.offset == cie_off).unwrap() as u32;
                     // S-38: the relocation at the initial location; R_*_NONE is none.
-                    let code = rela.iter().find(|r| r.r_offset == (at + 8) as u64 && r.r_type != 0).and_then(|r| {
-                        match target(r)? {
-                            RelocTarget::Section { section, offset } => Some(CodeRef { section, offset }),
+                    let code = rela
+                        .iter()
+                        .find(|r| r.r_offset == (at + 8) as u64 && r.r_type != 0)
+                        .and_then(|r| match target(r)? {
+                            RelocTarget::Section { section, offset } => {
+                                Some(CodeRef { section, offset })
+                            }
                             _ => None,
-                        }
-                    });
+                        });
                     let range = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().unwrap());
                     RecordKind::Fde { cie, code, empty_range: range == 0 }
                 };
@@ -137,7 +145,13 @@ fn parse(files: &[Vec<u8>]) -> Parsed {
                 at += 4 + len as usize;
             }
             let align = s.alignment().unwrap().max(1).trailing_zeros() as u8;
-            p.secs.push(EhSection { id: sid(file, s.index().0), file: FileId(file as u32), size: bytes.len() as u32, align, sh_type: s.sh_type() });
+            p.secs.push(EhSection {
+                id: sid(file, s.index().0),
+                file: FileId(file as u32),
+                size: bytes.len() as u32,
+                align,
+                sh_type: s.sh_type(),
+            });
             p.recs.push(recs);
             p.bytes.push(bytes);
         }
@@ -233,12 +247,22 @@ fn readelf_counts(readelf: &Path, file: &Path) -> (usize, usize) {
 fn dwarfdump_counts(dd: &Path, file: &Path) -> (usize, usize) {
     let out = run(dd, ["--eh-frame", file.to_str().unwrap()]);
     assert!(out.success(), "{}", out.stderr_text());
-    assert!(!out.stderr_text().contains("error") && !out.stderr_text().contains("warning"), "{}", out.stderr_text());
+    assert!(
+        !out.stderr_text().contains("error") && !out.stderr_text().contains("warning"),
+        "{}",
+        out.stderr_text()
+    );
     let t = out.stdout_text();
     (t.matches(" CIE\n").count(), t.matches(" FDE cie=").count())
 }
 
-fn check(label: &str, inputs: &[PathBuf], readelf: &Path, dd: &Path, dir: &Scratch) -> (usize, usize) {
+fn check(
+    label: &str,
+    inputs: &[PathBuf],
+    readelf: &Path,
+    dd: &Path,
+    dir: &Scratch,
+) -> (usize, usize) {
     let files: Vec<Vec<u8>> = inputs.iter().map(|p| std::fs::read(p).unwrap()).collect();
     let parsed = parse(&files);
     let diag = collector();
@@ -283,14 +307,18 @@ fn eh_frame_of_real_objects_reads_back() {
     let (c, f) = check("cfi", &objs[2..], &readelf, &dd, &dir);
     assert_eq!((c, f), (1, 2), "byte-identical CIEs merge");
     // The crt files around the C++ objects.
-    let mut all: Vec<PathBuf> = ["crt1.o", "crti.o", "crtbeginT.o"].iter().map(|n| crt(&gcc, n)).collect();
+    let mut all: Vec<PathBuf> =
+        ["crt1.o", "crti.o", "crtbeginT.o"].iter().map(|n| crt(&gcc, n)).collect();
     all.extend_from_slice(&objs);
     all.extend(["crtend.o", "crtn.o"].iter().map(|n| crt(&gcc, n)));
     let (c, f) = check("crt", &all, &readelf, &dd, &dir);
     eprintln!("crt: {c} CIEs, {f} FDEs");
     // An `ld -r` output of the C++ objects.
     let r = dir.join("r.o");
-    let out = run(&ld, ["-r", "-o", r.to_str().unwrap(), objs[0].to_str().unwrap(), objs[1].to_str().unwrap()]);
+    let out = run(
+        &ld,
+        ["-r", "-o", r.to_str().unwrap(), objs[0].to_str().unwrap(), objs[1].to_str().unwrap()],
+    );
     assert!(out.success(), "{}", out.stderr_text());
     let (c, f) = check("ld-r", std::slice::from_ref(&r), &readelf, &dd, &dir);
     eprintln!("ld -r: {c} CIEs, {f} FDEs");
