@@ -286,7 +286,15 @@ impl GotPlan {
             return fail(diag, key(0), internal("the architecture has no IRELATIVE type"));
         };
         if plt.chunks.len() != 1 || plt.call_chunk != 0 || plt.lazy_chunk != 0 {
-            return fail(diag, key(0), feature("a PLT of several sections in a dynamic output"));
+            // x86-64's IBT PLT (`.plt` + `.plt.sec`) is the only such shape;
+            // it stays refused at M2 (`spec/dyn.md` D-49, §15 Q4), and is
+            // named as such (WP-055: every input marked IBT selects it).
+            let what = if variant == PltVariant::Ibt {
+                "IBT PLT (-z ibt, -z ibtplt, or every input marked IBT) in a dynamic executable"
+            } else {
+                "a PLT of several sections in a dynamic output"
+            };
+            return fail(diag, key(0), feature(what));
         }
         let Some(lazy) = arch.lazy_target(variant) else {
             return fail(diag, key(0), feature("a dynamic PLT on this architecture"));
@@ -740,7 +748,14 @@ impl GotPlan {
         at: &GotAddrs,
         out: &mut Window<'_>,
     ) -> Result<(), (u32, FieldError)> {
-        let got_base = at.got;
+        // `SynthCx.got_base` is the GOT base of arch.md §3.1 (`Facts.got_base`):
+        // `.got.plt`'s start on x86 (x64.md X-36), where PLT0 finds
+        // `.got.plt[1]` and `[2]` (§10.3). `.got`'s start was passed before
+        // WP-055, which no static output reads (WP-055 record §2).
+        let got_base = match arch.facts().got_base {
+            GotBase::GotStart => at.got,
+            GotBase::GotPltStart => at.got_plt,
+        };
         let w = u64::from(self.word);
         if let Some(d) = &self.dynamic
             && !d.plt.is_empty()

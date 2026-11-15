@@ -1,0 +1,101 @@
+# dyn.md D-48 and D-46, C++ threads and TLS against libstdc++ and libc:
+# a `thread_local int` with dynamic initialization and a `thread_local
+# std::string` (TLS of the executable: local-exec, a TLS initialization
+# function per thread), four `std::thread`s, `std::call_once` (inline
+# code that reaches libstdc++'s TLS `_ZSt11__once_call` and
+# `_ZSt15__once_callable` by initial-exec: two `TLS_TPREL64` records,
+# D-48), and libc's `memcpy`, an `STT_GNU_IFUNC` in libc.so.6, called and
+# taken as a pointer kept in data (its address is the one the library
+# resolves, equal in both uses). PIE and `-no-pie` with `-fno-pic` code,
+# then each with `-static-libgcc` (the unwinder and its `.rodata.cst16`
+# from libgcc_eh.a; the first chunk of `.rodata` is aligned to the
+# section's alignment, layout L-5: WP-054's finding) and with
+# `-static-libstdc++ -static-libgcc` (no libstdc++.so, no libgcc_s.so).
+#
+# The difference from GNU ld's dynamic tables: in `-no-pie`, GNU ld
+# gives `memcpy` a canonical PLT (the address in `pmemcpy` is the PLT
+# entry's); mortar a symbolic `ABS64` record for the word in `.data`
+# (D-46: D-44's canonical PLT is for read-only places), so both uses see
+# libc's resolved `memcpy`.
+#
+#@ spec: dyn.md "D-48"
+#@ spec: dyn.md "D-46"
+#@ spec: layout.md "L-5"
+#@ arch: aarch64
+#@ requires: g++
+#@ anomaly(lld): A25
+
+cxx -O1 -fPIE main.cc -o main-pie.o
+cxx -O1 -fno-pic main.cc -o main-exec.o
+link g++ -pie main-pie.o -pthread -o pie
+run pie
+  stdout: once 1 main 50 inits 5 vals-ok 1 memcpy 1 eq 1
+link g++ -no-pie main-exec.o -pthread -o exec
+run exec
+  stdout: once 1 main 50 inits 5 vals-ok 1 memcpy 1 eq 1
+link g++ -pie -static-libgcc main-pie.o -pthread -o pie-sgcc
+run pie-sgcc
+  stdout: once 1 main 50 inits 5 vals-ok 1 memcpy 1 eq 1
+link g++ -no-pie -static-libgcc main-exec.o -pthread -o exec-sgcc
+run exec-sgcc
+  stdout: once 1 main 50 inits 5 vals-ok 1 memcpy 1 eq 1
+link g++ -pie -static-libstdc++ -static-libgcc main-pie.o -pthread -o pie-sall
+run pie-sall
+  stdout: once 1 main 50 inits 5 vals-ok 1 memcpy 1 eq 1
+link g++ -no-pie -static-libstdc++ -static-libgcc main-exec.o -pthread -o exec-sall
+run exec-sall
+  stdout: once 1 main 50 inits 5 vals-ok 1 memcpy 1 eq 1
+check readelf -rW pie
+  has: R_AARCH64_TLS_TPREL64 * _ZSt11__once_call@
+  has: R_AARCH64_TLS_TPREL64 * _ZSt15__once_callable@
+  has(bfd,mortar): R_AARCH64_JUMP_SLOT * memcpy@
+check readelf -rW exec
+  has: R_AARCH64_TLS_TPREL64 * _ZSt11__once_call@
+  has: R_AARCH64_TLS_TPREL64 * _ZSt15__once_callable@
+  has(mortar): R_AARCH64_ABS64 * memcpy@
+check readelf -dW exec-sgcc
+  has: (NEEDED) Shared library: [libstdc++.so.6]
+  not: libgcc_s
+check readelf -dW pie-sall
+  has: (NEEDED) Shared library: [libc.so.6]
+  not: libstdc++
+  not: libgcc_s
+
+#--- main.cc
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+// Four threads run this initializer at once: the count is atomic (a plain
+// `++` lost an update under load and printed "main 40 inits 4").
+static std::atomic<int> inits;
+static int init_val() { return (inits.fetch_add(1) + 1) * 10; }
+thread_local int tl = init_val();
+thread_local std::string tls = std::string("t") + "l";
+static std::once_flag once;
+static std::atomic<int> ran;
+using copy_fn = void *(*)(void *, const void *, std::size_t);
+copy_fn volatile pmemcpy = std::memcpy;
+
+int main() {
+  std::vector<std::thread> ts;
+  int vals[4] = {};
+  for (int i = 0; i < 4; i++)
+    ts.emplace_back([&vals, i] {
+      std::call_once(once, [] { ran++; });
+      vals[i] = tl + static_cast<int>(tls.size());
+    });
+  for (auto &t : ts) t.join();
+  char a[64], b[64];
+  std::memset(a, 'q', sizeof a);
+  pmemcpy(b, a, sizeof a);
+  std::memcpy(b + 1, a, 10);
+  std::printf("once %d main %d inits %d vals-ok %d memcpy %d eq %d\n", ran.load(), tl,
+              inits.load(), vals[0] > 10 && vals[1] > 10 && vals[2] > 10 && vals[3] > 10,
+              b[63] == 'q', pmemcpy == static_cast<copy_fn>(std::memcpy));
+  return 0;
+}
