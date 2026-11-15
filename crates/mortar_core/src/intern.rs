@@ -168,8 +168,9 @@ impl Mention {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Slot(pub u32);
 
-/// The interner is as full as its size allows: [`number`] starts again
-/// with a larger one.
+/// The interner is as full as its size allows (the key of the insert that
+/// says so may or may not be in it): the table is to be dropped, and
+/// [`number`] starts again with a larger one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Full;
 
