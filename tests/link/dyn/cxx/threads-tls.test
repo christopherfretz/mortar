@@ -70,8 +70,10 @@ check readelf -dW pie-sall
 #include <thread>
 #include <vector>
 
-static int inits;
-static int init_val() { return ++inits * 10; }
+// Four threads run this initializer at once: the count is atomic (a plain
+// `++` lost an update under load and printed "main 40 inits 4").
+static std::atomic<int> inits;
+static int init_val() { return (inits.fetch_add(1) + 1) * 10; }
 thread_local int tl = init_val();
 thread_local std::string tls = std::string("t") + "l";
 static std::once_flag once;
@@ -93,7 +95,7 @@ int main() {
   pmemcpy(b, a, sizeof a);
   std::memcpy(b + 1, a, 10);
   std::printf("once %d main %d inits %d vals-ok %d memcpy %d eq %d\n", ran.load(), tl,
-              inits, vals[0] > 10 && vals[1] > 10 && vals[2] > 10 && vals[3] > 10,
+              inits.load(), vals[0] > 10 && vals[1] > 10 && vals[2] > 10 && vals[3] > 10,
               b[63] == 'q', pmemcpy == static_cast<copy_fn>(std::memcpy));
   return 0;
 }
