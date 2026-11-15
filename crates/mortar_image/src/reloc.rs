@@ -589,9 +589,11 @@ pub(crate) fn relocate(
             proof,
             leads,
         };
-        if deferred {
+        // A deferred record's value and its check's facts: one read.
+        let (mut sym, split) = if deferred {
             let mention = r_sym.map(|s| SymEntry { file: c.file, index: SymbolIndex(s) });
-            let check = check(img, c, &at, mention);
+            let (sym, split, facts) = img.tables.record_sym_at(rec.key, mention);
+            let check = check(img, c, &at, mention, facts);
             fault |= check.fault && reports;
             if check.errored {
                 continue;
@@ -599,10 +601,12 @@ pub(crate) fn relocate(
             if let Some(w) = img.arch.unit_window(img.output, &at, img.tables) {
                 windows.push(w);
             }
-        }
+            (sym, split)
+        } else {
+            img.tables.record_sym(rec.key)
+        };
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name)
             .with_exec(c.exec);
-        let (mut sym, split) = img.tables.record_sym(rec.key);
         let value = match howto.field {
             Field::Data { bytes: width } if !sym.live => {
                 tombstone::field(img.arch, c.name, c.alloc, width).map(|v| (v, width))
@@ -673,6 +677,9 @@ struct CheckTables<'a> {
     tables: &'a dyn Tables,
     key: SymKey,
     mention: Option<SymEntry>,
+    /// `key`'s facts at `mention`, read with its value
+    /// ([`Tables::record_sym_at`]).
+    facts: Option<SymFacts>,
     missing: std::sync::atomic::AtomicBool,
 }
 
@@ -684,6 +691,11 @@ impl SymNames for CheckTables<'_> {
 
 impl ScanTables for CheckTables<'_> {
     fn sym(&self, key: SymKey) -> SymFacts {
+        if key == self.key
+            && let Some(f) = self.facts
+        {
+            return f;
+        }
         let mention = if key == self.key { self.mention } else { None };
         self.tables.scan_facts(key, mention).unwrap_or_else(|| {
             self.missing.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -739,11 +751,18 @@ impl DemandOut for Check {
 
 /// `arch.scan` of a deferred record (I-14), as the scan's walk calls it
 /// (§4.1 step 2: the record's own mention for an undefined key's type).
-fn check(img: &Image<'_>, c: &Clip<'_>, at: &RelocAt<'_>, mention: Option<SymEntry>) -> Check {
+fn check(
+    img: &Image<'_>,
+    c: &Clip<'_>,
+    at: &RelocAt<'_>,
+    mention: Option<SymEntry>,
+    facts: Option<SymFacts>,
+) -> Check {
     let tables = CheckTables {
         tables: img.tables,
         key: at.key,
         mention,
+        facts,
         missing: std::sync::atomic::AtomicBool::new(false),
     };
     let mut out = Check {

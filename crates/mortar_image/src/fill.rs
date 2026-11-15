@@ -66,6 +66,18 @@ pub trait Tables: FillTables {
         let _ = (key, mention);
         None
     }
+
+    /// [`Tables::record_sym`] and [`Tables::scan_facts`] of one deferred
+    /// record (I-14) together, so that tables which read the key's symbol
+    /// for both can read it once (WP-032f).
+    fn record_sym_at(
+        &self,
+        key: SymKey,
+        mention: Option<mortar_core::SymEntry>,
+    ) -> (mortar_arch::SymValue, bool, Option<mortar_arch::SymFacts>) {
+        let (value, split) = self.record_sym(key);
+        (value, split, self.scan_facts(key, mention))
+    }
 }
 
 /// What merged chunks are written from (I-38): phase 50's fragment order
