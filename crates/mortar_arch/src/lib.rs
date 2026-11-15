@@ -19,10 +19,13 @@
 //!   and keys (§3.4, §7).
 //! - [`error`]: refusals by name, field errors, incompatibility reasons
 //!   and the texts of §10.
+//! - [`dead`]: references to targets in sections that are not live, and
+//!   the tombstone (§3.4, §3.11).
 #![forbid(unsafe_code)]
 
 pub mod class;
 pub mod cx;
+pub mod dead;
 pub mod diag;
 pub mod error;
 pub mod flags;
@@ -33,15 +36,17 @@ pub mod vocab;
 
 pub use class::{ClassOutcome, Demand, DemandClass, PlaceFacts, class_outcome};
 pub use cx::{
-    DemandOut, DemandSink, FillCx, FillTables, OutputCx, PatchCx, Records, Reloc, RelocAt, ScanCx,
-    ScanError, ScanTables, SectionOut, SymFacts, SymNames, SymValue, SynthCx,
+    DemandOut, DemandSink, EventClass, FillCx, FillTables, OutputCx, PatchCx, Records, Reloc,
+    RelocAt, ScanCx, ScanError, ScanTables, SectionOut, SymFacts, SymNames, SymValue, SynthCx,
 };
+pub use dead::{DeadRef, dead_reference, is_debug_name, tombstone};
 pub use error::{FieldError, Incompatible, Range, RefName, Refusal};
 pub use flags::{DemandFlags, GlobalFlags};
 pub use seq::{Code, ErratumSite, Proof, ProofRun, UnitWindow, Unproved};
 pub use shapes::{
     Branch, DynRole, EhEncodings, Erratum, Facts, GotBase, GotShape, PltChunk, PltPart, PltShape,
     PltVariant, PropMerge, Reach, RelForm, ThunkShape, TlsAbi, TlsBlock, TlsVariant, Weak0Rule,
+    max_window,
 };
 pub use vocab::{
     AddendRule, Base, Check, Field, Howto, Implicit, Minus, OutputKind, Site, SlotKind, Status,
@@ -103,6 +108,15 @@ pub trait Arch: Sync + 'static {
         let _ = (output, at, names);
         false
     }
+    /// §3.5: the number of records from `i` that a sequence recognized at
+    /// `i` may consume, 1 for a record that starts no sequence (and for an
+    /// `i` past the end). It reads only the records. The scan driver does
+    /// not split a section's records between blocks inside an extent
+    /// (`spec/image.md` §4.1).
+    fn sequence_extent(&self, records: &dyn Records, i: u32) -> u32 {
+        let _ = (records, i);
+        1
+    }
 
     /// §3.7.
     fn got(&self) -> &'static GotShape;
@@ -133,6 +147,10 @@ pub trait Arch: Sync + 'static {
         out: &mut Vec<ErratumSite>,
     ) -> Result<(), Unproved>;
     fn erratum_in_place(&self, e: Erratum, cx: &PatchCx) -> bool;
+    /// The size and alignment of an erratum patch (§3.7), as `thunk()`
+    /// gives a thunk's; `None` for an erratum the architecture does not
+    /// fix.
+    fn patch(&self, e: Erratum) -> Option<&'static ThunkShape>;
     /// §6 step 1: the reach of each of the two branches between an
     /// erratum site's final word and its patch (`b patch` from `F`, and the
     /// patch's branch back to `F + 4`).
@@ -145,18 +163,14 @@ pub trait Arch: Sync + 'static {
     fn eh(&self) -> &'static EhEncodings;
     /// §3.10.
     fn dyn_type(&self, role: DynRole) -> Option<u32>;
-    /// §3.11: the value written for a relocation in a non-alloc section
-    /// against a dead target.
-    fn tombstone(&self, section_name: &[u8]) -> u64;
+    /// §3.11: the value written, truncated to the field, for a relocation
+    /// in a non-alloc section with a debug name against a dead target:
+    /// [`tombstone`] of the name and `Facts.class`.
+    fn tombstone(&self, section_name: &[u8]) -> u64 {
+        tombstone(section_name, self.facts().class)
+    }
     /// §3.12.
     fn weak0(&self, h: &Howto) -> Weak0Rule;
     /// §3.13.
     fn property_merge(&self, pr_type: u32) -> Option<PropMerge>;
-}
-
-/// The tombstone of §3.11, the same on all three targets: 1 for
-/// `.debug_ranges` and `.debug_loc`, 0 for every other section.
-#[must_use]
-pub fn tombstone(section_name: &[u8]) -> u64 {
-    u64::from(matches!(section_name, b".debug_ranges" | b".debug_loc"))
 }

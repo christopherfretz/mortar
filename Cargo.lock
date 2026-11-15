@@ -73,6 +73,9 @@ version = "0.0.0"
 [[package]]
 name = "mortar_digest"
 version = "0.0.0"
+dependencies = [
+ "mortar_testutil",
+]
 
 [[package]]
 name = "mortar_elf"
@@ -132,6 +135,7 @@ dependencies = [
 name = "mortar_merge"
 version = "0.0.0"
 dependencies = [
+ "mortar_a64",
  "mortar_arch",
  "mortar_core",
  "mortar_diag",
