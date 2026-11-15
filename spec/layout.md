@@ -892,10 +892,13 @@ order of the output sections themselves is in §10.
   `st_shndx` is the index of the output section of that chunk. A value
   at the end of a section uses that section's index. When the anchor is
   a header chunk (file header, program headers), the index is 1, the
-  first section (lld). Binding is `STB_GLOBAL` (GNU and lld). Visibility
-  is `STV_HIDDEN` for the `PROVIDE_HIDDEN` names of GNU's script, and
-  `STV_DEFAULT` otherwise. `__start_`/`__stop_` are `STV_PROTECTED`
-  (GNU, lld; mold makes them local). Type: `STT_NOTYPE`, except
+  first section (lld). Layout writes only the value; binding and
+  visibility are `spec/resolve.md` §8.1's column, and their `.symtab`
+  form is `spec/synth.md` S-77's: the names §8.1 marks local, hidden are
+  `STB_LOCAL` with `STV_HIDDEN` in the linker's block (lld; GNU ld
+  writes them `STB_LOCAL`, `STV_DEFAULT`), the others `STB_GLOBAL`,
+  `STV_DEFAULT`, and `__start_`/`__stop_` `STB_GLOBAL`, `STV_PROTECTED`
+  (GNU, lld; mold makes every one local). Type: `STT_NOTYPE`, except
   `_TLS_MODULE_BASE_` (L-98).
 - **L-92 [C]** "End" means the end of the content, the last chunk's
   `size`, never its capacity: every end symbol (`etext`, `_edata`,
