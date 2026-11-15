@@ -22,11 +22,28 @@ fn load_in<S: AsRef<OsStr>>(
     args: &[S],
     threads: usize,
 ) -> (Option<Inputs<'static>>, Report) {
-    let store: &'static Store = Box::leak(Box::new(Store::new(StorePolicy::Resident)));
-    let diag = Collector::new(Policy::default());
-    let env = LoadEnv { cwd: cwd.to_path_buf(), pool: Pool::new(threads) };
-    let inputs = load(&common::plan(args), &env, store, &diag);
-    (inputs, diag.finish())
+    // Under every store (§11.1): the same table, as text without what
+    // differs by design (common::mask), and the same report.
+    let mut last: Option<(Option<Inputs<'static>>, Report)> = None;
+    let mut first: Option<(StorePolicy, String)> = None;
+    for policy in common::policies() {
+        let store: &'static Store = common::leaked(policy);
+        let diag = Collector::new(Policy::default());
+        let env = LoadEnv { cwd: cwd.to_path_buf(), pool: Pool::new(threads) };
+        let inputs = load(&common::plan(args), &env, store, &diag);
+        let report = diag.finish();
+        let print = common::mask(&format!("{inputs:?}\n{:?}", report.diagnostics()));
+        match &first {
+            None => first = Some((policy, print)),
+            Some((p0, f)) => assert!(
+                *f == print,
+                "the {p0:?} and {policy:?} stores disagree:\n{}",
+                common::first_difference(f, &print)
+            ),
+        }
+        last = Some((inputs, report));
+    }
+    last.expect("a store")
 }
 
 fn ids(report: &Report) -> Vec<&'static str> {

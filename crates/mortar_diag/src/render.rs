@@ -178,6 +178,12 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(": ");
             escaped(reason, out);
         }
+        Kind::CannotWriteOutput { path, reason } => {
+            out.push_str("cannot write output file ");
+            escaped(path, out);
+            out.push_str(": ");
+            escaped(reason, out);
+        }
         Kind::DuplicateSoname { soname } => {
             out.push_str("DT_SONAME '");
             escaped(soname, out);
@@ -221,6 +227,10 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
         }
         Kind::Malformed { what } => escaped(what, out),
         Kind::UnknownFileType => out.push_str(NOT_RECOGNIZED),
+        Kind::UnknownProperty { path, pr_type } => {
+            escaped(path, out);
+            let _ = write!(out, ": unsupported GNU_PROPERTY_TYPE {pr_type:#x}; property dropped");
+        }
         Kind::ArchiveBackref { name } => {
             out.push_str("backward reference to an archive member: ");
             return symbol_into(name, style, out).then_some(name);

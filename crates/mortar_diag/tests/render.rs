@@ -258,6 +258,10 @@ fn control_characters_are_made_visible() {
             format!("cannot open output file {shown}: {shown}"),
         ),
         (
+            Kind::CannotWriteOutput { path: h(), reason: h() },
+            format!("cannot write output file {shown}: {shown}"),
+        ),
+        (
             Kind::LibraryNotFound { name: h() },
             format!("cannot find -l{shown}: No such file or directory"),
         ),
@@ -328,6 +332,7 @@ fn samples() -> Vec<Diagnostic> {
             Kind::UnknownOption { option: s(x) },
             Kind::CannotOpenFile { path: s(x), reason: s(x) },
             Kind::CannotOpenOutput { path: s(x), reason: s(x) },
+            Kind::CannotWriteOutput { path: s(x), reason: s(x) },
             Kind::AmbiguousSysrootPath { spelling: s(x) },
             Kind::DuplicateSoname { soname: s(x) },
             Kind::IgnoredMember { what: s(x) },
@@ -341,6 +346,7 @@ fn samples() -> Vec<Diagnostic> {
             Kind::StaticLinkOfSharedObject { path: s(x) },
             Kind::Malformed { what: s(x) },
             Kind::UnknownFileType,
+            Kind::UnknownProperty { path: s(x), pr_type: u32::MAX },
             Kind::ArchiveBackref { name: s(x) },
             Kind::ArchiveChoice { name: s(x) },
             Kind::ComdatMismatch { name: s(x), signature: s(x) },

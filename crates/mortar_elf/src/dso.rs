@@ -40,6 +40,7 @@ pub enum Entry {
 /// is the error of that part's accessor only.
 #[derive(Debug, Clone, Copy)]
 pub struct SharedObject<'a> {
+    data: &'a [u8],
     header: FileHeader,
     machine: Machine,
     entry: Entry,
@@ -114,6 +115,7 @@ impl<'a> SharedObject<'a> {
             Entry::Dynamic => by_dynamic(&segments, header.class),
         };
         Ok(SharedObject {
+            data,
             header,
             machine,
             entry,
@@ -129,7 +131,7 @@ impl<'a> SharedObject<'a> {
 
     /// The whole file.
     pub fn data(&self) -> &'a [u8] {
-        self.sections.file()
+        self.data
     }
 
     /// The file header.

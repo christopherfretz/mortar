@@ -124,14 +124,31 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   name, not an order: `Placement.order` (layout §10) is the order.
   `.comment` is not in the list: it is a merged chunk with a piece of
   the internal file (§9).
-- **S-4 [C] (divisible chunks).** The image phase may fill these
-  synthetic chunks in parallel by sub-range (model §5 "a record range
-  of one"): `.eh_frame` by record range, `.symtab` and `.strtab` by
-  file, `.got` by slot range, `.rela.plt` and `.plt` by entry range. The
-  others are one unit each. A unit's bytes depend only on the tables and
-  addresses; no unit reads another unit's output, with one exception the
-  writer orders explicitly: the build id (S-92), computed over the
-  finished image.
+- **S-4 [C] (division).** Each chunk declares its `Division`
+  (`spec/image.md` §13, I-104) through the `SynthChunk` interface
+  (`size`, `division`, `write(cx, range, out)`, `sealed`). `Divisible`
+  chunks (`.eh_frame`, `.symtab`, `.strtab`, `.symtab_shndx`, `.got`,
+  `.got.plt`, `.rela.plt`, `.plt`, and any other whose `write` meets
+  I-104's bound) are filled by range; `Whole` chunks are written by one
+  job into a buffer of their size, each with its size bound as a
+  function of the tables:
+
+  | whole chunk | bound |
+  |---|---|
+  | `.eh_frame_hdr` | `12 + 8 × live FDEs` (sorted by address: I-105's global order) |
+  | `.shstrtab` | `1 + Σ (name + 1)` over output sections |
+  | `.note.gnu.build-id` | `16 + align_up(n, 4)` |
+  | `.note.gnu.property` | `16 + Σ(8 + align_up(datasz, a))` |
+
+  `.strtab`'s range start is found through per-file prefix sums and the
+  name offset of every 1024th symbol (input local, global id, or demoted
+  row): a binary search over files, then over samples, then a walk of at
+  most 1024 symbols; `.symtab` and `.symtab_shndx` likewise by entry. For
+  any split of `[0, size)` the ranges' bytes concatenate to the same
+  bytes (I-103). A chunk's bytes depend only on the tables and
+  addresses; no chunk reads another chunk's output, with one exception
+  the writer orders explicitly: the build id's descriptor, the `sealed`
+  range (S-92, I-107), computed over the finished image.
 
 ## 3. Split and merge
 
@@ -454,11 +471,16 @@ with one terminator, and the pointers inside them rewritten.
   pointer are refused (`feature`, `.eh_frame pointer encoding 0xNN`): no
   producer emits them and their static base is not fixed by the LSB. The
   scan has FDE `0x1b`, personality `0x9b`, LSDA `0x1b` (X-1); hod's large
-  model uses `0x1c` with `PREL64` (a64.md §13.1).
+  model uses `0x1c` with `PREL64` (a64.md §13.1); GCC's non-PIC x86-64
+  code (`-fno-pic -fno-PIE`) uses `0x03` (`udata4`) with `R_X86_64_32`
+  for all three (WP-025m corpus).
 - **S-38 [C] (FDE code range).** An FDE's code section is the section of
   the target of the relocation at its initial-location field (offset 8
-  of the record). The relocation's class must be `Pc` or `AbsWord`
-  (arch.md §3.9); another is refused there. A relocation of type
+  of the record). The relocation's class must be `Pc` for a `pcrel`
+  pointer and `AbsWord` or `AbsNarrow` otherwise (arch.md §3.9), with the
+  pointer's width, at the pointer's first byte; another is refused there
+  (`feature`, `R_NAME at an .eh_frame pointer of another encoding`). The
+  same holds at personality and LSDA pointers. A relocation of type
   `R_AARCH64_NONE`, `R_X86_64_NONE` or `R_386_NONE` anywhere in
   `.eh_frame` is ignored: a field whose only relocations are of that type
   has no relocation; `ld -r` outputs carry them (X-30). An FDE whose
@@ -664,8 +686,12 @@ usually a duplicate of `crt1.o`'s and removed by S-44 (X-12, X-25).
   and parallel by section; liveness is a lookup per FDE; identity interns
   only the CIEs (thousands); offsets are a per-section count and a prefix
   sum; `Slots.eh_records` is 8 MB; writing is a copy plus three or four
-  field rewrites per record, parallel by range. A few tens of ms on 8
-  threads, dominated by reading the input.
+  field rewrites per record, parallel by range. Measured (WP-025's bench,
+  10^6 input FDEs in 10^4 sections, 92% live, 22 MB written; median of
+  5, load average 24, after the join with `mortar_merge`): plan
+  12/15/13/12 ms and write 20/12/7.6/4.3 ms on 1/2/4/8 threads. Parsing
+  and CIE identity (`mortar_merge`) are not included; the plan does not
+  scale with threads (its per-record passes are sequential).
 
 ## 5. .eh_frame_hdr
 
@@ -690,7 +716,10 @@ usually a duplicate of `crt1.o`'s and removed by S-44 (X-12, X-25).
     FDE with the same start from the binary search. This is what E5
     calls neutralised;
   - two live FDEs with the same initial location and non-zero ranges are
-    refused when the table is written: `malformed-input`, `.eh_frame_hdr
+    refused when the table is planned (phase 80, where the entries are
+    first known as `(code section, offset)` pairs; supervisor's ruling on
+    WP-025), and again if two entries meet at one address when the table
+    is written: `malformed-input`, `.eh_frame_hdr
     refers to overlapping FDEs` (GNU's message and behavior; lld keeps
     one entry, mold both, X-15). The table must be strictly sorted and
     list every FDE that is not neutralised (`plumb.md` §6.4 E5), and each
@@ -876,7 +905,11 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   `SymbolId` order. `STB_GLOBAL`, `STB_WEAK` and `STB_GNU_UNIQUE` keep
   their binding (GNU and lld keep `STB_GNU_UNIQUE` in a static output,
   X-17; resolve.md §3.7). mold makes every symbol local in a static
-  output; GNU and lld do not (`tests/link/resolve/symtab`).
+  output; GNU and lld do not (`tests/link/resolve/symtab`). A global
+  defined in a section that is not live has no entry, as a local in one
+  has none (S-76): at M1 `--gc-sections` is refused, so such a section is
+  a discarded COMDAT member or a section discarded by the script
+  (supervisor's ruling on WP-025).
 - **S-121 [G] (bindings are the inputs').** A global's output binding
   is resolve.md §3.7's and nothing else: `STB_LOCAL` only for a
   definition whose combined visibility is hidden or internal (S-77), and
@@ -905,7 +938,16 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   `STB_LOCAL` (a hidden or internal definition, resolve.md §3.7) is a
   local of its defining file's block. Its `st_other` keeps its
   visibility (`STV_HIDDEN`). A linker-defined symbol that is local in the
-  output is in the internal file's block.
+  output is in the internal file's block. Layout writes only the values
+  of linker-defined symbols (layout L-91); their binding and visibility
+  are resolve.md §8.1's column, which this rule writes: "local, hidden"
+  is `STB_LOCAL`, `STV_HIDDEN` in the internal block; "global" is
+  `STB_GLOBAL`, `STV_DEFAULT`; `__start_`/`__stop_` are `STB_GLOBAL`,
+  `STV_PROTECTED`. This is lld 22's `.symtab` exactly; GNU ld 2.44
+  writes the same bindings with `STV_DEFAULT` on its locals and makes
+  `__executable_start` global; mold makes all of them local
+  (measured on AArch64, a static C program referencing each name).
+  Y5 of the verifier judges the values only.
 - **S-78 [C] (`-X`, `-x`, `--discard-none`).**
   - default, `-X` (`--discard-locals`): discard locals whose name begins
     with `.L` (the ELF temporary-label prefix; GNU and lld both drop
@@ -930,9 +972,13 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   erratum patch (layout §14) gets, in the internal file's block: on
   AArch64 a `$x` at its start and a `$d` at any literal word (AAELF64
   "Mapping symbols"); and an `STT_FUNC` local `__<target>_veneer` (GNU's
-  AArch64 form; `+0x<addend>` in lower-case hex appended for a non-zero
-  addend, `@plt` for a `Plt` target), `st_size` the thunk's size; a patch
-  is `__erratum_843419_veneer`. gdb and perf then attribute a thunk to a
+  AArch64 form; for a non-zero addend `+0x<addend>` (`-0x<magnitude>`
+  for a negative one) in lower-case hex follows the target's name, before
+  `_veneer`, as `__foo+0x10_veneer`;
+  `@plt` for a `Plt` target, in the same place), `st_size` the thunk's
+  size (`arch.thunk()`); a patch is `__erratum_843419_veneer`, `st_size`
+  its shape's (`arch.patch(E843419)`). (Placement of the addend:
+  supervisor's ruling on WP-025.) gdb and perf then attribute a thunk to a
   named function (lld names its thunks `__AArch64ADRPThunk_<target>` for
   the same reason). Both forms are in the verifier's not-judged list
   (`plumb.md` §6.5); the `$x` at an address no input occupies is Y4's
@@ -1015,8 +1061,12 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   `.symtab_shndx` (`SHT_SYMTAB_SHNDX`, entsize 4, alignment 4, `sh_link`
   the index of `.symtab`), with one word per `.symtab` entry: the real
   section index for an `SHN_XINDEX` entry and 0 for every other (gABI
-  "Extended Section Indices"). Whether it exists is known once the number
-  of output sections is known (layout stage C), before content. The scan
+  "Extended Section Indices"). It exists exactly when the output has more
+  than `SHN_LORESERVE` (65280) sections, so that some section's index
+  does not fit `st_shndx`; this is known once the number of output
+  sections is known (layout stage C), before content and before which
+  symbols land in the high sections (supervisor's ruling on WP-025: the
+  approximation by the section count is the rule). The scan
   has no input with `SHN_XINDEX` (X-1), so this is reached only by an
   output with more than 65279 sections, which needs that many distinct
   orphan names.
@@ -1049,11 +1099,26 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   file by a pass over globals (a parallel counting sort by `FileId`).
 - **S-89 [C] (cost).** For 10^7 symbols (240 MB of `.symtab` on ELF64,
   and about 300 MB of names for a large C++ program): counting is one
-  parallel pass over the kept symbols; filling is parallel by file and
-  bound by memory bandwidth (about 0.1 s on 8 threads for 540 MB written).
-  No table of 10^7 rows is built beyond the existing symbol columns: the
-  output index of an entry is computed from its file's base and its
-  position.
+  parallel pass over the kept symbols; filling is parallel by window
+  (S-4). No table of 10^7 rows is built beyond the existing symbol
+  columns: the output index of an entry is computed from its file's base
+  and its position, and the write resumes from a checkpoint every 1024
+  entries. Measured (`examples/synth_bench.rs`, WP-025; AArch64, shared
+  host at load average 32, 10^7 symbols, half local over 2000 files;
+  240 MB of `.symtab` and 248 MB of `.strtab` written by 4 MiB windows;
+  median of 5):
+
+  | threads | plan | write | peak RSS |
+  |---|---|---|---|
+  | 1 | 106 ms | 549 ms | 51 MiB |
+  | 2 | 59 ms | 280 ms | 53 MiB |
+  | 4 | 36 ms | 148 ms | 56 MiB |
+  | 8 | 26 ms | 92 ms | 57 MiB |
+
+  For 10^6 symbols: 4 ms plan and 12 ms write on 8 threads. The peak RSS
+  is the bench's inputs plus the windows in flight; the plan itself is
+  a 40-byte segment row per file block, 24 bytes per checkpoint (10^7
+  entries: 230 KB) and 24 bytes per demoted global.
 
 ### 7.4 .shstrtab
 
@@ -1074,17 +1139,36 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
 ### 8.1 .note.gnu.build-id
 
 - **S-91 [C] (size).** One note, name `GNU`, type `NT_GNU_BUILD_ID` (3),
-  in an `SHT_NOTE` allocated section with alignment 4. The section's size
-  is `16 + n`, with no padding after the descriptor (all three
-  references: a 3-byte `0xabcdef` gives `0x13`, X-21), where `n` is the
-  descriptor size of the style: for `0xHEX` the number of hex bytes, for
-  `none` no note, and for every other style the size `spec/image.md`
-  gives (R-I1). `--build-id` alone is `sha1`
-  (`tests/link/layout/build-id`). An odd number of hex digits, or none,
-  is `invalid-option-value`. synth.md needs only `n` before addresses.
+  in an `SHT_NOTE` allocated section with alignment 4. `n` is the
+  descriptor size of the style (`spec/image.md` I-69):
+
+  | style | `n` | milestone |
+  |---|---|---|
+  | absent, `none`, `--no-build-id` | no note | M1 |
+  | bare `--build-id` | 20 | M1 |
+  | `sha1` | 20 (a different function from bare's) | M1 |
+  | `sha256` | 32 | M1 |
+  | `fast` | 8 | M1 |
+  | `0xHEX` | the number of hex bytes | M1 |
+  | `md5` | refused (`option value`, note `use sha1`) | — |
+  | `uuid` | 16 | M2 (refused in M1, `option value`) |
+
+  `0xHEX` (I-70): `0x` is case-sensitive, then one or more pairs of
+  hexadecimal digits of either case; an odd number of digits, none, or a
+  non-hex digit is `invalid-option-value` with the note `expected an
+  even number of hexadecimal digits`. The section's size is `16 +
+  align_up(n, 4)`, zero-padded (`spec/image.md` I-71); the references
+  write `16 + n` (a 3-byte `0xabcdef` gives `0x13`, X-21), which differs
+  only for `0xHEX` of a length not a multiple of 4. synth.md needs only
+  `n` before addresses.
 - **S-92 [C] (content).** The descriptor is written in the sealing step,
   after every other byte (`spec/image.md` owns the styles, the hash
-  functions and their order of input bytes); `0xHEX` is copied.
+  functions and their order of input bytes); `0xHEX` is copied. Bare
+  `--build-id` and `sha1` are different functions (image I-69: the fast
+  tree and the SHA-1 tree). `fast` is an 8-byte non-cryptographic hash
+  (lld's size): the first 8 bytes of the bare id (`spec/image.md`
+  I-72). `uuid` (M2) sets the RFC 4122 version 4 and variant bits, as
+  mold does.
 - **S-93 [G] (position).** The note is in the first `PT_LOAD` (layout
   rank 2), so that a core dump, which contains the first page of each
   mapping, contains it; `PT_NOTE` covers it (layout §11).
@@ -1153,9 +1237,12 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
   The scan has only `0xc0000000` (AArch64, values 3 and 7), and
   `0xc0000002` (value 3) and `0xc0008002` (value 1) on x86-64 (X-1).
 - **S-126 [C] (several notes in one object).** An object's notes are
-  combined first, by S-95 applied to them as if each were an object (an
-  `And` property survives only if every note has it); the result then
-  takes part in S-95. GNU 2.44 and lld 22 instead OR a repeated
+  combined first, each property by its own rule class of S-95 applied to
+  the notes as if each were an object (an `And` property survives only
+  if every note has it; `Or` is the OR of the notes that have it; `Max`
+  the largest); the result then takes part in S-95 across objects
+  (supervisor's ruling on Q12). A type repeated within one note is
+  combined by the same rule (supervisor's ruling on WP-025). GNU 2.44 and lld 22 instead OR a repeated
   `FEATURE_1_AND` within an object and ignore a note that lacks it
   (X-33; Q12). mortar's rule is the conservative one: a BTI claim that
   some note did not make could fault at the first indirect branch. In
@@ -1245,7 +1332,7 @@ it is not the M2 specification.
   | chunk | size |
   |---|---|
   | `.note.gnu.property` | `16 + Σ(8 + align_up(datasz, a))` over surviving properties, a = 8 (4) |
-  | `.note.gnu.build-id` | `16 + n` (S-91) |
+  | `.note.gnu.build-id` | `16 + align_up(n, 4)` (S-91) |
   | `.rela.plt` | `(PLT + IPLT entries) × entsize` |
   | `.eh_frame_hdr` | `12 + 8 × entries` (S-59) |
   | `.eh_frame` | Σ output sizes of the live records (S-47) + 4 |
@@ -1289,7 +1376,7 @@ edit changes.
 - **S-112 [M7] (a symbol added or removed).** `.symtab`, `.strtab` and
   `.symtab_shndx` are rewritten whole: they are non-allocated and last
   (layout rank 10), so their size changes no address and no other unit.
-  Rewriting 10^7 symbols is about 0.1 s (S-89). A per-file capacity in
+  Rewriting 10^7 symbols is about 0.12 s on 8 threads (S-89, measured). A per-file capacity in
   `.symtab` (with null local entries as holes) is possible and is not
   done unless the bench shows the rewrite matters; Q8 records it.
 - **S-113 [M7] (a GOT or IPLT slot added or removed).** A new slot is
@@ -1710,7 +1797,9 @@ know, and must say so (GNU warns the same; lld and mold are silent).
 
 ### 14.7 image.md (WP-026)
 
-**R-I1. The build-id styles.** image.md defines, per `--build-id=` style
+**R-I1. The build-id styles.** *Done*: `spec/image.md` I-69 to I-72
+(accepted), applied to S-91, S-92 and S-108 above (image R-12). The
+original request: image.md defines, per `--build-id=` style
 (`sha1`, `md5`, `sha256`, `uuid`, `fast`, `0xHEX`, `none`), the
 descriptor size `n` and how the bytes are computed; synth.md S-91 sizes
 the note as `16 + n` from it. X-21 measured the references' sizes
@@ -1747,10 +1836,10 @@ Ranked by how much depends on each.
 
 | # | question | default taken | what depends |
 |---|---|---|---|
-| Q12 | Several property notes in one object: S-126 combines them as separate objects (AND for BTI), where GNU 2.44 and lld 22 OR them (X-33). The rule matters only when the notes disagree, which no input in the scan does. | S-126 (AND) | BTI marking of objects with disagreeing notes |
+| Q12 | *Ruled*: each property by its own rule class within an object, then S-95 across objects (S-126). Several property notes in one object: S-126 combines them as separate objects (AND for BTI), where GNU 2.44 and lld 22 OR them (X-33). | S-126 (AND) | BTI marking of objects with disagreeing notes |
 | Q3 | Whether a relocation into the interior of a removed `.eh_frame` record (S-50 rule 4) ever occurs (crtstuff variants, other libcs). | refused | static C++ links with other crt files |
 | Q2 | Piece-level liveness of merge pieces under `--gc-sections` (lld marks pieces; GNU keeps whole sections). | `spec/live.md` decides; S-16 keeps all pieces without gc | size of `.rodata` with gc; symbol drops of S-22 |
-| Q11 | A local symbol naming each IPLT entry (say `f@iplt`), so that gdb's `info symbol` on a function pointer to an IFUNC names it (S-71's one cost). No reference writes one. | none | gdb on canonical IFUNC pointers |
+| Q11 | *Ruled*: the default accepted (no symbol). A local symbol naming each IPLT entry (say `f@iplt`), so that gdb's `info symbol` on a function pointer to an IFUNC names it (S-71's one cost). No reference writes one. | none | gdb on canonical IFUNC pointers |
 | Q6 | PLT and thunk unwind info (FDEs for `.plt`, thunks) for perf. | none (lld) | perf's unwinding through PLTs [M2] |
 | Q8 | Per-file capacity in `.symtab` for incremental links. | rewrite whole (S-112) | M7 time for 10^7-symbol programs |
 

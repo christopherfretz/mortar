@@ -1,0 +1,586 @@
+//! `.eh_frame` (`spec/synth.md` §4.2 to §4.5): which records survive,
+//! CIE de-duplication, the output order and offsets, the value of a
+//! reference into an input `.eh_frame`, and the bytes.
+//!
+//! **Plan** ([`EhPlan::new`], phase 80): from the parsed records of every
+//! live `.eh_frame` section ([`EhSource`]: `mortar_merge`'s `Phase::eh`)
+//! and the liveness of code sections, the kept records in output order
+//! (`Slots.eh_records`, S-49), each record's output offset and the size.
+//!
+//! **Write** ([`EhPlan::write`], image): any byte range of the chunk, in
+//! O(range + log records): the length word (raised to a multiple of 4,
+//! S-47), the rewritten CIE pointer (S-52), the copied body, the padding,
+//! and the one terminator (S-48). Relocated fields are the image phase's
+//! (S-52, second bullet): it applies an input relocation at
+//! [`EhPlan::place`] of its offset, and skips one in a removed record.
+
+use std::borrow::Cow;
+
+use mortar_core::layout::EhRecord;
+use mortar_core::par::Pool;
+use mortar_core::resolution::SectionKind;
+use mortar_core::{FileId, SectionId};
+use mortar_diag::Collector;
+use mortar_elf::SectionIndex;
+use mortar_elf::consts::SHT_PROGBITS;
+use mortar_merge::What;
+use mortar_merge::eh::{Code, EhFrames, Kind};
+use mortar_merge::phase::Link;
+use mortar_merge::refs::eh_ref;
+pub use mortar_merge::refs::{EhValue, EhWho};
+
+use crate::error::{Failed, SynthError, fail, internal, malformed, record_key};
+use crate::out::{Window, align_up};
+
+/// What the plan needs of an input `.eh_frame` beyond `mortar_merge`'s
+/// parse: its file (S-55 orders the internal file's records last), its
+/// alignment and its type (S-47, S-54).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EhInfo {
+    pub file: FileId,
+    /// log2 of `sh_addralign`.
+    pub align: u8,
+    /// `SHT_PROGBITS`, or `SHT_X86_64_UNWIND` (S-54).
+    pub sh_type: u32,
+}
+
+/// Where an FDE's initial location points: its code section and the
+/// target offset there (`st_value + A`, S-38).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CodeRef {
+    pub section: SectionId,
+    pub offset: i64,
+}
+
+/// The parsed `.eh_frame` input: `mortar_merge`'s [`EhFrames`]
+/// (`Phase::eh`, S-34 to S-40, S-43, S-45), which has refused every
+/// malformed record, plus per section row its [`EhInfo`] and its bytes.
+/// [`MergeEh`] implements it over a link; tests over bare bytes.
+pub trait EhSource: Sync {
+    /// The records, CIE classes and sections (in `SectionId` order).
+    fn frames(&self) -> &EhFrames;
+    /// Section row `s`'s file, alignment and type.
+    fn info(&self, s: usize) -> EhInfo;
+    /// Section row `s`'s bytes.
+    fn bytes(&self, s: usize) -> &[u8];
+}
+
+/// [`EhSource`] over phase 60's output and the link it read: the bytes
+/// are read again through [`Link::bytes`] (borrowed when the store holds
+/// them resident, `Inputs::resident`).
+pub struct MergeEh<'a> {
+    frames: &'a EhFrames,
+    info: Box<[EhInfo]>,
+    bytes: Box<[Cow<'a, [u8]>]>,
+}
+
+impl std::fmt::Debug for MergeEh<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergeEh").field("info", &self.info).finish_non_exhaustive()
+    }
+}
+
+impl<'a> MergeEh<'a> {
+    /// The source for `frames` (`Phase::eh` of `mortar_merge::phase::run`
+    /// over `link`). Walks the link's sections as phase 60 does, so the
+    /// rows match; a mismatch is an internal error.
+    pub fn new<'s: 'a>(frames: &'a EhFrames, link: &dyn Link<'s>) -> Result<Self, SynthError> {
+        let mut info = Vec::with_capacity(frames.sections.len());
+        let mut bytes = Vec::with_capacity(frames.sections.len());
+        for f in 0..link.files() {
+            let file = FileId(f);
+            let Some(object) = link.object(file) else { continue };
+            for index in 0..object.section_count() {
+                let Some(row) = link.section(file, SectionIndex(index)) else { continue };
+                if row.kind != SectionKind::EhFrame {
+                    continue;
+                }
+                let n = info.len();
+                if frames.sections.get(n).map(|s| s.section) != Some(row.id) {
+                    return Err(internal(format!(
+                        ".eh_frame section {} is not phase 60's row {n}",
+                        row.id.0
+                    )));
+                }
+                let s = object
+                    .section(SectionIndex(index))
+                    .map_err(|e| internal::<SynthError>(e.to_string()))?;
+                let b = link.bytes(file, &s).map_err(|w| malformed::<SynthError>(w.message()))?;
+                let align = s.header().sh_addralign.max(1);
+                info.push(EhInfo { file, align: align.ilog2() as u8, sh_type: s.sh_type() });
+                bytes.push(b);
+            }
+        }
+        if info.len() != frames.sections.len() {
+            return Err(internal("phase 60 has .eh_frame rows the link does not"));
+        }
+        Ok(Self { frames, info: info.into(), bytes: bytes.into() })
+    }
+}
+
+impl EhSource for MergeEh<'_> {
+    fn frames(&self) -> &EhFrames {
+        self.frames
+    }
+    fn info(&self, s: usize) -> EhInfo {
+        self.info[s]
+    }
+    fn bytes(&self, s: usize) -> &[u8] {
+        &self.bytes[s]
+    }
+}
+
+const NONE: u32 = u32::MAX;
+
+/// The output `.eh_frame` (S-46 to S-49).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EhPlan {
+    /// `Slots.eh_records`: the section and the record's index in it.
+    records: Box<[EhRecord]>,
+    /// Per output record: its index in `EhFrames::records`.
+    glob: Box<[u32]>,
+    /// Per output record: its section row.
+    src: Box<[u32]>,
+    /// For an FDE, the output index of its kept CIE; `NONE` for a CIE.
+    cie: Box<[u32]>,
+    /// The output offsets, one more than the records: the last is the
+    /// terminator's.
+    out_off: Box<[u64]>,
+    /// Per input record (`EhFrames::records`): its output index, or
+    /// `NONE` when removed.
+    out_index: Box<[u32]>,
+    /// The position of each section row in the output order.
+    pos: Box<[u32]>,
+    /// The first output record of each position, and the count last.
+    first: Box<[u32]>,
+    ids: Box<[SectionId]>,
+    align: u8,
+    sh_type: u32,
+    fdes: u32,
+}
+
+/// The per-record liveness marks: 0 removed, 1 live FDE, 2 used CIE.
+const REMOVED: u8 = 0;
+const LIVE_FDE: u8 = 1;
+const USED_CIE: u8 = 2;
+
+impl EhPlan {
+    /// The plan of S-41 to S-49. `code_live(s)` is S-41's test for an
+    /// FDE's code section: live and not folded away (`Liveness::fde_live`).
+    ///
+    /// Cost: a parallel pass marking the records, one walk over the CIEs
+    /// for S-44 ([`EhFrames::keepers`]: the identity classes are merge's,
+    /// S-43), two parallel passes writing the output rows, a prefix sum.
+    pub fn new<S, L>(src: &S, code_live: L, pool: &Pool, diag: &Collector) -> Result<Self, Failed>
+    where
+        S: EhSource + ?Sized,
+        L: Fn(SectionId) -> bool + Sync,
+    {
+        let frames = src.frames();
+        let sections = &frames.sections;
+        let n_sec = sections.len();
+        check_rows(frames, diag)?;
+        let internal_sec: Vec<bool> =
+            (0..n_sec).map(|s| src.info(s).file == FileId::INTERNAL).collect();
+        // S-55, review finding 13: the internal file's records come last.
+        let order: Vec<u32> = (0..n_sec as u32)
+            .filter(|&i| !internal_sec[i as usize])
+            .chain((0..n_sec as u32).filter(|&i| internal_sec[i as usize]))
+            .collect();
+        let mut pos = vec![0u32; n_sec];
+        for (p, &i) in order.iter().enumerate() {
+            pos[i as usize] = p as u32;
+        }
+        let mut marks = mark_live(src, &code_live, pool, diag)?;
+        let cies = Cies::new(frames, &internal_sec, &mut marks);
+        // S-46: the kept records per position.
+        let counts: Vec<u32> = pool.map(n_sec, |p| {
+            let r = sections[order[p] as usize].records;
+            marks[r.start as usize..(r.start + r.len) as usize]
+                .iter()
+                .filter(|&&m| m != REMOVED)
+                .count() as u32
+        });
+        let mut first = counts;
+        first.push(0);
+        let total = pool.prefix_sum(&mut first) as usize;
+        first[n_sec] = total as u32;
+        let out_index = output_indices(frames, &marks, &first, &pos, pool);
+        let mut records = vec![EhRecord { section: SectionId(0), piece: 0 }; total];
+        let mut glob = vec![0u32; total];
+        let mut srcs = vec![0u32; total];
+        let mut cie = vec![NONE; total];
+        let mut out_size = vec![0u64; total + 1];
+        let bounds: Vec<usize> = first.iter().map(|&f| f as usize).collect();
+        let parts = mortar_core::par::split_offsets(&mut records, &bounds)
+            .into_iter()
+            .zip(mortar_core::par::split_offsets(&mut glob, &bounds))
+            .zip(mortar_core::par::split_offsets(&mut srcs, &bounds))
+            .zip(mortar_core::par::split_offsets(&mut cie, &bounds))
+            .zip(mortar_core::par::split_offsets(&mut out_size[..total], &bounds));
+        pool.for_each_part(parts, |p, ((((recs, g), s), c), size)| {
+            let i = order[p];
+            let sec = &sections[i as usize];
+            let base = sec.records.start;
+            let mut k = 0;
+            for (r, rec) in frames.records_of(i as usize).iter().enumerate() {
+                let gi = base + r as u32;
+                if marks[gi as usize] == REMOVED {
+                    continue;
+                }
+                recs[k] = EhRecord { section: sec.section, piece: r as u32 };
+                g[k] = gi;
+                s[k] = i;
+                if let Kind::Fde(f) = rec.kind {
+                    c[k] = out_index[cies.rep(frames, base + f.cie) as usize];
+                }
+                // S-47.
+                size[k] = rec.out_size();
+                k += 1;
+            }
+        });
+        let body = pool.prefix_sum(&mut out_size);
+        out_size[total] = body;
+        if body + 4 > u64::from(u32::MAX) {
+            return fail(
+                diag,
+                record_key(SectionId(0), 0),
+                crate::error::feature(".eh_frame larger than 4 GiB"),
+            );
+        }
+        let fdes = cie.iter().filter(|&&c| c != NONE).count() as u32;
+        let infos: Vec<EhInfo> = (0..n_sec).map(|s| src.info(s)).collect();
+        let (align, sh_type) = out_type(&infos);
+        Ok(Self {
+            records: records.into(),
+            glob: glob.into(),
+            src: srcs.into(),
+            cie: cie.into(),
+            out_off: out_size.into(),
+            out_index: out_index.into(),
+            pos: pos.into(),
+            first: first.into(),
+            ids: sections.iter().map(|s| s.section).collect(),
+            align,
+            sh_type,
+            fdes,
+        })
+    }
+
+    /// `Slots.eh_records` (S-49): the kept records in output order.
+    #[must_use]
+    pub fn records(&self) -> &[EhRecord] {
+        &self.records
+    }
+
+    /// Whether the chunk exists (S-3: some live record).
+    #[must_use]
+    pub fn exists(&self) -> bool {
+        !self.records.is_empty()
+    }
+
+    /// The chunk's size (S-49): the records' output sizes plus the
+    /// terminator.
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.out_off[self.records.len()] + 4
+    }
+
+    /// log2 of the chunk's alignment (S-47).
+    #[must_use]
+    pub fn align(&self) -> u8 {
+        self.align
+    }
+
+    /// The output `sh_type` (layout L-49, S-54).
+    #[must_use]
+    pub fn sh_type(&self) -> u32 {
+        self.sh_type
+    }
+
+    /// The number of output FDEs.
+    #[must_use]
+    pub fn fde_count(&self) -> u32 {
+        self.fdes
+    }
+
+    /// The output offset of output record `n`; `n == records().len()` is
+    /// the terminator.
+    #[must_use]
+    pub fn out_offset(&self, n: usize) -> u64 {
+        self.out_off[n]
+    }
+
+    /// For output record `n`, the output index of its CIE if it is an FDE.
+    #[must_use]
+    pub fn cie_of(&self, n: usize) -> Option<usize> {
+        let c = self.cie[n];
+        (c != NONE).then_some(c as usize)
+    }
+
+    /// The section row and the `EhFrames::records` index of output record
+    /// `n`.
+    #[must_use]
+    pub fn source(&self, n: usize) -> (usize, u32) {
+        (self.src[n] as usize, self.glob[n])
+    }
+
+    /// The output index of input record `g` (`EhFrames::records`), if kept.
+    #[must_use]
+    pub fn output_index(&self, g: u32) -> Option<usize> {
+        let k = *self.out_index.get(g as usize)?;
+        (k != NONE).then_some(k as usize)
+    }
+
+    fn section_index(&self, section: SectionId) -> Option<usize> {
+        self.ids.binary_search(&section).ok()
+    }
+
+    /// The output offset of input byte `offset` of `section` when it lies
+    /// in a kept record: where the image phase applies a relocation of the
+    /// input section (S-52). `None` for a byte of a removed record.
+    #[must_use]
+    pub fn place<S>(&self, src: &S, section: SectionId, offset: u64) -> Option<u64>
+    where
+        S: EhSource + ?Sized,
+    {
+        let s = self.section_index(section)?;
+        let frames = src.frames();
+        let recs = frames.records_of(s);
+        let j = recs.partition_point(|r| u64::from(r.offset) <= offset).checked_sub(1)?;
+        let rec = &recs[j];
+        let n = self.output_index(frames.sections[s].records.start + j as u32)?;
+        (offset < rec.end()).then(|| self.out_off[n] + offset - u64::from(rec.offset))
+    }
+
+    /// S-50: the value of a reference at offset `r` of input `.eh_frame`
+    /// section `section` (`st_value + A` for a section symbol, `st_value`
+    /// for a symbol), by `mortar_merge::refs::eh_ref`. `src` is the source
+    /// the plan was made from. The error is the diagnostic, without place
+    /// or key.
+    pub fn value<S>(
+        &self,
+        src: &S,
+        section: SectionId,
+        r: i64,
+        who: EhWho,
+    ) -> Result<EhValue, SynthError>
+    where
+        S: EhSource + ?Sized,
+    {
+        let Some(s) = self.section_index(section) else {
+            return Err(internal(format!("section {} is not a live .eh_frame", section.0)));
+        };
+        // The next kept record after the section's, in output order.
+        let after = self.out_off[self.first[self.pos[s] as usize + 1] as usize];
+        let kept = |g: u32| self.output_index(g).map(|n| self.out_off[n]);
+        eh_ref(src.frames(), s, r, who, kept, after).map_err(|w| match w {
+            What::OutsideSection => outside(who),
+            w @ What::IntoRemovedRecord => malformed(w.message()),
+            w => internal(w.message()),
+        })
+    }
+
+    /// Fills `out` (S-47, S-48, S-52) for the window's range of the chunk.
+    /// The relocated fields hold the input's bytes; the image phase
+    /// applies the relocations over them.
+    pub fn write<S>(&self, src: &S, out: &mut Window<'_>) -> Result<(), SynthError>
+    where
+        S: EhSource + ?Sized,
+    {
+        let frames = src.frames();
+        let count = self.records.len();
+        let first = self.out_off[1..=count].partition_point(|&end| end <= out.start());
+        for k in first..count {
+            let at = self.out_off[k];
+            if at >= out.end() {
+                return Ok(());
+            }
+            let (row, gi) = self.source(k);
+            let rec = &frames.records[gi as usize];
+            let bytes = src.bytes(row);
+            let start = rec.offset as usize;
+            let l = rec.len as usize;
+            let Some(body) = bytes.get(start + 4..start + 4 + l) else {
+                return Err(internal("an .eh_frame record runs past its section"));
+            };
+            let padded = align_up(l as u64, 4);
+            out.word(at, 4, padded);
+            match self.cie_of(k) {
+                Some(c) => {
+                    // S-52: the distance back from the pointer to its CIE.
+                    let ptr = at + 4 - self.out_off[c];
+                    out.word(at + 4, 4, ptr);
+                    out.put(at + 8, body.get(4..).unwrap_or(&[]));
+                }
+                None => out.put(at + 4, body),
+            }
+            out.zero(at + 4 + l as u64, padded - l as u64);
+        }
+        // S-48.
+        out.zero(self.out_off[count], 4);
+        Ok(())
+    }
+
+    /// The code reference and whether the address range is 0 (S-59) of
+    /// output record `n`, when it is an FDE.
+    #[must_use]
+    pub fn code<S>(&self, src: &S, n: usize) -> Option<(CodeRef, bool)>
+    where
+        S: EhSource + ?Sized,
+    {
+        let f = *src.frames().records.get(self.glob[n] as usize)?.fde()?;
+        match f.code {
+            Code::Section { section, offset } => Some((CodeRef { section, offset }, f.range == 0)),
+            _ => None,
+        }
+    }
+}
+
+fn outside(who: EhWho) -> SynthError {
+    match who {
+        EhWho::Reloc => malformed(What::OutsideSection.message()),
+        _ => malformed("offset is outside the section"),
+    }
+}
+
+/// The rows phase 60 gives: sections ascending, records in section order.
+fn check_rows(frames: &EhFrames, diag: &Collector) -> Result<(), Failed> {
+    let sections = &frames.sections;
+    if sections.windows(2).any(|w| w[0].section >= w[1].section) {
+        return fail(diag, record_key(SectionId(0), 0), internal(".eh_frame sections not sorted"));
+    }
+    let mut at = 0u32;
+    for s in sections {
+        if s.records.start != at {
+            return fail(
+                diag,
+                record_key(s.section, 0),
+                internal(".eh_frame records not in section order"),
+            );
+        }
+        at += s.records.len;
+    }
+    Ok(())
+}
+
+/// S-43, S-44: per identity class (merge's), the kept CIE.
+struct Cies {
+    keep: Vec<u32>,
+    /// The internal file's records, as ranges of `EhFrames::records`
+    /// (S-44: they take no part in de-duplication).
+    internal: Vec<(u32, u32)>,
+}
+
+impl Cies {
+    /// The kept CIEs; marks every used CIE that is not kept removed.
+    fn new(frames: &EhFrames, internal_sec: &[bool], marks: &mut [u8]) -> Self {
+        let internal = frames
+            .sections
+            .iter()
+            .zip(internal_sec)
+            .filter(|(_, i)| **i)
+            .map(|(s, _)| (s.records.start, s.records.start + s.records.len))
+            .collect();
+        let mut cies = Self { keep: Vec::new(), internal };
+        cies.keep = frames.keepers(|g| marks[g as usize] == USED_CIE && !cies.is_internal(g));
+        for (g, m) in marks.iter_mut().enumerate() {
+            if *m == USED_CIE && cies.rep(frames, g as u32) != g as u32 {
+                *m = REMOVED;
+            }
+        }
+        cies
+    }
+
+    fn is_internal(&self, g: u32) -> bool {
+        self.internal.iter().any(|&(a, b)| (a..b).contains(&g))
+    }
+
+    /// The kept CIE for CIE `g`.
+    fn rep(&self, frames: &EhFrames, g: u32) -> u32 {
+        match frames.records[g as usize].kind {
+            Kind::Cie(c) if !self.is_internal(g) => self.keep[c.class as usize],
+            _ => g,
+        }
+    }
+}
+
+/// Per input record, its output index (`NONE` when removed); parallel by
+/// section.
+fn output_indices(
+    frames: &EhFrames,
+    marks: &[u8],
+    first: &[u32],
+    pos: &[u32],
+    pool: &Pool,
+) -> Vec<u32> {
+    let sections = &frames.sections;
+    let mut out_index = vec![NONE; frames.records.len()];
+    let bounds: Vec<usize> = sections
+        .iter()
+        .map(|s| s.records.start as usize)
+        .chain(std::iter::once(frames.records.len()))
+        .collect();
+    let parts = mortar_core::par::split_offsets(&mut out_index, &bounds);
+    pool.for_each_part(parts, |s, part| {
+        let r = sections[s].records;
+        let mut k = first[pos[s] as usize];
+        for (j, &m) in marks[r.start as usize..(r.start + r.len) as usize].iter().enumerate() {
+            if m != REMOVED {
+                part[j] = k;
+                k += 1;
+            }
+        }
+    });
+    out_index
+}
+
+/// S-41, S-42: per input record (`EhFrames::records`), [`REMOVED`],
+/// [`LIVE_FDE`] or [`USED_CIE`].
+fn mark_live<S, L>(src: &S, code_live: &L, pool: &Pool, diag: &Collector) -> Result<Vec<u8>, Failed>
+where
+    S: EhSource + ?Sized,
+    L: Fn(SectionId) -> bool + Sync,
+{
+    let frames = src.frames();
+    let sections = &frames.sections;
+    let marks: Vec<Result<Vec<u8>, SynthError>> = pool.map(sections.len(), |i| {
+        let recs = frames.records_of(i);
+        let mut m = vec![REMOVED; recs.len()];
+        for (r, rec) in recs.iter().enumerate() {
+            let Kind::Fde(f) = rec.kind else { continue };
+            let Code::Section { section, .. } = f.code else { continue };
+            if !code_live(section) {
+                continue;
+            }
+            if recs.get(f.cie as usize).and_then(|c| c.cie()).is_none() {
+                return Err(internal(format!(
+                    ".eh_frame record {r} of section {} names record {} as its CIE",
+                    sections[i].section.0, f.cie
+                )));
+            }
+            m[r] = LIVE_FDE;
+            m[f.cie as usize] = USED_CIE;
+        }
+        Ok(m)
+    });
+    let mut live = Vec::with_capacity(frames.records.len());
+    for (i, m) in marks.into_iter().enumerate() {
+        match m {
+            Ok(m) => live.extend(m),
+            Err(d) => return fail(diag, record_key(sections[i].section, 0), d.into_diagnostic()),
+        }
+    }
+    Ok(live)
+}
+
+/// S-47: the largest input alignment; L-49 / S-54: the shared type, else
+/// `SHT_PROGBITS`.
+fn out_type(sections: &[EhInfo]) -> (u8, u32) {
+    let align = sections.iter().map(|s| s.align).max().unwrap_or(2);
+    let sh_type = match sections.first() {
+        Some(s) if sections.iter().all(|t| t.sh_type == s.sh_type) => s.sh_type,
+        _ => SHT_PROGBITS,
+    };
+    (align, sh_type)
+}

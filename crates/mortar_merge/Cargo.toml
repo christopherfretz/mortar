@@ -15,7 +15,12 @@ mortar_diag.workspace = true
 mortar_elf.workspace = true
 
 [dev-dependencies]
+# The AArch64 relocation classes for tests over real objects.
+mortar_a64.workspace = true
 mortar_testutil.workspace = true
+# Phase 60 over inputs the staged store loaded (tests/staged.rs).
+mortar_cli.workspace = true
+mortar_input.workspace = true
 
 [lints]
 workspace = true
