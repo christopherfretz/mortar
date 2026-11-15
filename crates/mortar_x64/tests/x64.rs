@@ -25,9 +25,9 @@ const PLT: u64 = 0x40_0800;
 const TLS: TlsBlock = TlsBlock { start: 0x40_4000, size: 0x10, align: 8 };
 const TP_END: u64 = 0x40_4010;
 
-const ALLOC: PlaceFacts = PlaceFacts { alloc: true, writable: true };
-const RODATA: PlaceFacts = PlaceFacts { alloc: true, writable: false };
-const DEBUG: PlaceFacts = PlaceFacts { alloc: false, writable: false };
+const ALLOC: PlaceFacts = PlaceFacts { alloc: true, writable: true, exec: None };
+const RODATA: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
+const DEBUG: PlaceFacts = PlaceFacts { alloc: false, writable: false, exec: None };
 
 fn tables(kind: TargetKind) -> Tables {
     let mut t = Tables::default();

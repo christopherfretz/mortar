@@ -98,9 +98,9 @@ fn s2_3_alignment() {
 
 // ---------------------------------------------------------------- §4.3
 
-const W: PlaceFacts = PlaceFacts { alloc: true, writable: true };
-const RO: PlaceFacts = PlaceFacts { alloc: true, writable: false };
-const NA: PlaceFacts = PlaceFacts { alloc: false, writable: false };
+const W: PlaceFacts = PlaceFacts { alloc: true, writable: true, exec: None };
+const RO: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
+const NA: PlaceFacts = PlaceFacts { alloc: false, writable: false, exec: None };
 
 fn demand(flags: DemandFlags, global: GlobalFlags, dynamic: Option<DynRole>) -> ClassOutcome {
     ClassOutcome::Demand(Demand { flags, global, dynamic })

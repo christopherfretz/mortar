@@ -253,7 +253,21 @@ impl<'a, 's> View<'a, 's> {
                     _ if preemptible => TargetKind::Preemptible,
                     _ => TargetKind::Local,
                 };
-                of(kind, s)
+                // Under `--gc-sections`, a definition in a kept section the
+                // mark did not reach is dead (§6.1, `spec/image.md` I-7):
+                // live code cannot refer to it by construction, a debug
+                // section gets the tombstone (I-47), any other section is
+                // `discarded-section-reference` (I-12). Without it every
+                // kept section is live and this is `false`.
+                let dead = match place {
+                    Some(SymbolSection::Section(i)) => {
+                        self.resolution.section_id(e.file, i).is_some_and(|sid| {
+                            self.resolution.sections[sid].is_kept() && !self.liveness.is_live(sid)
+                        })
+                    }
+                    _ => false,
+                };
+                SymFacts { dead, ..of(kind, s) }
             }
             Def::Common(e) => of(TargetKind::Local, self.sym(e.file, e.index)),
             Def::Shared(e) => {

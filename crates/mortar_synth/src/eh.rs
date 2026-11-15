@@ -194,7 +194,7 @@ impl EhPlan {
         let mut marks = mark_live(src, &code_live, pool, diag)?;
         let cies = Cies::new(frames, &internal_sec, &mut marks);
         // S-46: the kept records per position.
-        let counts: Vec<u32> = pool.map(n_sec, |p| {
+        let counts: Vec<u32> = pool.unit_cost(31).map(n_sec, |p| {
             let r = sections[order[p] as usize].records;
             marks[r.start as usize..(r.start + r.len) as usize]
                 .iter()
@@ -203,7 +203,7 @@ impl EhPlan {
         });
         let mut first = counts;
         first.push(0);
-        let total = pool.prefix_sum(&mut first) as usize;
+        let total = pool.unit_cost(1).prefix_sum(&mut first) as usize;
         first[n_sec] = total as u32;
         let out_index = output_indices(frames, &marks, &first, &pos, pool);
         let mut records = vec![EhRecord { section: SectionId(0), piece: 0 }; total];
@@ -218,7 +218,7 @@ impl EhPlan {
             .zip(mortar_core::par::split_offsets(&mut srcs, &bounds))
             .zip(mortar_core::par::split_offsets(&mut cie, &bounds))
             .zip(mortar_core::par::split_offsets(&mut out_size[..total], &bounds));
-        pool.for_each_part(parts, |p, ((((recs, g), s), c), size)| {
+        pool.unit_cost(140).for_each_part(parts, |p, ((((recs, g), s), c), size)| {
             let i = order[p];
             let sec = &sections[i as usize];
             let base = sec.records.start;
@@ -239,7 +239,7 @@ impl EhPlan {
                 k += 1;
             }
         });
-        let body = pool.prefix_sum(&mut out_size);
+        let body = pool.unit_cost(1).prefix_sum(&mut out_size);
         out_size[total] = body;
         if body + 4 > u64::from(u32::MAX) {
             return fail(
@@ -522,7 +522,7 @@ fn output_indices(
         .chain(std::iter::once(frames.records.len()))
         .collect();
     let parts = mortar_core::par::split_offsets(&mut out_index, &bounds);
-    pool.for_each_part(parts, |s, part| {
+    pool.unit_cost(71).for_each_part(parts, |s, part| {
         let r = sections[s].records;
         let mut k = first[pos[s] as usize];
         for (j, &m) in marks[r.start as usize..(r.start + r.len) as usize].iter().enumerate() {
@@ -544,7 +544,7 @@ where
 {
     let frames = src.frames();
     let sections = &frames.sections;
-    let marks: Vec<Result<Vec<u8>, SynthError>> = pool.map(sections.len(), |i| {
+    let marks: Vec<Result<Vec<u8>, SynthError>> = pool.unit_cost(2000).map(sections.len(), |i| {
         let recs = frames.records_of(i);
         let mut m = vec![REMOVED; recs.len()];
         for (r, rec) in recs.iter().enumerate() {

@@ -53,8 +53,10 @@ f:
 ";
 
 /// Two copies of COMDAT group `f`, each `.debug_info` naming its own
-/// copy's section symbol (the second copy is dropped: the tombstone) and
-/// a section of its own that `--gc-sections` collects.
+/// copy's section symbol (the second copy is dropped: the tombstone), a
+/// section of its own that `--gc-sections` collects, and two pieces of a
+/// string section: one `f` uses (live in the kept copy only) and one
+/// nothing uses (collected by `--gc-sections`, I-7).
 fn comdat(n: u32) -> String {
     format!(
         "
@@ -62,13 +64,21 @@ fn comdat(n: u32) -> String {
     .globl f
 .Lf{n}:
 f:
+    adr x0, .Ls{n}
     ret
     .section .text.dead{n},\"ax\",@progbits
 .Ldead{n}:
     ret
+    .section .rodata.str1.1,\"aMS\",@progbits,1
+.Ls{n}:
+    .asciz \"used{n}\"
+.Lt{n}:
+    .asciz \"unused{n}\"
     .section .debug_info,\"\",@progbits
     .xword .Lf{n}
     .xword .Ldead{n}
+    .xword .Ls{n}
+    .xword .Lt{n}
 "
     )
 }
@@ -222,8 +232,9 @@ fn debug_info(out: &Path) -> Vec<u8> {
 }
 
 /// I-14, I-45, I-47: a deferred section's reference to a dropped COMDAT
-/// copy, or (`--gc-sections`) to a collected section, is the tombstone;
-/// the stores and thread counts agree.
+/// copy, or (`--gc-sections`, I-7) to a collected section or a collected
+/// merge piece, is the tombstone, decided at fill with no diagnostic; the
+/// stores and thread counts agree.
 #[test]
 fn i14_dead_targets_are_the_tombstone_at_fill() {
     let dir = Scratch::new("deferred-tombstone");
@@ -236,7 +247,8 @@ fn i14_dead_targets_are_the_tombstone_at_fill() {
         let mut args = ARGS.to_vec();
         args.extend(["c1.o", "c2.o"]);
         if gc {
-            args.push("--gc-sections");
+            // `f` is exported: `--gc-keep-exported` roots it (I-6).
+            args.extend(["--gc-sections", "--gc-keep-exported"]);
         }
         let mut first: Option<Vec<u8>> = None;
         for (policy, threads) in
@@ -244,31 +256,29 @@ fn i14_dead_targets_are_the_tombstone_at_fill() {
         {
             let store: &'static Store = Box::leak(Box::new(Store::new(policy)));
             let a: Vec<OsString> = args.iter().map(OsString::from).collect();
-            let f = match support::front_of(&a, dir.path(), store, Pool::new(threads)) {
-                Ok(f) => f,
-                // `--gc-sections` before WP-031: refused by name.
-                Err(r) if gc => {
-                    let text = r.render(&Style::plain("mortar"));
-                    assert!(text.contains("gc-sections"), "{text}");
-                    break;
-                }
-                Err(r) => panic!("front: {}", r.render(&Style::plain("mortar"))),
-            };
+            let f = support::front_of(&a, dir.path(), store, Pool::new(threads))
+                .unwrap_or_else(|r| panic!("front: {}", r.render(&Style::plain("mortar"))));
             assert_eq!(f.scanned.order.deferred().len(), 2);
             let out = dir.join("out");
             mortar::image::write(&f, store, &out, &|_| {}, &mut |_, _| {})
                 .unwrap_or_else(|e| panic!("image: {:?}", e.diagnostics));
             let info = debug_info(&out);
-            assert_eq!(info.len(), 32);
+            assert_eq!(info.len(), 64);
             let word = |i: usize| -> [u8; 8] { info[8 * i..8 * i + 8].try_into().unwrap() };
-            assert_ne!(word(0), ones, "the kept copy's address");
-            assert_eq!(word(2), ones, "the dropped copy's reference is the tombstone");
+            // Words 0-3 are c1.o's (the kept copy), 4-7 c2.o's.
+            assert_ne!(word(0), ones, "the kept copy's address (gc {gc})");
+            assert_eq!(word(4), ones, "the dropped copy's reference is the tombstone");
+            assert_ne!(word(2), ones, "a piece the kept copy uses");
             if gc {
                 assert_eq!(word(1), ones, "a collected section's reference is the tombstone");
-                assert_eq!(word(3), ones);
+                assert_eq!(word(5), ones);
+                assert_eq!(word(3), ones, "a collected piece's reference is the tombstone");
+                assert_eq!(word(6), ones, "a piece only the dropped copy used is collected");
+                assert_eq!(word(7), ones);
             } else {
-                assert_ne!(word(1), ones);
-                assert_ne!(word(3), ones);
+                for w in [1, 3, 5, 6, 7] {
+                    assert_ne!(word(w), ones, "word {w} without --gc-sections");
+                }
             }
             let bytes = std::fs::read(&out).unwrap();
             match &first {
@@ -378,7 +388,7 @@ fn raises(arch: &dyn mortar_arch::Arch, r_type: u32) -> bool {
                     proof: &[],
                     leads: true,
                 };
-                let place = mortar_arch::PlaceFacts { alloc: false, writable: false };
+                let place = mortar_arch::PlaceFacts { alloc: false, writable: false, exec: None };
                 let cx = ScanCx { tables: &facts, output, place, name: b".debug_info" };
                 let mut out = Raised(false);
                 arch.scan(&cx, &at, &mut DemandSink::new(&mut out));

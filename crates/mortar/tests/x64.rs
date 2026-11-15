@@ -149,14 +149,28 @@ fn compile(scratch: &Scratch, cc: Cc, flags: &[&str], program: &[Source]) -> Opt
 /// Links `program` with mortar and GNU ld, runs both, and holds mortar's
 /// output to the bar.
 fn holds(ld: &Path, label: &str, cc: Cc, flags: &[&str], program: &[Source]) -> Option<()> {
+    holds_with(ld, label, cc, flags, program, &[])
+}
+
+/// [`holds`], with `link_extra` on both links.
+fn holds_with(
+    ld: &Path,
+    label: &str,
+    cc: Cc,
+    flags: &[&str],
+    program: &[Source],
+    link_extra: &[&str],
+) -> Option<()> {
     let scratch = Scratch::new(label);
     let built = compile(&scratch, cc, flags, program)?;
     let ours = built.dir.join("out.mortar");
     let theirs = built.dir.join("out.bfd");
-    let m = mortar(&built, &ours, &[], &[]);
+    let m = mortar(&built, &ours, link_extra, &[]);
     assert!(m.success(), "{label}: mortar: {}", m.stderr_text());
     assert_eq!(m.stderr_text(), "", "{label}: mortar warns");
-    let b = link(ld, &with_output(&built.args, &theirs), &built.dir, &[]);
+    let mut args = with_output(&built.args, &theirs);
+    args.extend(link_extra.iter().map(OsString::from));
+    let b = link(ld, &args, &built.dir, &[]);
     assert!(b.success(), "{label}: ld.bfd: {}", b.stderr_text());
     let (out_m, out_b) = (execute(&ours), execute(&theirs));
     assert!(out_b.1.is_some(), "{label}: GNU ld's program did not exit");
@@ -217,6 +231,47 @@ fn x64_cxx_with_gxx() {
 fn x64_cxx_with_clangxx() {
     matrix("x64-cxx-clangxx", CLANGXX, &[], support::CXX_PROGRAM);
     matrix("x64-thr-clangxx", CLANGXX, &["-pthread"], CXX_THREADS);
+}
+
+/// `--gc-sections` on x86-64 (WP-031: the collector is
+/// architecture-independent): C with every TLS model and IFUNC, C++ with
+/// exceptions, `thread_local` and threads, compiled section-per-function
+/// and not, run under qemu against GNU ld's `--gc-sections` output of the
+/// same line, verifier-clean; and the collection removed something, so
+/// the output is smaller than without it.
+fn gc_matrix(name: &str, cc: Cc, program: &[Source]) {
+    let Some(ld) = host() else { return };
+    let sets: [&[&str]; 3] = [
+        &["-O2", "-fPIE", "-pthread"],
+        &["-O0", "-fPIC", "-g", "-ffunction-sections", "-fdata-sections", "-pthread"],
+        &["-O2", "-fno-pic", "-ffunction-sections", "-fdata-sections", "-pthread"],
+    ];
+    for (i, flags) in sets.into_iter().enumerate() {
+        let label = format!("{name}-{i}");
+        if holds_with(&ld, &label, cc, flags, program, &["--gc-sections"]).is_none() {
+            return;
+        }
+        let scratch = Scratch::new(&format!("{label}-size"));
+        let built = compile(&scratch, cc, flags, program).expect("compiled once already");
+        let (gc, plain) = (built.dir.join("gc"), built.dir.join("plain"));
+        let m = mortar(&built, &gc, &["--gc-sections", "--print-gc-sections"], &[]);
+        assert!(m.success(), "{label}: {}", m.stderr_text());
+        assert!(
+            m.stderr_text().lines().any(|l| l.contains("removing unused section '.text")),
+            "{label}: no code collected"
+        );
+        assert!(mortar(&built, &plain, &[], &[]).success());
+        let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
+        assert!(size(&gc) < size(&plain), "{label}: {} >= {}", size(&gc), size(&plain));
+    }
+}
+
+#[test]
+fn x64_gc_sections_c_and_cxx() {
+    gc_matrix("x64-gc-tls-gcc", GCC, C_TLS);
+    gc_matrix("x64-gc-tls-clang", CLANG, C_TLS);
+    gc_matrix("x64-gc-thr-gxx", GXX, CXX_THREADS);
+    gc_matrix("x64-gc-thr-clangxx", CLANGXX, CXX_THREADS);
 }
 
 #[test]

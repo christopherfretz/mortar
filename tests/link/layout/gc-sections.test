@@ -2,7 +2,6 @@
 # point refers to, and keeps a section marked SHF_GNU_RETAIN (GNU ld
 # manual "--gc-sections"; gABI extension SHF_GNU_RETAIN).
 #@ spec: layout.md "Garbage collection"
-#@ xfail(mortar): --gc-sections is refused by name until liveness implements it (M2, spec/image.md §3.2; owner: liveness)
 
 cc -O1 -ffunction-sections -fdata-sections main.c -o main.o
 link gcc -static -no-pie -Wl,--gc-sections main.o -o prog

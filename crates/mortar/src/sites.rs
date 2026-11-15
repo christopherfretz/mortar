@@ -157,7 +157,7 @@ impl<'a, 's> LinkSites<'a, 's> {
         }
         let files: Vec<&mortar_core::inputs::File<'s>> =
             t.inputs.files.iter().map(|(_, f)| f).collect();
-        let symtabs = pool.map(files.len(), |i| match files[i].reader {
+        let symtabs = pool.unit_cost(500).map(files.len(), |i| match files[i].reader {
             Reader::Object(obj) => obj.symbols().ok().flatten(),
             _ => None,
         });
@@ -210,7 +210,7 @@ impl Sites for LinkSites<'_, '_> {
 
     fn targets(&self, round: &Round<'_>, pool: &Pool) -> Vec<Option<u64>> {
         let tables = self.tables(round);
-        pool.map(self.branches.len(), |i| match self.branches[i].site.key {
+        pool.unit_cost(40).map(self.branches.len(), |i| match self.branches[i].site.key {
             ThunkTarget::Plt(key) => tables.plt(key),
             ThunkTarget::Sym { key, addend } => {
                 let v = tables.value(key)?;
@@ -268,7 +268,7 @@ impl Sites for LinkSites<'_, '_> {
             }
             parts.push((c, addr - start, addr, mine, result));
         }
-        pool.for_each_part(parts, |_, (c, rel_start, addr, mine, result)| {
+        pool.unit_cost(3600).for_each_part(parts, |_, (c, rel_start, addr, mine, result)| {
             *result = self.section_code(&tables, c, addr, rel_start, mine);
         });
         let mut proof: Vec<ProofRun> = Vec::new();

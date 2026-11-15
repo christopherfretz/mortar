@@ -96,13 +96,13 @@ impl<'a, 's> InputsView<'a, 's> {
         drop(hashes);
         steps.step("view.symbol_lookup");
         let names = inputs.comdats.as_slice();
-        let comdat_hashes = pool.map(names.len(), |c| hash_bytes(names[c].name));
+        let comdat_hashes = pool.unit_cost(15).map(names.len(), |c| hash_bytes(names[c].name));
         let comdats = HashIndex::new(&comdat_hashes);
         drop(comdat_hashes);
         steps.step("view.comdat_lookup");
         let n = inputs.files.len() as usize;
         let per: Vec<PerFile<'s>> =
-            pool.map(n, |f| per_file(inputs, &symbols, &comdats, FileId(f as u32)));
+            pool.unit_cost(1400).map(n, |f| per_file(inputs, &symbols, &comdats, FileId(f as u32)));
         steps.step("view.per_file");
         let sources = sources(inputs);
         let mut info = Vec::with_capacity(n);
@@ -899,6 +899,10 @@ pub struct Outcome {
     /// `SHF_GNU_RETAIN` sections (§4.7).
     pub retained: Vec<(FileId, SectionIndex)>,
     pub entry: crate::EntryPoint,
+    /// The keys the options root (§4.2: the entry, `-u`,
+    /// `--require-defined`), in option order: their definitions are
+    /// roots of `--gc-sections` (§4.7).
+    pub roots: Vec<SymbolId>,
     /// Where the time went (`MORTAR_STEPS`; decides nothing).
     pub steps: Steps,
 }
@@ -951,6 +955,7 @@ pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome 
         gnu_warning_syms: r.gnu_warning_syms,
         retained: r.retained,
         entry: r.entry,
+        roots: opts.roots().iter().map(|root| root.key).collect(),
         steps: Steps::default(),
     };
     steps.step("drop");

@@ -236,7 +236,7 @@ pub fn chunk(
     }
     let bss = a.outsecs.iter().find(|(_, o)| o.name == b".bss").map(|(id, _)| id);
     // Parts per output section, parallel over output sections (L-22).
-    let planned: Vec<Result<Vec<PartPlan>, LayoutDiag>> = pool.map(outs, |o| {
+    let planned: Vec<Result<Vec<PartPlan>, LayoutDiag>> = pool.unit_cost(10000).map(outs, |o| {
         let id = OutSecId(o as u32);
         let out = &a.outsecs[id];
         let exec = out.flags & SHF_EXECINSTR != 0;

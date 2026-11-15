@@ -16,35 +16,41 @@
 //!
 //! # Scheduling
 //!
-//! A call with work for more than one worker spawns `min(threads, items) -
-//! 1` scoped threads and works on the calling thread too; the threads are
-//! joined before the call returns. Items (units, or blocks of units) are
-//! handed out through one atomic cursor: a worker takes the next item when
-//! it is done with one. With one thread the work runs on the caller, in
-//! order, and nothing is spawned or allocated beyond what a helper's result
-//! needs.
+//! A call with work for more than one worker runs on at most
+//! `min(threads, items)` workers, the calling thread being the first, and
+//! returns when every one of them has. Items (units, or blocks of units)
+//! are handed out through one atomic cursor: a worker takes the next item
+//! when it is done with one. The caller spawns one scoped thread, and each
+//! spawned thread spawns up to two more before it takes items, as long as
+//! items are left untaken (a tree: no thread pays for every spawn, and a
+//! region that is over before a spawned thread starts spawns no more).
+//! [`Pool::unit_cost`] lets a call site cap the workers by its estimated
+//! work. With one thread the work runs on the caller, in order, and
+//! nothing is spawned or allocated beyond what a helper's result needs.
 //!
 //! With a **scheduling seed** ([`SEED_VAR`], or [`Pool::with_seed`]) items
-//! are single units, handed out in an order permuted by the seed, and every
-//! worker yields after each unit, so that a test can run a phase under many
-//! schedules ([`check_schedules`]). The seed changes the schedule only,
-//! never a result.
+//! are single units, handed out in an order permuted by the seed, every
+//! worker is spawned, and every worker yields after each unit, so that a
+//! test can run a phase under many schedules ([`check_schedules`]). The
+//! seed changes the schedule only, never a result.
 //!
 //! # Panics
 //!
 //! A panic in a worker stops the hand-out of further items, the other
 //! workers finish the item they hold, every thread is joined, and the
-//! panic resumes on the caller with its original payload. In a release
-//! build a panic aborts (it is a bug of mortar's); tests unwind.
+//! (first) panic resumes on the caller with its original payload. In a
+//! release build a panic aborts (it is a bug of mortar's); tests unwind.
 //!
 //! # Cost
 //!
 //! A call that runs in parallel costs one spawn per extra worker (tens of
-//! microseconds each, measured in `spec/landed/model/WP-020b.md`), one
-//! allocation of the join handles, and per helper what its documentation
-//! states. Safe Rust has no way to hand borrowed work to threads that
-//! outlive the call, so there is no persistent pool: a phase should make
-//! few calls with much work each, not many small ones.
+//! microseconds each, measured in `spec/landed/model/WP-020b.md` and
+//! `spec/landed/perf/WP-032e.md`; the caller pays for one), and per helper
+//! what its documentation states. Safe Rust has no way to hand borrowed
+//! work to threads that outlive the call, so there is no persistent pool:
+//! a phase should make few calls with much work each, not many small ones.
+//! `MORTAR_STEPS` prints one line per region (`par <file>:<line>`) with its
+//! units, workers and spawns.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -59,6 +65,12 @@ pub const SEED_VAR: &str = "MORTAR_SCHED_SEED";
 /// Blocks per worker when units are batched: enough that uneven units
 /// balance, few enough that the cursor is not contended. Not observable.
 const BLOCKS_PER_THREAD: usize = 16;
+
+/// The least estimated work, in nanoseconds, that one worker of a region
+/// sized by [`Pool::unit_cost`] gets: about four times what spawning and
+/// joining one thread costs on its own (`spec/landed/perf/WP-032e.md`:
+/// 35–60 µs per thread at 8–12 threads).
+pub const WORKER_NS: u128 = 200_000;
 
 /// The block of [`Pool::prefix_sum`] (rule 6: a constant).
 pub const SCAN_BLOCK: usize = 1 << 16;
@@ -109,6 +121,9 @@ pub fn env_seed() -> Result<Option<u64>, BadSeed> {
 pub struct Pool {
     threads: usize,
     seed: Option<u64>,
+    /// The caller's estimate of one unit's cost in nanoseconds
+    /// ([`Pool::unit_cost`]); 0: unknown.
+    unit_ns: u32,
 }
 
 impl Default for Pool {
@@ -137,12 +152,12 @@ impl Pool {
     /// If `threads` is 0.
     pub fn try_new(threads: usize) -> Result<Self, BadSeed> {
         assert!(threads >= 1, "a pool has at least one thread");
-        Ok(Self { threads, seed: env_seed()? })
+        Ok(Self { threads, seed: env_seed()?, unit_ns: 0 })
     }
 
     /// One thread, no seed: everything runs on the caller, in order.
     pub fn sequential() -> Self {
-        Self { threads: 1, seed: None }
+        Self { threads: 1, seed: None, unit_ns: 0 }
     }
 
     /// The default thread count: `std::thread::available_parallelism`, or 1.
@@ -166,6 +181,33 @@ impl Pool {
     pub fn with_threads(self, threads: usize) -> Self {
         assert!(threads >= 1, "a pool has at least one thread");
         Self { threads, ..self }
+    }
+
+    /// The same pool for one region whose units cost about `ns`
+    /// nanoseconds each, on one thread (a constant of the call site, from
+    /// its measured cost: `spec/landed/perf/WP-032g.md`).
+    ///
+    /// The region then runs on at most `units * ns / `[`WORKER_NS`] workers
+    /// (at least one, at most [`Pool::threads`]): a region too small to
+    /// repay a thread's spawn runs on the caller, without one. The count
+    /// depends on the number of units and the constant only, never on a
+    /// measurement, and like every schedule it changes no result. With a
+    /// scheduling seed the estimate is ignored (every worker runs: the
+    /// seed's purpose is to exercise schedules).
+    #[must_use]
+    pub fn unit_cost(self, ns: u32) -> Self {
+        Self { unit_ns: ns, ..self }
+    }
+
+    /// The pool one region of `units` units runs on ([`Pool::unit_cost`]).
+    fn sized(&self, units: usize) -> Self {
+        let mut pool = Self { unit_ns: 0, ..*self };
+        if self.unit_ns != 0 && self.seed.is_none() {
+            let work = (units as u128).saturating_mul(u128::from(self.unit_ns));
+            let workers = usize::try_from(work / WORKER_NS).unwrap_or(usize::MAX).max(1);
+            pool.threads = self.threads.min(workers);
+        }
+        pool
     }
 
     /// The thread count.
@@ -198,7 +240,8 @@ impl Pool {
 
     /// Runs `work(state, item)` for every item in `0..items`, each exactly
     /// once, `state` made by `init` once per worker.
-    fn drive<S, I, W>(&self, items: usize, init: I, work: W)
+    #[track_caller]
+    fn drive<S, I, W>(&self, units: usize, items: usize, init: I, work: W)
     where
         I: Fn() -> S + Sync,
         W: Fn(&mut S, usize) + Sync,
@@ -206,62 +249,40 @@ impl Pool {
         if items == 0 {
             return;
         }
+        let mut region = Region::start(units, self.threads.min(items));
         let perm = self.seed.map(|seed| permutation(items, seed));
-        let order = |c: usize| perm.as_ref().map_or(c, |p| p[c]);
-        let seeded = perm.is_some();
         let workers = self.threads.min(items);
         if workers == 1 {
             let mut state = init();
             for c in 0..items {
-                work(&mut state, order(c));
-                if seeded {
+                work(&mut state, perm.as_ref().map_or(c, |p| p[c]));
+                if perm.is_some() {
                     std::thread::yield_now();
                 }
             }
             return;
         }
-        let cursor = AtomicUsize::new(0);
-        let stop = AtomicBool::new(false);
-        let worker = || {
-            let _guard = StopOnPanic(&stop);
-            let mut state = init();
-            while !stop.load(atomic::Ordering::Relaxed) {
-                let c = cursor.fetch_add(1, atomic::Ordering::Relaxed);
-                if c >= items {
-                    break;
-                }
-                work(&mut state, order(c));
-                if seeded {
-                    std::thread::yield_now();
-                }
-            }
+        let team = Team {
+            items,
+            workers,
+            cursor: AtomicUsize::new(0),
+            started: AtomicUsize::new(1),
+            stop: AtomicBool::new(false),
+            payload: Mutex::new(None),
+            init: &init,
+            work: &work,
+            perm: perm.as_deref(),
         };
-        std::thread::scope(|scope| {
-            // A thread that cannot be spawned (a resource limit) leaves its
-            // share to the others: the result does not depend on it.
-            let handles: Vec<_> = (1..workers)
-                .filter_map(|_| {
-                    std::thread::Builder::new()
-                        .name("mortar-par".to_owned())
-                        .spawn_scoped(scope, worker)
-                        .ok()
-                })
-                .collect();
-            worker();
-            let mut payload = None;
-            for handle in handles {
-                if let Err(p) = handle.join() {
-                    payload.get_or_insert(p);
-                }
-            }
-            if let Some(p) = payload {
-                std::panic::resume_unwind(p);
-            }
-        });
+        std::thread::scope(|scope| team.run(scope, 1));
+        region.spawned = team.started.into_inner() - 1;
+        if let Some(p) = team.payload.into_inner().unwrap_or_else(PoisonError::into_inner) {
+            std::panic::resume_unwind(p);
+        }
     }
 
     /// Runs `work(state, index, part)` for every part, each exactly once.
-    fn drive_parts<X, S, P, I, W>(&self, parts: P, init: I, work: W)
+    #[track_caller]
+    fn drive_parts<X, S, P, I, W>(&self, units: Option<usize>, parts: P, init: I, work: W)
     where
         X: Send,
         P: IntoIterator<Item = X>,
@@ -269,15 +290,20 @@ impl Pool {
         W: Fn(&mut S, usize, X) + Sync,
     {
         let parts = parts.into_iter();
-        if self.is_inline() {
+        let this = self.sized(units.unwrap_or_else(|| parts.size_hint().0));
+        if this.is_inline() {
+            let mut region = Region::start(0, 1);
             let mut state = init();
+            let mut n = 0;
             for (i, x) in parts.enumerate() {
                 work(&mut state, i, x);
+                n += 1;
             }
+            region.items = units.unwrap_or(n);
             return;
         }
         let cells: Vec<Mutex<Option<X>>> = parts.map(|x| Mutex::new(Some(x))).collect();
-        self.drive(cells.len(), init, |state, i| {
+        this.drive(units.unwrap_or(cells.len()), cells.len(), init, |state, i| {
             let x = cells[i]
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -291,6 +317,7 @@ impl Pool {
     ///
     /// Cost: batches of consecutive units per item; no allocation beyond
     /// the call's (with a seed: the permutation, one `usize` per unit).
+    #[track_caller]
     pub fn for_each<F>(&self, units: usize, f: F)
     where
         F: Fn(usize) + Sync,
@@ -301,13 +328,15 @@ impl Pool {
     /// Runs `f(state, unit)` for every unit of `0..units`, `state` made by
     /// `init` once per worker (a scratch buffer reused across units). What
     /// `state` holds at the end is dropped: it must not carry a result.
+    #[track_caller]
     pub fn for_each_init<S, I, F>(&self, units: usize, init: I, f: F)
     where
         I: Fn() -> S + Sync,
         F: Fn(&mut S, usize) + Sync,
     {
-        let g = self.grain(units);
-        self.drive(units.div_ceil(g), init, |state, b| {
+        let this = self.sized(units);
+        let g = this.grain(units);
+        this.drive(units, units.div_ceil(g), init, |state, b| {
             for u in b * g..((b + 1) * g).min(units) {
                 f(state, u);
             }
@@ -318,16 +347,18 @@ impl Pool {
     /// parts are disjoint, e.g. from [`split_offsets`], or `chunks_mut`).
     ///
     /// Cost: unless inline, one `Mutex<Option<X>>` per part, allocated once.
+    #[track_caller]
     pub fn for_each_part<X, P, F>(&self, parts: P, f: F)
     where
         X: Send,
         P: IntoIterator<Item = X>,
         F: Fn(usize, X) + Sync,
     {
-        self.drive_parts(parts, || (), |(), i, x| f(i, x));
+        self.drive_parts(None, parts, || (), |(), i, x| f(i, x));
     }
 
     /// [`Pool::for_each_part`] with a per-worker state made by `init`.
+    #[track_caller]
     pub fn for_each_part_init<X, S, P, I, F>(&self, parts: P, init: I, f: F)
     where
         X: Send,
@@ -335,7 +366,7 @@ impl Pool {
         I: Fn() -> S + Sync,
         F: Fn(&mut S, usize, X) + Sync,
     {
-        self.drive_parts(parts, init, f);
+        self.drive_parts(None, parts, init, f);
     }
 
     /// Runs `f(index, item)` for every element of `items`, each element a
@@ -343,13 +374,16 @@ impl Pool {
     ///
     /// Cost: batches of consecutive elements per item; one `Mutex` per
     /// batch unless inline.
+    #[track_caller]
     pub fn for_each_mut<T, F>(&self, items: &mut [T], f: F)
     where
         T: Send,
         F: Fn(usize, &mut T) + Sync,
     {
-        let g = self.grain(items.len());
-        self.drive_parts(
+        let this = self.sized(items.len());
+        let g = this.grain(items.len());
+        this.drive_parts(
+            Some(items.len()),
             items.chunks_mut(g),
             || (),
             |(), b, chunk| {
@@ -362,29 +396,34 @@ impl Pool {
 
     /// Runs `f(block_index, range)` for every block of [`blocks`]`(len,
     /// block)`, each block a unit (rule 6).
+    #[track_caller]
     pub fn for_each_block<F>(&self, len: usize, block: usize, f: F)
     where
         F: Fn(usize, Range<usize>) + Sync,
     {
         let n = block_count(len, block);
-        self.for_each(n, |b| f(b, b * block..((b + 1) * block).min(len)));
+        self.sized(len).for_each(n, |b| f(b, b * block..((b + 1) * block).min(len)));
     }
 
     /// `(0..units).map(f).collect()` (rule 3).
     ///
     /// Cost: one buffer per batch and one copy of the results into the
     /// returned vector (none inline).
+    #[track_caller]
     pub fn map<R, F>(&self, units: usize, f: F) -> Vec<R>
     where
         R: Send,
         F: Fn(usize) -> R + Sync,
     {
-        if self.is_inline() {
+        let this = self.sized(units);
+        if this.is_inline() {
+            let _region = Region::start(units, 1);
             return (0..units).map(f).collect();
         }
-        let g = self.grain(units);
+        let g = this.grain(units);
         let mut outs: Vec<Vec<R>> = (0..units.div_ceil(g)).map(|_| Vec::new()).collect();
-        self.drive_parts(
+        this.drive_parts(
+            Some(units),
             outs.iter_mut(),
             || (),
             |(), b, out| {
@@ -402,16 +441,19 @@ impl Pool {
     ///
     /// Cost: one buffer per batch (one in all inline), one copy of the rows
     /// into the result (none inline), `units + 1` offsets.
+    #[track_caller]
     pub fn map_collect<R, F>(&self, units: usize, f: F) -> Collected<R>
     where
         R: Send,
         F: Fn(usize, &mut Vec<R>) + Sync,
     {
-        let g = self.grain(units);
+        let this = self.sized(units);
+        let g = this.grain(units);
         let nb = units.div_ceil(g);
         let mut outs: Vec<Vec<R>> = (0..nb).map(|_| Vec::new()).collect();
         let mut offsets = vec![0usize; units + 1];
-        self.drive_parts(
+        this.drive_parts(
+            Some(units),
             outs.iter_mut().zip(offsets[1..].chunks_mut(g)),
             || (),
             |(), b, (out, ends)| {
@@ -435,6 +477,7 @@ impl Pool {
     /// `(0..units).map(|u| { let mut v = Vec::new(); f(u, &mut v); v })`:
     /// one vector per unit (rule 3). Cost: as [`Pool::map`], plus each
     /// unit's own vector.
+    #[track_caller]
     pub fn map_collect_vecs<R, F>(&self, units: usize, f: F) -> Vec<Vec<R>>
     where
         R: Send,
@@ -453,21 +496,24 @@ impl Pool {
     ///
     /// Cost: sequential up to [`SCAN_BLOCK`] elements; beyond, two passes
     /// over blocks of [`SCAN_BLOCK`] and one allocation per block sum.
+    #[track_caller]
     pub fn prefix_sum<T>(&self, values: &mut [T]) -> T
     where
         T: Copy + Default + Add<Output = T> + Send + Sync,
     {
-        if values.len() <= SCAN_BLOCK || self.is_inline() {
+        let this = self.sized(values.len());
+        if values.len() <= SCAN_BLOCK || this.is_inline() {
+            let _region = Region::start(values.len(), 1);
             return scan(values, T::default());
         }
         let shared: &[T] = values;
-        let mut sums = self.map(block_count(shared.len(), SCAN_BLOCK), |b| {
+        let mut sums = this.map(block_count(shared.len(), SCAN_BLOCK), |b| {
             let start = b * SCAN_BLOCK;
             let end = (start + SCAN_BLOCK).min(shared.len());
             shared[start..end].iter().fold(T::default(), |acc, &x| acc + x)
         });
         let total = scan(&mut sums, T::default());
-        self.for_each_part(values.chunks_mut(SCAN_BLOCK), |b, chunk| {
+        this.for_each_part(values.chunks_mut(SCAN_BLOCK), |b, chunk| {
             scan(chunk, sums[b]);
         });
         total
@@ -488,18 +534,21 @@ impl Pool {
     /// Beyond: a scratch copy of `v` (hence `T: Copy`: rows are plain data,
     /// `spec/model.md` §1), at most `log2(SORT_MAX_RUNS)` merge rounds each
     /// moving every element once, and a final copy when the rounds are odd.
+    #[track_caller]
     pub fn sort_by<T, F>(&self, v: &mut [T], cmp: F)
     where
         T: Copy + Send + Sync,
         F: Fn(&T, &T) -> Ordering + Sync,
     {
         let n = v.len();
-        if n <= SORT_RUN || self.is_inline() {
+        let this = self.sized(n);
+        if n <= SORT_RUN || this.is_inline() {
+            let _region = Region::start(n, 1);
             v.sort_by(cmp);
             return;
         }
         let run = SORT_RUN.max(n.div_ceil(SORT_MAX_RUNS));
-        self.for_each_part(v.chunks_mut(run), |_, chunk| chunk.sort_by(&cmp));
+        this.for_each_part(v.chunks_mut(run), |_, chunk| chunk.sort_by(&cmp));
         if run >= n {
             return;
         }
@@ -508,15 +557,15 @@ impl Pool {
         let mut in_v = true;
         while width < n {
             if in_v {
-                self.merge_round(v, &mut scratch, width, &cmp);
+                this.merge_round(v, &mut scratch, width, &cmp);
             } else {
-                self.merge_round(&scratch, v, width, &cmp);
+                this.merge_round(&scratch, v, width, &cmp);
             }
             in_v = !in_v;
             width = width.saturating_mul(2);
         }
         if !in_v {
-            self.for_each_part(
+            this.for_each_part(
                 v.chunks_mut(MERGE_BLOCK).zip(scratch.chunks(MERGE_BLOCK)),
                 |_, (to, from)| {
                     to.copy_from_slice(from);
@@ -527,6 +576,7 @@ impl Pool {
 
     /// [`Pool::sort_by`] comparing `key(row)`; the result is that of
     /// `v.sort_by_key(key)`.
+    #[track_caller]
     pub fn sort_by_key<T, K, F>(&self, v: &mut [T], key: F)
     where
         T: Copy + Send + Sync,
@@ -538,6 +588,7 @@ impl Pool {
 
     /// Merges each pair of neighbouring sorted runs of `width` in `src` into
     /// `dst`.
+    #[track_caller]
     fn merge_round<T, F>(&self, src: &[T], dst: &mut [T], width: usize, cmp: &F)
     where
         T: Copy + Send + Sync,
@@ -638,13 +689,122 @@ fn scan<T: Copy + Add<Output = T>>(values: &mut [T], start: T) -> T {
     acc
 }
 
-/// Sets the stop flag when a worker unwinds.
-struct StopOnPanic<'a>(&'a AtomicBool);
+/// One parallel region's line under `MORTAR_STEPS` (WP-032g), printed when
+/// the region ends:
+///
+/// `mortar: steps: par <file>:<line>: <ms> ms, <u> item, <w> worker, <s> spawned`
+///
+/// `<file>:<line>` is the helper's caller, `u` its units, `w` the most
+/// workers it may use and `s` the threads it did spawn.
+/// Off, one branch on a cached flag.
+struct Region {
+    at: &'static std::panic::Location<'static>,
+    items: usize,
+    workers: usize,
+    spawned: usize,
+    start: Option<std::time::Instant>,
+}
 
-impl Drop for StopOnPanic<'_> {
+impl Region {
+    #[track_caller]
+    fn start(items: usize, workers: usize) -> Self {
+        let start = crate::wp032b_steps::enabled().then(std::time::Instant::now);
+        Self { at: std::panic::Location::caller(), items, workers, spawned: 0, start }
+    }
+}
+
+impl Drop for Region {
+    #[allow(clippy::cast_precision_loss)] // a printed duration
     fn drop(&mut self) {
-        if std::thread::panicking() {
-            self.0.store(true, atomic::Ordering::Relaxed);
+        if let Some(start) = self.start {
+            let ms = start.elapsed().as_nanos() as f64 / 1e6;
+            let file = self.at.file().rsplit("crates/").next().unwrap_or(self.at.file());
+            eprintln!(
+                "mortar: steps: par {file}:{}: {ms:.3} ms, {} item, {} worker, {} spawned",
+                self.at.line(),
+                self.items,
+                self.workers,
+                self.spawned
+            );
+        }
+    }
+}
+
+/// The workers of one region (`drive`). The caller is the first; it spawns
+/// one more, and every spawned worker spawns up to [`FANOUT`] more before
+/// it takes items, while fewer than `workers` have started. Then each takes
+/// the next item from `cursor` until none is left.
+///
+/// Without a seed a worker spawns only while items are left untaken: in a
+/// region that is over before a spawned thread starts, no further thread
+/// is spawned. That is a schedule the eager spawn already allowed (threads
+/// that start after the last item is taken do nothing), so it changes no
+/// result. With a seed every worker is spawned.
+struct Team<'a, I, W> {
+    items: usize,
+    workers: usize,
+    cursor: AtomicUsize,
+    /// Workers started, the caller included.
+    started: AtomicUsize,
+    /// Set by a worker that panicked: the others take no further item.
+    stop: AtomicBool,
+    /// The first panic's payload, resumed on the caller.
+    payload: Mutex<Option<Box<dyn std::any::Any + Send>>>,
+    init: &'a I,
+    work: &'a W,
+    perm: Option<&'a [usize]>,
+}
+
+/// The threads a spawned worker of a [`Team`] spawns (a tree: no thread
+/// pays for every spawn).
+const FANOUT: usize = 2;
+
+impl<S, I, W> Team<'_, I, W>
+where
+    I: Fn() -> S + Sync,
+    W: Fn(&mut S, usize) + Sync,
+{
+    fn run<'scope>(&'scope self, scope: &'scope std::thread::Scope<'scope, '_>, fanout: usize) {
+        for _ in 0..fanout {
+            if self.perm.is_none() && self.cursor.load(atomic::Ordering::Relaxed) >= self.items {
+                break;
+            }
+            let claimed = self
+                .started
+                .fetch_update(atomic::Ordering::Relaxed, atomic::Ordering::Relaxed, |n| {
+                    (n < self.workers).then_some(n + 1)
+                })
+                .is_ok();
+            if !claimed {
+                break;
+            }
+            // A thread that cannot be spawned (a resource limit) leaves its
+            // share to the others: the result does not depend on it.
+            if std::thread::Builder::new()
+                .name("mortar-par".to_owned())
+                .spawn_scoped(scope, move || self.run(scope, FANOUT))
+                .is_err()
+            {
+                self.started.fetch_sub(1, atomic::Ordering::Relaxed);
+                break;
+            }
+        }
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut state = (self.init)();
+            while !self.stop.load(atomic::Ordering::Relaxed) {
+                let c = self.cursor.fetch_add(1, atomic::Ordering::Relaxed);
+                if c >= self.items {
+                    break;
+                }
+                (self.work)(&mut state, self.perm.map_or(c, |p| p[c]));
+                if self.perm.is_some() {
+                    std::thread::yield_now();
+                }
+            }
+        }));
+        if let Err(p) = caught {
+            self.stop.store(true, atomic::Ordering::Relaxed);
+            self.payload.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert(p);
         }
     }
 }

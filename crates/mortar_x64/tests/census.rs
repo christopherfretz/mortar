@@ -187,7 +187,11 @@ fn census_object(obj: &Image, what: &str, c: &mut Census) {
                 }
             })
             .collect();
-        let place = PlaceFacts { alloc: sec.flags & SHF_ALLOC != 0, writable: sec.flags & 1 != 0 };
+        let place = PlaceFacts {
+            alloc: sec.flags & SHF_ALLOC != 0,
+            writable: sec.flags & 1 != 0,
+            exec: None,
+        };
         let input = obj.data(sec);
         for (output, oname) in [(OutputKind::Static, "static"), (OutputKind::Pie, "static-pie")] {
             if output == OutputKind::Static {
