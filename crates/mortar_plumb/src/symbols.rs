@@ -125,17 +125,21 @@ struct Def {
     sym: Sym,
 }
 
-#[allow(clippy::many_single_char_names)] // o, t, d, s, a, p: the ELF parts
 /// Whether input symbol `di` of object `oi` is defined in a section that
 /// has no address in the output: non-alloc, or discarded by the map.
 fn not_in_memory(e: &Engine<'_, '_>, oi: usize, di: u32) -> bool {
-    let o = &e.objs[oi];
-    let Some(t) = o.symtab else { return false };
-    let Ok(d) = t.get(SymbolIndex(di)) else { return false };
-    let Ok(SymbolSection::Section(k)) = t.section_of(SymbolIndex(di), &d) else { return false };
-    o.secs.get(k.0 as usize).is_some_and(|s| !s.alloc() || matches!(s.place, Place::Discarded))
+    let obj = &e.objs[oi];
+    let Some(table) = obj.symtab else { return false };
+    let Ok(sym) = table.get(SymbolIndex(di)) else { return false };
+    let Ok(SymbolSection::Section(idx)) = table.section_of(SymbolIndex(di), &sym) else {
+        return false;
+    };
+    obj.secs
+        .get(idx.0 as usize)
+        .is_some_and(|sec| !sec.alloc() || matches!(sec.place, Place::Discarded))
 }
 
+#[allow(clippy::many_single_char_names)] // o, t, d, s, a, p: the ELF parts
 fn placed_def(e: &Engine<'_, '_>, oi: usize, di: u32) -> Option<Def> {
     let o = &e.objs[oi];
     let t = o.symtab?;
