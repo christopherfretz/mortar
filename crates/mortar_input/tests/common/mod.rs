@@ -86,8 +86,12 @@ pub fn driver_link_args(driver: &Path, args: &[&str], cwd: &Path) -> Option<Vec<
     let text = out.stderr_text();
     let line = text.lines().rev().find(|l| {
         let first = shell_words(l).into_iter().next().unwrap_or_default();
+        let name = first.rsplit('/').next().unwrap_or_default();
         first.starts_with('/')
-            && (first.ends_with("/collect2") || first.ends_with("/ld") || first.ends_with("ld.bfd"))
+            && (name == "collect2"
+                || name == "ld"
+                || name.ends_with("-ld")
+                || name.ends_with("ld.bfd"))
     })?;
     let mut words = shell_words(line);
     if words.is_empty() {
