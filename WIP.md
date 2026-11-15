@@ -17,4 +17,10 @@ Measured, not written: hello-cxx "members as symbol tables" upper bound
   --gc-sections: 1 thread 19.8 -> 15.7 ms, 8 threads 10.9 -> 9.8 ms.
   I-8 amendment to propose in the landed record.
 
-Next: the thread cap (driver), then small costs, then the record.
+- worker cap (`crates/mortar/src/front.rs` `capped`): after input, without
+  `--threads` or a seed, min(threads, ceil(resident / 4 MiB)) workers.
+  hello-c default threads 25.7 -> 23.5 ms (load 10). Identity set with 10
+  default-thread links (64) identical.
+
+Next: small costs (fixed.rs needs, sites.rs code, check.rs), then the
+record, e2e table, plumb, gate.
