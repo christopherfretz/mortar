@@ -1,0 +1,27 @@
+# When two archives define a symbol, the one searched first while the
+# symbol is undefined provides it, and the other's member is not
+# extracted: no duplicate definition (GNU ld manual, "Command-line
+# Options", -l).
+#@ spec: resolve.md "Archives"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 main.c -o main.o
+cc -O1 one.c -o one.o
+cc -O1 two.c -o two.o
+ar rcs libone.a one.o
+ar rcs libtwo.a two.o
+link gcc -static -no-pie main.o -L. -lone -ltwo -o one_first
+link gcc -static -no-pie main.o -L. -ltwo -lone -o two_first
+run one_first
+  exit: 1
+run two_first
+  exit: 2
+
+#--- main.c
+int pick(void);
+
+int main(void) { return pick(); }
+#--- one.c
+int pick(void) { return 1; }
+#--- two.c
+int pick(void) { return 2; }

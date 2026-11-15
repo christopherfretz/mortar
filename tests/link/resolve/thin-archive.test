@@ -1,0 +1,25 @@
+# A thin archive (`ar T`) names its members by path instead of holding
+# them; members are extracted as from a regular archive (GNU ar manual,
+# "--thin"; GNU ld reads the members from those paths).
+#@ spec: resolve.md "Archives"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 main.c -o main.o
+cc -O1 lib/one.c -o lib/one.o
+cc -O1 lib/two.c -o lib/two.o
+ar rcsT libthin.a lib/one.o lib/two.o
+link gcc -static -no-pie main.o libthin.a -o prog
+run prog
+  exit: 3
+check readelf -sW prog
+  has: FUNC * one$
+  not: two_unused
+
+#--- main.c
+int one(void);
+
+int main(void) { return one(); }
+#--- lib/one.c
+int one(void) { return 3; }
+#--- lib/two.c
+int two_unused(void) { return 2; }

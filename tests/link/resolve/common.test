@@ -1,0 +1,46 @@
+# Common symbols (`-fcommon`): tentative definitions of one name in
+# several objects become one object, as large as the largest; an
+# initialized definition of the name takes precedence over the commons
+# (gABI "Symbol Table", SHN_COMMON; GNU ld manual "--warn-common").
+# mold 2.37.1 gets this WRONG: it sizes the merged symbol (and the
+# `.common` space) by the first tentative definition, 16 bytes, so the
+# program writes past the end of its data (measured: `buffer` is 16
+# bytes and `_end` follows it). Marked xfail for mold until it is fixed.
+#@ spec: resolve.md "Common symbols"
+#@ xfail(mold): mold 2.37.1 sizes a common symbol by its first definition, not the largest
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O0 -fcommon a.c -o a.o
+cc -O0 -fcommon b.c -o b.o
+cc -O0 -fcommon c.c -o c.o
+cc -O0 -fcommon main.c -o main.o
+link gcc -static -no-pie main.o a.o b.o c.o -o prog
+run prog
+  stdout: counter 5, buffer 64
+check readelf -sW prog
+  has: 64 OBJECT * buffer$
+  has: 4 OBJECT * counter$
+
+#--- a.c
+int counter;
+char buffer[16];
+#--- b.c
+int counter;
+char buffer[64];
+
+int b_counter(void) { return counter; }
+#--- c.c
+int counter = 5;
+#--- main.c
+#include <stdio.h>
+#include <string.h>
+
+extern char buffer[];
+int b_counter(void);
+
+int main(void) {
+  memset(buffer, 'x', 63);
+  buffer[63] = 0;
+  printf("counter %d, buffer %zu\n", b_counter(), strlen(buffer) + 1);
+  return 0;
+}

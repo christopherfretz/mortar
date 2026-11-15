@@ -920,8 +920,10 @@ struct Target {
     e_machine: u16,
 }
 
-/// The native compiler is AArch64's on the machines the gate runs on; the
-/// cross compilers are named by prefix.
+/// Each target's compilers are found by their prefixed names first, which
+/// Debian gives the host's own compilers too (AArch64's on the development
+/// machine, x86-64's on the hosted x86-64 lane); the cross compilers are
+/// named by prefix only.
 const TARGET_LIST: [Target; 3] = [
     Target {
         name: "aarch64",
