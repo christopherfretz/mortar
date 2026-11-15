@@ -224,7 +224,7 @@ pub struct Facts {
     pub max_reach: Window,                   // (before, after): derived, see below
     pub code_fill: &'static [u8],            // the trap pattern (layout.md L-82): AArch64 4 zero bytes, x86 0xCC
     pub code_nop: &'static [u8],             // the no-op of .init/.fini padding (L-82): AArch64 NOP, x86 0x90
-    pub seq_leads: &'static [u32],           // the lead types RelocAt.leads gates (§3.5): AArch64 [513]; x86-64 [19, 20]
+    pub seq_leads: &'static [u32],           // the lead types RelocAt.leads gates (§3.5): AArch64 [513]; x86-64 [19, 20]; i386 [18, 19]
 }
 fn e_flags(&self, inputs: &mut dyn Iterator<Item = u32>) -> Result<u32, Refusal>; // 0 for all three
 ```
@@ -235,7 +235,9 @@ member window of a recognized form (`unit_window`, §3.5). `mortar_arch`
 computes it from those tables; it is never written by hand
 (`spec/image.md` I-111). AArch64 gives `(0, 4)` (the markers' word and
 the GD→LE `CALL26` member, `spec/a64.md` §8.4); x86-64 `(4, 15)`
-(`spec/x64.md` §8.6). `code_fill` is positioned by address modulo its length.
+(`spec/x64.md` §8.6); i386 `(3, 6)` (`before` 3 from the SIB `TLS_GD`
+form, `after` 6 from the 12-byte base-register GD and LD forms,
+`spec/x86.md` X86-40). `code_fill` is positioned by address modulo its length.
 
 The output's `e_flags` is a function of the live inputs' `e_flags`; for
 the three targets it is 0. A relocation section of the other form
@@ -283,8 +285,27 @@ pub struct Site<'a> { pub bytes: &'a [u8], pub offset: u64 } // the input sectio
 - **REL**: `A = read_addend(h, field)`: the `Implicit` description of the
   type gives the width (`bytes`), signedness and scale (`shift`) of the
   value stored in the field of the input section; instruction forms read
-  the immediate as the architecture spec says. Read once per use from the
-  input bytes; never stored.
+  the immediate as the architecture spec says. `Implicit` addends of every
+  width are read sign-extended. Where a reference linker reads a narrow
+  field unsigned, the field's bits are unchanged and only the check
+  differs (`spec/x86.md` X86-6). Read once per use from the input bytes;
+  never stored.
+- **REL addends without resident bodies** (`spec/x86.md` R-13). `A` is
+  read from the input bytes of its field where a rule needs it, never
+  from bytes a relocation has written, and no second copy of a section
+  body or of a clip is made for it. `RelocAt.addend` is `Some(r_addend)`
+  on RELA and `None` on REL; the architecture calls `read_addend` on the
+  bytes `site` gives (scan) or `SectionOut::input` gives (fill, §3.6).
+  The **read window** of a unit (a record, or a matched sequence) is
+  every byte its `classify`, `scan` and `apply` read; it contains its
+  write window, and the architecture spec states it per type and form.
+  Within a matched sequence the architecture reads every member's addend
+  and pattern bytes before it writes any byte of the unit (i386: the D1
+  partner's `A = −4` lies inside the lead's window, which the lead
+  overwrites). `Records` gives a REL record's `addend` as whatever its
+  caller read, or 0; a REL architecture does not use it. What scan reads
+  on REL, and what the image does at fill, are `spec/image.md`'s
+  (`spec/x86.md` R-13 (a), (d), (e)).
 - **Write-back**, for REL outputs only:
   - `-r` (M4): the field of the output holds the output relocation's
     addend: `A + delta`, where `delta` is what `spec/image.md` adds for a
@@ -303,7 +324,8 @@ pub struct Site<'a> { pub bytes: &'a [u8], pub offset: u64 } // the input sectio
 ```rust
 pub struct RelocAt<'a> {
     pub file: FileId, pub section: SectionId, pub index: u32, // record index in its relocation section
-    pub r_offset: u64, pub key: SymKey, pub r_type: u32, pub addend: i64,
+    pub r_offset: u64, pub key: SymKey, pub r_type: u32,
+    pub addend: Option<i64>,               // Some(r_addend) on RELA, None on REL (§3.3)
     pub howto: &'a Howto,
     pub site: Site<'a>,
     pub records: &'a dyn Records,          // the same relocation section, §3.5
@@ -351,6 +373,13 @@ pub enum EventClass { Undefined, ComdatMismatch, DiscardedSection, GnuWarning } 
     with its call does not overlap.
   - Markers (`Field::None`) occupy no bytes unless a rule rewrites
     their word.
+  - **REL** (`spec/x86.md` R-13 (b)): on a target whose relocation
+    sections are `SHT_REL`, the check compares read windows (§3.3), not
+    only write windows, and it also refuses two records with the same
+    `r_offset` unless they are members of one matched sequence; the
+    refusal is the same, at the scan key of the later record. No unit
+    then reads a byte another unit writes, so the bytes a unit reads at
+    fill are input bytes, whatever the record order and the clip.
 - **Places in non-alloc sections** (no `SHF_ALLOC`): §4.3's
   non-alloc rule applies before the class table.
 - **Undefined symbols are reported by scan**, not by resolution.
@@ -479,7 +508,14 @@ pub struct SectionOut<'a> { /* the unit's output bytes in the clip [a, b) of sec
                                written through write(off, bytes); writes outside the
                                clip are discarded; the section's name, SHF_ALLOC and
                                SHF_EXECINSTR (exec: Option<bool>, None when the caller
-                               does not know it) */ }
+                               does not know it); for input(): the resident section,
+                               or the clip's two margins of input bytes */ }
+impl SectionOut<'_> {
+    /// The input bytes at section offsets [off, off + dst.len()): from the
+    /// resident section, the window buffer, or the clip's two margins.
+    /// false when a byte is in none of them.
+    fn input(&self, off: u64, dst: &mut [u8]) -> bool;
+}
 ```
 
 - **`SectionOut.exec`** (WP-029b): x86-64 decides `DTPOFF32`/`DTPOFF64`
@@ -494,7 +530,12 @@ pub struct SectionOut<'a> { /* the unit's output bytes in the clip [a, b) of sec
   relaxed form when the architecture's rule says so. Reads: the
   context, the input bytes (`at.site`), the relocation records. Writes
   only `[r_offset − window.before, r_offset + width + window.after)` of
-  `out`. Never reads `out`. `out` may hold only a clip of the section
+  `out`. It reads input bytes of the place only through
+  `SectionOut::input`, only inside its own read window (§3.3), and before
+  its unit writes; it never reads bytes a relocation has written. (A RELA
+  architecture reads none: its addends and pattern bytes come from
+  `at.site`; REL reads the addend this way, `spec/x86.md` R-13 (d).)
+  `out` may hold only a clip of the section
   (`spec/image.md` I-35): `apply` writes through `SectionOut`'s methods,
   and the bytes it writes inside the clip are those of an unclipped
   call. A relocation whose window straddles two clips is applied once
@@ -1287,6 +1328,12 @@ align_up(tls.size, tls.align)`; `TPOFF32` (23) `Signed(32)`; `DTPOFF64`
 Types are `R_386_*`, numbers from the i386 psABI; relocation sections are
 `SHT_REL`, addends implicit.
 
+The normative i386 rules are `spec/x86.md` §3–§9 (REL addends, fields
+and checks, the table, undefined weak, `GOT32`/`GOT32X`, TLS); this
+appendix is the fit check that shaped the trait, and where it and
+x86.md differ, x86.md holds. The facts the first draft got wrong are
+corrected here (x86.md R-1):
+
 **B.1 REL implicit addends.** `32` (1), `PC32` (2), `GOT32` (3), `PLT32`
 (4), `GOTOFF` (9), `GOTPC` (10), the TLS types: `Implicit { bytes: 4,
 signed: true, shift: 0 }`; `16` (20), `PC16` (21): `bytes: 2`; `8` (22),
@@ -1296,16 +1343,15 @@ width) and the final value is written for `--emit-relocs` (§3.3). Fits.
 
 **B.2 `GOT32` (3), `GOT32X` (43).** `X = G + A − GOT` when the instruction
 has a base register, `X = G + A` (absolute slot address, `Static`/`Exec`
-only) when it has none (ModRM `mod = 00, rm = 101`). `classify` reads the
-ModRM byte at `P − 1` (window `before: 2`) and returns `Minus::GotBase` or
-`Minus::None`. `GOT32X` relaxations: `mov foo@GOT(%reg), %r` (`8b`) →
-`lea foo@GOTOFF(%reg), %r` (`8d`); `call *foo@GOT(%reg)` (`ff /2`) →
-`addr32 call foo`; in `Static`/`Exec` `mov` and binary operations →
-immediates (`mov foo@GOT(%ebx), %edx` → `c7 c2 <abs>`, observed from GNU
-ld; lld 19 leaves the GOT load).
-Kind 2 where the value range matters, kind 1 for `lea` (the `GOTOFF`
-value has no range beyond 32 bits). Fits only because `classify` sees the
-bytes (Appendix C, 1).
+only) when it has none. The base test is x86.md X86-13's: the ModRM byte
+at `P − 1` (`(b & 0xc7) == 5`: no base), plus the SIB check, which
+refuses a SIB `0d` at `P − 1` that the ModRM byte alone misreads
+(x86.md §15.2 W1); and the place must be executable. `classify` returns
+`Minus::GotBase` or `Minus::None`. In static links GNU ld relaxes
+`GOT32X` `mov` to `mov $imm` (`c7 c0+r`), never to `lea`, with base and
+without (x86.md X86-25), and `call *`/`jmp *` and the binary operations
+as x86.md §8 states; lld relaxes nothing. Fits only because `classify`
+sees the bytes (Appendix C, 1).
 
 **B.3 `GOTOFF` (9), `GOTPC` (10).** `GOTOFF`: `S + A − GOT`, `GotRel`;
 `GOTPC`: `GOT + A − P`, `GotBaseRef`. The GOT base is `.got.plt`'s start.
@@ -1319,34 +1365,34 @@ Fits.
 forms (`endbr32` `f3 0f 1e fb`, two chunks as A.8). The push operand is
 the byte offset of the `JUMP_SLOT` in `.rel.plt` (8 per entry), from the
 index in `SynthCx`. `PLT32` is `Branch`, `X = L + A − P`. Fits with a
-per-output-kind variant (Appendix C, 4).
+per-output-kind variant (Appendix C, 4). The IPLT entries of static
+links are x86.md §11.3's.
 
 **B.5 The TLS family.** `TLS_GD` (18): `leal x@tlsgd(,%ebx,1), %eax`
 (`8d 04 1d`) or `leal x@tlsgd(%reg), %eax` (`8d 80+r`) followed by `call
 ___tls_get_addr@PLT` (`PLT32`) or `call *___tls_get_addr@GOT(%reg)`
-(`GOT32X`): a sequence with the call at record `+1`. The four forms have
-different lengths: a 7-byte SIB `lea` or a 6-byte base-register `lea`,
-then a 5-byte `PLT32` call or a 6-byte `GOT32X` call. So the matched
-window is 12, 13, 11 or 12 bytes. `classify` tells the `lea` forms apart
-by the ModRM byte (§3.2). LE in an executable, for the 6 + 5 form
-(checked with GNU ld and lld): `65 a1 00 00 00 00 81 e8 <tpoff>` (`movl
-%gs:0, %eax; subl $x@tpoff, %eax`), written by the lead over its window.
-The longer forms add `nop` padding, and x86.md (WP-030) gives the words
-per form; IE: `movl %gs:0, %eax; addl
-x@gotntpoff(%reg), %eax`. `TLS_LDM` (19) with `TLS_LDO_32` (32): as A.4.
-`TLS_IE` (15): `G(TpOff{negated: false})`, absolute (`movl x@indntpoff,
-%reg`, `a1` or `8b 05+8r`, `03` for `addl`) → `movl $x@ntpoff, %reg` (`c7
-c0+r`) or `addl $…` (`81 c0+r`). `TLS_GOTIE` (16): `G(TpOff{false}) −
-GOT`. `TLS_IE_32` (33): `G(TpOff{negated: true}) − GOT`. `TLS_LE` (17):
-`TpRel`; `TLS_LE_32` (34): `TpRel` with `negate`. `TLS_GOTDESC` (39) and
-`TLS_DESC_CALL` (40): as A.6 (`ff 10` → `66 90`). Dynamic: `TLS_TPOFF`
-(14, `TpOff{false}`), `TLS_TPOFF32` (37, `TpOff{true}`), `TLS_DTPMOD32`
-(35), `TLS_DTPOFF32` (36), `TLS_DESC` (41). `TlsAbi.get_addr` is
-`___tls_get_addr`. Fits with the negated slot and value (Appendix C, 5).
+(`GOT32X`): a sequence with the call at record `+1`. The matched windows
+are 12 bytes (the SIB `lea` + `call`, the base `lea` + `call *`, and the
+base `lea` + `call` + `nop`); the base-register GD with a bare `call`
+does not exist (x86.md X86-34, X86-36). `TLS_LDM` (19) with
+`TLS_LDO_32` (32): windows 11 or 12. The rewritten words per form are
+x86.md §9's. The IE forms: `TLS_IE` (15): `G(TpOff{negated: false})`,
+absolute; `a1` → `b8`, `8b` → `c7 c0+r`, `03` → `81 c0+r`.
+`TLS_GOTIE` (16): `G(TpOff{false}) − GOT`. `TLS_IE_32` (33):
+`G(TpOff{negated: true}) − GOT`. `TLS_LE` (17): `TpRel`; `TLS_LE_32`
+(34): `TpRel` with `negate`. `TLS_GOTDESC` (39) and `TLS_DESC_CALL` (40):
+the LE rewrite of the descriptor load is `8d 05 T` (`lea T, %eax`), not
+`c7`, and `ff 10` → `66 90` (x86.md X86-32, X86-37). Dynamic:
+`TLS_TPOFF` (14, `TpOff{false}`), `TLS_TPOFF32` (37, `TpOff{true}`),
+`TLS_DTPMOD32` (35), `TLS_DTPOFF32` (36), `TLS_DESC` (41).
+`TlsAbi.get_addr` is `___tls_get_addr`. Fits with the negated slot and
+value (Appendix C, 5).
 
-**B.6 `PC16` (21), `PC8` (23).** `Data{2}`/`Data{1}`, `X = S + A − P`,
-`Signed(16)`/`Signed(8)`, implicit 16- and 8-bit addends. `16`, `8`:
-`Either(16)`/`Either(8)`. Fits.
+**B.6 `16` (20), `8` (22), `PC16` (21), `PC8` (23).** `Data{2}`/`Data{1}`.
+`16` and `8` are `su(16)`/`su(8)` (`Either`); `PC16`/`PC8`, `X = S + A −
+P`, are `s(16)`/`s(8)` (`Signed`); overflow is an error (x86.md X86-11).
+The word-size types have no check (X86-10). Implicit 16- and 8-bit
+addends, sign-extended (§3.3). Fits.
 
 ## Appendix C. What the fit check changed
 
