@@ -74,7 +74,7 @@ pub fn address(
     let mut runs: Vec<(LoadClass, u8)> = Vec::new();
     for &c in order {
         let chunk = &chunks[c];
-        let Some(class) = chunk.load_class() else { continue };
+        let Some(class) = chunk.run_class(runs.last().map(|r| r.0)) else { continue };
         match runs.last_mut() {
             Some((last, align)) if *last == class => *align = (*align).max(chunk.align),
             _ => runs.push((class, chunk.align)),

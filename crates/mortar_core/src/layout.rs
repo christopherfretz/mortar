@@ -446,6 +446,25 @@ impl Chunk {
         })
     }
 
+    /// The class of the `PT_LOAD` run the chunk joins, after a run of
+    /// class `last` (`spec/layout.md` L-65, L-36a): its [`load_class`],
+    /// except that a large `NOBITS` chunk (`.lbss`) right after the small
+    /// RW run joins it, as `.lbss` without `.ldata` does in GNU ld's, lld's
+    /// and mold's outputs, rather than make a `PT_LOAD` without file
+    /// bytes. `.lbss` is the last alloc output section (L-36a), so the
+    /// small RW run's addresses are unchanged. Every place that cuts the
+    /// alloc chunks into runs uses this.
+    ///
+    /// [`load_class`]: Chunk::load_class
+    #[must_use]
+    pub fn run_class(&self, last: Option<LoadClass>) -> Option<LoadClass> {
+        let class = self.load_class()?;
+        if class == LoadClass::LargeRw && !self.in_file() && last == Some(LoadClass::Rw) {
+            return Some(LoadClass::Rw);
+        }
+        Some(class)
+    }
+
     /// The chunk's name: its output section's, a synthetic chunk's own, none
     /// for the headers. (For `Group` and `Relocs`, the name of the output
     /// section they are about; the section header's name is
@@ -711,7 +730,7 @@ fn derive_loads(ordered: &[&Chunk], page_log: u8) -> Vec<(Segment, u64)> {
     // PT_LOAD runs.
     let mut runs: Vec<(LoadClass, Vec<&Chunk>)> = Vec::new();
     for &c in ordered {
-        let Some(class) = c.load_class() else { continue };
+        let Some(class) = c.run_class(runs.last().map(|r| r.0)) else { continue };
         match runs.last_mut() {
             Some((last, members)) if *last == class => members.push(c),
             _ => runs.push((class, vec![c])),

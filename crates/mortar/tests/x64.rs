@@ -375,36 +375,277 @@ fn x64_w8_init_padding_runs() {
     holds(&ld, "x64-w8", GCC, &["-O2"], program);
 }
 
-/// The medium code model's large data (x64.md X-54, X-55; W9: lld makes a
-/// large common absolute): `SHF_X86_64_LARGE` sections and
-/// `SHN_X86_64_LCOMMON` symbols are refused by name until layout places
-/// them (L-36a, `.lbss`), never linked wrong.
+/// The medium and large code models' program (x64.md X-52..X-55, WP-084):
+/// a large `static` array (`.lbss`), large initialised and read-only data
+/// (`.ldata`, `.lrodata`), a large common under `-fcommon` (GCC:
+/// `SHN_X86_64_LCOMMON`, R-16), small data beside them, and a call into a
+/// second, small-model object.
+const C_LARGE: &[Source] = &[
+    Source {
+        name: "lg.c",
+        text: r#"#include <stdio.h>
+#ifndef BIG
+#define BIG (1<<20)
+#endif
+static char lb[BIG];
+char ld_[BIG] = {1};
+const char lr[1<<20] = {2};
+char lc[BIG];
+int small_d = 3; int small_b; const int small_r = 4;
+extern int ext_fn(int);
+static const char *strs[] = {"a", "b"};
+int main(void) { lb[BIG-1] = 5; lc[BIG-1] = 6;
+  printf("%d %d %d %d %d %d %d %s %d\n", lb[BIG-1], ld_[0], lr[0], lc[BIG-1], small_d, small_b,
+         small_r, strs[1], ext_fn(1));
+  return 0; }
+"#,
+    },
+    Source { name: "ext.c", text: "int ext_fn(int x) { return x + 41; }\n" },
+];
+
+/// C++ in the large models: a large object with a constructor and a
+/// vtable (`.lbss`), large tables, TLS and an exception.
+const CXX_LARGE: &[Source] = &[Source {
+    name: "lg.cc",
+    text: r#"#include <cstdio>
+#include <string>
+#include <stdexcept>
+struct Big { int v[1<<18]; Big() { v[0] = 7; v[(1<<18)-1] = 8; } virtual ~Big() {} virtual int f() const { return v[0]; } };
+Big big_obj;
+static int table[1<<17] = {1, 2, 3};
+const double ctab[1<<15] = {1.5};
+thread_local int tl = 9;
+static int thrower(int x) { if (x > 1) throw std::runtime_error("boom"); return x; }
+int main() {
+  int caught = 0;
+  try { thrower(3); } catch (const std::exception &e) { caught = std::string(e.what()) == "boom"; }
+  std::printf("%d %d %d %g %d %d\n", big_obj.f(), big_obj.v[(1<<18)-1], table[2], ctab[0], tl, caught);
+}
+"#,
+}];
+
+/// Fortran in the large models: a module array and a large COMMON block
+/// (`SHN_X86_64_LCOMMON` `bigcom_`).
+const F_LARGE: &[Source] = &[Source {
+    name: "lg.f90",
+    text: "module bigmod\n  implicit none\n  real(8) :: marr(200000)\nend module bigmod\n\
+program lgf\n  use bigmod\n  implicit none\n  real(8) :: cblk(300000)\n  integer :: n\n\
+  common /bigcom/ cblk, n\n  marr(200000) = 2.5d0\n  cblk(300000) = 4.5d0\n  n = 3\n\
+  call sub()\n  print '(F4.1,1X,F4.1,1X,I0)', marr(200000), cblk(300000), n\nend program lgf\n\
+subroutine sub()\n  implicit none\n  real(8) :: cblk(300000)\n  integer :: n\n\
+  common /bigcom/ cblk, n\n  n = n + 1\nend subroutine sub\n",
+}];
+
+/// The flag sets of the large-model links: each model with no PIC and
+/// both PIC models (`-mcmodel=large -fPIC` is the `GOTOFF64`/`GOTPC64`/
+/// `PLTOFF64`/`GOT64` form, `-mcmodel=medium -fPIE` the `GOTPC32` one).
+fn large_flag_sets() -> Vec<Vec<&'static str>> {
+    let mut v = Vec::new();
+    for model in ["-mcmodel=medium", "-mcmodel=large"] {
+        for pic in ["-fno-pic", "-fPIE", "-fPIC"] {
+            v.push(vec!["-O2", model, pic]);
+        }
+    }
+    v.push(vec!["-O0", "-mcmodel=medium", "-fPIC", "-g", "-fdata-sections", "-ffunction-sections"]);
+    v
+}
+
+/// Links `program` with mortar alone and runs it: for the links GNU ld
+/// refuses (C++ in the large model, static: GNU ld 2.44 refuses
+/// `PLTOFF64`/`GOT64` against glibc's IFUNC `strlen`, x64.md X-40).
+fn runs_alone(label: &str, cc: Cc, flags: &[&str], program: &[Source], want: &str) -> Option<()> {
+    host()?;
+    let scratch = Scratch::new(label);
+    let built = compile(&scratch, cc, flags, program)?;
+    let ours = built.dir.join("out.mortar");
+    let m = mortar(&built, &ours, &[], &[]);
+    assert!(m.success(), "{label}: mortar: {}", m.stderr_text());
+    assert_eq!(m.stderr_text(), "", "{label}: mortar warns");
+    assert_eq!(execute(&ours), (want.to_owned(), Some(0)), "{label}");
+    support::plumb::readers(&ours);
+    support::plumb::elflint(&ours);
+    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+    Some(())
+}
+
+// spec: x64.md X-52, X-54, X-55; layout.md L-36a; resolve.md §3.3 (R-15,
+// R-16): C in the medium and large models from GCC and Clang, static.
 #[test]
-fn x64_large_data_is_refused_by_name() {
+fn x64_large_models_c() {
+    let Some(ld) = host() else { return };
+    for (cc, name) in [(GCC, "gcc"), (CLANG, "clang")] {
+        for (i, flags) in large_flag_sets().into_iter().enumerate() {
+            let mut all = flags.clone();
+            all.push("-fcommon");
+            if holds(&ld, &format!("x64-large-c-{name}-{i}"), cc, &all, C_LARGE).is_none() {
+                return;
+            }
+        }
+    }
+}
+
+// spec: x64.md X-52, X-54, X-40: C++ in the medium and large models.
+#[test]
+fn x64_large_models_cxx() {
+    let Some(ld) = host() else { return };
+    for (cc, name) in [(GXX, "gxx"), (CLANGXX, "clangxx")] {
+        for (i, flags) in large_flag_sets().into_iter().enumerate() {
+            let label = format!("x64-large-cxx-{name}-{i}");
+            let done = if flags.contains(&"-mcmodel=large") {
+                runs_alone(&label, cc, &flags, CXX_LARGE, "7 8 3 1.5 9 1\n")
+            } else {
+                holds(&ld, &label, cc, &flags, CXX_LARGE)
+            };
+            if done.is_none() {
+                return;
+            }
+        }
+    }
+}
+
+// spec: x64.md X-55, resolve.md §3.3 (R-16): a large Fortran COMMON
+// block and module array.
+#[test]
+fn x64_large_models_fortran() {
+    let Some(ld) = host() else { return };
+    for (i, flags) in large_flag_sets().into_iter().enumerate() {
+        if holds(&ld, &format!("x64-large-f-{i}"), GFORTRAN, &flags, F_LARGE).is_none() {
+            return;
+        }
+    }
+}
+
+/// More than 2 GiB of `.lbss` (x64.md X-54: the small sections stay
+/// within reach of each other whatever the large sections' size): a
+/// 3 GiB array, as a section (`-fno-common`) and as a large common
+/// (`-fcommon`, `SHN_X86_64_LCOMMON`). The array has no file bytes.
+#[test]
+fn x64_lbss_over_2_gib_runs() {
+    const HUGE: &[Source] = &[Source {
+        name: "hb.c",
+        text: "#include <stdio.h>\nchar lb[3UL<<30];\nchar ld2[1<<17] = {1};\n\
+               int small_d = 3; int small_b;\n\
+               int main(int c, char **v) { lb[(3UL<<30)-1] = 5; small_b = c;\n\
+               printf(\"%d %d %d %d\\n\", lb[(3UL<<30)-1], ld2[0], small_d, small_b); return 0; }\n",
+    }];
+    let Some(ld) = host() else { return };
+    for (label, common) in [("x64-lbss-3g", "-fno-common"), ("x64-lcommon-3g", "-fcommon")] {
+        let flags = ["-O2", "-mcmodel=medium", "-fno-pic", common];
+        if holds(&ld, label, GCC, &flags, HUGE).is_none() {
+            return;
+        }
+    }
+}
+
+/// x64.md X-54, layout.md L-36a: the small sections' addresses do not
+/// depend on the large sections' sizes (the program header table is the
+/// same: the same large output sections exist), and every large section
+/// keeps `SHF_X86_64_LARGE` and comes after every small alloc section.
+#[test]
+fn x64_small_sections_do_not_move_with_the_large() {
+    const SHF_X86_64_LARGE: u64 = 0x1000_0000;
     if host().is_none() {
         return;
     }
-    for (label, flags, text, want) in [
-        (
-            "x64-lcommon",
-            &["-O2", "-mcmodel=medium", "-fcommon"][..],
-            "char lc[100000];\nint main(void) { lc[99999] = 3; return lc[99999]; }\n",
-            "unsupported feature: SHN_X86_64_LCOMMON",
-        ),
-        (
-            "x64-ldata",
-            &["-O2", "-mcmodel=medium"][..],
-            "char ld[100000] = {1};\nint main(void) { return ld[0]; }\n",
-            "SHF_X86_64_LARGE",
-        ),
-    ] {
-        let scratch = Scratch::new(label);
-        let program = [Source { name: "large.c", text }];
-        let Some(built) = compile(&scratch, GCC, flags, &program) else { return };
+    let mut seen = Vec::new();
+    for big in ["(1<<20)", "(1<<26)"] {
+        let label = format!("x64-large-fixed-{}", seen.len());
+        let scratch = Scratch::new(&label);
+        let define = format!("-DBIG={big}");
+        let flags = ["-O2", "-mcmodel=medium", "-fno-pic", "-fcommon", define.as_str()];
+        let Some(built) = compile(&scratch, GCC, &flags, C_LARGE) else { return };
         let out = built.dir.join("out.mortar");
         let m = mortar(&built, &out, &[], &[]);
-        assert!(!m.success(), "{label}: mortar linked large data");
-        assert!(m.stderr_text().contains(want), "{label}: {}", m.stderr_text());
+        assert!(m.success(), "{label}: {}", m.stderr_text());
+        let sum = support::summarize_elf(&out);
+        let alloc: Vec<&support::Sec> =
+            sum.sections.iter().filter(|s| s.flags & support::SHF_ALLOC != 0).collect();
+        let large: Vec<&str> = alloc
+            .iter()
+            .filter(|s| s.flags & SHF_X86_64_LARGE != 0)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(large, [".lrodata", ".ldata", ".lbss"], "{label}: {:#?}", sum.sections);
+        let first_large = alloc.iter().position(|s| s.flags & SHF_X86_64_LARGE != 0).unwrap();
+        assert!(
+            alloc[first_large..].iter().all(|s| s.flags & SHF_X86_64_LARGE != 0),
+            "{label}: a small section after a large one: {:#?}",
+            sum.sections
+        );
+        let small_end = alloc[..first_large].iter().map(|s| s.addr + s.size).max().unwrap();
+        assert!(alloc[first_large].addr >= small_end, "{label}");
+        let small: Vec<(String, u64, u64)> = alloc[..first_large]
+            .iter()
+            .map(|s| (s.name.clone(), s.addr, s.size))
+            .collect();
+        // The symbols GNU ld places at the end of the small data (Y5).
+        let marks: Vec<Option<u64>> = ["_edata", "__bss_start", "etext"]
+            .iter()
+            .map(|n| sum.symbols.get(*n).copied())
+            .collect();
+        seen.push((small, marks));
+    }
+    assert_eq!(seen[0], seen[1], "the small sections moved with the large sections' size");
+}
+
+/// x64.md X-33, X-34: a small-model `PC32` or `32S` that cannot reach a
+/// symbol placed past 2 GiB of large sections is the named overflow,
+/// never a truncated value, and no output is left.
+#[test]
+fn x64_small_model_reference_to_far_large_data_overflows_by_name() {
+    if host().is_none() {
+        return;
+    }
+    for (label, insn, r_type) in [
+        ("x64-large-pc32", "movl far_(%rip), %eax", "R_X86_64_PC32"),
+        ("x64-large-32s", "movl far_, %eax", "R_X86_64_32S"),
+    ] {
+        let text = format!(
+            "\t.text\n\t.globl main\nmain:\n\t{insn}\n\txorl %eax, %eax\n\tret\n\
+             \t.section .lbss,\"awl\",@nobits\n\t.skip 0xc0000000\n\t.globl far_\nfar_:\n\t.skip 4\n\
+             \t.section .note.GNU-stack,\"\",@progbits\n"
+        );
+        let scratch = Scratch::new(label);
+        let src = Source { name: "far.s", text: Box::leak(text.into_boxed_str()) };
+        let Some(built) = compile(&scratch, GCC, &["-fno-pic"], &[src]) else { return };
+        let out = built.dir.join("out.mortar");
+        let m = mortar(&built, &out, &[], &[]);
+        assert!(!m.success(), "{label}: mortar linked a truncated value");
+        let e = m.stderr_text();
+        assert!(e.contains("relocation truncated to fit") && e.contains(r_type), "{label}: {e}");
+        assert!(e.contains("far_"), "{label}: {e}");
         assert!(!out.exists(), "{label}: an output was left behind");
     }
+}
+
+/// gdb on a `-g` medium-model static executable reads its large globals
+/// (`.ldata`, `.lrodata`) and their addresses from the file.
+#[test]
+fn x64_gdb_reads_a_large_global() {
+    let Some(gdb) = tool("gdb-multiarch") else {
+        assert!(!tools_required(), "gdb-multiarch is required");
+        return;
+    };
+    if host().is_none() {
+        return;
+    }
+    let scratch = Scratch::new("x64-large-gdb");
+    let flags = ["-O0", "-g", "-mcmodel=medium", "-fno-pic", "-fcommon"];
+    let Some(built) = compile(&scratch, GCC, &flags, C_LARGE) else { return };
+    let out = built.dir.join("out.mortar");
+    let m = mortar(&built, &out, &[], &[]);
+    assert!(m.success(), "{}", m.stderr_text());
+    let sum = support::summarize_elf(&out);
+    let addr = sum.symbols["ld_"];
+    let mut c = Command::new(gdb);
+    c.args(["-nx", "-batch", "-ex", "print ld_[0]", "-ex", "print lr[0]", "-ex", "print sizeof(ld_)"])
+        .args(["-ex", "print/x &ld_", "-ex", "info symbol lc"])
+        .arg(&out)
+        .env("DEBUGINFOD_URLS", "")
+        .env("TERM", "dumb");
+    let o = run_with(&mut c, b"", Duration::from_mins(2));
+    let text = o.stdout_text();
+    assert!(o.success(), "gdb: {}{}", text, o.stderr_text());
+    let want = format!("$1 = 1 '\\001'\n$2 = 2 '\\002'\n$3 = 1048576\n$4 = {addr:#x}\nlc in section .lbss\n");
+    assert_eq!(text, want, "gdb: {}", o.stderr_text());
 }

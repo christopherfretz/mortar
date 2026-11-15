@@ -225,8 +225,11 @@ fn l36_l40_refusals() {
     use mortar_elf::consts::SHF_X86_64_LARGE;
     let one = |s: Sec| vec![vec![sec(b".text", P, AX, 4, 2), s]];
     let x86 = Machine::X86_64;
-    let cases: [(Sec, Machine, &str); 6] = [
-        (sec(b".ldata", P, WA | SHF_X86_64_LARGE, 8, 3), x86, "SectionFlag:SHF_X86_64_LARGE"),
+    let cases: [(Sec, Machine, &str); 7] = [
+        // L-36a: SHF_TLS together with SHF_X86_64_LARGE, and a large
+        // section that is not allocated.
+        (sec(b".ltdata", P, WAT | SHF_X86_64_LARGE, 8, 3), x86, "SectionFlag:SHF_X86_64_LARGE"),
+        (sec(b".lnote", P, SHF_X86_64_LARGE, 8, 0), x86, "SectionFlag:SHF_X86_64_LARGE"),
         (
             sec(b".gnu.linkonce.t.f", P, AX, 8, 2),
             Machine::AArch64,
@@ -248,6 +251,8 @@ fn l36_l40_refusals() {
     // An empty .ctors is not refused (L-40), and SHF_X86_64_LARGE means
     // nothing on AArch64 (it is a processor flag).
     assert_eq!(refusal_of(&one(sec(b".ctors", P, WA, 0, 3)), Machine::AArch64), None);
+    // L-36a: a large section is laid out on x86-64.
+    assert_eq!(refusal_of(&one(sec(b".ldata", P, WA | SHF_X86_64_LARGE, 8, 3)), x86), None);
 }
 
 // spec: layout.md §8.1 L-33..L-35 (consumed sections go nowhere)
