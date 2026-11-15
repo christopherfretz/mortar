@@ -1,8 +1,8 @@
 # spec: the model (`mortar_core`)
 
-Status: **draft** (WP-002). Frozen, and marked normative, after review
-against the reader API of WP-004 and the `Plan` of WP-008. Design only: the
-code is WP-020.
+Status: **draft 2** (WP-002), after an independent design review. Frozen,
+and marked normative, after review against the reader API of WP-004 and
+the `Plan` of WP-008. Design only: the code is WP-020.
 
 The model is what the phases of a link exchange: ids and tables. It holds
 no algorithm. A phase is specified by the tables it reads and the table it
@@ -26,7 +26,12 @@ link, and between the linker and its link state on disk.
 - **Rows are plain data.** A table holds fixed-width integers, ids and
   byte strings. No table holds a reference into another table, a pointer, a
   closure, or a container whose iteration order is unspecified (§6.5).
-  Input bytes are borrowed (`'data`), nothing else is.
+- **Input bytes belong to the input store.** A phase obtains the bytes of
+  a file or a section from `mortar_input`'s store by `(FileId, range)` or
+  `SectionId`. Whether the store holds a file for the whole link, reads a
+  range again when asked (non-alloc debug sections at fill time), or keeps
+  an owned buffer (a `SHF_COMPRESSED` input section is decompressed once
+  into one) is the store's business and invisible to the tables.
 
 ## 2. Ids
 
@@ -34,15 +39,17 @@ link, and between the linker and its link state on disk.
 |---|---|---|
 | `FileId` | loaded file: the internal file, each relocatable object (given directly or an archive member), each shared object | §2.1 |
 | `ArchiveId` | archive opened | in order of first appearance on the command line |
-| `SectionId` | section-header-table entry of a relocatable object, index 0 included | `section_base[file] + sh_index` (§2.2) |
-| `SymbolId` | distinct global symbol name (§2.3) | §2.3 |
+| `SymbolId` | global symbol row (§2.3) | §2.3 |
 | `ComdatId` | distinct COMDAT group signature | as `SymbolId`, over group signatures |
-| `ChunkId` | unit of the output that layout places as a whole (§4.3) | creation order (§4.3) |
+| `SectionId` | section-header-table entry of a **live** relocatable object, index 0 included | `section_base[file] + sh_index` (§2.2) |
+| `OutSecId` | output section (§3.4) | order of first assignment (§3.4) |
+| `FragId` | distinct piece of mergeable content within one output section (§3.5) | order of first occurrence |
+| `ChunkId` | unit of the output that layout places as a whole (§4.4) | creation order (§4.4) |
 | `SegmentId` | program header of the output | output order |
 
 A local symbol has no id of its own: it is `(FileId, st_index)`, written
 `LocalSym`. Where a table is keyed by "a symbol, local or global"
-(GOT-like slots, §4.2), the key is `SymKey = Global(SymbolId) |
+(GOT-like slots, §4.3), the key is `SymKey = Global(SymbolId) |
 Local(FileId, u32)`, ordered globals first, then by `(FileId, index)`.
 
 Ids are dense and **per link**: the same file may have another `FileId` in
@@ -64,36 +71,55 @@ the same file named twice, thin archives, `--start-lib`); this spec
 requires that the numbering be a function of the `Plan` and of file
 contents only, and equal to this sequential walk however files are read.
 
+A file that is never extracted costs its `files` row and its entries in
+`sym_map` and nothing else: no section rows (§2.2).
+
 `FileId` order is the **priority order** of symbol resolution
 (`spec/resolve.md`) and the unit order of every per-file parallel phase.
 
 ### 2.2 Sections
 
-A file's sections occupy one contiguous id range, `section_base[f] ..
-section_base[f] + e_shnum(f)`, in section-header order, with no compaction:
-`SectionId − section_base` *is* the ELF section index, so a symbol's
+Section ids are assigned **after resolution**, to live files only:
+`section_base` is the prefix sum of `e_shnum` over the live relocatable
+objects in `FileId` order. A file's sections occupy one contiguous range
+in section-header order, with no compaction inside the file:
+`SectionId − section_base[f]` *is* the ELF section index, so a symbol's
 `st_shndx`, a relocation section's `sh_info` and a group's member list
 address rows without a lookup. Rows of sections that carry no output
 (symbol and string tables, relocation sections, groups) exist and are
-marked (§3.2). Shared objects and the internal file have empty ranges.
+marked (§3.3); a wide column MAY be kept for output-carrying sections
+only, behind a dense secondary index (§9).
 
 Contiguity per file is what lets a parallel phase hand each worker a
 disjoint mutable slice of a column (§6.1).
 
 ### 2.3 Global symbols
 
-`SymbolId` names a **global symbol name**: one row per distinct name among
-the non-local symbol-table entries of all files (lazy archive members and
-shared objects included), with symbol versions distinguishing names as
-`spec/resolve.md` specifies. It is not a definition: which definition a
-name resolves to is a column of `Resolution`.
+A `SymbolId` row is a **global symbol name**, not a definition. The key is
+the name before any `@`, plus a version: an unversioned mention and a
+default-version mention (`foo`, `foo@@V2`) are the same row; a
+non-default version (`foo@V1`) is a row of its own. Which version a row's
+definition carries, and versions assigned by a version script, are
+columns of `Resolution`. `spec/resolve.md` specifies the rule in full; the
+key shape is fixed here because interning happens before resolution.
+
+One row exists per distinct key among the non-local symbol-table entries
+of all files (lazy archive members and shared objects included).
 
 Numbering is defined sequentially: files in `FileId` order, each file's
-non-local entries in symbol-table order, a name seen for the first time
-taking the next id. A parallel implementation interns concurrently and
-then numbers from each name's first mention `(FileId, st_index)`; the
-result MUST equal the sequential definition (§6). `ComdatId` likewise,
-over `SHT_GROUP` signatures in `(FileId, sh_index)` order.
+non-local entries in symbol-table order, a key seen for the first time
+taking the next id. `ComdatId` likewise, over `SHT_GROUP` signatures in
+`(FileId, sh_index)` order.
+
+A parallel implementation MUST produce the same numbering. The intended
+one costs one extra pass: (1) per file in parallel, intern each key in a
+concurrent table whose value holds the key's first mention, updated with
+an atomic minimum of `FileId << 32 | st_index`, and leave the table slot
+in `sym_map`; (2) per file, count the entries that are their key's first
+mention; prefix-sum the counts in `FileId` order; (3) per file, give those
+entries their ids and rewrite `sym_map` from slots to ids. Every order
+that is observable then follows from ids, with no sort by first mention
+later.
 
 ## 3. Derived tables
 
@@ -114,26 +140,16 @@ Immutable once the phase ends.
 | part | row | columns |
 |---|---|---|
 | `target` | one | machine, class, relocation form (RELA, or REL with implicit addends); the first object decides when `-m` did not, and every later file must agree or is diagnosed |
-| `files[FileId]` | file | kind (internal, object, shared object); display name (`FileRef`: path, archive and member); `ArchiveId` and member offset, if any; the `Plan` input it came from and the positional state copied from it (as-needed, whole-archive, lazy, static, exclude-libs); the bytes (`&'data [u8]`); the parsed reader (`mortar_elf::Object` or the shared-object view); `section_base`, section count; the range of `sym_map`; identity and content hash (§7.1) |
-| `sections[SectionId]` | section | `kind` (below); the relocation section(s) applying to it; the `ComdatId` it belongs to, if any; for hot paths, copies of size, alignment, flags and type widened once |
-| `sym_map` | non-local symbol-table entry of each file, per file in table order | the `SymbolId` of its name |
-| `symbols[SymbolId]` | name | name bytes, hash, version part |
+| `files[FileId]` | file | kind (internal, object, shared object); display name (`FileRef`: path, archive and member); `ArchiveId` and member offset, if any; the `Plan` input it came from and the positional state copied from it (as-needed, whole-archive, lazy, static, exclude-libs); the parsed reader (`mortar_elf::Object` or the shared-object view) over the store's bytes; section count; the range of `sym_map`; identity and content hash (§7.1) |
+| `sym_map` | non-local symbol-table entry of each file, per file in table order | the `SymbolId` of its key |
+| `symbols[SymbolId]` | key | name bytes, hash, version part |
 | `comdats[ComdatId]` | signature | name bytes |
 | `archives[ArchiveId]` | archive | path, kind |
 
-`kind` classifies a section once, from its type, flags and name, for every
-later phase: `Regular` (bytes copied and relocated), `Nobits`, `Merge`
-(strings or fixed-size constants, §4.1), `EhFrame`, `Note`, `Debug`
-(non-alloc, handled as data), `Metadata` (Mason records, `spec/meta.md`),
-and the kinds that carry no output of their own: `Null`, `Symtab`,
-`Strtab`, `Reloc`, `Group`, `Stack` (`.note.GNU-stack`), `Excluded`
-(`SHF_EXCLUDE`). A section whose type or flags mortar does not implement
-is not classified: the input phase refuses it by name.
-
-Invariant **I-file**: the rows of a file (its `files` row except the
-bases, its `sections` rows, the names it mentions) are a function of that
-file's bytes and its `Plan` input alone. This is what an incremental link
-reuses for an unchanged file.
+Invariant **I-file**: the rows of a file (its `files` row, the keys it
+mentions, and later its section rows of §3.3 relative to its base) are a
+function of that file's bytes and its `Plan` input alone. This is what an
+incremental link reuses for an unchanged file.
 
 Relocations and symbol-table entries are **not copied** into any table:
 phases read them from the input bytes through the reader each time they
@@ -144,22 +160,87 @@ need them (§5).
 | part | row | columns |
 |---|---|---|
 | `file_live[FileId]` | file | whether the file takes part in the link (always; extracted archive member; needed shared object) and, for an extracted member, the reference that pulled it in `(FileId, st_index)` |
-| `def[SymbolId]` | name | the resolved definition: `Undefined{weak}`, `Defined{file, st_index}`, `Common{file, st_index, size, align}`, `Shared{file, st_index}`, `Internal{..}` (linker-defined); and the properties merged over every live mention: visibility, whether referenced from a relocatable object, whether referenced from a shared object, binding for export, version |
+| `def[SymbolId]` | key | the resolved definition: `Undefined{weak}`, `Defined{file, st_index}`, `Common{file, st_index}`, `Shared{file, st_index}`, `Internal{..}` (linker-defined); and the properties merged over every live mention: visibility, whether referenced from a relocatable object, whether referenced from a shared object, binding for export, version |
+| `common[SymbolId]` | key with a common mention | size and alignment: the maximum over the live common mentions |
+| `clash[SymbolId]` | key | whether two or more live definitions tie at the strongest rank (a duplicate definition, reported with both places) |
+| `redirect[SymbolId]` | key | the row references to this key bind to (`--wrap`, `--defsym` aliases); itself otherwise. Every consumer of `sym_map` applies it |
 | `comdat[ComdatId]` | signature | the file whose group is kept |
-| `section_state[SectionId]` | section | `Kept`, or `Dropped(reason)`: file not live, COMDAT group not kept (with the keeping file), excluded, consumed by the linker (the kinds without output), stripped by option |
+| `section_base[FileId]` | live object | §2.2 |
+| `sections[SectionId]` | section | `kind` (below); the relocation section(s) applying to it; its `ComdatId`, if any; `state`: `Kept`, or `Dropped(reason)`: COMDAT group not kept (with the keeping file), excluded, consumed by the linker (the kinds without output), stripped by option |
 
-`def` is the minimum of a total order over the candidate definitions of a
-name (`spec/resolve.md`: strength, then `FileId`, then symbol index), which
-is what makes parallel resolution deterministic (§6.2).
+`kind` classifies a section once, from its type, flags and name, for every
+later phase: `Regular` (bytes copied and relocated), `Nobits`, `Merge`
+(strings or fixed-size constants), `EhFrame`, `Note`, `Debug` (non-alloc,
+handled as data), `Metadata` (Mason records, `spec/meta.md`), and the
+kinds that carry no output of their own: `Null`, `Symtab`, `Strtab`,
+`Reloc`, `Group`, `Stack` (`.note.GNU-stack`), `Excluded`
+(`SHF_EXCLUDE`). A section whose type or flags mortar does not implement
+is not classified: it is refused by name. Classification depends on the
+file alone (I-file) and may be computed while the file is parsed and kept
+per file until ids exist.
 
-### 3.4 `Liveness` (written by `mortar_live`)
+Every merge in this table is order-independent (§6.2): `def` is the
+minimum of a total order over the live candidate definitions of a key
+(`spec/resolve.md`: strength, then `FileId`, then symbol index); `common`
+is a maximum; `clash` a saturating count at the minimum's rank; the
+properties are unions or most-constraining values. Archive extraction is
+the least fixed point of "a live reference to a key a lazy member defines
+makes that member live" (and the cases `spec/resolve.md` adds: a member
+defining a key that so far has only common mentions), which is likewise
+independent of the order in which it is reached.
 
-`live[SectionId]: bool` after `--gc-sections` (all `Kept` sections when it
-is off), and `folded[SectionId]: SectionId` for identical code folding
-(itself when not folded). Whether folding is a derived table or a decision
-(§4) is settled with `spec/live.md`; until then it is derived.
+### 3.4 `Assignment` (written by `mortar_layout`, first stage)
 
-### 3.5 `Demands` (written by `mortar_arch` scan)
+Which output section each kept section belongs to. It runs before
+liveness and merging because both need it: a script's `KEEP` and
+`/DISCARD/`, `__start_<name>`/`__stop_<name>` references keeping the
+input sections of output section `<name>`, and merging "within one output
+section".
+
+| part | row | columns |
+|---|---|---|
+| `out_of[SectionId]` | section | `OutSecId`, or `Discard` (a script's `/DISCARD/`: the section's state becomes `Dropped(by script)`), or none for sections without output |
+| `outsecs[OutSecId]` | output section | name, type, flags, entry size class for merging; from a script: `KEEP` on the matching pattern, fill, constraints, the script position that orders it |
+| `keep[SectionId]` | section | whether it is a root of liveness by rule or by `KEEP` |
+
+Without a script the rule is the default mapping of `spec/layout.md`
+(by name prefix, type and flags). `OutSecId`s are numbered in order of
+first assignment `(FileId, sh_index)`, after any the script declares, in
+script order. The order of output sections in the file and the order of
+input sections inside one are **not** here: they are decisions (§4.4).
+
+### 3.5 `Split` (written by `mortar_merge`, first stage)
+
+Sections whose content is handled in pieces: `Merge` sections (strings,
+fixed-size constants) and `EhFrame` sections (CIE and FDE records).
+
+- per split section, a range into two columns with one entry per piece:
+  the piece's offset in the section (`u32`) and, for `Merge`, its `FragId`;
+- `frags[FragId]`: the output section, the content (as a place in some
+  input section), size and alignment. Two pieces have the same `FragId`
+  exactly when they belong to one output section and have equal bytes and
+  alignment. `FragId`s are numbered by first occurrence
+  `(FileId, sh_index, piece)`, by the method of §2.3;
+- for `EhFrame`: per piece, CIE or FDE, and for an FDE the section its
+  code range lies in (from its first relocation) and its CIE piece.
+
+A reference into a split section (commonly an `STT_SECTION` symbol plus an
+addend, which on a REL target is read from the section's bytes) is
+resolved to a piece by offset through this table.
+
+This is the largest table of a debug link; its row shape (8 bytes per
+piece occurrence) is part of the contract (§9).
+
+### 3.6 `Liveness` (written by `mortar_live`)
+
+- `live[SectionId]: bool` after `--gc-sections` from the roots (entry,
+  exported symbols, `keep`, start/stop references); all `Kept` sections
+  when it is off;
+- `frag_live[FragId]: bool`: referenced from a live section;
+- an FDE is live exactly when the section its code lies in is live and
+  not folded away (§4.1); this is a rule, not a column.
+
+### 3.7 `Demands` (written by `mortar_arch` scan)
 
 What the relocations of live sections require, with no placement:
 
@@ -172,7 +253,10 @@ What the relocations of live sections require, with no placement:
   kind of output).
 
 The flag set of a global is the union over all relocations that mention
-it; union is order-independent (§6.2). `spec/arch.md` defines the flags.
+it. **Demand is conservative**: a slot is demanded whenever some valid
+layout would use it. A relaxation that depends on distance (§5) never
+removes a demand; one that depends only on `Resolution` (the symbol is
+local to the output) may. `spec/arch.md` defines the flags.
 
 ## 4. Decision tables: the layout
 
@@ -183,47 +267,71 @@ deterministically, an incremental link chooses another (as much of the
 previous one as still fits). Together the decision tables are **the
 layout** of principle 7.
 
-### 4.1 `MergeMap` (written by `mortar_merge`)
+### 4.1 `Folds` (written by `mortar_live`, identical code folding)
 
-For each live `Merge` section, the split of its content into pieces and,
-for each piece, the merged chunk and the offset it lands at. A reference
-into a mergeable section resolves through this map. Valid when equal
-pieces of one output section map to one offset and every piece is mapped.
+`folded[SectionId]: SectionId`, the section a folded one is replaced by;
+absent when folding is off. Valid when each folded section is equivalent
+to its target by the rule of `spec/live.md` (checked again when a layout
+is loaded: an edit can break an equivalence), and targets are not
+themselves folded. It is a decision so that an incremental link is not
+forced to refold, and so move, unrelated sections.
 
-### 4.2 `Slots` (written by `mortar_synth`)
+### 4.2 `MergeMap` (written by `mortar_merge`)
 
-The content order of every synthetic table: the GOT and PLT index of each
-`SymKey` that demands one, the order of `.dynsym` and of `.symtab`, of
-dynamic relocations, of version definitions and needs, of `DT_NEEDED`
-entries, of `.eh_frame` records after deduplication of CIEs, and the size
-each synthetic chunk therefore has. Valid when every demand of §3.5 has
-exactly one slot, no slot is given twice, and the orders satisfy the
-format's own rules (local before global in `.symtab`; the `.gnu.hash`
+`frag_off[FragId]`: the offset of each live fragment in its merged chunk.
+Valid when live fragments of one output section do not overlap and honor
+their alignment. The default order is by `FragId`, or by a content key
+`spec/merge.md` gives (tail merging); never by a hash table's layout
+(§6.5).
+
+### 4.3 `Slots` (written by `mortar_synth`)
+
+The content order of every synthetic table whose size does not depend on
+addresses: the GOT and PLT index of each `SymKey` that demands one; the
+order of `.dynsym`; of dynamic relocations; of version definitions and
+needs; of `DT_NEEDED` entries; of live `.eh_frame` records after
+deduplication of CIEs; copy-relocation allocations, one per
+`(shared FileId, st_value)` with every `SymbolId` aliasing that address
+mapped to it; and the size each such chunk therefore has.
+
+`.symtab` (and the symbol tables of `-r` output) is ordered by rule, not
+by rows: locals per file in `FileId` and table order, then globals in
+`SymbolId` order, so that the output index of `(FileId, st_index)` is a
+prefix sum per file. Only the per-file `(first local, count)` ranges are
+stored.
+
+Valid when every demand of §3.7 has exactly one slot, no slot is given
+twice, and the orders satisfy the format's own rules (the `.gnu.hash`
 bucket order in `.dynsym`; ...), listed in `spec/synth.md`.
 
-### 4.3 `Placement` (written by `mortar_layout`)
+### 4.4 `Placement` (written by `mortar_layout`)
 
 | part | row | columns |
 |---|---|---|
-| `chunks[ChunkId]` | chunk | kind: file header, program headers, section headers, an **output section** (assembled from input sections), a merged section, a synthetic section (`spec/synth.md`); name, type, flags, alignment; `size`, `capacity ≥ size`; `addr`, `offset` (file); the output section index |
+| `chunks[ChunkId]` | chunk | kind: file header, program headers, section headers, the body of an output section (`OutSecId`), a merged section, a synthetic section (`spec/synth.md`), and for `-r` the group and relocation chunks of an output section; name, type, flags, alignment; `size`, `capacity ≥ size`; `addr` (none for a non-alloc chunk), `offset` (file); the output section index |
 | `order` | — | the chunks in file order |
 | `segments[SegmentId]` | program header | type, flags, offset, address, file size, memory size, alignment |
-| `place[SectionId]` | section | `(ChunkId, offset in chunk)`, or none; a folded section has the place of the section it is folded into |
-| `sym_place` | symbol-anchored allocation: a common symbol, a copy-relocated symbol | `(SymbolId, ChunkId, offset, size)`, sorted by `SymbolId` |
+| `place[SectionId]` | section | `(ChunkId, offset in chunk)`, or none; a folded section has the place of its target |
+| `sym_place` | symbol-anchored allocation: a common symbol, a copy-relocation allocation | `(key, ChunkId, offset, size)`, sorted |
 | `defined` | linker-defined symbol | `(SymbolId, value or (ChunkId, offset))` |
-| `thunks` | range-extension thunk | `(ChunkId, offset, target)`, and the redirect list `(SectionId, relocation index) → thunk`, sorted |
+| `patches` | code the linker adds because of addresses | `(ChunkId, offset, kind, target)`: a range-extension thunk to `Sym(SymKey, addend)` or `Plt(SymKey)`; an erratum patch (AArch64 843419); and the redirect list `(SectionId, offset in section) → patch`, sorted |
+| `sized` | address-dependent synthetic content | the size, and the encoding inputs `spec/synth.md` names, of chunks whose content depends on addresses: `.relr.dyn`, patch chunks, a compressed non-alloc chunk (sized by a pass that produces its bytes; such chunks follow every alloc chunk) |
 | `tls` | one | start, size and alignment of the TLS template |
 | `entry` | one | the entry address |
 
 `ChunkId`s are given in a fixed creation order: headers, then synthetic
 chunks in the order `spec/synth.md` lists them, then merged chunks and
-output sections in order of first contribution `(FileId, sh_index)`.
-`order` is the decision; the id is only a name.
+output-section bodies in `OutSecId` order. `order` is the decision; the id
+is only a name.
 
 `capacity − size` is slack. The default policy leaves none; an incremental
 policy leaves and consumes it. Nothing else distinguishes the two.
 
-**Validity** (`Placement::check`, run in tests on every layout mortar
+Layout is a fixed point: patches move code, which may need more patches,
+and change the sizes in `sized`. The table records the fixed point, not
+the iteration.
+
+**Validity** (`Layout::check`, run in tests on every layout mortar
 computes and in production on every layout loaded from a link state,
 before it is trusted):
 
@@ -231,23 +339,40 @@ before it is trusted):
    inside a chunk do not overlap, lie within `size`, and honor the
    section's alignment relative to the chunk's address;
 2. chunks do not overlap in the file or in memory; `addr ≡ offset` modulo
-   the page size for loaded chunks; alignments hold;
-3. segments cover exactly the chunks the program-header rules require
-   (`spec/layout.md`), with the flags and order a loader needs;
-4. every thunk redirect names a relocation whose target is out of range
-   from its place and a thunk within range; every relocation that is out
-   of range has a redirect;
-5. `sym_place`, `defined`, `tls` and `entry` are present for exactly the
-   symbols and features that need them.
+   the page size for loaded chunks; alignments hold; non-alloc chunks
+   have no address;
+3. `segments` equal what `spec/layout.md` derives from the chunks, their
+   order and the script's `PHDRS`, if any; in particular the TLS
+   initialized chunks are directly followed by the uninitialized ones and
+   `tls` describes them; the RELRO run is contiguous and ends where the
+   loader's page rounding requires; a copy-relocation allocation lies in
+   writable memory with the alignment of the shared object's symbol;
+4. every site that needs a patch has one in range (a branch out of range
+   of its target; an instruction at an address the erratum rule names),
+   and every patch is used;
+5. `sym_place`, `defined`, `sized` and `entry` are present for exactly the
+   symbols and features that need them;
+6. every relocated field of every live section holds its value at these
+   addresses (PC-relative and page-relative ranges; absolute values in
+   the field's width). A violation in a layout mortar computed is the
+   user-facing "relocation out of range"; in a loaded layout it means the
+   layout is not reused.
 
-### 4.4 What is derived from the layout
+Rules 4 and 6 cost a pass over the relocations. `fill` (§5) makes these
+checks anyway, on every field it writes, so a full link pays nothing
+extra; a loaded layout is checked for rules 1-3 and 5 up front and for 4
+and 6 on the units that are refilled, the rest being covered by the
+state's own integrity (`spec/incr.md`).
+
+### 4.5 What is derived from the layout
 
 The address of anything is computed, not stored: a section's address is
 its chunk's address plus its offset; a symbol's value follows from `def`
-(§3.3) through `place`, `MergeMap`, `sym_place` or `defined`; a GOT
-slot's address from `Slots` and its chunk. A phase MAY cache such values
-in a column of its own (`sym_addr[SymbolId]` for the image phase); a cache
-is never stored in the link state and never an input to another phase.
+and `redirect` (§3.3) through `place`, `Split` and `MergeMap`,
+`sym_place` or `defined`; a GOT slot's address from `Slots` and its
+chunk. A phase MAY cache such values in a column of its own
+(`sym_addr[SymbolId]` for the image phase); a cache is never stored in
+the link state and never an input to another phase.
 
 ## 5. The image is a function
 
@@ -255,13 +380,17 @@ is never stored in the link state and never an input to another phase.
 the input bytes, and from nothing else: not from a table of its own
 making, not from bytes it wrote earlier, not from the previous output.
 
-It does so per **unit**: one placed input section, or one synthetic chunk
-(or a record range of one, where `spec/synth.md` says a chunk is
-divisible). `fill(unit, out: &mut [u8])` writes exactly the unit's byte
-range. Units do not overlap (validity rule 1 and 2), so:
+It does so per **unit**: one placed input section, one live fragment run
+of a merged chunk, or one synthetic chunk (or a record range of one, where
+`spec/synth.md` says a chunk is divisible). `fill(unit, out: &mut [u8])`
+writes exactly the unit's bytes into a buffer the caller supplies. Units
+do not overlap (validity rules 1 and 2), so:
 
-- a full link fills all units in parallel, each through a disjoint
-  `&mut [u8]` of the output, with no `unsafe`;
+- a full link fills units in parallel; the writer hands out disjoint
+  slices of one buffer, or fills batches into buffers of its own and
+  writes each at its file offset (positioned writes; safe, and the whole
+  image need not be resident). Which, is `spec/image.md`'s to decide by
+  measurement;
 - an incremental link fills the units whose inputs or addresses changed;
 - the verifier, and the test "a full link given this layout produces
   these bytes" (`docs/VALIDATION.md` L10), are meaningful.
@@ -274,16 +403,21 @@ Consequences that bind other specs:
   is in command-line order").
 - **Relaxations are functions of the tables.** Whether an instruction
   sequence is rewritten (GOT load to address computation, a TLS model to a
-  cheaper one) is decided from `Resolution`, `Demands` and addresses by a
-  rule in `spec/arch.md`, the same in scan (which must not demand a slot
-  the rule will not use, or must demand it conservatively) and in fill.
-  A relaxation that changes a section's size is a layout matter and is
-  recorded in `Placement`.
-- **No table has a row per relocation.** Scan and fill each read
-  relocation records from the input bytes. The exceptions are sparse and
-  listed: thunk redirects (§4.3), dynamic relocations (`Slots`). The
-  incremental link state's referrer index (§7.2) is written to disk by a
-  streaming pass and never held as a table.
+  cheaper one) is decided by a rule in `spec/arch.md` from `Resolution`,
+  `Demands` and the addresses the layout gives, evaluated in `fill`.
+  Because demand is conservative (§3.7), the unrelaxed form is always
+  available: moving a section can turn a relaxation off without any table
+  changing. A rewriting that changes a section's size is not a
+  relaxation in this sense: it is a layout matter, recorded in
+  `Placement`.
+- **No value outside the tables.** `fill` reads no cache of an earlier
+  pass, no previous output, and infers nothing from the order in which
+  another phase happened to run.
+- **No table has a row per relocation or per symbol-table entry** beyond
+  `sym_map`. Scan and fill each read relocation records from the input
+  bytes. The exceptions are sparse and listed: patch redirects (§4.4),
+  dynamic relocations (`Slots`). For `-r`, the output index of a symbol
+  is a function (§4.3), not a table.
 - **One sealing pass.** Content that depends on the output's own bytes (the
   build id, `spec/image.md`) is computed after all units are filled, by a
   function of those bytes specified so that an incremental link can update
@@ -300,10 +434,10 @@ state in exactly these ways, each of which is independent of scheduling:
    contiguous per unit (§2.2) is split into one mutable slice per unit;
    a worker writes its unit's slice only.
 2. **Commutative, idempotent updates.** Shared cells updated with bitwise
-   or, minimum or maximum over a total order (atomically). Flag sets
-   (§3.5) and the choice of a definition (§3.3) are of this form. An
-   update whose result depends on arrival order (a counter used as an id,
-   "first writer wins", a sum of floats) is not.
+   or, minimum, maximum or a saturating count over a total order
+   (atomically). Flag sets (§3.7) and every merge of §3.3 are of this
+   form. An update whose result depends on arrival order (a counter used
+   as an id, "first writer wins", a sum of floats) is not.
 3. **Ordered collection.** Each unit appends to a buffer of its own; the
    buffers are concatenated in unit order. Ids handed out to collected
    rows are assigned after concatenation.
@@ -317,7 +451,7 @@ state in exactly these ways, each of which is independent of scheduling:
    reproducible too.
 6. **Thread count is not an input.** Work is partitioned by unit or by
    fixed-size block, never "into N parts for N threads", wherever the
-   partition can be observed (block hashing, shard assignment, thunk
+   partition can be observed (block hashing, shard assignment, patch
    group boundaries).
 
 Diagnostics follow rule 4 through their keys (§8).
@@ -332,7 +466,7 @@ helper and every parallel phase has such a test.
 
 ## 7. What a link state stores
 
-`spec/incr.md` (M7) owns the format. The model guarantees it can exist:
+`spec/incr.md` (M7) owns the format. The model guarantees it can exist.
 
 ### 7.1 Identity
 
@@ -341,28 +475,35 @@ Ids do not survive a link; identities do, and a later link translates.
 | thing | identity |
 |---|---|
 | file | the path as resolved, plus member name and ordinal among same-named members for an archive member; with a content hash to detect change |
-| section | file identity and section index; for matching across an edit of the file, the section's name, ordinal among same-named sections, and content hash (which kiln and hod may supply, `docs/ROADMAP.md` "Cross-project") |
-| symbol | name bytes (with version) |
+| section | file identity, then an **anchor** that survives edits elsewhere in the file: its COMDAT signature, else the first named non-local symbol defined at its start, else the first named local one; then its name and its ordinal among sections with the same anchor and name; with a content hash (which kiln and hod may supply, `docs/ROADMAP.md` "Cross-project") |
+| global symbol | key bytes (name and version) |
+| local symbol | file identity, name, ordinal among same-named locals of the file (never the symbol-table index, which shifts on any edit) |
 | COMDAT group | signature bytes |
-| chunk | kind and name |
+| output section, chunk | kind and name |
+| fragment | output section and content hash |
 
 ### 7.2 Contents
 
 - the `Plan`, normalized;
 - per file: identity, hash, and the rows invariant I-file lets a later
   link reuse;
-- `Resolution` and `Liveness` in identity terms (a definition as file
-  identity and symbol index);
-- the decision tables (§4) in full: they are the previous layout, and the
-  only part of a link state that cannot be recomputed;
-- the **referrer index**: for each place that can move (a section, a
-  slot, a symbol-anchored allocation), the output fields that depend on
-  its address. It is derived data, stored because recomputing it costs a
-  scan of every relocation.
+- `Resolution` and `Liveness` in identity terms;
+- the decision tables (§4) in full, in identity terms: they are the
+  previous layout, and the only part of a link state that cannot be
+  recomputed;
+- the **dependency index**: for each thing whose address or content can
+  change (a section, a fragment, a slot, a symbol-anchored allocation, a
+  symbol's definition), the **units** (§5) whose bytes depend on it. An
+  incremental link refills whole units through the same `fill`; it never
+  patches a field in place, so relaxed sequences, sorted tables
+  (`.eh_frame_hdr`, `.gnu.hash`), whole-chunk encodings (`.relr.dyn`)
+  and symbol tables need no special case. The index is derived data,
+  stored because recomputing it costs a scan of every relocation, and
+  written by a streaming pass, never held as a table.
 
 A link state is untrusted input: it is read with the same care as an
-object file, validated (§4.3 validity, identities against the present
-inputs), and any failure means a full link with the reason reported.
+object file, validated (§4.4, identities against the present inputs), and
+any failure means a full link with the reason reported.
 
 ### 7.3 The two tested invariants
 
@@ -375,26 +516,28 @@ option users see), which §5 makes well-defined.
 ## 8. Diagnostic keys
 
 `spec/diag.md` §6.1 leaves the phase ordinals to this table. Ordinals are
-spaced so that a phase can be added without renumbering.
+in pipeline order and spaced so that a phase can be added without
+renumbering.
 
 | phase | ordinal | `unit` | `seq` |
 |---|---|---|---|
 | command line | 10 | argument index | 0, or a count within the argument |
+| incremental (state load, fallback) | 15 | 0 | a count |
 | input (find, read, parse) | 20 | the `Plan` input's argument index | byte offset of the construct in the file as given (an archive member: its offset in the archive plus the offset within) |
 | resolve | 30 | `FileId` of the reporting mention | symbol-table index |
 | one-definition rule | 40 | `FileId` of the later definition | symbol-table index |
+| assignment | 45 | `FileId` | section index |
 | liveness, folding | 50 | `FileId` | section index |
-| merge | 60 | `FileId` | section index, then piece |
+| split, merge | 60 | `FileId` | section index × 2^32 + piece |
 | scan | 70 | `FileId` | section index × 2^32 + relocation index |
 | synthetic sections | 80 | 0 | `SymbolId`, or a count in a sequential step |
 | layout | 90 | 0 | `ChunkId`, or a count in a sequential step |
 | image | 100 | `FileId` (0 for synthetic chunks) | section index × 2^32 + relocation index; `ChunkId` for file 0 |
 | verify (`--verify`) | 110 | 0 | output offset |
-| incremental (state load, fallback) | 5 | 0 | a count |
 
 `FileId` is usable as a unit because it is a function of the inputs
-(§2.1). A relocation index is limited to 2^32 − 1 per section by the key;
-a section with more is refused by name.
+(§2.1). A relocation or piece index is limited to 2^32 − 1 per section by
+the key; a section with more is refused by name.
 
 ## 9. Memory
 
@@ -404,8 +547,12 @@ shape is part of principle 3:
 - columns, not structs of everything: a phase touches the columns it
   needs (`place` is 12 bytes per section and is all the image phase needs
   to find a section);
+- nothing per section for files that are not live (§2.2); wide columns
+  only for output-carrying sections; `folded` only when folding is on;
 - no per-relocation and no per-symbol-table-entry rows beyond `sym_map`
   (4 bytes per non-local entry);
+- `Split`: 8 bytes per piece occurrence, 16 per fragment plus the
+  interning table;
 - names are slices of input bytes, hashed once;
 - every table states its row size in WP-020's landed record, and the bench
   harness's peak-memory figure is the check.
@@ -419,33 +566,34 @@ impl<I: Id, T> Column<I, T> {
     pub fn split_by<'a>(&'a mut self, ranges: &[IdRange<I>]) -> Vec<&'a mut [T]>; // §6.1
 }
 pub enum SymKey { Global(SymbolId), Local(FileId, u32) }
-pub struct Inputs<'data> { pub target: Target, pub files: Column<FileId, File<'data>>, /* §3.2 */ }
+pub struct Inputs<'store> { pub target: Target, pub files: Column<FileId, File<'store>>, /* §3.2 */ }
 pub struct Resolution { /* §3.3 */ }
-pub struct Layout { pub merge: MergeMap, pub slots: Slots, pub placement: Placement }
-impl Placement { pub fn check(&self, /* derived tables */) -> Result<(), Diagnostic>; }
+pub struct Layout { pub folds: Folds, pub merge: MergeMap, pub slots: Slots, pub placement: Placement }
+impl Layout { pub fn check(&self, /* derived tables */) -> Result<(), Diagnostic>; }
 pub mod par { /* §6: for_each, map_collect, sort_by_key, the scheduling seed */ }
 ```
 
 ## 11. Tests (WP-020)
 
-- §2: id arithmetic; load-order and symbol numbering equal to the
-  sequential definition under every thread count and scheduling seed.
-- §4.3: `Placement::check` accepts the layouts mortar computes and rejects
-  a mutation of each rule (overlap, misalignment, a missing place, a
-  missing thunk, a wrong segment).
+- §2: id arithmetic; load-order, symbol and fragment numbering equal to
+  the sequential definition under every thread count and scheduling seed.
+- §4.4: `Layout::check` accepts the layouts mortar computes and rejects a
+  mutation of each rule (overlap, misalignment, a missing place, a missing
+  patch, a wrong segment, split TLS, a field out of range).
 - §5: filling units in a permuted order, or one at a time into a zeroed
   buffer, gives the bytes of a full fill.
 - §6: each helper under seeds and thread counts 1, 2, 7 and 64.
 - §7: a table written in identity terms and read back in a link whose ids
-  differ (an input added in front) denotes the same rows.
+  differ (an input added in front; a function added in the middle of a
+  file) denotes the same rows.
 
 ## 12. Open, with owner
 
 | question | owner |
 |---|---|
 | The mapping of `Plan` inputs to files: the same path twice, shared objects by `DT_SONAME`, thin archives, `--start-lib` | `spec/input.md` (WP-021) |
-| Archive semantics: GNU ld's left-to-right extraction against lld's and mold's order-independent one, and which one `file_live` implements | `spec/resolve.md` (WP-022) |
-| Symbol versions in the key of `SymbolId` (`foo@V`, `foo@@V`, shared-object `versym`) | `spec/resolve.md` |
-| Folding as derived or decision | `spec/live.md` |
-| Divisible synthetic chunks and the sealing function for the build id | `spec/synth.md`, `spec/image.md` |
+| Archive semantics: GNU ld's left-to-right extraction against lld's and mold's order-independent one, and which one `file_live` implements. §3.3 is written for the order-independent one; so is `comdat` (the lowest `FileId` among live files keeps the group, where GNU ld and lld keep the first *extracted*): a deliberate difference to be confirmed or withdrawn there, with tests against the references | `spec/resolve.md` (WP-022) |
+| Version scripts and shared-object `versym` against the key of §2.3 | `spec/resolve.md` |
+| Divisible synthetic chunks, the sealing function for the build id, resident image or positioned writes | `spec/synth.md`, `spec/image.md` |
+| `-r`: relocation and group chunks, REL addends of section symbols rewritten in the bytes | `spec/layout.md`, `spec/image.md` (M4) |
 | Whether `Plan` moves into `mortar_core` or is re-exported from `mortar_cli` | this spec, at freeze, with WP-008's handback |
