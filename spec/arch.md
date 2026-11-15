@@ -1089,6 +1089,11 @@ are lld's; the incompatible text is lld's shape with a reason field).
 - §6: a round that adds no patch is followed by a stopping round; the
   alignment counterexample; an erratum patch pushed out of range is
   re-patched.
+- §3.6: every clip of every unit writes the unclipped bytes inside it
+  (per architecture, every type and sequence); §3.1 `max_reach` equals
+  the maximum of the derived windows.
+- §3.4: each `EventClass` reported once per surviving reference, none
+  for a consumed record; §3.11 the tombstone by name and class.
 - Appendices: the fit checks become x64.md's and x86.md's first tests.
 
 ## Appendix A. Fit check: x86-64
