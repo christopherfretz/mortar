@@ -1,0 +1,47 @@
+# synth.md S-70 and dyn.md D-45 in a static-pie: an IFUNC defined in the
+# program has one IPLT entry, which is its address everywhere (the
+# initialized pointer `fp` gets a `RELATIVE` to the entry, so `fp == f`);
+# the IPLT word's `IRELATIVE` is in `.rela.dyn`, after the `RELATIVE`
+# records, and there is no `.rela.plt`. glibc's static-pie start-up
+# applies `.rela.dyn` once (`_dl_relocate_static_pie`); `apply_irel`
+# walks `__rela_iplt_start..__rela_iplt_end`, which must then be empty or
+# undefined, or every IRELATIVE is applied twice.
+#
+# Measured (both architectures): GNU ld puts the IPLT IRELATIVEs in
+# `.rela.plt` (DT_JMPREL) and leaves `__rela_iplt_*` undefined, lld
+# leaves them undefined, mold defines both as absolute 0, mortar defines
+# neither. W3 (dyn.md §13.2) on x86-64: GNU ld and mold give `fp` its own
+# IRELATIVE to the implementation, so `fp == f` is 0.
+#
+#@ spec: synth.md "S-70"
+#@ spec: dyn.md "D-45"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd,mold,x86_64): W3: the executable's IFUNC gets a second address through the word's own IRELATIVE
+
+cc -O1 -fPIE main.c -o main.o
+link gcc -static-pie main.o -o spie
+run spie
+  stdout: ifunc 2 2 1
+check readelf -rW spie
+  has(lld,mold,mortar): Relocation section '.rela.dyn'
+  then(lld,mold,mortar): _RELATIVE
+  then(lld,mold,mortar): _IRELATIVE
+  not(lld,mold,mortar): Relocation section '.rela.plt'
+check nm --defined-only spie
+  not(bfd,lld,mortar): __rela_iplt_start
+  not(bfd,lld,mortar): __rela_iplt_end
+  has(mold): __rela_iplt_start
+
+#--- main.c
+#include <stdio.h>
+
+static int impl_a(void) { return 1; }
+static int impl_b(void) { return 2; }
+static int (*resolve_f(void))(void) { return impl_b; }
+int f(void) __attribute__((ifunc("resolve_f")));
+int (*fp)(void) = f;
+
+int main(void) {
+  printf("ifunc %d %d %d\n", f(), fp(), fp == f);
+  return f() == 2 ? 0 : 1;
+}

@@ -1,0 +1,32 @@
+# dyn.md D-2 and D-41: an undefined weak symbol in a static-pie is 0
+# (nothing can define it at run time), and its address word gets no
+# record at all (not a symbolic one, not a `RELATIVE`: the word is 0 at
+# any load address). Measured: all three references write 0.
+#
+#@ spec: dyn.md "D-2"
+#@ spec: dyn.md "D-41"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE main.c -o main.o
+link gcc -static-pie main.o -o spie
+run spie
+  stdout: 1
+check readelf -W --dyn-syms spie
+  has(lld,mold,mortar): Symbol table '.dynsym' contains 1 entry:
+  has(bfd,x86_64): Symbol table '.dynsym' contains 1 entry:
+  has(bfd,aarch64): Symbol table '.dynsym' contains 3 entries:
+check readelf -rW spie
+  not: _GLOB_DAT
+  not: _ABS64
+  not: R_X86_64_64
+
+#--- main.c
+#include <stdio.h>
+
+extern int wk __attribute__((weak));
+int *p = &wk;
+
+int main(void) {
+  printf("%d\n", p == 0);
+  return 0;
+}

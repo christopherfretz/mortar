@@ -71,7 +71,7 @@ fn plan(pie: bool) -> GotPlan {
         &slots,
         GlobalFlags::empty(),
         PltVariant::Plain,
-        DynGotCx { pie, bind_now: false },
+        DynGotCx { pie, bind_now: false, static_pie: false },
         &Kinds,
         &dynsym(),
         &diag,
@@ -236,7 +236,7 @@ fn x64_plt0_reads_got_plt_words() {
         &slots,
         GlobalFlags::empty(),
         PltVariant::Lazy,
-        DynGotCx { pie: true, bind_now: false },
+        DynGotCx { pie: true, bind_now: false, static_pie: false },
         &Kinds,
         &DynsymPlan::new([1, 2].map(SymbolId).into(), 0, 1).unwrap(),
         &diag,
@@ -258,4 +258,50 @@ fn x64_plt0_reads_got_plt_words() {
         assert_eq!(u32::from_le_bytes(plt[at + 7..at + 11].try_into().unwrap()), n);
         assert_eq!(target(at + 12, AT.plt + e + 16), AT.plt, "entry {n} back to PLT0");
     }
+}
+
+// synth.md S-70, dyn.md D-45 (WP-052): a `StaticPie` has no PLT entries
+// (nothing is shared), and its IPLT word's IRELATIVE goes to `.rela.dyn`,
+// in IPLT order: `.rela.plt` is empty, the record is against `.got.plt`'s
+// IPLT word with symbol 0 and the resolver as its addend; the IFUNC's
+// GOT slot is a RELATIVE to its IPLT entry (one address everywhere).
+#[test]
+fn s70_static_pie_irelative_in_rela_dyn() {
+    let slots = Slots { got: [k(4), k(5)].into(), iplt: [k(5)].into(), ..Slots::default() };
+    let diag = collector();
+    let p = GotPlan::new_dynamic(
+        &DynA64::default(),
+        &slots,
+        GlobalFlags::empty(),
+        PltVariant::Plain,
+        DynGotCx { pie: true, bind_now: false, static_pie: true },
+        &Kinds,
+        &DynsymPlan::new(Vec::new().into(), 0, 1).unwrap(),
+        &diag,
+    )
+    .unwrap();
+    assert_eq!(p.rela_plt_size(), 0);
+    assert_eq!(p.rela_dyn_irelative(), 1);
+    let recs = p.irelative_records(&AT, &Values).unwrap();
+    assert_eq!(recs.len(), 1);
+    assert_eq!(recs[0].r_offset, AT.got_plt + p.iplt_word(0));
+    assert_eq!((recs[0].r_sym, recs[0].addend), (0, 0x1_1000));
+    // Both GOT slots are RELATIVE records (the local one and the IFUNC's).
+    assert_eq!(p.got_relative(), 2);
+    assert!(p.got_records().iter().all(|r| r.role == DynRole::Relative));
+    // The same plan outside a StaticPie keeps the IRELATIVE in `.rela.plt`.
+    let q = GotPlan::new_dynamic(
+        &DynA64::default(),
+        &slots,
+        GlobalFlags::empty(),
+        PltVariant::Plain,
+        DynGotCx { pie: true, bind_now: false, static_pie: false },
+        &Kinds,
+        &DynsymPlan::new(Vec::new().into(), 0, 1).unwrap(),
+        &collector(),
+    )
+    .unwrap();
+    assert_eq!(q.rela_dyn_irelative(), 0);
+    assert_eq!(q.rela_plt_size(), 24);
+    assert!(q.irelative_records(&AT, &Values).unwrap().is_empty());
 }

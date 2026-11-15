@@ -1,0 +1,79 @@
+# dyn.md D-1 and D-2, the `StaticPie` column with C++: a g++ and a
+# clang++ program linked `-static-pie` against libstdc++.a throws and
+# catches a std::runtime_error (the unwinder is libgcc_eh.a's, which
+# finds the frames through `.eh_frame_hdr`, PT_GNU_EH_FRAME), and uses
+# a `thread_local` int and a `thread_local` std::string (the code's TLS
+# forms end local-exec: a static-pie has one module). The dynamic
+# records are `RELATIVE` and `IRELATIVE` only: no TLS record, no symbolic
+# record, `.dynsym` with the null entry (GNU ld adds two STT_SECTION
+# symbols on AArch64), no `.interp`, no DT_NEEDED.
+# Measured: all three references write the same record types; mortar's
+# x86-64 output has more `RELATIVE` records than GNU ld's and lld's (M1
+# keeps GOT slots it does not relax, x64.md X-27), as mold's has.
+#
+#@ spec: dyn.md "D-1"
+#@ spec: dyn.md "D-2"
+#@ arch: aarch64 x86_64
+#@ requires: g++ clang
+
+cxx -O1 -fPIE main.cc -o main.o
+cxx(clang) -O2 -fPIE main.cc -o main-clang.o
+link g++ -static-pie main.o -o spie
+run spie
+  stdout: caught boom
+  stdout: hello 42 tls
+link clang++ -static-pie main-clang.o -o spie-clang
+run spie-clang
+  stdout: caught boom
+  stdout: hello 42 tls
+check readelf -lW spie
+  not: ^ INTERP
+  has: ^ GNU_EH_FRAME
+  has: ^ TLS
+check readelf -dW spie
+  not: (NEEDED)
+  has: (FLAGS_1) Flags:*PIE
+check readelf -W --dyn-syms spie
+  has(lld,mold,mortar): Symbol table '.dynsym' contains 1 entry:
+  has(bfd,x86_64): Symbol table '.dynsym' contains 1 entry:
+  has(bfd,aarch64): Symbol table '.dynsym' contains 3 entries:
+check readelf -rW spie
+  has: _RELATIVE
+  not: TPOFF
+  not: _TLS
+  not: DTPMOD
+  not: _GLOB_DAT
+  not: _ABS64
+  not: R_X86_64_64
+  not: JUMP_SLOT
+check readelf -rW spie-clang
+  has: _RELATIVE
+  not: TPOFF
+  not: _TLS
+  not: DTPMOD
+  not: _GLOB_DAT
+
+#--- main.cc
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
+thread_local int tl_counter = 41;
+static thread_local std::string tl_name = "tls";
+
+int thrower(int x) {
+  if (x > 0)
+    throw std::runtime_error("boom");
+  return x;
+}
+
+int main(int argc, char **) {
+  try {
+    thrower(argc);
+  } catch (const std::exception &e) {
+    std::cout << "caught " << e.what() << "\n";
+  }
+  ++tl_counter;
+  std::cout << "hello " << tl_counter << " " << tl_name << std::endl;
+  return 0;
+}
