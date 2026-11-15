@@ -99,6 +99,7 @@ dependencies = [
  "mortar_layout",
  "mortar_live",
  "mortar_merge",
+ "mortar_plumb",
  "mortar_resolve",
  "mortar_scan",
  "mortar_synth",

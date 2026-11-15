@@ -356,6 +356,27 @@ pub fn write_with(
     out: &Path,
     before_recheck: &(dyn Fn(FileId) + Sync),
 ) -> Result<Written, Failed> {
+    with_link(f, before_recheck, |link| {
+        let ids = f
+            .inputs
+            .files
+            .iter()
+            .filter_map(|(_, r)| {
+                let p = std::str::from_utf8(r.path).ok()?;
+                mortar_image::output::identity(&f.cwd.join(p))
+            })
+            .collect();
+        let opts = OutputOptions::executable(ids);
+        link::write(link, out, &opts, &mut |_, _| {})
+    })
+}
+
+/// Calls `go` with the image phase's view of `f`.
+fn with_link<T>(
+    f: &Front,
+    before_recheck: &(dyn Fn(FileId) + Sync),
+    go: impl FnOnce(&link::Link<'_, 'static>) -> T,
+) -> T {
     let tables = Tables { inputs: &f.inputs, resolution: &f.resolution, assignment: &f.assignment };
     let merge_eh = MergeEh::new(&f.merge.eh, &tables).expect("eh source");
     let core =
@@ -421,17 +442,12 @@ pub fn write_with(
             build_id: f.plan.shaping.build_id.as_ref().and_then(link::tree_style),
         },
     };
-    let ids = f
-        .inputs
-        .files
-        .iter()
-        .filter_map(|(_, r)| {
-            let p = std::str::from_utf8(r.path).ok()?;
-            mortar_image::output::identity(&f.cwd.join(p))
-        })
-        .collect();
-    let opts = OutputOptions::executable(ids);
-    link::write(&link, out, &opts, &mut |_, _| {})
+    go(&link)
+}
+
+/// The map of `f`'s link (`link::map_of`).
+pub fn map(f: &Front) -> mortar_image::map::Map {
+    with_link(f, &|_| {}, |l| link::map_of(l))
 }
 
 /// The proof runs of one input section, from its mapping symbols.
@@ -476,6 +492,7 @@ impl SymNames for Facts<'_, '_> {
 }
 
 impl KeyFacts for Facts<'_, '_> {
+    #[allow(clippy::many_single_char_names)]
     fn facts(&self, key: SymKey) -> SymFacts {
         let c = self.syms;
         let of = |kind, s: Option<Sym>| SymFacts {

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use mortar_input::store::StorePolicy;
 use mortar_testutil::{Scratch, tool, tools_required};
-use support::front::{front, write, write_with};
+use support::front::{Front, front, map, write, write_with};
 
 const A_S: &str = r#"
     .section .rodata.str1.1,"aMS",@progbits,1
@@ -154,6 +154,45 @@ fn elflint(out: &Path) {
     assert!(rest.is_empty(), "eu-elflint: {text}{}", o.stderr_text());
 }
 
+/// `mortar_plumb` (`spec/plumb.md` §2) on the written image, its inputs
+/// and mortar's map: no finding.
+fn plumb(f: &Front, out: &Path) {
+    let m = mortar_image::map::render(&map(f), &f.pool);
+    let text = String::from_utf8(m).unwrap();
+    if let Some(d) = std::env::var_os("DEBUG_MAP_DIR") {
+        std::fs::write(Path::new(&d).join("map.txt"), &text).unwrap();
+        std::fs::copy(out, Path::new(&d).join("out")).unwrap();
+        for n in ["a.o", "b.o", "big.o"] {
+            let _ = std::fs::copy(f.cwd.join(n), Path::new(&d).join(n));
+        }
+    }
+    let parsed = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &text)
+        .unwrap_or_else(|e| panic!("the map does not parse: {e:?}\n{text}"));
+    let bytes: Vec<(String, Vec<u8>)> = parsed
+        .files
+        .iter()
+        .map(|mf| (mf.path.clone(), std::fs::read(f.cwd.join(&mf.path)).unwrap()))
+        .collect();
+    let inputs: Vec<mortar_plumb::Input<'_>> =
+        bytes.iter().map(|(p, b)| mortar_plumb::Input { path: p, bytes: b }).collect();
+    let report = mortar_plumb::verify(&std::fs::read(out).unwrap(), &inputs, &parsed);
+    // A known verifier finding, reported to WP-028b's follow-ups: for a
+    // section listed as `piece`s, plumb resolves a section symbol's
+    // `st_value` to a piece and adds A after (reloc.rs `in_section`),
+    // where S-17 resolves `st_value + A` (a merge string at A of
+    // `.rodata.str1.8`). Only mortar's map lists merge pieces.
+    let merge_section_sym = |f: &mortar_plumb::Finding| {
+        f.rule == mortar_plumb::Rule::Field
+            && f.symbol.as_deref().is_some_and(|s| s.starts_with(".rodata.str"))
+    };
+    let (known, rest): (Vec<_>, Vec<_>) =
+        report.findings.iter().partition(|f| merge_section_sym(f));
+    assert!(rest.is_empty(), "plumb: {rest:#?}\n{text}");
+    if !known.is_empty() {
+        eprintln!("plumb: {} findings of the known S-17 pieces case", known.len());
+    }
+}
+
 #[test]
 fn i40_static_program_runs_and_reads_back() {
     let dir = Scratch::new("image-link");
@@ -169,6 +208,7 @@ fn i40_static_program_runs_and_reads_back() {
     check_tool("readelf", &["--debug-dump=frames"], &out);
     check_tool("llvm-readelf", &["-a"], &out);
     elflint(&out);
+    plumb(&f, &out);
 }
 
 /// I-81, I-75: the staged store and the resident one give the same
@@ -197,6 +237,7 @@ fn i81_staged_equals_resident_at_every_thread_count() {
             None => {
                 runs(&out);
                 elflint(&out);
+                plumb(&f, &out);
                 first = Some(bytes);
             }
             Some(b) => assert!(*b == bytes, "{policy:?} at {threads} threads differs"),

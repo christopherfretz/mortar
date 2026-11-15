@@ -57,6 +57,7 @@ use crate::{IMAGE_BLOCK, PHASE_IMAGE, PHASE_OUTPUT};
 
 const SHF_ALLOC: u64 = 0x2;
 const SHF_MERGE: u64 = 0x10;
+const SHT_NOBITS: u32 = 8;
 const SHT_INIT_ARRAY: u32 = 14;
 const SHT_FINI_ARRAY: u32 = 15;
 const SHT_PREINIT_ARRAY: u32 = 16;
@@ -1078,4 +1079,158 @@ pub fn write(
     out.commit().map_err(|kd| Failed { diagnostics: vec![kd] })?;
     on_phase(PHASE_OUTPUT, "output");
     Ok(Written { build_id: filled.build_id, rows: plan.rows.len(), jobs: plan.jobs.len() })
+}
+
+// ---- the map (§9.2) --------------------------------------------------------
+
+/// The map of a link (I-77, I-78; `spec/plumb.md` §3.2), from the tables
+/// alone (I-79: independent of fill). Not yet listed: thunk and patch
+/// chunks (range extension's, with their targets) and folds (M2).
+#[must_use]
+pub fn map_of(link: &Link<'_, '_>) -> crate::map::Map {
+    LinkTables::new(*link).map()
+}
+
+impl LinkTables<'_, '_> {
+    #[allow(clippy::too_many_lines)]
+    fn map(&self) -> crate::map::Map {
+        use crate::map::{self, DiscardWhy, MapChunk, MapFile, NonAlloc, Placed};
+        use mortar_core::resolution::{DropReason, SectionState};
+        let l = &self.link;
+        let pl = &l.layout.placement;
+        let mut m = map::Map::default();
+        let mut ids: Vec<Option<usize>> = vec![None; l.inputs.files.len() as usize];
+        for (file, row) in l.inputs.files.iter() {
+            if file == FileId::INTERNAL
+                || !l.resolution.file_live.get(file).is_some_and(|x| x.is_live())
+            {
+                continue;
+            }
+            let Reader::Object(_) = row.reader else { continue };
+            let id = m.files.len();
+            ids[file.0 as usize] = Some(id);
+            m.files.push(MapFile {
+                path: row.path.to_vec(),
+                member: row.member.as_ref().map(|mm| (mm.name.to_vec(), mm.offset)),
+            });
+            let mut placed = Vec::new();
+            let mut nonalloc = Vec::new();
+            let mut discards = Vec::new();
+            let range = l.resolution.section_base[file];
+            for i in 1..range.len() {
+                let sid = SectionId(range.start.0 + i);
+                let Some(r) = l.resolution.sections.get(sid) else { continue };
+                let size = self.section_size(sid).unwrap_or(0);
+                let bytes = size > 0 && r.kind != SectionKind::Nobits;
+                let why = match r.state {
+                    SectionState::Dropped(DropReason::Consumed) => continue,
+                    SectionState::Dropped(DropReason::Comdat) => Some(DiscardWhy::Comdat),
+                    SectionState::Dropped(DropReason::Script) => Some(DiscardWhy::Script),
+                    SectionState::Dropped(DropReason::Excluded | DropReason::Stripped) => {
+                        Some(DiscardWhy::Unspecified)
+                    }
+                    SectionState::Kept if !l.liveness.is_live(sid) => Some(DiscardWhy::Gc),
+                    SectionState::Kept => None,
+                };
+                if let Some(why) = why {
+                    if bytes {
+                        discards.push((i, why));
+                    }
+                    continue;
+                }
+                // Consumed by the link (layout §8.1): no output section.
+                let Some(o) = l.assignment.out(sid) else { continue };
+                let Some(out) = l.assignment.outsecs.get(o) else { continue };
+                let alloc = out.flags & SHF_ALLOC != 0;
+                match (r.kind, alloc) {
+                    // Its pieces come from the plan's records, below.
+                    (SectionKind::EhFrame, _) => {}
+                    (SectionKind::Merge, true) => {
+                        let Some(span) = l.split.merge_pieces(sid) else { continue };
+                        let offs = &l.split.piece_off[span.slots()];
+                        for (k, &off) in offs.iter().enumerate() {
+                            let end = offs.get(k + 1).map_or(size, |&e| u64::from(e));
+                            let frag = l.split.piece_frag[span.start as usize + k];
+                            let Some(addr) = self.frag_value(frag) else { continue };
+                            placed.push(Placed::Piece {
+                                section: i,
+                                input_offset: u64::from(off),
+                                addr,
+                                size: end - u64::from(off),
+                            });
+                        }
+                    }
+                    (SectionKind::Merge, false) => {
+                        nonalloc.push(NonAlloc::Merged { section: i, out: out.name.to_vec() });
+                    }
+                    (_, true) => {
+                        if let Some(addr) = pl.section_addr(sid, 0) {
+                            placed.push(Placed::Place { section: i, addr, size });
+                        }
+                    }
+                    (_, false) => {
+                        let Some((c, at)) = pl.place.get(sid).and_then(|p| p.get()) else {
+                            continue;
+                        };
+                        if let Some((_, offset)) = self.chunk_at(c, at) {
+                            nonalloc.push(NonAlloc::Place {
+                                section: i,
+                                out: out.name.to_vec(),
+                                offset,
+                                size,
+                            });
+                        }
+                    }
+                }
+            }
+            m.placed.push(placed);
+            m.nonalloc.push(nonalloc);
+            m.discards.push(discards);
+        }
+        // `.eh_frame`'s kept records, as pieces of their input sections.
+        if let (Some((plan, src)), Some((_, base))) = (l.eh, self.eh_frame) {
+            let frames = src.frames();
+            for n in 0..plan.records().len() {
+                let (srow, g) = plan.source(n);
+                let Some(sec) = frames.sections.get(srow) else { continue };
+                let Some(rec) = frames.records.get(g as usize) else { continue };
+                let Some((file, index)) = l.resolution.sh_index(sec.section) else { continue };
+                let Some(id) = ids.get(file.0 as usize).copied().flatten() else { continue };
+                let off = plan.out_offset(n);
+                m.placed[id].push(Placed::Piece {
+                    section: index.0,
+                    input_offset: u64::from(rec.offset),
+                    addr: base + off,
+                    size: plan.out_offset(n + 1) - off,
+                });
+            }
+        }
+        // Each file's records in output order (I-78).
+        for p in &mut m.placed {
+            p.sort_by_key(|r| match *r {
+                Placed::Place { addr, section, .. } => (addr, section, 0),
+                Placed::Piece { addr, section, input_offset, .. } => (addr, section, input_offset),
+            });
+        }
+        for (_, c) in pl.chunks.iter() {
+            if let ChunkKind::Synthetic(s) = c.kind
+                && c.size > 0
+                && c.sh_type != SHT_NOBITS
+            {
+                m.chunks.push(MapChunk {
+                    kind: map::ChunkKind::Synthetic,
+                    name: s.name.to_vec(),
+                    addr: c.addr,
+                    size: c.size,
+                    target: None,
+                });
+            }
+        }
+        for d in &pl.defined {
+            if let (Some(k), Some(v)) = (l.inputs.symbols.get(d.symbol), pl.defined_of(d.symbol)) {
+                m.defines.push((k.name.to_vec(), v));
+            }
+        }
+        m
+    }
 }
