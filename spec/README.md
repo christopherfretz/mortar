@@ -12,7 +12,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 |---|---|---|
 | `model.md` | `mortar_core`: ids, the tables phases exchange, determinism rules | planned (WP-002) |
 | `elf.md` | `mortar_elf`: readers for objects and shared objects; writer primitives | planned (WP-004, WP-006) |
-| `archive.md` | `mortar_elf::archive`: GNU, thin and BSD-named archives | planned (WP-005) |
+| `archive.md` | `mortar_elf::archive`: regular and thin archives, GNU and BSD names, the GNU, 64-bit and BSD symbol indexes | implemented (WP-005) |
 | `diag.md` | `mortar_diag`: diagnostics, the vocabulary of refusals, demangling | normative (WP-007); demangling planned |
 | `cli.md` | `mortar_cli`: the command line and the status of every option | planned (WP-008) |
 | `script.md` | `mortar_script`: linker scripts, version scripts, dynamic lists | planned (WP-009) |
