@@ -408,9 +408,6 @@ fn x86_1_e_flags_is_refused_with_its_value() {
 /// is an input byte.
 #[test]
 fn x86_5_overlapping_read_windows_are_refused() {
-    if host().is_none() {
-        return;
-    }
     const DUP: &str = "\t.data\n\t.globl p\np:\t.long 0\n\t.reloc p, R_386_32, x\n\
                        \t.reloc p, R_386_32, y\n\t.globl x, y\nx:\t.long 1\ny:\t.long 2\n\
                        \t.text\n\t.globl main\nmain:\tret\n\
@@ -419,6 +416,9 @@ fn x86_5_overlapping_read_windows_are_refused() {
                        \taddl $_GLOBAL_OFFSET_TABLE_+[.-1b], %ebx\n2:\tmovl x@GOT(%ebx), %eax\n\
                        \t.reloc 2b, R_386_8, x\n\tret\n\t.data\n\t.globl x\nx:\t.long 0\n\
                        \t.section .note.GNU-stack,\"\",@progbits\n";
+    if host().is_none() {
+        return;
+    }
     for (label, name, text, place) in [
         ("x86-5-dup", "dup.s", DUP, "dup.s.o:(.data+0x0)"),
         ("x86-5-got", "got.s", GOT, "got.s.o:(.text+0xe)"),
@@ -441,13 +441,13 @@ fn x86_5_overlapping_read_windows_are_refused() {
 /// piece; `mortar_live` reads the addend through the architecture.
 #[test]
 fn x86_5_rel_addend_selects_the_live_merge_piece() {
-    if host().is_none() {
-        return;
-    }
     const MS: &str = "\t.section .rodata.str1.1,\"aMS\",@progbits,1\n\t.string \"aaaa\"\n\
                       \t.string \"bbbb\"\n\t.text\n\t.globl main\n\
                       main:\tmovl $.rodata.str1.1+5, %eax\n\tret\n\
                       \t.section .note.GNU-stack,\"\",@progbits\n";
+    if host().is_none() {
+        return;
+    }
     let scratch = Scratch::new("x86-5-piece");
     let program = [Source { name: "ms.s", text: MS }];
     let Some(built) = compile(&scratch, GCC, &["-nostdlib", "-Wl,-e,main"], &program) else {
@@ -460,4 +460,57 @@ fn x86_5_rel_addend_selects_the_live_merge_piece() {
     let has = |s: &[u8]| b.windows(s.len()).any(|w| w == s);
     assert!(has(b"bbbb\0"), "the referenced piece is gone");
     assert!(!has(b"aaaa\0"), "the unreferenced piece is kept");
+}
+
+/// layout L-101 for a symbol table that names `_GLOBAL_OFFSET_TABLE_`
+/// with no record referring to it (GNU as writes the name beside i386's
+/// `@ntpoff`): the linker's definition has its `.got.plt` header, as a
+/// reference's `GOT_BASE` gives it, and the link succeeds.
+#[test]
+fn x86_got_symbol_named_without_a_reference() {
+    const LE: &str = "\t.text\n\t.globl main\nmain:\tmovl %gs:tb@ntpoff, %eax\n\tret\n\
+                      \t.section .tbss,\"awT\",@nobits\n\t.globl tb\ntb:\t.zero 16\n\
+                      \t.section .note.GNU-stack,\"\",@progbits\n";
+    if host().is_none() {
+        return;
+    }
+    let scratch = Scratch::new("x86-got-named");
+    let program = [Source { name: "le.s", text: LE }];
+    let Some(built) = compile(&scratch, GCC, &["-nostdlib", "-Wl,-e,main"], &program) else {
+        return;
+    };
+    let out = built.dir.join("out.mortar");
+    let m = mortar(&built, &out, &[], &[]);
+    assert!(m.success(), "{}", m.stderr_text());
+    support::plumb::readers(&out);
+}
+
+/// X86-45 (layout.md L-73), X86-38: an image whose last `PT_LOAD` ends
+/// above 2^32, and a TLS block of 2^31 bytes (a TP offset outside
+/// `s(32)`), are refused (`output-too-large`), and nothing is written.
+#[test]
+fn x86_45_an_image_beyond_elfclass32_is_refused() {
+    const BIG: &str = "\t.text\n\t.globl main\nmain:\tret\n\t.bss\n\t.globl big\n\
+                       big:\t.zero 0xfff00000\n\t.section .note.GNU-stack,\"\",@progbits\n";
+    const TLS: &str = "\t.text\n\t.globl main\nmain:\tmovl %gs:tb@ntpoff, %eax\n\tret\n\
+                       \t.section .tbss,\"awT\",@nobits\n\t.globl tb\ntb:\t.zero 0x80000000\n\
+                       \t.section .note.GNU-stack,\"\",@progbits\n";
+    if host().is_none() {
+        return;
+    }
+    for (label, name, text, want) in [
+        ("x86-45-big", "big.s", BIG, "output too large: chunk "),
+        ("x86-45-tls", "tls.s", TLS, "output too large: PT_TLS exceeds 0x80000000"),
+    ] {
+        let scratch = Scratch::new(label);
+        let program = [Source { name, text }];
+        let Some(built) = compile(&scratch, GCC, &["-nostdlib", "-Wl,-e,main"], &program) else {
+            return;
+        };
+        let out = built.dir.join("out.mortar");
+        let m = mortar(&built, &out, &[], &[]);
+        assert!(!m.success(), "{label}: linked");
+        assert!(m.stderr_text().contains(want), "{label}: {}", m.stderr_text());
+        assert!(!out.exists(), "{label}: an output was left behind");
+    }
 }

@@ -304,7 +304,7 @@ pub(crate) fn table_order(
         &raw
     };
     let mut perm = Vec::new();
-    Ok(match local_order(t.count, |i| raw_offset(bytes, &t, i), &mut perm) {
+    Ok(match local_order(t.count, |i| raw_offset(bytes, t, i), &mut perm) {
         Order::Sorted => None,
         Order::Permuted(p) => Some(p.into()),
     })

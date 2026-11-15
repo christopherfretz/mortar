@@ -462,7 +462,8 @@ pub fn front<'s>(
         .plt_variant(&OutputCx { output, feature_1_and, pac_plt: false, force_bti: false })
         .map_err(|r| diag.emit(mortar_synth::error::key(0), r.diagnostic()))
         .ok()?;
-    let got = GotPlan::new(arch, &slots, scanned.demands.output, variant, diag).ok()?;
+    let got_output = got_base_defined(&inputs, &resolution, scanned.demands.output);
+    let got = GotPlan::new(arch, &slots, got_output, variant, diag).ok()?;
     let build_id = BuildIdPlan::new(plan.shaping.build_id.as_ref(), diag).ok()?;
     steps.step("property got build-id", 0, "");
     let core = CoreSections { resolution: &resolution, liveness: &liveness, split: &merge.split };
@@ -669,6 +670,21 @@ pub fn front<'s>(
         break (a, placed, layout, fixes);
     };
     steps.step("drop sites", 0, "");
+    // X86-45, X86-38: an ELFCLASS32 TLS block of 2^31 bytes or more would
+    // put a TP offset outside s(32); refused by name, as L-73 refuses an
+    // end beyond 2^32.
+    if target.class == Class::Elf32
+        && let Some((_, tls)) =
+            placed.placement.segments.iter().find(|(_, g)| g.p_type == mortar_elf::consts::PT_TLS)
+        && tls.memsz >= 1 << 31
+    {
+        let d = Diagnostic::error(Kind::OutputTooLarge {
+            what: "PT_TLS".to_owned(),
+            limit: format!("{:#x}", 1u64 << 31),
+        });
+        diag.emit(Key::new(90, 0, 0), d);
+        return None;
+    }
     for (seq, w) in (0u64..).zip(placed.warnings.iter().cloned()) {
         let (k, d) = layout_diag(&inputs, &resolution, w, Key::new(90, 0, u64::MAX - 1000 + seq));
         if entry_warned && d.id() == "entry-not-found" {
@@ -871,6 +887,29 @@ fn property_plan(
     let processor = |t: u32| arch.property_merge(t);
     // `-z memory-seal` (R-C3): the last of it and `-z nomemory-seal` wins.
     PropertyPlan::new(&objects, arch.facts().class, &processor, memory_seal, diag)
+}
+
+/// The output demands the GOT is planned from: the scan's, with
+/// `GOT_BASE` when `_GLOBAL_OFFSET_TABLE_` is defined by the linker
+/// (layout L-101 values it at the GOT header). A symbol table can name
+/// the symbol with no record referring to it (GNU as writes it beside
+/// i386's `@ntpoff`, `@gotntpoff`, ...): the definition still has its
+/// section. One pass over the keys, testing the definition first.
+fn got_base_defined(
+    inputs: &Inputs<'_>,
+    resolution: &Resolution,
+    output: mortar_core::demands::GlobalFlags,
+) -> mortar_core::demands::GlobalFlags {
+    use mortar_core::demands::GlobalFlags;
+    use mortar_core::resolution::{Def, InternalDef};
+    if output.contains(GlobalFlags::GOT_BASE) {
+        return output;
+    }
+    let defined = resolution.def.iter().any(|(s, d)| {
+        matches!(d, Def::Internal(InternalDef::Provide { conditional: false }))
+            && inputs.symbols.get(s).is_some_and(|k| k.name == b"_GLOBAL_OFFSET_TABLE_")
+    });
+    if defined { output | GlobalFlags::GOT_BASE } else { output }
 }
 
 /// The synthetic chunks that exist, in S-3 order, as layout takes them,

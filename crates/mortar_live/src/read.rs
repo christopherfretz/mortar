@@ -176,9 +176,8 @@ pub(crate) fn implicit(
     buf: &mut Vec<u8>,
 ) -> Option<i64> {
     let s = obj.section(index).ok()?;
-    let size = s.size();
     let lo = raw.r_offset.saturating_sub(READ_BACK);
-    let hi = raw.r_offset.checked_add(READ_FWD)?.min(size);
+    let hi = raw.r_offset.checked_add(READ_FWD)?.min(s.size());
     if raw.r_offset >= hi {
         return None;
     }
