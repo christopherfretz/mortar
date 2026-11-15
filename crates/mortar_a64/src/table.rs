@@ -284,3 +284,26 @@ pub const fn howto(r_type: u32) -> Option<Howto> {
 pub const fn refused(r_type: u32) -> bool {
     matches!(r_type, 316 | 317 | 580..=598 | 1024..=1028 | 1030..=1032 | 1041..=1044)
 }
+
+/// One past the largest type [`howto`] accepts: the types below it are
+/// looked up in [`ROWS`].
+const DENSE: usize = 1030;
+
+/// [`howto`] for every type below [`DENSE`], evaluated at compile time:
+/// the scan and fill classify every record, and a load is cheaper than the
+/// match (WP-032b).
+static ROWS: [Option<Howto>; DENSE] = {
+    let mut rows = [None; DENSE];
+    let mut t = 0;
+    while t < DENSE {
+        rows[t] = howto(t as u32);
+        t += 1;
+    }
+    rows
+};
+
+/// [`howto`], by a table load: the same row for every type.
+#[must_use]
+pub fn lookup(r_type: u32) -> Option<&'static Howto> {
+    ROWS.get(r_type as usize)?.as_ref()
+}
