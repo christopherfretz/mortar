@@ -6,9 +6,9 @@ mod support;
 use mortar_a64::forms::{self, insert, requires};
 use mortar_a64::{A64, synth, table};
 use mortar_arch::{
-    Arch, DemandFlags, DynRole, FieldError, GlobalFlags, Howto, Incompatible, OutputKind,
-    PlaceFacts, PltPart, PltVariant, PropMerge, Range, RefName, Reloc, ScanError, Site, SlotKind,
-    Status, SynthCx, TargetKind, TlsBlock, Weak0Rule,
+    Arch, DemandFlags, DynRole, EventClass, FieldError, GlobalFlags, Howto, Incompatible,
+    OutputKind, PlaceFacts, PltPart, PltVariant, PropMerge, Range, RefName, Reloc, ScanError, Site,
+    SlotKind, Status, SynthCx, TargetKind, TlsBlock, Weak0Rule,
 };
 use mortar_diag::RefusalClass;
 use support::{Case, M2, Tables, key, raised, scan_one, words};
@@ -672,15 +672,58 @@ fn s13_2_non_alloc_and_tombstones() {
     let input = [0xAAu8; 8];
     let mut c = Case::new(&t, &input, 0);
     c.alloc = false;
-    for (name, v) in [(&b".debug_ranges"[..], 1u64), (b".debug_loc", 1), (b".debug_info", 0)] {
+    // arch.md §3.11, `spec/image.md` I-47: ELFCLASS64's column.
+    let all = u64::MAX;
+    for (name, v) in [
+        (&b".debug_ranges"[..], 1u64),
+        (b".debug_loc", 1),
+        (b".debug_info", all),
+        (b".debug_aranges", all),
+        (b".debug_frame", all),
+        (b".debug_addr", all),
+        (b".debug_line", all),
+    ] {
         c.name = name;
         let out =
             c.apply(&[Reloc { r_offset: 0, key: key(1), r_type: 257, addend: 0x40 }]).unwrap();
         assert_eq!(out, v.to_le_bytes());
         let out =
             c.apply(&[Reloc { r_offset: 0, key: key(1), r_type: 258, addend: 0x40 }]).unwrap();
-        assert_eq!(&out[..4], &(v as u32).to_le_bytes());
+        assert_eq!(&out[..4], &(v as u32).to_le_bytes(), "{}", String::from_utf8_lossy(name));
+        assert_eq!(&out[4..], &[0xAA; 4]);
     }
+    // `.gcc_except_table`, alloc or not: 0 (`spec/resolve.md` §6.3).
+    for alloc in [false, true] {
+        c.alloc = alloc;
+        c.name = b".gcc_except_table";
+        let out =
+            c.apply(&[Reloc { r_offset: 0, key: key(1), r_type: 261, addend: 0x40 }]).unwrap();
+        assert_eq!(out[..4], [0; 4]);
+    }
+    c.alloc = false;
+    // Scan: a dead target demands nothing; from a debug name or
+    // `.gcc_except_table` it is accepted, from any other section it is the
+    // event `DiscardedSection` (arch.md §3.4).
+    t.facts.get_mut(&key(1)).unwrap().dead = true;
+    let r = Reloc { r_offset: 0, key: key(1), r_type: 257, addend: 0 };
+    let na = PlaceFacts { alloc: false, writable: false };
+    let w = PlaceFacts { alloc: true, writable: true };
+    for (place, name, discarded) in [
+        (na, &b".debug_info"[..], false),
+        (na, b".gcc_except_table", false),
+        (w, b".gcc_except_table", false),
+        (na, b".comment", true),
+        (w, b".data", true),
+        (w, b".debug_info", true),
+    ] {
+        let mut sink = support::Sink::default();
+        support::scan_named(M2, &t, OutputKind::Pie, place, name, &[0; 8], &[r], &mut sink)
+            .unwrap();
+        assert!(sink.raised.is_empty() && sink.counts.is_empty() && sink.errors.is_empty());
+        let want = if discarded { vec![(0, EventClass::DiscardedSection, key(1))] } else { vec![] };
+        assert_eq!(sink.events, want, "{}", String::from_utf8_lossy(name));
+    }
+    t.facts.get_mut(&key(1)).unwrap().dead = false;
     // A GOT class in .debug_info is refused (§4.3's non-alloc rule).
     let input = words(&[ADRP_X0]);
     let r = Reloc { r_offset: 0, key: key(1), r_type: 311, addend: 0 };
@@ -691,6 +734,45 @@ fn s13_2_non_alloc_and_tombstones() {
     let r = Reloc { r_offset: 0, key: key(1), r_type: 257, addend: 0 };
     let s = scan_one(A64::M1, &t, OutputKind::Pie, na, &[0; 8], r).unwrap();
     assert!(s.errors.is_empty() && s.counts.is_empty());
+}
+
+/// arch.md §3.4 (`spec/image.md` §4.4, I-18): one event per class per
+/// record; `ComdatMismatch` instead of `Undefined`; `GnuWarning` beside
+/// either, and beside an ordinary reference.
+#[test]
+fn s3_4_reference_events() {
+    let mut t = local(0x41_0000);
+    t.sym(key(2), 0, TargetKind::Undefined);
+    t.sym(key(3), 0, TargetKind::Undefined);
+    t.facts.get_mut(&key(3)).unwrap().comdat_only = true;
+    t.facts.get_mut(&key(1)).unwrap().gnu_warning = true;
+    t.sym(key(4), 0, TargetKind::Undefined);
+    t.facts.get_mut(&key(4)).unwrap().gnu_warning = true;
+    let input = words(&[ADRP_X0, ADRP_X0, ADRP_X0, ADRP_X0]);
+    let r = |o: u64, k| Reloc { r_offset: o, key: k, r_type: 275, addend: 0 };
+    let mut sink = support::Sink::default();
+    support::scan_all(
+        A64::M1,
+        &t,
+        OutputKind::Static,
+        ALLOC,
+        &input,
+        &[r(0, key(2)), r(4, key(3)), r(8, key(1)), r(12, key(4))],
+        &mut sink,
+    )
+    .unwrap();
+    assert!(sink.errors.is_empty());
+    assert_eq!(
+        sink.events,
+        [
+            (0, EventClass::Undefined, key(2)),
+            (1, EventClass::ComdatMismatch, key(3)),
+            (2, EventClass::GnuWarning, key(1)),
+            (3, EventClass::GnuWarning, key(4)),
+            (3, EventClass::Undefined, key(4)),
+        ]
+    );
+    assert_eq!(raised(&sink, key(1)), DemandFlags::empty());
 }
 
 #[test]
@@ -910,9 +992,22 @@ fn s13_3_facts_dyn_types_properties() {
             Some(1031)
         ]
     );
+    // arch.md §3.13: FEATURE_1_AND, FEATURE_PAUTH; unknown types `None`.
     assert_eq!(a.property_merge(0xc000_0000), Some(PropMerge::And));
-    assert_eq!(a.property_merge(0xc000_0001), None);
+    assert_eq!(a.property_merge(0xc000_0001), Some(PropMerge::EqualOrAbsent));
+    for t in [0xc000_0002, 0xc000_8002, 0xc001_0001, 0xdfff_ffff, 1, 0xb000_0000] {
+        assert_eq!(a.property_merge(t), None, "{t:#x}");
+    }
     assert_eq!(a.tombstone(b".debug_loc"), 1);
+    assert_eq!(a.tombstone(b".debug_info"), u64::MAX);
+    // layout.md L-82 (§20.5): trap fill and the no-op.
+    assert_eq!(a.facts().code_fill, &[0; 4]);
+    assert_eq!(a.facts().code_nop, &0xd503_201f_u32.to_le_bytes());
+    // The erratum patch shape (§11.2).
+    assert_eq!(
+        a.patch(mortar_arch::Erratum::E843419),
+        Some(&mortar_arch::ThunkShape { size: 8, align: 4 })
+    );
     assert_eq!(a.eh().hdr_table, 0x3b);
     assert!(a.errata().is_empty());
     assert_eq!(M2.errata(), &[mortar_arch::Erratum::E843419]);

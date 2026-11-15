@@ -78,6 +78,7 @@ fn s6_branch_sites() {
             site: Site { bytes: &input, offset: r.r_offset },
             records: &&relocs[..],
             proof: &proof,
+            leads: true,
         };
         branch_site(&M2, OutputKind::Static, &at, &t, target, flags).map(|s| s.key)
     };
