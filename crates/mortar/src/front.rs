@@ -126,6 +126,9 @@ pub struct Front<'s> {
     /// The command line's words, response files expanded (the map's `arg`
     /// records, `spec/plumb.md` §3.2); set by the driver after `front`.
     pub args: Vec<Vec<u8>>,
+    /// Keep the build-id leaves for the link state (`spec/incr.md` IN-21);
+    /// set by the driver in incremental mode only.
+    pub keep_leaves: bool,
     pub commons: Vec<Common>,
     pub layout: Layout,
     /// What `place` returned besides the placement (the segment rules
@@ -883,6 +886,7 @@ pub fn front<'s>(
         synth: plans,
         dyn_tables,
         args: Vec::new(),
+        keep_leaves: false,
         commons,
         layout,
         placed,
