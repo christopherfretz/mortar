@@ -151,3 +151,79 @@ fn s4_4_undefined_weak_pc_relative_is_the_place() {
         assert_eq!(r.coverage.verified_of(Via::Direct), 5, "{}\n{}", link.label(), r.summary());
     }
 }
+
+// spec/plumb.md §4.8, §9.1: the IFUNC programs run, and every reference
+// to an IFUNC is judged through an IPLT entry.
+#[test]
+fn s4_8_ifunc_programs_run_and_verify_clean() {
+    let Some(c) = corpus(Size::Tls) else { return };
+    for case in ["ifunc", "ifunc-c"] {
+        for linker in Linker::ALL {
+            let link = c.get(case, linker);
+            assert_eq!(link.run(), Some(0), "{}: the program fails", link.label());
+            let r = link.verify();
+            assert_clean(link, &r);
+            let cov = &r.coverage;
+            let s = r.summary();
+            assert_eq!(cov.not_checked_of(mortar_plumb::Reason::Ifunc), 0, "{}\n{s}", link.label());
+            assert!(cov.irelative_checked >= 2 && cov.iplt_entries >= 2, "{}\n{s}", link.label());
+            let iplt = cov.verified_of(Via::Iplt)
+                + cov.accepted_of(Rewrite::AdrpAddToAdr)
+                + cov.accepted_of(Rewrite::GotToAdr);
+            assert!(iplt >= 8, "{}: too few IFUNC references judged\n{s}", link.label());
+        }
+    }
+}
+
+// spec/plumb.md §5.8, §9.1: debug information is checked, with each
+// linker's tombstone for a section not in the output; compressed debug
+// sections are named as not judged.
+#[test]
+fn s5_8_debug_references_verify_clean() {
+    use mortar_plumb::Reason;
+    let Some(c) = corpus(Size::Tls) else { return };
+    for case in ["debug-comdat", "debug-comdat-clang", "debug-gc", "debug-zlib"] {
+        for linker in Linker::ALL {
+            let link = c.get(case, linker);
+            let r = link.verify();
+            assert_clean(link, &r);
+            let cov = &r.coverage;
+            let s = r.summary();
+            assert_eq!(cov.not_checked_of(Reason::NonAlloc), 0, "{}\n{s}", link.label());
+            if case == "debug-zlib" {
+                assert!(cov.not_checked_of(Reason::Compressed) > 0, "{}\n{s}", link.label());
+            } else {
+                assert_eq!(cov.not_checked_of(Reason::Compressed), 0, "{}\n{s}", link.label());
+                assert!(cov.verified_of(Via::Tombstone) > 0, "{}: no tombstone\n{s}", link.label());
+            }
+        }
+    }
+}
+
+// spec/plumb.md §6.6, §9.1: program properties, merged by each linker's
+// rule: GNU ld and lld AND BTI and PAC, OR the notes of one object
+// (`prop-two`), and write none when one object has none; mold writes none
+// on AArch64.
+#[test]
+fn s6_6_properties_verify_clean() {
+    let Some(c) = corpus(Size::Tls) else { return };
+    for (case, want) in [("prop-and", 3), ("prop-bti", 1), ("prop-none", 0), ("prop-two", 3)] {
+        for linker in Linker::ALL {
+            let link = c.get(case, linker);
+            assert_eq!(link.run(), Some(0), "{}: the program fails", link.label());
+            let r = link.verify();
+            assert_clean(link, &r);
+            let out = link.output_bytes();
+            let image = mortar_elf::FileHeader::parse(&out).unwrap();
+            let table = mortar_elf::SectionTable::parse(&out, &image).unwrap();
+            let note = table.iter().find(|s| s.name().is_ok_and(|n| n == b".note.gnu.property"));
+            let got = note.map_or(0, |s| {
+                let o = s.header().sh_offset as usize + 24;
+                u32::from_le_bytes(out[o..o + 4].try_into().unwrap())
+            });
+            let want = if linker == Linker::Mold { 0 } else { want };
+            assert_eq!(got, want, "{}: the AArch64 feature property", link.label());
+            assert!(r.coverage.properties_judged >= 1, "{}\n{}", link.label(), r.summary());
+        }
+    }
+}

@@ -84,11 +84,23 @@ pub fn file_ref(inputs: &Inputs<'_>, file: FileId) -> FileRef {
 
 /// The records of relocation section `rel` of `file`, keys resolved
 /// (`spec/arch.md` §3.5): a local entry is its own key, a global entry the
-/// `SymbolId` of `sym_map`.
+/// `SymbolId` of `sym_map`. Records the store does not hold resident (the
+/// relocations of a non-alloc section, `spec/input.md` §11.1) are read
+/// with one `copy_to`.
 pub fn records(
     inputs: &Inputs<'_>,
     file: FileId,
     rel: SectionIndex,
+) -> Result<Vec<Reloc>, Diagnostic> {
+    records_in(inputs, file, rel, &mut Vec::new())
+}
+
+/// [`records`], copying records that are not resident into `buf`.
+fn records_in(
+    inputs: &Inputs<'_>,
+    file: FileId,
+    rel: SectionIndex,
+    buf: &mut Vec<u8>,
 ) -> Result<Vec<Reloc>, Diagnostic> {
     let Reader::Object(obj) = &inputs.files[file].reader else {
         return Err(internal(&format!("file {} has relocations and no object", file.0)));
@@ -113,7 +125,21 @@ pub fn records(
     };
     let mut out = Vec::new();
     if sec.sh_type() == SHT_RELA {
-        for r in sec.rela().map_err(bad)? {
+        let table = match sec.rela() {
+            Ok(t) => t,
+            Err(mortar_elf::Error::NotResident { offset, size }) => {
+                let len = usize::try_from(size)
+                    .map_err(|_| bad(mortar_elf::Error::NotResident { offset, size }))?;
+                buf.clear();
+                buf.resize(len, 0);
+                inputs
+                    .copy_to(file, offset..offset.saturating_add(size), buf)
+                    .map_err(|e| crate::source::copy_error(e, &file_ref(inputs, file)))?;
+                sec.rela_in(buf).map_err(bad)?
+            }
+            Err(e) => return Err(bad(e)),
+        };
+        for r in table {
             out.push(Reloc {
                 r_offset: r.r_offset,
                 key: key(r.r_sym)?,
@@ -166,6 +192,7 @@ pub fn from_layout(
     }
     pool.sort_by_key(&mut members, |&(c, off, _)| (c.0, off));
     let mut paths: BTreeMap<FileId, FileRef> = BTreeMap::new();
+    let mut rec_buf = Vec::new();
     for &(c, off, s) in &members {
         let chunk = &chunks[c];
         if !chunk.in_file() || !matches!(chunk.kind, ChunkKind::Body(_)) {
@@ -191,7 +218,7 @@ pub fn from_layout(
         let relocs = if rel.0 == 0 {
             None
         } else {
-            let records = records(m.inputs, file, rel)?;
+            let records = records_in(m.inputs, file, rel, &mut rec_buf)?;
             let order = RecOrder::of(&records);
             let proof = (extras.proof)(file, index, size).into_boxed_slice();
             Some(b.relocs(RelocSection { records: records.into_boxed_slice(), order, proof }))

@@ -23,6 +23,7 @@ pub mod segment;
 pub mod strtab;
 pub mod symbol;
 pub mod version;
+pub mod view;
 
 pub use dso::{Entry, SharedObject};
 pub use dynamic::{DynamicTable, Needed};
@@ -45,3 +46,4 @@ pub use version::{
     SymbolVersion, Version, VersionDefinition, VersionDefinitions, VersionNames, VersionNeed,
     VersionNeedEntries, VersionNeedEntry, VersionNeeds, Versions,
 };
+pub use view::{Part, View};

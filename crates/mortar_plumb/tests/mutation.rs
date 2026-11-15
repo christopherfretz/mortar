@@ -305,7 +305,7 @@ fn expect_rule(r: &Report, id: &str, what: &str) {
 
 // spec/plumb.md §9.2 (e), §6.2: each structure rule, broken.
 #[test]
-#[allow(clippy::many_single_char_names)]
+#[allow(clippy::many_single_char_names, clippy::too_many_lines)]
 fn s9_2e_each_structure_rule_is_enforced() {
     let Some(c) = small() else { return };
     for linker in Linker::ALL {
@@ -355,8 +355,12 @@ fn s9_2e_each_structure_rule_is_enforced() {
         expect_rule(&mutate(&|m| put32(m, exec.0 + 4, exec.2 & !1)), "S5", &what);
         // S6: two sections in the same memory.
         expect_rule(&mutate(&|m| put64(m, data.0 + 16, text.4)), "S6", &what);
-        // S7: the entry point outside the code.
-        expect_rule(&mutate(&|m| put64(m, 24, 0)), "S7", &what);
+        // S7: the entry point outside the code (the data). An entry of 0
+        // means "no entry point" (gABI) and is not a finding (WP-028b).
+        expect_rule(&mutate(&|m| put64(m, 24, data.4)), "S7", &what);
+        expect_rule(&mutate(&|m| put64(m, 24, 1)), "S7", &what);
+        let r = mutate(&|m| put64(m, 24, 0));
+        assert!(r.with_rule("S7").next().is_none(), "{what}: e_entry 0 is S7\n{}", r.render("o"));
         // S8: a sized symbol outside its section.
         let msg = symtab_entries(o, &["msg"])[0].1;
         expect_rule(
@@ -385,16 +389,61 @@ fn s9_2e_each_structure_rule_is_enforced() {
         let at = file_offset(o, le64(o, start + 8)).unwrap();
         expect_rule(&mutate(&|m| m[at] ^= 1), "S12", &what);
         // S12 for NOBITS memory is covered by the .bss of the types case.
-        let _ = SHT_NOBITS;
+        // S13: PT_INTERP after a PT_LOAD.
+        expect_rule(&mutate(&|m| put32(m, other.0, 3)), "S13", &what);
+        // S14: `.data` made NOBITS, inside its PT_LOAD's file image.
+        expect_rule(&mutate(&|m| put32(m, data.0 + 4, SHT_NOBITS)), "S14", &what);
+        // S15: `.data` aligned to 1 MiB.
+        expect_rule(&mutate(&|m| put64(m, data.0 + 48, 1 << 20)), "S15", &what);
+        // S16: a PT_GNU_RELRO starting 8 bytes into `.data`, which is
+        // writable and not RELRO: the page below is made read-only.
+        expect_rule(
+            &mutate(&|m| {
+                put32(m, other.0, 0x6474_e552);
+                put64(m, other.0 + 16, data.4 + 8);
+                put64(m, other.0 + 40, 0x2000);
+            }),
+            "S16",
+            &what,
+        );
+        // S17: the last PT_LOAD's file image stretched over the
+        // non-allocated sections.
+        let last = loads.last().unwrap();
+        let len = o.len() as u64;
+        expect_rule(
+            &mutate(&|m| {
+                put64(m, last.0 + 32, len - last.3);
+                put64(m, last.0 + 40, len - last.3 + 0x10_0000);
+            }),
+            "S17",
+            &what,
+        );
     }
+    // S2 (mortar's p_align) and S18 (mortar: a PT_LOAD ends at a
+    // section's end), on lld's link read as mortar's.
+    let (ctx, map) = mortar_map(c);
+    let check = |m: &[u8]| verify_with(m, &ctx.files, &map);
+    let r = check(&ctx.output);
+    assert!(r.with_rule("S2").next().is_none() && r.with_rule("S18").next().is_none());
+    let ph = phdrs(&ctx.output);
+    let load = ph.iter().rfind(|p| p.1 == PT_LOAD).unwrap();
+    let mut m = ctx.output.clone();
+    put64(&mut m, load.0 + 48, 0x100);
+    expect_rule(&check(&m), "S2", "mortar: p_align 0x100");
+    let mut m = ctx.output.clone();
+    let v = le64(&m, load.0 + 40);
+    put64(&mut m, load.0 + 40, v + 0x100);
+    expect_rule(&check(&m), "S18", "mortar: a PT_LOAD past its last section");
 }
 
 /// The lld map of the start link, in mortar's format: the base of the map
 /// rule tests (its records are exact: no linker-made section is named after
 /// an input).
+/// lld's SHA-1 build id is rewritten as mortar's (B1, §6.7).
 fn mortar_map(c: &'static Corpus) -> (Ctx, Map) {
     let link = c.get("start", Linker::Lld);
-    let ctx = Ctx::of(link);
+    let mut ctx = Ctx::of(link);
+    mortar_plumb::buildid::seal(&mut ctx.output, mortar_plumb::buildid::Tree::L128);
     let text = mortar_plumb::map::mortar::write(&ctx.map);
     let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
     (ctx, map)
@@ -838,4 +887,393 @@ fn s9_2h_symbol_table_mutations_are_found() {
         eprintln!("§9.2 (h) {k}: {f}/{n} found");
     }
     assert!(missed.is_empty(), "not found:\n{}", missed.join("\n"));
+}
+
+// spec/plumb.md §9.2 (i), §4.8: IFUNC references and tables broken. (1)
+// the lowest and highest bit of every relocated field of `ifunc`; (2)
+// every IRELATIVE record's type, symbol, addend and slot; (3) the words of
+// every IPLT entry that decide what it loads and where it branches; (4) the
+// data word of `gf` made `lf`'s entry (F3: two addresses for `gf`); (5)
+// `__rela_iplt_start` or `__rela_iplt_end` one record short (F1).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn s9_2i_ifunc_mutations_are_found() {
+    let Some(c) = corpus(Size::Tls) else { return };
+    let mut missed = Vec::new();
+    let mut counts = [(0u32, 0u32); 3];
+    let mut try_one = |k: usize, ctx: &Ctx, m: &[u8], what: String| {
+        counts[k].0 += 1;
+        if ctx.found(m) {
+            counts[k].1 += 1;
+        } else {
+            missed.push(what);
+        }
+    };
+    for linker in Linker::ALL {
+        let link = c.get("ifunc", linker);
+        let ctx = Ctx::of(link);
+        assert!(!ctx.found(&ctx.output), "{} is not clean", link.label());
+        for pl in places(&ctx) {
+            let off = file_offset(&ctx.output, pl.p).unwrap();
+            for bit in [pl.mask.trailing_zeros(), pl.mask.ilog2()] {
+                let mut m = ctx.output.clone();
+                m[off + (bit / 8) as usize] ^= 1 << (bit % 8);
+                try_one(
+                    0,
+                    &ctx,
+                    &m,
+                    format!("{} {} at {:#x} bit {bit}", link.label(), pl.name, pl.p),
+                );
+            }
+        }
+        let secs = shdrs(&ctx.output);
+        let rela = secs.iter().find(|s| s.2 == SHT_RELA && s.3 & SHF_ALLOC != 0).unwrap();
+        let mut slots = Vec::new();
+        for k in 0..(rela.6 / 24) as usize {
+            let o = rela.5 as usize + k * 24;
+            slots.push(le64(&ctx.output, o));
+            for (field, delta, what) in
+                [(8, 1u64, "type"), (8, 1 << 32, "symbol"), (16, 4, "addend"), (0, 8, "slot")]
+            {
+                let mut m = ctx.output.clone();
+                let v = le64(&m, o + field);
+                put64(&mut m, o + field, v.wrapping_add(delta));
+                try_one(1, &ctx, &m, format!("{} IRELATIVE {k} {what}", link.label()));
+            }
+        }
+        // The IPLT entries: the code that loads an IRELATIVE slot.
+        let plt = [".plt", ".iplt", ".plt.got"];
+        for s in secs.iter().filter(|s| plt.contains(&s.1.as_str())) {
+            for e in (0..s.6).step_by(16) {
+                let words: &[u64] = if linker == Linker::Mold { &[0, 4, 8] } else { &[0, 4, 12] };
+                for &w in words {
+                    let mut m = ctx.output.clone();
+                    m[(s.5 + e + w) as usize] ^= 1 << 5;
+                    try_one(2, &ctx, &m, format!("{} {} entry {e:#x} word {w}", link.label(), s.1));
+                }
+            }
+        }
+        // (4): `.data` holds gf's then lf's canonical entry.
+        let data = secs.iter().find(|s| s.1 == ".data").unwrap();
+        let mut m = ctx.output.clone();
+        let lf = le64(&m, data.5 as usize + 8);
+        put64(&mut m, data.5 as usize, lf);
+        expect_rule(&ctx.verify(&m), "F3", &format!("{}: gf's word made lf's entry", link.label()));
+        assert!(slots.len() == 2, "{}", link.label());
+    }
+    // (5): the bounds one record short at either end: an IRELATIVE
+    // record outside `__rela_iplt_*` (synth.md R-P3).
+    for linker in Linker::ALL {
+        let ctx = Ctx::of(c.get("ifunc", linker));
+        for (name, delta) in [("__rela_iplt_start", 24i64), ("__rela_iplt_end", -24)] {
+            let syms = symtab_entries(&ctx.output, &[name]);
+            let (_, o) = syms.first().unwrap_or_else(|| panic!("{} defines {name}", linker.name()));
+            let mut m = ctx.output.clone();
+            let v = le64(&m, o + 8);
+            put64(&mut m, o + 8, v.wrapping_add_signed(delta));
+            expect_rule(&ctx.verify(&m), "F1", &format!("{}: {name} moved", linker.name()));
+        }
+    }
+    let names = ["relocated fields", "IRELATIVE records", "IPLT entry words"];
+    for (n, (total, found)) in names.iter().zip(counts) {
+        eprintln!("§9.2 (i) {n}: {found}/{total} found");
+    }
+    assert!(missed.is_empty(), "not found:\n{}", missed.join("\n"));
+}
+
+/// The relocated data fields of non-alloc sections, as file offsets of the
+/// output (GNU ld's and lld's maps give the offset in the output section).
+fn nonalloc_places(ctx: &Ctx) -> Vec<(usize, u64, &'static str)> {
+    let secs = shdrs(&ctx.output);
+    let mut out = Vec::new();
+    for (path, bytes) in &ctx.files {
+        let Some(fi) = ctx.map.files.iter().position(|f| &f.path == path && f.member.is_none())
+        else {
+            continue;
+        };
+        let obj = Object::parse(bytes).unwrap();
+        for s in obj.sections() {
+            if s.sh_type() != SHT_RELA {
+                continue;
+            }
+            let target = obj.section(s.info_section().unwrap()).unwrap();
+            if target.flags() & SHF_ALLOC != 0 {
+                continue;
+            }
+            let name = String::from_utf8_lossy(target.name().unwrap()).into_owned();
+            let Some(o) = secs.iter().find(|x| x.1 == name && x.3 & SHF_ALLOC == 0) else {
+                continue;
+            };
+            let Some(pl) = ctx
+                .map
+                .placed
+                .iter()
+                .find(|p| p.file as usize == fi && p.section == SectionRef::Name(name.clone()))
+            else {
+                continue;
+            };
+            for r in s.rela().unwrap() {
+                let Some(def) = mortar_plumb::a64::def(r.r_type) else { continue };
+                if def.r_type == 0 {
+                    continue;
+                }
+                out.push(((o.5 + pl.addr - o.4 + r.r_offset) as usize, def.field.mask(), def.name));
+            }
+        }
+    }
+    out
+}
+
+// spec/plumb.md §9.2 (j), §5.8: debug information broken. (1) the lowest
+// and highest bit of every relocated non-alloc field of `debug-comdat` and
+// `debug-gc`, tombstones included, by GNU ld and lld; (2) lld's link read
+// as mortar's: every tombstone differs from image.md I-47 (R1); written
+// as I-47 and I-112 say it is clean; one aranges length restored is R1.
+#[test]
+#[allow(clippy::many_single_char_names, clippy::too_many_lines)]
+fn s9_2j_debug_mutations_are_found() {
+    let Some(c) = corpus(Size::Tls) else { return };
+    let mut missed = Vec::new();
+    let (mut total, mut found) = (0, 0);
+    for case in ["debug-comdat", "debug-gc"] {
+        for linker in [Linker::Bfd, Linker::Lld] {
+            let link = c.get(case, linker);
+            let ctx = Ctx::of(link);
+            assert!(!ctx.found(&ctx.output), "{} is not clean", link.label());
+            let places = nonalloc_places(&ctx);
+            assert!(places.len() > 20, "{}: {} places", link.label(), places.len());
+            // Every place's lowest and highest bit with MORTAR_PLUMB_FULL=1;
+            // otherwise 24 places spread over the link, one bit each,
+            // alternating (each flip is a whole verify of a debug link).
+            let full = std::env::var_os("MORTAR_PLUMB_FULL").is_some();
+            let stride = if full { 1 } else { places.len().div_ceil(24) };
+            for (k, (off, mask, name)) in places.into_iter().enumerate().step_by(stride) {
+                let bits = [mask.trailing_zeros(), mask.ilog2()];
+                let bits = if full { &bits[..] } else { &bits[k / stride % 2..][..1] };
+                for &bit in bits {
+                    let mut m = ctx.output.clone();
+                    m[off + (bit / 8) as usize] ^= 1 << (bit % 8);
+                    total += 1;
+                    if ctx.found(&m) {
+                        found += 1;
+                    } else {
+                        missed.push(format!("{} {name} at file {off:#x} bit {bit}", link.label()));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("§9.2 (j1) non-alloc field bit flips: {found}/{total} found");
+    assert!(missed.is_empty(), "not found:\n{}", missed.join("\n"));
+
+    // (2) mortar's convention, with lld's non-alloc places written as
+    // `nplace` records (R-9).
+    let link = c.get("debug-comdat", Linker::Lld);
+    let ctx = Ctx::of(link);
+    let secs = shdrs(&ctx.output);
+    let mut base = ctx.map.clone();
+    let (nonalloc, placed): (Vec<_>, Vec<_>) = base.placed.drain(..).partition(|p| {
+        matches!(&p.section, SectionRef::Name(n) if secs.iter().any(|x| &x.1 == n && x.3 & SHF_ALLOC == 0))
+    });
+    base.placed = placed;
+    for p in nonalloc {
+        let SectionRef::Name(n) = &p.section else { unreachable!() };
+        let o = secs.iter().find(|x| &x.1 == n && x.3 & SHF_ALLOC == 0).unwrap();
+        base.nonalloc.push(mortar_plumb::map::NonAlloc {
+            file: p.file,
+            section: p.section.clone(),
+            out: n.clone(),
+            offset: Some(p.addr - o.4),
+            size: p.size,
+            line: 0,
+        });
+    }
+    assert!(base.nonalloc.len() > 6, "{} nplace records", base.nonalloc.len());
+    let text = mortar_plumb::map::mortar::write(&base);
+    let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
+    // R-9's map rules within one output section: M2 and M5.
+    let mut twice = map.clone();
+    twice.nonalloc.push(map.nonalloc[0].clone());
+    expect_rule(&verify_with(&ctx.output, &ctx.files, &twice), "M2", "an nplace twice");
+    let mut over = map.clone();
+    let (a, b) = {
+        let mut k: Vec<usize> = (0..map.nonalloc.len()).collect();
+        k.sort_by_key(|&i| (map.nonalloc[i].out.clone(), map.nonalloc[i].offset));
+        let pair = k.windows(2).find(|w| {
+            let (x, y) = (&map.nonalloc[w[0]], &map.nonalloc[w[1]]);
+            x.out == y.out && x.size > 0 && y.size > 0
+        });
+        let w = pair.expect("two nplace records in one output section");
+        (w[0], w[1])
+    };
+    over.nonalloc[b].offset = over.nonalloc[a].offset;
+    expect_rule(&verify_with(&ctx.output, &ctx.files, &over), "M5", "two nplace records overlap");
+    let judged = |out: &[u8]| -> Vec<mortar_plumb::Finding> {
+        verify_with(out, &ctx.files, &map)
+            .findings
+            .into_iter()
+            .filter(|f| matches!(f.rule.id().as_str(), "R1" | "R5" | "S12"))
+            .collect()
+    };
+    let bad = judged(&ctx.output);
+    assert!(bad.len() >= 4, "lld's tombstones are not mortar's:\n{bad:?}");
+    let mut m = ctx.output.clone();
+    let mut lengths = Vec::new();
+    for f in &bad {
+        assert_eq!(f.rule.id(), "R1", "{f:?}");
+        let site = f.site.as_ref().unwrap();
+        let o = secs.iter().find(|x| x.1 == site.section && x.3 & SHF_ALLOC == 0).unwrap();
+        let at = (o.5 + f.addr.unwrap() - o.4) as usize;
+        let def = mortar_plumb::a64::TABLE.iter().find(|d| Some(d.name) == f.reloc.as_deref());
+        let w = usize::from(def.unwrap().field.width());
+        let v = f.expected.unwrap().to_le_bytes();
+        m[at..at + w].copy_from_slice(&v[..w]);
+        if site.section == ".debug_aranges" {
+            m[at + 8..at + 16].fill(0);
+            lengths.push(at + 8);
+        }
+    }
+    let after = judged(&m);
+    assert!(after.is_empty(), "I-47 and I-112 written are not clean:\n{after:?}");
+    assert!(!lengths.is_empty(), "no aranges tombstone in debug-comdat");
+    let mut n = m.clone();
+    n[lengths[0]] = 0x10;
+    let r = verify_with(&n, &ctx.files, &map);
+    assert!(
+        r.findings.iter().any(|f| f.rule.id() == "R1" && f.message.contains("I-112")),
+        "an aranges length kept is not found\n{}",
+        r.render("o")
+    );
+}
+
+/// The file offset of the first property's value in the output's
+/// `.note.gnu.property`, and the entry of `PT_GNU_PROPERTY`.
+fn property_places(b: &[u8]) -> (usize, usize) {
+    let note = shdrs(b).into_iter().find(|s| s.1 == ".note.gnu.property").unwrap();
+    let ph = phdrs(b).into_iter().find(|p| p.1 == 0x6474_e553).unwrap();
+    (note.5 as usize + 16, ph.0)
+}
+
+// spec/plumb.md §9.2 (k), §6.6 (synth.md R-P3): program properties
+// broken. (1) a feature bit no input has (GCS) set; (2) PAC set where one
+// input has only BTI; (3) `PT_GNU_PROPERTY` moved by 8, and made
+// `PT_NULL`; (4) the pr_type made an unknown type, read as mortar's link;
+// (5) `prop-two` read as mortar's link: GNU ld's and lld's OR of one
+// object's notes is not S-126's AND (P1), and the output written by S-126
+// is clean.
+#[test]
+fn s9_2k_property_mutations_are_found() {
+    let Some(c) = corpus(Size::Tls) else { return };
+    let mut n = 0;
+    for linker in [Linker::Bfd, Linker::Lld] {
+        let label = linker.name();
+        let ctx = Ctx::of(c.get("prop-and", linker));
+        assert!(!ctx.found(&ctx.output), "prop-and/{label} is not clean");
+        let (value, ph) = property_places(&ctx.output);
+        let mut m = ctx.output.clone();
+        m[value + 8] |= 4;
+        expect_rule(&ctx.verify(&m), "P1", &format!("{label}: GCS claimed"));
+        let mut m = ctx.output.clone();
+        let v = le64(&m, ph + 16);
+        put64(&mut m, ph + 16, v + 8);
+        expect_rule(&ctx.verify(&m), "P2", &format!("{label}: PT_GNU_PROPERTY moved"));
+        let mut m = ctx.output.clone();
+        put32(&mut m, ph, 0);
+        expect_rule(&ctx.verify(&m), "P2", &format!("{label}: PT_GNU_PROPERTY made PT_NULL"));
+        let ctx = Ctx::of(c.get("prop-bti", linker));
+        let (value, _) = property_places(&ctx.output);
+        let mut m = ctx.output.clone();
+        m[value + 8] |= 2;
+        expect_rule(&ctx.verify(&m), "P1", &format!("{label}: PAC claimed"));
+        n += 4;
+        // Mortar's rules, on the same bytes.
+        for case in ["prop-and", "prop-two"] {
+            let ctx = Ctx::of(c.get(case, linker));
+            let text = mortar_plumb::map::mortar::write(&ctx.map);
+            let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
+            let props = |out: &[u8]| -> Vec<String> {
+                verify_with(out, &ctx.files, &map)
+                    .findings
+                    .into_iter()
+                    .filter(|f| f.rule.id().starts_with('P'))
+                    .map(|f| f.message)
+                    .collect()
+            };
+            let (value, _) = property_places(&ctx.output);
+            if case == "prop-and" {
+                assert!(props(&ctx.output).is_empty(), "{case}/{label} as mortar's");
+                let mut m = ctx.output.clone();
+                put32(&mut m, value, 0xc000_0003);
+                assert!(
+                    props(&m).iter().any(|s| s.contains("0xc0000003")),
+                    "{label}: an unknown type kept is not found"
+                );
+            } else {
+                let bad = props(&ctx.output);
+                assert!(bad.iter().any(|s| s.contains("0xc0000000")), "{label}: S-126 {bad:?}");
+                let mut m = ctx.output.clone();
+                m[value + 8] = 1;
+                assert!(props(&m).is_empty(), "{label}: S-126 written is not clean");
+            }
+            n += 1;
+        }
+    }
+    eprintln!("§9.2 (k) property mutations: {n}/{n} found");
+}
+
+// spec/plumb.md §9.2 (l), §6.7 (image.md R-8): mortar's build id broken.
+// (1) lld's own SHA-1 id, read as mortar's link; (2) the id sealed by
+// I-72 (the bare and the `sha1` tree) is clean, and not judged under
+// lld's map; (3) one byte of the id changed; (4) one byte changed at 16
+// places outside the id: the root no longer matches.
+#[test]
+fn s9_2l_build_id_mutations_are_found() {
+    use mortar_plumb::buildid::{Tree, seal};
+    let Some(c) = small() else { return };
+    let link = c.get("start", Linker::Lld);
+    let ctx = Ctx::of(link);
+    let note = shdrs(&ctx.output).into_iter().find(|s| s.1 == ".note.gnu.build-id");
+    let note = note.expect("the start link has no build id: the driver passes --build-id");
+    let id = note.5 as usize + 16;
+    let text = mortar_plumb::map::mortar::write(&ctx.map);
+    let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
+    let b1 = |out: &[u8]| verify_with(out, &ctx.files, &map);
+    let mut n = 0;
+    expect_rule(&b1(&ctx.output), "B1", "lld's SHA-1 id as mortar's");
+    n += 1;
+    for t in [Tree::L128, Tree::Sha1] {
+        let mut m = ctx.output.clone();
+        assert_eq!(seal(&mut m, t), 1);
+        let r = b1(&m);
+        assert!(r.with_rule("B1").next().is_none(), "{t:?} sealed:\n{}", r.render("o"));
+        let what = r.coverage.build_id.clone().unwrap_or_default();
+        assert!(what.contains(&format!("{t:?}")), "{t:?}: coverage says {what:?}");
+        assert!(ctx.verify(&m).with_rule("B1").next().is_none(), "B1 judged under lld's map");
+    }
+    let mut sealed = ctx.output.clone();
+    seal(&mut sealed, Tree::L128);
+    let mut m = sealed.clone();
+    m[id + 19] ^= 1;
+    expect_rule(&b1(&m), "B1", "the id's last byte");
+    n += 1;
+    let len = sealed.len();
+    let mut by_b1 = 0;
+    for k in 0..16 {
+        let mut at = 9 + k * (len - 10) / 16;
+        if (id..id + 20).contains(&at) {
+            at = id + 20;
+        }
+        let mut m = sealed.clone();
+        m[at] ^= 0x80;
+        let r = b1(&m);
+        // A byte that breaks the output's form is another rule's (O1, or
+        // S11 for a note header), which may keep B1 from finding the id.
+        assert!(!r.clean(), "a byte at {at:#x} changed: no finding");
+        if r.with_rule("B1").next().is_some() {
+            by_b1 += 1;
+        }
+        n += 1;
+    }
+    eprintln!("§9.2 (l) build-id mutations: {n}/{n} found, {by_b1} of the 16 bytes by B1");
+    assert!(by_b1 >= 12, "only {by_b1} of 16 bytes found by B1");
 }

@@ -39,7 +39,7 @@ use crate::search::{
     self, InSysroot, SearchForm, Spelled, arch_name, bfd_name, dir_of, file_name, fs_path,
     in_sysroot, join, library_names, search_label, split_colon, sysroot_prefix, text,
 };
-use crate::store::{Blob, ReadError, ReadJob, Stat, Store, content_hash};
+use crate::store::{Blob, ReadError, ReadJob, Stat, Store};
 
 /// More than this many implicit scripts on one chain is refused (§5.3).
 pub const MAX_SCRIPT_DEPTH: usize = 16;
@@ -142,6 +142,9 @@ pub struct FileRow<'s> {
     pub globals: u32,
     pub groups: u32,
     pub identity: Identity,
+    /// The file's hash (§11.6); `ContentHash(0)`, "not computed", when
+    /// `Store::hashes()` is false (the staged store's default). Never
+    /// trust a 0: see `mortar_core::inputs::File::hash`.
     pub hash: ContentHash,
     /// A shared object's soname (§8.2) and whether it is `DT_SONAME`.
     pub soname: Option<(Spelled, bool)>,
@@ -481,7 +484,7 @@ impl<'s> Caches<'s> {
         let wanted: Vec<(Blob, bool)> =
             wanted_facts.into_iter().filter(|k| !self.facts.contains_key(k)).collect();
         let mut new: Vec<Facts<'s>> =
-            pool.map(wanted.len(), |i| facts::analyse(store.whole(wanted[i].0), wanted[i].1));
+            pool.map(wanted.len(), |i| facts::analyse_view(store.view(wanted[i].0), wanted[i].1));
         // The members of the archives just analysed, in parallel (§12.1).
         let mut slots: Vec<(usize, usize, Blob, u64, u64)> = Vec::new();
         for (i, f) in new.iter().enumerate() {
@@ -495,10 +498,10 @@ impl<'s> Caches<'s> {
         }
         let member_facts = pool.map(slots.len(), |s| {
             let (_, _, b, offset, len) = slots[s];
-            let bytes = store.whole(b);
-            let range = usize::try_from(offset).ok().zip(usize::try_from(offset + len).ok());
-            match range.and_then(|(lo, hi)| bytes.get(lo..hi)) {
-                Some(bytes) => facts::analyse_member(bytes),
+            // The member's view: its parts, which hold what the analysis
+            // reads (§11.3).
+            match store.view(b).sub(offset, len) {
+                Some(view) => facts::analyse_view(view, true),
                 None => Facts {
                     ident: None,
                     kind: Kind::Bad(Bad::Malformed("member out of range".to_owned())),
@@ -539,7 +542,9 @@ pub fn walk<'s>(
             timing.walk += t.elapsed();
             out.waves = waves;
             let t = Instant::now();
-            hash_members(store, pool, &mut out.files);
+            if store.hashes() {
+                hash_members(store, pool, &mut out);
+            }
             timing.hash += t.elapsed();
             out.timing = timing;
             return out;
@@ -553,20 +558,32 @@ pub fn walk<'s>(
     }
 }
 
-/// §11.6 for archive members: the hash of the member's bytes.
-fn hash_members(store: &Store, pool: &Pool, files: &mut [FileRow<'_>]) {
+/// §11.6: the hash of every row's bytes (a file's, or an archive
+/// member's). The staged store reads the bytes again to hash them, and a
+/// file that no longer holds what its parts hold is `input-changed`, at
+/// the row's file.
+fn hash_members(store: &Store, pool: &Pool, out: &mut Loaded<'_>) {
+    let files = &out.files;
     let hashes = pool.map(files.len(), |i| {
         let f = &files[i];
         if f.base == 0 && f.len == store.len(f.blob) {
             return store.hash(f.blob);
         }
-        let bytes = store.whole(f.blob);
-        let lo = usize::try_from(f.base).unwrap_or(usize::MAX);
-        let hi = usize::try_from(f.base + f.len).unwrap_or(usize::MAX);
-        content_hash(bytes.get(lo..hi).unwrap_or_default())
+        store.hash_range(f.blob, f.base..f.base + f.len)
     });
-    for (f, h) in files.iter_mut().zip(hashes) {
-        f.hash = h;
+    let mut changed = false;
+    for (f, h) in out.files.iter_mut().zip(hashes) {
+        match h {
+            Ok(h) => f.hash = h,
+            Err(e) => {
+                let p = read_problem(f.origin.arg, 0, &f.path, &e);
+                out.problems.push(p.at(Place::File(f.name.clone())));
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        crate::problem::sort(&mut out.problems);
     }
 }
 
@@ -1456,7 +1473,8 @@ impl<'c, 's> Walk<'c, 's> {
         if let Some(&u) = self.soname_units.get(&soname.0) {
             let opened = self.push_opened(m, &path, OpenedKind::Shared { loaded: false });
             let first = &self.files[self.link.sonames[u].file as usize - 1];
-            let same = first.blob == blob || self.store.whole(first.blob) == self.store.whole(blob);
+            // Both are read whole by either store (§11.1): no read can fail.
+            let same = self.store.same_bytes(first.blob, blob).unwrap_or(false);
             if !same {
                 let p = Problem::warning(unit, at, Dk::DuplicateSoname { soname: text(&soname.0) })
                     .note(format!("loaded from {}", text(&first.path)));
@@ -1739,7 +1757,10 @@ impl<'c, 's> Walk<'c, 's> {
         }
         let k = self.take_k(unit);
         let opened = self.push_opened(m, path, OpenedKind::Script);
-        let bytes = self.store.whole(blob);
+        let bytes = self
+            .store
+            .whole(blob)
+            .unwrap_or_else(|| unreachable!("a script is read whole by either store (§11.1)"));
         let Ok(script) = &s.parsed else {
             let Err(d) = mortar_script::parse(bytes, &text(path)) else {
                 unreachable!("the parser is a function of the bytes")
@@ -1936,7 +1957,9 @@ impl<'c, 's> Walk<'c, 's> {
                         Searched::Found { path, blob, facts } => {
                             let k = self.take_k(m.arg);
                             let opened = self.push_opened(&sub, &path, OpenedKind::Include);
-                            let bytes = self.store.whole(blob);
+                            let bytes = self.store.whole(blob).unwrap_or_else(|| {
+                                unreachable!("a script is read whole by either store (§11.1)")
+                            });
                             let sf = Rc::new(ScriptFile { path: path.clone(), bytes, k, opened });
                             match &facts.kind {
                                 Kind::Script(s) => {

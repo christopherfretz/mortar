@@ -6,6 +6,8 @@
 //! file <id> <path> [<member> <member-header-offset>]
 //! place <file> <section> <addr> <size>
 //! piece <file> <section> <input-offset> <addr> <size>
+//! nplace <file> <section> <output-section> <offset> <size>
+//! merged <file> <section> <output-section>
 //! discard <file> <section> gc|comdat|script|unspecified
 //! fold <file> <section> <into-file> <into-section>
 //! chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
@@ -20,7 +22,7 @@ use std::fmt::Write as _;
 
 use super::{
     Chunk, ChunkKind, Defined, DiscardReason, Discarded, Fold, Format, Map, MapError, MapFile,
-    Placed, SectionRef, dec, hex,
+    NonAlloc, Placed, SectionRef, dec, hex,
 };
 
 /// The first line of a version-1 map.
@@ -138,6 +140,20 @@ pub fn write(map: &Map) -> String {
             }
         }
     }
+    for r in &map.nonalloc {
+        let mut o = String::new();
+        encode(&r.out, &mut o);
+        match r.offset {
+            Some(off) => {
+                let _ =
+                    writeln!(out, "nplace {} {} {o} {off:x} {:x}", r.file, idx(&r.section), r.size);
+            }
+            None => {
+                let _ = writeln!(out, "merged {} {} {o}", r.file, idx(&r.section));
+            }
+        }
+    }
+
     for d in &map.discarded {
         let _ = writeln!(out, "discard {} {} {}", d.file, idx(&d.section), d.reason.name());
     }
@@ -252,6 +268,22 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                 size: num(t[5], "size")?,
                 line: n,
             }),
+            ("nplace", 6) => map.nonalloc.push(NonAlloc {
+                file: file_id(t[1])?,
+                section: section(t[2])?,
+                out: decode(t[3]).ok_or_else(|| bad("output section"))?,
+                offset: Some(num(t[4], "offset")?),
+                size: num(t[5], "size")?,
+                line: n,
+            }),
+            ("merged", 4) => map.nonalloc.push(NonAlloc {
+                file: file_id(t[1])?,
+                section: section(t[2])?,
+                out: decode(t[3]).ok_or_else(|| bad("output section"))?,
+                offset: None,
+                size: 0,
+                line: n,
+            }),
             ("discard", 4) => map.discarded.push(Discarded {
                 file: file_id(t[1])?,
                 section: section(t[2])?,
@@ -286,7 +318,11 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                 line: n,
             }),
             ("", 1) => return Err(MapError::new(n, "empty line before 'end'")),
-            ("end" | "file" | "place" | "piece" | "discard" | "fold" | "chunk" | "define", _) => {
+            (
+                "end" | "file" | "place" | "piece" | "nplace" | "merged" | "discard" | "fold"
+                | "chunk" | "define",
+                _,
+            ) => {
                 return Err(bad("wrong number of fields"));
             }
             (other, _) => {

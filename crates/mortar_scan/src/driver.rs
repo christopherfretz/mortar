@@ -16,7 +16,9 @@ use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, STT_SECTION};
 use mortar_elf::{SectionIndex, SymbolIndex};
 
 use crate::events::{Acc, Event, EventClass, GroupKey, RefId, UnitEvents, sym_group};
-use crate::view::{Raw, RecTable, RecTables, Recs, View, rec_table};
+use crate::view::{
+    Bufs, Raw, ReadFail, RecTable, RecTables, Recs, View, contents, rec_table, with_bufs,
+};
 
 /// One scan unit: records `lo..hi` of the relocation section `rel` of
 /// section `index` of `file` (a whole section, or one block of it).
@@ -46,6 +48,7 @@ fn malformed(what: String) -> Diagnostic {
 /// that cannot be read is reported here and has no unit.
 pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> Vec<Unit> {
     let mut out = Vec::new();
+    let mut bufs = Bufs::default();
     let r = view.resolution;
     for (file, range) in r.section_base.iter() {
         for (k, sid) in range.iter().enumerate() {
@@ -54,7 +57,21 @@ pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> 
                 continue;
             }
             let index = k as u32;
-            let sec = match Sec::open(view, file, sid, index, row.reloc.0) {
+            if let Some(n) = staged_count(view, file, row.reloc.0) {
+                // One unit, opened and checked by its walk: the scan
+                // reads the records once (`spec/image.md` I-81).
+                out.push(Unit {
+                    file,
+                    section: sid,
+                    index,
+                    rel: row.reloc.0,
+                    lo: 0,
+                    hi: n,
+                    parts: 1,
+                });
+                continue;
+            }
+            let sec = match Sec::open(view, file, sid, index, row.reloc.0, &mut bufs) {
                 Ok(s) => s,
                 Err(d) => {
                     diags.push(d);
@@ -97,6 +114,25 @@ pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> 
     out
 }
 
+/// The record count of relocation section `rel` of `file` when the store
+/// does not hold its records (`spec/input.md` §11.1: the relocations of
+/// a non-alloc section) and it has at most `SCAN_BLOCK` records: such a
+/// section is a single unit whatever its records say, so [`units`] need
+/// not read it. `None`: [`units`] opens it.
+fn staged_count(view: &View<'_, '_>, file: FileId, rel: u32) -> Option<u32> {
+    let obj = view.prep(file)?.obj?;
+    let s = obj.section(SectionIndex(rel)).ok()?;
+    if !matches!(s.data(), Err(mortar_elf::Error::NotResident { .. })) {
+        return None;
+    }
+    let h = s.header();
+    if h.sh_entsize == 0 {
+        return None;
+    }
+    let n = h.sh_size / h.sh_entsize;
+    u32::try_from(n).ok().filter(|&n| n > 0 && n as usize <= SCAN_BLOCK)
+}
+
 /// The records before a cut that may still lead a sequence reaching
 /// past it: `spec/arch.md` §3.5 bounds a sequence's look-back by the
 /// architecture (AArch64 2, x86 1), so an extent is at most 3 records.
@@ -107,7 +143,7 @@ const EXTENT_BACK: u32 = 16;
 /// `EXTENT_BACK` records back, ends its `sequence_extent` (R-3) at or
 /// before it. A record that leads nothing has extent 1, so checking
 /// every record, not only the leads, is exact.
-fn cut_at(view: &View<'_, '_>, sec: &Sec<'_, '_, '_>, c: u32, n: u32) -> u32 {
+fn cut_at(view: &View<'_, '_>, sec: &Sec<'_, '_, '_, '_>, c: u32, n: u32) -> u32 {
     let mut c = c;
     let mut j = c.saturating_sub(EXTENT_BACK);
     while j < c && c < n {
@@ -119,11 +155,11 @@ fn cut_at(view: &View<'_, '_>, sec: &Sec<'_, '_, '_>, c: u32, n: u32) -> u32 {
 }
 
 /// A relocated section opened for the scan.
-pub(crate) struct Sec<'v, 'a, 's> {
+pub(crate) struct Sec<'v, 'a, 's, 'b> {
     pub file: FileId,
     pub sid: SectionId,
     pub index: u32,
-    pub recs: Recs<'v, 'a, 's>,
+    pub recs: Recs<'v, 'a, 's, 'b>,
     pub place: PlaceFacts,
     pub kind: SectionKind,
     pub name: &'s [u8],
@@ -131,7 +167,7 @@ pub(crate) struct Sec<'v, 'a, 's> {
     view: &'v View<'a, 's>,
 }
 
-impl<'v, 'a, 's> Sec<'v, 'a, 's> {
+impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
     #[allow(
         clippy::result_large_err,
         reason = "the error is the diagnostic, made once per section"
@@ -142,19 +178,28 @@ impl<'v, 'a, 's> Sec<'v, 'a, 's> {
         sid: SectionId,
         index: u32,
         rel: u32,
+        bufs: &'b mut Bufs,
     ) -> Result<Self, (Key, Diagnostic)> {
         let fref = || view.inputs.files[file].display();
         let at = |what: String| {
             let d = malformed(what).at(Place::section(fref(), view.section_name(file, rel), 0));
             (key_at(file, index, 0), d)
         };
+        // A read of bytes that are not resident failed (or bytes the
+        // store keeps resident were not): never "no records".
+        let fail = |f: ReadFail, sec: u32| {
+            let place = Place::section(fref(), view.section_name(file, sec), 0);
+            (key_at(file, index, 0), f.diagnostic(&fref()).at(place))
+        };
+        let Bufs { rel: rel_buf, sec: sec_buf } = bufs;
         let prep = view.prep(file).ok_or_else(|| at("not an object".into()))?;
         let obj = prep.obj.ok_or_else(|| at("not an object".into()))?;
         let table = match &prep.symtab {
             Ok(t) => t.as_ref(),
             Err(e) => return Err(at(e.clone())),
         };
-        let (records, link, info) = rec_table(&obj, SectionIndex(rel)).map_err(at)?;
+        let (records, link, info) =
+            rec_table(view, file, &obj, SectionIndex(rel), rel_buf).map_err(|f| fail(f, rel))?;
         if info.0 != index {
             return Err(at(format!(
                 "relocation section {rel} applies to section {info}, not to section {index}"
@@ -171,7 +216,7 @@ impl<'v, 'a, 's> Sec<'v, 'a, 's> {
         }
         let s = obj.section(SectionIndex(index)).map_err(|e| at(e.to_string()))?;
         let flags = s.flags();
-        let bytes = s.data().unwrap_or_default();
+        let bytes = contents(view, file, &s, sec_buf).map_err(|f| fail(f, index))?;
         let name = s.name().unwrap_or_default();
         let place = PlaceFacts { alloc: flags & SHF_ALLOC != 0, writable: flags & SHF_WRITE != 0 };
         let exec = flags & SHF_EXECINSTR != 0;
@@ -396,19 +441,25 @@ pub(crate) const fn dyn_kind(role: DynRole) -> DynKind {
 /// Whether a `DiscardedSection` reference from `sec` is an error: not
 /// from an `.eh_frame` (`spec/resolve.md` §6.3's table: the FDE is dead,
 /// I-3), a row `mortar_arch::dead_reference` does not have.
-fn eh_frame(sec: &Sec<'_, '_, '_>) -> bool {
+fn eh_frame(sec: &Sec<'_, '_, '_, '_>) -> bool {
     sec.kind == SectionKind::EhFrame || sec.name == b".eh_frame"
 }
 
 /// Walks one unit (§4.1 step 2): every record in record order.
-#[allow(clippy::too_many_lines, reason = "the per-record steps of §4.1, in order")]
 pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> UnitOut {
+    with_bufs(|bufs| walk_unit(view, u, global, bufs))
+}
+
+/// [`run_unit`] with the worker's buffers.
+#[allow(clippy::too_many_lines, reason = "the per-record steps of §4.1, in order")]
+fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Bufs) -> UnitOut {
     let mut out = UnitOut { sorted: true, ..UnitOut::default() };
-    let sec = match Sec::open(view, u.file, u.section, u.index, u.rel) {
+    let sec = match Sec::open(view, u.file, u.section, u.index, u.rel, bufs) {
         Ok(s) => s,
         Err(d) => {
-            // Opened once already when the units were made: unreachable
-            // for a resident store, reported rather than assumed.
+            // Opened once already when the units were made, except a
+            // section whose records are not resident (`staged_count`):
+            // its first open is here.
             out.diags.push(d);
             return out;
         }
@@ -533,9 +584,15 @@ pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> U
 /// of `blocks` without another fault, decided together. Each block's own
 /// decision is exact for it when its extent meets no other block's, since
 /// windows of disjoint extents cannot overlap.
-pub(crate) fn rewalk(view: &View<'_, '_>, blocks: &[(&Unit, &UnitOut)]) -> Vec<u32> {
-    let Some((u, _)) = blocks.first() else { return Vec::new() };
-    let Ok(sec) = Sec::open(view, u.file, u.section, u.index, u.rel) else { return Vec::new() };
+#[allow(clippy::result_large_err, reason = "the error is the diagnostic, made once per section")]
+pub(crate) fn rewalk(
+    view: &View<'_, '_>,
+    blocks: &[(&Unit, &UnitOut)],
+) -> Result<Vec<u32>, (Key, Diagnostic)> {
+    let Some((u, _)) = blocks.first() else { return Ok(Vec::new()) };
+    let mut bufs = Bufs::default();
+    // Opened by every block's walk: a failure now is a file that changed.
+    let sec = Sec::open(view, u.file, u.section, u.index, u.rel, &mut bufs)?;
     let mut windows = Vec::new();
     for (b, o) in blocks {
         for i in b.lo..b.hi {
@@ -562,26 +619,37 @@ pub(crate) fn rewalk(view: &View<'_, '_>, blocks: &[(&Unit, &UnitOut)]) -> Vec<u
     let mut v: Vec<u32> = pairs.iter().map(|p| p.0).collect();
     v.sort_unstable();
     v.dedup();
-    v
+    Ok(v)
 }
 
 /// The record indexes of relocation section `u.rel` stably sorted by
 /// `r_offset` (I-29 `Permuted`).
-pub(crate) fn permutation(view: &View<'_, '_>, u: &Unit) -> Box<[u32]> {
-    let Some(obj) = view.prep(u.file).and_then(|p| p.obj) else { return Box::new([]) };
-    let Ok((t, _, _)) = rec_table(&obj, SectionIndex(u.rel)) else { return Box::new([]) };
-    let n = t.len() as u32;
-    let mut v: Vec<(u64, u32)> = (0..n).map(|i| (t.raw(i).map_or(0, |r| r.r_offset), i)).collect();
-    v.sort_by_key(|e| e.0);
-    v.into_iter().map(|e| e.1).collect()
+/// A read that fails now (the section was walked, so the file changed)
+/// is the read's diagnostic.
+#[allow(clippy::result_large_err, reason = "the error is the diagnostic, made once per section")]
+pub(crate) fn permutation(view: &View<'_, '_>, u: &Unit) -> Result<Box<[u32]>, (Key, Diagnostic)> {
+    let Some(obj) = view.prep(u.file).and_then(|p| p.obj) else { return Ok(Box::new([])) };
+    with_bufs(|bufs| {
+        let (t, _, _) =
+            rec_table(view, u.file, &obj, SectionIndex(u.rel), &mut bufs.rel).map_err(|f| {
+                let path = view.inputs.files[u.file].display();
+                let place = Place::section(path.clone(), view.section_name(u.file, u.rel), 0);
+                (key_at(u.file, u.index, 0), f.diagnostic(&path).at(place))
+            })?;
+        let n = t.len() as u32;
+        let mut v: Vec<(u64, u32)> =
+            (0..n).map(|i| (t.raw(i).map_or(0, |r| r.r_offset), i)).collect();
+        v.sort_by_key(|e| e.0);
+        Ok(v.into_iter().map(|e| e.1).collect())
+    })
 }
 
 /// The diagnostic of an overlap found at the merge.
-pub(crate) fn overlap_diag(
-    view: &View<'_, '_>,
-    u: &Unit,
-    record: u32,
-) -> Option<(Key, Diagnostic)> {
-    let sec = Sec::open(view, u.file, u.section, u.index, u.rel).ok()?;
-    Some(sec.fault(record, Fault::Scan(ScanError::Overlap)))
+pub(crate) fn overlap_diag(view: &View<'_, '_>, u: &Unit, record: u32) -> (Key, Diagnostic) {
+    let mut bufs = Bufs::default();
+    match Sec::open(view, u.file, u.section, u.index, u.rel, &mut bufs) {
+        Ok(sec) => sec.fault(record, Fault::Scan(ScanError::Overlap)),
+        // Opened by the walk: a failure now is a file that changed.
+        Err(d) => d,
+    }
 }

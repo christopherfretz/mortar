@@ -91,7 +91,7 @@ fn s9_4_identity() {
         )
         .success()
     );
-    let out = common::run(s.path(), &[M, "a.o", "a.o", "./a.o", "liba.a", "liba.a"]);
+    let out = common::run_hashed(s.path(), &[M, "a.o", "a.o", "./a.o", "liba.a", "liba.a"]);
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     let id: Vec<_> = out
         .files

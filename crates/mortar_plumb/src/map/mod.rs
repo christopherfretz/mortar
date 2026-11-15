@@ -102,6 +102,19 @@ pub struct Placed {
     pub line: u32,
 }
 
+/// A non-alloc input section in mortar's map (§3.2, `nplace` and
+/// `merged`): placed whole at `offset` of output section `out`, or
+/// (`offset` `None`) merged into it, its pieces not listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonAlloc {
+    pub file: u32,
+    pub section: SectionRef,
+    pub out: String,
+    pub offset: Option<u64>,
+    pub size: u64,
+    pub line: u32,
+}
+
 /// Why a section is not in the output, as far as the map says (§3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DiscardReason {
@@ -216,6 +229,8 @@ pub struct Map {
     pub folds: Vec<Fold>,
     pub chunks: Vec<Chunk>,
     pub defined: Vec<Defined>,
+    /// mortar's non-alloc records (§3.2).
+    pub nonalloc: Vec<NonAlloc>,
 }
 
 impl Map {
@@ -229,6 +244,7 @@ impl Map {
             folds: Vec::new(),
             chunks: Vec::new(),
             defined: Vec::new(),
+            nonalloc: Vec::new(),
         }
     }
 

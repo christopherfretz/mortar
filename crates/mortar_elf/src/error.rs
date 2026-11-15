@@ -94,6 +94,12 @@ pub enum Error {
     BadShstrndx { index: u32, count: u32 },
     /// A section index given to an accessor is not a section.
     SectionIndexOutOfRange { index: u32, count: u32 },
+    /// Over a parts view (`spec/elf.md` §3.0): bytes within the file that
+    /// do not lie inside one resident part. For a section's contents, the
+    /// caller copies them instead; for a structure the reader needs, the
+    /// store did not keep what it should have (an internal error of the
+    /// store, reported, never a panic).
+    NotResident { offset: u64, size: u64 },
 
     // ---- one section (§3.3, §3.4) ------------------------------------------
     /// The section's contents do not lie within the file.
@@ -391,6 +397,11 @@ impl fmt::Display for Error {
             Error::SectionIndexOutOfRange { index, count } => {
                 write!(f, "section index {index} is out of range: the file has {count} sections")
             }
+            Error::NotResident { offset, size } => write!(
+                f,
+                "{size:#x} bytes at offset {offset:#x} are not resident (an internal error of the \
+                 input store)"
+            ),
             Error::SectionOutOfBounds { section, offset, size, file_len } => write!(
                 f,
                 "section {section}: contents ({size:#x} bytes at offset {offset:#x}) extend past \
