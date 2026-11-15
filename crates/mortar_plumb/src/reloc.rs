@@ -16,6 +16,9 @@ use mortar_elf::{Machine, SymbolIndex, SymbolSection};
 use crate::a64::{self, Def, Field, Form, Op, Slot};
 use crate::image::Image;
 use crate::locate::{Obj, Place};
+#[path = "eh.rs"]
+mod eh;
+
 use crate::report::{Coverage, Finding, Reason, Rewrite, Rule, Site, Via};
 
 /// The width of a relocated place in bytes (§4.2).
@@ -369,6 +372,8 @@ pub(crate) struct Engine<'a, 'b> {
     /// record covers (W12's last word): S12 accepts them (§6.2).
     pub(crate) rewritten_words: std::collections::BTreeSet<u64>,
     piece_groups: BTreeMap<(usize, usize, u64, i64), Group>,
+    /// Allocated input `.eh_frame` sections, checked by record (§6.4).
+    eh_sections: Vec<(usize, usize)>,
     pub cov: Coverage,
     pub findings: Vec<Finding>,
 }
@@ -415,6 +420,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             got_groups: BTreeMap::new(),
             rewritten_words: std::collections::BTreeSet::new(),
             piece_groups: BTreeMap::new(),
+            eh_sections: Vec::new(),
             cov: Coverage::default(),
             findings: Vec::new(),
         }
@@ -693,6 +699,11 @@ impl<'a, 'b> Engine<'a, 'b> {
         let objs = self.objs;
         let o = &objs[oi];
         let s = &o.secs[si];
+        if s.alloc() && s.is_eh_frame(o.elf.machine()) {
+            // §6.4: by CIE and FDE, after every other section.
+            self.eh_sections.push((oi, si));
+            return;
+        }
         let Some(rs) = s.relocs else { return };
         let Some(raw) = o.records(rs) else {
             self.findings.push(
@@ -707,7 +718,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         let n = raw.len() as u64;
         let machine = o.elf.machine();
         match &s.place {
-            Place::Absent | Place::Discarded if !(s.alloc() && s.is_eh_frame(machine)) => {
+            Place::Absent | Place::Discarded => {
                 self.cov.absent_records += n;
                 return;
             }

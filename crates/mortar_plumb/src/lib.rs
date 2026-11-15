@@ -62,6 +62,7 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     }
     engine.finish_got();
     engine.finish_pieces();
+    engine.check_eh_frame();
     content::check_content(&mut engine);
     content::check_symbols(&mut engine);
     report.findings.append(&mut engine.findings);

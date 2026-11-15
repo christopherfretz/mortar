@@ -29,7 +29,7 @@ describes how x86-64 and i386 fit.
 | stage | covers | not-checked reasons it removes |
 |---|---|---|
 | 1 | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
-| 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents, non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame`, `non-alloc` |
+| 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents, non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame` (except labels inside `.eh_frame`, §6.4), `non-alloc` |
 | 3 | PIE and shared objects: the dynamic sections, dynamic relocations, PLT | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 
@@ -179,9 +179,9 @@ Each input section ends up with one *place*:
 | whole at `a` | a `place` record | checked, with `P = a + r_offset` |
 | pieces | `piece` records (mortar's format), or lld's `.eh_frame+0xOFF` rows | checked where a piece covers `r_offset`. A record outside every piece is in a dropped part and is counted as not in the output |
 | merged | an `SHF_MERGE` `SHF_ALLOC` section in a foreign map, placed, absent or ambiguous | not checked (`in-mergeable`). References *to* it are checked by content (§5.6) |
-| rewritten | `.eh_frame` placed whole with a size other than its input's (GNU ld) | not checked (`eh-frame`) |
+| rewritten | `.eh_frame` placed whole with a size other than its input's (GNU ld) | checked by CIE and FDE (§6.4) |
 | discarded | a `discard` record, or GNU's "Discarded input sections" and `/DISCARD/` | not in the output |
-| absent | no record | not in the output. An absent alloc `.eh_frame` (mold lists none) counts as `eh-frame` |
+| absent | no record | not in the output. An allocated `.eh_frame` is checked by CIE and FDE whatever its place (§6.4): mold lists none |
 | ambiguous | see above | not checked (`section-not-locatable`) |
 
 A fold gives a section its target's place.
@@ -444,7 +444,9 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
   - **whole at a:** S = a + `st_value`;
   - **pieces:** found through the piece that covers `st_value`;
   - **merged:** §5.6;
-  - **rewritten `.eh_frame`, or a dropped part of one:** `eh-frame`;
+  - **in `.eh_frame`** (a label such as crtbeginT.o's
+    `__EH_FRAME_BEGIN__`) when the section is rewritten, absent, or the
+    label is in a dropped part: `eh-frame`;
   - **ambiguous:** `section-not-locatable`;
   - **discarded or absent:** R5 (§5.7).
 
@@ -770,8 +772,9 @@ a *merged* section:
 ### 5.7 Discarded targets (R5)
 
 A relocation of a placed section whose symbol's section is discarded or
-absent is R5. This does not apply to `.eh_frame`'s own records, which are
-stage 2, nor to non-alloc records.
+absent is R5. This does not apply to `.eh_frame`'s own records, which
+§6.4 checks (an FDE whose function is discarded is dropped, not R5), nor
+to non-alloc records.
 
 ## 6. Structure and content
 
@@ -839,14 +842,123 @@ The relocated ranges of a section are the bytes
 from the type (§4.2). A TLS type counts as 4 bytes, and an unknown type
 as 8.
 
+### 6.4 Call frame information (stage 2)
+
+The output's allocated `.eh_frame` is read as the LSB defines it
+("Exception Frames": `.eh_frame` and `.eh_frame_hdr`), with DWARF 4 §6.4
+("Call Frame Information") for the instructions. The inputs' allocated
+`.eh_frame` sections are read the same way, whatever their place (§3.3):
+the check is by record, not by address, so GNU ld's edited `.eh_frame`
+(rewritten), lld's pieces and mold's unlisted sections are checked alike.
+Test: `tests/eh.rs`, `src/eh.rs` unit tests.
+
+**Reading.** A record is a 4-byte length (0xffffffff: an 8-byte length
+follows; 0: the zero terminator), then an id, 0 for a CIE and otherwise
+the distance back from the id field to the record's CIE. A CIE has:
+
+- a version, 1 or 3;
+- an augmentation string, empty or `z` followed by any of `R`, `P`, `L`,
+  `S` (signal frame), `B` (AArch64 return addresses signed with the B
+  key) and `G` (MTE-tagged frames);
+- a code alignment (ULEB128), a data alignment (SLEB128) and a return
+  address register (a byte in version 1, ULEB128 in 3);
+- for `z`, the augmentation data: its length, then the `R` encoding of
+  the FDE pointers, the `P` encoding and personality pointer, and the `L`
+  encoding of the LSDA pointers, in the string's order;
+- the initial instructions.
+
+An FDE has the initial location (in the `R` encoding), the address range
+(in its format, with no application), for `z` the augmentation data
+length and the LSDA pointer when the CIE has `L`, and the instructions.
+Pointer formats are `absptr`, `uleb128`, `udata2`, `udata4`, `udata8`,
+`sleb128`, `sdata2`, `sdata4` and `sdata8`. Applications are absolute and
+`pcrel` in `.eh_frame`, and also `datarel` (from the start of
+`.eh_frame_hdr`) in the header. The `indirect` bit is kept, so a
+personality is the address of the slot that holds it, which is what the
+input's relocation gives too. Instructions are compared without their
+trailing `DW_CFA_nop` padding. Anything else is unreadable.
+
+**The inputs' pointers.** A pointer field of an input record is the value
+of the relocation at its offset, resolved as §4.4 does (S + A for
+`ABS64`, `ABS32`, `PREL64` and `PREL32`). If there is no relocation, an
+absolute nonzero value is taken as written, and anything else cannot be
+judged. An input FDE is:
+
+- **dropped** if its initial location resolves into a discarded or
+  absent section. Its records are counted with the records of sections not
+  in the output, and the FDE in `fdes_dropped`;
+- **unknown** if any of its pointers cannot be resolved (`eh-frame`, or
+  the §4.4 reason). Its records are not checked, and E4 is not reported
+  for the output (an unknown input could be the FDE it reports);
+- **live** otherwise.
+
+**The rules.** Each finding is at the output record's address, or the
+`.eh_frame_hdr` address, and is sited at the input record when there is
+one.
+
+- **E1.** The output's `.eh_frame` cannot be read: a record runs past the
+  section, a CIE pointer does not point at a CIE, there is an unknown
+  version, augmentation or encoding, or a record follows the zero
+  terminator. Also, an input ends its frames with a zero terminator
+  (crtend.o's `__FRAME_END__`, the end of the list `__register_frame_info`
+  walks) and the output has none.
+- **E2.** A live input FDE has no output FDE with its initial location.
+- **E3.** The output FDE at its initial location differs from it. The two
+  must have the same address range, augmentation data length and
+  instructions, the same LSDA value, and CIEs with the same version,
+  augmentation string, alignments, return address register, initial
+  instructions and personality value. The encodings may differ; the
+  values may not. Each output FDE answers for one input FDE only, so a
+  duplicate input FDE needs a duplicate output FDE.
+- **E4.** An output FDE that no live input FDE gives, unless it is
+  neutralised (initial location 0 or range 0, counted in
+  `fdes_neutralised`).
+- **E5.** `.eh_frame_hdr` (only when there is one, or a
+  `PT_GNU_EH_FRAME`):
+  - exactly one `PT_GNU_EH_FRAME` covers exactly the section;
+  - the version is 1, and `eh_frame_ptr` is the address of `.eh_frame`;
+  - `fde_count` is the number of output FDEs that are not neutralised;
+  - the table is sorted strictly by initial location;
+  - each entry gives an FDE's address and that FDE's initial location;
+  - every FDE that is not neutralised is in the table.
+
+  The `DW_EH_PE_omit` table that the LSB allows is accepted, without a
+  table.
+
+**Coverage.** The relocation records of an input `.eh_frame` are counted as
+follows:
+
+- the initial-location and LSDA records of a matched FDE are verified
+  (`eh-frame`);
+- a personality record is verified when one live FDE of its CIE is;
+- E2 and E3 fail the FDE's records;
+- a record at no pointer field of a CIE or FDE is I2;
+- a CIE whose FDEs are all dropped has its personality record counted as
+  not in the output.
+
+`fdes_checked`, `fdes_dropped`, `fdes_neutralised` and
+`eh_frame_hdr_entries` are reported.
+
+**Not judged.** These are reported by name:
+
+- relocations from other sections to a label inside an input `.eh_frame`
+  (crtbeginT.o's `__EH_FRAME_BEGIN__`, 4 records per glibc link):
+  `eh-frame`. Their value is where that input's frames begin in the
+  output, which a rewritten or unlisted `.eh_frame` does not say;
+- the instructions' meaning (they are compared byte for byte, not
+  interpreted);
+- the LSDA's contents (`.gcc_except_table` is checked by S12 and its
+  relocations by §5);
+- the frames of other machines (`machine`).
+
 ## 7. The report
 
 ### 7.1 Findings
 
 A finding has:
 
-- the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R8`, `T1`
-  or `Y1`;
+- the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R8`, `T1`,
+  `Y1` or `E1`–`E5`;
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -866,7 +978,8 @@ once:
 
 `records = verified + accepted + not_checked + none + failed`
 
-- **verified**, by how S was found: `direct`, `got-slot` or `piece`;
+- **verified**, by how S was found: `direct`, `got-slot`, `piece` or
+  `eh-frame` (a pointer field of a matched CIE or FDE, §6.4);
 - **accepted**, by rewriting (W1 to W13);
 - **not checked**, by reason: `tls`, `tls-sequence`, `ifunc`, `non-alloc`, `eh-frame`,
   `type`, `machine`, `section-not-locatable`, `piece-not-locatable`,
@@ -878,7 +991,8 @@ once:
 `checked_types` counts the verified and accepted records by type. The
 records of sections not in the output are counted separately
 (`absent_records`). So are the sections by place, the symbols Y1 checked
-and left unchecked, and the bytes S12 compared.
+and left unchecked, the bytes S12 compared, and the FDEs and header
+entries of §6.4.
 
 The four stage-2 reasons are the only ones allowed on the reference
 corpus.
@@ -934,6 +1048,7 @@ is checked in.
 | `got` | gcc (asm): GOT forms, relaxable and not, an undefined weak | `-static -nostdlib` |
 | `erratum` | gcc (asm): an `ADRP` at `0xff8` and loads | `--fix-cortex-a53-843419` |
 | `types` | gcc (asm): every §4.2 type each linker accepts | `-static -nostdlib` |
+| `cxx-eh-hdr` | `cxx-eh`'s object | `-static -Wl,--eh-frame-hdr` |
 
 Every case is linked by `ld.bfd` (GNU ld 2.44), `ld.lld-22` and mold 2.37,
 each through the gcc driver with `-Wl,-Map`.
@@ -942,7 +1057,11 @@ For each link (`tests/corpus.rs s9_1_reference_links_verify_clean`):
 
 - there are no findings, other than the anomalies recorded in §10.2;
 - `failed` counts only the records of A6, and the coverage sum holds;
-- every not-checked reason is a stage-2 reason.
+- every not-checked reason is a stage-2 reason;
+- §6.4: more than 100 FDEs are checked for the glibc C and C++ cases, an
+  FDE is dropped for `comdat` and `gc-sections`, the search table has an
+  entry for every FDE wherever there is one (mold always, GNU ld and lld
+  for `cxx-eh-hdr`), and `cxx-eh-hdr` runs.
 
 `s4_2_every_type_each_linker_accepts_is_checked` asserts that each type
 listed in §10.3 is checked for its linker. `s5_3_observed_rewritings_are_accepted`
@@ -959,6 +1078,7 @@ way, by the linkers that accept it, and its glibc programs are run:
 | `tls-ie-regs` | gcc (asm): `ADRP x4; LDR x5, [x4]` IE, TPREL >= 2^16 | `-static` | A8: GNU ld and lld exit wrong with R1 on both records; mold exits 42, clean |
 | `got-ldr-w` | gcc (asm): `LDR w0, [x0, :got_lo12:]` | `-static -nostdlib` | R8 for every linker |
 | `weak-prel` | gcc (asm): PC-relative data, `ADR` and `LDR` literal to an undefined weak | GNU ld, lld | clean (§4.4) |
+| `eh-frames` | gcc (asm): CIEs `zR`, `zPLR` (personality through `DW.ref`, LSDA), `zRS`, `zRB`; one FDE in a collected section | `-static -nostdlib --eh-frame-hdr --gc-sections` | `tests/eh.rs`: exits 0; clean; nothing not checked; 5 FDEs checked, 1 dropped, 5 table entries, 7 records verified |
 
 ### 9.2 Mutations
 
@@ -983,6 +1103,23 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   its alignment, or its alignment multiplied by 4, and each must be found
   (6/6); (3) each `.got` word is corrupted as in (c), and at least one
   must be found where a TLS record went through an entry.
+- **(g)** Call frame information (`eh-frames`, every linker; §6.4). The
+  mutations are: bit 0 of every byte of every CIE and FDE after the
+  length; bit 12 of every initial location and range; every record's
+  length plus 4; bit 0 of every byte of `.eh_frame_hdr`. And for
+  `tls-c`, which links crtend.o, the last FDE lengthened over the
+  terminator. The verifier finds:
+  - CIE bytes: 237/240;
+  - FDE bytes: 318/318;
+  - record lengths: 25/27;
+  - header bytes: 156/156;
+  - the terminator: 3/3.
+
+  Every rule E1 to E5 finds some mutant. The 5 that are not found are
+  equivalent, and the test lists them. The LSDA encoding `sdata4` made
+  `sdata2` decodes the same LSDA. The last FDE lengthened over a
+  terminator that lld and mold add, which no input asked for, only gains
+  `DW_CFA_nop`s.
 
 ### 9.3 Map readers
 
@@ -1103,6 +1240,23 @@ The `tls-types` case does the same for §4.7:
 | `LDST128` TLS forms | GAS cannot assemble them | | |
 | `TLSDESC` `PREL21`/`LD_PREL19`, GD/LD `PREL21` | refused | refused | refused |
 
+### 10.4 Call frame information
+
+- **The search table.** In a `-static` link through the gcc driver, GNU ld
+  and lld write no `.eh_frame_hdr` and no `PT_GNU_EH_FRAME`, because the
+  driver passes `--eh-frame-hdr` only for dynamic links. mold always
+  writes both. Unwinding in such a GNU ld or lld program goes through
+  crtbeginT.o's `__register_frame_info`, which walks from
+  `__EH_FRAME_BEGIN__` to crtend.o's terminator.
+- **The terminator.** GNU ld keeps crtend.o's terminator last, and writes
+  none when no input gives one (`-nostdlib`). lld and mold always end
+  `.eh_frame` with a terminator of their own.
+- **CIEs.** All three merge identical CIEs: a glibc `-static` hello
+  world has 2 CIEs for 950 FDEs from each of them.
+- **Dropped FDEs.** An FDE whose function is in a discarded COMDAT group
+  or a collected section is absent from all three outputs. None of them
+  writes a neutralised FDE on the corpus.
+
 ## 11. Open questions
 
 1. `spec/model.md` should state that mortar's layout can write this map
@@ -1120,8 +1274,10 @@ The `tls-types` case does the same for §4.7:
    give each (symbol, addend) its own slot holding S+A (AAELF64's
    GDAT(S+A)) or refuse the record by name. `spec/a64.md` should state
    which.
-5. Stage 2 must specify the `.eh_frame` check against the LSB, so that
-   GNU ld's edited `.eh_frame` (§3.4) can be checked.
+5. (Resolved by §6.4.) GNU ld's edited `.eh_frame` is checked record by
+   record. mortar's map may still place `.eh_frame` by pieces. The check
+   does not need it, but piece records would let crtbeginT.o's
+   `__EH_FRAME_BEGIN__` be judged.
 6. A7 and A8 (§10.2): mortar's TLS relaxations must use `tcb` =
    align_up(16, `p_align`) and must relax IE only when Xt = Xn = Xd (else
    keep the GOT entry, as mold does). `spec/a64.md` should state both.

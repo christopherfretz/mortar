@@ -40,6 +40,8 @@ pub enum Rule {
     NoTls,
     /// Y1: an output symbol's value is not where its definition was placed.
     SymbolValue,
+    /// E1-E5: `.eh_frame` and `.eh_frame_hdr` (§6.4).
+    EhFrame(u8),
 }
 
 impl Rule {
@@ -61,6 +63,7 @@ impl Rule {
             Rule::Insn => "R8".into(),
             Rule::NoTls => "T1".into(),
             Rule::SymbolValue => "Y1".into(),
+            Rule::EhFrame(n) => format!("E{n}"),
         }
     }
 }
@@ -204,6 +207,8 @@ pub enum Via {
     GotSlot,
     /// To a mergeable piece found from the fields and checked by content.
     Piece,
+    /// A pointer field of a CIE or FDE, checked with its record (§6.4).
+    EhFrame,
 }
 
 impl Via {
@@ -212,6 +217,7 @@ impl Via {
             Via::Direct => "direct",
             Via::GotSlot => "got-slot",
             Via::Piece => "piece",
+            Via::EhFrame => "eh-frame",
         }
     }
 }
@@ -325,6 +331,14 @@ pub struct Coverage {
     pub symbols_unchecked: u64,
     /// Bytes of placed sections compared with the input (S12).
     pub content_bytes: u64,
+    /// Live input FDEs found in the output's `.eh_frame`; input FDEs
+    /// dropped with their function; output FDEs no live input gives that
+    /// are neutralised (§6.4).
+    pub fdes_checked: u64,
+    pub fdes_dropped: u64,
+    pub fdes_neutralised: u64,
+    /// Search table entries of `.eh_frame_hdr` checked (§6.4).
+    pub eh_frame_hdr_entries: u64,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
 }
@@ -446,6 +460,12 @@ impl Report {
             c.symbols_checked, c.symbols_unchecked
         );
         let _ = writeln!(s, "content compared: {} bytes", c.content_bytes);
+        let _ = writeln!(
+            s,
+            "FDEs: checked {}, dropped with their function {}, neutralised {}; \
+             .eh_frame_hdr entries checked {}",
+            c.fdes_checked, c.fdes_dropped, c.fdes_neutralised, c.eh_frame_hdr_entries
+        );
         let _ = writeln!(s, "findings: {}", self.findings.len());
         s
     }

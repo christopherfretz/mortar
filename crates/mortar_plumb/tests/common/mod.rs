@@ -499,7 +499,8 @@ impl Corpus {
 pub enum Size {
     All,
     Small,
-    /// The thread-local cases (§4.7) and the review's cases (§10.2).
+    /// The stage-2 cases: thread-local storage (§4.7), call frame
+    /// information (§6.4) and the review's cases (§10.2).
     Tls,
 }
 
@@ -663,6 +664,14 @@ fn build(size: Size) -> Option<Corpus> {
                 driver: gxx,
                 objects: vec!["eh.o"],
                 flags: vec!["-static"],
+                per_linker: none,
+            },
+            Case {
+                name: "cxx-eh-hdr",
+                linkers: &Linker::ALL,
+                driver: gxx,
+                objects: vec!["eh.o"],
+                flags: vec!["-static", "-Wl,--eh-frame-hdr"],
                 per_linker: none,
             },
             Case {
@@ -1010,6 +1019,90 @@ _start:
 gv: .quad 1
 ";
 
+/// Call frame information of every augmentation the assembler writes
+/// (`zR`, `zPLR`, `zRS`, `zRB`) and an FDE `--gc-sections` drops
+/// (`spec/plumb.md` §6.4).
+pub const EH_FRAMES_S: &str = r#"	.text
+	.globl _start
+	.type _start,%function
+_start:
+	.cfi_startproc
+	bl f1
+	bl f2
+	bl f3
+	mov x0, #0
+	mov x8, #93
+	svc #0
+	.cfi_endproc
+	.size _start, .-_start
+
+	.type f1,%function
+f1:
+	.cfi_startproc
+	.cfi_personality 0x9b, DW.ref.pers
+	.cfi_lsda 0x1b, .Llsda1
+	stp x29, x30, [sp, -16]!
+	.cfi_def_cfa_offset 16
+	.cfi_offset 29, -16
+	.cfi_offset 30, -8
+	mov x29, sp
+	ldp x29, x30, [sp], 16
+	.cfi_restore 30
+	.cfi_restore 29
+	.cfi_def_cfa_offset 0
+	ret
+	.cfi_endproc
+	.size f1, .-f1
+
+	.type f2,%function
+f2:
+	.cfi_startproc
+	.cfi_signal_frame
+	nop
+	ret
+	.cfi_endproc
+	.size f2, .-f2
+
+	.type f3,%function
+f3:
+	.cfi_startproc
+	.cfi_b_key_frame
+	hint #27
+	.cfi_negate_ra_state
+	hint #31
+	ret
+	.cfi_endproc
+	.size f3, .-f3
+
+	.type pers,%function
+pers:
+	.cfi_startproc
+	ret
+	.cfi_endproc
+	.size pers, .-pers
+
+	.section .text.dead,"ax",%progbits
+	.type dead,%function
+dead:
+	.cfi_startproc
+	.cfi_def_cfa_offset 32
+	ret
+	.cfi_endproc
+	.size dead, .-dead
+
+	.section .gcc_except_table,"a",%progbits
+.Llsda1:
+	.byte 0xff, 0xff, 0x01, 0x00
+
+	.section .data.rel.local.DW.ref.pers,"aw",%progbits
+	.align 3
+	.hidden DW.ref.pers
+	.type DW.ref.pers,%object
+	.size DW.ref.pers, 8
+DW.ref.pers:
+	.xword pers
+"#;
+
 /// PC-relative references to an undefined weak symbol (review finding
 /// 10): S is the place (AAELF64), so X is the addend.
 pub const WEAK_PREL_S: &str = r"
@@ -1052,6 +1145,7 @@ fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
     w("tieregs.s", TLS_IE_REGS_S);
     w("gotw.s", GOT_LDR_W_S);
     w("weakprel.s", WEAK_PREL_S);
+    w("ehf.s", EH_FRAMES_S);
     let gcc = |args: &[&str]| run_in(dir, &t.gcc, args);
     gcc(&["-O2", "-c", "tdef.c", "-o", "tdef.o"]);
     gcc(&["-O2", "-c", "tie.c", "-o", "tie.o"]);
@@ -1074,6 +1168,7 @@ fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
         ("tieregs.s", "tieregs.o"),
         ("gotw.s", "gotw.o"),
         ("weakprel.s", "weakprel.o"),
+        ("ehf.s", "ehf.o"),
     ] {
         gcc(&["-c", src, "-o", obj]);
     }
@@ -1135,6 +1230,14 @@ fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
             driver: gcc_driver,
             objects: vec!["gotw.o"],
             flags: free.clone(),
+            per_linker: none,
+        },
+        Case {
+            name: "eh-frames",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["ehf.o"],
+            flags: vec!["-static", "-nostdlib", "-Wl,--eh-frame-hdr", "-Wl,--gc-sections"],
             per_linker: none,
         },
         Case {

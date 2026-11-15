@@ -541,3 +541,124 @@ fn s9_2f_tls_mutations_are_found() {
         assert!(base > 0 && found > 0, "{}", link.label());
     }
 }
+
+/// The records of an output `.eh_frame` (file offsets): (start, end of the
+/// record, whether it is a CIE).
+fn eh_records(b: &[u8], off: usize, size: usize) -> Vec<(usize, usize, bool)> {
+    let mut out = Vec::new();
+    let mut p = off;
+    while p + 4 <= off + size {
+        let len = le32(b, p) as usize;
+        if len == 0 {
+            break;
+        }
+        out.push((p, p + 4 + len, le32(b, p + 4) == 0));
+        p += 4 + len;
+    }
+    out
+}
+
+// spec/plumb.md §9.2 (g), §6.4: each byte of every CIE and FDE of the
+// output, the records' lengths, and every byte of `.eh_frame_hdr`.
+#[test]
+fn s9_2g_eh_frame_mutations_are_found() {
+    let Some(c) = corpus(Size::Tls) else { return };
+    // (class, mutations, found, found by an E rule)
+    let mut tally: Vec<(&str, u32, u32, u32)> =
+        ["CIE bytes", "FDE bytes", "record lengths", ".eh_frame_hdr bytes"]
+            .iter()
+            .map(|k| (*k, 0, 0, 0))
+            .collect();
+    let mut missed = Vec::new();
+    let mut by_rule: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for linker in Linker::ALL {
+        let link = c.get("eh-frames", linker);
+        let ctx = Ctx::of(link);
+        assert!(!ctx.found(&ctx.output), "{} is not clean", link.label());
+        let secs = shdrs(&ctx.output);
+        let eh = secs.iter().find(|s| s.1 == ".eh_frame").unwrap();
+        let hdr = secs.iter().find(|s| s.1 == ".eh_frame_hdr").unwrap();
+        let mut muts: Vec<(usize, String, Vec<u8>)> = Vec::new();
+        for (start, end, cie) in eh_records(&ctx.output, eh.5 as usize, eh.6 as usize) {
+            for at in start + 4..end {
+                let mut m = ctx.output.clone();
+                m[at] ^= 0x01;
+                muts.push((usize::from(!cie), format!("{:#x}", at - start), m));
+            }
+            for at in [start + 8, start + 12].into_iter().filter(|_| !cie) {
+                let mut m = ctx.output.clone();
+                m[at + 1] ^= 0x10;
+                muts.push((1, format!("{:#x} bit 12", at - start), m));
+            }
+            let mut m = ctx.output.clone();
+            put32(&mut m, start, le32(&ctx.output, start) + 4);
+            muts.push((2, format!("length at {:#x}", start - eh.5 as usize), m));
+        }
+        for at in hdr.5 as usize..(hdr.5 + hdr.6) as usize {
+            let mut m = ctx.output.clone();
+            m[at] ^= 0x01;
+            muts.push((3, format!("{:#x}", at - hdr.5 as usize), m));
+        }
+        for (class, what, m) in muts {
+            let r = ctx.verify(&m);
+            let t = &mut tally[class];
+            t.1 += 1;
+            if unexpected(link, &r).is_empty() {
+                missed.push(format!("{} {}: {what}", link.label(), t.0));
+            } else {
+                t.2 += 1;
+                if r.findings.iter().any(|f| f.rule.id().starts_with('E')) {
+                    t.3 += 1;
+                }
+                let ids: std::collections::BTreeSet<String> = r
+                    .findings
+                    .iter()
+                    .map(|f| f.rule.id())
+                    .filter(|id| id.starts_with('E'))
+                    .collect();
+                for id in ids {
+                    *by_rule.entry(id).or_default() += 1;
+                }
+            }
+        }
+    }
+    for (k, n, f, e) in &tally {
+        eprintln!("§9.2 (g) {k}: {f}/{n} found, {e} by an E rule");
+    }
+    eprintln!("§9.2 (g) mutants each rule finds: {by_rule:?}");
+    for id in ["E1", "E2", "E3", "E4", "E5"] {
+        assert!(by_rule.contains_key(id), "{id} finds no mutant");
+    }
+    // Equivalent mutants: the frames mean what they meant. The zPLR CIE's
+    // LSDA encoding sdata4 made sdata2 (byte 0x17) decodes the same LSDA,
+    // whose offset fits in 16 bits; the last FDE lengthened over the
+    // terminator lld and mold add (no input gives one) gains DW_CFA_nops.
+    let equivalent = [
+        "eh-frames/bfd CIE bytes: 0x17",
+        "eh-frames/lld CIE bytes: 0x17",
+        "eh-frames/mold CIE bytes: 0x17",
+        "eh-frames/lld record lengths: length at 0xc0",
+        "eh-frames/mold record lengths: length at 0xc0",
+    ];
+    missed.retain(|m| !equivalent.contains(&m.as_str()));
+    assert!(missed.is_empty(), "not found:\n{}", missed.join("\n"));
+
+    // E1: crtend.o's terminator, swallowed by the FDE before it.
+    let (mut total, mut found) = (0, 0);
+    for linker in Linker::ALL {
+        let link = c.get("tls-c", linker);
+        let ctx = Ctx::of(link);
+        let eh = shdrs(&ctx.output).into_iter().find(|s| s.1 == ".eh_frame").unwrap();
+        let recs = eh_records(&ctx.output, eh.5 as usize, eh.6 as usize);
+        let &(last, end, _) = recs.last().unwrap();
+        assert_eq!(le32(&ctx.output, end), 0, "{}: no terminator", link.label());
+        let mut m = ctx.output.clone();
+        put32(&mut m, last, le32(&ctx.output, last) + 4);
+        total += 1;
+        if ctx.verify(&m).with_rule("E1").next().is_some() {
+            found += 1;
+        }
+    }
+    eprintln!("§9.2 (g) the terminator swallowed: {found}/{total} found");
+    assert_eq!(found, total);
+}

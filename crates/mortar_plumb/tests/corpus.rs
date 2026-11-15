@@ -41,6 +41,24 @@ fn s9_1_reference_links_verify_clean() {
                 + cov.failed,
             "{label}: the coverage counts do not add up"
         );
+        // §6.4: the libraries' and the programs' FDEs are matched one by
+        // one; a search table, where there is one, lists every live FDE.
+        if matches!(link.case, "c-hello" | "cxx-eh" | "cxx-eh-hdr" | "comdat" | "gc-sections") {
+            assert!(cov.fdes_checked > 100, "{label}: {} FDEs checked", cov.fdes_checked);
+        }
+        if matches!(link.case, "comdat" | "gc-sections") {
+            assert!(cov.fdes_dropped > 0, "{label}: no FDE dropped with its function");
+        }
+        if link.case == "cxx-eh-hdr" || (link.linker == Linker::Mold && cov.fdes_checked > 0) {
+            assert_eq!(
+                cov.eh_frame_hdr_entries,
+                cov.fdes_checked + cov.fdes_neutralised,
+                "{label}: the search table"
+            );
+        }
+        if link.case == "cxx-eh-hdr" {
+            assert_eq!(link.run(), Some(0), "{label}: the program fails");
+        }
         for (reason, n) in &cov.not_checked {
             assert!(
                 reason.is_stage2(),
@@ -51,7 +69,7 @@ fn s9_1_reference_links_verify_clean() {
         }
         let _ = writeln!(
             table,
-            "{label:24} records {:6} verified {:6} accepted {:5} not-checked {:5} (tls {}, ifunc {}, eh-frame {}, non-alloc {}) anomalies {}",
+            "{label:24} records {:6} verified {:6} accepted {:5} not-checked {:5} (tls {}, ifunc {}, eh-frame {}, non-alloc {}) fdes {}/{} hdr {} anomalies {}",
             cov.records,
             cov.verified_total(),
             cov.accepted_total(),
@@ -60,6 +78,9 @@ fn s9_1_reference_links_verify_clean() {
             cov.not_checked_of(Reason::Ifunc),
             cov.not_checked_of(Reason::EhFrame),
             cov.not_checked_of(Reason::NonAlloc),
+            cov.fdes_checked,
+            cov.fdes_dropped,
+            cov.eh_frame_hdr_entries,
             r.findings.len(),
         );
     }
