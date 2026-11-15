@@ -41,6 +41,91 @@ fn one_dash_names_do_not_start_with_l_m_o() {
     }
 }
 
+/// The supported rows, in table order (cli.md §4.2).
+const SUPPORTED: &[&str] = &[
+    // The whole pipeline writes the output (WP-027c).
+    "-o",
+    // The dynamic executable (WP-053).
+    "-pie",
+    // The default kind, position-dependent (WP-042).
+    "-no-pie",
+    // The front of the pipeline honors these (WP-027a).
+    "-m",
+    "-e",
+    "-s",
+    "-S",
+    "-x",
+    "-X",
+    "--discard-none",
+    "--no-build-id",
+    "--eh-frame-hdr",
+    "--no-eh-frame-hdr",
+    // The mark and its report (WP-031).
+    "--gc-sections",
+    "--no-gc-sections",
+    "--print-gc-sections",
+    "--no-print-gc-sections",
+    "--gc-keep-exported",
+    "-l",
+    "-(",
+    "-)",
+    "--as-needed",
+    "--no-as-needed",
+    "-Bstatic",
+    "-Bdynamic",
+    // WP-027e.
+    "--push-state",
+    "--pop-state",
+    "--warn-backrefs",
+    "--no-warn-backrefs",
+    "-L",
+    "--sysroot",
+    // The dynamic executable (WP-053).
+    "-rpath-link",
+    "--export-dynamic-symbol",
+    "-init",
+    "-fini",
+    "-E",
+    "--no-export-dynamic",
+    "-rpath",
+    "-I",
+    "--no-dynamic-linker",
+    "--enable-new-dtags",
+    "--disable-new-dtags",
+    "--error-limit",
+    "--fatal-warnings",
+    "--no-fatal-warnings",
+    "-w",
+    "--color-diagnostics",
+    "--no-color-diagnostics",
+    // The one-definition-rule switches (WP-072, odr.md O-41).
+    "--odr",
+    "--no-odr-check",
+    "--odr-stats",
+    "--version",
+    "-v",
+    "-V",
+    "--help",
+    "-Map",
+    "-M",
+    "--dependency-file",
+    "--threads",
+    "--mortar-map",
+    "--time-phases",
+    "-z now",
+    "-z lazy",
+    "-z relro",
+    "-z norelro",
+    "-z execstack",
+    "-z noexecstack",
+    "-z text",
+    "-z separate-code",
+    "-z noseparate-code",
+    "-z max-page-size",
+    "-z memory-seal",
+    "-z nomemory-seal",
+];
+
 // spec: cli.md §4.2 (status: supported today, noop with a reason, refused
 // otherwise)
 #[test]
@@ -50,92 +135,7 @@ fn statuses() {
         .filter(|r| r.status == Status::Supported)
         .map(mortar_cli::table::Row::name)
         .collect();
-    assert_eq!(
-        supported,
-        [
-            // The whole pipeline writes the output (WP-027c).
-            "-o",
-            // The dynamic executable (WP-053).
-            "-pie",
-            // The default kind, position-dependent (WP-042).
-            "-no-pie",
-            // The front of the pipeline honors these (WP-027a).
-            "-m",
-            "-e",
-            "-s",
-            "-S",
-            "-x",
-            "-X",
-            "--discard-none",
-            "--no-build-id",
-            "--eh-frame-hdr",
-            "--no-eh-frame-hdr",
-            // The mark and its report (WP-031).
-            "--gc-sections",
-            "--no-gc-sections",
-            "--print-gc-sections",
-            "--no-print-gc-sections",
-            "--gc-keep-exported",
-            "-l",
-            "-(",
-            "-)",
-            "--as-needed",
-            "--no-as-needed",
-            "-Bstatic",
-            "-Bdynamic",
-            // WP-027e.
-            "--push-state",
-            "--pop-state",
-            "--warn-backrefs",
-            "--no-warn-backrefs",
-            "-L",
-            "--sysroot",
-            // The dynamic executable (WP-053).
-            "-rpath-link",
-            "--export-dynamic-symbol",
-            "-init",
-            "-fini",
-            "-E",
-            "--no-export-dynamic",
-            "-rpath",
-            "-I",
-            "--no-dynamic-linker",
-            "--enable-new-dtags",
-            "--disable-new-dtags",
-            "--error-limit",
-            "--fatal-warnings",
-            "--no-fatal-warnings",
-            "-w",
-            "--color-diagnostics",
-            "--no-color-diagnostics",
-            // The one-definition-rule switches (WP-072, odr.md O-41).
-            "--odr",
-            "--no-odr-check",
-            "--odr-stats",
-            "--version",
-            "-v",
-            "-V",
-            "--help",
-            "-Map",
-            "-M",
-            "--dependency-file",
-            "--threads",
-            "--mortar-map",
-            "--time-phases",
-            "-z now",
-            "-z lazy",
-            "-z relro",
-            "-z norelro",
-            "-z execstack",
-            "-z noexecstack",
-            "-z text",
-            "-z separate-code",
-            "-z noseparate-code",
-            "-z max-page-size",
-            "-z memory-seal",
-            "-z nomemory-seal",
-        ]
-    );
+    assert_eq!(supported, SUPPORTED);
     for row in rows() {
         if let Status::Noop(reason) = row.status {
             assert!(!reason.is_empty(), "{}", row.name());
