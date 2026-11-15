@@ -1153,22 +1153,36 @@ in an append-only arena of fixed segments (segment `k` holds `2^k`
 
 Two stores conform to one interface (§1), chosen by `StorePolicy`:
 
-- **(a) `Resident` (M1).** Every file read is read whole (§11.2) and has
-  one part: the whole file.
-- **(b) `Staged`** (specified here for a later performance package; not
-  M1). Each file's **resident parts** are read into owned buffers: for a
-  relocatable object or archive member, the ELF header, the section
-  header table, the section-name string table, the symbol tables and
-  their string tables, `SHT_GROUP` sections, relocation sections, and
-  every other section of at most 64 KiB; for a shared object, the same
-  plus the dynamic tables; for a script or an archive's headers and
-  index, the whole of it. Everything else (in practice the large
-  `.debug_*` sections and large `.text`/`.data` bodies) **never enters
-  the store**: the image phase copies it straight into the output with
-  positioned reads (`FileExt::read_exact_at`), through `copy_to`.
+- **(a) `Resident`** (M1's first pipeline, and the fallback for an
+  input that cannot be re-read). Every file read is read whole (§11.2)
+  and has one part: the whole file.
+- **(b) `Staged`** (the primary store, and the default; WP-021b,
+  `spec/image.md` I-81). Each file's **resident parts** are read into
+  owned buffers; everything else **never enters the store**: the image
+  phase copies it straight into the output with positioned reads
+  (`FileExt::read_exact_at`), through `copy_to`.
+
+The staged store's resident ranges (§11.9 gives the read plan):
+
+| file | resident |
+|---|---|
+| relocatable object (little-endian `ET_REL`) larger than 64 KiB, or such an archive member | the first 64 bytes; the section header table; `.shstrtab`; every `SHT_SYMTAB`/`SHT_DYNSYM` and the section its `sh_link` names; every `SHT_STRTAB`, `SHT_SYMTAB_SHNDX`, `SHT_GROUP`, `SHT_NOTE` (so `.note.gnu.property`); every `SHT_REL`/`SHT_RELA` whose target (`sh_info`) is `SHF_ALLOC`, that is itself `SHF_ALLOC`, or whose `sh_info` names no section; every `SHF_COMPRESSED` section (the readers decode its header, `spec/elf.md` §3.9); every `SHF_MERGE` section with `sh_entsize > 0`, allocated or not, and every `.eh_frame` (and `SHT_X86_64_UNWIND` on x86-64): phase 60 splits them and interns pieces by their bytes (`spec/synth.md` S-5, S-28, §4), so they are read whole and compared, and the pieces' representatives must stay readable; every section named `.gnu.warning*` (resolve reads its text, §10 of `spec/resolve.md`); every other section of at most 64 KiB |
+| the same, of at most 64 KiB | the whole file (member) |
+| relocatable object whose section structure the rules cannot follow (`e_shentsize` not the class's, the table out of bounds, more than 2^32 − 1 sections) | the whole file: the reader finds the error in it, as over the resident store |
+| regular archive larger than 64 KiB | the magic; every member header; every special member (`/`, `/SYM64/`, `//`, `__.SYMDEF*`) and every BSD-named member (`#1/n`) whole; then each ordinary member as a file above; a member larger than 64 KiB that is not a little-endian `ET_REL` (a nested archive, a shared object, a text file): its first 64 bytes, all that §7.3 reads of it |
+| anything else: a shared object (with its dynamic parts), a thin archive, a script, a file of another format, any file of at most 64 KiB, a character device | the whole file |
+
+**Not resident**: bulk `PROGBITS` (`.text`, `.data`, `.rodata` bodies
+above 64 KiB), debug sections that are not `SHF_MERGE` (`.debug_info`,
+`.debug_line`, `.debug_loclists`, ...), and the relocation sections of
+non-allocated sections (`.rela.debug_info`): the scan and fill read
+them with `copy_to` (`spec/image.md` I-13, I-82).
 
 Which ranges are resident is a function of the file's bytes and the
-policy only, never of timing or of what happened to be read (§11.4).
+policy only, never of timing, of the thread count or of what happened to
+be read first (§11.4): the rules read the structure through what was
+read already or one more positioned read, and give the same ranges
+either way.
 
 **No mapping.** Every crate is `forbid(unsafe_code)`, and a memory
 mapping is `unsafe` in Rust for a reason beyond the call: if another
@@ -1225,15 +1239,22 @@ into one part. So:
   cover that range too: the readers never see a structure split between
   memory and disk;
 - `copy_to(b, r, out)` accepts any range within the file: the bytes of
-  `r` that lie in parts come from memory, the others from positioned
-  reads on the file's descriptor. A range past the end of the file is
-  `malformed-input` before any copy (the readers check section bounds,
-  elf.md §3).
+  `r` that lie in parts come from memory, the others from one positioned
+  read on the file's descriptor (from the first byte of `r` not in a part
+  to the last; the bytes of parts inside that read are then overwritten
+  with the parts' own, so a copy never mixes two versions of a resident
+  byte). A range past the end of the file is `malformed-input` before any
+  copy (the readers check section bounds, elf.md §3). `copy_to` takes
+  `&self` and may be called by every worker at once (positioned reads on
+  a shared descriptor, `read_exact_at`). A read that ends early is
+  `input-changed` (§11.5).
 
-The object and shared-object readers read through a parts view (every
-read of a structure is a `resident` call; a section body that is not
-resident is reported as such to the caller, which uses `copy_to`):
-requested of `spec/elf.md` (§17).
+The object and archive readers read through a parts view (`spec/elf.md`
+§3.0: every read of a structure is a `resident` call; a section body
+that is not resident is `NotResident` to the caller, which uses
+`copy_to`). The shared-object and script readers take whole files, which
+both stores hold whole. `Store::view(b)` is the view; `Store::whole(b)`
+is `Some` exactly for a file held in one part.
 
 ### 11.4 Descriptors and lifetimes
 
@@ -1241,17 +1262,25 @@ requested of `spec/elf.md` (§17).
 descriptor per worker, plus one per large file being read in chunks:
 never more than twice the thread count, whatever the number of inputs.
 
-**Staged store.** A file stays open from its first read to its last
-(the end of the image phase). The descriptor pins the inode: a file
-replaced by `rename` during the link is still read from the inode that
-was opened, so no file mixes the bytes of two versions through
-replacement. (In-place writes: §11.5.)
+**Staged store.** A file with bytes that are not resident stays open
+from its first read to the end of the link (the store's drop); a file
+held whole closes after its last read, as in the resident store. The
+descriptor pins the inode: a file replaced by `rename` or removed during
+the link is still read from the inode that was opened, so no file mixes
+the bytes of two versions through replacement. (In-place writes:
+§11.5.) While loading, the files of one batch are open from their first
+read to their checks (§11.9); a batch is a quarter of the budget (at
+least 16, at most 1 024 files).
 
-Safe Rust without dependencies can neither query nor raise
-`RLIMIT_NOFILE`. When `open` fails with `EMFILE` or `ENFILE`, the staged
-store makes one file that it holds open **fully resident** (reads the
-rest of it, its non-resident ranges, into a buffer of its own; closes
-it) and retries; if it holds no file open, the error is
+**The budget.** Safe Rust without dependencies can neither call
+`getrlimit` nor raise `RLIMIT_NOFILE`; the soft limit is read from
+`/proc/self/limits` (`Max open files`; 1 024 when it cannot be read),
+and the store keeps at most three quarters of it, less 32, at least 16,
+open after loading (`StoreConfig::max_open` overrides it, the tests'
+hook). A file loaded when the budget is spent is made **fully resident**
+(read whole, checked against its parts, closed). When `open` fails with
+`EMFILE` or `ENFILE`, the staged store makes the file it took last
+fully resident and retries; if it holds no file open, the error is
 `cannot-open-file` with the reason. A fully resident file answers
 exactly as a staged one: `resident` succeeds for the same ranges (those
 inside its declared parts), and `copy_to` returns the same bytes, from
@@ -1264,9 +1293,15 @@ descriptor budget and compares the output with the unbudgeted link.
 
 Checks, per file: one read at offset `n` (the size from `fstat`) must
 return 0 bytes; a short read is an error; and a second `fstat` at the
-last read (`close`) must give the same size, `st_mtime` and `st_ctime`.
+last read of loading must give the same size, `st_mtime` and `st_ctime`.
 Otherwise the error `input-changed` at the file's lowest mention (§9.3):
-`file changed while it was read`.
+`file changed while it was read`. The staged store makes the checks
+after its parts are read (§11.9 wave D), so a file truncated between its
+first reads and its parts is `input-changed`, never a part of zeros or a
+panic. After loading, a staged file's `copy_to` that reads short is
+`input-changed` (`CopyError::Changed`), and `Store::recheck(b)` repeats
+the `fstat` check on the held descriptor, for the end of the image
+phase.
 
 What is **guaranteed**: the bytes hashed are the bytes linked, per part
 (§11.6): no byte reaches a table or the output that was not part of the
@@ -1288,14 +1323,20 @@ stores compute the same value for the same bytes, so the identities of
 
 - **resident store**: computed over the buffer as it is read: the bytes
   hashed are exactly the bytes linked;
-- **staged store**: computed **lazily**, only when `hash(b)` is called
-  (by an incremental link; a plain link never calls it). Every part read
-  and every range handed out by `copy_to` records `(range, h(bytes))`;
-  `hash(b)` then streams the whole file through positioned reads into a
-  buffer of 1 MiB that is not kept, computes the file's hash, and checks
-  every recorded range against the same range of the stream; a mismatch
-  is `input-changed`. So the hashed bytes are the linked bytes, per part,
-  and the hash is the whole-file hash.
+- **staged store**: computed **lazily**, only when `hash(b)` (or
+  `hash_range(b, r)`, an archive member's) is called (by an incremental
+  link, or a walk whose `StoreConfig::hashes` asks for `File::hash`; a
+  plain link never calls it, and `File::hash` is then 0). `hash(b)`
+  streams the file through positioned reads into a buffer of 4 MiB (the
+  hash's block) that is not kept, computes the file's hash, and checks
+  every resident part against the same range of the stream, byte for
+  byte; a mismatch, or a read that ends early, is `input-changed`
+  (`ReadError::Changed`). So the hashed bytes are the resident bytes
+  linked, and the hash is the whole-file hash. The bytes `copy_to`
+  hands out are not recorded (that would hash every byte the image
+  copies on every link, for a hash only an incremental link asks for):
+  for them the guarantee is §11.5's, `recheck` at the end of the image
+  phase (`spec/landed/input/WP-021b.md`, ambiguity 3).
 
 What incremental linking then requires of a staged link: one further
 read of every byte of every staged file, without memory (a sequential
@@ -1321,6 +1362,19 @@ file's size with only some ranges read is not a saving, because on this
 machine (transparent huge pages `always`) a 512 MiB `vec![0u8; ..]`
 costs nothing until written, but writing one byte per MiB makes 161 MiB
 resident [E23].
+
+Measured with the staged store (WP-021b, `spec/landed/input/WP-021b.md`):
+of `cxx-medium-g`'s 210.6 MB of inputs, 129.8 MB is resident. Of the two
+archives' 201 MB: `.debug_str` and the other non-allocated `SHF_MERGE`
+sections 64.6 MB, symbol, string, group and note tables 22.1 MB, section
+headers 9.2 MB, archive indexes and name tables 7.2 MB, relocations of
+alloc sections 6.9 MB, other sections of at most 64 KiB 11.6 MB,
+`.eh_frame` 1.8 MB; not resident: relocations of non-alloc sections
+45.9 MB and large sections 32.8 MB. Without the merge sections the
+resident share would be `spec/image.md` I-93's 59.9 MB; phase 60 reads
+them whole and keeps its representatives' bytes (`spec/synth.md` S-5,
+S-28), so they are resident here (the landed record's ambiguity 1). The
+peak formula for both stores is `spec/image.md` I-92's.
 
 ### 11.8 Read against map: measurement
 
@@ -1357,6 +1411,35 @@ quarter of mold's whole link on this machine. Mapping wins where a
 linker does not touch what it maps (unextracted members, debug sections
 copied by `copy_file_range`): the staged store (§11.1) is the safe way to the same
 saving.
+
+### 11.9 The staged store's read plan
+
+`read_many` reads its jobs in batches (§11.4), each in four parallel
+waves; the parts are a function of the bytes alone (§11.1), whatever the
+waves read first.
+
+- **(A) per file**: `open`, `fstat`. A file of at most 64 KiB, or one
+  that is neither a little-endian `ET_REL` nor a regular archive, is one
+  range: the whole file. Otherwise one positioned read of its first
+  `StoreConfig::head` bytes (4 KiB). An object: one read of its last
+  `StoreConfig::tail` bytes (64 KiB), where GCC, Clang and `as` put the
+  section header table, `.symtab`, `.strtab` and `.shstrtab`; then the
+  rules of §11.1, each structure not inside what was read costing one
+  more read. An archive: the chain of member headers, each miss one read
+  of a window from the header (`head` + 64 bytes, doubled while the
+  misses follow each other closely, as in a run of small members, up to
+  1 MiB): a member's first bytes come with its header.
+- **(B) per member larger than 64 KiB** that is an object: one read of
+  its last `tail` bytes, then the rules.
+- Candidate ranges are merged into parts (§11.3).
+- **(C) per part**, in 4 MiB chunks: the bytes already read are copied;
+  the rest is one positioned read per chunk.
+- **(D) per file**: the checks of §11.5. A file held whole closes; any
+  other stays open within the budget (§11.4).
+
+The plan reads every byte of a large object at most once beyond its
+first `head` and last `tail` bytes, and makes about four positioned reads
+per large object (`spec/landed/input/WP-021b.md` measures it).
 
 ## 12. Parallelism and determinism
 
@@ -1636,19 +1719,35 @@ an argument at `Place::Argument`. A file reached through a script carries
   when another mention or another script changes); `s10_3_exclude_libs`;
   `s10_4_link_table` (merged `as_needed`, `copy_dt_needed`, groups),
   `s10_4_opened_and_dependency_file`.
-- **§11**: `s11_1_stores_agree` (Resident and Staged give equal
-  `Inputs`, equal `copy_to` bytes and equal hashes on the bench inputs);
-  `s11_3_parts_disjoint_and_merged` (a straddling section header table, a
-  string table overlapping a debug body);
-  `s11_3_resident_only_inside_one_part`; `s11_4_descriptor_bound`
-  (resident: 5 000 inputs, at most twice the thread count open);
-  `s11_4_descriptor_exhaustion_same_output` (the staged store with a
-  descriptor budget of 8 through a test hook: output equal to the
-  unbudgeted link); `s11_4_rename_between_stages` (the staged store
-  keeps reading the old inode); `s11_5_changed_size`, `s11_5_short_read`
-  (a file truncated between `fstat` and read, through a test hook in the
-  store), `s11_5_grew`; `s11_2_chunked_read_equals_whole_read`;
-  `s11_6_staged_hash_checks_ranges`.
+- **§11**: every walk and `load` test runs under both stores and asserts
+  equal tables (`tests/common`: `run_plan`, `s1_load::load_in`; the
+  tables as text without content hashes and parts shapes;
+  `MORTAR_TEST_STORE=resident|staged` runs one);
+  `s11_1_staged_resident_and_bulk` (a large `-g` object: the structure
+  resident, `.debug_info` and `.rela.debug_info` not, the parts view
+  parsing as the whole file); `s11_1_both_stores_agree_on_large_inputs`
+  (objects, a regular and a thin archive with large members);
+  `s11_1_staged_huge_sparse_archive` (a 1 GiB member of zeros: under 4
+  MiB read); `s11_3_parts_and_copy_to` (parts disjoint and at least 4 KiB
+  apart, `resident` only inside one part, `copy_to` of straddling ranges
+  equal to the file, past the end refused); `s11_3_member_view`;
+  `s11_3_copy_to_from_64_threads` (every section of every file of a
+  link, from 64 workers at once); `s11_4_descriptor_bound` (5 000
+  inputs, both stores: at most twice the thread count open while
+  reading); `s11_4_staged_descriptor_budget` (a budget of 2 through
+  `StoreConfig::max_open`: 6 of 8 files fully resident, the same bytes);
+  `s11_4_staged_emfile_falls_back` (run again under `ulimit -n 48` with a
+  budget above it: `EMFILE` makes held files fully resident);
+  `s11_4_staged_many_small_files`; `s11_4_rename_between_stages`;
+  `s11_5_changed_size`, `s11_5_short_read` (a file truncated between
+  `fstat` and read, through a test hook in the store), `s11_5_grew`;
+  `s11_5_staged_truncated_between_stages` (the `after_head` hook);
+  `s11_5_staged_changed_after_load` (`copy_to`, `hash` and `recheck`
+  give `Changed`); `s11_5_staged_fifo`;
+  `s11_2_chunked_read_equals_whole_read`; `s11_6_staged_hash_on_demand`
+  (equal to the resident store's, files and members; `File::hash` 0
+  unless asked); `s12_staged_determinism` (`check_schedules`: tables and
+  parts).
 - **§12**: `s12_determinism` (seeds × threads 1, 2, 7, 64: equal `Inputs`
   and report bytes); `s12_2_keys` (an error in the third file of `-lc`'s
   expansion sorts after one in the second); `s12_3_all_errors_reported`

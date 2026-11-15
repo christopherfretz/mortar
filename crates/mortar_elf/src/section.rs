@@ -16,6 +16,7 @@ use crate::note::Notes;
 use crate::raw::{Chdr, Class, Record, Rel, Rela, Shdr, Table, TableIter, Word};
 use crate::strtab::StrTab;
 use crate::symbol::{SymbolIndex, SymbolTable};
+use crate::view::View;
 
 /// The index of a section in a file's section header table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -31,7 +32,7 @@ impl fmt::Display for SectionIndex {
 /// `Copy`, and borrows only the input bytes.
 #[derive(Debug, Clone, Copy)]
 pub struct SectionTable<'a> {
-    file: &'a [u8],
+    file: View<'a>,
     headers: Table<'a, Shdr>,
     names: StrTab<'a>,
 }
@@ -42,8 +43,16 @@ impl<'a> SectionTable<'a> {
     /// name string table. Constant time: no section header other than
     /// header 0 and the string table's is read.
     pub fn parse(data: &'a [u8], header: &FileHeader) -> Result<Self, Error> {
+        Self::parse_view(View::whole(data), header)
+    }
+
+    /// [`SectionTable::parse`] over a parts view (`spec/elf.md` §3.0): the
+    /// section header table and the section name string table must each
+    /// lie inside one resident part, or the error is
+    /// [`Error::NotResident`].
+    pub fn parse_view(data: View<'a>, header: &FileHeader) -> Result<Self, Error> {
         let class = header.class;
-        let file_len = data.len() as u64;
+        let file_len = data.len();
         let offset = header.e_shoff;
         if offset == 0 {
             if header.e_shnum != 0 {
@@ -65,26 +74,26 @@ impl<'a> SectionTable<'a> {
                 expected: entsize as u16,
             });
         }
-        let table = usize::try_from(offset).ok().and_then(|start| data.get(start..));
         let count = if header.e_shnum != 0 {
             u64::from(header.e_shnum)
         } else {
             // gABI "ELF Header": the count is in sh_size of header 0.
-            match table.and_then(|bytes| Shdr::decode(class, bytes)) {
+            if !data.contains(offset, entsize as u64) {
+                return Err(Error::SectionTableOutOfBounds { offset, count: 1, file_len });
+            }
+            match data.get(offset, entsize as u64).and_then(|bytes| Shdr::decode(class, bytes)) {
                 Some(first) => first.sh_size,
-                None => {
-                    return Err(Error::SectionTableOutOfBounds { offset, count: 1, file_len });
-                }
+                None => return Err(Error::NotResident { offset, size: entsize as u64 }),
             }
         };
         if count > u64::from(u32::MAX) {
             return Err(Error::TooManySections { count });
         }
-        let bytes = count
+        let size = count
             .checked_mul(entsize as u64)
-            .and_then(|size| usize::try_from(size).ok())
-            .and_then(|size| table?.get(..size))
+            .filter(|size| data.contains(offset, *size))
             .ok_or(Error::SectionTableOutOfBounds { offset, count, file_len })?;
+        let bytes = data.get(offset, size).ok_or(Error::NotResident { offset, size })?;
         let mut sections =
             SectionTable { file: data, headers: Table::new(bytes, class), names: StrTab::empty() };
         let count = sections.len();
@@ -119,8 +128,8 @@ impl<'a> SectionTable<'a> {
         self.headers.class()
     }
 
-    /// The whole file.
-    pub fn file(&self) -> &'a [u8] {
+    /// The file the table is in, as far as it is resident.
+    pub fn file(&self) -> View<'a> {
         self.file
     }
 
@@ -292,7 +301,7 @@ impl FusedIterator for SectionIter<'_> {}
 /// bytes. Every accessor checks what it reads; none allocates.
 #[derive(Debug, Clone, Copy)]
 pub struct Section<'a> {
-    file: &'a [u8],
+    file: View<'a>,
     names: StrTab<'a>,
     shdr: Shdr,
     index: u32,
@@ -357,7 +366,7 @@ impl<'a> Section<'a> {
         let range = usize::try_from(offset).ok().zip(
             offset
                 .checked_add(size)
-                .filter(|end| *end <= self.file.len() as u64)
+                .filter(|end| *end <= self.file.len())
                 .and_then(|end| usize::try_from(end).ok()),
         );
         match range {
@@ -366,7 +375,7 @@ impl<'a> Section<'a> {
                 section: self.index,
                 offset,
                 size,
-                file_len: self.file.len() as u64,
+                file_len: self.file.len(),
             }),
         }
     }
@@ -374,11 +383,25 @@ impl<'a> Section<'a> {
     /// The contents as stored in the file; empty for a section without
     /// contents in the file. A `SHF_COMPRESSED` section's contents start
     /// with its compression header ([`Section::compression`]).
+    ///
+    /// Over a parts view, contents that do not lie inside one resident
+    /// part are [`Error::NotResident`]: the caller copies them from the
+    /// file instead (`spec/input.md` §11.3, `copy_to`).
     pub fn data(&self) -> Result<&'a [u8], Error> {
         match self.file_range()? {
-            Some(range) => Ok(self.file.get(range).unwrap_or(&[])),
+            Some(range) => {
+                let (offset, size) = (range.start as u64, (range.end - range.start) as u64);
+                self.file.get(offset, size).ok_or(Error::NotResident { offset, size })
+            }
             None => Ok(&[]),
         }
+    }
+
+    /// Whether [`Section::data`] can give the contents: they are resident,
+    /// or the section has none in the file. `false` also for contents out
+    /// of bounds (`data` says which).
+    pub fn is_resident(&self) -> bool {
+        self.data().is_ok()
     }
 
     /// `sh_link` as a section index, checked to be a section.

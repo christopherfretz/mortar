@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use mortar_core::par::Pool;
 use mortar_core::plan::Plan;
-use mortar_input::store::{Store, StorePolicy};
+use mortar_input::store::{Hooks, Store, StoreConfig, StorePolicy};
 use mortar_input::walk::{Loaded, Options, WalkEnv, walk};
 
 /// The plan of a command line (no program name).
@@ -17,11 +17,118 @@ pub fn plan<S: AsRef<OsStr>>(args: &[S]) -> Plan {
     mortar_cli::parse(&args).plan
 }
 
-/// Runs the walk in `cwd` with `threads` threads; the store lives as long
-/// as the test.
+/// The stores every test runs under (`spec/input.md` §11.1, §16): both,
+/// unless `MORTAR_TEST_STORE` names one (`resident` or `staged`).
+pub fn policies() -> Vec<StorePolicy> {
+    match std::env::var("MORTAR_TEST_STORE").as_deref() {
+        Ok("resident") => vec![StorePolicy::Resident],
+        Ok("staged") => vec![StorePolicy::Staged],
+        _ => vec![StorePolicy::Resident, StorePolicy::Staged],
+    }
+}
+
+/// A store that lives as long as the test.
+pub fn leaked(policy: StorePolicy) -> &'static Store {
+    Box::leak(Box::new(Store::new(policy)))
+}
+
+/// Runs the walk in `cwd` with `threads` threads under every store of
+/// [`policies`], asserts that they agree (§11.1: the tables are a function
+/// of the files, not of the store), and returns the last run (the staged
+/// store's, the default).
 pub fn run_plan(cwd: &Path, plan: &Plan, options: Options, pool: &Pool) -> Loaded<'static> {
-    let store: &'static Store = Box::leak(Box::new(Store::new(StorePolicy::Resident)));
-    walk(plan, &WalkEnv { cwd: cwd.to_path_buf() }, store, pool, options)
+    let mut runs = policies().into_iter().map(|policy| {
+        let store = leaked(policy);
+        (policy, walk(plan, &WalkEnv { cwd: cwd.to_path_buf() }, store, pool, options))
+    });
+    let (first_policy, first) = runs.next().expect("a store");
+    let print = fingerprint(&first);
+    let mut last = first;
+    for (policy, out) in runs {
+        let other = fingerprint(&out);
+        assert!(
+            print == other,
+            "the {first_policy:?} and {policy:?} stores disagree:\n{}",
+            first_difference(&print, &other)
+        );
+        last = out;
+    }
+    last
+}
+
+/// What the walk produced, as text, without what may differ between the
+/// stores by design: content hashes (the staged store computes them only
+/// when asked, §11.6), the shape of a reader's parts view, the timings.
+pub fn fingerprint(out: &Loaded<'_>) -> String {
+    let text = format!(
+        "{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{}",
+        out.target, out.files, out.archives, out.link, out.problems, out.waves
+    );
+    mask(&text)
+}
+
+/// [`fingerprint`]'s masking, for any `Debug` text of tables.
+pub fn mask(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let view = rest.find("View(base ");
+        let hash = rest.find("ContentHash(");
+        let at = match (view, hash) {
+            (Some(v), Some(h)) => v.min(h),
+            (Some(v), None) => v,
+            (None, Some(h)) => h,
+            (None, None) => break,
+        };
+        out.push_str(&rest[..at]);
+        let open = at + rest[at..].find('(').expect("an open parenthesis");
+        let close = open + rest[open..].find(')').expect("a close parenthesis");
+        out.push_str(&rest[at..open]);
+        out.push_str("(..)");
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The first line where two texts differ, with its neighbours.
+pub fn first_difference(a: &str, b: &str) -> String {
+    let short = |s: &str| s.chars().take(400).collect::<String>();
+    let (la, lb): (Vec<&str>, Vec<&str>) = (a.split(", ").collect(), b.split(", ").collect());
+    match la.iter().zip(&lb).position(|(x, y)| x != y) {
+        Some(i) => format!(
+            "at item {i}:\n  {}\n  {}",
+            short(&la[i.saturating_sub(2)..=i].join(", ")),
+            short(&lb[i.saturating_sub(2)..=i].join(", "))
+        ),
+        None => format!("lengths {} and {}", la.len(), lb.len()),
+    }
+}
+
+/// [`run`] with the content hashes filled (§11.6) by every store of
+/// [`policies`], which must agree on them too.
+pub fn run_hashed<S: AsRef<OsStr>>(cwd: &Path, args: &[S]) -> Loaded<'static> {
+    let plan = plan(args);
+    let mut last: Option<Loaded<'static>> = None;
+    for policy in policies() {
+        let config = StoreConfig { hashes: Some(true), ..StoreConfig::default() };
+        let store: &'static Store =
+            Box::leak(Box::new(Store::with_config(policy, config, Hooks::default())));
+        let out = walk(
+            &plan,
+            &WalkEnv { cwd: cwd.to_path_buf() },
+            store,
+            &Pool::sequential(),
+            Options::default(),
+        );
+        if let Some(prev) = &last {
+            let hashes = |o: &Loaded<'_>| o.files.iter().map(|f| f.hash).collect::<Vec<_>>();
+            assert_eq!(hashes(prev), hashes(&out), "{policy:?}: the hashes of the stores differ");
+            assert_eq!(fingerprint(prev), fingerprint(&out));
+        }
+        last = Some(out);
+    }
+    last.expect("a store")
 }
 
 /// [`run_plan`] on a command line, sequentially.
