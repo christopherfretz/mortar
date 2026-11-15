@@ -115,6 +115,7 @@ dependencies = [
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "mortar_plumb",
  "mortar_testutil",
  "signal-hook",
 ]

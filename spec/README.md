@@ -23,7 +23,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `layout.md` | `mortar_layout`: output sections, segments, addresses | planned (WP-024) |
 | `synth.md` | `mortar_synth`: synthetic sections | planned (WP-025) |
 | `image.md` | `mortar_image`: image synthesis, the writer, debug sections | planned (WP-026) |
-| `plumb.md` | `mortar_plumb`: the verifier and the map-file format | planned (WP-011) |
+| `plumb.md` | `mortar_plumb`: the verifier and the map-file format | stage 1: static non-PIE AArch64 (WP-011); TLS, IFUNC, `.eh_frame` stage 2 |
 | `meta.md` | `mortar_meta`: the Mason metadata container (shared with kiln, hod, tuck) | planned (M6) |
 | `odr.md` | `mortar_odr`: one-definition-rule checks | planned (M6) |
 | `incr.md` | `mortar_incr`: link state and incremental links | planned (M7) |
