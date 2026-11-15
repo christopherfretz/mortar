@@ -1534,6 +1534,9 @@ table (X-31).
 ### 14.3 arch.md
 
 **R-A1. §3.13, the merge rules of `property_merge`.**
+
+*Applied by WP-023b.*
+
 Current: "`property_merge(pr_type)` is `And` (an input without the
 property counts as 0; AArch64 `FEATURE_1_AND`, x86 `FEATURE_1_AND`),
 `Or` (an input without it counts as 0; x86 `ISA_1_NEEDED`,
@@ -1557,6 +1560,9 @@ kept), X-33 (GCS ANDs like BTI; PAUTH in lld 22; GNU drops or copies
 unknown types with a warning and never refuses them).
 
 **R-A2. §3.1, `Facts.got_plt_reserved`.**
+
+*Applied by WP-023b.*
+
 Current: "`got_plt_reserved: u8, // words reserved at the start of
 .got.plt with .dynamic`"
 Proposed: "`got_plt_reserved: u8, // words reserved at the start of
@@ -1568,6 +1574,9 @@ always demand `GOT_BASE`, L-101) and also covers a link without them.
 ### 14.4 a64.md
 
 **R-A64-1. §13.1, the personality encoding.**
+
+*Applied by WP-023b.*
+
 Current: "personality `0x9c` (`indirect | pcrel | sdata4`) via a
 `DW.ref.*` data word relocated by `ABS64`"
 Proposed: "personality `0x9b` (`indirect | pcrel | sdata4`), the CIE's
@@ -1579,6 +1588,8 @@ Reason: `0x9c` is `sdata8`, not `sdata4`; the scan has only `0x9b`.
 
 **R-A64-2. Q9.** Mark as answered: "`.plt`/`.rela.plt`/`.got.plt`
 (`spec/synth.md` S-68)."
+
+*Applied by WP-023b.*
 
 ### 14.5 plumb.md
 

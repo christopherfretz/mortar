@@ -1674,6 +1674,8 @@ the reason. Text is quoted from `main` at the merge of WP-020d.
 
 ### R-1 `spec/arch.md` §3.4 (the scan reports events)
 
+*Applied by WP-023b (`reference(record, EventClass, SymKey)`: the driver forms the group; `spec/landed/a64/WP-023b.md`).*
+
 1. The `DemandSink` comment. Current:
    `/* raise(SymKey, DemandFlags); raise_global(GlobalFlags); count(DynRole, n) for this section; error(Key, Diagnostic) */`.
    Proposed:
@@ -1714,6 +1716,8 @@ not merge (`spec/diag.md` §6.2).
 
 ### R-2 `spec/arch.md` §3.6 and §3.1 (clipped output)
 
+*Applied by WP-023b (`max_reach: Window`; `spec/landed/a64/WP-023b.md`).*
+
 1. `SectionOut`'s comment. Current: `/* the unit's output bytes,
    pre-filled with the input bytes; P of offset 0 */`. Proposed: `/* the
    unit's output bytes in the clip [a, b) of section offsets,
@@ -1736,6 +1740,8 @@ Reason: fill by windows (I-33) clips sections at window boundaries;
 the draft's hand-written AArch64 `(0, 0)` was wrong.
 
 ### R-3 `spec/arch.md` §3.5 (sequence extent)
+
+*Applied by WP-023b.*
 
 Add: "`sequence_extent(records, i) -> u32`: the number of records from
 `i` that a sequence recognized at `i` may consume (1 for a record that
@@ -1763,6 +1769,8 @@ cut a sequence.
 Reason: I-2, I-68, I-72; model §12's open item is closed.
 
 ### R-5 `spec/arch.md` §3.11 and `spec/a64.md` §13.2 (tombstone)
+
+*Applied by WP-023b (the image writes the `.debug_aranges` length, I-112).*
 
 1. `spec/arch.md` §3.11. Current: "A relocation in a non-alloc section
    whose target is in a section that is not live writes

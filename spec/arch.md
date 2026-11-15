@@ -852,7 +852,11 @@ of the key instruction)`.
 **Addresses are a function of the patch set.** The addresses `A` are a
 pure function of the patch-free layout and of the set of patches, each
 with its island and its place in the island's order. Redirects change
-no size, so they do not enter.
+no size, so they do not enter. At M2 the state is (patch set, the sizes in
+`sized`), with each `sized` size only growing, because `.relr.dyn`
+precedes the code (`spec/layout.md` L-21, L-121); the termination
+argument below then counts size increases as well as patches (each
+size is bounded, so their increases are finitely many).
 
 **Round** `k`, at the addresses `A_k` it starts with:
 

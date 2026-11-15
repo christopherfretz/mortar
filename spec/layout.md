@@ -1474,6 +1474,8 @@ New refusal names (class `feature` unless noted):
 
 ### 20.5 `arch.md`
 
+*Applied by WP-023b: all four bullets (arch §3.1, §6; a64 §11.1).*
+
 - §6 "Addresses are a function of the patch set": at M2, the state is
   (patch set, the sizes in `sized`), with each `sized` size only
   growing, because `.relr.dyn` precedes the code (L-21, L-121). The
