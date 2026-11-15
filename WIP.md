@@ -9,4 +9,7 @@ Done:
 - xfails: 67 x86-64 lines removed (61 WP-055, 6 WP-056 that pass); weak-class-table retagged
   (X-52 large sections staging refusal), gdb/lldb retagged (harness skips under qemu).
 
-Next: E-corpus matrix, C++/Fortran hello, item-5 checks, static-identical, gate, record.
+- IBT PLT (all inputs IBT) now refused naming IBT (got.rs new_dynamic); tests ibt-plt-refused, tls-desc-unrecognized-refused.
+- Verifier gap 2: TLSDESC->IE with a non-%rax destination flagged on every linker (reproducer for the record).
+
+Next: gate, record spec/landed/dyn/WP-055.md, delete WIP.md.

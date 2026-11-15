@@ -286,7 +286,15 @@ impl GotPlan {
             return fail(diag, key(0), internal("the architecture has no IRELATIVE type"));
         };
         if plt.chunks.len() != 1 || plt.call_chunk != 0 || plt.lazy_chunk != 0 {
-            return fail(diag, key(0), feature("a PLT of several sections in a dynamic output"));
+            // x86-64's IBT PLT (`.plt` + `.plt.sec`) is the only such shape;
+            // it stays refused at M2 (`spec/dyn.md` D-49, §15 Q4), and is
+            // named as such (WP-055: every input marked IBT selects it).
+            let what = if variant == PltVariant::Ibt {
+                "IBT PLT (-z ibt, -z ibtplt, or every input marked IBT) in a dynamic executable"
+            } else {
+                "a PLT of several sections in a dynamic output"
+            };
+            return fail(diag, key(0), feature(what));
         }
         let Some(lazy) = arch.lazy_target(variant) else {
             return fail(diag, key(0), feature("a dynamic PLT on this architecture"));
