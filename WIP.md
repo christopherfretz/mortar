@@ -2,20 +2,24 @@
 
 ## Done
 - 4681e52 spec rulings; 10e5f46 `PlaceFacts.exec`.
-- Driver selects i386 (`crates/mortar/src/arch.rs` `LinkArch::I386`; front.rs
-  refusal removed). front.rs: synthetic chunk names/headers for REL (`.rel.plt`)
-  and the output class (symtab, property note, chunk headers) from the target.
-- REL in fill: `crates/mortar_image/src/rel.rs` (decode, implicit addend from
-  the site snapshot); dispatch points in `reloc.rs` (decode, `raw_offset` by
-  entsize, addend for split targets, `RelocAt.addend: None` on REL);
-  `plan.rs` `RelaTable.rel` + entsize; `layout_plan.rs` decodes REL.
-- Static hello (gcc -O2) links and runs under qemu-i386, same as GNU ld.
+- Driver selects i386; REL in fill (`mortar_image/src/rel.rs`, dispatch in
+  reloc.rs); `.rel.plt` names; ELF32 class for symtab/property/chunks.
+- resolve: SHT_RELA in EM_386 (and SHT_REL in 64-bit) refused by name.
+- X86-1 e_flags value shown (`RefName::Value`).
+- mortar_live: REL addend selects the live merge piece (`LiveInputs.arch`).
+- front: `_GLOBAL_OFFSET_TABLE_` named w/o reference -> GOT header;
+  PT_TLS >= 2^31 refused on ELF32.
+- tests/x86.rs (13 tests, matrix + refusals), linktest i386 32 PASS 1 XFAIL.
+- docs/status/i386.md.
 
-## Learned
-- `raw_offset` assumed RELA entsize: the last REL records were never picked.
+## In flight
+- Identity of AArch64/x86-64 outputs vs merge-base build
+  (/Volumes/AgentWork/mortar-helper/.build/target-wp-030c-base, built from
+  `git archive 86d5439` in /tmp/mortar-wp030c-3761555/base; script
+  /tmp/mortar-wp030c-3761555/bin/ident.py).
+- Timing: 160-unit C++ program in /tmp/mortar-wp030c-3761555/big
+  (i386-*.o, x64-*.o), `--time-phases`.
 
 ## Next
-- Matrix in /tmp/mortar-wp030c-3761555 (bin/lk.py): C++ exceptions,
-  thread_local, Fortran, clang, -fPIE/-fPIC, gc-sections, -g.
-- Scan: i386 `SHT_RELA` refused by name; same-r_offset/straddler rules;
-  `mortar_live` REL addends; e_flags value shown.
+- Record spec/landed/x86/WP-030c.md; gate `cargo xtask ci --quick`;
+  remove .build/target-wp-030c-base and /tmp/mortar-wp030c-3761555.
