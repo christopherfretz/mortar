@@ -264,6 +264,7 @@ impl Census {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one pass over sections, then symbols
     fn object(&mut self, bytes: &[u8]) -> Result<(), mortar_elf::Error> {
         let obj = Object::parse(bytes)?;
         let machine: Machine = obj.machine();

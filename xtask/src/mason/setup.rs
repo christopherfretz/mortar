@@ -12,7 +12,8 @@
 //!    linker scripts would make the driver's trailing `-lc++` ask for the
 //!    `libc++.so.1` runtime that is not installed.
 //! 3. `libcxx-22-stripped/`: the four archives with `.ARM.attributes` and
-//!    `.deplibs` removed (`objcopy -R`).
+//!    `.deplibs` removed (`objcopy -R`); `libcxx-22-noattrs/`, with
+//!    `.ARM.attributes` removed only.
 //! 4. `llvm-project-<tag>/`: libc++'s tests, by kiln's
 //!    `scripts/fetch-libcxx-tests.sh`.
 //! 5. `kiln-src/`: kiln's tree at the submodule's commit (`git archive`,
@@ -33,6 +34,11 @@ use super::run_in;
 /// The libc++ release kiln pins (`kiln/spec/libcxx.md`).
 pub const TAG: &str = "llvmorg-22.1.8";
 pub const PACKAGES: &[&str] = &["libc++-22-dev", "libc++abi-22-dev", "libunwind-22-dev"];
+/// The stripped copies of the archives: directory, sections removed.
+pub const STRIPPED: &[(&str, &[&str])] = &[
+    ("libcxx-22-stripped", &[".ARM.attributes", ".deplibs"]),
+    ("libcxx-22-noattrs", &[".ARM.attributes"]),
+];
 pub const ARCHIVES: &[&str] = &["libc++.a", "libc++abi.a", "libc++experimental.a", "libunwind.a"];
 
 const LONG: Limits = Limits { time: Duration::from_mins(20), memory_kib: 8 << 20 };
@@ -117,19 +123,24 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
             }
         }
     }
-    let stripped = lane.join("libcxx-22-stripped");
-    if !ARCHIVES.iter().all(|a| stripped.join(a).is_file()) {
+    for (dir, sections) in STRIPPED {
+        let stripped = lane.join(dir);
+        if ARCHIVES.iter().all(|a| stripped.join(a).is_file()) {
+            continue;
+        }
         mk(&stripped)?;
         let mut script = String::from("set -e\n");
+        let removes: Vec<String> = sections.iter().map(|s| format!("-R {s}")).collect();
         for a in ARCHIVES {
             let _ = writeln!(
                 script,
-                "objcopy -R .ARM.attributes -R .deplibs {} {}",
+                "objcopy {} {} {}",
+                removes.join(" "),
                 q(&lib.join(a)),
                 q(&stripped.join(a))
             );
         }
-        sh(&script, &lane, "stripping .ARM.attributes and .deplibs")?;
+        sh(&script, &lane, &format!("making {dir}"))?;
     }
     let kiln = kiln_checkout();
     let tests = libcxx_tests();

@@ -6,6 +6,8 @@
 //! - `dyn`: kiln's procedure unchanged (static libc++, dynamic glibc, the
 //!   host's `ld`);
 //! - `bfd`, `lld`, `mold`, `mortar`: fully static, with that linker;
+//! - `mortar-noattrs`: mortar on the archives without `.ARM.attributes`
+//!   (what mortar does once that is accepted);
 //! - `mortar-stripped`: mortar on the archives without `.ARM.attributes`
 //!   and `.deplibs` (what mortar does once those are accepted).
 //!
@@ -21,7 +23,8 @@ use std::process::ExitCode;
 
 use super::setup;
 
-pub const MODES: &[&str] = &["dyn", "bfd", "lld", "mold", "mortar", "mortar-stripped"];
+pub const MODES: &[&str] =
+    &["dyn", "bfd", "lld", "mold", "mortar", "mortar-noattrs", "mortar-stripped"];
 
 /// The samples: named sets of test directories (relative to
 /// `libcxx/test`) with a shard.
@@ -228,13 +231,13 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         if let Some(p) = &mortar {
             c.env("MASON_MORTAR", p);
         }
-        if m == "mortar-stripped" {
+        if let Some(to) = m.strip_prefix("mortar-") {
             c.env(
                 "MASON_LIB_FROM",
                 super::lane_dir()
                     .join("kiln-src/.toolchain/libcxx-22-root/usr/lib/aarch64-linux-gnu"),
             )
-            .env("MASON_LIB_TO", super::lane_dir().join("libcxx-22-stripped"));
+            .env("MASON_LIB_TO", super::lane_dir().join(format!("libcxx-22-{to}")));
         }
         if args.backend == "hod" {
             c.env("KILN_BACKEND", "hod").env("KILN_HOD", &mason.hod).env("KILN_HOD_STRICT", "1");
@@ -334,6 +337,22 @@ fn render(args: &Args, modes: &[Mode]) -> String {
         let _ = writeln!(s, "| {} | {} | {} |", m.name, m.summary.trim(), b.join(", "));
     }
     let reference = reference(modes);
+    for m in modes {
+        let failed: Vec<&String> = m
+            .results
+            .iter()
+            .filter(|(_, l)| !matches!(l.outcome.as_str(), "PASS" | "UNSUPPORTED"))
+            .map(|(t, _)| t)
+            .collect();
+        if !failed.is_empty() && failed.len() <= 10 {
+            let _ = writeln!(
+                s,
+                "\n{} does not pass: {}",
+                m.name,
+                failed.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
     for m in modes.iter().filter(|m| m.name.starts_with("mortar")) {
         let _ = writeln!(s, "\n### {}", m.name);
         if let Some(r) = reference {
