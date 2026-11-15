@@ -810,6 +810,12 @@ which values are written where.
     IFUNC, X-22); `_GLOBAL_OFFSET_TABLE_` is its start (layout L-101).
     Keeping them whenever `.got.plt` exists means a new `GOTOFF`
     reference moves nothing (x86-64 [M1], `spec/x64.md` X-36); x86's crt files demand `GOT_BASE` anyway;
+    under `-static-pie` on i386, word 0 is `_DYNAMIC`'s link-time
+    address (the start of `.dynamic`, with no `RELATIVE`), words 1 and 2
+    are 0: GNU ld, lld and mold all write this (`spec/x86.md` X86-47,
+    R-16). glibc 2.41 does not read it; glibc before 2.35 did. [the rule
+    now; the end-to-end gate M2] (x86-64 was not measured; x64.md X-36
+    may want the same check);
   - on AArch64: one word per IPLT entry (a64.md §10.2; X-22).
 
   IPLT slot `n` is word `reserved + n`. A `.got.plt` with no words does
@@ -833,6 +839,11 @@ which values are written where.
     convention) on x86-64 (`spec/x64.md` E3); glibc overwrites the word, X-22);
   - REL (i386): the word itself holds the resolver's address, which is
     the implicit addend (GNU and lld, X-22).
+
+  On a REL target (i386) the `RELATIVE` addend, where synth places one
+  (the static-pie GOT slots and address words [M2]), is likewise the
+  initial content of the relocated word: synth writes the word, and the
+  record has no addend field (`spec/x86.md` §6.2, R-4).
 
   `sh_link` is 0 in a static output, `sh_info` the index of `.got.plt`
   with `SHF_INFO_LINK` (gABI; GNU on all three targets; lld writes 0 on
@@ -859,6 +870,17 @@ which values are written where.
   entry's address (a64.md §10.4). This includes the canonical case,
   where non-PIC code or data takes `f`'s address and the IPLT entry
   becomes `f`'s one address for pointer comparison.
+
+  Exception, i386 static-pie (`spec/x86.md` X86-50, R-14): the IPLT entry
+  is `ff a3 <word − GOT>`, which needs `%ebx` = the GOT at the jump, so it
+  cannot be the one address of `f`. Every address of `f` that a
+  relocation writes is instead a word holding the resolved function, with
+  an `IRELATIVE` whose implicit addend is the resolver (the `GDAT` slot,
+  `32` in data); only `PLT32` calls go to the entry; `GOTOFF` and `PC32`
+  against `f` are refused (`refused`, class `feature`, X86-50). lld 22
+  makes the `ff a3` entry the canonical address and its output crashes
+  when the pointer is called with `%ebx ≠ GOT` (`spec/x86.md` §15.2 W6).
+  [the rule now; the end-to-end gate M2]
 
   In `.symtab`, `f` keeps `STT_GNU_IFUNC` with the resolver's value,
   section and size in every case, the canonical one included: GNU's form
