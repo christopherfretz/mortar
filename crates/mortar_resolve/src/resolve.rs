@@ -303,11 +303,11 @@ pub fn resolve_steps<V: View>(
     // def (§3.2) and the merged properties (§3.5, §3.6).
     let mut def = vec![Def::Undefined { weak: false }; keys];
     pool.unit_cost(2).for_each_mut(&mut def, |k, d| *d = def_of(&acc, k));
-    let props: Vec<Props> = pool.unit_cost(1).map(keys, |k| Props {
+    let mut props: Vec<Props> = pool.unit_cost(1).map(keys, |k| Props {
         visibility: rank_vis(acc.vis[k].load(Relaxed)),
         flags: acc.flags[k].load(Relaxed),
     });
-    let common: Vec<(SymbolId, CommonShape)> = def
+    let mut common: Vec<(SymbolId, CommonShape)> = def
         .iter()
         .enumerate()
         .filter(|(_, d)| matches!(d, Def::Common(_)))
@@ -374,11 +374,14 @@ pub fn resolve_steps<V: View>(
             &redirect,
             &mut file_live,
             &mut def,
-            &props,
+            &mut props,
             &mut problems,
             pool,
         )
     });
+    // A common that yields to a shared data definition (§3.2 rule 2) is
+    // allocated nowhere.
+    common.retain(|(k, _)| matches!(def[k.0 as usize], Def::Common(_)));
     steps.step("resolve.shared");
     // Roots that must be defined (§4.2, §5.5).
     for named in &opts.require_defined {

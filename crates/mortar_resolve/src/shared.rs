@@ -179,7 +179,7 @@ pub(crate) fn link<V: View>(
     redirect: &[SymbolId],
     file_live: &mut [FileLive],
     def: &mut [Def],
-    props: &[Props],
+    props: &mut [Props],
     problems: &mut Vec<Problem>,
     pool: &Pool,
 ) -> Dynamic {
@@ -312,6 +312,11 @@ pub(crate) fn link<V: View>(
     });
     for (k, d) in new_def.into_iter().enumerate() {
         if let Some(d) = d {
+            // A common that yields (rule 2) is demoted: its mentions are
+            // references of the shared definition (§3.1, §3.6).
+            if matches!(def[k], Def::Common(_)) {
+                props[k].flags |= flags::REF_REGULAR | flags::REF_STRONG;
+            }
             def[k] = d;
         }
     }

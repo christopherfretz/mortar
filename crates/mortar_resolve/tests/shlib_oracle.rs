@@ -118,7 +118,11 @@ fn dynamic_names(path: &Path) -> (Vec<String>, Option<String>) {
 
 /// The names `.dynsym` of `path` defines.
 fn dynsym_defs(path: &Path) -> BTreeSet<String> {
-    let text = output(Command::new(readelf().unwrap()).args(["--dyn-syms", "-W"]).arg(path));
+    parse_dynsym(&output(Command::new(readelf().unwrap()).args(["--dyn-syms", "-W"]).arg(path)))
+}
+
+/// The defined names of `readelf --dyn-syms -W` output.
+fn parse_dynsym(text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for line in text.lines() {
         let f: Vec<&str> = line.split_whitespace().collect();
@@ -164,7 +168,11 @@ pub fn record(arch: Arch, driver: &str, args: &[&str], cwd: &Path, out: &str) ->
     let exe = cwd.join(out);
     let _ = std::fs::remove_file(&exe);
     let mut cmd = driver_cmd(arch, driver);
-    cmd.current_dir(cwd).env("MORTAR_ORACLE_ARGS", &argfile).env("TMPDIR", cwd);
+    cmd.current_dir(cwd)
+        .env("MORTAR_ORACLE_ARGS", &argfile)
+        .env("TMPDIR", cwd)
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("LD_RUN_PATH");
     cmd.arg(format!("-B{}/", bin.display())).args(args).arg("-o").arg(&exe);
     let o = run_with(&mut cmd, b"", Duration::from_mins(2));
     let args: Vec<String> =
@@ -221,11 +229,22 @@ pub fn resolve_line(
     cwd: &Path,
     sonames: &mut BTreeMap<PathBuf, String>,
 ) -> Mortar {
-    let argv = mortar_args(args);
-    let parsed = mortar_cli::parse(&argv);
+    let line = mortar_args(args);
+    let parsed = mortar_cli::parse(&line);
     let mut errors: Vec<(String, String)> = Vec::new();
     let mut warnings = Vec::new();
-    for (_, d) in &parsed.diagnostics {
+    // The CLI refuses the dynamic options until their packages land
+    // (WP-042, WP-056); of its refusals only the permanent one of this
+    // area counts: `--copy-dt-needed-entries` (D-15).
+    let refusals: Vec<(_, mortar_diag::Diagnostic)> = parsed
+        .refusals()
+        .into_iter()
+        .filter(|(_, d)| {
+            let text = format!("{d:?}");
+            text.contains("copy-dt-needed") || text.contains("add-needed")
+        })
+        .collect();
+    for (_, d) in parsed.diagnostics.iter().chain(&refusals) {
         if d.severity() == mortar_diag::Severity::Error {
             errors.push((d.id().to_owned(), format!("{d:?}")));
         }
@@ -293,6 +312,21 @@ pub fn resolve_line(
         })
         .collect();
     let name = |k| String::from_utf8_lossy(inputs.symbols[k].name).into_owned();
+    // The scan reports `undefined-symbol` for the keys whose verdict is an
+    // error (resolve §5.5): the link fails there.
+    for (k, p) in out.resolution.props.iter() {
+        if p.verdict == mortar_core::resolution::Verdict::Error {
+            let closure = out.closure_only.iter().find(|c| c.0 == k).map(|c| c.1);
+            errors.push((
+                "undefined-symbol".to_owned(),
+                format!(
+                    "(scan) {}{}",
+                    name(k),
+                    closure.map_or(String::new(), |f| format!(", defined in closure file {f:?}"))
+                ),
+            ));
+        }
+    }
     let exported = out.resolution.exported.iter().map(name).collect();
     let imported = out.resolution.imported.iter().map(name).collect();
     let internal = out
@@ -780,4 +814,175 @@ fn d19a_needed_order_aarch64() {
 #[test]
 fn d19a_needed_order_x86_64() {
     needed_order(X86_64);
+}
+
+/// Reads the records `usedset.sh`'s wrapper left in `model`: per link
+/// `<id>.args` (cwd, then GNU ld's arguments), `.rc`, `.needed`,
+/// `.dynsyms.all`, `.err`, `.env`.
+fn records(model: &Path) -> Vec<(String, Gnu, PathBuf, String)> {
+    let mut ids: Vec<String> = std::fs::read_dir(model)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".args").map(str::to_owned))
+        .collect();
+    ids.sort();
+    let read = |id: &str, ext: &str| {
+        std::fs::read_to_string(model.join(format!("{id}.{ext}"))).unwrap_or_default()
+    };
+    ids.into_iter()
+        .map(|id| {
+            let text = read(&id, "args");
+            let mut lines = text.lines();
+            let cwd = PathBuf::from(lines.next().unwrap());
+            let args: Vec<String> = lines.map(str::to_owned).collect();
+            let ok = read(&id, "rc").trim() == "0";
+            let needed = read(&id, "needed")
+                .trim()
+                .split(',')
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned)
+                .collect();
+            let exported =
+                if ok { parse_dynsym(&read(&id, "dynsyms.all")) } else { BTreeSet::new() };
+            let env = read(&id, "env").trim().to_owned();
+            let g = Gnu { args, ok, stderr: read(&id, "err"), needed, exported };
+            (id, g, cwd, env)
+        })
+        .collect()
+}
+
+/// The links of `shlib/usedset.sh` where mortar deliberately differs from
+/// GNU ld at resolution, by rule:
+///
+/// - D-15: `--copy-dt-needed-entries` is refused (`2.10b`; `2.10c`
+///   agrees: GNU ld refuses it too, its closure symbol undefined).
+/// - input §8.3: a shared object without `DT_SONAME` named by a script is
+///   refused by name (`1.6a`-`1.6c`, `6.3a`, `6.3b`: `libns.so`).
+/// - D-19: `LD_RUN_PATH`/`LD_LIBRARY_PATH` are never read, so a closure
+///   library found only through them is not found (`4.4c`, `4.4f`,
+///   `4.4g`): D-13 judges the needing library's reference undefined.
+/// - D-19a/D-11 (positions do not matter): an as-needed library named
+///   before the object that references it (`2.8a`) is needed; GNU ld
+///   refuses.
+/// - input §4.2/§8.6: the closure search has no built-in directories but
+///   finds a closure library in the `-L` directories and the needing
+///   library's own directory as GNU ld does not (`4.4h`, `4.4i`).
+/// - D-18 (phase 70, the scan's): a copy of, or canonical PLT for, a
+///   protected definition is refused after resolution, so resolution
+///   alone resolves `5.6*` lines GNU ld refuses.
+/// - W1 (`5.7`): a hidden `.dynsym` definition GNU ld binds to is ignored
+///   (D-10); the reference stays undefined and mortar refuses.
+fn usedset_deliberate(arch: Arch) -> Vec<(&'static str, &'static str)> {
+    let mut v = vec![
+        ("1.6a-group-script-NA", "mortar-refuses"),
+        ("1.6b-group-script-AN", "mortar-refuses"),
+        ("1.6c-group-script-hook", "mortar-refuses"),
+        ("6.3a-INPUT-script", "mortar-refuses"),
+        ("6.3b-INPUT-script-l", "mortar-refuses"),
+        ("2.10b-copy-dt-needed", "mortar-refuses"),
+        ("2.8a-AN-lib-before-obj", "gnu-refuses"),
+        ("4.4h-L-dir-only", "gnu-refuses"),
+        ("4.4i-needing-libs-own-dir", "gnu-refuses"),
+        ("5.6b-protected-data-nopie", "gnu-refuses"),
+        ("5.6d-protected-func-nopie", "gnu-refuses"),
+        ("5.7-hidden-in-dynsym", "mortar-refuses"),
+    ];
+    if arch.name == "aarch64" {
+        // The native GNU ld reads the environment (D-19).
+        v.extend([
+            ("4.4c-LD_RUN_PATH-only", "mortar-refuses"),
+            ("4.4f-LD_RUN_PATH-vs-LD_LIBRARY_PATH", "mortar-refuses"),
+            ("4.4g-LD_LIBRARY_PATH-only", "mortar-refuses"),
+        ]);
+    } else {
+        // x86-64's PIE takes a copy of protected data (D-18).
+        v.push(("5.6a-protected-data-pie", "gnu-refuses"));
+    }
+    v
+}
+
+fn tag(v: &Verdict) -> &'static str {
+    match v {
+        Verdict::Agree => "agree",
+        Verdict::GnuRefuses(_) => "gnu-refuses",
+        Verdict::MortarRefuses(_) => "mortar-refuses",
+        Verdict::Needed(..) => "needed",
+        Verdict::Exports(..) => "exports",
+    }
+}
+
+/// `shlib/usedset.sh` (E-usedset): every E-shlib experiment, X1-X3c and
+/// the default lines, recorded with GNU ld on both architectures, then
+/// resolved by mortar.
+#[test]
+fn e_usedset() {
+    if !tools(AARCH64, &["gcc"]) || !tools(X86_64, &["gcc"]) || tool("python3").is_none() {
+        return;
+    }
+    let dir = Scratch::new("shlib-usedset");
+    let here = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oracle/shlib");
+    for (script, envs) in [
+        ("run.sh", vec![("LINKERS", ""), ("NORUN", "1")]),
+        ("usedset.sh", vec![("NORUN", "1"), ("NOMODEL", "1")]),
+    ] {
+        let mut cmd = Command::new("bash");
+        cmd.current_dir(dir.path())
+            .env("TMPDIR", dir.path())
+            .env_remove("LD_LIBRARY_PATH")
+            .env_remove("LD_RUN_PATH")
+            .arg(here.join(script))
+            .arg(dir.path());
+        if script == "run.sh" {
+            cmd.arg("all");
+        }
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let o = run_with(&mut cmd, b"", Duration::from_mins(10));
+        assert!(o.success(), "{script}: {}", o.stderr_text());
+    }
+    let mut failures = Vec::new();
+    for arch in [AARCH64, X86_64] {
+        let model = dir.path().join(arch.name).join("model");
+        let mut sonames = BTreeMap::new();
+        let mut table: Vec<(String, Verdict)> = Vec::new();
+        for (id, g, cwd, env) in records(&model) {
+            let m = resolve_line(&g.args, &cwd, &mut sonames);
+            let v = judge(&g, &m);
+            if v != Verdict::Agree {
+                eprintln!(
+                    "{} {id}: {v:?}{}\n  gnu: {}\n  mortar: {:?}",
+                    arch.name,
+                    if env.is_empty() { String::new() } else { format!(" (env {env})") },
+                    g.stderr.lines().next().unwrap_or(""),
+                    m.errors.iter().map(|e| &e.1).collect::<Vec<_>>()
+                );
+            }
+            table.push((id, v));
+        }
+        let pinned = usedset_deliberate(arch);
+        let agree = table.iter().filter(|(_, v)| *v == Verdict::Agree).count();
+        let mut deliberate = 0;
+        for (id, v) in &table {
+            if *v == Verdict::Agree {
+                continue;
+            }
+            if pinned.iter().any(|(n, t)| n == id && *t == tag(v)) {
+                deliberate += 1;
+            } else {
+                failures.push(format!("{} {id}: {v:?}", arch.name));
+            }
+        }
+        for (n, t) in &pinned {
+            if !table.iter().any(|(id, v)| id == n && tag(v) == *t) {
+                failures.push(format!("{} {n}: pinned {t}, not seen", arch.name));
+            }
+        }
+        eprintln!(
+            "usedset {}: {} links, {agree} agree, {deliberate} deliberate, {} unexplained",
+            arch.name,
+            table.len(),
+            table.len() - agree - deliberate
+        );
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

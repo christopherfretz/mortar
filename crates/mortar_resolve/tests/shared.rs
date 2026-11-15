@@ -302,6 +302,10 @@ fn s3_2_rule2_common_yields_to_shared_data() {
     let r = link(&m);
     assert_eq!(row(&r, lib), NEEDED);
     assert_eq!(def(&m, &r, "x"), Def::Shared(SymEntry { file: lib, index: i }));
+    // The common is demoted: a reference of the shared definition,
+    // allocated nowhere.
+    assert!(dynamic(&r).imported[m.id("x").0 as usize]);
+    assert!(r.common.is_empty());
 }
 
 #[test]
