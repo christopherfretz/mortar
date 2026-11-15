@@ -54,31 +54,15 @@ resolved meta rows then odr rows; spec_tables green).
    T-MT-5: DONE. `crates/mortar/tests/meta.rs` `mt5_tools_that_keep_it_and_tools_that_lose_it`:
    every row of MT-5 (binutils 2.44, llvm 19 AND 22, elfutils 0.192, ar/thin,
    ld -r by bfd/lld/mold: one section, concatenated, flags E, align 8) holds.
-5. Experiment 7: NOT STARTED. Plan:
-   - Objects: bench workload `cxx-medium-static` (protoc, g++ -O0) at
-     `/Volumes/AgentWork/mortar-helper/.build/bench-work/workloads/cxx-medium-static/`
-     (`response.txt` = the link line; its objects are main.o +
-     libprotoc.a + libprotobuf.a members, 167 of protoc's). The heavy TU:
-     meta.md §10 table (kiln -O0 object 475,720 B; 595 vague, 661 globals,
-     334 types) — find it under `.build/review-meta*` or rebuild per
-     meta.md; else use the table's counts.
-   - Per object: rows = kind 2 per vague (STB_WEAK/GNU_UNIQUE defined)
-     symbol, kind 5 per defined+undefined global, kind 3 per DWARF type
-     (use the -g workload `cxx-medium-g-static` for counts, or the
-     table's proxy). Write units with mortar_meta's writer (anchored rows)
-     — e.g. a small `xtask meta` helper or an `#[ignore]` test — add them
-     with `meta write --into`, and relink.
-   - Measure: unit sizes by kind (sum, median, max vs MT-41's ~92 KB);
-     bytes read with containers unwanted (hook: must be 0 except the ELF32
-     head case) and wanted; read+group cost (O-22) vs O-45's 3 %.
-   - Bench before/after (cost of this package when unused): release
-     mortar at merge-base 862977c (export with `git archive` to the /tmp
-     scratch, separate CARGO_TARGET_DIR under .build, delete after) vs this
-     branch; `--thread-count 1`; median of 15 on protoc
-     (`cxx-medium-static` response.txt), hello-c-static,
-     synthetic-objects-static. Expected: +2 reads per small top-level
-     object, +1 per small non-object file, +2 per large object.
-   - Set MT-41's gate in the record from the numbers.
+5. Experiment 7: IN PROGRESS. Scripts + objects in
+   `/Volumes/AgentWork/mortar-helper/.build/wp071-exp7/` (scripts/gen.py,
+   run.sh, sizes.py, bench.py; obj/ = 216 MB, DELETE at the end; base-src/
+   base-target = release mortar at d23258b, DELETE at the end). Store half:
+   `crates/mortar_input/tests/exp7.rs` (#[ignore], MORTAR_EXP7=...).
+   Sizes done (sizes.py): protoc 168 units 14.57 MB = 31.4 % of the objects,
+   median 71 KB, 88 > 64 KiB; heavy TU 112,392 B (MT-41 said ~92 KB) =
+   23.6 % of -O0, 10.7 % of -O0 -g; type names dominate (avg ~107 B).
+   Outputs: base == branch == branch with containers (cmp).
 6. Record `spec/landed/meta/WP-071.md`: NOT STARTED (findings list above
    and in the hand-back notes: MT-35 fixed offsets, bad magic/unit_size
    ends the section, MT-14 unsorted/duplicate kinds, strtab rules, key vs

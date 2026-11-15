@@ -174,7 +174,9 @@ enum Mt5 {
 
 // spec: meta.md T-MT-5, MT-5
 #[test]
+#[allow(clippy::too_many_lines)] // MT-5's table, one row per line
 fn mt5_tools_that_keep_it_and_tools_that_lose_it() {
+    use Mt5::{Kept, KeptUnanchored, KeptWeak, Removed};
     let Some(asm) = tool("as") else { return };
     let s = Scratch::new("meta-mt5");
     let dir = s.path();
@@ -212,7 +214,6 @@ fn mt5_tools_that_keep_it_and_tools_that_lose_it() {
         mt5_run(dir, &exe, &a);
         check(what, &dir.join(&out), expect);
     };
-    use Mt5::{Kept, KeptUnanchored, KeptWeak, Removed};
     row("strip -g", "strip", &["-g"], Kept);
     row("strip -x", "strip", &["-x"], Kept);
     row("strip --strip-unneeded", "strip", &["--strip-unneeded"], Kept);
