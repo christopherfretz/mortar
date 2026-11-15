@@ -726,6 +726,18 @@ Types are `R_X86_64_*`, numbers from the SysV x86-64 psABI. "Fits" means
 expressible by §2-§3 with no change to the trait as it now stands; the
 changes it forced are in Appendix C.
 
+Grounding: the psABIs, plus one experiment (`landed/arch/WP-013.md`) with
+the container's x86-64 and i686 cross GCC 14, GNU ld 2.44 and lld 19. It
+confirmed byte for byte:
+
+- A.3's and B.5's GD → LE words;
+- A.2's `REX_GOTPCRELX` `mov` → `lea` (lld) and → `mov $imm` (GNU ld,
+  non-PIE);
+- A.8's IBT `.plt`/`.plt.sec`;
+- B.4's two i386 PLTs, including the `push 8n`.
+
+The other items rest on the psABIs alone.
+
 **A.1 `PLT32` (4), `PC32` (2).** `PLT32`: class `Branch` (no veneer:
 `branch().veneer = false`, `thunk()` is `None`), `X = L + A − P`, `Data{4}`,
 `Signed(32)`. Overflow is §7's error (no thunk exists on x86).
@@ -835,7 +847,9 @@ only) when it has none (ModRM `mod = 00, rm = 101`). `classify` reads the
 ModRM byte at `P − 1` (window `before: 2`) and returns `Minus::GotBase` or
 `Minus::None`. `GOT32X` relaxations: `mov foo@GOT(%reg), %r` (`8b`) →
 `lea foo@GOTOFF(%reg), %r` (`8d`); `call *foo@GOT(%reg)` (`ff /2`) →
-`addr32 call foo`; in `Static`/`Exec` binary operations → immediates.
+`addr32 call foo`; in `Static`/`Exec` `mov` and binary operations →
+immediates (`mov foo@GOT(%ebx), %edx` → `c7 c2 <abs>`, observed from GNU
+ld; lld 19 leaves the GOT load).
 Kind 2 where the value range matters, kind 1 for `lea` (the `GOTOFF`
 value has no range beyond 32 bits). Fits only because `classify` sees the
 bytes (Appendix C, 1).
