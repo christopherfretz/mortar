@@ -808,7 +808,13 @@ fn d42_copy_placement() {
         ChunkKind::Synthetic(Synth { name: b".dynbss", address_dependent: false });
     w.p().place[SectionId(9)] = Place::NONE;
     w.liveness.live[SectionId(9)] = false;
-    let at = |offset, align| SymPlace { key: AllocKey::Copy(0), chunk: ChunkId(8), offset, size: 8, align };
+    let at = |offset, align| SymPlace {
+        key: AllocKey::Copy(0),
+        chunk: ChunkId(8),
+        offset,
+        size: 8,
+        align,
+    };
     let common = w.layout.placement.sym_place[0];
     w.p().sym_place = Box::new([common, at(0, 3)]);
     assert_eq!(w.validate(), Ok(()));
@@ -1230,7 +1236,8 @@ fn derive_table() -> (Column<ChunkId, Chunk>, Box<[ChunkId]>) {
 fn derive_segments_shape() {
     use mortar_elf::consts::{PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_NOTE};
     let (chunks, order) = derive_table();
-    let rules = SegmentRules { class: Class::Elf64, max_page: 0x1_0000, stack: PF_R | PF_W, pie: false };
+    let rules =
+        SegmentRules { class: Class::Elf64, max_page: 0x1_0000, stack: PF_R | PF_W, pie: false };
     let seg = |p_type, flags, offset, addr, filesz, memsz, align| Segment {
         p_type,
         flags,

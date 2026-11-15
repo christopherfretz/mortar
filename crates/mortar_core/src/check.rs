@@ -1275,12 +1275,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             need(
                 matches!(c.kind, ChunkKind::Synthetic(s) if s.name == name),
                 r,
-                || {
-                    format!(
-                        "a copy allocation outside its chunk {}",
-                        String::from_utf8_lossy(name)
-                    )
-                },
+                || format!("a copy allocation outside its chunk {}", String::from_utf8_lossy(name)),
                 me,
             )?;
             need(
@@ -1294,7 +1289,13 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             )?;
             // Extent within the chunk: the general rule of model.md §4.4
             // (checked by `places`).
-            rows.push((row.chunk, row.offset, row.size, least[i as usize].unwrap_or(alloc.alias), at as u32));
+            rows.push((
+                row.chunk,
+                row.offset,
+                row.size,
+                least[i as usize].unwrap_or(alloc.alias),
+                at as u32,
+            ));
         }
         rows.sort_unstable();
         for w in rows.windows(2) {

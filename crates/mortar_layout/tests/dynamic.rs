@@ -25,10 +25,10 @@ use mortar_core::layout::{
 use mortar_core::par::Pool;
 use mortar_core::resolution::{Def, InternalDef, RefFlags};
 use mortar_elf::consts::{
-    PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE,
-    PT_PHDR, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHF_TLS, SHF_WRITE, SHT_DYNAMIC,
-    SHT_DYNSYM, SHT_GNU_HASH, SHT_GNU_VERNEED, SHT_GNU_VERSYM, SHT_INIT_ARRAY, SHT_NOBITS,
-    SHT_NOTE, SHT_PROGBITS, SHT_RELA, SHT_STRTAB,
+    PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR,
+    PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHF_TLS, SHF_WRITE, SHT_DYNAMIC, SHT_DYNSYM,
+    SHT_GNU_HASH, SHT_GNU_VERNEED, SHT_GNU_VERSYM, SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE,
+    SHT_PROGBITS, SHT_RELA, SHT_STRTAB,
 };
 use mortar_elf::{Machine, SymbolIndex};
 use mortar_layout::chunk::{CopyRow, SynthChunk};
@@ -64,13 +64,7 @@ fn files() -> Vec<Vec<Sec>> {
 }
 
 fn synth(name: &'static [u8], sh_type: u32, flags: u64, align: u8, size: u64) -> SynthChunk {
-    SynthChunk {
-        synth: Synth { name, address_dependent: false },
-        sh_type,
-        flags,
-        align,
-        size,
-    }
+    SynthChunk { synth: Synth { name, address_dependent: false }, sh_type, flags, align, size }
 }
 
 /// The copy allocations: (index, place, size, log2 align, least alias).
@@ -318,7 +312,8 @@ fn d60_d61_table() {
             assert_eq!(flags, want, "{what}");
 
             // D-1/L-68: base 0 exactly for a PIE.
-            assert_eq!(loads[0].addr == 0, k.pie, "{what}");
+            // -no-pie: the static base (L-68), GNU ld's 0x400000.
+            assert_eq!(loads[0].addr, if k.pie { 0 } else { 0x40_0000 }, "{what}");
             assert_eq!(loads[0].offset, 0, "{what}");
             for s in &loads {
                 // Segment alignment is log2.

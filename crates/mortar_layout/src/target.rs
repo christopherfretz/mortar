@@ -162,9 +162,7 @@ impl Options {
     pub fn from_plan(plan: &Plan, target: &Target) -> Result<Self, LayoutDiag> {
         let pie = match plan.kind {
             OutputKind::StaticExecutable => false,
-            OutputKind::Executable | OutputKind::PieExecutable
-                if target.class == Class::Elf32 =>
-            {
+            OutputKind::Executable | OutputKind::PieExecutable if target.class == Class::Elf32 => {
                 return Err(feature("ELFCLASS32 dynamic executable"));
             }
             OutputKind::Executable => false,
