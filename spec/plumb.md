@@ -2201,6 +2201,41 @@ every linker and asserts the classes that must have no miss.
   5. The x86-64 dead GOT slots, if they should be judged at all: the
      map naming each slot's owner (equivalent today).
 
+**i386 (WP-028e).** `mutate.rs` reads the class's header layout
+(`ELFCLASS32` symbol, program and section header offsets, 4-byte words)
+and has the i386 forms: `stale-relaxation` puts back the 2 bytes before
+a `GOT32X`, `TLS_IE`, `TLS_GOTIE` or `TLS_GOTDESC` field, or a GD/LD
+lead's 3 bytes and its call's 6, or a `TLS_DESC_CALL`'s 2; `irelative-swap`
+swaps or moves the resolver words at the `R_386_IRELATIVE` records'
+places (REL: the addend is the word); `iplt-entry` moves an `ff 25`
+word or makes an `endbr32` a NOP. mortar does not link i386 yet
+(`tests/link/xfails`), so the table is the references' (`tests/x86.rs
+x86_mutation_coverage`: `relax`, `ibt`, `tls-gd-ld`, `tls-desc`, `w5`,
+`cxx` by the three linkers, 4 per class, seed default):
+
+| class | applied | caught | | class | applied | caught |
+|---|---|---|---|---|---|---|
+| field-off-by-one | 72 | 72 | | e-entry | 36 | 18 |
+| field-wrong-symbol | 72 | 72 | | header-ident | 54 | 36 |
+| field-wrong-addend | 72 | 72 | | phdr-filesz | 72 | 59 |
+| stale-relaxation | 60 | 60 | | phdr-memsz | 72 | 44 |
+| got-slot-swap | 63 | 62 | | phdr-align | 72 | 20 |
+| irelative-swap | 57 | 57 | | phdr-flags | 72 | 20 |
+| eh-hdr-order, eh-hdr-entry | 32 | 32 | | tls-segment | 45 | 45 |
+| fde-pc-begin | 48 | 48 | | property-bit | 12 | 12 |
+| symtab-value | 72 | 57 | | linker-symbol | 67 | 56 |
+| symtab-size | 72 | 57 | | section-overlap | 72 | 72 |
+| iplt-entry | 40 | 40 | | | | |
+
+Every relocation, relaxation, IFUNC, TLS, property and overlap class is
+fully caught; the test asserts it. The misses are the rules that judge
+mortar's map only: `e_entry` + 4 (S7's symbol clause), `EI_OSABI` 0 ↔ 3
+(S1's mortar clause: the references disagree), `PT_LOAD` `p_memsz`
++ 0x10 and `p_align` (S18, L-1), the non-`PT_LOAD` segments, and as on
+x86-64 the locals of merged sections, linker symbols' sizes and mold's
+`$got` symbols. The one `got-slot-swap` miss is mold's `.got` words 0
+and 1 in `ibt` (not examined).
+
 ## 10. The reference linkers, observed
 
 ### 10.1 The rewritings each linker performs
