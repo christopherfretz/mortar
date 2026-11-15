@@ -73,7 +73,7 @@ links from scratch and says why (§7).
 
 ## 1. The workload: what an edit changes
 
-### 1.1 The corpus (E2')
+### 1.1 The corpus (R2)
 
 The previous draft's census (E1, `census.py`: two units, no `assert` or
 `__LINE__`) is superseded: three of its claims are artefacts of the toy
@@ -106,7 +106,7 @@ kiln with `-g` differs from the other compilers):
 | e2 | two statements added to a function in the middle of `big.cc` | 1 | without fs the bytes differ from offset 776 (GCC `-O0`), 1,128 (Clang), 1,364 (kiln) of a 129 KB `.text`: GCC's assembler resolves a `bl` to an internal-linkage function in the same section without a relocation, so code growing in between changes an earlier, unedited function (220 of 820 functions differ); with fs 47 of ~1,090 allocated sections differ (`.eh_frame` and functions whose `__LINE__` moved) |
 | e3 | a comment line at the top of `big.cc` | 1 | 90 of ~800 functions (those with `assert`/`__LINE__`) in every compiler; GCC's `.text` shrinks 4 bytes |
 | e4 | a comment line in `common.h` | 40 of 40 | allocated bytes in 39 of 40 (an inline function's `__LINE__`, `Bag::at`'s `assert`) |
-| e5 | a default argument in `common.h` | 13 of 40; kiln `-g`: 40 | one function per caller; kiln `-g`: 27 more objects differ **only** in `common.h`'s DWARF 5 MD5 in `.debug_line` (E2'-B) |
+| e5 | a default argument in `common.h` | 13 of 40; kiln `-g`: 40 | one function per caller; kiln `-g`: 27 more objects differ **only** in `common.h`'s DWARF 5 MD5 in `.debug_line` (R2-B) |
 | e6 | a member added to `Widget` | 34 of 40; kiln `-g`: 40 | Widget code, `.eh_frame`, `.symtab`, debug; kiln `-g`: 6 more MD5-only |
 | e7 | a function renamed in 4 units | 4 | |
 | e8 | a line above `checked_07` in `t07.cc` | 1, same size | `checked_07` and `lineb_07` (assert, `__LINE__`), not `plain_07` |
@@ -129,7 +129,7 @@ Findings:
   assembler-resolved branches (e2).
 - **A header edit changes the includers that use what changed** (13 of 40
   for e5, 34 of 40 for e6), not all of them; except **kiln `-g`, where
-  every includer changes**, measured per object (E2'-B,
+  every includer changes**, measured per object (R2-B,
   `hdredit.py`): the 27 (e5) and 6 (e6) extra objects differ only in
   `.debug_line`, with no relocation differences, and their
   `llvm-dwarfdump --debug-line` dumps differ in exactly one line: the
@@ -221,7 +221,7 @@ the **archive** (CMake's default), so the common protoc edit reaches the
 linker as "a regular archive changed". GNU `ar` rewrites the whole file;
 with Debian's deterministic default (`D`) every member header carries
 date 0, uid 0, gid 0 and mode 644, so **a same-size member edit changes
-nothing in the archive but the member's bytes** (E2'-C: the archive keeps
+nothing in the archive but the member's bytes** (R2-C: the archive keeps
 its size and every member offset; the header is identical before and
 after). Finding the changed member therefore means reading and hashing
 every member: 53–94 ms for `libprotobuf.a` single-threaded, 50–70 ms in
@@ -268,7 +268,7 @@ Three consequences:
   percentile. Patching through the index, not indirection, is the right
   mechanism (§2.7).
 
-### 1.5 The time of a full link and the floor of an incremental one (E2', E1')
+### 1.5 The time of a full link and the floor of an incremental one (R1)
 
 **Baseline.** Full links of the bench's static protoc by mortar at main
 `2a31ada` (merged into this branch at `ae4544f`; the branch adds only
@@ -290,7 +290,7 @@ load 21–23) was mortar before the M2 train's input and image work, at
 four times the load; the reviewer measured 274–295 ms and 210–355 ms at
 load ~20. Every speedup below is against 0.19 s and 0.12 s.
 
-**The floor, as a timed emulation** (`floor.py`, E1'): every I/O the
+**The floor, as a timed emulation** (`floor.py`, R1): every I/O the
 design does, performed for real on the real output and inputs, and the
 CPU parts that need mortar code taken from the full link's
 `--time-phases` in proportion to the bytes they touch ("derived"). It is
@@ -351,7 +351,7 @@ where the full link grows with all inputs (input and image are 69% of
 it) and the update with the edit, the windows and (on the copy path)
 the output. A 10× protoc (1.6 GB of inputs, a 500 MB output) is not in
 the bench; for it the derivation gives a full link of ~2 s and an
-update dominated by the copy (0.2–0.75 s at E7's and the reviewer's
+update dominated by the copy (0.2–0.75 s at R7's and the reviewer's
 rates) unless it is in place or reflinked (*estimate*, linear scaling,
 not measured).
 
@@ -601,8 +601,8 @@ program is the program a from-scratch link would have made.
   *Test:* `mortar_plumb --equiv X.map F.map` (an extension of the map
   checks, §8.2) checks 1–3 and 5 from the two maps and 4 by re-deriving
   each field's value through both placements; a program-level check runs
-  both (L10). E13 (`equiv.py`, §12) shows the order clause of item 5
-  rejecting the "b a" output of E4 that a check without it accepts.
+  both (L10). R13 (`equiv.py`, §12) shows the order clause of item 5
+  rejecting the "b a" output of R4 that a check without it accepts.
 - **IN-3 [v1] Holes.** Every byte of an allocated output section that no
   live unit owns is a **hole** and holds its section's fill, written when
   the hole is made:
@@ -622,7 +622,7 @@ program is the program a from-scratch link would have made.
   fill and the map lists it (`hole` lines, §8.2). Holes are the
   allocated case of a dead range (IN-3a). *Test:* remove a function and
   check that its old range is all trap fill (`plumb` checks every `hole`
-  line's bytes); E4 (`packed_holes.sh`) is the negative case: a hole in
+  line's bytes); R4 (`packed_holes.sh`) is the negative case: a hole in
   `.init` traps (SIGILL) and a zero slot in a `__start_` array crashes
   (SIGSEGV).
 - **IN-3a [v1] Dead ranges.** A **dead range** is a byte range of the
@@ -807,7 +807,7 @@ with each phase fed from the state for unchanged files:
   of another output: each gives its reason.
 - **IN-19 [v1] Contents** (model §7.2, in identity terms, model §7.1):
 
-  | table | rows | protoc `-g`, estimated (E4) |
+  | table | rows | protoc `-g`, measured (R12) |
   |---|---|---|
   | header, plan, options | 1 | < 1 KB |
   | files: identity, `(dev, ino, size, mtime, ctime)`, L128 content hash, probes, member offset, symbol-table offset and size | one per input file and archive member (~2,500 with unextracted members) | 0.15 MB |
@@ -822,9 +822,9 @@ with each phase fed from the state for unchanged files:
   | archive symbol tables (armaps): per archive, symbol → member | 32,338 (`libprotobuf.a`) + 4,578 (`libc.a`) + 7,414 (`libstdc++.a`) + the others | 0.53 MB for those three, measured |
   | section content hashes (IN-31, [v2]) | one per live input section | 0.44 MB, measured |
   | string pool: symbol names and paths | | 3.9–4.1 MB (7.4 MB if local names were kept; they are not, IN-49a) |
-  | **total** | | **8.05 MB measured** as written by E12 (16% of the 50.3 MB output) |
+  | **total** | | **8.05 MB measured** as written by R12 (16% of the 50.3 MB output) |
 
-  E12 (`state_emul.py`) writes the state's records as bytes from the
+  R12 (`state_emul.py`) writes the state's records as bytes from the
   protoc `-g` map and inputs (files 56 KB, units 658 KB, pieces 856 KB,
   global definitions 649 KB, the index's 67,627 (unit, global) rows 812
   KB, three armaps 532 KB, section hashes 439 KB, strings 4.05 MB) and
@@ -834,7 +834,7 @@ with each phase fed from the state for unchanged files:
   section targets of the index (118,145 − 67,661 rows, ~0.4 MB), so 8–9
   MB is the expected size. **Armaps are stored** rather than re-read:
   re-reading and parsing them costs 7.5 ms for `libprotobuf.a`'s 3.3 MB
-  armap, 0.47 ms for `libc.a`'s and 0.86 ms for `libstdc++.a`'s (E12),
+  armap, 0.47 ms for `libc.a`'s and 0.86 ms for `libstdc++.a`'s (R12),
   ~10 ms per update for protoc's archives against ~1 ms to read them from
   the state; a stored armap is used only while its archive is clean
   (IN-22), and a changed archive is read whole anyway (IN-24). Not
@@ -855,7 +855,7 @@ with each phase fed from the state for unchanged files:
   (IN-22a) on the output's file system until a stamp's ctime is later
   than the output's (at most one timestamp tick: measured 0.9–1.0 ms on
   this host's overlay, whose ctime tick is 1 ms, and 0.08–0.12 ms on its
-  virtiofs, tick 82 µs; E6'), `fstat`s the output again, and records the
+  virtiofs, tick 82 µs; R6), `fstat`s the output again, and records the
   second tuple `(dev, ino, size, mtime_ns, ctime_ns)`, that stamp's
   ctime as the output's **reference stamp**, and the build-id. If the two
   `fstat`s differ, something wrote the output during the link: no state
@@ -867,7 +867,7 @@ with each phase fed from the state for unchanged files:
   is not older than the reference stamp (a write in the stamp's own tick,
   after the link) is **racy**: the output's bytes are re-hashed against
   the stored build-id leaves (image.md I-76; one read of the output, ~10–
-  20 ms for protoc's 50 MB from the page cache, *estimate* from E1's read
+  20 ms for protoc's 50 MB from the page cache, *estimate* from R1s read
   rates) and the update proceeds if every leaf matches, else
   `output-changed`; racy is never by itself a full link. Without a
   build id (`--build-id=none`) the leaves are still stored in the state
@@ -892,7 +892,7 @@ with each phase fed from the state for unchanged files:
 - **IN-22a [v1] Stamps.** A **stamp** on a file system is the ctime of a
   file the link creates there (`<dir>/.mortar-stamp-<pid>`, created,
   `fstat`ed and unlinked; measured 8–10 µs on overlay, 0.3–0.5 ms on
-  virtiofs, E6'). Before it `stat`s any input, a link in incremental
+  virtiofs, R6). Before it `stat`s any input, a link in incremental
   mode takes one stamp on each file system (`st_dev`) that holds an
   input, in a writable directory of that file system among those it
   knows (the output's, the state's, each input's, `TMPDIR`), and records
@@ -901,7 +901,7 @@ with each phase fed from the state for unchanged files:
   (IN-22). Timestamps are compared only with stamps of their own file
   system, never with a clock: file systems have their own timestamp
   granularity (1 ms on this host's overlay, 82 µs on its virtiofs), and a
-  wall clock is finer than either. *Test:* `stamp_rule.py` (E6') with the
+  wall clock is finer than either. *Test:* `stamp_rule.py` (R6) with the
   state and the inputs on the same and on different file systems.
 - **IN-22 [v1] Stat, then content, per file.** An input (file or
   archive) is **clean** when its path resolves as before (the probes of
@@ -915,7 +915,7 @@ with each phase fed from the state for unchanged files:
   unstampable file system is hashed. Every input that is not clean is
   read and its L128 hash compared with the state's: equal means
   unchanged (a `touch`, a racy file that was not rewritten), different
-  means changed. Measured (E6', 2,000 trials on overlay): a same-size
+  means changed. Measured (R6, 2,000 trials on overlay): a same-size
   rewrite right after the link read the file kept its tuple 1,942 times;
   the old rule (ctime older than the link's start by the wall clock) took
   every one of them as unchanged, the stamp rule none (all 1,942 racy and
@@ -944,7 +944,7 @@ with each phase fed from the state for unchanged files:
   so only changed members count as changed files; added and removed
   members change the archive's symbol index, and resolution (IN-26)
   decides what is extracted. A thin archive's members are files and are
-  stat'ed as such (IN-22). Measured (E1', the "detect" part): reading and
+  stat'ed as such (IN-22). Measured (R1, the "detect" part): reading and
   hashing `libprotobuf.a` (84.7 MB) costs 53–94 ms here on one thread
   (one `read` of the file from the page cache, then CRC-32 per member),
   40–70% of a regular-archive update (§1.5); parallel hashing divides
@@ -957,7 +957,9 @@ with each phase fed from the state for unchanged files:
   same-length string) changes no header field and no offset, and the rule
   would keep the old member. Without `D` the date has one-second
   resolution, which a compile and an `ar` inside one second defeat the
-  same way. E2' (§1.1) measures this on the corpus. *Test:* L10 replaces
+  same way. R2-C (§1.1) confirms it on the corpus: after a same-size
+  member edit the member's header and every offset are identical and
+  only the member's bytes differ. *Test:* L10 replaces
   a member (with the same size too), adds one, removes one, and reorders
   the archive (`ar` with `-b`).
 
@@ -1032,7 +1034,7 @@ with each phase fed from the state for unchanged files:
   `std::terminate`. Units are refilled whole (model §7.2): relaxations,
   sorted tables and encodings need no special case. *Test:* IN-1 (B) and
   (C); a unit test per row with a two-file program; the refill oracle
-  (IN-63a) on every L10 step, which E3 (§12) runs over a body edit, both
+  (IN-63a) on every L10 step, which R3 (§12) runs over a body edit, both
   directions of a keeper change, a gc kill and revive, TLS growth and a
   value change seen only by debug information, and which catches each
   row's removal (mutation table, §8.2).
@@ -1076,14 +1078,14 @@ with each phase fed from the state for unchanged files:
   `.init`, `.fini`, `.eh_frame`, `.eh_frame_hdr`, notes,
   `.tm_clone_table`, every section reached through `__start_`/`__stop_`
   symbols) **has no regions and no holes**: it is one chunk, rewritten
-  whole in full-link order (IN-34) within its capacity (IN-33). E4
+  whole in full-link order (IN-34) within its capacity (IN-33). R4
   (`packed_holes.sh`) shows why: 64 bytes of trap fill between `crti.o`'s
   and `crtn.o`'s `.init` pieces kill the program at start-up (SIGILL), an
   8-byte zero slot in a `__start_`/`__stop_` pointer array crashes it
   (SIGSEGV), and moving one file's contribution to the section's tail
   makes it print `b a` where a full link prints `a b`. *Test:* L10
   body-grow and body-shrink steps check that only the region's file and
-  its referrers were refilled (`--incremental-report`); E4's three cases
+  its referrers were refilled (`--incremental-report`); R4's three cases
   in L10 with the fixed rule (the update's packed sections equal the full
   link's order, IN-2 item 5).
 - **IN-31 [v2] Section-level refill inside a changed file** (the M12
@@ -1106,7 +1108,7 @@ with each phase fed from the state for unchanged files:
   - nothing is trusted from a compiler: the hash is mortar's, over the
     bytes it reads (the corpus shows `__LINE__`, `assert` and assembler
     pre-resolved branches changing functions far from the edit, §1.1).
-  Measured costs on protoc `-g` (E12): 27,416 live input sections, 35.6
+  Measured costs on protoc `-g` (R12): 27,416 live input sections, 35.6
   MB of section bytes, 1,717,502 relocations. The hashes add 0.44 MB to a
   state of 8.05 MB (5.4%). Their computation is 35.6 MB of L128 (~3 ms of
   one thread at 12.6 GB/s, derived from image.md I-74) plus a sort and
@@ -1179,7 +1181,7 @@ with each phase fed from the state for unchanged files:
   |---|---|---|
   | `.text` and other code | regions with trap-fill holes (IN-30, IN-3) | `reserve-exhausted` |
   | `.rodata`, `.data`, `.data.rel.ro`, `.bss` | regions; zero holes; `.bss` holes cost no file bytes | `reserve-exhausted` |
-  | `.tdata`, `.tbss` (the TLS template) | a changed file's TLS contribution is refilled in place **only if no TLS input section's TP offset changes, in any file**; the update computes every TLS input section's TP offset under the new layout and compares it with the stored one. E3' (`tls_shift.sh`): making one `thread_local` initialized (`.tbss` → `.tdata`) keeps `PT_TLS`'s size and alignment yet moves an unchanged file's `c_var` from TP+0x30 to TP+0x38; two files changing by −8 and +8 move an unchanged `e_var` from TP+0x58 to TP+0x50 | `tls-layout-changed`; [later] refill every TP-relative referrer of every moved TLS section through the index |
+  | `.tdata`, `.tbss` (the TLS template) | a changed file's TLS contribution is refilled in place **only if no TLS input section's TP offset changes, in any file**; the update computes every TLS input section's TP offset under the new layout and compares it with the stored one. R3 (`tls_shift.sh`): making one `thread_local` initialized (`.tbss` → `.tdata`) keeps `PT_TLS`'s size and alignment yet moves an unchanged file's `c_var` from TP+0x30 to TP+0x38; two files changing by −8 and +8 move an unchanged `e_var` from TP+0x58 to TP+0x50 | `tls-layout-changed`; [later] refill every TP-relative referrer of every moved TLS section through the index |
   | `.init_array`, `.fini_array`, `.preinit_array`, `.ctors`, `.dtors`, `.init`, `.fini`, `.tm_clone_table`, `__start_`/`__stop_` sections (packed, L-142) | one chunk, no holes, rewritten whole in full-link order (priority, then load order; for `.init`/`.fini`, `crti.o`'s prologue first and `crtn.o`'s epilogue last) within capacity (IN-30); `__init_array_end`, `__stop_SEC` and the like move, and their users are refilled (IN-25) | growth step; `reserve-exhausted` |
   | `.eh_frame` | per-file ranges in full-link order, padding-CIE holes of 0 or ≥ 16 bytes, the terminator last; a range that overflows rewrites the section whole (IN-34a) | growth step; `reserve-exhausted` |
   | `.eh_frame_hdr` | one unit, rewritten whole when any FDE address changes (S-111); its table lists only live FDEs | growth step; `reserve-exhausted` |
@@ -1229,9 +1231,9 @@ with each phase fed from the state for unchanged files:
     whenever an FDE address changes anyway (S-111). **The terminator is
     always last**: S-48's zero word is the last 4 bytes of the section's
     content, and when the content's end moves the old terminator's word
-    becomes part of a padding CIE (or of the last record's padding); E5
+    becomes part of a padding CIE (or of the last record's padding); R5
     shows a terminator left before live FDEs aborts a throw.
-  - Measured (E5, `eh_holes.sh` with `ehpatch.py`, a g++ `-O0 -g` static
+  - Measured (R5, `eh_holes.sh` with `ehpatch.py`, a g++ `-O0 -g` static
     program whose `f_dead` FDE is turned into a hole, linked by mortar
     with `.eh_frame_hdr` and by GNU ld without; throw/catch under
     libgcc, gdb and lldb backtraces through `thrower`, `readelf -wf` and
@@ -1254,7 +1256,7 @@ with each phase fed from the state for unchanged files:
     `scripts/provision.sh`'s package list, so it was not tested (the
     installed `libunwind8` is the nongnu libunwind runtime, without
     headers); WP-064's gate adds it where available.
-  *Test:* E5 in L10 (each row a scenario; the first three must pass, the
+  *Test:* R5 in L10 (each row a scenario; the first three must pass, the
   others are the verifier's negative cases: plumb rejects a hole that is
   not one padding CIE of ≥ 16 bytes, and a zero word before the end).
 - **IN-35 [v1] The entry point and `.interp`**: `e_entry` is in the ELF
@@ -1310,7 +1312,7 @@ objects.
   the WP-060 record, "Operator decisions"; this text is the
   recommendation, option (c).)* An update writes a copy of the output and
   renames it over `P` (IN-47) unless `--incremental-write=in-place` is
-  given. Why not in place by default, measured (E7, `write_safety.py`):
+  given. Why not in place by default, measured (R7, `write_safety.py`):
   - `ETXTBSY` is not a test of "no process runs `P`": a program started
     as `/lib/ld-linux-aarch64.so.1 ./prog`, or under `qemu-aarch64`, maps
     `P` with no write denial; `open(P, O_WRONLY)` succeeds while it runs,
@@ -1327,12 +1329,12 @@ objects.
     give it a mix of old and new sections;
   - a scan of `/proc/*/maps` for `P`'s (device, inode) finds the
     `ld.so`/qemu mappers, but costs 1.0 ms with 57 processes, 5.6 ms with
-    575 and 55 ms with 5,083 (E7), sees only the link's own pid
+    575 and 55 ms with 5,083 (R7), sees only the link's own pid
     namespace (not other containers or the host) and, for an
     unprivileged user, only that user's processes; and `/proc/PID/
     map_files` cannot be `stat`ed here (EPERM).
   The copy costs 18–27 ms for protoc's 50 MB output at low load (first
-  run 40–58 ms; E7) and 52–76 ms at load ~20 (the reviewer's
+  run 40–58 ms; R7) and 52–76 ms at load ~20 (the reviewer's
   `write_paths.py`), i.e. ~0.4–1.5 s per GiB, and nothing where the file
   system clones (`FICLONE`; not this host's overlay, E5). With
   `--incremental-write=in-place`, the output is updated in place only
@@ -1355,7 +1357,7 @@ objects.
     enforces it (the probe of image.md I-59); otherwise two concurrent
     updates of one output could interleave their writes. (The
     workspace's virtiofs now enforces `flock`, the reviewer's m2.)
-  What a debugger holding the old file sees (E7): after copy and rename,
+  What a debugger holding the old file sees (R7): after copy and rename,
   gdb and lldb keep the old inode and show the old program consistently
   (old symbols, old line table, the running process's old code) until
   the next `run`, where gdb prints "`prog' has changed; re-reading
@@ -1365,7 +1367,7 @@ objects.
   `ETXTBSY`, so the update takes the copy path anyway; a debugger that
   has loaded `P` but not run it is the unprotected case above. *Test:*
   one link test per condition, checking the inode afterwards (same for
-  in place, new for copy); E7's `ld.so` and qemu cases with the scan.
+  in place, new for copy); R7's `ld.so` and qemu cases with the scan.
 - **IN-46 [v1] The order of writes, in place.** Correctness first: a
   torn output must not look valid to the next link **or to a user who
   runs it**, across a crash and a power loss.
@@ -1382,14 +1384,14 @@ objects.
   Without the syncs of steps 2 and 3, the page cache may write the
   step-4 header back before the step-3 windows, and after a power loss
   the file has a valid magic over half-written windows (the reviewer's
-  M3). Measured (E7, killing the process after each step, protoc's 50 MB
+  M3). Measured (R7, killing the process after each step, protoc's 50 MB
   output, four 1 MiB windows): after step 1 the old output runs and the
   flag is set; after 2 and 3 `exec` fails with `ENOEXEC`; after 4 the new
   output runs and the flag is still set (the next link says
   `output-torn`); after 5 the new output runs and the flag is clear.
   Power loss is covered by argument (each sync orders the write before
   it ahead of every write after it), not by a test here: this host has
-  no `dm-flakey`. Cost of the syncs (E7, median of 5, write + sync):
+  no `dm-flakey`. Cost of the syncs (R7, median of 5, write + sync):
   step 1 0.05 + 3.70 ms on overlay, 0.24 + 0.79 ms on virtiofs; step 2
   0.03 + 0.25 / 0.20 + 0.15; step 3 (4 MiB) 2.38 + 2.51 / 6.03 + 0.88;
   step 4 0.03 + 0.21 / 0.15 + 0.10; step 5 0.14 + 0.92 + 0.08 / 0.62 +
@@ -1402,7 +1404,7 @@ objects.
   a power loss (the state never reaches the disk before the output's
   data) but a user who runs the output after one may run a mix. It saves
   two syncs' fixed cost, ~0.3–0.5 ms (the window data is synced once
-  either way; E7's step 2 and 4 syncs). *Test:* a crash-injection hook (a test-only environment
+  either way; R7's step 2 and 4 syncs). *Test:* a crash-injection hook (a test-only environment
   variable that aborts after step k) at each step; the next link must
   report the reason and give an output equivalent to a full link's, and
   `exec` of the torn output must fail with `ENOEXEC` after steps 2 and 3.
@@ -1417,7 +1419,7 @@ objects.
   `output-torn`, not a stale state against a new output; the stat tuple
   would catch it too). Without the sync of `T` before the rename, the
   rename can reach the disk before `T`'s data and leave a torn `P` after
-  a power loss. Measured (E7): 27.0 ms on overlay (copy 13.6,
+  a power loss. Measured (R7): 27.0 ms on overlay (copy 13.6,
   `fdatasync` 11.7, rename 2.0) and 17.8 ms on virtiofs at load ~2, first
   runs 57.6 and 39.8 ms; 52–76 ms at load ~20 (`write_paths.py`); 1 GiB
   copies took 1.8–2.9 s (E5). *Test:* the crash hook on the copy path:
@@ -1437,7 +1439,7 @@ objects.
   from their parsed symbol tables; neither the state (which would need
   7.4 MB of local names, IN-19) nor the unchanged inputs are read for
   them. Cost: one read of 5.4 MB from the output (*estimate* 2–5 ms from
-  E1's read rates) and the windows they occupy written whole (in the
+  R1s read rates) and the windows they occupy written whole (in the
   floor's dirty windows, §1.5). *Test:* (B) of IN-1 covers it (a replay
   builds `.symtab` from the inputs); `nm` of the update equals `nm` of a
   full link modulo values (Q9).
@@ -1571,7 +1573,7 @@ file changes or when one of its file's sections moves (IN-25).
   `--strip-debug`/`-S` is supported (no debug sections at all).
 - **IN-59 [v1] What "the same debug information" means.** For IN-2,
   debug information is compared by the debuggers' view: the transcripts
-  of fixed gdb and lldb sessions (E6's commands: break by name and line,
+  of fixed gdb and lldb sessions (R6s commands: break by name and line,
   run, backtrace, `info line`/`source list`, `print`/`frame variable`,
   `ptype`/`image lookup -t`, step, `info functions`/`image lookup -n`,
   `info variables`/`target variable`, `info scope`), with addresses and
@@ -1635,16 +1637,16 @@ mode pays nothing for incremental mode. Per mechanism:
 |---|---|---|---|
 | slack and reserves (IN-33) | none: capacity = size, the same code with a zero slack function | +5.02 MB (+10.0%) output on protoc `-g`, +2.37 MB (+20.1%) without (`regions2.py`); written as fill | consumed; dead ranges |
 | content hashes of inputs (IN-22) | none (hash 0, `spec/input.md` §11.6, lazy) | every input hashed: 217 MB at 12.6 GB/s is ~17 ms of one thread, spread over the input workers (*estimate*) | changed and racy inputs only |
-| stamps (IN-22a) | none | one per file system: 8–10 µs on overlay, 0.3–0.5 ms on virtiofs (E6') | the same, plus the tick wait for the output (IN-21): 0.9–1.0 ms overlay, 0.08–0.12 ms virtiofs |
-| the state (IN-17–IN-20) | none: nothing opened, stat'ed or written (IN-11) | 8.05 MB written in 7.0 ms (E12); rows built from data the phases already hold (IN-20) | read and validated in 3.1 ms, rewritten in ~7 ms |
-| section content hashes (IN-31, [v2]) | none | 0.44 MB of state; 13–33 ms of CPU, 2–5 ms of wall time on 8 workers (*estimate*, E12) | changed files' sections only |
+| stamps (IN-22a) | none | one per file system: 8–10 µs on overlay, 0.3–0.5 ms on virtiofs (R6) | the same, plus the tick wait for the output (IN-21): 0.9–1.0 ms overlay, 0.08–0.12 ms virtiofs |
+| the state (IN-17–IN-20) | none: nothing opened, stat'ed or written (IN-11) | 8.05 MB written in 7.0 ms (R12); rows built from data the phases already hold (IN-20) | read and validated in 3.1 ms, rewritten in ~7 ms |
+| section content hashes (IN-31, [v2]) | none | 0.44 MB of state; 13–33 ms of CPU, 2–5 ms of wall time on 8 workers (*estimate*, R12) | changed files' sections only |
 | the dependency index (IN-25) | none | emitted by the scan's workers, sorted per unit: 238,919 alloc relocations become 118,145 rows (a few ms, *estimate*) | changed files' rows replaced |
-| armaps (IN-19) | none | 0.53 MB stored for protoc's three large archives | read from the state (~1 ms) instead of re-parsed (~10 ms, E12) |
+| armaps (IN-19) | none | 0.53 MB stored for protoc's three large archives | read from the state (~1 ms) instead of re-parsed (~10 ms, R12) |
 | ids (IN-28) | none: ids are per link in every mode | none | identity translation on load |
 | regions (IN-30) | none: layout is unchanged | a region per (file, hole-tolerant output section, category): 2,936 on protoc | as the delta needs |
 | debug size classes (IN-50) | none | +1.45 MB of rounding on protoc `-g` (inside the +10.0% above) | in place within the class |
 | debug neutralization (IN-51) | none | none | the dead units' bytes |
-| `fdatasync` (IN-46, IN-47) | none (image.md I-61) | none (a full link renames a complete file) | in place: about 8.2 ms on overlay, 2.3 ms on virtiofs; copy path: 27.0 / 17.8 ms for copy, sync and rename at 50 MB (E7) |
+| `fdatasync` (IN-46, IN-47) | none (image.md I-61) | none (a full link renames a complete file) | in place: about 8.2 ms on overlay, 2.3 ms on virtiofs; copy path: 27.0 / 17.8 ms for copy, sync and rename at 50 MB (R7) |
 
 "Pays nothing" is a gate, not a hope: the bench (`spec/harness.md`
 "bench") runs plain protoc links built with and without `mortar_incr`'s
@@ -1677,12 +1679,12 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   is a verifier of the incremental linker's claim and must not share its
   code.
 - **IN-63 [v1] L10** (`docs/VALIDATION.md`): random edit sequences.
-  - *Projects*: E1's census program; a generated program of 200 units
+  - *Projects*: R1s census program; a generated program of 200 units
     over 3 archives (thin and regular); protoc's object set with edits
     applied by recompiling one source of the bench's tree; each with GCC,
     Clang and kiln+hod, `-O0` and `-O2`, `-g` and none,
     `-ffunction-sections` and none, static, PIE and (M4) shared.
-  - *Edits*: E1's fifteen classes, plus: move a definition between
+  - *Edits*: R1s fifteen classes, plus: move a definition between
     files, change a COMDAT keeper, add and remove an archive member,
     reorder an archive, `touch` without change, rewrite with the old
     timestamp (with IN-23's hint), add and remove an input, flip
@@ -1721,7 +1723,7 @@ record (`spec/landed/incr/WP-060.md`, (c)).
    examples make archives.
 2. **kiln (`-g`, at least in the development profile): do not emit
    `DW_LNCT_MD5` in the `.debug_line` file table.** Measured (§1.1,
-   E2'-B): a header edit changes every includer's object under kiln
+   R2-B): a header edit changes every includer's object under kiln
    `-g` (40 of 40), against 13 or 34 of 40 under GCC and Clang, and the
    extra 27 (e5) and 6 (e6) objects differ only in `common.h`'s MD5. Each
    is a changed file for mortar (whole-file refill, §1.2) and a
@@ -1849,12 +1851,12 @@ against those, not measured.
 | WP | stage | content | depends on | parallel with | gate | estimate |
 |---|---|---|---|---|---|---|
 | WP-061 | S1 state + measured floor | `mortar_incr`: the state's format (IN-17–IN-20, armaps, IN-19), writer in an incremental-mode full link, reader with validation and a fuzz target, stamps and the clean / racy / hashed rule (IN-21, IN-22, IN-22a), the identity translation, the replay hook (IN-61); then the **floor measurement**: a test-only update path for a same-size body edit (the layout is the previous one, so no delta layout is needed) that does every step of §1.5's emulation with mortar's code, through the image phase and IN-46/IN-47's writes, on protoc `-g` and a workload ≥ 5× larger (added to the bench) | amendments 6, 8 | WP-062, WP-067 | state round-trips on the link-test corpus; replay (B) byte-identical for every first link; plain-link bench unchanged (§8.1); **the go/no-go numbers of §1.5, reported to the operator** | 5,000–7,000 lines, 2–3 sessions |
-| WP-062 | S2 slack and dead ranges | regions in L-143 sections, packed chunks with capacity, tails and segment reserves (IN-30, IN-32, IN-33), `.eh_frame` ranges and padding CIEs (IN-34a), debug size classes (IN-50), holes and their fill; map `hole`/`dead` lines; plumb's dead-range checker (IN-3a) | amendments 1–5, 7 | WP-061, WP-067 | incremental-mode first links pass plumb and are equivalent (IN-2) to plain links; output sizes against IN-33's table; E4 and E5 as plumb negative cases | 3,000–4,500 lines, 1–2 sessions |
-| WP-063 | S3 delta | change detection (IN-22–IN-24, parallel member hashing), delta resolution and the refill set (IN-25–IN-29), TLS and copy-size detectors, a dry-run `--incremental-report`; the **two-full-link oracle** (IN-63a) as a test lane | WP-061 | WP-062 | the dry run's refill set covers every unit the oracle finds differing, on every L10 step and E3's scenarios | 3,500–5,000 lines, 2 sessions |
+| WP-062 | S2 slack and dead ranges | regions in L-143 sections, packed chunks with capacity, tails and segment reserves (IN-30, IN-32, IN-33), `.eh_frame` ranges and padding CIEs (IN-34a), debug size classes (IN-50), holes and their fill; map `hole`/`dead` lines; plumb's dead-range checker (IN-3a) | amendments 1–5, 7 | WP-061, WP-067 | incremental-mode first links pass plumb and are equivalent (IN-2) to plain links; output sizes against IN-33's table; R4 and R5 as plumb negative cases | 3,000–4,500 lines, 1–2 sessions |
+| WP-063 | S3 delta | change detection (IN-22–IN-24, parallel member hashing), delta resolution and the refill set (IN-25–IN-29), TLS and copy-size detectors, a dry-run `--incremental-report`; the **two-full-link oracle** (IN-63a) as a test lane | WP-061 | WP-062 | the dry run's refill set covers every unit the oracle finds differing, on every L10 step and R3s scenarios | 3,500–5,000 lines, 2 sessions |
 | WP-064 | S4 update | delta layout, refill and writing (IN-13, IN-14, IN-44–IN-49a) for static executables, `-g` falling back; copy path by default, in place on request; crash hooks; `plumb --equiv` (IN-62) | WP-061–WP-063, "go" | WP-067 | L10 static, no `-g`: IN-1 on every step; crash injection at each IN-46/IN-47 step; floor against WP-061's | 5,000–7,000 lines, 2–3 sessions |
 | WP-065 | S5 debug | IN-50–IN-59: size classes in use, reuse, neutralization of every debug section (IN-51, IN-51b), compaction fall-back; type units and skeletons tested before enabling | WP-064 | WP-066 | L10 with `-g`: transcripts equal (IN-59), `--verify` clean, readelf warning-free | 3,000–4,000 lines, 1–2 sessions |
 | WP-066 | S6 dynamic | PIE and dynamic executables (IN-40–IN-42), shared objects by copy (IN-43, M4), `copy-size-changed` | WP-064, M2 (M4 for shared objects) | WP-065 | L10 PIE and shared | 2,500–4,000 lines, 1–2 sessions |
-| WP-067 | L10 | the generator over the corpus (E2'), the projects, the minimizer, the fault hooks, nightly and pre-merge lanes, the bench rows (IN-63, IN-64) | — (every step a fall-back until WP-064) | all | lanes run; a seeded failure is minimized; the lane's cost within IN-63's budget | 2,500–3,500 lines (Rust and scripts), 1–2 sessions |
+| WP-067 | L10 | the generator over the corpus (R2), the projects, the minimizer, the fault hooks, nightly and pre-merge lanes, the bench rows (IN-63, IN-64) | — (every step a fall-back until WP-064) | all | lanes run; a seeded failure is minimized; the lane's cost within IN-63's budget | 2,500–3,500 lines (Rust and scripts), 1–2 sessions |
 | WP-068 | v2 section-level refill (M12) | IN-31: per-section content hashes under `--incremental`, matching by anchor, kept sections in place, layout around them; plain-link gate | WP-064 (WP-065 if after it) | WP-066 | L10 with `-ffunction-sections`, no `-g`: refilled bytes against the coarseness table (§1.2); plain-link bench unchanged | 2,000–3,000 lines, 1 session |
 | WP-069 | mutation tests | the delta rules' mutation lane (IN-63b): each IN-27 row and each IN-3a check dropped in a test build, and the L10 scenario that must catch it; plumb's mutation cases (IN-60) | WP-063, WP-067 | WP-064 | every row and check caught by at least one scenario, else a scenario is added | 1,000–1,500 lines, 1 session |
 
@@ -1866,53 +1868,58 @@ per-file `.symtab` ranges. Each has its condition in its rule.
 
 ## 11. Open questions
 
-Each with the default this draft takes.
+Each with the default this draft takes. The operator's decisions (the
+write path, section-level refill's place, the slack overhead, kiln's
+default) are in the record, not here.
 
 1. **Is the fall-back note printed by default?** Default: yes, one line
    (`incr-full-link`), because silent fall-backs were gold's users'
    complaint (§2.2); successful updates print nothing. Build systems
    that treat stderr as failure would need `--no-warn`-style silencing:
    use the diagnostic key's level control (`spec/diag.md`).
-2. **`ETXTBSY` on newer kernels.** Measured on 6.8 here: writing a
-   running executable fails. Reports (not verified here) say newer
-   kernels dropped the write denial for executables; then an in-place
-   update would change a running program's pages under it. Default: rely
-   on `ETXTBSY` where the open fails, and add a check at S4 on a newer
-   kernel; if the denial is gone there, executables use the copy path
-   when any process maps them, which needs a scan of `/proc` (cost to be
-   measured) or copy always.
-3. **This host's workspace file system does not enforce `flock`**
-   (image.md I-59), so IN-45 sends every update there to the copy path
-   (54–142 ms per 100 MiB). Default: accept (correct first); [later] an
-   advisory alternative such as an `O_EXCL` lock file with a stale-pid
-   check, if L10 on this host shows the copy dominating.
+2. **`ETXTBSY` on newer kernels.** Measured on 6.8 here: writing an
+   executable started by `exec` fails, but one started through `ld.so`
+   or qemu-user, or loaded by lldb, does not (R7, IN-45). Reports (not
+   verified here) say newer kernels dropped the write denial altogether.
+   Default: the copy path (IN-45), which does not depend on it; the
+   in-place option adds the `/proc` scan and says what it cannot see.
+3. **File locks.** The workspace's virtiofs now enforces `flock` (the
+   reviewer's m2, `write_paths.py`; the previous draft measured the
+   opposite on an earlier mount), so the in-place option is available
+   there; IN-45 still probes each time (image.md I-59). Default: probe.
 4. **L128 is not a cryptographic hash.** It is consulted only when stat
-   already says "maybe changed", and an accidental collision of 128-bit
-   hashes is not a practical concern; a deliberate one requires an
-   attacker who writes the build's inputs, who could write the program
+   says "maybe changed" or a file is racy, and an accidental collision of
+   128-bit hashes is not a practical concern; a deliberate one requires
+   an attacker who writes the build's inputs, who could write the program
    anyway. Default: L128; SHA-256 would cost 750 ms on protoc's inputs
    (287 MB/s, image.md I-74).
-5. **The slack fractions** (1/8 per region, 1/16 per section, 1/8 per
-   segment and debug section): chosen from §1.1's growth sizes (24–116
-   bytes per edit against regions of 502 B median) without a measured
-   fall-back rate. Default: these; WP-064 tunes them from L10's
-   statistics.
-6. **Regular archives.** Default: read and hash the changed archive
-   (IN-24) and ask kiln for thin archives (§8.3); parallel member hashing
-   [later]. Whether CMake-style regular archives are common enough in
-   kiln's users' builds to make the parallel read worth doing first is a
-   question for the operator.
+5. **The slack fractions** (IN-33): region `size/8` (64 B minimum),
+   section tail `size/16`, segment `filesz/8`, packed `size/8`, debug
+   tail `size/32` plus size classes. The debug numbers come from the M2
+   model (IN-57); the allocated ones have no measured fall-back rate yet.
+   Default: these; WP-064 measures the rate of `reserve-exhausted` on
+   L10 and tunes them.
+6. **Regular archives.** Default: read the changed archive and hash its
+   members in parallel (IN-24); the cheaper header rule is unsound with
+   deterministic `ar`. Ask kiln for thin archives (§8.3). Whether
+   CMake-style regular archives are common enough in kiln's users' builds
+   to make more work here worthwhile is WP-061's measured floor to answer.
 7. **Where the state lives.** Default: beside the output. A build
    directory with outputs on a slow share might prefer the state on fast
-   local disk; `--incremental-state` allows it.
-8. **Debug compaction in v1** is a full link (`debug-compaction`): on a
-   project edited all day, every quarter-turnover of `.debug_info`
-   costs one full link. Default: accept for v1; the debug-only rewrite is
-   the first [later] item if L10 shows it frequent.
+   local disk; `--incremental-state` allows it, with stamps on both file
+   systems (IN-22a).
+8. **Debug compaction in v1** is a full link (`debug-compaction`): a run
+   of growing edits compacts every few dozen updates (IN-57). Default:
+   accept for v1; the debug-only rewrite is the first [later] item if
+   L10 shows it frequent.
 9. **Equivalence of `.symtab` order.** A full link orders `.symtab` by
-   file; the update rewrites it whole in the same order (S-112), so
-   `.symtab` is identical modulo values. No question, recorded because
+   file; the update rewrites it whole in the same order (S-112, IN-49a),
+   so `.symtab` is identical modulo values. No question, recorded because
    `nm` users compare it.
+10. **Power loss.** IN-46/IN-47's sync order is argued, not tested (no
+    `dm-flakey` here). Default: argue it in the spec and test it where a
+    host provides `dm-flakey` or a fault-injecting file system (WP-064's
+    gate, if available; not a blocker).
 
 ## 12. Appendix: experiments
 
@@ -1929,8 +1936,8 @@ Host: aarch64, 12 cores, Linux 6.8, container on an overlay file system
 |---|---|---|---|---|
 | E1 | the census: 15 edit classes × 2 units × 20 configurations, object diffs | `census.py WORK` (`--detail` for per-category diffs; `run-census.sh` sets up kiln+hod) using `objdiff.py` | `census.tsv` (600 rows), Table 1 | 20–30 |
 | E2 | full-link phase times of protoc `-g` and without, 5 runs each; input read, `stat` costs | `run-all.sh` part 2: `mortar --time-phases @response` with the bench's static protoc response files, `-o` moved to `WORK`; `cat` of the inputs | §1.5 | 21–29 |
-| E3 | the shape of the protoc link: files, sections, relocations, (unit, target) pairs, fan-out, per-file sizes | `linkstats.py MAP` over `--mortar-map` of E2's `-g` link | §1.4 | 19–30 |
-| E4 | the state's size | derived from E3's counts and IN-19's row widths (not a measurement of a written state) | IN-19 | — |
+| E3 | the shape of the protoc link: files, sections, relocations, (unit, target) pairs, fan-out, per-file sizes | `linkstats.py MAP` over `--mortar-map` of R2s `-g` link | §1.4 | 19–30 |
+| E4 | the state's size | derived from R3s counts and IN-19's row widths (not a measurement of a written state) | IN-19 | — |
 | E5 | writing: copy, reflink, positioned writes, `fdatasync`, rename, `ETXTBSY` | `write_cost.py WORK EXE` | §1.5 | 19–30 |
 | E6 | dead compile units: tombstoned (emul) and neutralized (pad) against a full link, gdb and lldb transcripts, `llvm-dwarfdump --verify` | `debug_dead_cu.sh WORK MORTAR` with `dwarf_pad.py` | §1.6 | 19–30 |
 
