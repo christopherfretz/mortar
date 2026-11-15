@@ -78,6 +78,15 @@ impl Link {
         verify_with(&self.output_bytes(), &self.inputs(&map), &map)
     }
 
+    /// Runs the output with no arguments: its exit status, `None` if it
+    /// ended by a signal or did not end in time.
+    pub fn run(&self) -> Option<i32> {
+        let mut c = Command::new(&self.output);
+        c.current_dir(&self.dir);
+        let out = mortar_testutil::run_with(&mut c, b"", mortar_testutil::DEFAULT_TIMEOUT);
+        out.status.and_then(|s| s.code())
+    }
+
     pub fn label(&self) -> String {
         format!("{}/{}", self.case, self.linker.name())
     }
@@ -461,6 +470,8 @@ fn run_in(dir: &Path, program: &Path, args: &[&str]) {
 /// What a case links.
 struct Case {
     name: &'static str,
+    /// The linkers that link it (lld refuses the traditional TLS forms).
+    linkers: &'static [Linker],
     driver: fn(&Tools) -> &Path,
     objects: Vec<&'static str>,
     flags: Vec<&'static str>,
@@ -488,12 +499,19 @@ impl Corpus {
 pub enum Size {
     All,
     Small,
+    /// The thread-local cases (§4.7) and the review's cases (§10.2).
+    Tls,
 }
 
 pub fn corpus(size: Size) -> Option<&'static Corpus> {
     static ALL: OnceLock<Option<Corpus>> = OnceLock::new();
     static SMALL: OnceLock<Option<Corpus>> = OnceLock::new();
-    let cell = if size == Size::All { &ALL } else { &SMALL };
+    static TLS: OnceLock<Option<Corpus>> = OnceLock::new();
+    let cell = match size {
+        Size::All => &ALL,
+        Size::Small => &SMALL,
+        Size::Tls => &TLS,
+    };
     cell.get_or_init(|| build(size)).as_ref()
 }
 
@@ -513,16 +531,20 @@ fn build(size: Size) -> Option<Corpus> {
     w("tall.s", TYPES_ALL_S);
     w("tmore.s", TYPES_MORE_S);
     w("tbfd.s", TYPES_BFD_S);
-    for (src, obj) in [
-        ("start.s", "start.o"),
-        ("far.s", "far.o"),
-        ("got.s", "got.o"),
-        ("e843.s", "e843.o"),
-        ("tdefs.s", "tdefs.o"),
-        ("tall.s", "tall.o"),
-        ("tmore.s", "tmore.o"),
-        ("tbfd.s", "tbfd.o"),
-    ] {
+    for (src, obj) in if size == Size::Tls {
+        &[][..]
+    } else {
+        &[
+            ("start.s", "start.o"),
+            ("far.s", "far.o"),
+            ("got.s", "got.o"),
+            ("e843.s", "e843.o"),
+            ("tdefs.s", "tdefs.o"),
+            ("tall.s", "tall.o"),
+            ("tmore.s", "tmore.o"),
+            ("tbfd.s", "tbfd.o"),
+        ][..]
+    } {
         run_in(&dir, &t.gcc, &["-c", src, "-o", obj]);
     }
     if size == Size::All {
@@ -564,54 +586,64 @@ fn build(size: Size) -> Option<Corpus> {
         &t.gfortran
     }
     let free = vec!["-static", "-nostdlib"];
-    let mut cases = vec![
-        Case {
-            name: "start",
-            driver: gcc,
-            objects: vec!["start.o"],
-            flags: free.clone(),
-            per_linker: none,
-        },
-        Case {
-            name: "veneer",
-            driver: gcc,
-            objects: vec!["far.o"],
-            flags: free.clone(),
-            per_linker: |l| match l {
-                Linker::Bfd => vec!["-Wl,--section-start=.fartext=0x20000000"],
-                _ => vec!["-Wl,-Ttext=0x400000", "-Wl,--section-start=.fartext=0x20000000"],
+    let mut cases = if size == Size::Tls {
+        tls_cases(&t, &scratch)
+    } else {
+        vec![
+            Case {
+                name: "start",
+                linkers: &Linker::ALL,
+                driver: gcc,
+                objects: vec!["start.o"],
+                flags: free.clone(),
+                per_linker: none,
             },
-        },
-        Case {
-            name: "got",
-            driver: gcc,
-            objects: vec!["got.o"],
-            flags: free.clone(),
-            per_linker: none,
-        },
-        Case {
-            name: "erratum",
-            driver: gcc,
-            objects: vec!["e843.o"],
-            flags: vec!["-static", "-nostdlib", "-Wl,--fix-cortex-a53-843419"],
-            per_linker: none,
-        },
-        Case {
-            name: "types",
-            driver: gcc,
-            objects: vec!["tdefs.o", "tall.o"],
-            flags: free.clone(),
-            per_linker: |l| match l {
-                Linker::Bfd => vec!["tmore.o", "tbfd.o"],
-                Linker::Lld => vec!["tmore.o"],
-                Linker::Mold => vec![],
+            Case {
+                name: "veneer",
+                linkers: &Linker::ALL,
+                driver: gcc,
+                objects: vec!["far.o"],
+                flags: free.clone(),
+                per_linker: |l| match l {
+                    Linker::Bfd => vec!["-Wl,--section-start=.fartext=0x20000000"],
+                    _ => vec!["-Wl,-Ttext=0x400000", "-Wl,--section-start=.fartext=0x20000000"],
+                },
             },
-        },
-    ];
+            Case {
+                name: "got",
+                linkers: &Linker::ALL,
+                driver: gcc,
+                objects: vec!["got.o"],
+                flags: free.clone(),
+                per_linker: none,
+            },
+            Case {
+                name: "erratum",
+                linkers: &Linker::ALL,
+                driver: gcc,
+                objects: vec!["e843.o"],
+                flags: vec!["-static", "-nostdlib", "-Wl,--fix-cortex-a53-843419"],
+                per_linker: none,
+            },
+            Case {
+                name: "types",
+                linkers: &Linker::ALL,
+                driver: gcc,
+                objects: vec!["tdefs.o", "tall.o"],
+                flags: free.clone(),
+                per_linker: |l| match l {
+                    Linker::Bfd => vec!["tmore.o", "tbfd.o"],
+                    Linker::Lld => vec!["tmore.o"],
+                    Linker::Mold => vec![],
+                },
+            },
+        ]
+    };
     if size == Size::All {
         cases.extend([
             Case {
                 name: "c-hello",
+                linkers: &Linker::ALL,
                 driver: gcc,
                 objects: vec!["hello.o"],
                 flags: vec!["-static"],
@@ -619,6 +651,7 @@ fn build(size: Size) -> Option<Corpus> {
             },
             Case {
                 name: "c-hello-clang",
+                linkers: &Linker::ALL,
                 driver: gcc,
                 objects: vec!["hello-clang.o"],
                 flags: vec!["-static"],
@@ -626,6 +659,7 @@ fn build(size: Size) -> Option<Corpus> {
             },
             Case {
                 name: "cxx-eh",
+                linkers: &Linker::ALL,
                 driver: gxx,
                 objects: vec!["eh.o"],
                 flags: vec!["-static"],
@@ -633,6 +667,7 @@ fn build(size: Size) -> Option<Corpus> {
             },
             Case {
                 name: "fortran",
+                linkers: &Linker::ALL,
                 driver: gf,
                 objects: vec!["hello-f.o"],
                 flags: vec!["-static"],
@@ -640,6 +675,7 @@ fn build(size: Size) -> Option<Corpus> {
             },
             Case {
                 name: "gc-sections",
+                linkers: &Linker::ALL,
                 driver: gcc,
                 objects: vec!["gc.o"],
                 flags: vec!["-static", "-Wl,--gc-sections"],
@@ -647,6 +683,7 @@ fn build(size: Size) -> Option<Corpus> {
             },
             Case {
                 name: "comdat",
+                linkers: &Linker::ALL,
                 driver: gxx,
                 objects: vec!["comdat_a.o", "comdat_b.o"],
                 flags: vec!["-static"],
@@ -656,7 +693,7 @@ fn build(size: Size) -> Option<Corpus> {
     }
     let mut links = Vec::new();
     for case in &cases {
-        for linker in Linker::ALL {
+        for &linker in case.linkers {
             let out = format!("{}.{}", case.name, linker.name());
             let map = format!("{out}.map");
             let mut args: Vec<String> = Vec::new();
@@ -683,6 +720,432 @@ fn build(size: Size) -> Option<Corpus> {
         }
     }
     Some(Corpus { _scratch: scratch, links })
+}
+
+// ---- the thread-local corpus (§4.7, §10.2) ----
+
+/// Thread-local variables of three alignments, local-exec in the unit
+/// that defines them (gcc, not PIC).
+pub const TLS_DEF_C: &str = r"
+__thread long t_a = 1;
+__thread long t_b __attribute__((aligned(64))) = 2;
+__thread int t_c;
+static __thread volatile long t_s = 5;
+long le_sum(void) { t_c = 3; return t_a + t_b + t_c + t_s; }
+";
+
+/// Initial-exec references (gcc, not PIC, external variables).
+pub const TLS_IE_C: &str = r"
+extern __thread long t_a, t_b;
+extern __thread int t_c;
+long ie_sum(void) { return t_a + t_b + t_c; }
+";
+
+/// General- and local-dynamic references: compiled `-fPIC` as TLSDESC
+/// (gcc, clang) and as the traditional sequences (gcc).
+pub const TLS_DYN_C: &str = r"
+extern __thread long t_a, t_b;
+extern __thread int t_c;
+static __thread volatile long d_s = 7;
+static __thread volatile long d_t __attribute__((aligned(32))) = 8;
+long SUM(void) { return t_a + t_b + t_c + d_s + d_t; }
+";
+
+pub const TLS_MAIN_C: &str = r"
+long le_sum(void), ie_sum(void), desc_sum(void), clang_sum(void);
+#ifdef TRAD
+long trad_sum(void);
+#endif
+int main(void) {
+  int bad = 0;
+  if (le_sum() != 11) bad |= 1;
+  if (ie_sum() != 6) bad |= 2;
+  if (desc_sum() != 21) bad |= 4;
+  if (clang_sum() != 21) bad |= 8;
+#ifdef TRAD
+  if (trad_sum() != 21) bad |= 16;
+#endif
+  return bad;
+}
+";
+
+/// The TLS types every reference linker accepts, and the variables they
+/// name (`.tdata` aligned to 16, so the TCB gap is 16 for all three).
+pub const TLS_TYPES_ALL_S: &str = r#"
+	.text
+	.globl _start
+	.type _start,%function
+_start:
+	mrs  x0, tpidr_el0
+	add  x1, x0, #:tprel_hi12:le1, lsl #12
+	add  x1, x1, #:tprel_lo12_nc:le1
+	movz x2, #:tprel_g2:le2
+	movk x2, #:tprel_g1_nc:le2
+	movk x2, #:tprel_g0_nc:le2
+	movz x2, #:tprel_g1:le1
+	movk x2, #:tprel_g0_nc:le1
+	movz x2, #:tprel_g0:le1
+	adrp x3, :gottprel:ie1
+	ldr  x3, [x3, #:gottprel_lo12:ie1]
+	adrp x0, :tlsdesc:gd1
+	ldr  x1, [x0, #:tlsdesc_lo12:gd1]
+	add  x0, x0, #:tlsdesc_lo12:gd1
+	.tlsdesccall gd1
+	blr  x1
+	mov x8, #93
+	svc #0
+	.globl __tls_get_addr
+	.type __tls_get_addr,%function
+__tls_get_addr: ret
+	.section .tdata,"awT",%progbits
+	.balign 16
+	.globl le1, le2, ie1, gd1, gd2, ld1, ie3
+le1: .quad 1
+le2: .quad 2
+ie1: .quad 3
+gd1: .quad 4
+gd2: .quad 5
+ld1: .quad 6
+ie3: .quad 7
+	.section .tbss,"awT",%nobits
+	.balign 16
+tb: .zero 32
+"#;
+
+/// The checked `ADD` form and the traditional general-dynamic sequence:
+/// GNU ld and mold.
+pub const TLS_TYPES_NOT_LLD_S: &str = r"
+	.text
+	.globl t_not_lld
+t_not_lld:
+	add  x12, x0, #:tprel_lo12:le1
+	adrp x0, :tlsgd:gd2
+	add  x0, x0, :tlsgd_lo12:gd2
+	bl   __tls_get_addr
+	nop
+	ret
+";
+
+/// The unchecked load/store forms: GNU ld and lld.
+pub const TLS_TYPES_NOT_MOLD_S: &str = r"
+	.text
+	.globl t_not_mold
+t_not_mold:
+	mrs  x9, tpidr_el0
+	ldrb w10, [x9, #:tprel_lo12_nc:le1]
+	ldrh w10, [x9, #:tprel_lo12_nc:le1]
+	ldr  w10, [x9, #:tprel_lo12_nc:le1]
+	ldr  x10, [x9, #:tprel_lo12_nc:le1]
+	ret
+";
+
+/// What only GNU ld accepts: the checked load/store forms, the literal
+/// and MOVW initial-exec forms, local-dynamic with every DTPREL form, and
+/// a TLSDESC of `_TLS_MODULE_BASE_` (review finding 6).
+pub const TLS_TYPES_BFD_S: &str = r"
+	.text
+	.globl t_bfd
+t_bfd:
+	mrs  x9, tpidr_el0
+	ldrb w10, [x9, #:tprel_lo12:le1]
+	ldrh w10, [x9, #:tprel_lo12:le1]
+	ldr  w10, [x9, #:tprel_lo12:le1]
+	ldr  x10, [x9, #:tprel_lo12:le1]
+	ldr  x6, :gottprel:ie3
+	movz x7, #:gottprel_g1:ie3
+	movk x7, #:gottprel_g0_nc:ie3
+	adrp x0, :tlsldm:ld1
+	add  x0, x0, :tlsldm_lo12_nc:ld1
+	bl   __tls_get_addr
+	nop
+	add  x1, x0, #:dtprel_hi12:ld1, lsl #12
+	add  x1, x1, #:dtprel_lo12_nc:ld1
+	add  x1, x0, #:dtprel_lo12:ld1
+	movz x2, #:dtprel_g2:ld1
+	movk x2, #:dtprel_g1_nc:ld1
+	movk x2, #:dtprel_g0_nc:ld1
+	movz x2, #:dtprel_g1:ld1
+	movz x2, #:dtprel_g0:ld1
+	ldrb w3, [x0, #:dtprel_lo12:ld1]
+	ldrb w3, [x0, #:dtprel_lo12_nc:ld1]
+	ldrh w3, [x0, #:dtprel_lo12:ld1]
+	ldrh w3, [x0, #:dtprel_lo12_nc:ld1]
+	ldr  w3, [x0, #:dtprel_lo12:ld1]
+	ldr  w3, [x0, #:dtprel_lo12_nc:ld1]
+	ldr  x3, [x0, #:dtprel_lo12:ld1]
+	ldr  x3, [x0, #:dtprel_lo12_nc:ld1]
+	adrp x0, :tlsdesc:_TLS_MODULE_BASE_
+	ldr  x1, [x0, #:tlsdesc_lo12:_TLS_MODULE_BASE_]
+	add  x0, x0, #:tlsdesc_lo12:_TLS_MODULE_BASE_
+	.tlsdesccall _TLS_MODULE_BASE_
+	blr  x1
+	mrs  x9, tpidr_el0
+	add  x0, x0, x9
+	add  x0, x0, #:dtprel_lo12_nc:ld1
+	ret
+";
+
+/// The TLS types each reference linker is given (§4.7, §10).
+pub fn tls_types_for(linker: Linker) -> Vec<&'static str> {
+    let mut v = vec![
+        "R_AARCH64_TLSLE_MOVW_TPREL_G2",
+        "R_AARCH64_TLSLE_MOVW_TPREL_G1",
+        "R_AARCH64_TLSLE_MOVW_TPREL_G1_NC",
+        "R_AARCH64_TLSLE_MOVW_TPREL_G0",
+        "R_AARCH64_TLSLE_MOVW_TPREL_G0_NC",
+        "R_AARCH64_TLSLE_ADD_TPREL_HI12",
+        "R_AARCH64_TLSLE_ADD_TPREL_LO12_NC",
+        "R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21",
+        "R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC",
+        "R_AARCH64_TLSDESC_ADR_PAGE21",
+        "R_AARCH64_TLSDESC_LD64_LO12",
+        "R_AARCH64_TLSDESC_ADD_LO12",
+        "R_AARCH64_TLSDESC_CALL",
+    ];
+    if linker != Linker::Lld {
+        v.extend([
+            "R_AARCH64_TLSLE_ADD_TPREL_LO12",
+            "R_AARCH64_TLSGD_ADR_PAGE21",
+            "R_AARCH64_TLSGD_ADD_LO12_NC",
+        ]);
+    }
+    if linker != Linker::Mold {
+        v.extend([
+            "R_AARCH64_TLSLE_LDST8_TPREL_LO12_NC",
+            "R_AARCH64_TLSLE_LDST16_TPREL_LO12_NC",
+            "R_AARCH64_TLSLE_LDST32_TPREL_LO12_NC",
+            "R_AARCH64_TLSLE_LDST64_TPREL_LO12_NC",
+        ]);
+    }
+    if linker == Linker::Bfd {
+        v.extend([
+            "R_AARCH64_TLSLE_LDST8_TPREL_LO12",
+            "R_AARCH64_TLSLE_LDST16_TPREL_LO12",
+            "R_AARCH64_TLSLE_LDST32_TPREL_LO12",
+            "R_AARCH64_TLSLE_LDST64_TPREL_LO12",
+            "R_AARCH64_TLSIE_LD_GOTTPREL_PREL19",
+            "R_AARCH64_TLSIE_MOVW_GOTTPREL_G1",
+            "R_AARCH64_TLSIE_MOVW_GOTTPREL_G0_NC",
+            "R_AARCH64_TLSLD_ADR_PAGE21",
+            "R_AARCH64_TLSLD_ADD_LO12_NC",
+            "R_AARCH64_TLSLD_ADD_DTPREL_HI12",
+            "R_AARCH64_TLSLD_ADD_DTPREL_LO12",
+            "R_AARCH64_TLSLD_ADD_DTPREL_LO12_NC",
+            "R_AARCH64_TLSLD_MOVW_DTPREL_G2",
+            "R_AARCH64_TLSLD_MOVW_DTPREL_G1",
+            "R_AARCH64_TLSLD_MOVW_DTPREL_G1_NC",
+            "R_AARCH64_TLSLD_MOVW_DTPREL_G0",
+            "R_AARCH64_TLSLD_MOVW_DTPREL_G0_NC",
+            "R_AARCH64_TLSLD_LDST8_DTPREL_LO12",
+            "R_AARCH64_TLSLD_LDST8_DTPREL_LO12_NC",
+            "R_AARCH64_TLSLD_LDST16_DTPREL_LO12",
+            "R_AARCH64_TLSLD_LDST16_DTPREL_LO12_NC",
+            "R_AARCH64_TLSLD_LDST32_DTPREL_LO12",
+            "R_AARCH64_TLSLD_LDST32_DTPREL_LO12_NC",
+            "R_AARCH64_TLSLD_LDST64_DTPREL_LO12",
+            "R_AARCH64_TLSLD_LDST64_DTPREL_LO12_NC",
+        ]);
+    }
+    v
+}
+
+/// Local-dynamic in a block aligned to `ALIGN`: exits 42 when the
+/// variable is read right (§10.2 A7).
+pub const TLS_LD_S: &str = r#"
+	.text
+	.globl main
+	.type main,%function
+main:
+	stp x29, x30, [sp, #-16]!
+	adrp x0, :tlsldm:v2
+	add  x0, x0, :tlsldm_lo12_nc:v2
+	bl   __tls_get_addr
+	nop
+	add  x0, x0, #:dtprel_hi12:v2, lsl #12
+	add  x0, x0, #:dtprel_lo12_nc:v2
+	ldr  x0, [x0]
+	ldp x29, x30, [sp], #16
+	ret
+	.section .tdata,"awT",%progbits
+	.balign ALIGN
+v1: .quad 5
+v2: .quad 42
+	.section .note.GNU-stack,"",%progbits
+"#;
+
+/// Initial-exec with the address and the value in different registers:
+/// exits 42 when the variable is read right (review finding 1, §10.2 A8).
+pub const TLS_IE_REGS_S: &str = r#"
+	.text
+	.globl main
+	.type main,%function
+main:
+	mov  x5, #0
+	adrp x4, :gottprel:iv
+	ldr  x5, [x4, #:gottprel_lo12:iv]
+	mrs  x6, tpidr_el0
+	ldr  x0, [x6, x5]
+	ret
+	.section .tdata,"awT",%progbits
+	.balign 8
+	// TPREL(iv) >= 2^16: the MOVZ half matters.
+	.zero 0x10000
+	.globl iv
+iv: .quad 42
+	.section .note.GNU-stack,"",%progbits
+"#;
+
+/// A 64-bit GOT relocation on a 32-bit load (review finding 4, R8).
+pub const GOT_LDR_W_S: &str = r"
+	.text
+	.globl _start
+_start:
+	adrp x0, :got:gv
+	ldr  w0, [x0, #:got_lo12:gv]
+	mov x8, #93
+	svc #0
+	.data
+	.balign 8
+	.globl gv
+gv: .quad 1
+";
+
+/// PC-relative references to an undefined weak symbol (review finding
+/// 10): S is the place (AAELF64), so X is the addend.
+pub const WEAK_PREL_S: &str = r"
+	.text
+	.globl _start
+_start:
+	adr x1, wu
+	ldr x2, wu
+	mov x8, #93
+	svc #0
+	.weak wu
+	.data
+	.balign 8
+	.quad wu - . + 16
+	.word wu - . + 8
+	.hword wu - .
+";
+
+const NOT_MOLD: &[Linker] = &[Linker::Bfd, Linker::Lld];
+const BFD: &[Linker] = &[Linker::Bfd];
+
+#[allow(clippy::too_many_lines, clippy::items_after_statements)] // the cases, one by one
+fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
+    let dir = scratch.path();
+    let w = |name: &str, text: &str| {
+        scratch.write(name, text);
+    };
+    w("tdef.c", TLS_DEF_C);
+    w("tie.c", TLS_IE_C);
+    w("tdesc.c", &TLS_DYN_C.replace("SUM", "desc_sum"));
+    w("ttrad.c", &TLS_DYN_C.replace("SUM", "trad_sum"));
+    w("tclang.c", &TLS_DYN_C.replace("SUM", "clang_sum").replace("d_", "c_"));
+    w("tmain.c", TLS_MAIN_C);
+    w("tt-all.s", TLS_TYPES_ALL_S);
+    w("tt-nlld.s", TLS_TYPES_NOT_LLD_S);
+    w("tt-nmold.s", TLS_TYPES_NOT_MOLD_S);
+    w("tt-bfd.s", TLS_TYPES_BFD_S);
+    w("tld64.s", &TLS_LD_S.replace("ALIGN", "64"));
+    w("tld8.s", &TLS_LD_S.replace("ALIGN", "8"));
+    w("tieregs.s", TLS_IE_REGS_S);
+    w("gotw.s", GOT_LDR_W_S);
+    w("weakprel.s", WEAK_PREL_S);
+    let gcc = |args: &[&str]| run_in(dir, &t.gcc, args);
+    gcc(&["-O2", "-c", "tdef.c", "-o", "tdef.o"]);
+    gcc(&["-O2", "-c", "tie.c", "-o", "tie.o"]);
+    gcc(&["-O2", "-fPIC", "-mtls-dialect=desc", "-c", "tdesc.c", "-o", "tdesc.o"]);
+    gcc(&["-O2", "-fPIC", "-mtls-dialect=trad", "-c", "ttrad.c", "-o", "ttrad.o"]);
+    gcc(&["-O2", "-c", "tmain.c", "-o", "tmain.o"]);
+    gcc(&["-O2", "-DTRAD", "-c", "tmain.c", "-o", "tmain-trad.o"]);
+    run_in(
+        dir,
+        &t.clang,
+        &["--target=aarch64-linux-gnu", "-O2", "-fPIC", "-c", "tclang.c", "-o", "tclang.o"],
+    );
+    for (src, obj) in [
+        ("tt-all.s", "tt-all.o"),
+        ("tt-nlld.s", "tt-nlld.o"),
+        ("tt-nmold.s", "tt-nmold.o"),
+        ("tt-bfd.s", "tt-bfd.o"),
+        ("tld64.s", "tld64.o"),
+        ("tld8.s", "tld8.o"),
+        ("tieregs.s", "tieregs.o"),
+        ("gotw.s", "gotw.o"),
+        ("weakprel.s", "weakprel.o"),
+    ] {
+        gcc(&["-c", src, "-o", obj]);
+    }
+    fn gcc_driver(t: &Tools) -> &Path {
+        &t.gcc
+    }
+    let free = vec!["-static", "-nostdlib"];
+    vec![
+        Case {
+            name: "tls-c",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["tdef.o", "tie.o", "tdesc.o", "tclang.o"],
+            flags: vec!["-static"],
+            per_linker: |l| match l {
+                Linker::Lld => vec!["tmain.o"],
+                _ => vec!["tmain-trad.o", "ttrad.o"],
+            },
+        },
+        Case {
+            name: "tls-types",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["tt-all.o"],
+            flags: free.clone(),
+            per_linker: |l| match l {
+                Linker::Bfd => vec!["tt-nlld.o", "tt-nmold.o", "tt-bfd.o"],
+                Linker::Lld => vec!["tt-nmold.o"],
+                Linker::Mold => vec!["tt-nlld.o"],
+            },
+        },
+        Case {
+            name: "tls-ld-64",
+            linkers: BFD,
+            driver: gcc_driver,
+            objects: vec!["tld64.o"],
+            flags: vec!["-static"],
+            per_linker: none,
+        },
+        Case {
+            name: "tls-ld-8",
+            linkers: BFD,
+            driver: gcc_driver,
+            objects: vec!["tld8.o"],
+            flags: vec!["-static"],
+            per_linker: none,
+        },
+        Case {
+            name: "tls-ie-regs",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["tieregs.o"],
+            flags: vec!["-static"],
+            per_linker: none,
+        },
+        Case {
+            name: "got-ldr-w",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["gotw.o"],
+            flags: free.clone(),
+            per_linker: none,
+        },
+        Case {
+            name: "weak-prel",
+            linkers: NOT_MOLD,
+            driver: gcc_driver,
+            objects: vec!["weakprel.o"],
+            flags: free,
+            per_linker: none,
+        },
+    ]
 }
 
 // ---- known anomalies of the reference linkers (§10.2) ----

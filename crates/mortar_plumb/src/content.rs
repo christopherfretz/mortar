@@ -68,9 +68,11 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                     out[k as usize + 2],
                     out[k as usize + 3],
                 ]);
-                a64::erratum_843419_site(p)
-                    && a64::is_ldst_unsigned_imm(inw)
-                    && e.erratum_patch(p, outw) == Some(inw)
+                // A word a TLS rewriting wrote that no record covers (W12).
+                e.rewritten_words.contains(&p)
+                    || (a64::erratum_843419_site(p)
+                        && a64::is_ldst_unsigned_imm(inw)
+                        && e.erratum_patch(p, outw) == Some(inw))
             }) {
                 let mut f = Finding::new(
                     Rule::Structure(12),
@@ -130,9 +132,20 @@ pub(crate) fn check_symbols(e: &mut Engine<'_, '_>) {
     let (mut checked, mut unchecked) = (0u64, 0u64);
     for name in names {
         let Some(out) = image.global(name).or_else(|| image.unique(name)) else { continue };
-        if out.sym.st_shndx == 0 || out.sym.sym_type() == STT_TLS {
+        if out.sym.st_shndx == 0 {
             continue;
         }
+        // A TLS symbol's value is its offset in the TLS template (gABI
+        // "Symbol Values"; §4.7): its address is that plus PT_TLS p_vaddr.
+        let value = if out.sym.sym_type() == STT_TLS {
+            let Ok(Some(b)) = e.tls else {
+                unchecked += 1;
+                continue;
+            };
+            b.start.wrapping_add(out.sym.st_value)
+        } else {
+            out.sym.st_value
+        };
         let mut values: Vec<u64> = Vec::new();
         let mut ifunc = false;
         for &(oi, di) in &e.defs[name] {
@@ -157,17 +170,17 @@ pub(crate) fn check_symbols(e: &mut Engine<'_, '_>) {
         }
         if ifunc || values.is_empty() {
             unchecked += 1;
-        } else if values.contains(&out.sym.st_value) {
+        } else if values.contains(&value) {
             checked += 1;
         } else {
             let mut f = Finding::new(
                 Rule::SymbolValue,
                 format!("symbol '{name}' is not where any placed definition of it is"),
             )
-            .at(out.sym.st_value);
+            .at(value);
             f.symbol = Some(name.clone());
             f.expected = values.first().copied();
-            f.found = Some(out.sym.st_value);
+            f.found = Some(value);
             findings.push(f);
         }
     }

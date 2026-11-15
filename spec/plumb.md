@@ -28,8 +28,8 @@ describes how x86-64 and i386 fit.
 
 | stage | covers | not-checked reasons it removes |
 |---|---|---|
-| 1 (this spec) | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
-| 2 | TLS (the AAELF64 TLS types: TLSLE, TLSIE relaxed, TLSDESC relaxed), IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents, non-alloc (DWARF) relocations | `tls`, `ifunc`, `eh-frame`, `non-alloc` |
+| 1 | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
+| 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents, non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame`, `non-alloc` |
 | 3 | PIE and shared objects: the dynamic sections, dynamic relocations, PLT | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 
@@ -390,8 +390,7 @@ it against this one and against `mortar_elf`'s names.
 | 314 | `PLT32` | S+A-P | data 4 | -2^31 <= X < 2^31 |
 
 All names take the `R_AARCH64_` prefix. Type 281 is not defined. The TLS
-types (512 to 573, and 1026 to 1031) are stage 2 (`tls`). Any other type is
-not checked (`type`).
+types are in §4.7. Any other type is not checked (`type`).
 
 ### 4.3 Fields
 
@@ -415,13 +414,30 @@ field drops must be zero: `scale` bits for imm12, 3 bits for `LO15`, 2 bits
 for the branch fields (R3). A `_NC` type has no overflow check, but its
 alignment is still checked.
 
+- **HI12** (bits [21:10]) = X[23:12], for `ADD ..., LSL #12`.
+- **Insn** (`TLSDESC_CALL`): no field; the type marks an instruction.
+
+**R8: the instruction fits the type.** The input instruction at the place
+must be of the class the type is defined for: a load or store of the
+access size its `imm12` is scaled by (`LDST8` to `LDST128`, and the TLS
+`LDST` forms), and a 64-bit `LDR` (unsigned offset) for the `LD64` GOT
+forms (310, 312, 313, 542, 563). Otherwise the record is R8 and is not
+otherwise judged. `ldr w0, [x0, :got_lo12:x]` is the case of review
+finding 4: GNU ld writes the scale-8 offset into the scale-4 load, and lld
+replaces the load with a 64-bit `ADR` (A5); the input is refused by name
+whatever the linker made of it.
+
 Test: `a64::tests::s4_3_fields_encode_as_the_instruction_set_says`,
-`s4_3_checks`.
+`s4_3_checks`, `tests/tls.rs s4_3_r8_the_instruction_must_fit_the_type`.
 
 ### 4.4 S: resolving a symbol
 
-Symbol 0 has S = 0. An input symbol of type `STT_GNU_IFUNC` or `STT_TLS`
-is stage 2 (`ifunc`, `tls`). Otherwise:
+Symbol 0 has S = 0. An input symbol of type `STT_GNU_IFUNC` is stage 2
+(`ifunc`). A thread-local symbol (`STT_TLS`, or any symbol defined in an
+`SHF_TLS` section, such as GCC's `.LANCHOR0` or a section symbol) resolves
+as below to its address in the TLS template, which §4.7 turns into an
+offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
++ `st_value` (gABI "Symbol Values"). Otherwise:
 
 - **A local symbol** (`STB_LOCAL`, including `STT_SECTION`) defined in
   section k has S = place(k) + `st_value`, which depends on k's place:
@@ -440,16 +456,24 @@ is stage 2 (`ifunc`, `tls`). Otherwise:
      `STB_GLOBAL` or `STB_WEAK` symbol of the name in `.symtab`, and it
      decides which definition won. If it is IFUNC or TLS, the record is
      stage 2. If it is defined, S is its value. If it is undefined and weak
-     (on either side), the symbol is an *undefined weak* and S = 0.
+     (on either side), the symbol is an *undefined weak*.
   2. **The unique placed definition in the inputs.** Take the one strong
      definition, else the one weak definition, whose section is placed,
      pieces or merged (or that is `SHN_ABS`). S follows from that section's
      place, as for a local symbol. This step covers hidden symbols, which
      lld and mold make local in the output.
   3. **The unique output symbol of that name**, of any binding.
-  4. **An undefined weak** in the input: S = 0.
+  4. **An undefined weak** in the input.
 
   If none applies, the record is `symbol-unresolved`.
+
+**An undefined weak** has S = 0, except for a PC-relative type that is
+not a branch (`PREL64/32/16`, `LD_PREL_LO19`, `ADR_PREL_LO21`, the
+`MOVW_PREL` groups), for which S = P, so X = A (AAELF64: an unresolved
+weak reference is the place for a PC-relative relocation). GNU ld and lld
+write X = A; mold refuses such a record as out of range (review finding
+10; test: `tests/tls.rs s4_4_undefined_weak_pc_relative_is_the_place`).
+Branches keep S = 0 and have W4 and W5.
 
 Lookups by name go through hash maps. Nothing depends on their iteration
 order (§7.1).
@@ -472,8 +496,10 @@ place, so REL and RELA follow one path.
 
 For each name that has a global, weak or unique definition in the inputs,
 take the output symbol of that name: the global one, else the unique one.
-If it is defined and not TLS, its value must equal the place of one of the
-name's placed definitions, or the `st_value` of an `SHN_ABS` one.
+If it is defined, its value must equal the place of one of the name's
+placed definitions, or the `st_value` of an `SHN_ABS` one. For a TLS
+symbol the value compared is `PT_TLS` `p_vaddr` + `st_value`; without a
+usable `PT_TLS` the name is unchecked.
 
 - A name with IFUNC definitions is unchecked: the output symbol is the
   canonical PLT entry, which is stage 2.
@@ -481,6 +507,77 @@ name's placed definitions, or the `st_value` of an `SHN_ABS` one.
 
 Counts: `symbols_checked`, `symbols_unchecked`. Test:
 `tests/mutation.rs s9_2b_moved_symbols_are_found`.
+
+### 4.7 Thread-local storage (stage 2)
+
+A static executable has one module, its TLS block is the `PT_TLS`
+template, and on AArch64 (TLS variant 1) the block starts `tcb` bytes
+after the thread pointer:
+
+- `start` = `PT_TLS` `p_vaddr`, `tcb` = align_up(16, `p_align`);
+- TPREL(v) = v − start + tcb, DTPREL(v) = v − start, the module index is 1.
+
+More than one `PT_TLS`, an alignment that is not a power of two, or a
+`p_vaddr` that is not a multiple of `p_align` is S9 (§6.2), and the TLS
+records are then `tls`. A TLS record in an output without `PT_TLS` is
+**T1**. A TLS type against a symbol that is not thread-local is **R8**.
+`_TLS_MODULE_BASE_` (the TLSDESC ABI's name for the start of the module's
+block) resolves to `start` whatever value a linker gives its symbol
+(A3; review finding 6).
+
+The types (AAELF64 "Relocations for thread-local storage"), with the
+operation and field; checks are as AAELF64 states them:
+
+| types | operation | field |
+|---|---|---|
+| 544–548 `TLSLE_MOVW_TPREL_G2/G1/G1_NC/G0/G0_NC` | TPREL(S+A) | signed MOVW (G2, G1, G0), MOVW (`_NC`) |
+| 549 `TLSLE_ADD_TPREL_HI12`, 550/551 `_LO12(_NC)` | TPREL(S+A) | HI12; imm12 |
+| 552–559, 570/571 `TLSLE_LDST{8,16,32,64,128}_TPREL_LO12(_NC)` | TPREL(S+A) | imm12, scaled |
+| 523–527 `TLSLD_MOVW_DTPREL_*`, 528–538, 572/573 `TLSLD_ADD/LDST*_DTPREL_*` | DTPREL(S+A) | as the TPREL forms |
+| 539/540 `TLSIE_MOVW_GOTTPREL_G1/G0_NC` | G − GOT, G holding TPREL(S+A) | signed MOVW; MOVW |
+| 541 `TLSIE_ADR_GOTTPREL_PAGE21`, 542 `_LD64_GOTTPREL_LO12_NC`, 543 `_LD_GOTTPREL_PREL19` | Page(G) − Page(P); G; G − P | ADRP; imm12/8; imm19 |
+| 513/514 `TLSGD_ADR_PAGE21`, `_ADD_LO12_NC` | G of a 16-byte entry (1, DTPREL(S+A)) | ADRP; imm12 |
+| 518/519 `TLSLD_ADR_PAGE21`, `_ADD_LO12_NC` | G of a 16-byte entry (1, 0) | ADRP; imm12 |
+| 562–564 `TLSDESC_ADR_PAGE21`, `_LD64_LO12`, `_ADD_LO12`; 569 `TLSDESC_CALL` | the sequence below | ADRP; imm12/8; imm12; none |
+
+The types no reference linker or assembler produces for a static link
+(512, 515–517, 520–522, 560, 561, 565–568, the `PREL21`/`PREL19` GD, LD and
+TLSDESC forms) are `type`. The dynamic TLS types (1028–1031) are stage 3.
+
+**Decisions.** A TPREL or DTPREL record is judged as in §5.2 with X as
+above. A TLS GOT record is decided by W9 (IE), or by its sequence (GD, LD,
+TLSDESC); when it is not rewritten, its output instruction must equal the
+input outside the field (or be W7's ADR), else it is R1 ("rewritten into
+a form no specified rewriting allows"), and it then joins the GOT groups
+of §5.5 keyed by (kind, object, symbol, addend), whose valid entry holds
+the TPREL word or the 16-byte pair. `TLSIE_MOVW` records give G − GOT
+from the MOVZ/MOVN high half and the MOVK low half.
+
+**Sequences.** Partners are found by offset in the same section:
+
+- **TLSDESC**: 562, 563, 564, 569 at P, P+4, P+8, P+12, one symbol and
+  addend. The input must be `ADRP x0; LDR Xt, [x0]; ADD x0, x0; BLR Xt`
+  (else R8). A TLSDESC record outside a whole sequence is `tls-sequence`.
+  W10 or W11 accepts all four; a sequence left as it is (for a dynamic
+  loader) is `tls` (stage 3); anything else is R1 with TPREL as expected.
+- **GD and LD**: 513+514 (or 518+519) at P, P+4, `CALL26 __tls_get_addr`
+  at P+8, `NOP` in the input at P+12, input `ADRP x0; ADD x0, x0`. W12 or
+  W13 accepts the three records (the word at P+12 has no record; W12's
+  rewrite of it is exempt from S12). A sequence left as it is is decided
+  per record (GOT pair, ordinary `CALL26`). Anything else is R1, on the
+  call as well.
+
+**Not judged** (`tls`): an undefined weak TLS symbol (glibc's
+`_nl_current_LC_*`, referenced by `setlocale.o` through IE); a non-TLS
+type against a TLS symbol; a TLSDESC sequence kept for a dynamic loader;
+the TLS records of an output whose `PT_TLS` is unusable (S9).
+
+Static PIE (`ET_DYN` with no `PT_INTERP`) is stage 3: on the reference
+linkers its TLS takes the same forms and has no TLS dynamic relocation,
+but S1 refuses `ET_DYN` today (§11).
+
+Tests: `tests/tls.rs` (§9.1), `tests/mutation.rs
+s9_2f_tls_mutations_are_found`.
 
 ## 5. Checking a record
 
@@ -490,15 +587,15 @@ The records of a section are checked in index order. For each record:
 
 1. **Place.** Find P (§3.3). A record outside every piece of a sectioned
    place is not in the output.
-2. **Trivial types.** Type 0 or 256 counts as `none`. TLS types go to
-   `tls`, and types not in the table go to `type`.
+2. **Trivial types.** Type 0 or 256 counts as `none`. Types not in the
+   tables go to `type`. The input instruction must fit the type (R8, §4.3).
 3. **Place bounds.** The input's place, `width` bytes at `r_offset`, must be
    inside the section's data. If it is not, the finding is I2 (for
    `SHT_NOBITS`, the input word is taken as 0).
 4. **The output word.** Read the output's word at P. If P is outside the
    loaded memory, the finding is R7. An instruction field at an erratum
    843419 site is read through the patch (W8, §5.3).
-5. **S.** Resolve S (§4.4).
+5. **S.** Resolve S (§4.4). A TLS type is decided by §4.7.
 6. **GOT types and merged targets.** These are grouped and decided after
    every section (§5.5, §5.6).
 7. **Everything else.** Compute X and give a verdict (§5.2). A record that
@@ -566,6 +663,29 @@ The erratum rewritings (Cortex-A53 erratum 843419):
   The word at T is then the word the program executes, and it is checked
   in place of the branch. The same rule allows the branch in the content
   check (§6.2 S12).
+
+The TLS rewritings (§4.7), static executables only. X is TPREL(S+A), and
+the local-exec forms need 0 <= X < 2^32. `MOVZ x, #X[31:16], LSL #16` is
+written `hi(x)` and `MOVK x, #X[15:0]` is written `lo(x)`:
+
+- **W9 `tlsie-to-le`.** `ADRP Xd, :gottprel:S` (541) and
+  `LDR Xt, [Xn, :gottprel_lo12:S]` (542), anywhere in the section with the
+  same symbol and addend, made `hi(Xd)` and `lo(Xd)`, with Xt = Xn = Xd.
+  With Xt ≠ Xn the rewriting leaves the value in no register (A8): it is
+  not W9, and the changed instructions are R1.
+- **W10 `tlsdesc-to-le`.** The four TLSDESC words made
+  `hi(x0); lo(x0); NOP; NOP` (GNU ld, lld) or `NOP; NOP; hi(x0); lo(x0)`
+  (mold).
+- **W11 `tlsdesc-to-ie`.** The four TLSDESC words made
+  `ADRP x0, G; LDR x0, [x0, :lo12:G]; NOP; NOP` or
+  `NOP; NOP; ADRP x0, G; LDR x0, [x0, :lo12:G]` (mold), with G a GOT entry
+  (§5.5 valid-slot conditions) holding X.
+- **W12 `tlsgd-to-le`.** `ADRP x0; ADD x0, x0; BL __tls_get_addr; NOP` made
+  `hi(x0); lo(x0); MRS x1, TPIDR_EL0; ADD x0, x1, x0`.
+- **W13 `tlsld-to-le`.** The same LD sequence made
+  `MRS x0, TPIDR_EL0; ADD x0, x0, #tcb; NOP; NOP`. The DTPREL records that
+  follow keep their DTPREL values. GNU ld writes `#16` whatever `tcb` is
+  (A7).
 
 ### 5.4 The veneer emulator
 
@@ -697,7 +817,8 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   TLS symbol, `st_value + st_size <= p_memsz` of `PT_TLS`, and a TLS
   symbol requires a `PT_TLS`. Labels (`st_size == 0`) are checked by Y1.
 - **S9.** There is at most one `PT_TLS`, its initialization image lies in
-  a `PT_LOAD`'s file image, and its `p_align` is a power of two. Every
+  a `PT_LOAD`'s file image, its `p_align` is a power of two, and its
+  `p_vaddr` is a multiple of `p_align` (§4.7). Every
   `SHF_TLS` section lies inside it, and TLS sections require a `PT_TLS`.
 - **S10.** There is at most one `PT_GNU_STACK`.
 - **S11.** Every `PT_NOTE` lies in the file and is a sequence of whole
@@ -706,8 +827,8 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
 - **S12 (content).** Take every input section placed whole that is
   allocated, has a size, and is not mergeable, `.eh_frame`, `.tbss` or
   `.note.gnu.property`. Its output bytes must equal its input bytes
-  outside its relocated ranges (§6.3). The one exception is a word that is
-  an erratum-patch branch (W8). A `SHT_NOBITS` section's memory must read
+  outside its relocated ranges (§6.3). The exceptions are a word that is
+  an erratum-patch branch (W8) and the last word of a W12 sequence. A `SHT_NOBITS` section's memory must read
   as zero. `.note.gnu.property` is excluded because linkers combine the
   property notes by definition (gABI "Program Property").
 
@@ -724,7 +845,8 @@ as 8.
 
 A finding has:
 
-- the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R7` or `Y1`;
+- the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R8`, `T1`
+  or `Y1`;
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -745,8 +867,8 @@ once:
 `records = verified + accepted + not_checked + none + failed`
 
 - **verified**, by how S was found: `direct`, `got-slot` or `piece`;
-- **accepted**, by rewriting (W1 to W8);
-- **not checked**, by reason: `tls`, `ifunc`, `non-alloc`, `eh-frame`,
+- **accepted**, by rewriting (W1 to W13);
+- **not checked**, by reason: `tls`, `tls-sequence`, `ifunc`, `non-alloc`, `eh-frame`,
   `type`, `machine`, `section-not-locatable`, `piece-not-locatable`,
   `in-mergeable`, `symbol-unresolved`, `got-unpaired` or
   `input-unreadable`;
@@ -826,6 +948,18 @@ For each link (`tests/corpus.rs s9_1_reference_links_verify_clean`):
 listed in §10.3 is checked for its linker. `s5_3_observed_rewritings_are_accepted`
 asserts the rewritings of §10.1.
 
+The thread-local corpus (`Size::Tls`, `tests/tls.rs`) is linked the same
+way, by the linkers that accept it, and its glibc programs are run:
+
+| case | built by | linked | asserted |
+|---|---|---|---|
+| `tls-c` | gcc -O2 (LE, IE), gcc `-fPIC` TLSDESC and traditional GD (not for lld), clang `-fPIC` TLSDESC; alignments 4 to 64 | `-static` | exits 0; clean; the §10.1 TLS rewritings |
+| `tls-types` | gcc (asm): every TLS type each linker accepts (§10.3), `_TLS_MODULE_BASE_` | `-static -nostdlib` | clean, nothing not checked, each type checked |
+| `tls-ld-64`, `tls-ld-8` | gcc (asm): LD in a block aligned to 64 and to 8 | GNU ld, `-static` | A7: the 64 case exits wrong and has three R1; the 8 case exits 42, clean, W13 |
+| `tls-ie-regs` | gcc (asm): `ADRP x4; LDR x5, [x4]` IE, TPREL >= 2^16 | `-static` | A8: GNU ld and lld exit wrong with R1 on both records; mold exits 42, clean |
+| `got-ldr-w` | gcc (asm): `LDR w0, [x0, :got_lo12:]` | `-static -nostdlib` | R8 for every linker |
+| `weak-prel` | gcc (asm): PC-relative data, `ADR` and `LDR` literal to an undefined weak | GNU ld, lld | clean (§4.4) |
+
 ### 9.2 Mutations
 
 A clean reference link is broken one way at a time. Each mutation must
@@ -843,6 +977,12 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   be found.
 - **(e)** Each structure rule (S1–S12) and map rule (M1–M5) is broken.
   Each must produce its own finding.
+- **(f)** Thread-local storage (`tls-types`, every linker): (1) bits 0, 5,
+  10, 16, 22 and 31 of every TLS-relocated instruction, relaxed or not,
+  are flipped, and all must be found (516/516); (2) `PT_TLS` is moved by
+  its alignment, or its alignment multiplied by 4, and each must be found
+  (6/6); (3) each `.got` word is corrupted as in (c), and at least one
+  must be found where a TLS record went through an entry.
 
 ### 9.3 Map readers
 
@@ -873,6 +1013,14 @@ A truncated output, or an input cut short, must also produce a finding.
 | GNU ld 2.44 | W4 (branch to an undefined weak made `NOP`); W6 (`__x_veneer` in `.text.stub`: `ADRP x16; ADD x16; BR x16`); W7 (erratum 843419: the `ADRP` made an `ADR` of the page). No GOT relaxation. With W7, an unused erratum stub is still emitted. |
 | lld 22 | W1, only with addend 0, Rd equal, and the pair adjacent; W2 and W3 (GOT relaxation, only when Rt = Rn and the pair is adjacent); W5 (`bl .+4` to an undefined weak); W6 (`__AArch64AbsLongThunk_x`: `LDR x16, .+8; BR x16; .xword`); W8 (`__CortexA53843419_*`: the site becomes `B patch`, and the patch holds the load and `B back`) |
 | mold 2.37 | W1, including with an addend; W2, including for an undefined weak (`ADRP` of page 0); W4; W6 (`x$thunkN`: `ADRP x16; ADD; BR x16`). Code padding is `BRK #0x3e8`. |
+
+TLS (§4.7, static executables):
+
+| linker | IE | TLSDESC | traditional GD | traditional LD |
+|---|---|---|---|---|
+| GNU ld 2.44 | W9, also with mismatched registers (A8); PREL19 and MOVW forms kept (GOT entry) | W10 (`hi; lo; NOP; NOP`) | W12 | W13 with `#16` (A7) |
+| lld 22 | W9, also with mismatched registers (A8) | W10 (`hi; lo; NOP; NOP`) | refused (513, 514) | refused (518, 519, 528) |
+| mold 2.37 | kept: a GOT entry holding TPREL | W10 (`NOP; NOP; hi; lo`) for local symbols, W11 (`NOP; NOP; ADRP; LDR`) for global ones | kept: a GOT pair (1, DTPREL), `BL __tls_get_addr` | refused |
 
 ### 10.2 Anomalies
 
@@ -908,8 +1056,25 @@ Two more anomalies are reported here but do not reach the corpus:
   not a finding: the verifier checks what the program computes, not
   whether the erratum workaround was applied.
 - **A5 (lld).** lld relaxes `LDR Wt, [Xn, :got_lo12:]` (a 32-bit load,
-  ill-formed with `LD64_GOT_LO12_NC`) into a 64-bit `ADR`. The corpus does
-  not contain that input.
+  ill-formed with `LD64_GOT_LO12_NC`) into a 64-bit `ADR`. GNU ld writes
+  the scale-8 offset into the scale-4 load. The input is R8 (§4.3), for
+  every linker (`got-ldr-w`).
+
+Two TLS miscompiles, each asserted by `tests/tls.rs` on its own case and
+absent from the other cases:
+
+- **A7 (GNU ld).** Local-dynamic relaxed to local-exec (W13) adds 16 to
+  the thread pointer whatever `PT_TLS` `p_align` is. With `p_align` 64 the
+  block starts at TP + 64, so every local-dynamic access is 48 bytes off:
+  `tls-ld-64` reads the variable before the one it names and exits 0
+  instead of 42. The verifier reports R1 on the three records of the
+  sequence, expecting `ADD x0, x0, #0x40`. With `p_align` <= 16 the
+  rewriting is right.
+- **A8 (GNU ld, lld).** IE relaxed to LE (W9) writes the MOVZ to the
+  ADRP's register and the MOVK to the LDR's: `ADRP x4; LDR x5, [x4]`
+  becomes `MOVZ x4, #hi; MOVK x5, #lo`, which leaves x5 without the high
+  half (review finding 1). `tls-ie-regs` exits wrong; the verifier reports
+  R1 on both records. mold keeps the GOT entry and is right.
 
 ### 10.3 Types each linker accepts
 
@@ -926,6 +1091,17 @@ which types each linker refuses:
 
 The table rows that no reference linker links (`GOTREL64/32`, `PLT32`) are
 checked only by the unit tests of their encoding.
+
+The `tls-types` case does the same for §4.7:
+
+| TLS types | GNU ld | lld 22 | mold 2.37 |
+|---|---|---|---|
+| `TLSLE_MOVW_TPREL_*`, `TLSLE_ADD_TPREL_HI12`, `_LO12_NC`, `TLSIE_ADR_GOTTPREL_PAGE21`, `TLSIE_LD64_GOTTPREL_LO12_NC`, the TLSDESC sequence | yes | yes | yes |
+| `TLSLE_ADD_TPREL_LO12` (checked), traditional GD (513, 514) | yes | refused | yes |
+| `TLSLE_LDST*_TPREL_LO12_NC` | yes | yes | refused |
+| `TLSLE_LDST*_TPREL_LO12` (checked), `TLSIE_LD_GOTTPREL_PREL19`, `TLSIE_MOVW_GOTTPREL_*`, traditional LD and every `DTPREL` type | yes | refused | refused |
+| `LDST128` TLS forms | GAS cannot assemble them | | |
+| `TLSDESC` `PREL21`/`LD_PREL19`, GD/LD `PREL21` | refused | refused | refused |
 
 ## 11. Open questions
 
@@ -946,3 +1122,10 @@ checked only by the unit tests of their encoding.
    which.
 5. Stage 2 must specify the `.eh_frame` check against the LSB, so that
    GNU ld's edited `.eh_frame` (§3.4) can be checked.
+6. A7 and A8 (§10.2): mortar's TLS relaxations must use `tcb` =
+   align_up(16, `p_align`) and must relax IE only when Xt = Xn = Xd (else
+   keep the GOT entry, as mold does). `spec/a64.md` should state both.
+7. Static PIE: S1 accepts `ET_EXEC` only, so a static-pie output is an S1 finding
+   today. Its TLS forms are those of §4.7 with no TLS dynamic relocation;
+   accepting `ET_DYN` without `PT_INTERP` needs the `RELATIVE` relocations
+   of `.rela.dyn` judged first, which is stage 3.

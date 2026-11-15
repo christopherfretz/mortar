@@ -456,3 +456,88 @@ fn s6_1_input_and_output_rules() {
         ctx.files.iter().map(|(p, _)| (p.clone(), b"!<arch>\nbroken".to_vec())).collect();
     expect_rule(&verify_with(&ctx.output, &bad, &ctx.map), "I2", "I2");
 }
+
+/// The relocated places of thread-local types in a freestanding link.
+fn tls_places(ctx: &Ctx) -> Vec<Place> {
+    places(ctx)
+        .into_iter()
+        .filter(|p| mortar_plumb::a64::TABLE.iter().any(|d| d.name == p.name && d.op.is_tls()))
+        .collect()
+}
+
+// spec/plumb.md §9.2 (f), §4.7, W9 to W13: thread-local references broken
+// three ways. (1) a flipped bit anywhere in a TLS-relocated instruction,
+// relaxed or not; (2) the TLS block moved or realigned in PT_TLS, which
+// moves every thread-pointer offset; (3) a corrupted TLS GOT entry.
+#[test]
+fn s9_2f_tls_mutations_are_found() {
+    let Some(c) = corpus(Size::Tls) else { return };
+    let mut missed = Vec::new();
+    let (mut total, mut found) = (0, 0);
+    for linker in Linker::ALL {
+        let link = c.get("tls-types", linker);
+        let ctx = Ctx::of(link);
+        assert!(!ctx.found(&ctx.output), "{} is not clean", link.label());
+        for pl in tls_places(&ctx) {
+            let off = file_offset(&ctx.output, pl.p).unwrap();
+            for bit in [0u32, 5, 10, 16, 22, 31] {
+                let mut m = ctx.output.clone();
+                m[off + (bit / 8) as usize] ^= 1 << (bit % 8);
+                total += 1;
+                if ctx.found(&m) {
+                    found += 1;
+                } else {
+                    missed.push(format!("{} {} at {:#x} bit {bit}", link.label(), pl.name, pl.p));
+                }
+            }
+        }
+    }
+    eprintln!("§9.2 (f1) TLS instruction bit flips: {found}/{total} found");
+    assert!(missed.is_empty(), "not found:\n{}", missed.join("\n"));
+
+    let (mut total, mut found) = (0, 0);
+    for case in ["tls-types"] {
+        for linker in Linker::ALL {
+            let link = c.get(case, linker);
+            let ctx = Ctx::of(link);
+            let tls = phdrs(&ctx.output).into_iter().find(|p| p.1 == PT_TLS).unwrap();
+            let align = le64(&ctx.output, tls.0 + 48).max(1);
+            for (field, value) in [(16, tls.4 + align), (48, align * 4)] {
+                let mut m = ctx.output.clone();
+                put64(&mut m, tls.0 + field, value);
+                if field == 16 {
+                    put64(&mut m, tls.0 + 24, value);
+                }
+                total += 1;
+                assert!(
+                    ctx.found(&m),
+                    "{}: PT_TLS field {field} := {value:#x} is not found",
+                    link.label()
+                );
+                found += 1;
+            }
+        }
+    }
+    eprintln!("§9.2 (f2) PT_TLS moved or realigned: {found}/{total} found");
+
+    for (case, linker) in [("tls-types", Linker::Bfd), ("tls-types", Linker::Mold)] {
+        let link = c.get(case, linker);
+        let ctx = Ctx::of(link);
+        let got = shdrs(&ctx.output).into_iter().find(|s| s.1 == ".got").unwrap();
+        let base = ctx.verify(&ctx.output).coverage.verified_of(mortar_plumb::Via::GotSlot);
+        let (mut total, mut found) = (0, 0);
+        for k in 0..got.6 / 8 {
+            let mut m = ctx.output.clone();
+            m[got.5 as usize + k as usize * 8] ^= 0x08;
+            total += 1;
+            if ctx.verify(&m).with_rule("R4").next().is_some() {
+                found += 1;
+            }
+        }
+        eprintln!(
+            "§9.2 (f3) {}: {found}/{total} GOT words found (records through a slot: {base})",
+            link.label()
+        );
+        assert!(base > 0 && found > 0, "{}", link.label());
+    }
+}
