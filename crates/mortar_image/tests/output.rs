@@ -1,5 +1,11 @@
 //! The output file (§7): every case of §16.1's list, on the system temp
 //! directory (a local file system that enforces `flock`).
+#![allow(
+    clippy::many_single_char_names,
+    clippy::too_many_lines,
+    clippy::similar_names,
+    clippy::items_after_statements
+)]
 
 mod support;
 

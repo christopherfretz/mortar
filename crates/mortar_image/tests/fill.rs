@@ -1,5 +1,11 @@
 //! Fill (§5, §6.1, §8.3): purity against the sequential reference, clips,
 //! record orders, gaps, synthetic chunks, errors, the build id.
+#![allow(
+    clippy::many_single_char_names,
+    clippy::too_many_lines,
+    clippy::similar_names,
+    clippy::items_after_statements
+)]
 
 mod support;
 
@@ -51,13 +57,13 @@ fn rewindow(w: World, window: u64) -> World {
     for (f, r) in &p.paths {
         b.path(*f, r.clone());
     }
-    for n in p.names.iter() {
+    for n in &p.names {
         b.name(n);
     }
-    for r in p.relocs.iter() {
+    for r in &p.relocs {
         b.relocs(r.clone());
     }
-    for row in p.rows.iter() {
+    for row in &p.rows {
         match row.unit {
             Unit::Input(i) => b.input(row.offset, row.size, p.inputs[i as usize].clone()),
             Unit::Bytes(i) => b.bytes(row.offset, p.bytes[i as usize].clone()),
@@ -562,7 +568,7 @@ fn i111_max_reach_bounds_every_write() {
             got_base: None,
             tls: Some(TLS),
         };
-        for u in w.plan.inputs.iter() {
+        for u in &w.plan.inputs {
             let Some(r) = u.relocs else { continue };
             let rs = &w.plan.relocs[r as usize];
             let mut input = vec![0u8; u.section_size as usize];

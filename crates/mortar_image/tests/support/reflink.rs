@@ -13,7 +13,7 @@
 //! as dead targets). The filled bytes of every row are then compared with
 //! the executable's bytes at the same offset, except the fields of the
 //! records left out ([`Left`]), which are masked.
-#![allow(dead_code, clippy::missing_panics_doc)]
+#![allow(dead_code, clippy::missing_panics_doc, clippy::too_many_lines)]
 
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
@@ -69,7 +69,7 @@ pub fn parse_map(text: &str) -> Vec<MapLine> {
             if let Some(name) = toks.first()
                 && name.starts_with('.')
             {
-                cur_out = (*name).to_owned();
+                (*name).clone_into(&mut cur_out);
             }
             pending = None;
             continue;
@@ -407,7 +407,7 @@ pub fn ref_world(
             if !placed.contains_key(&target) {
                 continue;
             }
-            for r in rs.iter() {
+            for r in rs {
                 let k = key(base + r.r_sym);
                 let why = left_for(r.r_type).or_else(|| {
                     if r.r_sym == 0 {

@@ -15,7 +15,7 @@
 //! when `exist`). Printed: the median and range of wall time, CPU time per
 //! rep, the process's peak RSS, and the time to read the inputs (resident
 //! store only).
-#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_precision_loss, clippy::many_single_char_names, clippy::too_many_lines)]
 
 use std::collections::BTreeMap;
 use std::fs::File;

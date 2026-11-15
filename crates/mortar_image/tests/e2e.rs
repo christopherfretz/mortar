@@ -20,6 +20,12 @@
 //! the reference dropped) are applied as dead targets; their fields are
 //! checked against the I-47 table rather than GNU ld (which redirects them
 //! to the kept copy: the documented difference in spec/image.md §16).
+#![allow(
+    clippy::many_single_char_names,
+    clippy::too_many_lines,
+    clippy::similar_names,
+    clippy::items_after_statements
+)]
 
 mod support;
 
@@ -88,7 +94,7 @@ int main(int argc, char**) {
 /// A second C++ unit instantiating the same templates: the reference keeps
 /// one COMDAT copy of each, so this unit's debug and exception records
 /// against the dropped copies are tombstoned (I-47).
-const CXX_SRC2: &str = r#"
+const CXX_SRC2: &str = r"
 #include <map>
 #include <memory>
 #include <string>
@@ -101,7 +107,7 @@ int other(int n) {
     auto p = std::make_unique<int>(n);
     return (int)m.size() + *p;
 }
-"#;
+";
 
 struct Built {
     exe: RefExe,

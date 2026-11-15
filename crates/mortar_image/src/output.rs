@@ -231,11 +231,12 @@ impl Output {
                     // keep the old mode). The lock is held on the old inode
                     // until the new one is locked.
                     fs::remove_file(&t0)?;
-                    if let Ok(new) = create_new(&t0, opts.mode) {
-                        if new.try_lock().is_ok() && is_path_of(&new, &t0) {
-                            return Ok((new, t0));
-                        }
-                        // Another link took it between: leave it to them.
+                    // If another link takes the name between, it is theirs.
+                    if let Ok(new) = create_new(&t0, opts.mode)
+                        && new.try_lock().is_ok()
+                        && is_path_of(&new, &t0)
+                    {
+                        return Ok((new, t0));
                     }
                 }
                 Ok(()) | Err(fs::TryLockError::Error(_)) => {

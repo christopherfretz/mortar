@@ -2,7 +2,7 @@
 //! with a failure at a chosen offset), tables, a memory sink, synthetic
 //! chunks, a generator of random plans, and the simple sequential
 //! reference fill that every parallel result is compared with.
-#![allow(dead_code, clippy::missing_panics_doc)]
+#![allow(dead_code, clippy::missing_panics_doc, clippy::too_many_lines)]
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
@@ -241,7 +241,7 @@ pub fn reference(img: &Image<'_>) -> Vec<u8> {
     let mut file = vec![0u8; plan.file_size as usize];
     let cx =
         FillCx { tables: img.tables, output: img.output, got_base: img.got_base, tls: img.tls };
-    for row in plan.rows.iter() {
+    for row in &plan.rows {
         let dst = &mut file[row.offset as usize..row.end() as usize];
         match row.unit {
             Unit::Gap(p) => p.fill(row.offset, dst),
@@ -385,7 +385,7 @@ const TEXT_ADDR: u64 = 0x40_0000;
 fn live_key(g: &mut Gen, syms: u32) -> SymKey {
     loop {
         let n = 1 + g.below(u64::from(syms)) as u32;
-        if n % 7 != 0 {
+        if !n.is_multiple_of(7) {
             return key(n);
         }
     }
