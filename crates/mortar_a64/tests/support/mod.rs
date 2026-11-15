@@ -31,7 +31,7 @@ pub struct Tables {
 
 impl Tables {
     pub fn sym(&mut self, k: SymKey, s: u64, kind: TargetKind) -> &mut Self {
-        self.syms.insert(k, SymValue { s, kind, size: 0, live: true });
+        self.syms.insert(k, SymValue { s, kind, size: 0, live: true, tls: false });
         self.facts.insert(
             k,
             SymFacts {
@@ -50,6 +50,7 @@ impl Tables {
     pub fn tls_sym(&mut self, k: SymKey, s: u64, kind: TargetKind) -> &mut Self {
         self.sym(k, s, kind);
         self.facts.get_mut(&k).unwrap().tls = true;
+        self.syms.get_mut(&k).unwrap().tls = true;
         self
     }
 }

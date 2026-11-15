@@ -270,7 +270,11 @@ pub fn apply(
         match dead_reference(out.name, out.alloc) {
             DeadRef::Tombstone => mortar_arch::tombstone(out.name, crate::FACTS.class) as i64,
             DeadRef::Zero => 0,
-            DeadRef::Discarded => return Err(FieldError::MissingTerm("live target")),
+            // `.eh_frame` is written by `mortar_synth` (its dead FDEs
+            // dropped), never field by field here.
+            DeadRef::Discarded | DeadRef::DeadFde => {
+                return Err(FieldError::MissingTerm("live target"));
+            }
         }
     };
 

@@ -437,7 +437,8 @@ impl LinkSites<'_, '_> {
                 if !in_window(v.at.r_offset) {
                     return;
                 }
-                let mut so = SectionOut::new(section, 0, addr, true, name.as_bytes());
+                let mut so =
+                    SectionOut::new(section, 0, addr, true, name.as_bytes()).with_exec(true);
                 probe.unknown.store(false, Ordering::Relaxed);
                 // A relocation that does not apply is fill's to report (the
                 // link fails there); the words are those of the
@@ -572,7 +573,7 @@ impl FillTables for Probe<'_, '_, '_, '_> {
             self.unknown.store(true, Ordering::Relaxed);
             t.fallback
         });
-        SymValue { s, kind: facts.kind, size: 0, live: true }
+        SymValue { s, kind: facts.kind, size: 0, live: true, tls: facts.tls }
     }
 
     fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {

@@ -64,34 +64,66 @@ impl Parsed {
     }
 
     /// The refused options used (`spec/cli.md` §4.4): the first use of
-    /// each refused row, in argument order.
+    /// each refused row, and each use of a `partial` row with a refused
+    /// value, in argument order. A use of a [`Lands::last_wins`] field
+    /// that a later use of the same field overrides is not counted: the
+    /// plan is the one the line would give without it.
     #[must_use]
     pub fn refused_uses(&self) -> Vec<&Use> {
         let mut seen = vec![false; rows().len()];
         let mut out = Vec::new();
-        for use_ in &self.uses {
-            if use_.row().status == Status::Refused && !seen[use_.row] {
-                seen[use_.row] = true;
-                out.push(use_);
+        let mut last: HashMap<&str, usize> = HashMap::new();
+        for (i, u) in self.uses.iter().enumerate() {
+            if u.row().lands.last_wins() {
+                last.insert(u.row().lands.field(), i);
+            }
+        }
+        for (i, use_) in self.uses.iter().enumerate() {
+            let lands = use_.row().lands;
+            if lands.last_wins() && last.get(lands.field()) != Some(&i) {
+                continue;
+            }
+            match use_.row().status {
+                Status::Refused if !seen[use_.row] => {
+                    seen[use_.row] = true;
+                    out.push(use_);
+                }
+                Status::Partial { refused, .. } if refused_value(use_, refused) => out.push(use_),
+                _ => {}
             }
         }
         out
     }
 
     /// The refusals of [`Parsed::refused_uses`] as diagnostics, keyed on
-    /// their arguments: `unsupported option: -o`.
+    /// their arguments: `unsupported option: -o`, or for a refused value of
+    /// a `partial` row `unsupported option value: --build-id=md5` with the
+    /// row's note.
     #[must_use]
     pub fn refusals(&self) -> Vec<(Key, Diagnostic)> {
         self.refused_uses()
             .into_iter()
             .map(|u| {
-                (
-                    Key::new(PHASE, u.arg, u64::MAX),
-                    Diagnostic::refused(RefusalClass::Option, u.spelling.clone()),
-                )
+                let d = match u.row().status {
+                    Status::Partial { note, .. } => {
+                        let value = u.value.as_deref().unwrap_or_default().to_string_lossy();
+                        Diagnostic::refused(
+                            RefusalClass::OptionValue,
+                            format!("{}={value}", u.spelling),
+                        )
+                        .note(note)
+                    }
+                    _ => Diagnostic::refused(RefusalClass::Option, u.spelling.clone()),
+                };
+                (Key::new(PHASE, u.arg, u64::MAX), d)
             })
             .collect()
     }
+}
+
+/// Whether `use_`'s value is one of a `partial` row's refused values.
+fn refused_value(use_: &Use, refused: &[&str]) -> bool {
+    use_.value.as_deref().is_some_and(|v| refused.iter().any(|r| OsStr::new(r) == v))
 }
 
 /// The diagnostics for the options that do not belong to `target`

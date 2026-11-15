@@ -94,6 +94,24 @@ pub const ELFLINT_KNOWN: &[(&str, &str, &str)] = &[
         "",
         "L-64's RELRO padding and elflint's offset heuristic",
     ),
+    // elflint places a TLS symbol of an executable by its section's
+    // `sh_offset − p_offset` of PT_TLS. `.tbss`'s offset is undisplaced
+    // (L-69, as GNU ld and lld write it), so when `.tdata` ends short of
+    // `.tbss`'s alignment the section starts lower by offset than by
+    // address, and a symbol near the block's end (glibc's `thread_arena`,
+    // `current`, `__libc_dlerror_result`; x86-64, WP-029b) is outside by
+    // offset, inside by address and within `p_memsz`, which is what the
+    // loader uses.
+    (
+        "does not fit completely in referenced section ",
+        "'.tbss'",
+        "GNU ld's output has the same lines (elflint's offset heuristic)",
+    ),
+    (
+        "st_value out of bounds of referenced section ",
+        "'.tbss'",
+        "GNU ld's output has the same lines (elflint's offset heuristic)",
+    ),
 ];
 
 /// eu-elflint `--gnu-ld` on `out`: no finding but [`ELFLINT_KNOWN`]. The

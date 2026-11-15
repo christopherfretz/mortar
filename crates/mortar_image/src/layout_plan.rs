@@ -240,6 +240,7 @@ pub fn from_layout(
         let size = sec.size();
         let name = b.name(sec.name().unwrap_or(b""));
         let alloc = sec.flags() & SHF_ALLOC != 0;
+        let exec = sec.flags() & SHF_EXECINSTR != 0;
         let rel = m.resolution.sections[s].reloc;
         let relocs = if rel.0 == 0 {
             None
@@ -258,6 +259,7 @@ pub fn from_layout(
             section_size: size,
             addr,
             alloc,
+            exec,
             name,
             relocs,
         };

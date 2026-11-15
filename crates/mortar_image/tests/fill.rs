@@ -121,6 +121,7 @@ fn one_section(words: &[u32], at: u64, records: Vec<Reloc>, size: u64, w: u64) -
         section_size: len,
         addr: 0x40_0000 + at,
         alloc: true,
+        exec: true,
         name,
         relocs: Some(r),
     };
@@ -438,6 +439,7 @@ fn tomb_world(name: &[u8], second: Option<u64>) -> Vec<u8> {
         section_size: 32,
         addr: 0,
         alloc: false,
+        exec: false,
         name,
         relocs: Some(r),
     };

@@ -1189,8 +1189,14 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
   | `sha256` | 32 | M1 |
   | `fast` | 8 | M1 |
   | `0xHEX` | the number of hex bytes | M1 |
-  | `md5` | refused (`option value`, note `use sha1`) | — |
+  | `md5` | refused (`option value`) | — |
   | `uuid` | 16 | M2 (refused in M1, `option value`) |
+
+  The row is `partial` (`spec/cli.md` §4.2): `=md5` and `=uuid` are
+  refused at the command line, `unsupported option value:
+  --build-id=md5`, with a note naming the styles mortar writes (WP-027d;
+  `BuildIdPlan::new` keeps the same refusals for a plan that reaches it
+  another way).
 
   `0xHEX` (I-70): `0x` is case-sensitive, then one or more pairs of
   hexadecimal digits of either case; an odd number of digits, none, or a

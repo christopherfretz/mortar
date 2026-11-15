@@ -558,26 +558,40 @@ The table includes:
 
 ### 4.2 Status
 
-Every row has one status:
-- `supported`: mortar does what the option asks.
+Every row has one status. A status never says more than the pipeline
+does: a user may rely on every use the status admits.
+- `supported`: mortar does what the option asks, for every value.
+- `partial(values, note)`: supported, except for the values listed; a use
+  with one of them is refused at the command line (§4.4) with the note,
+  which names what is supported. A row whose status would depend on its
+  value is `partial`, never `supported`.
 - `noop(reason)`: the option needs nothing done. The reason says why
   (GNU ld ignores it too; a memory hint for BFD; every target is
-  little-endian; mortar loads no plugin).
+  little-endian; mortar loads no plugin; the option acts only on inputs
+  or outputs that are refused by name).
 - `refused`: read and recorded, but not carried out yet. This is the
   default.
 
-The status today:
-- 10 rows are `supported`:
-  - `--error-limit`, `--fatal-warnings`, `--no-fatal-warnings`, `-w`;
-  - `--color-diagnostics`, `--no-color-diagnostics`;
-  - `--version`, `-v`, `-V`, `--help`.
-- 22 rows are `noop`; WP-024 made five of them (`-z common-page-size`,
-  `--warn-execstack`, `--rosegment`, `-z nostart-stop-gc`,
-  `-z sectionheader`; `spec/layout.md` §20.2).
-- 439 rows are `refused`.
+The status today (WP-027d; `docs/status/options.md` has the list):
+- 40 rows are `supported`; each has its evidence in
+  `crates/mortar/tests/options.rs`, an observable effect checked against
+  GNU ld's output where GNU ld has the option, or the test that checks
+  it.
+- 2 rows are `partial`: `--build-id` (`=md5`, `=uuid`; `spec/synth.md`
+  S-91) and `--fix-cortex-a53-843419` (`=adr`, `=adrp`; `spec/a64.md`
+  §11.2).
+- 27 rows are `noop`; the audit links each to the same bytes as the line
+  without it and checks its reason where it can be checked.
+  `--as-needed`, `--no-as-needed` (only shared objects, refused by name)
+  and `--hash-style` (only dynamic outputs, refused by name) were
+  `supported` before WP-027d.
+- 402 rows are `refused`, `--gc-sections` among them (`spec/image.md`
+  I-5): it was `supported` while every link that used it was refused by
+  liveness.
 
 A work package that implements an option changes the row's status in the
-same change.
+same change, and adds the row's evidence to the audit, which fails while
+a row that is not `refused` has none.
 
 Rows whose status the M1 and M2 packages change (`spec/input.md` §17,
 `spec/resolve.md` §18). Their fields exist (§3); the rows stay `refused`
@@ -592,13 +606,17 @@ until the phase that honors them lands with its test:
   `--fortran-common`, whose help says "mortar's behavior, always on":
   mortar always takes an archive member for a common symbol
   (`spec/resolve.md` §3.3). `--no-fortran-common` stays `refused`.
+  `--warn-backrefs` and `--no-warn-backrefs` became `supported` in
+  WP-027d (resolve.md §4.6's simulation had landed; the evidence is in
+  `crates/mortar/tests/options.rs`); `--warn-backrefs-exclude` stays
+  `refused`.
 - WP-024 (`mortar_layout`, `spec/layout.md` §20.2): `-z max-page-size`
   (L-74), `-z separate-code`, `-z noseparate-code` (L-71), `-z relro`,
   `-z norelro` (L-64, L-65), `-z execstack`, `-z noexecstack` (L-84).
-  `Options::from_plan` honors them; the rows become `supported` when
-  `mortar::link` runs layout (WP-027). `-z start-stop-visibility` stays
-  `refused`: §20.2 makes only the value `protected` a no-op, and a row's
-  status cannot depend on its value. `--image-base` and `-Ttext-segment`
+  `Options::from_plan` honors them; the rows became `supported` in
+  WP-027d, with their evidence (`crates/mortar/tests/options.rs`).
+  `-z start-stop-visibility` stays `refused`: §20.2 makes only the value
+  `protected` a no-op (it could become `partial`). `--image-base` and `-Ttext-segment`
   wait for M2 (L-68); `--no-rosegment`, `--no-warn-execstack`,
   `--error-execstack`, `-z start-stop-gc`, `-Ttext`, `-Tdata`, `-Tbss`,
   `--section-start` and `-z keep-text-section-prefix` stay `refused`.
@@ -632,11 +650,19 @@ because a failed link prints nothing on standard output
 
 - `Parsed::uses` records every option used: the row, the argument index,
   the spelling as completed, and the value.
-- `refused_uses()` returns the first use of each refused row, in argument
-  order. GCC passes `-plugin-opt=` seven times, and a row is reported
-  once.
+- `refused_uses()` returns the first use of each refused row, and every
+  use of a `partial` row with a refused value, in argument order. GCC
+  passes `-plugin-opt=` seven times, and a row is reported once.
+- A use whose field is last-wins (`Lands::last_wins`: the plain switches
+  such as `--gc-sections`/`--no-gc-sections`, and `--build-id` with
+  `--no-build-id`) and is overridden by a later use of the same field is
+  not a use for this rule: the plan is the one the line gives without it.
+  `--gc-sections --no-gc-sections` links; `--no-gc-sections
+  --gc-sections` is refused.
 - `refusals()` turns them into `Refused{Option, spelling}`, for example
-  `unsupported option: -o` or `unsupported option: -z relro`.
+  `unsupported option: -o` or `unsupported option: -z now`, and a refused
+  value into `Refused{OptionValue, spelling=value}` with the row's note,
+  for example `unsupported option value: --build-id=md5`.
 
 ### 4.5 `docs/status/options.md`
 
@@ -665,7 +691,7 @@ because a failed link prints nothing on standard output
 
 - `--help` stops the parse and prints the table:
   - `Usage: <prog> [options] file...`;
-  - three lines on what `[refused]` and `[noop]` mean;
+  - four lines on what `[refused]`, `[noop]` and `[partial]` mean;
   - the groups, each with its rows: spellings with their values, the
     help line, `(T only)` for target rows, and the status mark;
   - an `@FILE` line;
