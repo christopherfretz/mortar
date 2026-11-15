@@ -100,11 +100,10 @@ pub struct Variant {
 pub enum Stdlib {
     /// GCC 14's libstdc++.a, the default of every driver here.
     Libstdcxx,
-    /// libc++ 22's static archives as Debian ships them.
+    /// libc++ 22's static archives as Debian ships them (with
+    /// `.ARM.attributes` and `.deplibs` in their members, which mortar
+    /// consumes: resolve.md §10).
     Libcxx,
-    /// The same archives with `.ARM.attributes` and `.deplibs` removed
-    /// (`objcopy -R`): what mortar does once those two are accepted.
-    LibcxxStripped,
 }
 
 pub const VARIANTS: &[Variant] = &[
@@ -117,20 +116,14 @@ pub const VARIANTS: &[Variant] = &[
     },
     Variant { name: "nopic", flags: &["-fno-pic"], stdlib: Stdlib::Libstdcxx },
     Variant { name: "libcxx", flags: &[], stdlib: Stdlib::Libcxx },
-    Variant { name: "libcxx-stripped", flags: &["-g"], stdlib: Stdlib::LibcxxStripped },
+    Variant { name: "libcxx-g", flags: &["-g"], stdlib: Stdlib::Libcxx },
 ];
-
-/// What mortar is expected to say about the shipped libc++ archives until
-/// `SHT_AARCH64_ATTRIBUTES` is accepted (layout.md L-35, resolve.md
-/// "Section types"): the refusal names the section type.
-pub const LIBCXX_REFUSAL: &str = "unsupported section type: SHT_AARCH64_ATTRIBUTES";
 
 /// The libc++ tree of `setup`: headers and static archives.
 #[derive(Clone, Debug)]
 pub struct LibcxxTree {
     pub include: PathBuf,
     pub lib: PathBuf,
-    pub stripped: PathBuf,
 }
 
 impl LibcxxTree {
@@ -140,12 +133,8 @@ impl LibcxxTree {
         let t = LibcxxTree {
             include: root.join("usr/lib/llvm-22/include/c++/v1"),
             lib: root.join("usr/lib/aarch64-linux-gnu"),
-            stripped: lane.join("libcxx-22-stripped"),
         };
-        (t.include.is_dir()
-            && t.lib.join("libc++.a").is_file()
-            && t.stripped.join("libc++.a").is_file())
-        .then_some(t)
+        (t.include.is_dir() && t.lib.join("libc++.a").is_file()).then_some(t)
     }
 }
 
@@ -353,7 +342,7 @@ fn compile(
         ("KILN_STATS_LOG", &stats_s),
     ];
     let libcxx_flags: Vec<String> = match (&tools.libcxx, var.stdlib) {
-        (Some(tree), Stdlib::Libcxx | Stdlib::LibcxxStripped) => vec![
+        (Some(tree), Stdlib::Libcxx) => vec![
             "-stdlib=libc++".into(),
             "-nostdinc++".into(),
             "-isystem".into(),
@@ -446,13 +435,6 @@ fn link_line(
                 format!("-L{}", tree.lib.display()),
                 "-lc++abi".into(),
             ]),
-            Stdlib::LibcxxStripped => {
-                argv.extend([
-                    "-stdlib=libc++".into(),
-                    format!("-L{}", tree.stripped.display()),
-                    "-lc++abi".into(),
-                ]);
-            }
         }
     }
     argv.extend(["-o".into(), "out".into(), "-###".into()]);
@@ -562,22 +544,10 @@ fn run_cell(
             cell.notes.push(format!("{name}: runs differently from GNU ld's"));
         }
     }
-    let expect_refusal = var.stdlib == Stdlib::Libcxx;
-    cell.ok = match (&ours, &reference, expect_refusal) {
-        (Some(Err(e)), _, true) => {
-            let named = e.contains(LIBCXX_REFUSAL);
-            if !named {
-                cell.notes.push(format!("expected the refusal '{LIBCXX_REFUSAL}'"));
-            }
-            named
-        }
-        (Some(Ok(_)), _, true) => {
-            cell.notes.push(
-                "XPASS: mortar linked the shipped libc++ archives; update LIBCXX_REFUSAL".into(),
-            );
-            false
-        }
-        (Some(Ok(run)), Some(refr), false) => run == refr,
+    // Every cell, the shipped libc++ archives included (WP-034): mortar
+    // links and its program runs as GNU ld's; any refusal fails the cell.
+    cell.ok = match (&ours, &reference) {
+        (Some(Ok(run)), Some(refr)) => run == refr,
         _ => false,
     };
     if let Some(Ok(_)) = ours {

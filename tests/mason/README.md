@@ -43,15 +43,14 @@ objects (`g++ -lgfortran`).
 Every program runs in each variant: libstdc++ with `-O0`, `-g`,
 `-ffunction-sections -fdata-sections`, `-fno-pic`; and, for programs of
 kiln and Clang sources only, when `setup` has made the libc++ tree,
-libc++ 22 static as shipped (`libcxx`) and with `.ARM.attributes` and
-`.deplibs` stripped (`libcxx-stripped`, with `-g`). Each cell links the
+libc++ 22 static as Debian ships it (`libcxx`, and `libcxx-g` with
+`-g`; their members carry `.ARM.attributes` and `.deplibs`, which mortar
+consumes, `spec/resolve.md` §10). Each cell links the
 same objects with GNU ld (the reference), lld, mold (when present) and
 mortar, runs every output, and compares standard output, standard error
 and the exit status with GNU ld's. A cell holds when mortar's program runs
-as GNU ld's and the verifier finds nothing on mortar's output, or, in `libcxx`, when
-mortar refuses with `unsupported section type: SHT_AARCH64_ATTRIBUTES`;
-mortar linking the shipped archives fails the cell (XPASS) until the
-expectation in `programs.rs` (`LIBCXX_REFUSAL`) is updated. `--census`
+as GNU ld's and the verifier finds nothing on mortar's output (every
+finding counts); any refusal fails the cell. `--census`
 also compiles the kiln sources with g++ and clang++ and prints the census
 of the three producers' objects.
 
@@ -83,25 +82,60 @@ and GitHub. About 230 MB.
 
 ## libc++
 
-`cargo xtask mason libcxx [--mode <m>]... [--backend hod|llvm] [--sample vector|wp033] [--shard K/N] [-j <n>] [--plumb] [--report <file>] [<dir>...]`
+`cargo xtask mason libcxx [--mode <m>]... [--backend hod|llvm] [--sample vector|wp033|full] [--full] [--shard K/N] [-j <n>] [--plumb] [--report <file>] [--out <dir>] [--results <file>] [--baseline <file>] [--write-baseline <file>] [<dir>...]`
 
 kiln's own runner (`kiln/spec/libcxx.md`) runs the tests, once per mode,
 with `lane/kiln++` as its compiler. Compiles go to kiln++ unchanged. The
 link, except in mode `dyn`, is made fully static (`-static`; the runner's
 `-Wl,-Bstatic`/`-Bdynamic`/`--as-needed` dropped) and uses the `ld` of
-`lane/ld/<linker>/` (`-B`): `bfd`, `lld`, `mold`, `mortar`;
-`mortar-stripped` is mortar on `libcxx-22-stripped`. `dyn` is kiln's
-procedure unchanged (static libc++, dynamic glibc, the host's `ld`).
-mortar's `ld` writes a map, logs each link, and with `--plumb` runs
-`xtask mason verify` on the output. The report: kiln's summary per mode;
-for each mortar mode the tests the reference (`bfd`, else `dyn`) passes
-and it does not, of which WRONG (mortar linked and the test then failed);
-refusals by diagnostic; the verifier's results; the back end of every
-object job. The command fails when a WRONG test exists.
+`lane/ld/<linker>/` (`-B`): `bfd`, `lld`, `mold`, `mortar` (the default
+modes are `bfd` and `mortar`). `mortar-noattrs` and `mortar-stripped`
+link the archives without `.ARM.attributes` (and `.deplibs`) that
+`setup` makes; since WP-034 they show nothing `mortar` does not, and stay
+for comparison. `dyn` is kiln's procedure unchanged (static libc++,
+dynamic glibc, the host's `ld`). mortar's `ld` logs each link, and with
+`--plumb` links a second time with `-Map`, checks that the output is the
+same bytes, and runs `xtask mason verify` on it. The report: kiln's
+summary per mode; for each mortar mode the tests the reference (`bfd`,
+else `dyn`) passes and it does not, of which WRONG (mortar linked and the
+test then failed); refusals by diagnostic; the verifier's results; the
+back end of every object job. The command fails when a WRONG test exists.
 
 Samples: `vector` (`std/containers/sequences/vector`, 83 tests);
 `wp033` (`std/algorithms`, `strings`, `input.output`,
-`language.support`, `thread`, `localization`, shard 1/4).
+`language.support`, `thread`, `localization`, shard 1/4); `full`
+(`--full`: `std` and `libcxx`, the 9247 tests of kiln's release runs).
+Run directories are kept with `--out <dir>` (one subdirectory per mode;
+keep the path short: libc++'s filesystem tests build paths under its
+`TMPDIR`).
+
+**Link time.** Every lane `ld` (`lane/ld/timed.sh`) appends one line per
+link to `<mode>/times.tsv`: the runner's scratch directory, the linker,
+the status, the wall time in microseconds (bash's `$EPOCHREALTIME`
+around GNU time) and the peak RSS in KiB (GNU time's `%M`). mortar's
+timed link is the caller's command, without `-Map` or the verifier.
+mold forks a background process that finishes after the parent exits,
+so its wall time is what the caller waits for and its RSS is the
+parent's.
+
+**Result file** (`--results <file>`, `xtask/src/mason/outcomes.rs`):
+one line per test and mode, tab-separated, after a `#` header: test,
+mode, outcome, detail, link-ms (the test's links summed), links,
+link-rss-kib (the largest), plumb (the verifier's verdict, mortar modes),
+first-key (kiln's first cluster key; a refusal's diagnostic). With it the
+command prints the link-time table of every mode and every mode's
+comparison with `bfd`. `--collect <dir>` makes the same from an earlier
+`--out <dir>`; `--compare <file>[:<mode>] <file>[:<mode>]` prints the
+counts (both pass, both fail, both xfail, both unsupported) and the
+DIFFERENT tests of two result files with a cause for each (a refusal by
+its diagnostic, a timeout, a test that linked and then failed to run).
+
+**Baseline** (`baseline-mortar.tsv`): the tests mortar mode does not
+pass (not PASS, UNSUPPORTED or XFAIL) on the full suite, with their
+reason. `--baseline tests/mason/baseline-mortar.tsv` prints `regressed:`
+for a test that does not pass and is not listed (and fails the command)
+and `fixed:` for a listed test that passes; `--write-baseline <file>`
+writes a new one.
 
 ## Reproducers
 

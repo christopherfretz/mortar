@@ -23,6 +23,7 @@ use crate::process::{self, Limits, Output};
 
 pub mod census;
 pub mod libcxx;
+pub mod outcomes;
 pub mod programs;
 pub mod setup;
 
@@ -30,7 +31,10 @@ pub const USAGE: &str = "usage: cargo xtask mason [programs] [--mortar <path>] [
      cargo xtask mason census [--group <name> <path>...]...\n       \
      cargo xtask mason setup\n       \
      cargo xtask mason libcxx [--mode <m>]... [--backend hod|llvm] [--sample <name>] [--shard K/N]\n                                \
-     [-j <n>] [--plumb] [--report <file>] [--mortar <path>] [<dir>...]\n       \
+     [--full] [-j <n>] [--plumb] [--report <file>] [--mortar <path>] [--out <dir>]\n                                \
+     [--results <file>] [--baseline <file>] [--write-baseline <file>] [<dir>...]\n       \
+     cargo xtask mason libcxx --collect <dir> [--results <file>] [--baseline <file>]\n       \
+     cargo xtask mason libcxx --compare <file>[:<mode>] <file>[:<mode>]\n       \
      cargo xtask mason verify <output> <map>\n";
 
 /// The entry point.

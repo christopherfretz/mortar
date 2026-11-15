@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use super::setup;
+use super::{outcomes, setup};
 
 pub const MODES: &[&str] =
     &["dyn", "bfd", "lld", "mold", "mortar", "mortar-noattrs", "mortar-stripped"];
@@ -60,6 +60,17 @@ struct Args {
     /// `--out <dir>`: the run's directory (one subdirectory per mode),
     /// kept; else a scratch directory, removed.
     out: Option<PathBuf>,
+    /// `--results <file>`: the per-test result file (`outcomes.rs`).
+    results: Option<PathBuf>,
+    /// `--compare <a> <b>`: compare two result files (`<file>[:<mode>]`),
+    /// run nothing.
+    compare: Option<(String, String)>,
+    /// `--collect <dir>`: the result file of an earlier `--out <dir>` run.
+    collect: Option<PathBuf>,
+    /// `--baseline <file>`: mortar's expected not-passing tests.
+    baseline: Option<PathBuf>,
+    /// `--write-baseline <file>`: write mortar mode's baseline.
+    write_baseline: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -74,6 +85,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
         mortar: None,
         keep: false,
         out: None,
+        results: None,
+        compare: None,
+        collect: None,
+        baseline: None,
+        write_baseline: None,
     };
     let mut sample = None;
     let mut it = args.iter();
@@ -108,12 +124,23 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--report" => a.report = Some(PathBuf::from(value("--report")?)),
             "--mortar" => a.mortar = Some(PathBuf::from(value("--mortar")?)),
             "--out" => a.out = Some(PathBuf::from(value("--out")?)),
+            "--results" => a.results = Some(PathBuf::from(value("--results")?)),
+            "--collect" => a.collect = Some(PathBuf::from(value("--collect")?)),
+            "--baseline" => a.baseline = Some(PathBuf::from(value("--baseline")?)),
+            "--write-baseline" => {
+                a.write_baseline = Some(PathBuf::from(value("--write-baseline")?));
+            }
+            "--compare" => {
+                let x = value("--compare")?;
+                let y = value("--compare")?;
+                a.compare = Some((x, y));
+            }
             s if s.starts_with('-') => return Err(format!("unknown argument '{s}'")),
             s => a.dirs.push(s.to_owned()),
         }
     }
     if a.modes.is_empty() {
-        a.modes = ["bfd", "mortar", "mortar-stripped"].map(str::to_owned).into();
+        a.modes = ["bfd", "mortar"].map(str::to_owned).into();
     }
     if let Some(s) = sample {
         let (_, dirs, shard) = SAMPLES
@@ -125,8 +152,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
             a.shard = shard.map(str::to_owned);
         }
     }
-    if a.dirs.is_empty() {
-        return Err("libcxx needs test directories or --sample".into());
+    if a.dirs.is_empty() && a.compare.is_none() && a.collect.is_none() {
+        return Err("libcxx needs test directories, --sample, --full, --compare or --collect".into());
     }
     Ok(a)
 }
@@ -179,6 +206,12 @@ struct Mode {
 #[allow(clippy::too_many_lines)] // one runner invocation per mode, set up in one place
 pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let args = parse(args)?;
+    if let Some((x, y)) = &args.compare {
+        return compare_files(x, y);
+    }
+    if let Some(dir) = &args.collect {
+        return finish(&args, &collect_dir(dir, None)?);
+    }
     let Some(mason) = super::Mason::find_or_skip("libcxx")? else { return Ok(ExitCode::SUCCESS) };
     let kx = setup::kiln_xtask();
     let tree = super::lane_dir().join("libcxx-22-static");
@@ -307,7 +340,118 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         let _ = std::fs::remove_dir_all(&scratch);
     }
     let wrong = modes.iter().any(|m| !wrong_outputs(&modes, m).is_empty());
-    Ok(if wrong { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+    let names: Vec<String> = modes.iter().map(|m| m.name.clone()).collect();
+    let code = if args.results.is_some() || args.baseline.is_some() || args.write_baseline.is_some()
+    {
+        finish(&args, &collect_dir(&scratch, Some(&names))?)?
+    } else {
+        ExitCode::SUCCESS
+    };
+    Ok(if wrong { ExitCode::FAILURE } else { code })
+}
+
+/// The records of the mode directories of `dir` (`names`, else every
+/// subdirectory with a `results.tsv`), in mode order.
+fn collect_dir(dir: &Path, names: Option<&[String]>) -> Result<Vec<outcomes::Rec>, String> {
+    let names: Vec<String> = match names {
+        Some(n) => n.to_vec(),
+        None => {
+            let mut v: Vec<String> = std::fs::read_dir(dir)
+                .map_err(|e| format!("{}: {e}", dir.display()))?
+                .filter_map(Result::ok)
+                .filter(|e| e.path().join("results.tsv").is_file())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort_by_key(|m| MODES.iter().position(|x| x == m).unwrap_or(usize::MAX));
+            v
+        }
+    };
+    let mut recs = Vec::new();
+    for m in &names {
+        recs.extend(outcomes::collect(m, &dir.join(m))?);
+    }
+    Ok(recs)
+}
+
+/// Writes the result file, the comparisons of every mode with the
+/// reference (`bfd`), the link times, and the baseline's verdict.
+fn finish(args: &Args, recs: &[outcomes::Rec]) -> Result<ExitCode, String> {
+    if let Some(p) = &args.results {
+        std::fs::write(p, outcomes::render(recs)).map_err(|e| format!("{}: {e}", p.display()))?;
+        println!("xtask mason libcxx: results: {} ({} lines)", p.display(), recs.len());
+    }
+    let mut modes: Vec<&str> = Vec::new();
+    for r in recs {
+        if !modes.contains(&r.mode.as_str()) {
+            modes.push(&r.mode);
+        }
+    }
+    let by: Vec<(&str, BTreeMap<&str, &outcomes::Rec>)> = modes
+        .iter()
+        .map(|m| outcomes::select(recs, Some(m)).map(|s| (*m, s)))
+        .collect::<Result<_, _>>()?;
+    println!("
+{}", outcomes::TIMES_HEADER);
+    for (m, s) in &by {
+        println!("{}", outcomes::times(m, s));
+    }
+    if let Some((_, r)) = by.iter().find(|(m, _)| *m == "bfd") {
+        for (m, s) in by.iter().filter(|(m, _)| *m != "bfd") {
+            println!("
+### {m} against bfd
+
+{}", outcomes::compare("bfd", r, m, s).0);
+        }
+    }
+    let mut code = ExitCode::SUCCESS;
+    if let Some((_, m)) = by.iter().find(|(m, _)| *m == "mortar") {
+        if let Some(p) = &args.write_baseline {
+            std::fs::write(p, outcomes::baseline(m)).map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+        if let Some(p) = &args.baseline {
+            let base = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
+            let (regressed, fixed) = outcomes::against_baseline(m, &base);
+            println!("
+against {}: regressed {}, fixed {}", p.display(), regressed.len(), fixed.len());
+            for t in &regressed {
+                println!("regressed: {t}");
+            }
+            for t in &fixed {
+                println!("fixed: {t}");
+            }
+            if !regressed.is_empty() {
+                code = ExitCode::FAILURE;
+            }
+        }
+    }
+    Ok(code)
+}
+
+/// `--compare <a> <b>`: each `<file>[:<mode>]`.
+fn compare_files(a: &str, b: &str) -> Result<ExitCode, String> {
+    let load = |spec: &str| -> Result<(String, Vec<outcomes::Rec>, Option<String>), String> {
+        let (file, mode) = match spec.rsplit_once(':') {
+            Some((f, m)) if !m.contains('/') && Path::new(f).is_file() => (f, Some(m.to_owned())),
+            _ => (spec, None),
+        };
+        let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+        Ok((file.to_owned(), outcomes::parse(&text).map_err(|e| format!("{file}: {e}"))?, mode))
+    };
+    let (fa, ra, ma) = load(a)?;
+    let (fb, rb, mb) = load(b)?;
+    let sa = outcomes::select(&ra, ma.as_deref()).map_err(|e| format!("{fa}: {e}"))?;
+    let sb = outcomes::select(&rb, mb.as_deref()).map_err(|e| format!("{fb}: {e}"))?;
+    let name = |s: &BTreeMap<&str, &outcomes::Rec>| {
+        s.values().next().map_or_else(String::new, |r| r.mode.clone())
+    };
+    let (na, nb) = (name(&sa), name(&sb));
+    let (na, nb) = if na == nb { (format!("{na} (a)"), format!("{nb} (b)")) } else { (na, nb) };
+    let (text, _) = outcomes::compare(&na, &sa, &nb, &sb);
+    println!("{text}
+{}", outcomes::TIMES_HEADER);
+    println!("{}
+{}", outcomes::times(&na, &sa), outcomes::times(&nb, &sb));
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The reference mode: `bfd`, else `dyn`.
