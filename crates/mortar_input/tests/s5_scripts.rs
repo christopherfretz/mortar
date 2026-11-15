@@ -91,12 +91,9 @@ fn s5_1_commands() {
 #[test]
 fn s5_1_system_scripts() {
     let s = Scratch::new("s5sys");
-    for (target, driver, libc6) in [
-        ("native", "gcc", "/lib/aarch64-linux-gnu/libc.so.6"),
-        ("x86", "x86_64-linux-gnu-gcc", "/usr/x86_64-linux-gnu/lib/libc.so.6"),
-        ("i686", "i686-linux-gnu-gcc", "/usr/i686-linux-gnu/lib/libc.so.6"),
-    ] {
-        let Some(gcc) = common::need(driver) else { continue };
+    for target in ["native", "x86", "i686"] {
+        let Some(gcc) = common::compiler(target) else { continue };
+        let libc6 = common::libc_so_6(target).unwrap();
         let o = format!("m-{target}.o");
         common::cc(s.path(), target, &o, "int main(void){return 0;}\n", &[]);
         let args =
@@ -104,19 +101,17 @@ fn s5_1_system_scripts() {
         let out = common::run(s.path(), &args);
         assert!(out.problems.is_empty(), "{target}: {:?}", common::report(&out));
         let names = common::names(&out);
-        assert!(names.iter().any(|n| n == libc6), "{target}: {names:?}");
+        assert!(names.contains(&libc6), "{target}: {libc6}: {names:?}");
         assert!(names.iter().any(|n| n.contains("/libm.so")), "{target}: {names:?}");
         assert!(names.iter().any(|n| n.ends_with("libgcc_s.so.1")), "{target}: {names:?}");
         assert!(names.iter().any(|n| n.contains("libc_nonshared.a(")), "{target}: {names:?}");
     }
     // The i686 line with an x86-64 -L first: libgcc_s.so.1 found past it.
-    let Some(gcc) = common::need("i686-linux-gnu-gcc") else { return };
-    let args = common::driver_link_args(
-        &gcc,
-        &["m-i686.o", "-L/usr/x86_64-linux-gnu/lib", "-lm", "-shared-libgcc"],
-        s.path(),
-    )
-    .unwrap();
+    let Some(gcc) = common::compiler("i686") else { return };
+    let Some(x86) = common::libc_dir("x86") else { return };
+    let l = format!("-L{}", x86.display());
+    let args = common::driver_link_args(&gcc, &["m-i686.o", &l, "-lm", "-shared-libgcc"], s.path())
+        .unwrap();
     let out = common::run(s.path(), &args);
     assert!(
         out.problems.iter().all(|p| p.id() == "skipped-incompatible"),
@@ -124,12 +119,8 @@ fn s5_1_system_scripts() {
         common::report(&out)
     );
     let r = common::report(&out);
-    assert!(
-        r.iter().any(|l| l.contains(
-            "skipping incompatible /usr/x86_64-linux-gnu/lib/libm.so when searching for -lm"
-        )),
-        "{r:?}"
-    );
+    let skip = format!("skipping incompatible {}/libm.so when searching for -lm", x86.display());
+    assert!(r.iter().any(|l| l.contains(&skip)), "{r:?}");
     assert!(
         common::names(&out).iter().any(|n| n.ends_with("libgcc_s.so.1") && !n.contains("x86_64"))
     );

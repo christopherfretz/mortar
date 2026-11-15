@@ -13,7 +13,7 @@ use mortar_arch::Arch;
 use mortar_core::SectionId;
 use mortar_elf::{Class, Notes, Object};
 use mortar_synth::notes::{ObjectNotes, PropertyPlan};
-use mortar_testutil::{Scratch, run, tool};
+use mortar_testutil::{Scratch, run};
 
 /// `propgen.py`: an object with one property note of `props` (type,
 /// value, datasz), padded to 8, and a symbol `name`.
@@ -107,11 +107,9 @@ fn cases() -> Vec<(&'static str, Vec<Vec<Prop>>)> {
 
 #[test]
 fn s95_property_matrix_against_gnu_ld() {
-    let (Some(gcc), Some(ld)) = (tool("gcc"), tool("ld.bfd")) else { return };
-    if !cfg!(target_arch = "aarch64") {
-        eprintln!("note: the property matrix assembles for the host, AArch64 only");
-        return;
-    }
+    // AArch64 assembly on every host: its gcc and GNU ld, plain or cross.
+    let a64 = mortar_testutil::target::Arch::Aarch64;
+    let (Some(gcc), Some(ld)) = (a64.tool("gcc"), a64.tool("ld.bfd")) else { return };
     let dir = Scratch::new("synth-props");
     let mut table = String::from("| case | GNU ld | mortar |\n|---|---|---|\n");
     let mut differ = Vec::new();

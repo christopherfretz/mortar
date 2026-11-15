@@ -152,7 +152,9 @@ fn compare(ld: &str, cc: &str, cases: &[(&[&str], Expect)]) {
 // spec: cli.md §7 (AArch64)
 #[test]
 fn against_ld_bfd_aarch64() {
-    compare("aarch64-linux-gnu-ld.bfd", "gcc", AARCH64);
+    // The AArch64 compiler on any host (the object is the subject's).
+    let a64 = mortar_testutil::target::Arch::Aarch64;
+    compare(&a64.gnu("ld.bfd"), &a64.gnu("gcc"), AARCH64);
 }
 
 // spec: cli.md §7 (x86-64)

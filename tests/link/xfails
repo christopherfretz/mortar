@@ -27,9 +27,7 @@ mortar,aarch64,x86_64 dyn/kinds/output-kind-table-static-pie.test: M2: WP-052 (S
 
 # WP-054 (CXX): C++ on AArch64.
 
-# WP-055 (X64-JOIN): the x86-64 dynamic join (default lines).
-mortar,x86_64 dyn/reloc/weak-class-table.test: x86-64 large sections (x64.md X-52's staging refusal: Clang's -mcmodel=large movw.c has .ltext, SHF_X86_64_LARGE; the PIE half passes; WP-055 record)
-mortar,x86_64 dyn/tools/gdb-break-main.test: the harness runs gdb on host programs only (the step SKIPs under qemu); checked by hand under qemu, WP-055 record section 3
-mortar,x86_64 dyn/tools/lldb-break-main.test: the harness runs lldb on host programs only (the step SKIPs under qemu); checked by hand under qemu, WP-055 record section 3
+# WP-084: x86-64 large sections, left by the x86-64 join (WP-055).
+mortar,x86_64 dyn/reloc/weak-class-table.test: x86-64 large sections (x64.md X-52's staging refusal: Clang's -mcmodel=large movw.c has .ltext, SHF_X86_64_LARGE; the PIE half passes; WP-084; WP-055 record)
 
 # WP-056 (OPTS): the option variations.

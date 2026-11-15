@@ -38,7 +38,7 @@ use mortar_synth::dynsym::DynsymPlan;
 use mortar_synth::{DynGotCx, GotPlan, InputCopyDefs, KeyKinds, copy_plan};
 use mortar_testutil::Scratch;
 use support::dynarch::DynA64;
-use support::{A64Proof, compile, mismatches, need, render, run_in};
+use support::{A64Proof, compile, mismatches, need, need_gnu, render, run_in};
 
 /// Every dynamic link names its interpreter (input §8.4).
 const DYNAMIC_LINKER: [&str; 2] = ["-dynamic-linker", "/lib/ld-linux-aarch64.so.1"];
@@ -341,7 +341,9 @@ fn references(
 ) -> Vec<(&'static str, Result<Records, String>)> {
     let mut v = Vec::new();
     for ld in ["ld.bfd", "ld.lld"] {
-        let Some(tool) = need(ld) else { continue };
+        // GNU ld for AArch64 by the host's name; lld for every target.
+        let tool = if ld == "ld.bfd" { need_gnu(ld) } else { need(ld) };
+        let Some(tool) = tool else { continue };
         let o = cwd.join(format!("{out}.{ld}"));
         let mut a: Vec<OsString> = DYNAMIC_LINKER.iter().chain(args).map(OsString::from).collect();
         a.extend(["-o".into(), o.clone().into_os_string()]);
@@ -354,7 +356,7 @@ fn references(
 /// A shared object built by GCC and GNU ld from `src` (`-fPIC`, no
 /// startfiles).
 fn shlib(dir: &Path, name: &str, src: &str) -> Option<PathBuf> {
-    let gcc = need("gcc")?;
+    let gcc = need_gnu("gcc")?;
     let s = dir.join(format!("{name}.c"));
     std::fs::write(&s, src).unwrap();
     let o = dir.join(name);
@@ -387,7 +389,7 @@ fn cc(dir: &Path, name: &str, src: &str, flags: &[&str]) -> Option<PathBuf> {
 
 /// The setup of the shared object and the tools; `None` without them.
 fn setup(label: &str) -> Option<Scratch> {
-    need("gcc")?;
+    need_gnu("gcc")?;
     need("readelf")?;
     let dir = Scratch::new(label);
     shlib(dir.path(), "libL.so", LIB)?;
@@ -790,7 +792,7 @@ fn case_files(case: &str) -> Vec<(String, String)> {
 
 #[test]
 fn mixed_mode_refusal_order() {
-    let Some(gcc) = need("gcc") else { return };
+    let Some(gcc) = need_gnu("gcc") else { return };
     let dir = Scratch::new("dyn-mixed");
     for (name, body) in case_files("mixed-mode.test") {
         dir.write(&name, body);

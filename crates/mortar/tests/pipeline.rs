@@ -9,13 +9,12 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use mortar_testutil::{Outcome, Scratch, run_with, tool, tools_required};
-use support::{Built, Driver, Source, build, with_output};
+use support::{AARCH64, Built, Driver, Source, build, with_output};
 
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 
@@ -77,12 +76,10 @@ int thrower(int n) {
     },
 ];
 
-/// Whether the host can run the AArch64 tests, and the tools are there.
+/// Whether the AArch64 tools are there (on any host: the programs run
+/// natively on AArch64 and under `qemu-aarch64` elsewhere).
 fn host() -> bool {
-    if std::env::consts::ARCH != "aarch64" {
-        return false;
-    }
-    if tool("ld.bfd").is_none() {
+    if AARCH64.tool("ld.bfd").is_none() {
         assert!(!tools_required(), "ld.bfd is required");
         return false;
     }
@@ -127,14 +124,14 @@ fn map_of(out: &Path) -> PathBuf {
 fn bfd(built: &Built, out: &Path, extra: &[&str]) -> Outcome {
     let mut args = with_output(&built.args, out);
     args.extend(extra.iter().map(OsString::from));
-    let ld = tool("ld.bfd").expect("ld.bfd");
+    let ld = AARCH64.tool("ld.bfd").expect("ld.bfd");
     link(ld.to_str().expect("a UTF-8 path"), &args, &built.dir, &[])
 }
 
 /// Runs a program as `prog` (one argv[0] for every linker's output):
 /// (standard output, exit status).
 fn execute(exe: &Path) -> (String, Option<i32>) {
-    let o = run_with(Command::new(exe).arg0("prog"), b"", Duration::from_mins(1));
+    let o = run_with(&mut AARCH64.command(exe, Some("prog")), b"", Duration::from_mins(1));
     (o.stdout_text(), o.status.and_then(|s| s.code()))
 }
 
@@ -250,7 +247,7 @@ fn a_far_call_goes_through_a_thunk() {
     if !host() {
         return;
     }
-    let Some(cc) = tool("gcc") else {
+    let Some(cc) = AARCH64.tool("gcc") else {
         assert!(!tools_required(), "gcc is required");
         return;
     };
@@ -299,7 +296,7 @@ const BTI_NOTE: &str = "    .section .note.gnu.property,\"a\"\n    .p2align 3\n\
 /// `a_far_call_goes_through_a_thunk`) in a BTI-marked object; `far`
 /// begins with `head`, sets 42 and ends with `tail` before `ret`.
 fn bti_far(scratch: &Scratch, name: &str, head: &str, tail: &str) -> Built {
-    let cc = tool("gcc").expect("gcc");
+    let cc = AARCH64.tool("gcc").expect("gcc");
     scratch.write(
         &format!("{name}.s"),
         format!(
@@ -332,7 +329,7 @@ fn bti_far(scratch: &Scratch, name: &str, head: &str, tail: &str) -> Built {
 /// exits 42 as GNU ld's link does.
 #[test]
 fn a_bti_far_call_lands_on_each_pad() {
-    if !host() || tool("gcc").is_none() {
+    if !host() || AARCH64.tool("gcc").is_none() {
         assert!(!tools_required(), "gcc is required");
         return;
     }
@@ -369,11 +366,11 @@ fn a_bti_far_call_lands_on_each_pad() {
 /// `relocation truncated to fit: R_AARCH64_CALL26` against the IFUNC.)
 #[test]
 fn a_bti_far_call_to_an_iplt_entry_is_linked() {
-    if !host() || tool("gcc").is_none() {
+    if !host() || AARCH64.tool("gcc").is_none() {
         assert!(!tools_required(), "gcc is required");
         return;
     }
-    let cc = tool("gcc").expect("gcc");
+    let cc = AARCH64.tool("gcc").expect("gcc");
     let scratch = Scratch::new("pipe-bti-iplt");
     scratch.write(
         "ifn.s",
@@ -415,7 +412,7 @@ fn a_bti_far_call_to_an_iplt_entry_is_linked() {
 /// for the first, which mortar does not yet.
 #[test]
 fn a_bti_far_call_without_a_proved_pad_is_refused() {
-    if !host() || tool("gcc").is_none() {
+    if !host() || AARCH64.tool("gcc").is_none() {
         assert!(!tools_required(), "gcc is required");
         return;
     }
@@ -464,7 +461,7 @@ fn assemble(dir: &Path, name: &str, text: &str) -> PathBuf {
     std::fs::write(dir.join(name), text).unwrap();
     let obj = dir.join(format!("{name}.o"));
     let o = run_with(
-        Command::new(tool("gcc").expect("gcc"))
+        Command::new(AARCH64.tool("gcc").expect("gcc"))
             .arg("-c")
             .arg(name)
             .arg("-o")
@@ -706,13 +703,8 @@ fn z_now_puts_the_got_plt_in_relro() {
     }
 }
 
-/// GNU's BFD target name for the host (I-121 item 5).
-#[cfg(target_arch = "aarch64")]
+/// GNU's BFD target name of the output, an AArch64 program (I-121 item 5).
 const GNU_TARGET: &str = "elf64-littleaarch64";
-#[cfg(target_arch = "x86_64")]
-const GNU_TARGET: &str = "elf64-x86-64";
-#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-const GNU_TARGET: &str = "elf32-i386";
 
 /// A GNU-style text map, read by one parser for GNU's and mortar's
 /// (I-121): output sections, placed input sections, symbols, discarded

@@ -8,7 +8,7 @@ const C: &str = "int f(void) { return 1; }\n";
 #[test]
 fn s6_object_rows() {
     let s = Scratch::new("s6rows");
-    let Some(gxx) = common::need("g++") else { return };
+    let Some(gxx) = common::gnu("native", "g++") else { return };
     s.write("t.cc", "template <class T> T id(T x) { return x; }\nint g(int x) { return id(x); }\nint h;\nstatic int l;\nint *p = &l;\n");
     assert!(common::tool_run(&gxx, &["-c".into(), "t.cc".into()], s.path()).success());
     let out = common::run(s.path(), &["-maarch64linux", "t.o"]);
@@ -203,7 +203,7 @@ fn s7_3_member_table() {
 #[test]
 fn s7_4_no_index() {
     let s = Scratch::new("s7noidx");
-    let Some(ar) = common::need("ar") else { return };
+    let Some(ar) = common::gnu("native", "ar") else { return };
     let Some(_) = common::cc(s.path(), "native", "f.o", C, &[]) else { return };
     assert!(
         common::tool_run(&ar, &["rcS".into(), "libf.a".into(), "f.o".into()], s.path()).success()
@@ -216,7 +216,7 @@ fn s7_4_no_index() {
 #[test]
 fn s7_4_stale_index_is_ignored() {
     let s = Scratch::new("s7stale");
-    let Some(ar) = common::need("ar") else { return };
+    let Some(ar) = common::gnu("native", "ar") else { return };
     let Some(_) = common::cc(s.path(), "native", "f.o", "int old_sym(void){return 1;}\n", &[])
     else {
         return;

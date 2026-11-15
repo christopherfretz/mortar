@@ -15,7 +15,9 @@
 //!
 //! Ported from hod's `hod_testutil`.
 
+pub mod ci_tools;
 pub mod jobs;
+pub mod target;
 
 use std::ffi::OsStr;
 use std::io::{Read, Write};
@@ -74,20 +76,76 @@ pub fn is_unversioned_llvm_tool(name: &str) -> bool {
     llvm && !versioned
 }
 
+/// [`find_tool`] for a name `scripts/ci-tools.sh` covers: the lookup of
+/// the tests and of the link-test harness (the tool guard, [`ci_tools`]).
+///
+/// # Panics
+/// Panics when the script does not cover `name`, whether or not the tool
+/// is on this machine.
+pub fn find_listed_tool(name: &str) -> Option<PathBuf> {
+    ci_tools::assert_listed(name);
+    find_tool(name)
+}
+
 /// Finds a tool for a test, or says the test must skip.
 ///
 /// Returns `None` after printing a note when the tool is missing and tools
 /// are optional.
 ///
 /// # Panics
-/// Panics when the tool is missing and `MORTAR_REQUIRE_TOOLS=1`.
+/// Panics when the tool is missing and `MORTAR_REQUIRE_TOOLS=1`, and when
+/// `scripts/ci-tools.sh` does not cover `name` ([`find_listed_tool`]).
 pub fn tool(name: &str) -> Option<PathBuf> {
-    let found = find_tool(name);
+    let found = find_listed_tool(name);
     if found.is_none() {
         assert!(!tools_required(), "required tool `{name}` not found (MORTAR_REQUIRE_TOOLS=1)");
         eprintln!("note: `{name}` not found; skipping the tool-backed part of this test");
     }
     found
+}
+
+/// The directory, in the build directory's `tmp`, where [`named_skip`]
+/// records each skip: `cargo xtask ci` empties it before its test step
+/// and prints and counts what is in it after (`spec/harness.md` "ci",
+/// "Named skips").
+pub const NAMED_SKIPS: &str = "named-skips";
+
+/// The variable through which `cargo xtask ci` names the directory of the
+/// named skips to its test step; without it, `<build directory>/tmp/named-skips`.
+pub const NAMED_SKIPS_ENV: &str = "MORTAR_NAMED_SKIPS";
+
+/// Skips the rest of the calling test, by name and with its reason: a
+/// test or a part of one that cannot run on this host
+/// (`spec/harness.md` "Named skips"; a debugger session needs a process
+/// of the host's own architecture). Never for a missing tool, which is
+/// [`tool`]'s note or failure.
+///
+/// The skip is printed on standard error and recorded as the file
+/// `$MORTAR_NAMED_SKIPS/<name>` (else `<build directory>/tmp/named-skips/<name>`,
+/// when the build directory is found), whose one line is
+/// `<name>\t<reason>`, so that the gate lists and counts it whether or not
+/// the test binary's output is shown. `name` is the test's name and the
+/// part skipped (`debuggers::sessions_c_gcc`); `/` and blanks in it
+/// become `_` in the file name.
+///
+/// # Panics
+/// Panics when the record cannot be written, or when `cargo xtask ci`
+/// runs the test (`MORTAR_NAMED_SKIPS` is set) and the record has no
+/// place: an unrecorded skip would be a silent one.
+pub fn named_skip(name: &str, reason: &str) {
+    eprintln!("note: named skip: {name}: {reason}");
+    let dir = std::env::var_os(NAMED_SKIPS_ENV)
+        .map(PathBuf::from)
+        .or_else(|| build_tmp_dir().map(|tmp| tmp.join(NAMED_SKIPS)));
+    // Outside the gate the printed note is the record.
+    let Some(dir) = dir else { return };
+    let file: String =
+        name.chars().map(|c| if c == '/' || c.is_whitespace() { '_' } else { c }).collect();
+    std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join(file), format!("{name}\t{reason}\n")))
+        .unwrap_or_else(|e| {
+            panic!("cannot record the named skip {name} in {}: {e}", dir.display())
+        });
 }
 
 /// `<build directory>/tmp`, when this executable is in

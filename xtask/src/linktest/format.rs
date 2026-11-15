@@ -246,6 +246,18 @@ pub struct Anomaly {
     pub scope: Scope,
     /// `A1`, `A9`, ...
     pub ids: Vec<String>,
+    /// A default for the architectures built with the cross packages only
+    /// (the word `cross`): what the reference linker does to the cross C
+    /// runtime, which is another build than the host's native one.
+    pub cross: bool,
+}
+
+impl Anomaly {
+    /// Whether it applies to `linker`'s outputs on `arch`, on a machine of
+    /// architecture `host`.
+    pub fn applies(&self, arch: Arch, linker: Linker, host: Option<Arch>) -> bool {
+        self.scope.applies(arch, linker) && (!self.cross || host != Some(arch))
+    }
 }
 
 /// The language of a compile step.
@@ -403,6 +415,10 @@ pub struct Link {
 pub enum Exit {
     Status(i32),
     Signal(i32),
+    /// `exit: no-start`: the program cannot be started (its interpreter is
+    /// not there): natively the shell's exec fails, status 127; under qemu
+    /// the emulator cannot load it, status 255.
+    NoStart,
 }
 
 /// What a program is expected to print.
@@ -823,7 +839,7 @@ impl Parser {
                     format!("'anomaly: {value}' is not a list of plumb.md anomaly ids ('A9 A11')"),
                 );
             }
-            self.anomalies.push(Anomaly { line, scope, ids });
+            self.anomalies.push(Anomaly { line, scope, ids, cross: false });
             return;
         }
         if qualified {
@@ -1485,8 +1501,11 @@ fn both_outputs() -> String {
     "a run has 'stdout' lines or 'output: reference', not both".to_owned()
 }
 
-/// `N` (0 to 255) or `signal N` (1 to 64).
+/// `N` (0 to 255), `signal N` (1 to 64) or `no-start`.
 fn parse_exit(value: &str) -> Result<Exit, String> {
+    if value == "no-start" {
+        return Ok(Exit::NoStart);
+    }
     let number = |text: &str| text.parse::<i32>().ok().filter(|_| !text.starts_with('+'));
     let exit = match value.strip_prefix("signal") {
         Some(signal) if signal.starts_with([' ', '\t']) => {
@@ -1496,7 +1515,10 @@ fn parse_exit(value: &str) -> Result<Exit, String> {
         None => number(value).filter(|n| (0..=255).contains(n)).map(Exit::Status),
     };
     exit.ok_or_else(|| {
-        format!("'exit: {value}' of a run is not a status from 0 to 255 or 'signal N' (1 to 64)")
+        format!(
+            "'exit: {value}' of a run is not a status from 0 to 255, 'signal N' (1 to 64) or \
+             'no-start'"
+        )
     })
 }
 
@@ -1512,7 +1534,8 @@ fn anomaly_id(id: &str) -> bool {
 
 /// The run-wide default anomalies, `tests/link/anomalies`
 /// (`spec/harness.md` "L3"): one `<linker>[,<more linkers or
-/// architectures>]: <id>...` per line, `#` comments and blank lines aside.
+/// architectures, or `cross`>]: <id>...` per line, `#` comments and blank
+/// lines aside.
 /// Every line names at least one reference linker and never mortar.
 ///
 /// # Errors
@@ -1532,9 +1555,12 @@ pub fn parse_defaults(text: &str) -> Result<Vec<Anomaly>, Vec<Error>> {
             continue;
         };
         let mut scope = Scope::default();
+        let mut cross = false;
         let mut bad = false;
         for word in who.split(',').map(str::trim) {
-            if let Some(linker) = Linker::parse(word) {
+            if word == "cross" {
+                cross = true;
+            } else if let Some(linker) = Linker::parse(word) {
                 scope.linkers.push(linker);
             } else if let Some(arch) = Arch::parse(word) {
                 scope.arches.push(arch);
@@ -1555,7 +1581,7 @@ pub fn parse_defaults(text: &str) -> Result<Vec<Anomaly>, Vec<Error>> {
             error(format!("'{}' is not a list of plumb.md anomaly ids ('A9 A11')", ids.join(" ")));
             continue;
         }
-        out.push(Anomaly { line, scope, ids });
+        out.push(Anomaly { line, scope, ids, cross });
     }
     if errors.is_empty() { Ok(out) } else { Err(errors) }
 }
@@ -1943,6 +1969,14 @@ FileHeader:
             (3, &[Linker::Mold][..], &["A1".to_owned(), "A9".to_owned()][..])
         );
         assert_eq!(d[1].scope.arches, [Arch::Aarch64]);
+        assert!(!d[0].cross && !d[1].cross);
+        // `cross`: on an architecture that is not the host's only.
+        let c = parse_defaults("mold,x86_64,cross: A13\n").unwrap();
+        assert!(c[0].cross);
+        assert!(c[0].applies(Arch::X86_64, Linker::Mold, Some(Arch::Aarch64)));
+        assert!(!c[0].applies(Arch::X86_64, Linker::Mold, Some(Arch::X86_64)));
+        assert!(!c[0].applies(Arch::Aarch64, Linker::Mold, Some(Arch::X86_64)));
+        assert!(d[0].applies(Arch::Aarch64, Linker::Mold, Some(Arch::Aarch64)));
         let error = |text: &str| parse_defaults(text).unwrap_err()[0].message.clone();
         assert!(error("mold A9\n").contains("is not '<linker>"));
         assert!(error("gold: A9\n").contains("unknown linker or architecture 'gold'"));
@@ -2063,6 +2097,9 @@ FileHeader:
         assert!(link.fails);
         let StepKind::Run(run) = &test.steps[1].kind else { panic!() };
         assert_eq!(run.exit, Exit::Status(255));
+        let no_start = parse(&with("link ld a.o -o p\nrun p\n  exit: no-start\n")).unwrap();
+        let StepKind::Run(run) = &no_start.steps[1].kind else { panic!() };
+        assert_eq!(run.exit, Exit::NoStart);
         let reference = parse(&with("link ld a.o\nrun a.out\n  output: reference\n")).unwrap();
         assert!(reference.compares_output());
 

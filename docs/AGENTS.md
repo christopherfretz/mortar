@@ -91,5 +91,12 @@ section, under about 2000 lines.
 - Safety and style: no `unsafe`, clippy clean, no panics on input.
 - Interfaces: no undocumented drift.
 - Performance: baselines unchanged, or updated with a written reason.
+- Static bytes: a package that adds static links, or changes static
+  output on purpose, updates `tests/identical/baseline.on-aarch64.tsv`
+  itself; the x86-64 host's rows come from the hosted lane (`spec/harness.md`
+  "One baseline per host"): the branch is pushed and the `ci` workflow run
+  on it before the merge, and both baselines land in the same merge. Hosted
+  CI runs on every push to `main`: a red `main` is fixed before anything
+  else merges.
 
 Only the supervisor merges to `main`.

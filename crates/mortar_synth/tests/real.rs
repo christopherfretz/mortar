@@ -258,15 +258,18 @@ fn check(
 
 #[test]
 fn eh_frame_of_real_objects_reads_back() {
-    let (Some(gcc), Some(cxx), Some(readelf), Some(dd), Some(ld)) =
-        (tool("gcc"), tool("g++"), tool("readelf"), tool("llvm-dwarfdump"), tool("ld.bfd"))
-    else {
+    // AArch64 objects on every host: its gcc, g++ and GNU ld, plain or
+    // cross.
+    let a64 = mortar_testutil::target::Arch::Aarch64;
+    let (Some(gcc), Some(cxx), Some(readelf), Some(dd), Some(ld)) = (
+        a64.tool("gcc"),
+        a64.tool("g++"),
+        tool("readelf"),
+        tool("llvm-dwarfdump"),
+        a64.tool("ld.bfd"),
+    ) else {
         return;
     };
-    if !cfg!(target_arch = "aarch64") {
-        eprintln!("note: the real-object test compiles for the host, AArch64 only");
-        return;
-    }
     let dir = Scratch::new("synth-real");
     let objs = compile(&dir, &cxx, &gcc);
     // C++ with exceptions and COMDAT (`shared` in both).

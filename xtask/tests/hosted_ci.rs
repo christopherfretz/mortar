@@ -25,14 +25,17 @@ fn lines(text: &str) -> Vec<&str> {
 // `--quick` nor `--step`) through `scripts/env.sh`, with tools required;
 // the set-up installs the tools from `scripts/ci-tools.sh`, starts the
 // jobserver pool and installs the Rust that `rust-toolchain.toml` pins;
-// both architectures are called and have their fan-in checks.
+// both architectures are called and have their fan-in checks; ci.yml
+// runs on a push to main, pull requests, the merge queue and by hand.
 #[test]
 fn the_hosted_lanes_run_the_gate_as_the_development_machine_does() {
     let lane = read(".github/workflows/ci-lane.yml");
     let lane = lines(&lane);
     assert!(lane.contains(&"MORTAR_REQUIRE_TOOLS: \"1\""), "the lane requires the tools");
     let gate: Vec<&&str> = lane.iter().filter(|line| line.starts_with("cargo xtask")).collect();
-    assert_eq!(gate, [&"cargo xtask ci"], "the lane runs the whole gate, once");
+    // `"$@"` is empty but on a by-hand run that asks for `--no-fail-fast`.
+    assert_eq!(gate, [&"cargo xtask ci \"$@\""], "the lane runs the whole gate, once");
+    assert!(lane.contains(&"if [ \"$NO_FAIL_FAST\" = true ]; then set -- --no-fail-fast; fi"));
     assert!(lane.contains(&"source scripts/env.sh"));
 
     let setup = read(".github/actions/mortar-ci/action.yml");
@@ -50,13 +53,23 @@ fn the_hosted_lanes_run_the_gate_as_the_development_machine_does() {
     let entry = read(".github/workflows/ci.yml");
     let entry = lines(&entry);
     for call in [
-        "with: { runner: ubuntu-24.04-arm, cache-key: ci-arm }",
-        "with: { runner: ubuntu-24.04, cache-key: ci-x86_64 }",
+        "with: { runner: ubuntu-24.04-arm, cache-key: ci-arm, no-fail-fast: \"${{ inputs.no_fail_fast == true }}\" }",
+        "with: { runner: ubuntu-24.04, cache-key: ci-x86_64, no-fail-fast: \"${{ inputs.no_fail_fast == true }}\" }",
         "check:",
         "check-x86_64:",
         "uses: ./.github/workflows/ci-lane.yml",
     ] {
         assert!(entry.contains(&call), "ci.yml: {call}");
+    }
+    // The triggers: a push to main, pull requests, the merge queue, and by
+    // hand (rule 6).
+    let on = entry.iter().position(|line| *line == "on:").expect("ci.yml: on:");
+    let end = entry.iter().position(|line| *line == "permissions:").expect("ci.yml: permissions:");
+    let triggers = &entry[on + 1..end];
+    for trigger in
+        ["push:", "branches: [main]", "pull_request:", "merge_group:", "workflow_dispatch:"]
+    {
+        assert!(triggers.contains(&trigger), "ci.yml triggers: {trigger}: {triggers:?}");
     }
 }
 

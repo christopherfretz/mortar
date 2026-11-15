@@ -12,6 +12,7 @@ use mortar_diag::Style;
 use mortar_elf::Machine;
 use mortar_resolve::options::{Entry, Options};
 use mortar_resolve::resolve;
+use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, tool};
 use support::inputs::{Item, build};
 
@@ -67,13 +68,12 @@ fn assemble(asm: &str, src: &str, scratch: &Scratch, name: &str) -> Option<std::
 #[test]
 fn s3_3_lcommon_is_x86_64_only() {
     let scratch = Scratch::new("lcommon");
-    if let Some(x) = assemble("x86_64-linux-gnu-as", ".largecomm lc,8,8\n", &scratch, "x64") {
+    if let Some(x) = assemble(&Arch::X86_64.gnu("as"), ".largecomm lc,8,8\n", &scratch, "x64") {
         let e = errors(Machine::X86_64, x);
         assert_eq!(e.len(), 1, "{e:?}");
         assert!(e[0].contains("unsupported feature: SHN_X86_64_LCOMMON"), "{e:?}");
     }
-    let native = if cfg!(target_arch = "aarch64") { "as" } else { "aarch64-linux-gnu-as" };
-    if let Some(a) = assemble(native, ".comm lc,8,8\n", &scratch, "a64") {
+    if let Some(a) = assemble(&Arch::Aarch64.gnu("as"), ".comm lc,8,8\n", &scratch, "a64") {
         let mut bytes = std::fs::read(&a).unwrap();
         to_reserved(&mut bytes);
         let a = scratch.write("a64r.o", bytes);
