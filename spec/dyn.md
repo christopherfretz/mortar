@@ -640,8 +640,15 @@ reason. *Test:* `copy-dt-needed-refused`.
 **D-16 [M2] (TLS against a shared definition).** A TLS class relocation
 against a key whose `def` is a non-`STT_TLS` shared definition, or a
 non-TLS class against an `STT_TLS` shared definition, is `tls-mismatch`
-(resolve §3.4 extended to shared definitions, request R-R4) [unverified
-against the references]. *Test:* `tls-mismatch-shared`.
+(resolve §3.4 extended to shared definitions, request R-R4). The judged
+mentions are those of live relocatable objects; the diagnostic is at the
+first such mention of the other kind by `≺`, with `bind(k)`'s entry as
+the first definition (text `TLS attribute mismatch: <name>`, diag.md
+§3.1). GNU ld refuses both directions (measured by WP-051: ``tv: TLS
+definition in ./libtv.so section .tdata mismatches non-TLS reference in
+data.o``; ``nv: TLS reference in tls.o mismatches non-TLS definition in
+./libnv.so section .data``); lld and mold link and the programs crash or
+read garbage. *Test:* `tls-mismatch-shared`.
 
 **D-17 [M2] (common against a shared definition).** resolve §3.2 rule 2
 stands: GNU ld and mold give the shared data definition (`5 5`), lld the
@@ -1669,8 +1676,6 @@ eu-elflint 0.192, Python 3.13.5, glibc 2.41 (Debian 13).
 - mortar itself past the refusals: no dynamic output exists; every rule
   is measured on the references only.
 - A 64 KiB-page AArch64 kernel (D-61's RELRO end): none available.
-- `tls-mismatch` against a shared definition (D-16): no reference
-  diagnoses it; behaviour unmeasured.
 - An input section named `.interp` (D-31) and a canonical PLT in a PIE
   (D-44): no corpus input produces them.
 - Q1's refusal (`archive member needed by an --as-needed shared
