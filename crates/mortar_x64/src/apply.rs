@@ -34,6 +34,9 @@ pub const DYNAMIC_TLS: &str = "dynamic TLS models in a shared object";
 /// X-46 needs the place's `SHF_EXECINSTR`, which the caller did not give
 /// (`SectionOut.exec`).
 pub const DTPOFF_PLACE: &str = "DTPOFF relocation in an allocated section of unknown kind";
+/// X-32: no relaxation is taken in a non-alloc section, and a static
+/// output has no unrelaxed GD, LD or descriptor model.
+pub const NON_ALLOC_TLS: &str = "TLS sequence in a non-allocated section";
 
 const fn feature(name: &'static str) -> Refusal {
     Refusal::named(RefusalClass::Feature, name)
@@ -72,8 +75,14 @@ const fn uses_got_base(h: &mortar_arch::Howto) -> bool {
 
 /// I1/I2 (X-23): decided from the output kind, the target kind and the
 /// input bytes, so scan and fill agree (kind 1).
-fn ie_relaxed(at: &RelocAt<'_>, output: OutputKind, kind: TargetKind) -> Option<Form> {
-    if !output.is_exec() || at.addend != -4 || !tls_local(kind) {
+fn ie_relaxed(
+    at: &RelocAt<'_>,
+    output: OutputKind,
+    kind: TargetKind,
+    alloc: bool,
+) -> Option<Form> {
+    // X-32: never in a non-alloc section.
+    if !alloc || !output.is_exec() || at.addend != -4 || !tls_local(kind) {
         return None;
     }
     forms::form(GOTTPOFF, at.site).filter(|f| matches!(f, Form::I1 { .. } | Form::I2 { .. }))
@@ -167,6 +176,9 @@ fn tls_scan(
             _ => Err(feature(DYNAMIC_TLS)),
         };
     }
+    if !cx.place.alloc && matches!(at.r_type, TLSGD | TLSLD | GOTPC32_TLSDESC | TLSDESC_CALL) {
+        return Err(feature(NON_ALLOC_TLS));
+    }
     match at.r_type {
         TLSGD => match relax::lead_form(at, cx.tables) {
             None => Err(feature(UNRECOGNIZED_GD)),
@@ -175,7 +187,7 @@ fn tls_scan(
         },
         // The LE outputs of §8.4 do not depend on the symbol.
         TLSLD => relax::lead_form(at, cx.tables).map(|_| none).ok_or(feature(UNRECOGNIZED_LD)),
-        GOTTPOFF if ie_relaxed(at, cx.output, kind).is_some() => Ok(none),
+        GOTTPOFF if ie_relaxed(at, cx.output, kind, cx.place.alloc).is_some() => Ok(none),
         GOTTPOFF => Ok((DemandFlags::GOT_TPREL, GlobalFlags::empty())),
         GOTPC32_TLSDESC | TLSDESC_CALL => match desc_form(at) {
             None => Err(feature(UNRECOGNIZED_DESC)),
@@ -265,15 +277,21 @@ pub fn apply(cx: &FillCx<'_>, at: &RelocAt<'_>, out: &mut SectionOut<'_>) -> Res
         TLSGD | TLSLD | GOTPC32_TLSDESC | TLSDESC_CALL if !exec => {
             return Err(FieldError::Refused(feature(DYNAMIC_TLS)));
         }
+        TLSGD | TLSLD | GOTPC32_TLSDESC | TLSDESC_CALL if !out.alloc => {
+            return Err(FieldError::Refused(feature(NON_ALLOC_TLS)));
+        }
         TLSGD | TLSLD => return lead(cx, at, out, sym, kind),
         GOTPC32_TLSDESC | TLSDESC_CALL => return desc(cx, at, out, sym, kind),
         GOTTPOFF => {
-            if let Some(f) = ie_relaxed(at, cx.output, kind) {
+            if let Some(f) = ie_relaxed(at, cx.output, kind, out.alloc) {
                 return ie(cx, at, out, sym, f);
             }
         }
         GOTPCRELX | REX_GOTPCRELX => {
-            if let Some((off, bytes, n)) = got_relaxed(cx.output, at, out.addr, sym) {
+            // X-32: in a non-alloc section, applied as its §6.1 row.
+            if out.alloc
+                && let Some((off, bytes, n)) = got_relaxed(cx.output, at, out.addr, sym)
+            {
                 return put(at, out, off, &bytes[..n]);
             }
         }

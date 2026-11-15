@@ -29,7 +29,7 @@ use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
 
 pub use apply::{
-    DTPOFF_PLACE, DYNAMIC_TLS, LD12, LD13, LD22, TLS_TO_IE, UNRECOGNIZED_DESC, UNRECOGNIZED_GD,
+    DTPOFF_PLACE, DYNAMIC_TLS, LD12, NON_ALLOC_TLS, LD13, LD22, TLS_TO_IE, UNRECOGNIZED_DESC, UNRECOGNIZED_GD,
     UNRECOGNIZED_LD, scan_checks,
 };
 
