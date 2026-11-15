@@ -1,14 +1,17 @@
 # spec: liveness, the scan driver, the image and the output file (`mortar_image`)
 
-Status: **draft (WP-026 stage 1)**. Method, experiments and what was not
-checked are in `spec/landed/image/WP-026-spec.md` (cited as **E1**–**E15**).
-Every measurement here was taken on the WP-026 host: AArch64 (24 CPUs, 31
-GB, Linux 6.12.76, transparent huge pages `always`), load 23–36 during the
-runs, Rust 1.95.0, GNU ld 2.44, lld 19.1.7 and 22, mold 2.37.1, gdb 16.3,
+Status: **draft (WP-026 stage 1, revised after review)**. Method,
+experiments and what was not checked are in
+`spec/landed/image/WP-026-spec.md` (cited as **E1**–**E15**, and **E16**–
+**E25** for the re-measurements made for the review). Every measurement
+here was taken on the WP-026 host: AArch64 (24 CPUs, 31 GB, Linux
+6.12.76, transparent huge pages `always`), load 23–41 during the runs,
+Rust 1.95.0, GCC 14.2, Clang 19.1.7, GNU ld 2.44, lld 19.1.7 and 22.1.8,
+mold 2.37.1, gdb 16.3 (and `gdb-multiarch` with `qemu-i386` for i386),
 lldb 19.1.7. Two file systems were measured: `/tmp` (overlay, local) and
-the workspace mount (a host share). Numbers are medians of 3 runs with the
-range in parentheses unless said otherwise; ratios matter more than
-absolutes, because the host was shared and loaded.
+the workspace mount (a host share). Numbers are medians with the range in
+brackets or parentheses and the load average beside them; ratios matter
+more than absolutes, because the host was shared and loaded.
 
 This spec owns five phases of `docs/ARCHITECTURE.md`'s pipeline and the
 file the pipeline produces:
@@ -72,15 +75,21 @@ are not followed or disagree (§15).
   (§5.2).
 - **Window**: a range `[k × W, min((k + 1) × W, file_size))` of the output
   file, with **`W = IMAGE_BLOCK = 2^20` bytes** (1 MiB), a constant of
-  this spec and part of the build id's definition (§8.3). Windows are the
-  unit of buffering, of writing and of build-id hashing.
+  this spec in this mortar version (§8.3, I-75). Windows are the unit of
+  buffering, of writing and of build-id hashing.
 - **Job**: a run of consecutive windows filled into one buffer by one
-  worker (§5.3). Almost every job is one window.
+  worker (§5.3): one window, or the windows a *whole* synthetic chunk
+  larger than `W` covers (§13).
 - **Reference**: a relocation record that survives sequence recognition
   and still needs its symbol (`spec/arch.md` §3.4), identified by
   **`RefId = (FileId, section index, record index)`**, ordered
-  lexicographically. This order is the order of the scan's diagnostic
-  keys (model §8, phase 70).
+  lexicographically. The section index is that of the **relocated**
+  section (the relocation section's `sh_info`), not of the relocation
+  section; the record index counts records of that section's one
+  relocation section (`spec/resolve.md` refuses a second one). Scan units
+  are formed in `(FileId, relocated section index)` order and visit
+  records in record order, so **unit order is `RefId` order**. This order
+  is the order of the scan's diagnostic keys (model §8, phase 70).
 - **Event**: what `arch.scan` reports about a reference instead of a
   finished diagnostic (§4.4).
 - **Output file**: the file at `-o`; **temporary file**: the file the
@@ -138,9 +147,20 @@ The design is fixed now so that the M1 tables need no change.
   - its name is a C identifier and `__start_NAME` or `__stop_NAME` is
     referenced from a live section (`spec/layout.md` L-96: GNU ld's
     `-z nostart-stop-gc`);
-  - it is not `SHF_ALLOC` (every non-alloc section is kept whole: debug
-    information is not collected; all three linkers, not separately
-    verified, E14).
+  - it is not `SHF_ALLOC` and not `SHF_LINK_ORDER` (every other non-alloc
+    section is kept whole: debug information is not collected; all three
+    linkers, not separately verified, E14).
+- **I-109 [M2] `SHF_LINK_ORDER` follows its link target.** A section
+  with `SHF_LINK_ORDER`, alloc or not, is live exactly when the section
+  its `sh_link` names is live. This rule takes precedence over I-6's
+  non-alloc root rule. Clang's `-ffunction-sections -fstack-size-section`
+  emits a non-alloc `SHF_LINK_ORDER` `.stack_sizes` per function. If a
+  collected function's `.stack_sizes` were kept, its relocation would be
+  `discarded-section-reference`. Under `--gc-sections`, lld 22 and GNU ld
+  remove it (`removing unused section '.stack_sizes'`); mold 2.37.1 keeps
+  it (18 bytes in the output against 9 for lld and GNU ld, E25). M1 is
+  unaffected: without `--gc-sections` only COMDAT drops sections, and a
+  COMDAT `.stack_sizes` or `.llvm_bb_addr_map` is a member of its group.
 - **I-7 [M2] Edges.** A live `SHF_ALLOC` section `s` makes live:
   - the section of `def` of every key that a relocation record of `s`
     names, through `sym_map` (a `Section` definition; a `Common`
@@ -150,8 +170,8 @@ The design is fixed now so that the M1 tables need no change.
     for a reference into a split section, the piece and its fragment
     (`frag_live`, by offset through `Split`, as model §3.5 resolves a
     reference);
-  - the sections in `s`'s `SHF_LINK_ORDER` dependents (a section whose
-    `sh_link` is `s` is live when `s` is);
+  - the sections in `s`'s `SHF_LINK_ORDER` dependents, alloc or not (a
+    section whose `sh_link` is `s` is live when `s` is, I-109);
   - for a code section, its live FDEs (I-3) and, through each FDE's
     relocations, the personality routine's and the LSDA's sections
     (`.gcc_except_table` pieces): the FDE's edges are `s`'s edges.
@@ -218,12 +238,15 @@ relocation, and sequence recognition across neighbouring records
 3. merges the results (§4.3, §4.5) and emits the diagnostics.
 
 - **I-13 [M1]** The scan reads only live sections (`Liveness`), and of
-  each only its own relocation records, through `Inputs` (resident in
-  both stores: `spec/input.md` §11.1). It never reads section bodies
-  except where `arch.scan` checks an instruction (`spec/arch.md` §3.4,
-  through `RelocAt::site`); for a non-resident body (the staged store,
-  [perf]) the site is read with `copy_to` into a 16-byte buffer of the
-  worker's own.
+  each only its own relocation records, through `Inputs`. Relocation
+  records of an `SHF_ALLOC` section are resident in both stores; those
+  of a non-alloc section are resident in the resident store only. In the
+  staged store they are read in blocks of at most `SCAN_BLOCK` records
+  with `copy_to`, into a buffer the worker owns (I-82, request R-13). The
+  scan never reads section bodies except where `arch.scan` checks an
+  instruction (`spec/arch.md` §3.4, through `RelocAt::site`). For a
+  non-resident body the site is read with `copy_to` into a 16-byte
+  buffer the worker owns.
 - **I-14 [M1] Non-alloc fast path.** A relocation whose place is in a
   non-alloc section raises no demand and produces no dynamic relocation
   (`spec/a64.md` §13.2). For it the driver calls the architecture's
@@ -237,9 +260,7 @@ relocation, and sequence recognition across neighbouring records
   (written by the unit that scans the section; a section split into
   blocks sums the blocks' counts, an integer sum, rule 2), the
   diagnostics of `spec/arch.md` §7 at their keys, and the events of
-  §4.4. No other table is written. In particular the scan writes no
-  "relocations are sorted" bit or other per-section fact for fill: fill
-  computes its own (§5.2).
+  §4.4, and the **record index** of I-29. No other table is written.
 
 ### 4.2 Cost
 
@@ -280,8 +301,10 @@ the driver groups the events (§4.5).
 pub enum EventClass { Undefined, ComdatMismatch, DiscardedSection, GnuWarning }
 pub struct RefId { pub file: FileId, pub section: u32, pub record: u32 }  // Ord: lexicographic
 pub struct Event { pub class: EventClass, pub group: u64, pub at: RefId }
-// group: SymKey as u64; for DiscardedSection, (referring section index << 32) | symbol index,
-// the file being at.file
+// group: SymKey as u64; for DiscardedSection, (referring section index << 32) | symbol index
+pub struct GroupKey { pub class: EventClass, pub file: FileId, pub group: u64 } // Ord: lexicographic
+// file: at.file for DiscardedSection (its group is file-relative); FileId 0 for the SymKey classes,
+// whose groups span files. EventClass orders as declared.
 ```
 
 - **I-18 [M1]** `DemandSink` gains `reference(class, group)`; the sink
@@ -301,17 +324,26 @@ pub struct Event { pub class: EventClass, pub group: u64, pub at: RefId }
   reports none. Whether the event is an error or a warning is the
   verdict's, fixed per key, and is recorded with the group, not per
   event.
+- **I-110 [M1] [C] Undefined from non-alloc sections only.** A key
+  referenced only from non-alloc sections (`.debug_info` naming an
+  undefined global, for example) reports `Undefined` like any other
+  reference: the link fails with `undefined-symbol`, as with GNU ld and
+  mold; lld accepts the link (the review's measurement, §15). Debug
+  information that names a symbol nothing defines describes code that is
+  not in the program, which is the error the user needs to see.
 
 ### 4.5 The deterministic merge
 
 The sequential meaning: take every event of the link, in `RefId` order;
-for each `(class, group)`, the diagnostic lists the first three events'
-places and counts the rest; its key is the first event's. The parallel
+for each `GroupKey` `(class, file, group)`, the diagnostic lists the
+first three events' places **in `RefId` order** and counts the rest; its
+key is the first event's. (`file` keeps two files' discarded-section
+events with equal section and symbol indexes apart.) The parallel
 formulation:
 
 - **I-20 [M1] Per unit.** A scan unit visits its records in record order,
   so its events arrive in increasing `RefId`. It keeps an accumulator
-  per `(class, group)` it has seen, in a hash map used for lookup only:
+  per `GroupKey` it has seen, in a hash map used for lookup only:
 
   ```rust
   struct Acc { first: [RefId; 3], len: u8, count: u64 }  // count: every event, first included
@@ -319,15 +351,16 @@ formulation:
 
   The first three events of a group in the unit fill `first`; every
   event adds 1 to `count`. At the end of the unit the map is turned into
-  a vector sorted by `(class, group)` (rule 5: no hash order escapes).
+  a vector sorted by `GroupKey` (rule 5: no hash order escapes).
   Memory: one `Acc` (40 bytes) per distinct group per unit, only for
   links that report these kinds; a unit referencing one undefined
   symbol 10^6 times holds one `Acc`.
 - **I-21 [M1] Across units.** The vectors are concatenated in unit order
   (rule 3; units are in `RefId` order because blocks of a section are in
   record order and sections in `(FileId, index)` order), then stably
-  sorted by `(class, group)` (rule 4, `par::sort_by_key`, which is
-  stable). The run of one group is then in `RefId` order, and is reduced
+  sorted by `GroupKey` (rule 4, `par::sort_by_key`, which is stable).
+  **Ties** (equal `GroupKey`, from different units) keep unit order, which
+  is `RefId` order (§2). The run of one group is then in `RefId` order, and is reduced
   left to right: `first` takes the first three `RefId`s across the run's
   `Acc`s in order, `count` is the sum (a sum of integers, rule 2). The
   result is exactly the sequential meaning, whatever the schedule and
@@ -339,33 +372,26 @@ formulation:
   - kind and head per `spec/diag.md` §3.1 (`undefined symbol: {name}
     (undefined reference to `{name}')` and the others);
   - one `>>> referenced by {file}:({section}+0x{r_offset})` context line
-    per entry of `first` (`ReferencedBy`, `spec/diag.md` §3.1), and, when
-    `count > 3`, the note `>>> referenced {count − 3} more times`;
+    per entry of `first`, in `RefId` order (`ReferencedBy`,
+    `spec/diag.md` §3.1), and, when `count > 3`, the note `>>> referenced
+    {count − 3} more times` (the references differ here, §15);
   - the extra context of each kind: `spec/resolve.md` §5.3 (hidden
     visibility, demangling), §6.3 (`comdat-mismatch`'s kept and dropped
     copies and the ODR note).
-  `{r_offset}` is read from the record when the diagnostic is built (the
-  record is in a resident relocation section): `RefId` is enough.
+  `{r_offset}` is read from the record when the diagnostic is built (a
+  resident record, or 24 bytes through `copy_to`): `RefId` is enough.
 - **I-23 [M1]** Two groups share a key only when their first references
   are the same record. A record names one symbol, so that happens only
   when two classes fire on it, `GnuWarning` with `Undefined` or
   `ComdatMismatch`; the collector orders the two by text
-  (`spec/diag.md` §6.2).
+  (`spec/diag.md` §6.2). The same shape (one diagnostic per group, the
+  first three references, the count) applies to all four classes.
 - **I-24 [M1] Error limit.** Groups count as one diagnostic each against
   `--error-limit` (`spec/diag.md` §6.4); every group is still built,
   because which ones are printed depends on their keys.
 
 The undefined references of shared objects (M2) are resolution's (phase
 30, `spec/resolve.md` §5.2) and do not go through the scan.
-
-### 4.6 What the scan driver needs from other specs
-
-- `spec/arch.md` §3.4: events in place of diagnostics for the four kinds
-  (R-1).
-- `spec/arch.md` §3.5: a predicate `sequence_extent(records, i) ->
-  usize` saying how many records from `i` a recognized sequence may span,
-  so that block boundaries are moved past it (I-13's step 1). Requested
-  as R-3.
 
 ## 5. Fill (phase 100)
 
@@ -411,15 +437,36 @@ only when `has_errors()` is false after layout (`spec/diag.md` §7).
   terms: 3.5 MB for `cxx-medium-g`'s 143,907 sections at most (the live
   ones are fewer, E5). It is model §9-conforming (per section, not per
   relocation) and lives only during the phase.
-- **I-29 [M1] Sorted records.** For every placed input section larger
-  than `W` that has relocations, the plan records one bit: whether its
-  relocation records are in non-decreasing `r_offset` order. It is
-  computed by fill itself (one read of the `r_offset` fields; the bit is
-  fill's cache, model §4.5). In every object of `cxx-medium-g`, glibc's
-  `libc.a`, GCC 14's `libstdc++.a` and `libgcc.a`, and Clang 19 and GCC
-  14 `-g` objects, all 45,861 relocation sections are sorted (E7); GNU as
-  and Clang's integrated assembler keep the order of `.reloc` directives,
-  so an assembler source can produce unsorted records (E7).
+- **I-29 [M1] [C] The record index.** Fill finds a clip's relocations by
+  binary search on `r_offset` (I-35), so it needs every relocation
+  section in `r_offset` order. The scan already reads every record in
+  record order (I-13), so it checks the order there, with one comparison
+  per record and no extra pass. A section split into blocks combines its
+  blocks' results: it is sorted when every block is and each block's last
+  `r_offset` is at most the next block's first. Per relocation section,
+  the scan's unit writes the phase cache `RecIndex` (model §4.5; a column
+  per relocated section, rule 1):
+  - `Sorted`, when `r_offset` never decreases. For a non-resident
+    relocation section of more than `REC_SAMPLE = 2^12` records, it also
+    keeps the `r_offset` of every `REC_SAMPLE`-th record (8 bytes per
+    4096 records), so that fill can locate a clip's records with one
+    `copy_to`;
+  - `Permuted(Vec<u32>)`, otherwise: the record indexes stably sorted by
+    `r_offset` (4 bytes per record of an unsorted section).
+  Unsorted sections are ordinary on x86. Per archive, unsorted
+  relocation sections and records (E7, E22): x86-64 glibc `libc.a` 245 of
+  3,962 sections (11,053 records; the largest 783; e.g. `PLT32` records
+  appended out of order in `libc-start.o`); i386 `libc.a` 73 (6,167);
+  x86-64 `libstdc++.a` 446 (6,584); i686 `libstdc++.a` 184. No AArch64
+  library and no `cxx-medium-g` object has one. No relocation section
+  anywhere has two records at one offset (the review). Building the
+  permutation costs a sort of at most 783 records per section, and at
+  most 44 KB of memory for a whole `libc.a`. The alternative, filling an
+  unsorted section as one unclipped job when it fits in a window, needs
+  the multi-window job for the rest. It also makes job boundaries depend
+  on record order, and saves nothing measurable. Rejected. GNU as and
+  Clang's integrated assembler keep the order of `.reloc` directives, so
+  any target can see unsorted records (E7).
 - **I-30 [M1] Symbol values.** Fill computes, before the windows, the
   phase cache `sym_addr[SymbolId]: u64` (model §4.5: 8 bytes per global
   symbol) from `def`, `redirect`, `place`, `sym_place`, `defined`,
@@ -429,17 +476,18 @@ only when `has_errors()` is false after layout (`spec/diag.md` §7).
 
 ### 5.3 Windows and jobs
 
-- **I-31 [M1]** The file is filled window by window. A **job** is
-  normally one window; the jobs are formed by one sequential pass over
-  the plan: a placed section larger than `W` whose records are *not*
-  sorted (I-29) makes one job of every window it touches, together with
-  the windows already in the job. So a job is a run of windows that
-  contains every unsorted large section it touches entirely. Job
-  boundaries are a function of the plan and `W` only (rule 6).
+- **I-31 [M1]** The file is filled window by window. A **job** is one
+  window, except that a *whole* synthetic chunk larger than `W` (§13,
+  I-104) makes one job of every window it touches, together with the
+  windows already in the job. The jobs are formed by one sequential pass
+  over the plan. Job boundaries are a function of the plan and `W` only
+  (rule 6).
 - **I-32 [M1]** Jobs run in parallel (`for_each_part` over job indices;
-  under `MORTAR_SCHED_SEED`, permuted). A worker owns one buffer of
-  `W` bytes, reused between jobs, grown only for a multi-window job and
-  shrunk back to `W` after it.
+  under `MORTAR_SCHED_SEED`, permuted). A worker owns one buffer of `W`
+  bytes and, in the staged store, one relocation buffer of `SCAN_BLOCK`
+  records (1.5 MiB at 24 bytes per record), reused between jobs. The
+  window buffer is grown only for a multi-window job and shrunk back to
+  `W` after it.
 - **I-33 [M1]** For a job `[lo, hi)`, the worker:
   1. finds the first plan row ending after `lo` (binary search);
   2. for every row overlapping `[lo, hi)`, in order, fills the overlap
@@ -453,9 +501,10 @@ only when `has_errors()` is false after layout (`spec/diag.md` §7).
   depend only on the tables (model §5), so the file's bytes do not depend
   on which worker filled which window, or when.
 - **I-34 [M1] Memory.** Fill's own memory is `threads × W` (8 MiB at 8
-  threads), plus, for each multi-window job in flight, its length; plus
-  the plan (I-28) and `sym_addr` (I-30). A link whose inputs have no
-  unsorted section larger than `W` never makes a multi-window job.
+  threads), plus the relocation buffers of I-32 in the staged store, plus,
+  for each multi-window job in flight, its length; plus the plan (I-28),
+  `sym_addr` (I-30) and `RecIndex` (I-29). Only a whole synthetic chunk
+  larger than `W` makes a multi-window job.
 
 ### 5.4 Filling one unit, clipped
 
@@ -464,25 +513,26 @@ buffer; the clip only selects which of them a job writes.
 
 - **I-35 [M1] Placed input section.** For the clip `[a, b)` of section
   `s` (offsets relative to the section's start):
-  1. copy the input bytes `[a, b)` of `s`: from the resident slice when
-     the range is resident (`Inputs::resident`), otherwise with
-     `Inputs::copy_to` into the buffer ([perf], staged store); a
+  1. copy the input bytes `[a, b)` of `s` with `Inputs::copy_to` into the
+     buffer. In the staged store (the primary design, I-81) these are
+     positioned reads straight into the window buffer. In the resident
+     store they are a copy from memory: the same call, the same bytes. A
      `SHF_COMPRESSED` input is copied from the store's decompressed
      buffer (`spec/layout.md` L-52);
   2. apply every relocation record whose write window
      `[r_offset − before, r_offset + width + after)` intersects `[a, b)`,
-     through a `SectionOut` whose valid range is `[a, b)`: bytes the
-     relocation would write outside it are not written (request R-2:
-     `apply`'s results for the bytes inside the clip are those of an
-     unclipped call, which holds because `apply` never reads `out`,
-     `spec/arch.md` §3.6). `before`/`after` are bounded by the
-     architecture's constant `Facts.max_reach` (R-2; AArch64 needs 0/0
-     beyond the field, x86-64's `TLSGD` window `[P − 4, P + 12)` needs 4
-     and 8 past a 4-byte field). The records are found, for a sorted
-     section larger than `W`, by binary search on `r_offset` for `a −
-     max_reach.after − 8` and a forward walk to `b + max_reach.before`;
-     for other sections, by walking all of the section's records (the
-     section is at most `W` long, or wholly inside this job);
+     in record order, through a `SectionOut` whose valid range is
+     `[a, b)`: bytes the relocation would write outside it are not
+     written (request R-2: `apply`'s results for the bytes inside the
+     clip are those of an unclipped call, which holds because `apply`
+     never reads `out`, `spec/arch.md` §3.6). The records are those with
+     `a − max_reach.after − 8 < r_offset < b + max_reach.before`, where 8
+     is the widest field. They are found by binary search in `RecIndex`'s
+     order (I-29: the records themselves when `Sorted`, the permutation
+     when `Permuted`, the sample then one `copy_to` of the records between
+     two samples when non-resident), and are then taken in record order;
+     a sequence member finds its lead by record index (`spec/arch.md`
+     §3.5);
   3. for a split `EhFrame` section, write only its live pieces at their
      output offsets (`spec/layout.md` §8), with the relocations of live
      pieces; the bytes between the input pieces do not exist in the
@@ -494,6 +544,29 @@ buffer; the clip only selects which of them a job writes.
   the key `(100, FileId, section index × 2^32 + record index)`
   (`spec/arch.md` §7). A relocation's value does not depend on the job,
   so both jobs agree on whether it fails.
+- **I-111 [M1] `max_reach` is derived, never written by hand.**
+  `Facts.max_reach = (before, after)` is the maximum, over every window
+  the architecture states, of how far the window extends before the
+  field's first byte and past its last. That covers each type's `Howto`
+  window (`spec/arch.md` §3.2) and each matched form's member windows
+  (`unit_window`, §3.5). `mortar_arch` computes it from those tables
+  (request R-2), and a test checks that no `apply` writes outside its
+  record's window. Values this gives:
+  - AArch64 at least `(0, 4)`. The `CALL26` member of the GD→LE sequence
+    (`spec/a64.md` §8.4) has its field at `o+8` and owns `[o+8, o+16)`,
+    so it writes the `nop` 4 bytes past its field.
+  - x86-64 `(4, 8)`, for the recognized forms of `spec/arch.md` A.3
+    only: the 16-byte `TLSGD` form `[P − 4, P + 12)` around a 4-byte
+    field.
+  The draft's AArch64 `(0, 0)` was wrong; it worked only because of the
+  8-byte slack of the search bound. The x86-64 large-model `TLSGD`
+  sequence (`lea` / `movabs PLTOFF64` / `add` / `call`, 22 bytes,
+  `[P − 3, P + 19)`, after = 15) is not an A.3 form, so it stays unrelaxed
+  and its members keep their field windows. GNU ld relaxes all 22 bytes;
+  lld 22 writes 16 bytes from `P − 4` and corrupts it (the review).
+  `spec/x64.md` must either add the form, with its window, or state that
+  it is left unrelaxed, with a test (request R-14). Either way `max_reach`
+  follows from the tables.
 - **I-37 [M1] `.ctors`/`.dtors` reversal** (`spec/layout.md` L-40, when it
   is lifted): the words of a `.ctors` input section are written in
   reverse word order; the relocation of the word at offset `o` is applied
@@ -503,9 +576,9 @@ buffer; the clip only selects which of them a job writes.
 - **I-38 [M1] Fragment runs.** A run writes each fragment's bytes (from
   its first occurrence, `Split` §3.5) at the fragment's chunk offset.
   A fragment's relocations, if its section has any, are applied from
-  its first occurrence as I-35 applies a section's (not observed in the
-  inputs of `cxx-medium-g`, `libc.a` and `libstdc++.a`: no `SHF_MERGE`
-  section in them has a relocation section, E7).
+  its first occurrence, as I-35 applies a section's. This was not
+  observed in the inputs of `cxx-medium-g`, `libc.a` or `libstdc++.a`:
+  no `SHF_MERGE` section in them has a relocation section (E7).
 - **I-39 [M1] Synthetic chunks** are written by `spec/synth.md`'s
   `write(cx, range, out)` for the clip (§13). `Patches` chunks (islands,
   thunks, erratum patches) are synthetic chunks of `mortar_arch`'s
@@ -569,47 +642,94 @@ writes a value chosen by the referring section's name, as
 - **I-46 [M1]** Exactly `.gcc_except_table` (alloc or not): 0
   (`spec/resolve.md` §6.3). Any other non-alloc section: the scan
   reported `discarded-section-reference` (§4.4) and fill never runs.
-- **I-47 [M1] [C] The tombstone.** `tombstone(section, width)`:
-  - `.debug_ranges` and `.debug_loc`: **1**. These are DWARF ≤ 4 lists
-    of address pairs; a pair `(0, 0)` ends the list early and a first
-    word of all ones is a base-address selection entry, so neither 0 nor
-    all ones is safe. `(1, 1)` is an empty range. All three references
-    write 1 here (E9);
-  - every other debug-named section: **all ones** in the field's width
-    (`0xffffffffffffffff` for 64-bit fields, `0xffffffff` for 32-bit,
-    `0xffff` for 16-bit), the value DWARF 6 reserves as the tombstone
-    of an address and the value lld writes under
-    `-z dead-reloc-in-nonalloc=<section>=0xffffffffffffffff`.
-  This replaces `spec/arch.md` §3.11's 0 (request R-5). The evidence
-  (E9, E10):
-  - lld 22 and mold write 0 into `.debug_info`, `.debug_line`,
-    `.debug_aranges`, `.debug_frame`, `.debug_loclists`,
-    `.debug_rnglists` and `.debug_addr` for references into a dropped
-    COMDAT copy; GNU ld writes the kept copy's address plus the addend
-    when the two copies have the same size, and 0 otherwise. Measured
-    for GCC 14 and Clang 19 objects, DWARF 4 and 5.
-  - A zero tombstone is an address. When code is linked at a low address
-    the dead function's DWARF claims `[0, size)` overlaps real code.
-    With `-z max-page-size=4096 -z noseparate-code`, lld's and mold's
-    `.text` starts at `0x1740`, inside the dead copy's claimed range
-    `[0, 0x2a44)`: **lldb 19 loses the file and line of `big`, `helper`
-    and `main`** (`big(int) + 8` with no `h3.h:3:16`), on lld's and
-    mold's outputs, with GCC and Clang objects; GNU ld's redirected
-    output is correct. gdb 16 shows identical `break`, `bt`, `info line`,
-    `list` and `info scope` results for all three linkers in every
-    layout tried.
-  - The same link with lld and `-z dead-reloc-in-nonalloc=X=0xffff…`
-    for `.debug_info`, `.debug_line`, `.debug_aranges`, `.debug_addr`,
-    `.debug_rnglists`, `.debug_loclists` and `.debug_frame` gives lldb
-    the correct file and line; gdb is unchanged;
-    `llvm-dwarfdump-22 --verify` reports no errors and `addr2line` is
-    correct for every variant.
-  - mortar can produce low text addresses: x86-64's maxpage is 4 KiB
-    (`spec/layout.md` L-74, M3), and `-z max-page-size` lowers it on
-    AArch64. GNU ld's redirect was rejected: it states that the dropped
-    copy's code is at the kept copy's address, which is true only if
-    the two copies are the same code, and the linker does not know that
-    (that is the ODR question `mortar_odr` exists for, M6).
+- **I-47 [M1] [C] The tombstone.** `tombstone(section, width, class)`.
+  "All ones" means all ones in the field's width; it is the value DWARF 6
+  reserves as an address's tombstone, and what lld writes under
+  `-z dead-reloc-in-nonalloc=<section>=<all ones>`.
+
+  | referring section | ELFCLASS64 | ELFCLASS32 |
+  |---|---|---|
+  | `.debug_ranges`, `.debug_loc` | 1 | 1 |
+  | `.debug_aranges` | all ones, **and the tuple's length 0** (I-112) | the same |
+  | `.debug_frame` | all ones | all ones |
+  | every other debug name (`.debug_info`, `.debug_addr`, `.debug_line`, `.debug_rnglists`, `.debug_loclists`, `.debug_str_offsets`, …) | all ones | **0** |
+
+  Why each row (E9, E10, E16, E17):
+  - `.debug_ranges`/`.debug_loc` (DWARF ≤ 4 pairs): `(0, 0)` ends the
+    list and a first word of all ones selects a base address; `(1, 1)` is
+    empty. lld and mold write 1.
+  - `.debug_aranges` (GCC emits it; Clang does not by default): all ones
+    makes `[2^64 − 1, +len)`, which wraps, and lldb 19 then cannot map
+    line-table addresses to a CU (`unable to resolve a line table file
+    address`) and loses every other function's lines. A 0 address (lld,
+    mold, and the coordinator's ruling) claims `[0, len)`, which fails
+    the same way when code starts below `len`: GCC's `[0, 0x3d08)`
+    covers `.text` at `0x1740` in the low layout. With the length 0 the
+    tuple is empty and every row below passes. A tuple address of `2^63`
+    also passed every 64-bit row; the empty tuple was chosen because it
+    is empty in both classes.
+  - ELFCLASS64 elsewhere: gdb 16 and lldb 19 drop a subprogram whose
+    `low_pc` is all ones (`llvm-dwarfdump` prints `dead code`). A 0 is an
+    address: in the low layout lld's and mold's Clang DWARF 5 outputs
+    lose lldb's lines because `.debug_addr` claims `[0, size)`.
+  - ELFCLASS32 elsewhere: gdb 16 and lldb 19 do *not* treat `0xffffffff`
+    as a tombstone (they add `size` in 64-bit arithmetic, so it does not
+    wrap): `break big` gets a second location at `0xffffffff` in both. A
+    0 is filtered by gdb, and lld writes 0. Residual: i386 Clang DWARF 5
+    in the low layout still loses lldb's lines, with every linker (Q11).
+  - `.debug_frame`: a dead FDE at all ones overlaps no code, even in
+    64-bit arithmetic. i386 backtraces under `qemu-i386` were the same
+    with 0 and all ones (E17); the row rests on that argument.
+  - `.debug_str_offsets` has no relocation against code (its entries
+    point into `.debug_str`), so the row never fired in E16.
+
+  The 64-bit matrix (E16): the reviewer's two objects with a COMDAT
+  inline `big`, the second copy dropped; GCC 14 and Clang 19, DWARF 4
+  and 5, `-O0` and `-O2 -fno-asynchronous-unwind-tables` (which adds
+  `.debug_loc`/`.debug_loclists` and Clang's `.debug_frame`); the default
+  layout (`-no-pie`) and the low layout (`-pie -z max-page-size=4096 -z
+  noseparate-code`); the reviewer's gdb and lldb scripts,
+  `llvm-dwarfdump-22 --verify`, `addr2line`, `llvm-symbolizer-22`.
+  "lldb ok" is 17 `at file:line` frames and no `unable to resolve`;
+  failures give 6–10 and 5–7.
+
+  | AArch64, 16 configurations per column | lld 22 | mold | GNU ld | all ones (draft) | ones, aranges 0 (ruling) | **I-47** |
+  |---|---|---|---|---|---|---|
+  | gdb transcript (addresses masked) | same | same | same | same | same | same |
+  | lldb, GCC, default layout | ok | ok | ok | **fails** (wrap) | ok | ok |
+  | lldb, GCC, low layout | fails | fails | ok | **fails** | **fails** | ok |
+  | lldb, Clang 4, both layouts | ok | ok | ok | ok | ok | ok |
+  | lldb, Clang 5, low layout | fails | fails | fails | ok | ok | ok |
+  | `--verify` errors, DWARF 4 | 3 | 3 | 0–5 (by compiler and layout) | 0 | 0 | 0 |
+  | `--verify` errors, Clang DWARF 5 | 0 | 0 | 6 (`.debug_str_offsets`) | 0 | 0 | 0 |
+  | `addr2line`, function starts | right | right | `main` wrong (GCC `-O2`, low) | right | right | right |
+  | `llvm-symbolizer` `big`, low layout | wrong (GCC, Clang 5) | wrong (GCC, Clang 5) | wrong (4 of 8) | right | `??` (GCC) | right |
+
+  i386 (E17; static probes, and gdb under `qemu-i386`): with the
+  ELFCLASS32 column, breakpoints and lines equal lld's everywhere, and
+  the aranges rule fixes GCC in the low layout, which lld, mold and GNU
+  ld all fail. `--verify` gives lld's counts.
+
+  The draft's claim that `--verify` is clean for the references' outputs
+  was wrong (the DWARF 4 `DIE address ranges are not contained in its
+  parent's ranges`, GNU ld's `.debug_str_offsets` errors). `--verify` is
+  reported, not the oracle; the debuggers are. Low text addresses are
+  mortar's to produce: x86-64's maxpage is 4 KiB (`spec/layout.md` L-74,
+  M3), and `-z max-page-size` lowers it on AArch64. GNU ld's redirect to
+  the kept copy was rejected: it asserts that the two copies are the same
+  code, which the linker does not know (the ODR question `mortar_odr`
+  exists for, M6), and it gives `addr2line` a wrong line for `main`.
+- **I-112 [M1] The aranges length.** For a relocation in `.debug_aranges`
+  whose target is a section that is not live, whose type is the class's
+  address-sized absolute type (`ABS64`, `R_X86_64_64`, `R_386_32`), and
+  whose target is `SHF_ALLOC`, fill also writes 0 into the `width` bytes
+  that follow the field: that is the tuple's length in every DWARF
+  version (segment selectors are 0 on Linux). The rule applies unless a
+  relocation record has its field there, in which case those bytes are
+  left as the input has them. It is a function of the record and the
+  section bytes, so clipping applies as for any write (`max_reach.after`
+  is raised to 8 for `.debug_aranges` in I-35's search). No DWARF is
+  parsed.
 - **I-48 [M1]** The tombstone is truncated to the field, never checked
   for range (it is not a value of `X`), and replaces `X` for every type
   allowed in a non-alloc section (`spec/a64.md` §13.2), including
@@ -692,38 +812,92 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   cannot be created is reported before the work of fill.
 - **I-57 [M1]** If `P` names a directory (following symbolic links),
   the error is `cannot-open-output` with the reason `Is a directory`.
-- **I-58 [M1]** If `P` exists and is neither a regular file nor a
-  directory nor a symbolic link (a character device such as `/dev/null`,
-  a FIFO, a socket), the image opens `P` for writing without creating or
-  truncating it, and writes it directly (§7.3). A file that does not
-  accept positioned writes (a FIFO: `ESPIPE`) fails with
-  `cannot-write-output` and the system's reason (only `/dev/null` was
-  observed, E2).
-- **I-59 [M1] [C] Otherwise: a temporary file.** The image creates
-  `T = dir(P)/.<base(P)>.mortar.<pid>` with `OpenOptions::create_new`
-  (`O_CREAT|O_EXCL`), write-only, mode `0o777` for executables and shared
+- **I-58 [M1] [C]** If `P` exists and is neither a regular file nor a
+  directory nor a symbolic link, it is written in place only if it is a
+  character device (`/dev/null`): the image opens it for writing without
+  creating or truncating it and writes it directly (§7.3). A FIFO or a
+  socket at `P` is `cannot-open-output` with the note `output is a FIFO`
+  (or `a socket`): the image writes by position (I-63), which a FIFO
+  rejects (`ESPIPE`), and streaming it in order would serialize fill. This
+  is a choice: lld and mold write a FIFO (they build the image in memory),
+  GNU ld fails with `Illegal seek` (§15). A block device is refused the
+  same way (`output is a block device`).
+- **I-59 [M1] [C] Otherwise: a temporary file.** Let `T0 =
+  dir(P)/.<base(P)>.mortar-tmp`. The image opens `T0` with `create(true)`
+  (not `create_new`), write-only, mode `0o777` for executables and shared
   objects and `0o666` for `-r` (the kernel applies the umask, which
-  reproduces the references' modes of §7.1). If `T` exists (a stale file
-  of a crashed process with the same pid), the names `T.1`, `T.2`, …,
-  `T.63` are tried; then `cannot-open-output`. Every failure to create
-  `T` is reported as `cannot-open-output` **naming `P`**, not `T`, with
-  the system's reason: a read-only directory gives lld's line,
-  `cannot open output file P: Permission denied`.
+  reproduces §7.1's modes), and then calls `File::try_lock` (an exclusive
+  `flock`, stable Rust, no `unsafe`):
+  - It first checks that the file system enforces the lock: a second
+    descriptor of `T0`, opened in the same process, must fail `try_lock`
+    with `WouldBlock`. On `/tmp` (tmpfs) it does; on this host's
+    workspace share (a FUSE `fakeowner` mount) it does not: `try_lock`
+    succeeds on both descriptors, and across processes (E25).
+  - Enforced and acquired: no running link holds `T0`, so a `T0` that
+    existed is a stale file of a killed link. The image truncates it
+    (`set_len(0)`) and uses it. This is how a later link removes an
+    interrupted link's litter (G3): the name is derivable, and the lock
+    says whether its owner is alive. The kernel drops the lock when the
+    owner dies, `kill -9` included (E25).
+  - Enforced and `WouldBlock`: another link to `P` is running. The image
+    falls back to `T = T0.<pid>` created with `create_new` (then `.1`
+    … `.63` if a stale one exists), and does not touch `T0`.
+  - Not enforced, or `try_lock` returns `Unsupported`: the image never
+    reuses a name. It creates `T = T0.<pid>` with `create_new` as above.
+    A killed link can leave `T` behind on such a file system, and no later
+    link removes it (deleting a file whose owner cannot be shown dead is
+    unsafe). The link works without locks.
+
+  `create_new` alone (the draft) was rejected: it never collides, but
+  every interrupted link leaves litter that no one removes, and
+  `.gitignore` patterns cannot predict a pid. Every failure to create `T`
+  is `cannot-open-output` **naming `P`**, with the system's reason: a
+  read-only directory gives lld's line, `cannot open output file P:
+  Permission denied`. The lock is held until the rename (I-60). NFS and
+  SMB shares were not available to test; `flock` on NFSv4 is emulated
+  with byte-range locks, and the probe decides at run time either way.
 - **I-60 [M1]** After a successful fill and sealing (§8), the descriptor
   is closed and `T` is renamed to `P` (`std::fs::rename`). This gives
   §7.1's rows: a new inode, hard links unaffected, a symbolic link
-  replaced, a running executable replaced. A failed rename is
-  `cannot-write-output` and `T` is removed.
+  replaced (its target untouched), a running executable replaced. A failed
+  rename is `cannot-write-output`, and `T` is removed.
+- **I-113 [M1] [C] The old output is set aside.** Renaming over an
+  existing `P` makes the kernel free the old inode's blocks inside
+  `rename`, on the linker's critical path. On `/tmp` that costs 36 ms
+  for a 220 MB output and 0.73 s for 2 GB (E20). So, after `T` is created
+  and before fill, if `P` is a regular file or a symbolic link and is not
+  the same file (device and inode, following the link) as any input, the
+  image renames `P` to `A = dir(P)/.<base(P)>.mortar-old`, replacing any
+  stale `A`. A helper thread then unlinks `A`, overlapped with fill, and
+  is joined before the process exits. Measured on `/tmp` (td.rs; load
+  32–36):
+
+  | output | fresh | over an existing one, plain rename | set aside |
+  |---|---|---|---|
+  | 220 MB | 100 ms | 140 ms | 94–114 ms |
+  | 2 GB | 0.91 s | 2.40 s (1.67–4.05) | 0.82–1.11 s |
+
+  Holding a descriptor of the old inode open until exit does not help
+  (2.10 s): the free then happens at exit, still inside the link's wall
+  time. A hard link to the old output keeps it alive, so the unlink frees
+  nothing and the other name keeps the old bytes (§7.1). A symbolic link
+  at `P` is itself moved, and its target is untouched. If `P` is an input,
+  nothing is set aside (I-62 needs its name and bytes until the
+  store is done). If the rename to `A` fails (it is in the same directory, so
+  only a permission or a race can fail it), the image proceeds without it. On the
+  workspace share the write itself dominates (0.8–1.2 s for 220 MB), and
+  the set-aside changes nothing measurable.
 - **I-61 [M1]** No `fsync` of `T` or of the directory: a linker's output
   is a build artifact, re-creatable, and an `fsync` of a 2 GB debug
   output would wait for the device. (Whether the references sync was not
   measured, E14.)
 - **I-62 [M1] [C] The output is an input.** Accepted (lld, mold). It is
-  safe: the resident store has read every input whole before fill
-  starts (`spec/input.md` §11.2), and the staged store ([perf]) reads
-  through descriptors that pin the old inode, which the rename does not
-  change (§11.4). GNU ld's refusal guards against writing in place, which
-  mortar never does.
+  safe because mortar never writes in place: the resident store has read
+  every input whole before fill (`spec/input.md` §11.2), and the staged
+  store reads through descriptors opened before `T` is created, which pin
+  the old inode. Neither the rename of I-60 nor I-113 (which skips such
+  a `P`) changes that inode. GNU ld's refusal guards against writing in
+  place.
 
 ### 7.3 Writing
 
@@ -745,7 +919,8 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
 ### 7.4 Failure
 
 - **I-65 [M1]** If the link fails after `T` was created, `T` is
-  removed.
+  removed, and so is `A` (I-113). Neither is renamed back: a failed link
+  leaves no output, consistent with I-66.
 - **I-66 [M1] [C]** If the link fails at any phase after the command
   line (ordinal ≥ 15), an existing **regular** output `P` is removed,
   unless it is the same file (device and inode) as one of the inputs.
@@ -757,10 +932,15 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   command line keeps the output, as all three do. An output that is also
   an input is never removed (it would destroy the input). A symbolic
   link at `P` is removed, not its target; a non-regular `P` is left
-  alone. (Open question Q3.)
-- **I-67 [M1]** A link killed by a signal leaves `T` behind (safe Rust
-  installs no handler). A later link never removes another process's
-  temporary files; I-59's retry only steps past them.
+  alone. Accepted by the coordinator (Q4).
+- **I-67 [M1]** A link killed by a signal leaves `T` (and possibly `A`)
+  behind: safe Rust installs no handler. On a file system that enforces
+  `flock`, the next link to the same `P` reuses `T0` (I-59) and replaces
+  `A` (I-113), so litter is bounded to two files per output and lasts
+  until the next link. Elsewhere, a killed link's `T0.<pid>` stays.
+  For comparison (the review's observation, not re-run): after `SIGINT`,
+  lld leaves nothing, mold leaves `.out.<pid>`, and GNU ld leaves a
+  4 KiB partial output at `P` (§15).
 
 ### 7.5 Keys
 
@@ -792,7 +972,12 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   works in gdb 16 for ids of at least 2 bytes and in lldb 19 for ids of
   at least 8 bytes (an id of 1 or 2 bytes is not found by lldb; 1 byte
   not by gdb); `eu-unstrip -n` lists ids of every length tried, from 8
-  bytes up (E13).
+  bytes up (E13). Re-checked for 8, 16, 20 and 32 bytes: gdb and lldb
+  find the debug file for all four (E24).
+- Producers and consumers of a style (E24): every driver on the host
+  passes bare `--build-id`, and no CMake module passes a style (rpm,
+  debhelper and meson are not installed). Nothing found checks more than
+  the length: `file` labels 8 bytes `xxHash`, 16 `md5/uuid`, 20 `sha1`.
 
 ### 8.2 Styles
 
@@ -801,16 +986,24 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   | spelling | mortar | length | milestone |
   |---|---|---|---|
   | absent, `--build-id=none`, `--no-build-id` | no note | — | M1 |
-  | `--build-id` (bare, `Default`) | `sha1` (Q1) | 20 | M1 |
-  | `--build-id=sha1` | SHA-1 tree (§8.3) | 20 | M1 |
-  | `--build-id=fast` | XXH64 tree (§8.3) **[C]** | 16 | M1 |
-  | `--build-id=md5` | MD5 tree | 16 | M2 (refused in M1) |
-  | `--build-id=sha256` | SHA-256 tree **[C]** (mold accepts it; GNU ld and lld do not) | 32 | M2 (refused in M1) |
+  | `--build-id` (bare, `Default`) | the fast tree (§8.3) **[C]** | 20 | M1 |
+  | `--build-id=sha1` | the SHA-1 tree | 20 | M1 |
+  | `--build-id=sha256` | the SHA-256 tree **[C]** (mold accepts it; GNU ld and lld do not) | 32 | M1 |
+  | `--build-id=fast` | the fast tree, truncated **[C]** (lld's length) | 8 | M1 |
+  | `--build-id=md5` | refused (`option value`, note `use sha1`) **[C]** | — | — |
+  | `--build-id=uuid` | 16 bytes from `/dev/urandom`, RFC 4122 version 4 bits set (mold's form) | 16 | M2 (refused in M1) |
   | `--build-id=0xHEX` | the bytes of `HEX` | `len(HEX)/2` | M1 |
-  | `--build-id=uuid` | refused (`option value`) **[C]** (Q4) | — | — |
   | any other | `invalid-option-value` | — | M1 |
 
   The last of these options on the line wins (`spec/cli.md` §2.10).
+  Bare `--build-id` is what every driver passes, so it gets the function
+  that is cheapest at the length every tool expects (20, `sha1`-sized).
+  `md5` is refused because no producer on the host asks for it, and it
+  would be a fourth function to implement, test and verify for nothing;
+  refused by name, it fails loudly if a build does ask. `uuid` makes the
+  output depend on something other than the inputs, so the determinism
+  gate (`docs/VALIDATION.md`) excludes links that use it. mold sets the
+  version and variant bits; lld and GNU ld do not (one id each, E24).
 - **I-70 [M1] [C] `0xHEX`.** `HEX` is one or more pairs of hexadecimal
   digits, either case; `0x` is case-sensitive. An odd number of digits,
   no digits, or a non-hex digit is `invalid-option-value` with the note
@@ -830,69 +1023,117 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
 - **I-71 [M1] [C] The note** is `spec/synth.md`'s chunk
   `.note.gnu.build-id` (`spec/layout.md` rank 2): `namesz = 4`, `descsz
   = L`, `type = NT_GNU_BUILD_ID (3)`, name `GNU\0`, the descriptor, and
-  zero padding to a multiple of 4 bytes (`size = 16 + align_up(L, 4)`).
-  The references write `size = 16 + L` (18 bytes for `0xABCD`, which
-  `readelf -n` 2.44 warns about: `note with invalid namesz and/or descsz`,
-  E11); the padding follows the ELF note format. That `readelf` accepts
-  the padded form was not verified (no mortar output exists yet).
+  zero padding to a multiple of 4 bytes: `size = 16 + align_up(L, 4)`.
+  The references write `size = 16 + L` (18 bytes for `0xABCD`). Every
+  style but `0xHEX` has `L` a multiple of 4, so the difference is only
+  there. The reviewer saw no `readelf -n` warning for the padded form;
+  this spec's E11 saw one (`note with invalid namesz and/or descsz`) for
+  the unpadded 18-byte form. Request R-12 asks `spec/synth.md` for the
+  same formula.
 
 ### 8.3 The function
 
-- **I-72 [M1]** For a hash style with hash function `H` and length `L`:
-  let `F` be the output file's bytes with the descriptor `[d, d + L)`
-  replaced by zeros, `n = file_size`, `B = IMAGE_BLOCK = 2^20`, and
-  `m = ⌈n / B⌉`. Then
+- **I-72 [M1]** For a hash style with leaf function `H`, root function
+  `R` and length `L`: let `F` be the output file's bytes with the
+  descriptor `[d, d + L)` replaced by zeros, `n = file_size`, `B =
+  IMAGE_BLOCK = 2^20`, and `m = ⌈n / B⌉`. Then
 
   ```text
   leaf_i = H(F[i·B, min((i+1)·B, n)))                    for 0 ≤ i < m
-  root   = H("mortar-build-id-1\0" ‖ le64(n) ‖ le64(B) ‖ leaf_0 ‖ … ‖ leaf_{m-1})
+  root   = R("mortar-build-id-2\0" ‖ le64(n) ‖ le64(B) ‖ leaf_0 ‖ … ‖ leaf_{m-1})
   id     = root[0 .. L]
   ```
 
-  `H` is SHA-1 (`sha1`, 20 bytes), MD5 (`md5`), SHA-256 (`sha256`), or,
-  for `fast`, `X(b) = le64(XXH64(b, seed 0)) ‖ le64(XXH64(b, seed 1))`
-  (16 bytes). The tag names the version: a change of the function changes
-  the tag. The definition is public so that `mortar_plumb` can recompute
-  and check it (request R-8).
+  | style | `H` (leaf bytes) | `R` | `L` |
+  |---|---|---|---|
+  | bare, `fast` | `L128` (16) | SHA-256 | 20, 8 |
+  | `sha1` | SHA-1 (20) | SHA-1 | 20 |
+  | `sha256` | SHA-256 (32) | SHA-256 | 32 |
+
+  `fast` is the bare id's first 8 bytes. SHA-1 and SHA-256 are FIPS
+  180-4's, written from the standard (mortar ships no dependency for
+  them). Neither uses hardware instructions, which would need `unsafe`
+  intrinsics. The tag names the definition's version (I-75).
+- **I-114 [M1] `L128`**, defined here so that `mortar_plumb` and any
+  re-implementation compute it bit for bit. All arithmetic is on `u64`,
+  wrapping; `rotl` rotates left; words are little-endian.
+
+  ```text
+  P1 = 0x9E3779B185EBCA87   P2 = 0xC2B2AE3D27D4EB4F
+  P3 = 0x165667B19E3779F9   P4 = 0x85EBCA77C2B2AE63
+  round(v, w) = rotl(v + w·P2, 31) · P1
+  fmix(x)     = x ^= x >> 33; x ·= P2; x ^= x >> 29; x ·= P3; x ^= x >> 32
+  L128(d), n = len(d):
+    v = [P1 + P2, P2, 0, 0 − P1]
+    for each whole 32-byte stripe s of d: v[k] = round(v[k], le64(s[8k .. 8k+8])), k = 0..3
+    if 0 < n mod 32: pad the rest of d with zeros to 32 bytes, and do the same once
+    a = fmix(rotl(v0,1) ^ rotl(v1,7) ^ rotl(v2,12) ^ rotl(v3,18) ^ n·P4)
+    b = fmix(round(round(round(round(n, v3), v2), v1), v0) ^ a·P3)
+    L128(d) = le64(a) ‖ le64(b)
+  ```
+
+  It is our own multiply-rotate design, in the family of the published
+  64-bit multiplicative hashes (the constants are their usual ones). It
+  is not cryptographic, and does not need to be: a build id must tell
+  apart outputs that differ, and nobody forges a linker's id to collide
+  with another. The argument:
+  - For a fixed word, `round` is a bijection of `v` (`P1` is odd and
+    rotation is a bijection), so two leaves can only collide if their
+    lanes do, and the length is mixed into both halves. Inputs whose
+    differences all fall in one lane collide with probability about
+    2^-64, not 2^-128. That bounds the bare id at about 2^-64 per pair of
+    different outputs.
+  - Measured (`bh quality`, E23): flipping any one input bit flips each
+    output bit with probability 0.5000 on average (worst output bit
+    |p − 0.5| = 0.0205, over 64 seeds and lengths 8 to 4096). For 2^20
+    structured 4 KiB leaves that differ in one 4-byte counter, the low
+    32 bits collide 91 times (128 ± 11 expected for random 32-bit
+    values) and the 128-bit values never do. For 81,602 sparse leaves
+    (all zeros of each length 0 to 65,536, and single nonzero bytes)
+    there are no collisions.
+  - The root is SHA-256 over all leaves and parameters, so the root adds
+    no weakness of its own.
 - **I-73 [M1]** The leaves are window digests: a job hashes each of its
   windows after filling and before writing it (I-33 step 4), into
   `leaves[i]` (a column indexed by window: rule 1). The window holding
   the descriptor is hashed with the descriptor's zeros, as the synthetic
   chunk wrote it. After the last job, the root is computed on one thread
-  (`m × 20` bytes: 41 KB for a 2 GB output) and the id is written with
-  one `write_all_at` of `L` bytes at `d` into `T`, before the rename
-  (the sealing pass of model §5).
-- **I-74 [M1] Why a tree** (E12, E6): a whole-file SHA-1 is sequential:
-  at 267–279 MB/s per thread (a from-scratch scalar implementation in
-  safe Rust), a 2 GiB debug output would take 7.7–8.0 s after the fill,
-  longer than every other phase of the link. The tree's leaves are
-  hashed in parallel, by the workers that already hold the window in
-  cache:
+  (`m × 16` bytes for the bare id: 32 KB for a 2 GB output) and the id is
+  written with one `write_all_at` of `L` bytes at `d` into `T`, before
+  the rename (the sealing pass of model §5). For `uuid` and `0xHEX` no
+  leaves are computed.
+- **I-74 [M1] The cost** (E23: 1 GiB of generated bytes, 1 MiB leaves,
+  load 34; ids equal across thread counts):
 
-  | 2 GB of random bytes, 1 MiB leaves | 8 threads | 16 threads |
-  |---|---|---|
-  | SHA-1 tree | 1.10 s | 0.66 s |
-  | SHA-256 tree | 1.53 s | 1.06 s |
-  | XXH64 tree | 0.022 s | 0.017 s |
+  | function | 1 thread | 4 threads | 8 threads |
+  |---|---|---|---|
+  | `L128` tree (bare, `fast`) | 85 ms (12.6 GB/s) | 28 ms | 17 ms |
+  | SHA-256 tree (`sha256`) | 5.51 s (195 MB/s) | 1.41 s | 0.85 s |
+  | SHA-1 tree (`sha1`), from E12's 2 GB run | ≈ 4 s | — | ≈ 0.55 s |
 
-  For comparison, writing 2 GB from 8 workers to `/tmp` takes 1.06–1.75
-  s (E3), and writing does not scale with workers (§10.2), so the
-  hashing may largely overlap the writes; the combined figure is not
-  measured (E14). For `cxx-medium-g`'s 48 MB output, a SHA-1
-  tree costs about 0.18 s of CPU in all, about 25 ms on 8 threads
-  (estimated from the per-thread rate, not measured in a link). Since
-  no tool recomputes any linker's id (§8.1), the tree costs no
-  compatibility. A faster scalar SHA-1 would need unrolled rounds (an
-  estimated factor up to 2, not measured), and hardware SHA instructions
-  need `unsafe` intrinsics (`docs/ARCHITECTURE.md` principle 4: a
-  measured case, later).
-- **I-75 [M1]** The block size `B` is part of the function, not a tuning
-  knob: it equals `W` so that a window is a leaf. Changing `W` changes
-  every id (and requires a new tag).
+  The review measured mold's id at 107 ms and lld's at about 95 ms on a
+  1 GB output (`fast` in lld: about 0); not re-run here. In E18's
+  `cxx-medium-g` link (48 MB), mold spends 7–14 ms in `write_build_id`
+  (load 39–41), and dropping `--build-id` moved neither linker's wall
+  time beyond run-to-run noise (lld 133–160 against 145–176 ms, mold
+  93–100 against 95–96 ms; load 32–40). A whole-file SHA-1 at 260–279
+  MB/s per thread would take 3.6–3.9 s at 1 GB, longer than every other
+  phase. The tree's leaves are hashed by the workers that already hold
+  the window in cache, so the bare id costs about 1–2% of a 1 GB write.
+  No tool recomputes any linker's id (§8.1), so the tree costs no
+  compatibility.
+- **I-75 [M1] [C]** The function, `B` included, is defined per mortar
+  version. `B` equals `W` so that a window is a leaf. It is not frozen:
+  a later version may change `W`, `L128` or the root, and must then
+  change the tag. Two mortar versions may give different ids for the
+  same output. `mortar_plumb` checks an id with the definition of the
+  mortar version that wrote it (it ships in the same release; request
+  R-8).
 - **I-76 [M7]** An incremental link keeps `leaves` in the link state
-  (20 bytes per MiB of output), rehashes the windows it refills, and
-  recomputes the root: its cost is proportional to the refilled bytes,
-  plus `m` digests. A change of `n` changes the root through `le64(n)`.
+  (16 bytes per MiB of output for the bare id), rehashes the windows it
+  refills, and recomputes the root: its cost is proportional to the
+  refilled bytes, plus `m` digests. A change of `n` changes the root
+  through `le64(n)`.
 
 ## 9. The map file
 
@@ -911,7 +1152,7 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   `mortar-map 1` format to `FILE`; `-M` writes it to standard output
   after a successful link (a failed link prints nothing on standard
   output, `spec/diag.md` §7). GNU ld's text format is not produced until
-  a consumer needs it (Q5). `--cref` is `refused`.
+  a consumer needs it (Q5, accepted). `--cref` is `refused`.
 - **I-78 [M1] Records.**
   - `file` per live input file, in `FileId` order; the map's file ids
     count from 0 in that order (`FileId` 0, mortar's own file, has no
@@ -947,130 +1188,120 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
 
 ## 10. I/O: the measured design
 
-### 10.1 The candidates
+### 10.1 Candidates and results (E3)
 
-Every candidate was written as a throwaway program (E3) that produces an
-output of `S` MiB of pseudo-random bytes from 8 workers in 1 MiB blocks,
-into a temporary file renamed at the end, and reports wall time and the
-growth of `VmHWM`:
+Throwaway programs wrote `S` MiB from 8 workers in 1 MiB blocks into a
+renamed temporary file: `vec` (one whole-image buffer, one `write_all`),
+`vecpar` (the same, parallel `write_all_at`), `chunk` (a 1 MiB buffer
+per worker, `write_all_at`; `+setlen` after `set_len`), `stream`
+(`chunk` filled by positioned reads: the staged store's path), `cfr`
+(`copy_file_range` through `std::io::copy`), and, in C, `mmap`, `mmapf`
+(after `posix_fallocate`) and `mmapin` (source mapped too).
+Total seconds, median of 3, load 28–36:
 
-| name | how | memory beyond the inputs | safe Rust |
-|---|---|---|---|
-| `vec` | the whole image in one `vec![0; n]`, filled in parallel, one `write_all` | the output's size | yes |
-| `vecpar` | the same buffer, written by parallel `write_all_at` of 4 MiB | the output's size | yes |
-| `chunk` | each worker fills a reused 1 MiB buffer and writes it with `write_all_at` | workers × 1 MiB | yes |
-| `chunk+setlen` | `chunk` after `set_len(n)` | workers × 1 MiB | yes |
-| `stream` | `chunk`, but the bytes come from a positioned read of a source file (the staged store's path) | workers × 1 MiB | yes |
-| `cfr` | per block, `std::io::copy` from a `take` of the source file to the output, which std performs with `copy_file_range` on Linux | none | yes |
-| `mmap` | `ftruncate`, `MAP_SHARED`, `memcpy` (lld's and mold's method), in C | the output's size | no |
-| `mmapf` | `mmap` after `posix_fallocate` | the output's size | no |
-| `mmapin` | the source mapped too | twice the output's size | no |
-
-### 10.2 Results (E3; 8 workers; total seconds, median of 3; load 28–36)
-
-On `/tmp`:
-
-| MiB | vec | vecpar | chunk | chunk+setlen | stream | cfr | mmap | mmapf | mmapin |
+| file system, MiB | vec | vecpar | chunk | +setlen | stream | cfr | mmap | mmapf | mmapin |
 |---|---|---|---|---|---|---|---|---|---|
-| 10 | .006 | .008 | .005 | .005 | .010 | .006 | .006 | .005 | .007 |
-| 200 | .123 (.108–.278) | .132 | .085 (.077–.096) | .090 | .085 | .085 | .085 | .073 | .094 |
-| 2048 | 1.597 (1.47–6.21) | 1.864 | 1.159 (1.06–1.75) | 1.134 | 1.225 | 1.529 (.99–2.15) | 1.148 | .855 | 1.072 |
+| `/tmp`, 200 | .123 | .132 | .085 | .090 | .085 | .085 | .085 | .073 | .094 |
+| `/tmp`, 2048 | 1.597 | 1.864 | 1.159 | 1.134 | 1.225 | 1.529 | 1.148 | .855 | 1.072 |
+| share, 200 | 1.63 | 1.58 | 1.53 | 1.70 | 1.49 | .33 | 4.09 | 1.76 | 1.91 |
+| share, 2048 | 16.1 | 17.2 | 16.6 | 16.1 | 14.9 | 4.07 | 8.5 | 6.15 | 11.5 |
 
-On the workspace mount (a host share):
+Memory growth (`VmHWM`): `chunk` and `stream` about 7 MiB; `vec`,
+`vecpar` and `mmap` the output's size; `mmapin` twice; `cfr` nothing.
+On the share, dirty mapped pages count as resident (599–1454 MiB for
+`mmap` at 2 GB). Block sizes from 64 KiB to 4 MiB gave the same times.
 
-| MiB | vec | vecpar | chunk | chunk+setlen | stream | cfr | mmap | mmapf | mmapin |
-|---|---|---|---|---|---|---|---|---|---|
-| 10 | .085 | .082 | .090 | .083 | .095 | .030 | .048 | .040 | .068 |
-| 200 | 1.63 | 1.58 | 1.53 | 1.70 | 1.49 | .33 | 4.09 | 1.76 | 1.91 |
-| 2048 | 16.1 | 17.2 | 16.6 | 16.1 | 14.9 | 4.07 | 8.5 | 6.15 | 11.5 |
+### 10.2 What the numbers say
 
-Memory, measured as the growth of `VmHWM`: `chunk` and `stream` about 7
-MiB; `vec`, `vecpar` and `mmap` the output's size; `mmapin` twice; `cfr`
-nothing. On the workspace mount the growth for 2 GB varied from run to
-run: 599–1454 MiB for `mmap` and 65–2048 MiB for `mmapf` (dirty shared
-pages awaiting writeback count as resident).
-
-Scaling on `/tmp`, 2 GB: `chunk` 0.67–0.88 s on 1 worker, 0.74–1.19 on 4,
-1.06–1.75 on 8, 0.85–1.08 on 16; `mmap` 0.80–0.85 on 1, 0.83–0.92 on 4,
-1.02–1.10 on 16; `mmapf` 0.81–0.94 on 1, 0.70–0.77 on 4, 1.22–1.54 on
-16. At 200 MB, `chunk` 0.073–0.078 s on 1 worker and 0.078–0.122 on 16.
-Block sizes of 64 KiB, 256 KiB and 4 MiB gave the same times as 1 MiB
-within the noise.
-
-### 10.3 What the numbers say
-
-- **Writing one file does not scale with threads**, by any method: about
-  2–3 GB/s on `/tmp` from 1 worker or 16, for positioned writes and
-  for a shared mapping alike. The likeliest cause is the per-inode lock
-  on buffered writes and page-cache insertion; it was not traced (no
-  `strace` or `perf` on the host, E14). So the write's floor is the
-  file system's, and parallelism buys only the filling, hashing and
-  relocating, which must happen anyway.
-- **Safe positioned writes cost nothing against plain `mmap`** on the
-  local file system: `chunk` / `mmap` = 1.00 at 200 MB and 1.01 at 2 GB,
-  with 7 MiB of extra memory instead of the output's size. Against
-  `mmap` with `posix_fallocate` (which std does not offer), `chunk` is
-  1.16× slower at 200 MB and 1.36× at 2 GB. On the host share, `mmap` is
-  erratic: 2.7× *slower* than `chunk` at 200 MB (4.09 against 1.53 s)
-  and 1.95× faster at 2 GB (8.5 against 16.6 s), and its dirty pages
-  count as resident memory (599–1454 MiB at 2 GB).
+- **Writing one file scales to 2–4 threads and no further.** 2 GiB with
+  `chunk` on `/tmp` (E21, load 26–27): 0.80 s on 1 thread, 0.51 on 2,
+  0.59 on 4, 0.64 on 8, 0.80 on 16; the peak is 4.2 GB/s at 2 threads.
+  E3's `mmap` runs gave the same shape. The likeliest cause is the
+  per-inode lock on buffered writes; it was not traced (no `perf`).
+  **mortar promises no speed-up of the write beyond 4 threads** (P5).
+  Threads beyond that pay for filling, relocating and hashing, which
+  scale with the work.
+- **Safe positioned writes cost nothing against `mmap`** on `/tmp`:
+  `chunk` / `mmap` = 1.00 at 200 MB and 1.01 at 2 GB, with 7 MiB instead
+  of the output's size. Against `mmap` with `fallocate` (which std does
+  not offer), 1.16× at 200 MB and 1.36× at 2 GB. On the share, `mmap` is
+  erratic (2.7× slower at 200 MB, 1.95× faster at 2 GB).
 - **The whole-image buffer is worse on every count**: `vec` / `chunk` =
-  1.45 at 200 MB and 1.38 at 2 GB on `/tmp`, and the output's size in
-  memory (the kernel must also fault in and zero the 2 GB first).
-- **`copy_file_range`** is 3.7–5.2× faster than every other method on the
-  host share (it avoids moving bytes through the process), and no faster
-  on `/tmp`. It can only copy bytes the linker does not touch: no
-  relocation, and no build-id hashing, because the bytes never reach the
-  process. Since every driver passes `--build-id` (§8.1) and debug
-  sections are dense with relocations (I-50), its applicability in real
-  links is close to nil. Not adopted; recorded for the performance
-  package (Q8).
-- **For scale**: lld 22 links `cxx-medium-g` in 0.72–0.75 s on `/tmp`,
-  mold (`--no-fork`) in 0.37–0.43 s, GNU ld in 1.90–2.36 s (E4). Writing
-  its 48 MB output at 2–3 GB/s is 16–24 ms: about 5% of mold's link. On
-  the host share the same links take 1.00–1.44 s (lld), 0.82–0.97 s
-  (mold) and 5.3–6.8 s (GNU ld): the file system dominates GNU ld's.
+  1.45 at 200 MB and 1.38 at 2 GB, and the output's size in memory.
+- **`copy_file_range`** is 3.7–5.2× faster on the share and no faster on
+  `/tmp`. It copies only bytes the process never sees: no relocation and
+  no hashing. With `--build-id` on every link and debug sections dense
+  with relocations (I-50), it hardly applies. Recorded for the
+  performance work (Q10).
+- **The budget** (E18: `cxx-medium-g`, 201 MB of inputs and a 48 MB
+  output, all on `/tmp`; 3 runs; load 32–40): mold 93–100 ms on 8
+  threads (108–135 on 4, 298–305 on 1), lld 22 133–160 ms (155–189 on
+  4, 251–274 on 1), GNU ld 797 ms. mold's `--perf` attributes 35–45% of
+  its time to `copy` (33–49 ms of 71–167 ms), 7–14 ms to the build id
+  and 12–31 ms to reading inputs (load 39–41). So the image phase is
+  about 37% of the time mortar must beat. Writing 48 MB at 2–4 GB/s is
+  12–24 ms of it, the rest is copying and relocating. Peak RSS: mold
+  323 MB, lld 325 MB, GNU ld 212 MB. The draft's figures (lld 0.72 s,
+  mold 0.37 s) had inputs on the workspace share and overstated the
+  budget about fourfold.
+- **Replacing an existing output** costs the old inode's teardown inside
+  `rename`: 36 ms at 220 MB and 0.73 s at 2 GB on `/tmp`, which I-113
+  moves off the critical path (E20).
 
-### 10.4 The M1 design
+### 10.3 The design
 
-- **I-80 [M1]** Fill by windows into per-worker buffers, written with
-  positioned writes (`chunk`), as §5.3 and §7.3 specify; inputs from the
-  resident store. No mapping, no whole-image buffer, no
-  `copy_file_range`.
-- **I-81 [M1]** The expected cost of writing is the file system's floor
-  (§10.3), the same as lld's and mold's method on a local file system,
-  with `threads × 1 MiB` of buffers instead of the output's size.
+- **I-80 [M1] [C]** Fill by windows into per-worker buffers, written with
+  positioned writes (`chunk`), as §5.3 and §7.3 specify. No mapping, no
+  whole-image buffer, no `copy_file_range`.
+- **I-81 [M1] [C] The staged store is primary.** `spec/input.md` §11.1
+  (b): large section bodies are never resident; fill reads each clip
+  with `copy_to` (`read_exact_at`) straight into the window buffer. The
+  `stream` measurement is this path: 1.06× `chunk` at 2 GB and equal at
+  200 MB. Reading 201 MB from the page cache takes 54 ms on 1 thread,
+  16.8 ms on 4 and 12.7 ms on 8 (15.8 GB/s; load 27). The resident store
+  (every input read whole) remains: it is M1's first pipeline and the
+  fallback for inputs that cannot be re-read (a pipe, standard input).
+  WP-021b implements the staged store.
+- **I-82 [M1] [C] Relocations.** What the store keeps resident for
+  `cxx-medium-g` (E19, 202 MB of inputs):
 
-### 10.5 The performance design ([perf], after M2)
+  | part | MB | share |
+  |---|---|---|
+  | relocations, alloc targets | 6.87 | 3.4% |
+  | relocations, non-alloc targets (debug) | 45.93 | 22.7% |
+  | symbol tables and string tables | 15.54 | 7.7% |
+  | headers, section headers, `.shstrtab` | 15.20 | 7.5% |
+  | archive indexes | 7.16 | 3.5% |
+  | small (≤ 64 KiB) alloc / non-alloc bodies | 7.63 / 6.86 | 7.2% |
+  | groups | 0.56 | 0.3% |
+  | large alloc bodies / large non-alloc bodies | 0.73 / 95.5 | 47.6% |
 
-- **I-82 [perf]** The staged store (`spec/input.md` §11.1 (b)): large
-  section bodies (`.debug_*`, large `.text`) are never resident; fill
-  reads each clip with `copy_to` straight into the window buffer
-  (positioned reads from the page cache). The `stream` measurement is
-  this path: 1.06× the time of `chunk` at 2 GB and equal at 200 MB on
-  `/tmp`, while removing the debug bytes from resident memory: 102 MB
-  of `cxx-medium-g`'s 201 MiB of inputs (E5). The budget of §11.3 then
-  drops by that amount.
-- **I-83 [perf]** The window plan already gives each worker a
-  contiguous output range; with the staged store, the reads of one
-  window come from a few input files in increasing offsets, which the
-  kernel's readahead serves.
+  Relocations of alloc sections are resident: liveness, scan and fill
+  all read them, and they are small. Relocations of non-alloc sections
+  are read twice: once by the scan in `SCAN_BLOCK` blocks (I-13), once by
+  fill for the records of its clip (I-35). The second read is 45.9 MB:
+  about 2.9 ms of wall time on 8 threads and 12 ms of CPU at the
+  measured rate, against 45.9 MB of resident memory (23% of the input).
+  With them resident, the staged store keeps 105.8 MB (52% of the
+  input); read twice, 59.9 MB (29.7%). Read twice is chosen. The largest
+  relocation section is 1.36 MB, so a whole section never needs a buffer
+  larger than `SCAN_BLOCK`'s.
+- **I-83 [M1]** The window plan gives each worker a contiguous output
+  range; with the staged store, a window's reads come from a few input
+  files at increasing offsets, which readahead serves. Cold-cache
+  behaviour was not measured.
 - **I-84 [perf]** Mapping inputs or the output is not part of the
-  design. The measurement it would have to beat is §10.2's: parity with
-  `mmap`, and 1.16–1.36× against `mmap` with `fallocate`, on the local
-  file system. A request for `unsafe` (`docs/ARCHITECTURE.md` principle
-  4) would need a link-level measurement showing that difference, with
-  the `SIGBUS` handling `spec/input.md` §11.1 describes.
-
-### 10.6 The benchmark's own scratch directory
-
-The bench harness writes its outputs to `.build/bench-work/scratch`, on
-the workspace mount (`spec/harness.md`, Measurement). Writing 200 MB
-there takes 18× as long as on `/tmp` with `chunk` (1.53 against 0.085
-s), and the references' link times rise 1.4–2.9× (§10.3). A benchmark of
-mortar's I/O on that mount measures the host share. Request R-10 asks
-the harness to write its scratch outputs to a local file system and to
-record which.
+  design. It would have to beat parity with `mmap`, and 1.16–1.36×
+  against `mmap` with `fallocate`, on the local file system. A request
+  for `unsafe` (`docs/ARCHITECTURE.md` principle 4) would need a
+  link-level measurement of that difference, with `spec/input.md`
+  §11.1's `SIGBUS` handling.
+- **I-115 [M1]** The bench harness writes outputs under
+  `.build/bench-work/scratch`, on the workspace share
+  (`spec/harness.md`). Writing 200 MB there takes 18× as long as on
+  `/tmp`, and the references' link times rise 1.4–2.9×. Request R-10
+  asks the harness to write scratch outputs to a local file system and
+  record which.
 
 ## 11. Threads, `--time-phases`, memory
 
@@ -1125,37 +1356,40 @@ record which.
 
 ### 11.3 The peak-memory budget
 
-- **I-92 [M1]** mortar's peak resident memory is bounded by
+- **I-92 [M1] [C]** mortar's peak resident memory is bounded by
 
   ```text
-  peak ≤ R + D + T + P + threads × W + J + E
+  staged store:   peak ≤ R_s + D + T + P + threads × (W + S) + X + E
+  resident store: peak ≤ R_r + D + T + P + threads × W + X + E
   ```
 
-  - `R`: resident input bytes (`spec/input.md` §11.7; the resident store:
-    every input byte read);
+  - `R_r`: every input byte (the resident store reads each file whole);
+  - `R_s`: the staged store's resident parts: headers, section headers,
+    `.shstrtab`, symbol and string tables, groups, archive indexes,
+    bodies of at most 64 KiB, and the relocations of alloc sections
+    (I-82; `spec/input.md` §11.1 (b) as R-13 amends it);
   - `D`: decompressed `SHF_COMPRESSED` inputs (the store's buffers);
   - `T`: the tables of model §3–§4 at the row sizes WP-020's landed record
-    states, and the phase caches (`sym_addr`, 8 B per global symbol;
-    the fill plan, 24 B per placed section; build-id leaves, 20 B per MiB
-    of output);
-  - `P`: synthetic chunks' non-divisible working sets (§13: a sorted
-    `.eh_frame_hdr` table, 8 B per live FDE; string tables are divisible
-    and hold no copy);
-  - `threads × W`: fill's window buffers (I-34);
-  - `J`: the multi-window jobs in flight, at most `threads` × the
-    largest unsorted section larger than `W` (0 in every measured input,
-    E7);
+    states, and the phase caches (`sym_addr`, 8 B per global symbol; the
+    fill plan, 24 B per placed section; the record index, 4 B per record
+    of an unsorted section plus 8 B per `REC_SAMPLE` records of a sorted
+    non-resident one (I-29); build-id leaves, 16 B per MiB of output);
+  - `P`: synthetic chunks' non-divisible working sets (§13);
+  - `W`: fill's window buffer (I-34); `S` = `SCAN_BLOCK` = 1.5 MiB, the
+    staged store's relocation buffer, used by the scan and by fill;
+  - `X`: the buffers of whole chunks in flight (§13): at most `threads`
+    of the largest declared whole chunk larger than `W`;
   - `E`: the event accumulators (§4.5), only in links that report them.
+
   There is no term in the output's size: the image is never resident.
-- **I-93 [M1]** For `cxx-medium-g`, `R` is 201.1 MiB (`spec/input.md`
-  §11.8). The references' peaks for this link (E4, `/usr/bin/time`
-  `ru_maxrss`): GNU ld 217 MB, lld 22 332 MB, mold (`--no-fork`)
-  409–423 MB. The bench gate (§16.5) checks mortar's measured peak
-  against the formula's value with `T` from the landed row sizes, plus a
-  slack of 32 MiB for allocator overhead and stacks, and reports the
-  ratio to lld's and mold's peaks.
-- **I-94 [perf]** With the staged store, `R` loses the non-resident
-  section bodies (§10.5).
+- **I-93 [M1]** For `cxx-medium-g` (E19), `R_r` = 202 MB and `R_s` =
+  59.9 MB. With 8 threads the window and relocation buffers add 20 MiB.
+  The references' peaks for this link (E18): mold 323 MB, lld 325 MB, GNU
+  ld 212 MB. The bench gate (§16.5) checks mortar's measured peak against
+  the formula's value, with `T` from the landed row sizes plus a slack
+  of 32 MiB for allocator overhead and stacks, and reports the ratio to
+  lld's and mold's peaks.
+- **I-94** Merged into I-92, which now gives both stores.
 
 ## 12. Incremental linking constraints (M7)
 
@@ -1210,8 +1444,7 @@ synthetic chunk (`ChunkKind::Synthetic`, the GOT, PLT, `.symtab`,
 pub trait SynthChunk {
     /// The chunk's size, known at layout (stage C) or, for a `sized` chunk, after the fixed point.
     fn size(&self, cx: &SizeCx<'_>) -> u64;
-    /// The chunk's record boundaries: none (written whole), fixed records of `n` bytes,
-    /// or variable records found through `record_start`.
+    /// `Divisible` (any range, I-104's bound) or `Whole { max_size }` (one job, one buffer).
     fn division(&self) -> Division;
     /// Write the bytes [range.start, range.end) of the chunk into `out` (out.len() == range.len()).
     fn write(&self, cx: &FillCx<'_>, range: std::ops::Range<u64>, out: &mut [u8]) -> Result<(), SynthError>;
@@ -1224,18 +1457,29 @@ pub trait SynthChunk {
   every split of `[0, size)` into ranges, the concatenation of the ranges'
   outputs is the same bytes (the clip rule of I-35, which the image's
   tests check by filling each chunk whole and by windows).
-- **I-104** A chunk larger than `W` is **divisible**: `write` of a range
-  costs `O(range + log chunk)`, not `O(chunk)`. `.symtab` (fixed
-  records) is trivially so; `.strtab` needs, per input file, the prefix
-  sum of the sizes of its names in the output (a column per file, which
-  model §9 allows), and then walks that file's symbols from its start
-  (`O(file's symbols)` per window). In `cxx-medium-g`'s lld output
-  `.symtab` is 1.26 MB and `.strtab` 3.58 MB (E4).
-- **I-105** `write` allocates nothing proportional to the chunk. A chunk
-  whose content needs a global order (`.eh_frame_hdr`'s table sorted by
-  address, `.gnu.hash`'s buckets) builds it once, in a prelude of phase
-  100 that synth owns, with the parallel sort of rule 4, and states its
-  memory in §11.3's `P`.
+- **I-104 [C]** Every chunk declares its `Division`, one of two kinds:
+  - **Divisible**: `write` of any range costs `O(range + log chunk +
+    2^10)` and allocates nothing proportional to the chunk. `.symtab`
+    (fixed records) is so trivially. `.strtab` keeps, per input file, the
+    prefix sum of its names' sizes in the output, and the output offset
+    of every 1024th symbol's name: a range start is found by binary
+    search over files and then over samples, and then by walking at most
+    1024 symbols. (The draft walked from the file's first symbol, which
+    is `O(file's symbols)` per window and violated the bound it stated.)
+    In `cxx-medium-g`'s lld output, `.symtab` is 1.26 MB and `.strtab`
+    3.58 MB (E4).
+  - **Whole**: one job writes the whole chunk into a buffer of the
+    chunk's size, then writes the windows it covers. Allowed only for the
+    kinds `spec/synth.md` declares whole, each with a size bound as a
+    function of the tables (for example 8 bytes per live FDE for
+    `.eh_frame_hdr`). The buffers in flight are I-92's `X`. A whole chunk
+    of at most `W` bytes costs nothing extra: it fits one window's job.
+  Request R-12 asks synth for the list.
+- **I-105** `write` of a divisible chunk allocates nothing proportional
+  to the chunk. A chunk whose content needs a global order (`.gnu.hash`'s
+  buckets, a sorted table) builds it once, in a prelude of phase 100 that
+  synth owns, with the parallel sort of rule 4, and states its memory in
+  I-92's `P`.
 - **I-106** Errors of `write` are `relocation-out-of-range` /
   `relocation-misaligned` at `(100, 0, ChunkId)` (`spec/arch.md` §7), or
   `internal-error`.
@@ -1251,35 +1495,45 @@ pub trait SynthChunk {
 
 | kind | phase / key | emitted by | rule |
 |---|---|---|---|
-| `undefined-symbol` | `(70, first reference)` | scan driver, from events | I-20–I-22 |
+| `undefined-symbol` | `(70, first reference)` | scan driver, from events; also from non-alloc sections | I-20–I-22, I-110 |
 | `comdat-mismatch` | `(70, first reference)` | scan driver | same |
 | `discarded-section-reference` | `(70, first reference)` | scan driver | same |
 | `gnu-warning` (per key) | `(70, first reference)` | scan driver | same |
 | `relocation-incompatible` | `(70, FileId, section × 2^32 + record)` | `arch.scan` | I-17 |
 | `relocation-out-of-range`, `relocation-misaligned` | `(100, FileId, section × 2^32 + record)`; `(100, 0, ChunkId)` | fill, synth | I-36, I-43 |
 | `internal-error` | none | fill | I-27, I-44 |
-| `cannot-open-output` | `(105, 0, 0)` | output file | I-57, I-59 |
+| `cannot-open-output` | `(105, 0, 0)` | output file (a directory, FIFO, socket or block device; `T` not creatable) | I-57–I-59 |
 | `cannot-write-output` (new, R-7) | `(105, 0, 0)` | output file | I-58, I-60, I-64 |
 | `invalid-option-value` | `(10, argument, 0)` | command line | I-70, I-85 |
-| `refused` | `(10, argument, 0)` | command line | I-5, I-51, I-53, I-69 |
+| `refused` | `(10, argument, 0)` | command line (`md5`; `uuid` until M2) | I-5, I-51, I-53, I-69 |
 
 ## 15. Where the references differ
 
 | subject | GNU ld 2.44 | lld 22 | mold 2.37.1 | mortar | rule |
 |---|---|---|---|---|---|
-| debug reference into a dropped COMDAT copy, `.debug_info`/`line`/`aranges`/`frame`/`addr`/`rnglists`/`loclists` | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`, `addr`, `rnglists`, `loclists`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| the same, ELFCLASS32 | redirect or 0 | 0 | 0 | 0 (`.debug_frame`: all ones) | I-47 |
+| the same in `.debug_aranges` | redirect or 0 | 0 | 0 | all ones, length 0 | I-47, I-112 |
 | the same in `.debug_ranges`/`.debug_loc` | redirect or 0 (GC case: 0 in `.debug_loc`, `spec/a64.md` §13.2) | 1 | 1 | 1 | I-47 |
+| `SHF_LINK_ORDER` non-alloc section (`.stack_sizes`) of a dead section, `--gc-sections` | removed | removed | kept | removed (M2) | I-109 |
+| undefined symbol referenced only from non-alloc sections | error | accepted | error | error | I-110 |
+| `referenced by` lines of a grouped undefined symbol (the review's order c, a, b) | one line per reference | c, b, b | c, a, a | first three in `RefId` order | I-22 |
+| output is a FIFO | `Illegal seek` | written | written | refused by name | I-58 |
+| litter after `SIGINT` (the review) | a 4 KiB partial output | none | `.out.<pid>` | `T0`, reused by the next link | I-59, I-67 |
+| teardown of a replaced output | in `rename`, on the critical path | hidden | hidden | on a helper thread | I-113 |
 | existing output after a failed link | removed | kept | kept | removed, unless it is an input | I-66 |
 | read-only directory, writable output | written in place | error | error (names its temporary) | error naming the output | I-59 |
 | output is an input | refused | accepted | accepted | accepted | I-62 |
-| `--build-id=fast` | warning, no note | 8 bytes | 32 bytes | 16 bytes (XXH64 ×2 tree) | I-69 |
-| `--build-id=sha256` | warning, no note | error | 32 bytes | 32 bytes (M2) | I-69 |
-| `--build-id=uuid` | 16 random bytes | 16 random bytes | 16 random bytes | refused | I-69 |
+| bare `--build-id` | 20 (hash not reproducible) | 20 | 20 | 20, the `L128` tree | I-69 |
+| `--build-id=fast` | warning, no note | 8 bytes | 32 bytes | 8 bytes (the bare id's prefix) | I-69 |
+| `--build-id=sha256` | warning, no note | error | 32 bytes | 32 bytes | I-69 |
+| `--build-id=md5` | 16 bytes | 16 bytes | 16 bytes | refused | I-69 |
+| `--build-id=uuid` | 16 random bytes | 16 random bytes | 16, RFC 4122 v4 bits | 16, v4 bits (M2) | I-69 |
 | `--build-id=0xabc` (odd) | warning, no note | `ab 0c` | error | error | I-70 |
 | `--build-id=0x` | warning, no note | empty descriptor | error | error | I-70 |
 | build-id note size for a 2-byte id | 18 (unpadded) | 18 | 18 | 20 (padded to 4) | I-71 |
 | what the hash covers | not the whole file, not a 64 KiB/1 MiB/4 MiB tree (E12) | same | same | a public tree over 1 MiB blocks | I-72 |
-| `-Map` / `-M` format | GNU text | lld text | mold text | `mortar-map 1` | I-77 |
+| `-Map` / `-M` format | GNU text | lld's own text | mold's own text | `mortar-map 1` | I-77 |
 | `--gc-sections` in M1 | supported | supported | supported | refused until M2 | I-5 |
 | identification string in `.comment` | none | `Linker: LLD …` | `mold …` | none from the image | I-55 |
 | default thread count | one thread | all (not measured here) | all (not measured here) | `available_parallelism()` | I-85 |
@@ -1299,21 +1553,32 @@ pub trait SynthChunk {
 - `straddling_relocation_reported_once`: a relocation whose field
   crosses a window boundary, with an out-of-range value: one diagnostic,
   at the job holding `r_offset` (I-36).
-- `unsorted_large_section_is_one_job`: a section larger than `W` with
-  `.reloc`-ordered records gives the same bytes as the sorted
-  equivalent, and the job covers every window it touches (I-31).
+- `unsorted_records_index`: a section larger than `W` with records out
+  of `r_offset` order (as in E22's x86-64 `libc.a` members) gives the
+  same bytes as the sorted equivalent; the scan marks it `Permuted`, a
+  sorted one `Sorted` without an extra pass (I-29).
+- `window_boundary_sequences`: the AArch64 GD→LE sequence placed so that
+  a window boundary falls at `o+4`, `o+8` and `o+12`, and the x86-64
+  `TLSGD` form with a boundary at each byte of `[P − 4, P + 12)`: the
+  bytes equal an unclipped fill (I-35, I-111); the 22-byte large-model
+  form is left as the input has it (I-111, R-14).
+- `max_reach_derived`: `Facts.max_reach` equals the maximum over the
+  tables, and no `apply` writes outside its record's window (I-111).
 - `gap_patterns`: trap, no-op and zero gaps per I-41, positioned by
   address for odd starts.
-- `tombstone_by_name_and_width`: I-45–I-48 for each name class of
-  `spec/resolve.md` §6.3 and each allowed type (`ABS64`, `ABS32`,
-  `ABS16`, `PREL32`, `TLS_DTPREL64`).
+- `tombstone_by_name_width_class`: I-45–I-48 for each row of I-47's
+  table, both classes, each allowed type (`ABS64`, `ABS32`, `ABS16`,
+  `PREL32`, `TLS_DTPREL64`); I-112's length write, and its absence when
+  a record has its field at the length.
 - `events_merge_like_sequential`: random event multisets (up to 10^5
   events, 1–50 groups, 1–200 units), merged by I-20/I-21 under 50
   scheduling seeds and thread counts 1, 2, 7 and 16, equal the sequential
   definition of §4.5 (first three, count, key).
-- `build_id_vectors`: SHA-1, SHA-256, MD5 and XXH64 test vectors; the
-  tree of I-72 for `n` = 0, 1, `B − 1`, `B`, `B + 1`, `3B + 5`; the
-  descriptor zeroed (I-73).
+- `build_id_vectors`: SHA-1 and SHA-256 FIPS 180-4 vectors; `L128`
+  vectors for lengths 0, 1, 31, 32, 33, 4096 and `B` (fixed here once
+  the implementation lands, and checked against bh.rs of E23); the trees
+  of I-72 for `n` = 0, 1, `B − 1`, `B`, `B + 1`, `3B + 5`; `fast` equal
+  to the bare id's prefix; the descriptor zeroed (I-73).
 - `build_id_hex_values`: every row of I-70's table.
 - `time_phases_line_format`: the line of I-88 from fixed `/proc` texts.
 
@@ -1332,7 +1597,20 @@ pub trait SynthChunk {
   removing the old output, a command-line failure keeping it, an output
   that is an input (success, and a failure that keeps it), a read-only
   directory (run unprivileged: `setpriv --reuid=65534`; root ignores the
-  mode), a stale `T` from another pid (I-59).
+  mode).
+- The output file (I-58, I-59, I-113): a FIFO and a socket at `P`
+  refused by name; a stale `T0` with no lock holder is reused; a `T0`
+  locked by a second process makes the link use `T0.<pid>` and leaves
+  `T0` alone; on a file system whose `flock` is not enforced (simulated by
+  a test hook), only `create_new` names are used; an existing output is
+  set aside and gone after the link; a hard link to it keeps the old
+  bytes; a symbolic link is replaced and its target untouched; an output
+  that is an input is not set aside; a failed link leaves neither `P`
+  nor `A` nor `T`.
+- `undefined-symbol` referenced only from `.debug_info`: an error
+  (I-110).
+- `--gc-sections` (M2): a `.stack_sizes` section linked to a dead
+  `.text` section is removed, and one linked to a live one kept (I-109).
 - `undefined-symbol` with 5 references in 3 files: one diagnostic, three
   `referenced by` lines in `RefId` order, `referenced 2 more times`, and
   the key of the first; 10^5 references to one symbol: one diagnostic;
@@ -1346,19 +1624,24 @@ pub trait SynthChunk {
 
 ### 16.4 Debugger tests (`tests/debug/`)
 
-The E9/E10 matrix as a test: two objects with one COMDAT inline
-function, linked so that the second copy is dropped, compiled by GCC 14
-and Clang, DWARF 4 and 5, linked at the default layout and at
-`-z max-page-size=4096 -z noseparate-code`:
+E16's and E17's matrix as a test: two objects with one COMDAT inline
+function, the second copy dropped, compiled by GCC 14 and Clang 19,
+DWARF 4 and 5, at `-O0` and `-O2 -fno-asynchronous-unwind-tables`,
+linked in the default layout and the low layout (`-pie -z
+max-page-size=4096 -z noseparate-code`), for AArch64 and i386 (under
+`qemu-i386` for gdb):
 
-- the probe script of E10 (`break`, `bt`, `info line`, `list`, `info
-  scope` in gdb; `breakpoint set`, `thread backtrace`, `source list`,
-  `image lookup` in lldb) gives, with mortar's output, the transcript of
-  GNU ld's output after addresses are masked;
-- `llvm-dwarfdump --verify` reports no errors;
-- the tombstone bytes are those of I-47 (read by the E9 script);
-- a separate debug file found through `.build-id/xx/rest.debug` by gdb,
-  lldb and `eu-unstrip`, for `sha1` and `fast` ids.
+- gdb's transcript of the probe script (`break`, `bt`, `info line`,
+  `list`) equals GNU ld's after addresses are masked, and has one
+  location per breakpoint;
+- lldb's probe (`breakpoint set`, `thread backtrace`, `image lookup`)
+  gives every breakpoint a file and line and no `unable to resolve`
+  line, in every configuration but i386 Clang DWARF 5 in the low layout
+  (Q11), which is recorded and not gated;
+- `llvm-dwarfdump --verify` errors are reported, not gated;
+- the tombstone bytes are those of I-47 and I-112 (read by E16's script);
+- a separate debug file is found through `.build-id/xx/rest.debug` by
+  gdb, lldb and `eu-unstrip`, for bare, `sha1`, `sha256` and `fast` ids.
 
 ### 16.5 Benchmark gates (`spec/harness.md`)
 
@@ -1373,7 +1656,7 @@ and Clang, DWARF 4 and 5, linked at the default layout and at
 ### 16.6 Verifier
 
 - `mortar_plumb` accepts every output of §16.3 and §16.4; with R-8, it
-  recomputes the build id; every `-Map` file round-trips through
+  recomputes the build id of the same mortar version; every `-Map` file round-trips through
   `spec/plumb.md` §3.2's reader and resolves to the output's sections
   (I-78, I-79).
 
@@ -1441,13 +1724,16 @@ not merge (`spec/diag.md` §6.2).
    methods, and the bytes it writes inside the clip are those of an
    unclipped call."
 3. Add to §3.1's facts: "`max_reach: (u8, u8)`: the largest `before` and
-   `after` of any write window (§3.6) of the architecture, over every
-   type and sequence: AArch64 `(0, 0)`; x86-64 `(4, 8)` (the `TLSGD`
-   window `[P − 4, P + 12)` around a 4-byte field); i386 as Appendix B
-   gives."
+   `after` of any write window of the architecture, over every `Howto`
+   window (§3.2) and every member window of a recognized form
+   (`unit_window`, §3.5). `mortar_arch` computes it from those tables;
+   it is never written by hand. AArch64 gives at least `(0, 4)` (the
+   GD→LE `CALL26` member, `spec/a64.md` §8.4); x86-64 `(4, 8)` for the
+   A.3 forms."
 
 Reason: fill by windows (I-33) clips sections at window boundaries;
-`apply` already never reads `out`, so the change costs nothing.
+`apply` already never reads `out`, so the change costs nothing. I-111:
+the draft's hand-written AArch64 `(0, 0)` was wrong.
 
 ### R-3 `spec/arch.md` §3.5 (sequence extent)
 
@@ -1485,40 +1771,45 @@ Reason: I-2, I-68, I-72; model §12's open item is closed.
    three targets (a64.md §13.2 for the experiment)." Proposed: "A
    relocation in a non-alloc section with a debug name (`spec/resolve.md`
    §6.3) whose target is in a section that is not live writes
-   `tombstone(name)` truncated to the field instead of `X`: 1 for
-   `.debug_ranges` and `.debug_loc`, all ones for every other debug
-   name, on all three targets (`spec/image.md` I-47 for the experiment;
-   `.gcc_except_table` and other names: `spec/resolve.md` §6.3)."
+   `tombstone(name, class)` truncated to the field instead of `X`
+   (`spec/image.md` I-47): 1 for `.debug_ranges` and `.debug_loc`; all
+   ones for `.debug_aranges` and `.debug_frame`; for every other debug
+   name all ones in ELFCLASS64 and 0 in ELFCLASS32. In `.debug_aranges`
+   the tuple's length is also written 0 (I-112). `.gcc_except_table` and
+   other names: `spec/resolve.md` §6.3."
 2. `spec/a64.md` §13.2, **Discarded targets**. Current: "…writes a
    tombstone instead of `X`, independent of `A`: 1 in `.debug_ranges`
    and `.debug_loc` (where 0 would end the list), 0 elsewhere." Proposed:
    "…writes a tombstone instead of `X`, independent of `A`: 1 in
    `.debug_ranges` and `.debug_loc` (where 0 would end the list and all
-   ones would select a base address), all ones in the field's width
-   elsewhere (`spec/image.md` I-47: a 0 is an address, and lldb
-   attributes low code to the dead copy)." The experiment paragraph
-   stays; append: "For dropped COMDAT copies (`spec/image.md` E9) GNU ld
-   instead redirects to the kept copy when the sizes are equal."
+   ones would select a base address), all ones elsewhere, with the
+   aranges length written 0 (`spec/image.md` I-47, I-112: a 0 is an
+   address, and lldb attributes low code to the dead copy)." The
+   experiment paragraph stays; append: "For dropped COMDAT copies
+   (`spec/image.md` E9) GNU ld instead redirects to the kept copy when
+   the sizes are equal." `spec/x64.md` (WP-029) takes the same text for
+   x86-64 and the ELFCLASS32 column for i386.
 
-Reason: E9/E10 (lldb loses line information on lld's and mold's
-outputs at low text addresses; all ones fixes it; gdb unaffected).
+Reason: E16, E17. lldb loses line information with 0 at low text
+addresses and with an unbounded all-ones arange; gdb is unaffected;
+ELFCLASS32 debuggers do not treat `0xffffffff` as a tombstone.
 
 ### R-6 `spec/cli.md` §4.2 (rows whose status the image changes)
 
 Append to the list of rows the M1 and M2 packages change: "WP-026 stage 2
 (`mortar_image`): `supported` in M1: `--no-gc-sections`, `--build-id`
-(bare, `none`, `sha1`, `fast`, `0xHEX`; `md5` and `sha256` refused
-until M2; `uuid` refused, `option value`), `--no-build-id`, `-Map`,
+(bare, `none`, `sha1`, `sha256`, `fast`, `0xHEX`; `md5` refused,
+`option value`; `uuid` refused until M2), `--no-build-id`, `-Map`,
 `-M`/`--print-map`, `--threads`, `--thread-count`, `--no-threads`,
 `--time-phases` (its help loses `(reserved)`),
 `--compress-debug-sections` with the value `none` (others refused,
 `option value`, until M4); `noop(mortar never maps the output)`:
-`--mmap-output-file` and `--no-mmap-output-file`. `--gc-sections`, `--print-gc-sections`,
-`-s`, `-S` and `--cref` stay `refused` (M2)." And in §2.3, the
-build-ID value kind: "`0x` followed by an even, non-zero number of
-hexadecimal digits; anything else is `invalid-option-value`
-(`spec/image.md` I-70)." Reason: I-5, I-51, I-69, I-70, I-77, I-85,
-I-88.
+`--mmap-output-file` and `--no-mmap-output-file`. `--gc-sections`,
+`--print-gc-sections`, `-s`, `-S` and `--cref` stay `refused` (M2)."
+And in §2.3, the build-ID value kind: "`0x` followed by an even,
+non-zero number of hexadecimal digits; anything else is
+`invalid-option-value` (`spec/image.md` I-70)." Reason: I-5, I-51,
+I-69, I-70, I-77, I-85, I-88.
 
 ### R-7 `spec/diag.md` §3.1, §3.2, §7
 
@@ -1539,11 +1830,13 @@ Reason: I-64 needs a kind for write failures; I-66.
 ### R-8 `spec/plumb.md` (build-id check)
 
 Add a check: "When the map is mortar's (`mortar-map 1`) and the output
-has an `NT_GNU_BUILD_ID` note of 16, 20 or 32 bytes, the verifier
-recomputes `spec/image.md` I-72's function (16 bytes: MD5 or `fast`,
-either matching; 20: SHA-1; 32: SHA-256) and reports a mismatch as a
-finding at the note's address." Reason: the id is the one sealed value
-that no other check covers.
+has an `NT_GNU_BUILD_ID` note of 8, 20 or 32 bytes, the verifier
+recomputes `spec/image.md` I-72's function as defined by the same mortar
+version (8 bytes: the `L128` tree's prefix; 20: the `L128` tree or the
+SHA-1 tree, either matching; 32: the SHA-256 tree) and reports a
+mismatch as a finding at the note's address. Other lengths (`0xHEX`,
+`uuid`) are not checked." Reason: the id is the one sealed value no
+other check covers; I-75 makes the definition per version.
 
 ### R-9 `spec/plumb.md` §3.2 (non-alloc records), M2
 
@@ -1568,7 +1861,7 @@ Current: the bench writes its scratch output to
 `.build/bench-work/scratch`. Proposed: "The bench writes its scratch
 outputs under a local file system (`$TMPDIR`, default `/tmp`), in a
 directory unique to the run, removed at its end, and records the file
-system type of that directory with every result." Reason: §10.6 (18×
+system type of that directory with every result." Reason: I-115 (18×
 slower writes and 1.4–2.9× slower reference links on the workspace
 mount).
 
@@ -1592,61 +1885,99 @@ mount).
    `spec/live.md` becomes `spec/image.md` §3, until folding (M5) gives
    liveness a spec of its own.
 
-### R-12 `spec/synth.md` (to be written)
+### R-12 `spec/synth.md` (WP-025's draft)
 
-The interface of §13 (I-103–I-108): `size`, `division`, `write(cx,
-range, out)`, `sealed`; divisibility for chunks larger than 1 MiB; no
-allocation proportional to the chunk in `write`; the build-id note's
-layout (I-71) and its sealed descriptor.
+1. S-91's table and text. Current: "| (none given, or `sha1`) | 20 |…",
+   "| `md5` | 16 |…", "| `uuid` | 16 |…", and "The section's size is
+   `16 + n` with no padding after the descriptor". Proposed: bare
+   `--build-id` and `sha1` both 20 bytes, but different functions
+   (`spec/image.md` I-69: the `L128` tree and the SHA-1 tree); `md5`
+   refused, `option value`; `uuid` 16 bytes, M2; "The section's size is
+   `16 + align_up(n, 4)`, zero-padded (`spec/image.md` I-71); the
+   references write `16 + n`, which differs only for `0xHEX` of a length
+   not a multiple of 4."
+2. S-108's row. Current: "| `.note.gnu.build-id` | `16 + n` (S-91) |".
+   Proposed: "| `.note.gnu.build-id` | `16 + align_up(n, 4)` (S-91) |".
+3. S-92. Current: "`fast` is an 8-byte non-cryptographic hash (lld's
+   size); its function is `image.md`'s." Proposed: append "It is the
+   first 8 bytes of the bare id (`spec/image.md` I-72). `uuid` sets the
+   RFC 4122 version 4 and variant bits, as mold does."
+4. S-4. Current: "…`.eh_frame` by record range, `.symtab` and `.strtab`
+   by file, `.got` by slot range, `.rela.plt` and `.plt` by entry range.
+   The others are one unit each." Proposed: "Each chunk declares its
+   `Division` (`spec/image.md` §13, I-104): `Divisible` chunks
+   (`.eh_frame`, `.symtab`, `.strtab`, `.got`, `.rela.plt`, `.plt`, and
+   any other whose `write` meets I-104's bound) are filled by range;
+   `Whole` chunks are written by one job into a buffer of their size,
+   and S-4 lists each with its size bound as a function of the tables.
+   `.strtab`'s range start is found through per-file prefix sums and
+   the name offset of every 1024th symbol."
 
-### R-13 `spec/input.md` §11.3 (confirmation)
+Reason: I-69, I-71, I-72, I-104 (C1, C3, C4 of the review).
 
-Add to `copy_to`'s bullet: "`copy_to` takes `&self` and may be called
-by every worker at once (positioned reads on a shared descriptor)."
-Reason: fill's workers call it concurrently ([perf], I-82); the
-current text implies it but does not say it.
+### R-13 `spec/input.md` §11.1 (b), §11.3, §11.7
+
+1. §11.1 (b). Current: "**(b) `Staged`** (specified here for a later
+   performance package; not M1). Each file's **resident parts** are read
+   into owned buffers: … `SHT_GROUP` sections, relocation sections, and
+   every other section of at most 64 KiB". Proposed: "**(b) `Staged`**
+   (the primary store; WP-021b). Each file's **resident parts** are read
+   into owned buffers: … `SHT_GROUP` sections, the relocation sections
+   of `SHF_ALLOC` sections, and every other section of at most 64 KiB.
+   Relocation sections of non-alloc sections are not resident: the scan
+   and fill read them with `copy_to` (`spec/image.md` I-13, I-82)." And
+   (a): "**(a) `Resident`** (M1's first pipeline, and the fallback for
+   an input that cannot be re-read)."
+2. §11.3, `copy_to`'s bullet. Append: "`copy_to` takes `&self` and may
+   be called by every worker at once (positioned reads on a shared
+   descriptor, `read_exact_at`)."
+3. §11.7. Append: "With non-alloc relocations not resident, the staged
+   store keeps 59.9 MB of `cxx-medium-g`'s 202 MB (29.7%), against
+   105.8 MB (52%) with them (`spec/image.md` E19). The peak formula for
+   both stores is `spec/image.md` I-92's."
+
+Reason: P2 of the review; the measurement in I-82 (re-reading 45.9 MB
+costs about 2.9 ms of wall time on 8 threads).
+
+### R-14 `spec/x64.md` (WP-029)
+
+The x86-64 large-model `TLSGD` sequence (`lea` with `R_X86_64_TLSGD`,
+`movabs` with `R_X86_64_PLTOFF64`, `add`, `call`; 22 bytes,
+`[P − 3, P + 19)`) is not one of `spec/arch.md` A.3's forms. Request:
+either add it as a form, with its member windows (then `max_reach.after`
+rises to 15, derived), or state that it is left unrelaxed (each member
+relocated as its own type), with a test that links it and runs it. GNU ld
+relaxes the 22 bytes; the review reports that lld 22 writes 16 bytes
+from `P − 4` and corrupts it. Reason: I-111.
 
 ## 18. Open questions for the supervisor (most consequential first)
 
-1. **Q1 — What bare `--build-id` computes.** Recommended for M1: the
-   SHA-1 tree (20 bytes, the length every reference gives). The
-   alternative is a 20-byte fast tree (three XXH64 lanes): about 16×
-   cheaper in CPU (E6: 13.1–13.5 GB/s per lane against 267–279 MB/s), no tool can tell the difference (§8.1), and every link pays the
-   hash (every driver passes `--build-id`). Decide after the M1 bench
-   shows the SHA-1 tree's share of link time; until then the
-   conservative choice. Depends on it: every link's time; the frozen
-   definition of I-72.
-2. **Q2 — Freezing `W` = 1 MiB in the build id's definition (I-75).** It
-   ties the fill's window, the hash's leaf and M7's dirty unit together.
-   A later change of `W` changes every id and needs a new tag; an id is
-   not stored anywhere that would break, so this is cheap to revisit
-   before M7 and expensive after.
-3. **Q3 — The all-ones tombstone (I-47)** instead of lld's and mold's 0.
-   Every C++ debug link with a COMDAT duplicate has such references.
-   Evidence: lldb loses line information with 0 at low addresses; gdb
-   and `llvm-dwarfdump --verify` accept both. Risk: a consumer that
-   treats all ones as a real address (none found among gdb 16, lldb 19,
-   `addr2line`, `llvm-dwarfdump-22`, `eu-unstrip`).
-4. **Q4 — Removing a stale output after a failed link (I-66)**: GNU ld's
-   behaviour; lld and mold keep it. The safety argument is above;
-   the cost is that a developer loses the last working binary on a
-   failed relink.
-5. **Q5 — `-Map` writes `mortar-map 1`, not GNU's text (I-77).** No
-   installed tool parses either; a user script that greps GNU's map
-   would break.
-6. **Q6 — `--build-id=uuid` refused (I-69).** It is nondeterministic by
-   definition; GNU ld, lld and mold accept it. The alternative is to
-   accept it and exempt it from the determinism tests.
-7. **Q7 — `fast` = 16 bytes and `sha256` accepted (I-69).** lld's `fast`
-   is 8 bytes (lldb finds separate debug files from 8 bytes, E13); 16
-   is safer against collisions in debuginfod-sized collections.
-8. **Q8 — Accepting `-o` equal to an input (I-62)**, which GNU ld
-   refuses; with I-66, a failed link must then never remove the output
-   (it does not).
-9. **Q9 — The jobserver.** mortar uses `available_parallelism()` threads
-   even under `make -jN`; joining the jobserver (`--jobserver-auth` in
-   `MAKEFLAGS`) would avoid oversubscription in parallel builds but
-   adds a protocol to the linker.
-10. **Q10 — `copy_file_range` (§10.3).** Rejected for now because the
-    build id needs the bytes; worth revisiting if the host share (or
-    NFS) is where developers link, where it is 3.7–5.2× faster.
+1. **Q11 — i386 Clang DWARF 5 in the low layout (I-47).** lldb loses
+   line information there with every linker (`.debug_addr` holds 0 for
+   the dead copy and claims `[0, size)`), and all ones makes gdb and
+   lldb add a breakpoint location at `0xffffffff`. No tombstone fixes
+   both. Options: accept (the default layout of i386 executables is
+   unaffected), or pick all ones for `.debug_addr` only in ELFCLASS32
+   and accept the extra location. Native i386 gdb was not run (only
+   under `qemu-i386`).
+2. **Q12 — `flock` on network file systems (I-59).** The probe decides
+   at run time, so correctness does not depend on it, but on a file
+   system where the probe fails a killed link's `T0.<pid>` stays forever.
+   NFS and SMB were not available to test.
+3. **Q9 — The jobserver** (later performance work). mortar uses
+   `available_parallelism()` threads even under `make -jN`.
+4. **Q10 — `copy_file_range` (§10.2)** (later performance work). It
+   cannot be used for bytes the build id must hash.
+
+Resolved by the review (2026-11-15):
+
+- Q1: bare `--build-id` is the `L128` tree truncated to 20 bytes (I-69,
+  I-72).
+- Q2: the function is defined per mortar version, not frozen (I-75).
+- Q3: the tombstone, as I-47 (the coordinator's `.debug_aranges` = 0 was
+  replaced by all ones with the length 0, on E16's evidence).
+- Q4: removing a stale output after a failed link (I-66), accepted.
+- Q5: `-Map` writes `mortar-map 1` (I-77), accepted; in §15.
+- Q6: `uuid` accepted in M2, excluded from the determinism gate (I-69).
+- Q7: `fast` is 8 bytes; `sha256` accepted in M1 (I-69).
+- Q8: `-o` equal to an input, accepted (I-62).

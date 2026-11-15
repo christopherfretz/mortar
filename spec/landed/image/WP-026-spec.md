@@ -3,8 +3,9 @@
 This document backs `spec/image.md` (draft). It gives the method, the
 experiments the measured and the non-obvious rules rest on, the programs
 that made the measurements (inline, or described precisely enough to
-rewrite), and what could not be checked. The labels **E1**–**E15** are
-the ones `image.md` cites.
+rewrite), and what could not be checked. The labels **E1**–**E25** are
+the ones `image.md` cites; E16–E25 were made for the adversarial
+review (§4, §5).
 
 ## 1. Method
 
@@ -24,8 +25,8 @@ the ones `image.md` cites.
   ratios measured in the same batch.
 - **File systems.** `/tmp` is the container's overlay (36 GB free); the
   workspace is a host share ("fakeowner", 87 GB free). Both were
-  measured because the bench harness writes to the second (§10.6 of the
-  spec). The workspace is mounted `noexec`, so every program was built
+  measured because the bench harness writes to the second (I-115 of
+  the spec). The workspace is mounted `noexec`, so every program was built
   and run in one directory, `/tmp/wp026-img`, removed at the end; the
   write matrix's workspace runs used
   `/Volumes/AgentWork/mortar-helper/.build/scratch-wp026`, also removed.
@@ -439,7 +440,8 @@ and more, not for 1 or 2 (what it does with 4 is not claimed here). `eu-unstrip 
   `--print-gc-sections`'s format in lld and mold; whether the
   references keep unreferenced merge pieces without `--gc-sections`.
 - **Output files.** Whether the references `fsync`; their behaviour on
-  FIFOs and sockets as outputs; ENOSPC; what happens to a `-Map` file
+  sockets as outputs (FIFOs: the review's observation, not re-run);
+  ENOSPC; what happens to a `-Map` file
   when the link fails. Non-root permission cases beyond the read-only
   directory.
 - **Parallel scaling** of the scan with load-before-or (I-16), and the
@@ -456,8 +458,8 @@ and more, not for 1 or 2 (what it does with 4 is not claimed here). `eu-unstrip 
   (`cfr` 3.7–5.2× faster than `stream` on the host share, with no bytes
   through the process). It is platform behaviour of std, not a
   documented guarantee.
-- **readelf on a padded short build-id note** (I-71): no mortar output
-  exists yet.
+- **readelf on a padded short build-id note** (I-71): the review saw no
+  warning; not re-run here.
 - A faster scalar SHA-1 (unrolled) was not written; the "up to 2×" in
   I-74 is an estimate.
 
@@ -499,3 +501,268 @@ from `main` after the WP-020d merge (`46714d0`): its `undefined-symbol`,
 `comdat-mismatch`, `discarded-section-reference` and `gnu-warning`
 entries already describe per-key emission, which `image.md` implements;
 it has no kind for a failed write, hence R-7.
+
+## 4. Re-measurements for the review (E16–E25)
+
+Made on 2026-11-15 on the same host, load 23–41 (each line below gives
+its own). Every program was built and run in one directory,
+`/tmp/wp026-rev-23207`, removed at the end; the lock probes on the
+workspace share used `.build/scratch-wp026r`, also removed. The
+reviewer's programs (`.build/review-image/`: `e.cc`, `f.cc`, `h3.h`,
+`g.gdb`, `l.lldb`, `rd.rs`, `reflinks.sh`) were reused unchanged where
+named; everything else below is new.
+
+### E16 — Tombstone matrix, ELFCLASS64
+
+`tomb.sh` compiles the reviewer's `e.cc`/`f.cc` (both include `h3.h`'s
+COMDAT inline `big`) with `g++` and `clang++`, `-g -gdwarf-{4,5}`, at
+`OPT=-O0` and at `OPT=-O2 EXTRA=-fno-asynchronous-unwind-tables`, and
+links each pair in two layouts (`-no-pie`; `-pie -Wl,-z,max-page-size=4096
+-Wl,-z,noseparate-code`) with seven variants:
+
+```text
+lld   g++ -B$D/lld22 ...            (lld22/ld -> /usr/lib/llvm-22/bin/ld.lld)
+ones  lld + -z dead-reloc-in-nonalloc=.debug_*=0xffffffffffffffff
+          + -z dead-reloc-in-nonalloc=.debug_ranges=1 + ...=.debug_loc=1
+ar0   ones + -z dead-reloc-in-nonalloc=.debug_aranges=0      (the coordinator's ruling)
+arH   ones + -z dead-reloc-in-nonalloc=.debug_aranges=0x8000000000000000
+arE   ones, then arpatch.py: every .debug_aranges tuple whose address is all
+          ones gets its length written 0                     (I-47 + I-112)
+mold  -fuse-ld=mold        bfd  -fuse-ld=bfd
+```
+
+Per output: `gdb -q -batch -x g.gdb`, `lldb -b -s l.lldb`,
+`llvm-dwarfdump-22 --verify` (count of `error:` lines and their kinds),
+and `addr2line` / `llvm-symbolizer-22` at the `nm` addresses of
+`_Z3bigi`, `_Z6helperi` and `main` (exact `$3==s` match).
+
+```python
+# arpatch.py IN OUT: in .debug_aranges, set length=0 in every tuple whose address is all-ones
+# (ELF32/64 LE). Walk the section headers to .debug_aranges; per unit: length at p, address
+# size at p+10, tuples start at p + round_up(12, 2*asz); stop at (0,0) or the unit's end.
+```
+
+Results (112 outputs; load 29–37):
+
+- gdb: the transcripts, with addresses masked, are identical across all
+  seven variants in every configuration (`gdb_at` 9 for GCC DWARF 4, 5
+  elsewhere; no `No line number`).
+- lldb (`at file:line` count / `unable to resolve` count; a pass is
+  17/0): `ones` fails GCC in both layouts (11/1, the wrapped arange);
+  `ar0` fails GCC in the low layout (6/5 at `-O0`, 10/5 at `-O2`: the
+  arange `[0, 0x3d08)` overlaps `.text` from `0x1740`); lld and mold
+  fail GCC low (6/5, 10/5) and Clang DWARF 5 low (6/7, 10/6); GNU ld
+  fails Clang DWARF 5 low (6/7, 10/6). `arE` and `arH` pass all 16.
+- `--verify`: lld and mold 3 errors on every DWARF 4 output (`DIE address
+  ranges are not contained in its parent's ranges`); GNU ld 3 on Clang
+  DWARF 4, 0 on GCC `-O0`, 5 on GCC `-O2` low (overlapping
+  `DW_AT_ranges`), 6 on Clang DWARF 5 (`.debug_str_offsets` invalid
+  string offsets: its string merging, not a tombstone). `ones`, `ar0`,
+  `arE`, `arH`: 0.
+- `llvm-symbolizer` for `big`, low layout: lld `h3.h:124`/`266`/`148`/
+  `262` (wrong) for GCC and Clang DWARF 5, mold likewise (`122`, `261`,
+  `143`, `257`); GNU ld wrong in 4 of 8 (`h3.h:90`, `83`, `47`); `ar0`
+  `??:0:0` for GCC; `ones`/`arE` right. `addr2line`: right everywhere
+  except GNU ld's GCC `-O2` low layout, where `main` maps to `h3.h:70`.
+- Which sections carry relocations to the dropped copy (`readelf -r` of
+  the objects): GCC DWARF 4 `.debug_aranges`, `.debug_info`,
+  `.debug_ranges`, `.debug_line`, `.debug_loc` (`-O2`); GCC DWARF 5
+  `.debug_aranges`, `.debug_info`, `.debug_rnglists`, `.debug_line`,
+  `.debug_loclists` (`-O2`); Clang DWARF 4 `.debug_info`,
+  `.debug_ranges`, `.debug_line`, `.debug_frame` (`-O2`), `.debug_loc`;
+  Clang DWARF 5 `.debug_addr`, `.debug_line`, `.debug_frame` (`-O2`).
+  No `.debug_str_offsets` relocation targets code.
+
+Contradiction with the coordinator's ruling: `.debug_aranges` = 0 fails
+lldb for GCC in the low layout (both optimization levels, both DWARF
+versions). I-47 adopts all ones with the length 0 (`arE`).
+
+### E17 — Tombstone matrix, ELFCLASS32
+
+`tomb32.sh`: the same sources with `i686-linux-gnu-g++` and `clang++
+--target=i686-linux-gnu`, `-O0`, DWARF 4 and 5, both layouts, linked by
+`i686-linux-gnu-g++` with variants `lld`, `ones` (`0xffffffff`), `ar0`,
+`arE`, `mixB` (lld's 0 elsewhere, `.debug_aranges` all ones, then
+`arpatch.py`), `mold`, `bfd`. Probes without running: lldb `breakpoint
+set` ×4 and `image lookup -n main`; gdb `info line` ×3 and `break` ×2.
+Then gdb runs under `qemu-i386 -L /usr/i686-linux-gnu -g PORT` with
+`gdb-multiarch` (`target remote`), for `lld`, `arE` and `mixB`.
+
+- All ones is not a tombstone to either debugger in ELFCLASS32. gdb:
+  `info line big` prints a second line, `starts at address 0xffffffff
+  <_Z3bigi> and ends at 0x10000000c`, and `break h3.h:5` reports `(2
+  locations)`; lldb: `Breakpoint 1: 2 locations.` Every `ones`, `ar0`
+  and `arE` output shows it; `lld` and `mixB` do not.
+- `mixB` (= I-47's ELFCLASS32 column with I-112) passes every
+  configuration (lldb 5 `at`, 0 unresolved) except Clang DWARF 5 in
+  the low layout (3/6), which lld, mold and GNU ld fail identically;
+  `lld`, `mold` and `bfd` also fail GCC in the low layout (3/5), which
+  `mixB` fixes.
+- `.debug_frame` 0 against all ones: identical `bt` under qemu gdb.
+- Native i386 execution was not available; the qemu runs agree with the
+  static probes.
+
+### E18 — Reference links with inputs on `/tmp`
+
+`cxx-medium-g`'s inputs copied to `/tmp/wp026-rev-23207/w` with GCC's
+linker response file (`resp.txt`: the `collect2` line, `--build-id`
+included). `rb.py RUNS OUT LABEL -- cmd…` forks each run with the output
+unlinked first and a 0.3 s pause, and prints median wall, CPU, `ru_maxrss`
+and the load range. Three runs each, load 32–40:
+
+| link | wall ms (runs) |
+|---|---|
+| `mold --no-fork --threads=8 @resp.txt` | 92.7, 99.6 (two batches) |
+| mold, 4 threads / 1 thread | 108–135 / 298–305 |
+| mold, 8 threads, `--build-id=none` | 95–96 |
+| `ld.lld` 22, `--threads=8` | 133–160 |
+| lld, 4 threads / 1 thread | 155–189 / 251–274 |
+| lld, 8 threads, `--build-id=none` | 145–176 |
+| `ld.bfd` | 797 |
+
+Peak RSS: mold 323 MB, lld 325 MB, GNU ld 212 MB. `mold --perf` (load
+39–41, 3 runs): `all` 71–167 ms, `copy` 33–49 ms (35–45%),
+`write_build_id` 7–14 ms, `read_input` 12–31 ms.
+
+### E19 — What the staged store keeps resident
+
+`staged.py` walks every member of `cxx-medium-g`'s inputs (202 MB) and
+classifies each section by I-82's parts (relocation sections by the
+`SHF_ALLOC` flag of their `sh_info` target; bodies by size ≤ 64 KiB).
+Result: relocations 52.8 MB (26.1%), of which alloc targets 6.87 MB
+(3.4%) and non-alloc targets 45.93 MB (22.7%); the largest relocation
+section 1.36 MB (`share.py`). Archive index 7.16; ELF and section headers
+9.22; `.shstrtab` 5.98; symbol and string tables 15.54; groups 0.56;
+small alloc 7.63; small non-alloc 6.86; large non-alloc 95.5; large
+alloc 0.73 (MB). Resident set as `spec/input.md` §11.1 (b) is written:
+105.8 MB (52%); with non-alloc relocations not resident: 59.9 MB
+(29.7%).
+
+Read rate from the page cache: the reviewer's `rd.rs` (positioned reads
+of every input on `N` threads): 201 MB in 54 ms on 1 thread, 16.8 ms on
+4, 12.7 ms on 8 (load 27). Re-reading 45.9 MB is therefore about 2.9 ms
+of wall time on 8 threads and 12 ms of CPU.
+
+### E20 — Replacing an existing output
+
+`td.rs STRATEGY SIZE_MB THREADS OUT` writes `SIZE_MB` of generated bytes
+from `THREADS` workers in 1 MiB `write_all_at` blocks to `OUT.tmp`
+(`create_new`) and renames it to `OUT`, timing each step; strategies:
+`plain` (rename over `OUT`), `aside` (first rename `OUT` to `OUT.old`
+and unlink it on a helper thread never joined), `asidej` (the same,
+joined before exit), `holdfd` (open `OUT`, unlink it, keep the
+descriptor until exit). `td.py` alternates fresh and existing-output
+runs, with 1 s pauses, and times each from the parent. On `/tmp`, 8
+threads, load 32–36:
+
+| size | fresh | plain over existing | aside | asidej | holdfd |
+|---|---|---|---|---|---|
+| 220 MB | 100 ms | 140 ms (rename 36 ms) | 114 ms | 94 ms | — |
+| 2 GB | 0.91 s | 2.40 s [1.67–4.05] (rename 0.73 s) | 0.82 s | 1.11 s (helper 0.23 s) | 2.10 s |
+
+On the workspace share, 220 MB: writes take 0.8–1.2 s and the teardown
+is not visible.
+
+### E21 — Write scaling
+
+`td.rs plain 2048 N` on `/tmp`, fresh output, load 26–27: 0.80 s on 1
+thread, 0.51 on 2, 0.59 on 4, 0.64 on 8, 0.80 on 16 (peak 4.2 GB/s at
+2 threads).
+
+### E22 — Unsorted relocation sections
+
+`relscan2.py` (per REL/RELA section of every ELF32/ELF64 member: is
+`r_offset` non-decreasing; duplicate offsets; the largest sections):
+x86-64 `libc.a` 245 of 3,962 sections unsorted (11,053 records, the
+largest 783); i386 `libc.a` 73 (6,167, largest 596); x86-64
+`libstdc++.a` 446 (6,584, largest 233); i686 `libstdc++.a` 184; AArch64
+`libc.a` and `libstdc++.a` 0. No duplicate offsets anywhere.
+
+### E23 — The build-id function
+
+`bh.rs` (from FIPS 180-4 for SHA-256, and the `L128` definition of
+I-114): `bh check FILE` prints SHA-256 (equal to `sha256sum`, and the
+FIPS `abc` vector); `bh speed MiB THREADS` hashes generated bytes
+(splitmix64) as 1 MiB leaves on `THREADS` workers and the root of I-72;
+`bh quality` runs the avalanche and collision tests of I-114.
+
+| 1 GiB, load 34 | 1 thread | 4 | 8 |
+|---|---|---|---|
+| `L128` tree | 85 ms (12.6 GB/s) | 28 ms | 17 ms |
+| SHA-256 tree | 5.51 s (195 MB/s) | 1.41 s | 0.85 s |
+
+The ids are identical across thread counts. Quality: avalanche mean
+0.5000, worst |p − 0.5| = 0.0205 (lengths 8, 31, 64, 100, 4096; 64
+seeds; up to 512 bits flipped each); 2^20 structured 4 KiB leaves: 91
+low-32-bit collisions (128 ± 11 expected), 0 full; 81,602 sparse leaves:
+0 collisions.
+
+### E24 — Who produces and who consumes a build-id style
+
+- `-###` of `gcc`, `g++`, `gfortran`, `clang`, `clang++`,
+  `i686-linux-gnu-gcc`, `x86_64-linux-gnu-gcc`: bare `--build-id` only.
+  `grep -r build-id` of `/usr/share/cmake-3.31/Modules`: no style. rpm,
+  debhelper and meson are not installed.
+- Notes of 8, 16, 20 and 32 bytes written with `0xHEX` into `p16`, `p20`
+  and the like, the debug halves moved to
+  `dbg/.build-id/xx/rest.debug`: gdb (`-iex 'set debug-file-directory
+  dbg'`) and lldb (`-O 'settings set target.debug-file-search-paths
+  dbg'`) load the symbols for all four; `eu-unstrip -n` lists them. `file`
+  labels 8 bytes `xxHash`, 16 `md5/uuid`, 20 `sha1`, and 32 with no
+  label.
+- `--build-id=uuid` (E11's ids, one run per linker): mold's
+  `219be39d fbc0 4149 9329 88c2527f9db3` has version nibble 4 and variant
+  bits `10`; lld's (`…f379 1cc0…`) and GNU ld's (`…89e8 ee0f…`) do not.
+
+### E25 — Locks, and `.stack_sizes` under `--gc-sections`
+
+`lk2.rs PATH` (stable `File::try_lock`, Rust 1.95, no feature gate):
+
+```rust
+// open PATH twice (read, write, create, no truncate); f1.try_lock(); then f2.try_lock():
+// "WouldBlock (enforced)" or "acquired (not enforced)"
+```
+
+On `/tmp`: `WouldBlock`; a second process's `try_lock` also gets
+`WouldBlock`, and acquires it after the first is killed with `kill -9`.
+On the workspace share (FUSE `fakeowner`): both descriptors acquire,
+in one process and across two. NFS and SMB were not available.
+
+`.stack_sizes`: `ss.c` (two functions, one unreferenced) compiled with
+`clang -ffunction-sections -fstack-size-section`, linked with
+`--gc-sections` by each linker: lld 22 and GNU ld remove the dead
+function's `.stack_sizes` (9 bytes remain); mold keeps it (18 bytes).
+
+## 5. Review addressed (2026-11-15)
+
+The coordinator's adversarial review (`.build/review-026.md`) and its
+rulings, finding by finding. Rule ids were kept; new rules are I-109
+to I-115; I-94 was merged into I-92.
+
+| finding | what changed in `image.md` | evidence |
+|---|---|---|
+| W1 merge key | `GroupKey { class, file, group }`, ties in unit order = `RefId` order (§4.4, I-20, I-21) | — |
+| W2/W3 tombstone | I-47 table by section and class; I-112 aranges length 0; `--verify` claim corrected; §16.4 gates gdb and lldb in both layouts and i386 | E16, E17. **Disagreement**: `.debug_aranges` = 0 fails lldb for GCC in the low layout; all ones with length 0 adopted. ELFCLASS32 uses 0 except `.debug_frame` (all ones is not recognized) |
+| W4/W5 reach | I-111 derives `max_reach`; AArch64 ≥ (0, 4); the 22-byte TLSGD form unrelaxed; R-14 to `spec/x64.md`; boundary tests at `o+4`/`o+8`/`o+12` | `spec/a64.md` §8.4 |
+| R1 link order | I-109 [M2], before I-6's non-alloc root rule | E25 |
+| P1 budget | §10.2 rewritten from `/tmp` links; copy ≈ 35–45% of mold | E18 |
+| P2 store | I-81 staged primary, resident fallback; I-82 non-alloc relocations read twice; I-92 both formulas; R-13 | E19 |
+| P3 teardown | I-113 set-aside; I-65 a failed link leaves no output | E20 |
+| P4 build id | I-69, I-72, I-114, I-74, I-75 | E23, E24 |
+| P5 scaling | §10.2: no promise beyond 4 threads | E21 |
+| C1 note size | I-71; R-12 for S-91/S-108 | — |
+| C4 chunks | I-104 divisible/whole; `.strtab` sampling; I-92's `X` | — |
+| C5 unsorted | I-29 `RecIndex`, sortedness checked by the scan | E22 |
+| G1 RefId | §2: the relocated section | — |
+| G2 FIFO | I-58 refused by name | — |
+| G3 litter | I-59 lock-based `T0` with a probe; I-67 | E25 |
+| G4 non-alloc undefined | I-110; §15 row | the review |
+| G5 context lines | I-22 first three in `RefId` order | — |
+| Q1–Q10 | §18 re-ranked; Q11 (i386 Clang DWARF 5 low layout) and Q12 (`flock` on network file systems) new | E17, E25 |
+
+Not verified in this round: native i386 debuggers (only `qemu-i386`);
+cold page cache; the reviewer's numbers not re-run (`wr.rs` staged
+31 ms at 48 MB; SHA-1 at 260 MB/s; mold's and lld's build-id cost at
+1 GB; lld 22's corruption of the 22-byte TLSGD form; GNU ld's FIFO and
+`SIGINT` rows; lld's acceptance of a non-alloc undefined reference);
+`flock` on NFS/SMB; rpm/debhelper/meson build-id styles.
