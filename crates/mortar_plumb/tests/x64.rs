@@ -56,7 +56,13 @@ fn run_in(dir: &Path, program: &Path, args: &[&str]) -> bool {
 }
 
 fn must(dir: &Path, program: &Path, args: &[&str]) {
-    assert!(run_in(dir, program, args), "{} {} failed in {}", program.display(), args.join(" "), dir.display());
+    assert!(
+        run_in(dir, program, args),
+        "{} {} failed in {}",
+        program.display(),
+        args.join(" "),
+        dir.display()
+    );
 }
 
 /// One case: what to link and, per linker, what the verifier must say.
@@ -124,9 +130,19 @@ fn cases() -> Vec<Case> {
             expect: [CLEAN; 3],
         },
         // W1: GNU ld truncates; lld and mold refuse. A violation (R2).
-        Case { name: "w1", driver: gcc, args: &["-static", "-nostdlib", "bf.o"], expect: [Some(&["R2"]), None, None] },
+        Case {
+            name: "w1",
+            driver: gcc,
+            args: &["-static", "-nostdlib", "bf.o"],
+            expect: [Some(&["R2"]), None, None],
+        },
         // W4: lld's GD rewriting of the large model.
-        Case { name: "w4", driver: gcc, args: &["-static", "gd.o"], expect: [CLEAN, Some(&["A12"]), CLEAN] },
+        Case {
+            name: "w4",
+            driver: gcc,
+            args: &["-static", "gd.o"],
+            expect: [CLEAN, Some(&["A12"]), CLEAN],
+        },
         // W8: lld and mold trap in `.init` padding.
         Case {
             name: "w8",
@@ -135,7 +151,12 @@ fn cases() -> Vec<Case> {
             expect: [CLEAN, Some(&["A16"]), Some(&["A16"])],
         },
         // W9: lld makes the large common absolute; mold refuses.
-        Case { name: "w9", driver: gcc, args: &["-static", "lg.o"], expect: [CLEAN, Some(&["A14"]), None] },
+        Case {
+            name: "w9",
+            driver: gcc,
+            args: &["-static", "lg.o"],
+            expect: [CLEAN, Some(&["A14"]), None],
+        },
         // W10: GNU ld and mold write template addresses in .debug_addr.
         Case {
             name: "w10",
@@ -197,7 +218,11 @@ fn build() -> Option<Corpus> {
     must(&dir, cc, &["-O2", "-fPIE", "-c", "hello.c", "-o", "c-pie.o"]);
     must(&dir, cc, &["-O2", "-fPIC", "-fno-plt", "-c", "hello.c", "-o", "c-noplt.o"]);
     let clang = |pic: &str, out: &str| {
-        must(&dir, &t.clang, &["--target=x86_64-linux-gnu", "-O2", pic, "-c", "hello.c", "-o", out]);
+        must(
+            &dir,
+            &t.clang,
+            &["--target=x86_64-linux-gnu", "-O2", pic, "-c", "hello.c", "-o", out],
+        );
     };
     clang("-fno-pic", "c-clang.o");
     clang("-fPIC", "c-clang-pic.o");
@@ -232,7 +257,12 @@ fn build() -> Option<Corpus> {
             let refs: Vec<&str> = args.iter().map(String::as_str).collect();
             let linked = run_in(&dir, (case.driver)(&t), &refs);
             let Some(expect) = case.expect[k] else {
-                assert!(!linked, "{}/{}: the link was expected to be refused", case.name, linker.name());
+                assert!(
+                    !linked,
+                    "{}/{}: the link was expected to be refused",
+                    case.name,
+                    linker.name()
+                );
                 continue;
             };
             assert!(linked, "{}/{}: the link failed", case.name, linker.name());

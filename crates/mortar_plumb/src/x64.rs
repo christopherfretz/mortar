@@ -5,8 +5,8 @@
 //! Every field is little-endian data at P (`spec/x64.md` §3.2). The GOT
 //! forms add A outside the slot, which holds S (X-4).
 
-use crate::a64::{Check, Def, Field, Op, Slot};
 use crate::a64::Form as F;
+use crate::a64::{Check, Def, Field, Op, Slot};
 use Slot as G;
 
 pub const NONE: u32 = 0;

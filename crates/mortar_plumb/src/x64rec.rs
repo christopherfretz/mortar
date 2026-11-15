@@ -7,12 +7,11 @@
 //! rewriting is accepted only in the form the map's linker writes (§5.9's
 //! table); under mortar's map only mortar's forms.
 
-use mortar_elf::consts::{SHF_EXECINSTR, SHN_ABS, SHN_UNDEF};
 use mortar_elf::SymbolIndex;
+use mortar_elf::consts::{SHF_EXECINSTR, SHN_ABS, SHN_UNDEF};
 
 use super::{
-    Engine, Pending, Rec, Target, TlsBlock, Verdict, Want, find_at, judge,
-    verdict_finding,
+    Engine, Pending, Rec, Target, TlsBlock, Verdict, Want, find_at, judge, verdict_finding,
 };
 use crate::a64::{Op, Slot};
 use crate::map::Format;
@@ -178,9 +177,7 @@ impl Engine<'_, '_> {
                 }
                 return self.x64_debug_tls(rec, site, symbol, s.wrapping_add(addend as u64));
             }
-            Target::Addr(s) => {
-                (s, if self.x64_abs(oi, rec.sym) { Kind::Abs } else { Kind::Local })
-            }
+            Target::Addr(s) => (s, if self.x64_abs(oi, rec.sym) { Kind::Abs } else { Kind::Local }),
             Target::UndefWeak => (0, Kind::Weak0),
         };
         let a = addend as u64;
@@ -221,7 +218,8 @@ impl Engine<'_, '_> {
                 let Some(ev) = self.slot_evidence(rec) else {
                     return self.x64_unjudged(rec, Reason::SymbolUnresolved);
                 };
-                let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(s), w1: false };
+                let pend =
+                    Pending { rec: rec.clone(), site, symbol, want: Want::Word(s), w1: false };
                 self.got_groups.entry((slot, oi, rec.sym, 0)).or_default().members.push((pend, ev));
                 return;
             }
@@ -340,7 +338,14 @@ impl Engine<'_, '_> {
 
     /// The GOTPCRELX rewritings of §5.9 the map's linker writes, for a
     /// symbol of `kind` at `s`: the one the output holds.
-    fn x64_got_form(&mut self, oi: usize, si: usize, rec: &Rec, s: u64, kind: Kind) -> Option<Rewrite> {
+    fn x64_got_form(
+        &mut self,
+        oi: usize,
+        si: usize,
+        rec: &Rec,
+        s: u64,
+        kind: Kind,
+    ) -> Option<Rewrite> {
         let ty = rec.def.r_type;
         let k: u64 = match ty {
             x::REX_GOTPCRELX => 3,
@@ -369,7 +374,9 @@ impl Engine<'_, '_> {
             v.extend_from_slice(tail);
             cands.push((rw, v));
         };
-        let prefix = |b: &[u8]| -> Vec<u8> { rex.map(|r| vec![r]).into_iter().flatten().chain(b.iter().copied()).collect() };
+        let prefix = |b: &[u8]| -> Vec<u8> {
+            rex.map(|r| vec![r]).into_iter().flatten().chain(b.iter().copied()).collect()
+        };
         let primed = |b: &[u8]| -> Vec<u8> {
             rex.map(|r| vec![rex_rb(r)]).into_iter().flatten().chain(b.iter().copied()).collect()
         };
@@ -388,7 +395,11 @@ impl Engine<'_, '_> {
             push(Rewrite::GotToLea, &prefix(&[0x8d, modrm]), pc(s), &[]);
         }
         // X4 (GNU ld): mov -> mov $S.
-        if gnu && !plain && op == 0x8b && let Some(r) = reg {
+        if gnu
+            && !plain
+            && op == 0x8b
+            && let Some(r) = reg
+        {
             let imm_ok = if rex.is_some_and(|r| r & 8 != 0) {
                 i32::try_from(s as i64).is_ok()
             } else {
@@ -415,12 +426,14 @@ impl Engine<'_, '_> {
         }
         // X3: ALU operation or test with a GOT operand -> immediate (static).
         let alu = matches!(op, 0x03 | 0x0b | 0x13 | 0x1b | 0x23 | 0x2b | 0x33 | 0x3b);
-        if !plain && (alu || op == 0x85) && let Some(r) = reg {
+        if !plain
+            && (alu || op == 0x85)
+            && let Some(r) = reg
+        {
             let rexw = rex.is_some_and(|r| r & 8 != 0);
             let target_ok = local || (gnu && matches!(kind, Kind::Abs | Kind::Weak0));
             let linker_ok = ((mortar || lld) && rexw) || (gnu && (rexw || rex.is_none()));
-            let imm_ok =
-                if rexw { (0..1 << 31).contains(&s) } else { u32::try_from(s).is_ok() };
+            let imm_ok = if rexw { (0..1 << 31).contains(&s) } else { u32::try_from(s).is_ok() };
             if target_ok && linker_ok && imm_ok {
                 let (o, m) = if alu { (0x81, 0xc0 | (op & 0x38) | r) } else { (0xf7, 0xc0 | r) };
                 push(Rewrite::GotToImm, &primed(&[o, m]), s as i64, &[]);
@@ -465,10 +478,23 @@ impl Engine<'_, '_> {
     /// A `TLSGD`/`TLSLD` sequence (X-25, X-27; §5.9): the input form, and
     /// the output against the LE forms the map's linker writes.
     #[allow(clippy::too_many_lines)]
-    fn x64_seq(&self, oi: usize, si: usize, recs: &[Rec], sorted: &[(u64, usize)], lead: &Rec) -> SeqX {
+    fn x64_seq(
+        &self,
+        oi: usize,
+        si: usize,
+        recs: &[Rec],
+        sorted: &[(u64, usize)],
+        lead: &Rec,
+    ) -> SeqX {
         let gd = lead.def.r_type == x::TLSGD;
         let what = if gd { "general-dynamic" } else { "local-dynamic" };
-        let unrec = || SeqX::Bad(format!("an unrecognized {what} TLS sequence (spec/x64.md X-26)"), Vec::new(), None);
+        let unrec = || {
+            SeqX::Bad(
+                format!("an unrecognized {what} TLS sequence (spec/x64.md X-26)"),
+                Vec::new(),
+                None,
+            )
+        };
         let b = match self.tls {
             Ok(Some(b)) => b,
             _ => {
@@ -511,7 +537,10 @@ impl Engine<'_, '_> {
         let size = b.tcb.wrapping_neg() as u32;
         let (before, after, want): (u64, u64, Vec<u8>) = if gd {
             let g16 = at(-4, 4) == Some(&[0x66, 0x48, 0x8d, 0x3d]);
-            if g16 && at(4, 4) == Some(&[0x66, 0x66, 0x48, 0xe8]) && follows(8, &[x::PLT32, x::PC32]) {
+            if g16
+                && at(4, 4) == Some(&[0x66, 0x66, 0x48, 0xe8])
+                && follows(8, &[x::PLT32, x::PC32])
+            {
                 (4, 8, x::gd_le(t as u32, mold).to_vec())
             } else if g16
                 && at(4, 4) == Some(&[0x66, 0x48, 0xff, 0x15])
@@ -535,7 +564,8 @@ impl Engine<'_, '_> {
             return unrec();
         } else if at(4, 1) == Some(&[0xe8]) && follows(5, &[x::PLT32, x::PC32]) {
             let v = if mold {
-                [&[0x31, 0xc0, 0x64, 0x48, 0x8b, 0x00, 0x48, 0x2d][..], &size.to_le_bytes()].concat()
+                [&[0x31, 0xc0, 0x64, 0x48, 0x8b, 0x00, 0x48, 0x2d][..], &size.to_le_bytes()]
+                    .concat()
             } else {
                 [&[0x66, 0x66, 0x66][..], &x::MOV_FS0_RAX].concat()
             };
@@ -583,12 +613,13 @@ impl Engine<'_, '_> {
             // before it.
             let w4 = before == 3
                 && self.image.bytes(lead.p - 4, 16) == Some(&x::gd_le(t as u32, false)[..]);
-            let next = find_at(recs, sorted, Some(lead.off + 4 + after + 4), |r| {
-                r.def.r_type == x::TLSGD
-            })
-            .or_else(|| {
-                find_at(recs, sorted, Some(lead.off + 4 + after + 3), |r| r.def.r_type == x::TLSGD)
-            });
+            let next =
+                find_at(recs, sorted, Some(lead.off + 4 + after + 4), |r| r.def.r_type == x::TLSGD)
+                    .or_else(|| {
+                        find_at(recs, sorted, Some(lead.off + 4 + after + 3), |r| {
+                            r.def.r_type == x::TLSGD
+                        })
+                    });
             let clipped = next.is_some_and(|r2| {
                 let k = (r2.p - 4).saturating_sub(lo) as usize;
                 k < n && out.is_some_and(|o| o[..k] == want[..k])
@@ -632,7 +663,9 @@ impl Engine<'_, '_> {
                 _ => 0,
             }),
             Target::Skip(r) => Err(NoT::Unknown(r)),
-            _ => Err(NoT::Bad("a thread-local type against a symbol that is not thread-local".into())),
+            _ => Err(NoT::Bad(
+                "a thread-local type against a symbol that is not thread-local".into(),
+            )),
         }
     }
 
@@ -775,7 +808,15 @@ impl Engine<'_, '_> {
     }
 
     /// `DTPOFF32`/`DTPOFF64` (X-46): TpRel or DtpRel by section and linker.
-    fn x64_dtprel(&mut self, oi: usize, rec: &Rec, site: Site, symbol: String, alloc: bool, exec: bool) {
+    fn x64_dtprel(
+        &mut self,
+        oi: usize,
+        rec: &Rec,
+        site: Site,
+        symbol: String,
+        alloc: bool,
+        exec: bool,
+    ) {
         let b = match self.tls {
             Ok(Some(b)) => b,
             Ok(None) => {

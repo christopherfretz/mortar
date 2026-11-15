@@ -6,10 +6,10 @@
 use std::collections::{BTreeMap, HashMap};
 
 use mortar_elf::consts::{
-    PT_LOAD, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE, SHN_ABS, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX,
-    SHT_NOBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_GNU_UNIQUE, STB_LOCAL,
-    STB_WEAK, STT_FILE, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS, STV_HIDDEN, STV_INTERNAL,
-    STV_PROTECTED,
+    PT_LOAD, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE, SHN_ABS, SHN_LORESERVE,
+    SHN_UNDEF, SHN_XINDEX, SHT_NOBITS, SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL,
+    STB_GNU_UNIQUE, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS,
+    STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
 };
 use mortar_elf::{Class, Sym, SymbolIndex, SymbolSection};
 
@@ -372,7 +372,8 @@ fn common(image: &Image<'_>, out: &OutSym, (size, align): (u64, u64), fs: &mut V
         return;
     }
     if o.st_size != size {
-        let mut f = y(3, format!("common symbol '{name}' has another size than its largest definition"));
+        let mut f =
+            y(3, format!("common symbol '{name}' has another size than its largest definition"));
         f.expected = Some(size);
         f.found = Some(o.st_size);
         fs.push(named(f.at(o.st_value), name));

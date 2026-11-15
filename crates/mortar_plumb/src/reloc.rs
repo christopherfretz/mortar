@@ -141,7 +141,10 @@ impl TlsBlock {
         let tcb = if image.header.e_machine == mortar_elf::consts::EM_AARCH64 {
             16u64.next_multiple_of(align)
         } else {
-            t.p_memsz.checked_next_multiple_of(align).ok_or("PT_TLS p_memsz overflows")?.wrapping_neg()
+            t.p_memsz
+                .checked_next_multiple_of(align)
+                .ok_or("PT_TLS p_memsz overflows")?
+                .wrapping_neg()
         };
         Ok(Some(TlsBlock { start: t.p_vaddr, tcb }))
     }
@@ -478,7 +481,10 @@ impl<'a, 'b> Engine<'a, 'b> {
                         || (x64 && sym.st_shndx == mortar_elf::consts::SHN_X86_64_LCOMMON))
                     && let Ok(name) = t.name(&sym)
                 {
-                    commons.entry(String::from_utf8_lossy(name).into_owned()).or_default().push((oi, i.0));
+                    commons
+                        .entry(String::from_utf8_lossy(name).into_owned())
+                        .or_default()
+                        .push((oi, i.0));
                     continue;
                 }
                 if !matches!(sym.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE)
@@ -1742,7 +1748,9 @@ impl<'a, 'b> Engine<'a, 'b> {
                 let mut last = None;
                 let mut ok = None;
                 for &gv in &valid {
-                    let Some(x) = x_got(rec.def.op, gv, rec.p, self.got, rec.addend) else { continue };
+                    let Some(x) = x_got(rec.def.op, gv, rec.p, self.got, rec.addend) else {
+                        continue;
+                    };
                     match judge(rec, x) {
                         Verdict::Ok(rw) => {
                             ok = Some(rw);

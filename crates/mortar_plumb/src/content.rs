@@ -144,7 +144,9 @@ pub(crate) fn check_init_padding(e: &mut Engine<'_, '_>) {
     if !matches!(image.header.e_machine, 3 | 62) {
         return;
     }
-    for out in image.sections.iter().filter(|s| s.alloc() && (s.name == ".init" || s.name == ".fini")) {
+    for out in
+        image.sections.iter().filter(|s| s.alloc() && (s.name == ".init" || s.name == ".fini"))
+    {
         let (lo, hi) = (out.shdr.sh_addr, out.shdr.sh_addr.saturating_add(out.shdr.sh_size));
         let mut parts: Vec<(u64, u64)> = e
             .objs
