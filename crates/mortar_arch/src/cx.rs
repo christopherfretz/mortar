@@ -77,6 +77,12 @@ pub struct RelocAt<'a> {
     /// in section offsets: for AArch64 the runs of its mapping symbols
     /// (a64.md §3.4). A word no `Insn` run covers is not proved.
     pub proof: &'a [ProofRun],
+    /// Whether the relocation section may hold a record whose type is in
+    /// `Facts.seq_leads` (§3.5). `false` only when no record has such a
+    /// type; `true` is always correct (scan passes `true`, fill the bit
+    /// scan recorded for the section). An architecture skips the patterns
+    /// of those sequences when it is `false`.
+    pub leads: bool,
 }
 
 impl RelocAt<'_> {
@@ -105,6 +111,7 @@ impl std::fmt::Debug for RelocAt<'_> {
 
 /// What scan knows about a relocation's symbol (§3.4): input-only facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(clippy::struct_excessive_bools)] // independent input facts, each read on its own
 pub struct SymFacts {
     pub kind: TargetKind,
     /// `STT_*` of the resolved definition (or of the reference when
@@ -113,6 +120,17 @@ pub struct SymFacts {
     pub st_other: u8,
     /// `STT_TLS`.
     pub tls: bool,
+    /// The target is a symbol of a section that is not live: a dropped
+    /// COMDAT copy's (`spec/resolve.md` §6.3 case (a)) or, under
+    /// `--gc-sections`, a collected section's (§3.4 "Scan sees only live
+    /// sections").
+    pub dead: bool,
+    /// The key is defined only in dropped copies of a COMDAT group
+    /// (`spec/resolve.md` §6.3 case (b)); its `kind` is `Undefined`.
+    pub comdat_only: bool,
+    /// A live file has a `.gnu.warning.<name>` section for the key
+    /// (`spec/resolve.md` §10).
+    pub gnu_warning: bool,
 }
 
 /// The tables scan reads (§3.4: `Inputs`, `Resolution`, `Liveness`),
@@ -135,6 +153,9 @@ pub struct ScanCx<'a> {
     pub output: OutputKind,
     /// The section of the places being scanned.
     pub place: PlaceFacts,
+    /// That section's name: a reference to a dead target is classified
+    /// by it ([`crate::dead_reference`], §3.4).
+    pub name: &'a [u8],
 }
 
 impl std::fmt::Debug for ScanCx<'_> {
@@ -142,6 +163,7 @@ impl std::fmt::Debug for ScanCx<'_> {
         f.debug_struct("ScanCx")
             .field("output", &self.output)
             .field("place", &self.place)
+            .field("name", &String::from_utf8_lossy(self.name))
             .finish_non_exhaustive()
     }
 }
@@ -189,11 +211,32 @@ pub trait DemandOut {
     /// scanned.
     fn error(&mut self, record: u32, error: ScanError);
     /// Reports that the record `record` of the section being scanned is a
-    /// surviving reference to `key`, whose target kind is `Undefined`
-    /// (§3.4). The scan driver merges the events of all files into one
-    /// `undefined-symbol` diagnostic per key, keyed by the first reference
-    /// in `(FileId, section index, record index)` order.
-    fn undefined(&mut self, key: SymKey, record: u32);
+    /// surviving reference to `key` of event class `class` (§3.4;
+    /// `spec/image.md` §4.4). The scan driver forms the event's group
+    /// from `key` (the key itself for the classes grouped by key; the
+    /// referring section index and `key`'s symbol index for
+    /// `DiscardedSection`, whose key is a local) and merges the events of
+    /// all files into one diagnostic per group, keyed by its least
+    /// reference in `(FileId, section index, record index)` order.
+    fn reference(&mut self, record: u32, class: EventClass, key: SymKey);
+}
+
+/// The class of a reference event (§3.4; `spec/image.md` §4.4). Ordered
+/// as declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EventClass {
+    /// A reference to a key whose target kind is `Undefined`:
+    /// `undefined-symbol`.
+    Undefined,
+    /// A reference to a key defined only in dropped copies of a COMDAT
+    /// group: `comdat-mismatch` (never also `Undefined`).
+    ComdatMismatch,
+    /// A reference to a symbol of a section that is not live, from a
+    /// section `spec/resolve.md` §6.3 makes an error:
+    /// `discarded-section-reference`.
+    DiscardedSection,
+    /// A reference to a key with a `.gnu.warning` section: `gnu-warning`.
+    GnuWarning,
 }
 
 /// The sink of `scan` (§3.4).
@@ -232,8 +275,8 @@ impl<'a> DemandSink<'a> {
         self.out.error(record, error);
     }
 
-    pub fn undefined(&mut self, key: SymKey, record: u32) {
-        self.out.undefined(key, record);
+    pub fn reference(&mut self, record: u32, class: EventClass, key: SymKey) {
+        self.out.reference(record, class, key);
     }
 }
 
@@ -287,17 +330,63 @@ impl std::fmt::Debug for FillCx<'_> {
     }
 }
 
-/// The output bytes of one unit (§3.6): pre-filled with the input bytes;
-/// `apply` writes only its window and never reads them.
+/// The output bytes of one unit (§3.6) in the clip `[start, start +
+/// bytes.len())` of section offsets, pre-filled with the input bytes;
+/// `P` of offset 0 is `addr`. `apply` writes only its window, through
+/// [`SectionOut::write`], and never reads them; the part of a write that
+/// falls outside the clip is discarded, so the bytes inside the clip are
+/// those of an unclipped call (`spec/image.md` I-35).
 #[derive(Debug)]
 pub struct SectionOut<'a> {
-    pub bytes: &'a mut [u8],
+    bytes: &'a mut [u8],
+    start: u64,
     /// `P` of offset 0.
     pub addr: u64,
     /// The section has `SHF_ALLOC`.
     pub alloc: bool,
     /// The section's name, for the tombstone (§3.11).
     pub name: &'a [u8],
+}
+
+impl<'a> SectionOut<'a> {
+    /// The clip of `bytes.len()` bytes starting at section offset `start`.
+    pub fn new(bytes: &'a mut [u8], start: u64, addr: u64, alloc: bool, name: &'a [u8]) -> Self {
+        Self { bytes, start, addr, alloc, name }
+    }
+
+    /// The whole section: the clip starting at offset 0.
+    pub fn whole(bytes: &'a mut [u8], addr: u64, alloc: bool, name: &'a [u8]) -> Self {
+        Self::new(bytes, 0, addr, alloc, name)
+    }
+
+    /// The clip `[a, b)` in section offsets.
+    #[inline]
+    #[must_use]
+    pub fn clip(&self) -> (u64, u64) {
+        (self.start, self.start.saturating_add(self.bytes.len() as u64))
+    }
+
+    /// Writes `data` at section offset `off`: the part inside the clip.
+    #[inline]
+    pub fn write(&mut self, off: u64, data: &[u8]) {
+        // The common case: the write lies inside the clip.
+        if let Some(at) = off.checked_sub(self.start)
+            && let Ok(at) = usize::try_from(at)
+            && let Some(dst) = at.checked_add(data.len()).and_then(|e| self.bytes.get_mut(at..e))
+        {
+            dst.copy_from_slice(data);
+            return;
+        }
+        let (a, b) = self.clip();
+        let end = off.saturating_add(data.len() as u64);
+        let (lo, hi) = (off.max(a), end.min(b));
+        if lo >= hi {
+            return;
+        }
+        // In range: `lo − off < data.len()` and `hi − a ≤ bytes.len()`.
+        let src = &data[(lo - off) as usize..(hi - off) as usize];
+        self.bytes[(lo - a) as usize..(hi - a) as usize].copy_from_slice(src);
+    }
 }
 
 /// The context of `plt_variant` (§3.7).

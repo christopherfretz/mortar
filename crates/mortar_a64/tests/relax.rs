@@ -268,7 +268,13 @@ fn s8_4_r4_gd_to_le() {
     // undefined __tls_get_addr (arch.md §3.4).
     let s = scan(M2, &t, OutputKind::Static, &input, &gd_relocs());
     assert!(s.raised.iter().all(|(_, f)| f.is_empty()), "{:?}", s.raised);
-    assert!(s.undefined.is_empty() && s.errors.is_empty());
+    assert!(s.events.is_empty() && s.errors.is_empty());
+    // Nor a `gnu-warning` event (`spec/image.md` I-19: only surviving
+    // references report events).
+    let mut t = t;
+    t.facts.get_mut(&key(9)).unwrap().gnu_warning = true;
+    let s = scan(M2, &t, OutputKind::Static, &input, &gd_relocs());
+    assert!(s.events.is_empty() && s.errors.is_empty());
 }
 
 #[test]
@@ -333,6 +339,7 @@ fn s8_4_pattern_fails() {
         site: Site { bytes: &input, offset: 0 },
         records: &&relocs[..],
         proof: &proof,
+        leads: true,
     };
     assert!(mortar_a64::relax::gd_lead(&at, &t).is_none(), "o+12 unproved");
     let all = support::all_code(16);
@@ -366,6 +373,7 @@ fn s8_4_pattern_fails() {
                     site: Site { bytes: &input, offset: rr.r_offset },
                     records: &&relocs[..],
                     proof: &all,
+                    leads: true,
                 };
                 M2.unit_window(OutputKind::Static, &at, &t).unwrap()
             })
@@ -405,6 +413,7 @@ fn s8_4_the_call26_member_is_consumed() {
             site: Site { bytes: &input, offset: rr.r_offset },
             records: &&relocs[..],
             proof: &proof,
+            leads: true,
         };
         (
             M2.unit_window(OutputKind::Static, &at, &t).unwrap(),
@@ -431,6 +440,7 @@ fn s8_4_the_call26_member_is_consumed() {
         site: Site { bytes: &input, offset: 8 },
         records: &&relocs[..],
         proof: &proof,
+        leads: true,
     };
     let none = DemandFlags::empty();
     assert!(

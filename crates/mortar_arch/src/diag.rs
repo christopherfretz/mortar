@@ -9,6 +9,7 @@ use mortar_diag::{Diagnostic, FileRef, IncompatibleReason, Key, Kind, Place, Ref
 
 use crate::cx::{ScanError, fill_key, scan_key};
 use crate::error::{FieldError, Incompatible, RefName, Refusal};
+use crate::shapes::Erratum;
 
 /// The feature name of §3.4's overlap refusal.
 pub const OVERLAP: Refusal = Refusal::named(RefusalClass::Feature, "overlapping relocations");
@@ -162,4 +163,31 @@ pub fn chunk(
 ) -> (Key, Diagnostic) {
     let d = field_kind(err, what, target, offset);
     (Key::new(100, 0, u64::from(chunk.0)), d.at(Place::section(output.clone(), section, offset)))
+}
+
+/// The refusal of an erratum candidate that is neither proved code nor
+/// safely skipped (§3.7 `erratum_sites`, a64.md §11.1 condition 5):
+/// `refused`, class `feature`, with a note naming the option that turns
+/// the fix off. The caller adds the place, the candidate's input section
+/// and the offset of `W1` in it (`Unproved.q_unit`, `q_unit_offset`).
+#[must_use]
+pub fn unproved(e: Erratum) -> Diagnostic {
+    let (name, option) = match e {
+        Erratum::E843419 => {
+            ("erratum 843419 scan without mapping symbols", "--no-fix-cortex-a53-843419")
+        }
+        // `Erratum` is `non_exhaustive`; every variant has its own arm.
+        _ => ("erratum scan without mapping symbols", "turning the erratum's fix off"),
+    };
+    Diagnostic::refused(RefusalClass::Feature, name).note(format!(
+        "the candidate cannot be proved code or data; {option} links without the erratum fix"
+    ))
+}
+
+/// The key of [`unproved`]'s diagnostic: `(90, 0, ChunkId)` of the
+/// candidate's input section, because candidates depend on the layout's
+/// addresses (model §8; a64.md §11.1).
+#[must_use]
+pub fn unproved_key(chunk: ChunkId) -> Key {
+    Key::new(90, 0, u64::from(chunk.0))
 }
