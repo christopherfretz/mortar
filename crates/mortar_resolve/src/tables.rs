@@ -243,9 +243,18 @@ fn per_file<'s>(
     let keys = inputs.sym_map_of(id);
     if let Some(t) = symtab {
         if t.globals().len() == keys.len() {
+            let strings = t.strings().bytes();
             for ((index, sym), &key) in t.globals().zip(keys) {
                 if let Err(e) = t.section_of(index, &sym) {
                     out.faults.push(format!("symbol {index}: {e}"));
+                }
+                // The key's name is the entry's name up to its first `@`
+                // (the input phase read every name of this table): only an
+                // entry whose next two bytes are `@@` needs its whole name.
+                let base = inputs.symbols[key].name;
+                let after = (sym.st_name as usize).saturating_add(base.len());
+                if strings.get(after..after.saturating_add(2)) != Some(b"@@".as_slice()) {
+                    continue;
                 }
                 let name = match t.name(&sym) {
                     Ok(name) => name,
@@ -254,7 +263,6 @@ fn per_file<'s>(
                         continue;
                     }
                 };
-                let base = inputs.symbols[key].name;
                 // `foo@@V`: the key is `foo`; `also` is `foo@V`, if a row.
                 if name.len() > base.len() + 2 && name[base.len()..].starts_with(b"@@") {
                     let version = &name[base.len() + 2..];
