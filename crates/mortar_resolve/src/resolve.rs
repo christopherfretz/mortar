@@ -16,9 +16,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, Ordering::Relaxed};
 
 use mortar_core::par::{Pool, split_offsets};
-use mortar_core::resolution::{CommonShape, DropReason, FileLive, SectionKind, SectionRow, SectionState};
+use mortar_core::resolution::{
+    CommonShape, DropReason, FileLive, SectionKind, SectionRow, SectionState,
+};
 use mortar_core::{ComdatId, FileId, IdRange, OptId, SectionId, SymEntry, SymbolId};
-use mortar_elf::consts::{STT_TLS, STB_WEAK};
+use mortar_elf::consts::{STB_WEAK, STT_TLS};
 use mortar_elf::{SectionIndex, SymbolSection};
 
 use crate::comdat::{Keepers, SectionMap, keepers};
@@ -184,7 +186,10 @@ struct Ctx<'a, V> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Effect {
     /// A reference to the key (redirected for an undefined mention).
-    Ref { key: SymbolId, weak: bool },
+    Ref {
+        key: SymbolId,
+        weak: bool,
+    },
     Strong,
     Common,
     Weak,
@@ -291,7 +296,10 @@ pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
         .enumerate()
         .filter(|(_, d)| matches!(d, Def::Common(_)))
         .map(|(k, _)| {
-            let shape = CommonShape { size: acc.csize[k].load(Relaxed), align: acc.calign[k].load(Relaxed) };
+            let shape = CommonShape {
+                size: acc.csize[k].load(Relaxed),
+                align: acc.calign[k].load(Relaxed),
+            };
             (SymbolId(k as u32), shape)
         })
         .collect();
@@ -325,7 +333,16 @@ pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
     let interest: Vec<u8> = pool.map(keys, |k| interest_of(props[k].flags, def[k], opts));
     if interest.iter().any(|&i| i != 0) {
         let rare = d2(&ctx, &live_objects, &interest, pool);
-        several(&ctx, &rare, &def, &interest, &keepers, &mut clash, &mut comdat_mismatch, &mut problems);
+        several(
+            &ctx,
+            &rare,
+            &def,
+            &interest,
+            &keepers,
+            &mut clash,
+            &mut comdat_mismatch,
+            &mut problems,
+        );
     }
 
     // Roots that must be defined (§4.2, §5.5).
@@ -333,7 +350,11 @@ pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
         if named.key.get().is_none_or(|k| def[k.0 as usize].is_undefined()) {
             problems.push(Problem {
                 key: DiagKey::of(FileId::INTERNAL, u64::from(named.arg)),
-                what: What::RequiredSymbol { key: named.key, name: named.name.clone(), arg: named.arg },
+                what: What::RequiredSymbol {
+                    key: named.key,
+                    name: named.name.clone(),
+                    arg: named.arg,
+                },
             });
         }
     }
@@ -719,7 +740,12 @@ fn several<V: View>(
                 let other = word_entry(other.word);
                 problems.push(Problem::at(
                     other,
-                    What::TlsMismatch { key, first: word_entry(first.word), first_tls: first.tls, other },
+                    What::TlsMismatch {
+                        key,
+                        first: word_entry(first.word),
+                        first_tls: first.tls,
+                        other,
+                    },
                 ));
             }
         }
@@ -771,7 +797,9 @@ fn common_warnings<V: View>(
     let Some(def_row) = rows.iter().find(|r| r.word == entry_word(e.file, e.index)) else {
         return;
     };
-    let Some(largest) = commons.iter().copied().max_by(|a, b| a.size.cmp(&b.size).then(b.word.cmp(&a.word))) else {
+    let Some(largest) =
+        commons.iter().copied().max_by(|a, b| a.size.cmp(&b.size).then(b.word.cmp(&a.word)))
+    else {
         return;
     };
     if largest.size > def_row.size {
@@ -815,7 +843,12 @@ fn common_warnings<V: View>(
 }
 
 /// The entry address and `entry-not-found` (§5.5).
-fn entry_point<V: View>(entry: &Entry, def: &[Def], view: &V, problems: &mut Vec<Problem>) -> EntryPoint {
+fn entry_point<V: View>(
+    entry: &Entry,
+    def: &[Def],
+    view: &V,
+    problems: &mut Vec<Problem>,
+) -> EntryPoint {
     let (key, name, arg): (OptId<SymbolId>, &[u8], u32) = match entry {
         Entry::None => return EntryPoint::Default,
         Entry::Default(key) => (*key, b"_start", 0),

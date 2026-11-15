@@ -102,7 +102,13 @@ pub enum What {
     /// `common-larger-than-definition` (§3.3), a warning.
     CommonLarger { key: SymbolId, def: SymEntry, def_size: u64, common: SymEntry, common_size: u64 },
     /// `common-alignment` (§3.3), a warning.
-    CommonAlignment { key: SymbolId, def: SymEntry, def_align: u64, common: SymEntry, common_align: u64 },
+    CommonAlignment {
+        key: SymbolId,
+        def: SymEntry,
+        def_align: u64,
+        common: SymEntry,
+        common_align: u64,
+    },
     /// `multiple-common` (`--warn-common`), a warning.
     MultipleCommon { key: SymbolId, first: SymEntry, second: SymEntry },
     /// `common-overridden` (`--warn-common`), a warning.

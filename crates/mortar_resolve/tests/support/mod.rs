@@ -2,8 +2,8 @@
 //! from real objects and archives (the differential tests).
 #![allow(dead_code)]
 
-use std::collections::HashMap;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -201,7 +201,17 @@ impl Model {
         size: u64,
     ) -> SymbolIndex {
         let index = SymbolIndex(self.files[file.0 as usize].next_index);
-        self.sym_at(file, index, name.as_bytes(), binding, sym_type, STV_DEFAULT, place, value, size);
+        self.sym_at(
+            file,
+            index,
+            name.as_bytes(),
+            binding,
+            sym_type,
+            STV_DEFAULT,
+            place,
+            value,
+            size,
+        );
         index
     }
 
@@ -230,7 +240,17 @@ impl Model {
         };
         let f = &mut self.files[file.0 as usize];
         f.next_index = f.next_index.max(index.0 + 1);
-        f.mentions.push(Mention { index, key, also, binding, sym_type, visibility, place, value, size });
+        f.mentions.push(Mention {
+            index,
+            key,
+            also,
+            binding,
+            sym_type,
+            visibility,
+            place,
+            value,
+            size,
+        });
     }
 
     pub fn set_visibility(&mut self, file: FileId, index: SymbolIndex, visibility: u8) {
@@ -248,7 +268,15 @@ impl Model {
         self.sym(f, name, STB_WEAK, STT_FUNC, SymbolSection::Section(SectionIndex(TEXT)), 0, 4)
     }
     pub fn data(&mut self, f: FileId, name: &str, size: u64) -> SymbolIndex {
-        self.sym(f, name, STB_GLOBAL, STT_OBJECT, SymbolSection::Section(SectionIndex(DATA)), 0, size)
+        self.sym(
+            f,
+            name,
+            STB_GLOBAL,
+            STT_OBJECT,
+            SymbolSection::Section(SectionIndex(DATA)),
+            0,
+            size,
+        )
     }
     pub fn weak_data(&mut self, f: FileId, name: &str, size: u64) -> SymbolIndex {
         self.sym(f, name, STB_WEAK, STT_OBJECT, SymbolSection::Section(SectionIndex(DATA)), 0, size)
@@ -320,7 +348,12 @@ impl Model {
     // ---- ELF -----------------------------------------------------------
 
     /// Reads a relocatable object.
-    pub fn load_object(&mut self, bytes: &[u8], label: &str, kind: FileKind) -> Result<FileId, String> {
+    pub fn load_object(
+        &mut self,
+        bytes: &[u8],
+        label: &str,
+        kind: FileKind,
+    ) -> Result<FileId, String> {
         let obj = Object::parse(bytes).map_err(|e| format!("{label}: {e:?}"))?;
         let n = obj.section_count();
         let mut sections = Vec::with_capacity(n as usize);
@@ -343,7 +376,8 @@ impl Model {
         if let Some(symtab) = symtab {
             for (index, sym) in symtab.globals() {
                 let name = symtab.name(&sym).map_err(|e| format!("{label}: {e:?}"))?;
-                let place = symtab.section_of(index, &sym).map_err(|e| format!("{label}: {e:?}"))?;
+                let place =
+                    symtab.section_of(index, &sym).map_err(|e| format!("{label}: {e:?}"))?;
                 self.sym_at(
                     file,
                     index,
@@ -366,12 +400,12 @@ impl Model {
                 let g = s.group().map_err(|e| format!("{label}: {e:?}"))?;
                 let sym = symtab.get(g.signature()).map_err(|e| format!("{label}: {e:?}"))?;
                 let name = if sym.sym_type() == STT_SECTION {
-                    let at = symtab.section_of(g.signature(), &sym).map_err(|e| format!("{e:?}"))?;
+                    let at =
+                        symtab.section_of(g.signature(), &sym).map_err(|e| format!("{e:?}"))?;
                     match at {
-                        SymbolSection::Section(sec) => self.files[file.0 as usize].sections
-                            [sec.0 as usize]
-                            .name
-                            .clone(),
+                        SymbolSection::Section(sec) => {
+                            self.files[file.0 as usize].sections[sec.0 as usize].name.clone()
+                        }
                         _ => Vec::new(),
                     }
                 } else {
@@ -379,7 +413,12 @@ impl Model {
                 };
                 let signature = self.sig(&name);
                 let members: Vec<u32> = g.members().filter_map(Result::ok).map(|s| s.0).collect();
-                self.files[file.0 as usize].groups.push(SectionIndex(i), g.flags(), signature, &members);
+                self.files[file.0 as usize].groups.push(
+                    SectionIndex(i),
+                    g.flags(),
+                    signature,
+                    &members,
+                );
             }
         }
         Ok(file)
@@ -387,7 +426,12 @@ impl Model {
 
     /// Reads an archive mention: its members in order, lazy (or
     /// `--whole-archive`), in `group` if given.
-    pub fn load_archive(&mut self, path: &Path, whole: bool, group: Option<u32>) -> Result<Vec<FileId>, String> {
+    pub fn load_archive(
+        &mut self,
+        path: &Path,
+        whole: bool,
+        group: Option<u32>,
+    ) -> Result<Vec<FileId>, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let ar = Archive::parse(&bytes).map_err(|e| format!("{}: {e:?}", path.display()))?;
         let archive = self.archive();
@@ -468,7 +512,6 @@ impl View for Model {
     }
 }
 
-
 // ---- processes and traces ----------------------------------------------
 
 pub fn ok(out: &mortar_testutil::Outcome, what: &str) {
@@ -478,7 +521,7 @@ pub fn ok(out: &mortar_testutil::Outcome, what: &str) {
 pub fn exec(program: &Path, args: &[String], dir: &Path) -> mortar_testutil::Outcome {
     let mut c = Command::new(program);
     c.args(args).current_dir(dir);
-    run_with(&mut c, b"", Duration::from_secs(600))
+    run_with(&mut c, b"", Duration::from_mins(10))
 }
 
 pub fn canon(path: &str) -> String {
@@ -508,4 +551,3 @@ pub fn parse_trace(text: &str) -> BTreeSet<String> {
     }
     out
 }
-

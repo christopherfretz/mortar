@@ -80,7 +80,11 @@ impl SectionMap {
     /// The group of section `index`, if it is a member of a COMDAT group.
     #[inline]
     pub fn group_of(&self, index: u32) -> OptId<ComdatId> {
-        if self.any { self.group.get(index as usize).copied().unwrap_or(OptId::NONE) } else { OptId::NONE }
+        if self.any {
+            self.group.get(index as usize).copied().unwrap_or(OptId::NONE)
+        } else {
+            OptId::NONE
+        }
     }
 
     /// Whether section `index` is dropped for its group.

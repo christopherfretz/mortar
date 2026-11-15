@@ -138,7 +138,13 @@ impl Groups {
     }
 
     /// Appends a group with `members`.
-    pub fn push(&mut self, section: SectionIndex, flags: u32, signature: ComdatId, members: &[u32]) {
+    pub fn push(
+        &mut self,
+        section: SectionIndex,
+        flags: u32,
+        signature: ComdatId,
+        members: &[u32],
+    ) {
         let start = self.members.len() as u32;
         self.members.extend_from_slice(members);
         self.groups.push(GroupInfo { section, flags, signature, start, len: members.len() as u32 });

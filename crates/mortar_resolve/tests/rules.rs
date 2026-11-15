@@ -3,6 +3,12 @@
 //! under `check_schedules` (1, 2, 7, 64 threads and seeds) and its closure
 //! is compared with the sequential worklist.
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::similar_names,
+    reason = "files, entries and indexes are short names in the rules' tests"
+)]
+
 mod support;
 
 use mortar_core::par::{Pool, check_schedules};
@@ -10,9 +16,9 @@ use mortar_core::resolution::{DropReason, FileLive, SectionKind, SectionState};
 use mortar_core::{FileId, OptId, SymEntry, SymbolId};
 use mortar_elf::consts::{
     GRP_COMDAT, SHF_ALLOC, SHF_EXCLUDE, SHF_GNU_RETAIN, SHF_LINK_ORDER, SHF_MERGE, SHF_STRINGS,
-    SHF_WRITE, SHT_NOBITS, SHT_NOTE, SHT_PROGBITS, SHT_RELA, STB_GLOBAL, STB_GNU_UNIQUE,
-    STB_LOCAL, STB_WEAK, STT_FUNC, STT_NOTYPE, STT_OBJECT, STT_SECTION, STT_TLS, STV_DEFAULT,
-    STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
+    SHF_WRITE, SHT_NOBITS, SHT_NOTE, SHT_PROGBITS, SHT_RELA, STB_GLOBAL, STB_GNU_UNIQUE, STB_LOCAL,
+    STB_WEAK, STT_FUNC, STT_NOTYPE, STT_OBJECT, STT_SECTION, STT_TLS, STV_DEFAULT, STV_HIDDEN,
+    STV_INTERNAL, STV_PROTECTED,
 };
 use mortar_elf::{Machine, SectionIndex, SymbolIndex, SymbolSection};
 use mortar_resolve::linker::{Provided, TABLE, When};
@@ -103,7 +109,10 @@ fn s3_2_common_beats_weak() {
     let c = m.common(b, "v", 4, 4);
     let r = link(&m);
     assert_eq!(def(&m, &r, "v"), Def::Common(e(b, c)));
-    assert_eq!(r.common, vec![(m.id("v"), mortar_core::resolution::CommonShape { size: 4, align: 2 })]);
+    assert_eq!(
+        r.common,
+        vec![(m.id("v"), mortar_core::resolution::CommonShape { size: 4, align: 2 })]
+    );
 }
 
 #[test]
@@ -139,7 +148,7 @@ fn s3_2_order_is_total() {
         let mut any_ref_strong = false;
         for i in 0..files {
             let f = m.obj(&format!("f{i}.o"));
-            for _ in 0..1 + rnd(3) {
+            for _ in 0..=rnd(3) {
                 let (rank, idx) = match rnd(5) {
                     0 => (1, m.def(f, "K")),
                     1 => (2, m.common(f, "K", 1 + rnd(16), 1 << rnd(4))),
@@ -188,8 +197,10 @@ fn s3_3_alignment_not_power_of_two_is_malformed() {
     let a = m.obj("a.o");
     let i = m.common(a, "v", 4, 12);
     let r = link(&m);
-    assert!(r.problems.iter().any(|p| p.what
-        == What::Malformed { entry: e(a, i), why: MalformedSymbol::CommonAlignment(12) }));
+    assert!(
+        r.problems.iter().any(|p| p.what
+            == What::Malformed { entry: e(a, i), why: MalformedSymbol::CommonAlignment(12) })
+    );
 }
 
 #[test]
@@ -204,8 +215,12 @@ fn s3_3_larger_common_warns_in_both_orders() {
         let r = link(&m);
         assert_eq!(def(&m, &r, "v"), Def::Strong(e(df, d)));
         assert!(r.common.is_empty());
-        let larger: Vec<&What> =
-            r.problems.iter().map(|p| &p.what).filter(|w| matches!(w, What::CommonLarger { .. })).collect();
+        let larger: Vec<&What> = r
+            .problems
+            .iter()
+            .map(|p| &p.what)
+            .filter(|w| matches!(w, What::CommonLarger { .. }))
+            .collect();
         assert_eq!(
             larger,
             vec![&What::CommonLarger {
@@ -229,7 +244,13 @@ fn s3_3_less_aligned_definition_warns() {
     let d = m.data(b, "v", 4);
     let r = link(&m);
     assert!(r.problems.iter().any(|p| p.what
-        == What::CommonAlignment { key: m.id("v"), def: e(b, d), def_align: 4, common: e(a, c), common_align: 16 }));
+        == What::CommonAlignment {
+            key: m.id("v"),
+            def: e(b, d),
+            def_align: 4,
+            common: e(a, c),
+            common_align: 16
+        }));
 }
 
 #[test]
@@ -246,8 +267,16 @@ fn s3_3_warn_common() {
     assert!(quiet.problems.is_empty());
     let r = link_with(&m, &Options { warn_common: true, ..opts() });
     let whats: Vec<&What> = r.problems.iter().map(|p| &p.what).collect();
-    assert!(whats.contains(&&What::MultipleCommon { key: m.id("v"), first: e(a, ca), second: e(b, cb) }));
-    assert!(whats.contains(&&What::CommonOverridden { key: m.id("w"), common: e(a, cw), def: e(c, dw) }));
+    assert!(whats.contains(&&What::MultipleCommon {
+        key: m.id("v"),
+        first: e(a, ca),
+        second: e(b, cb)
+    }));
+    assert!(whats.contains(&&What::CommonOverridden {
+        key: m.id("w"),
+        common: e(a, cw),
+        def: e(c, dw)
+    }));
 }
 
 // ---- §3.4 ------------------------------------------------------------------
@@ -256,11 +285,40 @@ fn s3_3_warn_common() {
 fn s3_4_tls_mismatch_each_direction() {
     // TLS ref / non-TLS def; NOTYPE ref / TLS def; common / TLS def; TLS
     // ref / non-TLS ref with no definition.
-    let cases: [(&dyn Fn(&mut Model, FileId), &dyn Fn(&mut Model, FileId)); 4] = [
-        (&|m, f| { m.undef_typed(f, "x", STT_TLS); }, &|m, f| { m.data(f, "x", 4); }),
-        (&|m, f| { m.undef(f, "x"); }, &|m, f| { m.tls(f, "x"); }),
-        (&|m, f| { m.common(f, "x", 4, 4); }, &|m, f| { m.tls(f, "x"); }),
-        (&|m, f| { m.undef_typed(f, "x", STT_TLS); }, &|m, f| { m.undef_typed(f, "x", STT_OBJECT); }),
+    type Add<'a> = &'a dyn Fn(&mut Model, FileId);
+    let cases: [(Add, Add); 4] = [
+        (
+            &|m, f| {
+                m.undef_typed(f, "x", STT_TLS);
+            },
+            &|m, f| {
+                m.data(f, "x", 4);
+            },
+        ),
+        (
+            &|m, f| {
+                m.undef(f, "x");
+            },
+            &|m, f| {
+                m.tls(f, "x");
+            },
+        ),
+        (
+            &|m, f| {
+                m.common(f, "x", 4, 4);
+            },
+            &|m, f| {
+                m.tls(f, "x");
+            },
+        ),
+        (
+            &|m, f| {
+                m.undef_typed(f, "x", STT_TLS);
+            },
+            &|m, f| {
+                m.undef_typed(f, "x", STT_OBJECT);
+            },
+        ),
     ];
     for (n, (one, two)) in cases.iter().enumerate() {
         for swap in [false, true] {
@@ -342,7 +400,8 @@ fn s3_4_absolute_and_section_definition_clash() {
 fn s3_4_nonlocal_section_symbol_is_malformed() {
     let mut m = Model::new(A64);
     let a = m.obj("a.o");
-    let i = m.sym(a, "s", STB_GLOBAL, STT_SECTION, SymbolSection::Section(SectionIndex(TEXT)), 0, 0);
+    let i =
+        m.sym(a, "s", STB_GLOBAL, STT_SECTION, SymbolSection::Section(SectionIndex(TEXT)), 0, 0);
     let r = link(&m);
     assert_eq!(
         r.problems.iter().map(|p| &p.what).collect::<Vec<_>>(),
@@ -419,7 +478,10 @@ fn s3_6_ref_flags() {
     let w = r.props[m.id("W").0 as usize].flags;
     let s = r.props[m.id("S").0 as usize].flags;
     assert_eq!(w & (flags::REF_REGULAR | flags::REF_STRONG), flags::REF_REGULAR);
-    assert_eq!(s & (flags::REF_REGULAR | flags::REF_STRONG), flags::REF_REGULAR | flags::REF_STRONG);
+    assert_eq!(
+        s & (flags::REF_REGULAR | flags::REF_STRONG),
+        flags::REF_REGULAR | flags::REF_STRONG
+    );
     assert_eq!(def(&m, &r, "W"), Def::Undefined { weak: true });
     assert_eq!(def(&m, &r, "S"), Def::Undefined { weak: false });
 }
@@ -434,12 +496,21 @@ fn s3_7_output_binding_table() {
     assert_eq!(symtab_entry(Def::Strong(x), p(STV_HIDDEN), false), entry(STB_LOCAL, STV_HIDDEN));
     assert_eq!(symtab_entry(Def::Weak(x), p(STV_HIDDEN), false), entry(STB_LOCAL, STV_HIDDEN));
     assert_eq!(symtab_entry(Def::Strong(x), p(STV_DEFAULT), false), entry(STB_GLOBAL, STV_DEFAULT));
-    assert_eq!(symtab_entry(Def::Strong(x), p(STV_DEFAULT), true), entry(STB_GNU_UNIQUE, STV_DEFAULT));
-    assert_eq!(symtab_entry(Def::Common(x), p(STV_PROTECTED), false), entry(STB_GLOBAL, STV_PROTECTED));
+    assert_eq!(
+        symtab_entry(Def::Strong(x), p(STV_DEFAULT), true),
+        entry(STB_GNU_UNIQUE, STV_DEFAULT)
+    );
+    assert_eq!(
+        symtab_entry(Def::Common(x), p(STV_PROTECTED), false),
+        entry(STB_GLOBAL, STV_PROTECTED)
+    );
     assert_eq!(symtab_entry(Def::Weak(x), p(STV_DEFAULT), false), entry(STB_WEAK, STV_DEFAULT));
     let provide = Def::Provide { sym: Provided::Table(0), conditional: false };
     assert_eq!(symtab_entry(provide, p(STV_DEFAULT), false), SymtabEntry::Linker);
-    assert_eq!(symtab_entry(Def::Undefined { weak: true }, p(STV_DEFAULT), false), SymtabEntry::Absent);
+    assert_eq!(
+        symtab_entry(Def::Undefined { weak: true }, p(STV_DEFAULT), false),
+        SymtabEntry::Absent
+    );
 }
 
 #[test]
@@ -469,7 +540,10 @@ fn s3_5_hidden_needs_object_definition() {
     let r = link(&m);
     let k = m.id("zz");
     assert_eq!(r.def[k.0 as usize], Def::Undefined { weak: false });
-    assert_eq!(verdict(k, r.def[k.0 as usize], r.props[k.0 as usize], Unresolved::Ignore, &[]), Verdict::Error);
+    assert_eq!(
+        verdict(k, r.def[k.0 as usize], r.props[k.0 as usize], Unresolved::Ignore, &[]),
+        Verdict::Error
+    );
 }
 
 #[test]
@@ -480,7 +554,10 @@ fn s3_5_hidden_weak_undefined_is_zero() {
     m.set_visibility(a, u, STV_HIDDEN);
     let r = link(&m);
     let k = m.id("zz");
-    assert_eq!(verdict(k, r.def[k.0 as usize], r.props[k.0 as usize], Unresolved::Error, &[]), Verdict::Zero);
+    assert_eq!(
+        verdict(k, r.def[k.0 as usize], r.props[k.0 as usize], Unresolved::Error, &[]),
+        Verdict::Zero
+    );
 }
 
 #[test]
@@ -504,7 +581,10 @@ fn s3_8_duplicate_lists_three_places() {
     let [p] = r.problems.as_slice() else { panic!("{:?}", r.problems) };
     let What::Duplicate { key, defs } = &p.what else { panic!() };
     assert_eq!(*key, m.id("K"));
-    assert_eq!(defs.iter().map(|d| d.entry).collect::<Vec<_>>(), (0..4).map(|i| e(fs[i], idx[i])).collect::<Vec<_>>());
+    assert_eq!(
+        defs.iter().map(|d| d.entry).collect::<Vec<_>>(),
+        (0..4).map(|i| e(fs[i], idx[i])).collect::<Vec<_>>()
+    );
     assert_eq!(p.key, mortar_resolve::problem::DiagKey::at(e(fs[1], idx[1])));
 }
 
@@ -543,9 +623,15 @@ fn corpus(seed: u64, members: usize) -> Model {
         }
         let f = m.member(ar, &format!("m{i}.o"));
         match rnd(4) {
-            0 => { m.weak(f, &format!("f{i}")); }
-            1 => { m.common(f, &format!("f{i}"), 4, 4); }
-            _ => { m.def(f, &format!("f{i}")); }
+            0 => {
+                m.weak(f, &format!("f{i}"));
+            }
+            1 => {
+                m.common(f, &format!("f{i}"), 4, 4);
+            }
+            _ => {
+                m.def(f, &format!("f{i}"));
+            }
         }
         if rnd(3) == 0 {
             m.data(f, &format!("d{}", rnd(members as u64)), 4);
@@ -553,9 +639,15 @@ fn corpus(seed: u64, members: usize) -> Model {
         for _ in 0..rnd(4) {
             let t = rnd(members as u64);
             match rnd(5) {
-                0 => { m.weak_undef(f, &format!("f{t}")); }
-                1 => { m.common(f, &format!("d{t}"), 8, 8); }
-                _ => { m.undef(f, &format!("f{t}")); }
+                0 => {
+                    m.weak_undef(f, &format!("f{t}"));
+                }
+                1 => {
+                    m.common(f, &format!("d{t}"), 8, 8);
+                }
+                _ => {
+                    m.undef(f, &format!("f{t}"));
+                }
             }
         }
     }
@@ -576,14 +668,17 @@ fn s4_1_closure_is_order_independent() {
             order.swap(i, (s >> 33) as usize % (i + 1));
         }
         let mut live = vec![false; m.files.len()];
-        let mut work: Vec<u32> = order.iter().copied().filter(|&f| !m.files[f as usize].info.kind.is_lazy()).collect();
+        let mut work: Vec<u32> =
+            order.iter().copied().filter(|&f| !m.files[f as usize].info.kind.is_lazy()).collect();
         for &f in &work {
             live[f as usize] = true;
         }
         while let Some(f) = work.pop() {
             for mm in &m.files[f as usize].mentions {
                 let t = match mm.place {
-                    SymbolSection::Undefined if mm.binding != STB_WEAK => r.targets.first[mm.key.0 as usize],
+                    SymbolSection::Undefined if mm.binding != STB_WEAK => {
+                        r.targets.first[mm.key.0 as usize]
+                    }
                     SymbolSection::Common => r.targets.cfirst[mm.key.0 as usize],
                     _ => continue,
                 };
@@ -763,7 +858,10 @@ fn s4_2_each_root_option_extracts() {
             _ => Options { entry: Entry::Named(n), ..opts() },
         };
         let r = link_with(&m, &o);
-        assert_eq!(r.file_live[ks.0 as usize], FileLive::Extracted(e(FileId::INTERNAL, SymbolIndex(5))));
+        assert_eq!(
+            r.file_live[ks.0 as usize],
+            FileLive::Extracted(e(FileId::INTERNAL, SymbolIndex(5)))
+        );
         assert!(r.problems.is_empty(), "{:?}", r.problems);
         if which == 2 {
             assert_eq!(r.entry, EntryPoint::Symbol(m.id("K")));
@@ -841,10 +939,34 @@ fn s4_5_common_targets() {
     // later data member (R6: wv.o mc.o libLV.a extracts).
     type Add = fn(&mut Model, FileId);
     let rows: [(&str, Add, bool); 4] = [
-        ("data", |m, f| { m.data(f, "v", 4); }, true),
-        ("function", |m, f| { m.def(f, "v"); }, false),
-        ("common", |m, f| { m.common(f, "v", 8, 8); }, false),
-        ("weak data", |m, f| { m.weak_data(f, "v", 4); }, false),
+        (
+            "data",
+            |m, f| {
+                m.data(f, "v", 4);
+            },
+            true,
+        ),
+        (
+            "function",
+            |m, f| {
+                m.def(f, "v");
+            },
+            false,
+        ),
+        (
+            "common",
+            |m, f| {
+                m.common(f, "v", 8, 8);
+            },
+            false,
+        ),
+        (
+            "weak data",
+            |m, f| {
+                m.weak_data(f, "v", 4);
+            },
+            false,
+        ),
     ];
     for (what, add, extracted) in rows {
         let mut m = Model::new(A64);
@@ -1147,7 +1269,10 @@ fn s7_1_wrap_undefined_mentions_only() {
     let di = m.def(b, "f");
     m.undef(b, "__real_f");
     let _ = fi;
-    let o = Options { wrap: vec![Wrap { sym: m.key("f"), wrap: m.key("__wrap_f"), real: m.key("__real_f") }], ..opts() };
+    let o = Options {
+        wrap: vec![Wrap { sym: m.key("f"), wrap: m.key("__wrap_f"), real: m.key("__real_f") }],
+        ..opts()
+    };
     let r = link_with(&m, &o);
     assert_eq!(r.redirect[m.id("f").0 as usize], m.id("__wrap_f"));
     assert_eq!(r.redirect[m.id("__real_f").0 as usize], m.id("f"));
@@ -1164,7 +1289,10 @@ fn s7_1_real_extracts_target() {
     let ar = m.archive();
     let x = m.member(ar, "f.o");
     m.def(x, "f");
-    let o = Options { wrap: vec![Wrap { sym: m.key("f"), wrap: m.key("__wrap_f"), real: m.key("__real_f") }], ..opts() };
+    let o = Options {
+        wrap: vec![Wrap { sym: m.key("f"), wrap: m.key("__wrap_f"), real: m.key("__real_f") }],
+        ..opts()
+    };
     let r = link_with(&m, &o);
     assert!(live_of(&r, x));
 }
@@ -1180,7 +1308,10 @@ fn s8_1_provided_only_when_referenced() {
     m.key("__bss_start");
     let r = link(&m);
     assert!(matches!(def(&m, &r, "_end"), Def::Provide { conditional: false, .. }));
-    assert_eq!(def(&m, &r, "__start_mysec"), Def::Provide { sym: Provided::Start, conditional: true });
+    assert_eq!(
+        def(&m, &r, "__start_mysec"),
+        Def::Provide { sym: Provided::Start, conditional: true }
+    );
     assert!(def(&m, &r, "__bss_start").is_undefined());
 }
 
@@ -1195,19 +1326,21 @@ fn s8_1_table() {
             let r = link(&m);
             let d = def(&m, &r, name);
             let want = match row.when {
-                When::Always | When::Executable => true,
+                When::Always | When::Executable | When::Conditional => true,
                 When::StaticExecutable => match machine {
                     Machine::I386 => name.starts_with("__rel_iplt"),
                     _ => name.starts_with("__rela_iplt"),
                 },
                 When::Dynamic | When::Later => false,
                 When::AArch64 => machine == Machine::AArch64,
-                When::Conditional => true,
             };
             if want {
                 assert_eq!(
                     d,
-                    Def::Provide { sym: Provided::Table(n as u8), conditional: row.when == When::Conditional },
+                    Def::Provide {
+                        sym: Provided::Table(n as u8),
+                        conditional: row.when == When::Conditional
+                    },
                     "{name} on {machine:?}"
                 );
             } else {
@@ -1287,24 +1420,46 @@ fn s9_4_second_lookup_in_objects() {
 #[test]
 fn s10_classification_table() {
     use SectionKind as K;
+    type Want = Result<(SectionKind, SectionState), ()>;
     let kept = SectionState::Kept;
     let dropped = SectionState::Dropped;
-    let rows: Vec<(MSection, Result<(K, SectionState), ()>)> = vec![
+    let rows: Vec<(MSection, Want)> = vec![
         (MSection::new(".rela.text", SHT_RELA, 0), Ok((K::Reloc, dropped(DropReason::Consumed)))),
-        (MSection::new(".x", SHT_PROGBITS, SHF_ALLOC | SHF_EXCLUDE), Ok((K::Excluded, dropped(DropReason::Excluded)))),
-        (MSection::new(".note.GNU-stack", SHT_PROGBITS, 0), Ok((K::Stack, dropped(DropReason::Consumed)))),
+        (
+            MSection::new(".x", SHT_PROGBITS, SHF_ALLOC | SHF_EXCLUDE),
+            Ok((K::Excluded, dropped(DropReason::Excluded))),
+        ),
+        (
+            MSection::new(".note.GNU-stack", SHT_PROGBITS, 0),
+            Ok((K::Stack, dropped(DropReason::Consumed))),
+        ),
         (MSection::new(".note.gnu.property", SHT_NOTE, SHF_ALLOC), Ok((K::Note, kept))),
-        (MSection::new(".llvm_addrsig", 0x6fff_4c03, 0), Ok((K::Excluded, dropped(DropReason::Consumed)))),
+        (
+            MSection::new(".llvm_addrsig", 0x6fff_4c03, 0),
+            Ok((K::Excluded, dropped(DropReason::Consumed))),
+        ),
         (MSection::new(".deplibs", 0x6fff_4c04, 0), Err(())),
         (MSection::new(".llvm.odrtab", 0x6fff_4c00, 0), Err(())),
-        (MSection::new(".gnu.lto_.x", SHT_PROGBITS, SHF_EXCLUDE), Ok((K::Excluded, dropped(DropReason::Excluded)))),
-        (MSection::new(".gnu.warning", SHT_PROGBITS, 0), Ok((K::Excluded, dropped(DropReason::Consumed)))),
-        (MSection::new(".gnu.warning.gets", SHT_PROGBITS, 0), Ok((K::Excluded, dropped(DropReason::Consumed)))),
+        (
+            MSection::new(".gnu.lto_.x", SHT_PROGBITS, SHF_EXCLUDE),
+            Ok((K::Excluded, dropped(DropReason::Excluded))),
+        ),
+        (
+            MSection::new(".gnu.warning", SHT_PROGBITS, 0),
+            Ok((K::Excluded, dropped(DropReason::Consumed))),
+        ),
+        (
+            MSection::new(".gnu.warning.gets", SHT_PROGBITS, 0),
+            Ok((K::Excluded, dropped(DropReason::Consumed))),
+        ),
         (MSection::new(".gnu.linkonce.t.f", SHT_PROGBITS, SHF_ALLOC), Err(())),
         (MSection::new(".zdebug_info", SHT_PROGBITS, 0), Err(())),
         (MSection::new(".eh_frame", SHT_PROGBITS, SHF_ALLOC), Ok((K::EhFrame, kept))),
         (
-            MSection { entsize: 1, ..MSection::new(".rodata.str1.1", SHT_PROGBITS, SHF_ALLOC | SHF_MERGE | SHF_STRINGS) },
+            MSection {
+                entsize: 1,
+                ..MSection::new(".rodata.str1.1", SHT_PROGBITS, SHF_ALLOC | SHF_MERGE | SHF_STRINGS)
+            },
             Ok((K::Merge, kept)),
         ),
         (MSection::new(".rodata.m0", SHT_PROGBITS, SHF_ALLOC | SHF_MERGE), Ok((K::Regular, kept))),
@@ -1317,7 +1472,10 @@ fn s10_classification_table() {
         (MSection::new(".weird", 0x6000_0001, SHF_ALLOC), Err(())),
         (MSection::new(".flag", SHT_PROGBITS, SHF_ALLOC | 0x0800_0000), Err(())),
         (MSection::new(".purecode", SHT_PROGBITS, SHF_ALLOC | 0x2000_0000), Ok((K::Regular, kept))),
-        (MSection::new(".retain", SHT_PROGBITS, SHF_ALLOC | SHF_GNU_RETAIN), Ok((K::Regular, kept))),
+        (
+            MSection::new(".retain", SHT_PROGBITS, SHF_ALLOC | SHF_GNU_RETAIN),
+            Ok((K::Regular, kept)),
+        ),
     ];
     for (s, want) in rows {
         let name = String::from_utf8_lossy(&s.name).into_owned();

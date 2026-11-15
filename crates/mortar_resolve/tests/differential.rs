@@ -41,10 +41,18 @@ struct Target {
 }
 
 const A64: Target = Target { machine: Machine::AArch64, prefix: "", bfd: "ld.bfd", tag: "" };
-const X64: Target =
-    Target { machine: Machine::X86_64, prefix: "x86_64-linux-gnu-", bfd: "x86_64-linux-gnu-ld.bfd", tag: "64" };
-const X86: Target =
-    Target { machine: Machine::I386, prefix: "i686-linux-gnu-", bfd: "i686-linux-gnu-ld.bfd", tag: "32" };
+const X64: Target = Target {
+    machine: Machine::X86_64,
+    prefix: "x86_64-linux-gnu-",
+    bfd: "x86_64-linux-gnu-ld.bfd",
+    tag: "64",
+};
+const X86: Target = Target {
+    machine: Machine::I386,
+    prefix: "i686-linux-gnu-",
+    bfd: "i686-linux-gnu-ld.bfd",
+    tag: "32",
+};
 
 const HELLO: &str = "#include <stdio.h>\nint main(void){printf(\"hi %d\\n\", 3);return 0;}\n";
 const CXX: &str = r#"#include <iostream>
@@ -69,18 +77,21 @@ int main(int argc, char** argv) {
   return 0;
 }
 "#;
-const FORT_MAIN: &str = "program m\n  common /blk/ a, b\n  real a, b\n  print *, a + b\nend program m\n";
-const FORT_BD: &str = "block data bd\n  common /blk/ a, b\n  real a, b\n  data a, b /1.0, 2.0/\nend block data bd\n";
+const FORT_MAIN: &str =
+    "program m\n  common /blk/ a, b\n  real a, b\n  print *, a + b\nend program m\n";
+const FORT_BD: &str =
+    "block data bd\n  common /blk/ a, b\n  real a, b\n  data a, b /1.0, 2.0/\nend block data bd\n";
 const TPL_H: &str = r"#pragma once
 template <class T> struct Box { T v; T get() const; static int count; };
 template <class T> T Box<T>::get() const { return v + T(count); }
 template <class T> int Box<T>::count = 1;
 template <class T> inline T twice(T x) { return x + x; }
 ";
-const TPL_A: &str = "#include \"tpl.h\"\nint ua(int x) { Box<int> b{x}; return b.get() + twice(x); }\n";
-const TPL_B: &str =
-    "#include \"tpl.h\"\nint ub(long x) { Box<long> b{x}; Box<int> c{1}; return int(b.get()) + c.get() + twice(2); }\n";
-const TPL_MAIN: &str = "int ua(int); int ub(long);\nint main(int c, char**) { return ua(c) + ub(c); }\n";
+const TPL_A: &str =
+    "#include \"tpl.h\"\nint ua(int x) { Box<int> b{x}; return b.get() + twice(x); }\n";
+const TPL_B: &str = "#include \"tpl.h\"\nint ub(long x) { Box<long> b{x}; Box<int> c{1}; return int(b.get()) + c.get() + twice(2); }\n";
+const TPL_MAIN: &str =
+    "int ua(int); int ub(long);\nint main(int c, char**) { return ua(c) + ub(c); }\n";
 
 /// One link line: a driver, its flags, sources compiled into the named
 /// objects, and archives of sources.
@@ -95,12 +106,21 @@ struct Line {
 }
 
 fn line(name: &str, target: Target) -> Line {
-    let (driver, flags, main, archives, headers): (_, &'static [&'static str], _, _, _) = match name {
+    let (driver, flags, main, archives, headers): (_, &'static [&'static str], _, _, _) = match name
+    {
         "chello" => ("gcc", &["-static"], vec![("h.c", HELLO)], vec![], vec![]),
         "spie" => ("gcc", &["-static-pie"], vec![("h.c", HELLO)], vec![], vec![]),
-        "mth" => ("gcc", &["-static", "-lm", "-lpthread", "-ldl"], vec![("m.c", MTH)], vec![], vec![]),
+        "mth" => {
+            ("gcc", &["-static", "-lm", "-lpthread", "-ldl"], vec![("m.c", MTH)], vec![], vec![])
+        }
         "cxx" => ("g++", &["-static"], vec![("x.cc", CXX)], vec![], vec![]),
-        "fort" => ("gfortran", &["-static"], vec![("m.f90", FORT_MAIN)], vec![("libbd.a", vec![("bd.f90", FORT_BD)])], vec![]),
+        "fort" => (
+            "gfortran",
+            &["-static"],
+            vec![("m.f90", FORT_MAIN)],
+            vec![("libbd.a", vec![("bd.f90", FORT_BD)])],
+            vec![],
+        ),
         "tpl" => (
             "g++",
             &["-static"],
@@ -168,7 +188,8 @@ fn walk(args: &[String], dir: &Path) -> (Vec<String>, Vec<Input>, Vec<String>) {
     let mut group: Option<u32> = None;
     let mut groups = 0u32;
     let mut i = 0;
-    let with_arg = ["-m", "-z", "-dynamic-linker", "-e", "-u", "-T", "-y", "-soname", "-rpath", "-L"];
+    let with_arg =
+        ["-m", "-z", "-dynamic-linker", "-e", "-u", "-T", "-y", "-soname", "-rpath", "-L"];
     while i < args.len() {
         let a = args[i].as_str();
         if a == "-plugin" || a == "-o" {
@@ -214,14 +235,24 @@ fn walk(args: &[String], dir: &Path) -> (Vec<String>, Vec<Input>, Vec<String>) {
                 .unwrap_or_else(|| panic!("-l{l} not found in {lib_dirs:?}"));
             add_file(&path, whole, &mut group, &mut groups, &mut inputs);
         } else if !a.starts_with('-') {
-            let path = if Path::new(a).is_absolute() { a.to_owned() } else { dir.join(a).display().to_string() };
+            let path = if Path::new(a).is_absolute() {
+                a.to_owned()
+            } else {
+                dir.join(a).display().to_string()
+            };
             add_file(&path, whole, &mut group, &mut groups, &mut inputs);
         }
     }
     (kept, inputs, undefined)
 }
 
-fn add_file(path: &str, whole: bool, group: &mut Option<u32>, groups: &mut u32, inputs: &mut Vec<Input>) {
+fn add_file(
+    path: &str,
+    whole: bool,
+    group: &mut Option<u32>,
+    groups: &mut u32,
+    inputs: &mut Vec<Input>,
+) {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
     if bytes.starts_with(b"!<arch>\n") {
         inputs.push(Input::Archive { path: path.to_owned(), whole, group: *group });
@@ -231,7 +262,9 @@ fn add_file(path: &str, whole: bool, group: &mut Option<u32>, groups: &mut u32, 
         // A linker script: GROUP ( ... ), INPUT ( ... ), AS_NEEDED ( ... ).
         let text = String::from_utf8_lossy(&bytes);
         let text = strip_comments(&text);
-        let mut words = text.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ',').filter(|w| !w.is_empty());
+        let mut words = text
+            .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ',')
+            .filter(|w| !w.is_empty());
         while let Some(w) = words.next() {
             match w {
                 "GROUP" => {
@@ -305,7 +338,11 @@ fn parse_bfd_map(text: &str) -> (Placed, BTreeSet<String>) {
             current = Some((file_label(words[2]), name));
             continue;
         }
-        if raw.starts_with(' ') && !raw.starts_with("  ") && !words.is_empty() && !words[0].starts_with('*') {
+        if raw.starts_with(' ')
+            && !raw.starts_with("  ")
+            && !words.is_empty()
+            && !words[0].starts_with('*')
+        {
             match words.len() {
                 1 => {
                     pending = Some(words[0].to_owned());
@@ -390,7 +427,11 @@ fn build(l: &Line) -> Option<Built> {
         let path = dir.write(src, text);
         let obj = format!("{}.o", path.display());
         let level = if l.name.starts_with("tpl") { "-O0" } else { "-O1" };
-        let out = exec(&driver, &["-c".into(), level.into(), path.display().to_string(), "-o".into(), obj.clone()], dir.path());
+        let out = exec(
+            &driver,
+            &["-c".into(), level.into(), path.display().to_string(), "-o".into(), obj.clone()],
+            dir.path(),
+        );
         ok(&out, &format!("compiling {src}"));
         obj
     };
@@ -405,7 +446,8 @@ fn build(l: &Line) -> Option<Built> {
     }
     let mut args: Vec<String> = l.flags.iter().map(|s| (*s).to_owned()).collect();
     // Flags like -lm go after the objects.
-    let (libs, flags): (Vec<String>, Vec<String>) = args.drain(..).partition(|a| a.starts_with("-l"));
+    let (libs, flags): (Vec<String>, Vec<String>) =
+        args.drain(..).partition(|a| a.starts_with("-l"));
     let mut all = flags;
     all.push("-###".into());
     all.extend(objs);
@@ -414,7 +456,10 @@ fn build(l: &Line) -> Option<Built> {
     all.push(dir.join("a.out").display().to_string());
     let out = exec(&driver, &all, dir.path());
     let text = out.stderr_text();
-    let cmd = text.lines().find(|l| l.contains("collect2")).unwrap_or_else(|| panic!("no collect2 line:\n{text}"));
+    let cmd = text
+        .lines()
+        .find(|l| l.contains("collect2"))
+        .unwrap_or_else(|| panic!("no collect2 line:\n{text}"));
     let words = split_quoted(cmd);
     let (args, inputs, undefined) = walk(&words[1..], dir.path());
     Some(Built { dir, args, inputs, undefined })
@@ -467,15 +512,23 @@ fn in_group(m: &Model, e: mortar_core::SymEntry) -> bool {
     let Some(mention) = m.mention(e.file, e.index) else { return false };
     let SymbolSection::Section(s) = mention.place else { return false };
     m.files[e.file.0 as usize].groups.groups.iter().any(|g| {
-        g.flags == mortar_elf::consts::GRP_COMDAT && m.files[e.file.0 as usize].groups.members_of(g).contains(&s.0)
+        g.flags == mortar_elf::consts::GRP_COMDAT
+            && m.files[e.file.0 as usize].groups.members_of(g).contains(&s.0)
     })
 }
 
-/// `(compared, mismatched)` of mortar's definers against a map.
-fn definers(m: &Model, r: &Resolved, map: &Placed, skip_groups: bool) -> (usize, Vec<String>, usize) {
+/// Mortar's definers against a map: keys compared and those that differ;
+/// with `skip_groups`, the keys defined in COMDAT groups are counted
+/// apart (compared, differing).
+fn definers(
+    m: &Model,
+    r: &Resolved,
+    map: &Placed,
+    skip_groups: bool,
+) -> (usize, Vec<String>, (usize, usize)) {
     let mut compared = 0;
     let mut bad = Vec::new();
-    let mut group_keys = 0;
+    let mut group_keys = (0, 0);
     for (k, d) in r.def.iter().enumerate() {
         let Some(e) = d.entry() else { continue };
         let name = m.name(mortar_core::SymbolId(k as u32));
@@ -485,20 +538,23 @@ fn definers(m: &Model, r: &Resolved, map: &Placed, skip_groups: bool) -> (usize,
         let Some(mention) = m.mention(e.file, e.index) else { continue };
         let section = match mention.place {
             SymbolSection::Section(s) => {
-                String::from_utf8_lossy(&m.files[e.file.0 as usize].sections[s.0 as usize].name).into_owned()
+                String::from_utf8_lossy(&m.files[e.file.0 as usize].sections[s.0 as usize].name)
+                    .into_owned()
             }
             SymbolSection::Common => "COMMON".to_owned(),
             _ => continue,
         };
         let Some(places) = map.get(&name) else { continue };
         let [(file, sec)] = places.as_slice() else { continue };
+        let ours = m.label(e.file);
+        let sec_ok = sec == &section
+            || (section == "COMMON" && (sec == ".bss" || sec.starts_with("COMMON")));
         if skip_groups && in_group(m, e) {
-            group_keys += 1;
+            group_keys.0 += 1;
+            group_keys.1 += usize::from(file != &ours || !sec_ok);
             continue;
         }
         compared += 1;
-        let ours = m.label(e.file);
-        let sec_ok = sec == &section || (section == "COMMON" && (sec == ".bss" || sec.starts_with("COMMON")));
         if file != &ours || !sec_ok {
             bad.push(format!("{name}: mortar {ours}:{section}, map {file}:{sec}"));
         }
@@ -551,7 +607,7 @@ fn check_line(name: &str, target: Target) {
         .collect();
     let warnings: BTreeSet<&str> = r.problems.iter().map(mortar_resolve::Problem::id).collect();
     println!(
-        "| {} | {} | {} | {} | {} | {} | {} | {} | {}/{} ({} group keys) | {}/{} | {:?} |",
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {}/{} | {}/{} | {}/{} | {:?} |",
         l.name,
         bfd_members.len(),
         lld_members.len(),
@@ -562,21 +618,30 @@ fn check_line(name: &str, target: Target) {
         if sim_members == bfd_members { "equal" } else { "DIFF" },
         bbad.len(),
         bc,
-        bgroup,
+        bgroup.1,
+        bgroup.0,
         mbad.len(),
         mc,
         warnings,
     );
     let only_ours: Vec<&String> = ours.difference(&bfd_members).collect();
     let only_bfd: Vec<&String> = bfd_members.difference(&ours).collect();
-    assert!(only_ours.is_empty() && only_bfd.is_empty(), "{}: mortar only {only_ours:?}, bfd only {only_bfd:?}", l.name);
+    assert!(
+        only_ours.is_empty() && only_bfd.is_empty(),
+        "{}: mortar only {only_ours:?}, bfd only {only_bfd:?}",
+        l.name
+    );
     let sim_only: Vec<&String> = sim_members.symmetric_difference(&bfd_members).collect();
     assert!(sim_only.is_empty(), "{}: simulation differs from bfd: {sim_only:?}", l.name);
     assert!(errors.is_empty(), "{}: {:?}", l.name, r.problems);
     // The line's own archives are extracted (the Fortran BLOCK DATA by
     // its COMMON block alone, §4.5).
     for (lib, _) in &l.archives {
-        assert!(ours.iter().any(|f| f.contains(&format!("/{lib}("))), "{}: nothing from {lib}", l.name);
+        assert!(
+            ours.iter().any(|f| f.contains(&format!("/{lib}("))),
+            "{}: nothing from {lib}",
+            l.name
+        );
     }
     assert!(bbad.is_empty(), "{}: definers differ from ld.bfd: {bbad:#?}", l.name);
     assert!(mbad.is_empty(), "{}: definers differ from mold: {mbad:#?}", l.name);
@@ -613,4 +678,48 @@ lines! {
     s4_3_system_lines_match_gnu_mth32: "mth" X86;
     s4_3_system_lines_match_gnu_cxx32: "cxx" X86;
     s4_3_system_lines_match_gnu_tpl32: "tpl" X86;
+}
+
+/// §15.1 `s12_same_tables_under_seeds_and_threads` over the system
+/// archives: the C++ line on each target, every thread count of
+/// `TEST_THREADS` with ten seeds, equal to one thread; the closure equals
+/// the sequential worklist and the simulation the full visit.
+fn same_tables(target: Target) {
+    let l = line("cxx", target);
+    let Some(built) = build(&l) else { return };
+    let mut m = model(target, &built.inputs);
+    let start = m.key("_start");
+    let opts = Options {
+        entry: Entry::Default(OptId::some(start)),
+        warn_backrefs: true,
+        warn_common: true,
+        ..Options::default()
+    };
+    let reference = resolve(&m, &opts, &Pool::sequential());
+    for threads in mortar_core::par::TEST_THREADS {
+        for i in 0..10u64 {
+            let pool = Pool::sequential()
+                .with_threads(threads)
+                .with_seed(Some(0x9e37_79b9_7f4a_7c15_u64.wrapping_mul(i + 1)));
+            assert!(
+                resolve(&m, &opts, &pool) == reference,
+                "{}: {threads} threads, seed {i}",
+                l.name
+            );
+        }
+    }
+    let roots: Vec<(mortar_core::SymbolId, u32)> =
+        opts.roots().iter().map(|r| (r.key, r.arg)).collect();
+    assert_eq!(
+        mortar_resolve::live::oracle(&m, &reference.targets, &reference.redirect, &roots),
+        reference.file_live
+    );
+    assert_eq!(mortar_resolve::gnu::naive(&m, &opts, &reference), *reference.gnu.as_ref().unwrap());
+}
+
+#[test]
+fn s12_same_tables_under_seeds_and_threads_system() {
+    same_tables(A64);
+    same_tables(X64);
+    same_tables(X86);
 }

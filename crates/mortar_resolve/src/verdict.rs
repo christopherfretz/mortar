@@ -66,7 +66,13 @@ pub enum Verdict {
 /// The verdict for a surviving reference to `key` in an executable.
 /// `ignored` holds the `--ignore-unresolved-symbol` keys, sorted.
 #[must_use]
-pub fn verdict(key: SymbolId, def: Def, props: Props, mode: Unresolved, ignored: &[SymbolId]) -> Verdict {
+pub fn verdict(
+    key: SymbolId,
+    def: Def,
+    props: Props,
+    mode: Unresolved,
+    ignored: &[SymbolId],
+) -> Verdict {
     let Def::Undefined { weak } = def else {
         return Verdict::Defined;
     };

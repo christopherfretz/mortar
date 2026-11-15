@@ -6,11 +6,11 @@ use mortar_elf::Machine;
 use mortar_elf::consts::{
     SHF_ALLOC, SHF_COMPRESSED, SHF_EXCLUDE, SHF_EXECINSTR, SHF_GNU_RETAIN, SHF_GROUP,
     SHF_INFO_LINK, SHF_LINK_ORDER, SHF_MERGE, SHF_STRINGS, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE,
-    SHT_AARCH64_ATTRIBUTES, SHT_DYNAMIC, SHT_DYNSYM, SHT_FINI_ARRAY, SHT_GNU_HASH,
-    SHT_GNU_VERDEF, SHT_GNU_VERNEED, SHT_GNU_VERSYM, SHT_GROUP, SHT_HASH, SHT_INIT_ARRAY,
-    SHT_LLVM_ADDRSIG, SHT_LLVM_CALL_GRAPH_PROFILE, SHT_LLVM_DEPENDENT_LIBRARIES, SHT_NOBITS,
-    SHT_NOTE, SHT_PREINIT_ARRAY, SHT_PROGBITS, SHT_REL, SHT_RELA, SHT_RELR, SHT_STRTAB,
-    SHT_SYMTAB, SHT_SYMTAB_SHNDX, SHT_X86_64_UNWIND,
+    SHT_AARCH64_ATTRIBUTES, SHT_DYNAMIC, SHT_DYNSYM, SHT_FINI_ARRAY, SHT_GNU_HASH, SHT_GNU_VERDEF,
+    SHT_GNU_VERNEED, SHT_GNU_VERSYM, SHT_GROUP, SHT_HASH, SHT_INIT_ARRAY, SHT_LLVM_ADDRSIG,
+    SHT_LLVM_CALL_GRAPH_PROFILE, SHT_LLVM_DEPENDENT_LIBRARIES, SHT_NOBITS, SHT_NOTE,
+    SHT_PREINIT_ARRAY, SHT_PROGBITS, SHT_REL, SHT_RELA, SHT_RELR, SHT_STRTAB, SHT_SYMTAB,
+    SHT_SYMTAB_SHNDX, SHT_X86_64_UNWIND,
 };
 
 use crate::view::SectionInfo;
@@ -133,30 +133,29 @@ pub fn classify(
         return Err(SectionRefusal::Zdebug);
     }
     let unknown = s.flags & !known_flags(machine);
-    let kind = if (machine == Machine::X86_64 && s.sh_type == SHT_X86_64_UNWIND)
-        || name == b".eh_frame"
-    {
-        K::EhFrame
-    } else if s.flags & SHF_MERGE != 0 && matches!(s.sh_type, SHT_PROGBITS) {
-        if s.entsize > 0 { K::Merge } else { K::Regular }
-    } else if !alloc && is_debug_name(name) && s.sh_type == SHT_PROGBITS {
-        K::Debug
-    } else {
-        match s.sh_type {
-            SHT_NOTE => K::Note,
-            SHT_NOBITS => K::Nobits,
-            SHT_PROGBITS | SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY => K::Regular,
-            SHT_STRTAB if alloc => K::Regular,
-            SHT_AARCH64_ATTRIBUTES if machine == Machine::AArch64 => {
-                return Err(SectionRefusal::Aarch64Attributes);
+    let kind =
+        if (machine == Machine::X86_64 && s.sh_type == SHT_X86_64_UNWIND) || name == b".eh_frame" {
+            K::EhFrame
+        } else if s.flags & SHF_MERGE != 0 && matches!(s.sh_type, SHT_PROGBITS) {
+            if s.entsize > 0 { K::Merge } else { K::Regular }
+        } else if !alloc && is_debug_name(name) && s.sh_type == SHT_PROGBITS {
+            K::Debug
+        } else {
+            match s.sh_type {
+                SHT_NOTE => K::Note,
+                SHT_NOBITS => K::Nobits,
+                SHT_PROGBITS | SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY => K::Regular,
+                SHT_STRTAB if alloc => K::Regular,
+                SHT_AARCH64_ATTRIBUTES if machine == Machine::AArch64 => {
+                    return Err(SectionRefusal::Aarch64Attributes);
+                }
+                SHT_DYNAMIC | SHT_DYNSYM | SHT_HASH | SHT_GNU_HASH | SHT_GNU_VERDEF
+                | SHT_GNU_VERNEED | SHT_GNU_VERSYM | SHT_RELR => {
+                    return Err(SectionRefusal::DynamicType(s.sh_type));
+                }
+                other => return Err(SectionRefusal::Type(other)),
             }
-            SHT_DYNAMIC | SHT_DYNSYM | SHT_HASH | SHT_GNU_HASH | SHT_GNU_VERDEF
-            | SHT_GNU_VERNEED | SHT_GNU_VERSYM | SHT_RELR => {
-                return Err(SectionRefusal::DynamicType(s.sh_type));
-            }
-            other => return Err(SectionRefusal::Type(other)),
-        }
-    };
+        };
     if unknown != 0 {
         return Err(SectionRefusal::Flags(unknown));
     }

@@ -54,7 +54,10 @@ const SOURCES: &[(&str, &str)] = &[
     // t10
     ("m10.c", "int g(void); int hx(void); int main(void){return g()+hx();}"),
     // R12
-    ("mv2.c", "__asm__(\".symver foo_v2, foo@V2\"); int foo_v2(void); int main(void){return foo_v2();}"),
+    (
+        "mv2.c",
+        "__asm__(\".symver foo_v2, foo@V2\"); int foo_v2(void); int main(void){return foo_v2();}",
+    ),
     ("mf.c", "int foo(void); int main(void){return foo();}"),
     ("dloc.c", "__asm__(\".symver foo_impl, foo@@V2\"); int foo_impl(void){return 9;}"),
     ("dv.c", "__asm__(\".symver foo_impl, foo@V2\"); int foo_impl(void){return 4;}"),
@@ -62,7 +65,10 @@ const SOURCES: &[(&str, &str)] = &[
 
 const ASM: &[(&str, &str)] = &[
     ("start.s", ".text\n.globl _start\n_start: bl main\n mov x8, #93\n svc #0\n"),
-    ("st.s", ".text\n.globl _start\n_start: bl main\n mov x8, #93\n svc #0\n.globl marker\nmarker: ret\n"),
+    (
+        "st.s",
+        ".text\n.globl _start\n_start: bl main\n mov x8, #93\n svc #0\n.globl marker\nmarker: ret\n",
+    ),
     (
         "gl.s",
         ".section .text.g,\"axG\",%progbits,g,comdat\n.globl g\n.type g,%function\ng: mov w0, #40\n ret\n",
@@ -129,7 +135,18 @@ fn corpus() -> Option<Corpus> {
     for (name, text) in SOURCES.iter().chain(ASM) {
         let src = dir.write(name, text);
         let obj = dir.join(format!("{}.o", &name[..name.len() - 2])).display().to_string();
-        let out = exec(&gcc, &["-c".into(), "-O1".into(), "-fcommon".into(), src.display().to_string(), "-o".into(), obj], dir.path());
+        let out = exec(
+            &gcc,
+            &[
+                "-c".into(),
+                "-O1".into(),
+                "-fcommon".into(),
+                src.display().to_string(),
+                "-o".into(),
+                obj,
+            ],
+            dir.path(),
+        );
         ok(&out, name);
     }
     for (name, members, flags) in ARCHIVES {
@@ -161,7 +178,12 @@ fn run(c: &Corpus, line: &[&str]) -> Run {
     if !line.contains(&"libst.a") {
         let start = dir.join("start.o");
         args.push(start.display().to_string());
-        m.load_object(&std::fs::read(&start).unwrap(), &canon(&start.display().to_string()), FileKind::Object).unwrap();
+        m.load_object(
+            &std::fs::read(&start).unwrap(),
+            &canon(&start.display().to_string()),
+            FileKind::Object,
+        )
+        .unwrap();
     }
     let mut it = line.iter();
     while let Some(&a) = it.next() {
@@ -181,7 +203,7 @@ fn run(c: &Corpus, line: &[&str]) -> Run {
                 args.push(name.into());
                 continue;
             }
-            _ if a.ends_with(".a") => {
+            _ if Path::new(a).extension().is_some_and(|e| e == "a") => {
                 let label = canon(&path.display().to_string());
                 for f in m.load_archive(&path, whole, group).unwrap() {
                     m.files[f.0 as usize].label.clone_from(&label);
@@ -189,7 +211,9 @@ fn run(c: &Corpus, line: &[&str]) -> Run {
             }
             _ => {
                 let label = canon(&path.display().to_string());
-                let f = m.load_object(&std::fs::read(&path).unwrap(), &label, FileKind::Object).unwrap();
+                let f = m
+                    .load_object(&std::fs::read(&path).unwrap(), &label, FileKind::Object)
+                    .unwrap();
                 if let Some(g) = group {
                     m.set_group(f, g);
                 }
@@ -200,7 +224,11 @@ fn run(c: &Corpus, line: &[&str]) -> Run {
     let undefined: Vec<Named> = undefined
         .iter()
         .enumerate()
-        .map(|(i, u)| Named { key: OptId::some(m.key(u)), name: u.as_bytes().into(), arg: i as u32 + 1 })
+        .map(|(i, u)| Named {
+            key: OptId::some(m.key(u)),
+            name: u.as_bytes().into(),
+            arg: i as u32 + 1,
+        })
         .collect();
     let opts = Options {
         entry: Entry::Default(OptId::some(m.key("_start"))),
@@ -211,27 +239,40 @@ fn run(c: &Corpus, line: &[&str]) -> Run {
     let r = mortar_core::par::check_schedules(|pool: &Pool| resolve(&m, &opts, pool));
     let members = (0..m.files() as usize)
         .filter(|&f| {
-            matches!(r.file_live[f], FileLive::Extracted(_)) || m.files[f].info.kind == FileKind::WholeMember
+            matches!(r.file_live[f], FileLive::Extracted(_))
+                || m.files[f].info.kind == FileKind::WholeMember
         })
         .map(|f| short(&m.label(FileId(f as u32))))
         .collect();
     // ld.bfd -t -t lists --whole-archive members too.
-    let sim = r.gnu.as_ref().unwrap().loaded.iter().copied()
-        .chain((0..m.files()).map(FileId).filter(|&f| m.files[f.0 as usize].info.kind == FileKind::WholeMember))
+    let sim = r
+        .gnu
+        .as_ref()
+        .unwrap()
+        .loaded
+        .iter()
+        .copied()
+        .chain(
+            (0..m.files())
+                .map(FileId)
+                .filter(|&f| m.files[f.0 as usize].info.kind == FileKind::WholeMember),
+        )
         .map(|f| short(&m.label(f)))
         .collect();
     args.push("-o".into());
     args.push(dir.join("out").display().to_string());
     let out = exec(&c.bfd, &args, dir);
-    let bfd = out.success().then(|| parse_trace(&out.stdout_text()).iter().map(|s| short(s)).collect());
+    let bfd =
+        out.success().then(|| parse_trace(&out.stdout_text()).iter().map(|s| short(s)).collect());
     Run { m, r, members, sim, bfd }
 }
 
 /// `lib.a(member)` without the directory.
 fn short(label: &str) -> String {
-    Path::new(label.split('(').next().unwrap_or(label))
-        .file_name()
-        .map_or_else(|| label.to_owned(), |f| format!("{}({}", f.to_string_lossy(), label.split_once('(').map_or("", |x| x.1)))
+    Path::new(label.split('(').next().unwrap_or(label)).file_name().map_or_else(
+        || label.to_owned(),
+        |f| format!("{}({}", f.to_string_lossy(), label.split_once('(').map_or("", |x| x.1)),
+    )
 }
 
 fn set(items: &[&str]) -> BTreeSet<String> {
@@ -280,7 +321,13 @@ fn s4_6_simulation_matches_bfd() {
     assert_eq!(def_file(&t1, "K").as_deref(), Some("libt1k.a(ks.o)"));
     case(&c, "t1s", &["mk.o", "libt1k.a", "t1s.o"], &["libt1k.a(ks.o)"], &["duplicate-symbol"]);
     // t2 / t2b (finding 3): GNU ld takes c.o; mortar a.o.
-    let t2 = case(&c, "t2", &["m2.o", "libPA.a", "libPCB.a"], &["libPA.a(pa.o)", "libPCB.a(pb.o)"], &["archive-choice"]);
+    let t2 = case(
+        &c,
+        "t2",
+        &["m2.o", "libPA.a", "libPCB.a"],
+        &["libPA.a(pa.o)", "libPCB.a(pb.o)"],
+        &["archive-choice"],
+    );
     assert_eq!(t2.sim, set(&["libPCB.a(pb.o)", "libPCB.a(pc.o)"]));
     case(&c, "t2b", &["m2.o", "libPAB.a", "libPC.a"], &["libPAB.a(pa.o)", "libPAB.a(pb.o)"], &[]);
     // t10: keeper gl.o; hx only in the dropped copy.
@@ -300,9 +347,21 @@ fn s4_6_simulation_matches_bfd() {
         let r = case(&c, n, line, &["libA.a(a.o)", "libB.a(b.o)"], &["archive-choice"]);
         assert_eq!(def_file(&r, "pick").as_deref(), Some("libA.a(a.o)"));
     }
-    case(&c, "E1 o3", &["main.o", "libABC.a"], &["libABC.a(a.o)", "libABC.a(b.o)"], &["archive-choice"]);
+    case(
+        &c,
+        "E1 o3",
+        &["main.o", "libABC.a"],
+        &["libABC.a(a.o)", "libABC.a(b.o)"],
+        &["archive-choice"],
+    );
     case(&c, "E1 o5", &["main.o", "libBAC.a"], &["libBAC.a(a.o)", "libBAC.a(b.o)"], &[]);
-    case(&c, "E1 o4", &["main.o", "libA2.a", "libB.a", "libC.a"], &["libA2.a(a2.o)", "libB.a(b.o)"], &["duplicate-symbol", "archive-choice"]);
+    case(
+        &c,
+        "E1 o4",
+        &["main.o", "libA2.a", "libB.a", "libC.a"],
+        &["libA2.a(a2.o)", "libB.a(b.o)"],
+        &["duplicate-symbol", "archive-choice"],
+    );
     // E2: mortar reports the duplicate K on all three lines, as mold.
     for (n, a, b, members) in [
         ("E2 libX libY", "libX.a", "libY.a", ["libX.a(m1.o)", "libY.a(m2k.o)", "libY.a(n.o)"]),
@@ -310,7 +369,13 @@ fn s4_6_simulation_matches_bfd() {
         ("E2 lib1 lib2r", "lib1.a", "lib2r.a", ["lib1.a(m1.o)", "lib2r.a(m2k.o)", "lib2r.a(n.o)"]),
     ] {
         let r = run(&c, &["main1.o", a, b]);
-        println!("| {n} | mortar {:?} | simulation {:?} | bfd {:?} | {:?} |", r.members, r.sim, r.bfd, ids(&r.r));
+        println!(
+            "| {n} | mortar {:?} | simulation {:?} | bfd {:?} | {:?} |",
+            r.members,
+            r.sim,
+            r.bfd,
+            ids(&r.r)
+        );
         assert_eq!(r.members, set(&members), "{n}");
         assert!(ids(&r.r).contains(&"duplicate-symbol"), "{n}");
         if let Some(bfd) = &r.bfd {
@@ -324,12 +389,19 @@ fn s4_6_simulation_matches_bfd() {
     assert_eq!(def_file(&r3, "K").as_deref(), Some("libKW.a(kw.o)"));
     case(&c, "R3b", &["mk.o", "libKW.a", "ks.o"], &["libKW.a(kw.o)"], &[]);
     // R4.
-    let r4 = case(&c, "R4", &["mk.o", "libKS.a", "--whole-archive", "libKW.a", "--no-whole-archive"], &["libKS.a(ks.o)", "libKW.a(kw.o)"], &[]);
+    let r4 = case(
+        &c,
+        "R4",
+        &["mk.o", "libKS.a", "--whole-archive", "libKW.a", "--no-whole-archive"],
+        &["libKS.a(ks.o)", "libKW.a(kw.o)"],
+        &[],
+    );
     assert_eq!(def_file(&r4, "K").as_deref(), Some("libKS.a(ks.o)"));
     case(&c, "R4b", &["-u", "K", "m0.o", "libKS.a"], &["libKS.a(ks.o)"], &[]);
     // R5.
     case(&c, "R5", &["mv.o", "libLC.a"], &["libLC.a(lvc.o)"], &[]);
-    let r5 = case(&c, "R5b", &["mv.o", "libLC.a", "libLV.a"], &["libLC.a(lvc.o)", "libLV.a(lv.o)"], &[]);
+    let r5 =
+        case(&c, "R5b", &["mv.o", "libLC.a", "libLV.a"], &["libLC.a(lvc.o)", "libLV.a(lv.o)"], &[]);
     assert_eq!(def_file(&r5, "v").as_deref(), Some("libLV.a(lv.o)"));
     // R6.
     case(&c, "R6 function", &["mc.o", "libLF.a"], &[], &[]);

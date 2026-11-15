@@ -71,11 +71,8 @@ pub(crate) fn targets_with<V: View>(view: &V, kinds: &[FileKind], pool: &Pool) -
             if !class.is_candidate() {
                 continue;
             }
-            let c = if lazy {
-                class == Class::Strong && is_data(m)
-            } else {
-                class == Class::Strong
-            };
+            let c =
+                if lazy { class == Class::Strong && is_data(m) } else { class == Class::Strong };
             for key in [Some(m.key), m.also.get()].into_iter().flatten() {
                 min_u32(&first[key.0 as usize], file.0);
                 if c {
@@ -195,12 +192,11 @@ pub(crate) fn closure<V: View>(
                 }
             },
         );
-        frontier = std::mem::take(&mut *next.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        frontier =
+            std::mem::take(&mut *next.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         frontier.sort_unstable();
     }
-    let live = (0..n)
-        .map(|f| finish(kinds[f], live.get(f), pull[f].load(Relaxed)))
-        .collect();
+    let live = (0..n).map(|f| finish(kinds[f], live.get(f), pull[f].load(Relaxed))).collect();
     Closure { live, rounds }
 }
 

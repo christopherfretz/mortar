@@ -12,9 +12,9 @@ use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering::Rel
 use mortar_core::SymEntry;
 use mortar_elf::SymbolSection;
 use mortar_elf::consts::{
-    STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_COMMON, STT_FILE, STT_FUNC,
-    STT_GNU_IFUNC, STT_NOTYPE, STT_OBJECT, STT_SECTION, STT_TLS, STV_DEFAULT, STV_HIDDEN,
-    STV_INTERNAL, STV_PROTECTED,
+    STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_COMMON, STT_FILE, STT_FUNC, STT_GNU_IFUNC,
+    STT_NOTYPE, STT_OBJECT, STT_SECTION, STT_TLS, STV_DEFAULT, STV_HIDDEN, STV_INTERNAL,
+    STV_PROTECTED,
 };
 
 use crate::problem::{MalformedSymbol, What};
@@ -69,7 +69,8 @@ pub fn classify(m: &Mention, entry: SymEntry) -> (Class, Option<What>) {
     let class = match m.place {
         SymbolSection::Undefined => {
             if m.binding == STB_GNU_UNIQUE {
-                fault = fault.or(Some(What::Malformed { entry, why: MalformedSymbol::UndefinedUnique }));
+                fault = fault
+                    .or(Some(What::Malformed { entry, why: MalformedSymbol::UndefinedUnique }));
             }
             Class::Undefined { weak }
         }

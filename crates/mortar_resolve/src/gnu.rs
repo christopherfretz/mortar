@@ -6,6 +6,8 @@
 //! summarised once, in parallel, so that a pass over an archive reads a
 //! flat list rather than the member's symbol table again.
 
+use std::collections::BTreeSet;
+
 use mortar_core::par::Pool;
 use mortar_core::resolution::FileLive;
 use mortar_core::{FileId, SymEntry, SymbolId};
@@ -63,12 +65,63 @@ struct Walk<'a, V> {
     referrer: Vec<u64>,
     loaded: Vec<bool>,
     buf: Vec<Mention>,
+    /// The lazy files that may load: a key they pull became `undefined`
+    /// (or `common`, for a data definition) since they were last looked at.
+    pending: BTreeSet<u32>,
+    by_key: ByKey,
+    /// Test support: scan every member in every pass (the definition).
+    naive: bool,
+}
+
+/// For each key, the lazy files that pull it, in `FileId` order, with
+/// whether the mention is a non-weak data definition.
+struct ByKey {
+    offsets: Vec<u32>,
+    files: Vec<(u32, bool)>,
+}
+
+impl ByKey {
+    fn new(keys: usize, pulls: &Pulls) -> Self {
+        let mut offsets = vec![0u32; keys + 1];
+        for p in &pulls.items {
+            offsets[p.key as usize + 1] += 1;
+        }
+        for k in 0..keys {
+            offsets[k + 1] += offsets[k];
+        }
+        let mut next = offsets.clone();
+        let mut files = vec![(0, false); pulls.items.len()];
+        for f in 0..pulls.offsets.len() - 1 {
+            for p in pulls.of(f) {
+                let at = &mut next[p.key as usize];
+                files[*at as usize] = (f as u32, p.strong_data);
+                *at += 1;
+            }
+        }
+        Self { offsets, files }
+    }
+
+    fn of(&self, key: usize) -> &[(u32, bool)] {
+        &self.files[self.offsets[key] as usize..self.offsets[key + 1] as usize]
+    }
 }
 
 impl<V: View> Walk<'_, V> {
+    /// Sets a key's state, and makes the files it may now load pending.
+    fn set(&mut self, k: usize, to: State) {
+        self.state[k] = to;
+        if matches!(to, State::Undefined | State::Common) {
+            for &(f, strong_data) in self.by_key.of(k) {
+                if (to == State::Undefined || strong_data) && !self.loaded[f as usize] {
+                    self.pending.insert(f);
+                }
+            }
+        }
+    }
+
     fn raise(&mut self, key: SymbolId, to: State, word: u64) {
         let k = key.0 as usize;
-        self.state[k] = to;
+        self.set(k, to);
         self.definer[k] = word;
     }
 
@@ -87,9 +140,9 @@ impl<V: View> Walk<'_, V> {
                     let k = key.0 as usize;
                     let s = self.state[k];
                     if !weak && matches!(s, State::None | State::WeakUndefined) {
-                        self.state[k] = State::Undefined;
+                        self.set(k, State::Undefined);
                     } else if weak && s == State::None {
-                        self.state[k] = State::WeakUndefined;
+                        self.set(k, State::WeakUndefined);
                     }
                     if !weak && self.referrer[k] == u64::MAX {
                         self.referrer[k] = word;
@@ -135,7 +188,37 @@ impl<V: View> Walk<'_, V> {
 
     /// Scans one archive (its members `members`) in passes until one
     /// loads nothing; whether any pass loaded a member.
+    ///
+    /// A pass visits the members in order and loads those that are
+    /// wanted when visited. Only a pending member can be wanted, so a pass
+    /// visits the pending members of the range in order: one loaded at
+    /// `f` makes the members after `f` it pulls in visited in this pass,
+    /// those before it in the next one, as the full visit would.
     fn scan(&mut self, members: std::ops::Range<usize>, pulls: &Pulls) -> bool {
+        if self.naive {
+            return self.scan_naive(members, pulls);
+        }
+        let end = members.end as u32;
+        let mut any = false;
+        loop {
+            let mut pass = false;
+            let mut at = members.start as u32;
+            while let Some(&f) = self.pending.range(at..end).next() {
+                self.pending.remove(&f);
+                at = f + 1;
+                if !self.loaded[f as usize] && self.wants(pulls.of(f as usize)) {
+                    self.add(FileId(f), false);
+                    pass = true;
+                }
+            }
+            if !pass {
+                return any;
+            }
+            any = true;
+        }
+    }
+
+    fn scan_naive(&mut self, members: std::ops::Range<usize>, pulls: &Pulls) -> bool {
         let mut any = false;
         loop {
             let mut pass = false;
@@ -223,10 +306,28 @@ pub(crate) fn simulate<V: View>(
     keepers: &Keepers,
     pool: &Pool,
 ) -> Simulation {
+    simulate_with(view, kinds, redirect, roots, live, def, keepers, pool, false)
+}
+
+/// [`simulate`]; `naive` visits every member in every pass (test
+/// support: the definition the pending sets are checked against).
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+pub(crate) fn simulate_with<V: View>(
+    view: &V,
+    kinds: &[FileKind],
+    redirect: &[SymbolId],
+    roots: &[Root],
+    live: &[FileLive],
+    def: &[Def],
+    keepers: &Keepers,
+    pool: &Pool,
+    naive: bool,
+) -> Simulation {
     let _ = keepers;
     let keys = view.keys() as usize;
     let n = kinds.len();
     let pulls = pulls(view, kinds, pool);
+    let by_key = ByKey::new(keys, &pulls);
     let mut walk = Walk {
         view,
         redirect,
@@ -235,13 +336,16 @@ pub(crate) fn simulate<V: View>(
         referrer: vec![u64::MAX; keys],
         loaded: vec![false; n],
         buf: Vec::new(),
+        pending: BTreeSet::new(),
+        by_key,
+        naive,
     };
     // `-u`, `--require-defined` and the entry are undefined references
     // before the first file.
     for root in roots {
         let k = root.key.0 as usize;
         if walk.state[k] < State::Undefined {
-            walk.state[k] = State::Undefined;
+            walk.set(k, State::Undefined);
         }
         if walk.referrer[k] == u64::MAX {
             walk.referrer[k] = entry_word(FileId::INTERNAL, mortar_elf::SymbolIndex(root.arg));
@@ -338,7 +442,8 @@ fn report<V: View>(
         .enumerate()
         .filter_map(|(k, d)| {
             let e = d.entry()?;
-            matches!(live[e.file.0 as usize], FileLive::Extracted(_)).then_some((e, SymbolId(k as u32)))
+            matches!(live[e.file.0 as usize], FileLive::Extracted(_))
+                .then_some((e, SymbolId(k as u32)))
         })
         .collect();
     candidates.sort_unstable_by_key(|&(e, k)| (e.file, e.index, k));
@@ -363,7 +468,10 @@ fn report<V: View>(
         match walk.state[k] {
             State::Undefined => {
                 if let Some(referrer) = referrer {
-                    problems.push(Problem::at(e, What::ArchiveBackref { key, member: e.file, referrer }));
+                    problems.push(Problem::at(
+                        e,
+                        What::ArchiveBackref { key, member: e.file, referrer },
+                    ));
                 }
             }
             State::DefinedWeak | State::Common | State::Defined => {
@@ -384,4 +492,22 @@ fn report<V: View>(
         }
     }
     Simulation { loaded, mortar_only, gnu_only, state: walk.state, problems }
+}
+
+/// Test support: the simulation of `resolved` (a result of
+/// [`crate::resolve`] over `view` with `opts`) recomputed by visiting every
+/// member in every pass, the definition the pending sets implement.
+pub fn naive<V: View>(view: &V, opts: &crate::Options, resolved: &crate::Resolved) -> Simulation {
+    let kinds = crate::live::kinds(view);
+    simulate_with(
+        view,
+        &kinds,
+        &resolved.redirect,
+        &opts.roots(),
+        &resolved.file_live,
+        &resolved.def,
+        &resolved.keepers,
+        &Pool::sequential(),
+        true,
+    )
 }
