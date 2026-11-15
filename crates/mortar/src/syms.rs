@@ -165,9 +165,7 @@ impl SymSource for CoreSyms<'_, '_> {
                     .iter()
                     .find(|r| r.name == key.name)
                     .map(|r| r.visibility)
-                    .or_else(|| {
-                        mortar_resolve::linker::start_stop(key.name).map(|p| p.binding().1)
-                    })
+                    .or_else(|| mortar_resolve::linker::start_stop(key.name).map(|p| p.binding().1))
                     .unwrap_or(STV_DEFAULT);
                 let mut g = row(STT_NOTYPE, 0, SymDef::Internal, FileId::INTERNAL, STB_GLOBAL);
                 g.other = (g.other & !3) | stricter(other, table);

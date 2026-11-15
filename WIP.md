@@ -7,11 +7,19 @@
 - fixes: front.rs shstrtab plan was the estimate's (sorted) names; S-122 header case (synth);
   OSABI GNU rule (link.rs structure + SymtabPlan::gnu_symbols); internal syms get table
   visibility (syms.rs, __rela_iplt_* local hidden).
-- gcc -static hello links and runs.
+- linktest: L3 known merge-piece filter (xtask plumb::known_merge_piece); 25 rows flipped.
+- layout: cursors never move back (address.rs); L-159 empty-only output sections have no
+  chunk (chunk.rs + check.rs); L-160 body aligned to island.
+- rulings: missing file = cannot-open alone (walk.rs finish_checks); SHF_COMPRESSED refused
+  (resolve sections.rs); --gc-sections row Supported (liveness refuses when final value on).
+- tests: crates/mortar/tests/image.rs (moved from mortar_image/tests/link.rs),
+  tests/pipeline.rs (program matrix vs GNU ld), tests/support/plumb.rs.
 
-## Learned, not yet written
-- plumb in_section inclusive-end bug + S-17: both fixed on wp/028c-plumb-x64 8804ebe.
-  Filter in harness: R1 whose relocation target is in an SHF_MERGE input section.
+- thunks: link::patches writes Patches chunks (were zeros: a far call crashed); map lists
+  thunk/patch chunks; erratum patches refused by name (W4' not handed to the patch).
+- tests/pipeline.rs: program matrix, far call, determinism (stores x threads x seeds x
+  repeat), time-phases, -M, gc-sections last wins, I-110, over-existing output, entry
+  warning, bare build-id, -gz.
 
 ## Next
-- harness: plumb filter; flip XFAIL rows; move mortar_image tests/link.rs to crates/mortar/tests.
+- linktest rerun, xfail reasons/owners; protoc; debuggers; option rows; bench; record.

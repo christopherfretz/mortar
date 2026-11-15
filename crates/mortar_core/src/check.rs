@@ -762,6 +762,14 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         let cx = self.cx;
         let p = &self.layout.placement;
         let mut taken = Vec::new();
+        let bodies: std::collections::BTreeSet<_> = p
+            .chunks
+            .iter()
+            .filter_map(|(_, c)| match c.kind {
+                ChunkKind::Body(part) => Some(part.out),
+                _ => None,
+            })
+            .collect();
         for (s, row) in cx.resolution.sections.iter() {
             let out = cx.assignment.out(s);
             let needs =
@@ -773,8 +781,20 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             };
             need(needs, r, || "a section that needs no place has one".into(), [Row::Section(s)])?;
             let c = &p.chunks[chunk];
+            let in_body =
+                out.is_some_and(|o| matches!(c.kind, ChunkKind::Body(part) if part.out == o));
+            // layout.md L-159: an empty section whose output section has
+            // no chunk lies in a neighbour, at most at its end, unaligned.
+            let beside = !in_body
+                && cx.shapes.shape(s).is_some_and(|sh| sh.size == 0)
+                && out.is_some_and(|o| !bodies.contains(&o))
+                && c.is_alloc()
+                && u128::from(off) <= u128::from(c.size);
+            if beside {
+                continue;
+            }
             need(
-                out.is_some_and(|o| matches!(c.kind, ChunkKind::Body(part) if part.out == o)),
+                in_body,
                 r,
                 || "the section is not in the body of its output section".into(),
                 [Row::Section(s), Row::Chunk(chunk)],

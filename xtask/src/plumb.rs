@@ -187,9 +187,8 @@ pub fn known_merge_piece(inputs: &[(String, Vec<u8>)], f: &mortar_plumb::Finding
     };
     let Ok(obj) = Object::parse(data) else { return false };
     let Ok(Some(symtab)) = obj.symbols() else { return false };
-    let merge = |o: &Object<'_>, i: SectionIndex| {
-        o.section(i).is_ok_and(|s| s.flags() & SHF_MERGE != 0)
-    };
+    let merge =
+        |o: &Object<'_>, i: SectionIndex| o.section(i).is_ok_and(|s| s.flags() & SHF_MERGE != 0);
     for rs in obj.sections() {
         let Ok(target) = rs.info_section() else { continue };
         if !matches!(rs.sh_type(), SHT_RELA | SHT_REL)
@@ -198,9 +197,11 @@ pub fn known_merge_piece(inputs: &[(String, Vec<u8>)], f: &mortar_plumb::Finding
             continue;
         }
         let syms: Vec<u32> = if rs.sh_type() == SHT_RELA {
-            rs.rela().map(|r| r.iter().filter(|x| x.r_offset == site.offset).map(|x| x.r_sym).collect())
+            rs.rela()
+                .map(|r| r.iter().filter(|x| x.r_offset == site.offset).map(|x| x.r_sym).collect())
         } else {
-            rs.rel().map(|r| r.iter().filter(|x| x.r_offset == site.offset).map(|x| x.r_sym).collect())
+            rs.rel()
+                .map(|r| r.iter().filter(|x| x.r_offset == site.offset).map(|x| x.r_sym).collect())
         }
         .unwrap_or_default();
         for r_sym in syms {

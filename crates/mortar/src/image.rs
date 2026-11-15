@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use mortar_arch::{ProofRun, SymFacts, SymNames};
 use mortar_core::FileId;
-use mortar_core::inputs::{CopyError, Errno};
 use mortar_core::id::SymKey;
+use mortar_core::inputs::{CopyError, Errno};
 use mortar_elf::SectionIndex;
 use mortar_elf::consts::SHF_EXECINSTR;
 use mortar_image::fill::Failed;
@@ -83,7 +83,8 @@ pub fn with_link<T>(
     let f = front;
     let tables = Tables { inputs: &f.inputs, resolution: &f.resolution, assignment: &f.assignment };
     let merge_eh = MergeEh::new(&f.merge.eh, &tables)?;
-    let core = CoreSections { resolution: &f.resolution, liveness: &f.liveness, split: &f.merge.split };
+    let core =
+        CoreSections { resolution: &f.resolution, liveness: &f.liveness, split: &f.merge.split };
     let sections = LinkSections { core, assignment: &f.assignment };
     let syms = CoreSyms::new(&f.inputs, &f.resolution, &f.assignment);
     let cx = SymCtx {
@@ -161,6 +162,7 @@ pub fn with_link<T>(
             output,
             separate_code: f.options.separate_code,
             build_id: f.plan.shaping.build_id.as_ref().and_then(link::tree_style),
+            bti: s.property.value_u32(mortar_a64::FEATURE_1_AND) & mortar_a64::FEATURE_1_BTI != 0,
         },
     };
     Ok(go(&link))
@@ -198,8 +200,8 @@ pub fn write(
     let opts = output_options(store);
     match with_link(front, store, before_recheck, |l| link::write(l, path, &opts, on_phase)) {
         Ok(w) => w,
-        Err(e) => Err(Failed {
-            diagnostics: vec![(mortar_synth::error::key(0), e.into_diagnostic())],
-        }),
+        Err(e) => {
+            Err(Failed { diagnostics: vec![(mortar_synth::error::key(0), e.into_diagnostic())] })
+        }
     }
 }

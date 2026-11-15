@@ -593,6 +593,12 @@ buffer; the clip only selects which of them a job writes.
   `write(cx, range, out)` for the clip (§13). `Patches` chunks (islands,
   thunks, erratum patches) are synthetic chunks of `mortar_arch`'s
   `write_*` (`spec/arch.md` §6), with the key `(100, 0, ChunkId)`.
+  WP-027c writes them whole before fill (`link::patches`): each thunk by
+  `write_thunk` with its target as the fixed point computed it, zero
+  between patches. An erratum patch is refused by name
+  (`unsupported feature: erratum 843419 patches`) until fill hands the
+  site's `W4'` to it (`spec/a64.md` §11.2). A thunk's target word is not
+  proved at this point, so in a BTI output `thunk_target_ok` refuses it.
 - **I-40 [M1] Structural units.** The ELF header, the program header
   table and the section header table are written by the image from
   `Placement` and the output kind: `e_entry` from `Placement.entry`;
@@ -1352,8 +1358,10 @@ random input's).
     section, share an address; ties by section, then input offset).
   - `.eh_frame`'s pieces are its kept records (S-49), each at its output
     address with its output size.
-  - Not yet written: `fold` (M2) and the `thunk`/`patch` chunk records
-    with their targets (range extension's, WP-027c). `common` is not a
+  - `thunk` and `patch` chunks: one record per `Placement.patches` row,
+    named as `.symtab` names it (S-80), a thunk with its target's name
+    (`@plt` appended for a PLT target) and addend (WP-027c).
+  - Not yet written: `fold` (M2). `common` is not a
     chunk of its own in M1 (commons are placed in `.bss`, layout §8).
 - **I-79 [M1]** The map is a function of the tables and the file names,
   written after layout and independent of fill. Each record group is

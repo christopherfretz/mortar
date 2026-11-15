@@ -106,6 +106,9 @@ pub struct LinkOptions {
     /// The build id's tree ([`tree_style`] of `plan.shaping.build_id`);
     /// `None` without a hashed note.
     pub build_id: Option<TreeStyle>,
+    /// The output's BTI property is set (a thunk's target must be a
+    /// landing pad, `Arch::thunk_target_ok`).
+    pub bti: bool,
 }
 
 /// The tree of a `--build-id` style (I-72); `None` for a style the
@@ -701,6 +704,82 @@ impl OutSection {
     }
 }
 
+/// The bytes of the `Patches` chunks with file bytes (I-39), by chunk:
+/// each thunk written by `Arch::write_thunk` at its offset, with its
+/// target `T` as layout's fixed point computed it (`S + A` of the key, the
+/// IPLT entry of an IFUNC; a `Plt` target's entry), and zero between
+/// patches.
+///
+/// An erratum patch is refused by name: its first word `W4'` is the word
+/// fill computes for the site (`spec/a64.md` §11.2), which the image does
+/// not yet hand to the patch.
+///
+/// # Errors
+///
+/// The refusals; `internal-error` when a patch lies outside its chunk or
+/// a thunk cannot be encoded.
+fn patches(
+    link: &Link<'_, '_>,
+    tables: &LinkTables<'_, '_>,
+) -> Result<std::collections::BTreeMap<ChunkId, Box<[u8]>>, Diagnostic> {
+    use mortar_core::layout::{PatchKind, ThunkTarget};
+    let pl = &link.layout.placement;
+    let mut out: std::collections::BTreeMap<ChunkId, Box<[u8]>> = std::collections::BTreeMap::new();
+    for (id, c) in pl.chunks.iter() {
+        if matches!(c.kind, ChunkKind::Patches(_)) && c.in_file() && c.size > 0 {
+            let size = usize::try_from(c.size)
+                .map_err(|_| internal("image: a patch island larger than memory"))?;
+            out.insert(id, vec![0u8; size].into_boxed_slice());
+        }
+    }
+    for p in &pl.patches {
+        let target = match p.kind {
+            PatchKind::Thunk(ThunkTarget::Plt(key)) => tables.plt(key),
+            PatchKind::Thunk(ThunkTarget::Sym { key, addend }) => {
+                Some(tables.sym(key).s.wrapping_add_signed(addend))
+            }
+            PatchKind::Erratum { .. } => {
+                return Err(mortar_arch::Refusal::named(
+                    mortar_diag::RefusalClass::Feature,
+                    "erratum 843419 patches (a site the ADR fix cannot reach)",
+                )
+                .diagnostic());
+            }
+        };
+        let Some(target) = target else {
+            return Err(internal(format!("image: a thunk at chunk {} has no target", p.chunk.0)));
+        };
+        let Some(shape) = link.arch.thunk() else {
+            return Err(internal("image: a thunk for an architecture without thunks"));
+        };
+        let Some(addr) = pl.chunks.get(p.chunk).and_then(|c| c.addr?.checked_add(p.offset)) else {
+            return Err(internal(format!("image: a thunk in chunk {} has no address", p.chunk.0)));
+        };
+        let cx = mortar_arch::PatchCx {
+            addr,
+            target,
+            site: 0,
+            word: 0,
+            bti: link.options.bti,
+            target_word: None,
+            target_abs: false,
+        };
+        link.arch.thunk_target_ok(&cx).map_err(|r| r.diagnostic())?;
+        let bytes = out.get_mut(&p.chunk).ok_or_else(|| {
+            internal(format!("image: a thunk in chunk {}, not a patch island", p.chunk.0))
+        })?;
+        let range = usize::try_from(p.offset)
+            .ok()
+            .and_then(|s| Some(s..s.checked_add(usize::try_from(shape.size).ok()?)?))
+            .filter(|r| r.end <= bytes.len())
+            .ok_or_else(|| internal(format!("image: a thunk past its island {}", p.chunk.0)))?;
+        link.arch.write_thunk(&cx, &mut bytes[range]).map_err(|e| {
+            internal(format!("image: the thunk at {addr:#x} to {target:#x}: {e:?}"))
+        })?;
+    }
+    Ok(out)
+}
+
 /// The bytes of the three structural chunks (I-40): the ELF header, the
 /// program header table and the section header table, by chunk.
 ///
@@ -968,7 +1047,8 @@ pub fn write(
     on_phase: &mut dyn FnMut(u16, &str),
 ) -> Result<Written, Failed> {
     let tables = LinkTables::new(*link);
-    let fixed = structure(link).map_err(failed)?;
+    let mut fixed = structure(link).map_err(failed)?;
+    fixed.append(&mut patches(link, &tables).map_err(failed)?);
     let chunks = Chunks::new(link);
     let pl = &link.layout.placement;
     let mut list: Vec<&(dyn SynthChunk + Sync)> = Vec::new();
@@ -1091,8 +1171,7 @@ pub fn write(
 // ---- the map (§9.2) --------------------------------------------------------
 
 /// The map of a link (I-77, I-78; `spec/plumb.md` §3.2), from the tables
-/// alone (I-79: independent of fill). Not yet listed: thunk and patch
-/// chunks (range extension's, with their targets) and folds (M2).
+/// alone (I-79: independent of fill). Not yet listed: folds (M2).
 #[must_use]
 pub fn map_of(link: &Link<'_, '_>) -> crate::map::Map {
     LinkTables::new(*link).map()
@@ -1232,6 +1311,48 @@ impl LinkTables<'_, '_> {
                     target: None,
                 });
             }
+        }
+        // Range extension's thunks and erratum patches (I-78), in patch
+        // order, named as `.symtab` names them (S-80).
+        let thunk_size = l.arch.thunk().map_or(0, |t| u64::from(t.size));
+        for p in &pl.patches {
+            use mortar_core::layout::{PatchKind, ThunkTarget};
+            let addr = pl.chunks.get(p.chunk).and_then(|c| c.addr?.checked_add(p.offset));
+            let chunk = match p.kind {
+                PatchKind::Thunk(t) => {
+                    let (key, addend, plt) = match t {
+                        ThunkTarget::Sym { key, addend } => (key, addend, false),
+                        ThunkTarget::Plt(key) => (key, 0, true),
+                    };
+                    let mut target = l.facts.name(key).to_vec();
+                    if plt {
+                        target.extend_from_slice(b"@plt");
+                    }
+                    let mut name = b"__".to_vec();
+                    name.extend_from_slice(&target);
+                    if addend > 0 {
+                        name.extend_from_slice(format!("+{addend:#x}").as_bytes());
+                    } else if addend < 0 {
+                        name.extend_from_slice(format!("-{:#x}", addend.unsigned_abs()).as_bytes());
+                    }
+                    name.extend_from_slice(b"_veneer");
+                    MapChunk {
+                        kind: map::ChunkKind::Thunk,
+                        name,
+                        addr,
+                        size: thunk_size,
+                        target: Some((target, addend)),
+                    }
+                }
+                PatchKind::Erratum { erratum, .. } => MapChunk {
+                    kind: map::ChunkKind::Patch,
+                    name: mortar_synth::symtab::ERRATUM_843419.to_vec(),
+                    addr,
+                    size: l.arch.patch(erratum).map_or(0, |s| u64::from(s.size)),
+                    target: None,
+                },
+            };
+            m.chunks.push(chunk);
         }
         for d in &pl.defined {
             if let (Some(k), Some(v)) = (l.inputs.symbols.get(d.symbol), pl.defined_of(d.symbol)) {

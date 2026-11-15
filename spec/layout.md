@@ -512,6 +512,28 @@ order of the output sections themselves is in §10.
   `__EH_FRAME_BEGIN__` to that terminator without `.eh_frame_hdr`.
   `synth.md` owns CIE de-duplication and the removal of dead FDEs. Both
   keep this order for what remains.
+- **L-159 [C] (empty input sections; synth.md R-L6, WP-027c)** A live
+  input section of size 0 is placed like any other, at its output
+  section's position in stage B order, aligned to its `sh_addralign`, and
+  its output section's size covers its place. An allocated output section
+  whose live members are all empty, with no merged, common, synthetic or
+  kept content, has no chunk (so no section header and no segment: a
+  link with no writable data has no RW `PT_LOAD`, and none is empty).
+  Its members are placed at the end of the last chunk before it in
+  `order` of the same rank and load class (an island or the RELRO
+  padding, whose sizes come later, is passed over), or else at the start
+  of the first such chunk after it, or else beside the nearest allocated
+  chunk; with no alignment applied, so that the place is at most that
+  chunk's end. Their labels take that chunk's section index
+  (`__TMC_END__` of crtend.o's empty `.tm_clone_table`, for example, is
+  in `.data`). `Layout::check` accepts exactly this place for an empty
+  section whose output section has no chunk.
+- **L-160 [C] (body before an island)** On a target with islands
+  (L-115), a code output section's body chunk is aligned to at least the
+  island's alignment: the section's `sh_addralign` is the largest of its
+  chunks', and its `sh_addr` must be a multiple of it (gABI "Sections").
+  An empty `.text` (alignment 1) before a 4-aligned island otherwise
+  gives `sh_addr` ≡ 1 (mod 4) with `sh_addralign` 4.
 
 ## 10. Output section order
 
@@ -667,8 +689,11 @@ order of the output sections themselves is in §10.
   the file: `offset = prev_offset_end + (addr − prev_end)`. Here `a_k`
   is the chunk's *effective alignment*: its own alignment, except that
   the first TLS chunk's is `T` (L-76); `pad_k` is the 843419 start
-  padding (L-118), 0 for every other chunk. NOBITS chunks advance the
-  address only. The file never contains bytes for a NOBITS chunk, and a
+  padding (L-118), 0 for every other chunk. An empty chunk's end is its
+  aligned address, so neither the address nor the file offset ever moves
+  back (WP-027c: an empty 8-aligned chunk had left the next one below it,
+  and the segment's file image over a non-alloc section). NOBITS chunks
+  advance the address only. The file never contains bytes for a NOBITS chunk, and a
   PROGBITS chunk never follows a NOBITS one within a segment: the rank
   table puts NOBITS last in each segment. `.tbss` is the exception,
   because it takes no address space (L-77). A layout with a PROGBITS

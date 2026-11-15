@@ -29,7 +29,6 @@ use mortar_image::synth::{Division, SizeCx, SynthChunk, SynthCx, SynthError};
 use mortar_image::target::Target;
 use mortar_image::tombstone;
 
-pub mod front;
 pub mod reflink;
 
 pub const ARCH: A64 = A64::M1;

@@ -99,7 +99,7 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[g("eh-frame-hdr")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::EhFrameHdr(true), "Write .eh_frame_hdr and PT_GNU_EH_FRAME"),
     r(&[g("no-eh-frame-hdr")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::EhFrameHdr(false), "Write no .eh_frame_hdr"),
     r(&[g("package-metadata")], Arg::Optional(Values::Any), "JSON", GM, &[], Group::Output, Refused, Lands::Other, "Write a .note.package note"),
-    r(&[g("gc-sections")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::GcSections(true), "Remove sections nothing refers to"),
+    r(&[g("gc-sections")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::GcSections(true), "Remove sections nothing refers to"),
     r(&[g("no-gc-sections")], Arg::None, "", GLM, &[], Group::Output, Supported, Lands::GcSections(false), "Keep every section (default)"),
     r(&[g("print-gc-sections")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Other, "List the sections --gc-sections removes"),
     r(&[g("no-print-gc-sections")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Other, "Do not list removed sections (default)"),

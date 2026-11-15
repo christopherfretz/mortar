@@ -1646,7 +1646,7 @@ allocated chunk, so their size moves no address."
 Reason: S-2, S-80.
 
 **R-L6. §9, empty input sections.**
-*Not applied: whether `mortar_layout` places empty input sections as proposed was not verified by WP-027a (its record lists it).*
+*Applied by WP-027c as `spec/layout.md` L-159.*
 Current: (no rule)
 Proposed: add to §9 "- **L-n [C] (empty input sections)** A live input
 section of size 0 is placed like any other, at its output section's
