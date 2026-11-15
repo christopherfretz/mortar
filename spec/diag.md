@@ -1,6 +1,8 @@
 # spec: mortar_diag
 
-Status: normative (WP-007, crate `crates/mortar_diag`). "MUST" and "SHOULD"
+Status: normative (WP-007, crate `crates/mortar_diag`; the relocation
+kinds, `undefined-symbol` as the scan reports it and `internal-error` by
+WP-020c, for `spec/arch.md` §7 and §10). "MUST" and "SHOULD"
 carry their RFC 2119 meanings. Every test in `crates/mortar_diag` names the
 section it checks with a `// spec: diag.md §N` comment; §11 maps sections
 to tests.
@@ -43,7 +45,12 @@ going on pointless is an error and the phase that found it returns; the
 link stops at the next poll of §7. What other tools print as a note is a
 context line of the diagnostic it belongs to (§2.4), so that a diagnostic
 is one value and its lines cannot be interleaved with another's. A bug of
-mortar's is a panic, not a diagnostic (`docs/AGENTS.md`, rule 5).
+mortar's is a panic, not a diagnostic (`docs/AGENTS.md`, rule 5), with one
+exception: a table that a check finds in violation of its own validity
+rules (`spec/model.md` §4.4, `Layout::check`) is reported as
+`internal-error` (§3.2). The check runs on data, in production as well as
+in tests, so its finding is a value to report, and the link then fails
+like any other: status 1, no output file (§7).
 
 ### 2.2 Kind and id
 
@@ -130,8 +137,9 @@ it is created on a worker thread and outlives the inputs it describes.
 
 ### 3.1 The table
 
-`{x}` is the field `x` after §5.5; `{name}` of the two symbol kinds goes
-through §5.4. The wording column is the message of §5.2, complete: nothing
+`{x}` is the field `x` after §5.5; `{name}` of the kinds that name a
+symbol (`duplicate-symbol`, `undefined-symbol`, `relocation-incompatible`,
+`relocation-out-of-range`) goes through §5.4. The wording column is the message of §5.2, complete: nothing
 is added before or after it.
 
 | id | variant | message | wording from |
@@ -149,8 +157,12 @@ is added before or after it.
 | `malformed-input` | `Malformed { what }` | `{what}` | lld's shape |
 | `unknown-file-type` | `UnknownFileType` | `unknown file type` | lld, mold |
 | `duplicate-symbol` | `DuplicateSymbol { name }` | `duplicate symbol: {name}` | lld |
-| `undefined-symbol` | `UndefinedSymbol { name }` | `undefined symbol: {name}` | lld, mold |
+| `undefined-symbol` | `UndefinedSymbol { name }` | `undefined reference to '{name}'` | GNU ld (``undefined reference to `name'``) |
+| `relocation-incompatible` | `RelocationIncompatible { r_type, name, reason }` | `relocation {r_type} cannot be used against symbol '{name}'; {reason}` | lld's shape, with a reason (§3.2) |
+| `relocation-misaligned` | `RelocationMisaligned { r_type, value, align }` | `improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes` | lld |
+| `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation {r_type} out of range: {value} is not in [{min}, {max}]; references '{name}'` | lld |
 | `refused` | `Refused { class, name }` | `unsupported {noun of class}: {name}` (§4) | own (§8.2) |
+| `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
 
 ### 3.2 Notes on the kinds
 
@@ -182,9 +194,59 @@ is added before or after it.
   format it can name and does not read is `refused` with class
   `file-format`.
 - `duplicate-symbol` and `undefined-symbol` carry the symbol-table name.
-  Where the definitions or references are is context (`DefinedIn`,
-  `ReferencedBy`); how many of them a diagnostic lists is decided by
+  For `duplicate-symbol`, where the definitions are is context
+  (`DefinedIn`); how many of them a diagnostic lists is decided by
   `spec/resolve.md`.
+- `undefined-symbol` is reported by the relocation scan (`spec/arch.md`
+  §3.4), not by resolution: **one diagnostic per reference**, emitted
+  `.at` the place of the reference (`file:(section+0xoff)`), at phase 70
+  with the scan's key `(70, FileId, section index × 2^32 + record index)`
+  (`spec/model.md` §8). The message contains GNU ld's phrase
+  `undefined reference to` verbatim, with the name in single quotes (§8.2),
+  so `ld: error: undef.o:(.text+0xc): undefined reference to 'missing'`.
+  It is an error, or a warning where `spec/resolve.md` says so
+  (`--warn-unresolved-symbols`); a hidden undefined symbol with a
+  surviving reference is always an error (`spec/arch.md` §3.4).
+- The **relocation kinds** are reported with `.at` the relocation's place
+  (`file:(section+0xoff)`); for a synthetic chunk (a PLT entry, a thunk, a
+  patch) the place is the output section and offset. `{r_type}` is the
+  type's ABI name (`R_AARCH64_CALL26`), or `0x…` for a number without one.
+  `{name}` is the target's symbol-table name; for a section symbol it is
+  the section and offset (`.text+0x40`); for a branch through the PLT it is
+  the symbol's name. `{value}`, `{min}`, `{max}` (`i64`) and `{align}`
+  (`u64`) are printed in decimal, negative values with `-`, as lld prints
+  them; for ELFCLASS32 the value is the 32-bit-reduced one
+  (`spec/arch.md` §2.3). Who emits which, with which key, is
+  `spec/arch.md` §7's: `relocation-incompatible` at scan (phase 70), the
+  other two at fill (phase 100).
+- `relocation-incompatible`'s `{reason}` is one of a closed list,
+  `IncompatibleReason`, which a test compares instead of the text:
+
+  | variant | words |
+  |---|---|
+  | `RecompileFpic` | `recompile with -fPIC` |
+  | `RecompileFpie` | `recompile with -fPIE` |
+  | `ReadOnlySection` | `it is in a read-only section` |
+  | `AddendMustBeZero` | `the addend must be 0` |
+  | `NotThreadLocal` | `it is not thread-local` |
+  | `ThreadLocal` | `it is thread-local` |
+  | `LocalExecInShared` | `local-exec TLS in a shared object` |
+  | `InstructionMismatch` | `the instruction does not match the relocation` |
+  | `NonAlloc` | `not allowed in a non-allocated section` |
+
+  A reason is added like a refusal class (§4.1): the variant, the row, the
+  test.
+- `internal-error` is a bug of mortar's that a check of its own data
+  found (§2.1): today, a layout mortar computed that `Layout::check`
+  rejects (`spec/model.md` §4.4). `{what}` names the table, the rule and
+  what is wrong (`invalid layout: §4.4 rule 1: a live section has no
+  place`); the rows involved are notes. Like `refused` it is always an
+  error (`Diagnostic::warning` of it is an error, and `-w` cannot hide it):
+  an output written from data mortar knows to be wrong would be a wrong
+  link. It has no place: the input is not at fault. A layout *loaded from a
+  link state* that fails the same check is not an internal error but
+  untrusted input that is not reused (phase 15, `spec/incr.md`); the
+  incremental phase reports it in its own terms.
 
 ### 3.3 Adding a kind
 
@@ -193,7 +255,8 @@ id in `Kind::id` and `Kind::IDS`, its message in the renderer, its row in
 §3.1, and a test of its exact text in `tests/kinds.rs`.
 
 - Variants, rows and tests are grouped by area (command line, files, file
-  formats, symbols, refusals) and sorted by id inside an area. A new one is
+  formats, symbols, relocations, refusals, internal) and sorted by id
+  inside an area. A new one is
   **inserted at its place, not appended**: two branches that add different
   kinds then touch different lines.
 - The wording follows §8.2: an existing linker's wording where one fits
@@ -321,9 +384,9 @@ uses the model, not the text (§5.7).
 
 The head line starts with the diagnostic's place when it has one
 (`.at`): `ld: error: foo.o:(.rela.text+0x18): unsupported relocation type:
-0x999`. A diagnostic about a symbol (`undefined-symbol`,
-`duplicate-symbol`) names its places in context lines instead, one per
-reference or definition.
+0x999`. `undefined-symbol` and the relocation kinds are one diagnostic per
+reference and start with its place (§3.2). `duplicate-symbol` names its
+places in context lines instead, one per definition.
 
 ### 5.4 Symbol names and the demangling hook
 
@@ -339,9 +402,8 @@ never calls it.
   `>>> mangled name: <name>`. Symbol places get no such line.
 
 ```text
-ld: error: undefined symbol: ns::f(int, char)
+ld: error: cxx.o:(.text+0x18): undefined reference to 'ns::f(int, char)'
 >>> mangled name: _ZN2ns1fEic
->>> referenced by cxx.o:(.text+0x18)
 ```
 
 `no_demangling` is the hook that always answers `None`; it is what
@@ -371,7 +433,7 @@ true the severity word and its colon are wrapped, and nothing else is:
 | error (and the limit line) | `ESC [ 0 ; 3 1 m` | `error:` | `ESC [ 0 m` |
 | warning | `ESC [ 0 ; 3 5 m` | `warning:` | `ESC [ 0 m` |
 
-so `ld: \x1b[0;31merror:\x1b[0m undefined symbol: f`. The sequences are
+so `ld: \x1b[0;31merror:\x1b[0m undefined reference to 'f'`. The sequences are
 lld's (red, magenta). Removing them from a colored rendering MUST give the
 uncolored rendering.
 
@@ -557,13 +619,16 @@ from lld and mold; and no message needs debug information to be formed
 and, with `-g`, its line table).
 
 The wording is lld's wherever lld has a wording that fits, because the
-shape is: a tool that matches `error: undefined symbol: ` was written
-against lld or mold. The table of §3.1 names the source of each. Where
+shape is: a tool that matches `error: duplicate symbol: ` was written
+against lld or mold. The exception is `undefined-symbol`, which keeps GNU
+ld's phrase (the table below). The table of §3.1 names the source of
+each. Where
 mortar differs from lld:
 
 | what | lld | mortar | why |
 |---|---|---|---|
 | place of an archive member | `y.o:(.text+0x10) in archive libx.a` | `libx.a(y.o):(.text+0x10)` | One form for a file wherever it appears (§2.3). `archive(member)` is GNU ld's and mold's form and keeps the place a single token. |
+| undefined symbol | `error: undefined symbol: missing`, then the references as context | `error: undef.o:(.text+0xc): undefined reference to 'missing'`, one per reference | GNU ld's phrase, which configure scripts, build systems and people search for, is the one mortar keeps verbatim (`spec/arch.md` §3.4: the supervisor's ruling on undefined symbols at scan). One line per reference with its place in the head is also GNU ld's shape, and it makes the key of each diagnostic the scan's key of that reference. The name is in single quotes, the quoting §3.3 uses for every name, where GNU ld 2.44's survey line (§8.1) quotes ``with `…'``. A search for lld's `undefined symbol: ` does not match. |
 | context lines | two lines per reference (`>>> referenced by undef.c` / `>>>               undef.o:(_start)`), the first from the `STT_FILE` symbol or the line table | one line per place: `>>> referenced by undef.o:(.text+0xc)` | Every `>>> ` line is self-contained and has one grammar; no alignment by spaces; no dependence on `STT_FILE` or DWARF. Source positions are a planned place form (§9). |
 | duplicate symbol | `>>> defined at dup1.c` / `>>>            dup1.o:(twice)` | `>>> defined in dup1.o:(.text+0x0)` | `defined in` for a place in a file; `defined at` is kept for the source-position form of §9. |
 | blank line between diagnostics | after a diagnostic with context lines | never | Property 1 of §5.2: every line is a head line or a context line. mold prints none either. |
@@ -620,8 +685,12 @@ pub enum Severity { Warning, Error }
 impl RefusalClass { pub const ALL: [Self; 14]; pub const fn id(self) -> &'static str;
     pub const fn noun(self) -> &'static str; }
 #[non_exhaustive] pub enum Kind { /* §3.1 */ }
-impl Kind { pub const IDS: [&'static str; 15]; pub const fn id(&self) -> &'static str;
+impl Kind { pub const IDS: [&'static str; 19]; pub const fn id(&self) -> &'static str;
     pub fn symbol(&self) -> Option<&str>; }
+#[non_exhaustive] pub enum IncompatibleReason { RecompileFpic, RecompileFpie, ReadOnlySection,
+    AddendMustBeZero, NotThreadLocal, ThreadLocal, LocalExecInShared, InstructionMismatch,
+    NonAlloc }
+impl IncompatibleReason { pub const ALL: [Self; 9]; pub const fn text(self) -> &'static str; }
 
 pub struct FileRef { /* path, member */ }
 impl FileRef { pub fn new(path: impl Into<String>) -> Self;
@@ -703,6 +772,8 @@ Files are under `crates/mortar_diag/` unless a crate is named.
 | §2.5 | builder and accessors; `Send`/`Sync`/`'static` | `tests/model.rs` `builder_and_accessors`, `types_are_send_and_sync` |
 | §3.1 | every kind, exact text, as error and as warning | `tests/kinds.rs` (one test per kind) |
 | §3.2 | `os_reason` | `tests/kinds.rs` `os_reason_is_the_system_message` |
+| §3.2 | `undefined-symbol` one per reference with its place; the relocation kinds' fields; every reason's words and the table | `tests/kinds.rs` `undefined_symbol`, `relocation_*`, `tests/spec_tables.rs` `incompatible_reasons_match_the_spec_table` |
+| §2.1, §3.2 | `internal-error` is always an error | `tests/kinds.rs` `internal_error` |
 | §3.3 | symbol fields reach the hook | `tests/kinds.rs` `symbol_kinds_report_their_symbol` |
 | §4, §4.1 | every class: id, noun, exact text; the table | `tests/refusal.rs` `every_class_renders_uniformly`, `tests/spec_tables.rs` `refusal_classes_match_the_spec_table` |
 | §4.2 | class and name are readable by tests; place in the head | `tests/refusal.rs` `class_and_name_are_data`, `refusal_with_a_place` |

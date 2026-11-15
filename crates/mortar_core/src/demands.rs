@@ -1,8 +1,7 @@
 //! `Demands` (`spec/model.md` §3.7): what the relocations of live sections
 //! require, with no placement. Written by `mortar_arch`'s scan.
 //!
-//! The flags are the model's list of today; `spec/arch.md` confirms or
-//! amends them (the status note of `spec/model.md`).
+//! The flags are `spec/arch.md` §4.2's, adopted by the model (M-1).
 
 use crate::column::Column;
 use crate::flags::flag_set;
@@ -11,9 +10,10 @@ use crate::table::{Broken, ensure, unsorted_at};
 
 flag_set! {
     /// What a symbol's relocations require (§3.7). The union over all
-    /// relocations that mention it (§6 rule 2: bitwise or).
-    pub struct DemandFlags: u8 {
-        /// A GOT slot.
+    /// relocations that mention it (§6 rule 2: bitwise or), never cleared
+    /// within a link.
+    pub struct DemandFlags: u16 {
+        /// A GOT address slot.
         const GOT = 1 << 0;
         /// A PLT entry.
         const PLT = 1 << 1;
@@ -22,13 +22,58 @@ flag_set! {
         /// A TLS module/offset pair (general dynamic).
         const TLS_GD = 1 << 3;
         /// A thread-pointer offset slot (initial exec).
-        const TLS_IE = 1 << 4;
+        const GOT_TPREL = 1 << 4;
         /// A copy relocation.
         const COPY = 1 << 5;
         /// A canonical PLT address.
-        const CANONICAL_PLT = 1 << 6;
+        const CANON_PLT = 1 << 6;
         /// Export to the dynamic symbol table.
         const EXPORT = 1 << 7;
+        /// An IPLT entry: a non-preemptible IFUNC, whose every address is
+        /// that entry.
+        const IPLT = 1 << 8;
+        /// Some use forbids the GOT relaxation.
+        const GOT_NORELAX = 1 << 9;
+        /// Some use forbids the IE-to-LE relaxation.
+        const TLSIE_NORELAX = 1 << 10;
+    }
+}
+
+impl DemandFlags {
+    /// The flags another file's bytes depend on (`spec/arch.md` §4.2), which
+    /// the dependency index tracks per key (§7.2, M-8).
+    pub const CROSS_FILE: Self =
+        Self(Self::GOT_NORELAX.0 | Self::TLSIE_NORELAX.0 | Self::CANON_PLT.0 | Self::COPY.0);
+
+    /// The flags a local symbol never demands (§3.7).
+    pub const GLOBAL_ONLY: Self = Self(Self::COPY.0 | Self::CANON_PLT.0 | Self::EXPORT.0);
+
+    /// The pairs of flags that never occur on one key, since its flags
+    /// follow from one target kind (§3.7).
+    pub const EXCLUSIVE: [(Self, Self); 4] = [
+        (Self::IPLT, Self::PLT),
+        (Self::IPLT, Self::CANON_PLT),
+        (Self::IPLT, Self::COPY),
+        (Self::COPY, Self::CANON_PLT),
+    ];
+
+    /// The first pair of [`Self::EXCLUSIVE`] both set here.
+    #[must_use]
+    pub fn conflict(self) -> Option<(Self, Self)> {
+        Self::EXCLUSIVE.into_iter().find(|&(a, b)| self.contains(a) && self.contains(b))
+    }
+}
+
+flag_set! {
+    /// What the relocations require of the output as a whole (§3.7): the
+    /// union over all of them, never cleared within a link.
+    pub struct GlobalFlags: u8 {
+        /// The GOT base symbol is referenced.
+        const GOT_BASE = 1 << 0;
+        /// The module slot of local-dynamic TLS.
+        const TLS_LD = 1 << 1;
+        /// `DF_STATIC_TLS`.
+        const STATIC_TLS = 1 << 2;
     }
 }
 
@@ -75,6 +120,8 @@ pub struct Demands {
     pub global: Column<SymbolId, DemandFlags>,
     /// The local symbols with a demand, sorted, none empty.
     pub local: Box<[(LocalSym, DemandFlags)]>,
+    /// Per output.
+    pub output: GlobalFlags,
     /// The sections that carry dynamic relocations, sorted, none empty.
     pub dyn_relocs: Box<[(SectionId, DynCounts)]>,
 }
@@ -86,6 +133,7 @@ impl Demands {
         Self {
             global: Column::filled(symbols, DemandFlags::empty()),
             local: Box::new([]),
+            output: GlobalFlags::empty(),
             dyn_relocs: Box::new([]),
         }
     }
@@ -100,6 +148,18 @@ impl Demands {
                 .binary_search_by_key(&sym, |row| row.0)
                 .map_or(DemandFlags::empty(), |at| self.local[at].1),
         }
+    }
+
+    /// Every key with a flag that another file's bytes depend on
+    /// ([`DemandFlags::CROSS_FILE`]), with those flags, in `SymKey` order:
+    /// the flag rows of the dependency index (§7.2).
+    pub fn cross_file(&self) -> impl Iterator<Item = (SymKey, DemandFlags)> + '_ {
+        let globals = self.global.iter().map(|row| (SymKey::global(row.0), *row.1));
+        let locals = self.local.iter().map(|row| (SymKey::local(row.0), row.1));
+        globals.chain(locals).filter_map(|(key, flags)| {
+            let cross = DemandFlags(flags.0 & DemandFlags::CROSS_FILE.0);
+            (!cross.is_empty()).then_some((key, cross))
+        })
     }
 
     /// Every key with a demand among `flags`, in `SymKey` order.
@@ -119,7 +179,8 @@ impl Demands {
 
     /// The invariants of §3.7 the table shows: one row per key; the sparse
     /// lists sorted, without empty rows; a local symbol demands neither a
-    /// copy relocation, a canonical PLT address nor export.
+    /// copy relocation, a canonical PLT address nor export; no key has two
+    /// flags of [`DemandFlags::EXCLUSIVE`].
     pub fn check(&self, symbols: u32) -> Result<(), Broken> {
         let t = "Demands";
         ensure(self.global.len() == symbols, t, || "global is not per key".to_owned())?;
@@ -129,11 +190,20 @@ impl Demands {
         if let Some(at) = unsorted_at(&self.dyn_relocs, |row| row.0) {
             return Err(Broken { table: t, what: format!("dyn_relocs[{at}] out of order") });
         }
-        let global_only = DemandFlags::COPY | DemandFlags::CANONICAL_PLT | DemandFlags::EXPORT;
         for (sym, flags) in &self.local {
-            ensure(!flags.is_empty() && !flags.intersects(global_only), t, || {
+            ensure(!flags.is_empty() && !flags.intersects(DemandFlags::GLOBAL_ONLY), t, || {
                 format!("local ({}, {}): {flags:?}", sym.file.0, sym.index.0)
             })?;
+        }
+        let keys = self.global.iter().map(|row| (SymKey::global(row.0), *row.1));
+        let keys = keys.chain(self.local.iter().map(|row| (SymKey::local(row.0), row.1)));
+        for (key, flags) in keys {
+            if let Some((a, b)) = flags.conflict() {
+                return Err(Broken {
+                    table: t,
+                    what: format!("{key:?} demands both {a:?} and {b:?}"),
+                });
+            }
         }
         ensure(self.dyn_relocs.iter().all(|row| !row.1.is_empty()), t, || {
             "an empty dyn_relocs row".to_owned()
@@ -142,5 +212,6 @@ impl Demands {
     }
 }
 
-const _: () = assert!(size_of::<DemandFlags>() == 1);
+const _: () = assert!(size_of::<DemandFlags>() == 2);
+const _: () = assert!(size_of::<GlobalFlags>() == 1);
 const _: () = assert!(size_of::<(LocalSym, DemandFlags)>() == 12);

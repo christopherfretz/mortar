@@ -125,6 +125,67 @@ impl RefusalClass {
     }
 }
 
+/// Why a relocation cannot be used against its target in this output
+/// (`spec/diag.md` §3.2, `relocation-incompatible`; `spec/arch.md` §4.3,
+/// §7). The reasons are a closed list: a test compares the reason, not the
+/// text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum IncompatibleReason {
+    /// An absolute or PC-relative use against a target that a shared
+    /// object needs to reach position-independently.
+    RecompileFpic,
+    /// The same, in a position-independent executable.
+    RecompileFpie,
+    /// The relocation would need a dynamic relocation in a read-only
+    /// section (a text relocation, never written).
+    ReadOnlySection,
+    /// A type whose addend must be 0 has another.
+    AddendMustBeZero,
+    /// A TLS relocation against a symbol that is not thread-local.
+    NotThreadLocal,
+    /// A relocation that is not TLS against a thread-local symbol.
+    ThreadLocal,
+    /// A local-exec TLS relocation in a shared object.
+    LocalExecInShared,
+    /// The instruction at the place is not the one the field form requires.
+    InstructionMismatch,
+    /// A relocation other than a data relocation in a section without
+    /// `SHF_ALLOC`.
+    NonAlloc,
+}
+
+impl IncompatibleReason {
+    /// Every reason, in the order of `spec/diag.md` §3.2.
+    pub const ALL: [Self; 9] = [
+        Self::RecompileFpic,
+        Self::RecompileFpie,
+        Self::ReadOnlySection,
+        Self::AddendMustBeZero,
+        Self::NotThreadLocal,
+        Self::ThreadLocal,
+        Self::LocalExecInShared,
+        Self::InstructionMismatch,
+        Self::NonAlloc,
+    ];
+
+    /// The words after `; ` in the message.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::RecompileFpic => "recompile with -fPIC",
+            Self::RecompileFpie => "recompile with -fPIE",
+            Self::ReadOnlySection => "it is in a read-only section",
+            Self::AddendMustBeZero => "the addend must be 0",
+            Self::NotThreadLocal => "it is not thread-local",
+            Self::ThreadLocal => "it is thread-local",
+            Self::LocalExecInShared => "local-exec TLS in a shared object",
+            Self::InstructionMismatch => "the instruction does not match the relocation",
+            Self::NonAlloc => "not allowed in a non-allocated section",
+        }
+    }
+}
+
 /// What a diagnostic says (`spec/diag.md` §3). Each variant has a stable
 /// id ([`Kind::id`]) and one wording, fixed by the specification.
 ///
@@ -179,19 +240,42 @@ pub enum Kind {
     /// `duplicate-symbol`: two definitions that may not coexist. `name` is
     /// the name as the symbol table has it (mangled).
     DuplicateSymbol { name: String },
-    /// `undefined-symbol`: a reference nothing defines. `name` is the name
-    /// as the symbol table has it (mangled).
+    /// `undefined-symbol`: a reference nothing defines, one diagnostic per
+    /// reference, at the place of the reference (the relocation scan,
+    /// `spec/arch.md` §3.4). `name` is the name as the symbol table has it
+    /// (mangled).
     UndefinedSymbol { name: String },
+
+    // -- relocations ----------------------------------------------------
+    /// `relocation-incompatible`: the relocation `r_type` (its ABI name)
+    /// cannot be used against `name` in this output, for `reason`. `name`
+    /// is the symbol-table name, or the section and offset of a section
+    /// symbol's target (`.text+0x40`).
+    RelocationIncompatible { r_type: String, name: String, reason: IncompatibleReason },
+    /// `relocation-misaligned`: the value `value` of the relocation
+    /// `r_type` is not a multiple of `align` bytes.
+    RelocationMisaligned { r_type: String, value: i64, align: u64 },
+    /// `relocation-out-of-range`: the value `value` of the relocation
+    /// `r_type` is outside its field's check, `[min, max]`; `name` is the
+    /// target as for [`Kind::RelocationIncompatible`].
+    RelocationOutOfRange { r_type: String, value: i64, min: i64, max: i64, name: String },
 
     // -- refusals -------------------------------------------------------
     /// `refused`: a construct mortar does not implement, by name
     /// (`docs/ARCHITECTURE.md`, principle 1). Always an error.
     Refused { class: RefusalClass, name: String },
+
+    // -- internal -------------------------------------------------------
+    /// `internal-error`: mortar found its own data in a state its
+    /// specification forbids: a table that violates its own validity rules
+    /// (`spec/model.md` §4.4). A bug of mortar's, not of the input. `what`
+    /// names the rule and what is wrong. Always an error.
+    InternalError { what: String },
 }
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 15] = [
+    pub const IDS: [&'static str; 19] = [
         "conflicting-options",
         "invalid-option-value",
         "missing-argument",
@@ -206,7 +290,11 @@ impl Kind {
         "unknown-file-type",
         "duplicate-symbol",
         "undefined-symbol",
+        "relocation-incompatible",
+        "relocation-misaligned",
+        "relocation-out-of-range",
         "refused",
+        "internal-error",
     ];
 
     /// The stable kebab-case id of the kind. Tests assert on it; the text
@@ -228,7 +316,11 @@ impl Kind {
             Self::UnknownFileType => "unknown-file-type",
             Self::DuplicateSymbol { .. } => "duplicate-symbol",
             Self::UndefinedSymbol { .. } => "undefined-symbol",
+            Self::RelocationIncompatible { .. } => "relocation-incompatible",
+            Self::RelocationMisaligned { .. } => "relocation-misaligned",
+            Self::RelocationOutOfRange { .. } => "relocation-out-of-range",
             Self::Refused { .. } => "refused",
+            Self::InternalError { .. } => "internal-error",
         }
     }
 
@@ -237,7 +329,10 @@ impl Kind {
     #[must_use]
     pub fn symbol(&self) -> Option<&str> {
         match self {
-            Self::DuplicateSymbol { name } | Self::UndefinedSymbol { name } => Some(name),
+            Self::DuplicateSymbol { name }
+            | Self::UndefinedSymbol { name }
+            | Self::RelocationIncompatible { name, .. }
+            | Self::RelocationOutOfRange { name, .. } => Some(name),
             _ => None,
         }
     }
@@ -380,11 +475,11 @@ pub enum Context {
 /// [`crate::Collector`]:
 ///
 /// ```
-/// use mortar_diag::{Diagnostic, FileRef, Kind, Place, Relation};
+/// use mortar_diag::{Diagnostic, FileRef, Kind, Place};
 ///
 /// let file = FileRef::in_archive("libx.a", "y.o");
 /// let diag = Diagnostic::error(Kind::UndefinedSymbol { name: "missing".to_owned() })
-///     .with(Relation::ReferencedBy, Place::section(file, ".text", 0x10));
+///     .at(Place::section(file, ".text", 0x10));
 /// assert_eq!(diag.id(), "undefined-symbol");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -398,11 +493,13 @@ pub struct Diagnostic {
 impl Diagnostic {
     /// A diagnostic of the given severity. A [`Kind::Refused`] is an error
     /// whatever is asked for: a refusal that lets the link go on is the
-    /// silent acceptance principle 1 forbids.
+    /// silent acceptance principle 1 forbids. So is a
+    /// [`Kind::InternalError`]: output from data mortar knows to be wrong
+    /// is never written.
     #[must_use]
     pub fn new(severity: Severity, kind: Kind) -> Self {
-        let severity =
-            if matches!(kind, Kind::Refused { .. }) { Severity::Error } else { severity };
+        let always_error = matches!(kind, Kind::Refused { .. } | Kind::InternalError { .. });
+        let severity = if always_error { Severity::Error } else { severity };
         Self { severity, kind, place: None, context: Vec::new() }
     }
 
@@ -517,7 +614,11 @@ mod tests {
             Kind::UnknownFileType => 11,
             Kind::DuplicateSymbol { .. } => 12,
             Kind::UndefinedSymbol { .. } => 13,
-            Kind::Refused { .. } => 14,
+            Kind::RelocationIncompatible { .. } => 14,
+            Kind::RelocationMisaligned { .. } => 15,
+            Kind::RelocationOutOfRange { .. } => 16,
+            Kind::Refused { .. } => 17,
+            Kind::InternalError { .. } => 18,
         }
     }
 
@@ -541,7 +642,15 @@ mod tests {
             Kind::UnknownFileType,
             Kind::DuplicateSymbol { name: s() },
             Kind::UndefinedSymbol { name: s() },
+            Kind::RelocationIncompatible {
+                r_type: s(),
+                name: s(),
+                reason: IncompatibleReason::NonAlloc,
+            },
+            Kind::RelocationMisaligned { r_type: s(), value: 0, align: 1 },
+            Kind::RelocationOutOfRange { r_type: s(), value: 0, min: 0, max: 0, name: s() },
             Kind::Refused { class: RefusalClass::Feature, name: s() },
+            Kind::InternalError { what: s() },
         ];
         assert_eq!(all.len(), Kind::IDS.len());
         for (position, kind) in all.iter().enumerate() {
