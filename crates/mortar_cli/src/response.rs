@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
+use crate::PHASE;
 use mortar_diag::{Diagnostic, Key, Kind, Place};
 
 /// How many response files one command line may expand (§2.6.3). GNU ld
@@ -29,7 +30,7 @@ pub fn expand(args: &[OsString]) -> (Vec<OsString>, Vec<(Key, Diagnostic)>) {
         }
         let path = Path::new(std::ffi::OsStr::from_bytes(&bytes[1..])).to_path_buf();
         if path.is_dir() {
-            let key = Key::new(0, index(i), 0);
+            let key = Key::new(PHASE, index(i), 0);
             diagnostics.push((
                 key,
                 Diagnostic::error(Kind::CannotOpenFile {
@@ -48,7 +49,7 @@ pub fn expand(args: &[OsString]) -> (Vec<OsString>, Vec<(Key, Diagnostic)>) {
         };
         if expanded == LIMIT {
             diagnostics.push((
-                Key::new(0, index(i), 0),
+                Key::new(PHASE, index(i), 0),
                 Diagnostic::error(Kind::ResponseFileLimit { limit: LIMIT })
                     .at(Place::argument(out[i].to_string_lossy())),
             ));

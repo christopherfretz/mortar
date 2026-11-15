@@ -4,8 +4,10 @@ Status: **normative** (WP-002): frozen after an independent design review
 and review against the reader API of WP-004 and the `Plan` of WP-008. The
 code is WP-020. `Demands` (§3.7), `Slots` (§4.3) and `patches` (§4.4) are
 confirmed with `spec/arch.md` (WP-013), whose requested amendments M-1 to
-M-8 are made (WP-020c, `spec/landed/model/WP-020c.md`). Any later
-amendment is made here first and the code follows.
+M-8 are made (WP-020c, `spec/landed/model/WP-020c.md`); so are the
+requests of `spec/input.md` §17 and `spec/resolve.md` §18 (WP-020d,
+`spec/landed/model/WP-020d.md`). Any later amendment is made here first
+and the code follows.
 
 The model is what the phases of a link exchange: ids and tables. It holds
 no algorithm. A phase is specified by the tables it reads and the table it
@@ -30,18 +32,24 @@ link, and between the linker and its link state on disk.
   byte strings. No table holds a reference into another table, a pointer, a
   closure, or a container whose iteration order is unspecified (§6.5).
 - **Input bytes belong to the input store.** A phase obtains the bytes of
-  a file or a section from `mortar_input`'s store by `(FileId, range)` or
-  `SectionId`. Whether the store holds a file for the whole link, reads a
-  range again when asked (non-alloc debug sections at fill time), or keeps
-  an owned buffer (a `SHF_COMPRESSED` input section is decompressed once
-  into one) is the store's business and invisible to the tables.
+  a file or a section through `Inputs` by `(FileId, range)` or
+  `SectionId`: as a slice when the range lies in one resident part
+  (`Inputs::resident`), otherwise copied into a buffer of the caller
+  (`Inputs::copy_to`). The store is created before `mortar_input` runs,
+  outlives every table, and is shared and immutable to its users (a
+  `&'s` borrow, `StoreRef<'s>`); which ranges are resident is a function
+  of the file's bytes and the store policy (`spec/input.md` §11). Whether
+  the store reads a range again when asked (non-alloc debug sections at
+  fill time) or keeps an owned buffer (a `SHF_COMPRESSED` input section
+  is decompressed once into one) is the store's business and invisible to
+  the tables.
 
 ## 2. Ids
 
 | id | one per | numbered |
 |---|---|---|
 | `FileId` | loaded file: the internal file, each relocatable object (given directly or an archive member), each shared object | §2.1 |
-| `ArchiveId` | archive opened | in order of first appearance on the command line |
+| `ArchiveId` | archive mention | one per archive mention, in load order (`spec/input.md` §10.1) |
 | `SymbolId` | global symbol row (§2.3) | §2.3 |
 | `ComdatId` | distinct COMDAT group signature | as `SymbolId`, over group signatures |
 | `SectionId` | section-header-table entry of a **live** relocatable object, index 0 included | `section_base[file] + sh_index` (§2.2) |
@@ -117,7 +125,13 @@ version comes from its version tables, not from the name.
 Numbering is defined sequentially: files in `FileId` order, each file's
 non-local entries in symbol-table order, a key seen for the first time
 taking the next id. `ComdatId` likewise, over `SHT_GROUP` signatures in
-`(FileId, sh_index)` order.
+`(FileId, sh_index)` order, where a signature that is an `STT_SECTION`
+symbol is the name of its section (the effective signature,
+`spec/resolve.md` §6.1).
+
+An undefined `name@V` is a row of its own like any non-default version;
+resolution also binds it to a default definition of `name` whose version
+is `V` (`spec/resolve.md` §9.2). The key shape does not change for it.
 
 A parallel implementation MUST produce the same numbering. The intended
 one:
@@ -168,21 +182,45 @@ its own phase ordinal (§8) with the argument index as the unit.
 ### 3.2 `Inputs` (written by `mortar_input`)
 
 Everything known from reading files, before any symbol is resolved.
-Immutable once the phase ends.
+Immutable once the phase ends. The `DT_NEEDED` closure (`spec/input.md`
+§8.6) is loaded by this phase; no later phase adds a file.
 
 | part | row | columns |
 |---|---|---|
-| `target` | one | machine, class, relocation form (RELA, or REL with implicit addends); the first object decides when `-m` did not, and every later file must agree or is diagnosed |
-| `files[FileId]` | file | kind (internal, object, shared object); display name (`FileRef`: path, archive and member); `ArchiveId` and member offset, if any; the `Plan` input it came from and the positional state copied from it (as-needed, whole-archive, lazy, static, exclude-libs); the parsed reader (`mortar_elf::Object` or the shared-object view) over the store's bytes; section count; the range of `sym_map`; identity and content hash (§7.1) |
+| `target` | one | machine, class, relocation form (RELA, or REL with implicit addends); decided by `spec/input.md` §3.1 when `-m` did not; every ELF file must agree (§3.3), except candidates of a search, which are skipped (§4.4) |
+| `files[FileId]` | file | kind (internal, object, shared object); display name (`FileRef`: path, archive and member); the found path; `ArchiveId`, member name, ordinal and offset, if any, members of one archive mention being contiguous in archive order; the mention that named it (`origin`: a `Plan` input and argument, the script entry, or the closure edge) and the positional state of its own mention (as-needed, whole-archive, lazy, static, copy-dt-needed, exclude-libs; a shared object: its first mention's); the parsed reader over the file's resident parts (`spec/input.md` §11.3); where its bytes are in the store; section count; the range of `sym_map`; identity and content hash (§7.1) |
 | `sym_map` | non-local symbol-table entry of each file, per file in table order | the `SymbolId` of its key |
 | `symbols[SymbolId]` | key | name bytes, hash, version part |
 | `comdats[ComdatId]` | signature | name bytes |
-| `archives[ArchiveId]` | archive | path, kind |
+| `archives[ArchiveId]` | archive mention | found path, kind, the mention, its members (a `FileId` range) |
+| `link` (`LinkInputs`, `spec/input.md` §10.4) | per link | each file's `--start-group` region (`group`: an ordinal from 1 in load order, or none); the soname units, one per loaded shared object, with every mention and the merged `as_needed` and `copy_dt_needed`; the closure edges `(needing, index)` and what satisfied each; `opened`, every file opened and what it became; `probes`, every candidate examined by a search (§7.1); `script_entries`; `directives` (`OUTPUT`, `ENTRY`, `EXTERN`); `rpath_from_r` |
 
 Invariant **I-file**: the rows of a file (its `files` row, the keys it
 mentions, and later its section rows of §3.3 relative to its base) are a
-function of that file's bytes and its `Plan` input alone. This is what an
-incremental link reuses for an unchanged file.
+function of that file's bytes and its own mention (the `Plan` input or
+script entry that named it, with that position's state) alone. This is
+what an incremental link reuses for an unchanged file. Properties merged
+over several mentions or numbered over the load order (`spec/input.md`
+§10.4) are in `Inputs.link`, which I-file does not cover; an incremental
+link recomputes it whole.
+
+`Inputs::check` holds the invariants this table shows alone, numbered as
+its messages are: (1) only `FileId(0)` is the internal file, with origin
+`Internal`, no bytes, sections or symbols, and only objects have
+sections, as many as their reader; (2) the `sym_map` spans are
+contiguous in `FileId` order and cover it; (3) a member is an object of
+an archive in range with that archive's path, inside its `members`
+range, in increasing header offset, archives following one another in
+`FileId` order; (4) `LAZY` (`--start-lib`) only on an object that is not
+a member; (5) files of `Plan` inputs come in input order, closure files
+after all others, each a shared object needed by an earlier shared
+object; (6) `SymbolId`s are numbered by first mention (§2.3); (7)
+`group` has a row per file, ordinals from 1 first appearing in
+increasing order; (8) one soname unit per shared object in `FileId`
+order, each with a mention; (9) closure edges sorted by `(needing,
+index)`, between shared objects; (10) every index into `opened`,
+`script_entries` and `closure` is in range and names a row of the right
+kind.
 
 Relocations and symbol-table entries are **not copied** into any table:
 phases read them from the input bytes through the reader each time they
@@ -192,12 +230,13 @@ need them (§5).
 
 | part | row | columns |
 |---|---|---|
-| `file_live[FileId]` | file | whether the file takes part in the link (always; extracted archive member; needed shared object) and, for an extracted member, the reference that pulled it in `(FileId, st_index)` |
-| `def[SymbolId]` | key | the resolved definition: `Undefined{weak}`, `Defined{file, st_index}`, `Common{file, st_index}`, `Shared{file, st_index}`, `Internal{..}` (linker-defined); and the properties merged over every live mention: visibility, whether referenced from a relocatable object, whether referenced from a shared object, binding for export, version |
+| `file_live[FileId]` | file | whether the file takes part in the link and why: `Dead`; `Always`; `Extracted` by the reference `(FileId, st_index)` that pulled the lazy object in (a root, `spec/resolve.md` §4.2: file 0 and the root's argument index); `Shared{needed}`, a shared object of the command line or a script, `needed` when it is `DT_NEEDED` of the output (`spec/resolve.md` §9.5); `Closure`, a file of the `DT_NEEDED` closure that a needed shared object leads to, never `DT_NEEDED` of the output |
+| `def[SymbolId]` | key | the resolved definition: `Undefined{weak}`, `Defined{file, st_index}`, `Common{file, st_index}`, `Shared{file, st_index}`, `Internal(..)` (linker-defined: `Assign`, an assignment by its argument index or script position; `Alias(SymbolId)`, `--defsym A=B`; `Provide{conditional}`, a symbol of `spec/resolve.md` §8.1, `conditional` when its existence depends on output sections, §3.4); and the properties merged over every live mention (`spec/resolve.md` §3.6, §9.6): visibility, `ref_regular` (referenced from a relocatable object or a root), `ref_dynamic` (referenced from a needed shared object), `ref_strong` (some reference not weak), `defined_dynamic` (a live shared object defines it), `exported`, `preemptible`, binding for export, version, and the **verdict** of a surviving reference (`spec/resolve.md` §5.2: bound, error, warning, ignored) |
 | `common[SymbolId]` | key with a common mention | size and alignment: the maximum over the live common mentions |
 | `clash[SymbolId]` | key | whether two or more live definitions tie at the strongest rank (a duplicate definition, reported with both places) |
-| `redirect[SymbolId]` | key | the row references to this key bind to (`--wrap`, `--defsym` aliases); itself otherwise. Every consumer of `sym_map` applies it |
-| `comdat[ComdatId]` | signature | the file whose group is kept |
+| `redirect[SymbolId]` | key | the row the **undefined mentions** of this key bind to (`--wrap`); for a `--defsym` alias, every mention. A defined mention binds to itself; itself otherwise. Every consumer of `sym_map` applies it once |
+| `comdat[ComdatId]` | signature | the file whose group is kept: the least live `FileId` with the signature (`spec/resolve.md` §6.1) |
+| `comdat_copies` | live copy of a group | `(ComdatId, FileId)` pairs, sorted; the keeper first; for `mortar_odr` (`spec/resolve.md` §6.7) |
 | `section_base[FileId]` | live object | §2.2 |
 | `sections[SectionId]` | section | `kind` (below); the relocation section(s) applying to it; its `ComdatId`, if any; `state`: `Kept`, or `Dropped(reason)`: COMDAT group not kept (with the keeping file), excluded, consumed by the linker (the kinds without output), stripped by option |
 
@@ -212,15 +251,32 @@ is not classified: it is refused by name. Classification depends on the
 file alone (I-file) and may be computed while the file is parsed and kept
 per file until ids exist.
 
-Every merge in this table is order-independent (§6.2): `def` is the
-minimum of a total order over the live candidate definitions of a key
-(`spec/resolve.md`: strength, then `FileId`, then symbol index); `common`
-is a maximum; `clash` a saturating count at the minimum's rank; the
-properties are unions or most-constraining values. Archive extraction is
-the least fixed point of "a live reference to a key a lazy member defines
-makes that member live" (and the cases `spec/resolve.md` adds: a member
-defining a key that so far has only common mentions), which is likewise
-independent of the order in which it is reached.
+Every merge in this table is order-independent (§6.2): `def` is chosen
+over the live candidate definitions of a key by `spec/resolve.md` §3.2
+(rank, then `FileId`, then symbol index; not one total order over all
+candidates: the common/shared rule there is an exception); `common` is a
+maximum; `clash` a saturating count at the chosen rank; the properties
+are unions or most-constraining values. Archive extraction is
+reachability over a graph fixed by the inputs (`spec/resolve.md` §4.1:
+`first(K)`, `cfirst(K)` over all files, live or lazy); `def` is then
+computed over the live files only, and is `Undefined` when no live file
+defines the key. Both are independent of the order in which they are
+reached.
+
+`Resolution::check` holds what the table shows alone: (1) per-key and
+per-file columns of the right length; (2) section ranges contiguous in
+`FileId` order, sections only for live files; (3) definitions,
+extracting references and kept groups in live files, `redirect` and
+aliases in range, `common` sorted; (4) no section of a kind without
+output kept, a section dropped for its group in one; (5) `comdat_copies`
+sorted and live, the keeper the least copy; (6) an undefined key with a
+strong reference is not weak, a `Shared` definition is preemptible.
+`Resolution::check_against(&Inputs)` adds: (1) one row per file, key and
+signature; (2) `Shared` liveness only for a shared object not of the
+closure, `Closure` only for a closure file, `Extracted` only for a lazy
+object, `Always` for a lazy object only under `--whole-archive`; (3) a
+`Defined` or `Common` definition in an object, a `Shared` one in a
+shared object.
 
 ### 3.4 `Assignment` (written by `mortar_layout`, first stage)
 
@@ -235,12 +291,20 @@ section".
 | `out_of[SectionId]` | section | `OutSecId`, or `Discard` (a script's `/DISCARD/`: the section's state becomes `Dropped(by script)`), or none for sections without output |
 | `outsecs[OutSecId]` | output section | name, type, flags, entry size class for merging; from a script: `KEEP` on the matching pattern, fill, constraints, the script position that orders it |
 | `keep[SectionId]` | section | whether it is a root of liveness by rule or by `KEEP` |
+| `withdrawn` | withdrawn symbol | the conditional `Provide` candidates of resolution withdrawn here, sorted |
 
 Without a script the rule is the default mapping of `spec/layout.md`
 (by name prefix, type and flags). `OutSecId`s are numbered in order of
 first assignment `(FileId, sh_index)`, after any the script declares, in
 script order. The order of output sections in the file and the order of
 input sections inside one are **not** here: they are decisions (§4.4).
+
+Assignment confirms or withdraws resolution's conditional `Provide`
+candidates (`__start_`/`__stop_<sec>`, `_TLS_MODULE_BASE_`,
+`__GNU_EH_FRAME_HDR`; `spec/resolve.md` §5.1, §8.1): a withdrawn one
+reverts `def` to `Undefined{weak}` before the scan, weak unless a
+reference to it is strong (`Assignment::def`). Every later reader of
+`def` reads it through that function.
 
 ### 3.5 `Split` (written by `mortar_merge`, first stage)
 
@@ -566,7 +630,7 @@ Ids do not survive a link; identities do, and a later link translates.
 
 | thing | identity |
 |---|---|
-| file | the path as resolved, plus member name and ordinal among same-named members for an archive member; with a content hash to detect change |
+| file | the found path (`spec/input.md` §4.5) and the mention ordinal among files with that path (two mentions of one path are two files, `spec/input.md` §9.4; for a member, the ordinal of its archive mention among those with that path), plus member name and ordinal among same-named members for an archive member; with a content hash of the whole file (`spec/input.md` §11.6) and the probes that chose it (§4.6), re-checked by one `stat` each: a new candidate earlier in a search changes neither path nor hash, only a probe |
 | section | file identity, then an **anchor** that survives edits elsewhere in the file: its COMDAT signature, else the first named non-local symbol defined at its start, else the first named local one; then its name and its ordinal among sections with the same anchor and name; with a content hash (which kiln and hod may supply, `docs/ROADMAP.md` "Cross-project") |
 | global symbol | key bytes (name and version) |
 | local symbol | file identity, name, ordinal among same-named locals of the file (never the symbol-table index, which shifts on any edit) |
@@ -626,7 +690,7 @@ renumbering.
 |---|---|---|---|
 | command line | 10 | argument index | 0, or a count within the argument |
 | incremental (state load, fallback) | 15 | 0 | a count |
-| input (find, read, parse) | 20 | the `Plan` input's argument index | byte offset of the construct in the file as given (an archive member: its offset in the archive plus the offset within) |
+| input (find, read, parse) | 20 | the `Plan` input's argument index | `k × 2^40 + offset` (`spec/input.md` §12.2): one input reaches several files (a script, a thin archive, the closure) |
 | resolve | 30 | `FileId` of the reporting mention | symbol-table index |
 | one-definition rule | 40 | `FileId` of the later definition | symbol-table index |
 | assignment | 45 | `FileId` | section index |
@@ -656,7 +720,9 @@ shape is part of principle 3:
   (4 bytes per non-local entry);
 - `Split`: 8 bytes per piece occurrence, 16 per fragment plus the
   interning table;
-- names are slices of input bytes, hashed once;
+- names are slices of resident input bytes (`&'s [u8]` borrowed from the
+  shared store, `spec/input.md` §11), hashed once; names always lie in
+  resident parts;
 - every table states its row size in WP-020's landed record, and the bench
   harness's peak-memory figure is the check.
 
@@ -675,7 +741,14 @@ impl<I: Id, T> Column<I, T> {
 pub struct SymKey(u64);  // packed so that integer order is §2's order
 impl SymKey { pub fn kind(self) -> SymKind; }
 pub enum SymKind { Global(SymbolId), Local(LocalSym) }
-pub struct Inputs<'store> { pub target: LinkTarget, pub files: Column<FileId, File<'store>>, /* §3.2 */ }
+pub struct Inputs<'s> { pub target: LinkTarget, pub files: Column<FileId, File<'s>>,
+                        pub link: LinkInputs<'s>, pub store: StoreRef<'s>, /* §3.2 */ }
+pub trait InputStore: Sync {                                  // spec/input.md §1, §11
+    fn resident(&self, blob: Blob, range: Range<u64>) -> Option<&[u8]>;
+    fn copy_to(&self, blob: Blob, range: Range<u64>, out: &mut [u8]) -> Result<(), CopyError>;
+}
+// in mortar_input (WP-021):
+// pub fn load<'s>(plan: &Plan, env: &LoadEnv, store: &'s Store, diag: &Collector) -> Option<Inputs<'s>>;
 pub struct Resolution { /* §3.3 */ }
 pub struct Demands { pub global: Column<SymbolId, DemandFlags>, pub local: Box<[(LocalSym, DemandFlags)]>,
                      pub output: GlobalFlags, pub dyn_relocs: Box<[(SectionId, DynCounts)]> }  // §3.7
@@ -702,6 +775,13 @@ pub mod par { /* §6: for_each, map_collect, sort_by_key, the scheduling seed */
   buffer, gives the bytes of a full fill.
 - §6: each helper under seeds and thread counts 1, 2, 7 and 64; a
   malformed seed becomes the `invalid-option-value` diagnostic of §6.
+- §3.2, §3.3, §3.4 (WP-020d): an accepting `Inputs` with every kind of
+  file, mention and link row, and one violating table per way of breaking
+  each of rules 1, 3, 4, 5, 7, 8, 9, 10; `Resolution` rules 5 and 6 and
+  the three rules of `check_against`; `Assignment.withdrawn` and
+  `Assignment::def`.
+- §7.1 (WP-020d): mention ordinals of a path named twice and of an
+  archive mentioned twice; the probe re-check list.
 - §7: a table written in identity terms and read back in a link whose ids
   differ (an input added in front; a function added in the middle of a
   file) denotes the same rows; so does each dependee of the §7.2 index,
@@ -711,8 +791,11 @@ pub mod par { /* §6: for_each, map_collect, sort_by_key, the scheduling seed */
 
 | question | owner |
 |---|---|
-| The mapping of `Plan` inputs to files: the same path twice, shared objects by `DT_SONAME`, thin archives, `--start-lib` | `spec/input.md` (WP-021) |
-| Archive semantics: GNU ld's left-to-right extraction against lld's and mold's order-independent one, and which one `file_live` implements. §3.3 is written for the order-independent one; so is `comdat` (the lowest `FileId` among live files keeps the group, where GNU ld and lld keep the first *extracted*): a deliberate difference to be confirmed or withdrawn there, with tests against the references | `spec/resolve.md` (WP-022) |
-| Version scripts and shared-object `versym` against the key of §2.3 | `spec/resolve.md` |
+| A section kind `Property` for `.note.gnu.property`, which synth merges by kind (optional, `spec/resolve.md` §18) | `spec/synth.md` |
 | Divisible synthetic chunks, the sealing function for the build id, resident image or positioned writes | `spec/synth.md`, `spec/image.md` |
 | `-r`: relocation and group chunks, REL addends of section symbols rewritten in the bytes | `spec/layout.md`, `spec/image.md` (M4) |
+
+Closed (WP-020d): the mapping of `Plan` inputs to files (`spec/input.md`);
+archive semantics, `file_live` being reachability, and the COMDAT keeper
+being the least live `FileId` (`spec/resolve.md` §4, §6.1); version
+scripts and `versym` against the key of §2.3 (`spec/resolve.md` §9).
