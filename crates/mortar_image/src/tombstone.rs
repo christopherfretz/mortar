@@ -15,13 +15,14 @@ pub const ARANGES: &[u8] = b".debug_aranges";
 /// reference to a dead target from section `name` (`alloc`: it has
 /// `SHF_ALLOC`): the arch's tombstone truncated to the field (I-47, I-48)
 /// for [`DeadRef::Tombstone`], 0 for [`DeadRef::Zero`]; `None` for
-/// [`DeadRef::Discarded`] (the scan reported it, I-46).
+/// [`DeadRef::Discarded`] (the scan reported it, I-46) and
+/// [`DeadRef::DeadFde`] (a dead FDE is not written).
 #[must_use]
 pub fn field(arch: &dyn Arch, name: &[u8], alloc: bool, width: u8) -> Option<u64> {
     let ones = if width >= 8 { u64::MAX } else { (1u64 << (8 * u32::from(width))) - 1 };
     match dead_reference(name, alloc) {
         DeadRef::Tombstone => Some(arch.tombstone(name) & ones),
         DeadRef::Zero => Some(0),
-        DeadRef::Discarded => None,
+        DeadRef::Discarded | DeadRef::DeadFde => None,
     }
 }

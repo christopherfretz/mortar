@@ -9,7 +9,6 @@ use mortar_arch::{
 };
 use mortar_core::demands::{DemandFlags, DynCounts, DynKind, GlobalFlags};
 use mortar_core::par::SCAN_BLOCK;
-use mortar_core::resolution::SectionKind;
 use mortar_core::{FileId, LocalSym, SectionId, SymEntry, SymKey, SymKind};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass};
 use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, STT_SECTION};
@@ -165,7 +164,6 @@ pub(crate) struct Sec<'v, 'a, 's, 'b> {
     pub index: u32,
     pub recs: Recs<'v, 'a, 's, 'b>,
     pub place: PlaceFacts,
-    pub kind: SectionKind,
     pub name: &'s [u8],
     pub proof: Vec<ProofRun>,
     view: &'v View<'a, 's>,
@@ -229,14 +227,12 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
             let mut marks = view.marks(file, index);
             view.opts.proof.runs(&mut marks, bytes.len() as u64, exec, &mut proof);
         }
-        let kind = view.resolution.sections[sid].kind;
         Ok(Self {
             file,
             sid,
             index,
             recs: Recs { view, file, table, records, bytes },
             place,
-            kind,
             name,
             proof,
             view,
@@ -444,13 +440,6 @@ pub(crate) const fn dyn_kind(role: DynRole) -> DynKind {
     }
 }
 
-/// Whether a `DiscardedSection` reference from `sec` is an error: not
-/// from an `.eh_frame` (`spec/resolve.md` §6.3's table: the FDE is dead,
-/// I-3), a row `mortar_arch::dead_reference` does not have.
-fn eh_frame(sec: &Sec<'_, '_, '_, '_>) -> bool {
-    sec.kind == SectionKind::EhFrame || sec.name == b".eh_frame"
-}
-
 /// Whether `windows`, in the order the walk pushed them (record order),
 /// start in non-decreasing order and no non-empty one starts before a
 /// non-empty earlier one ends: then they are already in `overlaps`' sort
@@ -555,9 +544,6 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
         }
         for (record, class, k) in sink.refs.drain(..) {
             let group = if class == EventClass::DiscardedSection {
-                if eh_frame(&sec) {
-                    continue;
-                }
                 // (referring section index, symbol index): the record's.
                 let r_sym = sec.recs.records.raw(record).map_or(raw.r_sym, |r| r.r_sym);
                 u64::from(u.index) << 32 | u64::from(r_sym)

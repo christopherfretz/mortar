@@ -18,5 +18,6 @@ pub mod load;
 pub mod problem;
 pub mod search;
 pub mod staged;
+pub mod steps;
 pub mod store;
 pub mod walk;

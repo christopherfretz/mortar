@@ -190,7 +190,9 @@ M1. For a key whose `def` is `Common`:
 - `SHN_X86_64_LCOMMON` (large common, x86-64): accepted as a common
   symbol (`st_value` the alignment), resolved as `SHN_COMMON`; allocated
   in `.lbss` (`spec/x64.md` X-55, `spec/layout.md` L-36a); a `COMMON` and
-  an `LCOMMON` of one name give a large common. M1. On another machine
+  an `LCOMMON` of one name give a small common, allocated as `SHN_COMMON`
+  is (`.lbss` only when every mention is `LCOMMON`; GNU ld 2.44,
+  measured: `spec/x64.md` Q14). M1. On another machine
   the index 0xff02 means nothing and is refused as any other
   `Reserved(n)` (§2).
 
@@ -1048,7 +1050,7 @@ static executable; "lld/GNU/mold" columns: defined by that linker):
 | `__init_array_start/_end`, `__preinit_array_start/_end`, `__fini_array_start/_end` | always | local, hidden | yes | yes | yes | M1 |
 | `__rela_iplt_start/_end` (AArch64, x86-64), `__rel_iplt_start/_end` (i386) | static executables that are not PIE (empty range when there is no IRELATIVE); under `-static-pie` not defined, so a reference is weak undefined and zero (GNU ld, lld; mold: absolute 0; all three on the three targets, WP-022.md): the `IRELATIVE` relocations are in `.rela.dyn` | local, hidden | yes | yes | only with IRELATIVE | M1 |
 | `__start_<sec>`, `__stop_<sec>` | `<sec>` is a C identifier and an output section of that name exists | global, protected; `-z start-stop-visibility=` (M2) changes it | yes | yes | yes | M1 |
-| `_TLS_MODULE_BASE_` | a TLS segment exists and the key is referenced | local, hidden | no | x86 only | yes | M2 (TLS descriptors) |
+| `_TLS_MODULE_BASE_` | x86-64 (WP-029b; i386 with its back end): a TLS segment exists and the key is referenced (a conditional candidate; with no TLS chunk layout L-98 refuses it by name); `STT_TLS`, value 0 in the template (x64.md X-47: T = 0 by name, so only `.symtab` shows the value) | local, hidden | no | x86 only | yes | M1 (x86-64); M2 elsewhere |
 | `__GNU_EH_FRAME_HDR` | `.eh_frame_hdr` exists | local, hidden | no | no | yes | M1 |
 | `__dso_handle` | **not defined** (`crtbegin*.o` defines it) | — | no | yes (hidden) | yes | — |
 | `_PROCEDURE_LINKAGE_TABLE_`, `__global_pointer$`, `_gp`, `__tls_get_addr`, `_init`, `_fini` | not defined (RISC-V, MIPS, or libc's) | — | no | no | no | — |
@@ -1327,7 +1329,7 @@ classification is per file (I-file), the state needs `comdat`:
 | `SHT_NOTE` other | `Note` | `Kept` | |
 | `SHT_NOBITS` | `Nobits` | `Kept` | |
 | `SHT_PROGBITS`, `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY`, `SHT_PREINIT_ARRAY`, alloc `SHT_STRTAB` | `Regular` | `Kept` | |
-| `SHT_AARCH64_ATTRIBUTES` (`0x70000003`, AArch64) | — | `Refused{SectionType, ..}` until `spec/a64.md` says what merging them means | not verified (no GCC 14 or Clang 22 object here has one) |
+| `SHT_AARCH64_ATTRIBUTES` (`0x70000003`, AArch64) | — | `Dropped(Consumed)` (`spec/layout.md` L-35, §20.7; applied in WP-027d): the feature marking is the property note's | Clang 22 emits it for every `-mbranch-protection` but `none`; GNU ld and mold drop it, lld copies it (E-18) |
 | `SHT_DYNAMIC`, `SHT_DYNSYM`, `SHT_HASH`, `SHT_GNU_HASH`, `SHT_GNU_verdef/verneed/versym`, `SHT_RELR` in a relocatable object | — | `Refused{SectionType, ..}` | |
 | any other type, or a flag mortar does not implement (`SHF_OS_NONCONFORMING`, unknown bits, a processor flag other than `SHF_AARCH64_PURECODE`/`SHF_X86_64_LARGE` where the arch spec admits them) | — | `Refused{SectionType or SectionFlag, ..}` (`spec/model.md` §3.3) | the references accept silently (`spec/diag.md` §8.1) |
 | `SHF_GNU_RETAIN` | its kind | `Kept`, and a root of liveness (§4.7) | |
@@ -1751,8 +1753,8 @@ section-symbol signatures (E18), lld's stale `--fortran-common` help text
 7. **`-y` output** (M4): standard output text, not a diagnostic;
    needs a decision in `spec/diag.md` (an informational channel).
 8. **Did-you-mean hints** (§5.3): propose a small WP after M1.
-9. **`SHT_AARCH64_ATTRIBUTES`**: refused until a compiler on the matrix
-   emits it; then `spec/a64.md` defines the merge.
+9. **`SHT_AARCH64_ATTRIBUTES`**: closed (`spec/layout.md` L-35, §20.7;
+   applied in WP-027d): consumed, not merged.
 
 ## 18. Requested changes to other specs and tests
 

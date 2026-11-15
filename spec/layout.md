@@ -892,8 +892,9 @@ order of the output sections themselves is in §10.
   orders commons by name within the `COMMON` pattern, lld by input
   order. The order has no observable effect. `SymbolId` is
   deterministic and needs no sort. A large common (x86-64
-  `SHN_X86_64_LCOMMON`, `spec/resolve.md` §3.3) is allocated the same
-  way in `.lbss` (L-36a; `spec/x64.md` X-55).
+  `SHN_X86_64_LCOMMON`, `spec/resolve.md` §3.3: one whose every
+  mention is `LCOMMON`) is allocated the same way in `.lbss` (L-36a;
+  `spec/x64.md` X-55).
 - **L-89 [C] [M1]** A TLS common (`STT_TLS` with `SHN_COMMON`) is
   refused (`feature`, `TLS common symbol`). GCC emits it only with
   `-fcommon` on TLS variables, which no current default does.
@@ -1555,8 +1556,8 @@ the static IPLT is in `.plt`, `.rela.plt` and `.got.plt` (S-68);
 
 - §10: `SHT_AARCH64_ATTRIBUTES` becomes accepted and consumed
   (`Dropped(Consumed)`), not refused; §17 item 9 is closed (L-35).
-  Not applied yet: no compiler on this host emits the section (Clang
-  19, GCC 14; Clang 22 does) — WP-027a's record lists it.
+  **Applied** (WP-027d, with Clang 22's `-mbranch-protection=standard`
+  objects).
 - §5.5: "the entry is layout's default (`spec/layout.md`: GNU's, the
   start of `.text`)" becomes "`e_entry = 0`" (L-103). **Applied**
   (WP-027a; resolve's warning is the one reported, the facade drops

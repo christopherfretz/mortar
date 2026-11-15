@@ -207,6 +207,12 @@ impl GotPlan {
         self.iplt.len() as u64 * self.iplt_entry
     }
 
+    /// The PLT variant the plan was made with (S-97).
+    #[must_use]
+    pub fn variant(&self) -> PltVariant {
+        self.variant
+    }
+
     /// The offset in `.plt` of IPLT entry `n`.
     #[must_use]
     pub fn iplt_entry(&self, n: u32) -> u64 {

@@ -14,6 +14,9 @@ pub enum DeadRef {
     Tombstone,
     /// Exactly `.gcc_except_table`, alloc or not: accepted, the field is 0.
     Zero,
+    /// Exactly `.eh_frame`: accepted, the FDE is dead (`spec/model.md`
+    /// §3.6) and no field of it is written; no event.
+    DeadFde,
     /// Any other section: scan reports the event `DiscardedSection`.
     Discarded,
 }
@@ -34,7 +37,9 @@ pub fn is_debug_name(name: &[u8]) -> bool {
 /// alloc section with a debug name is `Discarded`.
 #[must_use]
 pub fn dead_reference(name: &[u8], alloc: bool) -> DeadRef {
-    if name == b".gcc_except_table" {
+    if name == b".eh_frame" {
+        DeadRef::DeadFde
+    } else if name == b".gcc_except_table" {
         DeadRef::Zero
     } else if !alloc && is_debug_name(name) {
         DeadRef::Tombstone
