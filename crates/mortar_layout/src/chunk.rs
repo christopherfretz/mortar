@@ -718,19 +718,27 @@ pub fn chunk(
             }
         }
     }
-    // A leading copy chunk is its section's first chunk: aligned to the
-    // largest alignment of the section's chunks (L-5, as the islands
-    // above).
-    for c in 0..out_of.len() {
-        let id = ChunkId(c as u32);
-        let lead = matches!(chunks[id].kind, ChunkKind::Synthetic(s) if leads(s.name));
-        let Some(o) = out_of[c].filter(|_| lead) else { continue };
-        let widest = (0..out_of.len())
-            .filter(|&d| out_of[d] == Some(o))
-            .map(|d| chunks[ChunkId(d as u32)].align)
-            .max()
-            .unwrap_or(0);
-        chunks[id].align = chunks[id].align.max(widest);
+    // The first chunk of an output section (a leading copy chunk, or the
+    // body before the merged chunk of `.rodata` whose `.rodata.cst16`
+    // pieces are wider than its members) is aligned to the largest
+    // alignment of the section's chunks: `sh_addralign` is that largest
+    // one, and gABI "Sections" wants `sh_addr` congruent to 0 modulo it
+    // (L-5, as the islands above). A section whose first chunk is
+    // already the widest is unchanged.
+    let mut widest: Vec<u8> = vec![0; outs];
+    for (c, o) in out_of.iter().enumerate() {
+        if let Some(o) = o {
+            let w = &mut widest[o.0 as usize];
+            *w = (*w).max(chunks[ChunkId(c as u32)].align);
+        }
+    }
+    let mut first_seen: Vec<bool> = vec![false; outs];
+    for &c in order.iter() {
+        let Some(o) = out_of[c.0 as usize] else { continue };
+        if std::mem::replace(&mut first_seen[o.0 as usize], true) {
+            continue;
+        }
+        chunks[c].align = chunks[c].align.max(widest[o.0 as usize]);
     }
     // Rule 5: sorted by key (commons, then copies by index).
     sym_place.sort_by_key(|p: &SymPlace| p.key);

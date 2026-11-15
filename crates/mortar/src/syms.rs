@@ -6,8 +6,8 @@ use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_elf::consts::{
-    STB_GLOBAL, STB_WEAK, STT_NOTYPE, STT_OBJECT, STT_TLS, STV_DEFAULT, STV_HIDDEN, STV_INTERNAL,
-    STV_PROTECTED,
+    STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_NOTYPE, STT_OBJECT, STT_TLS, STV_DEFAULT, STV_HIDDEN,
+    STV_INTERNAL, STV_PROTECTED,
 };
 use mortar_elf::{Sym, SymbolIndex, SymbolSection, SymbolTable};
 use mortar_synth::SymSource;
@@ -32,6 +32,9 @@ pub struct CoreSyms<'a, 's> {
     assignment: &'a Assignment<'a>,
     /// Per file: the symbol table of a live object.
     tables: Vec<Option<SymbolTable<'s>>>,
+    /// An output with `.dynamic`: a `STB_GNU_UNIQUE` definition keeps its
+    /// binding in `.symtab` and `.dynsym` (`spec/dyn.md` D-23).
+    keep_unique: bool,
 }
 
 impl std::fmt::Debug for CoreSyms<'_, '_> {
@@ -58,7 +61,20 @@ impl<'a, 's> CoreSyms<'a, 's> {
                 }
             })
             .collect();
-        Self { inputs, resolution, assignment, tables }
+        Self { inputs, resolution, assignment, tables, keep_unique: false }
+    }
+
+    /// `dynamic`: the output has `.dynamic`. Its `STB_GNU_UNIQUE`
+    /// definitions stay unique in `.symtab` and, when exported, in
+    /// `.dynsym` (`spec/dyn.md` D-23, as GNU ld, lld and mold write them):
+    /// glibc's unique-symbol table then holds the executable's instance,
+    /// which an `RTLD_DEEPBIND` library also binds to. A static link
+    /// keeps resolve §3.7's `STB_GLOBAL` (its bytes are unchanged; the
+    /// follow-up is the record's, `spec/landed/dyn/WP-054.md`).
+    #[must_use]
+    pub fn dynamic(mut self, dynamic: bool) -> Self {
+        self.keep_unique = dynamic;
+        self
     }
 
     fn table(&self, file: FileId) -> Option<&SymbolTable<'s>> {
@@ -170,7 +186,15 @@ impl SymSource for CoreSyms<'_, '_> {
         Some(match def {
             Def::Defined(e) => {
                 let (s, t) = self.sym(e)?;
-                row(s.sym_type(), s.st_size, self.def_of(e, &s, t), e.file, props.binding)
+                let binding = if self.keep_unique
+                    && props.binding == STB_GLOBAL
+                    && s.st_info >> 4 == STB_GNU_UNIQUE
+                {
+                    STB_GNU_UNIQUE
+                } else {
+                    props.binding
+                };
+                row(s.sym_type(), s.st_size, self.def_of(e, &s, t), e.file, binding)
             }
             Def::Common(e) => {
                 let size = self.resolution.common_of(id).map_or(0, |c| c.size);

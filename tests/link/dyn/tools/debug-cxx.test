@@ -1,0 +1,45 @@
+# dyn.md D-70, C++ in the debuggers: a g++ `-g` PIE linked against
+# libstdc++.so stops at `main` and at a member function in a namespace
+# (`ns::G::greet`, by its qualified name) in gdb and in lldb, with the
+# backtrace through `main` and libstdc++.so.6 among the loaded objects.
+# lldb runs with `settings set target.disable-aslr false` (the
+# harness's). gdb and lldb run host programs only.
+#
+#@ spec: dyn.md "D-70"
+#@ arch: aarch64
+#@ requires: g++ gdb lldb
+
+cxx -O0 -g main.cc -o main.o
+link g++ main.o -o pie
+run pie
+  stdout: hello, debugger 1
+check gdb pie "break main" "break ns::G::greet" run bt continue bt "info sharedlibrary" kill
+  has: Breakpoint 1, main () at main.cc:
+  has: Breakpoint 2, ns::G::greet (this=*) at main.cc:
+  has: #1 * main () at main.cc:
+  has: ^0x* 0x* Yes * */libstdc++.so.6$
+  not: Cannot insert breakpoint
+check lldb pie "b main" "b ns::G::greet" run bt continue bt "image list" kill
+  has: stop reason = breakpoint 1.1
+  has: frame #0: * pie`main at main.cc:
+  has: frame #0: * pie`ns::G::greet(this=*) * at main.cc:
+  has: ] * 0x* */libstdc++.so.6
+
+#--- main.cc
+#include <iostream>
+#include <string>
+
+namespace ns {
+struct G {
+  std::string who = "debugger";
+  int greet(int n) const {
+    std::cout << "hello, " << who << " " << n << std::endl;
+    return n;
+  }
+};
+} // namespace ns
+
+int main() {
+  ns::G g;
+  return g.greet(1) == 1 ? 0 : 1;
+}

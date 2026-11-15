@@ -1,0 +1,167 @@
+# dyn.md D-42 and D-46, C++ across the executable/library boundary:
+# exceptions thrown in a `-fPIC` library (its own class, std::bad_alloc,
+# std::out_of_range from libstdc++, an int) caught by type in the
+# executable; an exception of the executable's thrown from a callback
+# through the library's frames; one thrown and caught inside the
+# library while the executable's callback is on the stack. The unwinder
+# is libgcc_s.so's, which finds the executable's frames through
+# `.eh_frame_hdr` (`PT_GNU_EH_FRAME`), PLT entries included (they have
+# no FDE: the unwinder goes on through the caller's). dynamic_cast and
+# typeid compare equal across the boundary: one `_ZTI6Square` in the
+# library, which a PIE reaches through the GOT and a `-fno-pic`
+# executable copies (D-42: `.bss.rel.ro`, read-only after relocation).
+# PIE and `-no-pie` with `-fno-pic` code, g++ and clang++.
+#
+# The differences from GNU ld's dynamic tables are the D-46 ones: the
+# word `DW.ref.__gxx_personality_v0` gets a symbolic `ABS64` record in
+# both, and GNU ld gives `__gxx_personality_v0` a `JUMP_SLOT` (PIE) or a
+# canonical PLT (`-no-pie`) besides; mortar makes no PLT entry for a
+# function nothing calls (D-46: a writable place takes the record).
+#
+#@ spec: dyn.md "D-42"
+#@ spec: dyn.md "D-46"
+#@ arch: aarch64
+#@ requires: g++ clang
+
+cxx -O1 -fPIC lib.cc -o lib.o
+shlib g++ lib.o -Wl,-soname,libx.so -o libx.so
+cxx -O1 -fPIE main.cc -o main-pie.o
+cxx -O1 -fno-pic main.cc -o main-exec.o
+cxx(clang) -O2 -fPIE main.cc -o main-clang.o
+link g++ -pie main-pie.o -L. -lx -o pie
+run pie
+  stdout: LibErr liberr 7
+  stdout: bad_alloc
+  stdout: out_of_range
+  stdout: int 42
+  stdout: through lib 5
+  stdout: lib caught 9
+  stdout: exe exe-thrown
+  stdout: dyncast exe 1 lib 1 tri 0 0
+  stdout: typeid eq 1 1 1 addr 1 1
+  stdout: tri typeid 1 3Tri
+link g++ -no-pie main-exec.o -L. -lx -o exec
+run exec
+  stdout: LibErr liberr 7
+  stdout: bad_alloc
+  stdout: out_of_range
+  stdout: int 42
+  stdout: through lib 5
+  stdout: lib caught 9
+  stdout: exe exe-thrown
+  stdout: dyncast exe 1 lib 1 tri 0 0
+  stdout: typeid eq 1 1 1 addr 1 1
+  stdout: tri typeid 1 3Tri
+link clang++ main-clang.o -L. -lx -o clang
+run clang
+  stdout: LibErr liberr 7
+  stdout: bad_alloc
+  stdout: out_of_range
+  stdout: int 42
+  stdout: through lib 5
+  stdout: lib caught 9
+  stdout: exe exe-thrown
+  stdout: dyncast exe 1 lib 1 tri 0 0
+  stdout: typeid eq 1 1 1 addr 1 1
+  stdout: tri typeid 1 3Tri
+check readelf -lW pie
+  has: GNU_EH_FRAME
+check readelf -dW pie
+  has: (NEEDED) Shared library: [libgcc_s.so.1]
+check readelf -rW exec
+  has: R_AARCH64_COPY * _ZTI6LibErr
+  has: R_AARCH64_COPY * _ZTI6Square
+check readelf -SW exec
+  has(mortar): ] .bss.rel.ro NOBITS
+
+#--- lib.h
+#include <stdexcept>
+#include <typeinfo>
+
+struct LibErr : std::runtime_error {
+  LibErr(const char *w);
+  ~LibErr() override;
+  int code = 7;
+};
+struct Shape {
+  virtual ~Shape();
+  virtual int sides() const = 0;
+};
+struct Square : Shape {
+  ~Square() override;
+  int sides() const override;
+};
+Shape *lib_make_square();
+const std::type_info &lib_ti_square();
+const std::type_info &lib_ti_int();
+void lib_throw(int how);
+int lib_call(void (*cb)());
+bool lib_is_square(Shape *s);
+const std::type_info &lib_ti_of(const Shape &s);
+#--- lib.cc
+#include "lib.h"
+#include <new>
+#include <vector>
+
+LibErr::LibErr(const char *w) : std::runtime_error(w) {}
+LibErr::~LibErr() {}
+Shape::~Shape() {}
+Square::~Square() {}
+int Square::sides() const { return 4; }
+Shape *lib_make_square() { return new Square; }
+const std::type_info &lib_ti_square() { return typeid(Square); }
+const std::type_info &lib_ti_int() { return typeid(int); }
+void lib_throw(int how) {
+  if (how == 0) throw LibErr("liberr");
+  if (how == 1) throw std::bad_alloc();
+  if (how == 2) {
+    std::vector<int> v;
+    (void)v.at(3);
+  }
+  throw 42;
+}
+int lib_call(void (*cb)()) {
+  try {
+    cb();
+  } catch (int i) {
+    return i;
+  }
+  return -1;
+}
+bool lib_is_square(Shape *s) { return dynamic_cast<Square *>(s) != nullptr; }
+const std::type_info &lib_ti_of(const Shape &s) { return typeid(s); }
+#--- main.cc
+#include "lib.h"
+#include <cstdio>
+#include <new>
+
+struct Tri : Shape {
+  int sides() const override { return 3; }
+};
+struct ExeErr {
+  int v;
+};
+static void cb_throw_exe() { throw ExeErr{5}; }
+static void cb_throw_int() { throw 9; }
+
+int main() {
+  int n = 0;
+  try { lib_throw(0); } catch (const LibErr &e) { std::printf("LibErr %s %d\n", e.what(), e.code); n++; }
+  try { lib_throw(1); } catch (const std::bad_alloc &) { std::puts("bad_alloc"); n++; }
+  try { lib_throw(2); } catch (const std::out_of_range &) { std::puts("out_of_range"); n++; }
+  try { lib_throw(3); } catch (int i) { std::printf("int %d\n", i); n++; }
+  try { lib_call(cb_throw_exe); } catch (const ExeErr &e) { std::printf("through lib %d\n", e.v); n++; }
+  std::printf("lib caught %d\n", lib_call(cb_throw_int));
+  try { throw LibErr("exe-thrown"); } catch (const std::runtime_error &e) { std::printf("exe %s\n", e.what()); n++; }
+  Shape *s = lib_make_square();
+  Tri t;
+  std::printf("dyncast exe %d lib %d tri %d %d\n", dynamic_cast<Square *>(s) != nullptr,
+              lib_is_square(s), dynamic_cast<Square *>(static_cast<Shape *>(&t)) != nullptr,
+              lib_is_square(&t));
+  std::printf("typeid eq %d %d %d addr %d %d\n", typeid(*s) == typeid(Square),
+              lib_ti_square() == typeid(Square), lib_ti_int() == typeid(int),
+              &lib_ti_square() == &typeid(Square), &lib_ti_int() == &typeid(int));
+  std::printf("tri typeid %d %s\n", lib_ti_of(t) == typeid(Tri), lib_ti_of(t).name());
+  delete s;
+  return n == 6 ? 0 : 1;
+}
