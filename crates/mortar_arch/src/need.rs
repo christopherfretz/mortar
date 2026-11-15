@@ -55,7 +55,7 @@ pub fn branch_site(
     target: TargetKind,
     flags: DemandFlags,
 ) -> Option<BranchSite> {
-    branch_candidate(arch, output, at, names, target).map(|c| c.site(flags))
+    branch_candidate(arch, output, at, names, target == TargetKind::Weak0).map(|c| c.site(flags))
 }
 
 /// What [`branch_site`] reads of a relocation, before the target's final
@@ -90,17 +90,18 @@ impl BranchCandidate {
 }
 
 /// [`branch_site`] without the flags: `None` exactly when `branch_site`
-/// is `None` for every value of the flags.
+/// is `None` for every value of the flags. `weak0`: the target's kind is
+/// `TargetKind::Weak0` (the only kind the answer depends on).
 #[must_use]
 pub fn branch_candidate(
     arch: &dyn Arch,
     output: OutputKind,
     at: &RelocAt<'_>,
     names: &dyn SymNames,
-    target: TargetKind,
+    weak0: bool,
 ) -> Option<BranchCandidate> {
     let branch = arch.branch(at.howto)?;
-    if !branch.veneer || target == TargetKind::Weak0 || arch.consumed(output, at, names) {
+    if !branch.veneer || weak0 || arch.consumed(output, at, names) {
         return None;
     }
     Some(BranchCandidate {

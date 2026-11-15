@@ -578,6 +578,16 @@ pub(crate) const fn dyn_kind(role: DynRole) -> DynKind {
 }
 
 /// Walks one unit (§4.1 step 2): every record in record order.
+/// Whether `key`'s target kind is `Weak0`, from the definitions alone;
+/// checked against the full facts in debug builds.
+fn weak0(view: &View<'_, '_>, tables: &RecTables<'_, '_, '_>, key: SymKey) -> bool {
+    let w = view.is_weak0(key);
+    debug_assert_eq!(w, ScanTables::sym(tables, key).kind == mortar_arch::TargetKind::Weak0);
+    #[cfg(not(debug_assertions))]
+    let _ = tables;
+    w
+}
+
 pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> UnitOut {
     with_bufs(|bufs| walk_unit(view, u, global, bufs))
 }
@@ -716,7 +726,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
                 output,
                 &at,
                 &tables,
-                ScanTables::sym(&tables, key).kind,
+                weak0(view, &tables, key),
             )
         {
             out.branches.push(crate::BranchRec {

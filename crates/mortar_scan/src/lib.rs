@@ -175,11 +175,13 @@ pub struct BranchRec {
 pub struct Scanned {
     pub demands: Demands,
     pub order: RecIndex,
-    /// The branch candidates of every live code section, in unit order
-    /// (`(FileId, section index)`, then record order); `need::branch_candidate`
+    /// The branch candidates of every live code section, one list per
+    /// scan unit that has any, in unit order (`(FileId, section index)`,
+    /// then record order: concatenated, `SectionId` order; kept apart so
+    /// that the scan does not copy them); `need::branch_candidate`
     /// with the scan's output kind and `RelocAt.leads` set (§3.5: the bit
     /// only gates a test that fails without a lead).
-    pub branches: Vec<BranchRec>,
+    pub branches: Vec<Vec<BranchRec>>,
     /// Every diagnostic of the phase, in unit order and then by group;
     /// the collector orders them by key.
     pub diagnostics: Vec<(Key, Diagnostic)>,
@@ -266,12 +268,13 @@ pub fn scan(
     let mut locals: Vec<(LocalSym, DemandFlags)> = Vec::new();
     let mut events = Vec::with_capacity(results.len());
     let mut output = mortar_core::demands::GlobalFlags::empty();
-    let mut branches: Vec<BranchRec> =
-        Vec::with_capacity(results.iter().map(|o| o.branches.len()).sum());
+    let mut branches: Vec<Vec<BranchRec>> = Vec::new();
     for o in &mut results {
         diagnostics.append(&mut o.diags);
         locals.append(&mut o.locals);
-        branches.append(&mut o.branches);
+        if !o.branches.is_empty() {
+            branches.push(std::mem::take(&mut o.branches));
+        }
         events.push(std::mem::take(&mut o.events));
         stats.events += o.n_events;
         output |= o.output;

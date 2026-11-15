@@ -333,6 +333,26 @@ impl<'a, 's> View<'a, 's> {
     /// The target kind of an undefined key (§4.4, I-19): a weak one is
     /// zero (or dynamic); a strong one is `Undefined` unless its verdict
     /// is "nothing" (`--unresolved-symbols=ignore-*`), which makes it zero.
+    /// Whether `facts(key, _).kind` is `TargetKind::Weak0`, found from
+    /// the definitions alone (no symbol is read: the mention never
+    /// changes the kind, and a local is never `Weak0`).
+    pub fn is_weak0(&self, key: SymKey) -> bool {
+        let SymKind::Global(mut id) = key.kind() else { return false };
+        // As `global_facts`: an alias is followed to depth 8.
+        for depth in 0..=8 {
+            match self.def(id) {
+                Def::Undefined { weak } => {
+                    let verdict =
+                        self.resolution.props.get(id).copied().unwrap_or_default().verdict;
+                    return self.undefined_kind(weak, verdict) == TargetKind::Weak0;
+                }
+                Def::Internal(InternalDef::Alias(to)) if to != id && depth < 8 => id = to,
+                _ => return false,
+            }
+        }
+        false
+    }
+
     fn undefined_kind(&self, weak: bool, verdict: Verdict) -> TargetKind {
         let zero = if self.opts.dynamic { TargetKind::WeakDyn } else { TargetKind::Weak0 };
         match (weak, verdict) {

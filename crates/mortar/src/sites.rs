@@ -66,7 +66,7 @@ pub struct SiteInputs<'a, 's> {
     pub demands: &'a Demands,
     pub order: &'a RecIndex,
     /// The scan's branch candidates (`Scanned.branches`).
-    pub branches: &'a [BranchRec],
+    pub branches: &'a [Vec<BranchRec>],
     pub slots: &'a Slots,
     pub got: &'a GotPlan,
     pub ids: SynthIds,
@@ -183,7 +183,7 @@ impl<'a, 's> LinkSites<'a, 's> {
 fn branches_of(t: &SiteInputs<'_, '_>, code: &[CodeSec]) -> Vec<BranchAt> {
     let mut out: Vec<BranchAt> = Vec::new();
     let mut last: Option<(SectionId, bool)> = None;
-    for b in t.branches {
+    for b in t.branches.iter().flatten() {
         let keep = match last {
             Some((s, k)) if s == b.section => k,
             _ => {
