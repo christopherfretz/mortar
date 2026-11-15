@@ -79,8 +79,9 @@ and over REL or RELA.
 
 Out of scope until a milestone says otherwise: Mach-O, COFF, big-endian
 ELF, the x32 ABI, other architectures (32-bit ARM included), link-time
-optimization (the plugin interface is refused by name; `-flto` objects are
-a later decision).
+optimization (an LTO object among the inputs is refused by name; the
+`-plugin` options GCC passes on every link are accepted and have no effect
+without one, `spec/cli.md`; linking `-flto` objects is a later decision).
 
 ## Pipeline
 
