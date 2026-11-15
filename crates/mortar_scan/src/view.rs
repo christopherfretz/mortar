@@ -28,9 +28,9 @@ pub(crate) struct Prep<'s> {
     /// The symbol table (`.symtab`; `.dynsym` of a shared object), or why
     /// it cannot be read.
     pub symtab: Result<Option<SymbolTable<'s>>, String>,
-    /// The mapping marks of the file's sections, `(section, mark)` sorted
-    /// by `(section, value, index)`.
-    marks: OnceLock<Box<[(u32, Mark)]>>,
+    /// The mapping marks of the file's sections, sorted by `(section,
+    /// value, index)`, and per section index where its marks start.
+    marks: OnceLock<FileMarks>,
 }
 
 impl<'s> Prep<'s> {
@@ -118,8 +118,14 @@ impl<'a, 's> View<'a, 's> {
     pub fn marks(&self, file: FileId, section: u32) -> Vec<Mark> {
         let Some(p) = self.prep(file) else { return Vec::new() };
         let all = p.marks.get_or_init(|| file_marks(p, self.opts.proof));
-        let from = all.partition_point(|m| m.0 < section);
-        all[from..].iter().take_while(|m| m.0 == section).map(|m| m.1).collect()
+        // `starts[s]..starts[s + 1]`: the marks of section `s` (an index
+        // per section, not a search per call: the scan, the sites and the
+        // fixed point ask for every code section, some many times).
+        let s = section as usize;
+        match (all.starts.get(s), all.starts.get(s + 1)) {
+            (Some(&a), Some(&b)) => all.marks[a as usize..b as usize].to_vec(),
+            _ => Vec::new(),
+        }
     }
 
     pub fn is_mismatch(&self, id: SymbolId) -> bool {
@@ -344,8 +350,17 @@ impl<'a, 's> View<'a, 's> {
     }
 }
 
-fn file_marks(p: &Prep<'_>, proof: &dyn CodeProof) -> Box<[(u32, Mark)]> {
-    let Some(t) = p.table() else { return Box::new([]) };
+/// A file's mapping marks: `marks` sorted by `(section, value, index)`;
+/// those of section `s` are `starts[s]..starts[s + 1]` (`starts` ends
+/// after the last section with a mark).
+#[derive(Debug, Default)]
+pub(crate) struct FileMarks {
+    marks: Box<[Mark]>,
+    starts: Box<[u32]>,
+}
+
+fn file_marks(p: &Prep<'_>, proof: &dyn CodeProof) -> FileMarks {
+    let Some(t) = p.table() else { return FileMarks::default() };
     let mut out = Vec::new();
     for (index, s) in t.locals() {
         let Ok(name) = t.name(&s) else { continue };
@@ -355,7 +370,15 @@ fn file_marks(p: &Prep<'_>, proof: &dyn CodeProof) -> Box<[(u32, Mark)]> {
         }
     }
     out.sort_unstable_by_key(|m| (m.0, m.1.value, m.1.index));
-    out.into_boxed_slice()
+    let sections = out.last().map_or(0, |m| m.0 as usize + 1);
+    let mut starts = vec![0u32; sections + 1];
+    for m in &out {
+        starts[m.0 as usize + 1] += 1;
+    }
+    for s in 1..starts.len() {
+        starts[s] += starts[s - 1];
+    }
+    FileMarks { marks: out.into_iter().map(|m| m.1).collect(), starts: starts.into() }
 }
 
 /// One decoded record: the explicit addend of `SHT_RELA`, none for
