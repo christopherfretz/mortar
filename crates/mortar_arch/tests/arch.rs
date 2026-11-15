@@ -491,12 +491,111 @@ fn s3_8_tls_formulas() {
     assert_eq!(TlsAbi::dtp_rel(0x42_0010, tls), 0x10);
 }
 
+/// §3.11 (`spec/image.md` I-47): the table by name and class.
 #[test]
 fn s3_11_tombstone() {
-    assert_eq!(tombstone(b".debug_ranges"), 1);
-    assert_eq!(tombstone(b".debug_loc"), 1);
-    assert_eq!(tombstone(b".debug_info"), 0);
-    assert_eq!(tombstone(b".debug_rnglists"), 0);
+    let all = u64::MAX;
+    for (name, e64, e32) in [
+        (&b".debug_ranges"[..], 1, 1),
+        (b".debug_loc", 1, 1),
+        (b".debug_aranges", all, all),
+        (b".debug_frame", all, all),
+        (b".debug_info", all, 0),
+        (b".debug_addr", all, 0),
+        (b".debug_line", all, 0),
+        (b".debug_rnglists", all, 0),
+        (b".debug_loclists", all, 0),
+        (b".debug_str_offsets", all, 0),
+        (b".zdebug_info", all, 0),
+        (b".stab", all, 0),
+        (b".line", all, 0),
+        (b".gnu_debuglink", all, 0),
+    ] {
+        let n = String::from_utf8_lossy(name);
+        assert_eq!(tombstone(name, Class::Elf64), e64, "{n} ELFCLASS64");
+        assert_eq!(tombstone(name, Class::Elf32), e32, "{n} ELFCLASS32");
+    }
+}
+
+/// §3.4 "Scan sees only live sections": `spec/resolve.md` §6.3's table of
+/// referring sections, row by row.
+#[test]
+fn s3_4_dead_reference_by_referring_section() {
+    use mortar_arch::{DeadRef as D, dead_reference, is_debug_name};
+    for name in [
+        &b".debug"[..],
+        b".debug_info",
+        b".debugx",
+        b".zdebug_info",
+        b".line",
+        b".stab",
+        b".stabstr",
+        b".stab.foo",
+        b".gnu.linkonce.wi.x",
+        b".gnu.debuglto_.debug_info",
+        b".gnu_debuglink",
+    ] {
+        assert!(is_debug_name(name), "{}", String::from_utf8_lossy(name));
+        assert_eq!(dead_reference(name, false), D::Tombstone);
+        // An alloc section with a debug name is an error.
+        assert_eq!(dead_reference(name, true), D::Discarded);
+    }
+    assert_eq!(dead_reference(b".gcc_except_table", true), D::Zero);
+    assert_eq!(dead_reference(b".gcc_except_table", false), D::Zero);
+    for name in [
+        &b".comment"[..],
+        b".comment.x",
+        b".note.x",
+        b".gcc_except_table.foo",
+        b".gnu_debugaltlink",
+        b".debu",
+        b".lin",
+        b".gnu.debuglto_.debug",
+        b".gnu.linkonce.wix",
+        b".gnu_debuglink2",
+    ] {
+        assert!(!is_debug_name(name), "{}", String::from_utf8_lossy(name));
+        assert_eq!(dead_reference(name, false), D::Discarded);
+    }
+    for name in [&b".text"[..], b".data", b".rodata", b".stapsdt.base", b"a"] {
+        assert_eq!(dead_reference(name, true), D::Discarded);
+    }
+}
+
+/// §3.6 (`spec/image.md` I-35): a clipped `SectionOut` writes exactly the
+/// part of each write inside its clip, for every clip and write position.
+#[test]
+fn s3_6_section_out_clip() {
+    let len = 12u64;
+    let data: Vec<u8> = (1..=5).collect();
+    for off in 0..len {
+        let n = data.len().min(usize::try_from(len - off).unwrap());
+        let mut whole = vec![0u8; 12];
+        mortar_arch::SectionOut::whole(&mut whole, 0, true, b".text").write(off, &data[..n]);
+        for a in 0..=len {
+            for b in a..=len {
+                let mut clip = vec![0u8; usize::try_from(b - a).unwrap()];
+                let mut out = mortar_arch::SectionOut::new(&mut clip, a, 0, true, b".text");
+                assert_eq!(out.clip(), (a, b));
+                out.write(off, &data[..n]);
+                assert_eq!(clip, whole[a as usize..b as usize], "write {off}, clip [{a}, {b})");
+            }
+        }
+    }
+    // A write past the end of the address space is clipped, not wrapped.
+    let mut b = [0u8; 4];
+    mortar_arch::SectionOut::new(&mut b, u64::MAX - 4, 0, true, b"").write(u64::MAX - 1, &[9; 4]);
+    assert_eq!(b, [0, 0, 0, 9]);
+}
+
+/// §3.1 `max_reach`: the larger of each side.
+#[test]
+fn s3_1_max_window() {
+    use mortar_arch::{Window, max_window};
+    let a = Window { before: 4, after: 0 };
+    let b = Window { before: 0, after: 8 };
+    assert_eq!(max_window(a, b), Window { before: 4, after: 8 });
+    assert_eq!(max_window(b, a), Window { before: 4, after: 8 });
 }
 
 // ---------------------------------------------------------------- §7, §10

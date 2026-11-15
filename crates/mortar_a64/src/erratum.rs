@@ -1,7 +1,10 @@
 //! Erratum 843419 (a64.md §11): the predicate over one output code
 //! section, the ADR fix and the patch.
 
-use mortar_arch::{Code, ErratumSite, FieldError, Proof, Unproved};
+use mortar_arch::{Code, ErratumSite, FieldError, Proof, ThunkShape, Unproved};
+
+/// The shape of a patch (§11.2): two words, aligned to 4.
+pub static PATCH: ThunkShape = ThunkShape { size: 8, align: 4 };
 
 use crate::forms::{self, ADR, ADRP, B26};
 use crate::synth::checked;

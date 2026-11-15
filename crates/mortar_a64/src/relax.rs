@@ -6,7 +6,7 @@
 //! fill, in any order (arch.md §3.5).
 
 use mortar_arch::seq::look_back;
-use mortar_arch::{RelocAt, SymNames};
+use mortar_arch::{Records, RelocAt, SymNames, Window};
 
 use crate::synth::NOP;
 
@@ -17,6 +17,34 @@ pub const TLSGD_ADD_LO12_NC: u32 = 514;
 pub const CALL26: u32 = 283;
 pub const ADR_GOTTPREL_PAGE21: u32 = 541;
 pub const LD64_GOTTPREL_LO12_NC: u32 = 542;
+
+/// R4's `CALL26` member (§8.4) owns `[o+8, o+16)`: its field at `o+8` and
+/// the `nop` after it, 4 bytes past the field.
+pub const R4_CALL_AFTER: u64 = 4;
+
+/// The member windows of the recognized forms that differ from their
+/// type's `Howto` window (arch.md §3.5 `unit_window`), around each
+/// member's field: R4's `CALL26`. Every other member of R1 to R5 writes
+/// only its own field word. `Facts.max_reach` is derived from this table
+/// and the `Howto` table (arch.md §3.1).
+pub const MEMBER_WINDOWS: [Window; 1] = [Window { before: 0, after: R4_CALL_AFTER as u8 }];
+
+/// The lead types that `RelocAt.leads` gates (arch.md §3.5): R4's.
+pub const SEQ_LEADS: [u32; 1] = [TLSGD_ADR_PAGE21];
+
+/// arch.md §3.5 `sequence_extent`: 3 at an R4 lead whose next two records
+/// are the 514 and the `CALL26`, 2 at an R5 lead followed by its 312, 1
+/// otherwise. It reads only the record types: a pattern that may match
+/// at `i` never consumes more.
+#[must_use]
+pub fn sequence_extent(records: &dyn Records, i: u32) -> u32 {
+    let ty = |k: u32| i.checked_add(k).and_then(|j| records.get(j)).map(|r| r.r_type);
+    match ty(0) {
+        Some(TLSGD_ADR_PAGE21) if ty(1) == Some(TLSGD_ADD_LO12_NC) && ty(2) == Some(CALL26) => 3,
+        Some(ADR_GOT_PAGE) if ty(1) == Some(LD64_GOT_LO12_NC) => 2,
+        _ => 1,
+    }
+}
 
 const fn rd(w: u32) -> u32 {
     w & 0x1F
@@ -88,6 +116,10 @@ pub fn got_pair(at: &RelocAt<'_>) -> Option<(u64, u32)> {
 /// `unit_window`'s), and the overlap check of arch.md §3.4 refuses it.
 #[must_use]
 pub fn gd_lead(at: &RelocAt<'_>, names: &dyn SymNames) -> Option<(u32, u64)> {
+    // No 513 in the section: no R4 (`RelocAt.leads`, arch.md §3.5).
+    if !at.leads {
+        return None;
+    }
     let back = match at.r_type {
         TLSGD_ADR_PAGE21 => 0,
         TLSGD_ADD_LO12_NC => 1,
