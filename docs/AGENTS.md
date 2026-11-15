@@ -47,8 +47,9 @@ section, under about 2000 lines.
 8. The record of what a WP did goes in its own file,
    `spec/landed/<spec>/WP-NNN.md`, never appended to a shared spec file:
    parallel branches appending to one file conflict.
-9. Code, comments, tests, docs, commit messages and branch names refer
-   only to public projects and public material.
+9. This repository is public. Code, comments, tests, docs, commit
+   messages and branch names refer only to public projects and public
+   material.
 10. `mortar_plumb` (the verifier) is written from the specs. Its
     implementers do not read, copy or call the linker's relocation and
     layout code, and it depends on `mortar_elf` and `mortar_diag` only.
