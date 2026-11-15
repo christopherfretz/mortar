@@ -7,6 +7,8 @@
 //! changes from `refused` must be added here: the list is compared with
 //! the table.
 
+mod support;
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -322,10 +324,39 @@ impl Cx {
         run_with(&mut c, b"", Duration::from_mins(2))
     }
 
-    /// mortar on `args`.
+    /// mortar on `args`. With `-o X`, mortar also writes its map to
+    /// `X.mortar-map`, and an output it writes is judged by the verifier,
+    /// which must find nothing (`docs/VALIDATION.md` L3, WP-035).
     fn mortar(&self, args: &[&str]) -> Outcome {
-        let args: Vec<OsString> = args.iter().map(OsString::from).collect();
-        self.run_in(Path::new(MORTAR), &args)
+        let out = args.windows(2).filter(|w| w[0] == "-o").map(|w| w[1]).next_back();
+        let mut words: Vec<OsString> = args.iter().map(OsString::from).collect();
+        let map = out.map(|o| self.scratch.join(format!("{o}.mortar-map")));
+        if let Some(map) = &map {
+            words.push(format!("--mortar-map={}", map.display()).into());
+        }
+        let o = self.run_in(Path::new(MORTAR), &words);
+        if let (Some(out), Some(map), true) = (out, &map, o.success()) {
+            let out = self.scratch.join(out);
+            if out.exists() {
+                let findings = support::plumb::verify(&out, map, self.scratch.path());
+                if args.iter().any(|a| a.starts_with("--build-id=0x")) {
+                    // spec/plumb.md §6.7 "The style from the map": a given
+                    // id (`0xHEX`) of a hash's length is judged as a hash
+                    // (a false B1) until mortar's map states the style
+                    // `given` (a request to the image package). When it
+                    // does, this exception is stale and fails.
+                    assert!(
+                        !findings.is_empty()
+                            && findings.iter().all(|f| f.rule == mortar_plumb::Rule::BuildId),
+                        "{args:?}: the given build id's exception is stale or hides more: \
+                         {findings:#?}"
+                    );
+                } else {
+                    assert!(findings.is_empty(), "plumb on {}: {findings:#?}", out.display());
+                }
+            }
+        }
+        o
     }
 
     /// GNU ld on `args`.

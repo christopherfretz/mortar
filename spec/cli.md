@@ -248,7 +248,11 @@ This is libiberty's `buildargv`, as GNU ld uses it.
   `-z force-ibt` is lld's, and only GNU rows have targets (§4.1): it is
   read on every target and refused on AArch64 by §4.4. They land in
   `plan.other` (§3.12) with their value, and stay `refused` (§4.4) until
-  `mortar_x64` honours them.
+  `mortar_x64` (x86-64) or `mortar_x86` (i386) honours them. On i386
+  they will be honoured by `mortar_x86` with the same meaning
+  (`spec/x86.md` X86-55, X86-49, R-11); lld 19/22 ignore `-z ibt` on
+  i386 with a warning ('unknown -z value: ibt'), which mortar does not
+  follow.
 - They are read whatever the target. Each use is recorded in
   `plan.target_options`.
 - When `-m` names the target, `check_target` runs at the end of the line.
@@ -491,7 +495,10 @@ The facade does two things with these:
 - `cref`;
 - `reproduce`;
 - `threads`: `--threads[=N]` (N is given) and `--thread-count N` set a
-  count; `--threads` alone means `All`; `--no-threads` is a count of 1;
+  count; `--threads` alone means `All`; `--no-threads` is a count of 1.
+  Without `threads`, the phases after input use at most one worker per
+  4 MiB of resident input (`spec/model.md` §6); any `--threads` form,
+  `--threads` alone included, sets the count exactly;
 - `mortar_map`, `time_phases` and `verify`, which are mortar's own
   options;
 - `verbose`;

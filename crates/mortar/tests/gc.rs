@@ -46,8 +46,26 @@ fn map_of(out: &Path) -> PathBuf {
     out.with_extension("map")
 }
 
-/// mortar's link of `args` (its `-o` replaced by `out`), with the map.
+/// mortar's link of `args` (its `-o` replaced by `out`), with the map. An
+/// output it writes is judged by the verifier, which must find nothing
+/// (`docs/VALIDATION.md` L3, WP-035).
 fn mortar(
+    dir: &Path,
+    args: &[String],
+    out: &Path,
+    extra: &[&str],
+    env: &[(&str, &str)],
+) -> Outcome {
+    let o = mortar_unverified(dir, args, out, extra, env);
+    if o.success() && out.exists() {
+        support::plumb::clean(out, &map_of(out), dir);
+    }
+    o
+}
+
+/// [`mortar`] without the verifier: for a link whose output is compared
+/// byte for byte with one [`mortar`] verified.
+fn mortar_unverified(
     dir: &Path,
     args: &[String],
     out: &Path,
@@ -139,7 +157,6 @@ fn gc_link(
     assert!(m.success(), "{tag}: {}", m.stderr_text());
     let (set, other) = removed(&m.stderr_text());
     assert!(other.is_empty(), "{tag}: {other:?}");
-    support::plumb::clean(&out, &map_of(&out), dir);
     (set.into_iter().collect(), out)
 }
 
@@ -627,8 +644,13 @@ fn i8_the_mark_is_schedule_independent() {
                     env.push(("MORTAR_SCHED_SEED", seed));
                 }
                 let t = format!("--threads={threads}");
-                let m =
-                    mortar(&built.dir, &built.args, &out, &[&gc[..], &[t.as_str()]].concat(), &env);
+                let m = mortar_unverified(
+                    &built.dir,
+                    &built.args,
+                    &out,
+                    &[&gc[..], &[t.as_str()]].concat(),
+                    &env,
+                );
                 assert!(m.success(), "{store} {threads} {seed}: {}", m.stderr_text());
                 let got = (
                     std::fs::read(&out).unwrap(),
@@ -739,7 +761,6 @@ fn differential(label: &str, built: &Built) {
     let size = |p: &Path| std::fs::metadata(p).unwrap().len();
     assert!(size(&ours) < size(&nogc), "{label}: gc does not shrink the output");
     support::plumb::readers(&ours);
-    support::plumb::clean(&ours, &map_of(&ours), dir);
 }
 
 #[test]

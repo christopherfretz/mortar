@@ -5,7 +5,9 @@
 //! One pass over the records. Lookups are by index, by binary search or by
 //! hash; groups are kept in ordered maps so nothing depends on hash order.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+
+use crate::hasher::HashMap;
 
 use mortar_elf::consts::{
     PT_TLS, SHF_COMPRESSED, SHF_STRINGS, SHF_TLS, SHT_NOBITS, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK,
@@ -477,8 +479,8 @@ pub(crate) struct Engine<'a, 'b> {
 
 impl<'a, 'b> Engine<'a, 'b> {
     pub fn new(image: &'b Image<'a>, objs: &'b [Obj<'a>], format: Format) -> Self {
-        let mut defs: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
-        let mut commons: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
+        let mut defs: HashMap<String, Vec<(usize, u32)>> = HashMap::default();
+        let mut commons: HashMap<String, Vec<(usize, u32)>> = HashMap::default();
         for (oi, o) in objs.iter().enumerate() {
             let Some(t) = &o.symtab else { continue };
             let x64 = o.elf.machine() == Machine::X86_64;

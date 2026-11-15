@@ -104,6 +104,77 @@ pub struct Map {
     pub folds: Vec<Fold>,
     pub chunks: Vec<MapChunk>,
     pub defines: Vec<(Vec<u8>, u64)>,
+    /// The dynamic records (`spec/plumb.md` §3.2, `spec/dyn.md` P-D3);
+    /// `None` for a static link, which then writes none of them.
+    pub dynamic: Option<DynRecords>,
+}
+
+/// The output kind of the `output` record (`spec/dyn.md` D-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutputKind {
+    Static,
+    Exec,
+    Pie,
+    StaticPie,
+}
+
+impl OutputKind {
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Static => "static",
+            Self::Exec => "exec",
+            Self::Pie => "pie",
+            Self::StaticPie => "static-pie",
+        }
+    }
+}
+
+/// The tag of the run path: `runpath` (`DT_RUNPATH`) or `rpath`
+/// (`DT_RPATH`, `--disable-new-dtags`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RunpathTag {
+    Runpath,
+    Rpath,
+}
+
+/// A `copy` record: the name of the alias the `COPY` record names, the
+/// allocation's address and size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyHint {
+    pub name: Vec<u8>,
+    pub addr: u64,
+    pub size: u64,
+}
+
+/// The dynamic records (`spec/plumb.md` §3.2; P-D3): facts of the command
+/// line (`output`, `interp`, `runpath`/`rpath`, `bind`, `relro`, `arg`),
+/// then order hints the verifier never takes as the expected value
+/// (`needed`, `copy`, `export`, `plt`, `iplt`). Each package that makes
+/// the fact fills its field; a field left at its default writes no record.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DynRecords {
+    pub kind: Option<OutputKind>,
+    /// The `-dynamic-linker` path.
+    pub interp: Option<Vec<u8>>,
+    /// The `-rpath` list joined by `:`, and its tag.
+    pub runpath: Option<(RunpathTag, Vec<u8>)>,
+    /// `Some(true)` under `-z now`.
+    pub now: Option<bool>,
+    /// `Some(false)` under `-z norelro`.
+    pub relro: Option<bool>,
+    /// The command line's words in order, response files expanded, the
+    /// program name excluded.
+    pub args: Vec<Vec<u8>>,
+    /// The `DT_NEEDED` names, in the order written.
+    pub needed: Vec<Vec<u8>>,
+    pub copies: Vec<CopyHint>,
+    /// The exported names, in `.dynsym` order.
+    pub exports: Vec<Vec<u8>>,
+    /// The PLT entries' keys in PLT order (`name` or `name@version`).
+    pub plt: Vec<Vec<u8>>,
+    /// The IPLT entries' keys in IPLT order.
+    pub iplt: Vec<Vec<u8>>,
 }
 
 /// A string token (`spec/plumb.md` §3.2): `!`..`~` except `%` stand for
@@ -209,6 +280,58 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         token(name, &mut out);
         let _ = writeln!(out, " {value:x}");
     }
+    if let Some(d) = &map.dynamic {
+        render_dynamic(d, &mut out);
+    }
     out.push_str("end\n");
     out.into_bytes()
+}
+
+/// The dynamic records, in the format's fixed order (`spec/plumb.md` §3.2).
+fn render_dynamic(d: &DynRecords, out: &mut String) {
+    let named = |out: &mut String, record: &str, name: &[u8]| {
+        out.push_str(record);
+        out.push(' ');
+        token(name, out);
+        out.push('\n');
+    };
+    if let Some(k) = d.kind {
+        let _ = writeln!(out, "output {}", k.token());
+    }
+    if let Some(i) = &d.interp {
+        named(out, "interp", i);
+    }
+    if let Some((tag, paths)) = &d.runpath {
+        let record = match tag {
+            RunpathTag::Runpath => "runpath",
+            RunpathTag::Rpath => "rpath",
+        };
+        named(out, record, paths);
+    }
+    if let Some(now) = d.now {
+        out.push_str(if now { "bind now\n" } else { "bind lazy\n" });
+    }
+    if let Some(relro) = d.relro {
+        out.push_str(if relro { "relro on\n" } else { "relro off\n" });
+    }
+    for a in &d.args {
+        named(out, "arg", a);
+    }
+    for n in &d.needed {
+        named(out, "needed", n);
+    }
+    for c in &d.copies {
+        out.push_str("copy ");
+        token(&c.name, out);
+        let _ = writeln!(out, " {:x} {:x}", c.addr, c.size);
+    }
+    for e in &d.exports {
+        named(out, "export", e);
+    }
+    for p in &d.plt {
+        named(out, "plt", p);
+    }
+    for p in &d.iplt {
+        named(out, "iplt", p);
+    }
 }

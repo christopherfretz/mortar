@@ -32,9 +32,10 @@
 //! collector is the same for every architecture. Every record is an edge,
 //! `R_*_NONE` included (a `.reloc ., R_*_NONE, sym` is how assembly asks
 //! for a dependency). For a `SHT_REL` target the addend is in the relocated
-//! bytes; the mark does not read them, so a section-symbol reference into
-//! a split mergeable section marks every piece of that section (more than
-//! needed, never less).
+//! bytes: a section-symbol reference into a split mergeable section reads
+//! them through the architecture (`read::implicit`) and marks its piece;
+//! without an architecture, or where they cannot be read, it marks every
+//! piece of that section (more than needed, never less).
 
 #![allow(
     clippy::result_large_err,
@@ -409,6 +410,7 @@ pub(crate) fn collect(
             by_code: &by_code,
             eh_edges: &eh_edges_of,
             marks,
+            arch: tables_in.arch,
         };
         let mut errors = Vec::new();
         while !round.is_empty() {
@@ -790,6 +792,7 @@ struct Walk<'w, 't, 's> {
     by_code: &'w [(SectionId, u32, u32)],
     eh_edges: &'w [Vec<(u32, Target)>],
     marks: &'w Marks<'t>,
+    arch: Option<&'w dyn mortar_arch::Arch>,
 }
 
 impl Walk<'_, '_, '_> {
@@ -929,9 +932,20 @@ impl Walk<'_, '_, '_> {
             // checks it); none is an edge.
             return Ok(());
         };
+        let mut field = Vec::new();
         for i in u.lo..u.hi {
             let Some(raw) = recs.get(i) else { continue };
-            let t = record_target(self.inputs, self.r, table, self.defs, file, raw);
+            let mut t = record_target(self.inputs, self.r, table, self.defs, file, raw);
+            // A REL section-symbol reference into a split section: its
+            // piece by the implicit addend (I-7, X86-5).
+            if let (Target::At(s, WHOLE), None, Some(arch)) = (t, raw.addend, self.arch)
+                && self.split.merge_of.binary_search_by_key(&s, |r| r.section).is_ok()
+                && let Some(a) =
+                    read::implicit(arch, self.inputs, file, obj, index, raw, &mut field)
+            {
+                let raw = read::Raw { addend: Some(a), ..raw };
+                t = record_target(self.inputs, self.r, table, self.defs, file, raw);
+            }
             self.marks.target(t, marked);
         }
         Ok(())

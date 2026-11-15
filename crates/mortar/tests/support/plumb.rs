@@ -75,6 +75,8 @@ pub const ELFLINT_KNOWN: &[(&str, &str, &str)] = &[
         "invalid symbol index",
         "GNU ld, lld and mold write the same records",
     ),
+    // i386's (WP-030c): `R_386_IRELATIVE` in `.rel.plt`, the same records.
+    ("'.rel.plt': relocation ", "invalid symbol index", "GNU ld's output has the same lines"),
     // `__ehdr_start` is valued at the file header, below section 1
     // (synth.md S-122's header exception).
     ("(__ehdr_start): st_value out of bounds", "", "GNU ld, lld and mold value it the same"),

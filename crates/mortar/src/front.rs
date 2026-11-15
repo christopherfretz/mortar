@@ -40,7 +40,7 @@ use mortar_core::resolution::{Resolution, SectionKind};
 use mortar_core::{Liveness, SymbolId};
 use mortar_diag::{Collector, Diagnostic, Key, Kind, Place};
 use mortar_elf::consts::SHT_NOTE;
-use mortar_elf::{Class, Machine, SectionIndex};
+use mortar_elf::{Class, SectionIndex};
 use mortar_input::load::{LoadEnv, load_steps};
 use mortar_input::store::Store;
 use mortar_layout::chunk::{Common, SynthChunk, commons};
@@ -327,20 +327,6 @@ pub fn front<'s>(
     timer.phase(20, "input");
     let pool = capped(pool, &plan, store.stats().resident);
     let machine = inputs.target.machine;
-    if machine == Machine::I386 {
-        // Input's phase (20), after every file's diagnostics (their unit is
-        // the file's ordinal).
-        diag.emit(
-            Key::new(20, u32::MAX, 0),
-            Diagnostic::refused(
-                mortar_diag::RefusalClass::Feature,
-                format!("linking for {}", machine.name()),
-            )
-            .note("M1 links AArch64 and x86-64 (docs/ROADMAP.md)"),
-        );
-        return None;
-    }
-
     // 30: resolve.
     let outcome = mortar_resolve::resolve_inputs(&inputs, &plan, &pool);
     if time_steps {
@@ -377,6 +363,8 @@ pub fn front<'s>(
         return None;
     };
     let arch = link_arch.get();
+    // S-68: an output whose relocations are REL (i386) names `.rel.plt`.
+    let rel = arch.facts().rel_form == mortar_arch::RelForm::Rel;
     let headers = match gather(&inputs, &resolution, &pool) {
         Ok(h) => h,
         Err(d) => {
@@ -426,6 +414,7 @@ pub fn front<'s>(
         assignment: &assignment,
         split: &merge.split,
         roots: &roots,
+        arch: Some(arch),
     };
     let live_options = LiveOptions {
         gc_sections: plan.shaping.gc_sections,
@@ -493,7 +482,8 @@ pub fn front<'s>(
         .plt_variant(&OutputCx { output, feature_1_and, pac_plt: false, force_bti: false })
         .map_err(|r| diag.emit(mortar_synth::error::key(0), r.diagnostic()))
         .ok()?;
-    let got = GotPlan::new(arch, &slots, scanned.demands.output, variant, diag).ok()?;
+    let got_output = got_base_defined(&inputs, &resolution, scanned.demands.output);
+    let got = GotPlan::new(arch, &slots, got_output, variant, diag).ok()?;
     let build_id = BuildIdPlan::new(plan.shaping.build_id.as_ref(), diag).ok()?;
     steps.step("property got build-id", 0, "");
     let core = CoreSections { resolution: &resolution, liveness: &liveness, split: &merge.split };
@@ -510,7 +500,7 @@ pub fn front<'s>(
     let symtab = if strip_all {
         None
     } else {
-        Some(SymtabPlan::new(&sym_cx, Class::Elf64, &[], facts, &pool, diag).ok()?)
+        Some(SymtabPlan::new(&sym_cx, target.class, &[], facts, &pool, diag).ok()?)
     };
     steps.step("symtab plan", 0, "");
     timer.phase(80, "synthetic");
@@ -533,9 +523,10 @@ pub fn front<'s>(
     // input and the synthetic chunks that exist (their kinds do not depend
     // on `.shstrtab`'s size), so that one placement usually suffices; the
     // exact names are checked after it.
-    let kinds: Vec<SynthKind> = synth_chunks(&plans, &eh, false).1.iter().map(|p| p.0).collect();
+    let kinds: Vec<SynthKind> =
+        synth_chunks(&plans, &eh, false, target.class, rel).1.iter().map(|p| p.0).collect();
     let names: Vec<&[u8]> =
-        estimated_names(&assignment, &liveness, &resolution, &kinds, options.relro);
+        estimated_names(&assignment, &liveness, &resolution, &kinds, options.relro, rel);
     let mut shstrtab = ShstrtabPlan::new(&names);
     // S-85: `.symtab_shndx` exists when some section index reaches
     // `SHN_LORESERVE`; the count of section headers (with the null one)
@@ -556,7 +547,7 @@ pub fn front<'s>(
     let (placement_assignment, placed, layout, erratum_fixes) = loop {
         attempt += 1;
         plans.shstrtab = shstrtab.clone();
-        let (synthetic, present) = synth_chunks(&plans, &eh, shndx);
+        let (synthetic, present) = synth_chunks(&plans, &eh, shndx, target.class, rel);
         let Some(sizes) = chunk_ids(FIRST_SYNTHETIC, &present) else {
             diag.emit(Key::new(80, 0, 0), internal("a synthetic chunk given twice"));
             return None;
@@ -652,7 +643,7 @@ pub fn front<'s>(
         {
             let new = SymtabPlan::new(
                 &sym_cx,
-                Class::Elf64,
+                target.class,
                 &placed.placement.patches,
                 facts,
                 &pool,
@@ -699,6 +690,21 @@ pub fn front<'s>(
         break (a, placed, layout, fixes);
     };
     steps.step("drop sites", 0, "");
+    // X86-45, X86-38: an ELFCLASS32 TLS block of 2^31 bytes or more would
+    // put a TP offset outside s(32); refused by name, as L-73 refuses an
+    // end beyond 2^32.
+    if target.class == Class::Elf32
+        && let Some((_, tls)) =
+            placed.placement.segments.iter().find(|(_, g)| g.p_type == mortar_elf::consts::PT_TLS)
+        && tls.memsz >= 1 << 31
+    {
+        let d = Diagnostic::error(Kind::OutputTooLarge {
+            what: "PT_TLS".to_owned(),
+            limit: format!("{:#x}", 1u64 << 31),
+        });
+        diag.emit(Key::new(90, 0, 0), d);
+        return None;
+    }
     for (seq, w) in (0u64..).zip(placed.warnings.iter().cloned()) {
         let (k, d) = layout_diag(&inputs, &resolution, w, Key::new(90, 0, u64::MAX - 1000 + seq));
         if entry_warned && d.id() == "entry-not-found" {
@@ -710,7 +716,7 @@ pub fn front<'s>(
     for &(kind, id) in &plans.chunks {
         let ok = matches!(
             placed.placement.chunks.get(id).map(|c| c.kind),
-            Some(ChunkKind::Synthetic(s)) if s.name == kind.name(false)
+            Some(ChunkKind::Synthetic(s)) if s.name == kind.name(rel)
         );
         if !ok {
             diag.emit(
@@ -900,7 +906,30 @@ fn property_plan(
         paths.iter().zip(&per).map(|(p, s)| ObjectNotes { path: p, sections: s }).collect();
     let processor = |t: u32| arch.property_merge(t);
     // `-z memory-seal` (R-C3): the last of it and `-z nomemory-seal` wins.
-    PropertyPlan::new(&objects, Class::Elf64, &processor, memory_seal, diag)
+    PropertyPlan::new(&objects, arch.facts().class, &processor, memory_seal, diag)
+}
+
+/// The output demands the GOT is planned from: the scan's, with
+/// `GOT_BASE` when `_GLOBAL_OFFSET_TABLE_` is defined by the linker
+/// (layout L-101 values it at the GOT header). A symbol table can name
+/// the symbol with no record referring to it (GNU as writes it beside
+/// i386's `@ntpoff`, `@gotntpoff`, ...): the definition still has its
+/// section. One pass over the keys, testing the definition first.
+fn got_base_defined(
+    inputs: &Inputs<'_>,
+    resolution: &Resolution,
+    output: mortar_core::demands::GlobalFlags,
+) -> mortar_core::demands::GlobalFlags {
+    use mortar_core::demands::GlobalFlags;
+    use mortar_core::resolution::{Def, InternalDef};
+    if output.contains(GlobalFlags::GOT_BASE) {
+        return output;
+    }
+    let defined = resolution.def.iter().any(|(s, d)| {
+        matches!(d, Def::Internal(InternalDef::Provide { conditional: false }))
+            && inputs.symbols.get(s).is_some_and(|k| k.name == b"_GLOBAL_OFFSET_TABLE_")
+    });
+    if defined { output | GlobalFlags::GOT_BASE } else { output }
 }
 
 /// The synthetic chunks that exist, in S-3 order, as layout takes them,
@@ -909,6 +938,8 @@ fn synth_chunks(
     p: &SynthPlans,
     eh: &EhPlan,
     shndx: bool,
+    class: Class,
+    rel: bool,
 ) -> (Vec<SynthChunk>, Vec<(SynthKind, u64)>) {
     let mut present: Vec<(SynthKind, u64)> = Vec::new();
     if p.property.exists() {
@@ -949,12 +980,12 @@ fn synth_chunks(
     let chunks = present
         .iter()
         .map(|&(kind, size)| {
-            let h = kind.header(Class::Elf64, false).unwrap_or_else(|| unreachable!("an M1 chunk"));
+            let h = kind.header(class, rel).unwrap_or_else(|| unreachable!("an M1 chunk"));
             let (sh_type, align) = match kind {
                 SynthKind::EhFrame => (eh.sh_type(), eh.align()),
                 _ => (h.sh_type, h.align.trailing_zeros() as u8),
             };
-            SynthChunk { synth: kind.synth(false), sh_type, flags: h.flags, align, size }
+            SynthChunk { synth: kind.synth(rel), sh_type, flags: h.flags, align, size }
         })
         .collect();
     (chunks, present)
@@ -970,6 +1001,7 @@ fn estimated_names<'n>(
     resolution: &Resolution,
     synthetic: &[SynthKind],
     relro: bool,
+    rel: bool,
 ) -> Vec<&'n [u8]> {
     let mut used = vec![false; a.outsecs.len() as usize];
     for (sid, out) in a.out_of.iter() {
@@ -987,7 +1019,7 @@ fn estimated_names<'n>(
         .map(|(_, o)| o.name)
         .collect();
     for k in synthetic {
-        names.push(k.name(false));
+        names.push(k.name(rel));
     }
     // layout's `.relro_padding` (L-64), when RELRO has content: a static
     // executable's `.got` always does.
