@@ -143,6 +143,11 @@ fn compare(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
         Err(r) => panic!("{label}: {}", r.render(&mortar_diag::Style::plain("mortar"))),
     };
     let ours = summarize_front(&f);
+    if label == "cmp-big" {
+        // The object's `.text` and `.rela.debug_info` exceed 64 KiB.
+        let big = |name: &[u8]| f.headers.iter().any(|(_, h)| h.name == name && h.size > 0x1_0000);
+        assert!(big(b".text") && big(b".rela.debug_info"), "{label}");
+    }
     let names = |s: &Summary| s.sections.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
     let ctx = format!("{label}\n{}", table(&[("mortar", &ours), ("bfd", bfd), ("lld", lld), ("mold", mold)]));
 
@@ -301,4 +306,60 @@ fn clang_against_references() {
 #[test]
 fn gfortran_against_references() {
     compare("cmp-gfortran-O0", Driver::Gfortran, &["-O0", "-g"], FORTRAN_PROGRAM);
+}
+
+/// A C program whose object has `.text` and `.rela.debug_info` over the
+/// staged store's 64 KiB (`spec/landed/input/WP-021b.md`: neither is
+/// resident), so the scan, the erratum words (`Sites::code`) and the
+/// rest read them through `copy_to`.
+fn big_program() -> &'static [Source] {
+    use std::fmt::Write;
+    let mut text = String::from("#include <stdio.h>\n");
+    for i in 0..2000 {
+        let _ = writeln!(text, "int f{i}(int x) {{ int y{i} = x * {i}; return y{i} + {i}; }}");
+    }
+    text.push_str("int main(int c, char **v) { int s = 0;\n");
+    for i in (0..2000).step_by(50) {
+        let _ = writeln!(text, "  s += f{i}(c);");
+    }
+    text.push_str("  printf(\"%d\\n\", s); return 0; }\n");
+    Box::leak(Box::new([Source { name: "big.c", text: Box::leak(text.into_boxed_str()) }]))
+}
+
+// spec: input.md §11.1 and WP-021b (non-resident bytes are read, never
+// taken as empty), layout.md §14 (the erratum scan reads every code word)
+#[test]
+fn sections_over_the_staged_limits() {
+    compare("cmp-big", Driver::Gcc, &["-O0", "-g"], big_program());
+}
+
+// spec: model.md §6 (the result does not depend on the schedule: thread
+// count and MORTAR_SCHED_SEED), docs/ARCHITECTURE.md (deterministic
+// output): the same link under every test schedule gives the same
+// `Layout`, sections, symbol table and report.
+#[test]
+fn the_front_does_not_depend_on_the_schedule() {
+    for (label, driver, flags, program) in [
+        ("det-gxx-O2", Driver::Gxx, &["-O2"][..], CXX_PROGRAM),
+        ("det-big", Driver::Gcc, &["-O0", "-g"][..], big_program()),
+    ] {
+        let scratch = Scratch::new(label);
+        let Some(built) = build(&scratch, driver, flags, program) else { return };
+        let store = store();
+        let args = with_output(&built.args, &built.dir.join("out.mortar"));
+        mortar_core::par::check_schedules(|pool| {
+            let parsed = mortar_cli::parse(&args);
+            let diag = mortar_diag::Collector::new(mortar_diag::Policy::default());
+            let f = mortar::front::front(
+                parsed.plan,
+                mortar::front::Env { cwd: &built.dir, pool: *pool },
+                &store,
+                &diag,
+                &mut mortar::timing::Timer::new(false),
+            );
+            let report = diag.finish().render(&mortar_diag::Style::plain("mortar"));
+            let f = f.unwrap_or_else(|| panic!("{label}: {report}"));
+            (f.layout.clone(), f.sections(), symtab_entries(&f), report)
+        });
+    }
 }
