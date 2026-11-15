@@ -1,10 +1,10 @@
 # `-Map=<file>` writes a map of the link: each output section, the input
 # sections in it with their files, and the symbols (GNU ld manual
 # "-Map"). The three references' formats DIFFER (each is matched by its
-# header); mortar's own is to be specified in plumb.md (WP-011), and
-# must at least name the input file, the section and the symbol.
+# header); mortar's is GNU's layout (image.md I-121), its machine map
+# being `--mortar-map` (I-120).
 #@ spec: plumb.md "Map file"
-#@ xfail(mortar): mortar's map is mortar-map 1 (spec/plumb.md §3.2), not GNU ld's text; the test reads GNU's form (owner: supervisor, a ruling on -Map's format)
+#@ spec: image.md §9.3
 
 as start-%{arch}.s -o start.o
 link ld -Map=prog.map start.o -o prog
@@ -12,7 +12,8 @@ check text prog.map
   has: start.o
   has: .text
   has: _start
-  has(bfd): ^Linker script and memory map$
+  has(bfd,mortar): ^Linker script and memory map$
+  has(mortar): ^OUTPUT(prog elf
   has(lld): ^ *VMA LMA Size Align Out In Symbol$
   has(mold): ^ *VMA Size Align Out In Symbol$
 run prog

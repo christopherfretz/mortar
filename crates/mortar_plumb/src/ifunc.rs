@@ -312,13 +312,24 @@ impl Engine<'_, '_> {
                     EM_AARCH64 => {
                         let mut a = g0.checked_next_multiple_of(4).unwrap_or(g1);
                         while a.checked_add(12).is_some_and(|e| e <= g1) {
-                            // ADRP is the first word.
+                            // ADRP is the first word, after an optional
+                            // `BTI c` (GNU ld's and lld's entries in a BTI
+                            // output, spec/a64.md §10.3): the entry starts
+                            // at the BTI, which is where a branch to it
+                            // lands.
                             let k = (a - g0) as usize;
                             if b[k + 3] & 0x9f == 0x90
                                 && let Some(slot) = self.a64_entry(a)
                                 && self.iplt.resolver_of(slot).is_some()
                             {
-                                entries.push((a, slot));
+                                let bti = k >= 4
+                                    && a64::bti(u32::from_le_bytes([
+                                        b[k - 4],
+                                        b[k - 3],
+                                        b[k - 2],
+                                        b[k - 1],
+                                    ]));
+                                entries.push((if bti { a - 4 } else { a }, slot));
                             }
                             a += 4;
                         }
@@ -460,9 +471,10 @@ impl Engine<'_, '_> {
         }
     }
 
-    /// The slot an AArch64 IPLT entry at `a` loads: `ADRP Xn, slot; LDR
-    /// Xt, [Xn, #lo12]`, then `BR Xt` (mold) or `ADD Xn, Xn, #lo12; BR Xt`
-    /// (GNU ld, lld).
+    /// The slot an AArch64 IPLT entry whose `ADRP` is at `a` loads: `ADRP
+    /// Xn, slot; LDR Xt, [Xn, #lo12]`, then `BR Xt` (mold) or `ADD Xn, Xn,
+    /// #lo12; BR Xt` (GNU ld, lld). A `BTI` before the `ADRP` is the
+    /// entry's first word (the caller's scan).
     fn a64_entry(&self, a: u64) -> Option<u64> {
         let (n, pg) = a64::adrp(self.image.insn(a)?, a)?;
         let (t, n2, lo) = a64::ldr64_imm(self.image.insn(a + 4)?)?;
@@ -588,7 +600,10 @@ impl Engine<'_, '_> {
         // function it picks. An address must be the symbol's one address.
         if branch {
             match ok[0].1 {
-                Some(rw) => self.cov.add_accepted(rw, rec.def.r_type),
+                Some(rw) => {
+                    self.note_veneer(rw, rec, &pend.site, &pend.symbol, ok[0].0.wrapping_add(a));
+                    self.cov.add_accepted(rw, rec.def.r_type);
+                }
                 None => self.cov.add_verified(Via::Iplt, rec.def.r_type),
             }
             return;

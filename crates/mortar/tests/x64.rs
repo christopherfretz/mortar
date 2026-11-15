@@ -120,7 +120,7 @@ fn map_of(out: &Path) -> PathBuf {
 /// mortar's link of `built` to `out`, with its map at `out.map`.
 fn mortar(built: &Built, out: &Path, extra: &[&str], env: &[(&str, &str)]) -> Outcome {
     let mut args = with_output(&built.args, out);
-    args.push(format!("-Map={}", map_of(out).display()).into());
+    args.push(format!("--mortar-map={}", map_of(out).display()).into());
     args.extend(extra.iter().map(OsString::from));
     link(Path::new(MORTAR), &args, &built.dir, env)
 }

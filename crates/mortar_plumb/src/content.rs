@@ -86,6 +86,10 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                     || (a64::erratum_843419_site(p)
                         && a64::is_ldst_unsigned_imm(inw)
                         && e.erratum_patch(p, outw) == Some(inw))
+                    // W7 over an ADRP without a record: the ADR of the
+                    // page the ADRP computes here (a64.md §11.3 step 1).
+                    || (a64::erratum_843419_adrp(p)
+                        && a64::adrp(inw, p).is_some_and(|w| a64::adr(outw, p) == Some(w)))
             }) {
                 let mut f = Finding::new(
                     Rule::Structure(12),
