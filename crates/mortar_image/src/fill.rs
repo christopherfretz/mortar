@@ -3,7 +3,8 @@
 //! (I-33, I-63).
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use mortar_arch::{Arch, FillTables, OutputKind, TlsBlock};
 use mortar_core::par::Pool;
@@ -214,6 +215,66 @@ struct JobOut {
     flagged: Vec<mortar_core::SectionId>,
 }
 
+/// Fill's sub-step counters under `MORTAR_STEPS` (WP-032f; nothing they
+/// count reaches the output, the map or a diagnostic): CPU time summed
+/// over the workers in the jobs' fills, in copies from the store (inputs
+/// that are not resident) and in the sink's writes, with their bytes.
+#[derive(Debug)]
+pub(crate) struct FillSteps {
+    fill_ns: AtomicU64,
+    read_ns: AtomicU64,
+    read_bytes: AtomicU64,
+    reads: AtomicU64,
+    write_ns: AtomicU64,
+    write_bytes: AtomicU64,
+}
+
+pub(crate) static FILL_STEPS: FillSteps = FillSteps {
+    fill_ns: AtomicU64::new(0),
+    read_ns: AtomicU64::new(0),
+    read_bytes: AtomicU64::new(0),
+    reads: AtomicU64::new(0),
+    write_ns: AtomicU64::new(0),
+    write_bytes: AtomicU64::new(0),
+};
+
+impl FillSteps {
+    pub(crate) fn on(&self) -> bool {
+        mortar_core::wp032b_steps::enabled()
+    }
+
+    fn since(t: Instant) -> u64 {
+        u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    pub(crate) fn add_read(&self, t: Instant, bytes: usize) {
+        self.read_ns.fetch_add(Self::since(t), Ordering::Relaxed);
+        self.read_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.reads.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Prints the counters and clears them.
+    #[allow(clippy::cast_precision_loss)] // printed durations
+    fn print(&self) {
+        let take = |a: &AtomicU64| a.swap(0, Ordering::Relaxed);
+        let ms = |ns: u64| ns as f64 / 1e6;
+        let (fill, read, rb, reads, write, wb) = (
+            take(&self.fill_ns),
+            take(&self.read_ns),
+            take(&self.read_bytes),
+            take(&self.reads),
+            take(&self.write_ns),
+            take(&self.write_bytes),
+        );
+        eprintln!("mortar: steps: image fill jobs (cpu): {:.2} ms", ms(fill));
+        eprintln!(
+            "mortar: steps: image fill reads (cpu): {:.2} ms, {rb} byte, {reads} read",
+            ms(read)
+        );
+        eprintln!("mortar: steps: image fill writes (cpu): {:.2} ms, {wb} byte", ms(write));
+    }
+}
+
 /// A worker's state: its window buffer (I-32) and relocation scratch.
 #[derive(Debug, Default)]
 struct Worker {
@@ -285,6 +346,9 @@ pub fn write_checked(
         let job = plan.jobs[j].clone();
         run_job(img, w, job, sink, &stop, out);
     });
+    if FILL_STEPS.on() {
+        FILL_STEPS.print();
+    }
     let mut diagnostics = Vec::new();
     let mut write_err: Option<(u64, io::Error)> = None;
     let mut leaves = Vec::new();
@@ -478,9 +542,13 @@ fn run_job(
     let len = (job.end - job.start) as usize;
     w.buf.resize(len, 0);
     let Worker { buf, scratch } = w;
+    let steps = FILL_STEPS.on().then(Instant::now);
     if let Err(fatal) = fill_into(img, scratch, job.start, &mut buf[..len], &mut out.errors) {
         out.fatal = Some(fatal);
         stop.store(true, Ordering::Relaxed);
+    }
+    if let Some(t) = steps {
+        FILL_STEPS.fill_ns.fetch_add(FillSteps::since(t), Ordering::Relaxed);
     }
     out.flagged = std::mem::take(&mut scratch.flagged);
     let fill_failed = out.fatal.is_some() || !out.errors.is_empty() || !out.flagged.is_empty();
@@ -495,9 +563,14 @@ fn run_job(
         if fill_failed || stop.load(Ordering::Relaxed) {
             continue;
         }
+        let steps = FILL_STEPS.on().then(Instant::now);
         if let Err(e) = sink.write_at(offset, window) {
             out.write = Some((offset, e));
             stop.store(true, Ordering::Relaxed);
+        }
+        if let Some(t) = steps {
+            FILL_STEPS.write_ns.fetch_add(FillSteps::since(t), Ordering::Relaxed);
+            FILL_STEPS.write_bytes.fetch_add(window.len() as u64, Ordering::Relaxed);
         }
     }
     // A multi-window job grew the buffer: shrink it back to `W` (I-32).
