@@ -65,7 +65,7 @@ pub(crate) fn check(
     pd7(image, out, model, ld, format, &mut v);
     pd8(out, model, ld, &mut v);
     pd9_order(out, ld.machine, &mut v);
-    pd10(image, out, ld.machine, &mut v);
+    pd10(image, out, ld.machine, format, &mut v);
     pd11_13(image, out, model, ld, &mut v);
     pd12(out, ld, format, &mut v);
     v
@@ -918,7 +918,7 @@ fn pd9_order(out: &DynOut, machine: u16, v: &mut Vec<Finding>) {
 }
 
 /// P-D10: PLT entries, their words, the lazy word, IRELATIVE order (H1).
-fn pd10(image: &Image<'_>, out: &DynOut, machine: u16, v: &mut Vec<Finding>) {
+fn pd10(image: &Image<'_>, out: &DynOut, machine: u16, format: Format, v: &mut Vec<Finding>) {
     let entries = crate::loader::plt_entries(image);
     let mut by_slot: BTreeMap<u64, Vec<(usize, Kind)>> = BTreeMap::new();
     let jmprel: Vec<_> = out.rels.iter().filter(|r| r.plt).collect();
@@ -971,33 +971,13 @@ fn pd10(image: &Image<'_>, out: &DynOut, machine: u16, v: &mut Vec<Finding>) {
             );
         }
     }
-    let now = out.get(DT_FLAGS).is_some_and(|f| f & DF_BIND_NOW != 0)
-        || out.get(DT_FLAGS_1).is_some_and(|f| f & DF_1_NOW != 0);
-    let plt0 = sec(image, ".plt").map(|s| s.0);
-    for (idx, r) in jmprel.iter().enumerate() {
-        if kind(machine, r.ty) != Kind::JumpSlot {
-            continue;
-        }
+    for r in jmprel.iter().filter(|r| kind(machine, r.ty) == Kind::JumpSlot) {
         if !slots_reached.contains(&r.offset) {
             v.push(fd(10, "a JUMP_SLOT word no PLT entry jumps through").at(r.offset));
         }
-        if now {
-            continue;
-        }
-        let Some(lazy) = image.value(r.offset, 8) else { continue };
-        let ok = if machine == EM_AARCH64 {
-            Some(lazy) == plt0
-        } else {
-            x64_lazy_ok(image, &entries, r.offset, lazy, idx as u64, plt0)
-        };
-        if !ok {
-            let mut f =
-                fd(10, "the JUMP_SLOT word's initial content is not the lazy target (D-49)")
-                    .at(r.offset);
-            f.found = Some(lazy);
-            v.push(f);
-        }
     }
+    // The header, the lazy words and the way back (WP-082).
+    crate::plt::check(image, out, &entries, format, v);
     // H1 (D-41): every IRELATIVE after every symbolic record, in
     // application order, so a resolver that calls through the PLT or GOT,
     // or reads a copied object, runs after those are bound.
@@ -1017,40 +997,6 @@ fn pd10(image: &Image<'_>, out: &DynOut, machine: u16, v: &mut Vec<Finding>) {
                 .at(out.rels[ir].offset),
         );
     }
-}
-
-/// x86-64's lazy target: `entry + 6`, whose `push $i; jmp PLT0` names
-/// this record (GNU ld, lld), or PLT0 with `mov $i, %r11d` in the entry
-/// (mold).
-fn x64_lazy_ok(
-    image: &Image<'_>,
-    entries: &BTreeMap<u64, u64>,
-    slot: u64,
-    lazy: u64,
-    idx: u64,
-    plt0: Option<u64>,
-) -> bool {
-    if let Some(b) = image.bytes(lazy, 10) {
-        let mut i = 0;
-        if b[..4] == [0xf3, 0x0f, 0x1e, 0xfa] {
-            i = 4;
-        }
-        if b[i] == 0x68 {
-            let n = u32::from_le_bytes([b[i + 1], b[i + 2], b[i + 3], b[i + 4]]);
-            return u64::from(n) == idx;
-        }
-    }
-    if Some(lazy) == plt0 {
-        return entries.iter().filter(|(_, s)| **s == slot).any(|(&e, _)| {
-            image.bytes(e, 10).is_some_and(|b| {
-                let i = if b[..4] == [0xf3, 0x0f, 0x1e, 0xfa] { 4 } else { 0 };
-                b[i..i + 2] == [0x41, 0xbb]
-                    && u64::from(u32::from_le_bytes([b[i + 2], b[i + 3], b[i + 4], b[i + 5]]))
-                        == idx
-            })
-        });
-    }
-    false
 }
 
 /// P-D11 (copies) and P-D13 (protected).

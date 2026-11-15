@@ -68,6 +68,10 @@ pub const CLASSES: &[&str] = &[
     "relro",
     "lazy-slot",
     "copy-size",
+    "plt0-disp1",
+    "plt0-disp2",
+    "plt-index",
+    "plt-back-jump",
 ];
 
 /// How many mutants of each class to run, from which seed, on how many
@@ -1012,7 +1016,9 @@ fn candidates(
                             vec![(e, vec![0x0f, 0x1f, 0x40, 0x00])],
                         );
                     }
-                    if let Some(j) = (0..14).find(|&j| b[j] == 0xff && b[j + 1] == 0x25) {
+                    // `ff 25 <rel32>` whole inside the 16 bytes (a mold
+                    // entry's `jmp` at +6 overran with a scan to +13).
+                    if let Some(j) = (0..=10).find(|&j| b[j] == 0xff && b[j + 1] == 0x25) {
                         let d = le(&b[j + 2..j + 6]).wrapping_add(8);
                         g.push(
                             "iplt-entry",

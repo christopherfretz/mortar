@@ -2735,7 +2735,10 @@ own implementation of D-11-D-27 and compared with the output.
   plumb rules, already stage 2 for IPLT) to its `.got.plt` word; that
   word has one `JUMP_SLOT` against the entry's key; its initial content
   is the lazy target (D-49); IPLT words have one `IRELATIVE`, every one
-  after every `JUMP_SLOT` (D-41; H1).
+  after every `JUMP_SLOT` (D-41; H1). The lazy target leads, through
+  the PLT header, to the loader's resolver with the inputs glibc's
+  trampoline reads, and `.got.plt`'s reserved words are the loader's
+  (§12.2, WP-082).
 - **P-D11 (copies).** Each `COPY` record's place is an allocation of the
   shared definition's `st_size` (never 0: W4) and alignment, the
   allocations do not overlap each other or any other definition, the
@@ -2857,8 +2860,9 @@ from the file system (`line::Files`).
   `dyn-rel-offset`, `dyn-rel-drop`, `dyn-rel-addend`, `dyn-rel-symbol`,
   `dyn-rel-order` (only swaps that move a `RELATIVE` or `IRELATIVE`),
   `dynsym-value`, `dynsym-visibility`, `gnu-hash`, `versym`,
-  `version-need`, `interp`, `relro`, `lazy-slot` (lazy binding only),
-  `copy-size`. `xtask plumb --mutate --line` judges each mutant with
+  `version-need`, `interp`, `relro`, `lazy-slot` (under `-z now` too,
+  WP-082), `copy-size`, and §12.2's `plt0-disp1`, `plt0-disp2`,
+  `plt-index`, `plt-back-jump`. `xtask plumb --mutate --line` judges each mutant with
   stage 3. The kill table and its survivors are WP-050's record.
 - **Stage 2 inside a dynamic output**: `__rela_iplt_start` and
   `__rela_iplt_end` are equal (the loader applies `IRELATIVE`); a
@@ -2867,6 +2871,57 @@ from the file system (`line::Files`).
   (GOT[0], after the PLT's slots); a GNU map's repeated `.eh_frame`
   placement of the first input is skipped; an output FDE covering a PLT
   section (GNU ld x86-64) is counted as the linker's.
+
+### 12.2 The PLT header and the way back to it (WP-082)
+
+P-D10 executes every PLT entry whose word carries a `JUMP_SLOT`
+symbolically (`plt.rs`): from the entry to the indirect jump through its
+own word, then from that word's initial content (the lazy target) to
+the next indirect jump, the one into the resolver. What the resolver
+receives is what glibc's trampolines read (`dl-trampoline.h`,
+`dl-trampoline.S`). GOTPLT is `DT_PLTGOT`'s value; *k* is the index of
+the entry's `JUMP_SLOT` record in `DT_JMPREL`.
+
+- **x86-64.** The walk knows `endbr64`, `push imm32`, `push
+  *rel32(%rip)`, `mov $imm32, %r11d` with `push %r11`, `jmp rel32`/`rel8`
+  (with or without `bnd`) and `jmp *rel32(%rip)`. A `push` before the
+  entry's own jump is a finding. At the resolver's jump the stack must
+  hold, from the top, `GOTPLT[1]`'s word and *k* (GNU ld's and lld's
+  `push $k; jmp PLT0`, mold's `%r11d` pushed by its header), and the
+  jump must go through `GOTPLT + 16`. When the output's x86 feature
+  property has IBT, the lazy target starts with `endbr64`. Padding after
+  the jump is not judged.
+- **AArch64.** The walk knows `nop`, `bti`, `stp x16, x30, [sp,
+  #-16]!`, `adrp x16`, `ldr x17, [x16, #lo12]`, `add x16, x16, #lo12`
+  and `br x17`. At the resolver's jump: `x17` was loaded from `GOTPLT +
+  16` and `x16` is `GOTPLT + 16`, the link map being read at `x16 - 8`;
+  the `x16` the header pushed equals the entry's `x16`, which is `GOTPLT
+  + 24 + 8k`: the trampoline takes the index from it. When the output
+  asks for BTI (`DT_AARCH64_BTI_PLT` or the feature property), the lazy
+  target is a landing pad (`bti c`, `bti jc`, `paciasp`, `pacibsp`).
+- **The reserved words.** `GOTPLT[1]` and `GOTPLT[2]` are 0 in the file
+  and no dynamic record writes them (the loader fills them);
+  `GOTPLT[0]` is `_DYNAMIC`'s address on x86-64 (all three references)
+  and on AArch64 for mold; 0 for GNU ld and lld on AArch64 and for
+  mortar (`spec/a64.md`). No `DT_PLTGOT` with a `JUMP_SLOT` record is a
+  finding.
+- **Shapes.** Every shape the references write is judged, lazily and
+  under `-z now` (they all keep the lazy words then): GNU ld's and lld's
+  `.plt` with `push $k`, mold's `%r11d` form, GNU ld's `-z ibtplt` and
+  lld's `-z force-ibt` `.plt.sec` entries with their lazy stubs in
+  `.plt`, mold's `-z ibt` form, GNU ld's and lld's BTI headers and
+  entries. `.plt.got` entries (GNU ld, mold) jump through a `GLOB_DAT`
+  word and have no lazy path: their word is judged as before (the word's
+  record), nothing else. mortar refuses the IBT PLT and writes no
+  `.plt.got`.
+- **Mutations** (`dynmutate.rs`, sites found by the walk itself, a site
+  shared by several entries mutated once): `plt0-disp1` (x86-64: the
+  header's `push *rel32` ±8; AArch64: the header's `ldr` offset +8),
+  `plt0-disp2` (x86-64: the resolver jump's rel32 ±8; AArch64: the
+  header's `add` +8), `plt-index` (x86-64: `push $k` or `%r11d` +1;
+  AArch64: the entry's `add` +8), `plt-back-jump` (x86-64: the lazy
+  path's `jmp PLT0` ±16; AArch64 has none: the lazy word is its way
+  back), `lazy-slot` (the lazy word + 4).
 
 ## 13. Stage 4: Mason metadata and the ODR table (M6)
 

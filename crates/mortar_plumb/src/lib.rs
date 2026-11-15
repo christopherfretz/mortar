@@ -25,6 +25,7 @@ mod loader;
 mod locate;
 pub mod map;
 pub mod mutate;
+mod plt;
 mod property;
 mod reloc;
 pub mod report;
