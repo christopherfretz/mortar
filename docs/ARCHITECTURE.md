@@ -99,7 +99,8 @@ argv ─────── mortar_cli ────► Plan            options, i
                             Resolution        which definition wins, what is live
                                 │
              mortar_odr ────────┤             one-definition-rule checks (Mason
-                                │             metadata; weaker checks without)
+                                │             metadata; W1-W4 on the symbol
+                                │             tables of COMDAT copies without)
              mortar_layout ─────┤             assignment: the output section of
                                 │             each input section (default rules
                                 │             or a script; KEEP, /DISCARD/)
@@ -162,11 +163,11 @@ parallel work on them starts.
 | `mortar_layout` | Output sections from the default rules or a script, their order, segments, addresses, thunk insertion: `Layout`. | `mortar_core`, `mortar_arch`, `mortar_script` |
 | `mortar_image` | Image synthesis and the file writer; debug section handling (tombstones, compression). | `mortar_core`, `mortar_arch`, `mortar_merge` (fragment runs: `Order::frags_in`), `mortar_synth`, `mortar_digest` |
 | `mortar_meta` | The Mason metadata container: reader and writer of the format shared with kiln, hod and tuck (`spec/meta.md`). | `mortar_elf` |
-| `mortar_odr` | One-definition-rule checks at static link time; the tables and the load-time hook for dynamic checks. | `mortar_core`, `mortar_meta` |
+| `mortar_odr` | One-definition-rule checks at static link time; the tables and the load-time hook for dynamic checks. | `mortar_core`, `mortar_meta`, `mortar_diag` (its diagnostics), `mortar_elf` (the symbol tables of the COMDAT copies, as `mortar_resolve` reads them) |
 | `mortar_incr` | The link state, change detection, delta layout, patching. | everything above |
 | `mortar_plumb` | The independent verifier. Depends on `mortar_elf` and `mortar_diag` only, by rule: it shares no algorithm with the linker. | `mortar_elf`, `mortar_diag` |
 | `mortar` | The facade (`mortar::link`) and the `mortar` executable (also invoked as `ld.mortar` or `ld`). | all |
-| `mortar_testutil`, `xtask` | Test support and the harness: link tests, differential runs against the reference linkers, external suites, benchmarks, the jobserver client. | - |
+| `mortar_testutil`, `xtask` | Test support and the harness: link tests, differential runs against the reference linkers, external suites, benchmarks, the jobserver client. | `xtask`: `mortar_diag` (the wording a `#@ diag:` directive matches, `spec/harness.md`) |
 
 ## How mortar is reached
 

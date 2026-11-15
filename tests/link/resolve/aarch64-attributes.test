@@ -1,0 +1,31 @@
+# AArch64 build attributes (`.ARM.attributes`, `SHT_AARCH64_ATTRIBUTES`,
+# the `aeabi_feature_and_bits` subsection Clang 22 writes into every
+# member of Debian's libc++ 22 archives) are consumed: the link succeeds
+# and the section is not in mortar's output (GNU ld and mold drop it;
+# lld 22 merges it and also writes its feature bits as a GNU property). The feature marking is the property note's (layout.md
+# L-34). (The reproducer of tests/mason/repro/aarch64-attributes.s; WP-034.)
+#@ spec: resolve.md §10
+#@ spec: layout.md §20.7
+#@ arch: aarch64
+#@ requires: clang
+#@ anomaly(mold): A11
+#@ skip(lld): lld 22 turns the subsection's BTI/PAC bits into a GNU property note (0xc0000000), which the verifier's P1 merge of the inputs' notes does not give
+
+as(clang) start.s -o start.o
+link ld start.o -o prog
+run prog
+  exit: 42
+check(mortar) readelf -SW prog
+  not: .ARM.attributes
+
+#--- start.s
+	.aeabi_subsection aeabi_feature_and_bits, optional, uleb128
+	.aeabi_attribute Tag_Feature_BTI, 1
+	.aeabi_attribute Tag_Feature_PAC, 1
+	.aeabi_attribute Tag_Feature_GCS, 0
+	.text
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
