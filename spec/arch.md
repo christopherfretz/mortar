@@ -345,7 +345,15 @@ pub struct DemandSink<'a> { /* over a `dyn DemandOut`, which has the same method
                                count(DynRole, n) for this section; error(record, ScanError);
                                reference(record, EventClass, SymKey) for the record being scanned */ }
 pub enum EventClass { Undefined, ComdatMismatch, DiscardedSection, GnuWarning } // image.md §4.4
+pub struct PlaceFacts { pub alloc: bool, pub writable: bool, pub exec: Option<bool> } // the place's section
 ```
+
+- **`PlaceFacts.exec`** (WP-030c, an additive change): the place
+  section's `SHF_EXECINSTR`, `None` where the caller cannot know it.
+  i386 refuses a `GOT32`/`GOT32X` in a non-executable section at scan
+  when it is `Some(false)` (`spec/x86.md` X86-13 step 1), and at fill
+  (`SectionOut.exec`) when it is `None`. Existing constructors keep
+  compiling: `PlaceFacts::new(alloc, writable)` gives `exec: None`.
 
 - **Contract**: given one live relocation, raise the demands the forms
   `apply` may choose need (§5.2), count the dynamic relocations it puts at
