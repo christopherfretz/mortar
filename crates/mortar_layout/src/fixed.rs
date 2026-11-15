@@ -487,7 +487,7 @@ pub fn refix(
     // The first chunk in file order whose size changed; no alloc chunk may
     // follow it, and nothing but sizes may differ.
     let mut changed = false;
-    for &c in staged.order.iter() {
+    for &c in &staged.order {
         let (a, b) = (&staged.chunks[c], &prev.chunks[c]);
         let resized = a.size != b.size || a.capacity != b.capacity;
         changed |= resized;
@@ -591,7 +591,7 @@ pub fn fixed_point(
         let island_sizes: Vec<u64> = laid.iter().map(|l| l.size).collect();
         steps.step("lay out", 0, "");
         let addressed = address(staged, &island_sizes, target, options, rules)?;
-        steps.step("address", addressed.chunks.len() as u64, "chunk");
+        steps.step("address", u64::from(addressed.chunks.len()), "chunk");
         // The patch table, sorted by (chunk, offset): islands are in
         // ChunkId order and each island's rows in offset order.
         let mut patches = Vec::new();

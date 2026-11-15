@@ -47,12 +47,12 @@ fn hugepages() {
     }
     tunables.push(TUNABLE);
     tunables.push("=1");
-    let mut args = std::env::args_os();
-    let arg0 = args.next().unwrap_or_default();
+    let mut command_line = std::env::args_os();
+    let name = command_line.next().unwrap_or_default();
     // Returns only on failure, and then the link goes on in this process.
     let _ = std::process::Command::new("/proc/self/exe")
-        .arg0(arg0)
-        .args(args)
+        .arg0(name)
+        .args(command_line)
         .env("GLIBC_TUNABLES", tunables)
         .env(GUARD, "1")
         .exec();

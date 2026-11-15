@@ -515,7 +515,7 @@ pub fn front<'s>(
     // one's start (`mortar_layout::place_again`), and the symbol tables'
     // plan is made once per patch table (a function of it).
     let demand_slots = &slots;
-    let mut sites: Option<(SynthIds, LinkSites<'_, '_>)> = None;
+    let mut kept_sites: Option<(SynthIds, LinkSites<'_, '_>)> = None;
     let mut prev: Option<Placed> = None;
     let mut planned_for: Option<Box<[mortar_core::layout::Patch]>> = None;
     steps.step("prepare", 0, "");
@@ -555,16 +555,16 @@ pub fn front<'s>(
             got: &plans.got,
             ids,
         };
-        if sites.as_ref().is_none_or(|(i, _)| *i != ids) {
+        if kept_sites.as_ref().is_none_or(|(i, _)| *i != ids) {
             match LinkSites::new(site_inputs, arch, &walker, &pool) {
-                Ok(s) => sites = Some((ids, s)),
+                Ok(s) => kept_sites = Some((ids, s)),
                 Err((k, d)) => {
                     diag.emit(k, d);
                     return None;
                 }
             }
         }
-        let Some((_, link_sites)) = &sites else { return None };
+        let Some((_, link_sites)) = &kept_sites else { return None };
         steps.step("sites", 0, "");
         let range = RangeExtension { arch, sites: link_sites };
         let link = mortar_layout::Link {
@@ -711,7 +711,7 @@ pub fn front<'s>(
         return None;
     }
     timer.phase(90, "layout");
-    drop(sites);
+    drop(kept_sites);
     drop(walker);
     drop(merge_eh);
     Some(Front {

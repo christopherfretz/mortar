@@ -122,7 +122,7 @@ pub fn place_again(
         relro: options.relro,
     };
     let staged = chunk(&inputs, target, &rules, pool).map_err(|e| vec![e])?;
-    steps.step("chunk", staged.chunks.len() as u64, "chunk");
+    steps.step("chunk", u64::from(staged.chunks.len()), "chunk");
     let reused = prev
         .and_then(|p| refix(&staged, &p.staged, &p.placement, p.rounds, target, options, &rules));
     let fixed = match reused {
