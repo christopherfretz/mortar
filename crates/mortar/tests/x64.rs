@@ -263,6 +263,8 @@ fn gc_matrix(name: &str, cc: Cc, program: &[Source]) {
         assert!(mortar(&built, &plain, &[], &[]).success());
         let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
         assert!(size(&gc) < size(&plain), "{label}: {} >= {}", size(&gc), size(&plain));
+        support::plumb::clean(&gc, &map_of(&gc), &built.dir);
+        support::plumb::clean(&plain, &map_of(&plain), &built.dir);
     }
 }
 

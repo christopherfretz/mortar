@@ -1287,7 +1287,6 @@ fn an_erratum_site_in_collected_code_gets_no_patch() {
         }
         support::plumb::readers(&ours);
         support::plumb::elflint(&ours);
-        support::plumb::clean(&ours, &map_of(&ours), &built.dir);
     }
 }
 
