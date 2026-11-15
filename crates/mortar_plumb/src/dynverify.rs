@@ -86,6 +86,9 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     for p in &line.problems {
         report.findings.push(Finding::new(Rule::Dyn(2), format!("the command line: {p}")));
     }
+    if let Some(d) = &map.dynamic {
+        report.findings.extend(map_facts(&line, d));
+    }
     // file 0's definitions: the output's defined globals no input and no
     // shared object defines (linker-defined symbols).
     let mut input_defs: HashSet<String> = HashSet::new();
@@ -359,6 +362,40 @@ fn exported_ifuncs(
 
 /// Gives stage 2's engine a view: the loader's bindings, the TLS block
 /// the view uses, the PLT entries.
+/// P-D3: the map's facts of the command line (`output`, `interp`,
+/// `runpath`/`rpath`, `bind`, `relro`; §3.2) agree with its words. The
+/// hints are not compared: they only name what stage 3 recomputes.
+fn map_facts(line: &Line, d: &crate::map::DynRecords) -> Vec<Finding> {
+    use crate::map::RunpathTag;
+    let mut v = Vec::new();
+    let mut fact = |what: &str, map: String, words: String| {
+        if map != words {
+            v.push(Finding::new(
+                Rule::Dyn(3),
+                format!("the map's {what} record says {map}; the command line says {words}"),
+            ));
+        }
+    };
+    if let Some(k) = d.kind {
+        fact("output", format!("{k:?}"), format!("{:?}", line.kind.unwrap_or(OutputKind::Exec)));
+    }
+    if d.interp.is_some() || line.interp.is_some() {
+        fact("interp", format!("{:?}", d.interp), format!("{:?}", line.interp));
+    }
+    let words = (!line.rpath.is_empty()).then(|| {
+        let tag = if line.new_dtags { RunpathTag::Runpath } else { RunpathTag::Rpath };
+        (tag, line.rpath.join(":"))
+    });
+    fact("runpath/rpath", format!("{:?}", d.runpath), format!("{words:?}"));
+    if let Some(now) = d.now {
+        fact("bind", format!("now {now}"), format!("now {}", line.now));
+    }
+    if let Some(relro) = d.relro {
+        fact("relro", format!("on {relro}"), format!("on {}", line.relro));
+    }
+    v
+}
+
 fn dyn_engine(
     e: &mut reloc::Engine<'_, '_>,
     v: &loader::View,
@@ -371,5 +408,46 @@ fn dyn_engine(
     e.dynamic = true;
     if matches!(e.tls, Ok(None)) && !v.dyn_tls.is_empty() {
         e.tls = Ok(Some(reloc::TlsBlock { start: v.tls.0, tcb: v.tls.1 }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoFiles;
+    impl Files for NoFiles {
+        fn read(&self, _: &str) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    // spec: plumb.md §3.2 — the map's facts are recomputed from its `arg`
+    // words and a disagreeing record is reported (P-D3).
+    #[test]
+    fn s3_2_map_facts_agree_with_the_words() {
+        let words: Vec<String> =
+            "-pie -z now -dynamic-linker /lib/ld.so.1 -rpath /a -rpath $ORIGIN -o x"
+                .split(' ')
+                .map(str::to_string)
+                .collect();
+        let line = Line::parse(&words, &NoFiles);
+        let mut d = crate::map::DynRecords {
+            kind: Some(OutputKind::Pie),
+            interp: Some("/lib/ld.so.1".into()),
+            runpath: Some((crate::map::RunpathTag::Runpath, "/a:$ORIGIN".into())),
+            now: Some(true),
+            relro: Some(true),
+            ..Default::default()
+        };
+        assert!(map_facts(&line, &d).is_empty(), "{:?}", map_facts(&line, &d));
+        d.kind = Some(OutputKind::Exec);
+        d.interp = Some("/lib/ld-other.so".into());
+        d.runpath = Some((crate::map::RunpathTag::Rpath, "/a:$ORIGIN".into()));
+        d.now = Some(false);
+        d.relro = Some(false);
+        let f = map_facts(&line, &d);
+        assert_eq!(f.len(), 5, "{f:?}");
+        assert!(f.iter().all(|x| x.rule == Rule::Dyn(3)));
     }
 }
