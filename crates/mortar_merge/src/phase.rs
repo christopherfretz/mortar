@@ -1,0 +1,361 @@
+//! Phase 60 over the link's tables (`spec/synth.md` §2): which sections
+//! are split, their bytes, and the `.eh_frame` relocations classified and
+//! resolved, then [`merge()`](crate::merge()) and [`eh::parse`].
+//!
+//! The architecture enters through [`Relocs`], which [`ArchRelocs`]
+//! implements for any `mortar_arch::Arch` (a test gives a table for a
+//! target without one).
+
+use mortar_arch::{Arch, DemandClass, Field, Site};
+use mortar_core::inputs::{Reader, RelocForm};
+use mortar_core::layout::EntryDef;
+use mortar_core::par::Pool;
+use mortar_core::resolution::{Def, SectionKind};
+use mortar_core::{Assignment, FileId, Inputs, Resolution, SectionId, Split, SymbolId};
+use mortar_diag::{Diagnostic, Key};
+use mortar_elf::consts::{SHF_COMPRESSED, SHF_STRINGS, STT_SECTION};
+use mortar_elf::{Class, Object, Section, SectionIndex, SymbolIndex, SymbolSection};
+
+use crate::cut::{Whole, align_log2, placed_whole};
+use crate::eh::{self, EhFrames, EhIn, EhReloc, RelocClass, Target};
+use crate::merge::{MergeIn, MergeMeta, merge};
+use crate::problem::{Problem, What};
+
+/// A relocation type as `.eh_frame` parsing needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RelocInfo {
+    pub name: &'static str,
+    pub class: RelocClass,
+    /// The data field's width; 0 for an instruction or a marker.
+    pub width: u8,
+}
+
+/// The architecture's view of relocations (`spec/arch.md` §3.2, §3.3).
+pub trait Relocs: Sync {
+    /// Classifies `r_type` at `offset` of a section holding `bytes`.
+    fn classify(&self, r_type: u32, bytes: &[u8], offset: u64) -> Result<RelocInfo, What>;
+    /// REL only: the implicit addend of the classified relocation.
+    fn addend(&self, r_type: u32, bytes: &[u8], offset: u64) -> i64;
+}
+
+/// [`Relocs`] by a `mortar_arch::Arch`.
+#[derive(Clone, Copy)]
+pub struct ArchRelocs<'a>(pub &'a dyn Arch);
+
+impl std::fmt::Debug for ArchRelocs<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ArchRelocs")
+    }
+}
+
+impl Relocs for ArchRelocs<'_> {
+    fn classify(&self, r_type: u32, bytes: &[u8], offset: u64) -> Result<RelocInfo, What> {
+        let h = self
+            .0
+            .classify(r_type, Site { bytes, offset })
+            .map_err(|r| What::Refused(r.class, r.name.to_string()))?;
+        let class = match h.class {
+            DemandClass::None => RelocClass::None,
+            DemandClass::Pc => RelocClass::Pc,
+            DemandClass::AbsWord => RelocClass::AbsWord,
+            _ => RelocClass::Other,
+        };
+        let width = match h.field {
+            Field::Data { bytes } => bytes,
+            _ => 0,
+        };
+        Ok(RelocInfo { name: h.name, class, width })
+    }
+
+    fn addend(&self, r_type: u32, bytes: &[u8], offset: u64) -> i64 {
+        let Ok(h) = self.0.classify(r_type, Site { bytes, offset }) else { return 0 };
+        let at = offset as usize;
+        let w = usize::from(h.field.width());
+        bytes.get(at..at + w).map_or(0, |field| self.0.read_addend(&h, field))
+    }
+}
+
+/// What phase 60 produces.
+#[derive(Debug, Clone)]
+pub struct Phase {
+    /// `spec/model.md` §3.5.
+    pub split: Split,
+    /// Per `split.merge_of` row: its pieces' identity (S-13).
+    pub meta: Box<[MergeMeta]>,
+    /// Every kept, assigned `.eh_frame`, parsed.
+    pub eh: EhFrames,
+    /// Per `eh.sections` row: its relocations, sorted by offset (the
+    /// records' `relocs` spans index these).
+    pub eh_relocs: Box<[Box<[EhReloc]>]>,
+    /// The `Merge` sections placed whole (S-6), and why. Layout places
+    /// them as `Regular` (`Split` has no row for them).
+    pub whole: Box<[(SectionId, Whole)]>,
+}
+
+/// The link's tables phase 60 reads.
+#[derive(Debug, Clone, Copy)]
+pub struct Tables<'t, 's> {
+    pub inputs: &'t Inputs<'s>,
+    pub resolution: &'t Resolution,
+    pub assignment: &'t Assignment<'t>,
+}
+
+/// A section of a file to split, with its data.
+enum Unit<'a> {
+    Merge(MergeIn<'a>),
+    Whole(SectionId, Whole),
+    Eh { section: SectionId, index: u32, bytes: &'a [u8], relocs: Vec<EhReloc> },
+}
+
+/// Phase 60: splits every kept `Merge` and `EhFrame` section that is
+/// assigned an output section, merges, and parses `.eh_frame`. Problems
+/// (sorted by key) when any input is malformed or refused.
+pub fn run(pool: &Pool, t: Tables<'_, '_>, relocs: &dyn Relocs) -> Result<Phase, Vec<Problem>> {
+    let files = t.inputs.files.len() as usize;
+    let per_file: Vec<Result<Vec<Unit<'_>>, Problem>> =
+        pool.map(files, |f| units(t, FileId(f as u32), relocs));
+    let mut problems: Vec<Problem> =
+        per_file.iter().filter_map(|u| u.as_ref().err().cloned()).collect();
+    if !problems.is_empty() {
+        problems.sort();
+        return Err(problems);
+    }
+    let mut merge_in = Vec::new();
+    let mut whole = Vec::new();
+    let mut eh_units = Vec::new();
+    for (f, units) in per_file.into_iter().enumerate() {
+        let Ok(units) = units else { unreachable!("problems returned above") };
+        for u in units {
+            match u {
+                Unit::Merge(m) => merge_in.push(m),
+                Unit::Whole(s, w) => whole.push((s, w)),
+                Unit::Eh { section, index, bytes, relocs } => {
+                    eh_units.push((section, FileId(f as u32), index, bytes, relocs));
+                }
+            }
+        }
+    }
+    let word = match t.inputs.target.class {
+        Class::Elf32 => 4,
+        Class::Elf64 => 8,
+    };
+    let eh_in: Vec<EhIn<'_>> = eh_units
+        .iter()
+        .map(|(section, file, index, bytes, relocs)| EhIn {
+            section: *section,
+            file: *file,
+            index: *index,
+            bytes,
+            relocs,
+        })
+        .collect();
+    let merged = merge(pool, &merge_in);
+    let frames = eh::parse(pool, word, &eh_in);
+    let (merged, frames) = match (merged, frames) {
+        (Ok(m), Ok(e)) => (m, e),
+        (m, e) => {
+            let mut problems: Vec<Problem> =
+                m.err().into_iter().flatten().chain(e.err().into_iter().flatten()).collect();
+            problems.sort();
+            return Err(problems);
+        }
+    };
+    let meta = merged.meta.clone();
+    let split = merged.into_split(frames.split_rows());
+    drop(eh_in);
+    let eh_relocs = eh_units.into_iter().map(|u| u.4.into_boxed_slice()).collect();
+    Ok(Phase { split, meta, eh: frames, eh_relocs, whole: whole.into() })
+}
+
+/// The units of one file, in section order.
+fn units<'s>(
+    t: Tables<'_, 's>,
+    file: FileId,
+    relocs: &dyn Relocs,
+) -> Result<Vec<Unit<'s>>, Problem> {
+    let Some(range) = t.resolution.section_base.get(file).copied() else { return Ok(Vec::new()) };
+    let Reader::Object(object) = t.inputs.files[file].reader else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    for (i, section) in range.iter().enumerate() {
+        let row = t.resolution.sections[section];
+        if !row.is_kept() || t.assignment.out(section).is_none() {
+            continue;
+        }
+        let index = i as u32;
+        let problem = |what: What| Problem { file, section: index, piece: 0, offset: 0, what };
+        let malformed = |e: mortar_elf::Error| problem(What::Malformed(e.to_string()));
+        match row.kind {
+            SectionKind::Merge => {
+                let s = object.section(SectionIndex(index)).map_err(malformed)?;
+                let h = s.header();
+                let w = if h.sh_flags & SHF_COMPRESSED != 0 {
+                    // Placing whole is always correct (S-5); the bytes are
+                    // compressed and not the pieces'.
+                    Some(Whole::Compressed)
+                } else {
+                    placed_whole(h.sh_flags, h.sh_addralign, h.sh_entsize, row.reloc.0 != 0)
+                };
+                if let Some(w) = w {
+                    out.push(Unit::Whole(section, w));
+                    continue;
+                }
+                let out_sec = t.assignment.out(section).unwrap_or_else(|| unreachable!());
+                out.push(Unit::Merge(MergeIn {
+                    section,
+                    file,
+                    index,
+                    out: out_sec,
+                    strings: h.sh_flags & SHF_STRINGS != 0,
+                    entsize: h.sh_entsize as u32,
+                    align: align_log2(h.sh_addralign),
+                    bytes: s.data().map_err(malformed)?,
+                }));
+            }
+            SectionKind::EhFrame => {
+                let s = object.section(SectionIndex(index)).map_err(malformed)?;
+                if s.flags() & SHF_COMPRESSED != 0 {
+                    return Err(problem(What::Refused(
+                        mortar_diag::RefusalClass::Feature,
+                        "SHF_COMPRESSED .eh_frame".into(),
+                    )));
+                }
+                let bytes = s.data().map_err(malformed)?;
+                let rel = if row.reloc.0 == 0 {
+                    Vec::new()
+                } else {
+                    eh_relocs(t, file, &object, row.reloc, bytes, relocs)
+                        .map_err(|(offset, what)| Problem { offset, ..problem(what) })?
+                };
+                out.push(Unit::Eh { section, index, bytes, relocs: rel });
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// The relocations of an `.eh_frame`, classified, resolved and sorted by
+/// offset.
+fn eh_relocs(
+    t: Tables<'_, '_>,
+    file: FileId,
+    object: &Object<'_>,
+    reloc: SectionIndex,
+    bytes: &[u8],
+    relocs: &dyn Relocs,
+) -> Result<Vec<EhReloc>, (u64, What)> {
+    let malformed = |e: mortar_elf::Error| (0, What::Malformed(e.to_string()));
+    let rs: Section<'_> = object.section(reloc).map_err(malformed)?;
+    let raw: Vec<(u64, u32, u32, Option<i64>)> = match t.inputs.target.reloc {
+        RelocForm::Rela => rs
+            .rela()
+            .map_err(malformed)?
+            .iter()
+            .map(|r| (r.r_offset, r.r_sym, r.r_type, Some(r.r_addend)))
+            .collect(),
+        RelocForm::Rel => rs
+            .rel()
+            .map_err(malformed)?
+            .iter()
+            .map(|r| (r.r_offset, r.r_sym, r.r_type, None))
+            .collect(),
+    };
+    let symbols = object.symbols().map_err(malformed)?;
+    let mut out = Vec::with_capacity(raw.len());
+    for (offset, r_sym, r_type, addend) in raw {
+        let fail = |what: What| (offset, what);
+        let info = relocs.classify(r_type, bytes, offset).map_err(fail)?;
+        let addend = match addend {
+            Some(a) => a,
+            None if info.class == RelocClass::None => 0,
+            None => relocs.addend(r_type, bytes, offset),
+        };
+        let target = if r_sym == 0 || info.class == RelocClass::None {
+            Target::Absolute(0)
+        } else {
+            let symbols = symbols
+                .as_ref()
+                .ok_or_else(|| fail(What::Malformed("relocation without a symbol table".into())))?;
+            target(t, file, symbols, SymbolIndex(r_sym)).map_err(|w| (offset, w))?
+        };
+        out.push(EhReloc {
+            offset,
+            r_type,
+            name: info.name,
+            class: info.class,
+            width: info.width,
+            addend,
+            target,
+        });
+    }
+    out.sort_by_key(|r| r.offset);
+    Ok(out)
+}
+
+/// What symbol `index` of `file` resolves to (resolve.md: locals by their
+/// section, globals through `sym_map`, `redirect` and `def`).
+fn target(
+    t: Tables<'_, '_>,
+    file: FileId,
+    symbols: &mortar_elf::SymbolTable<'_>,
+    index: SymbolIndex,
+) -> Result<Target, What> {
+    let malformed = |e: mortar_elf::Error| What::Malformed(e.to_string());
+    let sym = symbols.get(index).map_err(malformed)?;
+    let first_global = symbols.first_global().0;
+    if index.0 < first_global || sym.st_info & 0xf == STT_SECTION {
+        return local(t, file, symbols.section_of(index, &sym).map_err(malformed)?, sym.st_value);
+    }
+    let map = t.inputs.sym_map_of(file);
+    let Some(&id) = map.get((index.0 - first_global) as usize) else {
+        return Err(What::Malformed(format!("symbol {} has no key", index.0)));
+    };
+    let id: SymbolId = t.resolution.redirect.get(id).copied().unwrap_or(id);
+    Ok(match t.resolution.def.get(id).copied() {
+        Some(Def::Defined(e)) => match t.inputs.entry_def(e) {
+            Some(EntryDef::Section(i, v)) => match t.resolution.section_id(e.file, i) {
+                Some(section) => Target::Section { section, value: v },
+                None => Target::Elsewhere(id),
+            },
+            Some(EntryDef::Absolute(v)) => Target::Absolute(v),
+            None => Target::Elsewhere(id),
+        },
+        Some(Def::Undefined { weak }) => Target::Undefined { symbol: id, weak },
+        _ => Target::Elsewhere(id),
+    })
+}
+
+fn local(t: Tables<'_, '_>, file: FileId, at: SymbolSection, value: u64) -> Result<Target, What> {
+    match at {
+        SymbolSection::Section(i) => match t.resolution.section_id(file, i) {
+            Some(section) => Ok(Target::Section { section, value }),
+            None => Err(What::Malformed(format!("symbol in section {} which does not exist", i.0))),
+        },
+        SymbolSection::Absolute | SymbolSection::Undefined => Ok(Target::Absolute(value)),
+        SymbolSection::Common | SymbolSection::Reserved(_) => {
+            Err(What::Malformed("local symbol in a reserved section index".into()))
+        }
+    }
+}
+
+/// The diagnostics of `problems`, keyed (`spec/model.md` §8), with the
+/// file and section they are at.
+#[must_use]
+pub fn diagnostics(inputs: &Inputs<'_>, problems: &[Problem]) -> Vec<(Key, Diagnostic)> {
+    problems
+        .iter()
+        .map(|p| {
+            let f = &inputs.files[p.file];
+            let name = match f.reader {
+                Reader::Object(o) => o
+                    .section(SectionIndex(p.section))
+                    .ok()
+                    .and_then(|s| s.name().ok())
+                    .map(|n| String::from_utf8_lossy(n).into_owned()),
+                _ => None,
+            };
+            let name = name.unwrap_or_else(|| format!("section {}", p.section));
+            (p.key(), p.diagnostic(f.display(), &name))
+        })
+        .collect()
+}

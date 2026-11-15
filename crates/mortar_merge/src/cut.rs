@@ -19,6 +19,10 @@ pub enum Whole {
     Tls,
     /// `sh_addralign` not a power of two, or `sh_entsize` above 2^16.
     Shape,
+    /// `SHF_COMPRESSED` (a non-alloc `.debug_str` from `-gz`): its bytes
+    /// are not the pieces' until decompressed, which the store does not do
+    /// yet; placing whole is always correct (S-5).
+    Compressed,
 }
 
 /// S-6: whether a section of fate `Merge` (an `SHF_MERGE` section with

@@ -101,6 +101,21 @@ pub struct Merged {
 }
 
 impl Merged {
+    /// The `Split` table (`spec/model.md` §3.5) of these merge rows and
+    /// the `.eh_frame` rows (`EhFrames::split_rows`).
+    #[must_use]
+    pub fn into_split(self, eh: crate::eh::EhRows) -> mortar_core::Split {
+        mortar_core::Split {
+            merge_of: self.merge_of,
+            piece_off: self.piece_off,
+            piece_frag: self.piece_frag,
+            frags: self.frags,
+            eh_of: eh.0,
+            eh_off: eh.1,
+            eh_piece: eh.2,
+        }
+    }
+
     /// The identity of a fragment's pieces (through its representative's
     /// row).
     #[must_use]

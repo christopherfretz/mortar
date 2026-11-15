@@ -41,10 +41,18 @@ pub enum What {
     Encoding(u8),
     /// S-38: `feature`.
     FdeWithoutReloc,
-    /// S-38: the initial location's relocation is not of class `Pc` or
-    /// `AbsWord`, or does not fit the field its encoding gives
-    /// (`relocation-type`); the relocation's name.
-    InitialLocationReloc(String),
+    /// S-37, S-38: the relocation at a pointer (an FDE's initial
+    /// location, a personality or LSDA pointer) does not fit it: its class
+    /// is not `Pc` for a `pcrel` pointer or `AbsWord` for another, its
+    /// width is not the pointer's, or it starts inside the pointer
+    /// (`feature`); the relocation's name.
+    PointerReloc(String),
+    /// S-38: an FDE whose initial location is a common, shared or
+    /// linker-defined symbol (no input section holds its code); `feature`.
+    FdeCodeElsewhere,
+    /// A relocation of a record's length or CIE pointer, which the linker
+    /// writes (S-52); `feature`.
+    RelocInHeader,
     /// Two relocations (neither `R_*_NONE`) at one place of `.eh_frame`;
     /// `feature`.
     TwoRelocs,
@@ -77,8 +85,10 @@ impl What {
             | Self::Dwarf64
             | Self::Encoding(_)
             | Self::FdeWithoutReloc
-            | Self::TwoRelocs => Some(RefusalClass::Feature),
-            Self::InitialLocationReloc(_) => Some(RefusalClass::RelocationType),
+            | Self::TwoRelocs
+            | Self::RelocInHeader
+            | Self::FdeCodeElsewhere
+            | Self::PointerReloc(_) => Some(RefusalClass::Feature),
             Self::Refused(class, _) => Some(*class),
             _ => None,
         }
@@ -105,7 +115,15 @@ impl What {
             Self::CorruptedRecord => "corrupted .eh_frame record: a field runs past its end".into(),
             Self::Encoding(e) => format!(".eh_frame pointer encoding {e:#04x}"),
             Self::FdeWithoutReloc => "FDE without a relocation for its initial location".into(),
-            Self::InitialLocationReloc(name) => name.clone(),
+            Self::PointerReloc(name) => {
+                format!("{name} at an .eh_frame pointer of another encoding")
+            }
+            Self::FdeCodeElsewhere => {
+                "FDE whose initial location is not in an input section".into()
+            }
+            Self::RelocInHeader => {
+                "relocation of an .eh_frame record's length or CIE pointer".into()
+            }
             Self::TwoRelocs => "two relocations at one place of .eh_frame".into(),
             Self::PastEnd => "CIE/FDE ends past the end of the section".into(),
             Self::BadCieReference => "invalid CIE reference".into(),
