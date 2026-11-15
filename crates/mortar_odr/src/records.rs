@@ -220,7 +220,7 @@ impl Entry<'_> {
         (self.key, self.kind, self.class)
     }
 
-    /// The entry's place in [`sort`]'s order above `INDEX_BITS`.
+    /// The entry's place in [`sorted`]'s order above `INDEX_BITS`.
     fn order(&self) -> u128 {
         let kind = match self.kind {
             2 => 0u128,
@@ -316,7 +316,7 @@ pub fn check(
     let got = pool.unit_cost(5_000).map_collect(units.len(), |u, out: &mut Vec<Entry<'_>>| {
         cx.entries(u, out);
     });
-    let mut entries = got.items;
+    let entries = got.items;
     let per_unit = pool.unit_cost(5_000).map_collect(units.len(), |u, out: &mut Vec<Counts>| {
         let mut c = cx.unit_counts(u);
         c.add(&cx.skipped(u));
@@ -327,7 +327,7 @@ pub fn check(
     }
     // Integers only (WP-073: comparing names here was a third of the
     // checks' time); names split a run only on a key collision.
-    sort(pool, &mut entries);
+    let mut entries = sorted(pool, entries);
     let groups = groups(&mut entries);
     let found = pool.unit_cost(2_000).map_collect(groups.len(), |g, out: &mut Vec<Found>| {
         let (a, b) = groups[g];
@@ -437,42 +437,27 @@ fn schemes(info: &[Info<'_>]) -> (u64, u64) {
     (distinct, (units * units.saturating_sub(1) / 2).saturating_sub(same))
 }
 
-/// Bits of an entry's index in [`sort`]'s sort words.
+/// Bits of an entry's index in [`sorted`]'s sort words.
 const INDEX_BITS: u32 = 46;
 
 /// `entries` (each unit's, in unit order, each kind's rows in row order)
 /// sorted by (key, kind, class, unit, row): one word per entry, its index
-/// in the low bits, sorted, then applied (WP-073: sorting 48-byte
+/// in the low bits, sorted, then gathered (WP-073: sorting 48-byte
 /// entries was a quarter of the checks' time at one thread). The index
 /// order within one kind is the (unit, row) order.
-fn sort(pool: &Pool, entries: &mut [Entry<'_>]) {
+fn sorted<'l>(pool: &Pool, entries: Vec<Entry<'l>>) -> Vec<Entry<'l>> {
     debug_assert!((entries.len() as u64) < 1 << INDEX_BITS);
     let mut words: Vec<u128> =
         entries.iter().enumerate().map(|(i, e)| e.order() | i as u128).collect();
     pool.sort_by(&mut words, Ord::cmp);
     let mask = (1u128 << INDEX_BITS) - 1;
-    // The permutation applied in place, cycle by cycle: no second copy of
-    // the entries (WP-073: they are 48 bytes a row).
-    let from: Vec<usize> = words.iter().map(|w| (w & mask) as usize).collect();
-    drop(words);
-    let mut done = vec![false; entries.len()];
-    for start in 0..entries.len() {
-        if done[start] || from[start] == start {
-            continue;
-        }
-        let first = entries[start];
-        let mut at = start;
-        loop {
-            done[at] = true;
-            let next = from[at];
-            if next == start {
-                entries[at] = first;
-                break;
-            }
-            entries[at] = entries[next];
-            at = next;
-        }
-    }
+    // A gather, not a permutation in place: the reads are independent, where
+    // following the cycles is a chain of dependent cache misses (WP-073
+    // measured +90 ms at 1.5 million rows). The input goes as soon as it is
+    // copied, so only one copy outlives this function.
+    let out = words.iter().map(|w| entries[(w & mask) as usize]).collect();
+    drop(entries);
+    out
 }
 
 /// The groups (kind, key, name, class) of `entries`, sorted by

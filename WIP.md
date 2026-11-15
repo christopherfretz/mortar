@@ -22,10 +22,7 @@
   anchored kind-5/kind-2 rows in tests.
 
 ## Next
-- CHECKPOINT hand-back.
-- Robustness (mutation corpus under strict, duplicates, forged counts,
-  mixed minor versions), §12.4 mutation tests + kill table.
-- Kind 2 flag tests (PARTIAL, EXPLICIT_SPEC+IMPLICIT_INST, USES_INTERNAL),
-  isa, abi violation tests.
-- Cost: bench, exp7 generator, scaled, O-45 per kind, 0.3 µs measurement.
-- spec/landed/meta/WP-073.md, gate, delete WIP.md, rm scratch.
+- Done since the checkpoint: rulings 1-10, odr_records.rs tests,
+  kill table, cost measured (scratch logs), sort as one word per entry.
+- Landed record spec/landed/meta/WP-073.md; merge main (WP-061 id table
+  conflict, keep §3.1 order); gate; delete WIP.md; rm scratch; hand back.
