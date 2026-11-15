@@ -1,0 +1,59 @@
+# dyn.md D-20, the hash style: an executable gets `.gnu.hash` and no
+# `.hash`; `--hash-style=gnu` (which every driver passes) is supported,
+# and `sysv`, `both` and `none` are refused as option values
+# (`unsupported option value: --hash-style=<v>`, cli.md §4.4), by
+# `mortar_cli` before anything is read. glibc has read `DT_GNU_HASH` since
+# 2.5; a loader that needs `DT_HASH` is out of scope.
+#
+# The references honour the option: `sysv` gives `DT_HASH` and no
+# `DT_GNU_HASH`, `both` gives both, and the programs run (the loader
+# finds the library's callback through either table). `none` is not
+# linked by the references here: it is refused by mortar alike.
+#
+# mortar: WP-042 (CLI) on both architectures, in tests/link/xfails
+# (a command-line refusal; mortar names every refused option at once, so
+# the diagnostic appears as soon as the CLI refuses the value).
+#@ spec: dyn.md "D-20"
+#@ spec: cli.md "4.4 Refused uses"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libhs.so -o libhs.so
+cc -O1 -fPIE main.c -o main.o
+
+link(bfd,lld,mold) gcc -pie main.o -L. -lhs -Wl,--hash-style=sysv -o sysv
+run(bfd,lld,mold) sysv
+  stdout: app_cb 1
+check(bfd,lld,mold) readelf -dW sysv
+  has: (HASH)
+  not: (GNU_HASH)
+link(mortar) gcc -pie main.o -L. -lhs -Wl,--hash-style=sysv -o sysv-mortar
+  exit: fail
+  diag: unsupported option value: --hash-style=sysv
+
+link(bfd,lld,mold) gcc -pie main.o -L. -lhs -Wl,--hash-style=both -o both
+run(bfd,lld,mold) both
+  stdout: app_cb 1
+check(bfd,lld,mold) readelf -dW both
+  has: (HASH)
+  has: (GNU_HASH)
+link(mortar) gcc -pie main.o -L. -lhs -Wl,--hash-style=both -o both-mortar
+  exit: fail
+  diag: unsupported option value: --hash-style=both
+
+link(mortar) gcc -pie main.o -L. -lhs -Wl,--hash-style=none -o none-mortar
+  exit: fail
+  diag: unsupported option value: --hash-style=none
+
+#--- lib.c
+extern int app_cb(void);
+int lib_call(void) { return app_cb(); }
+#--- main.c
+#include <stdio.h>
+int lib_call(void);
+int app_cb(void) { return 1; }
+
+int main(void) {
+  printf("app_cb %d\n", lib_call());
+  return 0;
+}

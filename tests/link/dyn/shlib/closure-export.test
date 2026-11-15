@@ -1,0 +1,48 @@
+# dyn.md D-12: a program symbol referenced only by a closure library is
+# exported. `libhtop.so` (named) needs `libhmid.so`, which is found by
+# `-rpath-link` and is not on the command line (a closure file, used:
+# reached from the needed `libhtop.so`); `libhmid.so` calls `hook`, which
+# the program defines and nothing else references. `hook` must be in the
+# program's `.dynsym`, or the loader cannot bind `libhmid.so`'s reference.
+# `main` prints `htop_fn()` = `hmid_fn()` = `hook()` = 42.
+#
+# W8 (dyn.md §13.2, E-shlib 4.2a): lld and mold do not export `hook`; their
+# programs fail at the call (`symbol lookup error: .../libhmid.so:
+# undefined symbol: hook`, status 127). GNU ld exports it and runs.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-12"
+#@ arch: aarch64 x86_64
+#@ xfail(lld,mold): W8: a symbol referenced only by a closure library is not exported; the program fails at load
+
+cc -O1 -fPIC hmid.c -o hmid.o
+cc -O1 -fPIC htop.c -o htop.o
+shlib gcc hmid.o -Wl,-soname,libhmid.so -o libhmid.so
+shlib gcc htop.o -Wl,-soname,libhtop.so -L. -lhmid -o libhtop.so
+cc -O1 -fPIE main.c -o main.o
+link gcc -pie main.o -L. -lhtop -Wl,-rpath-link,. -o prog
+run prog
+  stdout: 42
+check readelf -dW prog
+  has: (NEEDED) Shared library: [libhtop.so]
+  not: [libhmid.so]
+check readelf --dyn-syms -W prog
+  has: FUNC GLOBAL DEFAULT * hook$
+
+#--- hmid.c
+int hook(void);
+int hmid_fn(void) { return hook(); }
+#--- htop.c
+int hmid_fn(void);
+int htop_fn(void) { return hmid_fn(); }
+#--- main.c
+#include <stdio.h>
+
+int htop_fn(void);
+int hook(void) { return 42; }
+
+int main(void) {
+  printf("%d\n", htop_fn());
+  return 0;
+}
