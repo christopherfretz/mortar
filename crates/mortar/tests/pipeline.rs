@@ -175,6 +175,64 @@ fn c_with_clang() {
     matrix("pipe-c-clang", Driver::Clang, support::C_PROGRAM);
 }
 
+/// layout.md L-35 (§20.7): Clang 22 objects built with
+/// `-mbranch-protection=standard` carry `SHT_AARCH64_ATTRIBUTES` next to
+/// the property note; the section is consumed (it was refused), the
+/// output has none and its property note keeps BTI and PAC, as GNU ld's.
+#[test]
+fn c_with_clang22_branch_protection() {
+    if !host() {
+        return;
+    }
+    let (Some(readelf), Some(_)) = (tool("readelf"), tool("clang-22")) else {
+        return; // clang-22 is not on every host the tests run on.
+    };
+    let read = |args: &[&str], path: &Path| {
+        let o = run_with(Command::new(&readelf).args(args).arg(path), b"", Duration::from_mins(1));
+        o.stdout_text()
+    };
+    let scratch = Scratch::new("pipe-c-clang22-bp");
+    let flags = ["-O2", "-mbranch-protection=standard"];
+    let built = build(&scratch, Driver::Clang22, &flags, support::C_PROGRAM).expect("clang-22");
+    let obj = built.dir.join("c1.c.o");
+    assert!(read(&["-SW"], &obj).contains("AARCH64_ATTRIBUTES"), "the input has the section");
+    let ours = built.dir.join("out.mortar");
+    let theirs = built.dir.join("out.bfd");
+    let m = mortar(&built, &ours, &[], &[]);
+    assert!(m.success() && m.stderr_text().is_empty(), "mortar: {}", m.stderr_text());
+    let b = bfd(&built, &theirs, &[]);
+    assert!(b.success(), "ld.bfd: {}", b.stderr_text());
+    assert_eq!(execute(&ours), execute(&theirs), "mortar's program against GNU ld's");
+    assert!(!read(&["-SW"], &ours).contains("AARCH64_ATTRIBUTES"), "consumed");
+    let feature = |p: &Path| {
+        read(&["-nW"], p).lines().find(|l| l.contains("AArch64 feature")).map(str::to_owned)
+    };
+    assert_eq!(feature(&ours), feature(&theirs));
+    assert!(feature(&ours).is_some_and(|f| f.contains("BTI")), "{:?}", feature(&ours));
+    support::plumb::readers(&ours);
+    support::plumb::elflint(&ours);
+    only_the_bti_iplt_gap(&support::plumb::verify(&ours, &map_of(&ours), &built.dir));
+}
+
+/// The verifier's one gap on a BTI output (a WP-027d finding for
+/// `mortar_plumb`, `src/ifunc.rs` `a64_entry` and the entry scan): it finds
+/// an IPLT entry by its `ADRP`, so it takes a BTI entry (`bti c` first,
+/// a64.md §10.3) to start 4 bytes late, and a branch to the entry's start
+/// is F4 "reaches no IPLT entry". `findings` must be only those: F4 on a
+/// `CALL26`/`JUMP26` whose branch target is 4 bytes before the entry
+/// plumb expected.
+fn only_the_bti_iplt_gap(findings: &[mortar_plumb::Finding]) {
+    for x in findings {
+        let gap = format!("{:?}", x.rule) == "Ifunc(4)"
+            && matches!(x.reloc.as_deref(), Some("R_AARCH64_CALL26" | "R_AARCH64_JUMP26"))
+            && x.addr.zip(x.found).zip(x.expected).is_some_and(|((at, word), want)| {
+                let imm = i64::from(((word as u32 & 0x03ff_ffff) << 6) as i32 >> 6);
+                at.wrapping_add_signed(imm * 4).wrapping_add(4) == want
+            });
+        assert!(gap, "not the BTI IPLT gap: {x:#?}");
+    }
+}
+
 #[test]
 fn cxx_with_gxx() {
     matrix("pipe-cxx-gxx", Driver::Gxx, CXX_FULL);
@@ -355,11 +413,11 @@ fn a_bti_far_call_to_an_iplt_entry_is_linked() {
     let map = std::fs::read_to_string(map_of(&ours)).unwrap();
     assert!(map.lines().any(|l| l.starts_with("chunk thunk __f@plt_veneer ")), "{map}");
     support::plumb::readers(&ours);
-    // The verifier's one finding is its own gap (a WP-027d finding for
-    // `mortar_plumb`): it follows the veneer to the IPLT entry but does
-    // not take an IFUNC's IPLT entry as the `bl`'s destination, so it
-    // reports the `CALL26` to `f` as out of range. `bl` reaches the thunk,
-    // the thunk the entry (`objdump -d`); no other finding is allowed.
+    // The verifier's one finding is its own gap ([`only_the_bti_iplt_gap`]:
+    // it takes the BTI IPLT entry to start 4 bytes late): the veneer reaches
+    // the entry's start, not plumb's entry + 4, so it reports the `CALL26`
+    // to `f` as out of range. `bl` reaches the thunk, the thunk the entry
+    // (`objdump -d`); no other finding is allowed.
     let findings = support::plumb::verify(&ours, &map_of(&ours), &built.dir);
     assert!(
         findings.len() == 1

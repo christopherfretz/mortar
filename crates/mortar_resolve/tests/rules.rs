@@ -1606,7 +1606,11 @@ fn s10_classification_table() {
         (MSection::new(".note.x", SHT_NOTE, SHF_ALLOC), Ok((K::Note, kept))),
         (MSection::new(".tbss", SHT_NOBITS, SHF_ALLOC | SHF_WRITE), Ok((K::Nobits, kept))),
         (MSection::new(".init_array", 14, SHF_ALLOC | SHF_WRITE), Ok((K::Regular, kept))),
-        (MSection::new(".ARM.attributes", 0x7000_0003, 0), Err(())),
+        // layout.md §20.7, L-35: consumed (WP-027d; refused before).
+        (
+            MSection::new(".ARM.attributes", 0x7000_0003, 0),
+            Ok((K::Excluded, dropped(DropReason::Consumed))),
+        ),
         (MSection::new(".dynamic", 6, SHF_ALLOC), Err(())),
         (MSection::new(".weird", 0x6000_0001, SHF_ALLOC), Err(())),
         (MSection::new(".flag", SHT_PROGBITS, SHF_ALLOC | 0x0800_0000), Err(())),

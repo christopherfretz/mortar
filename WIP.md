@@ -12,6 +12,6 @@
   [x] LO15 (row 313 M1; data-pointers XFAIL->PASS). [x] build-id split (md5 alone XFAIL; plumb B1 hex-length gap). [x] --warn-backrefs
   supported (archive-backref XFAIL->PASS). [ ] -Ttext/--section-start stay refused (layout.md
   §20.2: until scripts); [ ] -gz sizing
-- [ ] 4. small joins: [x] .eh_frame DeadRef::DeadFde (scan name match gone)
+- [ ] 4. small joins: [x] .eh_frame DeadRef::DeadFde (scan name match gone); [x] R-L6 verified (L-159, __TMC_END__); [x] ATTRIBUTES consumed (Clang 22 test; plumb BTI IPLT gap)
 - [ ] 5. -Map text
 - [ ] 6. link-line histogram (measured; see hand-back)
