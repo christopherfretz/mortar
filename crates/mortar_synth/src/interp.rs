@@ -82,7 +82,9 @@ impl SynthChunk for InterpPlan {
 
     fn write(&self, _: &FillCx<'_>, range: Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
         let size = InterpPlan::size(self);
-        if range.start > range.end || range.end > size || out.len() as u64 != range.end - range.start
+        if range.start > range.end
+            || range.end > size
+            || out.len() as u64 != range.end - range.start
         {
             return Err(crate::error::internal(format!(
                 "a synthetic chunk of {size} bytes written at {}..{} into {} bytes",

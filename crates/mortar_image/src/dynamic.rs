@@ -79,9 +79,9 @@ pub fn value(v: DynValue, dynstr: &DynStr, addrs: &dyn DynAddrs) -> Result<u64, 
         DynValue::ChunkSize(k) => chunk(k)?.1,
         DynValue::SectionAddr(s) => section(s)?.0,
         DynValue::SectionSize(s) => section(s)?.1,
-        DynValue::Symbol(key) => addrs
-            .symbol(key)
-            .ok_or_else(|| missing(format!("symbol {} with no address", key.0)))?,
+        DynValue::Symbol(key) => {
+            addrs.symbol(key).ok_or_else(|| missing(format!("symbol {} with no address", key.0)))?
+        }
     })
 }
 
@@ -112,7 +112,9 @@ impl SynthChunk for DynamicChunk<'_> {
 
     fn write(&self, _: &FillCx<'_>, range: Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
         let size = self.plan.size();
-        if range.start > range.end || range.end > size || out.len() as u64 != range.end - range.start
+        if range.start > range.end
+            || range.end > size
+            || out.len() as u64 != range.end - range.start
         {
             return Err(internal(format!(
                 ".dynamic of {size} bytes written at {}..{} into {} bytes",

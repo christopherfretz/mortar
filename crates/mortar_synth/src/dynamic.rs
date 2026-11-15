@@ -140,6 +140,7 @@ impl ArraySection {
 /// (D-30: "each is present exactly under its condition, which depends on
 /// no address"). The join builds it from the plan, `Slots`, the chunk
 /// list and the architecture.
+#[allow(clippy::struct_excessive_bools, reason = "one field per condition of D-30")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DynamicInputs {
     pub kind: DynKind,
@@ -684,21 +685,21 @@ mod tests {
             let mut whole = vec![0xaa; size];
             p.write(&value, &mut Window::new(0, &mut whole)).unwrap();
             for cut in [1, 3, 8, 13, 16, 17, size - 1] {
-                let mut a = vec![0xbb; cut];
-                let mut b = vec![0xcc; size - cut];
-                p.write(&value, &mut Window::new(0, &mut a)).unwrap();
-                p.write(&value, &mut Window::new(cut as u64, &mut b)).unwrap();
-                a.extend_from_slice(&b);
-                assert_eq!(a, whole, "{class:?} cut at {cut}");
+                let mut head = vec![0xbb; cut];
+                let mut tail = vec![0xcc; size - cut];
+                p.write(&value, &mut Window::new(0, &mut head)).unwrap();
+                p.write(&value, &mut Window::new(cut as u64, &mut tail)).unwrap();
+                head.extend_from_slice(&tail);
+                assert_eq!(head, whole, "{class:?} cut at {cut}");
             }
             let ent = p.entsize() as usize;
-            let n = p.entries().len();
-            assert!(whole[n * ent..].iter().all(|&b| b == 0));
+            let count = p.entries().len();
+            assert!(whole[count * ent..].iter().all(|&byte| byte == 0));
             let word = |at: usize| -> u64 {
-                let h = ent / 2;
-                let mut b = [0u8; 8];
-                b[..h].copy_from_slice(&whole[at..at + h]);
-                u64::from_le_bytes(b)
+                let half = ent / 2;
+                let mut bytes = [0u8; 8];
+                bytes[..half].copy_from_slice(&whole[at..at + half]);
+                u64::from_le_bytes(bytes)
             };
             assert_eq!(word(0), DT_NEEDED as u64);
             assert_eq!(word(ent / 2), 1);
