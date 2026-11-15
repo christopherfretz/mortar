@@ -33,7 +33,8 @@ use mortar_arch::OutputKind;
 use mortar_core::par::Pool;
 use mortar_image::fill::Image;
 use mortar_image::source::NoKeys;
-use mortar_testutil::{run, tool};
+use mortar_testutil::run;
+use mortar_testutil::target::Arch;
 use support::reflink::{RefExe, check_tombstones, compare, parse_map, ref_world};
 use support::{ARCH, TempDir, fill_mem};
 
@@ -116,12 +117,16 @@ struct Built {
     objects: Vec<(String, Vec<u8>)>,
 }
 
+/// The image under test is AArch64's (`support::ARCH`): GCC for AArch64
+/// on any host.
+const TARGET: Arch = Arch::Aarch64;
+
 fn build(dir: &TempDir, lang: &str) -> Option<Built> {
     // C at -O1; C++ at -O0, so the template instantiations stay out of
     // line in both units (COMDAT groups the reference deduplicates).
     let (cc, srcs, ext, opt): (_, &[&str], _, _) = match lang {
-        "c" => (tool("gcc")?, &[C_SRC], "c", "-O1"),
-        _ => (tool("g++")?, &[CXX_SRC, CXX_SRC2], "cc", "-O0"),
+        "c" => (TARGET.tool("gcc")?, &[C_SRC], "c", "-O1"),
+        _ => (TARGET.tool("g++")?, &[CXX_SRC, CXX_SRC2], "cc", "-O0"),
     };
     let mut objs = Vec::new();
     for (i, src) in srcs.iter().enumerate() {

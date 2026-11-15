@@ -20,10 +20,10 @@ use mortar_elf::Machine;
 
 /// The architecture status of a link of `plan` on `machine`:
 /// [`Status::M2`] for a dynamic output (`Exec`, `Pie`) on an architecture
-/// whose join has landed (AArch64, WP-053), `M1` for every other output,
-/// so a static link's path is unchanged. A dynamic output on another
-/// architecture is refused by name: x86-64 until its join (WP-055), i386
-/// for all of M2 (ELFCLASS32 dynamic output is M4).
+/// whose join has landed (AArch64, WP-053; x86-64, WP-055), `M1` for
+/// every other output, so a static link's path is unchanged. A dynamic
+/// output on i386 is refused by name for all of M2 (ELFCLASS32 dynamic
+/// output is M4).
 ///
 /// # Errors
 ///
@@ -35,11 +35,7 @@ pub fn arch_status(plan: &Plan, machine: Machine) -> Result<Status, Diagnostic> 
         return Ok(Status::M1);
     }
     match machine {
-        Machine::AArch64 => Ok(Status::M2),
-        Machine::X86_64 => {
-            Err(Diagnostic::refused(RefusalClass::Feature, "dynamically linked output on x86-64")
-                .note("x86-64 dynamic executables arrive with WP-055 (docs/status/m2.md)"))
-        }
+        Machine::AArch64 | Machine::X86_64 => Ok(Status::M2),
         Machine::I386 => {
             Err(Diagnostic::refused(RefusalClass::Feature, "dynamically linked output on i386")
                 .note("ELFCLASS32 dynamic output is M4 (docs/status/m2.md)"))
@@ -58,7 +54,7 @@ mod tests {
     use mortar_elf::Machine;
 
     // spec: WP-040 step 0e (Status::M2 only behind the guard), WP-053
-    // (AArch64 only; x86-64 and i386 dynamic output refused by name)
+    // (AArch64), WP-055 (x86-64); i386 dynamic output refused by name
     #[test]
     fn m2_only_behind_the_guard() {
         for kind in [
@@ -70,15 +66,16 @@ mod tests {
             let plan = Plan { kind, ..Plan::default() };
             let dynamic = matches!(kind, OutputKind::Executable | OutputKind::PieExecutable);
             let m2 = dynamic;
-            let a64 = arch_status(&plan, Machine::AArch64).ok();
-            assert_eq!(a64 == Some(Status::M2), m2, "{kind:?}");
-            for other in [Machine::X86_64, Machine::I386] {
-                let s = arch_status(&plan, other);
-                if m2 {
-                    assert!(s.is_err(), "{kind:?} on {other:?} is refused by name");
-                } else {
-                    assert_eq!(s.ok(), Some(Status::M1), "{kind:?} on {other:?}");
-                }
+            for joined in [Machine::AArch64, Machine::X86_64] {
+                let s = arch_status(&plan, joined).ok();
+                assert_eq!(s == Some(Status::M2), m2, "{kind:?} on {joined:?}");
+                assert!(s.is_some(), "{kind:?} on {joined:?}");
+            }
+            let s = arch_status(&plan, Machine::I386);
+            if m2 {
+                assert!(s.is_err(), "{kind:?} on i386 is refused by name");
+            } else {
+                assert_eq!(s.ok(), Some(Status::M1), "{kind:?} on i386");
             }
         }
     }

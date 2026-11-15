@@ -170,7 +170,11 @@ fn fixed(plain: &Text, fixed: &Text) -> (BTreeSet<u64>, BTreeSet<u64>) {
 
 #[test]
 fn s11_1_superset_of_reference_linkers() {
-    let (Some(gcc), Some(bfd), Some(lld)) = (tool("gcc"), tool("ld.bfd"), tool("ld.lld")) else {
+    // The AArch64 assembler and GNU ld on any host; ld.lld reads the
+    // target from the object.
+    let a64 = mortar_testutil::target::Arch::Aarch64;
+    let (Some(gcc), Some(bfd), Some(lld)) = (a64.tool("gcc"), a64.tool("ld.bfd"), tool("ld.lld"))
+    else {
         return;
     };
     let dir = Scratch::new("a64-843419");

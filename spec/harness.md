@@ -11,7 +11,7 @@ tests ("Link tests"), the gate's hosted runs on GitHub Actions
 
 ## ci
 
-`cargo xtask ci [--quick] [--step <name>]...` is the gate
+`cargo xtask ci [--quick] [--no-fail-fast] [--step <name>]...` is the gate
 (`docs/VALIDATION.md` "Gates"). Its steps, in order:
 
 | step | command |
@@ -25,6 +25,21 @@ tests ("Link tests"), the gate's hosted runs on GitHub Actions
 Before a step it prints `[ci] <step>` on standard error. It stops at the
 first step that fails, printing `[ci] <step>: FAILED`, with exit status 1,
 and ends with `[ci] ok` and exit status 0 only if every step it ran passed.
+
+`--no-fail-fast` is a diagnosis run: every selected step runs whatever
+failed before it, `cargo test` gets `--no-fail-fast` (every test binary
+runs), and a gate with failures ends `[ci] FAILED: <step>, <step>...`
+with exit status 1. The hosted lanes run it only when asked by hand
+("Hosted CI", rule 6); a push and a pull request run the plain gate.
+
+After the `test` step (passed or not) the gate prints `[ci] named skips:
+<n>` and, indented, `<name>: <reason>` for each test part skipped by name
+on this host ("Hosted CI", "Named skips"). It empties the directory of
+the records before the step and names it to the step's cargo in
+`MORTAR_NAMED_SKIPS` (`<build directory>/tmp/named-skips` unless that
+variable is already set: a gate run by a test, as
+`xtask/tests/jobserver.rs` does, is given a directory of its own, so it
+cannot empty the outer gate's).
 
 `linktest` is run in-process, after the cargo steps ("Link tests"): any
 exit status but 0 fails it. With `--quick` it runs the corpus on the
@@ -83,7 +98,9 @@ Tests: `xtask/src/ci.rs` `steps_are_selected_by_name`,
 with a stand-in for cargo: the order, the lines, the stop at a failure,
 the one rerun, the usage errors; its passing run names the three cargo
 steps, as the link-test step is `xtask linktest`'s own, tested in "Link
-tests").
+tests"; `--no-fail-fast` runs every step after a failed one and names the
+failed ones last; the passing run lists the one named skip its stand-in
+records, in a directory of its own).
 
 ## Jobserver
 
@@ -747,6 +764,7 @@ are the indented lines under a step:
 | link | `diag: <pattern>` | some line of its standard error matches |
 | link | `no-diag: <pattern>` | no line does |
 | run | `exit: <n>` (default 0), `exit: signal <n>` | how the program ends |
+| run | `exit: no-start` | it cannot be started (its interpreter is not there): status 127 natively (the harness's shell, whose exec fails), 255 under qemu (which cannot load it); the same expectation on both hosts |
 | run | `stdout: <text>` | its standard output, one line per expectation, exactly; with none, it prints nothing |
 | run | `output: reference` | prints what the references printed ("The self-check") |
 | run | `env: <NAME>=<value>` | runs the program with that environment variable (repeatable; `LD_PRELOAD=./libhook.so`, `LD_BIND_NOW=1`) |
@@ -906,12 +924,16 @@ mortar included (`docs/VALIDATION.md` layer L3).
 
   ```
   # a comment; blank lines are ignored
-  mold: A1 A2 A3 A9                 <linker>[,<linker or arch>...]: <id>...
+  mold: A1 A2 A3 A9                 <linker>[,<linker, arch or cross>...]: <id>...
   bfd: A10
   ```
 
   Each line names at least one reference linker, never mortar, and can
-  name architectures (none is every architecture); the ids are those of
+  name architectures (none is every architecture) and the word `cross`
+  (only on an architecture that is not the host's: its C runtime is then
+  Debian's cross packages, another build than the native one, and a
+  default can be the reference linker's way with that build's objects;
+  A13 of mold on x86-64 is); the ids are those of
   `spec/plumb.md` §10.2. A line that does not parse is a run error (exit
   3); without the file there are no defaults. A defaulted anomaly is
   expected on every judged output of that linker and architecture, and is
@@ -1110,7 +1132,7 @@ reference bugs, `XFAIL`) and mortar `XFAIL` on every case until M1.
 
 `cargo xtask static-identical [--update] [-j <n>] [--mortar <binary>]` checks that mortar's
 static links are byte-identical to a checked-in baseline,
-`tests/identical/baseline.tsv`. It is the guard of milestone M2
+`tests/identical/baseline.on-<host>.tsv`. It is the guard of milestone M2
 (`spec/landed/dyn/WP-040.md`): dynamic output lands behind one refusal
 while a static link's bytes, its `--mortar-map` and its diagnostics stay
 what they were. A package whose change is meant to change them (a fix of
@@ -1146,6 +1168,21 @@ one row:
 | `output` | SHA-256 of the output file, `-` when there is none |
 | `map` | SHA-256 of the `--mortar-map`, `-` when there is none |
 | `stderr` | SHA-256 of the linker's (the driver's) standard error |
+
+**One baseline per host**: `baseline.on-aarch64.tsv` on an AArch64
+machine, `baseline.on-x86_64.tsv` on an x86-64 one. The digests are of
+mortar's links of inputs the host builds: its own architecture's with
+its native GCC and C library (Debian's `libc6-dev`, `libgcc-14-dev`),
+the others' with the cross packages (`libc6-dev-<arch>-cross`, ...),
+which are other builds of other package revisions. The same test on the
+same architecture is thus other bytes on the two hosts (an i386 link,
+cross on both, is the same). A change meant to change static bytes
+updates both baselines: the one of the host at hand with `--update`, the
+other from its hosted lane's log, where a failed check prints, after the
+difference lines, `static-identical: the run's rows of the links that
+differ:` and those rows in the baseline's format (test names and digests
+only). A missing baseline is an empty one: every link differs and is
+printed.
 
 The map and the standard error are digested after replacing the link's
 directory by `.`, the unit's directory by `<unit>` and the run's work
@@ -1206,10 +1243,11 @@ jobs with stable check names, the same concurrency rule, read-only
    `cargo xtask ci` (all of "ci": fmt, clippy, the tests, the link tests
    on all three architectures) through `scripts/env.sh`, with
    `MORTAR_REQUIRE_TOOLS=1`. hod and kiln split their gate into parallel
-   jobs by `--step`; mortar's takes minutes, and on a private repository
-   every job pays its set-up again and is billed by the minute, rounded
-   up, so it is one job until it grows. `--step` is there to split it
-   (an assertion of `xtask/tests/hosted_ci.rs` then changes with it).
+   jobs by `--step`; mortar's takes about a quarter of an hour (rule 11),
+   and every job pays its set-up again, so it is one job until it grows
+   past half an hour. `--step` is there to split it (`test` alone is
+   most of it; an assertion of `xtask/tests/hosted_ci.rs` then changes
+   with it).
 3. **The reference environment.** The job runs in
    `buildpack-deps:trixie-scm`: Debian 13, the distribution of the
    development container, with git, curl and procps (what checkout and
@@ -1242,9 +1280,11 @@ jobs with stable check names, the same concurrency rule, read-only
    `lang/fortran-c` does not run there); the C and C++ libraries of the
    two cross targets (`libc6-dev-<arch>-cross`,
    `libstdc++-14-dev-<arch>-cross`, their system roots `/usr/<triple>`);
-   `clang-22`, `llvm-22`, `lld-22`; `mold`; `qemu-user`; and what the
-   job and the harness run (git, curl, make, procps, python3, GNU time,
-   xz-utils). Without an argument it installs what is missing
+   `clang-22`, `llvm-22`, `lld-22`; Debian's own LLVM 19 (`clang-19`,
+   the compiler censuses' clang; `lldb-19`; `lld`, the `ld.lld` on `PATH`
+   that `gcc -fuse-ld=lld` runs); `mold`; `gdb` and `gdb-multiarch`;
+   `elfutils`; `file`; `qemu-user`; and what the job and the harness run
+   (git, curl, make, coreutils, procps, python3, GNU time, xz-utils). Without an argument it installs what is missing
    (`apt-get`, as root) and then checks; `--check` installs nothing and
    checks that every package is installed, every tool the tests look for
    is found (unprefixed for the host; prefixed for all three triples; the
@@ -1253,8 +1293,9 @@ jobs with stable check names, the same concurrency rule, read-only
    the packages. Its exit status is 1 for anything missing or a version
    that differs, 2 for a usage error or a host that is neither AArch64
    nor x86-64.
-   - **Versions.** GNU binutils 2.44, GCC 14.2, LLVM 22.1.8 and mold
-     2.37.1, pinned in the script, because tests and specs record what
+   - **Versions.** GNU binutils 2.44, GCC 14.2, LLVM 22.1.8, Debian's
+     LLVM 19.1.7, mold 2.37.1, gdb 16.3, elfutils 0.192 and qemu 10.0.13,
+     pinned in the script, because tests and specs record what
      these releases do ("Where the references differ", `spec/script.md`,
      `spec/elf.md`, `spec/archive.md`): another release is another
      oracle, which is re-measured before the pin moves. Debian 13's own
@@ -1282,12 +1323,13 @@ jobs with stable check names, the same concurrency rule, read-only
    run's), and the file is uploaded as the artifact
    `linktest-results-<cache key>` (kept 14 days). No results file means
    the gate stopped before its link-test step.
-6. **Triggers.** While the repository is private, `ci.yml` runs only by
-   hand (`workflow_dispatch`: Actions, "ci", "Run workflow", on any
-   branch; the workflow must be on the default branch to be listed).
-   `push` to `main`, `pull_request` and `merge_group` are in the file as
-   a commented block, enabled by uncommenting those four lines when the
-   repository is public.
+6. **Triggers.** `ci.yml` runs on a `push` to `main`, on every
+   `pull_request` and on `merge_group` (the merge queue), always the plain
+   gate; and by hand (`workflow_dispatch`: Actions, "ci", "Run workflow",
+   on any branch), with the input `no_fail_fast` for a diagnosis run
+   (`cargo xtask ci --no-fail-fast`, "ci"). The repository and its Actions
+   logs are public: nothing the gate prints may name the machine it was
+   developed on (paths, user names).
 7. **Caches.** `Swatinem/rust-cache`, `shared-key` `ci-arm` or
    `ci-x86_64` (rust-cache adds the Rust version, the hashes of
    `Cargo.lock` and the manifests, and the job's environment to the key):
@@ -1304,41 +1346,131 @@ jobs with stable check names, the same concurrency rule, read-only
    `main` that starts completes.
 9. **Check names and what is required.** The checks to require (branch
    protection or a ruleset, and the merge queue) are the fan-ins, `check`
-   and `check-x86_64`, never the lanes' own job names. `check` can be
-   required once the AArch64 lane has passed. `check-x86_64` is a
-   separate check so that it can stay non-required until the x86-64 lane
-   has passed once: mortar was written and measured on an AArch64 host,
-   and the places that depend on the host are listed in
-   `spec/landed/harness/WP-014.md`.
+   and `check-x86_64`, never the lanes' own job names. Both lanes have
+   passed (`spec/landed/harness/WP-015.md`), so both can be required;
+   `check-x86_64` stays a check of its own, so that the lanes can be
+   required separately.
 10. **What a red lane means.** A red set-up step is the environment: a
     package Debian no longer has, or a pinned version that moved
     (rule 4). A red `cargo xtask ci` on the AArch64 lane is what the
     same gate in the development container would say, and is a gate
-    failure like that one. On the x86-64 lane it is that, or, until the
-    lane has first passed, a test that assumes an AArch64 host; the
-    fix is in the test (or in `xtask::linktest::target`), never a skip
-    of the lane.
-11. **Cost while private.** GitHub bills a private repository's hosted
-    minutes per job, rounded up to the minute (arm64 Linux runners at a
-    lower rate than x86-64), against the plan's included minutes; a
-    public repository's standard runners are free. A run is four jobs:
-    two `gate` jobs of roughly 10 to 15 minutes each (estimated, not yet
-    measured: the set-up's package installation about 2 to 4, the gate
-    on a 2- to 4-processor runner the rest; the gate takes 2 minutes on
-    the development machine) and two fan-in jobs of under a minute
-    (billed as one each). Run it by hand on the branches that need it
-    until the repository is public.
+    failure like that one. On the x86-64 lane it is that, or a test that
+    assumes an AArch64 host ("A test's subject decides its tools"): the
+    fix is in the test (or in `xtask::linktest::target`), never a skip of
+    the lane, and a named skip only where the host itself is the reason
+    ("Named skips").
+11. **Time and cost.** A run is four jobs: two `gate` jobs and two
+    fan-in jobs of a few seconds. Measured (`spec/landed/harness/WP-015.md`),
+    a `gate` job takes about 16 minutes on `ubuntu-24.04-arm` and about
+    19 on `ubuntu-24.04`, of which the set-up (packages, Rust, cache) is
+    2 to 3 minutes and `cargo test` most of the rest. Standard runners
+    are free for a public repository.
 
-**Tests.** `xtask/tests/hosted_ci.rs`:
+### A test's subject decides its tools
+
+A test is about one architecture (or each of several), whatever host it
+runs on, and uses that architecture's tools, through
+`mortar_testutil::target::Arch`, which follows the link-test harness
+(`xtask::linktest::target`):
+
+- `gnu(tool)`: the plain name on that architecture's own host (`gcc`,
+  `ld.bfd`), `<triple>-<tool>` elsewhere; `tool(tool)` looks it up;
+- `clang_args()`: `--target=<triple>` off its host; `sysroot()`:
+  `/usr/<triple>`;
+- `command(program, argv0)` and `runner(program)`: the program itself on
+  its host, `qemu-<arch> -L /usr/<triple>` elsewhere; `gdb()`: `gdb` on
+  its host, `gdb-multiarch` elsewhere;
+- `is_host()`: false for every architecture under `MORTAR_TEST_CROSS=1`,
+  so an AArch64 machine can run its AArch64 tests the way an x86-64 host
+  does.
+
+A test never takes the host's default toolchain for an architecture it
+does not name, never runs a program of another architecture without its
+emulator, and never weakens an assertion for a host: an expectation that
+truly differs by target or by host is a parameter (one value per case,
+each stated), never a looser bound for all.
+
+**Native and cross runtimes.** A host builds its own architecture's
+programs against Debian's native C and C++ runtime (`libc6-dev`,
+`libstdc++-14-dev`) and the others against the cross packages
+(`libc6-dev-<arch>-cross`, `libstdc++-14-dev-<arch>-cross`, built
+separately: other package revisions, a `.note.package` in the cross
+`crt1.o`, other archive members). So the same AArch64 test links other
+input bytes on an AArch64 host than on an x86-64 one, and some outcomes
+follow the inputs, each stated where it is checked:
+
+- the static-identical baseline is one per host ("static-identical");
+- an anomaly default can apply to the cross runtime only (the word
+  `cross` in `tests/link/anomalies`, "L3");
+- with the cross libstdc++ the COMDAT copies mortar keeps (resolve.md
+  §6, ruling C: the least live FileId) are other files' than GNU ld's
+  (the first loaded) for some groups; `crates/mortar/tests/gc.rs`
+  tolerates, by name and only for files under `/gcc-cross/`, the
+  sections that this alone makes differ, and prints them;
+- `crates/mortar/tests/front_diff.rs` bounds the `.eh_frame` mapping
+  symbols lld keeps and mortar drops by 4 with the native runtime and by
+  16 with the cross one, where it also holds `.eh_frame`'s size and the
+  CIE and FDE counts to lld's (suspected cause: the COMDAT keepers leave
+  other input `.eh_frame` sections without records, S-50, S-76; not
+  proven).
+
+A GNU ld runs the environment's `LD_LIBRARY_PATH` and `LD_RUN_PATH`
+into its closure search only as a native linker, so oracles that record
+GNU ld state that per architecture by `is_host()`
+(`crates/mortar_resolve/tests/shlib_oracle.rs`).
+
+### The tool guard
+
+`mortar_testutil::tool` and `find_listed_tool` look a tool up only by a
+name `scripts/ci-tools.sh` covers (rule 4: `TOOLS`, `TRIPLE_TOOLS` for
+each of the three triples, `LLVM_TOOLS` bare or with `-<major>`,
+`SETUP_TOOLS`, and `FALLBACK_TOOLS`, tried only when a listed name is
+missing). `mortar_testutil::ci_tools` reads the lists from the script as
+compiled in; a lookup of any other name panics, on every machine and
+whatever `MORTAR_REQUIRE_TOOLS` says, naming the tool and the script. So
+a tool the development machine has and the hosted lanes would lack fails
+the first test that asks for it, locally, not a hosted run; the fix is
+to add the tool (and its package) to the script in the same change. A
+test that builds a name at run time (`<triple>-<tool>`, `qemu-<arch>`)
+is covered by the same lists; a name a shell script of a test runs is
+the test's to resolve with `tool` and pass in by path.
+
+### Named skips
+
+A test, or a part of one, that cannot run on this host for a reason of
+the host (a debugger session runs a process of the host's own
+architecture; the AArch64 `libelf.so.1` is installed only on an AArch64
+host) calls `mortar_testutil::named_skip(name, reason)`: never for a
+missing tool, which is `tool`'s note or, under `MORTAR_REQUIRE_TOOLS=1`,
+its failure. The skip is printed and recorded as the file
+`$MORTAR_NAMED_SKIPS/<name>` (one line, `<name>\t<reason>`); `cargo
+xtask ci` lists and counts them after the `test` step ("ci"). No named
+skip happens on an AArch64 host (the AArch64 lane prints `[ci] named
+skips: 0`); on the x86-64 lane they are the gdb and lldb sessions of
+`crates/mortar/tests/debuggers.rs` and `gc.rs` and the `libelf` line of
+`s8_shared_objects.rs`, ten in all. A new one is a change to review, as
+an `xfail` is.
+
+### Tests
+
+`xtask/tests/hosted_ci.rs`:
 `the_hosted_lanes_run_the_gate_as_the_development_machine_does` (the
 lane runs `cargo xtask ci` once, through `scripts/env.sh`, with
-`MORTAR_REQUIRE_TOOLS: "1"`; the set-up runs `scripts/ci-tools.sh` and
-`scripts/jobserver.sh start` and installs the Rust of
-`rust-toolchain.toml`; `ci.yml` calls the lane for both runners and has
-both fan-ins), `this_machine_has_the_reference_tools_of_the_hosted_lanes`
+`MORTAR_REQUIRE_TOOLS: "1"`, and `--no-fail-fast` only from the by-hand
+input; the set-up runs `scripts/ci-tools.sh` and `scripts/jobserver.sh
+start` and installs the Rust of `rust-toolchain.toml`; `ci.yml` calls the
+lane for both runners, has both fan-ins, and runs on `push` to `main`,
+`pull_request`, `merge_group` and by hand),
+`this_machine_has_the_reference_tools_of_the_hosted_lanes`
 (`scripts/ci-tools.sh --check` passes; a failure under
-`MORTAR_REQUIRE_TOOLS=1`, a note otherwise). The workflows themselves are
-tested only by running them.
+`MORTAR_REQUIRE_TOOLS=1`, a note otherwise).
+`crates/mortar_testutil/src/ci_tools.rs`
+`the_lists_cover_what_the_tests_ask_for`, `a_list_is_one_line` (the
+guard); `crates/mortar_testutil/src/target.rs`
+`tool_names_follow_the_host` (the convention, with and without
+`MORTAR_TEST_CROSS=1`); `xtask/tests/jobserver.rs` (the named skips'
+listing, "ci"). The workflows themselves are tested only by running
+them.
 
 ## bench
 

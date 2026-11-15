@@ -23,6 +23,7 @@ use mortar_image::fill::Failed;
 use mortar_image::link::Written;
 use mortar_input::store::{Store, StorePolicy};
 use mortar_testutil::{Scratch, tool, tools_required};
+use support::AARCH64;
 
 /// A front and the store it reads.
 struct Linked {
@@ -171,13 +172,10 @@ val:
 /// `.rela.debug_info` and `.text` pass 64 KiB (the staged store copies
 /// them, input.md §11.3), and which keeps its file open (§11.4).
 fn objects(dir: &Scratch, big: bool) -> Option<()> {
-    let Some(cc) = tool("gcc") else {
+    let Some(cc) = AARCH64.tool("gcc") else {
         assert!(!tools_required(), "gcc is required");
         return None;
     };
-    if std::env::consts::ARCH != "aarch64" {
-        return None;
-    }
     let mut units = vec![("a.o", "a.s"), ("b.o", "b.s"), ("c.o", "c.s")];
     std::fs::write(dir.join("a.s"), A_S).unwrap();
     std::fs::write(dir.join("b.s"), B_S).unwrap();
@@ -232,11 +230,8 @@ fn check_tool(name: &str, args: &[&str], file: &Path) -> Option<String> {
 
 /// Runs `out`: it prints `hello` and exits 42.
 fn runs(out: &Path) {
-    let run = mortar_testutil::run_with(
-        &mut std::process::Command::new(out),
-        b"",
-        Duration::from_secs(20),
-    );
+    let run =
+        mortar_testutil::run_with(&mut AARCH64.command(out, None), b"", Duration::from_secs(20));
     assert_eq!(run.stdout_text(), "hello\n");
     assert_eq!(run.status.and_then(|s| s.code()), Some(42), "{}", run.stderr_text());
 }
@@ -372,7 +367,7 @@ fn i110_undefined_from_debug_only_is_refused_by_both_stores() {
     )
     .unwrap();
     let o = mortar_testutil::run_with(
-        std::process::Command::new(tool("gcc").unwrap())
+        std::process::Command::new(AARCH64.tool("gcc").unwrap())
             .args(["-c", "-o", "d.o", "d.s"])
             .current_dir(dir.path()),
         b"",
@@ -542,7 +537,7 @@ fn i40_compares_with_gnu_ld() {
     if objects(&dir, false).is_none() {
         return;
     }
-    let Some(ld) = tool("ld.bfd") else {
+    let Some(ld) = AARCH64.tool("ld.bfd") else {
         assert!(!tools_required(), "ld.bfd is required");
         return;
     };
@@ -601,7 +596,7 @@ fn i40_no_entry_writes_zero() {
     }
     std::fs::write(dir.join("p.c"), "int v(int x) { return x + 1; }\n").unwrap();
     let o = mortar_testutil::run_with(
-        std::process::Command::new(tool("gcc").unwrap())
+        std::process::Command::new(AARCH64.tool("gcc").unwrap())
             .args(["-c", "-O1", "-mbranch-protection=standard", "-o", "p.o", "p.c"])
             .current_dir(dir.path()),
         b"",

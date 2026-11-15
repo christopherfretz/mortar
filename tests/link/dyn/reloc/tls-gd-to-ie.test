@@ -1,0 +1,57 @@
+# dyn.md D-48 and a64.md §8.4 R4: GCC's traditional general-dynamic
+# sequence (`-mtls-dialect=trad`: `adrp x0, :tlsgd:`, `add x0, x0,
+# :tlsgd_lo12:`, `bl __tls_get_addr`, `nop`) against TLS defined by a
+# shared library is relaxed to initial-exec in an executable: `adrp x0`
+# and `ldr x0, [x0]` of a GOT slot with a `TLS_TPREL64` record, `mrs x1,
+# tpidr_el0`, `add x0, x1, x0`. No `DTPMOD`/`DTPREL` pair; `CALL26` to
+# `__tls_get_addr` raises no PLT demand once relaxed, so mortar has no
+# `JUMP_SLOT` for it (GNU ld keeps an unused one). This is how GCC's
+# `-mtls-dialect=trad` C++ reaches libstdc++'s `_ZSt11__once_call`.
+# The object is `-fPIC` (GCC writes initial-exec for an external TLS
+# variable in `-fPIE` and `-fno-pie` code), linked into a PIE and a
+# non-PIE.
+#
+# What the references do (measured): GNU ld relaxes with the same bytes
+# as mortar; lld does not know `R_AARCH64_TLSGD_ADR_PAGE21` (513) and
+# refuses; mold keeps the module/offset pair (also D-48-conforming).
+# The verifier's rewriting list (plumb.md §5.3) has no traditional GD to
+# IE rewriting, so it reports R1 on GNU ld's output and mortar's
+# (a request to plumb.md: WP-054 finding).
+#
+# mortar: AArch64, a verifier request (WP-054 finding), in tests/link/xfails.
+#@ spec: dyn.md "D-48"
+#@ spec: a64.md "8.4"
+#@ arch: aarch64
+#@ fixture: reloc-libd
+#@ xfail(bfd): verifier request (WP-054 finding): plumb.md 5.3 has no traditional GD to IE rewriting (a64 R4), R1 on the relaxed sequence
+
+cc -O1 -fPIC -mtls-dialect=trad main.c -o main.o
+link(lld) gcc -pie main.o -L. -ld -o pie
+  exit: fail
+  diag: unknown relocation (513) against symbol tlsx
+link(bfd,mold,mortar) gcc -pie main.o -L. -ld -o pie
+run(bfd,mold,mortar) pie
+  stdout: gd 5 same 1
+check(bfd,mortar) readelf -rW pie
+  count: 1 R_AARCH64_TLS_TPREL64 * tlsx + 0$
+  not: TLS_DTPMOD64
+link(bfd,mold,mortar) gcc -no-pie main.o -L. -ld -o exec
+run(bfd,mold,mortar) exec
+  stdout: gd 5 same 1
+check(bfd,mortar) readelf -rW exec
+  count: 1 R_AARCH64_TLS_TPREL64 * tlsx + 0$
+  not: TLS_DTPMOD64
+check(mortar) readelf -rW exec
+  not: __tls_get_addr
+
+#--- main.c
+#include <stdio.h>
+#include "libd.h"
+
+__attribute__((noinline)) int *gd_addr(void) { return &tlsx; }
+
+int main(void) {
+  int *g = gd_addr();
+  printf("gd %d same %d\n", *g, g == lib_tlsx());
+  return 0;
+}

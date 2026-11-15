@@ -10,6 +10,7 @@ use mortar_core::par::Pool;
 use mortar_core::plan::Plan;
 use mortar_input::store::{Hooks, Store, StoreConfig, StorePolicy};
 use mortar_input::walk::{Loaded, Options, WalkEnv, walk};
+pub use mortar_testutil::target::Arch;
 
 /// The plan of a command line (no program name).
 pub fn plan<S: AsRef<OsStr>>(args: &[S]) -> Plan {
@@ -246,13 +247,58 @@ fn shell_words(line: &str) -> Vec<String> {
     out
 }
 
+/// The architecture of a target name: `native` (AArch64, the subject of
+/// these tests on any host), `x86`, `i686`.
+pub fn arch(target: &str) -> Arch {
+    match target {
+        "x86" => Arch::X86_64,
+        "i686" => Arch::I386,
+        _ => Arch::Aarch64,
+    }
+}
+
+/// GNU tool `tool` of a target ([`arch`]), or `None` with a note (a
+/// failure under `MORTAR_REQUIRE_TOOLS`).
+pub fn gnu(target: &str, tool: &str) -> Option<PathBuf> {
+    arch(target).tool(tool)
+}
+
 /// A compiler for a target: `native` (AArch64), `x86`, `i686`.
 pub fn compiler(target: &str) -> Option<PathBuf> {
-    match target {
-        "x86" => need("x86_64-linux-gnu-gcc"),
-        "i686" => need("i686-linux-gnu-gcc"),
-        _ => need("gcc"),
-    }
+    gnu(target, "gcc")
+}
+
+/// Where the compiler of `target` finds file `name`
+/// (`-print-file-name`): the native layout on its own host, the cross
+/// system root's elsewhere. `None` when the compiler is missing.
+///
+/// # Panics
+/// Panics when the compiler does not find the file.
+pub fn print_file_name(target: &str, name: &str) -> Option<PathBuf> {
+    let gcc = compiler(target)?;
+    let o = tool_run(&gcc, &[format!("-print-file-name={name}").into()], Path::new("/"));
+    assert!(o.success(), "{}", o.stderr_text());
+    let file = PathBuf::from(o.stdout_text().trim());
+    assert!(file.is_absolute(), "{target}: {name} not found by {}", gcc.display());
+    Some(file)
+}
+
+/// The directory of the C library of `target` (that of `libc.so`), its
+/// `..` resolved. `None` when the compiler is missing.
+pub fn libc_dir(target: &str) -> Option<PathBuf> {
+    let libc = print_file_name(target, "libc.so")?;
+    Some(libc.parent().unwrap().canonicalize().unwrap())
+}
+
+/// The path of `libc.so.6` of `target` as its `libc.so` script names it.
+/// `None` when the compiler is missing.
+pub fn libc_so_6(target: &str) -> Option<String> {
+    let script = std::fs::read_to_string(print_file_name(target, "libc.so")?).unwrap();
+    let path = script.split_whitespace().find(|w| w.ends_with("/libc.so.6"));
+    Some(
+        path.unwrap_or_else(|| panic!("{target}: libc.so names no libc.so.6:\n{script}"))
+            .to_owned(),
+    )
 }
 
 /// Compiles `src` (C) into `dir/name` with `flags`; `None` when the
@@ -273,9 +319,21 @@ pub fn cc(dir: &Path, target: &str, name: &str, src: &str, flags: &[&str]) -> Op
     Some(dir.join(name))
 }
 
-/// `ar rc` (or `rcT`, thin) of `members` (paths relative to `dir`).
+/// `ar rc` (or `rcT`, thin) of `members` (paths relative to `dir`), with
+/// the AArch64 `ar` (the archive index needs the members' format).
 pub fn ar(dir: &Path, name: &str, members: &[&str], thin: bool) -> Option<PathBuf> {
-    let ar = need("ar")?;
+    ar_for(dir, "native", name, members, thin)
+}
+
+/// [`ar`] with the `ar` of `target`.
+pub fn ar_for(
+    dir: &Path,
+    target: &str,
+    name: &str,
+    members: &[&str],
+    thin: bool,
+) -> Option<PathBuf> {
+    let ar = gnu(target, "ar")?;
     let mut a: Vec<OsString> = vec![if thin { "rcT" } else { "rc" }.into(), name.into()];
     a.extend(members.iter().map(OsString::from));
     let o = tool_run(&ar, &a, dir);
@@ -294,5 +352,5 @@ pub fn emulation(target: &str) -> &'static str {
 
 /// `true` when every named compiler and `ar` exist.
 pub fn have(targets: &[&str]) -> bool {
-    targets.iter().all(|t| compiler(t).is_some()) && need("ar").is_some()
+    targets.iter().all(|t| compiler(t).is_some() && gnu(t, "ar").is_some())
 }

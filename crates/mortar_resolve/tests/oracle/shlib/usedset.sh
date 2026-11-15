@@ -11,6 +11,7 @@ set -u
 W=$(cd "${1:?usage: usedset.sh WORK}" && pwd)
 HERE=$(cd "$(dirname "$0")" && pwd)
 LINKERS=trace
+source "$HERE/tools.sh"
 
 needed() { readelf -dW "$1" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | paste -sd, -; }
 LOG=/dev/null; log() { :; }; sec() { :; }; so() { :; }; obj() { :; }
@@ -29,12 +30,12 @@ exit \$rc
 EOF
   chmod +x "$W/bin/$1-trace/ld"
 }
-mkwrap aarch64 /usr/bin/ld.bfd
-mkwrap x86_64 /usr/bin/x86_64-linux-gnu-ld.bfd
+mkwrap aarch64 "$(bfd_of aarch64)"
+mkwrap x86_64 "$(bfd_of x86_64)"
 
 runit() {
   [ "${NORUN:-0}" = 1 ] && { echo "run skipped"; return; }
-  if [ "$ARCH" = x86_64 ]; then timeout 20 qemu-x86_64 -L /usr/x86_64-linux-gnu -E LD_LIBRARY_PATH="$LLP" "$1" 2>&1
+  if [ -n "$(pfx $ARCH)" ]; then timeout 20 qemu-$ARCH -L /usr/$(triple $ARCH) -E LD_LIBRARY_PATH="$LLP" "$1" 2>&1
   else (cd "$X" && timeout 20 env LD_LIBRARY_PATH="$LLP" "$1" 2>&1); fi
   echo "rc=$?"
 }
@@ -76,7 +77,7 @@ hellos() {
   printf '#include <stdio.h>\nint main(void){puts("hi");return 0;}\n' > $H/h.c
   printf '#include <iostream>\n#include <string>\nint main(){std::string s="hi"; try { throw 1; } catch (int) {} std::cout<<s<<std::endl;}\n' > $H/h.cc
   printf 'program h\n  print *, "hi"\nend program h\n' > $H/h.f90
-  local P=; [ $ARCH = x86_64 ] && P=x86_64-linux-gnu-
+  local P; P=$(pfx $ARCH)
   ( cd $H && ${P}gcc -c h.c -o hc.o && ${P}g++ -c h.cc -o hcc.o && ${P}gfortran -c h.f90 -o hf.o )
   local d
   for d in "gcc hc.o" "g++ hcc.o" "gfortran hf.o" "gcc-nopie hc.o" "g++-nopie hcc.o"; do
@@ -90,7 +91,7 @@ hellos() {
 
 for ARCH in aarch64 x86_64; do
   X=$W/$ARCH; [ -d $X ] || { echo "no $X: run run.sh first"; exit 1; }
-  if [ $ARCH = aarch64 ]; then CC=gcc; else CC=x86_64-linux-gnu-gcc; fi
+  CC=$(pfx $ARCH)gcc
   LLP=$X/d:$X/leafdir:$X/middir:$X/topdir:$X/q:$X/xtra
   MODEL_DIR=$X/model; export MODEL_DIR; mkdir -p $MODEL_DIR
   cd $X

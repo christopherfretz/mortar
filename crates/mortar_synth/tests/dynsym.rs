@@ -1134,11 +1134,18 @@ fn verdefs(lib: &[u8]) -> BTreeMap<u16, Vec<u8>> {
 #[allow(clippy::too_many_lines)] // lld's link, its tables read back, the fixture, then the checks
 fn verneed_model_agrees() {
     let Some(python) = tool("python3") else { return };
-    let Some(cxx) = tool("g++") else { return };
+    // An AArch64 program: the AArch64 g++ and C runtime by the host's
+    // convention (mortar_testutil::target).
+    let a64 = mortar_testutil::target::Arch::Aarch64;
+    let Some(cxx) = a64.tool("g++") else { return };
     if tool("ld.lld").is_none() || tool("readelf").is_none() {
         return;
     }
-    let dirs = ["/lib/aarch64-linux-gnu", "/usr/lib/aarch64-linux-gnu"];
+    let dirs: Vec<String> = if a64.is_host() {
+        vec!["/lib/aarch64-linux-gnu".into(), "/usr/lib/aarch64-linux-gnu".into()]
+    } else {
+        vec![a64.sysroot().join("lib").display().to_string()]
+    };
     let scratch = Scratch::new("wp044-verneed");
     let exe = scratch.join("t.lld");
     let src = models().join("t.cc");

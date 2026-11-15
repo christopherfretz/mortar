@@ -87,6 +87,9 @@ const ALLOC_ORDER: &[&str] = &[
     ".note.gnu.property",
     ".note.gnu.build-id",
     ".note.ABI-tag",
+    // The cross C runtime's crt1.o (libc6-dev-<arch>-cross) has it; the
+    // native one has not.
+    ".note.package",
     ".rela.plt",
     ".rodata",
     ".stapsdt.base",
@@ -115,6 +118,7 @@ const ALLOC_ORDER: &[&str] = &[
 const SAME_SIZE: &[&str] = &[
     ".note.gnu.build-id",
     ".note.ABI-tag",
+    ".note.package",
     ".gcc_except_table",
     ".stapsdt.base",
     ".tdata",
@@ -279,9 +283,30 @@ fn compare(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
     theirs.sort_unstable();
     mine.sort_unstable();
     assert!(mine == theirs, "mortar − lld: {}\n{ctx}", multiset_diff(&mine, &theirs));
+    // lld keeps mapping symbols of removed `.eh_frame` records that
+    // mortar drops (S-76): at most 4 with the native runtime. With
+    // Debian's cross AArch64 runtime (an x86-64 host; told by the
+    // runtime's path, as in tests/gc.rs) lld keeps 13 more. Suspected:
+    // COMDAT keeper differences (resolve.md §6 ruling C) leave different
+    // input `.eh_frame` sections without records (S-50, S-76); not
+    // proven. The looser bound leans on the same records being kept,
+    // asserted again here: `.eh_frame`'s size and the CIE and FDE counts
+    // are lld's.
+    let cross = built.args.iter().any(|a| a.contains("/gcc-cross/"));
+    let gap = eh_mapping.checked_sub(my_eh_mapping);
+    eprintln!("{label}: .eh_frame mapping symbols: mortar {my_eh_mapping}, lld {eh_mapping}");
+    if cross {
+        assert_eq!(
+            ours.section(".eh_frame").map(|x| x.size),
+            lld.section(".eh_frame").map(|x| x.size),
+            "{ctx}"
+        );
+        assert_eq!((ours.cies, ours.fdes), (lld.cies, lld.fdes), "{ctx}");
+    }
+    let bound = if cross { 16 } else { 4 };
     assert!(
-        my_eh_mapping <= eh_mapping && eh_mapping - my_eh_mapping <= 4,
-        "{my_eh_mapping} {eh_mapping}\n{ctx}"
+        gap.is_some_and(|g| g <= bound),
+        "{my_eh_mapping} {eh_mapping} (cross runtime: {cross})\n{ctx}"
     );
     assert_eq!(ours.symtab_entries, entries.len() as u64 + 1, "{ctx}");
 

@@ -219,3 +219,43 @@ fn d42_copy_plan() {
     bad.insert(SymbolId(9), def(1, 0x2000, 0, false));
     assert!(copy_plan(&d, &Defs(bad)).is_err());
 }
+
+// x64.md §10.3, X-36 (WP-055): PLT0 pushes `.got.plt[1]` and jumps
+// through `.got.plt[2]`, which on x86-64 are the GOT base (`.got.plt`'s
+// start, `Facts.got_base = GotPltStart`) + 8 and + 16; each entry jumps
+// through its own word and back to PLT0. Before WP-055 the plan handed
+// `.got`'s start as the GOT base and PLT0 jumped through a `.got` slot
+// (every lazy call crashed under qemu; the verifier does not decode PLT0).
+#[test]
+fn x64_plt0_reads_got_plt_words() {
+    let x64 = mortar_x64::X64::M2;
+    let slots = Slots { plt: [k(1), k(2)].into(), ..Slots::default() };
+    let diag = collector();
+    let p = GotPlan::new_dynamic(
+        &x64,
+        &slots,
+        GlobalFlags::empty(),
+        PltVariant::Lazy,
+        DynGotCx { pie: true, bind_now: false },
+        &Kinds,
+        &DynsymPlan::new([1, 2].map(SymbolId).into(), 0, 1).unwrap(),
+        &diag,
+    )
+    .unwrap();
+    let mut plt = vec![0u8; p.plt_size() as usize];
+    p.write_plt(&x64, &AT, &mut Window::new(0, &mut plt)).unwrap();
+    let rel = |at: usize| i64::from(i32::from_le_bytes(plt[at..at + 4].try_into().unwrap()));
+    let target = |at: usize, end: u64| end.wrapping_add_signed(rel(at));
+    assert_eq!(&plt[..2], [0xff, 0x35]);
+    assert_eq!(target(2, AT.plt + 6), AT.got_plt + 8, "push .got.plt[1]");
+    assert_eq!(&plt[6..8], [0xff, 0x25]);
+    assert_eq!(target(8, AT.plt + 12), AT.got_plt + 16, "jmp *.got.plt[2]");
+    for n in 0..2u32 {
+        let e = p.plt_entry(n);
+        let at = e as usize;
+        assert_eq!(target(at + 2, AT.plt + e + 6), AT.got_plt + p.plt_word(n), "entry {n}");
+        assert_eq!(plt[at + 6], 0x68);
+        assert_eq!(u32::from_le_bytes(plt[at + 7..at + 11].try_into().unwrap()), n);
+        assert_eq!(target(at + 12, AT.plt + e + 16), AT.plt, "entry {n} back to PLT0");
+    }
+}

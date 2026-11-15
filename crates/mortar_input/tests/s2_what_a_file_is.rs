@@ -130,7 +130,7 @@ fn s2_2_gcc_fat_lto_linked() {
 #[test]
 fn s2_2_flto_line_refused_naming_lto() {
     let s = Scratch::new("s2fltoline");
-    let Some(gcc) = common::need("gcc") else { return };
+    let Some(gcc) = common::compiler("native") else { return };
     let Some(_) = common::cc(s.path(), "native", "m.o", "int main(void){return 0;}\n", &["-flto"])
     else {
         return;

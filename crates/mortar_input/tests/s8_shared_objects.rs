@@ -5,6 +5,7 @@
 )]
 mod common;
 
+use common::Arch;
 use mortar_testutil::Scratch;
 
 const C: &str = "int f(void) { return 1; }\n";
@@ -45,12 +46,13 @@ fn s8_1_libc_so_6_accepted() {
     if !common::have(&["native"]) {
         return;
     }
-    let libc = "/lib/aarch64-linux-gnu/libc.so.6";
-    if !std::path::Path::new(libc).exists() {
+    // The AArch64 C library where its compiler's `libc.so` names it.
+    let Some(libc) = common::libc_so_6("native") else { return };
+    if !std::path::Path::new(&libc).exists() {
         assert!(!mortar_testutil::tools_required(), "{libc} is required");
         return;
     }
-    let out = common::run(s.path(), &["-shared", "-maarch64linux", libc]);
+    let out = common::run(s.path(), &["-shared", "-maarch64linux", &libc]);
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     assert_eq!(out.files[0].soname.as_ref().map(|s| s.0.to_vec()), Some(b"libc.so.6".to_vec()));
 }
@@ -586,17 +588,28 @@ fn s8_6_system_lines() {
     let cout = "#include <iostream>\nint main(){std::cout << 1;}\n";
     let elf =
         "extern unsigned elf_version(unsigned);\nint main(void){return (int)elf_version(1);}\n";
-    // [E29]: driver, ld.bfd, source, the driver's extra arguments.
-    let lines: [(&str, &str, &str, &str, &[&str]); 4] = [
-        ("g++", "ld.bfd", "e.cc", cout, &[]),
-        ("x86_64-linux-gnu-g++", "x86_64-linux-gnu-ld.bfd", "e.cc", cout, &[]),
-        ("i686-linux-gnu-g++", "i686-linux-gnu-ld.bfd", "e.cc", cout, &[]),
-        ("gcc", "ld.bfd", "e.c", elf, &["-l:libelf.so.1"]),
+    // [E29]: architecture, driver, source, the driver's extra arguments.
+    let lines: [(Arch, &str, &str, &str, &[&str]); 4] = [
+        (Arch::Aarch64, "g++", "e.cc", cout, &[]),
+        (Arch::X86_64, "g++", "e.cc", cout, &[]),
+        (Arch::I386, "g++", "e.cc", cout, &[]),
+        (Arch::Aarch64, "gcc", "e.c", elf, &["-l:libelf.so.1"]),
     ];
     let mut checked = 0;
-    for (driver, bfd, src, text, extra) in lines {
-        let (Some(d), Some(ld)) = (common::need(driver), common::need(bfd)) else { continue };
-        let w = s.join(driver);
+    let mut skipped = 0;
+    for (arch, driver, src, text, extra) in lines {
+        if extra.contains(&"-l:libelf.so.1") && !Arch::Aarch64.is_host() {
+            // The cross system root (libc6-dev-arm64-cross) has no libelf.
+            mortar_testutil::named_skip(
+                "s8_shared_objects::s8_6_system_lines/aarch64-libelf",
+                "the AArch64 libelf.so.1 is installed only on an AArch64 host",
+            );
+            skipped += 1;
+            continue;
+        }
+        let (Some(d), Some(ld)) = (arch.tool(driver), arch.tool("ld.bfd")) else { continue };
+        let driver = arch.gnu(driver);
+        let w = s.join(&driver);
         std::fs::create_dir_all(&w).unwrap();
         std::fs::write(w.join(src), text).unwrap();
         let c = common::tool_run(&d, &["-c".into(), src.into(), "-o".into(), "e.o".into()], &w);
@@ -645,6 +658,6 @@ fn s8_6_system_lines() {
         checked += 1;
     }
     if std::env::var_os("MORTAR_REQUIRE_TOOLS").is_some() {
-        assert_eq!(checked, 4, "every line of [E29] runs");
+        assert_eq!(checked + skipped, 4, "every line of [E29] runs");
     }
 }

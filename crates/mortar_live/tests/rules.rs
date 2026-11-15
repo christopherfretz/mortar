@@ -148,10 +148,8 @@ fn i6_a_kept_section_without_a_place_is_a_root() {
 
 #[test]
 fn i4_liveness_of_a_real_link_is_its_kept_sections() {
-    let Some(gas) = mortar_testutil::tool("as") else {
-        assert!(!mortar_testutil::tools_required(), "as is required");
-        return;
-    };
+    // AArch64 assembly (`ret`, `bl`): the AArch64 assembler on any host.
+    let Some(gas) = mortar_testutil::target::Arch::Aarch64.tool("as") else { return };
     let dir = mortar_testutil::Scratch::new("live-real");
     let src = "\t.section .text.a,\"axG\",%progbits,g,comdat\n\t.globl a\na:\tret\n\
                \t.section .rodata.str1.1,\"aMS\",%progbits,1\n\t.asciz \"x\"\n\
