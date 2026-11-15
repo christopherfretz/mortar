@@ -35,6 +35,7 @@ mod report;
 mod view;
 mod walk;
 pub mod weak;
+mod copies;
 
 pub use walk::{Visit, Walker};
 
@@ -120,10 +121,11 @@ pub struct ScanInputs<'a, 's> {
 #[derive(Clone, Copy)]
 pub struct ScanOptions<'a> {
     pub output: OutputKind,
-    /// The output has a dynamic symbol table: an undefined weak key is
-    /// `WeakDyn` rather than `Weak0` (M2). WP-046 replaces this blanket
-    /// rule with the per-key decision of [`weak::weak_classes`]
-    /// (`spec/dyn.md` D-25).
+    /// The output has a dynamic symbol table (`Exec`/`Pie` with
+    /// `.dynamic`; `false` in every static link, static PIE included): an
+    /// undefined weak key may be `WeakDyn`, per key ([`weak::weak_classes`],
+    /// `spec/dyn.md` D-25), and a record in a read-only place is
+    /// `text-relocation` (D-47).
     pub dynamic: bool,
     /// The section mapping's writability (D-25's writable place); `None`
     /// in a static link, which has no weak-dynamic key.
@@ -190,12 +192,14 @@ pub fn scan(
     pool: &Pool,
 ) -> Scanned {
     let mut steps = mortar_core::wp032b_steps::Steps::new("scan");
-    let view = view::View::new(arch, t, *opts);
+    let mut view = view::View::new(arch, t, *opts);
     steps.step("view", 0, "");
     // `spec/dyn.md` D-25: after liveness, before the demands of the walk.
-    let weak = weak::weak_classes(arch, t, opts, opts.sections);
+    let weak = weak::classes(&view, pool);
     steps.step("weak", weak.weak_dyn.count().into(), "key");
     let mut diagnostics = weak.refused;
+    view.weak_dyn = weak.weak_dyn.clone();
+    view.weak_refused = weak.refused_keys;
     let (units, deferred) = driver::units(&view, &mut diagnostics);
     steps.step("units", units.len() as u64, "unit");
     let symbols = t.inputs.symbols.len() as usize;
@@ -255,7 +259,12 @@ pub fn scan(
     let mut locals: Vec<(LocalSym, DemandFlags)> = Vec::new();
     let mut events = Vec::with_capacity(results.len());
     let mut output = mortar_core::demands::GlobalFlags::empty();
-    for o in &mut results {
+    let mut copy_refs: Vec<(SymbolId, Key, usize, u32)> = Vec::new();
+    for (k, o) in results.iter_mut().enumerate() {
+        let u = &units[k];
+        copy_refs.extend(
+            o.copy_refs.drain(..).map(|(id, r)| (id, driver::key_at(u.file, u.index, r), k, r)),
+        );
         diagnostics.append(&mut o.diags);
         locals.append(&mut o.locals);
         events.push(std::mem::take(&mut o.events));
@@ -264,6 +273,8 @@ pub fn scan(
     }
     diagnostics.append(&mut late);
     drop(results);
+    copies::refusals(&view, &units, copy_refs, &mut diagnostics);
+    steps.step("copies", 0, "");
 
     stats.par_calls += u32::from(locals.len() > SORT_RUN);
     pool.unit_cost(10).sort_by_key(&mut locals, |l| l.0);
@@ -301,8 +312,8 @@ pub fn scan(
         local: local.into_boxed_slice(),
         output,
         dyn_relocs: dyn_relocs.into_boxed_slice(),
-        // `spec/dyn.md` D-25: `weak::weak_classes` decides it (the body is
-        // WP-046's); none in a static link.
+        // `spec/dyn.md` D-25: `weak::classes` decided it; none in a
+        // static link.
         weak_dyn: weak.weak_dyn,
     };
     let order = RecIndex::new(permuted, leads).with_deferred(deferred);

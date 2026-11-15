@@ -332,6 +332,19 @@ pub fn class_outcome(
     };
     let none = GlobalFlags::empty();
     let read_only = ClassOutcome::Incompatible(Incompatible::ReadOnly);
+    // `spec/dyn.md` D-43, D-44: in a `Pie`, a `Pc` use of shared data is
+    // `C` (a `COPY`); a non-GOT address use of a shared function (the
+    // `C` cells of the `Exec` row other than `AbsWord`'s) is refused by
+    // name. Only a dynamic `Pie` has `Shlib` targets.
+    if output == OutputKind::Pie && matches!(target, TargetKind::Shlib { .. }) {
+        match class {
+            DemandClass::Pc if !func => return d(DemandFlags::COPY, none, None),
+            DemandClass::Pc | DemandClass::Lo | DemandClass::AbsNarrow if func => {
+                return ClassOutcome::Refused(DynRefusal::CanonicalPltInPie);
+            }
+            _ => {}
+        }
+    }
     match cell(class, output, target) {
         Cell::Nothing => d(DemandFlags::empty(), none, None),
         Cell::RelativeTx if place.writable => {
