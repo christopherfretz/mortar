@@ -6,10 +6,10 @@
 
 use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
-    AddendRule, Base, Check, ClassOutcome, DeadRef, DemandClass, DemandFlags, DemandSink,
-    EventClass, Field, FieldError, FillCx, Incompatible, Minus, Refusal, RelocAt, ScanCx,
-    ScanError, SectionOut, SlotKind, TargetKind, Terms, Weak0Rule, class_outcome, dead_reference,
-    writes_dtprel,
+    AddendRule, Base, Check, ClassOutcome, DeadRef, Demand, DemandClass, DemandFlags, DemandSink,
+    DynRefusal, EventClass, Field, FieldError, FillCx, Incompatible, Minus, OutputKind,
+    PlaceFacts, Refusal, RelocAt, ScanCx, ScanError, SectionOut, SlotKind, TargetKind, Terms,
+    Weak0Rule, class_outcome, dead_reference, writes_dtprel,
 };
 use mortar_diag::RefusalClass;
 
@@ -21,6 +21,14 @@ use crate::{TLS, relax, weak0_rule};
 /// symbol at a non-alloc place.
 pub const NON_ALLOC_TLS_ABS: &str =
     "absolute relocation against a TLS symbol in a non-alloc section";
+
+/// The feature refused for the large TLSDESC form against a TLS-dynamic
+/// target in an exec output. a64.md §8.2 keeps that form a descriptor,
+/// but its `TLSDESC_CALL` is the small form's (§8.1 rewrites each member
+/// "without looking at the others"), so a kept large sequence would lose
+/// its `blr`: refused until the spec says how the `CALL` tells the forms
+/// apart (no producer of the census emits the large form, a64.md §2).
+pub const LARGE_TLSDESC_DYNAMIC: &str = "large-model TLSDESC against a TLS-dynamic target";
 
 /// The input-only checks of arch.md §3.4 for one relocation: the field and
 /// its window lie in the section; the addend rule (a64.md §3.1); the
@@ -78,7 +86,8 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         sym.kind
     };
     let data = matches!(h.field, Field::Data { .. });
-    match class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls) {
+    let outcome = class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls);
+    match dynamic_outcome(h.class, cx.output, kind, cx.place, outcome) {
         // a64.md §13.2's staging note: arch.md §4.3 writes `DtpRel(S + A)`
         // here, which fill cannot yet tell from an address (its `SymValue`
         // has no symbol type), so the case is refused rather than written
@@ -107,6 +116,17 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         // a64.md §7: `PC` against `weak0` is `S = P` in every output kind;
         // it demands nothing.
         ClassOutcome::ArchWeak0 => {}
+        ClassOutcome::ArchTls
+            if exec
+                && h.class == DemandClass::TlsDesc
+                && matches!(at.r_type, 565..=568)
+                && !tls_local(kind) =>
+        {
+            out.error(
+                at.index,
+                ScanError::Refused(Refusal::named(RefusalClass::Feature, LARGE_TLSDESC_DYNAMIC)),
+            );
+        }
         ClassOutcome::ArchTls => {
             let gd =
                 exec && h.class == DemandClass::TlsGd && relax::gd_lead(at, cx.tables).is_some();
@@ -128,15 +148,58 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
     out.raise(at.key, inhibit);
 }
 
+/// a64.md §5's cells for `exec` and `pie` where they say more than
+/// arch.md §4.3's generic table gives (`spec/dyn.md` D-43, D-44, D-47),
+/// at a place in an `SHF_ALLOC` section (the table is for those, §5):
+///
+/// - `TX`, a dynamic record in a read-only place, is the refusal
+///   `text-relocation` (D-47), not `relocation-incompatible`;
+/// - in `pie`, `PC` and `LO` against `shlib-data` demand `COPY` (D-43;
+///   §5 "pie: `C` for `shlib-data`"), and against `shlib-func` are
+///   `canonical-plt-in-pie` (D-44): no canonical PLT in a PIE.
+///
+/// Every other outcome, and every other output kind, is the generic one.
+fn dynamic_outcome(
+    class: DemandClass,
+    output: OutputKind,
+    kind: TargetKind,
+    place: PlaceFacts,
+    outcome: ClassOutcome,
+) -> ClassOutcome {
+    if !place.alloc || !matches!(output, OutputKind::Exec | OutputKind::Pie) {
+        return outcome;
+    }
+    match outcome {
+        ClassOutcome::Incompatible(Incompatible::ReadOnly) => {
+            ClassOutcome::Refused(DynRefusal::TextRelocation)
+        }
+        ClassOutcome::Incompatible(_)
+            if output == OutputKind::Pie && matches!(class, DemandClass::Pc | DemandClass::Lo) =>
+        {
+            match kind {
+                TargetKind::Shlib { func: false } => {
+                    ClassOutcome::Demand(Demand { flags: DemandFlags::COPY, ..Demand::default() })
+                }
+                TargetKind::Shlib { func: true } => {
+                    ClassOutcome::Refused(DynRefusal::CanonicalPltInPie)
+                }
+                _ => outcome,
+            }
+        }
+        _ => outcome,
+    }
+}
+
 /// The TLS-model demands (a64.md §8.1 to §8.4, §12). In an exec output:
 /// TLSDESC against a TLS-local target relaxes to LE (nothing), against a
 /// TLS-dynamic one to IE (`GOT_TPREL`), except the large form, which stays
-/// a descriptor; IE keeps its slot (R3 is kind 2); GD with R4's pattern
+/// a descriptor (in an exec output scan refuses it first:
+/// [`LARGE_TLSDESC_DYNAMIC`]); IE keeps its slot (R3 is kind 2); GD with R4's pattern
 /// (`gd`) is LE or IE. Otherwise each model demands its own slots.
 fn tls_demand(
     class: DemandClass,
     r_type: u32,
-    output: mortar_arch::OutputKind,
+    output: OutputKind,
     kind: TargetKind,
     gd: bool,
 ) -> (DemandFlags, mortar_arch::GlobalFlags) {
@@ -252,6 +315,11 @@ pub fn apply(
     {
         return put_word(at, out, off, words);
     }
+    // `spec/dyn.md` D-46, a64.md §6.2: the place of a symbolic `ABS64`
+    // record holds 0 (RELA; the loader writes `S + A`).
+    if symbolic_place(cx.output, h.class, out.alloc, sym.kind, || cx.tables.flags(at.key)) {
+        return put(at, out, off, &[0; 8]);
+    }
     let form = match h.field {
         Field::None => return Ok(()),
         Field::Data { .. } => None,
@@ -286,6 +354,36 @@ pub fn apply(
             put(at, out, off, &bytes[..usize::from(width)])
         }
         Some(f) => put_word(at, out, off, forms::insert(f, w, x)),
+    }
+}
+
+/// Whether an `AW` place carries a symbolic `ABS64` record (§5, §6.2;
+/// `spec/dyn.md` D-46), so that its static content is 0: in `exec` and
+/// `pie`, at an alloc place, against `weakdyn` (a writable place: D-25
+/// makes a key `weak0` when it has a read-only `ABS64`), and against
+/// `shlib` in `pie` (every alloc `AW` there is `D`, or refused as a text
+/// relocation) and in `exec` unless the key has `COPY` or `CANON_PLT`
+/// (then the cell was `C`, read-only, and the value is the copy's or the
+/// PLT entry's address; a writable `ABS64` against such a key is `D`
+/// too, but fill cannot tell the place's `SHF_WRITE`, so it writes
+/// `S + A` there: a RELA loader ignores it, see the record).
+fn symbolic_place(
+    output: OutputKind,
+    class: DemandClass,
+    alloc: bool,
+    kind: TargetKind,
+    flags: impl FnOnce() -> DemandFlags,
+) -> bool {
+    if class != DemandClass::AbsWord || !alloc {
+        return false;
+    }
+    match (output, kind) {
+        (OutputKind::Exec | OutputKind::Pie, TargetKind::WeakDyn)
+        | (OutputKind::Pie, TargetKind::Shlib { .. }) => true,
+        (OutputKind::Exec, TargetKind::Shlib { .. }) => {
+            !flags().intersects(DemandFlags::COPY | DemandFlags::CANON_PLT)
+        }
+        _ => false,
     }
 }
 
