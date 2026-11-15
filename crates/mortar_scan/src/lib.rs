@@ -187,7 +187,7 @@ pub fn scan(
     let view = view::View::new(arch, t, *opts);
     steps.step("view", 0, "");
     let mut diagnostics = Vec::new();
-    let units = driver::units(&view, &mut diagnostics);
+    let (units, deferred) = driver::units(&view, &mut diagnostics);
     steps.step("units", units.len() as u64, "unit");
     let symbols = t.inputs.symbols.len() as usize;
     let global: Vec<AtomicU16> = (0..symbols).map(|_| AtomicU16::new(0)).collect();
@@ -293,8 +293,68 @@ pub fn scan(
         output,
         dyn_relocs: dyn_relocs.into_boxed_slice(),
     };
-    Scanned { demands, order: RecIndex::new(permuted, leads), diagnostics, stats }
+    let order = RecIndex::new(permuted, leads).with_deferred(deferred);
+    Scanned { demands, order, diagnostics, stats }
 }
+
+/// The diagnostics of the sections whose checks are fill's (I-14,
+/// `RecIndex::deferred`): each section walked whole as the scan walks a
+/// section (§4.1 to §4.4), its faults and events keyed at fill's phase
+/// (`spec/image.md` I-14: after every scan diagnostic). Empty when they
+/// have none.
+fn deferred_report(
+    view: &view::View<'_, '_>,
+    sections: &[SectionId],
+    pool: &Pool,
+) -> Vec<(Key, Diagnostic)> {
+    let r = view.resolution;
+    let mut diagnostics = Vec::new();
+    let mut units = Vec::new();
+    let mut bufs = view::Bufs::default();
+    for &sid in sections {
+        let Some((file, index)) = r.sh_index(sid) else { continue };
+        let Some(row) = r.sections.get(sid) else { continue };
+        let rel = row.reloc.0;
+        if rel == 0 {
+            continue;
+        }
+        match driver::Sec::open(view, file, sid, index.0, rel, &mut bufs) {
+            Ok(sec) => {
+                let hi = u32::try_from(sec.recs.records.len()).unwrap_or(u32::MAX);
+                units.push(driver::Unit {
+                    file,
+                    section: sid,
+                    index: index.0,
+                    rel,
+                    lo: 0,
+                    hi,
+                    parts: 1,
+                    types_only: false,
+                });
+            }
+            Err(d) => diagnostics.push(d),
+        }
+    }
+    let symbols = view.inputs.symbols.len() as usize;
+    let global: Vec<AtomicU16> = (0..symbols).map(|_| AtomicU16::new(0)).collect();
+    let results: Vec<driver::UnitOut> =
+        pool.map(units.len(), |i| driver::run_unit(view, &units[i], &global));
+    let mut events = Vec::with_capacity(results.len());
+    for mut o in results {
+        diagnostics.append(&mut o.diags);
+        events.push(o.events);
+    }
+    let groups = events::merge(events, pool);
+    diagnostics.extend(groups.iter().map(|(g, a)| report::group(view, g, a)));
+    for (k, _) in &mut diagnostics {
+        k.phase = DEFERRED_PHASE;
+    }
+    diagnostics
+}
+
+/// The phase the diagnostics of the sections fill checks are keyed at
+/// (`spec/image.md` I-14): fill's.
+pub const DEFERRED_PHASE: u16 = 100;
 
 /// The permutations of the unsorted sections (`unsorted`: their first
 /// units), one parallel call; a section that cannot be read again is its
