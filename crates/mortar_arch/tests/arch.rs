@@ -500,7 +500,7 @@ fn s10_diagnostic_texts() {
         text::incompatible("R_AARCH64_ADR_PREL_PG_HI21", "foo", Incompatible::RecompilePic),
         "relocation R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol 'foo'; recompile with -fPIC"
     );
-    let texts: Vec<&str> = Incompatible::ALL.iter().map(Incompatible::text).collect();
+    let texts: Vec<&str> = Incompatible::ALL.into_iter().map(Incompatible::text).collect();
     assert_eq!(
         texts,
         [
