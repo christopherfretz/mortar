@@ -410,7 +410,8 @@ fn relax_places(ctx: &Ctx) -> Vec<(u64, usize, &'static str)> {
             }
             let name = String::from_utf8_lossy(target.name().unwrap()).into_owned();
             let Some(pl) = ctx.map.placed.iter().find(|p| {
-                p.file as usize == fi && p.section == mortar_plumb::map::SectionRef::Name(name.clone())
+                p.file as usize == fi
+                    && p.section == mortar_plumb::map::SectionRef::Name(name.clone())
             }) else {
                 continue;
             };
@@ -433,14 +434,23 @@ fn relax_places(ctx: &Ctx) -> Vec<(u64, usize, &'static str)> {
 #[test]
 fn x64_flipped_fields_and_opcodes_are_found() {
     let Some(c) = corpus() else { return };
-    let (mut total, mut found, mut op_total, mut op_found) = (0, 0, 0, 0);
+    let (mut total, mut found, mut op_total, mut op_found, mut skipped) = (0, 0, 0, 0, 0);
     let mut missed = Vec::new();
     for linker in Linker::ALL {
         let link = link_of(c, "relax", linker).unwrap();
         let ctx = Ctx::of(link);
-        let base: Vec<u64> = ctx.report(&ctx.output).findings.iter().filter_map(|f| f.addr).collect();
+        // The places of a recorded anomaly's sequence (A12: lld's W4 over
+        // the 22-byte GD) are not a clean starting point.
+        let base: Vec<u64> = ctx
+            .report(&ctx.output)
+            .findings
+            .iter()
+            .filter(|f| f.rule == mortar_plumb::Rule::Field)
+            .filter_map(|f| f.addr)
+            .collect();
         for (p, w, name) in relax_places(&ctx) {
-            if base.contains(&p) {
+            if base.iter().any(|&a| a <= p && p < a + 22) {
+                skipped += 1;
                 continue;
             }
             let off = file_offset(&ctx.output, p).unwrap();
@@ -466,7 +476,9 @@ fn x64_flipped_fields_and_opcodes_are_found() {
             }
         }
     }
-    eprintln!("§9.2 (a) x86-64 field bit flips: {found}/{total}; opcode bytes: {op_found}/{op_total}");
+    eprintln!(
+        "§9.2 (a) x86-64 field bit flips: {found}/{total}; opcode bytes: {op_found}/{op_total} ({skipped} places of anomalies skipped)"
+    );
     assert!(missed.is_empty(), "not found:\n{}", missed.join("\n"));
 }
 
@@ -521,7 +533,9 @@ fn x64_new_rules_are_enforced() {
         if ctx.output[name_at..].starts_with(b"lc\0") {
             let mut m = ctx.output.clone();
             m[e + 6..e + 8].copy_from_slice(&0xfff1u16.to_le_bytes());
-            hit = usize::from(ctx.report(&m).findings.iter().any(|f| f.message.starts_with("common symbol")));
+            hit = usize::from(
+                ctx.report(&m).findings.iter().any(|f| f.message.starts_with("common symbol")),
+            );
         }
     }
     results.push(("Y3 common made absolute", hit, 1));
@@ -533,7 +547,11 @@ fn x64_new_rules_are_enforced() {
     let d = note.2 as usize + 16;
     assert_eq!(le32(&m, d), 0xc000_8002, "the first property is ISA_1_NEEDED");
     m[d + 8] ^= 0x02;
-    results.push(("P1 x86 property bit", usize::from(ctx.report(&m).with_rule("P1").next().is_some()), 1));
+    results.push((
+        "P1 x86 property bit",
+        usize::from(ctx.report(&m).with_rule("P1").next().is_some()),
+        1,
+    ));
     // TLS: PT_TLS memsz grown by its alignment moves every TP offset.
     let ctx = Ctx::of(link_of(c, "tls-ie", Linker::Bfd).unwrap());
     let b = &ctx.output;
