@@ -5,6 +5,10 @@ version = 4
 [[package]]
 name = "mortar"
 version = "0.0.0"
+dependencies = [
+ "mortar_diag",
+ "mortar_testutil",
+]
 
 [[package]]
 name = "mortar_diag"
