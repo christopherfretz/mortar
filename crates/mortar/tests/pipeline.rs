@@ -212,26 +212,7 @@ fn c_with_clang22_branch_protection() {
     assert!(feature(&ours).is_some_and(|f| f.contains("BTI")), "{:?}", feature(&ours));
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    only_the_bti_iplt_gap(&support::plumb::verify(&ours, &map_of(&ours), &built.dir));
-}
-
-/// The verifier's one gap on a BTI output (a WP-027d finding for
-/// `mortar_plumb`, `src/ifunc.rs` `a64_entry` and the entry scan): it finds
-/// an IPLT entry by its `ADRP`, so it takes a BTI entry (`bti c` first,
-/// a64.md §10.3) to start 4 bytes late, and a branch to the entry's start
-/// is F4 "reaches no IPLT entry". `findings` must be only those: F4 on a
-/// `CALL26`/`JUMP26` whose branch target is 4 bytes before the entry
-/// plumb expected.
-fn only_the_bti_iplt_gap(findings: &[mortar_plumb::Finding]) {
-    for x in findings {
-        let gap = format!("{:?}", x.rule) == "Ifunc(4)"
-            && matches!(x.reloc.as_deref(), Some("R_AARCH64_CALL26" | "R_AARCH64_JUMP26"))
-            && x.addr.zip(x.found).zip(x.expected).is_some_and(|((at, word), want)| {
-                let imm = i64::from(((word as u32 & 0x03ff_ffff) << 6) as i32 >> 6);
-                at.wrapping_add_signed(imm * 4).wrapping_add(4) == want
-            });
-        assert!(gap, "not the BTI IPLT gap: {x:#?}");
-    }
+    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
 
 #[test]
@@ -414,19 +395,11 @@ fn a_bti_far_call_to_an_iplt_entry_is_linked() {
     let map = std::fs::read_to_string(map_of(&ours)).unwrap();
     assert!(map.lines().any(|l| l.starts_with("chunk thunk __f@plt_veneer ")), "{map}");
     support::plumb::readers(&ours);
-    // The verifier's one finding is its own gap ([`only_the_bti_iplt_gap`]:
-    // it takes the BTI IPLT entry to start 4 bytes late): the veneer reaches
-    // the entry's start, not plumb's entry + 4, so it reports the `CALL26`
-    // to `f` as out of range. `bl` reaches the thunk, the thunk the entry
-    // (`objdump -d`); no other finding is allowed.
-    let findings = support::plumb::verify(&ours, &map_of(&ours), &built.dir);
-    assert!(
-        findings.len() == 1
-            && format!("{:?}", findings[0].rule) == "Overflow"
-            && findings[0].reloc.as_deref() == Some("R_AARCH64_CALL26")
-            && findings[0].symbol.as_deref() == Some("f"),
-        "{findings:#?}"
-    );
+    // `bl` reaches the thunk, the thunk the IPLT entry's `bti c`
+    // (`objdump -d`): the verifier follows both (a BTI IPLT entry starts
+    // at its BTI, `spec/plumb.md` §4.8) and finds the thunk lands on a
+    // landing pad (R9).
+    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
 
 /// a64.md §9: a target that is not a landing pad, or whose pad-shaped

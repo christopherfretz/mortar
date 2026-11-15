@@ -26,6 +26,16 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A6: GNU ld, lld and mold fill the GOT slot of a section symbol plus an addend without the addend",
         );
     }
+    if mold && f.rule == Rule::Erratum(1) {
+        return Some(
+            "A4: mold accepts --fix-cortex-a53-843419 and leaves erratum 843419 sites as they are",
+        );
+    }
+    if bfd && f.rule == Rule::Erratum(1) && f.message.ends_with(crate::erratum::AFTER_PATCH) {
+        return Some(
+            "A18: GNU ld leaves an erratum 843419 site unfixed when stubs placed after its scan move code onto it",
+        );
+    }
     let lld = linker == Format::Lld;
     if lld && f.rule == Rule::Field && f.message.ends_with("(spec/x64.md W4)") {
         return Some(
