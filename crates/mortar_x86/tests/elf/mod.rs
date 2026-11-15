@@ -124,13 +124,14 @@ impl Image {
         let phnum = usize::from(u16_at(&bytes, 0x2C));
         // p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags,
         // p_align.
-        let tls = (0..phnum).map(|i| phoff + 32 * i).find(|&o| u32_at(&bytes, o) == PT_TLS).map(
-            |o| TlsBlock {
-                start: w32_at(&bytes, o + 8),
-                size: w32_at(&bytes, o + 0x14),
-                align: w32_at(&bytes, o + 0x1C),
-            },
-        );
+        let tls =
+            (0..phnum).map(|i| phoff + 32 * i).find(|&o| u32_at(&bytes, o) == PT_TLS).map(|o| {
+                TlsBlock {
+                    start: w32_at(&bytes, o + 8),
+                    size: w32_at(&bytes, o + 0x14),
+                    align: w32_at(&bytes, o + 0x1C),
+                }
+            });
         Self { bytes, sections, tls, e_type, e_flags }
     }
 
