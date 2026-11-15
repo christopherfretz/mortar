@@ -19,7 +19,7 @@ Experiment dir: `/tmp/mortar-wp030r-EYWFOo` (remove by explicit path at the end)
 | 11 | tombstone replaces the field, A ignored (X86-59, I-45); review.sh tomb, GCC and Clang | done |
 | 12 | existing diag kinds only: section-type, malformed-input, relocation-incompatible reasons, refused feature; R-5, R-9, R-10 withdrawn | done |
 | 14 | (with 2) | done |
-| 15 | §2.4 GOTOFF wording; X86-8 example is S-19's | todo |
+| 15 | §2.4: no GOTOFF names a merge section symbol; X86-8 examples are S-19 (review.sh merge) | done |
 | 16 | Q1 (i386 gfortran run), Q6 (lldb) | todo |
 | extra | re-derive W8, W9, W10, W12, W14; X86-10 wrap; mortar IPLT bytes run whole | todo |
 | end | run-all.sh covers all; merge main 177c65b+; R-8/R-12 citations; delete WIP.md | todo |
