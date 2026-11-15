@@ -18,9 +18,13 @@ brief). `/tmp/mortar-wp029-88016` has been removed, so re-run what you need
 - Already found wrong in the notes below: "No library carries a note" —
   libgcc.a, libgcov.a, libgfortran.a, libstdc++.a, libatomic/gomp/ssp and
   9 crt files carry `FEATURE_1_AND = 3` (E1 props); libc.a does not.
-- **Next step:** fill x64.md sections in order, check each against
-  run-all.log; then E1 census table from run-e1.log; then requests, open
-  questions, Tests, README row; delete this file in the final commit.
+- E1 re-run (`run-e1.log`): census identical to the table below.
+  E2/E3/E7/E8/E12 checked (`run-all.log`, `run-e12.log`); corrections
+  are recorded in the spec (§14) and the final hand-back.
+- Written in x64.md: §1-§7 (X-1..X-18), census verified.
+- **Next step:** write §8 (relaxations, X-19..), then §9-§13, §14
+  (disagreements + wrong code), §15-§18, Appendix A; README row; delete
+  this file in the final commit; rm -rf /tmp/mortar-x64-40671.
 
 ## Take-over session 2 (2026-11-15), paused for a second host restart
 
