@@ -8,7 +8,6 @@
 #@ spec: resolve.md §6.3
 #@ spec: resolve.md §6.1
 #@ arch: aarch64
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 m10.c -o m10.o
 as gl.s -o gl.o
