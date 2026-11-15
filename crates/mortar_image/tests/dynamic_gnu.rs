@@ -30,14 +30,16 @@
 use std::path::{Path, PathBuf};
 
 use mortar_arch::{DynTag, RelForm, TagWhen};
+use mortar_arch::{Facts, GotBase};
 use mortar_core::DynStr;
 use mortar_core::id::SymbolId;
 use mortar_elf::Class;
 use mortar_elf::consts::{DT_AARCH64_BTI_PLT, DT_AARCH64_VARIANT_PCS, DT_NULL};
-use mortar_arch::{Facts, GotBase};
 use mortar_image::dynamic::{DynAddrs, DynamicChunk, GotTable, dynamic_table, reserved_word};
 use mortar_synth::chunks::SynthKind;
-use mortar_synth::dynamic::{ArraySection, DynKind, DynamicInputs, DynamicPlan, RunpathTag};
+use mortar_synth::dynamic::{
+    ArraySection, DynKind, DynamicInputs, DynamicPlan, RunpathTag, init_key,
+};
 use mortar_synth::image::{SizeCx, SynthChunk};
 use mortar_testutil::{Scratch, run, tool, tools_required};
 
@@ -46,6 +48,8 @@ const PROGRAM: &str = r#"#include <stdio.h>
 static void pre(void) { }
 __attribute__((section(".preinit_array"), used)) static void (*p)(void) = pre;
 __attribute__((constructor)) static void ctor(void) { }
+void myinit(void) { }
+void myfini(void) { }
 int main(int c, char **v) { char b[8]; memcpy(b, v[0], 1); printf("%d\n", b[0] != 0); return 0; }
 "#;
 
@@ -63,10 +67,13 @@ struct Variant {
     now: bool,
     runpath: Option<(RunpathTag, &'static [u8])>,
     bti: bool,
+    /// `-init=`, `-fini=`: the symbol named.
+    init: Option<&'static [u8]>,
+    fini: Option<&'static [u8]>,
 }
 
 const fn v(name: &'static str, flags: &'static [&'static str]) -> Variant {
-    Variant { name, flags, now: false, runpath: None, bti: false }
+    Variant { name, flags, now: false, runpath: None, bti: false, init: None, fini: None }
 }
 
 const VARIANTS: &[Variant] = &[
@@ -85,6 +92,13 @@ const VARIANTS: &[Variant] = &[
     Variant { bti: true, ..v("bti", &["-mbranch-protection=standard"]) },
     v("relro-off", &["-Wl,-z,norelro"]),
     v("static-pie", &["-static-pie"]),
+    Variant {
+        init: Some(b"myinit"),
+        fini: Some(b"myfini"),
+        ..v("init-fini", &["-Wl,-init=myinit", "-Wl,-fini=myfini"])
+    },
+    // An undefined `-init` symbol: no DT_INIT at all (not `_init`'s).
+    Variant { init: Some(b"nosuch"), ..v("init-undefined", &["-Wl,-init=nosuch"]) },
     Variant { now: true, ..v("static-pie-now", &["-static-pie", "-Wl,-z,now"]) },
 ];
 
@@ -279,11 +293,7 @@ impl DynAddrs for GnuAddrs<'_> {
         self.elf.sec(section.name()).map(|s| (s.addr, s.size))
     }
     fn symbol(&self, key: SymbolId) -> Option<u64> {
-        match key.0 {
-            1 => self.elf.symbol(b"_init"),
-            2 => self.elf.symbol(b"_fini"),
-            _ => None,
-        }
+        self.elf.symbol(SYMBOLS.get(key.0 as usize)?)
     }
 }
 
@@ -320,6 +330,15 @@ fn tools() -> Option<Tools> {
     Some(Tools { readelf: tool("llvm-readelf")?, elflint: tool("eu-elflint") })
 }
 
+/// The fixture keys: `SymbolId(k)` is `SYMBOLS[k]`.
+const SYMBOLS: &[&[u8]] = &[b"", b"_init", b"_fini", b"myinit", b"myfini", b"nosuch"];
+
+/// The key of `name` when GNU ld's output defines it.
+fn key(elf: &Elf, name: &[u8]) -> Option<SymbolId> {
+    let k = SYMBOLS.iter().position(|&s| s == name).unwrap();
+    elf.symbol(name).map(|_| SymbolId(k as u32))
+}
+
 /// mortar's `.dynamic` for GNU ld's output `elf` of variant `var`.
 fn mortar_dynamic(elf: &Elf, var: &Variant) -> (DynamicPlan, Vec<u8>) {
     let kind = match (elf.e_type, elf.interp) {
@@ -347,8 +366,8 @@ fn mortar_dynamic(elf: &Elf, var: &Variant) -> (DynamicPlan, Vec<u8>) {
         rel_form: if elf.wide { RelForm::Rela } else { RelForm::Rel },
         needed: needed.len() as u32,
         runpath: var.runpath.map(|(t, _)| t),
-        init: elf.symbol(b"_init").map(|_| SymbolId(1)),
-        fini: elf.symbol(b"_fini").map(|_| SymbolId(2)),
+        init: init_key(var.init.map(|n| key(elf, n)), key(elf, b"_init")),
+        fini: init_key(var.fini.map(|n| key(elf, n)), key(elf, b"_fini")),
         preinit_array: elf.sec(b".preinit_array").is_some(),
         init_array: elf.sec(b".init_array").is_some(),
         fini_array: elf.sec(b".fini_array").is_some(),
@@ -519,7 +538,7 @@ fn got_header(elf: &Elf, var: &Variant) -> Option<String> {
         183 => mortar_a64::FACTS,
         _ => Facts { got_base: GotBase::GotPltStart, ..mortar_a64::FACTS },
     };
-    let word = elf.wide.then_some(8).unwrap_or(4);
+    let word = if elf.wide { 8 } else { 4 };
     let addrs = GnuAddrs { elf };
     for table in [GotTable::Got, GotTable::GotPlt] {
         let (sec, reserved) = match table {

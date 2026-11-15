@@ -41,7 +41,7 @@
 //! with no shared input there is no `DT_NEEDED`, version or `JUMP_SLOT`,
 //! and `DT_FLAGS_1` holds `DF_1_PIE`.
 
-use mortar_arch::{DynTag, RelForm, TagWhen};
+use mortar_arch::{DynTag, Facts, GotBase, RelForm, TagWhen};
 use mortar_core::id::SymbolId;
 use mortar_elf::Class;
 use mortar_elf::consts::{
@@ -115,6 +115,20 @@ pub fn join_rpath<P: AsRef<[u8]>>(paths: &[P]) -> Option<Vec<u8>> {
     Some(s)
 }
 
+/// The key of `DT_INIT` (or `DT_FINI`), D-30 rows 3-4 as GNU ld, lld and
+/// mold behave (measured by WP-045): `named` is `Some` when the command
+/// line gave `-init=SYM` (`-fini=SYM`), holding SYM's key when SYM is
+/// defined; an `-init` naming an undefined symbol gives **no** `DT_INIT`,
+/// not `_init`'s. Without the option, `underscore` (`_init`, `_fini`) when
+/// it is defined.
+#[must_use]
+pub fn init_key(named: Option<Option<SymbolId>>, underscore: Option<SymbolId>) -> Option<SymbolId> {
+    match named {
+        Some(key) => key,
+        None => underscore,
+    }
+}
+
 /// An output section whose address and size `.dynamic` names (D-30 rows
 /// 5-10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -151,10 +165,10 @@ pub struct DynamicInputs {
     pub needed: u32,
     /// Some `-rpath`/`-R` was given (row 2), and its tag.
     pub runpath: Option<RunpathTag>,
-    /// Row 3: `-init=SYM` when it names a defined symbol, else `_init`
-    /// when it is defined (crti); `None` for neither.
+    /// Row 3: [`init_key`]: `-init=SYM` when given (none when SYM is
+    /// undefined), else `_init` when it is defined (crti).
     pub init: Option<SymbolId>,
-    /// Row 4: `-fini=SYM`, else `_fini`, as [`Self::init`].
+    /// Row 4: `-fini=SYM`, else `_fini`, by [`init_key`].
     pub fini: Option<SymbolId>,
     /// Rows 5-10: the output section exists.
     pub preinit_array: bool,
@@ -395,6 +409,38 @@ impl DynamicPlan {
         w.zero(nulls, NULLS * ent);
         Ok(())
     }
+}
+
+/// The GOT that holds the reserved words (D-32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GotTable {
+    /// `.got` (its header words, `Facts.got_header`).
+    Got,
+    /// `.got.plt` (its reserved words, `Facts.got_plt_reserved`).
+    GotPlt,
+}
+
+/// The table whose word 0 holds `_DYNAMIC` in an output with `.dynamic`
+/// (D-32): `.got` where the GOT base is `.got`'s start (AArch64, a64
+/// §10.1), `.got.plt` where it is `.got.plt`'s (x86-64 and i386, the
+/// psABIs).
+#[must_use]
+pub fn dynamic_table(facts: &Facts) -> GotTable {
+    match facts.got_base {
+        GotBase::GotStart => GotTable::Got,
+        GotBase::GotPltStart => GotTable::GotPlt,
+    }
+}
+
+/// Reserved word `index` of `table` in an output with `.dynamic` whose
+/// `.dynamic` is at `dynamic` (D-32): `_DYNAMIC`'s link-time address for
+/// word 0 of [`dynamic_table`], 0 for every other reserved word (the
+/// loader fills `.got.plt[1]` and `[2]`). No word carries a record; in a
+/// PIE the loader reads the link-time value as written. A static output
+/// writes 0 in every reserved word (synth S-65, S-67) and does not ask.
+#[must_use]
+pub fn reserved_word(facts: &Facts, table: GotTable, index: u8, dynamic: u64) -> u64 {
+    if index == 0 && table == dynamic_table(facts) { dynamic } else { 0 }
 }
 
 #[cfg(test)]
@@ -728,5 +774,39 @@ mod tests {
         let mut buf = vec![0; p.size() as usize];
         let r = p.write(&|_| Ok(1 << 32), &mut Window::new(0, &mut buf));
         assert!(r.is_err());
+    }
+
+    // D-32: AArch64 puts `_DYNAMIC` in
+    // `.got[0]`, x86-64 in `.got.plt[0]`; every other reserved word is 0.
+    #[test]
+    fn the_got_header_words() {
+        let f = &mortar_a64::FACTS;
+        assert_eq!(dynamic_table(f), GotTable::Got);
+        assert_eq!(reserved_word(f, GotTable::Got, 0, 0x1fdb8), 0x1fdb8);
+        for k in 0..3 {
+            assert_eq!(reserved_word(f, GotTable::GotPlt, k, 0x1fdb8), 0);
+        }
+        let x64 = mortar_x64_facts();
+        assert_eq!(dynamic_table(&x64), GotTable::GotPlt);
+        assert_eq!(reserved_word(&x64, GotTable::GotPlt, 0, 0x3e10), 0x3e10);
+        assert_eq!(reserved_word(&x64, GotTable::GotPlt, 1, 0x3e10), 0);
+        assert_eq!(reserved_word(&x64, GotTable::GotPlt, 2, 0x3e10), 0);
+        assert_eq!(reserved_word(&x64, GotTable::Got, 0, 0x3e10), 0);
+    }
+
+    // x86-64's facts without a dependency on `mortar_x64`: only the GOT
+    // base differs from AArch64's for this rule.
+    fn mortar_x64_facts() -> Facts {
+        Facts { got_base: GotBase::GotPltStart, ..mortar_a64::FACTS }
+    }
+
+    // D-30 rows 3-4: an `-init` naming an undefined symbol gives no DT_INIT.
+    #[test]
+    fn the_init_key() {
+        let (s, u) = (SymbolId(5), SymbolId(6));
+        assert_eq!(init_key(None, Some(u)), Some(u));
+        assert_eq!(init_key(None, None), None);
+        assert_eq!(init_key(Some(Some(s)), Some(u)), Some(s));
+        assert_eq!(init_key(Some(None), Some(u)), None);
     }
 }

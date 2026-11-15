@@ -16,11 +16,11 @@
 
 use std::ops::Range;
 
-use mortar_arch::{Facts, GotBase};
 use mortar_core::DynStr;
 use mortar_core::id::SymbolId;
 use mortar_synth::chunks::SynthKind;
 use mortar_synth::dynamic::{ArraySection, DynKind, DynValue, DynamicPlan, RunpathTag};
+pub use mortar_synth::dynamic::{GotTable, dynamic_table, reserved_word};
 use mortar_synth::error::internal;
 use mortar_synth::image::{Division, FillCx, SizeCx, SynthChunk};
 use mortar_synth::{InterpPlan, SynthError, Window};
@@ -133,38 +133,6 @@ impl SynthChunk for DynamicChunk<'_> {
 #[must_use]
 pub fn dynamic_symbol(addrs: &dyn DynAddrs) -> Option<u64> {
     addrs.chunk(SynthKind::Dynamic).map(|(at, _)| at)
-}
-
-/// The GOT that holds the reserved words (D-32).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GotTable {
-    /// `.got` (its header words, `Facts.got_header`).
-    Got,
-    /// `.got.plt` (its reserved words, `Facts.got_plt_reserved`).
-    GotPlt,
-}
-
-/// The table whose word 0 holds `_DYNAMIC` in an output with `.dynamic`
-/// (D-32): `.got` where the GOT base is `.got`'s start (AArch64, a64
-/// §10.1), `.got.plt` where it is `.got.plt`'s (x86-64 and i386, the
-/// psABIs).
-#[must_use]
-pub fn dynamic_table(facts: &Facts) -> GotTable {
-    match facts.got_base {
-        GotBase::GotStart => GotTable::Got,
-        GotBase::GotPltStart => GotTable::GotPlt,
-    }
-}
-
-/// Reserved word `index` of `table` in an output with `.dynamic` whose
-/// `.dynamic` is at `dynamic` (D-32): `_DYNAMIC`'s link-time address for
-/// word 0 of [`dynamic_table`], 0 for every other reserved word (the
-/// loader fills `.got.plt[1]` and `[2]`). No word carries a record; in a
-/// PIE the loader reads the link-time value as written. A static output
-/// writes 0 in every reserved word (synth S-65, S-67) and does not ask.
-#[must_use]
-pub fn reserved_word(facts: &Facts, table: GotTable, index: u8, dynamic: u64) -> u64 {
-    if index == 0 && table == dynamic_table(facts) { dynamic } else { 0 }
 }
 
 /// The map's dynamic records this package owns (`spec/plumb.md` §3.2,
@@ -302,29 +270,10 @@ mod tests {
         assert!(value(DynValue::ChunkAddr(SynthKind::RelaDyn), &ds, &Addrs).is_err());
     }
 
-    // D-32: `_DYNAMIC` is `.dynamic`'s address; AArch64 puts it in
-    // `.got[0]`, x86-64 in `.got.plt[0]`; every other reserved word is 0.
+    // D-32: `_DYNAMIC` is `.dynamic`'s address.
     #[test]
-    fn dynamic_and_the_got_header() {
+    fn dynamic_symbol_is_the_chunk() {
         assert_eq!(dynamic_symbol(&Addrs), Some(0x1fdb8));
-        let f = &mortar_a64::FACTS;
-        assert_eq!(dynamic_table(f), GotTable::Got);
-        assert_eq!(reserved_word(f, GotTable::Got, 0, 0x1fdb8), 0x1fdb8);
-        for k in 0..3 {
-            assert_eq!(reserved_word(f, GotTable::GotPlt, k, 0x1fdb8), 0);
-        }
-        let x64 = mortar_x64_facts();
-        assert_eq!(dynamic_table(&x64), GotTable::GotPlt);
-        assert_eq!(reserved_word(&x64, GotTable::GotPlt, 0, 0x3e10), 0x3e10);
-        assert_eq!(reserved_word(&x64, GotTable::GotPlt, 1, 0x3e10), 0);
-        assert_eq!(reserved_word(&x64, GotTable::GotPlt, 2, 0x3e10), 0);
-        assert_eq!(reserved_word(&x64, GotTable::Got, 0, 0x3e10), 0);
-    }
-
-    // x86-64's facts without a dependency on `mortar_x64`: only the GOT
-    // base differs from AArch64's for this rule.
-    fn mortar_x64_facts() -> Facts {
-        Facts { got_base: GotBase::GotPltStart, ..mortar_a64::FACTS }
     }
 
     // P-D3: the records of the command line's facts.
