@@ -522,12 +522,49 @@ ld does not, 4.4), are never read (input §4.7): a native GNU ld link that
 finds a closure library only through them fails in mortar with
 `needed-not-found` and the D-13 consequence, which the note names.
 
-**D-19a [M2] (`DT_NEEDED` order).** `Slots.needed` holds the needed shared
-objects in `FileId` order (the command line and scripts in order, objects'
-positions irrelevant; one entry per soname). All three agree (E-shlib 1.3,
-1.6a), except that lld refuses 1.6a for D-13's reason and mold writes the
-found path for `INPUT(-lns)` of a soname-less library (6.3). *Test:*
-`needed-order`.
+**D-19a [M2] (`DT_NEEDED` order: GNU ld's).** `DT_NEEDED` order is the
+loader's search order and the reverse of the constructor order (every run
+of `dynamic/needed_order.sh`, both architectures), so mortar takes the
+order of the reference of record, GNU ld. Definitions:
+
+- The **mentions** are the shared-object entries of the command line
+  with scripts expanded inline, depth first, at the script's own
+  position (`INPUT`, `GROUP`, nested scripts, `-l` inside scripts); a
+  mention's as-needed state is the one in force where it (or its
+  enclosing script) is named, `AS_NEEDED(…)` forcing it on;
+  `--push-state`/`--pop-state` restore it. Two mentions are of one
+  object when they have one soname (or, without a soname, one name as
+  written: `libnz.so` and `./libnz.so` are two entries in all three).
+- `Slots.needed` is the set D-11 computes (which does not depend on
+  positions). Each needed object `D` is placed at its **keeping
+  mention**: the first mention `m` of `D` such that `m` is not as-needed,
+  or `m` is as-needed and some reason of D-11 for `D` is a strong
+  reference from a relocatable object at a position before `m` (or
+  anywhere in the same `--start-group`/`GROUP` as `m`), or from a needed
+  shared object whose own keeping mention is before `m` and which does
+  not list `D` in `DT_NEEDED`. If no mention qualifies (a line GNU ld
+  refuses, below), the keeping mention is the first mention.
+- `DT_NEEDED` lists the needed objects by the position of their keeping
+  mentions (position, not the time GNU ld decided: a group rescan that
+  keeps `nc` after `nd` still writes `nc` first, `grp_rescan_time_vs_pos`).
+
+This is a total function of the command line and the symbol tables,
+computed after D-11's fixed point by walking the mentions once in order.
+It reproduces GNU ld on all 75 cases of `dynamic/needed_order.sh` that
+GNU ld links, on AArch64 and x86-64 (identical there); for example
+`na --as-needed nx --no-as-needed nb nx nc` with `nx` unreferenced gives
+`na nb nx nc` (lld: `na nx nb nc`; mold drops `nx`, W9), and the
+driver's default `--as-needed` with `nd na main.o nc nb nf ne na nd`
+gives `nc nb nf ne na nd` (lld and mold: `nd na nc nb nf ne`). GNU ld
+refuses lines where an as-needed library is referenced only by objects
+after its last mention (`obj_after_asn`, `drv_obj_after_all`: undefined
+reference); D-11 does not depend on position, so mortar links them, in
+first-mention order (lld's), and that is a deliberate superset of GNU
+ld. lld and mold differ (§13.1): one entry per soname at its first
+mention, needed if any mention is plain or any object anywhere
+references it. *Tests:* `needed-order` (the 75 cases; run-order equal to
+GNU ld's output), `needed-order-as-needed-twice` (the review's F5 line,
+constructor order compared), `needed-order-group`.
 ## 6. `.dynsym`, `.dynstr`, hash tables, versions
 
 Owner: `mortar_synth` (synth.md S-101..S-103 are the outline these rules
@@ -1295,6 +1332,7 @@ shrink a copy to 0, overlap two copies, misorder `IRELATIVE`, drop a
 | `.dynamic` tag order | its order | its own | its own | GNU ld's (D-30) |
 | `DT_NULL` entries | 5-6 | 1 | 6 | 6 (D-30) |
 | empty `.rela.dyn` | written | written | omitted | omitted (D-30) |
+| `DT_NEEDED` order | keeping mention (D-19a) | first mention of the soname | first mention; later plain mentions of a first-as-needed soname ignored (W9) | GNU ld's (D-19a) |
 | `.dynsym` unhashed block order | hash order | first appearance | library index | `SymbolId` (D-22) |
 | Bloom words, buckets | own formula | D-26 | own | lld's (D-26) |
 | `Vernaux` layout | interleaved | headers first | headers first | interleaved (D-27; elflint) |
@@ -1331,7 +1369,7 @@ wrong" means the program links without a diagnostic and then misbehaves.
 | W6 | mold | i386 text relocation written silently; the program crashes | `reloc/run.sh` (textrel, `t.i386.*.mold`) |
 | W7 | lld 19, 22 | PIE: absolute word in read-only data against shared data links with a copy and no record; the program crashes (12/12) | `dynamic/lld_textrel_copyrel.sh` |
 | W8 | lld, mold | a symbol referenced only by an under-linked closure library is not exported; load fails with an undefined symbol | `shlib/run.sh` exp. 4.2a, 2.3b |
-| W9 | mold | a library listed twice on the line is dropped from `DT_NEEDED` | `dynamic/variants.sh` (needed_twice) |
+| W9 | mold | a library first mentioned `--as-needed` (unreferenced) and later plainly is dropped from `DT_NEEDED` (mold keeps the first mention's flag); also a second `-lname` after `-Bstatic`/`-Bdynamic` is ignored | `dynamic/variants.sh` (needed_twice), `dynamic/needed_order.sh` (`asn_unref_then_plain`, `bstatic_first`) |
 | W10 | GNU ld | built-in default interpreter wrong on x86-64 and i386 (exit 255); lld and mold write no `PT_INTERP` (exit 139) | `dynamic/interp.sh` |
 | W11 | lld 19, 22 | x86-64 PIE: a `-fno-pic` `R_X86_64_32` against `puts` gets a canonical PLT and no record; the code sees the unrelocated address (`pie=0 lib=0 dlsym=0`) | `review-m2-adv/canonpie/run.sh` |
 | H1 | lld, mold | (hazard, not a wrong output) `IRELATIVE` before `JUMP_SLOT`s: a resolver calling through the PLT crashes | `reloc/run.sh` (ifh_plt) |
