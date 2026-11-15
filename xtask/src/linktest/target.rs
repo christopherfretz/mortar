@@ -353,18 +353,10 @@ impl CommonTools {
 /// The name a missing [`Feature`] is reported by, for `arch` on `host`.
 pub fn feature_tool_name(feature: Feature, arch: Arch, host: Option<Arch>) -> String {
     match feature {
-        Feature::Gxx => with_package(
-            &arch.gnu_tool(host, "g++"),
-            arch,
-            "g++",
-            host != Some(arch),
-        ),
-        Feature::Gfortran => with_package(
-            &arch.gnu_tool(host, "gfortran"),
-            arch,
-            "gfortran",
-            host != Some(arch),
-        ),
+        Feature::Gxx => with_package(&arch.gnu_tool(host, "g++"), arch, "g++", host != Some(arch)),
+        Feature::Gfortran => {
+            with_package(&arch.gnu_tool(host, "gfortran"), arch, "gfortran", host != Some(arch))
+        }
         Feature::Clang => "clang and clang++ of a pinned LLVM major".to_owned(),
         Feature::Yaml2obj => "yaml2obj of a pinned LLVM major".to_owned(),
         Feature::LlvmReadelf => "llvm-readelf of a pinned LLVM major".to_owned(),
@@ -443,10 +435,12 @@ mod tests {
         assert_eq!(Arch::I386.triple(), "i686-linux-gnu");
     }
 
+    #[allow(clippy::unnecessary_wraps)] // A `Find`.
     fn nothing(_: &str) -> Option<PathBuf> {
         None
     }
 
+    #[allow(clippy::unnecessary_wraps)] // A `Find`.
     fn everything(name: &str) -> Option<PathBuf> {
         Some(Path::new("/tools").join(name))
     }

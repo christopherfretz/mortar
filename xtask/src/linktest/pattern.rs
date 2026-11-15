@@ -54,9 +54,9 @@ impl Pattern {
         }
         // `$` ends the pattern unless a backslash makes it a character:
         // an odd number of backslashes before it.
-        let escaped = body.strip_suffix('$').is_some_and(|before| {
-            before.chars().rev().take_while(|c| *c == '\\').count() % 2 == 1
-        });
+        let escaped = body
+            .strip_suffix('$')
+            .is_some_and(|before| before.chars().rev().take_while(|c| *c == '\\').count() % 2 == 1);
         let at_end = body.ends_with('$') && !escaped;
         if at_end {
             body = &body[..body.len() - 1];

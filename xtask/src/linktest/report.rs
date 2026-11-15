@@ -31,6 +31,8 @@ pub struct Report {
     pub notes: Vec<String>,
     /// The tools that are missing although `MORTAR_REQUIRE_TOOLS=1`.
     pub missing: Vec<String>,
+    /// What kept the run from doing its work (mortar could not be built).
+    pub errors: Vec<String>,
     /// How many test files were selected.
     pub tests: usize,
     /// The architectures and the linkers of the run, in matrix order.
@@ -75,13 +77,30 @@ impl Report {
 
     /// The process exit status of the run: 0 when nothing failed; 1 when
     /// a linker failed, passed against its marker or ran into a limit; 3
-    /// when none did but a test is wrong (`ERROR`, `ORACLE`) or a required
-    /// tool is missing.
+    /// when none did but a test is wrong (`ERROR`, `ORACLE`), a required
+    /// tool is missing or the run could not do its work.
+    ///
+    /// The records of the reference linkers on an architecture where the
+    /// test is `ORACLE` are that wrong test, not a linker's failure: they
+    /// count as the `ORACLE` does, except `KILLED`, which nothing hides.
     pub fn exit_status(&self) -> u8 {
-        let any = |outcomes: &[Outcome]| outcomes.iter().any(|outcome| self.count(*outcome) > 0);
-        if any(&[Outcome::Fail, Outcome::Xpass, Outcome::Killed]) {
+        let refuted = |record: &Record| {
+            record.linker.is_some_and(Linker::is_reference)
+                && self.records.iter().any(|other| {
+                    other.outcome == Outcome::Oracle
+                        && other.test == record.test
+                        && other.arch == record.arch
+                })
+        };
+        let failed = self.records.iter().any(|record| match record.outcome {
+            Outcome::Killed => true,
+            Outcome::Fail | Outcome::Xpass => !refuted(record),
+            _ => false,
+        });
+        let wrong = self.records.iter().any(|record| record.outcome.fails());
+        if failed {
             1
-        } else if any(&[Outcome::Error, Outcome::Oracle]) || !self.missing.is_empty() {
+        } else if wrong || !self.missing.is_empty() || !self.errors.is_empty() {
             3
         } else {
             0
@@ -209,6 +228,9 @@ impl Report {
         for missing in &self.missing {
             let _ = writeln!(text, "linktest: error: {missing} (MORTAR_REQUIRE_TOOLS=1)");
         }
+        for error in &self.errors {
+            let _ = writeln!(text, "linktest: error: {error}");
+        }
         for line in self.listed(verbose) {
             let _ = writeln!(text, "{line}");
         }
@@ -306,6 +328,7 @@ mod tests {
     // otherwise.
     #[test]
     fn the_exit_status_of_a_run() {
+        use Outcome::{Error, Fail, Killed, Oracle, Pass, Skip, Xfail, Xpass};
         let status = |outcomes: &[Outcome], missing: bool| {
             let records = outcomes
                 .iter()
@@ -317,7 +340,6 @@ mod tests {
             }
             report.exit_status()
         };
-        use Outcome::{Error, Fail, Killed, Oracle, Pass, Skip, Xfail, Xpass};
         assert_eq!(status(&[], false), 0);
         assert_eq!(status(&[Pass, Xfail, Skip], false), 0);
         assert_eq!(status(&[Pass, Fail], false), 1);
@@ -325,8 +347,34 @@ mod tests {
         assert_eq!(status(&[Killed], false), 1);
         assert_eq!(status(&[Error], false), 3);
         assert_eq!(status(&[Oracle], false), 3);
-        assert_eq!(status(&[Oracle, Error, Fail], true), 1);
+        assert_eq!(status(&[Error, Fail], true), 1);
         assert_eq!(status(&[Pass], true), 3);
+        // The references' records of a wrong test are that wrong test.
+        let a64 = Some(Arch::Aarch64);
+        let refuted = report(vec![
+            record("t", a64, Some(Linker::Bfd), Fail, ""),
+            record("t", a64, Some(Linker::Mold), Xpass, ""),
+            record("t", a64, None, Oracle, ""),
+        ]);
+        assert_eq!(refuted.exit_status(), 3);
+        let killed = report(vec![
+            record("t", a64, Some(Linker::Bfd), Killed, ""),
+            record("t", a64, None, Oracle, ""),
+        ]);
+        assert_eq!(killed.exit_status(), 1);
+        let elsewhere = report(vec![
+            record("t", a64, Some(Linker::Bfd), Fail, ""),
+            record("t", Some(Arch::I386), None, Oracle, ""),
+        ]);
+        assert_eq!(elsewhere.exit_status(), 1);
+        let mortar = report(vec![
+            record("t", a64, Some(Linker::Mortar), Fail, ""),
+            record("u", a64, None, Oracle, ""),
+        ]);
+        assert_eq!(mortar.exit_status(), 1);
+        let mut broken = report(Vec::new());
+        broken.errors.push("cannot build mortar".to_owned());
+        assert_eq!(broken.exit_status(), 3);
     }
 
     // "Results file": six fields per record, escaped, `-` for an empty
@@ -377,10 +425,10 @@ FAIL    b.test [bfd: aarch64]: link (line 3): exit status 1
 ORACLE  b.test [aarch64]: bfd FAIL: link (line 3)
 SKIP    b.test [i386]: requires gfortran
 ERROR   c.test: line 1: no 'spec' directive
-linktest:            aarch64          i386
-linktest:    bfd     1 PASS, 1 FAIL   1 PASS
-linktest:    mortar  1 XFAIL          1 XFAIL
-linktest:    -       1 ORACLE         1 SKIP
+linktest:           aarch64         i386
+linktest:   bfd     1 PASS, 1 FAIL  1 PASS
+linktest:   mortar  1 XFAIL         1 XFAIL
+linktest:   -       1 ORACLE        1 SKIP
 linktest: 3 tests, 8 results: 2 PASS, 1 FAIL, 2 XFAIL, 0 XPASS, 1 SKIP, 0 KILLED, 1 ERROR, \
 1 ORACLE in 1.2s
 linktest: results: /build/linktest/results.tsv
@@ -399,8 +447,14 @@ linktest: kept: /build/linktest/run-1
         let a64 = Some(Arch::Aarch64);
         let i386 = Some(Arch::I386);
         let (bfd, lld, mold) = (Some(Linker::Bfd), Some(Linker::Lld), Some(Linker::Mold));
-        assert_eq!(who(&[(a64, bfd), (a64, lld), (i386, bfd), (i386, lld)]), "bfd lld: aarch64 i386");
-        assert_eq!(who(&[(a64, bfd), (a64, mold), (i386, mold)]), "bfd: aarch64; mold: aarch64 i386");
+        assert_eq!(
+            who(&[(a64, bfd), (a64, lld), (i386, bfd), (i386, lld)]),
+            "bfd lld: aarch64 i386"
+        );
+        assert_eq!(
+            who(&[(a64, bfd), (a64, mold), (i386, mold)]),
+            "bfd: aarch64; mold: aarch64 i386"
+        );
         assert_eq!(who(&[(a64, None), (i386, None)]), "aarch64 i386");
         assert_eq!(who(&[(None, None)]), "");
         let long = "x".repeat(400);

@@ -85,7 +85,7 @@ pub struct Vars {
 }
 
 impl Vars {
-    fn value(&self, var: Var) -> String {
+    fn value(self, var: Var) -> String {
         match var {
             Var::Arch => self.arch.name().to_owned(),
             Var::Triple => self.arch.triple().to_owned(),
@@ -158,17 +158,17 @@ impl Template {
     }
 
     /// The text with every variable replaced.
-    pub fn expand(&self, vars: &Vars) -> String {
+    pub fn expand(&self, vars: Vars) -> String {
         self.expand_with(vars, |value| value)
     }
 
     /// The text as a pattern: a variable's value stands for itself,
     /// whatever characters it has.
-    pub fn expand_pattern(&self, vars: &Vars) -> String {
+    pub fn expand_pattern(&self, vars: Vars) -> String {
         self.expand_with(vars, |value| pattern::escape(&value))
     }
 
-    fn expand_with(&self, vars: &Vars, value: impl Fn(String) -> String) -> String {
+    fn expand_with(&self, vars: Vars, value: impl Fn(String) -> String) -> String {
         let mut text = String::new();
         for piece in &self.pieces {
             match piece {
@@ -286,8 +286,7 @@ pub enum CheckTool {
 }
 
 impl CheckTool {
-    const ALL: [Self; 5] =
-        [Self::Readelf, Self::Nm, Self::Objdump, Self::LlvmReadelf, Self::Text];
+    const ALL: [Self; 5] = [Self::Readelf, Self::Nm, Self::Objdump, Self::LlvmReadelf, Self::Text];
 
     /// The word after `check`.
     pub fn name(self) -> &'static str {
@@ -458,9 +457,9 @@ impl Test {
 
     /// Whether a run step takes its expected output from the references.
     pub fn compares_output(&self) -> bool {
-        self.steps.iter().any(
-            |step| matches!(&step.kind, StepKind::Run(run) if run.stdout == Stdout::Reference),
-        )
+        self.steps
+            .iter()
+            .any(|step| matches!(&step.kind, StepKind::Run(run) if run.stdout == Stdout::Reference))
     }
 }
 
@@ -600,9 +599,9 @@ fn words(text: &str) -> Result<Vec<String>, String> {
 fn valid_file_name(name: &str) -> bool {
     let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-');
     !name.is_empty()
-        && name.split('/').all(|part| {
-            !part.is_empty() && part != "." && part != ".." && part.chars().all(plain)
-        })
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != ".." && part.chars().all(plain))
 }
 
 /// Whether `value` has the form of a spec reference: a file of `spec/`
@@ -653,7 +652,7 @@ impl Parser {
     fn pattern(&mut self, line: usize, text: &str) -> Option<Template> {
         let template = self.template(line, text)?;
         let sample = Vars { arch: Arch::Aarch64, host: None, linker: Some(Linker::Mortar) };
-        match Pattern::parse(&template.expand_pattern(&sample)) {
+        match Pattern::parse(&template.expand_pattern(sample)) {
             Ok(_) => Some(template),
             Err(message) => {
                 self.error(line, message);
@@ -663,6 +662,7 @@ impl Parser {
     }
 
     /// A `#@` line; `text` is what follows `#@`.
+    #[allow(clippy::too_many_lines)] // One arm per directive.
     fn directive(&mut self, line: usize, text: &str) {
         let Some(text) = text.strip_prefix(' ') else {
             return self.error(line, "a directive is '#@ <key>: <value>'");
@@ -724,9 +724,7 @@ impl Parser {
                         Some(arch) => arches.push(arch),
                         None => self.error(
                             line,
-                            format!(
-                                "unknown architecture '{word}' (aarch64, x86_64 or i386)"
-                            ),
+                            format!("unknown architecture '{word}' (aarch64, x86_64 or i386)"),
                         ),
                     }
                 }
@@ -768,7 +766,9 @@ impl Parser {
                 }
                 _ => self.error(
                     line,
-                    format!("'timeout: {value}' is not a number of seconds from 1 to {MAX_TIMEOUT}"),
+                    format!(
+                        "'timeout: {value}' is not a number of seconds from 1 to {MAX_TIMEOUT}"
+                    ),
                 ),
             },
             "mem" => match value.parse::<u64>() {
@@ -915,10 +915,10 @@ impl Parser {
         let Step { line: at, keyword, scope: step_scope, mut kind } = step;
         let result = match (&mut kind, key) {
             _ if keyword.is_empty() => Ok(()),
-            (StepKind::Link(link), "exit") => unqualified("exit").and_then(|()| {
+            (StepKind::Link(linking), "exit") => unqualified("exit").and_then(|()| {
                 match value.trim() {
-                    "0" => link.fails = false,
-                    "fail" => link.fails = true,
+                    "0" => linking.fails = false,
+                    "fail" => linking.fails = true,
                     other => {
                         return Err(format!(
                             "'exit: {other}' of a link is not '0' (it succeeds) or 'fail'"
@@ -927,9 +927,14 @@ impl Parser {
                 }
                 Ok(())
             }),
-            (StepKind::Link(link), "diag" | "no-diag") => {
+            (StepKind::Link(linking), "diag" | "no-diag") => {
                 if let Some(pattern) = self.pattern(line, value) {
-                    link.diags.push(Expectation { line, scope, present: key == "diag", pattern });
+                    linking.diags.push(Expectation {
+                        line,
+                        scope,
+                        present: key == "diag",
+                        pattern,
+                    });
                 }
                 Ok(())
             }
@@ -968,9 +973,9 @@ impl Parser {
                     Stdout::Reference => Err("a second 'output' for this step".to_owned()),
                 }
             }),
-            (StepKind::Link(_), _) => Err(format!(
-                "'{key}' is not an expectation of a link (exit, diag, no-diag)"
-            )),
+            (StepKind::Link(_), _) => {
+                Err(format!("'{key}' is not an expectation of a link (exit, diag, no-diag)"))
+            }
             (StepKind::Run(_), _) => {
                 Err(format!("'{key}' is not an expectation of a run (exit, stdout, output)"))
             }
@@ -1091,10 +1096,7 @@ impl Parser {
         }
         for feature in required {
             if !used.contains(&feature) {
-                self.error(
-                    at,
-                    format!("'requires: {}' but no step uses it", feature.name()),
-                );
+                self.error(at, format!("'requires: {}' but no step uses it", feature.name()));
             }
         }
     }
@@ -1279,4 +1281,356 @@ pub fn parse(text: &str) -> Result<Test, Vec<Error>> {
     // A marker that named no file has said so.
     parser.files.retain(|file| !file.name.is_empty());
     parser.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The errors of `text`, as `line: message` strings.
+    fn errors(text: &str) -> Vec<String> {
+        match parse(text) {
+            Ok(test) => panic!("parsed: {test:?}"),
+            Err(errors) => errors.iter().map(ToString::to_string).collect(),
+        }
+    }
+
+    /// Whether some error of `text` is on `line` and contains `part`.
+    fn has_error(text: &str, line: usize, part: &str) -> bool {
+        let all = errors(text);
+        let found =
+            all.iter().any(|e| e.starts_with(&format!("line {line}: ")) && e.contains(part));
+        assert!(found, "no error on line {line} with '{part}' in {all:#?}");
+        found
+    }
+
+    const MINIMAL: &str = "#@ spec: layout.md \"Entry point\"\nlink ld a.o\n";
+
+    // spec/harness.md "Link tests", "A test file": directives, steps with
+    // their indented expectations, embedded files.
+    #[test]
+    fn a_whole_test() {
+        let text = "\
+# A comment.
+#@ spec: resolve.md \"Archives\"
+#@ spec: layout.md \"Entry point\"
+#@ arch: i386 aarch64
+#@ requires: g++ yaml2obj
+#@ xfail(mortar): no linking yet (M1)
+#@ skip(mold,i386): mold differs here
+#@ timeout: 30
+#@ mem: 2048
+
+cc -O2 main.c -o main.o
+cxx(i386) -m32 \"a b.cc\" -o ab.o
+yaml2obj odd.yaml -o odd.o
+ar rcs libx.a main.o
+link g++ main.o -L. -lx -o prog
+  exit: 0
+  no-diag: warning
+  diag(bfd): ^ld*: note$
+run prog arg%%1 %{arch}
+  exit: signal 6
+  stdout: hello %{arch}
+  stdout:
+check(lld) nm prog
+  has: T main
+  not(aarch64): U foo
+#--- main.c
+int main(void) { return 0; }
+#--- sub/odd.yaml
+--- !ELF
+FileHeader:
+#--- last.txt
+";
+        let test = parse(text).unwrap();
+        assert_eq!(test.spec, ["resolve.md \"Archives\"", "layout.md \"Entry point\""]);
+        assert_eq!(test.arches, [Arch::Aarch64, Arch::I386]);
+        assert_eq!(test.requires, [Feature::Gxx, Feature::Yaml2obj]);
+        assert_eq!(test.timeout, Some(Duration::from_secs(30)));
+        assert_eq!(test.memory_mib, Some(2048));
+        assert_eq!(test.markers.len(), 2);
+        let xfail = test.marker(Arch::I386, Linker::Mortar).unwrap();
+        assert_eq!((xfail.kind, xfail.reason.as_str()), (MarkerKind::Xfail, "no linking yet (M1)"));
+        assert_eq!(test.marker(Arch::I386, Linker::Mold).unwrap().kind, MarkerKind::Skip);
+        assert!(test.marker(Arch::Aarch64, Linker::Mold).is_none());
+        assert!(test.marker(Arch::Aarch64, Linker::Bfd).is_none());
+
+        let keywords: Vec<&str> = test.steps.iter().map(|step| step.keyword).collect();
+        assert_eq!(keywords, ["cc", "cxx", "yaml2obj", "ar", "link", "run", "check"]);
+        let lines: Vec<usize> = test.steps.iter().map(|step| step.line).collect();
+        assert_eq!(lines, [11, 12, 13, 14, 15, 19, 23]);
+        let vars = Vars { arch: Arch::I386, host: Some(Arch::Aarch64), linker: Some(Linker::Lld) };
+        let StepKind::Compile(cxx) = &test.steps[1].kind else { panic!() };
+        assert_eq!((cxx.language, cxx.family), (Language::Cxx, Family::Gcc));
+        assert_eq!(test.steps[1].scope.arches, [Arch::I386]);
+        let args: Vec<String> = cxx.args.iter().map(|a| a.expand(vars)).collect();
+        assert_eq!(args, ["-m32", "a b.cc", "-o", "ab.o"]);
+        let StepKind::Link(link) = &test.steps[4].kind else { panic!() };
+        assert_eq!(link.driver, Driver::Gxx);
+        assert!(!link.fails);
+        assert_eq!(link.diags.len(), 2);
+        assert!(!link.diags[0].present && link.diags[1].present);
+        assert_eq!(link.diags[1].scope.linkers, [Linker::Bfd]);
+        let StepKind::Run(run) = &test.steps[5].kind else { panic!() };
+        assert_eq!(run.exit, Exit::Signal(6));
+        let args: Vec<String> = run.args.iter().map(|a| a.expand(vars)).collect();
+        assert_eq!(args, ["arg%1", "i386"]);
+        let Stdout::Exact(stdout) = &run.stdout else { panic!() };
+        let stdout: Vec<String> = stdout.iter().map(|line| line.expand(vars)).collect();
+        assert_eq!(stdout, ["hello i386", ""]);
+        let StepKind::Check(check) = &test.steps[6].kind else { panic!() };
+        assert_eq!(check.tool, CheckTool::Nm);
+        assert_eq!(test.steps[6].scope.linkers, [Linker::Lld]);
+        assert_eq!(check.expectations[1].scope.arches, [Arch::Aarch64]);
+
+        let names: Vec<&str> = test.files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(names, ["main.c", "sub/odd.yaml", "last.txt"]);
+        assert_eq!(test.files[0].contents, "int main(void) { return 0; }\n");
+        assert_eq!(test.files[1].contents, "--- !ELF\nFileHeader:\n", "'---' is a file's text");
+        assert_eq!(test.files[2].contents, "");
+        assert!(!test.compares_output());
+    }
+
+    // "Directives": the defaults, and the forms of each directive.
+    #[test]
+    fn defaults_and_directive_forms() {
+        let test = parse(MINIMAL).unwrap();
+        assert_eq!(test.arches, Arch::ALL);
+        assert!(test.requires.is_empty() && test.markers.is_empty() && test.files.is_empty());
+        assert_eq!((test.timeout, test.memory_mib), (None, None));
+
+        let with =
+            |directive: &str| format!("#@ spec: layout.md \"x\"\n{directive}\nlink ld a.o\n");
+        assert!(has_error(&with("#@spec: a.md b"), 2, "'#@ <key>: <value>'"));
+        assert!(has_error(&with("#@ arch aarch64"), 2, "no ':'"));
+        assert!(has_error(&with("#@ arch:"), 2, "has no value"));
+        assert!(has_error(&with("#@ color: red"), 2, "unknown directive 'color'"));
+        assert!(has_error(&with("#@ arch: arm64"), 2, "unknown architecture 'arm64'"));
+        assert!(has_error(&with("#@ arch: i386 i386"), 2, "given twice"));
+        assert!(has_error(&with("#@ arch: i386\n#@ arch: i386"), 3, "a second 'arch'"));
+        assert!(has_error(&with("#@ requires: flang"), 2, "unknown requirement 'flang'"));
+        assert!(has_error(&with("#@ timeout: 0"), 2, "from 1 to 3600"));
+        assert!(has_error(&with("#@ timeout: 3601"), 2, "from 1 to 3600"));
+        assert!(has_error(&with("#@ mem: 8"), 2, "from 16 to 65536"));
+        assert!(has_error(&with("#@ timeout(bfd): 3"), 2, "takes no qualifiers"));
+        assert!(has_error(&with("#@ spec: layout"), 2, "does not name a spec section"));
+        assert!(has_error(&with("#@ spec: Layout.md x"), 2, "does not name a spec section"));
+        assert!(has_error(&with("#@ spec: layout.md"), 2, "does not name a spec section"));
+        // A directive after a step.
+        let late = "#@ spec: layout.md \"x\"\nlink ld a.o\n#@ arch: i386\n";
+        assert!(has_error(late, 3, "before the first step"));
+        // A file needs a spec and a link.
+        assert!(has_error("link ld a.o\n", 1, "no 'spec' directive"));
+        assert!(has_error("#@ spec: layout.md \"x\"\n", 1, "no 'link' step"));
+    }
+
+    // "Markers": `xfail` and `skip` name linkers and a reason; at most one
+    // applies per linker and architecture; a reference stays unmarked on
+    // every architecture.
+    #[test]
+    fn markers() {
+        let with = |directives: &str| {
+            format!("#@ spec: layout.md \"x\"\n#@ arch: aarch64 i386\n{directives}link ld a.o\n")
+        };
+        assert!(has_error(&with("#@ xfail: why\n"), 3, "names the linkers it is for"));
+        assert!(has_error(&with("#@ xfail(i386): why\n"), 3, "names the linkers it is for"));
+        assert!(has_error(&with("#@ xfail(mortar):\n"), 3, "needs a reason"));
+        assert!(has_error(&with("#@ skip(gcc,bfd): why\n"), 3, "takes no compiler family"));
+        assert!(has_error(&with("#@ xfail(gold): why\n"), 3, "unknown qualifier 'gold'"));
+        assert!(has_error(&with("#@ xfail(bfd,bfd): why\n"), 3, "given twice"));
+        assert!(has_error(&with("#@ xfail(bfd,): why\n"), 3, "an empty qualifier"));
+        assert!(has_error(&with("#@ xfail(bfd: why\n"), 3, "without ')'"));
+        assert!(has_error(&with("#@ xfail(x86_64,lld): why\n"), 3, "not an architecture of this"));
+        let twice = "#@ xfail(mortar): a\n#@ skip(mortar,i386): b\n";
+        assert!(has_error(&with(twice), 4, "a second 'xfail' or 'skip' for mortar on i386"));
+        let all = "#@ xfail(bfd): a\n#@ skip(lld): b\n#@ xfail(mold,i386): c\n";
+        assert!(has_error(&with(all), 5, "every reference linker is marked"));
+        // Marked on different architectures: each keeps a reference.
+        let split = "#@ xfail(bfd,lld,i386): a\n#@ xfail(mold,aarch64): c\n";
+        assert!(parse(&with(split)).is_ok());
+    }
+
+    // "Steps": the keywords, their qualifiers and their arguments.
+    #[test]
+    fn steps() {
+        let with = |steps: &str| format!("#@ spec: layout.md \"x\"\n{steps}");
+        let ok = |steps: &str| parse(&with(steps)).unwrap();
+        let clang = ok("#@ requires: clang\ncc(clang) a.c\nlink clang++ a.o\n");
+        let StepKind::Compile(compile) = &clang.steps[0].kind else { panic!() };
+        assert_eq!(compile.family, Family::Clang);
+        let StepKind::Link(link) = &clang.steps[1].kind else { panic!() };
+        assert_eq!(link.driver, Driver::Clangxx);
+        let fortran = ok("#@ requires: gfortran\nfc a.f90\nlink gfortran a.o\n");
+        assert_eq!(fortran.requires, [Feature::Gfortran]);
+        let asm = ok("as a.S -o a.o\nlink gcc -static a.o\n");
+        let StepKind::Compile(compile) = &asm.steps[0].kind else { panic!() };
+        assert_eq!(compile.language, Language::Asm);
+        let checked = ok("link ld a.o\ncheck text a.map\n  has: .text\n");
+        let StepKind::Check(check) = &checked.steps[1].kind else { panic!() };
+        assert_eq!(check.tool, CheckTool::Text);
+
+        assert!(has_error(&with("compile a.c\nlink ld a.o\n"), 2, "unknown step 'compile'"));
+        assert!(has_error(&with("cc\nlink ld a.o\n"), 2, "'cc' has no arguments"));
+        assert!(has_error(&with("cc(bfd) a.c\nlink ld a.o\n"), 2, "cannot be for 'bfd' only"));
+        assert!(has_error(&with("cc(gcc,clang) a.c\nlink ld a.o\n"), 2, "one compiler family"));
+        assert!(has_error(&with("fc(clang) a.f\nlink ld a.o\n"), 2, "flang"));
+        assert!(has_error(&with("link(gcc) ld a.o\n"), 2, "takes no compiler family"));
+        assert!(has_error(&with("link cc a.o\n"), 2, "not 'cc'"));
+        assert!(has_error(&with("link ld a.o\nrun\n"), 3, "followed by the program"));
+        assert!(has_error(&with("link ld a.o\ncheck ldd a\n  has: x\n"), 3, "not 'ldd'"));
+        assert!(has_error(&with("link ld a.o\ncheck nm\n  has: x\n"), 3, "has no arguments"));
+        assert!(has_error(&with("link ld a.o\ncheck text a b\n  has: x\n"), 3, "one file"));
+        assert!(has_error(&with("link ld a.o\ncheck nm a\n"), 3, "checks nothing"));
+        assert!(has_error(&with("linkx ld a.o\n"), 2, "unknown step 'linkx'"));
+        assert!(has_error(&with("link: ld a.o\n"), 2, "unexpected ': ld a.o'"));
+        assert!(has_error(&with("link ld \"a.o\n"), 2, "not closed"));
+        assert!(has_error(&with("link ld \"a\\n\"\n"), 2, "a backslash goes before"));
+        // Inputs are built before any linker runs.
+        assert!(has_error(&with("link ld a.o\ncc a.c\n"), 3, "after a link"));
+        // `%{linker}` is not known while inputs are built.
+        assert!(has_error(&with("cc %{linker}.c\nlink ld a.o\n"), 2, "'%{linker}' in a step"));
+        assert!(has_error(&with("cc %{os}.c\nlink ld a.o\n"), 2, "unknown substitution '%{os}'"));
+        assert!(has_error(&with("cc %{arch.c\nlink ld a.o\n"), 2, "without '}'"));
+    }
+
+    // "Directives", `requires`: exactly the tools the steps use beyond
+    // gcc, binutils and the linkers.
+    #[test]
+    fn requires_names_exactly_the_tools_used() {
+        let with = |text: &str| format!("#@ spec: layout.md \"x\"\n{text}");
+        assert!(has_error(&with("cxx a.cc\nlink ld a.o\n"), 2, "add '#@ requires: g++'"));
+        assert!(has_error(&with("link g++ a.o\n"), 2, "needs 'g++'"));
+        assert!(has_error(&with("cc(clang) a.c\nlink ld a.o\n"), 2, "needs 'clang'"));
+        assert!(has_error(&with("yaml2obj a.yaml\nlink ld a.o\n"), 2, "needs 'yaml2obj'"));
+        let readelf = "link ld a.o\ncheck llvm-readelf -h a.out\n  has: ELF\n";
+        assert!(has_error(&with(readelf), 3, "needs 'llvm-readelf'"));
+        assert!(has_error(&with("#@ requires: g++\nlink ld a.o\n"), 2, "no step uses it"));
+        assert!(has_error(&with("#@ requires: g++ g++\nlink g++ a.o\n"), 2, "required twice"));
+        assert!(
+            parse(
+                &with("#@ requires: llvm-readelf\n".to_owned().as_str())
+                    .replace("llvm-readelf\n", &format!("llvm-readelf\n{readelf}"))
+            )
+            .is_ok()
+        );
+    }
+
+    // "Expectations": which a step takes, and their values.
+    #[test]
+    fn expectations() {
+        let with = |text: &str| format!("#@ spec: layout.md \"x\"\n{text}");
+        let test = parse(&with(
+            "link ld a.o -o p\n  exit: fail\n  diag: undefined*foo\nrun p\n  exit: 255\n",
+        ))
+        .unwrap();
+        let StepKind::Link(link) = &test.steps[0].kind else { panic!() };
+        assert!(link.fails);
+        let StepKind::Run(run) = &test.steps[1].kind else { panic!() };
+        assert_eq!(run.exit, Exit::Status(255));
+        let reference = parse(&with("link ld a.o\nrun a.out\n  output: reference\n")).unwrap();
+        assert!(reference.compares_output());
+
+        assert!(has_error(&with("  exit: 0\nlink ld a.o\n"), 2, "without a step"));
+        assert!(has_error(&with("link ld a.o\n  exit: 1\n"), 3, "not '0'"));
+        assert!(has_error(&with("link ld a.o\n  exit: 0\n  exit: 0\n"), 4, "a second 'exit'"));
+        assert!(has_error(&with("link ld a.o\n  exit(bfd): 0\n"), 3, "takes no qualifiers"));
+        assert!(has_error(&with("link ld a.o\n  has: x\n"), 3, "not an expectation of a link"));
+        assert!(has_error(&with("link ld a.o\n  diag: a\\b\n"), 3, "a backslash goes before"));
+        assert!(has_error(&with("link ld a.o\n  diag:\n"), 3, "an empty pattern"));
+        assert!(has_error(&with("link ld a.o\n  diag x\n"), 3, "no ':'"));
+        assert!(has_error(&with("link ld a.o\nrun p\n  exit: 256\n"), 4, "from 0 to 255"));
+        assert!(has_error(&with("link ld a.o\nrun p\n  exit: signal 0\n"), 4, "1 to 64"));
+        assert!(has_error(&with("link ld a.o\nrun p\n  exit: +1\n"), 4, "from 0 to 255"));
+        assert!(has_error(&with("link ld a.o\nrun p\n  exit: signals 6\n"), 4, "from 0 to 255"));
+        assert!(has_error(
+            &with("link ld a.o\nrun p\n  diag: x\n"),
+            4,
+            "not an expectation of a run"
+        ));
+        assert!(has_error(&with("link ld a.o\nrun p\n  output: mine\n"), 4, "is not 'reference'"));
+        let both = "link ld a.o\nrun p\n  stdout: a\n  output: reference\n";
+        assert!(has_error(&with(both), 5, "not both"));
+        let both = "link ld a.o\nrun p\n  output: reference\n  stdout: a\n";
+        assert!(has_error(&with(both), 5, "not both"));
+        assert!(has_error(&with("cc a.c\n  exit: 0\nlink ld a.o\n"), 3, "has no expectations"));
+        assert!(has_error(&with("link ld a.o\ncheck nm a\n  diag: x\n"), 4, "of a check"));
+        // An expectation of a step that did not parse is not reported again.
+        assert_eq!(errors(&with("lnk ld a.o\n  exit: 0\nlink ld a.o\n")).len(), 1);
+    }
+
+    // "Expectations": a link expected to fail says what mortar reports, on
+    // every architecture.
+    #[test]
+    fn a_failing_link_names_mortars_diagnostic() {
+        let with = |text: &str| format!("#@ spec: layout.md \"x\"\n#@ arch: aarch64 i386\n{text}");
+        assert!(has_error(&with("link ld a.o\n  exit: fail\n"), 3, "no 'diag' applies to mortar"));
+        let others = "link ld a.o\n  exit: fail\n  diag(bfd): undefined\n  no-diag: x\n";
+        assert!(has_error(&with(others), 3, "mortar on aarch64"));
+        let one_arch = "link ld a.o\n  exit: fail\n  diag(mortar,aarch64): undefined\n";
+        assert!(has_error(&with(one_arch), 3, "mortar on i386"));
+        assert!(parse(&with("link ld a.o\n  exit: fail\n  diag(mortar): undefined\n")).is_ok());
+        assert!(parse(&with("link ld a.o\n  exit: fail\n  diag: undefined\n")).is_ok());
+        // A link that mortar does not run needs no diagnostic of mortar's.
+        assert!(parse(&with("link(bfd) ld a.o\n  exit: fail\n")).is_ok());
+    }
+
+    // "Embedded files": names are relative paths of plain components; a
+    // name is embedded once.
+    #[test]
+    fn embedded_files() {
+        let with = |files: &str| format!("{MINIMAL}{files}");
+        assert!(has_error(&with("#--- ../a.c\nx\n"), 3, "does not start a file"));
+        assert!(has_error(&with("#--- /a.c\n"), 3, "does not start a file"));
+        assert!(has_error(&with("#---a.c\n"), 3, "does not start a file"));
+        assert!(has_error(&with("#--- a b.c\n"), 3, "does not start a file"));
+        assert!(has_error(&with("#--- a.c\n#--- a.c\n"), 1, "embedded twice"));
+        // After the first file, nothing is a step or a directive.
+        let test = parse(&with("#--- a.c\n#@ spec: x\nlink ld b.o\n  exit: 0\n")).unwrap();
+        assert_eq!(test.files[0].contents, "#@ spec: x\nlink ld b.o\n  exit: 0\n");
+        assert_eq!(test.steps.len(), 1);
+        // Line ends: a carriage return ends a marker line, and is kept in
+        // a file's text.
+        let test = parse(&with("#--- a.c\r\nx\r\n")).unwrap();
+        assert_eq!(
+            (test.files[0].name.as_str(), test.files[0].contents.as_str()),
+            ("a.c", "x\r\n")
+        );
+    }
+
+    // "Substitutions": every variable, `%%`, and a value inside a pattern
+    // stands for itself.
+    #[test]
+    fn substitutions() {
+        let host = Some(Arch::Aarch64);
+        let vars = Vars { arch: Arch::X86_64, host, linker: Some(Linker::Mold) };
+        let all: Vec<String> = Var::ALL.iter().map(|var| format!("%{{{}}}", var.name())).collect();
+        let template = Template::parse(&all.join("|")).unwrap();
+        assert_eq!(
+            template.expand(vars),
+            "x86_64|x86_64-linux-gnu|elf_x86_64|/lib64/ld-linux-x86-64.so.2|/usr/x86_64-linux-gnu|\
+             /usr/x86_64-linux-gnu/lib|ELF64|Advanced Micro Devices X86-64|mold"
+        );
+        assert!(template.uses_linker());
+        let native = Vars { arch: Arch::Aarch64, host, linker: None };
+        assert_eq!(
+            Template::parse("%{sysroot} %{libdir}").unwrap().expand(native),
+            "/ /usr/lib/aarch64-linux-gnu"
+        );
+        assert_eq!(Template::parse("100%% %x %").unwrap().expand(native), "100% %x %");
+        assert_eq!(Template::parse("plain").unwrap().literal(), Some("plain"));
+        assert_eq!(Template::parse("%{arch}").unwrap().literal(), None);
+        // A substituted value is literal in a pattern.
+        let star = Template::parse("^%{arch}$").unwrap();
+        assert_eq!(star.expand_pattern(native), "^aarch64$");
+        assert_eq!(pattern::escape("a*b$"), "a\\*b\\$");
+    }
+
+    // "Words": blanks separate words, double quotes keep them.
+    #[test]
+    fn words_of_a_step() {
+        assert_eq!(words("  a  b\tc ").unwrap(), ["a", "b", "c"]);
+        assert_eq!(words("-Wl,\"x y\"z \"\" \"q\\\"\\\\\"").unwrap(), ["-Wl,x yz", "", "q\"\\"]);
+        assert!(words("\"open").is_err());
+    }
 }

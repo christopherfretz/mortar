@@ -193,12 +193,7 @@ mod tests {
         let xfail = Some("not implemented (M1)");
         let rows = [
             (&Raw::Pass, None, Outcome::Pass, ""),
-            (
-                &Raw::Pass,
-                xfail,
-                Outcome::Xpass,
-                "passes: remove its xfail (not implemented (M1))",
-            ),
+            (&Raw::Pass, xfail, Outcome::Xpass, "passes: remove its xfail (not implemented (M1))"),
             (&fail, None, Outcome::Fail, "link (line 4): exit status 1"),
             (&fail, xfail, Outcome::Xfail, "not implemented (M1): link (line 4): exit status 1"),
             (&killed, None, Outcome::Killed, "run (line 5): killed: time"),
@@ -218,10 +213,7 @@ mod tests {
             Outcome::ALL.into_iter().filter(|o| o.fails()).map(Outcome::name).collect();
         assert_eq!(failing, ["FAIL", "XPASS", "KILLED", "ERROR", "ORACLE"]);
         let names: Vec<&str> = Outcome::ALL.into_iter().map(Outcome::name).collect();
-        assert_eq!(
-            names,
-            ["PASS", "FAIL", "XFAIL", "XPASS", "SKIP", "KILLED", "ERROR", "ORACLE"]
-        );
+        assert_eq!(names, ["PASS", "FAIL", "XFAIL", "XPASS", "SKIP", "KILLED", "ERROR", "ORACLE"]);
     }
 
     fn reference(linker: Linker, outcome: Option<Outcome>) -> Reference {
@@ -307,11 +299,18 @@ mod tests {
     // fail is not asked.
     #[test]
     fn references_that_disagree_on_output_refute_a_test() {
-        let same =
-            [printing(Linker::Bfd, "a\n"), printing(Linker::Lld, "a\n"), printing(Linker::Mold, "a\n")];
+        let same = [
+            printing(Linker::Bfd, "a\n"),
+            printing(Linker::Lld, "a\n"),
+            printing(Linker::Mold, "a\n"),
+        ];
         assert_eq!(self_check(&same), Verdict::Established);
 
-        let differ = [printing(Linker::Bfd, "a\n"), printing(Linker::Lld, "a\n"), printing(Linker::Mold, "b\n")];
+        let differ = [
+            printing(Linker::Bfd, "a\n"),
+            printing(Linker::Lld, "a\n"),
+            printing(Linker::Mold, "b\n"),
+        ];
         assert_eq!(
             self_check(&differ),
             Verdict::Refuted(
