@@ -43,14 +43,14 @@ fn cap_refusal() -> LayoutDiag {
 /// candidate's input section and the offset of `W1` in it (at `q`, an
 /// address) as a note. `LayoutDiag` carries no file place or key; the
 /// key is `diag::unproved_key` of that section's chunk.
-fn unproved_refusal(e: Erratum, at: Option<(SectionId, u64)>) -> LayoutDiag {
-    let d = mortar_arch::diag::unproved(e);
-    LayoutDiag::from(match at {
-        Some((section, offset)) => {
-            d.note(format!("W1 at offset {offset:#x} of input section {}", section.0))
-        }
+fn unproved_refusal(e: Erratum, at: Option<(ChunkId, SectionId, u64)>) -> LayoutDiag {
+    let d = LayoutDiag::from(mortar_arch::diag::unproved(e));
+    match at {
+        // `mortar_arch::diag::unproved_key`: `(90, 0, ChunkId)`; the caller
+        // names the input section and the offset of `W1` as the place.
+        Some((chunk, section, offset)) => d.on_chunk(chunk, Some((section, offset))),
         None => d,
-    })
+    }
 }
 
 /// A branch site of the link: where it is, and what `need::branch_site`
@@ -86,14 +86,27 @@ pub trait Sites: Sync {
     /// input-only decision).
     fn branches(&self) -> &[BranchAt];
 
-    /// The final target `T` of `branches()[i]` at the round's addresses:
-    /// the symbol, or its PLT or IPLT entry, plus the addend.
-    fn target(&self, i: usize, round: &Round<'_>) -> Option<u64>;
+    /// The final target `T` of every branch site at the round's
+    /// addresses (`[i]` is `branches()[i]`'s): the symbol, or its PLT or
+    /// IPLT entry, plus the addend. One call per round, so that what a
+    /// round's addresses give (fill's tables) is built once (WP-027a: per
+    /// site, it was 250 ms per round of a protoc link).
+    fn targets(&self, round: &Round<'_>, pool: &Pool) -> Vec<Option<u64>>;
 
     /// The words of output code section `out` at the round's addresses,
     /// for `Arch::erratum_sites`. Asked only when `Arch::errata()` is not
-    /// empty.
-    fn code(&self, out: OutSecId, round: &Round<'_>) -> Option<OwnedCode>;
+    /// empty. `Ok(None)`: `out` has no words at this round (no extent).
+    ///
+    /// # Errors
+    ///
+    /// A read of an input section's bytes that failed: the link fails
+    /// with it (never "no erratum sites", `spec/landed/input/WP-021b.md`).
+    fn code(
+        &self,
+        out: OutSecId,
+        round: &Round<'_>,
+        pool: &Pool,
+    ) -> Result<Option<OwnedCode>, LayoutDiag>;
 }
 
 /// No branch sites and no code: nothing is ever needed.
@@ -104,11 +117,16 @@ impl Sites for NoSites {
     fn branches(&self) -> &[BranchAt] {
         &[]
     }
-    fn target(&self, _i: usize, _round: &Round<'_>) -> Option<u64> {
-        None
+    fn targets(&self, _round: &Round<'_>, _pool: &Pool) -> Vec<Option<u64>> {
+        Vec::new()
     }
-    fn code(&self, _out: OutSecId, _round: &Round<'_>) -> Option<OwnedCode> {
-        None
+    fn code(
+        &self,
+        _out: OutSecId,
+        _round: &Round<'_>,
+        _pool: &Pool,
+    ) -> Result<Option<OwnedCode>, LayoutDiag> {
+        Ok(None)
     }
 }
 
@@ -330,6 +348,15 @@ fn bodies(staged: &Staged, by_part: &BTreeMap<Part, usize>) -> Bodies {
 
 /// The section and offset of the word at `addr`, if it is in a body chunk.
 fn key_at(bodies: &Bodies, chunks: &Column<ChunkId, Chunk>, addr: u64) -> Option<(SectionId, u64)> {
+    chunk_at(bodies, chunks, addr).map(|(_, section, offset)| (section, offset))
+}
+
+/// The body chunk, section and offset of the word at `addr`.
+fn chunk_at(
+    bodies: &Bodies,
+    chunks: &Column<ChunkId, Chunk>,
+    addr: u64,
+) -> Option<(ChunkId, SectionId, u64)> {
     for (&chunk, secs) in bodies {
         let c = chunks.get(chunk)?;
         let start = c.addr?;
@@ -339,7 +366,7 @@ fn key_at(bodies: &Bodies, chunks: &Column<ChunkId, Chunk>, addr: u64) -> Option
         let off = addr - start;
         let i = secs.partition_point(|&(at, _)| at <= off).checked_sub(1)?;
         let (at, section) = secs[i];
-        return Some((section, off - at));
+        return Some((chunk, section, off - at));
     }
     None
 }
@@ -354,14 +381,15 @@ fn needs(
     pool: &Pool,
 ) -> Result<(Vec<Need>, SiteKeys), LayoutDiag> {
     let branches = range.sites.branches();
+    let targets = range.sites.targets(round, pool);
+    if targets.len() != branches.len() {
+        return Err(internal("not one branch target per branch site"));
+    }
     let judged: Vec<Result<Option<Need>, LayoutDiag>> = pool.map(branches.len(), |i| {
         let b = branches[i];
         // A site in a section that is not placed is no site.
         let Some(p) = round.site_addr(b.section, b.offset) else { return Ok(None) };
-        let t = range
-            .sites
-            .target(i, round)
-            .ok_or_else(|| internal("a branch site with no target address"))?;
+        let t = targets[i].ok_or_else(|| internal("a branch site with no target address"))?;
         let r = round.redirect_addr(b.section, b.offset);
         Ok((thunk_need(&b.site, p, t, r) != ThunkNeed::None).then_some(Need {
             addr: p,
@@ -385,11 +413,11 @@ fn needs(
         pool.map(code_outs.len() * errata.len(), |u| {
             let out_sec = code_outs[u / errata.len()];
             let e = errata[u % errata.len()];
-            let Some(code) = range.sites.code(out_sec, round) else { return Ok(Vec::new()) };
+            let Some(code) = range.sites.code(out_sec, round, pool)? else { return Ok(Vec::new()) };
             let view = Code { bytes: &code.bytes, addr: code.addr, proof: &code.proof };
             let mut sites: Vec<ErratumSite> = Vec::new();
             range.arch.erratum_sites(e, &view, &mut sites).map_err(|u| {
-                unproved_refusal(e, key_at(bodies, round.chunks, code.addr.wrapping_add(u.q)))
+                unproved_refusal(e, chunk_at(bodies, round.chunks, code.addr.wrapping_add(u.q)))
             })?;
             let mut found = Vec::with_capacity(sites.len());
             for s in sites {

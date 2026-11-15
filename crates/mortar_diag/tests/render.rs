@@ -265,6 +265,10 @@ fn control_characters_are_made_visible() {
             Kind::LibraryNotFound { name: h() },
             format!("cannot find -l{shown}: No such file or directory"),
         ),
+        (
+            Kind::CetReport { path: h(), property: h() },
+            format!("{shown}: missing {shown} property (-z cet-report)"),
+        ),
         (Kind::Malformed { what: h() }, shown.to_owned()),
         (
             Kind::DuplicateSymbol { name: h() },
@@ -286,7 +290,7 @@ fn control_characters_are_made_visible() {
         ),
         (
             Kind::RelocationOutOfRange { r_type: h(), value: 9, min: -1, max: 8, name: h() },
-            format!("relocation {shown} out of range: 9 is not in [-1, 8]; references '{shown}'"),
+            format!("relocation truncated to fit: {shown} against '{shown}': 9 is not in [-1, 8]"),
         ),
         (
             Kind::ExecutableStack { file: h() },
@@ -344,6 +348,7 @@ fn samples() -> Vec<Diagnostic> {
             Kind::ScriptCycle,
             Kind::SkippedIncompatible { path: s(x), search: s(x) },
             Kind::StaticLinkOfSharedObject { path: s(x) },
+            Kind::CetReport { path: s(x), property: s(x) },
             Kind::Malformed { what: s(x) },
             Kind::UnknownFileType,
             Kind::UnknownProperty { path: s(x), pr_type: u32::MAX },

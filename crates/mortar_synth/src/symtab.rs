@@ -228,7 +228,8 @@ pub struct SymCtx<'a> {
     pub sections: &'a dyn Sections,
     /// The `.eh_frame` plan and its source, for symbols in `.eh_frame`.
     pub eh: Option<(&'a EhPlan, &'a dyn EhSource)>,
-    /// `plan.shaping.discard`; `None` is `-X` (S-78).
+    /// `plan.shaping.discard`; `None`: neither `-x`, `-X` nor
+    /// `--discard-none` (S-78's default).
     pub discard: Option<Discard>,
 }
 
@@ -404,13 +405,21 @@ impl<'a> SymCtx<'a> {
     fn local(&self, file: FileId, i: u32) -> Result<Option<Row<'a>>, SynthError> {
         let syms: &'a dyn SymSource = self.syms;
         let l = syms.local(file, i);
-        let discard = self.discard.unwrap_or(Discard::Locals);
         let typ = l.info & 0xf;
-        if discard == Discard::All || typ == STT_SECTION {
+        if self.discard == Some(Discard::All) || typ == STT_SECTION {
             return Ok(None);
         }
-        if discard == Discard::Locals && l.name.starts_with(b".L") && typ != STT_FILE {
-            return Ok(None);
+        if l.name.starts_with(b".L") && typ != STT_FILE {
+            // S-78: `-X` drops every `.L` local; the default only those in
+            // a split merge section (GNU's `discard_sec_merge`, lld's
+            // default policy).
+            let in_merge = matches!(l.def, SymDef::Section { section, .. }
+                if self.sections.kind(section) == SecKind::Merge);
+            match self.discard {
+                Some(Discard::Locals) => return Ok(None),
+                None if in_merge => return Ok(None),
+                _ => {}
+            }
         }
         let at = match l.def {
             SymDef::Absolute(v) => Some(Where::Absolute(v)),

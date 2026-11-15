@@ -5,10 +5,12 @@
 
 use mortar_elf::Class;
 
-/// The ELF header's fields that vary (`e_ident` is fixed: `ELFDATA2LSB`,
-/// `EV_CURRENT`, `ELFOSABI_NONE`).
+/// The ELF header's fields that vary (`e_ident` is otherwise fixed:
+/// `ELFDATA2LSB`, `EV_CURRENT`, `EI_ABIVERSION` 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Ehdr {
+    /// `EI_OSABI` (`Facts.osabi`; `spec/a64.md` Q11: 0).
+    pub osabi: u8,
     pub e_type: u16,
     pub e_machine: u16,
     pub e_entry: u64,
@@ -85,7 +87,7 @@ pub fn ehdr(class: Class, h: &Ehdr) -> Vec<u8> {
     let is_64 = matches!(class, Class::Elf64);
     let (eh, ph, sh) = sizes(class);
     let mut out = Vec::with_capacity(eh as usize);
-    out.extend_from_slice(&[0x7f, b'E', b'L', b'F', if is_64 { 2 } else { 1 }, 1, 1, 0]);
+    out.extend_from_slice(&[0x7f, b'E', b'L', b'F', if is_64 { 2 } else { 1 }, 1, 1, h.osabi]);
     out.extend_from_slice(&[0; 8]);
     let mut w = W { out: &mut out, is_64 };
     w.u16(h.e_type);

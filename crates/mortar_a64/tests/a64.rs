@@ -736,6 +736,55 @@ fn s13_2_non_alloc_and_tombstones() {
     assert!(s.errors.is_empty() && s.counts.is_empty());
 }
 
+/// a64.md §13.2 with arch.md §4.3 (`spec/x64.md` R-13): at a non-alloc
+/// place `ABS*` against a TLS symbol is the `DtpRel` exception, refused by
+/// name until fill sees the symbol's type (the staging note); `PREL32`
+/// against a TLS symbol is `it is thread-local`; `TLS_DTPREL64` against a
+/// non-TLS symbol `it is not thread-local`; the ordinary cases unchanged.
+#[test]
+fn s13_2_non_alloc_tls_targets() {
+    let mut t = local(0x41_0000);
+    t.tls_sym(key(2), 0x42_0010, TargetKind::Local);
+    let na = PlaceFacts { alloc: false, writable: false };
+    let one = |r_type, k| {
+        let r = Reloc { r_offset: 0, key: k, r_type, addend: 0 };
+        scan_one(M2, &t, OutputKind::Static, na, &[0; 8], r).unwrap()
+    };
+    let refused = ScanError::Refused(mortar_arch::Refusal::named(
+        RefusalClass::Feature,
+        mortar_a64::NON_ALLOC_TLS_ABS,
+    ));
+    for ty in [257, 258, 259] {
+        let s = one(ty, key(2));
+        assert_eq!(s.errors, [(0, refused)], "ABS {ty} against TLS");
+        assert!(s.raised.is_empty() && s.counts.is_empty());
+    }
+    assert_eq!(one(261, key(2)).errors, [(0, ScanError::Incompatible(Incompatible::ThreadLocal))]);
+    assert_eq!(
+        one(1029, key(1)).errors,
+        [(0, ScanError::Incompatible(Incompatible::NotThreadLocal))]
+    );
+    // Unchanged: ABS64 against a non-TLS symbol, TLS_DTPREL64 against TLS.
+    assert!(one(257, key(1)).errors.is_empty());
+    assert!(one(1029, key(2)).errors.is_empty());
+    // At an alloc place ABS64 against TLS stays `it is thread-local`.
+    let r = Reloc { r_offset: 0, key: key(2), r_type: 257, addend: 0 };
+    let s = scan_one(M2, &t, OutputKind::Static, ALLOC, &[0; 8], r).unwrap();
+    assert_eq!(s.errors, [(0, ScanError::Incompatible(Incompatible::ThreadLocal))]);
+}
+
+/// arch.md §4.3 (`spec/x64.md` R-6): `PC` against `weak0` in a PIE is the
+/// architecture's §7, on AArch64 `S = P` with no demand and no error.
+#[test]
+fn s4_3_pc_weak0_in_pie_is_s_equals_p() {
+    let mut t = Tables::default();
+    t.sym(key(1), 0, TargetKind::Weak0);
+    let r = Reloc { r_offset: 0, key: key(1), r_type: 261, addend: 5 };
+    let w = PlaceFacts { alloc: true, writable: true };
+    let s = scan_one(M2, &t, OutputKind::Pie, w, &[0; 4], r).unwrap();
+    assert!(s.errors.is_empty() && s.raised.is_empty() && s.counts.is_empty());
+}
+
 /// arch.md §3.4 (`spec/image.md` §4.4, I-18): one event per class per
 /// record; `ComdatMismatch` instead of `Undefined`; `GnuWarning` beside
 /// either, and beside an ordinary reference.

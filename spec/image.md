@@ -453,6 +453,15 @@ only when `has_errors()` is false after layout (`spec/diag.md` §7).
     `copy_to`;
   - `Permuted(Vec<u32>)`, otherwise: the record indexes stably sorted by
     `r_offset` (4 bytes per record of an unsorted section).
+  The index is a `mortar_core` type (`mortar_core::records::{RecIndex,
+  Order}`, re-exported by `mortar_scan`; supervisor ruling for WP-027b),
+  and it also carries the scan's per-section `leads` bit (`RelocAt.leads`,
+  `spec/arch.md` §3.5), which fill passes on unchanged. The plan's records
+  are `RecRows::Rela` (the input's `SHT_RELA` table, read at fill time
+  through the store for the clip, in `RecIndex` order; I-82's "read
+  twice") or `RecRows::Decoded` (records already in memory, for tests and
+  the bench); the site bytes a record reads are taken from the window
+  buffer the clip is filled into, not read again.
   Unsorted sections are ordinary on x86. Per archive, unsorted
   relocation sections and records (E7, E22): x86-64 glibc `libc.a` 245 of
   3,962 sections (11,053 records; the largest 783; e.g. `PLT32` records
@@ -556,18 +565,16 @@ buffer; the clip only selects which of them a job writes.
   - AArch64 at least `(0, 4)`. The `CALL26` member of the GD→LE sequence
     (`spec/a64.md` §8.4) has its field at `o+8` and owns `[o+8, o+16)`,
     so it writes the `nop` 4 bytes past its field.
-  - x86-64 `(4, 8)`, for the recognized forms of `spec/arch.md` A.3
-    only: the 16-byte `TLSGD` form `[P − 4, P + 12)` around a 4-byte
-    field.
+  - x86-64 `(4, 15)`: `before` 4 from the 16-byte `TLSGD` forms and
+    `after` 15 from the 22-byte `TLSGD` and `TLSLD` forms (`spec/x64.md`
+    §8.6).
   The draft's AArch64 `(0, 0)` was wrong; it worked only because of the
   8-byte slack of the search bound. The x86-64 large-model `TLSGD`
   sequence (`lea` / `movabs PLTOFF64` / `add` / `call`, 22 bytes,
-  `[P − 3, P + 19)`, after = 15) is not an A.3 form, so it stays unrelaxed
-  and its members keep their field windows. GNU ld relaxes all 22 bytes;
-  lld 22 writes 16 bytes from `P − 4` and corrupts it (the review).
-  `spec/x64.md` must either add the form, with its window, or state that
-  it is left unrelaxed, with a test (request R-14). Either way `max_reach`
-  follows from the tables.
+  `[P − 3, P + 19)`, after = 15) and its `TLSLD` twin are relaxed forms
+  (`spec/x64.md` X-25, X-27; request R-14, answered). GNU ld relaxes all
+  22 bytes; lld 22 writes 16 bytes from `P − 4` and corrupts it (the
+  review). `max_reach` follows from the tables.
 - **I-37 [M1] `.ctors`/`.dtors` reversal** (`spec/layout.md` L-40, when it
   is lifted): the words of a `.ctors` input section are written in
   reverse word order; the relocation of the word at offset `o` is applied
@@ -593,6 +600,67 @@ buffer; the clip only selects which of them a job writes.
   start, `spec/layout.md` L-86). Their encodings are `spec/elf.md`'s
   writer half, and the byte layout is a function of the class and the
   rows; nothing in them is filled from input bytes.
+  The fields (WP-027b, `link::structure`):
+  - `e_ident[EI_OSABI]` is `Facts.osabi` (AArch64: 0, a64.md Q11, also
+    with IFUNC symbols; eu-elflint then reads `STT_GNU_IFUNC` and
+    `R_AARCH64_IRELATIVE` as unknown, which Q11 may revisit);
+    `e_type` from the output kind; `e_machine` `Facts.e_machine`;
+    `e_flags` `Arch::e_flags` over the live objects' `e_flags`;
+  - `e_entry` is `Placement.entry`, or 0 when it is `None` (the gABI's
+    "no entry point"; layout's `entry-not-found` warning, L-103);
+  - `e_phoff`/`e_shoff` are the `ProgramHeaders`/`SectionHeaders` chunks'
+    offsets; `p_align` is `1 << align` of the segment row;
+  - `sh_name` from `.shstrtab`'s plan; `sh_type`, `sh_flags` and
+    `sh_addralign` from the section's chunks (the largest alignment);
+    `sh_addr` the first chunk's address (0 for non-alloc), `sh_offset`
+    its offset;
+  - `sh_entsize`: a synthetic chunk's from `SynthKind::header` (synth.md
+    §3); an output section that keeps `SHF_MERGE` its merge class's
+    entry size (L-50); `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY` and
+    `SHT_PREINIT_ARRAY` the word size; otherwise 0;
+  - `sh_link`/`sh_info`: `.symtab` links `.strtab`, its `sh_info` the
+    plan's first global (S-73); `.symtab_shndx` links `.symtab`;
+    `.rela.plt` has `sh_link` 0 and `sh_info` `.got.plt` (S-69);
+  - `.relro_padding` (layout's own `NOBITS` chunk, L-64) has a header
+    and no synthetic plan;
+  - extended numbering (gABI): when the section count or `.shstrtab`'s
+    index reaches `SHN_LORESERVE`, `e_shnum` 0 and `e_shstrndx`
+    `SHN_XINDEX`, with the values in section header 0;
+  - each structural chunk's size is checked against its encoding
+    (`internal-error` otherwise).
+
+- **I-116 [M1] The phase's entry point** (`link::write`, WP-027b). It
+  reads the front's tables (`Front` of `spec/landed/pipeline/
+  FRONT-INTERFACE.md`) by reference, as `link::Link`, and in order:
+  builds the fill tables (`LinkTables`: the global symbols' values in
+  parallel by `SymbolId`, I-30, without `redirect`: the record keys are
+  the scan's, already redirected); writes the structural units (I-40);
+  builds the plan (`from_layout`) with the synthetic chunks of
+  `Link.synth` (synth's own `SynthChunk`s and `FillCx`); creates the
+  output (§7.2), fills it (§5.3), rechecks the inputs (I-118), and
+  commits. `on_phase(100, "image")` and `on_phase(105, "output")` are
+  called as those phases end, for `--time-phases` (§11.2). The target
+  kind of each key is the scan's (`link::KeyFacts`, which the driver
+  answers with the scan's own view), so fill and scan cannot disagree.
+- **I-117 [M1] Values in non-allocated sections.** A symbol or fragment
+  in a non-alloc chunk (`.debug_*`, `.debug_str`'s merged chunk) has the
+  value of its offset from its output section's start (the gABI's
+  `sh_addr` 0), and a relocation of a debug section against it is
+  applied with that value (GNU ld, lld).
+- **I-118 [M1] The end of the phase** (`spec/input.md` §11.5). After
+  every window is written and before the rename, every input file the
+  store still holds open is checked again (`Store::recheck`, through the
+  driver's `Link.recheck` callback: `mortar_image` does not depend on
+  `mortar_input`). A file whose size, `st_mtime` or `st_ctime` changed
+  is `input-changed` at `(100, FileId, 0)`, and the link fails with no
+  output file (I-65).
+- **I-119 [M1] References into split sections** are resolved by the
+  fill tables (`Tables::split_target`, which gives S + A): a section
+  symbol of a `Merge` section by the piece at `st_value + A`
+  (`spec/synth.md` S-17, S-18, `mortar_merge::refs::section_symbol`); a
+  named symbol of one by its own piece, with A added after (S-19, S-22);
+  a symbol in `.eh_frame` by `EhPlan::value` (S-50), and the relocations
+  of `.eh_frame` itself at `EhPlan::place` (S-52, S-53).
 
 ### 5.5 Gaps
 
@@ -729,7 +797,7 @@ writes a value chosen by the referring section's name, as
   relocation record has its field there, in which case those bytes are
   left as the input has them. It is a function of the record and the
   section bytes, so clipping applies as for any write (`max_reach.after`
-  is raised to 8 for `.debug_aranges` in I-35's search). No DWARF is
+  is raised to at least 8 for `.debug_aranges` in I-35's search). No DWARF is
   parsed.
 - **I-48 [M1]** The tombstone is truncated to the field, never checked
   for range (it is not a value of `X`), and replaces `X` for every type
@@ -1272,11 +1340,19 @@ random input's).
     or thunk (`patch`, `thunk`), and the commons' chunk (`common`);
   - `define` per symbol of file 0 that layout defined
     (`spec/layout.md` §13), with its value;
-  - non-alloc input sections: none until `spec/plumb.md` has records for
-    them (request R-9: `nplace` for a section at an offset of a non-alloc
-    output section, `merged` for a merged non-alloc section whose pieces
-    are not listed). `mortar_plumb` stage 1 does not check non-alloc
-    relocations (`spec/plumb.md` §1), so nothing is lost in M1.
+  - non-alloc input sections (R-9, applied by WP-028b; written by
+    WP-027b): `nplace` per non-alloc input section placed whole, with
+    its output section's name and its offset from that section's start;
+    `merged` per `SHF_MERGE` non-alloc input section (its pieces are not
+    listed).
+  - Within a file, `place` and `piece` records are in address order
+    (pieces of one fragment, such as the NUL padding of a string
+    section, share an address; ties by section, then input offset).
+  - `.eh_frame`'s pieces are its kept records (S-49), each at its output
+    address with its output size.
+  - Not yet written: `fold` (M2) and the `thunk`/`patch` chunk records
+    with their targets (range extension's, WP-027c). `common` is not a
+    chunk of its own in M1 (commons are placed in `.bss`, layout §8).
 - **I-79 [M1]** The map is a function of the tables and the file names,
   written after layout and independent of fill. Each record group is
   formatted in parallel per file (`map_collect`, rule 3) and the buffers
@@ -1660,8 +1736,9 @@ pub trait SynthChunk {
 - `window_boundary_sequences`: the AArch64 GD→LE sequence placed so that
   a window boundary falls at `o+4`, `o+8` and `o+12`, and the x86-64
   `TLSGD` form with a boundary at each byte of `[P − 4, P + 12)`: the
-  bytes equal an unclipped fill (I-35, I-111); the 22-byte large-model
-  form is left as the input has it (I-111, R-14).
+  bytes equal an unclipped fill (I-35, I-111); the same for the 22-byte
+  large-model `TLSGD` and `TLSLD` forms at each byte of `[P − 3, P + 19)`
+  (`spec/x64.md` §8.6).
 - `max_reach_derived`: `Facts.max_reach` equals the maximum over the
   tables, and no `apply` writes outside its record's window (I-111).
 - `gap_patterns`: trap, no-op and zero gaps per I-41, positioned by
@@ -2053,6 +2130,9 @@ Reason: P2 of the review; the measurement in I-82 (re-reading 45.9 MB
 costs about 2.9 ms of wall time on 8 threads).
 
 ### R-14 `spec/x64.md` (WP-029)
+
+*Answered by `spec/x64.md` X-25 and X-27: both 22-byte forms are
+relaxed, with their windows (applied by WP-029r).*
 
 The x86-64 large-model `TLSGD` sequence (`lea` with `R_X86_64_TLSGD`,
 `movabs` with `R_X86_64_PLTOFF64`, `add`, `call`; 22 bytes,

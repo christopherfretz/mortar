@@ -148,7 +148,10 @@ const REJECTED: &[(&[&str], &str)] = &[
     (&["--shared=x"], "ld: error: unknown argument '--shared=x'\n>>> --shared takes no value (spec/cli.md §2.3)\n"),
     (&["--hash-style=md5"], "ld: error: --hash-style: invalid value 'md5'\n>>> expected one of: sysv, gnu, both, none\n"),
     (&["--error-limit=many"], "ld: error: --error-limit: invalid value 'many'\n>>> expected a decimal number\n"),
-    (&["--build-id=0xZZ"], "ld: error: --build-id: invalid value '0xZZ'\n>>> expected one of: none, md5, sha1, sha256, fast, uuid, 0xHEX\n"),
+    (&["--build-id=0xZZ"], "ld: error: --build-id: invalid value '0xZZ'\n>>> expected an even number of hexadecimal digits\n"),
+    (&["--build-id=0xabc"], "ld: error: --build-id: invalid value '0xabc'\n>>> expected an even number of hexadecimal digits\n"),
+    (&["--build-id=0x"], "ld: error: --build-id: invalid value '0x'\n>>> expected an even number of hexadecimal digits\n"),
+    (&["--build-id=0XAB"], "ld: error: --build-id: invalid value '0XAB'\n>>> expected one of: none, md5, sha1, sha256, fast, uuid, 0xHEX\n"),
     // spec: cli.md §2.7 (-z)
     (&["-z", "frob"], "ld: error: unknown argument '-z frob'\n>>> GNU ld, lld and mold warn and go on; mortar does not ignore a -z keyword (spec/cli.md §2.7)\n"),
     (&["-z", "now,relro"], "ld: error: unknown argument '-z now,relro'\n>>> GNU ld, lld and mold warn and go on; mortar does not ignore a -z keyword (spec/cli.md §2.7)\n"),
@@ -409,7 +412,7 @@ fn typed_fields() {
     assert_eq!(plan.z.defs, Some(true));
     assert_eq!(plan.z.max_page_size.as_deref(), Some("65536".as_ref()));
     assert!(plan.shaping.gc_sections);
-    assert_eq!(plan.shaping.build_id, Some(BuildId::Hex("abcd".to_owned())));
+    assert_eq!(plan.shaping.build_id, Some(BuildId::Hex("0xabcd".to_owned())));
     assert_eq!(plan.diagnostics.error_limit, Some(7));
     assert!(plan.diagnostics.fatal_warnings && plan.diagnostics.no_warnings);
     assert_eq!(plan.diagnostics.color, Color::Never);
@@ -509,6 +512,93 @@ fn options_of_one_target() {
     assert_eq!(check_target(&unknown.plan, Target::I386).len(), 2);
 }
 
+// spec: cli.md §2.9 (the CET rows of `spec/x64.md` §11, R-10): read on
+// every target and carried in the plan (`plan.other`, with the value, and
+// `plan.target_options`); refused by name on x86-64 until `mortar_x64`
+// honours them; on AArch64 an option of x86 only (`unknown-option`);
+// `-z force-ibt`, lld's spelling, has no target and is refused on each.
+#[test]
+fn r10_cet_rows() {
+    let line = [
+        "-z",
+        "ibt",
+        "-z",
+        "shstk",
+        "-z",
+        "ibtplt",
+        "-z",
+        "cet-report=warning",
+        "-z",
+        "force-ibt",
+        "a.o",
+    ];
+    let parsed = p(&line);
+    assert_eq!(errors(&parsed), Vec::<String>::new());
+    let other: Vec<(String, Option<String>)> = parsed
+        .plan
+        .other
+        .iter()
+        .map(|o| (o.name.clone(), o.value.as_ref().map(|v| v.to_string_lossy().into_owned())))
+        .collect();
+    assert_eq!(
+        other,
+        [
+            ("-z ibt".to_owned(), None),
+            ("-z shstk".to_owned(), None),
+            ("-z ibtplt".to_owned(), None),
+            ("-z cet-report".to_owned(), Some("warning".to_owned())),
+            ("-z force-ibt".to_owned(), None),
+        ]
+    );
+    let targeted: Vec<&str> =
+        parsed.plan.target_options.iter().map(|o| o.option.as_str()).collect();
+    assert_eq!(targeted, ["-z ibt", "-z shstk", "-z ibtplt", "-z cet-report"]);
+    assert!(parsed.plan.target_options.iter().all(|o| o.targets == [Target::X86_64, Target::I386]));
+    // x86-64: no target error, each refused by name.
+    assert!(check_target(&parsed.plan, Target::X86_64).is_empty());
+    let refused: Vec<String> =
+        parsed.refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect();
+    assert_eq!(
+        refused,
+        [
+            "ld: error: unsupported option: -z ibt\n",
+            "ld: error: unsupported option: -z shstk\n",
+            "ld: error: unsupported option: -z ibtplt\n",
+            "ld: error: unsupported option: -z cet-report\n",
+            "ld: error: unsupported option: -z force-ibt\n",
+        ]
+    );
+    // AArch64: the four x86 rows are unknown options there.
+    let a64: Vec<String> = check_target(&parsed.plan, Target::Aarch64)
+        .iter()
+        .map(|(_, d)| d.render(&Style::plain("ld")))
+        .collect();
+    assert_eq!(a64.len(), 4);
+    assert_eq!(
+        a64[3],
+        "ld: error: unknown argument '-z cet-report'\n\
+         >>> -z cet-report is an option of x86-64 and i386 only; this link is for AArch64\n"
+    );
+    // The value is a choice; the default (no option) is `none`.
+    assert!(p(&["-z", "cet-report=loud", "a.o"]).failed());
+    assert!(p(&["-z", "cet-report", "a.o"]).failed());
+    for level in ["none", "warning", "error"] {
+        assert!(!p(&["-z", &format!("cet-report={level}"), "a.o"]).failed(), "{level}");
+    }
+}
+
+// spec: synth.md S-70, `docs/ROADMAP.md` M1/M2 (R-9): until the
+// static-pie rows are implemented, `gcc -static-pie`'s line is a static
+// pie in the plan and refused by name (`-pie` is a refused row).
+#[test]
+fn r9_static_pie_is_refused_by_name() {
+    let parsed = p(&["-static", "-pie", "--no-dynamic-linker", "a.o"]);
+    assert_eq!(errors(&parsed), Vec::<String>::new());
+    assert_eq!(parsed.plan.kind, OutputKind::StaticPie);
+    let refused: Vec<&str> = parsed.refused_uses().iter().map(|u| u.spelling.as_str()).collect();
+    assert!(refused.contains(&"-pie"), "{refused:?}");
+}
+
 // spec: cli.md §2.8 (each emulation names its target)
 #[test]
 fn each_emulation() {
@@ -533,7 +623,7 @@ fn refused_uses_in_argument_order() {
         "0",
         "-o",
         "y",
-        "--as-needed",
+        "--push-state",
         "-z",
         "relro",
         "-EL",
@@ -543,7 +633,7 @@ fn refused_uses_in_argument_order() {
         "p.so",
     ]);
     let refused: Vec<&str> = parsed.refused_uses().iter().map(|u| u.spelling.as_str()).collect();
-    assert_eq!(refused, ["-o", "-Tdata", "--as-needed", "-z relro"]);
+    assert_eq!(refused, ["-o", "-Tdata", "--push-state", "-z relro"]);
     let rendered: Vec<String> =
         parsed.refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect();
     assert_eq!(rendered[0], "ld: error: unsupported option: -o\n");

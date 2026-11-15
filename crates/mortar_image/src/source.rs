@@ -5,7 +5,7 @@
 use std::ops::Range;
 
 use mortar_core::inputs::CopyError;
-use mortar_core::{FileId, Inputs};
+use mortar_core::{FileId, Inputs, SymKey};
 use mortar_diag::{Diagnostic, FileRef, Kind, Place};
 
 /// The bytes of input files by file offset (`Inputs::resident`,
@@ -24,6 +24,25 @@ impl Source for Inputs<'_> {
 
     fn copy_to(&self, file: FileId, range: Range<u64>, out: &mut [u8]) -> Result<(), CopyError> {
         Inputs::copy_to(self, file, range, out)
+    }
+}
+
+/// The key a record's `r_sym` names (`spec/arch.md` §3.5), as the scan
+/// decoded it: the image decodes an input's records again at fill time
+/// (I-82 "read twice") and must name the same keys.
+pub trait RecordKeys: Sync {
+    /// The key of symbol `r_sym` of `file`'s symbol table; `None` when
+    /// the index is outside it.
+    fn key(&self, file: FileId, r_sym: u32) -> Option<SymKey>;
+}
+
+/// No input has records in the store (every plan's records are decoded).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoKeys;
+
+impl RecordKeys for NoKeys {
+    fn key(&self, _: FileId, _: u32) -> Option<SymKey> {
+        None
     }
 }
 

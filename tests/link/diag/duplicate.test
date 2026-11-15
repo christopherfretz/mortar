@@ -2,7 +2,6 @@
 # that names the symbol (gABI "Symbol Table": multiple STB_GLOBAL
 # definitions are not allowed); the failed link leaves no output file.
 #@ spec: resolve.md §3.8
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 main.c -o main.o
 cc -O1 a.c -o a.o

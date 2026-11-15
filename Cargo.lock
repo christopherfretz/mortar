@@ -22,8 +22,20 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 name = "mortar"
 version = "0.0.0"
 dependencies = [
+ "mortar_a64",
+ "mortar_arch",
  "mortar_cli",
+ "mortar_core",
  "mortar_diag",
+ "mortar_elf",
+ "mortar_image",
+ "mortar_input",
+ "mortar_layout",
+ "mortar_live",
+ "mortar_merge",
+ "mortar_resolve",
+ "mortar_scan",
+ "mortar_synth",
  "mortar_testutil",
 ]
 
@@ -97,7 +109,11 @@ dependencies = [
  "mortar_elf",
  "mortar_input",
  "mortar_layout",
+ "mortar_live",
+ "mortar_merge",
+ "mortar_plumb",
  "mortar_resolve",
+ "mortar_scan",
  "mortar_synth",
  "mortar_testutil",
 ]
