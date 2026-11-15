@@ -3,6 +3,7 @@
 //!
 //!   cargo xtask ci [--quick] [--step <name>]...    the gate: fmt, clippy, tests, link tests
 //!   cargo xtask linktest [options] [paths...]      the link tests ("Link tests")
+//!   cargo xtask static-identical [--update]        static links' digests ("static-identical")
 //!   cargo xtask bench [options]                    link speed and memory
 //!   cargo xtask plumb <output> --map <file> ...    the verifier (spec/plumb.md §8)
 //!   cargo xtask mason [programs|census|setup|libcxx|verify] ...  the Mason lane (tests/mason/README.md)
@@ -11,6 +12,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage: cargo xtask ci [--quick] [--step fmt|clippy|test|linktest]...\n       \
                      cargo xtask linktest [options] [<file or directory>...]\n       \
+                     cargo xtask static-identical [--update] [-j <n>]\n       \
                      cargo xtask bench [options]   (cargo xtask bench --help)\n       \
                      cargo xtask plumb <output> --map <file> --map-format <format> ...\n       \
                      cargo xtask mason [programs|census|setup|libcxx|verify] ...   (tests/mason/README.md)\n";
@@ -27,6 +29,8 @@ fn main() -> ExitCode {
             }
         },
         Some("linktest") => ExitCode::from(xtask::linktest::main(&args[1..])),
+        #[cfg(unix)]
+        Some("static-identical") => ExitCode::from(xtask::identical::main(&args[1..])),
         Some("plumb") => xtask::plumb::main(&args[1..]),
         #[cfg(unix)]
         Some("bench") => match xtask::bench::Options::parse(&args[1..]) {

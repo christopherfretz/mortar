@@ -1,0 +1,25 @@
+# static-identical corpus (spec/harness.md "static-identical"): Clang's
+# C++ with debug information (DWARF 5 by default) and Clang's C, statically
+# against GCC's runtime.
+#@ spec: harness.md "static-identical"
+#@ requires: clang
+
+cxx(clang) -g -O1 main.cc -o main.o
+cc(clang) -g -O2 add.c -o add.o
+link clang++ -static -no-pie main.o add.o -o whole
+link clang++ -static -no-pie -Wl,--gc-sections main.o add.o -o gc
+
+#--- main.cc
+#include <cstdio>
+#include <string>
+#include <vector>
+extern "C" int add(int, int);
+int main() {
+  std::vector<std::string> words{"mortar", "links", "statically"};
+  int n = 0;
+  for (const auto &w : words)
+    n = add(n, static_cast<int>(w.size()));
+  std::printf("%d\n", n);
+}
+#--- add.c
+int add(int a, int b) { return a + b; }
