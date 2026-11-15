@@ -699,22 +699,3 @@ impl Row {
 pub fn rows() -> &'static [Row] {
     crate::rows::ROWS
 }
-
-/// The rows whose status changes when the M2 join lifts the dynamic guard,
-/// by name, with that status (`spec/dyn.md` R-C1; the list's comment in
-/// `rows.rs` says which and why).
-#[must_use]
-pub fn join_changes() -> &'static [(&'static str, Status)] {
-    crate::rows::AT_JOIN
-}
-
-impl Row {
-    /// The row's status once the M2 join lifts the dynamic guard
-    /// (`spec/dyn.md` R-C1): [`join_changes`]' status if it names the
-    /// row, otherwise [`Row::status`].
-    #[must_use]
-    pub fn status_at_join(&self) -> Status {
-        let name = self.name();
-        join_changes().iter().find(|(n, _)| *n == name).map_or(self.status, |(_, s)| *s)
-    }
-}

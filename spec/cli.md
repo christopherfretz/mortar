@@ -648,18 +648,13 @@ until the phase that honors them lands with its test:
   `--error-execstack`, `-z start-stop-gc`, `-Ttext`, `-Tdata`, `-Tbss`,
   `--section-start` and `-z keep-text-section-prefix` stay `refused`.
 - M2, dynamic executables (`spec/dyn.md` §2.3 and request R-C1). WP-042
-  changed what is true while dynamic output is refused: `--hash-style` is
-  `partial` (`gnu` only), `-z notext` (and `-z textoff`) `refused`,
-  `--no-copy-dt-needed-entries` `noop` and `-no-pie` `supported`; it
-  added the `Plan` fields `dynamic.init` and `dynamic.fini`. The other
-  statuses below are each row's status **at the join**: they are listed
-  in `crates/mortar_cli/src/rows.rs` (`AT_JOIN`, read through
-  `Row::status_at_join` and `Parsed::refused_uses_at_join`;
-  `docs/status/options.md` "At the M2 join"), and WP-053 moves them into
-  the table in the change that lifts the dynamic guard. Until then the
-  statuses above stand, the gates (`-pie`, `-dynamic-linker`,
-  `-Bdynamic`) are refused by `mortar::dynamic`, and the noop rows keep
-  the reason that names the refusal. At the join:
+  set what was true while dynamic output was refused (`--hash-style`
+  `partial`, `gnu` only; `-z notext` and `-z textoff` `refused`;
+  `--no-copy-dt-needed-entries` `noop`; `-no-pie` `supported`; the `Plan`
+  fields `dynamic.init` and `dynamic.fini`) and kept the statuses of the
+  join in a second table; WP-053, the join (AArch64), moved them into the
+  table and deleted that table and the guard that refused the gates
+  (`-pie`, `-dynamic-linker`, `-Bdynamic`). The statuses:
   - `supported`: `-pie`, `-dynamic-linker`, `-Bdynamic`, `--as-needed`,
     `--no-as-needed` (`spec/dyn.md` D-11), `-E` (and
     `--export-dynamic`), `-rpath`, `-init`, `-fini`, `-z text`, and
@@ -674,7 +669,7 @@ until the phase that honors them lands with its test:
     (D-15), `--dynamic-list` (M4), `-z nodynamic-undefined-weak` and
     `-z dynamic-undefined-weak` (D-25);
   - `noop`: `--no-copy-dt-needed-entries` (the default; D-15);
-  - rows R-C1 does not name whose reason today is the refusal (WP-042):
+  - rows R-C1 does not name whose reason was the refusal (WP-042):
     `-rpath-link` and `--no-dynamic-linker` `supported`; the five
     `-Bsymbolic` rows, `--no-undefined` and `-z defs` stay `noop` with a
     reason that no longer names the refusal (GNU ld and mold write

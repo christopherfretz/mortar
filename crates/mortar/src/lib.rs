@@ -123,6 +123,7 @@ pub fn invoke(prog: &str, args: &[OsString]) -> Invocation {
 
 /// [`invoke`] with relative paths relative to `cwd`.
 #[must_use]
+#[allow(clippy::too_many_lines, reason = "the steps of spec/cli.md §4.3 in order")]
 pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let parsed = mortar_cli::parse(args);
     let plan = &parsed.plan;
@@ -151,8 +152,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     // The refusals of options come after the front, whose phases stop at
     // the first error (the report is in key order, whatever the order of
     // emission, `spec/diag.md` §6).
-    // The dynamic gates are the guard's (WP-041 step 0e).
-    let refusals = dynamic::option_refusals(plan, &parsed);
+    let refusals = parsed.refusals();
     let failed = |diagnostics: Collector, phases: String| Invocation {
         outcome: Outcome::Failed(diagnostics.finish()),
         color,

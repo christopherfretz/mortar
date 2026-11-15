@@ -344,17 +344,15 @@ fn z_keywords() {
 }
 
 // spec: dyn.md D-20, R-C1 (--hash-style: gnu only; sysv, both and none are
-// refused as a value, by name, today and at the join)
+// refused as a value, by name)
 #[test]
 fn hash_style_is_gnu_only() {
     let parsed = ok(&["--hash-style=gnu", "m.o"]);
     assert_eq!(parsed.plan.dynamic.hash_style, Some(HashStyle::Gnu));
     assert!(parsed.refused_uses().is_empty());
-    assert!(parsed.refused_uses_at_join().is_empty());
     for style in ["sysv", "both", "none"] {
         let parsed = ok(&["--hash-style", style, "m.o"]);
         assert_eq!(written(&parsed.refused_uses()), [format!("--hash-style={style}")]);
-        assert_eq!(written(&parsed.refused_uses_at_join()), [format!("--hash-style={style}")]);
         let r = refusals(&parsed);
         assert_eq!(r.len(), 1);
         assert!(
@@ -397,10 +395,7 @@ fn m2_refusals_keep_their_names() {
         full.push("m.o");
         let parsed = ok(&full);
         let today: Vec<String> = parsed.refused_uses().iter().map(|u| u.spelling.clone()).collect();
-        let join: Vec<String> =
-            parsed.refused_uses_at_join().iter().map(|u| u.spelling.clone()).collect();
         assert_eq!(today, [name], "{full:?}");
-        assert_eq!(join, [name], "{full:?} at the join");
         let r = refusals(&parsed);
         assert!(r[0].starts_with(&format!("ld: error: unsupported option: {name}")), "{r:?}");
     }
@@ -410,11 +405,10 @@ fn m2_refusals_keep_their_names() {
     assert!(!parsed.plan.inputs[0].state.copy_dt_needed);
 }
 
-// spec: WP-040 step 0e, dyn.md R-C1 (the gates are refused by the table
-// today, which `mortar::dynamic` reports; at the join no row of a dynamic
-// line refuses)
+// spec: WP-040 step 0e, dyn.md R-C1 (since the M2 join, WP-053, no row of
+// a dynamic line refuses, the gates included)
 #[test]
-fn the_gates_today_and_at_the_join() {
+fn no_row_of_a_dynamic_line_refuses() {
     let line = [
         "--build-id",
         "--eh-frame-hdr",
@@ -453,16 +447,5 @@ fn the_gates_today_and_at_the_join() {
         "-lc",
     ];
     let parsed = ok(&line);
-    assert_eq!(
-        written(&parsed.refused_uses()),
-        [
-            "-dynamic-linker=/lib/ld-linux-aarch64.so.1",
-            "-pie",
-            "-Bdynamic",
-            "-init=i",
-            "-fini=f",
-            "--export-dynamic-symbol=s"
-        ]
-    );
-    assert_eq!(written(&parsed.refused_uses_at_join()), Vec::<String>::new());
+    assert_eq!(written(&parsed.refused_uses()), Vec::<String>::new());
 }

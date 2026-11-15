@@ -12,7 +12,9 @@
     reason = "the error is the scan's diagnostic, made once per section"
 )]
 
-use mortar_arch::{Arch, PlaceFacts, ProofRun, RelocAt, ScanCx, ScanTables, Site, SymFacts, SymNames};
+use mortar_arch::{
+    Arch, PlaceFacts, ProofRun, RelocAt, ScanCx, ScanTables, Site, SymFacts, SymNames,
+};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey};
 use mortar_diag::{Diagnostic, Key, Kind, Place};
 use mortar_elf::{SectionIndex, SymbolIndex};
@@ -44,7 +46,7 @@ pub struct Visit<'r> {
     pub output: mortar_arch::OutputKind,
 }
 
-impl<'r> Visit<'r> {
+impl Visit<'_> {
     /// The `ScanCx` the scan called `arch.scan` with for this record.
     #[must_use]
     pub fn cx(&self) -> ScanCx<'_> {

@@ -38,15 +38,15 @@ use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 use mortar_merge::order::Order;
 use mortar_merge::refs;
 use mortar_synth::chunks::SynthKind;
+use mortar_synth::dynamic::{ArraySection, DynKind, DynamicPlan, RunpathTag};
+use mortar_synth::dynstr::DynstrChunk;
+use mortar_synth::dynsym::{DynsymChunk, DynsymInputs};
 use mortar_synth::eh::CodeRef;
+use mortar_synth::gnuhash::GnuHashChunk;
 use mortar_synth::got::{GotAddrs, GotPlan, Region, SlotValues};
 use mortar_synth::hdr::{HdrAddrs, HdrPlan};
 use mortar_synth::image::{EhChunk, GotChunk, GotPart, HdrChunk, SymTable, SymtabChunk};
 use mortar_synth::symtab::{InternalValue, SymAddrs, SymCtx, SymtabPlan};
-use mortar_synth::dynamic::{ArraySection, DynKind, DynamicPlan, RunpathTag};
-use mortar_synth::dynstr::DynstrChunk;
-use mortar_synth::dynsym::{DynsymChunk, DynsymInputs};
-use mortar_synth::gnuhash::GnuHashChunk;
 use mortar_synth::version::{VerneedChunk, VersymChunk};
 use mortar_synth::{
     BuildIdPlan, Division, DynAddrs, DynRecord, DynSymSource, DynsymPlan, EhPlan, EhSource,
@@ -1462,7 +1462,12 @@ impl SynthChunk for RelaDynChunk {
         Division::Divisible
     }
 
-    fn write(&self, _: &FillCx<'_>, range: std::ops::Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+    fn write(
+        &self,
+        _: &FillCx<'_>,
+        range: std::ops::Range<u64>,
+        out: &mut [u8],
+    ) -> Result<(), SynthError> {
         if range.end > self.0.size() || out.len() as u64 != range.end - range.start {
             return Err(mortar_synth::error::internal(".rela.dyn written out of its range"));
         }
@@ -1483,7 +1488,12 @@ impl SynthChunk for Nobits {
         Division::Whole { max_size: 0 }
     }
 
-    fn write(&self, _: &FillCx<'_>, _: std::ops::Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+    fn write(
+        &self,
+        _: &FillCx<'_>,
+        _: std::ops::Range<u64>,
+        out: &mut [u8],
+    ) -> Result<(), SynthError> {
         out.fill(0);
         Ok(())
     }

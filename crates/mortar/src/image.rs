@@ -103,6 +103,10 @@ fn copy_error(e: &ReadError) -> CopyError {
 /// # Errors
 ///
 /// `MergeEh::new`'s, which phase 80 already passed on these tables.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the plans of every chunk, static and dynamic, in one place"
+)]
 pub fn with_link<T>(
     front: &Front<'_>,
     store: &Store,

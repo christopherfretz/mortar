@@ -225,6 +225,7 @@ fn refused(what: &str) -> Diagnostic {
 }
 
 /// The output's interpreter (D-31): `-dynamic-linker`'s path.
+#[allow(clippy::result_large_err, reason = "the phase's diagnostic, made once")]
 fn interp(plan: &Plan) -> Result<InterpPlan, Diagnostic> {
     use std::os::unix::ffi::OsStrExt as _;
     match &plan.dynamic.dynamic_linker {
@@ -282,7 +283,11 @@ fn arrays(t: &PlanIn<'_, '_>) -> [bool; 3] {
 /// `.dynstr`, GOT, `.rela.dyn`, `.dynamic` and `.interp` plans, with the
 /// `Slots` fields they fix (`needed`, `copies`, `copy_of`, `dynsym`,
 /// `verneed`, `dynstr`). Each failure is reported into `diag`.
-pub fn plan(t: &PlanIn<'_, '_>, slots: &mut Slots, diag: &Collector) -> Option<(GotPlan, DynTables)> {
+pub fn plan(
+    t: &PlanIn<'_, '_>,
+    slots: &mut Slots,
+    diag: &Collector,
+) -> Option<(GotPlan, DynTables)> {
     let key = mortar_synth::error::key(0);
     let emit = |d: Diagnostic| {
         diag.emit(key, d);
@@ -299,12 +304,11 @@ pub fn plan(t: &PlanIn<'_, '_>, slots: &mut Slots, diag: &Collector) -> Option<(
     let interp = interp(t.plan).map_err(emit).ok()?;
     // D-42: the copy allocations.
     let defs = InputCopyDefs { inputs: t.inputs, resolution: t.resolution };
-    let copy = mortar_synth::copy_plan(t.demands, &defs)
-        .map_err(|e| emit(e.into_diagnostic()))
-        .ok()?;
+    let copy =
+        mortar_synth::copy_plan(t.demands, &defs).map_err(|e| emit(e.into_diagnostic())).ok()?;
     slots.needed = t.needed.into();
-    slots.copies = copy.copies.clone();
-    slots.copy_of = copy.copy_of.clone();
+    slots.copies.clone_from(&copy.copies);
+    slots.copy_of.clone_from(&copy.copy_of);
     // D-21, D-22, D-26.
     let dynsym =
         mortar_synth::dynsym_plan(t.resolution, t.demands, slots, t.src, t.pool, diag).ok()?;
@@ -315,9 +319,9 @@ pub fn plan(t: &PlanIn<'_, '_>, slots: &mut Slots, diag: &Collector) -> Option<(
     let inputs = DynsymInputs { resolution: t.resolution, demands: t.demands, slots, src: t.src };
     let verneed = mortar_synth::version::verneed_plan(&dynsym, &inputs, t.needed, diag).ok()?;
     // D-24.
-    let rpath = join_rpath(&t.plan.dynamic.rpath.iter().map(|p| p.as_encoded_bytes()).collect::<Vec<_>>());
-    let dynstr =
-        mortar_synth::dynstr_plan(&dynsym, t.needed, &verneed, rpath.as_deref(), t.src);
+    let rpath =
+        join_rpath(&t.plan.dynamic.rpath.iter().map(|p| p.as_encoded_bytes()).collect::<Vec<_>>());
+    let dynstr = mortar_synth::dynstr_plan(&dynsym, t.needed, &verneed, rpath.as_deref(), t.src);
     let sizes = mortar_synth::dynsym::chunk_sizes(&dynsym, &verneed, &dynstr, facts.class)
         .map_err(|e| emit(e.into_diagnostic()))
         .ok()?;
@@ -325,17 +329,9 @@ pub fn plan(t: &PlanIn<'_, '_>, slots: &mut Slots, diag: &Collector) -> Option<(
     slots.dynstr = dynstr;
     // D-46, D-48, D-41.
     let cx = DynGotCx { pie: kind == DynKind::Pie, bind_now: t.output_cx.bind_now };
-    let got = GotPlan::new_dynamic(
-        t.arch,
-        slots,
-        t.got_output,
-        t.variant,
-        cx,
-        t.kinds,
-        &dynsym,
-        diag,
-    )
-    .ok()?;
+    let got =
+        GotPlan::new_dynamic(t.arch, slots, t.got_output, t.variant, cx, t.kinds, &dynsym, diag)
+            .ok()?;
     // D-40.
     let rela = RelaPlan::new(facts.class, facts.rel_form, t.demands, &got, slots.copies.len())
         .map_err(|e| emit(e.into_diagnostic()))
@@ -374,7 +370,8 @@ pub fn plan(t: &PlanIn<'_, '_>, slots: &mut Slots, diag: &Collector) -> Option<(
         verneed: slots.verneed.len() as u32,
         bind_now: t.output_cx.bind_now,
         arch_tags: t.arch.dyn_tags(&t.output_cx),
-        bti_property: t.output_cx.feature_1_and & mortar_elf::consts::GNU_PROPERTY_AARCH64_FEATURE_1_BTI
+        bti_property: t.output_cx.feature_1_and
+            & mortar_elf::consts::GNU_PROPERTY_AARCH64_FEATURE_1_BTI
             != 0,
         variant_pcs_jump_slot,
     };

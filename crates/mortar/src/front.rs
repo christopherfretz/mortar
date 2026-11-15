@@ -534,7 +534,13 @@ pub fn front<'s>(
             kinds: &kinds,
             needed: &needed,
             variant,
-            output_cx: OutputCx { output, feature_1_and, pac_plt: false, force_bti: false, bind_now },
+            output_cx: OutputCx {
+                output,
+                feature_1_and,
+                pac_plt: false,
+                force_bti: false,
+                bind_now,
+            },
             got_output,
             relro: options.relro,
             pool: &pool,
@@ -629,8 +635,7 @@ pub fn front<'s>(
     let (placement_assignment, placed, layout, erratum_fixes) = loop {
         attempt += 1;
         plans.shstrtab = shstrtab.clone();
-        let (synthetic, present) =
-            synth_chunks(&plans, &dyn_chunks, &eh, shndx, target.class, rel);
+        let (synthetic, present) = synth_chunks(&plans, &dyn_chunks, &eh, shndx, target.class, rel);
         let Some(sizes) = chunk_ids(FIRST_SYNTHETIC, &present) else {
             diag.emit(Key::new(80, 0, 0), internal("a synthetic chunk given twice"));
             return None;
@@ -917,8 +922,8 @@ impl Drop for Deferred<'_, '_, '_> {
         if !self.armed || self.order.deferred().is_empty() {
             return;
         }
-        let walker = Walker::new(self.arch, self.inputs, self.options)
-            .with_weak_dyn(self.weak_dyn.clone());
+        let walker =
+            Walker::new(self.arch, self.inputs, self.options).with_weak_dyn(self.weak_dyn.clone());
         for (k, d) in walker.deferred_report(self.order.deferred(), self.pool) {
             self.diag.emit(k, d);
         }
@@ -1114,7 +1119,8 @@ fn synth_chunks(
                 let sh_type = mortar_elf::consts::SHT_NOBITS;
                 return SynthChunk { synth, sh_type, flags, align, size };
             }
-            let h = kind.header(class, rel).unwrap_or_else(|| unreachable!("a chunk with a header"));
+            let h =
+                kind.header(class, rel).unwrap_or_else(|| unreachable!("a chunk with a header"));
             let (sh_type, align) = match kind {
                 SynthKind::EhFrame => (eh.sh_type(), eh.align()),
                 _ => (h.sh_type, h.align.trailing_zeros() as u8),
