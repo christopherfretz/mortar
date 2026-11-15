@@ -13,11 +13,14 @@
 //! - **mismatch**: mortar writes other bytes, or refuses a value the
 //!   reference wrote. Each is printed; there must be none.
 //! - **relaxed**: the word no longer has the instruction the type
-//!   requires: the reference relaxed it. M1 does not relax IE (§8.3, R3);
+//!   requires: the reference relaxed it. The comparison runs with R3
+//!   and R5 inhibited (the fixed point needs the unrelaxed form);
 //!   R1 (TLSDESC → LE) is compared on canonical input words instead.
 //! - **ifunc**: the target is an `STT_GNU_IFUNC`; the reference points the
-//!   field at its IPLT entry (stage B).
-//! - **refused**: the type is not enabled at M2, or is a stage-B relaxation.
+//!   field at its IPLT entry, which this harness does not locate (the
+//!   IPLT path is tested in `a64.rs` §10.4).
+//! - **refused**: the type is not enabled at M2, or mortar refuses the
+//!   construct by name.
 //!
 //! The table printed lists every M1 type, including those no input covers.
 
@@ -27,7 +30,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mortar_a64::{A64, table};
-use mortar_arch::{Arch, FieldError, Reloc, SlotKind, Status, TargetKind};
+use mortar_arch::{Arch, DemandFlags, FieldError, Reloc, SlotKind, Status, TargetKind};
 use mortar_testutil::{LLVM_MAJORS, Scratch, run, tool};
 
 mod support;
@@ -164,6 +167,11 @@ fn compare(
                 }
                 _ => vec![None],
             };
+            // The fixed point re-applies a record to the output word, so
+            // only the unrelaxed forms can be compared: R3 and R5 are
+            // switched off by their inhibitors (their forms are tested in
+            // `relax.rs`). A reference that relaxed shows as `relaxed`.
+            t.flags.insert(key(1), DemandFlags::TLSIE_NORELAX | DemandFlags::GOT_NORELAX);
             let mut outcome = None;
             for slot in slots {
                 if let Some(a) = slot {

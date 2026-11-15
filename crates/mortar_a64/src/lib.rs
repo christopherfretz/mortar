@@ -4,6 +4,7 @@
 //! - [`table`]: the static relocation table of §6.1, as data.
 //! - [`mapping`]: instruction ranges from mapping symbols (§3.4).
 //! - [`erratum`]: the 843419 predicate, ADR fix and patch (§11).
+//! - [`relax`]: the input-only predicates of the relaxations (§8).
 //! - [`synth`]: PLT/IPLT entries, thunks, static slot contents (§9, §10).
 //! - [`A64`]: the [`Arch`] implementation; [`A64::scan_checks`] are the
 //!   input-only checks of arch.md §3.4.
@@ -16,18 +17,19 @@ pub mod synth;
 pub mod table;
 
 mod apply;
+pub mod relax;
 
 use mortar_arch::shapes::EH_ENCODINGS;
 use mortar_arch::{
     Arch, Branch, Code, DemandClass, DynRole, EhEncodings, Erratum, ErratumSite, Facts, Field,
-    FieldError, GotBase, GotShape, Howto, OutputCx, PatchCx, PltChunk, PltPart, PltShape,
-    PltVariant, PropMerge, Reach, RefName, Refusal, RelForm, Site, SlotKind, Status, SynthCx,
-    ThunkShape, TlsAbi, TlsVariant, Unproved, Weak0Rule,
+    FieldError, GotBase, GotShape, Howto, OutputCx, OutputKind, PatchCx, PltChunk, PltPart,
+    PltShape, PltVariant, PropMerge, Reach, RefName, Refusal, RelForm, RelocAt, Site, SlotKind,
+    Status, SymNames, SynthCx, ThunkShape, TlsAbi, TlsVariant, UnitWindow, Unproved, Weak0Rule,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
 
-pub use apply::{R2_PENDING, R4_PENDING, WEAK_TLS, scan_checks};
+pub use apply::{ADD_X0_X1_X0, MRS_X1_TPIDR, WEAK_TLS, scan_checks};
 
 /// The AArch64 architecture, built with the milestone it enables and its
 /// options (arch.md §3.7 `errata`).
@@ -155,7 +157,7 @@ impl Arch for A64 {
     fn scan(
         &self,
         cx: &mortar_arch::ScanCx<'_>,
-        at: &mortar_arch::RelocAt<'_>,
+        at: &RelocAt<'_>,
         out: &mut mortar_arch::DemandSink<'_>,
     ) {
         apply::scan(cx, at, out);
@@ -164,10 +166,36 @@ impl Arch for A64 {
     fn apply(
         &self,
         cx: &mortar_arch::FillCx<'_>,
-        at: &mortar_arch::RelocAt<'_>,
+        at: &RelocAt<'_>,
         out: &mut mortar_arch::SectionOut<'_>,
     ) -> Result<(), FieldError> {
-        apply::apply(cx, at, out)
+        apply::apply(self.enables(Status::M2), cx, at, out)
+    }
+
+    /// R4's members (§8.4): the lead's index is the unit; the `CALL26`
+    /// owns `[o+8, o+16)`, the `nop` at `o+12` included.
+    fn unit_window(
+        &self,
+        output: OutputKind,
+        at: &RelocAt<'_>,
+        names: &dyn SymNames,
+    ) -> Option<UnitWindow> {
+        let (start, end) = mortar_arch::seq::field_window(at.r_offset, at.howto)?;
+        let mut w = UnitWindow { start, end, unit: at.index, record: at.index };
+        if output.is_exec()
+            && let Some((lead, o)) = relax::gd_lead(at, names)
+        {
+            w.unit = lead;
+            if at.r_type == relax::CALL26 {
+                (w.start, w.end) = (o + 8, o + 16);
+            }
+        }
+        Some(w)
+    }
+
+    /// R4's `CALL26` in an exec output (§8.4).
+    fn consumed(&self, output: OutputKind, at: &RelocAt<'_>, names: &dyn SymNames) -> bool {
+        output.is_exec() && at.r_type == relax::CALL26 && relax::gd_lead(at, names).is_some()
     }
 
     fn got(&self) -> &'static GotShape {
@@ -268,6 +296,15 @@ impl Arch for A64 {
 
     /// The ADR fix reaches: `Page(V) − Q` in `s(21)`, with `cx.site = Q`
     /// and `cx.word` the pre-fix `W1`.
+    /// `b patch` and `b F + 4`: `s(28)` (§11.2).
+    fn patch_reach(&self, e: Erratum) -> Reach {
+        match e {
+            Erratum::E843419 => reach(28),
+            // Not in `errata()`: never asked; no reach.
+            _ => Reach { min: 0, max: -1 },
+        }
+    }
+
     fn erratum_in_place(&self, e: Erratum, cx: &PatchCx) -> bool {
         match e {
             Erratum::E843419 => erratum::adr_fix(cx.site, cx.word).is_some(),

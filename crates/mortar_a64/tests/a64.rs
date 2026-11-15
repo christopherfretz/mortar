@@ -11,7 +11,7 @@ use mortar_arch::{
     Status, SynthCx, TargetKind, TlsBlock, Weak0Rule,
 };
 use mortar_diag::RefusalClass;
-use support::{Case, M2, Tables, key, scan_one, words};
+use support::{Case, M2, Tables, key, raised, scan_one, words};
 
 fn rng(seed: &mut u64) -> u64 {
     *seed ^= *seed << 13;
@@ -701,11 +701,14 @@ fn s5_scan_class_and_undefined() {
     let input = words(&[ADRP_X0]);
     let r = |k, r_type| Reloc { r_offset: 0, key: k, r_type, addend: 0 };
     let s = scan_one(A64::M1, &t, OutputKind::Static, ALLOC, &input, r(key(2), 275)).unwrap();
-    assert_eq!(s.errors, [(0, ScanError::Undefined)]);
+    // An undefined target is a reference event, merged by the driver.
+    assert!(s.errors.is_empty());
+    assert_eq!(s.undefined, [(key(2), 0)]);
     let s = scan_one(A64::M1, &t, OutputKind::Static, ALLOC, &input, r(key(3), 275)).unwrap();
     assert_eq!(s.raised, [(key(3), DemandFlags::IPLT)]);
+    // An unpaired 311 also raises GOT_NORELAX (§8.5 condition 3).
     let s = scan_one(A64::M1, &t, OutputKind::Static, ALLOC, &input, r(key(1), 311)).unwrap();
-    assert_eq!(s.raised, [(key(1), DemandFlags::GOT)]);
+    assert_eq!(raised(&s, key(1)), DemandFlags::GOT | DemandFlags::GOT_NORELAX);
     // PIE: ABS64 against local in a writable place counts one RELATIVE.
     let w = PlaceFacts { alloc: true, writable: true };
     let s = scan_one(M2, &t, OutputKind::Pie, w, &[0; 8], r(key(1), 257)).unwrap();
@@ -915,4 +918,50 @@ fn s13_3_facts_dyn_types_properties() {
     // REL is refused (§1).
     let h: Howto = table::howto(257).unwrap();
     assert!(a.write_addend(&h, &mut [0; 8], 0).is_err());
+}
+
+// ---------------------------------------------------------------- §10.4
+
+#[test]
+fn s10_4_iplt_and_irelative_in_a_static_link() {
+    // A non-preemptible IFUNC: every reference raises IPLT, and its address
+    // everywhere is the IPLT entry's (`S`).
+    let entry = 0x40_2000u64;
+    let word = 0x42_0010u64;
+    let resolver = 0x40_1234u64;
+    let mut t = Tables::default();
+    t.sym(key(1), entry, TargetKind::Ifunc);
+    t.slots.insert((key(1), SlotKind::Addr), 0x42_0100);
+    let bl = words(&[BL]);
+    for (r_type, input, flags) in [
+        (283, &bl, DemandFlags::IPLT),
+        (275, &words(&[ADRP_X0]), DemandFlags::IPLT),
+        (311, &words(&[ADRP_X0]), DemandFlags::GOT | DemandFlags::IPLT),
+        (257, &vec![0; 8], DemandFlags::IPLT),
+    ] {
+        let r = Reloc { r_offset: 0, key: key(1), r_type, addend: 0 };
+        let s = scan_one(A64::M1, &t, OutputKind::Static, ALLOC, input, r).unwrap();
+        assert!(raised(&s, key(1)).contains(flags), "{r_type}: {:?}", s.raised);
+        assert!(s.counts.is_empty(), "{r_type}: no dynamic relocation at the place");
+    }
+    // The call goes to the IPLT entry, the data word holds it.
+    let c = Case::new(&t, &bl, 0x40_1000);
+    assert_eq!(c.word(283, 0, key(1), 0).unwrap(), BL | (0x1000 >> 2));
+    let c = Case::new(&t, &[0; 8], 0x41_0000);
+    let out = c.apply(&[Reloc { r_offset: 0, key: key(1), r_type: 257, addend: 0 }]).unwrap();
+    assert_eq!(out, entry.to_le_bytes());
+    // The GOT slot of an ifunc holds S (§10.1), the entry loads its word.
+    let (slot, n) = synth::static_slot(SlotKind::Addr, entry, None, &mortar_a64::TLS).unwrap();
+    assert_eq!((slot[0], n), (entry, 1));
+    let cx = SynthCx { addr: entry, header: 0, got_plt: word, got_base: 0, index: 0 };
+    let mut bytes = [0u8; 16];
+    A64::M1.write_plt(PltVariant::Plain, PltPart::Iplt(0), &cx, &mut bytes).unwrap();
+    let (expect, _) = synth::plt_entry(entry, word, false).unwrap();
+    assert_eq!(bytes.to_vec(), words(&expect[..4]));
+    // Its IRELATIVE record: r_offset the word, type 1032, addend the resolver.
+    let rela = synth::irelative(word, resolver);
+    assert_eq!(u64::from_le_bytes(rela[..8].try_into().unwrap()), word);
+    assert_eq!(u64::from_le_bytes(rela[8..16].try_into().unwrap()), 1032);
+    assert_eq!(u64::from_le_bytes(rela[16..].try_into().unwrap()), resolver);
+    assert_eq!(A64::M1.dyn_type(DynRole::IRelative), Some(synth::IRELATIVE));
 }

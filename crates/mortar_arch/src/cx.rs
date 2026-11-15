@@ -15,6 +15,7 @@ use mortar_diag::Key;
 use crate::class::PlaceFacts;
 use crate::error::{Incompatible, Refusal};
 use crate::flags::{DemandFlags, GlobalFlags};
+use crate::seq::{Code, Proof, ProofRun};
 use crate::shapes::{DynRole, TlsBlock};
 use crate::vocab::{Howto, OutputKind, Site, SlotKind, TargetKind};
 
@@ -72,6 +73,20 @@ pub struct RelocAt<'a> {
     pub site: Site<'a>,
     /// The same relocation section (§3.5).
     pub records: &'a dyn Records,
+    /// The instruction proof of the input section's bytes (§3.6 rule 1),
+    /// in section offsets: for AArch64 the runs of its mapping symbols
+    /// (a64.md §3.4). A word no `Insn` run covers is not proved.
+    pub proof: &'a [ProofRun],
+}
+
+impl RelocAt<'_> {
+    /// Whether the input word at section offset `off` is a proved
+    /// instruction (§3.6 rule 1).
+    #[must_use]
+    pub fn is_insn(&self, off: u64) -> bool {
+        let code = Code { bytes: self.site.bytes, addr: 0, proof: self.proof };
+        code.word_proof(off).0 == Proof::Insn
+    }
 }
 
 impl std::fmt::Debug for RelocAt<'_> {
@@ -102,9 +117,14 @@ pub struct SymFacts {
 
 /// The tables scan reads (§3.4: `Inputs`, `Resolution`, `Liveness`),
 /// as the generic phase provides them.
-pub trait ScanTables: Sync {
+pub trait ScanTables: SymNames {
     fn sym(&self, key: SymKey) -> SymFacts;
-    /// The symbol's name, as its symbol table has it.
+}
+
+/// Symbol names, as their symbol tables have them: a sequence's pattern
+/// names a symbol (§3.5; a64.md §8.4 `__tls_get_addr`), and a diagnostic
+/// names its target.
+pub trait SymNames: Sync {
     fn name(&self, key: SymKey) -> &[u8];
 }
 
@@ -136,8 +156,6 @@ pub enum ScanError {
     Incompatible(Incompatible),
     /// `malformed-input`: the field or its window is outside the section.
     Outside,
-    /// `undefined-symbol`.
-    Undefined,
     /// `refused`, feature `overlapping relocations` (§3.4).
     Overlap,
     /// The target kind cannot occur in this output kind (a blank cell of
@@ -170,6 +188,12 @@ pub trait DemandOut {
     /// Reports an error for the record `record` of the section being
     /// scanned.
     fn error(&mut self, record: u32, error: ScanError);
+    /// Reports that the record `record` of the section being scanned is a
+    /// surviving reference to `key`, whose target kind is `Undefined`
+    /// (§3.4). The scan driver merges the events of all files into one
+    /// `undefined-symbol` diagnostic per key, keyed by the first reference
+    /// in `(FileId, section index, record index)` order.
+    fn undefined(&mut self, key: SymKey, record: u32);
 }
 
 /// The sink of `scan` (§3.4).
@@ -207,6 +231,10 @@ impl<'a> DemandSink<'a> {
     pub fn error(&mut self, record: u32, error: ScanError) {
         self.out.error(record, error);
     }
+
+    pub fn undefined(&mut self, key: SymKey, record: u32) {
+        self.out.undefined(key, record);
+    }
 }
 
 /// What fill knows about a relocation's symbol (§3.6).
@@ -226,7 +254,7 @@ pub struct SymValue {
 
 /// The tables fill reads (§3.6): model §3 and §4, as the image phase
 /// provides them.
-pub trait FillTables: Sync {
+pub trait FillTables: SymNames {
     fn sym(&self, key: SymKey) -> SymValue;
     /// The address of the key's slot of `kind`; for `SlotKind::TlsLd`, the
     /// output's module slot whatever the key.

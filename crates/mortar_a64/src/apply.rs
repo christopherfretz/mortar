@@ -6,27 +6,19 @@
 
 use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
-    AddendRule, Base, ClassOutcome, DemandClass, DemandFlags, DemandSink, Field, FieldError,
-    FillCx, Incompatible, Minus, Refusal, RelocAt, ScanCx, ScanError, SectionOut, TargetKind,
-    Terms, Weak0Rule, class_outcome,
+    AddendRule, Base, Check, ClassOutcome, DemandClass, DemandFlags, DemandSink, Field, FieldError,
+    FillCx, Incompatible, Minus, Refusal, RelocAt, ScanCx, ScanError, SectionOut, SlotKind,
+    TargetKind, Terms, Weak0Rule, class_outcome,
 };
 use mortar_diag::RefusalClass;
 
 use crate::forms::{self, B26};
-use crate::synth::{NOP, checked};
-use crate::{TLS, weak0_rule};
+use crate::synth::{NOP, checked, page_delta};
+use crate::{TLS, relax, weak0_rule};
 
 /// A thread-local undefined weak (§7).
 pub const WEAK_TLS: Refusal =
     Refusal::named(RefusalClass::Feature, "undefined weak thread-local symbol");
-
-/// R2 (TLSDESC → IE) is M2 and not yet written (stage B of WP-023).
-pub const R2_PENDING: Refusal =
-    Refusal::named(RefusalClass::Feature, "TLSDESC to initial-exec relaxation");
-
-/// R4 (traditional GD → LE/IE) is M2 and not yet written.
-pub const R4_PENDING: Refusal =
-    Refusal::named(RefusalClass::Feature, "traditional general-dynamic TLS in an executable");
 
 /// The input-only checks of arch.md §3.4 for one relocation: the field and
 /// its window lie in the section; the addend rule (a64.md §3.1); the
@@ -51,14 +43,19 @@ pub fn scan_checks(at: &RelocAt<'_>) -> Result<(), ScanError> {
     Ok(())
 }
 
-/// `scan` (arch.md §3.4): the checks, then the class rule of §4.3 and the
-/// TLS table of a64.md §8 and §12.
+/// `scan` (arch.md §3.4): the checks, then the class rule of §4.3, the
+/// TLS table of a64.md §8 and §12, and the inhibitor flags of R3 and R5.
 pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
     if let Err(e) = scan_checks(at) {
         out.error(at.index, e);
         return;
     }
     let h = at.howto;
+    let exec = cx.output.is_exec();
+    // §8.4: R4's `CALL26` is consumed: no reference, no demand.
+    if exec && at.r_type == relax::CALL26 && relax::gd_lead(at, cx.tables).is_some() {
+        return;
+    }
     let sym = cx.tables.sym(at.key);
     if h.class.is_tls() && sym.kind == TargetKind::Weak0 && cx.place.alloc {
         out.error(at.index, ScanError::Refused(WEAK_TLS));
@@ -74,36 +71,57 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
             }
         }
         ClassOutcome::Incompatible(r) => out.error(at.index, ScanError::Incompatible(r)),
-        ClassOutcome::Undefined => out.error(at.index, ScanError::Undefined),
+        ClassOutcome::Undefined => out.undefined(at.key, at.index),
         ClassOutcome::Impossible => out.error(at.index, ScanError::Internal),
         ClassOutcome::ArchTls => {
-            let (flags, global) = tls_demand(h.class, cx.output, sym.kind);
+            let gd =
+                exec && h.class == DemandClass::TlsGd && relax::gd_lead(at, cx.tables).is_some();
+            let (flags, global) = tls_demand(h.class, at.r_type, cx.output, sym.kind, gd);
             out.raise(at.key, flags);
             out.raise_global(global);
         }
     }
+    // The inhibitors (§8.3, §8.5): input-only, raised in every output kind.
+    let inhibit = match at.r_type {
+        relax::ADR_GOT_PAGE | relax::LD64_GOT_LO12_NC if relax::got_pair(at).is_none() => {
+            DemandFlags::GOT_NORELAX
+        }
+        relax::LD64_GOTTPREL_LO12_NC if relax::ie_registers_differ(at) == Some(true) => {
+            DemandFlags::TLSIE_NORELAX
+        }
+        _ => DemandFlags::empty(),
+    };
+    out.raise(at.key, inhibit);
 }
 
-/// The TLS-model demands (a64.md §8.1 to §8.4, §12): exec outputs relax
-/// TLSDESC against a TLS-local target to LE (nothing) and against a
-/// TLS-dynamic one to IE (`GOT_TPREL`); IE always keeps its slot (R3 is
-/// kind 2); GD and LD demand their pairs (R4 is stage B).
+/// The TLS-model demands (a64.md §8.1 to §8.4, §12). In an exec output:
+/// TLSDESC against a TLS-local target relaxes to LE (nothing), against a
+/// TLS-dynamic one to IE (`GOT_TPREL`), except the large form, which stays
+/// a descriptor; IE keeps its slot (R3 is kind 2); GD with R4's pattern
+/// (`gd`) is LE or IE. Otherwise each model demands its own slots.
 fn tls_demand(
     class: DemandClass,
+    r_type: u32,
     output: mortar_arch::OutputKind,
     kind: TargetKind,
+    gd: bool,
 ) -> (DemandFlags, mortar_arch::GlobalFlags) {
     use mortar_arch::GlobalFlags as GF;
     let exec = output.is_exec();
     let local = tls_local(kind);
+    let large = matches!(r_type, 565..=568);
+    let none = DemandFlags::empty();
     match class {
-        DemandClass::TlsDesc if exec && local => (DemandFlags::empty(), GF::empty()),
-        DemandClass::TlsDesc | DemandClass::TlsIe if exec => (DemandFlags::GOT_TPREL, GF::empty()),
+        DemandClass::TlsDesc if exec && local => (none, GF::empty()),
+        DemandClass::TlsDesc if exec && !large => (DemandFlags::GOT_TPREL, GF::empty()),
         DemandClass::TlsDesc => (DemandFlags::TLS_DESC, GF::empty()),
+        DemandClass::TlsIe if exec => (DemandFlags::GOT_TPREL, GF::empty()),
         DemandClass::TlsIe => (DemandFlags::GOT_TPREL, GF::STATIC_TLS),
+        DemandClass::TlsGd if gd && local => (none, GF::empty()),
+        DemandClass::TlsGd if gd => (DemandFlags::GOT_TPREL, GF::empty()),
         DemandClass::TlsGd => (DemandFlags::TLS_GD, GF::empty()),
-        DemandClass::TlsLd => (DemandFlags::empty(), GF::TLS_LD),
-        _ => (DemandFlags::empty(), GF::empty()),
+        DemandClass::TlsLd => (none, GF::TLS_LD),
+        _ => (none, GF::empty()),
     }
 }
 
@@ -136,9 +154,11 @@ fn input_word(at: &RelocAt<'_>, form: u16) -> Result<u32, FieldError> {
     if forms::requires(form, w) { Ok(w) } else { Err(FieldError::Instruction { word: w }) }
 }
 
-/// `apply` (arch.md §3.6).
+/// `apply` (arch.md §3.6). `m2` enables the M2 rules R3 and R5 (§8; before
+/// M2 IE and GOT loads are written unrelaxed).
 #[allow(clippy::many_single_char_names)] // the spec's S, A, P, X, w
 pub fn apply(
+    m2: bool,
     cx: &FillCx<'_>,
     at: &RelocAt<'_>,
     out: &mut SectionOut<'_>,
@@ -146,17 +166,46 @@ pub fn apply(
     let h = at.howto;
     let off = at.r_offset;
     let p = out.addr.wrapping_add(off);
+    let exec = cx.output.is_exec();
+    // §8.4: R4's `CALL26` writes `o+8` and `o+12`.
+    if exec && at.r_type == relax::CALL26 && relax::gd_lead(at, cx.tables).is_some() {
+        put_word(out, off, MRS_X1_TPIDR)?;
+        return put_word(out, off + 4, ADD_X0_X1_X0);
+    }
     let sym = cx.tables.sym(at.key);
     let weak0 = sym.kind == TargetKind::Weak0;
     if h.class.is_tls() && weak0 && out.alloc {
         return Err(FieldError::Refused(WEAK_TLS));
     }
-    if cx.output.is_exec() {
+    if exec {
         match h.class {
-            DemandClass::TlsDesc => return tlsdesc_exec(cx, at, out, sym.s, sym.kind),
-            DemandClass::TlsGd => return Err(FieldError::Refused(R4_PENDING)),
+            DemandClass::TlsDesc if tls_local(sym.kind) || !matches!(at.r_type, 565..=568) => {
+                return tlsdesc_exec(cx, at, out, sym.s, sym.kind);
+            }
+            DemandClass::TlsGd => {
+                if let Some((_, o)) = relax::gd_lead(at, cx.tables) {
+                    return gd_exec(cx, at, out, sym.s, sym.kind, o);
+                }
+            }
+            DemandClass::TlsIe
+                if m2
+                    && tls_local(sym.kind)
+                    && matches!(
+                        at.r_type,
+                        relax::ADR_GOTTPREL_PAGE21 | relax::LD64_GOTTPREL_LO12_NC
+                    )
+                    && !cx.tables.flags(at.key).contains(DemandFlags::TLSIE_NORELAX) =>
+            {
+                return ie_to_le(cx, at, out, sym.s);
+            }
             _ => {}
         }
+    }
+    if m2
+        && matches!(at.r_type, relax::ADR_GOT_PAGE | relax::LD64_GOT_LO12_NC)
+        && let Some(words) = got_relaxed(cx, at, out.addr, sym)
+    {
+        return put_word(out, off, words);
     }
     let form = match h.field {
         Field::None => return Ok(()),
@@ -185,6 +234,117 @@ pub fn apply(
         Some(f) => put_word(out, off, forms::insert(f, w, x)),
     }
 }
+
+/// `mrs x1, tpidr_el0` (§8.4).
+pub const MRS_X1_TPIDR: u32 = 0xD53B_D041;
+/// `add x0, x1, x0` (§8.4).
+pub const ADD_X0_X1_X0: u32 = 0x8B00_0020;
+/// `movz x0, #0, lsl #16`, `movk x0, #0`: the LE words before `T`.
+const MOVZ_X0_16: u32 = 0xD2A0_0000;
+const MOVK_X0: u32 = 0xF280_0000;
+
+/// `T = TPREL(S + A)`, checked `u(32)` when `check` (§8.1, §8.3, §8.4).
+fn tprel(cx: &FillCx<'_>, s: u64, a: i64, check: bool) -> Result<u64, FieldError> {
+    let tls = cx.tls.ok_or(FieldError::MissingTerm("PT_TLS"))?;
+    let t = TLS.tp_rel(s.wrapping_add(a as u64), tls);
+    if check {
+        checked(Check::Unsigned(32), 1, t)?;
+    }
+    Ok(t as u64)
+}
+
+const fn hi16(t: u64) -> u32 {
+    ((t >> 16) & 0xFFFF) as u32
+}
+
+const fn lo16(t: u64) -> u32 {
+    (t & 0xFFFF) as u32
+}
+
+/// The `GTPREL` slot of the key (R2, R4's IE form).
+fn gtprel(cx: &FillCx<'_>, at: &RelocAt<'_>) -> Result<u64, FieldError> {
+    cx.tables.slot(at.key, SlotKind::TpOff { negated: false }).ok_or(FieldError::MissingSlot)
+}
+
+/// R5 (§8.5): the relaxed word of a 311 or 312 when the precondition
+/// holds, else `None` (the GOT load stands).
+fn got_relaxed(
+    cx: &FillCx<'_>,
+    at: &RelocAt<'_>,
+    addr: u64,
+    sym: mortar_arch::SymValue,
+) -> Option<u32> {
+    if sym.kind != TargetKind::Local {
+        return None;
+    }
+    let (o, d) = relax::got_pair(at)?;
+    if cx.tables.flags(at.key).contains(DemandFlags::GOT_NORELAX) {
+        return None;
+    }
+    let x = page_delta(addr.wrapping_add(o), sym.s).ok()?;
+    let w = at.site.word(0)?;
+    Some(match at.r_type {
+        relax::ADR_GOT_PAGE => forms::insert(forms::ADRP, w, x),
+        _ => ADD_X_IMM | ((sym.s & 0xFFF) as u32) << 10 | d << 5 | d,
+    })
+}
+
+/// `add xd, xn, #0`.
+const ADD_X_IMM: u32 = 0x9100_0000;
+
+/// R3 (§8.3): IE → LE on a 541 or 542, all-or-none per symbol.
+fn ie_to_le(
+    cx: &FillCx<'_>,
+    at: &RelocAt<'_>,
+    out: &mut SectionOut<'_>,
+    s: u64,
+) -> Result<(), FieldError> {
+    let w = input_word(
+        at,
+        match at.howto.field {
+            Field::Insn { form } => form,
+            _ => return Err(FieldError::MissingTerm("IE field")),
+        },
+    )?;
+    let t = tprel(cx, s, at.addend, true)?;
+    let r = w & 0x1F;
+    let word = if at.r_type == relax::ADR_GOTTPREL_PAGE21 {
+        MOVZ_X0_16 | hi16(t) << 5 | r
+    } else {
+        MOVK_X0 | lo16(t) << 5 | r
+    };
+    put_word(out, at.r_offset, word)
+}
+
+/// R4 (§8.4) on the 513 or 514 of a matched GD sequence at `o`: LE for a
+/// TLS-local target, IE otherwise.
+fn gd_exec(
+    cx: &FillCx<'_>,
+    at: &RelocAt<'_>,
+    out: &mut SectionOut<'_>,
+    s: u64,
+    kind: TargetKind,
+    o: u64,
+) -> Result<(), FieldError> {
+    let lead = at.r_type == relax::TLSGD_ADR_PAGE21;
+    let word = if tls_local(kind) {
+        let t = tprel(cx, s, at.addend, true)?;
+        if lead { MOVZ_X0_16 | hi16(t) << 5 } else { MOVK_X0 | lo16(t) << 5 }
+    } else {
+        let g = gtprel(cx, at)?;
+        if lead {
+            forms::insert(forms::ADRP, ADRP_X0, page_delta(out.addr.wrapping_add(o), g)?)
+        } else {
+            forms::insert(forms::LDX12, LDR_X0_X0, checked(Check::None, 8, g as i64)?)
+        }
+    };
+    put_word(out, at.r_offset, word)
+}
+
+/// `adrp x0, 0`, `ldr x0, [x0]`, `ldr x0, .`.
+const ADRP_X0: u32 = 0x9000_0000;
+const LDR_X0_X0: u32 = 0xF940_0000;
+const LDR_X0_LIT: u32 = 0x5800_0000;
 
 /// `X` for the ordinary (unrelaxed) form, checked.
 #[allow(clippy::many_single_char_names)]
@@ -246,8 +406,10 @@ fn value(
     checked(h.check, h.align, x)
 }
 
-/// TLSDESC in an exec output (a64.md §8.1 R1, R1t, R1l; §8.2 R2 is stage
-/// B): against a TLS-local target every member is rewritten on its own.
+/// TLSDESC in an exec output (a64.md §8.1 R1, R1t, R1l; §8.2 R2, R2t):
+/// every member is rewritten on its own, to LE against a TLS-local target
+/// and to IE against a TLS-dynamic one (the large form against a
+/// TLS-dynamic target stays a descriptor and does not come here).
 fn tlsdesc_exec(
     cx: &FillCx<'_>,
     at: &RelocAt<'_>,
@@ -259,23 +421,31 @@ fn tlsdesc_exec(
     if let Field::Insn { form } = h.field {
         input_word(at, form)?;
     }
-    if !tls_local(kind) {
-        // R2 against a TLS-dynamic target; the large form stays a
-        // descriptor (§8.2), which an exec output only has from M2.
-        return Err(FieldError::Refused(R2_PENDING));
-    }
-    let tls = cx.tls.ok_or(FieldError::MissingTerm("PT_TLS"))?;
-    let t = TLS.tp_rel(s.wrapping_add(at.addend as u64), tls);
-    let word = match at.r_type {
-        // ADR_PAGE21, LD_PREL19 (tiny), OFF_G1 (large): movz x0, #T[31:16], lsl #16.
-        562 | 560 | 565 => {
-            checked(mortar_arch::Check::Unsigned(32), 1, t)?;
-            0xD2A0_0000 | (((t as u64 >> 16) & 0xFFFF) as u32) << 5
+    let word = if tls_local(kind) {
+        let t = tprel(cx, s, at.addend, matches!(at.r_type, 562 | 560 | 565))?;
+        match at.r_type {
+            // ADR_PAGE21, LD_PREL19 (tiny), OFF_G1 (large): movz x0, #T[31:16], lsl #16.
+            562 | 560 | 565 => MOVZ_X0_16 | hi16(t) << 5,
+            // LD64_LO12, ADR_PREL21 (tiny), OFF_G0_NC (large): movk x0, #T[15:0].
+            563 | 561 | 566 => MOVK_X0 | lo16(t) << 5,
+            // ADD_LO12, CALL, LDR, ADD: nop.
+            _ => NOP,
         }
-        // LD64_LO12, ADR_PREL21 (tiny), OFF_G0_NC (large): movk x0, #T[15:0].
-        563 | 561 | 566 => 0xF280_0000 | ((t as u64 & 0xFFFF) as u32) << 5,
-        // ADD_LO12, CALL, LDR, ADD: nop.
-        _ => NOP,
+    } else {
+        let p = out.addr.wrapping_add(at.r_offset);
+        match at.r_type {
+            562 => forms::insert(forms::ADRP, ADRP_X0, page_delta(p, gtprel(cx, at)?)?),
+            563 => forms::insert(
+                forms::LDX12,
+                LDR_X0_X0,
+                checked(Check::None, 8, gtprel(cx, at)? as i64)?,
+            ),
+            560 => {
+                let x = gtprel(cx, at)?.wrapping_sub(p) as i64;
+                forms::insert(forms::LDX19, LDR_X0_LIT, checked(Check::Signed(21), 4, x)?)
+            }
+            _ => NOP,
+        }
     };
     put_word(out, at.r_offset, word)
 }

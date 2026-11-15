@@ -14,7 +14,7 @@ use std::time::Instant;
 use mortar_a64::A64;
 use mortar_arch::{
     Arch, DemandFlags, FillCx, FillTables, OutputKind, Reloc, RelocAt, SectionOut, Site, SlotKind,
-    SymValue, TargetKind,
+    SymNames, SymValue, TargetKind,
 };
 use mortar_core::{FileId, SectionId, SymKey, SymbolId};
 
@@ -42,6 +42,12 @@ impl FillTables for Tables {
     }
     fn redirect(&self, _section: SectionId, _offset: u64) -> Option<u64> {
         None
+    }
+}
+
+impl SymNames for Tables {
+    fn name(&self, _key: SymKey) -> &[u8] {
+        b"f"
     }
 }
 
@@ -120,6 +126,7 @@ fn main() {
                 howto: h,
                 site: Site { bytes: &input, offset: r.r_offset },
                 records: &records,
+                proof: &[],
             };
             arch.apply(&cx, &at, &mut out).expect("in range");
         }

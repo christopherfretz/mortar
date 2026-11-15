@@ -132,3 +132,19 @@ pub fn static_slot(
         K::TlsDesc | K::TpOff { negated: true } => return Err(FieldError::MissingSlot),
     })
 }
+
+/// `R_AARCH64_IRELATIVE` (§6.2, §10.4).
+pub const IRELATIVE: u32 = 1032;
+
+/// The `Elf64_Rela` of an IPLT word (§10.4): `r_offset` the word's
+/// address, no symbol, type `IRELATIVE`, addend the resolver's address
+/// (`st_value` of the IFUNC's definition). The word itself holds the
+/// resolver's address too (§10.2), so a loader that reads either agrees.
+#[must_use]
+pub fn irelative(word: u64, resolver: u64) -> [u8; 24] {
+    let mut out = [0u8; 24];
+    out[..8].copy_from_slice(&word.to_le_bytes());
+    out[8..16].copy_from_slice(&u64::from(IRELATIVE).to_le_bytes());
+    out[16..].copy_from_slice(&resolver.to_le_bytes());
+    out
+}

@@ -289,7 +289,8 @@ pub struct RelocAt<'a> {
 pub struct ScanCx<'a> { /* Inputs, Resolution, Liveness, OutputKind, options;
                            target_kind(SymKey); symbol type and st_other */ }
 pub struct DemandSink<'a> { /* raise(SymKey, DemandFlags); raise_global(GlobalFlags);
-                               count(DynRole, n) for this section; error(Key, Diagnostic) */ }
+                               count(DynRole, n) for this section; error(record, ScanError);
+                               undefined(SymKey, record): a reference event */ }
 ```
 
 - **Contract**: given one live relocation, raise the demands the forms
@@ -326,16 +327,26 @@ pub struct DemandSink<'a> { /* raise(SymKey, DemandFlags); raise_global(GlobalFl
     objects), and `spec/resolve.md` has not made it a dynamic undefined.
     A dynamic undefined is a `Shlib` target, under `--unresolved-symbols`
     or `-z undefs`, the default for `Shared`.
-  - **What is reported.** For every live relocation against an
-    `Undefined` target that still needs its symbol, scan reports
-    `undefined-symbol` once. The message contains GNU ld's phrase
-    `undefined reference to '<name>'`, and gives the place
-    `file:(section+0xoff)`.
-  - **The key** is `(70, FileId, section index × 2^32 + record index)`.
-    This is model §8's scan key: it names the place's `SectionId`
-    (`FileId`, section index), and the record index orders the places
-    within it. The record index stands in for the offset because two
-    records can share one offset.
+  - **What is reported.** Scan does not emit the diagnostic itself.
+    For every live relocation against an `Undefined` target that still
+    needs its symbol, it reports one event through the sink,
+    `undefined(SymKey, record index)`; the file and section are those of
+    the section being scanned, as for `error`. The scan driver
+    (`spec/image.md`) merges the events of all files into **one**
+    `undefined-symbol` diagnostic per `SymKey` (`spec/resolve.md` §11,
+    diag.md §3: ``undefined symbol: {name} (undefined reference to
+    `{name}')``, with up to three `>>> referenced by` contexts).
+  - **The key** of that diagnostic is `(70, FileId, section index × 2^32
+    + record index)` of the key's **first** surviving reference in
+    `(FileId, section index, record index)` order: model §8's scan key.
+    It names the place's `SectionId` (`FileId`, section index), and the
+    record index orders the places within it. The record index stands in
+    for the offset because two records can share one offset. The result
+    is independent of scheduling, because the first reference is chosen
+    by that order after all events are in.
+  - `comdat-mismatch` and `discarded-section-reference` (`spec/resolve.md`
+    §6.3) have the same shape: per-reference events, one diagnostic per
+    key, keyed by the first reference.
   - **Relocations consumed by a sequence make no reference.** A relocation
     consumed by a matched sequence (§3.5) does not need its symbol: the
     x86 GD→LE/IE and LD→LE call (Appendix A.3, A.4, B.5), and AArch64

@@ -1,6 +1,6 @@
 //! Behavioural tests of `mortar_arch`, by section of `spec/arch.md`.
 
-use mortar_arch::error::text;
+use mortar_arch::diag::{self, RelocPlace};
 use mortar_arch::seq::{field_window, overlaps};
 use mortar_arch::vocab::verify_align;
 use mortar_arch::{
@@ -8,6 +8,8 @@ use mortar_arch::{
     GlobalFlags, Incompatible, Minus, OutputKind, PlaceFacts, Proof, ProofRun, Range, RefName,
     TargetKind, Terms, TlsAbi, TlsBlock, TlsVariant, UnitWindow, Value, class_outcome, tombstone,
 };
+use mortar_arch::{Refusal, ScanError};
+use mortar_diag::{FileRef, Key, Style};
 use mortar_elf::Class;
 
 // ---------------------------------------------------------------- §2.2
@@ -499,11 +501,37 @@ fn s3_11_tombstone() {
 
 // ---------------------------------------------------------------- §7, §10
 
+fn render(d: &mortar_diag::Diagnostic) -> String {
+    d.render(&Style::plain("mortar"))
+}
+
+const PLACE_FILE: &str = "a.o";
+
+fn place(path: &FileRef) -> RelocPlace<'_> {
+    RelocPlace {
+        file: mortar_core::FileId(3),
+        path,
+        section_index: 7,
+        section: ".text",
+        record: 9,
+        r_offset: 0x40,
+    }
+}
+
 #[test]
-fn s10_diagnostic_texts() {
+fn s7_s10_diagnostic_texts_and_keys() {
+    let path = FileRef::new(PLACE_FILE);
+    let at = place(&path);
+    let scan_key = Key::new(70, 3, (7 << 32) | 9);
+    let fill_key = Key::new(100, 3, (7 << 32) | 9);
+    let ty = RefName::Named("R_AARCH64_ADR_PREL_PG_HI21");
+
+    let (k, d) = diag::scan(ScanError::Incompatible(Incompatible::RecompilePic), &at, ty, "foo");
+    assert_eq!(k, scan_key);
+    assert_eq!(d.kind().id(), "relocation-incompatible");
     assert_eq!(
-        text::incompatible("R_AARCH64_ADR_PREL_PG_HI21", "foo", Incompatible::RecompilePic),
-        "relocation R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol 'foo'; recompile with -fPIC"
+        render(&d),
+        "mortar: error: a.o:(.text+0x40): relocation R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol 'foo'; recompile with -fPIC\n"
     );
     let texts: Vec<&str> = Incompatible::ALL.into_iter().map(Incompatible::text).collect();
     assert_eq!(
@@ -520,18 +548,79 @@ fn s10_diagnostic_texts() {
             "not allowed in a non-allocated section",
         ]
     );
-    assert_eq!(
-        text::misaligned("R_AARCH64_LDST64_ABS_LO12_NC", 0x1004, 8),
-        "improper alignment for relocation R_AARCH64_LDST64_ABS_LO12_NC: 4100 is not aligned to 8 bytes"
+    // The reasons map onto mortar_diag's, text for text.
+    for i in Incompatible::ALL {
+        assert_eq!(i.text(), i.reason().text());
+    }
+
+    let ty = RefName::Named("R_AARCH64_LDST64_ABS_LO12_NC");
+    let (k, d) = diag::fill(FieldError::Misaligned { value: 0x1004, align: 8 }, &at, ty, "x");
+    assert_eq!(k, fill_key);
+    assert_eq!(d.kind().id(), "relocation-misaligned");
+    assert!(render(&d).ends_with(
+        "a.o:(.text+0x40): improper alignment for relocation R_AARCH64_LDST64_ABS_LO12_NC: 4100 is not aligned to 8 bytes\n"
+    ));
+
+    let ty = RefName::Named("R_AARCH64_CALL26");
+    let range = Range { value: 134_217_728, min: -134_217_728, max: 134_217_727 };
+    let (k, d) = diag::fill(FieldError::Range(range), &at, ty, "far");
+    assert_eq!(k, fill_key);
+    assert_eq!(d.kind().id(), "relocation-out-of-range");
+    assert!(render(&d).ends_with(
+        "a.o:(.text+0x40): relocation R_AARCH64_CALL26 out of range: 134217728 is not in [-134217728, 134217727]; references 'far'\n"
+    ));
+
+    // A synthetic chunk: the output section and offset, key (100, 0, ChunkId).
+    let out = FileRef::new("a.out");
+    let (k, d) = diag::chunk(
+        FieldError::Range(Range { value: 1 << 33, min: -(1 << 32), max: (1 << 32) - 1 }),
+        mortar_core::ChunkId(12),
+        &out,
+        ".text",
+        0x1000,
+        RefName::Named("R_AARCH64_ADR_PREL_PG_HI21"),
+        "far",
     );
-    assert_eq!(
-        text::out_of_range(
-            "R_AARCH64_CALL26",
-            Range { value: 134_217_728, min: -134_217_728, max: 134_217_727 },
-            "far"
-        ),
-        "relocation R_AARCH64_CALL26 out of range: 134217728 is not in [-134217728, 134217727]; references 'far'"
+    assert_eq!(k, Key::new(100, 0, 12));
+    assert!(
+        render(&d)
+            .contains("a.out:(.text+0x1000): relocation R_AARCH64_ADR_PREL_PG_HI21 out of range")
     );
+
+    // The other scan errors.
+    let ty = RefName::Hex(0x999);
+    let id = |e| diag::scan(e, &at, ty, "foo").1.kind().id();
+    assert_eq!(id(ScanError::Outside), "malformed-input");
+    assert_eq!(id(ScanError::Overlap), "refused");
+    assert_eq!(id(ScanError::Internal), "internal-error");
+    assert_eq!(
+        id(ScanError::Refused(Refusal::hex(mortar_diag::RefusalClass::RelocationType, 0x999))),
+        "refused"
+    );
+    let (_, d) = diag::scan(ScanError::Overlap, &at, ty, "foo");
+    assert_eq!(
+        render(&d),
+        format!(
+            "mortar: error: a.o:(.text+0x40): unsupported {}: overlapping relocations\n",
+            mortar_diag::RefusalClass::Feature.noun()
+        )
+    );
+    let (_, d) = diag::scan(ScanError::Outside, &at, ty, "foo");
+    assert_eq!(
+        render(&d),
+        "mortar: error: a.o:(.text+0x40): relocation 0x999 at offset 0x40 lies outside its section\n"
+    );
+    // Field errors that are mortar's bugs are internal errors, always.
+    for e in [FieldError::MissingSlot, FieldError::MissingTerm("GOT base")] {
+        assert!(e.is_internal());
+        assert_eq!(diag::fill(e, &at, ty, "foo").1.kind().id(), "internal-error");
+    }
+    assert_eq!(
+        diag::fill(FieldError::Instruction { word: 0 }, &at, ty, "foo").1.kind().id(),
+        "relocation-incompatible"
+    );
+    // undefined-symbol: the key of the first reference.
+    assert_eq!(diag::undefined_key(mortar_core::FileId(3), 7, 9), scan_key);
     assert_eq!(RefName::Hex(0x1234).to_string(), "0x1234");
     assert_eq!(RefName::Named("R_AARCH64_P32_ABS32").to_string(), "R_AARCH64_P32_ABS32");
 }
@@ -540,9 +629,9 @@ fn s10_diagnostic_texts() {
 fn s3_4_diag_keys() {
     use mortar_core::FileId;
     let k = mortar_arch::cx::scan_key(FileId(3), 7, 9);
-    assert_eq!(k, mortar_diag::Key::new(70, 3, (7 << 32) | 9));
+    assert_eq!(k, Key::new(70, 3, (7 << 32) | 9));
     let k = mortar_arch::cx::fill_key(FileId(3), 7, 9);
-    assert_eq!(k, mortar_diag::Key::new(100, 3, (7 << 32) | 9));
+    assert_eq!(k, Key::new(100, 3, (7 << 32) | 9));
 }
 
 #[test]

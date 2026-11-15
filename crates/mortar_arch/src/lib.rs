@@ -13,14 +13,20 @@
 //!   §3.6).
 //! - [`seq`]: windows, overlaps, sequences (§3.4, §3.5) and the
 //!   instruction proof of rule 1 (§3.6).
+//! - [`need`]: the thunk and erratum needs of one round of the
+//!   range-extension fixed point (§6 step 1).
+//! - [`diag`]: scan and fill errors as diagnostics, with their places
+//!   and keys (§3.4, §7).
 //! - [`error`]: refusals by name, field errors, incompatibility reasons
 //!   and the texts of §10.
 #![forbid(unsafe_code)]
 
 pub mod class;
 pub mod cx;
+pub mod diag;
 pub mod error;
 pub mod flags;
+pub mod need;
 pub mod seq;
 pub mod shapes;
 pub mod vocab;
@@ -28,7 +34,7 @@ pub mod vocab;
 pub use class::{ClassOutcome, Demand, DemandClass, PlaceFacts, class_outcome};
 pub use cx::{
     DemandOut, DemandSink, FillCx, FillTables, OutputCx, PatchCx, Records, Reloc, RelocAt, ScanCx,
-    ScanError, ScanTables, SectionOut, SymFacts, SymValue, SynthCx,
+    ScanError, ScanTables, SectionOut, SymFacts, SymNames, SymValue, SynthCx,
 };
 pub use error::{FieldError, Incompatible, Range, RefName, Refusal};
 pub use flags::{DemandFlags, GlobalFlags};
@@ -76,6 +82,27 @@ pub trait Arch: Sync + 'static {
         at: &RelocAt<'_>,
         out: &mut SectionOut<'_>,
     ) -> Result<(), FieldError>;
+    /// §3.4 "Overlap", §3.5: the window of the unit the relocation belongs
+    /// to. By default its field window, the record its own unit; a member
+    /// of a matched sequence has the window of the words it owns and the
+    /// lead's index as its unit. `None` when the window wraps.
+    fn unit_window(
+        &self,
+        output: OutputKind,
+        at: &RelocAt<'_>,
+        names: &dyn SymNames,
+    ) -> Option<UnitWindow> {
+        let _ = (output, names);
+        let (start, end) = seq::field_window(at.r_offset, at.howto)?;
+        Some(UnitWindow { start, end, unit: at.index, record: at.index })
+    }
+    /// §3.4 "Relocations consumed by a sequence make no reference", §6
+    /// step 1: a consumed relocation needs no symbol, is no branch site and
+    /// has no redirect. The decision is input-only (a kind-1 rule).
+    fn consumed(&self, output: OutputKind, at: &RelocAt<'_>, names: &dyn SymNames) -> bool {
+        let _ = (output, at, names);
+        false
+    }
 
     /// §3.7.
     fn got(&self) -> &'static GotShape;
@@ -106,6 +133,10 @@ pub trait Arch: Sync + 'static {
         out: &mut Vec<ErratumSite>,
     ) -> Result<(), Unproved>;
     fn erratum_in_place(&self, e: Erratum, cx: &PatchCx) -> bool;
+    /// §6 step 1: the reach of each of the two branches between an
+    /// erratum site's final word and its patch (`b patch` from `F`, and the
+    /// patch's branch back to `F + 4`).
+    fn patch_reach(&self, e: Erratum) -> Reach;
     fn write_patch(&self, e: Erratum, cx: &PatchCx, out: &mut [u8]) -> Result<(), FieldError>;
 
     /// §3.8.

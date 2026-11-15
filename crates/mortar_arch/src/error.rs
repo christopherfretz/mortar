@@ -137,35 +137,3 @@ impl Incompatible {
         }
     }
 }
-
-/// The message texts of the three relocation diagnostics (§10), until
-/// `mortar_diag` carries them as kinds (WP-020c): the text is fixed here
-/// so that the kinds can adopt it verbatim, and tested.
-pub mod text {
-    use super::{Incompatible, Range};
-
-    /// `relocation {r_type} cannot be used against symbol '{name}'; {reason}`.
-    #[must_use]
-    pub fn incompatible(r_type: &str, name: &str, reason: Incompatible) -> String {
-        format!("relocation {r_type} cannot be used against symbol '{name}'; {}", reason.text())
-    }
-
-    /// `improper alignment for relocation {r_type}: {value} is not aligned
-    /// to {align} bytes`.
-    #[must_use]
-    pub fn misaligned(r_type: &str, value: i64, align: u8) -> String {
-        format!(
-            "improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes"
-        )
-    }
-
-    /// `relocation {r_type} out of range: {value} is not in [{min}, {max}];
-    /// references '{name}'`.
-    #[must_use]
-    pub fn out_of_range(r_type: &str, range: Range, name: &str) -> String {
-        format!(
-            "relocation {r_type} out of range: {} is not in [{}, {}]; references '{name}'",
-            range.value, range.min, range.max
-        )
-    }
-}
