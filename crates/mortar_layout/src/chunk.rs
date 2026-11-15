@@ -152,6 +152,9 @@ pub struct ChunkInputs<'t, 'n> {
     pub synthetic: &'t [SynthChunk],
     /// Output sections that need a chunk even when empty (L-43).
     pub keep_empty: &'t [OutSecId],
+    /// `-z relro` (the default); `-z norelro` puts rank 7 in the RW
+    /// segment with no padding and no `PT_GNU_RELRO` (§20.2).
+    pub relro: bool,
 }
 
 /// One body part: its members and their offsets, size and alignment.
@@ -355,7 +358,7 @@ pub fn chunk(
         };
         let group = joins[i].map_or(u32::MAX, |o| o.0);
         let mut c = blank(ChunkKind::Synthetic(s.synth), s.sh_type, s.flags, s.align, s.size);
-        c.relro = r.is_relro();
+        c.relro = inputs.relro && r.is_relro();
         push(
             &mut chunks,
             &mut ranks,
@@ -367,7 +370,7 @@ pub fn chunk(
             joins[i],
         );
     }
-    let relro_padding = relro_nonempty.then(|| {
+    let relro_padding = (inputs.relro && relro_nonempty).then(|| {
         let mut c = blank(
             ChunkKind::Synthetic(Synth::RELRO_PADDING),
             SHT_NOBITS,
@@ -431,7 +434,7 @@ pub fn chunk(
             }
             let part = Part { out: id, part: k as u32 };
             let mut c = blank(ChunkKind::Body(part), out.sh_type, out.flags, align, size);
-            c.relro = r.is_relro();
+            c.relro = inputs.relro && r.is_relro();
             push(&mut chunks, &mut ranks, &mut keys, &mut out_of, c, r, (id.0, 0, sub), Some(id));
             sub += 1;
             for &(s, off) in &plan.members {
@@ -440,7 +443,7 @@ pub fn chunk(
             if with_islands {
                 let isl = target.islands.map_or(2, |i| i.align);
                 let mut c = blank(ChunkKind::Patches(part), SHT_PROGBITS, out.flags, isl, 0);
-                c.relro = r.is_relro();
+                c.relro = inputs.relro && r.is_relro();
                 let i = push(
                     &mut chunks,
                     &mut ranks,
@@ -457,7 +460,7 @@ pub fn chunk(
         }
         if let Some((size, align)) = merged[o] {
             let mut c = blank(ChunkKind::Merged(id), out.sh_type, out.flags, align, size);
-            c.relro = r.is_relro();
+            c.relro = inputs.relro && r.is_relro();
             push(&mut chunks, &mut ranks, &mut keys, &mut out_of, c, r, (id.0, 0, sub), Some(id));
         }
     }

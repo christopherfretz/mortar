@@ -508,3 +508,17 @@ fn l88_commons() {
     let e = w.run(&Pool::sequential()).unwrap_err();
     assert_eq!(e[0].refusal().map(|r| r.1), Some("TLS common symbol"));
 }
+
+// spec: layout.md §20.2 (-z norelro: rank 7 joins RW, no padding, no PT_GNU_RELRO)
+#[test]
+fn norelro() {
+    let mut w = hello();
+    w.options.relro = false;
+    let (a, placed) = w.run(&Pool::sequential()).unwrap();
+    w.check(&a, &placed).unwrap();
+    let p = &placed.placement;
+    assert!(!names(&w, &a, &placed).iter().any(|n| n == ".relro_padding"));
+    assert!(!p.segments.iter().any(|(_, s)| s.p_type == PT_GNU_RELRO));
+    let rw = p.segments.iter().filter(|(_, s)| s.p_type == PT_LOAD && s.flags == PF_R | PF_W).count();
+    assert_eq!(rw, 1);
+}

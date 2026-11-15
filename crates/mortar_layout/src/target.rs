@@ -117,6 +117,8 @@ pub struct Options {
     pub execstack: Option<bool>,
     /// `--eh-frame-hdr`: whether `.eh_frame_hdr` exists (§13.1).
     pub eh_frame_hdr: bool,
+    /// `-z relro` (default) / `-z norelro` (§20.2).
+    pub relro: bool,
     pub entry: EntryName,
 }
 
@@ -131,6 +133,7 @@ impl Options {
             fix_843419: false,
             execstack: None,
             eh_frame_hdr: false,
+            relro: true,
             entry: EntryName::Symbol(b"_start".to_vec()),
         }
     }
@@ -170,6 +173,7 @@ impl Options {
         }
         o.separate_code = plan.z.separate_code.unwrap_or(false);
         o.execstack = plan.z.execstack;
+        o.relro = plan.z.relro.unwrap_or(true);
         o.eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
         o.fix_843419 = target.machine == Machine::AArch64
             && plan.target_options.iter().any(|t| t.option.starts_with("--fix-cortex-a53-843419"));
