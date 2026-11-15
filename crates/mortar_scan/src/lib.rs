@@ -276,12 +276,7 @@ pub fn scan(
         output,
         dyn_relocs: dyn_relocs.into_boxed_slice(),
     };
-    Scanned {
-        demands,
-        order: RecIndex::new(permuted, leads),
-        diagnostics,
-        stats,
-    }
+    Scanned { demands, order: RecIndex::new(permuted, leads), diagnostics, stats }
 }
 
 /// The permutations of the unsorted sections (`unsorted`: their first

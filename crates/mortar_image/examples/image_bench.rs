@@ -28,13 +28,13 @@ use mortar_a64::A64;
 use mortar_arch::{
     DemandFlags, FillTables, OutputKind, Reloc, SlotKind, SymNames, SymValue, TargetKind,
 };
+use mortar_core::RecIndex;
 use mortar_core::inputs::{CopyError, Errno};
 use mortar_core::par::Pool;
 use mortar_core::{FileId, SectionId, SymKey, SymbolId};
 use mortar_image::fill::{self, Image, Tables};
 use mortar_image::output::{Output, OutputOptions};
 use mortar_image::phases::Sample;
-use mortar_core::RecIndex;
 use mortar_image::plan::{Builder, InputUnit, RecRows, RelocSection};
 use mortar_image::source::NoKeys;
 use mortar_image::source::Source;

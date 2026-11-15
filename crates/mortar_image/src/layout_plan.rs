@@ -11,8 +11,6 @@
 use std::collections::BTreeMap;
 
 use mortar_arch::{ProofRun, Reloc};
-use mortar_merge::order::Order;
-use mortar_synth::EhSource;
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::Reader;
 use mortar_core::layout::ChunkKind;
@@ -23,6 +21,8 @@ use mortar_core::{
 };
 use mortar_diag::{Diagnostic, FileRef, Kind};
 use mortar_elf::{SectionIndex, SymbolIndex};
+use mortar_merge::order::Order;
+use mortar_synth::EhSource;
 
 use crate::plan::{
     Builder, EhSection, InputUnit, MergeSource, MergedUnit, Pattern, Plan, RecRows, RelaTable,
@@ -314,14 +314,15 @@ fn table(inputs: &Inputs<'_>, file: FileId, rel: SectionIndex) -> Result<RelaTab
     };
     let range = sec.file_range().map_err(bad)?.unwrap_or(0..0);
     let len = (range.end - range.start) as u64;
-    if len % entsize != 0 {
+    if !len.is_multiple_of(entsize) {
         return Err(internal(&format!(
             "file {}: relocation section {} is not whole records",
             file.0, rel.0
         )));
     }
-    let count = u32::try_from(len / entsize)
-        .map_err(|_| internal(&format!("file {}: relocation section {} too large", file.0, rel.0)))?;
+    let count = u32::try_from(len / entsize).map_err(|_| {
+        internal(&format!("file {}: relocation section {} too large", file.0, rel.0))
+    })?;
     Ok(RelaTable { file, offset: range.start as u64, count, class })
 }
 

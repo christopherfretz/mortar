@@ -17,11 +17,13 @@ use mortar_arch::{
 };
 use mortar_core::inputs::{CopyError, Errno};
 use mortar_core::par::Pool;
+use mortar_core::records::RecIndex;
 use mortar_core::{ChunkId, FileId, SectionId, SymKey, SymbolId};
 use mortar_diag::FileRef;
-use mortar_core::records::RecIndex;
 use mortar_image::fill::{Image, Sink, Tables};
-use mortar_image::plan::{Builder, InputUnit, Pattern, Plan, RecRows, RelocSection, SynthUnit, Unit};
+use mortar_image::plan::{
+    Builder, InputUnit, Pattern, Plan, RecRows, RelocSection, SynthUnit, Unit,
+};
 use mortar_image::source::{NoKeys, Source};
 use mortar_image::synth::{Division, SizeCx, SynthChunk, SynthCx, SynthError};
 use mortar_image::target::Target;
@@ -236,7 +238,12 @@ impl SynthChunk for Counting {
     fn division(&self) -> Division {
         Division::Divisible
     }
-    fn write(&self, _cx: &SynthCx<'_>, range: Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+    fn write(
+        &self,
+        _cx: &SynthCx<'_>,
+        range: Range<u64>,
+        out: &mut [u8],
+    ) -> Result<(), SynthError> {
         assert_eq!(out.len() as u64, range.end - range.start);
         for (k, b) in out.iter_mut().enumerate() {
             *b = self.seed.wrapping_add(((range.start + k as u64) * 31) as u8);
@@ -261,10 +268,17 @@ impl SynthChunk for Summing {
     fn division(&self) -> Division {
         Division::Whole { max_size: self.size }
     }
-    fn write(&self, _cx: &SynthCx<'_>, range: Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+    fn write(
+        &self,
+        _cx: &SynthCx<'_>,
+        range: Range<u64>,
+        out: &mut [u8],
+    ) -> Result<(), SynthError> {
         if range != (0..self.size) {
             return Err(SynthError::from(mortar_diag::Diagnostic::error(
-                mortar_diag::Kind::InternalError { what: format!("whole chunk written in part: {range:?}") },
+                mortar_diag::Kind::InternalError {
+                    what: format!("whole chunk written in part: {range:?}"),
+                },
             )));
         }
         let mut acc = 0u8;
@@ -671,7 +685,11 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
         } else {
             chunks.push(Box::new(Counting { size, seed: k as u8, sealed: None }));
         }
-        b.synth(offset, size, SynthUnit { chunk, id: ChunkId(500 + k as u32), name, whole, eh: false });
+        b.synth(
+            offset,
+            size,
+            SynthUnit { chunk, id: ChunkId(500 + k as u32), name, whole, eh: false },
+        );
     }
     // Pads are disjoint by construction (code rows and the gaps between).
     pads.sort_by_key(|p| p.0.start);

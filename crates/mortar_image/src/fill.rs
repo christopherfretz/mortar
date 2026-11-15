@@ -9,17 +9,17 @@ use mortar_arch::{Arch, FillTables, OutputKind, TlsBlock};
 use mortar_core::par::Pool;
 use mortar_core::records::RecIndex;
 use mortar_core::{Split, SymKey};
-use mortar_merge::order::Order;
-use mortar_synth::{EhPlan, EhSource};
 use mortar_diag::{Diagnostic, Key, Kind, Place};
 use mortar_digest::{Leaf, TreeStyle};
+use mortar_merge::order::Order;
+use mortar_synth::{EhPlan, EhSource};
 
-use crate::{digest, eh, merged};
 use crate::plan::{Plan, Unit};
 use crate::reloc::{self, Scratch};
 use crate::source::{self, RecordKeys, Source};
 use crate::synth::{SynthChunk, SynthCx, SynthError};
 use crate::{PHASE_IMAGE, PHASE_OUTPUT};
+use crate::{digest, eh, merged};
 
 /// The tables fill reads (`FillTables`), plus what §6.1 needs and
 /// `SymValue` does not carry.
@@ -30,12 +30,14 @@ use crate::{PHASE_IMAGE, PHASE_OUTPUT};
 pub trait Tables: FillTables {
     /// Whether the key's definition is in an `SHF_ALLOC` section (I-112).
     fn target_alloc(&self, key: SymKey) -> bool;
-    /// The value of a reference with addend `addend` to `key` when `key`
-    /// is defined in an input `.eh_frame` (`spec/synth.md` S-50, which
-    /// follows the target offset `st_value + A`, not the symbol): the
-    /// output address, or the diagnostic of rules 4 and 5. `None` when
-    /// `key` is not in an `.eh_frame`.
-    fn eh_target(&self, key: SymKey, addend: i64) -> Option<Result<u64, Diagnostic>> {
+    /// `S + A` of a reference with addend `addend` to `key` when that
+    /// value is not the symbol's plus `A`: a section symbol of a split
+    /// `Merge` section (`spec/synth.md` S-17, S-18: the piece holding
+    /// byte `st_value + A`) and any key defined in an input `.eh_frame`
+    /// (S-50, which follows the target offset). The output address, or
+    /// the diagnostic (S-18; S-50 rules 4 and 5). `None` otherwise: the
+    /// arch computes `S + A` from [`FillTables::sym`].
+    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<u64, Diagnostic>> {
         let _ = (key, addend);
         None
     }
@@ -298,7 +300,12 @@ fn internal(what: String) -> Diagnostic {
 
 /// I-106: a synthetic chunk's error at `(100, 0, ChunkId)`; an
 /// `internal-error` names the output section.
-fn synth_error(img: &Image<'_>, id: mortar_core::ChunkId, name: u32, err: SynthError) -> (Key, Diagnostic) {
+fn synth_error(
+    img: &Image<'_>,
+    id: mortar_core::ChunkId,
+    name: u32,
+    err: SynthError,
+) -> (Key, Diagnostic) {
     let d = err.into_diagnostic();
     let d = match d.kind() {
         Kind::InternalError { what } => {

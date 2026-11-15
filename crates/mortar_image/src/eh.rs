@@ -48,7 +48,8 @@ pub(crate) fn relocate(
             break;
         }
         let (row, g) = e.plan.source(k);
-        let (Some(rec), Some(sec)) = (frames.records.get(g as usize), frames.sections.get(row)) else {
+        let (Some(rec), Some(sec)) = (frames.records.get(g as usize), frames.sections.get(row))
+        else {
             continue;
         };
         let Some(es) = img.plan.eh_section(sec.section) else { continue };
@@ -74,8 +75,15 @@ pub(crate) fn relocate(
             a: off + (ca - at),
             b: off + (cb - at),
         };
-        reloc::relocate(img, s, &clip, Some(input), &mut dst[(ca - a) as usize..(cb - a) as usize], errs)
-            .map_err(|d| (Key::new(PHASE_IMAGE, es.file.0, 0), d))?;
+        reloc::relocate(
+            img,
+            s,
+            &clip,
+            Some(input),
+            &mut dst[(ca - a) as usize..(cb - a) as usize],
+            errs,
+        )
+        .map_err(|d| (Key::new(PHASE_IMAGE, es.file.0, 0), d))?;
     }
     Ok(())
 }

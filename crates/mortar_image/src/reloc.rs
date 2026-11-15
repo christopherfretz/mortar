@@ -92,7 +92,13 @@ pub(crate) struct Clip<'p> {
 
 impl<'p> Clip<'p> {
     /// The clip `[a, b)` of input unit `u`.
-    pub(crate) fn of_input(plan: &'p Plan, u: &InputUnit, rs: &'p RelocSection, a: u64, b: u64) -> Self {
+    pub(crate) fn of_input(
+        plan: &'p Plan,
+        u: &InputUnit,
+        rs: &'p RelocSection,
+        a: u64,
+        b: u64,
+    ) -> Self {
         Self {
             file: u.file,
             index: u.index,
@@ -189,19 +195,26 @@ fn raw_offset(raw: &[u8], class: Class, i: u32) -> u64 {
     match class {
         Class::Elf64 => {
             let at = i as usize * 24;
-            raw.get(at..at + 8).map_or(u64::MAX, |b| u64::from_le_bytes(b.try_into().unwrap_or([0xff; 8])))
+            raw.get(at..at + 8)
+                .map_or(u64::MAX, |b| u64::from_le_bytes(b.try_into().unwrap_or([0xff; 8])))
         }
         Class::Elf32 => {
             let at = i as usize * 12;
-            raw.get(at..at + 4)
-                .map_or(u64::MAX, |b| u64::from(u32::from_le_bytes(b.try_into().unwrap_or([0xff; 4]))))
+            raw.get(at..at + 4).map_or(u64::MAX, |b| {
+                u64::from(u32::from_le_bytes(b.try_into().unwrap_or([0xff; 4])))
+            })
         }
     }
 }
 
 /// The records `[lo, hi)` of raw table `raw` (record `lo` first), keys
 /// named by the image's `keys`, appended to `out`.
-fn decode(img: &Image<'_>, t: &RelaTable, raw: &[u8], out: &mut Vec<Reloc>) -> Result<(), Diagnostic> {
+fn decode(
+    img: &Image<'_>,
+    t: &RelaTable,
+    raw: &[u8],
+    out: &mut Vec<Reloc>,
+) -> Result<(), Diagnostic> {
     let size = t.entsize() as usize;
     for b in raw.chunks_exact(size) {
         let r = match t.class {
@@ -383,27 +396,26 @@ pub(crate) fn relocate(
     // The site: the whole section, or the snapshot of the clip with the
     // bytes on either side its records may read.
     let whole = site.or_else(|| img.source.resident(c.file, c.sec_src..c.sec_src + c.section_size));
-    let (input, base): (&[u8], u64) = match whole {
-        Some(bytes) => (bytes, 0),
-        None => {
-            let base = a.saturating_sub(SITE_BACK + reach.1 + 8);
-            let end = b.saturating_add(SITE_FWD + reach.0).min(c.section_size).max(b);
-            site_buf.clear();
-            site_buf.resize((end - base) as usize, 0);
-            let path = || plan.path(c.file);
-            let (pre, rest) = site_buf.split_at_mut((a - base) as usize);
-            let (mid, post) = rest.split_at_mut((b - a) as usize);
-            mid.copy_from_slice(buf);
-            if !pre.is_empty() {
-                source::read(img.source, c.file, c.sec_src + base..c.sec_src + a, pre)
-                    .map_err(|e| source::copy_error(e, &path()))?;
-            }
-            if !post.is_empty() {
-                source::read(img.source, c.file, c.sec_src + b..c.sec_src + end, post)
-                    .map_err(|e| source::copy_error(e, &path()))?;
-            }
-            (&site_buf[..], base)
+    let (input, base): (&[u8], u64) = if let Some(bytes) = whole {
+        (bytes, 0)
+    } else {
+        let base = a.saturating_sub(SITE_BACK + reach.1 + 8);
+        let end = b.saturating_add(SITE_FWD + reach.0).min(c.section_size).max(b);
+        site_buf.clear();
+        site_buf.resize((end - base) as usize, 0);
+        let path = || plan.path(c.file);
+        let (pre, rest) = site_buf.split_at_mut((a - base) as usize);
+        let (mid, post) = rest.split_at_mut((b - a) as usize);
+        mid.copy_from_slice(buf);
+        if !pre.is_empty() {
+            source::read(img.source, c.file, c.sec_src + base..c.sec_src + a, pre)
+                .map_err(|e| source::copy_error(e, &path()))?;
         }
+        if !post.is_empty() {
+            source::read(img.source, c.file, c.sec_src + b..c.sec_src + end, post)
+                .map_err(|e| source::copy_error(e, &path()))?;
+        }
+        (&site_buf[..], base)
     };
     let total = c.rs.len();
     let view = View { recs, first, total, base };
@@ -462,7 +474,7 @@ pub(crate) fn relocate(
             tomb(img, &mut out, &view, aranges, v, width, i, &rec, shifted, c.section_size);
             Ok(())
         } else {
-            let eh = match img.tables.eh_target(rec.key, rec.addend) {
+            let eh = match img.tables.split_target(rec.key, rec.addend) {
                 None => None,
                 Some(Ok(v)) => Some((rec.key, v.wrapping_sub(rec.addend.cast_unsigned()))),
                 Some(Err(d)) => {

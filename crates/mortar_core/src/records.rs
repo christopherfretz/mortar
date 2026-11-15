@@ -69,7 +69,10 @@ impl RecIndex {
     /// section, plus the rows.
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
-        self.permuted.iter().map(|p| 4 * p.1.len() + size_of::<(SectionId, Box<[u32]>)>()).sum::<usize>()
+        self.permuted
+            .iter()
+            .map(|p| 4 * p.1.len() + size_of::<(SectionId, Box<[u32]>)>())
+            .sum::<usize>()
             + self.leads.len() * size_of::<SectionId>()
     }
 }

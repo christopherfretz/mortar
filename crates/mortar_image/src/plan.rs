@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use mortar_arch::{ProofRun, Reloc};
-use mortar_elf::Class;
 use mortar_core::par::Pool;
 use mortar_core::{ChunkId, FileId, SectionId};
 use mortar_diag::{Diagnostic, FileRef, Kind};
+use mortar_elf::Class;
 
 use crate::target::Target;
 
@@ -430,6 +430,7 @@ impl Builder {
 
     /// Sorts and checks the rows (I-27), makes every gap a row (I-42) and
     /// forms the jobs for window `window` (I-31).
+    #[allow(clippy::too_many_lines)]
     pub fn finish(self, window: u64, pool: &Pool) -> Result<Plan, Diagnostic> {
         let Self {
             target,

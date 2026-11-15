@@ -19,9 +19,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
 use mortar_arch::{Proof, ProofRun, Reloc, SymValue, TargetKind};
+use mortar_core::RecIndex;
 use mortar_core::{FileId, SectionId};
 use mortar_elf::{Object, SectionIndex, SymbolSection};
-use mortar_core::RecIndex;
 use mortar_image::plan::{Builder, InputUnit, Plan, RecRows, RelocSection};
 
 use super::{FakeTables, MemSource, a64, key};
