@@ -161,11 +161,10 @@ impl Options {
     /// `spec/landed/dyn/WP-040.md` §6).
     pub fn from_plan(plan: &Plan, target: &Target) -> Result<Self, LayoutDiag> {
         let pie = match plan.kind {
-            OutputKind::StaticExecutable => false,
             OutputKind::Executable | OutputKind::PieExecutable if target.class == Class::Elf32 => {
                 return Err(feature("ELFCLASS32 dynamic executable"));
             }
-            OutputKind::Executable => false,
+            OutputKind::StaticExecutable | OutputKind::Executable => false,
             OutputKind::PieExecutable => true,
             OutputKind::StaticPie => {
                 return Err(feature("position-independent executable output"));

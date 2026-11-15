@@ -500,6 +500,36 @@ pub struct SegmentRules {
     pub pie: bool,
 }
 
+/// `PT_PHDR` and `PT_INTERP` (exactly when an interpreter is named), and
+/// `PT_DYNAMIC` (`spec/dyn.md` D-33, D-61): each over its chunk.
+fn derive_dynamic(ordered: &[&Chunk], word: u8) -> (Vec<Segment>, Option<Segment>) {
+    use mortar_elf::consts::{PF_R, PF_W, PT_DYNAMIC, PT_INTERP, PT_PHDR};
+    let synthetic = |name: &[u8]| {
+        ordered
+            .iter()
+            .copied()
+            .find(|c| c.is_alloc() && matches!(c.kind, ChunkKind::Synthetic(s) if s.name == name))
+    };
+    let covering = |c: &Chunk, p_type, flags, align| Segment {
+        p_type,
+        flags,
+        offset: c.offset,
+        addr: c.addr.unwrap_or(0),
+        filesz: c.size,
+        memsz: c.size,
+        align,
+    };
+    let mut head = Vec::new();
+    if let Some(interp) = synthetic(b".interp") {
+        if let Some(ph) = ordered.iter().find(|c| c.kind == ChunkKind::ProgramHeaders) {
+            head.push(covering(ph, PT_PHDR, PF_R, word));
+        }
+        head.push(covering(interp, PT_INTERP, PF_R, 0));
+    }
+    let dynamic = synthetic(b".dynamic").map(|d| covering(d, PT_DYNAMIC, PF_R | PF_W, word));
+    (head, dynamic)
+}
+
 /// The program headers of a layout (`spec/layout.md` §11, L-125): a pure
 /// function of the chunks, their order and the rules, shared by
 /// `mortar_layout` (which writes them) and [`Layout::check`] (which
@@ -542,8 +572,7 @@ pub fn derive_segments(
     rules: &SegmentRules,
 ) -> Vec<Segment> {
     use mortar_elf::consts::{
-        PF_R, PF_W, PT_DYNAMIC, PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_GNU_RELRO, PT_GNU_STACK,
-        PT_INTERP, PT_PHDR, PT_TLS,
+        PF_R, PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_GNU_RELRO, PT_GNU_STACK, PT_TLS,
     };
     let word: u8 = match rules.class {
         mortar_elf::Class::Elf64 => 3,
@@ -554,37 +583,13 @@ pub fn derive_segments(
     let ordered: Vec<&Chunk> = order.iter().filter_map(|&c| chunks.get(c)).collect();
     let mut out = Vec::new();
 
-    let synthetic = |name: &[u8]| {
-        ordered
-            .iter()
-            .copied()
-            .find(|c| c.is_alloc() && matches!(c.kind, ChunkKind::Synthetic(s) if s.name == name))
-    };
-    let covering = |c: &Chunk, p_type, flags, align| Segment {
-        p_type,
-        flags,
-        offset: c.offset,
-        addr: c.addr.unwrap_or(0),
-        filesz: c.size,
-        memsz: c.size,
-        align,
-    };
-
-    // PT_PHDR and PT_INTERP: exactly when an interpreter is named.
-    if let Some(interp) = synthetic(b".interp") {
-        if let Some(ph) = ordered.iter().find(|c| c.kind == ChunkKind::ProgramHeaders) {
-            out.push(covering(ph, PT_PHDR, PF_R, word));
-        }
-        out.push(covering(interp, PT_INTERP, PF_R, 0));
-    }
+    let (head, dynamic) = derive_dynamic(&ordered, word);
+    out.extend(head);
 
     let loads = derive_loads(&ordered, page_log);
     out.extend(loads.iter().map(|l| l.0));
 
-    // PT_DYNAMIC (spec/dyn.md D-33).
-    if let Some(dynamic) = synthetic(b".dynamic") {
-        out.push(covering(dynamic, PT_DYNAMIC, PF_R | PF_W, word));
-    }
+    out.extend(dynamic);
     let load_page = |addr: u64| -> u64 {
         loads
             .iter()

@@ -8,7 +8,13 @@
 //! extents), the base, the congruences, the copy offsets and `_DYNAMIC`
 //! are compared with D-60/D-61; `Layout::check` (with the copy slots) and
 //! the independent [G]-rule checker (`common::elf::check_g`) run on each.
-#![allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    clippy::struct_excessive_bools,
+    clippy::doc_markdown
+)]
 
 mod common;
 

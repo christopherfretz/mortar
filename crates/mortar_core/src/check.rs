@@ -1257,23 +1257,23 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         let p = &self.layout.placement;
         let slots = &self.layout.slots;
         let mut least: Vec<Option<SymbolId>> = vec![None; slots.copies.len()];
-        for &(s, i) in &*slots.copy_of {
-            if let Some(l) = least.get_mut(i as usize) {
-                *l = Some(l.map_or(s, |x| x.min(s)));
+        for &(sym, at) in &*slots.copy_of {
+            if let Some(l) = least.get_mut(at as usize) {
+                *l = Some(l.map_or(sym, |x| x.min(sym)));
             }
         }
         let mut rows: Vec<(ChunkId, u64, u64, SymbolId, u32)> = Vec::new();
         for (at, row) in p.sym_place.iter().enumerate() {
-            let AllocKey::Copy(i) = row.key else { continue };
-            let Some(alloc) = slots.copies.get(i as usize) else { continue };
+            let AllocKey::Copy(index) = row.key else { continue };
+            let Some(alloc) = slots.copies.get(index as usize) else { continue };
             let me = [Row::Entry("sym_place", at as u32), Row::Chunk(row.chunk)];
             let name: &[u8] = match alloc.place {
                 CopyPlace::DynBss => b".dynbss",
                 CopyPlace::RelRo => b".bss.rel.ro",
             };
-            let c = &p.chunks[row.chunk];
+            let chunk = &p.chunks[row.chunk];
             need(
-                matches!(c.kind, ChunkKind::Synthetic(s) if s.name == name),
+                matches!(chunk.kind, ChunkKind::Synthetic(s) if s.name == name),
                 r,
                 || format!("a copy allocation outside its chunk {}", String::from_utf8_lossy(name)),
                 me,
@@ -1282,7 +1282,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 alloc.align.is_power_of_two()
                     && u32::from(row.align) == alloc.align.trailing_zeros()
                     && aligned(row.offset, row.align)
-                    && row.align <= c.align,
+                    && row.align <= chunk.align,
                 r,
                 || "a copy allocation not at its alignment".into(),
                 me,
@@ -1293,7 +1293,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 row.chunk,
                 row.offset,
                 row.size,
-                least[i as usize].unwrap_or(alloc.alias),
+                least[index as usize].unwrap_or(alloc.alias),
                 at as u32,
             ));
         }

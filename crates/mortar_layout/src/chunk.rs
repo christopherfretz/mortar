@@ -133,6 +133,10 @@ pub fn copy_rows(
         .collect()
 }
 
+/// [`copy_extent`]'s result: the rows with their offsets, the chunk's
+/// size and its alignment (log2).
+pub type CopyPlan = (Vec<(CopyRow, u64)>, u64, u8);
+
 /// The allocations of one copy chunk (D-42): in the order of their least
 /// alias, each at the aligned prefix sum (L-22), as `(row, offset)`; and
 /// the chunk's size and alignment (log2). What synthesis gives as the
@@ -141,10 +145,7 @@ pub fn copy_rows(
 /// # Errors
 ///
 /// `internal-error` when the offsets overflow.
-pub fn copy_extent(
-    rows: &[CopyRow],
-    place: CopyPlace,
-) -> Result<(Vec<(CopyRow, u64)>, u64, u8), LayoutDiag> {
+pub fn copy_extent(rows: &[CopyRow], place: CopyPlace) -> Result<CopyPlan, LayoutDiag> {
     let mut mine: Vec<CopyRow> = rows.iter().copied().filter(|r| r.place == place).collect();
     mine.sort_by_key(|r| (r.first, r.index));
     let (mut size, mut align) = (0u64, 0u8);
@@ -395,14 +396,17 @@ pub fn chunk(
                 && !empty_only[o]
         })
         .collect();
-    let z = Z { now: inputs.now, relro: inputs.relro };
+    let keywords = Z { now: inputs.now, relro: inputs.relro };
     let rank_of_out = |o: usize| {
         let out = &a.outsecs[OutSecId(o as u32)];
-        rank_in(out.name, out.sh_type, out.flags, z)
+        rank_in(out.name, out.sh_type, out.flags, keywords)
     };
     // RELRO padding exists when rank 7 is non-empty (L-64).
     let relro_nonempty = (0..outs).any(|o| present[o] && rank_of_out(o).is_relro())
-        || inputs.synthetic.iter().any(|s| rank_in(s.synth.name, s.sh_type, s.flags, z).is_relro());
+        || inputs
+            .synthetic
+            .iter()
+            .any(|s| rank_in(s.synth.name, s.sh_type, s.flags, keywords).is_relro());
 
     let (ehdr, phent, shent, hdr_align) = header_sizes(target.class);
     let mut chunks: Vec<Chunk> = Vec::new();
@@ -496,7 +500,7 @@ pub fn chunk(
     for (i, s) in inputs.synthetic.iter().enumerate() {
         let r = match joins[i] {
             Some(o) => rank_of_out(o.0 as usize),
-            None => rank_in(s.synth.name, s.sh_type, s.flags, z),
+            None => rank_in(s.synth.name, s.sh_type, s.flags, keywords),
         };
         let group = joins[i].map_or(u32::MAX, |o| o.0);
         // A joining copy chunk leads its section (`rank::leads`); every
