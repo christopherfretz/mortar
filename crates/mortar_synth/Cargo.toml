@@ -18,6 +18,7 @@ mortar_merge.workspace = true
 
 [dev-dependencies]
 mortar_a64.workspace = true
+mortar_x64.workspace = true
 mortar_testutil.workspace = true
 
 [lints]

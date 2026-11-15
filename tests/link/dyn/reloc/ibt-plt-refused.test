@@ -1,0 +1,39 @@
+# dyn.md D-49 (and §15 Q4, ruled): the x86-64 IBT PLT (`.plt` lazy
+# entries with `endbr64` and `.plt.sec`) stays refused at M2. Besides
+# `-z ibt`/`-z ibtplt` (refused options of the table), it is chosen when
+# every input relocatable object is marked IBT in `FEATURE_1_AND`
+# (x64.md X-41, X-43). Debian's crt objects carry no property, so a
+# default line never selects it; here every object is IBT|SHSTK
+# (`-fcf-protection=full`, and the program's own `_start` instead of the
+# crt files) and calls `puts` and `exit` through the PLT.
+#
+# What the references do (measured): GNU ld and lld write `.plt` +
+# `.plt.sec` and mark the output IBT|SHSTK; mold marks it and writes its
+# own IBT `.plt`; all three run. mortar refuses by name (WP-055).
+#@ spec: dyn.md "D-49"
+#@ arch: x86_64
+
+cc -O2 -fPIE -fcf-protection=full start.c -o start.o
+cc -O2 -fPIE -fcf-protection=full main.c -o main.o
+link(bfd,lld,mold) gcc -pie -nostartfiles start.o main.o -o prog
+run(bfd,lld,mold) prog
+  stdout: hello ibt
+check(bfd,lld,mold) readelf -nW prog
+  has: x86 feature: IBT, SHSTK
+link(mortar) gcc -pie -nostartfiles start.o main.o -o prog
+  exit: fail
+  diag(mortar): unsupported feature: IBT PLT (-z ibt, -z ibtplt, or every input marked IBT) in a dynamic executable
+
+#--- start.c
+#include <stdlib.h>
+
+int main(void);
+
+void _start(void) { exit(main()); }
+#--- main.c
+#include <stdio.h>
+
+int main(void) {
+  puts("hello ibt");
+  return 0;
+}

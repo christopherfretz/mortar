@@ -24,13 +24,14 @@ impl LinkArch {
     /// The architecture of `machine` (`fix_843419`: AArch64's erratum
     /// option), or `None` for a machine mortar does not link yet.
     /// `status` is `crate::dynamic::arch_status`'s: `M2` only behind the
-    /// dynamic guard (WP-041 step 0e). x86-64 and i386 have M1 tables
-    /// only until WP-048 (and M4 for i386).
+    /// dynamic output on an architecture whose join has landed (AArch64,
+    /// WP-053; x86-64, WP-055). i386 has M1 tables only (its dynamic
+    /// output is M4).
     #[must_use]
     pub fn of(machine: Machine, fix_843419: bool, status: mortar_arch::Status) -> Option<Self> {
         match machine {
             Machine::AArch64 => Some(Self::A64(A64::new(status, fix_843419))),
-            Machine::X86_64 => Some(Self::X64(X64::M1)),
+            Machine::X86_64 => Some(Self::X64(X64::new(status))),
             Machine::I386 => Some(Self::I386(X86::M1)),
         }
     }
