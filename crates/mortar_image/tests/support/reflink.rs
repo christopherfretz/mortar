@@ -506,6 +506,7 @@ pub fn ref_world(
                     section_size: s.size(),
                     addr,
                     alloc,
+                    exec,
                     name: name_id,
                     relocs,
                 },

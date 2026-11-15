@@ -218,6 +218,7 @@ fn main() {
             section_size: size,
             addr: 0x40_0000 + off,
             alloc: true,
+            exec: true,
             name,
             relocs: Some(r),
         };

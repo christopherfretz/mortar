@@ -667,6 +667,7 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
             section_size: len,
             addr,
             alloc: s.alloc,
+            exec: s.exec,
             name,
             relocs,
         };

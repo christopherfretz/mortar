@@ -38,6 +38,7 @@ dependencies = [
  "mortar_scan",
  "mortar_synth",
  "mortar_testutil",
+ "mortar_x64",
 ]
 
 [[package]]
