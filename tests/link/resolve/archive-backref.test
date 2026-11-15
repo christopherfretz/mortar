@@ -1,0 +1,34 @@
+# A member extracted from a later archive needs a symbol that only an
+# earlier archive defines. GNU ld searches an archive once, where it is
+# on the command line ("Command-line Options", -l: "the linker searches
+# the archive only once"), so the symbol stays undefined. lld and mold
+# remember every archive seen and find it: the reference linkers
+# DIFFER, and each is held to its own behavior. mortar follows GNU ld,
+# whose drop-in it is (docs/ARCHITECTURE.md); resolve.md records the
+# choice.
+#@ spec: resolve.md "Archives"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 main.c -o main.o
+cc -O1 helper.c -o helper.o
+cc -O1 user.c -o user.o
+ar rcs libhelper.a helper.o
+ar rcs libuser.a user.o
+link(bfd,mortar) gcc -static -no-pie main.o -L. -lhelper -luser -o prog
+  exit: fail
+  diag(bfd): undefined reference to `helper'
+  diag(mortar): helper
+link(lld,mold) gcc -static -no-pie main.o -L. -lhelper -luser -o prog
+run(lld,mold) prog
+  exit: 7
+
+#--- main.c
+int user(void);
+
+int main(void) { return user(); }
+#--- user.c
+int helper(void);
+
+int user(void) { return helper(); }
+#--- helper.c
+int helper(void) { return 7; }

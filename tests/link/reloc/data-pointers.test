@@ -1,0 +1,40 @@
+# Relocations between objects: absolute addresses in initialized data,
+# with and without an addend (R_AARCH64_ABS64, R_X86_64_64, R_386_32),
+# and code compiled `-fpie` that reaches another object's symbols
+# through the GOT, which a static non-PIE link fills with their
+# addresses or relaxes away (the psABIs' relocation tables).
+#@ spec: a64.md "Static relocations"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O0 -fpie main.c -o main.o
+cc -O0 -fno-pie target.c -o target.o
+link gcc -static -no-pie main.o target.o -o prog
+run prog
+  exit: 42
+
+#--- target.c
+int target_data = 7;
+int target_array[4] = { 1, 2, 3, 4 };
+
+int target_func(void) { return 35; }
+
+int *array_end = &target_array[4];
+#--- main.c
+extern int target_data;
+extern int target_array[4];
+extern int *array_end;
+int target_func(void);
+
+int *data_pointer = &target_data;
+int (*func_pointer)(void) = target_func;
+int *third = &target_array[2];
+
+int main(void) {
+  if (data_pointer != &target_data)
+    return 1;
+  if (func_pointer != target_func)
+    return 2;
+  if (*third != 3 || third + 2 != array_end)
+    return 3;
+  return *data_pointer + func_pointer();
+}

@@ -1,0 +1,35 @@
+# A `bl` whose target is out of the ±128 MiB reach of R_AARCH64_CALL26
+# needs a veneer (AAELF64 "Call and Jump relocations": the linker may
+# insert one). Here `.far` is placed 512 MiB above `.text`. The program
+# exits 42 only if the call arrives. Each reference names its veneer its
+# own way (recorded); mortar's naming is for a64.md to choose.
+#@ spec: a64.md "Veneers"
+#@ arch: aarch64
+#@ xfail(mortar): no linking yet (M1)
+
+as far.s -o far.o
+link ld --section-start=.text=0x400000 --section-start=.far=0x20000000 far.o -o prog
+run prog
+  exit: 42
+check nm prog
+  has: far$
+  has(bfd): t __far_veneer$
+  has(lld): t __AArch64AbsLongThunk_far$
+  has(mold): t far$thunk
+
+#--- far.s
+	.text
+	.globl	_start
+_start:
+	bl	far
+	mov	x0, #1
+	mov	x8, #93
+	svc	#0
+
+	.section .far,"ax",@progbits
+	.globl	far
+	.type	far, %function
+far:
+	mov	x0, #42
+	mov	x8, #93
+	svc	#0

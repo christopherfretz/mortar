@@ -1,0 +1,59 @@
+# Static C++ with exceptions thrown through frames of another object and
+# caught: unwinding needs the CIEs and FDEs of `.eh_frame` from every
+# input (LSB "Exception Frames") and the language-specific data
+# `.gcc_except_table` (Itanium C++ ABI, "Exception Handling"). A
+# destructor runs during unwinding. GCC does not pass `--eh-frame-hdr`
+# for `-static` (the static unwinder registers `.eh_frame` itself), so
+# GNU ld and lld make no `.eh_frame_hdr`; mold makes one always (the
+# references DIFFER; layout/eh-frame-hdr.test covers the header).
+#@ spec: synth.md ".eh_frame"
+#@ requires: g++
+#@ xfail(mortar): no linking yet (M1)
+
+cxx -O1 main.cc -o main.o
+cxx -O1 thrower.cc -o thrower.o
+link g++ -static -no-pie main.o thrower.o -o prog
+run prog
+  stdout: guard destroyed
+  stdout: caught: depth 3
+  stdout: caught int 7
+check readelf -lSW prog
+  has: ] .eh_frame PROGBITS
+  has: ] .gcc_except_table PROGBITS
+
+#--- main.cc
+#include <cstdio>
+#include <stdexcept>
+
+void dive(int depth);
+
+struct Guard {
+  ~Guard() { std::puts("guard destroyed"); }
+};
+
+static void guarded() {
+  Guard guard;
+  dive(0);
+}
+
+int main() {
+  try {
+    guarded();
+  } catch (const std::exception &e) {
+    std::printf("caught: %s\n", e.what());
+  }
+  try {
+    throw 7;
+  } catch (int x) {
+    std::printf("caught int %d\n", x);
+  }
+}
+#--- thrower.cc
+#include <stdexcept>
+#include <string>
+
+void dive(int depth) {
+  if (depth == 3)
+    throw std::runtime_error("depth " + std::to_string(depth));
+  dive(depth + 1);
+}

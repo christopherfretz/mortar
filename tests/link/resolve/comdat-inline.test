@@ -1,0 +1,48 @@
+# An inline function with a static local, used in two translation units:
+# each object has a copy in a COMDAT group (gABI "Section Groups",
+# GRP_COMDAT); the link keeps one group, so both units share one
+# function and one counter (Itanium C++ ABI "Vague Linkage").
+#@ spec: resolve.md "COMDAT groups"
+#@ requires: g++
+#@ xfail(mortar): no linking yet (M1)
+
+cxx -O0 a.cc -o a.o
+cxx -O0 b.cc -o b.o
+cxx -O0 main.cc -o main.o
+link g++ -static -no-pie main.o a.o b.o -o prog
+run prog
+  stdout: a 1, b 2, template 3
+check readelf -sW prog
+  has: FUNC * _Z4nextv$
+  has: OBJECT * _ZZ4nextvE5count$
+
+#--- shared.h
+inline int next() {
+  static int count = 0;
+  return ++count;
+}
+
+template <typename T> T twice(T x) { return x + x; }
+#--- a.cc
+#include "shared.h"
+
+int from_a() { return next(); }
+int twice_a() { return twice(1); }
+#--- b.cc
+#include "shared.h"
+
+int from_b() { return next(); }
+int twice_b() { return twice(2) - 1; }
+#--- main.cc
+#include <cstdio>
+
+int from_a();
+int from_b();
+int twice_a();
+int twice_b();
+
+int main() {
+  int a = from_a();
+  int b = from_b();
+  std::printf("a %d, b %d, template %d\n", a, b, twice_a() + twice_b() - 2);
+}

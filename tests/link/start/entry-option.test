@@ -1,0 +1,44 @@
+# `-e <symbol>` makes that symbol the entry point instead of `_start`
+# (GNU ld manual, "Command-line Options", -e; gABI "ELF Header",
+# e_entry): `_start` would exit 1, `begin` exits 42.
+#@ spec: layout.md "Entry point"
+#@ xfail(mortar): no linking yet (M1)
+
+as start-%{arch}.s -o start.o
+link ld -e begin start.o -o prog
+run prog
+  exit: 42
+
+#--- start-aarch64.s
+	.text
+	.globl	_start, begin
+_start:
+	mov	x0, #1
+	mov	x8, #93
+	svc	#0
+begin:
+	mov	x0, #42
+	mov	x8, #93
+	svc	#0
+#--- start-x86_64.s
+	.text
+	.globl	_start, begin
+_start:
+	movl	$60, %eax
+	movl	$1, %edi
+	syscall
+begin:
+	movl	$60, %eax
+	movl	$42, %edi
+	syscall
+#--- start-i386.s
+	.text
+	.globl	_start, begin
+_start:
+	movl	$1, %eax
+	movl	$1, %ebx
+	int	$0x80
+begin:
+	movl	$1, %eax
+	movl	$42, %ebx
+	int	$0x80

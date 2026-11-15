@@ -18,6 +18,7 @@ mortar          = { path = "crates/mortar" }
 mortar_cli      = { path = "crates/mortar_cli" }
 mortar_diag     = { path = "crates/mortar_diag" }
 mortar_elf      = { path = "crates/mortar_elf" }
+mortar_plumb    = { path = "crates/mortar_plumb" }
 mortar_script   = { path = "crates/mortar_script" }
 mortar_testutil = { path = "crates/mortar_testutil" }
 xtask           = { path = "xtask" }

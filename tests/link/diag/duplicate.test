@@ -1,0 +1,23 @@
+# Two global definitions of one symbol fail the link with a diagnostic
+# that names the symbol (gABI "Symbol Table": multiple STB_GLOBAL
+# definitions are not allowed); the failed link leaves no output file.
+#@ spec: diag.md "Duplicate symbols"
+#@ xfail(mortar): no linking yet (M1)
+
+cc -O1 main.c -o main.o
+cc -O1 a.c -o a.o
+cc -O1 b.c -o b.o
+link gcc -static -no-pie main.o a.o b.o -o prog
+  exit: fail
+  diag: twice
+  diag(bfd): multiple definition of `twice'; a.o:*first defined here
+  diag(lld,mold): error: duplicate symbol: *twice
+
+#--- main.c
+int twice(void);
+
+int main(void) { return twice(); }
+#--- a.c
+int twice(void) { return 1; }
+#--- b.c
+int twice(void) { return 2; }
