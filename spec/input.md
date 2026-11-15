@@ -134,6 +134,9 @@ line by name: the user sees, at the first slim object,
 `unsupported file format: GCC LTO object` (kind `file-format`), with the
 note `mortar does not perform link-time optimization; compile without
 -flto, or with -ffat-lto-objects`. It is never a link that is missing code.
+This is the one place the check is made (`spec/resolve.md` §10's row for
+`__gnu_lto_slim` is the same refusal; a file refused here never reaches
+resolution, so resolution does not make it again).
 
 ### 2.3 Empty files
 
@@ -594,8 +597,11 @@ An `ET_REL` file of the target, named directly, by a script, or by
 `--start-lib` (§7.6), is one file: a `FileId` (§10), parsed with
 `mortar_elf::Object` (elf.md §3). Every non-local symbol-table entry is
 interned (`spec/model.md` §2.3); `SHT_GROUP` signatures are interned
-(`ComdatId`); the LTO check of §2.2 is made on the same pass over the
-symbol table. Structural errors of the object found on that pass are
+(`ComdatId`) by their **effective signature**: the signature symbol's
+name, or, when that symbol is `STT_SECTION` (as GNU as writes for a group
+named like its section), the name of the section it refers to
+(`spec/resolve.md` §6.1); the LTO check of §2.2 is made on the same pass
+over the symbol table. Structural errors of the object found on that pass are
 `malformed-input`; the reader's other checks happen when later phases ask
 for sections (elf.md §1: parse is constant time).
 
