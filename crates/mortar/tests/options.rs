@@ -126,8 +126,11 @@ const AUDIT: &[(&str, Proof)] = &[
 // list is the table's)
 #[test]
 fn every_row_that_is_not_refused_is_audited() {
-    let honoured: Vec<String> =
-        rows().iter().filter(|r| r.status != Status::Refused).map(|r| r.name()).collect();
+    let honoured: Vec<String> = rows()
+        .iter()
+        .filter(|r| r.status != Status::Refused)
+        .map(mortar_cli::table::Row::name)
+        .collect();
     let audited: Vec<String> = AUDIT.iter().map(|(n, _)| (*n).to_owned()).collect();
     assert_eq!(audited, honoured, "AUDIT must list exactly the rows that are not refused");
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -301,7 +304,7 @@ impl Cx {
     }
 
     /// The program's exit status.
-    fn exit(&self, path: &Path) -> Option<i32> {
+    fn exit(path: &Path) -> Option<i32> {
         run_with(&mut Command::new(path), b"", Duration::from_mins(1)).status.and_then(|s| s.code())
     }
 }
@@ -347,14 +350,14 @@ fn sections(cx: &Cx, path: &Path) -> String {
 // spec: cli.md §3.2 (`-o`)
 fn output_is_named(cx: &Cx) {
     let out = cx.link(&[], "named.out");
-    assert_eq!(cx.exit(&out), Some(42));
+    assert_eq!(Cx::exit(&out), Some(42));
 }
 
 // spec: cli.md §2.8 (`-m` sets the target; objects of another machine are
 // input.md's incompatible-file)
 fn emulation_sets_the_target(cx: &Cx) {
     let out = cx.link(&["-m", "aarch64elf"], "em.out");
-    assert_eq!(cx.exit(&out), Some(42));
+    assert_eq!(Cx::exit(&out), Some(42));
     let o = cx.mortar(&["-m", "elf_x86_64", "start.o", "-o", "em2.out"]);
     assert!(!o.success());
     assert!(o.stderr_text().contains("the target was set by -m elf_x86_64"), "{}", o.stderr_text());
@@ -363,7 +366,7 @@ fn emulation_sets_the_target(cx: &Cx) {
 // spec: layout.md L-103 (`-e`)
 fn entry_is_the_symbol(cx: &Cx) {
     let out = cx.link(&["-e", "alt"], "entry.out");
-    assert_eq!(cx.exit(&out), Some(7));
+    assert_eq!(Cx::exit(&out), Some(7));
 }
 
 // spec: synth.md S-77 (`-s`), as GNU ld
@@ -371,7 +374,7 @@ fn strip_all(cx: &Cx) {
     for out in [cx.link(&["-s"], "s.out"), cx.link_ld(&["-s"], "s.ld")] {
         let s = sections(cx, &out);
         assert!(!s.contains(".symtab") && !s.contains(".debug_"), "{s}");
-        assert_eq!(cx.exit(&out), Some(42));
+        assert_eq!(Cx::exit(&out), Some(42));
     }
 }
 
@@ -465,7 +468,7 @@ fn libraries(cx: &Cx) {
         args.extend_from_slice(&["-o", "lib.out"]);
         let o = cx.mortar(&args);
         assert!(o.success(), "{libs:?}: {}", o.stderr_text());
-        assert_eq!(cx.exit(&cx.scratch.join("lib.out")), Some(9));
+        assert_eq!(Cx::exit(&cx.scratch.join("lib.out")), Some(9));
     }
     let o = cx.mortar(&["circ.o", "-la", "-o", "lib.out"]);
     assert!(o.stderr_text().contains("-la"), "without -L: {}", o.stderr_text());
@@ -477,7 +480,7 @@ fn groups(cx: &Cx) {
     let args = ["circ.o", "-(", "lib/liba.a", "lib/libb.a", "-)", "-o", "grp.out"];
     for o in [cx.mortar(&args), cx.ld(&args)] {
         assert!(o.success(), "{}", o.stderr_text());
-        assert_eq!(cx.exit(&cx.scratch.join("grp.out")), Some(9));
+        assert_eq!(Cx::exit(&cx.scratch.join("grp.out")), Some(9));
     }
 }
 
@@ -587,7 +590,7 @@ fn separate_code(cx: &Cx) {
             .expect("an RX PT_LOAD");
         let w: Vec<&str> = rx.split_whitespace().collect();
         let offset = u64::from_str_radix(w[1].trim_start_matches("0x"), 16).unwrap();
-        assert_eq!(offset % 0x10000 == 0, separate, "{extra:?}: {rx}");
+        assert_eq!(offset.is_multiple_of(0x10000), separate, "{extra:?}: {rx}");
     }
 }
 
@@ -599,7 +602,7 @@ fn max_page_size(cx: &Cx) {
     ] {
         let loads: Vec<_> = segments(cx, &out).into_iter().filter(|s| s.0 == "LOAD").collect();
         assert!(!loads.is_empty() && loads.iter().all(|s| s.2 == "0x1000"), "{loads:?}");
-        assert_eq!(cx.exit(&out), Some(42));
+        assert_eq!(Cx::exit(&out), Some(42));
     }
     let o = cx.mortar(&["start.o", "-o", "mp.out", "-z", "max-page-size=12"]);
     assert!(o.stderr_text().contains("max-page-size"), "{}", o.stderr_text());
