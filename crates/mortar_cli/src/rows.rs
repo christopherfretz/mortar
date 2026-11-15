@@ -38,7 +38,8 @@ const EXPORT: &str = "a static executable has no dynamic symbol table (GNU ld an
 /// until dynamic outputs land (M2).
 const AS_NEEDED: &str = "it decides only which shared objects are needed, and every shared-object input is refused by name (M2)";
 /// The note of `--hash-style` (`spec/dyn.md` D-20, R-C1).
-const HASH_STYLE: &str = "dyn.md D-20: an executable gets .gnu.hash and no .hash; mortar writes =gnu";
+const HASH_STYLE: &str =
+    "dyn.md D-20: an executable gets .gnu.hash and no .hash; mortar writes =gnu";
 /// The reason of `--no-copy-dt-needed-entries` (`spec/dyn.md` D-15).
 const NO_COPY_DT_NEEDED: &str = "dyn.md D-15: the default; a library reached only through another's DT_NEEDED entries never defines a symbol of the link (D-12), and --copy-dt-needed-entries is refused";
 /// The reason of the `-Bsymbolic` rows once dynamic executables are

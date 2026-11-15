@@ -210,7 +210,8 @@ fn status_cell(status: Status) -> String {
 /// [`crate::table::join_changes`]).
 fn join_markdown(out: &mut String) {
     let changes = crate::table::join_changes();
-    let after = |f: &dyn Fn(Status) -> bool| rows().iter().filter(|r| f(r.status_at_join())).count();
+    let after =
+        |f: &dyn Fn(Status) -> bool| rows().iter().filter(|r| f(r.status_at_join())).count();
     let _ = writeln!(
         out,
         "## At the M2 join\n\n\

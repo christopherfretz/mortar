@@ -5,9 +5,7 @@
 
 use std::ffi::OsString;
 
-use mortar_cli::{
-    DynamicLinker, HashStyle, InputSpec, OutputKind, Parsed, SymbolRole, Use, parse,
-};
+use mortar_cli::{DynamicLinker, HashStyle, InputSpec, OutputKind, Parsed, SymbolRole, Use, parse};
 use mortar_diag::Style;
 
 fn p(list: &[&str]) -> Parsed {
@@ -83,7 +81,11 @@ fn kind_and_interpreter() {
         (&["-static", "-pie", "--no-dynamic-linker", "-z", "text"], OutputKind::StaticPie, None),
         (&["-dynamic-linker", L, "--no-dynamic-linker"], OutputKind::StaticExecutable, None),
         (&["--no-dynamic-linker", "-dynamic-linker", L], OutputKind::Executable, Some(L)),
-        (&["-pie", "--no-dynamic-linker", "-dynamic-linker", L], OutputKind::PieExecutable, Some(L)),
+        (
+            &["-pie", "--no-dynamic-linker", "-dynamic-linker", L],
+            OutputKind::PieExecutable,
+            Some(L),
+        ),
         (&["-no-pie"], OutputKind::StaticExecutable, None),
         (&["-dynamic-linker", "/a", "-dynamic-linker", L], OutputKind::Executable, Some(L)),
     ] {
@@ -177,7 +179,12 @@ fn as_needed_is_positional() {
     ]);
     assert_eq!(
         states(&parsed),
-        [st("-la", true, false), st("-lb", false, false), st("-lc", true, false), st("-ld", false, false)]
+        [
+            st("-la", true, false),
+            st("-lb", false, false),
+            st("-lc", true, false),
+            st("-ld", false, false)
+        ]
     );
     // D-19a's example: `na --as-needed nx --no-as-needed nb nx nc`.
     let parsed = ok(&["-lna", "--as-needed", "-lnx", "--no-as-needed", "-lnb", "-lnx", "-lnc"]);
@@ -400,7 +407,7 @@ fn m2_refusals_keep_their_names() {
     // The default of D-15 is accepted.
     let parsed = ok(&["--no-copy-dt-needed-entries", "--no-add-needed", "m.o"]);
     assert!(parsed.refused_uses().is_empty());
-    assert!(parsed.plan.inputs[0].state.copy_dt_needed == false);
+    assert!(!parsed.plan.inputs[0].state.copy_dt_needed);
 }
 
 // spec: WP-040 step 0e, dyn.md R-C1 (the gates are refused by the table

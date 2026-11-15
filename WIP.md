@@ -5,7 +5,7 @@ changes (--hash-style partial gnu-only, -z notext refused, -no-pie supported,
 --no-copy-dt-needed-entries noop); AT_JOIN table + Row::status_at_join +
 Parsed::refused_uses_at_join; options.md join section; tests table.rs, dynamic.rs.
 
-Next: census fixture (426 lines, /tmp/mortar-wp042-*/lines.tsv) + tests/census_m2.rs;
+Next: record spec/landed/dyn/WP-042.md; merge main once WP-051 lands (xfails tagged WP-042); gate.
 audit edits in crates/mortar/tests/options.rs (hash-style Check, -z notext out,
 --no-copy-dt-needed-entries Same, -no-pie Check); spec/cli.md row-status text and counts;
 record spec/landed/dyn/WP-042.md; gate.
