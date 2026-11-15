@@ -91,11 +91,16 @@ pub trait KeyKinds: Sync {
 /// The facts of an output with `.dynamic` that its GOT and PLT depend on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DynGotCx {
-    /// A `Pie` (else an `Exec`).
+    /// A `Pie` or a `StaticPie` (else an `Exec`).
     pub pie: bool,
     /// `-z now` (D-49; `OutputCx.bind_now`): the shapes stay, so the
     /// plan's bytes do not change with it; layout reads it.
     pub bind_now: bool,
+    /// A `StaticPie` (`spec/dyn.md` D-1, D-41; synth S-70): every
+    /// `IRELATIVE` is in `.rela.dyn`, after the other records, and
+    /// `.rela.plt` holds none. The only place the kind changes where an
+    /// `IRELATIVE` goes.
+    pub static_pie: bool,
 }
 
 /// One dynamic record of a `.got` slot (`spec/dyn.md` D-46, D-48), in
@@ -124,8 +129,12 @@ struct DynPlt {
     /// PLT0's bytes, and one PLT entry's.
     header: u64,
     entry: u64,
-    lazy: LazyTarget,
-    jump_slot: u32,
+    /// The lazy target and the `JUMP_SLOT` type; `None` with no PLT
+    /// entry (a `StaticPie`, whose architecture tables are M1's).
+    lazy: Option<LazyTarget>,
+    jump_slot: Option<u32>,
+    /// S-70: the IPLT's `IRELATIVE`s are `.rela.dyn`'s ([`DynGotCx::static_pie`]).
+    iplt_rela_dyn: bool,
     /// The `.got` records, by offset.
     records: Box<[GotRecord]>,
     /// How many of `records` are `RELATIVE`.
@@ -285,7 +294,8 @@ impl GotPlan {
         let Some(irelative) = arch.dyn_type(DynRole::IRelative) else {
             return fail(diag, key(0), internal("the architecture has no IRELATIVE type"));
         };
-        if plt.chunks.len() != 1 || plt.call_chunk != 0 || plt.lazy_chunk != 0 {
+        let plt_entries = !slots.plt.is_empty();
+        if plt_entries && (plt.chunks.len() != 1 || plt.call_chunk != 0 || plt.lazy_chunk != 0) {
             // x86-64's IBT PLT (`.plt` + `.plt.sec`) is the only such shape;
             // it stays refused at M2 (`spec/dyn.md` D-49, §15 Q4), and is
             // named as such (WP-055: every input marked IBT selects it).
@@ -296,9 +306,10 @@ impl GotPlan {
             };
             return fail(diag, key(0), feature(what));
         }
-        let Some(lazy) = arch.lazy_target(variant) else {
+        let lazy = arch.lazy_target(variant);
+        if plt_entries && lazy.is_none() {
             return fail(diag, key(0), feature("a dynamic PLT on this architecture"));
-        };
+        }
         let ty = |role: DynRole| {
             arch.dyn_type(role).ok_or_else(|| internal::<SynthError>("no type for a dynamic role"))
         };
@@ -391,7 +402,8 @@ impl GotPlan {
             Err(e) => return fail(diag, key(0), e.into_diagnostic()),
         };
         let jump_slot = match ty(DynRole::JumpSlot) {
-            Ok(t) => t,
+            Ok(t) => Some(t),
+            Err(_) if !plt_entries => None,
             Err(e) => return fail(diag, key(0), e.into_diagnostic()),
         };
         let x86 = facts.got_base == GotBase::GotPltStart;
@@ -401,11 +413,10 @@ impl GotPlan {
         } else {
             0
         };
-        let chunk = plt.chunks[0];
-        let (plt_header, plt_entry) = if slots.plt.is_empty() {
-            (0, u64::from(chunk.entry))
-        } else {
-            (u64::from(chunk.header), u64::from(chunk.entry))
+        let (plt_header, plt_entry) = match plt.chunks.first() {
+            Some(chunk) if plt_entries => (u64::from(chunk.header), u64::from(chunk.entry)),
+            Some(chunk) => (0, u64::from(chunk.entry)),
+            None => (0, 0),
         };
         let is_shared =
             |list: &[SymKey]| -> Box<[bool]> { list.iter().map(|&k| shared(k)).collect() };
@@ -435,6 +446,7 @@ impl GotPlan {
                 entry: plt_entry,
                 lazy,
                 jump_slot,
+                iplt_rela_dyn: cx.static_pie,
                 records: records.into(),
                 relative,
                 got_kinds,
@@ -573,7 +585,42 @@ impl GotPlan {
     /// The size of `.rela.plt` (S-108); 0 means no chunk.
     #[must_use]
     pub fn rela_plt_size(&self) -> u64 {
-        (self.plt_count() + self.iplt.len() as u64) * self.rela_entsize()
+        let iplt = if self.iplt_rela_dyn() { 0 } else { self.iplt.len() as u64 };
+        (self.plt_count() + iplt) * self.rela_entsize()
+    }
+
+    /// Whether the IPLT's `IRELATIVE`s are `.rela.dyn`'s (S-70: a
+    /// `StaticPie`), not `.rela.plt`'s.
+    fn iplt_rela_dyn(&self) -> bool {
+        self.dynamic.as_ref().is_some_and(|d| d.iplt_rela_dyn)
+    }
+
+    /// The `IRELATIVE` records this plan puts in `.rela.dyn` (S-70): one
+    /// per IPLT entry in a `StaticPie`, none otherwise.
+    #[must_use]
+    pub fn rela_dyn_irelative(&self) -> u32 {
+        if self.iplt_rela_dyn() { self.iplt.len() as u32 } else { 0 }
+    }
+
+    /// The `IRELATIVE` records of [`Self::rela_dyn_irelative`], in IPLT
+    /// order: `r_offset` the entry's `.got.plt` word, symbol 0, addend the
+    /// resolver's link-time address (RELA; glibc's self-relocation adds
+    /// the load bias to both and calls the resolver).
+    pub fn irelative_records(
+        &self,
+        at: &GotAddrs,
+        values: &dyn SlotValues,
+    ) -> Result<Vec<crate::rela::DynRecord>, SynthError> {
+        (0..u64::from(self.rela_dyn_irelative()))
+            .map(|n| {
+                Ok(crate::rela::DynRecord {
+                    r_offset: at.got_plt + self.iplt_word(n as u32),
+                    r_sym: 0,
+                    r_type: self.irelative,
+                    addend: self.resolver(n, values)? as i64,
+                })
+            })
+            .collect()
     }
 
     /// The address of `key`'s IPLT entry, if it has one (S-71: every
@@ -715,7 +762,7 @@ impl GotPlan {
                 Some(n) if n < nplt => {
                     let d = self.dynamic.as_ref().ok_or_else(|| internal::<SynthError>("PLT"))?;
                     let at = at.ok_or_else(|| internal::<SynthError>("no PLT address"))?;
-                    match d.lazy {
+                    match d.lazy.ok_or_else(|| internal::<SynthError>("no lazy target"))? {
                         LazyTarget::Plt0 => at.plt,
                         LazyTarget::Entry { plus } => {
                             at.plt + self.plt_entry(n as u32) + u64::from(plus)
@@ -857,7 +904,8 @@ impl GotPlan {
                 let n = i as u32;
                 out.word(off, w, at.got_plt + self.plt_word(n));
                 let r_sym = u64::from(d.plt_sym[n as usize]);
-                out.word(off + ww, w, r_sym << shift | u64::from(d.jump_slot));
+                let jump_slot = d.jump_slot.ok_or_else(|| internal::<SynthError>("JUMP_SLOT"))?;
+                out.word(off + ww, w, r_sym << shift | u64::from(jump_slot));
                 if self.rel == RelForm::Rela {
                     out.word(off + 2 * ww, w, 0);
                 }
