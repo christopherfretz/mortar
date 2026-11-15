@@ -151,9 +151,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     };
     let plt = loader::plt_entries(&image);
     let mut engine = reloc::Engine::new(&img1, &objs, map.format);
-    engine.dynbind = v1.dynbind.iter().map(|(k, v)| (k.clone(), *v)).collect();
-    engine.dyn_tls = v1.dyn_tls.clone();
-    engine.plt = plt.clone();
+    dyn_engine(&mut engine, &v1, &plt);
     run_engine(&mut engine, &image, map, None);
     let abs = std::mem::take(&mut engine.abs_words);
     let chosen = std::mem::take(&mut engine.ifunc_chosen);
@@ -212,9 +210,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         if let Ok(img3) = Image::read(&v3.bytes) {
             let names: HashSet<String> = fresh.keys().cloned().collect();
             let mut e3 = reloc::Engine::new(&img3, &objs, map.format);
-            e3.dynbind = v3.dynbind.iter().map(|(k, v)| (k.clone(), *v)).collect();
-            e3.dyn_tls = v3.dyn_tls.clone();
-            e3.plt = plt.clone();
+            dyn_engine(&mut e3, &v3, &plt);
             run_engine(&mut e3, &image, map, Some(&names));
             let mut bad: HashMap<String, Vec<Finding>> = HashMap::new();
             let mut ok: HashMap<String, u64> = HashMap::new();
@@ -342,4 +338,17 @@ fn exported_ifuncs(
         }
     }
     v
+}
+
+/// Gives stage 2's engine a view: the loader's bindings, the TLS block
+/// the view uses, the PLT entries.
+fn dyn_engine(e: &mut reloc::Engine<'_, '_>, v: &loader::View, plt: &std::collections::BTreeMap<u64, u64>) {
+    e.dynbind = v.dynbind.iter().map(|(k, x)| (k.clone(), *x)).collect();
+    e.dyn_tls = v.dyn_tls.clone();
+    e.dyn_tls_mod = v.dyn_tls_mod.iter().map(|(k, x)| (k.clone(), *x)).collect();
+    e.plt = plt.clone();
+    e.dynamic = true;
+    if matches!(e.tls, Ok(None)) && !v.dyn_tls.is_empty() {
+        e.tls = Ok(Some(reloc::TlsBlock { start: v.tls.0, tcb: v.tls.1 }));
+    }
 }

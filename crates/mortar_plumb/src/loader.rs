@@ -148,6 +148,21 @@ pub struct View {
     pub dynbind: HashMap<String, u64>,
     /// Names bound to a library's thread-local definition.
     pub dyn_tls: std::collections::HashSet<String>,
+    /// The module index of each name bound to a library's TLS.
+    pub dyn_tls_mod: HashMap<String, u64>,
+    /// The block the views use: the output's `PT_TLS`, or an empty one
+    /// at 0 when it has none.
+    pub tls: (u64, u64),
+}
+
+/// The first word a `TLSDESC` record writes in the model (the resolver).
+pub const TLSDESC_MARK: u64 = 0x7e5c_0000_0000_0001;
+
+/// Where the views put byte `off` of library `i`'s TLS block: past the
+/// executable's own block, as if every block were in one static area, so
+/// TPREL and DTPREL of it are values no linker can write by accident.
+pub fn tls_fake(tls_start: u64, i: usize, off: u64) -> u64 {
+    tls_start.wrapping_add((i as u64 + 1) << 32).wrapping_add(off)
 }
 
 fn file_off(image: &Image<'_>, addr: u64, len: u64) -> Option<usize> {
@@ -165,6 +180,8 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
         findings: Vec::new(),
         dynbind: HashMap::new(),
         dyn_tls: std::collections::HashSet::new(),
+        dyn_tls_mod: HashMap::new(),
+        tls: (0, 0),
     };
     let m = ld.machine;
     let f = |msg: String, at: u64| Finding::new(Rule::Dyn(9), msg).at(at);
@@ -178,6 +195,8 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
         }
     });
     let tls_start = tls.map_or(0, |t| t.p_vaddr);
+    let tcb = Some(tcb.unwrap_or(if m == EM_AARCH64 { 16 } else { 0 }));
+    v.tls = (tls_start, tcb.unwrap_or(0));
     let relro: Vec<(u64, u64)> = image
         .phdrs
         .iter()
@@ -185,14 +204,24 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
         .map(|q| (q.p_vaddr, q.p_vaddr + q.p_memsz))
         .collect();
     for (j, s) in out.syms.iter().enumerate() {
-        if j == 0 || s.defined() {
+        if j == 0 {
+            continue;
+        }
+        if s.defined() {
+            // A copy or an export: the engine uses it only for a name the
+            // output's `.symtab` does not carry plainly (GNU ld's
+            // `stdout@GLIBC_2.2.5` for a copied `stdout`).
+            if s.sym_type() != mortar_elf::consts::STT_TLS {
+                v.dynbind.entry(s.name.clone()).or_insert_with(|| ld.bind(out, j, false, p).addr());
+            }
             continue;
         }
         let b = ld.bind(out, j, false, p);
-        if let Bound::Lib { tls: true, .. } = b {
+        if let Bound::Lib { tls: true, i, addr, .. } = b {
             v.dyn_tls.insert(s.name.clone());
-        }
-        if !matches!(b, Bound::Missing) {
+            v.dyn_tls_mod.insert(s.name.clone(), 2 + i as u64);
+            v.dynbind.insert(s.name.clone(), tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i))));
+        } else if !matches!(b, Bound::Missing) {
             v.dynbind.insert(s.name.clone(), b.addr());
         }
     }
@@ -281,31 +310,51 @@ pub fn apply(image: &Image<'_>, out: &DynOut, ld: &Loader<'_>, p: &Params, with_
                 Bound::Lib { i, .. } => Some(2 + i as u64),
                 _ => Some(0),
             },
+            // A thread-local symbol's st_value in an executable is its
+            // offset in the TLS segment (gABI), so the bias comes back off.
             Kind::DtpOff => match sym(false) {
                 Bound::Exec(s) if r.sym != 0 => {
-                    Some(s.wrapping_sub(p.bias).wrapping_sub(tls_start).wrapping_add(a as u64))
+                    Some(s.wrapping_sub(p.bias).wrapping_add(a as u64))
                 }
-                Bound::Lib { i, addr, .. } => {
-                    Some(addr.wrapping_sub(lib_base(i)).wrapping_add(a as u64))
-                }
+                Bound::Lib { i, addr, .. } => Some(
+                    tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i)))
+                        .wrapping_sub(tls_start)
+                        .wrapping_add(a as u64),
+                ),
                 _ => Some(a as u64),
             },
             Kind::TpOff => match (sym(false), tcb) {
                 (Bound::Exec(s), Some(t)) => {
-                    let off = if r.sym == 0 { 0 } else { s.wrapping_sub(p.bias).wrapping_sub(tls_start) };
+                    let off = if r.sym == 0 { 0 } else { s.wrapping_sub(p.bias) };
                     Some(t.wrapping_add(off).wrapping_add(a as u64))
                 }
-                // A library's block: an offset the model invents; the
-                // engine does not judge TLS imports (Reason::Dynamic).
-                (Bound::Lib { i, addr, .. }, _) => Some(
-                    0x1000_0000u64
-                        .wrapping_mul(i as u64 + 1)
-                        .wrapping_add(addr.wrapping_sub(lib_base(i)))
-                        .wrapping_add(a as u64),
+                // A library's block: where `tls_fake` puts it.
+                (Bound::Lib { i, addr, .. }, Some(t)) => Some(
+                    t.wrapping_add(
+                        tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i))).wrapping_sub(tls_start),
+                    )
+                    .wrapping_add(a as u64),
                 ),
                 _ => None,
             },
-            Kind::TlsDesc | Kind::Unknown => {
+            Kind::TlsDesc => {
+                // The static-TLS descriptor: the resolver, then TPREL.
+                let off = match sym(false) {
+                    Bound::Exec(s) if r.sym != 0 => Some(s.wrapping_sub(p.bias)),
+                    Bound::Exec(_) => Some(0),
+                    Bound::Lib { i, addr, .. } => {
+                        Some(tls_fake(tls_start, i, addr.wrapping_sub(lib_base(i))).wrapping_sub(tls_start))
+                    }
+                    _ => None,
+                };
+                if let (Some(off), Some(t), Some(o)) = (off, tcb, file_off(image, r.offset, 16)) {
+                    v.bytes[o..o + 8].copy_from_slice(&TLSDESC_MARK.to_le_bytes());
+                    let w = t.wrapping_add(off).wrapping_add(a as u64);
+                    v.bytes[o + 8..o + 16].copy_from_slice(&w.to_le_bytes());
+                }
+                None
+            }
+            Kind::Unknown => {
                 if with_findings && k == Kind::Unknown {
                     v.findings.push(f(format!("a dynamic record of unknown type {}", r.ty), r.offset));
                 }

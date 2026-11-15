@@ -2,18 +2,19 @@
 
 ## Done
 - Step 0d (03d2154, on main as d3bde0d): map dynamic records.
-- Stage-3 skeleton, runs clean on PIE hellos of bfd/lld (mold: A9, A3 only):
-  - `dynout.rs` output dynamic tables; `line.rs` the link line (+ scripts,
-    `Files`); `dynmodel.rs` D-11/D-12/D-19a model, `lookup`/`bind_in`;
-    `loader.rs` record application (views), PLT decoder; `dynverify.rs`
-    `verify_with` (views 1-3); `dyncheck.rs` static checks (STUB).
-  - engine: `dynbind`, `dyn_tls`, `plt`, `abs_words`, `extent`
-    (reloc.rs Engine), PLT hop -> `Via::Plt`; `Rule::Dyn(n)` = P-Dn;
-    `Reason::Dynamic`; S1 accepts ET_DYN with PT_DYNAMIC.
-  - xtask plumb `--line FILE` (one word per line), `verify_link_line`.
+- Stage 3: `dynout.rs` (output tables), `line.rs` (link line), `dynmodel.rs`
+  (D-11/D-12/D-19a model), `loader.rs` (views, PLT decoder, TLS fake blocks),
+  `dynverify.rs` (`verify_with`, views 1-3, exported IFUNCs), `dyncheck.rs`
+  (P-D1, P-D4..P-D8, P-D10..P-D13); xtask plumb `--line FILE`.
+- Dynamic TLS: imports are `Target::Tls` at `tls_fake`; AArch64 GD/desc kept;
+  x64 GD->IE (GNU), desc->IE, GD/LD kept; exec TLS st_value is an offset.
+- E1 matrix (6 TUs x pie/nopie x lazy/now x 3 linkers x 2 arches): all
+  checked; only findings W3/F3 (x64 PIE bfd/mold), H1 (lld/mold), mold A-list.
+- W1-W13, H1, F2, dupdef reproduced in /tmp/mortar-wp050-182487/w (build.sh);
+  results table goes in the record.
 
 ## Next
-- dyncheck.rs: P-D1, P-D4..P-D8, P-D10..P-D13.
-- Experiments: W1-W13, H1, F2, dupdef from /Volumes/AgentWork/mortar-helper/.build/review-m2/
-  (scratch /tmp/mortar-wp050-182487, wrappers in wrap/ write $LINE_OUT).
-- Committed tests (fixtures built at test time), mutations, cost.
+- Committed tests `crates/mortar_plumb/tests/dyn.rs` (fixtures built at test
+  time; sources inlined, not from .build/review-m2).
+- Dynamic mutation classes + kill table; cost (C++ PIE, 1e6 RELATIVE).
+- plumb.md stage-3 notes; record spec/landed/plumb/WP-050.md; gate.

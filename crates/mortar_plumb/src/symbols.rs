@@ -621,7 +621,17 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             "__preinit_array_start" => bounds(".preinit_array", false),
             "__preinit_array_end" => bounds(".preinit_array", true),
             "_GLOBAL_OFFSET_TABLE_" => {
-                sec(if x86 { ".got.plt" } else { ".got" }).map(|(lo, _)| Want::Exactly(lo))
+                sec(if x86 { ".got.plt" } else { ".got" }).map(|(lo, hi)| {
+                    // GNU ld's AArch64 `-z now` merges `.got.plt` into
+                    // `.got` after the PLT's slots: the symbol is the word
+                    // that holds `_DYNAMIC` (AArch64 ELF ABI GOT[0]).
+                    let dynamic = sec(".dynamic").map(|(d, _)| d);
+                    let at_dynamic = !x86
+                        && e.format == Format::Gnu
+                        && (lo..hi).contains(&s.st_value)
+                        && dynamic.is_some_and(|d| image.value(s.st_value, 8) == Some(d));
+                    Want::Exactly(if at_dynamic { s.st_value } else { lo })
+                })
             }
             "__GNU_EH_FRAME_HDR" => sec(".eh_frame_hdr").map(|(lo, _)| Want::Exactly(lo)),
             "_edata" | "edata" => e_end.map(|v| Want::Within(v, next(v, &|_| true).unwrap_or(v))),

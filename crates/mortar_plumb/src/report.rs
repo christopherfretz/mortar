@@ -115,6 +115,8 @@ pub enum Rewrite {
     TlsDescToLe,
     /// W11: a TLSDESC sequence to initial-exec.
     TlsDescToIe,
+    /// Stage 3: a GD sequence rewritten to initial-exec (GNU ld, x86-64).
+    TlsGdToIe,
     /// W12: a traditional general-dynamic sequence to local-exec.
     TlsGdToLe,
     /// W13: a traditional local-dynamic sequence to local-exec.
@@ -131,7 +133,7 @@ pub enum Rewrite {
 }
 
 impl Rewrite {
-    pub const ALL: [Rewrite; 17] = [
+    pub const ALL: [Rewrite; 18] = [
         Rewrite::AdrpAddToAdr,
         Rewrite::GotToAdrpAdd,
         Rewrite::GotToAdr,
@@ -143,6 +145,7 @@ impl Rewrite {
         Rewrite::TlsIeToLe,
         Rewrite::TlsDescToLe,
         Rewrite::TlsDescToIe,
+        Rewrite::TlsGdToIe,
         Rewrite::TlsGdToLe,
         Rewrite::TlsLdToLe,
         Rewrite::GotToLea,
@@ -164,6 +167,7 @@ impl Rewrite {
             Rewrite::TlsIeToLe => "tlsie-to-le",
             Rewrite::TlsDescToLe => "tlsdesc-to-le",
             Rewrite::TlsDescToIe => "tlsdesc-to-ie",
+            Rewrite::TlsGdToIe => "tlsgd-to-ie",
             Rewrite::TlsGdToLe => "tlsgd-to-le",
             Rewrite::TlsLdToLe => "tlsld-to-le",
             Rewrite::GotToLea => "got-to-lea",

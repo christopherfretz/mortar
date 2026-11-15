@@ -480,6 +480,11 @@ pub(crate) struct Engine<'a, 'b> {
     pub(crate) dynbind: HashMap<String, u64>,
     /// Names bound to a library's thread-local definition: not judged.
     pub(crate) dyn_tls: std::collections::HashSet<String>,
+    /// Stage 3: the module index of each name in `dyn_tls`.
+    pub(crate) dyn_tls_mod: HashMap<String, u64>,
+    /// Stage 3: the output is dynamic (kept TLS sequences are the
+    /// loader's to finish).
+    pub(crate) dynamic: bool,
     /// PLT entries: entry address -> `.got.plt` word (stage 3).
     pub(crate) plt: BTreeMap<u64, u64>,
     /// Verified absolute words and GOT words: `(place, width, value,
@@ -589,6 +594,8 @@ impl<'a, 'b> Engine<'a, 'b> {
             findings: Vec::new(),
             dynbind: HashMap::default(),
             dyn_tls: std::collections::HashSet::new(),
+            dyn_tls_mod: HashMap::default(),
+            dynamic: false,
             plt: BTreeMap::new(),
             abs_words: Vec::new(),
             ifunc_chosen: BTreeMap::new(),
@@ -806,7 +813,8 @@ impl<'a, 'b> Engine<'a, 'b> {
         let undefined_out = self.image.global(&name).is_none_or(|o| o.sym.st_shndx == 0);
         if undefined_out && let Some(&a) = self.dynbind.get(&name) {
             if self.dyn_tls.contains(&name) {
-                return Target::Skip(Reason::Dynamic);
+                // Where the loader model puts the library's TLS byte.
+                return Target::Tls(a);
             }
             return if a == 0 { Target::UndefWeak } else { Target::Addr(a) };
         }
@@ -1487,7 +1495,8 @@ impl<'a, 'b> Engine<'a, 'b> {
                     Seq::Relaxed(rw) => Outcome::Accepted(rw),
                     Seq::Bad(msg, e) => Outcome::Fail(Rule::Field, msg, e),
                     Seq::Kept if same_insn(rec) => {
-                        let want = Want::Pair(1, if ld { 0 } else { b.dtprel(sa) });
+                        let module = self.dyn_tls_mod.get(&symbol).copied().unwrap_or(1);
+                        let want = Want::Pair(module, if ld { 0 } else { b.dtprel(sa) });
                         return self.push_slot(slot, oi, rec, site, symbol, want);
                     }
                     Seq::Kept => rewritten_badly(),
@@ -1563,6 +1572,21 @@ impl<'a, 'b> Engine<'a, 'b> {
             {
                 return Outcome::Accepted(Rewrite::TlsDescToIe);
             }
+        }
+        if seq[..3].iter().all(|r| same_insn(r)) && outw[3] == inw[3] && self.dynamic {
+            // Kept for the loader: the descriptor the ADRP/LDR reach holds
+            // the static-TLS resolver and TPREL once its record is applied.
+            if let (Some((_, pg)), Some((_, _, lo))) =
+                (a64::adrp(outw[0], seq[0].p), a64::ldr64_imm(outw[1]))
+                && self.slot_ok(pg.wrapping_add(lo), Want::Pair(crate::loader::TLSDESC_MARK, x))
+            {
+                return Outcome::Verified;
+            }
+            return Outcome::Fail(
+                Rule::GotSlot,
+                "the TLS descriptor the kept sequence reaches is not resolved to this symbol".into(),
+                Some(x),
+            );
         }
         if seq[..3].iter().all(|r| same_insn(r)) && outw[3] == inw[3] {
             // Kept for the dynamic loader: no static executable needs it,
