@@ -34,6 +34,13 @@ linker × pie/no-pie × lazy/now with `.line` files, `r2/` IBT/BTI shapes;
   `symbols.rs` judges `__CortexA53843419_<site>` (value = patch, size
   8); corpus.rs asserts them judged.
 
+- Item 6: a64 `tlsgd-to-ie` (reloc.rs gd_ld, case `tlsgd-ie`), P-D7
+  unique exports (dyncheck.rs fields, mutation `dynsym-unique`, case
+  `unique`), S1 reads `.dynsym` (structure.rs). Patch names with no
+  patched site: not judged (mutation.rs §9.2 (o)).
+- Item 7: cost unchanged (record §9). Record written; plumb.md §5.3, S1,
+  Y5, P-D12, §12.1, §12.3.
+
 ## Half-done
 - (none)
 
@@ -44,5 +51,5 @@ linker × pie/no-pie × lazy/now with `.line` files, `r2/` IBT/BTI shapes;
   outputs (36/42 flags missed on a GNU ld x86-64 hello PIE): item 2 row.
 
 ## Next
-- Item 6 (tlsgd-to-ie a64, GNU_UNIQUE, S1 EI_OSABI);
-  plumb.md §12.2/§12.3 text; cost before/after; record; gate.
+- Gate (`MORTAR_REQUIRE_TOOLS=1 cargo xtask ci --quick`), then the
+  final commit deleting WIP.md; remove /tmp/mortar-wp082-162509.

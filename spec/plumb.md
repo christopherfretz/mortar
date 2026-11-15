@@ -1008,6 +1008,13 @@ written `hi(x)` and `MOVK x, #X[15:0]` is written `lo(x)`:
   `MRS x0, TPIDR_EL0; ADD x0, x0, #tcb; NOP; NOP`. The DTPREL records that
   follow keep their DTPREL values. GNU ld writes `#16` whatever `tcb` is
   (A7).
+- **`tlsgd-to-ie` (AArch64, stage 3, WP-082).** The GD sequence of W12
+  made `ADRP x0, G; LDR x0, [x0, :lo12:G]; MRS x1, TPIDR_EL0; ADD x0, x1,
+  x0`, with G a GOT entry (§5.5 valid-slot conditions) holding X; in a
+  dynamic output G carries a `TLS_TPREL64` record and X is what the
+  loader writes there (§12.1's loader model; a64.md §8.4 R4). GNU ld
+  writes it for a GD reference to a library's variable; mold keeps the
+  sequence; lld refuses the traditional dialect's relocations.
 
 x86-64's rewritings are §5.9's, not W1–W13 (request R-12).
 
@@ -1408,8 +1415,9 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   class. [M2] Stage 3 widens it by P-D1 (§12): `ET_DYN` with
   `DF_1_PIE`, and `ET_EXEC` with `PT_INTERP`, are verified. `EI_OSABI` is `ELFOSABI_NONE` (0) or `ELFOSABI_GNU` (3); on
   `EM_386` and `EM_X86_64`, `e_flags` is 0 (the psABIs define none,
-  x86.md X86-1). **(mortar)** `EI_OSABI` is 3 exactly when the output has
-  an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or an `IRELATIVE` record
+  x86.md X86-1). **(mortar)** `EI_OSABI` is 3 exactly when `.symtab` or
+  `.dynsym` holds an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol (dyn.md
+  D-23; WP-082), or the output has an `IRELATIVE` record
   in an allocated relocation section (image.md §5.4, a64.md Q11, x64.md
   X-49, x86.md X86-64; WP-028e). The references on i386: GNU ld writes 3
   for every static glibc output and for `ibt` (IFUNC), 0 for the
@@ -1753,6 +1761,7 @@ rules below judge the rest. Code: `src/symbols.rs`.
   | `_DYNAMIC` | the start of `.dynamic`, else 0 |
   | `_TLS_MODULE_BASE_` | 0, and `STT_TLS` (§4.7) |
   | `__start_X`, `__stop_X` (X a C identifier) | the bounds of section X |
+  | `__CortexA53843419_H` (lld; H the hex address of a site's patched final word) | the patch W8 accepted for the 843419 site whose final word is at H, size 8; with no patched site at H the name labels dead bytes and is not judged (the site's C1 or its not-judged count reports it; WP-082) |
 
   The data-end symbols allow a range, because the reference linkers place
   them differently within it (§10.5). Every other name is not judged. It
@@ -2749,7 +2758,13 @@ own implementation of D-11-D-27 and compared with the output.
 - **P-D12 (TLS).** Every TLS slot holds the record of its model (IE:
   `TPREL`; unrelaxed GD: `DTPMOD` + `DTPOFF`; LE: none, value checked by
   stage 2) and no TLS relocation against an executable-defined symbol
-  leaves a dynamic record (D-48).
+  leaves a dynamic record (D-48). The one kept descriptor (D-48): an
+  AArch64 large-model TLSDESC sequence (`movz`/`movk` of
+  `:tlsdesc_off_g1:`/`:tlsdesc_off_g0_nc:`, relocations 565 and 566 with
+  567 and 569 against the same symbol, no small-model TLSDESC reference
+  to it) keeps one `TLSDESC` record, exactly at the pair the two
+  instructions address (`_GLOBAL_OFFSET_TABLE_` + their 32-bit offset);
+  any other `TLSDESC` record in mortar's output is P-D12 (WP-082).
 - **P-D13 (protected).** No `COPY` record and no canonical PLT
   (`SHN_UNDEF` with a non-zero `st_value`) names a key whose shared
   definition is `STV_PROTECTED` (D-18; W5): P-D9's equality cannot see
@@ -2859,7 +2874,7 @@ from the file system (`line::Files`).
 - **Mutations** (`dynmutate.rs`, §9.5's table): `dyn-needed`, `dyn-tag`,
   `dyn-rel-offset`, `dyn-rel-drop`, `dyn-rel-addend`, `dyn-rel-symbol`,
   `dyn-rel-order` (only swaps that move a `RELATIVE` or `IRELATIVE`),
-  `dynsym-value`, `dynsym-visibility`, `gnu-hash`, `versym`,
+  `dynsym-value`, `dynsym-visibility`, `dynsym-unique` (§12.3), `gnu-hash`, `versym`,
   `version-need`, `interp`, `relro`, `lazy-slot` (under `-z now` too,
   WP-082), `copy-size`, and §12.2's `plt0-disp1`, `plt0-disp2`,
   `plt-index`, `plt-back-jump`. `xtask plumb --mutate --line` judges each mutant with
@@ -2922,6 +2937,65 @@ the entry's `JUMP_SLOT` record in `DT_JMPREL`.
   AArch64: the entry's `add` +8), `plt-back-jump` (x86-64: the lazy
   path's `jmp PLT0` ±16; AArch64 has none: the lazy word is its way
   back), `lazy-slot` (the lazy word + 4).
+
+### 12.3 The byte sweep and the field rules (WP-082)
+
+**The sweep** (`sweep.rs`, `xtask plumb --sweep`) flips bit 0 and bit 7
+of every byte of the synthetic sections (`.dynamic`, `.dynsym`,
+`.dynstr`, `.gnu.hash`, `.gnu.version`, `.gnu.version_r`, `.rela.dyn`,
+`.rela.plt`, `.plt`, `.plt.got`, `.plt.sec`, `.iplt`, `.got`, `.got.plt`,
+`.interp`, `.eh_frame_hdr`, `.eh_frame`) one mutant at a time and
+judges each. A mutant is caught when a finding key appears that the
+unmutated output does not have (a panic counts as caught). It prints,
+per section and field range, the flips and the survivors. It is a
+measuring tool, not a gate: a survivor is either closed by a rule below
+or named as equivalent or as a follow-up row in WP-082's record.
+
+**The field rules** (`dyncheck.rs` `fields`, every format unless marked):
+
+- **P-D5.** No non-zero bucket is below `symoffset`.
+- **P-D6.** No tag repeats but `DT_NEEDED` and `DT_NULL`; no unknown tag;
+  the first `DT_NULL` has value 0; `DT_DEBUG` is 0. A tag is present
+  exactly when its section is: `DT_INIT`/`DT_FINI` (values the section
+  starts), the three array tags with their sizes, `DT_GNU_HASH`,
+  `DT_VERSYM`, `DT_VERNEED`/`DT_VERNEEDNUM`, `DT_JMPREL`/`DT_PLTRELSZ`/
+  `DT_PLTREL`; `DT_RELA`/`DT_RELASZ`/`DT_RELAENT` with `.rela.dyn`;
+  `DT_STRTAB`, `DT_STRSZ`, `DT_SYMTAB`, `DT_SYMENT` always. `DT_FLAGS`
+  holds only `DF_ORIGIN`, `DF_BIND_NOW`, `DF_STATIC_TLS`, and
+  `DT_FLAGS_1` only `DF_1_NOW`, `DF_1_PIE`. **(mortar)** `DT_FLAGS` is
+  present exactly under `-z now` and is then exactly `DF_BIND_NOW`;
+  `DT_RELACOUNT` is present exactly when a `RELATIVE` record is.
+- **P-D7.** `.dynsym` entry 0 is all zero; `st_other` has no bits beyond
+  the visibility (AArch64: also 0x80 with `DT_AARCH64_VARIANT_PCS`). An
+  import is `STV_DEFAULT`, `STB_GLOBAL` or `STB_WEAK`, and named by a
+  reference of the program (or an alias, at the same library value, of a
+  referenced name). A defined export is `STB_GLOBAL`, `STB_WEAK` or
+  `STB_GNU_UNIQUE`; the section it names holds its value (an
+  `STT_SECTION` entry: the section's start; not judged for reserved
+  indices, `STT_TLS` and a value at a PLT entry); its size, section and
+  `st_info` equal its `.symtab` entry's (an IFUNC's are P-D7's own). A
+  name every input defines `STB_GNU_UNIQUE` is exported `STB_GNU_UNIQUE`
+  (dyn.md D-23's export row: glibc's unique table then holds the
+  program's instance, which an `RTLD_DEEPBIND` library binds to); mortar's
+  `EI_OSABI` is then S1's (lld and mold write 0).
+- **P-D8.** `.gnu.version` entry 0 is 0; every Verneed has `vn_version`
+  1 and `vn_cnt` its chain's length; the last Verneed's `vn_next` and
+  each chain's last `vna_next` are 0; `vna_flags` is 0 or `VER_FLG_WEAK`.
+- **P-D9.** `RELATIVE` and `IRELATIVE` records name symbol 0; on x86-64
+  `GLOB_DAT`, `JUMP_SLOT` and `COPY` records have addend 0 (the psABI
+  computes S; glibc's lazy path adds a `JUMP_SLOT`'s addend).
+- **P-D10.** An import's non-zero `st_value` is a PLT entry; `DT_JMPREL`
+  holds only `JUMP_SLOT`, `IRELATIVE` and `TLSDESC` records. An AArch64
+  PLT entry is `adrp x16; ldr x17, [x16, #lo12]; [add x16, x16,
+  #lo12;] br x17`.
+- **R1, x86-64 (X-58).** A TLSDESC sequence relaxed to initial-exec in a
+  dynamic output is `mov G(%rip), %reg` into any of the sixteen
+  registers (REX.W and ModRM kept, `8d` made `8b`), G a GOT entry with
+  the symbol's `TPOFF64` record.
+
+**Mutations.** `dynsym-unique`: an exported `STB_GNU_UNIQUE` definition
+made `STB_GLOBAL` in `.dynsym` and in its `.symtab` entry (WP-054's case
+(a)), caught by P-D7.
 
 ## 13. Stage 4: Mason metadata and the ODR table (M6)
 

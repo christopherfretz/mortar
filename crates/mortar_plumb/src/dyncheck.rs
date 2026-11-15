@@ -67,7 +67,7 @@ pub(crate) fn check(
     pd10(image, out, ld.machine, format, &mut v);
     pd11_13(image, out, model, ld, &mut v);
     pd12(image, out, ld, objs, format, &mut v);
-    fields(image, out, model, line, format, &mut v);
+    fields(image, out, model, line, objs, format, &mut v);
     v
 }
 
@@ -1351,11 +1351,33 @@ fn fields(
     out: &DynOut,
     model: &Model,
     line: &Line,
+    objs: &[Obj<'_>],
     format: Format,
     v: &mut Vec<Finding>,
 ) {
     use mortar_elf::consts::{STB_GLOBAL, STV_DEFAULT};
     const STB_GNU_UNIQUE: u8 = 10;
+    // The names the inputs define only STB_GNU_UNIQUE (dyn.md D-23's
+    // export row: the output binding is `.symtab`'s, unique).
+    let unique = {
+        let (mut u, mut other) = (BTreeSet::new(), BTreeSet::new());
+        for o in objs {
+            let Some(t) = &o.symtab else { continue };
+            for (_, x) in t.iter() {
+                if x.st_shndx == 0 || !matches!(x.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE)
+                {
+                    continue;
+                }
+                let n = String::from_utf8_lossy(t.name(&x).unwrap_or(b"")).into_owned();
+                if x.binding() == STB_GNU_UNIQUE {
+                    u.insert(n)
+                } else {
+                    other.insert(n)
+                };
+            }
+        }
+        &u - &other
+    };
     let m = image.header.e_machine;
     // P-D8: the version tables' shape.
     for p in &out.version_problems {
@@ -1498,6 +1520,17 @@ fn fields(
         }
         if b != STB_GLOBAL && b != STB_WEAK && b != STB_GNU_UNIQUE {
             v.push(sym_finding(7, &s.name, format!("'{}' is exported with binding {b}", s.name)));
+        }
+        // An exported unique definition stays unique, so glibc's unique
+        // table holds the program's instance (WP-054 case (a): an
+        // RTLD_DEEPBIND library otherwise binds its own). EI_OSABI is
+        // S1's (mortar; lld and mold write 0 with a unique export).
+        if unique.contains(&s.name) && b != STB_GNU_UNIQUE {
+            v.push(sym_finding(
+                7,
+                &s.name,
+                format!("'{}' is defined STB_GNU_UNIQUE and exported with binding {b}", s.name),
+            ));
         }
         // The export is the program's definition: its .symtab entry's
         // section, size, binding and type (an IFUNC's is P-D7's above).

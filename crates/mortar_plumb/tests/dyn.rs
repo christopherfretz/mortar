@@ -47,6 +47,11 @@ const SOURCES: &[(&str, &str)] = src![
     "weak_main.c",
     "tlsdesc_regs.s",
     "libtx.c",
+    "gd_ie.c",
+    "libgdie.c",
+    "unique.h",
+    "libunique.cc",
+    "unique_main.cc",
 ];
 
 /// Small sources written by the test itself.
@@ -482,6 +487,38 @@ fn build() -> Option<Corpus> {
                 b.link("tlsdesc-regs", arch, &d, &out, &[pm, "tr.o", "-L.", "-ltx"], [CLEAN; 3]);
             }
         }
+
+        // tlsgd-to-ie (WP-082, WP-054's request): AArch64's traditional
+        // general-dynamic sequence against a library's variable, relaxed
+        // to initial-exec by GNU ld and kept by mold (lld refuses the
+        // traditional dialect's relocations).
+        if !x64 {
+            let d = b.dir(arch, "tlsgd-ie");
+            b.so(arch, &d, "libgdie.c", "libgdie.so", "libgdie.so", &[]);
+            b.obj(arch, &d, "gd_ie.c", &["-fPIC", "-O1", "-mtls-dialect=trad"], "gd.o");
+            for pm in ["-pie", "-no-pie"] {
+                let out = format!("gd{pm}");
+                for k in [0, 2] {
+                    b.link_one(
+                        "tlsgd-ie",
+                        arch,
+                        &d,
+                        &out,
+                        &[pm, "gd.o", "-L.", "-lgdie"],
+                        k,
+                        CLEAN,
+                    );
+                }
+            }
+        }
+
+        // D-23's export row (WP-082, WP-054 case (a)): a template's
+        // inline variable, defined STB_GNU_UNIQUE by the program and a
+        // library, exported and kept unique (mutation `dynsym-unique`).
+        let d = b.dir(arch, "unique");
+        b.so(arch, &d, "libunique.cc", "libunique.so", "libunique.so", &[]);
+        b.obj(arch, &d, "unique_main.cc", &["-O1", "-fPIE"], "um.o");
+        b.link("unique", arch, &d, "unique", &["-pie", "um.o", "-L.", "-lunique"], [CLEAN; 3]);
 
         // E1: copies, canonical PLTs, TLS from a library and the
         // executable, an IFUNC; every record type of the matrix.
@@ -1163,6 +1200,16 @@ fn s12_p_d10_ibt_and_bti_shapes() {
 #[test]
 fn r1_tlsdesc_relaxed_to_ie_into_every_register() {
     judge("tlsdesc-regs");
+}
+
+#[test]
+fn r1_a64_tlsgd_relaxed_to_ie() {
+    judge("tlsgd-ie");
+}
+
+#[test]
+fn p_d7_unique_export_stays_unique() {
+    judge("unique");
 }
 
 #[test]

@@ -61,6 +61,7 @@ pub const CLASSES: &[&str] = &[
     "dyn-rel-order",
     "dynsym-value",
     "dynsym-visibility",
+    "dynsym-unique",
     "gnu-hash",
     "versym",
     "version-need",

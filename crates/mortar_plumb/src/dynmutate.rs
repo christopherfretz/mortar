@@ -26,6 +26,7 @@ pub const CLASSES: &[(&str, &str)] = &[
     ("dyn-rel-order", "P-D9 (D-40, D-41)"),
     ("dynsym-value", "P-D5, P-D7"),
     ("dynsym-visibility", "P-D7"),
+    ("dynsym-unique", "P-D7"),
     ("gnu-hash", "P-D5"),
     ("versym", "P-D8"),
     ("version-need", "P-D8"),
@@ -170,6 +171,27 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
                     format!("'{}' hidden", s.name),
                     vec![(o + 5, vec![(s.st_other & !3) | 2])],
                 ));
+            }
+            // dynsym-unique: an exported STB_GNU_UNIQUE definition made
+            // STB_GLOBAL in `.dynsym` and in its `.symtab` entry (WP-054
+            // case (a), where both were written global).
+            if s.defined() && s.binding() == 10 {
+                let global = (1 << 4) | (s.st_info & 0xf);
+                let mut e = vec![(o + 4, vec![global])];
+                let symtab = image
+                    .sections
+                    .iter()
+                    .find(|x| x.shdr.sh_type == mortar_elf::consts::SHT_SYMTAB);
+                if let (Some(t), Some(x)) =
+                    (symtab, image.global(&s.name).or_else(|| image.unique(&s.name)))
+                    && x.sym.binding() == 10
+                {
+                    e.push((
+                        (t.shdr.sh_offset + 24 * u64::from(x.index)) as usize + 4,
+                        vec![global],
+                    ));
+                }
+                c.push(("dynsym-unique", format!("'{}' unique -> global", s.name), e));
             }
         }
         // copy-size: the definition a COPY record copies, its size doubled.

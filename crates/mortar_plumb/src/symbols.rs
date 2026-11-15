@@ -689,16 +689,10 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
                             ));
                             Some(Want::Equal)
                         }
-                        None => {
-                            fs.push(named(
-                                y(5, format!(
-                                    "'{name}' names no erratum 843419 site whose final word is patched"
-                                ))
-                                .at(s.st_value),
-                                name,
-                            ));
-                            Some(Want::Equal)
-                        }
+                        // No patched site: the site's own verdict (C1, or
+                        // erratum_not_judged) says what happened; the name
+                        // labels dead bytes and is listed as not judged.
+                        None => None,
                     }
                 } else if let Some(x) = name.strip_prefix("__start_").filter(|x| c_identifier(x)) {
                     sec(x).map(|(lo, _)| Want::Exactly(lo))

@@ -1706,6 +1706,19 @@ impl<'a, 'b> Engine<'a, 'b> {
             }
             return Seq::Relaxed(rw);
         }
+        // tlsgd-to-ie (§5.3): ADRP x0, G; LDR x0, [x0, :lo12:G];
+        // MRS x1, TPIDR_EL0; ADD x0, x1, x0, G holding S's TP offset
+        // (in a dynamic output once its TLS_TPREL64 record is applied).
+        if !ld
+            && outw[2] == a64::mrs_tpidr_el0(1)
+            && outw[3] == a64::add_reg(0, 1, 0)
+            && let (Some((0, pg)), Some((0, 0, lo))) =
+                (a64::adrp(outw[0], head.p), a64::ldr64_imm(outw[1]))
+            && self.slot_ok(pg.wrapping_add(lo), Want::Word(x))
+        {
+            self.rewritten_words.insert(p12);
+            return Seq::Relaxed(Rewrite::TlsGdToIe);
+        }
         if same_insn(head)
             && same_insn(second)
             && a64::branch(outw[2], call.p).is_some_and(|(l, _)| l)
@@ -1715,8 +1728,12 @@ impl<'a, 'b> Engine<'a, 'b> {
         let what = if ld { "TLSLD" } else { "TLSGD" };
         Seq::Bad(
             format!(
-                "the {what} sequence is rewritten, and not to the local-exec form of {} (thread-pointer offset {x:#x})",
-                if ld { "W13" } else { "W12" }
+                "the {what} sequence is rewritten, and not to {} (thread-pointer offset {x:#x})",
+                if ld {
+                    "the local-exec form of W13"
+                } else {
+                    "W12's local-exec form or the initial-exec form of tlsgd-to-ie"
+                }
             ),
             Some(x),
         )
