@@ -14,7 +14,7 @@ Experiment dir: `/tmp/mortar-wp030r-EYWFOo` (remove by explicit path at the end)
 | 6 | lld writes IBT notes and IBT IPLT on i386; only -z ibt unknown (warning) | done |
 | 7 | GNU relaxes GOT32X in static-pie; M2 candidates (mold: G1 lea only when no other reference needs the slot) | done |
 | 8 | EI_OSABI ruling (X86-64); §2.4 per-library OSABI-3 contents; E19 osabi32.py + review.sh osabi | done |
-| 9, 13 | IFUNC names (S-68), __rel_iplt_* undefined in static-pie, S-71 exception request, M2 tag, stub Q | todo |
+| 9, 13 | IFUNC names (S-68), __rel_iplt_* not defined in static-pie, R-14 (S-71 exception), R-15 + §1 tag, Q9 stub; W16 (mold) found | done |
 | 10 | .got.plt word 0 in static-pie = _DYNAMIC | todo |
 | 11 | tombstone replaces the field | todo |
 | 12 | existing diag classes (section-type, malformed-input) | todo |
