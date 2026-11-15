@@ -1,0 +1,214 @@
+# The legal corpus's shapes that records could flag (spec/odr.md §3), with
+# the records kiln would write, under --odr=strict: nothing is reported.
+#   n1a, n1b    N1: one inline function at -O0 and -O2, one hash; a
+#               duplicate identical row in one unit; a kind 3 row whose
+#               hash is zero ("not hashed", O-17) beside a hashed one
+#   n3a, n3b    N3: g++ and clang++ objects whose schemes differ: their
+#               kind 2 and 3 rows are never compared (O-11)
+#   n9a, n9b    N9: an explicit instantiation and an implicit copy
+#               (EXPLICIT_INST and IMPLICIT_INST are compatible, O-15)
+#   n12a, n12b  N12: a renamed copy whose row still names the old symbol
+#               (unanchored, O-4)
+#   n13a, n13b  N13, N31: internal-linkage symbols are never anchors (O-2)
+#   libn14.a    N14: a member that is not extracted (O-20: live files only)
+#   n15a, n15b  N15: an array of unknown bound and its definition (O-35)
+#   n21a, n21b  N21, N27: kind 2 and 3 rows of C units are set aside
+#               (O-14, O-33)
+#   n5a, n5b    O-35: two definitions are never compared with each other
+#@ spec: odr.md §3, "O-2", "O-4", "O-11", "O-14", "O-15", "O-17", "O-20", "O-33", "O-35"
+#@ requires: g++ clang
+
+cxx -O0 n1a.cc -o n1a0.o
+meta n1a.meta n1a0.o -o n1a.o
+cxx -O2 n1b.cc -o n1b0.o
+meta n1b.meta n1b0.o -o n1b.o
+cxx -O0 n3a.cc -o n3a0.o
+meta n3a.meta n3a0.o -o n3a.o
+cxx(clang) -O0 n3b.cc -o n3b0.o
+meta n3b.meta n3b0.o -o n3b.o
+cxx -O0 n9a.cc -o n9a0.o
+meta n9a.meta n9a0.o -o n9a.o
+cxx -O0 n9b.cc -o n9b0.o
+meta n9b.meta n9b0.o -o n9b.o
+cxx -O0 n12a.cc -o n12a0.o
+meta n12a.meta n12a0.o -o n12a.o
+cxx -O0 n12b.cc -o n12b0.o
+meta n12b.meta n12b0.o -o n12b.o
+cxx -O0 n13a.cc -o n13a0.o
+meta n13a.meta n13a0.o -o n13a.o
+cxx -O0 n13b.cc -o n13b0.o
+meta n13b.meta n13b0.o -o n13b.o
+cxx -O0 n14.cc -o n140.o
+meta n14.meta n140.o -o n14.o
+cxx -O0 n15a.cc -o n15a0.o
+meta n15a.meta n15a0.o -o n15a.o
+cxx -O0 n15b.cc -o n15b0.o
+meta n15b.meta n15b0.o -o n15b.o
+cc -O0 n21a.c -o n21a0.o
+meta n21a.meta n21a0.o -o n21a.o
+cc -O0 n21b.c -o n21b0.o
+meta n21b.meta n21b0.o -o n21b.o
+cxx -O0 n5a.cc -o n5a0.o
+meta n5a.meta n5a0.o -o n5a.o
+cxx -O0 n5b.cc -o n5b0.o
+meta n5b.meta n5b0.o -o n5b.o
+ar rcs libn14.a n14.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o n1a.o n1b.o n3a.o n3b.o n9a.o n9b.o n12a.o n12b.o n13a.o n13b.o n15a.o n15b.o n21a.o n21b.o n5a.o n5b.o libn14.a -o prog
+link(mortar) g++ -static -no-pie main.o n1a.o n1b.o n3a.o n3b.o n9a.o n9b.o n12a.o n12b.o n13a.o n13b.o n15a.o n15b.o n21a.o n21b.o n5a.o n5b.o libn14.a -Wl,--odr=strict -o prog
+run prog
+  stdout: 1 1 3 3 9 9 12 12 13 13 15 21 21 5
+
+#--- n1a.cc
+__attribute__((noinline, noipa)) inline int n1() { return 1; }
+int f1a() { return n1(); }
+#--- n1a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+definition anchor=_Z2n1v hash=11111111111111111111111111111111 class=1 flags=1 file=n1.h line=1
+definition anchor=_Z2n1v hash=11111111111111111111111111111111 class=1 flags=1 file=n1.h line=1
+type name=3N3Z hash=00000000000000000000000000000000 layout=7 size=4 align=4 file=n1.h line=2
+#--- n1b.cc
+__attribute__((noinline, noipa)) inline int n1() { return 1; }
+int f1b() { return n1(); }
+#--- n1b.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+definition anchor=_Z2n1v hash=11111111111111111111111111111111 class=1 flags=1 file=n1.h line=1
+type name=3N3Z hash=55555555555555555555555555555555 layout=7 size=4 align=4 file=n1.h line=2
+#--- n3a.cc
+__attribute__((noinline)) inline int n3() { return 3; }
+int f3a() { return n3(); }
+#--- n3a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=gcc-proxy-1
+summary name=std value=c++17
+definition anchor=_Z2n3v hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa class=1 flags=1 file=n3.h line=1
+type name=2N3 hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa layout=1 size=8 align=8 file=n3.h line=2
+#--- n3b.cc
+__attribute__((noinline)) inline int n3() { return 3; }
+int f3b() { return n3(); }
+#--- n3b.meta
+summary name=lang value=c++
+summary name=odr.scheme value=clang-proxy-1
+summary name=std value=c++17
+definition anchor=_Z2n3v hash=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb class=1 flags=1 file=n3.h line=1
+type name=2N3 hash=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb layout=2 size=8 align=8 file=n3.h line=2
+#--- n9a.cc
+template <typename T> __attribute__((noinline)) int tw(T t) { return (int)t + 9; }
+template int tw<int>(int);
+#--- n9a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+definition anchor=_Z2twIiEiT_ hash=99999999999999999999999999999999 class=1 flags=4 file=tw.h line=1
+#--- n9b.cc
+template <typename T> __attribute__((noinline)) int tw(T t) { return (int)t + 9; }
+int f9() { return tw(0); }
+#--- n9b.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+definition anchor=_Z2twIiEiT_ hash=99999999999999999999999999999999 class=1 flags=3 file=tw.h line=1
+#--- n12a.cc
+__attribute__((noinline)) inline int n12_new() { return 12; }
+int f12a() { return n12_new(); }
+#--- n12a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+definition anchor=_Z7n12_oldv hash=cccccccccccccccccccccccccccccccc class=1 flags=1 file=v.h line=1
+#--- n12b.cc
+__attribute__((noinline)) inline int n12_old() { return 12; }
+int f12b() { return n12_old(); }
+#--- n12b.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+definition anchor=_Z7n12_oldv hash=dddddddddddddddddddddddddddddddd class=1 flags=1 file=v.h line=1
+#--- n13a.cc
+static int helper() { return 13; }
+int f13a() { return helper(); }
+#--- n13a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+definition anchor=_ZL6helperv hash=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee class=1 flags=1 file=n13a.cc line=1
+#--- n13b.cc
+static int helper() { return 31; }
+int f13b() { return helper() - 18; }
+#--- n13b.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+definition anchor=_ZL6helperv hash=ffffffffffffffffffffffffffffffff class=1 flags=1 file=n13b.cc line=1
+#--- n14.cc
+__attribute__((noinline, noipa)) inline int n1() { return 1; }
+int n14_unused() { return n1() + 13; }
+#--- n14.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+definition anchor=_Z2n1v hash=22222222222222222222222222222222 class=1 flags=1 file=n1.h line=1
+#--- n15a.cc
+extern int n15_a[];
+int f15() { return n15_a[0]; }
+#--- n15a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+declaration anchor=n15_a ty=0x15 size=0 type_name=A_i flags=2
+#--- n15b.cc
+extern int n15_a[4];
+int n15_a[4] = {15};
+#--- n15b.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+declaration anchor=n15_a ty=0x15 size=16 type_name=A_i flags=3
+#--- n21a.c
+__attribute__((weak)) int n21(void) { return 21; }
+int f21a(void) { return n21(); }
+#--- n21a.meta
+summary name=lang value=c
+summary name=odr.scheme value=model-1
+summary name=std value=c11
+definition anchor=n21 hash=33333333333333333333333333333333 class=1 flags=1 file=n21.h line=1
+type name=4node hash=33333333333333333333333333333333 layout=3 size=8 align=8 file=n21.h line=1
+#--- n21b.c
+__attribute__((weak)) int n21(void) { return 21; }
+int f21b(void) { return n21(); }
+#--- n21b.meta
+summary name=lang value=c
+summary name=odr.scheme value=model-1
+summary name=std value=c11
+definition anchor=n21 hash=44444444444444444444444444444444 class=1 flags=1 file=n21.h line=1
+type name=4node hash=44444444444444444444444444444444 layout=4 size=16 align=8 file=n21.h line=1
+#--- n5a.cc
+__attribute__((weak)) int n5v = 5;
+#--- n5a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+declaration anchor=n5v ty=0x51 size=4 type_name=i flags=3
+#--- n5b.cc
+unsigned n5v = 5;
+#--- n5b.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=std value=c++17
+declaration anchor=n5v ty=0x52 size=4 type_name=j flags=3
+#--- main.cc
+#include <cstdio>
+template <typename T> int tw(T);
+extern template int tw<int>(int);
+int f1a(); int f1b(); int f3a(); int f3b(); int f9(); int f12a(); int f12b();
+int f13a(); int f13b(); int f15();
+extern "C" int f21a(); extern "C" int f21b();
+extern int n5v;
+int main() {
+  std::printf("%d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", f1a(), f1b(), f3a(), f3b(), tw(0),
+              f9(), f12a(), f12b(), f13a(), f13b(), f15(), f21a(), f21b(), n5v);
+}

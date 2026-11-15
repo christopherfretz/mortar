@@ -47,6 +47,24 @@ pub enum Check {
     W3,
     /// W4 `odr-contents-mismatch`.
     W4,
+    /// Kind 5, C++ linkage (O-35).
+    Kind5Cxx,
+    /// Kind 5, C linkage (O-33).
+    Kind5C,
+    /// Kind 3 layouts (O-17, O-18).
+    Kind3Layout,
+    /// Kind 3 definition-only differences (O-17).
+    Kind3Definition,
+    /// Kind 2 (O-15).
+    Kind2,
+    /// `odr-internal-reference` (O-16).
+    InternalReference,
+    /// `odr-abi-mismatch` (O-30), `odr-isa-mismatch` (O-31).
+    AbiIsa,
+    /// `odr-vtable-rtti-mismatch` (O-25).
+    VtableRtti,
+    /// O-32's `SYSTEM` `-std` differences.
+    SystemStd,
 }
 
 impl Check {
@@ -59,6 +77,15 @@ impl Check {
             Self::MetaHeaders => 2,
             Self::W3 => 3,
             Self::W4 => 4,
+            Self::Kind5Cxx => 5,
+            Self::Kind5C => 6,
+            Self::Kind3Layout => 7,
+            Self::Kind3Definition => 8,
+            Self::Kind2 => 9,
+            Self::InternalReference => 10,
+            Self::AbiIsa => 11,
+            Self::VtableRtti => 12,
+            Self::SystemStd => 16,
         }]
     }
 
@@ -166,6 +193,23 @@ mod tests {
         for check in [Check::W1, Check::W2, Check::W3, Check::W4, Check::MetaHeaders] {
             assert!(!check.runs(&at(OdrMode::Off)));
         }
+        // The record checks: strict only today (O-47); O-32 is a count.
+        let records = [
+            Check::Kind5Cxx,
+            Check::Kind5C,
+            Check::Kind3Layout,
+            Check::Kind3Definition,
+            Check::Kind2,
+            Check::InternalReference,
+            Check::AbiIsa,
+            Check::VtableRtti,
+        ];
+        for check in records {
+            for mode in [OdrMode::Off, OdrMode::Warn, OdrMode::Error, OdrMode::Strict] {
+                assert_eq!(check.runs(&at(mode)), mode == OdrMode::Strict, "{check:?}");
+            }
+        }
+        assert_eq!(Check::SystemStd.row().status, Status::StatsOnly);
         assert!(!Status::OptIn.runs(&at(OdrMode::Strict)));
         assert!(Status::OptIn.runs(&Odr { check_archives: true, ..at(OdrMode::Warn) }));
         assert!(!Status::Off.runs(&at(OdrMode::Strict)));
