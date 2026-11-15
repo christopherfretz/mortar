@@ -470,7 +470,10 @@ output (315 K and 1.26 M); so 1,800–4,400 members at 0.5 GB and
 7,200–17,800 at 2 GB in all, a typical regular archive of 1.8 MB
 (0.5 GB, 1,000 archives), 0.6 MB (0.5 GB, 3,000), 7.2 MB (2 GB, 1,000)
 or 2.4 MB (2 GB, 3,000). Split DWARF changes the output's size and the
-debug terms (§1.7); the figures here are plain `-g`.
+debug terms: the figures here are plain `-g`; §6 "Split DWARF" (R14)
+measures protoc both ways. There the full link is 37–44% faster while
+the floor falls only 12–37%, so the ratio is lower (thin, copy, median
+file: 1.65× GCC, 2.0× Clang, against 2.2× plain, measured floors).
 
 Every per-archive and per-member step, per update (*estimate* from the
 measured constants named):
@@ -1399,6 +1402,7 @@ with each phase fed from the state for unchanged files:
   | a synthetic table changed (§5.7) | its units, and the referrers of its end symbols |
   | a patch or thunk was added, moved or removed (arch.md "Incremental links") | the sites' units and the island's |
   | liveness changed (IN-29): a section of any file became dead or live | sections that became live are placed and refilled; sections that died become holes; the referrers of their globals; and that file's `.eh_frame` contribution and all its non-allocated units |
+  | the value synth.md S-50 gives a reference into an input `.eh_frame` from another section changed (IN-34a, "References into `.eh_frame`") | the referring unit |
   | any TLS input section's TP offset would change, in any file | none: `tls-layout-changed` (IN-34) |
 
   The COMDAT and liveness rows cover the reviewer's B4 (`comdat_keeper.sh`):
@@ -1417,7 +1421,10 @@ with each phase fed from the state for unchanged files:
   x86-64, and a value change seen only by debug information, each at
   GCC `-O0 -g` and `-O2 -g`: in all 32 pairs every differing unit of an
   unchanged file is predicted (and the mutation table, IN-63b, shows
-  which row each catches). The oracle compares two *full* links, so its
+  which row each catches). The final round's by-value oracle adds N1's
+  FUNC → IFUNC pair, a weak undefined that becomes defined, the LSDA
+  pair and the gc edge-kind pair (`gc-edge-kinds`, IN-29), on AArch64 and
+  x86-64: **56 of 56 pass** (IN-63b). The oracle compares two *full* links, so its
   predictor has two causes an update does not have, because an update
   keeps them in place: a slot that moved in a re-laid synthetic table
   (`crti.o`'s `.text` names `__gmon_start__`'s GOT slot, which moved
@@ -1472,14 +1479,26 @@ with each phase fed from the state for unchanged files:
   edge kind: drop that kind from the stored graph and a gc scenario must
   fail (IN-63b; `livemodel.py` is the prototype: from the inputs alone
   it walks I-7's kinds from I-6's roots and is compared with mortar's
-  live set). Measured so far: it equals mortar's live set, at section
-  and at fragment level, on all 16 gc links of R3 (c, cf, l at `-O0` and
-  `-O2`, both versions; x86-64 lx); dropping `reloc`, `local` or `fde`
-  breaks all 16, `nonalloc` breaks l on AArch64, and `startstop`,
-  `linkorder` and `group` are caught by **no scenario yet** (their
-  dedicated scenarios are pending, record §3). Rows on the `-O2` l
-  link, for scale: `reloc` 2,135, `local` 326, `fde` 42, `group` 4,
-  `nonalloc` 5 (2,512 rows, 20 KB at 8 B a row). On protoc `-g`
+  live set). Measured: it equals mortar's live set, at section and at
+  fragment level, on all 20 gc links of R3 (c, cf, l, g at `-O0` and
+  `-O2`, both versions; x86-64 lx). **Every edge kind is caught by a
+  scenario** when dropped from the walk (`livemodel.py --drop KIND`):
+
+  | kind dropped | gc links that then disagree with mortar's live set | the section the walk loses |
+  |---|---|---|
+  | `reloc`, `local`, `fde` | all 20 | (many) |
+  | `nonalloc` | l, `-O0` and `-O2`, both versions (AArch64) | `.stapsdt.base` |
+  | `startstop` | g, all 4 links | `u.o`'s `ureg`, reached only through `m.o`'s `__start_ureg`/`__stop_ureg` |
+  | `linkorder` | g, all 4 links | `.meta_k` (and in v1 `.meta_d`): alloc `SHF_LINK_ORDER` sections whose `sh_link` is `.text.keepf` (`.text.dropf`), referenced by nothing |
+  | `group` | g, all 4 links | `.rodata.gaux`, the second member of the COMDAT group `gsig`, referenced by nothing; its first member `.text.gfun` is called |
+
+  The g scenario (`oracle_scen.sh` "g", `-ffunction-sections
+  --gc-sections`; `m.o` calls `keepf` and `gfun` and sums the `ureg`
+  registry in v0, and also calls `dropf` in v1, so that `.meta_d` is
+  dead in v0 and live in v1) is the L10 case `gc-edge-kinds`; it prints
+  `42 6 7` and `42 6 7 10`, and its oracle pairs pass (IN-63b). Rows on
+  the `-O2` l link, for scale: `reloc` 2,135, `local` 326, `fde` 42,
+  `group` 4, `nonalloc` 5 (2,512 rows, 20 KB at 8 B a row). On protoc `-g`
   (`livemodel.py --stats` over the bench's inputs, distinct (source,
   target) pairs from sections live from the roots; the bench link has
   no `--gc-sections`, so the model's live set, 24,844 of 30,348
@@ -1696,9 +1715,32 @@ with each phase fed from the state for unchanged files:
     `scripts/provision.sh`'s package list, so it was not tested (the
     installed `libunwind8` is the nongnu libunwind runtime, without
     headers); WP-064's gate adds it where available.
+  - **References into `.eh_frame`** from other sections (synth.md §4.4:
+    `crtbeginT.o`'s `frame_dummy`, 4 records per glibc link; on x86-64
+    and i386 an `R_X86_64_32`/`R_386_32` to offset 0 of an **empty**
+    input `.eh_frame`, on AArch64 an `ADRP`/`ADD` pair to offset 0) take
+    S-50's value, which is not a placement of a unit: rule 1 gives the
+    start of the output `.eh_frame` whatever the input holds, rule 3 the
+    next kept record, possibly another file's, or the terminator. The
+    map has no line for an empty `.eh_frame` input (R3: `crtbeginT.o`'s
+    section 5 has no `piece`), so IN-27's moved-section row cannot see
+    such a target move. The state stores, for each such reference, the
+    S-50 value it was given; the update recomputes S-50 for each after
+    `.eh_frame`'s layout and refills the referring unit when the value
+    changed (IN-27's `.eh_frame`-reference row). It changes when the
+    section's start moves (a growth step) or, under rule 3, when the
+    records after the target change. Found by R3: the x86-64 lx pair's
+    `crtbeginT.o` field (`R_X86_64_32 .eh_frame+0` at `.text+0x91`)
+    holds 0x41d4a8 and 0x41d4c0 in the two full links, each the start of
+    that link's `.eh_frame`, and the oracle, which did not implement
+    S-50, compared it raw.
   *Test:* R5 in L10 (each row a scenario; the first three must pass, the
   others are the verifier's negative cases: plumb rejects a hole that is
-  not one padding CIE of ≥ 16 bytes, and a zero word before the end).
+  not one padding CIE of ≥ 16 bytes, and a zero word before the end); an
+  x86-64 static L10 step whose edit grows the sections before
+  `.eh_frame` past their slack (a growth step) checks that
+  `crtbeginT.o`'s `.text` was refilled and that its field equals the new
+  `.eh_frame` start; the row's mutation (IN-63b) must fail that step.
 - **IN-35 [v1] The entry point and `.interp`**: `e_entry` is in the ELF
   header, rewritten every update; `.interp` does not change unless the
   options do (`options-changed`). *Test:* an L10 step that changes
@@ -2108,8 +2150,12 @@ file changes or when one of its file's sections moves (IN-25).
   `.debug_pubnames`/`.debug_pubtypes`, clang `-gpubnames` emits
   `.debug_names`, and `-ggnu-pubnames` and **every `-gsplit-dwarf`
   object** emit `.debug_gnu_pubnames`/`.debug_gnu_pubtypes` (R10, both
-  compilers). [later] Neutralize the sets (a header with no entries,
-  padded), once transcripts show it equivalent. Neither hod nor the
+  compilers; R14: 166 of protoc's 168 objects, the other two empty, and
+  kiln++ 1.2.1). [later, WP-065, ordered into S5 because of split DWARF]
+  either leave the GNU index out of incremental-mode outputs or
+  neutralize the sets (a header with no entries, padded), once
+  transcripts show it equivalent; rewriting it whole like IN-54 is ruled
+  out by size (12–16.5 MB per update on protoc, §6 "Split DWARF"). Neither hod nor the
   bench's GCC and Clang defaults emit them (§8.3). *Test:* R10's objects
   in L10: each edit of one must report `debug-name-index`.
 - **IN-55a [v1] Detecting unit kinds** (`debug-unit-kind`, IN-51), from
@@ -2184,44 +2230,113 @@ target is expected to use** (debug information always on; split DWARF
 acceptable), so the go/no-go (§1.5) is measured in it as well as in
 plain `-g`. kiln and hod implement it (DWARF 5, `hod/spec/dwarf.md`).
 
-- *What still enters the link* (from R10's objects and the DWARF 5
-  standard; sizes on protoc not yet measured, see below): per object a
-  skeleton unit (`DW_UT_skeleton`: `DW_AT_dwo_name`, `DW_AT_comp_dir`,
-  the unit's `low_pc`/`high_pc` or ranges, `DW_AT_addr_base`,
-  `DW_AT_stmt_list`; the `dwo_id` in the header) in `.debug_info` with
-  its `.debug_abbrev`; `.debug_addr` (every address of the full unit, so
-  it keeps its size); `.debug_line` (the whole line table stays in the
-  object, MD5s included, so §8.3 request 2 still applies);
-  `.debug_str`/`.debug_line_str` and `.debug_str_offsets` for the
-  skeleton's strings; `.debug_rnglists` where the compiler puts the
-  skeleton's ranges there; `.debug_aranges` (GCC); and
-  `.debug_gnu_pubnames`/`.debug_gnu_pubtypes` from every `-gsplit-dwarf`
-  object (R10) or `.debug_names` with `-gpubnames`. `.debug_loclists`,
-  the types and the DIE trees are in the `.dwo`.
-- *Which rules shrink*: IN-50's allotments and IN-51's neutral units
-  apply to skeletons that are a few dozen bytes, so the debug tail and
-  the refill of a changed file's debug contributions shrink to its
-  `.debug_addr`, `.debug_line` and skeleton (most of `.debug_info`'s
-  25.9 MB and `.debug_str`'s 8.1 MB on protoc leave the link);
-  IN-53/IN-51b still govern `.debug_addr`, `.debug_line` and
-  `.debug_rnglists`; IN-54 still rewrites `.debug_aranges`; IN-57's
-  compaction pressure falls with the debug bytes. The +10.0% slack of
-  `-g` (IN-33) is expected to move towards the +20.1% of no `-g` in
-  relative terms (fixed minimums over a smaller output), smaller in
-  bytes. *Not measured*: pending the measurement below.
+- *What still enters the link* (R10's objects, and measured on protoc
+  below): per object a skeleton unit (`DW_UT_skeleton`, 0x30 bytes:
+  `DW_AT_dwo_name`, `DW_AT_comp_dir`, `low_pc` and ranges,
+  `DW_AT_addr_base`, `DW_AT_stmt_list`, `DW_AT_GNU_pubnames`; the
+  `dwo_id` in the header) in `.debug_info` with its `.debug_abbrev`;
+  `.debug_addr` (every address of the full unit); `.debug_line` (the
+  whole line table stays in the object, MD5s included, so §8.3 request 2
+  still applies); `.debug_str`/`.debug_line_str` and (Clang)
+  `.debug_str_offsets` for the skeleton's strings; `.debug_rnglists`;
+  `.debug_aranges` (GCC only); and **`.debug_gnu_pubnames` and
+  `.debug_gnu_pubtypes` from every object with code** (166 of 168 protoc
+  objects for both compilers, the other two are empty; kiln++ 1.2.1's
+  `-gsplit-dwarf` object has them too). `.debug_loclists`, the types and
+  the DIE trees are in the `.dwo`.
+- *Measurement* (R14, final round; `split/` scripts in the workspace's
+  `.build/review-incr/`): protoc 3.21.12 built static as the bench builds
+  it, `-O0 -g -gsplit-dwarf`, by GCC 14.2 and by Clang 19 (build 49 s and
+  32 s at `-j3`), linked by mortar with the bench's response file; plain
+  `-g` re-linked in the same session for comparison. Full links: a first
+  run and 7 warm runs each, load 5.5–6.1 on 12 cores. Floor
+  (`floor.py`, §1.5's method): output and state on the overlay, three
+  rounds interleaved plain/GCC/Clang, load 6.8–8.3; the median of the
+  three rounds' medians is given, and the speed-up is against the full
+  link's 223 / 145 / 127 ms. Two earlier rounds on the virtiofs workspace
+  were discarded as noise: their I/O parts varied 2–3× between rounds.
+
+  | | plain `-g` | GCC split | Clang split |
+  |---|---|---|---|
+  | debug bytes in the 168 objects (before merging) | 102.4 MB | 25.1 MB, of which the GNU name index 19.8 | 18.7 MB, of which the GNU name index 14.0 |
+  | `.dwo` files beside the objects | — | 98.7 MB | 34.4 MB |
+  | output | 50.3 MB | 32.3 MB | 26.6 MB |
+  | its debug sections | 38.6 MB (`.debug_info` 25.9, `.debug_str` 8.1, `.debug_line` 2.7) | 20.6 MB (**`.debug_gnu_pubnames` 8.8 + `pubtypes` 7.6**, `.debug_line` 2.7, `.debug_aranges` 0.68, `.debug_addr` 0.56; `.debug_info` 6 KB) | 15.4 MB (**`pubnames` 9.8 + `pubtypes` 2.2**, `.debug_line` 2.9, `.debug_addr` 0.37; `.debug_info` 6 KB) |
+  | `.symtab` + `.strtab` | 5.4 MB | 5.4 MB | 4.6 MB |
+  | full link, first / warm median (min–max) | 211 / 218 ms (194–248) | 148 / 138 ms (132–146) | 122 / 123 ms (117–131) |
+  | peak RSS (median) | 257 MB | 163 MB | 145 MB |
+  | phases (warm median, ms): input, split, layout, image | 71, 16, 23, 75 | 53, 3, 23, 36 | 46, 3, 20, 32 |
+  | floor, median file, thin, copy / in place | 100 ms (2.2×) / 68 ms (3.3×) | 88 ms (1.65×) / 66 ms (2.2×) | 63 ms (2.0×) / 52 ms (2.4×) |
+  | floor, median file, regular archive, copy | 160 ms (1.4×) | 118 ms (1.2×) | 87 ms (1.5×) |
+  | floor, `descriptor.cc.o`, thin, copy / in place | 109 ms (2.05×) / 79 ms (2.8×) | 97 ms (1.5×) / 70 ms (2.1×) | 82 ms (1.6×) / 63 ms (2.0×) |
+  | dirty windows / MB refilled (median file) | 15 / 10.0 | 16 / 11.6 | 12 / 7.7 |
+  | slack (`regions2.py`, IN-33, debug tail `size/32`; no tail) | +10.0% (5.0 MB); +7.6% | +12.0% (3.9 MB); +10.0% | +13.9% (3.7 MB); +12.0% |
+  | state (`state_emul.py`) | 8.17 MB | 8.18 MB | 7.32 MB |
+
+  The median live member is `importer.cc.o` (plain), `csharp_field_base.cc.o` (GCC)
+  and `map_field_lite.cc.o` (Clang): the median is taken in each build. The
+  program runs (`protoc --version`: `libprotoc 3.21.12` for all three).
+  gdb finds every `.dwo`: `break main`, `run`, `bt` and `info source` name
+  `main.cc:112`, with the compile directory taken from the skeleton.
+  `info line`, `ptype`, `info scope` and `list` resolve through the
+  `.dwo`.
+- *What it shows.*
+  1. **Split DWARF cuts the full link, not the update.** The full link
+     is 37–44% faster and needs 37–44% less peak RSS. The update's floor
+     falls only 12–37% in absolute terms, because its large parts do not
+     depend on debug bytes: the state (O(symbols), unchanged at 7–8 MB),
+     `.symtab`/`.strtab` (5.4 MB of windows on every update), the copy,
+     and the whole resolve. So the ratio falls: thin, by copy, for the
+     median file, 2.2× becomes **1.65× (GCC) and 2.0× (Clang)**,
+     *measured floor*. Adding §1.5's omitted-phases bound, which split
+     DWARF lowers only through its split phase (≤ 47 ms), gives
+     1.1–1.65× (GCC) and 1.15–2.0× (Clang), an *estimate*. §1.5's
+     go/no-go is therefore harder to meet in the reference configuration
+     than in plain `-g`, and is decided in it (record (a) 6, 9).
+  2. **The GNU name index is most of what is left.** It is 16.5 MB of
+     GCC's 20.6 MB of output debug bytes (51% of the output) and 11.9 of
+     Clang's 15.4 MB. One file's sets are large: `descriptor.cc.o`
+     carries 1.0 + 0.47 MB (GCC). IN-55's candidate, "rewritten whole,
+     as `.debug_aranges`" (IN-54), would write 12–16.5 MB on every update,
+     more than the whole floor refills. So WP-065 must not adopt it.
+     WP-065 chooses between two rules:
+     - (A) **leave the GNU name index out of incremental-mode outputs**:
+       the full link and the update both drop both sections, so IN-2
+       holds between them;
+     - (B) per-contribution allotments (IN-50) with a neutral dead set
+       (a set header naming the neutralized unit, no entries, padded),
+       tested as IN-51b's forms were.
+
+     The measured basis for (A): with the two sections removed
+     (`objcopy --remove-section`), a gdb session of 12 commands (break
+     by name, run, `bt`, `info source`, `info line`, `ptype`,
+     `info scope`, `list`, `info functions`, `info types`) and an lldb
+     session (`image lookup -n`, `type lookup`) print the same
+     transcripts as with them, with addresses masked, for both
+     compilers. gdb and lldb do not read these sections. Their consumer
+     is a linker's `--gdb-index` (gold, lld), and IN-58 already refuses
+     that in incremental mode. (A) also shrinks GCC's output to 15.6 MB.
+     (A) is the recommendation, pending WP-065's transcripts at L10
+     scale. A plain link keeps the sections as it does today.
+  3. **Skeletons are small and the slack grows in relative terms.**
+     `.debug_info` is 6 KB in all, about 0x30 bytes per skeleton, so IN-51's block form (≥ 19
+     bytes with `DW_AT_addr_base`) fits every skeleton. Slack grows from
+     +10.0% to +12.0% (GCC) and +13.9% (Clang) of the output, but shrinks
+     in bytes (5.0 to 3.9 and 3.7 MB): the GNU name index's
+     contributions take their size-class rounding like any other.
 - *What v1 does today*: it **falls back on every update** of a changed
   split-DWARF object, twice over: IN-55 (`debug-name-index`, the GNU
-  name index every `-gsplit-dwarf` object carries) and IN-55a
-  (`debug-unit-kind`, the skeleton unit). In the reference
-  configuration that makes v1 a full link every time, so the skeleton
-  and GNU-name-index cases are **ordered into S5 (WP-065), not after
-  it** (record (b)): S5 tests skeleton neutralization (IN-51's block
-  form on a skeleton) and the candidate rule for
-  `.debug_gnu_pubnames`/`pubtypes` (sets keyed by unit offset, like
-  `.debug_aranges`: rewritten whole, as IN-54), and lifts the two
-  fallbacks for skeletons only when its tests pass. WP-061's floor
-  measurement does not consult the detectors (a test-only path), so it
-  measures split DWARF from the start.
+  name index every `-gsplit-dwarf` object with code carries, R10 and R14
+  above, GCC, Clang and kiln) and IN-55a (`debug-unit-kind`, the
+  skeleton unit). **Confirmed by R14**: in the reference configuration
+  every protoc object would trigger both, so v1 is a full link on every
+  update. The skeleton and GNU-name-index cases are therefore **ordered
+  into S5 (WP-065), not after it** (record (b)). S5 tests skeleton
+  neutralization (IN-51's block form on a skeleton) and rule (A) or (B)
+  for `.debug_gnu_pubnames`/`pubtypes`. It lifts the two fallbacks for
+  split objects only when its tests pass. WP-061's floor measurement
+  does not consult the detectors (a test-only path), so it measures
+  split DWARF from the start.
 - *The `.dwo` files*: the update does nothing to them; the compiler
   rewrote the changed object's `.dwo`, and the unchanged objects' are
   untouched. The output names each `.dwo` through its skeleton
@@ -2233,12 +2348,11 @@ plain `-g`. kiln and hod implement it (DWARF 5, `hod/spec/dwarf.md`).
   earlier output is **stale after any update**, as after a full link:
   the spec promises nothing about `.dwp` files; the debugger reports the
   `dwo_id` mismatch for the changed unit. `docs/` says so.
-- *Measurement* (pending at this revision; brief and commands in the
-  workspace's `.build/review-incr/BRIEF-split.md`): protoc built with
-  `-O0 -g -gsplit-dwarf` by GCC and Clang (kiln if its driver passes
-  the flag), static: output size, debug bytes linked, `.dwo` bytes,
-  full-link time and peak RSS, `floor.py`'s table, `regions2.py`'s
-  slack, `state_emul.py`'s state size, beside plain `-g`'s.
+- *Not measured*: DWARF 4 split (`-gdwarf-4 -gsplit-dwarf`); `.dwp`;
+  kiln on more than one file (kiln++ 1.2.1 compiled one test file with
+  `-gsplit-dwarf`: a `DW_UT_skeleton`, a `.dwo`, and the GNU name index;
+  protoc was not built with kiln); lldb running the program (lldb was
+  run on the file only).
 
 ## 7. Fall-backs
 
@@ -2425,36 +2539,72 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   | TLS (`tls-layout-changed`) | **only x86-64 TLS growth at `-O0`**: on AArch64 every TP-offset change R3 produced also moved an address, so the global and moved-section rows caught it first |
 
   **Re-run with the by-value oracle** (IN-63a; the re-review's N4;
-  `oracle.py` compares moved units by value, 36 pairs, AArch64 and
-  x86-64, results in the workspace's `.build/review-incr/results/fx/`):
+  `oracle.py` compares moved units by value; 28 directed pairs × `-O0`
+  and `-O2` = 56 oracle runs, AArch64 and x86-64, the gc edge-kind pair
+  g included; `oracle_run.sh`, results in the workspace's
+  `.build/review-incr/results/final/`). **With every row in place, 56 of
+  56 pass.** Each row dropped in turn:
 
   | row dropped | pairs whose oracle run fails (by value) |
   |---|---|
   | a file changed | none (as above) |
   | a global's definition changed (by identity: definer, section, offset, size, live) | `-O0` b0, c, cf; `-O0`/`-O2` e |
-  | **symbol attributes (`symattr` → `symbol-kind-changed`)** | x86-64 FUNC → IFUNC (`fx`) at `-O0` and `-O2`; on AArch64 (`f`) the synthetic-table row predicts the referrers too, so `f` fails only with `symattr` and `synth` both dropped |
+  | **symbol attributes (`symattr` → `symbol-kind-changed`)** | **none alone** (see below) |
   | a COMDAT keeper changed | `-O0` b0, b; `-O2` b |
-  | liveness changed | `-O0`/`-O2` c, cf; `-O0` l (`lsda-edges`) |
-  | a section of an unchanged file moved | `-O0`/`-O2` a/grow, b0, b, w (weak undefined → defined); `-O0` l; x86-64 w |
-  | a synthetic table changed | `-O0` a/grow, b0, w; `-O0`/`-O2` cf; `-O2` x86-64 w |
-  | a merged fragment moved | `-O0`/`-O2` b |
+  | liveness changed | `-O0`/`-O2` c, cf, l (`lsda-edges`), x86-64 lx, g (`gc-edge-kinds`) |
+  | a section of an unchanged file moved | `-O0`/`-O2` a/grow, b0, b, w (weak undefined → defined), l, g (`-O2`), x86-64 w, lx |
+  | a synthetic table changed | `-O0` a/grow, b0, w; `-O0`/`-O2` cf, g, x86-64 lx; `-O2` x86-64 w |
+  | a merged fragment moved (non-allocated; oracle only) | `-O0`/`-O2` b |
   | TLS | x86-64 `-O0` dx |
-  | `symattr` + `global` + `synth` | the union, plus `f`, `w` and x86-64 `w` at both levels |
+  | `symattr` + `global` | as `global` alone |
+  | `symattr` + `synth` | as `synth` alone |
+  | `symattr` + `global` + `synth` | the union of `global` and `synth`, plus `f` and x86-64 `fx` at both levels, `w` at `-O2` and x86-64 `wx` at `-O0` |
 
-  With every row in place, **6 of the 36 pairs still fail** and are open
-  (not diagnosed to the root): `-O2` l both directions (about 35 libc
-  and libstdc++ units whose fields name allocated merged `.rodata.str*`
-  fragments have residuals that differ by 8 or 16: a fragment's owner or
-  position changes when `dropme()`'s strings come alive, which no
-  predictor row covers, because the oracle's fragment row covers only
-  non-allocated merged sections; *unverified reading*) and x86-64 lx at
-  `-O0` and `-O2` both directions (one field in `crtbeginT.o`'s `.text`,
-  an `R_X86_64_32` to a section the map does not place). Each is either
-  a missing refill row or an oracle gap; WP-063 must resolve both before
-  the oracle gates (record §3). The re-review's N1 pair with only
-  `global` or only `synth` dropped does **not** fail: the by-value
-  comparison sees no changed value there, and only `symattr` (x86-64)
-  or `symattr` + `synth` (AArch64) is the row that matters.
+  **The 6 failures of the previous run were oracle errors, not missing
+  rows** (diagnosed from the bytes, final round):
+  - `-O2` l, both directions (35 libc/libstdc++ units "differing beyond
+    the move"): the oracle mapped a field naming an **allocated merged**
+    fragment to the wrong fragment. Its lookup took the first piece
+    whose *end* equals the offset before the piece that *contains* it.
+    Example: `C-address.o`'s `R_AARCH64_ABS64` at `.data.rel.ro.local+0`
+    names `C_name.o`'s `.rodata.str1.8`+0x18, the string `"C"` (map:
+    `piece 107 4 18 415a98 2`). The de-duplicated empty string at 0x17
+    (`piece 107 4 17 413d98 1`) ends at 0x18, so the oracle used
+    0x413d99, and the residuals came out 7423 and 7431. The field is
+    right in both links. The same error, with the empty string at
+    0x1f before the string at 0x20, made g at `-O0` fail
+    (`translated_number_width.o`'s `adrp x0` holds pages 0x414000 and
+    0x415000 for fragments at 0x414ff0 and 0x415000, both correct; the
+    oracle computed page residuals 1 and 2 against 0x4139a1 and 0x4139b1).
+    The fix is in the oracle (a containing piece first, an end label
+    only if none contains the offset), and with it every such unit is
+    equal by value. No row is missing: an update never moves an
+    allocated merged fragment (L-147, S-110), and an unchanged unit
+    that names one is refilled only when one of its other targets moves.
+  - x86-64 lx at `-O0` and `-O2`, both directions: `crtbeginT.o`'s
+    `R_X86_64_32 .eh_frame+0`, offset 0 of an empty input `.eh_frame`
+    that has no map line, holds the start of the output `.eh_frame` in
+    each link (S-50 rule 1; 0x41d4a8 and 0x41d4c0). The oracle did not
+    implement S-50, found no target and compared the raw words. It now
+    does (rule 1), and the field is equal by value. Here the design
+    *did* lack a statement: the moved-section row cannot see an S-50
+    value move, because the target is no unit. IN-34a now stores S-50's
+    value per reference, and IN-27 has the `.eh_frame`-reference row.
+  In the previous run these 6 failed with every row in place, so every
+  mutation was reported as caught on them, and the table claimed that
+  `symattr` caught fx. With the oracle corrected, **`symattr` alone is
+  caught by no pair**: in fx and f, the changed definer is `c.o`, and the
+  oracle's `global` row compares a changed definer's *output* value,
+  which moves to the IPLT entry when `f` becomes an IFUNC. Its `synth`
+  row predicts the referrer too, through the new `.rela.iplt`/IPLT
+  entry. IN-26's delta and IN-27's global row compare input values (N1),
+  so in the design `symattr` is the only row that refills `u.o`. The
+  re-review's reproducer shows this (`f(5)=4423704`). The oracle's
+  predictor is wider than the design's rows there. So WP-069 must add a
+  scenario that only `symattr` predicts, or align the oracle's `global`
+  row with IN-26 (input value for a definer in a file that changed), and
+  keep the N1 reproducer as a run test. Until then, the `symattr` row's
+  mutation test is the reproducer itself, not the oracle.
 
   The TLS row still needs an AArch64 scenario where a TP offset changes
   at unchanged addresses (a `PT_TLS` alignment change; R3 could not
@@ -2749,6 +2899,8 @@ The revision's experiments, numbered as the reviewer's list (its §6):
 | R11 | PIE `[0, len)` tombstones | not run: mortar refuses `-pie` on this branch | IN-53 | — |
 | R12 | the state written as bytes, its write and read times; armap re-read cost; IN-31's hash inputs | `state_emul.py WORK MAP CWD libprotobuf.a libc.a libstdc++.a` | IN-19, IN-31, `results/e12.out` | ~14 |
 | R13 | IN-2's equivalence check with and without the order clause | `equiv_run.sh WORK` with `equiv.py OUT_A MAP_A OUT_B MAP_B [--no-order]` | IN-2, IN-62 | not timed |
+| R14 | split DWARF on protoc (GCC and Clang, `-O0 -g -gsplit-dwarf`) against plain `-g`: object and output debug bytes, full links (1 + 7 runs), floor on the overlay (3 interleaved rounds), slack, state, gdb/lldb transcripts with and without the GNU name index | `split/build.sh`, `split/link.sh`, `split/dbgsizes.py`, `split/summ.py`, `split/floor-overlay.sh` (`floor.py`), `regions2.py`, `state_emul.py` | §6 "Split DWARF", IN-55, `results/final/split/` | full links 5.5–6.1; floor 6.8–8.3 |
+| R15 | the final by-value oracle (28 pairs × 2 levels) with scenario g, its mutation table, and the gc edge-kind drops | `oracle_scen.sh WORK`, `oracle_run.sh WORK`, `livemodel.py` | IN-27, IN-29, IN-34a, IN-63b, `results/final/` | not timed |
 
 Incidents during the measurements, recorded for the reviewer: an early
 run of E2 overwrote the bench cache's GNU-ld-built
