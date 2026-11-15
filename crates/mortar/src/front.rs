@@ -351,7 +351,15 @@ pub fn front<'s>(
     let roots = outcome.roots;
     let resolution = outcome.resolution;
 
-    // 45: assignment (layout stage A).
+    // 45: assignment (layout stage A). A dynamic output on an
+    // architecture whose join has not landed is refused here, by name.
+    let status = match crate::dynamic::arch_status(&plan, machine) {
+        Ok(s) => s,
+        Err(d) => {
+            diag.emit(Key::new(45, 0, 0), d);
+            return None;
+        }
+    };
     let target = Target::of(machine);
     let options = match Options::from_plan(&plan, &target) {
         Ok(o) => o,
@@ -361,9 +369,7 @@ pub fn front<'s>(
             return None;
         }
     };
-    let Some(link_arch) =
-        LinkArch::of(machine, options.fix_843419, crate::dynamic::arch_status(&plan))
-    else {
+    let Some(link_arch) = LinkArch::of(machine, options.fix_843419, status) else {
         diag.emit(Key::new(45, 0, 0), internal(format!("no architecture for {}", machine.name())));
         return None;
     };

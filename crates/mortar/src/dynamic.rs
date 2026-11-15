@@ -17,12 +17,15 @@ use mortar_arch::Status;
 use mortar_cli::table::{KindSet, Lands, StateOp};
 use mortar_cli::{Parsed, Plan, Use};
 use mortar_core::plan::OutputKind;
-use mortar_diag::{Diagnostic, Key};
+use mortar_diag::{Diagnostic, Key, RefusalClass};
+use mortar_elf::Machine;
 use mortar_synth::DynsymPlan;
 
-/// Whether mortar writes `Exec` and `Pie` outputs. `false` until the M2
-/// join: every gate below is refused.
-pub const DYNAMIC_OUTPUT: bool = false;
+/// Whether mortar writes `Exec` and `Pie` outputs: `true` since the M2
+/// join (WP-053), on the architectures [`arch_status`] admits; the
+/// command line's gates pass, and the architecture is judged once the
+/// inputs name it.
+pub const DYNAMIC_OUTPUT: bool = true;
 
 /// Whether a refused use of the command line is a dynamic gate, which the
 /// guard reports instead of the command line: `-pie` (`--pic-executable`),
@@ -70,13 +73,34 @@ pub fn option_refusals(plan: &Plan, parsed: &Parsed) -> Vec<(Key, Diagnostic)> {
     refusals
 }
 
-/// The architecture status of a link of `plan`: [`Status::M2`] only for
-/// a dynamic output, and only once the guard lets one through; `M1`
-/// otherwise, so a static link's path is unchanged.
-#[must_use]
-pub fn arch_status(plan: &Plan) -> Status {
+/// The architecture status of a link of `plan` on `machine`:
+/// [`Status::M2`] for a dynamic output (`Exec`, `Pie`) on an architecture
+/// whose join has landed (AArch64, WP-053), `M1` for every other output,
+/// so a static link's path is unchanged. A dynamic output on another
+/// architecture is refused by name: x86-64 until its join (WP-055), i386
+/// for all of M2 (ELFCLASS32 dynamic output is M4).
+///
+/// # Errors
+///
+/// The refusal of a dynamic output on `machine`.
+pub fn arch_status(plan: &Plan, machine: Machine) -> Result<Status, Diagnostic> {
     let dynamic = matches!(plan.kind, OutputKind::Executable | OutputKind::PieExecutable);
-    if DYNAMIC_OUTPUT && dynamic { Status::M2 } else { Status::M1 }
+    if !(DYNAMIC_OUTPUT && dynamic) {
+        return Ok(Status::M1);
+    }
+    match machine {
+        Machine::AArch64 => Ok(Status::M2),
+        Machine::X86_64 => Err(Diagnostic::refused(
+            RefusalClass::Feature,
+            "dynamically linked output on x86-64",
+        )
+        .note("x86-64 dynamic executables arrive with WP-055 (docs/status/m2.md)")),
+        Machine::I386 => Err(Diagnostic::refused(
+            RefusalClass::Feature,
+            "dynamically linked output on i386",
+        )
+        .note("ELFCLASS32 dynamic output is M4 (docs/status/m2.md)")),
+    }
 }
 
 /// The plans of a dynamic output's tables, which a static link does not
@@ -94,8 +118,10 @@ mod tests {
     use mortar_arch::Status;
     use mortar_cli::Plan;
     use mortar_core::plan::OutputKind;
+    use mortar_elf::Machine;
 
-    // spec: WP-040 step 0e (Status::M2 only behind the guard)
+    // spec: WP-040 step 0e (Status::M2 only behind the guard), WP-053
+    // (AArch64 only; x86-64 and i386 dynamic output refused by name)
     #[test]
     fn m2_only_behind_the_guard() {
         for kind in [
@@ -107,7 +133,16 @@ mod tests {
             let plan = Plan { kind, ..Plan::default() };
             let dynamic = matches!(kind, OutputKind::Executable | OutputKind::PieExecutable);
             let m2 = DYNAMIC_OUTPUT && dynamic;
-            assert_eq!(arch_status(&plan) == Status::M2, m2, "{kind:?}");
+            let a64 = arch_status(&plan, Machine::AArch64).ok();
+            assert_eq!(a64 == Some(Status::M2), m2, "{kind:?}");
+            for other in [Machine::X86_64, Machine::I386] {
+                let s = arch_status(&plan, other);
+                if m2 {
+                    assert!(s.is_err(), "{kind:?} on {other:?} is refused by name");
+                } else {
+                    assert_eq!(s.ok(), Some(Status::M1), "{kind:?} on {other:?}");
+                }
+            }
         }
     }
 
