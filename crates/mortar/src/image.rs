@@ -32,7 +32,6 @@ use mortar_synth::MergeEh;
 use mortar_synth::symtab::{CoreSections, SymCtx};
 
 use crate::front::{Front, output_kind};
-use crate::proof::A64Proof;
 use crate::syms::{CoreSyms, LinkSections};
 
 /// The scan's answers per key, for fill (`KeyFacts` over `Walker`).
@@ -102,8 +101,8 @@ pub fn with_link<T>(
         comdat_mismatch: &f.comdat_mismatch,
         gnu_warnings: &f.gnu_warnings,
     };
-    let scan_options = ScanOptions { output, dynamic: false, proof: &A64Proof };
-    let walker = Walker::new(&f.arch, &scan_inputs, scan_options);
+    let scan_options = ScanOptions { output, dynamic: false, proof: f.arch.proof() };
+    let walker = Walker::new(f.arch.get(), &scan_inputs, scan_options);
     let facts = WalkFacts(&walker);
     let proof = |file: FileId, index: SectionIndex, len: u64| -> Vec<ProofRun> {
         let exec = f
@@ -134,7 +133,7 @@ pub fn with_link<T>(
     };
     let s = &f.synth;
     let link = link::Link {
-        arch: &f.arch,
+        arch: f.arch.get(),
         pool: &f.pool,
         inputs: &f.inputs,
         resolution: &f.resolution,
@@ -162,7 +161,10 @@ pub fn with_link<T>(
             output,
             separate_code: f.options.separate_code,
             build_id: f.plan.shaping.build_id.as_ref().and_then(link::tree_style),
-            bti: s.property.value_u32(mortar_a64::FEATURE_1_AND) & mortar_a64::FEATURE_1_BTI != 0,
+            bti: {
+                let (ty, bit) = f.arch.feature_1();
+                s.property.value_u32(ty) & bit != 0
+            },
         },
         fixups: &f.erratum_fixes,
     };
