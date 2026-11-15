@@ -133,6 +133,9 @@ impl RefusalClass {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Kind {
+    /// `conflicting-options`: two options that cannot be used together,
+    /// spelled as the user wrote them (`-r` and `-shared`).
+    ConflictingOptions { first: String, second: String },
     // -- command line ---------------------------------------------------
     /// `invalid-option-value`: the value given to an option is not one the
     /// option's grammar allows. `option` is spelled as the user wrote it.
@@ -142,6 +145,14 @@ pub enum Kind {
     MissingArgument { option: String },
     /// `no-input-files`: the command line names nothing to link.
     NoInputFiles,
+    /// `response-file-limit`: more response files (`@file`) were expanded
+    /// than the limit allows, which a response file that names itself
+    /// reaches.
+    ResponseFileLimit { limit: u32 },
+    /// `unbalanced-option`: an option that opens or closes a region of the
+    /// command line (`--push-state`, `--start-group`, `--start-lib`) has
+    /// no counterpart. Both are spelled as the user wrote them, or would.
+    UnbalancedOption { option: String, counterpart: String },
     /// `unknown-option`: not an option of GNU ld's command line as mortar
     /// knows it. (An option mortar knows and does not implement is a
     /// [`Kind::Refused`].)
@@ -180,10 +191,13 @@ pub enum Kind {
 
 impl Kind {
     /// Every stable id, in the order of `spec/diag.md` §3.1.
-    pub const IDS: [&'static str; 12] = [
+    pub const IDS: [&'static str; 15] = [
+        "conflicting-options",
         "invalid-option-value",
         "missing-argument",
         "no-input-files",
+        "response-file-limit",
+        "unbalanced-option",
         "unknown-option",
         "cannot-open-file",
         "cannot-open-output",
@@ -200,9 +214,12 @@ impl Kind {
     #[must_use]
     pub const fn id(&self) -> &'static str {
         match self {
+            Self::ConflictingOptions { .. } => "conflicting-options",
             Self::InvalidOptionValue { .. } => "invalid-option-value",
             Self::MissingArgument { .. } => "missing-argument",
             Self::NoInputFiles => "no-input-files",
+            Self::ResponseFileLimit { .. } => "response-file-limit",
+            Self::UnbalancedOption { .. } => "unbalanced-option",
             Self::UnknownOption { .. } => "unknown-option",
             Self::CannotOpenFile { .. } => "cannot-open-file",
             Self::CannotOpenOutput { .. } => "cannot-open-output",
@@ -486,18 +503,21 @@ mod tests {
     /// compile here.
     fn index(kind: &Kind) -> usize {
         match kind {
-            Kind::InvalidOptionValue { .. } => 0,
-            Kind::MissingArgument { .. } => 1,
-            Kind::NoInputFiles => 2,
-            Kind::UnknownOption { .. } => 3,
-            Kind::CannotOpenFile { .. } => 4,
-            Kind::CannotOpenOutput { .. } => 5,
-            Kind::LibraryNotFound { .. } => 6,
-            Kind::Malformed { .. } => 7,
-            Kind::UnknownFileType => 8,
-            Kind::DuplicateSymbol { .. } => 9,
-            Kind::UndefinedSymbol { .. } => 10,
-            Kind::Refused { .. } => 11,
+            Kind::ConflictingOptions { .. } => 0,
+            Kind::InvalidOptionValue { .. } => 1,
+            Kind::MissingArgument { .. } => 2,
+            Kind::NoInputFiles => 3,
+            Kind::ResponseFileLimit { .. } => 4,
+            Kind::UnbalancedOption { .. } => 5,
+            Kind::UnknownOption { .. } => 6,
+            Kind::CannotOpenFile { .. } => 7,
+            Kind::CannotOpenOutput { .. } => 8,
+            Kind::LibraryNotFound { .. } => 9,
+            Kind::Malformed { .. } => 10,
+            Kind::UnknownFileType => 11,
+            Kind::DuplicateSymbol { .. } => 12,
+            Kind::UndefinedSymbol { .. } => 13,
+            Kind::Refused { .. } => 14,
         }
     }
 
@@ -507,9 +527,12 @@ mod tests {
     fn every_variant_is_in_ids() {
         let s = String::new;
         let all = [
+            Kind::ConflictingOptions { first: s(), second: s() },
             Kind::InvalidOptionValue { option: s(), value: s() },
             Kind::MissingArgument { option: s() },
             Kind::NoInputFiles,
+            Kind::ResponseFileLimit { limit: 0 },
+            Kind::UnbalancedOption { option: s(), counterpart: s() },
             Kind::UnknownOption { option: s() },
             Kind::CannotOpenFile { path: s(), reason: s() },
             Kind::CannotOpenOutput { path: s(), reason: s() },
