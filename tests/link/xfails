@@ -162,7 +162,9 @@ mortar,x86_64 dyn/shlib/tls-mismatch-shared.test: M2: WP-055 (X64-JOIN)
 mortar,x86_64 dyn/shlib/used-underlinks-refused.test: M2: WP-055 (X64-JOIN)
 mortar,x86_64 dyn/shlib/version-needs-unchecked.test: M2: WP-055 (X64-JOIN)
 mortar,x86_64 dyn/tools/elflint-dynamic.test: M2: WP-055 (X64-JOIN)
+mortar,x86_64 dyn/tools/gdb-break-main.test: M2: WP-055 (X64-JOIN)
 mortar,x86_64 dyn/tools/ldd-lists.test: M2: WP-055 (X64-JOIN)
+mortar,x86_64 dyn/tools/lldb-break-main.test: M2: WP-055 (X64-JOIN)
 
 # WP-056 (OPTS): the option variations.
 mortar,aarch64 dyn/census/gfortran-default.test: M2: WP-056 (OPTS)

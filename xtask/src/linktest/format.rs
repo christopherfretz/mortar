@@ -415,6 +415,10 @@ pub struct Link {
 pub enum Exit {
     Status(i32),
     Signal(i32),
+    /// `exit: no-start`: the program cannot be started (its interpreter is
+    /// not there): natively the shell's exec fails, status 127; under qemu
+    /// the emulator cannot load it, status 255.
+    NoStart,
 }
 
 /// What a program is expected to print.
@@ -1471,8 +1475,11 @@ fn both_outputs() -> String {
     "a run has 'stdout' lines or 'output: reference', not both".to_owned()
 }
 
-/// `N` (0 to 255) or `signal N` (1 to 64).
+/// `N` (0 to 255), `signal N` (1 to 64) or `no-start`.
 fn parse_exit(value: &str) -> Result<Exit, String> {
+    if value == "no-start" {
+        return Ok(Exit::NoStart);
+    }
     let number = |text: &str| text.parse::<i32>().ok().filter(|_| !text.starts_with('+'));
     let exit = match value.strip_prefix("signal") {
         Some(signal) if signal.starts_with([' ', '\t']) => {
@@ -1482,7 +1489,10 @@ fn parse_exit(value: &str) -> Result<Exit, String> {
         None => number(value).filter(|n| (0..=255).contains(n)).map(Exit::Status),
     };
     exit.ok_or_else(|| {
-        format!("'exit: {value}' of a run is not a status from 0 to 255 or 'signal N' (1 to 64)")
+        format!(
+            "'exit: {value}' of a run is not a status from 0 to 255, 'signal N' (1 to 64) or \
+             'no-start'"
+        )
     })
 }
 
@@ -2041,6 +2051,9 @@ FileHeader:
         assert!(link.fails);
         let StepKind::Run(run) = &test.steps[1].kind else { panic!() };
         assert_eq!(run.exit, Exit::Status(255));
+        let no_start = parse(&with("link ld a.o -o p\nrun p\n  exit: no-start\n")).unwrap();
+        let StepKind::Run(run) = &no_start.steps[1].kind else { panic!() };
+        assert_eq!(run.exit, Exit::NoStart);
         let reference = parse(&with("link ld a.o\nrun a.out\n  output: reference\n")).unwrap();
         assert!(reference.compares_output());
 

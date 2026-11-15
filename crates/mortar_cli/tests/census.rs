@@ -316,6 +316,12 @@ fn rustc() {
     for (label, source, flags, kind, object) in cases {
         let mut c = Command::new(&rustc);
         c.arg(source).args(*flags).arg("-C").arg(format!("link-arg=-B{}/", bin.display()));
+        if target == Target::X86_64 {
+            // rustc links x86-64 with its own rust-lld by default (Rust
+            // 1.90): the system `ld`, the one mortar stands in for, only
+            // when told so (stable on this target alone).
+            c.args(["-C", "linker-features=-lld"]);
+        }
         c.arg("-o").arg(scratch.join(format!("out-{label}")));
         let line = capture(&scratch, c, label);
         let want = Expect { kind: *kind, target, libs: &["c"], object };

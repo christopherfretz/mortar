@@ -740,6 +740,7 @@ are the indented lines under a step:
 | link | `diag: <pattern>` | some line of its standard error matches |
 | link | `no-diag: <pattern>` | no line does |
 | run | `exit: <n>` (default 0), `exit: signal <n>` | how the program ends |
+| run | `exit: no-start` | it cannot be started (its interpreter is not there): status 127 natively (the harness's shell, whose exec fails), 255 under qemu (which cannot load it); the same expectation on both hosts |
 | run | `stdout: <text>` | its standard output, one line per expectation, exactly; with none, it prints nothing |
 | run | `output: reference` | prints what the references printed ("The self-check") |
 | run | `env: <NAME>=<value>` | runs the program with that environment variable (repeatable; `LD_PRELOAD=./libhook.so`, `LD_BIND_NOW=1`) |

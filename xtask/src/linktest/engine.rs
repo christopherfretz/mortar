@@ -396,6 +396,16 @@ struct Judged {
     digests: Vec<DigestRow>,
 }
 
+/// How a program that cannot be started ends (`exit: no-start`): the
+/// shell's status for an exec that fails, natively; qemu's for a program
+/// it cannot load.
+fn no_start_status(runner: &Runner) -> i32 {
+    match runner {
+        Runner::Native => 127,
+        Runner::Emulated { .. } => 255,
+    }
+}
+
 /// The anomaly ids of `list` that apply to `arch` and `linker`.
 fn anomaly_ids(list: &[Anomaly], arch: Arch, linker: Linker) -> Vec<&str> {
     list.iter()
@@ -1083,12 +1093,14 @@ impl Unit<'_> {
             (Exit::Status(want), End::Exit(got)) | (Exit::Signal(want), End::Signal(got)) => {
                 want == got
             }
+            (Exit::NoStart, End::Exit(got)) => got == no_start_status(&self.tools.runner),
             _ => false,
         };
         if !met {
             let want = match run.exit {
                 Exit::Status(status) => End::Exit(status),
                 Exit::Signal(signal) => End::Signal(signal),
+                Exit::NoStart => End::Exit(no_start_status(&self.tools.runner)),
             };
             return Err(fail(&format_args!(
                 "{}, expected {want}{}",

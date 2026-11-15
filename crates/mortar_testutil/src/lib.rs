@@ -110,6 +110,10 @@ pub fn tool(name: &str) -> Option<PathBuf> {
 /// "Named skips").
 pub const NAMED_SKIPS: &str = "named-skips";
 
+/// The variable through which `cargo xtask ci` names the directory of the
+/// named skips to its test step; without it, `<build directory>/tmp/named-skips`.
+pub const NAMED_SKIPS_ENV: &str = "MORTAR_NAMED_SKIPS";
+
 /// Skips the rest of the calling test, by name and with its reason: a
 /// test or a part of one that cannot run on this host
 /// (`spec/harness.md` "Named skips"; a debugger session needs a process
@@ -117,19 +121,24 @@ pub const NAMED_SKIPS: &str = "named-skips";
 /// [`tool`]'s note or failure.
 ///
 /// The skip is printed on standard error and recorded as the file
-/// `<build directory>/tmp/named-skips/<name>`, whose one line is
+/// `$MORTAR_NAMED_SKIPS/<name>` (else `<build directory>/tmp/named-skips/<name>`,
+/// when the build directory is found), whose one line is
 /// `<name>\t<reason>`, so that the gate lists and counts it whether or not
 /// the test binary's output is shown. `name` is the test's name and the
 /// part skipped (`debuggers::sessions_c_gcc`); `/` and blanks in it
 /// become `_` in the file name.
 ///
 /// # Panics
-/// Panics when the record cannot be written: an unrecorded skip would be a
-/// silent one.
+/// Panics when the record cannot be written, or when `cargo xtask ci`
+/// runs the test (`MORTAR_NAMED_SKIPS` is set) and the record has no
+/// place: an unrecorded skip would be a silent one.
 pub fn named_skip(name: &str, reason: &str) {
     eprintln!("note: named skip: {name}: {reason}");
-    let tmp = std::env::var_os("CARGO_TARGET_TMPDIR").map(PathBuf::from).or_else(build_tmp_dir);
-    let Some(dir) = tmp.map(|tmp| tmp.join(NAMED_SKIPS)) else { return };
+    let dir = std::env::var_os(NAMED_SKIPS_ENV)
+        .map(PathBuf::from)
+        .or_else(|| build_tmp_dir().map(|tmp| tmp.join(NAMED_SKIPS)));
+    // Outside the gate the printed note is the record.
+    let Some(dir) = dir else { return };
     let file: String =
         name.chars().map(|c| if c == '/' || c.is_whitespace() { '_' } else { c }).collect();
     std::fs::create_dir_all(&dir)

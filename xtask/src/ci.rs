@@ -56,6 +56,8 @@ pub fn cargo_step(args: &[&str]) -> bool {
     let mut retried = false;
     loop {
         let mut cargo = Command::new(cargo());
+        // Where the test binaries record their named skips.
+        cargo.env(mortar_testutil::NAMED_SKIPS_ENV, named_skips_dir());
         let (status, stderr) = match run_step(cargo.args(args), true) {
             Ok(result) => result,
             Err(e) => {

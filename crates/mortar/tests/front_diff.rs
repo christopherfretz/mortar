@@ -87,6 +87,9 @@ const ALLOC_ORDER: &[&str] = &[
     ".note.gnu.property",
     ".note.gnu.build-id",
     ".note.ABI-tag",
+    // The cross C runtime's crt1.o (libc6-dev-<arch>-cross) has it; the
+    // native one has not.
+    ".note.package",
     ".rela.plt",
     ".rodata",
     ".stapsdt.base",
@@ -115,6 +118,7 @@ const ALLOC_ORDER: &[&str] = &[
 const SAME_SIZE: &[&str] = &[
     ".note.gnu.build-id",
     ".note.ABI-tag",
+    ".note.package",
     ".gcc_except_table",
     ".stapsdt.base",
     ".tdata",
