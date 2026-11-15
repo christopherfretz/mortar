@@ -79,11 +79,16 @@ impl Sites for Synthetic {
         &self.branches
     }
 
-    fn target(&self, i: usize, round: &Round<'_>) -> Option<u64> {
-        self.target_at(i, round)
+    fn targets(&self, round: &Round<'_>, _pool: &Pool) -> Vec<Option<u64>> {
+        (0..self.branches.len()).map(|i| self.target_at(i, round)).collect()
     }
 
-    fn code(&self, out: OutSecId, round: &Round<'_>) -> Result<Option<OwnedCode>, LayoutDiag> {
+    fn code(
+        &self,
+        out: OutSecId,
+        round: &Round<'_>,
+        _pool: &Pool,
+    ) -> Result<Option<OwnedCode>, LayoutDiag> {
         let Some((start, end)) = round.out_extent(out) else { return Ok(None) };
         let mut bytes = vec![0u8; (end - start) as usize];
         for &(s, off, far) in &self.errata {

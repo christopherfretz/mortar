@@ -86,9 +86,12 @@ pub trait Sites: Sync {
     /// input-only decision).
     fn branches(&self) -> &[BranchAt];
 
-    /// The final target `T` of `branches()[i]` at the round's addresses:
-    /// the symbol, or its PLT or IPLT entry, plus the addend.
-    fn target(&self, i: usize, round: &Round<'_>) -> Option<u64>;
+    /// The final target `T` of every branch site at the round's
+    /// addresses (`[i]` is `branches()[i]`'s): the symbol, or its PLT or
+    /// IPLT entry, plus the addend. One call per round, so that what a
+    /// round's addresses give (fill's tables) is built once (WP-027a: per
+    /// site, it was 250 ms per round of a protoc link).
+    fn targets(&self, round: &Round<'_>, pool: &Pool) -> Vec<Option<u64>>;
 
     /// The words of output code section `out` at the round's addresses,
     /// for `Arch::erratum_sites`. Asked only when `Arch::errata()` is not
@@ -98,7 +101,12 @@ pub trait Sites: Sync {
     ///
     /// A read of an input section's bytes that failed: the link fails
     /// with it (never "no erratum sites", `spec/landed/input/WP-021b.md`).
-    fn code(&self, out: OutSecId, round: &Round<'_>) -> Result<Option<OwnedCode>, LayoutDiag>;
+    fn code(
+        &self,
+        out: OutSecId,
+        round: &Round<'_>,
+        pool: &Pool,
+    ) -> Result<Option<OwnedCode>, LayoutDiag>;
 }
 
 /// No branch sites and no code: nothing is ever needed.
@@ -109,10 +117,15 @@ impl Sites for NoSites {
     fn branches(&self) -> &[BranchAt] {
         &[]
     }
-    fn target(&self, _i: usize, _round: &Round<'_>) -> Option<u64> {
-        None
+    fn targets(&self, _round: &Round<'_>, _pool: &Pool) -> Vec<Option<u64>> {
+        Vec::new()
     }
-    fn code(&self, _out: OutSecId, _round: &Round<'_>) -> Result<Option<OwnedCode>, LayoutDiag> {
+    fn code(
+        &self,
+        _out: OutSecId,
+        _round: &Round<'_>,
+        _pool: &Pool,
+    ) -> Result<Option<OwnedCode>, LayoutDiag> {
         Ok(None)
     }
 }
@@ -368,14 +381,15 @@ fn needs(
     pool: &Pool,
 ) -> Result<(Vec<Need>, SiteKeys), LayoutDiag> {
     let branches = range.sites.branches();
+    let targets = range.sites.targets(round, pool);
+    if targets.len() != branches.len() {
+        return Err(internal("not one branch target per branch site"));
+    }
     let judged: Vec<Result<Option<Need>, LayoutDiag>> = pool.map(branches.len(), |i| {
         let b = branches[i];
         // A site in a section that is not placed is no site.
         let Some(p) = round.site_addr(b.section, b.offset) else { return Ok(None) };
-        let t = range
-            .sites
-            .target(i, round)
-            .ok_or_else(|| internal("a branch site with no target address"))?;
+        let t = targets[i].ok_or_else(|| internal("a branch site with no target address"))?;
         let r = round.redirect_addr(b.section, b.offset);
         Ok((thunk_need(&b.site, p, t, r) != ThunkNeed::None).then_some(Need {
             addr: p,
@@ -399,7 +413,7 @@ fn needs(
         pool.map(code_outs.len() * errata.len(), |u| {
             let out_sec = code_outs[u / errata.len()];
             let e = errata[u % errata.len()];
-            let Some(code) = range.sites.code(out_sec, round)? else { return Ok(Vec::new()) };
+            let Some(code) = range.sites.code(out_sec, round, pool)? else { return Ok(Vec::new()) };
             let view = Code { bytes: &code.bytes, addr: code.addr, proof: &code.proof };
             let mut sites: Vec<ErratumSite> = Vec::new();
             range.arch.erratum_sites(e, &view, &mut sites).map_err(|u| {

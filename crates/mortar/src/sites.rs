@@ -29,8 +29,8 @@ use mortar_core::resolution::{Def, Resolution, SectionKind};
 use mortar_core::split::Split;
 use mortar_core::{Demands, Liveness};
 use mortar_diag::{Diagnostic, Key};
-use mortar_elf::SymbolSection;
 use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS};
+use mortar_elf::{SymbolSection, SymbolTable};
 use mortar_layout::fixed::{BranchAt, OwnedCode, Round, Sites};
 use mortar_layout::{Headers, LayoutDiag};
 use mortar_scan::{RecIndex, Walker};
@@ -80,6 +80,10 @@ pub struct LinkSites<'a, 's> {
     walker: &'a Walker<'a, 's>,
     code: Vec<CodeSec>,
     branches: Vec<BranchAt>,
+    /// Each object's symbol table, found once (`Object::symbols` scans the
+    /// section headers: per branch target and round it cost ~2 µs, 245 ms
+    /// a round in a protoc link — WP-027a).
+    symtabs: Vec<Option<SymbolTable<'s>>>,
     /// Whether `code` is asked (`Arch::errata()` is not empty).
     errata: bool,
 }
@@ -151,7 +155,13 @@ impl<'a, 's> LinkSites<'a, 's> {
         for f in found {
             branches.extend(f?);
         }
-        Ok(Self { t, arch, walker, code, branches, errata: !arch.errata().is_empty() })
+        let files: Vec<&mortar_core::inputs::File<'s>> =
+            t.inputs.files.iter().map(|(_, f)| f).collect();
+        let symtabs = pool.map(files.len(), |i| match files[i].reader {
+            Reader::Object(obj) => obj.symbols().ok().flatten(),
+            _ => None,
+        });
+        Ok(Self { t, arch, walker, code, branches, symtabs, errata: !arch.errata().is_empty() })
     }
 
     /// The addresses of a round, as fill's tables.
@@ -189,7 +199,6 @@ impl<'a, 's> LinkSites<'a, 's> {
             got_base: at(self.t.ids.got),
             tls: tls.map(|(start, end, align)| TlsBlock { start, size: end - start, align }),
             fallback: round.chunks.iter().find_map(|(_, c)| c.addr).unwrap_or(0),
-            unknown: AtomicBool::new(false),
         }
     }
 }
@@ -199,117 +208,167 @@ impl Sites for LinkSites<'_, '_> {
         &self.branches
     }
 
-    fn target(&self, i: usize, round: &Round<'_>) -> Option<u64> {
-        let b = self.branches.get(i)?;
+    fn targets(&self, round: &Round<'_>, pool: &Pool) -> Vec<Option<u64>> {
         let tables = self.tables(round);
-        match b.site.key {
+        pool.map(self.branches.len(), |i| match self.branches[i].site.key {
             ThunkTarget::Plt(key) => tables.plt(key),
             ThunkTarget::Sym { key, addend } => {
                 let v = tables.value(key)?;
                 Some(v.wrapping_add_signed(addend))
             }
-        }
+        })
     }
 
-    fn code(&self, out: OutSecId, round: &Round<'_>) -> Result<Option<OwnedCode>, LayoutDiag> {
+    fn code(
+        &self,
+        out: OutSecId,
+        round: &Round<'_>,
+        pool: &Pool,
+    ) -> Result<Option<OwnedCode>, LayoutDiag> {
         if !self.errata {
             return Ok(None);
         }
         let Some((start, end)) = round.out_extent(out) else { return Ok(None) };
         let size = usize::try_from(end - start)
             .map_err(|_| internal("an output code section larger than memory"))?;
-        let mut bytes = vec![0u8; size];
-        let mut proof: Vec<ProofRun> = Vec::new();
         let tables = self.tables(round);
+        // The code sections of `out` at this round, by address. A live
+        // code section with no address at this round is not in the image
+        // (folded away); it has no words here.
+        let mut secs: Vec<(usize, u64, CodeSec)> = Vec::new();
+        for c in self.code.iter().filter(|c| c.out == out) {
+            let Some(addr) = round.site_addr(c.sid, 0) else { continue };
+            let off = usize::try_from(addr - start)
+                .map_err(|_| internal("a code section before its output section"))?;
+            secs.push((off, addr, *c));
+        }
+        secs.sort_by_key(|s| s.0);
+        // Each section's words are a prefix of the bytes from its offset
+        // to the next section's: disjoint parts, filled in parallel.
+        let mut bytes = vec![0u8; size];
+        let mut results: Vec<Result<Vec<ProofRun>, LayoutDiag>> =
+            secs.iter().map(|_| Ok(Vec::new())).collect();
+        let mut parts = Vec::with_capacity(secs.len());
+        let mut rest: &mut [u8] = &mut bytes;
+        let mut at = 0usize;
+        for ((i, &(off, addr, c)), result) in secs.iter().enumerate().zip(results.iter_mut()) {
+            let next = secs.get(i + 1).map_or(size, |n| n.0);
+            if off < at || next < off || next > size {
+                return Err(internal("code sections that overlap"));
+            }
+            let (_, tail) = std::mem::take(&mut rest).split_at_mut(off - at);
+            let (mine, tail) = tail.split_at_mut(next - off);
+            rest = tail;
+            at = next;
+            parts.push((c, addr - start, addr, mine, result));
+        }
+        pool.for_each_part(parts, |_, (c, rel_start, addr, mine, result)| {
+            *result = self.section_code(&tables, c, addr, rel_start, mine);
+        });
+        let mut proof: Vec<ProofRun> = Vec::new();
+        for r in results {
+            proof.extend(r?);
+        }
+        proof.sort_by_key(|r| r.start);
+        Ok(Some(OwnedCode { addr: start, bytes, proof }))
+    }
+}
+
+impl LinkSites<'_, '_> {
+    /// One code section's words at `addr` (`rel_start` bytes into its
+    /// output section) into `room`, and its proof runs.
+    fn section_code(
+        &self,
+        tables: &RoundTables<'_, '_, '_>,
+        c: CodeSec,
+        addr: u64,
+        rel_start: u64,
+        room: &mut [u8],
+    ) -> Result<Vec<ProofRun>, LayoutDiag> {
+        // Its bytes: resident, or copied (a `.text` over the staged
+        // store's limits is not resident); a failed read fails the link,
+        // never "no sites".
+        let len = self
+            .walker
+            .section_bytes(c.file, c.index, |data| {
+                let dst = room.get_mut(..data.len())?;
+                dst.copy_from_slice(data);
+                Some(data.len())
+            })
+            .map_err(keyed)?
+            .ok_or_else(|| internal("a code section outside its output section's extent"))?;
+        let section = &mut room[..len];
+        let len = len as u64;
+        let mut proof = Vec::new();
+        for mut run in self.walker.proof(c.file, c.index, len, true) {
+            run.unit_offset = run.start;
+            run.start += rel_start;
+            run.end += rel_start;
+            run.unit = c.sid.0;
+            proof.push(run);
+        }
+        if c.rel == 0 {
+            return Ok(proof);
+        }
+        // The candidate words (a64.md §11.1 condition 1: `W1` at an
+        // address ≡ 0xFF8 or 0xFFC mod 4096) and the three after.
+        let mut windows: Vec<(u64, u64)> = Vec::new();
+        let mut q = 0xFF8u64.wrapping_sub(addr) & 0xFFF;
+        while q < len {
+            windows.push((q, q + 4));
+            q += 0x1000;
+        }
+        if windows.is_empty() {
+            return Ok(proof);
+        }
+        let in_window = |r: u64| {
+            let i = windows.partition_point(|w| w.0 + 16 <= r);
+            windows.get(i).is_some_and(|w| w.0 <= r)
+        };
+        let leads = self.t.order.leads(c.sid);
+        let name = self.walker.section_name(c.file, c.index);
+        // This section's own view of the round's tables: whether the
+        // relocation just applied asked for an address not known yet.
+        let probe = Probe { tables, unknown: AtomicBool::new(false) };
         let cx = FillCx {
-            tables: &tables,
+            tables: &probe,
             output: OutputKind::Static,
             got_base: tables.got_base,
             tls: tables.tls,
         };
-        for c in self.code.iter().filter(|c| c.out == out) {
-            // A live code section with no address at this round is not in
-            // the image (folded away); it has no words here.
-            let Some(addr) = round.site_addr(c.sid, 0) else { continue };
-            let off = usize::try_from(addr - start)
-                .map_err(|_| internal("a code section before its output section"))?;
-            // Its bytes: resident, or copied (a `.text` over the staged
-            // store's limits is not resident); a failed read fails the
-            // link, never "no sites".
-            let len = self
-                .walker
-                .section_bytes(c.file, c.index, |data| {
-                    let dst = bytes.get_mut(off..off + data.len())?;
-                    dst.copy_from_slice(data);
-                    Some(data.len())
-                })
-                .map_err(keyed)?
-                .ok_or_else(|| internal("a code section outside its output section's extent"))?;
-            let len = len as u64;
-            for mut run in self.walker.proof(c.file, c.index, len, true) {
-                run.unit_offset = run.start;
-                run.start += addr - start;
-                run.end += addr - start;
-                run.unit = c.sid.0;
-                proof.push(run);
-            }
-            if c.rel == 0 {
-                continue;
-            }
-            // The candidate words (a64.md §11.1 condition 1: `W1` at an
-            // address ≡ 0xFF8 or 0xFFC mod 4096) and the three after.
-            let mut windows: Vec<(u64, u64)> = Vec::new();
-            let mut q = 0xFF8u64.wrapping_sub(addr) & 0xFFF;
-            while q < len {
-                windows.push((q, q + 4));
-                q += 0x1000;
-            }
-            if windows.is_empty() {
-                continue;
-            }
-            let in_window = |r: u64| {
-                let i = windows.partition_point(|w| w.0 + 16 <= r);
-                windows.get(i).is_some_and(|w| w.0 <= r)
-            };
-            let leads = self.t.order.leads(c.sid);
-            let name = self.walker.section_name(c.file, c.index);
-            let mut forced: Vec<u64> = Vec::new();
-            let section = &mut bytes[off..off + len as usize];
-            self.walker
-                .walk(c.file, c.sid, c.index, c.rel, 0..u64::MAX, leads, &mut |v| {
-                    if !in_window(v.at.r_offset) {
-                        return;
-                    }
-                    let mut so = SectionOut::new(section, 0, addr, true, name.as_bytes());
-                    tables.unknown.store(false, Ordering::Relaxed);
-                    // A relocation that does not apply is fill's to report
-                    // (the link fails there); the words are those of the
-                    // relocations that applied.
-                    let _ = self.arch.apply(&cx, &v.at, &mut so);
-                    if tables.unknown.load(Ordering::Relaxed) {
-                        forced.push(v.at.r_offset);
-                    }
-                })
-                .map_err(keyed)?;
-            // A word whose target's address is not known at this round
-            // (a linker-defined symbol, a common): when it is an ADRP at a
-            // `W1` position its page is unknown, so the in-place ADR fix
-            // is not asked for; its immediate is set out of the fix's
-            // reach, which makes the site take a patch, always correct
-            // (a64.md §11.2).
-            for r in forced {
-                let Ok(at) = usize::try_from(r) else { continue };
-                let Some(w) = section.get(at..at + 4) else { continue };
-                let w = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
-                if mortar_a64::erratum::is_adrp(w) {
-                    // immlo (bits 29-30) and immhi (bits 5-23): 2^20 pages.
-                    let far = (w & !0x60FF_FFE0) | (0x8_0000 << 5);
-                    section[at..at + 4].copy_from_slice(&far.to_le_bytes());
+        let mut forced: Vec<u64> = Vec::new();
+        self.walker
+            .walk(c.file, c.sid, c.index, c.rel, 0..u64::MAX, leads, &mut |v| {
+                if !in_window(v.at.r_offset) {
+                    return;
                 }
+                let mut so = SectionOut::new(section, 0, addr, true, name.as_bytes());
+                probe.unknown.store(false, Ordering::Relaxed);
+                // A relocation that does not apply is fill's to report (the
+                // link fails there); the words are those of the
+                // relocations that applied.
+                let _ = self.arch.apply(&cx, &v.at, &mut so);
+                if probe.unknown.load(Ordering::Relaxed) {
+                    forced.push(v.at.r_offset);
+                }
+            })
+            .map_err(keyed)?;
+        // A word whose target's address is not known at this round (a
+        // linker-defined symbol, a common): when it is an ADRP at a `W1`
+        // position its page is unknown, so the in-place ADR fix is not
+        // asked for; its immediate is set out of the fix's reach, which
+        // makes the site take a patch, always correct (a64.md §11.2).
+        for r in forced {
+            let Ok(at) = usize::try_from(r) else { continue };
+            let Some(w) = section.get(at..at + 4) else { continue };
+            let w = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+            if mortar_a64::erratum::is_adrp(w) {
+                // immlo (bits 29-30) and immhi (bits 5-23): 2^20 pages.
+                let far = (w & !0x60FF_FFE0) | (0x8_0000 << 5);
+                section[at..at + 4].copy_from_slice(&far.to_le_bytes());
             }
         }
-        proof.sort_by_key(|r| r.start);
-        Ok(Some(OwnedCode { addr: start, bytes, proof }))
+        Ok(proof)
     }
 }
 
@@ -334,8 +393,6 @@ struct RoundTables<'r, 'a, 's> {
     /// An address in the image, for a target whose address is unknown at
     /// the round (every range check of a static image passes with it).
     fallback: u64,
-    /// Set when `sym` was asked for a key whose address is unknown.
-    unknown: AtomicBool,
 }
 
 impl RoundTables<'_, '_, '_> {
@@ -360,8 +417,7 @@ impl RoundTables<'_, '_, '_> {
     /// The value of a file's entry: its section's place plus `st_value`.
     fn entry_value(&self, e: SymEntry) -> Option<u64> {
         let t = &self.sites.t;
-        let Reader::Object(obj) = t.inputs.files.get(e.file)?.reader else { return None };
-        let table = obj.symbols().ok()??;
+        let table = self.sites.symtabs.get(e.file.0 as usize)?.as_ref()?;
         let s = table.get(e.index).ok()?;
         match table.section_of(e.index, &s).ok()? {
             SymbolSection::Section(index) => {
@@ -394,26 +450,55 @@ impl RoundTables<'_, '_, '_> {
     }
 }
 
-impl SymNames for RoundTables<'_, '_, '_> {
+/// One section's use of a round's [`RoundTables`] as fill's tables: the
+/// flag of an address not known at the round is the section's own (the
+/// sections of a round are filled in parallel).
+struct Probe<'p, 'r, 'a, 's> {
+    tables: &'p RoundTables<'r, 'a, 's>,
+    /// Set when `sym` was asked for a key whose address is unknown.
+    unknown: AtomicBool,
+}
+
+impl SymNames for Probe<'_, '_, '_, '_> {
     fn name(&self, key: SymKey) -> &[u8] {
-        self.sites.walker.name(key)
+        self.tables.sites.walker.name(key)
     }
 }
 
-impl FillTables for RoundTables<'_, '_, '_> {
+impl FillTables for Probe<'_, '_, '_, '_> {
     fn sym(&self, key: SymKey) -> SymValue {
-        let facts = self.sites.walker.facts(key);
+        let t = self.tables;
+        let facts = t.sites.walker.facts(key);
         let s = match facts.kind {
             TargetKind::Weak0 => Some(0),
-            _ => self.value(key),
+            _ => t.value(key),
         };
         let s = s.unwrap_or_else(|| {
             self.unknown.store(true, Ordering::Relaxed);
-            self.fallback
+            t.fallback
         });
         SymValue { s, kind: facts.kind, size: 0, live: true }
     }
 
+    fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {
+        self.tables.slot(key, kind)
+    }
+
+    fn plt(&self, key: SymKey) -> Option<u64> {
+        self.tables.plt(key)
+    }
+
+    fn flags(&self, key: SymKey) -> DemandFlags {
+        self.tables.sites.t.demands.of(key)
+    }
+
+    fn redirect(&self, section: SectionId, offset: u64) -> Option<u64> {
+        let round = self.tables.round;
+        round.redirect(section, offset).and_then(|(i, _)| round.patch_addr(i))
+    }
+}
+
+impl RoundTables<'_, '_, '_> {
     fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {
         let slots = self.sites.t.slots;
         let (region, index) = match kind {
@@ -429,13 +514,5 @@ impl FillTables for RoundTables<'_, '_, '_> {
 
     fn plt(&self, key: SymKey) -> Option<u64> {
         self.sites.t.got.iplt_address(&self.got_addrs, key)
-    }
-
-    fn flags(&self, key: SymKey) -> DemandFlags {
-        self.sites.t.demands.of(key)
-    }
-
-    fn redirect(&self, section: SectionId, offset: u64) -> Option<u64> {
-        self.round.redirect(section, offset).and_then(|(i, _)| self.round.patch_addr(i))
     }
 }

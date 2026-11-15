@@ -463,21 +463,27 @@ pub fn front<'s>(
     let folds = Folds::default();
     let commons = commons(&resolution, Some(&inputs));
     let stack_notes = mortar_layout::stack::notes(&inputs, &resolution);
-    let names: Vec<&[u8]> = estimated_names(&assignment, &liveness, &resolution);
+    let mut plans = SynthPlans {
+        hdr,
+        got,
+        symtab,
+        shstrtab: ShstrtabPlan::new(&[]),
+        build_id,
+        property,
+        chunks: Vec::new(),
+    };
+    // The section names, estimated from the output sections with live
+    // input and the synthetic chunks that exist (their kinds do not depend
+    // on `.shstrtab`'s size), so that one placement usually suffices; the
+    // exact names are checked after it.
+    let kinds: Vec<SynthKind> = synth_chunks(&plans, &eh, false).1.iter().map(|p| p.0).collect();
+    let names: Vec<&[u8]> =
+        estimated_names(&assignment, &liveness, &resolution, &kinds, options.relro);
     let mut shstrtab = ShstrtabPlan::new(&names);
     // S-85: `.symtab_shndx` exists when some section index reaches
     // `SHN_LORESERVE`; the count of section headers (with the null one)
     // is estimated, then checked after the placement.
     let mut shndx = SymtabPlan::needs_shndx(names.len() as u32 + 2);
-    let mut plans = SynthPlans {
-        hdr,
-        got,
-        symtab,
-        shstrtab: shstrtab.clone(),
-        build_id,
-        property,
-        chunks: Vec::new(),
-    };
     let walker = Walker::new(&arch, &scan_inputs, scan_options);
     let mut attempt = 0;
     let (placement_assignment, placed, layout) = loop {
@@ -796,13 +802,15 @@ fn synth_chunks(
 }
 
 /// The output section names before layout (S-90's set): every output
-/// section with a live member, then the synthetic chunks' (added by
-/// [`synth_chunks`]' kinds through `placed_names` once placed). An
-/// estimate; [`front`] runs layout again in the rare case it differs.
+/// section with a live member, the synthetic chunks that exist, and
+/// layout's `.relro_padding`. An estimate; [`front`] runs layout again in
+/// the rare case it differs from the placement's names.
 fn estimated_names<'n>(
     a: &Assignment<'n>,
     liveness: &Liveness,
     resolution: &Resolution,
+    synthetic: &[SynthKind],
+    relro: bool,
 ) -> Vec<&'n [u8]> {
     let mut used = vec![false; a.outsecs.len() as usize];
     for (sid, out) in a.out_of.iter() {
@@ -819,16 +827,18 @@ fn estimated_names<'n>(
         .filter(|(id, o)| used[id.0 as usize] || o.keep)
         .map(|(_, o)| o.name)
         .collect();
-    for k in [
-        SynthKind::NoteGnuProperty,
-        SynthKind::NoteGnuBuildId,
-        SynthKind::EhFrame,
-        SynthKind::Symtab,
-        SynthKind::Strtab,
-        SynthKind::Shstrtab,
-    ] {
+    for k in synthetic {
         names.push(k.name(false));
     }
+    // layout's `.relro_padding` (L-64), when RELRO has content: a static
+    // executable's `.got` always does.
+    if relro {
+        names.push(mortar_core::layout::Synth::RELRO_PADDING.name);
+    }
+    // A name shared by an input output section and a synthetic chunk that
+    // joins it (`.eh_frame`, `.got`) is one section.
+    names.sort_unstable();
+    names.dedup();
     names
 }
 
