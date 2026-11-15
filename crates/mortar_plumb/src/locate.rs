@@ -255,6 +255,7 @@ fn read_obj<'a>(
 
 /// Reads the inputs a map names and decides the place of every section
 /// (§3.3).
+#[allow(clippy::too_many_lines)] // the map's records, kind by kind
 pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> Located<'a> {
     let mut out = Located::default();
     let by_path: HashMap<&str, &[u8]> = inputs.iter().map(|i| (i.path, i.bytes)).collect();
@@ -298,9 +299,72 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
         })
         .collect();
     let gnu = map.format == Format::Gnu;
+    // mold's map gives every non-alloc row the address 0: the offsets are
+    // the rows' sizes laid out in order at their alignments (§3.6).
+    let mut cursor: Option<HashMap<String, u64>> = (map.format == Format::Mold).then(HashMap::new);
     for p in &map.placed {
         let Some(oi) = obj_of.get(p.file as usize).copied().flatten() else { continue };
-        place_one(&mut out, &names[oi], oi, p, image, gnu);
+        place_one(&mut out, &names[oi], oi, p, image, gnu, cursor.as_mut());
+    }
+    // mortar's non-alloc records (§3.2): a place in a named output
+    // section, or merged into it.
+    // R-9: M2, M3 and M5 apply within one non-alloc output section.
+    let mut extents: Vec<(usize, u64, u64, u32)> = Vec::new();
+    for r in &map.nonalloc {
+        let Some(oi) = obj_of.get(r.file as usize).copied().flatten() else { continue };
+        let by_name = candidates(&out.objs[oi], &names[oi], &r.section);
+        let free: Vec<usize> = by_name
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let s = &out.objs[oi].secs[i];
+                !s.alloc() && matches!(s.place, Place::Absent)
+            })
+            .collect();
+        let target = image.nonalloc_section(&r.out);
+        if free.is_empty() && by_name.len() == 1 && !out.objs[oi].secs[by_name[0]].alloc() {
+            out.findings.push(Finding::new(
+                Rule::Map(2),
+                format!("line {}: the non-alloc section is placed twice", r.line),
+            ));
+            continue;
+        }
+        let ([si], Some(t)) = (free.as_slice(), target) else {
+            out.findings.push(Finding::new(
+                Rule::Map(1),
+                format!(
+                    "line {}: the non-alloc record names no single free section, or output section '{}' is not a non-alloc section of the output",
+                    r.line, r.out
+                ),
+            ));
+            continue;
+        };
+        let s = &mut out.objs[oi].secs[*si];
+        s.place = match r.offset {
+            None => Place::Merged,
+            Some(off) => {
+                if s.shdr.sh_size != r.size {
+                    out.findings.push(Finding::new(
+                        Rule::Map(3),
+                        format!(
+                            "line {}: the size {:#x} is not the input's {:#x}",
+                            r.line, r.size, s.shdr.sh_size
+                        ),
+                    ));
+                }
+                extents.push((t, off, r.size, r.line));
+                Place::Whole(image.sections[t].shdr.sh_addr.wrapping_add(off))
+            }
+        };
+    }
+    extents.sort_unstable();
+    for w in extents.windows(2) {
+        if w[0].0 == w[1].0 && w[0].1.saturating_add(w[0].2) > w[1].1 && w[1].2 > 0 && w[0].2 > 0 {
+            out.findings.push(Finding::new(
+                Rule::Map(5),
+                format!("lines {} and {}: two non-alloc sections overlap", w[0].3, w[1].3),
+            ));
+        }
     }
     for d in &map.discarded {
         let Some(oi) = obj_of.get(d.file as usize).copied().flatten() else { continue };
@@ -336,8 +400,7 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
     if map.format != Format::Mortar {
         for o in &mut out.objs {
             for s in &mut o.secs {
-                if s.alloc()
-                    && s.merge()
+                if s.merge()
                     && matches!(s.place, Place::Whole(_) | Place::Absent | Place::Ambiguous)
                 {
                     s.place = Place::Merged;
@@ -368,6 +431,7 @@ fn size_may_change(s: &Sec<'_>, machine: Machine) -> bool {
     s.merge() || s.is_eh_frame(machine)
 }
 
+#[allow(clippy::too_many_lines)]
 fn place_one(
     out: &mut Located<'_>,
     names: &HashMap<String, Vec<usize>>,
@@ -375,6 +439,7 @@ fn place_one(
     p: &Placed,
     image: &Image<'_>,
     gnu: bool,
+    cursor: Option<&mut HashMap<String, u64>>,
 ) {
     let obj = &out.objs[oi];
     let machine = obj.elf.machine();
@@ -464,10 +529,26 @@ fn place_one(
         }
     };
     let s = &mut out.objs[oi].secs[chosen];
+    let mut addr = p.addr;
+    // A non-alloc section's place is its offset in the output section of
+    // its name, whose address is 0 (§3.3): GNU ld and lld write it.
+    if !s.alloc()
+        && !s.merge()
+        && let Some(c) = cursor
+    {
+        let at = c.entry(s.name.clone()).or_default();
+        let off = at.checked_next_multiple_of(s.shdr.sh_addralign.max(1)).unwrap_or(u64::MAX);
+        *at = off.saturating_add(p.size);
+        addr = image
+            .sections
+            .iter()
+            .find(|o| o.name == s.name && !o.alloc())
+            .map_or(off, |o| o.shdr.sh_addr.wrapping_add(off));
+    }
     s.place = if s.is_eh_frame(machine) && s.shdr.sh_size != p.size {
         Place::Rewritten
     } else {
-        Place::Whole(p.addr)
+        Place::Whole(addr)
     };
 }
 
