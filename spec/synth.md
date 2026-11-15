@@ -1729,6 +1729,9 @@ symbol table) already check `.eh_frame`, `.eh_frame_hdr` and `.symtab`,
 and this spec is written to pass them (S-41, S-59, S-121 to S-124).
 
 **R-P1. §6, two new structure rules (stage 3).** Add:
+
+*Applied by WP-028b, with new ids: S16 is P1 and P2 (`plumb.md` §6.6; S16 and S17 were taken by `layout.md` §20.3's requests), the merge per linker by map format; S17 is F1 (§4.8), which also requires each slot to be an aligned, writable, unoccupied word (F2), not a word of `.got.plt` by name, because lld and mold put the slots in `.got.plt` and `.got`.*
+
 - "**S16 (.note.gnu.property).** The output's properties equal the merge
   of the inputs' by `synth.md` S-95 and S-126 (every note of an input
   section read, notes of one object combined first; unknown types
@@ -1741,7 +1744,11 @@ and this spec is written to pass them (S-41, S-59, S-121 to S-124).
 Reason: these are [G] rules of this spec that E1 to E5 and Y2 to Y5 do
 not cover (Y5 checks only the bounds of the `SHT_RELA` section).
 
-**R-P4. §6.5 Y3, the inclusive end.** Current: "Its `st_shndx` names an
+**R-P4. §6.5 Y3, the inclusive end.**
+
+*Applied by WP-028b (the sentence; the check was already inclusive).*
+
+Current: "Its `st_shndx` names an
 allocated section whose range holds D's input section's place."
 Proposed: append "The range includes its end address: a label at the end
 of a section, or of an empty input section placed at a section's end,
@@ -1750,6 +1757,9 @@ Reason: S-122; without the clause a label of an empty `.tm_clone_table`
 placed at the end of `.data` has no section that holds it.
 
 **R-P2. §5.6 step 1, out-of-range section references.**
+
+*Applied by WP-028b: on a reference output `piece-not-locatable`, not an anomaly id, since no corpus link has one; in mortar's, R6.*
+
 Current: "The input offset is r = `st_value + A` for a section symbol,
 with extra = 0."
 Proposed: append "A section-symbol reference with r outside `[0,
@@ -1758,6 +1768,9 @@ output section) and cannot occur in mortar's (synth.md S-18)."
 Reason: S-18.
 
 **R-P5. §6.5 Y5, `_GLOBAL_OFFSET_TABLE_` on x86 (before M3).**
+
+*Applied by WP-028b.*
+
 Current: "| `_GLOBAL_OFFSET_TABLE_` | the start of `.got` |"
 Proposed: "| `_GLOBAL_OFFSET_TABLE_` | AArch64: the start of `.got`;
 x86-64 and i386: the start of `.got.plt` |"
@@ -1766,6 +1779,9 @@ Reason: layout L-101 and `synth.md` S-67 put the x86 GOT base at
 x86 link of all three references.
 
 **R-P6. §6.5 Y5, the i386 IRELATIVE bounds (before M4).**
+
+*Applied by WP-028b (`-static-pie` is `ET_DYN`, which S1 refuses until stage 3).*
+
 Current: "| `__rela_iplt_start`/`_end` | the bounds of the only allocated
 `SHT_RELA` section; with none, start = end |"
 Proposed: "| `__rela_iplt_start`/`_end` (AArch64, x86-64),
@@ -1779,6 +1795,9 @@ weak undefined (resolve.md §8.1).
 
 **R-P7. §6.4 "The inputs' pointers", `R_*_NONE` and an initial location
 of 0.**
+
+*Applied by WP-028b (`R_*_NONE` counts under `none`; i386 frames are still `machine` until x86 CFI is judged).*
+
 Current: "If there is no relocation, an absolute nonzero value is taken
 as written, and anything else cannot be judged."
 Proposed: "A relocation of type `R_*_NONE` is no relocation. If there is
@@ -1789,7 +1808,11 @@ Reason: lld's i386 `ld -r` output has such an FDE (only `R_386_NONE`,
 field 0; X-30); "unknown" would turn off E4 for the whole output, though
 every linker drops it.
 
-**R-P3. Mutations (§9.2).** Add those WP-028 lacks: move the
+**R-P3. Mutations (§9.2).**
+
+*Applied by WP-028b in part: the property bit not in every input's AND and the property of an unknown type (§9.2 (k)), and the stray `IRELATIVE` outside `__rela_iplt_*` (§9.2 (i) (5)). Not applied: the `.eh_frame` terminator moved to the middle and `__EH_FRAME_BEGIN__`'s relocation retargeted, both E1/E4 mutations of crtbegin/crtend links (follow-up, `spec/landed/plumb/WP-028b.md`).*
+
+Add those WP-028 lacks: move the
 `.eh_frame` terminator to the middle; set a property bit not in every
 input's AND; keep a property of an unknown type; leave a stray
 `IRELATIVE` outside `__rela_iplt_*`; point `__EH_FRAME_BEGIN__`'s

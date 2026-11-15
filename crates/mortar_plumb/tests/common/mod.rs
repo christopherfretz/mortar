@@ -1121,6 +1121,151 @@ _start:
 	.hword wu - .
 ";
 
+/// A global and a local IFUNC of one resolver (§4.8): calls, ADRP+ADD,
+/// GOT pairs and data words to each. `_start` applies the IRELATIVE
+/// records between `__rela_iplt_start` and `__rela_iplt_end` itself (there
+/// is no C library), checks both calls return 42, and exits 0.
+pub const IFUNC_S: &str = r"
+	.text
+	.type impl, %function
+impl:	mov x0, #42
+	ret
+	.type res, %function
+res:	adrp x0, impl
+	add x0, x0, :lo12:impl
+	ret
+	.globl gf
+	.type gf, %gnu_indirect_function
+	.set gf, res
+	.type lf, %gnu_indirect_function
+	.set lf, res
+	.globl _start
+	.type _start, %function
+_start:
+	adrp x19, __rela_iplt_start
+	add x19, x19, :lo12:__rela_iplt_start
+	adrp x20, __rela_iplt_end
+	add x20, x20, :lo12:__rela_iplt_end
+1:	cmp x19, x20
+	b.hs 2f
+	ldr x21, [x19]
+	ldr x22, [x19, #16]
+	blr x22
+	str x0, [x21]
+	add x19, x19, #24
+	b 1b
+2:	bl gf
+	cmp x0, #42
+	b.ne 3f
+	bl lf
+	cmp x0, #42
+	b.ne 3f
+	adrp x1, gf
+	add x1, x1, :lo12:gf
+	adrp x2, :got:gf
+	ldr x2, [x2, :got_lo12:gf]
+	adrp x3, :got:lf
+	ldr x3, [x3, :got_lo12:lf]
+	adrp x4, lf
+	add x4, x4, :lo12:lf
+	mov x0, #0
+	mov x8, #93
+	svc #0
+3:	mov x0, #1
+	mov x8, #93
+	svc #0
+	.data
+	.balign 8
+	.xword gf
+	.xword lf
+";
+
+/// An IFUNC in C with address-of from two objects and a data word (§4.8).
+pub const IFUNC_PICK_C: &str = r#"
+static int impl_one(void) { return 1; }
+static int impl_two(void) { return 2; }
+static int (*resolve_pick(void))(void) {
+  return impl_one == impl_two ? impl_one : impl_two;
+}
+int pick(void) __attribute__((ifunc("resolve_pick")));
+int (*pick_address(void))(void) { return pick; }
+int (*pick_data)(void) = pick;
+"#;
+
+pub const IFUNC_MAIN_C: &str = r#"
+#include <stdio.h>
+int pick(void);
+int (*pick_address(void))(void);
+extern int (*pick_data)(void);
+int (*mp)(void) = pick;
+int main(void) {
+  int (*pointer)(void) = pick;
+  printf("pick %d, through a pointer %d, same address %d %d %d\n", pick(), pointer(),
+         pointer == pick_address(), mp == pointer, pick_data == pointer);
+  return pick() == 2 && pointer == pick_address() && mp == pointer && pick_data == pointer ? 0 : 1;
+}
+"#;
+
+/// Two copies of a COMDAT `big` with debug information; the second is
+/// dropped, so its DWARF refers to a section not in the output (§5.8).
+pub const DEBUG_A_CC: &str = r"
+inline int big(int x) { return x * 3 + 1; }
+int a(int y) { return big(y); }
+";
+
+pub const DEBUG_B_CC: &str = r"
+inline int big(int x) { return x * 3 + 1; }
+int a(int y);
+int main(int c, char **) { return big(c) + a(c) - 8; }
+";
+
+/// A function `--gc-sections` collects, with DWARF 4 ranges and location
+/// lists (§5.8).
+pub const DEBUG_GC_C: &str = r"
+int dead1(int x) { int y = x * 7; for (int i = 0; i < x; i++) y += i * x; return y; }
+int live(int x) { int y = x * 5; for (int i = 0; i < x; i++) y ^= i + x; return y; }
+int main(int c, char **v) { (void)v; return live(c) - 4; }
+";
+
+/// `_start` with a BTI and PAC property note, calling `f` and `g` (§6.6).
+pub const PROP_START_S: &str = r#"
+	.text
+	.globl _start
+	.type _start, %function
+_start:	hint #34
+	bl f
+	bl g
+	mov x0, #0
+	mov x8, #93
+	svc #0
+	.section .note.gnu.property, "a"
+	.balign 8
+	.word 4, 16, 5
+	.asciz "GNU"
+	.word 0xc0000000, 4, 3, 0
+"#;
+
+/// Two property notes in one section, BTI and PAC then BTI only
+/// (synth.md S-126, X-33).
+pub const PROP_TWO_S: &str = r#"
+	.text
+	.globl f
+	.type f, %function
+f:	hint #34
+	ret
+	.section .note.gnu.property, "a"
+	.balign 8
+	.word 4, 16, 5
+	.asciz "GNU"
+	.word 0xc0000000, 4, 3, 0
+	.word 4, 16, 5
+	.asciz "GNU"
+	.word 0xc0000000, 4, 1, 0
+"#;
+
+pub const PROP_F_C: &str = "int f(int x) { return x + 1; }\n";
+pub const PROP_G_C: &str = "int g(int x) { return x * 2; }\n";
+
 const NOT_MOLD: &[Linker] = &[Linker::Bfd, Linker::Lld];
 const BFD: &[Linker] = &[Linker::Bfd];
 
@@ -1146,12 +1291,38 @@ fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
     w("gotw.s", GOT_LDR_W_S);
     w("weakprel.s", WEAK_PREL_S);
     w("ehf.s", EH_FRAMES_S);
+    w("ifs.s", IFUNC_S);
+    w("ipick.c", IFUNC_PICK_C);
+    w("imain.c", IFUNC_MAIN_C);
+    w("dbga.cc", DEBUG_A_CC);
+    w("dbgb.cc", DEBUG_B_CC);
+    w("dbggc.c", DEBUG_GC_C);
+    w("pstart.s", PROP_START_S);
+    w("ptwo.s", PROP_TWO_S);
+    w("pf.c", PROP_F_C);
+    w("pg.c", PROP_G_C);
     let gcc = |args: &[&str]| run_in(dir, &t.gcc, args);
     gcc(&["-O2", "-c", "tdef.c", "-o", "tdef.o"]);
     gcc(&["-O2", "-c", "tie.c", "-o", "tie.o"]);
     gcc(&["-O2", "-fPIC", "-mtls-dialect=desc", "-c", "tdesc.c", "-o", "tdesc.o"]);
     gcc(&["-O2", "-fPIC", "-mtls-dialect=trad", "-c", "ttrad.c", "-o", "ttrad.o"]);
     gcc(&["-O2", "-c", "tmain.c", "-o", "tmain.o"]);
+    gcc(&["-O2", "-c", "ipick.c", "-o", "ipick.o"]);
+    gcc(&["-O2", "-c", "imain.c", "-o", "imain.o"]);
+    run_in(dir, &t.gxx, &["-g", "-O0", "-c", "dbga.cc", "-o", "dbga.o"]);
+    run_in(dir, &t.gxx, &["-g", "-O0", "-c", "dbgb.cc", "-o", "dbgb.o"]);
+    for (src, obj) in [("dbga.cc", "dbga-clang.o"), ("dbgb.cc", "dbgb-clang.o")] {
+        run_in(dir, &t.clang, &["--target=aarch64-linux-gnu", "-g", "-O0", "-c", src, "-o", obj]);
+    }
+    gcc(&["-gdwarf-4", "-O2", "-ffunction-sections", "-c", "dbggc.c", "-o", "dbggc.o"]);
+    for (src, obj, bp) in [
+        ("pf.c", "pf.o", "standard"),
+        ("pg.c", "pg.o", "standard"),
+        ("pg.c", "pg-bti.o", "bti"),
+        ("pg.c", "pg-none.o", "none"),
+    ] {
+        gcc(&["-O2", &format!("-mbranch-protection={bp}"), "-c", src, "-o", obj]);
+    }
     gcc(&["-O2", "-DTRAD", "-c", "tmain.c", "-o", "tmain-trad.o"]);
     run_in(
         dir,
@@ -1169,11 +1340,17 @@ fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
         ("gotw.s", "gotw.o"),
         ("weakprel.s", "weakprel.o"),
         ("ehf.s", "ehf.o"),
+        ("ifs.s", "ifs.o"),
+        ("pstart.s", "pstart.o"),
+        ("ptwo.s", "ptwo.o"),
     ] {
         gcc(&["-c", src, "-o", obj]);
     }
     fn gcc_driver(t: &Tools) -> &Path {
         &t.gcc
+    }
+    fn gxx_driver(t: &Tools) -> &Path {
+        &t.gxx
     }
     let free = vec!["-static", "-nostdlib"];
     vec![
@@ -1241,6 +1418,86 @@ fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
             per_linker: none,
         },
         Case {
+            name: "ifunc",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["ifs.o"],
+            flags: free.clone(),
+            per_linker: none,
+        },
+        Case {
+            name: "ifunc-c",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["ipick.o", "imain.o"],
+            flags: vec!["-static"],
+            per_linker: none,
+        },
+        Case {
+            name: "debug-comdat",
+            linkers: &Linker::ALL,
+            driver: gxx_driver,
+            objects: vec!["dbga.o", "dbgb.o"],
+            flags: vec!["-static"],
+            per_linker: none,
+        },
+        Case {
+            name: "debug-comdat-clang",
+            linkers: &Linker::ALL,
+            driver: gxx_driver,
+            objects: vec!["dbga-clang.o", "dbgb-clang.o"],
+            flags: vec!["-static"],
+            per_linker: none,
+        },
+        Case {
+            name: "debug-gc",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["dbggc.o"],
+            flags: vec!["-static", "-Wl,--gc-sections"],
+            per_linker: none,
+        },
+        Case {
+            name: "debug-zlib",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["dbggc.o"],
+            flags: vec!["-static", "-Wl,--gc-sections", "-Wl,--compress-debug-sections=zlib"],
+            per_linker: none,
+        },
+        Case {
+            name: "prop-and",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["pstart.o", "pf.o", "pg.o"],
+            flags: free.clone(),
+            per_linker: none,
+        },
+        Case {
+            name: "prop-bti",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["pstart.o", "pf.o", "pg-bti.o"],
+            flags: free.clone(),
+            per_linker: none,
+        },
+        Case {
+            name: "prop-none",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["pstart.o", "pf.o", "pg-none.o"],
+            flags: free.clone(),
+            per_linker: none,
+        },
+        Case {
+            name: "prop-two",
+            linkers: &Linker::ALL,
+            driver: gcc_driver,
+            objects: vec!["pstart.o", "ptwo.o", "pg.o"],
+            flags: free.clone(),
+            per_linker: none,
+        },
+        Case {
             name: "weak-prel",
             linkers: NOT_MOLD,
             driver: gcc_driver,
@@ -1273,11 +1530,13 @@ pub fn unexpected<'r>(link: &Link, r: &'r Report) -> Vec<&'r mortar_plumb::Findi
 
 /// Asserts that a report on `link` has no finding but recorded anomalies.
 pub fn assert_clean(link: &Link, r: &Report) {
+    let bad = unexpected(link, r);
     assert!(
-        unexpected(link, r).is_empty(),
-        "{}:\n{}{}",
+        bad.is_empty(),
+        "{}: {} findings not recorded as anomalies, the first:\n{:?}\n{}",
         link.label(),
-        r.render(&link.label()),
+        bad.len(),
+        bad.first(),
         r.summary()
     );
 }

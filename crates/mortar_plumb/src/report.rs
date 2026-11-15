@@ -44,6 +44,12 @@ pub enum Rule {
     EhFrame(u8),
     /// Y2-Y5: the symbol table (§6.5).
     SymbolTable(u8),
+    /// F1-F4: IFUNC in a static output (§4.8).
+    Ifunc(u8),
+    /// P1-P2: program properties (§6.6).
+    Property(u8),
+    /// B1: mortar's build id (§6.7).
+    BuildId,
 }
 
 impl Rule {
@@ -67,6 +73,9 @@ impl Rule {
             Rule::SymbolValue => "Y1".into(),
             Rule::EhFrame(n) => format!("E{n}"),
             Rule::SymbolTable(n) => format!("Y{n}"),
+            Rule::Ifunc(n) => format!("F{n}"),
+            Rule::Property(n) => format!("P{n}"),
+            Rule::BuildId => "B1".into(),
         }
     }
 }
@@ -151,6 +160,9 @@ pub enum Reason {
     Ifunc,
     /// The record is in a non-alloc section (debug information): stage 2.
     NonAlloc,
+    /// The record or its section is compressed (`SHF_COMPRESSED`): not
+    /// judged (§5.8).
+    Compressed,
     /// The record is in `.eh_frame` whose records the map does not place
     /// one by one (GNU ld, mold): stage 2 checks `.eh_frame` itself.
     EhFrame,
@@ -182,6 +194,7 @@ impl Reason {
             Reason::TlsSequence => "tls-sequence",
             Reason::Ifunc => "ifunc",
             Reason::NonAlloc => "non-alloc",
+            Reason::Compressed => "compressed",
             Reason::EhFrame => "eh-frame",
             Reason::Type => "type",
             Reason::Machine => "machine",
@@ -212,6 +225,11 @@ pub enum Via {
     Piece,
     /// A pointer field of a CIE or FDE, checked with its record (§6.4).
     EhFrame,
+    /// To an IFUNC: an IPLT entry or IRELATIVE slot of its resolver (§4.8).
+    Iplt,
+    /// A non-alloc reference to a section not in the output: the
+    /// linker's tombstone (§5.8).
+    Tombstone,
 }
 
 impl Via {
@@ -221,6 +239,8 @@ impl Via {
             Via::GotSlot => "got-slot",
             Via::Piece => "piece",
             Via::EhFrame => "eh-frame",
+            Via::Iplt => "iplt",
+            Via::Tombstone => "tombstone",
         }
     }
 }
@@ -352,6 +372,14 @@ pub struct Coverage {
     pub locals_unchecked: u64,
     /// Linker-defined symbols Y5 checked, and the names it does not judge.
     pub linker_defined_checked: u64,
+    /// IRELATIVE records checked by F1 and F2, and IPLT entries found (§4.8).
+    pub irelative_checked: u64,
+    pub iplt_entries: u64,
+    /// Property types P1 judged, and those it does not judge (§6.6).
+    pub properties_judged: u64,
+    pub properties_not_judged: u64,
+    /// What B1 made of the build id, when the output has one (§6.7).
+    pub build_id: Option<String>,
     pub linker_defined_not_judged: Vec<String>,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
@@ -489,6 +517,19 @@ impl Report {
             c.locals_unchecked,
             c.linker_defined_checked
         );
+        let _ = writeln!(
+            s,
+            "IFUNC: IRELATIVE records {}, IPLT entries {}",
+            c.irelative_checked, c.iplt_entries
+        );
+        let _ = writeln!(
+            s,
+            "program properties: types judged {}, not judged {}",
+            c.properties_judged, c.properties_not_judged
+        );
+        if let Some(b) = &c.build_id {
+            let _ = writeln!(s, "build id: {b}");
+        }
         if !c.linker_defined_not_judged.is_empty() {
             let _ = writeln!(
                 s,
