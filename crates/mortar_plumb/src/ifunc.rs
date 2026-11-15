@@ -15,8 +15,8 @@ use mortar_elf::consts::{
 use mortar_elf::{Class, SymbolIndex, SymbolSection};
 
 use super::{
-    CALL26, CONDBR19, Engine, Evidence, Group, JUMP26, Pending, Rec, TSTBR14, Target, Verdict,
-    Want, got_rewrite, judge, verdict_finding, x_direct, x_got,
+    Engine, Evidence, Group, Pending, Rec, Target, Verdict, Want, got_rewrite, is_branch, judge,
+    slot_addend, verdict_finding, x_direct, x_got,
 };
 use crate::a64::{self, Op};
 use crate::report::{Finding, Reason, Rewrite, Rule, Site, Via};
@@ -411,7 +411,10 @@ impl Engine<'_, '_> {
     ) {
         let entries = self.iplt.entries_of(resolver).to_vec();
         let a = rec.addend as u64;
-        if entries.is_empty() {
+        let slot_a = slot_addend(rec);
+        // A GOT-indirect reference may load an IRELATIVE slot with no IPLT
+        // entry (GNU ld's static x86-64 output, finish_ifunc).
+        if entries.is_empty() && !rec.def.op.is_slot() {
             let mut x = Self::finding(
                 Rule::Ifunc(4),
                 rec,
@@ -426,7 +429,9 @@ impl Engine<'_, '_> {
         if let Op::Slot(..) = rec.def.op {
             let ok: Vec<(u64, Option<Rewrite>)> = entries
                 .iter()
-                .filter_map(|&e| got_rewrite(rec, e.wrapping_add(a), partner).map(|r| (e, Some(r))))
+                .filter_map(|&e| {
+                    got_rewrite(rec, e.wrapping_add(slot_a), partner).map(|r| (e, Some(r)))
+                })
                 .collect();
             let ev = if ok.is_empty() { self.slot_evidence(rec) } else { Some(Evidence::None) };
             let Some(ev) = ev else { return self.not_checked(Reason::SymbolUnresolved, 1) };
@@ -440,7 +445,7 @@ impl Engine<'_, '_> {
                     &pend.symbol,
                     "the GOT-indirect reference to an IFUNC is neither a GOT load nor a specified rewriting to an IPLT entry",
                 );
-                x.expected = Some(entries[0].wrapping_add(a));
+                x.expected = entries.first().map(|e| e.wrapping_add(a));
                 x.found = Some(rec.out_word);
                 return self.fail(x);
             }
@@ -456,7 +461,7 @@ impl Engine<'_, '_> {
             }
             return;
         }
-        let branch = matches!(rec.def.r_type, JUMP26 | CALL26 | CONDBR19 | TSTBR14);
+        let branch = is_branch(rec);
         let mut ok: Vec<(u64, Option<Rewrite>)> = Vec::new();
         let mut last = None;
         for &e in &entries {
@@ -525,9 +530,11 @@ impl Engine<'_, '_> {
                 let cands = grp.candidates_from(self.got);
                 for (pend, _) in grp.members {
                     let (mut canon, mut resolved, mut last) = (Vec::new(), false, None);
-                    let a = pend.rec.addend as u64;
+                    let a = slot_addend(&pend.rec);
                     for &c in &cands {
-                        let Some(x) = x_got(pend.rec.def.op, c, pend.rec.p, self.got) else {
+                        let Some(x) =
+                            x_got(pend.rec.def.op, c, pend.rec.p, self.got, pend.rec.addend)
+                        else {
                             continue;
                         };
                         match judge(&pend.rec, x) {

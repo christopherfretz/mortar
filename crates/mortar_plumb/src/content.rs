@@ -61,9 +61,17 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                 continue;
             };
             let cov = covered(o, si);
-            if let Some(k) = first_difference(s.data, &cov, out, |k| {
+            // x86-64 rewritings are recorded byte by byte (§5.9).
+            let gran = if machine == mortar_elf::Machine::X86_64 { 1 } else { 4 };
+            if let Some(k) = first_difference(s.data, &cov, out, gran, |k| {
                 // A word an erratum 843419 patch replaced by a branch (W8).
                 let p = addr + k;
+                if e.rewritten_words.contains(&p) {
+                    return true;
+                }
+                if gran == 1 {
+                    return false;
+                }
                 let Some(inw) = s.data.get(k as usize..k as usize + 4) else { return false };
                 let inw = u32::from_le_bytes([inw[0], inw[1], inw[2], inw[3]]);
                 let outw = u32::from_le_bytes([
@@ -72,7 +80,8 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                     out[k as usize + 2],
                     out[k as usize + 3],
                 ]);
-                // A word a TLS rewriting wrote that no record covers (W12).
+                // A word a TLS rewriting wrote that no record covers (W12),
+                // or an x86-64 byte of a rewritten window.
                 e.rewritten_words.contains(&p)
                     || (a64::erratum_843419_site(p)
                         && a64::is_ldst_unsigned_imm(inw)
@@ -123,7 +132,7 @@ fn nonalloc_content(e: &mut Engine<'_, '_>, o: &crate::locate::Obj<'_>, si: usiz
     e.cov.content_bytes += size;
     let cov = covered(o, si);
     if let Some(k) =
-        first_difference(s.data, &cov, out, |k| e.nonalloc_rewritten.contains(&(i, addr + k)))
+        first_difference(s.data, &cov, out, 4, |k| e.nonalloc_rewritten.contains(&(i, addr + k)))
     {
         let mut f = Finding::new(
             Rule::Structure(12),
@@ -140,11 +149,12 @@ fn nonalloc_content(e: &mut Engine<'_, '_>, o: &crate::locate::Obj<'_>, si: usiz
 }
 
 /// The first offset where `out` differs from `data` outside the covered
-/// ranges, skipping 4-byte words `allowed` accepts.
+/// ranges, skipping `gran`-byte units (4 or 1) `allowed` accepts.
 fn first_difference(
     data: &[u8],
     covered: &[(u64, u64)],
     out: &[u8],
+    gran: usize,
     allowed: impl Fn(u64) -> bool,
 ) -> Option<u64> {
     let mut ci = 0usize;
@@ -159,9 +169,9 @@ fn first_difference(
             continue;
         }
         if data[k] != out[k] {
-            let w = k & !3;
-            if w + 4 <= n && allowed(w as u64) {
-                k = w + 4;
+            let w = k & !(gran - 1);
+            if w + gran <= n && allowed(w as u64) {
+                k = w + gran;
                 continue;
             }
             return Some(k as u64);

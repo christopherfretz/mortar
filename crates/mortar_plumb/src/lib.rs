@@ -20,6 +20,7 @@ mod reloc;
 pub mod report;
 mod structure;
 mod symbols;
+pub mod x64;
 
 pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};

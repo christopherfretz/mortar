@@ -26,6 +26,12 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A6: GNU ld, lld and mold fill the GOT slot of a section symbol plus an addend without the addend",
         );
     }
+    let lld = linker == Format::Lld;
+    if lld && f.rule == Rule::Field && f.message.ends_with("(spec/x64.md W4)") {
+        return Some(
+            "A12: lld writes the 16-byte local-exec form over the 22-byte general-dynamic sequence (spec/x64.md W4)",
+        );
+    }
     let sym = f.symbol.as_deref().unwrap_or("");
     let y = |n| f.rule == Rule::SymbolTable(n);
     if mold && y(3) && f.message.contains("binding") && f.found == Some(0) {

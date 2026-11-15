@@ -23,6 +23,8 @@ mod debug;
 mod eh;
 #[path = "ifunc.rs"]
 mod ifunc;
+#[path = "x64rec.rs"]
+mod x64rec;
 pub(crate) use ifunc::IfKey;
 
 use crate::report::{Coverage, Finding, Reason, Rewrite, Rule, Site, Via};
@@ -33,9 +35,10 @@ pub(crate) fn width(machine: Machine, r_type: u32) -> u8 {
         Machine::AArch64 => {
             a64::def(r_type).map_or_else(|| a64::unchecked_width(r_type), |d| d.field.width())
         }
-        // Stage 1 checks AArch64 only; the widths of the other two
-        // machines arrive with their tables (§4.5).
-        Machine::X86_64 | Machine::I386 => 4,
+        Machine::X86_64 => crate::x64::def(r_type)
+            .map_or_else(|| crate::x64::unchecked_width(r_type), |d| d.field.width()),
+        // i386 is not judged (§4.5): its records are `machine`.
+        Machine::I386 => 4,
     }
 }
 
@@ -111,7 +114,8 @@ impl Occupied {
 pub(crate) struct TlsBlock {
     /// `p_vaddr` of `PT_TLS`.
     pub start: u64,
-    /// `align_up(16, p_align)`: TPREL of the block's first byte.
+    /// TPREL of the block's first byte: `align_up(16, p_align)` on
+    /// AArch64, `-align_up(p_memsz, p_align)` on x86-64 (two's complement).
     pub tcb: u64,
 }
 
@@ -131,7 +135,15 @@ impl TlsBlock {
         if t.p_vaddr % align != 0 {
             return Err("PT_TLS p_vaddr is not a multiple of p_align");
         }
-        Ok(Some(TlsBlock { start: t.p_vaddr, tcb: 16u64.next_multiple_of(align) }))
+        // Variant I (AArch64): the block starts align_up(16, p_align)
+        // above TP. Variant II (x86-64, `spec/x64.md` X-44): it ends at TP,
+        // TpRel(x) = x - start - align_up(p_memsz, p_align).
+        let tcb = if image.header.e_machine == mortar_elf::consts::EM_AARCH64 {
+            16u64.next_multiple_of(align)
+        } else {
+            t.p_memsz.checked_next_multiple_of(align).ok_or("PT_TLS p_memsz overflows")?.wrapping_neg()
+        };
+        Ok(Some(TlsBlock { start: t.p_vaddr, tcb }))
     }
 
     /// TPREL(v) for the address v of a TLS byte.
@@ -338,20 +350,48 @@ fn x_direct(op: Op, sa: u64, p: u64, got: Option<u64>) -> Option<i64> {
         Op::Prel => sa.wrapping_sub(p) as i64,
         Op::Page => a64::page(sa).wrapping_sub(a64::page(p)) as i64,
         Op::GotRel => sa.wrapping_sub(got?) as i64,
-        Op::None | Op::Slot(..) | Op::DescCall => return None,
+        Op::None | Op::Slot(..) | Op::DescCall | Op::Size | Op::GotPc => return None,
     })
 }
 
-/// X for a GOT operation given the slot G (§4.1).
-fn x_got(op: Op, g: u64, p: u64, got: Option<u64>) -> Option<i64> {
+/// X for a GOT operation given the slot G (§4.1); `a` is the record's
+/// addend, which only the x86-64 forms add outside the slot.
+fn x_got(op: Op, g: u64, p: u64, got: Option<u64>, a: i64) -> Option<i64> {
     let Op::Slot(_, form) = op else { return None };
     Some(match form {
+        Form::PrelA => g.wrapping_add(a as u64).wrapping_sub(p) as i64,
+        Form::OffA => g.wrapping_add(a as u64).wrapping_sub(got?) as i64,
         Form::Abs => g as i64,
         Form::Prel => g.wrapping_sub(p) as i64,
         Form::Page => a64::page(g).wrapping_sub(a64::page(p)) as i64,
         Form::Off => g.wrapping_sub(got?) as i64,
         Form::PageOff => g.wrapping_sub(a64::page(got?)) as i64,
     })
+}
+
+/// Whether a record is of an x86-64 type: AArch64's are 256 and above,
+/// x86-64's below (`R_X86_64_NONE` is 0 and has no [`Def`]).
+fn is_x64(rec: &Rec) -> bool {
+    rec.def.r_type < 256
+}
+
+/// Whether a record is a branch, which may go through any IPLT entry of
+/// its resolver (§4.8).
+fn is_branch(rec: &Rec) -> bool {
+    if is_x64(rec) {
+        rec.def.r_type == crate::x64::PLT32
+    } else {
+        matches!(rec.def.r_type, JUMP26 | CALL26 | CONDBR19 | TSTBR14)
+    }
+}
+
+/// The addend a GOT slot of this record holds: A on AArch64, none on
+/// x86-64, whose forms add A outside the slot (`spec/x64.md` X-4).
+fn slot_addend(rec: &Rec) -> u64 {
+    match rec.def.op {
+        Op::Slot(_, f) if f.addend_outside() => 0,
+        _ => rec.addend as u64,
+    }
 }
 
 const ADR_PREL_PG_HI21: u32 = 275;
@@ -900,9 +940,12 @@ impl<'a, 'b> Engine<'a, 'b> {
         if let Some(r) = reason {
             return self.not_checked(r, n);
         }
-        if machine != Machine::AArch64 {
-            return self.not_checked(Reason::Machine, n);
-        }
+        // i386 is not judged (§4.5): every record is `machine`.
+        let x64 = match machine {
+            Machine::AArch64 => false,
+            Machine::X86_64 => true,
+            Machine::I386 => return self.not_checked(Reason::Machine, n),
+        };
         let place = s.place.clone();
         let data = s.data;
         let nobits = s.shdr.sh_type == SHT_NOBITS;
@@ -923,11 +966,12 @@ impl<'a, 'b> Engine<'a, 'b> {
                 self.cov.absent_records += 1;
                 continue;
             };
-            if ty == 0 || ty == 256 {
+            if ty == 0 || (!x64 && ty == 256) {
                 self.cov.none += 1;
                 continue;
             }
-            let Some(def) = a64::def(ty) else {
+            let def = if x64 { crate::x64::def(ty) } else { a64::def(ty) };
+            let Some(def) = def else {
                 self.not_checked(Reason::Type, 1);
                 continue;
             };
@@ -1008,6 +1052,10 @@ impl<'a, 'b> Engine<'a, 'b> {
             )
             .is_some();
             return self.tombstone(oi, si, rec, &site, &symbol, after);
+        }
+        // x86-64 (§4.5, §5.9).
+        if is_x64(rec) {
+            return self.x64_record(oi, si, recs, sorted, i, site, symbol);
         }
         let partner = |delta: i64, types: &[u32]| -> Option<&Rec> {
             find_at(recs, sorted, rec.off.checked_add_signed(delta), |r| {
@@ -1157,6 +1205,12 @@ impl<'a, 'b> Engine<'a, 'b> {
         let d = a64::decode(rec.def.field, rec.out_word, rec.p);
         Some(match (form, rec.def.field) {
             (Form::Prel, _) => Evidence::Exact(rec.p.wrapping_add(d as u64)),
+            (Form::PrelA, _) => {
+                Evidence::Exact(rec.p.wrapping_add(d as u64).wrapping_sub(rec.addend as u64))
+            }
+            (Form::OffA, _) => {
+                Evidence::Exact(self.got?.wrapping_add(d as u64).wrapping_sub(rec.addend as u64))
+            }
             (Form::Off, Field::MovwSigned(16) | Field::Movw(16)) => {
                 // MOVN writes the complement (AAELF64 "MOVW" groups).
                 let w = rec.out_word as u32;
@@ -1277,7 +1331,14 @@ impl<'a, 'b> Engine<'a, 'b> {
                     Seq::Kept => rewritten_badly(),
                 }
             }
-            Op::None | Op::Abs | Op::Prel | Op::Page | Op::GotRel | Op::Slot(Slot::Addr, _) => {
+            Op::None
+            | Op::Abs
+            | Op::Prel
+            | Op::Page
+            | Op::GotRel
+            | Op::Size
+            | Op::GotPc
+            | Op::Slot(Slot::Addr, _) => {
                 unreachable!("not a thread-local operation")
             }
         };
@@ -1667,7 +1728,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                 let mut last = None;
                 let mut ok = None;
                 for &gv in &valid {
-                    let Some(x) = x_got(rec.def.op, gv, rec.p, self.got) else { continue };
+                    let Some(x) = x_got(rec.def.op, gv, rec.p, self.got, rec.addend) else { continue };
                     match judge(rec, x) {
                         Verdict::Ok(rw) => {
                             ok = Some(rw);
