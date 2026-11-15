@@ -847,6 +847,66 @@ fn an_erratum_site_goes_through_a_patch() {
     support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
 
+/// Erratum 843419 under `--gc-sections` (WP-031, `spec/image.md` I-7;
+/// WP-032e's windows): two sites, each an ADRP at a page's `0xff8` whose
+/// target is beyond the ADR's range. One is in `dead`, which nothing calls;
+/// a 2 MiB gap before `f` is collected too, and a live 2 MiB gap keeps
+/// `val` far. Without gc both sites get a patch; with gc only `f`'s does
+/// (the erratum scan reads live code only) and the program still exits 42
+/// through it, as GNU ld's with gc does.
+#[test]
+fn an_erratum_site_in_collected_code_gets_no_patch() {
+    if !host() {
+        return;
+    }
+    let scratch = Scratch::new("pipe-erratum-gc");
+    let site = |name: &str| {
+        format!(
+            "\n    .section .text.{name},\"ax\",@progbits\n    .balign 4096\n    .skip 0xff8\n\
+             \n    .globl {name}\n    .type {name}, %function\n{name}:\n    adrp x0, val\n\
+             \n    ldr x2, [sp]\n    ldr x0, [x0, #:lo12:val]\n    ret\n"
+        )
+    };
+    let src = format!(
+        "    .text\n    .globl _start\n_start:\n    bl gap_end\n    bl f\n    mov x8, #93\n    svc #0\n\
+         {}\n    .section .text.dead_gap,\"ax\",@progbits\n    .skip 0x200000\n{}\
+         \n    .section .text.gap,\"ax\",@progbits\n    .skip 0x200000\ngap_end:\n    ret\n\
+         \n    .data\n    .balign 8\nval:\n    .xword 42\n",
+        site("dead"),
+        site("f"),
+    );
+    let obj = assemble(scratch.path(), "e.s", &src);
+    let patches = |map: &str| {
+        map.lines().filter(|l| l.starts_with("chunk patch __erratum_843419_veneer ")).count()
+    };
+    for gc in [false, true] {
+        let mut args: Vec<String> = vec!["-static".into(), "--fix-cortex-a53-843419".into()];
+        if gc {
+            args.push("--gc-sections".into());
+        }
+        args.extend([obj.display().to_string(), "-o".into(), "out".into()]);
+        let built = Built { dir: scratch.path().to_path_buf(), args };
+        let ours = built.dir.join(format!("e{gc}.mortar"));
+        let theirs = built.dir.join(format!("e{gc}.bfd"));
+        let ran = mortar(&built, &ours, &[], &[]);
+        assert!(ran.success(), "mortar: {}", ran.stderr_text());
+        let gnu = bfd(&built, &theirs, &[]);
+        assert!(gnu.success(), "ld.bfd: {}", gnu.stderr_text());
+        assert_eq!(execute(&theirs).1, Some(42));
+        assert_eq!(execute(&ours).1, Some(42), "the load through the patch (gc {gc})");
+        let map = std::fs::read_to_string(map_of(&ours)).unwrap();
+        assert_eq!(patches(&map), if gc { 1 } else { 2 }, "gc {gc}: {map}");
+        if gc {
+            // `.text.dead` and `.text.dead_gap`.
+            let gc_lines = map.lines().filter(|l| l.starts_with("discard ") && l.ends_with(" gc"));
+            assert_eq!(gc_lines.count(), 2, "both dead sections are collected: {map}");
+        }
+        support::plumb::readers(&ours);
+        support::plumb::elflint(&ours);
+        support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+    }
+}
+
 /// Erratum 843419 with `W1` at a page's `0xffc` and the final word `F`
 /// three words after it, across the page (`0x1008`): the patch holds the
 /// load as fill writes it, its `lo12` relocation applied (WP-032e found
