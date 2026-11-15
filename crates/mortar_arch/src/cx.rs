@@ -360,13 +360,23 @@ impl<'a> SectionOut<'a> {
     }
 
     /// The clip `[a, b)` in section offsets.
+    #[inline]
     #[must_use]
     pub fn clip(&self) -> (u64, u64) {
         (self.start, self.start.saturating_add(self.bytes.len() as u64))
     }
 
     /// Writes `data` at section offset `off`: the part inside the clip.
+    #[inline]
     pub fn write(&mut self, off: u64, data: &[u8]) {
+        // The common case: the write lies inside the clip.
+        if let Some(at) = off.checked_sub(self.start)
+            && let Ok(at) = usize::try_from(at)
+            && let Some(dst) = at.checked_add(data.len()).and_then(|e| self.bytes.get_mut(at..e))
+        {
+            dst.copy_from_slice(data);
+            return;
+        }
         let (a, b) = self.clip();
         let end = off.saturating_add(data.len() as u64);
         let (lo, hi) = (off.max(a), end.min(b));

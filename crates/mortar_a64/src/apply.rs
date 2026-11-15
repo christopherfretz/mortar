@@ -148,6 +148,7 @@ const fn tls_local(kind: TargetKind) -> bool {
 /// Writes `bytes` at section offset `off`, which must lie in the input
 /// section (`at.site`); `out` keeps the part inside its clip (arch.md
 /// §3.6).
+#[inline]
 fn put(
     at: &RelocAt<'_>,
     out: &mut SectionOut<'_>,
@@ -164,6 +165,7 @@ fn put(
     }
 }
 
+#[inline]
 fn put_word(
     at: &RelocAt<'_>,
     out: &mut SectionOut<'_>,
