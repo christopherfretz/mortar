@@ -75,9 +75,9 @@ fn a_bad_schedule_seed_is_reported() {
     assert_eq!((status, stderr.as_str()), (Some(0), ""));
 }
 
-// spec: docs/ROADMAP.md (M1 links AArch64): an x86-64 or i386 link is
-// refused by name after the input phase, and objects of two machines are
-// input.md's `incompatible-file`
+// spec: docs/ROADMAP.md (M1 links AArch64 and x86-64, WP-029b): an i386
+// link is refused by name after the input phase, an x86-64 one links, and
+// objects of two machines are input.md's `incompatible-file`
 #[test]
 fn another_machine_is_refused_by_name() {
     let Some(clang) = mortar_testutil::tool("clang") else { return };
@@ -110,18 +110,16 @@ fn another_machine_is_refused_by_name() {
         let o = run_with(&mut cmd, &[], DEFAULT_TIMEOUT);
         (o.status.and_then(|s| s.code()), o.stderr_text())
     };
-    for (obj, name) in [("x86.o", "x86-64"), ("i386.o", "i386")] {
-        assert_eq!(
-            run(&["-e", "f", obj, "-o", "out"]),
-            (
-                Some(1),
-                format!(
-                    "mortar: error: unsupported feature: linking for {name}\n\
-                     >>> M1 links AArch64 (docs/ROADMAP.md)\n"
-                )
-            )
-        );
-    }
+    assert_eq!(run(&["-e", "f", "x86.o", "-o", "out"]), (Some(0), String::new()));
+    assert_eq!(
+        run(&["-e", "f", "i386.o", "-o", "out"]),
+        (
+            Some(1),
+            "mortar: error: unsupported feature: linking for i386\n\
+             >>> M1 links AArch64 and x86-64 (docs/ROADMAP.md)\n"
+                .to_owned()
+        )
+    );
     assert_eq!(
         run(&["-e", "f", "a64.o", "x86.o", "-o", "out"]),
         (
