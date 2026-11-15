@@ -1,5 +1,5 @@
-//! Symbol tables (`spec/elf.md` §3.5). Shared by every reader of this
-//! crate.
+//! Symbol tables (`spec/elf.md` §3.5, §6.5). Shared by every reader of
+//! this crate.
 
 use core::fmt;
 
@@ -45,7 +45,9 @@ pub struct SymbolTable<'a> {
     shndx: Option<Table<'a, Word>>,
     section: u32,
     first_global: u32,
-    section_count: u32,
+    /// The number of sections a section index is checked against; `None`
+    /// for a table found without section headers (§6.5).
+    section_count: Option<u32>,
 }
 
 impl<'a> SymbolTable<'a> {
@@ -55,12 +57,13 @@ impl<'a> SymbolTable<'a> {
         shndx: Option<Table<'a, Word>>,
         section: u32,
         first_global: u32,
-        section_count: u32,
+        section_count: Option<u32>,
     ) -> Self {
         SymbolTable { symbols, strings, shndx, section, first_global, section_count }
     }
 
-    /// The index of the symbol table's section.
+    /// The index of the symbol table's section; 0 for a table found
+    /// through the dynamic table (`spec/elf.md` §6.5).
     pub fn section(&self) -> SectionIndex {
         SectionIndex(self.section)
     }
@@ -138,7 +141,8 @@ impl<'a> SymbolTable<'a> {
     /// Where `symbol`, the record at `index` of this table, is defined:
     /// `st_shndx`, or for `SHN_XINDEX` entry `index` of the
     /// `SHT_SYMTAB_SHNDX` section. A section index is checked to be a
-    /// section of the file.
+    /// section of the file, except in a table found through the dynamic
+    /// table, whose file may have no sections (`spec/elf.md` §6.5).
     #[inline]
     pub fn section_of(&self, index: SymbolIndex, symbol: &Sym) -> Result<SymbolSection, Error> {
         let section = match symbol.st_shndx {
@@ -156,14 +160,11 @@ impl<'a> SymbolTable<'a> {
             reserved if reserved >= SHN_LORESERVE => return Ok(SymbolSection::Reserved(reserved)),
             section => u32::from(section),
         };
-        if section < self.section_count {
-            Ok(SymbolSection::Section(SectionIndex(section)))
-        } else {
-            Err(Error::SymbolSectionOutOfRange {
-                symbol: index.0,
-                index: section,
-                count: self.section_count,
-            })
+        match self.section_count {
+            Some(count) if section >= count => {
+                Err(Error::SymbolSectionOutOfRange { symbol: index.0, index: section, count })
+            }
+            _ => Ok(SymbolSection::Section(SectionIndex(section))),
         }
     }
 }

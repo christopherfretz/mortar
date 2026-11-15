@@ -1,5 +1,5 @@
 //! The on-disk records of both ELF classes, widened to one set of types,
-//! and [`Table`], a zero-copy array of them (`spec/elf.md` §3.2).
+//! and [`Table`], a zero-copy array of them (`spec/elf.md` §3.11, §6.10).
 //!
 //! A record is decoded from its bytes when it is asked for; nothing here
 //! allocates. All records are little-endian.
@@ -8,7 +8,7 @@ use core::fmt;
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
 
-use crate::consts::STV_MASK;
+use crate::consts::{STV_MASK, VERSYM_HIDDEN, VERSYM_VERSION};
 
 /// The file class, `e_ident[EI_CLASS]`: which of the two record layouts a
 /// file uses.
@@ -430,6 +430,243 @@ impl Record for Ehdr {
             e_shnum: u16_at(b, 60),
             e_shstrndx: u16_at(b, 62),
         })
+    }
+}
+
+/// A program header (gABI "Program Header": `Elf32_Phdr`, 32 bytes;
+/// `Elf64_Phdr`, 56 bytes; `p_flags` is the seventh field in `ELFCLASS32`
+/// and the second in `ELFCLASS64`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Phdr {
+    pub p_type: u32,
+    pub p_flags: u32,
+    pub p_offset: u64,
+    pub p_vaddr: u64,
+    pub p_paddr: u64,
+    pub p_filesz: u64,
+    pub p_memsz: u64,
+    pub p_align: u64,
+}
+
+impl Record for Phdr {
+    const SIZE32: usize = 32;
+    const SIZE64: usize = 56;
+
+    #[inline]
+    fn decode32(bytes: &[u8]) -> Option<Self> {
+        let b = bytes.first_chunk::<32>()?;
+        Some(Phdr {
+            p_type: u32_at(b, 0),
+            p_offset: u64::from(u32_at(b, 4)),
+            p_vaddr: u64::from(u32_at(b, 8)),
+            p_paddr: u64::from(u32_at(b, 12)),
+            p_filesz: u64::from(u32_at(b, 16)),
+            p_memsz: u64::from(u32_at(b, 20)),
+            p_flags: u32_at(b, 24),
+            p_align: u64::from(u32_at(b, 28)),
+        })
+    }
+
+    #[inline]
+    fn decode64(bytes: &[u8]) -> Option<Self> {
+        let b = bytes.first_chunk::<56>()?;
+        Some(Phdr {
+            p_type: u32_at(b, 0),
+            p_flags: u32_at(b, 4),
+            p_offset: u64_at(b, 8),
+            p_vaddr: u64_at(b, 16),
+            p_paddr: u64_at(b, 24),
+            p_filesz: u64_at(b, 32),
+            p_memsz: u64_at(b, 40),
+            p_align: u64_at(b, 48),
+        })
+    }
+}
+
+/// An entry of the dynamic table (gABI "Dynamic Section": `Elf32_Dyn`, 8
+/// bytes; `Elf64_Dyn`, 16 bytes). The `ELFCLASS32` tag is an `Elf32_Sword`
+/// and is sign-extended; `d_val` and `d_ptr` share one field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Dyn {
+    pub d_tag: i64,
+    pub d_val: u64,
+}
+
+impl Record for Dyn {
+    const SIZE32: usize = 8;
+    const SIZE64: usize = 16;
+
+    #[inline]
+    fn decode32(bytes: &[u8]) -> Option<Self> {
+        let b = bytes.first_chunk::<8>()?;
+        Some(Dyn { d_tag: i64::from(u32_at(b, 0).cast_signed()), d_val: u64::from(u32_at(b, 4)) })
+    }
+
+    #[inline]
+    fn decode64(bytes: &[u8]) -> Option<Self> {
+        let b = bytes.first_chunk::<16>()?;
+        Some(Dyn { d_tag: u64_at(b, 0).cast_signed(), d_val: u64_at(b, 8) })
+    }
+}
+
+/// An entry of the symbol version table, `.gnu.version` (LSB "Symbol
+/// Versioning": `Elf32_Versym`/`Elf64_Versym`, a 16-bit half in both
+/// classes), as stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Versym(pub u16);
+
+impl Versym {
+    /// The version index: the low 15 bits (`VERSYM_VERSION`).
+    pub const fn index(self) -> u16 {
+        self.0 & VERSYM_VERSION
+    }
+
+    /// The hidden bit (`VERSYM_HIDDEN`): the symbol is not the default
+    /// version of its name.
+    pub const fn hidden(self) -> bool {
+        self.0 & VERSYM_HIDDEN != 0
+    }
+}
+
+impl Record for Versym {
+    const SIZE32: usize = 2;
+    const SIZE64: usize = 2;
+
+    #[inline]
+    fn decode32(bytes: &[u8]) -> Option<Self> {
+        Some(Versym(u16::from_le_bytes(*bytes.first_chunk::<2>()?)))
+    }
+
+    #[inline]
+    fn decode64(bytes: &[u8]) -> Option<Self> {
+        Self::decode32(bytes)
+    }
+}
+
+/// A version definition (LSB "Symbol Versioning": `Elf32_Verdef` and
+/// `Elf64_Verdef`, 20 bytes in both classes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Verdef {
+    pub vd_version: u16,
+    pub vd_flags: u16,
+    pub vd_ndx: u16,
+    pub vd_cnt: u16,
+    pub vd_hash: u32,
+    pub vd_aux: u32,
+    pub vd_next: u32,
+}
+
+impl Record for Verdef {
+    const SIZE32: usize = 20;
+    const SIZE64: usize = 20;
+
+    #[inline]
+    fn decode32(bytes: &[u8]) -> Option<Self> {
+        let b = bytes.first_chunk::<20>()?;
+        Some(Verdef {
+            vd_version: u16_at(b, 0),
+            vd_flags: u16_at(b, 2),
+            vd_ndx: u16_at(b, 4),
+            vd_cnt: u16_at(b, 6),
+            vd_hash: u32_at(b, 8),
+            vd_aux: u32_at(b, 12),
+            vd_next: u32_at(b, 16),
+        })
+    }
+
+    #[inline]
+    fn decode64(bytes: &[u8]) -> Option<Self> {
+        Self::decode32(bytes)
+    }
+}
+
+/// A name of a version definition (`Elf32_Verdaux`/`Elf64_Verdaux`, 8
+/// bytes in both classes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Verdaux {
+    pub vda_name: u32,
+    pub vda_next: u32,
+}
+
+impl Record for Verdaux {
+    const SIZE32: usize = 8;
+    const SIZE64: usize = 8;
+
+    #[inline]
+    fn decode32(bytes: &[u8]) -> Option<Self> {
+        let b = bytes.first_chunk::<8>()?;
+        Some(Verdaux { vda_name: u32_at(b, 0), vda_next: u32_at(b, 4) })
+    }
+
+    #[inline]
+    fn decode64(bytes: &[u8]) -> Option<Self> {
+        Self::decode32(bytes)
+    }
+}
+
+/// The versions needed from one file (`Elf32_Verneed`/`Elf64_Verneed`, 16
+/// bytes in both classes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Verneed {
+    pub vn_version: u16,
+    pub vn_cnt: u16,
+    pub vn_file: u32,
+    pub vn_aux: u32,
+    pub vn_next: u32,
+}
+
+impl Record for Verneed {
+    const SIZE32: usize = 16;
+    const SIZE64: usize = 16;
+
+    #[inline]
+    fn decode32(bytes: &[u8]) -> Option<Self> {
+        let b = bytes.first_chunk::<16>()?;
+        Some(Verneed {
+            vn_version: u16_at(b, 0),
+            vn_cnt: u16_at(b, 2),
+            vn_file: u32_at(b, 4),
+            vn_aux: u32_at(b, 8),
+            vn_next: u32_at(b, 12),
+        })
+    }
+
+    #[inline]
+    fn decode64(bytes: &[u8]) -> Option<Self> {
+        Self::decode32(bytes)
+    }
+}
+
+/// One needed version (`Elf32_Vernaux`/`Elf64_Vernaux`, 16 bytes in both
+/// classes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Vernaux {
+    pub vna_hash: u32,
+    pub vna_flags: u16,
+    pub vna_other: u16,
+    pub vna_name: u32,
+    pub vna_next: u32,
+}
+
+impl Record for Vernaux {
+    const SIZE32: usize = 16;
+    const SIZE64: usize = 16;
+
+    #[inline]
+    fn decode32(bytes: &[u8]) -> Option<Self> {
+        let b = bytes.first_chunk::<16>()?;
+        Some(Vernaux {
+            vna_hash: u32_at(b, 0),
+            vna_flags: u16_at(b, 4),
+            vna_other: u16_at(b, 6),
+            vna_name: u32_at(b, 8),
+            vna_next: u32_at(b, 12),
+        })
+    }
+
+    #[inline]
+    fn decode64(bytes: &[u8]) -> Option<Self> {
+        Self::decode32(bytes)
     }
 }
 

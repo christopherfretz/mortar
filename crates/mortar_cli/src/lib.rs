@@ -11,7 +11,7 @@
 #![forbid(unsafe_code)]
 
 mod grammar;
-pub mod plan;
+pub use mortar_core::plan;
 pub mod response;
 mod rows;
 pub mod table;

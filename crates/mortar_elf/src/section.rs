@@ -197,7 +197,7 @@ impl<'a> SectionTable<'a> {
                 Some(words)
             }
         };
-        Ok(SymbolTable::new(symbols, strings, shndx, symtab.0, first_global, self.len()))
+        Ok(SymbolTable::new(symbols, strings, shndx, symtab.0, first_global, Some(self.len())))
     }
 
     /// The one symbol table of type `sh_type` (`SHT_SYMTAB` or

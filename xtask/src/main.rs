@@ -4,12 +4,14 @@
 //!   cargo xtask ci [--quick] [--step <name>]...    the gate: fmt, clippy, tests, link tests
 //!   cargo xtask linktest [options] [paths...]      the link tests ("Link tests")
 //!   cargo xtask bench [options]                    link speed and memory
+//!   cargo xtask plumb <output> --map <file> ...    the verifier (spec/plumb.md §8)
 
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: cargo xtask ci [--quick] [--step fmt|clippy|test|linktest]...\n       \
                      cargo xtask linktest [options] [<file or directory>...]\n       \
-                     cargo xtask bench [options]   (cargo xtask bench --help)\n";
+                     cargo xtask bench [options]   (cargo xtask bench --help)\n       \
+                     cargo xtask plumb <output> --map <file> --map-format <format> ...\n";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -23,6 +25,7 @@ fn main() -> ExitCode {
             }
         },
         Some("linktest") => ExitCode::from(xtask::linktest::main(&args[1..])),
+        Some("plumb") => xtask::plumb::main(&args[1..]),
         #[cfg(unix)]
         Some("bench") => match xtask::bench::Options::parse(&args[1..]) {
             Ok(options) => ExitCode::from(xtask::bench::run(&options)),

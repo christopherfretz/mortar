@@ -1,6 +1,13 @@
-//! String tables (`spec/elf.md` §3.3).
+//! String tables (`spec/elf.md` §3.3, §6.4).
 
 use crate::error::Error;
+
+/// The `section` of the dynamic string table when it is found through
+/// `DT_STRTAB` and not through a section header (`spec/elf.md` §6.3).
+/// Errors of such a table name the dynamic string table, not a section. No
+/// section has this index: a file has at most `u32::MAX` sections, numbered
+/// from 0.
+pub const DYNAMIC_STRINGS: u32 = u32::MAX;
 
 /// A string table: NUL-terminated byte strings addressed by offset (gABI
 /// "String Table"). `Copy`, and borrows only the input bytes.
@@ -12,8 +19,8 @@ pub struct StrTab<'a> {
 
 impl<'a> StrTab<'a> {
     /// A table over `bytes`. `section` is the index errors name: the
-    /// section the bytes are the contents of, or 0 for bytes that are not
-    /// a section's.
+    /// section the bytes are the contents of, 0 for bytes that are not
+    /// a section's, or [`DYNAMIC_STRINGS`].
     pub fn new(bytes: &'a [u8], section: u32) -> Self {
         StrTab { bytes, section }
     }
