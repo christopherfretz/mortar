@@ -1822,11 +1822,9 @@ impl<'a, 'b> Engine<'a, 'b> {
             (Op::Abs, Field::Data(w)) => Evidence::Exact(trunc(rec.out_word, w)),
             // i386's `GOTOFF` (x86-64's `GOTOFF64`): GOT plus the field,
             // modulo the address size (WP-028e).
-            (Op::GotRel, Field::Data(4 | 8)) => self.got.map_or(Evidence::None, |g| {
-                let d = a64::decode(rec.def.field, rec.out_word, rec.p) as u64;
-                let mask = if self.word() == 4 { u64::from(u32::MAX) } else { u64::MAX };
-                Evidence::Exact(g.wrapping_add(d) & mask)
-            }),
+            (Op::GotRel, Field::Data(4 | 8)) => {
+                self.gotrel_address(rec).map_or(Evidence::None, Evidence::Exact)
+            }
             (
                 Op::Prel,
                 Field::Data(_) | Field::Adr | Field::Imm19 | Field::Imm14 | Field::Imm26,

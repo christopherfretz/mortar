@@ -97,6 +97,17 @@ fn f(n: u8, msg: impl Into<String>) -> Finding {
 
 impl Engine<'_, '_> {
     /// Word size of the output's class.
+    /// The address a `GotRel` field gives: GOT plus the field, modulo
+    /// the address size (spec/x86.md W5's GOTOFF).
+    pub(super) fn gotrel_address(&self, rec: &Rec) -> Option<u64> {
+        if rec.def.op != Op::GotRel {
+            return None;
+        }
+        let d = a64::decode(rec.def.field, rec.out_word, rec.p) as u64;
+        let mask = if self.word() == 4 { u64::from(u32::MAX) } else { u64::MAX };
+        Some(self.got?.wrapping_add(d) & mask)
+    }
+
     pub(super) fn word(&self) -> u64 {
         if self.image.class() == Class::Elf64 { 8 } else { 4 }
     }
@@ -591,13 +602,7 @@ impl Engine<'_, '_> {
                     "the reference to an IFUNC reaches no IPLT entry of its resolver",
                 );
                 x.expected = Some(entries[0].wrapping_add(a));
-                x.found = Some(rec.out_word);
-                // GOTOFF: the address the field gives (spec/x86.md W5).
-                if let (Op::GotRel, Some(g)) = (rec.def.op, self.got) {
-                    let d = a64::decode(rec.def.field, rec.out_word, rec.p) as u64;
-                    let mask = if self.word() == 4 { u64::from(u32::MAX) } else { u64::MAX };
-                    x.found = Some(g.wrapping_add(d) & mask);
-                }
+                x.found = Some(self.gotrel_address(rec).unwrap_or(rec.out_word));
                 x
             };
             return self.fail(x);
