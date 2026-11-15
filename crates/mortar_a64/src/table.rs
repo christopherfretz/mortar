@@ -174,7 +174,7 @@ pub const fn howto(r_type: u32) -> Option<Howto> {
         312 => h("R_AARCH64_LD64_GOT_LO12_NC", GT, g(GDAT), Zero, i(LDX12), NONE, 8, M1),
         313 => {
             let v = val(Base::G(GDAT), false, false, Minus::PageGotBase);
-            h("R_AARCH64_LD64_GOTPAGE_LO15", GT, v, Zero, i(LS15), u(15), 8, M2)
+            h("R_AARCH64_LD64_GOTPAGE_LO15", GT, v, Zero, i(LS15), u(15), 8, M1)
         }
         // TLS, general dynamic.
         512 => h("R_AARCH64_TLSGD_ADR_PREL21", TG, g_p(GTLSIDX), Zero, i(ADR), s(21), 1, Later),
