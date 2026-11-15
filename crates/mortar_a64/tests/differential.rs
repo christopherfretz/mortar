@@ -726,10 +726,13 @@ fn tools() -> Option<Tools> {
         tool("ld.lld")?;
         return None;
     };
+    // The AArch64 toolchain on any host: GCC's by its target's name,
+    // Clang with `--target=` off its host (in `objects`).
+    let a64 = mortar_testutil::target::Arch::Aarch64;
     Some(Tools {
-        gcc: tool("gcc")?,
-        gxx: tool("g++")?,
-        gfortran: tool("gfortran")?,
+        gcc: a64.tool("gcc")?,
+        gxx: a64.tool("g++")?,
+        gfortran: a64.tool("gfortran")?,
         clang: tool("clang")?,
         clangxx: tool("clang++")?,
         llvm_mc: tool("llvm-mc")?,
@@ -765,6 +768,9 @@ fn objects(t: &Tools, dir: &Scratch, b: &Build) -> Vec<(String, PathBuf)> {
         if cc == "llvm-mc" {
             args.extend(["-triple=aarch64-linux-gnu", "-filetype=obj"].map(String::from));
         } else {
+            if cc.starts_with("clang") {
+                args.extend(mortar_testutil::target::Arch::Aarch64.clang_args());
+            }
             args.push("-c".into());
             if b.lang == Lang::Fortran {
                 // The module file goes to the scratch directory, not the

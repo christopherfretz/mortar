@@ -32,8 +32,9 @@ BINUTILS_VERSION=2.44   # ld.bfd --version
 GCC_VERSION=14.2        # gcc -dumpfullversion, major.minor
 LLVM_MAJOR=22           # mortar_testutil::LLVM_MAJORS[0]: the LLVM tools the tests run
 LLVM_VERSION=22.1.8     # clang-22 -dumpversion
-LLDB_MAJOR=19           # Debian 13's lldb: the debugger sessions' (find_tool tries 22, then 19)
-LLDB_VERSION=19.1.7     # lldb-19 --version
+DEBIAN_LLVM_MAJOR=19    # Debian 13's own LLVM: lldb (find_tool tries 22, then 19), the
+                        # clang-19 of the compiler censuses, the ld.lld of gcc -fuse-ld=lld
+DEBIAN_LLVM_VERSION=19.1.7  # lldb-19 --version, clang-19 -dumpversion, ld.lld --version
 MOLD_VERSION=2.37.1     # mold --version
 GDB_VERSION=16.3        # gdb --version
 ELFUTILS_VERSION=0.192  # eu-elflint --version
@@ -64,11 +65,13 @@ debian_arch() {
 # Each list is one line, `NAME=(...)`, of plain words.
 #
 # On PATH, by these names, on both hosts:
-TOOLS=(gcc g++ gfortran as ar nm objdump readelf ld.bfd mold gdb gdb-multiarch eu-elflint file ldd qemu-aarch64 qemu-x86_64 qemu-i386 python3 bash git dpkg-query)
+TOOLS=(gcc g++ gfortran as ar nm objdump readelf ld ld.bfd mold gdb gdb-multiarch eu-elflint file ldd qemu-aarch64 qemu-x86_64 qemu-i386 python3 bash git dpkg-query sha1sum sha256sum mkfifo nohup realpath ps pgrep)
 # `<triple>-<tool>` for each of the three TRIPLES (the host's own too):
-TRIPLE_TOOLS=(gcc g++ gfortran as ar nm objdump readelf ld.bfd)
-# The pinned LLVM's, /usr/lib/llvm-$LLVM_MAJOR/bin/<tool> (lldb: LLDB_MAJOR's);
-# mortar_testutil::find_tool finds them as <tool>-<major> or there:
+TRIPLE_TOOLS=(gcc g++ gfortran as ar nm objdump readelf ld ld.bfd)
+# The pinned LLVM's, /usr/lib/llvm-$LLVM_MAJOR/bin/<tool> (lldb: Debian's own,
+# DEBIAN_LLVM_MAJOR's); mortar_testutil::find_tool finds them as
+# <tool>-<major> or there. clang-19 and clang++-19 are Debian's (the
+# censuses), and so is the bare ld.lld on PATH, which gcc -fuse-ld=lld runs:
 LLVM_TOOLS=(clang clang++ ld.lld yaml2obj llvm-readelf llvm-readobj llvm-ar llvm-nm llvm-objcopy llvm-dwarfdump llvm-mc lldb)
 # Given by the job's Rust set-up (.github/actions/mortar-ci), not by apt:
 SETUP_TOOLS=(rustc)
@@ -97,12 +100,15 @@ HOST="$(host_arch)"
 
 packages() {
   # What the job and the harness run, beyond the tools under test.
-  echo bash ca-certificates curl git make procps python3 time xz-utils
+  echo bash ca-certificates coreutils curl git make procps python3 time xz-utils
   # The host's own toolchain: gcc, g++, gfortran, the binutils (ld.bfd).
   echo build-essential binutils gfortran
   # The pinned LLVM (/usr/lib/llvm-22/bin: clang, ld.lld, yaml2obj, the
-  # llvm- tools) and Debian's LLDB (/usr/lib/llvm-19/bin/lldb).
-  echo "clang-$LLVM_MAJOR" "llvm-$LLVM_MAJOR" "lld-$LLVM_MAJOR" "lldb-$LLDB_MAJOR"
+  # llvm- tools).
+  echo "clang-$LLVM_MAJOR" "llvm-$LLVM_MAJOR" "lld-$LLVM_MAJOR"
+  # Debian's own LLVM: its lldb, its clang (the compiler censuses), and its
+  # lld as the ld.lld on PATH (gcc -fuse-ld=lld).
+  echo "clang-$DEBIAN_LLVM_MAJOR" "lldb-$DEBIAN_LLVM_MAJOR" lld
   echo mold qemu-user
   # The debuggers of the debugger tests and the link tests' `check gdb`
   # (gdb-multiarch reads the other architectures' programs), elfutils'
@@ -161,19 +167,21 @@ check() {
       [ -d "/usr/$t" ] || fail "missing: the system root /usr/$t"
     fi
   done
-  local llvm="/usr/lib/llvm-$LLVM_MAJOR/bin" lldb="/usr/lib/llvm-$LLDB_MAJOR/bin/lldb" l
+  local llvm="/usr/lib/llvm-$LLVM_MAJOR/bin" lldb="/usr/lib/llvm-$DEBIAN_LLVM_MAJOR/bin/lldb" l
   for l in "${LLVM_TOOLS[@]}"; do
     if [ "$l" = lldb ]; then need "$lldb"; else need "$llvm/$l"; fi
   done
   # What the harness itself runs.
-  need /usr/bin/time ps pgrep mkfifo nohup realpath
+  need /usr/bin/time "clang-$DEBIAN_LLVM_MAJOR" "clang++-$DEBIAN_LLVM_MAJOR" ld.lld
   if [ "$FAILED" = 0 ]; then
     echo "ci-tools.sh: versions on $HOST:"
     pinned "GNU ld" "$BINUTILS_VERSION" "$(ld.bfd --version | head -1 | awk '{print $NF}')"
     pinned "GCC" "$GCC_VERSION" "$(gcc -dumpfullversion)"
     pinned "LLVM" "$LLVM_VERSION" "$("$llvm/clang" -dumpversion)"
     pinned "mold" "$MOLD_VERSION" "$(mold --version | awk '{print $2}')"
-    pinned "LLDB" "$LLDB_VERSION" "$("$lldb" --version | head -1 | awk '{print $3}')"
+    pinned "LLDB" "$DEBIAN_LLVM_VERSION" "$("$lldb" --version | head -1 | awk '{print $3}')"
+    pinned "clang-$DEBIAN_LLVM_MAJOR" "$DEBIAN_LLVM_VERSION" "$("clang-$DEBIAN_LLVM_MAJOR" -dumpversion)"
+    pinned "ld.lld" "$DEBIAN_LLVM_VERSION" "$(ld.lld --version | awk '{print $3}')"
     pinned "gdb" "$GDB_VERSION" "$(gdb --version | head -1 | awk '{print $NF}')"
     pinned "gdb-multiarch" "$GDB_VERSION" "$(gdb-multiarch --version | head -1 | awk '{print $NF}')"
     pinned "elfutils" "$ELFUTILS_VERSION" "$(eu-elflint --version | head -1 | awk '{print $NF}')"

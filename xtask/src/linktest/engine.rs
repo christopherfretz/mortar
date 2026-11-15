@@ -270,10 +270,10 @@ impl Plumb {
     /// The default anomalies that apply to a judged output of the run and
     /// that no judged output of that architecture and linker has: each one
     /// a stale default (`spec/harness.md` "L3").
-    pub fn stale_defaults(&self, defaults: &[Anomaly]) -> Vec<String> {
+    pub fn stale_defaults(&self, defaults: &[Anomaly], host: Option<Arch>) -> Vec<String> {
         let mut stale = Vec::new();
         for &(arch, linker) in &self.judged_by {
-            for d in defaults.iter().filter(|d| d.scope.applies(arch, linker)) {
+            for d in defaults.iter().filter(|d| d.applies(arch, linker, host)) {
                 for id in &d.ids {
                     if !self.defaults_seen.contains(&(arch, linker, id.clone())) {
                         stale.push(format!(
@@ -984,7 +984,12 @@ impl Unit<'_> {
         let defaults = if linker == Linker::Mortar {
             Vec::new()
         } else {
-            anomaly_ids(&self.matrix.defaults, self.arch(), linker)
+            self.matrix
+                .defaults
+                .iter()
+                .filter(|a| a.applies(self.arch(), linker, self.matrix.host))
+                .flat_map(|a| a.ids.iter().map(String::as_str))
+                .collect()
         };
         let mut unexpected = Vec::new();
         for f in &report.findings {
@@ -1661,11 +1666,11 @@ mod tests {
         plumb.judged_by.insert((Arch::Aarch64, Linker::Mold));
         plumb.judged_by.insert((Arch::Aarch64, Linker::Lld));
         plumb.defaults_seen.insert((Arch::Aarch64, Linker::Mold, "A9".to_owned()));
-        let stale = plumb.stale_defaults(&defaults);
+        let stale = plumb.stale_defaults(&defaults, Some(Arch::Aarch64));
         assert_eq!(stale.len(), 1, "{stale:?}");
         assert!(stale[0].contains("line 1 expects A3 of mold on aarch64"), "{stale:?}");
         plumb.defaults_seen.insert((Arch::Aarch64, Linker::Mold, "A3".to_owned()));
-        assert!(plumb.stale_defaults(&defaults).is_empty());
+        assert!(plumb.stale_defaults(&defaults, Some(Arch::Aarch64)).is_empty());
     }
 
     // spec/harness.md "L3": the outputs the verifier does not judge.

@@ -399,13 +399,14 @@ fn check_defaults(
     args: &Args,
     plumb: &engine::Plumb,
     defaults: &[format::Anomaly],
+    host: Option<Arch>,
     report: &mut Report,
 ) {
     if args.digest {
         return;
     }
     if args.paths.is_empty() && args.filters.is_empty() {
-        report.errors.extend(plumb.stale_defaults(defaults));
+        report.errors.extend(plumb.stale_defaults(defaults, host));
     } else if !defaults.is_empty() && plumb.verified > 0 {
         report.notes.push(
             "L3: a run of part of the corpus does not check that the default anomalies occur"
@@ -634,7 +635,7 @@ pub fn run(args: &Args) -> Result<Report, String> {
     if plumb != engine::Plumb::default() {
         report.notes.push(plumb.note());
     }
-    check_defaults(args, &plumb, &matrix.defaults, &mut report);
+    check_defaults(args, &plumb, &matrix.defaults, matrix.host, &mut report);
     // Deterministic: by test, architecture, linker, and a record without a
     // linker after those with one.
     report.records.sort_by_key(|record| {

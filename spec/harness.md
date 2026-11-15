@@ -891,12 +891,16 @@ mortar included (`docs/VALIDATION.md` layer L3).
 
   ```
   # a comment; blank lines are ignored
-  mold: A1 A2 A3 A9                 <linker>[,<linker or arch>...]: <id>...
+  mold: A1 A2 A3 A9                 <linker>[,<linker, arch or cross>...]: <id>...
   bfd: A10
   ```
 
   Each line names at least one reference linker, never mortar, and can
-  name architectures (none is every architecture); the ids are those of
+  name architectures (none is every architecture) and the word `cross`
+  (only on an architecture that is not the host's: its C runtime is then
+  Debian's cross packages, another build than the native one, and a
+  default can be the reference linker's way with that build's objects;
+  A13 of mold on x86-64 is); the ids are those of
   `spec/plumb.md` §10.2. A line that does not parse is a run error (exit
   3); without the file there are no defaults. A defaulted anomaly is
   expected on every judged output of that linker and architecture, and is
@@ -1086,7 +1090,7 @@ reference bugs, `XFAIL`) and mortar `XFAIL` on every case until M1.
 
 `cargo xtask static-identical [--update] [-j <n>] [--mortar <binary>]` checks that mortar's
 static links are byte-identical to a checked-in baseline,
-`tests/identical/baseline.tsv`. It is the guard of milestone M2
+`tests/identical/baseline.on-<host>.tsv`. It is the guard of milestone M2
 (`spec/landed/dyn/WP-040.md`): dynamic output lands behind one refusal
 while a static link's bytes, its `--mortar-map` and its diagnostics stay
 what they were. A package whose change is meant to change them (a fix of
@@ -1122,6 +1126,21 @@ one row:
 | `output` | SHA-256 of the output file, `-` when there is none |
 | `map` | SHA-256 of the `--mortar-map`, `-` when there is none |
 | `stderr` | SHA-256 of the linker's (the driver's) standard error |
+
+**One baseline per host**: `baseline.on-aarch64.tsv` on an AArch64
+machine, `baseline.on-x86_64.tsv` on an x86-64 one. The digests are of
+mortar's links of inputs the host builds: its own architecture's with
+its native GCC and C library (Debian's `libc6-dev`, `libgcc-14-dev`),
+the others' with the cross packages (`libc6-dev-<arch>-cross`, ...),
+which are other builds of other package revisions. The same test on the
+same architecture is thus other bytes on the two hosts (an i386 link,
+cross on both, is the same). A change meant to change static bytes
+updates both baselines: the one of the host at hand with `--update`, the
+other from its hosted lane's log, where a failed check prints, after the
+difference lines, `static-identical: the run's rows of the links that
+differ:` and those rows in the baseline's format (test names and digests
+only). A missing baseline is an empty one: every link differs and is
+printed.
 
 The map and the standard error are digested after replacing the link's
 directory by `.`, the unit's directory by `<unit>` and the run's work

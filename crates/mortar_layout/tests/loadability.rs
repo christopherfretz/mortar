@@ -31,6 +31,7 @@ use mortar_elf::consts::{
 use mortar_layout::Header;
 use mortar_layout::chunk::SynthChunk;
 use mortar_layout::stack::StackNote;
+use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, run, run_with, tool};
 
 const A: u64 = SHF_ALLOC;
@@ -195,16 +196,20 @@ fn reference_shaped(machine: Machine, exe: &[u8]) -> World {
 
 fn reference_links(dir: &Path) -> Vec<(String, World)> {
     let mut out = Vec::new();
-    if tool("ld.lld").is_none() {
-        return out;
-    }
-    for (arch, machine, prefix) in [
-        ("aarch64", Machine::AArch64, ""),
-        ("x86-64", Machine::X86_64, "x86_64-linux-gnu-"),
-        ("i386", Machine::I386, "i686-linux-gnu-"),
+    let Some(lld) = tool("ld.lld") else { return out };
+    // The lld found, for the driver's -B (alone it looks on PATH).
+    let lldbin = dir.join("lldbin");
+    std::fs::create_dir_all(&lldbin).unwrap();
+    std::os::unix::fs::symlink(&lld, lldbin.join("ld.lld")).unwrap();
+    // Each architecture's own GCC, whatever the host (`spec/harness.md`
+    // "A test's subject decides its tools").
+    for (arch, machine, target) in [
+        ("aarch64", Machine::AArch64, Arch::Aarch64),
+        ("x86-64", Machine::X86_64, Arch::X86_64),
+        ("i386", Machine::I386, Arch::I386),
     ] {
         for (file, cc, source) in PROGRAMS {
-            let cc = format!("{prefix}{cc}");
+            let cc = target.gnu(cc);
             if tool(&cc).is_none() {
                 continue;
             }
@@ -212,7 +217,8 @@ fn reference_links(dir: &Path) -> Vec<(String, World)> {
             std::fs::write(&src, source).unwrap();
             let exe = dir.join(format!("{file}-{arch}"));
             let mut cmd = std::process::Command::new(&cc);
-            cmd.args(["-O2", "-static", "-fuse-ld=lld"]).arg(&src).arg("-o").arg(&exe);
+            cmd.args(["-O2", "-static", "-B"]).arg(&lldbin).arg("-fuse-ld=lld");
+            cmd.arg(&src).arg("-o").arg(&exe);
             let o = run_with(&mut cmd, &[], Duration::from_mins(5));
             assert!(o.success(), "{cc} {file}: {}", o.stderr_text());
             let bytes = std::fs::read(&exe).unwrap();

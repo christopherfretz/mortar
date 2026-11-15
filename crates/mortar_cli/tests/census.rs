@@ -11,6 +11,7 @@ use std::process::Command;
 
 use mortar_cli::{Emulation, InputSpec, OutputKind, Parsed, Target, parse};
 use mortar_diag::Style;
+use mortar_testutil::target::Arch;
 use mortar_testutil::{DEFAULT_TIMEOUT, Scratch, run_with, tool};
 
 /// The rows real link lines use, by name (`spec/cli.md` §6.2).
@@ -194,41 +195,50 @@ fn census(name: &str, extra: &[&str], source: (&str, &str), target: Target, libs
     }
 }
 
-// spec: cli.md §6 (gcc, g++, gfortran: native AArch64)
+// spec: cli.md §6 (gcc, g++, gfortran for AArch64: native on an AArch64
+// host, `aarch64-linux-gnu-*` elsewhere)
 #[test]
 fn gcc() {
-    census("gcc", &[], C, Target::Aarch64, &["c", "gcc"]);
+    census(&Arch::Aarch64.gnu("gcc"), &[], C, Target::Aarch64, &["c", "gcc"]);
 }
 
 #[test]
 fn gxx() {
-    census("g++", &[], CXX, Target::Aarch64, &["stdc++", "m", "c"]);
+    census(&Arch::Aarch64.gnu("g++"), &[], CXX, Target::Aarch64, &["stdc++", "m", "c"]);
 }
 
 #[test]
 fn gfortran() {
-    census("gfortran", &[], FORTRAN, Target::Aarch64, &["gfortran", "m", "c"]);
+    let gfortran = Arch::Aarch64.gnu("gfortran");
+    census(&gfortran, &[], FORTRAN, Target::Aarch64, &["gfortran", "m", "c"]);
 }
 
-// spec: cli.md §6 (clang and clang++, 19 and 22)
+/// A Clang census for AArch64: `--target=aarch64-linux-gnu` off its host.
+fn clang_aarch64(name: &str, source: (&str, &str), libs: &[&str]) {
+    let args = Arch::Aarch64.clang_args();
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    census(name, &extra, source, Target::Aarch64, libs);
+}
+
+// spec: cli.md §6 (clang and clang++, 19 and 22, for AArch64)
 #[test]
 fn clang_19() {
-    census("clang-19", &[], C, Target::Aarch64, &["c"]);
+    clang_aarch64("clang-19", C, &["c"]);
 }
 
 #[test]
 fn clang_22() {
-    census("clang-22", &[], C, Target::Aarch64, &["c"]);
+    clang_aarch64("clang-22", C, &["c"]);
 }
 
 #[test]
 fn clangxx_19() {
-    census("clang++-19", &[], CXX, Target::Aarch64, &["stdc++", "m", "c"]);
+    clang_aarch64("clang++-19", CXX, &["stdc++", "m", "c"]);
 }
 
 #[test]
 fn clangxx_22() {
-    census("clang++-22", &[], CXX, Target::Aarch64, &["stdc++", "m", "c"]);
+    clang_aarch64("clang++-22", CXX, &["stdc++", "m", "c"]);
 }
 
 // spec: cli.md §6 (the cross drivers: x86-64 and i386)
@@ -267,9 +277,23 @@ fn clang_i686() {
     census("clang-22", &["--target=i686-linux-gnu"], C, Target::I386, &["c"]);
 }
 
-// spec: cli.md §6 (rustc, through the C driver it runs)
+// spec: cli.md §6 (rustc, through the C driver it runs). The installed
+// rustc has its host's standard library only, so its line is for the
+// host's architecture: the subject is the host's rustc, on purpose.
 #[test]
 fn rustc() {
+    let target = match Arch::host() {
+        Some(Arch::Aarch64) => Target::Aarch64,
+        Some(Arch::X86_64) => Target::X86_64,
+        Some(Arch::I386) => Target::I386,
+        None => {
+            mortar_testutil::named_skip(
+                "census::rustc",
+                "the host is none of the three targets; rustc links for the host",
+            );
+            return;
+        }
+    };
     let Some(rustc) = tool("rustc") else { return };
     let scratch = Scratch::new("census-rustc");
     let bin = recorder(&scratch);
@@ -294,7 +318,7 @@ fn rustc() {
         c.arg(source).args(*flags).arg("-C").arg(format!("link-arg=-B{}/", bin.display()));
         c.arg("-o").arg(scratch.join(format!("out-{label}")));
         let line = capture(&scratch, c, label);
-        let want = Expect { kind: *kind, target: Target::Aarch64, libs: &["c"], object };
+        let want = Expect { kind: *kind, target, libs: &["c"], object };
         check(&format!("rustc {label}"), &line, &want, &mut rows);
     }
     assert_census_rows(&rows);

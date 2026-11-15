@@ -27,6 +27,12 @@ use mortar_input::store::{Store, StorePolicy};
 use mortar_live::{LiveInputs, LiveOptions, liveness};
 use mortar_resolve::Outcome;
 use mortar_scan::{CodeProof, Mark, Mismatch, ScanInputs, ScanOptions, Scanned, scan};
+use mortar_testutil::target::Arch;
+
+/// The architecture these tests are about (`spec/harness.md` "A test's
+/// subject decides its tools"): its GNU tools by [`Arch::gnu`]'s names,
+/// whatever the host.
+pub const ARCH: Arch = Arch::Aarch64;
 
 /// AArch64's instruction proof: its mapping symbols (a64.md §3.4).
 #[derive(Debug, Clone, Copy, Default)]
@@ -229,6 +235,25 @@ pub fn need(name: &str) -> Option<PathBuf> {
     t
 }
 
+/// [`need`] of [`ARCH`]'s GNU tool `tool` (`gcc`, `as`, `ld.bfd`, ...).
+pub fn need_gnu(tool: &str) -> Option<PathBuf> {
+    need(&ARCH.gnu(tool))
+}
+
+/// The driver options that link with `lld` (the `ld.lld` [`need`]
+/// found): `-B <dir> -fuse-ld=lld`, `dir` a directory under `scratch`
+/// holding `ld.lld`. The driver alone looks for `ld.lld` on `PATH`, which
+/// need not be the lld found, nor be there at all.
+pub fn fuse_lld(scratch: &Path, lld: &Path) -> Vec<OsString> {
+    let bin = scratch.join("lldbin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let link = bin.join("ld.lld");
+    if link.symlink_metadata().is_err() {
+        std::os::unix::fs::symlink(lld, &link).unwrap();
+    }
+    vec!["-B".into(), bin.into_os_string(), "-fuse-ld=lld".into()]
+}
+
 /// Runs `program` in `cwd`.
 pub fn run_in(program: &Path, args: &[OsString], cwd: &Path) -> mortar_testutil::Outcome {
     let mut c = Command::new(program);
@@ -236,9 +261,10 @@ pub fn run_in(program: &Path, args: &[OsString], cwd: &Path) -> mortar_testutil:
     mortar_testutil::run_with(&mut c, b"", Duration::from_mins(3))
 }
 
-/// Assembles `src` into `dir/name` (`as`), or `None` without the tool.
+/// Assembles `src` into `dir/name` ([`ARCH`]'s `as`), or `None` without
+/// the tool.
 pub fn assemble(dir: &Path, name: &str, src: &str) -> Option<PathBuf> {
-    let gas = need("as")?;
+    let gas = need_gnu("as")?;
     let s = dir.join(format!("{name}.s"));
     std::fs::write(&s, src).unwrap();
     let o = dir.join(name);
@@ -247,8 +273,8 @@ pub fn assemble(dir: &Path, name: &str, src: &str) -> Option<PathBuf> {
     Some(o)
 }
 
-/// Compiles `src` with `driver` (`gcc`, `g++`, `gfortran`) into
-/// `dir/name` with `-c` and `flags`.
+/// Compiles `src` with [`ARCH`]'s `driver` (`gcc`, `g++`, `gfortran`)
+/// into `dir/name` with `-c` and `flags`.
 pub fn compile(
     dir: &Path,
     driver: &str,
@@ -257,7 +283,7 @@ pub fn compile(
     src: &str,
     flags: &[&str],
 ) -> Option<PathBuf> {
-    let cc = need(driver)?;
+    let cc = need_gnu(driver)?;
     let s = dir.join(format!("{name}.{ext}"));
     std::fs::write(&s, src).unwrap();
     let o = dir.join(name);

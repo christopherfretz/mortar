@@ -21,6 +21,11 @@ mold: A1 A2 A3 A9
 bfd,aarch64,x86_64: A10
 
 # mold on x86-64: the 8-aligned .note.gnu.property and the 4-aligned
-# notes after it (ABI tag, build id) share one PT_NOTE with p_align 8
-# (A13), on every link with the C runtime's notes.
-mold,x86_64: A13
+# notes after it (ABI tag, package, build id) share one PT_NOTE with
+# p_align 8 (A13), on every link with the cross C runtime's notes. Only
+# the cross one (`cross`: x86-64 off an x86-64 host): its crt1.o has a
+# .note.package whose size is not a multiple of 8, so the notes after it
+# are misread under p_align 8; the native crt1.o (Debian's libc6-dev on
+# an x86-64 host) has no .note.package, every note then falls on 8, and
+# the same PT_NOTE reads right (WP-015).
+mold,x86_64,cross: A13
