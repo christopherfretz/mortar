@@ -867,8 +867,9 @@ order of the output sections themselves is in §10.
   orders commons by name within the `COMMON` pattern, lld by input
   order. The order has no observable effect. `SymbolId` is
   deterministic and needs no sort. A large common (x86-64
-  `SHN_X86_64_LCOMMON`, `spec/resolve.md` §3.3) is allocated the same
-  way in `.lbss` (L-36a; `spec/x64.md` X-55).
+  `SHN_X86_64_LCOMMON`, `spec/resolve.md` §3.3: one whose every
+  mention is `LCOMMON`) is allocated the same way in `.lbss` (L-36a;
+  `spec/x64.md` X-55).
 - **L-89 [C] [M1]** A TLS common (`STT_TLS` with `SHN_COMMON`) is
   refused (`feature`, `TLS common symbol`). GCC emits it only with
   `-fcommon` on TLS variables, which no current default does.

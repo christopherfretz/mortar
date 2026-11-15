@@ -190,7 +190,9 @@ M1. For a key whose `def` is `Common`:
 - `SHN_X86_64_LCOMMON` (large common, x86-64): accepted as a common
   symbol (`st_value` the alignment), resolved as `SHN_COMMON`; allocated
   in `.lbss` (`spec/x64.md` X-55, `spec/layout.md` L-36a); a `COMMON` and
-  an `LCOMMON` of one name give a large common. M1. On another machine
+  an `LCOMMON` of one name give a small common, allocated as `SHN_COMMON`
+  is (`.lbss` only when every mention is `LCOMMON`; GNU ld 2.44,
+  measured: `spec/x64.md` Q14). M1. On another machine
   the index 0xff02 means nothing and is refused as any other
   `Reserved(n)` (§2).
 
