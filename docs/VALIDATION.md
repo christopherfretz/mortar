@@ -91,9 +91,13 @@ memory (the kernel's figure for the process, as GNU `time` reports it):
 - from M7: the incremental cases (one function changed; one object changed;
   an archive replaced).
 
-A change fails the bench gate when mortar's time grows by more than 5% or
-its memory by more than 2% against the recorded per-machine baseline in
-`bench/baselines`. The release gate also compares against mold, lld and
+A change fails the bench gate when mortar's time grows by more than 35% or
+its memory by more than 4% against the recorded per-machine baseline in
+`bench/baselines`. The margins were 5% and 2%; WP-036 measured the
+shared host's run-to-run noise (up to 28% on the links the gate judges
+steady, 2.6% of memory) and set them above it (`spec/harness.md`
+"Noise"). Each mortar link is also compared against the fastest and the
+smallest other linker in `docs/status/perf.md`. The release gate also compares against mold, lld and
 GNU ld on the same machine and records the ratios in
 `docs/status/bench.md`. Measurements are taken with the jobserver pool
 idle, or marked as noisy.

@@ -1608,6 +1608,36 @@ never assumed quiet; what the load did to it is measured and recorded:
   make a **slower time** unjudgeable: `NOISY`, not `REGRESSED`. Memory is
   judged whatever the machine is doing.
 
+**The margins, measured (WP-036).** The host the gate runs on is shared
+(12 cores, load average 8 to 15). Three whole runs of one commit
+(`cargo xtask bench`, 5 runs per link, at 09:42, 10:00 and 10:28 on
+2026-11-15), each judged against each of the others as a baseline
+(`--judge`, six pairs), measured:
+
+- mortar's median wall time per link moved between runs by 7% to 223%
+  (the median row 53%); the reference linkers' by up to 262%. The
+  calibration does not follow it: the faster calibrations of the three
+  runs are within 8% of one another while rows moved by a factor of two.
+  One run of three was `noisy` (calibration 70.8 ms before, 35.0 ms
+  after).
+- On the links the gate judges steady (spread at most 5% in both runs,
+  neither run noisy, drift within 25%) the largest slowdown was 28.2%
+  (`synthetic-sections-static` at one thread); with the earlier margin
+  of 5% it was a false `REGRESSED (time)` on two rows of one pair.
+- mortar's median RSS moved by at most 2.6% (6.4 MiB,
+  `synthetic-objects-static` at the default threads, where the threads
+  allocate concurrently), the median row 0.6%; with the earlier margin
+  of 2% it was a false `REGRESSED (memory)` on one pair.
+
+The margins are set above those figures: **35% of time** (28.2% × 1.25)
+and **4% of memory** (2.6% × 1.5); with them none of the six pairs, and
+none of the three runs judged against the recorded baseline, has a
+`REGRESSED` row. On this host the time gate therefore catches a
+slowdown of about a third, not one of 5%: a smaller one must be shown
+by a run on a quiet machine, or by many runs (`--runs`), not by the
+gate. A host with less noise should measure its own margins in the same
+way before narrowing them.
+
 ### Results file
 
 The results of a run (`<work>/results.tsv`) and a baseline are the same
@@ -1680,8 +1710,8 @@ linkers are never judged. In this order:
 | `ok` now, refused in the baseline | new | no |
 | the baseline is of another machine | advisory | no |
 | refused or killed now, `ok` in the baseline | **LOST** | yes |
-| memory: median RSS above the baseline's by more than 2% and by more than 1024 KiB | **REGRESSED (memory)** | yes |
-| time: median wall above the baseline's × drift by more than 5% and by more than 2 ms, on a steady measurement | **REGRESSED (time)** | yes |
+| memory: median RSS above the baseline's by more than 4% and by more than 1024 KiB | **REGRESSED (memory)** | yes |
+| time: median wall above the baseline's × drift by more than 35% and by more than 2 ms, on a steady measurement | **REGRESSED (time)** | yes |
 | the same on an unsteady one ("Noise"), memory within bounds | NOISY | no; exit 3 |
 | faster or smaller by those margins | improved | no |
 | otherwise | ok | no |

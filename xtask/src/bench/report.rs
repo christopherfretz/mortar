@@ -336,7 +336,7 @@ fn figures_section(results: &Results) -> String {
          slowest run), CPU time (user and system, median) in milliseconds, peak resident memory in MiB (median), and both as a ratio to mold at its \
          default number of threads on the same workload (lld where mold did not link). A link \
          that is not `ok` has no figures. Only mortar's rows are judged against the baseline \
-         (5% time, 2% memory); the reference linkers' are information.\n",
+         (35% time, 4% memory); the reference linkers' are information.\n",
     );
     for w in &results.workloads {
         let _ = writeln!(text, "\n### `{}`\n", w.name);
