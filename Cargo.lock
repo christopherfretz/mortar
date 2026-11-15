@@ -143,6 +143,7 @@ dependencies = [
 name = "mortar_live"
 version = "0.0.0"
 dependencies = [
+ "mortar_arch",
  "mortar_cli",
  "mortar_core",
  "mortar_diag",

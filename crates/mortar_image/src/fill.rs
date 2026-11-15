@@ -35,9 +35,11 @@ pub trait Tables: FillTables {
     /// `Merge` section (`spec/synth.md` S-17, S-18: the piece holding
     /// byte `st_value + A`) and any key defined in an input `.eh_frame`
     /// (S-50, which follows the target offset). The output address, or
-    /// the diagnostic (S-18; S-50 rules 4 and 5). `None` otherwise: the
+    /// the diagnostic (S-18; S-50 rules 4 and 5). `Ok(None)`: the piece
+    /// was collected (`--gc-sections`, `spec/image.md` I-7; a debug
+    /// reference to it is the tombstone, I-47). `None` otherwise: the
     /// arch computes `S + A` from [`FillTables::sym`].
-    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<u64, Diagnostic>> {
+    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<Option<u64>, Diagnostic>> {
         let _ = (key, addend);
         None
     }

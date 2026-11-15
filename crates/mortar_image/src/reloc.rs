@@ -603,8 +603,13 @@ pub(crate) fn relocate(
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name)
             .with_exec(c.exec);
         let (mut sym, split) = img.tables.record_sym(rec.key);
+        // A live key's split target first: under `--gc-sections` a live
+        // merge section can hold a collected piece (I-7), and a debug
+        // reference to one is the tombstone (I-47), as one to a collected
+        // section is.
+        let mut target = (split && sym.live).then(|| img.tables.split_target(rec.key, rec.addend));
         let value = match howto.field {
-            Field::Data { bytes: width } if !sym.live => {
+            Field::Data { bytes: width } if !sym.live || matches!(target, Some(Some(Ok(None)))) => {
                 tombstone::field(img.arch, c.name, c.alloc, width).map(|v| (v, width))
             }
             _ => None,
@@ -614,9 +619,18 @@ pub(crate) fn relocate(
             Ok(())
         } else {
             if split {
-                match img.tables.split_target(rec.key, rec.addend) {
+                let target =
+                    target.take().unwrap_or_else(|| img.tables.split_target(rec.key, rec.addend));
+                match target {
                     None => sym = img.tables.sym(rec.key),
-                    Some(Ok(v)) => sym.s = v.wrapping_sub(rec.addend.cast_unsigned()),
+                    Some(Ok(Some(v))) => sym.s = v.wrapping_sub(rec.addend.cast_unsigned()),
+                    Some(Ok(None)) => {
+                        if reports {
+                            let what = "fill: a reference to a collected merge piece".to_owned();
+                            errs.push((fill_key(c.file, c.index, i), internal(what)));
+                        }
+                        continue;
+                    }
                     Some(Err(d)) => {
                         if reports {
                             errs.push((fill_key(c.file, c.index, i), d));

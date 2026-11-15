@@ -66,7 +66,12 @@ fn statuses() {
             "--no-build-id",
             "--eh-frame-hdr",
             "--no-eh-frame-hdr",
+            // The mark and its report (WP-031).
+            "--gc-sections",
             "--no-gc-sections",
+            "--print-gc-sections",
+            "--no-print-gc-sections",
+            "--gc-keep-exported",
             "-l",
             "-(",
             "-)",

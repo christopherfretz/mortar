@@ -706,7 +706,10 @@ section); the entry; every key exported to `.dynsym` (§9.6); every section
 of `SHF_GNU_RETAIN`; `KEEP` (assignment's). `def` itself is the same with
 and without `--gc-sections`: extraction is decided before liveness, so a
 member whose sections are later collected still settled its keys (all
-three; not separately verified).
+three: a collected member's definition still collides with a later one,
+verified by WP-031, `spec/landed/image/WP-031.md` Q10). `Outcome.roots`
+carries the rooted keys (`Options::roots`: the entry, `-u`,
+`--require-defined`) to `mortar_live`.
 
 ### 4.8 `--start-lib` (M4)
 

@@ -49,7 +49,20 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--compress-debug-sections", Check(compress_debug_sections)),
     ("--eh-frame-hdr", Check(eh_frame_hdr)),
     ("--no-eh-frame-hdr", Check(eh_frame_hdr)),
+    ("--gc-sections", Test("crates/mortar/tests/gc.rs", "differential_c_and_cxx_against_gnu_ld")),
     ("--no-gc-sections", Test("crates/mortar/tests/pipeline.rs", "gc_sections_the_last_one_wins")),
+    (
+        "--print-gc-sections",
+        Test("crates/mortar/tests/gc.rs", "i10_print_gc_sections_text_and_order"),
+    ),
+    (
+        "--no-print-gc-sections",
+        Test("crates/mortar/tests/gc.rs", "i10_print_gc_sections_text_and_order"),
+    ),
+    (
+        "--gc-keep-exported",
+        Test("crates/mortar/tests/gc.rs", "gc_keep_exported_roots_default_visibility_globals"),
+    ),
     ("--no-gdb-index", Same(&["--no-gdb-index"], None)),
     ("-l", Check(libraries)),
     ("-(", Check(groups)),

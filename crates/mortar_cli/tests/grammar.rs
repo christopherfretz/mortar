@@ -657,10 +657,8 @@ fn overridden_and_partial_uses() {
         p(args).refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect()
     };
     assert_eq!(refused(&["a.o", "--gc-sections", "--no-gc-sections"]), Vec::<String>::new());
-    assert_eq!(
-        refused(&["a.o", "--no-gc-sections", "--gc-sections"]),
-        ["ld: error: unsupported option: --gc-sections\n"]
-    );
+    // Supported since WP-031: neither order refuses.
+    assert_eq!(refused(&["a.o", "--no-gc-sections", "--gc-sections"]), Vec::<String>::new());
     assert_eq!(refused(&["a.o", "--build-id=md5", "--build-id"]), Vec::<String>::new());
     assert_eq!(refused(&["a.o", "--build-id=md5", "--no-build-id"]), Vec::<String>::new());
     let md5 = refused(&["a.o", "--build-id", "--build-id=md5"]);
