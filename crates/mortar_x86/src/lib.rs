@@ -66,6 +66,7 @@ pub static FACTS: Facts = Facts {
     // `.got` has no reserved word; `.got.plt` has 3 (X86-47).
     got_header: 0,
     got_plt_reserved: 3,
+    iplt_word: mortar_arch::IpltWord::Resolver,
     max_reach: MAX_REACH,
     code_fill: &[0xCC],
     code_nop: &[0x90],

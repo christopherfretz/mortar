@@ -1,0 +1,62 @@
+# static-identical corpus (spec/harness.md "static-identical"): a static C
+# program of several objects and an archive, with debug information, linked
+# whole, with --gc-sections and on one thread. Only the digests of mortar's
+# links are recorded; the linktest does not run this directory.
+#@ spec: harness.md "static-identical"
+
+cc -g -O2 -ffunction-sections -fdata-sections main.c -o main.o
+cc -g -O2 -ffunction-sections -fdata-sections table.c -o table.o
+cc -g -O0 util.c -o util.o
+cc -g -O1 tls.c -o tls.o
+ar rcs libutil.a util.o tls.o
+link gcc -static -no-pie main.o table.o libutil.a -o whole
+link gcc -static -no-pie -Wl,--gc-sections main.o table.o libutil.a -o gc
+link gcc -static -no-pie -Wl,--threads=1 main.o table.o libutil.a -o one
+link gcc -static -no-pie -Wl,--gc-sections -Wl,--threads=1 -Wl,--build-id=sha1 main.o table.o libutil.a -o gc-one
+
+#--- main.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int table_sum(int n);
+const char *table_name(int i);
+int util_mix(int a, int b);
+int tls_bump(void);
+
+static int compare(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+int main(int argc, char **argv) {
+  const char *names[8];
+  for (int i = 0; i < 8; i++)
+    names[i] = table_name(i);
+  qsort(names, 8, sizeof names[0], compare);
+  for (int i = 0; i < 8; i++)
+    printf("%s %d\n", names[i], util_mix(i, argc));
+  printf("sum %d tls %d %d\n", table_sum(100), tls_bump(), tls_bump());
+  return argc > 1 ? atoi(argv[1]) : 0;
+}
+#--- table.c
+static const char *const names[] = {
+  "kiln", "hod", "mortar", "tuck", "mason", "trowel", "level", "plumb",
+};
+int unused_table[1024] = {1};
+const char *table_name(int i) { return names[i & 7]; }
+int table_sum(int n) {
+  int s = 0;
+  for (int i = 0; i < n; i++)
+    s += i * i % 7;
+  return s;
+}
+int table_unused(int x) { return unused_table[x]; }
+#--- util.c
+#include <math.h>
+double util_scale = 1.5;
+int util_mix(int a, int b) { return (int)(a * util_scale) ^ b; }
+double util_unused(double x) { return x * util_scale; }
+#--- tls.c
+static __thread int counter = 40;
+__thread char tls_buffer[64];
+int tls_bump(void) { tls_buffer[0]++; return ++counter; }

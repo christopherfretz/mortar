@@ -40,13 +40,13 @@ pub use cx::{
     RelocAt, ScanCx, ScanError, ScanTables, SectionOut, SymFacts, SymNames, SymValue, SynthCx,
 };
 pub use dead::{DeadRef, dead_reference, is_debug_name, tombstone};
-pub use error::{FieldError, Incompatible, Range, RefName, Refusal};
+pub use error::{DynRefusal, FieldError, Incompatible, Range, RefName, Refusal};
 pub use flags::{DemandFlags, GlobalFlags};
 pub use seq::{Code, ErratumSite, Proof, ProofRun, UnitWindow, Unproved};
 pub use shapes::{
-    Branch, DynRole, EhEncodings, Erratum, Facts, GotBase, GotShape, PltChunk, PltPart, PltShape,
-    PltVariant, PropMerge, Reach, RelForm, ThunkShape, TlsAbi, TlsBlock, TlsVariant, Weak0Rule,
-    max_window, x86_property_merge,
+    Branch, DynRole, DynTag, EhEncodings, Erratum, Facts, GotBase, GotShape, IpltWord, LazyTarget,
+    PlaceContent, PltChunk, PltPart, PltShape, PltVariant, PropMerge, Reach, RelForm, TagWhen,
+    ThunkShape, TlsAbi, TlsBlock, TlsVariant, Weak0Rule, WeakClass, max_window, x86_property_merge,
 };
 pub use vocab::{
     AddendRule, Base, Check, Field, Howto, Implicit, Minus, OutputKind, Site, SlotKind, Status,
@@ -171,6 +171,36 @@ pub trait Arch: Sync + 'static {
     fn eh(&self) -> &'static EhEncodings;
     /// §3.10.
     fn dyn_type(&self, role: DynRole) -> Option<u32>;
+    /// `spec/dyn.md` D-49, R-A6 (a): where a `JUMP_SLOT` word of PLT
+    /// variant `v` points before it is bound. `None` (the default) while
+    /// the architecture writes no dynamic PLT (M1).
+    fn lazy_target(&self, v: PltVariant) -> Option<LazyTarget> {
+        let _ = v;
+        None
+    }
+    /// `spec/dyn.md` D-30 rows 24-25, R-A6 (c): the architecture's own
+    /// `.dynamic` entries for the output of `cx`, each with its
+    /// condition. Empty by default (and for a static output).
+    fn dyn_tags(&self, cx: &OutputCx) -> &'static [DynTag] {
+        let _ = cx;
+        &[]
+    }
+    /// `spec/dyn.md` D-25: how a relocation of `r_type` whose place is
+    /// `place` (the input section's bytes, the field at `offset`) in a
+    /// section that is `writable` after layout uses an undefined weak
+    /// key; `None` when it does not use the key (`NONE`, the `SIZE` and
+    /// `GOTPC` types). By default every type is
+    /// [`WeakClass::Unfillable`], so every such key stays `Weak0` (M1).
+    fn weak_use(
+        &self,
+        r_type: u32,
+        place: &[u8],
+        offset: u64,
+        writable: bool,
+    ) -> Option<WeakClass> {
+        let _ = (r_type, place, offset, writable);
+        Some(WeakClass::Unfillable)
+    }
     /// §3.11: the value written, truncated to the field, for a relocation
     /// in a non-alloc section with a debug name against a dead target:
     /// [`tombstone`] of the name and `Facts.class`.

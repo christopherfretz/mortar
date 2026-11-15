@@ -194,7 +194,7 @@ fn dynamic_types_of_6_2() {
 }
 
 fn ocx(output: OutputKind, feature_1_and: u32) -> OutputCx {
-    OutputCx { output, feature_1_and, pac_plt: false, force_bti: false }
+    OutputCx { output, feature_1_and, pac_plt: false, force_bti: false, bind_now: false }
 }
 
 #[test]
@@ -241,4 +241,23 @@ fn slots_and_got_plt_of_x86_46_47() {
     assert_eq!(synth::got_plt_reserved(None), [0, 0, 0]);
     assert_eq!(synth::got_plt_reserved(Some(0xa4ef4)), [0xa4ef4, 0, 0]);
     assert_eq!((X86::M1.got().slot_words)(SlotKind::Addr), 1);
+}
+
+/// `spec/dyn.md` R-A6: the step-0 defaults keep M1 behaviour (no lazy
+/// target, no tags, every weak use unfillable, so every weak key is
+/// `Weak0`).
+#[test]
+fn r_a6_defaults_keep_m1() {
+    use mortar_arch::WeakClass;
+    let a = X86::M1;
+    let cx = OutputCx {
+        output: OutputKind::Pie,
+        feature_1_and: 0,
+        pac_plt: false,
+        force_bti: false,
+        bind_now: true,
+    };
+    assert_eq!(a.lazy_target(PltVariant::Lazy), None);
+    assert!(a.dyn_tags(&cx).is_empty());
+    assert_eq!(a.weak_use(0, &[0; 8], 4, true), Some(WeakClass::Unfillable));
 }

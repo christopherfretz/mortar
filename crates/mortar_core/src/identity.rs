@@ -668,8 +668,8 @@ impl<'a> Identities<'a> {
         match identity {
             AllocIdentity::Common(g) => symbol_id(symbols, lookup, g).map(AllocKey::Common),
             AllocIdentity::Copy { file, value } => {
-                let want = CopyAlloc { file: self.file_id(file)?, value: *value };
-                let at = slots.copies.binary_search(&want).ok()?;
+                let want = (self.file_id(file)?, *value);
+                let at = slots.copies.binary_search_by_key(&want, CopyAlloc::key).ok()?;
                 Some(AllocKey::Copy(at as u32))
             }
         }
