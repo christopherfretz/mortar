@@ -167,6 +167,27 @@ GOT references to `main` and `__libc_start_main` (`Scrt1.o`), weak
 references to `__gmon_start__`, `_ITM_*` (crtbegin) and, in the non-PIE
 `crtbegin.o` of x86-64, `R_X86_64_32`/`32S` against them.
 
+Mixed-mode links (`corpus/mixed.sh`, added after the review): a main
+and three translation units, each in its own mode (`-fno-pic`, `-fPIE`,
+`-fPIC`, `-fno-plt`), against a `-fPIC` library; C and C++; GCC and Clang
+22; AArch64 and x86-64; the three references; PIE and `-no-pie`; every
+output run with address-equality checks (`puts`, `&stdout`, `strlen`,
+library data, functions, read-only data, IFUNC and TLS, executable data
+and TLS, a `puts` pointer in data) across the units, the library and
+`dlsym`. Every `-no-pie` mix links everywhere and every equality held
+(C++: 156 ok, 60 refused, 0 wrong). One `-fno-pic` unit changes the
+whole image: in `-no-pie` it brings copies of `stdout` and library data
+and canonical PLTs for `puts`, `strlen`, library functions and IFUNCs,
+and the other units' GOT slots then point at those (as D-42/D-44 say).
+In a PIE, a `-fno-pic` unit is refused on x86-64 by all three and on
+AArch64 by GNU ld (D-44, D-47); lld links it on AArch64 with copies and
+canonical PLTs; mold links all of them and writes `DT_TEXTREL` silently
+in 8 (a wrong output of the D-47 kind, W6). GCC's `-fPIE` alone already
+copies typeinfo and `std::cout` into an x86-64 PIE (D-43). The only
+wrong outputs are IFUNC address inequalities (W3, extended) and an
+executable IFUNC referenced from a library (W13), both in §13.2; D-45 is
+the rule that avoids them (lld: 0 wrong).
+
 Consequences for the rules: an **x86-64 PIE needs copy relocations**
 (GCC's default code reads `stdout` PC-relatively; all three references
 copy `stdout`, `stderr`, `optind`, `opterr`, `environ`, `std::cout`,
@@ -387,88 +408,133 @@ of all three; `patch_vis.py`); mortar reports the reference undefined.
 *Test:* `shlib-hidden-dynsym` (the patched library; mortar refuses with
 `undefined-symbol`, never writes an output that cannot load).
 
-**D-11 [M2] (needed).** A shared object of the command line or a script
-is **needed** (`file_live = Shared{needed: true}`) when its soname unit's
-*merged* `as_needed` (input §8.2: on only if on at every mention) is
-off, or when it gives `def` to a key with
+**D-11-D-13 setting.** Revised after the review (F1): `ld-linux` is
+loaded by `libc.so`'s `AS_NEEDED(…)`, is not needed by a hello, and
+defines the 22 (AArch64) / 21 (x86-64) strong references of `libc.so.6`
+that nothing else defines (`__tls_get_addr`, `_rtld_global_ro`,
+`__libc_stack_end`, `_dl_argv@GLIBC_PRIVATE`, …;
+`review-m2-adv/ldso`, reproduced); the sets below make it *used*, so
+every default line links. Notation:
 
-1. a strong reference from a live relocatable object (any of its
-   relocations or symbol-table mentions, whether or not the section
-   holding it survives `--gc-sections`: needed is decided by resolution,
-   before liveness; GNU ld and mold agree, lld drops the library, E-shlib
-   2.6a, all three run), or from file 0 (`-u`, `--defsym`, `ENTRY`); or
-2. a strong reference from a needed shared object or a used closure file
-   (D-12) that does not itself list the defining object in its own
-   `DT_NEEDED` (an under-linked library: GNU ld makes the provider
-   needed and the program runs; lld and mold drop it and the program
-   fails with `undefined symbol: mid_fn`, a wrong output of both, E-shlib
-   2.3b).
+- **C**: the shared objects of the command line and scripts, one per
+  soname, each with its merged `as_needed` (input §8.2: on only if on at
+  every mention) and the `FileId` of its first mention. **W**: the closure
+  files of the `DT_NEEDED` walk (input §8.6). **Loaded** = C ∪ W.
+- **Edges**: each `DT_NEEDED` entry of a loaded object leads to the
+  loaded object with that soname, *whatever loaded it* (an as-needed
+  member of C that is not needed satisfies the edge and stops the
+  search: GNU ld, E-shlib 2.3a). `reach(S)` is `S` and every loaded object
+  reachable from `S` along edges.
+- **giver(k)**: none when the program defines `k` (strong or weak; a
+  common gives way to a shared data definition, resolve §3.2 rule 2);
+  otherwise the first member of C in `FileId` order with a visible
+  definition of `k` at the version `k` asks for (resolve §9.2). Closure
+  files never give `def` (D-12).
 
-It is a least fixed point over shared objects (a needed one's references
-can make another needed), computed after `def` (resolve §12). A weak
-reference alone never makes an object needed (GNU ld and lld; mold
-differs, 2.2a); the key's output view is then `Undefined{weak: true}`
-(resolve §9.5) and D-25 gives its `.dynsym` form. A library supplying only
-a weak definition that a strong object definition beats is not needed
-(2.9). Position does not matter (resolve §9.5; GNU ld refuses
-`--as-needed liba.so m.o`, 2.8a). `libc.so`'s
-`AS_NEEDED(ld-linux-*.so.*)` makes the loader needed only when a
-reference binds to a symbol only it defines (`__tls_get_addr`, 1.8a);
-a hello needs `libc.so.6` alone (1.7). *Tests:* `as-needed-weak`,
+**D-11 [M2] (needed).** N is the least set such that
+
+1. every member of C whose merged `as_needed` is off is in N;
+2. `giver(k)` is in N for every key `k` with a strong reference from a
+   live relocatable object (any relocation or symbol-table mention,
+   whether or not its section survives `--gc-sections`: needed is
+   decided by resolution, before liveness; GNU ld and mold agree, lld
+   drops the library, E-shlib 2.6a) or from file 0 (`-u`, `--defsym`,
+   `ENTRY`); call the sets of items 1-2 **N0**;
+3. if `x` ∈ N has a strong undefined reference to `k`, `s = giver(k)` is
+   in C, and `s` ∉ `reach(N0) ∪ reach({x})`, then `s` ∈ N (an under-linked
+   library: GNU ld makes the provider needed and the program runs; lld
+   and mold drop it and the program fails with `undefined symbol:
+   mid_fn`, a wrong output of both, E-shlib 2.3b).
+
+Computed as `N₀ = N0`, `Nᵢ₊₁ = Nᵢ ∪ {s by item 3 for x ∈ Nᵢ}`: item 3
+depends on N only through "`x` ∈ N", so the iteration is monotone and
+reaches the least fixed point in at most |C| rounds, after `def`
+(resolve §12). Never a reason to be needed: a weak reference alone (GNU
+ld and lld; mold differs, 2.2a; the key's view is then
+`Undefined{weak: true}` and D-25 applies), a reference from a used
+object (D-12) or a closure file, a reference from an as-needed object
+outside N, and a weak definition that a strong object definition beats
+(2.9). Position does not matter (resolve §9.5): GNU ld refuses
+`--as-needed liba.so m.o` (2.8a), mortar links it (D-19a gives the
+order). Both conditions of item 3 are needed: without `reach(N0)` a
+provider already reached from the command line's needed set is added
+twice-over (`libleaf.so` in 2.3b would be recorded); without
+`reach({x})` a provider `x` itself lists is recorded (`libmid.so`, X2);
+GNU ld's own test, "`s` ∉ `reach(N)`", gives the same verdicts on the
+corpus but is not monotone. A used object's references never make an
+object needed (GNU ld refuses X3: ``libmid2.so: undefined reference to
+`leaf_fn'``; letting `x` range over used objects would link it, and that
+output runs, X3c; mortar takes GNU ld's rule). A hello needs
+`libc.so.6` alone (1.7); `ld-linux` becomes needed only when the
+program's own reference binds a symbol only it defines
+(`__tls_get_addr`, 1.8a). *Tests:* `as-needed-weak`,
 `as-needed-underlinked` (runs), `as-needed-gc`, `as-needed-merge`,
-`needed-ldso-tls`.
+`needed-ldso-tls`, `used-underlinks-refused` (X3).
 
-**D-12 [M2] (closure files).** The `DT_NEEDED` closure is loaded (input
-§8.6). Resolution treats a closure file `c` thus:
+**D-12 [M2] (used objects and closure files).** **U = reach(N) \ N**,
+computed once after D-11 (so the two never recurse into each other): a
+loaded object reached by a `DT_NEEDED` edge from a needed or used
+object, whatever loaded it. On the default lines U is `ld-linux` (C),
+`libm` and `ld-linux` (C++), `libm`, `libgcc_s`, `ld-linux` (Fortran on
+AArch64) (`shlib/usedset.sh`). `file_live`: N → `Shared{needed: true}`,
+U → `Shared{used: true}`, every other loaded object → `Dead` (request
+R-M1). Then:
 
-- `c` is **used** when some needed shared object or used closure file
-  lists it in `DT_NEEDED` (a reachability over closure edges from needed
-  objects only); `file_live = Closure` for a used one, `Dead` otherwise
-  (request to model.md §3.3, R-M1).
-- `c`'s definitions are never candidates for a key referenced by a
-  relocatable object or file 0: such a reference is undefined, with the
-  note `defined in <c>, which is not on the command line` (GNU ld:
-  ``undefined reference to symbol 'mid_fn'`` and `DSO missing from command
-  line`; lld and mold: `undefined symbol: mid_fn`; E-shlib 2.10a).
-- `c`'s definitions do satisfy references of shared objects when the
-  shlib-undefined check judges them (D-13), and `c`'s references set
-  `ref_dynamic`: a program symbol referenced only by a used closure file is
-  exported (GNU ld; lld and mold do not export and the program fails with
-  `symbol lookup error: … undefined symbol: hook`, a wrong output of both,
-  E-shlib 4.2a).
-- `c` is never `DT_NEEDED` (input §8.6).
+- a used object is never `DT_NEEDED` (input §8.6);
+- a definition that exists only in a closure file (W, never in C) is
+  never a candidate for a key referenced by a relocatable object or file
+  0: such a reference is undefined, with the note `defined in <c>, which
+  is not on the command line` (GNU ld: ``undefined reference to symbol
+  'mid_fn'`` and `DSO missing from command line`; lld and mold:
+  `undefined symbol: mid_fn`; E-shlib 2.10a). A member of C that is used
+  but not needed gives `def` like any other member of C (if a program
+  reference binds it, it is needed by item 2);
+- definitions of used objects satisfy the shlib-undefined check (D-13);
+- references (strong or weak) and definitions of members of N ∪ U set
+  `ref_dynamic` and `defined_dynamic`: a program symbol referenced only
+  by a used object is exported (GNU ld; lld and mold do not export and
+  the program fails with `symbol lookup error: … undefined symbol: hook`,
+  W8, E-shlib 4.2a). Objects outside N ∪ U count for neither (an
+  executable definition that an unneeded as-needed library also defines
+  is not exported: GNU ld and mold; lld exports it, harmless, 2.5a);
+  these columns are computed after D-11 and D-12 (request R-R3).
 
-`ref_dynamic` and `defined_dynamic` count needed shared objects and used
-closure files only, so they are computed after D-11's fixed point (request
-R-R3 to resolve.md §3.6, §12.1; an executable definition that an
-as-needed, unneeded library also defines is not exported: GNU ld and mold;
-lld exports it, harmless, E-shlib 2.5a). Archive extraction (resolve
-§4.2) still takes every shared object's references as edges, needed or
-not, and closure files' too [open Q1: unmeasured whether GNU ld extracts
-for an unneeded as-needed library's reference].
-*Tests:* `closure-export` (runs), `closure-not-on-command-line`
-(the note), `closure-unused`.
+Archive extraction (resolve §4.2) still takes every loaded shared
+object's references as edges, needed or not [open Q1: unmeasured whether
+GNU ld extracts for an unneeded as-needed library's reference].
+*Tests:* `closure-export` (runs), `closure-not-on-command-line` (the
+note), `closure-unused`, `shlib-undefined-ldso` (the default hello with
+D-13 on: links, `ld-linux` used, not needed).
 
 **D-13 [M2] (shared objects' undefined references).** In `Exec` and `Pie`
 the check of resolve §5.2 is on by default (`--no-allow-shlib-undefined`;
 GNU ld and lld; mold never checks, E-shlib 3.1a);
-`--allow-shlib-undefined` turns it off. It judges every strong undefined
-reference of every needed shared object and used closure file (GNU ld
-checks closure files, 3.4a; an as-needed object that is not needed is not
-judged: lld judges it and refuses a link that runs, 3.6). A reference is
-satisfied by any definition of the program, of a needed shared object or
-of a used closure file, with the version it requires (D-10). When a
-closure library is **not found** (`needed-not-found`, input §8.6), the
-references of the object that needs it are judged like the others, and
-any that only the missing library would define are undefined: GNU ld's
-rule (3.5, 4.1); lld exempts such an object. This **replaces** resolve
-§5.2 L769's exemption (request R-R1): the conservative rule is the one
-the default `gcc` line already applies, and `--allow-shlib-undefined` or
+`--allow-shlib-undefined` turns it off. It **judges** every strong
+undefined reference of every member of N ∪ U (GNU ld judges used objects:
+X1, X3, 3.4a); objects outside N ∪ U, and what only they reach, are not
+judged (an as-needed object that is not needed: GNU ld; lld judges it and
+refuses a link that runs, 3.6). A judged reference is **satisfied** by a
+non-hidden program definition (any version) or by a visible definition
+in a member of N ∪ U with the version it requires (D-10). When an edge's
+library is **not found** (`needed-not-found`, input §8.6), the
+references that only it would satisfy are undefined: GNU ld's rule (3.5,
+4.1); lld exempts such an object. This **replaces** resolve §5.2 L769's
+exemption (request R-R1): the conservative rule is the one the default
+`gcc` line already applies, and `--allow-shlib-undefined` or
 `-rpath-link` resolves it. Message: `undefined-symbol` with the note of
 resolve §5.3 and the needing file as the place (GNU ld:
-``d/libx.so: undefined reference to `nobody'``). *Tests:*
-`shlib-undefined`, `shlib-undefined-closure`, `shlib-undefined-dropped`,
-`shlib-undefined-missing-needed`.
+``d/libx.so: undefined reference to `nobody'``). Model check
+(`shlib/usedset.py`, an independent implementation of D-11-D-13 run on
+the 116 E-shlib experiments, X1-X3c and the default gcc, g++ and gfortran
+lines, AArch64 and x86-64: 254 links): 236 agree with GNU ld on verdict,
+`DT_NEEDED` set and export; the 18 that differ are deliberate (2.8a
+position, D-11; 2.10b, D-15; 4.4c/f/g native `LD_RUN_PATH`/
+`LD_LIBRARY_PATH`, D-19; 4.4h/i the search of input §8.6; 5.6a/b/d
+protected, D-18; 5.7 hidden entry, D-10). Every default line links,
+judging 22/21 (C), 240/234 (C++) and 292/319 (Fortran) references, all
+satisfied. *Tests:* `shlib-undefined`, `shlib-undefined-closure`,
+`shlib-undefined-dropped`, `shlib-undefined-missing-needed`,
+`shlib-undefined-ldso`.
 
 **D-14 [M2] (versions read, versions not checked).** From a shared object
 mortar reads its `versym`, its version definitions (names, `VER_FLG_BASE`
@@ -541,8 +607,7 @@ order of the reference of record, GNU ld. Definitions:
   or `m` is as-needed and some reason of D-11 for `D` is a strong
   reference from a relocatable object at a position before `m` (or
   anywhere in the same `--start-group`/`GROUP` as `m`), or from a needed
-  shared object whose own keeping mention is before `m` and which does
-  not list `D` in `DT_NEEDED`. If no mention qualifies (a line GNU ld
+  shared object whose own keeping mention is before `m` (D-11 item 3). If no mention qualifies (a line GNU ld
   refuses, below), the keeping mention is the first mention.
 - `DT_NEEDED` lists the needed objects by the position of their keeping
   mentions (position, not the time GNU ld decided: a group rescan that
@@ -664,27 +729,77 @@ in order of first use: the `.dynsym` names in `.dynsym` order, the
 the offsets are a prefix sum the verifier can recompute. *Test:*
 `dynstr-layout`.
 
-**D-25 [M2] (undefined weak in a dynamic executable).** This settles the
-circle of arch.md §2.1 L77 and resolve.md §5.4 L819 (requests R-A2, R-R2):
-`target_kind` of an undefined key that is weak (no definition, or a
-definition in a shared object that is not needed, D-11) is
+**D-25 [M2] (undefined weak in a dynamic executable; per symbol).** This
+settles the circle of arch.md §2.1 L77 and resolve.md §5.4 L819 (requests
+R-A2, R-R2). `target_kind` is a property of the **key**, never of the
+relocation class (arch.md §2.1). For an undefined key that is weak (no
+definition, or one only in a shared object that is not needed, D-11),
+classify its live relocations as
 
-- `Weak0` in `Exec`, and in `Pie` under `-z nodynamic-undefined-weak`;
-- `WeakDyn` in `Pie` otherwise, when some live relocation against it has
-  a class that reaches it through a GOT slot or an absolute data word
-  (`Got`, `AbsWord`): the key is in `.dynsym` (D-23) and the loader fills
-  the slot (0 unless a library loaded at run time defines it);
-- `Weak0` for every other class against it (a branch or PC-relative use
-  cannot be filled by the loader in a PIE).
+- *fillable*: a GOT class (`Got`), an absolute word in a writable place
+  (`AbsWord`), a branch (`CALL26`/`JUMP26`, `PLT32`, `R_386_PLT32`,
+  `R_386_PC32` on a call, `R_X86_64_PLTOFF64`);
+- *unfillable*: a non-branch PC-relative use (`R_X86_64_PC32`/`PC64` not
+  on a call, AArch64 `ADR_PREL_*`, `LD_PREL_LO19`, `PREL*`, i386
+  `R_386_PC32` not on a call) or an absolute use in a non-writable place
+  (`R_X86_64_32`/`32S` in code, `MOVW_UABS_*`).
 
-The references: GNU ld keeps such keys in `.dynsym` except on x86 non-PIE,
-lld always, mold never (E-dynsym §1); every program runs the same unless a
-library loaded later defines the symbol. The rule above is the one that
-never needs a text relocation or a canonical PLT for a symbol that does
-not exist. [open Q2: the per-class split makes `target_kind` depend on
-the relocation class, which arch.md §2.1 defines per key; R-A2 proposes
-the split as a property of the class row instead.] *Tests:*
-`weak-undef-pie` (`__gmon_start__`, `_ITM_*`), `weak-undef-exec`.
+Then:
+
+- the key is **`WeakDyn`** in `Exec` and `Pie` when it has some `Got` or
+  `AbsWord` use and no unfillable use. It is in `.dynsym` (`WEAK UND`,
+  unhashed, D-22/D-23); its GOT slots get `GLOB_DAT`, its absolute words
+  a symbolic record, and **every branch against it goes through a PLT
+  entry** with a `JUMP_SLOT` (lld's form; GNU ld uses `.plt.got` on
+  x86-64; D-49 has no `.plt.got`). The GOT test and the call then agree
+  whether or not a library loaded later (`LD_PRELOAD`, `dlopen` with
+  `RTLD_GLOBAL`) defines it;
+- in `Pie`, a key with an unfillable use is refused by name,
+  `weak-undefined-pc-in-pie`, with ``relocation R_X86_64_PC32 against
+  undefined weak symbol `v' cannot be used in a position-independent
+  executable; recompile with -fPIE``. Measured (`reloc/weakpc.sh`: GCC 14,
+  Clang 19, Clang 22 × AArch64, x86-64, i386 × default, `-fPIE`, `-fPIC`,
+  `-fno-pic`, code models × `-O0`/`-O2` × 8 weak patterns, 1008 objects):
+  only x86-64 `-fno-pic` objects (GCC at `-O0`/`-O2`, Clang at `-O2`;
+  `-mcmodel=medium` too) produce one, on weak **data** (`movl v(%rip)`),
+  and always together with an `R_X86_64_32` for `&v`, which all three
+  references refuse in a PIE already; AArch64 (GOT in every mode,
+  `-fno-pic` and `-mcmodel=tiny` included) and i386 never do. The
+  refusal costs no input that any reference links;
+- otherwise the key is **`Weak0`** for every class: in `Exec` when it has
+  an unfillable use (it is then 0 everywhere, consistently: GNU ld on
+  x86, mold), and in both kinds when it has neither a `Got` nor an
+  `AbsWord` use (a branch alone: `__gmon_start__` style calls patched per
+  a64 §7 / x64 X-16).
+
+The references: GNU ld and lld make a GOT-used weak key dynamic in `Pie`
+and in `Exec` and run the hook (`review-m2-adv/weaksplit`, reproduced:
+GNU ld `GLOB_DAT` + PLT, `.plt.got` on x86-64; lld `GLOB_DAT` +
+`JUMP_SLOT`); mold makes it 0 everywhere (the hook never runs under
+`LD_PRELOAD`: consistent, but the idiom is lost). The former per-class
+split (GOT `WeakDyn`, call `Weak0`) is a mislink: patched into GNU ld's
+image it prints "hook non-null, called" and skips `hook` on AArch64 and
+dies with `SIGSEGV` on x86-64. GNU ld on AArch64 and lld on all three
+architectures make that split themselves in a `-no-pie` link that mixes
+a `-fPIE` object (GOT) and an absolute use from `-fno-pic`/`-mcmodel=large`
+code: under `LD_PRELOAD` they print `got non-null abs null` (W12;
+`reloc/weakpc.sh` stage `weakmix`); the "no unfillable use" condition is
+what prevents it. An absolute word alone (`void (*p)(void) = hook;` in
+data) makes the key dynamic, as lld and GNU ld on AArch64 do (GNU ld on
+x86 and mold give 0).
+
+`-z nodynamic-undefined-weak` and `-z dynamic-undefined-weak` are refused
+by name at M2 (R-C1): no census line passes them; GNU ld honours them on
+x86 and ignores them with a warning on AArch64, lld and mold honour them,
+and mold's `-z dynamic-undefined-weak -no-pie` refuses (x86-64,
+`_ITM_deregisterTMCloneTable` copy) or asserts (i386). *Tests:*
+`weak-undef-pie` (`__gmon_start__`, `_ITM_*`), `weak-undef-exec`,
+`weak-undef-hook-preload` (the review's hook program and the call,
+address and data patterns; AArch64 natively and x86-64 under qemu
+`-E LD_PRELOAD=…`; with and without the preload; must match GNU ld and
+lld: `null`/-1 without, `f: RAN`, `&f == dlsym(f)`, data 42 with),
+`weak-undef-pc-pie-refused` (x86-64 `-fno-pic` weak data), `weak-mixed-exec`
+(W12: `Weak0` everywhere, consistent).
 
 **D-26 [M2] (`.gnu.hash`).** For `n` hashed entries (D-22), `W` the word
 size in bits:
@@ -1314,6 +1429,8 @@ What reports each wrong output and hazard of §13.2:
 | W9 needed library dropped | P-D6 |
 | W10 wrong or missing interpreter | P-D4 |
 | W11 canonical PLT word without a record in a PIE | P-D9 (views 1 and 2) |
+| W12 weak symbol split between GOT and absolute use | P-D9 (view 3) |
+| W13 executable IFUNC exported as `STT_GNU_IFUNC` / at the implementation | P-D7 (D-23 fields), P-D9 |
 | H1 `IRELATIVE` before `JUMP_SLOT`s | P-D10 |
 | F2 image (GOT `WeakDyn`, call `Weak0`) | P-D9 (view 3) |
 
@@ -1363,14 +1480,16 @@ wrong" means the program links without a diagnostic and then misbehaves.
 |---|---|---|---|
 | W1 | all three | a `.dynsym` entry made `STV_HIDDEN` is bound; the output fails to load | `shlib/run.sh` exp. 5.7, `shlib/patch_vis.py` |
 | W2 | GNU ld | not every alias of a copied `environ` is exported; a library reading `_environ` sees libc's stale variable after `setenv` | `dynsym/run.sh` (envalias) |
-| W3 | GNU ld, mold | x86-64 PIE: `&ifunc` differs between translation units (two `IRELATIVE`s) | `reloc/run.sh` (ifeq, `main.x86_64.pie`) |
+| W3 | GNU ld, mold | `&ifunc` of an executable IFUNC differs between translation units: x86-64 PIE (GNU ld, mold) and `-no-pie` (GNU ld); AArch64 PIE with a `-fno-pic` unit (mold) | `reloc/run.sh` (ifeq, `main.x86_64.pie`); `corpus/mixed.sh` (`all-pie`, `pie+nopic`, …) |
 | W4 | GNU ld, mold | copy of a zero-size symbol: GNU ld aliases another copy, mold makes a 0-byte copy outside any section; reads wrong values | `reloc/run.sh` (copy/zero) |
 | W5 | mold | canonical PLT for a protected function: links, address inequality | `reloc/run.sh` (copy/pfn); `shlib` 5.6d |
-| W6 | mold | i386 text relocation written silently; the program crashes | `reloc/run.sh` (textrel, `t.i386.*.mold`) |
+| W6 | mold | text relocations written silently (`DT_TEXTREL`): i386, where the program crashes; AArch64 PIEs with a `-fno-pic` unit (8 mixes) | `reloc/run.sh` (textrel, `t.i386.*.mold`); `corpus/mixed.sh` |
 | W7 | lld 19, 22 | PIE: absolute word in read-only data against shared data links with a copy and no record; the program crashes (12/12) | `dynamic/lld_textrel_copyrel.sh` |
 | W8 | lld, mold | a symbol referenced only by an under-linked closure library is not exported; load fails with an undefined symbol | `shlib/run.sh` exp. 4.2a, 2.3b |
 | W9 | mold | a library first mentioned `--as-needed` (unreferenced) and later plainly is dropped from `DT_NEEDED` (mold keeps the first mention's flag); also a second `-lname` after `-Bstatic`/`-Bdynamic` is ignored | `dynamic/variants.sh` (needed_twice), `dynamic/needed_order.sh` (`asn_unref_then_plain`, `bstatic_first`) |
 | W10 | GNU ld | built-in default interpreter wrong on x86-64 and i386 (exit 255); lld and mold write no `PT_INTERP` (exit 139) | `dynamic/interp.sh` |
+| W12 | GNU ld (AArch64), lld (all three) | `-no-pie`, a weak symbol reached through the GOT in a `-fPIE` unit and absolutely in a `-fno-pic`/`-mcmodel=large` unit: under `LD_PRELOAD` the GOT sees the definition and the absolute use sees 0 (`got non-null abs null`) | `reloc/weakpc.sh` (stage `weakmix`) |
+| W13 | GNU ld, mold | x86-64 PIE: an executable IFUNC referenced from a library; the loader refuses (``IFUNC symbol 'main_ifunc' referenced in libmxi.so is defined in the executable and creates an unsatisfiable circular dependency``, rc 127); on AArch64, mold (PIE, all `-fno-pic`) and GNU ld (`-no-pie`) give the library a different `&main_ifunc` | `corpus/mixed.sh` (exe-ifunc-from-dso) |
 | W11 | lld 19, 22 | x86-64 PIE: a `-fno-pic` `R_X86_64_32` against `puts` gets a canonical PLT and no record; the code sees the unrelocated address (`pie=0 lib=0 dlsym=0`) | `review-m2-adv/canonpie/run.sh` |
 | H1 | lld, mold | (hazard, not a wrong output) `IRELATIVE` before `JUMP_SLOT`s: a resolver calling through the PLT crashes | `reloc/run.sh` (ifh_plt) |
 
@@ -1450,10 +1569,10 @@ refusal. "W" links to §13.2.
 | area | tests |
 |---|---|
 | kinds | `output-kind-table`, `no-dynamic-linker-refused` (refuse) |
-| shared inputs | `shlib-hidden-dynsym` (refuse; W1), `as-needed-weak`, `as-needed-closure`, `closure-export` (W8), `closure-not-on-command-line` (refuse), `shlib-undefined-missing-closure`, `version-needs-unchecked`, `copy-dt-needed-refused` (refuse), `tls-mismatch-shared` (refuse), `protected-copy`, `protected-canon-plt` (refuse; W5), `needed-twice` (W9), `needed-order` |
+| shared inputs | `shlib-hidden-dynsym` (refuse; W1), `as-needed-weak`, `as-needed-closure`, `closure-export` (W8), `closure-not-on-command-line` (refuse), `shlib-undefined-missing-closure`, `version-needs-unchecked`, `copy-dt-needed-refused` (refuse), `tls-mismatch-shared` (refuse), `protected-copy`, `protected-canon-plt` (refuse; W5), `needed-twice` (W9), `needed-order`, `shlib-undefined-ldso`, `used-underlinks-refused`, `needed-order-as-needed-twice`, `needed-order-group` |
 | `.dynsym` | `dynsym-set`, `dynsym-order`, `dynsym-fields`, `environ-aliases` (W2), `weak-undef-pie`, `gnu-hash-sizes`, `gnu-hash-lookup`, `versions-verneed`, `versioned-export-refused` (refuse), `hash-style-sysv-refused` (refuse) |
 | `.dynamic` | `dynamic-tags`, `init-fini-option`, `variant-pcs-plt`, `got-header`, `dynamic-writable`, `dyn-shdr`, `interp-default` (W10) |
-| relocations | `rela-dyn-order`, `irelative-resolver-calls-plt` (H1), `copy-reloc`, `copy-zero-size` (refuse; W4), `copy-tls-refused` (refuse), `copy-in-pie-x86-64`, `canonical-plt-equality`, `canon-plt-in-pie-refused` (refuse), `ifunc-equality-pie` (W3), `textrel-refused` (refuse; W6), `textrel-ro-copy-pie` (refuse; W7), `tls-shared-ie`, `tls-exe-le`, `tls-gd-unrelaxed`, `tls-desc-large`, `plt-lazy`, `plt-now` |
+| relocations | `rela-dyn-order`, `irelative-resolver-calls-plt` (H1), `copy-reloc`, `copy-zero-size` (refuse; W4), `copy-tls-refused` (refuse), `copy-in-pie-x86-64`, `canonical-plt-equality`, `canon-plt-in-pie-refused` (refuse; W11), `ifunc-equality-pie` (W3), `textrel-refused` (refuse; W6), `textrel-ro-copy-pie` (refuse; W7), `tls-shared-ie`, `tls-exe-le`, `tls-gd-unrelaxed`, `tls-desc-large`, `plt-lazy`, `plt-now`, `copy-typeinfo-relro`, `weak-undef-hook-preload`, `weak-undef-pc-pie-refused`, `weak-mixed-exec` (W12), `ifunc-from-dso` (W13), `mixed-mode` (the `corpus/mixed.sh` mixes), `norelro-dynamic` |
 | layout | `dyn-section-order`, `dyn-segments`, `relro-maxpage`, `pure-function` (link twice with a perturbed address input; dynamic sizes equal) |
 | tools | `gdb-break-main`, `lldb-break-main`, `ldd-lists`, `elflint-dynamic` |
 | end to end | the default line of every driver of §2.1 for AArch64 and x86-64 (C, C++, Fortran; PIE and `-no-pie`; `-z now`; `-rdynamic`; `-static-libstdc++`) and kiln's libc++ lane |
