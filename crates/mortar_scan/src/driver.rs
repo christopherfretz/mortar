@@ -57,9 +57,10 @@ pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> 
                 continue;
             }
             let index = k as u32;
-            if let Some(n) = staged_count(view, file, row.reloc.0) {
+            if let Some(n) = header_count(view, file, row.reloc.0) {
                 // One unit, opened and checked by its walk: the scan
-                // reads the records once (`spec/image.md` I-81).
+                // reads the records once (`spec/image.md` I-81), and the
+                // list of units is made from section headers alone.
                 out.push(Unit {
                     file,
                     section: sid,
@@ -114,17 +115,20 @@ pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> 
     out
 }
 
-/// The record count of relocation section `rel` of `file` when the store
-/// does not hold its records (`spec/input.md` §11.1: the relocations of
-/// a non-alloc section) and it has at most `SCAN_BLOCK` records: such a
-/// section is a single unit whatever its records say, so [`units`] need
-/// not read it. `None`: [`units`] opens it.
-fn staged_count(view: &View<'_, '_>, file: FileId, rel: u32) -> Option<u32> {
-    let obj = view.prep(file)?.obj?;
-    let s = obj.section(SectionIndex(rel)).ok()?;
-    if !matches!(s.data(), Err(mortar_elf::Error::NotResident { .. })) {
+/// The record count of relocation section `rel` of `file` from its
+/// header, when it has between 1 and `SCAN_BLOCK` records: such a section
+/// is a single unit whatever its records say, so [`units`] need not open
+/// it; its walk does, and reports what [`Sec::open`] finds wrong at the
+/// same key. `sh_size / sh_entsize` is the record count whenever the
+/// records can be read (`mortar_elf` checks `sh_entsize` against the
+/// record size and `sh_size` against a multiple of it). `None`: [`units`]
+/// opens it (none, or more than one block, of records; an unreadable
+/// header).
+fn header_count(view: &View<'_, '_>, file: FileId, rel: u32) -> Option<u32> {
+    let mortar_core::inputs::Reader::Object(obj) = view.inputs.files.get(file)?.reader else {
         return None;
-    }
+    };
+    let s = obj.section(SectionIndex(rel)).ok()?;
     let h = s.header();
     if h.sh_entsize == 0 {
         return None;
@@ -457,9 +461,9 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     let sec = match Sec::open(view, u.file, u.section, u.index, u.rel, bufs) {
         Ok(s) => s,
         Err(d) => {
-            // Opened once already when the units were made, except a
-            // section whose records are not resident (`staged_count`):
-            // its first open is here.
+            // A section of one block is first opened here
+            // (`header_count`); one of several blocks was opened when the
+            // units were made.
             out.diags.push(d);
             return out;
         }
