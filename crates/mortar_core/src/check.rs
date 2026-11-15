@@ -21,13 +21,16 @@ use mortar_elf::consts::{
 use crate::assignment::Assignment;
 use crate::column::Column;
 use crate::demands::{DemandFlags, Demands, GlobalFlags};
-use crate::id::{ChunkId, FragId, Id, OptId, OutSecId, SectionId, SegmentId, SymKey, SymKind};
+use crate::id::{
+    ChunkId, FragId, Id, OptId, OutSecId, SectionId, SegmentId, SymKey, SymKind, SymbolId,
+};
 use crate::inputs::{Inputs, Reader};
 use crate::layout::{
-    AllocKey, ChunkKind, DefValue, Layout, PatchKind, SegmentRules, ThunkTarget, derive_segments,
+    AllocKey, ChunkKind, CopyAlloc, CopyPlace, DefValue, Layout, PatchKind, SegmentRules,
+    ThunkTarget, derive_segments,
 };
 use crate::liveness::Liveness;
-use crate::resolution::{Def, FileLive, Resolution};
+use crate::resolution::{Def, Resolution};
 use crate::split::Split;
 
 /// The rule a layout breaks.
@@ -425,10 +428,18 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         }
         for (at, row) in slots.copies.iter().enumerate() {
             need(
-                row.file.index() < files,
+                row.file.index() < files && row.alias.index() < symbols,
                 r,
                 || "file out of range".into(),
                 [Row::Entry("copies", at as u32)],
+            )?;
+        }
+        for (at, (f, _)) in slots.verneed.iter().enumerate() {
+            need(
+                f.index() < files,
+                r,
+                || "file out of range".into(),
+                [Row::Entry("verneed", at as u32)],
             )?;
         }
         for (at, row) in slots.copy_of.iter().enumerate() {
@@ -652,16 +663,8 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         if let Some(pair) = dynsym.windows(2).find(|p| p[0] == p[1]) {
             return fail(r, "a symbol twice in .dynsym", [Row::Symbol(pair[0].into())]);
         }
-        let exported = cx.demands.keys_with(DemandFlags::EXPORT).filter_map(SymKey::as_global);
-        if let Some((s, missing)) = difference(exported, dynsym.iter().copied()) {
-            let what = if missing {
-                "an export demand not in .dynsym"
-            } else {
-                "a .dynsym entry without an export demand"
-            };
-            return fail(r, what, [Row::Symbol(s.into())]);
-        }
-        if let Some(at) = unsorted(&slots.copies, |c| *c) {
+        self.dynsym_set(&dynsym)?;
+        if let Some(at) = unsorted(&slots.copies, CopyAlloc::key) {
             return fail(r, "copies not sorted or given twice", [Row::Entry("copies", at)]);
         }
         if let Some(at) = unsorted(&slots.copy_of, |c| c.0) {
@@ -683,6 +686,18 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         if let Some(at) = used.iter().position(|u| !u) {
             return fail(r, "a copy allocation no symbol uses", [Row::Entry("copies", at as u32)]);
         }
+        for (at, c) in slots.copies.iter().enumerate() {
+            let alias = slots.copy_of.binary_search_by_key(&c.alias, |row| row.0);
+            need(
+                alias.is_ok_and(|i| slots.copy_of[i].1 as usize == at) && c.align.is_power_of_two(),
+                r,
+                || {
+                    "a copy allocation whose alias is not its own, or alignment not a power of 2"
+                        .into()
+                },
+                [Row::Entry("copies", at as u32)],
+            )?;
+        }
         let mut needed = slots.needed.to_vec();
         needed.sort_unstable();
         if let Some(pair) = needed.windows(2).find(|p| p[0] == p[1]) {
@@ -690,12 +705,13 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         }
         for (at, &f) in slots.needed.iter().enumerate() {
             need(
-                matches!(cx.resolution.file_live[f], FileLive::Shared { needed: true }),
+                cx.resolution.file_live[f].is_needed(),
                 r,
                 || "DT_NEEDED for a file that is not a needed shared object".into(),
                 [Row::Entry("needed", at as u32)],
             )?;
         }
+        self.versions_and_strings()?;
         let mut eh = slots.eh_records.to_vec();
         eh.sort_unstable();
         if let Some(pair) = eh.windows(2).find(|p| p[0] == p[1]) {
@@ -754,6 +770,94 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             )?;
         }
         Ok(())
+    }
+
+    /// §4.3, `.dynsym` (`spec/dyn.md` D-21, D-22): every import, export,
+    /// `EXPORT` demand, `WeakDyn` key and copied key is an entry, and every
+    /// entry is one of those or a copy alias (a key whose shared
+    /// definition is in a file with a copy allocation); the unhashed block
+    /// is within the list. `dynsym` is the sorted list.
+    fn dynsym_set(&self, dynsym: &[SymbolId]) -> Check {
+        let r = Rule::Slots;
+        let (cx, slots) = (self.cx, &self.layout.slots);
+        let res = cx.resolution;
+        let export = |k: SymbolId| cx.demands.of(SymKey::global(k)).contains(DemandFlags::EXPORT);
+        let copied = |k: SymbolId| slots.copy_of.binary_search_by_key(&k, |row| row.0).is_ok();
+        let required = |k: SymbolId| {
+            res.imported.contains(k)
+                || res.exported.contains(k)
+                || cx.demands.weak_dyn.contains(k)
+                || export(k)
+                || copied(k)
+        };
+        let alias = |k: SymbolId| {
+            res.bind(k).is_some_and(|e| slots.copies.iter().any(|c| c.file == e.file))
+        };
+        for &k in dynsym {
+            need(
+                required(k) || alias(k),
+                r,
+                || "a .dynsym entry that is no import, export, copy alias or WeakDyn key".into(),
+                [Row::Symbol(k.into())],
+            )?;
+        }
+        let keys = res.def.iter().map(|row| row.0);
+        for k in keys.filter(|&k| required(k)) {
+            need(
+                dynsym.binary_search(&k).is_ok(),
+                r,
+                || "an import, export, copy or WeakDyn key not in .dynsym".into(),
+                [Row::Symbol(k.into())],
+            )?;
+        }
+        need(
+            slots.dynsym_unhashed as usize <= slots.dynsym.len(),
+            r,
+            || "more unhashed .dynsym entries than entries".into(),
+            [],
+        )
+    }
+
+    /// §4.3, `.gnu.version_r` and `.dynstr` (`spec/dyn.md` D-24, D-27):
+    /// `verneed` in `needed` order with increasing, non-empty version
+    /// lists; a `.dynstr` has one offset per string it names, each below
+    /// its size.
+    fn versions_and_strings(&self) -> Check {
+        let r = Rule::Slots;
+        let slots = &self.layout.slots;
+        let mut last = None;
+        for (at, (f, versions)) in slots.verneed.iter().enumerate() {
+            let pos = slots.needed.iter().position(|n| n == f);
+            need(
+                pos.is_some() && pos > last,
+                r,
+                || "a version need of a file not needed, or out of needed order".into(),
+                [Row::Entry("verneed", at as u32)],
+            )?;
+            last = pos;
+            need(
+                !versions.is_empty() && versions.windows(2).all(|w| w[0] < w[1]),
+                r,
+                || "a version need whose versions are empty or not increasing".into(),
+                [Row::Entry("verneed", at as u32)],
+            )?;
+        }
+        let d = &slots.dynstr;
+        if d.is_empty() {
+            let none = d.symbols.is_empty()
+                && d.needed.is_empty()
+                && d.versions.is_empty()
+                && d.runpath.is_none();
+            return need(none, r, || "offsets into an empty .dynstr".into(), []);
+        }
+        let shapes = d.symbols.len() == slots.dynsym.len()
+            && d.needed.len() == slots.needed.len()
+            && d.versions.len() == slots.verneed.len()
+            && d.versions.iter().zip(&slots.verneed).all(|(o, v)| o.len() == v.1.len());
+        need(shapes, r, || ".dynstr offsets do not match the lists they name".into(), [])?;
+        let all = d.symbols.iter().chain(&d.needed).chain(d.versions.iter().flatten());
+        let inside = all.chain(&d.runpath).all(|&o| o > 0 && o < d.size);
+        need(inside, r, || "a .dynstr offset outside the section".into(), [])
     }
 
     /// §4.4 rule 1.
@@ -1074,7 +1178,172 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             }
         }
         need(page > 0, r, || "page size 0".into(), [])?;
+        self.dynamic()?;
+        self.copies()?;
         self.derived()
+    }
+
+    /// The first alloc synthetic chunk named `name` in order.
+    fn synthetic(&self, name: &[u8]) -> Option<(usize, ChunkId)> {
+        let p = &self.layout.placement;
+        p.order.iter().enumerate().map(|(i, &c)| (i, c)).find(|&(_, c)| {
+            let ch = &p.chunks[c];
+            ch.is_alloc() && matches!(ch.kind, ChunkKind::Synthetic(s) if s.name == name)
+        })
+    }
+
+    /// Rule 3, the dynamic output's placement (`spec/dyn.md` D-1, D-31,
+    /// D-33; `spec/layout.md` L-68): the image base is 0 exactly in a
+    /// position-independent output; `.interp` directly follows the program
+    /// header table; `.dynamic` is writable, and inside the RELRO run when
+    /// there is one.
+    fn dynamic(&self) -> Check {
+        let r = Rule::Segments;
+        let p = &self.layout.placement;
+        let pie = self.cx.segment_rules.pie;
+        let header = p.order.iter().copied().find(|&c| p.chunks[c].kind == ChunkKind::FileHeader);
+        if let Some(h) = header
+            && let Some(base) = p.chunks[h].addr
+        {
+            need(
+                (base == 0) == pie,
+                r,
+                || {
+                    if pie {
+                        format!("a position-independent output at base {base:#x}, not 0")
+                    } else {
+                        "a position-dependent output at base 0".into()
+                    }
+                },
+                [Row::Chunk(h)],
+            )?;
+        }
+        if let Some((at, interp)) = self.synthetic(b".interp") {
+            let after = at.checked_sub(1).map(|i| p.order[i]);
+            need(
+                after.is_some_and(|c| p.chunks[c].kind == ChunkKind::ProgramHeaders),
+                r,
+                || ".interp does not directly follow the program headers".into(),
+                [Row::Chunk(interp)],
+            )?;
+        }
+        if let Some((_, dynamic)) = self.synthetic(b".dynamic") {
+            let c = &p.chunks[dynamic];
+            need(
+                c.flags & SHF_WRITE != 0,
+                r,
+                || ".dynamic is not writable".into(),
+                [Row::Chunk(dynamic)],
+            )?;
+            let relro = p.chunks.iter().any(|(_, c)| c.relro);
+            need(
+                c.relro || !relro,
+                r,
+                || ".dynamic is outside the RELRO run".into(),
+                [Row::Chunk(dynamic)],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Rule 3, copy allocations (`spec/dyn.md` D-42, D-60; `spec/layout.md`
+    /// L-80): each lies in the chunk its place names (`.dynbss` or
+    /// `.bss.rel.ro`), at its alignment, inside the chunk's size; inside a
+    /// chunk the allocations do not overlap and follow the least `SymbolId`
+    /// among each one's aliases; a copy chunk is the first chunk of its
+    /// section.
+    fn copies(&self) -> Check {
+        let r = Rule::Segments;
+        let p = &self.layout.placement;
+        let slots = &self.layout.slots;
+        let mut least: Vec<Option<SymbolId>> = vec![None; slots.copies.len()];
+        for &(sym, at) in &*slots.copy_of {
+            if let Some(l) = least.get_mut(at as usize) {
+                *l = Some(l.map_or(sym, |x| x.min(sym)));
+            }
+        }
+        let mut rows: Vec<(ChunkId, u64, u64, SymbolId, u32)> = Vec::new();
+        for (at, row) in p.sym_place.iter().enumerate() {
+            let AllocKey::Copy(index) = row.key else { continue };
+            let Some(alloc) = slots.copies.get(index as usize) else { continue };
+            let me = [Row::Entry("sym_place", at as u32), Row::Chunk(row.chunk)];
+            let name: &[u8] = match alloc.place {
+                CopyPlace::DynBss => b".dynbss",
+                CopyPlace::RelRo => b".bss.rel.ro",
+            };
+            let chunk = &p.chunks[row.chunk];
+            need(
+                matches!(chunk.kind, ChunkKind::Synthetic(s) if s.name == name),
+                r,
+                || format!("a copy allocation outside its chunk {}", String::from_utf8_lossy(name)),
+                me,
+            )?;
+            need(
+                alloc.align.is_power_of_two()
+                    && u32::from(row.align) == alloc.align.trailing_zeros()
+                    && aligned(row.offset, row.align)
+                    && row.align <= chunk.align,
+                r,
+                || "a copy allocation not at its alignment".into(),
+                me,
+            )?;
+            // Extent within the chunk: the general rule of model.md §4.4
+            // (checked by `places`).
+            rows.push((
+                row.chunk,
+                row.offset,
+                row.size,
+                least[index as usize].unwrap_or(alloc.alias),
+                at as u32,
+            ));
+        }
+        rows.sort_unstable();
+        for w in rows.windows(2) {
+            let ((c0, o0, s0, k0, a0), (c1, o1, _, k1, a1)) = (w[0], w[1]);
+            if c0 != c1 {
+                continue;
+            }
+            let rows = [Row::Entry("sym_place", a0), Row::Entry("sym_place", a1)];
+            need(end(o0, s0) <= u128::from(o1), r, || "copy allocations overlap".into(), rows)?;
+            need(
+                k0 < k1,
+                r,
+                || "copy allocations are not in the order of their least alias".into(),
+                rows,
+            )?;
+        }
+        for (at, &c) in p.order.iter().enumerate() {
+            let ch = &p.chunks[c];
+            let copy = matches!(ch.kind, ChunkKind::Synthetic(s)
+                if s.name == b".dynbss" || s.name == b".bss.rel.ro");
+            if !copy || at == 0 {
+                continue;
+            }
+            let before = &p.chunks[p.order[at - 1]];
+            need(
+                ch.shndx.is_none() || before.shndx != ch.shndx,
+                r,
+                || "a copy chunk is not the first chunk of its section".into(),
+                [Row::Chunk(c)],
+            )?;
+            // L-5: the section's `sh_addr` is its first chunk's address and
+            // its `sh_addralign` the largest of its chunks'.
+            let Some(sh) = ch.shndx else { continue };
+            let widest = p.order[at..]
+                .iter()
+                .map(|&d| &p.chunks[d])
+                .take_while(|d| d.shndx == Some(sh))
+                .map(|d| d.align)
+                .max()
+                .unwrap_or(0);
+            need(
+                ch.align >= widest,
+                r,
+                || "a copy chunk less aligned than its section".into(),
+                [Row::Chunk(c)],
+            )?;
+        }
+        Ok(())
     }
 
     /// Rule 3, `spec/layout.md` L-125: the segments are exactly what
@@ -1369,15 +1638,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                             [me, Row::Section(section), Row::Chunk(patch.chunk)],
                         )?;
                     }
-                    (
-                        patch.chunk,
-                        2,
-                        SymKey::global(crate::id::SymbolId(0)),
-                        0,
-                        section,
-                        offset,
-                        at as u32,
-                    )
+                    (patch.chunk, 2, SymKey::global(SymbolId(0)), 0, section, offset, at as u32)
                 }
             };
             keys.push(k);

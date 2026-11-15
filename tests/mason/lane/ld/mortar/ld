@@ -2,9 +2,9 @@
 # The lane's `ld` for mortar ($MASON_MORTAR). The link as the caller asked
 # for it is timed (timed.sh) and logged, one line per link to $MASON_LOG
 # (cwd, status, the first diagnostic, the verifier's result). With
-# MASON_PLUMB=1 a second link of the same command adds -Map; its output
-# must equal the first byte for byte (determinism, and a map changes
-# nothing), and the verifier (`xtask mason verify`, $MASON_XTASK) checks
+# MASON_PLUMB=1 a second link of the same command adds --mortar-map (the
+# verifier's machine map, not -Map's GNU text); its output must equal the
+# first byte for byte (determinism, and a map changes nothing), and the verifier (`xtask mason verify`, $MASON_XTASK) checks
 # it against its map. A finding or a difference does not fail the link:
 # the report counts it.
 . "${BASH_SOURCE%/*}/../timed.sh"
@@ -17,7 +17,7 @@ if [ $st = 0 ] && [ "${MASON_PLUMB:-}" = 1 ]; then
   for a in "$@"; do
     if [ "$prev" = -o ]; then args+=("$out.plumb"); else args+=("$a"); fi; prev=$a
   done
-  if ! e2=$("$MASON_MORTAR" "${args[@]}" -Map="$out.map" 2>&1 >/dev/null); then
+  if ! e2=$("$MASON_MORTAR" "${args[@]}" --mortar-map="$out.map" 2>&1 >/dev/null); then
     plumb="second link failed: $(printf '%s' "$e2" | head -n 1)"
   elif ! cmp -s "$out" "$out.plumb"; then
     plumb="nondeterministic: the output with -Map differs"

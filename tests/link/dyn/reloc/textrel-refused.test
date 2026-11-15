@@ -1,0 +1,48 @@
+# dyn.md D-47: a dynamic record whose place is in a section without
+# `SHF_WRITE` is a text relocation, refused by name, `text-relocation`.
+# A `-fPIE` object holds, in a read-only data section (`.rodata.tr`,
+# flags "a"), an address-sized word pointing at its own datum `loc`; in a
+# PIE that word needs a `RELATIVE` record in read-only memory.
+#
+# What the references do (measured, both architectures): lld refuses
+# (`relocation R_AARCH64_ABS64 / R_X86_64_64 cannot be used against
+# symbol 'loc'; recompile with -fPIC`); GNU ld writes `DT_TEXTREL` (with
+# `warning: creating DT_TEXTREL in a PIE` on x86-64, silently on
+# AArch64), and mold writes `DT_TEXTREL` silently (W6's behaviour; the
+# crash of W6 is i386's, out of M2), and both programs run. dyn.md D-47
+# says GNU ld refuses on x86-64 and AArch64: that is its answer for a
+# `-fno-pic` object's 32-bit words (`R_X86_64_32S`, which no record can
+# express), not for this word (reported as a spec finding). The test
+# records each reference's answer and holds mortar to the refusal.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-47"
+#@ arch: aarch64 x86_64
+#@ anomaly(bfd,mold): A24
+
+cc -O1 -fPIE main.c -o main.o
+link(bfd,mold) gcc -pie main.o -o prog
+run(bfd,mold) prog
+  stdout: loc 5
+check(bfd,mold) readelf -dW prog
+  has: (TEXTREL)
+link(lld,mortar) gcc -pie main.o -o prog
+  exit: fail
+  diag(lld,aarch64): relocation R_AARCH64_ABS64 cannot be used against symbol 'loc'; recompile with -fPIC
+  diag(lld,x86_64): relocation R_X86_64_64 cannot be used against symbol 'loc'; recompile with -fPIC
+  diag(mortar): relocation * against symbol `*' can not be used when making a PIE object; recompile with -fPIE
+
+#--- main.c
+#include <stdio.h>
+
+int loc = 5;
+/* an address-sized word to `loc` in a read-only, non-executable section */
+__asm__(".section .rodata.tr,\"a\",%progbits\n.p2align 3\n.globl tr_ptr\n"
+        "tr_ptr: .dc.a loc\n.text\n");
+extern int *const tr_ptr;
+
+int main(void) {
+  printf("loc %d\n", *tr_ptr);
+  return 0;
+}

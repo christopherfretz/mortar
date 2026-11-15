@@ -359,6 +359,9 @@ pub struct Store {
     /// names of thin archives (§1: `Inputs<'s>` borrows from the store).
     kept: [OnceLock<Box<[Kept]>>; SEGMENTS],
     kept_len: AtomicU32,
+    /// The descriptors the process's table has room for, as far as the
+    /// store made it (see [`Store::make_room`]).
+    fd_room: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -428,6 +431,7 @@ impl Store {
             counters: Counters::default(),
             kept: std::array::from_fn(|_| OnceLock::new()),
             kept_len: AtomicU32::new(0),
+            fd_room: AtomicUsize::new(FD_TABLE_START),
         }
     }
 
@@ -623,6 +627,7 @@ impl Store {
             };
             self.counters.copy_reads.fetch_add(1, Ordering::Relaxed);
             self.counters.copy_bytes.fetch_add(out.len() as u64, Ordering::Relaxed);
+            prefault(out);
             return file.read_exact_at(out, span.start).map_err(|e| ReadError::read(&e));
         }
     }
@@ -930,6 +935,7 @@ impl Store {
     fn make_full(&self, e: &Entry, file: &File) {
         let read = || -> Result<Box<[u8]>, ReadError> {
             let mut all = vec![0u8; e.len as usize];
+            prefault(&mut all);
             self.counters.reads.fetch_add(1, Ordering::Relaxed);
             file.read_exact_at(&mut all, 0).map_err(|e| ReadError::read(&e))?;
             self.counters.bytes.fetch_add(e.len, Ordering::Relaxed);
@@ -1031,6 +1037,7 @@ impl Store {
                     live.fail(e);
                 }
             } else if !slice.is_empty() {
+                prefault(slice);
                 self.counters.reads.fetch_add(1, Ordering::Relaxed);
                 match file.read_exact_at(slice, c as u64 * CHUNK) {
                     Ok(()) => {
@@ -1099,6 +1106,7 @@ impl Store {
         let plans: Vec<Plan> = jobs.iter().map(|job| self.plan(job)).collect();
         let reads: Vec<usize> =
             (0..plans.len()).filter(|&i| matches!(plans[i], Plan::Read { .. })).collect();
+        self.make_room(reads.len());
 
         // (A)
         let mut staging: Vec<Result<Staging, ReadError>> = pool.map(reads.len(), |k| {
@@ -1171,7 +1179,7 @@ impl Store {
 
         wave(2);
         // (D)
-        let checked = pool.map(staging.len(), |k| match &staging[k] {
+        let checked = pool.unit_cost(3000).map(staging.len(), |k| match &staging[k] {
             Ok(s) => {
                 if let Some(e) = failed[k].get() {
                     return Err(e.clone());
@@ -1207,6 +1215,39 @@ impl Store {
             .into_iter()
             .map(|r| r.unwrap_or_else(|| unreachable!("every job answered")))
             .collect()
+    }
+
+    /// Grows the process's descriptor table, before a batch's files are
+    /// opened, to room for `n` more descriptors than the store has open.
+    ///
+    /// The batch keeps its files open from (A) to (D), so a batch of
+    /// hundreds of files grows the kernel's table (64 slots, then doubling)
+    /// while the workers open them; and the kernel waits for an RCU grace
+    /// period at every growth of the table of a process with more than one
+    /// thread (`expand_fdtable`), with every other `open` of the process
+    /// waiting behind it. Measured on `synthetic-objects` (1 006 files, one
+    /// batch): 25–40 ms of wave (A) at every thread count. Called between
+    /// regions, when the process has one thread, the growth needs no grace
+    /// period: `n` duplicates of one descriptor, closed at once (~1 µs
+    /// each; the table never shrinks). Purely a cost: a duplicate that
+    /// fails ends the growth, and nothing read depends on it.
+    fn make_room(&self, n: usize) {
+        let open = self.counters.open_now.load(Ordering::Relaxed);
+        let want = open + n + FD_SLACK;
+        if want <= self.fd_room.load(Ordering::Relaxed) {
+            return;
+        }
+        let Ok(first) = File::open("/dev/null") else { return };
+        let mut dups = Vec::with_capacity(n + FD_SLACK);
+        while dups.len() < n + FD_SLACK {
+            match first.try_clone() {
+                Ok(f) => dups.push(f),
+                Err(_) => break,
+            }
+        }
+        if dups.len() == n + FD_SLACK {
+            self.fd_room.fetch_max(want, Ordering::Relaxed);
+        }
     }
 
     /// Wave (A) for one file.
@@ -1362,6 +1403,7 @@ impl Store {
         }
         for (lo, hi) in runs {
             let dst = &mut out[(lo - at) as usize..(hi - at) as usize];
+            prefault(dst);
             self.counters.reads.fetch_add(1, Ordering::Relaxed);
             s.file.read_exact_at(dst, lo).map_err(|e| ReadError::read(&e))?;
             self.counters.bytes.fetch_add(hi - lo, Ordering::Relaxed);
@@ -1414,6 +1456,43 @@ impl Store {
     }
 }
 
+/// Touches every page of a buffer a positioned read is about to fill.
+///
+/// A fresh buffer's pages are not mapped until first written. Written by
+/// `read`, each page faults inside the kernel's copy, and on this kernel
+/// (Linux 6.8, AArch64) a fault taken in kernel mode does not use the
+/// per-VMA lock that a user-mode fault uses: it takes the process's
+/// `mmap_lock`, which every worker's faults (and the allocator's heap
+/// growth) then share. Measured on `synthetic-objects`' 1 006 head-and-tail
+/// reads: 30 ms at 1 thread, 40–60 ms at 8 and 12 when the read faults;
+/// 5–6 ms at 8 when the pages were touched first (`spec/landed/perf/
+/// WP-032h.md`). The writes are of the value the read then overwrites, and
+/// cost nothing where the pages are mapped already.
+fn prefault(buf: &mut [u8]) {
+    const PAGE: usize = 4096;
+    let len = buf.len();
+    if len == 0 {
+        return;
+    }
+    let mut i = 0;
+    while i < len {
+        // An opaque zero: a store of a known zero into zeroed memory may be
+        // removed by the optimiser, and the touch with it.
+        buf[i] = std::hint::black_box(0);
+        i += PAGE;
+    }
+    buf[len - 1] = std::hint::black_box(0);
+}
+
+/// The descriptors a process's table holds before it first grows (the
+/// kernel's `NR_OPEN_DEFAULT` on a 64-bit target), less the standard
+/// streams and a margin: a batch that fits needs no [`Store::make_room`].
+const FD_TABLE_START: usize = 48;
+
+/// What [`Store::make_room`] adds to a batch: the descriptors open that the
+/// store does not count (standard streams, the output, the walk's).
+const FD_SLACK: usize = 16;
+
 /// The largest window of [`Chain`]: what a miss may read of a large
 /// member's bytes that are not resident.
 const WINDOW: u64 = 1 << 20;
@@ -1456,6 +1535,7 @@ struct Reader<'a> {
 impl Reader<'_> {
     fn read_into_own(&mut self, at: u64, size: u64) -> Result<(), ReadError> {
         let mut buf = vec![0u8; size as usize];
+        prefault(&mut buf);
         self.store.counters.reads.fetch_add(1, Ordering::Relaxed);
         self.file.read_exact_at(&mut buf, at).map_err(|e| ReadError::read(&e))?;
         self.store.counters.bytes.fetch_add(size, Ordering::Relaxed);

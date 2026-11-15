@@ -33,11 +33,16 @@ pub enum Shape {
     /// member of the archive before it. Parameters: archives, members per
     /// archive.
     Archives,
+    /// One large archive of which the program needs few members: the
+    /// search and extraction of a big library. Parameters: members, and
+    /// the stride of the needed ones (every `stride`-th member, the first
+    /// included).
+    Library,
 }
 
 impl Shape {
-    pub const ALL: [Self; 5] =
-        [Self::Objects, Self::Sections, Self::Comdat, Self::Strings, Self::Archives];
+    pub const ALL: [Self; 6] =
+        [Self::Objects, Self::Sections, Self::Comdat, Self::Strings, Self::Archives, Self::Library];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -46,6 +51,7 @@ impl Shape {
             Self::Comdat => "comdat",
             Self::Strings => "strings",
             Self::Archives => "archives",
+            Self::Library => "library",
         }
     }
 
@@ -86,7 +92,7 @@ impl Request {
     pub fn count(&self) -> usize {
         let (a, b) = self.params;
         match self.shape {
-            Shape::Objects | Shape::Sections | Shape::Strings => a + 1,
+            Shape::Objects | Shape::Sections | Shape::Strings | Shape::Library => a + 1,
             Shape::Comdat => a + 2,
             Shape::Archives => a * b + 1,
         }
@@ -122,6 +128,14 @@ impl Request {
                     archive: Some(archive),
                 }
             }
+            // Members of eight functions that call nothing: the archives
+            // shape's last archive.
+            Shape::Library => Source {
+                name: format!("l{index:05}.c"),
+                text: archive_member(0, index, 1, a),
+                compiled: true,
+                archive: Some(0),
+            },
         }
     }
 
@@ -146,18 +160,23 @@ impl Request {
                 |i| format!("int mortar_bench_comdat_unit_{i:05}(int);\n"),
                 |i| format!("  sum += mortar_bench_comdat_unit_{i:05}(sum);\n"),
             ),
-            Shape::Archives => (
+            Shape::Archives | Shape::Library => (
                 |m| format!("int {}(int);\n", archive_name(0, m, 0)),
                 |m| format!("  sum += {}(sum);\n", archive_name(0, m, 0)),
             ),
         };
-        // The archives' chain starts at the needed members of the first.
-        let units = if self.shape == Shape::Archives { needed_members(b) } else { a };
-        for i in 0..units {
+        // The archives' chain starts at the needed members of the first;
+        // the library's needed members are every `b`-th.
+        let units: Vec<usize> = match self.shape {
+            Shape::Archives => (0..needed_members(b)).collect(),
+            Shape::Library => (0..a).step_by(b).collect(),
+            _ => (0..a).collect(),
+        };
+        for &i in &units {
             text.push_str(&decl(i));
         }
         text.push_str("int main(void) {\n  int sum = 1;\n");
-        for i in 0..units {
+        for &i in &units {
             text.push_str(&call(i));
         }
         text.push_str("  return sum == 0;\n}\n");
@@ -375,7 +394,10 @@ mod tests {
             // In any order of asking.
             let backwards: Vec<_> = (0..request.count()).rev().map(|i| request.source(i)).collect();
             assert!(backwards.iter().rev().eq(all(&request).iter()), "{shape:?}");
-            assert_ne!(hash(&request), hash(&Request { shape, params: (7, 13) }), "{shape:?}");
+            // (A library of 7 members needs only the first at a stride of
+            // 12 or 13: the same program.)
+            let other = if shape == Shape::Library { (7, 5) } else { (7, 13) };
+            assert_ne!(hash(&request), hash(&Request { shape, params: other }), "{shape:?}");
             assert_ne!(hash(&request), hash(&Request { shape, params: (8, 12) }), "{shape:?}");
             assert_eq!(Shape::parse(shape.name()), Some(shape));
         }
@@ -398,6 +420,7 @@ mod tests {
                 "fnv1a64:4ee59eb191818ce8",
                 "fnv1a64:ba3451fddf5f19c7",
                 "fnv1a64:4ded4bcf6bccb165",
+                "fnv1a64:6129bd24f943a2cc",
             ]
         );
     }
@@ -457,5 +480,16 @@ mod tests {
         let main = archives.source(12);
         assert_eq!((main.name.as_str(), main.archive), ("main.c", None));
         assert_eq!(main.text.matches("sum += mortar_bench_archives_a00000_m").count(), 2);
+
+        // One archive; main needs members 0, 3 and 6 of 8; no member
+        // calls another.
+        let library = Request { shape: Shape::Library, params: (8, 3) };
+        assert_eq!(library.count(), 9);
+        assert_eq!(library.source(7).name, "l00007.c");
+        assert!((0..8).all(|m| library.source(m).archive == Some(0)));
+        assert!((0..8).all(|m| !library.source(m).text.contains("(x)")));
+        let main = library.source(8).text;
+        assert_eq!(main.matches("sum += mortar_bench_archives_a00000_m").count(), 3, "{main}");
+        assert!(main.contains("_m00006_f0(sum)") && !main.contains("_m00007_"), "{main}");
     }
 }

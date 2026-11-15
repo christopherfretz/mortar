@@ -1,0 +1,131 @@
+# dyn.md D-62: layout is a pure function; no size depends on an address.
+# The same program is linked twice, once with a small and once with a
+# large `pad.o` (same symbols; 64 KiB more `.text` and 256 KiB more
+# `.rodata`), which moves every later section. The sizes of the dynamic
+# sections (`.interp`, `.gnu.hash`, `.dynsym`, `.dynstr`, `.gnu.version`,
+# `.gnu.version_r`, `.rela.dyn`, `.rela.plt`, `.dynamic`, `.plt`,
+# `.plt.got`, `.got`, `.got.plt`) must be equal in the two outputs, and
+# each must be present in both or in neither. PIE and -no-pie, against
+# the greet fixture (a PLT call, a datum, a TLS variable of a library).
+#
+# The harness's checks read one file each, and the sizes differ by linker
+# and architecture (and mortar's are not known before it links), so the
+# comparison is a program: `elfcmp` (linked by the linker under test like
+# any program) reads the section headers of both outputs and prints
+# whether the names and sizes agree and whether `.dynamic` moved (proof
+# that the perturbation took effect). The three references agree.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-62"
+#@ arch: aarch64 x86_64
+#@ fixture: greet
+
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+cc -O1 -fPIE small.c -o small.o
+cc -O1 -fPIE big.c -o big.o
+cc -O1 -fPIE elfcmp.c -o elfcmp.o
+link gcc -pie elfcmp.o -o elfcmp
+link gcc -pie pie.o small.o -L. -lgreet -o pie-small
+link gcc -pie pie.o big.o -L. -lgreet -o pie-big
+link gcc -no-pie exec.o small.o -L. -lgreet -o exec-small
+link gcc -no-pie exec.o big.o -L. -lgreet -o exec-big
+run pie-small
+  stdout: hello, pure
+  stdout: 41 7 1
+run pie-big
+  stdout: hello, pure
+  stdout: 41 7 1
+run exec-small
+  stdout: hello, pure
+  stdout: 41 7 1
+run exec-big
+  stdout: hello, pure
+  stdout: 41 7 1
+run elfcmp pie-small pie-big
+  stdout: same sections 1
+  stdout: same sizes 1
+  stdout: .dynamic moved 1
+run elfcmp exec-small exec-big
+  stdout: same sections 1
+  stdout: same sizes 1
+  stdout: .dynamic moved 1
+
+#--- main.c
+#include <stdio.h>
+#include "greet.h"
+int pad_fn(void);
+
+int main(void) {
+  int n = greet("pure");
+  printf("%d %d %d\n", n, greet_tls, pad_fn());
+  return 0;
+}
+#--- small.c
+const char pad[16] = {1};
+int pad_fn(void) { return pad[0]; }
+#--- big.c
+const char pad[262144] = {1};
+int pad_fn(void) { return pad[0]; }
+__asm__(".text\n.skip 65536\n");
+#--- elfcmp.c
+/* elfcmp A B: compares the dynamic sections of two ELF64 files. */
+#include <elf.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static const char *const names[] = {
+    ".interp", ".gnu.hash", ".dynsym", ".dynstr", ".gnu.version",
+    ".gnu.version_r", ".rela.dyn", ".rela.plt", ".dynamic", ".plt",
+    ".plt.got", ".got", ".got.plt",
+};
+#define N (sizeof names / sizeof names[0])
+
+struct sec { int present; unsigned long size, addr; };
+
+static void load(const char *path, struct sec *out) {
+  FILE *f = fopen(path, "rb");
+  if (!f) { perror(path); exit(2); }
+  fseek(f, 0, SEEK_END);
+  long len = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  unsigned char *b = malloc(len);
+  if (!b || fread(b, 1, len, f) != (size_t)len) { perror(path); exit(2); }
+  fclose(f);
+  Elf64_Ehdr *eh = (Elf64_Ehdr *)b;
+  Elf64_Shdr *sh = (Elf64_Shdr *)(b + eh->e_shoff);
+  const char *strs = (const char *)(b + sh[eh->e_shstrndx].sh_offset);
+  memset(out, 0, sizeof(struct sec) * N);
+  for (int i = 0; i < eh->e_shnum; i++)
+    for (size_t k = 0; k < N; k++)
+      if (strcmp(strs + sh[i].sh_name, names[k]) == 0) {
+        out[k].present = 1;
+        out[k].size = sh[i].sh_size;
+        out[k].addr = sh[i].sh_addr;
+      }
+  free(b);
+}
+
+int main(int argc, char **argv) {
+  struct sec a[N], b[N];
+  if (argc != 3) return 2;
+  load(argv[1], a);
+  load(argv[2], b);
+  int same_sections = 1, same_sizes = 1;
+  for (size_t k = 0; k < N; k++) {
+    if (a[k].present != b[k].present) {
+      same_sections = 0;
+      printf("present %s %d %d\n", names[k], a[k].present, b[k].present);
+    } else if (a[k].size != b[k].size) {
+      same_sizes = 0;
+      printf("size %s %lu %lu\n", names[k], a[k].size, b[k].size);
+    }
+  }
+  size_t d = 8; /* .dynamic */
+  printf("same sections %d\n", same_sections);
+  printf("same sizes %d\n", same_sizes);
+  printf(".dynamic moved %d\n", a[d].present && a[d].addr != b[d].addr);
+  return 0;
+}

@@ -163,7 +163,7 @@ fn main() {
         r_offset: relocs[i].r_offset,
         key: relocs[i].key,
         r_type: relocs[i].r_type,
-        addend: relocs[i].addend,
+        addend: Some(relocs[i].addend),
         howto: &howtos[i],
         site: Site { bytes: &input, offset: relocs[i].r_offset },
         records: &records,
@@ -173,7 +173,7 @@ fn main() {
     let scx = ScanCx {
         tables: &tables,
         output: OutputKind::Static,
-        place: PlaceFacts { alloc: true, writable: false },
+        place: PlaceFacts { alloc: true, writable: false, exec: None },
         name: b".text",
     };
     let mut best_scan = f64::MAX;

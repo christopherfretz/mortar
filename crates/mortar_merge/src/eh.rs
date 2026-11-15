@@ -631,7 +631,7 @@ type CieKey<'a> = (&'a [u8], Vec<(u32, u32, i64, Target)>);
 /// section, are returned sorted, and then nothing else is.
 pub fn parse(pool: &Pool, word: u8, sections: &[EhIn<'_>]) -> Result<EhFrames, Vec<Problem>> {
     debug_assert!(sections.windows(2).all(|w| w[0].section < w[1].section));
-    let parsed = pool.map(sections.len(), |i| parse_section(&sections[i], word));
+    let parsed = pool.unit_cost(2200).map(sections.len(), |i| parse_section(&sections[i], word));
     let mut problems: Vec<Problem> =
         parsed.iter().filter_map(|p| p.as_ref().err().cloned()).collect();
     if !problems.is_empty() {

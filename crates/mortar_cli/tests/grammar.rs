@@ -623,9 +623,9 @@ fn refused_uses_in_argument_order() {
         "0",
         "-o",
         "y",
-        "--push-state",
+        "--whole-archive",
         "-z",
-        "now",
+        "nodelete",
         "-EL",
         "--error-limit=3",
         "--output=z",
@@ -633,7 +633,7 @@ fn refused_uses_in_argument_order() {
         "p.so",
     ]);
     let refused: Vec<&str> = parsed.refused_uses().iter().map(|u| u.spelling.as_str()).collect();
-    assert_eq!(refused, ["-Tdata", "--push-state", "-z now"]);
+    assert_eq!(refused, ["-Tdata", "--whole-archive", "-z nodelete"]);
     let rendered: Vec<String> =
         parsed.refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect();
     assert_eq!(rendered[0], "ld: error: unsupported option: -Tdata\n");
@@ -657,10 +657,8 @@ fn overridden_and_partial_uses() {
         p(args).refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect()
     };
     assert_eq!(refused(&["a.o", "--gc-sections", "--no-gc-sections"]), Vec::<String>::new());
-    assert_eq!(
-        refused(&["a.o", "--no-gc-sections", "--gc-sections"]),
-        ["ld: error: unsupported option: --gc-sections\n"]
-    );
+    // Supported since WP-031: neither order refuses.
+    assert_eq!(refused(&["a.o", "--no-gc-sections", "--gc-sections"]), Vec::<String>::new());
     assert_eq!(refused(&["a.o", "--build-id=md5", "--build-id"]), Vec::<String>::new());
     assert_eq!(refused(&["a.o", "--build-id=md5", "--no-build-id"]), Vec::<String>::new());
     let md5 = refused(&["a.o", "--build-id", "--build-id=md5"]);

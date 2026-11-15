@@ -1,7 +1,7 @@
 //! Resolving a map against the input files (`spec/plumb.md` §3.3): which
 //! input section each record means, and where each section is.
 
-use std::collections::HashMap;
+use crate::hasher::HashMap;
 
 use mortar_elf::archive::{Archive, Content};
 use mortar_elf::consts::{
@@ -181,22 +181,35 @@ pub fn thin_members(archive_path: &str, bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// An archive's members by name: `(header offset, content)` in file
+/// order, read once per archive (WP-028d: a scan per member was a quarter
+/// of the verifier's time on protoc).
+type Members<'a> = HashMap<&'a [u8], Vec<(u64, Content<'a>)>>;
+
+fn members_of(bytes: &[u8]) -> Result<Members<'_>, String> {
+    let archive = Archive::parse(bytes).map_err(|e| e.to_string())?;
+    let mut by_name: Members<'_> = HashMap::default();
+    for m in archive.members() {
+        let m = m.map_err(|e| e.to_string())?;
+        by_name.entry(m.name()).or_default().push((m.header_offset(), m.content()));
+    }
+    Ok(by_name)
+}
+
 fn find_member<'a>(
-    bytes: &'a [u8],
     file: &MapFile,
+    members: &Members<'a>,
     by_path: &HashMap<&str, &'a [u8]>,
 ) -> Result<&'a [u8], String> {
-    let archive = Archive::parse(bytes).map_err(|e| e.to_string())?;
     let name = file.member.as_deref().unwrap_or("").as_bytes();
     let mut found: Option<&'a [u8]> = None;
     let mut count = 0;
-    for m in archive.members() {
-        let m = m.map_err(|e| e.to_string())?;
-        if m.name() != name || file.member_offset.is_some_and(|o| o != m.header_offset()) {
+    for &(offset, content) in members.get(name).map_or(&[][..], Vec::as_slice) {
+        if file.member_offset.is_some_and(|o| o != offset) {
             continue;
         }
         count += 1;
-        match m.content() {
+        match content {
             Content::Inline { data, .. } => found = found.or(Some(data)),
             Content::External { path } => {
                 let at = thin_member_path(&file.path, path);
@@ -232,8 +245,18 @@ fn read_obj<'a>(
     bytes: &'a [u8],
     file: &MapFile,
     by_path: &HashMap<&str, &'a [u8]>,
+    archives: &mut HashMap<String, Result<Members<'a>, String>>,
 ) -> Result<Obj<'a>, String> {
-    let data = if file.member.is_some() { find_member(bytes, file, by_path)? } else { bytes };
+    let data = if file.member.is_some() {
+        let members = archives
+            .entry(file.path.clone())
+            .or_insert_with(|| members_of(bytes))
+            .as_ref()
+            .map_err(Clone::clone)?;
+        find_member(file, members, by_path)?
+    } else {
+        bytes
+    };
     let elf = Object::parse(data).map_err(|e| e.to_string())?;
     let symtab = elf.symbols().map_err(|e| e.to_string())?;
     let mut secs: Vec<Sec<'a>> = Vec::with_capacity(elf.section_count() as usize);
@@ -263,6 +286,7 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
     let mut obj_of: Vec<Option<usize>> = vec![None; map.files.len()];
     let out_machine = image.header.e_machine;
     let mut missing_said: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut archives = HashMap::default();
     for (i, f) in map.files.iter().enumerate() {
         let Some(bytes) = by_path.get(f.path.as_str()) else {
             if missing_said.insert(&f.path) {
@@ -273,7 +297,7 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
             }
             continue;
         };
-        match read_obj(bytes, f, &by_path) {
+        match read_obj(bytes, f, &by_path, &mut archives) {
             Ok(obj) if obj.elf.header().e_machine == out_machine => {
                 obj_of[i] = Some(out.objs.len());
                 out.objs.push(obj);
@@ -289,7 +313,7 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
         .objs
         .iter()
         .map(|o| {
-            let mut m: HashMap<String, Vec<usize>> = HashMap::new();
+            let mut m: HashMap<String, Vec<usize>> = HashMap::default();
             for (i, s) in o.secs.iter().enumerate() {
                 if !s.consumed() {
                     m.entry(s.name.clone()).or_default().push(i);
@@ -301,7 +325,8 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
     let gnu = map.format == Format::Gnu;
     // mold's map gives every non-alloc row the address 0: the offsets are
     // the rows' sizes laid out in order at their alignments (§3.6).
-    let mut cursor: Option<HashMap<String, u64>> = (map.format == Format::Mold).then(HashMap::new);
+    let mut cursor: Option<HashMap<String, u64>> =
+        (map.format == Format::Mold).then(HashMap::default);
     for p in &map.placed {
         let Some(oi) = obj_of.get(p.file as usize).copied().flatten() else { continue };
         place_one(&mut out, &names[oi], oi, p, image, gnu, cursor.as_mut());
@@ -491,6 +516,13 @@ fn place_one(
         .filter(|&i| size_may_change(&obj.secs[i], machine) || obj.secs[i].shdr.sh_size == p.size)
         .collect();
     let chosen = match fits.len() {
+        // GNU ld names the first input as the origin of the `.eh_frame`
+        // it writes for its PLT (x86): a further `.eh_frame` row of that
+        // file is the linker's (the FDEs are judged by §6.4, which knows
+        // a reference's PLT FDE).
+        0 if free.is_empty() && gnu && cands.iter().all(|&i| obj.secs[i].is_eh_frame(machine)) => {
+            return;
+        }
         0 if free.is_empty() => {
             out.findings.push(Finding::new(
                 Rule::Map(2),

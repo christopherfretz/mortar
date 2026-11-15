@@ -1,0 +1,77 @@
+# dyn.md D-42, copy relocations: `-fno-pic` C++ code in a non-PIE reads
+# and writes shared data directly, so each datum gets one allocation in
+# the executable and one `COPY` record: a fixture library's `dvar` (and
+# its weak alias `dalias`, which the program does not name: every alias
+# at the address is exported at the copy, D-21), a datum aligned to 64
+# (`al64`: the copy keeps the alignment), libc's `stdout` and `environ`
+# (whose aliases `__environ`, `_environ` share the copy), and libstdc++'s
+# `std::cout`. The program prints what it reads, whether the executable,
+# the library and `dlsym` see one address for each, and whether the
+# library reads a `setenv` through its own `environ`.
+#
+# The record's symbol (D-42: the least `SymbolId` among the aliases a
+# relocatable object references): GNU ld and lld attach it to the
+# primary name, mold to an alias (§13.1). Here the program names `dvar`
+# and `environ` only: lld, mold and mortar name those; GNU ld names
+# `__environ` (its primary), so it is held to that.
+#
+# mortar: AArch64 WP-054 (CXX), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-42"
+#@ arch: aarch64 x86_64
+#@ requires: g++
+#@ fixture: reloc-libd
+#@ anomaly(bfd): A21
+
+cxx -O1 -fno-pic main.cc -o main.o
+link g++ -no-pie main.o -L. -ld -o prog
+run prog
+  stdout: dvar 43 lib 43 same 1 alias 1
+  stdout: al64 64 aligned 1 same 1
+  stdout: stdout same 1
+  stdout: environ same 1 1 lib sees yes
+  stdout: cout same 1
+check readelf -rW prog
+  count(aarch64): 5 R_AARCH64_COPY
+  has(aarch64): R_AARCH64_COPY * dvar + 0$
+  has(aarch64): R_AARCH64_COPY * al64 + 0$
+  has(aarch64): R_AARCH64_COPY * stdout@
+  has(aarch64): R_AARCH64_COPY * _ZSt4cout@
+  has(aarch64,lld,mold,mortar): R_AARCH64_COPY * environ@
+  has(aarch64,bfd): R_AARCH64_COPY * __environ@
+  count(x86_64): 5 R_X86_64_COPY
+  has(x86_64): R_X86_64_COPY * dvar + 0$
+  has(x86_64): R_X86_64_COPY * al64 + 0$
+  has(x86_64): R_X86_64_COPY * stdout@
+  has(x86_64): R_X86_64_COPY * _ZSt4cout@
+  has(x86_64,lld,mold,mortar): R_X86_64_COPY * environ@
+  has(x86_64,bfd): R_X86_64_COPY * __environ@
+check readelf --dyn-syms -W prog
+  has: OBJECT * GLOBAL DEFAULT * dvar$
+  has: OBJECT * WEAK * DEFAULT * dalias$
+
+#--- main.cc
+#include <cstdio>
+#include <cstdlib>
+#include <iostream>
+#include <dlfcn.h>
+#include <unistd.h>
+extern "C" {
+#include "libd.h"
+}
+
+int main() {
+  dvar = 43;
+  std::printf("dvar %d lib %d same %d alias %d\n", dvar, lib_get_dvar(),
+              &dvar == lib_addr("dvar"), &dvar == lib_addr("dalias"));
+  std::printf("al64 %d aligned %d same %d\n", al64,
+              (int)((unsigned long)&al64 % 64 == 0), &al64 == lib_addr("al64"));
+  std::printf("stdout same %d\n", (void *)&stdout == lib_addr("stdout") &&
+                                      (void *)&stdout == dlsym(RTLD_DEFAULT, "stdout"));
+  setenv("RELOC_COPY", "yes", 1);
+  std::printf("environ same %d %d lib sees %s\n", (void *)&environ == lib_addr("environ"),
+              (void *)&environ == lib_addr("__environ"), lib_getenv("RELOC_COPY"));
+  std::cout << "cout same " << ((void *)&std::cout == dlsym(RTLD_DEFAULT, "_ZSt4cout"))
+            << std::endl;
+  return 0;
+}

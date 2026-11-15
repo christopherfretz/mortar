@@ -9,26 +9,33 @@
 //! (`spec/resolve.md` §5.1, §5.2).
 
 use mortar_core::hash::hash_bytes;
-use mortar_core::inputs::{DirectiveKind, FileKind as InputKind, InputFlags, Inputs, Reader};
+use std::collections::HashMap;
+
+use mortar_core::inputs::{
+    DirectiveKind, EdgeOutcome, FileKind as InputKind, InputFlags, Inputs, OpenedKind, Origin,
+    Reader,
+};
 use mortar_core::intern::{InternKey, SymName};
 use mortar_core::par::Pool;
 use mortar_core::plan::{OutputKind, Plan, Strip, SymbolRole, UnresolvedSymbols};
 use mortar_core::resolution::{
-    Def as TableDef, FileLive, InternalDef, RefFlags, Resolution, SymProps, Verdict as TableVerdict,
+    Def as TableDef, InternalDef, RefFlags, Resolution, SymProps, Verdict as TableVerdict,
 };
-use mortar_core::{ComdatId, FileId, OptId, SymEntry, SymbolId};
+use mortar_core::{ComdatId, FileId, IdSet, OptId, SymEntry, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass, Relation};
 use mortar_elf::consts::{STB_GLOBAL, STB_WEAK, STT_SECTION};
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 
 use crate::index::HashIndex;
-use crate::options::{Entry, Named, Options, Output};
+use crate::options::{
+    Entry, MentionGroup, Named, Options, Output, SharedLink, SharedMention, ShlibUndefined,
+};
 use crate::problem::{DefPlace, MalformedSymbol, Problem, What};
 use crate::resolve::{Def, Resolved, flags, resolve_steps};
 use crate::sections::SectionRefusal;
 use crate::steps::Steps;
 use crate::verdict::{SymtabEntry, Unresolved, Verdict, symtab_entry, verdict};
-use crate::view::{FileInfo, FileKind, Groups, Mention, SectionInfo, View};
+use crate::view::{FileInfo, FileKind, Groups, Mention, SectionInfo, SharedInfo, View};
 
 /// One `SHT_GROUP` of a file, decoded once.
 #[derive(Debug, Clone, Copy)]
@@ -58,6 +65,8 @@ struct PerFile<'s> {
     /// `(st_index, the row foo@V)` for each definition `foo@@V`.
     also: Vec<(u32, SymbolId)>,
     faults: Vec<String>,
+    /// A shared object's `.gnu.version` (`spec/resolve.md` §9.2).
+    versym: Option<mortar_elf::Table<'s, mortar_elf::Versym>>,
 }
 
 /// The [`View`] of `Inputs` (`spec/model.md` §3.2).
@@ -73,6 +82,10 @@ pub struct InputsView<'a, 's> {
     also: Vec<(FileId, u32, SymbolId)>,
     symbols: HashIndex,
     faults: Vec<Fault>,
+    /// Per file: a shared object's `.gnu.version`.
+    versym: Vec<Option<mortar_elf::Table<'s, mortar_elf::Versym>>>,
+    /// Per file: what a shared object is to the link.
+    shared: Vec<Option<SharedInfo>>,
 }
 
 impl<'a, 's> InputsView<'a, 's> {
@@ -96,13 +109,13 @@ impl<'a, 's> InputsView<'a, 's> {
         drop(hashes);
         steps.step("view.symbol_lookup");
         let names = inputs.comdats.as_slice();
-        let comdat_hashes = pool.map(names.len(), |c| hash_bytes(names[c].name));
+        let comdat_hashes = pool.unit_cost(15).map(names.len(), |c| hash_bytes(names[c].name));
         let comdats = HashIndex::new(&comdat_hashes);
         drop(comdat_hashes);
         steps.step("view.comdat_lookup");
         let n = inputs.files.len() as usize;
         let per: Vec<PerFile<'s>> =
-            pool.map(n, |f| per_file(inputs, &symbols, &comdats, FileId(f as u32)));
+            pool.unit_cost(1400).map(n, |f| per_file(inputs, &symbols, &comdats, FileId(f as u32)));
         steps.step("view.per_file");
         let sources = sources(inputs);
         let mut info = Vec::with_capacity(n);
@@ -112,9 +125,19 @@ impl<'a, 's> InputsView<'a, 's> {
         let mut group_at = Vec::with_capacity(n + 1);
         let mut also = Vec::new();
         let mut faults = Vec::new();
+        let mut versym = Vec::with_capacity(n);
+        let mut shared = Vec::with_capacity(n);
         for (f, p) in per.into_iter().enumerate() {
             let id = FileId(f as u32);
             let file = &inputs.files[id];
+            versym.push(p.versym);
+            shared.push((file.kind() == InputKind::Shared).then(|| SharedInfo {
+                closure: matches!(file.origin, Origin::Closure { .. }),
+                as_needed: inputs.soname_unit(id).map_or_else(
+                    || file.state.contains(InputFlags::AS_NEEDED),
+                    |unit| unit.as_needed,
+                ),
+            }));
             info.push(FileInfo {
                 kind: kind_of(file),
                 archive: file.member.map_or(OptId::NONE, |m| OptId::some(m.archive)),
@@ -132,7 +155,19 @@ impl<'a, 's> InputsView<'a, 's> {
         }
         group_at.push(groups.len() as u32);
         steps.step("view.assemble");
-        Self { inputs, info, symtab, groups, group_members, group_at, also, symbols, faults }
+        Self {
+            inputs,
+            info,
+            symtab,
+            groups,
+            group_members,
+            group_at,
+            also,
+            symbols,
+            faults,
+            versym,
+            shared,
+        }
     }
 
     /// What the view could not decode, by file.
@@ -231,6 +266,10 @@ fn per_file<'s>(
 ) -> PerFile<'s> {
     let mut out = PerFile::default();
     let file = &inputs.files[id];
+    if let Reader::Shared(dso) = file.reader {
+        shared_per_file(inputs, symbols, id, &dso, &mut out);
+        return out;
+    }
     let Reader::Object(obj) = file.reader else { return out };
     let symtab = match obj.symbols() {
         Ok(t) => t,
@@ -320,6 +359,107 @@ fn per_file<'s>(
     out
 }
 
+/// A shared object's `.dynsym` (`spec/resolve.md` §9.1, §9.2): its table,
+/// its `.gnu.version`, the row `foo@V` of each default definition
+/// `foo@@V`, and the faults of §9.1-§9.2 the input phase does not report.
+fn shared_per_file<'s>(
+    inputs: &Inputs<'s>,
+    symbols: &HashIndex,
+    id: FileId,
+    dso: &mortar_elf::SharedObject<'s>,
+    out: &mut PerFile<'s>,
+) {
+    let t = match dso.symbols() {
+        Ok(t) => t,
+        Err(e) => {
+            out.faults.push(format!("dynamic symbol table: {e}"));
+            None
+        }
+    };
+    let keys = inputs.sym_map_of(id);
+    let Some(t) = t else { return };
+    if t.globals().len() != keys.len() {
+        out.faults.push("the dynamic symbol table is not the one the input phase read".to_owned());
+        return;
+    }
+    out.symtab = Some(t);
+    let versym = match dso.versym() {
+        Ok(v) => v,
+        Err(e) => {
+            out.faults.push(format!(".gnu.version: {e}"));
+            None
+        }
+    };
+    out.versym = versym;
+    // Version index -> (name, defined here); the base definition names no
+    // version (§9.2's last row).
+    let mut slots: Vec<Option<(&'s [u8], bool)>> = Vec::new();
+    let mut put = |index: u16, slot: (&'s [u8], bool)| {
+        let i = usize::from(index);
+        if slots.len() <= i {
+            slots.resize(i + 1, None);
+        }
+        slots[i] = Some(slot);
+    };
+    if let Ok(Some(defs)) = dso.version_definitions() {
+        for d in defs.flatten() {
+            if !d.is_base()
+                && let Ok(name) = d.name()
+            {
+                put(d.index(), (name, true));
+            }
+        }
+    }
+    if let Ok(Some(needs)) = dso.version_needs() {
+        for n in needs.flatten() {
+            for e in n.entries().into_iter().flatten().flatten() {
+                if let Ok(name) = e.name() {
+                    put(e.index(), (name, false));
+                }
+            }
+        }
+    }
+    for (index, sym) in t.globals() {
+        let place = match t.section_of(index, &sym) {
+            Ok(p) => p,
+            Err(e) => {
+                out.faults.push(format!("dynamic symbol {index}: {e}"));
+                continue;
+            }
+        };
+        if sym.binding() == mortar_elf::consts::STB_LOCAL {
+            out.faults.push(format!("dynamic symbol {index}: STB_LOCAL past sh_info"));
+            continue;
+        }
+        if place == SymbolSection::Common {
+            out.faults.push(format!("dynamic symbol {index}: SHN_COMMON in a shared object"));
+            continue;
+        }
+        if place == SymbolSection::Undefined {
+            continue;
+        }
+        let Some(v) = versym.and_then(|v| v.get(index.0 as usize)) else { continue };
+        match v.index() {
+            0 => out.faults.push(format!(
+                "dynamic symbol {index}: a definition with version index 0 (VER_NDX_LOCAL)"
+            )),
+            1 => {}
+            i => match slots.get(usize::from(i)).copied().flatten() {
+                Some((_, false)) => out.faults.push(format!(
+                    "dynamic symbol {index}: a definition whose version index {i} names a needed version"
+                )),
+                Some((version, true)) if !v.hidden() => {
+                    let base = inputs.symbols[keys[(index.0 - t.first_global().0) as usize]].name;
+                    if let Some(row) = lookup(&inputs.symbols, symbols, base, Some(version)) {
+                        out.also.push((index.0, row));
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+}
+
 /// The effective signature (`spec/model.md` §2.3): the symbol's name, or
 /// its section's name for an `STT_SECTION` symbol.
 fn signature_name<'s>(
@@ -361,11 +501,15 @@ impl View for InputsView<'_, '_> {
 
     fn mentions(&self, file: FileId, out: &mut Vec<Mention>) {
         let Some(t) = self.symtab[file.0 as usize] else { return };
+        let shared = self.shared[file.0 as usize].is_some();
         let keys = self.inputs.sym_map_of(file);
         let from = self.also.partition_point(|a| a.0 < file);
         let mut also = self.also[from..].iter().take_while(|a| a.0 == file).peekable();
         for ((index, sym), &key) in t.globals().zip(keys) {
             let Ok(place) = t.section_of(index, &sym) else { continue };
+            if shared && !shared_mention(&sym, place) {
+                continue;
+            }
             let mut row = OptId::NONE;
             while let Some(a) = also.peek() {
                 if a.1 < index.0 {
@@ -447,6 +591,42 @@ impl View for InputsView<'_, '_> {
     fn find_key(&self, name: &[u8]) -> Option<SymbolId> {
         self.lookup(name, None)
     }
+
+    fn shared(&self, file: FileId) -> Option<SharedInfo> {
+        self.shared.get(file.0 as usize).copied().flatten()
+    }
+
+    fn needed(&self, file: FileId, out: &mut Vec<Option<FileId>>) {
+        let edges = &self.inputs.link.closure;
+        let from = edges.partition_point(|e| e.needing < file);
+        out.extend(edges[from..].iter().take_while(|e| e.needing == file).map(
+            |e| match e.outcome {
+                EdgeOutcome::Satisfied(f) => Some(f),
+                EdgeOutcome::NotFound => None,
+            },
+        ));
+    }
+
+    fn version(&self, file: FileId, index: SymbolIndex) -> u16 {
+        self.versym
+            .get(file.0 as usize)
+            .copied()
+            .flatten()
+            .and_then(|v| v.get(index.0 as usize))
+            .map_or(0, mortar_elf::Versym::index)
+    }
+}
+
+/// Whether a `.dynsym` entry of a shared object is a mention resolution
+/// reads (`spec/resolve.md` §9.1): a reference, or a definition of default
+/// or protected visibility (hidden and internal ones are ignored; local
+/// and common ones are faults of the view).
+fn shared_mention(sym: &mortar_elf::Sym, place: SymbolSection) -> bool {
+    use mortar_elf::consts::{STB_LOCAL, STV_HIDDEN, STV_INTERNAL};
+    if sym.binding() == STB_LOCAL || place == SymbolSection::Common {
+        return false;
+    }
+    place == SymbolSection::Undefined || !matches!(sym.st_other & 3, STV_HIDDEN | STV_INTERNAL)
 }
 
 // ---- the Plan -------------------------------------------------------------
@@ -514,6 +694,148 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
         },
         unresolved,
         ignore_unresolved: ignored,
+        shared: shared_link(plan, inputs, view, &by_role(SymbolRole::ExportDynamicSymbol)),
+    }
+}
+
+/// [`SharedLink`]: the mentions of shared objects and the positions of the
+/// relocatable objects, from `opened` (`spec/input.md` §10.4, load order
+/// with scripts expanded inline), and the switches of D-13 and D-21.
+#[allow(clippy::too_many_lines, reason = "one walk over `opened` and the plan")]
+fn shared_link(
+    plan: &Plan,
+    inputs: &Inputs<'_>,
+    view: &InputsView<'_, '_>,
+    export: &[Named],
+) -> SharedLink {
+    let files = inputs.files.as_slice();
+    if !files.iter().any(|f| f.kind() == InputKind::Shared) {
+        return SharedLink::default();
+    }
+    let link = &inputs.link;
+    let mut position = vec![u32::MAX; files.len()];
+    let mut archive_at: HashMap<u32, u32> = HashMap::new();
+    let mut mentions = Vec::new();
+    // The command-line group ordinal -> `FileInfo::group`'s numbering.
+    let mut plan_group: HashMap<u32, u32> = HashMap::new();
+    for (f, file) in files.iter().enumerate() {
+        if let Origin::Input { input, .. } = file.origin
+            && let Some(g) = plan.inputs.get(input as usize).and_then(|i| i.state.group)
+            && let Some(o) = view.file(FileId(f as u32)).group
+        {
+            plan_group.entry(g).or_insert(o);
+        }
+    }
+    let script_of = |entry: u32| link.script_entries.get(entry as usize);
+    for (i, o) in link.opened.iter().enumerate() {
+        let i = i as u32;
+        if matches!(o.origin, Origin::Closure { .. }) {
+            continue;
+        }
+        match o.kind {
+            OpenedKind::Object(f) => position[f.0 as usize] = i,
+            OpenedKind::Archive(a) => {
+                archive_at.insert(a.0, i);
+            }
+            OpenedKind::Shared(f) => mentions.push(SharedMention {
+                file: f,
+                position: i,
+                as_needed: Some(files[f.0 as usize].state.contains(InputFlags::AS_NEEDED)),
+                group: view.file(f).group.map_or(MentionGroup::None, MentionGroup::In),
+            }),
+            OpenedKind::SharedNotLoaded(f) => {
+                let Origin::Input { input, entry, .. } = o.origin else { continue };
+                let Some(state) = plan.inputs.get(input as usize).map(|i| &i.state) else {
+                    continue;
+                };
+                let as_needed = match entry {
+                    None => Some(state.as_needed),
+                    // `AS_NEEDED(…)` can only turn it on.
+                    Some(_) if state.as_needed => Some(true),
+                    Some(_) => None,
+                };
+                let group = match (state.group, entry) {
+                    (Some(g), _) => {
+                        plan_group.get(&g).map_or(MentionGroup::None, |&o| MentionGroup::In(o))
+                    }
+                    (None, None) => MentionGroup::None,
+                    (None, Some(e)) => {
+                        // The script's own GROUP, as its other entries got it.
+                        let here = script_of(e).map(|s| (s.script, s.parent));
+                        match here {
+                            Some((script, None)) => {
+                                let mut found = MentionGroup::None;
+                                for (g, file) in files.iter().enumerate() {
+                                    if let Origin::Input { entry: Some(e2), .. } = file.origin
+                                        && script_of(e2).is_some_and(|s| s.script == script)
+                                        && let Some(o) = view.file(FileId(g as u32)).group
+                                    {
+                                        found = MentionGroup::In(o);
+                                        break;
+                                    }
+                                }
+                                found
+                            }
+                            _ => MentionGroup::Unknown,
+                        }
+                    }
+                };
+                mentions.push(SharedMention { file: f, position: i, as_needed, group });
+            }
+            _ => {}
+        }
+    }
+    for (f, file) in files.iter().enumerate() {
+        if let Some(m) = file.member
+            && let Some(&at) = archive_at.get(&m.archive.0)
+        {
+            position[f] = at;
+        }
+    }
+    // A merged `as_needed` (on only if on at every mention) decides the
+    // mentions the tables do not record when it can.
+    let mut by_file: HashMap<FileId, Vec<usize>> = HashMap::new();
+    for (i, m) in mentions.iter().enumerate() {
+        by_file.entry(m.file).or_default().push(i);
+    }
+    for (file, at) in by_file {
+        let merged = inputs.soname_unit(file).map(|u| u.as_needed);
+        if merged == Some(true) {
+            for &i in &at {
+                mentions[i].as_needed = Some(true);
+            }
+        } else if merged == Some(false) {
+            let unknown: Vec<usize> =
+                at.iter().copied().filter(|&i| mentions[i].as_needed.is_none()).collect();
+            let known_off = at.iter().any(|&i| mentions[i].as_needed == Some(false));
+            if unknown.len() == 1 && !known_off {
+                mentions[unknown[0]].as_needed = Some(false);
+            }
+        }
+    }
+    let d = &plan.diagnostics;
+    let allow = plan.dynamic.allow_shlib_undefined == Some(true)
+        || !matches!(plan.kind, OutputKind::Executable | OutputKind::PieExecutable)
+        || matches!(
+            d.unresolved_symbols,
+            Some(UnresolvedSymbols::IgnoreAll | UnresolvedSymbols::IgnoreInSharedLibs)
+        );
+    let shlib_undefined = if allow {
+        ShlibUndefined::Allow
+    } else if d.warn_unresolved_symbols == Some(true) {
+        ShlibUndefined::Warn
+    } else {
+        ShlibUndefined::Error
+    };
+    let mut export_symbols: Vec<SymbolId> = export.iter().filter_map(|n| n.key.get()).collect();
+    export_symbols.sort_unstable();
+    export_symbols.dedup();
+    SharedLink {
+        mentions,
+        position,
+        shlib_undefined,
+        export_dynamic: plan.dynamic.export_dynamic,
+        export_symbols,
     }
 }
 
@@ -529,23 +851,36 @@ pub fn resolution<V: View>(
     r: &Resolved,
     opts: &Options,
 ) -> Result<Resolution, mortar_core::IdOverflow> {
-    let file_live = r
-        .file_live
-        .iter()
-        .enumerate()
-        .map(|(f, &live)| match (view.file(FileId(f as u32)).kind, live) {
-            (FileKind::Shared, l) if l.is_live() => FileLive::Shared { needed: false },
-            (_, l) => l,
-        })
-        .collect();
+    // N, U and the rest of the loaded shared objects are the shared
+    // stage's (`spec/dyn.md` D-11, D-12); a static link has none.
+    let file_live = r.file_live.clone();
     let def = r.def.iter().map(|&d| table_def(d)).collect();
+    let dynamic = r.dynamic.as_ref();
     let props = r
         .def
         .iter()
         .zip(&r.props)
         .enumerate()
-        .map(|(k, (&d, &p))| sym_props(SymbolId(k as u32), d, p, opts))
+        .map(|(k, (&d, &p))| {
+            let mut props = sym_props(SymbolId(k as u32), d, p, opts);
+            if let Some(dy) = dynamic {
+                dynamic_props(view, k, d, dy, &mut props);
+            }
+            props
+        })
         .collect();
+    let set = |col: Option<&Vec<bool>>| -> IdSet<SymbolId> {
+        let mut out = IdSet::new();
+        if let Some(col) = col {
+            out = IdSet::with_len(col.len() as u32);
+            for (k, &on) in col.iter().enumerate() {
+                if on {
+                    out.insert(SymbolId(k as u32));
+                }
+            }
+        }
+        out
+    };
     Ok(Resolution {
         file_live: mortar_core::Column::from_vec(file_live)?,
         def: mortar_core::Column::from_vec(def)?,
@@ -557,7 +892,38 @@ pub fn resolution<V: View>(
         comdat_copies: r.keepers.copies.clone().into_boxed_slice(),
         section_base: mortar_core::Column::from_vec(r.section_base.clone())?,
         sections: mortar_core::Column::from_vec(r.sections.clone())?,
+        // The dynamic columns (`spec/dyn.md` D-11, D-12, D-21): empty in a
+        // static link.
+        exported: set(dynamic.map(|d| &d.exported)),
+        imported: set(dynamic.map(|d| &d.imported)),
+        ref_dynamic: set(dynamic.map(|d| &d.ref_dynamic)),
+        defined_dynamic: set(dynamic.map(|d| &d.defined_dynamic)),
     })
+}
+
+/// The `RefFlags` bits that repeat the dynamic columns (kept equal to them,
+/// `docs/status/m2.md`), `PREEMPTIBLE` for a shared definition, and the
+/// version of `bind(k)`'s definition (`spec/dyn.md` D-27).
+fn dynamic_props<V: View>(
+    view: &V,
+    k: usize,
+    d: Def,
+    dy: &crate::shared::Dynamic,
+    props: &mut SymProps,
+) {
+    if dy.ref_dynamic[k] {
+        props.refs |= RefFlags::FROM_SHARED;
+    }
+    if dy.defined_dynamic[k] {
+        props.refs |= RefFlags::DEFINED_SHARED;
+    }
+    if dy.exported[k] {
+        props.refs |= RefFlags::EXPORTED;
+    }
+    if let Def::Shared(e) = d {
+        props.refs |= RefFlags::PREEMPTIBLE;
+        props.version = view.version(e.file, e.index);
+    }
 }
 
 /// The model's `def` (§3.3): strong and weak definitions are both
@@ -571,6 +937,7 @@ pub fn table_def(d: Def) -> TableDef {
         Def::Provide { conditional, .. } => {
             TableDef::Internal(InternalDef::Provide { conditional })
         }
+        Def::Shared(e) => TableDef::Shared(e),
     }
 }
 
@@ -702,9 +1069,41 @@ impl Ctx<'_, '_, '_> {
         use RefusalClass as C;
         let warn = |kind| Diagnostic::warning(kind);
         match &p.what {
-            What::SharedObject { file } => {
-                Diagnostic::refused(C::Feature, "shared objects as input").at(self.file(*file))
+            What::ShlibUndefined { file, key, .. } => {
+                let kind = Kind::UndefinedSymbol { name: self.name(*key) };
+                let d = if p.severity() == crate::Severity::Warning {
+                    Diagnostic::warning(kind)
+                } else {
+                    Diagnostic::error(kind)
+                };
+                d.at(self.file(*file))
+                    .with(Relation::ReferencedBy, self.file(*file))
+                    .note("a shared object's undefined symbol; --allow-shlib-undefined accepts it")
             }
+            What::NonExported { key, def, entry } => {
+                Diagnostic::error(Kind::NonExportedSymbol { name: self.name(*key) })
+                    .at(self.entry(*def))
+                    .with(Relation::DefinedIn, self.entry(*def))
+                    .with(Relation::ReferencedBy, self.file(entry.file))
+            }
+            What::AsNeededExtraction { key, entry, member } => Diagnostic::refused(
+                C::Feature,
+                format!(
+                    "archive member needed by an --as-needed shared object: {}",
+                    self.name(*key)
+                ),
+            )
+            .at(self.file(entry.file))
+            .with(Relation::DefinedIn, self.file(*member))
+            .note(
+                "link the library with --no-as-needed, or name the member's definition \
+                 earlier (an object or -u)",
+            ),
+            What::NeededOrderUnknown { file } => Diagnostic::refused(
+                C::Feature,
+                "DT_NEEDED order of a shared object mentioned again inside a linker script",
+            )
+            .at(self.file(*file)),
             What::LtoSlim { file } => {
                 Diagnostic::refused(C::FileFormat, "GCC LTO object").at(self.file(*file))
             }
@@ -760,6 +1159,11 @@ impl Ctx<'_, '_, '_> {
                             .map_or_else(|| format!("{t:#x}"), str::to_owned),
                     ),
                     SectionRefusal::Flags(f) => (C::SectionFlag, format!("{f:#x}")),
+                    SectionRefusal::RelForm(t) => {
+                        let name =
+                            if *t == mortar_elf::consts::SHT_REL { "SHT_REL" } else { "SHT_RELA" };
+                        (C::SectionType, name.to_owned())
+                    }
                     SectionRefusal::Linkonce => (C::Feature, ".gnu.linkonce sections".to_owned()),
                     SectionRefusal::Zdebug => {
                         (C::Feature, ".zdebug compressed debug sections".to_owned())
@@ -907,7 +1311,19 @@ pub struct Outcome {
     /// `SHF_GNU_RETAIN` sections (§4.7).
     pub retained: Vec<(FileId, SectionIndex)>,
     pub entry: crate::EntryPoint,
-    /// Where the time went (`MORTAR_TIME_STEPS`; decides nothing).
+    /// The keys the options root (§4.2: the entry, `-u`,
+    /// `--require-defined`), in option order: their definitions are
+    /// roots of `--gc-sections` (§4.7).
+    pub roots: Vec<SymbolId>,
+    /// The needed shared objects in `DT_NEEDED` order (`spec/dyn.md`
+    /// D-19a): `Slots.needed`. Empty in a static link.
+    pub needed: Vec<FileId>,
+    /// Keys a relocatable object refers to strongly that stay undefined
+    /// while a closure file defines them, with that file (`spec/dyn.md`
+    /// D-12): the scan's `undefined-symbol` gets the note `defined in
+    /// <file>, which is not on the command line`. Sorted by key.
+    pub closure_only: Vec<(SymbolId, FileId)>,
+    /// Where the time went (`MORTAR_STEPS`; decides nothing).
     pub steps: Steps,
 }
 
@@ -959,6 +1375,9 @@ pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome 
         gnu_warning_syms: r.gnu_warning_syms,
         retained: r.retained,
         entry: r.entry,
+        roots: opts.roots().iter().map(|root| root.key).collect(),
+        needed: r.dynamic.as_ref().map(|d| d.needed.clone()).unwrap_or_default(),
+        closure_only: r.dynamic.as_ref().map(|d| d.closure_only.clone()).unwrap_or_default(),
         steps: Steps::default(),
     };
     steps.step("drop");

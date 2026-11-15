@@ -451,3 +451,67 @@ fn l118_island_padding() {
     assert!(![0xffc, 0, 4, 8].contains(&(padded & 0xfff)), "{padded:#x}");
     assert!(padded > at && padded - at <= 16, "{:#x}", padded - at);
 }
+
+/// `.symtab`-like and `.got`-like synthetic chunks of `w`, sized `sym` and
+/// `got` bytes.
+fn with_synthetic(mut w: World, sym: u64, got: u64) -> World {
+    use mortar_core::layout::Synth;
+    use mortar_elf::consts::{SHF_WRITE, SHT_SYMTAB};
+    use mortar_layout::chunk::SynthChunk;
+    w.synthetic = vec![
+        SynthChunk {
+            synth: Synth { name: b".got", address_dependent: false },
+            sh_type: SHT_PROGBITS,
+            flags: SHF_ALLOC | SHF_WRITE,
+            align: 3,
+            size: got,
+        },
+        SynthChunk {
+            synth: Synth { name: b".symtab", address_dependent: false },
+            sh_type: SHT_SYMTAB,
+            flags: 0,
+            align: 3,
+            size: sym,
+        },
+    ];
+    w
+}
+
+/// `place_again` from the placement of a link whose synthetic chunks had
+/// other sizes, as the driver's second placement does.
+fn placed_again(w: &World, sites: &Synthetic, prev: &Placed, pool: &Pool) -> Placed {
+    let range = RangeExtension { arch: &A64::M1, sites };
+    let mut a = w.stage_a(pool).unwrap();
+    let entries = w.entries.clone();
+    mortar_layout::place_again(
+        &w.link(),
+        &mut a,
+        Some(&range),
+        move |e| entries.iter().find(|(x, _)| *x == e).map(|(_, d)| *d),
+        pool,
+        Some(prev),
+    )
+    .unwrap()
+}
+
+// spec: layout.md §14 and L-21 (a function of the patch set), L-72
+// (non-alloc chunks after the alloc ones): placing again with only a
+// trailing non-alloc chunk resized reuses the fixed point and gives the
+// placement a full run gives; an alloc chunk resized is a full run.
+#[test]
+fn place_again_is_place() {
+    for pool in [Pool::sequential(), Pool::sequential().with_threads(4)] {
+        let first = with_synthetic(world(), 0x100, 0x40);
+        let sites = two_round_sites(&first);
+        let prev = run(&first, &A64::M1, &sites, &pool);
+        assert_eq!(prev.rounds, 3);
+        for (sym, got) in [(0x100, 0x40), (0x1234, 0x40), (0x18, 0x40), (0x100, 0x48)] {
+            let w = with_synthetic(world(), sym, got);
+            let full = run(&w, &A64::M1, &sites, &pool);
+            let again = placed_again(&w, &sites, &prev, &pool);
+            assert_eq!(again.placement, full.placement, "sizes {sym:#x}, {got:#x}");
+            assert_eq!(again.staged, full.staged);
+            assert_eq!((again.rounds, again.rules), (full.rounds, full.rules));
+        }
+    }
+}

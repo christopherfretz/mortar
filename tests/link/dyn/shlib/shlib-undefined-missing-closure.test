@@ -1,0 +1,63 @@
+# dyn.md D-13 (with input.md §8.6 "Not found"): when a needed library's
+# `DT_NEEDED` entry is not found, the references that only the missing
+# library would satisfy are undefined (GNU ld's rule, the default
+# `--no-allow-shlib-undefined`). `libumid.so` (named by path) needs
+# `libuleaf.so`, which sits in `sub/`: not in `libumid.so`'s directory, a
+# `-L` directory, an `-rpath-link` or a `DT_RUNPATH`, so no linker finds it.
+# `libumid.so`'s strong reference to `uleaf_fn` is then undefined: GNU ld
+# warns `libuleaf.so, needed by libumid.so, not found` and fails
+# ``libumid.so: undefined reference to `uleaf_fn'``; mortar warns
+# `needed-not-found` and refuses with `undefined-symbol`. With
+# `-rpath-link,sub` the closure is found, every linker links, and the
+# program prints 204 (`umid_fn` = 200 + `uleaf_fn`).
+#
+# Where the references differ (D-13): lld exempts a library whose
+# `DT_NEEDED` entries are not all found, and mold never checks; both link
+# the first line, and their programs run once the loader finds `sub/`.
+# Not wrong outputs (the loader checks at load); held to their own
+# behaviour, mortar to GNU ld's.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-13"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC uleaf.c -o uleaf.o
+cc -O1 -fPIC umid.c -o umid.o
+shlib gcc uleaf.o -Wl,-soname,libuleaf.so -o sub/libuleaf.so
+shlib gcc umid.o -Wl,-soname,libumid.so sub/libuleaf.so -o libumid.so
+cc -O1 -fPIE main.c -o main.o
+link(bfd,mortar) gcc -pie main.o libumid.so -o missing
+  exit: fail
+  diag(bfd): libuleaf.so, needed by libumid.so, not found
+  diag(bfd): libumid.so: undefined reference to `uleaf_fn'
+  diag(mortar): libuleaf.so, needed by libumid.so, not found
+  diag(mortar): undefined symbol: uleaf_fn
+link(lld,mold) gcc -pie main.o libumid.so -o missing
+run(lld,mold) missing
+  env: LD_LIBRARY_PATH=.:sub
+  stdout: 204
+link gcc -pie main.o libumid.so -Wl,-rpath-link,sub -o prog
+run prog
+  env: LD_LIBRARY_PATH=.:sub
+  stdout: 204
+check readelf -dW prog
+  has: (NEEDED) Shared library: [libumid.so]
+  not: [libuleaf.so]
+
+#--- sub/README
+The directory of libuleaf.so, searched by no linker unless named.
+#--- uleaf.c
+int uleaf_fn(void) { return 4; }
+#--- umid.c
+int uleaf_fn(void);
+int umid_fn(void) { return 200 + uleaf_fn(); }
+#--- main.c
+#include <stdio.h>
+
+int umid_fn(void);
+
+int main(void) {
+  printf("%d\n", umid_fn());
+  return 0;
+}

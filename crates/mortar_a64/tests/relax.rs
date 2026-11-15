@@ -13,7 +13,7 @@ use mortar_arch::{
 use mortar_core::{FileId, SectionId};
 use support::{Case, M2, Sink, Tables, key, raised, scan_all, words};
 
-const ALLOC: PlaceFacts = PlaceFacts { alloc: true, writable: false };
+const ALLOC: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
 const NOP: u32 = 0xD503_201F;
 const TLS: TlsBlock = TlsBlock { start: 0x42_0000, size: 0x2_0000, align: 16 };
 /// `S` with `T = TPREL(S) = 0x1_2360` (variant I, 16-byte TCB).
@@ -334,7 +334,7 @@ fn s8_4_pattern_fails() {
         r_offset: 0,
         key: key(1),
         r_type: 513,
-        addend: 0,
+        addend: Some(0),
         howto: &h,
         site: Site { bytes: &input, offset: 0 },
         records: &&relocs[..],
@@ -368,7 +368,7 @@ fn s8_4_pattern_fails() {
                     r_offset: rr.r_offset,
                     key: rr.key,
                     r_type: rr.r_type,
-                    addend: 0,
+                    addend: Some(0),
                     howto: &h,
                     site: Site { bytes: &input, offset: rr.r_offset },
                     records: &&relocs[..],
@@ -408,7 +408,7 @@ fn s8_4_the_call26_member_is_consumed() {
             r_offset: rr.r_offset,
             key: rr.key,
             r_type: rr.r_type,
-            addend: 0,
+            addend: Some(0),
             howto: h,
             site: Site { bytes: &input, offset: rr.r_offset },
             records: &&relocs[..],
@@ -435,7 +435,7 @@ fn s8_4_the_call26_member_is_consumed() {
         r_offset: rr.r_offset,
         key: rr.key,
         r_type: rr.r_type,
-        addend: 0,
+        addend: Some(0),
         howto: &h2,
         site: Site { bytes: &input, offset: 8 },
         records: &&relocs[..],
@@ -480,11 +480,16 @@ fn s8_2_r2_tlsdesc_to_ie() {
     c.output = OutputKind::Pie;
     let out = apply_both(&c, &relocs).unwrap();
     assert_eq!(out, words(&[insert(forms::LDX19, 0x5800_0000, 0x1238), NOP, NOP]));
-    // Scan: GOT_TPREL, never TLS_DESC; the large form stays a descriptor.
+    // Scan: GOT_TPREL, never TLS_DESC; the large form stays a descriptor
+    // (WP-047: a lone `TLSDESC_ADD`, without its `CALL` after it, is
+    // refused by name, `tests/dynamic.rs`).
     let s = scan(M2, &t, OutputKind::Exec, &input, &[r(0, 1, 562)]);
     assert_eq!(raised(&s, key(1)), DemandFlags::GOT_TPREL);
     let movz = words(&[0xD2A0_0000]);
     let s = scan(M2, &t, OutputKind::Exec, &movz, &[r(0, 1, 565)]);
+    assert_eq!(raised(&s, key(1)), DemandFlags::TLS_DESC);
+    // In a shared output it is a descriptor.
+    let s = scan(M2, &t, OutputKind::Shared, &movz, &[r(0, 1, 565)]);
     assert_eq!(raised(&s, key(1)), DemandFlags::TLS_DESC);
 }
 

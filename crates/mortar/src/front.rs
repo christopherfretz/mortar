@@ -40,7 +40,7 @@ use mortar_core::resolution::{Resolution, SectionKind};
 use mortar_core::{Liveness, SymbolId};
 use mortar_diag::{Collector, Diagnostic, Key, Kind, Place};
 use mortar_elf::consts::SHT_NOTE;
-use mortar_elf::{Class, Machine, SectionIndex};
+use mortar_elf::{Class, SectionIndex};
 use mortar_input::load::{LoadEnv, load_steps};
 use mortar_input::store::Store;
 use mortar_layout::chunk::{Common, SynthChunk, commons};
@@ -119,6 +119,9 @@ pub struct Front<'s> {
     /// the symbol tables' plan reads it.
     pub eh: EhPlan,
     pub synth: SynthPlans,
+    /// The dynamic tables' plans; `None` in a static link, and always
+    /// while `crate::dynamic::dynamic_guard` refuses dynamic output.
+    pub dyn_tables: Option<crate::dynamic::DynTables>,
     pub commons: Vec<Common>,
     pub layout: Layout,
     /// What `place` returned besides the placement (the segment rules
@@ -222,6 +225,25 @@ impl Front<'_> {
     }
 }
 
+/// The resident input bytes that repay one more worker after the input
+/// phase (WP-032h: at default threads under load 10, hello-c's 6.9 MB
+/// link went 25.7 -> 23.5 ms on 2 workers; 2, 4 and 8 MB per worker were
+/// equal on hello-cxx (15 MB) and a 68 MB link).
+const BYTES_PER_WORKER: u64 = 4 << 20;
+
+/// The pool the phases after input run on: without `--threads`, at most
+/// one worker per [`BYTES_PER_WORKER`] resident input bytes, so a small
+/// link does not pay for workers it cannot use. The count is a function
+/// of the inputs, never of a clock; an explicit `--threads` (or a
+/// scheduling seed, which exists to exercise schedules) keeps the pool.
+fn capped(pool: Pool, plan: &Plan, resident: u64) -> Pool {
+    if plan.bookkeeping.threads.is_some() || pool.seed().is_some() {
+        return pool;
+    }
+    let cap = usize::try_from(resident.div_ceil(BYTES_PER_WORKER)).unwrap_or(usize::MAX).max(1);
+    pool.with_threads(pool.threads().min(cap))
+}
+
 /// Where a link runs.
 #[derive(Debug, Clone, Copy)]
 pub struct Env<'e> {
@@ -298,7 +320,7 @@ pub fn front<'s>(
 
     // 20: input.
     let load_env = LoadEnv { cwd: env.cwd.to_path_buf(), pool };
-    let time_steps = std::env::var_os("MORTAR_TIME_STEPS").is_some();
+    let time_steps = mortar_core::wp032b_steps::enabled();
     let mut steps = mortar_input::steps::Steps::default();
     let inputs = load_steps(&plan, &load_env, store, diag, &mut steps);
     if time_steps {
@@ -306,21 +328,8 @@ pub fn front<'s>(
     }
     let inputs = inputs?;
     timer.phase(20, "input");
+    let pool = capped(pool, &plan, store.stats().resident);
     let machine = inputs.target.machine;
-    if machine == Machine::I386 {
-        // Input's phase (20), after every file's diagnostics (their unit is
-        // the file's ordinal).
-        diag.emit(
-            Key::new(20, u32::MAX, 0),
-            Diagnostic::refused(
-                mortar_diag::RefusalClass::Feature,
-                format!("linking for {}", machine.name()),
-            )
-            .note("M1 links AArch64 and x86-64 (docs/ROADMAP.md)"),
-        );
-        return None;
-    }
-
     // 30: resolve.
     let outcome = mortar_resolve::resolve_inputs(&inputs, &plan, &pool);
     if time_steps {
@@ -339,6 +348,7 @@ pub fn front<'s>(
     let entry_warned = outcome.diagnostics.iter().any(|(_, d)| d.id() == "entry-not-found");
     let comdat_mismatch = mismatches(&outcome);
     let gnu_warnings = outcome.gnu_warning_syms.clone();
+    let roots = outcome.roots;
     let resolution = outcome.resolution;
 
     // 45: assignment (layout stage A).
@@ -351,11 +361,15 @@ pub fn front<'s>(
             return None;
         }
     };
-    let Some(link_arch) = LinkArch::of(machine, options.fix_843419) else {
+    let Some(link_arch) =
+        LinkArch::of(machine, options.fix_843419, crate::dynamic::arch_status(&plan))
+    else {
         diag.emit(Key::new(45, 0, 0), internal(format!("no architecture for {}", machine.name())));
         return None;
     };
     let arch = link_arch.get();
+    // S-68: an output whose relocations are REL (i386) names `.rel.plt`.
+    let rel = arch.facts().rel_form == mortar_arch::RelForm::Rel;
     let headers = match gather(&inputs, &resolution, &pool) {
         Ok(h) => h,
         Err(d) => {
@@ -404,15 +418,20 @@ pub fn front<'s>(
         resolution: &resolution,
         assignment: &assignment,
         split: &merge.split,
+        roots: &roots,
+        arch: Some(arch),
     };
-    let liveness =
-        match liveness(&live, LiveOptions { gc_sections: plan.shaping.gc_sections }, &pool) {
-            Ok(l) => l,
-            Err((k, d)) => {
-                diag.emit(k, d);
-                return None;
-            }
-        };
+    let live_options = LiveOptions {
+        gc_sections: plan.shaping.gc_sections,
+        keep_exported: plan.shaping.gc_keep_exported,
+    };
+    let liveness = match liveness(&live, live_options, &pool) {
+        Ok(l) => l,
+        Err((k, d)) => {
+            diag.emit(k, d);
+            return None;
+        }
+    };
     let order = offsets(&pool, &merge.split, &merge.meta, &liveness.frag_live);
     timer.phase(50, "liveness");
 
@@ -426,17 +445,31 @@ pub fn front<'s>(
         comdat_mismatch: &comdat_mismatch,
         gnu_warnings: &gnu_warnings,
     };
-    let scan_options = ScanOptions { output, dynamic: false, proof: link_arch.proof() };
-    let scanned = scan(arch, &scan_inputs, &scan_options, &pool);
+    let scan_options =
+        ScanOptions { output, dynamic: false, sections: None, proof: link_arch.proof() };
+    let mut scanned = scan(arch, &scan_inputs, &scan_options, &pool);
+    // The branch candidates are the sites' input only: dropped once the
+    // sites are final, before the image.
+    let branch_candidates = std::mem::take(&mut scanned.branches);
     for (k, d) in scanned.diagnostics.iter().cloned() {
         diag.emit(k, d);
     }
+    let deferred = Deferred {
+        arch,
+        inputs: &scan_inputs,
+        options: scan_options,
+        order: &scanned.order,
+        pool: &pool,
+        diag,
+        armed: true,
+    };
     timer.phase(70, "scan");
     if stop(diag) {
         return None;
     }
 
     // 80: the synthetic chunks' plans, as sizes.
+    let mut steps = mortar_core::wp032b_steps::Steps::new("synthetic");
     let slots = slots_of(&scanned.demands, &resolution);
     let merge_eh = match MergeEh::new(&merge.eh, &tables) {
         Ok(m) => m,
@@ -445,18 +478,29 @@ pub fn front<'s>(
             return None;
         }
     };
+    steps.step("merge eh", 0, "");
     let eh = EhPlan::new(&merge_eh, |s: SectionId| liveness.is_live(s), &pool, diag).ok()?;
+    steps.step("eh plan", 0, "");
     let eh_frame_hdr = plan.shaping.eh_frame_hdr.unwrap_or(false);
     let hdr = HdrPlan::new(&merge_eh, &eh, eh_frame_hdr, &pool, diag).ok()?;
+    steps.step("hdr plan", 0, "");
     let memory_seal = plan.z.memory_seal == Some(true);
     let property = property_plan(&inputs, &resolution, &headers, arch, memory_seal, diag).ok()?;
     let feature_1_and = property.value_u32(link_arch.feature_1().0);
     let variant = arch
-        .plt_variant(&OutputCx { output, feature_1_and, pac_plt: false, force_bti: false })
+        .plt_variant(&OutputCx {
+            output,
+            feature_1_and,
+            pac_plt: false,
+            force_bti: false,
+            bind_now: false,
+        })
         .map_err(|r| diag.emit(mortar_synth::error::key(0), r.diagnostic()))
         .ok()?;
-    let got = GotPlan::new(arch, &slots, scanned.demands.output, variant, diag).ok()?;
+    let got_output = got_base_defined(&inputs, &resolution, scanned.demands.output);
+    let got = GotPlan::new(arch, &slots, got_output, variant, diag).ok()?;
     let build_id = BuildIdPlan::new(plan.shaping.build_id.as_ref(), diag).ok()?;
+    steps.step("property got build-id", 0, "");
     let core = CoreSections { resolution: &resolution, liveness: &liveness, split: &merge.split };
     let sections = LinkSections { core, assignment: &assignment };
     let syms = CoreSyms::new(&inputs, &resolution, &assignment);
@@ -471,9 +515,11 @@ pub fn front<'s>(
     let symtab = if strip_all {
         None
     } else {
-        Some(SymtabPlan::new(&sym_cx, Class::Elf64, &[], facts, &pool, diag).ok()?)
+        Some(SymtabPlan::new(&sym_cx, target.class, &[], facts, &pool, diag).ok()?)
     };
+    steps.step("symtab plan", 0, "");
     timer.phase(80, "synthetic");
+    let mut steps = mortar_core::wp032b_steps::Steps::new("layout");
 
     // 90: layout, to the fixed point.
     let folds = Folds::default();
@@ -492,9 +538,10 @@ pub fn front<'s>(
     // input and the synthetic chunks that exist (their kinds do not depend
     // on `.shstrtab`'s size), so that one placement usually suffices; the
     // exact names are checked after it.
-    let kinds: Vec<SynthKind> = synth_chunks(&plans, &eh, false).1.iter().map(|p| p.0).collect();
+    let kinds: Vec<SynthKind> =
+        synth_chunks(&plans, &eh, false, target.class, rel).1.iter().map(|p| p.0).collect();
     let names: Vec<&[u8]> =
-        estimated_names(&assignment, &liveness, &resolution, &kinds, options.relro);
+        estimated_names(&assignment, &liveness, &resolution, &kinds, options.relro, rel);
     let mut shstrtab = ShstrtabPlan::new(&names);
     // S-85: `.symtab_shndx` exists when some section index reaches
     // `SHN_LORESERVE`; the count of section headers (with the null one)
@@ -502,10 +549,20 @@ pub fn front<'s>(
     let mut shndx = SymtabPlan::needs_shndx(names.len() as u32 + 2);
     let walker = Walker::new(arch, &scan_inputs, scan_options);
     let mut attempt = 0;
+    // The sites read the slots' key lists only, which every attempt shares
+    // (`slots`, before the sizes are set); they are found once per set of
+    // synthetic chunk ids. The placement of the attempt before is the next
+    // one's start (`mortar_layout::place_again`), and the symbol tables'
+    // plan is made once per patch table (a function of it).
+    let demand_slots = &slots;
+    let mut kept_sites: Option<(SynthIds, LinkSites<'_, '_>)> = None;
+    let mut prev: Option<Placed> = None;
+    let mut planned_for: Option<Box<[mortar_core::layout::Patch]>> = None;
+    steps.step("prepare", 0, "");
     let (placement_assignment, placed, layout, erratum_fixes) = loop {
         attempt += 1;
         plans.shstrtab = shstrtab.clone();
-        let (synthetic, present) = synth_chunks(&plans, &eh, shndx);
+        let (synthetic, present) = synth_chunks(&plans, &eh, shndx, target.class, rel);
         let Some(sizes) = chunk_ids(FIRST_SYNTHETIC, &present) else {
             diag.emit(Key::new(80, 0, 0), internal("a synthetic chunk given twice"));
             return None;
@@ -525,7 +582,6 @@ pub fn front<'s>(
             plt: plans.chunk(SynthKind::Plt),
         };
         let site_inputs = SiteInputs {
-            inputs: &inputs,
             resolution: &resolution,
             assignment: &assignment,
             headers: &headers,
@@ -534,18 +590,22 @@ pub fn front<'s>(
             merge: &order.map,
             demands: &scanned.demands,
             order: &scanned.order,
-            slots: &slots,
+            slots: demand_slots,
             got: &plans.got,
             ids,
         };
-        let link_sites = match LinkSites::new(site_inputs, arch, &walker, &pool) {
-            Ok(s) => s,
-            Err((k, d)) => {
-                diag.emit(k, d);
-                return None;
+        if kept_sites.as_ref().is_none_or(|(i, _)| *i != ids) {
+            match LinkSites::new(site_inputs, &branch_candidates, arch, &walker, &pool) {
+                Ok(s) => kept_sites = Some((ids, s)),
+                Err((k, d)) => {
+                    diag.emit(k, d);
+                    return None;
+                }
             }
-        };
-        let range = RangeExtension { arch, sites: &link_sites };
+        }
+        let Some((_, link_sites)) = &kept_sites else { return None };
+        steps.step("sites", 0, "");
+        let range = RangeExtension { arch, sites: link_sites };
         let link = mortar_layout::Link {
             headers: &headers,
             resolution: &resolution,
@@ -561,19 +621,25 @@ pub fn front<'s>(
             options: &options,
         };
         let mut a = assignment.clone();
-        let placed =
-            match mortar_layout::place(&link, &mut a, Some(&range), |e| inputs.entry_def(e), &pool)
-            {
-                Ok(p) => p,
-                Err(errors) => {
-                    for (n, d) in errors.into_iter().enumerate() {
-                        let (k, d) =
-                            layout_diag(&inputs, &resolution, d, Key::new(90, 0, n as u64));
-                        diag.emit(k, d);
-                    }
-                    return None;
+        steps.step("assignment clone", 0, "");
+        let placed = match mortar_layout::place_again(
+            &link,
+            &mut a,
+            Some(&range),
+            |e| inputs.entry_def(e),
+            &pool,
+            prev.as_ref(),
+        ) {
+            Ok(p) => p,
+            Err(errors) => {
+                for (n, d) in errors.into_iter().enumerate() {
+                    let (k, d) = layout_diag(&inputs, &resolution, d, Key::new(90, 0, n as u64));
+                    diag.emit(k, d);
                 }
-            };
+                return None;
+            }
+        };
+        steps.step("place", u64::from(placed.rounds), "round");
         // The sizes known only now (S-90 after stage C; R-L5 after the
         // fixed point): equal, or one more run with them (they are
         // non-allocated and last, so they move no address).
@@ -586,23 +652,32 @@ pub fn front<'s>(
         again |= exact_shndx != shndx;
         shndx = exact_shndx;
         if !placed.placement.patches.is_empty()
+            && planned_for.as_ref() != Some(&placed.placement.patches)
             && let Some(old) = &plans.symtab
         {
-            let new = SymtabPlan::new(
-                &sym_cx,
-                Class::Elf64,
-                &placed.placement.patches,
-                facts,
-                &pool,
-                diag,
-            )
-            .ok()?;
+            let new = old.with_patches(sym_cx.syms, &placed.placement.patches);
+            #[cfg(debug_assertions)]
+            {
+                let full = SymtabPlan::new(
+                    &sym_cx,
+                    target.class,
+                    &placed.placement.patches,
+                    facts,
+                    &pool,
+                    diag,
+                )
+                .ok()?;
+                assert_eq!(new, full, "SymtabPlan::with_patches");
+            }
             again |= new.symtab_size() != old.symtab_size()
                 || new.strtab_size() != old.strtab_size()
                 || (shndx && new.shndx_size() != old.shndx_size());
             plans.symtab = Some(new);
+            planned_for = Some(placed.placement.patches.clone());
+            steps.step("symtab replan", placed.placement.patches.len() as u64, "patch");
         }
         if again && attempt < 3 {
+            prev = Some(placed);
             continue;
         }
         if again {
@@ -619,6 +694,7 @@ pub fn front<'s>(
                 return None;
             }
         };
+        steps.step("erratum fixes", 0, "");
         // The exact names, in section index order (S-90: `sh_name` of
         // section `n` is the plan's `n`-th name); their size is the one
         // placed.
@@ -629,8 +705,26 @@ pub fn front<'s>(
             slots,
             placement: placed.placement.clone(),
         };
+        steps.step("layout clone", 0, "");
         break (a, placed, layout, fixes);
     };
+    drop(branch_candidates);
+    steps.step("drop sites", 0, "");
+    // X86-45, X86-38: an ELFCLASS32 TLS block of 2^31 bytes or more would
+    // put a TP offset outside s(32); refused by name, as L-73 refuses an
+    // end beyond 2^32.
+    if target.class == Class::Elf32
+        && let Some((_, tls)) =
+            placed.placement.segments.iter().find(|(_, g)| g.p_type == mortar_elf::consts::PT_TLS)
+        && tls.memsz >= 1 << 31
+    {
+        let d = Diagnostic::error(Kind::OutputTooLarge {
+            what: "PT_TLS".to_owned(),
+            limit: format!("{:#x}", 1u64 << 31),
+        });
+        diag.emit(Key::new(90, 0, 0), d);
+        return None;
+    }
     for (seq, w) in (0u64..).zip(placed.warnings.iter().cloned()) {
         let (k, d) = layout_diag(&inputs, &resolution, w, Key::new(90, 0, u64::MAX - 1000 + seq));
         if entry_warned && d.id() == "entry-not-found" {
@@ -642,7 +736,7 @@ pub fn front<'s>(
     for &(kind, id) in &plans.chunks {
         let ok = matches!(
             placed.placement.chunks.get(id).map(|c| c.kind),
-            Some(ChunkKind::Synthetic(s)) if s.name == kind.name(false)
+            Some(ChunkKind::Synthetic(s)) if s.name == kind.name(rel)
         );
         if !ok {
             diag.emit(
@@ -666,7 +760,10 @@ pub fn front<'s>(
         demands,
         shapes: &shapes,
     };
-    if let Err(v) = layout.validate(&cx) {
+    steps.step("checks", 0, "");
+    let validated = layout.validate(&cx);
+    steps.step("validate", 0, "");
+    if let Err(v) = validated {
         diag.emit(
             Key::new(90, 0, u64::MAX),
             internal(format!("the layout breaks its rules: {v:?}")),
@@ -674,6 +771,8 @@ pub fn front<'s>(
         return None;
     }
     timer.phase(90, "layout");
+    deferred.disarm();
+    drop(kept_sites);
     drop(walker);
     drop(merge_eh);
     Some(Front {
@@ -694,6 +793,7 @@ pub fn front<'s>(
         scanned,
         eh,
         synth: plans,
+        dyn_tables: None,
         commons,
         layout,
         placed,
@@ -701,9 +801,10 @@ pub fn front<'s>(
     })
 }
 
-/// `MORTAR_TIME_STEPS`: a phase's sub-step times and work counts, on
-/// standard error as they are taken (the bench's unit costs; nothing in
-/// the output depends on them).
+/// `MORTAR_STEPS` for the phases that collect their sub-steps (input and
+/// resolve): their times and work counts on standard error, in the format
+/// of `mortar_core::wp032b_steps` (the bench's unit costs; nothing in the
+/// output depends on them).
 fn print_steps(
     phase: &str,
     times: &[(&'static str, std::time::Duration)],
@@ -712,12 +813,44 @@ fn print_steps(
     use std::fmt::Write as _;
     let mut s = String::new();
     for (name, d) in times {
-        let _ = writeln!(s, "mortar: time-steps: {phase}.{name}: {:.2} ms", d.as_secs_f64() * 1e3);
+        let _ = writeln!(s, "mortar: steps: {phase} {name}: {:.2} ms", d.as_secs_f64() * 1e3);
     }
     for (name, n) in counts {
-        let _ = writeln!(s, "mortar: time-steps: {phase}.count.{name}: {n}");
+        let _ = writeln!(s, "mortar: steps: {phase} count {name}: {n}");
     }
     eprint!("{s}");
+}
+
+/// WP-032c (`spec/image.md` I-14): a link that fails after the scan and
+/// before fill gets the scan's diagnostics of the sections the scan left
+/// to fill's checks, which fill would have found (dropped with `armed`).
+struct Deferred<'g, 'a, 's> {
+    arch: &'a dyn Arch,
+    inputs: &'g ScanInputs<'a, 's>,
+    options: ScanOptions<'a>,
+    order: &'g mortar_scan::RecIndex,
+    pool: &'g Pool,
+    diag: &'g Collector,
+    armed: bool,
+}
+
+impl Deferred<'_, '_, '_> {
+    /// The front has succeeded: fill checks the sections.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Deferred<'_, '_, '_> {
+    fn drop(&mut self) {
+        if !self.armed || self.order.deferred().is_empty() {
+            return;
+        }
+        let walker = Walker::new(self.arch, self.inputs, self.options);
+        for (k, d) in walker.deferred_report(self.order.deferred(), self.pool) {
+            self.diag.emit(k, d);
+        }
+    }
 }
 
 /// `Slots` from `Demands` (S-64): each kind's keys in `SymKey` order.
@@ -794,7 +927,30 @@ fn property_plan(
         paths.iter().zip(&per).map(|(p, s)| ObjectNotes { path: p, sections: s }).collect();
     let processor = |t: u32| arch.property_merge(t);
     // `-z memory-seal` (R-C3): the last of it and `-z nomemory-seal` wins.
-    PropertyPlan::new(&objects, Class::Elf64, &processor, memory_seal, diag)
+    PropertyPlan::new(&objects, arch.facts().class, &processor, memory_seal, diag)
+}
+
+/// The output demands the GOT is planned from: the scan's, with
+/// `GOT_BASE` when `_GLOBAL_OFFSET_TABLE_` is defined by the linker
+/// (layout L-101 values it at the GOT header). A symbol table can name
+/// the symbol with no record referring to it (GNU as writes it beside
+/// i386's `@ntpoff`, `@gotntpoff`, ...): the definition still has its
+/// section. One pass over the keys, testing the definition first.
+fn got_base_defined(
+    inputs: &Inputs<'_>,
+    resolution: &Resolution,
+    output: mortar_core::demands::GlobalFlags,
+) -> mortar_core::demands::GlobalFlags {
+    use mortar_core::demands::GlobalFlags;
+    use mortar_core::resolution::{Def, InternalDef};
+    if output.contains(GlobalFlags::GOT_BASE) {
+        return output;
+    }
+    let defined = resolution.def.iter().any(|(s, d)| {
+        matches!(d, Def::Internal(InternalDef::Provide { conditional: false }))
+            && inputs.symbols.get(s).is_some_and(|k| k.name == b"_GLOBAL_OFFSET_TABLE_")
+    });
+    if defined { output | GlobalFlags::GOT_BASE } else { output }
 }
 
 /// The synthetic chunks that exist, in S-3 order, as layout takes them,
@@ -803,6 +959,8 @@ fn synth_chunks(
     p: &SynthPlans,
     eh: &EhPlan,
     shndx: bool,
+    class: Class,
+    rel: bool,
 ) -> (Vec<SynthChunk>, Vec<(SynthKind, u64)>) {
     let mut present: Vec<(SynthKind, u64)> = Vec::new();
     if p.property.exists() {
@@ -837,16 +995,18 @@ fn synth_chunks(
         present.push((SynthKind::Strtab, s.strtab_size()));
     }
     present.push((SynthKind::Shstrtab, p.shstrtab.size()));
+    // S-100: mortar's `.comment` piece, after the inputs' strings.
+    present.push((SynthKind::Comment, mortar_synth::COMMENT.len() as u64));
     present.sort_by_key(|c| c.0);
     let chunks = present
         .iter()
         .map(|&(kind, size)| {
-            let h = kind.header(Class::Elf64, false).unwrap_or_else(|| unreachable!("an M1 chunk"));
+            let h = kind.header(class, rel).unwrap_or_else(|| unreachable!("an M1 chunk"));
             let (sh_type, align) = match kind {
                 SynthKind::EhFrame => (eh.sh_type(), eh.align()),
                 _ => (h.sh_type, h.align.trailing_zeros() as u8),
             };
-            SynthChunk { synth: kind.synth(false), sh_type, flags: h.flags, align, size }
+            SynthChunk { synth: kind.synth(rel), sh_type, flags: h.flags, align, size }
         })
         .collect();
     (chunks, present)
@@ -862,6 +1022,7 @@ fn estimated_names<'n>(
     resolution: &Resolution,
     synthetic: &[SynthKind],
     relro: bool,
+    rel: bool,
 ) -> Vec<&'n [u8]> {
     let mut used = vec![false; a.outsecs.len() as usize];
     for (sid, out) in a.out_of.iter() {
@@ -879,7 +1040,7 @@ fn estimated_names<'n>(
         .map(|(_, o)| o.name)
         .collect();
     for k in synthetic {
-        names.push(k.name(false));
+        names.push(k.name(rel));
     }
     // layout's `.relro_padding` (L-64), when RELRO has content: a static
     // executable's `.got` always does.

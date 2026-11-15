@@ -1,0 +1,188 @@
+# dyn.md D-22, the order of `.dynsym`: entry 0 is null; then the
+# unhashed entries (undefined, `st_value` 0) in `SymbolId` order; then the
+# hashed entries (every defined entry, and every undefined entry with a
+# value, a canonical PLT) sorted by (bucket, `SymbolId`); `sh_info` 1.
+# The program (`dynwalk.h`) reads its own tables and prints, for a PIE and
+# for a non-PIE whose code takes `&puts` (a canonical PLT, which must be
+# hashed: glibc binds a library's reference to it only through the hash
+# table), what breaks the rule: entries of the unhashed block that are
+# not undefined with value 0, hashed entries that are, hashed entries
+# whose bucket goes back, two entries of a bucket out of first-mention
+# order (the 40 callbacks the library calls, defined in main.c in index
+# order, so their `SymbolId`s are in index order), and hashed names the
+# table itself does not find.
+#
+# Where the references differ (dyn.md §13.1, "`.dynsym` unhashed block
+# order"): inside the unhashed block GNU ld writes a hash order, lld the
+# order of first appearance, mold the library's index; mortar's is
+# `SymbolId` order, first mention over the files in `FileId` order (model
+# §2.3): Scrt1.o, crti.o, crtbeginS.o, then main.o's symbol table, which
+# on these inputs is lld's order exactly (checked below, `then(lld,mortar)`).
+# GNU ld also keeps its own order inside a bucket, writes two `STT_SECTION`
+# entries in an AArch64 PIE (unhashed, defined: `sh_info` 3, D-21) and
+# hashes the x86-64 PIE's `__cxa_finalize` with value 0 (harmless: glibc
+# skips value 0). Those are its own runs below.
+#
+# Not here (a harness gap, reported): D-22's "stable under input
+# permutations that keep `SymbolId`s; `--threads=1` vs many" needs two
+# outputs compared byte for byte.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-22"
+#@ arch: aarch64 x86_64
+#@ fixture: dynsym-walk
+
+cc -O1 -fPIC cb.c -o cb.o
+shlib gcc cb.o -Wl,-soname,libcb.so -o libcb.so
+cc -O1 -fPIC other.c -o other.o
+shlib gcc other.o -Wl,-soname,libother.so -o libother.so
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+
+link gcc -pie pie.o -L. -lcb -lother -o pie
+run(lld,mold,mortar) pie
+  stdout: callbacks 40 other 2
+  stdout: unhashed entries not undefined with value 0: 0
+  stdout: hashed entries undefined with value 0: 0
+  stdout: hashed entries out of bucket order: 0
+  stdout: same bucket, out of first-mention order: 0
+  stdout: hashed entries the table does not find: 0
+run(bfd,aarch64) pie
+  stdout: callbacks 40 other 2
+  stdout: unhashed entries not undefined with value 0: 2
+  stdout: hashed entries undefined with value 0: 0
+  stdout: hashed entries out of bucket order: 0
+  stdout: same bucket, out of first-mention order: 12
+  stdout: hashed entries the table does not find: 0
+run(bfd,x86_64) pie
+  stdout: callbacks 40 other 2
+  stdout: unhashed entries not undefined with value 0: 0
+  stdout: hashed entries undefined with value 0: 1
+  stdout: hashed entries out of bucket order: 0
+  stdout: same bucket, out of first-mention order: 12
+  stdout: hashed entries the table does not find: 0
+
+link gcc -no-pie exec.o -L. -lcb -lother -o exec
+run(lld,mold,mortar) exec
+  stdout: callbacks 40 other 2
+  stdout: unhashed entries not undefined with value 0: 0
+  stdout: hashed entries undefined with value 0: 0
+  stdout: hashed entries out of bucket order: 0
+  stdout: same bucket, out of first-mention order: 0
+  stdout: hashed entries the table does not find: 0
+  stdout: canonical PLT puts: hashed 1, found 1
+run(bfd) exec
+  stdout: callbacks 40 other 2
+  stdout: unhashed entries not undefined with value 0: 0
+  stdout: hashed entries undefined with value 0: 0
+  stdout: hashed entries out of bucket order: 0
+  stdout: same bucket, out of first-mention order: 12
+  stdout: hashed entries the table does not find: 0
+  stdout: canonical PLT puts: hashed 1, found 1
+
+check readelf -SW pie
+  has(lld,mold,mortar): .dynsym * DYNSYM * A * 1 8$
+  has(bfd,x86_64): .dynsym * DYNSYM * A * 1 8$
+  has(bfd,aarch64): .dynsym * DYNSYM * A * 3 8$
+check readelf -SW exec
+  has: .dynsym * DYNSYM * A * 1 8$
+# The unhashed block, in each linker's order.
+check(lld,mortar,aarch64) readelf --dyn-syms -W pie
+  has: UND abort@
+  then: UND __libc_start_main@
+  then: UND __gmon_start__
+  then: UND _ITM_deregisterTMCloneTable
+  then: UND _ITM_registerTMCloneTable
+  then: UND __cxa_finalize@
+  then: UND dl_iterate_phdr@
+  then: UND puts@
+  then: UND strcmp@
+  then: UND strncmp@
+  then: UND lib_sum
+  then: UND other_fn
+  then: UND printf@
+check(lld,mortar,x86_64) readelf --dyn-syms -W pie
+  has: UND __libc_start_main@
+  then: UND __gmon_start__
+  then: UND _ITM_deregisterTMCloneTable
+  then: UND _ITM_registerTMCloneTable
+  then: UND __cxa_finalize@
+  then: UND dl_iterate_phdr@
+  then: UND puts@
+  then: UND strcmp@
+  then: UND strncmp@
+  then: UND other_fn
+  then: UND lib_sum
+  then: UND printf@
+check(mold) readelf --dyn-syms -W pie
+  has: UND lib_sum
+  then: UND other_fn
+  then: UND puts@
+check(bfd) readelf --dyn-syms -W pie
+  has: UND other_fn
+  then: UND lib_sum
+
+#--- cbs.h
+/* cb_00 .. cb_39 */
+#define D(p) X(p##0) X(p##1) X(p##2) X(p##3) X(p##4) X(p##5) X(p##6) X(p##7) X(p##8) X(p##9)
+#define CBS D(cb_0) D(cb_1) D(cb_2) D(cb_3)
+#--- cb.c
+#include "cbs.h"
+#define X(name) extern int name(void);
+CBS
+#undef X
+#define X(name) +name()
+int lib_sum(void) { return 0 CBS; }
+#--- other.c
+int other_fn(void) { return 2; }
+#--- main.c
+#include "dynwalk.h"
+#include "cbs.h"
+#define X(name) \
+  int name(void) { return 1; }
+CBS
+int lib_sum(void);
+int other_fn(void);
+void *volatile puts_address;
+
+static int index_of(const char *name) {
+  int n = 0;
+  for (name += 3; *name; name++) n = n * 10 + (*name - '0');
+  return n;
+}
+
+int main(void) {
+  struct dw w;
+  if (!dw_open(&w)) return 1;
+  /* In -fno-pie code this takes the address directly: a canonical PLT. */
+  puts_address = (void *)puts;
+  int unhashed_bad = 0, hashed_und0 = 0, bucket_back = 0, mention_back = 0, misses = 0;
+  int canon = -1;
+  for (uint32_t i = 1; i < w.symoffset; i++)
+    if (w.sym[i].st_shndx != SHN_UNDEF || w.sym[i].st_value != 0) unhashed_bad++;
+  for (uint32_t i = w.symoffset; i < w.count; i++) {
+    const char *n = w.str + w.sym[i].st_name;
+    if (w.sym[i].st_shndx == SHN_UNDEF && w.sym[i].st_value == 0) hashed_und0++;
+    if (dw_lookup(&w, n) != i) misses++;
+    if (!strcmp(n, "puts") && w.sym[i].st_shndx == SHN_UNDEF) canon = i;
+    if (i > w.symoffset) {
+      uint32_t b0 = dw_bucket(&w, i - 1), b1 = dw_bucket(&w, i);
+      const char *p = w.str + w.sym[i - 1].st_name;
+      if (b1 < b0) bucket_back++;
+      if (b1 == b0 && !strncmp(p, "cb_", 3) && !strncmp(n, "cb_", 3) && index_of(p) > index_of(n))
+        mention_back++;
+    }
+  }
+  printf("callbacks %d other %d\n", lib_sum(), other_fn());
+  printf("unhashed entries not undefined with value 0: %d\n", unhashed_bad);
+  printf("hashed entries undefined with value 0: %d\n", hashed_und0);
+  printf("hashed entries out of bucket order: %d\n", bucket_back);
+  printf("same bucket, out of first-mention order: %d\n", mention_back);
+  printf("hashed entries the table does not find: %d\n", misses);
+#ifndef __PIE__
+  printf("canonical PLT puts: hashed %d, found %d\n", canon > 0,
+         canon > 0 && w.bias + w.sym[canon].st_value == (uintptr_t)puts_address);
+#endif
+  return 0;
+}

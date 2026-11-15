@@ -44,6 +44,32 @@ Every layer runs on AArch64 natively and on x86-64 and 32-bit x86 under
 each architecture natively (32-bit x86 on the x86-64 runner). The layers
 that need kiln and hod (L7, L8) cover the two 64-bit architectures.
 
+### Where mortar writes an output, and who judges it
+
+L3's promise is that no harness produces a mortar output the verifier
+has not judged. The audit of WP-035 (`spec/landed/harness/WP-035.md`);
+a row that changes must change here. Refusal tests (deliberately bad
+inputs, `exit: fail`) write no output and are not holes.
+
+| where | mortar's outputs | the verifier |
+|---|---|---|
+| `cargo xtask linktest` (L2/L3) | every link step of every test, per architecture | every step that is to succeed writes `--mortar-map` and is judged (`spec/harness.md` "L3"); outputs outside the verifier's scope are counted by reason in the summary (`machine`: i386; `pie-or-shared`, `dynamic`, `relocatable`). `--no-plumb` turns it off by hand; no gate passes it. |
+| `cargo xtask bench` | one untimed link per workload, then the timed ones | judged before timing (`spec/harness.md` "Verification"); the timed bytes must hash to the verified bytes; `--no-verify` by hand only, never for a baseline. A verified output whose workload has a `run` line is then run once, as is GNU ld's output of the same link, and the two programs' stdout and exit status must agree (`spec/harness.md` "Running the outputs"); a difference fails the bench like a finding. Since WP-036 mortar links 12 of the 23 workloads, every one of them clean and, where run, the same as GNU ld's; the 11 others are refused by name (10 are `-pie` or dynamic; `rust-self-static` because rustc passes a trailing `-Bdynamic`). |
+| `crates/mortar/tests/pipeline.rs` | every link through `mortar()` | `mortar()` judges every output it writes; the determinism runs judge the first output and compare the 27 others byte for byte (`mortar_unverified`). |
+| `crates/mortar/tests/x64.rs` | `holds`, the gc size pairs and the determinism runs | `holds` and the size pairs judge; the determinism test judges the first output, the others must equal it. |
+| `crates/mortar/tests/gc.rs` | every `--gc-sections` link through `mortar()` | `mortar()` judges every output it writes; the determinism runs judge the first and compare the others byte for byte (`mortar_unverified`). |
+| `crates/mortar/tests/image.rs` | the library's `image::write` | every written image is judged (`plumb`), `i40_compares_with_gnu_ld` included; the I-65 tests write none. |
+| `crates/mortar/tests/deferred.rs` | the tombstone test's writes | the first output of each case is judged (with the map rendered from the link); the others must equal it. The other tests write no output. |
+| `crates/mortar/tests/options.rs` | the option audit's links (`Cx::mortar`) | every output is judged; the one exception is `--build-id=0xHEX` (a false B1 until mortar's map states the style `given`, `spec/plumb.md` §6.7), checked to be exactly B1 so that it fails when the map catches up. |
+| `crates/mortar/tests/sysroot.rs` | the sysroot links | every output is judged. |
+| `crates/mortar/tests/debuggers.rs` | the debugger pairs | `link` judges every output. |
+| `crates/mortar/tests/cli.rs`, `refusals.rs` | none (failed links, `--version`) | — |
+| `crates/mortar/tests/front_diff.rs` | none (the front's layout, compared; no image) | — |
+| `cargo xtask mason programs` | every program × variant | judged (`--mortar-map`; the lane wrote `-Map`, a GNU text map since WP-027e, which the verifier could not read). |
+| `cargo xtask mason libcxx` | every libc++ test link | only with `--plumb` (a cost choice: thousands of links); the counts are in the report. The shim now writes `--mortar-map`. |
+| `cargo xtask mason verify` | — | the shim's verifier. |
+| byte-identity checks of the performance packages (WP-032*) | ad hoc scripts, not in the repository | not judged. Their outputs are the bench's workloads or static twins of them: a performance package states the verifier's verdict on each output it hashes, or measures through `cargo xtask bench`. |
+
 ## Determinism
 
 The full gate links a set of cases with `--threads=1` and with many, and
@@ -65,9 +91,13 @@ memory (the kernel's figure for the process, as GNU `time` reports it):
 - from M7: the incremental cases (one function changed; one object changed;
   an archive replaced).
 
-A change fails the bench gate when mortar's time grows by more than 5% or
-its memory by more than 2% against the recorded per-machine baseline in
-`bench/baselines`. The release gate also compares against mold, lld and
+A change fails the bench gate when mortar's time grows by more than 35% or
+its memory by more than 4% against the recorded per-machine baseline in
+`bench/baselines`. The margins were 5% and 2%; WP-036 measured the
+shared host's run-to-run noise (up to 28% on the links the gate judges
+steady, 2.6% of memory) and set them above it (`spec/harness.md`
+"Noise"). Each mortar link is also compared against the fastest and the
+smallest other linker in `docs/status/perf.md`. The release gate also compares against mold, lld and
 GNU ld on the same machine and records the ratios in
 `docs/status/bench.md`. Measurements are taken with the jobserver pool
 idle, or marked as noisy.

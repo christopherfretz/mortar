@@ -1,0 +1,87 @@
+# dyn.md D-42, copied typeinfo and vtables: `-fno-pic` C++ code takes
+# `&typeid(std::bad_alloc)` and constructs a `std::bad_alloc` (its inline
+# constructor stores the vtable's address), so a non-PIE gets `COPY`
+# records of `_ZTISt9bad_alloc` and `_ZTVSt9bad_alloc` from libstdc++,
+# which defines them in `.data.rel.ro` (a writable `PT_LOAD` inside its
+# `PT_GNU_RELRO`). The copies are therefore read-only data of the
+# executable: they lie inside the executable's `PT_GNU_RELRO` (mortar's
+# `.bss.rel.ro`; GNU ld `.data.rel.ro`, lld `.bss.rel.ro`, mold
+# `.copyrel.rel.ro`: dyn.md §13.1). The program checks at run time that
+# both addresses are inside RELRO and equal to what a `-fPIC` library
+# sees, and that a `std::bad_alloc` thrown by libstdc++ is caught by type.
+#
+# mortar: AArch64 WP-054 (CXX), x86-64 WP-055 (X64-JOIN), in tests/link/xfails.
+#@ spec: dyn.md "D-42"
+#@ arch: aarch64 x86_64
+#@ requires: g++
+#@ anomaly(mold,x86_64): A28
+
+cxx -O1 -fPIC lib.cc -o lib.o
+shlib g++ lib.o -Wl,-soname,libti.so -o libti.so
+cxx -O1 -fno-pic main.cc -o main.o
+link g++ -no-pie main.o -L. -lti -o prog
+run prog
+  stdout: typeinfo in relro 1, same as the library 1
+  stdout: vtable in relro 1, same as the library 1
+  stdout: caught std::bad_alloc from libstdc++
+check readelf -rW prog
+  has(aarch64): R_AARCH64_COPY * _ZTISt9bad_alloc@
+  has(aarch64): R_AARCH64_COPY * _ZTVSt9bad_alloc@
+  has(x86_64): R_X86_64_COPY * _ZTISt9bad_alloc@
+  has(x86_64): R_X86_64_COPY * _ZTVSt9bad_alloc@
+check readelf -SW prog
+  has(mortar): ] .bss.rel.ro NOBITS
+
+#--- lib.cc
+#include <new>
+#include <typeinfo>
+
+const void *lib_typeinfo() { return &typeid(std::bad_alloc); }
+const void *lib_vptr() {
+  static std::bad_alloc b;
+  return *reinterpret_cast<const void *const *>(&b);
+}
+#--- main.cc
+#include <link.h>
+#include <cstdio>
+#include <cstdint>
+#include <new>
+#include <typeinfo>
+
+const void *lib_typeinfo();
+const void *lib_vptr();
+
+static uintptr_t relro_lo, relro_hi;
+
+static int first(dl_phdr_info *info, size_t, void *) {
+  for (int i = 0; i < info->dlpi_phnum; i++)
+    if (info->dlpi_phdr[i].p_type == PT_GNU_RELRO) {
+      relro_lo = info->dlpi_addr + info->dlpi_phdr[i].p_vaddr;
+      relro_hi = relro_lo + info->dlpi_phdr[i].p_memsz;
+    }
+  return 1;
+}
+
+static int in_relro(const void *p) {
+  uintptr_t a = reinterpret_cast<uintptr_t>(p);
+  return a >= relro_lo && a < relro_hi;
+}
+
+int main() {
+  dl_iterate_phdr(first, nullptr);
+  const void *ti = &typeid(std::bad_alloc);
+  std::bad_alloc b;
+  const void *vp = *reinterpret_cast<const void *const *>(&b);
+  std::printf("typeinfo in relro %d, same as the library %d\n", in_relro(ti),
+              ti == lib_typeinfo());
+  std::printf("vtable in relro %d, same as the library %d\n", in_relro(vp),
+              vp == lib_vptr());
+  try {
+    volatile std::size_t huge = ~static_cast<std::size_t>(0) / 2;
+    char *p = new char[huge];
+    std::printf("allocated %p\n", static_cast<void *>(p));
+  } catch (const std::bad_alloc &) {
+    std::puts("caught std::bad_alloc from libstdc++");
+  }
+  return 0;
+}

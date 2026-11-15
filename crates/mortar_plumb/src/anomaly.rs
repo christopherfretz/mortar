@@ -26,6 +26,16 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A6: GNU ld, lld and mold fill the GOT slot of a section symbol plus an addend without the addend",
         );
     }
+    if mold && f.rule == Rule::Erratum(1) {
+        return Some(
+            "A4: mold accepts --fix-cortex-a53-843419 and leaves erratum 843419 sites as they are",
+        );
+    }
+    if bfd && f.rule == Rule::Erratum(1) && f.message.ends_with(crate::erratum::AFTER_PATCH) {
+        return Some(
+            "A18: GNU ld leaves an erratum 843419 site unfixed when stubs placed after its scan move code onto it",
+        );
+    }
     let lld = linker == Format::Lld;
     if lld && f.rule == Rule::Field && f.message.ends_with("(spec/x64.md W4)") {
         return Some(
@@ -47,7 +57,11 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A14: lld makes an x86-64 large common (SHN_X86_64_LCOMMON) absolute and allocates nothing (spec/x64.md W9)",
         );
     }
-    if (bfd || mold) && f.rule == Rule::Field && f.message.ends_with("(spec/x64.md X-53)") {
+    if (bfd || mold)
+        && f.rule == Rule::Field
+        && (f.message.ends_with("(spec/x64.md X-53)")
+            || f.message.ends_with("(spec/x86.md X86-62)"))
+    {
         return Some(
             "A15: GNU ld and mold write a TLS symbol's template address in .debug_addr where its DTP offset belongs (spec/x64.md W10)",
         );
@@ -79,21 +93,136 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
         return Some("A3: mold's _TLS_MODULE_BASE_ is an address, or there is no PT_TLS");
     }
     if mold
-        && f.rule == Rule::SymbolValue
-        && f.message.starts_with("IFUNC symbol")
-        && f.found.is_some_and(|v| v >= 1 << 32)
+        && f.rule == Rule::EhFrame(5)
+        && f.message.starts_with("fde_count counts the FDEs of address range 0")
     {
-        return Some("A2: mold gives an alias of an IFUNC the value 2^32 + x");
+        return Some(
+            "A19: mold gives an FDE with address range 0 an entry in .eh_frame_hdr's table (spec/synth.md S-59)",
+        );
     }
-    if !mold || f.rule != Rule::Structure(8) {
+    if let Some(a) = dynamic(linker, output, f) {
+        return Some(a);
+    }
+    if mold { ifunc_alias(output, f) } else { None }
+}
+
+/// The anomalies of dynamic outputs (stage 3, `spec/plumb.md` §10.2,
+/// A20-A29): the wrong outputs of `spec/dyn.md` §13.2 a test records
+/// for a reference, and two found by WP-050's judging of WP-051's cases.
+fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
+    let (bfd, lld, mold) = (linker == Format::Gnu, linker == Format::Lld, linker == Format::Mold);
+    let d = |n| f.rule == Rule::Dyn(n);
+    let m = f.message.as_str();
+    if (lld || mold) && d(10) && m.ends_with("(D-41, H1)") {
+        return Some(
+            "A20: lld and mold put IRELATIVE records before the JUMP_SLOTs; a resolver that calls through the PLT jumps to an unbound slot (dyn.md H1)",
+        );
+    }
+    if bfd && ((d(11) && m.ends_with("(D-21, W2)")) || (d(7) && m.ends_with("(W2)"))) {
+        return Some("A21: GNU ld does not export every alias of a copied variable (dyn.md W2)");
+    }
+    if bfd && d(4) && m.ends_with("names no -dynamic-linker: a linker default (D-31, W10)") {
+        return Some(
+            "A22: GNU ld writes its built-in interpreter when the line names no -dynamic-linker, wrong on x86-64 (dyn.md W10)",
+        );
+    }
+    if (lld || mold)
+        && ((d(1) && m.ends_with("(no -dynamic-linker, no PT_INTERP: D-31, W10)"))
+            || (d(4)
+                && m.ends_with("names no -dynamic-linker: the kernel cannot start it (D-31, W10)")))
+    {
+        return Some(
+            "A23: lld and mold write no PT_INTERP when the line names no -dynamic-linker; the program cannot start (dyn.md W10)",
+        );
+    }
+    if (bfd || mold)
+        && ((d(9) && m.ends_with("a text relocation (D-47, W6)"))
+            || (d(6) && m.ends_with("text relocations (D-47, W6)")))
+    {
+        return Some(
+            "A24: GNU ld and mold write dynamic records into read-only memory (DT_TEXTREL) where D-47 refuses (dyn.md W6)",
+        );
+    }
+    if lld
+        && d(9)
+        && m.starts_with("view 3 ")
+        && m.ends_with("no dynamic record names it (D-25, W12)")
+        && mortar_elf::FileHeader::parse(output)
+            .is_ok_and(|h| h.e_type == mortar_elf::consts::ET_EXEC)
+    {
+        return Some(
+            "A25: lld exports a -no-pie executable's undefined weak key and writes no record for its uses, which a preloaded definition never reaches (dyn.md D-25, W12)",
+        );
+    }
+    if (lld || mold) && d(6) && m.contains("which D-11 item 3 makes needed") {
+        return Some(
+            "A26: lld and mold leave an under-linked library's provider out of DT_NEEDED; the load fails (dyn.md D-11 item 3)",
+        );
+    }
+    if (bfd || lld || mold)
+        && ((d(6) || d(7) || d(9)) && m.ends_with("(only a STV_HIDDEN entry: W1)"))
+    {
+        return Some(
+            "A27: GNU ld, lld and mold bind a reference to a STV_HIDDEN .dynsym entry; the output fails to load (dyn.md W1)",
+        );
+    }
+    let section = |name: &[u8]| {
+        let h = mortar_elf::FileHeader::parse(output).ok()?;
+        let table = mortar_elf::SectionTable::parse(output, &h).ok()?;
+        table.iter().find(|s| s.name().is_ok_and(|n| n == name)).map(|s| {
+            let h = s.header();
+            (h.sh_addr, h.sh_addr.saturating_add(h.sh_size))
+        })
+    };
+    if mold
+        && f.rule == Rule::EhFrame(3)
+        && m.ends_with("differs in its personality routine")
+        && let Some(found) = f.found
+        && section(b".plt").is_some_and(|(lo, hi)| (lo..hi).contains(&found))
+    {
+        return Some(
+            "A28: mold points a CIE's absolute personality at a PLT entry it does not make canonical (two addresses of the routine)",
+        );
+    }
+    if lld
+        && f.rule == Rule::EhFrame(5)
+        && m == "the search table is not sorted by initial location"
+        && let Some(at) = f.addr
+        && section(b".eh_frame_hdr").is_some_and(|(lo, _)| at < lo)
+    {
+        return Some(
+            "A29: lld sorts .eh_frame_hdr's table by unsigned offset: an FDE below the table comes last, where the unwinder's search cannot find it",
+        );
+    }
+    None
+}
+
+const A2: &str = "A2: mold gives an alias of an IFUNC the value 2^32 + x";
+
+/// A1 and A2: mold's IFUNC symbols (spec/plumb.md §10.2).
+fn ifunc_alias(output: &[u8], f: &Finding) -> Option<&'static str> {
+    let ifunc_value = f.rule == Rule::SymbolValue && f.message.starts_with("IFUNC symbol");
+    if ifunc_value && f.found.is_some_and(|v| v >= 1 << 32) {
+        return Some(A2);
+    }
+    if !ifunc_value && f.rule != Rule::Structure(8) {
         return None;
     }
-    let addr = f.addr?;
+    let addr = if ifunc_value { f.found? } else { f.addr? };
     if addr >= 1 << 32 {
-        return Some("A2: mold gives an alias of an IFUNC the value 2^32 + x");
+        return Some(A2);
     }
     let h = mortar_elf::FileHeader::parse(output).ok()?;
     let table = mortar_elf::SectionTable::parse(output, &h).ok()?;
+    // ELF32: 2^32 + x is x, 16 bytes before .plt.got (spec/plumb.md §10.2).
+    let plt_got =
+        table.iter().find(|s| s.name().is_ok_and(|n| n == b".plt.got")).map(|s| s.header().sh_addr);
+    if h.class == mortar_elf::Class::Elf32 && plt_got.is_some_and(|p| p.wrapping_sub(16) == addr) {
+        return Some(A2);
+    }
+    if ifunc_value {
+        return None;
+    }
     let in_plt = table.iter().any(|s| {
         s.name().is_ok_and(|n| n == b".plt.got" || n == b".iplt" || n == b".plt")
             && (s.header().sh_addr..s.header().sh_addr.saturating_add(s.header().sh_size))

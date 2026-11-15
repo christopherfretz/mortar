@@ -570,6 +570,7 @@ fn i40_compares_with_gnu_ld() {
     let f = front(ARGS, dir.path(), 4, StorePolicy::Staged);
     let out = dir.join("out");
     write(&f, &out).unwrap_or_else(|e| panic!("image: {:?}", e.diagnostics));
+    plumb(&f, &out, dir.path());
     let reference = dir.join("ref");
     runs(&reference);
     assert_eq!(header(&out), header(&reference));
@@ -638,4 +639,43 @@ fn i40_no_entry_writes_zero() {
     );
     elflint(&out);
     plumb(&f, &out, dir.path());
+}
+
+// spec/plumb.md §3.2 (P-D3 of spec/dyn.md, WP-040 step 0d): the dynamic
+// records `mortar_image` writes are the ones the verifier reads.
+#[test]
+fn map_dynamic_records_read_by_the_verifier() {
+    use mortar_image::map::{CopyHint, DynRecords, Map, OutputKind, RunpathTag};
+    use mortar_plumb::map as pm;
+    let mut m = Map::default();
+    let pool = Pool::new(1);
+    let static_text = mortar_image::map::render(&m, &pool);
+    assert_eq!(static_text, b"mortar-map 1\nend\n", "a static map writes no dynamic record");
+    m.dynamic = Some(DynRecords {
+        kind: Some(OutputKind::Exec),
+        interp: Some(b"/lib64/ld-linux-x86-64.so.2".to_vec()),
+        runpath: Some((RunpathTag::Rpath, b"$ORIGIN:/a b".to_vec())),
+        now: Some(false),
+        relro: Some(true),
+        args: vec![b"--as-needed".to_vec(), b"-lc".to_vec()],
+        needed: vec![b"libc.so.6".to_vec()],
+        copies: vec![CopyHint { name: b"environ".to_vec(), addr: 0x40_1000, size: 8 }],
+        exports: vec![b"main".to_vec()],
+        plt: vec![b"puts".to_vec()],
+        iplt: vec![b"f".to_vec()],
+    });
+    let text = String::from_utf8(mortar_image::map::render(&m, &pool)).unwrap();
+    let parsed = pm::parse(pm::Format::Mortar, &text).unwrap();
+    let d = parsed.dynamic.expect("the dynamic records");
+    assert_eq!(d.kind, Some(pm::OutputKind::Exec));
+    assert_eq!(d.interp.as_deref(), Some("/lib64/ld-linux-x86-64.so.2"));
+    assert_eq!(d.runpath, Some((pm::RunpathTag::Rpath, "$ORIGIN:/a b".into())));
+    assert_eq!((d.now, d.relro), (Some(false), Some(true)));
+    assert_eq!(d.args, ["--as-needed", "-lc"]);
+    assert_eq!(d.needed, ["libc.so.6"]);
+    assert_eq!(d.copies, [pm::CopyHint { name: "environ".into(), addr: 0x40_1000, size: 8 }]);
+    assert_eq!(
+        (d.exports, d.plt, d.iplt),
+        (vec!["main".into()], vec!["puts".into()], vec!["f".into()])
+    );
 }

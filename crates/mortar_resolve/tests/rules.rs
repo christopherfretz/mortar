@@ -46,7 +46,15 @@ fn named(m: &mut Model, name: &str, arg: u32) -> Named {
 fn link_with(m: &Model, o: &Options) -> Resolved {
     let r = check_schedules(|pool| resolve(m, o, pool));
     let roots: Vec<(SymbolId, u32)> = o.roots().iter().map(|r| (r.key, r.arg)).collect();
-    assert_eq!(live::oracle(m, &r.targets, &r.redirect, &roots), r.file_live, "closure != oracle");
+    // The oracle is of §4 (extraction); the shared stage then sets the
+    // rows of the shared objects (`spec/dyn.md` D-11).
+    let mut want = live::oracle(m, &r.targets, &r.redirect, &roots);
+    for (f, row) in want.iter_mut().enumerate() {
+        if mortar_resolve::view::View::file(m, FileId(f as u32)).kind == FileKind::Shared {
+            *row = r.file_live[f];
+        }
+    }
+    assert_eq!(want, r.file_live, "closure != oracle");
     r
 }
 
@@ -1698,11 +1706,14 @@ fn s10_section_base_is_prefix_sum_over_live_objects() {
 }
 
 #[test]
-fn s1_2_shared_objects_refused() {
+fn s1_2_shared_objects_are_no_longer_refused() {
     let mut m = Model::new(A64);
     let a = m.obj("a.o");
-    m.set_kind(a, FileKind::Shared);
+    m.undef(a, "f");
+    let lib = m.shlib("libf.so", false);
+    m.def(lib, "f");
     let r = link(&m);
-    assert_eq!(ids(&r), vec!["refused"]);
+    assert!(ids(&r).is_empty(), "{:?}", ids(&r));
+    assert!(matches!(def(&m, &r, "f"), Def::Shared(_)));
     let _ = Pool::sequential();
 }

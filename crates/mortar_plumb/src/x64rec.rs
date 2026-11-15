@@ -8,7 +8,7 @@
 //! table); under mortar's map only mortar's forms.
 
 use mortar_elf::SymbolIndex;
-use mortar_elf::consts::{SHF_EXECINSTR, SHN_ABS, SHN_UNDEF};
+use mortar_elf::consts::{ET_EXEC, PT_DYNAMIC, PT_INTERP, SHF_EXECINSTR, SHN_ABS, SHN_UNDEF};
 
 use super::{
     Engine, Pending, Rec, Target, TlsBlock, Verdict, Want, find_at, judge, verdict_finding,
@@ -17,6 +17,7 @@ use crate::a64::{Op, Slot};
 use crate::map::Format;
 use crate::report::{Reason, Rewrite, Rule, Site, Via};
 use crate::x64::{self as x, rex_rb, rip_reg};
+use crate::x86op::{self, CALL_DISP32, JMP_DISP32, imm_form, le};
 
 const TLS_GET_ADDR: &str = "__tls_get_addr";
 const TLS_MODULE_BASE: &str = "_TLS_MODULE_BASE_";
@@ -41,6 +42,8 @@ enum SeqX {
     Bad(String, Vec<u8>, Option<(u64, u64)>),
     /// Not judged: the symbol cannot be resolved (a stripped output).
     Unknown(Reason),
+    /// Stage 3: kept for the loader, its GOT pair verified.
+    Kept,
 }
 
 /// Why T of a TLS reference is not known.
@@ -86,11 +89,33 @@ impl Engine<'_, '_> {
             && alloc
             && let Some(lead) = Self::x64_lead_of(recs, sorted, rec)
         {
-            return match self.x64_seq(oi, si, recs, sorted, lead) {
-                SeqX::Relaxed(rw, ..) => self.cov.add_accepted(rw, ty),
-                SeqX::Bad(..) => self.not_checked(Reason::TlsSequence, 1),
-                SeqX::Unknown(r) => self.not_checked(r, 1),
-            };
+            match self.x64_seq(oi, si, recs, sorted, lead) {
+                SeqX::Relaxed(rw, ..) => return self.cov.add_accepted(rw, ty),
+                SeqX::Bad(..) => return self.not_checked(Reason::TlsSequence, 1),
+                SeqX::Unknown(r) => return self.not_checked(r, 1),
+                // A kept sequence's call is an ordinary call.
+                SeqX::Kept => {}
+            }
+        }
+        // X-48 (mortar): a static output makes no TLS runtime call; a
+        // branch or GOT load against `__tls_get_addr` that no GD/LD
+        // sequence consumed survives as a call (spec/x64.md X-48).
+        if symbol == TLS_GET_ADDR
+            && alloc
+            && exec
+            && self.format == Format::Mortar
+            && self.image.header.e_type == ET_EXEC
+            && !self.image.phdrs.iter().any(|p| matches!(p.p_type, PT_DYNAMIC | PT_INTERP))
+            && matches!(ty, x::PLT32 | x::PC32 | x::GOTPCREL | x::GOTPCRELX | x::REX_GOTPCRELX)
+        {
+            let f = Self::finding(
+                Rule::Insn,
+                rec,
+                &site,
+                &symbol,
+                "a call to __tls_get_addr survives in a static output (spec/x64.md X-48)",
+            );
+            return self.fail(f);
         }
         match rec.def.op {
             Op::Slot(Slot::Gd | Slot::Ld, _) => {
@@ -108,6 +133,7 @@ impl Engine<'_, '_> {
                         self.fail(f);
                     }
                     SeqX::Unknown(r) => self.x64_unjudged(rec, r),
+                    SeqX::Kept => self.cov.add_verified(Via::GotSlot, ty),
                 };
             }
             Op::Slot(Slot::Desc | Slot::TpRel, _) | Op::DescCall | Op::TpRel => {
@@ -225,7 +251,34 @@ impl Engine<'_, '_> {
             }
             _ => return self.not_checked(Reason::Type, 1),
         };
+        let failed = self.cov.failed;
+        // Stage 3: a call or jump through a PLT entry whose word holds S.
+        // (A weak undefined call through a PLT whose word holds 0 calls 0.)
+        if matches!(ty, x::PLT32 | x::PC32)
+            && !matches!(judge(rec, xv as i64), Verdict::Ok(_))
+            && self
+                .plt_hop(rec.p.wrapping_add(4).wrapping_add(rec.out_word as u32 as i32 as u64), s)
+        {
+            return self.cov.add_verified(Via::Plt, ty);
+        }
+        // `PLTOFF64` is `L + A − GOT` (x64.md §6.1): L a PLT entry whose
+        // word holds S (a dynamic key, `-mcmodel=large` code).
+        if ty == x::PLTOFF64
+            && !matches!(judge(rec, xv as i64), Verdict::Ok(_))
+            && let Some(g) = self.got
+            && self.plt_hop(rec.out_word.wrapping_add(g).wrapping_sub(a), s)
+        {
+            return self.cov.add_verified(Via::Plt, ty);
+        }
         self.x64_judge(rec, &site, &symbol, xv as i64);
+        if rec.def.op == Op::Abs
+            && rec.def.field.width() >= 4
+            && kind != Kind::Weak0
+            && self.cov.failed == failed
+            && self.objs[oi].secs[si].alloc()
+        {
+            self.abs_words.push((rec.p, rec.def.field.width(), xv, self.internal(s)));
+        }
     }
 
     /// A record not judged for `r`: the bytes a rewriting of it may change
@@ -238,7 +291,7 @@ impl Engine<'_, '_> {
     }
 
     /// R1-R3 for a data value, the record counted as verified directly.
-    fn x64_judge(&mut self, rec: &Rec, site: &Site, symbol: &str, xv: i64) {
+    pub(super) fn x64_judge(&mut self, rec: &Rec, site: &Site, symbol: &str, xv: i64) {
         match judge(rec, xv) {
             Verdict::Ok(_) => self.cov.add_verified(Via::Direct, rec.def.r_type),
             v => {
@@ -251,7 +304,7 @@ impl Engine<'_, '_> {
     /// `64`/`32` against a TLS symbol at a non-alloc place (X-53): the
     /// DTP offset; GNU ld and mold write the template address `t`
     /// (`spec/x64.md` W10), which is a finding §10.2 names.
-    fn x64_debug_tls(&mut self, rec: &Rec, site: &Site, symbol: &str, t: u64) {
+    pub(super) fn x64_debug_tls(&mut self, rec: &Rec, site: &Site, symbol: &str, t: u64) {
         let Ok(Some(b)) = self.tls else { return self.not_checked(Reason::Tls, 1) };
         let want = b.dtprel(t) as i64;
         if let Verdict::Ok(_) = judge(rec, want) {
@@ -263,7 +316,11 @@ impl Engine<'_, '_> {
                 rec,
                 site,
                 symbol,
-                "a TLS symbol's template address where the DTP offset belongs (spec/x64.md X-53)",
+                if rec.def.r_type == crate::x86::R32 && self.word() == 4 {
+                    "a TLS symbol's template address where the DTP offset belongs (spec/x86.md X86-62)"
+                } else {
+                    "a TLS symbol's template address where the DTP offset belongs (spec/x64.md X-53)"
+                },
             );
             f.expected = Some(want as u64);
             f.found = Some(rec.out_word);
@@ -274,7 +331,7 @@ impl Engine<'_, '_> {
 
     /// Whether symbol `idx` of object `oi` is absolute: `SHN_ABS` in the
     /// input, or, undefined there, in the output.
-    fn x64_abs(&self, oi: usize, idx: u32) -> bool {
+    pub(super) fn x64_abs(&self, oi: usize, idx: u32) -> bool {
         let o = &self.objs[oi];
         let Some(t) = o.symtab else { return false };
         let Ok(sym) = t.get(SymbolIndex(idx)) else { return false };
@@ -289,7 +346,7 @@ impl Engine<'_, '_> {
     }
 
     /// Z: the size of symbol `idx`'s definition (§6.1 `SIZE32`/`SIZE64`).
-    fn x64_size(&self, oi: usize, idx: u32) -> Option<u64> {
+    pub(super) fn x64_size(&self, oi: usize, idx: u32) -> Option<u64> {
         let o = &self.objs[oi];
         let t = o.symtab?;
         let sym = t.get(SymbolIndex(idx)).ok()?;
@@ -302,7 +359,7 @@ impl Engine<'_, '_> {
 
     /// The input and output bytes of `[P - before, P + width + after)`,
     /// when the input section holds them all (X-8) and the output too.
-    fn x64_window(
+    pub(super) fn x64_window(
         &self,
         oi: usize,
         si: usize,
@@ -319,7 +376,7 @@ impl Engine<'_, '_> {
     }
 
     /// Marks output bytes `[lo, hi)` as written by a rewriting, for S12.
-    fn x64_rewrote(&mut self, lo: u64, hi: u64) {
+    pub(super) fn x64_rewrote(&mut self, lo: u64, hi: u64) {
         self.rewritten_words.extend(lo..hi);
     }
 
@@ -407,26 +464,27 @@ impl Engine<'_, '_> {
                 u32::try_from(s).is_ok()
             };
             if imm_ok {
-                push(Rewrite::GotToMovImm, &primed(&[0xc7, 0xc0 | r]), s as i64, &[]);
+                let head = imm_form(op, r).expect("8b has an immediate form");
+                push(Rewrite::GotToMovImm, &primed(&head), s as i64, &[]);
             }
         }
         // X2: call/jmp through the GOT -> direct.
-        if !plain && op == 0xff && (modrm == 0x15 || modrm == 0x25) {
+        if !plain && op == 0xff && (modrm == CALL_DISP32 || modrm == JMP_DISP32) {
             let target_ok = local || ((gnu || mold) && kind == Kind::Weak0);
             if target_ok && (mortar || lld || gnu) && k == 2 {
-                if modrm == 0x15 {
+                if modrm == CALL_DISP32 {
                     push(Rewrite::GotToDirect, &[0x67, 0xe8], pc(s), &[]);
                 } else {
                     push(Rewrite::GotToDirect, &[0xe9], pc(s) + 1, &[0x90]);
                 }
             }
             if target_ok && mold && k == 2 {
-                let o = if modrm == 0x15 { 0xe8 } else { 0xe9 };
+                let o = if modrm == CALL_DISP32 { 0xe8 } else { 0xe9 };
                 push(Rewrite::GotToDirect, &[0x40, o], pc(s), &[]);
             }
         }
         // X3: ALU operation or test with a GOT operand -> immediate (static).
-        let alu = matches!(op, 0x03 | 0x0b | 0x13 | 0x1b | 0x23 | 0x2b | 0x33 | 0x3b);
+        let alu = x86op::alu(op);
         if !plain
             && (alu || op == 0x85)
             && let Some(r) = reg
@@ -436,8 +494,8 @@ impl Engine<'_, '_> {
             let linker_ok = ((mortar || lld) && rexw) || (gnu && (rexw || rex.is_none()));
             let imm_ok = if rexw { (0..1 << 31).contains(&s) } else { u32::try_from(s).is_ok() };
             if target_ok && linker_ok && imm_ok {
-                let (o, m) = if alu { (0x81, 0xc0 | (op & 0x38) | r) } else { (0xf7, 0xc0 | r) };
-                push(Rewrite::GotToImm, &primed(&[o, m]), s as i64, &[]);
+                let head = imm_form(op, r).expect("an ALU op or test");
+                push(Rewrite::GotToImm, &primed(&head), s as i64, &[]);
             }
         }
         let start = rec.p - k as u64;
@@ -596,6 +654,47 @@ impl Engine<'_, '_> {
         if out == Some(&want[..]) {
             return SeqX::Relaxed(rw, lo, hi);
         }
+        if self.dynamic && gd && before == 4 && after == 8 {
+            // GNU ld's initial-exec form of a 16-byte GD sequence:
+            // `mov %fs:0, %rax; add G(%rip), %rax`, G holding T.
+            if let Some(o) = out
+                && o[..12] == [0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x03, 0x05]
+            {
+                let rel = i32::from_le_bytes([o[12], o[13], o[14], o[15]]);
+                let g = hi.wrapping_add_signed(i64::from(rel));
+                if self.slot_ok(g, Want::Word(t)) {
+                    return SeqX::Relaxed(Rewrite::TlsGdToIe, lo, hi);
+                }
+            }
+        }
+        // Kept for the loader: the input's bytes, the `lea` reaching a GOT
+        // pair that holds the module index and the DTP offset.
+        if self.dynamic
+            && let (Some(o), Some(i)) = (out, at(-(before as i64), (hi - lo) as usize))
+            && o[..before as usize] == i[..before as usize]
+            && o[before as usize + 4..] == i[before as usize + 4..]
+        {
+            let rel = i32::from_le_bytes([
+                o[before as usize],
+                o[before as usize + 1],
+                o[before as usize + 2],
+                o[before as usize + 3],
+            ]);
+            let g = (lead.p + 4).wrapping_add_signed(i64::from(rel));
+            let name = self.sym_name(oi, lead.sym);
+            let module = self.dyn_tls_mod.get(&name).copied().unwrap_or(1);
+            let off = if gd { t.wrapping_sub(b.tcb) } else { 0 };
+            if self.slot_ok(g, Want::Pair(module, off)) {
+                return SeqX::Kept;
+            }
+            return SeqX::Bad(
+                format!(
+                    "the kept {what} sequence reaches no GOT pair holding module {module} and offset {off:#x}"
+                ),
+                Vec::new(),
+                None,
+            );
+        }
         let n = want.len();
         if f == Format::Lld && gd {
             // spec/x64.md W4: lld writes the 16-byte form from P - 4 over a
@@ -696,6 +795,10 @@ impl Engine<'_, '_> {
                 self.x64_rewrote(rec.p, rec.p + 2);
                 return self.cov.add_accepted(Rewrite::TlsDescToLe, ty);
             }
+            if self.dynamic && out == inp {
+                // Kept: the descriptor is judged at its GOTPC32_TLSDESC.
+                return self.cov.add_verified(Via::Direct, ty);
+            }
             let mut f = Self::finding(
                 Rule::Field,
                 rec,
@@ -736,14 +839,16 @@ impl Engine<'_, '_> {
                 // (which it never relaxes): otherwise the symbol has a GOT
                 // slot and every reference keeps it (observed, §10.1).
                 (x::GOTPC32_TLSDESC, 0x8d) | (x::GOTTPOFF, 0x8b) => {
-                    cands.push([&[p, 0xc7, 0xc0 | r][..], &tb].concat());
+                    cands.push([&[p][..], &imm_form(0x8b, r).unwrap(), &tb].concat());
                 }
                 // I2: mortar's `add $T`; GNU ld's and lld's `lea T(%reg)`
                 // (`add $T` for %rsp and %r12, which need a SIB).
                 (x::GOTTPOFF, 0x03) => match f {
-                    Format::Mortar => cands.push([&[p, 0x81, 0xc0 | r][..], &tb].concat()),
+                    Format::Mortar => {
+                        cands.push([&[p][..], &imm_form(0x03, r).unwrap(), &tb].concat());
+                    }
                     Format::Gnu | Format::Lld if r == 4 => {
-                        cands.push([&[p, 0x81, 0xc0 | r][..], &tb].concat());
+                        cands.push([&[p][..], &imm_form(0x03, r).unwrap(), &tb].concat());
                     }
                     Format::Gnu | Format::Lld => {
                         let both = rex | ((rex >> 2) & 1);
@@ -758,6 +863,26 @@ impl Engine<'_, '_> {
             self.x64_rewrote(rec.p - 3, rec.p + 4);
             let rw = if ty == x::GOTTPOFF { Rewrite::TlsIeToLe } else { Rewrite::TlsDescToLe };
             return self.cov.add_accepted(rw, ty);
+        }
+        if ty == x::GOTPC32_TLSDESC && self.dynamic && reg == Some(0) {
+            // Kept (the descriptor pair holds the resolver and T), or
+            // relaxed to initial-exec, `mov G(%rip), %rax` (GNU ld, lld,
+            // mold), G holding T.
+            let ie = out[0] == inp[0] && out[1] == 0x8b && out[2] == inp[2];
+            if out == inp || ie {
+                let Some(ev) = self.slot_evidence(rec) else {
+                    return self.x64_unjudged(rec, Reason::SymbolUnresolved);
+                };
+                let (slot, want) = if ie {
+                    self.x64_rewrote(rec.p - 3, rec.p);
+                    (Slot::TpRel, Want::Word(t))
+                } else {
+                    (Slot::Desc, Want::Pair(crate::loader::TLSDESC_MARK, t))
+                };
+                let pend = Pending { rec: rec.clone(), site, symbol, want, w1: false };
+                self.got_groups.entry((slot, oi, rec.sym, 0)).or_default().members.push((pend, ev));
+                return;
+            }
         }
         if ty == x::GOTPC32_TLSDESC {
             let mut f = Self::finding(
@@ -798,7 +923,7 @@ impl Engine<'_, '_> {
     }
 
     /// `DTPOFF32`/`DTPOFF64` (X-46): `TpRel` or `DtpRel` by section and linker.
-    fn x64_dtprel(
+    pub(super) fn x64_dtprel(
         &mut self,
         oi: usize,
         rec: &Rec,
@@ -855,13 +980,7 @@ impl Engine<'_, '_> {
     }
 }
 
-/// A byte string as a little-endian number (its first 8 bytes), for a
-/// finding's expected and found values.
-fn le(v: &[u8]) -> u64 {
-    v.iter().take(8).rev().fold(0, |a, &b| a << 8 | u64::from(b))
-}
-
-fn linker_name(f: Format) -> &'static str {
+pub(super) fn linker_name(f: Format) -> &'static str {
     match f {
         Format::Mortar => "mortar",
         Format::Gnu => "GNU ld",

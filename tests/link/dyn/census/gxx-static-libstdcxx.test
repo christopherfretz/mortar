@@ -1,0 +1,55 @@
+# dyn.md §2.1 variants: g++'s default line with `-static-libstdc++`
+# (`-Bstatic -lstdc++ -Bdynamic` on the line), as users link, PIE (the
+# driver's default) and `-no-pie`, each run: the C++ hello of
+# `gxx-default` (iostream, exceptions thrown by the program and by the
+# library code, a `thread_local`) with libstdc++ taken from `libstdc++.a`
+# into the executable, while libgcc_s and libc stay shared. Needed: no
+# `libstdc++.so.6`; `libgcc_s.so.1` (the unwinder) and `libc.so.6`.
+#
+# mortar: AArch64 WP-054 (CXX), x86-64 WP-056 (OPTS), in tests/link/xfails.
+#@ spec: dyn.md "2.1 Default link lines"
+#@ arch: aarch64 x86_64
+#@ requires: g++
+#@ anomaly(lld): A25
+
+cxx -O2 hello.cc -o hello.o
+link g++ -static-libstdc++ hello.o -o pie
+run pie
+  stdout: hello C++ boom 42
+  stdout: caught std::out_of_range
+link g++ -no-pie -static-libstdc++ hello.o -o exec
+run exec
+  stdout: hello C++ boom 42
+  stdout: caught std::out_of_range
+check readelf -hdW pie
+  has: Type: DYN
+  has: (NEEDED) Shared library: [libgcc_s.so.1]
+  has: (NEEDED) Shared library: [libc.so.6]
+  not: libstdc++
+check readelf -hdW exec
+  has: Type: EXEC
+  has: (NEEDED) Shared library: [libgcc_s.so.1]
+  has: (NEEDED) Shared library: [libc.so.6]
+  not: libstdc++
+
+#--- hello.cc
+#include <iostream>
+#include <stdexcept>
+#include <vector>
+
+thread_local int tl = 41;
+
+int main() {
+  try {
+    throw std::runtime_error("boom");
+  } catch (const std::exception &e) {
+    std::cout << "hello C++ " << e.what() << " " << ++tl << std::endl;
+  }
+  std::vector<int> v(3);
+  try {
+    std::cout << v.at(7) << std::endl;
+  } catch (const std::out_of_range &) {
+    std::cout << "caught std::out_of_range" << std::endl;
+  }
+  return 0;
+}

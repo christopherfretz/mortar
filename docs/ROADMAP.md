@@ -1,8 +1,36 @@
 # Roadmap
 
-Milestones are ordered by what they unlock; tracks run in parallel inside a
-milestone once the interfaces they share are fixed. Work packages are rows
-in `docs/BACKLOG.md`.
+Tracks run in parallel inside a milestone once the interfaces they share
+are fixed. Work packages are rows in `docs/BACKLOG.md`. The milestone
+numbers are names, kept stable because the specs and the backlog cite them;
+the order of work is the one below.
+
+## Order of work (operator, 2026-11-15)
+
+Correctness and the ability to link big, real codebases come first,
+together with incremental linking; optimisation starts when that is
+minimally mature. Incremental linking and diagnostics (the metadata, the
+one-definition rule, what tuck needs) are what distinguishes mortar; parity
+with mold is wanted but is not what makes mortar worth using.
+
+1. **M2**, then **M3**: dynamic executables, then the libc++ suite with
+   kiln and hod.
+2. **M4** (the breadth big codebases need: shared-object output, linker
+   scripts, the open-source lanes), **M7** (incremental linking) and **M6**
+   (metadata and the one-definition rule) side by side. The designs of M7
+   and M6 (`spec/incr.md`, `spec/meta.md`, the requests to kiln and hod)
+   start during M2, because they shape what the other projects emit and
+   what the linker must keep.
+3. **M5**, the fastest: after the above is minimally mature.
+
+Until M5, speed and memory are guarded, not pursued: the bench records
+every release and a regression needs a reason, no package is cut for speed
+alone, and no `unsafe` is proposed (file mapping included: measured in
+November 2026 at about a third of the distance to mold on the static
+bench link, it waits for M5). What does not wait is
+design: nothing may be built that makes a fast or an incremental linker
+impossible later (layout is data, the image a pure function of it,
+deterministic output, the pipeline's parallel shape).
 
 The first long-term goal is **M3**: the full libc++ test suite, compiled by
 kiln and hod and linked by mortar, passing wherever it passes with the
@@ -63,10 +91,11 @@ The whole pipeline, in its final shape, on the smallest useful case.
   link is refused; it is never accepted without effect.
 - A static C hello-world, then static C++ with exceptions, link and run.
 - `--time-phases`; determinism test; first mortar rows in the bench.
-- x86-64: the static-pie rows of the architecture specs are specified
-  and tagged now, and `mortar_x64` implements and unit-tests them
-  (`spec/x64.md` X-9, X-15, X-56, §10); the end-to-end static-pie link
-  test is an M2 gate, with the generic `.dynamic`/`RELATIVE` work.
+- x86-64 and i386: the static-pie rows of the architecture specs are
+  specified and tagged now, and `mortar_x64`/`mortar_x86` implement and
+  unit-test them (`spec/x64.md` X-9, X-15, X-56, §10; `spec/x86.md`
+  X86-27, X86-50, X86-51, §11); the end-to-end static-pie link test is an
+  M2 gate, with the generic `.dynamic`/`RELATIVE` work.
 
 **Done when:** the static subset of the link tests passes with the verifier
 clean, and static C and C++ test programs behave as with every reference.
@@ -89,6 +118,12 @@ What every default link line of GCC, Clang and kiln needs.
 **Done when:** the default link lines of `gcc`, `g++`, `clang++`,
 `gfortran` and `kiln++` work for the test corpus on AArch64 with the
 verifier clean, and kiln's corpus passes with mortar.
+
+Spec: `spec/dyn.md`; the package cut: `spec/landed/dyn/WP-040.md`
+(WP-040). Shared objects are inputs only: producing them (`-shared`,
+verdefs), RELR, i386 dynamic links and the IBT/PAC PLTs are M4. Joined in
+the order: C PIE on AArch64, C++, x86-64 (under qemu), the options.
+`--gc-sections` is WP-031.
 
 ## M3: libc++ with kiln and hod
 
@@ -131,7 +166,8 @@ a row in `docs/status/support.md`.
 ## M5: the fastest
 
 Design for speed is in the architecture from M0; this milestone is where it
-is measured against the competition and won.
+is measured against the competition and won. It comes after M4, M6 and M7
+are minimally mature ("Order of work").
 
 - Parallel everything, the concurrent symbol table, memory layout of the
   tables, output writing; the decision on file mapping (`unsafe`, by
@@ -158,8 +194,17 @@ the open-source lanes.
 
 ## M7: incremental linking
 
-Needs M5's layout work and benefits from M6's metadata (per-section
-content hashes from kiln and hod).
+A launch feature, not an extra: it is worked on beside M4, ahead of M5
+("Order of work"). It builds on what M1 fixed (layout is data, the image a
+pure function of it, deterministic output) and benefits from M6's metadata
+(per-section content hashes from kiln and hod); it must be correct before
+it is fast, so the verifier judges every incrementally produced output as
+it judges a full link, and the output of an incremental link is compared
+with the full link of the same inputs (L10).
+
+- `spec/incr.md`: the design, written during M2 (what is kept between
+  links, how a change is detected, what an edit may move, when the link
+  falls back, what kiln and hod hand over).
 
 - Link state format; change detection; delta resolution.
 - Layout with slack; in-place patching; moving a section and patching its
@@ -186,5 +231,5 @@ allows because they have their own queues:
 | mortar as a linker in hod's link matrix and in both projects' libc++ sweeps | hod, kiln | M2, M3 |
 | The metadata container: kiln emits records, hod carries them into a discardable section | kiln, hod | M6 |
 | One-definition-rule records: per-entity definition hashes and locations | kiln | M6 |
-| Per-section content hashes and `-ffunction-sections`-style granularity for incremental links | kiln, hod | M7 |
+| Per-section content hashes and `-ffunction-sections`-style granularity for incremental links | kiln, hod | M7 (design during M2) |
 | What tuck needs the linker to keep or index | tuck | after M3 |

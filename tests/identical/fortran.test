@@ -1,0 +1,47 @@
+# static-identical corpus (spec/harness.md "static-identical"): static
+# Fortran with a module, C interoperability and debug information, linked
+# whole and with --gc-sections. (There is no i686 gfortran on the reference
+# machine.)
+#@ spec: harness.md "static-identical"
+#@ arch: aarch64 x86_64
+#@ requires: gfortran
+
+fc -g -O1 -ffunction-sections stats.f90 -o stats.o
+fc -g -O1 main.f90 -o main.o
+cc -g -O1 clock.c -o clock.o
+link gfortran -static -no-pie main.o stats.o clock.o -o whole
+link gfortran -static -no-pie -Wl,--gc-sections -Wl,--threads=1 main.o stats.o clock.o -o gc-one
+
+#--- stats.f90
+module stats
+  implicit none
+contains
+  real(8) function mean(x)
+    real(8), intent(in) :: x(:)
+    mean = sum(x) / size(x)
+  end function
+  real(8) function spread(x)
+    real(8), intent(in) :: x(:)
+    spread = maxval(x) - minval(x)
+  end function
+end module
+#--- main.f90
+program main
+  use stats
+  use iso_c_binding
+  implicit none
+  interface
+    integer(c_int) function c_ticks() bind(c, name="c_ticks")
+      import :: c_int
+    end function
+  end interface
+  real(8) :: x(10)
+  integer :: i
+  do i = 1, 10
+    x(i) = i * 1.5d0
+  end do
+  write (*, '(A,F8.3,A,F8.3)') 'mean ', mean(x), ' spread ', spread(x)
+  print '(A,I0)', 'ticks ', c_ticks()
+end program
+#--- clock.c
+int c_ticks(void) { return 42; }

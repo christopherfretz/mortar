@@ -21,13 +21,14 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `arch.md` | `mortar_arch`: the `Arch` trait | accepted for M1 (WP-013; two independent review passes, dispositions in `landed/arch/WP-013.md`); its requested `model.md` changes M-1..M-8 are applied by WP-020c |
 | `a64.md` | AArch64: relocation table, PLT/GOT/TLS/thunk shapes, erratum 843419 | accepted for M1 (WP-013; reviewed with `arch.md`) |
 | `x64.md` | x86-64: the relocation table, relaxations, GOT/IPLT/TLS shapes, GNU properties and CET | accepted (WP-029 stage 1; reviewed independently); its requests of §16 are applied (WP-029r, `landed/x64/WP-029r.md`; R-12 to `plumb.md` by WP-028c, `landed/plumb/WP-028c.md`) |
-| `x86.md` | i386: the relocation table, PLT/GOT/TLS shapes | planned (WP-030) |
+| `x86.md` | i386: the relocation table, PLT/GOT/TLS shapes | accepted (WP-030 stage 1; reviewed independently, every finding applied); its requests of §17 are WP-030r's |
 | `layout.md` | `mortar_layout`: output sections, segments, addresses | accepted for M1 (WP-024 stage 1; one independent review, dispositions in `landed/layout/WP-024-spec.md`); its §20 requests to other specs are applied by the WP-024 code package |
 | `synth.md` | `mortar_merge`, `mortar_synth`: split and merge, synthetic sections | accepted for M1 (WP-025; reviewed independently) |
+| `dyn.md` | dynamic executables (M2): shared objects as inputs, `.dynsym`/`.gnu.hash`/versions, `.dynamic`, dynamic relocations, copies, canonical PLTs, TLS, layout, the verifier's stage 3 requests; the work-package cut in `landed/dyn/WP-040.md` | draft (WP-040; awaiting review) |
 | `image.md` | `mortar_live`, `mortar_scan`, `mortar_digest`, `mortar_image`: liveness, the scan driver, the build id, image synthesis, the writer, debug sections | accepted for M1 (WP-026; reviewed independently) |
 | `plumb.md` | `mortar_plumb`: the verifier and the map-file format | stage 1: static non-PIE AArch64 (WP-011); stage 2 (WP-028, WP-028b): static TLS, `.eh_frame`/`.eh_frame_hdr`, the symbol table, IFUNC, non-alloc relocations, properties, build id; x86-64 (WP-028c): the table, its rewritings per linker, IPLT shapes, x86 properties; i386 not judged (`machine`) |
-| `meta.md` | `mortar_meta`: the Mason metadata container (shared with kiln, hod, tuck) | planned (M6) |
-| `odr.md` | `mortar_odr`: one-definition-rule checks | planned (M6) |
+| `meta.md` | `mortar_meta`: the Mason metadata container (shared with kiln, hod, tuck): the section, framing, the COMDAT answer, record kinds, versioning, size, the container in outputs | final draft, revision 2 (WP-070; open operator decisions in `odr.md` §15) |
+| `odr.md` | `mortar_odr`: one-definition-rule checks: the violation catalogue, what must not be flagged, keys, hashes, layouts, comparison points, foreign checks, diagnostics and switches, the loadable table and load-time hook, requests to kiln and hod; the work-package cut in §13 | final draft, revision 2 (WP-070; open operator decisions in `odr.md` §15) |
 | `incr.md` | `mortar_incr`: link state and incremental links | planned (M7) |
 | `harness.md` | `xtask`: the gate, link tests, differential runs, bench, jobserver | "ci", "Jobserver", "Limits" (WP-003); "Link tests" (WP-010); "bench" (WP-012); "Hosted CI" (WP-014); "L3" (WP-028) |
 

@@ -1,0 +1,354 @@
+# dyn.md D-25's class table, for the relocation types the compilers put
+# against an undefined weak key (E-weakpc; GCC 14 and Clang 22, every
+# mode). Each row is a translation unit using its own weak function
+# `k_<row>`, so each key is classified alone:
+#
+# | row     | how it is built               | AArch64                     | x86-64                  | class      |
+# |---------|-------------------------------|-----------------------------|-------------------------|------------|
+# | got     | `&k`, `-fPIE`                 | ADR_GOT_PAGE, LD64_GOT_LO12_NC | REX_GOTPCRELX        | GOT        |
+# | word    | `p = k` in `.data`, `-fPIE`   | ABS64, writable             | 64, writable            | abs word   |
+# | relro   | `const p = k`, `-fPIE`        | ABS64 in `.data.rel.ro`     | 64 in `.data.rel.ro`    | abs word   |
+# | branch  | `k()` alone, `-fPIE`          | JUMP26                      | PLT32                   | branch     |
+# | gotcall | `if (k) k()`, `-fPIE`         | GOT + JUMP26/CALL26         | GOTPCREL + PLT32        | GOT, branch|
+# | noplt   | `if (k) k()`, `-fno-plt`      | GOT + BLR                   | REX_GOTPCRELX, GOTPCRELX| GOT        |
+# | arch    | `arch.S` (compiler's output)  | GOT_LD_PREL19 (`-mcmodel=tiny`) + CALL26 | GOT64, PLTOFF64 (`-mcmodel=large -fPIC`) | GOT, branch |
+# | rodata  | `const p = k`, `-fno-pic`     | ABS64 in `.rodata`          | 64 in `.rodata`         | unfillable |
+# | text    | `&k`, `-mcmodel=large -fno-pic` (GCC) | ABS64 in `.text` (literal) | 64 in `.text` (movabs) | unfillable |
+# | movw    | `&k`, `-mcmodel=large -fno-pic` (Clang) | MOVW_UABS_G0_NC..G3   | 64 in `.text`           | unfillable |
+#
+# Expected (D-25): a key with a GOT use or an absolute word in a writable
+# place and no unfillable use is `WeakDyn` in `Pie` and `Exec`: a `WEAK
+# UND` `.dynsym` entry, its uses see a definition preloaded with
+# `LD_PRELOAD=./libhook.so`, and its branches go through a PLT entry. A
+# branch alone is `Weak0` (no `.dynsym` entry, no `JUMP_SLOT`; the row is
+# never called, a `Weak0` call has no target). An unfillable use makes the
+# key `Weak0` in `Exec` (null with and without the preload) and is refused
+# by name in `Pie`, `weak-undefined-pc-in-pie`.
+#
+# Where the references differ (dyn.md §13.1 and D-25's notes): mold makes
+# every undefined weak key 0 (nothing dynamic, the preload is never seen);
+# GNU ld and lld write no record for an absolute word in a writable place
+# of a `-no-pie` output (D-25: "this behaviour is new to mortar"), and
+# GNU ld on x86-64 gives such a word 0 in a PIE too; GNU ld and lld make a
+# branch-only key dynamic with a `JUMP_SLOT`. Each reference's runs are
+# held to what it prints; the `.dynsym` and relocation checks are mortar's.
+# The references refuse the unfillable rows in a PIE with their own
+# wording. mold does not know AArch64 `GOT_LD_PREL19` ("unknown
+# relocation"), so the `arch` row is its own program, not linked by mold on
+# AArch64. Not covered: forms no compiler produces
+# against a weak key (an x86-64 `PC32` on a call or `jcc` opcode, AArch64
+# `CONDBR19`/`TSTBR14`, `ADR_PREL_*`, `PREL*`): `weak-undef-pc-pie-refused`
+# has the AArch64 `ADR_PREL_PG_HI21` and the x86-64 `PC32` data read.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-25"
+#@ arch: aarch64 x86_64
+#@ requires: clang
+#@ anomaly(lld): A25
+#@ anomaly(lld,x86_64): A29
+
+cc -O2 -fPIE main.c -o main-pie.o
+cc -O2 -fPIE -DEXEC main.c -o main-exec.o
+cc -O2 -fPIE archmain.c -o archmain.o
+cc -O2 -fPIE got.c -o got.o
+cc -O2 -fPIE word.c -o word.o
+cc -O2 -fPIE relro.c -o relro.o
+cc -O2 -fPIE branch.c -o branch.o
+cc -O2 -fPIE gotcall.c -o gotcall.o
+cc -O2 -fPIE -fno-plt noplt.c -o noplt.o
+as arch.S -o arch.o
+cc -O2 -fno-pic rodata.c -o rodata.o
+cc -O2 -mcmodel=large -fno-pic text.c -o text.o
+cc(clang) -O2 -mcmodel=large -fno-pic movw.c -o movw.o
+cc -O2 -fPIC hook.c -o hook.o
+shlib gcc hook.o -o libhook.so
+
+link gcc -pie main-pie.o got.o word.o relro.o branch.o gotcall.o noplt.o -o pie
+run pie
+  stdout: got null
+  stdout: word null
+  stdout: relro null
+  stdout: gotcall 0
+  stdout: noplt 0
+run(lld,mortar) pie
+  env: LD_PRELOAD=./libhook.so
+  stdout: got non-null
+  stdout: word non-null
+  stdout: relro non-null
+  stdout: k_gotcall: RAN
+  stdout: gotcall 1
+  stdout: k_noplt: RAN
+  stdout: noplt 1
+run(bfd,aarch64) pie
+  env: LD_PRELOAD=./libhook.so
+  stdout: got non-null
+  stdout: word non-null
+  stdout: relro non-null
+  stdout: k_gotcall: RAN
+  stdout: gotcall 1
+  stdout: k_noplt: RAN
+  stdout: noplt 1
+run(bfd,x86_64) pie
+  env: LD_PRELOAD=./libhook.so
+  stdout: got non-null
+  stdout: word null
+  stdout: relro null
+  stdout: k_gotcall: RAN
+  stdout: gotcall 1
+  stdout: k_noplt: RAN
+  stdout: noplt 1
+run(mold) pie
+  env: LD_PRELOAD=./libhook.so
+  stdout: got null
+  stdout: word null
+  stdout: relro null
+  stdout: gotcall 0
+  stdout: noplt 0
+check readelf --dyn-syms -W pie
+  has(mortar): WEAK DEFAULT UND k_got$
+  has(mortar): WEAK DEFAULT UND k_word$
+  has(mortar): WEAK DEFAULT UND k_relro$
+  not(mortar): k_branch
+  has(mortar): WEAK DEFAULT UND k_gotcall$
+  has(mortar): WEAK DEFAULT UND k_noplt$
+check readelf -rW pie
+  has(aarch64,mortar): R_AARCH64_GLOB_DAT * k_got + 0
+  has(aarch64,mortar): R_AARCH64_ABS64 * k_word + 0
+  has(aarch64,mortar): R_AARCH64_ABS64 * k_relro + 0
+  has(aarch64,mortar): R_AARCH64_GLOB_DAT * k_gotcall + 0
+  has(aarch64,mortar): R_AARCH64_JUMP_SLOT * k_gotcall + 0
+  has(x86_64,mortar): R_X86_64_GLOB_DAT * k_got + 0
+  has(x86_64,mortar): R_X86_64_64 * k_word + 0
+  has(x86_64,mortar): R_X86_64_64 * k_relro + 0
+  has(x86_64,mortar): R_X86_64_GLOB_DAT * k_gotcall + 0
+  has(x86_64,mortar): R_X86_64_JUMP_SLOT * k_gotcall + 0
+  not(mortar): k_branch
+
+link gcc -no-pie main-exec.o got.o word.o relro.o branch.o gotcall.o noplt.o rodata.o text.o movw.o -o exec
+run exec
+  stdout: got null
+  stdout: word null
+  stdout: relro null
+  stdout: gotcall 0
+  stdout: noplt 0
+  stdout: rodata null, text null, movw null
+run(mortar) exec
+  env: LD_PRELOAD=./libhook.so
+  stdout: got non-null
+  stdout: word non-null
+  stdout: relro non-null
+  stdout: k_gotcall: RAN
+  stdout: gotcall 1
+  stdout: k_noplt: RAN
+  stdout: noplt 1
+  stdout: rodata null, text null, movw null
+run(bfd,lld) exec
+  env: LD_PRELOAD=./libhook.so
+  stdout: got non-null
+  stdout: word null
+  stdout: relro null
+  stdout: k_gotcall: RAN
+  stdout: gotcall 1
+  stdout: k_noplt: RAN
+  stdout: noplt 1
+  stdout: rodata null, text null, movw null
+run(mold) exec
+  env: LD_PRELOAD=./libhook.so
+  stdout: got null
+  stdout: word null
+  stdout: relro null
+  stdout: gotcall 0
+  stdout: noplt 0
+  stdout: rodata null, text null, movw null
+check readelf --dyn-syms -W exec
+  has(mortar): WEAK DEFAULT UND k_got$
+  has(mortar): WEAK DEFAULT UND k_word$
+  has(mortar): WEAK DEFAULT UND k_relro$
+  has(mortar): WEAK DEFAULT UND k_gotcall$
+  has(mortar): WEAK DEFAULT UND k_noplt$
+  not(mortar): k_branch
+  not(mortar): k_rodata
+  not(mortar): k_text
+  not(mortar): k_movw
+check readelf -rW exec
+  has(aarch64,mortar): R_AARCH64_ABS64 * k_word + 0
+  has(aarch64,mortar): R_AARCH64_ABS64 * k_relro + 0
+  has(x86_64,mortar): R_X86_64_64 * k_word + 0
+  has(x86_64,mortar): R_X86_64_64 * k_relro + 0
+
+link(x86_64) gcc -pie archmain.o arch.o -o pie-arch
+link(aarch64,bfd,lld,mortar) gcc -pie archmain.o arch.o -o pie-arch
+run(x86_64) pie-arch
+  stdout: arch null, called 0
+run(aarch64,bfd,lld,mortar) pie-arch
+  stdout: arch null, called 0
+run(bfd,lld,mortar) pie-arch
+  env: LD_PRELOAD=./libhook.so
+  stdout: k_arch: RAN
+  stdout: arch non-null, called 1
+run(mold,x86_64) pie-arch
+  env: LD_PRELOAD=./libhook.so
+  stdout: arch null, called 0
+check(mortar) readelf -rW pie-arch
+  has(aarch64): R_AARCH64_GLOB_DAT * k_arch + 0
+  has(aarch64): R_AARCH64_JUMP_SLOT * k_arch + 0
+  has(x86_64): R_X86_64_GLOB_DAT * k_arch + 0
+  has(x86_64): R_X86_64_JUMP_SLOT * k_arch + 0
+
+link gcc -pie main-pie.o rodata.o -o pie-rodata
+  exit: fail
+  diag(mortar): relocation * against undefined weak symbol `*' cannot be used in a position-independent executable; recompile with -fPIE
+link gcc -pie main-pie.o text.o -o pie-text
+  exit: fail
+  diag(mortar): relocation * against undefined weak symbol `*' cannot be used in a position-independent executable; recompile with -fPIE
+link gcc -pie main-pie.o movw.o -o pie-movw
+  exit: fail
+  diag(mortar): relocation * against undefined weak symbol `*' cannot be used in a position-independent executable; recompile with -fPIE
+
+#--- main.c
+#include <stdio.h>
+
+void *row_got(void);
+extern void (*row_word)(void);
+extern void (*const row_relro)(void);
+int row_gotcall(void);
+int row_noplt(void);
+#ifdef EXEC
+extern void (*const row_rodata)(void);
+void *row_text(void);
+void *row_movw(void);
+#endif
+
+static const char *nn(const void *p) { return p ? "non-null" : "null"; }
+
+int main(void) {
+  printf("got %s\n", nn(row_got()));
+  printf("word %s\n", nn((const void *)row_word));
+  printf("relro %s\n", nn((const void *)row_relro));
+  printf("gotcall %d\n", row_gotcall());
+  printf("noplt %d\n", row_noplt());
+#ifdef EXEC
+  printf("rodata %s, text %s, movw %s\n", nn((const void *)row_rodata),
+         nn(row_text()), nn(row_movw()));
+#endif
+  return 0;
+}
+#--- archmain.c
+#include <stdio.h>
+
+void *row_arch(void);
+int row_archcall(void);
+
+int main(void) {
+  const char *arch = row_arch() ? "non-null" : "null";
+  printf("arch %s, called %d\n", arch, row_archcall());
+  return 0;
+}
+#--- got.c
+extern void k_got(void) __attribute__((weak));
+void *row_got(void) { return (void *)&k_got; }
+#--- word.c
+extern void k_word(void) __attribute__((weak));
+void (*row_word)(void) = k_word;
+#--- relro.c
+extern void k_relro(void) __attribute__((weak));
+void (*const row_relro)(void) = k_relro;
+#--- branch.c
+/* Never called: a Weak0 branch has no target to reach. */
+extern void k_branch(void) __attribute__((weak));
+void row_branch(void) { k_branch(); }
+#--- gotcall.c
+extern void k_gotcall(void) __attribute__((weak));
+int row_gotcall(void) {
+  if (k_gotcall) {
+    k_gotcall();
+    return 1;
+  }
+  return 0;
+}
+#--- noplt.c
+extern void k_noplt(void) __attribute__((weak));
+int row_noplt(void) {
+  if (k_noplt) {
+    k_noplt();
+    return 1;
+  }
+  return 0;
+}
+#--- rodata.c
+extern void k_rodata(void) __attribute__((weak));
+void (*const row_rodata)(void) = k_rodata;
+#--- text.c
+extern void k_text(void) __attribute__((weak));
+void *row_text(void) { return (void *)&k_text; }
+#--- movw.c
+extern void k_movw(void) __attribute__((weak));
+void *row_movw(void) { return (void *)&k_movw; }
+#--- arch.S
+/* The compilers' own forms that only one architecture has, as GCC 14
+   writes them: AArch64 -mcmodel=tiny (GOT_LD_PREL19, CALL26), x86-64
+   -mcmodel=large -fPIC (GOTPC64, GOT64, PLTOFF64). */
+	.weak	k_arch
+	.text
+	.globl	row_arch
+	.type	row_arch, %function
+	.globl	row_archcall
+	.type	row_archcall, %function
+#if defined(__x86_64__)
+row_arch:
+.La:
+	movabsq	$_GLOBAL_OFFSET_TABLE_-.La, %r11
+	leaq	.La(%rip), %rax
+	movabsq	$k_arch@GOT, %rdx
+	addq	%r11, %rax
+	movq	(%rax,%rdx), %rax
+	ret
+row_archcall:
+.Lc:
+	movabsq	$_GLOBAL_OFFSET_TABLE_-.Lc, %r11
+	pushq	%r15
+	leaq	.Lc(%rip), %r15
+	xorl	%eax, %eax
+	movabsq	$k_arch@GOT, %rdx
+	addq	%r11, %r15
+	cmpq	$0, (%rdx,%r15)
+	je	1f
+	movabsq	$k_arch@PLTOFF, %rax
+	addq	%r15, %rax
+	call	*%rax
+	movl	$1, %eax
+1:
+	popq	%r15
+	ret
+#elif defined(__aarch64__)
+row_arch:
+	ldr	x0, :got:k_arch
+	ret
+row_archcall:
+	ldr	x0, :got:k_arch
+	cbz	x0, 1f
+	stp	x29, x30, [sp, -16]!
+	mov	x29, sp
+	bl	k_arch
+	ldp	x29, x30, [sp], 16
+	mov	w0, 1
+	ret
+1:
+	mov	w0, 0
+	ret
+#endif
+	.section .note.GNU-stack,"",%progbits
+#--- hook.c
+#include <stdio.h>
+
+void k_got(void) { puts("k_got: RAN"); }
+void k_word(void) { puts("k_word: RAN"); }
+void k_relro(void) { puts("k_relro: RAN"); }
+void k_branch(void) { puts("k_branch: RAN"); }
+void k_gotcall(void) { puts("k_gotcall: RAN"); }
+void k_noplt(void) { puts("k_noplt: RAN"); }
+void k_arch(void) { puts("k_arch: RAN"); }
+void k_rodata(void) { puts("k_rodata: RAN"); }
+void k_text(void) { puts("k_text: RAN"); }
+void k_movw(void) { puts("k_movw: RAN"); }

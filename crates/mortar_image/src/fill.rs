@@ -3,7 +3,8 @@
 //! (I-33, I-63).
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use mortar_arch::{Arch, FillTables, OutputKind, TlsBlock};
 use mortar_core::par::Pool;
@@ -30,17 +31,102 @@ use crate::{digest, eh, merged};
 pub trait Tables: FillTables {
     /// Whether the key's definition is in an `SHF_ALLOC` section (I-112).
     fn target_alloc(&self, key: SymKey) -> bool;
+
+    /// Whether input section `section` has `SHF_WRITE` (`spec/dyn.md`
+    /// D-46: which record a relocation of it makes, [`crate::dynrel`]).
+    /// `None` (the default): the tables cannot say, and the fill leaves
+    /// every place as `apply` wrote it, as in a static output.
+    fn section_writable(&self, section: mortar_core::SectionId) -> Option<bool> {
+        let _ = section;
+        None
+    }
     /// `S + A` of a reference with addend `addend` to `key` when that
     /// value is not the symbol's plus `A`: a section symbol of a split
     /// `Merge` section (`spec/synth.md` S-17, S-18: the piece holding
     /// byte `st_value + A`) and any key defined in an input `.eh_frame`
     /// (S-50, which follows the target offset). The output address, or
-    /// the diagnostic (S-18; S-50 rules 4 and 5). `None` otherwise: the
+    /// the diagnostic (S-18; S-50 rules 4 and 5). `Ok(None)`: the piece
+    /// was collected (`--gc-sections`, `spec/image.md` I-7; a debug
+    /// reference to it is the tombstone, I-47). `None` otherwise: the
     /// arch computes `S + A` from [`FillTables::sym`].
-    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<u64, Diagnostic>> {
+    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<Option<u64>, Diagnostic>> {
         let _ = (key, addend);
         None
     }
+
+    /// [`FillTables::sym`] of a record's key, and whether
+    /// [`Tables::split_target`] may give its value. When the flag is true
+    /// the value `s` need not be computed (the caller asks `split_target`,
+    /// and falls back to `sym` when that is `None`); when it is false,
+    /// `split_target` is `None` and the value is `sym(key)` exactly. One
+    /// read of the key's symbol where `sym` and `split_target` would make
+    /// several (WP-032c).
+    fn record_sym(&self, key: SymKey) -> (mortar_arch::SymValue, bool) {
+        (self.sym(key), true)
+    }
+
+    /// What the scan knows of `key` (`spec/arch.md` §3.4 `SymFacts`) for
+    /// a record whose symbol is `mention` (an undefined key takes its
+    /// type): fill's checks of a section the scan left to it
+    /// (`RecIndex::deferred`, `spec/image.md` I-14). `None`: the tables
+    /// cannot say, and such a section's records are faults.
+    fn scan_facts(
+        &self,
+        key: SymKey,
+        mention: Option<mortar_core::SymEntry>,
+    ) -> Option<mortar_arch::SymFacts> {
+        let _ = (key, mention);
+        None
+    }
+
+    /// [`Tables::record_sym`] and [`Tables::scan_facts`] of one deferred
+    /// record (I-14) together, so that tables which read the key's symbol
+    /// for both can read it once (WP-032f).
+    fn record_sym_at(
+        &self,
+        key: SymKey,
+        mention: Option<mortar_core::SymEntry>,
+    ) -> (mortar_arch::SymValue, bool, Option<mortar_arch::SymFacts>) {
+        let (value, split) = self.record_sym(key);
+        (value, split, self.scan_facts(key, mention))
+    }
+
+    /// What [`Tables::split_target`] reads of `key` before it looks at
+    /// the addend, read once for many records (WP-032f); `None`: ask
+    /// `split_target`.
+    fn split_place(&self, key: SymKey) -> Option<SplitPlace> {
+        let _ = key;
+        None
+    }
+
+    /// [`Tables::split_target`] of `key`, whose place is `place`
+    /// (`split_place(key)`).
+    fn split_at(
+        &self,
+        place: &SplitPlace,
+        key: SymKey,
+        addend: i64,
+    ) -> Option<Result<Option<u64>, Diagnostic>> {
+        let _ = place;
+        self.split_target(key, addend)
+    }
+}
+
+/// Where a split target is defined ([`Tables::split_place`]): the input
+/// section, whether it is a `Merge` section (else an `.eh_frame`), the
+/// symbol's `st_value` and whether it is the section's symbol, the
+/// tables' own row of the section (`u32::MAX`: none) and, for a `Merge`
+/// section, the value of offset 0 of its output section's merged chunk
+/// when the tables know it (every fragment of the section's pieces is in
+/// that chunk: S-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplitPlace {
+    pub section: mortar_core::SectionId,
+    pub merge: bool,
+    pub value: u64,
+    pub section_sym: bool,
+    pub row: u32,
+    pub chunk_base: Option<u64>,
 }
 
 /// What merged chunks are written from (I-38): phase 50's fragment order
@@ -136,6 +222,68 @@ struct JobOut {
     /// The lowest window offset whose write failed, with the error.
     write: Option<(u64, io::Error)>,
     fatal: Option<(Key, Diagnostic)>,
+    /// Deferred sections with a fault (I-14).
+    flagged: Vec<mortar_core::SectionId>,
+}
+
+/// Fill's sub-step counters under `MORTAR_STEPS` (WP-032f; nothing they
+/// count reaches the output, the map or a diagnostic): CPU time summed
+/// over the workers in the jobs' fills, in copies from the store (inputs
+/// that are not resident) and in the sink's writes, with their bytes.
+#[derive(Debug)]
+pub(crate) struct FillSteps {
+    fill_ns: AtomicU64,
+    read_ns: AtomicU64,
+    read_bytes: AtomicU64,
+    reads: AtomicU64,
+    write_ns: AtomicU64,
+    write_bytes: AtomicU64,
+}
+
+pub(crate) static FILL_STEPS: FillSteps = FillSteps {
+    fill_ns: AtomicU64::new(0),
+    read_ns: AtomicU64::new(0),
+    read_bytes: AtomicU64::new(0),
+    reads: AtomicU64::new(0),
+    write_ns: AtomicU64::new(0),
+    write_bytes: AtomicU64::new(0),
+};
+
+impl FillSteps {
+    pub(crate) fn on() -> bool {
+        mortar_core::wp032b_steps::enabled()
+    }
+
+    fn since(t: Instant) -> u64 {
+        u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    pub(crate) fn add_read(&self, t: Instant, bytes: usize) {
+        self.read_ns.fetch_add(Self::since(t), Ordering::Relaxed);
+        self.read_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.reads.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Prints the counters and clears them.
+    #[allow(clippy::cast_precision_loss)] // printed durations
+    fn print(&self) {
+        let take = |a: &AtomicU64| a.swap(0, Ordering::Relaxed);
+        let ms = |ns: u64| ns as f64 / 1e6;
+        let (fill, read, rb, reads, write, wb) = (
+            take(&self.fill_ns),
+            take(&self.read_ns),
+            take(&self.read_bytes),
+            take(&self.reads),
+            take(&self.write_ns),
+            take(&self.write_bytes),
+        );
+        eprintln!("mortar: steps: image fill jobs (cpu): {:.2} ms", ms(fill));
+        eprintln!(
+            "mortar: steps: image fill reads (cpu): {:.2} ms, {rb} byte, {reads} read",
+            ms(read)
+        );
+        eprintln!("mortar: steps: image fill writes (cpu): {:.2} ms, {wb} byte", ms(write));
+    }
 }
 
 /// A worker's state: its window buffer (I-32) and relocation scratch.
@@ -151,19 +299,57 @@ struct Worker {
 ///
 /// Errors are concatenated in job order; a write error is the one of the
 /// lowest failing window (I-64), keyed `(105, 0, 0)` (I-68).
+///
+/// A section whose checks are fill's (I-14) with a fault is an
+/// `internal-error` here: [`write_checked`] hands such sections to the
+/// caller, who reports them.
 pub fn write(
     img: &Image<'_>,
     sink: &dyn Sink,
     output_path: &str,
     pool: &Pool,
 ) -> Result<Filled, Failed> {
+    let (r, checked) = write_checked(img, sink, output_path, pool);
+    if checked.flagged.is_empty() {
+        return r;
+    }
+    let mut diagnostics = r.err().map(|f| f.diagnostics).unwrap_or_default();
+    let what = format!(
+        "fill: {} deferred section(s) have faults and no report (I-14)",
+        checked.flagged.len()
+    );
+    diagnostics.push((Key::new(PHASE_IMAGE, 0, 0), internal(what)));
+    Err(Failed { diagnostics })
+}
+
+/// What fill's checks of the sections the scan left to it found
+/// (`RecIndex::deferred`, I-14).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Checked {
+    /// The sections with a fault, sorted: the link has failed, and the
+    /// diagnostics are the scan's walk of them.
+    pub flagged: Vec<mortar_core::SectionId>,
+    /// Every job ran to its end: every clip was checked.
+    pub complete: bool,
+}
+
+/// [`write`], with fill's checks of the deferred sections (I-14) handed
+/// back: a fault fails the fill (nothing more is written) with no
+/// diagnostic of its own.
+pub fn write_checked(
+    img: &Image<'_>,
+    sink: &dyn Sink,
+    output_path: &str,
+    pool: &Pool,
+) -> (Result<Filled, Failed>, Checked) {
     let plan = img.plan;
     if img.build_id.is_some() && plan.window != crate::IMAGE_BLOCK {
         let what = format!(
             "fill: a build id needs W = IMAGE_BLOCK, the plan has {:#x} (I-75)",
             plan.window
         );
-        return Err(Failed { diagnostics: vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))] });
+        let d = vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))];
+        return (Err(Failed { diagnostics: d }), Checked::default());
     }
     let mut outs: Vec<JobOut> = plan.jobs.iter().map(|_| JobOut::default()).collect();
     let stop = AtomicBool::new(false);
@@ -171,12 +357,18 @@ pub fn write(
         let job = plan.jobs[j].clone();
         run_job(img, w, job, sink, &stop, out);
     });
+    if FillSteps::on() {
+        FILL_STEPS.print();
+    }
     let mut diagnostics = Vec::new();
     let mut write_err: Option<(u64, io::Error)> = None;
     let mut leaves = Vec::new();
+    let mut checked = Checked { flagged: Vec::new(), complete: true };
     for o in outs {
         diagnostics.extend(o.errors);
+        checked.complete &= o.fatal.is_none();
         diagnostics.extend(o.fatal);
+        checked.flagged.extend(o.flagged);
         leaves.extend(o.leaves);
         if let Some((off, e)) = o.write
             && write_err.as_ref().is_none_or(|(w, _)| off < *w)
@@ -184,18 +376,20 @@ pub fn write(
             write_err = Some((off, e));
         }
     }
+    checked.flagged.sort_unstable();
+    checked.flagged.dedup();
     let mut build_id = None;
     if write_err.is_none()
         && diagnostics.is_empty()
+        && checked.flagged.is_empty()
         && let Some(style) = img.build_id
     {
         let id = match digest::build_id(style, plan.file_size, &leaves) {
             Ok(id) => id,
             Err(e) => {
                 let what = format!("fill: build id: {e}");
-                return Err(Failed {
-                    diagnostics: vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))],
-                });
+                let d = vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))];
+                return (Err(Failed { diagnostics: d }), checked);
             }
         };
         if let Some(sealed) = &plan.sealed {
@@ -211,7 +405,12 @@ pub fn write(
     if let Some((_, e)) = write_err {
         diagnostics.push(write_error(output_path, &e));
     }
-    if diagnostics.is_empty() { Ok(Filled { build_id }) } else { Err(Failed { diagnostics }) }
+    let r = if diagnostics.is_empty() && checked.flagged.is_empty() {
+        Ok(Filled { build_id })
+    } else {
+        Err(Failed { diagnostics })
+    };
+    (r, checked)
 }
 
 /// `cannot-write-output` at `(105, 0, 0)` (I-64, I-68).
@@ -223,6 +422,9 @@ pub(crate) fn write_error(path: &str, e: &io::Error) -> (Key, Diagnostic) {
 /// Fills the bytes of `[lo, hi)` of the file into `out`
 /// (`out.len() == hi − lo`): every row overlapping the range (I-33 steps
 /// 1-3). Relocation errors go to `errs`; the first failed read is returned.
+/// A fault in a section deferred to fill (I-14) has no report here (that
+/// is the scan's walk, `link::write`): it is an internal error in `errs`,
+/// so that no fault passes unseen.
 pub fn fill_range(
     img: &Image<'_>,
     lo: u64,
@@ -230,7 +432,15 @@ pub fn fill_range(
     errs: &mut Vec<(Key, Diagnostic)>,
 ) -> Result<(), (Key, Diagnostic)> {
     let mut scratch = Scratch::default();
-    fill_into(img, &mut scratch, lo, out, errs)
+    let r = fill_into(img, &mut scratch, lo, out, errs);
+    if !scratch.flagged.is_empty() {
+        let what = format!(
+            "fill: {} deferred section(s) have faults and no report (I-14)",
+            scratch.flagged.len()
+        );
+        errs.push((Key::new(PHASE_IMAGE, 0, 0), internal(what)));
+    }
+    r
 }
 
 fn fill_into(
@@ -343,11 +553,16 @@ fn run_job(
     let len = (job.end - job.start) as usize;
     w.buf.resize(len, 0);
     let Worker { buf, scratch } = w;
+    let steps = FillSteps::on().then(Instant::now);
     if let Err(fatal) = fill_into(img, scratch, job.start, &mut buf[..len], &mut out.errors) {
         out.fatal = Some(fatal);
         stop.store(true, Ordering::Relaxed);
     }
-    let fill_failed = out.fatal.is_some() || !out.errors.is_empty();
+    if let Some(t) = steps {
+        FILL_STEPS.fill_ns.fetch_add(FillSteps::since(t), Ordering::Relaxed);
+    }
+    out.flagged = std::mem::take(&mut scratch.flagged);
+    let fill_failed = out.fatal.is_some() || !out.errors.is_empty() || !out.flagged.is_empty();
     let win = plan.window as usize;
     for (k, window) in buf[..len].chunks(win).enumerate() {
         let offset = job.start + (k * win) as u64;
@@ -359,9 +574,14 @@ fn run_job(
         if fill_failed || stop.load(Ordering::Relaxed) {
             continue;
         }
+        let steps = FillSteps::on().then(Instant::now);
         if let Err(e) = sink.write_at(offset, window) {
             out.write = Some((offset, e));
             stop.store(true, Ordering::Relaxed);
+        }
+        if let Some(t) = steps {
+            FILL_STEPS.write_ns.fetch_add(FillSteps::since(t), Ordering::Relaxed);
+            FILL_STEPS.write_bytes.fetch_add(window.len() as u64, Ordering::Relaxed);
         }
     }
     // A multi-window job grew the buffer: shrink it back to `W` (I-32).

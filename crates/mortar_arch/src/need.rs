@@ -6,6 +6,7 @@
 //! the cap of `R_MAX` rounds) is layout's (`spec/layout.md` §14), which
 //! calls these.
 
+use mortar_core::SymKey;
 use mortar_core::layout::ThunkTarget;
 use mortar_diag::RefusalClass;
 
@@ -54,18 +55,61 @@ pub fn branch_site(
     target: TargetKind,
     flags: DemandFlags,
 ) -> Option<BranchSite> {
+    branch_candidate(arch, output, at, names, target == TargetKind::Weak0).map(|c| c.site(flags))
+}
+
+/// What [`branch_site`] reads of a relocation, before the target's final
+/// `Demands` flags are known: the scan finds it as it walks the record
+/// (`spec/image.md` §4), so that layout need not walk the code's
+/// relocations again (WP-032i).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BranchCandidate {
+    pub branch: Branch,
+    pub key: SymKey,
+    /// `RelocAt::rela_addend`.
+    pub addend: i64,
+    /// The howto's value is `L` based: the site goes through the PLT or
+    /// IPLT entry when the key has the `PLT` or `IPLT` flag.
+    pub via_plt: bool,
+}
+
+impl BranchCandidate {
+    /// The site, given the target's final `Demands` flags:
+    /// `branch_site(.., flags)` of the record this was found at.
+    #[must_use]
+    pub fn site(&self, flags: DemandFlags) -> BranchSite {
+        let via_plt =
+            self.via_plt && (flags.contains(DemandFlags::PLT) || flags.contains(DemandFlags::IPLT));
+        let key = if via_plt {
+            ThunkTarget::Plt(self.key)
+        } else {
+            ThunkTarget::Sym { key: self.key, addend: self.addend }
+        };
+        BranchSite { branch: self.branch, key }
+    }
+}
+
+/// [`branch_site`] without the flags: `None` exactly when `branch_site`
+/// is `None` for every value of the flags. `weak0`: the target's kind is
+/// `TargetKind::Weak0` (the only kind the answer depends on).
+#[must_use]
+pub fn branch_candidate(
+    arch: &dyn Arch,
+    output: OutputKind,
+    at: &RelocAt<'_>,
+    names: &dyn SymNames,
+    weak0: bool,
+) -> Option<BranchCandidate> {
     let branch = arch.branch(at.howto)?;
-    if !branch.veneer || target == TargetKind::Weak0 || arch.consumed(output, at, names) {
+    if !branch.veneer || weak0 || arch.consumed(output, at, names) {
         return None;
     }
-    let via_plt = at.howto.value.base == Base::L
-        && (flags.contains(DemandFlags::PLT) || flags.contains(DemandFlags::IPLT));
-    let key = if via_plt {
-        ThunkTarget::Plt(at.key)
-    } else {
-        ThunkTarget::Sym { key: at.key, addend: at.addend }
-    };
-    Some(BranchSite { branch, key })
+    Some(BranchCandidate {
+        branch,
+        key: at.key,
+        addend: at.rela_addend(),
+        via_plt: at.howto.value.base == Base::L,
+    })
 }
 
 /// What a branch site needs in this round (§6 step 1).

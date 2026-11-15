@@ -30,13 +30,17 @@ pub struct Thresholds {
 }
 
 impl Default for Thresholds {
-    /// The contract: 5% and 2 ms of time, 2% and 1 MiB of memory; a
+    /// The contract: 35% and 2 ms of time, 4% and 1 MiB of memory; a
     /// spread of 5%, a calibration difference of 10%, a drift of 25%.
+    /// The time and memory margins are WP-036's, from three whole runs of
+    /// the same commit on the shared 12-core host: the largest slowdown
+    /// the gate judged steady was 28.2%, the largest RSS growth 2.6%
+    /// (`spec/harness.md` "Noise").
     fn default() -> Self {
         Self {
-            time_permille: 50,
+            time_permille: 350,
             time_floor_us: 2_000,
-            memory_permille: 20,
+            memory_permille: 40,
             memory_floor_kib: 1_024,
             spread_permille: 50,
             calibration_permille: 100,
@@ -309,10 +313,12 @@ mod tests {
         drift_permille: 250,
     };
 
-    // "The gate": the margins are the contract's.
+    // "The gate": the margins are the contract's. The other tests use
+    // the narrower margins of `T`, which make their arithmetic easy to read.
     #[test]
     fn the_contract() {
-        assert_eq!(Thresholds::default(), T);
+        let contract = Thresholds { time_permille: 350, memory_permille: 40, ..T };
+        assert_eq!(Thresholds::default(), contract);
     }
 
     // "Measurement": the middle of N runs.

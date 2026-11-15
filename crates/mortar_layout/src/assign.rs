@@ -218,7 +218,7 @@ pub fn assign<'n>(
         return Err(vec![(SectionId(0), internal("headers are not per section"))]);
     }
     let files = resolution.section_base.len() as usize;
-    let per_file: Vec<FileFates<'n>> = pool.map(files, |f| {
+    let per_file: Vec<FileFates<'n>> = pool.unit_cost(500).map(files, |f| {
         let range = resolution.section_base[mortar_core::id::FileId(f as u32)];
         let mut out = FileFates { fates: Vec::new(), names: Vec::new(), errors: Vec::new() };
         let mut seen: HashSet<&'n [u8]> = HashSet::new();

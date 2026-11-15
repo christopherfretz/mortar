@@ -1,0 +1,90 @@
+# dyn.md D-49: lazy binding is the default. A PIE and a non-PIE call a
+# library's `early` through the PLT, and its `late` only when given an
+# argument; neither is linked with `-z now`. `.rela.plt` has a
+# `JUMP_SLOT` for each, `DT_JMPREL`/`DT_PLTREL`/`DT_PLTGOT` are written,
+# and neither `DF_BIND_NOW` nor `DF_1_NOW` is set. The `JUMP_SLOT` word
+# initially holds its lazy target (D-49: AArch64 PLT0, x86-64 its own
+# entry + 6; mold PLT0): a wrong lazy word crashes the first call.
+#
+# Laziness is observed at run time: run against `v2/libplt.so` (same
+# soname, no `late`), the program still runs, since `late` is never
+# called and never bound; with `LD_BIND_NOW=1` the loader binds every
+# slot at start-up and stops with `symbol lookup error` (exit 127).
+# The `-z now` link is `plt-now`.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-49"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC plt.c -o plt.o
+cc -O1 -fPIC -DNO_LATE plt.c -o plt2.o
+shlib gcc plt.o -Wl,-soname,libplt.so -o libplt.so
+shlib gcc plt2.o -Wl,-soname,libplt.so -o v2/libplt.so
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+link gcc -pie pie.o -L. -lplt -o pie
+run pie
+  stdout: early 3
+run pie late
+  stdout: early 3
+  stdout: late 4
+run pie
+  env: LD_LIBRARY_PATH=./v2
+  stdout: early 3
+run pie
+  env: LD_LIBRARY_PATH=./v2
+  env: LD_BIND_NOW=1
+  exit: 127
+link gcc -no-pie exec.o -L. -lplt -o exec
+run exec
+  stdout: early 3
+run exec
+  env: LD_LIBRARY_PATH=./v2
+  stdout: early 3
+run exec
+  env: LD_LIBRARY_PATH=./v2
+  env: LD_BIND_NOW=1
+  exit: 127
+check readelf -dW pie
+  has: (PLTGOT)
+  has: (PLTREL) * RELA
+  has: (JMPREL)
+  not: BIND_NOW
+  not: (FLAGS_1) Flags:*NOW
+check readelf -dW exec
+  has: (PLTGOT)
+  has: (PLTREL) * RELA
+  has: (JMPREL)
+  not: BIND_NOW
+  not: (FLAGS_1) Flags:*NOW
+check readelf -rW pie
+  has: Relocation section '.rela.plt'
+  count(aarch64): 1 R_AARCH64_JUMP_SLOT * early + 0$
+  count(aarch64): 1 R_AARCH64_JUMP_SLOT * late + 0$
+  count(x86_64): 1 R_X86_64_JUMP_SLOT * early + 0$
+  count(x86_64): 1 R_X86_64_JUMP_SLOT * late + 0$
+check readelf -rW exec
+  count(aarch64): 1 R_AARCH64_JUMP_SLOT * early + 0$
+  count(aarch64): 1 R_AARCH64_JUMP_SLOT * late + 0$
+  count(x86_64): 1 R_X86_64_JUMP_SLOT * early + 0$
+  count(x86_64): 1 R_X86_64_JUMP_SLOT * late + 0$
+
+#--- v2/.keep
+#--- plt.c
+int early(void) { return 3; }
+#ifndef NO_LATE
+int late(void) { return 4; }
+#endif
+#--- main.c
+#include <stdio.h>
+
+int early(void), late(void);
+
+int main(int argc, char **argv) {
+  (void)argv;
+  printf("early %d\n", early());
+  if (argc > 1)
+    printf("late %d\n", late());
+  return 0;
+}

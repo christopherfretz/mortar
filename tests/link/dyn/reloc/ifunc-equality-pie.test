@@ -1,0 +1,57 @@
+# dyn.md D-45: an IFUNC defined in the executable has one IPLT entry,
+# which is its address everywhere in the executable: a GOT slot of it
+# holds the entry (a `RELATIVE` in a PIE), never an `IRELATIVE` of its
+# own. Two translation units take `&ifq`: the defining one
+# PC-relatively, the other through the GOT (`-fPIE`) or directly
+# (`-fno-pic`). The program prints whether the two addresses are equal
+# and calls through both. Three links: a PIE of `-fPIE` units; on AArch64
+# a PIE whose defining unit is `-fno-pic` (its `ADR_PREL_PG_HI21` to a
+# local IFUNC is valid in a PIE); a non-PIE of `-fPIE` units.
+#
+# W3 (dyn.md §13.2): GNU ld and mold give the GOT slot its own
+# `IRELATIVE` to the implementation, so the two addresses differ:
+# x86-64 PIE (GNU ld, mold) and non-PIE (GNU ld); AArch64 PIE with a
+# `-fno-pic` unit (mold, and GNU ld as well: measured here, `a != b`,
+# beyond what §13.2 lists; reported). lld is right everywhere.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-45"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd,mold): W3: the executable's IFUNC gets a second address through the GOT's own IRELATIVE
+#@ anomaly(lld): A20
+
+cc -O1 -fPIE a.c -o a-pie.o
+cc -O1 -fPIE b.c -o b-pie.o
+cc -O1 -fno-pic a.c -o a-nopic.o
+link gcc -pie a-pie.o b-pie.o -o pie
+run pie
+  stdout: a == b 1 calls 7 7
+link(aarch64) gcc -pie a-nopic.o b-pie.o -o mixed
+run(aarch64) mixed
+  stdout: a == b 1 calls 7 7
+link gcc -no-pie a-pie.o b-pie.o -o exec
+run exec
+  stdout: a == b 1 calls 7 7
+check readelf -rW pie
+  count(aarch64): 1 R_AARCH64_IRELATIVE
+  count(x86_64): 1 R_X86_64_IRELATIVE
+
+#--- a.c
+/* the IFUNC, and its address taken PC-relatively in the defining unit */
+static int impl(void) { return 7; }
+static int (*res(void))(void) { return impl; }
+int ifq(void) __attribute__((ifunc("res")));
+void *ifq_addr_a(void) { return (void *)&ifq; }
+#--- b.c
+/* the same address from another unit (through the GOT in -fPIE code) */
+#include <stdio.h>
+
+extern int ifq(void);
+extern void *ifq_addr_a(void);
+
+int main(void) {
+  void *b = (void *)&ifq, *a = ifq_addr_a();
+  printf("a == b %d calls %d %d\n", a == b, ((int (*)(void))a)(), ((int (*)(void))b)());
+  return 0;
+}

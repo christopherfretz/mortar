@@ -3,17 +3,53 @@
 
 use mortar_elf::Machine;
 use mortar_elf::consts::{
-    ET_EXEC, PF_W, PF_X, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR, PT_TLS,
-    SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF,
-    SHN_XINDEX, SHT_NOBITS, STT_SECTION, STT_TLS,
+    EM_386, EM_X86_64, ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_GNU_RELRO,
+    PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS,
+    SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX, SHT_NOBITS, SHT_NOTE,
+    SHT_REL, SHT_RELA, STB_GNU_UNIQUE, STT_FILE, STT_GNU_IFUNC, STT_SECTION, STT_TLS,
 };
 
 use crate::image::{Image, Phdr};
 use crate::map::Format;
 use crate::report::{Finding, Rule};
 
+/// AArch64's execute-only section flag (AAELF64 "Section flags").
+const SHF_AARCH64_PURECODE: u64 = 0x2000_0000;
+
 fn s(n: u8, msg: impl Into<String>) -> Finding {
     Finding::new(Rule::Structure(n), msg)
+}
+
+/// Whether the output has an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol,
+/// or an `IRELATIVE` record in an allocated relocation section.
+fn gnu_extension(image: &Image<'_>) -> bool {
+    if image.symbols.iter().any(|x| {
+        x.index != 0 && (x.sym.sym_type() == STT_GNU_IFUNC || x.sym.binding() == STB_GNU_UNIQUE)
+    }) {
+        return true;
+    }
+    let (irelative, rela, size) = match image.header.e_machine {
+        EM_386 => (42, false, 8),
+        EM_X86_64 => (37, true, 24),
+        _ => (1032, true, 24),
+    };
+    image.sections.iter().any(|x| {
+        let sh = &x.shdr;
+        let want = if rela { SHT_RELA } else { SHT_REL };
+        if sh.sh_flags & SHF_ALLOC == 0 || sh.sh_type != want {
+            return false;
+        }
+        let (Ok(o), Ok(n)) = (usize::try_from(sh.sh_offset), usize::try_from(sh.sh_size)) else {
+            return false;
+        };
+        image.data.get(o..o.saturating_add(n)).is_some_and(|b| {
+            b.chunks_exact(size).any(|e| {
+                let info = if rela { &e[8..12] } else { &e[4..5] };
+                let ty = info.iter().rev().fold(0u32, |a, &v| a << 8 | u32::from(v));
+                ty == irelative
+            })
+        })
+    })
 }
 
 /// A `.tbss` section occupies no memory of its segment (gABI "Thread-Local
@@ -28,7 +64,9 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
     let mut out = Vec::new();
     let h = &image.header;
     // S1: an executable of a supported machine.
-    if h.e_type != ET_EXEC {
+    // Stage 3 (§12, P-D1) judges an `ET_DYN` with `PT_DYNAMIC`.
+    let dynamic = image.phdrs.iter().any(|p| p.p_type == mortar_elf::consts::PT_DYNAMIC);
+    if h.e_type != ET_EXEC && !(dynamic && h.e_type == mortar_elf::consts::ET_DYN) {
         out.push(s(
             1,
             format!("e_type is {}, not ET_EXEC (stage 1 checks static executables)", h.e_type),
@@ -38,6 +76,17 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
         out.push(s(
             1,
             format!("e_machine {} in this class is not a supported machine", h.e_machine),
+        ));
+    }
+    // S1: the x86 psABIs define no e_flags (spec/x86.md X86-1, §2.4); a
+    // Linux output's EI_OSABI is ELFOSABI_NONE or ELFOSABI_GNU.
+    if matches!(h.e_machine, EM_386 | EM_X86_64) && h.e_flags != 0 {
+        out.push(s(1, format!("e_flags is {:#x}; the psABI defines none", h.e_flags)));
+    }
+    if !matches!(h.ei_osabi, 0 | 3) {
+        out.push(s(
+            1,
+            format!("EI_OSABI is {}, neither ELFOSABI_NONE nor ELFOSABI_GNU", h.ei_osabi),
         ));
     }
     let loads: Vec<&Phdr> = image.phdrs.iter().filter(|p| p.p_type == PT_LOAD).collect();
@@ -92,7 +141,10 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
                 .at(p.p_vaddr),
             );
         }
-        if p.p_vaddr.checked_add(p.p_memsz).is_none() {
+        // ELFCLASS32: the address space ends at 2^32 (gABI "Data
+        // Representation": Elf32_Addr).
+        let top = if image.class() == mortar_elf::Class::Elf32 { 1u64 << 32 } else { u64::MAX };
+        if p.p_vaddr.checked_add(p.p_memsz).is_none_or(|e| e > top) {
             out.push(
                 s(2, format!("PT_LOAD at {:#x}: its memory wraps the address space", p.p_vaddr))
                     .at(p.p_vaddr),
@@ -170,6 +222,22 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
         if sh.sh_flags & SHF_EXECINSTR != 0 && p.p_flags & PF_X == 0 {
             out.push(
                 s(5, format!("section '{}' is executable, its PT_LOAD is not", sec.name)).at(addr),
+            );
+        }
+    }
+    // S5: a PT_LOAD holding an allocated section is readable (a text
+    // segment without PF_R is execute-only where the hardware allows it,
+    // and its literal pools fault; WP-028d), unless every section in it
+    // asks to be execute-only: AArch64's SHF_AARCH64_PURECODE (AAELF64
+    // "Section flags"; lld 22 makes its `.iplt` so).
+    for p in &loads {
+        let secs = sections_in(image, p);
+        let pure =
+            h.e_machine == 183 && secs.iter().all(|sh| sh.sh_flags & SHF_AARCH64_PURECODE != 0);
+        if p.p_flags & PF_R == 0 && !secs.is_empty() && !pure {
+            out.push(
+                s(5, format!("PT_LOAD at {:#x} holds sections and is not PF_R", p.p_vaddr))
+                    .at(p.p_vaddr),
             );
         }
     }
@@ -331,6 +399,56 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
                 );
             }
         }
+        // The block is exactly the TLS sections (gABI "Thread-Local
+        // Storage": the initialization image is .tdata, the block .tdata
+        // and .tbss; its alignment is theirs). lld rounds p_memsz up to
+        // p_align (variant 2 places the TP after the block), so p_memsz may
+        // be anywhere from their span to it rounded up (WP-028d).
+        let secs: Vec<&mortar_elf::Shdr> = image
+            .sections
+            .iter()
+            .map(|x| &x.shdr)
+            .filter(|sh| {
+                sh.sh_flags & SHF_TLS != 0 && sh.sh_flags & SHF_ALLOC != 0 && sh.sh_size > 0
+            })
+            .collect();
+        if let (Some(lo), Some(hi)) = (
+            secs.iter().map(|sh| sh.sh_addr).min(),
+            secs.iter().map(|sh| sh.sh_addr.saturating_add(sh.sh_size)).max(),
+        ) {
+            let file_hi = secs
+                .iter()
+                .filter(|sh| sh.sh_type != SHT_NOBITS)
+                .map(|sh| sh.sh_addr.saturating_add(sh.sh_size))
+                .max()
+                .unwrap_or(lo);
+            let align = secs.iter().map(|sh| sh.sh_addralign.max(1)).max().unwrap_or(1);
+            let span = hi - lo;
+            let up = span.next_multiple_of(align.max(1));
+            let mut bad = Vec::new();
+            if t.p_vaddr != lo {
+                bad.push(format!("p_vaddr {:#x}, the first TLS section is at {lo:#x}", t.p_vaddr));
+            }
+            if t.p_filesz != file_hi.saturating_sub(lo) {
+                bad.push(format!(
+                    "p_filesz {:#x}, the initialized TLS sections span {:#x}",
+                    t.p_filesz,
+                    file_hi.saturating_sub(lo)
+                ));
+            }
+            if t.p_memsz < span || t.p_memsz > up {
+                bad.push(format!("p_memsz {:#x}, the TLS sections span {span:#x}", t.p_memsz));
+            }
+            if t.p_align.max(1) != align {
+                bad.push(format!(
+                    "p_align {:#x}, the TLS sections' alignment is {align:#x}",
+                    t.p_align
+                ));
+            }
+            for b in bad {
+                out.push(s(9, format!("PT_TLS: {b}")).at(t.p_vaddr));
+            }
+        }
     } else if image.sections.iter().any(|x| x.shdr.sh_flags & SHF_TLS != 0 && x.shdr.sh_size > 0) {
         out.push(s(9, "TLS sections and no PT_TLS"));
     }
@@ -352,6 +470,59 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
             );
             continue;
         };
+        // The segment is whole note sections, aligned as they are: a
+        // reader takes the padding from p_align (glibc ignores a property
+        // note under a p_align other than 8), and the memory image is the
+        // file image (WP-028d).
+        let (lo, hi) = (p.p_vaddr, p.p_vaddr.saturating_add(p.p_filesz));
+        let notes: Vec<&mortar_elf::Shdr> = image
+            .sections
+            .iter()
+            .map(|x| &x.shdr)
+            .filter(|sh| {
+                sh.sh_type == SHT_NOTE
+                    && sh.sh_flags & SHF_ALLOC != 0
+                    && sh.sh_size > 0
+                    && sh.sh_addr >= lo
+                    && sh.sh_addr < hi
+            })
+            .collect();
+        if p.p_memsz != p.p_filesz {
+            out.push(
+                s(
+                    11,
+                    format!(
+                        "PT_NOTE at {:#x}: p_memsz {:#x} is not p_filesz {:#x}",
+                        p.p_vaddr, p.p_memsz, p.p_filesz
+                    ),
+                )
+                .at(p.p_vaddr),
+            );
+        }
+        if !notes.is_empty() {
+            let want = notes.iter().map(|sh| sh.sh_addralign.max(1)).max().unwrap_or(1).max(4);
+            let first = notes.iter().map(|sh| sh.sh_addr).min().unwrap_or(lo);
+            let last =
+                notes.iter().map(|sh| sh.sh_addr.saturating_add(sh.sh_size)).max().unwrap_or(hi);
+            if p.p_align != want {
+                out.push(
+                    s(
+                        11,
+                        format!(
+                            "PT_NOTE at {:#x}: p_align {:#x}, its notes are aligned to {want:#x}",
+                            p.p_vaddr, p.p_align
+                        ),
+                    )
+                    .at(p.p_vaddr),
+                );
+            }
+            if first != lo || last != hi {
+                out.push(
+                    s(11, format!("PT_NOTE [{lo:#x}, {hi:#x}) is not its note sections [{first:#x}, {last:#x})"))
+                        .at(p.p_vaddr),
+                );
+            }
+        }
         let align: usize = if p.p_align == 8 { 8 } else { 4 };
         if !notes_ok(bytes, align) {
             // A segment of notes padded to 4 under a p_align of 8: what a
@@ -367,7 +538,45 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
             out.push(s(11, msg).at(p.p_vaddr));
         }
     }
+    // S11: PT_GNU_PROPERTY is exactly `.note.gnu.property` (the Linux
+    // "Program Property" extension: the loader reads the properties
+    // through it), with the note's alignment (WP-028d).
+    for p in image.phdrs.iter().filter(|p| p.p_type == PT_GNU_PROPERTY) {
+        let note = image.sections.iter().find(|x| x.name == ".note.gnu.property");
+        let ok = note.is_some_and(|x| {
+            let sh = &x.shdr;
+            sh.sh_addr == p.p_vaddr
+                && sh.sh_size == p.p_filesz
+                && p.p_memsz == p.p_filesz
+                && sh.sh_offset == p.p_offset
+                && p.p_align == sh.sh_addralign.max(1)
+        });
+        if !ok {
+            out.push(
+                s(
+                    11,
+                    format!(
+                        "PT_GNU_PROPERTY [{:#x}, +{:#x}) (p_memsz {:#x}, p_align {:#x}) is not .note.gnu.property",
+                        p.p_vaddr, p.p_filesz, p.p_memsz, p.p_align
+                    ),
+                )
+                .at(p.p_vaddr),
+            );
+        }
+    }
     out
+}
+
+/// The allocated sections with memory that lie in the `PT_LOAD` `p`.
+fn sections_in<'s>(image: &'s Image<'_>, p: &Phdr) -> Vec<&'s mortar_elf::Shdr> {
+    let (lo, hi) = (p.p_vaddr, p.p_vaddr.saturating_add(p.p_memsz));
+    image
+        .sections
+        .iter()
+        .skip(1)
+        .map(|x| &x.shdr)
+        .filter(|sh| occupies_memory(sh) && sh.sh_size > 0 && sh.sh_addr >= lo && sh.sh_addr < hi)
+        .collect()
 }
 
 /// Whether `b` is a sequence of whole notes (gABI "Note Section").
@@ -382,15 +591,22 @@ fn notes_ok(b: &[u8], align: usize) -> bool {
         // the name, and the next note after the descriptor (an 8-aligned
         // property note pads its 4-byte name to 4 only, gABI and the Linux
         // "Program Property" extension).
-        let Some(next) = namesz
+        let Some(end) = namesz
             .checked_add(12)
             .and_then(|n| at.checked_add(n))
             .and_then(up)
             .and_then(|d| d.checked_add(descsz))
-            .and_then(up)
         else {
             return false;
         };
+        // The padding after a descriptor is there "to ensure 4-byte
+        // alignment for the next note entry" (gABI "Note Section"): the
+        // last note of the segment may end at its descriptor (GNU ld, lld
+        // and mold write a 6-byte build id so, p_filesz 22).
+        if end == b.len() {
+            return true;
+        }
+        let Some(next) = up(end) else { return false };
         if next > b.len() {
             return false;
         }
@@ -411,6 +627,42 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
             off >= p.p_offset && off.saturating_add(len) <= p.p_offset.saturating_add(p.p_filesz)
         })
     };
+    // S1 (mortar): EI_OSABI is ELFOSABI_GNU exactly when the output has an
+    // STT_GNU_IFUNC or STB_GNU_UNIQUE symbol or an IRELATIVE record
+    // (spec/image.md §5.4; a64.md Q11; x64.md X-49; x86.md X86-64).
+    if format == Format::Mortar {
+        let gnu = gnu_extension(image);
+        if (h.ei_osabi == 3) != gnu {
+            out.push(s(
+                1,
+                format!(
+                    "EI_OSABI is {} in an output {} a GNU extension (IFUNC, UNIQUE, IRELATIVE)",
+                    h.ei_osabi,
+                    if gnu { "with" } else { "without" }
+                ),
+            ));
+        }
+    }
+    // S2 (mortar, i386): every PT_LOAD has p_align 0x1000 and a static
+    // executable starts at 0x08048000 (x86.md X86-65); PT_GNU_STACK has
+    // p_align 16 (X86-66).
+    if format == Format::Mortar && h.e_machine == EM_386 {
+        for p in loads.iter().filter(|p| p.p_align != 0x1000) {
+            out.push(
+                s(2, format!("PT_LOAD at {:#x}: p_align {:#x}, not 0x1000", p.p_vaddr, p.p_align))
+                    .at(p.p_vaddr),
+            );
+        }
+        if h.e_type == ET_EXEC
+            && let Some(first) = loads.iter().map(|p| p.p_vaddr).min()
+            && first & !0xfff != 0x0804_8000
+        {
+            out.push(s(2, format!("the first PT_LOAD is at {first:#x}, not 0x08048000")));
+        }
+        for p in image.phdrs.iter().filter(|p| p.p_type == PT_GNU_STACK && p.p_align != 16) {
+            out.push(s(10, format!("PT_GNU_STACK has p_align {:#x}, not 16", p.p_align)));
+        }
+    }
     // S2 (mortar): p_align is at least 4 KiB (L-1).
     if format == Format::Mortar {
         for p in loads.iter().filter(|p| p.p_align < 4096) {
@@ -448,6 +700,27 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
             && !in_file_image(image.phdrs[i].p_offset, image.phdrs[i].p_filesz)
         {
             out.push(s(13, "PT_PHDR is in no PT_LOAD's file image").at(image.phdrs[i].p_vaddr));
+        }
+        // PT_PHDR is the program header table (gABI "Program Header"): a
+        // loader takes AT_PHDR and AT_PHNUM from it (WP-028d).
+        if ty == PT_PHDR
+            && let Some(&i) = at.first()
+        {
+            let p = &image.phdrs[i];
+            let len = u64::from(h.e_phnum) * u64::from(h.e_phentsize);
+            // lld may leave room for more headers than it writes.
+            if p.p_offset != h.e_phoff || p.p_filesz < len || p.p_memsz != p.p_filesz {
+                out.push(
+                    s(
+                        13,
+                        format!(
+                            "PT_PHDR (offset {:#x}, p_filesz {:#x}, p_memsz {:#x}) is not the program header table (offset {:#x}, {len:#x} bytes)",
+                            p.p_offset, p.p_filesz, p.p_memsz, h.e_phoff
+                        ),
+                    )
+                    .at(p.p_vaddr),
+                );
+            }
         }
     }
     if h.e_phnum > 0 {
@@ -525,6 +798,133 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
             }
         }
     }
+    // S20: PT_GNU_RELRO ends at a section's end: a section that starts in
+    // it ends in it (GNU ld's .got.plt aside, S16), and the sections the
+    // gABI and every reference make read-only after relocation lie in it
+    // (a RELRO cut short leaves the end of .got writable under a page
+    // boundary; WP-028d).
+    for r in image.phdrs.iter().filter(|p| p.p_type == PT_GNU_RELRO) {
+        let (lo, hi) = (r.p_vaddr, r.p_vaddr.saturating_add(r.p_memsz));
+        for sec in image.sections.iter().skip(1) {
+            let sh = &sec.shdr;
+            let (a, b) = (sh.sh_addr, sh.sh_addr.saturating_add(sh.sh_size));
+            if !occupies_memory(sh) || sh.sh_size == 0 || sec.name == ".got.plt" {
+                continue;
+            }
+            let relro = matches!(
+                sec.name.as_str(),
+                ".init_array" | ".fini_array" | ".preinit_array" | ".got" | ".dynamic"
+            ) || sec.name.starts_with(".data.rel.ro");
+            let starts_in = a >= lo && a < hi;
+            if (starts_in || relro) && !(a >= lo && b <= hi) {
+                out.push(
+                    s(
+                        20,
+                        format!(
+                            "section '{}' [{a:#x}, {b:#x}) is not inside PT_GNU_RELRO [{lo:#x}, {hi:#x})",
+                            sec.name
+                        ),
+                    )
+                    .at(a),
+                );
+            }
+        }
+    }
+    // S20: PT_GNU_RELRO ends at the end of a section, at a 4 KiB boundary
+    // (GNU ld pads it to the page), or (GNU ld) inside the reserved head
+    // of `.got.plt` (three words, S16); elsewhere it is cut short or runs
+    // into writable data (WP-028d).
+    for r in image.phdrs.iter().filter(|p| p.p_type == PT_GNU_RELRO && p.p_memsz > 0) {
+        let hi = r.p_vaddr.saturating_add(r.p_memsz);
+        let word: u64 = if image.class() == mortar_elf::Class::Elf64 { 8 } else { 4 };
+        let ok = hi.is_multiple_of(0x1000)
+            || image.sections.iter().skip(1).any(|x| {
+                let sh = &x.shdr;
+                occupies_memory(sh)
+                    && (sh.sh_addr.saturating_add(sh.sh_size) == hi
+                        || x.name == ".got.plt" && hi > sh.sh_addr && hi <= sh.sh_addr + 3 * word)
+            });
+        if !ok {
+            out.push(
+                s(20, format!("PT_GNU_RELRO ends at {hi:#x}, which is no section's end"))
+                    .at(r.p_vaddr),
+            );
+        }
+    }
+    // S21: PT_GNU_EH_FRAME is exactly `.eh_frame_hdr` (the unwinder finds
+    // the search table through it; LSB "Exception Frames", WP-028d).
+    for p in image.phdrs.iter().filter(|p| p.p_type == PT_GNU_EH_FRAME) {
+        let ok = image.sections.iter().find(|x| x.name == ".eh_frame_hdr").is_some_and(|x| {
+            let sh = &x.shdr;
+            sh.sh_addr == p.p_vaddr
+                && sh.sh_offset == p.p_offset
+                && sh.sh_size == p.p_filesz
+                && p.p_memsz == p.p_filesz
+        });
+        if !ok {
+            out.push(
+                s(
+                    21,
+                    format!(
+                        "PT_GNU_EH_FRAME [{:#x}, +{:#x}) (p_memsz {:#x}) is not .eh_frame_hdr",
+                        p.p_vaddr, p.p_filesz, p.p_memsz
+                    ),
+                )
+                .at(p.p_vaddr),
+            );
+        }
+    }
+    // S7 (mortar): a nonzero entry point is where a symbol other than a
+    // mapping symbol is, when the output has a symbol table with
+    // functions: the entry symbol's value (L-103: mortar writes the entry
+    // symbol's value or 0; the references fall back to the start of
+    // `.text`; WP-028d). The entry symbol may be local: a hidden `_start`
+    // is made local in the output (gABI STV_HIDDEN).
+    let labelled = |v: u64| {
+        image.symbols.iter().any(|x| {
+            x.index != 0
+                && x.sym.st_shndx != SHN_UNDEF
+                && !x.name.starts_with('$')
+                && !matches!(x.sym.sym_type(), STT_SECTION | STT_FILE | STT_TLS)
+                && x.sym.st_value == v
+        })
+    };
+    let functions = image.symbols.iter().any(|x| x.sym.sym_type() == mortar_elf::consts::STT_FUNC);
+    if format == Format::Mortar
+        && h.e_type == ET_EXEC
+        && h.e_entry != 0
+        && functions
+        && !labelled(h.e_entry)
+    {
+        out.push(
+            s(7, format!("the entry point {:#x} is no symbol's value", h.e_entry)).at(h.e_entry),
+        );
+    }
+    // S5 (mortar): a PT_LOAD is PF_W only when it holds a writable section,
+    // PF_X only when it holds an executable one (L-6, strengthened: mortar
+    // asks for no permission it does not need; WP-028d).
+    if format == Format::Mortar {
+        for p in &loads {
+            let secs = sections_in(image, p);
+            if secs.is_empty() {
+                continue;
+            }
+            for (bit, flag, name) in [(PF_W, SHF_WRITE, "PF_W"), (PF_X, SHF_EXECINSTR, "PF_X")] {
+                if p.p_flags & bit != 0 && !secs.iter().any(|sh| sh.sh_flags & flag != 0) {
+                    out.push(
+                        s(
+                            5,
+                            format!(
+                                "PT_LOAD at {:#x} is {name} and holds no section that needs it",
+                                p.p_vaddr
+                            ),
+                        )
+                        .at(p.p_vaddr),
+                    );
+                }
+            }
+        }
+    }
     // S18 (mortar): every PT_LOAD's memory ends at a section's end (L-9).
     if format == Format::Mortar {
         let ehsize: u64 = if image.class() == mortar_elf::Class::Elf64 { 64 } else { 52 };
@@ -550,4 +950,39 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notes_ok;
+
+    /// One note: `GNU\0`, type 3, a `desc`-byte descriptor, padded to 4
+    /// when `pad`.
+    fn note(desc: usize, pad: bool) -> Vec<u8> {
+        let mut b = Vec::new();
+        for w in [4u32, desc as u32, 3] {
+            b.extend_from_slice(&w.to_le_bytes());
+        }
+        b.extend_from_slice(b"GNU\0");
+        b.extend(std::iter::repeat_n(0xab, desc));
+        if pad {
+            b.resize(b.len().next_multiple_of(4), 0);
+        }
+        b
+    }
+
+    // spec/plumb.md §6.2 S11 (WP-028d): the gABI pads a descriptor "to
+    // ensure 4-byte alignment for the next note entry", so the last note
+    // may end at its descriptor (the reference linkers' 6-byte build id,
+    // p_filesz 22); a note that follows an unpadded one is misread.
+    #[test]
+    fn s6_2_s11_the_last_note_needs_no_padding() {
+        assert!(notes_ok(&note(6, true), 4));
+        assert!(notes_ok(&note(6, false), 4), "the last note, unpadded");
+        assert!(notes_ok(&[note(8, true), note(6, false)].concat(), 4));
+        assert!(!notes_ok(&[note(6, false), note(8, true)].concat(), 4), "padding before a note");
+        let mut cut = note(6, false);
+        cut.pop();
+        assert!(!notes_ok(&cut, 4), "a descriptor cut short");
+    }
 }

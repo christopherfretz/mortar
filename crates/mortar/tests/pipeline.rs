@@ -7,6 +7,7 @@
 
 mod support;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -98,10 +99,22 @@ fn link(exe: &str, args: &[OsString], dir: &Path, env: &[(&str, &str)]) -> Outco
     run_with(&mut c, b"", Duration::from_mins(5))
 }
 
-/// mortar's link of `built` to `out`, with its map at `out.map`.
+/// mortar's link of `built` to `out`, with its map at `out.map`. An output
+/// it writes is judged by the verifier, which must find nothing
+/// (`docs/VALIDATION.md` L3, WP-035): no test here links without it.
 fn mortar(built: &Built, out: &Path, extra: &[&str], env: &[(&str, &str)]) -> Outcome {
+    let o = mortar_unverified(built, out, extra, env);
+    if o.success() && out.exists() {
+        support::plumb::clean(out, &map_of(out), &built.dir);
+    }
+    o
+}
+
+/// [`mortar`] without the verifier: for a link whose output is compared
+/// byte for byte with one [`mortar`] verified.
+fn mortar_unverified(built: &Built, out: &Path, extra: &[&str], env: &[(&str, &str)]) -> Outcome {
     let mut args = with_output(&built.args, out);
-    args.push(format!("-Map={}", map_of(out).display()).into());
+    args.push(format!("--mortar-map={}", map_of(out).display()).into());
     args.extend(extra.iter().map(OsString::from));
     link(MORTAR, &args, &built.dir, env)
 }
@@ -141,7 +154,6 @@ fn holds(label: &str, driver: Driver, flags: &[&str], program: &[Source]) -> Opt
     assert_eq!(out_m, out_b, "{label}: mortar's program against GNU ld's");
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
     Some(())
 }
 
@@ -211,26 +223,6 @@ fn c_with_clang22_branch_protection() {
     assert!(feature(&ours).is_some_and(|f| f.contains("BTI")), "{:?}", feature(&ours));
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    only_the_bti_iplt_gap(&support::plumb::verify(&ours, &map_of(&ours), &built.dir));
-}
-
-/// The verifier's one gap on a BTI output (a WP-027d finding for
-/// `mortar_plumb`, `src/ifunc.rs` `a64_entry` and the entry scan): it finds
-/// an IPLT entry by its `ADRP`, so it takes a BTI entry (`bti c` first,
-/// a64.md §10.3) to start 4 bytes late, and a branch to the entry's start
-/// is F4 "reaches no IPLT entry". `findings` must be only those: F4 on a
-/// `CALL26`/`JUMP26` whose branch target is 4 bytes before the entry
-/// plumb expected.
-fn only_the_bti_iplt_gap(findings: &[mortar_plumb::Finding]) {
-    for x in findings {
-        let gap = format!("{:?}", x.rule) == "Ifunc(4)"
-            && matches!(x.reloc.as_deref(), Some("R_AARCH64_CALL26" | "R_AARCH64_JUMP26"))
-            && x.addr.zip(x.found).zip(x.expected).is_some_and(|((at, word), want)| {
-                let imm = i64::from(((word as u32 & 0x03ff_ffff) << 6) as i32 >> 6);
-                at.wrapping_add_signed(imm * 4).wrapping_add(4) == want
-            });
-        assert!(gap, "not the BTI IPLT gap: {x:#?}");
-    }
 }
 
 #[test]
@@ -293,7 +285,6 @@ fn a_far_call_goes_through_a_thunk() {
     assert!(map.lines().any(|l| l.starts_with("chunk thunk ")), "a thunk in the map");
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
 }
 
 /// The BTI property note (`GNU_PROPERTY_AARCH64_FEATURE_1_AND`, bit BTI):
@@ -366,7 +357,6 @@ fn a_bti_far_call_lands_on_each_pad() {
         let map = std::fs::read_to_string(map_of(&ours)).unwrap();
         assert!(map.lines().any(|l| l.starts_with("chunk thunk ")), "{name}: a thunk");
         support::plumb::readers(&ours);
-        support::plumb::clean(&ours, &map_of(&ours), &built.dir);
         std::fs::remove_file(&ours).unwrap();
         std::fs::remove_file(&theirs).unwrap();
     }
@@ -413,19 +403,10 @@ fn a_bti_far_call_to_an_iplt_entry_is_linked() {
     let map = std::fs::read_to_string(map_of(&ours)).unwrap();
     assert!(map.lines().any(|l| l.starts_with("chunk thunk __f@plt_veneer ")), "{map}");
     support::plumb::readers(&ours);
-    // The verifier's one finding is its own gap ([`only_the_bti_iplt_gap`]:
-    // it takes the BTI IPLT entry to start 4 bytes late): the veneer reaches
-    // the entry's start, not plumb's entry + 4, so it reports the `CALL26`
-    // to `f` as out of range. `bl` reaches the thunk, the thunk the entry
-    // (`objdump -d`); no other finding is allowed.
-    let findings = support::plumb::verify(&ours, &map_of(&ours), &built.dir);
-    assert!(
-        findings.len() == 1
-            && format!("{:?}", findings[0].rule) == "Overflow"
-            && findings[0].reloc.as_deref() == Some("R_AARCH64_CALL26")
-            && findings[0].symbol.as_deref() == Some("f"),
-        "{findings:#?}"
-    );
+    // `bl` reaches the thunk, the thunk the IPLT entry's `bti c`
+    // (`objdump -d`): the verifier follows both (a BTI IPLT entry starts
+    // at its BTI, `spec/plumb.md` §4.8) and finds the thunk lands on a
+    // landing pad (R9).
 }
 
 /// a64.md §9: a target that is not a landing pad, or whose pad-shaped
@@ -496,8 +477,8 @@ fn assemble(dir: &Path, name: &str, text: &str) -> PathBuf {
     obj
 }
 
-/// Determinism (image.md I-81; ARCHITECTURE.md "deterministic output"):
-/// the output and the map of a C++ link with debug information are byte
+/// Determinism (image.md I-81, I-122; ARCHITECTURE.md "deterministic
+/// output"): the output, the map and the text map of a C++ link with debug information are byte
 /// for byte the same under both stores, at 1, 2, 4 and 8 threads, under
 /// three scheduler seeds, and over repeated runs.
 #[test]
@@ -510,10 +491,17 @@ fn the_output_is_a_function_of_the_inputs_alone() {
         assert!(!tools_required(), "g++ is required");
         return;
     };
+    // The text map (I-122) names the output: compared without its name.
+    let text_of = |out: &Path| {
+        let t = String::from_utf8_lossy(&read(&out.with_extension("txt"))).into_owned();
+        t.replace(&out.display().to_string(), "OUT")
+    };
+    let text_option = |out: &Path| format!("-Map={}", out.with_extension("txt").display());
     let first = built.dir.join("first.out");
-    let m = mortar(&built, &first, &["--threads=1"], &[("MORTAR_STORE", "staged")]);
+    let t1 = text_option(&first);
+    let m = mortar(&built, &first, &["--threads=1", &t1], &[("MORTAR_STORE", "staged")]);
     assert!(m.success(), "{}", m.stderr_text());
-    let want = (read(&first), read(&map_of(&first)));
+    let want = (read(&first), read(&map_of(&first)), text_of(&first));
     let mut runs = 1;
     for store in ["staged", "resident"] {
         for threads in ["1", "2", "4", "8"] {
@@ -524,9 +512,10 @@ fn the_output_is_a_function_of_the_inputs_alone() {
                     env.push(("MORTAR_SCHED_SEED", seed));
                 }
                 let t = format!("--threads={threads}");
-                let m = mortar(&built, &out, &[t.as_str()], &env);
+                let tm = text_option(&out);
+                let m = mortar_unverified(&built, &out, &[t.as_str(), &tm], &env);
                 assert!(m.success(), "{store} {threads} {seed}: {}", m.stderr_text());
-                let got = (read(&out), read(&map_of(&out)));
+                let got = (read(&out), read(&map_of(&out)), text_of(&out));
                 assert!(
                     got.0 == want.0,
                     "{store}, {threads} threads, seed {seed:?}: the output differs"
@@ -535,15 +524,20 @@ fn the_output_is_a_function_of_the_inputs_alone() {
                     got.1 == want.1,
                     "{store}, {threads} threads, seed {seed:?}: the map differs"
                 );
+                assert!(
+                    got.2 == want.2,
+                    "{store}, {threads} threads, seed {seed:?}: the text map differs"
+                );
                 std::fs::remove_file(&out).unwrap();
                 std::fs::remove_file(map_of(&out)).unwrap();
+                std::fs::remove_file(out.with_extension("txt")).unwrap();
                 runs += 1;
             }
         }
     }
     for _ in 0..3 {
         let again = built.dir.join("again.out");
-        let m = mortar(&built, &again, &[], &[]);
+        let m = mortar_unverified(&built, &again, &[], &[]);
         assert!(m.success(), "{}", m.stderr_text());
         assert!(read(&again) == want.0, "a repeated run differs");
         runs += 1;
@@ -587,21 +581,412 @@ fn time_phases_lists_the_image_and_the_output_file() {
     );
 }
 
-/// `-M` (I-77): the map goes to standard output, the same text `-Map`
-/// writes.
+/// `-M` (I-120): the text map goes to standard output, the same text
+/// `-Map` writes; `--mortar-map` still writes `mortar-map 1` beside it.
 #[test]
 fn print_map_writes_the_map_to_standard_output() {
     let Some((_s, built)) = c_program("pipe-print-map", &["-O2"]) else { return };
     let out = built.dir.join("m.out");
-    let m = mortar(&built, &out, &["-M"], &[]);
+    let text = built.dir.join("m.txt");
+    let map = format!("-Map={}", text.display());
+    let m = mortar(&built, &out, &["-M", map.as_str()], &[]);
     assert!(m.success(), "{}", m.stderr_text());
-    assert_eq!(m.stdout_text().as_bytes(), read(&map_of(&out)));
-    assert!(m.stdout_text().starts_with("mortar-map 1\n"));
+    assert_eq!(m.stdout_text().as_bytes(), read(&text));
+    assert!(m.stdout_text().contains("\nLinker script and memory map\n\n"));
+    assert!(
+        m.stdout_text()
+            .ends_with(&format!("\nOUTPUT({} {GNU_TARGET})\nLOAD linker stubs\n", out.display()))
+    );
+    assert!(read(&map_of(&out)).starts_with(b"mortar-map 1\n"));
 }
 
-/// `--gc-sections` is refused by name until liveness implements it (M2,
-/// image.md §3.2), with no output; of `--gc-sections` and
-/// `--no-gc-sections`, the last one wins (`spec/cli.md`'s boolean pairs).
+/// `readelf -p .comment`: the strings, in offset order.
+fn comment_strings(path: &Path) -> Vec<String> {
+    let readelf = tool("readelf").expect("readelf");
+    let o = mortar_testutil::run(&readelf, [OsString::from("-p"), ".comment".into(), path.into()]);
+    o.stdout_text()
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix('[')?.split_once(']'))
+        .map(|(_, t)| t.trim().to_owned())
+        .collect()
+}
+
+/// S-100: `.comment` is the inputs' strings, as GNU ld merges them, then
+/// `mortar <version>` (lld's place for its own); with no input
+/// `.comment` it is mortar's alone.
+#[test]
+fn the_comment_names_mortar_after_the_inputs() {
+    let Some((_s, built)) = c_program("pipe-comment", &["-O2"]) else { return };
+    let ident = format!("mortar {}", env!("CARGO_PKG_VERSION"));
+    let (ours, gnu) = (built.dir.join("c.out"), built.dir.join("c.gnu"));
+    let m = mortar(&built, &ours, &[], &[]);
+    assert!(m.success(), "{}", m.stderr_text());
+    assert!(bfd(&built, &gnu, &[]).success());
+    let mut want = comment_strings(&gnu);
+    assert!(!want.is_empty() && !want.contains(&ident), "{want:?}");
+    want.push(ident.clone());
+    assert_eq!(comment_strings(&ours), want);
+    if let Some(lld) = tool("ld.lld") {
+        let theirs = built.dir.join("c.lld");
+        let args = with_output(&built.args, &theirs);
+        assert!(link(lld.to_str().unwrap(), &args, &built.dir, &[]).success());
+        let l = comment_strings(&theirs);
+        assert!(l.last().is_some_and(|s| s.starts_with("Linker: ")), "{l:?}");
+        assert_eq!(l[..l.len() - 1], want[..want.len() - 1], "lld's input strings");
+    }
+    // An assembled object has no `.comment`.
+    let obj = assemble(&built.dir, "nc.s", "\t.globl _start\n_start:\n\tret\n");
+    let out = built.dir.join("nc.out");
+    let args: Vec<OsString> = vec![
+        obj.into(),
+        "-o".into(),
+        out.clone().into(),
+        format!("--mortar-map={}", map_of(&out).display()).into(),
+    ];
+    let o = link(MORTAR, &args, &built.dir, &[]);
+    assert!(o.success(), "{}", o.stderr_text());
+    support::plumb::clean(&out, &map_of(&out), &built.dir);
+    assert_eq!(comment_strings(&out), [ident]);
+}
+
+/// `PT_GNU_RELRO`'s `[start, end)` (`readelf -lW`).
+fn relro(path: &Path) -> (u64, u64) {
+    let readelf = tool("readelf").expect("readelf");
+    let o = mortar_testutil::run(&readelf, [OsString::from("-lW"), path.into()]);
+    let line = o
+        .stdout_text()
+        .lines()
+        .find(|l| l.trim_start().starts_with("GNU_RELRO"))
+        .map(str::to_owned);
+    let w: Vec<String> =
+        line.expect("a PT_GNU_RELRO").split_whitespace().map(str::to_owned).collect();
+    let start = hex(&w[2]).expect("p_vaddr");
+    (start, start + hex(&w[5]).expect("p_memsz"))
+}
+
+/// `-z now` (layout.md L-60 row 7): `.got.plt`, which a static link fills
+/// with IRELATIVE slots, moves into `PT_GNU_RELRO` after `.got`, where
+/// lld puts it (GNU ld folds the slots into `.got`: RELRO too). The
+/// program still runs: static glibc applies IRELATIVE before it protects
+/// RELRO. The last of `-z now` and `-z lazy` wins.
+#[test]
+fn z_now_puts_the_got_plt_in_relro() {
+    let Some((_s, built)) = c_program("pipe-z-now", &["-O2"]) else { return };
+    let gnu = built.dir.join("gnu.out");
+    assert!(bfd(&built, &gnu, &["-z", "now"]).success());
+    let (lo, hi) = relro(&gnu);
+    let (secs, _) = elf_facts(&gnu);
+    for (name, addr, size, _) in &secs {
+        if name.starts_with(".got") {
+            assert!(lo <= *addr && addr + size <= hi, "GNU -z now: {name} outside RELRO");
+        }
+    }
+    let want = execute(&gnu);
+    for (k, (extra, now)) in [
+        (&[][..], false),
+        (&["-z", "now"][..], true),
+        (&["-z", "now", "-z", "lazy"][..], false),
+        (&["-z", "lazy", "-z", "now"][..], true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let out = built.dir.join(format!("now{k}.out"));
+        let m = mortar(&built, &out, extra, &[]);
+        assert!(m.success(), "{extra:?}: {}", m.stderr_text());
+        assert_eq!(execute(&out), want, "{extra:?}");
+        let (lo, hi) = relro(&out);
+        let (secs, _) = elf_facts(&out);
+        let (_, addr, size, _) =
+            secs.iter().find(|s| s.0 == ".got.plt").expect("IRELATIVE slots in .got.plt");
+        assert!(*size > 0);
+        assert_eq!(lo <= *addr && addr + size <= hi, now, "{extra:?}: .got.plt and RELRO");
+        let got = secs.iter().find(|s| s.0 == ".got").expect(".got");
+        assert!(lo <= got.1 && got.1 + got.2 <= hi, "{extra:?}: .got is RELRO");
+    }
+}
+
+/// GNU's BFD target name for the host (I-121 item 5).
+#[cfg(target_arch = "aarch64")]
+const GNU_TARGET: &str = "elf64-littleaarch64";
+#[cfg(target_arch = "x86_64")]
+const GNU_TARGET: &str = "elf64-x86-64";
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+const GNU_TARGET: &str = "elf32-i386";
+
+/// A GNU-style text map, read by one parser for GNU's and mortar's
+/// (I-121): output sections, placed input sections, symbols, discarded
+/// sections and archive members.
+#[derive(Default, Debug)]
+struct TextMap {
+    /// (name, address, size)
+    out: Vec<(String, u64, u64)>,
+    /// (output section, name, address, size, file)
+    inputs: Vec<(String, String, u64, u64, String)>,
+    /// (output section, address, name)
+    syms: Vec<(String, u64, String)>,
+    /// (name, size, file)
+    discarded: Vec<(String, u64, String)>,
+    /// archive members taken
+    members: Vec<String>,
+}
+
+fn hex(w: &str) -> Option<u64> {
+    u64::from_str_radix(w.strip_prefix("0x")?, 16).ok()
+}
+
+/// `addr size [file...]` after a name: GNU's two hex columns.
+fn columns(rest: &str) -> Option<(u64, u64, String)> {
+    let rest = rest.trim_start();
+    let (a, rest) = rest.split_once(' ')?;
+    let rest = rest.trim_start();
+    let (sz, file) = rest.split_once(' ').unwrap_or((rest, ""));
+    Some((hex(a)?, hex(sz)?, file.to_owned()))
+}
+
+fn parse_text_map(text: &str) -> TextMap {
+    let mut m = TextMap::default();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut part = "";
+    let mut cur = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let mut ln = lines[i].to_owned();
+        i += 1;
+        for heading in [
+            "Archive member included",
+            "Discarded input sections",
+            "Memory Configuration",
+            "Linker script and memory map",
+            "Merging program properties",
+        ] {
+            if ln.starts_with(heading) {
+                part = heading;
+            }
+        }
+        if part == "Archive member included" {
+            if !ln.is_empty() && !ln.starts_with(' ') && !ln.starts_with("Archive") {
+                m.members.push(ln.get(..30).map_or(ln.as_str(), str::trim_end).to_owned());
+            }
+            continue;
+        }
+        if part != "Discarded input sections" && part != "Linker script and memory map" {
+            continue;
+        }
+        // A name long enough to wrap: its columns are on the next line.
+        let word = ln.trim_start_matches(' ');
+        let indent = ln.len() - word.len();
+        if indent <= 1 && !word.is_empty() && !word.contains(' ') {
+            let next = lines.get(i).copied().unwrap_or("");
+            if next.starts_with(&" ".repeat(16)) && columns(next).is_some() {
+                ln.push_str(next);
+                i += 1;
+            } else {
+                continue;
+            }
+        }
+        if ln.starts_with("LOAD ") || ln.starts_with("OUTPUT(") {
+            continue;
+        }
+        let word = ln.trim_start_matches(' ');
+        let indent = ln.len() - word.len();
+        let (name, rest) = word.split_once(' ').unwrap_or((word, ""));
+        match indent {
+            0 if part == "Linker script and memory map" => {
+                if let Some((a, sz, _)) = columns(rest) {
+                    name.clone_into(&mut cur);
+                    m.out.push((cur.clone(), a, sz));
+                }
+            }
+            1 if name != "*fill*" => {
+                if let Some((a, sz, file)) = columns(rest).filter(|c| !c.2.is_empty()) {
+                    if part == "Discarded input sections" {
+                        m.discarded.push((name.to_owned(), sz, file));
+                    } else {
+                        m.inputs.push((cur.clone(), name.to_owned(), a, sz, file));
+                    }
+                }
+            }
+            16 => {
+                let (a, sym) = word.split_once(' ').unwrap_or((word, ""));
+                let sym = sym.trim_start();
+                if let Some(a) = hex(a)
+                    && !sym.is_empty()
+                    && !sym.contains(' ')
+                {
+                    m.syms.push((cur.clone(), a, sym.to_owned()));
+                }
+            }
+            _ => {}
+        }
+    }
+    m
+}
+
+/// `readelf -SW`: (name, address, size, alloc) per section header;
+/// `readelf -sW`: the values each symbol name has (a TLS symbol's from
+/// the TLS block's start).
+/// Section headers and symbol values, as `elf_facts` reads them.
+type ElfFacts = (Vec<(String, u64, u64, bool)>, BTreeMap<String, BTreeSet<u64>>);
+
+fn elf_facts(path: &Path) -> ElfFacts {
+    let readelf = tool("readelf").expect("readelf");
+    let o = mortar_testutil::run(&readelf, [OsString::from("-SW"), path.into()]);
+    assert!(o.success(), "readelf -SW: {}", o.stderr_text());
+    let mut sections = Vec::new();
+    for ln in o.stdout_text().lines() {
+        let Some((_, rest)) = ln.split_once(']') else { continue };
+        let w: Vec<&str> = rest.split_whitespace().collect();
+        if w.len() < 9 || w[0] == "Name" {
+            continue;
+        }
+        let (Ok(a), Ok(sz)) = (u64::from_str_radix(w[2], 16), u64::from_str_radix(w[4], 16)) else {
+            continue;
+        };
+        let alloc = w.len() == 10 && w[6].contains('A');
+        sections.push((w[0].to_owned(), a, sz, alloc));
+    }
+    let tls = sections
+        .iter()
+        .filter(|s| s.0.starts_with(".tdata") || s.0.starts_with(".tbss"))
+        .map(|s| s.1)
+        .min()
+        .unwrap_or(0);
+    let o = mortar_testutil::run(&readelf, [OsString::from("-sW"), path.into()]);
+    assert!(o.success(), "readelf -sW: {}", o.stderr_text());
+    let mut syms: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+    for ln in o.stdout_text().lines() {
+        let w: Vec<&str> = ln.split_whitespace().collect();
+        if w.len() < 8 || !w[0].ends_with(':') || w[6] == "UND" {
+            continue;
+        }
+        let Ok(v) = u64::from_str_radix(w[1], 16) else { continue };
+        let v = if w[3] == "TLS" { v + tls } else { v };
+        syms.entry(w[7].to_owned()).or_default().insert(v);
+    }
+    (sections, syms)
+}
+
+/// The text map (I-121) against the output and GNU ld's map of the same
+/// line: every section line is the section header (address 0 when not
+/// allocated), every input line lies inside its section, every symbol line
+/// is the `.symtab` value; and the placed input sections, read as
+/// (section, size, file), are GNU's, but for what mortar makes itself
+/// (merged strings, `.eh_frame`, the notes it consumes, `.comment`) and the
+/// copy of a COMDAT group the two keep.
+#[test]
+fn the_text_map_matches_the_output_and_gnus_map() {
+    let Some((_s, built)) = c_program("pipe-text-map", &["-O2", "-g"]) else { return };
+    text_map_against_gnu(&built);
+    let scratch = Scratch::new("pipe-text-map-cxx");
+    let Some(built) = build(&scratch, Driver::Gxx, &["-O2", "-g"], CXX_FULL) else {
+        assert!(!tools_required(), "g++ is required");
+        return;
+    };
+    text_map_against_gnu(&built);
+}
+
+fn text_map_against_gnu(built: &Built) {
+    let out = built.dir.join("t.out");
+    let text = built.dir.join("t.txt");
+    let map = format!("-Map={}", text.display());
+    let m = mortar(built, &out, &[map.as_str()], &[]);
+    assert!(m.success(), "{}", m.stderr_text());
+    let gnu_out = built.dir.join("g.out");
+    let gnu_text = built.dir.join("g.txt");
+    let gmap = format!("-Map={}", gnu_text.display());
+    let b = bfd(built, &gnu_out, &[gmap.as_str()]);
+    assert!(b.success(), "{}", b.stderr_text());
+    let ours = parse_text_map(&String::from_utf8_lossy(&read(&text)));
+    let gnus = parse_text_map(&String::from_utf8_lossy(&read(&gnu_text)));
+    let (sections, syms) = elf_facts(&out);
+    assert!(!ours.out.is_empty() && !ours.inputs.is_empty() && !ours.syms.is_empty());
+    let mut ranges = BTreeMap::new();
+    for (name, a, sz) in &ours.out {
+        let sh = sections.iter().find(|s| &s.0 == name);
+        let want = sh.map(|s| (if s.3 { s.1 } else { 0 }, s.2));
+        assert_eq!(want, Some((*a, *sz)), "section {name}");
+        ranges.insert(name.clone(), (*a, *sz));
+    }
+    for (sec, name, a, sz, file) in &ours.inputs {
+        let (start, size) = ranges[sec];
+        assert!(start <= *a && a + sz <= start + size, "{sec}: {name} {a:#x} {sz:#x} {file}");
+    }
+    for (sec, a, name) in &ours.syms {
+        if name.ends_with("_veneer") || name.starts_with("__erratum") {
+            continue;
+        }
+        let values = syms.get(name);
+        assert!(values.is_some_and(|v| v.contains(a)), "{sec}: {name} {a:#x}: {values:?}");
+    }
+    // What mortar makes itself (its `mortar` lines; GNU's same sections
+    // name an input), so is not GNU's per-input line.
+    let synthetic: BTreeSet<&str> =
+        ours.inputs.iter().filter(|r| r.4 == "mortar").map(|r| r.1.as_str()).collect();
+    let made = |name: &str| {
+        synthetic.contains(name)
+            // GNU's own IFUNC sections, which mortar's `.plt`/`.got` hold.
+            || name == ".iplt"
+            || name == ".igot.plt"
+            || name == ".eh_frame"
+            || name == ".comment"
+            || name == ".group"
+            || name.starts_with(".note.GNU-stack")
+            || name == ".note.gnu.property"
+            || name.starts_with(".rela")
+            || name.starts_with(".rodata.str")
+            || name.starts_with(".rodata.cst")
+            || name.starts_with(".debug_str")
+            || name.starts_with(".debug_line_str")
+    };
+    let comdat: BTreeSet<&str> =
+        ours.discarded.iter().chain(&gnus.discarded).map(|d| d.0.as_str()).collect();
+    let norm = |f: &str| {
+        let p = Path::new(f);
+        let mut out = PathBuf::new();
+        for c in p.components() {
+            match c {
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                c => out.push(c),
+            }
+        }
+        out.display().to_string()
+    };
+    // Merged input sections (`.str1.8`, `.cst16`, ...), GNU's one line
+    // each, are mortar's one `mortar` line per output section.
+    let merged = |name: &str| {
+        name.split('.').any(|w| {
+            let digits = w.strip_prefix("str").or_else(|| w.strip_prefix("cst"));
+            digits.is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+        })
+    };
+    // A COMDAT group's sections: which copy is kept (and so its size and
+    // file, when copies differ) is each linker's own.
+    let compared = |r: &&(String, String, u64, u64, String)| {
+        !made(&r.1) && !merged(&r.1) && !comdat.contains(r.1.as_str()) && r.4 != "linker stubs"
+    };
+    let key = |(_, name, _, sz, file): &(String, String, u64, u64, String)| {
+        (name.clone(), *sz, norm(file))
+    };
+    let theirs: BTreeSet<_> = gnus.inputs.iter().filter(compared).map(key).collect();
+    let mine: BTreeSet<_> =
+        ours.inputs.iter().filter(|r| r.4 != "mortar").filter(compared).map(key).collect();
+    assert!(mine.len() > 100, "{} input sections compared", mine.len());
+    let only_gnu: Vec<_> = theirs.difference(&mine).collect();
+    let only_ours: Vec<_> = mine.difference(&theirs).collect();
+    assert!(
+        only_gnu.is_empty() && only_ours.is_empty(),
+        "GNU only {only_gnu:?}; mortar only {only_ours:?}"
+    );
+    let members = |m: &TextMap| m.members.iter().map(|f| norm(f)).collect::<BTreeSet<_>>();
+    assert_eq!(members(&ours), members(&gnus), "the archive members taken");
+}
+
+/// Of `--gc-sections` and `--no-gc-sections`, the last one wins
+/// (`spec/cli.md`'s boolean pairs): with it the output is smaller and runs
+/// the same (the rest of `--gc-sections` is `tests/gc.rs`).
 #[test]
 fn gc_sections_the_last_one_wins() {
     let Some((_s, built)) =
@@ -609,27 +994,21 @@ fn gc_sections_the_last_one_wins() {
     else {
         return;
     };
-    for (extra, ok) in [
-        (&["--gc-sections"][..], false),
-        (&["--no-gc-sections", "--gc-sections"][..], false),
-        (&["--gc-sections", "--no-gc-sections"][..], true),
+    let mut sizes = Vec::new();
+    for extra in [
+        &["--gc-sections"][..],
+        &["--no-gc-sections", "--gc-sections"][..],
+        &["--gc-sections", "--no-gc-sections"][..],
     ] {
         let out = built.dir.join("gc.out");
         let m = mortar(&built, &out, extra, &[]);
-        if ok {
-            assert!(m.success(), "{extra:?}: {}", m.stderr_text());
-            assert_eq!(execute(&out).1, Some(0), "{extra:?}");
-            std::fs::remove_file(&out).unwrap();
-        } else {
-            assert_eq!(code(&m), Some(1), "{extra:?}");
-            assert!(
-                m.stderr_text().contains("error: unsupported option: --gc-sections"),
-                "{extra:?}: {}",
-                m.stderr_text()
-            );
-            assert!(!out.exists(), "{extra:?}: a refused link leaves no output");
-        }
+        assert!(m.success(), "{extra:?}: {}", m.stderr_text());
+        assert_eq!(execute(&out).1, Some(0), "{extra:?}");
+        sizes.push(read(&out).len());
+        std::fs::remove_file(&out).unwrap();
     }
+    assert_eq!(sizes[0], sizes[1]);
+    assert!(sizes[0] < sizes[2], "{sizes:?}");
 }
 
 /// I-110 through the driver: a key referenced only from `.debug_info`
@@ -764,11 +1143,11 @@ fn compressed_debug_is_refused_by_name() {
     let Some((_s, mut built)) = c_program("pipe-gz", &["-O2", "-g", "-gz"]) else { return };
     let out = built.dir.join("z.out");
     // The driver asks for compressed output debug sections too, which is
-    // refused on the command line.
+    // refused on the command line (only `=none` is written, cli.md §4.2).
     let m = mortar(&built, &out, &[], &[]);
     assert_eq!(code(&m), Some(1));
     assert!(
-        m.stderr_text().contains("error: unsupported option: --compress-debug-sections"),
+        m.stderr_text().contains("error: unsupported option value: --compress-debug-sections=z"),
         "{}",
         m.stderr_text()
     );
@@ -850,5 +1229,108 @@ fn an_erratum_site_goes_through_a_patch() {
     assert_eq!(w(1) >> 26, 0b00_0101, "then a b: {:#x}", w(1));
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+}
+
+/// Erratum 843419 under `--gc-sections` (WP-031, `spec/image.md` I-7;
+/// WP-032e's windows): two sites, each an ADRP at a page's `0xff8` whose
+/// target is beyond the ADR's range. One is in `dead`, which nothing calls;
+/// a 2 MiB gap before `f` is collected too, and a live 2 MiB gap keeps
+/// `val` far. Without gc both sites get a patch; with gc only `f`'s does
+/// (the erratum scan reads live code only) and the program still exits 42
+/// through it, as GNU ld's with gc does.
+#[test]
+fn an_erratum_site_in_collected_code_gets_no_patch() {
+    if !host() {
+        return;
+    }
+    let scratch = Scratch::new("pipe-erratum-gc");
+    let site = |name: &str| {
+        format!(
+            "\n    .section .text.{name},\"ax\",@progbits\n    .balign 4096\n    .skip 0xff8\n\
+             \n    .globl {name}\n    .type {name}, %function\n{name}:\n    adrp x0, val\n\
+             \n    ldr x2, [sp]\n    ldr x0, [x0, #:lo12:val]\n    ret\n"
+        )
+    };
+    let src = format!(
+        "    .text\n    .globl _start\n_start:\n    bl gap_end\n    bl f\n    mov x8, #93\n    svc #0\n\
+         {}\n    .section .text.dead_gap,\"ax\",@progbits\n    .skip 0x200000\n{}\
+         \n    .section .text.gap,\"ax\",@progbits\n    .skip 0x200000\ngap_end:\n    ret\n\
+         \n    .data\n    .balign 8\nval:\n    .xword 42\n",
+        site("dead"),
+        site("f"),
+    );
+    let obj = assemble(scratch.path(), "e.s", &src);
+    let patches = |map: &str| {
+        map.lines().filter(|l| l.starts_with("chunk patch __erratum_843419_veneer ")).count()
+    };
+    for gc in [false, true] {
+        let mut args: Vec<String> = vec!["-static".into(), "--fix-cortex-a53-843419".into()];
+        if gc {
+            args.push("--gc-sections".into());
+        }
+        args.extend([obj.display().to_string(), "-o".into(), "out".into()]);
+        let built = Built { dir: scratch.path().to_path_buf(), args };
+        let ours = built.dir.join(format!("e{gc}.mortar"));
+        let theirs = built.dir.join(format!("e{gc}.bfd"));
+        let ran = mortar(&built, &ours, &[], &[]);
+        assert!(ran.success(), "mortar: {}", ran.stderr_text());
+        let gnu = bfd(&built, &theirs, &[]);
+        assert!(gnu.success(), "ld.bfd: {}", gnu.stderr_text());
+        assert_eq!(execute(&theirs).1, Some(42));
+        assert_eq!(execute(&ours).1, Some(42), "the load through the patch (gc {gc})");
+        let map = std::fs::read_to_string(map_of(&ours)).unwrap();
+        assert_eq!(patches(&map), if gc { 1 } else { 2 }, "gc {gc}: {map}");
+        if gc {
+            // `.text.dead` and `.text.dead_gap`.
+            let gc_lines = map.lines().filter(|l| l.starts_with("discard ") && l.ends_with(" gc"));
+            assert_eq!(gc_lines.count(), 2, "both dead sections are collected: {map}");
+        }
+        support::plumb::readers(&ours);
+        support::plumb::elflint(&ours);
+    }
+}
+
+/// Erratum 843419 with `W1` at a page's `0xffc` and the final word `F`
+/// three words after it, across the page (`0x1008`): the patch holds the
+/// load as fill writes it, its `lo12` relocation applied (WP-032e found
+/// the patch's word taken before that relocation, so the load read the
+/// page's first doubleword). Exits 42 only if the load reads `val`.
+#[test]
+fn an_erratum_site_across_the_page_takes_its_relocated_word() {
+    if !host() {
+        return;
+    }
+    let scratch = Scratch::new("pipe-erratum-ffc");
+    let obj = assemble(
+        scratch.path(),
+        "e.s",
+        "    .text\n    .globl _start\n_start:\n    bl f\n    mov x8, #93\n    svc #0\n\
+         \n    .section .text.f,\"ax\",@progbits\n    .balign 4096\n    .skip 0xffc\n\
+         \n    .globl f\n    .type f, %function\nf:\n    adrp x0, val\n    ldr x2, [sp]\n\
+         \n    nop\n    ldr x0, [x0, #:lo12:val]\n    ret\n\
+         \n    .section .text.gap,\"ax\",@progbits\n    .skip 0x200000\n\
+         \n    .data\n    .balign 8\n    .xword 7, 7, 7\nval:\n    .xword 42\n",
+    );
+    let built = Built {
+        dir: scratch.path().to_path_buf(),
+        args: vec![
+            "-static".into(),
+            "--fix-cortex-a53-843419".into(),
+            obj.display().to_string(),
+            "-o".into(),
+            "out".into(),
+        ],
+    };
+    let ours = built.dir.join("e.mortar");
+    let theirs = built.dir.join("e.bfd");
+    let ran = mortar(&built, &ours, &[], &[]);
+    assert!(ran.success(), "mortar: {}", ran.stderr_text());
+    let gnu = bfd(&built, &theirs, &[]);
+    assert!(gnu.success(), "ld.bfd: {}", gnu.stderr_text());
+    assert_eq!(execute(&theirs).1, Some(42));
+    assert_eq!(execute(&ours).1, Some(42), "the load through the patch");
+    let map = std::fs::read_to_string(map_of(&ours)).unwrap();
+    assert!(map.contains("chunk patch __erratum_843419_veneer "), "a patch in the map: {map}");
+    support::plumb::readers(&ours);
+    support::plumb::elflint(&ours);
 }

@@ -36,6 +36,9 @@ pub enum Rule {
     /// type is defined for, or a thread-local type names a symbol that is
     /// not thread-local (§4.3, §4.7).
     Insn,
+    /// R9: in an output marked BTI, a range-extension veneer ends in an
+    /// indirect branch to a word that is not a landing pad (§5.4).
+    LandingPad,
     /// T1: a thread-local relocation in an output without `PT_TLS` (§4.7).
     NoTls,
     /// Y1: an output symbol's value is not where its definition was placed.
@@ -50,6 +53,10 @@ pub enum Rule {
     Property(u8),
     /// B1: mortar's build id (§6.7).
     BuildId,
+    /// C1-C6: erratum 843419 fixes by site (§5.10).
+    Erratum(u8),
+    /// P-D1 .. P-D13: stage 3, dynamic executables (§12).
+    Dyn(u8),
 }
 
 impl Rule {
@@ -69,6 +76,7 @@ impl Rule {
             Rule::MergePiece => "R6".into(),
             Rule::Place => "R7".into(),
             Rule::Insn => "R8".into(),
+            Rule::LandingPad => "R9".into(),
             Rule::NoTls => "T1".into(),
             Rule::SymbolValue => "Y1".into(),
             Rule::EhFrame(n) => format!("E{n}"),
@@ -76,6 +84,8 @@ impl Rule {
             Rule::Ifunc(n) => format!("F{n}"),
             Rule::Property(n) => format!("P{n}"),
             Rule::BuildId => "B1".into(),
+            Rule::Erratum(n) => format!("C{n}"),
+            Rule::Dyn(n) => format!("P-D{n}"),
         }
     }
 }
@@ -105,6 +115,8 @@ pub enum Rewrite {
     TlsDescToLe,
     /// W11: a TLSDESC sequence to initial-exec.
     TlsDescToIe,
+    /// Stage 3: a GD sequence rewritten to initial-exec (GNU ld, x86-64).
+    TlsGdToIe,
     /// W12: a traditional general-dynamic sequence to local-exec.
     TlsGdToLe,
     /// W13: a traditional local-dynamic sequence to local-exec.
@@ -121,7 +133,7 @@ pub enum Rewrite {
 }
 
 impl Rewrite {
-    pub const ALL: [Rewrite; 17] = [
+    pub const ALL: [Rewrite; 18] = [
         Rewrite::AdrpAddToAdr,
         Rewrite::GotToAdrpAdd,
         Rewrite::GotToAdr,
@@ -133,6 +145,7 @@ impl Rewrite {
         Rewrite::TlsIeToLe,
         Rewrite::TlsDescToLe,
         Rewrite::TlsDescToIe,
+        Rewrite::TlsGdToIe,
         Rewrite::TlsGdToLe,
         Rewrite::TlsLdToLe,
         Rewrite::GotToLea,
@@ -154,6 +167,7 @@ impl Rewrite {
             Rewrite::TlsIeToLe => "tlsie-to-le",
             Rewrite::TlsDescToLe => "tlsdesc-to-le",
             Rewrite::TlsDescToIe => "tlsdesc-to-ie",
+            Rewrite::TlsGdToIe => "tlsgd-to-ie",
             Rewrite::TlsGdToLe => "tlsgd-to-le",
             Rewrite::TlsLdToLe => "tlsld-to-le",
             Rewrite::GotToLea => "got-to-lea",
@@ -202,6 +216,9 @@ pub enum Reason {
     GotUnpaired,
     /// The input file of the section cannot be read.
     InputUnreadable,
+    /// Stage 3: a dynamic construct the loader model does not judge
+    /// (named in the record, `spec/plumb.md` §12).
+    Dynamic,
 }
 
 impl Reason {
@@ -221,6 +238,7 @@ impl Reason {
             Reason::SymbolUnresolved => "symbol-unresolved",
             Reason::GotUnpaired => "got-unpaired",
             Reason::InputUnreadable => "input-unreadable",
+            Reason::Dynamic => "dynamic",
         }
     }
 
@@ -247,6 +265,9 @@ pub enum Via {
     /// A non-alloc reference to a section not in the output: the
     /// linker's tombstone (§5.8).
     Tombstone,
+    /// Stage 3: a branch to a PLT entry whose `.got.plt` word holds S
+    /// after the loader's work (§12, P-D9).
+    Plt,
 }
 
 impl Via {
@@ -258,6 +279,7 @@ impl Via {
             Via::EhFrame => "eh-frame",
             Via::Iplt => "iplt",
             Via::Tombstone => "tombstone",
+            Via::Plt => "plt",
         }
     }
 }
@@ -289,7 +311,20 @@ pub struct Finding {
     pub message: String,
 }
 
+/// The start of a P-D1 finding that names why an output is outside
+/// stage 3 (`spec/plumb.md` §12.1): a link the verifier does not model
+/// (an option `spec/dyn.md` refuses, static-pie, version definitions, a
+/// `DT_NEEDED` object no search finds). It is a finding, never a pass;
+/// a harness may count a reference linker's output with only such
+/// findings as not judged ([`Finding::outside`]).
+pub const OUTSIDE: &str = "outside stage 3: ";
+
 impl Finding {
+    /// Whether this is a P-D1 "outside stage 3" finding ([`OUTSIDE`]).
+    pub fn outside(&self) -> bool {
+        self.rule == Rule::Dyn(1) && self.message.starts_with(OUTSIDE)
+    }
+
     pub(crate) fn new(rule: Rule, message: impl Into<String>) -> Self {
         Finding {
             rule,
@@ -377,6 +412,8 @@ pub struct Coverage {
     pub fdes_checked: u64,
     pub fdes_dropped: u64,
     pub fdes_neutralised: u64,
+    /// Output FDEs a reference linker made for its own PLT (stage 3).
+    pub fdes_linker_plt: u64,
     /// Search table entries of `.eh_frame_hdr` checked (§6.4).
     pub eh_frame_hdr_entries: u64,
     /// Output symbols Y3 checked against their global definitions, and
@@ -402,6 +439,11 @@ pub struct Coverage {
     /// large sections (`SHF_X86_64_LARGE`), whose order differs by linker
     /// (spec/x64.md X-54; Y5 leaves them out of `_edata`/`_end`).
     pub placement_not_judged: Vec<String>,
+    /// Erratum 843419 sites found with their fix (C1), and sites not
+    /// judged: the option unknown, beyond what both references fix, or
+    /// unproved code in a reference's output (§5.10).
+    pub erratum_sites: u64,
+    pub erratum_not_judged: u64,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
 }
@@ -525,9 +567,13 @@ impl Report {
         let _ = writeln!(s, "content compared: {} bytes", c.content_bytes);
         let _ = writeln!(
             s,
-            "FDEs: checked {}, dropped with their function {}, neutralised {}; \
-             .eh_frame_hdr entries checked {}",
-            c.fdes_checked, c.fdes_dropped, c.fdes_neutralised, c.eh_frame_hdr_entries
+            "FDEs: checked {}, dropped with their function {}, neutralised {}, \
+             the linker's PLT FDEs {}; .eh_frame_hdr entries checked {}",
+            c.fdes_checked,
+            c.fdes_dropped,
+            c.fdes_neutralised,
+            c.fdes_linker_plt,
+            c.eh_frame_hdr_entries
         );
         let _ = writeln!(
             s,
@@ -548,6 +594,13 @@ impl Report {
             "program properties: types judged {}, not judged {}",
             c.properties_judged, c.properties_not_judged
         );
+        if c.erratum_sites + c.erratum_not_judged > 0 {
+            let _ = writeln!(
+                s,
+                "erratum 843419 sites: fixed {}, not judged {}",
+                c.erratum_sites, c.erratum_not_judged
+            );
+        }
         if let Some(b) = &c.build_id {
             let _ = writeln!(s, "build id: {b}");
         }

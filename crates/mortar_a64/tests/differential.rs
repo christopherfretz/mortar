@@ -1037,7 +1037,7 @@ fn r3_object(label: &str, obj: &Image, tally: &mut R3Tally, bad: &mut Vec<String
     // Scan: the flags of every key, over all sections of the object.
     for (target, relocs) in &sections {
         let mut sink = Sink::default();
-        let place = mortar_arch::PlaceFacts { alloc: true, writable: false };
+        let place = mortar_arch::PlaceFacts { alloc: true, writable: false, exec: None };
         scan_all(
             M2,
             &t,
@@ -1211,7 +1211,7 @@ fn r5_object(label: &str, obj: &Image, tally: &mut R5Tally, bad: &mut Vec<String
     }
     for (target, relocs) in &sections {
         let mut sink = Sink::default();
-        let place = mortar_arch::PlaceFacts { alloc: true, writable: false };
+        let place = mortar_arch::PlaceFacts { alloc: true, writable: false, exec: None };
         let output = mortar_arch::OutputKind::Static;
         scan_all(M2, &t, output, place, obj.data(target), relocs, &mut sink).unwrap();
         assert!(sink.errors.is_empty(), "{label} {}: {:?}", target.name, sink.errors);

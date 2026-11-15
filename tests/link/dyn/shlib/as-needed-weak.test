@@ -1,0 +1,48 @@
+# dyn.md D-11: under `--as-needed` (the gcc driver's default) a weak
+# reference alone never makes a shared object needed. `main` references
+# `a_fn` weakly (`liba.so` defines it) and `b_fn` strongly (`libb.so`):
+# `libb.so` is needed, `liba.so` is not, so the program's weak `a_fn`
+# stays unresolved at run time (`a_fn` is null, the program prints `0`)
+# and `b_fn` returns 20. dyn.md D-25 then decides the weak reference.
+#
+# Where the references differ (D-11 "mold differs", E-shlib 2.2a; not
+# yet a row of §13.1): GNU ld and lld agree with D-11; mold records
+# `liba.so` as needed and the program prints `1 20`. Not a wrong output
+# (the weak reference binds to a library the program names), so mold is
+# held to its own behaviour; mortar to D-11's.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-11"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC a.c -o a.o
+cc -O1 -fPIC b.c -o b.o
+shlib gcc a.o -Wl,-soname,liba.so -o liba.so
+shlib gcc b.o -Wl,-soname,libb.so -o libb.so
+cc -O1 -fPIE main.c -o main.o
+link gcc -pie main.o -L. -la -lb -o prog
+run(bfd,lld,mortar) prog
+  stdout: 0 20
+run(mold) prog
+  stdout: 1 20
+check readelf -dW prog
+  has: (NEEDED) Shared library: [libb.so]
+  has: (NEEDED) Shared library: [libc.so.6]
+  not(bfd,lld,mortar): [liba.so]
+  has(mold): (NEEDED) Shared library: [liba.so]
+
+#--- a.c
+int a_fn(void) { return 1; }
+#--- b.c
+int b_fn(void) { return 20; }
+#--- main.c
+#include <stdio.h>
+
+int a_fn(void) __attribute__((weak));
+int b_fn(void);
+
+int main(void) {
+  printf("%d %d\n", a_fn ? a_fn() : 0, b_fn());
+  return 0;
+}

@@ -74,8 +74,15 @@ pub enum TargetKind {
 - `target_kind(SymKey) -> TargetKind` is a generic function of
   `Resolution` (`def`, the merged visibility, `-Bsymbolic*`, export
   rules) and the output kind. A preemptible IFUNC is `Preemptible`.
-  Which undefined weak symbols are `WeakDyn` is `spec/resolve.md`'s
-  (a64.md Q4).
+  `target_kind` is a property of the **key**, never of the relocation
+  class. A weak undefined key is `WeakDyn` or `Weak0` by `spec/dyn.md`
+  D-25, per key: a pre-pass after liveness (`mortar_scan`, WP-040
+  step 0k) classes each live relocation naming the key with
+  `weak_use` (§3.12; each architecture spec carries its column of
+  D-25's class table) and decides the key from the union of its classes.
+  In `Static` and a static PIE (`dyn.md` D-1 `StaticPie`, no `.dynsym`
+  beyond the null entry) every weak undefined key is `Weak0`. This
+  ends the former circle with `spec/resolve.md` §5.4 (a64.md Q4).
 - A `Local(FileId, u32)` key is `Local`, or `Abs` for an `SHN_ABS` local,
   or the kind of the section symbol's section (always `Local`).
 
@@ -197,6 +204,10 @@ pub trait Arch: Sync + 'static {
     fn dyn_type(&self, role: DynRole) -> Option<u32>;                        // §3.10
     fn tombstone(&self, section_name: &[u8]) -> u64;                         // §3.11; default: tombstone(name, Facts.class)
     fn weak0(&self, h: &Howto) -> Weak0Rule;                                 // §3.12
+    fn weak_use(&self, r_type: u32, place: &[u8], writable: bool)
+        -> Option<WeakClass>;                                                // §3.12 [M2]
+    fn lazy_target(&self, n: PltIndex) -> LazyTarget;                        // §3.7 [M2]
+    fn dyn_tags(&self, cx: &OutputCx<'_>) -> &'static [DynTag];              // §3.10 [M2]
     fn property_merge(&self, pr_type: u32) -> Option<PropMerge>;             // §3.13
 }
 ```
@@ -221,10 +232,12 @@ pub struct Facts {
     pub got_header: u8,                      // words reserved at the start of .got with .dynamic
     pub got_plt_reserved: u8,                // words reserved at the start of .got.plt: with .dynamic
                                              // on every target; also in static outputs on x86 (synth.md S-67)
+    pub iplt_word: IpltWord,                 // an IPLT .got.plt word before start-up (synth.md S-69):
+                                             // Resolver (S + A; AArch64, i386) or Zero (x86-64, x64.md X-39)
     pub max_reach: Window,                   // (before, after): derived, see below
     pub code_fill: &'static [u8],            // the trap pattern (layout.md L-82): AArch64 4 zero bytes, x86 0xCC
     pub code_nop: &'static [u8],             // the no-op of .init/.fini padding (L-82): AArch64 NOP, x86 0x90
-    pub seq_leads: &'static [u32],           // the lead types RelocAt.leads gates (§3.5): AArch64 [513]; x86-64 [19, 20]
+    pub seq_leads: &'static [u32],           // the lead types RelocAt.leads gates (§3.5): AArch64 [513]; x86-64 [19, 20]; i386 [18, 19]
 }
 fn e_flags(&self, inputs: &mut dyn Iterator<Item = u32>) -> Result<u32, Refusal>; // 0 for all three
 ```
@@ -235,12 +248,18 @@ member window of a recognized form (`unit_window`, §3.5). `mortar_arch`
 computes it from those tables; it is never written by hand
 (`spec/image.md` I-111). AArch64 gives `(0, 4)` (the markers' word and
 the GD→LE `CALL26` member, `spec/a64.md` §8.4); x86-64 `(4, 15)`
-(`spec/x64.md` §8.6). `code_fill` is positioned by address modulo its length.
+(`spec/x64.md` §8.6); i386 `(3, 6)` (`before` 3 from the SIB `TLS_GD`
+form, `after` 6 from the 12-byte base-register GD and LD forms,
+`spec/x86.md` X86-40). `code_fill` is positioned by address modulo its length.
 
 The output's `e_flags` is a function of the live inputs' `e_flags`; for
 the three targets it is 0. A relocation section of the other form
 (`SHT_REL` where `Rela` is accepted, and the reverse) is refused by name
-(class `section-type`).
+at resolve (`SectionRefusal::RelForm`, class `section-type`, name
+`SHT_REL` or `SHT_RELA`): an `SHT_REL` section in an ELFCLASS64 input
+(AArch64, x86-64) and an `SHT_RELA` section in an `EM_386` input. Before
+WP-030c a 64-bit `SHT_REL` section was accepted with A = 0, which wrote
+wrong bytes.
 
 ### 3.2 `classify`
 
@@ -283,8 +302,27 @@ pub struct Site<'a> { pub bytes: &'a [u8], pub offset: u64 } // the input sectio
 - **REL**: `A = read_addend(h, field)`: the `Implicit` description of the
   type gives the width (`bytes`), signedness and scale (`shift`) of the
   value stored in the field of the input section; instruction forms read
-  the immediate as the architecture spec says. Read once per use from the
-  input bytes; never stored.
+  the immediate as the architecture spec says. `Implicit` addends of every
+  width are read sign-extended. Where a reference linker reads a narrow
+  field unsigned, the field's bits are unchanged and only the check
+  differs (`spec/x86.md` X86-6). Read once per use from the input bytes;
+  never stored.
+- **REL addends without resident bodies** (`spec/x86.md` R-13). `A` is
+  read from the input bytes of its field where a rule needs it, never
+  from bytes a relocation has written, and no second copy of a section
+  body or of a clip is made for it. `RelocAt.addend` is `Some(r_addend)`
+  on RELA and `None` on REL; the architecture calls `read_addend` on the
+  bytes `site` gives (scan) or `SectionOut::input` gives (fill, §3.6).
+  The **read window** of a unit (a record, or a matched sequence) is
+  every byte its `classify`, `scan` and `apply` read; it contains its
+  write window, and the architecture spec states it per type and form.
+  Within a matched sequence the architecture reads every member's addend
+  and pattern bytes before it writes any byte of the unit (i386: the D1
+  partner's `A = −4` lies inside the lead's window, which the lead
+  overwrites). `Records` gives a REL record's `addend` as whatever its
+  caller read, or 0; a REL architecture does not use it. What scan reads
+  on REL, and what the image does at fill, are `spec/image.md`'s
+  (`spec/x86.md` R-13 (a), (d), (e)).
 - **Write-back**, for REL outputs only:
   - `-r` (M4): the field of the output holds the output relocation's
     addend: `A + delta`, where `delta` is what `spec/image.md` adds for a
@@ -303,7 +341,8 @@ pub struct Site<'a> { pub bytes: &'a [u8], pub offset: u64 } // the input sectio
 ```rust
 pub struct RelocAt<'a> {
     pub file: FileId, pub section: SectionId, pub index: u32, // record index in its relocation section
-    pub r_offset: u64, pub key: SymKey, pub r_type: u32, pub addend: i64,
+    pub r_offset: u64, pub key: SymKey, pub r_type: u32,
+    pub addend: Option<i64>,               // Some(r_addend) on RELA, None on REL (§3.3)
     pub howto: &'a Howto,
     pub site: Site<'a>,
     pub records: &'a dyn Records,          // the same relocation section, §3.5
@@ -323,7 +362,15 @@ pub struct DemandSink<'a> { /* over a `dyn DemandOut`, which has the same method
                                count(DynRole, n) for this section; error(record, ScanError);
                                reference(record, EventClass, SymKey) for the record being scanned */ }
 pub enum EventClass { Undefined, ComdatMismatch, DiscardedSection, GnuWarning } // image.md §4.4
+pub struct PlaceFacts { pub alloc: bool, pub writable: bool, pub exec: Option<bool> } // the place's section
 ```
+
+- **`PlaceFacts.exec`** (WP-030c, an additive change): the place
+  section's `SHF_EXECINSTR`, `None` where the caller cannot know it.
+  i386 refuses a `GOT32`/`GOT32X` in a non-executable section at scan
+  when it is `Some(false)` (`spec/x86.md` X86-13 step 1), and at fill
+  (`SectionOut.exec`) when it is `None`. Existing constructors keep
+  compiling: `PlaceFacts::new(alloc, writable)` gives `exec: None`.
 
 - **Contract**: given one live relocation, raise the demands the forms
   `apply` may choose need (§5.2), count the dynamic relocations it puts at
@@ -351,6 +398,14 @@ pub enum EventClass { Undefined, ComdatMismatch, DiscardedSection, GnuWarning } 
     with its call does not overlap.
   - Markers (`Field::None`) occupy no bytes unless a rule rewrites
     their word.
+  - **REL** (`spec/x86.md` R-13 (b)): on a target whose relocation
+    sections are `SHT_REL`, the check compares read windows (§3.3), not
+    only write windows, and it also refuses two records with the same
+    `r_offset` unless they are members of one matched sequence, or one of
+    them is a marker (width 0, e.g. `R_386_NONE`), which reads and writes
+    nothing; the refusal is the same, at the scan key of the later record. No unit
+    then reads a byte another unit writes, so the bytes a unit reads at
+    fill are input bytes, whatever the record order and the clip.
 - **Places in non-alloc sections** (no `SHF_ALLOC`): §4.3's
   non-alloc rule applies before the class table.
 - **Undefined symbols are reported by scan**, not by resolution.
@@ -479,7 +534,14 @@ pub struct SectionOut<'a> { /* the unit's output bytes in the clip [a, b) of sec
                                written through write(off, bytes); writes outside the
                                clip are discarded; the section's name, SHF_ALLOC and
                                SHF_EXECINSTR (exec: Option<bool>, None when the caller
-                               does not know it) */ }
+                               does not know it); for input(): the resident section,
+                               or the clip's two margins of input bytes */ }
+impl SectionOut<'_> {
+    /// The input bytes at section offsets [off, off + dst.len()): from the
+    /// resident section, the window buffer, or the clip's two margins.
+    /// false when a byte is in none of them.
+    fn input(&self, off: u64, dst: &mut [u8]) -> bool;
+}
 ```
 
 - **`SectionOut.exec`** (WP-029b): x86-64 decides `DTPOFF32`/`DTPOFF64`
@@ -494,7 +556,12 @@ pub struct SectionOut<'a> { /* the unit's output bytes in the clip [a, b) of sec
   relaxed form when the architecture's rule says so. Reads: the
   context, the input bytes (`at.site`), the relocation records. Writes
   only `[r_offset − window.before, r_offset + width + window.after)` of
-  `out`. Never reads `out`. `out` may hold only a clip of the section
+  `out`. It reads input bytes of the place only through
+  `SectionOut::input`, only inside its own read window (§3.3), and before
+  its unit writes; it never reads bytes a relocation has written. (A RELA
+  architecture reads none: its addends and pattern bytes come from
+  `at.site`; REL reads the addend this way, `spec/x86.md` R-13 (d).)
+  `out` may hold only a clip of the section
   (`spec/image.md` I-35): `apply` writes through `SectionOut`'s methods,
   and the bytes it writes inside the clip are those of an unclipped
   call. A relocation whose window straddles two clips is applied once
@@ -562,6 +629,23 @@ pub enum Erratum { A53_843419 }
 - **PLT variant** is a function of the output kind, the merged GNU
   properties and the options (`-z pac-plt`, `-z force-ibt`), chosen once
   per link.
+- **Lazy binding [M2]** (`spec/dyn.md` D-49). A `JUMP_SLOT` word of
+  `.got.plt` initially holds its lazy target at the link-time address
+  (in a PIE the loader adds the bias): `lazy_target(n)` names it,
+  `LazyTarget::Plt0` (the PLT header: AArch64, a64.md §10.2) or
+  `LazyTarget::EntryPlus(k)` (the entry's own lazy stub at offset `k`
+  of entry `n` of `lazy_chunk`: x86-64 `k = 6`, the `push`, x64.md
+  §10.3; i386 [M4] likewise, x86.md X86-52). The word is a function of
+  the shape and the PLT index, never of the symbol.
+- **`-z now` [M2]** keeps every shape: PLT0 and the lazy stubs are still
+  written and every size is the lazy variant's (D-49; all three
+  references). What `-z now` changes is generic: `.got.plt` becomes its
+  own chunk inside RELRO (`spec/layout.md` L-60 rank 7), and
+  `DT_FLAGS`/`DT_FLAGS_1` (D-30). `-z now` is a `now` flag beside the
+  variant (WP-040 step 0c's `PltVariant::Now`, revised so that it
+  combines with AArch64's `Bti`; WP-041), and it changes neither the
+  `PltShape` nor the bytes of the variant. There is no `.plt.got` (D-49): a
+  key with both a GOT and a PLT use gets a PLT entry and a GOT slot.
 - **Thunks**: `branch(h)` says which types are branches, their reach, and
   whether a veneer may be inserted (AArch64 `CALL26`/`JUMP26`). `thunk()`
   is `None` where no type allows one (x86-64, i386). `thunk_target_ok`
@@ -644,14 +728,44 @@ pub enum DynRole { Relative, Symbolic, GlobDat, JumpSlot, Copy, IRelative,
 where the architecture has none (i386 has `TpOff{negated: true}` as
 `TLS_TPOFF32`, the others do not). RELR eligibility is generic: role
 `Relative`, place aligned to `word`, the value stored at the place equal
-to the addend (`-z pack-relative-relocs`).
+to the addend (`-z pack-relative-relocs`, [M4], `spec/dyn.md` D-27,
+D-62).
+
+**Record form per role [M2]** (`spec/dyn.md` D-46). What the place holds
+when the record is written is generic, from `Facts.rel_form`:
+
+| role | RELA: place | RELA: `r_addend` | REL (i386, [M4]): place |
+|---|---|---|---|
+| `Relative` | `S + A` | `S + A` | `S + A` |
+| `Symbolic` | 0 | `A` | `A` |
+| `GlobDat` | 0 | 0 | 0 |
+| `JumpSlot` | the lazy target (§3.7 `lazy_target`, D-49), under `-z now` too | 0 | the lazy target |
+| `IRelative` | per architecture (`spec/dyn.md` §15 Q7): AArch64 the resolver's link address (`S + A`, a64 §6.2); x86-64 0 (x64 X-39) | the resolver's address | the resolver's address (the word is the addend) |
+| `Copy` | none: the allocation is `NOBITS` | 0 | none |
+| `TpOff`, `DtpMod`, `DtpOff`, `TlsDesc` against a shared key | 0 | 0 | 0 |
+
+`dyn.md` D-46 is normative for which record a slot or word gets, and
+D-48 for the TLS records (an executable's own TLS is relaxed to LE and
+has no record). The place contents of the TLS roles under REL are [M4]
+with the i386 rules (`spec/x86.md`).
+
+**Dynamic tags per architecture [M2].** `dyn_tags(cx)` lists the
+architecture's own `.dynamic` entries and their conditions, which the
+generic writer places at `spec/dyn.md` D-30 rows 24-25: AArch64
+`DT_AARCH64_BTI_PLT` (the output has the BTI property) and
+`DT_AARCH64_VARIANT_PCS` (some `JUMP_SLOT` key is
+`STO_AARCH64_VARIANT_PCS`), `spec/a64.md` §10.3; x86-64 and i386 none
+(`DT_X86_64_PLT*` is never written in an executable, D-30). Each
+condition depends on no address.
 
 ### 3.11 Tombstones
 
 A relocation in a non-alloc section with a debug name (`spec/resolve.md`
 §6.3) whose target is in a section that is not live writes
 `tombstone(name, class)` truncated to the field instead of `X`
-(`spec/image.md` I-47): 1 for `.debug_ranges` and `.debug_loc`; all ones
+(`spec/image.md` I-47): 1 for `.debug_ranges` and `.debug_loc`; 0 for
+`.debug_rnglists`, `.debug_loclists` and `.debug_addr` (an address there
+is paired with a length, which all ones would wrap); all ones
 for `.debug_aranges` and `.debug_frame`; for every other debug name all
 ones in ELFCLASS64 and 0 in ELFCLASS32. In `.debug_aranges` the tuple's
 length is also written 0 (I-112): that write is the image phase's, not
@@ -670,6 +784,27 @@ pub enum Weak0Rule { SZero, SIsP, XZero, XConst(i64) }
 For a `Weak0` target, `weak0(h)` says how the value is formed: `S = 0`,
 `S = P`, `X = 0`, or a constant `X` (AArch64 branches: 4). a64.md §7 gives
 the AArch64 table; x86 uses `SZero` for every class.
+
+**`WeakDyn` or `Weak0` [M2]** (`spec/dyn.md` D-25, normative):
+
+```rust
+pub enum WeakClass { Got, AbsWord, Branch, Unfillable }
+```
+
+`weak_use(r_type, place, writable)` gives the class of one live
+relocation that names a weak undefined key: `place` is the input
+section's bytes up to the place (the x86 branch-opcode test reads
+offsets −1 and −2), `writable` whether the place's output section has
+`SHF_WRITE` after `spec/layout.md`'s section rules (RELRO sections
+count as writable). `None` is a type that does not use the key (D-25's
+last row: `NONE`, x86 `SIZE*`, `GOTPC*`). A type absent from the
+architecture's column is `Unfillable`, never `None`. Each architecture
+spec carries its column of D-25's table (`spec/a64.md` §7, `spec/x64.md`
+X-16, `spec/x86.md` §5). The decision is generic: in `Exec` and `Pie`
+the key is `WeakDyn` when some use is `Got` or `AbsWord` and none is
+`Unfillable`; in `Pie` a key with an `Unfillable` use is refused once,
+`weak-undefined-pc-in-pie`; otherwise `Weak0`. Against a `WeakDyn` key
+every `Branch` demands `PLT` (§4.3), and the GOT relaxations are off.
 
 ### 3.13 GNU properties
 
@@ -740,8 +875,16 @@ Every `Howto` names one class. The table gives, per output and target
 kind, the demands or the error. `R`: a `Relative` dynamic relocation at
 the place (counted); `D`: a `Symbolic` one, with `EXPORT`; `C`: `COPY`
 for a data symbol, `CANON_PLT` for a function; `I`: `IPLT`; `E`: the
-error `relocation-incompatible` (§7); `TX`: `E` when the place is in a
-read-only section (no `DT_TEXTREL` is ever written); `—`: nothing.
+error `relocation-incompatible` (§7; its M1 meaning: the relocation
+cannot express the target in this output kind); `TX`: the error
+`text-relocation` when the place is in a read-only section, since the
+record it needs would be a text relocation (`spec/dyn.md` D-47; no
+`DT_TEXTREL` is ever written); `—`: nothing. Two `E` cells of a dynamic
+`Pie` carry the names of their `spec/dyn.md` rules: `Pc` against
+`Shlib{func: true}` is `canonical-plt-in-pie` (D-44), and a `Weak0` key
+with an unfillable use is refused per key, `weak-undefined-pc-in-pie`
+(D-25). The kinds are registered in `mortar_diag` by WP-041 (and listed
+in `spec/diag.md` with them).
 `Static` never has `Preemptible`, `Shlib` or `WeakDyn` targets.
 
 | class | output | Local | Abs | Preemptible | Shlib | Ifunc | Weak0 | WeakDyn |
@@ -751,7 +894,7 @@ read-only section (no `DT_TEXTREL` is ever written); `—`: nothing.
 | `AbsNarrow` | Static, Exec | — | — | | `C` | `I` | — | `E` |
 | | Pie, Shared | `E` | — | `E` | `E` | `E` | — | `E` |
 | `Pc` | Static, Exec | — | — | | `C` | `I` | — | `E` |
-| | Pie, Shared | — | `E` | `E` | `E` | `I` | the architecture spec's §7 (x86-64: `E`, `spec/x64.md` X-15; AArch64: `S = P`) | `E` |
+| | Pie, Shared | — | `E` | `E` | `Pie`: `C` against `Shlib{func: false}` (`spec/dyn.md` D-43), `E` against `Shlib{func: true}` (D-44); `Shared`: `E` | `I` | the architecture spec's §7 (x86-64: `E`, `spec/x64.md` X-15; AArch64: `S = P`) | `E` |
 | `Lo` (low bits of an address paired with a `Pc` page) | any | — | — | as `Pc` | as `Pc` | `I` | — | as `Pc` |
 | `Branch` | Static, Exec | — | — | | `PLT` | `I` | — | `PLT` |
 | | Pie, Shared | — | `E` | `PLT` | `PLT` | `I` | — | `PLT` |
@@ -813,11 +956,23 @@ against a non-TLS symbol, are `E` (at a non-alloc place, `AbsWord` and
 `AbsNarrow` against a TLS symbol are the exception above). Each architecture spec lists which of
 its types belong to which class (a64.md §5).
 
+The `WeakDyn` column's `E` cells are unreachable in `Exec` and `Pie`
+[M2]: `spec/dyn.md` D-25 makes a key with a use of D-25's `unfillable`
+class `Weak0` in `Exec`, and refuses it per key in `Pie`
+(`weak-undefined-pc-in-pie`, §3.12) before any cell is read; a
+`WeakDyn` key therefore meets only `AbsWord` in a writable place, `Got`
+and `Branch` (which demands `PLT`, with a `JUMP_SLOT`, in both kinds).
+In a dynamic `Pie` the `Weak0` cell of `Pc` is likewise preceded by
+that refusal; it stands for a static PIE.
+
 ### 4.4 Slot contents
 
 The content of each slot, and the dynamic relocation it carries, per
 output and target kind, is the architecture spec's table (a64.md §10.1);
-the dynamic relocation types come from `dyn_type`.
+the dynamic relocation types come from `dyn_type`. For `Exec` and `Pie`
+the record each slot and absolute word gets is `spec/dyn.md` D-46
+(normative, one table for every architecture), the TLS records D-48,
+and the place contents per record §3.10.
 
 ## 5. What is decided when
 
@@ -1145,7 +1300,9 @@ The other items rest on the psABIs alone.
 `branch().veneer = false`, `thunk()` is `None`), `X = L + A − P`, `Data{4}`,
 `Signed(32)`. Overflow is §7's error (no thunk exists on x86).
 `PC32`: class `Pc`, `X = S + A − P`; against `Shlib` in `Exec` it is
-`C` (copy relocation, canonical PLT), in `Pie` `E`. Fits.
+`C` (copy relocation, canonical PLT); in `Pie` it is `C` (a copy) against
+shared data and `E` against a shared function (`spec/dyn.md` D-43,
+D-44). Fits.
 
 **A.2 `GOTPCREL` (9), `GOTPCRELX` (41), `REX_GOTPCRELX` (42).** Class
 `Got`; `X = G(Addr) + A − P` (`add_a`: the addend, typically −4, applies
@@ -1160,12 +1317,18 @@ outside the slot, `AddendRule::Any`). Relaxations:
   the rel32 staying at `P`; `jmp *foo@GOTPCREL(%rip)` (`ff 25`) → `jmp
   foo; nop` (`e9 <rel32> 90`), the rel32 moving to `P − 1` and holding
   `S + A − P + 1`. Window `before: 2`.
-- In `Static` only, `REX_GOTPCRELX` binary operations (`03 0b 13 1b 23
-  2b 33 3b`) and `test` (`85`) → `81 /n imm32` and `f7 /0 imm32` (REX.R
-  moved to REX.B) when `S` is in [0, 2^31).
+- In `Static` and `Exec` only (the non-PIE kinds, whose `S` does not
+  move: `spec/x64.md` X-20, `spec/dyn.md` D-46), `REX_GOTPCRELX` binary
+  operations (`03 0b 13 1b 23 2b 33 3b`) and `test` (`85`) → `81 /n
+  imm32` and `f7 /0 imm32` (REX.R moved to REX.B) when `S` is in [0,
+  2^31).
 
 Every form needs a `Local` target that is not `Abs`, `Ifunc` or `Weak0`,
 and `A = −4`; plain `GOTPCREL` is never relaxed (`spec/x64.md` §8.1).
+This is the one scope of x86-64 GOT relaxation, in every output kind
+(`spec/dyn.md` D-46, request R-A7; x64.md X-19, X-20 [M2 for `Exec` and
+`Pie`]): a key that is not `Local` (`Preemptible`, `Shlib`, `WeakDyn`)
+keeps its slot and its record.
 
 The precondition has an address part (`S + A − P` in `Signed(32)`; the
 absolute value in range), so the rule is kind 2 of §5.2: the GOT slot
@@ -1285,6 +1448,12 @@ align_up(tls.size, tls.align)`; `TPOFF32` (23) `Signed(32)`; `DTPOFF64`
 Types are `R_386_*`, numbers from the i386 psABI; relocation sections are
 `SHT_REL`, addends implicit.
 
+The normative i386 rules are `spec/x86.md` §3–§9 (REL addends, fields
+and checks, the table, undefined weak, `GOT32`/`GOT32X`, TLS); this
+appendix is the fit check that shaped the trait, and where it and
+x86.md differ, x86.md holds. The facts the first draft got wrong are
+corrected here (x86.md R-1):
+
 **B.1 REL implicit addends.** `32` (1), `PC32` (2), `GOT32` (3), `PLT32`
 (4), `GOTOFF` (9), `GOTPC` (10), the TLS types: `Implicit { bytes: 4,
 signed: true, shift: 0 }`; `16` (20), `PC16` (21): `bytes: 2`; `8` (22),
@@ -1294,16 +1463,15 @@ width) and the final value is written for `--emit-relocs` (§3.3). Fits.
 
 **B.2 `GOT32` (3), `GOT32X` (43).** `X = G + A − GOT` when the instruction
 has a base register, `X = G + A` (absolute slot address, `Static`/`Exec`
-only) when it has none (ModRM `mod = 00, rm = 101`). `classify` reads the
-ModRM byte at `P − 1` (window `before: 2`) and returns `Minus::GotBase` or
-`Minus::None`. `GOT32X` relaxations: `mov foo@GOT(%reg), %r` (`8b`) →
-`lea foo@GOTOFF(%reg), %r` (`8d`); `call *foo@GOT(%reg)` (`ff /2`) →
-`addr32 call foo`; in `Static`/`Exec` `mov` and binary operations →
-immediates (`mov foo@GOT(%ebx), %edx` → `c7 c2 <abs>`, observed from GNU
-ld; lld 19 leaves the GOT load).
-Kind 2 where the value range matters, kind 1 for `lea` (the `GOTOFF`
-value has no range beyond 32 bits). Fits only because `classify` sees the
-bytes (Appendix C, 1).
+only) when it has none. The base test is x86.md X86-13's: the ModRM byte
+at `P − 1` (`(b & 0xc7) == 5`: no base), plus the SIB check, which
+refuses a SIB `0d` at `P − 1` that the ModRM byte alone misreads
+(x86.md §15.2 W1); and the place must be executable. `classify` returns
+`Minus::GotBase` or `Minus::None`. In static links GNU ld relaxes
+`GOT32X` `mov` to `mov $imm` (`c7 c0+r`), never to `lea`, with base and
+without (x86.md X86-25), and `call *`/`jmp *` and the binary operations
+as x86.md §8 states; lld relaxes nothing. Fits only because `classify`
+sees the bytes (Appendix C, 1).
 
 **B.3 `GOTOFF` (9), `GOTPC` (10).** `GOTOFF`: `S + A − GOT`, `GotRel`;
 `GOTPC`: `GOT + A − P`, `GotBaseRef`. The GOT base is `.got.plt`'s start.
@@ -1317,34 +1485,34 @@ Fits.
 forms (`endbr32` `f3 0f 1e fb`, two chunks as A.8). The push operand is
 the byte offset of the `JUMP_SLOT` in `.rel.plt` (8 per entry), from the
 index in `SynthCx`. `PLT32` is `Branch`, `X = L + A − P`. Fits with a
-per-output-kind variant (Appendix C, 4).
+per-output-kind variant (Appendix C, 4). The IPLT entries of static
+links are x86.md §11.3's.
 
 **B.5 The TLS family.** `TLS_GD` (18): `leal x@tlsgd(,%ebx,1), %eax`
 (`8d 04 1d`) or `leal x@tlsgd(%reg), %eax` (`8d 80+r`) followed by `call
 ___tls_get_addr@PLT` (`PLT32`) or `call *___tls_get_addr@GOT(%reg)`
-(`GOT32X`): a sequence with the call at record `+1`. The four forms have
-different lengths: a 7-byte SIB `lea` or a 6-byte base-register `lea`,
-then a 5-byte `PLT32` call or a 6-byte `GOT32X` call. So the matched
-window is 12, 13, 11 or 12 bytes. `classify` tells the `lea` forms apart
-by the ModRM byte (§3.2). LE in an executable, for the 6 + 5 form
-(checked with GNU ld and lld): `65 a1 00 00 00 00 81 e8 <tpoff>` (`movl
-%gs:0, %eax; subl $x@tpoff, %eax`), written by the lead over its window.
-The longer forms add `nop` padding, and x86.md (WP-030) gives the words
-per form; IE: `movl %gs:0, %eax; addl
-x@gotntpoff(%reg), %eax`. `TLS_LDM` (19) with `TLS_LDO_32` (32): as A.4.
-`TLS_IE` (15): `G(TpOff{negated: false})`, absolute (`movl x@indntpoff,
-%reg`, `a1` or `8b 05+8r`, `03` for `addl`) → `movl $x@ntpoff, %reg` (`c7
-c0+r`) or `addl $…` (`81 c0+r`). `TLS_GOTIE` (16): `G(TpOff{false}) −
-GOT`. `TLS_IE_32` (33): `G(TpOff{negated: true}) − GOT`. `TLS_LE` (17):
-`TpRel`; `TLS_LE_32` (34): `TpRel` with `negate`. `TLS_GOTDESC` (39) and
-`TLS_DESC_CALL` (40): as A.6 (`ff 10` → `66 90`). Dynamic: `TLS_TPOFF`
-(14, `TpOff{false}`), `TLS_TPOFF32` (37, `TpOff{true}`), `TLS_DTPMOD32`
-(35), `TLS_DTPOFF32` (36), `TLS_DESC` (41). `TlsAbi.get_addr` is
-`___tls_get_addr`. Fits with the negated slot and value (Appendix C, 5).
+(`GOT32X`): a sequence with the call at record `+1`. The matched windows
+are 12 bytes (the SIB `lea` + `call`, the base `lea` + `call *`, and the
+base `lea` + `call` + `nop`); the base-register GD with a bare `call`
+does not exist (x86.md X86-34, X86-36). `TLS_LDM` (19) with
+`TLS_LDO_32` (32): windows 11 or 12. The rewritten words per form are
+x86.md §9's. The IE forms: `TLS_IE` (15): `G(TpOff{negated: false})`,
+absolute; `a1` → `b8`, `8b` → `c7 c0+r`, `03` → `81 c0+r`.
+`TLS_GOTIE` (16): `G(TpOff{false}) − GOT`. `TLS_IE_32` (33):
+`G(TpOff{negated: true}) − GOT`. `TLS_LE` (17): `TpRel`; `TLS_LE_32`
+(34): `TpRel` with `negate`. `TLS_GOTDESC` (39) and `TLS_DESC_CALL` (40):
+the LE rewrite of the descriptor load is `8d 05 T` (`lea T, %eax`), not
+`c7`, and `ff 10` → `66 90` (x86.md X86-32, X86-37). Dynamic:
+`TLS_TPOFF` (14, `TpOff{false}`), `TLS_TPOFF32` (37, `TpOff{true}`),
+`TLS_DTPMOD32` (35), `TLS_DTPOFF32` (36), `TLS_DESC` (41).
+`TlsAbi.get_addr` is `___tls_get_addr`. Fits with the negated slot and
+value (Appendix C, 5).
 
-**B.6 `PC16` (21), `PC8` (23).** `Data{2}`/`Data{1}`, `X = S + A − P`,
-`Signed(16)`/`Signed(8)`, implicit 16- and 8-bit addends. `16`, `8`:
-`Either(16)`/`Either(8)`. Fits.
+**B.6 `16` (20), `8` (22), `PC16` (21), `PC8` (23).** `Data{2}`/`Data{1}`.
+`16` and `8` are `su(16)`/`su(8)` (`Either`); `PC16`/`PC8`, `X = S + A −
+P`, are `s(16)`/`s(8)` (`Signed`); overflow is an error (x86.md X86-11).
+The word-size types have no check (X86-10). Implicit 16- and 8-bit
+addends, sign-extended (§3.3). Fits.
 
 ## Appendix C. What the fit check changed
 

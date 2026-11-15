@@ -15,22 +15,25 @@ pub mod forms;
 pub mod mapping;
 pub mod synth;
 pub mod table;
+pub mod weak;
 
 mod apply;
 pub mod relax;
 
 use mortar_arch::shapes::EH_ENCODINGS;
 use mortar_arch::{
-    Arch, Branch, Code, DemandClass, DynRole, EhEncodings, Erratum, ErratumSite, Facts, Field,
-    FieldError, GotBase, GotShape, Howto, OutputCx, OutputKind, PatchCx, PltChunk, PltPart,
-    PltShape, PltVariant, PropMerge, Reach, Records, RefName, Refusal, RelForm, RelocAt, Site,
-    SlotKind, Status, SymNames, SynthCx, ThunkShape, TlsAbi, TlsVariant, UnitWindow, Unproved,
-    Weak0Rule, Window, max_window,
+    Arch, Branch, Code, DemandClass, DynRole, DynTag, EhEncodings, Erratum, ErratumSite, Facts,
+    Field, FieldError, GotBase, GotShape, Howto, LazyTarget, OutputCx, OutputKind, PatchCx,
+    PltChunk, PltPart, PltShape, PltVariant, PropMerge, Reach, Records, RefName, Refusal, RelForm,
+    RelocAt, Site, SlotKind, Status, SymNames, SynthCx, TagWhen, ThunkShape, TlsAbi, TlsVariant,
+    UnitWindow, Unproved, Weak0Rule, WeakClass, Window, max_window,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::{Class, Machine};
 
-pub use apply::{ADD_X0_X1_X0, MRS_X1_TPIDR, NON_ALLOC_TLS_ABS, scan_checks};
+pub use apply::{
+    ADD_X0_X1_X0, LARGE_TLSDESC_DYNAMIC, MRS_X1_TPIDR, NON_ALLOC_TLS_ABS, scan_checks,
+};
 
 /// The AArch64 architecture, built with the milestone it enables and its
 /// options (arch.md §3.7 `errata`).
@@ -78,6 +81,7 @@ pub static FACTS: Facts = Facts {
     got_base: GotBase::GotStart,
     got_header: 1,
     got_plt_reserved: 3,
+    iplt_word: mortar_arch::IpltWord::Resolver,
     max_reach: MAX_REACH,
     code_fill: &[0; 4],
     code_nop: &synth::NOP.to_le_bytes(),
@@ -146,6 +150,18 @@ pub const FEATURE_1_BTI: u32 = 1;
 /// `GNU_PROPERTY_AARCH64_FEATURE_PAUTH` (§13.3; `spec/synth.md` S-95).
 pub const FEATURE_PAUTH: u32 = 0xc000_0001;
 
+/// `DT_AARCH64_BTI_PLT`, `DT_AARCH64_VARIANT_PCS` (§10.3; SYSVABI64).
+pub const DT_AARCH64_BTI_PLT: i64 = 0x7000_0001;
+pub const DT_AARCH64_VARIANT_PCS: i64 = 0x7000_0005;
+
+/// The architecture's `.dynamic` entries (`spec/dyn.md` D-30 rows 24-25,
+/// a64.md §10.3), in D-30's order, each with its condition. Never
+/// `DT_AARCH64_PAC_PLT`: `-z pac-plt` is refused (D-30).
+static DYN_TAGS: [DynTag; 2] = [
+    DynTag { tag: DT_AARCH64_BTI_PLT, value: 0, when: TagWhen::BtiProperty },
+    DynTag { tag: DT_AARCH64_VARIANT_PCS, value: 0, when: TagWhen::VariantPcsJumpSlot },
+];
+
 /// The refusal name of a type: its `R_AARCH64_*` name, or its number in
 /// hex when it has none (diag.md §4.2).
 fn type_name(r_type: u32) -> RefName {
@@ -193,6 +209,12 @@ impl Arch for A64 {
         out: &mut mortar_arch::DemandSink<'_>,
     ) {
         apply::scan(cx, at, out);
+    }
+
+    /// `R_AARCH64_GOTREL64` and `GOTREL32` (M2): a `GotRel` record of a
+    /// non-alloc section needs the GOT base (`spec/arch.md` §4.3).
+    fn nonalloc_demand_types(&self) -> &'static [u32] {
+        if self.enables(Status::M2) { &[307, 308] } else { &[] }
     }
 
     fn apply(
@@ -390,6 +412,41 @@ impl Arch for A64 {
             DynRole::IRelative => 1032,
             DynRole::TpOff { negated: true } => return None,
         })
+    }
+
+    /// `spec/dyn.md` D-49, a64.md §10.2: a `JUMP_SLOT` word holds the PLT
+    /// header's address until it is bound, in both shapes mortar writes
+    /// (GNU ld and lld write the same, lazy and `-z now`). The PAC shapes
+    /// are refused (`plt_variant`) and the other variants are not
+    /// AArch64's: `None`.
+    fn lazy_target(&self, v: PltVariant) -> Option<LazyTarget> {
+        match v {
+            PltVariant::Plain | PltVariant::Bti => Some(LazyTarget::Plt0),
+            _ => None,
+        }
+    }
+
+    /// `spec/dyn.md` D-30 rows 24-25: `DT_AARCH64_BTI_PLT` when the output
+    /// has the BTI property, `DT_AARCH64_VARIANT_PCS` when a `JUMP_SLOT`
+    /// symbol is `STO_AARCH64_VARIANT_PCS`; only in an output with
+    /// `.dynamic` (GNU ld and lld write `BTI_PLT` in a static PIE too).
+    fn dyn_tags(&self, cx: &OutputCx) -> &'static [DynTag] {
+        match cx.output {
+            OutputKind::Exec | OutputKind::Pie | OutputKind::Shared => &DYN_TAGS,
+            OutputKind::Static | OutputKind::Relocatable => &[],
+        }
+    }
+
+    /// a64.md §7.1, AArch64's column of `spec/dyn.md` D-25
+    /// ([`weak::weak_class`]); the place's bytes are not read.
+    fn weak_use(
+        &self,
+        r_type: u32,
+        _place: &[u8],
+        _offset: u64,
+        writable: bool,
+    ) -> Option<WeakClass> {
+        weak::weak_class(r_type, writable)
     }
 
     /// §7, by class and field: `AW`, `AN`, `LO` (and `GT`, whose slot holds

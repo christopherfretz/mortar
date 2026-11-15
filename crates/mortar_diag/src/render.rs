@@ -336,6 +336,37 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(" is kept");
             return shown.then_some(name);
         }
+        Kind::VersionedExport { name, version } => {
+            out.push_str("versioned definition ");
+            let shown = symbol_into(name, style, out);
+            out.push_str("@@");
+            escaped(version, out);
+            out.push_str(" cannot be exported (version definitions are not supported)");
+            return shown.then_some(name);
+        }
+        Kind::CanonicalPltInPie { r_type, name } => {
+            out.push_str("relocation ");
+            escaped(r_type, out);
+            out.push_str(" against symbol `");
+            let shown = symbol_into(name, style, out);
+            out.push_str(
+                "' cannot be used in a position-independent executable; recompile with -fPIE, \
+                 or link with -no-pie",
+            );
+            return shown.then_some(name);
+        }
+        Kind::CopyRelocationAgainstProtected { name, file } => {
+            out.push_str("copy relocation against non-copyable protected symbol `");
+            let shown = symbol_into(name, style, out);
+            out.push_str("' in ");
+            escaped(file, out);
+            return shown.then_some(name);
+        }
+        Kind::CopyRelocationOfZeroSize { name } => {
+            out.push_str("cannot create a copy relocation for symbol ");
+            let shown = symbol_into(name, style, out);
+            return shown.then_some(name);
+        }
         Kind::RelocationIncompatible { r_type, name, reason } => {
             out.push_str("relocation ");
             escaped(r_type, out);
@@ -356,6 +387,24 @@ fn message<'d>(kind: &'d Kind, style: &Style<'_>, out: &mut String) -> Option<&'
             out.push_str(" against '");
             let shown = symbol_into(name, style, out);
             let _ = write!(out, "': {value} is not in [{min}, {max}]");
+            return shown.then_some(name);
+        }
+        Kind::TextRelocation { r_type, name } => {
+            out.push_str("relocation ");
+            escaped(r_type, out);
+            out.push_str(" against symbol `");
+            let shown = symbol_into(name, style, out);
+            out.push_str("' can not be used when making a PIE object; recompile with -fPIE");
+            return shown.then_some(name);
+        }
+        Kind::WeakUndefinedPcInPie { r_type, name } => {
+            out.push_str("relocation ");
+            escaped(r_type, out);
+            out.push_str(" against undefined weak symbol `");
+            let shown = symbol_into(name, style, out);
+            out.push_str(
+                "' cannot be used in a position-independent executable; recompile with -fPIE",
+            );
             return shown.then_some(name);
         }
         Kind::ExecutableStack { file } => {

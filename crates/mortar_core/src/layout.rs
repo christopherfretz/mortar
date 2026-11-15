@@ -69,11 +69,85 @@ pub struct EhRecord {
     pub piece: u32,
 }
 
-/// A copy-relocation allocation: one per `(shared FileId, st_value)`.
+/// A copy-relocation allocation: one per `(shared FileId, st_value)`
+/// (`spec/dyn.md` D-42). `(file, value)` is its identity and its sort key
+/// in [`Slots::copies`]; the other fields follow from the shared object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CopyAlloc {
     pub file: FileId,
     pub value: u64,
+    /// The chunk the copy lands in (D-42 "place").
+    pub place: CopyPlace,
+    /// `min(sh_addralign of the defining section, 2^ctz(st_value))`, a
+    /// power of two (D-42 "alignment").
+    pub align: u64,
+    /// The key of the `COPY` record's `r_sym` (D-42 "record"): the least
+    /// `SymbolId` among the aliases at `(file, value)` that a live
+    /// relocatable object references; a key of [`Slots::copy_of`] that
+    /// maps to this allocation.
+    pub alias: SymbolId,
+}
+
+impl CopyAlloc {
+    /// A fixture allocation: `.dynbss`, alignment 1, alias `SymbolId(0)`.
+    #[must_use]
+    pub fn at(file: FileId, value: u64) -> Self {
+        Self { file, value, place: CopyPlace::DynBss, align: 1, alias: SymbolId(0) }
+    }
+
+    /// The identity and sort key, `(file, value)`.
+    #[must_use]
+    pub fn key(&self) -> (FileId, u64) {
+        (self.file, self.value)
+    }
+}
+
+/// Where a copy allocation lands (`spec/dyn.md` D-42; `spec/layout.md`
+/// L-80).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CopyPlace {
+    /// The chunk `.dynbss` (output section `.bss`, its first chunk): the
+    /// defining address is writable and outside the library's RELRO.
+    DynBss,
+    /// The chunk `.bss.rel.ro` (output section `.bss.rel.ro`, inside
+    /// RELRO): the defining address is in a `PT_GNU_RELRO` or a
+    /// non-writable `PT_LOAD` of the shared object.
+    RelRo,
+}
+
+/// A version of a shared object, by the index of its version definition
+/// there (`vd_ndx`, `spec/dyn.md` D-14, D-27): what a `Vernaux` of
+/// `.gnu.version_r` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VerIndex(pub u16);
+
+/// The `.dynstr` offsets of every string the dynamic sections name
+/// (`spec/dyn.md` D-24), fixed by `mortar_synth::dynstr::dynstr_plan`.
+/// The writers of `.dynsym`, `.dynamic` and the version sections read
+/// offsets here and never build strings. Empty (no `.dynstr`) in a
+/// static link.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DynStr {
+    /// Per `.dynsym` entry after the null one, in [`Slots::dynsym`]
+    /// order: its name.
+    pub symbols: Box<[u32]>,
+    /// Per [`Slots::needed`] entry: its `DT_NEEDED` name (the soname, else
+    /// the name as written).
+    pub needed: Box<[u32]>,
+    /// Per [`Slots::verneed`] entry, per version: the version's name.
+    pub versions: Box<[Box<[u32]>]>,
+    /// `DT_RUNPATH`/`DT_RPATH`, when the output has one.
+    pub runpath: Option<u32>,
+    /// The section's size: byte 0 is NUL, each distinct string once.
+    pub size: u32,
+}
+
+impl DynStr {
+    /// Whether there is no `.dynstr` (a static link).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
 }
 
 /// The content order of the synthetic tables whose size does not depend
@@ -99,16 +173,39 @@ pub struct Slots {
     /// The output's local-dynamic module slot, index 0 of its kind: present
     /// exactly when `TLS_LD` is demanded.
     pub tls_ld: bool,
-    /// `.dynsym`, after the null entry (one per `EXPORT` demand).
+    /// `.dynsym`, after the null entry (`spec/dyn.md` D-21: the imports,
+    /// the exports, the copy aliases and the `WeakDyn` keys; an `EXPORT`
+    /// demand is an export), in D-22's order: the first
+    /// [`Slots::dynsym_unhashed`] entries are the unhashed ones in
+    /// `SymbolId` order, the rest hashed, by (bucket, `SymbolId`). Empty in
+    /// a static link.
     pub dynsym: Box<[SymbolId]>,
+    /// How many entries of [`Slots::dynsym`] are unhashed (D-22: undefined
+    /// with `st_value` 0); `.gnu.hash`'s `symoffset` is this plus 1.
+    pub dynsym_unhashed: u32,
+    /// `.gnu.hash`'s `nbuckets` (D-26: `max(1, ⌊n/4⌋)` for `n` hashed
+    /// entries; D-28 lets an incremental link keep it); 0 without a
+    /// `.gnu.hash`.
+    pub gnu_hash_buckets: u32,
     /// The order of the sections whose dynamic relocations are emitted.
     pub dyn_relocs: Box<[SectionId]>,
-    /// `DT_NEEDED` entries.
+    /// `DT_NEEDED` entries: the needed shared objects (`spec/dyn.md`
+    /// D-11), in D-19a's order (by the position of each one's keeping
+    /// mention). Computed by `mortar_resolve`.
     pub needed: Box<[FileId]>,
+    /// `.gnu.version_r` (`spec/dyn.md` D-27): per needed object that
+    /// provides a version an import binds to, in [`Slots::needed`] order,
+    /// its versions in increasing [`VerIndex`] (the library's own order of
+    /// definitions). Empty without `.gnu.version_r`.
+    pub verneed: Box<[(FileId, Box<[VerIndex]>)]>,
+    /// The `.dynstr` offsets (`spec/dyn.md` D-24).
+    pub dynstr: DynStr,
     /// The live `.eh_frame` records after deduplication of CIEs, in output
     /// order.
     pub eh_records: Box<[EhRecord]>,
-    /// Copy-relocation allocations, sorted.
+    /// Copy-relocation allocations (`spec/dyn.md` D-42), sorted by
+    /// `(file, value)`. Their order inside each chunk (by the least
+    /// `SymbolId` among the aliases) is layout's, not this list's.
     pub copies: Box<[CopyAlloc]>,
     /// The allocation of every key that has one, sorted by key.
     pub copy_of: Box<[(SymbolId, u32)]>,
@@ -396,6 +493,41 @@ pub struct SegmentRules {
     pub max_page: u64,
     /// The `p_flags` of `PT_GNU_STACK` (L-84): `PF_R|PF_W`, or with `PF_X`.
     pub stack: u32,
+    /// The output is position-independent (`ET_DYN`, `spec/dyn.md` D-1):
+    /// its image base is 0 (`spec/layout.md` L-68), so the file header is
+    /// at address 0; otherwise it is at a non-zero base. [`Layout::check`]
+    /// requires it (rule 3).
+    pub pie: bool,
+}
+
+/// `PT_PHDR` and `PT_INTERP` (exactly when an interpreter is named), and
+/// `PT_DYNAMIC` (`spec/dyn.md` D-33, D-61): each over its chunk.
+fn derive_dynamic(ordered: &[&Chunk], word: u8) -> (Vec<Segment>, Option<Segment>) {
+    use mortar_elf::consts::{PF_R, PF_W, PT_DYNAMIC, PT_INTERP, PT_PHDR};
+    let synthetic = |name: &[u8]| {
+        ordered
+            .iter()
+            .copied()
+            .find(|c| c.is_alloc() && matches!(c.kind, ChunkKind::Synthetic(s) if s.name == name))
+    };
+    let covering = |c: &Chunk, p_type, flags, align| Segment {
+        p_type,
+        flags,
+        offset: c.offset,
+        addr: c.addr.unwrap_or(0),
+        filesz: c.size,
+        memsz: c.size,
+        align,
+    };
+    let mut head = Vec::new();
+    if let Some(interp) = synthetic(b".interp") {
+        if let Some(ph) = ordered.iter().find(|c| c.kind == ChunkKind::ProgramHeaders) {
+            head.push(covering(ph, PT_PHDR, PF_R, word));
+        }
+        head.push(covering(interp, PT_INTERP, PF_R, 0));
+    }
+    let dynamic = synthetic(b".dynamic").map(|d| covering(d, PT_DYNAMIC, PF_R | PF_W, word));
+    (head, dynamic)
 }
 
 /// The program headers of a layout (`spec/layout.md` §11, L-125): a pure
@@ -403,12 +535,19 @@ pub struct SegmentRules {
 /// `mortar_layout` (which writes them) and [`Layout::check`] (which
 /// requires the stored ones to equal it).
 ///
-/// In this order (L-67): one `PT_LOAD` per run of consecutive alloc chunks
-/// of one [`LoadClass`] (non-alloc chunks do not break a run); one
-/// `PT_NOTE` per run of consecutive alloc `SHT_NOTE` chunks of one
-/// alignment; `PT_TLS` over the TLS chunks; `PT_GNU_PROPERTY` and
-/// `PT_GNU_EH_FRAME` over the synthetic chunks of those names; one
-/// `PT_GNU_STACK`; `PT_GNU_RELRO` over the RELRO chunks.
+/// In this order (L-67, `spec/dyn.md` D-61): `PT_PHDR` over the program
+/// header table and `PT_INTERP` over the synthetic chunk `.interp`, both
+/// exactly when that chunk exists (an interpreter is named); one `PT_LOAD`
+/// per run of consecutive alloc chunks of one [`LoadClass`] (non-alloc
+/// chunks do not break a run); `PT_DYNAMIC` over the synthetic chunk
+/// `.dynamic` when it exists; one `PT_NOTE` per run of consecutive alloc
+/// `SHT_NOTE` chunks of one alignment; `PT_TLS` over the TLS chunks;
+/// `PT_GNU_PROPERTY` and `PT_GNU_EH_FRAME` over the synthetic chunks of
+/// those names; one `PT_GNU_STACK`; `PT_GNU_RELRO` over the RELRO chunks.
+///
+/// - `PT_PHDR` is `PF_R`, `p_align` the word; `PT_INTERP` `PF_R`,
+///   `p_align` 1; `PT_DYNAMIC` `PF_R|PF_W`, `p_align` the word (D-33).
+///   Each covers its chunk's `size` exactly (file and memory).
 ///
 /// - A `PT_LOAD` starts at its first chunk; its `p_offset` is the least
 ///   offset at or after that chunk's offset congruent to its address modulo
@@ -444,8 +583,13 @@ pub fn derive_segments(
     let ordered: Vec<&Chunk> = order.iter().filter_map(|&c| chunks.get(c)).collect();
     let mut out = Vec::new();
 
+    let (head, dynamic) = derive_dynamic(&ordered, word);
+    out.extend(head);
+
     let loads = derive_loads(&ordered, page_log);
     out.extend(loads.iter().map(|l| l.0));
+
+    out.extend(dynamic);
     let load_page = |addr: u64| -> u64 {
         loads
             .iter()

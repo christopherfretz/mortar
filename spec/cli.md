@@ -104,7 +104,9 @@ An option is looked up in this order:
 - The "rest" form takes every argument that follows and ends the line.
   One row has it: mold's `-run COMMAND...`.
 - The value of each row is checked when the row says how:
-  - a choice of words: `--hash-style=sysv|gnu|both|none`,
+  - a choice of words: `--hash-style=sysv|gnu|both|none` (at M2 the row
+    is `partial`: only `gnu` is carried out, `spec/dyn.md` D-20; `sysv`,
+    `both` and `none` are refused values, §4.4),
     `--color-diagnostics=auto|always|never`, `--icf=all|safe|none`, and
     the others in `docs/status/options.md`;
   - a decimal count: `--error-limit`, `--thread-count`;
@@ -248,7 +250,11 @@ This is libiberty's `buildargv`, as GNU ld uses it.
   `-z force-ibt` is lld's, and only GNU rows have targets (§4.1): it is
   read on every target and refused on AArch64 by §4.4. They land in
   `plan.other` (§3.12) with their value, and stay `refused` (§4.4) until
-  `mortar_x64` honours them.
+  `mortar_x64` (x86-64) or `mortar_x86` (i386) honours them. On i386
+  they will be honoured by `mortar_x86` with the same meaning
+  (`spec/x86.md` X86-55, X86-49, R-11); lld 19/22 ignore `-z ibt` on
+  i386 with a warning ('unknown -z value: ibt'), which mortar does not
+  follow.
 - They are read whatever the target. Each use is recorded in
   `plan.target_options`.
 - When `-m` names the target, `check_target` runs at the end of the line.
@@ -413,6 +419,9 @@ A line that has `-T` or `-dT` needs no input file.
   `--no-allow-shlib-undefined` (`false`), the last wins; `None` is the
   default for the output kind (`spec/input.md` §8.6, `spec/resolve.md`
   §5.2).
+- `init`, `fini`: `-init SYMBOL` and `-fini SYMBOL` (also `=SYMBOL`), the
+  last of each wins; `None` means `_init` and `_fini` (`spec/dyn.md` D-30
+  rows 3-4; WP-042).
 
 ### 3.7 Typed `-z` keywords
 
@@ -484,13 +493,19 @@ The facade does two things with these:
 ### 3.10 Bookkeeping
 
 `plan.bookkeeping` holds:
-- `map` (`-Map`);
-- `print_map` (`-M`);
+- `map` (`-Map`) and `print_map` (`-M`): GNU's text map
+  (`spec/image.md` I-120, I-121);
+- `mortar_map` (`--mortar-map`): `mortar-map 1`, the verifier's map
+  (`spec/image.md` I-77);
 - `cref`;
 - `reproduce`;
 - `threads`: `--threads[=N]` (N is given) and `--thread-count N` set a
-  count; `--threads` alone means `All`; `--no-threads` is a count of 1;
-- `time_phases` and `verify`, which are mortar's own options;
+  count; `--threads` alone means `All`; `--no-threads` is a count of 1.
+  Without `threads`, the phases after input use at most one worker per
+  4 MiB of resident input (`spec/model.md` §6); any `--threads` form,
+  `--threads` alone included, sets the count exactly;
+- `mortar_map`, `time_phases` and `verify`, which are mortar's own
+  options;
 - `verbose`;
 - `trace` (`-t`);
 - `dependency_file`.
@@ -516,7 +531,7 @@ phase that reads it meets it.
 ### 4.1 Rows
 
 There is one row per option, in `crates/mortar_cli/src/rows.rs`. The
-table has 471 rows. A row has:
+table has 472 rows. A row has:
 
 - **spellings**: each with a form (§2.2) and a flag saying whether GNU ld
   has that spelling. The flag decides which spellings abbreviate (§2.4).
@@ -546,7 +561,8 @@ The table includes:
 - every option in `ld.lld-22 --help`;
 - every option in `mold --help`;
 - the `-z` keywords of all three linkers;
-- two options of mortar's own, `--time-phases` and `--verify`.
+- three options of mortar's own, `--mortar-map`, `--time-phases` and
+  `--verify`.
 
 | origin | rows |
 |---|---|
@@ -554,7 +570,7 @@ The table includes:
 | lld only | 117 |
 | mold only | 21 |
 | lld and mold, not GNU ld | 39 |
-| mortar's own | 2 |
+| mortar's own | 3 |
 
 ### 4.2 Status
 
@@ -572,25 +588,36 @@ does: a user may rely on every use the status admits.
 - `refused`: read and recorded, but not carried out yet. This is the
   default.
 
-The status today (WP-027d; `docs/status/options.md` has the list):
-- 40 rows are `supported`; each has its evidence in
+The status today (WP-042 and WP-034; `docs/status/options.md` has the
+list, and counts 54 supported, 4 partial, 44 noop and 370 refused).
+WP-034 made `--no-dependent-libraries` `noop`: mortar never loads the
+libraries `.deplibs` sections name (`spec/resolve.md` §10);
+`--dependent-libraries` stays `refused`. The counts in
+this list are those of WP-027e; WP-031, WP-027d's later rows and WP-042
+(the M2 paragraph below) changed them since:
+- 49 rows are `supported`; each has its evidence in
   `crates/mortar/tests/options.rs`, an observable effect checked against
   GNU ld's output where GNU ld has the option, or the test that checks
-  it.
-- 2 rows are `partial`: `--build-id` (`=md5`, `=uuid`; `spec/synth.md`
-  S-91) and `--fix-cortex-a53-843419` (`=adr`, `=adrp`; `spec/a64.md`
-  §11.2).
-- 28 rows are `noop`; the audit links each to the same bytes as the line
+  it. WP-027e added `--push-state`, `--pop-state`, `-z now`, `-z lazy`
+  (`spec/layout.md` L-60 row 7), `--dependency-file`
+  (`spec/input.md` §10.4) and `--mortar-map`.
+- 3 rows are `partial`: `--build-id` (`=md5`, `=uuid`; `spec/synth.md`
+  S-91), `--fix-cortex-a53-843419` (`=adr`, `=adrp`; `spec/a64.md`
+  §11.2) and `--compress-debug-sections` (only `=none`, WP-027e).
+- 44 rows are `noop`; the audit links each to the same bytes as the line
   without it and checks its reason where it can be checked.
   `--as-needed`, `--no-as-needed` (only shared objects, refused by name)
   and `--hash-style` (only dynamic outputs, refused by name) were
-  `supported` before WP-027d. `--no-dependent-libraries` became `noop`
-  in WP-034 (it is what mortar always does: `spec/resolve.md` §10
-  "Dependent libraries"); `--dependent-libraries`, lld's default, stays
-  `refused` until the specifiers are honoured (the later row there).
-- 402 rows are `refused`, `--gc-sections` among them (`spec/image.md`
+  `supported` before WP-027d. WP-027e added the rows that act only on a
+  dynamic output or a shared-object input: `-rpath`, `-rpath-link`,
+  `--enable-new-dtags`, `--disable-new-dtags`, the five `-Bsymbolic`
+  rows, `-E`, `--no-export-dynamic`, `--no-dynamic-linker`, `-z text`,
+  `-z notext`, `--no-undefined`, `-z defs`; and `--no-gdb-index` (the
+  default).
+- 376 rows are `refused`, `--gc-sections` among them (`spec/image.md`
   I-5): it was `supported` while every link that used it was refused by
-  liveness.
+  liveness. `--warn-common` stays refused (WP-027e: it needs a resolve
+  warning with GNU's three texts).
 
 A work package that implements an option changes the row's status in the
 same change, and adds the row's evidence to the audit, which fails while
@@ -623,6 +650,38 @@ until the phase that honors them lands with its test:
   wait for M2 (L-68); `--no-rosegment`, `--no-warn-execstack`,
   `--error-execstack`, `-z start-stop-gc`, `-Ttext`, `-Tdata`, `-Tbss`,
   `--section-start` and `-z keep-text-section-prefix` stay `refused`.
+- M2, dynamic executables (`spec/dyn.md` §2.3 and request R-C1). WP-042
+  changed what is true while dynamic output is refused: `--hash-style` is
+  `partial` (`gnu` only), `-z notext` (and `-z textoff`) `refused`,
+  `--no-copy-dt-needed-entries` `noop` and `-no-pie` `supported`; it
+  added the `Plan` fields `dynamic.init` and `dynamic.fini`. The other
+  statuses below are each row's status **at the join**: they are listed
+  in `crates/mortar_cli/src/rows.rs` (`AT_JOIN`, read through
+  `Row::status_at_join` and `Parsed::refused_uses_at_join`;
+  `docs/status/options.md` "At the M2 join"), and WP-053 moves them into
+  the table in the change that lifts the dynamic guard. Until then the
+  statuses above stand, the gates (`-pie`, `-dynamic-linker`,
+  `-Bdynamic`) are refused by `mortar::dynamic`, and the noop rows keep
+  the reason that names the refusal. At the join:
+  - `supported`: `-pie`, `-dynamic-linker`, `-Bdynamic`, `--as-needed`,
+    `--no-as-needed` (`spec/dyn.md` D-11), `-E` (and
+    `--export-dynamic`), `-rpath`, `-init`, `-fini`, `-z text`, and
+    `--export-dynamic-symbol` (one more source of `exported`, D-21;
+    `spec/dyn.md` §15 Q9, closed);
+  - `partial`: `--hash-style`, `gnu` only (D-20);
+  - `-z norelro` stays `supported`; in a dynamic output it also moves
+    what RELRO would hold (D-33, D-42, D-49; plumb P-D4);
+  - `refused` by name at M2 (no census line passes them; lld 19 warns
+    that it does not know the last two): `-z notext` (D-47),
+    `-z nocopyreloc`, `--spare-dynamic-tags`, `--copy-dt-needed-entries`
+    (D-15), `--dynamic-list` (M4), `-z nodynamic-undefined-weak` and
+    `-z dynamic-undefined-weak` (D-25);
+  - `noop`: `--no-copy-dt-needed-entries` (the default; D-15);
+  - rows R-C1 does not name whose reason today is the refusal (WP-042):
+    `-rpath-link` and `--no-dynamic-linker` `supported`; the five
+    `-Bsymbolic` rows, `--no-undefined` and `-z defs` stay `noop` with a
+    reason that no longer names the refusal (GNU ld and mold write
+    nothing for `-Bsymbolic` in a PIE; lld writes `DF_SYMBOLIC`).
 
 ### 4.3 What the facade does with a parse
 
@@ -663,7 +722,7 @@ because a failed link prints nothing on standard output
   `--gc-sections --no-gc-sections` links; `--no-gc-sections
   --gc-sections` is refused.
 - `refusals()` turns them into `Refused{Option, spelling}`, for example
-  `unsupported option: -o` or `unsupported option: -z now`, and a refused
+  `unsupported option: -o` or `unsupported option: -z nodelete`, and a refused
   value into `Refused{OptionValue, spelling=value}` with the row's note,
   for example `unsupported option value: --build-id=md5`.
 
@@ -764,7 +823,12 @@ The 33 rows the census uses:
 
 The test fails when a line uses a row outside this list. These rows are
 the order in which options should become supported. Of them, `-EL`,
-`-plugin` and `-plugin-opt` are noops today; the rest are refused.
+`-plugin`, `-plugin-opt`, `--as-needed`, `--no-as-needed`,
+`--hash-style`, `--no-dynamic-linker` and `-z text` are noops today;
+`-(`, `-)`, `--build-id`, `--eh-frame-hdr`, `--fix-cortex-a53-843419`,
+`--pop-state`, `--push-state`, `--sysroot`, `-Bstatic`, `-L`, `-X`, `-l`,
+`-m`, `-o`, `-z noexecstack`, `-z now` and `-z relro` are supported or
+partial (WP-027e); the rest are refused.
 
 ## 7. Against GNU ld
 

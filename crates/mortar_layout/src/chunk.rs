@@ -12,8 +12,8 @@ use mortar_core::column::Column;
 use mortar_core::id::{ChunkId, OutSecId, SectionId, SymbolId};
 use mortar_core::inputs::{Inputs, Reader, SymbolKey};
 use mortar_core::layout::{
-    AllocKey, Chunk, ChunkKind, Folds, MergeMap, Part, Place, SegmentRules, SymPlace, Synth,
-    derive_segments,
+    AllocKey, Chunk, ChunkKind, CopyAlloc, CopyPlace, Folds, MergeMap, Part, Place, SegmentRules,
+    Slots, SymPlace, Synth, derive_segments,
 };
 use mortar_core::liveness::Liveness;
 use mortar_core::par::Pool;
@@ -26,7 +26,7 @@ use crate::assign::{OutInfo, is_c_identifier};
 use crate::diag::{LayoutDiag, feature, internal};
 use crate::headers::Headers;
 use crate::order::Ordered;
-use crate::rank::{Rank, rank_of};
+use crate::rank::{Rank, Z, home, leads, rank_in};
 use crate::target::Target;
 
 /// A synthetic chunk the caller (synthesis) asks for, with its
@@ -75,6 +75,93 @@ pub fn commons(resolution: &Resolution, inputs: Option<&Inputs<'_>>) -> Vec<Comm
             Some(Common { symbol: s, size: shape.size, align: shape.align, tls })
         })
         .collect()
+}
+
+/// A copy-relocation allocation as layout places it (`spec/dyn.md` D-42):
+/// the allocation `index` of `Slots::copies`, its chunk, size and
+/// alignment, and the least `SymbolId` among its aliases, which orders the
+/// allocations inside their chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyRow {
+    pub index: u32,
+    pub place: CopyPlace,
+    /// The defining entry's `st_size` (D-42 "size"; never 0: refused
+    /// before layout, `copy-relocation-of-zero-size`).
+    pub size: u64,
+    /// log2 of the alignment (D-42 "alignment").
+    pub align: u8,
+    /// The least `SymbolId` among the aliases at the allocation's
+    /// `(file, st_value)` (D-42 "order within each chunk").
+    pub first: SymbolId,
+}
+
+/// The copy rows of `slots`, with each allocation's size from `size`
+/// (`Slots::copies` does not carry it): the least alias of each
+/// allocation from `Slots::copy_of` (its record's alias when no key maps
+/// to it).
+///
+/// # Errors
+///
+/// `internal-error` for an alignment that is not a power of two (D-42
+/// computes one).
+pub fn copy_rows(
+    slots: &Slots,
+    size: impl Fn(u32, &CopyAlloc) -> u64,
+) -> Result<Vec<CopyRow>, LayoutDiag> {
+    let mut first: Vec<SymbolId> = slots.copies.iter().map(|c| c.alias).collect();
+    for &(s, i) in &*slots.copy_of {
+        if let Some(f) = first.get_mut(i as usize) {
+            *f = (*f).min(s);
+        }
+    }
+    slots
+        .copies
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            if !c.align.is_power_of_two() {
+                return Err(internal("a copy allocation's alignment is not a power of two"));
+            }
+            Ok(CopyRow {
+                index: i as u32,
+                place: c.place,
+                size: size(i as u32, c),
+                align: c.align.trailing_zeros() as u8,
+                first: first[i],
+            })
+        })
+        .collect()
+}
+
+/// [`copy_extent`]'s result: the rows with their offsets, the chunk's
+/// size and its alignment (log2).
+pub type CopyPlan = (Vec<(CopyRow, u64)>, u64, u8);
+
+/// The allocations of one copy chunk (D-42): in the order of their least
+/// alias, each at the aligned prefix sum (L-22), as `(row, offset)`; and
+/// the chunk's size and alignment (log2). What synthesis gives as the
+/// size of `.dynbss` or `.bss.rel.ro` must be this size.
+///
+/// # Errors
+///
+/// `internal-error` when the offsets overflow.
+pub fn copy_extent(rows: &[CopyRow], place: CopyPlace) -> Result<CopyPlan, LayoutDiag> {
+    let mut mine: Vec<CopyRow> = rows.iter().copied().filter(|r| r.place == place).collect();
+    mine.sort_by_key(|r| (r.first, r.index));
+    let (mut size, mut align) = (0u64, 0u8);
+    let mut out = Vec::with_capacity(mine.len());
+    for r in mine {
+        if r.align > 63 {
+            return Err(internal("a copy allocation aligned beyond 2^63"));
+        }
+        let at = size
+            .checked_next_multiple_of(1u64 << r.align)
+            .ok_or_else(|| internal("copy offsets overflow"))?;
+        size = at.checked_add(r.size).ok_or_else(|| internal("copy offsets overflow"))?;
+        align = align.max(r.align);
+        out.push((r, at));
+    }
+    Ok((out, size, align))
 }
 
 /// The output sections named by a confirmed `__start_SEC`/`__stop_SEC`
@@ -155,6 +242,11 @@ pub struct ChunkInputs<'t, 'n> {
     /// `-z relro` (the default); `-z norelro` puts rank 7 in the RW
     /// segment with no padding and no `PT_GNU_RELRO` (§20.2).
     pub relro: bool,
+    /// `-z now`: `.got.plt` is RELRO (`rank_with`, L-60).
+    pub now: bool,
+    /// The copy-relocation allocations (D-42), placed in the synthetic
+    /// chunks `.dynbss` and `.bss.rel.ro`; empty in a static link.
+    pub copies: &'t [CopyRow],
 }
 
 /// One body part: its members and their offsets, size and alignment.
@@ -219,7 +311,8 @@ const fn header_sizes(class: Class) -> (u64, u64, u64, u8) {
 /// # Errors
 ///
 /// L-89 (a TLS common), L-110 (a code section larger than `S`), and
-/// `internal-error` for a size that overflows.
+/// `internal-error` for a size that overflows or a copy chunk that is
+/// missing or not the size of its allocations (D-42).
 #[allow(clippy::too_many_lines)]
 pub fn chunk(
     inputs: &ChunkInputs<'_, '_>,
@@ -234,7 +327,7 @@ pub fn chunk(
     }
     let bss = a.outsecs.iter().find(|(_, o)| o.name == b".bss").map(|(id, _)| id);
     // Parts per output section, parallel over output sections (L-22).
-    let planned: Vec<Result<Vec<PartPlan>, LayoutDiag>> = pool.map(outs, |o| {
+    let planned: Vec<Result<Vec<PartPlan>, LayoutDiag>> = pool.unit_cost(10000).map(outs, |o| {
         let id = OutSecId(o as u32);
         let out = &a.outsecs[id];
         let exec = out.flags & SHF_EXECINSTR != 0;
@@ -259,11 +352,15 @@ pub fn chunk(
         m.0 = m.0.max(end);
         m.1 = m.1.max(frag.align);
     }
-    // Synthetic chunks named like an output section join it.
+    // Synthetic chunks named like an output section join it; `.dynbss`
+    // joins `.bss` (`rank::home`).
     let joins: Vec<Option<OutSecId>> = inputs
         .synthetic
         .iter()
-        .map(|s| a.outsecs.iter().find(|(_, o)| o.name == s.synth.name).map(|(id, _)| id))
+        .map(|s| {
+            let name = home(s.synth.name);
+            a.outsecs.iter().find(|(_, o)| o.name == name).map(|(id, _)| id)
+        })
         .collect();
     let mut has_synth = vec![false; outs];
     for j in joins.iter().flatten() {
@@ -299,13 +396,17 @@ pub fn chunk(
                 && !empty_only[o]
         })
         .collect();
+    let keywords = Z { now: inputs.now, relro: inputs.relro };
     let rank_of_out = |o: usize| {
         let out = &a.outsecs[OutSecId(o as u32)];
-        rank_of(out.name, out.sh_type, out.flags)
+        rank_in(out.name, out.sh_type, out.flags, keywords)
     };
     // RELRO padding exists when rank 7 is non-empty (L-64).
     let relro_nonempty = (0..outs).any(|o| present[o] && rank_of_out(o).is_relro())
-        || inputs.synthetic.iter().any(|s| rank_of(s.synth.name, s.sh_type, s.flags).is_relro());
+        || inputs
+            .synthetic
+            .iter()
+            .any(|s| rank_in(s.synth.name, s.sh_type, s.flags, keywords).is_relro());
 
     let (ehdr, phent, shent, hdr_align) = header_sizes(target.class);
     let mut chunks: Vec<Chunk> = Vec::new();
@@ -369,24 +470,65 @@ pub fn chunk(
         (0, 0, 0),
         None,
     );
+    // The copy chunks and their allocations (D-42): each chunk's size is
+    // its allocations' extent.
+    let mut sym_place = Vec::new();
+    let copy_chunks: [(CopyPlace, &[u8]); 2] =
+        [(CopyPlace::DynBss, b".dynbss"), (CopyPlace::RelRo, b".bss.rel.ro")];
+    let mut copy_plans = Vec::new();
+    for (place, name) in copy_chunks {
+        let (rows, size, align) = copy_extent(inputs.copies, place)?;
+        let at = inputs.synthetic.iter().position(|s| s.synth.name == name);
+        match at {
+            None if rows.is_empty() => {}
+            None => {
+                return Err(internal(format!(
+                    "copy allocations with no {} chunk",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+            Some(i) if inputs.synthetic[i].size != size => {
+                return Err(internal(format!(
+                    "{} has size {:#x}, its copy allocations {size:#x}",
+                    String::from_utf8_lossy(name),
+                    inputs.synthetic[i].size
+                )));
+            }
+            Some(i) => copy_plans.push((i, rows, align)),
+        }
+    }
     for (i, s) in inputs.synthetic.iter().enumerate() {
         let r = match joins[i] {
             Some(o) => rank_of_out(o.0 as usize),
-            None => rank_of(s.synth.name, s.sh_type, s.flags),
+            None => rank_in(s.synth.name, s.sh_type, s.flags, keywords),
         };
         let group = joins[i].map_or(u32::MAX, |o| o.0);
-        let mut c = blank(ChunkKind::Synthetic(s.synth), s.sh_type, s.flags, s.align, s.size);
+        // A joining copy chunk leads its section (`rank::leads`); every
+        // other one follows the section's chunks.
+        let key = if joins[i].is_some() && leads(s.synth.name) {
+            (group, 0, 0)
+        } else {
+            (group, i as u32, u32::MAX - 1)
+        };
+        let mut align = s.align;
+        let plan = copy_plans.iter().find(|p| p.0 == i);
+        if let Some((_, _, a)) = plan {
+            align = align.max(*a);
+        }
+        let mut c = blank(ChunkKind::Synthetic(s.synth), s.sh_type, s.flags, align, s.size);
         c.relro = inputs.relro && r.is_relro();
-        push(
-            &mut chunks,
-            &mut ranks,
-            &mut keys,
-            &mut out_of,
-            c,
-            r,
-            (group, i as u32, u32::MAX - 1),
-            joins[i],
-        );
+        let id = push(&mut chunks, &mut ranks, &mut keys, &mut out_of, c, r, key, joins[i]);
+        if let Some((_, rows, _)) = plan {
+            for &(row, offset) in rows {
+                sym_place.push(SymPlace {
+                    key: AllocKey::Copy(row.index),
+                    chunk: id,
+                    offset,
+                    size: row.size,
+                    align: row.align,
+                });
+            }
+        }
     }
     let relro_padding = (inputs.relro && relro_nonempty).then(|| {
         let mut c = blank(
@@ -411,7 +553,6 @@ pub fn chunk(
     // Per output section: bodies, islands, merged.
     let mut islands = Vec::new();
     let mut place_rows: Vec<(SectionId, ChunkId, u64)> = Vec::new();
-    let mut sym_place = Vec::new();
     for o in 0..outs {
         if !present[o] {
             continue;
@@ -422,7 +563,8 @@ pub fn chunk(
         let exec = out.flags & SHF_EXECINSTR != 0;
         let with_islands = exec && target.islands.is_some();
         let n_parts = plans[o].len();
-        let mut sub = 0u32;
+        // From 1: a leading copy chunk is (o, 0, 0).
+        let mut sub = 1u32;
         let has_body = !inputs.ordered.members[id].is_empty()
             || (commons_in_bss && Some(id) == bss)
             || (merged[o].is_none() && !has_synth[o]);
@@ -576,6 +718,22 @@ pub fn chunk(
             }
         }
     }
+    // A leading copy chunk is its section's first chunk: aligned to the
+    // largest alignment of the section's chunks (L-5, as the islands
+    // above).
+    for c in 0..out_of.len() {
+        let id = ChunkId(c as u32);
+        let lead = matches!(chunks[id].kind, ChunkKind::Synthetic(s) if leads(s.name));
+        let Some(o) = out_of[c].filter(|_| lead) else { continue };
+        let widest = (0..out_of.len())
+            .filter(|&d| out_of[d] == Some(o))
+            .map(|d| chunks[ChunkId(d as u32)].align)
+            .max()
+            .unwrap_or(0);
+        chunks[id].align = chunks[id].align.max(widest);
+    }
+    // Rule 5: sorted by key (commons, then copies by index).
+    sym_place.sort_by_key(|p: &SymPlace| p.key);
     Ok(Staged {
         chunks,
         order: order.into(),

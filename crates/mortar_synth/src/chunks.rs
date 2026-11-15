@@ -8,37 +8,68 @@ use mortar_core::ChunkId;
 use mortar_core::layout::Synth;
 use mortar_elf::Class;
 use mortar_elf::consts::{
-    SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHF_WRITE, SHT_NOTE, SHT_PROGBITS, SHT_REL, SHT_RELA,
-    SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHF_MERGE, SHF_STRINGS, SHF_WRITE, SHT_DYNAMIC,
+    SHT_DYNSYM, SHT_GNU_HASH, SHT_GNU_VERNEED, SHT_GNU_VERSYM, SHT_NOTE, SHT_PROGBITS, SHT_REL,
+    SHT_RELA, SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX,
 };
 
 /// A synthetic chunk of S-3, by its number there. The M2 chunks are named
-/// so the numbering stays S-3's; M1 never creates them.
+/// so the numbering stays S-3's; M1 never creates them, and a static link
+/// never does (`spec/dyn.md` §1: they exist only in dynamic output).
+///
+/// Each M2 row names the file of the package that plans its content
+/// (`spec/landed/dyn/WP-040.md`); after WP-041 nobody else edits this
+/// list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum SynthKind {
+    /// M2: `mortar_synth/src/interp.rs` (WP-M2-DYNAMIC; D-30, D-31).
     Interp = 1,
     NoteGnuProperty = 2,
     NoteGnuBuildId = 3,
+    /// M2: `mortar_synth/src/gnuhash.rs` (WP-M2-DYNSYM; D-26).
     GnuHash = 4,
+    /// M2: `mortar_synth/src/dynsym.rs` (WP-M2-DYNSYM; D-21 to D-23).
     Dynsym = 5,
+    /// M2: `mortar_synth/src/dynstr.rs` (WP-M2-DYNSYM; D-24).
     Dynstr = 6,
+    /// M2: `mortar_synth/src/version.rs` (WP-M2-DYNSYM; D-27).
     GnuVersion = 7,
+    /// M4 (a version script defines a version); never created at M2.
     GnuVersionD = 8,
+    /// M2: `mortar_synth/src/version.rs` (WP-M2-DYNSYM; D-27).
     GnuVersionR = 9,
+    /// M2: `mortar_synth/src/rela.rs` (WP-M2-RELOC; D-40, D-42); the
+    /// records' bytes `mortar_image/src/dynrel.rs`.
     RelaDyn = 10,
+    /// M4 (`-z pack-relative-relocs`); never created at M2.
     RelrDyn = 11,
+    /// M1 (IPLT); M2 `JUMP_SLOT`s: `mortar_synth/src/got.rs` (WP-M2-RELOC;
+    /// D-41).
     RelaPlt = 12,
     EhFrameHdr = 13,
     EhFrame = 14,
     Plt = 15,
     Got = 16,
     GotPlt = 17,
+    /// M2: `mortar_synth/src/dynamic.rs`, values `mortar_image/src/dynamic.rs`
+    /// (WP-M2-DYNAMIC; D-30).
     Dynamic = 18,
     Symtab = 19,
     SymtabShndx = 20,
     Strtab = 21,
     Shstrtab = 22,
+    Comment = 23,
+    /// M2: `.dynbss`, the copy allocations of [`mortar_core::CopyPlace::DynBss`]
+    /// (output section `.bss`, its first chunk): sized by
+    /// `mortar_synth/src/rela.rs` (WP-M2-RELOC; D-42), placed by
+    /// `mortar_layout` (WP-M2-LAYOUT; D-60). After `.comment` so every M1
+    /// chunk keeps its id.
+    DynBss = 24,
+    /// M2: the copy chunk of `.bss.rel.ro`, the allocations of
+    /// [`mortar_core::CopyPlace::RelRo`] (inside RELRO): as [`Self::DynBss`]
+    /// (D-42, D-60).
+    BssRelRo = 25,
 }
 
 /// The section header fields of a synthetic chunk that do not depend on
@@ -96,14 +127,19 @@ impl SynthKind {
             Self::SymtabShndx => b".symtab_shndx",
             Self::Strtab => b".strtab",
             Self::Shstrtab => b".shstrtab",
+            Self::Comment => b".comment",
+            Self::DynBss => b".dynbss",
+            Self::BssRelRo => b".bss.rel.ro",
         }
     }
 
-    /// The header fields of an M1 chunk, for an output of `class` whose
-    /// relocations are REL when `rel`. `None` for the M2 chunks, and for
-    /// the chunks whose type or alignment comes from their plan
+    /// The header fields of a chunk, for an output of `class` whose
+    /// relocations are REL when `rel` (M2 rows: `spec/dyn.md` D-34; their
+    /// `sh_link`/`sh_info` are the image's). `None` for the M4 chunks and
+    /// for the chunks whose type or alignment comes from their plan
     /// (`.eh_frame`: [`crate::EhPlan::sh_type`] and
-    /// [`crate::EhPlan::align`]; `.plt`: the PLT shape's alignment).
+    /// [`crate::EhPlan::align`]; `.plt`: the PLT shape's alignment;
+    /// `.dynbss` and `.bss.rel.ro`: their allocations' alignment, D-42).
     #[must_use]
     pub fn header(self, class: Class, rel: bool) -> Option<Header> {
         let word = class.word_size() as u64;
@@ -117,14 +153,22 @@ impl SynthKind {
             Self::NoteGnuBuildId => h(SHT_NOTE, SHF_ALLOC, 4, 0),
             // S-69: SHF_INFO_LINK, sh_info `.got.plt`.
             Self::RelaPlt => {
-                let (t, e) = match (rel, class) {
-                    (true, Class::Elf32) => (SHT_REL, 8),
-                    (true, Class::Elf64) => (SHT_REL, 16),
-                    (false, Class::Elf32) => (SHT_RELA, 12),
-                    (false, Class::Elf64) => (SHT_RELA, 24),
-                };
+                let (t, e) = rel_form(class, rel);
                 h(t, SHF_ALLOC | SHF_INFO_LINK, word, e)
             }
+            // D-34: sh_link `.dynsym`.
+            Self::RelaDyn => {
+                let (t, e) = rel_form(class, rel);
+                h(t, SHF_ALLOC, word, e)
+            }
+            // D-34.
+            Self::Interp => h(SHT_PROGBITS, SHF_ALLOC, 1, 0),
+            Self::GnuHash => h(SHT_GNU_HASH, SHF_ALLOC, word, if word == 8 { 0 } else { 4 }),
+            Self::Dynsym => h(SHT_DYNSYM, SHF_ALLOC, word, if word == 8 { 24 } else { 16 }),
+            Self::Dynstr => h(SHT_STRTAB, SHF_ALLOC, 1, 0),
+            Self::GnuVersion => h(SHT_GNU_VERSYM, SHF_ALLOC, 2, 2),
+            Self::GnuVersionR => h(SHT_GNU_VERNEED, SHF_ALLOC, 4, 0),
+            Self::Dynamic => h(SHT_DYNAMIC, SHF_ALLOC | SHF_WRITE, word, 2 * word),
             // S-58: alignment 4.
             Self::EhFrameHdr => h(SHT_PROGBITS, SHF_ALLOC, 4, 0),
             Self::Got | Self::GotPlt => h(SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, word, word),
@@ -135,8 +179,20 @@ impl SynthKind {
             Self::Strtab | Self::Shstrtab => h(SHT_STRTAB, 0, 1, 0),
             Self::Plt => h(SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 16, 0),
             Self::EhFrame => h(SHT_PROGBITS, SHF_ALLOC, word, 0),
+            // S-100: the inputs' `.comment` flags.
+            Self::Comment => h(SHT_PROGBITS, SHF_MERGE | SHF_STRINGS, 1, 1),
             _ => None,
         }
+    }
+}
+
+/// The type and entry size of a relocation section: REL or RELA, by class.
+fn rel_form(class: Class, rel: bool) -> (u32, u64) {
+    match (rel, class) {
+        (true, Class::Elf32) => (SHT_REL, 8),
+        (true, Class::Elf64) => (SHT_REL, 16),
+        (false, Class::Elf32) => (SHT_RELA, 12),
+        (false, Class::Elf64) => (SHT_RELA, 24),
     }
 }
 
@@ -158,4 +214,31 @@ pub fn chunk_ids(first: ChunkId, present: &[(SynthKind, u64)]) -> Option<Box<[(C
             .map(|(i, &(_, size))| (ChunkId(first.0 + i as u32), size))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // S-3 and dyn.md D-34: the M2 rows have their names and headers; the
+    // copy chunks come after `.comment`, so a static link's chunks keep
+    // their ids (a chunk that does not exist gets none).
+    #[test]
+    fn the_m2_rows() {
+        let h = |k: SynthKind, class| k.header(class, false).unwrap();
+        assert_eq!(h(SynthKind::Dynsym, Class::Elf64).entsize, 24);
+        assert_eq!(h(SynthKind::Dynsym, Class::Elf32).entsize, 16);
+        assert_eq!(h(SynthKind::GnuHash, Class::Elf32).entsize, 4);
+        assert_eq!(h(SynthKind::GnuVersionR, Class::Elf64).align, 4);
+        assert_eq!(h(SynthKind::Dynamic, Class::Elf64).flags, SHF_ALLOC | SHF_WRITE);
+        assert_eq!(SynthKind::RelaDyn.header(Class::Elf32, true).unwrap().sh_type, SHT_REL);
+        assert_eq!(h(SynthKind::Interp, Class::Elf64).align, 1);
+        for m4 in [SynthKind::GnuVersionD, SynthKind::RelrDyn, SynthKind::DynBss] {
+            assert!(m4.header(Class::Elf64, false).is_none());
+        }
+        assert_eq!(SynthKind::BssRelRo.name(false), b".bss.rel.ro");
+        assert!(SynthKind::DynBss > SynthKind::Comment && SynthKind::BssRelRo > SynthKind::DynBss);
+        let ids = chunk_ids(ChunkId(4), &[(SynthKind::Comment, 9), (SynthKind::Shstrtab, 3)]);
+        assert_eq!(ids.unwrap()[..], [(ChunkId(4), 3), (ChunkId(5), 9)]);
+    }
 }

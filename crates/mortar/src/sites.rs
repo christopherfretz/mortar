@@ -13,7 +13,6 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use mortar_arch::need::branch_site;
 use mortar_arch::{
     Arch, FillCx, FillTables, OutputKind, ProofRun, SectionOut, SlotKind, SymNames, SymValue,
     TargetKind, TlsBlock,
@@ -21,7 +20,6 @@ use mortar_arch::{
 use mortar_core::assignment::Assignment;
 use mortar_core::demands::DemandFlags;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, SymKind};
-use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::layout::Slots;
 use mortar_core::layout::{ChunkKind, MergeMap, ThunkTarget};
 use mortar_core::par::Pool;
@@ -29,11 +27,11 @@ use mortar_core::resolution::{Def, Resolution, SectionKind};
 use mortar_core::split::Split;
 use mortar_core::{Demands, Liveness};
 use mortar_diag::{Diagnostic, Key};
+use mortar_elf::SymbolSection;
 use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS};
-use mortar_elf::{SymbolSection, SymbolTable};
 use mortar_layout::fixed::{BranchAt, OwnedCode, Round, Sites};
 use mortar_layout::{Headers, LayoutDiag};
-use mortar_scan::{RecIndex, Walker};
+use mortar_scan::{BranchRec, RecIndex, Walker};
 use mortar_synth::GotPlan;
 use mortar_synth::got::{GotAddrs, Region};
 
@@ -49,7 +47,7 @@ struct CodeSec {
 }
 
 /// The synthetic chunks whose addresses relocations read.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SynthIds {
     pub got: Option<ChunkId>,
     pub got_plt: Option<ChunkId>,
@@ -59,7 +57,6 @@ pub struct SynthIds {
 /// The tables the sites read.
 #[derive(Clone, Copy)]
 pub struct SiteInputs<'a, 's> {
-    pub inputs: &'a Inputs<'s>,
     pub resolution: &'a Resolution,
     pub assignment: &'a Assignment<'a>,
     pub headers: &'a Headers<'s>,
@@ -80,10 +77,6 @@ pub struct LinkSites<'a, 's> {
     walker: &'a Walker<'a, 's>,
     code: Vec<CodeSec>,
     branches: Vec<BranchAt>,
-    /// Each object's symbol table, found once (`Object::symbols` scans the
-    /// section headers: per branch target and round it cost ~2 µs, 245 ms
-    /// a round in a protoc link — WP-027a).
-    symtabs: Vec<Option<SymbolTable<'s>>>,
     /// Whether `code` is asked (`Arch::errata()` is not empty).
     errata: bool,
 }
@@ -98,16 +91,24 @@ impl std::fmt::Debug for LinkSites<'_, '_> {
 }
 
 impl<'a, 's> LinkSites<'a, 's> {
-    /// The branch sites: one parallel pass over the relocations of the
-    /// live code sections (`need::branch_site` on each, with the target's
-    /// final demand flags).
+    /// The branch sites: the scan's branch candidates (`Scanned.branches`)
+    /// of the live code sections, each made a site with its target's
+    /// final demand flags (`need::branch_site`). Debug builds also walk
+    /// the code sections' relocations again, as this did before WP-032i,
+    /// and require the same sites.
     ///
     /// # Errors
     ///
-    /// The scan's diagnostic of a section that cannot be opened (the scan
-    /// reported it already; the link has failed).
+    /// None in a release build. A debug build's walk: the scan's
+    /// diagnostic of a section that cannot be opened (the scan reported it
+    /// already; the link has failed).
+    #[cfg_attr(
+        not(debug_assertions),
+        allow(clippy::unnecessary_wraps, reason = "a debug build's check walk can fail")
+    )]
     pub fn new(
         t: SiteInputs<'a, 's>,
+        candidates: &[Vec<BranchRec>],
         arch: &'a dyn Arch,
         walker: &'a Walker<'a, 's>,
         pool: &Pool,
@@ -125,43 +126,15 @@ impl<'a, 's> LinkSites<'a, 's> {
             let Some((file, index)) = t.resolution.sh_index(sid) else { continue };
             code.push(CodeSec { file, sid, index: index.0, rel: row.reloc.0, out });
         }
-        let found: Vec<Result<Vec<BranchAt>, (Key, Diagnostic)>> = pool.map(code.len(), |i| {
-            let c = code[i];
-            let mut out = Vec::new();
-            if c.rel == 0 {
-                return Ok(out);
-            }
-            let leads = t.order.leads(c.sid);
-            walker.walk(c.file, c.sid, c.index, c.rel, 0..u64::MAX, leads, &mut |v| {
-                if arch.branch(v.at.howto).is_none() {
-                    return;
-                }
-                let kind = v.tables.sym(v.at.key).kind;
-                let flags = t.demands.of(v.at.key);
-                if let Some(site) =
-                    branch_site(arch, OutputKind::Static, &v.at, walker.names(), kind, flags)
-                {
-                    out.push(BranchAt {
-                        section: c.sid,
-                        offset: v.at.r_offset,
-                        record: v.at.index,
-                        site,
-                    });
-                }
-            })?;
-            Ok(out)
-        });
-        let mut branches = Vec::new();
-        for f in found {
-            branches.extend(f?);
+        let branches = branches_of(&t, candidates, &code);
+        #[cfg(not(debug_assertions))]
+        let _ = (walker, pool);
+        #[cfg(debug_assertions)]
+        {
+            let by_walk = walk_branches(&t, arch, walker, pool, &code)?;
+            assert!(by_walk == branches, "the scan's branch sites differ from a walk's");
         }
-        let files: Vec<&mortar_core::inputs::File<'s>> =
-            t.inputs.files.iter().map(|(_, f)| f).collect();
-        let symtabs = pool.map(files.len(), |i| match files[i].reader {
-            Reader::Object(obj) => obj.symbols().ok().flatten(),
-            _ => None,
-        });
-        Ok(Self { t, arch, walker, code, branches, symtabs, errata: !arch.errata().is_empty() })
+        Ok(Self { t, arch, walker, code, branches, errata: !arch.errata().is_empty() })
     }
 
     /// The addresses of a round, as fill's tables.
@@ -203,6 +176,91 @@ impl<'a, 's> LinkSites<'a, 's> {
     }
 }
 
+/// The branch sites of `code` (in `SectionId` order) from the scan's
+/// candidates: those in a section of `code`, by section and then record,
+/// each with its key's final demand flags.
+fn branches_of(
+    t: &SiteInputs<'_, '_>,
+    candidates: &[Vec<BranchRec>],
+    code: &[CodeSec],
+) -> Vec<BranchAt> {
+    let mut out: Vec<BranchAt> = Vec::new();
+    let mut last: Option<(SectionId, bool)> = None;
+    for b in candidates.iter().flatten() {
+        let keep = match last {
+            Some((s, k)) if s == b.section => k,
+            _ => {
+                let k = code.binary_search_by_key(&b.section, |c| c.sid).is_ok();
+                last = Some((b.section, k));
+                k
+            }
+        };
+        if keep {
+            out.push(BranchAt {
+                section: b.section,
+                offset: b.offset,
+                record: b.record,
+                site: b.site.site(t.demands.of(b.site.key)),
+            });
+        }
+    }
+    // The scan's units are in `(FileId, section index)` order; `SectionId`s
+    // follow it (`spec/model.md` §2.2), so this is a check.
+    if !out.is_sorted_by_key(|b| b.section) {
+        out.sort_by_key(|b| b.section);
+    }
+    out
+}
+
+/// The branch sites as one parallel walk of `code`'s relocations finds
+/// them (`need::branch_site` on each record): what the scan's candidates
+/// replace, kept to check them in debug builds.
+#[cfg(debug_assertions)]
+fn walk_branches(
+    t: &SiteInputs<'_, '_>,
+    arch: &dyn Arch,
+    walker: &Walker<'_, '_>,
+    pool: &Pool,
+    code: &[CodeSec],
+) -> Result<Vec<BranchAt>, (Key, Diagnostic)> {
+    let found: Vec<Result<Vec<BranchAt>, (Key, Diagnostic)>> = pool.map(code.len(), |i| {
+        let c = code[i];
+        let mut out = Vec::new();
+        if c.rel == 0 {
+            return Ok(out);
+        }
+        let leads = t.order.leads(c.sid);
+        walker.walk(c.file, c.sid, c.index, c.rel, 0..u64::MAX, leads, &mut |v| {
+            if arch.branch(v.at.howto).is_none() {
+                return;
+            }
+            let kind = v.tables.sym(v.at.key).kind;
+            let flags = t.demands.of(v.at.key);
+            if let Some(site) = mortar_arch::need::branch_site(
+                arch,
+                walker.output(),
+                &v.at,
+                walker.names(),
+                kind,
+                flags,
+            ) {
+                out.push(BranchAt {
+                    section: c.sid,
+                    offset: v.at.r_offset,
+                    record: v.at.index,
+                    site,
+                });
+            }
+        })?;
+        Ok(out)
+    });
+    let mut branches = Vec::new();
+    for f in found {
+        branches.extend(f?);
+    }
+    Ok(branches)
+}
+
 impl Sites for LinkSites<'_, '_> {
     fn branches(&self) -> &[BranchAt] {
         &self.branches
@@ -210,7 +268,7 @@ impl Sites for LinkSites<'_, '_> {
 
     fn targets(&self, round: &Round<'_>, pool: &Pool) -> Vec<Option<u64>> {
         let tables = self.tables(round);
-        pool.map(self.branches.len(), |i| match self.branches[i].site.key {
+        pool.unit_cost(40).map(self.branches.len(), |i| match self.branches[i].site.key {
             ThunkTarget::Plt(key) => tables.plt(key),
             ThunkTarget::Sym { key, addend } => {
                 let v = tables.value(key)?;
@@ -260,9 +318,15 @@ impl Sites for LinkSites<'_, '_> {
             let (mine, tail) = tail.split_at_mut(next - off);
             rest = tail;
             at = next;
+            // The scan reads (and asks the proof of) only the bytes of the
+            // erratum windows: a section whose room touches none adds
+            // nothing (its bytes stay zero, it has no proof runs).
+            if erratum_windows(addr, (next - off) as u64).is_empty() {
+                continue;
+            }
             parts.push((c, addr - start, addr, mine, result));
         }
-        pool.for_each_part(parts, |_, (c, rel_start, addr, mine, result)| {
+        pool.unit_cost(3600).for_each_part(parts, |_, (c, rel_start, addr, mine, result)| {
             *result = self.section_code(&tables, c, addr, rel_start, mine);
         });
         let mut proof: Vec<ProofRun> = Vec::new();
@@ -405,20 +469,20 @@ impl LinkSites<'_, '_> {
         if c.rel == 0 {
             return Ok(proof);
         }
-        // The candidate words (a64.md §11.1 condition 1: `W1` at an
-        // address ≡ 0xFF8 or 0xFFC mod 4096) and the three after.
-        let mut windows: Vec<(u64, u64)> = Vec::new();
-        let mut q = 0xFF8u64.wrapping_sub(addr) & 0xFFF;
-        while q < len {
-            windows.push((q, q + 4));
-            q += 0x1000;
-        }
+        // The words the erratum scan reads (a64.md §11.1 condition 1: `W1`
+        // at an address ≡ 0xFF8 or 0xFFC mod 4096, and the three words
+        // after each): `[0xFF8, 0x100C)` of every page, as offsets into
+        // this section, which may hold only the end of a window (its `W1`
+        // in the section before). A record applies to `[r, r + 8)` at most;
+        // one that touches a window is applied (applying more is fill's
+        // own words, never wrong).
+        let windows = erratum_windows(addr, len);
         if windows.is_empty() {
             return Ok(proof);
         }
         let in_window = |r: u64| {
-            let i = windows.partition_point(|w| w.0 + 16 <= r);
-            windows.get(i).is_some_and(|w| w.0 <= r)
+            let i = windows.partition_point(|w| w.1 <= r);
+            windows.get(i).is_some_and(|w| w.0 < r.saturating_add(8))
         };
         let leads = self.t.order.leads(c.sid);
         let name = self.walker.section_name(c.file, c.index);
@@ -433,10 +497,7 @@ impl LinkSites<'_, '_> {
         };
         let mut forced: Vec<u64> = Vec::new();
         self.walker
-            .walk(c.file, c.sid, c.index, c.rel, 0..u64::MAX, leads, &mut |v| {
-                if !in_window(v.at.r_offset) {
-                    return;
-                }
+            .walk_where(c.file, c.sid, c.index, c.rel, &in_window, leads, &mut |v| {
                 let mut so =
                     SectionOut::new(section, 0, addr, true, name.as_bytes()).with_exec(true);
                 probe.unknown.store(false, Ordering::Relaxed);
@@ -466,6 +527,29 @@ impl LinkSites<'_, '_> {
         }
         Ok(proof)
     }
+}
+
+/// The erratum scan's windows in a section of `len` bytes at `addr`: the
+/// offset ranges, ascending and disjoint, of the bytes `[P + 0xFF8, P +
+/// 0x100C)` of each page `P` (`mortar_a64::erratum::sites` reads the words
+/// at `0xFF8` and `0xFFC` and the three after each) that lie in the
+/// section.
+fn erratum_windows(addr: u64, len: u64) -> Vec<(u64, u64)> {
+    const LO: u128 = 0xFF8;
+    const HI: u128 = 0x100C;
+    let (start, end) = (u128::from(addr), u128::from(addr) + u128::from(len));
+    let mut windows = Vec::new();
+    // The page whose window may reach `start`: the one before `start`'s.
+    let mut page = (start & !0xFFF).saturating_sub(0x1000);
+    while page + LO < end {
+        let (lo, hi) = ((page + LO).max(start), (page + HI).min(end));
+        if lo < hi {
+            // In u64: both lie in `start..=end`, `end - start = len`.
+            windows.push(((lo - start) as u64, (hi - start) as u64));
+        }
+        page += 0x1000;
+    }
+    windows
 }
 
 /// A scan diagnostic as layout carries it: its key and place kept.
@@ -513,7 +597,11 @@ impl RoundTables<'_, '_, '_> {
     /// The value of a file's entry: its section's place plus `st_value`.
     fn entry_value(&self, e: SymEntry) -> Option<u64> {
         let t = &self.sites.t;
-        let table = self.sites.symtabs.get(e.file.0 as usize)?.as_ref()?;
+        // Each object's symbol table, found once per file by the walker's
+        // view (`Object::symbols` scans the section headers: per branch
+        // target and round it cost ~2 µs, 245 ms a round in a protoc link —
+        // WP-027a).
+        let table = self.sites.walker.symbols(e.file)?;
         let s = table.get(e.index).ok()?;
         match table.section_of(e.index, &s).ok()? {
             SymbolSection::Section(index) => {
@@ -610,5 +698,32 @@ impl RoundTables<'_, '_, '_> {
 
     fn plt(&self, key: SymKey) -> Option<u64> {
         self.sites.t.got.iplt_address(&self.got_addrs, key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::erratum_windows;
+
+    // spec: a64.md §11.1 (the words of a site: `W1` at 0xFF8 or 0xFFC, and
+    // up to three words after it, which may cross the page and the section)
+    #[test]
+    fn windows_cover_every_word_the_scan_reads() {
+        // A section from a page start: the tail of the window before it
+        // (the last words of a site whose `W1` is in the previous page),
+        // then the window at each 0xFF8.
+        assert_eq!(
+            erratum_windows(0x40_0000, 0x2000),
+            [(0, 0xC), (0xFF8, 0x100C), (0x1FF8, 0x2000)]
+        );
+        // A section that starts inside a window: its first bytes.
+        assert_eq!(erratum_windows(0x40_1000, 0x40), [(0, 0xC)]);
+        assert_eq!(erratum_windows(0x40_0FFC, 0x40), [(0, 0x10)]);
+        // One that ends before any window, and one that touches none.
+        assert_eq!(erratum_windows(0x40_0010, 0x40), []);
+        assert_eq!(erratum_windows(0x40_100C, 0x40), []);
+        // Low addresses do not underflow.
+        assert_eq!(erratum_windows(0, 0x1000), [(0xFF8, 0x1000)]);
+        assert_eq!(erratum_windows(0x10, 8), []);
     }
 }

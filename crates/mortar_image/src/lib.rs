@@ -23,6 +23,7 @@
 #![allow(clippy::result_large_err, clippy::many_single_char_names, clippy::cast_precision_loss)]
 
 pub mod digest;
+pub mod dynrel;
 mod eh;
 pub mod fill;
 pub mod headers;
@@ -33,10 +34,12 @@ mod merged;
 pub mod output;
 pub mod phases;
 pub mod plan;
+mod rel;
 mod reloc;
 pub mod source;
 pub mod synth;
 pub mod target;
+pub mod textmap;
 pub mod tombstone;
 
 /// `W = IMAGE_BLOCK` (I-31, I-75): the window, and the build id's leaf.

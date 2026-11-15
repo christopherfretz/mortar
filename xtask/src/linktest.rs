@@ -45,6 +45,7 @@ const DEFAULT_JOBS: usize = 8;
 
 /// What `cargo xtask linktest` is asked for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent switches of a command line
 pub struct Args {
     /// The linkers to run, in [`Linker::ALL`] order; every one when empty.
     pub linkers: Vec<Linker>,
@@ -67,6 +68,9 @@ pub struct Args {
     pub no_plumb: bool,
     /// Test files and directories; `tests/link` when empty.
     pub paths: Vec<PathBuf>,
+    /// The digest mode of `cargo xtask static-identical` (not an option of
+    /// `linktest`: [`engine::Matrix::digest`]).
+    pub digest: bool,
 }
 
 impl Args {
@@ -207,6 +211,8 @@ pub fn collect(paths: &[PathBuf], filters: &[String]) -> Result<Vec<TestFile>, S
     let base = workspace_root().join("tests").join("link");
     let paths = if paths.is_empty() { vec![base.clone()] } else { paths.to_vec() };
     let canonical_base = base.canonicalize().unwrap_or(base);
+    let tests_dir = workspace_root().join("tests");
+    let canonical_tests = tests_dir.canonicalize().unwrap_or(tests_dir);
     let mut files = Vec::new();
     for path in paths {
         if path.is_dir() {
@@ -224,7 +230,13 @@ pub fn collect(paths: &[PathBuf], filters: &[String]) -> Result<Vec<TestFile>, S
             let name = path
                 .canonicalize()
                 .ok()
-                .and_then(|full| Some(full.strip_prefix(&canonical_base).ok()?.to_path_buf()))
+                .and_then(|full| {
+                    let name = full
+                        .strip_prefix(&canonical_base)
+                        .or_else(|_| full.strip_prefix(&canonical_tests))
+                        .ok()?;
+                    Some(name.to_path_buf())
+                })
                 .unwrap_or_else(|| path.clone());
             TestFile { name: name.display().to_string(), path }
         })
@@ -333,7 +345,10 @@ fn find_tools(
             absent(report, format!("{} is not run: {tool} not found", linker.name()));
         }
     }
-    if linkers.contains(&Linker::Mortar) && !linkers.iter().any(|linker| linker.is_reference()) {
+    if linkers.contains(&Linker::Mortar)
+        && !linkers.iter().any(|linker| linker.is_reference())
+        && !args.digest
+    {
         report.notes.push(
             "no reference linker in the run: mortar is judged by the tests' expectations, which \
              the self-check has not proven"
@@ -386,6 +401,9 @@ fn check_defaults(
     defaults: &[format::Anomaly],
     report: &mut Report,
 ) {
+    if args.digest {
+        return;
+    }
     if args.paths.is_empty() && args.filters.is_empty() {
         report.errors.extend(plumb.stale_defaults(defaults));
     } else if !defaults.is_empty() && plumb.verified > 0 {
@@ -393,6 +411,69 @@ fn check_defaults(
             "L3: a run of part of the corpus does not check that the default anomalies occur"
                 .to_owned(),
         );
+    }
+}
+
+/// The directory of the shared fixtures, `tests/link/fixtures`
+/// (`spec/harness.md` "Fixtures").
+pub const FIXTURES: &str = "fixtures";
+
+/// The fixture `name`, `tests/link/fixtures/<name>.fixture`, parsed; or
+/// why it cannot be.
+fn load_fixture(name: &str) -> Result<format::Fixture, String> {
+    let path =
+        workspace_root().join("tests").join("link").join(FIXTURES).join(format!("{name}.fixture"));
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    format::parse_fixture(&text).map_err(|errors| {
+        let lines: Vec<String> = errors
+            .iter()
+            .map(|e| format!("{}:{}: {}", path.display(), e.line, e.message))
+            .collect();
+        lines.join("; ")
+    })
+}
+
+/// The test xfails of `tests/link/xfails` against the tests: a test that
+/// also marks mortar `xfail` itself on such an architecture is an error
+/// of the test (two markers for one linker); a line naming no test of the
+/// corpus is stale, which only a run of all of it can say (as for the
+/// default anomalies).
+fn check_xfails(
+    args: &Args,
+    xfails: &[format::ArchXfail],
+    tests: &[TestFile],
+    parsed: &[(usize, &TestFile, format::Test)],
+    report: &mut Report,
+) {
+    for (_, file, test) in parsed {
+        let twice = xfails.iter().find(|x| {
+            x.test.as_deref() == Some(file.name.as_str())
+                && test
+                    .marker(x.arch, Linker::Mortar)
+                    .is_some_and(|m| m.kind == format::MarkerKind::Xfail)
+        });
+        if let Some(x) = twice {
+            report.errors.push(format!(
+                "tests/link/xfails line {}: {} marks mortar xfail on {} itself as well",
+                x.line,
+                file.name,
+                x.arch.name()
+            ));
+        }
+    }
+    if args.paths.is_empty() && args.filters.is_empty() {
+        let mut stale: Vec<&format::ArchXfail> = xfails
+            .iter()
+            .filter(|x| x.test.as_ref().is_some_and(|t| !tests.iter().any(|f| &f.name == t)))
+            .collect();
+        stale.dedup_by_key(|x| x.line);
+        for x in stale {
+            report.errors.push(format!(
+                "tests/link/xfails line {}: there is no test {}: remove the line",
+                x.line,
+                x.test.as_deref().unwrap_or_default()
+            ));
+        }
     }
 }
 
@@ -416,46 +497,32 @@ pub fn load_defaults(path: &Path) -> Result<Vec<format::Anomaly>, String> {
     })
 }
 
-/// Runs the tests `args` selects.
-///
-/// # Errors
-/// A test path that does not exist (a usage error).
-pub fn run(args: &Args) -> Result<Report, String> {
-    let started = Instant::now();
-    let tests = collect(&args.paths, &args.filters)?;
-    let mut report = Report { tests: tests.len(), ..Report::default() };
-    let host = Arch::host();
-    let (arches, common, linkers, mortar) = find_tools(args, host, !tests.is_empty(), &mut report);
-
-    let root = build_dir().join("linktest");
-    let work = root.join(format!("run-{}", std::process::id()));
-    if work.exists() {
-        std::fs::remove_dir_all(&work)
-            .map_err(|e| format!("cannot remove '{}': {e}", work.display()))?;
+/// Loads the fixtures the parsed tests name, each once.
+fn load_fixtures(matrix: &mut Matrix, parsed: &[(usize, &TestFile, format::Test)]) {
+    for (_, _, test) in parsed {
+        for name in &test.fixtures {
+            if !matrix.fixtures.contains_key(name) {
+                matrix.fixtures.insert(name.clone(), load_fixture(name));
+            }
+        }
     }
-    let jobs = args.jobs.unwrap_or_else(|| {
-        std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(DEFAULT_JOBS)
-    });
-    report.arches = arches.iter().map(|tools| tools.arch).collect();
-    report.linkers.clone_from(&linkers);
-    report.configuration = configuration(&report, mortar.as_deref(), jobs);
-    let defaults = if args.no_plumb { Ok(Vec::new()) } else { load_defaults(&defaults_file()) };
-    let defaults = defaults.unwrap_or_else(|e| {
-        report.errors.push(e);
-        Vec::new()
-    });
-    let xfails = load_xfails(&workspace_root().join("tests").join("link").join(XFAILS))
-        .unwrap_or_else(|e| {
-            report.errors.push(e);
-            Vec::new()
-        });
-    let wrappers = work.join("bin");
-    let matrix =
-        Matrix { host, common, linkers, mortar, wrappers, plumb: !args.no_plumb, defaults, xfails };
-    if let Err(e) = matrix.write_wrappers(&arches) {
-        report.errors.push(e);
-    }
+}
 
+/// The note of a run whose verifier has no stage 3.
+fn stage3_note() -> String {
+    format!(
+        "L3: the verifier has no stage 3 (spec/plumb.md §1): dynamic outputs are not judged \
+         ('{}')",
+        engine::STAGE3_ABSENT
+    )
+}
+
+/// Parses the test files: a file that does not parse gives one `ERROR`
+/// record of the file.
+fn parse_tests<'a>(
+    tests: &'a [TestFile],
+    report: &mut Report,
+) -> Vec<(usize, &'a TestFile, format::Test)> {
     let mut parsed = Vec::new();
     for (index, test) in tests.iter().enumerate() {
         let text = std::fs::read_to_string(&test.path);
@@ -475,6 +542,71 @@ pub fn run(args: &Args) -> Result<Report, String> {
             }),
         }
     }
+    parsed
+}
+
+/// Runs the tests `args` selects.
+///
+/// # Errors
+/// A test path that does not exist (a usage error).
+#[allow(clippy::too_many_lines)] // the tools, the matrix, the units, then the report
+pub fn run(args: &Args) -> Result<Report, String> {
+    let started = Instant::now();
+    let tests = collect(&args.paths, &args.filters)?;
+    let mut report = Report { tests: tests.len(), ..Report::default() };
+    let host = Arch::host();
+    let (arches, common, linkers, mortar) = find_tools(args, host, !tests.is_empty(), &mut report);
+
+    let root = build_dir().join("linktest");
+    let work = root.join(format!("run-{}", std::process::id()));
+    if work.exists() {
+        std::fs::remove_dir_all(&work)
+            .map_err(|e| format!("cannot remove '{}': {e}", work.display()))?;
+    }
+    let jobs = args.jobs.unwrap_or_else(|| {
+        std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(DEFAULT_JOBS)
+    });
+    report.arches = arches.iter().map(|tools| tools.arch).collect();
+    report.linkers.clone_from(&linkers);
+    report.configuration = configuration(&report, mortar.as_deref(), jobs);
+    let defaults =
+        if args.no_plumb || args.digest { Ok(Vec::new()) } else { load_defaults(&defaults_file()) };
+    let defaults = defaults.unwrap_or_else(|e| {
+        report.errors.push(e);
+        Vec::new()
+    });
+    let xfails = load_xfails(&workspace_root().join("tests").join("link").join(XFAILS))
+        .unwrap_or_else(|e| {
+            report.errors.push(e);
+            Vec::new()
+        });
+    let wrappers = work.join("bin");
+    let stage3 = !args.no_plumb && engine::stage3_present();
+    let mut matrix = Matrix {
+        host,
+        common,
+        linkers,
+        mortar,
+        wrappers,
+        plumb: !args.no_plumb && !args.digest,
+        defaults,
+        xfails,
+        digest: args.digest,
+        stage3,
+        fixtures: std::collections::BTreeMap::new(),
+        fixture_dir: work.join("fixtures"),
+        built: engine::FixtureCache::default(),
+    };
+    if let Err(e) = matrix.write_wrappers(&arches) {
+        report.errors.push(e);
+    }
+
+    let parsed = parse_tests(&tests, &mut report);
+    load_fixtures(&mut matrix, &parsed);
+    check_xfails(args, &matrix.xfails, &tests, &parsed, &mut report);
+    if matrix.plumb && !matrix.stage3 {
+        report.notes.push(stage3_note());
+    }
     let matrix = &matrix;
     let units: Vec<Unit> = if report.errors.is_empty() {
         parsed
@@ -493,10 +625,12 @@ pub fn run(args: &Args) -> Result<Report, String> {
     for results in run_units(&units, jobs) {
         plumb.add(&results.plumb);
         report.records.extend(results.records);
+        report.digests.extend(results.digests);
         report.missing.extend(results.missing.into_iter().map(|tool| format!("{tool} not found")));
     }
     report.missing.sort();
     report.missing.dedup();
+    report.digests.sort();
     if plumb != engine::Plumb::default() {
         report.notes.push(plumb.note());
     }
@@ -630,7 +764,7 @@ mod tests {
         let names: Vec<&str> = tests.iter().map(|t| t.name.as_str()).collect();
         let outside = scratch.join("d").display().to_string();
         assert_eq!(names, [format!("{outside}/b.test"), format!("{outside}/e/a.test")]);
-        let filtered = collect(&[scratch.join("d")], &["e/".to_owned()]).unwrap();
+        let filtered = collect(&[scratch.join("d")], &["/e/a.".to_owned()]).unwrap();
         assert_eq!(filtered.len(), 1);
         assert!(collect(&[scratch.join("nothing")], &[]).unwrap_err().contains("no such test"));
         // The corpus is named relative to tests/link.

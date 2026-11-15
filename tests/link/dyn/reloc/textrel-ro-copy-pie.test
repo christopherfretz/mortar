@@ -1,0 +1,45 @@
+# dyn.md D-47: a text relocation against a shared object's datum is
+# refused by name, `text-relocation`. A `-fPIE` object holds, in a
+# read-only data section, an address-sized word pointing at the fixture
+# library's `dvar`; linked as a PIE (dyn.md "E-dynamic"
+# `lld_textrel_copyrel.sh`).
+#
+# What the references do (measured, both architectures): GNU ld writes
+# `DT_TEXTREL` and a symbolic record for the word (on x86-64 it also
+# copies `dvar`, and the record names the copy), mold writes `DT_TEXTREL`
+# and the symbolic record; both programs print 42. W7 (§13.2): lld links
+# silently with a `COPY` of `dvar` and no record for the word, which
+# keeps the unrelocated link-time address: the program crashes. The case
+# holds lld to the correct run (42); mortar refuses where lld miswrites.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-47"
+#@ arch: aarch64 x86_64
+#@ fixture: reloc-libd
+#@ xfail(lld): W7: a read-only word to shared data gets a COPY and no record; the program crashes
+#@ anomaly(bfd,mold): A24
+
+cc -O1 -fPIE main.c -o main.o
+link(bfd,lld,mold) gcc -pie main.o -L. -ld -o prog
+run(bfd,lld,mold) prog
+  stdout: dvar 42
+check(bfd,lld,mold) readelf -dW prog
+  has: (TEXTREL)
+link(mortar) gcc -pie main.o -L. -ld -o prog
+  exit: fail
+  diag: relocation * against symbol `*' can not be used when making a PIE object; recompile with -fPIE
+
+#--- main.c
+#include <stdio.h>
+#include "libd.h"
+
+/* an address-sized word to the library's `dvar` in a read-only section */
+__asm__(".section .rodata.tr,\"a\",%progbits\n.p2align 3\n.globl tr_ptr\n"
+        "tr_ptr: .dc.a dvar\n.text\n");
+extern int *const tr_ptr;
+
+int main(void) {
+  printf("dvar %d\n", *tr_ptr);
+  return 0;
+}

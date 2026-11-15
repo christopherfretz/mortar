@@ -233,3 +233,44 @@ fn s50_empty_section_offset_zero() {
     assert_eq!(eh_ref(&frames, 0, 0, EhWho::Reloc, |_| None, 7), Ok(EhValue::Offset(0)));
     assert_eq!(eh_ref(&frames, 0, 1, EhWho::Reloc, |_| None, 7), Err(What::OutsideSection));
 }
+
+/// `PieceIndex` (WP-032c) answers S-17 and S-19 exactly as
+/// `section_symbol` and `named_symbol` do, at every offset around every
+/// section of strings and of fixed-size entries, short and long pieces
+/// on both sides of every bucket boundary, and for sections it does not
+/// hold.
+#[test]
+fn piece_index_agrees() {
+    use mortar_merge::refs::PieceIndex;
+    let mut long = Vec::new();
+    for k in 0..300u32 {
+        // Pieces of 1 to 600 bytes, crossing 256-byte buckets.
+        long.extend(std::iter::repeat_n(b'a' + (k % 26) as u8, ((k * 37) % 600) as usize));
+        long.push(0);
+    }
+    let secs = [
+        s(0, true, 1, 0, b"ab\0cd\0\0efg\0"),
+        s(0, true, 1, 0, &long),
+        s(1, false, 4, 2, &[1, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0]),
+        s(0, true, 1, 0, b"x\0"),
+    ];
+    let (sp, _) = split(merged(&secs));
+    let size = |s: SectionId| (s.0 != 3).then(|| secs[s.0 as usize].bytes.len() as u64);
+    let ix = PieceIndex::new(&sp, size);
+    for (i, sec) in secs.iter().enumerate() {
+        let id = SectionId(i as u32);
+        let n = sec.bytes.len() as i64;
+        for r in -2..n + 3 {
+            let got = ix.section_symbol(&sp, id, r);
+            let named = ix.named_symbol(&sp, id, r.max(0) as u64);
+            if i == 3 {
+                assert_eq!((got, named), (None, None));
+                continue;
+            }
+            assert_eq!(got, Some(section_symbol(&sp, id, n as u64, r)), "S-17 {i} {r}");
+            let v = r.max(0) as u64;
+            assert_eq!(named, Some(named_symbol(&sp, id, n as u64, v)), "S-19 {i} {v}");
+        }
+    }
+    assert_eq!(ix.section_symbol(&sp, SectionId(9), 0), None);
+}

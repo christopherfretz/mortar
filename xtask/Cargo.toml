@@ -17,6 +17,9 @@ mortar_plumb.workspace = true
 # Reads kiln/hod, GCC and Clang objects for `cargo xtask mason census`
 # (spec/landed/mason/WP-033.md).
 mortar_elf.workspace = true
+# SHA-256 of the outputs `cargo xtask static-identical` records
+# (spec/harness.md "static-identical").
+mortar_digest.workspace = true
 
 # Kills the children and returns the held jobserver tokens on SIGINT/SIGTERM
 # (spec/harness.md "Jobserver", "Signals").

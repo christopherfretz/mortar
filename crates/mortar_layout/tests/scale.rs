@@ -94,6 +94,8 @@ fn stages(w: &World, pool: &Pool) -> [(&'static str, Duration); 7] {
         synthetic: &w.synthetic,
         keep_empty: &keep_empty,
         relro: w.options.relro,
+        now: w.options.now,
+        copies: &[],
     };
     let staged = chunk(&inputs, &w.target, &rules, pool).unwrap();
     let tc = t.elapsed();

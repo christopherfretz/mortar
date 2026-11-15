@@ -12,7 +12,6 @@ use mortar_core::par::{Pool, check_schedules};
 use mortar_core::resolution::{DropReason, Resolution, SectionKind, SectionRow, SectionState};
 use mortar_core::split::{EhPiece, Frag, Split, SplitRow};
 use mortar_core::{FragId, Liveness, OptId, SectionId, Span};
-use mortar_diag::Style;
 use mortar_elf::{Machine, SectionIndex};
 use mortar_live::{LiveInputs, LiveOptions, eh_piece_live, liveness};
 
@@ -86,8 +85,15 @@ fn cols(l: &Liveness) -> (Vec<bool>, Vec<bool>) {
 fn run(r: &Resolution, split: &Split, gc: bool, pool: &Pool) -> LiveResult {
     let inputs = no_inputs();
     let a = Assignment::empty(r.sections.len());
-    let t = LiveInputs { inputs: &inputs, resolution: r, assignment: &a, split };
-    liveness(&t, LiveOptions { gc_sections: gc }, pool)
+    let t = LiveInputs {
+        inputs: &inputs,
+        resolution: r,
+        assignment: &a,
+        split,
+        roots: &[],
+        arch: None,
+    };
+    liveness(&t, LiveOptions { gc_sections: gc, keep_exported: false }, pool)
 }
 
 #[test]
@@ -129,12 +135,15 @@ fn i3_fde_live_with_its_code_and_cie_with_a_live_fde() {
 }
 
 #[test]
-fn i5_gc_sections_is_refused_by_name() {
+fn i6_a_kept_section_without_a_place_is_a_root() {
+    // `Assignment::empty` places nothing: every kept section is a root of
+    // the mark (I-6, as without `--gc-sections`), and the result is the
+    // no-gc one whatever the schedule.
     let (r, split) = tables();
-    let (key, d) = run(&r, &split, true, &Pool::new(1)).unwrap_err();
-    assert_eq!(key, mortar_diag::Key::new(mortar_live::PHASE, 0, 0));
-    assert_eq!(d.id(), "refused");
-    assert_eq!(d.render(&Style::plain("ld")), "ld: error: unsupported option: --gc-sections\n");
+    let with = check_schedules(|pool| cols(&run(&r, &split, true, pool).unwrap()));
+    let without = cols(&run(&r, &split, false, &Pool::new(1)).unwrap());
+    assert_eq!(with.0, without.0);
+    run(&r, &split, true, &Pool::new(1)).unwrap().check(&r, &split).unwrap();
 }
 
 #[test]
@@ -172,7 +181,14 @@ fn i4_liveness_of_a_real_link_is_its_kept_sections() {
     let r = &outcome.resolution;
     let split = Split::default();
     let a = Assignment::empty(r.sections.len());
-    let t = LiveInputs { inputs: &inputs, resolution: r, assignment: &a, split: &split };
+    let t = LiveInputs {
+        inputs: &inputs,
+        resolution: r,
+        assignment: &a,
+        split: &split,
+        roots: &[],
+        arch: None,
+    };
     let (live, _) =
         check_schedules(|pool| cols(&liveness(&t, LiveOptions::default(), pool).unwrap()));
     let kept: Vec<bool> = r.sections.as_slice().iter().map(SectionRow::is_kept).collect();

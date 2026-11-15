@@ -3,7 +3,9 @@
 //! definitions (Y3); locals against the input locals of their name (Y4); the symbols the
 //! linker defines (Y5).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+
+use crate::hasher::HashMap;
 
 use mortar_elf::consts::{
     PT_LOAD, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHF_X86_64_LARGE, SHN_ABS, SHN_LORESERVE,
@@ -125,6 +127,20 @@ struct Def {
     sym: Sym,
 }
 
+/// Whether input symbol `di` of object `oi` is defined in a section that
+/// has no address in the output: non-alloc, or discarded by the map.
+fn not_in_memory(e: &Engine<'_, '_>, oi: usize, di: u32) -> bool {
+    let obj = &e.objs[oi];
+    let Some(table) = obj.symtab else { return false };
+    let Ok(sym) = table.get(SymbolIndex(di)) else { return false };
+    let Ok(SymbolSection::Section(idx)) = table.section_of(SymbolIndex(di), &sym) else {
+        return false;
+    };
+    obj.secs
+        .get(idx.0 as usize)
+        .is_some_and(|sec| !sec.alloc() || matches!(sec.place, Place::Discarded))
+}
+
 #[allow(clippy::many_single_char_names)] // o, t, d, s, a, p: the ELF parts
 fn placed_def(e: &Engine<'_, '_>, oi: usize, di: u32) -> Option<Def> {
     let o = &e.objs[oi];
@@ -229,7 +245,7 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     let image = e.image;
     // The most constraining visibility of every non-local entry of a name,
     // defined or not.
-    let mut vis: HashMap<&str, u8> = HashMap::new();
+    let mut vis: HashMap<&str, u8> = HashMap::default();
     for o in e.objs {
         let Some(t) = &o.symtab else { continue };
         for (_, s) in t.iter() {
@@ -413,7 +429,7 @@ fn locals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             }
         }
     }
-    let mut placed: HashMap<&str, Placed> = HashMap::new();
+    let mut placed: HashMap<&str, Placed> = HashMap::default();
     let (mut checked, mut unchecked) = (0u64, 0u64);
     for out in &image.symbols {
         let s = &out.sym;
@@ -439,8 +455,10 @@ fn locals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
                     }
                     // A definition in a section whose place is not known
                     // (GNU ld's rewritten `.eh_frame`, a merged section)
-                    // could be the one.
-                    None => p.unknown = true,
+                    // could be the one; one in a non-alloc or discarded
+                    // section has no address in the output (every
+                    // object's `$d` of its debug sections; WP-028d).
+                    None => p.unknown |= !not_in_memory(e, oi, di),
                 }
             }
             p
@@ -563,7 +581,7 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     let x86 = matches!(e.image.header.e_machine, 3 | 62);
     let rel_type = if e.image.header.e_machine == 3 { SHT_REL } else { SHT_RELA };
     let relas: Vec<_> = alloc().filter(|s| s.shdr.sh_type == rel_type).collect();
-    let mut input_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut input_names: crate::hasher::HashSet<&str> = crate::hasher::HashSet::default();
     for o in e.objs {
         let Some(t) = &o.symtab else { continue };
         for (_, d) in t.iter() {
@@ -603,7 +621,17 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             "__preinit_array_start" => bounds(".preinit_array", false),
             "__preinit_array_end" => bounds(".preinit_array", true),
             "_GLOBAL_OFFSET_TABLE_" => {
-                sec(if x86 { ".got.plt" } else { ".got" }).map(|(lo, _)| Want::Exactly(lo))
+                sec(if x86 { ".got.plt" } else { ".got" }).map(|(lo, hi)| {
+                    // GNU ld's AArch64 `-z now` merges `.got.plt` into
+                    // `.got` after the PLT's slots: the symbol is the word
+                    // that holds `_DYNAMIC` (AArch64 ELF ABI GOT[0]).
+                    let dynamic = sec(".dynamic").map(|(d, _)| d);
+                    let at_dynamic = !x86
+                        && e.format == Format::Gnu
+                        && (lo..hi).contains(&s.st_value)
+                        && dynamic.is_some_and(|d| image.value(s.st_value, 8) == Some(d));
+                    Want::Exactly(if at_dynamic { s.st_value } else { lo })
+                })
             }
             "__GNU_EH_FRAME_HDR" => sec(".eh_frame_hdr").map(|(lo, _)| Want::Exactly(lo)),
             "_edata" | "edata" => e_end.map(|v| Want::Within(v, next(v, &|_| true).unwrap_or(v))),
@@ -621,7 +649,13 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             "__rela_iplt_start" | "__rela_iplt_end" | "__rel_iplt_start" | "__rel_iplt_end"
                 if name.starts_with("__rela_") == (rel_type == SHT_RELA) =>
             {
+                // A dynamic output's loader applies its IRELATIVE records;
+                // the C runtime's range is empty (stage 3; GNU ld and mold
+                // give start = end, lld does not define them).
+                let dynamic =
+                    image.phdrs.iter().any(|p| p.p_type == mortar_elf::consts::PT_DYNAMIC);
                 match relas.as_slice() {
+                    _ if dynamic => Some(Want::Equal),
                     [] => Some(Want::Equal),
                     [r] => Some(Want::Exactly(if name.ends_with("_end") {
                         end(r)

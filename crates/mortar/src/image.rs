@@ -47,6 +47,20 @@ impl KeyFacts for WalkFacts<'_, '_, '_> {
     fn facts(&self, key: SymKey) -> SymFacts {
         self.0.facts(key)
     }
+
+    // WP-032c (image.md I-14): fill's checks of the sections the scan
+    // left to it.
+    fn facts_at(&self, key: SymKey, mention: Option<mortar_core::SymEntry>) -> SymFacts {
+        self.0.facts_at(key, mention)
+    }
+
+    fn deferred_report(
+        &self,
+        sections: &[mortar_core::SectionId],
+        pool: &mortar_core::par::Pool,
+    ) -> Vec<(mortar_diag::Key, mortar_diag::Diagnostic)> {
+        self.0.deferred_report(sections, pool)
+    }
 }
 
 /// The output path: `-o`'s value or `a.out` (image.md I-56), relative to
@@ -101,7 +115,8 @@ pub fn with_link<T>(
         comdat_mismatch: &f.comdat_mismatch,
         gnu_warnings: &f.gnu_warnings,
     };
-    let scan_options = ScanOptions { output, dynamic: false, proof: f.arch.proof() };
+    let scan_options =
+        ScanOptions { output, dynamic: false, sections: None, proof: f.arch.proof() };
     let walker = Walker::new(f.arch.get(), &scan_inputs, scan_options);
     let facts = WalkFacts(&walker);
     let proof = |file: FileId, index: SectionIndex, len: u64| -> Vec<ProofRun> {
@@ -178,6 +193,39 @@ pub fn with_link<T>(
 /// [`with_link`]'s.
 pub fn map_of(front: &Front<'_>, store: &Store) -> Result<Map, mortar_synth::error::SynthError> {
     with_link(front, store, &|_| {}, link::map_of)
+}
+
+/// The text map of `front`'s link (`link::text_map_of`, image.md I-121),
+/// for the output `output` names.
+///
+/// # Errors
+///
+/// [`with_link`]'s.
+pub fn text_map_of(
+    front: &Front<'_>,
+    store: &Store,
+    output: &[u8],
+) -> Result<mortar_image::textmap::TextMap, mortar_synth::error::SynthError> {
+    use mortar_core::inputs::DirectiveKind;
+    use mortar_core::plan::SymbolRole;
+    // The roots by argument index, as resolve names them (§4.2): the
+    // entry is index 0.
+    let plan = &front.plan;
+    let script_entry =
+        front.inputs.link.directives.iter().rev().find(|d| d.kind == DirectiveKind::Entry);
+    let entry = match (&plan.entry, script_entry) {
+        (Some(e), _) => e.as_encoded_bytes().to_vec(),
+        (None, Some(d)) => d.value.to_vec(),
+        (None, None) => b"_start".to_vec(),
+    };
+    let mut roots: Vec<(u32, Vec<u8>)> = vec![(0, entry)];
+    roots.extend(
+        plan.symbols
+            .iter()
+            .filter(|s| matches!(s.role, SymbolRole::Undefined | SymbolRole::RequireDefined))
+            .map(|s| (s.arg, s.value.as_encoded_bytes().to_vec())),
+    );
+    with_link(front, store, &|_| {}, |l: &link::Link<'_, '_>| link::text_map_of(l, output, &roots))
 }
 
 /// The output options of `front`'s link: the mode of an executable, and

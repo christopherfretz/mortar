@@ -10,6 +10,8 @@
 #[cfg(unix)]
 pub mod bench;
 pub mod ci;
+#[cfg(unix)]
+pub mod identical;
 pub mod jobs;
 #[cfg(unix)]
 pub mod linktest;

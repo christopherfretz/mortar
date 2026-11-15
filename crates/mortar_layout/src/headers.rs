@@ -55,7 +55,7 @@ pub fn gather<'n>(
     pool: &Pool,
 ) -> Result<Headers<'n>, LayoutDiag> {
     let files = resolution.section_base.len() as usize;
-    let per_file: Vec<Result<Vec<Header<'n>>, String>> = pool.map(files, |f| {
+    let per_file: Vec<Result<Vec<Header<'n>>, String>> = pool.unit_cost(500).map(files, |f| {
         let file = FileId(f as u32);
         let range = resolution.section_base[file];
         let mut rows = Vec::with_capacity(range.len() as usize);

@@ -13,7 +13,7 @@ use mortar_arch::{Arch, Records, Reloc, ScanTables, Site, SymFacts, SymNames, Ta
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::{CopyError, Inputs, Reader};
 use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution, Verdict};
-use mortar_core::{FileId, Liveness, SectionId, SymEntry, SymKey, SymKind, SymbolId};
+use mortar_core::{FileId, IdSet, Liveness, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Kind};
 use mortar_elf::consts::{SHT_REL, SHT_RELA, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS};
 use mortar_elf::{
@@ -60,6 +60,12 @@ pub(crate) struct View<'a, 's> {
     warned: Vec<SymbolId>,
     /// `gnu_warnings`, sorted.
     pub gnu_warnings: Vec<(SymbolId, FileId, SectionIndex)>,
+    /// `spec/dyn.md` D-25: the `WeakDyn` keys ([`crate::weak::classes`]);
+    /// empty until it ran, and in every static link.
+    pub weak_dyn: IdSet<SymbolId>,
+    /// The undefined weak keys refused by D-25: the walk drops what the
+    /// architecture's scan says of their relocations.
+    pub weak_refused: IdSet<SymbolId>,
 }
 
 /// The name of the linker-defined TLS symbol (`spec/resolve.md` §8.1).
@@ -94,6 +100,8 @@ impl<'a, 's> View<'a, 's> {
                 v.sort_unstable();
                 v
             },
+            weak_dyn: IdSet::new(),
+            weak_refused: IdSet::new(),
         }
     }
 
@@ -253,7 +261,21 @@ impl<'a, 's> View<'a, 's> {
                     _ if preemptible => TargetKind::Preemptible,
                     _ => TargetKind::Local,
                 };
-                of(kind, s)
+                // Under `--gc-sections`, a definition in a kept section the
+                // mark did not reach is dead (§6.1, `spec/image.md` I-7):
+                // live code cannot refer to it by construction, a debug
+                // section gets the tombstone (I-47), any other section is
+                // `discarded-section-reference` (I-12). Without it every
+                // kept section is live and this is `false`.
+                let dead = match place {
+                    Some(SymbolSection::Section(i)) => {
+                        self.resolution.section_id(e.file, i).is_some_and(|sid| {
+                            self.resolution.sections[sid].is_kept() && !self.liveness.is_live(sid)
+                        })
+                    }
+                    _ => false,
+                };
+                SymFacts { dead, ..of(kind, s) }
             }
             Def::Common(e) => of(TargetKind::Local, self.sym(e.file, e.index)),
             Def::Shared(e) => {
@@ -282,16 +304,71 @@ impl<'a, 's> View<'a, 's> {
             }
             Def::Undefined { weak } => {
                 let s = mention.and_then(|m| self.sym(m.file, m.index));
-                of(self.undefined_kind(weak, props.verdict), s)
+                of(self.undefined_kind(id, weak, props.verdict), s)
             }
         }
     }
 
+    /// The keys a reference to which can make an event (§4.4): those
+    /// whose target kind is `Undefined` (an undefined key, or an alias of
+    /// one), those only dropped COMDAT copies define, and those with a
+    /// `.gnu.warning` section; sorted. A record whose key is none of
+    /// these, at a place where a dead target is the tombstone, makes no
+    /// event (`spec/image.md` I-14: the sections fill checks).
+    pub fn event_keys(&self) -> Vec<SymbolId> {
+        let mut v: Vec<SymbolId> = Vec::new();
+        for i in 0..self.inputs.symbols.len() {
+            let id = SymbolId(i);
+            let undefined = match self.def(id) {
+                Def::Defined(_) | Def::Common(_) | Def::Shared(_) => false,
+                Def::Undefined { weak } => {
+                    let verdict = self.resolution.props.get(id).map(|p| p.verdict);
+                    self.undefined_kind(id, weak, verdict.unwrap_or_default())
+                        == TargetKind::Undefined
+                }
+                Def::Internal(_) => self.global_facts(id, None, 0).kind == TargetKind::Undefined,
+            };
+            if undefined {
+                v.push(id);
+            }
+        }
+        v.extend_from_slice(&self.mismatch);
+        v.extend_from_slice(&self.warned);
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Whether `facts(key, _).kind` is `TargetKind::Weak0`, found from
+    /// the definitions alone (no symbol is read: the mention never
+    /// changes the kind, and a local is never `Weak0`).
+    pub fn is_weak0(&self, key: SymKey) -> bool {
+        let SymKind::Global(mut id) = key.kind() else { return false };
+        // As `global_facts`: an alias is followed to depth 8.
+        for depth in 0..=8 {
+            match self.def(id) {
+                Def::Undefined { weak } => {
+                    let verdict =
+                        self.resolution.props.get(id).copied().unwrap_or_default().verdict;
+                    return self.undefined_kind(id, weak, verdict) == TargetKind::Weak0;
+                }
+                Def::Internal(InternalDef::Alias(to)) if to != id && depth < 8 => id = to,
+                _ => return false,
+            }
+        }
+        false
+    }
+
     /// The target kind of an undefined key (§4.4, I-19): a weak one is
-    /// zero (or dynamic); a strong one is `Undefined` unless its verdict
-    /// is "nothing" (`--unresolved-symbols=ignore-*`), which makes it zero.
-    fn undefined_kind(&self, weak: bool, verdict: Verdict) -> TargetKind {
-        let zero = if self.opts.dynamic { TargetKind::WeakDyn } else { TargetKind::Weak0 };
+    /// zero, or dynamic when D-25 made it so (`weak_dyn`, per key); a
+    /// strong one is `Undefined` unless its verdict is "nothing"
+    /// (`--unresolved-symbols=ignore-*`), which makes it zero.
+    fn undefined_kind(&self, id: SymbolId, weak: bool, verdict: Verdict) -> TargetKind {
+        let zero = if weak && self.weak_dyn.contains(id) {
+            TargetKind::WeakDyn
+        } else {
+            TargetKind::Weak0
+        };
         match (weak, verdict) {
             (true, _) | (false, Verdict::Ignored) => zero,
             _ => TargetKind::Undefined,

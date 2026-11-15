@@ -114,8 +114,8 @@ requires `live ⇒ state == Kept`.
   replaces model §3.6's "referenced from a live section" for this mode
   (request R-4): computing references would need a relocation walk at
   phase 50 for no change in correctness, and an unreferenced string
-  costs a few bytes. That GNU ld, lld and mold also keep unreferenced
-  pieces without `--gc-sections` was not verified (E14).
+  costs a few bytes. GNU ld, lld and mold also keep unreferenced pieces
+  without `--gc-sections` (verified, WP-031 Q11).
 - **I-3 [M1]** An FDE piece is live exactly when the section its code
   range lies in is live (model §3.6; under folding, M5, also not folded
   away). A dead FDE is not written (`spec/layout.md` lays out live pieces
@@ -123,15 +123,10 @@ requires `live ⇒ state == Kept`.
 - **I-4 [M1]** Liveness emits no diagnostic in M1. Its key, when it does
   (M2, §3.3), is `(50, FileId, section index)`.
 - **I-5 [M1]** `--no-gc-sections` is the default and is `supported` in M1
-  (request R-6). `--gc-sections` is `refused` in M1 (`unsupported option:
-  --gc-sections`): its row's status is `refused`, so the command line
-  refuses it (`spec/cli.md` §4.4), unless a later `--no-gc-sections`
-  overrides it; liveness keeps the same refusal for a plan that reaches
-  it another way. Evidence for refusing rather than implementing now:
-  none of `gcc`, `g++`, `gfortran`, `clang`, `clang++` passes it by
-  default (E1); of the bench workloads only `rust-self` (rustc passes it)
-  uses it; the libc++ test suite's link lines are built by the M1 driver
-  and do not need it. It is M2's (`docs/ROADMAP.md`).
+  (request R-6). `--gc-sections` was `refused` in M1 (WP-027d: by the
+  row, at the command line, `spec/cli.md` §4.4); it is `supported` since
+  WP-031 (§3.2), with `--print-gc-sections`, `--no-print-gc-sections` and
+  `--gc-keep-exported`.
 
 ### 3.2 `--gc-sections` (M2)
 
@@ -139,20 +134,47 @@ The design is fixed now so that the M1 tables need no change.
 
 - **I-6 [M2] Roots.** A section is a root when any of these holds:
   - it defines `def` of a key rooted by `spec/resolve.md` §4.7 (the entry,
-    `-u`, `--require-defined`, every key exported to `.dynsym`);
-  - it has `SHF_GNU_RETAIN` (`spec/layout.md` L-97), or a script `KEEP`
-    covers it;
-  - its output section is `.init_array`, `.fini_array`,
-    `.preinit_array`, `.init`, `.fini`, `.ctors`, `.dtors` (start-up
-    tables run by name, not by reference: `spec/layout.md` §5);
-  - its type is `SHT_NOTE` (notes are read by tools and loaders, not
-    referenced; lld keeps them: not verified for GNU ld and mold, E14);
+    `-u`, `--require-defined`, every key exported to `.dynsym`); all three
+    references root these (verified, WP-031 Q8; `-u` and
+    `--require-defined` are refused by mortar's command line today;
+    `--export-dynamic` on a static executable roots nothing in GNU ld and
+    lld 22, everything in lld 19 and mold: nothing is exported, so
+    nothing is rooted);
+  - with `--gc-keep-exported` (GNU ld only), it defines a key that is
+    defined, global or weak, of default or protected visibility (Q8);
+  - it has `SHF_GNU_RETAIN` (`spec/layout.md` L-97; GCC 14 and Clang 19/22
+    emit it for `__attribute__((retain))`, all three keep it, Q7), or a
+    script `KEEP` covers it;
+  - `Assignment.keep` holds it (`mortar_layout::assign::keep_by_rule`), its
+    output section is `.init_array`, `.fini_array`, `.preinit_array`,
+    `.init`, `.fini`, `.ctors`, `.dtors`, or its input name is one of
+    those or one of those followed by `.` (`.init_array.00100`,
+    `.ctors.65435`): start-up tables are run by name, not by reference
+    (`spec/layout.md` §5); all three keep them and what they point to,
+    in a COMDAT group too (Q5);
+  - its type is `SHT_NOTE` or it is not `SHF_ALLOC`, and it is not in a
+    section group with an allocated member (notes and non-alloc
+    sections are read by tools and loaders, not referenced). All three
+    keep notes, alloc or not, of every object (Q1). lld and mold keep
+    every non-alloc section; GNU ld drops the non-alloc sections of an
+    object none of whose allocated sections is marked, and every
+    non-alloc non-debug section with relocations (Q2, Q13): mortar keeps
+    them, the rule that cannot drop what a tool reads. A note or a
+    non-alloc section in a group with an allocated member lives and dies
+    with its group (I-7; GNU ld and lld drop such a note with its dead
+    group, mold keeps it, Q1);
+  - it is `.eh_frame` (its pieces are live by I-3), or it is kept but has
+    no place of its own (`OutOf::Consumed`);
+  - it is a section the mark could not describe (not of an object, or a
+    header `mortar_elf` cannot read): the mark never drops what it has not
+    looked at;
   - its name is a C identifier and `__start_NAME` or `__stop_NAME` is
     referenced from a live section (`spec/layout.md` L-96: GNU ld's
-    `-z nostart-stop-gc`);
-  - it is not `SHF_ALLOC` and not `SHF_LINK_ORDER` (every other non-alloc
-    section is kept whole: debug information is not collected; all three
-    linkers, not separately verified, E14).
+    `-z nostart-stop-gc`, its default; lld 19 and 22 default to
+    `start-stop-gc`, under which an undefined `__stop_` is an error; mold
+    roots every C-identifier section; all three collect an unreferenced
+    one, Q6).
+  A `SHF_LINK_ORDER` section is never a root (I-109).
 - **I-109 [M2] `SHF_LINK_ORDER` follows its link target.** A section
   with `SHF_LINK_ORDER`, alloc or not, is live exactly when the section
   its `sh_link` names is live. This rule takes precedence over I-6's
@@ -164,49 +186,89 @@ The design is fixed now so that the M1 tables need no change.
   it (18 bytes in the output against 9 for lld and GNU ld, E25). M1 is
   unaffected: without `--gc-sections` only COMDAT drops sections, and a
   COMDAT `.stack_sizes` or `.llvm_bb_addr_map` is a member of its group.
-- **I-7 [M2] Edges.** A live `SHF_ALLOC` section `s` makes live:
+- **I-7 [M2] Edges.** A live section `s` that is not `.eh_frame` and has
+  no debug name (`mortar_arch::is_debug_name`) makes live:
   - the section of `def` of every key that a relocation record of `s`
-    names, through `sym_map` (a `Section` definition; a `Common`
-    definition makes the commons' output live; an `Internal` definition,
-    nothing; a `Shlib` one, nothing);
+    names, through `sym_map` and `redirect` (a `Section` definition; a
+    `Common` definition, nothing: commons are never collected; an
+    `Internal` definition, nothing, but a conditional `__start_NAME` or
+    `__stop_NAME` the sections named `NAME`; a `Shlib` one, nothing).
+    Every record is an edge, `R_*_NONE` included (`.reloc ., R_*_NONE,
+    sym` asks for a dependency);
   - the section of every local or section symbol a record of `s` names;
     for a reference into a split section, the piece and its fragment
     (`frag_live`, by offset through `Split`, as model §3.5 resolves a
-    reference);
+    reference: the symbol's value, plus the addend for a section symbol;
+    under `SHT_REL`, whose addend is in the relocated bytes the mark does
+    not read, every piece). GNU ld keeps a live merge section whole; lld
+    and mold keep the referenced pieces (Q11);
   - the sections in `s`'s `SHF_LINK_ORDER` dependents, alloc or not (a
     section whose `sh_link` is `s` is live when `s` is, I-109);
-  - for a code section, its live FDEs (I-3) and, through each FDE's
-    relocations, the personality routine's and the LSDA's sections
-    (`.gcc_except_table` pieces): the FDE's edges are `s`'s edges.
-  Relocations in non-alloc sections are not edges (debug information
-  never keeps code alive); in `.eh_frame` they are edges only through
-  the FDE rule. A group's members are not made live together: each is
-  live by its own edges (lld's rule; GNU ld's not verified, E14).
-- **I-8 [M2] The algorithm.** A least fixed point, computed by parallel
-  rounds: round 0 is the roots; round `k + 1` is the set of sections first
-  marked by the edges of round `k`'s sections. `live` is a column of
+  - for a code section, its FDEs (I-3) and, through the relocations of
+    each FDE and of its CIE, the LSDA's (`.gcc_except_table`) and the
+    personality routine's sections: the FDE's edges are `s`'s edges. A
+    collected function's LSDA is collected (GNU ld and mold; lld keeps
+    it), and a personality reached only through the CIE of collected
+    FDEs is collected (GNU ld; lld and mold keep it) (Q4, Q15);
+  - every other member of `s`'s section group: a group is live as a unit.
+    GNU ld and lld keep a group whole when any member is live; mold
+    collects members one by one (Q3; the earlier "each by its own edges"
+    was lld's rule misread, refuted).
+  Relocations in debug sections are not edges (debug information never
+  keeps code alive, all three, Q14); in `.eh_frame` they are edges only
+  through the FDE rule. Relocations in other non-alloc sections are: GNU
+  ld marks through notes (`.note.stapsdt` keeps libstdc++'s
+  `.stapsdt.base`, found by WP-031's tests), and a kept section's
+  reference to a collected one would otherwise be refused (I-12).
+- **I-8 [M2] The algorithm.** A least fixed point. `live` is a column of
   atomic booleans marked with `swap(true)` (model §6 rule 2: idempotent,
-  commutative); the section whose swap returned `false` is collected into
-  the worker's buffer for the next round, and the buffers are
-  concatenated in unit order (rule 3). The resulting *set* is the least
-  set closed under I-7 containing the roots, whatever the schedule; the
-  order of a round's list may differ between schedules and is never
-  observed (no id, diagnostic or byte depends on it). Within a round,
-  work is partitioned by section and, for a section with more than
-  `SCAN_BLOCK` records, by `SCAN_BLOCK` records (rule 6).
+  commutative); the worker whose swap returned `false` owns the section
+  and walks its edges, every live section exactly once. The work is
+  handed out in rounds: round 0 is the roots; a round's units are the
+  sections the round before left, partitioned by section and, for a
+  section with more than `SCAN_BLOCK` records, by `SCAN_BLOCK` records
+  (rule 6). A worker continues, depth first, on the sections its own
+  swaps marked until it has walked `CONTINUE` records for the unit (no
+  limit when the pool runs inline). It leaves the rest, and any section
+  of more than `SCAN_BLOCK` records, to the next round, and the leftovers
+  are concatenated in unit order (rule 3). The rounds only balance the
+  load: the resulting *set* is the least set closed under I-7 containing
+  the roots, whatever the schedule. Which round walks a section, and the
+  order of a round's list, may differ between schedules and are never
+  observed (no id, diagnostic or byte depends on them). A failure to read
+  a section's relocations is reported after the closure: the least-keyed
+  failure of the first breadth-first round (round `k + 1` = the sections
+  first marked by round `k`'s edges) that has one, found by marking
+  again breadth first (WP-032h).
 - **I-9 [M2] Cost.** One walk of the relocation records of live alloc
   sections: 221,459 for `cxx-medium-g` (E5), about 0.8 ms at the 3.4–3.7
-  ns per record of a scan-like walk (E6). It is a separate walk from the
+  ns per record of a scan-like walk (E6). Measured (WP-032h, static
+  protoc, 1/8 threads): the phase is 15.7/9.8 ms (WP-031: 19/14), the
+  rounds ~5.5/~5 ms in 3 rounds at 8 threads (20 before); lld 22's
+  `markLive` is 5.3/4.7 ms and mold's `gc` 7/2 ms. The link is no slower
+  in total (WP-031: layout has less to place: 79→56, 64→43, 66→41 ms).
+  It is a separate walk from the
   scan's (phase 70), because the scan must know liveness first: undefined
   references are reported only from live sections (`spec/resolve.md`
   §5.1), and whether a reference survives depends on liveness of its
   target (§6.1).
 - **I-10 [M2]** Liveness under `--gc-sections` does not change
   `Resolution`: extraction is decided before liveness
-  (`spec/resolve.md` §4.7). `discard <file> <section> gc` records go to
-  the map (§9). `--print-gc-sections` is `refused` until M2 implements
-  it; its line is then GNU ld's `removing unused section '{section}' in
-  file '{file}'` (not measured against lld or mold, E14).
+  (`spec/resolve.md` §4.7); a member every section of which is collected
+  is still extracted, and its definitions still collide (all three, Q10).
+  `discard <file> <section> gc` records go to the map (§9).
+  `--print-gc-sections` writes GNU ld's lines to standard error, before
+  the report: `<prog>: removing unused section '<section>' in file
+  '<file>'`, `<file>` as `libx.a(y.o)` for a member, `<section>` as
+  `name[signature]` for a member of a COMDAT group; one line per
+  collected section that is kept by resolution, assigned an output
+  section, not `.eh_frame`, and not of size 0; in `(FileId, section
+  index)` order (`mortar_live::removed`). GNU ld prints the same lines
+  in the same order (its program path where mortar prints its basename),
+  and also lists `.group` sections, which mortar does not output; lld
+  and mold print `removing unused section <file>:(<section>)` to
+  standard output, size-0 sections included, mold in no stable order
+  (Q9).
 - **I-11 [M2]** `-r` with `--gc-sections` is refused (M4 decides).
   `--gc-sections` with `-shared` (M4) roots every exported key (I-6).
 
@@ -216,10 +278,16 @@ The design is fixed now so that the M1 tables need no change.
   collected section is not an error: it writes the tombstone of I-47 when
   the referring section has a debug name, and is
   `discarded-section-reference` otherwise (`spec/resolve.md` §6.3's
-  table, applied to collected sections as to dropped COMDAT copies; GNU
-  ld's treatment of collected sections from non-debug non-alloc sections
-  not verified, E14). The scan reports it (§4.4); liveness reports
-  nothing.
+  table, applied to collected sections as to dropped COMDAT copies). The
+  scan reports it (§4.4), or for a section deferred to fill fill's check
+  does (I-14); liveness reports nothing. The mark reads every live
+  section's relocation records itself (`mortar_live::read`), deferred or
+  not: it never depends on the scan's walk. Under I-7 a live
+  non-debug section's references are edges, so only a debug section can
+  refer to a collected one. None of the three references diagnoses the
+  non-debug case: GNU ld removes the referring section, lld and mold
+  write `0 + A` (Q13). A key whose definition is in a collected section
+  is `dead` to the scan (`mortar_scan::view`), as a local of one is.
 
 ## 4. The scan driver (phase 70)
 
@@ -250,20 +318,61 @@ relocation, and sequence recognition across neighbouring records
   instruction (`spec/arch.md` §3.4, through `RelocAt::site`). For a
   non-resident body the site is read with `copy_to` into a 16-byte
   buffer the worker owns.
-- **I-14 [M1] Non-alloc fast path.** A relocation whose place is in a
-  non-alloc section raises no demand and produces no dynamic relocation
-  (`spec/a64.md` §13.2). For it the driver calls the architecture's
-  non-alloc check only: the type is in the allowed list, the field lies
-  in the section, and the target is classified as defined, undefined
-  (an event, §4.4), or in a section that is not live (§6.1). This is
-  where the cost is: 87% of `cxx-medium-g`'s 2.2 M relocations are in
-  `.debug_*` sections (E5).
+- **I-14 [M1] Non-alloc relocations are checked by fill (supervisor
+  ruling, WP-032c).** A relocation whose place is in a non-alloc section
+  raises no demand and produces no dynamic relocation (`spec/a64.md`
+  §13.2), except the types the architecture lists in
+  `Arch::nonalloc_demand_types` (x86-64 `GOTOFF64`, X-53; AArch64
+  `GOTREL64`/`GOTREL32`, M2), which need the GOT base (`spec/arch.md`
+  §4.3). The scan **defers** a live relocated section `S` to fill
+  (`RecIndex::deferred`) when all of these hold: `S` is not `SHF_ALLOC`,
+  is `Regular` or `Debug`, and has a debug name (a reference from it to a
+  section that is not live is the tombstone, §6.1:
+  `mortar_arch::dead_reference` is `Tombstone`); its relocation section
+  is `SHT_RELA` with the class's record size, whole records, `sh_info`
+  `S` and `sh_link` the file's symbol table; and no global of `S`'s file,
+  nor what `redirect` makes of one, is a key a reference to which makes
+  an event (§4.4: target kind `Undefined`, a `comdat-mismatch` key, a
+  `gnu-warning` key). A deferred section's records can make no event, so
+  what is left of the scan's work on them is the checks of §4.3. The
+  scan reads only a deferred section's records of the listed types, and
+  calls `arch.scan` on those for their demands; it reads no other record
+  of it.
+
+  Fill checks each record of a deferred section as it applies it (§5.4),
+  in the clip whose `[a, b)` holds its `r_offset` (the last clip: or any
+  `r_offset ≥ b`): its symbol has a key; `classify` accepts the type;
+  `arch.scan`, called as the scan calls it, reports nothing, which is
+  the architecture's non-alloc check (the type is allowed at a non-alloc
+  place, the field lies in the section, the target is defined, a weak or
+  ignored undefined, or in a section that is not live, whose field is
+  the tombstone of I-47) and raises no demand outside the listed types;
+  and no two of the clip's windows overlap (`spec/arch.md` §3.4). A
+  failed check fails the link, and its diagnostics are the scan's walk
+  of the section (`Walker::deferred_report`): the same text as the
+  scan's, keyed `(100, FileId, section index × 2^32 + record index)`,
+  so after every scan diagnostic and among themselves by file, section
+  and record. Fill reports nothing of its own for such a record and does
+  not apply it. The walk also reports, so that no fault goes unseen,
+  every deferred section when the link fails after the scan and before
+  fill has run every job (a phase from 80 to 99, the image phase before
+  fill, a job stopped by a failed read), and a deferred section fill does
+  not reach (no input row with relocations). An `Undefined` from
+  non-alloc sections only (I-110) is still the scan's: its file is not
+  deferred. 87% of `cxx-medium-g`'s 2.2 M relocations are in `.debug_*`
+  sections (E5).
 - **I-15 [M1]** The scan's outputs and only these: the `Demands` flags
   (atomic or, rule 2), the per-section dynamic-relocation counts
   (written by the unit that scans the section; a section split into
   blocks sums the blocks' counts, an integer sum, rule 2), the
   diagnostics of `spec/arch.md` §7 at their keys, and the events of
   §4.4, and the **record index** of I-29. No other table is written.
+  [M2] The per-section dynamic-relocation counts are also what places
+  the `RELATIVE` records of `.rela.dyn`: each unit's slice starts at the
+  exclusive prefix sum of the counts in address order of the placed
+  sections and GOT slots, and the unit fills it with its records sorted
+  by `r_offset` (`spec/dyn.md` D-40, synth S-4), so the counts must be
+  exact per section, not only in total.
 
 ### 4.2 Cost
 
@@ -276,7 +385,10 @@ relocation, and sequence recognition across neighbouring records
   a key's flags before or-ing** (`load`, and `fetch_or` only when a bit is
   missing), which keeps the cache line shared in the common case of a
   flag already set. The parallel scaling of that form is not measured
-  (E14); the benchmark gate of §16.5 is.
+  (E14); the benchmark gate of §16.5 is. The records of the sections
+  deferred to fill (I-14) are not part of this cost: fill pays one
+  `arch.scan` and one window per such record, in the pass that applies
+  it.
 
 ### 4.3 Errors
 
@@ -322,7 +434,8 @@ pub struct GroupKey { pub class: EventClass, pub file: FileId, pub group: u64 } 
 - **I-19 [M1]** An event is only reported for a **surviving** reference:
   a relocation consumed by a matched sequence reports none
   (`spec/arch.md` §3.4); a relocation in a section that is not live is
-  never scanned; an `Undefined` target whose verdict is "nothing"
+  never scanned; a section deferred to fill (I-14) makes none, by the
+  rule that defers it; an `Undefined` target whose verdict is "nothing"
   (`--unresolved-symbols=ignore-all`, `--ignore-unresolved-symbol`, weak)
   reports none. Whether the event is an error or a warning is the
   verdict's, fixed per key, and is recorded with the group, not per
@@ -614,10 +727,14 @@ buffer; the clip only selects which of them a job writes.
   writer half, and the byte layout is a function of the class and the
   rows; nothing in them is filled from input bytes.
   The fields (WP-027b, `link::structure`):
-  - `e_ident[EI_OSABI]` is `Facts.osabi` (AArch64: 0, a64.md Q11, also
-    with IFUNC symbols; eu-elflint then reads `STT_GNU_IFUNC` and
-    `R_AARCH64_IRELATIVE` as unknown, which Q11 may revisit);
-    `e_type` from the output kind; `e_machine` `Facts.e_machine`;
+  - `e_ident[EI_OSABI]`: `ELFOSABI_GNU` when the output has an
+    `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or an `IRELATIVE` record,
+    else `ELFOSABI_NONE`, on every target (a64.md Q11, ruled by WP-027c;
+    x64.md X-49; x86.md X86-64; `spec/dyn.md` D-23 for `.dynsym`; plumb
+    S1);
+    `e_type` from the output kind (`spec/dyn.md` D-1: `ET_EXEC` for
+    `Static` and `Exec`, `ET_DYN` for `Pie` and `StaticPie`);
+    `e_machine` `Facts.e_machine`;
     `e_flags` `Arch::e_flags` over the live objects' `e_flags`;
   - `e_entry` is `Placement.entry`, or 0 when it is `None` (the gABI's
     "no entry point"; layout's `entry-not-found` warning, L-103);
@@ -633,7 +750,10 @@ buffer; the clip only selects which of them a job writes.
     `SHT_PREINIT_ARRAY` the word size; otherwise 0;
   - `sh_link`/`sh_info`: `.symtab` links `.strtab`, its `sh_info` the
     plan's first global (S-73); `.symtab_shndx` links `.symtab`;
-    `.rela.plt` has `sh_link` 0 and `sh_info` `.got.plt` (S-69);
+    `.rela.plt` has `sh_link` 0 and `sh_info` `.got.plt` (S-69) in a
+    static output; [M2] the dynamic sections' `sh_type`, `sh_flags`,
+    `sh_link`, `sh_info`, `sh_entsize` and `sh_addralign` are
+    `spec/dyn.md` D-34's table (`.rela.plt` then links `.dynsym`);
   - `.relro_padding` (layout's own `NOBITS` chunk, L-64) has a header
     and no synthetic plan;
   - extended numbering (gABI): when the section count or `.shstrtab`'s
@@ -720,7 +840,19 @@ writes a value chosen by the referring section's name, as
 - **I-45 [M1]** Referring section with **a GNU ld debug name**
   (`spec/resolve.md` §6.3: prefix `.debug`, `.zdebug`, `.line`, `.stab`,
   `.gnu.linkonce.wi.`, `.gnu.debuglto_.debug_`, exactly
-  `.gnu_debuglink`): the **tombstone** of I-47, whatever the addend.
+  `.gnu_debuglink`): the **tombstone** of I-47, whatever the addend. Such
+  a section is usually deferred to fill (I-14): the target's liveness is
+  then read at fill (`SymValue::live`, from `Liveness`), which is where
+  `arch.scan` would have found the target dead. Under `--gc-sections` a
+  live `Merge` section can hold collected pieces (I-7, `frag_live`): a
+  reference whose target is such a piece (a section symbol plus addend,
+  or a named symbol in it) is a reference to a section that is not live,
+  and writes the tombstone too (`Tables::split_target`'s `Ok(None)`; a
+  named symbol's `SymValue::live` is false). The deferred check passes it
+  (the target is defined), so it raises no diagnostic. Found by the
+  WP-031 differential (`clang++ -O2 -g`: `.debug_info` naming an unused
+  `.rodata.str` piece); test `tests/deferred.rs`
+  `i14_dead_targets_are_the_tombstone_at_fill`.
 - **I-46 [M1]** Exactly `.gcc_except_table` (alloc or not): 0
   (`spec/resolve.md` §6.3). Any other non-alloc section: the scan
   reported `discarded-section-reference` (§4.4) and fill never runs.
@@ -732,11 +864,36 @@ writes a value chosen by the referring section's name, as
   | referring section | ELFCLASS64 | ELFCLASS32 |
   |---|---|---|
   | `.debug_ranges`, `.debug_loc` | 1 | 1 |
+  | `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | **0** | 0 |
   | `.debug_aranges` | all ones, **and the tuple's length 0** (I-112) | the same |
   | `.debug_frame` | all ones | all ones |
-  | every other debug name (`.debug_info`, `.debug_addr`, `.debug_line`, `.debug_rnglists`, `.debug_loclists`, `.debug_str_offsets`, …) | all ones | **0** |
+  | every other debug name (`.debug_info`, `.debug_line`, `.debug_str_offsets`, …) | all ones | **0** |
 
-  Why each row (E9, E10, E16, E17):
+  Why each row (E9, E10, E16, E17, and WP-027e's matrix,
+  `spec/landed/pipeline/WP-027e.md`):
+  - `.debug_rnglists`/`.debug_loclists`/`.debug_addr` (DWARF 5): their
+    entries pair an address with a length (`DW_RLE_start_length`,
+    `DW_LLE_start_length`; through `.debug_addr`, Clang's
+    `DW_RLE_startx_length` and `DW_LLE_startx_length`), so all ones makes
+    `[2^64 − 1, len − 1)`, which wraps. gdb 16 then reports `Invalid
+    .debug_rnglists data (inverted range)` and drops the CU's whole range
+    list, and stepping into that CU's code says `pc … in read in CU, but
+    not in symtab` (GCC 14 `-gdwarf-5`, its default, `-O0`). 0 is what
+    GNU ld (without a kept copy), lld 19/22 and mold write: gdb skips an
+    entry that starts at 0 when no section is there (`.debug_rnglists
+    entry has start address of zero`), a subprogram whose
+    `DW_FORM_addrx` `low_pc` is 0 is dropped by gdb and lldb 19, and
+    lldb's breakpoints, lookups and steps are those of the all-ones
+    output. It is sound because no code lies in `[0, len)`: the non-PIE
+    base is at least 4 MiB (`spec/layout.md` L-68), so only a dead
+    function of 4 MiB or more could reach it. In a PIE [M2] the rows
+    stand (`spec/dyn.md` D-72, §15 Q6, ruled as lld): the 0 rows stay 0
+    and `.debug_ranges`/`.debug_loc` stay 1, since no code is at 0 in a
+    PIE either (the first `PT_LOAD` holds the headers). E16 measured
+    lldb losing lines with the references' 0 in a low layout; a low
+    layout stays as layout L-68 has it. `llvm-dwarfdump --verify` reports `DIE has overlapping
+    ranges` for a CU's several `[0, len)` entries (lld and mold: the
+    same); the debuggers are the oracle.
   - `.debug_ranges`/`.debug_loc` (DWARF ≤ 4 pairs): `(0, 0)` ends the
     list and a first word of all ones selects a base address; `(1, 1)` is
     empty. lld and mold write 1.
@@ -750,7 +907,8 @@ writes a value chosen by the referring section's name, as
     tuple is empty and every row below passes. A tuple address of `2^63`
     also passed every 64-bit row; the empty tuple was chosen because it
     is empty in both classes.
-  - ELFCLASS64 elsewhere: gdb 16 and lldb 19 drop a subprogram whose
+  - ELFCLASS64 elsewhere (`DW_FORM_addr` in `.debug_info`,
+    `DW_LNE_set_address`): gdb 16 and lldb 19 drop a subprogram whose
     `low_pc` is all ones (`llvm-dwarfdump` prints `dead code`). A 0 is an
     address: in the low layout lld's and mold's Clang DWARF 5 outputs
     lose lldb's lines because `.debug_addr` claims `[0, size)`.
@@ -1329,11 +1487,12 @@ random input's).
 
 ### 9.2 mortar's map
 
-- **I-77 [M1] [C]** `-Map=FILE` writes `spec/plumb.md` §3.2's
-  `mortar-map 1` format to `FILE`; `-M` writes it to standard output
-  after a successful link (a failed link prints nothing on standard
-  output, `spec/diag.md` §7). GNU ld's text format is not produced until
-  a consumer needs it (Q5, accepted). `--cref` is `refused`.
+- **I-77 [M1] [C]** `--mortar-map=FILE` writes `spec/plumb.md` §3.2's
+  `mortar-map 1` format to `FILE` after a successful link, for the
+  verifier and tools. `-Map` and `-M` write GNU's text instead (§9.3,
+  I-120; WP-027e replaced Q5's "`-Map` is `mortar-map 1`"). A failed link
+  writes neither and prints nothing on standard output (`spec/diag.md`
+  §7). `--cref` is `refused`.
 - **I-78 [M1] Records.**
   - `file` per live input file, in `FileId` order; the map's file ids
     count from 0 in that order (`FileId` 0, mortar's own file, has no
@@ -1377,49 +1536,84 @@ random input's).
   successful link; a failed link removes nothing at `FILE` (not
   compared with the references, E14).
 
-### 9.3 The GNU-style map (WP-027d: specified, not implemented)
+### 9.3 The GNU-style map (WP-027d specified, WP-027e implemented)
 
-- **I-120 [proposed]** `-Map=FILE` and `-M` write a human-readable map in
-  GNU ld's text layout, and `--mortar-map=FILE` writes `mortar-map 1`
-  (I-77, I-78) for the verifier and tools. Until this lands I-77 stands
-  (`-Map` is `mortar-map 1`). When it lands every consumer of the machine
-  map moves to `--mortar-map` in the same change: the pipeline and
-  options tests (`crates/mortar/tests/pipeline.rs` `mortar()`,
-  `debuggers.rs` `map_option()`), `cargo xtask linktest` (its L3 verifier
-  run) and `layout/map-file.test` (XFAIL today: it checks GNU's text).
-  Both may be given; each is written as I-79 says.
-- **I-121 [proposed] The text.** Byte-compatible headings and record
-  shapes of GNU ld 2.44, so that people and the scripts that grep GNU
-  maps read it; not byte-identical content (addresses, order and fill are
-  mortar's). In order:
+- **I-120 [M1]** `-Map=FILE`, `-Map FILE` and `-M` (`--print-map`, to
+  standard output) write a human-readable map in GNU ld's text layout;
+  `--mortar-map=FILE` writes `mortar-map 1` (I-77, I-78) for the
+  verifier and tools. Every consumer of the machine map uses
+  `--mortar-map`: the pipeline and options tests
+  (`crates/mortar/tests/pipeline.rs` `mortar()`, `x64.rs`,
+  `debuggers.rs` `map_option()`) and `cargo xtask linktest` (its L3
+  verifier run adds `--mortar-map` to every mortar link, whatever `-Map`
+  the test gives). Both may be given; each is written as I-79 says.
+- **I-121 [M1] The text.** The headings and record shapes of GNU ld
+  2.44 (checked against its output for a static C link with libc, and a
+  C++ link with COMDAT groups), so that people and the scripts that
+  grep GNU maps read it; not GNU's content (addresses, order, fill and
+  which COMDAT copy is kept are mortar's). In order:
   1. `Archive member included to satisfy reference by file (symbol)`, a
-     blank line, and per taken member `ARCHIVE(MEMBER)` and on the next
-     line 26 spaces then `FILE (SYMBOL)`: the file and symbol whose
-     reference took it (resolve's first taker, `spec/resolve.md` §4.3);
-  2. `Discarded input sections`, then per dropped COMDAT copy and per
-     section `--gc-sections` removes, ` NAME ADDR SIZE FILE` (address 0);
-  3. `Memory Configuration`, the fixed four lines GNU writes with no
-     `MEMORY` command (`Name Origin Length Attributes`,
-     `*default* 0x0000000000000000 0xffffffffffffffff`);
-  4. `Linker script and memory map`, `LOAD FILE` per input in `FileId`
-     order, then per output section in address order
-     `NAME` padded to 16, `0x%016x` address, size in `0x%x` right-aligned
-     to 10; per placed input section ` NAME` and, when it is longer than
-     14 columns, a new line of 16 spaces, then address, size and
-     `FILE` or `ARCHIVE(MEMBER)`; per named global or local symbol
-     defined there 16 spaces, address, 16 spaces, name; ` *fill*` with
-     address, size and the fill word for alignment gaps in code (the
-     fill of §4); a synthetic chunk as an input section of file
-     `mortar` (`spec/synth.md` S-3 names), a thunk or erratum patch as
-     `__TARGET_veneer` lines as in `mortar-map 1`;
-  5. `OUTPUT(FILE ELF-TARGET)`, GNU's emulation target name
-     (`elf64-littleaarch64`, `elf64-x86-64`, `elf32-i386`).
-  The script lines GNU prints (` *(.text.unlikely ...)`) are not written:
-  mortar has no script for default placement. `--cref` stays refused.
-- **I-122 [proposed] Determinism and cost.** The text is a function of
-  the same tables as `mortar-map 1` (I-79) and of nothing else; it is
-  formatted per output section in parallel and is written only when
-  asked. The determinism matrix covers it like the machine map.
+     blank line, and per taken member in `FileId` order
+     `ARCHIVE(MEMBER)`; then, at column 30 (on the next line after 30
+     spaces when the member text is 30 columns or longer, else padded
+     to column 30 on the same line), `FILE (SYMBOL)`: the file and
+     symbol whose reference took it (resolve's first taker,
+     `spec/resolve.md` §4.3, which is not always GNU's), for a root
+     (`-u`, the entry) no file, so the line is 30 spaces and
+     `(SYMBOL)`, as GNU writes it; a blank line;
+  2. `Discarded input sections`, a blank line, per dropped section of a
+     live object (COMDAT copy, `/DISCARD/`, excluded, gc'd; zero-sized
+     ones included, as GNU does) ` NAME`, address 0, size and file,
+     in the column layout of item 4; a blank line. Sections the link
+     consumes (`.note.GNU-stack`, `.note.gnu.property`, `.group`, layout
+     §8.1) are not listed (GNU lists them: its script discards them);
+  3. `Memory Configuration`, a blank line,
+     `Name             Origin             Length             Attributes`,
+     `*default*        0x0000000000000000 0xffffffffffffffff` (8 digits
+     each for ELFCLASS32), a blank line;
+  4. `Linker script and memory map`, a blank line, `LOAD PATH` per input
+     file in `FileId` order (an archive once, at its first member), then
+     per output section in section-header order a blank line, `NAME`
+     padded to column 16 (on a line of its own and the columns on the
+     next line after 16 spaces when the name is 15 columns or longer),
+     the address `0x%016x` (`0x%08x` for ELFCLASS32; 0 for a non-alloc
+     section, whose lines then hold offsets in it), a space and the size
+     `0x%x` right-aligned to 10. Inside it, in address order: per placed
+     input section ` NAME` with the same wrapping rule (counting the
+     leading space), address, size and ` FILE` or ` ARCHIVE(MEMBER)`;
+     after it, per global symbol defined there, 16 spaces, address, 16
+     spaces, name (GNU's default: locals are its `--print-map-locals`,
+     not written); ` *fill*` with address and size for each gap in an
+     allocated section, and in an executable one the fill pattern of
+     §4 in hex (`00000000` on AArch64, `cc` on x86; GNU writes its NOP
+     word). A chunk mortar makes is one input line of file `mortar`
+     (`spec/synth.md` S-3 names: `.got`, `.eh_frame`, `.symtab`, ...),
+     and so are the merged bytes of an output section with mergeable
+     inputs (GNU lists each input section); a symbol in those bytes is
+     listed under that line. An island of thunks and erratum patches is
+     an input line of file `linker stubs` with a symbol line per patch,
+     named as `.symtab` names it (S-80, `__TARGET_veneer`);
+  5. `OUTPUT(FILE ELF-TARGET)`, the output as the command line named it
+     and GNU's BFD target name (`elf64-littleaarch64`, `elf64-x86-64`,
+     `elf32-i386`), then `LOAD linker stubs` (GNU's last line).
+  GNU's script lines (` *(.text.unlikely ...)`, `PROVIDE (...)`,
+  assignments) are not written: mortar has no script for default
+  placement, and the linker-defined symbols they show are not listed.
+  `--cref` stays refused. The test is
+  `crates/mortar/tests/pipeline.rs`
+  `the_text_map_matches_the_output_and_gnus_map`: one parser reads
+  mortar's and GNU's maps of one line; every section line is the
+  section header, every input line lies in its section, every symbol
+  line is its `.symtab` value, and the (section, size, file) sets of
+  placed input sections and the taken members are GNU's, but for what
+  item 4 says mortar makes itself and the kept COMDAT copy.
+- **I-122 [M1] Determinism and cost.** The text is a function of the
+  same tables as `mortar-map 1` (I-79) and the output's name, and of
+  nothing else; it is formatted per output section in parallel and is
+  written only when asked. The determinism matrix
+  (`the_output_is_a_function_of_the_inputs_alone`) covers it like the
+  machine map. Its cost on protoc (static, `-g`) is in
+  `spec/landed/pipeline/WP-027e.md`.
 
 ## 10. I/O: the measured design
 
@@ -1746,7 +1940,8 @@ pub trait SynthChunk {
 
 | subject | GNU ld 2.44 | lld 22 | mold 2.37.1 | mortar | rule |
 |---|---|---|---|---|---|
-| debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`, `addr`, `rnglists`, `loclists`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| the same in `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | redirect or 0 | 0 | 0 | 0 | I-47 |
 | the same, ELFCLASS32 | redirect or 0 | 0 | 0 | 0 (`.debug_frame`: all ones) | I-47 |
 | the same in `.debug_aranges` | redirect or 0 | 0 | 0 | all ones, length 0 | I-47, I-112 |
 | the same in `.debug_ranges`/`.debug_loc` | redirect or 0 (GC case: 0 in `.debug_loc`, `spec/a64.md` §13.2) | 1 | 1 | 1 | I-47 |
@@ -1768,8 +1963,16 @@ pub trait SynthChunk {
 | `--build-id=0x` | warning, no note | empty descriptor | error | error | I-70 |
 | build-id note size for a 2-byte id | 18 (unpadded) | 18 | 18 | 20 (padded to 4) | I-71 |
 | what the hash covers | not the whole file, not a 64 KiB/1 MiB/4 MiB tree (E12) | same | same | a public tree over 1 MiB blocks | I-72 |
-| `-Map` / `-M` format | GNU text | lld's own text | mold's own text | `mortar-map 1` | I-77 |
-| `--gc-sections` in M1 | supported | supported | supported | refused until M2 | I-5 |
+| `-Map` / `-M` format | GNU text | lld's own text | mold's own text | GNU's layout (`mortar-map 1` is `--mortar-map`) | I-77, I-121 |
+| `--gc-sections` in M1 | supported | supported | supported | supported since WP-031 | I-5 |
+| COMDAT group with one live member, `--gc-sections` | whole group kept | whole group kept | members one by one | whole group kept | I-7 |
+| non-alloc sections of an object with no marked section; non-alloc non-debug with relocations | removed | kept | kept | kept | I-6 |
+| note in a dead group with an alloc member | removed | removed | kept | removed | I-6 |
+| personality reached only from the CIE of collected FDEs | removed | kept | kept | removed | I-7 |
+| collected function's `.gcc_except_table` | removed | kept | removed | removed | I-7 |
+| unreferenced pieces of a live string section, `--gc-sections` | kept (whole section) | removed | removed | removed | I-7 |
+| `__start_`/`__stop_` default | `nostart-stop-gc` | `start-stop-gc` | every C-identifier section kept | `nostart-stop-gc` | I-6 |
+| `--print-gc-sections` | stderr, `'sec' in file 'f'`, no size 0 | stdout, `f:(sec)` | stdout, `f:(sec)`, unordered | GNU's text and order | I-10 |
 | identification string in `.comment` | none | `Linker: LLD …` | `mold …` | none from the image | I-55 |
 | default thread count | one thread | all (not measured here) | all (not measured here) | `available_parallelism()` | I-85 |
 | `--time-phases` | — | `--time-trace` (a different format) | `--perf` (a different format) | mortar's lines | I-88 |
@@ -2229,7 +2432,9 @@ Resolved by the review (2026-11-15):
 - Q3: the tombstone, as I-47 (the coordinator's `.debug_aranges` = 0 was
   replaced by all ones with the length 0, on E16's evidence).
 - Q4: removing a stale output after a failed link (I-66), accepted.
-- Q5: `-Map` writes `mortar-map 1` (I-77), accepted; in §15.
+- Q5: `-Map` writes `mortar-map 1` (I-77), accepted; in §15. Replaced
+  by WP-027e: `-Map` is GNU's text, `--mortar-map` the machine map
+  (I-120).
 - Q6: `uuid` accepted in M2, excluded from the determinism gate (I-69).
 - Q7: `fast` is 8 bytes; `sha256` accepted in M1 (I-69).
 - Q8: `-o` equal to an input, accepted (I-62).

@@ -5,7 +5,9 @@
 //! One pass over the records. Lookups are by index, by binary search or by
 //! hash; groups are kept in ordered maps so nothing depends on hash order.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+
+use crate::hasher::HashMap;
 
 use mortar_elf::consts::{
     PT_TLS, SHF_COMPRESSED, SHF_STRINGS, SHF_TLS, SHT_NOBITS, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK,
@@ -25,6 +27,8 @@ mod eh;
 mod ifunc;
 #[path = "x64rec.rs"]
 mod x64rec;
+#[path = "x86rec.rs"]
+mod x86rec;
 pub(crate) use ifunc::IfKey;
 
 use crate::report::{Coverage, Finding, Reason, Rewrite, Rule, Site, Via};
@@ -37,8 +41,8 @@ pub(crate) fn width(machine: Machine, r_type: u32) -> u8 {
         }
         Machine::X86_64 => crate::x64::def(r_type)
             .map_or_else(|| crate::x64::unchecked_width(r_type), |d| d.field.width()),
-        // i386 is not judged (§4.5): its records are `machine`.
-        Machine::I386 => 4,
+        Machine::I386 => crate::x86::def(r_type)
+            .map_or_else(|| crate::x86::unchecked_width(r_type), |d| d.field.width()),
     }
 }
 
@@ -136,7 +140,8 @@ impl TlsBlock {
             return Err("PT_TLS p_vaddr is not a multiple of p_align");
         }
         // Variant I (AArch64): the block starts align_up(16, p_align)
-        // above TP. Variant II (x86-64, `spec/x64.md` X-44): it ends at TP,
+        // above TP. Variant II (x86-64, `spec/x64.md` X-44; i386,
+        // `spec/x86.md` X86-57, the same on `%gs`): it ends at TP,
         // TpRel(x) = x - start - align_up(p_memsz, p_align).
         let tcb = if image.header.e_machine == mortar_elf::consts::EM_AARCH64 {
             16u64.next_multiple_of(align)
@@ -364,6 +369,7 @@ fn x_got(op: Op, g: u64, p: u64, got: Option<u64>, a: i64) -> Option<i64> {
     Some(match form {
         Form::PrelA => g.wrapping_add(a as u64).wrapping_sub(p) as i64,
         Form::OffA => g.wrapping_add(a as u64).wrapping_sub(got?) as i64,
+        Form::AbsA => g.wrapping_add(a as u64) as i64,
         Form::Abs => g as i64,
         Form::Prel => g.wrapping_sub(p) as i64,
         Form::Page => a64::page(g).wrapping_sub(a64::page(p)) as i64,
@@ -464,14 +470,49 @@ pub(crate) struct Engine<'a, 'b> {
     pub(crate) nonalloc_rewritten: std::collections::BTreeSet<(usize, u64)>,
     /// GNU ld's redirect targets: placed group sections by name and size.
     redirects: Option<HashMap<(String, u64), Vec<u64>>>,
+    /// The veneers W6 accepted, by start address, each with the first
+    /// record that branches to it (for R9, §5.4).
+    veneers: BTreeMap<u64, (Rec, Site, String, u64)>,
     pub cov: Coverage,
     pub findings: Vec<Finding>,
+    /// Stage 3 (§12): the run-time address of each name the output
+    /// imports, from the loader model (0: no definition, weak).
+    pub(crate) dynbind: HashMap<String, u64>,
+    /// Names bound to a library's thread-local definition: not judged.
+    pub(crate) dyn_tls: std::collections::HashSet<String>,
+    /// Stage 3: the module index of each name in `dyn_tls`.
+    pub(crate) dyn_tls_mod: HashMap<String, u64>,
+    /// Stage 3: the output is dynamic (kept TLS sequences are the
+    /// loader's to finish).
+    pub(crate) dynamic: bool,
+    /// PLT entries: entry address -> `.got.plt` word (stage 3).
+    pub(crate) plt: BTreeMap<u64, u64>,
+    /// Verified absolute words and GOT words: `(place, width, value,
+    /// internal)`, for the bias view (P-D9 view 2).
+    pub(crate) abs_words: Vec<(u64, u8, u64, bool)>,
+    /// Stage 3: each IFUNC resolver's canonical IPLT entry, `None` when
+    /// every reference reaches its IRELATIVE slot.
+    pub(crate) ifunc_chosen: BTreeMap<u64, Option<u64>>,
+    /// The executable's extent `[lo, hi)`: a target inside it moves with
+    /// the load bias.
+    pub(crate) extent: (u64, u64),
 }
 
 impl<'a, 'b> Engine<'a, 'b> {
+    /// Whether an address is the executable's (moves with the bias).
+    pub(crate) fn internal(&self, s: u64) -> bool {
+        self.extent.0 <= s && s < self.extent.1
+    }
+
+    /// A branch whose target is a PLT entry whose word holds `s` after
+    /// loading (stage 3).
+    pub(crate) fn plt_hop(&self, t: u64, s: u64) -> bool {
+        self.plt.get(&t).is_some_and(|&slot| self.image.value(slot, self.word() as u8) == Some(s))
+    }
+
     pub fn new(image: &'b Image<'a>, objs: &'b [Obj<'a>], format: Format) -> Self {
-        let mut defs: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
-        let mut commons: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
+        let mut defs: HashMap<String, Vec<(usize, u32)>> = HashMap::default();
+        let mut commons: HashMap<String, Vec<(usize, u32)>> = HashMap::default();
         for (oi, o) in objs.iter().enumerate() {
             let Some(t) = &o.symtab else { continue };
             let x64 = o.elf.machine() == Machine::X86_64;
@@ -504,6 +545,24 @@ impl<'a, 'b> Engine<'a, 'b> {
             .or_else(|| image.global("_GLOBAL_OFFSET_TABLE_"))
             .map(|s| s.sym.st_value)
             .or_else(|| image.sections.iter().find(|s| s.name == ".got").map(|s| s.shdr.sh_addr));
+        // spec/x86.md X86-47: mold computes the i386 GOT base (GOTPC,
+        // GOTOFF, GOT32) against the start of `.got`, not
+        // `_GLOBAL_OFFSET_TABLE_` (§5.11; its no-base GOT32 is W3).
+        // In a stripped output GNU ld's and lld's base is the start of
+        // `.got.plt` (X86-47), not `.got`.
+        let sec = |n: &str| image.sections.iter().find(|s| s.name == n).map(|s| s.shdr.sh_addr);
+        let i386 = image.header.e_machine == mortar_elf::consts::EM_386;
+        let got = if i386 && format == Format::Mold {
+            sec(".got").or(got)
+        } else if i386 && image.unique("_GLOBAL_OFFSET_TABLE_").is_none() {
+            image
+                .global("_GLOBAL_OFFSET_TABLE_")
+                .map(|s| s.sym.st_value)
+                .or(sec(".got.plt"))
+                .or(got)
+        } else {
+            got
+        };
         let got_section = image
             .sections
             .iter()
@@ -530,8 +589,22 @@ impl<'a, 'b> Engine<'a, 'b> {
             format,
             nonalloc_rewritten: std::collections::BTreeSet::new(),
             redirects: None,
+            veneers: BTreeMap::new(),
             cov: Coverage::default(),
             findings: Vec::new(),
+            dynbind: HashMap::default(),
+            dyn_tls: std::collections::HashSet::new(),
+            dyn_tls_mod: HashMap::default(),
+            dynamic: false,
+            plt: BTreeMap::new(),
+            abs_words: Vec::new(),
+            ifunc_chosen: BTreeMap::new(),
+            extent: {
+                let loads = image.phdrs.iter().filter(|p| p.p_type == mortar_elf::consts::PT_LOAD);
+                let lo = loads.clone().map(|p| p.p_vaddr).min().unwrap_or(0);
+                let hi = loads.map(|p| p.p_vaddr.saturating_add(p.p_memsz)).max().unwrap_or(0);
+                (lo, hi)
+            },
         };
         e.build_iplt();
         e
@@ -735,6 +808,15 @@ impl<'a, 'b> Engine<'a, 'b> {
             && matches!(where_, Ok(SymbolSection::Section(_)))
         {
             return self.ifunc_target(oi, idx, IfKey::Global(name));
+        }
+        // Stage 3: a name the output imports is where the loader binds it.
+        let undefined_out = self.image.global(&name).is_none_or(|o| o.sym.st_shndx == 0);
+        if undefined_out && let Some(&a) = self.dynbind.get(&name) {
+            if self.dyn_tls.contains(&name) {
+                // Where the loader model puts the library's TLS byte.
+                return Target::Tls(a);
+            }
+            return if a == 0 { Target::UndefWeak } else { Target::Addr(a) };
         }
         // 1. The output's global symbol of the name.
         if let Some(out) = self.image.global(&name) {
@@ -960,12 +1042,21 @@ impl<'a, 'b> Engine<'a, 'b> {
         if let Some(r) = reason {
             return self.not_checked(r, n);
         }
-        // i386 is not judged (§4.5): every record is `machine`.
-        let x64 = match machine {
-            Machine::AArch64 => false,
-            Machine::X86_64 => true,
-            Machine::I386 => return self.not_checked(Reason::Machine, n),
-        };
+        let x64 = machine == Machine::X86_64;
+        let i386 = machine == Machine::I386;
+        if i386 && raw.first().is_some_and(|r| r.3.is_some()) {
+            // spec/x86.md X86-2: refused; the references differ (W12).
+            let f = Finding::new(
+                Rule::Insn,
+                format!("{rs} is SHT_RELA in an EM_386 object (spec/x86.md X86-2)"),
+            )
+            .site(o.site(si, 0));
+            self.fail(f);
+            return self.not_checked(Reason::Type, n);
+        }
+        if i386 {
+            self.x86_rel_overlaps(oi, si, &raw);
+        }
         let place = s.place.clone();
         let data = s.data;
         let nobits = s.shdr.sh_type == SHT_NOBITS;
@@ -990,8 +1081,26 @@ impl<'a, 'b> Engine<'a, 'b> {
                 self.cov.none += 1;
                 continue;
             }
-            let def = if x64 { crate::x64::def(ty) } else { a64::def(ty) };
+            let def = match machine {
+                Machine::X86_64 => crate::x64::def(ty),
+                Machine::I386 => crate::x86::def(ty),
+                Machine::AArch64 => a64::def(ty),
+            };
             let Some(def) = def else {
+                // spec/x86.md X86-20: the same for i386 (W14).
+                if i386 && crate::x86::dynamic_only(ty) {
+                    let mut f = Finding::new(
+                        Rule::Insn,
+                        format!(
+                            "relocation type {ty} is defined for dynamic relocations only, not for an object file (spec/x86.md X86-20)"
+                        ),
+                    )
+                    .at(p)
+                    .site(o.site(si, off));
+                    f.found = Some(u64::from(ty));
+                    self.fail(f);
+                    continue;
+                }
                 // spec/x64.md X-14: the dynamic-only types have no static
                 // value; GNU ld writes S + A for them (W3).
                 if x64 && matches!(ty, 5..=8 | 16 | 36..=38) {
@@ -1087,6 +1196,10 @@ impl<'a, 'b> Engine<'a, 'b> {
             )
             .is_some();
             return self.tombstone(oi, si, rec, &site, &symbol, after);
+        }
+        // i386 (§4.5, §5.11).
+        if self.image.header.e_machine == mortar_elf::consts::EM_386 {
+            return self.x86_record(oi, si, recs, i, site, symbol);
         }
         // x86-64 (§4.5, §5.9).
         if is_x64(rec) {
@@ -1187,13 +1300,31 @@ impl<'a, 'b> Engine<'a, 'b> {
         };
         let verdict = judge(rec, x);
         if let Verdict::Ok(rw) = verdict {
+            // Stage 3's view 2 re-reads loaded words only: a non-alloc
+            // place (`.debug_*`) is not in memory and no record moves it.
+            if op == Op::Abs
+                && matches!(rec.def.field, Field::Data(4 | 8))
+                && !weak
+                && self.objs[oi].secs[si].alloc()
+            {
+                let s = sa.wrapping_sub(addend as u64);
+                self.abs_words.push((rec.p, rec.def.field.width(), sa, self.internal(s)));
+            }
             match rw {
                 Some(r) => self.cov.add_accepted(r, rec.def.r_type),
                 None => self.cov.add_verified(Via::Direct, rec.def.r_type),
             }
             return;
         }
+        if matches!(rec.def.r_type, JUMP26 | CALL26)
+            && let Some((_, t)) = a64::branch(rec.out_word as u32, rec.p)
+            && rec.out_word as u32 & 0xfc00_0000 == rec.input_word as u32 & 0xfc00_0000
+            && self.plt_hop(t, sa)
+        {
+            return self.cov.add_verified(Via::Plt, rec.def.r_type);
+        }
         if let Some(rw) = self.direct_rewrite(rec, sa, weak, &partner) {
+            self.note_veneer(rw, rec, &site, &symbol, sa);
             self.cov.add_accepted(rw, rec.def.r_type);
             return;
         }
@@ -1236,6 +1367,15 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// The address evidence of a GOT-indirect record (§5.5); `None` when
     /// the GOT base it needs is unknown.
     fn slot_evidence(&self, rec: &Rec) -> Option<Evidence> {
+        let e = self.slot_evidence_wide(rec)?;
+        // ELFCLASS32: an address is the value modulo 2^32.
+        Some(match e {
+            Evidence::Exact(v) if self.word() == 4 => Evidence::Exact(v & 0xffff_ffff),
+            e => e,
+        })
+    }
+
+    fn slot_evidence_wide(&self, rec: &Rec) -> Option<Evidence> {
         let Op::Slot(_, form) = rec.def.op else { return Some(Evidence::None) };
         let d = a64::decode(rec.def.field, rec.out_word, rec.p);
         Some(match (form, rec.def.field) {
@@ -1246,6 +1386,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             (Form::OffA, _) => {
                 Evidence::Exact(self.got?.wrapping_add(d as u64).wrapping_sub(rec.addend as u64))
             }
+            (Form::AbsA, _) => Evidence::Exact((d as u64).wrapping_sub(rec.addend as u64)),
             (Form::Off, Field::MovwSigned(16) | Field::Movw(16)) => {
                 // MOVN writes the complement (AAELF64 "MOVW" groups).
                 let w = rec.out_word as u32;
@@ -1360,7 +1501,8 @@ impl<'a, 'b> Engine<'a, 'b> {
                     Seq::Relaxed(rw) => Outcome::Accepted(rw),
                     Seq::Bad(msg, e) => Outcome::Fail(Rule::Field, msg, e),
                     Seq::Kept if same_insn(rec) => {
-                        let want = Want::Pair(1, if ld { 0 } else { b.dtprel(sa) });
+                        let module = self.dyn_tls_mod.get(&symbol).copied().unwrap_or(1);
+                        let want = Want::Pair(module, if ld { 0 } else { b.dtprel(sa) });
                         return self.push_slot(slot, oi, rec, site, symbol, want);
                     }
                     Seq::Kept => rewritten_badly(),
@@ -1437,6 +1579,22 @@ impl<'a, 'b> Engine<'a, 'b> {
                 return Outcome::Accepted(Rewrite::TlsDescToIe);
             }
         }
+        if seq[..3].iter().all(|r| same_insn(r)) && outw[3] == inw[3] && self.dynamic {
+            // Kept for the loader: the descriptor the ADRP/LDR reach holds
+            // the static-TLS resolver and TPREL once its record is applied.
+            if let (Some((_, pg)), Some((_, _, lo))) =
+                (a64::adrp(outw[0], seq[0].p), a64::ldr64_imm(outw[1]))
+                && self.slot_ok(pg.wrapping_add(lo), Want::Pair(crate::loader::TLSDESC_MARK, x))
+            {
+                return Outcome::Verified;
+            }
+            return Outcome::Fail(
+                Rule::GotSlot,
+                "the TLS descriptor the kept sequence reaches is not resolved to this symbol"
+                    .into(),
+                Some(x),
+            );
+        }
         if seq[..3].iter().all(|r| same_insn(r)) && outw[3] == inw[3] {
             // Kept for the dynamic loader: no static executable needs it,
             // and the descriptor's dynamic relocation is stage 3's.
@@ -1451,17 +1609,20 @@ impl<'a, 'b> Engine<'a, 'b> {
     }
 
     /// Whether `g` is a GOT entry that holds `want` (§5.5).
+    /// Words are the output class's (4 bytes on ELFCLASS32, a value
+    /// compared modulo 2^32).
     fn slot_ok(&self, g: u64, want: Want) -> bool {
-        g.is_multiple_of(8)
+        let word = self.word();
+        let mask = if word == 8 { u64::MAX } else { 0xffff_ffff };
+        let size = if word == 8 { want.size() } else { want.size() / 2 };
+        g.is_multiple_of(word)
             && !self.occupied.contains(g)
-            && self
-                .got_section
-                .is_none_or(|(lo, hi)| lo <= g && g.saturating_add(want.size()) <= hi)
+            && self.got_section.is_none_or(|(lo, hi)| lo <= g && g.saturating_add(size) <= hi)
             && match want {
-                Want::Word(v) => self.image.value(g, 8) == Some(v),
+                Want::Word(v) => self.image.value(g, word as u8) == Some(v & mask),
                 Want::Pair(m, v) => {
-                    self.image.value(g, 8) == Some(m)
-                        && self.image.value(g.wrapping_add(8), 8) == Some(v)
+                    self.image.value(g, word as u8) == Some(m & mask)
+                        && self.image.value(g.wrapping_add(word), word as u8) == Some(v & mask)
                 }
             }
     }
@@ -1590,6 +1751,80 @@ impl<'a, 'b> Engine<'a, 'b> {
         }
     }
 
+    /// Remembers the veneer a W6 record branches to (R9, §5.4).
+    fn note_veneer(&mut self, rw: Rewrite, rec: &Rec, site: &Site, symbol: &str, sa: u64) {
+        if rw != Rewrite::Veneer {
+            return;
+        }
+        if let Some((_, t)) = a64::branch(rec.out_word as u32, rec.p) {
+            self.veneers
+                .entry(t)
+                .or_insert_with(|| (rec.clone(), site.clone(), symbol.to_owned(), sa));
+        }
+    }
+
+    /// R9 (§5.4; spec/a64.md §9): in an output whose
+    /// `GNU_PROPERTY_AARCH64_FEATURE_1_AND` has BTI, the loader maps code
+    /// as guarded pages, so a veneer that ends in `BR x16`/`BR x17` must
+    /// land on `BTI c|j|jc`, `PACIASP` or `PACIBSP`. A veneer ending in a
+    /// direct `B` (GNU ld's and lld's `bti c; b T` pad veneer) needs none.
+    pub fn check_landing_pads(&mut self) {
+        if self.image.header.e_machine != mortar_elf::consts::EM_AARCH64
+            || crate::property::aarch64_feature_1_and(self.image) & 1 == 0
+        {
+            return;
+        }
+        let veneers = std::mem::take(&mut self.veneers);
+        for (t, (rec, site, symbol, sa)) in veneers {
+            let Some(hops) = self.veneer_hops(t, sa) else { continue };
+            let Some(&(t, dest, _)) =
+                hops.iter().find(|h| h.2 && !self.image.insn(h.1).is_some_and(a64::landing_pad))
+            else {
+                continue;
+            };
+            let word = self.image.insn(dest);
+            let mut f = Self::finding(
+                Rule::LandingPad,
+                &rec,
+                &site,
+                &symbol,
+                format!(
+                    "the veneer at {t:#x} branches indirectly to {dest:#x}, which is not a landing pad (BTI c|j|jc, PACIASP, PACIBSP) in a BTI output"
+                ),
+            )
+            .at(t);
+            f.expected = Some(dest);
+            f.found = word.map(u64::from);
+            self.findings.push(f);
+        }
+    }
+
+    /// The veneers from `t` to `sa` (W6, §5.4): `(start, destination,
+    /// indirect)` of each. A veneer's destination outside every placed
+    /// section may be another veneer (GNU ld's `__x_veneer` to its
+    /// `__x_bti_veneer`, `bti c; b x`), or a landing pad just before the
+    /// target that falls through to it (lld's `__AArch64BTIThunk_x`).
+    /// `None` when the chain does not reach `sa` within 4 veneers.
+    fn veneer_hops(&self, t: u64, sa: u64) -> Option<Vec<(u64, u64, bool)>> {
+        let mut hops = Vec::new();
+        let mut at = t;
+        for _ in 0..4 {
+            let (d, indirect) = a64::veneer_end(self.image, at)?;
+            hops.push((at, d, indirect));
+            if d == sa {
+                return Some(hops);
+            }
+            if self.occupied.contains(d) {
+                return None;
+            }
+            if d.wrapping_add(4) == sa && self.image.insn(d).is_some_and(a64::landing_pad) {
+                return Some(hops);
+            }
+            at = d;
+        }
+        None
+    }
+
     /// The rewritings of a non-GOT record (§5.3): W1, W4, W5, W6.
     fn direct_rewrite<'r>(
         &self,
@@ -1613,9 +1848,12 @@ impl<'a, 'b> Engine<'a, 'b> {
             if weak && t == rec.p.wrapping_add(4) {
                 return Some(Rewrite::WeakBranchNext);
             }
+            if self.plt_hop(t, sa) {
+                return None;
+            }
             if !self.occupied.contains(t)
                 && self.image.load_of(t, 4).is_some()
-                && a64::run_veneer(self.image, t) == Some(sa)
+                && self.veneer_hops(t, sa).is_some()
             {
                 return Some(Rewrite::Veneer);
             }
@@ -1688,6 +1926,11 @@ impl<'a, 'b> Engine<'a, 'b> {
                 return self.not_checked(Reason::PieceNotLocatable, 1);
             }
             (Op::Abs, Field::Data(w)) => Evidence::Exact(trunc(rec.out_word, w)),
+            // i386's `GOTOFF` (x86-64's `GOTOFF64`): GOT plus the field,
+            // modulo the address size (WP-028e).
+            (Op::GotRel, Field::Data(4 | 8)) => {
+                self.gotrel_address(rec).map_or(Evidence::None, Evidence::Exact)
+            }
             (
                 Op::Prel,
                 Field::Data(_) | Field::Adr | Field::Imm19 | Field::Imm14 | Field::Imm26,
@@ -1702,7 +1945,19 @@ impl<'a, 'b> Engine<'a, 'b> {
                         w1 = true;
                         Evidence::Exact(t)
                     }
-                    _ => Evidence::None,
+                    // An ADRP made NOP is W1 only with its ADD made the
+                    // ADR of its register; else the register is unset
+                    // (WP-028d: was not checked as `piece-not-locatable`).
+                    _ => {
+                        let f = Self::finding(
+                            Rule::Field,
+                            rec,
+                            &site,
+                            &symbol,
+                            "the ADRP is a NOP but the ADD after it is not the ADR of its register (W1)",
+                        );
+                        return self.fail(f);
+                    }
                 }
             }
             (Op::Page, _) => page_evidence(rec),
@@ -1724,7 +1979,7 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// Decides the GOT groups (§5.5).
     pub fn finish_got(&mut self) {
         let groups = std::mem::take(&mut self.got_groups);
-        for (_, g) in groups {
+        for ((_, goi, gsym, _), g) in groups {
             if g.unpaired() {
                 self.not_checked(Reason::GotUnpaired, g.members.len() as u64);
                 continue;
@@ -1756,7 +2011,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                         },
                     );
                     f.expected = Some(want.first());
-                    f.found = cands.first().and_then(|&c| self.image.value(c, 8));
+                    f.found = cands.first().and_then(|&c| self.image.value(c, self.word() as u8));
                     self.fail(f);
                     continue;
                 }
@@ -1772,6 +2027,17 @@ impl<'a, 'b> Engine<'a, 'b> {
                             break;
                         }
                         v => last = Some((v, x)),
+                    }
+                }
+                if ok.is_some()
+                    && let Want::Word(v) = want
+                    && !rec.def.op.is_tls()
+                {
+                    let w = self.word() as u8;
+                    let internal = self.internal(v.wrapping_sub(slot_addend(rec)))
+                        && !matches!(self.resolve_any(goi, gsym), Target::UndefWeak);
+                    for &gv in &valid {
+                        self.abs_words.push((gv, w, v, internal));
                     }
                 }
                 match ok {

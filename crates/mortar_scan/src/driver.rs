@@ -2,16 +2,17 @@
 
 use std::sync::atomic::{AtomicU16, Ordering};
 
-use mortar_arch::seq::overlaps;
+use mortar_arch::seq::{disjoint_in_order, overlaps};
 use mortar_arch::{
-    DemandOut, DemandSink, DynRole, Howto, PlaceFacts, ProofRun, RefName, RelocAt, ScanCx,
-    ScanError, Site, UnitWindow,
+    DemandOut, DemandSink, DynRefusal, DynRole, Howto, Incompatible, PlaceFacts, ProofRun, RefName,
+    RelocAt, ScanCx, ScanError, ScanTables, Site, UnitWindow,
 };
 use mortar_core::demands::{DemandFlags, DynCounts, DynKind, GlobalFlags};
 use mortar_core::par::SCAN_BLOCK;
-use mortar_core::{FileId, LocalSym, SectionId, SymEntry, SymKey, SymKind};
+use mortar_core::resolution::SectionKind;
+use mortar_core::{FileId, LocalSym, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass};
-use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, STT_SECTION};
+use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_RELA, STT_SECTION};
 use mortar_elf::{SectionIndex, SymbolIndex};
 
 use crate::events::{Acc, Event, EventClass, GroupKey, RefId, UnitEvents, sym_group};
@@ -31,9 +32,13 @@ pub(crate) struct Unit {
     pub hi: u32,
     /// The number of blocks of the section.
     pub parts: u32,
+    /// A section whose checks are fill's (I-14): only its records of the
+    /// types of `Arch::nonalloc_demand_types` are walked, for their
+    /// demands.
+    pub types_only: bool,
 }
 
-fn key_at(file: FileId, index: u32, record: u32) -> Key {
+pub(crate) fn key_at(file: FileId, index: u32, record: u32) -> Key {
     mortar_arch::cx::scan_key(file, index, record)
 }
 
@@ -45,9 +50,19 @@ fn malformed(what: String) -> Diagnostic {
 /// index)` order, a section of more than `SCAN_BLOCK` records cut into
 /// blocks that never split a sequence (§4.1 step 1). A relocation section
 /// that cannot be read is reported here and has no unit.
-pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> Vec<Unit> {
+///
+/// The sections whose checks are fill's (I-14, [`Defer`]) are returned
+/// apart, in the same order; they have no unit, or a `types_only` one
+/// when the architecture has non-alloc demand types.
+pub(crate) fn units(
+    view: &View<'_, '_>,
+    diags: &mut Vec<(Key, Diagnostic)>,
+) -> (Vec<Unit>, Vec<SectionId>) {
     let mut out = Vec::new();
+    let mut deferred = Vec::new();
     let mut bufs = Bufs::default();
+    let mut defer = Defer::new(view);
+    let types = !view.arch.nonalloc_demand_types().is_empty();
     let r = view.resolution;
     for (file, range) in r.section_base.iter() {
         for (k, sid) in range.iter().enumerate() {
@@ -56,6 +71,24 @@ pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> 
                 continue;
             }
             let index = k as u32;
+            if let Some(n) = defer.count(file, index, row.reloc.0, row.kind) {
+                if n > 0 {
+                    deferred.push(sid);
+                    if types {
+                        out.push(Unit {
+                            file,
+                            section: sid,
+                            index,
+                            rel: row.reloc.0,
+                            lo: 0,
+                            hi: n,
+                            parts: 1,
+                            types_only: true,
+                        });
+                    }
+                }
+                continue;
+            }
             if let Some(n) = header_count(view, file, row.reloc.0) {
                 // One unit, opened and checked by its walk: the scan
                 // reads the records once (`spec/image.md` I-81), and the
@@ -68,6 +101,7 @@ pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> 
                     lo: 0,
                     hi: n,
                     parts: 1,
+                    types_only: false,
                 });
                 continue;
             }
@@ -107,11 +141,108 @@ pub(crate) fn units(view: &View<'_, '_>, diags: &mut Vec<(Key, Diagnostic)>) -> 
             let parts = cuts.len() as u32;
             for (part, &lo) in cuts.iter().enumerate() {
                 let hi = cuts.get(part + 1).copied().unwrap_or(n);
-                out.push(Unit { file, section: sid, index, rel: row.reloc.0, lo, hi, parts });
+                out.push(Unit {
+                    file,
+                    section: sid,
+                    index,
+                    rel: row.reloc.0,
+                    lo,
+                    hi,
+                    parts,
+                    types_only: false,
+                });
             }
         }
     }
-    out
+    (out, deferred)
+}
+
+/// Which relocated sections the scan leaves to fill (`spec/image.md`
+/// I-14): a section not `SHF_ALLOC`, of a debug name (a dead target is
+/// the tombstone there, `mortar_arch::dead_reference`), whose records
+/// can therefore make no event unless their file mentions a key of
+/// [`View::event_keys`]; and whose relocation section's header is one
+/// the walk would accept (`SHT_RELA`, its record size, whole records,
+/// `sh_info` the section, `sh_link` the file's symbol table). Such a
+/// section's records can only be faults (§4.3), which fill finds as it
+/// applies them; the diagnostics are then the walk's
+/// ([`crate::Walker::deferred_report`]).
+struct Defer<'v, 'a, 's> {
+    view: &'v View<'a, 's>,
+    /// [`View::event_keys`]: empty in a link without undefined,
+    /// mismatched or warned keys, the common case, when no file's
+    /// mentions need be looked at.
+    events: Vec<SymbolId>,
+    /// Per file: 0 not yet known, 1 mentions none of `events`, 2 does.
+    mentions: Vec<u8>,
+}
+
+impl<'v, 'a, 's> Defer<'v, 'a, 's> {
+    fn new(view: &'v View<'a, 's>) -> Self {
+        Self { view, events: view.event_keys(), mentions: Vec::new() }
+    }
+
+    /// Whether `file` mentions a key of `events`: one of its globals, or
+    /// what `redirect` makes of one (`View::key_of`).
+    fn mentions(&mut self, file: FileId) -> bool {
+        if self.events.is_empty() {
+            return false;
+        }
+        let at = file.0 as usize;
+        if self.mentions.len() <= at {
+            self.mentions.resize(at + 1, 0);
+        }
+        if self.mentions[at] == 0 {
+            let r = self.view.resolution;
+            let hit = |id: SymbolId| self.events.binary_search(&id).is_ok();
+            let any =
+                self.view.inputs.sym_map_of(file).iter().any(|&id| {
+                    hit(id) || r.redirect.get(id).is_some_and(|&to| to != id && hit(to))
+                });
+            self.mentions[at] = if any { 2 } else { 1 };
+        }
+        self.mentions[at] == 2
+    }
+
+    /// The record count of relocation section `rel` of section `index`
+    /// of `file` when the section is one fill checks, from the headers
+    /// alone; `None` when the scan walks it.
+    fn count(&mut self, file: FileId, index: u32, rel: u32, kind: SectionKind) -> Option<u32> {
+        if !matches!(kind, SectionKind::Regular | SectionKind::Debug) {
+            return None;
+        }
+        let view = self.view;
+        let prep = view.prep(file)?;
+        let obj = prep.obj?;
+        let table = prep.table()?;
+        let s = obj.section(SectionIndex(index)).ok()?;
+        if s.flags() & SHF_ALLOC != 0 {
+            return None;
+        }
+        let name = s.name().ok()?;
+        if mortar_arch::dead_reference(name, false) != mortar_arch::DeadRef::Tombstone {
+            return None;
+        }
+        let rs = obj.section(SectionIndex(rel)).ok()?;
+        let h = rs.header();
+        let size = match obj.class() {
+            mortar_elf::Class::Elf64 => 24,
+            mortar_elf::Class::Elf32 => 12,
+        };
+        if rs.sh_type() != SHT_RELA
+            || h.sh_entsize != size
+            || h.sh_size % size != 0
+            || h.sh_info != index
+            || h.sh_link != table.section().0
+        {
+            return None;
+        }
+        let n = u32::try_from(h.sh_size / size).ok()?;
+        if self.mentions(file) {
+            return None;
+        }
+        Some(n)
+    }
 }
 
 /// The record count of relocation section `rel` of `file` from its
@@ -220,8 +351,12 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
         let flags = s.flags();
         let bytes = contents(view, file, &s, sec_buf).map_err(|f| fail(f, index))?;
         let name = s.name().unwrap_or_default();
-        let place = PlaceFacts { alloc: flags & SHF_ALLOC != 0, writable: flags & SHF_WRITE != 0 };
         let exec = flags & SHF_EXECINSTR != 0;
+        let place = PlaceFacts {
+            alloc: flags & SHF_ALLOC != 0,
+            writable: flags & SHF_WRITE != 0,
+            exec: Some(exec),
+        };
         let mut proof = Vec::new();
         if exec {
             let mut marks = view.marks(file, index);
@@ -255,7 +390,7 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
             r_offset: raw.r_offset,
             key,
             r_type: raw.r_type,
-            addend: self.recs.addend(raw, h),
+            addend: raw.addend,
             howto: h,
             site: Site { bytes: self.recs.bytes, offset: raw.r_offset },
             records: &self.recs,
@@ -369,6 +504,11 @@ pub(crate) struct UnitOut {
     pub nonalloc: u64,
     /// Some record's type is in `Facts.seq_leads` (`RelocAt.leads`).
     pub leads: bool,
+    /// The branch candidates of a code section's unit, in record order.
+    pub branches: Vec<crate::BranchRec>,
+    /// The records that raised `COPY` or `CANON_PLT` on a global key, in
+    /// record order (`spec/dyn.md` D-18, D-42: checked per key).
+    pub copy_refs: Vec<(SymbolId, u32)>,
 }
 
 /// The sink one record's `arch.scan` writes (`spec/arch.md` §3.4).
@@ -379,6 +519,7 @@ struct Sink<'u> {
     counts: [u32; 4],
     errors: Vec<(u32, ScanError)>,
     refs: Vec<(u32, EventClass, SymKey)>,
+    copy_refs: Vec<(SymbolId, u32)>,
     record: u32,
     errored: bool,
 }
@@ -390,6 +531,11 @@ impl DemandOut for Sink<'_> {
         }
         match key.kind() {
             SymKind::Global(id) => {
+                if flags.intersects(DemandFlags::COPY | DemandFlags::CANON_PLT)
+                    && self.copy_refs.last().is_none_or(|l| *l != (id, self.record))
+                {
+                    self.copy_refs.push((id, self.record));
+                }
                 // I-16: read before or-ing, so the line stays shared.
                 if let Some(cell) = self.global.get(id.0 as usize) {
                     let bits = flags.bits();
@@ -440,29 +586,27 @@ pub(crate) const fn dyn_kind(role: DynRole) -> DynKind {
     }
 }
 
-/// Whether `windows`, in the order the walk pushed them (record order),
-/// start in non-decreasing order and no non-empty one starts before a
-/// non-empty earlier one ends: then they are already in `overlaps`' sort
-/// order and no two non-empty windows meet, so `overlaps` would report
-/// nothing. One pass, where `overlaps` sorts; the common case, since
-/// records are nearly always in offset order and their fields disjoint.
-fn disjoint_in_order(windows: &[UnitWindow]) -> bool {
-    let mut start = 0u64;
-    let mut end = 0u64;
-    for w in windows {
-        if w.start < start {
-            return false;
+/// `spec/dyn.md` D-47: in an output with `.dynamic`, a record that
+/// would be dynamic at a read-only place (arch.md §4.3 `TX`, the
+/// `read-only` reason of `relocation-incompatible`) is `text-relocation`.
+/// A static link (static PIE included) keeps the M1 diagnostic.
+pub(crate) fn dynamic_error(view: &View<'_, '_>, e: ScanError) -> ScanError {
+    match e {
+        ScanError::Incompatible(Incompatible::ReadOnly) if view.opts.dynamic => {
+            ScanError::Dynamic(DynRefusal::TextRelocation)
         }
-        start = w.start;
-        if w.start == w.end {
-            continue;
-        }
-        if w.start < end {
-            return false;
-        }
-        end = end.max(w.end);
+        e => e,
     }
-    true
+}
+
+/// Whether `key`'s target kind is `Weak0`, from the definitions alone;
+/// checked against the full facts in debug builds.
+fn weak0(view: &View<'_, '_>, tables: &RecTables<'_, '_, '_>, key: SymKey) -> bool {
+    let w = view.is_weak0(key);
+    debug_assert_eq!(w, ScanTables::sym(tables, key).kind == mortar_arch::TargetKind::Weak0);
+    #[cfg(not(debug_assertions))]
+    let _ = tables;
+    w
 }
 
 /// Walks one unit (§4.1 step 2): every record in record order.
@@ -470,9 +614,70 @@ pub(crate) fn run_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16]) -> U
     with_bufs(|bufs| walk_unit(view, u, global, bufs))
 }
 
+/// The demands of the records of a `types_only` unit (I-14) whose type
+/// is one of `Arch::nonalloc_demand_types`: `arch.scan` as the walk calls
+/// it, its demands kept and nothing else (the checks are fill's). The
+/// section is opened only when a record has such a type.
+fn walk_types(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Bufs) -> UnitOut {
+    let mut out = UnitOut { sorted: true, ..UnitOut::default() };
+    let types = view.arch.nonalloc_demand_types();
+    let Some(obj) = view.prep(u.file).and_then(|p| p.obj) else { return out };
+    // A failed read is fill's to report, as every check of the section.
+    let Ok((t, _, _)) = rec_table(view, u.file, &obj, SectionIndex(u.rel), &mut bufs.rel) else {
+        return out;
+    };
+    let n = t.len() as u32;
+    if !(0..n).any(|i| t.raw(i).is_some_and(|r| types.contains(&r.r_type))) {
+        return out;
+    }
+    let Ok(sec) = Sec::open(view, u.file, u.section, u.index, u.rel, bufs) else { return out };
+    let mut sink = Sink {
+        global,
+        locals: Vec::new(),
+        output: GlobalFlags::empty(),
+        counts: [0; 4],
+        errors: Vec::new(),
+        refs: Vec::new(),
+        copy_refs: Vec::new(),
+        record: 0,
+        errored: false,
+    };
+    for i in u.lo..u.hi {
+        let Some(raw) = sec.recs.records.raw(i) else { continue };
+        if !types.contains(&raw.r_type) {
+            continue;
+        }
+        out.records += 1;
+        let Some(key) = view.key_of(u.file, sec.recs.table, raw.r_sym) else { continue };
+        let site = Site { bytes: sec.recs.bytes, offset: raw.r_offset };
+        let Ok(h) = view.arch.classify(raw.r_type, site) else { continue };
+        let at = sec.at(i, &raw, key, &h);
+        let tables = RecTables {
+            view,
+            key,
+            mention: SymEntry { file: u.file, index: SymbolIndex(raw.r_sym) },
+        };
+        sink.record = i;
+        let cx =
+            ScanCx { tables: &tables, output: view.opts.output, place: sec.place, name: sec.name };
+        view.arch.scan(&cx, &at, &mut DemandSink::new(&mut sink));
+        sink.errors.clear();
+        sink.refs.clear();
+    }
+    out.locals = sink.locals;
+    out.locals.sort_by_key(|l| l.0);
+    out.output = sink.output;
+    out.counts = DynCounts(sink.counts);
+    out.nonalloc = out.records;
+    out
+}
+
 /// [`run_unit`] with the worker's buffers.
 #[allow(clippy::too_many_lines, reason = "the per-record steps of §4.1, in order")]
 fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Bufs) -> UnitOut {
+    if u.types_only {
+        return walk_types(view, u, global, bufs);
+    }
     let mut out = UnitOut { sorted: true, ..UnitOut::default() };
     let sec = match Sec::open(view, u.file, u.section, u.index, u.rel, bufs) {
         Ok(s) => s,
@@ -491,6 +696,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
         counts: [0; 4],
         errors: Vec::new(),
         refs: Vec::new(),
+        copy_refs: Vec::new(),
         record: 0,
         errored: false,
     };
@@ -502,6 +708,8 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     let mut faults: Vec<(u32, Fault)> = Vec::new();
     let mut prev: Option<u64> = None;
     let seq_leads = view.arch.facts().seq_leads;
+    // The branch candidates (`crate::BranchRec`): only in live code.
+    let code = sec.place.alloc && sec.place.exec == Some(true);
     for i in u.lo..u.hi {
         out.records += 1;
         let Some(raw) = sec.recs.records.raw(i) else {
@@ -528,19 +736,44 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
                 continue;
             }
         };
+        // `spec/dyn.md` D-25: the key's refusal (made once, by the weak
+        // classes) precedes what the architecture says of the record.
+        if let SymKind::Global(id) = key.kind()
+            && view.weak_refused.contains(id)
+        {
+            continue;
+        }
         let at = sec.at(i, &raw, key, &h);
         let tables = RecTables {
             view,
             key,
             mention: SymEntry { file: u.file, index: SymbolIndex(raw.r_sym) },
         };
+        if code
+            && let Some(b) = view.arch.branch(&h)
+            && b.veneer
+            && let Some(site) = mortar_arch::need::branch_candidate(
+                view.arch,
+                output,
+                &at,
+                &tables,
+                weak0(view, &tables, key),
+            )
+        {
+            out.branches.push(crate::BranchRec {
+                section: u.section,
+                offset: raw.r_offset,
+                record: i,
+                site,
+            });
+        }
         sink.record = i;
         sink.errored = false;
         let before = sink.errors.len();
         let cx = ScanCx { tables: &tables, output, place: sec.place, name: sec.name };
         view.arch.scan(&cx, &at, &mut DemandSink::new(&mut sink));
         for (record, e) in sink.errors.drain(before..) {
-            faults.push((record, Fault::Scan(e)));
+            faults.push((record, Fault::Scan(dynamic_error(view, e))));
         }
         for (record, class, k) in sink.refs.drain(..) {
             let group = if class == EventClass::DiscardedSection {
@@ -598,6 +831,7 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     }
     out.output = sink.output;
     out.counts = DynCounts(sink.counts);
+    out.copy_refs = sink.copy_refs;
     out
 }
 

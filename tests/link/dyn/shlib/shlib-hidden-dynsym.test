@@ -1,0 +1,203 @@
+# dyn.md D-10: a `STV_HIDDEN` entry in a shared object's `.dynsym` is not a
+# definition the program may bind to (gABI "Symbol Visibility": a hidden
+# symbol is not visible outside its component; glibc's lookup skips it),
+# so a reference that only it would satisfy is undefined: mortar refuses
+# with `undefined-symbol` (text `undefined symbol: vf`, diag.md §3.1;
+# the text form prints no id) and never writes an output that cannot load.
+#
+# `libvis.so` is written by yaml2obj (GNU ld never puts a hidden symbol in
+# `.dynsym`; the review patched one, `shlib/patch_vis.py`): a loadable
+# shared object without a soname whose `.dynsym` has `vf` (returns 12)
+# hidden. `libvisok.so` is the same file with `vf` default, the control:
+# every linker links it and the program prints 12, so the library itself
+# loads and only the visibility differs.
+#
+# W1 (dyn.md §13.2): every reference is wrong here. GNU ld, lld and mold
+# bind `vf` to the hidden entry and write a program that fails at its
+# first call of `vf` (`symbol lookup error: ./prog: undefined symbol: vf`,
+# status 127). The references' output is wrong; the (bfd,lld,mold) steps
+# record it, the hazard mortar must refuse. The mortar steps state the
+# correct behaviour.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-10"
+#@ arch: aarch64 x86_64
+#@ requires: yaml2obj
+#@ anomaly(bfd,lld,mold): A27
+
+yaml2obj -DVIS=STV_HIDDEN libvis-%{arch}.yaml -o libvis.so
+yaml2obj -DVIS=STV_DEFAULT libvis-%{arch}.yaml -o libvisok.so
+cc -O1 -fPIE main.c -o main.o
+link gcc -pie main.o -L. -lvisok -o ok
+run ok
+  stdout: 12
+check readelf --dyn-syms -W libvis.so
+  has: FUNC GLOBAL HIDDEN * vf$
+link(bfd,lld,mold) gcc -pie main.o -L. -lvis -o prog
+run(bfd,lld,mold) prog
+  exit: 127
+link(mortar) gcc -pie main.o -L. -lvis -o prog
+  exit: fail
+  diag: undefined symbol: vf
+
+#--- main.c
+#include <stdio.h>
+
+int vf(void);
+
+int main(void) {
+  printf("%d\n", vf());
+  return 0;
+}
+#--- libvis-x86_64.yaml
+# One RWX PT_LOAD at 0 (vaddr = offset), DT_HASH, no soname; vf is
+# `mov $12, %eax; ret`. -DVIS= sets its visibility.
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS64
+  Data:    ELFDATA2LSB
+  Type:    ET_DYN
+  Machine: EM_X86_64
+ProgramHeaders:
+  - Type:     PT_LOAD
+    Flags:    [ PF_R, PF_W, PF_X ]
+    FirstSec: .hash
+    LastSec:  .dynamic
+    Offset:   0x0
+    VAddr:    0x0
+    Align:    0x10000
+  - Type:     PT_DYNAMIC
+    Flags:    [ PF_R, PF_W ]
+    FirstSec: .dynamic
+    LastSec:  .dynamic
+    VAddr:    0x400
+Sections:
+  - Name:    .hash
+    Type:    SHT_HASH
+    Flags:   [ SHF_ALLOC ]
+    Link:    .dynsym
+    Address: 0x200
+    Offset:  0x200
+    Bucket:  [ 1 ]
+    Chain:   [ 0, 0 ]
+  - Name:    .dynsym
+    Type:    SHT_DYNSYM
+    Flags:   [ SHF_ALLOC ]
+    Link:    .dynstr
+    Address: 0x240
+    Offset:  0x240
+  - Name:    .dynstr
+    Type:    SHT_STRTAB
+    Flags:   [ SHF_ALLOC ]
+    Address: 0x300
+    Offset:  0x300
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Address: 0x380
+    Offset:  0x380
+    Content: b80c000000c3
+  - Name:    .dynamic
+    Type:    SHT_DYNAMIC
+    Flags:   [ SHF_ALLOC, SHF_WRITE ]
+    Address: 0x400
+    Offset:  0x400
+    Link:    .dynstr
+    Entries:
+      - Tag:   DT_HASH
+        Value: 0x200
+      - Tag:   DT_SYMTAB
+        Value: 0x240
+      - Tag:   DT_STRTAB
+        Value: 0x300
+      - Tag:   DT_STRSZ
+        Value: 0x4
+      - Tag:   DT_SYMENT
+        Value: 0x18
+      - Tag:   DT_NULL
+        Value: 0x0
+DynamicSymbols:
+  - Name:    vf
+    Type:    STT_FUNC
+    Section: .text
+    Binding: STB_GLOBAL
+    Other:   [ [[VIS]] ]
+    Value:   0x380
+    Size:    6
+...
+#--- libvis-aarch64.yaml
+# As libvis-x86_64.yaml; vf is `mov w0, #12; ret`.
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS64
+  Data:    ELFDATA2LSB
+  Type:    ET_DYN
+  Machine: EM_AARCH64
+ProgramHeaders:
+  - Type:     PT_LOAD
+    Flags:    [ PF_R, PF_W, PF_X ]
+    FirstSec: .hash
+    LastSec:  .dynamic
+    Offset:   0x0
+    VAddr:    0x0
+    Align:    0x10000
+  - Type:     PT_DYNAMIC
+    Flags:    [ PF_R, PF_W ]
+    FirstSec: .dynamic
+    LastSec:  .dynamic
+    VAddr:    0x400
+Sections:
+  - Name:    .hash
+    Type:    SHT_HASH
+    Flags:   [ SHF_ALLOC ]
+    Link:    .dynsym
+    Address: 0x200
+    Offset:  0x200
+    Bucket:  [ 1 ]
+    Chain:   [ 0, 0 ]
+  - Name:    .dynsym
+    Type:    SHT_DYNSYM
+    Flags:   [ SHF_ALLOC ]
+    Link:    .dynstr
+    Address: 0x240
+    Offset:  0x240
+  - Name:    .dynstr
+    Type:    SHT_STRTAB
+    Flags:   [ SHF_ALLOC ]
+    Address: 0x300
+    Offset:  0x300
+  - Name:    .text
+    Type:    SHT_PROGBITS
+    Flags:   [ SHF_ALLOC, SHF_EXECINSTR ]
+    Address: 0x380
+    Offset:  0x380
+    Content: 80018052c0035fd6
+  - Name:    .dynamic
+    Type:    SHT_DYNAMIC
+    Flags:   [ SHF_ALLOC, SHF_WRITE ]
+    Address: 0x400
+    Offset:  0x400
+    Link:    .dynstr
+    Entries:
+      - Tag:   DT_HASH
+        Value: 0x200
+      - Tag:   DT_SYMTAB
+        Value: 0x240
+      - Tag:   DT_STRTAB
+        Value: 0x300
+      - Tag:   DT_STRSZ
+        Value: 0x4
+      - Tag:   DT_SYMENT
+        Value: 0x18
+      - Tag:   DT_NULL
+        Value: 0x0
+DynamicSymbols:
+  - Name:    vf
+    Type:    STT_FUNC
+    Section: .text
+    Binding: STB_GLOBAL
+    Other:   [ [[VIS]] ]
+    Value:   0x380
+    Size:    8
+...

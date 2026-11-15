@@ -1,7 +1,7 @@
 //! Non-alloc references to sections that are not in the output
 //! (`spec/plumb.md` §5.8): the tombstone each linker writes.
 
-use std::collections::HashMap;
+use crate::hasher::HashMap;
 
 use mortar_elf::consts::SHF_GROUP;
 use mortar_elf::{Class, SymbolIndex, SymbolSection};
@@ -20,10 +20,17 @@ pub(crate) fn is_debug_name(n: &str) -> bool {
         || n == ".gnu_debuglink"
 }
 
-/// Whether `r_type` is the absolute address-sized type of the machine
-/// (I-112): `R_AARCH64_ABS64` or `R_X86_64_64`.
-fn is_abs64(r_type: u32) -> bool {
-    r_type == 257 || r_type == crate::x64::R64
+/// Whether `r_type` is the class's absolute address-sized type of the
+/// output's machine (`spec/image.md` I-112): `R_AARCH64_ABS64` on
+/// `EM_AARCH64`, `R_X86_64_64` on `EM_X86_64`, `R_386_32` on `EM_386`.
+fn is_abs_addr(machine: u16, r_type: u32) -> bool {
+    use mortar_elf::consts::{EM_386, EM_AARCH64, EM_X86_64};
+    match machine {
+        EM_AARCH64 => r_type == 257,
+        EM_X86_64 => r_type == crate::x64::R64,
+        EM_386 => r_type == 1,
+        _ => false,
+    }
 }
 
 impl Engine<'_, '_> {
@@ -32,7 +39,7 @@ impl Engine<'_, '_> {
     fn redirect_targets(&mut self, name: &str, size: u64) -> Vec<u64> {
         let objs = self.objs;
         let m = self.redirects.get_or_insert_with(|| {
-            let mut m: HashMap<(String, u64), Vec<u64>> = HashMap::new();
+            let mut m: HashMap<(String, u64), Vec<u64>> = HashMap::default();
             for o in objs {
                 for s in &o.secs {
                     if s.shdr.sh_flags & SHF_GROUP != 0
@@ -73,6 +80,8 @@ impl Engine<'_, '_> {
         let ones = trunc(u64::MAX, w);
         let class64 = self.image.class() == Class::Elf64;
         let ranges = name == ".debug_ranges" || name == ".debug_loc";
+        // DWARF 5 entries that pair an address with a length.
+        let paired = matches!(name.as_str(), ".debug_rnglists" | ".debug_loclists" | ".debug_addr");
         let debug = is_debug_name(&name);
         // The dead section the symbol is in, and the symbol's offset there.
         let dead = self.objs[oi].symtab.and_then(|t| {
@@ -85,6 +94,7 @@ impl Engine<'_, '_> {
         let mut want: Vec<u64> = match self.format {
             // spec/image.md I-47.
             Format::Mortar if ranges => vec![1],
+            Format::Mortar if paired => vec![0],
             Format::Mortar if name == ".debug_aranges" || name == ".debug_frame" => vec![ones],
             Format::Mortar if debug => vec![if class64 { ones } else { 0 }],
             Format::Mortar if name == ".gcc_except_table" => vec![0],
@@ -136,8 +146,7 @@ impl Engine<'_, '_> {
         });
         if self.format == Format::Mortar
             && name == ".debug_aranges"
-            && is_abs64(rec.def.r_type)
-            && class64
+            && is_abs_addr(self.image.header.e_machine, rec.def.r_type)
             && alloc_target
             && !after
             && let Some(out) = self.image.nonalloc_section(&name)

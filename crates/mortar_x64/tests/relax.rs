@@ -22,7 +22,7 @@ use support::{Case, Sink, Tables, all_code, key, raised, scan_all};
 const ADDR: u64 = 0x40_1000;
 const LEN: usize = 64;
 const AT: usize = 16;
-const TEXT: PlaceFacts = PlaceFacts { alloc: true, writable: false };
+const TEXT: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
 const TLS: TlsBlock = TlsBlock { start: 0x40_4000, size: 0x10, align: 8 };
 /// The TLS target's address and `T = TpRel(S) = −8`.
 const TLS_S: u64 = 0x40_4008;
@@ -89,7 +89,9 @@ fn refused_name(e: &ScanError) -> &'static str {
     match e {
         ScanError::Refused(r) => match r.name {
             RefName::Named(n) => n,
-            other @ RefName::Hex(_) => panic!("unnamed refusal {other:?}"),
+            other @ (RefName::Hex(_) | RefName::Value { .. }) => {
+                panic!("unnamed refusal {other:?}")
+            }
         },
         other => panic!("not a refusal: {other:?}"),
     }
@@ -556,7 +558,7 @@ fn at<'a>(relocs: &'a [Reloc], i: usize, input: &'a [u8]) -> RelocAt<'a> {
         r_offset: r.r_offset,
         key: r.key,
         r_type: r.r_type,
-        addend: r.addend,
+        addend: Some(r.addend),
         howto: Box::leak(Box::new(h)),
         site: Site { bytes: input, offset: r.r_offset },
         records: Box::leak(Box::new(relocs)),

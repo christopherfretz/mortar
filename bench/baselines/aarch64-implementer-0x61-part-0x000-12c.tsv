@@ -1,0 +1,254 @@
+# mortar-bench 1
+# date	2026-11-15T16:24:34Z
+# machine	aarch64-implementer-0x61-part-0x000-12c
+# cpu	implementer 0x61 part 0x000
+# cores	12
+# commit	b0c81eb7fff1
+# runs	5
+# probe	gnu-time (/usr/bin/time -f '%M %U %S')
+# limits	600 s, 16777216 KiB of address space
+# calibration	lld default on fnv1a64:cfaff5ee0c861737
+# calibration_before_us	108612
+# calibration_after_us	112432
+# noisy	no
+# load_before	23.30 19.14 15.14
+# load_after	20.19 20.05 18.39
+# version.bfd	GNU ld (GNU Binutils for Debian) 2.44
+# version.lld	Debian LLD 22.1.8 (compatible with GNU linkers)
+# version.mold	mold 2.37.1 (compatible with GNU ld)
+# version.mortar	mortar 0.0.0 (compatible with GNU ld)
+# output_hash.hello-c-static	fnv1a64:eef57ed3339ee8b4
+# output_hash.hello-cxx-static	fnv1a64:0d45c2c5265e2d31
+# output_hash.cxx-medium-g-static	fnv1a64:effa7f8a6589bce1
+# output_hash.cxx-medium-static	fnv1a64:482e6d58bb035214
+# output_hash.cxx-medium-gc-static	fnv1a64:ea68cdf27e13ce04
+# output_hash.synthetic-objects-static	fnv1a64:02a60ef4b7b6eeae
+# output_hash.synthetic-sections-static	fnv1a64:873f62873f82e342
+# output_hash.synthetic-strings-static	fnv1a64:aa6e84f3dce78b4c
+# output_hash.synthetic-comdat-static	fnv1a64:388ab735c72a568b
+# output_hash.synthetic-archives-static	fnv1a64:91d42eccbd98ac5f
+# output_hash.synthetic-library-static	fnv1a64:a113869360e8e3da
+# output_hash.fortran-static	fnv1a64:fdce36f7fdce92e6
+# verify	on
+# verify.hello-c	refused: mortar: error: unsupported option: -dynamic-linker
+# verify.hello-c-static	clean
+# verify.hello-cxx	refused: mortar: error: unsupported option: -dynamic-linker
+# verify.hello-cxx-static	clean
+# verify.cxx-medium-g	refused: mortar: error: unsupported option: -dynamic-linker
+# verify.cxx-medium	refused: mortar: error: unsupported option: -dynamic-linker
+# verify.cxx-medium-g-static	clean
+# verify.cxx-medium-static	clean
+# verify.cxx-medium-gc-static	clean
+# verify.rust-self	refused: mortar: error: unsupported option: -dynamic-linker
+# verify.rust-self-static	refused: mortar: error: unsupported option: -Bdynamic
+# verify.synthetic-objects	refused: mortar: error: unsupported option: -dynamic-linker
+# verify.synthetic-sections	refused: mortar: error: unsupported option: -dynamic-linker
+# verify.synthetic-strings	refused: mortar: error: unsupported option: -dynamic-linker
+# verify.synthetic-comdat	refused: mortar: error: unsupported option: -dynamic-linker
+# verify.synthetic-archives	refused: mortar: error: unsupported option: -dynamic-linker
+# verify.synthetic-objects-static	clean
+# verify.synthetic-sections-static	clean
+# verify.synthetic-strings-static	clean
+# verify.synthetic-comdat-static	clean
+# verify.synthetic-archives-static	clean
+# verify.synthetic-library-static	clean
+# verify.fortran-static	clean
+# run.hello-c-static	same: exit status 0, 13 bytes of standard output
+# run.hello-cxx-static	same: exit status 0, 15 bytes of standard output
+# run.cxx-medium-g-static	same: exit status 0, 0 bytes of standard output
+# run.cxx-medium-static	same: exit status 0, 0 bytes of standard output
+# run.cxx-medium-gc-static	same: exit status 0, 0 bytes of standard output
+# run.synthetic-objects-static	not run: no `run` in the manifest
+# run.synthetic-sections-static	same: exit status 0, 0 bytes of standard output
+# run.synthetic-strings-static	same: exit status 0, 0 bytes of standard output
+# run.synthetic-comdat-static	same: exit status 0, 0 bytes of standard output
+# run.synthetic-archives-static	same: exit status 0, 0 bytes of standard output
+# run.synthetic-library-static	same: exit status 1, 0 bytes of standard output
+# run.fortran-static	same: exit status 0, 26 bytes of standard output
+# reason	WP-036: first baseline of the 12-core host; the static twins, the library shape and Fortran added; margins 35% time, 4% memory from three whole runs; RECORDED UNDER LOAD (load average 23.30 before, 20.19 after; calibration 108.6 ms before, 112.4 ms after, against 32.6 to 36.0 ms in the quieter runs): times are judged only for gross slowdowns, spec/harness.md "Noise"
+# workload-fields	name	class	objects	archives	shared	others	input_bytes	symbols	output_bytes	input_hash
+# link-fields	status	workload	linker	threads	runs	wall_us_min	wall_us	wall_us_max	cpu_us	rss_kib_min	rss_kib	rss_kib_max	output_bytes	spread_permille	detail
+workload	hello-c	small	6	2	3	2	5296873	89	70432	fnv1a64:cbc57d88156fcad3
+workload	hello-c-static	small	6	3	0	0	8875470	3179	704928	fnv1a64:43fc02e1f24e1ef0
+workload	hello-cxx	small	6	2	6	3	8597990	132	73448	fnv1a64:d5eb65e3e21ab1e8
+workload	hello-cxx-static	small	6	6	0	1	17553525	13330	2250264	fnv1a64:1cd0ee59cb8305a5
+workload	cxx-medium-g	medium	6	4	6	3	210582942	52450	47973432	fnv1a64:f5ec405f25aa9365
+workload	cxx-medium	medium	6	4	6	3	62134198	52443	9485520	fnv1a64:d64e3328984213c2
+workload	cxx-medium-g-static	medium	6	8	0	1	219540869	66934	50062880	fnv1a64:e9bcd04b1d5abb2c
+workload	cxx-medium-static	medium	6	8	0	1	71089733	66927	11574960	fnv1a64:e7a7e25d5009da93
+workload	cxx-medium-gc-static	medium	6	8	0	1	75824397	57506	10096144	fnv1a64:547fbe3728d3c397
+workload	rust-self	rust	8	26	5	3	29151096	2881	4583424	fnv1a64:559548a1c1c6c2c1
+workload	rust-self-static	rust	8	29	0	1	34007007	6726	5292608	fnv1a64:46e22e8308776b0c
+workload	synthetic-objects	extreme	1006	2	3	2	85973817	205087	35258704	fnv1a64:84f1f66dc6243421
+workload	synthetic-sections	extreme	8	2	3	2	61970097	320098	21097544	fnv1a64:bf31bf23e29ab80b
+workload	synthetic-strings	extreme	206	2	3	2	108874497	888	67205928	fnv1a64:75c794a27beb9c84
+workload	synthetic-comdat	extreme	306	2	6	3	165887638	2424	23005688	fnv1a64:b8d1440005d48d8e
+workload	synthetic-archives	extreme	6	102	3	2	15717545	22087	1909720	fnv1a64:d7e37e781f847a4d
+workload	synthetic-objects-static	extreme	1006	3	0	0	89552414	208176	34320344	fnv1a64:1134d6f092efbf22
+workload	synthetic-sections-static	extreme	8	3	0	0	65548694	323187	21076680	fnv1a64:26627aac8f8f71a6
+workload	synthetic-strings-static	extreme	206	3	0	0	112453094	3979	43854248	fnv1a64:b0bd586067187e37
+workload	synthetic-comdat-static	extreme	306	6	0	1	174845597	5510	23640080	fnv1a64:f66641efc52623f9
+workload	synthetic-archives-static	extreme	6	103	0	0	19296142	25173	2413056	fnv1a64:b021f051502508be
+workload	synthetic-library-static	extreme	6	4	0	0	58754798	7573	1004304	fnv1a64:2a322d2aefb82fa7
+workload	fortran-static	small	7	6	0	1	14496489	5331	1103304	fnv1a64:0bbb0e3076ab616f
+link	ok	hello-c	bfd	1	5	34974	43128	60509	0	8568	8652	8780	70432	233	-
+link	ok	hello-c	lld	default	5	33234	41183	56426	0	68096	68224	68296	7064	239	-
+link	ok	hello-c	lld	1	5	31871	43777	53472	0	68084	68352	68352	7064	373	-
+link	ok	hello-c	mold	default	5	26487	31332	53690	10000	18672	18976	19624	9320	182	-
+link	ok	hello-c	mold	1	5	25546	28785	51710	10000	17732	17876	17976	9320	126	-
+link	refused	hello-c	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	refused	hello-c	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	ok	hello-c-static	bfd	1	5	243558	286265	349612	40000	25344	25728	25728	704928	175	-
+link	ok	hello-c-static	lld	default	5	58348	66999	72185	20000	71040	71424	71680	649608	148	-
+link	ok	hello-c-static	lld	1	5	37476	51504	57900	10000	71552	71680	71808	649608	374	-
+link	ok	hello-c-static	mold	default	5	48208	61260	77151	30000	28796	29640	30828	660680	270	-
+link	ok	hello-c-static	mold	1	5	38591	53922	66203	10000	28336	28616	28616	660680	397	-
+link	ok	hello-c-static	mortar	default	5	63147	80433	121315	30000	19696	19824	20388	644136	273	-
+link	ok	hello-c-static	mortar	1	5	41565	47495	69065	20000	19516	19544	19548	644136	142	-
+link	ok	hello-cxx	bfd	1	5	69648	124334	153079	30000	18456	18496	18628	73448	785	-
+link	ok	hello-cxx	lld	default	5	34484	49060	69459	10000	70800	71060	71184	15176	422	-
+link	ok	hello-cxx	lld	1	5	25485	45603	55391	10000	70920	71080	71192	15176	789	-
+link	ok	hello-cxx	mold	default	5	28320	51813	58190	20000	21124	21760	23232	20584	829	-
+link	ok	hello-cxx	mold	1	5	26744	40663	52427	10000	22860	23024	23032	20584	520	-
+link	refused	hello-cxx	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	refused	hello-cxx	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	ok	hello-cxx-static	bfd	1	5	1680054	3569521	10382229	260000	49980	50104	50128	2250264	1124	-
+link	ok	hello-cxx-static	lld	default	5	61086	72429	106431	40000	86948	87228	87512	2243320	185	-
+link	ok	hello-cxx-static	lld	1	5	59145	68906	80791	20000	87128	87456	87464	2243320	165	-
+link	ok	hello-cxx-static	mold	default	5	51091	61155	92263	70000	47284	47624	48668	2302048	196	-
+link	ok	hello-cxx-static	mold	1	5	59006	67471	94513	20000	46232	46580	46620	2302048	143	-
+link	ok	hello-cxx-static	mortar	default	5	104671	119706	131062	70000	38340	38452	39612	2221032	143	-
+link	ok	hello-cxx-static	mortar	1	5	84979	104244	118954	50000	33408	33796	34056	2221032	226	-
+link	ok	cxx-medium-g	bfd	1	5	3913202	5451564	5785799	1080000	216056	216064	216300	47973432	393	-
+link	ok	cxx-medium-g	lld	default	5	328880	405134	601532	330000	333056	333436	333932	48315688	231	-
+link	ok	cxx-medium-g	lld	1	5	571552	669476	1006037	300000	331864	332088	332260	48315688	171	-
+link	ok	cxx-medium-g	mold	default	5	264601	336190	408255	560000	288964	291460	292228	49431904	270	-
+link	ok	cxx-medium-g	mold	1	5	644834	757436	866091	390000	290272	290448	290768	49431904	174	-
+link	refused	cxx-medium-g	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	refused	cxx-medium-g	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	ok	cxx-medium	bfd	1	5	2776632	2914201	3097952	700000	152196	152508	152968	9485520	49	-
+link	ok	cxx-medium	lld	default	5	213115	254927	355604	120000	159508	159648	159888	9761048	196	-
+link	ok	cxx-medium	lld	1	5	297233	349366	406444	110000	158896	159328	159724	9761048	175	-
+link	ok	cxx-medium	mold	default	5	201575	229577	244982	190000	113424	113836	114584	10877096	138	-
+link	ok	cxx-medium	mold	1	5	303112	391175	424150	140000	108412	111032	111156	10877096	290	-
+link	refused	cxx-medium	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	refused	cxx-medium	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	ok	cxx-medium-g-static	bfd	1	5	8901362	10454027	11480447	1800000	257288	257300	257360	50062880	174	-
+link	ok	cxx-medium-g-static	lld	default	5	417041	509761	560307	540000	346480	346840	347092	50390712	222	-
+link	ok	cxx-medium-g-static	lld	1	5	634594	823971	893129	430000	344964	345108	345412	50390712	298	-
+link	ok	cxx-medium-g-static	mold	default	5	297441	365433	563095	830000	314964	315276	318084	51724808	228	-
+link	ok	cxx-medium-g-static	mold	1	5	797594	915871	1206669	540000	308104	316152	316644	51724808	148	-
+link	ok	cxx-medium-g-static	mortar	default	5	528925	586561	1038215	820000	252252	254928	255540	50306704	108	-
+link	ok	cxx-medium-g-static	mortar	1	5	994864	1281110	1540768	700000	214420	214568	214824	50306704	287	-
+link	ok	cxx-medium-static	bfd	1	5	2645730	3601664	3816867	930000	195836	195920	196148	11574960	361	-
+link	ok	cxx-medium-static	lld	default	5	150975	184327	268017	150000	172280	172416	172792	11836064	220	-
+link	ok	cxx-medium-static	lld	1	5	165526	207073	270730	110000	172448	172552	172864	11836064	250	-
+link	ok	cxx-medium-static	mold	default	5	116917	125074	191601	250000	135624	137472	137548	13169992	69	-
+link	ok	cxx-medium-static	mold	1	5	200172	241439	260905	140000	138892	139160	139176	13169992	206	-
+link	ok	cxx-medium-static	mortar	default	5	235013	304566	343865	310000	145484	150244	151928	11752064	295	-
+link	ok	cxx-medium-static	mortar	1	5	347118	360969	420256	260000	134944	135012	135740	11752064	39	-
+link	ok	cxx-medium-gc-static	bfd	1	5	3504071	3981247	5340692	900000	214432	214564	214608	10096144	136	-
+link	ok	cxx-medium-gc-static	lld	default	5	163019	251014	285992	180000	179316	179492	179640	10132560	539	-
+link	ok	cxx-medium-gc-static	lld	1	5	166077	221520	312270	120000	178180	178536	178800	10132560	333	-
+link	ok	cxx-medium-gc-static	mold	default	5	107516	123740	175956	290000	143580	145464	146928	11428592	150	-
+link	ok	cxx-medium-gc-static	mold	1	5	203032	256492	284652	150000	145556	145940	146076	11428592	263	-
+link	ok	cxx-medium-gc-static	mortar	default	5	267265	289928	379243	380000	153076	159228	163028	10041400	84	-
+link	ok	cxx-medium-gc-static	mortar	1	5	322304	400229	472581	280000	141056	141640	141780	10041400	241	-
+link	ok	rust-self	bfd	1	5	504451	547599	632552	90000	30724	31116	31192	4583424	85	-
+link	ok	rust-self	lld	default	5	74285	88038	105286	30000	88532	89052	89344	4598376	185	-
+link	ok	rust-self	lld	1	5	76249	84974	118974	30000	88308	88668	88832	4598376	114	-
+link	ok	rust-self	mold	default	5	59943	71274	80733	130000	44228	45496	45796	4589448	189	-
+link	ok	rust-self	mold	1	5	82453	83899	103272	30000	43780	44304	44564	4589448	17	-
+link	refused	rust-self	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	refused	rust-self	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	ok	rust-self-static	bfd	1	5	780227	888457	1182776	180000	89600	89776	89816	5292608	138	-
+link	ok	rust-self-static	lld	default	5	78635	84798	152823	60000	105816	106184	106440	5327096	78	-
+link	ok	rust-self-static	lld	1	5	76240	83174	119836	40000	105532	105940	106360	5327096	90	-
+link	ok	rust-self-static	mold	default	5	60542	74410	100781	160000	60748	60912	62412	5310968	229	-
+link	ok	rust-self-static	mold	1	5	91620	102605	138724	50000	61852	62044	62336	5310968	119	-
+link	refused	rust-self-static	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -Bdynamic
+link	refused	rust-self-static	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -Bdynamic
+link	ok	synthetic-objects	bfd	1	5	5185190	6589332	6890240	1720000	201564	201920	202156	35258704	270	-
+link	ok	synthetic-objects	lld	default	5	662528	828343	1578754	340000	272740	273028	275536	35240520	250	-
+link	ok	synthetic-objects	lld	1	5	703122	952582	1193619	350000	274812	275032	275400	35240520	354	-
+link	ok	synthetic-objects	mold	default	5	716373	965802	1199321	2010000	170632	170972	171316	35215560	348	-
+link	ok	synthetic-objects	mold	1	5	1129924	1227873	1575822	600000	171764	172084	172280	35215560	86	-
+link	refused	synthetic-objects	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	refused	synthetic-objects	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	ok	synthetic-sections	bfd	1	5	2706265	2907514	3367784	1660000	299928	300464	300748	21097544	74	-
+link	ok	synthetic-sections	lld	default	5	230986	282379	367807	270000	250604	250692	251016	21527704	222	-
+link	ok	synthetic-sections	lld	1	5	254682	293048	391122	220000	249224	249796	250852	21527704	150	-
+link	ok	synthetic-sections	mold	default	5	175735	245540	260567	350000	171220	172784	174116	21529352	397	-
+link	ok	synthetic-sections	mold	1	5	246318	295261	323043	220000	168988	169156	169252	21529352	198	-
+link	refused	synthetic-sections	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	refused	synthetic-sections	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	ok	synthetic-strings	bfd	1	5	4798328	5291019	6208525	1350000	264336	264652	264920	67205928	102	-
+link	ok	synthetic-strings	lld	default	5	642277	943675	2242738	750000	387916	388296	388908	67175424	469	-
+link	ok	synthetic-strings	lld	1	5	990752	1056821	2328729	650000	384636	384860	385004	67175424	66	-
+link	ok	synthetic-strings	mold	default	5	539282	575240	1221752	1300000	460948	481788	483476	67177568	66	-
+link	ok	synthetic-strings	mold	1	5	1156290	1401874	2844951	1000000	482308	504460	516008	67177568	212	-
+link	refused	synthetic-strings	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	refused	synthetic-strings	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	ok	synthetic-comdat	bfd	1	5	5749283	9587098	9719011	2910000	443364	443640	443896	23005688	667	-
+link	ok	synthetic-comdat	lld	default	5	935650	1628763	2507744	630000	305352	305524	306208	22970920	740	-
+link	ok	synthetic-comdat	lld	1	5	1304552	1473758	2275520	410000	304548	305300	305404	22970920	129	-
+link	ok	synthetic-comdat	mold	default	5	744888	1307941	1865527	850000	287840	288604	289008	22965024	755	-
+link	ok	synthetic-comdat	mold	1	5	796495	1076886	1587061	430000	294560	294976	295232	22965024	352	-
+link	refused	synthetic-comdat	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	refused	synthetic-comdat	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	ok	synthetic-archives	bfd	1	5	2330354	2564303	3243939	470000	121660	121720	122012	1909720	100	-
+link	ok	synthetic-archives	lld	default	5	154694	205289	281773	150000	93064	93428	93448	1874168	327	-
+link	ok	synthetic-archives	lld	1	5	123903	133988	476931	50000	92236	93016	93236	1874168	81	-
+link	ok	synthetic-archives	mold	default	5	104686	176957	191668	220000	46780	47920	48396	1822208	690	-
+link	ok	synthetic-archives	mold	1	5	166876	224505	239725	90000	47380	47944	48072	1822208	345	-
+link	refused	synthetic-archives	mortar	default	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	refused	synthetic-archives	mortar	1	0	-	-	-	-	-	-	-	-	-	mortar: error: unsupported option: -dynamic-linker
+link	ok	synthetic-objects-static	bfd	1	5	4509496	4938839	6058510	1220000	215444	215556	215936	34320344	95	-
+link	ok	synthetic-objects-static	lld	default	5	665657	923765	2887657	360000	276556	277020	278404	34282328	387	-
+link	ok	synthetic-objects-static	lld	1	5	795930	921980	1269030	310000	275752	276252	277072	34282328	158	-
+link	ok	synthetic-objects-static	mold	default	5	693492	721121	1298501	1750000	180696	180860	181116	35866464	39	-
+link	ok	synthetic-objects-static	mold	1	5	1030492	1106112	1801180	650000	183072	183240	183960	35866464	73	-
+link	ok	synthetic-objects-static	mortar	default	5	506064	712578	984520	790000	247700	254168	255760	34267800	408	-
+link	ok	synthetic-objects-static	mortar	1	5	1179813	1765555	2774854	750000	210276	210588	210816	34267800	496	-
+link	ok	synthetic-sections-static	bfd	1	5	2996182	3412107	3583378	1700000	326104	326176	326520	21076680	138	-
+link	ok	synthetic-sections-static	lld	default	5	306734	352061	460505	320000	253296	253336	253536	21529328	147	-
+link	ok	synthetic-sections-static	lld	1	5	323697	341221	575851	270000	251724	252508	253632	21529328	54	-
+link	ok	synthetic-sections-static	mold	default	5	256793	275311	379276	410000	177636	178256	179292	22180264	72	-
+link	ok	synthetic-sections-static	mold	1	5	263882	287243	371121	230000	177912	178136	178276	22180264	88	-
+link	ok	synthetic-sections-static	mortar	default	5	373669	519838	818894	570000	223788	226356	228888	21043800	391	-
+link	ok	synthetic-sections-static	mortar	1	5	482664	513149	655003	420000	187180	187476	187776	21043800	63	-
+link	ok	synthetic-strings-static	bfd	1	5	3288159	3472034	4646527	980000	237940	238224	238584	43854248	55	-
+link	ok	synthetic-strings-static	lld	default	5	456774	556152	678439	430000	340480	340708	340880	43817232	217	-
+link	ok	synthetic-strings-static	lld	1	5	638938	673082	896529	380000	340100	340296	340392	43817232	53	-
+link	ok	synthetic-strings-static	mold	default	5	443204	518686	576589	1060000	467552	469140	470340	43828240	170	-
+link	ok	synthetic-strings-static	mold	1	5	826163	954449	990008	590000	501268	503296	503664	43828240	155	-
+link	ok	synthetic-strings-static	mortar	default	5	352398	478370	524100	520000	241468	241808	246260	43810488	357	-
+link	ok	synthetic-strings-static	mortar	1	5	627714	789723	977342	440000	226020	226328	226456	43810488	258	-
+link	ok	synthetic-comdat-static	bfd	1	5	4709718	7047914	11756285	1860000	479744	479868	480208	23640080	496	-
+link	ok	synthetic-comdat-static	lld	default	5	460145	771802	1339813	290000	315812	316464	317000	23606408	677	-
+link	ok	synthetic-comdat-static	lld	1	5	685150	963415	1697485	240000	315560	315984	316252	23606408	406	-
+link	ok	synthetic-comdat-static	mold	default	5	384220	604184	1215145	720000	308832	309744	311112	23615968	572	-
+link	ok	synthetic-comdat-static	mold	1	5	665920	1053591	1562566	390000	314152	317132	317396	23615968	582	-
+link	ok	synthetic-comdat-static	mortar	default	5	598158	614228	1022213	610000	296376	301768	304960	23590224	26	-
+link	ok	synthetic-comdat-static	mortar	1	5	1164635	1385366	2032811	600000	296476	299712	300216	23590224	189	-
+link	ok	synthetic-archives-static	bfd	1	5	1804233	2105741	2938451	340000	139236	139504	139648	2413056	167	-
+link	ok	synthetic-archives-static	lld	default	5	179406	195770	309868	110000	97060	97416	97544	2388056	91	-
+link	ok	synthetic-archives-static	lld	1	5	104090	172545	263321	50000	97304	97512	97648	2388056	657	-
+link	ok	synthetic-archives-static	mold	default	5	108566	135463	254588	200000	56336	58104	59728	2473064	247	-
+link	ok	synthetic-archives-static	mold	1	5	149188	199514	287108	80000	59028	59152	59288	2473064	337	-
+link	ok	synthetic-archives-static	mortar	default	5	205004	237485	403592	130000	53884	54624	54856	2370528	158	-
+link	ok	synthetic-archives-static	mortar	1	5	213522	318977	341550	110000	50304	50320	50628	2370528	493	-
+link	ok	synthetic-library-static	bfd	1	5	852706	928026	1257366	130000	55200	55328	55772	1004304	88	-
+link	ok	synthetic-library-static	lld	default	5	138449	166959	311731	90000	142884	143240	143352	979560	205	-
+link	ok	synthetic-library-static	lld	1	5	118630	126460	191330	70000	143196	143220	143268	979560	66	-
+link	ok	synthetic-library-static	mold	default	5	138629	167449	209268	350000	146516	147408	147964	1005432	207	-
+link	ok	synthetic-library-static	mold	1	5	172621	208472	253976	160000	150888	151016	151020	1005432	207	-
+link	ok	synthetic-library-static	mortar	default	5	261557	291760	408802	280000	169784	170744	172728	971632	115	-
+link	ok	synthetic-library-static	mortar	1	5	247233	292257	412291	220000	157772	157888	158112	971632	182	-
+link	ok	fortran-static	bfd	1	5	626624	764090	876456	100000	37052	37116	37248	1103304	219	-
+link	ok	fortran-static	lld	default	5	61550	72002	77836	40000	82028	82160	82432	1094984	169	-
+link	ok	fortran-static	lld	1	5	47076	59459	84789	20000	82304	82536	82540	1094984	263	-
+link	ok	fortran-static	mold	default	5	46304	58907	65644	60000	40520	41532	41924	1110952	272	-
+link	ok	fortran-static	mold	1	5	48672	60073	84860	20000	40612	40652	40672	1110952	234	-
+link	ok	fortran-static	mortar	default	5	106259	140882	144201	70000	35344	35720	37456	1085968	325	-
+link	ok	fortran-static	mortar	1	5	60447	67340	108844	40000	34812	35116	35120	1085968	114	-

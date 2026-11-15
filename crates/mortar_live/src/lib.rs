@@ -1,34 +1,39 @@
 //! Liveness (`spec/image.md` §3, phase 50): which sections and pieces are
 //! live, as the table `Liveness` (`spec/model.md` §3.6).
 //!
-//! M1 has one mode, `--no-gc-sections` (I-5): a section is live exactly
-//! when resolution keeps it (I-1), every fragment of a live mergeable
-//! section is live (I-2), and an FDE is live exactly when the section its
-//! code lies in is (I-3, [`Liveness::fde_live`]; a CIE by [`eh_piece_live`]).
+//! Without `--gc-sections` (the default): a section is live exactly when
+//! resolution keeps it (I-1), every fragment of a live mergeable section
+//! is live (I-2), and an FDE is live exactly when the section its code
+//! lies in is (I-3, [`Liveness::fde_live`]; a CIE by [`eh_piece_live`]).
 //! `spec/resolve.md` §10 has already dropped consumed sections,
 //! `SHF_EXCLUDE` sections, the losing copies of COMDAT groups and
-//! stripped sections, so M1's liveness is a copy of `state == Kept`.
+//! stripped sections, so this liveness is a copy of `state == Kept`.
 //!
-//! `--gc-sections` is M2's (I-6 to I-11). Its shape is fixed now: `live`
-//! is a column per `SectionId` that a parallel mark of atomic booleans
-//! fills in rounds (I-8), and nothing in this table changes for it. M1
-//! refuses it ([`liveness`] returns the refusal; the command line refuses
-//! it first, `spec/cli.md` §4.2).
+//! With `--gc-sections` (I-6 to I-10, I-109): the least set of kept
+//! sections that holds the roots and is closed under the edges of the
+//! relocation records, marked in parallel rounds of atomic booleans (I-8);
+//! fragments of allocated mergeable sections are live when referenced
+//! (S-16). The collector is `gc`; [`removed`] lists what it removed.
 //!
-//! Liveness emits no diagnostic in M1 (I-4); its key, when it does (M2),
-//! is `(50, FileId, section index)` ([`PHASE`]).
+//! The only diagnostics of liveness are those of relocation sections it
+//! cannot read; their key is `(50, FileId, section index)` ([`PHASE`]).
 #![forbid(unsafe_code)]
 
+mod gc;
+mod read;
+
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use mortar_core::assignment::Assignment;
 use mortar_core::column::Column;
-use mortar_core::inputs::Inputs;
+use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::par::Pool;
 use mortar_core::resolution::Resolution;
+use mortar_core::resolution::SectionKind;
 use mortar_core::split::Split;
-use mortar_core::{FragId, Liveness, SectionId};
-use mortar_diag::{Diagnostic, Key, RefusalClass};
+use mortar_core::{FragId, Liveness, SectionId, SymbolId};
+use mortar_diag::{Diagnostic, Key};
 
 /// The phase ordinal of liveness (`spec/model.md` §8).
 pub const PHASE: u16 = 50;
@@ -37,26 +42,55 @@ pub const PHASE: u16 = 50;
 /// `Assignment` and `Split`. M1 reads `resolution` and `split` only;
 /// `inputs` (the relocation edges) and `assignment` (`keep`, the start-up
 /// tables) are the roots and edges of M2's mark (I-6, I-7).
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct LiveInputs<'a, 's> {
     pub inputs: &'a Inputs<'s>,
     pub resolution: &'a Resolution,
     pub assignment: &'a Assignment<'a>,
     pub split: &'a Split,
+    /// The keys resolution roots (`spec/resolve.md` §4.2, §4.7: the entry,
+    /// `-u`, `--require-defined`): their definitions' sections are roots
+    /// under `--gc-sections` (I-6). Unused without it.
+    pub roots: &'a [SymbolId],
+    /// The architecture, whose `read_addend` gives a `SHT_REL` record's
+    /// implicit addend where a piece selection needs it (I-7; i386,
+    /// WP-030c). `None`: such a reference marks every piece of its
+    /// section (more than needed, never less).
+    pub arch: Option<&'a dyn mortar_arch::Arch>,
+}
+
+impl std::fmt::Debug for LiveInputs<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveInputs")
+            .field("inputs", &self.inputs)
+            .field("resolution", &self.resolution)
+            .field("assignment", &self.assignment)
+            .field("split", &self.split)
+            .field("roots", &self.roots)
+            .field("arch", &self.arch.map(|a| a.facts().machine))
+            .finish()
+    }
 }
 
 /// The options liveness depends on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LiveOptions {
-    /// `--gc-sections` (I-5: refused in M1).
+    /// `--gc-sections` (I-6 to I-10).
     pub gc_sections: bool,
+    /// `--gc-keep-exported`: every section defining a global of default or
+    /// protected visibility is a root (I-6).
+    pub keep_exported: bool,
 }
 
-/// The `Liveness` table (I-1, I-2), or the refusal of `--gc-sections`
-/// (I-5) with its key `(50, 0, 0)`.
+/// The `Liveness` table: I-1 and I-2 without `--gc-sections`, the mark of
+/// I-6 to I-8 with it. `Err`: a relocation section the mark could not read
+/// (the least-keyed one).
 ///
-/// Cost: one pass over the section rows and, when some mergeable section
-/// is not live, one over the merge pieces; both in parallel.
+/// Cost without `--gc-sections`: one pass over the section rows and, when
+/// some mergeable section is not live, one over the merge pieces; both in
+/// parallel. With it: one pass over the section headers, one over the
+/// keys, one over the `.eh_frame` relocations, and one walk of the
+/// relocation records of the live allocated sections (I-9).
 #[allow(clippy::result_large_err, reason = "the phases' diagnostic pair, returned once per link")]
 pub fn liveness(
     t: &LiveInputs<'_, '_>,
@@ -64,15 +98,12 @@ pub fn liveness(
     pool: &Pool,
 ) -> Result<Liveness, (Key, Diagnostic)> {
     if options.gc_sections {
-        return Err((
-            Key::new(PHASE, 0, 0),
-            Diagnostic::refused(RefusalClass::Option, "--gc-sections"),
-        ));
+        return gc::collect(t, options, pool);
     }
     let sections = t.resolution.sections.as_slice();
     // I-1: live exactly when kept.
     let mut live = vec![false; sections.len()];
-    pool.for_each_mut(&mut live, |s, cell| *cell = sections[s].is_kept());
+    pool.unit_cost(1).for_each_mut(&mut live, |s, cell| *cell = sections[s].is_kept());
     let frag_live = frag_live(t.split, &live, pool);
     let live = Column::from_vec(live).unwrap_or_default();
     Ok(Liveness { live, frag_live })
@@ -133,4 +164,68 @@ pub fn eh_piece_live(
         return Some(fde(p));
     }
     Some(pieces.iter().any(|&q| !q.is_cie() && q.cie as usize == ordinal && fde(q)))
+}
+
+/// The sections `--gc-sections` removed (I-10): kept by resolution, with
+/// output of their own, assigned an output section, and not live; in
+/// `(FileId, section index)` order, which is `SectionId` order. This is
+/// the order of `--print-gc-sections`' lines and of the map's `gc`
+/// records.
+#[must_use]
+pub fn removed(
+    resolution: &Resolution,
+    assignment: &Assignment<'_>,
+    liveness: &Liveness,
+) -> Vec<SectionId> {
+    resolution
+        .sections
+        .iter()
+        .filter(|(s, row)| {
+            row.is_kept()
+                && row.kind.carries_output()
+                && row.kind != SectionKind::EhFrame
+                && assignment.out(*s).is_some()
+                && !liveness.is_live(*s)
+        })
+        .map(|(s, _)| s)
+        .collect()
+}
+
+/// `--print-gc-sections` (I-10): one line per removed section with bytes,
+/// in [`removed`]'s order, as GNU ld prints them to standard error:
+/// `<prog>: removing unused section '<name>' in file '<file>'`, where
+/// `<file>` is `libx.a(y.o)` for an archive member and `<name>` is
+/// `name[signature]` for a member of a COMDAT group. GNU ld skips sections
+/// of size 0 (E14 Q9); so does this. Each line ends in a newline.
+#[must_use]
+pub fn print_gc_sections(
+    prog: &str,
+    inputs: &Inputs<'_>,
+    resolution: &Resolution,
+    assignment: &Assignment<'_>,
+    liveness: &Liveness,
+) -> String {
+    let mut out = String::new();
+    for s in removed(resolution, assignment, liveness) {
+        let Some((file, index)) = resolution.sh_index(s) else { continue };
+        let Reader::Object(obj) = inputs.files[file].reader else { continue };
+        let Ok(sec) = obj.section(index) else { continue };
+        if sec.header().sh_size == 0 {
+            continue;
+        }
+        let mut name = String::from_utf8_lossy(sec.name().unwrap_or_default()).into_owned();
+        // GNU ld names a member of a COMDAT group `name[signature]`.
+        if let Some(g) = resolution.sections[s].comdat.get()
+            && let Some(c) = inputs.comdats.get(g)
+        {
+            let _ = write!(name, "[{}]", String::from_utf8_lossy(c.name));
+        }
+        let f = inputs.files[file].display();
+        let file = match f.member() {
+            Some(m) => format!("{}({m})", f.path()),
+            None => f.path().to_owned(),
+        };
+        let _ = writeln!(out, "{prog}: removing unused section '{name}' in file '{file}'");
+    }
+    out
 }

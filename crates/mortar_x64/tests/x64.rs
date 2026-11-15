@@ -25,9 +25,9 @@ const PLT: u64 = 0x40_0800;
 const TLS: TlsBlock = TlsBlock { start: 0x40_4000, size: 0x10, align: 8 };
 const TP_END: u64 = 0x40_4010;
 
-const ALLOC: PlaceFacts = PlaceFacts { alloc: true, writable: true };
-const RODATA: PlaceFacts = PlaceFacts { alloc: true, writable: false };
-const DEBUG: PlaceFacts = PlaceFacts { alloc: false, writable: false };
+const ALLOC: PlaceFacts = PlaceFacts { alloc: true, writable: true, exec: None };
+const RODATA: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
+const DEBUG: PlaceFacts = PlaceFacts { alloc: false, writable: false, exec: None };
 
 fn tables(kind: TargetKind) -> Tables {
     let mut t = Tables::default();
@@ -465,6 +465,11 @@ fn x53_dead_targets() {
     assert_eq!(field(&c, 10, 0).unwrap(), le(-1, 4));
     c.name = b".debug_ranges";
     assert_eq!(field(&c, 1, 0).unwrap(), le(1, 8));
+    // An address paired with a length (`DW_RLE_start_length`): 0.
+    for name in [&b".debug_rnglists"[..], b".debug_loclists", b".debug_addr"] {
+        c.name = name;
+        assert_eq!(field(&c, 1, 0).unwrap(), le(0, 8));
+    }
     c.alloc = true;
     c.name = b".gcc_except_table";
     assert_eq!(field(&c, 10, 0).unwrap(), le(0, 4));

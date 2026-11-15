@@ -46,6 +46,13 @@ const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 /// The tombstone of an address field in ELFCLASS64 (`spec/image.md` I-47).
 const DEAD: u64 = u64::MAX;
 
+/// The tombstone of an address that a DWARF 5 list entry pairs with a
+/// length (`.debug_rnglists`, `.debug_loclists`, and `.debug_addr`, which
+/// Clang's `DW_RLE_startx_length` indexes): 0, `spec/image.md` I-47. A
+/// subprogram's `DW_AT_low_pc` read through `.debug_addr` is then 0 too:
+/// no code lies there (the non-PIE base, `spec/layout.md` L-68).
+const DEAD_PAIRED: u64 = 0;
+
 // ---------------------------------------------------------------------
 // The programs.
 
@@ -340,7 +347,7 @@ fn tools() -> Option<Tools> {
 /// The map option mortar's link writes its machine map with: the one
 /// place to change when the option is renamed.
 fn map_option(map: &Path) -> OsString {
-    format!("-Map={}", map.display()).into()
+    format!("--mortar-map={}", map.display()).into()
 }
 
 /// The two links of one set of objects.
@@ -348,6 +355,8 @@ struct Pair {
     dir: PathBuf,
     ours: PathBuf,
     theirs: PathBuf,
+    /// Both links ran with `--gc-sections` (WP-031).
+    gc: bool,
 }
 
 fn linker(exe: &Path, args: &[OsString], dir: &Path) -> Outcome {
@@ -355,23 +364,28 @@ fn linker(exe: &Path, args: &[OsString], dir: &Path) -> Outcome {
 }
 
 /// Links `built` with mortar (to `mortar/prog`, its map beside it) and
-/// GNU ld (to `bfd/prog`); mortar's output goes through the verifier.
-fn link(t: &Tools, label: &str, built: &Built) -> Pair {
+/// GNU ld (to `bfd/prog`), both with `--gc-sections` when `gc`; mortar's
+/// output goes through the verifier.
+fn link(t: &Tools, label: &str, built: &Built, gc: bool) -> Pair {
     let ours = built.dir.join("mortar").join("prog");
     let theirs = built.dir.join("bfd").join("prog");
     for out in [&ours, &theirs] {
         std::fs::create_dir_all(out.parent().expect("a directory")).expect("create a directory");
     }
     let map = ours.with_extension("map");
+    let extra: &[OsString] = if gc { &[OsString::from("--gc-sections")] } else { &[] };
     let mut args = with_output(&built.args, &ours);
     args.push(map_option(&map));
+    args.extend_from_slice(extra);
     let m = linker(Path::new(MORTAR), &args, &built.dir);
     assert!(m.success(), "{label}: mortar: {}", m.stderr_text());
     assert_eq!(m.stderr_text(), "", "{label}: mortar warns");
-    let b = linker(&t.ld, &with_output(&built.args, &theirs), &built.dir);
+    let mut args = with_output(&built.args, &theirs);
+    args.extend_from_slice(extra);
+    let b = linker(&t.ld, &args, &built.dir);
     assert!(b.success(), "{label}: ld.bfd: {}", b.stderr_text());
     support::plumb::clean(&ours, &map, &built.dir);
-    Pair { dir: built.dir.clone(), ours, theirs }
+    Pair { dir: built.dir.clone(), ours, theirs, gc }
 }
 
 /// Runs a debugger or dump tool in `dir`, with debuginfod off.
@@ -684,7 +698,7 @@ fn count(t: &str, prefix: &str) -> usize {
 /// Asserts that the sessions did what they were written for on mortar's
 /// output (an equal pair of transcripts that both stop early proves
 /// nothing).
-fn sessions_did_their_work(label: &str, p: &Program, gdb: &str, lldb: &str) {
+fn sessions_did_their_work(label: &str, p: &Program, gc: bool, gdb: &str, lldb: &str) {
     let deep_file = p.sources.last().expect("a source").name;
     // gdb: a frame #2 and #3 with a file and line, the deep function hit.
     assert!(
@@ -694,8 +708,18 @@ fn sessions_did_their_work(label: &str, p: &Program, gdb: &str, lldb: &str) {
         p.deep.0
     );
     assert!(gdb.contains("$3 = "), "{label}: gdb printed fewer than 3 values:\n{gdb}");
-    if p.tls.is_some() {
+    if p.tls.is_some() && !gc {
         assert!(gdb.contains("$3 = 11"), "{label}: gdb did not read the TLS variable:\n{gdb}");
+    } else if p.tls.is_some() {
+        // Under --gc-sections GNU ld and mortar both collect the sections of
+        // glibc's `_thread_db_*` descriptors (libc.a(pthread_create.o)'s
+        // `.rodata`, which nothing references), and libthread_db then
+        // cannot work in a static program: the transcripts are equal
+        // (compared above), and this is what they say.
+        assert!(
+            gdb.contains("Cannot find thread-local variables on this target"),
+            "{label}: gdb read TLS under --gc-sections:\n{gdb}"
+        );
     }
     assert!(
         count(gdb, "Breakpoint ") + count(gdb, "Temporary breakpoint ") >= 2,
@@ -785,58 +809,63 @@ fn comdat_kept_copy(label: &str, t: &Tools, pair: &Pair, sym: &str, kept: &str) 
     );
 }
 
-/// gdb's line on mortar's output when a GCC DWARF 5 C++ program steps
-/// near a function whose CU's range list holds a dead entry.
-const RNGLISTS_SYMPTOM: &str = "in read in CU, but not in symtab";
-
-/// xfail(mortar): `spec/image.md` I-47 writes all ones for a dead
-/// address in `.debug_rnglists`. GCC 14's DWARF 5 CU range lists use
-/// `DW_RLE_start_length`, so the dead entry reads `[2^64 - 1, len - 1)`,
-/// which wraps: gdb 16 reports `Invalid .debug_rnglists data (inverted
-/// range)` and rejects that CU's list, and part of the CU's code (the
-/// `thread_local` wrapper `_ZTW5t_val` in `dx_b.cpp`) is then missing
-/// from the CU's symtab: `next` in `level3` then warns `(Internal error: pc ... in read
-/// in CU, but not in symtab.)` three to seven times. GNU ld's redirect
-/// gives a real range. A spec question for I-47 (`.debug_rnglists` /
-/// `.debug_loclists` `*_start_length` entries), not a fill bug:
-/// `crates/mortar_arch/src/dead.rs` `tombstone` implements I-47's table.
-///
-/// Clang's DWARF 5 lists (`DW_RLE_startx_length` through a dead
-/// `.debug_addr` entry) give the same complaint; gdb's sessions there
-/// did not show the symptom.
-fn rnglists_xfail(driver: Driver, tag: &str) -> bool {
-    matches!(driver, Driver::Gxx | Driver::Clangxx) && tag.starts_with("d5")
-}
-
-/// `t` without the lines that contain `what`, and how many there were.
-fn without(t: &str, what: &str) -> (String, usize) {
-    let mut n = 0;
-    let mut out = String::new();
-    for l in t.lines() {
-        if l.contains(what) {
-            n += 1;
-        } else {
-            out.push_str(l);
-            out.push('\n');
-        }
-    }
-    (out, n)
-}
-
 /// Builds `p` with `driver` over the flag matrix, links each with both
 /// linkers, and runs `check` on each pair (with the label and the flag
 /// set's tag). A missing tool skips, after a note.
 fn each(name: &str, driver: Driver, p: &Program, check: impl Fn(&str, &str, &Tools, &Pair)) {
+    each_gc(name, driver, p, false, check);
+}
+
+/// The `--gc-sections` variant of a program (WP-031): every function and
+/// object in a section of its own, and one more source whose functions
+/// nothing calls, so that both linkers collect code with debug
+/// information. Fortran has no such source (gfortran's flags are the
+/// same; the collected sections are the run-time library's).
+fn gc_sources(p: &Program) -> Vec<Source> {
+    let mut v = p.sources.to_vec();
+    let unused = match p.sources.first().and_then(|s| Path::new(s.name).extension()) {
+        Some(e) if e == "cpp" => Some(Source {
+            name: "gc_unused.cpp",
+            text: "struct Gone { int v; };\n\
+                   __attribute__((noinline)) int gc_unused_throw(int x) { if (x) throw Gone{x}; return 1; }\n\
+                   __attribute__((noinline)) int gc_unused(int x) { try { return gc_unused_throw(x); } \
+                   catch (const Gone &g) { return g.v; } }\n\
+                   int gc_unused_data[64] = {1};\n",
+        }),
+        Some(e) if e == "c" => Some(Source {
+            name: "gc_unused.c",
+            text: "__attribute__((noinline)) int gc_unused(int x) { return x * 5 + 1; }\n\
+                   int gc_unused_data[64] = {1};\n",
+        }),
+        _ => None,
+    };
+    v.extend(unused);
+    v
+}
+
+/// [`each`], with `--gc-sections` on both links when `gc`.
+fn each_gc(
+    name: &str,
+    driver: Driver,
+    p: &Program,
+    gc: bool,
+    check: impl Fn(&str, &str, &Tools, &Pair),
+) {
     let Some(t) = tools() else { return };
+    let sources = if gc { gc_sources(p) } else { p.sources.to_vec() };
     for (tag, flags) in FLAGS {
         let label = format!("{name}-{tag}");
         let scratch = Scratch::new(&label);
-        let Some(built) = build(&scratch, driver, flags, p.sources) else {
+        let mut flags = flags.to_vec();
+        if gc {
+            flags.extend(["-ffunction-sections", "-fdata-sections"]);
+        }
+        let Some(built) = build(&scratch, driver, &flags, &sources) else {
             assert!(!tools_required(), "{} is required", driver.tool());
             eprintln!("note: {} is missing; skipping {name}", driver.tool());
             return;
         };
-        let pair = link(&t, &label, &built);
+        let pair = link(&t, &label, &built, gc);
         check(&label, tag, &t, &pair);
     }
 }
@@ -845,26 +874,27 @@ fn each(name: &str, driver: Driver, p: &Program, check: impl Fn(&str, &str, &Too
 /// sessions did their work.
 // spec: VALIDATION.md L6 (debuggers: equal transcripts against GNU ld)
 fn sessions(name: &str, driver: Driver, p: &Program) {
-    each(name, driver, p, |label, tag, t, pair| {
+    sessions_gc(name, driver, p, false);
+}
+
+/// [`sessions`], with `--gc-sections` on both links when `gc`.
+fn sessions_gc(name: &str, driver: Driver, p: &Program, gc: bool) {
+    each_gc(name, driver, p, gc, |label, _, t, pair| {
         let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
         let addr = |e: &Elf| p.comdat.map(|(sym, _)| e.values[sym]);
         let g_ours = session(&t.gdb, &gdb_args(p, addr(&eo)), &pair.ours, &pair.dir, &eo);
         let g_theirs = session(&t.gdb, &gdb_args(p, addr(&et)), &pair.theirs, &pair.dir, &et);
         let l_ours = session(&t.lldb, &lldb_args(p, addr(&eo)), &pair.ours, &pair.dir, &eo);
         let l_theirs = session(&t.lldb, &lldb_args(p, addr(&et)), &pair.theirs, &pair.dir, &et);
-        // The symptom shows at -O0, where `next` in level3 passes the
-        // thread_local wrapper; at -O2 the wrapper is inlined.
-        let g_ours = if driver == Driver::Gxx && rnglists_xfail(driver, tag) && tag.ends_with("O0")
-        {
-            let (rest, hits) = without(&g_ours, RNGLISTS_SYMPTOM);
-            assert!(hits > 0, "{label}: XPASS: gdb no longer says {RNGLISTS_SYMPTOM:?}");
-            rest
-        } else {
-            g_ours
-        };
+        // WP-027e: the all-ones tombstone in a `DW_RLE_start_length`
+        // entry made gdb drop the CU's ranges, and `next` then said this.
+        assert!(
+            !g_ours.contains("not in symtab"),
+            "{label}: gdb lost a CU's ranges (spec/image.md I-47):\n{g_ours}"
+        );
         same(label, "the gdb session", &g_ours, &g_theirs);
         same(label, "the lldb session", &l_ours, &l_theirs);
-        sessions_did_their_work(label, p, &g_ours, &l_ours);
+        sessions_did_their_work(label, p, pair.gc, &g_ours, &l_ours);
         if let Some((sym, kept)) = p.comdat {
             comdat_kept_copy(label, t, pair, sym, kept);
         }
@@ -911,7 +941,14 @@ fn subprograms(info: &str) -> Vec<(String, u64, Option<u64>)> {
         let Some((n, lo, hi)) = cur.as_mut() else { continue };
         let attr = l.split_whitespace().next().unwrap_or("");
         // llvm-dwarfdump prints the tombstone as `dead code`.
-        let value = || if l.contains("dead code") { Some(DEAD) } else { last_hex(l) };
+        // A `.debug_addr` entry (`DW_FORM_addrx`) holds DEAD_PAIRED.
+        let value = || {
+            if l.contains("dead code") {
+                Some(DEAD)
+            } else {
+                last_hex(l).map(|v| if v == DEAD_PAIRED { DEAD } else { v })
+            }
+        };
         match attr {
             "DW_AT_low_pc" => *lo = value(),
             "DW_AT_high_pc" => *hi = last_hex(l),
@@ -955,7 +992,8 @@ fn debug_addrs(tools: &Tools, pair: &Pair, prog: &Path, img: &Elf) -> DebugAddrs
         if *lo == DEAD {
             found.dead_subprograms.push(name.clone());
             *found.dead.entry(".debug_info").or_default() += 1;
-            if !live.contains(name.as_str()) {
+            // Under --gc-sections a collected function has no copy at all.
+            if !pair.gc && !live.contains(name.as_str()) {
                 found.wrong.push(format!("tombstoned subprogram {name} has no kept copy"));
             }
         } else if !img.in_exec(*lo, hi.unwrap_or(*lo)) {
@@ -1007,7 +1045,7 @@ fn debug_addrs(tools: &Tools, pair: &Pair, prog: &Path, img: &Elf) -> DebugAddrs
         }
         let Some((a, b)) = r.split_once(", ") else { continue };
         let (a, b) = (last_hex(a).unwrap_or(0), last_hex(b).unwrap_or(0));
-        if a != b && a != DEAD && !img.in_exec(a, b) {
+        if a != b && a != DEAD && a != DEAD_PAIRED && !img.in_exec(a, b) {
             found.wrong.push(format!("DW_AT_ranges [{a:#x}, {b:#x})"));
         }
     }
@@ -1022,7 +1060,7 @@ fn debug_addrs(tools: &Tools, pair: &Pair, prog: &Path, img: &Elf) -> DebugAddrs
         let first = vals.first().copied().unwrap_or(0);
         match kind {
             "DW_RLE_start_length" | "DW_RLE_start_end" | "DW_RLE_base_address" => {
-                if first == DEAD {
+                if first == DEAD_PAIRED {
                     *found.dead.entry(".debug_rnglists").or_default() += 1;
                 } else {
                     let end = match kind {
@@ -1042,7 +1080,7 @@ fn debug_addrs(tools: &Tools, pair: &Pair, prog: &Path, img: &Elf) -> DebugAddrs
     let addr = dump(tools, prog, dir, &["--debug-addr"]);
     for l in addr.lines().filter(|l| l.starts_with("0x") && l.len() == 18) {
         let a = last_hex(l).unwrap_or(0);
-        if a == DEAD {
+        if a == DEAD_PAIRED {
             *found.dead.entry(".debug_addr").or_default() += 1;
         } else if !img.in_alloc(a) {
             found.wrong.push(format!(".debug_addr {l}"));
@@ -1150,17 +1188,47 @@ const LINE_TOMBSTONE: &str = "During symbol reading: .debug_line address at offs
 const CALL_TARGET_DEAD: &str =
     "During symbol reading: DW_AT_call_target target DIE has invalid low pc";
 
-/// [`rnglists_xfail`]'s complaint.
-const RNGLISTS_COMPLAINT: &str =
+/// gdb's complaint when a range list entry starts at [`DEAD_PAIRED`]:
+/// gdb drops the entry (it has no section at 0), which is I-47's purpose.
+/// lld's and mold's outputs give it too.
+const RNGLISTS_ZERO: &str =
+    "During symbol reading: .debug_rnglists entry has start address of zero";
+
+/// gdb's complaint when a range list wraps, as all ones in a
+/// `DW_RLE_start_length` entry did before WP-027e: gdb then drops the
+/// CU's whole list. Never on mortar's output.
+const RNGLISTS_INVERTED: &str =
     "During symbol reading: Invalid .debug_rnglists data (inverted range)";
 
 /// The static checks on both outputs of each configuration.
 fn dwarf(name: &str, driver: Driver, p: &Program) {
-    each(name, driver, p, |label, tag, t, pair| {
+    each(name, driver, p, |label, _, t, pair| {
         let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
         verify_against(label, t, pair, &eo, &et);
-        symtabs_against(label, t, pair, (&eo, &et), rnglists_xfail(driver, tag));
+        symtabs_against(label, t, pair, (&eo, &et));
         addresses(label, t, pair, p, driver == Driver::Gxx, (&eo, &et));
+    });
+}
+
+/// The static checks under `--gc-sections` (WP-031, `spec/image.md`
+/// I-47): `llvm-dwarfdump --verify` and gdb's complaints as without it;
+/// every address in mortar's debug sections is in its section or the
+/// tombstone (GNU ld writes 0 for a collected function, `E14 Q13`, so its
+/// output is not held to that); the unused functions' subprograms are
+/// tombstoned, and no address 0 claims code.
+fn dwarf_gc(name: &str, driver: Driver, p: &Program) {
+    each_gc(name, driver, p, true, |label, _, t, pair| {
+        let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
+        verify_against(label, t, pair, &eo, &et);
+        symtabs_against(label, t, pair, (&eo, &et));
+        let ours = debug_addrs(t, pair, &pair.ours, &eo);
+        assert!(ours.wrong.is_empty(), "{label}: mortar's output: {:#?}", ours.wrong);
+        if p.sources.first().is_some_and(|s| Path::new(s.name).extension() != Some("f90".as_ref()))
+        {
+            let gone = ours.dead_subprograms.iter().filter(|n| n.contains("gc_unused")).count();
+            assert!(gone >= 1, "{label}: tombstoned subprograms {:?}", ours.dead_subprograms);
+            assert!(!eo.values.contains_key("gc_unused"), "{label}: gc_unused is in the output");
+        }
     });
 }
 
@@ -1192,15 +1260,14 @@ fn verify_against(label: &str, t: &Tools, pair: &Pair, eo: &Elf, et: &Elf) {
 
 /// gdb's `maint check-symtabs` is silent on mortar's output; gdb's
 /// complaints while reading mortar's debug information are GNU ld's
-/// output's, but for [`LINE_TOMBSTONE`] and [`CALL_TARGET_DEAD`] (I-47)
-/// and, under
-/// [`rnglists_xfail`], [`RNGLISTS_COMPLAINT`]; and `info functions -n`
+/// output's, but for [`LINE_TOMBSTONE`], [`CALL_TARGET_DEAD`] and
+/// [`RNGLISTS_ZERO`] (I-47), and never [`RNGLISTS_INVERTED`]; and `info functions -n`
 /// lists the same functions as on GNU ld's output. GNU ld's lists a
 /// COMDAT function once per object that defined a copy (the redirect,
 /// `spec/image.md` I-47); mortar's once, under the kept copy's file: the
 /// signature sets are equal and mortar's entries are a subset of GNU's.
 // spec: VALIDATION.md L6; image.md I-47 (tombstones)
-fn symtabs_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf), xfail: bool) {
+fn symtabs_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf)) {
     let ours = gdb_symtabs(t, &pair.ours, &pair.dir, eo);
     let theirs = gdb_symtabs(t, &pair.theirs, &pair.dir, et);
     let check: Vec<&String> =
@@ -1210,15 +1277,14 @@ fn symtabs_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf), 
         .complaints
         .difference(&theirs.complaints)
         .filter(|c| !c.starts_with(LINE_TOMBSTONE) && !c.starts_with(CALL_TARGET_DEAD))
-        .filter(|c| !(xfail && c.starts_with(RNGLISTS_COMPLAINT)))
+        .filter(|c| !c.starts_with(RNGLISTS_ZERO))
         .collect();
     assert!(extra.is_empty(), "{label}: gdb complains of mortar's output only: {extra:#?}");
-    if xfail {
-        assert!(
-            ours.complaints.iter().any(|c| c.starts_with(RNGLISTS_COMPLAINT)),
-            "{label}: XPASS: gdb no longer complains {RNGLISTS_COMPLAINT:?}"
-        );
-    }
+    assert!(
+        !ours.complaints.iter().any(|c| c.starts_with(RNGLISTS_INVERTED)),
+        "{label}: gdb rejects a range list of mortar's output: {:#?}",
+        ours.complaints
+    );
     let (fo, ft) = (&ours.functions, &theirs.functions);
     assert!(!fo.is_empty(), "{label}: gdb lists no function with debug information");
     let sigs = |s: &BTreeSet<(String, String)>| -> BTreeSet<String> {
@@ -1235,8 +1301,8 @@ fn symtabs_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf), 
 /// address in `.debug_aranges`, `.debug_ranges`, `.debug_rnglists`,
 /// `.debug_addr` and `.debug_line` is in its section or a tombstone. On
 /// mortar's output, a C++ program's discarded copies of `twice<int>` are
-/// tombstoned in each of the sections the compiler wrote; no address 0
-/// claims code (the reason for I-47's choice of all ones). GNU ld
+/// tombstoned in each of the sections the compiler wrote (all ones, or 0
+/// where a DWARF 5 entry pairs the address with a length). GNU ld
 /// redirects the copies (I-47), so its output has no tombstone to count.
 // spec: image.md I-45, I-47, I-112 (tombstones); VALIDATION.md L6
 fn addresses(label: &str, t: &Tools, pair: &Pair, p: &Program, gcc: bool, (eo, et): (&Elf, &Elf)) {
@@ -1335,4 +1401,49 @@ fn dwarf_cxx_clangxx() {
 #[test]
 fn dwarf_fortran_gfortran() {
     dwarf("dwarf-f-gfortran", Driver::Gfortran, &FORTRAN);
+}
+
+// The --gc-sections variants (WP-031): the same sessions against GNU ld
+// with --gc-sections, and the static checks.
+
+// spec: VALIDATION.md L6; image.md I-6 to I-10, I-47
+#[test]
+fn gc_sessions_c_gcc() {
+    sessions_gc("gc-dbg-c-gcc", Driver::Gcc, &C, true);
+}
+
+// spec: VALIDATION.md L6; image.md I-6 to I-10, I-47
+#[test]
+fn gc_sessions_cxx_gxx() {
+    sessions_gc("gc-dbg-cxx-gxx", Driver::Gxx, &CXX, true);
+}
+
+// spec: VALIDATION.md L6; image.md I-6 to I-10, I-47
+#[test]
+fn gc_sessions_cxx_clangxx() {
+    sessions_gc("gc-dbg-cxx-clangxx", Driver::Clangxx, &CXX, true);
+}
+
+// spec: VALIDATION.md L6; image.md I-6 to I-10, I-47
+#[test]
+fn gc_dwarf_c_clang() {
+    dwarf_gc("gc-dwarf-c-clang", Driver::Clang, &C);
+}
+
+// spec: VALIDATION.md L6; image.md I-6 to I-10, I-47
+#[test]
+fn gc_dwarf_cxx_gxx() {
+    dwarf_gc("gc-dwarf-cxx-gxx", Driver::Gxx, &CXX);
+}
+
+// spec: VALIDATION.md L6; image.md I-6 to I-10, I-47
+#[test]
+fn gc_dwarf_cxx_clangxx() {
+    dwarf_gc("gc-dwarf-cxx-clangxx", Driver::Clangxx, &CXX);
+}
+
+// spec: VALIDATION.md L6; image.md I-6 to I-10, I-47
+#[test]
+fn gc_dwarf_fortran_gfortran() {
+    dwarf_gc("gc-dwarf-f-gfortran", Driver::Gfortran, &FORTRAN);
 }

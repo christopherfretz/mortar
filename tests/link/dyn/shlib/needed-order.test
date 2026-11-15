@@ -1,0 +1,357 @@
+# dyn.md D-19a: the order of the DT_NEEDED entries is GNU ld's, the
+# "keeping mention" of each needed library: its first mention that is not
+# as-needed, or that is as-needed and comes after (or in the same group
+# as) a strong reference to it. The order is the loader's search order
+# and the reverse of the constructor order, so each program prints the
+# constructors of its libraries and then "main" (fixture needed-libs): the
+# run shows the order the loader used, the readelf check the entries.
+# Lines ported from review-m2/dynamic/needed_order.sh (name in each
+# comment; measured on both architectures, identical) and
+# review-m2-adv/neededorder (thrice-ref, underlink-after). The lines on
+# which mold drops a library (W9) are in needed-twice and
+# needed-order-as-needed-twice; the -Bstatic and --push-state lines of the
+# experiment are not ported here (option variations); groups are in
+# needed-order-group.
+#
+# Where the references differ (dyn.md 13.1, "DT_NEEDED order"): lld and
+# mold place each soname at its first mention; mortar is held to GNU ld's
+# order (has(bfd,mortar)). On lines GNU ld refuses (a library referenced
+# only after its last as-needed mention: drv-obj-after-all,
+# obj-after-as-needed) mortar links, each such library at its first
+# mention (D-19a's fallback), which is the lld and mold order.
+#
+# underlink-after (N5): `main_p.o --as-needed libnq.so --no-as-needed
+# libnp.so libnc.so`, libnp.so under-linked against libnq.so (D-11 item
+# 3). GNU ld refuses; lld and mold drop libnq.so and their outputs fail at
+# load (symbol lookup error, exit 127: recorded here as what they do);
+# mortar needs libnq.so at its first mention (nq np nc) and the program
+# runs.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-19a"
+#@ spec: dyn.md "D-11"
+#@ arch: aarch64 x86_64
+#@ fixture: needed-libs
+#@ anomaly(lld,mold): A26
+
+cc -O1 -fPIE -DREFS=f_nx() main.c -o main_x.o
+cc -O1 -fPIE "-DREFS=f_na()+f_nz()" main.c -o main_z.o
+cc -O1 -fPIE -DREFS=g_np() main.c -o main_p.o
+cc -O1 -fPIC -DN=nz lib.c -o nz.o
+shlib gcc nz.o -o libnz.so
+
+# base_plain: every library plain, in command-line order.
+link gcc -pie main.o -Wl,--no-as-needed libna.so libnb.so libnc.so libnd.so libne.so libnf.so -o base-plain
+check readelf -dW base-plain
+  count: 7 (NEEDED)
+  has: [libna.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libnd.so]
+  then: [libne.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run base-plain
+  stdout: nf ne nd nc nb na main
+
+# plain_unref: a plain library nothing references is needed, at its place.
+link gcc -pie main.o -Wl,--no-as-needed libna.so libnx.so libnb.so libnc.so libnd.so libne.so libnf.so -o plain-unref
+check readelf -dW plain-unref
+  count: 8 (NEEDED)
+  has: [libna.so]
+  then: [libnx.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libnd.so]
+  then: [libne.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run plain-unref
+  stdout: nf ne nd nc nb nx na main
+
+# all_asn_ref: every library as-needed and referenced by an earlier object.
+link gcc -pie main.o -Wl,--as-needed libnf.so libne.so libnd.so libnc.so libnb.so libna.so -o all-as-needed
+check readelf -dW all-as-needed
+  count: 7 (NEEDED)
+  has: [libnf.so]
+  then: [libne.so]
+  then: [libnd.so]
+  then: [libnc.so]
+  then: [libnb.so]
+  then: [libna.so]
+  then: [libc.so.6]
+run all-as-needed
+  stdout: na nb nc nd ne nf main
+
+# two_libs_swap: two libraries first as-needed (referenced earlier), then plain:
+# kept at their first mentions.
+link gcc -pie main.o -Wl,--no-as-needed -Wl,--as-needed libnc.so libnd.so -Wl,--no-as-needed libna.so libnd.so libnb.so libnc.so libne.so libnf.so -o two-libs-swap
+check readelf -dW two-libs-swap
+  count: 7 (NEEDED)
+  has: [libnc.so]
+  then: [libnd.so]
+  then: [libna.so]
+  then: [libnb.so]
+  then: [libne.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run two-libs-swap
+  stdout: nf ne nb na nd nc main
+
+# drv_obj_mid: the driver's default --as-needed; nd and na are first named
+# before the object that references them, so GNU ld keeps their second
+# mentions (D-19a); lld and mold keep first mentions (dyn.md 13.1).
+link gcc -pie libnd.so libna.so main.o libnc.so libnb.so libnf.so libne.so libna.so libnd.so -o drv-obj-mid
+check readelf -dW drv-obj-mid
+  count(bfd,mortar): 7 (NEEDED)
+  has(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnf.so]
+  then(bfd,mortar): [libne.so]
+  then(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnd.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 7 (NEEDED)
+  has(lld,mold): [libnd.so]
+  then(lld,mold): [libna.so]
+  then(lld,mold): [libnc.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libnf.so]
+  then(lld,mold): [libne.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) drv-obj-mid
+  stdout: nd na ne nf nb nc main
+run(lld,mold) drv-obj-mid
+  stdout: ne nf nb nc na nd main
+
+# obj_after_asn_plain: nc as-needed before the object, then plain after it:
+# the plain mention keeps it (GNU ld); lld and mold, the first mention.
+link gcc -pie -Wl,--no-as-needed -Wl,--as-needed libnc.so -Wl,--no-as-needed libna.so libnb.so main.o libnc.so libnd.so libne.so libnf.so -o obj-after-as-needed-plain
+check readelf -dW obj-after-as-needed-plain
+  count(bfd,mortar): 7 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libnd.so]
+  then(bfd,mortar): [libne.so]
+  then(bfd,mortar): [libnf.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 7 (NEEDED)
+  has(lld,mold): [libnc.so]
+  then(lld,mold): [libna.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libnd.so]
+  then(lld,mold): [libne.so]
+  then(lld,mold): [libnf.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) obj-after-as-needed-plain
+  stdout: nf ne nd nc nb na main
+run(lld,mold) obj-after-as-needed-plain
+  stdout: nf ne nd nb na nc main
+
+# obj_between: the same with the object between the two mentions.
+link gcc -pie -Wl,--no-as-needed libna.so -Wl,--as-needed libnc.so -Wl,--no-as-needed main.o libnb.so libnc.so libnd.so libne.so libnf.so -o obj-between
+check readelf -dW obj-between
+  count(bfd,mortar): 7 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libnd.so]
+  then(bfd,mortar): [libne.so]
+  then(bfd,mortar): [libnf.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 7 (NEEDED)
+  has(lld,mold): [libna.so]
+  then(lld,mold): [libnc.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libnd.so]
+  then(lld,mold): [libne.so]
+  then(lld,mold): [libnf.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) obj-between
+  stdout: nf ne nd nc nb na main
+run(lld,mold) obj-between
+  stdout: nf ne nd nb nc na main
+
+# asn_unref_obj_asn2: nc and nd as-needed before the object and again after
+# it: kept at their second mentions, in that mention's order (nd nc).
+link gcc -pie -Wl,--no-as-needed -Wl,--as-needed libnc.so libnd.so -Wl,--no-as-needed libna.so main.o libnb.so -Wl,--as-needed libnd.so libnc.so -Wl,--no-as-needed libne.so libnf.so -o as-needed-object-twice
+check readelf -dW as-needed-object-twice
+  count(bfd,mortar): 7 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnd.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libne.so]
+  then(bfd,mortar): [libnf.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 7 (NEEDED)
+  has(lld,mold): [libnc.so]
+  then(lld,mold): [libnd.so]
+  then(lld,mold): [libna.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libne.so]
+  then(lld,mold): [libnf.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) as-needed-object-twice
+  stdout: nf ne nc nd nb na main
+run(lld,mold) as-needed-object-twice
+  stdout: nf ne nb na nd nc main
+
+# thrice-ref (review-m2-adv/neededorder): nx as-needed, referenced by an object
+# after its first mention, as-needed again after the object, then plain:
+# the second mention keeps it.
+link gcc -pie -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--as-needed main_x.o libnx.so -Wl,--no-as-needed libnc.so libnx.so -o thrice-ref
+check readelf -dW thrice-ref
+  count(bfd,mortar): 5 (NEEDED)
+  has(bfd,mortar): [libna.so]
+  then(bfd,mortar): [libnb.so]
+  then(bfd,mortar): [libnx.so]
+  then(bfd,mortar): [libnc.so]
+  then(bfd,mortar): [libc.so.6]
+  count(lld,mold): 5 (NEEDED)
+  has(lld,mold): [libna.so]
+  then(lld,mold): [libnx.so]
+  then(lld,mold): [libnb.so]
+  then(lld,mold): [libnc.so]
+  then(lld,mold): [libc.so.6]
+run(bfd,mortar) thrice-ref
+  stdout: nc nx nb na main
+run(lld,mold) thrice-ref
+  stdout: nc nb nx na main
+
+# scr_input: INPUT(libnc.so libnd.so) expands at the script's position.
+link gcc -pie main.o -Wl,--no-as-needed libna.so inp_cd.so libnb.so libne.so libnf.so -o script-input
+check readelf -dW script-input
+  count: 7 (NEEDED)
+  has: [libna.so]
+  then: [libnc.so]
+  then: [libnd.so]
+  then: [libnb.so]
+  then: [libne.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run script-input
+  stdout: nf ne nb nd nc na main
+
+# scr_nested2: INPUT(libne.so grp.so libnf.so), grp.so a GROUP with an
+# AS_NEEDED list: depth first, at each script's position.
+link gcc -pie main.o -Wl,--no-as-needed libna.so libnb.so nest.so libnc.so -o script-nested
+check readelf -dW script-nested
+  count: 7 (NEEDED)
+  has: [libna.so]
+  then: [libnb.so]
+  then: [libne.so]
+  then: [libnd.so]
+  then: [libnc.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run script-nested
+  stdout: nf nc nd ne nb na main
+
+# scr_asn_in_group: GROUP(libnd.so AS_NEEDED(libnc.so libnx.so)): nc
+# referenced (kept), nx not (dropped).
+link gcc -pie main.o -Wl,--no-as-needed libna.so grp.so libnb.so libne.so libnf.so -o script-as-needed-in-group
+check readelf -dW script-as-needed-in-group
+  count: 7 (NEEDED)
+  has: [libna.so]
+  then: [libnd.so]
+  then: [libnc.so]
+  then: [libnb.so]
+  then: [libne.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run script-as-needed-in-group
+  stdout: nf ne nb nc nd na main
+
+# two_files_soname: two files with one soname are one object, at the first.
+link gcc -pie main.o -Wl,--no-as-needed libna.so d1/libnc.so libnb.so d2/libnc.so libnd.so libne.so libnf.so -o two-files-soname
+check readelf -dW two-files-soname
+  count: 7 (NEEDED)
+  has: [libna.so]
+  then: [libnc.so]
+  then: [libnb.so]
+  then: [libnd.so]
+  then: [libne.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run two-files-soname
+  stdout: nf ne nd nb nc na main
+
+# drv_obj_after_all: the driver's default --as-needed, the object last.
+# GNU ld refuses (every library is unloaded before the reference); mortar
+# links, each library at its first mention.
+link(bfd) gcc -pie libnd.so libna.so libnc.so libnb.so libnf.so libne.so main.o -o drv-obj-after-all
+  exit: fail
+  diag: undefined reference to `f_na'
+link(lld,mold,mortar) gcc -pie libnd.so libna.so libnc.so libnb.so libnf.so libne.so main.o -o drv-obj-after-all
+check(lld,mold,mortar) readelf -dW drv-obj-after-all
+  count: 7 (NEEDED)
+  has: [libnd.so]
+  then: [libna.so]
+  then: [libnc.so]
+  then: [libnb.so]
+  then: [libnf.so]
+  then: [libne.so]
+  then: [libc.so.6]
+run(lld,mold,mortar) drv-obj-after-all
+  stdout: ne nf nb nc na nd main
+
+# obj_after_asn: nc only as-needed, referenced by the object after it.
+link(bfd) gcc -pie -Wl,--no-as-needed -Wl,--as-needed libnc.so -Wl,--no-as-needed libna.so libnb.so libnd.so libne.so libnf.so main.o -o obj-after-as-needed
+  exit: fail
+  diag: undefined reference to `f_nc'
+link(lld,mold,mortar) gcc -pie -Wl,--no-as-needed -Wl,--as-needed libnc.so -Wl,--no-as-needed libna.so libnb.so libnd.so libne.so libnf.so main.o -o obj-after-as-needed
+check(lld,mold,mortar) readelf -dW obj-after-as-needed
+  count: 7 (NEEDED)
+  has: [libnc.so]
+  then: [libna.so]
+  then: [libnb.so]
+  then: [libnd.so]
+  then: [libne.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run(lld,mold,mortar) obj-after-as-needed
+  stdout: nf ne nd nb na nc main
+
+# nosoname_spellings: without a soname, libnz.so (also as -lnz) and
+# ./libnz.so are two entries in all three (D-19a); the loader loads the
+# file once.
+link gcc -pie -Wl,--no-as-needed -L. main_z.o libnz.so libna.so -lnz ./libnz.so -o no-soname
+check readelf -dW no-soname
+  count: 4 (NEEDED)
+  has: [libnz.so]
+  then: [libna.so]
+  then: [./libnz.so]
+  then: [libc.so.6]
+run no-soname
+  stdout: na nz main
+
+# underlink-after (N5).
+link(bfd) gcc -pie -Wl,--no-as-needed main_p.o -Wl,--as-needed libnq.so -Wl,--no-as-needed libnp.so libnc.so -o underlink-after
+  exit: fail
+  diag: libnp.so: undefined reference to `f_nq'
+link(lld,mold,mortar) gcc -pie -Wl,--no-as-needed main_p.o -Wl,--as-needed libnq.so -Wl,--no-as-needed libnp.so libnc.so -o underlink-after
+check(lld,mold) readelf -dW underlink-after
+  count: 3 (NEEDED)
+  has: [libnp.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run(lld,mold) underlink-after
+  exit: 127
+check(mortar) readelf -dW underlink-after
+  count: 4 (NEEDED)
+  has: [libnq.so]
+  then: [libnp.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run(mortar) underlink-after
+  stdout: nc np nq main
+
+#--- inp_cd.so
+INPUT ( libnc.so libnd.so )
+#--- grp.so
+GROUP ( libnd.so AS_NEEDED ( libnc.so libnx.so ) )
+#--- nest.so
+INPUT ( libne.so grp.so libnf.so )

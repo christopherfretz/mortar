@@ -218,6 +218,82 @@ pub struct Defined {
     pub line: u32,
 }
 
+/// The output kind a map records (§3.2 `output`; `spec/dyn.md` D-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OutputKind {
+    Static,
+    Exec,
+    Pie,
+    StaticPie,
+}
+
+impl OutputKind {
+    pub const ALL: [OutputKind; 4] =
+        [OutputKind::Static, OutputKind::Exec, OutputKind::Pie, OutputKind::StaticPie];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            OutputKind::Static => "static",
+            OutputKind::Exec => "exec",
+            OutputKind::Pie => "pie",
+            OutputKind::StaticPie => "static-pie",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
+/// Which tag carries the run path (§3.2 `runpath`/`rpath`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RunpathTag {
+    /// `DT_RUNPATH` (`--enable-new-dtags`, the default).
+    Runpath,
+    /// `DT_RPATH` (`--disable-new-dtags`).
+    Rpath,
+}
+
+/// A copy allocation as the map states it: an order hint (P-D3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyHint {
+    pub name: String,
+    pub addr: u64,
+    pub size: u64,
+}
+
+/// The dynamic records of a map (§3.2, `spec/plumb.md` P-D3): facts of the
+/// command line, and **order hints** (`needed`, `copy`, `export`, `plt`,
+/// `iplt`) the verifier uses only to name what it compares, never as the
+/// expected value. Every field is optional in the text: a record that is
+/// absent leaves its default.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DynRecords {
+    /// `output`.
+    pub kind: Option<OutputKind>,
+    /// `interp`: the `-dynamic-linker` path.
+    pub interp: Option<String>,
+    /// `runpath` or `rpath`: the joined `-rpath` list.
+    pub runpath: Option<(RunpathTag, String)>,
+    /// `bind now` (`-z now`) or `bind lazy`.
+    pub now: Option<bool>,
+    /// `relro on` or `relro off` (`-z norelro`).
+    pub relro: Option<bool>,
+    /// `arg`: the link's command line, one word per record, in order,
+    /// response files expanded; the program name is not a word.
+    pub args: Vec<String>,
+    /// `needed`: the `DT_NEEDED` names, in the order written.
+    pub needed: Vec<String>,
+    /// `copy`: the copy allocations, by the name of the record's alias.
+    pub copies: Vec<CopyHint>,
+    /// `export`: the exported names.
+    pub exports: Vec<String>,
+    /// `plt`: the keys of the PLT entries, in PLT order.
+    pub plt: Vec<String>,
+    /// `iplt`: the keys of the IPLT entries, in IPLT order.
+    pub iplt: Vec<String>,
+}
+
 /// The common form of a placement map (§3.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Map {
@@ -231,6 +307,12 @@ pub struct Map {
     pub defined: Vec<Defined>,
     /// mortar's non-alloc records (§3.2).
     pub nonalloc: Vec<NonAlloc>,
+    /// Whether the link had `--fix-cortex-a53-843419`, when the caller
+    /// knows (no map format records it); `None` infers it from the fixes
+    /// found (§5.10).
+    pub fix_843419: Option<bool>,
+    /// mortar's dynamic records (§3.2; P-D3), when the map has any.
+    pub dynamic: Option<DynRecords>,
 }
 
 impl Map {
@@ -245,6 +327,8 @@ impl Map {
             chunks: Vec::new(),
             defined: Vec::new(),
             nonalloc: Vec::new(),
+            fix_843419: None,
+            dynamic: None,
         }
     }
 
@@ -271,7 +355,7 @@ impl Map {
 /// Builds [`Map::files`] without a linear search per line.
 #[derive(Debug, Default)]
 pub(crate) struct FileInterner {
-    index: std::collections::HashMap<MapFile, u32>,
+    index: crate::hasher::HashMap<MapFile, u32>,
 }
 
 impl FileInterner {

@@ -345,7 +345,7 @@ fn synthesize(
         return Err(e);
     }
     let main = "main.o".to_owned();
-    if request.shape != Shape::Archives {
+    if !matches!(request.shape, Shape::Archives | Shape::Library) {
         let mut inputs = vec![main.clone()];
         inputs.extend(
             compiled

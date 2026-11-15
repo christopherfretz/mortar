@@ -39,6 +39,7 @@ dependencies = [
  "mortar_synth",
  "mortar_testutil",
  "mortar_x64",
+ "mortar_x86",
 ]
 
 [[package]]
@@ -143,6 +144,7 @@ dependencies = [
 name = "mortar_live"
 version = "0.0.0"
 dependencies = [
+ "mortar_arch",
  "mortar_cli",
  "mortar_core",
  "mortar_diag",
@@ -179,9 +181,11 @@ dependencies = [
 name = "mortar_resolve"
 version = "0.0.0"
 dependencies = [
+ "mortar_cli",
  "mortar_core",
  "mortar_diag",
  "mortar_elf",
+ "mortar_input",
  "mortar_testutil",
 ]
 
@@ -198,6 +202,7 @@ dependencies = [
  "mortar_input",
  "mortar_live",
  "mortar_resolve",
+ "mortar_synth",
  "mortar_testutil",
 ]
 
@@ -228,6 +233,17 @@ version = "0.0.0"
 
 [[package]]
 name = "mortar_x64"
+version = "0.0.0"
+dependencies = [
+ "mortar_arch",
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_x86"
 version = "0.0.0"
 dependencies = [
  "mortar_arch",
@@ -276,6 +292,7 @@ dependencies = [
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "mortar_digest",
  "mortar_elf",
  "mortar_plumb",
  "mortar_testutil",

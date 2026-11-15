@@ -49,7 +49,11 @@ reused. A withdrawn rule keeps its id and is marked "withdrawn".
 implement it:
 
 - M1: static non-PIE executables on AArch64;
-- M2: dynamic executables, PIE and shared objects;
+- M2: dynamic executables (PIE and non-PIE) and static PIE, with shared
+  objects as **inputs**; producing shared objects is M4
+  (`docs/ROADMAP.md`; `spec/dyn.md` §15 Q8, closed). An `[M2]` rule that
+  speaks of a shared-object output binds the design at M2 and is
+  implemented at M4;
 - M3: x86-64 (its static rules are M1 since `spec/x64.md` X-3 and
   `docs/ROADMAP.md` M1; an x86-64 `[M3]` tag here reads as M1 static, M2 dynamic);
 - M4: i386;
@@ -299,7 +303,7 @@ wins.
 | `.gnu.linkonce.*` | refused (`feature`, `.gnu.linkonce sections`): pre-COMDAT, and no current compiler emits it | L-37 |
 | non-allocated `.debug*` under `-S`/`-s` (`.debug_str`, `.debug_line_str` too) | go nowhere (resolve.md §10: `Dropped(Stripped)`) | L-158 |
 | `.zdebug_*` | refused (`compression-type`, `.zdebug`). Only `SHF_COMPRESSED` is accepted | L-38 |
-| a name that a synthetic section owns (`.got`, `.got.plt`, `.plt`, `.iplt`, `.rela.dyn`, `.rela.plt`, `.dynamic`, `.dynsym`, `.dynstr`, `.hash`, `.gnu.hash`, `.eh_frame_hdr`, `.relr.dyn`, `.interp`) | refused (`feature`, `input section <name>`). `.interp` becomes accepted at M2, when it decides the interpreter as in GNU | L-39 |
+| a name that a synthetic section owns (`.got`, `.got.plt`, `.plt`, `.iplt`, `.rela.dyn`, `.rela.plt`, `.dynamic`, `.dynsym`, `.dynstr`, `.hash`, `.gnu.hash`, `.eh_frame_hdr`, `.relr.dyn`, `.interp`) | refused (`feature`, `input section <name>`). `.interp` stays refused at M2: the interpreter is `-dynamic-linker`'s alone (`spec/dyn.md` D-31; unmeasured, no corpus input has one) | L-39 |
 | `.ctors*`, `.dtors*`, non-empty | M1 refuses (`feature`, `.ctors section`); the rule from M2 is L-56 | L-40 |
 | an `sh_type` or flag that `resolve.md` §10 ("The fate of sections") refuses | refused there (`section-type`, `section-flag`); layout never sees it. resolve.md owns the classification; this table only adds layout's outcome for the classes it accepts | L-41 |
 | not live (`Liveness`), or in a discarded COMDAT group | given an output section like any other, but no place | L-42 |
@@ -556,12 +560,12 @@ order of the output sections themselves is in §10.
 | 0 | R | file header, program headers | M1 |
 | 1 | R | `.interp` | M2 |
 | 2 | R | `.note.gnu.property`, `.note.gnu.build-id`, `.note.ABI-tag`, other allocated notes in `OutSecId` order | M1 |
-| 3 | R | `.hash`, `.gnu.hash`, `.dynsym`, `.dynstr`, `.gnu.version`, `.gnu.version_d`, `.gnu.version_r` | M2 |
-| 4 | R | `.rela.dyn` (`.rel.dyn` on i386), `.relr.dyn`, `.rela.plt` (`.rel.plt`) | M1 for `.rela.plt` (IRELATIVE in a static link), M2 the rest |
+| 3 | R | `.gnu.hash`, `.dynsym`, `.dynstr`, `.gnu.version`, `.gnu.version_d`, `.gnu.version_r` (no `.hash`: `spec/dyn.md` D-20) | M2 (`.gnu.version_d` M4) |
+| 4 | R | `.rela.dyn` (`.rel.dyn` on i386), `.relr.dyn`, `.rela.plt` (`.rel.plt`) | M1 for `.rela.plt` (IRELATIVE in a static link), M2 the rest (`.relr.dyn` M4) |
 | 5 | R | `.rodata`, read-only orphans (`PROGBITS`, alloc, not W, not X), `.gcc_except_table`, `.eh_frame_hdr`, `.eh_frame` | M1 |
 | 6 | RX | `.init`, `.plt` (`.iplt` content in a static link), `.text`, exec orphans, `.fini` | M1 |
-| 7 | RW-RELRO | `.tdata`, `.tbss`, TLS orphans (`PROGBITS` then `NOBITS`), `.preinit_array`, `.init_array`, `.fini_array`, `.data.rel.ro`, `.dynamic`, `.got`, `.got.plt` (only with `-z now`, M2), `.bss.rel.ro`, relro padding (L-64) | M1 (`.dynamic`, `.bss.rel.ro` at M2) |
-| 8 | RW | `.got.plt`, `.data`, `.tm_clone_table`, writable `PROGBITS` orphans, `.bss`, writable `NOBITS` orphans | M1 |
+| 7 | RW-RELRO | `.tdata`, `.tbss`, TLS orphans (`PROGBITS` then `NOBITS`), `.preinit_array`, `.init_array`, `.fini_array`, `.data.rel.ro`, `.dynamic`, `.got`, `.got.plt` (only with `-z now`, after `.got` as lld places it; GNU ld folds the slots into `.got`; M1 since WP-027e), `.bss.rel.ro` (the copy chunk of read-only shared data, `spec/dyn.md` D-42, synth S-3 row 25, then input `.bss.rel.ro`), relro padding (L-64) | M1 (`.dynamic`, `.bss.rel.ro` at M2) |
+| 8 | RW | `.got.plt` (without `-z now`), `.data`, `.tm_clone_table`, writable `PROGBITS` orphans, `.bss` (its first chunk `.dynbss`, the copy chunk of writable shared data, D-42, synth S-3 row 24 [M2]), writable `NOBITS` orphans | M1 |
 | 9 | none | non-allocated sections other than the four below, in `OutSecId` order (`.comment`, `.debug_*`, notes) | M1 |
 | 10 | none | `.symtab`, `.symtab_shndx`, `.strtab`, `.shstrtab` | M1 |
 | 11 | none | section header table | M1 |
@@ -588,7 +592,11 @@ order of the output sections themselves is in §10.
     writable (rank 8), as in all three references. glibc applies
     IRELATIVE before it protects RELRO, but that ordering was not
     confirmed for static start-up, so mortar does not depend on it
-    (unverified, WP-024-spec §4).
+    by default (WP-024-spec §4). Under `-z now` it is RELRO (row 7), as
+    in lld (GNU ld folds the slots into `.got`, RELRO too): static glibc
+    applies IRELATIVE (`ARCH_SETUP_IREL` in `__libc_start_main`) before
+    `_dl_non_dynamic_init` protects RELRO, and
+    `z_now_puts_the_got_plt_in_relro` runs such a program (WP-027e).
   - `.preinit_array` comes before `.init_array`, as in GNU. lld puts it
     after; nothing depends on that.
   - `.tm_clone_table` is in RW because libgcc's `crtbegin` writes
@@ -634,7 +642,7 @@ order of the output sections themselves is in §10.
 | type | when | covers | `p_align` |
 |---|---|---|---|
 | `PT_PHDR` | `PT_INTERP` is present (M2) | the program header table | 8 (ELF64) / 4 |
-| `PT_INTERP` | dynamic, not `-shared` (M2) | `.interp` | 1 |
+| `PT_INTERP` | an interpreter is named (`Exec`, `Pie`; never `StaticPie`; `spec/dyn.md` D-31, D-61) (M2) | `.interp` | 1 |
 | `PT_LOAD` ×1-4 | L-65 | | `P` = max(maxpage, the largest alignment of a chunk in the segment) |
 | `PT_DYNAMIC` | dynamic (M2) | `.dynamic` | word |
 | `PT_NOTE` ×n | allocated notes | one per run of consecutive note chunks with the same alignment | that alignment |
@@ -736,6 +744,9 @@ order of the output sections themselves is in §10.
 - **L-73 [C]** An address, an end address or an offset that does not fit
   the class (ELFCLASS32: an end beyond 2³²; ELFCLASS64: beyond 2⁶⁴) is
   refused by name, `output-too-large` (§20.4), never a wrapped value.
+  ELFCLASS32 also: a `PT_TLS` `p_memsz` ≥ 2³¹ is `output-too-large`
+  (TP offsets are `s(32)`, `spec/x86.md` X86-45; WP-030c checks it in the
+  front for now, `mortar_layout` owns it).
   The limit is the class's. A kernel's split of the address space (the
   3 GiB `TASK_SIZE` of a 32-bit kernel, the 48-bit user space of
   AArch64) is not the linker's concern: the same file runs on another
@@ -811,7 +822,11 @@ order of the output sections themselves is in §10.
 - **L-80 [C] [M2]** PIE and shared objects use the same ranks and
   segment rules with base 0. RELRO then also holds `.dynamic`, `.got`,
   `.data.rel.ro` and, with `-z now`, `.got.plt`. `.bss.rel.ro` holds copy
-  relocations of read-only data from shared objects.
+  relocations of read-only data from shared objects (and of data in the
+  shared object's `PT_GNU_RELRO`: `spec/dyn.md` D-42); `.dynbss`, the
+  first chunk of `.bss`, the other copies. Under `-z norelro` the
+  `.bss.rel.ro` chunk is still made and placed as an ordinary writable
+  section (D-42). Shared-object output is M4.
 - **L-81 [C] [M3, M4]** x86-64 and i386 change only the facts:
   - maxpage is 4 KiB;
   - the bases are those of L-68;
@@ -1038,12 +1053,18 @@ from it:
 
 ### 13.5 x86 and dynamic additions [M2-M4]
 
-- **L-100 [C] [M2]** In a shared object, `_end`, `_edata` and
+- **L-100 [C] [M4]** (shared-object output is M4, `spec/dyn.md` Q8; in
+  an executable these symbols are exported only when `ref_dynamic`,
+  D-21) In a shared object, `_end`, `_edata` and
   `__bss_start` are exported `STB_GLOBAL STV_DEFAULT` when they are
   defined (GNU and lld). `_DYNAMIC` is hidden.
 - **L-101 [C]** `_GLOBAL_OFFSET_TABLE_` is tied to the `GOT_BASE`
   demand: a reference to the symbol demands `GOT_BASE` (`spec/arch.md`),
-  and that demand creates the GOT header even when no GOT slot exists.
+  and so does a definition of the symbol in an input's symbol table, as a
+  reference does (gas names it in `.symtab` beside `@ntpoff` code with no
+  relocation against it; WP-030c, test
+  `x86_got_symbol_named_without_a_reference`); that demand creates the
+  GOT header even when no GOT slot exists.
   - AArch64 (M1): `.got` with its one header word (`spec/a64.md`
     §10.1); a static `.got.plt` has no reserved words (§10.2 there). The
     symbol is the start of `.got`.

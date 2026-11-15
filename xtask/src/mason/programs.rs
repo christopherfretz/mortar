@@ -562,10 +562,11 @@ fn run_cell(
     for (name, linker) in &tools.linkers {
         let out = format!("out.{name}");
         let mut argv = with_output(&line, &out);
-        // The verifier judges AArch64 outputs (plumb.md §1): no map
-        // elsewhere.
+        // The verifier's map is mortar's machine map (`--mortar-map`,
+        // image.md I-120; `-Map` is the GNU text map, WP-027e). It judges
+        // AArch64 outputs (plumb.md §1): no map elsewhere.
         if *name == "mortar" && cross.is_none() {
-            argv.push(format!("-Map={out}.map"));
+            argv.push(format!("--mortar-map={out}.map"));
         }
         let ld = match (cross, *name) {
             (Some(c), "bfd") => &c.bfd,

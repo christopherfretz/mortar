@@ -418,7 +418,7 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
     // 4. number: each shard's entries become their fragments, in place.
     let words: Vec<u64> = is_rep.into_iter().map(AtomicU64::into_inner).collect();
     let mut below: Vec<u32> = words.iter().map(|w| w.count_ones()).collect();
-    let nfrags = pool.prefix_sum(&mut below);
+    let nfrags = pool.unit_cost(1).prefix_sum(&mut below);
     let rank = |occ: usize| {
         let (w, b) = (occ / 64, occ % 64);
         below[w] + (words[w] & ((1u64 << b) - 1)).count_ones()

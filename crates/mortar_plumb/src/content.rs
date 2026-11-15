@@ -61,8 +61,8 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                 continue;
             };
             let cov = covered(o, si);
-            // x86-64 rewritings are recorded byte by byte (§5.9).
-            let gran = if machine == mortar_elf::Machine::X86_64 { 1 } else { 4 };
+            // x86 rewritings are recorded byte by byte (§5.9, §5.11).
+            let gran = if machine == mortar_elf::Machine::AArch64 { 4 } else { 1 };
             if let Some(k) = first_difference(s.data, &cov, out, gran, |k| {
                 // A word an erratum 843419 patch replaced by a branch (W8).
                 let p = addr + k;
@@ -86,6 +86,10 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                     || (a64::erratum_843419_site(p)
                         && a64::is_ldst_unsigned_imm(inw)
                         && e.erratum_patch(p, outw) == Some(inw))
+                    // W7 over an ADRP without a record: the ADR of the
+                    // page the ADRP computes here (a64.md §11.3 step 1).
+                    || (a64::erratum_843419_adrp(p)
+                        && a64::adrp(inw, p).is_some_and(|w| a64::adr(outw, p) == Some(w)))
             }) {
                 let mut f = Finding::new(
                     Rule::Structure(12),
@@ -323,7 +327,10 @@ pub(crate) fn check_symbols(e: &mut Engine<'_, '_>) {
             // §4.8: STT_GNU_IFUNC at the resolver (GNU ld, mortar), or
             // (lld, mold) a function symbol at an IPLT entry of it.
             let gnu = out.sym.sym_type() == STT_GNU_IFUNC && values.contains(&value);
-            let canonical = matches!(e.format, Format::Lld | Format::Mold)
+            // A dynamic output's canonical IFUNC is that function symbol
+            // for every linker (dyn.md D-23; GNU ld on x86).
+            let dynamic = image.phdrs.iter().any(|p| p.p_type == mortar_elf::consts::PT_DYNAMIC);
+            let canonical = (matches!(e.format, Format::Lld | Format::Mold) || dynamic)
                 && out.sym.sym_type() == STT_FUNC
                 && values.iter().any(|&r| e.iplt.entries_of(r).contains(&value));
             if gnu || canonical {

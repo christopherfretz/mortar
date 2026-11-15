@@ -12,6 +12,8 @@
 //! vouch for.
 
 pub mod arch;
+pub mod depfile;
+pub mod dynamic;
 pub mod front;
 pub mod image;
 mod proof;
@@ -61,6 +63,10 @@ pub struct Invocation {
     /// `--time-phases` (`spec/image.md` I-88, I-89): the lines, each ending
     /// in a newline, for standard error after the report; empty without it.
     pub phases: String,
+    /// `--print-gc-sections` (`spec/image.md` I-10): the lines, each ending
+    /// in a newline, for standard error before the report; empty without
+    /// it or when the link stopped before liveness.
+    pub removed: String,
 }
 
 /// The name diagnostics start with (`spec/diag.md` §5.1): the basename
@@ -120,8 +126,12 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let parsed = mortar_cli::parse(args);
     let plan = &parsed.plan;
     let color = plan.diagnostics.color;
-    let done =
-        |text: String| Invocation { outcome: Outcome::Done(text), color, phases: String::new() };
+    let done = |text: String| Invocation {
+        outcome: Outcome::Done(text),
+        color,
+        phases: String::new(),
+        removed: String::new(),
+    };
     match plan.exit {
         Some(Exit::Version) if !parsed.failed() => return done(mortar_cli::version_text()),
         Some(Exit::Help) if !parsed.failed() => return done(mortar_cli::help_text(prog)),
@@ -140,11 +150,13 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     // The refusals of options come after the front, whose phases stop at
     // the first error (the report is in key order, whatever the order of
     // emission, `spec/diag.md` §6).
-    let refusals = parsed.refusals();
+    // The dynamic gates are the guard's (WP-041 step 0e).
+    let refusals = dynamic::option_refusals(plan, &parsed);
     let failed = |diagnostics: Collector, phases: String| Invocation {
         outcome: Outcome::Failed(diagnostics.finish()),
         color,
         phases,
+        removed: String::new(),
     };
     let emit_refusals = |diagnostics: &Collector| {
         for (key, diagnostic) in refusals.iter().cloned() {
@@ -157,7 +169,7 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     }
     // An option the pipeline does not honor stops the line here, with the
     // refusal of linking itself (phase 11).
-    if !parsed.refused_uses().is_empty() {
+    if !refusals.is_empty() {
         emit_refusals(&diagnostics);
         diagnostics.emit(
             Key::new(mortar_cli::PHASE + 1, 0, 0),
@@ -181,21 +193,30 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
     let store = Store::new(StorePolicy::from_env());
     let out_path = cwd.join(plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out")));
     let map_path = plan.bookkeeping.map.as_deref().map(|m| cwd.join(m));
+    let mortar_map_path = plan.bookkeeping.mortar_map.as_deref().map(|m| cwd.join(m));
+    let dependency_path = plan.bookkeeping.dependency_file.as_deref().map(|m| cwd.join(m));
     let print_map = plan.bookkeeping.print_map;
     let env = front::Env { cwd, pool };
     let front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
     let mut stdout = String::new();
+    let removed = front.as_ref().map_or_else(String::new, |f| removed_lines(prog, f));
     if let Some(f) = &front {
         let linked = link_image(f, &store, &out_path, &diagnostics, &mut timer);
-        if let Some(map) = linked {
-            // I-77, I-79: the map of a successful link only.
-            if let Some(m) = &map_path
-                && let Err((k, d)) = mortar_image::output::write_whole(m, &map, 0o666)
-            {
-                diagnostics.emit(k, d);
+        if let Some(maps) = linked {
+            // I-79, I-120: the maps of a successful link only.
+            for (path, text) in [(&map_path, &maps.text), (&mortar_map_path, &maps.machine)] {
+                if let Some(m) = path
+                    && let Err((k, d)) = mortar_image::output::write_whole(m, text, 0o666)
+                {
+                    diagnostics.emit(k, d);
+                }
             }
             if print_map {
-                stdout = String::from_utf8_lossy(&map).into_owned();
+                stdout = String::from_utf8_lossy(&maps.text).into_owned();
+            }
+            // input.md §10.4: the dependency file, of a successful link.
+            if let Some(d) = &dependency_path {
+                write_dependency_file(f, d, &diagnostics);
             }
         }
     }
@@ -205,41 +226,88 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
         // I-66: a link that fails after the command line leaves no output
         // (GNU ld's choice; never an input, never a non-regular file).
         mortar_image::output::remove_stale_output(&out_path, &store.inodes());
-        return failed(diagnostics, timer.finish());
+        return Invocation { removed, ..failed(diagnostics, timer.finish()) };
     }
     Invocation {
         outcome: Outcome::Linked { report: diagnostics.finish(), stdout },
         color,
         phases: timer.finish(),
+        removed,
     }
 }
 
+/// `--print-gc-sections`' lines (`spec/image.md` I-10), when asked for
+/// with `--gc-sections`.
+fn removed_lines(prog: &str, f: &front::Front<'_>) -> String {
+    if !(f.plan.shaping.gc_sections && f.plan.shaping.print_gc_sections) {
+        return String::new();
+    }
+    mortar_live::print_gc_sections(prog, &f.inputs, &f.resolution, &f.assignment, &f.liveness)
+}
+
+/// `--dependency-file` (`spec/input.md` §10.4) of the link `f` to `path`.
+fn write_dependency_file(f: &front::Front<'_>, path: &Path, diagnostics: &Collector) {
+    let target = f.plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out"));
+    let paths = mortar_input::dependency_paths(&f.inputs.link);
+    match depfile::render(target.as_encoded_bytes(), &paths) {
+        Ok(text) => {
+            if let Err((k, d)) = mortar_image::output::write_whole(path, &text, 0o666) {
+                diagnostics.emit(k, d);
+            }
+        }
+        Err(depfile::Unwritable(p)) => diagnostics.emit(
+            Key::new(mortar_cli::PHASE + 1, 0, 0),
+            Diagnostic::refused(RefusalClass::Feature, "dependency file path with a newline").note(
+                format!("{:?} cannot be written as a Make word", String::from_utf8_lossy(&p)),
+            ),
+        ),
+    }
+}
+
+/// The maps a link writes: the text of `-Map`/`-M` (I-121) and
+/// `mortar-map 1` for `--mortar-map` (I-77); each empty when not asked for.
+#[derive(Default)]
+struct Maps {
+    text: Vec<u8>,
+    machine: Vec<u8>,
+}
+
 /// The image phase of a laid-out link (100, 105): the output file at
-/// `path`, and the map's text when the link succeeded (rendered from the
-/// tables, I-79; empty when no map is asked for).
+/// `path`, and the maps when the link succeeded (rendered from the
+/// tables before fill, I-79, I-122).
 fn link_image(
     f: &front::Front<'_>,
     store: &Store,
     path: &Path,
     diagnostics: &Collector,
     timer: &mut Timer,
-) -> Option<Vec<u8>> {
-    let wants_map = f.plan.bookkeeping.map.is_some() || f.plan.bookkeeping.print_map;
-    // The map before fill (I-79: independent of it), written after the
-    // output file is.
-    let map = if wants_map {
-        match image::map_of(f, store) {
-            Ok(m) => Some(mortar_image::map::render(&m, &f.pool)),
+) -> Option<Maps> {
+    let b = &f.plan.bookkeeping;
+    let mut maps = Maps::default();
+    let failed = |e: mortar_synth::error::SynthError| {
+        diagnostics.emit(mortar_synth::error::key(0), e.into_diagnostic());
+    };
+    if b.map.is_some() || b.print_map {
+        let output = f.plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out"));
+        match image::text_map_of(f, store, output.as_encoded_bytes()) {
+            Ok(m) => maps.text = mortar_image::textmap::render(&m, &f.pool),
             Err(e) => {
-                diagnostics.emit(mortar_synth::error::key(0), e.into_diagnostic());
+                failed(e);
                 return None;
             }
         }
-    } else {
-        None
-    };
+    }
+    if b.mortar_map.is_some() {
+        match image::map_of(f, store) {
+            Ok(m) => maps.machine = mortar_image::map::render(&m, &f.pool),
+            Err(e) => {
+                failed(e);
+                return None;
+            }
+        }
+    }
     match image::write(f, store, path, &|_| {}, &mut |n, name| timer.phase(n, name)) {
-        Ok(_) => Some(map.unwrap_or_default()),
+        Ok(_) => Some(maps),
         Err(e) => {
             for (k, d) in e.diagnostics {
                 diagnostics.emit(k, d);
@@ -292,10 +360,20 @@ mod tests {
     #[test]
     fn errors_come_in_argument_order() {
         assert_eq!(
-            failed(&["--frob", "-o", "x", "a.o", "-z", "now", "-z", "now", "--hash-style"]),
+            failed(&[
+                "--frob",
+                "-o",
+                "x",
+                "a.o",
+                "-z",
+                "nodelete",
+                "-z",
+                "nodelete",
+                "--hash-style"
+            ]),
             format!(
                 "ld: error: unknown argument '--frob'\n\
-                 ld: error: unsupported option: -z now\n\
+                 ld: error: unsupported option: -z nodelete\n\
                  ld: error: --hash-style: missing argument\n"
             )
         );

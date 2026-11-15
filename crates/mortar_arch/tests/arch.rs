@@ -98,9 +98,9 @@ fn s2_3_alignment() {
 
 // ---------------------------------------------------------------- §4.3
 
-const W: PlaceFacts = PlaceFacts { alloc: true, writable: true };
-const RO: PlaceFacts = PlaceFacts { alloc: true, writable: false };
-const NA: PlaceFacts = PlaceFacts { alloc: false, writable: false };
+const W: PlaceFacts = PlaceFacts { alloc: true, writable: true, exec: None };
+const RO: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
+const NA: PlaceFacts = PlaceFacts { alloc: false, writable: false, exec: None };
 
 fn demand(flags: DemandFlags, global: GlobalFlags, dynamic: Option<DynRole>) -> ClassOutcome {
     ClassOutcome::Demand(Demand { flags, global, dynamic })
@@ -184,7 +184,9 @@ fn s4_3_class_table() {
     assert_eq!(out(K::Lo, Pie, Abs, RO), nothing());
     assert_eq!(out(K::Lo, Exec, SHLIB_DATA, RO), fl(DemandFlags::COPY));
     assert_eq!(out(K::Lo, Shared, Preemptible, RO), inc(Incompatible::RecompilePic));
-    assert_eq!(out(K::Lo, Pie, SHLIB_DATA, RO), inc(Incompatible::RecompilePie));
+    // D-43 with WP-046's finding: the `Lo` half of AArch64's `-fno-pic`
+    // read of shared data copies in a PIE as its `Pc` half does.
+    assert_eq!(out(K::Lo, Pie, SHLIB_DATA, RO), fl(DemandFlags::COPY));
     assert_eq!(out(K::Lo, Static, Ifunc, RO), fl(DemandFlags::IPLT));
 
     // Branch.
@@ -544,10 +546,10 @@ fn s3_11_tombstone() {
         (b".debug_aranges", all, all),
         (b".debug_frame", all, all),
         (b".debug_info", all, 0),
-        (b".debug_addr", all, 0),
+        (b".debug_addr", 0, 0),
         (b".debug_line", all, 0),
-        (b".debug_rnglists", all, 0),
-        (b".debug_loclists", all, 0),
+        (b".debug_rnglists", 0, 0),
+        (b".debug_loclists", 0, 0),
         (b".debug_str_offsets", all, 0),
         (b".zdebug_info", all, 0),
         (b".stab", all, 0),
@@ -634,6 +636,46 @@ fn s3_6_section_out_clip() {
     assert_eq!(b, [0, 0, 0, 9]);
 }
 
+/// §3.6 `SectionOut::input` (`spec/x86.md` R-13 (d)): the input bytes from
+/// the resident section, or from the clip's buffer and its two margins;
+/// `false` for a byte in none of them, for every clip and read position.
+#[test]
+fn s3_6_section_out_input() {
+    let sec: Vec<u8> = (10..22).collect();
+    let len = sec.len() as u64;
+    for a in 0..=len {
+        for b in a..=len {
+            for m in [0u64, 1, 3] {
+                let lo = a.saturating_sub(m);
+                let hi = (b + m).min(len);
+                let mut clip = sec[a as usize..b as usize].to_vec();
+                let out = mortar_arch::SectionOut::new(&mut clip, a, 0, true, b".text")
+                    .with_margins(&sec[lo as usize..a as usize], &sec[b as usize..hi as usize]);
+                for off in 0..=len + 1 {
+                    for n in 0..=4u64 {
+                        let mut dst = vec![0u8; n as usize];
+                        let ok = out.input(off, &mut dst);
+                        let want = off >= lo && off + n <= hi;
+                        assert_eq!(ok, want, "clip [{a}, {b}) margin {m} read [{off}, +{n})");
+                        if ok {
+                            assert_eq!(dst, sec[off as usize..(off + n) as usize]);
+                        }
+                    }
+                }
+            }
+            // Resident: every byte of the section, whatever the clip.
+            let mut clip = vec![0u8; (b - a) as usize];
+            let out =
+                mortar_arch::SectionOut::new(&mut clip, a, 0, true, b".text").with_resident(&sec);
+            let mut dst = [0u8; 3];
+            assert!(out.input(len - 3, &mut dst));
+            assert_eq!(dst, [19, 20, 21]);
+            assert!(!out.input(len - 2, &mut dst));
+            assert!(!out.input(u64::MAX - 1, &mut dst));
+        }
+    }
+}
+
 /// §3.1 `max_reach`: the larger of each side.
 #[test]
 fn s3_1_max_window() {
@@ -698,6 +740,7 @@ fn place(path: &FileRef) -> RelocPlace<'_> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one case per diagnostic
 fn s7_s10_diagnostic_texts_and_keys() {
     let path = FileRef::new(PLACE_FILE);
     let at = place(&path);
@@ -773,6 +816,20 @@ fn s7_s10_diagnostic_texts_and_keys() {
     assert_eq!(id(ScanError::Outside), "malformed-input");
     assert_eq!(id(ScanError::Overlap), "refused");
     assert_eq!(id(ScanError::Internal), "internal-error");
+    // The M2 names a dynamic output refuses by (dyn.md D-25, D-44, D-47).
+    let names: Vec<_> =
+        mortar_arch::DynRefusal::ALL.iter().map(|&r| id(ScanError::Dynamic(r))).collect();
+    assert_eq!(names, ["canonical-plt-in-pie", "text-relocation", "weak-undefined-pc-in-pie"]);
+    let (_, d) = diag::scan(
+        ScanError::Dynamic(mortar_arch::DynRefusal::WeakUndefinedPcInPie),
+        &at,
+        RefName::Named("R_X86_64_PC32"),
+        "v",
+    );
+    assert!(render(&d).contains(
+        "relocation R_X86_64_PC32 against undefined weak symbol `v' cannot be used in a \
+         position-independent executable; recompile with -fPIE"
+    ));
     assert_eq!(
         id(ScanError::Refused(Refusal::hex(mortar_diag::RefusalClass::RelocationType, 0x999))),
         "refused"
@@ -820,4 +877,28 @@ fn s4_2_flags() {
     assert_eq!(DemandFlags::from_bits(0x7FF).map(DemandFlags::bits), Some(0x7FF));
     assert_eq!(format!("{:?}", DemandFlags::GOT | DemandFlags::IPLT), "{GOT, IPLT}");
     assert!(DemandFlags::CROSS_FILE.contains(DemandFlags::GOT_NORELAX));
+}
+
+/// `spec/dyn.md` D-46, D-48, D-49 (R-A6 (d)): the place content of each
+/// role's record. REL is M4: no content stated.
+#[test]
+fn r_a6_record_place_per_role() {
+    use mortar_arch::{PlaceContent, RelForm};
+    let rela = |r: DynRole| r.place(RelForm::Rela);
+    assert_eq!(rela(DynRole::Relative), Some(PlaceContent::SPlusA));
+    for r in [DynRole::Symbolic, DynRole::GlobDat, DynRole::Copy, DynRole::TpOff { negated: false }]
+    {
+        assert_eq!(rela(r), Some(PlaceContent::Zero), "{r:?}");
+    }
+    assert_eq!(rela(DynRole::JumpSlot), Some(PlaceContent::LazyTarget), "D-49 over D-46");
+    for r in [
+        DynRole::IRelative,
+        DynRole::DtpMod,
+        DynRole::DtpOff,
+        DynRole::TpOff { negated: true },
+        DynRole::TlsDesc,
+    ] {
+        assert_eq!(rela(r), None, "{r:?}");
+    }
+    assert!(DynRole::ALL.iter().all(|r| r.place(RelForm::Rel).is_none()));
 }

@@ -1,6 +1,6 @@
 //! The steps of `cargo xtask ci` (`spec/harness.md` "ci"): three cargo
 //! steps, ported from hod's `xtask ci`, which met the same build directory,
-//! then the link tests, run in-process.
+//! then the link tests and the static-identical check, run in-process.
 
 use std::process::Command;
 
@@ -91,8 +91,13 @@ pub const STEPS: [(&str, &[&str]); 3] = [
 /// linktest` in-process (`spec/harness.md` "ci", "Link tests").
 pub const LINKTEST: &str = "linktest";
 
+/// The static-identical step, last: `cargo xtask static-identical`
+/// in-process, on every architecture whatever `--quick` says
+/// (`spec/harness.md` "static-identical").
+pub const STATIC_IDENTICAL: &str = "static-identical";
+
 /// Every step's name, in the order they run.
-pub const STEP_NAMES: [&str; 4] = [STEPS[0].0, STEPS[1].0, STEPS[2].0, LINKTEST];
+pub const STEP_NAMES: [&str; 5] = [STEPS[0].0, STEPS[1].0, STEPS[2].0, LINKTEST, STATIC_IDENTICAL];
 
 /// The arguments of the link-test step: the host's architecture only for
 /// `--quick` (when it is one of the three), every architecture otherwise.
@@ -166,7 +171,8 @@ pub fn run(args: &Args) -> bool {
             Some((_, cargo_args)) => cargo_step(cargo_args),
             // Any exit status but 0 fails the gate ("Link tests", "Exit
             // status").
-            None => crate::linktest::main(&linktest_args(args.quick)) == 0,
+            None if name == LINKTEST => crate::linktest::main(&linktest_args(args.quick)) == 0,
+            None => crate::identical::run(&crate::identical::Args::default()),
         };
         if !passed {
             eprintln!("[ci] {name}: FAILED");
@@ -190,7 +196,7 @@ mod tests {
         let all = parse(&["--quick"]).unwrap();
         assert!(all.quick);
         assert_eq!(all.steps, STEP_NAMES);
-        assert_eq!(all.steps, ["fmt", "clippy", "test", "linktest"]);
+        assert_eq!(all.steps, ["fmt", "clippy", "test", "linktest", "static-identical"]);
         assert_eq!(parse(&[]).unwrap().steps, all.steps);
         let two = parse(&["--step", "test", "--step=fmt"]).unwrap();
         assert!(!two.quick);
