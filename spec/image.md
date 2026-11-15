@@ -732,11 +732,33 @@ writes a value chosen by the referring section's name, as
   | referring section | ELFCLASS64 | ELFCLASS32 |
   |---|---|---|
   | `.debug_ranges`, `.debug_loc` | 1 | 1 |
+  | `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | **0** | 0 |
   | `.debug_aranges` | all ones, **and the tuple's length 0** (I-112) | the same |
   | `.debug_frame` | all ones | all ones |
-  | every other debug name (`.debug_info`, `.debug_addr`, `.debug_line`, `.debug_rnglists`, `.debug_loclists`, `.debug_str_offsets`, …) | all ones | **0** |
+  | every other debug name (`.debug_info`, `.debug_line`, `.debug_str_offsets`, …) | all ones | **0** |
 
-  Why each row (E9, E10, E16, E17):
+  Why each row (E9, E10, E16, E17, and WP-027e's matrix,
+  `spec/landed/pipeline/WP-027e.md`):
+  - `.debug_rnglists`/`.debug_loclists`/`.debug_addr` (DWARF 5): their
+    entries pair an address with a length (`DW_RLE_start_length`,
+    `DW_LLE_start_length`; through `.debug_addr`, Clang's
+    `DW_RLE_startx_length` and `DW_LLE_startx_length`), so all ones makes
+    `[2^64 − 1, len − 1)`, which wraps. gdb 16 then reports `Invalid
+    .debug_rnglists data (inverted range)` and drops the CU's whole range
+    list, and stepping into that CU's code says `pc … in read in CU, but
+    not in symtab` (GCC 14 `-gdwarf-5`, its default, `-O0`). 0 is what
+    GNU ld (without a kept copy), lld 19/22 and mold write: gdb skips an
+    entry that starts at 0 when no section is there (`.debug_rnglists
+    entry has start address of zero`), a subprogram whose
+    `DW_FORM_addrx` `low_pc` is 0 is dropped by gdb and lldb 19, and
+    lldb's breakpoints, lookups and steps are those of the all-ones
+    output. It is sound because no code lies in `[0, len)`: the non-PIE
+    base is at least 4 MiB (`spec/layout.md` L-68), so only a dead
+    function of 4 MiB or more could reach it. A PIE or a low layout (M2)
+    must revisit this row: E16 measured lldb losing lines there with the
+    references' 0. `llvm-dwarfdump --verify` reports `DIE has overlapping
+    ranges` for a CU's several `[0, len)` entries (lld and mold: the
+    same); the debuggers are the oracle.
   - `.debug_ranges`/`.debug_loc` (DWARF ≤ 4 pairs): `(0, 0)` ends the
     list and a first word of all ones selects a base address; `(1, 1)` is
     empty. lld and mold write 1.
@@ -750,7 +772,8 @@ writes a value chosen by the referring section's name, as
     tuple is empty and every row below passes. A tuple address of `2^63`
     also passed every 64-bit row; the empty tuple was chosen because it
     is empty in both classes.
-  - ELFCLASS64 elsewhere: gdb 16 and lldb 19 drop a subprogram whose
+  - ELFCLASS64 elsewhere (`DW_FORM_addr` in `.debug_info`,
+    `DW_LNE_set_address`): gdb 16 and lldb 19 drop a subprogram whose
     `low_pc` is all ones (`llvm-dwarfdump` prints `dead code`). A 0 is an
     address: in the low layout lld's and mold's Clang DWARF 5 outputs
     lose lldb's lines because `.debug_addr` claims `[0, size)`.
@@ -1746,7 +1769,8 @@ pub trait SynthChunk {
 
 | subject | GNU ld 2.44 | lld 22 | mold 2.37.1 | mortar | rule |
 |---|---|---|---|---|---|
-| debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`, `addr`, `rnglists`, `loclists`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| the same in `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | redirect or 0 | 0 | 0 | 0 | I-47 |
 | the same, ELFCLASS32 | redirect or 0 | 0 | 0 | 0 (`.debug_frame`: all ones) | I-47 |
 | the same in `.debug_aranges` | redirect or 0 | 0 | 0 | all ones, length 0 | I-47, I-112 |
 | the same in `.debug_ranges`/`.debug_loc` | redirect or 0 (GC case: 0 in `.debug_loc`, `spec/a64.md` §13.2) | 1 | 1 | 1 | I-47 |
