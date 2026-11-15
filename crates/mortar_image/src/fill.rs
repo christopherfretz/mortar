@@ -41,6 +41,17 @@ pub trait Tables: FillTables {
         let _ = (key, addend);
         None
     }
+
+    /// [`FillTables::sym`] of a record's key, and whether
+    /// [`Tables::split_target`] may give its value. When the flag is true
+    /// the value `s` need not be computed (the caller asks `split_target`,
+    /// and falls back to `sym` when that is `None`); when it is false,
+    /// `split_target` is `None` and the value is `sym(key)` exactly. One
+    /// read of the key's symbol where `sym` and `split_target` would make
+    /// several (WP-032c).
+    fn record_sym(&self, key: SymKey) -> (mortar_arch::SymValue, bool) {
+        (self.sym(key), true)
+    }
 }
 
 /// What merged chunks are written from (I-38): phase 50's fragment order

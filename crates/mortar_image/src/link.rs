@@ -466,18 +466,43 @@ impl SymNames for LinkTables<'_, '_> {
     }
 }
 
-impl FillTables for LinkTables<'_, '_> {
-    fn sym(&self, key: SymKey) -> SymValue {
+impl LinkTables<'_, '_> {
+    /// `sym(key)`, reading the key's symbol once; with `split` (the
+    /// caller asks `split_target`), `s` is left 0 when the target is in a
+    /// split section, and the flag says so (`Tables::record_sym`).
+    fn sym_value(&self, key: SymKey, split: bool) -> (SymValue, bool) {
         let facts = self.link.facts.facts(key);
         let entry = self.def_entry(key);
-        let size = entry.and_then(|e| self.sym_of(e)).map_or(0, |(_, s)| s.st_size);
+        let read = entry.and_then(|e| self.sym_of(e).map(|(t, s)| (e, t, s)));
+        let size = read.map_or(0, |r| r.2.st_size);
+        let place = read.and_then(|(e, t, sym)| match t.section_of(e.index, &sym).ok()? {
+            SymbolSection::Absolute => Some(Err(sym.st_value)),
+            SymbolSection::Section(index) => {
+                Some(Ok((self.link.resolution.section_id(e.file, index)?, sym)))
+            }
+            _ => None,
+        });
+        // `split_target`'s cases: a section symbol of a `Merge` section,
+        // any key defined in an `.eh_frame`.
+        let in_split = |s: SectionId, sym: &mortar_elf::raw::Sym| match self.kind_of(s) {
+            Some(SectionKind::Merge) => sym.sym_type() == STT_SECTION,
+            Some(SectionKind::EhFrame) => true,
+            _ => false,
+        };
+        let is_split = split && matches!(&place, Some(Ok((s, sym))) if in_split(*s, sym));
         let (s, live) = match key.kind() {
-            SymKind::Local(e) => {
+            SymKind::Local(_) => {
                 let live = !facts.dead;
-                (if live { self.entry_addr(e) } else { None }, live)
+                let s = match place {
+                    _ if !live || is_split => None,
+                    Some(Err(abs)) => Some(abs),
+                    Some(Ok((s, sym))) => self.value_in(s, sym.st_value),
+                    None => None,
+                };
+                (s, live)
             }
             SymKind::Global(id) => {
-                let live = match entry.and_then(|e| self.entry_place(e)) {
+                let live = match place {
                     Some(Ok((sec, _))) => self.link.liveness.is_live(sec),
                     _ => true,
                 };
@@ -486,7 +511,13 @@ impl FillTables for LinkTables<'_, '_> {
         };
         // S-71: every address of an IFUNC with an IPLT entry is the entry.
         let s = self.plt(key).or(s).unwrap_or(0);
-        SymValue { s, kind: facts.kind, size, live }
+        (SymValue { s, kind: facts.kind, size, live }, is_split)
+    }
+}
+
+impl FillTables for LinkTables<'_, '_> {
+    fn sym(&self, key: SymKey) -> SymValue {
+        self.sym_value(key, false).0
     }
 
     fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {
@@ -524,6 +555,10 @@ impl FillTables for LinkTables<'_, '_> {
 }
 
 impl Tables for LinkTables<'_, '_> {
+    fn record_sym(&self, key: SymKey) -> (SymValue, bool) {
+        self.sym_value(key, true)
+    }
+
     fn target_alloc(&self, key: SymKey) -> bool {
         match self.def_entry(key).and_then(|e| self.entry_place(e)) {
             Some(Ok((s, _))) => self.section_flags(s) & SHF_ALLOC != 0,
@@ -1073,9 +1108,12 @@ pub fn write(
     opts: &OutputOptions,
     on_phase: &mut dyn FnMut(u16, &str),
 ) -> Result<Written, Failed> {
+    let mut steps = mortar_core::wp032b_steps::Steps::new("image");
     let tables = LinkTables::new(*link);
+    steps.step("tables", u64::from(link.inputs.symbols.len()), "symbol");
     let mut fixed = structure(link).map_err(failed)?;
     fixed.append(&mut patches(link, &tables).map_err(failed)?);
+    steps.step("structure", 0, "");
     let chunks = Chunks::new(link);
     let pl = &link.layout.placement;
     let mut list: Vec<&(dyn SynthChunk + Sync)> = Vec::new();
@@ -1127,6 +1165,7 @@ pub fn write(
     let target = Target::from_facts(link.arch.facts());
     let plan = layout_plan::from_layout(&model, target, &extras, IMAGE_BLOCK, link.pool)
         .map_err(failed)?;
+    steps.step("plan", plan.rows.len() as u64, "row");
     let output_ref = FileRef::new(path.display().to_string());
     let code_addr = |c: CodeRef| -> Option<u64> {
         let off = u64::try_from(c.offset).ok()?;
@@ -1172,6 +1211,7 @@ pub fn write(
         fixups: &fixups,
     };
     let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
+    steps.step("create", 0, "");
     let filled: Filled = match fill::write(&img, &out, out.shown(), link.pool) {
         Ok(f) => f,
         Err(e) => {
@@ -1179,6 +1219,7 @@ pub fn write(
             return Err(e);
         }
     };
+    steps.step("fill", plan.file_size, "byte");
     // input.md §11.5: the files the store still holds, once more.
     let mut changed = Vec::new();
     for (file, _) in link.inputs.files.iter() {
@@ -1191,6 +1232,7 @@ pub fn write(
         out.abort();
         return Err(Failed { diagnostics: changed });
     }
+    steps.step("recheck", 0, "");
     on_phase(PHASE_IMAGE, "image");
     out.commit().map_err(|kd| Failed { diagnostics: vec![kd] })?;
     on_phase(PHASE_OUTPUT, "output file");

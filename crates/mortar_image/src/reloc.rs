@@ -143,12 +143,13 @@ impl Records for View<'_> {
 }
 
 /// The tables with `redirect` taking shifted offsets, and with the value
-/// of one key replaced (a reference into `.eh_frame`, S-50).
+/// of the record's key given (computed once per record, with `s` the
+/// split target's where there is one: S-17, S-50).
 struct ShiftTables<'a> {
     inner: &'a dyn Tables,
     section: SectionId,
     base: u64,
-    value: Option<(SymKey, u64)>,
+    value: Option<(SymKey, SymValue)>,
 }
 
 impl SymNames for ShiftTables<'_> {
@@ -159,13 +160,10 @@ impl SymNames for ShiftTables<'_> {
 
 impl FillTables for ShiftTables<'_> {
     fn sym(&self, key: SymKey) -> SymValue {
-        let mut v = self.inner.sym(key);
-        if let Some((k, s)) = self.value
-            && k == key
-        {
-            v.s = s;
+        match self.value {
+            Some((k, v)) if k == key => v,
+            _ => self.inner.sym(key),
         }
-        v
     }
 
     fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {
@@ -464,8 +462,9 @@ pub(crate) fn relocate(
             leads,
         };
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name);
+        let (mut sym, split) = img.tables.record_sym(rec.key);
         let value = match howto.field {
-            Field::Data { bytes: width } if !img.tables.sym(rec.key).live => {
+            Field::Data { bytes: width } if !sym.live => {
                 tombstone::field(img.arch, c.name, c.alloc, width).map(|v| (v, width))
             }
             _ => None,
@@ -474,17 +473,24 @@ pub(crate) fn relocate(
             tomb(img, &mut out, &view, aranges, v, width, i, &rec, shifted, c.section_size);
             Ok(())
         } else {
-            let eh = match img.tables.split_target(rec.key, rec.addend) {
-                None => None,
-                Some(Ok(v)) => Some((rec.key, v.wrapping_sub(rec.addend.cast_unsigned()))),
-                Some(Err(d)) => {
-                    if reports {
-                        errs.push((fill_key(c.file, c.index, i), d));
+            if split {
+                match img.tables.split_target(rec.key, rec.addend) {
+                    None => sym = img.tables.sym(rec.key),
+                    Some(Ok(v)) => sym.s = v.wrapping_sub(rec.addend.cast_unsigned()),
+                    Some(Err(d)) => {
+                        if reports {
+                            errs.push((fill_key(c.file, c.index, i), d));
+                        }
+                        continue;
                     }
-                    continue;
                 }
+            }
+            let shift = ShiftTables {
+                inner: img.tables,
+                section: c.section,
+                base,
+                value: Some((rec.key, sym)),
             };
-            let shift = ShiftTables { inner: img.tables, section: c.section, base, value: eh };
             let cx =
                 FillCx { tables: &shift, output: img.output, got_base: img.got_base, tls: img.tls };
             img.arch.apply(&cx, &at, &mut out)
