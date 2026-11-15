@@ -378,20 +378,21 @@ impl DynsymInputs<'_> {
                 let d = shared(e)?;
                 let strong = res.props.get(k).is_some_and(|p| p.refs.contains(RefFlags::STRONG));
                 let bind = if strong { STB_GLOBAL } else { STB_WEAK };
+                // D-23 (both import rows): the definition's
+                // `STO_AARCH64_VARIANT_PCS` is kept; glibc reads it on the
+                // program's own `.dynsym` entry of a `JUMP_SLOT` to bind
+                // it at load under `DT_AARCH64_VARIANT_PCS` (D-30 row 25).
+                let pcs =
+                    if machine == Machine::AArch64 { d.other & STO_AARCH64_VARIANT_PCS } else { 0 };
                 if form == Form::CanonPlt {
                     let value = addrs.plt(k).ok_or_else(|| missing("PLT entry"))?;
-                    let pcs = if machine == Machine::AArch64 {
-                        d.other & STO_AARCH64_VARIANT_PCS
-                    } else {
-                        0
-                    };
                     (bind << 4 | STT_FUNC, pcs, u32::from(SHN_UNDEF), value, 0)
                 } else {
                     let typ = match d.info & 0xf {
                         STT_FUNC | STT_GNU_IFUNC => STT_FUNC,
                         t => t,
                     };
-                    (bind << 4 | typ, 0, u32::from(SHN_UNDEF), 0, 0)
+                    (bind << 4 | typ, pcs, u32::from(SHN_UNDEF), 0, 0)
                 }
             }
             Form::Copy(a) => {
@@ -410,7 +411,8 @@ impl DynsymInputs<'_> {
                 } else {
                     (p.info & 0xf, addrs.defined(k).ok_or_else(|| missing("value"))?)
                 };
-                (p.info & 0xf0 | typ, p.other, shndx, value, p.size)
+                let pcs = if machine == Machine::AArch64 { STO_AARCH64_VARIANT_PCS } else { 0 };
+                (p.info & 0xf0 | typ, p.other & (STV_MASK | pcs), shndx, value, p.size)
             }
             Form::WeakDyn => (STB_WEAK << 4 | STT_NOTYPE, 0, u32::from(SHN_UNDEF), 0, 0),
         };
@@ -466,11 +468,17 @@ pub fn dynsym_plan(
         .chain(demands.keys_with(DemandFlags::EXPORT).filter_map(SymKey::as_global))
         .chain(slots.copy_of.iter().map(|row| row.0))
         .collect();
-    if !slots.copies.is_empty() {
-        keys.extend(copy_aliases(&t, pool));
-    }
     pool.unit_cost(20).sort_by(&mut keys, Ord::cmp);
     keys.dedup();
+    if !slots.copies.is_empty() {
+        let aliases = copy_aliases(&t, &keys, pool);
+        keys.extend(aliases);
+        pool.unit_cost(20).sort_by(&mut keys, Ord::cmp);
+    }
+    if let Err(d) = one_entry_per_definition(&t, &keys) {
+        diag.emit(key(0), d.into_diagnostic());
+        return Err(Failed);
+    }
     let forms: Vec<Result<Form, SynthError>> =
         pool.unit_cost(100).map(keys.len(), |i| t.form(keys[i]));
     let mut failed = false;
@@ -503,13 +511,17 @@ pub fn dynsym_plan(
 
 /// Every key whose shared definition lies at a copy allocation's
 /// `(file, value)` (D-21 item 3; resolve §7.3), whether or not it is
-/// referenced, in `SymbolId` order.
-fn copy_aliases(t: &DynsymInputs<'_>, pool: &Pool) -> Vec<SymbolId> {
+/// referenced, in `SymbolId` order: one key per shared definition (a
+/// `.dynsym` entry is a name and a version, so `foo` and the row `foo@V`
+/// that a default-version definition `foo@@V` also binds, resolve §9.2,
+/// are one entry). A definition that a key of `present` (the set so far,
+/// sorted) already names adds nothing; otherwise its least key is taken.
+fn copy_aliases(t: &DynsymInputs<'_>, present: &[SymbolId], pool: &Pool) -> Vec<SymbolId> {
     const BLOCK: usize = 4096;
     let defs = t.resolution.def.as_slice();
     let copies = &t.slots.copies;
     let blocks = defs.len().div_ceil(BLOCK);
-    let found: Vec<Vec<SymbolId>> = pool.unit_cost(20_000).map(blocks, |b| {
+    let found: Vec<Vec<(SymEntry, SymbolId)>> = pool.unit_cost(20_000).map(blocks, |b| {
         let mut out = Vec::new();
         for (i, def) in defs.iter().enumerate().skip(b * BLOCK).take(BLOCK) {
             let Def::Shared(e) = *def else { continue };
@@ -520,12 +532,60 @@ fn copy_aliases(t: &DynsymInputs<'_>, pool: &Pool) -> Vec<SymbolId> {
             if let Some(d) = t.src.shared(e)
                 && t.copy_at(e.file, d.value).is_some()
             {
-                out.push(SymbolId(i as u32));
+                out.push((e, SymbolId(i as u32)));
             }
         }
         out
     });
-    found.into_iter().flatten().collect()
+    let mut named: Vec<SymEntry> = present
+        .iter()
+        .filter_map(|&k| match t.resolution.def.get(k) {
+            Some(Def::Shared(e)) => Some(*e),
+            _ => None,
+        })
+        .collect();
+    named.sort_unstable();
+    let mut found: Vec<(SymEntry, SymbolId)> = found.into_iter().flatten().collect();
+    // By (definition, key): the first of each definition is its least key.
+    found.sort_unstable();
+    found.dedup_by_key(|row| row.0);
+    found.retain(|row| named.binary_search(&row.0).is_err());
+    found.into_iter().map(|row| row.1).collect()
+}
+
+/// D-21/D-22: no two hashed entries for one shared definition. Two keys
+/// that resolve to one shared definition and that the program both
+/// references (`foo` and a `.symver` reference `foo@V` that `foo@@V`
+/// binds, resolve §9.2) would be two entries of one name and version:
+/// a copy or a canonical PLT twice, which the loader's lookup finds only
+/// once (the other key's address is then not the one the program
+/// compares). Refused by name; two unhashed imports of one definition
+/// are two `UND` entries the loader binds alike and are kept.
+fn one_entry_per_definition(t: &DynsymInputs<'_>, keys: &[SymbolId]) -> Result<(), SynthError> {
+    let mut shared: Vec<(SymEntry, SymbolId)> = keys
+        .iter()
+        .filter_map(|&k| match t.resolution.def.get(k) {
+            Some(Def::Shared(e)) => Some((*e, k)),
+            _ => None,
+        })
+        .collect();
+    shared.sort_unstable();
+    for w in shared.windows(2) {
+        if w[0].0 != w[1].0 {
+            continue;
+        }
+        let hashed = |k| t.form(k).is_ok_and(Form::hashed);
+        if hashed(w[0].1) || hashed(w[1].1) {
+            return Err(feature(format!(
+                "references to the shared definition of {} both by its plain name and by \
+                 its explicit version (`.symver`), where a defined .dynsym entry is needed \
+                 (a copy relocation or a canonical PLT entry, spec/dyn.md D-21)",
+                String::from_utf8_lossy(t.src.symbol(w[0].1))
+            ))
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// Whether `.dynsym` holds an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol

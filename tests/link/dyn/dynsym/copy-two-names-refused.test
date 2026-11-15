@@ -1,0 +1,29 @@
+# dyn.md D-21/D-22, one `.dynsym` entry per name and version: the program
+# reads libc's `environ` by its plain name and, through `.symver`, by
+# `environ@GLIBC_2.17`. Both keys resolve to libc's one definition
+# `environ@@GLIBC_2.17` (resolve §9.2), and in `-no-pie` code both need
+# the copy, so each would be a defined entry `environ@GLIBC_2.17`: two
+# entries of one name and version, which the loader's lookup finds only
+# once (lld's output: plumb P-D5). mortar refuses this by name (WP-053) rather than choose an entry.
+# What the references do (measured with WP-053): GNU ld and mold write
+# one entry (GNU ld without `_environ`, W2: A21), lld writes
+# `environ@GLIBC_2.17` twice; all three run (`same 1`).
+#@ spec: dyn.md "D-21"
+#@ arch: aarch64
+#@ anomaly(bfd): A21
+#@ xfail(lld): the copied environ@GLIBC_2.17 is twice in .dynsym (plumb P-D5)
+
+cc -O1 -fno-pie main.c -o main.o
+link(bfd,lld,mold) gcc -no-pie main.o -o prog
+run(bfd,lld,mold) prog
+  stdout: same 1
+link(mortar) gcc -no-pie main.o -o prog-mortar
+  exit: fail
+  diag: unsupported feature: references to the shared definition of environ both by its plain name and by its explicit version
+
+#--- main.c
+#include <stdio.h>
+extern char **environ;
+extern char **env_v;
+__asm__(".symver env_v, environ@GLIBC_2.17");
+int main(void) { printf("same %d\n", &environ == &env_v); return 0; }

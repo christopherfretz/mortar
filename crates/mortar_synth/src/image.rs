@@ -241,7 +241,7 @@ impl SynthChunk for GotChunk<'_> {
         let mut w = Window::new(start, out);
         match self.part {
             GotPart::Got => self.plan.write_got(&cx.got, cx.slots, &mut w),
-            GotPart::GotPlt => self.plan.write_got_plt(cx.slots, &mut w),
+            GotPart::GotPlt => self.plan.write_got_plt_at(Some(&cx.got), cx.slots, &mut w),
             GotPart::RelaPlt => self.plan.write_rela_plt(&cx.got, cx.slots, &mut w),
             GotPart::Plt => self.plan.write_plt(cx.arch, &cx.got, &mut w).map_err(|(n, e)| {
                 let (_, d) = mortar_arch::diag::chunk(

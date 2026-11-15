@@ -12,7 +12,9 @@
     reason = "the error is the scan's diagnostic, made once per section"
 )]
 
-use mortar_arch::{Arch, ProofRun, RelocAt, ScanTables, Site, SymFacts, SymNames};
+use mortar_arch::{
+    Arch, PlaceFacts, ProofRun, RelocAt, ScanCx, ScanTables, Site, SymFacts, SymNames,
+};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey};
 use mortar_diag::{Diagnostic, Key, Kind, Place};
 use mortar_elf::{SectionIndex, SymbolIndex};
@@ -38,6 +40,18 @@ pub struct Visit<'r> {
     /// The target's facts as `arch.scan` saw them (an undefined key takes
     /// the type of this record's own mention).
     pub tables: &'r dyn ScanTables,
+    /// The section's facts and name, as the scan's `ScanCx` has them.
+    pub place: PlaceFacts,
+    pub name: &'r [u8],
+    pub output: mortar_arch::OutputKind,
+}
+
+impl Visit<'_> {
+    /// The `ScanCx` the scan called `arch.scan` with for this record.
+    #[must_use]
+    pub fn cx(&self) -> ScanCx<'_> {
+        ScanCx { tables: self.tables, output: self.output, place: self.place, name: self.name }
+    }
 }
 
 impl std::fmt::Debug for Visit<'_> {
@@ -51,6 +65,16 @@ impl<'a, 's> Walker<'a, 's> {
     #[must_use]
     pub fn new(arch: &'a dyn Arch, t: &ScanInputs<'a, 's>, opts: ScanOptions<'a>) -> Self {
         Self { view: View::new(arch, t, opts) }
+    }
+
+    /// The view with the scan's `WeakDyn` keys (`Demands::weak_dyn`,
+    /// `spec/dyn.md` D-25): a walk after the scan sees each undefined weak
+    /// key as the scan decided it. Without them every such key is `Weak0`
+    /// (a static link has none).
+    #[must_use]
+    pub fn with_weak_dyn(mut self, weak_dyn: mortar_core::IdSet<mortar_core::SymbolId>) -> Self {
+        self.view.weak_dyn = weak_dyn;
+        self
     }
 
     /// The output kind the scan judged the records for
@@ -230,7 +254,13 @@ impl<'a, 's> Walker<'a, 's> {
                 key,
                 mention: SymEntry { file, index: SymbolIndex(raw.r_sym) },
             };
-            visit(&Visit { at, tables: &tables });
+            visit(&Visit {
+                at,
+                tables: &tables,
+                place: sec.place,
+                name: sec.name,
+                output: self.view.opts.output,
+            });
         }
         Ok(())
     }
