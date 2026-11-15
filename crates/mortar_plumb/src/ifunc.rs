@@ -97,7 +97,18 @@ fn f(n: u8, msg: impl Into<String>) -> Finding {
 
 impl Engine<'_, '_> {
     /// Word size of the output's class.
-    fn word(&self) -> u64 {
+    /// The address a `GotRel` field gives: GOT plus the field, modulo
+    /// the address size (spec/x86.md W5's GOTOFF).
+    pub(super) fn gotrel_address(&self, rec: &Rec) -> Option<u64> {
+        if rec.def.op != Op::GotRel {
+            return None;
+        }
+        let d = a64::decode(rec.def.field, rec.out_word, rec.p) as u64;
+        let mask = if self.word() == 4 { u64::from(u32::MAX) } else { u64::MAX };
+        Some(self.got?.wrapping_add(d) & mask)
+    }
+
+    pub(super) fn word(&self) -> u64 {
         if self.image.class() == Class::Elf64 { 8 } else { 4 }
     }
 
@@ -372,6 +383,8 @@ impl Engine<'_, '_> {
         self.cov.iplt_entries = entries.len() as u64;
         if image.header.e_machine == EM_X86_64 && word == 8 {
             self.x64_iplt(&entries, static_exec, &mut fs);
+        } else if image.header.e_machine == EM_386 {
+            self.x86_iplt(&entries, &mut fs);
         }
         for (e, slot) in entries {
             let i = self.iplt.irel.partition_point(|r| r.0 < slot);
@@ -396,7 +409,7 @@ impl Engine<'_, '_> {
     /// or the entry itself when it starts with `endbr64`, and 0 for a word
     /// no entry loads).
     fn x64_iplt(&self, entries: &[(u64, u64)], static_exec: bool, fs: &mut Vec<Finding>) {
-        const ENDBR64: [u8; 4] = [0xf3, 0x0f, 0x1e, 0xfa];
+        use crate::x86op::ENDBR64;
         let image = self.image;
         let ibt = crate::property::x86_feature_1_and(image) & 1 != 0;
         let endbr = |e: u64| image.bytes(e, 4) == Some(&ENDBR64[..]);
@@ -591,7 +604,7 @@ impl Engine<'_, '_> {
                     "the reference to an IFUNC reaches no IPLT entry of its resolver",
                 );
                 x.expected = Some(entries[0].wrapping_add(a));
-                x.found = Some(rec.out_word);
+                x.found = Some(self.gotrel_address(rec).unwrap_or(rec.out_word));
                 x
             };
             return self.fail(x);

@@ -3,10 +3,10 @@
 
 use mortar_elf::Machine;
 use mortar_elf::consts::{
-    ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_GNU_RELRO, PT_GNU_STACK,
-    PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE,
-    SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX, SHT_NOBITS, SHT_NOTE, STT_FILE,
-    STT_SECTION, STT_TLS,
+    EM_386, EM_X86_64, ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_EH_FRAME, PT_GNU_PROPERTY, PT_GNU_RELRO,
+    PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE, PT_PHDR, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS,
+    SHF_WRITE, SHN_ABS, SHN_COMMON, SHN_LORESERVE, SHN_UNDEF, SHN_XINDEX, SHT_NOBITS, SHT_NOTE,
+    SHT_REL, SHT_RELA, STB_GNU_UNIQUE, STT_FILE, STT_GNU_IFUNC, STT_SECTION, STT_TLS,
 };
 
 use crate::image::{Image, Phdr};
@@ -18,6 +18,38 @@ const SHF_AARCH64_PURECODE: u64 = 0x2000_0000;
 
 fn s(n: u8, msg: impl Into<String>) -> Finding {
     Finding::new(Rule::Structure(n), msg)
+}
+
+/// Whether the output has an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol,
+/// or an `IRELATIVE` record in an allocated relocation section.
+fn gnu_extension(image: &Image<'_>) -> bool {
+    if image.symbols.iter().any(|x| {
+        x.index != 0 && (x.sym.sym_type() == STT_GNU_IFUNC || x.sym.binding() == STB_GNU_UNIQUE)
+    }) {
+        return true;
+    }
+    let (irelative, rela, size) = match image.header.e_machine {
+        EM_386 => (42, false, 8),
+        EM_X86_64 => (37, true, 24),
+        _ => (1032, true, 24),
+    };
+    image.sections.iter().any(|x| {
+        let sh = &x.shdr;
+        let want = if rela { SHT_RELA } else { SHT_REL };
+        if sh.sh_flags & SHF_ALLOC == 0 || sh.sh_type != want {
+            return false;
+        }
+        let (Ok(o), Ok(n)) = (usize::try_from(sh.sh_offset), usize::try_from(sh.sh_size)) else {
+            return false;
+        };
+        image.data.get(o..o.saturating_add(n)).is_some_and(|b| {
+            b.chunks_exact(size).any(|e| {
+                let info = if rela { &e[8..12] } else { &e[4..5] };
+                let ty = info.iter().rev().fold(0u32, |a, &v| a << 8 | u32::from(v));
+                ty == irelative
+            })
+        })
+    })
 }
 
 /// A `.tbss` section occupies no memory of its segment (gABI "Thread-Local
@@ -42,6 +74,17 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
         out.push(s(
             1,
             format!("e_machine {} in this class is not a supported machine", h.e_machine),
+        ));
+    }
+    // S1: the x86 psABIs define no e_flags (spec/x86.md X86-1, §2.4); a
+    // Linux output's EI_OSABI is ELFOSABI_NONE or ELFOSABI_GNU.
+    if matches!(h.e_machine, EM_386 | EM_X86_64) && h.e_flags != 0 {
+        out.push(s(1, format!("e_flags is {:#x}; the psABI defines none", h.e_flags)));
+    }
+    if !matches!(h.ei_osabi, 0 | 3) {
+        out.push(s(
+            1,
+            format!("EI_OSABI is {}, neither ELFOSABI_NONE nor ELFOSABI_GNU", h.ei_osabi),
         ));
     }
     let loads: Vec<&Phdr> = image.phdrs.iter().filter(|p| p.p_type == PT_LOAD).collect();
@@ -96,7 +139,10 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
                 .at(p.p_vaddr),
             );
         }
-        if p.p_vaddr.checked_add(p.p_memsz).is_none() {
+        // ELFCLASS32: the address space ends at 2^32 (gABI "Data
+        // Representation": Elf32_Addr).
+        let top = if image.class() == mortar_elf::Class::Elf32 { 1u64 << 32 } else { u64::MAX };
+        if p.p_vaddr.checked_add(p.p_memsz).is_none_or(|e| e > top) {
             out.push(
                 s(2, format!("PT_LOAD at {:#x}: its memory wraps the address space", p.p_vaddr))
                     .at(p.p_vaddr),
@@ -579,6 +625,42 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
             off >= p.p_offset && off.saturating_add(len) <= p.p_offset.saturating_add(p.p_filesz)
         })
     };
+    // S1 (mortar): EI_OSABI is ELFOSABI_GNU exactly when the output has an
+    // STT_GNU_IFUNC or STB_GNU_UNIQUE symbol or an IRELATIVE record
+    // (spec/image.md §5.4; a64.md Q11; x64.md X-49; x86.md X86-64).
+    if format == Format::Mortar {
+        let gnu = gnu_extension(image);
+        if (h.ei_osabi == 3) != gnu {
+            out.push(s(
+                1,
+                format!(
+                    "EI_OSABI is {} in an output {} a GNU extension (IFUNC, UNIQUE, IRELATIVE)",
+                    h.ei_osabi,
+                    if gnu { "with" } else { "without" }
+                ),
+            ));
+        }
+    }
+    // S2 (mortar, i386): every PT_LOAD has p_align 0x1000 and a static
+    // executable starts at 0x08048000 (x86.md X86-65); PT_GNU_STACK has
+    // p_align 16 (X86-66).
+    if format == Format::Mortar && h.e_machine == EM_386 {
+        for p in loads.iter().filter(|p| p.p_align != 0x1000) {
+            out.push(
+                s(2, format!("PT_LOAD at {:#x}: p_align {:#x}, not 0x1000", p.p_vaddr, p.p_align))
+                    .at(p.p_vaddr),
+            );
+        }
+        if h.e_type == ET_EXEC
+            && let Some(first) = loads.iter().map(|p| p.p_vaddr).min()
+            && first & !0xfff != 0x0804_8000
+        {
+            out.push(s(2, format!("the first PT_LOAD is at {first:#x}, not 0x08048000")));
+        }
+        for p in image.phdrs.iter().filter(|p| p.p_type == PT_GNU_STACK && p.p_align != 16) {
+            out.push(s(10, format!("PT_GNU_STACK has p_align {:#x}, not 16", p.p_align)));
+        }
+    }
     // S2 (mortar): p_align is at least 4 KiB (L-1).
     if format == Format::Mortar {
         for p in loads.iter().filter(|p| p.p_align < 4096) {

@@ -591,19 +591,51 @@ is `DtpRel(S + A)` (X-53); `GOTOFF64` in `.debug_info` is `S + A − GOT`
 (`xtask/src/linktest/engine.rs` `not_judged`); the run-wide x86-64
 default is mold's A13 (§10.2).
 
-**i386 stays `machine`.** Its table needs, besides the operations above:
-REL addends read through the field (above); `GOT32`/`GOT32X` as G + A −
-GOT with `GOT32X` relaxed (`mov` → `lea`, binops, `call`/`jmp`; i386
-psABI §B, with the base register form of the PIC and non-PIC encodings);
-`GOTOFF` (S + A − GOT) and `GOTPC` (GOT + A − P); the TLS types
-`TLS_GD`, `TLS_LDM` (with the `call ___tls_get_addr@PLT` and `call
-*___tls_get_addr@GOT(%reg)` followers), `TLS_GOTIE`, `TLS_IE`, `TLS_LE`,
-`TLS_LE_32`, `TLS_LDO_32`, `TLS_GOTDESC`/`TLS_DESC_CALL` and their LE
-forms per linker; IRELATIVE (42) with the slot holding the resolver
-(§4.8 reads it already); `__rel_iplt_*` (§4.8 has them); the i386 IPLT
-entries (`ff 25 abs32` non-PIC); and `spec/x64.md`'s companion spec for
-i386, which does not exist yet: the forms must come from a spec, not from
-the reference linkers alone.
+**i386 (WP-028e, request R-12 of `spec/x86.md`).** `src/x86.rs` is
+`spec/x86.md` §6.1's M1 rows (21, `NONE` has no row); the record path
+is `src/x86rec.rs`, and the `ModRM`/`SIB` reading both x86 tables share
+is `src/x86op.rs`. Every addend is the field, sign-extended (X86-4).
+X is computed modulo 2^32 and the narrow checks apply to the reduced
+value read as an `i32` (x86.md §3.1); `TLS_LE` (s32, X86-38) and
+`SIZE32` (u32, X86-12) are checked before the reduction. The rows:
+
+| operation | types |
+|---|---|
+| `Abs` (S + A) | `32` (mod 2^32), `16`, `8` (either) |
+| `Prel` (S + A − P) | `PC32`, `PLT32` (mod 2^32), `PC16` (s16), `PC8` (s8) |
+| GOT slot, `OffA` (G + A − GOT) | `GOT32`, `GOT32X` (address slot) with a base register; `TLS_GOTIE` (TP-offset slot); `TLS_GD`, `TLS_LDM`, `TLS_GOTDESC` (relaxed in a static output, §5.11) |
+| GOT slot, `AbsA` (G + A) | `GOT32`, `GOT32X` with no base register (X86-13); `TLS_IE` |
+| `GotRel` (S + A − GOT) | `GOTOFF` |
+| `GotPc` (GOT + A − P) | `GOTPC`, its symbol ignored (X86-30) |
+| `TpRel` | `TLS_LE` (s32) |
+| `DtpRel` | `TLS_LDO_32`: the TP or DTP offset by section and linker (§5.11) |
+| `Size` | `SIZE32` (u32) |
+| marker | `TLS_DESC_CALL` (§5.11) |
+
+GOT is the output's `_GLOBAL_OFFSET_TABLE_` (the start of `.got.plt`),
+except under mold's map, where it is the start of `.got`: mold's `GOTPC`
+sets the base register to it, and its `GOTOFF` and based `GOT32` values
+are relative to it (x86.md X86-47; WP-028e's `g.s`: `GOTPC` gives
+`.got`'s address in `%ebx`). The operand of a `GOT32`/`GOT32X` decides its
+form (X86-13): the byte before the field read as a `ModRM` (`(b & 0xc7)
+== 5`: no base), the byte before that as a `ModRM` whose `rm` is 100 (a
+`SIB` follows); two readings that disagree, a record at offset 0 or in a
+section that is not executable are R8 ("the GOT32/GOT32X operand …"),
+under every map (W1). `TLS_IE_32`, `TLS_LE_32` and the other numbered
+types outside the table are not checked (`type`). The dynamic-only types
+(5–8, 14, 35–37, 41, 42) in an input are R8 (X86-20, W14), and so is an
+`SHT_RELA` section of an `EM_386` object (X86-2, W12: the references
+disagree on it). Two records of one `SHT_REL` section at one
+`r_offset`, or whose fields overlap (`TLS_DESC_CALL` has none), are R8
+at the later one (x86.md R-13 (b): each implicit addend would be read
+from bytes the other writes; every reference linker applies both,
+WP-028e's `rel-overlap`, where the second write also leaves the first
+field R1). `32` against a TLS symbol at a non-alloc place is
+`DtpRel(S + A)` (X86-62; GNU ld and mold write the template address, A15).
+A `GOTOFF` to a piece of a mergeable section (the PIC string idiom,
+`leal .LC0@GOTOFF(%ebx)`) is grouped by its piece (§5.6) with the
+evidence GOT + field. L3 judges i386 outputs (`not_judged` accepts
+ELFCLASS32 `EM_386`).
 
 ### 4.6 Y1: symbol values
 
@@ -629,6 +661,12 @@ after the thread pointer:
 
 - `start` = `PT_TLS` `p_vaddr`, `tcb` = align_up(16, `p_align`);
 - TPREL(v) = v − start + tcb, DTPREL(v) = v − start, the module index is 1.
+
+On x86-64 and i386 (variant II, x64.md X-44, x86.md X86-57: the block
+ends at the thread pointer, `%fs` and `%gs`), `tcb` = −align_up(`p_memsz`,
+`p_align`); i386 values are compared modulo 2^32, `TLS_LE` as s32 before
+the reduction (X86-38). The four linkers place an over-aligned i386 block
+alike (x86.md E7); the corpus's TLS cases read every variable's offset.
 
 More than one `PT_TLS`, an alignment that is not a power of two, or a
 `p_vaddr` that is not a multiple of `p_align` is S9 (§6.2), and the TLS
@@ -1260,6 +1298,44 @@ with each linker: `tests/mutation.rs` (`s9_2o_*`), and the stale patch
 load, the ADR to the next page and an undone fix are mutation class
 `erratum-fix` (§9.5).
 
+### 5.11 i386 rewritings (WP-028e)
+
+As §5.9, on `spec/x86.md` §8 and §9: a rewriting is matched on the
+bytes of the record's window in the input and the output, and accepted
+only in the forms the map's linker writes; under mortar's map only
+mortar's (x86.md §8, §9). Every form was linked by each reference
+linker in `tests/x86/relax.s` (the `relax` case of `tests/x86.rs`,
+which asserts each family is accepted); the W rows are `tests/x86/wforms.s`.
+"Static" is a static `ET_EXEC`; static-pie is outside stage 1 (S1).
+
+| form | mortar | GNU ld 2.44 | lld 22 | mold 2.37 |
+|---|---|---|---|---|
+| G1 `GOT32X` `mov` → `mov $S` (`c7 c0+r`) | yes | yes, also absolute and undefined weak (`mov $0`) | — | — |
+| G1 as `lea S − GOT(%reg)` (`8d`, base kept) | — | static-pie, local only | — | every based `mov` whose slot no other reference needs, any symbol (X86-27); in static-pie wrong for absolute and undefined weak (W16) |
+| G2/G3 binop/`test` → immediate (`81 /n`, `f7 c0+r`) | yes | yes | — | — |
+| G4/G5 `call`/`jmp *GOT` → `67 e8` / `e9 … 90` | defined target | defined target; in static also undefined weak, a direct call or jump to 0 (X86-24 says the GOT is kept) | — | — |
+| `GOT32` (not `X`) | kept | kept | kept | kept |
+| no-base `GOT32`/`GOT32X` (`-fno-pic -fno-plt`) | G + A | G + A | G + A | G − `.got` (W3, R4); a no-base `mov` becomes `lea` (R1) |
+| I1–I3 `TLS_IE` → `b8 T`, `c7 c0+r T`, `81 c0+r T` | yes | yes | yes | kept (a GOT slot holding T) |
+| I4/I5 `TLS_GOTIE` → `c7`/`81` | yes | yes | I4; I5 as `lea T(%r), %r` (`8d 80+r·9`) | kept |
+| D1–D3 GD → LE (12 bytes) | `65 a1 0; 81 e8 −T` | the same | the same | `65 a1 0; 81 c0 T`; D3 written from P − 3 (W4, R1) |
+| L1 / L2 LD → LE | `65 a1 0` + `90 8d 74 26 00` / `8d b6 0` | the same | the same | `65 a1 0; 2d Z`, Z the TP offset of the block start negated (L2: and `90`) |
+| T1 `TLS_GOTDESC` `lea` → | `8d 05+r·8 T` | the same | the same | `90 b8+r T` |
+| T2 `call *(%eax)` → `66 90` | yes | yes | yes | yes |
+| `_TLS_MODULE_BASE_` descriptor T | 0 | 0 | 0 | TpRel(tls.start) |
+| undefined weak TLS T | 0 | TpRel(0) | 0 | TpRel(0) |
+| `TLS_LDO_32` | §5.9's `DTPOFF32` row | | | |
+
+The GD and LD leads require `A` = 0 and the call's `A` of its form (−4
+for `PLT32`/`PC32`, 0 for `GOT32`/`GOT32X`, `ModRM` `10 010 rm'` with
+rm' ≠ 100), and T1 requires `A` = 0 (x86.md X86-35–X86-37 as ruled on
+2026-11-15); another sequence is R8, "an unrecognized … TLS
+sequence". A rewriting's window is left out of S12 when the record is
+not judged, and so is the window of a slot record against a piece of a
+mergeable section (§5.6 does not locate GOT slots of pieces): `GOT32X`,
+`TLS_IE`, `TLS_GOTIE`, `TLS_GOTDESC` [P−2, P+4); `TLS_DESC_CALL` [P,
+P+2); `TLS_GD`/`TLS_LDM` [P−3, P+10).
+
 ## 6. Structure and content
 
 ### 6.1 Output and input rules
@@ -1280,15 +1356,25 @@ These rules are checked from the output alone. Each one has a mutation
 that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
 
 - **S1.** `e_type` is `ET_EXEC`, and the machine is supported in its
-  class.
+  class. `EI_OSABI` is `ELFOSABI_NONE` (0) or `ELFOSABI_GNU` (3); on
+  `EM_386` and `EM_X86_64`, `e_flags` is 0 (the psABIs define none,
+  x86.md X86-1). **(mortar)** `EI_OSABI` is 3 exactly when the output has
+  an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or an `IRELATIVE` record
+  in an allocated relocation section (image.md §5.4, a64.md Q11, x64.md
+  X-49, x86.md X86-64; WP-028e). The references on i386: GNU ld writes 3
+  for every static glibc output and for `ibt` (IFUNC), 0 for the
+  `-nostdlib` ones without; lld and mold write 0 (x86.md §15.1).
 - **S2.** There is at least one `PT_LOAD`. For each one:
   - `p_filesz <= p_memsz`;
   - `p_align` is 0, 1 or a power of two;
   - `p_vaddr ≡ p_offset (mod p_align)`;
   - its file image lies inside the file;
-  - its memory does not wrap;
+  - its memory does not wrap (in an `ELFCLASS32` output, it ends at or
+    below 2^32);
   - in mortar's output (by map format), `p_align` is at least 4 KiB
-    (`spec/layout.md` L-1; layout.md §20.3, WP-028b).
+    (`spec/layout.md` L-1; layout.md §20.3, WP-028b); on i386 it is
+    0x1000, and a static executable's first `PT_LOAD` is at 0x08048000
+    (x86.md X86-65, WP-028e).
 - **S3.** The `PT_LOAD`s are in ascending `p_vaddr` order and do not
   overlap (gABI "Program Header").
 - **S4.** Every allocated section with a size, other than `.tbss`, lies
@@ -1335,7 +1421,8 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   `p_align` (lld rounds it, since variant 2 puts the thread pointer after
   the block). A wrong `p_memsz` moves every x86-64 TP offset; a wrong
   `p_align` moves every AArch64 one (§4.7's `tcb`).
-- **S10.** There is at most one `PT_GNU_STACK`.
+- **S10.** There is at most one `PT_GNU_STACK`. **(mortar, i386)** Its
+  `p_align` is 16 (x86.md X86-66).
 - **S11.** Every `PT_NOTE` lies in the file and is a sequence of whole
   notes (gABI "Note Section"), with padding to 4, or to 8 when `p_align`
   is 8. The padding after a descriptor is there "to ensure 4-byte
@@ -1465,7 +1552,8 @@ link, `synth.md` S-38); anything else cannot be judged (synth.md R-P7,
 WP-028b). An input FDE is:
 
 - **dropped** if its initial location resolves into a discarded or
-  absent section. Its records are counted with the records of sections not
+  absent section, or its address range is 0 (it covers no code: GNU ld
+  drops it, synth.md S-59; glibc's i386 `clone3.o` has one, WP-028e). Its records are counted with the records of sections not
   in the output, and the FDE in `fdes_dropped`;
 - **unknown** if any of its pointers cannot be resolved (`eh-frame`, or
   the §4.4 reason). Its records are not checked, and E4 is not reported
@@ -2040,12 +2128,12 @@ A truncated output, or an input cut short, must also produce a finding.
 ### 9.5 Mutation coverage (WP-028d)
 
 `src/mutate.rs` takes a correct output and makes single-field edits, one
-mutant at a time, in 23 classes: a relocated field off by one, holding
+mutant at a time, in 24 classes: a relocated field off by one, holding
 another symbol's value, or another addend; a relaxed sequence put back
 to its input bytes (`stale-relaxation`); two GOT words or two
 IRELATIVE records swapped; `.eh_frame_hdr`'s table out of order or an
 entry wrong; an FDE's `pc_begin`; a `.symtab` value or size; `e_entry`;
-a program header's `p_filesz`, `p_memsz`, `p_align` or flags; `PT_TLS`;
+`EI_OSABI` or `e_flags` (`header-ident`, S1, WP-028e); a program header's `p_filesz`, `p_memsz`, `p_align` or flags; `PT_TLS`;
 a property bit; a linker-defined symbol; two sections overlapping; a
 thunk's target; an IPLT entry; an erratum fix (§5.10). A mutant is
 **caught** when the report has a finding the unmutated output's report
@@ -2113,6 +2201,41 @@ every linker and asserts the classes that must have no miss.
   5. The x86-64 dead GOT slots, if they should be judged at all: the
      map naming each slot's owner (equivalent today).
 
+**i386 (WP-028e).** `mutate.rs` reads the class's header layout
+(`ELFCLASS32` symbol, program and section header offsets, 4-byte words)
+and has the i386 forms: `stale-relaxation` puts back the 2 bytes before
+a `GOT32X`, `TLS_IE`, `TLS_GOTIE` or `TLS_GOTDESC` field, or a GD/LD
+lead's 3 bytes and its call's 6, or a `TLS_DESC_CALL`'s 2; `irelative-swap`
+swaps or moves the resolver words at the `R_386_IRELATIVE` records'
+places (REL: the addend is the word); `iplt-entry` moves an `ff 25`
+word or makes an `endbr32` a NOP. mortar does not link i386 yet
+(`tests/link/xfails`), so the table is the references' (`tests/x86.rs
+x86_mutation_coverage`: `relax`, `ibt`, `tls-gd-ld`, `tls-desc`, `w5`,
+`cxx` by the three linkers, 4 per class, seed default):
+
+| class | applied | caught | | class | applied | caught |
+|---|---|---|---|---|---|---|
+| field-off-by-one | 72 | 72 | | e-entry | 36 | 18 |
+| field-wrong-symbol | 72 | 72 | | header-ident | 54 | 36 |
+| field-wrong-addend | 72 | 72 | | phdr-filesz | 72 | 59 |
+| stale-relaxation | 60 | 60 | | phdr-memsz | 72 | 44 |
+| got-slot-swap | 63 | 62 | | phdr-align | 72 | 20 |
+| irelative-swap | 57 | 57 | | phdr-flags | 72 | 20 |
+| eh-hdr-order, eh-hdr-entry | 32 | 32 | | tls-segment | 45 | 45 |
+| fde-pc-begin | 48 | 48 | | property-bit | 12 | 12 |
+| symtab-value | 72 | 57 | | linker-symbol | 67 | 56 |
+| symtab-size | 72 | 57 | | section-overlap | 72 | 72 |
+| iplt-entry | 40 | 40 | | | | |
+
+Every relocation, relaxation, IFUNC, TLS, property and overlap class is
+fully caught; the test asserts it. The misses are the rules that judge
+mortar's map only: `e_entry` + 4 (S7's symbol clause), `EI_OSABI` 0 ↔ 3
+(S1's mortar clause: the references disagree), `PT_LOAD` `p_memsz`
++ 0x10 and `p_align` (S18, L-1), the non-`PT_LOAD` segments, and as on
+x86-64 the locals of merged sections, linker symbols' sizes and mold's
+`$got` symbols. The one `got-slot-swap` miss is mold's `.got` words 0
+and 1 in `ibt` (not examined).
+
 ## 10. The reference linkers, observed
 
 ### 10.1 The rewritings each linker performs
@@ -2149,7 +2272,9 @@ corpus test accepts them by name and nothing else.
   the address to the wrong section.
 - **A2 (mold).** Other aliases of an IFUNC (`__libc_memcpy`, `__memchr`,
   `__strlen`, …) get the value `2^32 + x`, an address outside every
-  segment (S8, and Y1 by §4.8).
+  segment (S8, and Y1 by §4.8). In an ELF32 output the value is
+  truncated to `x`, which is 16 bytes before `.plt.got` (i386: `bcmp`,
+  `__memchr`, `index`, … at `.plt.got` − 0x10, WP-028e).
 - **A3 (mold).** `_TLS_MODULE_BASE_` is defined `STT_TLS` even with no
   `PT_TLS`. When there is one, its value is the segment's address rather
   than an offset (S8, and Y5 of §6.5).
@@ -2245,6 +2370,22 @@ case of `tests/x64.rs`):
 - **A17 (mold).** An output marked IBT has IPLT entries without
   `endbr64` (W6): an indirect call to an IFUNC faults under IBT
   enforcement (F5).
+- **A19 (mold).** An FDE of address range 0 (glibc i386's `clone3.o`,
+  in every static link that pulls it, e.g. Fortran's runtime) keeps an
+  entry in `.eh_frame_hdr`'s table, so `fde_count` counts it (E5, "fde_count
+  counts the FDEs of address range 0"). synth.md S-59: such an entry
+  can hide a real FDE with the same start from the binary search. GNU
+  ld drops the FDE; lld keeps it out of the table.
+
+On i386 (WP-028e, `tests/x86.rs`; x86.md §15.2): W1 (two readings of a
+`GOT32X` operand) is R8 under every map; W3 (mold's no-base GOT value
+G − `.got`) is R4, and its no-base `mov` → `lea` R1; W4 (mold's LE form
+from P − 3) is R1; W5 (GNU ld's `GOTOFF` of an IFUNC, the entry − 12)
+is F4; W10 is A15 (GNU ld, mold); W11 (GNU ld's `16`/`8` truncation) is
+R2; W12 (`SHT_RELA` in `EM_386`) is R8 under every map; W14 (GNU ld's
+dynamic types) is R8. W2 reads as based (X86-13) and is accepted (an
+accepted risk of the spec). W6–W9 and W16 are static-pie (S1, not
+judged); W13 and W15 are false refusals, so there is no output.
 
 W1 (GNU ld truncates `16`/`8` fields) and W2 (GNU ld writes `PC16` one
 past either end) are violations, R2; W3 (GNU ld writes S + A for a
@@ -2270,7 +2411,10 @@ in `tests/link/anomalies` (format: `spec/harness.md` "L3"). It holds mold
 A1 A2 A3 A9 (A1 and A2 come from the C runtime's IFUNCs, so the
 `-nostdlib` links show only A3 and A9) and GNU ld A10 (crtbegin/crtend's
 labels, on every driver link with the C runtime), and on x86-64 mold's
-A13. A test declares any
+A13. On i386 GNU ld shows no A10 on any output of the L3 run or the corpus
+(WP-028e), so the default is `bfd,aarch64,x86_64`; i386's defaults are
+mold's A1 A2 A3 A9, and A19 is declared by the tests that pull glibc's
+`clone3.o`. A test declares any
 other anomaly itself with `#@ anomaly(<linker>): <id>...`. mortar never
 has a default and never declares one.
 
