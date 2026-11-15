@@ -371,7 +371,13 @@ pub fn ref_world(
                     } else {
                         tables.syms.insert(
                             k,
-                            SymValue { s: 0, kind: TargetKind::Local, size: 0, live: false, tls: false },
+                            SymValue {
+                                s: 0,
+                                kind: TargetKind::Local,
+                                size: 0,
+                                live: false,
+                                tls: false,
+                            },
                         );
                     }
                 }
