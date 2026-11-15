@@ -3,8 +3,9 @@
 `xtask` is the project's harness: `cargo xtask <command>`. This file is the
 contract of its commands and of the rules every process it starts lives
 under: the gate (`ci`), the machine's pool of parallelism tokens
-("Jobserver"), the limits of a child process ("Limits"), and the link
-tests ("Link tests"). The test binaries start processes too, through
+("Jobserver"), the limits of a child process ("Limits"), the link
+tests ("Link tests"), and the gate's hosted runs on GitHub Actions
+("Hosted CI"). The test binaries start processes too, through
 `mortar_testutil`, and the same rules bind them. Still to be specified
 here: `bench` (WP-012).
 
@@ -883,3 +884,168 @@ references; the usage errors.
 The corpus itself is the test of the format against real linkers: `cargo
 xtask linktest` must give every reference `PASS` (bar the recorded
 reference bugs, `XFAIL`) and mortar `XFAIL` on every case until M1.
+
+## Hosted CI
+
+GitHub Actions runs the gate on real hardware of both 64-bit
+architectures (`.github/workflows/ci.yml`, `ci-lane.yml`,
+`.github/actions/mortar-ci`), with the structure and conventions of
+hod's and kiln's hosted CI: an entry workflow that calls a reusable lane
+workflow once per architecture, a composite action for the set-up, fan-in
+jobs with stable check names, the same concurrency rule, read-only
+`permissions`, and one cargo cache per architecture.
+
+| | `ubuntu-24.04-arm` (AArch64) | `ubuntu-24.04` (x86-64) |
+|---|---|---|
+| container | Debian 13, `buildpack-deps:trixie-scm` | the same |
+| tools | `scripts/ci-tools.sh` | the same list |
+| AArch64 programs under test | native | `qemu-aarch64 -L /usr/aarch64-linux-gnu` |
+| x86-64 programs under test | `qemu-x86_64 -L /usr/x86_64-linux-gnu` | native |
+| i386 programs under test | `qemu-i386 -L /usr/i686-linux-gnu` | the same |
+| job | `gate`: `cargo xtask ci` | the same |
+| fan-in check | `check` | `check-x86_64` |
+
+1. **Two lanes.** `ci.yml` calls `ci-lane.yml` with `ubuntu-24.04-arm`
+   and with `ubuntu-24.04`; their jobs show up as `arm / gate` and
+   `x86_64 / gate`. The fan-in jobs `check` (AArch64) and `check-x86_64`
+   pass only when every job of their lane succeeded: they run with
+   `if: always()`, so a failed, cancelled or skipped lane fails them
+   rather than counting as passed. They are plain jobs, not a matrix, so
+   their names do not change when a lane's jobs do.
+2. **The whole gate, one job per lane.** The `gate` job runs
+   `cargo xtask ci` (all of "ci": fmt, clippy, the tests, the link tests
+   on all three architectures) through `scripts/env.sh`, with
+   `MORTAR_REQUIRE_TOOLS=1`. hod and kiln split their gate into parallel
+   jobs by `--step`; mortar's takes minutes, and on a private repository
+   every job pays its set-up again and is billed by the minute, rounded
+   up, so it is one job until it grows. `--step` is there to split it
+   (an assertion of `xtask/tests/hosted_ci.rs` then changes with it).
+3. **The reference environment.** The job runs in
+   `buildpack-deps:trixie-scm`: Debian 13, the distribution of the
+   development container, with git, curl and procps (what checkout and
+   the Rust set-up need) and none of the `-dev` libraries of the full
+   `buildpack-deps:trixie` that hod uses, because
+   `crates/mortar_script/tests/corpus.rs` reads every text library of the
+   machine: the hosted machine has the libraries of the tools' packages,
+   as the development container does. `.github/actions/mortar-ci` then:
+   - runs `scripts/ci-tools.sh` (rule 4);
+   - marks the checkout a safe git directory (the container's root over a
+     checkout the runner owns) and sets `CARGO_TARGET_DIR` to `../target`,
+     outside the checkout, as for a worktree on the development machine
+     (`scripts/env.sh` keeps a preset one);
+   - installs Rust 1.95.0 with rustfmt and clippy
+     (`dtolnay/rust-toolchain`, as hod and kiln; `rust-toolchain.toml`
+     pins the same version, which `xtask/tests/hosted_ci.rs` checks);
+   - restores the cargo cache (rule 7);
+   - starts the jobserver pool, `MORTAR_JOBS=$(nproc)
+     scripts/jobserver.sh start` ("Jobserver"): one token per processor
+     of the runner, on the default fifo, so `scripts/env.sh` exports
+     `MAKEFLAGS` and `RUST_TEST_THREADS=6` there as it does on the
+     development machine. The pool's processes end with the container.
+4. **The tools: one list.** `scripts/ci-tools.sh` is the list of the
+   reference tools the gate needs, the same Debian 13 packages on both
+   hosts (a `<tool>-<triple>` package is the host's own compiler under
+   its triplet name, and the cross compiler for another architecture):
+   the host's `build-essential`, `binutils` and `gfortran`; `gcc-`,
+   `g++-` and `binutils-<triple>` of all three architectures and
+   `gfortran-<triple>` of AArch64 and x86-64 (none for i686:
+   `lang/fortran-c` does not run there); the C and C++ libraries of the
+   two cross targets (`libc6-dev-<arch>-cross`,
+   `libstdc++-14-dev-<arch>-cross`, their system roots `/usr/<triple>`);
+   `clang-22`, `llvm-22`, `lld-22`; `mold`; `qemu-user`; and what the
+   job and the harness run (git, curl, make, procps, python3, GNU time,
+   xz-utils). Without an argument it installs what is missing
+   (`apt-get`, as root) and then checks; `--check` installs nothing and
+   checks that every package is installed, every tool the tests look for
+   is found (unprefixed for the host; prefixed for all three triples; the
+   two other architectures' emulators and system roots; the LLVM 22 tools
+   in `/usr/lib/llvm-22/bin`), and the pinned versions; `--list` prints
+   the packages. Its exit status is 1 for anything missing or a version
+   that differs, 2 for a usage error or a host that is neither AArch64
+   nor x86-64.
+   - **Versions.** GNU binutils 2.44, GCC 14.2, LLVM 22.1.8 and mold
+     2.37.1, pinned in the script, because tests and specs record what
+     these releases do ("Where the references differ", `spec/script.md`,
+     `spec/elf.md`, `spec/archive.md`): another release is another
+     oracle, which is re-measured before the pin moves. Debian 13's own
+     packages are these releases; Ubuntu 24.04's (the runners' system:
+     binutils 2.42, GCC 13, mold 2.30, no LLVM 22) are not. hod and kiln
+     solve this the same way, with a Debian 13 container on the runner
+     (hod `buildpack-deps:trixie`; kiln `gcc:16.1.0-trixie`, for its GCC
+     16 oracle), not with a third-party archive: apt.llvm.org would give
+     an LLVM 22 but not Debian's binutils, GCC or mold, and its builds are
+     not the development container's. A Debian point release that moves
+     a pinned tool turns the set-up step red with a line naming it.
+   - **Required.** The lane sets `MORTAR_REQUIRE_TOOLS=1`, so a tool a
+     test looks for and this list does not give fails that test, and
+     `xtask/tests/hosted_ci.rs`
+     `this_machine_has_the_reference_tools_of_the_hosted_lanes` runs
+     `--check` in every gate, so the development machine's gate fails
+     when it lacks a tool of the list: the list cannot fall behind the
+     tests, nor the machines behind the list, unnoticed.
+5. **Results.** After the gate, whether it passed or not (unless the run
+   was cancelled), `scripts/ci-summary.py` writes the link tests' table
+   of outcomes per linker and architecture, and every record whose
+   outcome fails a run, to the job summary, from
+   `$CARGO_TARGET_DIR/linktest/results.tsv` ("Results and exit status";
+   removed before the gate, so a restored cache cannot show an older
+   run's), and the file is uploaded as the artifact
+   `linktest-results-<cache key>` (kept 14 days). No results file means
+   the gate stopped before its link-test step.
+6. **Triggers.** While the repository is private, `ci.yml` runs only by
+   hand (`workflow_dispatch`: Actions, "ci", "Run workflow", on any
+   branch; the workflow must be on the default branch to be listed).
+   `push` to `main`, `pull_request` and `merge_group` are in the file as
+   a commented block, enabled by uncommenting those four lines when the
+   repository is public.
+7. **Caches.** `Swatinem/rust-cache`, `shared-key` `ci-arm` or
+   `ci-x86_64` (rust-cache adds the Rust version, the hashes of
+   `Cargo.lock` and the manifests, and the job's environment to the key):
+   `~/.cargo` and the builds of the dependencies, not of the workspace
+   crates (a fresh checkout gives every source a new mtime, so cargo
+   rebuilds them anyway). The `gate` job saves it, also when the gate
+   failed. With one third-party dependency tree (`signal-hook`, for
+   xtask) an entry is some tens of MB; the Rust toolchain itself is
+   downloaded by each job.
+8. **Concurrency.** One run per ref at a time (`ci-<ref>`). A newer run
+   cancels a pull request's or a branch's run in progress, never
+   `main`'s: there the newer run waits until the one in progress ends
+   (GitHub keeps one waiting run per group, the newest), so every run on
+   `main` that starts completes.
+9. **Check names and what is required.** The checks to require (branch
+   protection or a ruleset, and the merge queue) are the fan-ins, `check`
+   and `check-x86_64`, never the lanes' own job names. `check` can be
+   required once the AArch64 lane has passed. `check-x86_64` is a
+   separate check so that it can stay non-required until the x86-64 lane
+   has passed once: mortar was written and measured on an AArch64 host,
+   and the places that depend on the host are listed in
+   `spec/landed/harness/WP-014.md`.
+10. **What a red lane means.** A red set-up step is the environment: a
+    package Debian no longer has, or a pinned version that moved
+    (rule 4). A red `cargo xtask ci` on the AArch64 lane is what the
+    same gate in the development container would say, and is a gate
+    failure like that one. On the x86-64 lane it is that, or, until the
+    lane has first passed, a test that assumes an AArch64 host; the
+    fix is in the test (or in `xtask::linktest::target`), never a skip
+    of the lane.
+11. **Cost while private.** GitHub bills a private repository's hosted
+    minutes per job, rounded up to the minute (arm64 Linux runners at a
+    lower rate than x86-64), against the plan's included minutes; a
+    public repository's standard runners are free. A run is four jobs:
+    two `gate` jobs of roughly 10 to 15 minutes each (estimated, not yet
+    measured: the set-up's package installation about 2 to 4, the gate
+    on a 2- to 4-processor runner the rest; the gate takes 2 minutes on
+    the development machine) and two fan-in jobs of under a minute
+    (billed as one each). Run it by hand on the branches that need it
+    until the repository is public.
+
+**Tests.** `xtask/tests/hosted_ci.rs`:
+`the_hosted_lanes_run_the_gate_as_the_development_machine_does` (the
+lane runs `cargo xtask ci` once, through `scripts/env.sh`, with
+`MORTAR_REQUIRE_TOOLS: "1"`; the set-up runs `scripts/ci-tools.sh` and
+`scripts/jobserver.sh start` and installs the Rust of
+`rust-toolchain.toml`; `ci.yml` calls the lane for both runners and has
+both fan-ins), `this_machine_has_the_reference_tools_of_the_hosted_lanes`
+(`scripts/ci-tools.sh --check` passes; a failure under
+`MORTAR_REQUIRE_TOOLS=1`, a note otherwise). The workflows themselves are
+tested only by running them.

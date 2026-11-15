@@ -1,0 +1,60 @@
+name: ci
+# The gate on both architectures (spec/harness.md "Hosted CI";
+# docs/VALIDATION.md "Gates"), after hod's and kiln's ci.yml: each
+# architecture is one call of the reusable workflow ci-lane.yml, whose job
+# shows up as `arm / gate` and `x86_64 / gate`. On `ubuntu-24.04-arm` the
+# AArch64 programs under test run natively and the x86-64 and i386 ones
+# under qemu-user; on `ubuntu-24.04` the x86-64 ones natively and the
+# AArch64 and i386 ones under qemu-user. The two fan-in jobs keep stable
+# check names, `check` and `check-x86_64`, whatever the lanes' jobs are:
+# they are plain jobs, since a matrix axis would rename them.
+on:
+  # By hand only (Actions, "ci", "Run workflow") while the repository is
+  # private, where every runner minute is billed.
+  workflow_dispatch:
+  # Enable these (uncomment the four lines) when the repository is public.
+  # push:
+  #   branches: [main]
+  # pull_request:
+  # merge_group:
+permissions:
+  contents: read
+# One run per ref at a time. A newer run cancels a pull request's or a
+# branch's run in progress, never main's: a cancelled run there would
+# leave main without a complete one. On main the newer run waits (GitHub
+# keeps one waiting run per group, the newest), so every run that starts
+# finishes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  arm:
+    uses: ./.github/workflows/ci-lane.yml
+    with: { runner: ubuntu-24.04-arm, cache-key: ci-arm }
+  x86_64:
+    uses: ./.github/workflows/ci-lane.yml
+    with: { runner: ubuntu-24.04, cache-key: ci-x86_64 }
+  # Fan-in: passes only if every job of the lane succeeded. `always()` so
+  # a failed, cancelled or skipped lane makes this job FAIL (a skipped
+  # required check would otherwise count as passing).
+  check:
+    needs: [arm]
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: every arm job succeeded
+        run: |
+          echo "arm lane: ${{ needs.arm.result }}"
+          test "${{ needs.arm.result }}" = success
+  # The x86-64 lane's own check, so that it can stay non-required until
+  # the lane has passed once (spec/harness.md "Hosted CI": the code base
+  # was written on an AArch64 host).
+  check-x86_64:
+    needs: [x86_64]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: every x86_64 job succeeded
+        run: |
+          echo "x86_64 lane: ${{ needs.x86_64.result }}"
+          test "${{ needs.x86_64.result }}" = success
