@@ -562,6 +562,12 @@ struct Mention {
 }
 
 impl Mention {
+    /// The `named by` places of a file this mention's script names: its
+    /// own chain, or, for a command-line input, its argument.
+    fn chain_places(&self) -> Vec<Place> {
+        if self.named_by.is_empty() { vec![self.place.clone()] } else { self.named_by.clone() }
+    }
+
     fn origin(&self) -> Origin {
         Origin { input: self.input, arg: self.arg, entry: self.entry, edge: self.edge }
     }
@@ -1826,7 +1832,7 @@ impl<'c, 's> Walk<'c, 's> {
                     sub.place = place.clone();
                     sub.seq = at;
                     sub.named_by =
-                        std::iter::once(place.clone()).chain(m.named_by.iter().cloned()).collect();
+                        std::iter::once(place.clone()).chain(m.chain_places()).collect();
                     match self.search(&sub, SearchForm::Name, name, &candidates, sref, false) {
                         Searched::Pending | Searched::Failed => complete = false,
                         Searched::NotFound { .. } => {
@@ -1931,7 +1937,7 @@ impl<'c, 's> Walk<'c, 's> {
                         state,
                         chain: chain.to_vec(),
                         named_by: std::iter::once(place.clone())
-                            .chain(m.named_by.iter().cloned())
+                            .chain(m.chain_places())
                             .collect(),
                         entry: Some(entry),
                         edge: None,
@@ -1995,7 +2001,14 @@ impl<'c, 's> Walk<'c, 's> {
             FileForm::Path => {
                 // Rule 3: the script's directory, the working directory,
                 // the library search path.
-                let mut candidates: Vec<Spelled> = vec![join(dir_of(&f.path), name), name.into()];
+                // The script's directory, unless it is the working
+                // directory (then the two probes are one).
+                let script_dir = dir_of(&f.path);
+                let mut candidates: Vec<Spelled> = Vec::new();
+                if !script_dir.is_empty() {
+                    candidates.push(join(script_dir, name));
+                }
+                candidates.push(name.into());
                 candidates.extend(self.search_dirs(&[]).iter().map(|d| join(d, name)));
                 let dirs = self.search_dirs(&[]);
                 match self.search(m, SearchForm::Name, name, &candidates, sref, true) {
@@ -2008,11 +2021,9 @@ impl<'c, 's> Walk<'c, 's> {
                             "cannot-open-file",
                             format!("cannot open {}: No such file or directory", text(name)),
                         );
-                        let script_dir = dir_of(&f.path);
-                        p = p.note(format!(
-                            "searched {}",
-                            if script_dir.is_empty() { ".".to_owned() } else { text(script_dir) }
-                        ));
+                        if !script_dir.is_empty() {
+                            p = p.note(format!("searched {}", text(script_dir)));
+                        }
                         p = p.note("searched the working directory");
                         for d in &dirs {
                             p = p.note(format!("searched {}", text(d)));
