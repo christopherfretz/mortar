@@ -1389,6 +1389,14 @@ impl Store {
         let mut src =
             Reader { store: self, path: s.path, file: &s.file, shared: &[], own: Vec::new(), len };
         src.read_into_own(0, PREFIX.min(len))?;
+        // The first PREFIX bytes stay resident whatever they hold: every
+        // reader starts there (`mortar_elf`'s file header, `facts`). Only
+        // an ELF32 file (a 52-byte header) can have a container start
+        // before byte 64, and then up to 12 of its bytes are read before
+        // the class is known: the one exception to MT-42's zero, in
+        // WP-071's record (reading 52 bytes first would cost every ELF64
+        // object one more read).
+        s.ranges.push(0..PREFIX.min(len));
         let shape = staged::shape(src.fetch(0, PREFIX.min(len))?);
         if shape == Shape::Object {
             let Some(found) = staged::container_ranges(&mut src, 0, len)? else {
@@ -1422,7 +1430,7 @@ impl Store {
         let mut ranges = Vec::new();
         let mut containers = Vec::new();
         if staged::object_ranges(&mut src, 0, len, &mut ranges, &mut containers)? {
-            s.ranges = ranges;
+            s.ranges.extend(ranges);
         } else {
             s.ranges.extend(staged::clip(0..len, &s.forbidden));
         }

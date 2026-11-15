@@ -313,6 +313,7 @@ version = "0.0.0"
 dependencies = [
  "mortar_digest",
  "mortar_elf",
+ "mortar_meta",
  "mortar_plumb",
  "mortar_testutil",
  "signal-hook",
