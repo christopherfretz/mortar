@@ -481,6 +481,11 @@ lands in `plan.other` (§3.12).
   `--warn-backrefs-exclude` stays in `other`;
 - `warn_common`: `--warn-common` until `--no-warn-common` (the common
   kinds, `spec/resolve.md` §3.3).
+- `odr` (M6, `spec/odr.md` O-40, O-41): the mode, `--odr=warn|error|
+  strict|off` (default `warn`; `--no-odr-check` is `off`);
+  `check_archives` (`--odr-check-archives`); `table`
+  (`--odr-table=off|exported|full`, default `off`); `stats`
+  (`--odr-stats`); `keep_meta` (`--keep-mason-meta`).
 
 The facade does two things with these:
 - It applies `error_limit`, `fatal_warnings` and `no_warnings` to the
@@ -619,6 +624,20 @@ this list are those of WP-027e; WP-031, WP-027d's later rows and WP-042
 A work package that implements an option changes the row's status in the
 same change, and adds the row's evidence to the audit, which fails while
 a row that is not `refused` has none.
+
+Rows of mortar's own for M6 (`spec/odr.md` O-41; amendment A-5). They
+are added to `crates/mortar_cli/src/rows.rs` by WP-072 (WP-076 for the
+opt-ins), `refused` until the package that honors each lands with its
+test, and `docs/status/options.md` is regenerated from the table, never
+edited:
+- `--odr=warn|error|strict|off` (default `warn`) and `--no-odr-check`
+  (= `--odr=off`): WP-072;
+- `--odr-stats`: WP-072;
+- `--detect-odr-violations` (GNU gold's spelling; not a reference
+  linker's row): `noop`, with the note of `spec/odr.md` O-41 printed
+  once; WP-072;
+- `--odr-check-archives`, `--odr-table=off|exported|full` (default
+  `off`), `--keep-mason-meta`: WP-075 and WP-076.
 
 Rows whose status the M1 and M2 packages change (`spec/input.md` §17,
 `spec/resolve.md` §18). Their fields exist (§3); the rows stay `refused`
