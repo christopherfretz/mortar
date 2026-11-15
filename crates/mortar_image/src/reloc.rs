@@ -18,18 +18,32 @@
 //! small, when the clip is the whole section, or when its records are not
 //! sorted, and otherwise located by binary search with one 8-byte read
 //! per probe, then copied for the clip's records only.
+//!
+//! A section whose checks are fill's (`RecIndex::deferred`, I-14: the
+//! scan did not read its records) is checked here as it is applied: each
+//! record whose `r_offset` is in the clip (the last clip: or past it) is
+//! decoded, classified and scanned as the scan would, and the windows of
+//! the clip's records are checked for overlap (§3.4). A fault is not
+//! reported here: the section is flagged ([`Scratch::flagged`]) and its
+//! diagnostics are the scan's walk of it (`link::write`). Its order is
+//! the plan's ([`Plan::deferred_order`]) or found from the records read
+//! for the clip, and its `leads` bit is taken as set (exact: a section
+//! without a lead type recognizes no sequence either way).
 
 use mortar_arch::cx::fill_key;
 use mortar_arch::diag::RelocPlace;
+use mortar_arch::seq::{disjoint_in_order, overlaps};
 use mortar_arch::{
-    Field, FillCx, FillTables, ProofRun, Records, RefName, Reloc, RelocAt, SectionOut, Site,
-    SlotKind, SymNames, SymValue,
+    DemandOut, DemandSink, DynRole, Field, FillCx, FillTables, GlobalFlags, PlaceFacts, ProofRun,
+    Records, RefName, Reloc, RelocAt, ScanCx, ScanError, ScanTables, SectionOut, Site, SlotKind,
+    SymFacts, SymNames, SymValue, TargetKind, UnitWindow,
 };
 use mortar_core::demands::DemandFlags;
 use mortar_core::records::Order;
-use mortar_core::{FileId, SectionId, SymKey};
+use mortar_core::{FileId, SectionId, SymEntry, SymKey};
 use mortar_diag::{Diagnostic, Key, Kind};
 use mortar_elf::Class;
+use mortar_elf::SymbolIndex;
 use mortar_elf::raw::{Record, Rela};
 
 const _: () = assert!(Rela::SIZE64 == 24 && Rela::SIZE32 == 12);
@@ -55,7 +69,7 @@ pub(crate) const SITE_FWD: u64 = 32;
 const SEQ_MARGIN: u32 = 8;
 
 /// A table that is not resident is copied whole up to this size.
-const WHOLE_TABLE: u64 = 256 * 1024;
+pub(crate) const WHOLE_TABLE: u64 = 256 * 1024;
 
 /// A worker's reused buffers.
 #[derive(Debug, Default)]
@@ -67,6 +81,17 @@ pub(crate) struct Scratch {
     raw: Vec<u8>,
     /// Decoded records `[first, first + len)` of the current table.
     recs: Vec<Reloc>,
+    /// A deferred section's (I-14): `r_sym` of each record of `recs`,
+    /// `u32::MAX` for one whose symbol has no key.
+    syms: Vec<u32>,
+    /// A deferred section's order, found for the clip.
+    perm: Vec<u32>,
+    /// A deferred clip's windows (§3.4 overlap) and their pairs.
+    windows: Vec<UnitWindow>,
+    pairs: Vec<(u32, u32)>,
+    /// The deferred sections a fault was found in (I-14), in the order
+    /// found; taken by the job.
+    pub flagged: Vec<SectionId>,
 }
 
 /// One clip of a relocated section: `[a, b)` in section offsets, held by
@@ -146,12 +171,13 @@ impl Records for View<'_> {
 }
 
 /// The tables with `redirect` taking shifted offsets, and with the value
-/// of one key replaced (a reference into `.eh_frame`, S-50).
+/// of the record's key given (computed once per record, with `s` the
+/// split target's where there is one: S-17, S-50).
 struct ShiftTables<'a> {
     inner: &'a dyn Tables,
     section: SectionId,
     base: u64,
-    value: Option<(SymKey, u64)>,
+    value: Option<(SymKey, SymValue)>,
 }
 
 impl SymNames for ShiftTables<'_> {
@@ -162,13 +188,10 @@ impl SymNames for ShiftTables<'_> {
 
 impl FillTables for ShiftTables<'_> {
     fn sym(&self, key: SymKey) -> SymValue {
-        let mut v = self.inner.sym(key);
-        if let Some((k, s)) = self.value
-            && k == key
-        {
-            v.s = s;
+        match self.value {
+            Some((k, v)) if k == key => v,
+            _ => self.inner.sym(key),
         }
-        v
     }
 
     fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {
@@ -212,11 +235,15 @@ fn raw_offset(raw: &[u8], class: Class, i: u32) -> u64 {
 
 /// The records `[lo, hi)` of raw table `raw` (record `lo` first), keys
 /// named by the image's `keys`, appended to `out`.
+/// With `syms` (a deferred section, I-14) each record's `r_sym` goes
+/// there, and a symbol without a key is the record's fault, not an
+/// internal error (its key is then symbol 0's; the link fails).
 fn decode(
     img: &Image<'_>,
     t: &RelaTable,
     raw: &[u8],
     out: &mut Vec<Reloc>,
+    mut syms: Option<&mut Vec<u32>>,
 ) -> Result<(), Diagnostic> {
     let size = t.entsize() as usize;
     for b in raw.chunks_exact(size) {
@@ -225,17 +252,73 @@ fn decode(
             Class::Elf32 => Rela::decode32(b),
         }
         .ok_or_else(|| internal("fill: a relocation record cut short".into()))?;
-        let key = img.keys.key(t.file, r.r_sym).ok_or_else(|| {
-            internal(format!("fill: file {}: symbol {} has no key (model §3.3)", t.file.0, r.r_sym))
-        })?;
+        let key = match (img.keys.key(t.file, r.r_sym), syms.as_deref_mut()) {
+            (Some(key), Some(syms)) => {
+                syms.push(r.r_sym);
+                key
+            }
+            (Some(key), None) => key,
+            (None, Some(syms)) => {
+                syms.push(u32::MAX);
+                SymKey::local(SymEntry { file: t.file, index: SymbolIndex(0) })
+            }
+            (None, None) => {
+                return Err(internal(format!(
+                    "fill: file {}: symbol {} has no key (model §3.3)",
+                    t.file.0, r.r_sym
+                )));
+            }
+        };
         out.push(Reloc { r_offset: r.r_offset, key, r_type: r.r_type, addend: r.r_addend });
     }
     Ok(())
 }
 
+/// The order of `n` records with offsets `off` (I-29), found from them:
+/// `Sorted`, or their indexes stably sorted by `r_offset` in `perm`.
+fn local_order(n: u32, off: impl Fn(u32) -> u64, perm: &mut Vec<u32>) -> Order<'_> {
+    if (1..n).all(|i| off(i - 1) <= off(i)) {
+        return Order::Sorted;
+    }
+    perm.clear();
+    perm.extend(0..n);
+    perm.sort_by_key(|&i| off(i));
+    Order::Permuted(perm)
+}
+
+/// The order of the records of table `t` (I-29), found from them, for a
+/// deferred section (I-14) with a large table cut into several clips
+/// ([`Plan::deferred_order`]): `None` when sorted, else the stable
+/// permutation. One read of the table, so that its clips need not each
+/// read it whole.
+pub(crate) fn table_order(
+    src: &dyn source::Source,
+    plan: &Plan,
+    t: &RelaTable,
+) -> Result<Option<Box<[u32]>>, Diagnostic> {
+    let all = t.range(0, t.count);
+    let mut raw = Vec::new();
+    let bytes = if let Some(bytes) = src.resident(t.file, all.clone()) {
+        bytes
+    } else {
+        raw.resize((all.end - all.start) as usize, 0);
+        source::read(src, t.file, all, &mut raw)
+            .map_err(|e| source::copy_error(e, &plan.path(t.file)))?;
+        &raw
+    };
+    let mut perm = Vec::new();
+    Ok(match local_order(t.count, |i| raw_offset(bytes, t.class, i), &mut perm) {
+        Order::Sorted => None,
+        Order::Permuted(p) => Some(p.into()),
+    })
+}
+
 /// The picks of a clip of table `t` (record indexes in record order,
 /// into `picks`) and the records they index, decoded into `recs` from
 /// index `first`: returns `first`.
+///
+/// A deferred section's (I-14) order is the plan's, or found from the
+/// records (then all of them are read); `syms` gets their `r_sym`.
 #[allow(clippy::too_many_arguments)]
 fn load(
     img: &Image<'_>,
@@ -246,9 +329,16 @@ fn load(
     picks: &mut Vec<u32>,
     raw: &mut Vec<u8>,
     recs: &mut Vec<Reloc>,
+    deferred: Option<(&mut Vec<u32>, &mut Vec<u32>)>,
 ) -> Result<u32, Diagnostic> {
     let t = *t;
-    let order = img.records.get(c.section);
+    let (known, mut syms, perm) = match deferred {
+        Some((syms, perm)) => {
+            syms.clear();
+            (img.plan.deferred_order(c.section), Some(syms), Some(perm))
+        }
+        None => (Some(img.records.get(c.section)), None, None),
+    };
     let after_lo = |off: u64| lo.is_none_or(|lo| off > lo);
     recs.clear();
     if t.count == 0 {
@@ -256,21 +346,33 @@ fn load(
     }
     let all = t.range(0, t.count);
     let path = || img.plan.path(t.file);
+    let mut empty = Vec::new();
+    let perm = perm.unwrap_or(&mut empty);
     if let Some(bytes) = img.source.resident(t.file, all.clone()) {
-        pick(order, t.count, |i| raw_offset(bytes, t.class, i), after_lo, hi, picks);
+        let off = |i| raw_offset(bytes, t.class, i);
+        let order = match known {
+            Some(o) => o,
+            None => local_order(t.count, off, perm),
+        };
+        pick(order, t.count, off, after_lo, hi, picks);
         let (w0, w1) = window(order, picks, t.count);
         let e = t.entsize() as usize;
-        decode(img, &t, &bytes[w0 as usize * e..w1 as usize * e], recs)?;
+        decode(img, &t, &bytes[w0 as usize * e..w1 as usize * e], recs, syms.as_deref_mut())?;
         return Ok(w0);
     }
     let whole = c.a == 0 && c.b >= c.section_size;
-    if whole || all.end - all.start <= WHOLE_TABLE || matches!(order, Order::Permuted(_)) {
+    if whole || all.end - all.start <= WHOLE_TABLE || !matches!(known, Some(Order::Sorted)) {
         raw.resize((all.end - all.start) as usize, 0);
         source::read(img.source, t.file, all, raw).map_err(|e| source::copy_error(e, &path()))?;
-        pick(order, t.count, |i| raw_offset(raw, t.class, i), after_lo, hi, picks);
+        let off = |i| raw_offset(raw, t.class, i);
+        let order = match known {
+            Some(o) => o,
+            None => local_order(t.count, off, perm),
+        };
+        pick(order, t.count, off, after_lo, hi, picks);
         let (w0, w1) = window(order, picks, t.count);
         let e = t.entsize() as usize;
-        decode(img, &t, &raw[w0 as usize * e..w1 as usize * e], recs)?;
+        decode(img, &t, &raw[w0 as usize * e..w1 as usize * e], recs, syms.as_deref_mut())?;
         return Ok(w0);
     }
     // Sorted and large: probe the bounds, then read the clip's records.
@@ -294,11 +396,11 @@ fn load(
         return Err(source::copy_error(e, &path()));
     }
     picks.extend(i0..i1);
-    let (w0, w1) = window(order, picks, t.count);
+    let (w0, w1) = window(Order::Sorted, picks, t.count);
     let r = t.range(w0, w1);
     raw.resize((r.end - r.start) as usize, 0);
     source::read(img.source, t.file, r, raw).map_err(|e| source::copy_error(e, &path()))?;
-    decode(img, &t, raw, recs)?;
+    decode(img, &t, raw, recs, syms)?;
     Ok(w0)
 }
 
@@ -359,6 +461,8 @@ fn window(order: Order<'_>, picks: &[u32], n: u32) -> (u32, u32) {
 /// `buf.len() == b − a`). `site` is the whole input section when the
 /// caller has it. Field errors of records whose `r_offset` lies in
 /// `[a, b)` go to `errs` (I-36); a failed read of the input is returned.
+/// A deferred section's (I-14) records are checked first; a fault flags
+/// the section in `s.flagged`.
 #[allow(clippy::too_many_lines)] // one record loop, the spec's steps in order
 pub(crate) fn relocate(
     img: &Image<'_>,
@@ -378,9 +482,16 @@ pub(crate) fn relocate(
         reach.1 = reach.1.max(8);
     }
     let lo = a.checked_sub(reach.1 + 8);
-    let hi = b.saturating_add(reach.0);
-    let Scratch { site: site_buf, proof, picks, raw, recs } = s;
+    let deferred = img.records.is_deferred(c.section);
+    // I-14: the last clip of a deferred section checks the records past
+    // its end too (each such record is a fault).
+    let last = deferred && b >= c.section_size;
+    let hi = if last { u64::MAX } else { b.saturating_add(reach.0) };
+    let Scratch { site: site_buf, proof, picks, raw, recs, syms, perm, windows, pairs, flagged } =
+        s;
     picks.clear();
+    syms.clear();
+    windows.clear();
     let (recs, first): (&[Reloc], u32) = match &c.rs.rows {
         RecRows::Decoded(r) => {
             let order = img.records.get(c.section);
@@ -389,7 +500,8 @@ pub(crate) fn relocate(
             (r, 0)
         }
         RecRows::Rela(t) => {
-            let first = load(img, t, c, lo, hi, picks, raw, recs)?;
+            let checks = deferred.then_some((&mut *syms, &mut *perm));
+            let first = load(img, t, c, lo, hi, picks, raw, recs, checks)?;
             (recs, first)
         }
     };
@@ -428,7 +540,8 @@ pub(crate) fn relocate(
         end: p.end - base,
         ..*p
     }));
-    let leads = img.records.leads(c.section);
+    let leads = deferred || img.records.leads(c.section);
+    let mut fault = false;
     for &i in picks.iter() {
         let Some(&rec) = view.at(i) else {
             let what = format!("fill: record {i} of section {} not decoded", c.section.0);
@@ -436,10 +549,20 @@ pub(crate) fn relocate(
         };
         let r = rec.r_offset;
         let shifted = r.wrapping_sub(base);
-        let reports = (a..b).contains(&r);
+        let reports = (a..b).contains(&r) || (last && r >= b);
         let site = Site { bytes: input, offset: shifted };
+        // I-14: `syms` is empty unless the section is deferred.
+        let r_sym = syms.get((i - first) as usize).copied();
+        if r_sym == Some(u32::MAX) {
+            fault |= reports;
+            continue;
+        }
         let howto = match img.arch.classify(rec.r_type, site) {
             Ok(h) => h,
+            Err(_) if deferred => {
+                fault |= reports;
+                continue;
+            }
             Err(refusal) => {
                 if reports {
                     let what = format!(
@@ -459,19 +582,34 @@ pub(crate) fn relocate(
             r_offset: shifted,
             key: rec.key,
             r_type: rec.r_type,
-            addend: rec.addend,
+            addend: Some(rec.addend),
             howto: &howto,
             site,
             records: &view,
             proof,
             leads,
         };
+        if deferred {
+            let mention = r_sym.map(|s| SymEntry { file: c.file, index: SymbolIndex(s) });
+            let check = check(img, c, &at, mention);
+            fault |= check.fault && reports;
+            if check.errored {
+                continue;
+            }
+            if let Some(w) = img.arch.unit_window(img.output, &at, img.tables) {
+                windows.push(w);
+            }
+        }
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name)
             .with_exec(c.exec);
+        let (mut sym, split) = img.tables.record_sym(rec.key);
+        // A live key's split target first: under `--gc-sections` a live
+        // merge section can hold a collected piece (I-7), and a debug
+        // reference to one is the tombstone (I-47), as one to a collected
+        // section is.
+        let mut target = (split && sym.live).then(|| img.tables.split_target(rec.key, rec.addend));
         let value = match howto.field {
-            Field::Data { bytes: width }
-                if !img.tables.sym(rec.key).live || !img.tables.piece_live(rec.key, rec.addend) =>
-            {
+            Field::Data { bytes: width } if !sym.live || matches!(target, Some(Some(Ok(None)))) => {
                 tombstone::field(img.arch, c.name, c.alloc, width).map(|v| (v, width))
             }
             _ => None,
@@ -480,17 +618,33 @@ pub(crate) fn relocate(
             tomb(img, &mut out, &view, aranges, v, width, i, &rec, shifted, c.section_size);
             Ok(())
         } else {
-            let eh = match img.tables.split_target(rec.key, rec.addend) {
-                None => None,
-                Some(Ok(v)) => Some((rec.key, v.wrapping_sub(rec.addend.cast_unsigned()))),
-                Some(Err(d)) => {
-                    if reports {
-                        errs.push((fill_key(c.file, c.index, i), d));
+            if split {
+                let target =
+                    target.take().unwrap_or_else(|| img.tables.split_target(rec.key, rec.addend));
+                match target {
+                    None => sym = img.tables.sym(rec.key),
+                    Some(Ok(Some(v))) => sym.s = v.wrapping_sub(rec.addend.cast_unsigned()),
+                    Some(Ok(None)) => {
+                        if reports {
+                            let what = "fill: a reference to a collected merge piece".to_owned();
+                            errs.push((fill_key(c.file, c.index, i), internal(what)));
+                        }
+                        continue;
                     }
-                    continue;
+                    Some(Err(d)) => {
+                        if reports {
+                            errs.push((fill_key(c.file, c.index, i), d));
+                        }
+                        continue;
+                    }
                 }
+            }
+            let shift = ShiftTables {
+                inner: img.tables,
+                section: c.section,
+                base,
+                value: Some((rec.key, sym)),
             };
-            let shift = ShiftTables { inner: img.tables, section: c.section, base, value: eh };
             let cx =
                 FillCx { tables: &shift, output: img.output, got_base: img.got_base, tls: img.tls };
             img.arch.apply(&cx, &at, &mut out)
@@ -512,7 +666,115 @@ pub(crate) fn relocate(
             errs.push(mortar_arch::diag::fill(e, &place, RefName::Named(howto.name), &target));
         }
     }
+    // §3.4: the windows of the clip's records without a fault of their
+    // own, every pair that overlaps among them (each such pair meets in
+    // some clip, whose picks hold both records).
+    if deferred && !disjoint_in_order(windows) {
+        pairs.clear();
+        overlaps(windows, pairs);
+        fault |= !pairs.is_empty();
+    }
+    if fault {
+        flagged.push(c.section);
+    }
     Ok(())
+}
+
+/// The facts of a deferred record's scan (I-14): the scan's, through
+/// [`Tables::scan_facts`]; `missing` when the tables have none (the
+/// record is then a fault, reported as the tables can).
+struct CheckTables<'a> {
+    tables: &'a dyn Tables,
+    key: SymKey,
+    mention: Option<SymEntry>,
+    missing: std::sync::atomic::AtomicBool,
+}
+
+impl SymNames for CheckTables<'_> {
+    fn name(&self, key: SymKey) -> &[u8] {
+        self.tables.name(key)
+    }
+}
+
+impl ScanTables for CheckTables<'_> {
+    fn sym(&self, key: SymKey) -> SymFacts {
+        let mention = if key == self.key { self.mention } else { None };
+        self.tables.scan_facts(key, mention).unwrap_or_else(|| {
+            self.missing.store(true, std::sync::atomic::Ordering::Relaxed);
+            SymFacts {
+                kind: TargetKind::Abs,
+                sym_type: 0,
+                st_other: 0,
+                tls: false,
+                dead: false,
+                comdat_only: false,
+                gnu_warning: false,
+            }
+        })
+    }
+}
+
+/// What `arch.scan` said of a deferred record (I-14).
+#[derive(Debug, Default)]
+struct Check {
+    /// The record's type is one of `Arch::nonalloc_demand_types`: its
+    /// demands were raised by the scan.
+    demands: bool,
+    record: u32,
+    /// An error of the record itself: no window, not applied.
+    errored: bool,
+    /// Anything the scan would report: an error (of any record), an event,
+    /// or a demand the scan did not raise.
+    fault: bool,
+}
+
+impl DemandOut for Check {
+    fn raise(&mut self, _: SymKey, flags: DemandFlags) {
+        self.fault |= !flags.is_empty() && !self.demands;
+    }
+
+    fn raise_global(&mut self, flags: GlobalFlags) {
+        self.fault |= !flags.is_empty() && !self.demands;
+    }
+
+    fn count(&mut self, _: DynRole, n: u32) {
+        self.fault |= n != 0 && !self.demands;
+    }
+
+    fn error(&mut self, record: u32, _: ScanError) {
+        self.fault = true;
+        self.errored |= record == self.record;
+    }
+
+    fn reference(&mut self, _: u32, _: mortar_arch::EventClass, _: SymKey) {
+        self.fault = true;
+    }
+}
+
+/// `arch.scan` of a deferred record (I-14), as the scan's walk calls it
+/// (§4.1 step 2: the record's own mention for an undefined key's type).
+fn check(img: &Image<'_>, c: &Clip<'_>, at: &RelocAt<'_>, mention: Option<SymEntry>) -> Check {
+    let tables = CheckTables {
+        tables: img.tables,
+        key: at.key,
+        mention,
+        missing: std::sync::atomic::AtomicBool::new(false),
+    };
+    let mut out = Check {
+        demands: img.arch.nonalloc_demand_types().contains(&at.r_type),
+        record: at.index,
+        ..Check::default()
+    };
+    // A deferred section is not `SHF_ALLOC`, where `writable` is not read
+    // (`spec/arch.md` §4.3 "Non-alloc places").
+    let place = PlaceFacts { alloc: c.alloc, writable: false };
+    let cx = ScanCx { tables: &tables, output: img.output, place, name: c.name };
+    img.arch.scan(&cx, at, &mut DemandSink::new(&mut out));
+    if tables.missing.into_inner() {
+        out.fault = true;
+        out.errored = true;
+    }
+    out
 }
 
 /// Writes the tombstone `v` (I-47, I-48) and, in `.debug_aranges`, the

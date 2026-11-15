@@ -1,4 +1,4 @@
-//! Sub-step timers of the split, merge and scan phases (WP-032b): when
+//! Sub-step timers of the phases (WP-032b, WP-032e): when
 //! the environment variable [`STEPS_VAR`] is set (to anything), each
 //! [`Steps::step`] prints one line to standard error,
 //!
@@ -6,8 +6,10 @@
 //!
 //! Off, a step is one branch on a cached flag. Nothing a step prints
 //! reaches the output file, the map or a diagnostic; it is for profiling
-//! and `cargo xtask bench` only. (Prefixed for WP-032b: the supervisor
-//! reconciles helpers of the same kind at merge.)
+//! and `cargo xtask bench` only. Input and resolve collect their steps
+//! (`mortar_input::steps`, `mortar_resolve::steps`) and the driver prints
+//! them under the same variable, in the same format, with counts as
+//! `mortar: steps: <phase> count <name>: <n>`.
 
 use std::fmt::Write as _;
 use std::sync::OnceLock;

@@ -308,14 +308,49 @@ relocation, and sequence recognition across neighbouring records
   instruction (`spec/arch.md` §3.4, through `RelocAt::site`). For a
   non-resident body the site is read with `copy_to` into a 16-byte
   buffer the worker owns.
-- **I-14 [M1] Non-alloc fast path.** A relocation whose place is in a
-  non-alloc section raises no demand and produces no dynamic relocation
-  (`spec/a64.md` §13.2). For it the driver calls the architecture's
-  non-alloc check only: the type is in the allowed list, the field lies
-  in the section, and the target is classified as defined, undefined
-  (an event, §4.4), or in a section that is not live (§6.1). This is
-  where the cost is: 87% of `cxx-medium-g`'s 2.2 M relocations are in
-  `.debug_*` sections (E5).
+- **I-14 [M1] Non-alloc relocations are checked by fill (supervisor
+  ruling, WP-032c).** A relocation whose place is in a non-alloc section
+  raises no demand and produces no dynamic relocation (`spec/a64.md`
+  §13.2), except the types the architecture lists in
+  `Arch::nonalloc_demand_types` (x86-64 `GOTOFF64`, X-53; AArch64
+  `GOTREL64`/`GOTREL32`, M2), which need the GOT base (`spec/arch.md`
+  §4.3). The scan **defers** a live relocated section `S` to fill
+  (`RecIndex::deferred`) when all of these hold: `S` is not `SHF_ALLOC`,
+  is `Regular` or `Debug`, and has a debug name (a reference from it to a
+  section that is not live is the tombstone, §6.1:
+  `mortar_arch::dead_reference` is `Tombstone`); its relocation section
+  is `SHT_RELA` with the class's record size, whole records, `sh_info`
+  `S` and `sh_link` the file's symbol table; and no global of `S`'s file,
+  nor what `redirect` makes of one, is a key a reference to which makes
+  an event (§4.4: target kind `Undefined`, a `comdat-mismatch` key, a
+  `gnu-warning` key). A deferred section's records can make no event, so
+  what is left of the scan's work on them is the checks of §4.3. The
+  scan reads only a deferred section's records of the listed types, and
+  calls `arch.scan` on those for their demands; it reads no other record
+  of it.
+
+  Fill checks each record of a deferred section as it applies it (§5.4),
+  in the clip whose `[a, b)` holds its `r_offset` (the last clip: or any
+  `r_offset ≥ b`): its symbol has a key; `classify` accepts the type;
+  `arch.scan`, called as the scan calls it, reports nothing, which is
+  the architecture's non-alloc check (the type is allowed at a non-alloc
+  place, the field lies in the section, the target is defined, a weak or
+  ignored undefined, or in a section that is not live, whose field is
+  the tombstone of I-47) and raises no demand outside the listed types;
+  and no two of the clip's windows overlap (`spec/arch.md` §3.4). A
+  failed check fails the link, and its diagnostics are the scan's walk
+  of the section (`Walker::deferred_report`): the same text as the
+  scan's, keyed `(100, FileId, section index × 2^32 + record index)`,
+  so after every scan diagnostic and among themselves by file, section
+  and record. Fill reports nothing of its own for such a record and does
+  not apply it. The walk also reports, so that no fault goes unseen,
+  every deferred section when the link fails after the scan and before
+  fill has run every job (a phase from 80 to 99, the image phase before
+  fill, a job stopped by a failed read), and a deferred section fill does
+  not reach (no input row with relocations). An `Undefined` from
+  non-alloc sections only (I-110) is still the scan's: its file is not
+  deferred. 87% of `cxx-medium-g`'s 2.2 M relocations are in `.debug_*`
+  sections (E5).
 - **I-15 [M1]** The scan's outputs and only these: the `Demands` flags
   (atomic or, rule 2), the per-section dynamic-relocation counts
   (written by the unit that scans the section; a section split into
@@ -334,7 +369,10 @@ relocation, and sequence recognition across neighbouring records
   a key's flags before or-ing** (`load`, and `fetch_or` only when a bit is
   missing), which keeps the cache line shared in the common case of a
   flag already set. The parallel scaling of that form is not measured
-  (E14); the benchmark gate of §16.5 is.
+  (E14); the benchmark gate of §16.5 is. The records of the sections
+  deferred to fill (I-14) are not part of this cost: fill pays one
+  `arch.scan` and one window per such record, in the pass that applies
+  it.
 
 ### 4.3 Errors
 
@@ -380,7 +418,8 @@ pub struct GroupKey { pub class: EventClass, pub file: FileId, pub group: u64 } 
 - **I-19 [M1]** An event is only reported for a **surviving** reference:
   a relocation consumed by a matched sequence reports none
   (`spec/arch.md` §3.4); a relocation in a section that is not live is
-  never scanned; an `Undefined` target whose verdict is "nothing"
+  never scanned; a section deferred to fill (I-14) makes none, by the
+  rule that defers it; an `Undefined` target whose verdict is "nothing"
   (`--unresolved-symbols=ignore-all`, `--ignore-unresolved-symbol`, weak)
   reports none. Whether the event is an error or a warning is the
   verdict's, fixed per key, and is recorded with the group, not per
@@ -778,7 +817,10 @@ writes a value chosen by the referring section's name, as
 - **I-45 [M1]** Referring section with **a GNU ld debug name**
   (`spec/resolve.md` §6.3: prefix `.debug`, `.zdebug`, `.line`, `.stab`,
   `.gnu.linkonce.wi.`, `.gnu.debuglto_.debug_`, exactly
-  `.gnu_debuglink`): the **tombstone** of I-47, whatever the addend.
+  `.gnu_debuglink`): the **tombstone** of I-47, whatever the addend. Such
+  a section is usually deferred to fill (I-14): the target's liveness is
+  then read at fill (`SymValue::live`, from `Liveness`), which is where
+  `arch.scan` would have found the target dead.
 - **I-46 [M1]** Exactly `.gcc_except_table` (alloc or not): 0
   (`spec/resolve.md` §6.3). Any other non-alloc section: the scan
   reported `discarded-section-reference` (§4.4) and fill never runs.
@@ -790,11 +832,33 @@ writes a value chosen by the referring section's name, as
   | referring section | ELFCLASS64 | ELFCLASS32 |
   |---|---|---|
   | `.debug_ranges`, `.debug_loc` | 1 | 1 |
+  | `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | **0** | 0 |
   | `.debug_aranges` | all ones, **and the tuple's length 0** (I-112) | the same |
   | `.debug_frame` | all ones | all ones |
-  | every other debug name (`.debug_info`, `.debug_addr`, `.debug_line`, `.debug_rnglists`, `.debug_loclists`, `.debug_str_offsets`, …) | all ones | **0** |
+  | every other debug name (`.debug_info`, `.debug_line`, `.debug_str_offsets`, …) | all ones | **0** |
 
-  Why each row (E9, E10, E16, E17):
+  Why each row (E9, E10, E16, E17, and WP-027e's matrix,
+  `spec/landed/pipeline/WP-027e.md`):
+  - `.debug_rnglists`/`.debug_loclists`/`.debug_addr` (DWARF 5): their
+    entries pair an address with a length (`DW_RLE_start_length`,
+    `DW_LLE_start_length`; through `.debug_addr`, Clang's
+    `DW_RLE_startx_length` and `DW_LLE_startx_length`), so all ones makes
+    `[2^64 − 1, len − 1)`, which wraps. gdb 16 then reports `Invalid
+    .debug_rnglists data (inverted range)` and drops the CU's whole range
+    list, and stepping into that CU's code says `pc … in read in CU, but
+    not in symtab` (GCC 14 `-gdwarf-5`, its default, `-O0`). 0 is what
+    GNU ld (without a kept copy), lld 19/22 and mold write: gdb skips an
+    entry that starts at 0 when no section is there (`.debug_rnglists
+    entry has start address of zero`), a subprogram whose
+    `DW_FORM_addrx` `low_pc` is 0 is dropped by gdb and lldb 19, and
+    lldb's breakpoints, lookups and steps are those of the all-ones
+    output. It is sound because no code lies in `[0, len)`: the non-PIE
+    base is at least 4 MiB (`spec/layout.md` L-68), so only a dead
+    function of 4 MiB or more could reach it. A PIE or a low layout (M2)
+    must revisit this row: E16 measured lldb losing lines there with the
+    references' 0. `llvm-dwarfdump --verify` reports `DIE has overlapping
+    ranges` for a CU's several `[0, len)` entries (lld and mold: the
+    same); the debuggers are the oracle.
   - `.debug_ranges`/`.debug_loc` (DWARF ≤ 4 pairs): `(0, 0)` ends the
     list and a first word of all ones selects a base address; `(1, 1)` is
     empty. lld and mold write 1.
@@ -808,7 +872,8 @@ writes a value chosen by the referring section's name, as
     tuple is empty and every row below passes. A tuple address of `2^63`
     also passed every 64-bit row; the empty tuple was chosen because it
     is empty in both classes.
-  - ELFCLASS64 elsewhere: gdb 16 and lldb 19 drop a subprogram whose
+  - ELFCLASS64 elsewhere (`DW_FORM_addr` in `.debug_info`,
+    `DW_LNE_set_address`): gdb 16 and lldb 19 drop a subprogram whose
     `low_pc` is all ones (`llvm-dwarfdump` prints `dead code`). A 0 is an
     address: in the low layout lld's and mold's Clang DWARF 5 outputs
     lose lldb's lines because `.debug_addr` claims `[0, size)`.
@@ -1804,7 +1869,8 @@ pub trait SynthChunk {
 
 | subject | GNU ld 2.44 | lld 22 | mold 2.37.1 | mortar | rule |
 |---|---|---|---|---|---|
-| debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`, `addr`, `rnglists`, `loclists`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| the same in `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | redirect or 0 | 0 | 0 | 0 | I-47 |
 | the same, ELFCLASS32 | redirect or 0 | 0 | 0 | 0 (`.debug_frame`: all ones) | I-47 |
 | the same in `.debug_aranges` | redirect or 0 | 0 | 0 | all ones, length 0 | I-47, I-112 |
 | the same in `.debug_ranges`/`.debug_loc` | redirect or 0 (GC case: 0 in `.debug_loc`, `spec/a64.md` §13.2) | 1 | 1 | 1 | I-47 |

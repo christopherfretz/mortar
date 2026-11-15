@@ -630,7 +630,7 @@ fn i111_max_reach_bounds_every_write() {
                     r_offset: rec.r_offset,
                     key: rec.key,
                     r_type: rec.r_type,
-                    addend: rec.addend,
+                    addend: Some(rec.addend),
                     howto: &h,
                     site: Site { bytes: &input, offset: rec.r_offset },
                     records: &recs,

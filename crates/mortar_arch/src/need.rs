@@ -63,7 +63,7 @@ pub fn branch_site(
     let key = if via_plt {
         ThunkTarget::Plt(at.key)
     } else {
-        ThunkTarget::Sym { key: at.key, addend: at.addend }
+        ThunkTarget::Sym { key: at.key, addend: at.rela_addend() }
     };
     Some(BranchSite { branch, key })
 }

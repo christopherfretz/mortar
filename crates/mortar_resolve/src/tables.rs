@@ -903,7 +903,7 @@ pub struct Outcome {
     /// `--require-defined`), in option order: their definitions are
     /// roots of `--gc-sections` (§4.7).
     pub roots: Vec<SymbolId>,
-    /// Where the time went (`MORTAR_TIME_STEPS`; decides nothing).
+    /// Where the time went (`MORTAR_STEPS`; decides nothing).
     pub steps: Steps,
 }
 

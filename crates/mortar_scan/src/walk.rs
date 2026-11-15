@@ -59,6 +59,27 @@ impl<'a, 's> Walker<'a, 's> {
         self.view.facts(key, None)
     }
 
+    /// The facts of `key` as `arch.scan` sees them for a record whose
+    /// symbol is `mention` (an undefined key takes its type), `None` for
+    /// a definition's ([`Walker::facts`]).
+    #[must_use]
+    pub fn facts_at(&self, key: SymKey, mention: Option<SymEntry>) -> SymFacts {
+        self.view.facts(key, mention)
+    }
+
+    /// The scan's diagnostics of `sections`, sections whose checks the
+    /// scan left to fill (`RecIndex::deferred`, `spec/image.md` I-14):
+    /// each walked whole as the scan walks it, keyed at phase
+    /// [`crate::DEFERRED_PHASE`]. Empty when none has a fault or an event.
+    #[must_use]
+    pub fn deferred_report(
+        &self,
+        sections: &[SectionId],
+        pool: &mortar_core::par::Pool,
+    ) -> Vec<(Key, Diagnostic)> {
+        crate::deferred_report(&self.view, sections, pool)
+    }
+
     /// The name of section `index` of `file`, for diagnostics.
     #[must_use]
     pub fn section_name(&self, file: FileId, index: u32) -> String {

@@ -76,6 +76,29 @@ const ELFOSABI_GNU: u8 = 3;
 /// that fill sees the target kind the scan decided on.
 pub trait KeyFacts: SymNames {
     fn facts(&self, key: SymKey) -> SymFacts;
+
+    /// The facts of `key` for a record whose symbol is `mention`, as
+    /// `arch.scan` sees them (an undefined key takes the mention's type):
+    /// fill's checks of the sections the scan left to it
+    /// (`RecIndex::deferred`, `spec/image.md` I-14). By default the
+    /// definition's, [`KeyFacts::facts`].
+    fn facts_at(&self, key: SymKey, mention: Option<SymEntry>) -> SymFacts {
+        let _ = mention;
+        self.facts(key)
+    }
+
+    /// The diagnostics of deferred `sections` (I-14), as the scan's walk
+    /// of them makes them, keyed at phase 100: fill found a fault in them,
+    /// or could not check them. By default one `internal-error`: these
+    /// tables cannot report them.
+    fn deferred_report(&self, sections: &[SectionId], pool: &Pool) -> Vec<(Key, Diagnostic)> {
+        let _ = pool;
+        let what = format!(
+            "image: {} section(s) left to fill's checks (I-14) and no report of them",
+            sections.len()
+        );
+        vec![(Key::new(PHASE_IMAGE, 0, 0), internal(what))]
+    }
 }
 
 /// The synthetic chunks' plans (phase 80, re-planned after layout's fixed
@@ -220,6 +243,8 @@ pub struct LinkTables<'a, 's> {
     eh_frame: Option<(u32, u64)>,
     /// Per section index (0 is the null section).
     sections: Box<[OutSection]>,
+    /// References into `Merge` sections by offset (I-119).
+    pieces: refs::PieceIndex,
 }
 
 impl std::fmt::Debug for LinkTables<'_, '_> {
@@ -277,7 +302,9 @@ impl<'a, 's> LinkTables<'a, 's> {
             got_addrs,
             eh_frame,
             sections: out_sections(link.layout).into(),
+            pieces: refs::PieceIndex::default(),
         };
+        t.pieces = refs::PieceIndex::new(link.split, |s| t.section_size(s));
         let n = link.inputs.symbols.len() as usize;
         let global = link.pool.map(n, |i| t.def_addr(SymbolId(i as u32)));
         t.global = global.into();
@@ -333,8 +360,12 @@ impl<'a, 's> LinkTables<'a, 's> {
     fn value_in(&self, s: SectionId, v: u64) -> Option<u64> {
         match self.kind_of(s)? {
             SectionKind::Merge => {
-                let size = self.section_size(s)?;
-                let p = refs::named_symbol(self.link.split, s, size, v).ok()?;
+                let p = if let Some(p) = self.pieces.named_symbol(self.link.split, s, v) {
+                    p.ok()?
+                } else {
+                    let size = self.section_size(s)?;
+                    refs::named_symbol(self.link.split, s, size, v).ok()?
+                };
                 self.frag_value(p.frag)?.checked_add(p.within)
             }
             SectionKind::EhFrame => {
@@ -355,6 +386,24 @@ impl<'a, 's> LinkTables<'a, 's> {
     /// A live fragment's value (model §4.5): its address, or in a
     /// non-allocated merged chunk its offset from its section's start
     /// (`.debug_str`, the gABI's `sh_addr` 0).
+    /// Whether `frag` survived the mark (`frag_live`; every fragment
+    /// without `--gc-sections`).
+    fn frag_live(&self, frag: mortar_core::FragId) -> bool {
+        self.link.liveness.frag_live.get(frag).copied().unwrap_or(true)
+    }
+
+    /// Whether a named symbol at `v` in `Merge` section `s` names a
+    /// collected piece (I-7): its references are then to a dead target.
+    fn named_piece_dead(&self, s: SectionId, v: u64) -> bool {
+        let found = if let Some(p) = self.pieces.named_symbol(self.link.split, s, v) {
+            p
+        } else {
+            let Some(size) = self.section_size(s) else { return false };
+            refs::named_symbol(self.link.split, s, size, v)
+        };
+        found.is_ok_and(|p| !self.frag_live(p.frag))
+    }
+
     fn frag_value(&self, frag: mortar_core::FragId) -> Option<u64> {
         let row = self.link.split.frags.get(frag)?;
         let chunk = self.addrs.merged_chunk(self.link.assignment.out(row.section)?)?;
@@ -468,19 +517,52 @@ impl SymNames for LinkTables<'_, '_> {
     }
 }
 
-impl FillTables for LinkTables<'_, '_> {
-    fn sym(&self, key: SymKey) -> SymValue {
+impl LinkTables<'_, '_> {
+    /// `sym(key)`, reading the key's symbol once; with `split` (the
+    /// caller asks `split_target`), `s` is left 0 when the target is in a
+    /// split section, and the flag says so (`Tables::record_sym`).
+    fn sym_value(&self, key: SymKey, split: bool) -> (SymValue, bool) {
         let facts = self.link.facts.facts(key);
         let entry = self.def_entry(key);
-        let size = entry.and_then(|e| self.sym_of(e)).map_or(0, |(_, s)| s.st_size);
+        let read = entry.and_then(|e| self.sym_of(e).map(|(t, s)| (e, t, s)));
+        let size = read.map_or(0, |r| r.2.st_size);
+        let place = read.and_then(|(e, t, sym)| match t.section_of(e.index, &sym).ok()? {
+            SymbolSection::Absolute => Some(Err(sym.st_value)),
+            SymbolSection::Section(index) => {
+                Some(Ok((self.link.resolution.section_id(e.file, index)?, sym)))
+            }
+            _ => None,
+        });
+        // `split_target`'s cases: a section symbol of a `Merge` section,
+        // any key defined in an `.eh_frame`.
+        let in_split = |s: SectionId, sym: &mortar_elf::raw::Sym| match self.kind_of(s) {
+            Some(SectionKind::Merge) => sym.sym_type() == STT_SECTION,
+            Some(SectionKind::EhFrame) => true,
+            _ => false,
+        };
+        let is_split = split && matches!(&place, Some(Ok((s, sym))) if in_split(*s, sym));
+        // A named symbol in a collected merge piece (I-7) is dead, as one
+        // in a collected section is.
+        let piece_dead = |place: &Option<Result<(SectionId, mortar_elf::raw::Sym), u64>>| {
+            matches!(place, Some(Ok((s, sym)))
+                if sym.sym_type() != STT_SECTION
+                    && self.kind_of(*s) == Some(SectionKind::Merge)
+                    && self.named_piece_dead(*s, sym.st_value))
+        };
         let (s, live) = match key.kind() {
-            SymKind::Local(e) => {
-                let live = !facts.dead;
-                (if live { self.entry_addr(e) } else { None }, live)
+            SymKind::Local(_) => {
+                let live = !facts.dead && !piece_dead(&place);
+                let s = match place {
+                    _ if !live || is_split => None,
+                    Some(Err(abs)) => Some(abs),
+                    Some(Ok((s, sym))) => self.value_in(s, sym.st_value),
+                    None => None,
+                };
+                (s, live)
             }
             SymKind::Global(id) => {
-                let live = match entry.and_then(|e| self.entry_place(e)) {
-                    Some(Ok((sec, _))) => self.link.liveness.is_live(sec),
+                let live = match place {
+                    Some(Ok((sec, _))) => self.link.liveness.is_live(sec) && !piece_dead(&place),
                     _ => true,
                 };
                 (self.global.get(id.0 as usize).copied().flatten(), live)
@@ -488,7 +570,13 @@ impl FillTables for LinkTables<'_, '_> {
         };
         // S-71: every address of an IFUNC with an IPLT entry is the entry.
         let s = self.plt(key).or(s).unwrap_or(0);
-        SymValue { s, kind: facts.kind, size, live, tls: facts.tls }
+        (SymValue { s, kind: facts.kind, size, live, tls: facts.tls }, is_split)
+    }
+}
+
+impl FillTables for LinkTables<'_, '_> {
+    fn sym(&self, key: SymKey) -> SymValue {
+        self.sym_value(key, false).0
     }
 
     fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {
@@ -526,6 +614,14 @@ impl FillTables for LinkTables<'_, '_> {
 }
 
 impl Tables for LinkTables<'_, '_> {
+    fn record_sym(&self, key: SymKey) -> (SymValue, bool) {
+        self.sym_value(key, true)
+    }
+
+    fn scan_facts(&self, key: SymKey, mention: Option<SymEntry>) -> Option<SymFacts> {
+        Some(self.link.facts.facts_at(key, mention))
+    }
+
     fn target_alloc(&self, key: SymKey) -> bool {
         match self.def_entry(key).and_then(|e| self.entry_place(e)) {
             Some(Ok((s, _))) => self.section_flags(s) & SHF_ALLOC != 0,
@@ -535,39 +631,26 @@ impl Tables for LinkTables<'_, '_> {
         }
     }
 
-    fn piece_live(&self, key: SymKey, addend: i64) -> bool {
-        let Some(Ok((s, sym))) = self.def_entry(key).and_then(|e| self.entry_place(e)) else {
-            return true;
-        };
-        if self.kind_of(s) != Some(SectionKind::Merge) {
-            return true;
-        }
-        let at = if sym.sym_type() == STT_SECTION {
-            (sym.st_value as i64).wrapping_add(addend)
-        } else {
-            sym.st_value as i64
-        };
-        let Ok(at) = u32::try_from(at) else { return true };
-        let split = self.link.split;
-        split
-            .merge_piece_at(s, at)
-            .and_then(|p| split.piece_frag.get(p.piece as usize))
-            .is_none_or(|&f| self.link.liveness.frag_live.get(f).copied().unwrap_or(true))
-    }
-
-    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<u64, Diagnostic>> {
+    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<Option<u64>, Diagnostic>> {
         let e = self.def_entry(key)?;
         let Ok((s, sym)) = self.entry_place(e)? else { return None };
         let section_sym = sym.sym_type() == STT_SECTION;
         let malformed = |what: String| Diagnostic::error(Kind::Malformed { what });
         match self.kind_of(s)? {
             SectionKind::Merge if section_sym => {
-                let size = self.section_size(s)?;
                 let r = (sym.st_value as i64).wrapping_add(addend);
-                Some(match refs::section_symbol(self.link.split, s, size, r) {
+                let found = if let Some(found) = self.pieces.section_symbol(self.link.split, s, r) {
+                    found
+                } else {
+                    let size = self.section_size(s)?;
+                    refs::section_symbol(self.link.split, s, size, r)
+                };
+                Some(match found {
+                    Ok(p) if !self.frag_live(p.frag) => Ok(None),
                     Ok(p) => self
                         .frag_value(p.frag)
                         .and_then(|a| a.checked_add(p.within))
+                        .map(Some)
                         .ok_or_else(|| internal("fill: a live merge piece has no address")),
                     Err(w) => Err(malformed(w.message())),
                 })
@@ -590,7 +673,9 @@ impl Tables for LinkTables<'_, '_> {
                 };
                 let tail = if section_sym { 0 } else { addend };
                 Some(match plan.value(src, s, r, EhWho::Reloc) {
-                    Ok(EhValue::Offset(o)) => Ok(eh.wrapping_add(o).wrapping_add(tail as u64)),
+                    Ok(EhValue::Offset(o)) => {
+                        Ok(Some(eh.wrapping_add(o).wrapping_add(tail as u64)))
+                    }
                     Ok(EhValue::Dropped) => Err(internal("fill: a relocation to a dropped symbol")),
                     Err(e) => Err(e.into_diagnostic()),
                 })
@@ -1211,19 +1296,100 @@ impl<'a> Chunks<'a> {
 /// A failed link leaves no output file (I-65): the temporary is removed
 /// and an existing output is untouched.
 ///
+/// The sections whose checks the scan left to fill (`RecIndex::deferred`,
+/// `spec/image.md` I-14) are checked by fill; a fault, a section fill
+/// does not reach, or a link that fails before fill has checked them all
+/// adds the scan's diagnostics of them ([`KeyFacts::deferred_report`]).
+///
 /// # Errors
 ///
 /// Every diagnostic of the phase, keyed (I-43, I-64, I-68).
-#[allow(clippy::too_many_lines)]
 pub fn write(
     link: &Link<'_, '_>,
     path: &Path,
     opts: &OutputOptions,
     on_phase: &mut dyn FnMut(u16, &str),
 ) -> Result<Written, Failed> {
+    let mut checked = false;
+    match write_link(link, path, opts, on_phase, &mut checked) {
+        Err(mut f) if !checked && !link.records.deferred().is_empty() => {
+            // I-14: the link failed before fill checked the sections.
+            let all = link.records.deferred();
+            f.diagnostics.extend(link.facts.deferred_report(all, link.pool));
+            Err(f)
+        }
+        r => r,
+    }
+}
+
+/// The order of the deferred sections (I-14) whose table is large and
+/// whose row is cut into several jobs' clips (`Plan::deferred_order`):
+/// found once here, in parallel, where each clip would read the table
+/// whole.
+fn deferred_orders(
+    link: &Link<'_, '_>,
+    plan: &crate::plan::Plan,
+) -> Result<crate::plan::DeferredOrders, Failed> {
+    use crate::plan::{RecRows, Unit};
+    if link.records.deferred().is_empty() {
+        return Ok(Box::new([]));
+    }
+    let job_of = |off: u64| plan.jobs.partition_point(|j| j.end <= off);
+    let mut todo = Vec::new();
+    for row in &plan.rows {
+        let Unit::Input(i) = row.unit else { continue };
+        let u = &plan.inputs[i as usize];
+        let Some(r) = u.relocs else { continue };
+        let RecRows::Rela(t) = &plan.relocs[r as usize].rows else { continue };
+        if row.size == 0
+            || !link.records.is_deferred(u.section)
+            || u64::from(t.count) * t.entsize() <= crate::reloc::WHOLE_TABLE
+            || job_of(row.offset) == job_of(row.end() - 1)
+        {
+            continue;
+        }
+        todo.push((u.section, *t));
+    }
+    let orders = link.pool.map(todo.len(), |k| {
+        crate::reloc::table_order(link.inputs, plan, &todo[k].1).map(|o| (todo[k].0, o))
+    });
+    let mut v = Vec::with_capacity(orders.len());
+    for o in orders {
+        v.push(o.map_err(failed)?);
+    }
+    v.sort_by_key(|o| o.0);
+    v.dedup_by_key(|o| o.0);
+    Ok(v.into_boxed_slice())
+}
+
+/// The deferred sections (I-14) fill does not reach: no input row with
+/// relocations in the plan (an empty section, one not in the file).
+fn unreached(link: &Link<'_, '_>, plan: &crate::plan::Plan) -> Vec<SectionId> {
+    let deferred = link.records.deferred();
+    if deferred.is_empty() {
+        return Vec::new();
+    }
+    let mut reached: Vec<SectionId> =
+        plan.inputs.iter().filter(|u| u.relocs.is_some()).map(|u| u.section).collect();
+    reached.sort_unstable();
+    deferred.iter().copied().filter(|s| reached.binary_search(s).is_err()).collect()
+}
+
+/// [`write`]; `checked` is set once fill has run (I-14).
+#[allow(clippy::too_many_lines)]
+fn write_link(
+    link: &Link<'_, '_>,
+    path: &Path,
+    opts: &OutputOptions,
+    on_phase: &mut dyn FnMut(u16, &str),
+    checked: &mut bool,
+) -> Result<Written, Failed> {
+    let mut steps = mortar_core::wp032b_steps::Steps::new("image");
     let tables = LinkTables::new(*link);
+    steps.step("tables", u64::from(link.inputs.symbols.len()), "symbol");
     let mut fixed = structure(link).map_err(failed)?;
     fixed.append(&mut patches(link, &tables).map_err(failed)?);
+    steps.step("structure", 0, "");
     let chunks = Chunks::new(link);
     let pl = &link.layout.placement;
     let mut list: Vec<&(dyn SynthChunk + Sync)> = Vec::new();
@@ -1273,8 +1439,10 @@ pub fn write(
         eh: link.eh.map(|e| e.1),
     };
     let target = Target::from_facts(link.arch.facts());
-    let plan = layout_plan::from_layout(&model, target, &extras, IMAGE_BLOCK, link.pool)
+    let mut plan = layout_plan::from_layout(&model, target, &extras, IMAGE_BLOCK, link.pool)
         .map_err(failed)?;
+    plan.deferred_order = deferred_orders(link, &plan)?;
+    steps.step("plan", plan.rows.len() as u64, "row");
     let output_ref = FileRef::new(path.display().to_string());
     let code_addr = |c: CodeRef| -> Option<u64> {
         let off = u64::try_from(c.offset).ok()?;
@@ -1320,13 +1488,41 @@ pub fn write(
         fixups: &fixups,
     };
     let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
-    let filled: Filled = match fill::write(&img, &out, out.shown(), link.pool) {
-        Ok(f) => f,
-        Err(e) => {
+    steps.step("create", 0, "");
+    let (filled, checks) = fill::write_checked(&img, &out, out.shown(), link.pool);
+    *checked = true;
+    // I-14: the scan's diagnostics of the deferred sections fill found a
+    // fault in, or did not reach; of all of them when a job stopped early.
+    let mut report_on =
+        if checks.complete { checks.flagged.clone() } else { link.records.deferred().to_vec() };
+    report_on.extend(unreached(link, &plan));
+    report_on.sort_unstable();
+    report_on.dedup();
+    let mut report = if report_on.is_empty() {
+        Vec::new()
+    } else {
+        link.facts.deferred_report(&report_on, link.pool)
+    };
+    if checks.complete && !checks.flagged.is_empty() && report.is_empty() {
+        let what = format!(
+            "image: fill found a fault in section(s) {:?} that the scan's walk of them does not report (I-14)",
+            checks.flagged.iter().map(|s| s.0).collect::<Vec<_>>()
+        );
+        report.push((Key::new(PHASE_IMAGE, 0, 0), internal(what)));
+    }
+    let filled: Filled = match filled {
+        Ok(f) if report.is_empty() => f,
+        Ok(_) => {
             out.abort();
+            return Err(Failed { diagnostics: report });
+        }
+        Err(mut e) => {
+            out.abort();
+            e.diagnostics.append(&mut report);
             return Err(e);
         }
     };
+    steps.step("fill", plan.file_size, "byte");
     // input.md §11.5: the files the store still holds, once more.
     let mut changed = Vec::new();
     for (file, _) in link.inputs.files.iter() {
@@ -1339,6 +1535,7 @@ pub fn write(
         out.abort();
         return Err(Failed { diagnostics: changed });
     }
+    steps.step("recheck", 0, "");
     on_phase(PHASE_IMAGE, "image");
     out.commit().map_err(|kd| Failed { diagnostics: vec![kd] })?;
     on_phase(PHASE_OUTPUT, "output file");

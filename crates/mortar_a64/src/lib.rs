@@ -195,6 +195,12 @@ impl Arch for A64 {
         apply::scan(cx, at, out);
     }
 
+    /// `R_AARCH64_GOTREL64` and `GOTREL32` (M2): a `GotRel` record of a
+    /// non-alloc section needs the GOT base (`spec/arch.md` §4.3).
+    fn nonalloc_demand_types(&self) -> &'static [u32] {
+        if self.enables(Status::M2) { &[307, 308] } else { &[] }
+    }
+
     fn apply(
         &self,
         cx: &mortar_arch::FillCx<'_>,
