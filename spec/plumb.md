@@ -42,7 +42,7 @@ landed; the last two with WP-028b. The reasons `ifunc` and `non-alloc`
 remain only for a CFI pointer to an IFUNC (§6.4) and for compatibility of
 reports; compressed debug sections are named as not judged
 (`compressed`, which is not a stage-2 reason). WP-028b also added the
-layout rules S13–S18 (§6.2), program properties (§6.6) and mortar's
+layout rules S13–S19 (§6.2), program properties (§6.6) and mortar's
 build id (§6.7). The x86 tables (stage x) are measured (§4.5), not
 written.
 
@@ -477,7 +477,16 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
 - **A local symbol** (`STB_LOCAL`, including `STT_SECTION`) defined in
   section k has S = place(k) + `st_value`, which depends on k's place:
   - **whole at a:** S = a + `st_value`;
-  - **pieces:** found through the piece that covers `st_value`;
+  - **pieces:** for a section symbol, the reference's addend selects
+    the piece (`synth.md` S-17): r = `st_value` + A, S + A is the address
+    of byte r in the piece that holds it, and r outside `[0, sh_size)` is
+    R6 under mortar's map (S-18) and `piece-not-locatable` under a
+    foreign one. For any other symbol S is found through the piece that
+    holds byte `st_value` (at `st_value = sh_size`, the piece ending
+    there), and A is added after (S-19). The same order holds for every
+    consumer of a resolved target: fields, GOT slots, tombstones and
+    `.eh_frame` pointers (fixed by WP-028c; the verifier first found the
+    piece of `st_value` for section symbols too);
   - **merged:** §5.6;
   - **in `.eh_frame`** (a label such as crtbeginT.o's
     `__EH_FRAME_BEGIN__`) when the section is rewritten, absent, or the
@@ -553,12 +562,48 @@ With the static C library the GOT forms dominate: x86-64's `libc.a` adds
 1732 `GOTTPOFF`, 83 `GOTPCREL`, 72 `REX_GOTPCRELX` and some `GOTPCRELX`;
 i386's adds 13158 `GOTOFF`, 2581 `GOTPC`, 1718 `TLS_GOTIE`, 884
 `GOT32X` and some `GOT32`. A table that judges only the direct types
-(`PC32`, `PLT32`, `64`, `32`, `32S`) would leave most of a driver link's
-records `type`; the x86 tables need the GOTPCRELX and TLS relaxations
-(psABI x86-64 §B.2, i386 §B) and REL's implicit addends together, and are
-not in stage 2b. Until then every x86 record is `machine` and L3 leaves
-x86 outputs not judged (`xtask/src/linktest/engine.rs`, EM_AARCH64
-only), so no x86 default belongs in `tests/link/anomalies` yet.
+would leave most of a driver link's records `type`.
+
+**x86-64 (WP-028c, request R-12 of `spec/x64.md`).** `src/x64.rs` is
+`spec/x64.md` §6.1's M1 rows, in the shape of `a64.rs`; the record path
+is `src/x64rec.rs`. Fields are little-endian data of 1, 2, 4 or 8 bytes
+(`TLSDESC_CALL` has none). The rows, by operation (§4.1):
+
+| operation | types |
+|---|---|
+| `Abs` (S + A) | `64` (none), `32` (u32), `32S` (s32), `16`, `8` (either: signed or unsigned) |
+| `Prel` (S + A − P) | `PC32`, `PLT32` (s32), `PC16` (s16), `PC8` (s8), `PC64` (none) |
+| GOT slot, `PrelA` (G + A − P) | `GOTPCREL`, `GOTPCRELX`, `REX_GOTPCRELX` (address slot), `GOTTPOFF` (TP-offset slot), `TLSGD`, `TLSLD`, `GOTPC32_TLSDESC` (s32; relaxed in a static output, §5.9) |
+| GOT slot, `OffA` (G + A − GOT) | `GOT64` (none) |
+| `GotRel` (S + A − GOT) | `GOTOFF64`; `PLTOFF64` (L + A − GOT, L the IPLT entry when there is one) |
+| `GotPc` (GOT + A − P) | `GOTPC32` (s32), `GOTPC64` (none) |
+| `TpRel` | `TPOFF32` (s32), `TPOFF64` |
+| `DtpRel` | `DTPOFF32` (s32), `DTPOFF64`: the TP or DTP offset by section and linker (X-46, §5.9) |
+| `Size` | `SIZE32` (u32), `SIZE64` |
+| marker | `TLSDESC_CALL` (§5.9) |
+
+GOT is the output's `_GLOBAL_OFFSET_TABLE_`. The later types of X-13 (`GOT32`, `GOTPCREL64`, `GOTPLT64`, the
+APX `CODE_*` types 43–51) are not in the table: their records are not
+checked (`type`). The dynamic-only types 5–8, 16 and 36–38 in an input
+are R8 (X-14: they have no static value; GNU ld writes S + A, W3). `64` (and `32`) against a TLS symbol in `.debug_addr`
+is `DtpRel(S + A)` (X-53); `GOTOFF64` in `.debug_info` is `S + A − GOT`
+(X-53); every other non-alloc record is §5.8's. L3 judges x86-64 outputs
+(`xtask/src/linktest/engine.rs` `not_judged`); the run-wide x86-64
+default is mold's A13 (§10.2).
+
+**i386 stays `machine`.** Its table needs, besides the operations above:
+REL addends read through the field (above); `GOT32`/`GOT32X` as G + A −
+GOT with `GOT32X` relaxed (`mov` → `lea`, binops, `call`/`jmp`; i386
+psABI §B, with the base register form of the PIC and non-PIC encodings);
+`GOTOFF` (S + A − GOT) and `GOTPC` (GOT + A − P); the TLS types
+`TLS_GD`, `TLS_LDM` (with the `call ___tls_get_addr@PLT` and `call
+*___tls_get_addr@GOT(%reg)` followers), `TLS_GOTIE`, `TLS_IE`, `TLS_LE`,
+`TLS_LE_32`, `TLS_LDO_32`, `TLS_GOTDESC`/`TLS_DESC_CALL` and their LE
+forms per linker; IRELATIVE (42) with the slot holding the resolver
+(§4.8 reads it already); `__rel_iplt_*` (§4.8 has them); the i386 IPLT
+entries (`ff 25 abs32` non-PIC); and `spec/x64.md`'s companion spec for
+i386, which does not exist yet: the forms must come from a spec, not from
+the reference linkers alone.
 
 ### 4.6 Y1: symbol values
 
@@ -742,6 +787,28 @@ for an address.
 Tests: `tests/corpus.rs` (the `ifunc` case), `tests/mutation.rs
 s9_2i_ifunc_mutations_are_found`.
 
+**x86-64 (WP-028c).** IRELATIVE is 37; an entry is linker-made code that
+loads a slot, `ff 25 rel32` (`jmp *slot(%rip)`), after an optional
+`endbr64` and `bnd` prefix. Observed (static, `tests/x64/iplt-ibt.s` and
+glibc's IFUNCs):
+
+| | records in | slots in | entries in | slot word before start-up |
+|---|---|---|---|---|
+| GNU ld | `.rela.plt` | `.got.plt` | `.plt`, 16 bytes `ff 25; 68; e9`, or X-38's with IBT | entry + 6; the entry with IBT; 0 for a `.got` slot no entry loads |
+| lld | `.rela.dyn` | `.got.plt` | `.iplt`, 16 bytes `ff 25; 68; e9`, or X-38's with IBT | 0 |
+| mold | `.rela.dyn` | `.got` | `.plt.got`, 8 bytes `ff 25; cc cc`, with IBT too (W6) | the resolver |
+
+- **F5 (x86-64).** (1) When the output's `GNU_PROPERTY_X86_FEATURE_1_AND`
+  has IBT, every IPLT entry starts with `endbr64` (X-38); mold's do not
+  (W6, A17). (2) mortar's entries are exactly X-37's 8 bytes (`ff 25 rel32
+  66 90`, `rel32` = slot − (entry + 6)) or, with IBT, X-38's 16 (`f3 0f 1e
+  fa ff 25 rel32 66 0f 1f 44 00 00`). (3) In a static executable each
+  IRELATIVE slot holds, before start-up, what its linker writes there
+  (X-39, the table's last column; mortar 0). The value is never read
+  (glibc's `apply_irel` overwrites it), so (3) is a check of the linker's
+  own convention: a different word means the slot is not the one the
+  linker made.
+
 ## 5. Checking a record
 
 ### 5.1 The procedure
@@ -849,6 +916,8 @@ written `hi(x)` and `MOVK x, #X[15:0]` is written `lo(x)`:
   `MRS x0, TPIDR_EL0; ADD x0, x0, #tcb; NOP; NOP`. The DTPREL records that
   follow keep their DTPREL values. GNU ld writes `#16` whatever `tcb` is
   (A7).
+
+x86-64's rewritings are §5.9's, not W1–W13 (request R-12).
 
 ### 5.4 The veneer emulator
 
@@ -1039,6 +1108,35 @@ the aranges length.
 Tests: `tests/tls.rs s5_8_debug_references_verify_clean`,
 `tests/mutation.rs s9_2j_debug_mutations_are_found`.
 
+### 5.9 x86-64 rewritings (WP-028c)
+
+A rewriting is matched on the bytes of the record's window in the input
+section and the output (x64.md §8.6), and accepted only in the forms the
+map's linker writes (x64.md §8.8, §14.1). Under mortar's map only
+mortar's (x64.md §8). Every form below was linked by each reference
+linker in `tests/x64/relax.s` (the `relax` case of `tests/x64.rs`,
+which asserts each family is accepted):
+
+| form | mortar | GNU ld 2.44 | lld 22 | mold 2.37 |
+|---|---|---|---|---|
+| X1 GOT `mov` → `lea` | `GOTPCRELX`/`REX_GOTPCRELX`, local | also plain `GOTPCREL`, local | as mortar | every `REX_GOTPCRELX` `mov`, also abs and undefined weak (X-22) |
+| X4 `mov` → `mov $S` (`REX' c7 c0+r`) | — | `GOTPCRELX`/`REX_GOTPCRELX`, S fits | — | — |
+| X2 `call`/`jmp *GOT` → `addr32 call` / `jmp; nop` | local | local, undefined weak | local | `rex call`/`rex jmp`, local or undefined weak |
+| X3 binop/`test` → immediate (`REX' 81 /n`, `f7 c0+r`) | REX.W, local | REX.W or none; local, abs, undefined weak | REX.W, local | — |
+| IE `mov` → `mov $T` (I1) | yes | yes | yes | per symbol, only when no reference to it is an `add` (otherwise all keep the GOT slot) |
+| IE `add` → | `add $T` (I2) | `lea T(%r)`, `add $T` for `%rsp`/`%r12` | as GNU ld | kept (a GOT slot holding T) |
+| TLSDESC `lea` → `mov $T`; `call *(%rax)` → `66 90` | yes | yes | yes | yes |
+| GD → LE | X-25's 16 bytes `mov %fs:0,%rax; lea T(%rax),%rax`; large model the same and a 6-byte `nopw` | the same | the same, but W4 over the large-model 22-byte sequence (A12) | `add $T,%rax` for the `lea`; large model the same and `nopw` |
+| LD → LE | `66 66 66 mov %fs:0,%rax` (four `66` for a `call *GOTPCREL`; 13-byte NOP first in the large model) | the same | the same; the large-model sequence refused | `xor %eax,%eax; mov %fs:(%rax),%rax; sub $tcb,%rax` (and the large-model variant) |
+| `_TLS_MODULE_BASE_` descriptor T | 0 | 0 | 0 | TpRel(tls.start) |
+| undefined weak TLS T | 0 | TpRel(0) | 0 | TpRel(0) |
+| `DTPOFF*` in code / alloc data / non-alloc | TP / DTP / DTP | TP / DTP / DTP | TP / TP / DTP | DTP / DTP / DTP |
+
+A record whose rewriting cannot be judged (its symbol unresolved, as in a
+stripped output; an unusable `PT_TLS`) is not checked, and its rewrite
+window (`GOTPCREL*` [P−3, P+5); `GOTTPOFF`/`GOTPC32_TLSDESC` [P−3, P);
+`TLSDESC_CALL` [P, P+2); `TLSGD`/`TLSLD` [P−4, P+18)) is left out of S12.
+
 ## 6. Structure and content
 
 ### 6.1 Output and input rules
@@ -1132,6 +1230,12 @@ S18 is S17 here; its T1 is S18):
   of a section, or of the headers (L-9). The reference linkers do not
   promise it (strip rebuilds `p_memsz` from the sections, E-14), so S18
   judges mortar's map format only.
+
+- **S19 (x86, WP-028c).** The bytes between two placed input fragments
+  of `.init` or `.fini` run at start-up and must be no-operation
+  instructions (X-50): any NOP sequence for a reference linker, all 0x90
+  for mortar. lld and mold pad with `int3` (W8, A16). (This S19 is the
+  verifier's own id, not layout.md §20.3's S19 below.)
 
 Not taken from layout.md §20.3: its S19 (`ET_DYN` alignment) has no
 output to apply to while S1 accepts `ET_EXEC` only, and is stage 3; its
@@ -1369,10 +1473,22 @@ cases: more than 1000 globals, more than 300 locals and at least 9
 linker-defined symbols judged; not-judged names only from mold, §10.5) and
 `tests/mutation.rs s9_2h_symbol_table_mutations_are_found`.
 
-### 6.6 Program properties (stage 2, WP-028b)
+**x86-64 additions (WP-028c).** A common symbol (`SHN_COMMON`, or
+x86-64's `SHN_X86_64_LCOMMON`, X-55) with no non-common definition is
+Y3's when its output symbol is not in an allocated, writable
+`SHT_NOBITS` section, with the largest size of its definitions and
+aligned to the largest alignment (lld's absolute large common is A14,
+W9). Y5's `_edata` and `_end` leave out an x86-64 large section
+(`SHF_X86_64_LARGE`) placed after every small one (X-54): GNU ld's
+`.ldata`/`.lbss` follow `.bss`. Where the large sections go differs by
+linker (x64.md §14.1) and no rule judges it: their names are in the
+coverage as *placement not judged* (§7.2).
+
+### 6.6 Program properties (stage 2, WP-028b; x86 WP-028c)
 
 `.note.gnu.property` is written from `spec/synth.md` S-94 to S-97 and
-S-126, and from the observations of synth.md §13. It is judged by two
+S-126, from the observations of synth.md §13, and for x86 from
+`spec/x64.md` X-41. It is judged by two
 rules; S12 does not compare the section's bytes (§6.2).
 
 **The inputs.** Every input object the map names counts, in map order;
@@ -1396,14 +1512,27 @@ linker that wrote it (by map format):
 
 | type | merge (S-95) | mortar | GNU ld | lld | mold |
 |---|---|---|---|---|---|
-| AArch64 `FEATURE_1_AND` 0xc0000000, x86 `FEATURE_1_AND` 0xc0000002 | `And` | merged | merged | merged | AArch64: dropped; x86: merged |
+| AArch64 `FEATURE_1_AND` 0xc0000000 | `And` | merged | merged | merged | dropped |
 | AArch64 `FEATURE_PAUTH` 0xc0000001 | `EqualOrAbsent` | merged | not judged | merged | dropped |
-| x86 0xc0008000..0xc0008fff (`ISA_1_NEEDED`) | `Or` | merged | merged | dropped | merged |
-| x86 0xc0010000..0xc0017fff (`*_USED`) | `OrAll` | merged | merged | not judged | merged |
+| x86 0xc0000002..0xc0007fff (`FEATURE_1_AND`, `UINT32_AND`) | `And` | merged | merged | merged | merged |
+| x86 0xc0008000..0xc000ffff (`ISA_1_NEEDED`, `FEATURE_2_NEEDED`, `UINT32_OR`) | `Or` | merged | merged | dropped | merged |
+| x86 0xc0010000..0xc0017fff (`*_USED`, `UINT32_OR_AND`) | `OrAll` | merged | merged | dropped | merged |
+| x86 `COMPAT_ISA_1_USED` 0xc0000000 | `OrAll` | merged | merged | dropped | dropped |
+| x86 `COMPAT_ISA_1_NEEDED` 0xc0000001 | `Or` | merged | merged | dropped | dropped |
 | generic 0xb0000000..0xb0007fff / 0xb0008000..0xb000ffff | `And` / `Or` | merged | merged | dropped | dropped |
 | `STACK_SIZE` 1, `NO_COPY_ON_PROTECTED` 2 | `Max`, `Present` | merged | merged | dropped | dropped |
 | `MEMORY_SEAL` 3 | an option | not judged | not judged | not judged | not judged |
-| any other type | unknown | dropped | not judged | dropped | dropped |
+| any other type, x86 | unknown | dropped | dropped (with a warning) | dropped | dropped |
+| any other type, AArch64 | unknown | dropped | not judged | dropped | dropped |
+
+The x86 ranges are binutils' `GNU_PROPERTY_X86_UINT32_AND_LO..` /
+`_OR_LO..OR_HI` / `_OR_AND_LO..` (X-41; synth.md S-95 as amended by
+R-7). WP-028c measured the x86 columns (two objects with 0xc0000000,
+0xc0000001, 0xc0008002, 0xc0010002, the unknown 0xc0018000 and the
+generic unknown 0x7000): GNU ld ORs 0xc0000001, keeps 0xc0000000 when
+both objects have it, and drops both unknown types with "unsupported
+GNU_PROPERTY_TYPE"; lld writes no property; mold keeps 0xc0008002 and
+0xc0010002 and drops the rest.
 
 - *merged*: the output has the type exactly when the merge gives it, with
   the merge's bytes. `And`: every object has it, ANDed, omitted if 0.
@@ -1414,9 +1543,8 @@ linker that wrote it (by map format):
 - *dropped*: the output must not have the type.
 - *not judged*: counted (`properties_not_judged`), never a finding.
   `MEMORY_SEAL` follows `-z memory-seal`, which the verifier does not
-  see; GNU ld copies or fails on an unknown type depending on the
-  inputs' order (synth.md §13), and does not know PAUTH; lld's `*_USED`
-  is not observed.
+  see; on AArch64 GNU ld copies or fails on an unknown type depending
+  on the inputs' order (synth.md §13), and does not know PAUTH.
 
 These columns are per-linker rules, not anomalies: dropping a property
 never claims what an input did not, and each column is accepted only
@@ -1471,7 +1599,7 @@ and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`.
 A finding has:
 
 - the rule id: `O1`, `S1`–`S12`, `I1`, `I2`, `M1`–`M5`, `R1`–`R8`, `T1`,
-  `Y1`–`Y5`, `E1`–`E5`, `F1`–`F4` (§4.8), `P1`–`P2` (§6.6) or `B1` (§6.7);
+  `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6) or `B1` (§6.7);
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -1494,7 +1622,8 @@ once:
 - **verified**, by how S was found: `direct`, `got-slot`, `piece`,
   `eh-frame` (a pointer field of a matched CIE or FDE, §6.4), `iplt`
   (an IFUNC reference, §4.8) or `tombstone` (§5.8);
-- **accepted**, by rewriting (W1 to W13);
+- **accepted**, by rewriting (W1 to W13; on x86-64 §5.9's `got-to-lea`,
+  `got-to-direct`, `got-to-imm`, `got-to-mov-imm` and the TLS ones);
 - **not checked**, by reason: `tls`, `tls-sequence`, `ifunc`, `non-alloc`, `eh-frame`, `compressed`,
   `type`, `machine`, `section-not-locatable`, `piece-not-locatable`,
   `in-mergeable`, `symbol-unresolved`, `got-unpaired` or
@@ -1507,8 +1636,9 @@ records of sections not in the output are counted separately
 (`absent_records`). So are the sections by place, the symbols Y1 checked
 and left unchecked, the bytes S12 compared, and the FDEs and header
 entries of §6.4, the symbols of §6.5, the IRELATIVE records and IPLT
-entries of §4.8, and the property types §6.6 judged and did not judge, and what B1 made of
-the build id (§6.7).
+entries of §4.8, and the property types §6.6 judged and did not judge, what B1 made of
+the build id (§6.7), and the x86-64 large sections whose placement no
+rule judges (`placement_not_judged`, §6.5).
 
 The four stage-2 reasons are the only ones allowed on the reference
 corpus.
@@ -1682,6 +1812,16 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   output no longer reads, or S11 where a note header changed; at least
   12 of the 16 by B1).
 
+- **(m)** x86-64 (WP-028c, `tests/x64.rs`): (1) every field bit of
+  every relocated place of the `relax` links flipped, each linker: 384/384
+  found; (2) each opcode or ModRM byte of a rewritten window changed:
+  161/161 (4 places inside an anomaly's window, A12, skipped); (3) a NOP
+  byte of GNU ld's `.init` padding made `int3`: S19 1/1; (4) the large
+  common `lc` made `SHN_ABS`: Y3 1/1; (5) a bit of a GNU ld C output's
+  `ISA_1_NEEDED`: P1 1/1; (6) `PT_TLS` `p_memsz` grown by its alignment:
+  1/1; (7) in the `w6` links of GNU ld and lld, an IPLT entry's `endbr64`
+  made a 4-byte NOP, and the IFUNC word changed: F5 2/2 each.
+
 ### 9.3 Map readers
 
 There are unit tests on excerpts captured from each linker (§3.4 to
@@ -1719,6 +1859,13 @@ TLS (§4.7, static executables):
 | GNU ld 2.44 | W9, also with mismatched registers (A8); PREL19 and MOVW forms kept (GOT entry) | W10 (`hi; lo; NOP; NOP`) | W12 | W13 with `#16` (A7) |
 | lld 22 | W9, also with mismatched registers (A8) | W10 (`hi; lo; NOP; NOP`) | refused (513, 514) | refused (518, 519, 528) |
 | mold 2.37 | kept: a GOT entry holding TPREL | W10 (`NOP; NOP; hi; lo`) for local symbols, W11 (`NOP; NOP; ADRP; LDR`) for global ones | kept: a GOT pair (1, DTPREL), `BL __tls_get_addr` | refused |
+
+x86-64 (WP-028c; §5.9 has every form): GNU ld relaxes the most (X4
+`mov $S`, X3 for absolute and undefined weak symbols, plain `GOTPCREL`);
+lld relaxes only what mortar does and writes W4 over the large-model
+GD sequence; mold relaxes every `REX_GOTPCRELX` `mov` (even to an
+absolute symbol), never an IE `add`, and keeps a symbol's IE GOT slot
+for all its references once one of them is an `add`.
 
 ### 10.2 Anomalies
 
@@ -1790,6 +1937,41 @@ Three symbol-table defects, found by §6.5 on the corpus:
   `__bss_start` to `_end` would write from address 0. This was verified by
   hand with a 3-line program (Y5, found 0).
 
+x86-64 (WP-028c; `spec/x64.md` §14.2 has the experiments, and each is a
+case of `tests/x64.rs`):
+
+- **A12 (lld).** lld writes its 16-byte local-exec form from P − 4 over
+  the 22-byte large-model general-dynamic sequence (x64.md W4): the rest
+  runs as garbage, and the write may reach the last byte of the sequence
+  before it (Field, "(spec/x64.md W4)").
+- **A13 (mold).** mold puts its own 4-aligned `.note.gnu.build-id` (and
+  the inputs' 4-aligned notes, `.note.ABI-tag`, `.note.package`) in one
+  `PT_NOTE` with the 8-aligned `.note.gnu.property`, with `p_align` 8: a
+  reader that pads by 8 misreads every note after the first (S11, "only
+  with padding to 4"). Run-wide on x86-64 whenever there is a property
+  note.
+- **A14 (lld).** An x86-64 large common (`SHN_X86_64_LCOMMON`) becomes
+  an absolute symbol whose value is its alignment, and nothing is
+  allocated (W9): every store to it writes wherever that address is (Y3,
+  found `SHN_ABS`).
+- **A15 (GNU ld, mold).** GCC's `-gsplit-dwarf` `.debug_addr` entry of
+  a TLS variable holds its template address, not its DTP offset (W10):
+  a debugger reads the wrong thread's storage (Field, "(spec/x64.md
+  X-53)").
+- **A16 (lld, mold).** The padding between `.init` (or `.fini`)
+  fragments is `int3`, which traps at start-up when a fragment is
+  aligned above its predecessor's end (W8; S19, found 0xcc).
+- **A17 (mold).** An output marked IBT has IPLT entries without
+  `endbr64` (W6): an indirect call to an IFUNC faults under IBT
+  enforcement (F5).
+
+W1 (GNU ld truncates `16`/`8` fields) and W2 (GNU ld writes `PC16` one
+past either end) are violations, R2; W3 (GNU ld writes S + A for a
+dynamic-only type) is R8; W5 (lld writes
+a link-time value in a static-pie) is S1, since S1 accepts `ET_EXEC` only
+(§11 item 7). GNU ld and mold refuse W5's input; lld and mold refuse
+W1's, W2's and W3's.
+
 **Notes, not anomalies** (`spec/layout.md` §20.3; never findings, so no
 id):
 
@@ -1806,7 +1988,8 @@ shows on essentially every link of a kind are run-wide defaults, listed
 in `tests/link/anomalies` (format: `spec/harness.md` "L3"). It holds mold
 A1 A2 A3 A9 (A1 and A2 come from the C runtime's IFUNCs, so the
 `-nostdlib` links show only A3 and A9) and GNU ld A10 (crtbegin/crtend's
-labels, on every driver link with the C runtime). A test declares any
+labels, on every driver link with the C runtime), and on x86-64 mold's
+A13. A test declares any
 other anomaly itself with `#@ anomaly(<linker>): <id>...`. mortar never
 has a default and never declares one.
 
@@ -1931,3 +2114,10 @@ DWARF's text, and each is accepted only from its own linker.
 8. A9 to A11 (§10.2): mortar's `.symtab` must keep the inputs' bindings,
    name the section that holds each label (or `SHN_ABS`), and define
    `__bss_start` within §6.5's range even when there is no `.bss`.
+9. i386 (§4.5): the table and its rewritings need a spec of their own;
+   until one exists every i386 record is `machine`.
+10. X-48 (a `__tls_get_addr` call left in a static output) has no rule:
+    a GD/LD sequence left unrewritten is its lead record's finding, but
+    a `call __tls_get_addr` without a `TLSGD`/`TLSLD` before it is
+    judged only as a branch. A rule that no call to `__tls_get_addr`
+    remains in a static executable is later.

@@ -375,6 +375,56 @@ t_bfd:
 ";
 
 /// The types each reference linker is given, by name (§9.1, §10).
+/// Two units sharing strings of a mergeable section (`synth.md` S-17,
+/// S-19), referred to by section symbol plus addend and by a local label
+/// plus addend. No string is a suffix of another, so each has one place.
+pub const PIECES_A_S: &str = r#"
+	.text
+	.globl _start
+	.type _start,%function
+_start:
+	adrp x0, .rodata.str1.1+4
+	add  x0, x0, :lo12:.rodata.str1.1+4
+	adrp x1, .Lpb+2
+	add  x1, x1, :lo12:.Lpb+2
+	bl   other
+	mov  x0, #0
+	mov  x8, #93
+	svc  #0
+	.size _start, .-_start
+	.section .rodata.str1.1,"aMS",%progbits,1
+.Lpa:	.asciz "alpha"
+.Lpb:	.asciz "bravo!"
+	.asciz "charlie"
+	.data
+	.balign 8
+	.xword .rodata.str1.1+6
+	.xword .rodata.str1.1+13
+	.xword .Lpa+1
+"#;
+
+pub const PIECES_B_S: &str = r#"
+	.text
+	.globl other
+	.type other,%function
+other:
+	adrp x2, .rodata.str1.1+8
+	add  x2, x2, :lo12:.rodata.str1.1+8
+	ret
+	.size other, .-other
+	.section .rodata.str1.1,"aMS",%progbits,1
+	.asciz "zulu"
+	.asciz "charlie"
+	.asciz "yankee"
+	.asciz "alpha"
+	.data
+	.balign 8
+	.xword .rodata.str1.1+0
+	.xword .rodata.str1.1+5
+	.xword .rodata.str1.1+20
+	.xword .rodata.str1.1+14
+"#;
+
 pub fn types_for(linker: Linker) -> Vec<&'static str> {
     let mut v = vec![
         "R_AARCH64_ABS64",
@@ -532,6 +582,8 @@ fn build(size: Size) -> Option<Corpus> {
     w("tall.s", TYPES_ALL_S);
     w("tmore.s", TYPES_MORE_S);
     w("tbfd.s", TYPES_BFD_S);
+    w("pieces_a.s", PIECES_A_S);
+    w("pieces_b.s", PIECES_B_S);
     for (src, obj) in if size == Size::Tls {
         &[][..]
     } else {
@@ -544,6 +596,8 @@ fn build(size: Size) -> Option<Corpus> {
             ("tall.s", "tall.o"),
             ("tmore.s", "tmore.o"),
             ("tbfd.s", "tbfd.o"),
+            ("pieces_a.s", "pieces_a.o"),
+            ("pieces_b.s", "pieces_b.o"),
         ][..]
     } {
         run_in(&dir, &t.gcc, &["-c", src, "-o", obj]);
@@ -637,6 +691,14 @@ fn build(size: Size) -> Option<Corpus> {
                     Linker::Lld => vec!["tmore.o"],
                     Linker::Mold => vec![],
                 },
+            },
+            Case {
+                name: "pieces",
+                linkers: &Linker::ALL,
+                driver: gcc,
+                objects: vec!["pieces_a.o", "pieces_b.o"],
+                flags: free.clone(),
+                per_linker: none,
             },
         ]
     };

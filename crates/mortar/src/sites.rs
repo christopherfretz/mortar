@@ -275,6 +275,101 @@ impl Sites for LinkSites<'_, '_> {
 }
 
 impl LinkSites<'_, '_> {
+    /// The erratum fixes of the final placement (`spec/a64.md` §11.2), as
+    /// words written over fill's bytes, by address: for each site the
+    /// architecture finds in the words fill writes (before any fix), a
+    /// redirected final word `F` becomes `b patch` and its patch holds
+    /// `W4'` (the word fill writes at `F`) and `b F + 4`; any other site's
+    /// `W1` becomes the ADR. Sorted by address. Empty when no erratum is
+    /// enabled.
+    ///
+    /// # Errors
+    ///
+    /// A failed read of a code section; `internal-error` for a site with
+    /// neither fix (layout's fixed point gives every site one).
+    pub fn erratum_fixes(
+        &self,
+        pl: &mortar_core::layout::Placement,
+        pool: &Pool,
+    ) -> Result<Vec<(u64, [u8; 4])>, LayoutDiag> {
+        use mortar_core::layout::PatchKind;
+        let errata = self.arch.errata();
+        if errata.is_empty() {
+            return Ok(Vec::new());
+        }
+        let round = Round {
+            number: 0,
+            chunks: &pl.chunks,
+            place: &pl.place,
+            patches: &pl.patches,
+            redirects: &pl.redirects,
+        };
+        // The redirected final words, by address: the patch's address.
+        let mut patch_of: BTreeMap<u64, (mortar_core::layout::Erratum, u64)> = BTreeMap::new();
+        for r in &pl.redirects {
+            let Some(p) = pl.patches.get(r.patch as usize) else { continue };
+            let PatchKind::Erratum { erratum, .. } = p.kind else { continue };
+            let (Some(f), Some(at)) =
+                (pl.section_addr(r.section, r.offset), round.patch_addr(r.patch))
+            else {
+                return Err(internal("an erratum redirect with no address"));
+            };
+            patch_of.insert(f, (erratum, at));
+        }
+        let outs: std::collections::BTreeSet<OutSecId> = pl
+            .chunks
+            .iter()
+            .filter(|(_, c)| matches!(c.kind, ChunkKind::Body(_)) && c.flags & SHF_EXECINSTR != 0)
+            .filter_map(|(_, c)| c.kind.out())
+            .collect();
+        let mut fixes = Vec::new();
+        for out in outs {
+            let Some(code) = self.code(out, &round, pool)? else { continue };
+            let view =
+                mortar_arch::Code { bytes: &code.bytes, addr: code.addr, proof: &code.proof };
+            for &e in errata {
+                let mut sites = Vec::new();
+                self.arch
+                    .erratum_sites(e, &view, &mut sites)
+                    .map_err(|_| internal("an unproved erratum site after layout"))?;
+                for s in sites {
+                    let (q, f) = (code.addr.wrapping_add(s.q), code.addr.wrapping_add(s.f));
+                    let (Some(w1), Some(w4)) = (view.word(s.q), view.word(s.f)) else {
+                        return Err(internal("an erratum site outside its code"));
+                    };
+                    if let Some(&(pe, patch)) = patch_of.get(&f) {
+                        let b = mortar_a64::erratum_branch(f, patch)
+                            .map_err(|_| internal("an erratum patch out of reach"))?;
+                        fixes.push((f, b.to_le_bytes()));
+                        let cx = mortar_arch::PatchCx {
+                            addr: patch,
+                            target: f,
+                            site: q,
+                            word: w4,
+                            bti: false,
+                            target_word: None,
+                            target_abs: false,
+                        };
+                        let size = self.arch.patch(pe).map_or(0, |p| p.size as usize);
+                        let mut words = vec![0u8; size];
+                        self.arch
+                            .write_patch(pe, &cx, &mut words)
+                            .map_err(|_| internal("an erratum patch that cannot be written"))?;
+                        for (i, w) in words.chunks_exact(4).enumerate() {
+                            fixes.push((patch + 4 * i as u64, [w[0], w[1], w[2], w[3]]));
+                        }
+                    } else {
+                        let adr = mortar_a64::erratum_adr(q, w1)
+                            .ok_or_else(|| internal("an erratum site with neither fix"))?;
+                        fixes.push((q, adr.to_le_bytes()));
+                    }
+                }
+            }
+        }
+        fixes.sort_by_key(|f| f.0);
+        Ok(fixes)
+    }
+
     /// One code section's words at `addr` (`rel_start` bytes into its
     /// output section) into `room`, and its proof runs.
     fn section_code(

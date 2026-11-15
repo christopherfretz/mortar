@@ -4,7 +4,6 @@
 # function and one counter (Itanium C++ ABI "Vague Linkage").
 #@ spec: resolve.md §6.1
 #@ requires: g++
-#@ xfail(mortar): no linking yet (M1)
 
 cxx -O0 a.cc -o a.o
 cxx -O0 b.cc -o b.o

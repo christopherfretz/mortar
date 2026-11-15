@@ -1321,6 +1321,7 @@ classification is per file (I-file), the state needs `comdat`:
 | name `.gnu.warning` / `.gnu.warning.<sym>` | `Excluded` | `Dropped(Consumed)`; the text is a warning (`gnu-warning`): for `.gnu.warning` when the file is live, for `.gnu.warning.<sym>` per key `<sym>` referenced from a live section (one diagnostic per key, first 3 references, emitted by the scan) | GNU ld (E21); lld and mold neither warn nor drop: they copy the section into the output. glibc's `libc.a` has 112 such sections (E21) |
 | name `.gnu.linkonce.*` | — | refused (§6.6) | |
 | name prefix `.zdebug` | — | `Refused{Feature, ".zdebug compressed debug sections"}` | (GNU-style compression, superseded by `SHF_COMPRESSED`) |
+| `SHF_COMPRESSED` (GCC and Clang `-gz`) | — | `Refused{Feature, "SHF_COMPRESSED input sections"}` until the store decompresses (`spec/layout.md` L-52); a non-alloc `.debug*` one under `-S`/`-s`: `Dropped(Stripped)` (WP-027c ruling: never copied compressed as if plain) | the references decompress |
 | `SHT_X86_64_UNWIND` (x86-64) or name `.eh_frame` | `EhFrame` | `Kept` | |
 | `SHF_MERGE` with entry size > 0 | `Merge`, or `Regular` when `spec/synth.md` S-6 places it whole (writable, code, TLS, relocated, `SHF_COMPRESSED`, odd shape) | `Kept`; a non-alloc `.debug*` one (`.debug_str`, `.debug_line_str`) under `-S`/`-s`: `Dropped(Stripped)`, as the `Debug` row (WP-027a: GNU ld, lld and mold drop them) | |
 | `SHF_MERGE` with entry size 0 | `Regular` | `Kept` (not merged; lld) | not verified with GNU ld |
@@ -1345,7 +1346,8 @@ row matches, kept or dropped: WP-022.md.)
 
 `.ARM.*`, `.riscv.*` and other machines' attribute sections cannot occur:
 the file's machine is checked first (`spec/input.md`). `SHF_COMPRESSED`
-does not change the kind: the store decompresses (`spec/model.md` §1).
+does not change the kind once the store decompresses (`spec/model.md`
+§1); until then the row above refuses it.
 
 `section_base[f]` is the prefix sum of `e_shnum` over the live
 relocatable objects in `FileId` order (`spec/model.md` §2.2): an exclusive

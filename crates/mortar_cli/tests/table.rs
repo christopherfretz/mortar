@@ -53,6 +53,8 @@ fn statuses() {
     assert_eq!(
         supported,
         [
+            // The whole pipeline writes the output (WP-027c).
+            "-o",
             // The front of the pipeline honors these (WP-027a).
             "-m",
             "-e",
@@ -64,6 +66,7 @@ fn statuses() {
             "--build-id",
             "--eh-frame-hdr",
             "--no-eh-frame-hdr",
+            "--gc-sections",
             "--no-gc-sections",
             "-l",
             "-(",
@@ -83,6 +86,8 @@ fn statuses() {
             "-v",
             "-V",
             "--help",
+            "-Map",
+            "-M",
             "--threads",
             "--time-phases",
             "--fix-cortex-a53-843419",

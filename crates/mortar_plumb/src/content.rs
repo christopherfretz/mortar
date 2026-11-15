@@ -61,9 +61,17 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                 continue;
             };
             let cov = covered(o, si);
-            if let Some(k) = first_difference(s.data, &cov, out, |k| {
+            // x86-64 rewritings are recorded byte by byte (§5.9).
+            let gran = if machine == mortar_elf::Machine::X86_64 { 1 } else { 4 };
+            if let Some(k) = first_difference(s.data, &cov, out, gran, |k| {
                 // A word an erratum 843419 patch replaced by a branch (W8).
                 let p = addr + k;
+                if e.rewritten_words.contains(&p) {
+                    return true;
+                }
+                if gran == 1 {
+                    return false;
+                }
                 let Some(inw) = s.data.get(k as usize..k as usize + 4) else { return false };
                 let inw = u32::from_le_bytes([inw[0], inw[1], inw[2], inw[3]]);
                 let outw = u32::from_le_bytes([
@@ -72,7 +80,8 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                     out[k as usize + 2],
                     out[k as usize + 3],
                 ]);
-                // A word a TLS rewriting wrote that no record covers (W12).
+                // A word a TLS rewriting wrote that no record covers (W12),
+                // or an x86-64 byte of a rewritten window.
                 e.rewritten_words.contains(&p)
                     || (a64::erratum_843419_site(p)
                         && a64::is_ldst_unsigned_imm(inw)
@@ -86,6 +95,99 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                 .site(o.site(si, k));
                 f.expected = Some(u64::from(s.data[k as usize]));
                 f.found = Some(u64::from(out[k as usize]));
+                e.findings.push(f);
+            }
+        }
+    }
+}
+
+/// The length of the x86 no-operation instruction at the start of `b`:
+/// `90`, or `0f 1f /0` (`nopl`/`nopw`, any operand), after any number of
+/// `66` prefixes and at most one `2e` (Intel SDM, NOP; GNU ld's padding).
+fn x86_nop(b: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while b.get(i) == Some(&0x66) {
+        i += 1;
+    }
+    if b.get(i) == Some(&0x2e) {
+        i += 1;
+    }
+    match *b.get(i)? {
+        0x90 => Some(i + 1),
+        0x0f if b.get(i + 1) == Some(&0x1f) => {
+            let modrm = *b.get(i + 2)?;
+            if modrm & 0x38 != 0 {
+                return None;
+            }
+            let (md, rm) = (modrm >> 6, modrm & 7);
+            let sib = usize::from(md != 3 && rm == 4);
+            let base5 = sib == 1 && b.get(i + 3).is_some_and(|s| s & 7 == 5);
+            let disp = match md {
+                0 if rm == 5 || base5 => 4,
+                1 => 1,
+                2 => 4,
+                _ => 0,
+            };
+            let n = i + 3 + sib + disp;
+            (n <= b.len()).then_some(n)
+        }
+        _ => None,
+    }
+}
+
+/// S19 (§6.2, `spec/x64.md` X-50): on x86, the fragments of `.init` and
+/// `.fini` run in sequence from crti's to crtn's, so the bytes between
+/// two of them are no-operation instructions: mortar's 0x90, a
+/// reference's multi-byte NOPs. lld and mold write `int3` (W8, §10.2 A16).
+pub(crate) fn check_init_padding(e: &mut Engine<'_, '_>) {
+    let image = e.image;
+    if !matches!(image.header.e_machine, 3 | 62) {
+        return;
+    }
+    for out in
+        image.sections.iter().filter(|s| s.alloc() && (s.name == ".init" || s.name == ".fini"))
+    {
+        let (lo, hi) = (out.shdr.sh_addr, out.shdr.sh_addr.saturating_add(out.shdr.sh_size));
+        let mut parts: Vec<(u64, u64)> = e
+            .objs
+            .iter()
+            .flat_map(|o| o.secs.iter())
+            .filter_map(|s| match s.place {
+                Place::Whole(a) if s.alloc() && s.name == out.name && lo <= a && a < hi => {
+                    Some((a, a.saturating_add(s.shdr.sh_size)))
+                }
+                _ => None,
+            })
+            .collect();
+        parts.sort_unstable();
+        for w in parts.windows(2) {
+            let (g0, g1) = (w[0].1, w[1].0);
+            if g1 <= g0 {
+                continue;
+            }
+            let Some(gap) = image.bytes(g0, g1 - g0) else { continue };
+            let ok = if e.format == Format::Mortar {
+                gap.iter().all(|&b| b == 0x90)
+            } else {
+                let mut k = 0;
+                while k < gap.len() {
+                    match x86_nop(&gap[k..]) {
+                        Some(n) => k += n,
+                        None => break,
+                    }
+                }
+                k == gap.len()
+            };
+            if !ok {
+                let mut f = Finding::new(
+                    Rule::Structure(19),
+                    format!(
+                        "the padding between two fragments of {} is not no-operation instructions (spec/x64.md X-50)",
+                        out.name
+                    ),
+                )
+                .at(g0);
+                f.found = gap.first().map(|&b| u64::from(b));
                 e.findings.push(f);
             }
         }
@@ -123,7 +225,7 @@ fn nonalloc_content(e: &mut Engine<'_, '_>, o: &crate::locate::Obj<'_>, si: usiz
     e.cov.content_bytes += size;
     let cov = covered(o, si);
     if let Some(k) =
-        first_difference(s.data, &cov, out, |k| e.nonalloc_rewritten.contains(&(i, addr + k)))
+        first_difference(s.data, &cov, out, 4, |k| e.nonalloc_rewritten.contains(&(i, addr + k)))
     {
         let mut f = Finding::new(
             Rule::Structure(12),
@@ -140,11 +242,12 @@ fn nonalloc_content(e: &mut Engine<'_, '_>, o: &crate::locate::Obj<'_>, si: usiz
 }
 
 /// The first offset where `out` differs from `data` outside the covered
-/// ranges, skipping 4-byte words `allowed` accepts.
+/// ranges, skipping `gran`-byte units (4 or 1) `allowed` accepts.
 fn first_difference(
     data: &[u8],
     covered: &[(u64, u64)],
     out: &[u8],
+    gran: usize,
     allowed: impl Fn(u64) -> bool,
 ) -> Option<u64> {
     let mut ci = 0usize;
@@ -159,9 +262,9 @@ fn first_difference(
             continue;
         }
         if data[k] != out[k] {
-            let w = k & !3;
-            if w + 4 <= n && allowed(w as u64) {
-                k = w + 4;
+            let w = k & !(gran - 1);
+            if w + gran <= n && allowed(w as u64) {
+                k = w + gran;
                 continue;
             }
             return Some(k as u64);

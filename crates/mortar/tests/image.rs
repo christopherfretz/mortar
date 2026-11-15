@@ -1,18 +1,69 @@
-//! `link::write` on real inputs (WP-027b scope 5): a static AArch64
-//! program through the test front (`support::front`, main's phases up to
-//! `place`) and the image phase, then run, read back by readelf,
-//! llvm-readelf and eu-elflint, and checked by `mortar_plumb`.
+//! `mortar::image` on real inputs, through the real front
+//! (`mortar::front::front`; WP-027c moved these tests here from
+//! `mortar_image/tests/link.rs`, whose test front restated the driver): a
+//! static AArch64 program written, run, read back by readelf,
+//! llvm-readelf and eu-elflint, and checked by `mortar_plumb` with
+//! mortar's map; the stores and thread counts against each other; an
+//! input changed or truncated before the image's recheck; I-110; the
+//! comparison with GNU ld.
 
 mod support;
 
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use mortar_input::store::StorePolicy;
+use mortar::front::Front;
+use mortar_core::FileId;
+use mortar_core::par::Pool;
+use mortar_diag::Style;
+use mortar_image::fill::Failed;
+use mortar_image::link::Written;
+use mortar_input::store::{Store, StorePolicy};
 use mortar_testutil::{Scratch, tool, tools_required};
-use support::front::{Front, front, map, try_front, write, write_with};
+
+/// A front and the store it reads.
+struct Linked {
+    f: Front<'static>,
+    store: &'static Store,
+}
+
+fn try_front(
+    args: &[&str],
+    cwd: &Path,
+    threads: usize,
+    policy: StorePolicy,
+) -> Result<Linked, String> {
+    // A test's store lives as long as the test binary: one per link.
+    let store: &'static Store = Box::leak(Box::new(Store::new(policy)));
+    let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+    match support::front_of(&args, cwd, store, Pool::new(threads)) {
+        Ok(f) => Ok(Linked { f, store }),
+        Err(r) => Err(r.render(&Style::plain("mortar"))),
+    }
+}
+
+fn front(args: &[&str], cwd: &Path, threads: usize, policy: StorePolicy) -> Linked {
+    try_front(args, cwd, threads, policy).unwrap_or_else(|t| panic!("the front: {t}"))
+}
+
+fn write_with(l: &Linked, out: &Path, before: &(dyn Fn(FileId) + Sync)) -> Result<Written, Failed> {
+    mortar::image::write(&l.f, l.store, out, before, &mut |_, _| {})
+}
+
+fn write(l: &Linked, out: &Path) -> Result<Written, Failed> {
+    write_with(l, out, &|_| {})
+}
+
+/// The map of the link, rendered, at `out.map`.
+fn write_map(l: &Linked, out: &Path) -> std::path::PathBuf {
+    let map = mortar::image::map_of(&l.f, l.store).expect("the map");
+    let path = out.with_extension("map");
+    std::fs::write(&path, mortar_image::map::render(&map, &l.f.pool)).unwrap();
+    path
+}
 
 const A_S: &str = r#"
     .section .rodata.str1.1,"aMS",@progbits,1
@@ -172,7 +223,7 @@ fn with_big() -> Vec<&'static str> {
 
 fn check_tool(name: &str, args: &[&str], file: &Path) -> Option<String> {
     let t = tool(name)?;
-    let mut a: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
+    let mut a: Vec<OsString> = args.iter().map(Into::into).collect();
     a.push(file.into());
     let out = mortar_testutil::run(t, a);
     assert!(out.success(), "{name}: {}{}", out.stdout_text(), out.stderr_text());
@@ -190,66 +241,16 @@ fn runs(out: &Path) {
     assert_eq!(run.status.and_then(|s| s.code()), Some(42), "{}", run.stderr_text());
 }
 
-/// eu-elflint's findings, but for two known ones:
-/// - `.relro_padding`'s name: elflint takes every `.rel*` name for a
-///   relocation section (lld's output has the same finding; layout L-64
-///   names the chunk);
-/// - the GNU extensions under `EI_OSABI` 0 (a64.md Q11: "0 always"; GNU
-///   ld writes `ELFOSABI_GNU` when the output has IFUNC symbols): elflint
-///   then reads `STT_GNU_IFUNC` as an unknown type and
-///   `R_AARCH64_IRELATIVE` as an invalid one (reported for Q11's
-///   "revisit if a tool rejects it").
+/// eu-elflint, with `support::plumb::ELFLINT_KNOWN` set aside.
 fn elflint(out: &Path) {
-    let Some(t) = tool("eu-elflint") else { return };
-    let o = mortar_testutil::run(t, [std::ffi::OsStr::new("--gnu-ld"), out.as_os_str()]);
-    let text = o.stdout_text();
-    let known = |l: &str| {
-        l.contains("'.relro_padding'")
-            || (l.contains("'.rela.plt'")
-                && (l.ends_with("invalid type") || l.ends_with("invalid symbol index")))
-            || (l.contains("'.symtab'") && l.ends_with("unknown type"))
-    };
-    let rest: Vec<&str> = text.lines().filter(|l| !known(l) && *l != "No errors").collect();
-    assert!(rest.is_empty(), "eu-elflint: {text}{}", o.stderr_text());
+    support::plumb::elflint(out);
 }
 
 /// `mortar_plumb` (`spec/plumb.md` §2) on the written image, its inputs
 /// and mortar's map: no finding.
-fn plumb(f: &Front, out: &Path) {
-    let m = mortar_image::map::render(&map(f), &f.pool);
-    let text = String::from_utf8(m).unwrap();
-    if let Some(d) = std::env::var_os("DEBUG_MAP_DIR") {
-        std::fs::write(Path::new(&d).join("map.txt"), &text).unwrap();
-        std::fs::copy(out, Path::new(&d).join("out")).unwrap();
-        for n in ["a.o", "b.o", "big.o"] {
-            let _ = std::fs::copy(f.cwd.join(n), Path::new(&d).join(n));
-        }
-    }
-    let parsed = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &text)
-        .unwrap_or_else(|e| panic!("the map does not parse: {e:?}\n{text}"));
-    let bytes: Vec<(String, Vec<u8>)> = parsed
-        .files
-        .iter()
-        .map(|mf| (mf.path.clone(), std::fs::read(f.cwd.join(&mf.path)).unwrap()))
-        .collect();
-    let inputs: Vec<mortar_plumb::Input<'_>> =
-        bytes.iter().map(|(p, b)| mortar_plumb::Input { path: p, bytes: b }).collect();
-    let report = mortar_plumb::verify(&std::fs::read(out).unwrap(), &inputs, &parsed);
-    // A known verifier finding, reported to WP-028b's follow-ups: for a
-    // section listed as `piece`s, plumb resolves a section symbol's
-    // `st_value` to a piece and adds A after (reloc.rs `in_section`),
-    // where S-17 resolves `st_value + A` (a merge string at A of
-    // `.rodata.str1.8`). Only mortar's map lists merge pieces.
-    let merge_section_sym = |f: &mortar_plumb::Finding| {
-        f.rule == mortar_plumb::Rule::Field
-            && f.symbol.as_deref().is_some_and(|s| s.starts_with(".rodata.str"))
-    };
-    let (known, rest): (Vec<_>, Vec<_>) =
-        report.findings.iter().partition(|f| merge_section_sym(f));
-    assert!(rest.is_empty(), "plumb: {rest:#?}\n{text}");
-    if !known.is_empty() {
-        eprintln!("plumb: {} findings of the known S-17 pieces case", known.len());
-    }
+fn plumb(l: &Linked, out: &Path, dir: &Path) {
+    let map = write_map(l, out);
+    support::plumb::clean(out, &map, dir);
 }
 
 #[test]
@@ -267,7 +268,7 @@ fn i40_static_program_runs_and_reads_back() {
     check_tool("readelf", &["--debug-dump=frames"], &out);
     check_tool("llvm-readelf", &["-a"], &out);
     elflint(&out);
-    plumb(&f, &out);
+    plumb(&f, &out, dir.path());
 }
 
 /// I-81, I-75: the staged store and the resident one give the same
@@ -296,7 +297,7 @@ fn i81_staged_equals_resident_at_every_thread_count() {
             None => {
                 runs(&out);
                 elflint(&out);
-                plumb(&f, &out);
+                plumb(&f, &out, dir.path());
                 first = Some(bytes);
             }
             Some(b) => assert!(*b == bytes, "{policy:?} at {threads} threads differs"),
@@ -382,7 +383,7 @@ fn i110_undefined_from_debug_only_is_refused_by_both_stores() {
     args.push("d.o");
     let mut seen = None;
     for policy in [StorePolicy::Resident, StorePolicy::Staged] {
-        let Err(text) = try_front(&args, dir.path(), 2, policy) else {
+        let Err(text) = try_front(&args, dir.path(), 2, policy).map(|_| ()) else {
             panic!("{policy:?}: the link is accepted");
         };
         assert!(text.contains("undefined symbol: nowhere_defined"), "{text}");
@@ -462,12 +463,14 @@ fn symtab_multiset(file: &Path) -> Vec<(String, String, String, String, u64, Str
         .filter(|s| !GNU_OWN.contains(&s.6.as_str()))
         .map(|s| {
             let sec = names.get(&s.5).cloned().unwrap_or(s.5.clone());
-            // resolve.md §8.1 makes `__rela_iplt_*` local and hidden (GNU
-            // ld: `STB_LOCAL`); mortar's symbol source writes them global
-            // (a follow-up of the driver's `CoreSyms`, reported): compared
-            // without the binding.
-            let bind = if s.6.starts_with("__rela_iplt_") { String::new() } else { s.3 };
-            (s.6, s.2, bind, s.4, s.1, sec)
+            // resolve.md §8.1: `__rela_iplt_*` are local and hidden; GNU
+            // ld writes them local with default visibility.
+            let vis = if s.6.starts_with("__rela_iplt_") && s.4 == "HIDDEN" {
+                "DEFAULT".to_owned()
+            } else {
+                s.4
+            };
+            (s.6, s.2, s.3, vis, s.1, sec)
         })
         .collect();
     v.sort();
@@ -509,9 +512,8 @@ fn frames(file: &Path) -> Vec<String> {
     out
 }
 
-/// readelf's ELF header lines that do not depend on the layout, nor on
-/// `EI_OSABI` (a64.md Q11: mortar writes 0, GNU ld `ELFOSABI_GNU` with
-/// IFUNC symbols; checked apart).
+/// readelf's ELF header lines that do not depend on the layout
+/// (`EI_OSABI` is checked with the identification bytes).
 fn header(file: &Path) -> Vec<String> {
     let text = check_tool("readelf", &["-hW"], file).unwrap_or_default();
     text.lines()
@@ -573,9 +575,10 @@ fn i40_compares_with_gnu_ld() {
     assert_eq!(header(&out), header(&reference));
     let ident = |p: &Path| std::fs::read(p).unwrap()[..16].to_vec();
     let (ours, theirs) = (ident(&out), ident(&reference));
-    assert_eq!((ours[7], theirs[7]), (0, 3), "EI_OSABI: Q11's 0, GNU ld's ELFOSABI_GNU");
-    assert_eq!(ours[..7], theirs[..7]);
-    assert_eq!(ours[8..], theirs[8..]);
+    // a64.md Q11 as ruled: ELFOSABI_GNU with an IFUNC symbol (`pick`), as
+    // GNU ld writes.
+    assert_eq!(ours[7], 3, "EI_OSABI");
+    assert_eq!(ours, theirs);
     let start = |p: &Path| symbols(p).into_iter().find(|s| s.6 == "_start").unwrap().0;
     assert_eq!(entry(&out), start(&out));
     assert_eq!(entry(&reference), start(&reference));
@@ -586,16 +589,16 @@ fn i40_compares_with_gnu_ld() {
 /// I-40, layout L-103: with no entry symbol, `e_entry` is 0 (the gABI's
 /// "no entry point") and layout's warning says so. The one object has a
 /// `.note.gnu.property` (BTI and PAC, `-mbranch-protection=standard`),
-/// which the output keeps (S-94) and plumb checks (P1, P2). `w` keeps the
-/// RW segment non-empty: layout writes an empty RW `PT_LOAD` when there is
-/// no writable data, which eu-elflint rejects (a layout follow-up).
+/// which the output keeps (S-94) and plumb checks (P1, P2). With no
+/// writable data there is no RW `PT_LOAD` (layout L-159: the object's
+/// empty `.data` and `.bss` have no chunk), and no empty one.
 #[test]
 fn i40_no_entry_writes_zero() {
     let dir = Scratch::new("image-link-noentry");
     if objects(&dir, false).is_none() {
         return;
     }
-    std::fs::write(dir.join("p.c"), "int w = 1;\nint v(int x) { return x + w; }\n").unwrap();
+    std::fs::write(dir.join("p.c"), "int v(int x) { return x + 1; }\n").unwrap();
     let o = mortar_testutil::run_with(
         std::process::Command::new(tool("gcc").unwrap())
             .args(["-c", "-O1", "-mbranch-protection=standard", "-o", "p.o", "p.c"])
@@ -611,11 +614,11 @@ fn i40_no_entry_writes_zero() {
         StorePolicy::Staged,
     );
     assert!(
-        f.placed.warnings.iter().any(|w| w.diagnostic().id() == "entry-not-found"),
+        f.f.placed.warnings.iter().any(|w| w.diagnostic().id() == "entry-not-found"),
         "{:?}",
-        f.placed.warnings
+        f.f.placed.warnings
     );
-    assert!(f.property.exists(), "the property note is kept");
+    assert!(f.f.synth.property.exists(), "the property note is kept");
     let out = dir.join("out");
     write(&f, &out).unwrap_or_else(|e| panic!("image: {:?}", e.diagnostics));
     let bytes = std::fs::read(&out).unwrap();
@@ -624,6 +627,15 @@ fn i40_no_entry_writes_zero() {
     assert!(notes.is_empty() || notes.contains("BTI, PAC"), "{notes}");
     let segs = check_tool("readelf", &["-lW"], &out).unwrap_or_default();
     assert!(segs.is_empty() || segs.contains("GNU_PROPERTY"), "{segs}");
+    let loads: Vec<&str> = segs.lines().filter(|l| l.trim_start().starts_with("LOAD")).collect();
+    assert!(
+        segs.is_empty()
+            || loads.iter().all(|l| {
+                let t: Vec<&str> = l.split_whitespace().collect();
+                !l.contains(" RW ") && t.get(5).is_some_and(|m| *m != "0x000000")
+            }),
+        "no RW and no empty PT_LOAD: {segs}"
+    );
     elflint(&out);
-    plumb(&f, &out);
+    plumb(&f, &out, dir.path());
 }

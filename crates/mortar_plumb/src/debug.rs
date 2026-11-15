@@ -20,8 +20,11 @@ pub(crate) fn is_debug_name(n: &str) -> bool {
         || n == ".gnu_debuglink"
 }
 
-/// The absolute address-sized type of the machine (I-112).
-const ABS64: u32 = 257;
+/// Whether `r_type` is the absolute address-sized type of the machine
+/// (I-112): `R_AARCH64_ABS64` or `R_X86_64_64`.
+fn is_abs64(r_type: u32) -> bool {
+    r_type == 257 || r_type == crate::x64::R64
+}
 
 impl Engine<'_, '_> {
     /// GNU ld's redirect targets for a dropped group section: the places of
@@ -133,7 +136,7 @@ impl Engine<'_, '_> {
         });
         if self.format == Format::Mortar
             && name == ".debug_aranges"
-            && rec.def.r_type == ABS64
+            && is_abs64(rec.def.r_type)
             && class64
             && alloc_target
             && !after

@@ -161,14 +161,11 @@ fn compare(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
     );
 
     // The set: GNU's, plus `.relro_padding` (layout L-64, as lld and
-    // mold) and an empty `.tm_clone_table` (L-43: an output section with
-    // a live member has a chunk; GNU drops empty ones, lld and mold keep
-    // it).
+    // mold). An output section whose live members are all empty has no
+    // chunk (L-159), so an empty `.tm_clone_table` is dropped as GNU
+    // drops it (lld and mold keep it).
     let mut want: Vec<String> = names(bfd);
     want.push(".relro_padding".into());
-    if lld.section(".tm_clone_table").is_some() && !want.iter().any(|n| n == ".tm_clone_table") {
-        want.push(".tm_clone_table".into());
-    }
     let mut got = names(&ours);
     want.sort();
     got.sort();

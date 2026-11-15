@@ -4,7 +4,6 @@
 # defines it (mold makes it a local symbol). R9 of the landed record.
 # The program is not run: its _start never exits.
 #@ spec: resolve.md §4.2
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 m0.c -o m0.o
 cc -O1 st.c -o st.o

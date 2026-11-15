@@ -3,7 +3,6 @@
 # The output is ET_EXEC with neither an interpreter (PT_INTERP) nor a
 # dynamic segment (gABI "Program Header"); arguments reach main.
 #@ spec: layout.md "Static executables"
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O2 hello.c -o hello.o
 link gcc -static -no-pie hello.o -o hello

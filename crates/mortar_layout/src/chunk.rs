@@ -271,14 +271,32 @@ pub fn chunk(
     }
     // Which output sections have chunks (L-43).
     let commons_in_bss = !inputs.commons.is_empty();
+    // L-159: an allocated output section whose live members are all empty
+    // and that nothing else fills has no chunk; its members are placed
+    // beside a neighbour once the order is known (below).
+    let empty_only: Vec<bool> = (0..outs)
+        .map(|o| {
+            let id = OutSecId(o as u32);
+            let members = &inputs.ordered.members[id];
+            a.outsecs[id].flags & SHF_ALLOC != 0
+                && !members.is_empty()
+                && members.iter().all(|&s| inputs.headers[s].size == 0)
+                && merged[o].is_none()
+                && !has_synth[o]
+                && !(commons_in_bss && Some(id) == bss)
+                && !inputs.keep_empty.contains(&id)
+                && !a.outsecs[id].keep
+        })
+        .collect();
     let present: Vec<bool> = (0..outs)
         .map(|o| {
             let id = OutSecId(o as u32);
-            !inputs.ordered.members[id].is_empty()
+            (!inputs.ordered.members[id].is_empty()
                 || merged[o].is_some()
                 || (commons_in_bss && Some(id) == bss)
                 || inputs.keep_empty.contains(&id)
-                || a.outsecs[id].keep
+                || a.outsecs[id].keep)
+                && !empty_only[o]
         })
         .collect();
     let rank_of_out = |o: usize| {
@@ -414,6 +432,13 @@ pub fn chunk(
             }
             let mut size = plan.size;
             let mut align = plan.align;
+            if with_islands {
+                // The island after the body is aligned; the output
+                // section's `sh_addralign` is the largest of its chunks',
+                // so its first chunk must be aligned to it too (gABI
+                // "Sections": `sh_addr` is congruent to 0 modulo it).
+                align = align.max(target.islands.map_or(2, |i| i.align));
+            }
             let body = ChunkId(chunks.len() as u32);
             if Some(id) == bss && k + 1 == n_parts {
                 // L-88: commons after the .bss inputs, in SymbolId order.
@@ -503,6 +528,42 @@ pub fn chunk(
     let mut chunks = chunks;
     chunks[ph].size = count * phent;
     chunks[ph].capacity = chunks[ph].size;
+    // L-159: the members of an output section with no chunk, at the end
+    // of the last chunk before it in order of its rank and load class
+    // (skipping islands and the RELRO padding, whose sizes come later), or
+    // else at the start of the first chunk after it.
+    for o in (0..outs).filter(|&o| empty_only[o]) {
+        let id = OutSecId(o as u32);
+        let out = &a.outsecs[id];
+        let r = rank_of_out(o);
+        let class = blank(ChunkKind::Merged(id), out.sh_type, out.flags, 0, 0).load_class();
+        let pos = order.partition_point(|c| keys[c.0 as usize] < (r, id.0, 0, 0));
+        let same =
+            |c: &ChunkId| ranks[c.0 as usize].rank == r.rank && chunks[*c].load_class() == class;
+        let sized = |c: &ChunkId| {
+            let ch = &chunks[*c];
+            !matches!(ch.kind, ChunkKind::Patches(_)) && !ch.is_relro_padding()
+        };
+        let before = order[..pos].iter().rev().take_while(|c| same(c)).find(|c| sized(c));
+        let at = match before {
+            Some(&c) => Some((c, chunks[c].size)),
+            None => order[pos..]
+                .iter()
+                .find(|c| same(c))
+                .or_else(|| order[pos..].iter().find(|c| chunks[**c].is_alloc() && sized(c)))
+                .map(|&c| (c, 0))
+                .or_else(|| {
+                    let c =
+                        *order[..pos].iter().rev().find(|c| chunks[**c].is_alloc() && sized(c))?;
+                    Some((c, chunks[c].size))
+                }),
+        };
+        if let Some((c, off)) = at {
+            for &s in &inputs.ordered.members[id] {
+                place_rows.push((s, c, off));
+            }
+        }
+    }
     // Places (rule 1): members, then folded sections at their target's.
     let mut place = Column::filled(inputs.headers.len(), Place::NONE);
     for (s, c, off) in place_rows {

@@ -525,6 +525,7 @@ impl Parser<'_> {
             self.out.plan.target_options.push(TargetOption {
                 arg,
                 option: m.name.clone(),
+                value: value.clone(),
                 targets: row.targets.to_vec(),
             });
         }

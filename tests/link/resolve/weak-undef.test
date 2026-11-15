@@ -7,7 +7,6 @@
 # leaves it out, lld keeps it as WEAK UND, mold as LOCAL UND; the test
 # checks only that no definition was pulled in.
 #@ spec: resolve.md §3.2
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 main.c -o main.o
 cc -O1 maybe.c -o maybe.o

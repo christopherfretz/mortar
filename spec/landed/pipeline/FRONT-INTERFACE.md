@@ -127,3 +127,8 @@ of the first version changed):
 4. `plan.shaping.build_id`'s `BuildId::Hex` holds the whole option text,
    `0x` included (the command line used to strip it, so no `0xHEX` id
    reached synth intact).
+5. `Front::erratum_fixes` (WP-027c): the erratum 843419 fixes of the
+   final placement as words by address (`LinkSites::erratum_fixes`),
+   which the image writes over fill's bytes (`mortar_image::link::Link::
+   fixups`). Before, the fixes were computed by the fixed point but never
+   written.
