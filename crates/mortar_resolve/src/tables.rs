@@ -892,6 +892,7 @@ pub fn resolution<V: View>(
         comdat_copies: r.keepers.copies.clone().into_boxed_slice(),
         section_base: mortar_core::Column::from_vec(r.section_base.clone())?,
         sections: mortar_core::Column::from_vec(r.sections.clone())?,
+        meta: r.meta.clone().into_boxed_slice(),
         // The dynamic columns (`spec/dyn.md` D-11, D-12, D-21): empty in a
         // static link.
         exported: set(dynamic.map(|d| &d.exported)),
@@ -1272,6 +1273,16 @@ impl Ctx<'_, '_, '_> {
                 let at =
                     Place::section(self.file_ref(*file), self.section_name(*file, *section), 0);
                 warn(Kind::GnuWarning { text }).at(at)
+            }
+            What::MetaNotContainer { file, section } => {
+                let at =
+                    Place::section(self.file_ref(*file), self.section_name(*file, *section), 0);
+                warn(Kind::MetaMalformed {
+                    reason: "the section is not a container: its type or flags are not \
+                             SHT_PROGBITS with exactly SHF_EXCLUDE (meta.md MT-1, MT-6)"
+                        .to_owned(),
+                })
+                .at(at)
             }
         }
     }

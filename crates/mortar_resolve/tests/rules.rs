@@ -1677,6 +1677,70 @@ fn s10_classification_table() {
     assert_eq!(r.sections[base + TDATA as usize].kind, SectionKind::Regular);
 }
 
+/// A Mason container is `Meta`, `Dropped(Consumed)`, and listed; a
+/// section of that name that is not one takes the other rows and is
+/// reported once per file, never by its position in the table.
+// spec: meta.md T-MT-6, MT-1, MT-4, MT-6; resolve.md §10 (amendment A-1)
+#[test]
+fn s10_mason_containers() {
+    const META: &str = ".mason.meta";
+    let consumed = SectionState::Dropped(DropReason::Consumed);
+    // Two containers in one object (MT-4), not at a fixed index.
+    let mut m = Model::new(A64);
+    let a = m.obj("a.o");
+    let i = m.section(a, MSection::new(META, SHT_PROGBITS, SHF_EXCLUDE));
+    m.section(a, MSection::new(".debug_info", SHT_PROGBITS, 0));
+    let j = m.section(a, MSection::new(META, SHT_PROGBITS, SHF_EXCLUDE));
+    m.obj("b.o");
+    let r = link(&m);
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+    let base = r.section_base[a.0 as usize].start.0 as usize;
+    for k in [i, j] {
+        let row = r.sections[base + k as usize];
+        assert_eq!((row.kind, row.state), (SectionKind::Meta, consumed));
+        assert!(!row.kind.carries_output() && !row.kind.is_placed());
+    }
+    assert_eq!(r.meta, vec![(a, SectionIndex(i)), (a, SectionIndex(j))]);
+
+    // The non-container variants: the rows below, one warning per file.
+    let variants = [
+        (SHT_PROGBITS, SHF_ALLOC, SectionKind::Regular, SectionState::Kept),
+        (SHT_PROGBITS, 0, SectionKind::Regular, SectionState::Kept),
+        (
+            SHT_PROGBITS,
+            SHF_ALLOC | SHF_EXCLUDE,
+            SectionKind::Excluded,
+            SectionState::Dropped(DropReason::Excluded),
+        ),
+        (SHT_NOTE, SHF_EXCLUDE, SectionKind::Excluded, SectionState::Dropped(DropReason::Excluded)),
+        (SHT_NOTE, 0, SectionKind::Note, SectionState::Kept),
+    ];
+    for (sh_type, flags, kind, state) in variants {
+        let mut m = Model::new(A64);
+        let a = m.obj("a.o");
+        let i = m.section(a, MSection::new(META, sh_type, flags));
+        // A second one in the same file: still one warning.
+        m.section(a, MSection::new(META, sh_type, flags));
+        let b = m.obj("b.o");
+        m.section(b, MSection::new(META, sh_type, flags));
+        let r = link(&m);
+        let row = r.sections[(r.section_base[a.0 as usize].start.0 + i) as usize];
+        assert_eq!((row.kind, row.state), (kind, state), "{sh_type} {flags:#x}");
+        assert!(r.meta.is_empty());
+        assert_eq!(ids(&r), ["meta-malformed", "meta-malformed"], "{sh_type} {flags:#x}");
+        let files: Vec<_> = r
+            .problems
+            .iter()
+            .map(|p| match p.what {
+                What::MetaNotContainer { file, .. } => file,
+                _ => panic!("{p:?}"),
+            })
+            .collect();
+        assert_eq!(files, [a, b]);
+        assert!(r.problems.iter().all(|p| p.severity() == mortar_resolve::Severity::Warning));
+    }
+}
+
 #[test]
 fn s10_slim_lto_refused() {
     let mut m = Model::new(A64);

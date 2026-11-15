@@ -145,6 +145,12 @@ pub fn classify(
         SHT_GROUP => return Ok((K::Group, Note::None)),
         _ => {}
     }
+    // spec: meta.md MT-6, amendment A-1: a Mason container, before the
+    // `SHF_EXCLUDE` row it would otherwise match. A section of that name
+    // that is not a container takes the rows below (the caller warns).
+    if mortar_meta::is_container(s.name, s.sh_type, s.flags) {
+        return Ok((K::Meta, Note::None));
+    }
     if s.flags & SHF_EXCLUDE != 0 {
         return Ok((K::Excluded, Note::None));
     }
@@ -237,7 +243,7 @@ pub fn state(
         return SectionState::Dropped(DropReason::Comdat);
     }
     match kind {
-        K::Null | K::Symtab | K::Strtab | K::Reloc | K::Group | K::Stack => {
+        K::Null | K::Symtab | K::Strtab | K::Reloc | K::Group | K::Stack | K::Meta => {
             SectionState::Dropped(DropReason::Consumed)
         }
         K::Excluded => SectionState::Dropped(excluded),

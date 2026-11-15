@@ -138,6 +138,11 @@ mod tests {
             "llvm-dwarfdump",
             "rustc",
             "ld.mold",
+            "objcopy",
+            "i686-linux-gnu-objcopy",
+            "strip",
+            "eu-strip",
+            "llvm-strip-19",
         ] {
             assert!(covers(name), "{name}");
         }
@@ -146,7 +151,7 @@ mod tests {
             "x86_64-linux-gnu-clang",
             "arm-linux-gnueabi-gcc",
             "clang-18",
-            "llvm-strip",
+            "llvm-size",
             "x86_64-linux-gnu-",
             "",
         ] {

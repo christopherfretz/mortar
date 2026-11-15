@@ -61,16 +61,19 @@ pub fn shape(head: &[u8]) -> Shape {
 }
 
 /// The resident ranges of the relocatable object at `base` of `size`
-/// bytes, appended to `out`; `Ok(false)` when its section structure is
-/// not one the rules can follow (a bad `e_shentsize`, a section header
-/// table out of bounds, an absurd count): the caller then keeps it whole,
-/// and the reader finds the error in the whole bytes, exactly as the
-/// resident store's does.
+/// bytes, appended to `out`, and the ranges of its Mason containers
+/// (`spec/meta.md` MT-6), which are never resident (amendment A-8 to
+/// §11.1), appended to `containers`; `Ok(false)` when its section
+/// structure is not one the rules can follow (a bad `e_shentsize`, a
+/// section header table out of bounds, an absurd count): the caller then
+/// keeps it whole, and the reader finds the error in the whole bytes,
+/// exactly as the resident store's does.
 pub fn object_ranges(
     src: &mut dyn Fetch,
     base: u64,
     size: u64,
     out: &mut Vec<Range<u64>>,
+    containers: &mut Vec<Range<u64>>,
 ) -> Result<bool, crate::store::ReadError> {
     let head = src.fetch(base, size.min(PREFIX))?;
     let class = if head.get(EI_CLASS) == Some(&ELFCLASS32) { Class::Elf32 } else { Class::Elf64 };
@@ -127,6 +130,15 @@ pub fn object_ranges(
             continue;
         }
         let Some(range) = body(&s) else { continue };
+        // A-8: a container is never resident, whatever its size; the
+        // name is looked at only for a section MT-6's type and flags
+        // allow.
+        if mortar_meta::is_candidate(s.sh_type, s.sh_flags)
+            && mortar_meta::is_container(name(&s), s.sh_type, s.sh_flags)
+        {
+            containers.push(range);
+            continue;
+        }
         let resident = match s.sh_type {
             SHT_SYMTAB | SHT_DYNSYM => {
                 // And its string table, whatever its type: the reader
@@ -162,6 +174,98 @@ pub fn object_ranges(
         }
     }
     Ok(true)
+}
+
+/// The ranges of the Mason containers (`spec/meta.md` MT-6) of the
+/// relocatable object at `base` of `size` bytes, found by reading only its
+/// ELF header, its section header table and, when a section has a
+/// container's type and flags, its `.shstrtab` (MT-42: "mortar reads the
+/// section header ... and nothing else of it"). Each structure is fetched
+/// exactly, so that nothing past it is read. `None` when the section
+/// structure is not one the rules follow (the caller reads the file as
+/// before; the reader then refuses it).
+pub fn container_ranges(
+    src: &mut dyn Fetch,
+    base: u64,
+    size: u64,
+) -> Result<Option<Vec<Range<u64>>>, crate::store::ReadError> {
+    let head = src.fetch(base, size.min(PREFIX))?;
+    let class = if head.get(EI_CLASS) == Some(&ELFCLASS32) { Class::Elf32 } else { Class::Elf64 };
+    let Some(ehdr) = Ehdr::decode(class, head) else { return Ok(None) };
+    let entsize = Shdr::size(class) as u64;
+    let shoff = ehdr.e_shoff;
+    if shoff == 0 {
+        return Ok(Some(Vec::new()));
+    }
+    if u64::from(ehdr.e_shentsize) != entsize || !within(shoff, entsize, size) {
+        return Ok(None);
+    }
+    let Some(first) = Shdr::decode(class, src.fetch(base + shoff, entsize)?) else {
+        return Ok(None);
+    };
+    let count = if ehdr.e_shnum != 0 { u64::from(ehdr.e_shnum) } else { first.sh_size };
+    let Some(table_size) = count.checked_mul(entsize) else { return Ok(None) };
+    if count > u64::from(u32::MAX) || !within(shoff, table_size, size) {
+        return Ok(None);
+    }
+    // Borrowed, not copied: a file with no candidate (nearly every one)
+    // costs no allocation here.
+    let headers: Table<'_, Shdr> = Table::new(src.fetch(base + shoff, table_size)?, class);
+    let candidates: Vec<Shdr> = headers
+        .iter()
+        .skip(1)
+        .filter(|s| mortar_meta::is_candidate(s.sh_type, s.sh_flags))
+        .filter(|s| s.sh_size > 0 && within(s.sh_offset, s.sh_size, size))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let shstrndx = if ehdr.e_shstrndx == SHN_XINDEX {
+        u64::from(first.sh_link)
+    } else {
+        u64::from(ehdr.e_shstrndx)
+    };
+    let strtab = usize::try_from(shstrndx).ok().and_then(|i| headers.get(i));
+    let names = match strtab {
+        Some(t)
+            if shstrndx != 0 && t.sh_type != SHT_NOBITS && within(t.sh_offset, t.sh_size, size) =>
+        {
+            src.fetch(base + t.sh_offset, t.sh_size)?.to_vec()
+        }
+        _ => Vec::new(),
+    };
+    let mut out: Vec<Range<u64>> = candidates
+        .iter()
+        .filter(|s| {
+            let tail = names.get(s.sh_name as usize..).unwrap_or_default();
+            let name = tail.iter().position(|&b| b == 0).map_or(&[][..], |nul| &tail[..nul]);
+            mortar_meta::is_container(name, s.sh_type, s.sh_flags)
+        })
+        .map(|s| base + s.sh_offset..base + s.sh_offset + s.sh_size)
+        .collect();
+    out.sort_by_key(|r| (r.start, r.end));
+    Ok(Some(out))
+}
+
+/// `range` less the `forbidden` ranges (sorted by start): the pieces, in
+/// order.
+#[must_use]
+pub fn clip(range: Range<u64>, forbidden: &[Range<u64>]) -> Vec<Range<u64>> {
+    let mut out = Vec::new();
+    let mut at = range.start;
+    for f in forbidden {
+        if f.end <= at || f.start >= range.end {
+            continue;
+        }
+        if f.start > at {
+            out.push(at..f.start);
+        }
+        at = at.max(f.end);
+    }
+    if at < range.end {
+        out.push(at..range.end);
+    }
+    out
 }
 
 /// Whether `start..start + len` lies within `0..size`.
@@ -214,15 +318,21 @@ pub fn archive_ranges(
 }
 
 /// Sorts `ranges` and merges those that overlap, touch, or are less than
-/// [`GAP`] apart, into the parts of §11.3.
+/// [`GAP`] apart, into the parts of §11.3; never across a byte of a
+/// `forbidden` range (a Mason container, A-8: the bytes between two
+/// ranges a merge joins become resident).
 #[must_use]
-pub fn merge(mut ranges: Vec<Range<u64>>) -> Vec<Range<u64>> {
+pub fn merge(mut ranges: Vec<Range<u64>>, forbidden: &[Range<u64>]) -> Vec<Range<u64>> {
     ranges.retain(|r| r.start < r.end);
     ranges.sort_by_key(|r| (r.start, r.end));
     let mut out: Vec<Range<u64>> = Vec::with_capacity(ranges.len());
     for r in ranges {
         match out.last_mut() {
-            Some(last) if r.start < last.end.saturating_add(GAP) => {
+            Some(last)
+                if r.start < last.end.saturating_add(GAP)
+                    && (r.start <= last.end
+                        || !forbidden.iter().any(|f| f.start < r.start && f.end > last.end)) =>
+            {
                 last.end = last.end.max(r.end);
             }
             _ => out.push(r),

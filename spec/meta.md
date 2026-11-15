@@ -102,6 +102,18 @@ the election, and `-r` by any reference linker keeps one copy of a group
 by `-r` (R), so a record that relied on one would mean something else
 afterwards, silently.
 
+What mortar does today (WP-071; measured on an aarch64 object): no
+component checks MT-2 on its own terms. A section of the container's name
+with `SHF_GROUP` set (a group member, as GNU as writes `"eG"`) fails
+MT-6's flags test ("exactly `SHF_EXCLUDE`"): it is not a container, takes
+`spec/resolve.md` §10's `SHF_EXCLUDE` row (dropped) and gives one
+`meta-malformed` warning per file; its bytes are never read as units. A
+container with a relocation section is classified as a container and
+read as one; its relocation section is consumed with it (no relocation
+is applied: the container has no output, MT-31/MT-33) and nothing is
+reported. On Mason objects MT-2 is checked by the verifier's container
+rules (WP-078).
+
 **MT-3 (other linkers).** Final links by GNU ld 2.44, lld 19 and mold
 2.37 drop the section and produce the same program as without it (P,
 three targets). This is the principle-9 guarantee for Mason objects
@@ -114,7 +126,8 @@ reads all of them in section-index order (their relative order, never an
 absolute index, MT-1); their units are one sequence.
 
 **MT-5 (tools that keep it, tools that lose it).** Measured on objects
-(`container`, `container-adv`; binutils 2.44, llvm 19, elfutils 0.192):
+(`container`, `container-adv`; binutils 2.44, llvm 19 and 22, elfutils
+0.192; re-run by T-MT-5, WP-071):
 
 | tool and option | the container | the symbols its rows anchor to |
 |---|---|---|
@@ -213,9 +226,11 @@ cost no string bytes; MT-41 measures the difference.
 `0xcbf29ce484222325`, prime `0x100000001b3`) over the name's bytes
 without the NUL. A key is an index, never an identity: every reader that
 groups rows by key confirms equality by comparing the names (`odr.md`
-O-4). **Versions** (one rule, also `odr.md` O-4): the name is the
-symbol's name as the object's symbol table spells it, so a version that
-`.symver` wrote into the object (`foo@V1`, `foo@@V2`) is part of the
+O-4). So a reader need not check that a named row's key is FNV-1a 64 of
+its name (mortar's does not): a wrong key can only make the row miss its
+group, never put it in a wrong one. **Versions** (one rule, also
+`odr.md` O-4): the name is the symbol's name as the object's symbol
+table spells it, so a version that `.symver` wrote into the object (`foo@V1`, `foo@@V2`) is part of the
 name and of the key; a version that a version script assigns at link
 time is not in any object and is not part of the key. It is part of the
 identity wherever it exists, in a shared object's `.dynsym` (through
@@ -225,11 +240,20 @@ nodes are different entities (`odr.md` O-24, O-54).
 
 **MT-14 (validity).** A unit is malformed if its magic is wrong,
 `unit_size` runs past the section or is not a multiple of 8, a block runs
-past the unit, `row_count × row_size` runs past its block, a string
-offset is past the table or a string has no NUL, or rows that must be
-sorted are not. A malformed unit is skipped whole with the warning
-`meta-malformed` naming the file and the unit's offset; the units around
-it are read (their framing is independent). **Malformed metadata never
+past the unit, its blocks are not strictly increasing by kind (MT-11: a
+kind twice, or out of order), `row_count × row_size` runs past its block,
+the string table runs past the unit, overlaps the header or (when not
+empty) does not start with the empty string (MT-12), a string offset is
+past the table or a string has no NUL, or rows that must be sorted are
+not. A malformed unit is skipped whole with the warning `meta-malformed`
+naming the file and the unit's offset; the units after it are read when
+its `unit_size` still says where the next one starts. After a wrong
+magic, a header cut short by the section's end, or a `unit_size` that is
+not usable (not a multiple of 8, smaller than a header, or past the
+section), nothing says where a next unit would start: the reader gives
+the one `meta-malformed` (naming the unit's offset and MT-10 or MT-14)
+and reads no more of that section; the file's other containers are read
+(MT-4). **Malformed metadata never
 fails a link** unless the user asked for strictness (`odr.md` O-40): it
 is additive.
 
@@ -365,7 +389,9 @@ partially). Nothing is designed for them here.
 A unit with another major is skipped with the warning `meta-version`,
 once per file; a link never fails for it. A major changes only when a
 1.x reader would misread a 2.0 unit; adding kinds, header fields, or
-row fields never does.
+row fields never does. Every major keeps the magic at offset 0, `major`
+at offset 4 and `unit_size` at offset 8 (MT-10), so that a reader of any
+major can recognise a unit and skip one it does not read.
 
 **MT-36 (minor).** A producer writes the lowest minor that has every
 feature it uses. A reader of minor `m` reads a unit of minor `n > m`:
@@ -427,39 +453,89 @@ above stand as the upper proxy [estimate: a proxy until kiln writes kind
 3]. Everything in the "bytes" column after kind 2's is arithmetic over the
 row sizes and assumed name lengths: `[estimate]`.
 
-**MT-41 (budget).** Without kind 4, about 92 KB [estimate: the table's
-arithmetic; kinds 1, 2, 3 and 5]: about **19 % of the `-O0` object, 9 %
-of the `-O0 -g` one** [estimate]. (`odr.md` Q4's "3-6 %" is kinds 1 and 2
-alone, anchored.) No gate is set from these numbers: WP-071's acceptance
-test (`odr.md` §13, experiment 7) writes real units for the heavy TU and
-for protoc with the test producer at the row counts of their objects,
-and the gate of the L11 lane is set from that measurement, by kind, in
-WP-071's landed record. What a link pays with the checks off is none of
-it: MT-42.
+**MT-41 (budget).** Measured by WP-071's acceptance test (`odr.md` §13,
+experiment 7: the test producer at the row counts of the objects;
+`spec/landed/meta/WP-071.md` §5.2): without kind 4, the heavy TU's unit
+is **112,392 B, 23.6 % of the `-O0` object and 10.7 % of the `-O0 -g`
+one** (kind 1 112 B; kind 2 28,528 B, 594 rows; kind 3 16,928 B, 302
+rows; kind 5 26,456 B, 661 rows; strings 40,335 B), and protoc's 168
+units are 14.57 MB, 31.4 % of its objects. The table's estimate above
+(~92 KB, 19 % and 9 %) assumed 40 B a type name; kind 3's qualified
+names measured 132 B a name (g++'s DWARF of the same TU, a proxy until
+kiln writes kind 3), which is the difference. Kind 5's type strings are
+not in these numbers (nothing gave the test producer a declared type).
+(`odr.md` Q4's "3-6 %" is kinds 1 and 2 alone, anchored.) **The gate**
+(the L11 lane, on kiln's units of the heavy TU): a row is 16 B (kind 1),
+48 B (kind 2), 56 B (kind 3), 40 B (kind 5), the v1 row sizes; kind 3's
+names at most 160 B a row on average; kind 5's type strings at most
+8 KB a unit; the unit (kinds 1, 2, 3 and 5) at most **125,000 B** and at
+most **12 %** of the `-O0 -g` object. It is measured again when kiln
+writes kind 3. What a link pays with the checks off is none of it:
+MT-42.
 
 **MT-42 (a link that does not use the feature does not pay for it).**
 A hard rule (the operator's, 2026-11-15). Mortar reads a container's
 bytes only when a check that needs them is on (`odr.md` O-42): with
 `--odr=off`, and in the default mode as long as every record-based check
-is `--odr=strict` only (`odr.md` O-47), **no container byte is read**:
-mortar reads the section header (it reads every header anyway to
-classify sections) and nothing else of it; no unit is parsed. This
+is `--odr=strict` only (`odr.md` O-47), **a link pays nothing for the
+containers**: mortar parses no unit and keeps no container byte. This
 needs amendment **A-8** to `spec/input.md` §11.1 (`odr.md` §14): the
 staged store's row "every other section of at most 64 KiB" excludes
 containers (MT-6's predicate); a container is never resident; when a
 check needs it, `mortar_meta` reads it with positioned reads
 (`copy_to`-style, `read_exact_at`) into memory it owns for the check's
-duration. This holds for every file, small ones included: with
-`--odr=off` (and in the default mode while no record-based check is on)
-an object of at most 64 KiB that `input.md` §11.1 would read whole in
-one read is read around its container (its headers first, then the
-ranges before and after the container), so that no container byte is
-read: a small Mason object pays one or two reads more, which the
-operator's rule accepts (`odr.md` Q15, withdrawn). When a check that needs the
-container is on, a small file is read whole in one read, container
-included (it is then needed). T-MT-42 checks both. The cost the rule
-leaves is the file's size on disk and in the page cache of whoever
-wrote it.
+duration. The reads (the supervisor's ruling, 2026-11-15, WP-071):
+
+With containers unwanted, mortar makes exactly the reads it would make
+if no section were a container (a small file whole; a large object's
+head and tail windows, then its body ranges). Container bytes that fall
+inside those reads are read and dropped: never resident, never parsed.
+No other container byte is read: a large object's body ranges are
+clipped around its containers.
+
+The file header is always resident. GNU as on i386 puts an ELF32
+object's first container right after its 52-byte header, so bytes 52-63
+may be container bytes. The readers take an ELF32 header from its 52
+bytes when the first 64 are not resident (`mortar_elf`
+`FileHeader::head`, used by `Object::parse_view` and `facts`). Pinned by
+`t_mt_42.rs` `elf32_container_after_the_header_is_not_resident`.
+
+So a link whose inputs have no container pays nothing that grows with
+the input: the same reads, range for range, as with the containers
+wanted. (A first version read each top-level object's headers first and
+the rest around its containers, so that no container byte was read at
+all; it cost every container-free object three reads more, measured at
+about 5.5 ms, 7 %, on 5,000 small objects at one thread: WP-071's
+record §5.5.1.) When a check that needs the container is on, a small file
+stays resident whole, container included (it is then needed). T-MT-42
+checks both, pinned by `crates/mortar_input/tests/t_mt_42.rs`
+`container_free_files_cost_what_they_cost_without_the_rule` and
+`no_container_byte_is_resident`. The cost the rule leaves is the file's
+size on disk and in the page cache of whoever wrote it.
+
+Two named exceptions (accepted 2026-11-15, WP-071); T-MT-42's byte
+counter counts each, and a test pins each:
+
+- **E2 (archive members).** A regular archive's members are read before
+  their section headers are known (`spec/input.md` §11.1): a member of
+  at most 64 KiB is read whole and stays resident, its container with
+  it; the chain's windows and a larger member's head and tail reads may
+  cover container bytes, which are not kept; a container of a member
+  larger than 64 KiB is never resident. With the containers wanted,
+  those bytes may be read a second time. Reading every member's section
+  headers first would make every archive link pay, Mason or not.
+  Measured on protoc's archives: 11.4 % of the container bytes read,
+  2.7 % resident (WP-071's record §5.3). Pinned by `t_mt_42.rs`
+  `small_member_container_is_the_archive_exception` and
+  `member_container_is_not_resident`.
+- **E3 (whole-file reads).** A file made fully resident because
+  descriptors ran out (`spec/input.md` §11.4) and every file under the
+  resident policy are read whole, containers included. Pinned by
+  `t_mt_42.rs` `whole_file_paths_are_the_named_exception`.
+
+(E1, the first 64 bytes of a file read before its class was known, went
+with the first version: the head is now one of the reads the rule
+names.)
 
 ## 11. The container in mortar's outputs
 
@@ -507,11 +583,15 @@ has seen every definition (`odr.md` O-20).
   the default mode while O-47 lists no record-based check as on, a link
   of objects whose `.mason.meta` bytes are garbage (valid section
   header, random contents) succeeds without a warning and produces the
-  same output as with the sections removed; and the store's byte counter
-  (`spec/input.md` §11, a test-only counter of bytes read per file range)
-  shows **zero** bytes read from any container range of any object,
-  objects of at most 64 KiB included. With a check on that needs the
-  container, the counter shows each container read once.
+  same output as with the sections removed; and the store's read
+  counter (`spec/input.md` §11, a test-only counter per file range)
+  shows the same reads as with the containers wanted, no read wholly
+  inside a container, no container byte resident, and of a large
+  object's containers only the bytes inside its head and tail windows
+  read (none for a container in its body). With a check on that needs
+  the container, the counter shows each container read once (twice
+  where a large object's head or tail window covers it: the window's
+  bytes are dropped, `mortar_meta` reads the container again).
 - **T-MT-5**: MT-5's table, re-run on the harness's tool versions
   (binutils, llvm, elfutils): a changed row fails the test and is a spec
   change.
