@@ -669,7 +669,9 @@ program is the program a from-scratch link would have made.
   either way when the contribution is small. Worth it if a user asks for
   "no stale bytes" (a privacy concern: a removed comment's string is
   still in `.debug_str`'s dead fragments either way, which no scrub can
-  remove without moving live strings).
+  remove without moving live strings). *Test (when built):* plumb checks
+  that every dead debug range is in neutral form over its whole length,
+  not only its first unit.
 - **IN-4 [v1] Never refuse what a full link accepts.** An update that
   meets a case the delta rules do not cover links from scratch (§7), in
   the same process, and reports why. The full link's result (output or
@@ -744,7 +746,9 @@ program is the program a from-scratch link would have made.
   gives one warning (`incremental-unsupported`, naming the option) and
   links plainly, writing no state; with `--incremental=update` it is an
   error. These are §7's "unsupported" rows: a state for them would never
-  be used.
+  be used. *Test:* one link test per option: the warning, no state file
+  written, and the output byte-identical to a plain link's; with
+  `--incremental=update`, the error.
 
 ### 5.2 The update, phase by phase
 
@@ -777,12 +781,17 @@ with each phase fed from the state for unchanged files:
   An unchanged archive member is read the same way, at its member
   offset. *Test:* covered by (B) and (C) of IN-1.
 - **IN-15 [v1] Threads.** The update uses the same parallel phases as a
-  full link; determinism is IN-6.
+  full link; determinism is IN-6. *Test:* L10 runs each step's update
+  with `--threads=1` and with the default, and the outputs must be
+  byte-identical (IN-6).
 - **IN-16 [v1] Too much changed.** When the units to refill hold more
   than half of the output's allocated bytes, or more than half of the
   inputs changed, the update falls back (`too-much-changed`): a full
   link costs about the same, and compacts. The threshold is a constant
-  of the policy, reviewed at S4 (§10) with L10's statistics.
+  of the policy, reviewed at S4 (§10) with L10's statistics. *Test:* an
+  L10 step that changes more than half the inputs (a header every unit
+  includes) must report `too-much-changed`, and one just under the
+  threshold must update.
 
 ### 5.3 The link state
 
@@ -792,7 +801,10 @@ with each phase fed from the state for unchanged files:
   reader never sees half a state. Not inside the output: gold's
   in-output sections are stripped by `strip`, copied by `cp` and
   `install` with the output, and would make an incremental-mode output
-  differ in its sections from a plain one (§2.7).
+  differ in its sections from a plain one (§2.7). *Test:* a link test
+  checks the state's path with and without `--incremental-state`, that
+  no temporary file is left after success or a crash at IN-46 step 5,
+  and that a plain link creates no state file.
 - **IN-18 [v1] Format and version.** Little-endian, fixed-width rows,
   no pointers; a header of magic `MORTARST`, a format version (u32), the
   mortar version string (any difference: `state-version`), the target,
@@ -1121,7 +1133,10 @@ with each phase fed from the state for unchanged files:
   and with `-ffunction-sections` (the bench's GCC/Clang defaults): a
   same-size constant edit refills one 104–120-byte section instead of
   176–234 KB. When it goes first rather than second is §1.5's go/no-go
-  rule.
+  rule. *Test (WP-068):* L10 with `-ffunction-sections` and no `-g`: the
+  refilled bytes of e1 equal the differing section's size, and the
+  oracle (IN-63a) still holds; a mutation that keeps a section whose
+  relocation target moved must be caught (IN-63b).
 - **IN-32 [v1] Overflow.** A region that no longer fits its contribution
   becomes a hole, and the contribution is placed at the **tail reserve**
   of its output section (category tail), with a fresh region's slack. If
@@ -1261,7 +1276,9 @@ with each phase fed from the state for unchanged files:
   not one padding CIE of ≥ 16 bytes, and a zero word before the end).
 - **IN-35 [v1] The entry point and `.interp`**: `e_entry` is in the ELF
   header, rewritten every update; `.interp` does not change unless the
-  options do (`options-changed`).
+  options do (`options-changed`). *Test:* an L10 step that changes
+  `-e` reports `options-changed`; the oracle (IN-63a) checks `e_entry`
+  after an edit that moves the entry function.
 
 ### 5.8 Dynamic outputs
 
@@ -1293,7 +1310,9 @@ objects.
   pointers in a PIE; the loader's relocations are checked by running.
 - **IN-42 [v1] `.dynamic`** is rewritten whole; a new `DT_NEEDED` uses
   one of the five spare `DT_NULL`s (D-30), and `DT_NEEDED`'s order
-  changing, or the spares running out, is `dynamic-changed`.
+  changing, or the spares running out, is `dynamic-changed`. *Test:* L10
+  (WP-066) adds a `-l` library (a spare used), adds six (the spares run
+  out: `dynamic-changed`) and swaps two (`dynamic-changed`).
 - **IN-43 [v1] Shared objects are never written in place** (M4): a
   running process maps a shared library `MAP_PRIVATE` without write
   denial, so its unmodified pages follow the file and an in-place write
@@ -1532,7 +1551,10 @@ file changes or when one of its file's sections moves (IN-25).
   the bench's GCC and Clang defaults emit them (§8.3).
 - **IN-56 [v1] Strings.** `.debug_str` and `.debug_line_str` are merged
   sections: new strings are appended (S-110), dead ones stay. A neutralized
-  unit names no string.
+  unit names no string. *Test:* an L10 step that adds and removes a
+  string literal checks with plumb that the new string's offset is past
+  the old content (appended) and that no live `DW_FORM_strp` names a dead
+  fragment (IN-3a check 1).
 - **IN-57 [v1] Compaction.** When the dead bytes **summed over all debug
   sections** exceed a quarter of their summed size, or a contribution
   fits nowhere (IN-50), the update falls back (`debug-compaction`): the
@@ -1570,7 +1592,8 @@ file changes or when one of its file's sections moves (IN-25).
   `none`, `--gdb-index` and `--debug-names` (generated indexes) are not
   supported in incremental mode (IN-12): a compressed section cannot be
   updated by window, and a generated index is a function of every unit.
-  `--strip-debug`/`-S` is supported (no debug sections at all).
+  `--strip-debug`/`-S` is supported (no debug sections at all). *Test:*
+  as IN-12, per option; an L10 project linked with `-S` updates.
 - **IN-59 [v1] What "the same debug information" means.** For IN-2,
   debug information is compared by the debuggers' view: the transcripts
   of fixed gdb and lldb sessions (R6s commands: break by name and line,
@@ -1661,52 +1684,101 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   update's output from the output and the map alone, as for any link
   (`docs/VALIDATION.md` "independent verifier"). The map gains two line
   kinds (plumb.md §2.3): `hole <output section> <offset> <size>` and
-  `dead <file> <debug section> <offset> <size>`. plumb checks that every
+  `dead <output section> <offset> <size> <kind>`. plumb checks that every
   byte of an allocated output section is covered exactly once by a
-  `place`, `piece`, synthetic chunk or `hole`; that each hole holds its
-  fill (IN-3); that each `dead` range in `.debug_info` is a neutralized
-  unit and in `.debug_abbrev` is IN-51's pattern; and that no live unit's
-  reference lands in a hole. *Test:* plumb's mutation tests (plumb.md
-  §9.2) gain a stale byte in a hole, a dead unit not neutralized, and a
-  reference into a hole.
+  `place`, `piece`, synthetic chunk, `hole` or `dead` line, and runs
+  IN-3a's three checks on every `hole` and `dead` range. *Test:* plumb's
+  mutation tests (plumb.md §9.2) gain: a live relocation aimed into a
+  hole; a live unit's `DW_AT_stmt_list` aimed at a dead `.debug_line`
+  range; a stale code byte in a code hole; a dead `.debug_info` unit not
+  neutralized; a 12-byte CIE and a zero word in an `.eh_frame` hole
+  (R5's negative rows); a hole in `.init` and a zero slot in a
+  `__start_` array (R4). Each must be rejected.
 - **IN-61 [v1] The replay hook.** A test-only entry (an environment
   variable read by the test build, not an option; model §7.3) runs a
   full link whose decision tables come from a state file; the harness
-  compares its output with the update's byte for byte (IN-1 B).
+  compares its output with the update's byte for byte outside the dead
+  ranges, which it compares by IN-3a's checks (IN-1 B). *Test:* every L10
+  step runs it; a mutation that changes one decision-table entry in the
+  state must make the comparison fail.
 - **IN-62 [v1] The equivalence check.** `mortar_plumb --equiv X.map
   F.map X F` checks IN-2's items 1–6 between an update `X` and a full
   link `F` of the same inputs (§3). It lives in `mortar_plumb` because it
   is a verifier of the incremental linker's claim and must not share its
-  code.
+  code. *Test:* R13's two cases (accept a re-link with other addresses
+  in the same order; reject "b a") are its first tests; the relaxation
+  list of item 4 gets one positive and one negative case per target.
 - **IN-63 [v1] L10** (`docs/VALIDATION.md`): random edit sequences.
-  - *Projects*: R1s census program; a generated program of 200 units
-    over 3 archives (thin and regular); protoc's object set with edits
-    applied by recompiling one source of the bench's tree; each with GCC,
-    Clang and kiln+hod, `-O0` and `-O2`, `-g` and none,
-    `-ffunction-sections` and none, static, PIE and (M4) shared.
-  - *Edits*: R1s fifteen classes, plus: move a definition between
-    files, change a COMDAT keeper, add and remove an archive member,
-    reorder an archive, `touch` without change, rewrite with the old
-    timestamp (with IN-23's hint), add and remove an input, flip
-    `--gc-sections` (an option change). Sequences of 20–50 steps from a
-    recorded seed; a failing sequence is minimized (delta debugging
-    over steps) and its seed kept as a regression.
-  - *After each step*: IN-1's three checks; the program run with its
-    expected output; at `-g`, IN-59's transcripts; the
+  - *Projects*: R2's 40-unit corpus (thin and regular archives, add and
+    remove a unit, extraction changes); a generated program of 200 units
+    over 3 archives; protoc's object set with edits applied by
+    recompiling one source of the bench's tree; the go/no-go workload of
+    §1.5; each with GCC, Clang and kiln+hod, `-O0` and `-O2` (kiln: `-O0`),
+    `-g` and none, `-ffunction-sections` and none, static, PIE and (M4)
+    shared.
+  - *Edits*: R2's edits e1–e10 and the rows of Table 1, plus: move a
+    definition between files, change a COMDAT keeper both ways, kill and
+    revive a section under `--gc-sections`, grow and shrink TLS, change a
+    shared library's copy-relocated object, reorder an archive, `touch`
+    without change, a same-size rewrite within one timestamp tick
+    (`clock_race.py`, R6), the output rewritten within its own tick
+    (`state_tick.py`, R6), add and remove an input, flip `--gc-sections`
+    (an option change). Sequences of 20–50 steps from a recorded seed; a
+    failing sequence is minimized (delta debugging over steps) and its
+    seed kept as a regression.
+  - *After each step*: IN-1's three checks; **IN-63a**; the program run
+    with its expected output; at `-g`, IN-59's transcripts; the
     `--incremental-report` line recorded, so the mix of updates and
     fall-backs is a statistic (and a sequence that only ever falls back
     is flagged).
-  - *Faults*: the crash hook of IN-46 at each step; a running copy of the
-    output during an update (the copy path); a corrupted state.
-  - *Cost*: L10 is a nightly lane at full size and a pre-merge smoke of
-    one sequence per project and compiler; it starts as soon as S1's
-    state round-trips (with every step a fall-back) and grows with the
-    stages.
+  - *Faults*: the crash hook of IN-46 and IN-47 at each step; a process
+    running the output through `ld.so` during an in-place update (R7); a
+    corrupted state; a state on another file system (IN-22a).
+  - *Cost* (R3's oracle run time, and §1.5's full-link times): one step
+    costs two full links (the base is the previous step's), the update,
+    the oracle and the equivalence check. On the 40-unit corpus a full
+    link is a few ms and the oracle's Python prototype ~0.2–0.5 s per
+    scenario (R3); on protoc a full link is 0.2 s, and the oracle reads
+    two 50 MB outputs. *Estimate*: a pre-merge smoke of one 20-step
+    sequence per project and compiler at `-O0` (3 compilers × 2 small
+    projects) is about 120 updates and 240 full links, ~2–4 minutes of
+    one core plus compiles (a corpus edit recompiles one unit, ~0.2–1 s);
+    the nightly lane at full size (every configuration, 50-step
+    sequences, protoc included) is 30–60 core-minutes. S1 measures the
+    smoke's real cost; the pre-merge budget is 5 minutes of wall time on
+    the jobserver pool, else the smoke shrinks. *Test:* the lane's own
+    check: a seeded wrong refill (IN-63b) is found and minimized to at
+    most 3 steps.
+- **IN-63a [v1] The two-full-link oracle.** For every incremental test
+  step: link the step's inputs fully twice (the previous inputs and the
+  new ones, both with the update's options); for every unit of an
+  **unchanged** file whose placement is the same in both, compare its
+  bytes; each unit whose bytes differ must be in the refill set that
+  `--incremental-report` (or WP-063's dry run) predicted, and each unit
+  of an unchanged file that moved must be named as moved; bytes that
+  differ outside every unit are named by output section and must belong
+  to a synthetic chunk the update rewrote. It needs no state and no
+  incremental code: it is the reviewer's experiment 3 made a test, and
+  it is what keeps IN-27's table honest as rows are added. *Test:* R3's
+  scenarios (body edit, COMDAT keeper both ways, gc kill and revive, TLS
+  growth, a debug-only referrer) on GCC `-O0 -g` and `-O2 -g`.
+- **IN-63b [v1] Mutation tests of the delta rules.** Each IN-27 row, and
+  each of IN-3a's checks, is dropped in turn in a test build; the lane
+  records which scenario's oracle (IN-63a) or verifier run fails. A row
+  whose removal no scenario catches has no test, and a scenario is added
+  before the row is relied on. R3 measured the table below with the
+  oracle's prototype as the predictor. *Test:* the lane itself (WP-069).
+
+  MUTATION_TABLE_PLACEHOLDER
+
 - **IN-64 [v1] The bench** gains incremental rows: for protoc `-g` and
-  without, the full link plain and in incremental mode, and an update
-  after (a) one body edit in `descriptor.cc.o` given directly, (b) the
-  same through `libprotobuf.a` regular, (c) thin; wall time, peak RSS,
-  output size and state size (§1.5's floor is the target to compare).
+  without, and for the go/no-go workload, the full link plain and in
+  incremental mode, and an update after (a) one body edit in
+  `descriptor.cc.o` given directly, (b) the same through `libprotobuf.a`
+  regular, (c) thin; each on the copy path and in place; wall time, peak
+  RSS, output size and state size (§1.5's floor is the target to
+  compare). *Test:* the bench's own regression flags (`spec/harness.md`
+  "bench"): an update slower than §1.5's go threshold is flagged.
 
 ### 8.3 What kiln and hod are asked for
 
