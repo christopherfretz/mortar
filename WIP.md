@@ -8,4 +8,5 @@ Learned, not yet written: GNU ld 2.44 AArch64 static writes `.plt`'s start into 
 Q7 ruled S+A. x86-64 kept 0 (X-39, plumb F5(3)).
 0b: Slots needed/verneed/dynstr/dynsym_unhashed/gnu_hash_buckets; CopyAlloc{place,align,alias}; DynStr, VerIndex, CopyPlace; Demands.weak_dyn; check rules.
 0i: mortar_synth::dynsym (DynsymPlan, dynsym_plan stub); S-3 chunk list M2 rows + DynBss=24, BssRelRo=25, D-34 headers.
-Next: 0h dynstr stub (parked at /tmp/mortar-wp041-3943017/dynstr.rs + synth-lib.rs), then merge main.
+0h: mortar_synth::dynstr (DynNames, dynstr_plan stub); DynStr lives in Slots (0b).
+Next: git merge main (WP-030c, 0d), reconcile Q7 with 030c S-69 text, re-cut baseline only if i386 rows changed; then 0c/0k/0e.
