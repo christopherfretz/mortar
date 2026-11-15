@@ -101,6 +101,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mortar_merge"
+version = "0.0.0"
+dependencies = [
+ "mortar_arch",
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_testutil",
+]
+
+[[package]]
 name = "mortar_plumb"
 version = "0.0.0"
 dependencies = [
@@ -124,6 +135,17 @@ name = "mortar_script"
 version = "0.0.0"
 dependencies = [
  "mortar_diag",
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_synth"
+version = "0.0.0"
+dependencies = [
+ "mortar_arch",
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
  "mortar_testutil",
 ]
 
