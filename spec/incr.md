@@ -143,12 +143,31 @@ Findings:
   `hdredit.py`): the 27 (e5) and 6 (e6) extra objects differ only in
   `.debug_line`, with no relocation differences, and their
   `llvm-dwarfdump --debug-line` dumps differ in exactly one line: the
-  `md5_checksum` of `common.h`. GCC 14 emits no MD5s. Clang emits a
-  line table with MD5s only when every file of the unit has one; in the
-  corpus 20 of 54 files (libstdc++ headers, `<stdin>`) have none, so its
-  objects carry none, but a unit including only local headers does
-  change on a header edit under Clang too (control test). kiln emits
-  MD5s for all 56 of 56 files. §8.3's kiln request follows.
+  `md5_checksum` of `common.h`. This is **not a kiln-versus-Clang
+  difference in kind** (kiln's agent measured Clang 19 and 22 behaving
+  as kiln does). The mechanism is the DWARF 5 MD5 and which units carry
+  it. A re-measurement (R2-B', two units including a local `h.h`, one
+  also `<vector>`, an edit that keeps every line number, `-std=c++17 -O0
+  -g`) shows it:
+
+  | compiler | unit with local headers only | unit also including `<vector>` |
+  |---|---|---|
+  | Clang 19 (DWARF 5) | **differs** (2 MD5 entries) | same (0 MD5 entries) |
+  | kiln + hod | **differs** (2) | **differs** (20) |
+  | GCC 14 | same (0) | same (0) |
+  | Clang 19 `-gdwarf-4` | same | same |
+
+  Clang drops every MD5 from a unit when one of its files (here a
+  libstdc++ header) has none. Every corpus unit includes libstdc++, so
+  Clang's corpus objects carry no MD5 and do not change. kiln writes an
+  MD5 for every file (56 of 56 in the corpus), so all its includers
+  change. With only local headers, Clang behaves like kiln. The
+  consequence for mortar is a `.debug_line`-only change, not an
+  allocated-byte change. v1 still sees a changed file and refills it
+  whole, so a header edit makes every includer a changed input under
+  kiln (40 instead of 13 or 34 here). IN-31's section hashes (v2)
+  would refill only that file's `.debug_line` contribution. §8.3's kiln
+  request follows.
 - **Debug sizes barely move on these edits**: over 745 changed `-g`
   objects, the new debug size over the old is 1.0000 at the median,
   1.0005 / 1.0021 / 1.0002 at p90 (GCC / Clang / kiln), 1.0149 at most
@@ -432,7 +451,12 @@ abbreviation table; lldb then warned `unsupported DW_FORM value` and lost
 the line information of the *live* `b_f`, because lldb parses
 `.debug_abbrev` as a sequence of tables and read the dead table's
 remaining bytes as the next table. Zeroing the whole dead table (each
-zero byte is an empty table) fixed it. §6 turns this into rules.
+zero byte is an empty table) fixed it. The revision's R9 repeated this
+at depth (20 dead versions of one file): the pad form above makes readelf
+print "Bogus end-of-siblings marker" warnings on every output, and a
+**block form** (one DIE whose `DW_FORM_block` attribute covers the unit)
+is clean in readelf, `--verify`, gdb and lldb. §6 turns this into rules
+(IN-51, IN-51b).
 
 ## 2. Prior art and mortar's positions
 
@@ -655,7 +679,7 @@ program is the program a from-scratch link would have made.
      and libunwind's `.eh_frame` walkers) pass over it: a neutral unit of
      IN-51's form in `.debug_info`, `.debug_abbrev`, `.debug_line`,
      `.debug_rnglists`, `.debug_loclists`, `.debug_str_offsets`,
-     `.debug_addr`, `.debug_aranges` (IN-51b), a padding CIE in
+     `.debug_addr` (IN-51, IN-51b; `.debug_aranges` has none, IN-54), a padding CIE in
      `.eh_frame` (IN-34a), a whole dead contribution as its compiler wrote
      it elsewhere in a debug section (IN-53), any bytes in a merged
      string section (reached only by offset);
@@ -1487,8 +1511,9 @@ file changes or when one of its file's sections moves (IN-25).
 - **IN-50 [v1] Where a new contribution goes.** Every debug contribution
   (strings excepted, IN-56) is **allotted its size class**: its size
   rounded up to `m·2^k` with `m` in 8..15 (at most 12.5% over, at least 32
-  bytes); the bytes between its end and the allotment's end are a dead
-  range in neutral form (IN-51, IN-53). A changed file's new contribution
+  bytes), and to the next class when the slack would be smaller than the
+  section's minimum neutral form (IN-51b); the bytes between its end and
+  the allotment's end are a dead range in that form. A changed file's new contribution
   goes, first fit:
   1. **in place**, if it fits the file's current allotment (the common
      case: sizes barely move, §1.1);
@@ -1506,59 +1531,156 @@ file changes or when one of its file's sections moves (IN-25).
   `debug_tail_reuse.py`). *Test:* E6b in L10 (IN-59); an L10 sequence
   that grows a file's debug contribution past its class, so that each of
   the three placements happens, with `--incremental-report` naming which.
-- **IN-51 [v1] Dead `.debug_info` units are neutralized.** Each unit of
-  a dead contribution keeps its offset and its `unit_length`; its header
-  becomes a compile-unit header (DWARF 5: `DW_UT_compile`; type and
-  skeleton units are converted, their longer headers' extra bytes
-  becoming null entries) of the same version, address size and
-  abbreviation offset; its DIE stream becomes the byte `01` followed by
-  zero bytes (null entries) to the unit's end. The file's dead
-  `.debug_abbrev` contribution becomes, at each offset a dead unit names,
-  the six bytes `01 11 00 00 00 00` (code 1, `DW_TAG_compile_unit`,
-  `DW_CHILDREN_no`, no attributes, end of table), and zero bytes
-  everywhere else (each zero byte is an empty table). Measured (E6b, §1.6):
-  with GCC and Clang, DWARF 4 and 5, gdb 16.3's transcript equals the
-  from-scratch link's and lldb 19's differs only in a placement offset;
-  `llvm-dwarfdump --verify` passes. Zeroing only the first six bytes of
-  the dead table broke lldb (it parses `.debug_abbrev` as a sequence of
-  tables). Converted type and skeleton units were not tested here: S5
-  tests them before relying on them, and until then a changed file with
-  type units (`.debug_types`, `DW_UT_type`) or split-DWARF skeletons
-  falls back (`debug-unit-kind`). *Test:* E6/E6b's transcripts per
-  compiler and DWARF version, in L10.
+- **IN-51 [v1] Dead `.debug_info` units are neutralized, in block
+  form.** Each unit of a dead contribution keeps its offset and its
+  `unit_length`, and becomes a compile unit of the same version and
+  address size (DWARF 5: `DW_UT_compile`) holding **one DIE whose single
+  attribute is a block covering the rest of the unit**: abbreviation
+  code 1, `DW_TAG_compile_unit`, `DW_CHILDREN_no`, attribute 0x2000
+  (`DW_AT_lo_user`, ULEB `80 40`) with form `DW_FORM_block` (0x09), whose
+  ULEB length (padded to a fixed width when needed) makes the DIE end
+  exactly at the unit's end, with no null entries after it. Its
+  abbreviation table is `01 11 00 80 40 09 00 00`. For a file that has a
+  `.debug_addr` contribution (Clang DWARF 5), the neutral unit also keeps
+  `DW_AT_addr_base` (0x73, `DW_FORM_sec_offset` 0x17) aimed at the file's
+  dead `.debug_addr` table, with the abbreviation table `01 11 00 73 17 80
+  40 09 00 00`. readelf reads `.debug_addr` tables only through the units
+  that name them, so an unnamed dead table between live ones gives
+  "Corrupt .debug_addr section". The rest of the file's dead
+  `.debug_abbrev` contribution is zero bytes, and each zero byte is an
+  empty table. Minimum unit length: 14 bytes (DWARF 4), 15 (DWARF 5) or
+  19 (with `DW_AT_addr_base`), so that the block holds at least one byte.
+  A 0-byte block makes readelf warn "Block ends prematurely".
+  Measured by R9 (`debug_chain.sh` with `dwarf_pad.py --form=block`): 20
+  dead versions of one file, g++ and clang++, DWARF 4 and 5.
+
+  | form | `--verify` errors | readelf `--debug-dump=info` warnings | gdb, lldb vs full link |
+  |---|---|---|---|
+  | the previous draft's (one DIE `01`, then null entries) | 0 | 4 per output ("Bogus end-of-siblings marker") | same |
+  | **block** | 0 | 0 | same |
+  | block with `DW_AT_addr_base` (Clang DWARF 5) | 0 | 0, and none in a full `readelf --debug-dump` | same |
+  | tombstoned only (E6's "emul") | 0 on DWARF 4; 116 (g++) and 250 (clang) on DWARF 5 | 0 | differ |
+
+  Type and skeleton units are detected (IN-55a) and fall back
+  (`debug-unit-kind`) until S5 tests their conversion. *Test:* R9 in L10
+  per compiler and DWARF version. plumb checks that each dead
+  `.debug_info` range is a sequence of block-form units.
+- **IN-51b [v1] Neutral forms of the other debug sections.** A dead
+  range in a debug section is either a whole dead contribution left as
+  its compiler wrote it (IN-53), or a remainder or allotment slack in the
+  section's neutral form:
+
+  | section | neutral form | minimum, granule (bytes) |
+  |---|---|---|
+  | `.debug_info` | IN-51's block unit | 14 / 15 / 19, 1 |
+  | `.debug_abbrev` | zero bytes | 1, 1 |
+  | `.debug_line` v5 | a header with `opcode_base` 7, one format entry `[DW_LNCT_path, DW_FORM_string]` for directories and for files, each with count 0, `header_length` exact, and the rest `DW_LNS_negate_stmt` (0x06) bytes | 32, 1 |
+  | `.debug_line` v2–v4 | the same with empty directory and file lists | 24, 1 |
+  | `.debug_rnglists`, `.debug_loclists` | a v5 header with `offset_entry_count` 0, the body zero (`DW_RLE_end_of_list`/`DW_LLE_end_of_list`) | 12, 1 |
+  | `.debug_str_offsets` | a v5 header, then zero entries | 8, 4 |
+  | `.debug_addr` | a v5 header (address size 8), then zeros | 8, 8; never split (see below) |
+  | `.debug_ranges` (v4) | zero bytes | 16, 1 |
+  | `.debug_frame` | a CIE (version 1, empty augmentation), then `DW_CFA_nop` | 13, 1 |
+  | `.debug_aranges` | none: rewritten whole (IN-54) | — |
+
+  Measured by R9 (`neutral_chain.sh`, `dwarf_neutral.py`). Neutral
+  pieces of 4 to 36 lengths per section, many of them odd, were spliced
+  into the 19 real dead contributions, and pieces of 6 lengths were
+  appended to live sections. With g++ and clang++, DWARF 4 and 5, every
+  form above passes readelf on its section, a full readelf dump,
+  `llvm-dwarfdump --verify` and `--debug-<section>`, and the gdb and lldb
+  transcripts. There are two exceptions.
+  - An unreferenced `.debug_addr` remainder between referenced tables
+    gives readelf's "Corrupt .debug_addr" warning. gdb, lldb and verify
+    stay clean. Hence: a dead `.debug_addr` table is never split or
+    reused, and it stays named by its neutral unit (IN-51).
+  - readelf warns of "unused bytes at the end" of `.debug_loclists` for
+    trailing unreferenced pieces. A dead `.debug_loclists` or
+    `.debug_frame` range in the middle of a section was not tested (no
+    build had one). S5 tests both before reuse is enabled in those two
+    sections. Until then, they take only appends.
+
+  The forms first proposed fail. A `.debug_line` header whose
+  `header_length` covers the rest gives 156–350 readelf and 35–104 llvm
+  warnings, and `.debug_aranges` padded with zeros after its terminator
+  is a "premature terminator". **Remainders.** Size classes are 4 bytes
+  apart at 32–60, so a remainder can be smaller than every minimum but
+  `.debug_abbrev`'s. IN-50 therefore allots each contribution the
+  smallest class `c` such that `c − size` is 0, or at least the
+  section's minimum and a multiple of its granule. Reuse of a dead range
+  likewise leaves a remainder of 0 or at least the minimum. The extra
+  rounding is at most one minimum per contribution: ≤ 32 B × ~1,500
+  contributions, under 50 KB on protoc (*estimate*). *Test:* R9's
+  splices in L10, and plumb's check that every debug dead range parses
+  as one or more of these forms or as a whole compiler-written
+  contribution.
 - **IN-52 [v1] Why not tombstones alone.** A dead unit left with
   tombstoned addresses (image.md I-47, what a full link with
   `--gc-sections` writes for a collected file's debug information) is
-  still enumerated: gdb lists its variables, and lldb lists them and picks
-  its stale type as the best match (E6, §1.6). That is acceptable for a
-  file a full link collected (its types and variables were never part of
-  the program), and not for the old version of a file whose new version
-  is live. Hence IN-51 for replaced files; a file that disappears from
-  the link (no longer extracted, removed from the command line) is
-  neutralized too, so that an update's debug information never holds
-  more than a full link's.
-- **IN-53 [v1] Contributions reached only by offset stay as written.**
-  The dead contributions in `.debug_line`, `.debug_str_offsets`,
+  still enumerated. gdb lists its variables, and lldb lists them and
+  picks its stale type as the best match (E6, §1.6). On DWARF 5,
+  `llvm-dwarfdump --verify` also reports 116–250 errors at 20 dead
+  versions (R9). That is acceptable for a file a full link collected,
+  because its types and variables were never part of the program. It is
+  not acceptable for the old version of a file whose new version is
+  live. Hence IN-51 for replaced files. A file that leaves the link (no
+  longer extracted, removed from the command line) is neutralized too,
+  so an update's debug information never holds more than a full link's.
+  *Test:* E6's "emul" transcripts are kept in L10 as a negative case:
+  the transcript comparison must flag them.
+- **IN-53 [v1] Whole dead contributions reached only by offset.** A
+  whole dead contribution in `.debug_line`, `.debug_str_offsets`,
   `.debug_addr`, `.debug_rnglists`, `.debug_loclists`, `.debug_ranges`,
-  `.debug_loc`, `.debug_macro` and `.debug_frame` keep their bytes, with
-  every address in them tombstoned (image.md I-47) when the sections they
-  name are no longer placed; nothing that is live names them. E6b left
-  `.debug_line`, `.debug_str_offsets`, `.debug_addr`, `.debug_rnglists`
-  and `.debug_aranges` this way and measured equal transcripts; the
-  others are what a full link already writes for collected sections.
-  *Test:* `llvm-dwarfdump --verify` of every L10 step with `-g`.
-- **IN-54 [v1] Address lookup tables.** `.debug_aranges` sets of a dead
-  contribution keep their bytes with tombstoned ranges (length 0, as
-  I-47 writes them), which match no address (measured in E6b with GCC,
-  which emits the section). A new contribution's set is appended.
+  `.debug_loc`, `.debug_macro` or `.debug_frame` may keep the bytes its
+  compiler wrote, with every address in it tombstoned (image.md I-47).
+  Nothing live names it (IN-3a check 1). E6b and R9 left `.debug_line`,
+  `.debug_str_offsets`, `.debug_addr` and `.debug_rnglists` this way and
+  measured equal transcripts. When part of it is reused, the remainder
+  takes IN-51b's form. **In a PIE or shared object**, the tombstone of
+  `.debug_rnglists`, `.debug_loclists` and `.debug_addr` is 0
+  (`mortar_arch`'s `dead.rs`, read, not run). A dead `[0, len)` entry
+  there names a valid unrelocated address range, and R11 could not test
+  it because mortar refuses `-pie` on this branch. So in those outputs,
+  dead contributions to these three sections are rewritten in IN-51b's
+  neutral form, never left as written, until WP-066 runs R11. *Test:*
+  `llvm-dwarfdump --verify` of every L10 step with `-g`; R11 in WP-066's
+  gate.
+- **IN-54 [v1] `.debug_aranges` is rewritten whole.** gdb drops the
+  whole section ("duplicate debug_info_offset, ignoring .debug_aranges")
+  when two sets name one unit. It drops it too ("does not exist") when a
+  set names an offset that is not a unit start (R9). So a dead set can
+  be neither split nor left naming a reused range. Nothing refers into
+  `.debug_aranges` by offset, so an update rewrites it whole from the
+  live units' sets, in full-link order, as it rewrites `.eh_frame_hdr`.
+  It has no dead ranges. The section is small, one set per unit with -g
+  (measured size not taken here; *estimate* under 100 KB on protoc).
+  *Test:* L10 checks `.debug_aranges` equals the full link's up to the
+  placement mapping (IN-2 item 5), and gdb's transcript has no "ignoring
+  .debug_aranges" line.
 - **IN-55 [v1] Name indexes fall back.** `.debug_pubnames`,
   `.debug_pubtypes`, `.debug_gnu_pubnames`, `.debug_gnu_pubtypes` and
-  `.debug_names` are enumerated by name: a dead contribution's entries
+  `.debug_names` are enumerated by name, so a dead contribution's entries
   would find the dead unit. A changed or removed file with any of these
-  falls back (`debug-name-index`) in v1. [later] Neutralize its sets
-  (a header with no entries, padded), once transcripts with
-  `-ggnu-pubnames` and `-gpubnames` show it equivalent. Neither hod nor
-  the bench's GCC and Clang defaults emit them (§8.3).
+  falls back (`debug-name-index`) in v1. g++ `-gpubnames` emits
+  `.debug_pubnames`/`.debug_pubtypes`, clang `-gpubnames` emits
+  `.debug_names`, and `-ggnu-pubnames` and **every `-gsplit-dwarf`
+  object** emit `.debug_gnu_pubnames`/`.debug_gnu_pubtypes` (R10, both
+  compilers). [later] Neutralize the sets (a header with no entries,
+  padded), once transcripts show it equivalent. Neither hod nor the
+  bench's GCC and Clang defaults emit them (§8.3). *Test:* R10's objects
+  in L10: each edit of one must report `debug-name-index`.
+- **IN-55a [v1] Detecting unit kinds** (`debug-unit-kind`, IN-51), from
+  section names and unit headers alone (R10, g++ and clang++). mortar
+  links all of these today: verify clean, gdb and lldb correct.
+  - type units, DWARF 4: a `.debug_types` section;
+  - type units, DWARF 5: a `.debug_info` unit of type `DW_UT_type`
+    (0x02) or `DW_UT_split_type` (0x06), in COMDAT groups;
+  - split DWARF, DWARF 5: a unit of type `DW_UT_skeleton` (0x04);
+  - split DWARF, DWARF 4: the header cannot tell (a plain compile unit
+    with `DW_AT_GNU_dwo_name`). Such objects always carry
+    `.debug_gnu_pubnames` (above), so IN-55 catches them first. A
+    DWARF 4 object with `.debug_addr` is also treated as split.
+  *Test:* R10's 18 configurations in L10, each reporting its reason.
 - **IN-56 [v1] Strings.** `.debug_str` and `.debug_line_str` are merged
   sections: new strings are appended (S-110), dead ones stay. A neutralized
   unit names no string. *Test:* an L10 step that adds and removes a
@@ -1615,12 +1737,14 @@ file changes or when one of its file's sections moves (IN-25).
   gdb and lldb.
 
 Split DWARF (`-gsplit-dwarf`): the linker then sees only skeleton units
-and `.debug_addr`, `.debug_line`, `.debug_rnglists`; the `.dwo` files are
-not its business. That shrinks the debug bytes an update refills and the
-debug reserve by most of `.debug_info` (not measured here: the bench has
-no split-DWARF build). hod supports it for DWARF 5 (`hod/spec/dwarf.md`).
-Skeleton neutralization is IN-51's untested case, so split DWARF is a
-fall-back in v1 and the first [later] item of S5's follow-up.
+and `.debug_addr`, `.debug_line`, `.debug_rnglists`, and
+`.debug_gnu_pubnames`/`pubtypes` (R10); the `.dwo` files are not its
+business. That shrinks the debug bytes an update refills and the debug
+reserve by most of `.debug_info` (not measured here: the bench has no
+split-DWARF build). hod supports it for DWARF 5 (`hod/spec/dwarf.md`).
+v1 falls back on it twice over (IN-55's name index, IN-55a's skeleton
+units); S5's follow-up tests skeleton neutralization and the GNU name
+index sets first.
 
 ## 7. Fall-backs
 
@@ -1803,15 +1927,19 @@ record (`spec/landed/incr/WP-060.md`, (c)).
    every member (§1.3), 50–70 ms of a 107–178 ms update on protoc `-g`
    (§1.5). Cost to kiln: `ar rcsT` instead of `ar rcs` where its build
    examples make archives.
-2. **kiln (`-g`, at least in the development profile): do not emit
-   `DW_LNCT_MD5` in the `.debug_line` file table.** Measured (§1.1,
-   R2-B): a header edit changes every includer's object under kiln
-   `-g` (40 of 40), against 13 or 34 of 40 under GCC and Clang, and the
-   extra 27 (e5) and 6 (e6) objects differ only in `common.h`'s MD5. Each
-   is a changed file for mortar (whole-file refill, §1.2) and a
-   recompile for the build system's own content checks. GCC 14 emits no
-   MD5s; Clang emits them only when every file has one. Alternative if
-   kiln wants checksums: emit them only for the primary source file.
+2. **kiln: a switch to omit `DW_LNCT_MD5`, on in the development
+   profile.** Measured (§1.1, R2-B, R2-B'): under kiln `-g` a header edit
+   changes every includer's object (40 of 40). The objects whose code
+   did not change (27 for e5, 6 for e6) differ only in the edited
+   header's DWARF 5 MD5 in `.debug_line`. Clang does the same for units
+   whose files all have MD5s. GCC 14 emits none. Today kiln's only way
+   to drop the MD5 is `-gdwarf-4`. What mortar saves: those objects stop
+   being changed inputs. That is 27 of 40 (e5) and 6 of 40 (e6) whole-file
+   refills in v1, each the file's allocated units plus its debug
+   contributions (p50 0.5 KB + 210 KB on protoc, §1.4). In v2 (IN-31)
+   only their `.debug_line` contributions would be refilled, so the
+   request is worth most before WP-068. Alternative: emit the MD5 only
+   for the primary source file.
 3. **hod: tell mortar before emitting name indexes or type units**
    (`.debug_names`, `.debug_pubnames`, `DW_UT_type`): today it emits
    none, and v1 falls back on them (IN-51, IN-55).
