@@ -13,7 +13,8 @@
 //!    walking its records in record order: decode, the key through
 //!    `sym_map` and `redirect`, `classify`, `arch.scan`, the events of
 //!    §4.4, the window of §3.4's overlap rule and the order check of
-//!    I-29;
+//!    I-29; in a live `SHF_ALLOC | SHF_EXECINSTR` section, the records
+//!    that may be branch sites ([`BranchRec`], for layout's fixed point);
 //! 3. the merge: global flags or-ed into atomics during the pass (I-16:
 //!    read before or); local flags, counts, diagnostics and events
 //!    concatenated in unit order, the events grouped by [`events::merge`]
@@ -155,11 +156,30 @@ pub struct Stats {
     pub rewalked: u32,
 }
 
+/// A record of a live `SHF_ALLOC | SHF_EXECINSTR` section for which
+/// `need::branch_candidate` is `Some` (`spec/arch.md` §6 step 1), found by
+/// the scan's walk so that layout need not walk the code's relocations
+/// again (WP-032i). The site is `site.site(flags)` with the key's final
+/// `Demands` flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BranchRec {
+    pub section: SectionId,
+    pub offset: u64,
+    /// The record's index in its relocation section.
+    pub record: u32,
+    pub site: mortar_arch::need::BranchCandidate,
+}
+
 /// What the scan produces (I-15).
 #[derive(Debug, Clone, Default)]
 pub struct Scanned {
     pub demands: Demands,
     pub order: RecIndex,
+    /// The branch candidates of every live code section, in unit order
+    /// (`(FileId, section index)`, then record order); `need::branch_candidate`
+    /// with the scan's output kind and `RelocAt.leads` set (§3.5: the bit
+    /// only gates a test that fails without a lead).
+    pub branches: Vec<BranchRec>,
     /// Every diagnostic of the phase, in unit order and then by group;
     /// the collector orders them by key.
     pub diagnostics: Vec<(Key, Diagnostic)>,
@@ -246,9 +266,12 @@ pub fn scan(
     let mut locals: Vec<(LocalSym, DemandFlags)> = Vec::new();
     let mut events = Vec::with_capacity(results.len());
     let mut output = mortar_core::demands::GlobalFlags::empty();
+    let mut branches: Vec<BranchRec> =
+        Vec::with_capacity(results.iter().map(|o| o.branches.len()).sum());
     for o in &mut results {
         diagnostics.append(&mut o.diags);
         locals.append(&mut o.locals);
+        branches.append(&mut o.branches);
         events.push(std::mem::take(&mut o.events));
         stats.events += o.n_events;
         output |= o.output;
@@ -294,7 +317,7 @@ pub fn scan(
         dyn_relocs: dyn_relocs.into_boxed_slice(),
     };
     let order = RecIndex::new(permuted, leads).with_deferred(deferred);
-    Scanned { demands, order, diagnostics, stats }
+    Scanned { demands, order, branches, diagnostics, stats }
 }
 
 /// The diagnostics of the sections whose checks are fill's (I-14,

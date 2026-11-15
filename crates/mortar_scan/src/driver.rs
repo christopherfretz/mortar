@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use mortar_arch::seq::{disjoint_in_order, overlaps};
 use mortar_arch::{
     DemandOut, DemandSink, DynRole, Howto, PlaceFacts, ProofRun, RefName, RelocAt, ScanCx,
-    ScanError, Site, UnitWindow,
+    ScanError, ScanTables, Site, UnitWindow,
 };
 use mortar_core::demands::{DemandFlags, DynCounts, DynKind, GlobalFlags};
 use mortar_core::par::SCAN_BLOCK;
@@ -504,6 +504,8 @@ pub(crate) struct UnitOut {
     pub nonalloc: u64,
     /// Some record's type is in `Facts.seq_leads` (`RelocAt.leads`).
     pub leads: bool,
+    /// The branch candidates of a code section's unit, in record order.
+    pub branches: Vec<crate::BranchRec>,
 }
 
 /// The sink one record's `arch.scan` writes (`spec/arch.md` §3.4).
@@ -672,6 +674,8 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
     let mut faults: Vec<(u32, Fault)> = Vec::new();
     let mut prev: Option<u64> = None;
     let seq_leads = view.arch.facts().seq_leads;
+    // The branch candidates (`crate::BranchRec`): only in live code.
+    let code = sec.place.alloc && sec.place.exec == Some(true);
     for i in u.lo..u.hi {
         out.records += 1;
         let Some(raw) = sec.recs.records.raw(i) else {
@@ -704,6 +708,24 @@ fn walk_unit(view: &View<'_, '_>, u: &Unit, global: &[AtomicU16], bufs: &mut Buf
             key,
             mention: SymEntry { file: u.file, index: SymbolIndex(raw.r_sym) },
         };
+        if code
+            && let Some(b) = view.arch.branch(&h)
+            && b.veneer
+            && let Some(site) = mortar_arch::need::branch_candidate(
+                view.arch,
+                output,
+                &at,
+                &tables,
+                ScanTables::sym(&tables, key).kind,
+            )
+        {
+            out.branches.push(crate::BranchRec {
+                section: u.section,
+                offset: raw.r_offset,
+                record: i,
+                site,
+            });
+        }
         sink.record = i;
         sink.errored = false;
         let before = sink.errors.len();

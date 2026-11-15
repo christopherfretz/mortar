@@ -53,6 +53,13 @@ impl<'a, 's> Walker<'a, 's> {
         Self { view: View::new(arch, t, opts) }
     }
 
+    /// The output kind the scan judged the records for
+    /// (`ScanOptions.output`).
+    #[must_use]
+    pub fn output(&self) -> mortar_arch::OutputKind {
+        self.view.opts.output
+    }
+
     /// The facts of `key` with no mention (a definition's).
     #[must_use]
     pub fn facts(&self, key: SymKey) -> SymFacts {
