@@ -126,9 +126,8 @@ fn execute(exe: &Path) -> (String, Option<i32>) {
 }
 
 /// Links `program` with mortar and GNU ld, runs both, and holds mortar's
-/// output to the bar. Returns the plumb findings of the known
-/// merge-piece case that were set aside.
-fn holds(label: &str, driver: Driver, flags: &[&str], program: &[Source]) -> Option<usize> {
+/// output to the bar (`None` when a tool is missing).
+fn holds(label: &str, driver: Driver, flags: &[&str], program: &[Source]) -> Option<()> {
     let scratch = Scratch::new(label);
     let built = build(&scratch, driver, flags, program)?;
     let ours = built.dir.join("out.mortar");
@@ -142,7 +141,8 @@ fn holds(label: &str, driver: Driver, flags: &[&str], program: &[Source]) -> Opt
     assert_eq!(out_m, out_b, "{label}: mortar's program against GNU ld's");
     support::plumb::readers(&ours);
     support::plumb::elflint(&ours);
-    Some(support::plumb::clean(&ours, &map_of(&ours), &built.dir))
+    support::plumb::clean(&ours, &map_of(&ours), &built.dir);
+    Some(())
 }
 
 const C_FLAGS: &[&[&str]] = &[
@@ -157,16 +157,11 @@ fn matrix(name: &str, driver: Driver, program: &[Source]) {
     if !host() {
         return;
     }
-    let mut known = 0;
     for (i, flags) in C_FLAGS.iter().enumerate() {
-        let Some(k) = holds(&format!("{name}-{i}"), driver, flags, program) else {
+        if holds(&format!("{name}-{i}"), driver, flags, program).is_none() {
             assert!(!tools_required(), "{} is required", driver.tool());
             return;
-        };
-        known += k;
-    }
-    if known > 0 {
-        eprintln!("{name}: {known} plumb findings of the known merge-piece case (WP-028c)");
+        }
     }
 }
 
