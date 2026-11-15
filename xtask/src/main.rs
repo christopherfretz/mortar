@@ -7,6 +7,7 @@
 //!   cargo xtask bench [options]                    link speed and memory
 //!   cargo xtask plumb <output> --map <file> ...    the verifier (spec/plumb.md §8)
 //!   cargo xtask mason [programs|census|setup|libcxx|verify] ...  the Mason lane (tests/mason/README.md)
+//!   cargo xtask meta [write|dump] ...              Mason metadata: test producer, dumper (spec/meta.md §12)
 
 use std::process::ExitCode;
 
@@ -15,7 +16,8 @@ const USAGE: &str = "usage: cargo xtask ci [--quick] [--no-fail-fast] [--step fm
                      cargo xtask static-identical [--update] [-j <n>]\n       \
                      cargo xtask bench [options]   (cargo xtask bench --help)\n       \
                      cargo xtask plumb <output> --map <file> --map-format <format> ...\n       \
-                     cargo xtask mason [programs|census|setup|libcxx|verify] ...   (tests/mason/README.md)\n";
+                     cargo xtask mason [programs|census|setup|libcxx|verify] ...   (tests/mason/README.md)\n       \
+                     cargo xtask meta [write|dump] ...   (cargo xtask meta)\n";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -42,6 +44,8 @@ fn main() -> ExitCode {
         },
         #[cfg(unix)]
         Some("mason") => xtask::mason::main(&args[1..]),
+        #[cfg(unix)]
+        Some("meta") => xtask::meta::main(&args[1..]),
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)

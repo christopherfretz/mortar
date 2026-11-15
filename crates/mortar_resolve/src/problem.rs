@@ -140,6 +140,10 @@ pub enum What {
     /// `gnu-warning` for a `.gnu.warning` section of a live file (§10),
     /// a warning; the text is the section's.
     GnuWarning { file: FileId, section: SectionIndex },
+    /// `meta-malformed` (`spec/meta.md` MT-6), a warning, once per file:
+    /// a section named `.mason.meta` that is not a container (its type or
+    /// flags are not MT-1's); it took the other rows of §10.
+    MetaNotContainer { file: FileId, section: SectionIndex },
 }
 
 /// A diagnostic of resolution.
@@ -167,6 +171,7 @@ impl Problem {
             | What::ArchiveBackref { .. }
             | What::ArchiveChoice { .. }
             | What::GnuWarning { .. }
+            | What::MetaNotContainer { .. }
             | What::ShlibUndefined { warn: true, .. } => Severity::Warning,
             _ => Severity::Error,
         }
@@ -198,6 +203,7 @@ impl Problem {
             What::ArchiveBackref { .. } => "archive-backref",
             What::ArchiveChoice { .. } => "archive-choice",
             What::GnuWarning { .. } => "gnu-warning",
+            What::MetaNotContainer { .. } => "meta-malformed",
             What::ShlibUndefined { .. } => "undefined-symbol",
             What::NonExported { .. } => "non-exported-symbol",
         }

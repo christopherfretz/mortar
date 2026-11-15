@@ -17,6 +17,8 @@ pub mod jobs;
 pub mod linktest;
 #[cfg(unix)]
 pub mod mason;
+#[cfg(unix)]
+pub mod meta;
 pub mod plumb;
 #[cfg(unix)]
 pub mod process;

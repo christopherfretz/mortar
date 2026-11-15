@@ -1184,7 +1184,7 @@ The staged store's resident ranges (§11.9 gives the read plan):
 | file | resident |
 |---|---|
 | relocatable object (little-endian `ET_REL`) larger than 64 KiB, or such an archive member | the first 64 bytes; the section header table; `.shstrtab`; every `SHT_SYMTAB`/`SHT_DYNSYM` and the section its `sh_link` names; every `SHT_STRTAB`, `SHT_SYMTAB_SHNDX`, `SHT_GROUP`, `SHT_NOTE` (so `.note.gnu.property`); every `SHT_REL`/`SHT_RELA` whose target (`sh_info`) is `SHF_ALLOC`, that is itself `SHF_ALLOC`, or whose `sh_info` names no section; every `SHF_COMPRESSED` section (the readers decode its header, `spec/elf.md` §3.9); every `SHF_MERGE` section with `sh_entsize > 0`, allocated or not, and every `.eh_frame` (and `SHT_X86_64_UNWIND` on x86-64): phase 60 splits them and interns pieces by their bytes (`spec/synth.md` S-5, S-28, §4), so they are read whole and compared, and the pieces' representatives must stay readable; every section named `.gnu.warning*` (resolve reads its text, §10 of `spec/resolve.md`); every other section of at most 64 KiB, except a Mason container (`spec/meta.md` MT-6), which is never resident; `mortar_meta` reads it with positioned reads, only when a check that needs it is on (`spec/odr.md` O-42) |
-| the same, of at most 64 KiB | the whole file (member); when `--odr` is off, or no check that needs the container is on, such a file is read around its container (headers first, then the ranges before and after it) (`spec/meta.md` MT-42) |
+| the same, of at most 64 KiB | the whole file (member), in one read whatever it holds; when `--odr` is off, or no check that needs the container is on, a top-level file's containers are then left out of its resident ranges: their bytes are read with the file and dropped (`spec/meta.md` MT-42: exactly the reads made with no container). An archive member is not: it stays resident whole, its container with it, and the archive's other reads (the chain's windows, a large member's head and tail) are made before its section headers are known, because reading every member's section headers first would make every archive link pay, Mason or not (`spec/meta.md` MT-42, exception E2) |
 | relocatable object whose section structure the rules cannot follow (`e_shentsize` not the class's, the table out of bounds, more than 2^32 − 1 sections) | the whole file: the reader finds the error in it, as over the resident store |
 | regular archive larger than 64 KiB | the magic; every member header; every special member (`/`, `/SYM64/`, `//`, `__.SYMDEF*`) and every BSD-named member (`#1/n`) whole; then each ordinary member as a file above; a member larger than 64 KiB that is not a little-endian `ET_REL` (a nested archive, a shared object, a text file): its first 64 bytes, all that §7.3 reads of it |
 | anything else: a shared object (with its dynamic parts), a thin archive, a script, a file of another format, any file of at most 64 KiB, a character device | the whole file |
@@ -1458,10 +1458,10 @@ waves read first.
 
 - **(A) per file**: `open`, `fstat`. A file of at most 64 KiB, or one
   that is neither a little-endian `ET_REL` nor a regular archive, is one
-  range: the whole file (except a little-endian `ET_REL` of at most
-  64 KiB with a Mason container when no check needs the container: it is
-  read around the container, §11.1's row: the headers first, then the
-  ranges before and after it). Otherwise one positioned read of its first
+  range: the whole file (a little-endian `ET_REL` of at most 64 KiB with
+  a Mason container when no check needs the container: the whole file
+  is read in this wave, in one read, and the ranges are the file less
+  its containers, §11.1's row). Otherwise one positioned read of its first
   `StoreConfig::head` bytes (4 KiB). An object: one read of its last
   `StoreConfig::tail` bytes (64 KiB), where GCC, Clang and `as` put the
   section header table, `.symtab`, `.strtab` and `.shstrtab`; then the

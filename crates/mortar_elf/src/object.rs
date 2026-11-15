@@ -37,7 +37,7 @@ impl<'a> Object<'a> {
     /// are resident ([`Error::NotResident`] otherwise). Section contents
     /// that are not resident are reported by [`Section::data`].
     pub fn parse_view(data: View<'a>) -> Result<Object<'a>, Error> {
-        let head = data.prefix(64).ok_or(Error::NotResident { offset: 0, size: 64 })?;
+        let head = FileHeader::head(&data).ok_or(Error::NotResident { offset: 0, size: 64 })?;
         let header = FileHeader::parse(head)?;
         let machine = Machine::of(&header)?;
         if header.e_type != ET_REL {
