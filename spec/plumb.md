@@ -1205,9 +1205,14 @@ or absent holds the linker's *tombstone*, compared in the field's width:
   mortar, so they are recorded here and in §10.6 rather than accepted
   from mortar.
 - **I-112** (mortar only): when the record is in `.debug_aranges`, its
-  type is the class's absolute address type (`ABS64`), its target
-  section is `SHF_ALLOC`, and no record has its field right after this
-  one, the `width` bytes after the field are 0. S12 accepts those bytes.
+  type is the class's absolute address-sized type of the output's
+  machine (`R_AARCH64_ABS64` on `EM_AARCH64`, `R_X86_64_64` on
+  `EM_X86_64`, `R_386_32` on `EM_386`), its target section is
+  `SHF_ALLOC`, and no record has its field right after this one, the
+  `width` bytes after the field (the field's own width: 8 in ELFCLASS64,
+  4 in ELFCLASS32) are 0. S12 accepts those bytes. (Until WP-030d the
+  acceptance was ELFCLASS64 only, and mortar's i386 output, written as
+  I-112 says, was an S12 finding; test `tests/aranges.rs`.)
 - A non-data field in a non-alloc section with a dead target, or a dead
   target from a non-tombstone name in a mortar link, is R5. A value
   other than the column's is R1.

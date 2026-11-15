@@ -20,10 +20,17 @@ pub(crate) fn is_debug_name(n: &str) -> bool {
         || n == ".gnu_debuglink"
 }
 
-/// Whether `r_type` is the absolute address-sized type of the machine
-/// (I-112): `R_AARCH64_ABS64` or `R_X86_64_64`.
-fn is_abs64(r_type: u32) -> bool {
-    r_type == 257 || r_type == crate::x64::R64
+/// Whether `r_type` is the class's absolute address-sized type of the
+/// output's machine (`spec/image.md` I-112): `R_AARCH64_ABS64` on
+/// `EM_AARCH64`, `R_X86_64_64` on `EM_X86_64`, `R_386_32` on `EM_386`.
+fn is_abs_addr(machine: u16, r_type: u32) -> bool {
+    use mortar_elf::consts::{EM_386, EM_AARCH64, EM_X86_64};
+    match machine {
+        EM_AARCH64 => r_type == 257,
+        EM_X86_64 => r_type == crate::x64::R64,
+        EM_386 => r_type == 1,
+        _ => false,
+    }
 }
 
 impl Engine<'_, '_> {
@@ -139,8 +146,7 @@ impl Engine<'_, '_> {
         });
         if self.format == Format::Mortar
             && name == ".debug_aranges"
-            && is_abs64(rec.def.r_type)
-            && class64
+            && is_abs_addr(self.image.header.e_machine, rec.def.r_type)
             && alloc_target
             && !after
             && let Some(out) = self.image.nonalloc_section(&name)
