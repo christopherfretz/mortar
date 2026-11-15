@@ -187,6 +187,7 @@ pub fn link_in(cwd: &Path, args: &[OsString], pool: &Pool, policy: StorePolicy) 
         assignment: &assignment,
         split: &split,
         roots: &outcome.roots,
+        arch: None,
     };
     let options = LiveOptions {
         gc_sections: plan.shaping.gc_sections,

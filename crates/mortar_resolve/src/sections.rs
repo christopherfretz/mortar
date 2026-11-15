@@ -41,6 +41,11 @@ pub enum SectionRefusal {
     /// one of two `SHT_RELA` sections, lld refuses, mold asserts or drops
     /// one (§10). The variant holds the section it applies to.
     SecondReloc(u32),
+    /// A relocation section of the form the machine does not use: an
+    /// `SHT_RELA` section in an `EM_386` object (x86.md X86-2, §15.2 W12)
+    /// or an `SHT_REL` one in an `EM_X86_64` (x64.md X-2) or
+    /// `EM_AARCH64` object. The variant holds its `sh_type`.
+    RelForm(u32),
 }
 
 /// What §10 makes of a section, besides its row.
@@ -126,7 +131,17 @@ pub fn classify(
     match s.sh_type {
         SHT_SYMTAB | SHT_SYMTAB_SHNDX if !alloc => return Ok((K::Symtab, Note::None)),
         SHT_STRTAB if !alloc => return Ok((K::Strtab, Note::None)),
-        SHT_REL | SHT_RELA => return Ok((K::Reloc, Note::None)),
+        SHT_REL | SHT_RELA => {
+            // X86-2, X-2: i386 relocates by REL only, the 64-bit targets by
+            // RELA only; the other form is refused by name, never read
+            // with the wrong addend.
+            let rel = matches!(machine, Machine::I386);
+            return if (s.sh_type == SHT_REL) == rel {
+                Ok((K::Reloc, Note::None))
+            } else {
+                Err(SectionRefusal::RelForm(s.sh_type))
+            };
+        }
         SHT_GROUP => return Ok((K::Group, Note::None)),
         _ => {}
     }

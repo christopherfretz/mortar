@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 mortar_a64.workspace = true
 mortar_x64.workspace = true
+mortar_x86.workspace = true
 mortar_arch.workspace = true
 mortar_cli.workspace = true
 mortar_core.workspace = true
