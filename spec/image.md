@@ -234,7 +234,13 @@ The design is fixed now so that the M1 tables need no change.
   `SCAN_BLOCK` records, by `SCAN_BLOCK` records (rule 6).
 - **I-9 [M2] Cost.** One walk of the relocation records of live alloc
   sections: 221,459 for `cxx-medium-g` (E5), about 0.8 ms at the 3.4–3.7
-  ns per record of a scan-like walk (E6). It is a separate walk from the
+  ns per record of a scan-like walk (E6). Measured (WP-031, static
+  protoc, 1/4/8 threads): the phase is 19/14/14 ms, of which the rounds
+  are 13/7/10 ms (20 rounds, 23,186 units); lld 22's `markLive` is
+  5.3/5.5/4.7 ms and mold's `gc` 7/3/2 ms. The link is no slower in
+  total (layout has less to place: 79→56, 64→43, 66→41 ms); the
+  per-round barrier is the limit at 8 threads (follow-up in the landed
+  record). It is a separate walk from the
   scan's (phase 70), because the scan must know liveness first: undefined
   references are reported only from live sections (`spec/resolve.md`
   §5.1), and whether a reference survives depends on liveness of its

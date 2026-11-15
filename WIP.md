@@ -29,7 +29,9 @@
   tests, refusals' gc test dropped; debuggers.rs gc variants (gc_sessions_*, gc_dwarf_*; gdb
   cannot read TLS under gc with GNU ld too: glibc's _thread_db_* .rodata collected);
   x64.rs x64_gc_sections_c_and_cxx (qemu, vs GNU ld --gc-sections).
-- next: rerun matrix (tmpl fixed); protoc differential; cost; byte-identical no-gc; audit; record.
+- differential rerun (132 configs incl. x86-64; harness plugin fix), protoc, cost, byte-identical
+  no-gc vs main 1d578d4 (132 + protoc), audit: all in spec/landed/image/WP-031.md; I-9 measured.
+- next: gate (MORTAR_REQUIRE_TOOLS=1 cargo xtask ci --quick), full linktest, delete WIP.md, rm /tmp dir.
 
 ## E14 experiments (subagent, /tmp/mortar-wp031-1342893/e14, sources q*.s/c)
 - Q1 notes: kept by all (alloc+nonalloc, dead object too); note in a dead group: GNU/lld drop, mold keeps.
