@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::prepare::Prepared;
-use super::record::{Figures, Link, Status, Threads};
+use super::record::{Figures, Fnv, Link, Status, Threads};
 use super::stats::median;
 use crate::process::{self, End, Limits, Output, Probe};
 
@@ -61,17 +61,22 @@ pub struct Run {
     pub output: Output,
     /// The size of the file it wrote, if it left a non-empty one.
     pub output_bytes: Option<u64>,
+    /// The hash of that file, when asked for (the judged linker's warm-up
+    /// runs: the golden output check).
+    pub output_hash: Option<String>,
 }
 
 /// Runs `linker` once on `prepared`: `<linker> @<response> -o <out>
 /// <flags>` in the directory the driver ran the linker in (the last `-o`
-/// wins in all of them). The output is removed before and after.
+/// wins in all of them). The output is removed before and after; with
+/// `hash`, it is hashed first.
 pub fn run_once(
     prepared: &Prepared,
     linker: &Linker,
     threads: Threads,
     probe: &Probe,
     scratch: &Path,
+    hash: bool,
 ) -> Result<Run, String> {
     let out =
         scratch.join(format!("{}-{}-{}.out", prepared.workload.name, linker.name, threads.text()));
@@ -89,8 +94,17 @@ pub fn run_once(
         &usage,
     )?;
     let output_bytes = std::fs::metadata(&out).ok().map(|m| m.len()).filter(|n| *n > 0);
+    let output_hash = if hash && output_bytes.is_some() {
+        std::fs::read(&out).ok().map(|bytes| {
+            let mut h = Fnv::default();
+            h.update(&bytes);
+            h.text()
+        })
+    } else {
+        None
+    };
     let _ = std::fs::remove_file(&out);
-    Ok(Run { output, output_bytes })
+    Ok(Run { output, output_bytes, output_hash })
 }
 
 /// What one run says about a link: `ok` (status 0 and a non-empty
@@ -142,20 +156,32 @@ pub fn figures(runs: &[Run]) -> Option<Figures> {
 /// `runs` rounds, each running every configuration that linked once, in
 /// the same order. A configuration whose measured run does not link is
 /// `failed` (or `killed`) with no figures.
+///
+/// The golden output check (WP-032a): the judged linker's warm-up outputs
+/// are hashed; outputs that differ between its thread configurations
+/// fail both (mortar's output does not depend on the thread count), and
+/// the hash is returned, for the record's `output_hash.<workload>` (a
+/// commit that only makes mortar faster keeps it).
 pub fn measure(
     prepared: &Prepared,
     linkers: &[Linker],
     runs: u32,
     probe: &Probe,
     scratch: &Path,
-) -> Result<Vec<Link>, String> {
+) -> Result<(Vec<Link>, Option<String>), String> {
     let name = &prepared.workload.name;
     let mut links = Vec::new();
     let mut measured: Vec<(usize, Vec<Run>)> = Vec::new();
+    let mut golden: Vec<(usize, String)> = Vec::new();
     for linker in linkers {
         for &threads in linker.configs() {
-            let warm = run_once(prepared, linker, threads, probe, scratch)?;
+            let warm = run_once(prepared, linker, threads, probe, scratch, linker.judged())?;
             let (status, detail) = status_of(&warm, linker);
+            if status == Status::Ok
+                && let Some(h) = &warm.output_hash
+            {
+                golden.push((links.len(), h.clone()));
+            }
             if status == Status::Ok {
                 measured.push((links.len(), Vec::new()));
             }
@@ -170,6 +196,15 @@ pub fn measure(
             });
         }
     }
+    if golden.windows(2).any(|w| w[0].1 != w[1].1) {
+        let all: Vec<&str> = golden.iter().map(|(_, h)| h.as_str()).collect();
+        for (at, _) in &golden {
+            links[*at].status = Status::Failed;
+            links[*at].detail =
+                format!("the output differs between thread configurations: {}", all.join(" "));
+        }
+    }
+    let output_hash = golden.first().map(|(_, h)| h.clone());
     let configs: Vec<(&Linker, Threads)> =
         linkers.iter().flat_map(|l| l.configs().iter().map(move |t| (l, *t))).collect();
     for round in 0..runs {
@@ -178,7 +213,7 @@ pub fn measure(
                 continue;
             }
             let (linker, threads) = configs[*at];
-            let run = run_once(prepared, linker, threads, probe, scratch)?;
+            let run = run_once(prepared, linker, threads, probe, scratch, false)?;
             let (status, detail) = status_of(&run, linker);
             if status == Status::Ok {
                 samples.push(run);
@@ -195,7 +230,7 @@ pub fn measure(
             links[at].figures = figures(&samples);
         }
     }
-    Ok(links)
+    Ok((links, output_hash))
 }
 
 /// The calibration link: `linker` at its default threads on the
@@ -210,7 +245,7 @@ pub fn calibrate(
 ) -> Result<u64, String> {
     let mut walls = Vec::new();
     for at in 0..=runs {
-        let run = run_once(prepared, linker, Threads::Default, probe, scratch)?;
+        let run = run_once(prepared, linker, Threads::Default, probe, scratch, false)?;
         let (status, detail) = status_of(&run, linker);
         if status != Status::Ok {
             return Err(format!(
@@ -246,6 +281,7 @@ mod tests {
                 usage: rss.map(|rss_kib| Usage { rss_kib, cpu_us: wall_ms * 1500 }),
             },
             output_bytes: output,
+            output_hash: None,
         }
     }
 

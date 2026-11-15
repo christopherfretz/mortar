@@ -1503,8 +1503,13 @@ link	<fields>
   its tracked files differ), `runs`, `probe` (`Probe::describe`),
   `limits`, `calibration` (`lld default on <input hash>`),
   `calibration_before_us`, `calibration_after_us`, `noisy` (`yes`, `no`),
-  `load_before`, `load_after`, `version.<linker>`, and in a baseline
-  `reason`. A key appears once, and all keys come before the first record.
+  `load_before`, `load_after`, `version.<linker>`, `output_hash.<workload>`
+  (FNV-1a 64 of mortar's warm-up output, the golden output check: its
+  warm-up outputs at the default and at one thread must be identical, or
+  both links are `failed`; `check` prints `OUTPUT CHANGED` for a workload
+  whose inputs are the baseline's and whose hash is not, as information:
+  a performance commit keeps it, WP-032a), and in a baseline `reason`. A
+  key appears once, and all keys come before the first record.
 - A field of free text escapes `\` `\t` `\n` `\r`; an empty field is `-`,
   and a field that is `-` is `\-`. A number absent (a row without figures,
   memory without the probe) is `-`. `spread_permille` is derived and
