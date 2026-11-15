@@ -209,7 +209,7 @@ fn elflint(out: &Path) {
                 && (l.ends_with("invalid type") || l.ends_with("invalid symbol index")))
             || (l.contains("'.symtab'") && l.ends_with("unknown type"))
     };
-    let rest: Vec<&str> = text.lines().filter(|l| !known(l)).collect();
+    let rest: Vec<&str> = text.lines().filter(|l| !known(l) && *l != "No errors").collect();
     assert!(rest.is_empty(), "eu-elflint: {text}{}", o.stderr_text());
 }
 
@@ -518,4 +518,31 @@ fn i40_compares_with_gnu_ld() {
     assert_eq!(entry(&reference), start(&reference));
     assert_eq!(symtab_multiset(&out), symtab_multiset(&reference));
     assert_eq!(frames(&out), frames(&reference));
+}
+
+/// I-40, layout L-103: with no entry symbol, `e_entry` is 0 (the gABI's
+/// "no entry point") and layout's warning says so.
+#[test]
+fn i40_no_entry_writes_zero() {
+    let dir = Scratch::new("image-link-noentry");
+    if objects(&dir, false).is_none() {
+        return;
+    }
+    let f = front(
+        &["-maarch64linux", "-static", "-o", "out", "b.o"],
+        dir.path(),
+        2,
+        StorePolicy::Staged,
+    );
+    assert!(
+        f.placed.warnings.iter().any(|w| w.diagnostic().id() == "entry-not-found"),
+        "{:?}",
+        f.placed.warnings
+    );
+    let out = dir.join("out");
+    write(&f, &out).unwrap_or_else(|e| panic!("image: {:?}", e.diagnostics));
+    let bytes = std::fs::read(&out).unwrap();
+    assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 0);
+    elflint(&out);
+    plumb(&f, &out);
 }
