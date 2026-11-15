@@ -257,6 +257,179 @@ positions irrelevant; one entry per soname). All three agree (E-shlib 1.3,
 found path for `INPUT(-lns)` of a soname-less library (6.3). *Test:*
 `needed-order`.
 ## 6. `.dynsym`, `.dynstr`, hash tables, versions
+
+Owner: `mortar_synth` (synth.md S-101..S-103 are the outline these rules
+complete; request R-S1 replaces them by citations of this section).
+Measured in E-dynsym: 438 links, three architectures, PIE and non-PIE,
+every hash table looked up name by name by `dyninfo.py`; the formulas of
+each reference fitted on 1200 links.
+
+**D-20 [M2] (hash style).** An executable gets `.gnu.hash` and no `.hash`.
+`--hash-style=gnu` is supported; `sysv`, `both` and `none` are refused as
+an option value (`unsupported-option-value`), which is what synth S-102
+meant and what cli §2.3 and the options row must say (request R-C1:
+`--hash-style` becomes `partial`). Every census driver passes
+`--hash-style=gnu`, i686 included (§2.3); with no option GNU ld (Debian's
+build) writes `.gnu.hash` only, lld and mold write both (E-dynsym,
+`DEFAULT-HASH`), and mortar's default is GNU ld's. glibc since 2.5 reads
+`DT_GNU_HASH`; a loader that needs `DT_HASH` is out of scope. *Test:*
+`hash-style-sysv-refused`.
+
+**D-21 [M2] (which symbols).** `.dynsym` of `Exec` and `Pie` holds, besides
+the null entry:
+
+1. **imports**: every key whose `def` is `Shared` (from a needed shared
+   object) and which a live relocatable object mentions (`ref_regular`);
+2. **exports**: every key `exported` (resolve §9.6, D-12), except
+   linker-defined keys of file 0, which are exported only when
+   `ref_dynamic` (lld and mold export none of `__bss_start`, `_edata`,
+   `_end`, `__bss_end__`… under `-rdynamic`, GNU ld exports them; the
+   set of linker-defined names is each linker's own, so exporting them
+   would make the dynamic interface an artefact of the implementation;
+   request R-R5 to resolve §9.6);
+3. **copy aliases**: every key whose shared definition lies at the address
+   of a copy allocation (`Slots` copy allocations, model §4.3), whether
+   or not the program references it. All three export the referenced name;
+   lld and mold export every alias (`environ`, `__environ`, `_environ`);
+   GNU ld exports only one alias besides, and a library reading
+   `_environ` then sees libc's stale variable after `setenv` (E-dynsym
+   `envalias`, `lib&_environ=0`): a wrong output of GNU ld;
+4. **dynamic weak undefined**: the `WeakDyn` keys of D-25.
+
+Never: local or hidden symbols, section symbols (GNU ld writes two
+`STT_SECTION` entries in an AArch64 PIE; lld and mold none), `_DYNAMIC`,
+`_GLOBAL_OFFSET_TABLE_`, `__dso_handle`. *Tests:* `dynsym-set` (the set
+equals lld's on the corpus), `copy-alias-environ` (runs; the library sees
+`setenv`).
+
+**D-22 [M2] (order).** Entry 0 is null. Then the **unhashed** entries (the
+undefined entries whose `st_value` is 0) in `SymbolId` order; then the
+**hashed** entries (every defined entry and every undefined entry with a
+non-zero `st_value`, i.e. a canonical PLT) sorted by (bucket,
+`SymbolId`), `bucket = gnu_hash(name) mod nbuckets`. `sh_info` is 1.
+Hashing the canonical-PLT entries is required: glibc resolves a library's
+`R_*_GLOB_DAT`/absolute reference to `puts` to the executable's PLT entry
+only through the hash table, and all three hash them (`ptreq`:
+`exp-vs-lib &puts equal=1` with every reference). Unhashed undefined
+entries are never found by a lookup (GNU ld hashes an x86-64
+`__cxa_finalize` with value 0; harmless, glibc skips value 0). All three
+place the unhashed block first; their orders inside it are a hash order
+(GNU ld), first appearance (lld) and the library's index (mold);
+`SymbolId` order is a function of the inputs. `Slots.dynsym` stores
+this order (model §4.3). *Test:* `dynsym-order` (stable under input
+permutations that keep `SymbolId`s; `--threads=1` vs many).
+
+**D-23 [M2] (entry fields).**
+
+| entry | `st_info` | `st_other` | `st_shndx` | `st_value` | `st_size` |
+|---|---|---|---|---|---|
+| import, called or through the GOT | binding `STB_WEAK` iff `!ref_strong`, else `STB_GLOBAL`; type: `STT_FUNC` when the definition is `STT_FUNC` or `STT_GNU_IFUNC`, else the definition's type | `STV_DEFAULT` | `SHN_UNDEF` | 0 | 0 |
+| import with `CANON_PLT` | as above, `STT_FUNC` | `STV_DEFAULT` (plus `STO_AARCH64_VARIANT_PCS` when the definition has it) | `SHN_UNDEF` | the PLT entry's address | 0 |
+| copy allocation (each alias) | binding `STB_WEAK` iff the shared definition is weak, else `STB_GLOBAL`; the definition's type | `STV_DEFAULT` | the copy's output section | the copy's address | the definition's `st_size` |
+| export | the output binding and type of `.symtab` (an exported non-preemptible IFUNC: `STT_FUNC` at its IPLT entry, a64 §10.4) | the merged visibility (`STV_PROTECTED` kept) | its output section | its address | its size |
+| `WeakDyn` | `STB_WEAK`, `STT_NOTYPE` | `STV_DEFAULT` | `SHN_UNDEF` | 0 | 0 |
+
+The canonical PLT is `SHN_UNDEF` with the entry's address in all three
+references, on every architecture (E-dynsym §2, E-reloc §5); a64.md §10.5
+L1162 ("`st_shndx` = the PLT's section") is wrong and is corrected
+(request R-A1): a defined entry would make glibc bind the executable's own
+`JUMP_SLOT` to its own PLT entry. An `STB_GNU_UNIQUE` shared definition
+gives a copy `STB_GLOBAL` (the binding rule above), so an executable never
+holds a unique symbol [the references' choice unmeasured; harmless:
+uniqueness is the library's]. *Test:* `dynsym-fields` (one case per row,
+per architecture).
+
+**D-24 [M2] (`.dynstr`).** Byte 0 is NUL; then each distinct string once,
+in order of first use: the `.dynsym` names in `.dynsym` order, the
+`DT_NEEDED` names in `Slots.needed` order, the version names of
+`.gnu.version_r` in its order, `DT_RUNPATH`/`DT_RPATH`. No tail merging
+(lld and mold; GNU ld tail-merges, e.g. `main` inside
+`__libc_start_main`): the size is a function of the set of strings, and
+the offsets are a prefix sum the verifier can recompute. *Test:*
+`dynstr-layout`.
+
+**D-25 [M2] (undefined weak in a dynamic executable).** This settles the
+circle of arch.md §2.1 L77 and resolve.md §5.4 L819 (requests R-A2, R-R2):
+`target_kind` of an undefined key that is weak (no definition, or a
+definition in a shared object that is not needed, D-11) is
+
+- `Weak0` in `Exec`, and in `Pie` under `-z nodynamic-undefined-weak`;
+- `WeakDyn` in `Pie` otherwise, when some live relocation against it has
+  a class that reaches it through a GOT slot or an absolute data word
+  (`Got`, `AbsWord`): the key is in `.dynsym` (D-23) and the loader fills
+  the slot (0 unless a library loaded at run time defines it);
+- `Weak0` for every other class against it (a branch or PC-relative use
+  cannot be filled by the loader in a PIE).
+
+The references: GNU ld keeps such keys in `.dynsym` except on x86 non-PIE,
+lld always, mold never (E-dynsym §1); every program runs the same unless a
+library loaded later defines the symbol. The rule above is the one that
+never needs a text relocation or a canonical PLT for a symbol that does
+not exist. [open Q2: the per-class split makes `target_kind` depend on
+the relocation class, which arch.md §2.1 defines per key; R-A2 proposes
+the split as a property of the class row instead.] *Tests:*
+`weak-undef-pie` (`__gmon_start__`, `_ITM_*`), `weak-undef-exec`.
+
+**D-26 [M2] (`.gnu.hash`).** For `n` hashed entries (D-22), `W` the word
+size in bits:
+
+- `nbuckets = max(1, ⌊n/4⌋)`;
+- `bloom_shift = 26`;
+- `maskwords` = the least power of two strictly greater than `⌊12n/W⌋`
+  (1 when that is 0);
+- two Bloom bits per hashed entry (`h mod W` and `(h >> shift) mod W` of
+  word `(h / W) mod maskwords`); buckets hold the least `.dynsym` index of
+  the bucket, 0 for an empty one; chain words `h & !1`, with bit 0 set on
+  the last entry of each bucket;
+- `symoffset` = the index of the first hashed entry; with `n = 0`,
+  `nbuckets = 1`, bucket 0, one zero mask word, `symoffset` = the
+  `.dynsym` count, no chain.
+
+This is lld's choice (fitted on 1200 links, E-dynsym §4). GNU ld uses a
+prime below `n` and a size-dependent shift, mold `⌊n/8⌋+1`; all three
+produce correct tables (every name found, absent names rejected). lld's
+is a closed form of `n`, gives four entries per bucket on average, and
+needs no table of primes; GNU ld's empty table has `symoffset = 1`
+whatever the count (harmless to glibc). The section's `sh_entsize` is 0
+on ELF64 and 4 on ELF32 (all three; elflint complains of the i386 value).
+*Correctness:* the verifier looks up every `.dynsym` name and a fixed set
+of absent names (§12, P-D5). *Test:* `gnu-hash-sizes` (n = 0, 1, 2, 3, 10,
+100, 1000, 5000: the table looks up every name).
+
+**D-27 [M2] (versions).** `.gnu.version` exists when `.gnu.version_r`
+does (a needed object whose definition of some imported key is
+versioned); one `u16` per `.dynsym` entry: 0 for the null entry, 1 for
+exports, `WeakDyn` and unversioned imports, the need's index for a
+versioned import (resolve §9.3); bit 15 never set. `.gnu.version_r`:
+
+- one `Verneed` per needed shared object that provides at least one
+  version an import binds to, in `Slots.needed` order (lld; GNU ld uses a
+  reverse first-use order, mold sorts by soname);
+- each followed directly by its `Vernaux` entries (GNU ld and mold; lld
+  writes all headers first, which elflint warns about), in the order of
+  the library's own version definitions (lld and mold);
+- `vn_file` the `.dynstr` offset of its `DT_NEEDED` name; `vna_hash` the
+  ELF hash of the version name (the `vd_hash` the library wrote, D-14);
+  `vna_flags` 0 (all three, a weak-only reference included);
+  `vna_other` numbered from 2 in output order (mold);
+- no `.gnu.version_d` in an executable (no reference writes one without a
+  version script, which is M4; a `.symver` `foo@@V` definition that is
+  exported is refused, `versioned-export (M4)`: GNU ld writes a verdef
+  for it, lld and mold export it unversioned, E-dynsym §5).
+
+`-z pack-relative-relocs` and its `GLIBC_ABI_DT_RELR` need are M4
+(§2.3: no default line passes it; GNU ld adds the need only with
+`DT_RELR`, lld also without, mold in non-PIE too). *Tests:*
+`verneed-order`, `verneed-symver` (`memcpy@GLIBC_2.2.5` on x86-64 runs).
+
+**D-28 [M7 hook] (incremental).** `.dynsym`'s order is a function of the
+hash bucket and therefore of `nbuckets`, which changes with the count:
+adding one export can move every hashed entry and every `r_sym` of the
+dynamic relocations. An incremental link keeps `nbuckets` (a capacity in
+`Slots`, model §4.3) while `n` stays within a bound it chooses, so that an
+added export moves only its own bucket's entries, and reserves `.dynsym`,
+`.dynstr` and `.gnu.version` capacity; nothing in this section prevents
+it.
 ## 7. `.dynamic`, `.interp`, `_DYNAMIC`
 ## 8. Dynamic relocations, copy relocations, canonical PLTs, TLS
 ## 9. Layout
