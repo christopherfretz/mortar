@@ -1708,7 +1708,9 @@ fn fields(
     let fl_ok = if format == Format::Mortar {
         if line.now { DF_BIND_NOW } else { 0 }
     } else {
-        dynout::DF_ORIGIN | DF_BIND_NOW | dynout::DF_STATIC_TLS
+        // DF_TEXTREL (4): GNU ld and mold under -z notext (D-47 refuses
+        // the link for mortar; P-D4/P-D9 judge the records).
+        dynout::DF_ORIGIN | 4 | DF_BIND_NOW | dynout::DF_STATIC_TLS
     };
     if fl & !fl_ok != 0 {
         v.push(fd(6, format!("DT_FLAGS {fl:#x} has bits {:#x} (D-30)", fl & !fl_ok)));

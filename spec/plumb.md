@@ -2962,7 +2962,7 @@ or named as equivalent or as a follow-up row in WP-082's record.
   `DT_VERSYM`, `DT_VERNEED`/`DT_VERNEEDNUM`, `DT_JMPREL`/`DT_PLTRELSZ`/
   `DT_PLTREL`; `DT_RELA`/`DT_RELASZ`/`DT_RELAENT` with `.rela.dyn`;
   `DT_STRTAB`, `DT_STRSZ`, `DT_SYMTAB`, `DT_SYMENT` always. `DT_FLAGS`
-  holds only `DF_ORIGIN`, `DF_BIND_NOW`, `DF_STATIC_TLS`, and
+  holds only `DF_ORIGIN`, `DF_TEXTREL` (references; D-47), `DF_BIND_NOW`, `DF_STATIC_TLS`, and
   `DT_FLAGS_1` only `DF_1_NOW`, `DF_1_PIE`. **(mortar)** `DT_FLAGS` is
   present exactly under `-z now` and is then exactly `DF_BIND_NOW`;
   `DT_RELACOUNT` is present exactly when a `RELATIVE` record is.
