@@ -104,6 +104,10 @@ impl<'a, 's> LinkSites<'a, 's> {
     /// None in a release build. A debug build's walk: the scan's
     /// diagnostic of a section that cannot be opened (the scan reported it
     /// already; the link has failed).
+    #[cfg_attr(
+        not(debug_assertions),
+        allow(clippy::unnecessary_wraps, reason = "a debug build's check walk can fail")
+    )]
     pub fn new(
         t: SiteInputs<'a, 's>,
         arch: &'a dyn Arch,
@@ -124,6 +128,8 @@ impl<'a, 's> LinkSites<'a, 's> {
             code.push(CodeSec { file, sid, index: index.0, rel: row.reloc.0, out });
         }
         let branches = branches_of(&t, &code);
+        #[cfg(not(debug_assertions))]
+        let _ = (walker, pool);
         #[cfg(debug_assertions)]
         {
             let by_walk = walk_branches(&t, arch, walker, pool, &code)?;
@@ -488,10 +494,7 @@ impl LinkSites<'_, '_> {
         };
         let mut forced: Vec<u64> = Vec::new();
         self.walker
-            .walk(c.file, c.sid, c.index, c.rel, 0..u64::MAX, leads, &mut |v| {
-                if !in_window(v.at.r_offset) {
-                    return;
-                }
+            .walk_where(c.file, c.sid, c.index, c.rel, &in_window, leads, &mut |v| {
                 let mut so =
                     SectionOut::new(section, 0, addr, true, name.as_bytes()).with_exec(true);
                 probe.unknown.store(false, Ordering::Relaxed);
