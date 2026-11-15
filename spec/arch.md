@@ -224,7 +224,7 @@ pub struct Facts {
     pub max_reach: Window,                   // (before, after): derived, see below
     pub code_fill: &'static [u8],            // the trap pattern (layout.md L-82): AArch64 4 zero bytes, x86 0xCC
     pub code_nop: &'static [u8],             // the no-op of .init/.fini padding (L-82): AArch64 NOP, x86 0x90
-    pub seq_leads: &'static [u32],           // the lead types RelocAt.leads gates (§3.5): AArch64 [513]
+    pub seq_leads: &'static [u32],           // the lead types RelocAt.leads gates (§3.5): AArch64 [513]; x86-64 [19, 20]
 }
 fn e_flags(&self, inputs: &mut dyn Iterator<Item = u32>) -> Result<u32, Refusal>; // 0 for all three
 ```
@@ -234,8 +234,8 @@ window of the architecture, over every `Howto` window (§3.2) and every
 member window of a recognized form (`unit_window`, §3.5). `mortar_arch`
 computes it from those tables; it is never written by hand
 (`spec/image.md` I-111). AArch64 gives `(0, 4)` (the markers' word and
-the GD→LE `CALL26` member, `spec/a64.md` §8.4); x86-64 `(4, 8)` for the
-A.3 forms. `code_fill` is positioned by address modulo its length.
+the GD→LE `CALL26` member, `spec/a64.md` §8.4); x86-64 `(4, 15)`
+(`spec/x64.md` §8.6). `code_fill` is positioned by address modulo its length.
 
 The output's `e_flags` is a function of the live inputs' `e_flags`; for
 the three targets it is 0. A relocation section of the other form
@@ -256,7 +256,8 @@ pub struct Site<'a> { pub bytes: &'a [u8], pub offset: u64 } // the input sectio
     `leal x@tlsgd(%reg)`.
   - Its call is 5 bytes with `PLT32` and 6 bytes with `GOT32X`.
   - x86-64 `TLSLD` is followed by a 5-byte `call` or a 6-byte
-    `call *…(%rip)`.
+    `call *…(%rip)`, or (large model) by `movabs`, `add` and
+    `call *%rax` (A.4).
 
   `classify` returns the window of the unrelaxed form, which is the
   field alone for every type here except the single-relocation x86
@@ -415,8 +416,10 @@ pub enum EventClass { Undefined, ComdatMismatch, DiscardedSection, GnuWarning } 
   and is classified by `spec/resolve.md` §6.3's table of referring
   sections (`mortar_arch::dead_reference(name, alloc)`): from a debug
   name it is accepted and `fill` writes the tombstone (§3.11); from
-  `.gcc_except_table` the field is 0; from any other section scan
-  reports the event `DiscardedSection`.
+  `.gcc_except_table` the field is 0; from `.eh_frame` the FDE is dead
+  (`spec/model.md` §3.6) and nothing is reported (`DeadRef::DeadFde`,
+  WP-027d: the row was matched by name in the scan); from any other
+  section scan reports the event `DiscardedSection`.
 
 ### 3.5 Sequences
 
@@ -466,15 +469,26 @@ pub trait Records { fn len(&self) -> u32; fn get(&self, i: u32) -> Option<Reloc>
 ### 3.6 `apply`
 
 ```rust
-pub struct FillCx<'a> { /* the tables of model §3, §4: sym(SymKey) -> address, kind, size;
+pub struct FillCx<'a> { /* the tables of model §3, §4: sym(SymKey) -> address, kind, size,
+                           tls (STT_TLS: the address is then in the TLS template);
                            slot(SymKey, SlotKind) -> address; plt(SymKey) -> address;
                            got_base(); tls(); flags(SymKey) -> DemandFlags;
                            redirect(SectionId, offset) -> patch address; output kind; options */ }
 pub struct SectionOut<'a> { /* the unit's output bytes in the clip [a, b) of section
                                offsets, pre-filled with the input bytes; P of offset 0;
                                written through write(off, bytes); writes outside the
-                               clip are discarded */ }
+                               clip are discarded; the section's name, SHF_ALLOC and
+                               SHF_EXECINSTR (exec: Option<bool>, None when the caller
+                               does not know it) */ }
 ```
+
+- **`SectionOut.exec`** (WP-029b): x86-64 decides `DTPOFF32`/`DTPOFF64`
+  by it (`spec/x64.md` X-46: `TpRel` in an executable section of an
+  executable, `DtpRel` elsewhere). The image phase sets it from the
+  output section's flags; an architecture whose rule needs it refuses by
+  name (`DTPOFF relocation in an allocated section of unknown kind`)
+  when it is `None`, never
+  guesses.
 
 - **Contract**: compute `X` for one relocation and write it, or write the
   relaxed form when the architecture's rule says so. Reads: the
@@ -637,7 +651,9 @@ to the addend (`-z pack-relative-relocs`).
 A relocation in a non-alloc section with a debug name (`spec/resolve.md`
 §6.3) whose target is in a section that is not live writes
 `tombstone(name, class)` truncated to the field instead of `X`
-(`spec/image.md` I-47): 1 for `.debug_ranges` and `.debug_loc`; all ones
+(`spec/image.md` I-47): 1 for `.debug_ranges` and `.debug_loc`; 0 for
+`.debug_rnglists`, `.debug_loclists` and `.debug_addr` (an address there
+is paired with a length, which all ones would wrap); all ones
 for `.debug_aranges` and `.debug_frame`; for every other debug name all
 ones in ELFCLASS64 and 0 in ELFCLASS32. In `.debug_aranges` the tuple's
 length is also written 0 (I-112): that write is the image phase's, not
@@ -662,11 +678,12 @@ the AArch64 table; x86 uses `SZero` for every class.
 `property_merge(pr_type)` gives the rule for a processor-range type
 (0xc0000000..0xdfffffff): `And` (an input without the property counts as
 0; the property is omitted when the result is 0; AArch64 `FEATURE_1_AND`
-with BTI, PAC and GCS, x86 `FEATURE_1_AND`), `Or` (the OR of the inputs
+with BTI, PAC and GCS, x86 `FEATURE_1_AND` and the rest of
+`0xc0000002..0xc0007fff`), `Or` (the OR of the inputs
 that have it, present if any has it; x86 `ISA_1_NEEDED` and the other
-`0xc0008000..0xc0008fff` types), `OrAll` (the OR of the inputs, present
+`0xc0008000..0xc000ffff` types, and `COMPAT_ISA_1_NEEDED` 0xc0000001), `OrAll` (the OR of the inputs, present
 only if every input has it; x86 `ISA_1_USED`, `FEATURE_2_USED` and the
-other `0xc0010000..0xc0017fff` types), `EqualOrAbsent` (AArch64
+other `0xc0010000..0xc0017fff` types, and `COMPAT_ISA_1_USED` 0xc0000000; `spec/x64.md` X-41), `EqualOrAbsent` (AArch64
 `FEATURE_PAUTH`: copied when every input that has it agrees, refused
 when two disagree) or `None` for a type the architecture does not know,
 which `spec/synth.md` S-95 drops with the warning `unknown-property`.
@@ -736,7 +753,7 @@ read-only section (no `DT_TEXTREL` is ever written); `—`: nothing.
 | `AbsNarrow` | Static, Exec | — | — | | `C` | `I` | — | `E` |
 | | Pie, Shared | `E` | — | `E` | `E` | `E` | — | `E` |
 | `Pc` | Static, Exec | — | — | | `C` | `I` | — | `E` |
-| | Pie, Shared | — | `E` | `E` | `E` | `I` | — | `E` |
+| | Pie, Shared | — | `E` | `E` | `E` | `I` | the architecture spec's §7 (x86-64: `E`, `spec/x64.md` X-15; AArch64: `S = P`) | `E` |
 | `Lo` (low bits of an address paired with a `Pc` page) | any | — | — | as `Pc` | as `Pc` | `I` | — | as `Pc` |
 | `Branch` | Static, Exec | — | — | | `PLT` | `I` | — | `PLT` |
 | | Pie, Shared | — | `E` | `PLT` | `PLT` | `I` | — | `PLT` |
@@ -754,7 +771,8 @@ read-only section (no `DT_TEXTREL` is ever written); `—`: nothing.
 place in a section without `SHF_ALLOC`:
 
 - is filled with link-time addresses in every output kind;
-- raises no demand and no `E`, and never gets a dynamic relocation;
+- raises no demand (except `GotRel`'s `GOT_BASE`, below) and no `E` of
+  the table, and never gets a dynamic relocation;
 - takes `S` as the link-time value. That is 0 for a `Weak0` target, and
   0 for a `Shlib`, `Preemptible` or `WeakDyn` target that is not defined
   in this output. An `Undefined` target is still the `undefined-symbol`
@@ -767,12 +785,21 @@ place in a section without `SHF_ALLOC`:
 Only data relocations are allowed there:
 
 - `None`;
-- `AbsWord`, `AbsNarrow`, `Pc`, `TlsDtpRel` and `Size`, each with a
-  `Field::Data` field.
+- `AbsWord`, `AbsNarrow`, `Pc`, `GotRel`, `TlsDtpRel` and `Size`, each
+  with a `Field::Data` field. `GotRel` writes `S + A − GOT` (x86-64
+  `GOTOFF64` in GCC's large-model `.debug_info`, `spec/x64.md` X-53) and
+  raises `GOT_BASE`, so that the base exists even when the code the
+  debug entry describes is not live.
+  `AbsWord` and `AbsNarrow` against an `STT_TLS` target write
+  `DtpRel(S + A)`, the offset in the TLS block, not an address (GCC
+  `-gsplit-dwarf` `.debug_addr` entries for `DW_OP_form_tls_address`,
+  `spec/x64.md` X-53); this is the one exception to the rule that a
+  non-TLS class against a TLS symbol is `E`, and it holds at non-alloc
+  places only.
 
 An instruction form of one of those classes is not a data relocation.
 a64.md §13.2 lists the AArch64 types: `NONE`, `ABS64/32/16`,
-`PREL64/32/16`, `TLS_DTPREL64`. Any other relocation is `relocation-incompatible` (reason `not
+`PREL64/32/16`, `TLS_DTPREL64`, and (M2) `GOTREL64/32`. Any other relocation is `relocation-incompatible` (reason `not
 allowed in a non-allocated section`). This is what every `-g` PIE needs.
 GNU ld, lld and mold resolve `.debug_*` relocations statically (a64.md
 §13.2).
@@ -784,7 +811,8 @@ a matched sequence, which references nothing.
 The `Weak0` columns show demands; what is written is §3.12's rule. A
 `Got`-class relocation against `Weak0` demands a slot that holds 0 with no
 dynamic relocation. A non-TLS class against a TLS symbol, and a TLS class
-against a non-TLS symbol, are `E`. Each architecture spec lists which of
+against a non-TLS symbol, are `E` (at a non-alloc place, `AbsWord` and
+`AbsNarrow` against a TLS symbol are the exception above). Each architecture spec lists which of
 its types belong to which class (a64.md §5).
 
 ### 4.4 Slot contents
@@ -1036,14 +1064,15 @@ phase 70 (§3.4).
 |---|---|---|
 | `relocation-incompatible` | `RelocationIncompatible { r_type, name, reason }` | `relocation {r_type} cannot be used against symbol '{name}'; {reason}` |
 | `relocation-misaligned` | `RelocationMisaligned { r_type, value, align }` | `improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes` |
-| `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation {r_type} out of range: {value} is not in [{min}, {max}]; references '{name}'` |
+| `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation truncated to fit: {r_type} against '{name}': {value} is not in [{min}, {max}]` |
 
 `{reason}` is one of: `recompile with -fPIC`; `recompile with -fPIE`;
 `it is in a read-only section` (a text relocation); `the addend must be
 0`; `it is not thread-local`; `it is thread-local`; `local-exec TLS in a
 shared object`; `the instruction does not match the relocation`; `not
-allowed in a non-allocated section`. Wording after lld (the out-of-range and alignment texts
-are lld's; the incompatible text is lld's shape with a reason field).
+allowed in a non-allocated section`. Wording after lld (the alignment text is lld's; the
+out-of-range text is GNU ld's phrase with lld's value and bounds, `spec/x64.md` X-34; the
+incompatible text is lld's shape with a reason field).
 `name` goes through the demangling hook.
 
 ## 11. Open questions
@@ -1055,8 +1084,8 @@ are lld's; the incompatible text is lld's shape with a reason field).
 | Q3 | `--emit-relocs` on REL outputs: GNU ld leaves the final value in the field, so the emitted addend is lost. | Do the same; consumers of `--emit-relocs` (BOLT, post-link tools) target RELA platforms. Confirm in x86.md. |
 | Q4 | Keeping the GOT slot of a relaxed GOT load (AArch64 R5, x86 `GOTPCRELX`) costs one word per symbol; lld drops it when every use is relaxed. | Keep (conservative demand, model §3.7); measure in the bench and revisit with an address-independent criterion if it matters. |
 | Q5 | Thunk reuse picks "the existing thunk with the lowest address in reach". | Keep (any deterministic rule is correct); the layout policy may prefer the nearest, if measured to need fewer rounds. |
-| Q6 | x86 TLSLD sequences that match none of the recognized forms (Appendix A.4: `call` and `call *GOTPCRELX`, i386 `PLT32` and `GOT32X`), in an executable, are refused, because their `DTPOFF` fields would otherwise need per-sequence knowledge. | Keep; GCC and Clang emit only the recognized forms (the `-fno-plt` forms are in A.4 after the review). |
-| Q7 | The x86 TLS special cases (A.4, A.6: `_TLS_MODULE_BASE_` under TLSDESC) are from the review's experiment with clang `-mtls-dialect=gnu2`; GCC's gnu2 local-dynamic output was not inspected. | x64.md (WP-029) re-runs both producers before implementing. |
+| Q6 | x86 TLSLD sequences that match none of the recognized forms (Appendix A.4: `call`, `call *GOTPCRELX` and the large-model `movabs; add; call *%rax`, i386 `PLT32` and `GOT32X`), in an executable, are refused, because their `DTPOFF` fields would otherwise need per-sequence knowledge. | Keep; GCC and Clang emit only the recognized forms (the `-fno-plt` forms are in A.4 after the review). |
+| Q7 | The x86 TLS special cases (A.4, A.6: `_TLS_MODULE_BASE_` under TLSDESC) are from the review's experiment with clang `-mtls-dialect=gnu2`; GCC's gnu2 local-dynamic output was not inspected. | Answered (`spec/x64.md` X-28, X-47): GCC 14 and Clang 22 both use `_TLS_MODULE_BASE_` under `-mtls-dialect=gnu2 -ftls-model=local-dynamic`; both run with GNU ld's and lld's convention. |
 | Q8 | `undefined-symbol` from a non-alloc place (§3.4) follows GNU ld and mold; lld 22 accepts it. | Keep (one experiment, 2026-11-14: `.xword undef_sym` in `.debug_info`). |
 
 ## 12. Tests
@@ -1122,19 +1151,23 @@ The other items rest on the psABIs alone.
 
 **A.2 `GOTPCREL` (9), `GOTPCRELX` (41), `REX_GOTPCRELX` (42).** Class
 `Got`; `X = G(Addr) + A − P` (`add_a`: the addend, typically −4, applies
-outside the slot, `AddendRule::Any`). Relaxations, for a `Local` target
-that is not `Ifunc` (and, for the PC-relative forms, not `Abs` in a PIE):
+outside the slot, `AddendRule::Any`). Relaxations:
 
-- `mov foo@GOTPCREL(%rip), %reg` (`8b`, ModRM `00 reg 101`) → `lea
-  foo(%rip), %reg` (`8d`): the opcode byte at `P − 2` changes, the field
-  becomes `S + A − P`. Window `before: 2` (`3` with REX for `REX_`).
-- `call *foo@GOTPCREL(%rip)` (`ff 15`) → `addr32 call foo` (`67 e8`);
-  `jmp *foo@GOTPCREL(%rip)` (`ff 25`) → `jmp foo; nop` (`e9 <rel32> 90`):
-  the rel32 moves one byte left, so `X` is computed for `P − 1`. Window
-  `before: 2, after: 0`; the member writes all six bytes.
-- In `Static`/`Exec`, `REX_GOTPCRELX` `mov` → `mov $foo, %reg` (`c7`,
-  REX.R moved to REX.B) when `S + A` fits `Unsigned(31)`; binary
-  operations (`test`, `add`… `81 /n`) likewise.
+- `mov foo@GOTPCREL(%rip), %reg` (`GOTPCRELX` `8b`, or `REX_GOTPCRELX`
+  `48|4c 8b`, ModRM `00 reg 101`) → `lea foo(%rip), %reg`: the byte at
+  `P − 2` becomes `8d` and the field `S + A − P`, in every output kind
+  (GNU ld's `mov $foo` is not taken). Window `before: 2` (`3` for
+  `REX_`).
+- `call *foo@GOTPCREL(%rip)` (`ff 15`) → `addr32 call foo` (`67 e8`),
+  the rel32 staying at `P`; `jmp *foo@GOTPCREL(%rip)` (`ff 25`) → `jmp
+  foo; nop` (`e9 <rel32> 90`), the rel32 moving to `P − 1` and holding
+  `S + A − P + 1`. Window `before: 2`.
+- In `Static` only, `REX_GOTPCRELX` binary operations (`03 0b 13 1b 23
+  2b 33 3b`) and `test` (`85`) → `81 /n imm32` and `f7 /0 imm32` (REX.R
+  moved to REX.B) when `S` is in [0, 2^31).
+
+Every form needs a `Local` target that is not `Abs`, `Ifunc` or `Weak0`,
+and `A = −4`; plain `GOTPCREL` is never relaxed (`spec/x64.md` §8.1).
 
 The precondition has an address part (`S + A − P` in `Signed(32)`; the
 absolute value in range), so the rule is kind 2 of §5.2: the GOT slot
@@ -1143,7 +1176,10 @@ stays demanded. Single-relocation rewrites: fits with the window.
 **A.3 `TLSGD` (19).** The sequence is `66 48 8d 3d <TLSGD>` (`data16 lea
 x@tlsgd(%rip), %rdi`) followed by the call. The call is `66 66 48 e8
 <PLT32 __tls_get_addr>`, or with `-fno-plt` `66 48 ff 15 <GOTPCRELX
-__tls_get_addr>`. The lead is the `TLSGD`, and the follower is the call
+__tls_get_addr>`; the follower types are `PLT32` or `PC32` after `e8`,
+`GOTPCRELX` or `GOTPCREL` after `ff 15`, `PLTOFF64` after `48 b8` (GCC 14 `-fPIC -fno-plt
+-Wa,-mrelax-relocations=no` writes `GOTPCREL`; `spec/x64.md` X-25,
+X-30). The lead is the `TLSGD`, and the follower is the call
 relocation at record `+1`. In both forms the follower's field is at
 `P + 8`. GCC 14's `-fno-plt` output was checked: the lead is at 0x8 and
 the follower at 0x10. Both forms are 16 bytes, `[P − 4, P + 12)`.
@@ -1154,7 +1190,13 @@ written entirely by the lead (window `before: 4, after: 8`); IE `mov
 the pattern holds and raises no `PLT` demand (input-only, §3.5). Fits;
 this case and AArch64 R4 are why §3.5 exists.
 
-**A.4 `TLSLD` (20) with `DTPOFF32` (21).** There are two forms, each with
+A third form is GCC's `-fPIC -mcmodel=large`: `48 8d 3d <TLSGD>; 48 b8
+<PLTOFF64 __tls_get_addr at P + 6>; (48|4c) 01 (c0 | r << 3); ff d0` (22
+bytes, `[P − 3, P + 19)`), relaxed to `64 48 8b 04 25 00 00 00 00; 48 8d
+80 <tpoff32>; 66 0f 1f 44 00 00` (window `before: 3, after: 15`;
+`spec/x64.md` §8.3).
+
+**A.4 `TLSLD` (20) with `DTPOFF32` (21).** There are three forms, each with
 its own window.
 
 - `48 8d 3d <TLSLD>; e8 <PLT32 __tls_get_addr>` (12 bytes, follower field
@@ -1163,8 +1205,13 @@ its own window.
 - The `-fno-plt` form `48 8d 3d <TLSLD>; ff 15 <GOTPCRELX
   __tls_get_addr>` (13 bytes, follower field at `P + 6`) becomes `66 66
   66 66 64 48 8b 04 25 00 00 00 00`.
+- the 22-byte large-model form (A.3's, with `TLSLD`) becomes `66 66 66 66 2e 0f 1f
+  84 00 00 00 00 00 64 48 8b 04 25 00 00 00 00` (`spec/x64.md` §8.4).
 
-Both were checked with GCC 14, GNU ld 2.44 and lld 19, which write the
+The follower types are `PLT32` or `PC32` after `e8`, `GOTPCRELX` or
+`GOTPCREL` after `ff 15`, `PLTOFF64` after `48 b8` (`spec/x64.md` X-27, X-30).
+
+The first two were checked with GCC 14, GNU ld 2.44 and lld 19, which write the
 same words. The `DTPOFF32` fields that follow use the module base the
 call returned: once the sequence is relaxed they must hold `TpRel`
 instead of `DtpRel`. They are not linked to a particular `TLSLD`, so the
@@ -1189,13 +1236,15 @@ becomes `TPREL(tls.start)` and DTPREL fields keep `DtpRel` (a64.md
 refused by name (feature `unrecognized local-dynamic TLS sequence`,
 §11 Q6). Fits; no trait change.
 
-**A.5 `GOTTPOFF` (22).** `mov x@gottpoff(%rip), %reg` (`48 8b`) → `mov
-$tpoff, %reg` (`48 c7 c0+r`, REX.R → REX.B); `add x@gottpoff(%rip), %reg`
-(`48 03`) → `add $tpoff, %reg` (`48 81 c0+r`). Window `before: 3`. Kind 1
+**A.5 `GOTTPOFF` (22).** `mov x@gottpoff(%rip), %reg` (`48|4c 8b`) → `mov
+$tpoff, %reg` (`REX' c7 c0+r`, REX.R → REX.B); `add x@gottpoff(%rip), %reg`
+(`48|4c 03`) → `add $tpoff, %reg` (`REX' 81 c0+r`; `spec/x64.md` §8.2). Window `before: 3`. Kind 1
 (target `Local` in an executable). Fits.
 
 **A.6 TLSDESC: `GOTPC32_TLSDESC` (34), `TLSDESC_CALL` (35).** `lea
-x@tlsdesc(%rip), %rax` (`48 8d 05`) → LE `mov $tpoff, %rax` (`48 c7 c0`),
+x@tlsdesc(%rip), %reg` (`48|4c 8d`, ModRM `00 reg 101`; GCC also uses
+`%rbp` and `%rbx`) → LE `mov $tpoff, %reg` (`REX' c7 c0+reg`, REX.R moved
+to REX.B; `48 c7 c0` for `%rax`, `spec/x64.md` §8.5),
 IE `mov x@gottpoff(%rip), %rax` (`48 8b 05`); `call *x@tlscall(%rax)`
 (`ff 10`, a marker: `Field::None`, window `after: 2`) → `xchg %ax, %ax`
 (`66 90`). Members rewrite independently, as AArch64 R1. The LE value is

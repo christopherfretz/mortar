@@ -3,7 +3,6 @@
 # non-executable stack (PT_GNU_STACK without PF_X); every PT_LOAD is
 # aligned to the page size of the psABI's maximum, 64 KiB on AArch64.
 #@ spec: layout.md "Segments"
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 main.c -o main.o
 link gcc -static -no-pie main.o -o prog

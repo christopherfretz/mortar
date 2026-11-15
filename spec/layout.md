@@ -50,7 +50,8 @@ implement it:
 
 - M1: static non-PIE executables on AArch64;
 - M2: dynamic executables, PIE and shared objects;
-- M3: x86-64;
+- M3: x86-64 (its static rules are M1 since `spec/x64.md` X-3 and
+  `docs/ROADMAP.md` M1; an x86-64 `[M3]` tag here reads as M1 static, M2 dynamic);
 - M4: i386;
 - M7: incremental linking.
 
@@ -294,14 +295,21 @@ wins.
 | `.gnu.warning`, `.gnu.warning.SYM` | consumed: no output section. The text is resolve.md's `gnu-warning` (§10 there): for `.gnu.warning.SYM`, once, when a live input other than the defining file references `SYM`; for plain `.gnu.warning`, when its file is linked in (GNU). Static glibc's `libc.a` carries `.gnu.warning.dlopen` and others in members every static link extracts. lld copies them into the output as orphans, mold into one `.gnu.warning`, GNU consumes them; none warns unless the symbol is used (E-17) | L-33 |
 | `.note.gnu.property` | consumed by synthesis (`spec/arch.md` / `synth.md`), which builds the merged property note | L-34 |
 | `SHT_AARCH64_ATTRIBUTES` (`.ARM.attributes`, AArch64) | accepted and consumed: no output section. Feature marking comes only from the AND-merged `.note.gnu.property` (L-34). Clang 22 emits both for every `-mbranch-protection` value but `none`; GCC 14 and Clang 19 emit only the note (E-18). GNU drops the section, lld copies it, mold drops it and emits no property note at all (E-18) | L-35 |
-| `SHF_X86_64_LARGE` set | refused (`section-flag`, `SHF_X86_64_LARGE`) [M3] | L-36 |
+| `SHF_X86_64_LARGE` set (x86-64) | accepted: the output section is `.ltext`, `.lrodata`, `.ldata` or `.lbss` by flags and type (exec; read-only; writable `PROGBITS`; `NOBITS`), whatever the input name, and keeps the flag; with `SHF_TLS` refused (`section-flag`, `SHF_X86_64_LARGE`) [M1] | L-36 |
 | `.gnu.linkonce.*` | refused (`feature`, `.gnu.linkonce sections`): pre-COMDAT, and no current compiler emits it | L-37 |
+| non-allocated `.debug*` under `-S`/`-s` (`.debug_str`, `.debug_line_str` too) | go nowhere (resolve.md §10: `Dropped(Stripped)`) | L-158 |
 | `.zdebug_*` | refused (`compression-type`, `.zdebug`). Only `SHF_COMPRESSED` is accepted | L-38 |
 | a name that a synthetic section owns (`.got`, `.got.plt`, `.plt`, `.iplt`, `.rela.dyn`, `.rela.plt`, `.dynamic`, `.dynsym`, `.dynstr`, `.hash`, `.gnu.hash`, `.eh_frame_hdr`, `.relr.dyn`, `.interp`) | refused (`feature`, `input section <name>`). `.interp` becomes accepted at M2, when it decides the interpreter as in GNU | L-39 |
 | `.ctors*`, `.dtors*`, non-empty | M1 refuses (`feature`, `.ctors section`); the rule from M2 is L-56 | L-40 |
 | an `sh_type` or flag that `resolve.md` §10 ("The fate of sections") refuses | refused there (`section-type`, `section-flag`); layout never sees it. resolve.md owns the classification; this table only adds layout's outcome for the classes it accepts | L-41 |
 | not live (`Liveness`), or in a discarded COMDAT group | given an output section like any other, but no place | L-42 |
 
+- **L-158 [C]** With `-S` (`--strip-debug`) or `-s`, the non-allocated
+  `.debug*` sections go nowhere, the mergeable string ones included (GNU
+  ld, lld and mold drop `.debug_str` and `.debug_line_str` too, checked
+  by WP-027a). `.comment` and non-allocated notes are kept
+  (`spec/synth.md` S-84; synth.md R-L3). `.gdb_index` is a linker output
+  no input on the matrix carries; it is not named here.
 - **L-43** Dead and discarded sections still get an `out_of` entry, so
   the assignment never depends on liveness. Their output section can
   have zero live members. An output section with no live member and no
@@ -339,7 +347,7 @@ wins.
 | `.data.rel.ro` | `.data.rel.ro` (`.data.rel.ro.local*` included) | M1 |
 | `.data` | `.data` | M1 |
 | `.bss.rel.ro` | `.bss.rel.ro` | M2 |
-| `.bss` | `.bss`, and the commons of §12.4 | M1 |
+| `.bss` | `.bss`, and the commons of §12.2 | M1 |
 | `.tdata` | `.tdata` | M1 |
 | `.tbss` | `.tbss` | M1 |
 | `.preinit_array` | `.preinit_array` | M1 |
@@ -357,7 +365,15 @@ wins.
     orphans in mortar;
   - GNU folds `.gnu.linkonce.*` and `.text.*_unlikely`;
   - lld's list matches the table, with `.ldata`/`.lrodata`/`.lbss` added
-    for x86-64 large sections (M3, refused by L-36).
+    for x86-64 large sections (L-36; mortar places them by L-36a, not where
+    lld does).
+- **L-36a [M1] (x86-64 large sections).** The large output sections
+  follow every other alloc section, `.bss` and the commons included, in
+  the order `.lrodata` (its own R `PT_LOAD`), `.ltext` (its own RX
+  `PT_LOAD`), `.ldata` then `.lbss` (one RW `PT_LOAD`); an empty one is
+  omitted. No other section's address depends on their size, so the
+  small-model sections stay within 2 GiB of each other however large the
+  large data is (`spec/x64.md` X-54).
 - **L-45 [C]** Notes (`SHT_NOTE`) are not merged by name. Each distinct
   note name is its own output section, with the name kept:
   `.note.ABI-tag`, `.note.stapsdt` and the rest. The synthetic notes are
@@ -498,13 +514,35 @@ order of the output sections themselves is in §10.
   then `SectionId`. The key uses no addresses. `__patchable_function_entries`
   and Clang's `.llvm_bb_addr_map` are the common cases. A linked section
   that is not live makes the input dead (`Liveness`).
-- **L-58 [C] (.eh_frame)** `.eh_frame` inputs keep `SectionId` order. The
-  terminator that `crtend.o` provides (a zero-length CIE) must stay last,
-  and it does, because `crtend.o` comes after the user's objects in every
-  driver's line. Static start-up with `crtbeginT.o` walks
+- **L-58 [C] (.eh_frame)** `.eh_frame` inputs keep `SectionId` order.
+  Input terminators (zero-length records, which `crtend.o` provides) are
+  dropped, and `spec/synth.md` writes one terminator at the end of
+  `.eh_frame` (S-48), wherever `crtend.o` is on the line (synth.md R-L1). Static start-up with `crtbeginT.o` walks
   `__EH_FRAME_BEGIN__` to that terminator without `.eh_frame_hdr`.
   `synth.md` owns CIE de-duplication and the removal of dead FDEs. Both
   keep this order for what remains.
+- **L-159 [C] (empty input sections; synth.md R-L6, WP-027c)** A live
+  input section of size 0 is placed like any other, at its output
+  section's position in stage B order, aligned to its `sh_addralign`, and
+  its output section's size covers its place. An allocated output section
+  whose live members are all empty, with no merged, common, synthetic or
+  kept content, has no chunk (so no section header and no segment: a
+  link with no writable data has no RW `PT_LOAD`, and none is empty).
+  Its members are placed at the end of the last chunk before it in
+  `order` of the same rank and load class (an island or the RELRO
+  padding, whose sizes come later, is passed over), or else at the start
+  of the first such chunk after it, or else beside the nearest allocated
+  chunk; with no alignment applied, so that the place is at most that
+  chunk's end. Their labels take that chunk's section index
+  (`__TMC_END__` of crtend.o's empty `.tm_clone_table`, for example, is
+  in `.data`). `Layout::check` accepts exactly this place for an empty
+  section whose output section has no chunk.
+- **L-160 [C] (body before an island)** On a target with islands
+  (L-115), a code output section's body chunk is aligned to at least the
+  island's alignment: the section's `sh_addralign` is the largest of its
+  chunks', and its `sh_addr` must be a multiple of it (gABI "Sections").
+  An empty `.text` (alignment 1) before a 4-aligned island otherwise
+  gives `sh_addr` ≡ 1 (mod 4) with `sh_addralign` 4.
 
 ## 10. Output section order
 
@@ -660,8 +698,11 @@ order of the output sections themselves is in §10.
   the file: `offset = prev_offset_end + (addr − prev_end)`. Here `a_k`
   is the chunk's *effective alignment*: its own alignment, except that
   the first TLS chunk's is `T` (L-76); `pad_k` is the 843419 start
-  padding (L-118), 0 for every other chunk. NOBITS chunks advance the
-  address only. The file never contains bytes for a NOBITS chunk, and a
+  padding (L-118), 0 for every other chunk. An empty chunk's end is its
+  aligned address, so neither the address nor the file offset ever moves
+  back (WP-027c: an empty 8-aligned chunk had left the next one below it,
+  and the segment's file image over a non-alloc section). NOBITS chunks
+  advance the address only. The file never contains bytes for a NOBITS chunk, and a
   PROGBITS chunk never follows a NOBITS one within a segment: the rank
   table puts NOBITS last in each segment. `.tbss` is the exception,
   because it takes no address space (L-77). A layout with a PROGBITS
@@ -825,7 +866,8 @@ order of the output sections themselves is in §10.
     section is exec and larger than the part limit;
   - `Merged(OutSecId)` after the body. It holds the live pieces of every
     merge class in the section, ordered by class (strings before
-    constants, then entsize ascending), then by `MergeMap` order. One
+    constants, then entsize ascending), then by alignment ascending, then
+    by `MergeMap` order (`spec/synth.md` S-24, S-25; synth.md R-L4). One
     merged chunk per output section;
   - `Patches(OutSecId, part)` directly after each exec body part, for
     thunks (§14). It exists in the chunk list even when it is empty
@@ -849,7 +891,10 @@ order of the output sections themselves is in §10.
   order, each aligned to its `st_value` (the common alignment). GNU
   orders commons by name within the `COMMON` pattern, lld by input
   order. The order has no observable effect. `SymbolId` is
-  deterministic and needs no sort.
+  deterministic and needs no sort. A large common (x86-64
+  `SHN_X86_64_LCOMMON`, `spec/resolve.md` §3.3: one whose every
+  mention is `LCOMMON`) is allocated the same way in `.lbss` (L-36a;
+  `spec/x64.md` X-55).
 - **L-89 [C] [M1]** A TLS common (`STT_TLS` with `SHN_COMMON`) is
   refused (`feature`, `TLS common symbol`). GCC emits it only with
   `-fcommon` on TLS variables, which no current default does.
@@ -870,9 +915,11 @@ order of the output sections themselves is in §10.
   that does not make the rule optional.
   This is a choice. GNU's AArch64 script fills `.init`, `.text` and
   `.fini` with `NOP` (`=0x1f2003d5` in `ld --verbose`), so a gap inside
-  `.text` is a slide into the next function; GNU's x86 scripts give no
-  fill (zeros, which decode as `add` on x86). lld's and mold's fill was
-  not examined. mortar's trap fill turns a fall into a gap into a crash
+  `.text` is a slide into the next function; GNU ld fills x86-64 `.text`
+  and `.init` gaps with multi-byte NOPs (`66 2e 0f 1f 84 00 …`,
+  `66 0f 1f 44 00 00`, `0f 1f 40 00`); lld 22 and mold 2.37.1 fill both
+  with `0xCC`, which inside `.init` traps at start-up when an aligned
+  `.init` fragment follows crti (`spec/x64.md` X-50, W8). mortar's trap fill turns a fall into a gap into a crash
   at the gap.
 - **L-83 [C]** The bytes between segments in the file, under
   separate-code, are zeros in data and the trap pattern in exec. Bytes
@@ -1139,7 +1186,12 @@ with the island sizes; and the order of patches inside an island.
   because patches are only added. `.relr.dyn` is padded with RELR bitmap words that
   mark nothing, which is a valid encoding of the same set. Compressed
   non-alloc chunks come after every allocated chunk, so they do not move
-  any address and are sized once, after the fixed point.
+  any address and are sized once, after the fixed point. `.symtab`,
+  `.strtab` and `.symtab_shndx` are sized after the fixed point when
+  thunks or patches exist, since each adds symbols (`spec/synth.md`
+  S-80); they are non-allocated and after every allocated chunk, so their
+  size moves no address (synth.md R-L5; the facade places once more with
+  the final sizes, `crates/mortar/src/front.rs`).
 
 ## 15. Validity: completing `model.md` §4.4
 
@@ -1473,7 +1525,7 @@ New refusal names (class `feature` unless noted):
 - `entry point outside code`;
 - `_TLS_MODULE_BASE_ without TLS`;
 - `non-PIE image base 0`;
-- class `section-flag`: `SHF_X86_64_LARGE`.
+- class `section-flag`: `SHF_X86_64_LARGE` with `SHF_TLS` (x86-64, L-36).
 
 (`.gnu.linkonce` and `.zdebug` are resolve.md's refusals already.)
 
@@ -1492,21 +1544,24 @@ New refusal names (class `feature` unless noted):
 - a64.md §11.1 item 2's padding is specified as L-118; a64.md's "at
   most 16 bytes" holds for chunk alignments ≤ 16.
 
-### 20.6 `synth.md` (not yet written)
+### 20.6 `synth.md` — applied
 
-- `.relro_padding` is a layout chunk, not synthetic content.
-- `.eh_frame` keeps input order (L-58); its type follows L-49.
-- The IPLT goes in `.plt`/`.rela.plt`/`.got.plt` for static links (arch
-  Q9).
-- `.note.gnu.property` is the AND-merge of the inputs' notes; an input
-  without one has no features (L-35).
+`.relro_padding` is a layout chunk (synth.md does not list it, S-3);
+`.eh_frame` keeps input order (S-46) and its type follows L-49 (S-54);
+the static IPLT is in `.plt`, `.rela.plt` and `.got.plt` (S-68);
+`.note.gnu.property` is merged by S-95, which keeps the AND rule and adds
+`Or` and `OrAll` for x86. (synth.md R-L2, applied by WP-027a.)
 
 ### 20.7 `resolve.md`
 
 - §10: `SHT_AARCH64_ATTRIBUTES` becomes accepted and consumed
   (`Dropped(Consumed)`), not refused; §17 item 9 is closed (L-35).
+  **Applied** (WP-027d, with Clang 22's `-mbranch-protection=standard`
+  objects).
 - §5.5: "the entry is layout's default (`spec/layout.md`: GNU's, the
-  start of `.text`)" becomes "`e_entry = 0`" (L-103).
+  start of `.text`)" becomes "`e_entry = 0`" (L-103). **Applied**
+  (WP-027a; resolve's warning is the one reported, the facade drops
+  layout's copy of it).
 
 ## 21. Where the references differ
 

@@ -6,7 +6,7 @@ mod support;
 
 use mortar_core::par::{self, Pool};
 use mortar_image::map::{
-    ChunkKind, DiscardWhy, Fold, Map, MapChunk, MapFile, Placed, render, token,
+    ChunkKind, DiscardWhy, Fold, Map, MapChunk, MapFile, NonAlloc, Placed, render, token,
 };
 use support::Gen;
 
@@ -40,6 +40,7 @@ fn hex(t: &str) -> u64 {
 }
 
 /// A reader of `mortar-map 1`, from the grammar alone.
+#[allow(clippy::too_many_lines)]
 fn parse(text: &str) -> Map {
     let mut lines = text.lines();
     assert_eq!(lines.next(), Some("mortar-map 1"));
@@ -62,6 +63,7 @@ fn parse(text: &str) -> Map {
                 let member = (t.len() == 5).then(|| (untoken(t[3]), hex(t[4])));
                 m.files.push(MapFile { path: untoken(t[2]), member });
                 m.placed.push(Vec::new());
+                m.nonalloc.push(Vec::new());
                 m.discards.push(Vec::new());
             }
             "place" => {
@@ -80,6 +82,20 @@ fn parse(text: &str) -> Map {
                     addr: hex(t[4]),
                     size: hex(t[5]),
                 });
+            }
+            "nplace" => {
+                let f = file(t[1]);
+                m.nonalloc[f].push(NonAlloc::Place {
+                    section: t[2].parse().unwrap(),
+                    out: untoken(t[3]),
+                    offset: hex(t[4]),
+                    size: hex(t[5]),
+                });
+            }
+            "merged" => {
+                let f = file(t[1]);
+                m.nonalloc[f]
+                    .push(NonAlloc::Merged { section: t[2].parse().unwrap(), out: untoken(t[3]) });
             }
             "discard" => {
                 let f = file(t[1]);
@@ -157,6 +173,18 @@ fn random_map(g: &mut Gen) -> Map {
             });
         }
         m.placed.push(placed);
+        m.nonalloc.push(
+            (0..g.below(4))
+                .map(|_| {
+                    let section = g.below(100) as u32;
+                    if g.below(2) == 0 {
+                        NonAlloc::Merged { section, out: name(g) }
+                    } else {
+                        NonAlloc::Place { section, out: name(g), offset: g.next(), size: g.next() }
+                    }
+                })
+                .collect(),
+        );
         let whys =
             [DiscardWhy::Gc, DiscardWhy::Comdat, DiscardWhy::Script, DiscardWhy::Unspecified];
         m.discards.push(
@@ -202,14 +230,19 @@ fn i79_map_round_trips_through_the_grammar() {
         let text = par::check_schedules(|pool| render(&m, pool));
         let s = String::from_utf8(text).unwrap();
         assert_eq!(parse(&s), m);
-        // Group order: files, places/pieces, discards, folds, chunks, defines.
-        let order = ["file", "place", "discard", "fold", "chunk", "define", "end"];
+        // Group order: files, places/pieces, the non-alloc records,
+        // discards, folds, chunks, defines.
+        let order = ["file", "place", "nplace", "discard", "fold", "chunk", "define", "end"];
         let ranks: Vec<usize> = s
             .lines()
             .skip(1)
             .map(|l| {
                 let w = l.split(' ').next().unwrap();
-                let w = if w == "piece" { "place" } else { w };
+                let w = match w {
+                    "piece" => "place",
+                    "merged" => "nplace",
+                    w => w,
+                };
                 order.iter().position(|o| *o == w).unwrap()
             })
             .collect();

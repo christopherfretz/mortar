@@ -30,11 +30,21 @@ fn main() -> ExitCode {
             let _ = std::io::stdout().write_all(text.as_bytes());
             ExitCode::SUCCESS
         }
+        Outcome::Linked { report, stdout } => {
+            let style = Style { color: colored(invocation.color), ..Style::plain(&prog) };
+            let mut err = std::io::stderr().lock();
+            let _ = err.write_all(report.render(&style).as_bytes());
+            let _ = err.write_all(invocation.phases.as_bytes());
+            let _ = std::io::stdout().write_all(stdout.as_bytes());
+            ExitCode::SUCCESS
+        }
         Outcome::Failed(report) => {
             // Demangling comes with the phases that name symbols.
             let style = Style { color: colored(invocation.color), ..Style::plain(&prog) };
             let text = report.render(&style);
-            let _ = std::io::stderr().lock().write_all(text.as_bytes());
+            let mut err = std::io::stderr().lock();
+            let _ = err.write_all(text.as_bytes());
+            let _ = err.write_all(invocation.phases.as_bytes());
             ExitCode::FAILURE
         }
     }

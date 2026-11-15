@@ -4,7 +4,6 @@
 # through the GOT, which a static non-PIE link fills with their
 # addresses or relaxes away (the psABIs' relocation tables).
 #@ spec: a64.md "Static relocations"
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O0 -fpie main.c -o main.o
 cc -O0 -fno-pie target.c -o target.o

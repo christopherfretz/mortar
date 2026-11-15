@@ -64,34 +64,66 @@ impl Parsed {
     }
 
     /// The refused options used (`spec/cli.md` §4.4): the first use of
-    /// each refused row, in argument order.
+    /// each refused row, and each use of a `partial` row with a refused
+    /// value, in argument order. A use of a [`Lands::last_wins`] field
+    /// that a later use of the same field overrides is not counted: the
+    /// plan is the one the line would give without it.
     #[must_use]
     pub fn refused_uses(&self) -> Vec<&Use> {
         let mut seen = vec![false; rows().len()];
         let mut out = Vec::new();
-        for use_ in &self.uses {
-            if use_.row().status == Status::Refused && !seen[use_.row] {
-                seen[use_.row] = true;
-                out.push(use_);
+        let mut last: HashMap<&str, usize> = HashMap::new();
+        for (i, u) in self.uses.iter().enumerate() {
+            if u.row().lands.last_wins() {
+                last.insert(u.row().lands.field(), i);
+            }
+        }
+        for (i, use_) in self.uses.iter().enumerate() {
+            let lands = use_.row().lands;
+            if lands.last_wins() && last.get(lands.field()) != Some(&i) {
+                continue;
+            }
+            match use_.row().status {
+                Status::Refused if !seen[use_.row] => {
+                    seen[use_.row] = true;
+                    out.push(use_);
+                }
+                Status::Partial { refused, .. } if refused_value(use_, refused) => out.push(use_),
+                _ => {}
             }
         }
         out
     }
 
     /// The refusals of [`Parsed::refused_uses`] as diagnostics, keyed on
-    /// their arguments: `unsupported option: -o`.
+    /// their arguments: `unsupported option: -o`, or for a refused value of
+    /// a `partial` row `unsupported option value: --build-id=md5` with the
+    /// row's note.
     #[must_use]
     pub fn refusals(&self) -> Vec<(Key, Diagnostic)> {
         self.refused_uses()
             .into_iter()
             .map(|u| {
-                (
-                    Key::new(PHASE, u.arg, u64::MAX),
-                    Diagnostic::refused(RefusalClass::Option, u.spelling.clone()),
-                )
+                let d = match u.row().status {
+                    Status::Partial { note, .. } => {
+                        let value = u.value.as_deref().unwrap_or_default().to_string_lossy();
+                        Diagnostic::refused(
+                            RefusalClass::OptionValue,
+                            format!("{}={value}", u.spelling),
+                        )
+                        .note(note)
+                    }
+                    _ => Diagnostic::refused(RefusalClass::Option, u.spelling.clone()),
+                };
+                (Key::new(PHASE, u.arg, u64::MAX), d)
             })
             .collect()
     }
+}
+
+/// Whether `use_`'s value is one of a `partial` row's refused values.
+fn refused_value(use_: &Use, refused: &[&str]) -> bool {
+    use_.value.as_deref().is_some_and(|v| refused.iter().any(|r| OsStr::new(r) == v))
 }
 
 /// The diagnostics for the options that do not belong to `target`
@@ -525,6 +557,7 @@ impl Parser<'_> {
             self.out.plan.target_options.push(TargetOption {
                 arg,
                 option: m.name.clone(),
+                value: value.clone(),
                 targets: row.targets.to_vec(),
             });
         }
@@ -571,7 +604,9 @@ impl Parser<'_> {
                 };
                 plan.library_paths.push(SearchPath { arg, path, in_sysroot });
             }
-            Lands::Sysroot => plan.sysroot = Some(text()),
+            // An empty `--sysroot=` is no sysroot, as in GNU ld, lld and
+            // mold (`spec/input.md` §4.3); the last one wins.
+            Lands::Sysroot => plan.sysroot = Some(text()).filter(|t| !t.is_empty()),
             Lands::NoStdlib => plan.nostdlib = true,
             Lands::Script(role) => plan.scripts.push(ScriptArg { arg, role, path: text() }),
             Lands::Symbol(role) => plan.symbols.push(SymbolArg { arg, role, value: text() }),
@@ -619,7 +654,7 @@ impl Parser<'_> {
                         "sha256" => Some(BuildId::Sha256),
                         "fast" => Some(BuildId::Fast),
                         "uuid" => Some(BuildId::Uuid),
-                        hex => Some(BuildId::Hex(hex[2..].to_owned())),
+                        hex => Some(BuildId::Hex(hex.to_owned())),
                     },
                 };
             }
@@ -861,6 +896,7 @@ fn z_field(plan: &mut Plan, field: ZField, value: Option<OsString>) {
         ZField::Copyreloc(on) => z.copyreloc = Some(on),
         ZField::Combreloc(on) => z.combreloc = Some(on),
         ZField::Sectionheader(on) => z.sectionheader = Some(on),
+        ZField::MemorySeal(on) => z.memory_seal = Some(on),
     }
 }
 
@@ -888,15 +924,21 @@ fn check_value(values: Values, value: &OsStr) -> Result<(), String> {
             }
         }
         Values::BuildId => {
-            let hex = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X"));
-            match hex {
-                Some(digits)
-                    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_hexdigit()) =>
+            // spec: image.md I-70 (`0x` is case-sensitive, as GNU ld's and
+            // lld's; then one or more pairs of hexadecimal digits).
+            if let Some(digits) = text.strip_prefix("0x") {
+                if !digits.is_empty()
+                    && digits.len().is_multiple_of(2)
+                    && digits.bytes().all(|b| b.is_ascii_hexdigit())
                 {
                     Ok(())
+                } else {
+                    Err("expected an even number of hexadecimal digits".to_owned())
                 }
-                _ if matches!(text, "none" | "md5" | "sha1" | "sha256" | "fast" | "uuid") => Ok(()),
-                _ => Err("expected one of: none, md5, sha1, sha256, fast, uuid, 0xHEX".to_owned()),
+            } else if matches!(text, "none" | "md5" | "sha1" | "sha256" | "fast" | "uuid") {
+                Ok(())
+            } else {
+                Err("expected one of: none, md5, sha1, sha256, fast, uuid, 0xHEX".to_owned())
             }
         }
     }

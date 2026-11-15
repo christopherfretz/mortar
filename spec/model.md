@@ -319,9 +319,13 @@ fixed-size constants) and `EhFrame` sections (CIE and FDE records).
   the piece's offset in the section (`u32`) and, for `Merge`, its `FragId`;
 - `frags[FragId]`: the output section, the content (as a place in some
   input section), size and alignment. Two pieces have the same `FragId`
-  exactly when they belong to one output section and have equal bytes and
-  alignment. `FragId`s are numbered by first occurrence
-  `(FileId, sh_index, piece)`, by the method of §2.3;
+  exactly when they belong to one output section and have the same merge
+  class (`SHF_STRINGS` and `sh_entsize`), equal alignment and equal bytes
+  (`spec/synth.md` S-13). `FragId`s are numbered by first occurrence
+  `(FileId, sh_index, piece)`: the numbering §2.3 defines, computed by the
+  partitioned method of `spec/synth.md` S-28 (occurrences partitioned by
+  shard in key order, each shard interned on one thread; the first insert
+  is the first occurrence, so no atomic minimum is needed);
 - for `EhFrame`: per piece, CIE or FDE, and for an FDE the section its
   code range lies in (from its first relocation) and its CIE piece.
 
@@ -402,9 +406,10 @@ forced to refold, and so move, unrelated sections.
 
 `frag_off[FragId]`: the offset of each live fragment in its merged chunk.
 Valid when live fragments of one output section do not overlap and honor
-their alignment. The default order is by `FragId`, or by a content key
-`spec/merge.md` gives (tail merging); never by a hash table's layout
-(§6.5).
+their alignment. The order is by merge class, then alignment, then
+`FragId` (`spec/synth.md` S-24); never by a hash table's layout (§6.5).
+Fragments never overlap: there is no tail merging (`spec/synth.md`
+S-23).
 
 ### 4.3 `Slots` (written by `mortar_synth`)
 
@@ -425,13 +430,17 @@ An index counts within its kind: one key can hold slots of several kinds
 (`spec/a64.md` §10.1), each with its own index, and a key has a PLT index
 or an IPLT index, never both. Where the kinds lie relative to each other
 in the GOT, and which `.got.plt` word belongs to a PLT or IPLT entry,
-follow from the indices by `spec/synth.md`'s rule; they are not stored.
+follow from the indices and from each kind's capacity (`spec/synth.md`
+S-63) by that spec's rule. A capacity equals the kind's count except in
+an incremental link [M7], which stores it.
 
 `.symtab` (and the symbol tables of `-r` output) is ordered by rule, not
-by rows: locals per file in `FileId` and table order, then globals in
-`SymbolId` order, so that the output index of `(FileId, st_index)` is a
-prefix sum per file. Only the per-file `(first local, count)` ranges are
-stored.
+by rows (`spec/synth.md` S-74, S-75): the internal file's locals, then
+per file in `FileId` order its kept locals in table order followed by its
+demoted globals (output binding `STB_LOCAL`) in `SymbolId` order, then
+the kept globals in `SymbolId` order, so that the output index of
+`(FileId, st_index)` is a prefix sum per file. Only the per-file `(first
+local, count)` ranges are stored; `count` includes the demoted globals.
 
 Valid when every demand of §3.7 has exactly one slot of its kind (the
 module slot exists exactly when `TLS_LD` is demanded), no slot is given
@@ -459,7 +468,9 @@ program headers, the section headers, then synthetic chunks in the order
 order its chunks: `Body(o, 0)`, `Patches(o, 0)`, `Body(o, 1)`,
 `Patches(o, 1)`, …, and its merged chunk. Each part's island follows the
 part (`spec/layout.md` L-110, L-111). `order` is the decision; the id is
-only a name. (Rust form: `ChunkKind::Body(Part)` and `Patches(Part)` with
+only a name. The synthetic list is `spec/synth.md` S-3; `.eh_frame` is
+one of its synthetic chunks (its input sections are split and have no
+`place`). (Rust form: `ChunkKind::Body(Part)` and `Patches(Part)` with
 `Part { out, part }`; the padding is `Synthetic(Synth::RELRO_PADDING)`.)
 
 The RELRO padding is a `SHT_NOBITS` synthetic chunk named `.relro_padding`

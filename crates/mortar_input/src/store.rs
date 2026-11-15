@@ -174,6 +174,10 @@ pub struct FileMeta {
     pub mtime: (i64, i64),
     /// `st_ctime`: seconds, nanoseconds.
     pub ctime: (i64, i64),
+    /// `st_nlink`: a held file renamed over or removed drops a link even
+    /// when `st_ctime` does not move (a filesystem with a coarse clock
+    /// stamps the write and the unlink alike: §11.5).
+    pub nlink: u64,
 }
 
 impl FileMeta {
@@ -184,11 +188,13 @@ impl FileMeta {
             ino: m.ino(),
             mtime: (m.mtime(), m.mtime_nsec()),
             ctime: (m.ctime(), m.ctime_nsec()),
+            nlink: m.nlink(),
         }
     }
 
     fn same_version(&self, other: &Self) -> bool {
-        (self.size, self.mtime, self.ctime) == (other.size, other.mtime, other.ctime)
+        (self.size, self.mtime, self.ctime, self.nlink)
+            == (other.size, other.mtime, other.ctime, other.nlink)
     }
 }
 
@@ -286,6 +292,10 @@ pub struct StoreStats {
     /// Positioned reads and bytes of [`Store::copy_to`] from disk.
     pub copy_reads: u64,
     pub copy_bytes: u64,
+    /// Wall nanoseconds of the staged read's waves A, B, C, D and the
+    /// entries' assembly, summed over batches (the bench's; decides
+    /// nothing).
+    pub wave_ns: [u64; 5],
 }
 
 /// A test hook, called with the path of the file.
@@ -365,6 +375,7 @@ struct Counters {
     fully_resident: AtomicU64,
     copy_reads: AtomicU64,
     copy_bytes: AtomicU64,
+    wave_ns: [AtomicU64; 5],
 }
 
 impl std::fmt::Debug for Store {
@@ -666,8 +677,8 @@ impl Store {
     }
 
     /// The checks of §11.5 again, on a file the staged store still holds:
-    /// the same size, `st_mtime` and `st_ctime` as when it was read. For
-    /// the end of the image phase; a file the store does not hold (read
+    /// the same size, `st_mtime`, `st_ctime` and `st_nlink` as when it was
+    /// read. For the end of the image phase; a file the store does not hold (read
     /// whole, or made fully resident) needs none.
     pub fn recheck(&self, b: Blob) -> Result<(), ReadError> {
         let e = self.entry(b);
@@ -684,6 +695,25 @@ impl Store {
     #[must_use]
     pub fn blob_of_inode(&self, dev: u64, ino: u64) -> Option<Blob> {
         self.by_inode.lock().unwrap_or_else(PoisonError::into_inner).get(&(dev, ino)).copied()
+    }
+
+    /// The store's handle of a model handle (`FileBytes::blob`), when this
+    /// store gave it out: the direct way back for [`Store::recheck`]
+    /// (WP-027c; the image's end, input.md §11.5).
+    #[must_use]
+    pub fn blob_of_model(&self, b: inputs::Blob) -> Option<Blob> {
+        self.try_entry(b.0).map(|_| Blob(b.0))
+    }
+
+    /// The `(st_dev, st_ino)` of every file read, in ascending order (the
+    /// output file's checks against its inputs: image.md I-62, I-66,
+    /// I-113).
+    #[must_use]
+    pub fn inodes(&self) -> Vec<(u64, u64)> {
+        let map = self.by_inode.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut v: Vec<(u64, u64)> = map.keys().copied().collect();
+        v.sort_unstable();
+        v
     }
 
     /// The system calls made so far.
@@ -704,6 +734,7 @@ impl Store {
             fully_resident: c.fully_resident.load(Ordering::Relaxed),
             copy_reads: c.copy_reads.load(Ordering::Relaxed),
             copy_bytes: c.copy_bytes.load(Ordering::Relaxed),
+            wave_ns: std::array::from_fn(|i| c.wave_ns[i].load(Ordering::Relaxed)),
         }
     }
 
@@ -1056,7 +1087,15 @@ impl Store {
         jobs.chunks(batch).flat_map(|jobs| self.read_batch(pool, jobs)).collect()
     }
 
+    #[allow(clippy::too_many_lines, reason = "the four waves of §11.9 in order")]
     fn read_batch(&self, pool: &Pool, jobs: &[ReadJob]) -> Vec<Result<Blob, ReadError>> {
+        let mut clock = std::time::Instant::now();
+        let mut wave = |w: usize| {
+            let now = std::time::Instant::now();
+            let ns = u64::try_from((now - clock).as_nanos()).unwrap_or(u64::MAX);
+            self.counters.wave_ns[w].fetch_add(ns, Ordering::Relaxed);
+            clock = now;
+        };
         let plans: Vec<Plan> = jobs.iter().map(|job| self.plan(job)).collect();
         let reads: Vec<usize> =
             (0..plans.len()).filter(|&i| matches!(plans[i], Plan::Read { .. })).collect();
@@ -1070,6 +1109,7 @@ impl Store {
             self.stage(&jobs[i].path, size, meta, char_device)
         });
 
+        wave(0);
         // (B)
         let members: Vec<(usize, MemberSpan)> = staging
             .iter()
@@ -1097,6 +1137,7 @@ impl Store {
             }
         }
 
+        wave(1);
         // (C)
         let mut parts: Vec<Vec<(u64, Vec<u8>)>> = staging
             .iter_mut()
@@ -1128,6 +1169,7 @@ impl Store {
             }
         });
 
+        wave(2);
         // (D)
         let checked = pool.map(staging.len(), |k| match &staging[k] {
             Ok(s) => {
@@ -1139,6 +1181,7 @@ impl Store {
             Err(e) => Err(e.clone()),
         });
 
+        wave(3);
         let mut results: Vec<Option<Result<Blob, ReadError>>> = plans
             .iter()
             .map(|p| match p {
@@ -1159,6 +1202,7 @@ impl Store {
             };
             results[reads[k]] = Some(result);
         }
+        wave(4);
         results
             .into_iter()
             .map(|r| r.unwrap_or_else(|| unreachable!("every job answered")))

@@ -5,27 +5,65 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use mortar_arch::{Arch, FillCx, FillTables, OutputKind, TlsBlock};
-use mortar_core::SymKey;
+use mortar_arch::{Arch, FillTables, OutputKind, TlsBlock};
 use mortar_core::par::Pool;
+use mortar_core::records::RecIndex;
+use mortar_core::{Split, SymKey};
 use mortar_diag::{Diagnostic, Key, Kind, Place};
 use mortar_digest::{Leaf, TreeStyle};
+use mortar_merge::order::Order;
+use mortar_synth::{EhPlan, EhSource};
 
-use crate::digest;
 use crate::plan::{Plan, Unit};
 use crate::reloc::{self, Scratch};
-use crate::source::{self, Source};
-use crate::synth::{SynthChunk, SynthError};
+use crate::source::{self, RecordKeys, Source};
+use crate::synth::{SynthChunk, SynthCx, SynthError};
 use crate::{PHASE_IMAGE, PHASE_OUTPUT};
+use crate::{digest, eh, merged};
 
 /// The tables fill reads (`FillTables`), plus what §6.1 needs and
 /// `SymValue` does not carry.
 ///
 /// `FillTables` (WP-023b) does not carry the target's section flags, so
-/// the image asks for them here; the driver answers from `Resolution`.
+/// the image asks for them here; [`crate::link`]'s tables answer from the
+/// resolution and the inputs' section headers.
 pub trait Tables: FillTables {
     /// Whether the key's definition is in an `SHF_ALLOC` section (I-112).
     fn target_alloc(&self, key: SymKey) -> bool;
+    /// `S + A` of a reference with addend `addend` to `key` when that
+    /// value is not the symbol's plus `A`: a section symbol of a split
+    /// `Merge` section (`spec/synth.md` S-17, S-18: the piece holding
+    /// byte `st_value + A`) and any key defined in an input `.eh_frame`
+    /// (S-50, which follows the target offset). The output address, or
+    /// the diagnostic (S-18; S-50 rules 4 and 5). `None` otherwise: the
+    /// arch computes `S + A` from [`FillTables::sym`].
+    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<u64, Diagnostic>> {
+        let _ = (key, addend);
+        None
+    }
+}
+
+/// What merged chunks are written from (I-38): phase 50's fragment order
+/// and phase 60's fragments.
+#[derive(Debug, Clone, Copy)]
+pub struct MergedFrags<'a> {
+    pub order: &'a Order,
+    pub split: &'a Split,
+}
+
+/// What the input `.eh_frame` relocations are applied through (S-52):
+/// the plan, its source and the output `.eh_frame`'s address.
+#[derive(Clone, Copy)]
+pub struct EhFill<'a> {
+    pub plan: &'a EhPlan,
+    pub src: &'a dyn EhSource,
+    pub addr: u64,
+}
+
+impl std::fmt::Debug for EhFill<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EhFill").field("addr", &self.addr).finish_non_exhaustive()
+    }
 }
 
 /// Where windows go (I-63): the output file, or memory in tests.
@@ -47,14 +85,28 @@ pub struct Image<'a> {
     pub source: &'a dyn Source,
     pub arch: &'a dyn Arch,
     pub tables: &'a dyn Tables,
+    /// The scan's record index (I-29): the order of each relocated
+    /// section's records and its `leads` bit.
+    pub records: &'a RecIndex,
+    /// How records read from the store name their keys.
+    pub keys: &'a dyn RecordKeys,
     pub output: OutputKind,
     pub got_base: Option<u64>,
     pub tls: Option<TlsBlock>,
     /// The chunks [`crate::plan::SynthUnit::chunk`] indexes.
-    pub chunks: &'a [&'a dyn SynthChunk],
+    pub chunks: &'a [&'a (dyn SynthChunk + Sync)],
+    /// What the chunks' `write` reads (§13).
+    pub synth: SynthCx<'a>,
+    /// For [`crate::plan::Unit::Merged`] rows.
+    pub merged: Option<MergedFrags<'a>>,
+    /// For the `.eh_frame` chunk's relocations.
+    pub eh: Option<EhFill<'a>>,
     /// The build id's style; `None` when no leaves are computed (I-73).
     /// Leaves are windows, so it needs `plan.window == IMAGE_BLOCK` (I-75).
     pub build_id: Option<TreeStyle>,
+    /// Words written over the rows' bytes, by file offset, sorted (the
+    /// erratum fixes, `crate::link::Link::fixups`).
+    pub fixups: &'a [(u64, [u8; 4])],
 }
 
 impl std::fmt::Debug for Image<'_> {
@@ -211,25 +263,26 @@ fn fill_into(
                     .map_err(|err| fail(source::copy_error(err, &plan.path(u.file))))?;
                 if let Some(r) = u.relocs {
                     let rs = &plan.relocs[r as usize];
-                    reloc::relocate(img, scratch, u, rs, u.start + a, u.start + b, dst, errs)
-                        .map_err(fail)?;
+                    let clip = reloc::Clip::of_input(plan, u, rs, u.start + a, u.start + b);
+                    reloc::relocate(img, scratch, &clip, None, dst, errs).map_err(fail)?;
                 }
+            }
+            Unit::Merged(i) => {
+                let mu = &plan.merged[i as usize];
+                merged::fill(img, mu, a, b, dst)?;
             }
             Unit::Synth(i) => {
                 let su = &plan.synth[i as usize];
-                let cx = FillCx {
-                    tables: img.tables,
-                    output: img.output,
-                    got_base: img.got_base,
-                    tls: img.tls,
-                };
                 let Some(chunk) = img.chunks.get(su.chunk as usize) else {
                     let what = format!("fill: no synthetic chunk {} (model §4.4)", su.chunk);
                     errs.push((Key::new(PHASE_IMAGE, 0, u64::from(su.id.0)), internal(what)));
                     continue;
                 };
-                if let Err(err) = chunk.write(&cx, a..b, dst) {
-                    errs.push(synth_error(img, su.id, su.name, row.offset, err));
+                if let Err(err) = chunk.write(&img.synth, a..b, dst) {
+                    errs.push(synth_error(img, su.id, su.name, err));
+                }
+                if su.eh {
+                    eh::relocate(img, scratch, a, b, dst, errs)?;
                 }
                 if let Some(sealed) = chunk.sealed() {
                     // The descriptor's zeros (I-73): whatever `write` put there.
@@ -241,6 +294,16 @@ fn fill_into(
             }
         }
     }
+    // The fixed words over the rows (a word may straddle the range).
+    let first = img.fixups.partition_point(|f| f.0 + 4 <= lo);
+    for &(off, word) in img.fixups[first..].iter().take_while(|f| f.0 < hi) {
+        for (i, b) in word.iter().enumerate() {
+            let at = off + i as u64;
+            if (lo..hi).contains(&at) {
+                out[(at - lo) as usize] = *b;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -248,26 +311,23 @@ fn internal(what: String) -> Diagnostic {
     Diagnostic::error(Kind::InternalError { what })
 }
 
-/// I-106: a synthetic chunk's error at `(100, 0, ChunkId)`.
+/// I-106: a synthetic chunk's error at `(100, 0, ChunkId)`; an
+/// `internal-error` names the output section.
 fn synth_error(
     img: &Image<'_>,
     id: mortar_core::ChunkId,
     name: u32,
-    chunk_off: u64,
     err: SynthError,
 ) -> (Key, Diagnostic) {
-    let section = String::from_utf8_lossy(img.plan.name(name)).into_owned();
-    match err {
-        SynthError::Field { error, offset, what, target } => {
-            let output = mortar_diag::FileRef::new("<output>");
-            let _ = chunk_off;
-            mortar_arch::diag::chunk(error, id, &output, &section, offset, what, &target)
+    let d = err.into_diagnostic();
+    let d = match d.kind() {
+        Kind::InternalError { what } => {
+            let section = String::from_utf8_lossy(img.plan.name(name));
+            internal(format!("{section}: {what}")).at(Place::argument("output"))
         }
-        SynthError::Internal(what) => (
-            Key::new(PHASE_IMAGE, 0, u64::from(id.0)),
-            internal(format!("{section}: {what}")).at(Place::argument("output")),
-        ),
-    }
+        _ => d,
+    };
+    (Key::new(PHASE_IMAGE, 0, u64::from(id.0)), d)
 }
 
 /// One job (I-33): fill, hash each window, write each window.

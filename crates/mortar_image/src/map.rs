@@ -40,6 +40,16 @@ pub enum Placed {
     Piece { section: u32, input_offset: u64, addr: u64, size: u64 },
 }
 
+/// A non-alloc record of one file (R-9, `spec/plumb.md` §3.2): `nplace`,
+/// a section placed whole at `offset` of the non-alloc output section
+/// `out`; `merged`, an `SHF_MERGE` non-alloc section whose pieces are in
+/// `out` and are not listed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NonAlloc {
+    Place { section: u32, out: Vec<u8>, offset: u64, size: u64 },
+    Merged { section: u32, out: Vec<u8> },
+}
+
 /// `chunk`'s kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChunkKind {
@@ -87,6 +97,8 @@ pub struct Map {
     pub files: Vec<MapFile>,
     /// Per map file, its `place` and `piece` records.
     pub placed: Vec<Vec<Placed>>,
+    /// Per map file, its `nplace` and `merged` records (R-9).
+    pub nonalloc: Vec<Vec<NonAlloc>>,
     /// Per map file, its `discard` records.
     pub discards: Vec<Vec<(u32, DiscardWhy)>>,
     pub folds: Vec<Fold>,
@@ -139,6 +151,24 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         }
         s
     });
+    let nonalloc = pool.map(map.nonalloc.len(), |id| {
+        let mut s = String::new();
+        for r in &map.nonalloc[id] {
+            match r {
+                NonAlloc::Place { section, out, offset, size } => {
+                    let _ = write!(s, "nplace {id} {section} ");
+                    token(out, &mut s);
+                    let _ = writeln!(s, " {offset:x} {size:x}");
+                }
+                NonAlloc::Merged { section, out } => {
+                    let _ = write!(s, "merged {id} {section} ");
+                    token(out, &mut s);
+                    s.push('\n');
+                }
+            }
+        }
+        s
+    });
     let discards = pool.map(map.discards.len(), |id| {
         let mut s = String::new();
         for (section, why) in &map.discards[id] {
@@ -147,6 +177,7 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         s
     });
     out.extend(placed);
+    out.extend(nonalloc);
     out.extend(discards);
     for f in &map.folds {
         let _ = writeln!(out, "fold {} {} {} {}", f.file, f.section, f.into_file, f.into_section);

@@ -28,13 +28,15 @@ use mortar_a64::A64;
 use mortar_arch::{
     DemandFlags, FillTables, OutputKind, Reloc, SlotKind, SymNames, SymValue, TargetKind,
 };
+use mortar_core::RecIndex;
 use mortar_core::inputs::{CopyError, Errno};
 use mortar_core::par::Pool;
 use mortar_core::{FileId, SectionId, SymKey, SymbolId};
 use mortar_image::fill::{self, Image, Tables};
 use mortar_image::output::{Output, OutputOptions};
 use mortar_image::phases::Sample;
-use mortar_image::plan::{Builder, InputUnit, RecOrder, RelocSection};
+use mortar_image::plan::{Builder, InputUnit, RecRows, RelocSection};
+use mortar_image::source::NoKeys;
 use mortar_image::source::Source;
 use mortar_image::target::Target;
 
@@ -66,7 +68,7 @@ impl SymNames for T {
 }
 impl FillTables for T {
     fn sym(&self, _key: SymKey) -> SymValue {
-        SymValue { s: 0x40_1000, kind: TargetKind::Local, size: 0, live: true }
+        SymValue { s: 0x40_1000, kind: TargetKind::Local, size: 0, live: true, tls: false }
     }
     fn slot(&self, _key: SymKey, _kind: SlotKind) -> Option<u64> {
         None
@@ -186,8 +188,8 @@ fn main() {
                         .collect();
                     records_total += records.len() as u64;
                     b.relocs(RelocSection {
-                        records: records.into(),
-                        order: RecOrder::Sorted,
+                        section: SectionId(0),
+                        rows: RecRows::Decoded(records.into()),
                         proof: Vec::new().into(),
                     })
                 });
@@ -216,6 +218,7 @@ fn main() {
             section_size: size,
             addr: 0x40_0000 + off,
             alloc: true,
+            exec: true,
             name,
             relocs: Some(r),
         };
@@ -223,16 +226,24 @@ fn main() {
     }
     let plan = plan_b.finish(mortar_image::IMAGE_BLOCK, &pool).unwrap();
     let arch = A64::M1;
+    let records = RecIndex::default();
+    let out_ref = mortar_diag::FileRef::new("out");
     let img = Image {
         plan: &plan,
         source: &store,
         arch: &arch,
         tables: &T,
+        records: &records,
+        keys: &NoKeys,
         output: OutputKind::Static,
         got_base: None,
         tls: None,
         chunks: &[],
+        synth: mortar_image::synth::no_answers(&arch, &pool, &out_ref),
+        merged: None,
+        eh: None,
         build_id: None,
+        fixups: &[],
     };
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("out");

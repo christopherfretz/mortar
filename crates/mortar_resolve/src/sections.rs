@@ -24,8 +24,6 @@ pub enum SectionRefusal {
     /// `SHT_LLVM_DEPENDENT_LIBRARIES` or another `SHT_LLVM_*` type that
     /// is not ignorable.
     LlvmType(u32),
-    /// `SHT_AARCH64_ATTRIBUTES`.
-    Aarch64Attributes,
     /// A dynamic-linking section type in a relocatable object.
     DynamicType(u32),
     /// Any other section type.
@@ -36,6 +34,9 @@ pub enum SectionRefusal {
     Linkonce,
     /// `.zdebug*` (GNU-style compressed debug sections).
     Zdebug,
+    /// `SHF_COMPRESSED` (GCC's `-gz`): refused until the store
+    /// decompresses (layout.md L-52; WP-027c ruling).
+    Compressed,
     /// A second relocation section for one kept section: GNU ld applies
     /// one of two `SHT_RELA` sections, lld refuses, mold asserts or drops
     /// one (§10). The variant holds the section it applies to.
@@ -81,6 +82,32 @@ fn is_debug_name(name: &[u8]) -> bool {
     name.starts_with(b".debug")
 }
 
+/// Whether `-S`/`-s` drop the section (§10): a non-allocated `.debug*`
+/// section, of kind `Debug` or, for the string sections (`.debug_str`,
+/// `.debug_line_str`: `SHF_MERGE|SHF_STRINGS`), `Merge`.
+pub fn is_debug(s: &SectionInfo<'_>) -> bool {
+    s.flags & SHF_ALLOC == 0 && is_debug_name(s.name)
+}
+
+/// The largest `sh_entsize` a `Merge` section is split by (synth.md S-6).
+pub const MAX_MERGE_ENTSIZE: u64 = 1 << 16;
+
+/// synth.md S-6: whether a section classified `Merge` is placed whole, as
+/// `Regular`: it is writable or code, the target of a relocation section
+/// (`relocated`), TLS, `SHF_COMPRESSED` (its bytes are not the pieces'
+/// until decompressed, S-5), or of a shape merging does not take
+/// (`sh_addralign` not a power of two, `sh_entsize` above 2^16).
+/// `mortar_merge::cut::placed_whole` is the same predicate, kept for its
+/// bare-object tests; after this, phase 60 sees no such section.
+#[must_use]
+pub fn placed_whole(s: &SectionInfo<'_>, relocated: bool) -> bool {
+    s.flags & (SHF_WRITE | SHF_EXECINSTR | SHF_TLS | SHF_COMPRESSED) != 0
+        || relocated
+        || !(s.addralign == 0 || s.addralign.is_power_of_two())
+        || s.entsize == 0
+        || s.entsize > MAX_MERGE_ENTSIZE
+}
+
 /// The kind of a section, by the first row of §10's table that matches,
 /// leaving out the rows that need the COMDAT keeper (a member of a group
 /// not kept takes its kind from the later rows; [`state`] decides its
@@ -115,6 +142,11 @@ pub fn classify(
     }
     match s.sh_type {
         SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE => return Ok((K::Excluded, Note::None)),
+        // layout.md L-35 (§20.7): AArch64 build attributes are consumed;
+        // the feature marking is the property note's (L-34).
+        SHT_AARCH64_ATTRIBUTES if machine == Machine::AArch64 => {
+            return Ok((K::Excluded, Note::None));
+        }
         SHT_LLVM_DEPENDENT_LIBRARIES => return Err(SectionRefusal::LlvmType(s.sh_type)),
         t if (0x6fff_4c00..=0x6fff_4cff).contains(&t) => {
             return Err(SectionRefusal::LlvmType(t));
@@ -136,6 +168,9 @@ pub fn classify(
     if name.starts_with(b".zdebug") {
         return Err(SectionRefusal::Zdebug);
     }
+    if s.flags & SHF_COMPRESSED != 0 {
+        return Err(SectionRefusal::Compressed);
+    }
     let unknown = s.flags & !known_flags(machine);
     let kind =
         if (machine == Machine::X86_64 && s.sh_type == SHT_X86_64_UNWIND) || name == b".eh_frame" {
@@ -150,9 +185,6 @@ pub fn classify(
                 SHT_NOBITS => K::Nobits,
                 SHT_PROGBITS | SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY => K::Regular,
                 SHT_STRTAB if alloc => K::Regular,
-                SHT_AARCH64_ATTRIBUTES if machine == Machine::AArch64 => {
-                    return Err(SectionRefusal::Aarch64Attributes);
-                }
                 SHT_DYNAMIC | SHT_DYNSYM | SHT_HASH | SHT_GNU_HASH | SHT_GNU_VERDEF
                 | SHT_GNU_VERNEED | SHT_GNU_VERSYM | SHT_RELR => {
                     return Err(SectionRefusal::DynamicType(s.sh_type));
@@ -173,7 +205,8 @@ fn retain(s: &SectionInfo<'_>) -> Note {
 /// The state of a section of kind `kind` (§10): `Dropped(Comdat)` for a
 /// member of a group not kept that carries output, then by kind;
 /// `excluded` is the reason for an `Excluded` kind ([`excluded_reason`]);
-/// `strip_debug` (`-S`/`-s`) drops `Debug` sections.
+/// `strip_debug` (`-S`/`-s`, and the section is [`is_debug`]) drops the
+/// section.
 pub fn state(
     kind: SectionKind,
     excluded: DropReason,
@@ -189,17 +222,21 @@ pub fn state(
             SectionState::Dropped(DropReason::Consumed)
         }
         K::Excluded => SectionState::Dropped(excluded),
-        K::Debug if strip_debug => SectionState::Dropped(DropReason::Stripped),
+        K::Debug | K::Merge if strip_debug => SectionState::Dropped(DropReason::Stripped),
         _ => SectionState::Kept,
     }
 }
 
 /// The reason an `Excluded` kind is dropped: `Consumed` for the kinds
 /// §10 says the linker consumes (`.llvm_addrsig`, the call-graph profile,
-/// `.gnu.warning*`), `Excluded` for `SHF_EXCLUDE` and `.gnu.lto_*`.
+/// `.gnu.warning*`, AArch64's `.ARM.attributes`), `Excluded` for
+/// `SHF_EXCLUDE` and `.gnu.lto_*`.
 pub fn excluded_reason(s: &SectionInfo<'_>, note: Note) -> DropReason {
     let consumed = matches!(note, Note::GnuWarning | Note::GnuWarningSym)
         || (s.flags & SHF_EXCLUDE == 0
-            && matches!(s.sh_type, SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE));
+            && matches!(
+                s.sh_type,
+                SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE | SHT_AARCH64_ATTRIBUTES
+            ));
     if consumed { DropReason::Consumed } else { DropReason::Excluded }
 }

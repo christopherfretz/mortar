@@ -3,7 +3,6 @@
 # psABI, and the driver's own link line works with each linker.
 #@ spec: layout.md "Static executables"
 #@ requires: clang
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 gcc_part.c -o gcc_part.o
 cc(clang) -O1 clang_part.c -o clang_part.o

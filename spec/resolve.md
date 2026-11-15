@@ -65,7 +65,6 @@ semantics (`spec/arch.md`).
 | `.gnu.linkonce.*` sections | `Refused{Feature, ".gnu.linkonce sections"}` (§6.6) | an input that needs it |
 | a slim GCC LTO object (symbol `__gnu_lto_slim`) | `Refused{FileFormat, "GCC LTO object"}` (§10) | a later decision (`docs/ARCHITECTURE.md`, "Scope") |
 | a weak common symbol (`STB_WEAK` with `SHN_COMMON`) | `Refused{SymbolBinding, "STB_WEAK common"}` | an input that needs it (no tool tested emits one; not verified) |
-| `SHN_X86_64_LCOMMON` (large common) | `Refused{Feature, "SHN_X86_64_LCOMMON"}` | M4 |
 | a symbol binding other than `STB_GLOBAL`, `STB_WEAK`, `STB_GNU_UNIQUE` among non-local entries | `Refused{SymbolBinding, <name or 0x..>}` | never planned |
 | a symbol type other than `NOTYPE`, `OBJECT`, `FUNC`, `SECTION`, `FILE`, `COMMON`, `TLS`, `GNU_IFUNC` | `Refused{SymbolType, ..}` | never planned |
 | `--warn-backrefs-exclude` | option refusal | when asked for |
@@ -81,7 +80,8 @@ Everything else in this spec is **M1** unless marked.
   and a version part. `foo`, `foo@@V2` are one key; `foo@V1` is another
   (§9.4).
 - A mention is **defined** when its section is a section of the file
-  (`Section(n)`, `elf.md` §3.5) or `Absolute`; **common** for `Common`;
+  (`Section(n)`, `elf.md` §3.5) or `Absolute`; **common** for `Common`
+  (and, on x86-64, `Reserved(SHN_X86_64_LCOMMON)`, §3.3);
   **undefined** for `Undefined`. A `Reserved(n)` other than those this
   spec names is refused (`Refused{Feature, "SHN 0x.."}`).
 - A **data definition** is a defined mention whose type is not `STT_FUNC`
@@ -187,6 +187,14 @@ M1. For a key whose `def` is `Common`:
   §16;
 - `def` is `Common{file, st_index}` of the least common mention by `≺`
   (the identity; the size and alignment are the column's).
+- `SHN_X86_64_LCOMMON` (large common, x86-64): accepted as a common
+  symbol (`st_value` the alignment), resolved as `SHN_COMMON`; allocated
+  in `.lbss` (`spec/x64.md` X-55, `spec/layout.md` L-36a); a `COMMON` and
+  an `LCOMMON` of one name give a small common, allocated as `SHN_COMMON`
+  is (`.lbss` only when every mention is `LCOMMON`; GNU ld 2.44,
+  measured: `spec/x64.md` Q14). M1. On another machine
+  the index 0xff02 means nothing and is refused as any other
+  `Reserved(n)` (§2).
 
 When a `Strong` definition wins over commons, its own size and alignment
 stand. Warnings (GNU ld's, which gfortran users meet; mortar's wording is
@@ -820,8 +828,9 @@ Resolution only records `Undefined{weak: true}` and `ref_dynamic`.
 symbol nosuch; defaulting to 0000000000400078`` (the start of `.text`),
 lld ``cannot find entry symbol nosuch; not setting start address``, mold
 ``entry symbol is not defined: nosuch`` (E13). mortar warns
-`entry-not-found` and the entry is layout's default (`spec/layout.md`:
-GNU's, the start of `.text`). If `SYM` parses as a number and no file
+`entry-not-found` (once: resolve's, at the key of the table in §14;
+layout does not repeat it) and `e_entry = 0` (`spec/layout.md` L-103,
+lld's and mold's value). If `SYM` parses as a number and no file
 mentions it, it is that address (GNU ld manual, `-e`). A shared object
 (M4) without the option has no entry and no warning.
 
@@ -1041,7 +1050,7 @@ static executable; "lld/GNU/mold" columns: defined by that linker):
 | `__init_array_start/_end`, `__preinit_array_start/_end`, `__fini_array_start/_end` | always | local, hidden | yes | yes | yes | M1 |
 | `__rela_iplt_start/_end` (AArch64, x86-64), `__rel_iplt_start/_end` (i386) | static executables that are not PIE (empty range when there is no IRELATIVE); under `-static-pie` not defined, so a reference is weak undefined and zero (GNU ld, lld; mold: absolute 0; all three on the three targets, WP-022.md): the `IRELATIVE` relocations are in `.rela.dyn` | local, hidden | yes | yes | only with IRELATIVE | M1 |
 | `__start_<sec>`, `__stop_<sec>` | `<sec>` is a C identifier and an output section of that name exists | global, protected; `-z start-stop-visibility=` (M2) changes it | yes | yes | yes | M1 |
-| `_TLS_MODULE_BASE_` | a TLS segment exists and the key is referenced | local, hidden | no | x86 only | yes | M2 (TLS descriptors) |
+| `_TLS_MODULE_BASE_` | x86-64 (WP-029b; i386 with its back end): a TLS segment exists and the key is referenced (a conditional candidate; with no TLS chunk layout L-98 refuses it by name); `STT_TLS`, value 0 in the template (x64.md X-47: T = 0 by name, so only `.symtab` shows the value) | local, hidden | no | x86 only | yes | M1 (x86-64); M2 elsewhere |
 | `__GNU_EH_FRAME_HDR` | `.eh_frame_hdr` exists | local, hidden | no | no | yes | M1 |
 | `__dso_handle` | **not defined** (`crtbegin*.o` defines it) | — | no | yes (hidden) | yes | — |
 | `_PROCEDURE_LINKAGE_TABLE_`, `__global_pointer$`, `_gp`, `__tls_get_addr`, `_init`, `_fini` | not defined (RISC-V, MIPS, or libc's) | — | no | no | no | — |
@@ -1312,14 +1321,15 @@ classification is per file (I-file), the state needs `comdat`:
 | name `.gnu.warning` / `.gnu.warning.<sym>` | `Excluded` | `Dropped(Consumed)`; the text is a warning (`gnu-warning`): for `.gnu.warning` when the file is live, for `.gnu.warning.<sym>` per key `<sym>` referenced from a live section (one diagnostic per key, first 3 references, emitted by the scan) | GNU ld (E21); lld and mold neither warn nor drop: they copy the section into the output. glibc's `libc.a` has 112 such sections (E21) |
 | name `.gnu.linkonce.*` | — | refused (§6.6) | |
 | name prefix `.zdebug` | — | `Refused{Feature, ".zdebug compressed debug sections"}` | (GNU-style compression, superseded by `SHF_COMPRESSED`) |
+| `SHF_COMPRESSED` (GCC and Clang `-gz`) | — | `Refused{Feature, "SHF_COMPRESSED input sections"}` until the store decompresses (`spec/layout.md` L-52); a non-alloc `.debug*` one under `-S`/`-s`: `Dropped(Stripped)` (WP-027c ruling: never copied compressed as if plain) | the references decompress |
 | `SHT_X86_64_UNWIND` (x86-64) or name `.eh_frame` | `EhFrame` | `Kept` | |
-| `SHF_MERGE` with entry size > 0 | `Merge` | `Kept` | |
+| `SHF_MERGE` with entry size > 0 | `Merge`, or `Regular` when `spec/synth.md` S-6 places it whole (writable, code, TLS, relocated, `SHF_COMPRESSED`, odd shape) | `Kept`; a non-alloc `.debug*` one (`.debug_str`, `.debug_line_str`) under `-S`/`-s`: `Dropped(Stripped)`, as the `Debug` row (WP-027a: GNU ld, lld and mold drop them) | |
 | `SHF_MERGE` with entry size 0 | `Regular` | `Kept` (not merged; lld) | not verified with GNU ld |
 | non-alloc, name `.debug_*` | `Debug` | `Kept` (unless `-S`/`-s`: `Dropped(Stripped)`) | |
 | `SHT_NOTE` other | `Note` | `Kept` | |
 | `SHT_NOBITS` | `Nobits` | `Kept` | |
 | `SHT_PROGBITS`, `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY`, `SHT_PREINIT_ARRAY`, alloc `SHT_STRTAB` | `Regular` | `Kept` | |
-| `SHT_AARCH64_ATTRIBUTES` (`0x70000003`, AArch64) | — | `Refused{SectionType, ..}` until `spec/a64.md` says what merging them means | not verified (no GCC 14 or Clang 22 object here has one) |
+| `SHT_AARCH64_ATTRIBUTES` (`0x70000003`, AArch64) | — | `Dropped(Consumed)` (`spec/layout.md` L-35, §20.7; applied in WP-027d): the feature marking is the property note's | Clang 22 emits it for every `-mbranch-protection` but `none`; GNU ld and mold drop it, lld copies it (E-18) |
 | `SHT_DYNAMIC`, `SHT_DYNSYM`, `SHT_HASH`, `SHT_GNU_HASH`, `SHT_GNU_verdef/verneed/versym`, `SHT_RELR` in a relocatable object | — | `Refused{SectionType, ..}` | |
 | any other type, or a flag mortar does not implement (`SHF_OS_NONCONFORMING`, unknown bits, a processor flag other than `SHF_AARCH64_PURECODE`/`SHF_X86_64_LARGE` where the arch spec admits them) | — | `Refused{SectionType or SectionFlag, ..}` (`spec/model.md` §3.3) | the references accept silently (`spec/diag.md` §8.1) |
 | `SHF_GNU_RETAIN` | its kind | `Kept`, and a root of liveness (§4.7) | |
@@ -1336,7 +1346,8 @@ row matches, kept or dropped: WP-022.md.)
 
 `.ARM.*`, `.riscv.*` and other machines' attribute sections cannot occur:
 the file's machine is checked first (`spec/input.md`). `SHF_COMPRESSED`
-does not change the kind: the store decompresses (`spec/model.md` §1).
+does not change the kind once the store decompresses (`spec/model.md`
+§1); until then the row above refuses it.
 
 `section_base[f]` is the prefix sum of `e_shnum` over the live
 relocatable objects in `FileId` order (`spec/model.md` §2.2): an exclusive
@@ -1742,8 +1753,8 @@ section-symbol signatures (E18), lld's stale `--fortran-common` help text
 7. **`-y` output** (M4): standard output text, not a diagnostic;
    needs a decision in `spec/diag.md` (an informational channel).
 8. **Did-you-mean hints** (§5.3): propose a small WP after M1.
-9. **`SHT_AARCH64_ATTRIBUTES`**: refused until a compiler on the matrix
-   emits it; then `spec/a64.md` defines the merge.
+9. **`SHT_AARCH64_ATTRIBUTES`**: closed (`spec/layout.md` L-35, §20.7;
+   applied in WP-027d): consumed, not merged.
 
 ## 18. Requested changes to other specs and tests
 

@@ -22,9 +22,23 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 name = "mortar"
 version = "0.0.0"
 dependencies = [
+ "mortar_a64",
+ "mortar_arch",
  "mortar_cli",
+ "mortar_core",
  "mortar_diag",
+ "mortar_elf",
+ "mortar_image",
+ "mortar_input",
+ "mortar_layout",
+ "mortar_live",
+ "mortar_merge",
+ "mortar_plumb",
+ "mortar_resolve",
+ "mortar_scan",
+ "mortar_synth",
  "mortar_testutil",
+ "mortar_x64",
 ]
 
 [[package]]
@@ -96,8 +110,7 @@ dependencies = [
  "mortar_digest",
  "mortar_elf",
  "mortar_input",
- "mortar_layout",
- "mortar_resolve",
+ "mortar_merge",
  "mortar_synth",
  "mortar_testutil",
 ]
@@ -214,6 +227,17 @@ name = "mortar_testutil"
 version = "0.0.0"
 
 [[package]]
+name = "mortar_x64"
+version = "0.0.0"
+dependencies = [
+ "mortar_arch",
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_testutil",
+]
+
+[[package]]
 name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -252,6 +276,7 @@ dependencies = [
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "mortar_elf",
  "mortar_plumb",
  "mortar_testutil",
  "signal-hook",

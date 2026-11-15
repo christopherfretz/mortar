@@ -3,7 +3,6 @@
 # extracted: no duplicate definition (GNU ld manual, "Command-line
 # Options", -l).
 #@ spec: resolve.md §4.1
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 main.c -o main.o
 cc -O1 one.c -o one.o

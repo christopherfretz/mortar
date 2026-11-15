@@ -33,6 +33,7 @@ use crate::mention::{
 use crate::options::{Entry, Options};
 use crate::problem::{ComdatMismatch, DefPlace, DiagKey, Problem, What};
 use crate::sections::{self, Note, SectionRefusal};
+use crate::steps::Steps;
 use crate::view::{FileKind, Mention, View, entry_word, word_entry};
 
 /// The definition of a key (§3.2), stage A's form of `def`.
@@ -208,8 +209,19 @@ fn effect(m: &Mention, class: Class, dropped: bool, redirect: &[SymbolId]) -> Ef
 }
 
 /// Stage A: resolution over `view` with `opts` (§1.1).
-#[allow(clippy::too_many_lines, reason = "the steps of the crate docs, in order")]
 pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
+    resolve_steps(view, opts, pool, &mut Steps::default())
+}
+
+/// [`resolve`], recording where the time went.
+#[allow(clippy::too_many_lines, reason = "the steps of the crate docs, in order")]
+pub fn resolve_steps<V: View>(
+    view: &V,
+    opts: &Options,
+    pool: &Pool,
+    steps: &mut Steps,
+) -> Resolved {
+    steps.restart();
     let keys = view.keys() as usize;
     let kinds = kinds(view);
     let redirect = opts.redirect(view.keys());
@@ -223,14 +235,18 @@ pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
             });
         }
     }
+    steps.step("resolve.kinds");
     let targets = targets_with(view, &kinds, pool);
+    steps.step("resolve.targets");
     let Closure { live: file_live, rounds } =
         closure(view, &kinds, &targets, &redirect, &roots, pool);
+    steps.step("resolve.closure");
     let live_objects: Vec<FileId> = (0..kinds.len())
         .filter(|&f| file_live[f].is_live() && kinds[f].is_object())
         .map(|f| FileId(f as u32))
         .collect();
     let keepers = keepers(view, &live_objects, pool);
+    steps.step("resolve.keepers");
 
     // section_base (§10): an exclusive prefix sum over the live objects.
     let mut section_base = Vec::with_capacity(kinds.len());
@@ -252,6 +268,7 @@ pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
         comdat: OptId::NONE,
     };
     let mut sections = vec![blank; next as usize];
+    steps.step("resolve.section_base");
 
     let ctx = Ctx {
         view,
@@ -283,6 +300,7 @@ pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
     problems.append(&mut found.problems);
     found.retained.sort_unstable();
     found.gnu_warning_syms.sort_unstable();
+    steps.step("resolve.d1");
 
     // def (§3.2) and the merged properties (§3.5, §3.6).
     let mut def = vec![Def::Undefined { weak: false }; keys];
@@ -303,6 +321,7 @@ pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
             (SymbolId(k as u32), shape)
         })
         .collect();
+    steps.step("resolve.def");
 
     // The linker's own symbols (§8) for referenced keys nothing defines,
     // and the forced names an object defines (§8.2).
@@ -327,6 +346,7 @@ pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
         }
     }
 
+    steps.step("resolve.linker");
     // The rules over several mentions of a key (D2).
     let mut clash = vec![false; keys];
     let mut comdat_mismatch = Vec::new();
@@ -345,6 +365,7 @@ pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
         );
     }
 
+    steps.step("resolve.d2");
     // Roots that must be defined (§4.2, §5.5).
     for named in &opts.require_defined {
         if named.key.get().is_none_or(|k| def[k.0 as usize].is_undefined()) {
@@ -368,6 +389,7 @@ pub fn resolve<V: View>(view: &V, opts: &Options, pool: &Pool) -> Resolved {
     }
     problems.sort();
     problems.dedup();
+    steps.step("resolve.finish");
     Resolved {
         file_live,
         rounds,
@@ -539,7 +561,8 @@ fn section_rows<V: View>(
             Ok((kind, note)) => {
                 row.kind = kind;
                 let excluded = sections::excluded_reason(&s, note);
-                row.state = sections::state(kind, excluded, dropped, ctx.opts.strip_debug);
+                let strip = ctx.opts.strip_debug && sections::is_debug(&s);
+                row.state = sections::state(kind, excluded, dropped, strip);
                 match note {
                     Note::Retain if row.is_kept() => out.retained.push((file, SectionIndex(i))),
                     Note::GnuWarning if !dropped => out.problems.push(Problem {
@@ -562,6 +585,10 @@ fn section_rows<V: View>(
                 row.state = SectionState::Dropped(DropReason::Comdat);
             }
             Err(SectionRefusal::Zdebug) if ctx.opts.strip_debug => {
+                row.kind = SectionKind::Debug;
+                row.state = SectionState::Dropped(DropReason::Stripped);
+            }
+            Err(SectionRefusal::Compressed) if ctx.opts.strip_debug && sections::is_debug(&s) => {
                 row.kind = SectionKind::Debug;
                 row.state = SectionState::Dropped(DropReason::Stripped);
             }
@@ -595,6 +622,18 @@ fn section_rows<V: View>(
                     why: SectionRefusal::SecondReloc(s.info),
                 },
             });
+        }
+    }
+    // synth.md S-6: a `Merge` section that is not certain to merge safely
+    // is placed whole, as `Regular` (§10), so every later phase (layout's
+    // `place`, `addr_in`, the symbol stage) treats it as one piece.
+    for i in 1..n {
+        if rows[i as usize].kind != SectionKind::Merge {
+            continue;
+        }
+        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+        if sections::placed_whole(&s, rows[i as usize].reloc.0 != 0) {
+            rows[i as usize].kind = SectionKind::Regular;
         }
     }
     // A `SHF_LINK_ORDER` section outside the groups whose linked section

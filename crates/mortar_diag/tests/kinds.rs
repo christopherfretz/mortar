@@ -305,6 +305,22 @@ fn malformed_input() {
     );
 }
 
+// spec: diag.md §3.1 `cet-report` (spec/x64.md X-43, R-11): the severity
+// is the option's; one per (object, property)
+#[test]
+fn cet_report() {
+    let kind = Kind::CetReport { path: s("an.o"), property: s("IBT") };
+    assert_eq!(kind.id(), "cet-report");
+    assert_eq!(kind.symbol(), None);
+    assert_eq!(
+        Diagnostic::warning(kind.clone()).render(&Style::plain("ld")),
+        "ld: warning: an.o: missing IBT property (-z cet-report)\n"
+    );
+    assert_eq!(text(kind), "ld: error: an.o: missing IBT property (-z cet-report)\n");
+    let shstk = Kind::CetReport { path: s("libx.a(y.o)"), property: s("SHSTK") };
+    assert_eq!(text(shstk), "ld: error: libx.a(y.o): missing SHSTK property (-z cet-report)\n");
+}
+
 // spec: diag.md §3.1 `unknown-file-type`, §3.2 (emitted with a place)
 // spec: diag.md §3.1 `unknown-property` (synth.md S-95, R-D2)
 #[test]
@@ -644,8 +660,9 @@ fn relocation_misaligned() {
     );
 }
 
-// spec: diag.md §3.1 `relocation-out-of-range` (value and bounds in
-// decimal, negative ones signed; the target's name through the hook)
+// spec: diag.md §3.1 `relocation-out-of-range` (GNU ld's phrase, then
+// lld's value and bounds in decimal, negative ones signed; the target's
+// name through the hook)
 #[test]
 fn relocation_out_of_range() {
     let kind = Kind::RelocationOutOfRange {
@@ -658,14 +675,14 @@ fn relocation_out_of_range() {
     assert_eq!(kind.id(), "relocation-out-of-range");
     assert_eq!(
         text(kind.clone()),
-        "ld: error: relocation R_AARCH64_CONDBR19 out of range: -1048580 is not in [-1048576, \
-         1048575]; references 'far_away'\n"
+        "ld: error: relocation truncated to fit: R_AARCH64_CONDBR19 against 'far_away': \
+         -1048580 is not in [-1048576, 1048575]\n"
     );
     let diag = Diagnostic::error(kind).at(Place::section(FileRef::new("b.o"), ".text", 0x20));
     assert_eq!(
         diag.render(&Style::plain("ld")),
-        "ld: error: b.o:(.text+0x20): relocation R_AARCH64_CONDBR19 out of range: -1048580 is \
-         not in [-1048576, 1048575]; references 'far_away'\n"
+        "ld: error: b.o:(.text+0x20): relocation truncated to fit: R_AARCH64_CONDBR19 against \
+         'far_away': -1048580 is not in [-1048576, 1048575]\n"
     );
     // A section symbol's target: the section and offset (spec/arch.md §7).
     let section = Kind::RelocationOutOfRange {
@@ -677,8 +694,8 @@ fn relocation_out_of_range() {
     };
     assert_eq!(
         text(section),
-        "ld: error: relocation R_X86_64_PC32 out of range: 2147483648 is not in [-2147483648, \
-         2147483647]; references '.rodata+0x40'\n"
+        "ld: error: relocation truncated to fit: R_X86_64_PC32 against '.rodata+0x40': \
+         2147483648 is not in [-2147483648, 2147483647]\n"
     );
 }
 
@@ -748,7 +765,7 @@ fn internal_error() {
 fn wording_policy_phrases() {
     let at =
         |kind: Kind| Diagnostic::error(kind).at(Place::file("f.o")).render(&Style::plain("ld"));
-    let rows: [(&str, Vec<String>); 9] = [
+    let rows: [(&str, Vec<String>); 10] = [
         ("undefined reference to `x'", vec![at(Kind::UndefinedSymbol { name: s("x") })]),
         ("multiple definition of `x'", vec![at(Kind::DuplicateSymbol { name: s("x") })]),
         ("cannot find -lm", vec![at(Kind::LibraryNotFound { name: s("m") })]),
@@ -782,6 +799,16 @@ fn wording_policy_phrases() {
             vec![at(Kind::NeededNotFound { name: s("libz.so.1"), needed_by: s("l.so") })],
         ),
         ("cannot find entry symbol x", vec![at(Kind::EntryNotFound { name: s("x") })]),
+        (
+            "relocation truncated to fit: R_X86_64_PC32 against",
+            vec![at(Kind::RelocationOutOfRange {
+                r_type: s("R_X86_64_PC32"),
+                value: 1 << 32,
+                min: -(1 << 31),
+                max: (1 << 31) - 1,
+                name: s("far"),
+            })],
+        ),
     ];
     for (phrase, messages) in rows {
         for message in messages {

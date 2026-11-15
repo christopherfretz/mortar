@@ -53,6 +53,28 @@ fn statuses() {
     assert_eq!(
         supported,
         [
+            // The whole pipeline writes the output (WP-027c).
+            "-o",
+            // The front of the pipeline honors these (WP-027a).
+            "-m",
+            "-e",
+            "-s",
+            "-S",
+            "-x",
+            "-X",
+            "--discard-none",
+            "--no-build-id",
+            "--eh-frame-hdr",
+            "--no-eh-frame-hdr",
+            "--no-gc-sections",
+            "-l",
+            "-(",
+            "-)",
+            "-Bstatic",
+            "--warn-backrefs",
+            "--no-warn-backrefs",
+            "-L",
+            "--sysroot",
             "--error-limit",
             "--fatal-warnings",
             "--no-fatal-warnings",
@@ -63,6 +85,19 @@ fn statuses() {
             "-v",
             "-V",
             "--help",
+            "-Map",
+            "-M",
+            "--threads",
+            "--time-phases",
+            "-z relro",
+            "-z norelro",
+            "-z execstack",
+            "-z noexecstack",
+            "-z separate-code",
+            "-z noseparate-code",
+            "-z max-page-size",
+            "-z memory-seal",
+            "-z nomemory-seal",
         ]
     );
     for row in rows() {
@@ -73,8 +108,13 @@ fn statuses() {
         if !matches!(row.arg, Arg::None) {
             assert!(!row.meta.is_empty(), "{} names its value", row.name());
         }
-        // A row of mortar's own is reserved, so refused.
-        if !row.linkers.gnu() && !row.linkers.lld() && !row.linkers.mold() {
+        // A row of mortar's own is reserved, so refused; `--time-phases`
+        // is mortar's own and implemented (image.md §11).
+        if !row.linkers.gnu()
+            && !row.linkers.lld()
+            && !row.linkers.mold()
+            && row.name() != "--time-phases"
+        {
             assert_eq!(row.status, Status::Refused, "{}", row.name());
         }
         // An option of some targets only is GNU ld's.

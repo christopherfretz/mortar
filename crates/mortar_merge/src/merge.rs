@@ -4,33 +4,37 @@
 //! 1. **cut**: per section in parallel, the piece offsets ([`cut::cut`])
 //!    and one 64-bit hash per piece over its bytes, its output section,
 //!    merge class and alignment;
-//! 2. **partition**: the sections are cut into contiguous ranges; per
-//!    range, each occurrence `(occurrence, row)` is appended to the bucket
-//!    of its shard (the hash's high bits). A shard's buckets taken in range
-//!    order list its occurrences in key order `(FileId, sh_index, piece)`,
-//!    because the rows are in `SectionId` order and an occurrence's number
-//!    is its position in the `Split` piece columns;
+//! 2. **partition**: the sections are cut into contiguous ranges; a
+//!    counting sort by (shard, range) lays every occurrence out in one
+//!    column, shard after shard (the shard: the hash's high bits), each
+//!    element the occurrence and the low half of its hash. A shard's part
+//!    of the column lists its occurrences in key order `(FileId,
+//!    sh_index, piece)`, because the rows are in `SectionId` order and an
+//!    occurrence's number is its position in the `Split` piece columns;
 //! 3. **intern**: per shard, on one thread and with no lock, the
 //!    occurrences in key order are looked up by `(hash, bytes, class)` in
-//!    the shard's own open-addressing table; a miss makes the occurrence
+//!    the shard's own open-addressing table (a slot: the hash's low half
+//!    and the entry; an entry: its row, offset and length, so a candidate
+//!    is compared without other lookups); a miss makes the occurrence
 //!    the representative of a new entry, and it is the first occurrence
-//!    (S-14) because the walk is in key order. Each occurrence records its
-//!    entry, and a representative sets its bit in one bit set over all
-//!    occurrences (an atomic `or`, `spec/model.md` §6 rule 2);
+//!    (S-14) because the walk is in key order. Each column element is
+//!    replaced by its entry, and a representative sets its bit in one bit
+//!    set over all occurrences (an atomic `or`, `spec/model.md` §6 rule 2);
 //! 4. **number**: a representative's `FragId` is the number of
 //!    representatives before it in key order (S-15): the popcount of the
 //!    bit set below it, from a prefix sum of the per-word popcounts. Each
-//!    shard numbers its own entries;
-//! 5. **resolve**: every occurrence reads its entry's `FragId` into the
-//!    `Split` row, and the `frags` rows are collected from the bit set in
-//!    occurrence order, which is `FragId` order.
+//!    shard replaces its column's entries by their `FragId`s;
+//! 5. **resolve**: per range, every occurrence in key order takes the next
+//!    element of its (range, shard) bucket into the `Split` row, and the
+//!    `frags` rows are collected from the bit set in occurrence order,
+//!    which is `FragId` order.
 //!
 //! The ranges and the shard count depend on the thread count; nothing
 //! observable does (`spec/model.md` §6 rules 5 and 6): hashes only
 //! propose candidates, bytes decide, and every number is a function of
 //! key order.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use mortar_core::hash::{combine, hash_bytes, hash_u64};
 use mortar_core::par::{Pool, split_offsets};
@@ -132,30 +136,52 @@ fn shard_bits(threads: usize) -> u32 {
     (threads.saturating_mul(8)).clamp(16, 1024).next_power_of_two().trailing_zeros()
 }
 
+/// A representative piece as its shard's table keeps it: its row and
+/// bytes (offset and length in the row's section), so that comparing a
+/// candidate reads the table, this, and the bytes.
+#[derive(Debug, Clone, Copy)]
+struct Rep {
+    row: u32,
+    off: u32,
+    len: u32,
+}
+
+/// The bytes of a representative piece of a section holding `bytes`.
+fn piece<'a>(bytes: &'a [u8], rep: &Rep) -> &'a [u8] {
+    let off = rep.off as usize;
+    &bytes[off..off + rep.len as usize]
+}
+
 /// One shard's table: open addressing over the entries' hashes, probed
-/// linearly from the hash's low bits (the high bits chose the shard).
+/// linearly from the hash's low bits (the high bits chose the shard). A
+/// slot holds the low 32 bits of its entry's hash (the probe start, and a
+/// tag that rules out almost every other entry before its bytes are
+/// read) and the entry + 1; 0 is empty.
 struct Table {
-    /// Entry + 1; 0 is empty.
-    slots: Vec<u32>,
-    hashes: Vec<u64>,
+    slots: Vec<u64>,
+    reps: Vec<Rep>,
 }
 
 impl Table {
-    fn new() -> Self {
-        Self { slots: vec![0; 64], hashes: Vec::new() }
+    /// A table for a shard of `occurrences` pieces: sized for one in
+    /// sixteen being distinct (it grows past that), at least 64 slots.
+    fn with_occurrences(occurrences: usize) -> Self {
+        let slots = (occurrences / 8).next_power_of_two().max(64);
+        Self { slots: vec![0; slots], reps: Vec::new() }
     }
 
     /// The entry with hash `h` that `same` accepts, or the empty slot to
     /// put a new one in.
-    fn find(&self, h: u64, mut same: impl FnMut(u32) -> bool) -> Result<u32, usize> {
+    fn find(&self, h: u64, mut same: impl FnMut(&Rep) -> bool) -> Result<u32, usize> {
         let mask = self.slots.len() - 1;
+        let tag = h & 0xffff_ffff;
         let mut at = h as usize & mask;
         loop {
             match self.slots[at] {
                 0 => return Err(at),
                 s => {
-                    let e = s - 1;
-                    if self.hashes[e as usize] == h && same(e) {
+                    let e = (s & 0xffff_ffff) as u32 - 1;
+                    if s >> 32 == tag && same(&self.reps[e as usize]) {
                         return Ok(e);
                     }
                 }
@@ -164,25 +190,49 @@ impl Table {
         }
     }
 
-    /// Adds entry `hashes.len()` at `slot` (from [`Table::find`]).
-    fn insert(&mut self, slot: usize, h: u64) -> u32 {
-        let e = self.hashes.len() as u32;
-        self.hashes.push(h);
-        self.slots[slot] = e + 1;
-        if self.hashes.len() * 2 > self.slots.len() {
-            let mut slots = vec![0u32; self.slots.len() * 2];
+    /// Adds entry `reps.len()` at `slot` (from [`Table::find`]).
+    fn insert(&mut self, slot: usize, h: u64, rep: Rep) -> u32 {
+        let e = self.reps.len() as u32;
+        self.reps.push(rep);
+        self.slots[slot] = (h << 32) | u64::from(e + 1);
+        if self.reps.len() * 2 > self.slots.len() {
+            let mut slots = vec![0u64; self.slots.len() * 2];
             let mask = slots.len() - 1;
-            for (i, &h) in self.hashes.iter().enumerate() {
-                let mut at = h as usize & mask;
+            for &s in &self.slots {
+                if s == 0 {
+                    continue;
+                }
+                let mut at = (s >> 32) as usize & mask;
                 while slots[at] != 0 {
                     at = (at + 1) & mask;
                 }
-                slots[at] = i as u32 + 1;
+                slots[at] = s;
             }
             self.slots = slots;
         }
         e
     }
+}
+
+/// The row of occurrence `occ`, searching forward from row `from` (whose
+/// first occurrence is at or before `occ`): `starts` is the rows' prefix
+/// sum. A shard walks its occurrences in key order, so its row only moves
+/// forward; a far move is a galloping search.
+fn row_of(starts: &[usize], from: usize, occ: usize) -> usize {
+    if occ < starts[from + 1] {
+        return from;
+    }
+    let mut lo = from + 1;
+    let mut step = 1;
+    let last = starts.len() - 2;
+    let mut hi = (lo + step).min(last);
+    while hi < last && starts[hi + 1] <= occ {
+        lo = hi;
+        step *= 2;
+        hi = (lo + step).min(last);
+    }
+    // The row is in lo..=hi: the last row starting at or before occ.
+    lo + starts[lo + 1..=hi + 1].partition_point(|&s| s <= occ)
 }
 
 /// A section's piece offsets and piece hashes (step 1).
@@ -198,6 +248,7 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
         sections.windows(2).all(|w| w[0].section < w[1].section),
         "merge: sections not in SectionId order"
     );
+    let mut steps = mortar_core::wp032b_steps::Steps::new("merge");
     // 1. cut and hash.
     let cuts: Vec<Result<Cut, Problem>> = pool.map(sections.len(), |i| {
         let s = &sections[i];
@@ -216,6 +267,10 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
             .collect();
         Ok((offs, hashes))
     });
+    if steps.on() {
+        let bytes: usize = sections.iter().map(|s| s.bytes.len()).sum();
+        steps.step("cut+hash", bytes as u64, "byte");
+    }
     let mut problems: Vec<Problem> =
         cuts.iter().filter_map(|c| c.as_ref().err().cloned()).collect();
     if !problems.is_empty() {
@@ -263,78 +318,136 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
         out.copy_from_slice(&offs[r]);
     });
     drop(offs);
+    steps.step("rows", total as u64, "piece");
     let bytes_of = |row: usize, occ: usize| -> &[u8] {
         let b = sections[rows_in[row]].bytes;
         let end = if occ + 1 < starts[row + 1] { piece_off[occ + 1] as usize } else { b.len() };
         &b[piece_off[occ] as usize..end]
     };
 
-    // 2. partition.
+    // 2. partition: a counting sort of the occurrences by (shard, range)
+    // into one column, shard-major, each shard's occurrences in key order.
+    // An element is the occurrence and its hash's low half (all the
+    // shard's table uses: the high bits chose the shard).
     let bits = shard_bits(pool.threads());
     let nshards = 1usize << bits;
     let shard = |h: u64| (h >> (64 - bits)) as usize;
     let nranges = nrows.min(pool.threads() * 8).max(1);
     let per = nrows.div_ceil(nranges).max(1);
-    let buckets: Vec<Vec<Vec<(u32, u32)>>> = pool.map(nranges, |c| {
-        let mut b: Vec<Vec<(u32, u32)>> = (0..nshards).map(|_| Vec::new()).collect();
-        for row in c * per..((c + 1) * per).min(nrows) {
-            for (j, &h) in hashes[row].iter().enumerate() {
-                b[shard(h)].push(((starts[row] + j) as u32, row as u32));
+    let range_rows = |c: usize| (c * per).min(nrows)..((c + 1) * per).min(nrows);
+    // The hashes of range c's occurrences, in key order.
+    let range_hashes = |c: usize| range_rows(c).flat_map(|r| hashes[r].iter().copied());
+    let counts: Vec<Vec<u32>> = pool.map(nranges, |c| {
+        let mut n = vec![0u32; nshards];
+        for h in range_hashes(c) {
+            n[shard(h)] += 1;
+        }
+        n
+    });
+    // at[c][s]: where bucket (c, s) starts in the column; base[s]: where
+    // shard s does.
+    let mut at = vec![vec![0usize; nshards]; nranges];
+    let mut base = Vec::with_capacity(nshards + 1);
+    let mut next = 0usize;
+    for s in 0..nshards {
+        base.push(next);
+        for c in 0..nranges {
+            at[c][s] = next;
+            next += counts[c][s] as usize;
+        }
+    }
+    base.push(next);
+    drop(counts);
+    let mut column = vec![0u64; total];
+    {
+        // The buckets in column order (shard, range), regrouped by range.
+        let mut bounds: Vec<usize> = Vec::with_capacity(nshards * nranges + 1);
+        for s in 0..nshards {
+            for row in &at {
+                bounds.push(row[s]);
             }
         }
-        b
-    });
+        bounds.push(total);
+        let mut by_range: Vec<Vec<&mut [u64]>> = (0..nranges).map(|_| Vec::new()).collect();
+        for (k, part) in split_offsets(&mut column, &bounds).into_iter().enumerate() {
+            by_range[k % nranges].push(part);
+        }
+        pool.for_each_part(by_range, |c, mut parts| {
+            let mut fill = vec![0usize; nshards];
+            let first = starts[range_rows(c).start];
+            for (o, h) in (first..).zip(range_hashes(c)) {
+                let s = shard(h);
+                parts[s][fill[s]] = (o as u64) << 32 | (h & 0xffff_ffff);
+                fill[s] += 1;
+            }
+        });
+    }
+    steps.step("partition", total as u64, "piece");
 
-    // 3. intern.
-    let entry_of: Vec<AtomicU32> = (0..total).map(|_| AtomicU32::new(0)).collect();
+    // 3. intern: per shard, its occurrences in key order; each column
+    // element is replaced by the occurrence's entry.
     let is_rep: Vec<AtomicU64> = (0..total.div_ceil(64)).map(|_| AtomicU64::new(0)).collect();
-    let reps: Vec<Vec<u32>> = pool.map(nshards, |s| {
-        let mut table = Table::new();
-        let mut reps: Vec<(u32, u32)> = Vec::new();
-        for range in &buckets {
-            for &(occ, row) in &range[s] {
-                let (o, r) = (occ as usize, row as usize);
-                let h = hashes[r][o - starts[r]];
-                let bytes = bytes_of(r, o);
-                let found = table.find(h, |e| {
-                    let (o2, r2) = reps[e as usize];
-                    meta[r2 as usize] == meta[r] && bytes_of(r2 as usize, o2 as usize) == bytes
-                });
-                let e = match found {
-                    Ok(e) => e,
-                    Err(slot) => {
-                        reps.push((occ, row));
-                        is_rep[o / 64].fetch_or(1 << (o % 64), Ordering::Relaxed);
-                        table.insert(slot, h)
-                    }
-                };
-                entry_of[o].store(e, Ordering::Relaxed);
-            }
+    let mut reps: Vec<Vec<u32>> = (0..nshards).map(|_| Vec::new()).collect();
+    let parts = split_offsets(&mut column, &base).into_iter().zip(reps.iter_mut());
+    pool.for_each_part(parts, |_, (elems, reps)| {
+        let mut table = Table::with_occurrences(elems.len());
+        let mut row = 0usize;
+        for elem in elems.iter_mut() {
+            let (o, h) = ((*elem >> 32) as usize, *elem & 0xffff_ffff);
+            row = row_of(&starts, row, o);
+            let bytes = bytes_of(row, o);
+            let found = table.find(h, |rep| {
+                rep.len as usize == bytes.len()
+                    && meta[rep.row as usize] == meta[row]
+                    && piece(sections[rows_in[rep.row as usize]].bytes, rep) == bytes
+            });
+            let e = match found {
+                Ok(e) => e,
+                Err(slot) => {
+                    reps.push(o as u32);
+                    is_rep[o / 64].fetch_or(1 << (o % 64), Ordering::Relaxed);
+                    let rep = Rep { row: row as u32, off: piece_off[o], len: bytes.len() as u32 };
+                    table.insert(slot, h, rep)
+                }
+            };
+            *elem = u64::from(e);
         }
-        reps.into_iter().map(|(occ, _)| occ).collect()
     });
-    drop(buckets);
+    steps.step("intern", total as u64, "piece");
 
-    // 4. number.
+    // 4. number: each shard's entries become their fragments, in place.
     let words: Vec<u64> = is_rep.into_iter().map(AtomicU64::into_inner).collect();
     let mut below: Vec<u32> = words.iter().map(|w| w.count_ones()).collect();
     let nfrags = pool.prefix_sum(&mut below);
     let rank = |occ: usize| {
         let (w, b) = (occ / 64, occ % 64);
-        FragId(below[w] + (words[w] & ((1u64 << b) - 1)).count_ones())
+        below[w] + (words[w] & ((1u64 << b) - 1)).count_ones()
     };
-    let shard_frag: Vec<Vec<FragId>> =
-        pool.map(nshards, |s| reps[s].iter().map(|&occ| rank(occ as usize)).collect());
-    drop(reps);
-
-    // 5. resolve.
-    let mut piece_frag = vec![FragId(0); total];
-    pool.for_each_part(split_offsets(&mut piece_frag, &starts), |r, out| {
-        for (j, slot) in out.iter_mut().enumerate() {
-            let e = entry_of[starts[r] + j].load(Ordering::Relaxed);
-            *slot = shard_frag[shard(hashes[r][j])][e as usize];
+    let parts = split_offsets(&mut column, &base).into_iter().zip(reps.iter_mut());
+    pool.for_each_part(parts, |_, (elems, reps)| {
+        let frag: Vec<u32> = reps.iter().map(|&occ| rank(occ as usize)).collect();
+        *reps = Vec::new();
+        for e in elems.iter_mut() {
+            *e = u64::from(frag[*e as usize]);
         }
     });
+    drop(reps);
+    steps.step("number", total as u64, "piece");
+
+    // 5. resolve: per range, the occurrences in key order, each taking the
+    // next fragment of its bucket (range, shard).
+    let mut piece_frag = vec![FragId(0); total];
+    let range_starts: Vec<usize> = (0..=nranges).map(|c| starts[(c * per).min(nrows)]).collect();
+    pool.for_each_part(split_offsets(&mut piece_frag, &range_starts), |c, out| {
+        let mut cursor = at[c].clone();
+        for (slot, h) in out.iter_mut().zip(range_hashes(c)) {
+            let s = shard(h);
+            *slot = FragId(column[cursor[s]] as u32);
+            cursor[s] += 1;
+        }
+    });
+    drop(column);
+    drop(hashes);
     let frags = pool.map_collect(nrows, |r, out| {
         let s = &sections[rows_in[r]];
         for occ in starts[r]..starts[r + 1] {
@@ -349,6 +462,7 @@ pub fn merge(pool: &Pool, sections: &[MergeIn<'_>]) -> Result<Merged, Vec<Proble
         }
     });
     debug_assert_eq!(frags.items.len(), nfrags as usize, "one row per representative");
+    steps.step("resolve", u64::from(nfrags), "frag");
     let frags = Column::from_vec(frags.items)
         .unwrap_or_else(|_| unreachable!("fragments are at most the pieces, which fit u32"));
     Ok(Merged {

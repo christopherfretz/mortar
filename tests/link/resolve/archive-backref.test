@@ -7,7 +7,6 @@
 # mold (resolve.md §4.3); GNU ld rejects it. Under --warn-backrefs mortar
 # says what GNU ld would do.
 #@ spec: resolve.md §4.3
-#@ xfail(mortar): no linking yet (M1)
 
 cc -O1 main.c -o main.o
 cc -O1 helper.c -o helper.o

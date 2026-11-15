@@ -213,6 +213,8 @@ impl<'a> Image<'a> {
         }
         let b = self.bytes(addr, w)?;
         Some(match width {
+            0 => 0,
+            1 => u64::from(b[0]),
             2 => u64::from(u16_at(b, 0)),
             4 => u64::from(u32_at(b, 0)),
             8 => u64_at(b, 0),

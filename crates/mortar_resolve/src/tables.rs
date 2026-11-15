@@ -8,8 +8,9 @@
 //! phase 70 from the verdict this module writes into `SymProps`
 //! (`spec/resolve.md` §5.1, §5.2).
 
-use mortar_core::identity::{Lookup, comdat_lookup, symbol_lookup};
+use mortar_core::hash::hash_bytes;
 use mortar_core::inputs::{DirectiveKind, FileKind as InputKind, InputFlags, Inputs, Reader};
+use mortar_core::intern::{InternKey, SymName};
 use mortar_core::par::Pool;
 use mortar_core::plan::{OutputKind, Plan, Strip, SymbolRole, UnresolvedSymbols};
 use mortar_core::resolution::{
@@ -20,10 +21,12 @@ use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass, Relation}
 use mortar_elf::consts::{STB_GLOBAL, STB_WEAK, STT_SECTION};
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 
+use crate::index::HashIndex;
 use crate::options::{Entry, Named, Options, Output};
 use crate::problem::{DefPlace, MalformedSymbol, Problem, What};
-use crate::resolve::{Def, Resolved, flags, resolve};
+use crate::resolve::{Def, Resolved, flags, resolve_steps};
 use crate::sections::SectionRefusal;
+use crate::steps::Steps;
 use crate::verdict::{SymtabEntry, Unresolved, Verdict, symtab_entry, verdict};
 use crate::view::{FileInfo, FileKind, Groups, Mention, SectionInfo, View};
 
@@ -68,7 +71,7 @@ pub struct InputsView<'a, 's> {
     /// Per file, its rows of `groups`: `groups[group_at[f]..group_at[f + 1]]`.
     group_at: Vec<u32>,
     also: Vec<(FileId, u32, SymbolId)>,
-    symbols: Lookup<SymbolId>,
+    symbols: HashIndex,
     faults: Vec<Fault>,
 }
 
@@ -77,11 +80,30 @@ impl<'a, 's> InputsView<'a, 's> {
     /// symbol table and groups.
     #[must_use]
     pub fn new(inputs: &'a Inputs<'s>, pool: &Pool) -> Self {
-        let symbols = symbol_lookup(&inputs.symbols);
-        let comdats = comdat_lookup(&inputs.comdats);
+        Self::new_steps(inputs, pool, &mut Steps::default())
+    }
+
+    /// [`InputsView::new`], recording where the time went.
+    pub fn new_steps(inputs: &'a Inputs<'s>, pool: &Pool, steps: &mut Steps) -> Self {
+        steps.restart();
+        // The keys' hashes are the input phase's (`SymbolKey::hash`).
+        let hashes: Vec<u64> = inputs.symbols.as_slice().iter().map(|k| k.hash).collect();
+        debug_assert!(
+            inputs.symbols.as_slice().iter().all(|k| k.hash == sym_hash(k.name, k.version)),
+            "a symbol key's hash is not its name's"
+        );
+        let symbols = HashIndex::new(&hashes);
+        drop(hashes);
+        steps.step("view.symbol_lookup");
+        let names = inputs.comdats.as_slice();
+        let comdat_hashes = pool.map(names.len(), |c| hash_bytes(names[c].name));
+        let comdats = HashIndex::new(&comdat_hashes);
+        drop(comdat_hashes);
+        steps.step("view.comdat_lookup");
         let n = inputs.files.len() as usize;
         let per: Vec<PerFile<'s>> =
             pool.map(n, |f| per_file(inputs, &symbols, &comdats, FileId(f as u32)));
+        steps.step("view.per_file");
         let sources = sources(inputs);
         let mut info = Vec::with_capacity(n);
         let mut symtab = Vec::with_capacity(n);
@@ -109,6 +131,7 @@ impl<'a, 's> InputsView<'a, 's> {
             faults.extend(p.faults.into_iter().map(|what| Fault { file: id, what }));
         }
         group_at.push(groups.len() as u32);
+        steps.step("view.assemble");
         Self { inputs, info, symtab, groups, group_members, group_at, also, symbols, faults }
     }
 
@@ -136,11 +159,32 @@ impl<'a, 's> InputsView<'a, 's> {
 
 fn lookup(
     symbols: &mortar_core::Column<SymbolId, mortar_core::inputs::SymbolKey<'_>>,
-    lookup: &Lookup<SymbolId>,
+    index: &HashIndex,
     name: &[u8],
     version: Option<&[u8]>,
 ) -> Option<SymbolId> {
-    lookup.find(&(name, version), |s| (symbols[s].name, symbols[s].version))
+    let rows = symbols.as_slice();
+    index
+        .find(sym_hash(name, version), |r| {
+            let k = &rows[r as usize];
+            k.name == name && k.version == version
+        })
+        .map(SymbolId)
+}
+
+/// The hash of a symbol key (`spec/model.md` §9): the interner's.
+fn sym_hash(name: &[u8], version: Option<&[u8]>) -> u64 {
+    SymName { name, version }.hash()
+}
+
+/// The row of the COMDAT signature `name`.
+fn comdat_of(
+    comdats: &mortar_core::Column<ComdatId, mortar_core::inputs::Comdat<'_>>,
+    index: &HashIndex,
+    name: &[u8],
+) -> Option<ComdatId> {
+    let rows = comdats.as_slice();
+    index.find(hash_bytes(name), |r| rows[r as usize].name == name).map(ComdatId)
 }
 
 /// The view's file kind (§4.2).
@@ -181,8 +225,8 @@ fn sources(inputs: &Inputs<'_>) -> Vec<u32> {
 
 fn per_file<'s>(
     inputs: &Inputs<'s>,
-    symbols: &Lookup<SymbolId>,
-    comdats: &Lookup<ComdatId>,
+    symbols: &HashIndex,
+    comdats: &HashIndex,
     id: FileId,
 ) -> PerFile<'s> {
     let mut out = PerFile::default();
@@ -199,9 +243,18 @@ fn per_file<'s>(
     let keys = inputs.sym_map_of(id);
     if let Some(t) = symtab {
         if t.globals().len() == keys.len() {
+            let strings = t.strings().bytes();
             for ((index, sym), &key) in t.globals().zip(keys) {
                 if let Err(e) = t.section_of(index, &sym) {
                     out.faults.push(format!("symbol {index}: {e}"));
+                }
+                // The key's name is the entry's name up to its first `@`
+                // (the input phase read every name of this table): only an
+                // entry whose next two bytes are `@@` needs its whole name.
+                let base = inputs.symbols[key].name;
+                let after = (sym.st_name as usize).saturating_add(base.len());
+                if strings.get(after..after.saturating_add(2)) != Some(b"@@".as_slice()) {
+                    continue;
                 }
                 let name = match t.name(&sym) {
                     Ok(name) => name,
@@ -210,7 +263,6 @@ fn per_file<'s>(
                         continue;
                     }
                 };
-                let base = inputs.symbols[key].name;
                 // `foo@@V`: the key is `foo`; `also` is `foo@V`, if a row.
                 if name.len() > base.len() + 2 && name[base.len()..].starts_with(b"@@") {
                     let version = &name[base.len() + 2..];
@@ -245,7 +297,7 @@ fn per_file<'s>(
             out.faults.push(format!("section {i}: the group's signature cannot be read"));
             continue;
         };
-        let Some(signature) = comdats.find(&name, |c| inputs.comdats[c].name) else {
+        let Some(signature) = comdat_of(&inputs.comdats, comdats, name) else {
             out.faults.push(format!("section {i}: the signature was not interned"));
             continue;
         };
@@ -667,7 +719,13 @@ impl Ctx<'_, '_, '_> {
                 Diagnostic::refused(C::SymbolType, format!("{sym_type:#x}")).at(self.entry(*entry))
             }
             What::ReservedSection { entry, shndx } => {
-                let name = if *shndx == mortar_elf::consts::SHN_X86_64_LCOMMON {
+                // §3.3: the index is x86-64's large common only on x86-64
+                // (accepted there by `spec/x64.md` X-55, staged as this
+                // refusal until `.lbss` exists); elsewhere it is any
+                // reserved index (§2).
+                let name = if *shndx == mortar_elf::consts::SHN_X86_64_LCOMMON
+                    && self.inputs.target.machine == mortar_elf::Machine::X86_64
+                {
                     "SHN_X86_64_LCOMMON".to_owned()
                 } else {
                     format!("SHN {shndx:#x}")
@@ -693,13 +751,13 @@ impl Ctx<'_, '_, '_> {
                     SectionRefusal::LlvmType(t)
                     | SectionRefusal::DynamicType(t)
                     | SectionRefusal::Type(t) => (C::SectionType, format!("{t:#x}")),
-                    SectionRefusal::Aarch64Attributes => {
-                        (C::SectionType, "SHT_AARCH64_ATTRIBUTES".to_owned())
-                    }
                     SectionRefusal::Flags(f) => (C::SectionFlag, format!("{f:#x}")),
                     SectionRefusal::Linkonce => (C::Feature, ".gnu.linkonce sections".to_owned()),
                     SectionRefusal::Zdebug => {
                         (C::Feature, ".zdebug compressed debug sections".to_owned())
+                    }
+                    SectionRefusal::Compressed => {
+                        (C::Feature, "SHF_COMPRESSED input sections".to_owned())
                     }
                     SectionRefusal::SecondReloc(target) => (
                         C::Feature,
@@ -841,6 +899,8 @@ pub struct Outcome {
     /// `SHF_GNU_RETAIN` sections (§4.7).
     pub retained: Vec<(FileId, SectionIndex)>,
     pub entry: crate::EntryPoint,
+    /// Where the time went (`MORTAR_TIME_STEPS`; decides nothing).
+    pub steps: Steps,
 }
 
 /// Resolution of a link (`spec/resolve.md`): the view, the options, the
@@ -848,17 +908,22 @@ pub struct Outcome {
 /// `check_against`) and the diagnostics.
 #[must_use]
 pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome {
-    let view = InputsView::new(inputs, pool);
+    let mut steps = Steps::default();
+    let view = InputsView::new_steps(inputs, pool, &mut steps);
     let opts = options(plan, inputs, &view);
-    let r = resolve(&view, &opts, pool);
+    steps.step("options");
+    let r = resolve_steps(&view, &opts, pool, &mut steps);
     let mut diagnostics = diagnostics(inputs, &view, &opts, &r);
+    steps.step("diagnostics");
     let internal = |what: String| {
         (
             Key::new(u16::from(crate::problem::PHASE), u32::MAX, 0),
             Diagnostic::error(Kind::InternalError { what }),
         )
     };
-    let resolution = match resolution(&view, &r, &opts) {
+    let table = resolution(&view, &r, &opts);
+    steps.step("table");
+    let resolution = match table {
         Ok(t) => {
             if let Err(e) = t.check().and_then(|()| t.check_against(inputs)) {
                 diagnostics.push(internal(e.to_string()));
@@ -870,12 +935,24 @@ pub fn resolve_inputs(inputs: &Inputs<'_>, plan: &Plan, pool: &Pool) -> Outcome 
             Resolution::empty(inputs.files.len(), inputs.symbols.len(), inputs.comdats.len())
         }
     };
-    Outcome {
+    steps.step("check");
+    steps.count("files", u64::from(inputs.files.len()));
+    steps.count("live", r.file_live.iter().filter(|l| l.is_live()).count() as u64);
+    steps.count("keys", u64::from(inputs.symbols.len()));
+    steps.count("mentions", inputs.sym_map.len() as u64);
+    steps.count("comdats", u64::from(inputs.comdats.len()));
+    steps.count("sections", r.sections.len() as u64);
+    steps.count("rounds", u64::from(r.rounds));
+    drop(view);
+    let outcome = Outcome {
         resolution,
         diagnostics,
         comdat_mismatch: r.comdat_mismatch,
         gnu_warning_syms: r.gnu_warning_syms,
         retained: r.retained,
         entry: r.entry,
-    }
+        steps: Steps::default(),
+    };
+    steps.step("drop");
+    Outcome { steps, ..outcome }
 }

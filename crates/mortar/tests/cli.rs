@@ -9,7 +9,8 @@ use mortar_testutil::{DEFAULT_TIMEOUT, Scratch, run, run_with, tool};
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 
 // spec: diag.md §7 (a failed link: the report on standard error, nothing
-// on standard output, status 1, no output file), §4 (refused by name)
+// on standard output, status 1, no output file); input.md §3.1 rule 4 (a
+// missing file is `cannot-open-file` alone, not also `no-target`)
 #[test]
 fn a_failed_link_reports_on_stderr_and_leaves_no_output() {
     let scratch = Scratch::new("cli-fail");
@@ -19,9 +20,10 @@ fn a_failed_link_reports_on_stderr_and_leaves_no_output() {
     assert_eq!(outcome.stdout_text(), "");
     assert_eq!(
         outcome.stderr_text(),
-        "mortar: error: unsupported option: -o\n\
-         mortar: error: unsupported feature: linking\n\
-         >>> no link is implemented yet (docs/ROADMAP.md, milestone M1)\n"
+        format!(
+            "mortar: error: {a}: cannot open {a}: No such file or directory\n",
+            a = scratch.join("a.o").display()
+        )
     );
     assert!(!output.exists(), "a failed link leaves no output file");
 }
@@ -39,10 +41,7 @@ fn diagnostics_start_with_the_invoked_name() {
         assert_eq!(outcome.status.and_then(|s| s.code()), Some(1));
         assert_eq!(outcome.stdout_text(), "");
         let stderr = outcome.stderr_text();
-        assert!(
-            stderr.starts_with(&format!("{name}: error: unsupported feature: linking\n")),
-            "{stderr:?}"
-        );
+        assert!(stderr.starts_with(&format!("{name}: error: a.o: cannot open a.o")), "{stderr:?}");
     }
 }
 
@@ -93,25 +92,34 @@ fn version_through_a_symlink() {
     assert_eq!(outcome.stderr_text(), "");
 }
 
-// spec: cli.md §6, diag.md §7 (gcc runs mortar as its `ld`: the link
-// fails with status 1 and leaves no output)
+// spec: cli.md §6, image.md §5 (gcc runs mortar as its `ld`, as the
+// compiler driver of a build does: the link succeeds, the program runs)
 #[cfg(unix)]
 #[test]
-fn a_gcc_link_through_mortar_fails_cleanly() {
+fn a_gcc_link_through_mortar_runs() {
+    // AArch64 is the one target mortar writes in M1.
+    if std::env::consts::ARCH != "aarch64" {
+        return;
+    }
     let Some(gcc) = tool("gcc") else { return };
     let scratch = Scratch::new("cli-gcc");
     let bin = scratch.join("bin");
     std::fs::create_dir_all(&bin).expect("mkdir bin");
     std::os::unix::fs::symlink(MORTAR, bin.join("ld")).expect("symlink in the scratch directory");
-    let src = scratch.write("h.c", "int main(void) { return 0; }\n");
+    let src = scratch.write("h.c", "int main(void) { return 7; }\n");
     let output = scratch.join("h");
     let outcome = run_with(
-        Command::new(gcc).arg(format!("-B{}/", bin.display())).arg(&src).arg("-o").arg(&output),
+        Command::new(gcc)
+            .arg(format!("-B{}/", bin.display()))
+            .arg("-static")
+            .arg(&src)
+            .arg("-o")
+            .arg(&output),
         &[],
         DEFAULT_TIMEOUT,
     );
-    assert_eq!(outcome.status.and_then(|s| s.code()), Some(1), "{}", outcome.stderr_text());
-    let stderr = outcome.stderr_text();
-    assert!(stderr.contains("ld: error: unsupported feature: linking\n"), "{stderr}");
-    assert!(!output.exists(), "a failed link leaves no output file");
+    assert!(outcome.success(), "{}", outcome.stderr_text());
+    assert_eq!(outcome.stderr_text(), "");
+    let ran = run_with(&mut Command::new(&output), &[], DEFAULT_TIMEOUT);
+    assert_eq!(ran.status.and_then(|s| s.code()), Some(7));
 }

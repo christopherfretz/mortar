@@ -65,8 +65,26 @@ impl DemandClass {
     /// non-alloc section (§4.3 "Non-alloc places").
     #[must_use]
     pub const fn allowed_in_non_alloc(self) -> bool {
-        matches!(self, Self::AbsWord | Self::AbsNarrow | Self::Pc | Self::TlsDtpRel | Self::Size)
+        matches!(
+            self,
+            Self::AbsWord
+                | Self::AbsNarrow
+                | Self::Pc
+                | Self::GotRel
+                | Self::TlsDtpRel
+                | Self::Size
+        )
     }
+}
+
+/// §4.3 "Non-alloc places": an `AbsWord` or `AbsNarrow` relocation at a
+/// non-alloc place against an `STT_TLS` target writes `DtpRel(S + A)`, the
+/// offset in the TLS block, not an address (GCC `-gsplit-dwarf`
+/// `.debug_addr` entries, `spec/x64.md` X-53). The one exception to the
+/// TLS mismatch rule; `false` at an alloc place.
+#[must_use]
+pub const fn writes_dtprel(class: DemandClass, place: PlaceFacts, tls: bool) -> bool {
+    !place.alloc && tls && matches!(class, DemandClass::AbsWord | DemandClass::AbsNarrow)
 }
 
 /// One cell of the §4.3 table.
@@ -104,6 +122,10 @@ pub enum Cell {
     Tls,
     /// `—` if the target is defined here, else `E` (`TlsLe`, `TlsDtpRel`).
     DefinedHereElseError,
+    /// The architecture spec's §7 decides (`Pc` against `Weak0` in `Pie`
+    /// and `Shared`: x86-64 `E`, `spec/x64.md` X-15; AArch64 `—` with
+    /// `S = P`).
+    ArchWeak0,
     /// `E` with the reason `local-exec TLS in a shared object`.
     LocalExecInShared,
     /// A blank cell: the output kind never has this target kind.
@@ -136,9 +158,10 @@ const fn column(t: TargetKind) -> usize {
 }
 
 use Cell::{
-    Copy as C, Error as E, Got as G, GotBase as GB, GotIplt as GI, Impossible as X, Iplt as I,
-    IpltGotBase as IGB, IpltRelativeTx as IRT, Nothing as N, Plt as PLT, RelativeTx as RT,
-    SymbolicTx as DT, WritableSymbolicElseCopy as WDC, WritableSymbolicElseError as WDE,
+    ArchWeak0 as AW0, Copy as C, Error as E, Got as G, GotBase as GB, GotIplt as GI,
+    Impossible as X, Iplt as I, IpltGotBase as IGB, IpltRelativeTx as IRT, Nothing as N,
+    Plt as PLT, RelativeTx as RT, SymbolicTx as DT, WritableSymbolicElseCopy as WDC,
+    WritableSymbolicElseError as WDE,
 };
 
 /// The table of §4.3 as data: per class, the row for `Static`/`Exec` and
@@ -148,7 +171,7 @@ use Cell::{
 pub const TABLE: [(DemandClass, [Cell; 7], [Cell; 7]); 16] = [
     (DemandClass::AbsWord, [N, N, X, WDC, I, N, WDE], [RT, N, DT, DT, IRT, N, DT]),
     (DemandClass::AbsNarrow, [N, N, X, C, I, N, E], [E, N, E, E, E, N, E]),
-    (DemandClass::Pc, [N, N, X, C, I, N, E], [N, E, E, E, I, N, E]),
+    (DemandClass::Pc, [N, N, X, C, I, N, E], [N, E, E, E, I, AW0, E]),
     (DemandClass::Lo, [N, N, X, C, I, N, E], [N, N, E, E, I, N, E]),
     (DemandClass::Branch, [N, N, X, PLT, I, N, PLT], [N, E, PLT, PLT, I, N, PLT]),
     (DemandClass::Got, [G, G, G, G, GI, G, G], [G, G, G, G, GI, G, G]),
@@ -221,6 +244,10 @@ pub enum ClassOutcome {
     Incompatible(Incompatible),
     /// A TLS-model class: the architecture's table decides (§4.3).
     ArchTls,
+    /// `Pc` against `Weak0` in `Pie` or `Shared`: the architecture spec's
+    /// §7 decides (§4.3; x86-64 `E` with the output's `recompile` reason,
+    /// AArch64 nothing, its value `S = P`).
+    ArchWeak0,
     /// The target is `Undefined`: `undefined-symbol` (§3.4), unless a
     /// matched sequence consumes the relocation.
     Undefined,
@@ -238,8 +265,10 @@ const fn pic_reason(output: OutputKind) -> Incompatible {
 /// The generic rule of §3.4/§4.3 for one relocation.
 ///
 /// In order: an `Undefined` target; a place in a non-alloc section (only
-/// `None` and data fields of the allowed classes, which demand nothing);
-/// a TLS class against a non-TLS symbol or the reverse; then the table.
+/// `None` and data fields of the allowed classes, which demand nothing but
+/// `GotRel`'s `GOT_BASE`, with the TLS mismatch rule except
+/// [`writes_dtprel`]'s case); a TLS class against a non-TLS symbol or the
+/// reverse; then the table.
 /// `data_field` is whether the type's field is `Field::Data`; `tls`
 /// whether the symbol is `STT_TLS`.
 #[must_use]
@@ -255,12 +284,22 @@ pub fn class_outcome(
         return ClassOutcome::Undefined;
     }
     if !place.alloc {
-        let allowed = class == DemandClass::None || (data_field && class.allowed_in_non_alloc());
-        return if allowed {
-            ClassOutcome::Demand(Demand::default())
-        } else {
-            ClassOutcome::Incompatible(Incompatible::NotInNonAlloc)
-        };
+        if class == DemandClass::None {
+            return ClassOutcome::Demand(Demand::default());
+        }
+        if !(data_field && class.allowed_in_non_alloc()) {
+            return ClassOutcome::Incompatible(Incompatible::NotInNonAlloc);
+        }
+        if class.is_tls() && !tls {
+            return ClassOutcome::Incompatible(Incompatible::NotThreadLocal);
+        }
+        if !class.is_tls() && tls && !writes_dtprel(class, place, tls) {
+            return ClassOutcome::Incompatible(Incompatible::ThreadLocal);
+        }
+        // `GotRel` writes `S + A − GOT`: the base must exist.
+        let global =
+            if class == DemandClass::GotRel { GlobalFlags::GOT_BASE } else { GlobalFlags::empty() };
+        return ClassOutcome::Demand(Demand { global, ..Demand::default() });
     }
     if class == DemandClass::None {
         return ClassOutcome::Demand(Demand::default());
@@ -308,6 +347,7 @@ pub fn class_outcome(
         }
         Cell::DefinedHereElseError => ClassOutcome::Incompatible(pic_reason(output)),
         Cell::LocalExecInShared => ClassOutcome::Incompatible(Incompatible::LocalExecInShared),
+        Cell::ArchWeak0 => ClassOutcome::ArchWeak0,
         Cell::Impossible => ClassOutcome::Impossible,
     }
 }

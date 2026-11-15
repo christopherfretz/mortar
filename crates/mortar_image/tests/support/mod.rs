@@ -17,14 +17,15 @@ use mortar_arch::{
 };
 use mortar_core::inputs::{CopyError, Errno};
 use mortar_core::par::Pool;
+use mortar_core::records::RecIndex;
 use mortar_core::{ChunkId, FileId, SectionId, SymKey, SymbolId};
 use mortar_diag::FileRef;
 use mortar_image::fill::{Image, Sink, Tables};
 use mortar_image::plan::{
-    Builder, InputUnit, Pattern, Plan, RecOrder, RelocSection, SynthUnit, Unit,
+    Builder, InputUnit, Pattern, Plan, RecRows, RelocSection, SynthUnit, Unit,
 };
-use mortar_image::source::Source;
-use mortar_image::synth::{Division, SizeCx, SynthChunk, SynthError};
+use mortar_image::source::{NoKeys, Source};
+use mortar_image::synth::{Division, SizeCx, SynthChunk, SynthCx, SynthError};
 use mortar_image::target::Target;
 use mortar_image::tombstone;
 
@@ -50,6 +51,54 @@ pub const TLS: TlsBlock = TlsBlock { start: 0x50_0000, size: 0x1000, align: 16 }
 #[must_use]
 pub fn key(n: u32) -> SymKey {
     SymKey::global(SymbolId(n))
+}
+
+/// The scan's record index for `sections` (section, records): the
+/// permutation of each unsorted one (I-29); every section with records
+/// leads (`RelocAt.leads = true` is always correct, arch.md §3.5).
+#[must_use]
+pub fn index_of<'r>(sections: impl IntoIterator<Item = (SectionId, &'r [Reloc])>) -> RecIndex {
+    let mut permuted = Vec::new();
+    let mut leads = Vec::new();
+    for (s, r) in sections {
+        if r.is_empty() {
+            continue;
+        }
+        leads.push(s);
+        if !r.windows(2).all(|w| w[0].r_offset <= w[1].r_offset) {
+            let mut perm: Vec<u32> = (0..r.len() as u32).collect();
+            perm.sort_by_key(|&i| r[i as usize].r_offset);
+            permuted.push((s, perm.into_boxed_slice()));
+        }
+    }
+    RecIndex::new(permuted, leads)
+}
+
+/// The record index of a plan whose records are all decoded.
+#[must_use]
+pub fn plan_index(plan: &Plan) -> RecIndex {
+    index_of(plan.relocs.iter().filter_map(|r| match &r.rows {
+        RecRows::Decoded(d) => Some((r.section, &d[..])),
+        RecRows::Rela(_) => None,
+    }))
+}
+
+/// The decoded records of a relocation section.
+#[must_use]
+pub fn decoded(rs: &RelocSection) -> &[Reloc] {
+    match &rs.rows {
+        RecRows::Decoded(d) => d,
+        RecRows::Rela(_) => panic!("records in the store"),
+    }
+}
+
+/// The answers a chunk's `write` reads, none known.
+pub static OUT_REF: std::sync::LazyLock<FileRef> = std::sync::LazyLock::new(|| FileRef::new("out"));
+pub static SEQ_POOL: std::sync::LazyLock<Pool> = std::sync::LazyLock::new(Pool::sequential);
+
+#[must_use]
+pub fn no_answers() -> SynthCx<'static> {
+    mortar_image::synth::no_answers(&ARCH, &SEQ_POOL, &OUT_REF)
 }
 
 /// A target with AArch64's facts.
@@ -108,7 +157,7 @@ pub struct FakeTables {
 
 impl FakeTables {
     pub fn define(&mut self, k: SymKey, s: u64, live: bool) -> &mut Self {
-        self.syms.insert(k, SymValue { s, kind: TargetKind::Local, size: 0, live });
+        self.syms.insert(k, SymValue { s, kind: TargetKind::Local, size: 0, live, tls: false });
         self.alloc.insert(k, true);
         self
     }
@@ -189,7 +238,12 @@ impl SynthChunk for Counting {
     fn division(&self) -> Division {
         Division::Divisible
     }
-    fn write(&self, _cx: &FillCx<'_>, range: Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+    fn write(
+        &self,
+        _cx: &SynthCx<'_>,
+        range: Range<u64>,
+        out: &mut [u8],
+    ) -> Result<(), SynthError> {
         assert_eq!(out.len() as u64, range.end - range.start);
         for (k, b) in out.iter_mut().enumerate() {
             *b = self.seed.wrapping_add(((range.start + k as u64) * 31) as u8);
@@ -214,9 +268,18 @@ impl SynthChunk for Summing {
     fn division(&self) -> Division {
         Division::Whole { max_size: self.size }
     }
-    fn write(&self, _cx: &FillCx<'_>, range: Range<u64>, out: &mut [u8]) -> Result<(), SynthError> {
+    fn write(
+        &self,
+        _cx: &SynthCx<'_>,
+        range: Range<u64>,
+        out: &mut [u8],
+    ) -> Result<(), SynthError> {
         if range != (0..self.size) {
-            return Err(SynthError::Internal(format!("whole chunk written in part: {range:?}")));
+            return Err(SynthError::from(mortar_diag::Diagnostic::error(
+                mortar_diag::Kind::InternalError {
+                    what: format!("whole chunk written in part: {range:?}"),
+                },
+            )));
         }
         let mut acc = 0u8;
         for (k, b) in out.iter_mut().enumerate() {
@@ -249,11 +312,12 @@ pub fn reference(img: &Image<'_>) -> Vec<u8> {
             Unit::Synth(i) => {
                 let su = &plan.synth[i as usize];
                 let chunk = img.chunks[su.chunk as usize];
-                chunk.write(&cx, 0..row.size, dst).unwrap();
+                chunk.write(&img.synth, 0..row.size, dst).unwrap();
                 if let Some(z) = chunk.sealed() {
                     dst[z.start as usize..z.end as usize].fill(0);
                 }
             }
+            Unit::Merged(_) => panic!("the reference has no merged chunks"),
             Unit::Input(i) => {
                 let u = &plan.inputs[i as usize];
                 let mut sec = vec![0u8; u.section_size as usize];
@@ -279,7 +343,7 @@ fn reference_relocs(
     sec: &mut [u8],
 ) {
     let name = img.plan.name(u.name).to_vec();
-    let records: &[Reloc] = &rs.records;
+    let records: &[Reloc] = decoded(rs);
     for (i, rec) in records.iter().enumerate() {
         let Ok(howto) = img.arch.classify(rec.r_type, Site { bytes: input, offset: rec.r_offset })
         else {
@@ -354,28 +418,45 @@ pub struct World {
     pub plan: Plan,
     pub source: MemSource,
     pub tables: FakeTables,
-    pub chunks: Vec<Box<dyn SynthChunk>>,
+    pub chunks: Vec<Box<dyn SynthChunk + Sync>>,
+    pub records: RecIndex,
 }
 
+/// A chunk as fill takes it.
+pub type Chunk<'a> = &'a (dyn SynthChunk + Sync);
+
 impl World {
-    pub fn image(&self) -> (Vec<&dyn SynthChunk>, ()) {
-        (self.chunks.iter().map(|c| &**c as &dyn SynthChunk).collect(), ())
+    /// The world with the record index of its plan.
+    #[must_use]
+    pub fn indexed(mut self) -> Self {
+        self.records = plan_index(&self.plan);
+        self
+    }
+
+    pub fn image(&self) -> (Vec<Chunk<'_>>, ()) {
+        (self.chunks.iter().map(|c| &**c as Chunk<'_>).collect(), ())
     }
 }
 
 /// The image of `w` with `chunks`.
 #[must_use]
-pub fn image<'a>(w: &'a World, chunks: &'a [&'a dyn SynthChunk]) -> Image<'a> {
+pub fn image<'a>(w: &'a World, chunks: &'a [Chunk<'a>]) -> Image<'a> {
     Image {
         plan: &w.plan,
         source: &w.source,
         arch: &ARCH,
         tables: &w.tables,
+        records: &w.records,
+        keys: &NoKeys,
         output: OutputKind::Static,
         got_base: None,
         tls: Some(TLS),
         chunks,
+        synth: no_answers(),
+        merged: None,
+        eh: None,
         build_id: None,
+        fixups: &[],
     }
 }
 
@@ -548,7 +629,7 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
     }
     let file_size = at + g.below(100);
     let mut b = Builder::new(target, file_size);
-    let mut chunks: Vec<Box<dyn SynthChunk>> = Vec::new();
+    let mut chunks: Vec<Box<dyn SynthChunk + Sync>> = Vec::new();
     for (k, (offset, mut s)) in rows.into_iter().enumerate() {
         let file = FileId(1 + k as u32);
         let section = SectionId(100 + k as u32);
@@ -557,7 +638,6 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
         if k % 4 == 3 {
             s.records.reverse();
         }
-        let order = RecOrder::of(&s.records);
         let len = s.bytes.len() as u64;
         let proof = if s.exec {
             vec![ProofRun { start: 0, end: len, proof: Proof::Insn, unit: 0, unit_offset: 0 }]
@@ -566,8 +646,8 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
         };
         let relocs = (!s.records.is_empty()).then(|| {
             b.relocs(RelocSection {
-                records: s.records.into_boxed_slice(),
-                order,
+                section,
+                rows: RecRows::Decoded(s.records.into_boxed_slice()),
                 proof: proof.into_boxed_slice(),
             })
         });
@@ -587,6 +667,7 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
             section_size: len,
             addr,
             alloc: s.alloc,
+            exec: s.exec,
             name,
             relocs,
         };
@@ -606,7 +687,11 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
         } else {
             chunks.push(Box::new(Counting { size, seed: k as u8, sealed: None }));
         }
-        b.synth(offset, size, SynthUnit { chunk, id: ChunkId(500 + k as u32), name, whole });
+        b.synth(
+            offset,
+            size,
+            SynthUnit { chunk, id: ChunkId(500 + k as u32), name, whole, eh: false },
+        );
     }
     // Pads are disjoint by construction (code rows and the gaps between).
     pads.sort_by_key(|p| p.0.start);
@@ -614,7 +699,8 @@ pub fn random_world(seed: u64, budget: u64, window: u64) -> World {
         b.pad(r, p);
     }
     let plan = b.finish(window, &Pool::sequential()).expect("a valid plan");
-    World { plan, source, tables, chunks }
+    let records = plan_index(&plan);
+    World { plan, source, tables, chunks, records }
 }
 
 /// Fills `img` into memory.

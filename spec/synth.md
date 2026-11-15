@@ -43,10 +43,12 @@ are never reused. A withdrawn rule keeps its id and is marked "withdrawn".
   decide differently.
 
 **Milestones.** M1: static non-PIE AArch64 executables; M2: dynamic
-outputs; M3: x86-64; M4: i386; M7: incremental linking. A rule tagged
+outputs; M3: x86-64 (its static rules are M1 since `spec/x64.md` X-3 and
+`docs/ROADMAP.md` M1); M4: i386; M7: incremental linking. A rule tagged
 with a later milestone binds the design now: an M1 implementation must
 not make that rule hard to add. A rule with no tag applies from M1. Rules
-that name x86-64 or i386 are M3 and M4 rules; they are written now
+that name x86-64 are M1 (static) and M2 (dynamic) rules, those that name
+i386 M4 rules; they are written now
 because the shapes are shared.
 
 **Words.** A **piece** is a part of a split input section (a string, a
@@ -170,12 +172,20 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   - is the target of a relocation section (its bytes are not final, so
     equal bytes need not be equal pieces);
   - is `SHF_TLS`;
+  - is `SHF_COMPRESSED` (a non-alloc `.debug_str` of `-gz`: its bytes are
+    not the pieces' until decompressed, and phase 60 reads the file's
+    bytes);
   - has `sh_addralign` that is not a power of two (refused already by
     `elf.md`), or `sh_entsize` larger than 2^16.
 
   None of these occurs in the library scan (X-1); the rule exists so
   that a hand-written object cannot make a wrong merge. Such a section
   keeps `SHF_MERGE` out of its output section's flags (layout L-50).
+  Resolution decides it (resolve.md §10: the row's kind becomes
+  `Regular`, `mortar_resolve::sections::placed_whole`), so every later
+  phase — merge, layout's `addr_in`, the symbol values — sees a plain
+  section; phase 60 never cuts one (WP-027a; the test is
+  `crates/mortar/tests/front_diff.rs` `s6_unsafe_merge_sections_are_placed_whole`).
 - **S-7 [G] (malformed).** A `Merge` section whose size is not a
   multiple of `sh_entsize` is malformed (`elf.md` §3.10, `BadSize`):
   `malformed-input`, `section size is not a multiple of sh_entsize`.
@@ -799,7 +809,7 @@ which values are written where.
     entry (GNU and lld keep the three in a static link with only an
     IFUNC, X-22); `_GLOBAL_OFFSET_TABLE_` is its start (layout L-101).
     Keeping them whenever `.got.plt` exists means a new `GOTOFF`
-    reference moves nothing [M3]; x86's crt files demand `GOT_BASE` anyway;
+    reference moves nothing (x86-64 [M1], `spec/x64.md` X-36); x86's crt files demand `GOT_BASE` anyway;
   - on AArch64: one word per IPLT entry (a64.md §10.2; X-22).
 
   IPLT slot `n` is word `reserved + n`. A `.got.plt` with no words does
@@ -819,7 +829,8 @@ which values are written where.
   `r_offset` the entry's `.got.plt` word, symbol 0, and:
   - RELA (AArch64, x86-64): `r_addend` the resolver's address, and the
     word itself written 0 (lld; GNU writes the PLT entry's address on
-    AArch64 and 0 on x86-64; glibc overwrites the word, X-22);
+    AArch64 and the entry's address + 6 (the lazy-PLT
+    convention) on x86-64 (`spec/x64.md` E3); glibc overwrites the word, X-22);
   - REL (i386): the word itself holds the resolver's address, which is
     the implicit addend (GNU and lld, X-22).
 
@@ -834,11 +845,13 @@ which values are written where.
   would have, layout §13). glibc's static start-up applies every entry
   between them. They are `STB_LOCAL` in `.symtab` (layout §13).
 
-  Under `-static-pie` [M2] every `IRELATIVE` is in `.rela.dyn`
+  Under `-static-pie` [the rule now; the end-to-end gate M2, `docs/ROADMAP.md`] every `IRELATIVE` is in `.rela.dyn`
   (`.rel.dyn`), applied by self-relocation, and there is no `.rela.plt`;
   `__rela_iplt_*` (`__rel_iplt_*`) are not defined, so glibc's weak
-  references are 0, an empty range (resolve.md §8.1, WP-022 ruling 7; GNU
-  and lld; mold defines them absolute 0). Bounding the entries would make
+  references are 0, an empty range (resolve.md §8.1, WP-022 ruling 7; lld. GNU ld instead keeps the
+  `IRELATIVE`s in `.rela.plt`, reached through `DT_JMPREL`, with one more
+  in `.rela.dyn`; mold puts them in `.rela.dyn` and defines the symbols
+  absolute 0; all three run; `spec/x64.md` X-56). Bounding the entries would make
   glibc apply each a second time, with an unrelocated addend.
 - **S-71 [C] (the IFUNC's address and its symbol).** Every address of an
   IFUNC `f` with an IPLT entry that a relocation writes (a call, a GOT
@@ -910,6 +923,14 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   has none (S-76): at M1 `--gc-sections` is refused, so such a section is
   a discarded COMDAT member or a section discarded by the script
   (supervisor's ruling on WP-025).
+  An undefined key whose combined visibility is `STV_HIDDEN` or
+  `STV_INTERNAL` (a weak hidden reference no object defines, as glibc's
+  `_nl_current_LC_*` and `_IO_cookie_*` in a static link) has no entry:
+  the gABI ("Symbol Visibility") requires a hidden symbol to be removed
+  or made `STB_LOCAL` in an executable, and an undefined key has no
+  file block to be local in. This is GNU's form; lld writes it as an
+  `STB_LOCAL` `SHN_UNDEF` entry (WP-027a, GCC 14 static C program:
+  `_IO_cookie_close` absent in GNU 2.44, `LOCAL HIDDEN UND` in lld 19).
 - **S-121 [G] (bindings are the inputs').** A global's output binding
   is resolve.md §3.7's and nothing else: `STB_LOCAL` only for a
   definition whose combined visibility is hidden or internal (S-77), and
@@ -932,7 +953,14 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   - it is not discarded by the `-X`/`-x` rule (S-78).
 
   Locals in sections that are not live are dropped (GNU's
-  `--strip-discarded`, its default, and lld). Locals in a folded section
+  `--strip-discarded`, its default, and lld). A section the link
+  consumes (layout §8.1: `.note.gnu.property`, `.note.GNU-stack`,
+  `.gnu.warning*`, `.ARM.attributes`) counts as not live here: it has
+  no output section, so a symbol in it has no value. glibc's and
+  libgcc's objects each carry a `$d` at the start of their
+  `.note.gnu.property`; GNU and lld drop them (WP-027a: 386 such
+  entries in a GCC 14 static C link, which also had no address to
+  write). Locals in a folded section
   [ICF] take the place of the fold's target.
 - **S-77 [C] (demoted globals).** A global whose output binding is
   `STB_LOCAL` (a hidden or internal definition, resolve.md §3.7) is a
@@ -949,10 +977,17 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   (measured on AArch64, a static C program referencing each name).
   Y5 of the verifier judges the values only.
 - **S-78 [C] (`-X`, `-x`, `--discard-none`).**
-  - default, `-X` (`--discard-locals`): discard locals whose name begins
-    with `.L` (the ELF temporary-label prefix; GNU and lld both drop
-    them by default, mold keeps them; X-17). Mapping symbols (`$x`, `$d`,
-    `$x.<n>`, `$d.<n>`) and `STT_FILE` are kept;
+  - `-X` (`--discard-locals`): discard locals whose name begins
+    with `.L` (the ELF temporary-label prefix; GNU and lld; mold keeps
+    them; X-17). Mapping symbols (`$x`, `$d`, `$x.<n>`, `$d.<n>`) and
+    `STT_FILE` are kept;
+  - default (none of the three): discard the `.L` locals of split
+    `Merge` sections only (S-5), keep the others. This is GNU's default
+    (`discard_sec_merge`) and lld's: the assembler keeps a `.L` symbol in
+    a mergeable section for its relocations, and the linker drops it.
+    GCC's driver passes `-X`; Clang's does not, and lld 19 then keeps
+    libstdc++'s `.LANCHOR0` (WP-027a, Clang 19 static C link: three
+    `.LANCHOR` locals; the earlier text treated the default as `-X`);
   - `-x` (`--discard-all`): discard every local of every input file,
     `STT_FILE` and mapping symbols included (GNU and lld, X-17). Demoted
     globals (S-77) and the internal file's block are kept: they were not
@@ -1006,6 +1041,10 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   output section), which holds it once empty input sections are placed
   by R-L6. GNU breaks this for crtend.o's `__TMC_END__`, whose output
   section it removes (`plumb.md` §10.2 A10); the verifier's Y3 checks it.
+  The one exception is the headers: a linker-defined value in the file
+  header or the program headers (layout §13.1: `__ehdr_start`,
+  `__executable_start`, an absent array's base) is below section 1 and
+  takes index 1, as GNU ld, lld and mold all write it (WP-027c).
 - **S-123 [C] (labels of empty input sections).** A symbol defined in a
   live input section of size 0 (`__TMC_LIST__`, `__TMC_END__` in the
   crtstuff `.tm_clone_table`; `__start_`-style markers in hand-written
@@ -1150,8 +1189,14 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
   | `sha256` | 32 | M1 |
   | `fast` | 8 | M1 |
   | `0xHEX` | the number of hex bytes | M1 |
-  | `md5` | refused (`option value`, note `use sha1`) | — |
+  | `md5` | refused (`option value`) | — |
   | `uuid` | 16 | M2 (refused in M1, `option value`) |
+
+  The row is `partial` (`spec/cli.md` §4.2): `=md5` and `=uuid` are
+  refused at the command line, `unsupported option value:
+  --build-id=md5`, with a note naming the styles mortar writes (WP-027d;
+  `BuildIdPlan::new` keeps the same refusals for a plan that reaches it
+  another way).
 
   `0xHEX` (I-70): `0x` is case-sensitive, then one or more pairs of
   hexadecimal digits of either case; an odd number of digits, none, or a
@@ -1193,18 +1238,24 @@ descriptor starts at `align_up(12 + namesz, a)` from the note's start
   X-33):
   - **`And`**: the AND of every input's value, an absent input counting
     0; omitted if 0. AArch64 `FEATURE_1_AND` (0xc0000000: BTI 1, PAC 2,
-    GCS 4), x86 `FEATURE_1_AND` (0xc0000002: IBT 1, SHSTK 2), and the
+    GCS 4), x86 `FEATURE_1_AND` (0xc0000002: IBT 1, SHSTK 2) and the rest of 0xc0000002..
+    0xc0007fff (`UINT32_AND`), and the
     generic range 0xb0000000..0xb0007fff (`UINT32_AND`). GNU and lld
     agree, GCS included (GNU 2.44, lld 22); lld drops the generic range;
     mold writes no AArch64 property;
   - **`Or`**: the OR of the inputs that have it, present if any has it.
-    x86 `ISA_1_NEEDED` (0xc0008002) and the other 0xc0008000..0xc0008fff
-    types, and the generic range 0xb0008000..0xb000ffff (`UINT32_OR`,
+    x86 `ISA_1_NEEDED` (0xc0008002) and the other 0xc0008000..0xc000ffff types
+    (binutils `GNU_PROPERTY_X86_UINT32_OR_HI`; GNU ld and mold OR
+    0xc000f000, `spec/x64.md` E4), x86 `COMPAT_ISA_1_NEEDED`
+    (0xc0000001, no `unknown-property`: GNU ld's merge; lld and mold drop
+    it; `spec/x64.md` X-41), and the generic range 0xb0008000..0xb000ffff (`UINT32_OR`,
     whose first type is `GNU_PROPERTY_1_NEEDED`, emitted by
     `-mno-direct-extern-access`). GNU and mold agree; lld drops them;
   - **`OrAll`** (new, §14): the OR of the inputs, present only if every
     input has it. x86 `ISA_1_USED` (0xc0010002), `FEATURE_2_USED`
-    (0xc0010001) and the other 0xc0010000..0xc0017fff types (GNU, mold;
+    (0xc0010001) and the other 0xc0010000..0xc0017fff types, and x86
+    `COMPAT_ISA_1_USED` (0xc0000000, no `unknown-property`: GNU ld's
+    merge; lld and mold drop it; `spec/x64.md` X-41) (GNU, mold;
     arch.md §3.13 calls `FEATURE_2_USED` `Or`, which X-20 refutes);
   - **`Max`**: `GNU_PROPERTY_STACK_SIZE` (1), the largest value over the
     inputs that have it; absent inputs do not count (GNU; lld and mold
@@ -1447,7 +1498,7 @@ edit changes.
 | static IPLT sections | `.plt`, `.rela.plt`, `.got.plt` | `.iplt`, `.rela.dyn`, `.got.plt` | `.plt.got`, `.rela.dyn` | GNU's (S-68) | |
 | an IFUNC in `.symtab` | `IFUNC` at the resolver, always | `FUNC` at `.iplt`, size 0, when canonical; else `IFUNC` | `FUNC` locals at `.plt.got` (A1, A2) | `IFUNC` at the resolver, always (S-71) | gdb's `break f` works (X-27) |
 | `__rela_iplt_*` under `-static-pie` | not defined | not defined | absolute 0 | not defined (S-70) | resolve.md §8.1 |
-| IRELATIVE word (RELA) | AArch64: PLT address; x86-64: 0 | 0 | — | 0 (S-69) | glibc overwrites it |
+| IRELATIVE word (RELA) | AArch64: PLT address; x86-64: the entry's address + 6 (`spec/x64.md` E3) | 0 | — | 0 (S-69) | glibc overwrites it |
 | x86 static `.got.plt` reserved words | 3 | 3 | — | 3 (S-67) | |
 | section symbols in `.symtab` | AArch64 yes, x86 no | none | all | none (S-79) | |
 | `.L` locals | dropped | dropped | kept | dropped (S-78) | |
@@ -1461,6 +1512,7 @@ edit changes.
 | AArch64 `.note.gnu.property` | AND | AND | none written | AND (S-95) | BTI/PAC enforcement |
 | x86 `ISA_1_NEEDED` | OR | dropped | OR | OR (S-95) | |
 | x86 `*_USED` | OR if all have it | — | OR if all have it | OR if all have it (S-95) | |
+| x86 `COMPAT_ISA_1_USED` / `_NEEDED` (0xc0000000, 0xc0000001) | OR if all have it / OR | dropped | dropped | GNU's (S-95) | `spec/x64.md` X-41 |
 | several property notes in one object | OR within the object | OR within the object | — | as separate objects: AND for `And` types (S-126) | a BTI claim no note made could fault |
 | generic AND/OR ranges (0xb0000000..) | AND / OR | dropped | dropped | AND / OR (S-95) | GNU |
 | `STACK_SIZE`, `NO_COPY_ON_PROTECTED` | max / present if any | dropped | dropped | max / present if any (S-95) | GNU |
@@ -1477,6 +1529,7 @@ the reason. They are written to be applied mechanically.
 ### 14.1 model.md
 
 **R-M1. §3.5, the identity of a fragment.**
+*Applied by WP-027a.*
 Current: "Two pieces have the same `FragId` exactly when they belong to
 one output section and have equal bytes and alignment."
 Proposed: "Two pieces have the same `FragId` exactly when they belong to
@@ -1487,6 +1540,7 @@ to differently (S-9, S-10), so they must not share a fragment; two
 alignments of one string stay apart in all three references (X-7).
 
 **R-M2. §4.2, the reference to `spec/merge.md`.**
+*Applied by WP-027a.*
 Current: "The default order is by `FragId`, or by a content key
 `spec/merge.md` gives (tail merging); never by a hash table's layout
 (§6.5)."
@@ -1497,6 +1551,7 @@ Reason: there is no `merge.md`; synth.md owns merging, and does not
 tail-merge.
 
 **R-M3. §4.3, the `.symtab` order.**
+*Applied by WP-027a.*
 Current: "`.symtab` (and the symbol tables of `-r` output) is ordered by
 rule, not by rows: locals per file in `FileId` and table order, then
 globals in `SymbolId` order, so that the output index of `(FileId,
@@ -1514,6 +1569,7 @@ Reason: hidden definitions become locals (resolve.md §3.7) and must be
 in the local part (gABI); lld puts them in their file's block (X-17).
 
 **R-M4. §4.3, GOT capacities.**
+*Applied by WP-027a.*
 Current: "Where the kinds lie relative to each other in the GOT, and
 which `.got.plt` word belongs to a PLT or IPLT entry, follow from the
 indices by `spec/synth.md`'s rule; they are not stored."
@@ -1526,6 +1582,7 @@ Reason: an incremental link appends a slot to one kind without moving
 the slots of the next (S-113).
 
 **R-M5. §4.4, `ChunkId` order.**
+*Applied by WP-027a.*
 Current: "`ChunkId`s are given in a fixed creation order: headers, then
 synthetic chunks in the order `spec/synth.md` lists them, then merged
 chunks and output-section bodies in `OutSecId` order."
@@ -1534,6 +1591,7 @@ its synthetic chunks (its input sections are split and have no `place`)."
 Reason: `.eh_frame` is synthesized from `Slots.eh_records`, not a body.
 
 **R-M6. §3.5, the internal file's pieces.**
+*Not applied: `.comment` (S-100) is not a merge piece yet (WP-027a record).*
 Current: (no text)
 Proposed: add after the `EhFrame` bullet: "- the internal file (`FileId`
 0) may contribute pieces: the `.comment` string of `spec/synth.md`
@@ -1542,6 +1600,7 @@ Reason: S-100 puts mortar's identification through the ordinary merge
 path rather than a new chunk kind.
 
 **R-M7. §3.5, the numbering method of `FragId`.**
+*Applied by WP-027a.*
 Current: "`FragId`s are numbered by first occurrence
 `(FileId, sh_index, piece)`, by the method of §2.3;"
 Proposed: "`FragId`s are numbered by first occurrence
@@ -1556,6 +1615,7 @@ threads, with the same `FragId`s (X-29).
 ### 14.2 layout.md
 
 **R-L1. L-58.**
+*Applied by WP-027a.*
 Current: "The terminator that `crtend.o` provides (a zero-length CIE)
 must stay last, and it does, because `crtend.o` comes after the user's
 objects in every driver's line."
@@ -1566,6 +1626,7 @@ Reason: X-13: with `crtend.o` early GNU's output crashes; lld and mold
 write the terminator last and the program runs.
 
 **R-L2. §20.6, replace the request list with its resolution.**
+*Applied by WP-027a.*
 Current: the four bullets under "### 20.6 `synth.md` (not yet written)".
 Proposed: "### 20.6 `synth.md` — applied: `.relro_padding` is a layout
 chunk (synth.md does not list it, S-3); `.eh_frame` keeps input order
@@ -1575,6 +1636,7 @@ S-95, which keeps the AND rule and adds `Or` and `OrAll` for x86."
 Reason: the requests are answered.
 
 **R-L3. §8.1 (sections that go nowhere), `-S`.**
+*Applied by WP-027a as L-158 (with the fix that also strips the mergeable `.debug_str`/`.debug_line_str`).*
 Current: (no rule for `-S`/`--strip-debug`)
 Proposed: add "- **L-n [C]** With `-S` (`--strip-debug`) or `-s`, the
 `.debug_*` sections and `.gdb_index` go nowhere.
@@ -1583,6 +1645,7 @@ Reason: S-84 needs the rule to exist in the spec that decides which
 sections are output.
 
 **R-L4. §12.1 L-85, the merged chunk's order.**
+*Applied by WP-027a.*
 Current: "ordered by class (strings before constants, then entsize
 ascending), then by `MergeMap` order."
 Proposed: "ordered by class (strings before constants, then entsize
@@ -1591,6 +1654,7 @@ ascending), then by alignment ascending, then by `MergeMap` order
 Reason: S-25.
 
 **R-L5. §14.3, symbol-table sizes after the fixed point.**
+*Applied by WP-027a (L-121).*
 Current: L-121 lists `.relr.dyn`, patch islands and compressed non-alloc
 chunks as sized chunks.
 Proposed: add to L-121: "`.symtab`, `.strtab` and `.symtab_shndx` are
@@ -1600,6 +1664,7 @@ allocated chunk, so their size moves no address."
 Reason: S-2, S-80.
 
 **R-L6. §9, empty input sections.**
+*Applied by WP-027c as `spec/layout.md` L-159.*
 Current: (no rule)
 Proposed: add to §9 "- **L-n [C] (empty input sections)** A live input
 section of size 0 is placed like any other, at its output section's
@@ -1632,11 +1697,14 @@ which is refused by name."
 Proposed: "`property_merge(pr_type)` gives the rule for a processor-range
 type (0xc0000000..0xdfffffff): `And` (an input without the property
 counts as 0; the property is omitted when the result is 0; AArch64
-`FEATURE_1_AND` with BTI, PAC and GCS, x86 `FEATURE_1_AND`), `Or` (the OR
+`FEATURE_1_AND` with BTI, PAC and GCS, x86 `FEATURE_1_AND` and the rest
+of `0xc0000002..0xc0007fff`), `Or` (the OR
 of the inputs that have it, present if any has it; x86 `ISA_1_NEEDED`
-and the other `0xc0008000..0xc0008fff` types), `OrAll` (the OR of the
+and the other `0xc0008000..0xc000ffff` types, and `COMPAT_ISA_1_NEEDED`
+0xc0000001), `OrAll` (the OR of the
 inputs, present only if every input has it; x86 `ISA_1_USED`,
-`FEATURE_2_USED` and the other `0xc0010000..0xc0017fff` types),
+`FEATURE_2_USED` and the other `0xc0010000..0xc0017fff` types, and
+`COMPAT_ISA_1_USED` 0xc0000000),
 `EqualOrAbsent` (AArch64 `FEATURE_PAUTH`: copied when every input that
 has it agrees, refused when two disagree) or `None` for a type the
 architecture does not know, which `spec/synth.md` S-95 drops with the
@@ -1809,7 +1877,9 @@ sha256 32, fast 32). Reason: Q4 is image.md's (coordinator ruling).
 
 ### 14.8 cli.md and docs/status/options.md
 
-**R-C1.** Status changes when WP-025's code lands (M1): `-s`, `-S`,
+**R-C1.** *Applied by WP-027a* (`--strip-discarded` and `-O` are
+`noop`, the others `supported`; `--build-id=STYLE`'s check is cli.md
+§3's). Status changes when WP-025's code lands (M1): `-s`, `-S`,
 `--strip-discarded`, `-x`, `-X`, `--discard-none` (S-78, S-84),
 `--build-id[=STYLE]` with every style of S-91, `--eh-frame-hdr`,
 `--no-eh-frame-hdr` (S-57) become "implemented"; `-O LEVEL` becomes
@@ -1818,12 +1888,15 @@ sha256 32, fast 32). Reason: Q4 is image.md's (coordinator ruling).
 (GNU warns and ignores; lld refuses).
 Reason: these are the options this spec defines.
 
-**R-C3. `-z memory-seal`, `-z nomemory-seal`.** Add both as implemented
+**R-C3. `-z memory-seal`, `-z nomemory-seal`.** *Applied by WP-027a
+(`plan.z.memory_seal`; GNU ld 2.44 gives the same 0x18-byte note for a
+static C program).* Add both as implemented
 at M1, the last one winning, default `nomemory-seal`, feeding S-95's
 `MEMORY_SEAL` property (GNU ld 2.44's options; lld 22 does not know
 them).
 
-**R-C2. §3.8.** Current: "`strip` (`-s`, `-S`, `--strip-*`);" Proposed:
+**R-C2. §3.8.** *Applied by WP-027a, except "default `-X`": the
+default is S-78's own (corrected by WP-027a).* Current: "`strip` (`-s`, `-S`, `--strip-*`);" Proposed:
 "`strip` (`-s`, `-S`, `--strip-*`; the last wins, `--strip-discarded`
 is accepted and has no effect, `spec/synth.md` S-84);" and current
 "`discard` (`-x`, `-X`, `--discard-*`);" proposed "`discard` (`-x`,

@@ -26,6 +26,42 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A6: GNU ld, lld and mold fill the GOT slot of a section symbol plus an addend without the addend",
         );
     }
+    let lld = linker == Format::Lld;
+    if lld && f.rule == Rule::Field && f.message.ends_with("(spec/x64.md W4)") {
+        return Some(
+            "A12: lld writes the 16-byte local-exec form over the 22-byte general-dynamic sequence (spec/x64.md W4)",
+        );
+    }
+    if mold && f.rule == Rule::Structure(11) && f.message.ends_with("only with padding to 4") {
+        return Some(
+            "A13: mold puts 4-aligned notes in the PT_NOTE of the 8-aligned .note.gnu.property, with p_align 8",
+        );
+    }
+    if lld
+        && f.rule == Rule::SymbolTable(3)
+        && f.message.starts_with("common symbol")
+        && f.message.ends_with("is not allocated in a writable SHT_NOBITS section")
+        && f.found == Some(u64::from(mortar_elf::consts::SHN_ABS))
+    {
+        return Some(
+            "A14: lld makes an x86-64 large common (SHN_X86_64_LCOMMON) absolute and allocates nothing (spec/x64.md W9)",
+        );
+    }
+    if (bfd || mold) && f.rule == Rule::Field && f.message.ends_with("(spec/x64.md X-53)") {
+        return Some(
+            "A15: GNU ld and mold write a TLS symbol's template address in .debug_addr where its DTP offset belongs (spec/x64.md W10)",
+        );
+    }
+    if (lld || mold) && f.rule == Rule::Structure(19) && f.found == Some(0xcc) {
+        return Some(
+            "A16: lld and mold pad between .init or .fini fragments with int3, which traps at start-up (spec/x64.md W8)",
+        );
+    }
+    if mold && f.rule == Rule::Ifunc(5) && f.message.contains("does not start with ENDBR64") {
+        return Some(
+            "A17: mold marks an output IBT and writes its IPLT entries without endbr64 (spec/x64.md W6)",
+        );
+    }
     let sym = f.symbol.as_deref().unwrap_or("");
     let y = |n| f.rule == Rule::SymbolTable(n);
     if mold && y(3) && f.message.contains("binding") && f.found == Some(0) {

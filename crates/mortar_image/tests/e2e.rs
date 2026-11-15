@@ -32,6 +32,7 @@ mod support;
 use mortar_arch::OutputKind;
 use mortar_core::par::Pool;
 use mortar_image::fill::Image;
+use mortar_image::source::NoKeys;
 use mortar_testutil::{run, tool};
 use support::reflink::{RefExe, check_tombstones, compare, parse_map, ref_world};
 use support::{ARCH, TempDir, fill_mem};
@@ -192,11 +193,17 @@ fn check(lang: &str) {
             source: &w.source,
             arch: &ARCH,
             tables: &w.tables,
+            records: &w.records,
+            keys: &NoKeys,
             output: OutputKind::Static,
             got_base: None,
             tls: b.exe.tls(),
             chunks: &[],
+            synth: support::no_answers(),
+            merged: None,
+            eh: None,
             build_id: None,
+            fixups: &[],
         };
         for threads in [1, 4] {
             let pool = Pool::new(threads);

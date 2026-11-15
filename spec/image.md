@@ -124,7 +124,10 @@ requires `live ⇒ state == Kept`.
   (M2, §3.3), is `(50, FileId, section index)`.
 - **I-5 [M1]** `--no-gc-sections` is the default and is `supported` in M1
   (request R-6). `--gc-sections` is `refused` in M1 (`unsupported option:
-  --gc-sections`). Evidence for refusing rather than implementing now:
+  --gc-sections`): its row's status is `refused`, so the command line
+  refuses it (`spec/cli.md` §4.4), unless a later `--no-gc-sections`
+  overrides it; liveness keeps the same refusal for a plan that reaches
+  it another way. Evidence for refusing rather than implementing now:
   none of `gcc`, `g++`, `gfortran`, `clang`, `clang++` passes it by
   default (E1); of the bench workloads only `rust-self` (rustc passes it)
   uses it; the libc++ test suite's link lines are built by the M1 driver
@@ -453,6 +456,15 @@ only when `has_errors()` is false after layout (`spec/diag.md` §7).
     `copy_to`;
   - `Permuted(Vec<u32>)`, otherwise: the record indexes stably sorted by
     `r_offset` (4 bytes per record of an unsorted section).
+  The index is a `mortar_core` type (`mortar_core::records::{RecIndex,
+  Order}`, re-exported by `mortar_scan`; supervisor ruling for WP-027b),
+  and it also carries the scan's per-section `leads` bit (`RelocAt.leads`,
+  `spec/arch.md` §3.5), which fill passes on unchanged. The plan's records
+  are `RecRows::Rela` (the input's `SHT_RELA` table, read at fill time
+  through the store for the clip, in `RecIndex` order; I-82's "read
+  twice") or `RecRows::Decoded` (records already in memory, for tests and
+  the bench); the site bytes a record reads are taken from the window
+  buffer the clip is filled into, not read again.
   Unsorted sections are ordinary on x86. Per archive, unsorted
   relocation sections and records (E7, E22): x86-64 glibc `libc.a` 245 of
   3,962 sections (11,053 records; the largest 783; e.g. `PLT32` records
@@ -556,18 +568,16 @@ buffer; the clip only selects which of them a job writes.
   - AArch64 at least `(0, 4)`. The `CALL26` member of the GD→LE sequence
     (`spec/a64.md` §8.4) has its field at `o+8` and owns `[o+8, o+16)`,
     so it writes the `nop` 4 bytes past its field.
-  - x86-64 `(4, 8)`, for the recognized forms of `spec/arch.md` A.3
-    only: the 16-byte `TLSGD` form `[P − 4, P + 12)` around a 4-byte
-    field.
+  - x86-64 `(4, 15)`: `before` 4 from the 16-byte `TLSGD` forms and
+    `after` 15 from the 22-byte `TLSGD` and `TLSLD` forms (`spec/x64.md`
+    §8.6).
   The draft's AArch64 `(0, 0)` was wrong; it worked only because of the
   8-byte slack of the search bound. The x86-64 large-model `TLSGD`
   sequence (`lea` / `movabs PLTOFF64` / `add` / `call`, 22 bytes,
-  `[P − 3, P + 19)`, after = 15) is not an A.3 form, so it stays unrelaxed
-  and its members keep their field windows. GNU ld relaxes all 22 bytes;
-  lld 22 writes 16 bytes from `P − 4` and corrupts it (the review).
-  `spec/x64.md` must either add the form, with its window, or state that
-  it is left unrelaxed, with a test (request R-14). Either way `max_reach`
-  follows from the tables.
+  `[P − 3, P + 19)`, after = 15) and its `TLSLD` twin are relaxed forms
+  (`spec/x64.md` X-25, X-27; request R-14, answered). GNU ld relaxes all
+  22 bytes; lld 22 writes 16 bytes from `P − 4` and corrupts it (the
+  review). `max_reach` follows from the tables.
 - **I-37 [M1] `.ctors`/`.dtors` reversal** (`spec/layout.md` L-40, when it
   is lifted): the words of a `.ctors` input section are written in
   reverse word order; the relocation of the word at offset `o` is applied
@@ -584,6 +594,16 @@ buffer; the clip only selects which of them a job writes.
   `write(cx, range, out)` for the clip (§13). `Patches` chunks (islands,
   thunks, erratum patches) are synthetic chunks of `mortar_arch`'s
   `write_*` (`spec/arch.md` §6), with the key `(100, 0, ChunkId)`.
+  WP-027c writes them whole before fill (`link::patches`): each thunk by
+  `write_thunk` with its target as the fixed point computed it, zero
+  between patches. The erratum fixes (`spec/a64.md` §11.2: `b patch` at
+  `F`, the patch's `W4'` and `b F + 4`, or the ADR at `Q`) are words
+  written over fill's bytes (`Link::fixups`, applied in every window
+  after its rows, so the build id covers them). The front computes them
+  from the words fill writes at the final addresses, with the same scan
+  as the fixed point (`LinkSites::erratum_fixes`). A thunk's target word
+  is not proved at this point, so in a BTI output `thunk_target_ok`
+  refuses it.
 - **I-40 [M1] Structural units.** The ELF header, the program header
   table and the section header table are written by the image from
   `Placement` and the output kind: `e_entry` from `Placement.entry`;
@@ -593,6 +613,67 @@ buffer; the clip only selects which of them a job writes.
   start, `spec/layout.md` L-86). Their encodings are `spec/elf.md`'s
   writer half, and the byte layout is a function of the class and the
   rows; nothing in them is filled from input bytes.
+  The fields (WP-027b, `link::structure`):
+  - `e_ident[EI_OSABI]` is `Facts.osabi` (AArch64: 0, a64.md Q11, also
+    with IFUNC symbols; eu-elflint then reads `STT_GNU_IFUNC` and
+    `R_AARCH64_IRELATIVE` as unknown, which Q11 may revisit);
+    `e_type` from the output kind; `e_machine` `Facts.e_machine`;
+    `e_flags` `Arch::e_flags` over the live objects' `e_flags`;
+  - `e_entry` is `Placement.entry`, or 0 when it is `None` (the gABI's
+    "no entry point"; layout's `entry-not-found` warning, L-103);
+  - `e_phoff`/`e_shoff` are the `ProgramHeaders`/`SectionHeaders` chunks'
+    offsets; `p_align` is `1 << align` of the segment row;
+  - `sh_name` from `.shstrtab`'s plan; `sh_type`, `sh_flags` and
+    `sh_addralign` from the section's chunks (the largest alignment);
+    `sh_addr` the first chunk's address (0 for non-alloc), `sh_offset`
+    its offset;
+  - `sh_entsize`: a synthetic chunk's from `SynthKind::header` (synth.md
+    §3); an output section that keeps `SHF_MERGE` its merge class's
+    entry size (L-50); `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY` and
+    `SHT_PREINIT_ARRAY` the word size; otherwise 0;
+  - `sh_link`/`sh_info`: `.symtab` links `.strtab`, its `sh_info` the
+    plan's first global (S-73); `.symtab_shndx` links `.symtab`;
+    `.rela.plt` has `sh_link` 0 and `sh_info` `.got.plt` (S-69);
+  - `.relro_padding` (layout's own `NOBITS` chunk, L-64) has a header
+    and no synthetic plan;
+  - extended numbering (gABI): when the section count or `.shstrtab`'s
+    index reaches `SHN_LORESERVE`, `e_shnum` 0 and `e_shstrndx`
+    `SHN_XINDEX`, with the values in section header 0;
+  - each structural chunk's size is checked against its encoding
+    (`internal-error` otherwise).
+
+- **I-116 [M1] The phase's entry point** (`link::write`, WP-027b). It
+  reads the front's tables (`Front` of `spec/landed/pipeline/
+  FRONT-INTERFACE.md`) by reference, as `link::Link`, and in order:
+  builds the fill tables (`LinkTables`: the global symbols' values in
+  parallel by `SymbolId`, I-30, without `redirect`: the record keys are
+  the scan's, already redirected); writes the structural units (I-40);
+  builds the plan (`from_layout`) with the synthetic chunks of
+  `Link.synth` (synth's own `SynthChunk`s and `FillCx`); creates the
+  output (§7.2), fills it (§5.3), rechecks the inputs (I-118), and
+  commits. `on_phase(100, "image")` and `on_phase(105, "output")` are
+  called as those phases end, for `--time-phases` (§11.2). The target
+  kind of each key is the scan's (`link::KeyFacts`, which the driver
+  answers with the scan's own view), so fill and scan cannot disagree.
+- **I-117 [M1] Values in non-allocated sections.** A symbol or fragment
+  in a non-alloc chunk (`.debug_*`, `.debug_str`'s merged chunk) has the
+  value of its offset from its output section's start (the gABI's
+  `sh_addr` 0), and a relocation of a debug section against it is
+  applied with that value (GNU ld, lld).
+- **I-118 [M1] The end of the phase** (`spec/input.md` §11.5). After
+  every window is written and before the rename, every input file the
+  store still holds open is checked again (`Store::recheck`, through the
+  driver's `Link.recheck` callback: `mortar_image` does not depend on
+  `mortar_input`). A file whose size, `st_mtime` or `st_ctime` changed
+  is `input-changed` at `(100, FileId, 0)`, and the link fails with no
+  output file (I-65).
+- **I-119 [M1] References into split sections** are resolved by the
+  fill tables (`Tables::split_target`, which gives S + A): a section
+  symbol of a `Merge` section by the piece at `st_value + A`
+  (`spec/synth.md` S-17, S-18, `mortar_merge::refs::section_symbol`); a
+  named symbol of one by its own piece, with A added after (S-19, S-22);
+  a symbol in `.eh_frame` by `EhPlan::value` (S-50), and the relocations
+  of `.eh_frame` itself at `EhPlan::place` (S-52, S-53).
 
 ### 5.5 Gaps
 
@@ -651,11 +732,33 @@ writes a value chosen by the referring section's name, as
   | referring section | ELFCLASS64 | ELFCLASS32 |
   |---|---|---|
   | `.debug_ranges`, `.debug_loc` | 1 | 1 |
+  | `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | **0** | 0 |
   | `.debug_aranges` | all ones, **and the tuple's length 0** (I-112) | the same |
   | `.debug_frame` | all ones | all ones |
-  | every other debug name (`.debug_info`, `.debug_addr`, `.debug_line`, `.debug_rnglists`, `.debug_loclists`, `.debug_str_offsets`, …) | all ones | **0** |
+  | every other debug name (`.debug_info`, `.debug_line`, `.debug_str_offsets`, …) | all ones | **0** |
 
-  Why each row (E9, E10, E16, E17):
+  Why each row (E9, E10, E16, E17, and WP-027e's matrix,
+  `spec/landed/pipeline/WP-027e.md`):
+  - `.debug_rnglists`/`.debug_loclists`/`.debug_addr` (DWARF 5): their
+    entries pair an address with a length (`DW_RLE_start_length`,
+    `DW_LLE_start_length`; through `.debug_addr`, Clang's
+    `DW_RLE_startx_length` and `DW_LLE_startx_length`), so all ones makes
+    `[2^64 − 1, len − 1)`, which wraps. gdb 16 then reports `Invalid
+    .debug_rnglists data (inverted range)` and drops the CU's whole range
+    list, and stepping into that CU's code says `pc … in read in CU, but
+    not in symtab` (GCC 14 `-gdwarf-5`, its default, `-O0`). 0 is what
+    GNU ld (without a kept copy), lld 19/22 and mold write: gdb skips an
+    entry that starts at 0 when no section is there (`.debug_rnglists
+    entry has start address of zero`), a subprogram whose
+    `DW_FORM_addrx` `low_pc` is 0 is dropped by gdb and lldb 19, and
+    lldb's breakpoints, lookups and steps are those of the all-ones
+    output. It is sound because no code lies in `[0, len)`: the non-PIE
+    base is at least 4 MiB (`spec/layout.md` L-68), so only a dead
+    function of 4 MiB or more could reach it. A PIE or a low layout (M2)
+    must revisit this row: E16 measured lldb losing lines there with the
+    references' 0. `llvm-dwarfdump --verify` reports `DIE has overlapping
+    ranges` for a CU's several `[0, len)` entries (lld and mold: the
+    same); the debuggers are the oracle.
   - `.debug_ranges`/`.debug_loc` (DWARF ≤ 4 pairs): `(0, 0)` ends the
     list and a first word of all ones selects a base address; `(1, 1)` is
     empty. lld and mold write 1.
@@ -669,7 +772,8 @@ writes a value chosen by the referring section's name, as
     tuple is empty and every row below passes. A tuple address of `2^63`
     also passed every 64-bit row; the empty tuple was chosen because it
     is empty in both classes.
-  - ELFCLASS64 elsewhere: gdb 16 and lldb 19 drop a subprogram whose
+  - ELFCLASS64 elsewhere (`DW_FORM_addr` in `.debug_info`,
+    `DW_LNE_set_address`): gdb 16 and lldb 19 drop a subprogram whose
     `low_pc` is all ones (`llvm-dwarfdump` prints `dead code`). A 0 is an
     address: in the low layout lld's and mold's Clang DWARF 5 outputs
     lose lldb's lines because `.debug_addr` claims `[0, size)`.
@@ -729,7 +833,7 @@ writes a value chosen by the referring section's name, as
   relocation record has its field there, in which case those bytes are
   left as the input has them. It is a function of the record and the
   section bytes, so clipping applies as for any write (`max_reach.after`
-  is raised to 8 for `.debug_aranges` in I-35's search). No DWARF is
+  is raised to at least 8 for `.debug_aranges` in I-35's search). No DWARF is
   parsed.
 - **I-48 [M1]** The tombstone is truncated to the field, never checked
   for range (it is not a value of `X`), and replaces `X` for every type
@@ -1272,11 +1376,21 @@ random input's).
     or thunk (`patch`, `thunk`), and the commons' chunk (`common`);
   - `define` per symbol of file 0 that layout defined
     (`spec/layout.md` §13), with its value;
-  - non-alloc input sections: none until `spec/plumb.md` has records for
-    them (request R-9: `nplace` for a section at an offset of a non-alloc
-    output section, `merged` for a merged non-alloc section whose pieces
-    are not listed). `mortar_plumb` stage 1 does not check non-alloc
-    relocations (`spec/plumb.md` §1), so nothing is lost in M1.
+  - non-alloc input sections (R-9, applied by WP-028b; written by
+    WP-027b): `nplace` per non-alloc input section placed whole, with
+    its output section's name and its offset from that section's start;
+    `merged` per `SHF_MERGE` non-alloc input section (its pieces are not
+    listed).
+  - Within a file, `place` and `piece` records are in address order
+    (pieces of one fragment, such as the NUL padding of a string
+    section, share an address; ties by section, then input offset).
+  - `.eh_frame`'s pieces are its kept records (S-49), each at its output
+    address with its output size.
+  - `thunk` and `patch` chunks: one record per `Placement.patches` row,
+    named as `.symtab` names it (S-80), a thunk with its target's name
+    (`@plt` appended for a PLT target) and addend (WP-027c).
+  - Not yet written: `fold` (M2). `common` is not a
+    chunk of its own in M1 (commons are placed in `.bss`, layout §8).
 - **I-79 [M1]** The map is a function of the tables and the file names,
   written after layout and independent of fill. Each record group is
   formatted in parallel per file (`map_collect`, rule 3) and the buffers
@@ -1285,6 +1399,50 @@ random input's).
   same writer as the output (temporary file, rename, §7), only for a
   successful link; a failed link removes nothing at `FILE` (not
   compared with the references, E14).
+
+### 9.3 The GNU-style map (WP-027d: specified, not implemented)
+
+- **I-120 [proposed]** `-Map=FILE` and `-M` write a human-readable map in
+  GNU ld's text layout, and `--mortar-map=FILE` writes `mortar-map 1`
+  (I-77, I-78) for the verifier and tools. Until this lands I-77 stands
+  (`-Map` is `mortar-map 1`). When it lands every consumer of the machine
+  map moves to `--mortar-map` in the same change: the pipeline and
+  options tests (`crates/mortar/tests/pipeline.rs` `mortar()`,
+  `debuggers.rs` `map_option()`), `cargo xtask linktest` (its L3 verifier
+  run) and `layout/map-file.test` (XFAIL today: it checks GNU's text).
+  Both may be given; each is written as I-79 says.
+- **I-121 [proposed] The text.** Byte-compatible headings and record
+  shapes of GNU ld 2.44, so that people and the scripts that grep GNU
+  maps read it; not byte-identical content (addresses, order and fill are
+  mortar's). In order:
+  1. `Archive member included to satisfy reference by file (symbol)`, a
+     blank line, and per taken member `ARCHIVE(MEMBER)` and on the next
+     line 26 spaces then `FILE (SYMBOL)`: the file and symbol whose
+     reference took it (resolve's first taker, `spec/resolve.md` §4.3);
+  2. `Discarded input sections`, then per dropped COMDAT copy and per
+     section `--gc-sections` removes, ` NAME ADDR SIZE FILE` (address 0);
+  3. `Memory Configuration`, the fixed four lines GNU writes with no
+     `MEMORY` command (`Name Origin Length Attributes`,
+     `*default* 0x0000000000000000 0xffffffffffffffff`);
+  4. `Linker script and memory map`, `LOAD FILE` per input in `FileId`
+     order, then per output section in address order
+     `NAME` padded to 16, `0x%016x` address, size in `0x%x` right-aligned
+     to 10; per placed input section ` NAME` and, when it is longer than
+     14 columns, a new line of 16 spaces, then address, size and
+     `FILE` or `ARCHIVE(MEMBER)`; per named global or local symbol
+     defined there 16 spaces, address, 16 spaces, name; ` *fill*` with
+     address, size and the fill word for alignment gaps in code (the
+     fill of §4); a synthetic chunk as an input section of file
+     `mortar` (`spec/synth.md` S-3 names), a thunk or erratum patch as
+     `__TARGET_veneer` lines as in `mortar-map 1`;
+  5. `OUTPUT(FILE ELF-TARGET)`, GNU's emulation target name
+     (`elf64-littleaarch64`, `elf64-x86-64`, `elf32-i386`).
+  The script lines GNU prints (` *(.text.unlikely ...)`) are not written:
+  mortar has no script for default placement. `--cref` stays refused.
+- **I-122 [proposed] Determinism and cost.** The text is a function of
+  the same tables as `mortar-map 1` (I-79) and of nothing else; it is
+  formatted per output section in parallel and is written only when
+  asked. The determinism matrix covers it like the machine map.
 
 ## 10. I/O: the measured design
 
@@ -1611,7 +1769,8 @@ pub trait SynthChunk {
 
 | subject | GNU ld 2.44 | lld 22 | mold 2.37.1 | mortar | rule |
 |---|---|---|---|---|---|
-| debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`, `addr`, `rnglists`, `loclists`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| debug reference into a dropped COMDAT copy, ELFCLASS64 (`.debug_info`, `line`, `frame`) | the kept copy's address + addend when the sizes are equal, else 0 | 0 | 0 | all ones | I-47 |
+| the same in `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | redirect or 0 | 0 | 0 | 0 | I-47 |
 | the same, ELFCLASS32 | redirect or 0 | 0 | 0 | 0 (`.debug_frame`: all ones) | I-47 |
 | the same in `.debug_aranges` | redirect or 0 | 0 | 0 | all ones, length 0 | I-47, I-112 |
 | the same in `.debug_ranges`/`.debug_loc` | redirect or 0 (GC case: 0 in `.debug_loc`, `spec/a64.md` §13.2) | 1 | 1 | 1 | I-47 |
@@ -1660,8 +1819,9 @@ pub trait SynthChunk {
 - `window_boundary_sequences`: the AArch64 GD→LE sequence placed so that
   a window boundary falls at `o+4`, `o+8` and `o+12`, and the x86-64
   `TLSGD` form with a boundary at each byte of `[P − 4, P + 12)`: the
-  bytes equal an unclipped fill (I-35, I-111); the 22-byte large-model
-  form is left as the input has it (I-111, R-14).
+  bytes equal an unclipped fill (I-35, I-111); the same for the 22-byte
+  large-model `TLSGD` and `TLSLD` forms at each byte of `[P − 3, P + 19)`
+  (`spec/x64.md` §8.6).
 - `max_reach_derived`: `Facts.max_reach` equals the maximum over the
   tables, and no `apply` writes outside its record's window (I-111).
 - `gap_patterns`: trap, no-op and zero gaps per I-41, positioned by
@@ -2053,6 +2213,9 @@ Reason: P2 of the review; the measurement in I-82 (re-reading 45.9 MB
 costs about 2.9 ms of wall time on 8 threads).
 
 ### R-14 `spec/x64.md` (WP-029)
+
+*Answered by `spec/x64.md` X-25 and X-27: both 22-byte forms are
+relaxed, with their windows (applied by WP-029r).*
 
 The x86-64 large-model `TLSGD` sequence (`lea` with `R_X86_64_TLSGD`,
 `movabs` with `R_X86_64_PLTOFF64`, `add`, `call`; 22 bytes,

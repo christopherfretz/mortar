@@ -219,6 +219,8 @@ fn s6_1_classify_every_type_number() {
     let mut by_status = [0u32; 4];
     for r_type in 0..=0xFFFF_u32 {
         let row = table::howto(r_type);
+        // The compile-time table is the match, row for row (WP-032b).
+        assert_eq!(table::lookup(r_type).copied(), row, "{r_type}");
         if let Some(h) = row {
             by_status[h.status as usize] += 1;
             assert_eq!(Some(h.name), mortar_elf::reloc::aarch64::name(r_type), "{r_type}");
@@ -244,8 +246,10 @@ fn s6_1_classify_every_type_number() {
             }
         }
     }
-    // a64.md §1: 60 M1, 42 M2, 16 later, 22 refused.
-    assert_eq!(by_status, [60, 42, 16, 22]);
+    // a64.md §1: 61 M1, 41 M2, 16 later, 22 refused.
+    assert_eq!(by_status, [61, 41, 16, 22]);
+    // Row 313, M1 since WP-027d (GCC's `-fpie -O0` GOT loads; not in the census).
+    assert!(m1.classify(313, site).is_ok());
     // The census's 34 types: 32 M1, the traditional TLSGD pair M2.
     let census = [
         257, 258, 260, 261, 264, 266, 268, 269, 273, 274, 275, 277, 278, 280, 282, 283, 284, 285,
@@ -680,7 +684,9 @@ fn s13_2_non_alloc_and_tombstones() {
         (b".debug_info", all),
         (b".debug_aranges", all),
         (b".debug_frame", all),
-        (b".debug_addr", all),
+        (b".debug_addr", 0),
+        (b".debug_rnglists", 0),
+        (b".debug_loclists", 0),
         (b".debug_line", all),
     ] {
         c.name = name;
@@ -734,6 +740,55 @@ fn s13_2_non_alloc_and_tombstones() {
     let r = Reloc { r_offset: 0, key: key(1), r_type: 257, addend: 0 };
     let s = scan_one(A64::M1, &t, OutputKind::Pie, na, &[0; 8], r).unwrap();
     assert!(s.errors.is_empty() && s.counts.is_empty());
+}
+
+/// a64.md §13.2 with arch.md §4.3 (`spec/x64.md` R-13): at a non-alloc
+/// place `ABS*` against a TLS symbol is the `DtpRel` exception, refused by
+/// name until fill sees the symbol's type (the staging note); `PREL32`
+/// against a TLS symbol is `it is thread-local`; `TLS_DTPREL64` against a
+/// non-TLS symbol `it is not thread-local`; the ordinary cases unchanged.
+#[test]
+fn s13_2_non_alloc_tls_targets() {
+    let mut t = local(0x41_0000);
+    t.tls_sym(key(2), 0x42_0010, TargetKind::Local);
+    let na = PlaceFacts { alloc: false, writable: false };
+    let one = |r_type, k| {
+        let r = Reloc { r_offset: 0, key: k, r_type, addend: 0 };
+        scan_one(M2, &t, OutputKind::Static, na, &[0; 8], r).unwrap()
+    };
+    let refused = ScanError::Refused(mortar_arch::Refusal::named(
+        RefusalClass::Feature,
+        mortar_a64::NON_ALLOC_TLS_ABS,
+    ));
+    for ty in [257, 258, 259] {
+        let s = one(ty, key(2));
+        assert_eq!(s.errors, [(0, refused)], "ABS {ty} against TLS");
+        assert!(s.raised.is_empty() && s.counts.is_empty());
+    }
+    assert_eq!(one(261, key(2)).errors, [(0, ScanError::Incompatible(Incompatible::ThreadLocal))]);
+    assert_eq!(
+        one(1029, key(1)).errors,
+        [(0, ScanError::Incompatible(Incompatible::NotThreadLocal))]
+    );
+    // Unchanged: ABS64 against a non-TLS symbol, TLS_DTPREL64 against TLS.
+    assert!(one(257, key(1)).errors.is_empty());
+    assert!(one(1029, key(2)).errors.is_empty());
+    // At an alloc place ABS64 against TLS stays `it is thread-local`.
+    let r = Reloc { r_offset: 0, key: key(2), r_type: 257, addend: 0 };
+    let s = scan_one(M2, &t, OutputKind::Static, ALLOC, &[0; 8], r).unwrap();
+    assert_eq!(s.errors, [(0, ScanError::Incompatible(Incompatible::ThreadLocal))]);
+}
+
+/// arch.md §4.3 (`spec/x64.md` R-6): `PC` against `weak0` in a PIE is the
+/// architecture's §7, on AArch64 `S = P` with no demand and no error.
+#[test]
+fn s4_3_pc_weak0_in_pie_is_s_equals_p() {
+    let mut t = Tables::default();
+    t.sym(key(1), 0, TargetKind::Weak0);
+    let r = Reloc { r_offset: 0, key: key(1), r_type: 261, addend: 5 };
+    let w = PlaceFacts { alloc: true, writable: true };
+    let s = scan_one(M2, &t, OutputKind::Pie, w, &[0; 4], r).unwrap();
+    assert!(s.errors.is_empty() && s.raised.is_empty() && s.counts.is_empty());
 }
 
 /// arch.md §3.4 (`spec/image.md` §4.4, I-18): one event per class per

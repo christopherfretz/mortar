@@ -1321,6 +1321,65 @@ pub fn parse_defaults(text: &str) -> Result<Vec<Anomaly>, Vec<Error>> {
     if errors.is_empty() { Ok(out) } else { Err(errors) }
 }
 
+/// A run-wide `xfail` of mortar on one architecture, `tests/link/xfails`
+/// (`spec/harness.md` "Markers"): mortar has no back end there yet, so
+/// every mortar link of that architecture is expected to fail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchXfail {
+    pub line: usize,
+    pub arch: Arch,
+    pub reason: String,
+}
+
+/// The run-wide mortar `xfail`s: one `mortar,<arch>: <reason>` per line,
+/// `#` comments and blank lines aside; at most one per architecture.
+///
+/// # Errors
+/// Every line that does not have that form, with its number.
+pub fn parse_xfails(text: &str) -> Result<Vec<ArchXfail>, Vec<Error>> {
+    let mut out: Vec<ArchXfail> = Vec::new();
+    let mut errors = Vec::new();
+    for (index, raw) in text.lines().enumerate() {
+        let line = index + 1;
+        let text = raw.trim();
+        if text.is_empty() || text.starts_with('#') {
+            continue;
+        }
+        let mut error = |message: String| errors.push(Error { line, message });
+        let Some((who, reason)) = text.split_once(':') else {
+            error(format!("'{text}' is not 'mortar,<arch>: <reason>'"));
+            continue;
+        };
+        let words: Vec<&str> = who.split(',').map(str::trim).collect();
+        let arch = match words.as_slice() {
+            ["mortar", arch] => Arch::parse(arch),
+            _ => None,
+        };
+        let Some(arch) = arch else {
+            error(format!(
+                "'{}' is not 'mortar,<arch>': a run-wide xfail is for mortar on one architecture",
+                who.trim()
+            ));
+            continue;
+        };
+        let reason = reason.trim();
+        if reason.is_empty() {
+            error("a run-wide xfail needs a reason".to_owned());
+            continue;
+        }
+        if let Some(first) = out.iter().find(|x| x.arch == arch) {
+            error(format!(
+                "a second run-wide xfail for mortar on {} (the first is on line {})",
+                arch.name(),
+                first.line
+            ));
+            continue;
+        }
+        out.push(ArchXfail { line, arch, reason: reason.to_owned() });
+    }
+    if errors.is_empty() { Ok(out) } else { Err(errors) }
+}
+
 pub fn parse(text: &str) -> Result<Test, Vec<Error>> {
     let mut parser = Parser::default();
     // The file being read: its name, the line of its marker, its text.
@@ -1581,6 +1640,23 @@ FileHeader:
         assert!(error("mortar: A9\n").contains("never mortar"));
         assert!(error("mold: 9\n").contains("not a list of plumb.md anomaly ids"));
         assert!(error("mold:\n").contains("not a list of plumb.md anomaly ids"));
+    }
+
+    // "Markers": the run-wide mortar xfails, `tests/link/xfails`.
+    #[test]
+    fn arch_xfails() {
+        let x = parse_xfails("# c\n\nmortar,x86_64: no back end\nmortar, i386 : later\n").unwrap();
+        assert_eq!(x.len(), 2);
+        assert_eq!((x[0].line, x[0].arch, x[0].reason.as_str()), (3, Arch::X86_64, "no back end"));
+        assert_eq!((x[1].arch, x[1].reason.as_str()), (Arch::I386, "later"));
+        let error = |text: &str| parse_xfails(text).unwrap_err()[0].message.clone();
+        assert!(error("mortar x86_64 why\n").contains("is not 'mortar,<arch>: <reason>'"));
+        assert!(error("mold,x86_64: why\n").contains("for mortar on one architecture"));
+        assert!(error("mortar: why\n").contains("for mortar on one architecture"));
+        assert!(error("mortar,x86_64,i386: why\n").contains("for mortar on one architecture"));
+        assert!(error("mortar,sparc: why\n").contains("for mortar on one architecture"));
+        assert!(error("mortar,i386:\n").contains("needs a reason"));
+        assert!(error("mortar,i386: a\nmortar,i386: b\n").contains("a second run-wide xfail"));
     }
 
     // "Steps": the keywords, their qualifiers and their arguments.

@@ -215,7 +215,10 @@ REL with implicit addends for i386) is:
    does not change which file that is (§12.1);
 4. otherwise `no-target`, an error: `target emulation unknown: -m or at
    least one .o file required` (lld's wording; GNU ld uses its built-in
-   default, mold says `-m option is missing` [E1]).
+   default, mold says `-m option is missing` [E1]). It is not reported
+   when an input already has an error (a missing file is `cannot-open-file`
+   alone): that input may be the one that would have named the target
+   (WP-027c ruling).
 
 An **ELF file** for this purpose is a relocatable object, a shared object,
 or an archive's first member that is a relocatable object (in archive
@@ -1293,7 +1296,12 @@ descriptor budget and compares the output with the unbudgeted link.
 
 Checks, per file: one read at offset `n` (the size from `fstat`) must
 return 0 bytes; a short read is an error; and a second `fstat` at the
-last read of loading must give the same size, `st_mtime` and `st_ctime`.
+last read of loading must give the same size, `st_mtime`, `st_ctime` and
+`st_nlink` (the link count: a held file renamed over or removed loses a
+link, which a filesystem with a coarse clock may not show in `st_ctime`
+when the unlink comes within one tick of the last write; WP-032a measured
+191 of 200 such unlinks invisible to `st_ctime` on overlayfs `/tmp`, 0 of
+200 to `st_nlink`).
 Otherwise the error `input-changed` at the file's lowest mention (§9.3):
 `file changed while it was read`. The staged store makes the checks
 after its parts are read (§11.9 wave D), so a file truncated between its

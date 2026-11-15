@@ -15,6 +15,7 @@
 //!   [`Layout::check`] ([`check`]).
 //! - [`identity`]: what survives between links (§7.1), and the dependees
 //!   of the dependency index (§7.2).
+//! - [`records`]: the record index the scan writes and fill reads (I-29).
 //! - [`seed`]: a malformed scheduling seed as a diagnostic (§6).
 
 mod flags;
@@ -33,9 +34,11 @@ pub mod layout;
 pub mod liveness;
 pub mod par;
 pub mod plan;
+pub mod records;
 pub mod resolution;
 pub mod seed;
 pub mod split;
+pub mod wp032b_steps;
 
 pub use assignment::Assignment;
 pub use check::{CheckContext, Rule, Violation};
@@ -48,6 +51,7 @@ pub use id::{
 pub use inputs::Inputs;
 pub use layout::{Folds, Layout, MergeMap, Placement, Slots};
 pub use liveness::Liveness;
+pub use records::RecIndex;
 pub use resolution::Resolution;
 pub use split::Split;
 pub use table::Broken;

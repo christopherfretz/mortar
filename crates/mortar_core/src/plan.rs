@@ -406,6 +406,9 @@ pub struct ZOptions {
     pub combreloc: Option<bool>,
     /// `-z sectionheader`, `-z nosectionheader`.
     pub sectionheader: Option<bool>,
+    /// `-z memory-seal`, `-z nomemory-seal` (GNU ld 2.44; `spec/synth.md`
+    /// S-95's `MEMORY_SEAL` property, R-C3).
+    pub memory_seal: Option<bool>,
 }
 
 /// Output shaping (`spec/cli.md` §3.8).
@@ -464,7 +467,9 @@ pub enum BuildId {
     Fast,
     /// `uuid`.
     Uuid,
-    /// `0x<hex>`: the given bytes, as the hexadecimal text.
+    /// `0x<hex>`: the given bytes, as the option's text (`0x` included;
+    /// `spec/image.md` I-70 is checked by the command line and again by
+    /// the note's plan).
     Hex(String),
 }
 
@@ -646,6 +651,8 @@ pub struct TargetOption {
     /// The option as the user wrote it (`--fix-cortex-a53-843419`,
     /// `-z lam-u48`).
     pub option: String,
+    /// Its value, if it has one (`full` of `--fix-cortex-a53-843419=full`).
+    pub value: Option<OsString>,
     /// The targets it belongs to.
     pub targets: Vec<Target>,
 }
