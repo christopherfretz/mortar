@@ -162,7 +162,13 @@ impl DynSymSource for DynSource<'_, '_> {
         }
         // S-81: a common symbol is `STT_OBJECT`.
         let typ = if g.def == SymDef::Common { STT_OBJECT } else { g.typ };
-        let version = self.inputs.symbols.get(key).and_then(|k| k.version);
+        // `foo@V` is in the key's name; `foo@@V` only in the defining entry.
+        let version = self
+            .inputs
+            .symbols
+            .get(key)
+            .and_then(|k| k.version)
+            .or_else(|| self.syms.default_version(key));
         Some(ProgramDef { info: g.binding << 4 | typ, other: g.other, size: g.size, version })
     }
 

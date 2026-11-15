@@ -65,6 +65,18 @@ impl<'a, 's> CoreSyms<'a, 's> {
         self.tables.get(file.0 as usize)?.as_ref()
     }
 
+    /// The version `V` of a key whose definition is written `foo@@V` in
+    /// its relocatable object (a default-version definition, resolve
+    /// §9.2: its key is `foo`, so the key's own name carries no version).
+    #[must_use]
+    pub fn default_version(&self, id: SymbolId) -> Option<&'s [u8]> {
+        let Some(Def::Defined(e)) = self.resolution.def.get(id).copied() else { return None };
+        let t = self.table(e.file)?;
+        let name = t.name(&t.get(e.index).ok()?).ok()?;
+        let at = name.windows(2).position(|w| w == b"@@")?;
+        Some(&name[at + 2..])
+    }
+
     fn sym(&self, e: SymEntry) -> Option<(Sym, &SymbolTable<'s>)> {
         let t = self.table(e.file)?;
         Some((t.get(e.index).ok()?, t))
