@@ -16,12 +16,13 @@ use mortar_diag::FileRef;
 use mortar_digest::TreeStyle;
 use mortar_image::IMAGE_BLOCK;
 use mortar_image::fill::{self, Image};
-use mortar_image::plan::{Builder, InputUnit, Pattern, RecOrder, RelocSection, SynthUnit, Unit};
+use mortar_image::plan::{Builder, InputUnit, Pattern, RecRows, RelocSection, SynthUnit, Unit};
 use mortar_image::synth::SynthChunk;
+use support::Chunk;
 use support::*;
 
-fn chunks_of(w: &World) -> Vec<&dyn SynthChunk> {
-    w.chunks.iter().map(|c| &**c as &dyn SynthChunk).collect()
+fn chunks_of(w: &World) -> Vec<Chunk<'_>> {
+    w.chunks.iter().map(|c| &**c as Chunk<'_>).collect()
 }
 
 // spec: image.md I-33, I-35, §16.1 "purity": identical bytes for W' of 4 KiB,
@@ -68,6 +69,7 @@ fn rewindow(w: World, window: u64) -> World {
             Unit::Input(i) => b.input(row.offset, row.size, p.inputs[i as usize].clone()),
             Unit::Bytes(i) => b.bytes(row.offset, p.bytes[i as usize].clone()),
             Unit::Synth(i) => b.synth(row.offset, row.size, p.synth[i as usize].clone()),
+            Unit::Merged(i) => b.merged(row.offset, row.size, p.merged[i as usize].clone()),
             Unit::Gap(pat) => b.pad(row.offset..row.end(), pat),
         }
     }
@@ -103,9 +105,8 @@ fn one_section(words: &[u32], at: u64, records: Vec<Reloc>, size: u64, w: u64) -
     let mut source = MemSource::default();
     source.files.insert(FileId(1), (bytes, false));
     b.path(FileId(1), FileRef::new("a.o"));
-    let order = RecOrder::of(&records);
     let proof = vec![ProofRun { start: 0, end: len, proof: Proof::Insn, unit: 0, unit_offset: 0 }];
-    let r = b.relocs(RelocSection { records: records.into(), order, proof: proof.into() });
+    let r = b.relocs(RelocSection { section: SectionId(1), rows: RecRows::Decoded(records.into()), proof: proof.into() });
     let name = b.name(b".text");
     let unit = InputUnit {
         file: FileId(1),
@@ -124,7 +125,7 @@ fn one_section(words: &[u32], at: u64, records: Vec<Reloc>, size: u64, w: u64) -
     for n in 1..8 {
         tables.define(key(n), 0x40_8000 + 0x100 * u64::from(n), true);
     }
-    World { plan: b.finish(w, &Pool::sequential()).unwrap(), source, tables, chunks: Vec::new() }
+    World { plan: b.finish(w, &Pool::sequential()).unwrap(), source, tables, chunks: Vec::new(), records: Default::default() }.indexed()
 }
 
 // spec: image.md I-111, I-35 step 2: the GD→LE sequence (`spec/a64.md`
@@ -217,7 +218,7 @@ fn i29_permuted_and_overlapping_records() {
     // Two records at overlapping fields: the later in record order wins.
     records.push(Reloc { r_offset: 4004, key: key(6), r_type: ABS32, addend: 1 });
     let world = one_section(&words, 100, records, 3 * w, w);
-    assert!(matches!(world.plan.relocs[0].order, RecOrder::Permuted(_)));
+    assert!(matches!(world.records.get(SectionId(1)), mortar_core::records::Order::Permuted(_)));
     let chunks = Vec::new();
     let img = image(&world, &chunks);
     let want = reference(&img);
@@ -241,7 +242,9 @@ fn i41_gaps_patterns_and_zero_size_rows() {
         source: MemSource::default(),
         tables: FakeTables::default(),
         chunks: Vec::new(),
-    };
+        records: Default::default(),
+    }
+    .indexed();
     let chunks = Vec::new();
     let img = image(&world, &chunks);
     let got = fill_mem(&img, &Pool::sequential()).unwrap();
@@ -285,18 +288,18 @@ fn i31_whole_chunks_join_windows() {
     let name = b.name(b".x");
     // A whole chunk of 2.5 windows from 1.5w, and one of 100 bytes
     // straddling 5w.
-    b.synth(w + w / 2, 2 * w + w / 2, SynthUnit { chunk: 0, id: ChunkId(1), name, whole: true });
-    b.synth(5 * w - 50, 100, SynthUnit { chunk: 1, id: ChunkId(2), name, whole: true });
-    b.synth(6 * w - 50, 100, SynthUnit { chunk: 2, id: ChunkId(3), name, whole: false });
+    b.synth(w + w / 2, 2 * w + w / 2, SynthUnit { chunk: 0, id: ChunkId(1), name, whole: true, eh: false });
+    b.synth(5 * w - 50, 100, SynthUnit { chunk: 1, id: ChunkId(2), name, whole: true, eh: false });
+    b.synth(6 * w - 50, 100, SynthUnit { chunk: 2, id: ChunkId(3), name, whole: false, eh: false });
     let plan = b.finish(w, &Pool::sequential()).unwrap();
     let jobs: Vec<_> = plan.jobs.iter().map(|j| (j.start / w, j.end / w)).collect();
     assert_eq!(jobs, vec![(0, 1), (1, 4), (4, 6), (6, 7), (7, 8), (8, 9), (9, 10)]);
-    let chunks: Vec<Box<dyn SynthChunk>> = vec![
+    let chunks: Vec<Box<dyn SynthChunk + Sync>> = vec![
         Box::new(Summing { size: 2 * w + w / 2 }),
         Box::new(Summing { size: 100 }),
         Box::new(Counting { size: 100, seed: 3, sealed: None }),
     ];
-    let world = World { plan, source: MemSource::default(), tables: FakeTables::default(), chunks };
+    let world = World { plan, source: MemSource::default(), tables: FakeTables::default(), chunks, records: Default::default() }.indexed();
     let chunks = chunks_of(&world);
     let img = image(&world, &chunks);
     let got = par::check_schedules(|pool| fill_mem(&img, pool).unwrap());
@@ -398,8 +401,7 @@ fn tomb_world(name: &[u8], second: Option<u64>) -> Vec<u8> {
     if let Some(o) = second {
         records.push(Reloc { r_offset: o, key: key(2), r_type: ABS64, addend: 0 });
     }
-    let order = RecOrder::of(&records);
-    let r = b.relocs(RelocSection { records: records.into(), order, proof: Vec::new().into() });
+    let r = b.relocs(RelocSection { section: SectionId(1), rows: RecRows::Decoded(records.into()), proof: Vec::new().into() });
     let name = b.name(name);
     let unit = InputUnit {
         file: FileId(1),
@@ -422,7 +424,9 @@ fn tomb_world(name: &[u8], second: Option<u64>) -> Vec<u8> {
         source,
         tables,
         chunks: Vec::new(),
-    };
+        records: Default::default(),
+    }
+    .indexed();
     let chunks = Vec::new();
     let img = image(&world, &chunks);
     let got = fill_mem(&img, &Pool::sequential()).unwrap();
@@ -464,10 +468,10 @@ fn i73_build_id_matches_the_reference_tree() {
     let name = b.name(b".note.gnu.build-id");
     let chunk_at = 2 * w - 10;
     // The descriptor at chunk offset 16..36, straddling 2w.
-    b.synth(chunk_at, 64, SynthUnit { chunk: 0, id: ChunkId(1), name, whole: false });
-    b.synth(0, chunk_at, SynthUnit { chunk: 1, id: ChunkId(2), name, whole: false });
+    b.synth(chunk_at, 64, SynthUnit { chunk: 0, id: ChunkId(1), name, whole: false, eh: false });
+    b.synth(0, chunk_at, SynthUnit { chunk: 1, id: ChunkId(2), name, whole: false, eh: false });
     b.sealed(chunk_at + 16..chunk_at + 36);
-    let chunks: Vec<Box<dyn SynthChunk>> = vec![
+    let chunks: Vec<Box<dyn SynthChunk + Sync>> = vec![
         Box::new(Counting { size: 64, seed: 9, sealed: Some(16..36) }),
         Box::new(Counting { size: chunk_at, seed: 1, sealed: None }),
     ];
@@ -476,7 +480,9 @@ fn i73_build_id_matches_the_reference_tree() {
         source: MemSource::default(),
         tables: FakeTables::default(),
         chunks,
-    };
+        records: Default::default(),
+    }
+    .indexed();
     let chunks = chunks_of(&world);
     for style in [TreeStyle::Default, TreeStyle::Fast, TreeStyle::Sha1, TreeStyle::Sha256] {
         let mut img = image(&world, &chunks);
@@ -504,7 +510,9 @@ fn i73_build_id_matches_the_reference_tree() {
         source: MemSource::default(),
         tables: FakeTables::default(),
         chunks: Vec::new(),
-    };
+        records: Default::default(),
+    }
+    .indexed();
     let mut img = image(&world, &[]);
     img.build_id = Some(TreeStyle::Default);
     assert!(fill_mem(&img, &Pool::sequential()).is_err());
@@ -580,7 +588,7 @@ fn i111_max_reach_bounds_every_write() {
             )
             .unwrap();
             let name = w.plan.name(u.name).to_vec();
-            let recs: &[Reloc] = &rs.records;
+            let recs: &[Reloc] = decoded(rs);
             for (i, rec) in recs.iter().enumerate() {
                 let Ok(h) =
                     ARCH_M2.classify(rec.r_type, Site { bytes: &input, offset: rec.r_offset })

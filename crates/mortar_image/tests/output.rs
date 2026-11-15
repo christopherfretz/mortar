@@ -145,7 +145,7 @@ fn i64_dev_full_write_error() {
         return;
     }
     let world = random_world(2, 64 * 1024, 4096);
-    let chunks: Vec<&dyn mortar_image::synth::SynthChunk> =
+    let chunks: Vec<Chunk<'_>> =
         world.chunks.iter().map(|c| &**c as _).collect();
     let img = image(&world, &chunks);
     let out = Output::create(p, &opts()).unwrap();
@@ -320,7 +320,7 @@ fn i65_failed_fill_leaves_nothing() {
     let u = world.plan.inputs.iter().find(|u| u.section_size > 64).unwrap().clone();
     world.source.fail = Some((u.file, u.src + 8));
     world.source.files.get_mut(&u.file).unwrap().1 = false;
-    let chunks: Vec<&dyn mortar_image::synth::SynthChunk> =
+    let chunks: Vec<Chunk<'_>> =
         world.chunks.iter().map(|c| &**c as _).collect();
     let img = image(&world, &chunks);
     let out = Output::create(&p, &opts()).unwrap();
@@ -374,7 +374,7 @@ fn i63_fill_into_the_output_file() {
     let d = TempDir::new("e2e");
     let p = d.path("a.out");
     let world = random_world(21, 3 * 1024 * 1024, 65536);
-    let chunks: Vec<&dyn mortar_image::synth::SynthChunk> =
+    let chunks: Vec<Chunk<'_>> =
         world.chunks.iter().map(|c| &**c as _).collect();
     let img = image(&world, &chunks);
     let want = reference(&img);

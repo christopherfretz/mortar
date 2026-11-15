@@ -21,7 +21,8 @@ use std::ops::Range;
 use mortar_arch::{Proof, ProofRun, Reloc, SymValue, TargetKind};
 use mortar_core::{FileId, SectionId};
 use mortar_elf::{Object, SectionIndex, SymbolSection};
-use mortar_image::plan::{Builder, InputUnit, Plan, RecOrder, RelocSection};
+use mortar_core::RecIndex;
+use mortar_image::plan::{Builder, InputUnit, Plan, RecRows, RelocSection};
 
 use super::{FakeTables, MemSource, a64, key};
 
@@ -258,6 +259,8 @@ pub struct RefUnit {
 /// A plan built from a reference link, with what to compare.
 pub struct RefWorld {
     pub plan: Plan,
+    /// The record index of the plan's decoded rows (I-29).
+    pub records: RecIndex,
     pub source: MemSource,
     pub tables: FakeTables,
     pub units: Vec<RefUnit>,
@@ -465,7 +468,6 @@ pub fn ref_world(
             let exec = s.flags() & SHF_EXECINSTR != 0;
             let nrec = records.len();
             let relocs = (!records.is_empty()).then(|| {
-                let order = RecOrder::of(&records);
                 let proof = if exec {
                     vec![ProofRun {
                         start: 0,
@@ -478,8 +480,8 @@ pub fn ref_world(
                     Vec::new()
                 };
                 b.relocs(RelocSection {
-                    records: records.into_boxed_slice(),
-                    order,
+                    section: SectionId(next_section),
+                    rows: RecRows::Decoded(records.into_boxed_slice()),
                     proof: proof.into_boxed_slice(),
                 })
             });
@@ -507,7 +509,8 @@ pub fn ref_world(
         }
     }
     let plan = b.finish(window, &pool).expect("plan");
-    RefWorld { plan, source, tables, units, masks, left, dead, tombs, disagree }
+    let records = super::plan_index(&plan);
+    RefWorld { plan, records, source, tables, units, masks, left, dead, tombs, disagree }
 }
 
 /// A difference between the fill and the reference: file offset, ours,
