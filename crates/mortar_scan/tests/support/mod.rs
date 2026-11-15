@@ -7,6 +7,8 @@
 //! nothing here is test-only except the tools.
 #![allow(dead_code, reason = "each test file uses a part")]
 
+pub mod dynarch;
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;

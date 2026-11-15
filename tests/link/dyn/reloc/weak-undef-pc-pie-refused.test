@@ -1,0 +1,89 @@
+# dyn.md D-25, the refusal: in a `Pie`, an undefined weak key with an
+# unfillable use (here a PC-relative data read, x86-64 `R_X86_64_PC32` not
+# on a branch opcode, AArch64 `R_AARCH64_ADR_PREL_PG_HI21`) is refused by
+# name, `weak-undefined-pc-in-pie`, once per key. The use is what x86-64
+# `-fno-pic` code makes of weak data (`movl v(%rip)`, GCC and Clang);
+# AArch64 compilers use the GOT in every mode, so the AArch64 form is
+# written in assembly (the same rule, D-25's AArch64 column). The rest of
+# the program is PIE code. All three references refuse the PIE too, with
+# their own wording.
+#
+# In `Exec` the same key is `Weak0` (D-25, "otherwise"): the link succeeds
+# and every use sees 0, with or without a definition preloaded (all three
+# references). That half runs on x86-64 only: on AArch64, GNU ld and lld
+# resolve an `ADRP` against an undefined weak symbol in `-no-pie` to the
+# page of the place, not 0 (measured: "v present", reading code; mold
+# gives 0), so the program's test means nothing there.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-25"
+#@ arch: aarch64 x86_64
+
+cc -O2 -fPIE main.c -o main.o
+as weak.S -o weak.o
+cc -O2 -fPIC hook.c -o hook.o
+shlib gcc hook.o -o libhook.so
+link gcc -pie main.o weak.o -o pie
+  exit: fail
+  diag(bfd,x86_64): relocation R_X86_64_PC32 against undefined symbol `v' can not be used when making a PIE object
+  diag(bfd,aarch64): relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `v' which may bind externally can not be used
+  diag(lld,x86_64): relocation R_X86_64_PC32 cannot be used against symbol 'v'
+  diag(lld,aarch64): relocation R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol 'v'
+  diag(mold,x86_64): R_X86_64_PC32 relocation at offset * against symbol `v' can not be used
+  diag(mold,aarch64): R_AARCH64_ADR_PREL_PG_HI21 relocation at offset * against symbol `v' can not be used
+  diag(mortar): relocation * against undefined weak symbol `v' cannot be used in a position-independent executable; recompile with -fPIE
+link(x86_64) gcc -no-pie main.o weak.o -o exec
+run(x86_64) exec
+  stdout: v absent
+run(x86_64) exec
+  env: LD_PRELOAD=./libhook.so
+  stdout: v absent
+
+#--- main.c
+#include <stdio.h>
+
+int v_present(void);
+int v_read(void);
+
+int main(void) {
+  if (v_present())
+    printf("v present: %d\n", v_read());
+  else
+    puts("v absent");
+  return 0;
+}
+#--- weak.S
+/* v_read: a PC-relative read of the weak datum v; v_present: its address
+   compared with 0, through the same PC-relative form. */
+	.weak	v
+	.text
+	.globl	v_read
+	.type	v_read, %function
+	.globl	v_present
+	.type	v_present, %function
+#if defined(__x86_64__)
+v_read:
+	movl	v(%rip), %eax
+	ret
+v_present:
+	leaq	v(%rip), %rax
+	testq	%rax, %rax
+	setne	%al
+	movzbl	%al, %eax
+	ret
+#elif defined(__aarch64__)
+v_read:
+	adrp	x0, v
+	ldr	w0, [x0, :lo12:v]
+	ret
+v_present:
+	adrp	x0, v
+	add	x0, x0, :lo12:v
+	cmp	x0, #0
+	cset	w0, ne
+	ret
+#endif
+	.section .note.GNU-stack,"",%progbits
+#--- hook.c
+int v = 42;

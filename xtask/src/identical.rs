@@ -195,6 +195,31 @@ pub fn main(args: &[String]) -> u8 {
     }
 }
 
+/// The directory of `tests/link` that holds M2's dynamic cases: not in
+/// the corpus (`spec/harness.md` "static-identical"). None of its links is
+/// a static link; mortar refuses them until their packages land, and the
+/// refusals would churn the baseline at each landing.
+pub const DYNAMIC_CASES: &str = "dyn";
+
+/// The corpus: every directory of `tests/link` but [`DYNAMIC_CASES`], and
+/// `tests/identical`.
+fn corpus(root: &std::path::Path) -> Result<Vec<PathBuf>, String> {
+    let link = root.join("tests").join("link");
+    let entries =
+        std::fs::read_dir(&link).map_err(|e| format!("cannot read '{}': {e}", link.display()))?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot read '{}': {e}", link.display()))?;
+        let path = entry.path();
+        if path.is_dir() && entry.file_name() != DYNAMIC_CASES {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    paths.push(root.join("tests").join("identical"));
+    Ok(paths)
+}
+
 /// Runs the corpus in the digest mode and checks (or rewrites) the
 /// baseline; returns whether it passed.
 #[allow(clippy::too_many_lines)] // the run, its problems, the units not run, then the verdict
@@ -208,7 +233,13 @@ pub fn run(args: &Args) -> bool {
         results: Some(build_dir().join("static-identical-results.tsv")),
         no_plumb: true,
         digest: true,
-        paths: vec![root.join("tests").join("link"), root.join("tests").join("identical")],
+        paths: match corpus(&root) {
+            Ok(paths) => paths,
+            Err(e) => {
+                eprintln!("static-identical: {e}");
+                return false;
+            }
+        },
         ..linktest::Args::default()
     };
     let report = match linktest::run(&linktest_args) {
@@ -316,6 +347,18 @@ pub fn run(args: &Args) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // spec/harness.md "static-identical", "The corpus": `tests/link` but
+    // its dynamic cases, and `tests/identical`.
+    #[test]
+    fn the_corpus_leaves_out_the_dynamic_cases() {
+        let root = workspace_root();
+        let paths = corpus(&root).unwrap();
+        let link = root.join("tests").join("link");
+        assert!(paths.contains(&link.join("resolve")));
+        assert!(!paths.contains(&link.join(DYNAMIC_CASES)));
+        assert_eq!(paths.last(), Some(&root.join("tests").join("identical")));
+    }
 
     fn row(test: &str, line: usize, output: &str) -> DigestRow {
         DigestRow {

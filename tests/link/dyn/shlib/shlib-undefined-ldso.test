@@ -1,0 +1,41 @@
+# dyn.md D-12, D-13 (review finding F1): the default C hello, with the
+# shared-object undefined check on (the default for an executable). libc.so
+# (a script) names ld-linux in AS_NEEDED(...); libc.so.6 has strong
+# undefined references that only ld-linux defines (`__tls_get_addr`,
+# `_rtld_global_ro`, `__libc_stack_end`, `_dl_argv@GLIBC_PRIVATE`, ...:
+# 22 on AArch64, 21 on x86-64). ld-linux is reached by libc.so.6's own
+# DT_NEEDED entry, so it is used (U), not needed: its definitions satisfy
+# D-13's check, it gets no DT_NEEDED entry, and every default line links.
+# PIE and -no-pie; libc.so.6 is the only DT_NEEDED entry (D-11, E-shlib
+# 1.7). All three references agree (mold never checks, D-13).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-13"
+#@ spec: dyn.md "D-12"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE hello.c -o pie.o
+cc -O1 -fno-pie hello.c -o exec.o
+link gcc -pie pie.o -o pie
+run pie
+  stdout: hello
+check readelf -dW pie
+  count: 1 (NEEDED)
+  has: (NEEDED) Shared library: [libc.so.6]
+  not: [ld-linux
+link gcc -no-pie exec.o -o exec
+run exec
+  stdout: hello
+check readelf -dW exec
+  count: 1 (NEEDED)
+  has: (NEEDED) Shared library: [libc.so.6]
+  not: [ld-linux
+
+#--- hello.c
+#include <stdio.h>
+
+int main(void) {
+  puts("hello");
+  return 0;
+}

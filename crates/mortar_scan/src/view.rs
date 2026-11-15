@@ -13,7 +13,7 @@ use mortar_arch::{Arch, Records, Reloc, ScanTables, Site, SymFacts, SymNames, Ta
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::{CopyError, Inputs, Reader};
 use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution, Verdict};
-use mortar_core::{FileId, Liveness, SectionId, SymEntry, SymKey, SymKind, SymbolId};
+use mortar_core::{FileId, IdSet, Liveness, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Kind};
 use mortar_elf::consts::{SHT_REL, SHT_RELA, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS};
 use mortar_elf::{
@@ -60,6 +60,12 @@ pub(crate) struct View<'a, 's> {
     warned: Vec<SymbolId>,
     /// `gnu_warnings`, sorted.
     pub gnu_warnings: Vec<(SymbolId, FileId, SectionIndex)>,
+    /// `spec/dyn.md` D-25: the `WeakDyn` keys ([`crate::weak::classes`]);
+    /// empty until it ran, and in every static link.
+    pub weak_dyn: IdSet<SymbolId>,
+    /// The undefined weak keys refused by D-25: the walk drops what the
+    /// architecture's scan says of their relocations.
+    pub weak_refused: IdSet<SymbolId>,
 }
 
 /// The name of the linker-defined TLS symbol (`spec/resolve.md` §8.1).
@@ -94,6 +100,8 @@ impl<'a, 's> View<'a, 's> {
                 v.sort_unstable();
                 v
             },
+            weak_dyn: IdSet::new(),
+            weak_refused: IdSet::new(),
         }
     }
 
@@ -296,7 +304,7 @@ impl<'a, 's> View<'a, 's> {
             }
             Def::Undefined { weak } => {
                 let s = mention.and_then(|m| self.sym(m.file, m.index));
-                of(self.undefined_kind(weak, props.verdict), s)
+                of(self.undefined_kind(id, weak, props.verdict), s)
             }
         }
     }
@@ -315,7 +323,8 @@ impl<'a, 's> View<'a, 's> {
                 Def::Defined(_) | Def::Common(_) | Def::Shared(_) => false,
                 Def::Undefined { weak } => {
                     let verdict = self.resolution.props.get(id).map(|p| p.verdict);
-                    self.undefined_kind(weak, verdict.unwrap_or_default()) == TargetKind::Undefined
+                    self.undefined_kind(id, weak, verdict.unwrap_or_default())
+                        == TargetKind::Undefined
                 }
                 Def::Internal(_) => self.global_facts(id, None, 0).kind == TargetKind::Undefined,
             };
@@ -330,9 +339,6 @@ impl<'a, 's> View<'a, 's> {
         v
     }
 
-    /// The target kind of an undefined key (§4.4, I-19): a weak one is
-    /// zero (or dynamic); a strong one is `Undefined` unless its verdict
-    /// is "nothing" (`--unresolved-symbols=ignore-*`), which makes it zero.
     /// Whether `facts(key, _).kind` is `TargetKind::Weak0`, found from
     /// the definitions alone (no symbol is read: the mention never
     /// changes the kind, and a local is never `Weak0`).
@@ -344,7 +350,7 @@ impl<'a, 's> View<'a, 's> {
                 Def::Undefined { weak } => {
                     let verdict =
                         self.resolution.props.get(id).copied().unwrap_or_default().verdict;
-                    return self.undefined_kind(weak, verdict) == TargetKind::Weak0;
+                    return self.undefined_kind(id, weak, verdict) == TargetKind::Weak0;
                 }
                 Def::Internal(InternalDef::Alias(to)) if to != id && depth < 8 => id = to,
                 _ => return false,
@@ -353,8 +359,16 @@ impl<'a, 's> View<'a, 's> {
         false
     }
 
-    fn undefined_kind(&self, weak: bool, verdict: Verdict) -> TargetKind {
-        let zero = if self.opts.dynamic { TargetKind::WeakDyn } else { TargetKind::Weak0 };
+    /// The target kind of an undefined key (§4.4, I-19): a weak one is
+    /// zero, or dynamic when D-25 made it so (`weak_dyn`, per key); a
+    /// strong one is `Undefined` unless its verdict is "nothing"
+    /// (`--unresolved-symbols=ignore-*`), which makes it zero.
+    fn undefined_kind(&self, id: SymbolId, weak: bool, verdict: Verdict) -> TargetKind {
+        let zero = if weak && self.weak_dyn.contains(id) {
+            TargetKind::WeakDyn
+        } else {
+            TargetKind::Weak0
+        };
         match (weak, verdict) {
             (true, _) | (false, Verdict::Ignored) => zero,
             _ => TargetKind::Undefined,

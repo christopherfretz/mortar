@@ -419,6 +419,9 @@ A line that has `-T` or `-dT` needs no input file.
   `--no-allow-shlib-undefined` (`false`), the last wins; `None` is the
   default for the output kind (`spec/input.md` §8.6, `spec/resolve.md`
   §5.2).
+- `init`, `fini`: `-init SYMBOL` and `-fini SYMBOL` (also `=SYMBOL`), the
+  last of each wins; `None` means `_init` and `_fini` (`spec/dyn.md` D-30
+  rows 3-4; WP-042).
 
 ### 3.7 Typed `-z` keywords
 
@@ -528,7 +531,7 @@ phase that reads it meets it.
 ### 4.1 Rows
 
 There is one row per option, in `crates/mortar_cli/src/rows.rs`. The
-table has 471 rows. A row has:
+table has 472 rows. A row has:
 
 - **spellings**: each with a form (§2.2) and a flag saying whether GNU ld
   has that spelling. The flag decides which spellings abbreviate (§2.4).
@@ -585,7 +588,10 @@ does: a user may rely on every use the status admits.
 - `refused`: read and recorded, but not carried out yet. This is the
   default.
 
-The status today (WP-027e; `docs/status/options.md` has the list):
+The status today (WP-042; `docs/status/options.md` has the list, and
+counts 54 supported, 4 partial, 43 noop and 371 refused). The counts in
+this list are those of WP-027e; WP-031, WP-027d's later rows and WP-042
+(the M2 paragraph below) changed them since:
 - 49 rows are `supported`; each has its evidence in
   `crates/mortar/tests/options.rs`, an observable effect checked against
   GNU ld's output where GNU ld has the option, or the test that checks
@@ -641,10 +647,19 @@ until the phase that honors them lands with its test:
   wait for M2 (L-68); `--no-rosegment`, `--no-warn-execstack`,
   `--error-execstack`, `-z start-stop-gc`, `-Ttext`, `-Tdata`, `-Tbss`,
   `--section-start` and `-z keep-text-section-prefix` stay `refused`.
-- M2, dynamic executables (`spec/dyn.md` §2.3 and request R-C1; WP-042
-  changes the rows of `crates/mortar_cli/src/rows.rs` and regenerates
-  `docs/status/options.md` when dynamic output is lifted, WP-053; until
-  then the statuses above stand):
+- M2, dynamic executables (`spec/dyn.md` §2.3 and request R-C1). WP-042
+  changed what is true while dynamic output is refused: `--hash-style` is
+  `partial` (`gnu` only), `-z notext` (and `-z textoff`) `refused`,
+  `--no-copy-dt-needed-entries` `noop` and `-no-pie` `supported`; it
+  added the `Plan` fields `dynamic.init` and `dynamic.fini`. The other
+  statuses below are each row's status **at the join**: they are listed
+  in `crates/mortar_cli/src/rows.rs` (`AT_JOIN`, read through
+  `Row::status_at_join` and `Parsed::refused_uses_at_join`;
+  `docs/status/options.md` "At the M2 join"), and WP-053 moves them into
+  the table in the change that lifts the dynamic guard. Until then the
+  statuses above stand, the gates (`-pie`, `-dynamic-linker`,
+  `-Bdynamic`) are refused by `mortar::dynamic`, and the noop rows keep
+  the reason that names the refusal. At the join:
   - `supported`: `-pie`, `-dynamic-linker`, `-Bdynamic`, `--as-needed`,
     `--no-as-needed` (`spec/dyn.md` D-11), `-E` (and
     `--export-dynamic`), `-rpath`, `-init`, `-fini`, `-z text`, and
@@ -658,7 +673,12 @@ until the phase that honors them lands with its test:
     `-z nocopyreloc`, `--spare-dynamic-tags`, `--copy-dt-needed-entries`
     (D-15), `--dynamic-list` (M4), `-z nodynamic-undefined-weak` and
     `-z dynamic-undefined-weak` (D-25);
-  - `noop`: `--no-copy-dt-needed-entries` (the default; D-15).
+  - `noop`: `--no-copy-dt-needed-entries` (the default; D-15);
+  - rows R-C1 does not name whose reason today is the refusal (WP-042):
+    `-rpath-link` and `--no-dynamic-linker` `supported`; the five
+    `-Bsymbolic` rows, `--no-undefined` and `-z defs` stay `noop` with a
+    reason that no longer names the refusal (GNU ld and mold write
+    nothing for `-Bsymbolic` in a PIE; lld writes `DF_SYMBOLIC`).
 
 ### 4.3 What the facade does with a parse
 

@@ -1,0 +1,75 @@
+# dyn.md D-25, an undefined weak key in a PIE: one with a GOT use and no
+# unfillable use is `WeakDyn`: a `.dynsym` entry (`NOTYPE WEAK DEFAULT
+# UND`, value 0, unhashed: D-22, D-23), a `GLOB_DAT` on each GOT slot, and
+# every call goes through a PLT entry with a `JUMP_SLOT`, so that the GOT
+# test and the call agree whether or not a library loaded later defines
+# it. The keys: crti.o's `__gmon_start__` (GOT load, and on AArch64 a
+# `JUMP26` to it), crtbeginS.o's `_ITM_deregisterTMCloneTable` and
+# `_ITM_registerTMCloneTable` (GOT), and the program's `hook` (`if (hook)
+# hook();`). The run shows it: without a definition `&hook` is null and
+# the call is skipped; with `LD_PRELOAD` of a library that defines it,
+# the hook runs.
+#
+# Where the references differ (dyn.md §13.1, "undefined weak, GOT-used,
+# in a PIE"): GNU ld calls through `.plt.got` on x86-64 (a `GLOB_DAT`, no
+# `JUMP_SLOT`); mold makes the keys 0 everywhere (no entry, no record:
+# the preloaded hook never runs). mortar's form is lld's.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-25"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIC hook.c -o hook.o
+shlib gcc hook.o -o libhook.so
+
+link gcc -pie main.o -o prog
+run prog
+  stdout: &hook null 1
+  stdout: no hook
+run(bfd,lld,mortar) prog
+  env: LD_PRELOAD=./libhook.so
+  stdout: &hook null 0
+  stdout: hook ran
+run(mold) prog
+  env: LD_PRELOAD=./libhook.so
+  stdout: &hook null 1
+  stdout: no hook
+check(bfd,lld,mortar) readelf --dyn-syms -W prog
+  has: 0000000000000000 0 NOTYPE WEAK DEFAULT UND __gmon_start__$
+  has: 0000000000000000 0 NOTYPE WEAK DEFAULT UND _ITM_deregisterTMCloneTable$
+  has: 0000000000000000 0 NOTYPE WEAK DEFAULT UND _ITM_registerTMCloneTable$
+  has: 0000000000000000 0 NOTYPE WEAK DEFAULT UND hook$
+check(bfd,lld,mortar) readelf -rW prog
+  count: 1 GLOB_DAT * __gmon_start__ + 0
+  count: 1 GLOB_DAT * _ITM_deregisterTMCloneTable + 0
+  count: 1 GLOB_DAT * _ITM_registerTMCloneTable + 0
+  count: 1 GLOB_DAT * hook + 0
+  count(aarch64): 1 JUMP_SLOT * __gmon_start__ + 0
+  not(x86_64): JUMP_SLOT * __gmon_start__
+  count(aarch64): 1 JUMP_SLOT * hook + 0
+  count(lld,mortar,x86_64): 1 JUMP_SLOT * hook + 0
+  not(bfd,x86_64): JUMP_SLOT * hook
+check(mold) readelf --dyn-syms -W prog
+  not: __gmon_start__
+  not: _ITM_
+  not: hook
+check(mold) readelf -rW prog
+  not: hook
+
+#--- main.c
+#include <stdio.h>
+extern void hook(void) __attribute__((weak));
+
+int main(void) {
+  printf("&hook null %d\n", &hook == 0);
+  if (hook)
+    hook();
+  else
+    puts("no hook");
+  return 0;
+}
+#--- hook.c
+#include <stdio.h>
+void hook(void) { puts("hook ran"); }

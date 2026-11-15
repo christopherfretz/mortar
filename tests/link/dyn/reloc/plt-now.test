@@ -1,0 +1,96 @@
+# dyn.md D-49, `-z now`: a PIE and a non-PIE calling a fixture library's
+# function through the PLT, linked with `-Wl,-z,now`. The program reads its
+# own headers at run time (`dl_iterate_phdr`, `_DYNAMIC`, `DT_JMPREL`) and
+# prints what D-49 and D-30 require: `DT_FLAGS` has `DF_BIND_NOW`,
+# `DT_FLAGS_1` has `DF_1_NOW`, and every `JUMP_SLOT` word lies inside
+# `PT_GNU_RELRO` (read-only after relocation: lld and mold keep
+# `.got.plt` as a section of its own inside RELRO, GNU ld merges it into
+# `.got`, dyn.md §13.1; both are inside RELRO). The lazy shapes stay
+# (`.rela.plt` with `JUMP_SLOT` records). The lazy default is `plt-lazy`.
+#
+# mortar: AArch64 WP-056 (OPTS), x86-64 WP-056 (OPTS), in tests/link/xfails.
+#@ spec: dyn.md "D-49"
+#@ spec: dyn.md "D-30"
+#@ arch: aarch64 x86_64
+#@ fixture: greet
+
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+link gcc -pie -Wl,-z,now pie.o -L. -lgreet -o pie
+run pie
+  stdout: hello, now
+  stdout: greet 41
+  stdout: relro 1
+  stdout: bind-now 1 now 1
+  stdout: jump slots some, in relro all
+link gcc -no-pie -Wl,-z,now exec.o -L. -lgreet -o exec
+run exec
+  stdout: hello, now
+  stdout: greet 41
+  stdout: relro 1
+  stdout: bind-now 1 now 1
+  stdout: jump slots some, in relro all
+check readelf -dW pie
+  has: (FLAGS) BIND_NOW
+  has: (FLAGS_1) Flags: NOW PIE
+check readelf -dW exec
+  has: (FLAGS) BIND_NOW
+  has: (FLAGS_1) Flags: NOW
+check readelf -rW pie
+  has(aarch64): R_AARCH64_JUMP_SLOT * greet
+  has(x86_64): R_X86_64_JUMP_SLOT * greet
+check readelf -rW exec
+  has(aarch64): R_AARCH64_JUMP_SLOT * greet
+  has(x86_64): R_X86_64_JUMP_SLOT * greet
+check readelf -SW pie
+  has(lld,mold,mortar): ] .got.plt
+  not(bfd): ] .got.plt
+
+#--- main.c
+#define _GNU_SOURCE
+#include <link.h>
+#include <stdio.h>
+#include "greet.h"
+
+/* The executable is the first object dl_iterate_phdr reports. */
+static ElfW(Addr) bias, relro_lo, relro_hi;
+static int has_relro;
+
+static int first(struct dl_phdr_info *info, size_t size, void *data) {
+  (void)size;
+  (void)data;
+  bias = info->dlpi_addr;
+  for (int i = 0; i < info->dlpi_phnum; i++)
+    if (info->dlpi_phdr[i].p_type == PT_GNU_RELRO) {
+      has_relro = 1;
+      relro_lo = bias + info->dlpi_phdr[i].p_vaddr;
+      relro_hi = relro_lo + info->dlpi_phdr[i].p_memsz;
+    }
+  return 1;
+}
+
+/* An address tag of _DYNAMIC, whether or not the loader biased it. */
+static ElfW(Addr) at(ElfW(Addr) p) { return p < bias ? p + bias : p; }
+
+int main(void) {
+  printf("greet %d\n", greet("now"));
+  dl_iterate_phdr(first, 0);
+  ElfW(Addr) jmprel = 0, size = 0, flags = 0, flags1 = 0;
+  for (const ElfW(Dyn) *d = _DYNAMIC; d->d_tag != DT_NULL; d++) {
+    if (d->d_tag == DT_JMPREL) jmprel = at(d->d_un.d_ptr);
+    if (d->d_tag == DT_PLTRELSZ) size = d->d_un.d_val;
+    if (d->d_tag == DT_FLAGS) flags = d->d_un.d_val;
+    if (d->d_tag == DT_FLAGS_1) flags1 = d->d_un.d_val;
+  }
+  const ElfW(Rela) *r = (const ElfW(Rela) *)jmprel;
+  size_t n = jmprel ? size / sizeof *r : 0, in = 0;
+  for (size_t i = 0; i < n; i++) {
+    ElfW(Addr) slot = bias + r[i].r_offset;
+    if (has_relro && slot >= relro_lo && slot < relro_hi) in++;
+  }
+  printf("relro %d\n", has_relro);
+  printf("bind-now %d now %d\n", !!(flags & DF_BIND_NOW), !!(flags1 & DF_1_NOW));
+  printf("jump slots %s, in relro %s\n", n ? "some" : "none",
+         in == n ? "all" : in ? "some" : "none");
+  return 0;
+}
