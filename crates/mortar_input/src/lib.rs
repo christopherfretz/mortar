@@ -11,7 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub use load::{LoadEnv, dependency_paths, load};
-pub use store::{Store, StorePolicy};
+pub use store::{ReadHook, ReadSite, Store, StorePolicy};
 
 pub mod facts;
 pub mod load;

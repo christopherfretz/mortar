@@ -133,7 +133,17 @@ pub const NO_DETAILS: u32 = 0xffff_ffff;
 #[inline]
 #[must_use]
 pub fn is_container(name: &[u8], sh_type: u32, sh_flags: u64) -> bool {
-    sh_flags == SHF_EXCLUDE && sh_type == SHT_PROGBITS && name == SECTION_NAME
+    is_candidate(sh_type, sh_flags) && name == SECTION_NAME
+}
+
+/// MT-6's predicate without the name: whether a section with this type
+/// and these flags is a container if it has the name. For callers that
+/// find a name only at a cost (the input store, before `.shstrtab` is
+/// read): a section that is not a candidate is not a container.
+#[inline]
+#[must_use]
+pub const fn is_candidate(sh_type: u32, sh_flags: u64) -> bool {
+    sh_flags == SHF_EXCLUDE && sh_type == SHT_PROGBITS
 }
 
 /// MT-13: FNV-1a 64 over `bytes` (a name without its NUL).

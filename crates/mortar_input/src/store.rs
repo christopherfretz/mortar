@@ -102,11 +102,23 @@ pub struct StoreConfig {
     /// does it cheaply (resident: yes, as the bytes are read; staged: no,
     /// the hash needs a second read of every byte).
     pub hashes: Option<bool>,
+    /// Whether a check that needs the Mason containers is on (`spec/meta.md`
+    /// MT-42, `spec/odr.md` O-42; the switch WP-073 connects to `--odr`).
+    /// `false` (the default, and every link today): the staged store reads
+    /// no byte of a relocatable object's container. It reads the ELF header
+    /// and the section header table of each top-level object first (and
+    /// `.shstrtab` when a section has a container's type and flags), then
+    /// its other bytes around the containers: a small object is read
+    /// around its container instead of whole. `true`: the plan of §11.9
+    /// before amendment A-8. Either way a container is never resident in
+    /// an object larger than 64 KiB; with `true` a smaller one is read
+    /// whole, container included.
+    pub containers: bool,
 }
 
 impl Default for StoreConfig {
     fn default() -> Self {
-        Self { max_open: None, head: HEAD, tail: TAIL, hashes: None }
+        Self { max_open: None, head: HEAD, tail: TAIL, hashes: None, containers: false }
     }
 }
 
@@ -301,6 +313,20 @@ pub struct StoreStats {
 /// A test hook, called with the path of the file.
 pub type Hook = Box<dyn Fn(&Path) + Send + Sync>;
 
+/// Where a positioned read of the store came from (the byte counter of
+/// `spec/input.md` §11.1, T-MT-42).
+#[derive(Clone, Copy, Debug)]
+pub enum ReadSite<'a> {
+    /// While loading the file at this path (every store and wave).
+    Load(&'a Path),
+    /// [`Store::copy_to`], [`Store::hash_range`] or a full copy, of a blob
+    /// already loaded.
+    Copy(Blob),
+}
+
+/// A test hook called with every range of a file the store reads.
+pub type ReadHook = Box<dyn Fn(ReadSite<'_>, Range<u64>) + Send + Sync>;
+
 /// Test hooks (`spec/input.md` §16: `s11_5_short_read`, the hostile cases
 /// of the staged store).
 #[derive(Default)]
@@ -310,6 +336,10 @@ pub struct Hooks {
     /// The staged store: called after a file's first reads (its head and
     /// tail, or an archive's headers), before its parts are read.
     pub after_head: Option<Hook>,
+    /// Called with the file range of every positioned read that returns
+    /// bytes (the test-only byte counter per file range of §11.1, which
+    /// T-MT-42 reads). `None` in a link: one test of an `Option` per read.
+    pub on_read: Option<ReadHook>,
 }
 
 impl std::fmt::Debug for Hooks {
@@ -317,6 +347,7 @@ impl std::fmt::Debug for Hooks {
         f.debug_struct("Hooks")
             .field("after_fstat", &self.after_fstat.is_some())
             .field("after_head", &self.after_head.is_some())
+            .field("on_read", &self.on_read.is_some())
             .finish()
     }
 }
@@ -601,7 +632,7 @@ impl Store {
             return Err(ReadError::OutOfRange);
         }
         if let Some(span) = uncovered(&e.parts, r.start, r.end) {
-            self.read_uncovered(e, span.clone(), &mut out[slice(span, r.start)])?;
+            self.read_uncovered(b, e, span.clone(), &mut out[slice(span, r.start)])?;
         }
         copy_parts(&e.parts, r.start, out);
         Ok(())
@@ -609,7 +640,13 @@ impl Store {
 
     /// The bytes `span` of a file that are not all inside parts: from the
     /// full copy, or one positioned read.
-    fn read_uncovered(&self, e: &Entry, span: Range<u64>, out: &mut [u8]) -> Result<(), ReadError> {
+    fn read_uncovered(
+        &self,
+        b: Blob,
+        e: &Entry,
+        span: Range<u64>,
+        out: &mut [u8],
+    ) -> Result<(), ReadError> {
         loop {
             if let Some(full) = e.full.get() {
                 let full = full.as_ref().map_err(Clone::clone)?;
@@ -628,6 +665,9 @@ impl Store {
             self.counters.copy_reads.fetch_add(1, Ordering::Relaxed);
             self.counters.copy_bytes.fetch_add(out.len() as u64, Ordering::Relaxed);
             prefault(out);
+            if let Some(hook) = &self.hooks.on_read {
+                hook(ReadSite::Copy(b), span.clone());
+            }
             return file.read_exact_at(out, span.start).map_err(|e| ReadError::read(&e));
         }
     }
@@ -671,7 +711,7 @@ impl Store {
         while at < r.end {
             let n = (r.end - at).min(CHUNK);
             let out = &mut block[..n as usize];
-            self.read_uncovered(e, at..at + n, out)?;
+            self.read_uncovered(b, e, at..at + n, out)?;
             if !parts_agree(&e.parts, at, out) {
                 return Err(ReadError::Changed);
             }
@@ -921,7 +961,7 @@ impl Store {
         let e = self.entry(b);
         let file = e.file.lock().unwrap_or_else(PoisonError::into_inner).clone();
         if let Some(file) = file {
-            self.make_full(e, &file);
+            self.make_full(e, &file, ReadSite::Copy(b));
             *e.file.lock().unwrap_or_else(PoisonError::into_inner) = None;
             drop(file);
             self.closed();
@@ -932,11 +972,14 @@ impl Store {
     /// Reads the whole of a held file into `full`, checked against its
     /// parts (the same bytes, or [`ReadError::Changed`] for every later
     /// copy).
-    fn make_full(&self, e: &Entry, file: &File) {
+    fn make_full(&self, e: &Entry, file: &File, site: ReadSite<'_>) {
         let read = || -> Result<Box<[u8]>, ReadError> {
             let mut all = vec![0u8; e.len as usize];
             prefault(&mut all);
             self.counters.reads.fetch_add(1, Ordering::Relaxed);
+            if let Some(hook) = &self.hooks.on_read {
+                hook(site, 0..e.len);
+            }
             file.read_exact_at(&mut all, 0).map_err(|e| ReadError::read(&e))?;
             self.counters.bytes.fetch_add(e.len, Ordering::Relaxed);
             if parts_agree(&e.parts, 0, &all) {
@@ -1039,6 +1082,10 @@ impl Store {
             } else if !slice.is_empty() {
                 prefault(slice);
                 self.counters.reads.fetch_add(1, Ordering::Relaxed);
+                if let Some(hook) = &self.hooks.on_read {
+                    let at = c as u64 * CHUNK;
+                    hook(ReadSite::Load(path), at..at + slice.len() as u64);
+                }
                 match file.read_exact_at(slice, c as u64 * CHUNK) {
                     Ok(()) => {
                         self.counters.bytes.fetch_add(slice.len() as u64, Ordering::Relaxed);
@@ -1133,9 +1180,10 @@ impl Store {
         for ((k, _), result) in members.iter().zip(planned) {
             let Ok(s) = &mut staging[*k] else { continue };
             match result {
-                Ok((ranges, scratch)) => {
+                Ok((ranges, scratch, containers)) => {
                     s.ranges.extend(ranges);
                     s.scratch.extend(scratch);
+                    s.forbidden.extend(containers);
                 }
                 Err(e) => {
                     // Its descriptor closes with it.
@@ -1153,7 +1201,8 @@ impl Store {
                 Ok(s) => {
                     s.scratch.sort_by_key(|(at, _)| *at);
                     s.longest = s.scratch.iter().map(|(_, b)| b.len() as u64).max().unwrap_or(0);
-                    staged::merge(std::mem::take(&mut s.ranges))
+                    s.forbidden.sort_by_key(|r| (r.start, r.end));
+                    staged::merge(std::mem::take(&mut s.ranges), &s.forbidden)
                         .into_iter()
                         .map(|r| (r.start, vec![0u8; (r.end - r.start) as usize]))
                         .collect()
@@ -1251,16 +1300,17 @@ impl Store {
     }
 
     /// Wave (A) for one file.
-    fn stage(
+    fn stage<'p>(
         &self,
-        path: &Path,
+        path: &'p Path,
         size: u64,
         meta: FileMeta,
         char_device: bool,
-    ) -> Result<Staging, ReadError> {
+    ) -> Result<Staging<'p>, ReadError> {
         let (file, first) = self.open(path, meta, char_device)?;
         let file = Arc::new(file);
         let mut s = Staging {
+            path,
             file,
             meta: first,
             len: size,
@@ -1269,6 +1319,7 @@ impl Store {
             scratch: Vec::new(),
             longest: 0,
             members: Vec::new(),
+            forbidden: Vec::new(),
         };
         let result = self.stage_file(&mut s);
         if let Err(e) = result {
@@ -1282,7 +1333,7 @@ impl Store {
         Ok(s)
     }
 
-    fn stage_file(&self, s: &mut Staging) -> Result<(), ReadError> {
+    fn stage_file(&self, s: &mut Staging<'_>) -> Result<(), ReadError> {
         if s.char_device {
             return self.char_device_empty(&s.file);
         }
@@ -1290,13 +1341,17 @@ impl Store {
         if len == 0 {
             return Ok(());
         }
+        if !self.config.containers {
+            return self.stage_around_containers(s);
+        }
         if len <= SMALL {
             s.ranges.push(0..len);
             return Ok(());
         }
         let config = self.config;
         let head = config.head.clamp(PREFIX, len);
-        let mut src = Reader { store: self, file: &s.file, shared: &[], own: Vec::new(), len };
+        let mut src =
+            Reader { store: self, path: s.path, file: &s.file, shared: &[], own: Vec::new(), len };
         src.read_into_own(0, head)?;
         let shape = staged::shape(src.fetch(0, PREFIX)?);
         match shape {
@@ -1306,33 +1361,15 @@ impl Store {
                     src.read_into_own(tail_start, len - tail_start)?;
                 }
                 let mut ranges = Vec::new();
-                if staged::object_ranges(&mut src, 0, len, &mut ranges)? {
+                if staged::object_ranges(&mut src, 0, len, &mut ranges, &mut s.forbidden)? {
                     s.ranges = ranges;
                 } else {
                     s.ranges.push(0..len);
                 }
             }
             Shape::Archive => {
-                let base = config.head + PREFIX;
-                let mut chain = Chain { reader: src, base, window: base, last_end: 0 };
-                let mut spans = Vec::new();
-                staged::archive_ranges(&mut chain, len, &mut s.ranges, &mut spans)?;
-                src = chain.reader;
-                for span in spans {
-                    if span.size <= SMALL {
-                        s.ranges.push(span.content..span.content + span.size);
-                        continue;
-                    }
-                    // The member's head is in the window read with its
-                    // header.
-                    let prefix = PREFIX.min(span.size);
-                    let shape = staged::shape(src.fetch(span.content, prefix)?);
-                    if shape == Shape::Object {
-                        s.members.push(span);
-                    } else {
-                        s.ranges.push(span.content..span.content + prefix);
-                    }
-                }
+                s.scratch = src.own;
+                return self.stage_archive(s);
             }
             Shape::Other => s.ranges.push(0..len),
         }
@@ -1340,11 +1377,103 @@ impl Store {
         Ok(())
     }
 
+    /// Wave (A) with no check that needs a container (amendment A-8 to
+    /// §11.1, `spec/meta.md` MT-42): the first [`PREFIX`] bytes; for a
+    /// relocatable object its section header table (and `.shstrtab` if a
+    /// section could be a container) before any other byte, then the plan
+    /// of §11.9 with every read clipped around the containers; a small
+    /// object is read around its container instead of whole.
+    fn stage_around_containers(&self, s: &mut Staging<'_>) -> Result<(), ReadError> {
+        let len = s.len;
+        let config = self.config;
+        let mut src =
+            Reader { store: self, path: s.path, file: &s.file, shared: &[], own: Vec::new(), len };
+        src.read_into_own(0, PREFIX.min(len))?;
+        let shape = staged::shape(src.fetch(0, PREFIX.min(len))?);
+        if shape == Shape::Object {
+            let Some(found) = staged::container_ranges(&mut src, 0, len)? else {
+                // Not a structure the rules follow: the whole file, for the
+                // reader to refuse as over the resident store.
+                s.ranges.push(0..len);
+                s.scratch = src.own;
+                return Ok(());
+            };
+            s.forbidden = found;
+        }
+        if len <= SMALL || shape == Shape::Other {
+            s.ranges.extend(staged::clip(0..len, &s.forbidden));
+            s.scratch = src.own;
+            return Ok(());
+        }
+        let head = config.head.clamp(PREFIX, len);
+        if shape == Shape::Archive {
+            // The chain reads from one buffer of the file's first bytes.
+            src.read_into_own(0, head)?;
+            s.scratch = src.own;
+            return self.stage_archive(s);
+        }
+        for r in staged::clip(0..head, &s.forbidden) {
+            src.read_into_own(r.start, r.end - r.start)?;
+        }
+        let tail_start = len.saturating_sub(config.tail).max(head);
+        for r in staged::clip(tail_start..len, &s.forbidden) {
+            src.read_into_own(r.start, r.end - r.start)?;
+        }
+        let mut ranges = Vec::new();
+        let mut containers = Vec::new();
+        if staged::object_ranges(&mut src, 0, len, &mut ranges, &mut containers)? {
+            s.ranges = ranges;
+        } else {
+            s.ranges.extend(staged::clip(0..len, &s.forbidden));
+        }
+        s.scratch = src.own;
+        Ok(())
+    }
+
+    /// Wave (A) of a regular archive larger than 64 KiB: the chain of its
+    /// headers from the first `head` bytes (in `s.scratch`). Its members'
+    /// bytes may be read whatever they hold (a Mason container included:
+    /// the windows and the member's own reads are made before its section
+    /// headers are known; WP-071's record); a container of a member larger
+    /// than 64 KiB is never resident.
+    fn stage_archive(&self, s: &mut Staging<'_>) -> Result<(), ReadError> {
+        let len = s.len;
+        let own = std::mem::take(&mut s.scratch);
+        let src = Reader { store: self, path: s.path, file: &s.file, shared: &[], own, len };
+        let base = self.config.head + PREFIX;
+        let mut chain = Chain { reader: src, base, window: base, last_end: 0 };
+        let mut spans = Vec::new();
+        staged::archive_ranges(&mut chain, len, &mut s.ranges, &mut spans)?;
+        let mut src = chain.reader;
+        for span in spans {
+            if span.size <= SMALL {
+                s.ranges.push(span.content..span.content + span.size);
+                continue;
+            }
+            // The member's head is in the window read with its header.
+            let prefix = PREFIX.min(span.size);
+            let shape = staged::shape(src.fetch(span.content, prefix)?);
+            if shape == Shape::Object {
+                s.members.push(span);
+            } else {
+                s.ranges.push(span.content..span.content + prefix);
+            }
+        }
+        s.scratch = src.own;
+        Ok(())
+    }
+
     /// Wave (B) for one large member of an archive: its plan, with its
     /// tail read; the member's head is in the archive's scratch.
-    fn plan_member(&self, s: &Staging, span: MemberSpan) -> Result<PlannedMember, ReadError> {
-        let mut src =
-            Reader { store: self, file: &s.file, shared: &s.scratch, own: Vec::new(), len: s.len };
+    fn plan_member(&self, s: &Staging<'_>, span: MemberSpan) -> Result<PlannedMember, ReadError> {
+        let mut src = Reader {
+            store: self,
+            path: s.path,
+            file: &s.file,
+            shared: &s.scratch,
+            own: Vec::new(),
+            len: s.len,
+        };
         let end = span.content + span.size;
         let head_end = span.content + self.config.head.min(span.size);
         let tail_start = end.saturating_sub(self.config.tail).max(head_end);
@@ -1352,11 +1481,13 @@ impl Store {
             src.read_into_own(tail_start, end - tail_start)?;
         }
         let mut ranges = Vec::new();
-        if !staged::object_ranges(&mut src, span.content, span.size, &mut ranges)? {
+        let mut containers = Vec::new();
+        if !staged::object_ranges(&mut src, span.content, span.size, &mut ranges, &mut containers)?
+        {
             ranges.clear();
             ranges.push(span.content..end);
         }
-        Ok((ranges, src.own))
+        Ok((ranges, src.own, containers))
     }
 
     /// Wave (C): the bytes `at..at + out.len()` of a part, from what was
@@ -1405,6 +1536,9 @@ impl Store {
             let dst = &mut out[(lo - at) as usize..(hi - at) as usize];
             prefault(dst);
             self.counters.reads.fetch_add(1, Ordering::Relaxed);
+            if let Some(hook) = &self.hooks.on_read {
+                hook(ReadSite::Load(s.path), lo..hi);
+            }
             s.file.read_exact_at(dst, lo).map_err(|e| ReadError::read(&e))?;
             self.counters.bytes.fetch_add(hi - lo, Ordering::Relaxed);
         }
@@ -1423,7 +1557,7 @@ impl Store {
     }
 
     /// The entry of a file whose waves all succeeded.
-    fn finish_staged(&self, s: Staging, parts: Vec<(u64, Vec<u8>)>) -> Blob {
+    fn finish_staged(&self, s: Staging<'_>, parts: Vec<(u64, Vec<u8>)>) -> Blob {
         let parts: Box<[Part]> = parts
             .into_iter()
             .map(|(offset, bytes)| Part { offset, bytes: bytes.into_boxed_slice() })
@@ -1445,7 +1579,7 @@ impl Store {
         } else {
             let budget = self.held.lock().unwrap_or_else(PoisonError::into_inner).len();
             if budget >= self.max_open {
-                self.make_full(&entry, &s.file);
+                self.make_full(&entry, &s.file, ReadSite::Load(s.path));
                 drop(s.file);
                 self.closed();
             } else {
@@ -1501,11 +1635,12 @@ const WINDOW: u64 = 1 << 20;
 /// make a second read, when they are fewer than this.
 const REREAD: u64 = 16 << 10;
 
-/// A member's planned ranges and the reads its plan made.
-type PlannedMember = (Vec<Range<u64>>, Vec<(u64, Vec<u8>)>);
+/// A member's planned ranges, the reads its plan made, and its containers.
+type PlannedMember = (Vec<Range<u64>>, Vec<(u64, Vec<u8>)>, Vec<Range<u64>>);
 
 /// A file between the waves of the staged read.
-struct Staging {
+struct Staging<'p> {
+    path: &'p Path,
     file: Arc<File>,
     meta: FileMeta,
     len: u64,
@@ -1518,12 +1653,17 @@ struct Staging {
     longest: u64,
     /// Large archive members whose plan is wave (B)'s.
     members: Vec<MemberSpan>,
+    /// The Mason containers found so far (`spec/meta.md` MT-6): never in a
+    /// part, and no merge joins across one (A-8).
+    forbidden: Vec<Range<u64>>,
 }
 
 /// [`Fetch`] over a file: what was read already (the archive's reads for
 /// a member, then its own), else one positioned read kept for later.
 struct Reader<'a> {
     store: &'a Store,
+    /// For the read hook.
+    path: &'a Path,
     file: &'a File,
     shared: &'a [(u64, Vec<u8>)],
     own: Vec<(u64, Vec<u8>)>,
@@ -1537,6 +1677,9 @@ impl Reader<'_> {
         let mut buf = vec![0u8; size as usize];
         prefault(&mut buf);
         self.store.counters.reads.fetch_add(1, Ordering::Relaxed);
+        if let Some(hook) = &self.store.hooks.on_read {
+            hook(ReadSite::Load(self.path), at..at + size);
+        }
         self.file.read_exact_at(&mut buf, at).map_err(|e| ReadError::read(&e))?;
         self.store.counters.bytes.fetch_add(size, Ordering::Relaxed);
         self.own.push((at, buf));

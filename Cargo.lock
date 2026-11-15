@@ -124,6 +124,7 @@ dependencies = [
  "mortar_core",
  "mortar_diag",
  "mortar_elf",
+ "mortar_meta",
  "mortar_script",
  "mortar_testutil",
 ]

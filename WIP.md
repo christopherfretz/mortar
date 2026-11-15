@@ -1,18 +1,20 @@
 # WP-071 work in progress (deleted in the final commit)
 
 ## Done
-- mortar_diag: the 13 kinds of main's diag.md §3.1 table (gate fix; the
-  same text as WP-072's uncommitted work, minus its odr-contents-mismatch).
-- mortar_core: SectionKind::Metadata -> Meta, a no-output kind (A-2).
-- mortar_meta: predicate, fnv1a64, reader (read.rs), writer (write.rs),
-  anchors (anchor.rs); tests/format.rs (T-MT-10..14, 25, 26, 35, 36, 38),
-  tests/mutate.rs (property test).
+- mortar_diag: meta-malformed, meta-version kinds; diag.md §3.1 rows moved.
+- mortar_core: SectionKind::Meta (no-output), Resolution.meta, check rule.
+- mortar_meta: predicate, fnv1a64, reader, writer, anchors; format.rs,
+  mutate.rs tests.
+- mortar_resolve: MT-6 classification, Consumed, Resolution.meta, the
+  not-a-container warning; T-MT-6 (rules.rs s10_mason_containers).
+- mortar_input: A-8 (StoreConfig.containers, Hooks.on_read, headers-first
+  for top-level objects, clipped reads, merge never bridges a container;
+  archives: members' containers never resident, but Chain/head/tail reads
+  may read container bytes -> finding); T-MT-42 (tests/t_mt_42.rs).
 
 ## Next
-1. mortar_resolve: classification row (sections.rs classify, before the
-   SHF_EXCLUDE row), state() Meta -> Dropped(Consumed), Resolution.meta
-   list, MT-6 warning once per file (problem.rs What, tables.rs mapping),
-   T-MT-6.
-2. mortar_input: A-8 byte rule (store.rs/staged.rs), StoreConfig switch,
-   test-only read hook, T-MT-42.
-3. xtask meta write/dump, T-MT-3; experiment 7; record; gate.
+1. xtask `meta write` / `meta dump`; T-MT-3 (ld, lld, mold drop it).
+2. End-to-end: link with and without a container is byte-identical, no
+   warning.
+3. Experiment 7 + bench before/after (protoc, 1 thread, median of 15).
+4. Record spec/landed/meta/WP-071.md; gate; delete WIP.md.
