@@ -688,8 +688,10 @@ usually a duplicate of `crt1.o`'s and removed by S-44 (X-12, X-25).
   sum; `Slots.eh_records` is 8 MB; writing is a copy plus three or four
   field rewrites per record, parallel by range. Measured (WP-025's bench,
   10^6 input FDEs in 10^4 sections, 92% live, 22 MB written; median of
-  5, load average 32): plan 60/37/25/21 ms and write 20/11/7.5/5.3 ms on
-  1/2/4/8 threads. Parsing (`mortar_merge`) is not included.
+  5, load average 24, after the join with `mortar_merge`): plan
+  12/15/13/12 ms and write 20/12/7.6/4.3 ms on 1/2/4/8 threads. Parsing
+  and CIE identity (`mortar_merge`) are not included; the plan does not
+  scale with threads (its per-record passes are sequential).
 
 ## 5. .eh_frame_hdr
 
