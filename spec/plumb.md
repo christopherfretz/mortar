@@ -1172,6 +1172,72 @@ stripped output; an unusable `PT_TLS`) is not checked, and its rewrite
 window (`GOTPCREL*` [P−3, P+5); `GOTTPOFF`/`GOTPC32_TLSDESC` [P−3, P);
 `TLSDESC_CALL` [P, P+2); `TLSGD`/`TLSLD` [P−4, P+18)) is left out of S12.
 
+### 5.10 Erratum 843419 by site (WP-028d)
+
+W7 and W8 (§5.3) judge a fix's **meaning** where the words are judged:
+the patch's first word is the record's relocated word (R1), or the input
+word when the final word has no record (S12); the patch must return to
+`F + 4` or it is not followed and the branch at `F` is R1/S12; an `ADR`
+over an `ADRP` must compute the page the relocated `ADRP` computes (R1),
+or, for an `ADRP` without a record, the page the input word computes at
+its output address (S12). This section judges that the fixes are **where
+the sites are** (`src/erratum.rs`, from `spec/a64.md` §11.3), on AArch64
+outputs:
+
+1. **The words.** A site reads the bytes `[P + 0xFF8, P + 0x100C)` of
+   each page `P`: `W1` at `0xFF8` or `0xFFC` and the three words after
+   it, which cross the page. The window can start in the section before
+   the one that holds its last words (WP-032e found mortar reading such
+   words unrelocated). Each word is taken from the input section placed
+   there, with its class from the input's mapping symbols (a64.md §11.1
+   condition 5: `$x`, `$d`, or unproved before the first). A word in no
+   input section (padding, a synthetic chunk) breaks every candidate
+   through it.
+2. **Undo the fixes.** At `F` (page offset `0x000`, `0x004`, `0x008`), a
+   `B` to a patch that §5.3's W8 conditions accept, over an input
+   load/store with an unsigned offset, is a redirect: the patch's first
+   word is the pre-fix word. At `Q` (`0xFF8`, `0xFFC`), an `ADR Xd` over
+   an input `ADRP Xd` is an ADR fix: the input word is the pre-fix word.
+   Other words are their output words (§8 rewritings applied, so a
+   relaxed `ADRP` is not a `W1`).
+3. **The sites** are a64.md §11.1's on the pre-fix words, both forms.
+4. **The option.** No map format records `--fix-cortex-a53-843419`. The
+   caller states it (`Map.fix_843419`: `xtask plumb
+   --fix-cortex-a53-843419`/`--no-fix-cortex-a53-843419`, or read from
+   the `--inputs-from` response file); otherwise any fix found shows it
+   was given, and a link with no fix leaves its sites not judged
+   (coverage `erratum_not_judged`). The map should carry it (request).
+
+The rules (ids C1-C6):
+
+- **C1** (every linker). A site with neither fix when the option is in
+  effect. On a reference linker's output only sites both GNU ld 2.44 and
+  lld 22 fix are judged (a64.md §11.4: `W2` a single-register load or
+  store that does not load `Xn`, or a store pair; `W3` not a branch);
+  the others, and unproved candidates, are not judged.
+- **C2** (mortar). A site with both fixes, or an ADR fix at a `W1` that
+  starts no site (§11.3 item 5).
+- **C3** (mortar). A redirect at a word that is no site's `F` (§11.3
+  item 4).
+- **C4** (mortar). A candidate with an unproved word: mortar must have
+  refused (§11.1 condition 5, §11.3 item 7).
+- **C5** (mortar, the option in effect). A map chunk in an executable
+  section starts at page offset `0xFFC`, `0x000`, `0x004` or `0x008`
+  (§11.3 item 8, `spec/layout.md` L-118).
+- **C6** (mortar). A fix in a link stated to be without the option.
+
+Coverage counts the sites found with their fix (`erratum_sites`) and the
+sites not judged.
+
+**WP-032e's mislinks** (main 4afb6df's linker, eafc050 the fix): both
+were already findings of §5.3's rules (R1 on the `ADRP` the `ADR`
+replaced, R1 on the patch's load) when the verifier was run on them, as
+was the `synthetic-sections` workload's output; the bench harness does
+not run the verifier, which is how they went unreported. Reproducers
+with each linker: `tests/mutation.rs` (`s9_2o_*`), and the stale patch
+load, the ADR to the next page and an undone fix are mutation class
+`erratum-fix` (§9.5).
+
 ## 6. Structure and content
 
 ### 6.1 Output and input rules
@@ -1224,10 +1290,13 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   accepts the 0 whatever the reason (WP-028b). S7 judges `ET_EXEC` only:
   a shared object or `-r` output has no entry rule here (L-104). In
   mortar's output with a `.symtab` that has a function, a nonzero
-  `e_entry` is the value of a global symbol (L-103: the entry symbol's;
-  WP-028d). The references fall back to the start of `.text` when there
-  is no entry symbol, so the clause is mortar's only; an `-e` given as an
-  address with no global there would be its one false finding.
+  `e_entry` is the value of a symbol that is not a mapping symbol,
+  `STT_SECTION`, `STT_FILE` or `STT_TLS` (L-103: the entry symbol's;
+  WP-028d). The symbol may be local: glibc's `_start` is hidden, and a
+  hidden symbol is local in the output. The references fall back to the
+  start of `.text` when there is no entry symbol, so the clause is
+  mortar's only; an `-e` given as an address with no symbol there would
+  be its one false finding.
 - **S8.** Every `.symtab` symbol defined in an allocated section, with
   `st_size > 0` and not `STT_SECTION`, lies within its section:
   `[st_value, st_value + st_size] ⊆ [sh_addr, sh_addr + sh_size]`. For a
@@ -1692,7 +1761,8 @@ and tree vectors), `tests/mutation.rs s9_2l_build_id_mutations_are_found`,
 A finding has:
 
 - the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M5`, `R1`–`R9`, `T1`,
-  `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6) or `B1` (§6.7);
+  `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7)
+  or `C1`–`C6` (§5.10);
 - the output address, if it has one;
 - the site (input file, archive member, section, offset);
 - the relocation type's name and the symbol;
@@ -1914,6 +1984,13 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   `ISA_1_NEEDED`: P1 1/1; (6) `PT_TLS` `p_memsz` grown by its alignment:
   1/1; (7) in the `w6` links of GNU ld and lld, an IPLT entry's `endbr64`
   made a 4-byte NOP, and the IFUNC word changed: F5 2/2 each.
+- **(o)** (§5.10) The `erratum` link, by each linker: GNU ld's ADR made
+  the next page's, and lld's patch load with its offset cleared, are R1;
+  either fix undone is C1 with the option stated, and not judged
+  without it; mold's unfixed site is C1, A4. Read as mortar's (the map
+  rewritten): `W2` made a NOP in input and output is C2 (GNU ld's ADR)
+  and C3 (lld's patch), the option stated off is C6, and a chunk at
+  `.text + 0x1000` is C5.
 
 ### 9.3 Map readers
 
@@ -1990,9 +2067,17 @@ corpus test accepts them by name and nothing else.
 Two more anomalies are reported here but do not reach the corpus:
 
 - **A4 (mold).** mold accepts `--fix-cortex-a53-843419` and does not patch.
-  The erratum sequence is left as it is. The fields are right, so this is
-  not a finding: the verifier checks what the program computes, not
-  whether the erratum workaround was applied.
+  The erratum sequence is left as it is. The fields are right. With the
+  option stated to the verifier, each site is C1 (§5.10), classified A4;
+  without it, no fix shows the option and the sites are not judged.
+- **A18 (GNU ld).** GNU ld 2.44 leaves an erratum 843419 site unfixed in
+  a large link: the `synthetic-sections` workload's static link has a
+  4-word site (ADRP at `0x661ff8`, `W3` an `ADRP` of the same register,
+  `F` at `0x662004`) with neither fix, after two of its own 16-byte
+  erratum stubs earlier in `.text`. Consistent with the stubs moving
+  code onto a page end after the scan; the same words at `0xFF8` in a
+  small link are fixed. C1, classified A18 when an earlier site of the
+  output is patched.
 - **A5 (lld).** lld relaxes `LDR Wt, [Xn, :got_lo12:]` (a 32-bit load,
   ill-formed with `LD64_GOT_LO12_NC`) into a 64-bit `ADR`. GNU ld writes
   the scale-8 offset into the scale-4 load. The input is R8 (§4.3), for

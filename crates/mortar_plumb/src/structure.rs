@@ -762,15 +762,17 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
             );
         }
     }
-    // S7 (mortar): a nonzero entry point is where a global symbol is, when
-    // the output has a symbol table with functions: the entry symbol's
-    // value (L-103: mortar writes the entry symbol's value or 0; the
-    // references fall back to the start of `.text`; WP-028d).
+    // S7 (mortar): a nonzero entry point is where a symbol other than a
+    // mapping symbol is, when the output has a symbol table with
+    // functions: the entry symbol's value (L-103: mortar writes the entry
+    // symbol's value or 0; the references fall back to the start of
+    // `.text`; WP-028d). The entry symbol may be local: a hidden `_start`
+    // is made local in the output (gABI STV_HIDDEN).
     let labelled = |v: u64| {
         image.symbols.iter().any(|x| {
             x.index != 0
                 && x.sym.st_shndx != SHN_UNDEF
-                && x.sym.binding() != mortar_elf::consts::STB_LOCAL
+                && !x.name.starts_with('$')
                 && !matches!(x.sym.sym_type(), STT_SECTION | STT_FILE | STT_TLS)
                 && x.sym.st_value == v
         })

@@ -1414,3 +1414,129 @@ fn s9_5_mutation_coverage_on_the_small_corpus() {
         assert!(real.is_empty(), "{class}: {real:?}\n{table}");
     }
 }
+
+/// The output and input offsets of `.text` in the `erratum` case's
+/// output and `e843.o`: its `W1` is at `.text + 0xff8` (`E843_S`).
+fn e843_text(ctx: &Ctx) -> (u64, usize, usize) {
+    let text = placed(&ctx.map, ".text");
+    let at = file_offset(&ctx.output, text.addr).unwrap();
+    let (_, obj) = ctx.files.iter().find(|(p, _)| p.ends_with("e843.o")).unwrap();
+    let o = Object::parse(obj).unwrap();
+    let s = o.sections().find(|s| s.name().ok() == Some(&b".text"[..])).unwrap();
+    (text.addr, at, s.header().sh_offset as usize)
+}
+
+/// The C rules' findings of a report (§5.10), by id.
+fn c_rules(r: &Report) -> Vec<String> {
+    r.findings.iter().map(|f| f.rule.id()).filter(|r| r.starts_with('C')).collect()
+}
+
+fn rules_of(link: &Link, r: &Report) -> Vec<String> {
+    let mut v: Vec<String> = unexpected(link, r).iter().map(|f| f.rule.id()).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+// spec/plumb.md §5.10 (WP-028d item 0; a64.md §11.2-§11.3): each erratum
+// 843419 fix is judged by its meaning and by site. GNU ld writes the ADR
+// form here, lld the patch. (1) An ADR to the next page, and a patch
+// whose load lost its relocated offset (WP-032e's two mislinks): R1.
+// (2) Either fix undone, with the option known: C1; with the option
+// unknown, nothing shows it was given: not judged. (3) mold leaves the
+// site (A4): C1, classified A4, when the option is known.
+#[test]
+fn s9_2o_erratum_fixes_are_judged_by_meaning_and_site() {
+    let Some(c) = small() else { return };
+    for linker in Linker::ALL {
+        let ctx = Ctx::of(c.get("erratum", linker));
+        let r = ctx.verify(&ctx.output);
+        common::assert_clean(ctx.link, &r);
+        let (addr, at, _) = e843_text(&ctx);
+        let (q, f) = (at + 0xff8, at + 0x1000);
+        let mut given = ctx.map.clone();
+        given.fix_843419 = Some(true);
+        let label = ctx.link.label();
+        if linker == Linker::Mold {
+            assert_eq!(r.coverage.erratum_not_judged, 1, "{label}: {}", r.summary());
+            let m = verify_with(&ctx.output, &ctx.files, &given);
+            assert!(m.with_rule("C1").next().is_some(), "{label}: {}", m.render("e"));
+            assert!(unexpected(ctx.link, &m).is_empty(), "{label}: C1 is A4: {}", m.render("e"));
+            continue;
+        }
+        assert_eq!(r.coverage.erratum_sites, 1, "{label}: {}", r.summary());
+        let w1 = le32(&ctx.output, q);
+        let wf = le32(&ctx.output, f);
+        let mut out = ctx.output.clone();
+        let mut undone = ctx.output.clone();
+        if let Some((d, t)) = mortar_plumb::a64::adr(w1, addr + 0xff8) {
+            assert_eq!(linker, Linker::Bfd);
+            // The next page: adr's immediate + 0x1000 (immhi bit 10).
+            put32(&mut out, q, w1 + (0x400 << 5));
+            // The ADRP of the same page, at Q.
+            let delta = ((t - ((addr + 0xff8) & !0xfff)) >> 12) as u32;
+            put32(&mut undone, q, 0x9000_0000 | (delta & 3) << 29 | (delta >> 2) << 5 | d);
+        } else {
+            assert_eq!(linker, Linker::Lld, "{label}: neither fix");
+            let (false, t) = mortar_plumb::a64::branch(wf, addr + 0x1000).unwrap() else {
+                panic!("{label}: not a b")
+            };
+            let pt = file_offset(&ctx.output, t).unwrap();
+            let moved = le32(&ctx.output, pt);
+            assert_ne!(moved & (0xfff << 10), 0, "{label}: the load has its lo12");
+            put32(&mut out, pt, moved & !(0xfff << 10));
+            put32(&mut undone, f, moved);
+        }
+        let m = ctx.verify(&out);
+        assert_eq!(rules_of(ctx.link, &m), ["R1"], "{label}: {}", m.render("e"));
+        let m = verify_with(&undone, &ctx.files, &given);
+        assert_eq!(rules_of(ctx.link, &m), ["C1"], "{label}: {}", m.render("e"));
+        let m = ctx.verify(&undone);
+        assert!(unexpected(ctx.link, &m).is_empty(), "{label}: {}", m.render("e"));
+        assert_eq!(m.coverage.erratum_not_judged, 1, "{label}: {}", m.summary());
+        eprintln!("§9.2 (o) {label}: next page / stale load R1, undone C1");
+    }
+}
+
+// spec/plumb.md §5.10 (a64.md §11.3 items 4, 5, 7, 8): the rules on
+// mortar's output only, the erratum links read as mortar's. (1) `W2` made
+// a NOP (in the input too): the site is gone, so lld's patch is a
+// redirect at no site (C3) and GNU ld's ADR a fix outside a site (C2).
+// (2) The option known off: C6 on each fix. (3) A code chunk at page
+// offset 0: C5.
+#[test]
+fn s9_2o_erratum_rules_on_mortar_output() {
+    use mortar_plumb::map::{Chunk, ChunkKind};
+    let Some(c) = small() else { return };
+    for (linker, rule) in [(Linker::Bfd, "C2"), (Linker::Lld, "C3")] {
+        let ctx = Ctx::of(c.get("erratum", linker));
+        let text = mortar_plumb::map::mortar::write(&ctx.map);
+        let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
+        let label = ctx.link.label();
+        let base = verify_with(&ctx.output, &ctx.files, &map);
+        assert!(c_rules(&base).is_empty(), "{label} as mortar: {}", base.render("e"));
+        let (addr, at, input) = e843_text(&ctx);
+        let mut out = ctx.output.clone();
+        let mut files = ctx.files.clone();
+        put32(&mut out, at + 0xffc, 0xd503_201f);
+        let (_, obj) = files.iter_mut().find(|(p, _)| p.ends_with("e843.o")).unwrap();
+        put32(obj, input + 0xffc, 0xd503_201f);
+        let m = verify_with(&out, &files, &map);
+        assert_eq!(c_rules(&m), [rule], "{label}: {}", m.render("e"));
+        let mut off = map.clone();
+        off.fix_843419 = Some(false);
+        let m = verify_with(&ctx.output, &ctx.files, &off);
+        assert_eq!(c_rules(&m), ["C6"], "{label}: {}", m.render("e"));
+        let mut chunk = map.clone();
+        chunk.chunks.push(Chunk {
+            kind: ChunkKind::Thunk,
+            name: "__test_veneer".into(),
+            addr: Some(addr + 0x1000),
+            size: 8,
+            target: None,
+            line: 0,
+        });
+        let m = verify_with(&ctx.output, &ctx.files, &chunk);
+        assert!(m.with_rule("C5").next().is_some(), "{label}: {}", m.render("e"));
+    }
+}

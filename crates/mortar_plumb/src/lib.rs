@@ -12,6 +12,7 @@ pub mod a64;
 pub mod anomaly;
 pub mod buildid;
 mod content;
+mod erratum;
 mod image;
 mod locate;
 pub mod mutate;
@@ -74,6 +75,7 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     engine.finish_pieces();
     engine.check_eh_frame();
     content::check_content(&mut engine);
+    erratum::check(&mut engine, map);
     content::check_init_padding(&mut engine);
     content::check_symbols(&mut engine);
     symbols::check(&mut engine);

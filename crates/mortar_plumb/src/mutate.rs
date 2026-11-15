@@ -49,6 +49,7 @@ pub const CLASSES: &[&str] = &[
     "section-overlap",
     "thunk-target",
     "iplt-entry",
+    "erratum-fix",
 ];
 
 /// How many mutants of each class to run, from which seed, on how many
@@ -801,7 +802,82 @@ fn candidates(
             }
         }
     }
+    // erratum-fix (a64.md §11.2): an ADR fix to the next page, or undone
+    // (the ADRP of the same page put back: a missing fix); a patch whose
+    // load has its offset changed (the relocation not applied, as WP-032e
+    // found), or undone (the load put back at F).
+    if image.header.e_machine == mortar_elf::consts::EM_AARCH64 {
+        let exec = image.sections.iter().filter(|s| {
+            s.shdr.sh_flags & mortar_elf::consts::SHF_EXECINSTR != 0 && s.shdr.sh_addr != 0
+        });
+        let mut ranges: Vec<(u64, u64)> =
+            exec.map(|s| (s.shdr.sh_addr, s.shdr.sh_addr + s.shdr.sh_size)).collect();
+        ranges.sort_unstable();
+        for (lo, hi) in ranges {
+            let mut page = lo & !0xFFF;
+            while page < hi {
+                for q in [page + 0xFF8, page + 0xFFC] {
+                    if q < lo || q + 4 > hi {
+                        continue;
+                    }
+                    let Some(o) = g.off(q, 4) else { continue };
+                    let w = g.word(o, 4) as u32;
+                    if let Some((d, t)) = a64::adr(w, q)
+                        && t & 0xFFF == 0
+                    {
+                        let next = adr_word(d, q, t.wrapping_add(0x1000));
+                        let back = adrp_word(d, q, t);
+                        if let Some(n) = next {
+                            g.push("erratum-fix", format!("ADR fix at {q:#x}: the next page"), vec![(o, n.to_le_bytes().to_vec())]);
+                        }
+                        if let Some(b) = back {
+                            g.push("erratum-fix", format!("ADR fix at {q:#x}: undone"), vec![(o, b.to_le_bytes().to_vec())]);
+                        }
+                    }
+                }
+                for f in [page, page + 4, page + 8] {
+                    if f < lo || f + 4 > hi {
+                        continue;
+                    }
+                    let Some(o) = g.off(f, 4) else { continue };
+                    let w = g.word(o, 4) as u32;
+                    let Some((false, t)) = a64::branch(w, f) else { continue };
+                    let (Some(to), Some(bo)) = (g.off(t, 4), g.off(t.wrapping_add(4), 4)) else { continue };
+                    let moved = g.word(to, 4) as u32;
+                    let back = g.word(bo, 4) as u32;
+                    if !a64::is_ldst_unsigned_imm(moved)
+                        || a64::branch(back, t.wrapping_add(4)) != Some((false, f.wrapping_add(4)))
+                    {
+                        continue;
+                    }
+                    let imm = (moved >> 10) & 0xFFF;
+                    let stale = if imm == 0 { moved | 1 << 10 } else { moved & !(0xFFF << 10) };
+                    g.push("erratum-fix", format!("patch for {f:#x} at {t:#x}: offset not relocated"), vec![(to, stale.to_le_bytes().to_vec())]);
+                    g.push("erratum-fix", format!("patch for {f:#x}: undone"), vec![(o, moved.to_le_bytes().to_vec())]);
+                }
+                page += 0x1000;
+            }
+        }
+    }
     g.out
+}
+
+/// `ADR Xd, target` at `pc`, if it reaches.
+fn adr_word(d: u32, pc: u64, target: u64) -> Option<u32> {
+    let delta = target.wrapping_sub(pc) as i64;
+    (-(1 << 20)..(1 << 20)).contains(&delta).then(|| {
+        let v = delta as u32 & 0x1F_FFFF;
+        0x1000_0000 | (v & 3) << 29 | (v >> 2) << 5 | d
+    })
+}
+
+/// `ADRP Xd, page` at `pc`, if it reaches.
+fn adrp_word(d: u32, pc: u64, page: u64) -> Option<u32> {
+    let delta = (page.wrapping_sub(pc & !0xFFF) as i64) >> 12;
+    (-(1 << 20)..(1 << 20)).contains(&delta).then(|| {
+        let v = delta as u32 & 0x1F_FFFF;
+        0x9000_0000 | (v & 3) << 29 | (v >> 2) << 5 | d
+    })
 }
 
 /// The `(offset, width)` of each FDE's initial location in `.eh_frame`'s
@@ -901,7 +977,15 @@ fn keys(r: &crate::Report) -> BTreeSet<(String, Option<u64>, String)> {
 pub fn run(output: &[u8], inputs: &[Input<'_>], map: &Map, cfg: &Config) -> Result<Outcome, String> {
     let image = Image::read(output)?;
     let mut rng = Rng(cfg.seed);
-    let base = verify(output, inputs, map);
+    let mut base = verify(output, inputs, map);
+    // A link whose fixes show the erratum option keeps it when a mutant
+    // undoes them (§5.10: otherwise the option would be inferred off).
+    let mut given = map.clone();
+    if given.fix_843419.is_none() && base.coverage.erratum_sites > 0 {
+        given.fix_843419 = Some(true);
+        base = verify(output, inputs, &given);
+    }
+    let map = &given;
     let failed: BTreeSet<u64> = base.findings.iter().filter_map(|f| f.addr).collect();
     let all = candidates(&image, map, inputs, &mut rng, &failed);
     let base_keys = keys(&base);
@@ -980,6 +1064,17 @@ pub fn run(output: &[u8], inputs: &[Input<'_>], map: &Map, cfg: &Config) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // spec: Arm A64 ADR/ADRP encodings (a64.md §11.2's `adr` and W1).
+    #[test]
+    fn s9_5_adr_and_adrp_words() {
+        assert_eq!(adr_word(1, 0x41_2ffc, 0x41_3000), Some(0x1000_0021));
+        let w = adr_word(1, 0x41_2ffc, 0x41_3000).unwrap();
+        assert_eq!(a64::adr(w, 0x41_2ffc), Some((1, 0x41_3000)));
+        let p = adrp_word(0, 0x41_2ffc, 0x62_3000).unwrap();
+        assert_eq!(a64::adrp(p, 0x41_2ffc), Some((0, 0x62_3000)));
+        assert_eq!(adr_word(0, 0, 1 << 21), None);
+    }
 
     #[test]
     fn s9_5_bit_packing() {

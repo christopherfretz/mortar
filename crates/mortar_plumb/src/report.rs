@@ -53,6 +53,8 @@ pub enum Rule {
     Property(u8),
     /// B1: mortar's build id (§6.7).
     BuildId,
+    /// C1-C6: erratum 843419 fixes by site (§5.10).
+    Erratum(u8),
 }
 
 impl Rule {
@@ -80,6 +82,7 @@ impl Rule {
             Rule::Ifunc(n) => format!("F{n}"),
             Rule::Property(n) => format!("P{n}"),
             Rule::BuildId => "B1".into(),
+            Rule::Erratum(n) => format!("C{n}"),
         }
     }
 }
@@ -406,6 +409,11 @@ pub struct Coverage {
     /// large sections (`SHF_X86_64_LARGE`), whose order differs by linker
     /// (spec/x64.md X-54; Y5 leaves them out of `_edata`/`_end`).
     pub placement_not_judged: Vec<String>,
+    /// Erratum 843419 sites found with their fix (C1), and sites not
+    /// judged: the option unknown, beyond what both references fix, or
+    /// unproved code in a reference's output (§5.10).
+    pub erratum_sites: u64,
+    pub erratum_not_judged: u64,
     /// Verified or accepted records by relocation type.
     pub checked_types: BTreeMap<u32, u64>,
 }
@@ -552,6 +560,13 @@ impl Report {
             "program properties: types judged {}, not judged {}",
             c.properties_judged, c.properties_not_judged
         );
+        if c.erratum_sites + c.erratum_not_judged > 0 {
+            let _ = writeln!(
+                s,
+                "erratum 843419 sites: fixed {}, not judged {}",
+                c.erratum_sites, c.erratum_not_judged
+            );
+        }
         if let Some(b) = &c.build_id {
             let _ = writeln!(s, "build id: {b}");
         }

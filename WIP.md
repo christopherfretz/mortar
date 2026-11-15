@@ -19,8 +19,13 @@ Scratch: /tmp/mortar-wp028d-447239 (remove by explicit path at the end).
 - Item 0 repro: pre-fix mortar (4afb6df) at .build/target-wp-028d-pre;
   e843/{e,e3a,e4,me3a} flagged R1 by this worktree's plumb.
 
+- Item 0: erratum.rs C1-C6 (§5.10), mutation class erratum-fix, tests
+  s9_2o_*; A4 judged, A18 (GNU ld unfixed site in synthetic-sections);
+  xtask --fix-cortex-a53-843419 + rsp detection. Finding: main's plumb
+  (4afb6df) already flags all pre-fix outputs with R1; the bench never
+  runs plumb. Repros in /tmp/.../e843 (e,e3a,e4,me3a) and sec/.
+  S7 entry symbol may be local (hidden _start).
+
 ## Next
-- Item 0: was main's plumb silent? new §11.3 rules (missing fix, patch
-  return), mutation tests, bfd/lld checks; plumb.md text.
-- Items 2/4: release sweeps on protoc (a64 + x64), cost table; §9.5 text.
-- Item 5 sizing; gate; linktest; landed note.
+- Full plumb tests; pipeline tests; then items 2/4 (protoc sweeps, cost
+  table, §9.5 text), item 5 sizing, gate, linktest, landed note.
