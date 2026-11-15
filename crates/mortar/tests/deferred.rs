@@ -380,7 +380,7 @@ fn raises(arch: &dyn mortar_arch::Arch, r_type: u32) -> bool {
                     proof: &[],
                     leads: true,
                 };
-                let place = mortar_arch::PlaceFacts { alloc: false, writable: false };
+                let place = mortar_arch::PlaceFacts { alloc: false, writable: false, exec: None };
                 let cx = ScanCx { tables: &facts, output, place, name: b".debug_info" };
                 let mut out = Raised(false);
                 arch.scan(&cx, &at, &mut DemandSink::new(&mut out));

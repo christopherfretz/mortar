@@ -27,9 +27,9 @@ const TP_SLOT: u64 = 0x0804_c010;
 const TLS: TlsBlock = TlsBlock { start: 0x0804_b000, size: 0x10, align: 4 };
 const TP_END: u64 = 0x0804_b010;
 
-const DATA: PlaceFacts = PlaceFacts { alloc: true, writable: true };
-const TEXT: PlaceFacts = PlaceFacts { alloc: true, writable: false };
-const DEBUG: PlaceFacts = PlaceFacts { alloc: false, writable: false };
+const DATA: PlaceFacts = PlaceFacts { alloc: true, writable: true, exec: None };
+const TEXT: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
+const DEBUG: PlaceFacts = PlaceFacts { alloc: false, writable: false, exec: None };
 
 fn tables(kind: TargetKind, s: u64) -> Tables {
     let mut t = Tables::default();
@@ -447,6 +447,18 @@ fn x86_13_step_1_got32_outside_code_is_refused() {
         c.word(3, 8, key(1), 0),
         Err(FieldError::Refused(Refusal::named(RefusalClass::Feature, GOT_PLACE)))
     );
+    // At scan, where `PlaceFacts.exec` is known (arch.md §3.4), the same
+    // record is refused there; unknown, scan leaves it to fill.
+    let data_known = PlaceFacts { exec: Some(false), ..DATA };
+    for r_type in [3, 43] {
+        let s = scan(&t, OutputKind::Static, data_known, &input, r_type);
+        assert_eq!(s.errors, [(0, ScanError::Incompatible(Incompatible::InstructionMismatch))]);
+        let s = scan(&t, OutputKind::Static, DATA, &input, r_type);
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
+    }
+    let text_known = PlaceFacts { exec: Some(true), ..TEXT };
+    let s = scan(&t, OutputKind::Static, text_known, &code(&[0x8b, 0x83]), 43);
+    assert!(s.errors.is_empty(), "{:?}", s.errors);
     // A non-alloc GOT form is E (X86-59).
     let s = scan(&t, OutputKind::Static, DEBUG, &input, 3);
     assert_eq!(s.errors, [(0, ScanError::Incompatible(Incompatible::NotInNonAlloc))]);

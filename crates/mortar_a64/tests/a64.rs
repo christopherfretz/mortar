@@ -284,7 +284,7 @@ impl RefusalName for mortar_arch::Refusal {
 
 // ---------------------------------------------------------------- reviewer cases
 
-const ALLOC: PlaceFacts = PlaceFacts { alloc: true, writable: false };
+const ALLOC: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
 
 fn scan_err(arch: A64, tables: &Tables, input: &[u8], r: Reloc) -> Vec<ScanError> {
     scan_one(arch, tables, OutputKind::Static, ALLOC, input, r)
@@ -712,8 +712,8 @@ fn s13_2_non_alloc_and_tombstones() {
     // event `DiscardedSection` (arch.md §3.4).
     t.facts.get_mut(&key(1)).unwrap().dead = true;
     let r = Reloc { r_offset: 0, key: key(1), r_type: 257, addend: 0 };
-    let na = PlaceFacts { alloc: false, writable: false };
-    let w = PlaceFacts { alloc: true, writable: true };
+    let na = PlaceFacts { alloc: false, writable: false, exec: None };
+    let w = PlaceFacts { alloc: true, writable: true, exec: None };
     for (place, name, discarded) in [
         (na, &b".debug_info"[..], false),
         (na, b".gcc_except_table", false),
@@ -733,7 +733,7 @@ fn s13_2_non_alloc_and_tombstones() {
     // A GOT class in .debug_info is refused (§4.3's non-alloc rule).
     let input = words(&[ADRP_X0]);
     let r = Reloc { r_offset: 0, key: key(1), r_type: 311, addend: 0 };
-    let na = PlaceFacts { alloc: false, writable: false };
+    let na = PlaceFacts { alloc: false, writable: false, exec: None };
     let s = scan_one(A64::M1, &t, OutputKind::Pie, na, &input, r).unwrap();
     assert_eq!(s.errors, [(0, ScanError::Incompatible(Incompatible::NotInNonAlloc))]);
     // ABS64 in .debug_info of a PIE: no dynamic relocation.
@@ -751,7 +751,7 @@ fn s13_2_non_alloc_and_tombstones() {
 fn s13_2_non_alloc_tls_targets() {
     let mut t = local(0x41_0000);
     t.tls_sym(key(2), 0x42_0010, TargetKind::Local);
-    let na = PlaceFacts { alloc: false, writable: false };
+    let na = PlaceFacts { alloc: false, writable: false, exec: None };
     let one = |r_type, k| {
         let r = Reloc { r_offset: 0, key: k, r_type, addend: 0 };
         scan_one(M2, &t, OutputKind::Static, na, &[0; 8], r).unwrap()
@@ -786,7 +786,7 @@ fn s4_3_pc_weak0_in_pie_is_s_equals_p() {
     let mut t = Tables::default();
     t.sym(key(1), 0, TargetKind::Weak0);
     let r = Reloc { r_offset: 0, key: key(1), r_type: 261, addend: 5 };
-    let w = PlaceFacts { alloc: true, writable: true };
+    let w = PlaceFacts { alloc: true, writable: true, exec: None };
     let s = scan_one(M2, &t, OutputKind::Pie, w, &[0; 4], r).unwrap();
     assert!(s.errors.is_empty() && s.raised.is_empty() && s.counts.is_empty());
 }
@@ -847,7 +847,7 @@ fn s5_scan_class_and_undefined() {
     let s = scan_one(A64::M1, &t, OutputKind::Static, ALLOC, &input, r(key(1), 311)).unwrap();
     assert_eq!(raised(&s, key(1)), DemandFlags::GOT | DemandFlags::GOT_NORELAX);
     // PIE: ABS64 against local in a writable place counts one RELATIVE.
-    let w = PlaceFacts { alloc: true, writable: true };
+    let w = PlaceFacts { alloc: true, writable: true, exec: None };
     let s = scan_one(M2, &t, OutputKind::Pie, w, &[0; 8], r(key(1), 257)).unwrap();
     assert_eq!(s.counts, [(DynRole::Relative, 1)]);
     // A window outside the section.

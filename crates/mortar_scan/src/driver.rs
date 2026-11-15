@@ -351,8 +351,12 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
         let flags = s.flags();
         let bytes = contents(view, file, &s, sec_buf).map_err(|f| fail(f, index))?;
         let name = s.name().unwrap_or_default();
-        let place = PlaceFacts { alloc: flags & SHF_ALLOC != 0, writable: flags & SHF_WRITE != 0 };
         let exec = flags & SHF_EXECINSTR != 0;
+        let place = PlaceFacts {
+            alloc: flags & SHF_ALLOC != 0,
+            writable: flags & SHF_WRITE != 0,
+            exec: Some(exec),
+        };
         let mut proof = Vec::new();
         if exec {
             let mut marks = view.marks(file, index);
