@@ -1,0 +1,103 @@
+# dyn.md D-23, the export row: a C++ executable defines a template's
+# static data member, an inline variable and the static local of an
+# inline function (GCC writes the three `STB_GNU_UNIQUE`), and a `-fPIC`
+# library defines the same three. Each is one object at run time: the
+# executable's, which the library binds to through `.dynsym`. The
+# executable exports them with the binding of `.symtab`, so they stay
+# `STB_GNU_UNIQUE` in `.dynsym`, as GNU ld, lld and mold write them, and
+# glibc's unique-symbol table holds the executable's instance: a library
+# opened with `RTLD_DEEPBIND` (which looks in itself before the global
+# scope) still binds its own definition to the executable's (`exe==deep
+# 1`). An export written `STB_GLOBAL` lets the `RTLD_DEEPBIND` library
+# keep its own copy (`exe==deep 0`: WP-054's finding). `EI_OSABI` is
+# `ELFOSABI_GNU` (D-23: a unique symbol in `.symtab`; GNU ld's output,
+# lld and mold write 0, so readelf shows their unique binding as `<OS
+# specific>: 10`). PIE and `-no-pie` with `-fno-pic` code.
+#
+#@ spec: dyn.md "D-23"
+#@ arch: aarch64
+#@ requires: g++
+
+cxx -O1 -fPIC lib.cc -o lib.o
+shlib g++ lib.o -Wl,-soname,libuq.so -o libuq.so
+cxx -O1 -fPIC deep.cc -o deep.o
+shlib g++ deep.o -Wl,-soname,libdeep.so -o libdeep.so
+cxx -O1 -fPIE main.cc -o main-pie.o
+cxx -O1 -fno-pic main.cc -o main-exec.o
+link g++ -pie main-pie.o -L. -luq -ldl -o pie
+run pie
+  stdout: S 11 same 1 counter 102 same 1 inl 1008 same 1
+  stdout: exe==lib 1 exe==deep 1
+link g++ -no-pie main-exec.o -L. -luq -ldl -o exec
+run exec
+  stdout: S 11 same 1 counter 102 same 1 inl 1008 same 1
+  stdout: exe==lib 1 exe==deep 1
+check readelf --dyn-syms -W pie
+  has(bfd,mortar): OBJECT * UNIQUE * _ZN1SIiE1cE$
+  has(lld,mold): OBJECT * <OS specific>: 10 * _ZN1SIiE1cE$
+  has(bfd,mortar): OBJECT * UNIQUE * _ZZ7countervE1c$
+  has(lld,mold): OBJECT * <OS specific>: 10 * _ZZ7countervE1c$
+  has(bfd,mortar): OBJECT * UNIQUE * inl_var$
+  has(lld,mold): OBJECT * <OS specific>: 10 * inl_var$
+check readelf --dyn-syms -W exec
+  has(bfd,mortar): OBJECT * UNIQUE * _ZN1SIiE1cE$
+  has(lld,mold): OBJECT * <OS specific>: 10 * _ZN1SIiE1cE$
+  has(bfd,mortar): OBJECT * UNIQUE * _ZZ7countervE1c$
+  has(lld,mold): OBJECT * <OS specific>: 10 * _ZZ7countervE1c$
+  has(bfd,mortar): OBJECT * UNIQUE * inl_var$
+  has(lld,mold): OBJECT * <OS specific>: 10 * inl_var$
+check readelf -hsW pie
+  has(bfd,mortar): OS/ABI: * UNIX - GNU
+  has(bfd,mortar): OBJECT * UNIQUE * _ZN1SIiE1cE$
+
+#--- uq.h
+template <class T> struct S { static int c; };
+template <class T> int S<T>::c = 0;
+inline int &counter() {
+  static int c = 0;
+  return c;
+}
+inline int inl_var = 5;
+#--- lib.cc
+#include "uq.h"
+
+int *lib_S() { return &S<int>::c; }
+int *lib_counter() { return &counter(); }
+int *lib_inl() { return &inl_var; }
+void lib_bump() {
+  S<int>::c += 10;
+  counter() += 100;
+  inl_var += 1000;
+}
+#--- deep.cc
+#include "uq.h"
+
+extern "C" int *deep_S() { return &S<int>::c; }
+#--- main.cc
+#include <cstdio>
+#include <dlfcn.h>
+#include "uq.h"
+
+int *lib_S();
+int *lib_counter();
+int *lib_inl();
+void lib_bump();
+
+int main() {
+  S<int>::c += 1;
+  counter() += 2;
+  inl_var += 3;
+  lib_bump();
+  std::printf("S %d same %d counter %d same %d inl %d same %d\n", S<int>::c,
+              &S<int>::c == lib_S(), counter(), &counter() == lib_counter(),
+              inl_var, &inl_var == lib_inl());
+  void *h = dlopen("libdeep.so", RTLD_NOW | RTLD_DEEPBIND);
+  if (!h) {
+    std::printf("dlopen: %s\n", dlerror());
+    return 1;
+  }
+  auto deep = reinterpret_cast<int *(*)()>(dlsym(h, "deep_S"));
+  std::printf("exe==lib %d exe==deep %d\n", &S<int>::c == lib_S(),
+              &S<int>::c == deep());
+  return 0;
+}
