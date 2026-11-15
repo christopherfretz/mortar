@@ -1,0 +1,163 @@
+# dyn.md §2.4 "Mixed-mode links" (`corpus/mixed.sh`), D-42, D-43, D-44,
+# D-45, D-47: a main and three translation units, each compiled in its own
+# mode (`-fno-pic`, `-fPIE`, `-fPIC`, `-fno-plt`), against a `-fPIC`
+# library. Every unit and the library record the addresses they see
+# (`puts`, `&stdout`, `stdout`, `strlen` (a libc IFUNC), library data,
+# function, read-only data, IFUNC and TLS, the executable's data, TLS and
+# IFUNC, a `puts` pointer in initialized data) and `main` compares them
+# with its own and with `dlsym`, then calls through each. A correct link
+# prints only `tu` lines and the counters, `mismatches=0`.
+#
+# - `-no-pie`, mix (`-fPIE` main, `-fno-pic`, `-fPIC`, `-fno-plt`): the
+#   `-fno-pic` unit brings copies (`stdout`, `lib_data`, `lib_ro`) and
+#   canonical PLTs (`puts`, `strlen`, `lib_fn`, `lib_ifunc`), and the other
+#   units' GOT slots point at them (D-42, D-44).
+# - PIE, mix (`-fPIE` main, `-fPIC`, `-fno-plt`, `-fPIE`): no `-fno-pic`
+#   unit; the executable's IFUNC `main_ifunc` has one address in every unit
+#   (D-45, its IPLT entry).
+# - PIE with the `-fno-pic` unit: refused. Its absolute and PC-relative
+#   uses of shared functions demand canonical PLTs, which a PIE refuses
+#   (D-44, `canonical-plt-in-pie`; its absolute words in read-only places
+#   would be text relocations, D-47). GNU ld refuses on both architectures;
+#   lld and mold refuse on x86-64; on AArch64 lld links it with canonical
+#   PLTs in the PIE (address equality holds: a choice mortar does not make,
+#   D-44), and so does mold, with W3's inequality.
+#
+# W3 (dyn.md §13.2): GNU ld and mold give `&main_ifunc` a different value
+# in the units that take it PC-relatively and those that load it from the
+# GOT, in the x86-64 PIE (`main_ifunc: DIFF vs main: a b c`, exit 1), and
+# mold in the AArch64 PIE with the `-fno-pic` unit, which it links where
+# mortar refuses (`DIFF vs main: a`). This `-no-pie` mix does not show W3's
+# GNU ld `-no-pie` form, nor this PIE W6's `DT_TEXTREL` (measured: mold
+# writes none here).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-44"
+#@ spec: dyn.md "D-45"
+#@ spec: dyn.md "D-42"
+#@ spec: dyn.md "D-47"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd,x86_64): W3: &main_ifunc differs between units in the PIE
+#@ xfail(mold): W3: &main_ifunc differs between units (x86-64 PIE; the AArch64 PIE with the -fno-pic unit, which it links)
+
+cc -O2 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libmx.so -o libmx.so
+cc -O2 -fPIE main.c -o main.pie.o
+cc -O2 -fno-pic -DTUNAME=tu_a tu.c -o a.nopic.o
+cc -O2 -fPIC -DTUNAME=tu_a tu.c -o a.pic.o
+cc -O2 -fPIC -DTUNAME=tu_b tu.c -o b.pic.o
+cc -O2 -fno-plt -DTUNAME=tu_b tu.c -o b.noplt.o
+cc -O2 -fno-plt -DTUNAME=tu_c tu.c -o c.noplt.o
+cc -O2 -fPIE -DTUNAME=tu_c tu.c -o c.pie.o
+
+link gcc -no-pie main.pie.o a.nopic.o b.pic.o c.noplt.o -L. -lmx -o exec
+run exec
+  stdout: tu
+  stdout: tu
+  stdout: tu
+  stdout: tu
+  stdout: tu
+  stdout: lib_data=105 main_data=12 g_tls=10 lib_tls=1005 mismatches=0
+
+link gcc -pie main.pie.o a.pic.o b.noplt.o c.pie.o -L. -lmx -o pie
+run pie
+  stdout: tu
+  stdout: tu
+  stdout: tu
+  stdout: tu
+  stdout: tu
+  stdout: lib_data=105 main_data=12 g_tls=10 lib_tls=1005 mismatches=0
+
+link(bfd,mold,mortar) gcc -pie main.pie.o a.nopic.o b.pic.o c.noplt.o -L. -lmx -o pie-nopic
+  exit: fail
+  diag(mortar): relocation * against symbol `*' cannot be used in a position-independent executable; recompile with -fPIE, or link with -no-pie
+link(lld,x86_64) gcc -pie main.pie.o a.nopic.o b.pic.o c.noplt.o -L. -lmx -o pie-nopic
+  exit: fail
+link(lld,aarch64) gcc -pie main.pie.o a.nopic.o b.pic.o c.noplt.o -L. -lmx -o pie-nopic
+run(lld,aarch64) pie-nopic
+  stdout: tu
+  stdout: tu
+  stdout: tu
+  stdout: tu
+  stdout: tu
+  stdout: lib_data=105 main_data=12 g_tls=10 lib_tls=1005 mismatches=0
+
+#--- mx.h
+#pragma once
+#define NF 13
+static const char *const fname[NF] = {"puts", "&stdout", "stdout", "strlen", "&lib_data", "lib_fn",
+  "main_ifunc", "&g_tls", "&lib_tls", "pp_puts(data)", "&main_data", "lib_ifunc", "&lib_ro"};
+struct probe { void *v[NF]; int calls; };
+extern int lib_data; int lib_fn(int); extern __thread int lib_tls; int lib_ifunc(void);
+extern const int lib_ro[4];
+extern int main_data; extern __thread int g_tls; int main_ifunc(void);
+#--- tu.c
+#include <stdio.h>
+#include <string.h>
+#include "mx.h"
+#define CAT2(a, b) a##b
+#define CAT(a, b) CAT2(a, b)
+int (*CAT(TUNAME, _pp))(const char *) = puts;
+void TUNAME(struct probe *p) {
+#if defined(IN_LIB)  /* an executable IFUNC referenced from a library is ifunc-from-dso */
+#define MAIN_IFUNC_ADDR ((void *)0)
+#define MAIN_IFUNC_CALL 3
+#else
+#define MAIN_IFUNC_ADDR ((void *)main_ifunc)
+#define MAIN_IFUNC_CALL main_ifunc()
+#endif
+  void *v[NF] = {(void *)puts, (void *)&stdout, (void *)stdout, (void *)strlen, &lib_data, (void *)lib_fn,
+                 MAIN_IFUNC_ADDR, &g_tls, &lib_tls, (void *)CAT(TUNAME, _pp), &main_data,
+                 (void *)lib_ifunc, (void *)lib_ro};
+  for (int i = 0; i < NF; i++) p->v[i] = v[i];
+  lib_data++; main_data++; g_tls++; lib_tls++;
+  p->calls = lib_fn(1) + MAIN_IFUNC_CALL + lib_ifunc() + (int)strlen("abc") + lib_ro[1];
+  fputs("tu\n", stdout);
+}
+#--- lib.c
+#include <stdio.h>
+#include <string.h>
+#include "mx.h"
+int lib_data = 100;
+const int lib_ro[4] = {1, 2, 3, 4};
+__thread int lib_tls = 1000;
+int lib_fn(int x) { return x + 1; }
+static int li1(void) { return 10; }
+static int (*lres(void))(void) { return li1; }
+int lib_ifunc(void) __attribute__((ifunc("lres")));
+#define TUNAME lib_probe
+#define IN_LIB 1
+#include "tu.c"
+#--- main.c
+#include <stdio.h>
+#include <dlfcn.h>
+#include "mx.h"
+int main_data = 7;
+__thread int g_tls = 5;
+static int mi1(void) { return 3; }
+static int (*mres(void))(void) { return mi1; }
+int main_ifunc(void) __attribute__((ifunc("mres")));
+void tu_a(struct probe *), tu_b(struct probe *), tu_c(struct probe *), lib_probe(struct probe *);
+#define TUNAME tu_m
+#include "tu.c"
+int main(void) {
+  struct probe P[5];
+  const char *nm[6] = {"main", "a", "b", "c", "lib", "dlsym"};
+  tu_m(&P[0]); tu_a(&P[1]); tu_b(&P[2]); tu_c(&P[3]); lib_probe(&P[4]);
+  const char *ds[NF] = {"puts", "stdout", 0, "strlen", "lib_data", "lib_fn", "main_ifunc", "g_tls",
+                        "lib_tls", 0, "main_data", "lib_ifunc", "lib_ro"};
+  int bad = 0;
+  for (int i = 0; i < NF; i++) {
+    void *d = ds[i] ? dlsym(RTLD_DEFAULT, ds[i]) : 0;
+    char diff[128] = ""; int n = 0;
+    for (int t = 1; t < 5; t++)
+      if (P[t].v[i] != P[0].v[i] && !(t == 4 && i == 6 && P[4].v[6] == 0))  /* lib does not see main_ifunc */
+        n += snprintf(diff + n, sizeof diff - n, " %s", nm[t]);
+    if (d && d != P[0].v[i]) n += snprintf(diff + n, sizeof diff - n, " dlsym");
+    if (n) { bad++; printf("%s: DIFF vs main:%s\n", fname[i], diff); }
+  }
+  for (int t = 0; t < 5; t++) if (P[t].calls != 2 + 3 + 10 + 3 + 2) { bad++; printf("calls %s: %d\n", nm[t], P[t].calls); }
+  printf("lib_data=%d main_data=%d g_tls=%d lib_tls=%d mismatches=%d\n", lib_data, main_data, g_tls, lib_tls, bad);
+  return bad != 0;
+}
