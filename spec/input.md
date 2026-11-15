@@ -840,8 +840,7 @@ do not export it and the program fails at run time with
 **When.** The input phase loads the closure when the output is an
 executable (`Executable`, `PieExecutable`; a static kind loads no shared
 object, §8.4), when it
-is a shared object and `--no-allow-shlib-undefined` is in effect, and
-for the shared objects mentioned under `--copy-dt-needed-entries`. It is
+is a shared object and `--no-allow-shlib-undefined` is in effect. It is
 never loaded for `-r`. The decision is a function of the `Plan` only.
 
 **Of what.** The closure of *every* shared object the walk loaded,
@@ -910,28 +909,32 @@ mortar and fails in GNU ld (`./libg.so: undefined reference to 'h'`)
 [E31]; §15 lists it.
 
 **What closure files are used for.** A closure file has a `FileId`, a
-row and its dynamic symbols. Unless `--copy-dt-needed-entries` was in
-effect at the mention of the shared object that leads to it:
+row and its dynamic symbols (`spec/dyn.md` D-12 is normative; this is
+its summary):
 
 - it is **never** a `DT_NEEDED` entry of the output;
 - it **defines nothing the program binds to**: a reference from a
   regular object is not satisfied by a closure file's definition (GNU
   ld: `undefined reference`, with the hint `DSO missing from command
-  line`; *not re-measured here*);
-- its **undefined references** are used for two things only: a program
-  symbol (defined in a regular object of the link) that a closure file
-  references is exported to `.dynsym`, as for a symbol a command-line
-  shared object references (the `hook` case); and under
+  line`; lld and mold `undefined symbol`; E-shlib 2.10a): the reference is
+  undefined with the note `defined in <c>, which is not on the command
+  line`;
+- when it is **used** (in U: reached by a `DT_NEEDED` edge from a needed
+  or used object, D-12), its **undefined references** are used for two
+  things only: a program symbol (defined in a regular object of the
+  link) that it references is exported to `.dynsym`, as for a symbol a
+  command-line shared object references (the `hook` case); and under
   `--no-allow-shlib-undefined` its undefined references are judged as
-  those of a command-line shared object.
+  those of a command-line shared object (D-13). Its definitions satisfy
+  that judgement and the loader-order binding of a weak program reference
+  (D-11 `bind`). A closure file that is not used contributes nothing.
 
-Under `--copy-dt-needed-entries`, a closure file reached from a shared
-object mentioned under that flag is treated as a mention with
-`as_needed` on: it may define symbols and become needed. Which part of
-the closure a later phase uses is `spec/resolve.md`'s, which must use
-only the part reachable from shared objects that end up needed
-(requested, §17): a shared object dropped by `--as-needed` contributes
-nothing, through its closure either.
+`--copy-dt-needed-entries` is refused by name (`spec/dyn.md` D-15; only
+GNU ld accepts it); `--no-copy-dt-needed-entries` is the default and a
+`noop`. Which part of the closure a later phase uses is
+`spec/resolve.md`'s and `spec/dyn.md` D-12's: only the part reachable
+from shared objects that end up needed; a shared object dropped by
+`--as-needed` contributes nothing, through its closure either.
 
 **Not found.** An edge with no candidate found is the warning
 `needed-not-found` at `S`, `libf.so, needed by dg/libg.so, not found
@@ -1642,7 +1645,7 @@ an argument at `Place::Argument`. A file reached through a script carries
 | `as_needed` over two mentions | needed if any is not as-needed | the same | first mention | GNU ld, lld | §8.2 |
 | needed name, soname-less object from a script | several | several | several | refused | §8.3 |
 | shared object, no `-dynamic-linker` | its default interpreter | no `PT_INTERP` | no `PT_INTERP` | refused | §8.4 |
-| `--copy-dt-needed-entries` | supported | unknown option | unknown option | supported (M2) | §8.6 |
+| `--copy-dt-needed-entries` | supported | unknown option | unknown option | refused by name (`spec/dyn.md` D-15; withdrawn from "supported (M2)") | §8.6 |
 | `DT_NEEDED` closure for an executable | loaded: exports program symbols it references | not loaded | not loaded | loaded (M2) | §8.6 |
 | closure search in the needing library's directory and `-L` | no (uses `ld.so.conf`, built-in directories) | — | — | yes, after `RUNPATH` | §8.6 |
 | `DT_NEEDED` search via `LD_LIBRARY_PATH` | yes | — | — | no | §8.6 |
@@ -1823,7 +1826,7 @@ holds each to its behavior with qualified expectations.
 | `closure-export.test` | the `hook` case: a program symbol referenced only by an indirect dependency is exported and the program prints 42 (GNU ld; `xfail(lld,mold)`: not exported) |
 | `incompatible-object.test` | an object of another architecture fails (`exit: fail`, all three) |
 | `executable-input.test` | an `ET_EXEC` and a PIE as inputs fail (`ET_EXEC`: all three; PIE: GNU ld, `skip(lld,mold)`) |
-| `copy-dt-needed.test` | `--copy-dt-needed-entries` with `-rpath-link` (GNU ld only: `skip(lld,mold)`) |
+| `copy-dt-needed.test` | `--copy-dt-needed-entries` is refused by name (`spec/dyn.md` D-15, test `copy-dt-needed-refused`) |
 | `rpath-origin.test` | a needed library found through `$ORIGIN` in `DT_RUNPATH` (GNU ld; others skip) |
 | `rpath-link-colon.test` | `-rpath-link /nonexist:dir` (GNU ld; others skip) |
 
@@ -1903,7 +1906,7 @@ None of these specs is edited by WP-021.
 
 | section | current text | proposed text | reason |
 |---|---|---|---|
-| the M2 part, shared objects | — | "The `DT_NEEDED` closure is in `Inputs` (`spec/input.md` §8.6). A closure file is never `DT_NEEDED` of the output and defines nothing the program binds to unless `--copy-dt-needed-entries` was in effect at the mention that leads to it. Only the part of the closure reachable from shared objects that end up needed is used: (1) a program symbol defined in a regular object and referenced by a used closure file is exported; (2) under `--no-allow-shlib-undefined`, the undefined references of command-line shared objects and of used closure files are judged; a reference whose definer was `needed-not-found` is judged undefined" | §8.6: GNU ld's behaviour [E30, E31]; keeps `Inputs` immutable |
+| the M2 part, shared objects | — | "The `DT_NEEDED` closure is in `Inputs` (`spec/input.md` §8.6). A closure file is never `DT_NEEDED` of the output and defines nothing the program binds to (`--copy-dt-needed-entries` is refused, `spec/dyn.md` D-15). Only the part of the closure reachable from shared objects that end up needed is used: (1) a program symbol defined in a regular object and referenced by a used closure file is exported; (2) under `--no-allow-shlib-undefined`, the undefined references of command-line shared objects and of used closure files are judged; a reference whose definer was `needed-not-found` is judged undefined" | §8.6: GNU ld's behaviour [E30, E31]; keeps `Inputs` immutable |
 
 ## 18. Open questions
 

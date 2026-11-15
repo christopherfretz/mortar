@@ -455,6 +455,38 @@ fn s3_3_rule6_merged_properties() {
     assert_eq!(r.check(), Ok(()));
 }
 
+// spec: dyn.md D-11, D-12, D-21 (model.md §3.3 rule 7: the dynamic columns)
+#[test]
+fn s3_3_rule7_dynamic_columns() {
+    use mortar_core::IdSet;
+    let mut r = resolution();
+    // A static link: every dynamic column empty, nothing bound.
+    assert_eq!(r.check(), Ok(()));
+    assert!(r.dynamic_columns().iter().all(|(_, set)| set.is_empty()));
+    assert_eq!(r.bind(SymbolId(0)), None);
+    // A set is per key or empty.
+    r.ref_dynamic = IdSet::with_len(1);
+    assert!(r.check().unwrap_err().what.contains("rule 7: ref_dynamic"));
+    r.ref_dynamic = IdSet::from_ids(2, [SymbolId(0)]).unwrap();
+    r.defined_dynamic = IdSet::with_len(2);
+    assert_eq!(r.check(), Ok(()));
+    // An export is a program definition; an import a shared one (bind).
+    r.exported = IdSet::from_ids(2, [SymbolId(0)]).unwrap();
+    assert_eq!(r.check(), Ok(()));
+    r.exported = IdSet::from_ids(2, [SymbolId(1)]).unwrap();
+    assert!(r.check().unwrap_err().what.contains("exported without a program definition"));
+    r.exported = IdSet::with_len(2);
+    r.imported = IdSet::from_ids(2, [SymbolId(1)]).unwrap();
+    assert!(r.check().unwrap_err().what.contains("imported without a shared definition"));
+    let e = SymEntry { file: FileId(2), index: SymbolIndex(4) };
+    r.def[SymbolId(1)] = Def::Shared(e);
+    r.props[SymbolId(1)].refs = RefFlags::PREEMPTIBLE;
+    r.file_live[FileId(2)] = FileLive::Shared { needed: true, used: false };
+    assert_eq!(r.check(), Ok(()));
+    assert_eq!(r.bind(SymbolId(1)), Some(e));
+    assert!(r.file_live[FileId(2)].is_needed());
+}
+
 /// A resolution of `world()`: every file live by its kind.
 fn world_resolution() -> Resolution {
     let mut r = Resolution::empty(6, 0, 0);
@@ -463,8 +495,8 @@ fn world_resolution() -> Resolution {
         FileLive::Always,
         FileLive::Extracted(SymEntry { file: FileId(1), index: SymbolIndex(3) }),
         FileLive::Dead,
-        FileLive::Shared { needed: true },
-        FileLive::Closure,
+        FileLive::Shared { needed: true, used: false },
+        FileLive::Shared { needed: false, used: true },
     ])
     .unwrap();
     r
@@ -488,9 +520,12 @@ fn s3_3_resolution_against_inputs() {
         r
     };
     let by = FileLive::Extracted(SymEntry { file: FileId(1), index: SymbolIndex(3) });
-    rule(&live(1, FileLive::Shared { needed: false }), &w, "rule 2");
-    rule(&live(5, FileLive::Shared { needed: true }), &w, "rule 2");
-    rule(&live(4, FileLive::Closure), &w, "rule 2");
+    // spec/dyn.md D-12: a closure file is at most used; one flag exactly.
+    rule(&live(1, FileLive::Shared { needed: false, used: true }), &w, "rule 2");
+    rule(&live(5, FileLive::Shared { needed: true, used: false }), &w, "rule 2");
+    rule(&live(4, FileLive::Shared { needed: false, used: false }), &w, "rule 2");
+    rule(&live(4, FileLive::Shared { needed: true, used: true }), &w, "rule 2");
+    assert_eq!(live(4, FileLive::Shared { needed: false, used: true }).check_against(&w), Ok(()));
     rule(&live(1, by), &w, "rule 2");
     rule(&live(2, FileLive::Always), &w, "rule 2");
     w.files[FileId(2)].state = InputFlags::WHOLE_ARCHIVE;

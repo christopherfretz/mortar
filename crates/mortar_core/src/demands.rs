@@ -6,6 +6,7 @@
 use crate::column::Column;
 use crate::flags::flag_set;
 use crate::id::{LocalSym, SectionId, SymKey, SymKind, SymbolId};
+use crate::idset::IdSet;
 use crate::table::{Broken, ensure, unsorted_at};
 
 flag_set! {
@@ -124,6 +125,12 @@ pub struct Demands {
     pub output: GlobalFlags,
     /// The sections that carry dynamic relocations, sorted, none empty.
     pub dyn_relocs: Box<[(SectionId, DynCounts)]>,
+    /// The `WeakDyn` keys (`spec/dyn.md` D-25): undefined weak keys of a
+    /// dynamic executable that get a `.dynsym` entry and a dynamic
+    /// relocation, decided per key by the scan (`mortar_scan::weak`,
+    /// WP-M2-RELOC) and read by `.dynsym` (D-21 item 4). Empty (no room)
+    /// in a static link.
+    pub weak_dyn: IdSet<SymbolId>,
 }
 
 impl Demands {
@@ -135,6 +142,7 @@ impl Demands {
             local: Box::new([]),
             output: GlobalFlags::empty(),
             dyn_relocs: Box::new([]),
+            weak_dyn: IdSet::new(),
         }
     }
 
@@ -184,6 +192,9 @@ impl Demands {
     pub fn check(&self, symbols: u32) -> Result<(), Broken> {
         let t = "Demands";
         ensure(self.global.len() == symbols, t, || "global is not per key".to_owned())?;
+        ensure(self.weak_dyn.is_empty() || self.weak_dyn.len() == symbols, t, || {
+            "weak_dyn is neither empty nor per key".to_owned()
+        })?;
         if let Some(at) = unsorted_at(&self.local, |row| row.0) {
             return Err(Broken { table: t, what: format!("local[{at}] out of order") });
         }

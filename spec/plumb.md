@@ -30,7 +30,7 @@ describes how x86-64 and i386 fit.
 |---|---|---|
 | 1 | `ET_EXEC`, static, non-PIE, AArch64. Placement, relocations (the §4.2 table), the GOT slots of a static link, structure (§6), content, symbol values | — |
 | 2 (WP-028) | Static TLS: every AAELF64 TLS type and the relaxations W9–W13 (§4.7); IFUNC/`IRELATIVE`, `.eh_frame` and `.eh_frame_hdr` contents (§6.4), the symbol table (§6.5), non-alloc (DWARF) relocations | `tls` (except the constructs §4.7 names), `ifunc`, `eh-frame` (except labels inside `.eh_frame`, §6.4), `non-alloc` |
-| 3 | PIE and shared objects: the dynamic sections, dynamic relocations, PLT | — |
+| 3 (M2) | Dynamic executables (`Exec`, `Pie`) and static PIE: the dynamic sections, dynamic relocations, PLT, copies, shared inputs (§12, P-D1-P-D13; not started). Shared-object output is M4 | — |
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 
 On the reference corpus, a stage-1 report may give only the stage-2
@@ -1404,7 +1404,8 @@ These rules are checked from the output alone. Each one has a mutation
 that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
 
 - **S1.** `e_type` is `ET_EXEC`, and the machine is supported in its
-  class. `EI_OSABI` is `ELFOSABI_NONE` (0) or `ELFOSABI_GNU` (3); on
+  class. [M2] Stage 3 widens it by P-D1 (§12): `ET_DYN` with
+  `DF_1_PIE`, and `ET_EXEC` with `PT_INTERP`, are verified. `EI_OSABI` is `ELFOSABI_NONE` (0) or `ELFOSABI_GNU` (3); on
   `EM_386` and `EM_X86_64`, `e_flags` is 0 (the psABIs define none,
   x86.md X86-1). **(mortar)** `EI_OSABI` is 3 exactly when the output has
   an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or an `IRELATIVE` record
@@ -2582,8 +2583,9 @@ DWARF's text, and each is accepted only from its own linker.
 7. Static PIE: S1 accepts `ET_EXEC` only, so a static-pie output is an S1 finding
    today. Its TLS forms are those of §4.7 with no TLS dynamic relocation;
    accepting `ET_DYN` without `PT_INTERP` needs the `RELATIVE` relocations
-   of `.rela.dyn` judged first, which is stage 3. So are its `.dynsym`,
-   `.hash` and `.gnu.hash` (§6.5).
+   of `.rela.dyn` judged first, which is stage 3 (§12, P-D1, P-D9). So
+   are its `.dynsym` and `.gnu.hash` (§6.5; an executable has no `.hash`,
+   `spec/dyn.md` D-20).
 8. A9 to A11 (§10.2): mortar's `.symtab` must keep the inputs' bindings,
    name the section that holds each label (or `SHN_ABS`), and define
    `__bss_start` within §6.5's range even when there is no `.bss`.
@@ -2595,3 +2597,129 @@ DWARF's text, and each is accepted only from its own linker.
     erratum option (§5.10) and `-z execstack`/`-z noexecstack` (with
     them `PT_GNU_STACK`'s `PF_X` could be judged against L-84's table;
     today a flipped `PF_X` there is not found, §9.5).
+
+## 12. Stage 3: dynamic executables (M2)
+
+The rules of stage 3 (M2; moved from `spec/dyn.md` §12 by WP-040r,
+request R-P1; their ids stay `P-D`*n*, and the `D-` rules they cite are
+`spec/dyn.md`'s). The verifier reads the output, the inputs (now
+including shared objects) and the machine map, and must not share code
+with what it checks (§1). Until stage 3 lands it rejects anything but a
+static `ET_EXEC` (S1). Each rule checks a `spec/dyn.md` D rule from the
+output bytes and the inputs. **The verifier never takes from the linker
+what it can recompute from the inputs**: from the map it reads the
+command line's record (files in order with their `--as-needed` and
+`-Bstatic` state, options), as stage 2 does; every decision of
+`spec/dyn.md` (needed set and order, export set, import set, versions
+bound, copy and canonical-PLT choice) is recomputed by the verifier's
+own implementation of D-11-D-27 and compared with the output.
+
+- **P-D1 (accept).** `ET_DYN` with `DF_1_PIE` and `ET_EXEC` with
+  `PT_INTERP` are verified; the kind is recomputed from the headers and
+  the command line and must agree (D-1 table, every row).
+- **P-D2 (shared inputs).** Read every shared object the command line or
+  a script names, and the `DT_NEEDED` closure (input §8.6, searched by
+  the verifier itself), with `mortar_elf`: `.dynsym`, versym, verdefs,
+  `DT_NEEDED`, `PT_LOAD`/`PT_GNU_RELRO` extents. An input it cannot open
+  is an error.
+- **P-D3 (map records).** The map gains the output kind, the interpreter,
+  rpath, `-z now`/`-z norelro`, and, as **hints for order only**, the
+  needed list, the copy allocations, the export set and the PLT/IPLT key
+  order: the verifier uses them to name what it compares, never as the
+  expected value.
+- **P-D4 (segments).** `PT_PHDR` covers the program headers and lies in
+  the first `PT_LOAD`; `PT_INTERP` exists in `Exec`/`Pie`, covers
+  `.interp`, and its string is the command line's `-dynamic-linker`
+  (W10); `PT_DYNAMIC` covers exactly `.dynamic` and is writable; unless
+  `-z norelro`, `PT_GNU_RELRO` covers `.dynamic`, `.got`, `.bss.rel.ro`
+  and (`-z now`) `.got.plt`, and ends on maxpage (D-33, D-42, D-49,
+  D-61); under `-z norelro` there is no `PT_GNU_RELRO`.
+- **P-D5 (`.gnu.hash`).** Recompute the table from `.dynsym` with D-26's
+  formulas and compare word for word; then look up every exported and
+  every canonical-PLT name with the loader's algorithm (it is found at
+  its index) and a fixed set of absent names (not found).
+- **P-D6 (`.dynamic`).** Each D-30 tag is present iff its condition holds
+  (recomputed from the sections and the command line), in D-30's order,
+  with the value equal to the address or size of its section; exactly
+  six `DT_NULL` entries at the end. The `DT_NEEDED` entries equal the
+  needed set the verifier computes by D-11/D-12 from the P-D2 inputs, in
+  D-19a's order (W9).
+- **P-D7 (`.dynsym`).** The set equals D-21 recomputed from the inputs:
+  imports are the program's references the verifier resolves to needed
+  shared objects (hidden `.dynsym` entries ignored, W1), exports the
+  program definitions referenced by needed or used objects (W8), every
+  copy alias, the `WeakDyn` keys; order per D-22; fields per D-23;
+  `sh_info` 1; `.dynstr` holds each name once.
+- **P-D8 (versions).** Each `.gnu.version` index is 0, 1, or names a
+  `Vernaux` whose version is **the version the input reference requested**
+  (the default `@@` definition for an unversioned reference, the
+  `.symver` name for a versioned one, resolve §9.2), defined by the
+  needed library that defines the symbol; `vna_hash` is the ELF hash of
+  the name, `vn_file` a `DT_NEEDED` name, `vna_other` unique; a
+  `memcpy@GLIBC_2.2.5` reference bound to `memcpy@@GLIBC_2.14` is
+  reported.
+- **P-D9 (dynamic relocations).** The extension of stage 2's
+  reconstruction: for each input relocation whose place is in the output,
+  the run-time value of the place is computed from the output (its
+  bytes, then its dynamic records applied by a loader model of the
+  verifier's own, symbols looked up in the P-D2 objects **in ld.so's
+  order**: the executable, then the `DT_NEEDED` entries breadth-first,
+  the order D-19a writes and `bind` uses, D-11-D-13; an image whose copy
+  size or provider came from a library later in that order, the review's
+  `dupdef`, fails here) and from the
+  input (`S + A`, `S` the definition's run-time address), in **three
+  views**, which must all agree: (1) the load bias 0 and (2) a second
+  bias, for a `Pie` (base independence: every absolute word has its
+  record, W7, W11); (3) every `WeakDyn` key defined at a fresh address,
+  as a preloaded library would (the GOT and the call must both reach it:
+  the image of the review's F2 fails here). This proves at once the
+  `RELATIVE`/symbolic choice, addends, the copy redirection,
+  canonical-PLT equality and IFUNC equality (D-44, D-45; W3). Plus:
+  `RELATIVE` first and sorted, `DT_RELACOUNT` right (D-40); no record in
+  a non-writable place outside RELRO (D-47; W6).
+- **P-D10 (PLT and GOT).** Each PLT entry decodes (the architecture's
+  plumb rules, already stage 2 for IPLT) to its `.got.plt` word; that
+  word has one `JUMP_SLOT` against the entry's key; its initial content
+  is the lazy target (D-49); IPLT words have one `IRELATIVE`, every one
+  after every `JUMP_SLOT` (D-41; H1).
+- **P-D11 (copies).** Each `COPY` record's place is an allocation of the
+  shared definition's `st_size` (never 0: W4) and alignment, the
+  allocations do not overlap each other or any other definition, the
+  allocation is inside `.bss.rel.ro` when the definition lies in a
+  `PT_GNU_RELRO` or non-writable `PT_LOAD` of its library and inside
+  `.dynbss` otherwise (D-42); every alias at that `(file, value)` is
+  defined in `.dynsym` at the copy (W2).
+- **P-D12 (TLS).** Every TLS slot holds the record of its model (IE:
+  `TPREL`; unrelaxed GD: `DTPMOD` + `DTPOFF`; LE: none, value checked by
+  stage 2) and no TLS relocation against an executable-defined symbol
+  leaves a dynamic record (D-48).
+- **P-D13 (protected).** No `COPY` record and no canonical PLT
+  (`SHN_UNDEF` with a non-zero `st_value`) names a key whose shared
+  definition is `STV_PROTECTED` (D-18; W5): P-D9's equality cannot see
+  it, because the executable's own `&pf` is its PLT entry everywhere.
+
+What reports each wrong output and hazard of `spec/dyn.md` §13.2:
+
+| finding | reported by |
+|---|---|
+| W1 hidden `.dynsym` entry bound | P-D7 (the verifier's resolution sees the reference undefined) |
+| W2 copy alias not exported | P-D11, P-D7 |
+| W3 IFUNC address inequality | P-D9 |
+| W4 zero-size copy | P-D11 |
+| W5 protected canonical PLT or copy | P-D13 |
+| W6 text relocation | P-D9 (record in a non-writable place) |
+| W7 read-only word, copy, no record | P-D9 (views 1 and 2) |
+| W8 closure-referenced symbol not exported | P-D7 |
+| W9 needed library dropped | P-D6 |
+| W10 wrong or missing interpreter | P-D4 |
+| W11 canonical PLT word without a record in a PIE | P-D9 (views 1 and 2) |
+| W12 weak symbol split between GOT and absolute use | P-D9 (view 3) |
+| W13 executable IFUNC exported as `STT_GNU_IFUNC` / at the implementation | P-D7 (D-23 fields), P-D9 |
+| H1 `IRELATIVE` before `JUMP_SLOT`s | P-D10 |
+| F2 image (GOT `WeakDyn`, call `Weak0`) | P-D9 (view 3) |
+
+Mutation tests (the WP-028d harness) gain one mutation per rule: drop a
+record, swap two `.dynsym` entries, flip a Bloom bit, change an addend,
+shrink a copy to 0, overlap two copies, misorder `IRELATIVE`, drop a
+`DT_NEEDED`, bind a different version, patch a `WeakDyn` call to its
+`Weak0` form.

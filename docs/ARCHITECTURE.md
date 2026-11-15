@@ -157,7 +157,7 @@ parallel work on them starts.
 | `mortar_digest` | SHA-1, SHA-256 and the fast leaf hash written from scratch; the build-id tree (`spec/image.md` §8). | none |
 | `mortar_merge` | `SHF_MERGE` sections: string and constant deduplication. | `mortar_core` |
 | `mortar_arch` | The `Arch` trait: classify, scan, apply and relax relocations; PLT, GOT and thunk shapes; TLS sequences; unwind encodings. | `mortar_core` |
-| `mortar_a64`, `mortar_x64`, `mortar_x86` | The architectures: AArch64, x86-64, 32-bit x86. | `mortar_arch` |
+| `mortar_a64`, `mortar_x64`, `mortar_x86` | The architectures: AArch64, x86-64, 32-bit x86. Code both x86 crates need (the GNU property merge, `mortar_arch::x86_property_merge` today; the `endbr32`/`endbr64` constants and the ModRM/SIB readers when a package next touches both) lives in `mortar_arch`, never in one architecture crate the other depends on; `mortar_plumb` keeps its own, `src/x86op.rs`, shared by its two x86 tables (`spec/x86.md` R-12). | `mortar_arch` |
 | `mortar_synth` | Synthetic sections: `.dynamic`, `.dynsym`, hash tables, version sections, GOT and PLT, dynamic relocations (RELA, RELR), `.eh_frame` and `.eh_frame_hdr`, notes, `.symtab`, debug indexes. | `mortar_core`, `mortar_arch` |
 | `mortar_layout` | Output sections from the default rules or a script, their order, segments, addresses, thunk insertion: `Layout`. | `mortar_core`, `mortar_arch`, `mortar_script` |
 | `mortar_image` | Image synthesis and the file writer; debug section handling (tombstones, compression). | `mortar_core`, `mortar_arch`, `mortar_merge` (fragment runs: `Order::frags_in`), `mortar_synth`, `mortar_digest` |

@@ -119,6 +119,9 @@ pub struct Front<'s> {
     /// the symbol tables' plan reads it.
     pub eh: EhPlan,
     pub synth: SynthPlans,
+    /// The dynamic tables' plans; `None` in a static link, and always
+    /// while `crate::dynamic::dynamic_guard` refuses dynamic output.
+    pub dyn_tables: Option<crate::dynamic::DynTables>,
     pub commons: Vec<Common>,
     pub layout: Layout,
     /// What `place` returned besides the placement (the segment rules
@@ -222,6 +225,25 @@ impl Front<'_> {
     }
 }
 
+/// The resident input bytes that repay one more worker after the input
+/// phase (WP-032h: at default threads under load 10, hello-c's 6.9 MB
+/// link went 25.7 -> 23.5 ms on 2 workers; 2, 4 and 8 MB per worker were
+/// equal on hello-cxx (15 MB) and a 68 MB link).
+const BYTES_PER_WORKER: u64 = 4 << 20;
+
+/// The pool the phases after input run on: without `--threads`, at most
+/// one worker per [`BYTES_PER_WORKER`] resident input bytes, so a small
+/// link does not pay for workers it cannot use. The count is a function
+/// of the inputs, never of a clock; an explicit `--threads` (or a
+/// scheduling seed, which exists to exercise schedules) keeps the pool.
+fn capped(pool: Pool, plan: &Plan, resident: u64) -> Pool {
+    if plan.bookkeeping.threads.is_some() || pool.seed().is_some() {
+        return pool;
+    }
+    let cap = usize::try_from(resident.div_ceil(BYTES_PER_WORKER)).unwrap_or(usize::MAX).max(1);
+    pool.with_threads(pool.threads().min(cap))
+}
+
 /// Where a link runs.
 #[derive(Debug, Clone, Copy)]
 pub struct Env<'e> {
@@ -306,6 +328,7 @@ pub fn front<'s>(
     }
     let inputs = inputs?;
     timer.phase(20, "input");
+    let pool = capped(pool, &plan, store.stats().resident);
     let machine = inputs.target.machine;
     // 30: resolve.
     let outcome = mortar_resolve::resolve_inputs(&inputs, &plan, &pool);
@@ -338,7 +361,9 @@ pub fn front<'s>(
             return None;
         }
     };
-    let Some(link_arch) = LinkArch::of(machine, options.fix_843419) else {
+    let Some(link_arch) =
+        LinkArch::of(machine, options.fix_843419, crate::dynamic::arch_status(&plan))
+    else {
         diag.emit(Key::new(45, 0, 0), internal(format!("no architecture for {}", machine.name())));
         return None;
     };
@@ -420,7 +445,8 @@ pub fn front<'s>(
         comdat_mismatch: &comdat_mismatch,
         gnu_warnings: &gnu_warnings,
     };
-    let scan_options = ScanOptions { output, dynamic: false, proof: link_arch.proof() };
+    let scan_options =
+        ScanOptions { output, dynamic: false, sections: None, proof: link_arch.proof() };
     let scanned = scan(arch, &scan_inputs, &scan_options, &pool);
     for (k, d) in scanned.diagnostics.iter().cloned() {
         diag.emit(k, d);
@@ -459,7 +485,13 @@ pub fn front<'s>(
     let property = property_plan(&inputs, &resolution, &headers, arch, memory_seal, diag).ok()?;
     let feature_1_and = property.value_u32(link_arch.feature_1().0);
     let variant = arch
-        .plt_variant(&OutputCx { output, feature_1_and, pac_plt: false, force_bti: false })
+        .plt_variant(&OutputCx {
+            output,
+            feature_1_and,
+            pac_plt: false,
+            force_bti: false,
+            bind_now: false,
+        })
         .map_err(|r| diag.emit(mortar_synth::error::key(0), r.diagnostic()))
         .ok()?;
     let got_output = got_base_defined(&inputs, &resolution, scanned.demands.output);
@@ -753,6 +785,7 @@ pub fn front<'s>(
         scanned,
         eh,
         synth: plans,
+        dyn_tables: None,
         commons,
         layout,
         placed,

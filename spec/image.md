@@ -220,27 +220,34 @@ The design is fixed now so that the M1 tables need no change.
   ld marks through notes (`.note.stapsdt` keeps libstdc++'s
   `.stapsdt.base`, found by WP-031's tests), and a kept section's
   reference to a collected one would otherwise be refused (I-12).
-- **I-8 [M2] The algorithm.** A least fixed point, computed by parallel
-  rounds: round 0 is the roots; round `k + 1` is the set of sections first
-  marked by the edges of round `k`'s sections. `live` is a column of
+- **I-8 [M2] The algorithm.** A least fixed point. `live` is a column of
   atomic booleans marked with `swap(true)` (model §6 rule 2: idempotent,
-  commutative); the section whose swap returned `false` is collected into
-  the worker's buffer for the next round, and the buffers are
-  concatenated in unit order (rule 3). The resulting *set* is the least
-  set closed under I-7 containing the roots, whatever the schedule; the
-  order of a round's list may differ between schedules and is never
-  observed (no id, diagnostic or byte depends on it). Within a round,
-  work is partitioned by section and, for a section with more than
-  `SCAN_BLOCK` records, by `SCAN_BLOCK` records (rule 6).
+  commutative); the worker whose swap returned `false` owns the section
+  and walks its edges, every live section exactly once. The work is
+  handed out in rounds: round 0 is the roots; a round's units are the
+  sections the round before left, partitioned by section and, for a
+  section with more than `SCAN_BLOCK` records, by `SCAN_BLOCK` records
+  (rule 6). A worker continues, depth first, on the sections its own
+  swaps marked until it has walked `CONTINUE` records for the unit (no
+  limit when the pool runs inline). It leaves the rest, and any section
+  of more than `SCAN_BLOCK` records, to the next round, and the leftovers
+  are concatenated in unit order (rule 3). The rounds only balance the
+  load: the resulting *set* is the least set closed under I-7 containing
+  the roots, whatever the schedule. Which round walks a section, and the
+  order of a round's list, may differ between schedules and are never
+  observed (no id, diagnostic or byte depends on them). A failure to read
+  a section's relocations is reported after the closure: the least-keyed
+  failure of the first breadth-first round (round `k + 1` = the sections
+  first marked by round `k`'s edges) that has one, found by marking
+  again breadth first (WP-032h).
 - **I-9 [M2] Cost.** One walk of the relocation records of live alloc
   sections: 221,459 for `cxx-medium-g` (E5), about 0.8 ms at the 3.4–3.7
-  ns per record of a scan-like walk (E6). Measured (WP-031, static
-  protoc, 1/4/8 threads): the phase is 19/14/14 ms, of which the rounds
-  are 13/7/10 ms (20 rounds, 23,186 units); lld 22's `markLive` is
-  5.3/5.5/4.7 ms and mold's `gc` 7/3/2 ms. The link is no slower in
-  total (layout has less to place: 79→56, 64→43, 66→41 ms); the
-  per-round barrier is the limit at 8 threads (follow-up in the landed
-  record). It is a separate walk from the
+  ns per record of a scan-like walk (E6). Measured (WP-032h, static
+  protoc, 1/8 threads): the phase is 15.7/9.8 ms (WP-031: 19/14), the
+  rounds ~5.5/~5 ms in 3 rounds at 8 threads (20 before); lld 22's
+  `markLive` is 5.3/4.7 ms and mold's `gc` 7/2 ms. The link is no slower
+  in total (WP-031: layout has less to place: 79→56, 64→43, 66→41 ms).
+  It is a separate walk from the
   scan's (phase 70), because the scan must know liveness first: undefined
   references are reported only from live sections (`spec/resolve.md`
   §5.1), and whether a reference survives depends on liveness of its
@@ -360,6 +367,12 @@ relocation, and sequence recognition across neighbouring records
   blocks sums the blocks' counts, an integer sum, rule 2), the
   diagnostics of `spec/arch.md` §7 at their keys, and the events of
   §4.4, and the **record index** of I-29. No other table is written.
+  [M2] The per-section dynamic-relocation counts are also what places
+  the `RELATIVE` records of `.rela.dyn`: each unit's slice starts at the
+  exclusive prefix sum of the counts in address order of the placed
+  sections and GOT slots, and the unit fills it with its records sorted
+  by `r_offset` (`spec/dyn.md` D-40, synth S-4), so the counts must be
+  exact per section, not only in total.
 
 ### 4.2 Cost
 
@@ -714,10 +727,14 @@ buffer; the clip only selects which of them a job writes.
   writer half, and the byte layout is a function of the class and the
   rows; nothing in them is filled from input bytes.
   The fields (WP-027b, `link::structure`):
-  - `e_ident[EI_OSABI]` is `Facts.osabi` (AArch64: 0, a64.md Q11, also
-    with IFUNC symbols; eu-elflint then reads `STT_GNU_IFUNC` and
-    `R_AARCH64_IRELATIVE` as unknown, which Q11 may revisit);
-    `e_type` from the output kind; `e_machine` `Facts.e_machine`;
+  - `e_ident[EI_OSABI]`: `ELFOSABI_GNU` when the output has an
+    `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or an `IRELATIVE` record,
+    else `ELFOSABI_NONE`, on every target (a64.md Q11, ruled by WP-027c;
+    x64.md X-49; x86.md X86-64; `spec/dyn.md` D-23 for `.dynsym`; plumb
+    S1);
+    `e_type` from the output kind (`spec/dyn.md` D-1: `ET_EXEC` for
+    `Static` and `Exec`, `ET_DYN` for `Pie` and `StaticPie`);
+    `e_machine` `Facts.e_machine`;
     `e_flags` `Arch::e_flags` over the live objects' `e_flags`;
   - `e_entry` is `Placement.entry`, or 0 when it is `None` (the gABI's
     "no entry point"; layout's `entry-not-found` warning, L-103);
@@ -733,7 +750,10 @@ buffer; the clip only selects which of them a job writes.
     `SHT_PREINIT_ARRAY` the word size; otherwise 0;
   - `sh_link`/`sh_info`: `.symtab` links `.strtab`, its `sh_info` the
     plan's first global (S-73); `.symtab_shndx` links `.symtab`;
-    `.rela.plt` has `sh_link` 0 and `sh_info` `.got.plt` (S-69);
+    `.rela.plt` has `sh_link` 0 and `sh_info` `.got.plt` (S-69) in a
+    static output; [M2] the dynamic sections' `sh_type`, `sh_flags`,
+    `sh_link`, `sh_info`, `sh_entsize` and `sh_addralign` are
+    `spec/dyn.md` D-34's table (`.rela.plt` then links `.dynsym`);
   - `.relro_padding` (layout's own `NOBITS` chunk, L-64) has a header
     and no synthetic plan;
   - extended numbering (gABI): when the section count or `.shstrtab`'s
@@ -866,9 +886,12 @@ writes a value chosen by the referring section's name, as
     lldb's breakpoints, lookups and steps are those of the all-ones
     output. It is sound because no code lies in `[0, len)`: the non-PIE
     base is at least 4 MiB (`spec/layout.md` L-68), so only a dead
-    function of 4 MiB or more could reach it. A PIE or a low layout (M2)
-    must revisit this row: E16 measured lldb losing lines there with the
-    references' 0. `llvm-dwarfdump --verify` reports `DIE has overlapping
+    function of 4 MiB or more could reach it. In a PIE [M2] the rows
+    stand (`spec/dyn.md` D-72, §15 Q6, ruled as lld): the 0 rows stay 0
+    and `.debug_ranges`/`.debug_loc` stay 1, since no code is at 0 in a
+    PIE either (the first `PT_LOAD` holds the headers). E16 measured
+    lldb losing lines with the references' 0 in a low layout; a low
+    layout stays as layout L-68 has it. `llvm-dwarfdump --verify` reports `DIE has overlapping
     ranges` for a CU's several `[0, len)` entries (lld and mold: the
     same); the debuggers are the oracle.
   - `.debug_ranges`/`.debug_loc` (DWARF ≤ 4 pairs): `(0, 0)` ends the
