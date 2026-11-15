@@ -1400,23 +1400,31 @@ fn fields(
         v.push(fd(7, ".dynsym entry 0 is not all zero (gABI: the undefined symbol)"));
     }
     let entries = crate::loader::plt_entries(image);
-    for s in out.syms.iter().skip(1) {
+    for (j, s) in out.syms.iter().enumerate().skip(1) {
         let extra = s.st_other & !3;
-        let variant_pcs =
-            m == EM_AARCH64 && extra == 0x80 && out.has(dynout::DT_AARCH64_VARIANT_PCS);
+        let variant_pcs = m == EM_AARCH64 && extra == 0x80;
         if extra != 0 && !variant_pcs {
             v.push(sym_finding(
                 7,
                 &s.name,
                 format!(
-                    "'{}' has st_other {:#x}: bits the psABI does not define{}",
-                    s.name,
-                    s.st_other,
-                    if m == EM_AARCH64 {
-                        " (or STO_AARCH64_VARIANT_PCS without DT_AARCH64_VARIANT_PCS)"
-                    } else {
-                        ""
-                    }
+                    "'{}' has st_other {:#x}: bits the psABI does not define",
+                    s.name, s.st_other
+                ),
+            ));
+        }
+        // AAELF64: a JUMP_SLOT of a variant-PCS function needs
+        // DT_AARCH64_VARIANT_PCS (the loader must not bind it lazily).
+        if variant_pcs
+            && !out.has(dynout::DT_AARCH64_VARIANT_PCS)
+            && out.rels.iter().any(|r| r.sym as usize == j && kind(m, r.ty) == Kind::JumpSlot)
+        {
+            v.push(sym_finding(
+                7,
+                &s.name,
+                format!(
+                    "'{}' is STO_AARCH64_VARIANT_PCS with a JUMP_SLOT and there is no DT_AARCH64_VARIANT_PCS",
+                    s.name
                 ),
             ));
         }
@@ -1625,9 +1633,20 @@ fn fields(
         v.push(fd(6, "DT_DEBUG is not 0 in the file (the loader writes it; D-30)"));
     }
     let present = |name: &str| sec(image, name).is_some();
-    let rows: [(&[u64], &str); 9] = [
-        (&[dynout::DT_INIT], ".init"),
-        (&[dynout::DT_FINI], ".fini"),
+    // -init/-fini name the functions DT_INIT/DT_FINI hold instead of the
+    // sections' starts (D-30 rows 3-4).
+    let named = |opt: &Option<String>| {
+        opt.as_ref().map(|n| image.global(n).or_else(|| image.unique(n)).map(|x| x.sym.st_value))
+    };
+    let (init, fini) = (named(&line.init), named(&line.fini));
+    let mut rows: Vec<(&[u64], &str)> = Vec::new();
+    if init.is_none() {
+        rows.push((&[dynout::DT_INIT], ".init"));
+    }
+    if fini.is_none() {
+        rows.push((&[dynout::DT_FINI], ".fini"));
+    }
+    rows.extend::<[(&[u64], &str); 7]>([
         (&[DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ], ".preinit_array"),
         (&[DT_INIT_ARRAY, DT_INIT_ARRAYSZ], ".init_array"),
         (&[DT_FINI_ARRAY, DT_FINI_ARRAYSZ], ".fini_array"),
@@ -1635,7 +1654,7 @@ fn fields(
         (&[DT_VERSYM], ".gnu.version"),
         (&[DT_VERNEED, DT_VERNEEDNUM], ".gnu.version_r"),
         (&[DT_JMPREL, DT_PLTRELSZ, DT_PLTREL], ".rela.plt"),
-    ];
+    ]);
     for (tags, name) in rows {
         let want = present(name);
         for &t in tags {
@@ -1652,8 +1671,15 @@ fn fields(
             }
         }
     }
-    for &(t, name) in &[(dynout::DT_INIT, ".init"), (dynout::DT_FINI, ".fini")] {
-        if let (Some(val), Some((a, _))) = (out.get(t), sec(image, name))
+    for &(t, name, opt) in &[(dynout::DT_INIT, ".init", init), (dynout::DT_FINI, ".fini", fini)] {
+        // With the option: the named function when the output defines
+        // it (an absent function leaves the tag out, GNU ld; not judged).
+        let want = match opt {
+            Some(Some(f)) => Some(f),
+            Some(None) => continue,
+            None => sec(image, name).map(|(a, _)| a),
+        };
+        if let (Some(val), Some(a)) = (out.get(t), want)
             && val != a
         {
             v.push(fd(

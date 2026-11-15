@@ -2957,7 +2957,8 @@ or named as equivalent or as a follow-up row in WP-082's record.
 - **P-D6.** No tag repeats but `DT_NEEDED` and `DT_NULL`; no unknown tag;
   the first `DT_NULL` has value 0; `DT_DEBUG` is 0. A tag is present
   exactly when its section is: `DT_INIT`/`DT_FINI` (values the section
-  starts), the three array tags with their sizes, `DT_GNU_HASH`,
+  starts; under `-init`/`-fini` the named function's value instead, and
+  presence not judged), the three array tags with their sizes, `DT_GNU_HASH`,
   `DT_VERSYM`, `DT_VERNEED`/`DT_VERNEEDNUM`, `DT_JMPREL`/`DT_PLTRELSZ`/
   `DT_PLTREL`; `DT_RELA`/`DT_RELASZ`/`DT_RELAENT` with `.rela.dyn`;
   `DT_STRTAB`, `DT_STRSZ`, `DT_SYMTAB`, `DT_SYMENT` always. `DT_FLAGS`
@@ -2966,7 +2967,8 @@ or named as equivalent or as a follow-up row in WP-082's record.
   present exactly under `-z now` and is then exactly `DF_BIND_NOW`;
   `DT_RELACOUNT` is present exactly when a `RELATIVE` record is.
 - **P-D7.** `.dynsym` entry 0 is all zero; `st_other` has no bits beyond
-  the visibility (AArch64: also 0x80 with `DT_AARCH64_VARIANT_PCS`). An
+  the visibility (AArch64: also `STO_AARCH64_VARIANT_PCS`, 0x80; a
+  `JUMP_SLOT` of such a symbol needs `DT_AARCH64_VARIANT_PCS`, AAELF64). An
   import is `STV_DEFAULT`, `STB_GLOBAL` or `STB_WEAK`, and named by a
   reference of the program (or an alias, at the same library value, of a
   referenced name). A defined export is `STB_GLOBAL`, `STB_WEAK` or
