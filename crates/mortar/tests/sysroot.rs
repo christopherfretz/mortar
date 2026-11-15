@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use mortar_testutil::{Outcome, Scratch, run_with, tool, tools_required};
+use mortar_testutil::{Outcome, Scratch, run_with, tools_required};
 
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 
@@ -32,10 +32,10 @@ struct Cx {
 
 impl Cx {
     fn new() -> Option<Self> {
-        if std::env::consts::ARCH != "aarch64" {
-            return None;
-        }
-        let (Some(gcc), Some(bfd), Some(ar)) = (tool("gcc"), tool("ld.bfd"), tool("ar")) else {
+        let a64 = support::AARCH64;
+        let (Some(gcc), Some(bfd), Some(ar)) =
+            (a64.tool("gcc"), a64.tool("ld.bfd"), a64.tool("ar"))
+        else {
             assert!(!tools_required(), "gcc, ld.bfd and ar are required");
             return None;
         };
@@ -90,9 +90,8 @@ impl Cx {
     }
 
     fn exit(&self, out: &str) -> Option<i32> {
-        run_with(&mut Command::new(self.scratch.join(out)), b"", Duration::from_mins(1))
-            .status
-            .and_then(|s| s.code())
+        let mut program = support::AARCH64.command(&self.scratch.join(out), None);
+        run_with(&mut program, b"", Duration::from_mins(1)).status.and_then(|s| s.code())
     }
 }
 

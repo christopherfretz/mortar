@@ -126,10 +126,8 @@ fn the_hugepage_exec_keeps_the_name_and_the_arguments() {
 #[cfg(unix)]
 #[test]
 fn a_gcc_link_through_mortar_runs() {
-    // AArch64 is the one target mortar writes in M1.
-    if std::env::consts::ARCH != "aarch64" {
-        return;
-    }
+    // The host's own gcc and its static C library: an AArch64 or an
+    // x86-64 program (mortar links both, docs/ROADMAP.md M1).
     let Some(gcc) = tool("gcc") else { return };
     let scratch = Scratch::new("cli-gcc");
     let bin = scratch.join("bin");

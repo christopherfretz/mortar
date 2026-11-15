@@ -263,23 +263,29 @@ pub fn members(path: &Path) -> Vec<(String, Vec<u8>)> {
 }
 
 /// The library directories of each target: (machine, crt and libgcc
-/// directory, libc directory).
+/// directory, libc directory), as each target's GCC reports them
+/// (`-print-libgcc-file-name`, `-print-file-name=libc.a`): native on its
+/// own host (`/usr/lib/gcc/<triple>/<v>`, `/usr/lib/<triple>`), cross
+/// elsewhere (`/usr/lib/gcc-cross/<triple>/<v>`, `/usr/<triple>/lib`).
 pub fn lib_dirs() -> Vec<(Machine, PathBuf, PathBuf)> {
-    let gcc = |d: &str| -> Option<PathBuf> {
-        let mut v: Vec<PathBuf> = std::fs::read_dir(d).ok()?.flatten().map(|e| e.path()).collect();
-        v.sort();
-        v.into_iter().rev().find(|p| p.join("crtbegin.o").exists())
+    use mortar_testutil::target::Arch;
+    let print = |gcc: &Path, arg: &str| -> Option<PathBuf> {
+        let o = mortar_testutil::run(gcc, [arg]);
+        let p = PathBuf::from(o.stdout_text().trim());
+        (o.success() && p.is_absolute()).then_some(p)?.canonicalize().ok()
     };
     let mut out = Vec::new();
-    for (m, g, c) in [
-        (Machine::AArch64, "/usr/lib/gcc/aarch64-linux-gnu", "/usr/lib/aarch64-linux-gnu"),
-        (Machine::X86_64, "/usr/lib/gcc-cross/x86_64-linux-gnu", "/usr/x86_64-linux-gnu/lib"),
-        (Machine::I386, "/usr/lib/gcc-cross/i686-linux-gnu", "/usr/i686-linux-gnu/lib"),
+    for (m, arch) in [
+        (Machine::AArch64, Arch::Aarch64),
+        (Machine::X86_64, Arch::X86_64),
+        (Machine::I386, Arch::I386),
     ] {
-        if let Some(g) = gcc(g)
-            && Path::new(c).join("libc.a").exists()
-        {
-            out.push((m, g, PathBuf::from(c)));
+        let Some(gcc) = arch.tool("gcc") else { continue };
+        let Some(libgcc) = print(&gcc, "-print-libgcc-file-name") else { continue };
+        let Some(libc) = print(&gcc, "-print-file-name=libc.a") else { continue };
+        let (Some(g), Some(c)) = (libgcc.parent(), libc.parent()) else { continue };
+        if g.join("crtbegin.o").exists() {
+            out.push((m, g.to_path_buf(), c.to_path_buf()));
         }
     }
     out

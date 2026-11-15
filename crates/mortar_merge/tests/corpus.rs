@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 use mortar_core::par::Pool;
 use mortar_merge::phase;
+use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, run, tool, tools_required};
 use support::{Objects, readelf_frames, relocs};
 
@@ -101,31 +102,15 @@ nosize: .cfi_startproc
 "#;
 
 struct Target {
-    triple: &'static str,
-    gnu: &'static str,
+    arch: Arch,
     hardening: &'static str,
     fortran: bool,
 }
 
 const TARGETS: [Target; 3] = [
-    Target {
-        triple: "aarch64-linux-gnu",
-        gnu: "aarch64-linux-gnu-",
-        hardening: "-mbranch-protection=standard",
-        fortran: true,
-    },
-    Target {
-        triple: "x86_64-linux-gnu",
-        gnu: "x86_64-linux-gnu-",
-        hardening: "-fcf-protection",
-        fortran: true,
-    },
-    Target {
-        triple: "i686-linux-gnu",
-        gnu: "i686-linux-gnu-",
-        hardening: "-fcf-protection",
-        fortran: false,
-    },
+    Target { arch: Arch::Aarch64, hardening: "-mbranch-protection=standard", fortran: true },
+    Target { arch: Arch::X86_64, hardening: "-fcf-protection", fortran: true },
+    Target { arch: Arch::I386, hardening: "-fcf-protection", fortran: false },
 ];
 
 const FLAGS: [&str; 6] = [
@@ -157,21 +142,22 @@ type Compiler = (&'static str, Option<PathBuf>, Option<PathBuf>, Vec<String>);
 fn configurations(root: &Path, src: &Path) -> Vec<(String, PathBuf, Vec<Job>)> {
     let mut v = Vec::new();
     for t in &TARGETS {
-        let gnu = |n: &str| need(&format!("{}{n}", t.gnu));
+        let triple = t.arch.triple();
+        let gnu = |n: &str| need(&t.arch.gnu(n));
         let mut compilers: Vec<Compiler> = vec![("gcc", gnu("gcc"), gnu("g++"), vec![])];
         for c in ["19", "22"] {
             compilers.push((
                 if c == "19" { "clang-19" } else { "clang-22" },
                 need(&format!("clang-{c}")),
                 need(&format!("clang++-{c}")),
-                vec![format!("--target={}", t.triple)],
+                vec![format!("--target={triple}")],
             ));
         }
         let fortran = if t.fortran { gnu("gfortran") } else { None };
         for (cname, cc, cxx, base) in compilers {
             let (Some(cc), Some(cxx)) = (cc, cxx) else { continue };
             for (k, flags) in FLAGS.iter().enumerate() {
-                let label = format!("{}-{cname}-{k}", t.triple);
+                let label = format!("{triple}-{cname}-{k}");
                 let dir = root.join(&label);
                 std::fs::create_dir_all(&dir).unwrap();
                 let mut args: Vec<String> = base.clone();
@@ -192,7 +178,7 @@ fn configurations(root: &Path, src: &Path) -> Vec<(String, PathBuf, Vec<Job>)> {
                 job(&cc, "strs.c", &[]);
                 job(&cxx, "a.cc", &[]);
                 job(&cxx, "b.cc", &[]);
-                if t.triple != "i686-linux-gnu" {
+                if t.arch != Arch::I386 {
                     job(&cc, "s.S", &[]);
                 }
                 if let Some(f) = fortran.as_ref().filter(|_| cname == "gcc") {

@@ -62,9 +62,23 @@ fn s9_1_reference_links_verify_clean() {
             assert!(cov.globals_checked > 1000, "{label}: {} globals", cov.globals_checked);
             assert!(cov.locals_checked > 300, "{label}: {} locals", cov.locals_checked);
             assert!(cov.linker_defined_checked >= 9, "{label}: {}", cov.linker_defined_checked);
+            let mut lld_patches = 0;
             for n in &cov.linker_defined_not_judged {
                 let mold_own = n.contains('$') || n.ends_with("_EHDR") || n.ends_with("_PHDR");
+                // lld's Cortex-A53 843419 patches (plumb.md W8): where one
+                // falls depends on the addresses, so on the inputs (the
+                // cross C runtime of an x86-64 host makes one). The
+                // verifier lists their symbols as linker-defined and not
+                // judged; judging them is a verifier follow-up.
+                let lld_patch = link.linker == Linker::Lld && n.starts_with("__CortexA53843419_");
+                if lld_patch {
+                    lld_patches += 1;
+                    continue;
+                }
                 assert!(link.linker == Linker::Mold && mold_own, "{label}: '{n}' not judged");
+            }
+            if lld_patches > 0 {
+                eprintln!("{label}: {lld_patches} lld 843419 patch symbols allowed not judged");
             }
         }
         if link.case == "cxx-eh-hdr" {

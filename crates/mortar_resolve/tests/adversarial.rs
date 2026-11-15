@@ -18,7 +18,7 @@ use mortar_elf::Machine;
 use mortar_resolve::options::{Entry, Named, Options};
 use mortar_resolve::view::{FileKind, View};
 use mortar_resolve::{Def, Resolved, resolve};
-use mortar_testutil::{Scratch, tool};
+use mortar_testutil::Scratch;
 use support::{Model, canon, exec, ok, parse_trace};
 
 const SOURCES: &[(&str, &str)] = &[
@@ -124,13 +124,11 @@ struct Corpus {
 }
 
 fn corpus() -> Option<Corpus> {
-    let gcc = tool("gcc")?;
-    let ar = tool("ar")?;
-    let bfd = tool("ld.bfd")?;
-    if !cfg!(target_arch = "aarch64") {
-        eprintln!("note: the adversarial sources are AArch64's; skipping");
-        return None;
-    }
+    // The sources are AArch64's: its toolchain on every host.
+    let a64 = mortar_testutil::target::Arch::Aarch64;
+    let gcc = a64.tool("gcc")?;
+    let ar = a64.tool("ar")?;
+    let bfd = a64.tool("ld.bfd")?;
     let dir = Scratch::new("resolve-adv");
     for (name, text) in SOURCES.iter().chain(ASM) {
         let src = dir.write(name, text);

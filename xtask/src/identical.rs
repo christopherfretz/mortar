@@ -1,8 +1,8 @@
 //! `cargo xtask static-identical [--update] [-j <n>]` (`spec/harness.md`
 //! "static-identical"): the digests of every static mortar link of a
 //! corpus — every link step of `tests/link` and `tests/identical` on every
-//! architecture — against the checked-in baseline
-//! `tests/identical/baseline.tsv`.
+//! architecture — against the checked-in baseline of the machine it runs
+//! on, `tests/identical/baseline.on-<host>.tsv`.
 //!
 //! It is the guard of milestone M2 (`spec/landed/dyn/WP-040.md`): dynamic
 //! output lands behind a refusal, and a static link's bytes, its
@@ -23,8 +23,16 @@ use crate::linktest::{self, build_dir, workspace_root};
 pub const USAGE: &str =
     "usage: cargo xtask static-identical [--update] [-j <n>] [--mortar <binary>]\n";
 
-/// The baseline, relative to the workspace.
-pub const BASELINE: &str = "tests/identical/baseline.tsv";
+/// The baseline of a machine of architecture `host`, relative to the
+/// workspace. One per host, because the inputs are the host's: a host's
+/// own architecture is built by its native GCC and C library (Debian's
+/// `libc6-dev`, `libgcc-14-dev`), the others by the cross packages
+/// (`libc6-dev-<arch>-cross`), which are other builds of other revisions,
+/// so the same test links other bytes on an AArch64 and an x86-64 machine
+/// (spec/harness.md "static-identical", "One baseline per host").
+pub fn baseline_file(host: Arch) -> String {
+    format!("tests/identical/baseline.on-{}.tsv", host.name())
+}
 
 /// The first line of the baseline: its columns.
 const HEADER: &str = "# test\tarch\tline\tend\toutput\tmap\tstderr";
@@ -103,6 +111,13 @@ pub fn format_baseline(rows: &[DigestRow]) -> String {
     );
     text.push_str(HEADER);
     text.push('\n');
+    text.push_str(&rows_text(rows));
+    text
+}
+
+/// `rows` as baseline lines.
+fn rows_text(rows: &[DigestRow]) -> String {
+    let mut text = String::new();
     for row in rows {
         let _ = writeln!(
             text,
@@ -123,14 +138,14 @@ pub fn format_baseline(rows: &[DigestRow]) -> String {
 ///
 /// # Errors
 /// A line that is not seven tab-separated fields, or a repeated link.
-pub fn parse_baseline(text: &str) -> Result<BTreeMap<Key, Digests>, String> {
+pub fn parse_baseline(name: &str, text: &str) -> Result<BTreeMap<Key, Digests>, String> {
     let mut rows = BTreeMap::new();
     for (n, line) in text.lines().enumerate() {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let fields: Vec<&str> = line.split('\t').collect();
-        let bad = || format!("{BASELINE}:{}: not a baseline row", n + 1);
+        let bad = || format!("{name}:{}: not a baseline row", n + 1);
         let [test_name, arch, step, end, output, map, stderr] = fields[..] else {
             return Err(bad());
         };
@@ -138,7 +153,7 @@ pub fn parse_baseline(text: &str) -> Result<BTreeMap<Key, Digests>, String> {
         let key = (test_name.to_owned(), arch.to_owned(), step);
         let digests = [end, output, map, stderr].map(str::to_owned);
         if rows.insert(key, digests).is_some() {
-            return Err(format!("{BASELINE}:{}: a repeated link", n + 1));
+            return Err(format!("{name}:{}: a repeated link", n + 1));
         }
     }
     Ok(rows)
@@ -275,10 +290,17 @@ pub fn run(args: &Args) -> bool {
                 .filter_map(|r| Some((r.test.clone(), r.arch?.name().to_owned()))),
         )
         .collect();
-    let baseline_path: PathBuf = root.join(BASELINE);
+    let Some(host) = Arch::host() else {
+        eprintln!("static-identical: this machine is none of the architectures with a baseline");
+        return false;
+    };
+    let name = baseline_file(host);
+    let baseline_path: PathBuf = root.join(&name);
     let baseline = match std::fs::read_to_string(&baseline_path) {
-        Ok(text) => parse_baseline(&text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && args.update => Ok(BTreeMap::new()),
+        Ok(text) => parse_baseline(&name, &text),
+        // No baseline yet for this host: every link differs (and is
+        // printed as a row), so the check fails and the rows cut one.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(e) => Err(format!("{}: {e}", baseline_path.display())),
     };
     let baseline = match baseline {
@@ -296,7 +318,7 @@ pub fn run(args: &Args) -> bool {
     let changes = diff(&baseline, &report.digests, &not_run);
     let elapsed = started.elapsed().as_secs_f64();
     let summary = format!(
-        "static-identical: {} links of {} tests on {}; {} differ from {BASELINE}; {elapsed:.1}s",
+        "static-identical: {} links of {} tests on {}; {} differ from {name}; {elapsed:.1}s",
         report.digests.len(),
         report.tests,
         report.arches.iter().map(|a| a.name()).collect::<Vec<_>>().join(" "),
@@ -315,6 +337,18 @@ pub fn run(args: &Args) -> bool {
     for line in &changes {
         eprintln!("{line}");
     }
+    if !changes.is_empty() && !args.update {
+        // The run's own rows of the links that differ, as baseline rows:
+        // digests and test names only, so that the baseline of a host one
+        // does not have can be cut from its hosted lane's log.
+        let rows: Vec<DigestRow> = report
+            .digests
+            .iter()
+            .filter(|r| baseline.get(&key_of(r)) != Some(&digests_of(r)))
+            .cloned()
+            .collect();
+        eprint!("static-identical: the run's rows of the links that differ:\n{}", rows_text(&rows));
+    }
     if args.update {
         if !not_run.is_empty() {
             eprintln!(
@@ -328,7 +362,7 @@ pub fn run(args: &Args) -> bool {
             eprintln!("static-identical: cannot write '{}': {e}", baseline_path.display());
             return false;
         }
-        eprintln!("{summary}\nstatic-identical: wrote {BASELINE}");
+        eprintln!("{summary}\nstatic-identical: wrote {name}");
         return true;
     }
     eprintln!("{summary}");
@@ -377,7 +411,7 @@ mod tests {
     #[test]
     fn baseline_and_diff() {
         let rows = [row("a.test", 3, "x"), row("b.test", 5, "y")];
-        let baseline = parse_baseline(&format_baseline(&rows)).unwrap();
+        let baseline = parse_baseline("b", &format_baseline(&rows)).unwrap();
         assert_eq!(baseline.len(), 2);
         assert!(diff(&baseline, &rows, &BTreeSet::new()).is_empty());
         let now = [row("a.test", 3, "z"), row("c.test", 1, "y")];
@@ -391,8 +425,18 @@ mod tests {
         );
         let not_run = BTreeSet::from([("b.test".to_owned(), "aarch64".to_owned())]);
         assert_eq!(diff(&baseline, &now, &not_run).len(), 2, "a unit not run is not compared");
-        assert!(parse_baseline("a\tb\n").is_err());
-        assert!(parse_baseline("a\taarch64\t1\te\to\tm\ts\na\taarch64\t1\te\to\tm\ts\n").is_err());
+        assert!(parse_baseline("b", "a\tb\n").is_err());
+        assert_eq!(baseline_file(Arch::Aarch64), "tests/identical/baseline.on-aarch64.tsv");
+        for host in [Arch::Aarch64, Arch::X86_64] {
+            assert!(
+                workspace_root().join(baseline_file(host)).is_file(),
+                "{}",
+                baseline_file(host)
+            );
+        }
+        assert!(
+            parse_baseline("b", "a\taarch64\t1\te\to\tm\ts\na\taarch64\t1\te\to\tm\ts\n").is_err()
+        );
     }
 
     #[test]

@@ -56,6 +56,8 @@ pub fn cargo_step(args: &[&str]) -> bool {
     let mut retried = false;
     loop {
         let mut cargo = Command::new(cargo());
+        // Where the test binaries record their named skips.
+        cargo.env(mortar_testutil::NAMED_SKIPS_ENV, named_skips_dir());
         let (status, stderr) = match run_step(cargo.args(args), true) {
             Ok(result) => result,
             Err(e) => {
@@ -108,10 +110,15 @@ pub fn linktest_args(quick: bool) -> Vec<String> {
     }
 }
 
-/// What `cargo xtask ci [--quick] [--step <name>]...` asks for.
+/// What `cargo xtask ci [--quick] [--no-fail-fast] [--step <name>]...`
+/// asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Args {
     pub quick: bool,
+    /// Every selected step runs whatever an earlier one did, and `cargo
+    /// test` runs every test binary (`--no-fail-fast`): a diagnosis run
+    /// that shows every failure at once (`spec/harness.md` "ci").
+    pub no_fail_fast: bool,
     /// The steps to run, in [`STEP_NAMES`] order; every step when none is
     /// named.
     pub steps: Vec<&'static str>,
@@ -124,11 +131,13 @@ impl Args {
     /// An unknown argument or step, or `--step` without a name.
     pub fn parse(args: &[String]) -> Result<Self, String> {
         let mut quick = false;
+        let mut no_fail_fast = false;
         let mut named: Vec<String> = Vec::new();
         let mut rest = args.iter();
         while let Some(arg) = rest.next() {
             match arg.as_str() {
                 "--quick" => quick = true,
+                "--no-fail-fast" => no_fail_fast = true,
                 "--step" => named.push(rest.next().ok_or("--step needs a step name")?.clone()),
                 other => match other.strip_prefix("--step=") {
                     Some(step) => named.push(step.to_owned()),
@@ -144,7 +153,7 @@ impl Args {
             .into_iter()
             .filter(|step| named.is_empty() || named.iter().any(|n| n == step))
             .collect();
-        Ok(Self { quick, steps })
+        Ok(Self { quick, no_fail_fast, steps })
     }
 
     /// Whether `step` runs.
@@ -153,31 +162,88 @@ impl Args {
     }
 }
 
-/// Runs each selected step in order and stops at the first failure
-/// (`spec/harness.md` "ci"). `--quick` is what an implementer runs before
-/// handing back: the link tests on the host's architecture only; the full
-/// gate runs them on every architecture, and adds the differential lanes
-/// as they land (`docs/VALIDATION.md`).
+/// The arguments of cargo step `name`: [`STEPS`]'s, and `--no-fail-fast`
+/// for `test` when asked for.
+pub fn cargo_args(name: &str, no_fail_fast: bool) -> Option<Vec<&'static str>> {
+    let (_, args) = STEPS.iter().find(|(step, _)| *step == name)?;
+    let mut args = args.to_vec();
+    if no_fail_fast && name == "test" {
+        args.push("--no-fail-fast");
+    }
+    Some(args)
+}
+
+/// Where the test binaries record their named skips
+/// ([`mortar_testutil::named_skip`]): `MORTAR_NAMED_SKIPS` when set, else
+/// `<build directory>/tmp/named-skips`. A gate run by a test (xtask's own
+/// tests) is given a directory of its own: the build directory's is the
+/// outer gate's, which it empties before its test step and counts after.
+pub fn named_skips_dir() -> std::path::PathBuf {
+    std::env::var_os(mortar_testutil::NAMED_SKIPS_ENV).map_or_else(
+        || crate::linktest::build_dir().join("tmp").join(mortar_testutil::NAMED_SKIPS),
+        std::path::PathBuf::from,
+    )
+}
+
+/// The named skips recorded in `dir`, one `<name>\t<reason>` line each,
+/// sorted.
+pub fn named_skips(dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut lines: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .flat_map(|text| text.lines().map(str::to_owned).collect::<Vec<_>>())
+        .collect();
+    lines.sort();
+    lines
+}
+
+/// Runs each selected step in order and stops at the first failure, or
+/// with `--no-fail-fast` runs them all (`spec/harness.md` "ci").
+/// `--quick` is what an implementer runs before handing back: the link
+/// tests on the host's architecture only; the full gate runs them on
+/// every architecture, and adds the differential lanes as they land
+/// (`docs/VALIDATION.md`). After the test step it lists and counts the
+/// named skips the tests recorded ("Named skips").
 pub fn run(args: &Args) -> bool {
+    let mut failed: Vec<&str> = Vec::new();
     for name in STEP_NAMES {
         if !args.runs(name) {
             continue;
         }
         eprintln!("[ci] {name}");
-        let passed = match STEPS.iter().find(|(step, _)| *step == name) {
+        let skips = named_skips_dir();
+        if name == "test" {
+            let _ = std::fs::remove_dir_all(&skips);
+        }
+        let passed = match cargo_args(name, args.no_fail_fast) {
             // A cargo step is a jobserver client of its own
             // (spec/harness.md "Jobserver"), and is run once more if an
             // artifact vanished under it ("ci").
-            Some((_, cargo_args)) => cargo_step(cargo_args),
+            Some(cargo_args) => cargo_step(&cargo_args),
             // Any exit status but 0 fails the gate ("Link tests", "Exit
             // status").
             None if name == LINKTEST => crate::linktest::main(&linktest_args(args.quick)) == 0,
             None => crate::identical::run(&crate::identical::Args::default()),
         };
+        if name == "test" {
+            let lines = named_skips(&skips);
+            eprintln!("[ci] named skips: {}", lines.len());
+            for line in &lines {
+                eprintln!("[ci]   {}", line.replace('\t', ": "));
+            }
+        }
         if !passed {
             eprintln!("[ci] {name}: FAILED");
-            return false;
+            if !args.no_fail_fast {
+                return false;
+            }
+            failed.push(name);
         }
+    }
+    if !failed.is_empty() {
+        eprintln!("[ci] FAILED: {}", failed.join(", "));
+        return false;
     }
     eprintln!("[ci] ok");
     true
@@ -185,7 +251,7 @@ pub fn run(args: &Args) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, STEP_NAMES, STEPS, linktest_args, should_retry};
+    use super::{Args, STEP_NAMES, STEPS, cargo_args, linktest_args, named_skips, should_retry};
 
     // spec/harness.md "ci": `--step` selects steps, which run in the
     // gate's order whatever the order they are named in.
@@ -206,6 +272,29 @@ mod tests {
         assert!(parse(&["--step", "lint"]).unwrap_err().contains("unknown step `lint`"));
         assert!(parse(&["--step"]).is_err());
         assert!(parse(&["--fast"]).unwrap_err().contains("unknown argument `--fast`"));
+        assert!(!all.no_fail_fast);
+        let every = parse(&["--no-fail-fast", "--step", "test"]).unwrap();
+        assert!(every.no_fail_fast && every.steps == ["test"]);
+    }
+
+    // spec/harness.md "ci": `--no-fail-fast` reaches `cargo test` only.
+    #[test]
+    fn no_fail_fast_reaches_cargo_test() {
+        assert_eq!(cargo_args("test", true).unwrap(), ["test", "--workspace", "--no-fail-fast"]);
+        assert_eq!(cargo_args("test", false).unwrap(), ["test", "--workspace"]);
+        assert_eq!(cargo_args("fmt", true).unwrap(), ["fmt", "--all", "--check"]);
+        assert!(cargo_args("linktest", true).is_none());
+    }
+
+    // spec/harness.md "Named skips": the records of a test run, one line
+    // each, sorted; none when the directory is not there.
+    #[test]
+    fn named_skips_are_listed_sorted() {
+        let scratch = mortar_testutil::Scratch::new("named-skips");
+        std::fs::write(scratch.join("b"), "b::x\tnot here\n").unwrap();
+        std::fs::write(scratch.join("a"), "a::y\toff its host\n").unwrap();
+        assert_eq!(named_skips(scratch.path()), ["a::y\toff its host", "b::x\tnot here"]);
+        assert!(named_skips(&scratch.join("none")).is_empty());
     }
 
     // spec/harness.md "ci": the steps are cargo's own checks of the whole

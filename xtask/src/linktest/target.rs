@@ -530,4 +530,46 @@ mod tests {
         );
         assert_eq!(feature_tool_name(Feature::Gxx, Arch::Aarch64, host), "g++");
     }
+
+    thread_local! {
+        static ASKED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn recording(name: &str) -> Option<PathBuf> {
+        ASKED.with(|asked| asked.borrow_mut().push(name.to_owned()));
+        None
+    }
+
+    fn recording_all(name: &str) -> Option<PathBuf> {
+        let _ = recording(name);
+        everything(name)
+    }
+
+    // spec/harness.md "Hosted CI", "The tool guard": every name the run
+    // looks a tool up by, for every architecture on either host and
+    // whether or not the first name is found, is one scripts/ci-tools.sh
+    // covers (the run itself looks them up with
+    // `mortar_testutil::find_listed_tool`).
+    #[test]
+    fn the_tool_tables_are_in_ci_tools() {
+        for host in [Some(Arch::Aarch64), Some(Arch::X86_64)] {
+            for arch in Arch::ALL {
+                for find in [recording as Find, recording_all] {
+                    let _ = ArchTools::find(arch, host, find);
+                }
+                // What a run that finds them asks for (the cross ones stop
+                // early on a machine without their system root).
+                for name in ["gcc", "ar", "nm", "objdump", "readelf", "g++", "gfortran", "ld.bfd"] {
+                    ASKED.with(|asked| asked.borrow_mut().push(arch.gnu_tool(host, name)));
+                }
+            }
+        }
+        let _ = CommonTools::find(recording);
+        let _ = CommonTools::find(recording_all);
+        let asked = ASKED.with(std::cell::RefCell::take);
+        assert!(asked.iter().any(|name| name == "qemu-x86_64-static"), "{asked:?}");
+        let unlisted: Vec<&String> =
+            asked.iter().filter(|name| !mortar_testutil::ci_tools::covers(name)).collect();
+        assert!(unlisted.is_empty(), "not in scripts/ci-tools.sh: {unlisted:?}");
+    }
 }

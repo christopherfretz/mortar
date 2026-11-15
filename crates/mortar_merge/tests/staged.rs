@@ -21,6 +21,7 @@ use mortar_input::store::{Store, StorePolicy};
 use mortar_merge::eh::Target;
 use mortar_merge::phase::{self, Link, LinkSection};
 use mortar_merge::{Problem, What};
+use mortar_testutil::target::Arch;
 use mortar_testutil::tools_required;
 use support::{Objects, lib_dirs, relocs};
 
@@ -66,15 +67,15 @@ impl Link<'static> for Over<'_> {
 
 #[test]
 fn s11_1_phase_60_reads_only_resident_bytes_under_the_staged_store() {
-    // The native target's libraries (the link's own target is the host's).
+    // The AArch64 libraries and compiler, on any host.
     let Some((machine, gcc, libc)) =
         lib_dirs().into_iter().find(|(m, ..)| *m == mortar_elf::Machine::AArch64)
     else {
         assert!(!tools_required(), "the AArch64 libraries are required");
         return;
     };
-    let Some(cc) = mortar_testutil::tool("gcc") else {
-        assert!(!tools_required(), "gcc is required");
+    let Some(cc) = Arch::Aarch64.tool("gcc") else {
+        assert!(!tools_required(), "the AArch64 gcc is required");
         return;
     };
     // One object whose `.text`, string section, `.eh_frame` and
