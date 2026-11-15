@@ -379,9 +379,11 @@ fn needs(
     code_outs: &[OutSecId],
     bodies: &Bodies,
     pool: &Pool,
+    steps: &mut mortar_core::wp032b_steps::Steps,
 ) -> Result<(Vec<Need>, SiteKeys), LayoutDiag> {
     let branches = range.sites.branches();
     let targets = range.sites.targets(round, pool);
+    steps.step("targets", branches.len() as u64, "branch");
     if targets.len() != branches.len() {
         return Err(internal("not one branch target per branch site"));
     }
@@ -403,6 +405,7 @@ fn needs(
     for j in judged {
         out.extend(j?);
     }
+    steps.step("branch needs", branches.len() as u64, "branch");
     let mut keys = BTreeSet::new();
     let errata = range.arch.errata();
     if errata.is_empty() {
@@ -447,7 +450,89 @@ fn needs(
             }
         }
     }
+    steps.step("erratum needs", keys.len() as u64, "site");
     Ok((out, keys))
+}
+
+/// Stage E for a stage C that differs from `prev`'s only in the sizes of
+/// non-alloc chunks after every alloc chunk (the symbol tables and
+/// `.shstrtab`, sized after the fixed point: `spec/synth.md` R-L5, S-90):
+/// `prev`'s fixed point, readdressed. `None` when `staged` differs in any
+/// other way, or stage D fails on it (the caller then runs
+/// [`fixed_point`], which reports that failure as its own).
+///
+/// It is the result [`fixed_point`] would give: stage D gives every alloc
+/// chunk an address and offset that do not depend on a non-alloc chunk
+/// after the last alloc one (L-72: those only move the file cursor past
+/// it), so every round sees the addresses `prev`'s round saw, and the sites
+/// read only alloc addresses ([`Sites`]). That is checked on the result:
+/// every alloc chunk must keep `prev`'s address and offset.
+#[must_use]
+pub fn refix(
+    staged: &Staged,
+    prev: &Staged,
+    prev_fixed: &mortar_core::layout::Placement,
+    rounds: u32,
+    target: &Target,
+    options: &Options,
+    rules: &SegmentRules,
+) -> Option<Fixed> {
+    if staged.chunks.len() != prev.chunks.len()
+        || staged.order != prev.order
+        || staged.islands != prev.islands
+        || staged.relro_padding != prev.relro_padding
+    {
+        return None;
+    }
+    // The first chunk in file order whose size changed; no alloc chunk may
+    // follow it, and nothing but sizes may differ.
+    let mut changed = false;
+    for &c in &staged.order {
+        let (a, b) = (&staged.chunks[c], &prev.chunks[c]);
+        let resized = a.size != b.size || a.capacity != b.capacity;
+        changed |= resized;
+        let others_equal = Chunk { size: b.size, capacity: b.capacity, ..*a } == *b;
+        if (changed && a.is_alloc()) || !others_equal {
+            return None;
+        }
+    }
+    if staged.ranks != prev.ranks
+        || staged.out_of != prev.out_of
+        || staged.sym_place != prev.sym_place
+        || staged.place != prev.place
+    {
+        return None;
+    }
+    let island_sizes: Vec<u64> =
+        staged.islands.iter().map(|&i| prev_fixed.chunks.get(i).map_or(0, |c| c.size)).collect();
+    let addressed = address(staged, &island_sizes, target, options, rules).ok()?;
+    let same = staged.order.iter().all(|&c| {
+        let (a, b) = (&addressed.chunks[c], prev_fixed.chunks.get(c));
+        !a.is_alloc()
+            || b.is_some_and(|b| a.addr == b.addr && a.offset == b.offset && a.size == b.size)
+    });
+    if !same || addressed.chunks.len() != prev_fixed.chunks.len() {
+        return None;
+    }
+    let mut sized: Vec<Sized> = staged
+        .islands
+        .iter()
+        .zip(&island_sizes)
+        .map(|(&chunk, &size)| Sized { chunk, size })
+        .collect();
+    for (chunk, c) in addressed.chunks.iter() {
+        if matches!(c.kind, ChunkKind::Synthetic(s) if s.address_dependent) {
+            sized.push(Sized { chunk, size: c.size });
+        }
+    }
+    sized.sort_unstable_by_key(|s| s.chunk);
+    Some(Fixed {
+        addressed,
+        patches: prev_fixed.patches.clone(),
+        redirects: prev_fixed.redirects.clone(),
+        sized: sized.into(),
+        rounds,
+    })
 }
 
 /// Stage E: rounds of arch.md §6 until one has no needs. `None`: no
@@ -492,6 +577,8 @@ pub fn fixed_point(
     let mut sets: Vec<BTreeSet<Key>> = vec![BTreeSet::new(); n];
     let mut redirect: BTreeMap<(SectionId, u64), (usize, Key)> = BTreeMap::new();
     let mut number = 0u32;
+    let mut steps = mortar_core::wp032b_steps::Steps::new("fixed");
+    steps.step("prepare", 0, "");
     loop {
         number += 1;
         let laid: Vec<Laid> = match range {
@@ -502,7 +589,9 @@ pub fn fixed_point(
             return Err(cap_refusal());
         }
         let island_sizes: Vec<u64> = laid.iter().map(|l| l.size).collect();
+        steps.step("lay out", 0, "");
         let addressed = address(staged, &island_sizes, target, options, rules)?;
+        steps.step("address", u64::from(addressed.chunks.len()), "chunk");
         // The patch table, sorted by (chunk, offset): islands are in
         // ChunkId order and each island's rows in offset order.
         let mut patches = Vec::new();
@@ -529,8 +618,9 @@ pub fn fixed_point(
             patches: &patches,
             redirects: &redirects,
         };
+        steps.step("tables", patches.len() as u64, "patch");
         let (mut needs, erratum_keys) = match range {
-            Some(r) => needs(r, &round, &code_outs, &bodies, pool)?,
+            Some(r) => needs(r, &round, &code_outs, &bodies, pool, &mut steps)?,
             None => (Vec::new(), BTreeSet::new()),
         };
         if needs.is_empty() {

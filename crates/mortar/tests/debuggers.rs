@@ -46,6 +46,13 @@ const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 /// The tombstone of an address field in ELFCLASS64 (`spec/image.md` I-47).
 const DEAD: u64 = u64::MAX;
 
+/// The tombstone of an address that a DWARF 5 list entry pairs with a
+/// length (`.debug_rnglists`, `.debug_loclists`, and `.debug_addr`, which
+/// Clang's `DW_RLE_startx_length` indexes): 0, `spec/image.md` I-47. A
+/// subprogram's `DW_AT_low_pc` read through `.debug_addr` is then 0 too:
+/// no code lies there (the non-PIE base, `spec/layout.md` L-68).
+const DEAD_PAIRED: u64 = 0;
+
 // ---------------------------------------------------------------------
 // The programs.
 
@@ -785,44 +792,6 @@ fn comdat_kept_copy(label: &str, t: &Tools, pair: &Pair, sym: &str, kept: &str) 
     );
 }
 
-/// gdb's line on mortar's output when a GCC DWARF 5 C++ program steps
-/// near a function whose CU's range list holds a dead entry.
-const RNGLISTS_SYMPTOM: &str = "in read in CU, but not in symtab";
-
-/// xfail(mortar): `spec/image.md` I-47 writes all ones for a dead
-/// address in `.debug_rnglists`. GCC 14's DWARF 5 CU range lists use
-/// `DW_RLE_start_length`, so the dead entry reads `[2^64 - 1, len - 1)`,
-/// which wraps: gdb 16 reports `Invalid .debug_rnglists data (inverted
-/// range)` and rejects that CU's list, and part of the CU's code (the
-/// `thread_local` wrapper `_ZTW5t_val` in `dx_b.cpp`) is then missing
-/// from the CU's symtab: `next` in `level3` then warns `(Internal error: pc ... in read
-/// in CU, but not in symtab.)` three to seven times. GNU ld's redirect
-/// gives a real range. A spec question for I-47 (`.debug_rnglists` /
-/// `.debug_loclists` `*_start_length` entries), not a fill bug:
-/// `crates/mortar_arch/src/dead.rs` `tombstone` implements I-47's table.
-///
-/// Clang's DWARF 5 lists (`DW_RLE_startx_length` through a dead
-/// `.debug_addr` entry) give the same complaint; gdb's sessions there
-/// did not show the symptom.
-fn rnglists_xfail(driver: Driver, tag: &str) -> bool {
-    matches!(driver, Driver::Gxx | Driver::Clangxx) && tag.starts_with("d5")
-}
-
-/// `t` without the lines that contain `what`, and how many there were.
-fn without(t: &str, what: &str) -> (String, usize) {
-    let mut n = 0;
-    let mut out = String::new();
-    for l in t.lines() {
-        if l.contains(what) {
-            n += 1;
-        } else {
-            out.push_str(l);
-            out.push('\n');
-        }
-    }
-    (out, n)
-}
-
 /// Builds `p` with `driver` over the flag matrix, links each with both
 /// linkers, and runs `check` on each pair (with the label and the flag
 /// set's tag). A missing tool skips, after a note.
@@ -845,23 +814,19 @@ fn each(name: &str, driver: Driver, p: &Program, check: impl Fn(&str, &str, &Too
 /// sessions did their work.
 // spec: VALIDATION.md L6 (debuggers: equal transcripts against GNU ld)
 fn sessions(name: &str, driver: Driver, p: &Program) {
-    each(name, driver, p, |label, tag, t, pair| {
+    each(name, driver, p, |label, _, t, pair| {
         let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
         let addr = |e: &Elf| p.comdat.map(|(sym, _)| e.values[sym]);
         let g_ours = session(&t.gdb, &gdb_args(p, addr(&eo)), &pair.ours, &pair.dir, &eo);
         let g_theirs = session(&t.gdb, &gdb_args(p, addr(&et)), &pair.theirs, &pair.dir, &et);
         let l_ours = session(&t.lldb, &lldb_args(p, addr(&eo)), &pair.ours, &pair.dir, &eo);
         let l_theirs = session(&t.lldb, &lldb_args(p, addr(&et)), &pair.theirs, &pair.dir, &et);
-        // The symptom shows at -O0, where `next` in level3 passes the
-        // thread_local wrapper; at -O2 the wrapper is inlined.
-        let g_ours = if driver == Driver::Gxx && rnglists_xfail(driver, tag) && tag.ends_with("O0")
-        {
-            let (rest, hits) = without(&g_ours, RNGLISTS_SYMPTOM);
-            assert!(hits > 0, "{label}: XPASS: gdb no longer says {RNGLISTS_SYMPTOM:?}");
-            rest
-        } else {
-            g_ours
-        };
+        // WP-027e: the all-ones tombstone in a `DW_RLE_start_length`
+        // entry made gdb drop the CU's ranges, and `next` then said this.
+        assert!(
+            !g_ours.contains("not in symtab"),
+            "{label}: gdb lost a CU's ranges (spec/image.md I-47):\n{g_ours}"
+        );
         same(label, "the gdb session", &g_ours, &g_theirs);
         same(label, "the lldb session", &l_ours, &l_theirs);
         sessions_did_their_work(label, p, &g_ours, &l_ours);
@@ -911,7 +876,14 @@ fn subprograms(info: &str) -> Vec<(String, u64, Option<u64>)> {
         let Some((n, lo, hi)) = cur.as_mut() else { continue };
         let attr = l.split_whitespace().next().unwrap_or("");
         // llvm-dwarfdump prints the tombstone as `dead code`.
-        let value = || if l.contains("dead code") { Some(DEAD) } else { last_hex(l) };
+        // A `.debug_addr` entry (`DW_FORM_addrx`) holds DEAD_PAIRED.
+        let value = || {
+            if l.contains("dead code") {
+                Some(DEAD)
+            } else {
+                last_hex(l).map(|v| if v == DEAD_PAIRED { DEAD } else { v })
+            }
+        };
         match attr {
             "DW_AT_low_pc" => *lo = value(),
             "DW_AT_high_pc" => *hi = last_hex(l),
@@ -1007,7 +979,7 @@ fn debug_addrs(tools: &Tools, pair: &Pair, prog: &Path, img: &Elf) -> DebugAddrs
         }
         let Some((a, b)) = r.split_once(", ") else { continue };
         let (a, b) = (last_hex(a).unwrap_or(0), last_hex(b).unwrap_or(0));
-        if a != b && a != DEAD && !img.in_exec(a, b) {
+        if a != b && a != DEAD && a != DEAD_PAIRED && !img.in_exec(a, b) {
             found.wrong.push(format!("DW_AT_ranges [{a:#x}, {b:#x})"));
         }
     }
@@ -1022,7 +994,7 @@ fn debug_addrs(tools: &Tools, pair: &Pair, prog: &Path, img: &Elf) -> DebugAddrs
         let first = vals.first().copied().unwrap_or(0);
         match kind {
             "DW_RLE_start_length" | "DW_RLE_start_end" | "DW_RLE_base_address" => {
-                if first == DEAD {
+                if first == DEAD_PAIRED {
                     *found.dead.entry(".debug_rnglists").or_default() += 1;
                 } else {
                     let end = match kind {
@@ -1042,7 +1014,7 @@ fn debug_addrs(tools: &Tools, pair: &Pair, prog: &Path, img: &Elf) -> DebugAddrs
     let addr = dump(tools, prog, dir, &["--debug-addr"]);
     for l in addr.lines().filter(|l| l.starts_with("0x") && l.len() == 18) {
         let a = last_hex(l).unwrap_or(0);
-        if a == DEAD {
+        if a == DEAD_PAIRED {
             *found.dead.entry(".debug_addr").or_default() += 1;
         } else if !img.in_alloc(a) {
             found.wrong.push(format!(".debug_addr {l}"));
@@ -1150,16 +1122,24 @@ const LINE_TOMBSTONE: &str = "During symbol reading: .debug_line address at offs
 const CALL_TARGET_DEAD: &str =
     "During symbol reading: DW_AT_call_target target DIE has invalid low pc";
 
-/// [`rnglists_xfail`]'s complaint.
-const RNGLISTS_COMPLAINT: &str =
+/// gdb's complaint when a range list entry starts at [`DEAD_PAIRED`]:
+/// gdb drops the entry (it has no section at 0), which is I-47's purpose.
+/// lld's and mold's outputs give it too.
+const RNGLISTS_ZERO: &str =
+    "During symbol reading: .debug_rnglists entry has start address of zero";
+
+/// gdb's complaint when a range list wraps, as all ones in a
+/// `DW_RLE_start_length` entry did before WP-027e: gdb then drops the
+/// CU's whole list. Never on mortar's output.
+const RNGLISTS_INVERTED: &str =
     "During symbol reading: Invalid .debug_rnglists data (inverted range)";
 
 /// The static checks on both outputs of each configuration.
 fn dwarf(name: &str, driver: Driver, p: &Program) {
-    each(name, driver, p, |label, tag, t, pair| {
+    each(name, driver, p, |label, _, t, pair| {
         let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
         verify_against(label, t, pair, &eo, &et);
-        symtabs_against(label, t, pair, (&eo, &et), rnglists_xfail(driver, tag));
+        symtabs_against(label, t, pair, (&eo, &et));
         addresses(label, t, pair, p, driver == Driver::Gxx, (&eo, &et));
     });
 }
@@ -1192,15 +1172,14 @@ fn verify_against(label: &str, t: &Tools, pair: &Pair, eo: &Elf, et: &Elf) {
 
 /// gdb's `maint check-symtabs` is silent on mortar's output; gdb's
 /// complaints while reading mortar's debug information are GNU ld's
-/// output's, but for [`LINE_TOMBSTONE`] and [`CALL_TARGET_DEAD`] (I-47)
-/// and, under
-/// [`rnglists_xfail`], [`RNGLISTS_COMPLAINT`]; and `info functions -n`
+/// output's, but for [`LINE_TOMBSTONE`], [`CALL_TARGET_DEAD`] and
+/// [`RNGLISTS_ZERO`] (I-47), and never [`RNGLISTS_INVERTED`]; and `info functions -n`
 /// lists the same functions as on GNU ld's output. GNU ld's lists a
 /// COMDAT function once per object that defined a copy (the redirect,
 /// `spec/image.md` I-47); mortar's once, under the kept copy's file: the
 /// signature sets are equal and mortar's entries are a subset of GNU's.
 // spec: VALIDATION.md L6; image.md I-47 (tombstones)
-fn symtabs_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf), xfail: bool) {
+fn symtabs_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf)) {
     let ours = gdb_symtabs(t, &pair.ours, &pair.dir, eo);
     let theirs = gdb_symtabs(t, &pair.theirs, &pair.dir, et);
     let check: Vec<&String> =
@@ -1210,15 +1189,14 @@ fn symtabs_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf), 
         .complaints
         .difference(&theirs.complaints)
         .filter(|c| !c.starts_with(LINE_TOMBSTONE) && !c.starts_with(CALL_TARGET_DEAD))
-        .filter(|c| !(xfail && c.starts_with(RNGLISTS_COMPLAINT)))
+        .filter(|c| !c.starts_with(RNGLISTS_ZERO))
         .collect();
     assert!(extra.is_empty(), "{label}: gdb complains of mortar's output only: {extra:#?}");
-    if xfail {
-        assert!(
-            ours.complaints.iter().any(|c| c.starts_with(RNGLISTS_COMPLAINT)),
-            "{label}: XPASS: gdb no longer complains {RNGLISTS_COMPLAINT:?}"
-        );
-    }
+    assert!(
+        !ours.complaints.iter().any(|c| c.starts_with(RNGLISTS_INVERTED)),
+        "{label}: gdb rejects a range list of mortar's output: {:#?}",
+        ours.complaints
+    );
     let (fo, ft) = (&ours.functions, &theirs.functions);
     assert!(!fo.is_empty(), "{label}: gdb lists no function with debug information");
     let sigs = |s: &BTreeSet<(String, String)>| -> BTreeSet<String> {
@@ -1235,8 +1213,8 @@ fn symtabs_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf), 
 /// address in `.debug_aranges`, `.debug_ranges`, `.debug_rnglists`,
 /// `.debug_addr` and `.debug_line` is in its section or a tombstone. On
 /// mortar's output, a C++ program's discarded copies of `twice<int>` are
-/// tombstoned in each of the sections the compiler wrote; no address 0
-/// claims code (the reason for I-47's choice of all ones). GNU ld
+/// tombstoned in each of the sections the compiler wrote (all ones, or 0
+/// where a DWARF 5 entry pairs the address with a length). GNU ld
 /// redirects the copies (I-47), so its output has no tombstone to count.
 // spec: image.md I-45, I-47, I-112 (tombstones); VALIDATION.md L6
 fn addresses(label: &str, t: &Tools, pair: &Pair, p: &Program, gcc: bool, (eo, et): (&Elf, &Elf)) {

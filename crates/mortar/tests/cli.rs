@@ -92,6 +92,35 @@ fn version_through_a_symlink() {
     assert_eq!(outcome.stderr_text(), "");
 }
 
+// `MORTAR_HUGEPAGES=1` (WP-032e): mortar runs itself again with glibc's
+// huge-page tunable; the run it hands over to sees the same program name
+// and the same argument bytes.
+#[cfg(unix)]
+#[test]
+fn the_hugepage_exec_keeps_the_name_and_the_arguments() {
+    use std::os::unix::ffi::OsStrExt;
+    let scratch = Scratch::new("cli-hugepages");
+    let link = scratch.join("ld.mortar");
+    std::os::unix::fs::symlink(MORTAR, &link).expect("symlink in the scratch directory");
+    let option = std::ffi::OsStr::from_bytes(b"--frob\xff");
+    for tunables in [None, Some("glibc.malloc.arena_max=2"), Some("glibc.malloc.hugetlb=0")] {
+        let mut command = Command::new(&link);
+        command.arg(option).env("MORTAR_HUGEPAGES", "1").env_remove("MORTAR_HUGEPAGES_EXEC");
+        match tunables {
+            Some(t) => command.env("GLIBC_TUNABLES", t),
+            None => command.env_remove("GLIBC_TUNABLES"),
+        };
+        let outcome = run_with(&mut command, &[], Duration::from_mins(1));
+        assert_eq!(outcome.status.and_then(|s| s.code()), Some(1));
+        assert_eq!(outcome.stdout_text(), "");
+        assert_eq!(
+            outcome.stderr_text(),
+            "ld.mortar: error: unknown argument '--frob\u{fffd}'\nld.mortar: error: no input files\n",
+            "with GLIBC_TUNABLES {tunables:?}"
+        );
+    }
+}
+
 // spec: cli.md §6, image.md §5 (gcc runs mortar as its `ld`, as the
 // compiler driver of a build does: the link succeeds, the program runs)
 #[cfg(unix)]
