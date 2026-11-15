@@ -565,18 +565,16 @@ buffer; the clip only selects which of them a job writes.
   - AArch64 at least `(0, 4)`. The `CALL26` member of the GD→LE sequence
     (`spec/a64.md` §8.4) has its field at `o+8` and owns `[o+8, o+16)`,
     so it writes the `nop` 4 bytes past its field.
-  - x86-64 `(4, 8)`, for the recognized forms of `spec/arch.md` A.3
-    only: the 16-byte `TLSGD` form `[P − 4, P + 12)` around a 4-byte
-    field.
+  - x86-64 `(4, 15)`: `before` 4 from the 16-byte `TLSGD` forms and
+    `after` 15 from the 22-byte `TLSGD` and `TLSLD` forms (`spec/x64.md`
+    §8.6).
   The draft's AArch64 `(0, 0)` was wrong; it worked only because of the
   8-byte slack of the search bound. The x86-64 large-model `TLSGD`
   sequence (`lea` / `movabs PLTOFF64` / `add` / `call`, 22 bytes,
-  `[P − 3, P + 19)`, after = 15) is not an A.3 form, so it stays unrelaxed
-  and its members keep their field windows. GNU ld relaxes all 22 bytes;
-  lld 22 writes 16 bytes from `P − 4` and corrupts it (the review).
-  `spec/x64.md` must either add the form, with its window, or state that
-  it is left unrelaxed, with a test (request R-14). Either way `max_reach`
-  follows from the tables.
+  `[P − 3, P + 19)`, after = 15) and its `TLSLD` twin are relaxed forms
+  (`spec/x64.md` X-25, X-27; request R-14, answered). GNU ld relaxes all
+  22 bytes; lld 22 writes 16 bytes from `P − 4` and corrupts it (the
+  review). `max_reach` follows from the tables.
 - **I-37 [M1] `.ctors`/`.dtors` reversal** (`spec/layout.md` L-40, when it
   is lifted): the words of a `.ctors` input section are written in
   reverse word order; the relocation of the word at offset `o` is applied
@@ -799,7 +797,7 @@ writes a value chosen by the referring section's name, as
   relocation record has its field there, in which case those bytes are
   left as the input has them. It is a function of the record and the
   section bytes, so clipping applies as for any write (`max_reach.after`
-  is raised to 8 for `.debug_aranges` in I-35's search). No DWARF is
+  is raised to at least 8 for `.debug_aranges` in I-35's search). No DWARF is
   parsed.
 - **I-48 [M1]** The tombstone is truncated to the field, never checked
   for range (it is not a value of `X`), and replaces `X` for every type
@@ -1738,8 +1736,9 @@ pub trait SynthChunk {
 - `window_boundary_sequences`: the AArch64 GD→LE sequence placed so that
   a window boundary falls at `o+4`, `o+8` and `o+12`, and the x86-64
   `TLSGD` form with a boundary at each byte of `[P − 4, P + 12)`: the
-  bytes equal an unclipped fill (I-35, I-111); the 22-byte large-model
-  form is left as the input has it (I-111, R-14).
+  bytes equal an unclipped fill (I-35, I-111); the same for the 22-byte
+  large-model `TLSGD` and `TLSLD` forms at each byte of `[P − 3, P + 19)`
+  (`spec/x64.md` §8.6).
 - `max_reach_derived`: `Facts.max_reach` equals the maximum over the
   tables, and no `apply` writes outside its record's window (I-111).
 - `gap_patterns`: trap, no-op and zero gaps per I-41, positioned by
@@ -2131,6 +2130,9 @@ Reason: P2 of the review; the measurement in I-82 (re-reading 45.9 MB
 costs about 2.9 ms of wall time on 8 threads).
 
 ### R-14 `spec/x64.md` (WP-029)
+
+*Answered by `spec/x64.md` X-25 and X-27: both 22-byte forms are
+relaxed, with their windows (applied by WP-029r).*
 
 The x86-64 large-model `TLSGD` sequence (`lea` with `R_X86_64_TLSGD`,
 `movabs` with `R_X86_64_PLTOFF64`, `add`, `call`; 22 bytes,

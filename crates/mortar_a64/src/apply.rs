@@ -7,13 +7,19 @@
 use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
     AddendRule, Base, Check, ClassOutcome, DeadRef, DemandClass, DemandFlags, DemandSink,
-    EventClass, Field, FieldError, FillCx, Incompatible, Minus, RelocAt, ScanCx, ScanError,
-    SectionOut, SlotKind, TargetKind, Terms, Weak0Rule, class_outcome, dead_reference,
+    EventClass, Field, FieldError, FillCx, Incompatible, Minus, Refusal, RelocAt, ScanCx,
+    ScanError, SectionOut, SlotKind, TargetKind, Terms, Weak0Rule, class_outcome, dead_reference,
+    writes_dtprel,
 };
+use mortar_diag::RefusalClass;
 
 use crate::forms::{self, B26};
 use crate::synth::{NOP, checked, page_delta};
 use crate::{TLS, relax, weak0_rule};
+
+/// The feature a64.md §13.2's staging note refuses: `ABS*` against a TLS
+/// symbol at a non-alloc place.
+pub const NON_ALLOC_TLS_ABS: &str = "absolute relocation against a TLS symbol in a non-alloc section";
 
 /// The input-only checks of arch.md §3.4 for one relocation: the field and
 /// its window lie in the section; the addend rule (a64.md §3.1); the
@@ -72,6 +78,13 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
     };
     let data = matches!(h.field, Field::Data { .. });
     match class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls) {
+        // a64.md §13.2's staging note: arch.md §4.3 writes `DtpRel(S + A)`
+        // here, which fill cannot yet tell from an address (its `SymValue`
+        // has no symbol type), so the case is refused rather than written
+        // as the template address.
+        ClassOutcome::Demand(_) if writes_dtprel(h.class, cx.place, sym.tls) => {
+            out.error(at.index, ScanError::Refused(Refusal::named(RefusalClass::Feature, NON_ALLOC_TLS_ABS)));
+        }
         ClassOutcome::Demand(d) => {
             out.raise(at.key, d.flags);
             out.raise_global(d.global);
@@ -86,6 +99,9 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
             out.reference(at.index, class, at.key);
         }
         ClassOutcome::Impossible => out.error(at.index, ScanError::Internal),
+        // a64.md §7: `PC` against `weak0` is `S = P` in every output kind;
+        // it demands nothing.
+        ClassOutcome::ArchWeak0 => {}
         ClassOutcome::ArchTls => {
             let gd =
                 exec && h.class == DemandClass::TlsGd && relax::gd_lead(at, cx.tables).is_some();

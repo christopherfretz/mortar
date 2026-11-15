@@ -174,7 +174,11 @@ fn s4_3_class_table() {
     assert_eq!(out(K::Pc, Pie, Abs, RO), inc(Incompatible::RecompilePie));
     assert_eq!(out(K::Pc, Shared, Preemptible, RO), inc(Incompatible::RecompilePic));
     assert_eq!(out(K::Pc, Pie, Ifunc, RO), fl(DemandFlags::IPLT));
-    assert_eq!(out(K::Pc, Pie, Weak0, RO), nothing());
+    // R-6 (spec/x64.md): the architecture spec's §7 decides.
+    assert_eq!(out(K::Pc, Pie, Weak0, RO), ClassOutcome::ArchWeak0);
+    assert_eq!(out(K::Pc, Shared, Weak0, RO), ClassOutcome::ArchWeak0);
+    assert_eq!(out(K::Pc, Static, Weak0, RO), nothing());
+    assert_eq!(out(K::Pc, Exec, Weak0, RO), nothing());
 
     // Lo: as Pc, except Abs is always nothing.
     assert_eq!(out(K::Lo, Pie, Abs, RO), nothing());
@@ -300,7 +304,7 @@ fn s4_3_non_alloc_places() {
             class_outcome(K::Pc, false, o, TargetKind::Local, NA, false),
             inc(Incompatible::NotInNonAlloc)
         );
-        for k in [K::Lo, K::Branch, K::Got, K::GotRel, K::TlsLe, K::TlsIe] {
+        for k in [K::Lo, K::Branch, K::Got, K::TlsLe, K::TlsIe] {
             assert_eq!(
                 class_outcome(k, true, o, TargetKind::Local, NA, k.is_tls()),
                 inc(Incompatible::NotInNonAlloc),
@@ -312,6 +316,45 @@ fn s4_3_non_alloc_places() {
             class_outcome(K::AbsWord, true, o, TargetKind::Undefined, NA, false),
             ClassOutcome::Undefined
         );
+    }
+    // R-13 (spec/x64.md X-53): `GotRel` is a data relocation there and
+    // raises only `GOT_BASE`; `AbsWord`/`AbsNarrow` against a TLS symbol
+    // are accepted (they write `DtpRel`); every other mismatch is `E`.
+    for o in [OutputKind::Static, OutputKind::Pie, OutputKind::Shared] {
+        for t in [TargetKind::Local, TargetKind::Abs, TargetKind::Weak0] {
+            assert_eq!(
+                class_outcome(K::GotRel, true, o, t, NA, false),
+                demand(DemandFlags::empty(), GlobalFlags::GOT_BASE, None)
+            );
+        }
+        assert_eq!(
+            class_outcome(K::GotRel, false, o, TargetKind::Local, NA, false),
+            inc(Incompatible::NotInNonAlloc)
+        );
+        for k in [K::AbsWord, K::AbsNarrow] {
+            assert_eq!(class_outcome(k, true, o, TargetKind::Local, NA, true), nothing());
+            assert!(mortar_arch::writes_dtprel(k, NA, true));
+            assert!(!mortar_arch::writes_dtprel(k, NA, false));
+            assert!(!mortar_arch::writes_dtprel(k, RO, true));
+            assert_eq!(
+                class_outcome(k, true, o, TargetKind::Local, RO, true),
+                inc(Incompatible::ThreadLocal)
+            );
+        }
+        for k in [K::Pc, K::Size, K::GotRel] {
+            assert!(!mortar_arch::writes_dtprel(k, NA, true));
+            assert_eq!(
+                class_outcome(k, true, o, TargetKind::Local, NA, true),
+                inc(Incompatible::ThreadLocal),
+                "{k:?}"
+            );
+        }
+        assert_eq!(
+            class_outcome(K::TlsDtpRel, true, o, TargetKind::Local, NA, false),
+            inc(Incompatible::NotThreadLocal)
+        );
+        // `None` writes nothing, against anything.
+        assert_eq!(class_outcome(K::None, false, o, TargetKind::Local, NA, true), nothing());
     }
     // Shlib/Preemptible targets in a non-alloc place raise nothing.
     assert_eq!(
@@ -596,6 +639,40 @@ fn s3_1_max_window() {
     let b = Window { before: 0, after: 8 };
     assert_eq!(max_window(a, b), Window { before: 4, after: 8 });
     assert_eq!(max_window(b, a), Window { before: 4, after: 8 });
+    // The windows of `spec/x64.md` §8.6 fold to its X-29 `(4, 15)`: the
+    // 16-byte `TLSGD` forms give `before`, the 22-byte forms `after`.
+    let x64 = [
+        Window { before: 3, after: 0 },  // G1, G5, G6, I1, I2, T1
+        Window { before: 2, after: 0 },  // G2, G3, G4
+        Window { before: 0, after: 2 },  // T2
+        Window { before: 4, after: 8 },  // GD16, GD16x
+        Window { before: 3, after: 15 }, // GD22, LD22
+        Window { before: 3, after: 5 },  // LD12
+        Window { before: 3, after: 6 },  // LD13
+    ];
+    let reach = x64.iter().fold(Window { before: 0, after: 0 }, |m, &w| max_window(m, w));
+    assert_eq!(reach, Window { before: 4, after: 15 });
+}
+
+/// §3.13 (`spec/x64.md` X-41, `spec/synth.md` S-95): the x86 processor
+/// range's merge rules, binutils' ranges and GNU ld's legacy types.
+#[test]
+fn s3_13_x86_property_merge() {
+    use mortar_arch::{PropMerge, x86_property_merge as m};
+    assert_eq!(m(0xc000_0000), Some(PropMerge::OrAll), "COMPAT_ISA_1_USED");
+    assert_eq!(m(0xc000_0001), Some(PropMerge::Or), "COMPAT_ISA_1_NEEDED");
+    for t in [0xc000_0002, 0xc000_0003, 0xc000_7fff] {
+        assert_eq!(m(t), Some(PropMerge::And), "{t:#x}");
+    }
+    for t in [0xc000_8000, 0xc000_8001, 0xc000_8002, 0xc000_9000, 0xc000_f000, 0xc000_ffff] {
+        assert_eq!(m(t), Some(PropMerge::Or), "{t:#x}");
+    }
+    for t in [0xc001_0000, 0xc001_0001, 0xc001_0002, 0xc001_7000, 0xc001_7fff] {
+        assert_eq!(m(t), Some(PropMerge::OrAll), "{t:#x}");
+    }
+    for t in [0xc001_8000, 0xc002_0000, 0xdfff_ffff, 0xbfff_ffff, 0xe000_0000, 5] {
+        assert_eq!(m(t), None, "{t:#x}");
+    }
 }
 
 // ---------------------------------------------------------------- §7, §10
@@ -666,7 +743,7 @@ fn s7_s10_diagnostic_texts_and_keys() {
     assert_eq!(k, fill_key);
     assert_eq!(d.kind().id(), "relocation-out-of-range");
     assert!(render(&d).ends_with(
-        "a.o:(.text+0x40): relocation R_AARCH64_CALL26 out of range: 134217728 is not in [-134217728, 134217727]; references 'far'\n"
+        "a.o:(.text+0x40): relocation truncated to fit: R_AARCH64_CALL26 against 'far': 134217728 is not in [-134217728, 134217727]\n"
     ));
 
     // A synthetic chunk: the output section and offset, key (100, 0, ChunkId).
@@ -683,7 +760,7 @@ fn s7_s10_diagnostic_texts_and_keys() {
     assert_eq!(k, Key::new(100, 0, 12));
     assert!(
         render(&d)
-            .contains("a.out:(.text+0x1000): relocation R_AARCH64_ADR_PREL_PG_HI21 out of range")
+            .contains("a.out:(.text+0x1000): relocation truncated to fit: R_AARCH64_ADR_PREL_PG_HI21")
     );
 
     // The other scan errors.
