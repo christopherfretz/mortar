@@ -313,7 +313,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
             .find(|l| l.contains(" tests: "))
             .unwrap_or("(no summary)")
             .to_owned();
-        let links = read(&log)
+        let links: Vec<_> = read(&log)
             .lines()
             .filter_map(|l| {
                 let f: Vec<&str> = l.split('\t').collect();
@@ -321,6 +321,16 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
                     .then(|| (f[2].to_owned(), f[3].to_owned(), f[4].to_owned()))
             })
             .collect();
+        // A mortar mode whose links did not reach mortar's `ld` (a lane
+        // `ld` the driver skipped) would report another linker's outcomes.
+        let link_jobs =
+            read(&stats).lines().filter(|l| l.contains("\"output_kind\":\"link\"")).count();
+        if m.starts_with("mortar") && link_jobs > 0 && links.is_empty() {
+            return Err(format!(
+                "mode {m}: kiln made {link_jobs} links and none reached mortar's lane ld (see {})",
+                dir.join("out.log").display()
+            ));
+        }
         let mut backends = BTreeMap::new();
         for l in read(&stats).lines().filter(|l| l.contains("\"output_kind\":\"obj\"")) {
             let b = l

@@ -24,4 +24,8 @@ for a in "$@"; do
     *) args+=("$a");;
   esac
 done
-exec "$MASON_KILN" "${args[@]}" "${cflags[@]}" -static -B"${MASON_LANE:?}/ld/${MASON_LD:?}"
+# The driver skips a -B directory whose `ld` is not executable and links
+# with the system's: a mode would then silently be GNU ld's.
+ld="${MASON_LANE:?}/ld/${MASON_LD:?}"
+[ -x "$ld/ld" ] || { echo "kiln++ (Mason lane): $ld/ld is not executable" >&2; exit 125; }
+exec "$MASON_KILN" "${args[@]}" "${cflags[@]}" -static -B"$ld"
