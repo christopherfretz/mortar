@@ -1,0 +1,65 @@
+# dyn.md D-45, W13: an IFUNC defined in the executable (`main_ifunc`) and
+# referenced from a shared library, which calls it and takes its address.
+# The IFUNC is not preemptible, so its one IPLT entry is its address
+# everywhere: the executable exports it as `STT_FUNC` at that entry (D-23),
+# the library binds to the entry, and the executable's, the library's and
+# `dlsym`'s addresses agree; both calls reach the implementation. Linked as
+# a PIE from `-fPIE` code and as a non-PIE from `-fno-pic` code.
+#
+# W13 (dyn.md §13.2): GNU ld and mold export it as `STT_GNU_IFUNC` in an
+# x86-64 PIE, and glibc refuses to start the program ("IFUNC symbol
+# 'main_ifunc' referenced in 'libifx.so' is defined in the executable and
+# creates an unsatisfiable circular dependency", exit 127); GNU ld's
+# AArch64 non-PIE gives the library and `dlsym` a different address
+# (`lib==exe 0`). lld is right on both architectures, mold on AArch64.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-45"
+#@ spec: dyn.md "D-23"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd): W13: the library's &main_ifunc differs (AArch64 -no-pie); the loader refuses the x86-64 PIE
+#@ xfail(mold,x86_64): W13: STT_GNU_IFUNC exported from the PIE; the loader refuses it
+
+cc -O2 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libifx.so -o libifx.so
+cc -O2 -fPIE main.c -o pie.o
+cc -O2 -fno-pic main.c -o exec.o
+link gcc -pie pie.o -L. -lifx -o pie
+run pie
+  stdout: calls: exe 7 lib 7
+  stdout: lib==exe 1 dlsym==exe 1
+link gcc -no-pie exec.o -L. -lifx -o exec
+run exec
+  stdout: calls: exe 7 lib 7
+  stdout: lib==exe 1 dlsym==exe 1
+check readelf --dyn-syms -W pie
+  has(mortar): FUNC GLOBAL DEFAULT * main_ifunc$
+  not(mortar): IFUNC
+check readelf --dyn-syms -W exec
+  has(mortar): FUNC GLOBAL DEFAULT * main_ifunc$
+  not(mortar): IFUNC
+
+#--- lib.c
+int main_ifunc(void);
+
+void *lib_addr(void) { return (void *)main_ifunc; }
+int lib_call(void) { return main_ifunc(); }
+#--- main.c
+#include <dlfcn.h>
+#include <stdio.h>
+
+void *lib_addr(void);
+int lib_call(void);
+
+static int impl(void) { return 7; }
+static int (*resolve(void))(void) { return impl; }
+int main_ifunc(void) __attribute__((ifunc("resolve")));
+
+int main(void) {
+  void *mine = (void *)main_ifunc;
+  printf("calls: exe %d lib %d\n", main_ifunc(), lib_call());
+  printf("lib==exe %d dlsym==exe %d\n", lib_addr() == mine,
+         dlsym(RTLD_DEFAULT, "main_ifunc") == mine);
+  return 0;
+}

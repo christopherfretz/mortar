@@ -1,0 +1,145 @@
+# dyn.md D-30, the option-dependent rows of `.dynamic`: `-init=SYM` and
+# `-fini=SYM` (rows 3-4: `DT_INIT`/`DT_FINI` hold `my_init`/`my_fini`
+# instead of crti's `_init`/`_fini`), `-rpath` (row 2: `DT_RUNPATH`, the
+# path as written with `$ORIGIN` kept; `DT_RPATH` under
+# `--disable-new-dtags`) and `-z now` (row 26: `DT_FLAGS` `DF_BIND_NOW`;
+# row 27: `DF_1_NOW` in `DT_FLAGS_1`, with `DF_1_PIE` in a PIE), in GNU
+# ld's tag order. The run shows each: `my_init` runs before `main` and
+# `my_fini` after it, the program reads `DT_INIT`/`DT_FINI` and finds
+# them at `my_init`/`my_fini`, the library is found only through the
+# runpath (`LD_LIBRARY_PATH` points elsewhere, the library is in `sub/`),
+# and the `JUMP_SLOT` of `lib_fn` is already bound to the library's
+# function before the first call (`-z now`).
+#
+# Where the references differ (dyn.md §13.1): the tag order (lld puts
+# `DT_RUNPATH` first and `DT_FLAGS`/`DT_FLAGS_1` after the `DT_NEEDED`
+# entries; mold has its own); mortar's is GNU ld's.
+#
+# mortar: WP-056 (OPTS) on both architectures, in tests/link/xfails
+# (`-init`/`-fini` are refused today, R-C1).
+#@ spec: dyn.md "D-30"
+#@ arch: aarch64 x86_64
+#@ fixture: dynsym-walk
+
+cc -O1 -fPIC sub/lib.c -o sub/lib.o
+shlib gcc sub/lib.o -Wl,-soname,libio.so -o sub/libio.so
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+
+link gcc -pie pie.o -Lsub -lio -Wl,-rpath,$ORIGIN/sub -Wl,-init=my_init,-fini=my_fini -Wl,-z,now -o pie
+run pie
+  env: LD_LIBRARY_PATH=/nonexistent
+  stdout: my_init
+  stdout: DT_INIT is my_init 1, DT_FINI is my_fini 1
+  stdout: lib_fn bound before its first call 1
+  stdout: main 1
+  stdout: my_fini
+check(bfd,mortar) readelf -dW pie
+  has: (NEEDED) Shared library: [libio.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+  then: (RUNPATH) Library runpath: [$ORIGIN/sub]
+  then: (INIT) 0x
+  then: (FINI) 0x
+  then: (INIT_ARRAY) 0x
+  then: (GNU_HASH) 0x
+  then: (DEBUG) 0x0$
+  then: (PLTGOT) 0x
+  then: (RELAENT) 24 (bytes)
+  then: (FLAGS) BIND_NOW$
+  then: (FLAGS_1) Flags: NOW PIE$
+  then: (VERNEED) 0x
+  then: (RELACOUNT)
+  then: (NULL) 0x0$
+check readelf -dW pie
+  count: 1 (RUNPATH) Library runpath: [$ORIGIN/sub]
+  not: (RPATH)
+  count: 1 (FLAGS) BIND_NOW$
+  count: 1 (FLAGS_1) Flags: NOW PIE$
+  count: 1 (INIT) 0x
+  count: 1 (FINI) 0x
+  not: (BIND_NOW)
+check(lld) readelf -dW pie
+  has: (RUNPATH)
+  then: (NEEDED) Shared library: [libio.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+  then: (FLAGS) BIND_NOW$
+  then: (FLAGS_1) Flags: NOW PIE$
+  then: (DEBUG)
+check(mold) readelf -dW pie
+  has: (NEEDED) Shared library: [libc.so.6]
+  then: (RUNPATH)
+  then: (INIT) 0x
+  then: (FINI) 0x
+  then: (GNU_HASH)
+  then: (FLAGS) BIND_NOW$
+  then: (FLAGS_1) Flags: NOW PIE$
+  then: (DEBUG)
+
+link gcc -no-pie exec.o -Lsub -lio -Wl,-rpath,$ORIGIN/sub -Wl,-init=my_init,-fini=my_fini -Wl,-z,now -o exec
+run exec
+  env: LD_LIBRARY_PATH=/nonexistent
+  stdout: my_init
+  stdout: DT_INIT is my_init 1, DT_FINI is my_fini 1
+  stdout: lib_fn bound before its first call 1
+  stdout: main 1
+  stdout: my_fini
+check(bfd,mortar) readelf -dW exec
+  has: (NEEDED) Shared library: [libc.so.6]
+  then: (RUNPATH) Library runpath: [$ORIGIN/sub]
+  then: (INIT) 0x
+  then: (FINI) 0x
+  then: (RELAENT) 24 (bytes)
+  then: (FLAGS) BIND_NOW$
+  then: (FLAGS_1) Flags: NOW$
+  then: (VERNEED) 0x
+check readelf -dW exec
+  count: 1 (FLAGS) BIND_NOW$
+  count: 1 (FLAGS_1) Flags: NOW$
+  not: PIE
+  not: (RELACOUNT)
+
+link gcc -pie pie.o -Lsub -lio -Wl,-rpath,$ORIGIN/sub -Wl,--disable-new-dtags -o rpath
+run rpath
+  env: LD_LIBRARY_PATH=/nonexistent
+  stdout: DT_INIT is my_init 0, DT_FINI is my_fini 0
+  stdout: lib_fn bound before its first call 0
+  stdout: main 1
+check readelf -dW rpath
+  count: 1 (RPATH) Library rpath: [$ORIGIN/sub]
+  not: (RUNPATH)
+  not: (FLAGS)
+  has: (FLAGS_1) Flags: PIE$
+
+#--- sub/lib.c
+int lib_fn(void) { return 1; }
+#--- main.c
+#include "dynwalk.h"
+int lib_fn(void);
+void my_init(void) { puts("my_init"); }
+void my_fini(void) { puts("my_fini"); }
+
+int main(void) {
+  extern ElfW(Dyn) _DYNAMIC[] __attribute__((visibility("hidden")));
+  struct dw w;
+  if (!dw_open(&w)) return 1;
+  uintptr_t init = 0, fini = 0, jmprel = 0, pltrelsz = 0;
+  for (ElfW(Dyn) *d = _DYNAMIC; d->d_tag != DT_NULL; d++) {
+    if (d->d_tag == DT_INIT) init = dw_ptr(&w, d->d_un.d_ptr);
+    if (d->d_tag == DT_FINI) fini = dw_ptr(&w, d->d_un.d_ptr);
+    if (d->d_tag == DT_JMPREL) jmprel = dw_ptr(&w, d->d_un.d_ptr);
+    if (d->d_tag == DT_PLTRELSZ) pltrelsz = d->d_un.d_val;
+  }
+  printf("DT_INIT is my_init %d, DT_FINI is my_fini %d\n", init == (uintptr_t)my_init,
+         fini == (uintptr_t)my_fini);
+  /* The GOT slot of lib_fn's PLT entry, before the program calls it. */
+  int bound = 0;
+  void *target = dlsym(RTLD_DEFAULT, "lib_fn");
+  const ElfW(Rela) *r = (const ElfW(Rela) *)jmprel;
+  for (size_t i = 0; jmprel && i < pltrelsz / sizeof *r; i++) {
+    const char *name = w.str + w.sym[ELF64_R_SYM(r[i].r_info)].st_name;
+    if (!strcmp(name, "lib_fn")) bound = *(void **)(w.bias + r[i].r_offset) == target;
+  }
+  printf("lib_fn bound before its first call %d\n", bound);
+  printf("main %d\n", lib_fn());
+  return 0;
+}

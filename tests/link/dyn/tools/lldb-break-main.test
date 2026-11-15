@@ -1,0 +1,29 @@
+# dyn.md D-70: lldb sets `b main` in a PIE before `run`, stops there and
+# lists the needed objects with `image list` (with `settings set
+# target.disable-aslr false`, the harness's: the container refuses
+# `personality`). lldb runs host programs only here: on x86-64 (qemu) the
+# step is skipped by name (spec/harness.md "Checks").
+#
+# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
+#@ spec: dyn.md "D-70"
+#@ arch: aarch64 x86_64
+#@ requires: lldb
+#@ fixture: greet
+
+cc -O0 -g -fPIE main.c -o main.o
+link gcc -pie main.o -L. -lgreet -o pie
+run pie
+  stdout: hello, lldb
+check lldb pie "b main" run bt "image list" kill
+  has: stop reason = breakpoint 1.1
+  has: frame #0: * pie`main at main.c:
+  has: ] * 0x* */libgreet.so
+  has: ] * 0x* */libc.so.6
+
+#--- main.c
+#include "greet.h"
+
+int main(void) {
+  greet("lldb");
+  return 0;
+}

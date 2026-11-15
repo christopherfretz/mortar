@@ -1,0 +1,66 @@
+# dyn.md D-25, W12 (first form): in `Exec`, one undefined weak function
+# `f` reached through the GOT (a `-fPIE` unit taking `&f`) and through
+# absolute words in code (a `-mcmodel=large -fno-pic` unit: AArch64
+# `ABS64` in a literal pool of `.text`, x86-64 `R_X86_64_64` in a
+# `movabs`). The absolute uses are unfillable (D-25's table), so the key
+# is `Weak0` for every use: 0 everywhere, the two views equal, with and
+# without a definition preloaded (`LD_PRELOAD=./libhook.so`), and no
+# `.dynsym` entry for it.
+#
+# W12 (dyn.md §13.2): GNU ld on AArch64 and lld on both architectures make
+# the GOT use dynamic and leave the absolute use 0, so under the preload
+# the program prints `got non-null abs null equal 0` and exits 1. GNU ld on
+# x86-64 and mold are right.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-25"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd,aarch64): W12: the GOT use is dynamic, the absolute use 0 (got non-null abs null)
+#@ xfail(lld): W12: the GOT use is dynamic, the absolute use 0 (got non-null abs null)
+
+cc -O2 -fPIE main.c -o main.o
+cc -O2 -fPIE got.c -o got.o
+cc -O2 -mcmodel=large -fno-pic abs.c -o abs.o
+cc -O2 -fPIC hook.c -o hook.o
+shlib gcc hook.o -o libhook.so
+link gcc -no-pie main.o got.o abs.o -o exec
+run exec
+  stdout: weakmix: got null abs null equal 1 abs-test-called 0
+run exec
+  env: LD_PRELOAD=./libhook.so
+  stdout: weakmix: got null abs null equal 1 abs-test-called 0
+check readelf --dyn-syms -W exec
+  not: UND f$
+
+#--- main.c
+#include <stdio.h>
+
+void *wm_got(void);
+void *wm_abs(void);
+int wm_abs_call(void);
+
+int main(void) {
+  void *g = wm_got(), *a = wm_abs();
+  int c = wm_abs_call();
+  printf("weakmix: got %s abs %s equal %d abs-test-called %d\n",
+         g ? "non-null" : "null", a ? "non-null" : "null", g == a, c);
+  return g != a;
+}
+#--- got.c
+extern void f(void) __attribute__((weak));
+void *wm_got(void) { return (void *)&f; }
+#--- abs.c
+extern void f(void) __attribute__((weak));
+void *wm_abs(void) { return (void *)&f; }
+int wm_abs_call(void) {
+  if (f) {
+    f();
+    return 1;
+  }
+  return 0;
+}
+#--- hook.c
+#include <stdio.h>
+
+void f(void) { puts("f: RAN"); }

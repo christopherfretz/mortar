@@ -1,0 +1,128 @@
+# dyn.md D-23, the fields of each kind of `.dynsym` entry, one row each,
+# on both architectures:
+# - an import called or reached through the GOT: `SHN_UNDEF`, value 0,
+#   size 0, `STB_WEAK` iff every reference is weak (`lib_wref`), the
+#   definition's type, `STT_FUNC` for an `STT_GNU_IFUNC` definition
+#   (libc's `memcpy`);
+# - an import with a canonical PLT (`-no-pie` code taking `&lib_fn`):
+#   `STT_FUNC`, `SHN_UNDEF`, the PLT entry's address as value (the
+#   program and the library see one `&lib_fn`);
+# - a copy allocation (`-no-pie` code reading `lib_obj`; on x86-64 the
+#   PIE's too, GCC's `-fPIE` reaches extern data directly): defined in the
+#   program, the definition's type and size, `STB_WEAK` iff the shared
+#   definition is weak (`lib_wobj`);
+# - an export (`app_cb`, `app_var`, which the library references): its
+#   section, address and size, the merged visibility (`STV_PROTECTED`
+#   kept);
+# - a dynamic weak undefined key (D-25: `nowhere`, reached through the GOT
+#   in a PIE): `STB_WEAK`, `STT_NOTYPE`, `SHN_UNDEF`, 0.
+# And `EI_OSABI` is `ELFOSABI_NONE` (no IFUNC, unique symbol or
+# `IRELATIVE` in the output). The run prints what each entry gives the
+# program: values through copies and canonical addresses compared with the
+# library's.
+#
+# Where the references differ: mold leaves the dynamic weak undefined key
+# out (D-25, §13.1: 0 everywhere). The copy of a weak shared definition
+# (`lib_wobj`) is `STB_WEAK` in GNU ld's output, as D-23 says, and
+# `STB_GLOBAL` in lld's and mold's (not in §13.1: a spec finding reported
+# with WP-051); mortar follows D-23. The other fields agree in all three.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-23"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libfields.so -o libfields.so
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+
+link gcc -pie pie.o -L. -lfields -o pie
+run pie
+  stdout: fn 1 wfn 2 wref 6 obj 3 wobj 4 memcpy ok
+  stdout: &lib_fn same in library 1
+  stdout: &lib_obj same in library 1
+  stdout: app_cb 7 app_var 8
+  stdout: nowhere null 1
+check readelf --dyn-syms -W pie
+  has: 0 FUNC GLOBAL DEFAULT UND lib_fn$
+  has: 0 FUNC WEAK DEFAULT UND lib_wref$
+  has: 0 FUNC GLOBAL DEFAULT UND memcpy@
+  has: FUNC GLOBAL PROTECTED * app_cb$
+  has: 4 OBJECT GLOBAL DEFAULT * app_var$
+  not: UND app_cb
+  not: UND app_var
+  has(aarch64): 0000000000000000 0 OBJECT GLOBAL DEFAULT UND lib_obj$
+  has(aarch64): 0000000000000000 0 OBJECT GLOBAL DEFAULT UND lib_wobj$
+  has(x86_64): 4 OBJECT GLOBAL DEFAULT * lib_obj$
+  has(bfd,mortar,x86_64): 4 OBJECT WEAK DEFAULT * lib_wobj$
+  has(lld,mold,x86_64): 4 OBJECT GLOBAL DEFAULT * lib_wobj$
+  not(x86_64): UND lib_obj$
+  not(x86_64): UND lib_wobj$
+  has(bfd,lld,mortar): 0000000000000000 0 NOTYPE WEAK DEFAULT UND nowhere$
+  not(mold): nowhere
+check readelf -hW pie
+  has: OS/ABI: UNIX - System V
+
+link gcc -no-pie exec.o -L. -lfields -o exec
+run exec
+  stdout: fn 1 wfn 2 wref 6 obj 3 wobj 4 memcpy ok
+  stdout: &lib_fn same in library 1
+  stdout: &lib_obj same in library 1
+  stdout: app_cb 7 app_var 8
+  stdout: nowhere null 1
+check readelf --dyn-syms -W exec
+  has: FUNC GLOBAL DEFAULT UND lib_fn$
+  not: 0000000000000000 0 FUNC GLOBAL DEFAULT UND lib_fn$
+  has: 0 FUNC WEAK DEFAULT UND lib_wref$
+  has: 0 FUNC GLOBAL DEFAULT UND memcpy@
+  has: FUNC GLOBAL PROTECTED * app_cb$
+  has: 4 OBJECT GLOBAL DEFAULT * app_var$
+  has: 4 OBJECT GLOBAL DEFAULT * lib_obj$
+  has(bfd,mortar): 4 OBJECT WEAK DEFAULT * lib_wobj$
+  has(lld,mold): 4 OBJECT GLOBAL DEFAULT * lib_wobj$
+  not: UND lib_obj$
+  not: UND lib_wobj$
+check readelf -hW exec
+  has: OS/ABI: UNIX - System V
+
+#--- lib.c
+int lib_fn(void) { return 1; }
+__attribute__((weak)) int lib_wfn(void) { return 2; }
+int lib_obj = 3;
+__attribute__((weak)) int lib_wobj = 4;
+int lib_wref(void) { return 6; }
+void *lib_fn_address(void) { return (void *)lib_fn; }
+int *lib_obj_address(void) { return &lib_obj; }
+extern int app_cb(void);
+extern int app_var;
+int lib_calls_back(void) { return app_cb() * 10 + app_var; }
+#--- main.c
+#include <stdio.h>
+#include <string.h>
+int lib_fn(void);
+int lib_wfn(void);
+extern int lib_obj, lib_wobj;
+extern int lib_wref(void) __attribute__((weak));
+extern int nowhere __attribute__((weak));
+void *lib_fn_address(void);
+int *lib_obj_address(void);
+int lib_calls_back(void);
+__attribute__((visibility("protected"))) int app_cb(void) { return 7; }
+int app_var = 8;
+void *volatile fn_address;
+volatile size_t len = 3;
+
+int main(void) {
+  char buf[4] = "";
+  memcpy(buf, "ok", len);
+  fn_address = (void *)lib_fn; /* -fno-pie: a canonical PLT */
+  printf("fn %d wfn %d wref %d obj %d wobj %d memcpy %s\n", lib_fn(), lib_wfn(),
+         lib_wref ? lib_wref() : -1, lib_obj, lib_wobj, buf);
+  printf("&lib_fn same in library %d\n", fn_address == lib_fn_address());
+  printf("&lib_obj same in library %d\n", &lib_obj == lib_obj_address());
+  int back = lib_calls_back();
+  printf("app_cb %d app_var %d\n", back / 10, back % 10);
+  printf("nowhere null %d\n", &nowhere == 0);
+  return 0;
+}

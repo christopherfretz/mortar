@@ -1,0 +1,134 @@
+# dyn.md D-11 (review finding N1): two needed libraries define one datum,
+# `dv` (libnA.so `int dv[4]` of 1s, libnB.so `int dv[8]` of 2s), which the
+# program reaches by a COPY (`-fno-pic`, `-no-pie`) and prints (`dv[0]`,
+# `dv[7]`). Neededness uses the first mention (`giver`), the binding the
+# loader order of D-19a (`bind`): every fact of the shared definition
+# (the provider, the copy's size) is `bind(dv)`'s. The three lines of
+# review-m2/shlib/dupdef_needed.sh, both architectures (measured there):
+#
+#   line                                                  GNU ld         lld, mold      mortar
+#   1 --as-needed -lnA --no-as-needed -lnB m.o
+#     --as-needed -lnA                                    nB; 32; 2 2    nA nB; 16; 1 0 nB nA; 32; 2 2
+#   2 m.o --as-needed -lnA --no-as-needed -lnB            nA nB; 16; 1 0 (same)         (same)
+#   3 --as-needed -lnA --no-as-needed -lnB m.o -lnA       nB nA; 32; 2 2 nA nB; 16; 1 0 GNU ld's
+#
+# mortar's line 1 is GNU ld's line 3 (D-11: `nA`'s keeping mention is the
+# third, after m.o; the unused `nA` entry is a deliberate superset of GNU
+# ld's line 1), so it has mortar-qualified steps. lld and mold bind at the
+# first mention (dyn.md 13.1, "a key defined in two needed libraries").
+# The review's `dupdef` (review-m2-adv/dupdef) is line 3 as an x86-64
+# PIE (GCC's x86-64 PIE code copies `dv`, D-43) with `fa` and `fb` also
+# called: GNU ld's image, which mortar must write (`bind` gives the copy
+# its 32 bytes, so no size warning and `fb=16`).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-11"
+#@ spec: dyn.md "D-19a"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC a.c -o a.o
+shlib gcc a.o -Wl,-soname,libnA.so -o libnA.so
+cc -O1 -fPIC b.c -o b.o
+shlib gcc b.o -Wl,-soname,libnB.so -o libnB.so
+cc -O1 -fno-pic m.c -o m.o
+cc -O1 -fPIE mf.c -o mf.o
+
+# Line 1.
+link gcc -no-pie -L. -Wl,--as-needed -lnA -Wl,--no-as-needed -lnB m.o -Wl,--as-needed -lnA -o line1
+check readelf -dW line1
+  count(bfd): 2 (NEEDED)
+  has(bfd): [libnB.so]
+  then(bfd): [libc.so.6]
+  count(lld,mold): 3 (NEEDED)
+  has(lld,mold): [libnA.so]
+  then(lld,mold): [libnB.so]
+  then(lld,mold): [libc.so.6]
+  count(mortar): 3 (NEEDED)
+  has(mortar): [libnB.so]
+  then(mortar): [libnA.so]
+  then(mortar): [libc.so.6]
+check readelf -W --dyn-syms line1
+  has(bfd,mortar): 32 OBJECT GLOBAL DEFAULT * dv$
+  has(lld,mold): 16 OBJECT GLOBAL DEFAULT * dv$
+check readelf -rW line1
+  has: _COPY * dv
+run(bfd,mortar) line1
+  stdout: dv[0]=2 dv[7]=2
+run(lld,mold) line1
+  stdout: dv[0]=1 dv[7]=0
+
+# Line 2.
+link gcc -no-pie -L. m.o -Wl,--as-needed -lnA -Wl,--no-as-needed -lnB -o line2
+check readelf -dW line2
+  count: 3 (NEEDED)
+  has: [libnA.so]
+  then: [libnB.so]
+  then: [libc.so.6]
+check readelf -W --dyn-syms line2
+  has: 16 OBJECT GLOBAL DEFAULT * dv$
+run line2
+  stdout: dv[0]=1 dv[7]=0
+
+# Line 3.
+link gcc -no-pie -L. -Wl,--as-needed -lnA -Wl,--no-as-needed -lnB m.o -lnA -o line3
+check readelf -dW line3
+  count: 3 (NEEDED)
+  has(bfd,mortar): [libnB.so]
+  then(bfd,mortar): [libnA.so]
+  has(lld,mold): [libnA.so]
+  then(lld,mold): [libnB.so]
+  then: [libc.so.6]
+check readelf -W --dyn-syms line3
+  has(bfd,mortar): 32 OBJECT GLOBAL DEFAULT * dv$
+  has(lld,mold): 16 OBJECT GLOBAL DEFAULT * dv$
+run(bfd,mortar) line3
+  stdout: dv[0]=2 dv[7]=2
+run(lld,mold) line3
+  stdout: dv[0]=1 dv[7]=0
+
+# The review's dupdef: line 3, x86-64 PIE.
+link(x86_64) gcc -pie -L. -Wl,--as-needed -lnA -Wl,--no-as-needed -lnB mf.o -lnA -o dupdef
+check(x86_64) readelf -dW dupdef
+  count: 3 (NEEDED)
+  has(bfd,mortar): [libnB.so]
+  then(bfd,mortar): [libnA.so]
+  has(lld,mold): [libnA.so]
+  then(lld,mold): [libnB.so]
+  then: [libc.so.6]
+check(x86_64) readelf -W --dyn-syms dupdef
+  has(bfd,mortar): 32 OBJECT GLOBAL DEFAULT * dv$
+  has(lld,mold): 16 OBJECT GLOBAL DEFAULT * dv$
+run(x86_64,bfd,mortar) dupdef
+  stdout: dv[0]=2 dv[7]=2 fa=2 fb=16
+run(x86_64,lld,mold) dupdef
+  stdout: dv[0]=1 dv[7]=0 fa=1 fb=4
+
+#--- a.c
+int dv[4] = {1, 1, 1, 1};
+int fa(void) { return dv[0]; }
+#--- b.c
+int dv[8] = {2, 2, 2, 2, 2, 2, 2, 2};
+int fb(void) {
+  int s = 0;
+  for (int i = 0; i < 8; i++)
+    s += dv[i];
+  return s;
+}
+#--- m.c
+#include <stdio.h>
+extern int dv[];
+
+int main(void) {
+  printf("dv[0]=%d dv[7]=%d\n", dv[0], dv[7]);
+  return 0;
+}
+#--- mf.c
+#include <stdio.h>
+extern int dv[];
+int fa(void), fb(void);
+
+int main(void) {
+  printf("dv[0]=%d dv[7]=%d fa=%d fb=%d\n", dv[0], dv[7], fa(), fb());
+  return 0;
+}

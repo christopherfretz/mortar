@@ -1,0 +1,76 @@
+# dyn.md §2.1, end to end: gfortran's default link line, as users link — a
+# Fortran program with a formatted write and a `BIND(C)` call into a C
+# function, linked by `gfortran` with no option (the default PIE, the
+# gfortran tail `-lgfortran -lm -lgcc_s -lgcc [--as-needed -lquadmath
+# --no-as-needed] -lm -lc -lgcc_s -lgcc` under gcc's global
+# `--as-needed`) and with `-no-pie`, each run. Needed (§2.2):
+# `libgfortran.so.5`, `libc.so.6`; on x86-64 the tail's `--no-as-needed`
+# makes the later plain `-lm` and `-lgcc_s` needed too: GNU ld's order (the
+# keeping mention, D-19a) is `libgfortran`, `libm`, `libc`, `libgcc_s`; lld
+# lists by first mention (`libgcc_s` before `libc`; dyn.md §13.1).
+#
+# W9 (dyn.md §13.2): mold keeps the first mention's as-needed flag and
+# drops `libm.so.6` and `libgcc_s.so.1` from an x86-64 output (it runs).
+#
+# mortar: AArch64 WP-056 (OPTS: the gfortran tail), x86-64 WP-055
+# (X64-JOIN: its target 3 names the Fortran default line), in tests/link/xfails.
+#@ spec: dyn.md "2.1 Default link lines"
+#@ spec: dyn.md "D-19a"
+#@ arch: aarch64 x86_64
+#@ requires: gfortran
+#@ xfail(mold,x86_64): W9: libm.so.6 and libgcc_s.so.1 dropped from DT_NEEDED
+
+fc -O2 hello.f90 -o hello.o
+cc -O2 sum.c -o sum.o
+link gfortran hello.o sum.o -o pie
+run pie
+  stdout: hello Fortran
+  stdout: sum 55, pi 3.1416
+link gfortran -no-pie hello.o sum.o -o exec
+run exec
+  stdout: hello Fortran
+  stdout: sum 55, pi 3.1416
+check readelf -hdW pie
+  has: Type: DYN
+  has: (FLAGS_1) Flags: PIE
+  has: (NEEDED) Shared library: [libgfortran.so.5]
+  has: (NEEDED) Shared library: [libc.so.6]
+  count(aarch64): 2 (NEEDED)
+  count(x86_64): 4 (NEEDED)
+  has(x86_64,bfd,mortar): (NEEDED) Shared library: [libgfortran.so.5]
+  then(x86_64,bfd,mortar): (NEEDED) Shared library: [libm.so.6]
+  then(x86_64,bfd,mortar): (NEEDED) Shared library: [libc.so.6]
+  then(x86_64,bfd,mortar): (NEEDED) Shared library: [libgcc_s.so.1]
+  has(x86_64,lld,mold): (NEEDED) Shared library: [libgfortran.so.5]
+  then(x86_64,lld,mold): (NEEDED) Shared library: [libm.so.6]
+  then(x86_64,lld,mold): (NEEDED) Shared library: [libgcc_s.so.1]
+  then(x86_64,lld,mold): (NEEDED) Shared library: [libc.so.6]
+check readelf -hdW exec
+  has: Type: EXEC
+  has: (NEEDED) Shared library: [libgfortran.so.5]
+  has: (NEEDED) Shared library: [libc.so.6]
+  count(aarch64): 2 (NEEDED)
+  count(x86_64): 4 (NEEDED)
+
+#--- hello.f90
+program hello
+  use iso_c_binding
+  implicit none
+  interface
+    integer(c_int) function c_sum(n) bind(c, name="c_sum")
+      import :: c_int
+      integer(c_int), value :: n
+    end function
+  end interface
+  real :: pi
+  pi = 4.0 * atan(1.0)
+  print '(A)', 'hello Fortran'
+  write (*, '(A,I0,A,F6.4)') 'sum ', c_sum(10_c_int), ', pi ', pi
+end program
+#--- sum.c
+int c_sum(int n) {
+  int total = 0;
+  for (int i = 1; i <= n; i++)
+    total += i;
+  return total;
+}

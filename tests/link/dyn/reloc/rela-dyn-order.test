@@ -1,0 +1,133 @@
+# dyn.md D-40, the set and order of `.rela.dyn`, and D-41's IRELATIVE rule
+# by its absence here: a PIE whose data holds four pointers into its own
+# data (four `RELATIVE` records, given out of address order), a pointer to
+# a fixture library's datum and two to its functions (symbolic
+# `R_AARCH64_ABS64` / `R_X86_64_64` records against `dvar`, `fb`, `fa`),
+# and the address of `fa` taken in code (a GOT slot, `GLOB_DAT fa`).
+# The program prints the values it reaches through those words, then reads
+# its own file (`/proc/self/exe`) and prints D-40's facts about its
+# `.rela.dyn`:
+#
+# - every `RELATIVE` comes first, sorted by `r_offset` (all three);
+# - `DT_RELACOUNT` is their count (GNU ld, lld and mortar write it; mold
+#   never does, dyn.md §13.1);
+# - the other records are sorted by (`.dynsym` index, `r_offset`) (lld,
+#   mold and mortar; GNU ld sorts by offset, with `COPY` last, §13.1).
+#
+# The record counts differ between the references (the start files' GOT
+# slots, `.init_array` words, and what each relaxes): only the counts this
+# program decides are held to (three symbolic records, one `GLOB_DAT`
+# against `fa`). D-40's `--threads=1` against many threads is not here:
+# the references have no such guarantee to compare with, and it is
+# mortar's determinism (the `pure-function` layout test).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-40"
+#@ arch: aarch64 x86_64
+#@ fixture: reloc-libd
+
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE data.c -o data.o
+link gcc -pie main.o data.o -L. -ld -o prog
+run(bfd) prog
+  stdout: values 13 10 12 11 dvar 42 calls 2 1 got 1
+  stdout: RELATIVE first, by offset: yes
+  stdout: DT_RELACOUNT = RELATIVE count: yes
+  stdout: others by (symbol, offset): no
+run(lld,mortar) prog
+  stdout: values 13 10 12 11 dvar 42 calls 2 1 got 1
+  stdout: RELATIVE first, by offset: yes
+  stdout: DT_RELACOUNT = RELATIVE count: yes
+  stdout: others by (symbol, offset): yes
+run(mold) prog
+  stdout: values 13 10 12 11 dvar 42 calls 2 1 got 1
+  stdout: RELATIVE first, by offset: yes
+  stdout: DT_RELACOUNT: absent
+  stdout: others by (symbol, offset): yes
+check readelf -rW prog
+  has: Relocation section '.rela.dyn'
+  count(aarch64): 3 R_AARCH64_ABS64
+  has(aarch64): R_AARCH64_ABS64 * dvar + 0$
+  has(aarch64): R_AARCH64_ABS64 * fa + 0$
+  has(aarch64): R_AARCH64_ABS64 * fb + 0$
+  count(aarch64): 1 R_AARCH64_GLOB_DAT * fa + 0$
+  count(x86_64): 3 R_X86_64_64
+  has(x86_64): R_X86_64_64 * dvar + 0$
+  has(x86_64): R_X86_64_64 * fa + 0$
+  has(x86_64): R_X86_64_64 * fb + 0$
+  count(x86_64): 1 R_X86_64_GLOB_DAT * fa + 0$
+  not: IRELATIVE
+check readelf -dW prog
+  has(bfd,lld,mortar): (RELACOUNT)
+  not(mold): (RELACOUNT)
+
+#--- data.c
+#include "libd.h"
+
+static int x[4] = {10, 11, 12, 13};
+int *rp[4] = {&x[3], &x[0], &x[2], &x[1]};   /* four RELATIVE records */
+int *dp = &dvar;                             /* a symbolic record against dvar */
+int (*fp[2])(void) = {fb, fa};               /* and against fb, fa */
+void *code_fa(void) { return (void *)&fa; }  /* a GOT slot: GLOB_DAT fa */
+#--- main.c
+#include <elf.h>
+#include <stdio.h>
+#include <string.h>
+#include "libd.h"
+
+extern int *rp[4], *dp, (*fp[2])(void);
+extern void *code_fa(void);
+
+static unsigned char img[1 << 22];
+
+static Elf64_Shdr *section(const char *name) {
+  Elf64_Ehdr *e = (Elf64_Ehdr *)img;
+  Elf64_Shdr *s = (Elf64_Shdr *)(img + e->e_shoff);
+  const char *names = (const char *)img + s[e->e_shstrndx].sh_offset;
+  for (int i = 0; i < e->e_shnum; i++)
+    if (!strcmp(names + s[i].sh_name, name))
+      return &s[i];
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  (void)argc;
+  printf("values %d %d %d %d dvar %d calls %d %d got %d\n", *rp[0], *rp[1], *rp[2],
+         *rp[3], *dp, fp[0](), fp[1](), code_fa() == (void *)&fa);
+  FILE *f = fopen("/proc/self/exe", "rb");
+  if (!f)
+    f = fopen(argv[0], "rb");
+  if (!f || fread(img, 1, sizeof img, f) < sizeof(Elf64_Ehdr))
+    return 2;
+  unsigned relative =
+      ((Elf64_Ehdr *)img)->e_machine == EM_AARCH64 ? R_AARCH64_RELATIVE : R_X86_64_RELATIVE;
+  Elf64_Shdr *rd = section(".rela.dyn"), *dy = section(".dynamic");
+  if (!rd || !dy)
+    return 3;
+  Elf64_Rela *r = (Elf64_Rela *)(img + rd->sh_offset);
+  size_t n = rd->sh_size / sizeof *r, k = 0;
+  int sorted = 1, stray = 0, rest = 1;
+  for (; k < n && ELF64_R_TYPE(r[k].r_info) == relative; k++)
+    if (k && r[k].r_offset <= r[k - 1].r_offset)
+      sorted = 0;
+  for (size_t i = k; i < n; i++) {
+    if (ELF64_R_TYPE(r[i].r_info) == relative)
+      stray = 1;
+    if (i > k && (ELF64_R_SYM(r[i].r_info) < ELF64_R_SYM(r[i - 1].r_info) ||
+                  (ELF64_R_SYM(r[i].r_info) == ELF64_R_SYM(r[i - 1].r_info) &&
+                   r[i].r_offset <= r[i - 1].r_offset)))
+      rest = 0;
+  }
+  long relacount = -1;
+  for (Elf64_Dyn *d = (Elf64_Dyn *)(img + dy->sh_offset); d->d_tag != DT_NULL; d++)
+    if (d->d_tag == DT_RELACOUNT)
+      relacount = (long)d->d_un.d_val;
+  printf("RELATIVE first, by offset: %s\n", sorted && !stray ? "yes" : "no");
+  if (relacount < 0)
+    printf("DT_RELACOUNT: absent\n");
+  else
+    printf("DT_RELACOUNT = RELATIVE count: %s\n", relacount == (long)k ? "yes" : "no");
+  printf("others by (symbol, offset): %s\n", rest ? "yes" : "no");
+  return 0;
+}

@@ -1,0 +1,94 @@
+# dyn.md D-60 (layout L-60's ranks): the order of the sections of a PIE.
+# The program has every kind the rule ranks that a C program meets: the
+# dynamic tables (it calls puts: `.rela.plt`, `.plt`, `.got.plt`), TLS
+# (`.tdata`, `.tbss`), a constructor (`.init_array`), a relocated
+# read-only pointer table (`.data.rel.ro`), `.data` and `.bss`.
+#
+# mortar's order is D-60's, in full:
+#   .interp, notes, .gnu.hash, .dynsym, .dynstr, .gnu.version,
+#   .gnu.version_r, .rela.dyn, .rela.plt, .rodata, .eh_frame_hdr,
+#   .eh_frame | .init, .plt, .text, .fini | .tdata, .tbss, .init_array,
+#   .fini_array, .data.rel.ro, .dynamic, .got, .relro_padding |
+#   .got.plt, .data, .bss.
+# No reference writes exactly that (measured, both architectures):
+# GNU ld puts the notes before `.interp` (dyn.md 13.1, ".interp
+# position"), `.rodata` after `.fini`, and has no `.relro_padding`; lld
+# puts `.gnu.hash` after `.gnu.version_r`, `.text` before `.init`, and
+# `.fini_array` before `.init_array`; mold puts `.eh_frame` before the
+# read-only data, `.fini` and `.init` first in the code, and the arrays
+# after `.dynamic`. The references are held to the order the three share
+# (unqualified), and to the first section: `.interp` for lld, mold and
+# mortar, a note for GNU ld.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-60"
+#@ spec: dyn.md "D-31"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE lay.c -o lay.o
+link gcc -pie lay.o -o pie
+run pie
+  stdout: a b 5 1 4
+check readelf -SW pie
+  has(lld,mold,mortar): [ 1] .interp PROGBITS
+  has(bfd): [ 1] .note.gnu.
+  has: ] .interp PROGBITS
+  then: ] .dynsym DYNSYM
+  then: ] .gnu.version VERSYM
+  then: ] .gnu.version_r VERNEED
+  then: ] .rela.dyn RELA
+  then: ] .rela.plt RELA
+  then: ] .text PROGBITS
+  then: ] .tdata PROGBITS
+  then: ] .tbss NOBITS
+  then: ] .data.rel.ro PROGBITS
+  then: ] .dynamic DYNAMIC
+  then: ] .got PROGBITS
+  then: ] .data PROGBITS
+  then: ] .bss NOBITS
+  has(mortar): ] .interp PROGBITS
+  then(mortar): ] .note.
+  then(mortar): ] .gnu.hash GNU_HASH
+  then(mortar): ] .dynsym DYNSYM
+  then(mortar): ] .dynstr STRTAB
+  then(mortar): ] .gnu.version VERSYM
+  then(mortar): ] .gnu.version_r VERNEED
+  then(mortar): ] .rela.dyn RELA
+  then(mortar): ] .rela.plt RELA
+  then(mortar): ] .rodata PROGBITS
+  then(mortar): ] .eh_frame_hdr PROGBITS
+  then(mortar): ] .eh_frame PROGBITS
+  then(mortar): ] .init PROGBITS
+  then(mortar): ] .plt PROGBITS
+  then(mortar): ] .text PROGBITS
+  then(mortar): ] .fini PROGBITS
+  then(mortar): ] .tdata PROGBITS
+  then(mortar): ] .tbss NOBITS
+  then(mortar): ] .init_array INIT_ARRAY
+  then(mortar): ] .fini_array FINI_ARRAY
+  then(mortar): ] .data.rel.ro PROGBITS
+  then(mortar): ] .dynamic DYNAMIC
+  then(mortar): ] .got PROGBITS
+  then(mortar): ] .relro_padding NOBITS
+  then(mortar): ] .got.plt PROGBITS
+  then(mortar): ] .data PROGBITS
+  then(mortar): ] .bss NOBITS
+
+#--- lay.c
+#include <stdio.h>
+
+__thread int tv = 3;
+__thread int tz;
+int dv = 5;
+int bz[16];
+static const char *const names[] = {"a", "b"};
+const char *const *np = names;
+
+__attribute__((constructor)) static void init(void) { bz[0] = 1; }
+
+int main(void) {
+  tz = tv + 1;
+  printf("%s %s %d %d %d\n", np[0], names[1], dv, bz[0], tz);
+  return 0;
+}
