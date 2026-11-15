@@ -1,2 +1,3 @@
 # WIP (WP-070)
-- skeleton of spec/meta.md and spec/odr.md committed; next: survey kiln/hod, experiments in /tmp/mortar-wp070-<pid>, scripts in .build/review-meta/.
+
+spec/meta.md written in full (MT rules); next: spec/odr.md, README rows, the landed record, then delete this file.
