@@ -4,10 +4,10 @@
 contract of its commands and of the rules every process it starts lives
 under: the gate (`ci`), the machine's pool of parallelism tokens
 ("Jobserver"), the limits of a child process ("Limits"), the link
-tests ("Link tests"), and the gate's hosted runs on GitHub Actions
-("Hosted CI"). The test binaries start processes too, through
-`mortar_testutil`, and the same rules bind them. Still to be specified
-here: `bench` (WP-012).
+tests ("Link tests"), the gate's hosted runs on GitHub Actions
+("Hosted CI"), and the measurement of the linkers' speed and memory
+(`bench`). The test binaries start processes too, through
+`mortar_testutil`, and the same rules bind them.
 
 ## ci
 
@@ -1049,3 +1049,479 @@ both fan-ins), `this_machine_has_the_reference_tools_of_the_hosted_lanes`
 (`scripts/ci-tools.sh --check` passes; a failure under
 `MORTAR_REQUIRE_TOOLS=1`, a note otherwise). The workflows themselves are
 tested only by running them.
+
+## bench
+
+`cargo xtask bench` measures how fast the linkers link a fixed set of
+workloads and how much memory they take (`docs/VALIDATION.md` "Speed and
+memory"), and judges mortar against this machine's recorded baseline.
+GNU ld, lld and mold are measured on the same inputs as references: their
+rows are information, never a failure. The bench links nothing of its own
+choosing: every workload is a link line captured from a real build, and is
+replayed as it was captured.
+
+AArch64 only for now (the host). The x86-64 and 32-bit x86 rows need an
+x86-64 machine: a time measured under `qemu-user` says nothing about speed.
+They are a planned row ("Planned workloads").
+
+### Command
+
+`cargo xtask bench [options]`, the options as `--name value` or
+`--name=value`:
+
+| option | meaning |
+|---|---|
+| (no action) | prepare what is not current, measure, print the table, write `<cache>/results.tsv` |
+| `--check` | the same, then judge mortar's links against the baseline ("The gate") |
+| `--update-baseline --reason <text>` | the same with every workload and every linker, then write the run as the baseline, append to its log, regenerate `docs/status/bench.md` |
+| `--report` | regenerate `docs/status/bench.md` from the baseline, measuring nothing |
+| `--prepare` | prepare the workloads and print their census; measure nothing |
+| `--list` | list the manifest's workloads, the planned ones included |
+| `--workload <name>` | only this workload (repeatable); a planned one, or the calibration workload, is an error |
+| `--linker bfd\|lld\|mold\|mortar` | only this linker (repeatable) |
+| `--runs <N>` | measured runs per link after the warm-up: 1 to 100, default 5 |
+| `--baseline <file>` | default `bench/baselines/<machine id>.tsv` |
+| `--mortar <binary>` | default: the checkout's, built by `cargo build --release -p mortar --bin mortar` (a cargo step, `process::run_step`) |
+| `--work <dir>` | the cache, default `<build directory>/bench-work` ("The cache") |
+| `-h`, `--help` | the usage on standard output, status 0 |
+
+At most one action. `--update-baseline` without a non-blank `--reason`,
+with `--workload` or with `--linker`, and `--reason` without
+`--update-baseline`, are usage errors: a baseline is always a whole run,
+and every change of it says why (`docs/AGENTS.md` "Review gates").
+
+Exit status: 0; 1 when `--check` finds a mortar link regressed or lost;
+3 when the run cannot be trusted: an error of the harness (a build, a
+fetch, a census, a missing tool or baseline), a reference linker that did
+not link, a link killed by a limit, or a `--check` with a slower time on
+an unsteady machine ("Noise"); 2 for a usage error (`xtask bench: <what>`
+and the usage on standard error). An error is one line,
+`xtask bench: error: <what>`. Progress lines start with `[bench]` on
+standard error; the table and the check go to standard output.
+
+Nothing of the bench runs in `cargo xtask ci`: its unit tests build no
+workload and fetch nothing.
+
+### Workloads
+
+`bench/workloads/manifest` lists them, one section each: `[name]` (lower
+case letters, digits, `-`), then `key = value` lines; `#` starts a comment
+line. A value is words separated by blanks, with no quoting. A key appears
+once per section; a key the section's kind does not take, an unknown kind,
+class or shape, and a missing required key, are errors naming the line.
+
+| key | kinds | meaning |
+|---|---|---|
+| `class` | all | `small`, `medium`, `large`, `extreme`, `rust`, or `calibration` (exactly one workload: "Calibration") |
+| `kind` | all | `sources`, `synthetic`, `cmake`, `cargo`, `planned` |
+| `about` | all | one sentence for the report |
+| `sources` | sources | files of `bench/workloads/src/` |
+| `shape`, `params` | synthetic | the generator's shape and its two parameters ("Generated workloads") |
+| `url`, `sha256`, `root` | cmake | the source archive, its SHA-256, the directory in it with the top `CMakeLists.txt` |
+| `options`, `prebuild`, `target` | cmake | cmake `-D` options; make targets built first without capture; the make target whose link is the workload |
+| `rev`, `package`, `bin`, `rustc_args` | cargo | a commit of this repository; `cargo rustc -p <package> --bin <bin> -- <rustc_args>` |
+| `driver`, `cflags`, `ldflags` | sources, synthetic, cmake (no `ldflags`) | the compiler driver on `PATH`, compiler flags, driver flags of the link |
+| `capture` | all built | the pattern the basename of the captured link's output matches (`*` is any run of characters); default `out` |
+| `needs` | planned | what the workload waits for |
+
+The workloads (sizes as the census of this machine counted them are in
+`docs/status/bench.md`):
+
+| workload | class | built from |
+|---|---|---|
+| `hello-c`, `hello-c-static` | small | `hello.c`, gcc `-O2`, linked `-pie` / `-static` |
+| `hello-cxx`, `hello-cxx-static` | small | `hello.cc` (iostreams, a map, an exception), g++ `-O2`, `-pie` / `-static` against libstdc++ |
+| `cxx-medium-g`, `cxx-medium` | medium | protobuf 3.21.12 (the last release without abseil), its `protoc`: `main.o`, `libprotoc.a`, `libprotobuf.a`; g++ `-O0 -g` / `-O0` |
+| `rust-self` | rust | mortar's binary, dev profile, at a pinned commit, as rustc invokes the linker |
+| `synthetic-objects` | extreme | 1000 objects × 200 functions calling across objects |
+| `synthetic-sections` | extreme | 2 objects × 40000 functions, each with a section of code and of data: more than 0xff00 sections per object (extended section numbering) |
+| `synthetic-strings` | extreme | 200 objects × 5000 string literals, every other one the same in every object |
+| `synthetic-comdat` | extreme | 300 C++ units that all define the same 500 inline functions, `-O0 -g` |
+| `synthetic-archives` | extreme | 100 archives × 40 members; half of each archive is needed by the one before |
+| `calibration` | calibration | 100 objects × 50 functions (the `objects` shape) |
+
+The long symbol names of `synthetic-objects` (some 200 000 of 40 bytes
+and more) are the "one huge string table" of `docs/VALIDATION.md`; the
+million-symbol and hundred-thousand-section extremes are approached, at
+the scale this machine's disk and time allow, by `synthetic-objects` and
+`synthetic-sections`. Larger sizes are a manifest change.
+
+### Planned workloads
+
+`kind = planned` sections are specified and not built: `--list` and the
+report name them with what they need. Today: `libcxx-test` (one libc++
+test program as the L8 lane links it; needs kiln and hod and the libc++
+build), `cxx-large-g` and `cxx-large` (a large open-source C++ program's
+objects captured once and pinned; needs tens of GB of disk),
+`kiln-hod-medium` (the medium program compiled by kiln and hod),
+`incremental-function`, `incremental-object`, `incremental-archive`
+(M7), and `cross-x86-64` (the x86-64 and i386 rows, on an x86-64 machine).
+A planned workload becomes another kind when what it needs exists.
+
+### The cache
+
+Nothing built is checked in. A workload is built from its pinned sources
+into `<work>/workloads/<name>/`, where `<work>` is `--work`, else
+`<parent of CARGO_TARGET_DIR>/bench-work` when `CARGO_TARGET_DIR` is set
+(the workspace's build directory, shared by its checkouts; git-ignored),
+else `<checkout>/target/bench-work`. The cache also holds `downloads/`
+(fetched archives, named by the URL's last component), `src/<first 16
+digits of the SHA-256>/` (each archive unpacked once for the workloads
+that share it, with an `.unpacked` marker), `scratch/` (outputs of links,
+removed after each run) and `results.tsv` (the last run).
+
+**One run at a time.** A run holds `<work>/lock`, a file created
+exclusively with the process id in it, for its whole length, and removes
+it at the end. A lock whose process does not exist (`/proc/<pid>`) is
+taken over; a live one is an error (`another bench run (process N) is
+using <work>`). `--list` and `--report` take no lock.
+
+**The stamp.** A prepared workload has `stamp`:
+
+```
+# mortar-bench-stamp 1
+key	fnv1a64:<16 hex digits>
+cwd	<directory the link runs in>
+census	<objects> <archives> <shared> <others> <input bytes> <symbols> <output bytes> <input hash>   (tab-separated)
+file	<size>	<modification time, ns>	<path>     (one per file the census read)
+```
+
+The key is FNV-1a 64 over the stamp's first line, the manifest section
+(its key lines as written, comments and blank lines dropped), the first
+line of `<driver> --version` and of `ld.bfd --version`, and per kind: the
+name and bytes of each source; the generator's version (`GENERATOR` in
+`xtask/src/bench/synth.rs`); `cmake --version` and `make --version`;
+`rustc --version`. A workload is ready when its stamp's key is the current
+key, its `response.txt` exists and every `file` line still has its size
+and time. When only files changed (a system library was upgraded), the
+census alone is redone. Otherwise the workload's directory is removed and
+the workload is built again from nothing.
+
+### Preparation
+
+Every tool of a build is a child of `process::run` (one token, limits:
+15 minutes and 8 GiB of address space per compiler or archiver, 3 hours
+and 8 GiB per make, 20 minutes per download), with `TMPDIR=<workload>/tmp`
+and `LC_ALL=C`. A step that fails is an error with its last 12 lines of
+standard error. Sources are copied into the build directory and compiled
+there under relative names, so that what the objects record of their
+directory is the cache's, the same for every checkout.
+
+- **sources**: `<driver> <cflags> -c <source> -o <stem>.o` for each, then
+  the captured link `<driver> <ldflags> <objects> -o out`.
+- **synthetic**: the generator's sources are written to the build
+  directory and compiled `<driver> <cflags> -c <64 files>` per process, on
+  at most 8 threads (fewer on a smaller machine), each child holding its
+  token; for the `archives` shape, `ar rcsD lib<NNNNN>.a <members>` per
+  archive. The captured link is `<driver> <ldflags> main.o <the other
+  objects, or the archives in order> -o out`.
+- **cmake**: the archive is fetched with `curl -fsSL --retry 3` to
+  `<file>.part`, checked with `sha256sum` against `sha256` (a mismatch
+  removes it and is an error) and renamed; it is fetched only when the
+  downloaded file is missing or its digest is not the pinned one, and
+  unpacked with `tar -xzf … --no-same-owner`. Then `cmake -S
+  <src>/<root> -B <workload>/build -G "Unix Makefiles"
+  -DCMAKE_CXX_COMPILER=<driver> -DCMAKE_CXX_FLAGS=<cflags>
+  -DCMAKE_C_FLAGS=<cflags> <options>`, `make <prebuild…>`, and the
+  captured `make <target>`. make is a jobserver client: it inherits
+  `MAKEFLAGS` from `process::run` and takes its parallelism from the
+  machine's pool; `-j` is never passed, and without a pool make runs
+  serially. (The Ninja generator is not used: the ninja here is not a
+  jobserver client.)
+- **cargo**: `git -C <checkout> archive --format=tar -o <workload>/src.tar
+  <rev>`, unpacked into `<workload>/src`; then, as a cargo step
+  (`process::run_step`: cargo is a client of the pool itself),
+  `cargo rustc --offline --locked --quiet --manifest-path
+  <workload>/src/Cargo.toml -p <package> --bin <bin> -- <rustc_args>` with
+  `CARGO_TARGET_DIR=<workload>/target`, `CARGO_PROFILE_DEV_DEBUG=true`,
+  `CARGO_INCREMENTAL=0`, and `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`,
+  `CARGO_BUILD_RUSTFLAGS`, `RUSTC_WRAPPER` removed. `rust-self` passes
+  `-C save-temps`: without it rustc deletes the `symbols.o` its link reads
+  (under `deps/rustcXXXXXX/`) once the link is done.
+
+### Capture
+
+The link line is captured by a recording `ld`: a `/bin/sh` script at
+`<workload>/wrapper/ld`, put first in the driver's program search by
+`COMPILER_PATH=<workload>/wrapper` for the captured step only. (gcc and
+clang both find `ld` there; unlike `-B`, it adds no `-L` to the line.
+GNU ld's `--reproduce` does not exist, and lld's and mold's rewrite the
+command line.) It writes its working directory and each argument, each
+ended by a NUL, to a new `mktemp <workload>/records/link.XXXXXXXX`, then
+execs `/usr/bin/ld.bfd` with the same arguments for the cmake and cargo
+kinds (make and cargo go on with the output), and exits 0 otherwise. A
+record that does not end with a NUL, whose directory is not absolute, an
+argument that is not UTF-8, and an argument starting with `@` (a response
+file of the driver's, whose contents are not recorded) are errors.
+
+Exactly one record must have an output (the last `-o <f>`, `-o<f>`,
+`--output <f>`, `--output=<f>`; `a.out` without one) whose basename
+matches `capture`; otherwise the error lists the outputs recorded.
+
+The captured arguments are stored as `<workload>/response.txt`: one per
+line; one made only of letters, digits and `_@%+=:,./-` as it is, any
+other (an empty one too) in double quotes with `\` before each `\` and
+`"`. That is the one form GNU ld (libiberty's `buildargv`), lld and mold
+read back alike: mold does not join a quoted part to an unquoted one.
+
+gcc's link line carries `-plugin <liblto_plugin.so>
+-plugin-opt=-fresolution=<TMPDIR>/ccXXXXXX.res`: the `.res` file is gone
+at replay, and GNU ld, lld and mold all replay the line without it.
+
+### Replay
+
+Every link of the bench, the census's too, is `<linker>
+@<workload>/response.txt -o <scratch output> <flags>` run in the recorded
+working directory: the last `-o` wins in all four linkers, so the
+captured output is never written. The scratch output is removed before
+and after each run.
+
+### Census
+
+Once per preparation GNU ld replays the link with
+`--dependency-file=<scratch>` (limits: 10 minutes, 16 GiB). A workload GNU
+ld cannot replay is not admitted (an error). From the first rule of the
+dependency file (make's format: `\` before a line end continues it,
+before a blank keeps the blank, `$$` is `$`), each prerequisite is taken
+relative to the working directory, canonicalized, and kept once, in the
+order first seen (GNU ld names a file again and keeps `..`). Each file is
+counted by its first bytes: `\x7fELF` with `e_type` 1 is an object, 3 a
+shared object; `!<arch>\n` or `!<thin>\n` an archive; anything else (a
+linker script such as `libc.so`) other. The workload's
+
+- **input bytes** are the files' sizes summed;
+- **symbols** are the entries of the `.symtab` of GNU ld's output, and
+  **output bytes** its size (each linker's own output size is in its
+  row);
+- **input hash** is FNV-1a 64 (`fnv1a64:` and 16 hex digits) over each
+  argument of the response file, normalized, then for each file its
+  normalized path and its contents (each field ended by a NUL).
+
+Normalized: the workload's directory written `$W`, and under it each path
+component that is a driver's temporary name (`cc` and six letters or
+digits, with or without an extension; `rustc` and six letters or digits)
+written `*`. The hash is then the same on every preparation, in every
+checkout, and changes exactly when what the link reads changes.
+
+### Linkers
+
+| name | program | configurations | flags |
+|---|---|---|---|
+| `bfd` | `/usr/bin/ld.bfd` | `1` | none: it has one thread and rejects `--threads` |
+| `lld` | `ld.lld-22`, else `/usr/lib/llvm-22/bin/ld.lld`, else 19 (`mortar_testutil::find_tool`) | `default`, `1` | `--threads=1` for `1` |
+| `mold` | `mold` on `PATH` | `default`, `1` | `--no-fork` always; `--threads=1` for `1` |
+| `mortar` | `--mortar`, else the checkout's release build | `default`, `1` | `--threads=1` for `1` |
+
+`--no-fork`: by default mold's process forks, the child links, and the
+parent exits once the output is written, without waiting for the child.
+GNU `time` then reports the parent: measured here, 8.6 MB for a link whose
+real peak is 65 MB. With `--no-fork` the process measured is the one that
+links. Each linker's version (the first line of `--version`) is in the
+results header.
+
+### Measurement
+
+- **One measured child at a time**, through `process::run_measured`
+  (`spec/harness.md` "Measured children": GNU `time`'s peak RSS and CPU
+  time, `MAKEFLAGS` removed), with `LC_ALL=C`, holding **one token** of
+  the pool, as every child does. No extra tokens are held for a linker's
+  threads: the pool's refill counts one token per child process and would
+  mint tokens for the difference ("Jobserver", "What the pool's refill
+  sees"). The cost of the shared machine is measured instead
+  ("Calibration", "Noise").
+- **Limits** of a measured link: 10 minutes, 16 GiB of address space.
+  (lld at its default number of threads aborts under 1 GiB: it cannot
+  start its threads.)
+- Per workload: a **warm-up** round, every configuration once, in the
+  order of the table, which decides each configuration's status and is
+  discarded; then `--runs` **rounds**, each running every configuration
+  that linked once, in the same order.
+- **Status** of a configuration, from how a run ended:
+  - `ok`: exit status 0 and a non-empty output;
+  - `refused`: mortar only: a non-zero exit status (not a signal), no
+    output, and something on standard error, whose first line is the
+    detail;
+  - `killed`: a limit ended the run (`End::Killed`): the detail is
+    `killed: time` or `killed: memory`. Never a failure of the linker's
+    and never a time; reported on standard error as `KILLED`, and the run
+    exits with status 3;
+  - `failed`: anything else; the detail is the end and the first line of
+    standard error.
+
+  A configuration that is `ok` at the warm-up and does not link in a
+  measured round is `failed` or `killed` with `run N: <detail>`. A link
+  that is not `ok` has **no figures**: the results file refuses a
+  `refused`, `killed` or `failed` row with figures, and an `ok` row
+  without them.
+- **Figures** of an `ok` configuration: wall time (`Output::wall`, from
+  just before the process starts, its token held, to the return of
+  `wait`), fastest, median and slowest; peak RSS, smallest, median,
+  largest; median CPU time; the size of the last run's output. The median
+  of an even number of runs is the lower middle value plus half the
+  difference, rounded down. Without a usable GNU `time` (`Probe`) there
+  are no memory or CPU figures, and the header says so.
+- The **spread** of a row is how far its median wall time is above its
+  fastest, in thousandths of the fastest.
+
+### Calibration
+
+The workload of class `calibration` is linked by lld (22) at its default
+threads, once to warm up and five times, before the first workload and
+after the last: the median of each is `calibration_before_us` and
+`calibration_after_us`. It is the run's control: how fast this machine
+links the same fixed inputs right now. lld is the control whether or not
+`--linker` selects it.
+
+### Noise
+
+The machine is shared with other agents and builds, so a measurement is
+never assumed quiet; what the load did to it is measured and recorded:
+
+- a run is **noisy** (`noisy yes`) when its two calibrations differ by
+  more than 10% of the faster;
+- the 1, 5 and 15 minute load averages before and after the run are
+  recorded (`load_before`, `load_after`). The load average is not a noise
+  criterion: on a machine where idle agents keep it near the number of
+  processors it says little about interference, which the calibration
+  measures directly. (`docs/VALIDATION.md` asks for the pool to be idle;
+  the pool cannot be observed without taking its tokens, so the
+  calibration stands for it.)
+- a row whose spread is above 5%, a noisy run, a noisy baseline, and a
+  machine more than 25% slower than at the baseline (by the calibration)
+  make a **slower time** unjudgeable: `NOISY`, not `REGRESSED`. Memory is
+  judged whatever the machine is doing.
+
+### Results file
+
+The results of a run (`<work>/results.tsv`) and a baseline are the same
+format, text, tab-separated:
+
+```
+# mortar-bench 1
+# <key>	<value>                                        (header, in order)
+# workload-fields	name	class	objects	archives	shared	others	input_bytes	symbols	output_bytes	input_hash
+# link-fields	status	workload	linker	threads	runs	wall_us_min	wall_us	wall_us_max	cpu_us	rss_kib_min	rss_kib	rss_kib_max	output_bytes	spread_permille	detail
+workload	<fields>
+link	<fields>
+```
+
+- Header keys: `date` (UTC, `YYYY-MM-DDThh:mm:ssZ`), `machine` (the id),
+  `cpu`, `cores`, `commit` (the checkout's, 12 digits, `+changes` when
+  its tracked files differ), `runs`, `probe` (`Probe::describe`),
+  `limits`, `calibration` (`lld default on <input hash>`),
+  `calibration_before_us`, `calibration_after_us`, `noisy` (`yes`, `no`),
+  `load_before`, `load_after`, `version.<linker>`, and in a baseline
+  `reason`. A key appears once, and all keys come before the first record.
+- A field of free text escapes `\` `\t` `\n` `\r`; an empty field is `-`,
+  and a field that is `-` is `\-`. A number absent (a row without figures,
+  memory without the probe) is `-`. `spread_permille` is derived and
+  checked only for its form.
+- The `workload-fields` and `link-fields` lines must be exactly this
+  reader's; anything else, an unknown record or status, a field that is
+  not a number, a partial set of figures, and figures on a row that is not
+  `ok` (or none on one that is), are errors naming the line.
+- Writing goes to `<file>.tmp-<pid>` and is renamed into place.
+
+**The machine id** is `<arch>-<cpu>-<cores>c` in lower-case letters,
+digits and single dashes: the architecture xtask was built for, the
+`model name` of `/proc/cpuinfo` (else `implementer <CPU implementer> part
+<CPU part>`, else `unknown`), and the parallelism available. It names no
+host and no user.
+
+### Baselines
+
+`bench/baselines/<machine id>.tsv`, checked in, one per machine, written
+only by `--update-baseline`, which measures every workload with every
+linker, refuses to write a baseline in which a reference linker did not
+link `ok`, records `--reason` in the header, appends `<date>\t<commit>\t<reason>`
+to `bench/baselines/<machine id>.log`, and regenerates
+`docs/status/bench.md`. A baseline change is reviewed like code: the
+reason says why mortar's numbers moved.
+
+### The gate
+
+`--check` judges each link of **mortar** in the run against the
+baseline's link of the same workload, linker and threads; the reference
+linkers are never judged. In this order:
+
+| case | verdict | fails |
+|---|---|---|
+| the run's link `failed` | not judged | no |
+| the run's link `killed`, the baseline's not `ok` (or absent) | not judged | no |
+| no baseline link, or it `failed` or was `killed` | new | no |
+| the workload's input hash differs from the baseline's | advisory | no |
+| both refused | not judged | no |
+| `ok` now, refused in the baseline | new | no |
+| the baseline is of another machine | advisory | no |
+| refused or killed now, `ok` in the baseline | **LOST** | yes |
+| memory: median RSS above the baseline's by more than 2% and by more than 1024 KiB | **REGRESSED (memory)** | yes |
+| time: median wall above the baseline's × drift by more than 5% and by more than 2 ms, on a steady measurement | **REGRESSED (time)** | yes |
+| the same on an unsteady one ("Noise"), memory within bounds | NOISY | no; exit 3 |
+| faster or smaller by those margins | improved | no |
+| otherwise | ok | no |
+
+**Drift** is the calibration now over the baseline's (each the faster of
+before and after), at least 1: a machine that got slower widens the time
+margin by as much, one that got faster does not tighten it. Memory is not
+scaled. Without a common calibration (another control link or input
+hash) a time is unsteady. The comparisons are exact (128-bit integers).
+
+### Report
+
+`docs/status/bench.md` is generated from the baseline (by
+`--update-baseline` and `--report`), never edited by hand: the machine,
+date, commit, runs, calibration, load, probe and reason; the linkers'
+versions; the workloads with their census; per workload a table of every
+configuration with its median wall time, the fastest-to-slowest range,
+median RSS, both as ratios to mold at its default threads (lld where mold
+did not link `ok`), and the output size, or its status and detail; and
+the planned workloads. When mortar links, its ratios against mold, lld
+and GNU ld are the ones the release gate records. A run prints the same
+per-workload table on standard output.
+
+### Generated workloads
+
+`xtask/src/bench/synth.rs`: a pure function of a shape and its two
+parameters; the same request gives the same bytes on any machine, and a
+change of the output changes `GENERATOR` and the pinned hashes of its
+test.
+
+| shape | sources | what it stresses |
+|---|---|---|
+| `objects (n, f)` | `n` objects of `f` functions; each calls one function of the next object and one further on (never backwards), and reads the object's table | global symbols, relocations, cross-object references |
+| `sections (n, f)` | `n` objects of `f` functions, each with a variable of its own, built with `-ffunction-sections -fdata-sections`; calls in chains of 64 | input sections, extended section numbering |
+| `strings (n, s)` | `n` objects with a table of `s` literals; even positions the same in every object | mergeable string sections |
+| `comdat (n, i)` | a header of `i` inline functions (an inline variable per eight, a class template) and `n` C++ units that all use them | COMDAT groups, duplicate debug information |
+| `archives (a, m)` | `a` archives of `m` members of eight functions; the first half of each archive's members call the same member of the next archive | archive member extraction |
+
+Every shape has a `main` that calls into every unit (for `archives`, into
+the needed members of the first), so a link drops nothing.
+
+### Tests
+
+`xtask/src/bench/record.rs`: `results_file_round_trip`,
+`results_are_written_and_read`, `malformed_files`, `spread`, `hashes`,
+`machine_id`, `utc_dates`. `xtask/src/bench/stats.rs`: `the_contract`,
+`medians`, `threshold_decisions`, `noisy_run_detection`,
+`check_pass_and_fail`, `links_without_a_comparison`,
+`an_unsteady_measurement_is_not_a_regression`,
+`the_calibration_link_is_the_control`, `headers_decide_what_binds`,
+`judging_a_run`, `percents`. `xtask/src/bench/response.rs`:
+`capture_records_are_parsed`, `the_output_of_a_link`, `the_wrapper_script`,
+`response_files_round_trip`, `response_files_are_parsed_by_gnu_rules`,
+`dependency_files_are_parsed`, `globs`. `xtask/src/bench/prepare.rs`:
+`arguments_are_normalized`, `files_are_classified`,
+`symbol_tables_are_counted`, `stamps_round_trip`, `the_cache_is_locked`.
+`xtask/src/bench/measure.rs`: `linker_configurations`, `statuses`,
+`figures_of_runs`. `xtask/src/bench/manifest.rs`:
+`the_manifest_is_read`, `malformed_manifests`.
+`xtask/src/bench/synth.rs`: `the_generator_is_deterministic`,
+`the_generators_output_is_pinned`, `the_shapes`.
+`xtask/src/bench/report.rs`: `the_table`, `the_status_page`.
+`xtask/src/bench.rs`: `options`, `the_checked_in_manifest`,
+`baseline_paths`.
+
+The end-to-end behavior (building, capturing, replaying with the real
+linkers, the census) is exercised by `cargo xtask bench` itself and not by
+a unit test: it builds and fetches, which the gate does not. Its evidence
+is the committed baseline and `spec/landed/harness/WP-012.md`.
