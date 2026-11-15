@@ -233,7 +233,6 @@ fn expected(k: Kind) -> Vec<&'static str> {
         ".rodata",
         ".plt",
         ".text",
-        ".text",
         ".tdata",
         ".init_array",
         ".data.rel.ro",
@@ -249,7 +248,7 @@ fn expected(k: Kind) -> Vec<&'static str> {
     if !k.now {
         v.push(".got.plt");
     }
-    v.extend([".data", ".data", ".dynbss", ".bss", ".bss"]);
+    v.extend([".data", ".dynbss", ".bss"]);
     if !k.relro {
         // L-69: no PROGBITS after NOBITS in one PT_LOAD; lld's place.
         v.push(".bss.rel.ro");
@@ -322,8 +321,10 @@ fn d60_d61_table() {
             assert_eq!(loads[0].addr == 0, k.pie, "{what}");
             assert_eq!(loads[0].offset, 0, "{what}");
             for s in &loads {
-                assert_eq!(s.offset % s.align, s.addr % s.align, "{what}: p_offset = p_vaddr");
-                assert_eq!(s.align, w.options.max_page, "{what}");
+                // Segment alignment is log2.
+                let al = 1u64 << s.align;
+                assert_eq!(s.offset % al, s.addr % al, "{what}: p_offset = p_vaddr");
+                assert_eq!(al, w.options.max_page, "{what}");
             }
 
             // PT_PHDR, PT_INTERP, PT_DYNAMIC: their chunks exactly.
@@ -379,7 +380,8 @@ fn d60_d61_table() {
             assert_eq!(place_of(0), (dynbss, 0, 8, 3), "{what}");
             assert_eq!(place_of(2), (dynbss, 8, 4, 2), "{what}");
             assert_eq!(place_of(1), (relro_copy, 0, 0x18, 3), "{what}");
-            assert_eq!(p.chunks[dynbss].align, 3, "{what}");
+            // L-5: .dynbss leads .bss, so it carries .bss's alignment.
+            assert_eq!(p.chunks[dynbss].align, 6, "{what}");
             // .dynbss is the first chunk of .bss's section.
             let at = p.order.iter().position(|&c| c == dynbss).unwrap();
             let next = &p.chunks[p.order[at + 1]];
@@ -455,4 +457,17 @@ fn input_interp_refused() {
     let w = World::new(Machine::X86_64, &f, &[]);
     let e = w.stage_a(&Pool::sequential()).unwrap_err();
     assert!(format!("{e:?}").contains(".interp"), "{e:?}");
+}
+
+// spec: layout.md L-5, dyn.md D-42 (the leading .dynbss carries .bss's
+// alignment: the section's sh_addr is its address)
+#[test]
+fn l5_dynbss_aligned_as_bss() {
+    let w = world(Machine::AArch64, kinds()[0]);
+    let (a, mut placed) = place(&w);
+    let dynbss = chunk_named(&placed, b".dynbss");
+    assert_eq!(placed.placement.chunks[dynbss].align, 6);
+    placed.placement.chunks[dynbss].align = 3;
+    let v = check(&w, &a, &placed).unwrap_err();
+    assert!(v.what.contains("less aligned than its section"), "{v:?}");
 }

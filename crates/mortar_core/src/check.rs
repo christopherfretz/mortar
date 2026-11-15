@@ -1325,6 +1325,22 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 || "a copy chunk is not the first chunk of its section".into(),
                 [Row::Chunk(c)],
             )?;
+            // L-5: the section's `sh_addr` is its first chunk's address and
+            // its `sh_addralign` the largest of its chunks'.
+            let Some(sh) = ch.shndx else { continue };
+            let widest = p.order[at..]
+                .iter()
+                .map(|&d| &p.chunks[d])
+                .take_while(|d| d.shndx == Some(sh))
+                .map(|d| d.align)
+                .max()
+                .unwrap_or(0);
+            need(
+                ch.align >= widest,
+                r,
+                || "a copy chunk less aligned than its section".into(),
+                [Row::Chunk(c)],
+            )?;
         }
         Ok(())
     }

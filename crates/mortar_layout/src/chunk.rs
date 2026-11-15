@@ -714,6 +714,20 @@ pub fn chunk(
             }
         }
     }
+    // A leading copy chunk is its section's first chunk: aligned to the
+    // largest alignment of the section's chunks (L-5, as the islands
+    // above).
+    for c in 0..out_of.len() {
+        let id = ChunkId(c as u32);
+        let lead = matches!(chunks[id].kind, ChunkKind::Synthetic(s) if leads(s.name));
+        let Some(o) = out_of[c].filter(|_| lead) else { continue };
+        let widest = (0..out_of.len())
+            .filter(|&d| out_of[d] == Some(o))
+            .map(|d| chunks[ChunkId(d as u32)].align)
+            .max()
+            .unwrap_or(0);
+        chunks[id].align = chunks[id].align.max(widest);
+    }
     // Rule 5: sorted by key (commons, then copies by index).
     sym_place.sort_by_key(|p: &SymPlace| p.key);
     Ok(Staged {

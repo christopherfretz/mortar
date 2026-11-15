@@ -280,4 +280,29 @@ mod tests {
         let e = with(|p| p.kind = OutputKind::Shared).unwrap_err();
         assert_eq!(e.refusal().map(|r| r.1), Some("shared object output"));
     }
+
+    // spec: dyn.md D-1 (Pie: base 0, L-68), D-61 (ELF64 only in M2)
+    #[test]
+    fn d1_kinds() {
+        let kind = |k| move |p: &mut Plan| p.kind = k;
+        assert!(!with(kind(OutputKind::Executable)).unwrap().pie);
+        assert!(with(kind(OutputKind::PieExecutable)).unwrap().pie);
+        assert!(!with(kind(OutputKind::StaticExecutable)).unwrap().pie);
+        let e = with(kind(OutputKind::StaticPie)).unwrap_err();
+        assert_eq!(e.refusal().map(|r| r.1), Some("position-independent executable output"));
+        let o = with(|p| {
+            p.kind = OutputKind::PieExecutable;
+            p.z.now = Some(true);
+            p.z.relro = Some(false);
+        })
+        .unwrap();
+        assert!(o.now && !o.relro);
+        for k in [OutputKind::Executable, OutputKind::PieExecutable] {
+            let plan = Plan { kind: k, ..Plan::default() };
+            let e = Options::from_plan(&plan, &Target::of(Machine::I386)).unwrap_err();
+            assert_eq!(e.refusal().map(|r| r.1), Some("ELFCLASS32 dynamic executable"));
+        }
+        let plan = Plan { kind: OutputKind::StaticExecutable, ..Plan::default() };
+        assert!(Options::from_plan(&plan, &Target::of(Machine::I386)).is_ok());
+    }
 }
