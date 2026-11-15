@@ -1013,6 +1013,14 @@ fails the gate until its marker goes. All cases run on all three
 architectures except `lang/fortran-c` (no i686 `gfortran` on the
 reference machine) and `reloc/aarch64-veneer` (AArch64 only).
 
+The dynamic cases (`tests/link/dyn/`, M2) are the rows of `spec/dyn.md`
+§16 and the default lines of its §2.1, on AArch64 and x86-64 (i386 is
+outside M2); `spec/landed/dyn/WP-051.md` lists them. Each is mortar's
+expected failure by a line of `tests/link/xfails` naming the package that
+makes it pass, and their references pass but for the wrong outputs of
+`dyn.md` §13.2, which are `xfail` markers citing W-n. They add about 10 s
+to the quick gate's linktest (80 tests, measured at load 13).
+
 ### Tests
 
 `xtask/src/linktest/format.rs`: `a_whole_test`,
