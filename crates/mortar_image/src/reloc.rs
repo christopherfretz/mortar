@@ -743,9 +743,8 @@ pub(crate) fn relocate(
             Ok(())
         } else {
             if split {
-                let target = target
-                    .take()
-                    .unwrap_or_else(|| memo.split_target(img.tables, rec.key, addend));
+                let target =
+                    target.take().unwrap_or_else(|| memo.split_target(img.tables, rec.key, addend));
                 match target {
                     None => sym = img.tables.sym(rec.key),
                     Some(Ok(Some(v))) => sym.s = v.wrapping_sub(addend.cast_unsigned()),
