@@ -21,8 +21,8 @@
 //! (the rest zero: `DT_NULL`s), and that image is checked by
 //! `llvm-readelf -d` (no warning, the same listing as GNU ld's up to the
 //! `DT_NULL`s), by `eu-elflint --gnu-ld` (the same verdict as GNU ld's
-//! output), and run (natively on AArch64, under `qemu-x86_64` and
-//! `qemu-i386`; i386, M4 for dynamic output, checks the ELF32/REL rows): the
+//! output), and run (natively on its own host, else under `qemu-<arch>`;
+//! i386, M4 for dynamic output, checks the ELF32/REL rows): the
 //! loader reads mortar's table.
 
 #![allow(clippy::many_single_char_names)]
@@ -41,7 +41,7 @@ use mortar_synth::dynamic::{
     ArraySection, DynKind, DynamicInputs, DynamicPlan, RunpathTag, init_key,
 };
 use mortar_synth::image::{SizeCx, SynthChunk};
-use mortar_testutil::{Scratch, run, tool, tools_required};
+use mortar_testutil::{Scratch, run, target, tool, tools_required};
 
 const PROGRAM: &str = r#"#include <stdio.h>
 #include <string.h>
@@ -297,28 +297,18 @@ impl DynamicAddrs for GnuAddrs<'_> {
     }
 }
 
-/// A target: its name, driver, and how a program of it runs (`None`:
-/// natively on an AArch64 host), with the `-L` sysroot.
+/// A target: the architecture whose tools build it and whose runner runs
+/// it (natively on its own host, else under `qemu-<arch> -L <sysroot>`).
 struct Target {
-    arch: &'static str,
-    cc: &'static str,
-    qemu: Option<(&'static str, &'static str)>,
+    arch: target::Arch,
 }
 
 /// AArch64 and x86-64 (M2), and i386 for the ELF32/REL rows (D-30's
 /// `DT_REL*`; i386 dynamic output is M4, the writer is checked now).
 const TARGETS: &[Target] = &[
-    Target { arch: "aarch64", cc: "gcc", qemu: None },
-    Target {
-        arch: "x86_64",
-        cc: "x86_64-linux-gnu-gcc",
-        qemu: Some(("qemu-x86_64", "/usr/x86_64-linux-gnu")),
-    },
-    Target {
-        arch: "i386",
-        cc: "i686-linux-gnu-gcc",
-        qemu: Some(("qemu-i386", "/usr/i686-linux-gnu")),
-    },
+    Target { arch: target::Arch::Aarch64 },
+    Target { arch: target::Arch::X86_64 },
+    Target { arch: target::Arch::I386 },
 ];
 
 struct Tools {
@@ -457,8 +447,8 @@ fn dynamic_equals_gnu_ld_per_condition() {
     let mut checked = 0;
     let mut failures = Vec::new();
     for target in TARGETS {
-        let arch = target.arch;
-        let Some(cc) = tool(target.cc) else {
+        let arch = target.arch.name();
+        let Some(cc) = target.arch.tool("gcc") else {
             assert!(!tools_required(), "the {arch} compiler is required");
             continue;
         };
@@ -570,26 +560,10 @@ fn run_program(target: &Target, name: &str, exe: &Path) {
     let o = run("chmod", ["+x".as_ref(), exe.as_os_str()]);
     assert!(o.success());
     let script = "ulimit -c 0; exec \"$@\"";
-    let o = if let Some((qemu, sysroot)) = target.qemu {
-        let Some(q) = tool(qemu) else {
-            assert!(!tools_required(), "{qemu} is required");
-            return;
-        };
-        let args: [&std::ffi::OsStr; 7] = [
-            "-c".as_ref(),
-            script.as_ref(),
-            "sh".as_ref(),
-            q.as_os_str(),
-            "-L".as_ref(),
-            sysroot.as_ref(),
-            exe.as_os_str(),
-        ];
-        run("sh", args)
-    } else {
-        if std::env::consts::ARCH != "aarch64" {
-            return;
-        }
-        run("sh", ["-c".as_ref(), script.as_ref(), "sh".as_ref(), exe.as_os_str()])
-    };
+    let (program, lead) = target.arch.runner(exe);
+    let mut args: Vec<&std::ffi::OsStr> =
+        vec!["-c".as_ref(), script.as_ref(), "sh".as_ref(), program.as_os_str()];
+    args.extend(lead.iter().map(std::ffi::OsString::as_os_str));
+    let o = run("sh", args);
     assert!(o.success() && o.stdout_text() == "1\n", "{name}: {:?} {}", o.status, o.stderr_text());
 }
