@@ -182,7 +182,7 @@ non-alloc section is also accepted, with `<addr>` read as the output
 section's `sh_addr` (0) plus the offset: that is what a converted GNU ld
 or lld map holds.
 
-**The dynamic records** (`spec/dyn.md` P-D3; WP-040 step 0d) follow
+**The dynamic records** (§12 P-D3; WP-040 step 0d) follow
 `define`. A static link writes none of them; a dynamic link (`Exec`,
 `Pie`, `StaticPie`) writes them, each package filling its own. Every
 string is a string token.
@@ -206,7 +206,7 @@ recomputes each from the `arg` words (or, for a reference link, from its
 response file) and reports a record that disagrees. The **hints** are
 never the expected value: every decision they name (the needed set and
 order, the copies, the export set, PLT order) is recomputed from the
-inputs (`spec/dyn.md` §12), and a hint only names what is compared. A
+inputs (§12), and a hint only names what is compared. A
 second `output`, `interp`, `runpath`/`rpath`, `bind` or `relro` record
 is a `MapError`.
 
