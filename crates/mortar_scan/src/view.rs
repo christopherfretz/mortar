@@ -323,7 +323,8 @@ impl<'a, 's> View<'a, 's> {
                 Def::Defined(_) | Def::Common(_) | Def::Shared(_) => false,
                 Def::Undefined { weak } => {
                     let verdict = self.resolution.props.get(id).map(|p| p.verdict);
-                    self.undefined_kind(id, weak, verdict.unwrap_or_default()) == TargetKind::Undefined
+                    self.undefined_kind(id, weak, verdict.unwrap_or_default())
+                        == TargetKind::Undefined
                 }
                 Def::Internal(_) => self.global_facts(id, None, 0).kind == TargetKind::Undefined,
             };

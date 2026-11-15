@@ -67,7 +67,12 @@ fn howto() -> &'static mortar_arch::Howto {
 fn section(n: u32, addr: u64, keys: impl Fn(u32) -> SymKey) -> dynrel::SectionRecords {
     let recs = Recs(
         (0..n)
-            .map(|i| Reloc { r_offset: 8 * u64::from(i), key: keys(i), r_type: ABS64, addend: i64::from(i) })
+            .map(|i| Reloc {
+                r_offset: 8 * u64::from(i),
+                key: keys(i),
+                r_type: ABS64,
+                addend: i64::from(i),
+            })
             .collect(),
     );
     let bytes = vec![0u8; 8 * n as usize];
@@ -80,10 +85,10 @@ fn section(n: u32, addr: u64, keys: impl Fn(u32) -> SymKey) -> dynrel::SectionRe
     };
     let value = |k: SymKey, a: i64| -> Option<u64> {
         let s = match k.as_global() {
-            Some(SymbolId(1) | SymbolId(2)) => 0,
+            Some(SymbolId(1 | 2)) => 0,
             _ => 0x10_0000,
         };
-        Some((s as i64 + a) as u64)
+        Some((i64::from(s) + a) as u64)
     };
     let dynsym = |id: SymbolId| -> Option<u32> { (id.0 <= 2).then_some(10 - id.0) };
     let cx = SectionCx { arch: &A64::M1, scan, addr, value: &value, dynsym: &dynsym };
@@ -116,14 +121,19 @@ fn local(_: u32) -> SymKey {
 // shared or weak-dynamic key, `r_sym` its `.dynsym` index, addend `A`.
 #[test]
 fn d46_section_records_by_target_kind() {
-    let keys = |i: u32| SymKey::global(SymbolId(match i % 3 {
-        0 => 5,
-        1 => 1,
-        _ => 2,
-    }));
+    let keys = |i: u32| {
+        SymKey::global(SymbolId(match i % 3 {
+            0 => 5,
+            1 => 1,
+            _ => 2,
+        }))
+    };
     let r = section(6, 0x4000, keys);
     assert_eq!(r.relative.len(), 2);
-    assert_eq!(r.relative[0], DynRecord { r_offset: 0x4000, r_sym: 0, r_type: 1027, addend: 0x10_0000 });
+    assert_eq!(
+        r.relative[0],
+        DynRecord { r_offset: 0x4000, r_sym: 0, r_type: 1027, addend: 0x10_0000 }
+    );
     assert_eq!(r.relative[1].addend, 0x10_0003);
     assert_eq!(
         r.other,
@@ -192,7 +202,7 @@ fn d40_a_count_mismatch_is_an_error() {
 // after the RELATIVE part; any window gives the same bytes.
 #[test]
 fn d40_rela_dyn_windows() {
-    use mortar_core::demands::{DynCounts, Demands};
+    use mortar_core::demands::{Demands, DynCounts};
     let r = section(6, 0x4000, |i| SymKey::global(SymbolId([5, 1, 2][i as usize % 3])));
     let mut d = Demands::empty(8);
     d.dyn_relocs = vec![(SectionId(0), DynCounts([2, 4, 0, 0]))].into();

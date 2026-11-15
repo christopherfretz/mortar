@@ -94,7 +94,16 @@ impl RelaPlan {
         let copies = u32::try_from(copies).map_err(|_| internal::<SynthError>("copies"))?;
         relative += u64::from(got_relative);
         other += u64::from(got_other) + u64::from(copies);
-        Ok(Self { class, rel, sections: sections.into(), got_relative, got_other, copies, relative, other })
+        Ok(Self {
+            class,
+            rel,
+            sections: sections.into(),
+            got_relative,
+            got_other,
+            copies,
+            relative,
+            other,
+        })
     }
 
     /// The bytes of one record.

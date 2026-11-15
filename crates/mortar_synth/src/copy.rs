@@ -18,7 +18,9 @@ use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::layout::{CopyAlloc, CopyPlace};
 use mortar_core::resolution::{Def, Resolution};
 use mortar_core::{FileId, SymKey, SymbolId};
-use mortar_elf::consts::{PF_W, PT_GNU_RELRO, PT_LOAD, STT_FUNC, STT_GNU_IFUNC, STT_TLS, STV_PROTECTED};
+use mortar_elf::consts::{
+    PF_W, PT_GNU_RELRO, PT_LOAD, STT_FUNC, STT_GNU_IFUNC, STT_TLS, STV_PROTECTED,
+};
 use mortar_elf::{SectionIndex, SymbolIndex};
 
 use crate::error::{SynthError, internal};
@@ -138,7 +140,10 @@ pub fn copy_plan(demands: &Demands, defs: &dyn CopyDefs) -> Result<CopyPlan, Syn
     let mut groups: BTreeMap<(FileId, u64), Group> = BTreeMap::new();
     for key in demands.keys_with(DemandFlags::COPY).filter_map(SymKey::as_global) {
         let d = defs.copy_def(key).ok_or_else(|| {
-            internal::<SynthError>(format!("symbol {}: a COPY demand without a shared definition", key.0))
+            internal::<SynthError>(format!(
+                "symbol {}: a COPY demand without a shared definition",
+                key.0
+            ))
         })?;
         let refused = d.visibility == STV_PROTECTED
             || d.size == 0

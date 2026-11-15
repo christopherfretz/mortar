@@ -30,12 +30,12 @@
 
 pub mod events;
 
+mod copies;
 mod driver;
 mod report;
 mod view;
 mod walk;
 pub mod weak;
-mod copies;
 
 pub use walk::{Visit, Walker};
 

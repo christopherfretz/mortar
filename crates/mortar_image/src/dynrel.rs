@@ -63,12 +63,7 @@ pub fn roles(arch: &dyn Arch, cx: &ScanCx<'_>, at: &RelocAt<'_>) -> Vec<DynRole>
 /// `TPOFF` record holds 0). Only a `Shlib` or `WeakDyn` target can make
 /// such a record, so a static output never pays for the call.
 #[must_use]
-pub fn zeroed_place(
-    arch: &dyn Arch,
-    kind: TargetKind,
-    cx: &ScanCx<'_>,
-    at: &RelocAt<'_>,
-) -> bool {
+pub fn zeroed_place(arch: &dyn Arch, kind: TargetKind, cx: &ScanCx<'_>, at: &RelocAt<'_>) -> bool {
     if !matches!(kind, TargetKind::Shlib { .. } | TargetKind::WeakDyn) {
         return false;
     }
@@ -243,8 +238,7 @@ impl RelaDyn {
     /// The size in bytes.
     #[must_use]
     pub fn size(&self) -> u64 {
-        self.relative.len() as u64
-            + self.other.len() as u64 * rela::entsize(self.class, self.form)
+        self.relative.len() as u64 + self.other.len() as u64 * rela::entsize(self.class, self.form)
     }
 
     /// Fills the window's range.

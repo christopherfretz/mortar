@@ -318,7 +318,13 @@ impl GotPlan {
         let mut records: Vec<GotRecord> = Vec::new();
         let mut relative = 0u32;
         let mut plain = |offset: u64, role: DynRole, k: SymKey| -> Result<(), SynthError> {
-            records.push(GotRecord { offset, role, r_type: ty(role)?, key: Some(k), r_sym: index(k)? });
+            records.push(GotRecord {
+                offset,
+                role,
+                r_type: ty(role)?,
+                key: Some(k),
+                r_sym: index(k)?,
+            });
             Ok(())
         };
         let got_kinds: Box<[TargetKind]> = slots.got.iter().map(|&k| kinds.kind(k)).collect();
@@ -393,7 +399,8 @@ impl GotPlan {
         } else {
             (u64::from(chunk.header), u64::from(chunk.entry))
         };
-        let is_shared = |list: &[SymKey]| -> Box<[bool]> { list.iter().map(|&k| shared(k)).collect() };
+        let is_shared =
+            |list: &[SymKey]| -> Box<[bool]> { list.iter().map(|&k| shared(k)).collect() };
         Ok(Self {
             word: facts.word,
             class: facts.class,
@@ -616,10 +623,9 @@ impl GotPlan {
         let Some(d) = &self.dynamic else { return false };
         let i = index as usize;
         match region {
-            Region::Addr => matches!(
-                d.got_kinds.get(i),
-                Some(TargetKind::Shlib { .. } | TargetKind::WeakDyn)
-            ),
+            Region::Addr => {
+                matches!(d.got_kinds.get(i), Some(TargetKind::Shlib { .. } | TargetKind::WeakDyn))
+            }
             Region::TpOff => d.ie_shared.get(i).copied().unwrap_or(false),
             Region::TlsGd => d.gd_shared.get(i).copied().unwrap_or(false),
             Region::TlsDesc => d.desc_shared.get(i).copied().unwrap_or(false),
@@ -768,8 +774,13 @@ impl GotPlan {
                         index: n32,
                     };
                     buf.fill(0);
-                    arch.write_plt(self.variant, PltPart::Entry { chunk: 0, n: n32 }, &cx, &mut buf)
-                        .map_err(|e| (n32, e))?;
+                    arch.write_plt(
+                        self.variant,
+                        PltPart::Entry { chunk: 0, n: n32 },
+                        &cx,
+                        &mut buf,
+                    )
+                    .map_err(|e| (n32, e))?;
                     out.put(self.plt_entry(n32), &buf);
                 }
             }
@@ -804,9 +815,11 @@ impl GotPlan {
         Ok(())
     }
 
-    /// Fills the window's range of `.rela.plt` (S-69): one `IRELATIVE`
-    /// per IPLT entry, `r_offset` its `.got.plt` word, symbol 0, addend
-    /// the resolver (RELA).
+    /// Fills the window's range of `.rela.plt` (S-69, `spec/dyn.md`
+    /// D-41): in a dynamic output first one `JUMP_SLOT` per PLT entry in
+    /// PLT order (its `.got.plt` word, the key's `.dynsym` index, addend
+    /// 0); then one `IRELATIVE` per IPLT entry, `r_offset` its `.got.plt`
+    /// word, symbol 0, addend the resolver (RELA).
     pub fn write_rela_plt(
         &self,
         at: &GotAddrs,

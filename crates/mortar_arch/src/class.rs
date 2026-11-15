@@ -333,12 +333,16 @@ pub fn class_outcome(
     let none = GlobalFlags::empty();
     let read_only = ClassOutcome::Incompatible(Incompatible::ReadOnly);
     // `spec/dyn.md` D-43, D-44: in a `Pie`, a `Pc` use of shared data is
-    // `C` (a `COPY`); a non-GOT address use of a shared function (the
-    // `C` cells of the `Exec` row other than `AbsWord`'s) is refused by
-    // name. Only a dynamic `Pie` has `Shlib` targets.
+    // `C` (a `COPY`), and so is a `Lo` use (WP-046 finding: AArch64's
+    // `-fno-pic` read is `ADR_PREL_PG_HI21` (`Pc`) paired with an
+    // `*_ABS_LO12_NC` (`Lo`), whose low 12 bits a PIE's page-aligned
+    // load does not change; refusing the `Lo` half would refuse the copy
+    // GNU ld and lld make); a non-GOT address use of a shared function
+    // (the `C` cells of the `Exec` row other than `AbsWord`'s) is refused
+    // by name. Only a dynamic `Pie` has `Shlib` targets.
     if output == OutputKind::Pie && matches!(target, TargetKind::Shlib { .. }) {
         match class {
-            DemandClass::Pc if !func => return d(DemandFlags::COPY, none, None),
+            DemandClass::Pc | DemandClass::Lo if !func => return d(DemandFlags::COPY, none, None),
             DemandClass::Pc | DemandClass::Lo | DemandClass::AbsNarrow if func => {
                 return ClassOutcome::Refused(DynRefusal::CanonicalPltInPie);
             }

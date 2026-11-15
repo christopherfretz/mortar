@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU16, Ordering};
 
 use mortar_arch::seq::{disjoint_in_order, overlaps};
 use mortar_arch::{
-    DemandOut, DemandSink, DynRefusal, DynRole, Howto, Incompatible, PlaceFacts, ProofRun, RefName, RelocAt, ScanCx,
-    ScanError, Site, UnitWindow,
+    DemandOut, DemandSink, DynRefusal, DynRole, Howto, Incompatible, PlaceFacts, ProofRun, RefName,
+    RelocAt, ScanCx, ScanError, Site, UnitWindow,
 };
 use mortar_core::demands::{DemandFlags, DynCounts, DynKind, GlobalFlags};
 use mortar_core::par::SCAN_BLOCK;

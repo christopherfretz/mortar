@@ -58,11 +58,11 @@ pub mod shstrtab;
 pub mod symtab;
 
 pub use chunks::{SynthKind, chunk_ids};
+pub use copy::{CopyDef, CopyDefs, CopyPlan, InputCopyDefs, copy_plan};
 pub use dynstr::{DynNames, dynstr_plan};
 pub use dynsym::{DynsymPlan, dynsym_plan};
 pub use eh::{EhInfo, EhPlan, EhSource, EhValue, EhWho, MergeEh};
 pub use error::{Failed, PHASE, SynthError};
-pub use copy::{CopyDef, CopyDefs, CopyPlan, InputCopyDefs, copy_plan};
 pub use got::{DynGotCx, GotPlan, GotRecord, KeyKinds, SlotValues};
 pub use hdr::HdrPlan;
 pub use image::{COMMENT, Comment, Division, FillCx, SizeCx, SynthChunk};
