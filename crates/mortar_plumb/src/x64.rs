@@ -98,7 +98,7 @@ pub const fn rex_rb(rex: u8) -> u8 {
 
 /// The `ModRM` of a RIP-relative operand (`mod` 00, `rm` 101): its `reg`.
 pub const fn rip_reg(modrm: u8) -> Option<u8> {
-    if modrm & 0xc7 == 0x05 { Some((modrm >> 3) & 7) } else { None }
+    crate::x86op::disp32_reg(modrm)
 }
 
 /// Whether `b` is a REX.W prefix without X and B (`48` or `4c`).

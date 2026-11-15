@@ -225,6 +225,18 @@ pub struct PlaceFacts {
     /// The place's section has `SHF_WRITE` (so a dynamic relocation there
     /// is not a text relocation).
     pub writable: bool,
+    /// The place's section has `SHF_EXECINSTR`; `None` where the caller
+    /// cannot know it (arch.md §3.4; i386 X86-13 step 1 refuses a GOT form
+    /// outside code at scan when it is known, at fill otherwise).
+    pub exec: Option<bool>,
+}
+
+impl PlaceFacts {
+    /// A place whose `SHF_EXECINSTR` the caller does not know.
+    #[must_use]
+    pub const fn new(alloc: bool, writable: bool) -> Self {
+        Self { alloc, writable, exec: None }
+    }
 }
 
 /// The demands of one relocation by its class (§3.4, §4.3).

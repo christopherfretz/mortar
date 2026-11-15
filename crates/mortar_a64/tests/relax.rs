@@ -13,7 +13,7 @@ use mortar_arch::{
 use mortar_core::{FileId, SectionId};
 use support::{Case, M2, Sink, Tables, key, raised, scan_all, words};
 
-const ALLOC: PlaceFacts = PlaceFacts { alloc: true, writable: false };
+const ALLOC: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
 const NOP: u32 = 0xD503_201F;
 const TLS: TlsBlock = TlsBlock { start: 0x42_0000, size: 0x2_0000, align: 16 };
 /// `S` with `T = TPREL(S) = 0x1_2360` (variant I, 16-byte TCB).

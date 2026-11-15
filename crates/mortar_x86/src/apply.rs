@@ -219,13 +219,16 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
     }
 }
 
-/// The i386 refusals the generic table does not have: the X86-13 operand
-/// reading (steps 2 and 3; step 1 needs `SHF_EXECINSTR`, which only fill
-/// has), the no-base GOT form in static-pie (X86-27, X86-58), and `GOTOFF`
-/// and `Pc` against an IFUNC in static-pie (X86-50).
+/// The i386 refusals the generic table does not have: X86-13 (step 1 where
+/// the place's `SHF_EXECINSTR` is known, `PlaceFacts.exec`; fill refuses
+/// the rest; steps 2 and 3), the no-base GOT form in static-pie (X86-27,
+/// X86-58), and `GOTOFF` and `Pc` against an IFUNC in static-pie (X86-50).
 fn i386_cells(cx: &ScanCx<'_>, at: &RelocAt<'_>, kind: TargetKind) -> Result<(), ScanError> {
     let pie = cx.output == OutputKind::Pie;
     match at.r_type {
+        GOT32 | GOT32X if cx.place.exec == Some(false) => {
+            Err(ScanError::Incompatible(Incompatible::InstructionMismatch))
+        }
         GOT32 | GOT32X => match forms::got_operand(at.site) {
             None => Err(ScanError::Incompatible(Incompatible::InstructionMismatch)),
             Some(Operand::NoBase) if pie => Err(ScanError::Incompatible(Incompatible::ReadOnly)),
@@ -422,7 +425,7 @@ fn value(
     // non-alloc place is the offset in the TLS block.
     if writes_dtprel(
         h.class,
-        mortar_arch::PlaceFacts { alloc: out.alloc, writable: false },
+        mortar_arch::PlaceFacts { alloc: out.alloc, writable: false, exec: out.exec },
         sym.tls,
     ) {
         let x = tls_off(cx, sym, a, TlsAbi::dtp_rel)?;

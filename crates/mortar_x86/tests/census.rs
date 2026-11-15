@@ -49,8 +49,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use elf::{
-    Image, SHF_ALLOC, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_UNDEF, SHT_REL, SHT_RELA, STB_WEAK,
-    STT_GNU_IFUNC, STT_SECTION, STT_TLS, Shdr, is_elf32, u16_at,
+    Image, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_UNDEF, SHT_REL, SHT_RELA,
+    STB_WEAK, STT_GNU_IFUNC, STT_SECTION, STT_TLS, Shdr, is_elf32, u16_at,
 };
 use mortar_arch::{
     Arch, DemandSink, Incompatible, OutputKind, PlaceFacts, RefName, Reloc, RelocAt, ScanCx,
@@ -430,8 +430,11 @@ fn census_object(obj: &Image, what: &str, c: &mut Census) {
             .into_iter()
             .map(|r| Reloc { r_offset: r.offset, key: key(r.sym), r_type: r.r_type, addend: 0 })
             .collect();
-        let place =
-            PlaceFacts { alloc: sec.flags & SHF_ALLOC != 0, writable: sec.flags & SHF_WRITE != 0 };
+        let place = PlaceFacts {
+            alloc: sec.flags & SHF_ALLOC != 0,
+            writable: sec.flags & SHF_WRITE != 0,
+            exec: Some(sec.flags & SHF_EXECINSTR != 0),
+        };
         let input = obj.data(sec);
         let proof = all_code(input.len());
         c.records += relocs.len() as u64;

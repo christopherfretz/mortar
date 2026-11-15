@@ -19,8 +19,8 @@ const GOT: u64 = 0x080e_5000;
 const SLOT: u64 = 0x080e_500c;
 const S: u64 = 0x080e_6020;
 const TLS: TlsBlock = TlsBlock { start: 0x080e_4900, size: 0x20, align: 4 };
-const TEXT: PlaceFacts = PlaceFacts { alloc: true, writable: false };
-const DATA: PlaceFacts = PlaceFacts { alloc: true, writable: true };
+const TEXT: PlaceFacts = PlaceFacts { alloc: true, writable: false, exec: None };
+const DATA: PlaceFacts = PlaceFacts { alloc: true, writable: true, exec: None };
 
 fn tables(kind: TargetKind, s: u64) -> Tables {
     let mut t = Tables::default();

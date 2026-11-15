@@ -173,7 +173,7 @@ fn main() {
     let scx = ScanCx {
         tables: &tables,
         output: OutputKind::Static,
-        place: PlaceFacts { alloc: true, writable: false },
+        place: PlaceFacts { alloc: true, writable: false, exec: None },
         name: b".text",
     };
     let mut best_scan = f64::MAX;

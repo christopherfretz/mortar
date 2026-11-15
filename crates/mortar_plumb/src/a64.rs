@@ -65,14 +65,18 @@ pub enum Form {
     /// `G + A - P`: the slot holds S and A is added outside it (x86-64,
     /// `spec/x64.md` X-4).
     PrelA,
-    /// `G + A - GOT` (x86-64 `GOT64`).
+    /// `G + A - GOT` (x86-64 `GOT64`; i386 `GOT32` with a base register,
+    /// `TLS_GOTIE`).
     OffA,
+    /// `G + A`: the slot's absolute address (i386 `GOT32`/`GOT32X` with no
+    /// base register and `TLS_IE`, `spec/x86.md` X-13, §5).
+    AbsA,
 }
 
 impl Form {
     /// Whether the addend is outside the slot: the slot holds S, not S+A.
     pub const fn addend_outside(self) -> bool {
-        matches!(self, Form::PrelA | Form::OffA)
+        matches!(self, Form::PrelA | Form::OffA | Form::AbsA)
     }
 }
 
