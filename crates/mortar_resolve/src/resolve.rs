@@ -539,7 +539,8 @@ fn section_rows<V: View>(
             Ok((kind, note)) => {
                 row.kind = kind;
                 let excluded = sections::excluded_reason(&s, note);
-                row.state = sections::state(kind, excluded, dropped, ctx.opts.strip_debug);
+                let strip = ctx.opts.strip_debug && sections::is_debug(&s);
+                row.state = sections::state(kind, excluded, dropped, strip);
                 match note {
                     Note::Retain if row.is_kept() => out.retained.push((file, SectionIndex(i))),
                     Note::GnuWarning if !dropped => out.problems.push(Problem {
@@ -595,6 +596,18 @@ fn section_rows<V: View>(
                     why: SectionRefusal::SecondReloc(s.info),
                 },
             });
+        }
+    }
+    // synth.md S-6: a `Merge` section that is not certain to merge safely
+    // is placed whole, as `Regular` (§10), so every later phase (layout's
+    // `place`, `addr_in`, the symbol stage) treats it as one piece.
+    for i in 1..n {
+        if rows[i as usize].kind != SectionKind::Merge {
+            continue;
+        }
+        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+        if sections::placed_whole(&s, rows[i as usize].reloc.0 != 0) {
+            rows[i as usize].kind = SectionKind::Regular;
         }
     }
     // A `SHF_LINK_ORDER` section outside the groups whose linked section

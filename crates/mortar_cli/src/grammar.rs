@@ -619,7 +619,7 @@ impl Parser<'_> {
                         "sha256" => Some(BuildId::Sha256),
                         "fast" => Some(BuildId::Fast),
                         "uuid" => Some(BuildId::Uuid),
-                        hex => Some(BuildId::Hex(hex[2..].to_owned())),
+                        hex => Some(BuildId::Hex(hex.to_owned())),
                     },
                 };
             }
@@ -861,6 +861,7 @@ fn z_field(plan: &mut Plan, field: ZField, value: Option<OsString>) {
         ZField::Copyreloc(on) => z.copyreloc = Some(on),
         ZField::Combreloc(on) => z.combreloc = Some(on),
         ZField::Sectionheader(on) => z.sectionheader = Some(on),
+        ZField::MemorySeal(on) => z.memory_seal = Some(on),
     }
 }
 
@@ -888,15 +889,21 @@ fn check_value(values: Values, value: &OsStr) -> Result<(), String> {
             }
         }
         Values::BuildId => {
-            let hex = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X"));
-            match hex {
-                Some(digits)
-                    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_hexdigit()) =>
+            // spec: image.md I-70 (`0x` is case-sensitive, as GNU ld's and
+            // lld's; then one or more pairs of hexadecimal digits).
+            if let Some(digits) = text.strip_prefix("0x") {
+                if !digits.is_empty()
+                    && digits.len().is_multiple_of(2)
+                    && digits.bytes().all(|b| b.is_ascii_hexdigit())
                 {
                     Ok(())
+                } else {
+                    Err("expected an even number of hexadecimal digits".to_owned())
                 }
-                _ if matches!(text, "none" | "md5" | "sha1" | "sha256" | "fast" | "uuid") => Ok(()),
-                _ => Err("expected one of: none, md5, sha1, sha256, fast, uuid, 0xHEX".to_owned()),
+            } else if matches!(text, "none" | "md5" | "sha1" | "sha256" | "fast" | "uuid") {
+                Ok(())
+            } else {
+                Err("expected one of: none, md5, sha1, sha256, fast, uuid, 0xHEX".to_owned())
             }
         }
     }

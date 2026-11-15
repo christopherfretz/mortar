@@ -53,6 +53,26 @@ fn statuses() {
     assert_eq!(
         supported,
         [
+            // The front of the pipeline honors these (WP-027a).
+            "-m",
+            "-e",
+            "-s",
+            "-S",
+            "-x",
+            "-X",
+            "--discard-none",
+            "--build-id",
+            "--eh-frame-hdr",
+            "--no-eh-frame-hdr",
+            "--no-gc-sections",
+            "-l",
+            "-(",
+            "-)",
+            "--as-needed",
+            "--no-as-needed",
+            "-Bstatic",
+            "-L",
+            "--hash-style",
             "--error-limit",
             "--fatal-warnings",
             "--no-fatal-warnings",
@@ -63,6 +83,11 @@ fn statuses() {
             "-v",
             "-V",
             "--help",
+            "--threads",
+            "--time-phases",
+            "--fix-cortex-a53-843419",
+            "-z memory-seal",
+            "-z nomemory-seal",
         ]
     );
     for row in rows() {
@@ -73,8 +98,13 @@ fn statuses() {
         if !matches!(row.arg, Arg::None) {
             assert!(!row.meta.is_empty(), "{} names its value", row.name());
         }
-        // A row of mortar's own is reserved, so refused.
-        if !row.linkers.gnu() && !row.linkers.lld() && !row.linkers.mold() {
+        // A row of mortar's own is reserved, so refused; `--time-phases`
+        // is mortar's own and implemented (image.md §11).
+        if !row.linkers.gnu()
+            && !row.linkers.lld()
+            && !row.linkers.mold()
+            && row.name() != "--time-phases"
+        {
             assert_eq!(row.status, Status::Refused, "{}", row.name());
         }
         // An option of some targets only is GNU ld's.

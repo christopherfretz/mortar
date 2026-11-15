@@ -81,6 +81,32 @@ fn is_debug_name(name: &[u8]) -> bool {
     name.starts_with(b".debug")
 }
 
+/// Whether `-S`/`-s` drop the section (§10): a non-allocated `.debug*`
+/// section, of kind `Debug` or, for the string sections (`.debug_str`,
+/// `.debug_line_str`: `SHF_MERGE|SHF_STRINGS`), `Merge`.
+pub fn is_debug(s: &SectionInfo<'_>) -> bool {
+    s.flags & SHF_ALLOC == 0 && is_debug_name(s.name)
+}
+
+/// The largest `sh_entsize` a `Merge` section is split by (synth.md S-6).
+pub const MAX_MERGE_ENTSIZE: u64 = 1 << 16;
+
+/// synth.md S-6: whether a section classified `Merge` is placed whole, as
+/// `Regular`: it is writable or code, the target of a relocation section
+/// (`relocated`), TLS, `SHF_COMPRESSED` (its bytes are not the pieces'
+/// until decompressed, S-5), or of a shape merging does not take
+/// (`sh_addralign` not a power of two, `sh_entsize` above 2^16).
+/// `mortar_merge::cut::placed_whole` is the same predicate, kept for its
+/// bare-object tests; after this, phase 60 sees no such section.
+#[must_use]
+pub fn placed_whole(s: &SectionInfo<'_>, relocated: bool) -> bool {
+    s.flags & (SHF_WRITE | SHF_EXECINSTR | SHF_TLS | SHF_COMPRESSED) != 0
+        || relocated
+        || !(s.addralign == 0 || s.addralign.is_power_of_two())
+        || s.entsize == 0
+        || s.entsize > MAX_MERGE_ENTSIZE
+}
+
 /// The kind of a section, by the first row of §10's table that matches,
 /// leaving out the rows that need the COMDAT keeper (a member of a group
 /// not kept takes its kind from the later rows; [`state`] decides its
@@ -173,7 +199,8 @@ fn retain(s: &SectionInfo<'_>) -> Note {
 /// The state of a section of kind `kind` (§10): `Dropped(Comdat)` for a
 /// member of a group not kept that carries output, then by kind;
 /// `excluded` is the reason for an `Excluded` kind ([`excluded_reason`]);
-/// `strip_debug` (`-S`/`-s`) drops `Debug` sections.
+/// `strip_debug` (`-S`/`-s`, and the section is [`is_debug`]) drops the
+/// section.
 pub fn state(
     kind: SectionKind,
     excluded: DropReason,
@@ -189,7 +216,7 @@ pub fn state(
             SectionState::Dropped(DropReason::Consumed)
         }
         K::Excluded => SectionState::Dropped(excluded),
-        K::Debug if strip_debug => SectionState::Dropped(DropReason::Stripped),
+        K::Debug | K::Merge if strip_debug => SectionState::Dropped(DropReason::Stripped),
         _ => SectionState::Kept,
     }
 }

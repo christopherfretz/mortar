@@ -19,9 +19,12 @@ fn a_failed_link_reports_on_stderr_and_leaves_no_output() {
     assert_eq!(outcome.stdout_text(), "");
     assert_eq!(
         outcome.stderr_text(),
-        "mortar: error: unsupported option: -o\n\
-         mortar: error: unsupported feature: linking\n\
-         >>> no link is implemented yet (docs/ROADMAP.md, milestone M1)\n"
+        format!(
+            "mortar: error: unsupported option: -o\n\
+             mortar: error: {a}: cannot open {a}: No such file or directory\n\
+             mortar: error: target emulation unknown: -m or at least one .o file required\n",
+            a = scratch.join("a.o").display()
+        )
     );
     assert!(!output.exists(), "a failed link leaves no output file");
 }
@@ -39,10 +42,7 @@ fn diagnostics_start_with_the_invoked_name() {
         assert_eq!(outcome.status.and_then(|s| s.code()), Some(1));
         assert_eq!(outcome.stdout_text(), "");
         let stderr = outcome.stderr_text();
-        assert!(
-            stderr.starts_with(&format!("{name}: error: unsupported feature: linking\n")),
-            "{stderr:?}"
-        );
+        assert!(stderr.starts_with(&format!("{name}: error: a.o: cannot open a.o")), "{stderr:?}");
     }
 }
 
@@ -93,8 +93,9 @@ fn version_through_a_symlink() {
     assert_eq!(outcome.stderr_text(), "");
 }
 
-// spec: cli.md §6, diag.md §7 (gcc runs mortar as its `ld`: the link
-// fails with status 1 and leaves no output)
+// spec: cli.md §6, diag.md §7 (gcc runs mortar as its `ld`: the front
+// lays the link out, then the output file is refused — WP-027b writes it —
+// so the link fails with status 1 and leaves no output)
 #[cfg(unix)]
 #[test]
 fn a_gcc_link_through_mortar_fails_cleanly() {
@@ -106,12 +107,24 @@ fn a_gcc_link_through_mortar_fails_cleanly() {
     let src = scratch.write("h.c", "int main(void) { return 0; }\n");
     let output = scratch.join("h");
     let outcome = run_with(
-        Command::new(gcc).arg(format!("-B{}/", bin.display())).arg(&src).arg("-o").arg(&output),
+        Command::new(gcc)
+            .arg(format!("-B{}/", bin.display()))
+            .arg("-static")
+            .arg(&src)
+            .arg("-o")
+            .arg(&output),
         &[],
         DEFAULT_TIMEOUT,
     );
     assert_eq!(outcome.status.and_then(|s| s.code()), Some(1), "{}", outcome.stderr_text());
     let stderr = outcome.stderr_text();
-    assert!(stderr.contains("ld: error: unsupported feature: linking\n"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "ld: error: unsupported option: -o\n\
+             ld: error: unsupported feature: writing the output file\n\
+             >>> the link was laid out; the image and the output file are WP-027b\n"
+        ),
+        "{stderr}"
+    );
     assert!(!output.exists(), "a failed link leaves no output file");
 }

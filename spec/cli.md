@@ -108,7 +108,13 @@ An option is looked up in this order:
     `--color-diagnostics=auto|always|never`, `--icf=all|safe|none`, and
     the others in `docs/status/options.md`;
   - a decimal count: `--error-limit`, `--thread-count`;
-  - a build-ID style, or `0x` followed by hex digits.
+  - a build-ID style, or `0x` (case-sensitive) followed by one or more
+    pairs of hex digits (`spec/image.md` I-70). `0x` with an odd count,
+    no digits or a non-hex digit has the note `expected an even number
+    of hexadecimal digits`; `0X…` is not a style (GNU ld ignores it with
+    a warning, lld 22 errors `unknown --build-id style`; mold alone
+    accepts it — checked by WP-027a). `Hex` keeps the whole text, `0x`
+    included.
 
   A value that fails its check is `invalid-option-value`, with a note
   listing what is accepted. Other values (paths, symbols, addresses,
@@ -406,6 +412,8 @@ A line that has `-T` or `-dT` needs no input file.
 - `copyreloc`;
 - `combreloc`;
 - `sectionheader`;
+- `memory_seal` (`-z memory-seal`, `-z nomemory-seal`; the last wins;
+  `spec/synth.md` S-95's `MEMORY_SEAL`, R-C3);
 - the sizes `max-page-size`, `common-page-size` and `stack-size`, as
   text (§2.7).
 
@@ -418,8 +426,10 @@ lands in `plan.other` (§3.12).
 - `gc_sections`;
 - `icf`;
 - `build_id` (`None` means no note; `--build-id` alone means `Default`);
-- `strip` (`-s`, `-S`, `--strip-*`);
-- `discard` (`-x`, `-X`, `--discard-*`);
+- `strip` (`-s`, `-S`, `--strip-*`; the last wins, `--strip-discarded`
+  is accepted and has no effect, `spec/synth.md` S-84);
+- `discard` (`-x`, `-X`, `--discard-none`; the last wins; with none of
+  them the default of `spec/synth.md` S-78 applies, which is not `-X`);
 - `compress_debug_sections`;
 - `eh_frame_hdr`;
 - `magic` (`-n`, `-N`, `--omagic`, ...);

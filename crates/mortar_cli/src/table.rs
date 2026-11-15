@@ -372,6 +372,8 @@ pub enum ZField {
     Combreloc(bool),
     /// `sectionheader`, `nosectionheader`.
     Sectionheader(bool),
+    /// `memory-seal`, `nomemory-seal`.
+    MemorySeal(bool),
 }
 
 /// What an address option places.
@@ -581,6 +583,7 @@ impl Lands {
                 ZField::Copyreloc(_) => "z.copyreloc",
                 ZField::Combreloc(_) => "z.combreloc",
                 ZField::Sectionheader(_) => "z.sectionheader",
+                ZField::MemorySeal(_) => "z.memory_seal",
             },
             Self::GcSections(_) => "shaping.gc_sections",
             Self::Icf | Self::NoIcf => "shaping.icf",

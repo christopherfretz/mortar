@@ -820,8 +820,9 @@ Resolution only records `Undefined{weak: true}` and `ref_dynamic`.
 symbol nosuch; defaulting to 0000000000400078`` (the start of `.text`),
 lld ``cannot find entry symbol nosuch; not setting start address``, mold
 ``entry symbol is not defined: nosuch`` (E13). mortar warns
-`entry-not-found` and the entry is layout's default (`spec/layout.md`:
-GNU's, the start of `.text`). If `SYM` parses as a number and no file
+`entry-not-found` (once: resolve's, at the key of the table in §14;
+layout does not repeat it) and `e_entry = 0` (`spec/layout.md` L-103,
+lld's and mold's value). If `SYM` parses as a number and no file
 mentions it, it is that address (GNU ld manual, `-e`). A shared object
 (M4) without the option has no entry and no warning.
 
@@ -1313,7 +1314,7 @@ classification is per file (I-file), the state needs `comdat`:
 | name `.gnu.linkonce.*` | — | refused (§6.6) | |
 | name prefix `.zdebug` | — | `Refused{Feature, ".zdebug compressed debug sections"}` | (GNU-style compression, superseded by `SHF_COMPRESSED`) |
 | `SHT_X86_64_UNWIND` (x86-64) or name `.eh_frame` | `EhFrame` | `Kept` | |
-| `SHF_MERGE` with entry size > 0 | `Merge` | `Kept` | |
+| `SHF_MERGE` with entry size > 0 | `Merge`, or `Regular` when `spec/synth.md` S-6 places it whole (writable, code, TLS, relocated, `SHF_COMPRESSED`, odd shape) | `Kept`; a non-alloc `.debug*` one (`.debug_str`, `.debug_line_str`) under `-S`/`-s`: `Dropped(Stripped)`, as the `Debug` row (WP-027a: GNU ld, lld and mold drop them) | |
 | `SHF_MERGE` with entry size 0 | `Regular` | `Kept` (not merged; lld) | not verified with GNU ld |
 | non-alloc, name `.debug_*` | `Debug` | `Kept` (unless `-S`/`-s`: `Dropped(Stripped)`) | |
 | `SHT_NOTE` other | `Note` | `Kept` | |
