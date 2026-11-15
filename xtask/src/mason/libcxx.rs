@@ -71,6 +71,8 @@ struct Args {
     baseline: Option<PathBuf>,
     /// `--write-baseline <file>`: write mortar mode's baseline.
     write_baseline: Option<PathBuf>,
+    /// `--cflags <words>`: added to every compile (`MASON_CFLAGS`).
+    cflags: String,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -90,6 +92,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         collect: None,
         baseline: None,
         write_baseline: None,
+        cflags: String::new(),
     };
     let mut sample = None;
     let mut it = args.iter();
@@ -124,6 +127,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--report" => a.report = Some(PathBuf::from(value("--report")?)),
             "--mortar" => a.mortar = Some(PathBuf::from(value("--mortar")?)),
             "--out" => a.out = Some(PathBuf::from(value("--out")?)),
+            "--cflags" => a.cflags = value("--cflags")?,
             "--results" => a.results = Some(PathBuf::from(value("--results")?)),
             "--collect" => a.collect = Some(PathBuf::from(value("--collect")?)),
             "--baseline" => a.baseline = Some(PathBuf::from(value("--baseline")?)),
@@ -272,6 +276,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
             .env("MASON_TIMES", dir.join("times.tsv"))
             .env("MASON_XTASK", &me)
             .env("MASON_PLUMB", if args.plumb { "1" } else { "0" })
+            .env("MASON_CFLAGS", &args.cflags)
             .env("KILN_STATS_LOG", &stats);
         if let Some(p) = &mortar {
             c.env("MASON_MORTAR", p);
@@ -355,18 +360,17 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
 /// The records of the mode directories of `dir` (`names`, else every
 /// subdirectory with a `results.tsv`), in mode order.
 fn collect_dir(dir: &Path, names: Option<&[String]>) -> Result<Vec<outcomes::Rec>, String> {
-    let names: Vec<String> = match names {
-        Some(n) => n.to_vec(),
-        None => {
-            let mut v: Vec<String> = std::fs::read_dir(dir)
-                .map_err(|e| format!("{}: {e}", dir.display()))?
-                .filter_map(Result::ok)
-                .filter(|e| e.path().join("results.tsv").is_file())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            v.sort_by_key(|m| MODES.iter().position(|x| x == m).unwrap_or(usize::MAX));
-            v
-        }
+    let names: Vec<String> = if let Some(n) = names {
+        n.to_vec()
+    } else {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .filter_map(Result::ok)
+            .filter(|e| e.path().join("results.tsv").is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort_by_key(|m| MODES.iter().position(|x| x == m).unwrap_or(usize::MAX));
+        v
     };
     let mut recs = Vec::new();
     for m in &names {
@@ -501,10 +505,11 @@ fn render(args: &Args, modes: &[Mode]) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "## libc++ through the Mason lane\n\ndirs: {}; shard: {}; backend: {}\n",
+        "## libc++ through the Mason lane\n\ndirs: {}; shard: {}; backend: {}{}\n",
         args.dirs.join(" "),
         args.shard.as_deref().unwrap_or("all"),
-        args.backend
+        args.backend,
+        if args.cflags.is_empty() { String::new() } else { format!("; cflags: {}", args.cflags) }
     );
     let _ = writeln!(s, "| mode | summary | object jobs by back end |\n|---|---|---|");
     for m in modes {

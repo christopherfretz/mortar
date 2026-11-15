@@ -1556,6 +1556,7 @@ fn s9_4_second_lookup_in_objects() {
 // ---- §10 -------------------------------------------------------------------
 
 #[test]
+#[allow(clippy::too_many_lines)] // one row per line of §10's table
 fn s10_classification_table() {
     use SectionKind as K;
     type Want = Result<(SectionKind, SectionState), ()>;

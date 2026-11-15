@@ -141,16 +141,17 @@ pub fn classify(
         return Ok((K::Note, retain(s)));
     }
     match s.sh_type {
-        SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE => return Ok((K::Excluded, Note::None)),
+        // `.deplibs` (WP-034): the library specifiers are not honoured
+        // (GNU ld, mold); a library not loaded can only surface as a
+        // named undefined symbol, never as a different output.
+        SHT_LLVM_ADDRSIG | SHT_LLVM_CALL_GRAPH_PROFILE | SHT_LLVM_DEPENDENT_LIBRARIES => {
+            return Ok((K::Excluded, Note::None));
+        }
         // layout.md L-35 (§20.7): AArch64 build attributes are consumed;
         // the feature marking is the property note's (L-34).
         SHT_AARCH64_ATTRIBUTES if machine == Machine::AArch64 => {
             return Ok((K::Excluded, Note::None));
         }
-        // §10 (WP-034): the library specifiers are not honoured (GNU ld,
-        // mold); a library not loaded can only surface as a named
-        // undefined symbol, never as a different output.
-        SHT_LLVM_DEPENDENT_LIBRARIES => return Ok((K::Excluded, Note::None)),
         t if (0x6fff_4c00..=0x6fff_4cff).contains(&t) => {
             return Err(SectionRefusal::LlvmType(t));
         }

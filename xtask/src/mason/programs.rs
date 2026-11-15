@@ -221,6 +221,7 @@ struct Cell {
     ok: bool,
 }
 
+#[allow(clippy::too_many_lines)] // the tools, the work list and the report, in one place
 pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let args = parse(args)?;
     let Some(mason) = Mason::find_or_skip("programs")? else { return Ok(ExitCode::SUCCESS) };
@@ -400,7 +401,7 @@ fn compile(
         }
         argv.extend(var.flags.iter().map(|f| (*f).to_owned()));
         argv.push("-O0".into());
-        let cross = var.target.and_then(|_| tools.cross.as_ref());
+        let cross = var.target.and(tools.cross.as_ref());
         let target: Vec<String> = var.target.map(|t| format!("--target={t}")).into_iter().collect();
         let (prog, env): (&Path, &[(&str, &str)]) = match lang {
             Lang::Kiln => {
@@ -469,7 +470,7 @@ fn link_line(
     dir: &Path,
 ) -> Result<Vec<String>, String> {
     let mut argv: Vec<String> = vec!["-static".into()];
-    let cross = var.target.and_then(|_| tools.cross.as_ref());
+    let cross = var.target.and(tools.cross.as_ref());
     if !prog.gnu_driver {
         argv.extend(var.target.map(|t| format!("--target={t}")));
     }
@@ -557,7 +558,7 @@ fn run_cell(
             return cell;
         }
     };
-    let cross = var.target.and_then(|_| tools.cross.as_ref());
+    let cross = var.target.and(tools.cross.as_ref());
     for (name, linker) in &tools.linkers {
         let out = format!("out.{name}");
         let mut argv = with_output(&line, &out);
@@ -566,7 +567,7 @@ fn run_cell(
         if *name == "mortar" && cross.is_none() {
             argv.push(format!("-Map={out}.map"));
         }
-        let linker = match (cross, *name) {
+        let ld = match (cross, *name) {
             (Some(c), "bfd") => &c.bfd,
             _ => linker,
         };
@@ -574,7 +575,7 @@ fn run_cell(
             Some(c) => (c.qemu.clone(), vec![dir.join(&out).display().to_string()]),
             None => (dir.join(&out), Vec::new()),
         };
-        let r = match run_in(linker, &argv, dir, &[], TOOL_LIMITS) {
+        let r = match run_in(ld, &argv, dir, &[], TOOL_LIMITS) {
             Err(e) => Err(e),
             Ok(linked) if !linked.end.success() => Err(first_line(&linked)),
             Ok(linked) => {

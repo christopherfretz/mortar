@@ -5,6 +5,7 @@
 # glibc), drop the runner's -Bstatic/-Bdynamic/--as-needed, and use the
 # `ld` of $MASON_LANE/ld/$MASON_LD (GNU ld, lld, mold or mortar).
 # With MASON_LIB_FROM/MASON_LIB_TO, -L$MASON_LIB_FROM becomes -L$MASON_LIB_TO.
+# $MASON_CFLAGS (words) is added to every command (`--cflags`, e.g. -O2).
 : "${MASON_KILN:?}" "${MASON_MODE:?}"
 link=1
 for a in "$@"; do
@@ -13,7 +14,8 @@ for a in "$@"; do
   esac
 done
 [ $# = 0 ] && link=0
-if [ $link = 0 ] || [ "$MASON_MODE" = dyn ]; then exec "$MASON_KILN" "$@"; fi
+read -r -a cflags <<< "${MASON_CFLAGS:-}"
+if [ $link = 0 ] || [ "$MASON_MODE" = dyn ]; then exec "$MASON_KILN" "$@" "${cflags[@]}"; fi
 args=()
 for a in "$@"; do
   case "$a" in
@@ -22,4 +24,4 @@ for a in "$@"; do
     *) args+=("$a");;
   esac
 done
-exec "$MASON_KILN" "${args[@]}" -static -B"${MASON_LANE:?}/ld/${MASON_LD:?}"
+exec "$MASON_KILN" "${args[@]}" "${cflags[@]}" -static -B"${MASON_LANE:?}/ld/${MASON_LD:?}"

@@ -43,6 +43,7 @@ fn field(s: &str) -> String {
 }
 
 /// The file's text.
+#[allow(clippy::cast_precision_loss)] // microseconds: exact far beyond any link
 pub fn render(recs: &[Rec]) -> String {
     let mut s = String::from(HEADER);
     s.push('\n');
@@ -125,7 +126,7 @@ pub fn collect(mode: &str, dir: &Path) -> Result<Vec<Rec>, String> {
             let p = plumbs.entry(i).or_default();
             // A test's worst verdict: a finding or a failure over `clean`.
             if p.is_empty() || p == "-" || p == "plumb: clean" {
-                *p = f[4].trim().to_owned();
+                f[4].trim().clone_into(p);
             }
         }
     }
@@ -263,6 +264,7 @@ pub fn compare(
 
 /// The link-time summary of one mode: links, sum and median of the
 /// per-test link wall time, the 90th percentile, and the peak RSS.
+#[allow(clippy::cast_precision_loss)] // microseconds and counts: exact far beyond any run
 pub fn times(name: &str, m: &BTreeMap<&str, &Rec>) -> String {
     let mut ms: Vec<u64> = m.values().filter_map(|r| r.link_us).collect();
     let mut rss: Vec<u64> = m.values().filter_map(|r| r.rss_kib).collect();
