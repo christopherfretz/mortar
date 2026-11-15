@@ -42,6 +42,8 @@ enum SeqX {
     Bad(String, Vec<u8>, Option<(u64, u64)>),
     /// Not judged: the symbol cannot be resolved (a stripped output).
     Unknown(Reason),
+    /// Stage 3: kept for the loader, its GOT pair verified.
+    Kept,
 }
 
 /// Why T of a TLS reference is not known.
@@ -87,11 +89,13 @@ impl Engine<'_, '_> {
             && alloc
             && let Some(lead) = Self::x64_lead_of(recs, sorted, rec)
         {
-            return match self.x64_seq(oi, si, recs, sorted, lead) {
-                SeqX::Relaxed(rw, ..) => self.cov.add_accepted(rw, ty),
-                SeqX::Bad(..) => self.not_checked(Reason::TlsSequence, 1),
-                SeqX::Unknown(r) => self.not_checked(r, 1),
-            };
+            match self.x64_seq(oi, si, recs, sorted, lead) {
+                SeqX::Relaxed(rw, ..) => return self.cov.add_accepted(rw, ty),
+                SeqX::Bad(..) => return self.not_checked(Reason::TlsSequence, 1),
+                SeqX::Unknown(r) => return self.not_checked(r, 1),
+                // A kept sequence's call is an ordinary call.
+                SeqX::Kept => {}
+            }
         }
         // X-48 (mortar): a static output makes no TLS runtime call; a
         // branch or GOT load against `__tls_get_addr` that no GD/LD
@@ -129,6 +133,7 @@ impl Engine<'_, '_> {
                         self.fail(f);
                     }
                     SeqX::Unknown(r) => self.x64_unjudged(rec, r),
+                    SeqX::Kept => self.cov.add_verified(Via::GotSlot, ty),
                 };
             }
             Op::Slot(Slot::Desc | Slot::TpRel, _) | Op::DescCall | Op::TpRel => {
@@ -246,7 +251,34 @@ impl Engine<'_, '_> {
             }
             _ => return self.not_checked(Reason::Type, 1),
         };
+        let failed = self.cov.failed;
+        // Stage 3: a call or jump through a PLT entry whose word holds S.
+        // (A weak undefined call through a PLT whose word holds 0 calls 0.)
+        if matches!(ty, x::PLT32 | x::PC32)
+            && !matches!(judge(rec, xv as i64), Verdict::Ok(_))
+            && self
+                .plt_hop(rec.p.wrapping_add(4).wrapping_add(rec.out_word as u32 as i32 as u64), s)
+        {
+            return self.cov.add_verified(Via::Plt, ty);
+        }
+        // `PLTOFF64` is `L + A − GOT` (x64.md §6.1): L a PLT entry whose
+        // word holds S (a dynamic key, `-mcmodel=large` code).
+        if ty == x::PLTOFF64
+            && !matches!(judge(rec, xv as i64), Verdict::Ok(_))
+            && let Some(g) = self.got
+            && self.plt_hop(rec.out_word.wrapping_add(g).wrapping_sub(a), s)
+        {
+            return self.cov.add_verified(Via::Plt, ty);
+        }
         self.x64_judge(rec, &site, &symbol, xv as i64);
+        if rec.def.op == Op::Abs
+            && rec.def.field.width() >= 4
+            && kind != Kind::Weak0
+            && self.cov.failed == failed
+            && self.objs[oi].secs[si].alloc()
+        {
+            self.abs_words.push((rec.p, rec.def.field.width(), xv, self.internal(s)));
+        }
     }
 
     /// A record not judged for `r`: the bytes a rewriting of it may change
@@ -622,6 +654,47 @@ impl Engine<'_, '_> {
         if out == Some(&want[..]) {
             return SeqX::Relaxed(rw, lo, hi);
         }
+        if self.dynamic && gd && before == 4 && after == 8 {
+            // GNU ld's initial-exec form of a 16-byte GD sequence:
+            // `mov %fs:0, %rax; add G(%rip), %rax`, G holding T.
+            if let Some(o) = out
+                && o[..12] == [0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x03, 0x05]
+            {
+                let rel = i32::from_le_bytes([o[12], o[13], o[14], o[15]]);
+                let g = hi.wrapping_add_signed(i64::from(rel));
+                if self.slot_ok(g, Want::Word(t)) {
+                    return SeqX::Relaxed(Rewrite::TlsGdToIe, lo, hi);
+                }
+            }
+        }
+        // Kept for the loader: the input's bytes, the `lea` reaching a GOT
+        // pair that holds the module index and the DTP offset.
+        if self.dynamic
+            && let (Some(o), Some(i)) = (out, at(-(before as i64), (hi - lo) as usize))
+            && o[..before as usize] == i[..before as usize]
+            && o[before as usize + 4..] == i[before as usize + 4..]
+        {
+            let rel = i32::from_le_bytes([
+                o[before as usize],
+                o[before as usize + 1],
+                o[before as usize + 2],
+                o[before as usize + 3],
+            ]);
+            let g = (lead.p + 4).wrapping_add_signed(i64::from(rel));
+            let name = self.sym_name(oi, lead.sym);
+            let module = self.dyn_tls_mod.get(&name).copied().unwrap_or(1);
+            let off = if gd { t.wrapping_sub(b.tcb) } else { 0 };
+            if self.slot_ok(g, Want::Pair(module, off)) {
+                return SeqX::Kept;
+            }
+            return SeqX::Bad(
+                format!(
+                    "the kept {what} sequence reaches no GOT pair holding module {module} and offset {off:#x}"
+                ),
+                Vec::new(),
+                None,
+            );
+        }
         let n = want.len();
         if f == Format::Lld && gd {
             // spec/x64.md W4: lld writes the 16-byte form from P - 4 over a
@@ -722,6 +795,10 @@ impl Engine<'_, '_> {
                 self.x64_rewrote(rec.p, rec.p + 2);
                 return self.cov.add_accepted(Rewrite::TlsDescToLe, ty);
             }
+            if self.dynamic && out == inp {
+                // Kept: the descriptor is judged at its GOTPC32_TLSDESC.
+                return self.cov.add_verified(Via::Direct, ty);
+            }
             let mut f = Self::finding(
                 Rule::Field,
                 rec,
@@ -786,6 +863,26 @@ impl Engine<'_, '_> {
             self.x64_rewrote(rec.p - 3, rec.p + 4);
             let rw = if ty == x::GOTTPOFF { Rewrite::TlsIeToLe } else { Rewrite::TlsDescToLe };
             return self.cov.add_accepted(rw, ty);
+        }
+        if ty == x::GOTPC32_TLSDESC && self.dynamic && reg == Some(0) {
+            // Kept (the descriptor pair holds the resolver and T), or
+            // relaxed to initial-exec, `mov G(%rip), %rax` (GNU ld, lld,
+            // mold), G holding T.
+            let ie = out[0] == inp[0] && out[1] == 0x8b && out[2] == inp[2];
+            if out == inp || ie {
+                let Some(ev) = self.slot_evidence(rec) else {
+                    return self.x64_unjudged(rec, Reason::SymbolUnresolved);
+                };
+                let (slot, want) = if ie {
+                    self.x64_rewrote(rec.p - 3, rec.p);
+                    (Slot::TpRel, Want::Word(t))
+                } else {
+                    (Slot::Desc, Want::Pair(crate::loader::TLSDESC_MARK, t))
+                };
+                let pend = Pending { rec: rec.clone(), site, symbol, want, w1: false };
+                self.got_groups.entry((slot, oi, rec.sym, 0)).or_default().members.push((pend, ev));
+                return;
+            }
         }
         if ty == x::GOTPC32_TLSDESC {
             let mut f = Self::finding(

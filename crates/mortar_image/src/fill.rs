@@ -31,6 +31,15 @@ use crate::{digest, eh, merged};
 pub trait Tables: FillTables {
     /// Whether the key's definition is in an `SHF_ALLOC` section (I-112).
     fn target_alloc(&self, key: SymKey) -> bool;
+
+    /// Whether input section `section` has `SHF_WRITE` (`spec/dyn.md`
+    /// D-46: which record a relocation of it makes, [`crate::dynrel`]).
+    /// `None` (the default): the tables cannot say, and the fill leaves
+    /// every place as `apply` wrote it, as in a static output.
+    fn section_writable(&self, section: mortar_core::SectionId) -> Option<bool> {
+        let _ = section;
+        None
+    }
     /// `S + A` of a reference with addend `addend` to `key` when that
     /// value is not the symbol's plus `A`: a section symbol of a split
     /// `Merge` section (`spec/synth.md` S-17, S-18: the piece holding

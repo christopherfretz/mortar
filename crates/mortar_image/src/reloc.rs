@@ -771,7 +771,18 @@ pub(crate) fn relocate(
             };
             let cx =
                 FillCx { tables: &shift, output: img.output, got_base: img.got_base, tls: img.tls };
-            img.arch.apply(&cx, &at, &mut out)
+            let applied = img.arch.apply(&cx, &at, &mut out);
+            // `spec/dyn.md` D-46: the place of a record that carries its
+            // value (symbolic, `GLOB_DAT`, IE `TPOFF`) holds 0. Only a
+            // `Shlib` or `WeakDyn` target makes one: never in a static link.
+            if applied.is_ok()
+                && matches!(sym.kind, TargetKind::Shlib { .. } | TargetKind::WeakDyn)
+                && let Field::Data { bytes: width } = howto.field
+                && zeroed(img, c, &at, r_sym)
+            {
+                out.write(shifted, &[0u8; 8][..usize::from(width)]);
+            }
+            applied
         };
         if let Err(e) = result
             && reports
@@ -881,6 +892,26 @@ impl DemandOut for Check {
     fn reference(&mut self, _: u32, _: mortar_arch::EventClass, _: SymKey) {
         self.fault = true;
     }
+}
+
+/// Whether the field of the record at `at` is cleared after `apply`
+/// (`crate::dynrel::zeroed_place`): the scan's roles of the record, with
+/// the input section's `SHF_WRITE` (unknown: never).
+fn zeroed(img: &Image<'_>, c: &Clip<'_>, at: &RelocAt<'_>, r_sym: Option<u32>) -> bool {
+    let Some(writable) = img.tables.section_writable(c.section) else { return false };
+    let mention = r_sym.map(|s| SymEntry { file: c.file, index: SymbolIndex(s) });
+    let facts = img.tables.scan_facts(at.key, mention);
+    let Some(kind) = facts.map(|f| f.kind) else { return false };
+    let tables = CheckTables {
+        tables: img.tables,
+        key: at.key,
+        mention,
+        facts,
+        missing: std::sync::atomic::AtomicBool::new(false),
+    };
+    let place = PlaceFacts { alloc: c.alloc, writable, exec: Some(c.exec) };
+    let cx = ScanCx { tables: &tables, output: img.output, place, name: c.name };
+    crate::dynrel::zeroed_place(img.arch, kind, &cx, at)
 }
 
 /// `arch.scan` of a deferred record (I-14), as the scan's walk calls it

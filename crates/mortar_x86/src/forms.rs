@@ -202,6 +202,7 @@ pub fn got_operand(site: Site<'_>) -> Option<Operand> {
 /// `apply` read, clipped to the section (bytes outside it do not exist).
 #[must_use]
 pub fn read_window(r_type: u32, site: Site<'_>) -> Window {
+    debug_assert!(r_type < 64 && WINDOWED & (1 << r_type) != 0 || form(r_type, site).is_none());
     if let Some(f) = form(r_type, site) {
         return f.window();
     }
@@ -217,6 +218,17 @@ pub fn read_window(r_type: u32, site: Site<'_>) -> Window {
         _ => w(0, 0),
     }
 }
+
+/// The types [`read_window`] can give another window than (0, 0) and
+/// [`form`] a form, as bits: `classify` reads neither for the others.
+pub const WINDOWED: u64 = 1 << GOT32
+    | 1 << GOT32X
+    | 1 << TLS_IE
+    | 1 << TLS_GOTIE
+    | 1 << TLS_GOTDESC
+    | 1 << TLS_DESC_CALL
+    | 1 << TLS_GD
+    | 1 << TLS_LDM;
 
 /// The form the bytes around `site` match for a relocation of `r_type`,
 /// or `None`. The conditions that are not bytes (the output kind, `A`,

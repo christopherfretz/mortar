@@ -50,15 +50,18 @@ pub enum Def {
     /// A linker-defined symbol (rank 5, §8); `conditional` for the rows
     /// the first layout stage confirms or withdraws (§5.1).
     Provide { sym: Provided, conditional: bool },
+    /// A definition in a shared object (rank 4, M2): the entry of
+    /// `bind(k)` (`spec/dyn.md` D-11).
+    Shared(SymEntry),
 }
 
 impl Def {
-    /// The defining entry, if a file defines the key.
+    /// The defining entry, if a relocatable object defines the key.
     #[must_use]
     pub fn entry(self) -> Option<SymEntry> {
         match self {
             Self::Strong(e) | Self::Common(e) | Self::Weak(e) => Some(e),
-            Self::Undefined { .. } | Self::Provide { .. } => None,
+            Self::Undefined { .. } | Self::Provide { .. } | Self::Shared(_) => None,
         }
     }
 
@@ -147,6 +150,9 @@ pub struct Resolved {
     pub problems: Vec<Problem>,
     /// The simulation of GNU ld (§4.6), under `--warn-backrefs` only.
     pub gnu: Option<crate::gnu::Simulation>,
+    /// The shared stage (`spec/dyn.md` D-11-D-21); `None` when no shared
+    /// object is loaded (every static link).
+    pub dynamic: Option<crate::shared::Dynamic>,
 }
 
 /// The per-key cells of D1.
@@ -227,18 +233,10 @@ pub fn resolve_steps<V: View>(
     let redirect = opts.redirect(view.keys());
     let roots = opts.roots();
     let mut problems = Vec::new();
-    for (f, kind) in kinds.iter().enumerate() {
-        if *kind == FileKind::Shared {
-            problems.push(Problem {
-                key: DiagKey::of(FileId(f as u32), 0),
-                what: What::SharedObject { file: FileId(f as u32) },
-            });
-        }
-    }
     steps.step("resolve.kinds");
     let targets = targets_with(view, &kinds, pool);
     steps.step("resolve.targets");
-    let Closure { live: file_live, rounds } =
+    let Closure { live: mut file_live, rounds } =
         closure(view, &kinds, &targets, &redirect, &roots, pool);
     steps.step("resolve.closure");
     let live_objects: Vec<FileId> = (0..kinds.len())
@@ -305,11 +303,11 @@ pub fn resolve_steps<V: View>(
     // def (§3.2) and the merged properties (§3.5, §3.6).
     let mut def = vec![Def::Undefined { weak: false }; keys];
     pool.unit_cost(2).for_each_mut(&mut def, |k, d| *d = def_of(&acc, k));
-    let props: Vec<Props> = pool.unit_cost(1).map(keys, |k| Props {
+    let mut props: Vec<Props> = pool.unit_cost(1).map(keys, |k| Props {
         visibility: rank_vis(acc.vis[k].load(Relaxed)),
         flags: acc.flags[k].load(Relaxed),
     });
-    let common: Vec<(SymbolId, CommonShape)> = def
+    let mut common: Vec<(SymbolId, CommonShape)> = def
         .iter()
         .enumerate()
         .filter(|(_, d)| matches!(d, Def::Common(_)))
@@ -367,6 +365,24 @@ pub fn resolve_steps<V: View>(
     }
 
     steps.step("resolve.d2");
+    let dynamic = kinds.contains(&FileKind::Shared).then(|| {
+        crate::shared::link(
+            view,
+            opts,
+            &kinds,
+            &targets,
+            &redirect,
+            &mut file_live,
+            &mut def,
+            &mut props,
+            &mut problems,
+            pool,
+        )
+    });
+    // A common that yields to a shared data definition (§3.2 rule 2) is
+    // allocated nowhere.
+    common.retain(|(k, _)| matches!(def[k.0 as usize], Def::Common(_)));
+    steps.step("resolve.shared");
     // Roots that must be defined (§4.2, §5.5).
     for named in &opts.require_defined {
         if named.key.get().is_none_or(|k| def[k.0 as usize].is_undefined()) {
@@ -409,6 +425,7 @@ pub fn resolve_steps<V: View>(
         entry,
         problems,
         gnu,
+        dynamic,
     }
 }
 

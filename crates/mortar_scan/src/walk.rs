@@ -53,6 +53,22 @@ impl<'a, 's> Walker<'a, 's> {
         Self { view: View::new(arch, t, opts) }
     }
 
+    /// The output kind the scan judged the records for
+    /// (`ScanOptions.output`).
+    #[must_use]
+    pub fn output(&self) -> mortar_arch::OutputKind {
+        self.view.opts.output
+    }
+
+    /// The symbol table of `file` when it is a relocatable object with
+    /// one (`Object::symbols`, found once per file and kept by the view).
+    #[must_use]
+    pub fn symbols(&self, file: FileId) -> Option<mortar_elf::SymbolTable<'s>> {
+        let p = self.view.prep(file)?;
+        p.obj?;
+        p.table().copied()
+    }
+
     /// The facts of `key` with no mention (a definition's).
     #[must_use]
     pub fn facts(&self, key: SymKey) -> SymFacts {
@@ -157,7 +173,32 @@ impl<'a, 's> Walker<'a, 's> {
         leads: bool,
         visit: &mut dyn FnMut(&Visit<'_>),
     ) -> Result<(), (Key, Diagnostic)> {
-        with_bufs(|bufs| self.walk_in(file, sid, index, rel, offsets, leads, visit, bufs))
+        let keep = |r: u64| offsets.contains(&r);
+        with_bufs(|bufs| self.walk_in(file, sid, index, rel, &keep, leads, visit, bufs))
+    }
+
+    /// [`Walker::walk`] of the records whose `r_offset` `keep` accepts:
+    /// the others are skipped before their symbol is looked up or their
+    /// type classified.
+    ///
+    /// # Errors
+    ///
+    /// The scan's diagnostic when the section cannot be opened.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the scan's walk of one section, as the driver calls it"
+    )]
+    pub fn walk_where(
+        &self,
+        file: FileId,
+        sid: SectionId,
+        index: u32,
+        rel: u32,
+        keep: &dyn Fn(u64) -> bool,
+        leads: bool,
+        visit: &mut dyn FnMut(&Visit<'_>),
+    ) -> Result<(), (Key, Diagnostic)> {
+        with_bufs(|bufs| self.walk_in(file, sid, index, rel, keep, leads, visit, bufs))
     }
 
     #[allow(clippy::too_many_arguments, reason = "walk's arguments and the worker's buffers")]
@@ -167,7 +208,7 @@ impl<'a, 's> Walker<'a, 's> {
         sid: SectionId,
         index: u32,
         rel: u32,
-        offsets: std::ops::Range<u64>,
+        keep: &dyn Fn(u64) -> bool,
         leads: bool,
         visit: &mut dyn FnMut(&Visit<'_>),
         bufs: &mut crate::view::Bufs,
@@ -176,7 +217,7 @@ impl<'a, 's> Walker<'a, 's> {
         let n = u32::try_from(sec.recs.records.len()).unwrap_or(u32::MAX);
         for i in 0..n {
             let Some(raw) = sec.recs.records.raw(i) else { continue };
-            if !offsets.contains(&raw.r_offset) {
+            if !keep(raw.r_offset) {
                 continue;
             }
             let Some(key) = self.view.key_of(file, sec.recs.table, raw.r_sym) else { continue };

@@ -40,6 +40,7 @@
 #@ arch: aarch64 x86_64
 #@ xfail(bfd,x86_64): W3: &main_ifunc differs between units in the PIE
 #@ xfail(mold): W3: &main_ifunc differs between units (x86-64 PIE; the AArch64 PIE with the -fno-pic unit, which it links)
+#@ anomaly(lld): A20
 
 cc -O2 -fPIC lib.c -o lib.o
 shlib gcc lib.o -Wl,-soname,libmx.so -o libmx.so
