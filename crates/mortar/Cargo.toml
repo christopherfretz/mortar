@@ -16,6 +16,7 @@ name = "mortar"
 path = "src/main.rs"
 
 [dependencies]
+mortar_cli.workspace = true
 mortar_diag.workspace = true
 
 [dev-dependencies]
