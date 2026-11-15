@@ -744,6 +744,9 @@ order of the output sections themselves is in §10.
 - **L-73 [C]** An address, an end address or an offset that does not fit
   the class (ELFCLASS32: an end beyond 2³²; ELFCLASS64: beyond 2⁶⁴) is
   refused by name, `output-too-large` (§20.4), never a wrapped value.
+  ELFCLASS32 also: a `PT_TLS` `p_memsz` ≥ 2³¹ is `output-too-large`
+  (TP offsets are `s(32)`, `spec/x86.md` X86-45; WP-030c checks it in the
+  front for now, `mortar_layout` owns it).
   The limit is the class's. A kernel's split of the address space (the
   3 GiB `TASK_SIZE` of a 32-bit kernel, the 48-bit user space of
   AArch64) is not the linker's concern: the same file runs on another
@@ -1057,7 +1060,11 @@ from it:
   defined (GNU and lld). `_DYNAMIC` is hidden.
 - **L-101 [C]** `_GLOBAL_OFFSET_TABLE_` is tied to the `GOT_BASE`
   demand: a reference to the symbol demands `GOT_BASE` (`spec/arch.md`),
-  and that demand creates the GOT header even when no GOT slot exists.
+  and so does a definition of the symbol in an input's symbol table, as a
+  reference does (gas names it in `.symtab` beside `@ntpoff` code with no
+  relocation against it; WP-030c, test
+  `x86_got_symbol_named_without_a_reference`); that demand creates the
+  GOT header even when no GOT slot exists.
   - AArch64 (M1): `.got` with its one header word (`spec/a64.md`
     §10.1); a static `.got.plt` has no reserved words (§10.2 there). The
     symbol is the start of `.got`.

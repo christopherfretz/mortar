@@ -737,10 +737,13 @@ usually a duplicate of `crt1.o`'s and removed by S-44 (X-12, X-25).
   the start of `.eh_frame_hdr` (arch.md §3.9). Size `12 + 8 × entries`,
   known in phase 80 (S-59). Alignment 4.
 - **S-59 [C] (the entries).** One entry per live FDE, except:
-  - an FDE with address range 0 has no entry (GNU; lld and mold keep it,
-    X-15): it covers no address, and an entry for it would hide a real
-    FDE with the same start from the binary search. This is what E5
-    calls neutralised;
+  - an FDE with address range 0 is written but has no entry: it covers
+    no address, and an entry for it would hide a real FDE with the same
+    start from the binary search. This is what E5 calls neutralised.
+    Reference note (supervisor's ruling after WP-030c; mortar's rule
+    stands): GNU ld drops the range-0 FDE itself (glibc i386
+    `clone3.o`), lld writes the FDE and no entry, and mold lists it in
+    the table (plumb A19);
   - two live FDEs with the same initial location and non-zero ranges are
     refused when the table is planned (phase 80, where the entries are
     first known as `(code section, offset)` pairs; supervisor's ruling on
@@ -1567,7 +1570,7 @@ edit changes.
 | FDE without pc relocation | kept, no hdr | dropped | dropped | dropped if zero, else refused (S-38) | verifier E2 |
 | FDEs with the same start, with a table | link fails | one entry | all entries | refused (S-59) | verifier E3, E5 |
 | dead FDEs | removed | removed | removed | absent, never neutralised (S-41) | verifier E4 |
-| zero-length FDE | no entry | entry | entry | no entry (S-59) | it would shadow |
+| zero-length FDE | FDE dropped | FDE kept, no entry | FDE kept, entry (plumb A19) | FDE kept, no entry (S-59) | it would shadow |
 | overlapping FDEs | link fails | accepted | accepted | accepted (S-60) | |
 | `.eh_frame_hdr` without the option | none | none | always | none (S-57) | |
 | static IPLT sections | `.plt`, `.rela.plt`, `.got.plt` | `.iplt`, `.rela.dyn`, `.got.plt` | `.plt.got`, `.rela.dyn` | GNU's (S-68) | |

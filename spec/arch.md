@@ -253,7 +253,11 @@ form, `after` 6 from the 12-byte base-register GD and LD forms,
 The output's `e_flags` is a function of the live inputs' `e_flags`; for
 the three targets it is 0. A relocation section of the other form
 (`SHT_REL` where `Rela` is accepted, and the reverse) is refused by name
-(class `section-type`).
+at resolve (`SectionRefusal::RelForm`, class `section-type`, name
+`SHT_REL` or `SHT_RELA`): an `SHT_REL` section in an ELFCLASS64 input
+(AArch64, x86-64) and an `SHT_RELA` section in an `EM_386` input. Before
+WP-030c a 64-bit `SHT_REL` section was accepted with A = 0, which wrote
+wrong bytes.
 
 ### 3.2 `classify`
 
@@ -395,8 +399,9 @@ pub struct PlaceFacts { pub alloc: bool, pub writable: bool, pub exec: Option<bo
   - **REL** (`spec/x86.md` R-13 (b)): on a target whose relocation
     sections are `SHT_REL`, the check compares read windows (§3.3), not
     only write windows, and it also refuses two records with the same
-    `r_offset` unless they are members of one matched sequence; the
-    refusal is the same, at the scan key of the later record. No unit
+    `r_offset` unless they are members of one matched sequence, or one of
+    them is a marker (width 0, e.g. `R_386_NONE`), which reads and writes
+    nothing; the refusal is the same, at the scan key of the later record. No unit
     then reads a byte another unit writes, so the bytes a unit reads at
     fill are input bytes, whatever the record order and the clip.
 - **Places in non-alloc sections** (no `SHF_ALLOC`): §4.3's
