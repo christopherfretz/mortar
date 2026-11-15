@@ -1,0 +1,137 @@
+# dyn.md D-19a (review finding F5): the review's line, a library named
+# --as-needed and again, where its keeping mention decides its place;
+# the constructor order (the run) is compared with GNU ld's. Lines from
+# review-m2/dynamic/needed_order.sh and review-m2-adv/neededorder (names
+# in the comments), fixture needed-libs. Each program prints its
+# constructors (reverse of the loader's order) and "main".
+#
+# Where the references differ: lld writes each soname at its first
+# mention (dyn.md 13.1, "DT_NEEDED order"; has(lld), run(lld)). mold drops
+# a library whose first mention is as-needed and unreferenced even when a
+# later mention is plain (W9, dyn.md 13.2): the case holds it to GNU ld's
+# list, which mortar must write.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-19a"
+#@ arch: aarch64 x86_64
+#@ fixture: needed-libs
+#@ xfail(mold): W9: an unreferenced library first named --as-needed and later plainly is dropped from DT_NEEDED
+
+# drv_f5_review, the review's F5 line on the driver's default line (gcc passes
+# --as-needed first): nc, unreferenced, first as-needed then plain.
+link gcc -pie main_abd.o libna.so -Wl,--as-needed libnc.so -Wl,--no-as-needed libnb.so libnc.so libnd.so -o f5-driver
+check readelf -dW f5-driver
+  count(bfd,mold,mortar): 5 (NEEDED)
+  has(bfd,mold,mortar): [libna.so]
+  then(bfd,mold,mortar): [libnb.so]
+  then(bfd,mold,mortar): [libnc.so]
+  then(bfd,mold,mortar): [libnd.so]
+  then(bfd,mold,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnc.so]
+  then(lld): [libnb.so]
+  then(lld): [libnd.so]
+  then(lld): [libc.so.6]
+run(bfd,mold,mortar) f5-driver
+  stdout: nd nc nb na main
+run(lld) f5-driver
+  stdout: nd nb nc na main
+
+# f5_review: the F5 line with nc referenced by an earlier object: kept at
+# its first (as-needed) mention by all three.
+link gcc -pie main.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnc.so -Wl,--no-as-needed libnb.so libnc.so libnd.so libne.so libnf.so -o f5-referenced
+check readelf -dW f5-referenced
+  count: 7 (NEEDED)
+  has: [libna.so]
+  then: [libnc.so]
+  then: [libnb.so]
+  then: [libnd.so]
+  then: [libne.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run f5-referenced
+  stdout: nf ne nd nb nc na main
+
+# asn_twice_ref: nc as-needed twice, referenced before both: the first.
+link gcc -pie main.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnc.so -Wl,--no-as-needed libnb.so -Wl,--as-needed libnc.so -Wl,--no-as-needed libnd.so libne.so libnf.so -o as-needed-twice-ref
+check readelf -dW as-needed-twice-ref
+  count: 7 (NEEDED)
+  has: [libna.so]
+  then: [libnc.so]
+  then: [libnb.so]
+  then: [libnd.so]
+  then: [libne.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run as-needed-twice-ref
+  stdout: nf ne nd nb nc na main
+
+# thrice-unref (review-m2-adv/neededorder): nx unreferenced, as-needed twice,
+# then plain last: needed at the last mention.
+link gcc -pie -Wl,--no-as-needed libna.so -Wl,--as-needed libnx.so -Wl,--no-as-needed libnb.so -Wl,--as-needed main0.o libnx.so -Wl,--no-as-needed libnc.so libnx.so -o thrice-unref
+check readelf -dW thrice-unref
+  count(bfd,mold,mortar): 5 (NEEDED)
+  has(bfd,mold,mortar): [libna.so]
+  then(bfd,mold,mortar): [libnb.so]
+  then(bfd,mold,mortar): [libnc.so]
+  then(bfd,mold,mortar): [libnx.so]
+  then(bfd,mold,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libnb.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+run(bfd,mold,mortar) thrice-unref
+  stdout: nx nc nb na main
+run(lld) thrice-unref
+  stdout: nc nb nx na main
+
+# script1-unref (review-m2-adv/neededorder): INPUT(AS_NEEDED(libnx.so) libny.so
+# libnx.so): nx unreferenced, as-needed then plain inside one script.
+link gcc -pie -Wl,--no-as-needed libna.so main0.o s1.so libnc.so -o script-as-needed-twice
+check readelf -dW script-as-needed-twice
+  count(bfd,mold,mortar): 5 (NEEDED)
+  has(bfd,mold,mortar): [libna.so]
+  then(bfd,mold,mortar): [libny.so]
+  then(bfd,mold,mortar): [libnx.so]
+  then(bfd,mold,mortar): [libnc.so]
+  then(bfd,mold,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnx.so]
+  then(lld): [libny.so]
+  then(lld): [libnc.so]
+  then(lld): [libc.so.6]
+run(bfd,mold,mortar) script-as-needed-twice
+  stdout: nc nx ny na main
+run(lld) script-as-needed-twice
+  stdout: nc ny nx na main
+
+# scr_under_asn_flag_unref: INPUT(libnc.so libnd.so) under --as-needed (nd
+# referenced, nc not), then libnc.so plain.
+link gcc -pie main_abd.o -Wl,--no-as-needed libna.so -Wl,--as-needed inp_cd.so -Wl,--no-as-needed libnb.so libnc.so -o script-under-as-needed
+check readelf -dW script-under-as-needed
+  count(bfd,mold,mortar): 5 (NEEDED)
+  has(bfd,mold,mortar): [libna.so]
+  then(bfd,mold,mortar): [libnd.so]
+  then(bfd,mold,mortar): [libnb.so]
+  then(bfd,mold,mortar): [libnc.so]
+  then(bfd,mold,mortar): [libc.so.6]
+  count(lld): 5 (NEEDED)
+  has(lld): [libna.so]
+  then(lld): [libnc.so]
+  then(lld): [libnd.so]
+  then(lld): [libnb.so]
+  then(lld): [libc.so.6]
+run(bfd,mold,mortar) script-under-as-needed
+  stdout: nc nb nd na main
+run(lld) script-under-as-needed
+  stdout: nb nd nc na main
+
+#--- inp_cd.so
+INPUT ( libnc.so libnd.so )
+#--- s1.so
+INPUT ( AS_NEEDED ( libnx.so ) libny.so libnx.so )

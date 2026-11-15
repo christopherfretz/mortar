@@ -1,0 +1,33 @@
+# dyn.md D-70: gdb sets `break main` in a PIE before `run` (the address
+# is unrelocated then; gdb computes the bias from the auxiliary vector),
+# stops there, lists the needed objects with `info sharedlibrary`, and
+# stops at a breakpoint set after relocation in the fixture library.
+# Needs DT_DEBUG, a writable `.dynamic`, PT_PHDR, PT_INTERP and `.symtab`.
+# gdb runs host programs only here: on x86-64 (qemu) the step is skipped
+# by name (spec/harness.md "Checks").
+#
+# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
+#@ spec: dyn.md "D-70"
+#@ arch: aarch64 x86_64
+#@ requires: gdb
+#@ fixture: greet
+
+cc -O0 -g -fPIE main.c -o main.o
+link gcc -pie main.o -L. -lgreet -o pie
+run pie
+  stdout: hello, gdb
+check gdb pie "break main" run bt "info sharedlibrary" "break greet" continue kill
+  has: Breakpoint 1, main () at main.c:
+  has: #0 main () at main.c:
+  has: ^0x* 0x* Yes * */libgreet.so$
+  has: ^0x* 0x* Yes * */libc.so.6$
+  has: Breakpoint 2, * greet
+  not: Cannot insert breakpoint
+
+#--- main.c
+#include "greet.h"
+
+int main(void) {
+  greet("gdb");
+  return 0;
+}

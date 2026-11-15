@@ -1,0 +1,36 @@
+# dyn.md D-42: a copy relocation of a shared datum whose `st_size` is 0
+# (the fixture's `zsym`, defined without `.size`) cannot be sized, and is
+# refused by name, `copy-relocation-of-zero-size`. `-fno-pic` code in a
+# non-PIE reads `zsym` directly, which demands the copy. lld refuses it
+# too (`cannot create a copy relocation for symbol zsym`).
+#
+# W4 (dyn.md §13.2): GNU ld and mold link it and the program reads the
+# wrong bytes. GNU ld gives `zsym` the address of another copy (the
+# executable and the library both read 0 where the library wrote 0x5a);
+# mold makes a 0-byte copy outside every section, and the program
+# crashes (measured: `SIGSEGV` on both architectures).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-42"
+#@ arch: aarch64 x86_64
+#@ fixture: reloc-libd
+#@ xfail(bfd,mold): W4: links a copy of a zero-size symbol; the program reads the wrong object
+
+cc -O1 -fno-pie main.c -o main.o
+link gcc -no-pie main.o -L. -ld -o prog
+  exit: fail
+  diag(lld): cannot create a copy relocation for symbol zsym
+  diag(mortar): cannot create a copy relocation for symbol zsym
+
+#--- main.c
+#include <stdio.h>
+#include "libd.h"
+
+extern char zsym[8];
+
+int main(void) {
+  printf("zsym %#x lib %#x same %d\n", zsym[0], lib_get_zsym(),
+         (void *)zsym == lib_addr("zsym"));
+  return 0;
+}
