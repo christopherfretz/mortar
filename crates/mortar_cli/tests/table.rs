@@ -55,6 +55,8 @@ fn statuses() {
         [
             // The whole pipeline writes the output (WP-027c).
             "-o",
+            // The default kind, position-dependent (WP-042).
+            "-no-pie",
             // The front of the pipeline honors these (WP-027a).
             "-m",
             "-e",
@@ -188,4 +190,97 @@ fn status_file_is_current() {
         have == want,
         "docs/status/options.md is stale: run `MORTAR_BLESS=1 cargo test -p mortar_cli --test table`"
     );
+}
+
+/// The row named `name`.
+fn row(name: &str) -> &'static mortar_cli::table::Row {
+    rows().iter().find(|r| r.name() == name).unwrap_or_else(|| panic!("no row {name}"))
+}
+
+// spec: dyn.md §11.2 R-C1 (the M2 statuses of the dynamic rows, at the
+// join; `spec/cli.md` §4.2's M2 list)
+#[test]
+fn r_c1_statuses_at_the_join() {
+    for name in [
+        "-pie",
+        "-I",
+        "-Bdynamic",
+        "--as-needed",
+        "--no-as-needed",
+        "-E",
+        "-rpath",
+        "-init",
+        "-fini",
+        "-z text",
+        "--export-dynamic-symbol",
+        "--enable-new-dtags",
+        "--disable-new-dtags",
+        // Already supported, and still so.
+        "-z norelro",
+        "-z relro",
+        "-z now",
+        "-z lazy",
+        "-Bstatic",
+        "--push-state",
+        "--pop-state",
+        "-no-pie",
+    ] {
+        assert_eq!(row(name).status_at_join(), Status::Supported, "{name}");
+    }
+    // `gnu` only (D-20).
+    match row("--hash-style").status_at_join() {
+        Status::Partial { refused, .. } => assert_eq!(refused, ["sysv", "both", "none"]),
+        other => panic!("--hash-style: {other:?}"),
+    }
+    // Refused by name at M2, today and at the join.
+    for name in [
+        "-z notext",
+        "-z nocopyreloc",
+        "--spare-dynamic-tags",
+        "--copy-dt-needed-entries",
+        "--dynamic-list",
+        "-z nodynamic-undefined-weak",
+        "-z dynamic-undefined-weak",
+        "-shared",
+        "-h",
+        "-z force-bti",
+        "-z pac-plt",
+        "-z ibtplt",
+        "-z ibt",
+        "-z shstk",
+        "-z undefs",
+    ] {
+        let r = row(name);
+        assert_eq!(r.status, Status::Refused, "{name} today");
+        assert_eq!(r.status_at_join(), Status::Refused, "{name} at the join");
+    }
+    // The default (D-15).
+    assert!(matches!(row("--no-copy-dt-needed-entries").status_at_join(), Status::Noop(_)));
+}
+
+// spec: dyn.md R-C1 (no status that rests on the dynamic refusal outlives
+// it: every gate, and every noop row whose reason is the refusal, changes
+// at the join; and the join's list names rows that exist, once each)
+#[test]
+fn the_join_changes_every_status_that_rests_on_the_refusal() {
+    use mortar_cli::table::{KindSet, Lands, StateOp, join_changes};
+    let mut names = HashSet::new();
+    for (name, status) in join_changes() {
+        assert!(names.insert(*name), "{name} twice");
+        let r = row(name);
+        assert_ne!(r.status, *status, "{name}: the join changes nothing");
+        if let Status::Noop(reason) = status {
+            assert!(!reason.contains("(M2)"), "{name}: the join's reason is the refusal");
+        }
+    }
+    for r in rows() {
+        let gate = matches!(
+            r.lands,
+            Lands::Kind(KindSet::Pie) | Lands::DynamicLinker | Lands::State(StateOp::Static(false))
+        );
+        let rests = matches!(r.status, Status::Noop(reason) if reason.contains("(M2)"));
+        if gate || rests {
+            assert!(names.contains(r.name().as_str()), "{}: not in the join's list", r.name());
+        }
+    }
 }

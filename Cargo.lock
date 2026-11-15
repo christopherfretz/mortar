@@ -200,6 +200,7 @@ dependencies = [
  "mortar_input",
  "mortar_live",
  "mortar_resolve",
+ "mortar_synth",
  "mortar_testutil",
 ]
 
