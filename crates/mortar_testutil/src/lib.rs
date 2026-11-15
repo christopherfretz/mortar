@@ -17,6 +17,7 @@
 
 pub mod ci_tools;
 pub mod jobs;
+pub mod target;
 
 use std::ffi::OsStr;
 use std::io::{Read, Write};

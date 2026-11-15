@@ -16,7 +16,7 @@ use mortar_elf::consts::SHT_RELA;
 use mortar_image::layout_plan::records;
 use mortar_input::load::{LoadEnv, load};
 use mortar_input::store::{Store, StorePolicy};
-use mortar_testutil::{Scratch, tool, tools_required};
+use mortar_testutil::{Scratch, tools_required};
 
 fn loaded(dir: &Scratch, policy: StorePolicy) -> Inputs<'static> {
     let args: Vec<OsString> = ["-maarch64linux", "big.o"].iter().map(OsString::from).collect();
@@ -29,13 +29,12 @@ fn loaded(dir: &Scratch, policy: StorePolicy) -> Inputs<'static> {
 
 #[test]
 fn i81_plan_records_staged_equal_resident() {
-    let Some(cc) = tool("gcc") else {
+    // The object is AArch64's on every host (the AArch64 gcc, plain or
+    // cross): its relocations are what the staged store copies.
+    let Some(cc) = mortar_testutil::target::Arch::Aarch64.tool("gcc") else {
         assert!(!tools_required(), "gcc is required");
         return;
     };
-    if std::env::consts::ARCH != "aarch64" {
-        return;
-    }
     let dir = Scratch::new("image-staged");
     let mut src = String::new();
     for i in 0..4000 {

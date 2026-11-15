@@ -11,22 +11,19 @@ mod support;
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use mortar_testutil::{Outcome, Scratch, run_with, tool, tools_required};
-use support::{Built, Driver, build, with_output};
+use support::{AARCH64, Built, Driver, build, with_output};
 
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 
-/// Whether the host can run the AArch64 tests, and the tools are there.
+/// Whether the AArch64 tools are there (on any host: the programs run
+/// natively on AArch64 and under `qemu-aarch64` elsewhere).
 fn host() -> bool {
-    if std::env::consts::ARCH != "aarch64" {
-        return false;
-    }
-    if tool("gcc").is_none() || tool("ld.bfd").is_none() {
+    if AARCH64.tool("gcc").is_none() || AARCH64.tool("ld.bfd").is_none() {
         assert!(!tools_required(), "gcc and ld.bfd are required");
         return false;
     }
@@ -81,12 +78,12 @@ fn mortar_unverified(
 fn bfd(dir: &Path, args: &[String], out: &Path, extra: &[&str]) -> Outcome {
     let mut a = with_output(args, out);
     a.extend(extra.iter().map(OsString::from));
-    run_in(&tool("ld.bfd").expect("ld.bfd"), &a, dir, &[])
+    run_in(&AARCH64.tool("ld.bfd").expect("ld.bfd"), &a, dir, &[])
 }
 
 /// Runs a program as `prog`: (standard output, exit status).
 fn execute(exe: &Path) -> (String, Option<i32>) {
-    let o = run_with(Command::new(exe).arg0("prog"), b"", Duration::from_mins(1));
+    let o = run_with(&mut AARCH64.command(exe, Some("prog")), b"", Duration::from_mins(1));
     (o.stdout_text(), o.status.and_then(|s| s.code()))
 }
 
@@ -118,7 +115,9 @@ fn assemble(dir: &Path, files: &[(&str, &str)]) -> Vec<String> {
         std::fs::write(dir.join(name), text).unwrap();
         let obj = format!("{name}.o");
         let o = run_with(
-            Command::new(tool("gcc").expect("gcc")).args(["-c", name, "-o", &obj]).current_dir(dir),
+            Command::new(AARCH64.tool("gcc").expect("gcc"))
+                .args(["-c", name, "-o", &obj])
+                .current_dir(dir),
             b"",
             Duration::from_mins(1),
         );
@@ -452,7 +451,7 @@ fn archive_members_stay_extracted_when_collected() {
     if !host() {
         return;
     }
-    let Some(ar) = tool("ar") else { return };
+    let Some(ar) = AARCH64.tool("ar") else { return };
     let dir = Scratch::new("gc-archive");
     let a = format!(
         "    .text\n    .globl _start\n_start:\n{}\
@@ -825,6 +824,15 @@ fn debuggers_read_a_collected_program() {
             ok_m || err_m <= err_b,
             "llvm-dwarfdump --verify: {err_m} errors (GNU ld's: {err_b}):\n{text_m}"
         );
+    }
+    // A debugger session runs the program: natively only (gdb would
+    // need qemu's remote stub off an AArch64 host).
+    if !AARCH64.is_host() {
+        mortar_testutil::named_skip(
+            "gc::debuggers_read_a_collected_program (gdb session)",
+            "gdb runs the AArch64 program: on an AArch64 host only",
+        );
+        return;
     }
     let Some(gdb) = tool("gdb") else { return };
     let o = run_with(

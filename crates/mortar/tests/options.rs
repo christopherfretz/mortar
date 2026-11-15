@@ -277,11 +277,9 @@ const BACK_HELPER: &str = "\t.text\n\t.globl helper\nhelper:\n\tmov x0, #9\n\tre
 
 impl Cx {
     fn new() -> Option<Self> {
-        if std::env::consts::ARCH != "aarch64" {
-            return None;
-        }
+        let a64 = support::AARCH64;
         let (Some(gcc), Some(bfd), Some(readelf), Some(ar)) =
-            (tool("gcc"), tool("ld.bfd"), tool("readelf"), tool("ar"))
+            (a64.tool("gcc"), a64.tool("ld.bfd"), tool("readelf"), a64.tool("ar"))
         else {
             assert!(!tools_required(), "gcc, ld.bfd, readelf and ar are required");
             return None;
@@ -397,7 +395,8 @@ impl Cx {
 
     /// The program's exit status.
     fn exit(path: &Path) -> Option<i32> {
-        run_with(&mut Command::new(path), b"", Duration::from_mins(1)).status.and_then(|s| s.code())
+        let mut program = support::AARCH64.command(path, None);
+        run_with(&mut program, b"", Duration::from_mins(1)).status.and_then(|s| s.code())
     }
 }
 
