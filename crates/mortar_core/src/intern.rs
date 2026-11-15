@@ -14,39 +14,35 @@
 //!
 //! # Design
 //!
-//! [`SHARDS`] shards (a constant, §6 rule 6), chosen by the hash's top
-//! bits, each an open-addressing table behind its own `Mutex`, padded to
-//! its own cache lines. A shard holds its entries in insertion order (key,
-//! hash, first mention: 48 bytes for a [`SymName`]) and a probe array of
-//! `u64` cells, each the hash's upper half and the entry's index (linear
-//! probing, at most 5/8 full), so that a probe compares key bytes only on a
-//! 32-bit tag match. The hash is computed before the lock is taken; the
-//! lock covers the probe, the key comparison and the minimum. A slot is the
-//! shard and the entry's index in it: which slot a key gets depends on the
-//! schedule, so slots are never observable; ids are. The measurements and
-//! the designs rejected are in `spec/landed/model/WP-020b.md`.
+//! One lock-free open-addressing table, sized up front: an array of
+//! `AtomicU64` probe cells (linear probing from a multiply-shift reduction
+//! of the hash), each 0 or the hash's low half (a tag) and an entry index.
+//! Entries (key, hash, first mention as an `AtomicU64`) live in `OnceLock`s
+//! in fixed-size segments allocated on first use; a worker reserves entry
+//! indices in blocks ([`Inserter`]), writes its entry, and only then
+//! publishes it by a compare-exchange of an empty cell, so a reader never
+//! waits: a cell it sees holds a complete entry. A worker that loses the
+//! race for a cell leaves its entry unused (a hole, never referenced) and
+//! takes the winner's if the keys are equal. The first mention is updated
+//! with `fetch_min`, after a plain load shows it would lower it. No lock is
+//! taken anywhere, so a preempted worker never stalls the others (the
+//! sharded-mutex design this replaced did, on a loaded host: the numbers
+//! are in `spec/landed/model/WP-020b.md`).
+//!
+//! A lock-free table cannot grow, so [`number`] sizes it from a
+//! `HyperLogLog` estimate of the distinct keys (one pass that hashes every
+//! key; mold sizes its symbol table the same way) and, should the estimate
+//! fall short, starts pass 1 again with twice the size: the result is the
+//! same either way. Which slot a key gets depends on the schedule, so
+//! slots are never observable; ids are.
 
 use std::marker::PhantomData;
-use std::sync::atomic::{self, AtomicBool, AtomicU32};
-use std::sync::{Mutex, PoisonError};
+use std::sync::OnceLock;
+use std::sync::atomic::{self, AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize};
 
 use crate::hash::{combine, hash_bytes};
 use crate::id::Id;
 use crate::par::{Pool, split_offsets};
-
-/// log2 of [`SHARDS`].
-pub const SHARD_BITS: u32 = 8;
-
-/// The number of shards of an [`Interner`]: a constant (§6 rule 6).
-pub const SHARDS: usize = 1 << SHARD_BITS;
-
-/// The bits of a slot that index an entry within its shard.
-const LOCAL_BITS: u32 = 32 - SHARD_BITS;
-
-/// The most entries one shard holds: 2^24 - 1, so that a slot fits 32 bits.
-/// With the fixed hash a shard reaches it only when the keys number about
-/// 2^32, beyond what §1 allows anyway.
-pub const SHARD_CAPACITY: usize = (1 << LOCAL_BITS) - 1;
 
 /// A key an [`Interner`] holds: plain data, compared bytewise, hashed by
 /// the fixed hash of [`crate::hash`].
@@ -167,271 +163,297 @@ impl Mention {
     }
 }
 
-/// A key's place in an [`Interner`]: its shard and its entry there. Which
-/// slot a key gets depends on the schedule: a slot is never observable.
+/// A key's place in an [`Interner`]: the index of its entry. Which slot a
+/// key gets depends on the schedule: a slot is never observable.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Slot(pub u32);
 
-impl Slot {
-    fn new(shard: usize, local: usize) -> Self {
-        Self(((shard as u32) << LOCAL_BITS) | local as u32)
-    }
-    fn shard(self) -> usize {
-        (self.0 >> LOCAL_BITS) as usize
-    }
-    fn local(self) -> usize {
-        (self.0 & ((1 << LOCAL_BITS) - 1)) as usize
-    }
-}
+/// The interner is as full as its size allows: [`number`] starts again
+/// with a larger one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Full;
 
-/// An interner shard grew beyond [`SHARD_CAPACITY`] entries, or a numbering
-/// beyond 2^32 - 1 ids: the link is refused by name (§1).
+/// A numbering would need more than 2^32 - 1 ids, or units, or mentions in
+/// one unit: the link is refused by name (§1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TooManyKeys;
 
 impl std::fmt::Display for TooManyKeys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("more than 2^32 - 1 distinct keys (or 2^24 - 1 in one interner shard)")
+        f.write_str("more than 2^32 - 1 distinct keys")
     }
 }
 
 impl std::error::Error for TooManyKeys {}
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 struct Entry<K> {
     key: K,
     hash: u64,
-    first: u64,
+    first: AtomicU64,
 }
 
-#[derive(Debug)]
-struct Shard<K> {
-    /// 0, or the tag (the hash's upper half) and `local + 1`.
-    cells: Vec<u64>,
-    entries: Vec<Entry<K>>,
-}
+/// log2 of the entries per segment.
+const SEGMENT_BITS: u32 = 14;
+const SEGMENT: usize = 1 << SEGMENT_BITS;
 
-impl<K> Default for Shard<K> {
-    fn default() -> Self {
-        Self { cells: Vec::new(), entries: Vec::new() }
-    }
-}
+/// The entry indices an [`Inserter`] reserves at a time.
+const RESERVE: usize = 256;
 
-#[inline]
-fn cell(hash: u64, local: usize) -> u64 {
-    (hash & 0xffff_ffff_0000_0000) | (local as u64 + 1)
-}
+type Segment<K> = Box<[OnceLock<Entry<K>>]>;
 
-impl<K: InternKey> Shard<K> {
-    fn find(&self, key: &K, hash: u64) -> Result<usize, usize> {
-        let mask = self.cells.len().wrapping_sub(1);
-        let tag = hash >> 32;
-        let mut i = hash as usize & mask;
-        loop {
-            let c = self.cells[i];
-            if c == 0 {
-                return Err(i);
-            }
-            if c >> 32 == tag {
-                let local = (c as u32 - 1) as usize;
-                if self.entries[local].key == *key {
-                    return Ok(local);
-                }
-            }
-            i = (i + 1) & mask;
-        }
-    }
-
-    fn insert(&mut self, key: K, hash: u64, mention: u64) -> Result<usize, TooManyKeys> {
-        if (self.entries.len() + 1) * 8 > self.cells.len() * 5 {
-            self.grow();
-        }
-        match self.find(&key, hash) {
-            Ok(local) => {
-                let e = &mut self.entries[local];
-                e.first = e.first.min(mention);
-                Ok(local)
-            }
-            Err(at) => {
-                let local = self.entries.len();
-                if local >= SHARD_CAPACITY {
-                    return Err(TooManyKeys);
-                }
-                self.entries.push(Entry { key, hash, first: mention });
-                self.cells[at] = cell(hash, local);
-                Ok(local)
-            }
-        }
-    }
-
-    fn get(&self, key: &K, hash: u64) -> Option<usize> {
-        if self.cells.is_empty() {
-            return None;
-        }
-        self.find(key, hash).ok()
-    }
-
-    fn grow(&mut self) {
-        let size = (self.cells.len() * 2).max(16);
-        self.cells.clear();
-        self.cells.resize(size, 0);
-        let mask = size - 1;
-        for (local, e) in self.entries.iter().enumerate() {
-            let mut i = e.hash as usize & mask;
-            while self.cells[i] != 0 {
-                i = (i + 1) & mask;
-            }
-            self.cells[i] = cell(e.hash, local);
-        }
-    }
-}
-
-/// A shard on cache lines of its own.
-#[derive(Debug, Default)]
-#[repr(align(128))]
-struct Padded<T>(T);
-
-#[inline]
-fn shard_of(hash: u64) -> usize {
-    (hash >> (64 - SHARD_BITS)) as usize
-}
-
-/// A concurrent, insert-only table from keys to [`Slot`]s, keeping each
-/// key's first mention. Shared by reference among workers; frozen into a
+/// A concurrent, insert-only, fixed-size table from keys to [`Slot`]s,
+/// keeping each key's first mention. Shared by reference among workers,
+/// each inserting through an [`Inserter`] of its own; frozen into a
 /// read-only [`Frozen`] when the parallel phase ends.
 ///
-/// Cost: one lock of one shard per insert; per distinct key one entry (48
-/// bytes for [`SymName`]) and 1.6 to 4 probe cells of 8 bytes, with
-/// vector growth on top (measured in `spec/landed/model/WP-020b.md`).
+/// Cost: 8 bytes per probe cell (2 per key it is sized for), an entry per
+/// key (56 bytes for [`SymName`]) in segments of 2^14 allocated on first
+/// use; per insert one hash, a probe (one tag compare per cell visited, key
+/// bytes compared on a tag match), and for a new key one compare-exchange.
 #[derive(Debug)]
 pub struct Interner<K> {
-    shards: Box<[Padded<Mutex<Shard<K>>>]>,
+    cells: Box<[AtomicU64]>,
+    segments: Box<[OnceLock<Segment<K>>]>,
+    /// The next entry index to reserve.
+    next: AtomicUsize,
+    /// The most entries: three quarters of the cells, so that a probe ends.
+    limit: usize,
 }
 
-impl<K: InternKey> Default for Interner<K> {
-    fn default() -> Self {
-        Self::new()
-    }
+#[inline]
+fn cell(hash: u64, index: usize) -> u64 {
+    (hash << 32) | (index as u64 + 1)
 }
 
 impl<K: InternKey> Interner<K> {
-    /// An empty interner. Allocates the shard headers only.
-    pub fn new() -> Self {
-        Self { shards: (0..SHARDS).map(|_| Padded::default()).collect() }
+    /// A table for about `keys` distinct keys (it is full at 1.5 times
+    /// `keys`). Allocates its probe cells, zeroed.
+    pub fn with_capacity(keys: usize) -> Self {
+        let cells = keys.saturating_mul(2).max(64);
+        let limit = (cells / 4 * 3).min(u32::MAX as usize);
+        Self {
+            cells: (0..cells).map(|_| AtomicU64::new(0)).collect(),
+            segments: (0..limit.div_ceil(SEGMENT)).map(|_| OnceLock::new()).collect(),
+            next: AtomicUsize::new(0),
+            limit,
+        }
     }
 
+    /// An inserter for one worker.
+    pub fn inserter(&self) -> Inserter<'_, K> {
+        Inserter { table: self, next: 0, end: 0 }
+    }
+
+    /// The first probe cell of `hash`.
+    #[inline]
+    fn home(&self, hash: u64) -> usize {
+        ((u128::from(hash) * self.cells.len() as u128) >> 64) as usize
+    }
+
+    #[inline]
+    fn entry(&self, index: usize) -> &Entry<K> {
+        self.segments[index >> SEGMENT_BITS]
+            .get()
+            .and_then(|s| s[index & (SEGMENT - 1)].get())
+            .expect("an entry is written before its cell is published")
+    }
+
+    /// The slot of `key`, if it was inserted.
+    pub fn get(&self, key: &K) -> Option<Slot> {
+        let hash = key.hash();
+        let mut i = self.home(hash);
+        loop {
+            let c = self.cells[i].load(atomic::Ordering::Acquire);
+            if c == 0 {
+                return None;
+            }
+            if c >> 32 == hash & 0xffff_ffff {
+                let index = (c as u32 - 1) as usize;
+                if self.entry(index).key == *key {
+                    return Some(Slot(index as u32));
+                }
+            }
+            i = if i + 1 == self.cells.len() { 0 } else { i + 1 };
+        }
+    }
+
+    /// The table, read-only.
+    pub fn freeze(self) -> Frozen<K> {
+        Frozen { table: self }
+    }
+}
+
+/// One worker's handle on an [`Interner`]: it reserves entry indices in
+/// blocks, so that workers do not contend for one counter.
+#[derive(Debug)]
+pub struct Inserter<'t, K> {
+    table: &'t Interner<K>,
+    next: usize,
+    end: usize,
+}
+
+impl<K: InternKey> Inserter<'_, K> {
     /// Interns `key`, mentioned at `mention`: its slot, the first mention
     /// becoming the minimum of the old one and `mention`.
-    pub fn insert(&self, key: K, mention: Mention) -> Result<Slot, TooManyKeys> {
+    pub fn insert(&mut self, key: K, mention: Mention) -> Result<Slot, Full> {
+        let table = self.table;
         let hash = key.hash();
-        let s = shard_of(hash);
-        let local = self.shards[s].0.lock().unwrap_or_else(PoisonError::into_inner).insert(
-            key,
-            hash,
-            mention.pack(),
-        )?;
-        Ok(Slot::new(s, local))
-    }
-
-    /// [`Interner::insert`] without locking, for a sequential caller.
-    pub fn insert_mut(&mut self, key: K, mention: Mention) -> Result<Slot, TooManyKeys> {
-        let hash = key.hash();
-        let s = shard_of(hash);
-        let shard = self.shards[s].0.get_mut().unwrap_or_else(PoisonError::into_inner);
-        Ok(Slot::new(s, shard.insert(key, hash, mention.pack())?))
-    }
-
-    /// The table, read-only: lookups without locks, and a dense index of
-    /// slots.
-    pub fn freeze(self) -> Frozen<K> {
-        let shards: Box<[Shard<K>]> = self
-            .shards
-            .into_vec()
-            .into_iter()
-            .map(|p| p.0.into_inner().unwrap_or_else(PoisonError::into_inner))
-            .collect();
-        let mut bases = Vec::with_capacity(SHARDS + 1);
-        let mut total = 0;
-        for shard in &shards {
-            bases.push(total);
-            total += shard.entries.len();
+        let mention = mention.pack();
+        let mut i = table.home(hash);
+        let mut c = table.cells[i].load(atomic::Ordering::Acquire);
+        loop {
+            if c == 0 {
+                let index = self.reserve()?;
+                let segment = table.segments[index >> SEGMENT_BITS]
+                    .get_or_init(|| (0..SEGMENT).map(|_| OnceLock::new()).collect());
+                let fresh = Entry { key, hash, first: AtomicU64::new(mention) };
+                assert!(segment[index & (SEGMENT - 1)].set(fresh).is_ok(), "an entry index is reserved once");
+                match table.cells[i].compare_exchange(
+                    0,
+                    cell(hash, index),
+                    atomic::Ordering::AcqRel,
+                    atomic::Ordering::Acquire,
+                ) {
+                    Ok(_) => return Ok(Slot(index as u32)),
+                    // Another worker took the cell: the entry is a hole.
+                    Err(now) => c = now,
+                }
+                continue;
+            }
+            if c >> 32 == hash & 0xffff_ffff {
+                let index = (c as u32 - 1) as usize;
+                let e = table.entry(index);
+                if e.key == key {
+                    if mention < e.first.load(atomic::Ordering::Relaxed) {
+                        e.first.fetch_min(mention, atomic::Ordering::Relaxed);
+                    }
+                    return Ok(Slot(index as u32));
+                }
+            }
+            i = if i + 1 == table.cells.len() { 0 } else { i + 1 };
+            c = table.cells[i].load(atomic::Ordering::Acquire);
         }
-        bases.push(total);
-        Frozen { shards, bases: bases.into_boxed_slice() }
+    }
+
+    fn reserve(&mut self) -> Result<usize, Full> {
+        if self.next == self.end {
+            let start = self.table.next.fetch_add(RESERVE, atomic::Ordering::Relaxed);
+            if start >= self.table.limit {
+                return Err(Full);
+            }
+            self.next = start;
+            self.end = (start + RESERVE).min(self.table.limit);
+        }
+        self.next += 1;
+        Ok(self.next - 1)
     }
 }
 
 /// A frozen [`Interner`]: read-only, shared freely.
 #[derive(Debug)]
 pub struct Frozen<K> {
-    shards: Box<[Shard<K>]>,
-    /// `SHARDS + 1` prefix sums of the shard sizes: the dense index of slot
-    /// `(s, l)` is `bases[s] + l`.
-    bases: Box<[usize]>,
+    table: Interner<K>,
 }
 
 impl<K: InternKey> Frozen<K> {
-    /// The number of distinct keys.
-    pub fn len(&self) -> usize {
-        self.bases[SHARDS]
-    }
-
-    /// Whether no key was interned.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    /// One more than the greatest slot (holes included): the size of an
+    /// array indexed by slot.
+    pub fn slots(&self) -> usize {
+        self.table.next.load(atomic::Ordering::Relaxed).min(self.table.limit)
     }
 
     /// The slot of `key`, if it was interned.
     pub fn get(&self, key: &K) -> Option<Slot> {
-        let hash = key.hash();
-        let s = shard_of(hash);
-        self.shards[s].get(key, hash).map(|l| Slot::new(s, l))
-    }
-
-    fn entry(&self, slot: Slot) -> &Entry<K> {
-        &self.shards[slot.shard()].entries[slot.local()]
+        self.table.get(key)
     }
 
     /// The key of `slot`.
     pub fn key(&self, slot: Slot) -> K {
-        self.entry(slot).key
+        self.table.entry(slot.0 as usize).key
     }
 
     /// The hash of the key of `slot`.
     pub fn hash(&self, slot: Slot) -> u64 {
-        self.entry(slot).hash
+        self.table.entry(slot.0 as usize).hash
     }
 
     /// The first mention of the key of `slot`.
     pub fn first(&self, slot: Slot) -> Mention {
-        Mention::unpack(self.entry(slot).first)
+        Mention::unpack(self.table.entry(slot.0 as usize).first.load(atomic::Ordering::Relaxed))
     }
 
-    /// The slot's index in `0..len()`, dense (the order is not observable).
-    #[inline]
-    pub fn dense(&self, slot: Slot) -> usize {
-        self.bases[slot.shard()] + slot.local()
-    }
-
-    /// The bytes the table holds: shards, entries and probe cells, by
-    /// capacity.
+    /// The bytes the table holds: probe cells and the segments allocated.
     pub fn heap_bytes(&self) -> usize {
-        let shard = size_of::<Shard<K>>();
-        self.shards
-            .iter()
-            .map(|s| {
-                shard + s.cells.capacity() * 8 + s.entries.capacity() * size_of::<Entry<K>>()
-            })
-            .sum::<usize>()
-            + self.bases.len() * size_of::<usize>()
+        let segments = self.table.segments.iter().filter(|s| s.get().is_some()).count();
+        self.table.cells.len() * 8
+            + self.table.segments.len() * size_of::<OnceLock<Segment<K>>>()
+            + segments * SEGMENT * size_of::<OnceLock<Entry<K>>>()
     }
+}
+
+/// `HyperLogLog` with 2^12 registers (standard error 1.6 %).
+const HLL_BITS: u32 = 12;
+
+/// One worker's `HyperLogLog` registers, merged into the shared ones (by
+/// maximum, §6 rule 2) when the worker is done.
+struct Sketch<'a> {
+    local: Vec<u8>,
+    shared: &'a [AtomicU8],
+}
+
+impl Sketch<'_> {
+    #[inline]
+    fn add(&mut self, hash: u64) {
+        let register = (hash >> (64 - HLL_BITS)) as usize;
+        let rank = ((hash << HLL_BITS) | (1 << (HLL_BITS - 1))).leading_zeros() as u8 + 1;
+        let r = &mut self.local[register];
+        *r = (*r).max(rank);
+    }
+}
+
+impl Drop for Sketch<'_> {
+    fn drop(&mut self) {
+        for (shared, &local) in self.shared.iter().zip(&self.local) {
+            if local > shared.load(atomic::Ordering::Relaxed) {
+                shared.fetch_max(local, atomic::Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// The `HyperLogLog` estimate of the distinct keys of `units` units.
+fn estimate<K, F, It>(pool: &Pool, units: usize, keys: &F) -> usize
+where
+    K: InternKey,
+    F: Fn(usize) -> It + Sync,
+    It: IntoIterator<Item = K>,
+{
+    let m = 1usize << HLL_BITS;
+    let shared: Vec<AtomicU8> = (0..m).map(|_| AtomicU8::new(0)).collect();
+    pool.for_each_init(
+        units,
+        || Sketch { local: vec![0; m], shared: &shared },
+        |sketch, u| {
+            for key in keys(u) {
+                sketch.add(key.hash());
+            }
+        },
+    );
+    let registers: Vec<u8> = shared.into_iter().map(AtomicU8::into_inner).collect();
+    let m = f64::from(1u32 << HLL_BITS);
+    let sum: f64 = registers.iter().map(|&r| 2f64.powi(-i32::from(r))).sum();
+    let zeros: u32 = registers.iter().map(|&r| u32::from(r == 0)).sum();
+    let raw = 0.7213 / (1.0 + 1.079 / m) * m * m / sum;
+    let e = if raw <= 2.5 * m && zeros > 0 { m * (m / f64::from(zeros)).ln() } else { raw };
+    e.ceil() as usize
 }
 
 /// The distinct keys of a [`number`]ing, in id order, with lookup by key.
 #[derive(Debug)]
 pub struct Names<K, I> {
     table: Frozen<K>,
-    /// Dense slot index to id.
+    /// Slot to id (holes: 0, never read).
     id_of: Vec<u32>,
     /// Id to slot.
     slot_of: Vec<Slot>,
@@ -466,7 +488,7 @@ impl<K: InternKey, I: Id> Names<K, I> {
 
     /// The id of `key`, if some unit mentions it.
     pub fn get(&self, key: &K) -> Option<I> {
-        self.table.get(key).map(|s| I::from_index(self.id_of[self.table.dense(s)]))
+        self.table.get(key).map(|s| I::from_index(self.id_of[s.0 as usize]))
     }
 
     /// The ids and their keys, in id order.
@@ -507,6 +529,10 @@ impl<K, I> Numbering<K, I> {
 /// count and schedule: units in order, each mention in order, a key seen
 /// for the first time taking the next id.
 ///
+/// `keys` is called twice per unit: once to estimate the number of
+/// distinct keys (the size of the table), once to intern them; a third
+/// time for every unit in the rare case the estimate falls short.
+///
 /// The three passes of §2.3: (1) per unit, intern each key and leave its
 /// slot in the map; (2) per unit, collect the slots whose first mention is
 /// this mention, in order, and concatenate in unit order: that is the id
@@ -543,27 +569,23 @@ where
     let mut map = vec![I::from_index(0); total];
 
     // Pass 1: intern, leaving slots in the map.
-    let mut interner = Interner::new();
-    if pool.is_inline() {
-        for (u, out) in split_offsets(&mut map, &offsets).into_iter().enumerate() {
-            fill(keys(u), u, out, |k, m| interner.insert_mut(k, m))?;
-        }
-    } else {
-        let failed = AtomicBool::new(false);
-        let shared = &interner;
-        pool.for_each_part(split_offsets(&mut map, &offsets), |u, out| {
-            if fill(keys(u), u, out, |k, m| shared.insert(k, m)).is_err() {
-                failed.store(true, atomic::Ordering::Relaxed);
+    let mut size = estimate(pool, counts.len(), &keys) + 16;
+    let table = loop {
+        let interner = Interner::with_capacity(size);
+        let full = AtomicBool::new(false);
+        pool.for_each_part_init(split_offsets(&mut map, &offsets), || interner.inserter(), |ins, u, out| {
+            if !full.load(atomic::Ordering::Relaxed) && fill(keys(u), u, out, |k, m| ins.insert(k, m)).is_err() {
+                full.store(true, atomic::Ordering::Relaxed);
             }
         });
-        if failed.into_inner() {
+        if !full.into_inner() {
+            break interner.freeze();
+        }
+        if interner.limit >= u32::MAX as usize {
             return Err(TooManyKeys);
         }
-    }
-    let table = interner.freeze();
-    if u32::try_from(table.len()).is_err() {
-        return Err(TooManyKeys);
-    }
+        size = size.saturating_mul(2);
+    };
 
     // Pass 2: the first mentions, in unit order, are the ids in order.
     let collected = pool.map_collect(counts.len(), |u, out| {
@@ -575,18 +597,20 @@ where
         }
     });
     let slot_of = collected.items;
-    debug_assert_eq!(slot_of.len(), table.len(), "every key has one first mention");
+    if u32::try_from(slot_of.len()).is_err() {
+        return Err(TooManyKeys);
+    }
 
     // Pass 3: ids by slot, then the map from slots to ids.
-    let ids: Vec<AtomicU32> = (0..table.len()).map(|_| AtomicU32::new(0)).collect();
+    let ids: Vec<AtomicU32> = (0..table.slots()).map(|_| AtomicU32::new(0)).collect();
     pool.for_each_block(slot_of.len(), REWRITE_BLOCK, |_, range| {
         for id in range {
-            ids[table.dense(slot_of[id])].store(id as u32, atomic::Ordering::Relaxed);
+            ids[slot_of[id].0 as usize].store(id as u32, atomic::Ordering::Relaxed);
         }
     });
     pool.for_each_part(map.chunks_mut(REWRITE_BLOCK), |_, chunk| {
         for x in chunk {
-            *x = I::from_index(ids[table.dense(Slot(x.index()))].load(atomic::Ordering::Relaxed));
+            *x = I::from_index(ids[x.slot()].load(atomic::Ordering::Relaxed));
         }
     });
     let id_of = ids.into_iter().map(AtomicU32::into_inner).collect();
@@ -594,11 +618,11 @@ where
 }
 
 /// Pass 1 for unit `u`: interns its keys, leaving their slots in `out`.
-fn fill<K, I, It, F>(keys: It, u: usize, out: &mut [I], mut intern: F) -> Result<(), TooManyKeys>
+fn fill<K, I, It, F>(keys: It, u: usize, out: &mut [I], mut intern: F) -> Result<(), Full>
 where
     I: Id,
     It: IntoIterator<Item = K>,
-    F: FnMut(K, Mention) -> Result<Slot, TooManyKeys>,
+    F: FnMut(K, Mention) -> Result<Slot, Full>,
 {
     let mut n = 0;
     for key in keys {

@@ -2,7 +2,7 @@
 //! interning tests and the benchmarks (`examples/intern_bench.rs`,
 //! `examples/hash_bench.rs`).
 
-#![allow(dead_code)]
+#![allow(dead_code, clippy::cast_precision_loss, clippy::range_plus_one)]
 
 use std::ops::Range;
 
@@ -127,4 +127,36 @@ pub fn workload(seed: u64, files: usize, per_file: usize, shared: usize, own: us
         out.push(file);
     }
     Workload { arena, names, files: out }
+}
+
+/// A workload laid out as real inputs are: each file has a string table of
+/// its own holding the names it mentions, in order.
+pub struct Strtabs {
+    pub files: Vec<(Vec<u8>, Vec<Range<usize>>)>,
+}
+
+impl Strtabs {
+    pub fn new(w: &Workload) -> Self {
+        let files = w
+            .files
+            .iter()
+            .map(|file| {
+                let mut strtab = Vec::new();
+                let mut names = Vec::with_capacity(file.len());
+                for &n in file {
+                    let start = strtab.len();
+                    strtab.extend_from_slice(w.name(n));
+                    names.push(start..strtab.len());
+                    strtab.push(0);
+                }
+                (strtab, names)
+            })
+            .collect();
+        Self { files }
+    }
+
+    pub fn names(&self, file: usize) -> impl ExactSizeIterator<Item = &[u8]> + '_ {
+        let (strtab, names) = &self.files[file];
+        names.iter().map(move |r| &strtab[r.clone()])
+    }
 }
