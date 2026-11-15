@@ -8,8 +8,9 @@
 //! phase 70 from the verdict this module writes into `SymProps`
 //! (`spec/resolve.md` §5.1, §5.2).
 
-use mortar_core::identity::{Lookup, comdat_lookup, symbol_lookup};
+use mortar_core::hash::hash_bytes;
 use mortar_core::inputs::{DirectiveKind, FileKind as InputKind, InputFlags, Inputs, Reader};
+use mortar_core::intern::{InternKey, SymName};
 use mortar_core::par::Pool;
 use mortar_core::plan::{OutputKind, Plan, Strip, SymbolRole, UnresolvedSymbols};
 use mortar_core::resolution::{
@@ -20,6 +21,7 @@ use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, RefusalClass, Relation}
 use mortar_elf::consts::{STB_GLOBAL, STB_WEAK, STT_SECTION};
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 
+use crate::index::HashIndex;
 use crate::options::{Entry, Named, Options, Output};
 use crate::problem::{DefPlace, MalformedSymbol, Problem, What};
 use crate::resolve::{Def, Resolved, flags, resolve_steps};
@@ -69,7 +71,7 @@ pub struct InputsView<'a, 's> {
     /// Per file, its rows of `groups`: `groups[group_at[f]..group_at[f + 1]]`.
     group_at: Vec<u32>,
     also: Vec<(FileId, u32, SymbolId)>,
-    symbols: Lookup<SymbolId>,
+    symbols: HashIndex,
     faults: Vec<Fault>,
 }
 
@@ -84,9 +86,19 @@ impl<'a, 's> InputsView<'a, 's> {
     /// [`InputsView::new`], recording where the time went.
     pub fn new_steps(inputs: &'a Inputs<'s>, pool: &Pool, steps: &mut Steps) -> Self {
         steps.restart();
-        let symbols = symbol_lookup(&inputs.symbols);
+        // The keys' hashes are the input phase's (`SymbolKey::hash`).
+        let hashes: Vec<u64> = inputs.symbols.as_slice().iter().map(|k| k.hash).collect();
+        debug_assert!(
+            inputs.symbols.as_slice().iter().all(|k| k.hash == sym_hash(k.name, k.version)),
+            "a symbol key's hash is not its name's"
+        );
+        let symbols = HashIndex::new(&hashes);
+        drop(hashes);
         steps.step("view.symbol_lookup");
-        let comdats = comdat_lookup(&inputs.comdats);
+        let names = inputs.comdats.as_slice();
+        let comdat_hashes = pool.map(names.len(), |c| hash_bytes(names[c].name));
+        let comdats = HashIndex::new(&comdat_hashes);
+        drop(comdat_hashes);
         steps.step("view.comdat_lookup");
         let n = inputs.files.len() as usize;
         let per: Vec<PerFile<'s>> =
@@ -147,11 +159,32 @@ impl<'a, 's> InputsView<'a, 's> {
 
 fn lookup(
     symbols: &mortar_core::Column<SymbolId, mortar_core::inputs::SymbolKey<'_>>,
-    lookup: &Lookup<SymbolId>,
+    index: &HashIndex,
     name: &[u8],
     version: Option<&[u8]>,
 ) -> Option<SymbolId> {
-    lookup.find(&(name, version), |s| (symbols[s].name, symbols[s].version))
+    let rows = symbols.as_slice();
+    index
+        .find(sym_hash(name, version), |r| {
+            let k = &rows[r as usize];
+            k.name == name && k.version == version
+        })
+        .map(SymbolId)
+}
+
+/// The hash of a symbol key (`spec/model.md` §9): the interner's.
+fn sym_hash(name: &[u8], version: Option<&[u8]>) -> u64 {
+    SymName { name, version }.hash()
+}
+
+/// The row of the COMDAT signature `name`.
+fn comdat_of(
+    comdats: &mortar_core::Column<ComdatId, mortar_core::inputs::Comdat<'_>>,
+    index: &HashIndex,
+    name: &[u8],
+) -> Option<ComdatId> {
+    let rows = comdats.as_slice();
+    index.find(hash_bytes(name), |r| rows[r as usize].name == name).map(ComdatId)
 }
 
 /// The view's file kind (§4.2).
@@ -192,8 +225,8 @@ fn sources(inputs: &Inputs<'_>) -> Vec<u32> {
 
 fn per_file<'s>(
     inputs: &Inputs<'s>,
-    symbols: &Lookup<SymbolId>,
-    comdats: &Lookup<ComdatId>,
+    symbols: &HashIndex,
+    comdats: &HashIndex,
     id: FileId,
 ) -> PerFile<'s> {
     let mut out = PerFile::default();
@@ -256,7 +289,7 @@ fn per_file<'s>(
             out.faults.push(format!("section {i}: the group's signature cannot be read"));
             continue;
         };
-        let Some(signature) = comdats.find(&name, |c| inputs.comdats[c].name) else {
+        let Some(signature) = comdat_of(&inputs.comdats, comdats, name) else {
             out.faults.push(format!("section {i}: the signature was not interned"));
             continue;
         };

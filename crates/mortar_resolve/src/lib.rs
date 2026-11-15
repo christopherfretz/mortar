@@ -24,6 +24,7 @@
 
 pub mod comdat;
 pub mod gnu;
+pub mod index;
 pub mod linker;
 pub mod live;
 pub mod mention;

@@ -6,9 +6,9 @@
   `mortar_input::load::load_steps`, `mortar_resolve::Outcome::steps`,
   `StoreStats::wave_ns`).
 
-## Measured, not yet written
-- resolve: `symbol_lookup` sort 7 ms serial, comdat sort + binary search
-  ~10 ms (1T). Hash index prototype: resolve 50 -> 20 ms (1T).
+- F1 resolve hash index (`mortar_resolve/src/index.rs`): protoc resolve
+  35.7 -> 17.7 ms (1T), 22.1 -> 9.0 ms (8T), golden identical.
 
 ## Next
-- commit the hash index (resolve `tables.rs`).
+- per_file remainder; input interning (estimate pass, dyn iterators);
+  staged read wave B/C.

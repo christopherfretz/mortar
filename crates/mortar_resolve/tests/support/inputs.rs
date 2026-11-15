@@ -10,6 +10,7 @@ use mortar_core::inputs::{
     Archive, ArchiveKind, Blob, Comdat, ContentHash, File, FileBytes, GroupOrdinal, InputFlags,
     Inputs, LinkInputs, LinkTarget, Member, Origin, Reader, StoreRef, SymbolKey,
 };
+use mortar_core::intern::SymName;
 use mortar_core::{ArchiveId, Column, ComdatId, FileId, IdRange, Span, SymbolId};
 use mortar_elf::archive::Archive as ArFile;
 use mortar_elf::consts::{SHT_GROUP, STT_SECTION};
@@ -73,7 +74,10 @@ impl Builder {
                 let next = SymbolId(self.symbols.len() as u32);
                 let id = *self.keys.entry((name, version)).or_insert(next);
                 if id == next {
-                    self.symbols.push(SymbolKey { name, version, hash: 0 });
+                    // The key's hash, as the input phase computes it
+                    // (`spec/model.md` §9): resolution's index reads it.
+                    let hash = mortar_core::intern::InternKey::hash(&SymName { name, version });
+                    self.symbols.push(SymbolKey { name, version, hash });
                 }
                 self.sym_map.push(id);
             }
