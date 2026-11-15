@@ -1377,6 +1377,50 @@ random input's).
   successful link; a failed link removes nothing at `FILE` (not
   compared with the references, E14).
 
+### 9.3 The GNU-style map (WP-027d: specified, not implemented)
+
+- **I-120 [proposed]** `-Map=FILE` and `-M` write a human-readable map in
+  GNU ld's text layout, and `--mortar-map=FILE` writes `mortar-map 1`
+  (I-77, I-78) for the verifier and tools. Until this lands I-77 stands
+  (`-Map` is `mortar-map 1`). When it lands every consumer of the machine
+  map moves to `--mortar-map` in the same change: the pipeline and
+  options tests (`crates/mortar/tests/pipeline.rs` `mortar()`,
+  `debuggers.rs` `map_option()`), `cargo xtask linktest` (its L3 verifier
+  run) and `layout/map-file.test` (XFAIL today: it checks GNU's text).
+  Both may be given; each is written as I-79 says.
+- **I-121 [proposed] The text.** Byte-compatible headings and record
+  shapes of GNU ld 2.44, so that people and the scripts that grep GNU
+  maps read it; not byte-identical content (addresses, order and fill are
+  mortar's). In order:
+  1. `Archive member included to satisfy reference by file (symbol)`, a
+     blank line, and per taken member `ARCHIVE(MEMBER)` and on the next
+     line 26 spaces then `FILE (SYMBOL)`: the file and symbol whose
+     reference took it (resolve's first taker, `spec/resolve.md` §4.3);
+  2. `Discarded input sections`, then per dropped COMDAT copy and per
+     section `--gc-sections` removes, ` NAME ADDR SIZE FILE` (address 0);
+  3. `Memory Configuration`, the fixed four lines GNU writes with no
+     `MEMORY` command (`Name Origin Length Attributes`,
+     `*default* 0x0000000000000000 0xffffffffffffffff`);
+  4. `Linker script and memory map`, `LOAD FILE` per input in `FileId`
+     order, then per output section in address order
+     `NAME` padded to 16, `0x%016x` address, size in `0x%x` right-aligned
+     to 10; per placed input section ` NAME` and, when it is longer than
+     14 columns, a new line of 16 spaces, then address, size and
+     `FILE` or `ARCHIVE(MEMBER)`; per named global or local symbol
+     defined there 16 spaces, address, 16 spaces, name; ` *fill*` with
+     address, size and the fill word for alignment gaps in code (the
+     fill of §4); a synthetic chunk as an input section of file
+     `mortar` (`spec/synth.md` S-3 names), a thunk or erratum patch as
+     `__TARGET_veneer` lines as in `mortar-map 1`;
+  5. `OUTPUT(FILE ELF-TARGET)`, GNU's emulation target name
+     (`elf64-littleaarch64`, `elf64-x86-64`, `elf32-i386`).
+  The script lines GNU prints (` *(.text.unlikely ...)`) are not written:
+  mortar has no script for default placement. `--cref` stays refused.
+- **I-122 [proposed] Determinism and cost.** The text is a function of
+  the same tables as `mortar-map 1` (I-79) and of nothing else; it is
+  formatted per output section in parallel and is written only when
+  asked. The determinism matrix covers it like the machine map.
+
 ## 10. I/O: the measured design
 
 ### 10.1 Candidates and results (E3)
