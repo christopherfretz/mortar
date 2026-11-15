@@ -667,7 +667,13 @@ impl Ctx<'_, '_, '_> {
                 Diagnostic::refused(C::SymbolType, format!("{sym_type:#x}")).at(self.entry(*entry))
             }
             What::ReservedSection { entry, shndx } => {
-                let name = if *shndx == mortar_elf::consts::SHN_X86_64_LCOMMON {
+                // §3.3: the index is x86-64's large common only on x86-64
+                // (accepted there by `spec/x64.md` X-55, staged as this
+                // refusal until `.lbss` exists); elsewhere it is any
+                // reserved index (§2).
+                let name = if *shndx == mortar_elf::consts::SHN_X86_64_LCOMMON
+                    && self.inputs.target.machine == mortar_elf::Machine::X86_64
+                {
                     "SHN_X86_64_LCOMMON".to_owned()
                 } else {
                     format!("SHN {shndx:#x}")

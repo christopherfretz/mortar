@@ -256,7 +256,8 @@ pub struct Site<'a> { pub bytes: &'a [u8], pub offset: u64 } // the input sectio
     `leal x@tlsgd(%reg)`.
   - Its call is 5 bytes with `PLT32` and 6 bytes with `GOT32X`.
   - x86-64 `TLSLD` is followed by a 5-byte `call` or a 6-byte
-    `call *…(%rip)`.
+    `call *…(%rip)`, or (large model) by `movabs`, `add` and
+    `call *%rax` (A.4).
 
   `classify` returns the window of the unrelaxed form, which is the
   field alone for every type here except the single-relocation x86
@@ -1068,7 +1069,7 @@ incompatible text is lld's shape with a reason field).
 | Q3 | `--emit-relocs` on REL outputs: GNU ld leaves the final value in the field, so the emitted addend is lost. | Do the same; consumers of `--emit-relocs` (BOLT, post-link tools) target RELA platforms. Confirm in x86.md. |
 | Q4 | Keeping the GOT slot of a relaxed GOT load (AArch64 R5, x86 `GOTPCRELX`) costs one word per symbol; lld drops it when every use is relaxed. | Keep (conservative demand, model §3.7); measure in the bench and revisit with an address-independent criterion if it matters. |
 | Q5 | Thunk reuse picks "the existing thunk with the lowest address in reach". | Keep (any deterministic rule is correct); the layout policy may prefer the nearest, if measured to need fewer rounds. |
-| Q6 | x86 TLSLD sequences that match none of the recognized forms (Appendix A.4: `call` and `call *GOTPCRELX`, i386 `PLT32` and `GOT32X`), in an executable, are refused, because their `DTPOFF` fields would otherwise need per-sequence knowledge. | Keep; GCC and Clang emit only the recognized forms (the `-fno-plt` forms are in A.4 after the review). |
+| Q6 | x86 TLSLD sequences that match none of the recognized forms (Appendix A.4: `call`, `call *GOTPCRELX` and the large-model `movabs; add; call *%rax`, i386 `PLT32` and `GOT32X`), in an executable, are refused, because their `DTPOFF` fields would otherwise need per-sequence knowledge. | Keep; GCC and Clang emit only the recognized forms (the `-fno-plt` forms are in A.4 after the review). |
 | Q7 | The x86 TLS special cases (A.4, A.6: `_TLS_MODULE_BASE_` under TLSDESC) are from the review's experiment with clang `-mtls-dialect=gnu2`; GCC's gnu2 local-dynamic output was not inspected. | Answered (`spec/x64.md` X-28, X-47): GCC 14 and Clang 22 both use `_TLS_MODULE_BASE_` under `-mtls-dialect=gnu2 -ftls-model=local-dynamic`; both run with GNU ld's and lld's convention. |
 | Q8 | `undefined-symbol` from a non-alloc place (§3.4) follows GNU ld and mold; lld 22 accepts it. | Keep (one experiment, 2026-11-14: `.xword undef_sym` in `.debug_info`). |
 
@@ -1220,9 +1221,9 @@ becomes `TPREL(tls.start)` and DTPREL fields keep `DtpRel` (a64.md
 refused by name (feature `unrecognized local-dynamic TLS sequence`,
 §11 Q6). Fits; no trait change.
 
-**A.5 `GOTTPOFF` (22).** `mov x@gottpoff(%rip), %reg` (`48 8b`) → `mov
-$tpoff, %reg` (`48 c7 c0+r`, REX.R → REX.B); `add x@gottpoff(%rip), %reg`
-(`48 03`) → `add $tpoff, %reg` (`48 81 c0+r`). Window `before: 3`. Kind 1
+**A.5 `GOTTPOFF` (22).** `mov x@gottpoff(%rip), %reg` (`48|4c 8b`) → `mov
+$tpoff, %reg` (`REX' c7 c0+r`, REX.R → REX.B); `add x@gottpoff(%rip), %reg`
+(`48|4c 03`) → `add $tpoff, %reg` (`REX' 81 c0+r`; `spec/x64.md` §8.2). Window `before: 3`. Kind 1
 (target `Local` in an executable). Fits.
 
 **A.6 TLSDESC: `GOTPC32_TLSDESC` (34), `TLSDESC_CALL` (35).** `lea

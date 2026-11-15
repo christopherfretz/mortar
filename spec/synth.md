@@ -43,10 +43,12 @@ are never reused. A withdrawn rule keeps its id and is marked "withdrawn".
   decide differently.
 
 **Milestones.** M1: static non-PIE AArch64 executables; M2: dynamic
-outputs; M3: x86-64; M4: i386; M7: incremental linking. A rule tagged
+outputs; M3: x86-64 (its static rules are M1 since `spec/x64.md` X-3 and
+`docs/ROADMAP.md` M1); M4: i386; M7: incremental linking. A rule tagged
 with a later milestone binds the design now: an M1 implementation must
 not make that rule hard to add. A rule with no tag applies from M1. Rules
-that name x86-64 or i386 are M3 and M4 rules; they are written now
+that name x86-64 are M1 (static) and M2 (dynamic) rules, those that name
+i386 M4 rules; they are written now
 because the shapes are shared.
 
 **Words.** A **piece** is a part of a split input section (a string, a
@@ -1486,7 +1488,7 @@ edit changes.
 | static IPLT sections | `.plt`, `.rela.plt`, `.got.plt` | `.iplt`, `.rela.dyn`, `.got.plt` | `.plt.got`, `.rela.dyn` | GNU's (S-68) | |
 | an IFUNC in `.symtab` | `IFUNC` at the resolver, always | `FUNC` at `.iplt`, size 0, when canonical; else `IFUNC` | `FUNC` locals at `.plt.got` (A1, A2) | `IFUNC` at the resolver, always (S-71) | gdb's `break f` works (X-27) |
 | `__rela_iplt_*` under `-static-pie` | not defined | not defined | absolute 0 | not defined (S-70) | resolve.md §8.1 |
-| IRELATIVE word (RELA) | AArch64: PLT address; x86-64: 0 | 0 | — | 0 (S-69) | glibc overwrites it |
+| IRELATIVE word (RELA) | AArch64: PLT address; x86-64: the entry's address + 6 (`spec/x64.md` E3) | 0 | — | 0 (S-69) | glibc overwrites it |
 | x86 static `.got.plt` reserved words | 3 | 3 | — | 3 (S-67) | |
 | section symbols in `.symtab` | AArch64 yes, x86 no | none | all | none (S-79) | |
 | `.L` locals | dropped | dropped | kept | dropped (S-78) | |
