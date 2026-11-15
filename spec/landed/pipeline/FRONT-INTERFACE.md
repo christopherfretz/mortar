@@ -81,21 +81,49 @@ Every `(kind, id)` in `synth.chunks` is checked against the placement before
 `front` returns (the chunk at `id` is `ChunkKind::Synthetic` with that
 kind's name).
 
-Helpers on `Front`: `fn sections(&self) -> Vec<OutRow>` (the output sections
-in index order: `shndx, name, sh_type, flags, addr, size, align`), used by
-the differential tests.
+Helpers on `Front`:
+
+```rust
+impl Front<'_> {
+    // The output sections in index order: shndx, name, sh_type, flags,
+    // addr (None: not allocated), size, align. Used by the differential tests.
+    pub fn sections(&self) -> Vec<OutRow>;
+    // The symbol tables' context (synth.md §7.1) exactly as phase 80 built
+    // it — what SymtabPlan::write_symtab / write_strtab read. Rebuilds
+    // Tables, MergeEh, CoreSections, LinkSections and CoreSyms from the
+    // fields above; the error is MergeEh::new's (already passed once).
+    pub fn with_sym_cx<T>(&self, f: impl FnOnce(&SymCtx<'_>) -> T)
+        -> Result<T, mortar_synth::error::SynthError>;
+}
+```
 
 ## What `Front` does not carry (by design)
 
 - the `Collector`, the `Timer`, the `Store` — the caller's (above);
-- the scan's `View`/`Walker` and `CoreSyms` (`crates/mortar/src/syms.rs`, the
-  `SymSource` the symtab plan reads) — borrowed views, rebuilt from the fields
-  above when needed (`Walker::new(&arch, &ScanInputs{..}, ScanOptions{..})`;
-  `CoreSyms::new(&inputs, &resolution, &assignment)`, crate-private today: say
-  if image needs it public);
+- the scan's `View`/`Walker` and the symbol context — borrowed views,
+  rebuilt from the fields above when needed (`Walker::new(&arch,
+  &ScanInputs{..}, ScanOptions{..})`; `Front::with_sym_cx` for the symbol
+  tables). `mortar::syms` is public: `CoreSyms<'a,'s>: SymSource`
+  (`CoreSyms::new(&inputs, &resolution, &assignment)`) and
+  `LinkSections<'a> { core: CoreSections<'a>, assignment: &'a Assignment<'a> }:
+  Sections` (a section is live only if it is live *and* placed: the
+  consumed ones, `.note.gnu.property`, `.gnu.warning*`, have no output
+  section, synth.md S-76);
 - `.comment` (S-100) — not yet a chunk (an internal-file `SectionId` is
   missing; see the record).
 
 ## Changes after first publication
 
-(none yet)
+Published in d0e347e. Changed since (all additive; no field or signature
+of the first version changed):
+
+1. `mortar::syms` is `pub` (was crate-private), with the new
+   `LinkSections` (S-76: consumed sections' locals are dropped from
+   `.symtab`).
+2. `Front::with_sym_cx` added, so image writes `.symtab`/`.strtab` with
+   the same context the plan was sized with.
+3. `SynthPlans.chunks` holds `SymtabShndx` only when the section count
+   needs it (past `SHN_LORESERVE`); before, it was always present.
+4. `plan.shaping.build_id`'s `BuildId::Hex` holds the whole option text,
+   `0x` included (the command line used to strip it, so no `0xHEX` id
+   reached synth intact).
