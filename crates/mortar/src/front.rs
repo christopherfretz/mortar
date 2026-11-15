@@ -576,6 +576,7 @@ pub fn front<'s>(
             merge: &order.map,
             demands: &scanned.demands,
             order: &scanned.order,
+            branches: &scanned.branches,
             slots: demand_slots,
             got: &plans.got,
             ids,

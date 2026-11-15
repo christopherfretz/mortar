@@ -13,7 +13,6 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use mortar_arch::need::branch_site;
 use mortar_arch::{
     Arch, FillCx, FillTables, OutputKind, ProofRun, SectionOut, SlotKind, SymNames, SymValue,
     TargetKind, TlsBlock,
@@ -33,7 +32,7 @@ use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS};
 use mortar_elf::{SymbolSection, SymbolTable};
 use mortar_layout::fixed::{BranchAt, OwnedCode, Round, Sites};
 use mortar_layout::{Headers, LayoutDiag};
-use mortar_scan::{RecIndex, Walker};
+use mortar_scan::{BranchRec, RecIndex, Walker};
 use mortar_synth::GotPlan;
 use mortar_synth::got::{GotAddrs, Region};
 
@@ -68,6 +67,8 @@ pub struct SiteInputs<'a, 's> {
     pub merge: &'a MergeMap,
     pub demands: &'a Demands,
     pub order: &'a RecIndex,
+    /// The scan's branch candidates (`Scanned.branches`).
+    pub branches: &'a [BranchRec],
     pub slots: &'a Slots,
     pub got: &'a GotPlan,
     pub ids: SynthIds,
@@ -98,14 +99,17 @@ impl std::fmt::Debug for LinkSites<'_, '_> {
 }
 
 impl<'a, 's> LinkSites<'a, 's> {
-    /// The branch sites: one parallel pass over the relocations of the
-    /// live code sections (`need::branch_site` on each, with the target's
-    /// final demand flags).
+    /// The branch sites: the scan's branch candidates (`Scanned.branches`)
+    /// of the live code sections, each made a site with its target's
+    /// final demand flags (`need::branch_site`). Debug builds also walk
+    /// the code sections' relocations again, as this did before WP-032i,
+    /// and require the same sites.
     ///
     /// # Errors
     ///
-    /// The scan's diagnostic of a section that cannot be opened (the scan
-    /// reported it already; the link has failed).
+    /// None in a release build. A debug build's walk: the scan's
+    /// diagnostic of a section that cannot be opened (the scan reported it
+    /// already; the link has failed).
     pub fn new(
         t: SiteInputs<'a, 's>,
         arch: &'a dyn Arch,
@@ -125,35 +129,11 @@ impl<'a, 's> LinkSites<'a, 's> {
             let Some((file, index)) = t.resolution.sh_index(sid) else { continue };
             code.push(CodeSec { file, sid, index: index.0, rel: row.reloc.0, out });
         }
-        let found: Vec<Result<Vec<BranchAt>, (Key, Diagnostic)>> = pool.map(code.len(), |i| {
-            let c = code[i];
-            let mut out = Vec::new();
-            if c.rel == 0 {
-                return Ok(out);
-            }
-            let leads = t.order.leads(c.sid);
-            walker.walk(c.file, c.sid, c.index, c.rel, 0..u64::MAX, leads, &mut |v| {
-                if arch.branch(v.at.howto).is_none() {
-                    return;
-                }
-                let kind = v.tables.sym(v.at.key).kind;
-                let flags = t.demands.of(v.at.key);
-                if let Some(site) =
-                    branch_site(arch, OutputKind::Static, &v.at, walker.names(), kind, flags)
-                {
-                    out.push(BranchAt {
-                        section: c.sid,
-                        offset: v.at.r_offset,
-                        record: v.at.index,
-                        site,
-                    });
-                }
-            })?;
-            Ok(out)
-        });
-        let mut branches = Vec::new();
-        for f in found {
-            branches.extend(f?);
+        let branches = branches_of(&t, &code);
+        #[cfg(debug_assertions)]
+        {
+            let by_walk = walk_branches(&t, arch, walker, pool, &code)?;
+            assert!(by_walk == branches, "the scan's branch sites differ from a walk's");
         }
         let files: Vec<&mortar_core::inputs::File<'s>> =
             t.inputs.files.iter().map(|(_, f)| f).collect();
@@ -201,6 +181,87 @@ impl<'a, 's> LinkSites<'a, 's> {
             fallback: round.chunks.iter().find_map(|(_, c)| c.addr).unwrap_or(0),
         }
     }
+}
+
+/// The branch sites of `code` (in `SectionId` order) from the scan's
+/// candidates: those in a section of `code`, by section and then record,
+/// each with its key's final demand flags.
+fn branches_of(t: &SiteInputs<'_, '_>, code: &[CodeSec]) -> Vec<BranchAt> {
+    let mut out: Vec<BranchAt> = Vec::new();
+    let mut last: Option<(SectionId, bool)> = None;
+    for b in t.branches {
+        let keep = match last {
+            Some((s, k)) if s == b.section => k,
+            _ => {
+                let k = code.binary_search_by_key(&b.section, |c| c.sid).is_ok();
+                last = Some((b.section, k));
+                k
+            }
+        };
+        if keep {
+            out.push(BranchAt {
+                section: b.section,
+                offset: b.offset,
+                record: b.record,
+                site: b.site.site(t.demands.of(b.site.key)),
+            });
+        }
+    }
+    // The scan's units are in `(FileId, section index)` order; `SectionId`s
+    // follow it (`spec/model.md` §2.2), so this is a check.
+    if !out.is_sorted_by_key(|b| b.section) {
+        out.sort_by_key(|b| b.section);
+    }
+    out
+}
+
+/// The branch sites as one parallel walk of `code`'s relocations finds
+/// them (`need::branch_site` on each record): what the scan's candidates
+/// replace, kept to check them in debug builds.
+#[cfg(debug_assertions)]
+fn walk_branches(
+    t: &SiteInputs<'_, '_>,
+    arch: &dyn Arch,
+    walker: &Walker<'_, '_>,
+    pool: &Pool,
+    code: &[CodeSec],
+) -> Result<Vec<BranchAt>, (Key, Diagnostic)> {
+    let found: Vec<Result<Vec<BranchAt>, (Key, Diagnostic)>> = pool.map(code.len(), |i| {
+        let c = code[i];
+        let mut out = Vec::new();
+        if c.rel == 0 {
+            return Ok(out);
+        }
+        let leads = t.order.leads(c.sid);
+        walker.walk(c.file, c.sid, c.index, c.rel, 0..u64::MAX, leads, &mut |v| {
+            if arch.branch(v.at.howto).is_none() {
+                return;
+            }
+            let kind = v.tables.sym(v.at.key).kind;
+            let flags = t.demands.of(v.at.key);
+            if let Some(site) = mortar_arch::need::branch_site(
+                arch,
+                walker.output(),
+                &v.at,
+                walker.names(),
+                kind,
+                flags,
+            ) {
+                out.push(BranchAt {
+                    section: c.sid,
+                    offset: v.at.r_offset,
+                    record: v.at.index,
+                    site,
+                });
+            }
+        })?;
+        Ok(out)
+    });
+    let mut branches = Vec::new();
+    for f in found {
+        branches.extend(f?);
+    }
+    Ok(branches)
 }
 
 impl Sites for LinkSites<'_, '_> {
