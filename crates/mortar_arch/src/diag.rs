@@ -93,6 +93,7 @@ pub fn scan(
             name: name(),
             reason: i.reason(),
         }),
+        ScanError::Dynamic(r) => Diagnostic::error(r.kind(r_type.to_string(), name())),
         ScanError::Outside => Diagnostic::error(outside(r_type, at.r_offset)),
         ScanError::Overlap => OVERLAP.diagnostic(),
         ScanError::Internal => Diagnostic::error(internal(

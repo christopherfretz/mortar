@@ -14,4 +14,13 @@ Merged main 3f4cfe2 (4e76279; merge 2 of 3): S-69 consistent (my RELA bullet + 0
 x86-64 none; AArch64 one: reloc/data-pointers line 10 (output, map) — from main's 31175df (got_base_defined: the
 _GLOBAL_OFFSET_TABLE_ definition now demands GOT_BASE on every arch, so .got gains its 8-byte header word; main's
 own binary shows the same change). No other previously recorded digest moved.
-Next: 0c (mortar_arch), 0k (mortar_scan weak.rs + diag name), 0e (dynamic_guard), docs/status/m2.md, spec/landed/dyn/WP-041.md.
+Supervisor: the data-pointers header word is WANTED (layout L-101); record row+cause in docs/status/m2.md baseline history.
+0c: OutputCx.bind_now (not PltVariant::Now: shapes stay under -z now, Bti combines; supervisor agreed);
+Arch::lazy_target(PltVariant)->Option<LazyTarget>, dyn_tags(&OutputCx)->&[DynTag]{tag,value,when:TagWhen},
+weak_use(r_type,place,offset,writable)->Option<WeakClass> (default Unfillable), DynRole::place(RelForm)->Option<PlaceContent>;
+defaults only (WP-047/048 fill). Six M2 kinds registered (mortar_diag + spec/diag.md §3.1): versioned-export,
+canonical-plt-in-pie, copy-relocation-against-protected, copy-relocation-of-zero-size, text-relocation,
+weak-undefined-pc-in-pie; mortar_arch DynRefusal + ClassOutcome::Refused + ScanError::Dynamic carry them.
+Next: 0k (mortar_scan/src/weak.rs, ScanOptions.sections), 0e (dynamic_guard: CLI gate rows -pie, -dynamic-linker,
+-Bdynamic filtered from parsed.refusals and refused by the guard with identical text; walk's §8.4 refusal stays, D-31),
+docs/status/m2.md, spec/landed/dyn/WP-041.md.

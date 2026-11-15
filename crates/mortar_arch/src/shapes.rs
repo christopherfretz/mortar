@@ -274,6 +274,92 @@ impl DynRole {
     ];
 }
 
+impl DynRole {
+    /// What the place of a record of this role holds when the record is
+    /// written, under `form` (`spec/dyn.md` D-46, D-48, D-49; R-A6 (d)).
+    /// RELA: 0 for `GLOB_DAT`, symbolic, `COPY` and an IE `TPOFF`
+    /// record, `S + A` for `RELATIVE`, the lazy target for `JUMP_SLOT`
+    /// (D-49; D-46 as WP-040r states it). `None` where the spec states no
+    /// content: every REL role (D-46's REL column is i386's, M4),
+    /// `IRELATIVE` (its word is [`Facts::iplt_word`]'s, S-69),
+    /// `DTPMOD`, `DTPOFF`, a negated `TPOFF` and `TLSDESC`.
+    #[must_use]
+    pub const fn place(self, form: RelForm) -> Option<PlaceContent> {
+        if matches!(form, RelForm::Rel) {
+            return None;
+        }
+        match self {
+            Self::Relative => Some(PlaceContent::SPlusA),
+            Self::Symbolic | Self::GlobDat | Self::Copy | Self::TpOff { negated: false } => {
+                Some(PlaceContent::Zero)
+            }
+            Self::JumpSlot => Some(PlaceContent::LazyTarget),
+            Self::IRelative
+            | Self::DtpMod
+            | Self::DtpOff
+            | Self::TpOff { negated: true }
+            | Self::TlsDesc => None,
+        }
+    }
+}
+
+/// What the place of a dynamic record holds in the output file
+/// ([`DynRole::place`]; `spec/dyn.md` D-46, D-49).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlaceContent {
+    /// 0.
+    Zero,
+    /// The record's `S + A` at the link-time address.
+    SPlusA,
+    /// The `JUMP_SLOT` word's lazy target ([`LazyTarget`]).
+    LazyTarget,
+}
+
+/// Where a `JUMP_SLOT` word points before it is bound (`spec/dyn.md`
+/// D-49; R-A6 (a)), at the link-time address: the loader adds the bias
+/// in a PIE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LazyTarget {
+    /// The PLT header (AArch64, i386).
+    Plt0,
+    /// The entry's own address plus `plus` (x86-64: 6, the `push`).
+    Entry { plus: u32 },
+}
+
+/// When an architecture's dynamic tag is written (`spec/dyn.md` D-30
+/// rows 24-25; R-A6 (c)): the condition, decided by the tag writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TagWhen {
+    /// The output has the BTI property (a64 §10.3).
+    BtiProperty,
+    /// Some `JUMP_SLOT` symbol is `STO_AARCH64_VARIANT_PCS` (a64 §10.3).
+    VariantPcsJumpSlot,
+}
+
+/// One per-architecture `.dynamic` entry and its condition (`spec/dyn.md`
+/// D-30 rows 24-25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DynTag {
+    pub tag: i64,
+    pub value: u64,
+    pub when: TagWhen,
+}
+
+/// How a live relocation uses an undefined weak key (`spec/dyn.md`
+/// D-25's table): what decides `WeakDyn` against `Weak0` per key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum WeakClass {
+    /// A GOT-slot reference.
+    Got,
+    /// An absolute word of the pointer size in a writable place.
+    AbsWord,
+    /// A branch that may go through a PLT entry.
+    Branch,
+    /// A use no dynamic record can fill: a key with one stays `Weak0`
+    /// (`Exec`) or is refused `weak-undefined-pc-in-pie` (`Pie`).
+    Unfillable,
+}
+
 /// How an undefined weak (`Weak0`) target's value is formed (§3.12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Weak0Rule {

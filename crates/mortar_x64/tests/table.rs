@@ -195,6 +195,7 @@ fn plt_variant_and_iplt_bytes() {
         feature_1_and,
         pac_plt: false,
         force_bti,
+        bind_now: false,
     };
     assert_eq!(x.plt_variant(&cx(0, false)), Ok(PltVariant::Lazy));
     assert_eq!(x.plt_variant(&cx(2, false)), Ok(PltVariant::Lazy), "SHSTK alone");
@@ -224,4 +225,23 @@ fn property_merge_is_the_x86_rule() {
     for t in [0xc000_0002, 0xc000_8002, 0xc001_0001, 0xc001_0002, 0xc000_0001, 5] {
         assert_eq!(X64::M1.property_merge(t), x86_property_merge(t), "{t:#x}");
     }
+}
+
+/// `spec/dyn.md` R-A6: the step-0 defaults keep M1 behaviour (no lazy
+/// target, no tags, every weak use unfillable, so every weak key is
+/// `Weak0`).
+#[test]
+fn r_a6_defaults_keep_m1() {
+    use mortar_arch::{OutputKind, WeakClass};
+    let a = X64::M1;
+    let cx = OutputCx {
+        output: OutputKind::Pie,
+        feature_1_and: 0,
+        pac_plt: false,
+        force_bti: false,
+        bind_now: true,
+    };
+    assert_eq!(a.lazy_target(PltVariant::Lazy), None);
+    assert!(a.dyn_tags(&cx).is_empty());
+    assert_eq!(a.weak_use(0, &[0; 8], 4, true), Some(WeakClass::Unfillable));
 }

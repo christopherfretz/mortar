@@ -459,7 +459,13 @@ pub fn front<'s>(
     let property = property_plan(&inputs, &resolution, &headers, arch, memory_seal, diag).ok()?;
     let feature_1_and = property.value_u32(link_arch.feature_1().0);
     let variant = arch
-        .plt_variant(&OutputCx { output, feature_1_and, pac_plt: false, force_bti: false })
+        .plt_variant(&OutputCx {
+            output,
+            feature_1_and,
+            pac_plt: false,
+            force_bti: false,
+            bind_now: false,
+        })
         .map_err(|r| diag.emit(mortar_synth::error::key(0), r.diagnostic()))
         .ok()?;
     let got_output = got_base_defined(&inputs, &resolution, scanned.demands.output);
