@@ -85,9 +85,14 @@ main used: 2 of 3 (last at main 862977c).
 
 ## Gate
 
-Not yet run on this head; run `MORTAR_REQUIRE_TOOLS=1 cargo xtask ci
---quick` in the background (must end `[ci] ok`, static-identical 182
-links, 0 differ).
+Ran on 573b975 (log `/Volumes/AgentWork/mortar-helper/.build/wp071-gate.log`):
+fmt, clippy, test, linktest passed; static-identical failed only because
+of 6 NEW links (mason-meta.test, 2 links x 3 arches, all `+`; the 182 old
+links unchanged). The baseline now has them (`static-identical --update`,
++6 lines in tests/identical/baseline.tsv); `static-identical` ok after
+that. The brief's gate line therefore becomes "188 links of 44 tests; 0
+differ": say so in the record. The full gate has not run again since the
+baseline commit; run it on the final head.
 
 ## Next concrete step
 
