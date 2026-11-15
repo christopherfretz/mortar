@@ -305,6 +305,11 @@ fn census_groups(scratch: &Path) -> Vec<(String, Vec<PathBuf>)> {
     let mut dirs: Vec<PathBuf> = dirs.filter_map(|e| e.ok().map(|e| e.path())).collect();
     dirs.sort();
     for d in dirs {
+        // Only the cells that made reference objects: like for like.
+        let n = d.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        if !(n.ends_with("-O0") || n.ends_with("-g")) {
+            continue;
+        }
         let Ok(files) = std::fs::read_dir(&d) else { continue };
         let mut files: Vec<PathBuf> = files.filter_map(|e| e.ok().map(|e| e.path())).collect();
         files.sort();
