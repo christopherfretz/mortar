@@ -13,13 +13,13 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `model.md` | `mortar_core`: ids, the tables phases exchange, determinism rules | planned (WP-002) |
 | `elf.md` | `mortar_elf`: readers for objects and shared objects; writer primitives | planned (WP-004, WP-006) |
 | `archive.md` | `mortar_elf::archive`: regular and thin archives, GNU and BSD names, the GNU, 64-bit and BSD symbol indexes | implemented (WP-005) |
-| `diag.md` | `mortar_diag`: diagnostics, the vocabulary of refusals, demangling | planned (WP-007) |
+| `diag.md` | `mortar_diag`: diagnostics, the vocabulary of refusals, demangling | normative (WP-007); demangling planned |
 | `cli.md` | `mortar_cli`: the command line and the status of every option | planned (WP-008) |
 | `script.md` | `mortar_script`: linker scripts, version scripts, dynamic lists | planned (WP-009) |
 | `input.md` | `mortar_input`: finding and loading files | planned (WP-021) |
 | `resolve.md` | `mortar_resolve`: symbol resolution | planned (WP-022) |
 | `arch.md` | `mortar_arch`: the `Arch` trait | planned (WP-013) |
-| `a64.md`, `x64.md` | the relocation tables, PLT/GOT/TLS/thunk shapes per architecture | planned (WP-013, WP-029) |
+| `a64.md`, `x64.md`, `x86.md` | the relocation tables, PLT/GOT/TLS/thunk shapes per architecture | planned (WP-013, WP-029, WP-030) |
 | `layout.md` | `mortar_layout`: output sections, segments, addresses | planned (WP-024) |
 | `synth.md` | `mortar_synth`: synthetic sections | planned (WP-025) |
 | `image.md` | `mortar_image`: image synthesis, the writer, debug sections | planned (WP-026) |
@@ -27,7 +27,7 @@ former and writes down the latter: "as GNU ld" is not a specification.
 | `meta.md` | `mortar_meta`: the Mason metadata container (shared with kiln, hod, tuck) | planned (M6) |
 | `odr.md` | `mortar_odr`: one-definition-rule checks | planned (M6) |
 | `incr.md` | `mortar_incr`: link state and incremental links | planned (M7) |
-| `harness.md` | `xtask`: the gate, link tests, differential runs, bench, jobserver | planned (WP-003, WP-010, WP-012) |
+| `harness.md` | `xtask`: the gate, link tests, differential runs, bench, jobserver | "ci", "Jobserver", "Limits" (WP-003); link tests and bench planned (WP-010, WP-012) |
 
 ## Conventions
 

@@ -15,5 +15,11 @@ path = "src/lib.rs"
 name = "mortar"
 path = "src/main.rs"
 
+[dependencies]
+mortar_diag.workspace = true
+
+[dev-dependencies]
+mortar_testutil.workspace = true
+
 [lints]
 workspace = true

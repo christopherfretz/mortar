@@ -8,12 +8,14 @@
 //! "Oracles").
 //!
 //! Every process a test starts goes through [`run_with`], [`run`] or
-//! [`write_script`], never a bare `Command`: WP-003 makes each of them hold
-//! a token of the machine's jobserver for the child's lifetime
-//! (`spec/harness.md` "Jobserver"). Until it lands they run the child
-//! directly; the signatures are the ones that stay.
+//! [`write_script`], never a bare `Command`: each holds a token of the
+//! machine's jobserver for the child's lifetime, when there is one
+//! ([`jobs`], `spec/harness.md` "Jobserver"): a test binary is a jobserver
+//! client like the cargo that built it.
 //!
 //! Ported from hod's `hod_testutil`.
+
+pub mod jobs;
 
 use std::ffi::OsStr;
 use std::io::{Read, Write};
@@ -96,9 +98,14 @@ fn build_tmp_dir() -> Option<PathBuf> {
     if dir.file_name()? == "deps" {
         dir = dir.parent()?;
     }
-    // `dir` is the profile directory if its parent holds cargo's marker.
+    // `dir` is the profile directory if its parent holds one of cargo's
+    // markers. `CACHEDIR.TAG` is written only when cargo itself creates
+    // the directory; `.rustc_info.json` is there after any build (a
+    // directory made by `mkdir -p <build directory>/tmp` before the first
+    // build has no tag).
     let build = dir.parent()?;
-    build.join("CACHEDIR.TAG").is_file().then(|| build.join("tmp"))
+    let marked = build.join("CACHEDIR.TAG").is_file() || build.join(".rustc_info.json").is_file();
+    marked.then(|| build.join("tmp"))
 }
 
 /// A scratch directory removed on drop.
@@ -227,13 +234,27 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(1);
 /// Runs a command with `stdin` as its input and a time limit, capturing its
 /// output. The process is killed when the limit passes.
 ///
-/// From WP-003 the process holds one token of the jobserver this test
-/// binary inherited from before it starts until it has ended, and the time
-/// limit starts once the token is held.
+/// The process holds one token of the jobserver this test binary inherited
+/// ([`jobs::global`]) from before it starts until it has ended, however it
+/// ends; the time limit starts once the token is held, so waiting for the
+/// pool is never a timeout. Without a jobserver nothing waits.
 ///
 /// # Panics
 /// Panics if the process cannot be started.
 pub fn run_with(command: &mut Command, stdin: &[u8], timeout: Duration) -> Outcome {
+    run_on(jobs::global(), command, stdin, timeout)
+}
+
+/// [`run_with`] as a client of `client`.
+fn run_on(
+    client: &jobs::Client,
+    command: &mut Command,
+    stdin: &[u8],
+    timeout: Duration,
+) -> Outcome {
+    // One jobserver slot for the child's lifetime (released on every return
+    // path, kill or panic by `Drop`); the time limit starts once it is held.
+    let _slot = client.acquire();
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = spawn(command)
         .unwrap_or_else(|e| panic!("cannot run {}: {e}", command.get_program().display()));
@@ -302,5 +323,123 @@ fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
                 return None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec/harness.md "Limits", "Children of a test binary": scratch
+    // files are in the build directory, under a name of this process's.
+    #[test]
+    fn scratch_is_created_and_removed() {
+        let path = {
+            let scratch = Scratch::new("selftest");
+            let file = scratch.write("a.txt", "x");
+            assert!(file.is_file());
+            // A test built by cargo keeps its scratch in the build
+            // directory, not in the system's temporary directory.
+            let build_tmp = build_tmp_dir().expect("tests run from a cargo build directory");
+            assert!(scratch.path().starts_with(&build_tmp), "{:?}", scratch.path());
+            scratch.path().to_path_buf()
+        };
+        assert!(!path.exists());
+    }
+
+    // "Limits", "Children of a test binary": input, both output streams
+    // and the exit status.
+    #[test]
+    fn run_captures_output_and_status() {
+        let outcome = run_with(
+            Command::new("sh").args(["-c", "cat; echo err >&2; exit 3"]),
+            b"in",
+            DEFAULT_TIMEOUT,
+        );
+        assert_eq!(outcome.stdout, b"in");
+        assert_eq!(outcome.stderr_text(), "err\n");
+        assert_eq!(outcome.status.and_then(|s| s.code()), Some(3));
+        assert!(!outcome.success() && !outcome.timed_out());
+    }
+
+    // "Limits", "Children of a test binary": a script written by
+    // `write_script` runs at once (it is never "text file busy").
+    #[test]
+    fn scripts_are_runnable_at_once() {
+        let scratch = Scratch::new("script");
+        let script = scratch.write_script("hello", "echo \"hello $1\"");
+        let outcome = run(&script, ["world"]);
+        assert!(outcome.success(), "{}", outcome.stderr_text());
+        assert_eq!(outcome.stdout_text(), "hello world\n");
+    }
+
+    // "Limits", "Children of a test binary": the time limit kills the
+    // child, and the outcome says so.
+    #[test]
+    fn run_kills_at_the_time_limit() {
+        let outcome = run_with(Command::new("sleep").arg("30"), &[], Duration::from_millis(100));
+        assert!(outcome.timed_out());
+    }
+
+    // spec/harness.md "Jobserver", "The clients" and "Release": a child of
+    // `run_with` holds a token from before it starts until it has ended,
+    // and a child killed at the time limit returns it too.
+    #[test]
+    fn run_holds_a_token_for_the_childs_lifetime() {
+        let scratch = Scratch::new("run-token");
+        let pool = jobs::PrivatePool::new("run-token", 1);
+        let client = jobs::Client::open(pool.path()).unwrap();
+        // With the implicit token taken, the child needs the pool's.
+        let implicit = client.acquire();
+        let (started, release) = (scratch.join("started"), scratch.join("release"));
+        let script = format!(
+            ": > '{}'; while [ ! -e '{}' ]; do sleep 0.02; done; echo done",
+            started.display(),
+            release.display()
+        );
+        std::thread::scope(|scope| {
+            let child = scope.spawn(|| {
+                run_on(&client, Command::new("sh").args(["-c", &script]), &[], DEFAULT_TIMEOUT)
+            });
+            let waited = Instant::now();
+            while !started.exists() {
+                assert!(waited.elapsed() < DEFAULT_TIMEOUT, "the child never started");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(pool.idle(), 0, "the running child holds the pool's token");
+            std::fs::write(&release, "").unwrap();
+            let outcome = child.join().unwrap();
+            assert_eq!(outcome.stdout_text(), "done\n");
+        });
+        assert_eq!(pool.idle(), 1, "the token came back when the child ended");
+
+        let killed =
+            run_on(&client, Command::new("sleep").arg("30"), &[], Duration::from_millis(100));
+        assert!(killed.timed_out());
+        assert_eq!(pool.idle(), 1, "a child killed at the time limit returns its token");
+        drop(implicit);
+    }
+
+    // "Jobserver", "The clients": the time limit starts once the token is held:
+    // a child that waited for the pool longer than its limit is not timed
+    // out.
+    #[test]
+    fn the_time_limit_starts_once_the_token_is_held() {
+        let pool = jobs::PrivatePool::new("run-wait", 0);
+        let client = jobs::Client::open(pool.path()).unwrap();
+        let implicit = client.acquire();
+        // The limit is also the time `true` has to start and end once the
+        // token is free: 3 s, not less, because a spawn at load 30 has taken
+        // a large part of a second.
+        let limit = Duration::from_secs(3);
+        std::thread::scope(|scope| {
+            let child = scope.spawn(|| run_on(&client, Command::new("true").arg("x"), &[], limit));
+            // Longer than the child's limit, with no slot for it.
+            std::thread::sleep(limit + Duration::from_millis(300));
+            assert!(!child.is_finished(), "the child ran without a token");
+            drop(implicit);
+            let outcome = child.join().unwrap();
+            assert!(outcome.success() && !outcome.timed_out());
+        });
     }
 }
