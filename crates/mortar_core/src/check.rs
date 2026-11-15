@@ -27,7 +27,7 @@ use crate::layout::{
     AllocKey, ChunkKind, DefValue, Layout, PatchKind, SegmentRules, ThunkTarget, derive_segments,
 };
 use crate::liveness::Liveness;
-use crate::resolution::{Def, FileLive, Resolution};
+use crate::resolution::{Def, Resolution};
 use crate::split::Split;
 
 /// The rule a layout breaks.
@@ -690,7 +690,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         }
         for (at, &f) in slots.needed.iter().enumerate() {
             need(
-                matches!(cx.resolution.file_live[f], FileLive::Shared { needed: true }),
+                cx.resolution.file_live[f].is_needed(),
                 r,
                 || "DT_NEEDED for a file that is not a needed shared object".into(),
                 [Row::Entry("needed", at as u32)],

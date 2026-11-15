@@ -230,7 +230,7 @@ need them (§5).
 
 | part | row | columns |
 |---|---|---|
-| `file_live[FileId]` | file | whether the file takes part in the link and why: `Dead`; `Always`; `Extracted` by the reference `(FileId, st_index)` that pulled the lazy object in (a root, `spec/resolve.md` §4.2: file 0 and the root's argument index); `Shared{needed}`, a shared object of the command line or a script, `needed` when it is `DT_NEEDED` of the output (`spec/resolve.md` §9.5); `Closure`, a file of the `DT_NEEDED` closure that a needed shared object leads to, never `DT_NEEDED` of the output |
+| `file_live[FileId]` | file | whether the file takes part in the link and why: `Dead`; `Always`; `Extracted` by the reference `(FileId, st_index)` that pulled the lazy object in (a root, `spec/resolve.md` §4.2: file 0 and the root's argument index); `Shared{needed, used}`, a loaded shared object that takes part (`spec/dyn.md` D-11, D-12), exactly one flag set: `needed`, a member of N, `DT_NEEDED` of the output, only a shared object of the command line or a script; `used`, a member of U = reach(N) \ N, never `DT_NEEDED` (whatever loaded it: the command line, `AS_NEEDED`, the closure walk). Any other loaded shared object is `Dead` |
 | `def[SymbolId]` | key | the resolved definition: `Undefined{weak}`, `Defined{file, st_index}`, `Common{file, st_index}`, `Shared{file, st_index}`, `Internal(..)` (linker-defined: `Assign`, an assignment by its argument index or script position; `Alias(SymbolId)`, `--defsym A=B`; `Provide{conditional}`, a symbol of `spec/resolve.md` §8.1, `conditional` when its existence depends on output sections, §3.4); and the properties merged over every live mention (`spec/resolve.md` §3.6, §9.6): visibility, `ref_regular` (referenced from a relocatable object or a root), `ref_dynamic` (referenced from a needed shared object), `ref_strong` (some reference not weak), `defined_dynamic` (a live shared object defines it), `exported`, `preemptible`, binding for export, version, and the **verdict** of a surviving reference (`spec/resolve.md` §5.2: bound, error, warning, ignored) |
 | `common[SymbolId]` | key with a common mention | size and alignment: the maximum over the live common mentions |
 | `clash[SymbolId]` | key | whether two or more live definitions tie at the strongest rank (a duplicate definition, reported with both places) |
@@ -238,6 +238,7 @@ need them (§5).
 | `comdat[ComdatId]` | signature | the file whose group is kept: the least live `FileId` with the signature (`spec/resolve.md` §6.1) |
 | `comdat_copies` | live copy of a group | `(ComdatId, FileId)` pairs, sorted; the keeper first; for `mortar_odr` (`spec/resolve.md` §6.7) |
 | `section_base[FileId]` | live object | §2.2 |
+| `exported`, `imported`, `ref_dynamic`, `defined_dynamic` | key (bit sets; empty in a static link) | the dynamic columns (`spec/dyn.md` D-11, D-12, D-21): `exported`, a program definition (`Defined`, `Common`, `Internal`) in `.dynsym`; `imported`, a key whose `def` is `Shared` that a live object mentions; `ref_dynamic`, referenced by a member of N ∪ U; `defined_dynamic`, defined by one. `def`'s `Shared` entry is `bind(k)` (D-11: the first member of N ∪ U in loader order with a visible definition, never `giver(k)`), read through `Resolution::bind` |
 | `sections[SectionId]` | section | `kind` (below); the relocation section(s) applying to it; its `ComdatId`, if any; `state`: `Kept`, or `Dropped(reason)`: COMDAT group not kept (with the keeping file), excluded, consumed by the linker (the kinds without output), stripped by option |
 
 `kind` classifies a section once, from its type, flags and name, for every
@@ -270,11 +271,13 @@ extracting references and kept groups in live files, `redirect` and
 aliases in range, `common` sorted; (4) no section of a kind without
 output kept, a section dropped for its group in one; (5) `comdat_copies`
 sorted and live, the keeper the least copy; (6) an undefined key with a
-strong reference is not weak, a `Shared` definition is preemptible.
+strong reference is not weak, a `Shared` definition is preemptible;
+(7) each dynamic column empty or per key, an import's `def` `Shared`, an
+export's the program's.
 `Resolution::check_against(&Inputs)` adds: (1) one row per file, key and
-signature; (2) `Shared` liveness only for a shared object not of the
-closure, `Closure` only for a closure file, `Extracted` only for a lazy
-object, `Always` for a lazy object only under `--whole-archive`; (3) a
+signature; (2) `Shared` liveness only for a shared object, with exactly
+one of `needed` and `used`, `needed` never for a closure file, `Extracted`
+only for a lazy object, `Always` for a lazy object only under `--whole-archive`; (3) a
 `Defined` or `Common` definition in an object, a `Shared` one in a
 shared object.
 
