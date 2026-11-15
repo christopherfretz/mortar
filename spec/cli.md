@@ -484,13 +484,16 @@ The facade does two things with these:
 ### 3.10 Bookkeeping
 
 `plan.bookkeeping` holds:
-- `map` (`-Map`);
-- `print_map` (`-M`);
+- `map` (`-Map`) and `print_map` (`-M`): GNU's text map
+  (`spec/image.md` I-120, I-121);
+- `mortar_map` (`--mortar-map`): `mortar-map 1`, the verifier's map
+  (`spec/image.md` I-77);
 - `cref`;
 - `reproduce`;
 - `threads`: `--threads[=N]` (N is given) and `--thread-count N` set a
   count; `--threads` alone means `All`; `--no-threads` is a count of 1;
-- `time_phases` and `verify`, which are mortar's own options;
+- `mortar_map`, `time_phases` and `verify`, which are mortar's own
+  options;
 - `verbose`;
 - `trace` (`-t`);
 - `dependency_file`.
@@ -546,7 +549,8 @@ The table includes:
 - every option in `ld.lld-22 --help`;
 - every option in `mold --help`;
 - the `-z` keywords of all three linkers;
-- two options of mortar's own, `--time-phases` and `--verify`.
+- three options of mortar's own, `--mortar-map`, `--time-phases` and
+  `--verify`.
 
 | origin | rows |
 |---|---|
@@ -554,7 +558,7 @@ The table includes:
 | lld only | 117 |
 | mold only | 21 |
 | lld and mold, not GNU ld | 39 |
-| mortar's own | 2 |
+| mortar's own | 3 |
 
 ### 4.2 Status
 

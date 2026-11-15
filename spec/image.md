@@ -1352,11 +1352,12 @@ random input's).
 
 ### 9.2 mortar's map
 
-- **I-77 [M1] [C]** `-Map=FILE` writes `spec/plumb.md` §3.2's
-  `mortar-map 1` format to `FILE`; `-M` writes it to standard output
-  after a successful link (a failed link prints nothing on standard
-  output, `spec/diag.md` §7). GNU ld's text format is not produced until
-  a consumer needs it (Q5, accepted). `--cref` is `refused`.
+- **I-77 [M1] [C]** `--mortar-map=FILE` writes `spec/plumb.md` §3.2's
+  `mortar-map 1` format to `FILE` after a successful link, for the
+  verifier and tools. `-Map` and `-M` write GNU's text instead (§9.3,
+  I-120; WP-027e replaced Q5's "`-Map` is `mortar-map 1`"). A failed link
+  writes neither and prints nothing on standard output (`spec/diag.md`
+  §7). `--cref` is `refused`.
 - **I-78 [M1] Records.**
   - `file` per live input file, in `FileId` order; the map's file ids
     count from 0 in that order (`FileId` 0, mortar's own file, has no
@@ -1400,49 +1401,84 @@ random input's).
   successful link; a failed link removes nothing at `FILE` (not
   compared with the references, E14).
 
-### 9.3 The GNU-style map (WP-027d: specified, not implemented)
+### 9.3 The GNU-style map (WP-027d specified, WP-027e implemented)
 
-- **I-120 [proposed]** `-Map=FILE` and `-M` write a human-readable map in
-  GNU ld's text layout, and `--mortar-map=FILE` writes `mortar-map 1`
-  (I-77, I-78) for the verifier and tools. Until this lands I-77 stands
-  (`-Map` is `mortar-map 1`). When it lands every consumer of the machine
-  map moves to `--mortar-map` in the same change: the pipeline and
-  options tests (`crates/mortar/tests/pipeline.rs` `mortar()`,
-  `debuggers.rs` `map_option()`), `cargo xtask linktest` (its L3 verifier
-  run) and `layout/map-file.test` (XFAIL today: it checks GNU's text).
-  Both may be given; each is written as I-79 says.
-- **I-121 [proposed] The text.** Byte-compatible headings and record
-  shapes of GNU ld 2.44, so that people and the scripts that grep GNU
-  maps read it; not byte-identical content (addresses, order and fill are
-  mortar's). In order:
+- **I-120 [M1]** `-Map=FILE`, `-Map FILE` and `-M` (`--print-map`, to
+  standard output) write a human-readable map in GNU ld's text layout;
+  `--mortar-map=FILE` writes `mortar-map 1` (I-77, I-78) for the
+  verifier and tools. Every consumer of the machine map uses
+  `--mortar-map`: the pipeline and options tests
+  (`crates/mortar/tests/pipeline.rs` `mortar()`, `x64.rs`,
+  `debuggers.rs` `map_option()`) and `cargo xtask linktest` (its L3
+  verifier run adds `--mortar-map` to every mortar link, whatever `-Map`
+  the test gives). Both may be given; each is written as I-79 says.
+- **I-121 [M1] The text.** The headings and record shapes of GNU ld
+  2.44 (checked against its output for a static C link with libc, and a
+  C++ link with COMDAT groups), so that people and the scripts that
+  grep GNU maps read it; not GNU's content (addresses, order, fill and
+  which COMDAT copy is kept are mortar's). In order:
   1. `Archive member included to satisfy reference by file (symbol)`, a
-     blank line, and per taken member `ARCHIVE(MEMBER)` and on the next
-     line 26 spaces then `FILE (SYMBOL)`: the file and symbol whose
-     reference took it (resolve's first taker, `spec/resolve.md` §4.3);
-  2. `Discarded input sections`, then per dropped COMDAT copy and per
-     section `--gc-sections` removes, ` NAME ADDR SIZE FILE` (address 0);
-  3. `Memory Configuration`, the fixed four lines GNU writes with no
-     `MEMORY` command (`Name Origin Length Attributes`,
-     `*default* 0x0000000000000000 0xffffffffffffffff`);
-  4. `Linker script and memory map`, `LOAD FILE` per input in `FileId`
-     order, then per output section in address order
-     `NAME` padded to 16, `0x%016x` address, size in `0x%x` right-aligned
-     to 10; per placed input section ` NAME` and, when it is longer than
-     14 columns, a new line of 16 spaces, then address, size and
-     `FILE` or `ARCHIVE(MEMBER)`; per named global or local symbol
-     defined there 16 spaces, address, 16 spaces, name; ` *fill*` with
-     address, size and the fill word for alignment gaps in code (the
-     fill of §4); a synthetic chunk as an input section of file
-     `mortar` (`spec/synth.md` S-3 names), a thunk or erratum patch as
-     `__TARGET_veneer` lines as in `mortar-map 1`;
-  5. `OUTPUT(FILE ELF-TARGET)`, GNU's emulation target name
-     (`elf64-littleaarch64`, `elf64-x86-64`, `elf32-i386`).
-  The script lines GNU prints (` *(.text.unlikely ...)`) are not written:
-  mortar has no script for default placement. `--cref` stays refused.
-- **I-122 [proposed] Determinism and cost.** The text is a function of
-  the same tables as `mortar-map 1` (I-79) and of nothing else; it is
-  formatted per output section in parallel and is written only when
-  asked. The determinism matrix covers it like the machine map.
+     blank line, and per taken member in `FileId` order
+     `ARCHIVE(MEMBER)`; then, at column 30 (on the next line after 30
+     spaces when the member text is 30 columns or longer, else padded
+     to column 30 on the same line), `FILE (SYMBOL)`: the file and
+     symbol whose reference took it (resolve's first taker,
+     `spec/resolve.md` §4.3, which is not always GNU's), for a root
+     (`-u`, the entry) no file, so the line is 30 spaces and
+     `(SYMBOL)`, as GNU writes it; a blank line;
+  2. `Discarded input sections`, a blank line, per dropped section of a
+     live object (COMDAT copy, `/DISCARD/`, excluded, gc'd; zero-sized
+     ones included, as GNU does) ` NAME`, address 0, size and file,
+     in the column layout of item 4; a blank line. Sections the link
+     consumes (`.note.GNU-stack`, `.note.gnu.property`, `.group`, layout
+     §8.1) are not listed (GNU lists them: its script discards them);
+  3. `Memory Configuration`, a blank line,
+     `Name             Origin             Length             Attributes`,
+     `*default*        0x0000000000000000 0xffffffffffffffff` (8 digits
+     each for ELFCLASS32), a blank line;
+  4. `Linker script and memory map`, a blank line, `LOAD PATH` per input
+     file in `FileId` order (an archive once, at its first member), then
+     per output section in section-header order a blank line, `NAME`
+     padded to column 16 (on a line of its own and the columns on the
+     next line after 16 spaces when the name is 15 columns or longer),
+     the address `0x%016x` (`0x%08x` for ELFCLASS32; 0 for a non-alloc
+     section, whose lines then hold offsets in it), a space and the size
+     `0x%x` right-aligned to 10. Inside it, in address order: per placed
+     input section ` NAME` with the same wrapping rule (counting the
+     leading space), address, size and ` FILE` or ` ARCHIVE(MEMBER)`;
+     after it, per global symbol defined there, 16 spaces, address, 16
+     spaces, name (GNU's default: locals are its `--print-map-locals`,
+     not written); ` *fill*` with address and size for each gap in an
+     allocated section, and in an executable one the fill pattern of
+     §4 in hex (`00000000` on AArch64, `cc` on x86; GNU writes its NOP
+     word). A chunk mortar makes is one input line of file `mortar`
+     (`spec/synth.md` S-3 names: `.got`, `.eh_frame`, `.symtab`, ...),
+     and so are the merged bytes of an output section with mergeable
+     inputs (GNU lists each input section); a symbol in those bytes is
+     listed under that line. An island of thunks and erratum patches is
+     an input line of file `linker stubs` with a symbol line per patch,
+     named as `.symtab` names it (S-80, `__TARGET_veneer`);
+  5. `OUTPUT(FILE ELF-TARGET)`, the output as the command line named it
+     and GNU's BFD target name (`elf64-littleaarch64`, `elf64-x86-64`,
+     `elf32-i386`), then `LOAD linker stubs` (GNU's last line).
+  GNU's script lines (` *(.text.unlikely ...)`, `PROVIDE (...)`,
+  assignments) are not written: mortar has no script for default
+  placement, and the linker-defined symbols they show are not listed.
+  `--cref` stays refused. The test is
+  `crates/mortar/tests/pipeline.rs`
+  `the_text_map_matches_the_output_and_gnus_map`: one parser reads
+  mortar's and GNU's maps of one line; every section line is the
+  section header, every input line lies in its section, every symbol
+  line is its `.symtab` value, and the (section, size, file) sets of
+  placed input sections and the taken members are GNU's, but for what
+  item 4 says mortar makes itself and the kept COMDAT copy.
+- **I-122 [M1] Determinism and cost.** The text is a function of the
+  same tables as `mortar-map 1` (I-79) and the output's name, and of
+  nothing else; it is formatted per output section in parallel and is
+  written only when asked. The determinism matrix
+  (`the_output_is_a_function_of_the_inputs_alone`) covers it like the
+  machine map. Its cost on protoc (static, `-g`) is in
+  `spec/landed/pipeline/WP-027e.md`.
 
 ## 10. I/O: the measured design
 
@@ -1792,7 +1828,7 @@ pub trait SynthChunk {
 | `--build-id=0x` | warning, no note | empty descriptor | error | error | I-70 |
 | build-id note size for a 2-byte id | 18 (unpadded) | 18 | 18 | 20 (padded to 4) | I-71 |
 | what the hash covers | not the whole file, not a 64 KiB/1 MiB/4 MiB tree (E12) | same | same | a public tree over 1 MiB blocks | I-72 |
-| `-Map` / `-M` format | GNU text | lld's own text | mold's own text | `mortar-map 1` | I-77 |
+| `-Map` / `-M` format | GNU text | lld's own text | mold's own text | GNU's layout (`mortar-map 1` is `--mortar-map`) | I-77, I-121 |
 | `--gc-sections` in M1 | supported | supported | supported | refused until M2 | I-5 |
 | identification string in `.comment` | none | `Linker: LLD …` | `mold …` | none from the image | I-55 |
 | default thread count | one thread | all (not measured here) | all (not measured here) | `available_parallelism()` | I-85 |
@@ -2253,7 +2289,9 @@ Resolved by the review (2026-11-15):
 - Q3: the tombstone, as I-47 (the coordinator's `.debug_aranges` = 0 was
   replaced by all ones with the length 0, on E16's evidence).
 - Q4: removing a stale output after a failed link (I-66), accepted.
-- Q5: `-Map` writes `mortar-map 1` (I-77), accepted; in §15.
+- Q5: `-Map` writes `mortar-map 1` (I-77), accepted; in §15. Replaced
+  by WP-027e: `-Map` is GNU's text, `--mortar-map` the machine map
+  (I-120).
 - Q6: `uuid` accepted in M2, excluded from the determinism gate (I-69).
 - Q7: `fast` is 8 bytes; `sha256` accepted in M1 (I-69).
 - Q8: `-o` equal to an input, accepted (I-62).

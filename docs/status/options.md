@@ -4,9 +4,9 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-471 rows: 43 supported, 2 partial, 27 noop, 399 refused.
+472 rows: 44 supported, 2 partial, 27 noop, 399 refused.
 
-Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's own.
+Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 3 mortar's own.
 
 - AArch64: 14 rows of that target only
 - x86-64: 26 rows of that target only
@@ -314,6 +314,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 2 mortar's
 | `--threads` | optional, `=` only: N (number) | lld, mold | all | supported | `bookkeeping.threads` | Use N threads (alone: all processors) |
 | `--thread-count` | N (number) | mold | all | refused | `bookkeeping.threads` | Use N threads |
 | `--no-threads` |  | mold | all | refused | `bookkeeping.threads` | Use one thread |
+| `--mortar-map` | FILE | mortar | all | supported | `bookkeeping.mortar_map` | Write the machine-readable map (mortar-map 1) to FILE |
 | `--time-phases` |  | mortar | all | supported | `bookkeeping.time_phases` | Report the time and memory of each phase |
 | `--verify` |  | mortar | all | refused | `bookkeeping.verify` | Check the output with mortar_plumb (reserved) |
 | `--stats` |  | GNU, lld, mold | all | refused | `other` | Print statistics |

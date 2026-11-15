@@ -77,12 +77,16 @@ const AUDIT: &[(&str, Proof)] = &[
     ("--help", Test("crates/mortar/src/lib.rs", "requests_are_answered")),
     (
         "-Map",
-        Test("crates/mortar/tests/pipeline.rs", "print_map_writes_the_map_to_standard_output"),
+        Test("crates/mortar/tests/pipeline.rs", "the_text_map_matches_the_output_and_gnus_map"),
     ),
     ("-M", Test("crates/mortar/tests/pipeline.rs", "print_map_writes_the_map_to_standard_output")),
     (
         "--threads",
         Test("crates/mortar/tests/pipeline.rs", "the_output_is_a_function_of_the_inputs_alone"),
+    ),
+    (
+        "--mortar-map",
+        Test("crates/mortar/tests/pipeline.rs", "print_map_writes_the_map_to_standard_output"),
     ),
     ("--time-phases", Test("crates/mortar/tests/refusals.rs", "time_phases_lists_the_front")),
     ("-plugin", Same(&["-plugin", "/nonexistent/liblto_plugin.so"], Some(lto_is_refused))),

@@ -1519,3 +1519,263 @@ impl LinkTables<'_, '_> {
         m
     }
 }
+
+// ---- the text map (§9.3) ---------------------------------------------------
+
+/// The text map of a link (I-120, I-121): from the same tables as
+/// [`map_of`] (I-122). `output` is the output file as the command line
+/// named it; `roots` the name of each root by its argument index (resolve
+/// §4.2: the archive lines of the members a root took).
+#[must_use]
+pub fn text_map_of(
+    link: &Link<'_, '_>,
+    output: &[u8],
+    roots: &[(u32, Vec<u8>)],
+) -> crate::textmap::TextMap {
+    LinkTables::new(*link).text_map(output, roots)
+}
+
+impl LinkTables<'_, '_> {
+    /// `ARCHIVE(MEMBER)` or the path of `file`.
+    fn file_text(&self, file: FileId) -> Vec<u8> {
+        let Some(row) = self.link.inputs.files.get(file) else { return Vec::new() };
+        let mut t = row.path.to_vec();
+        if let Some(m) = &row.member {
+            t.push(b'(');
+            t.extend_from_slice(m.name);
+            t.push(b')');
+        }
+        t
+    }
+
+    /// The name of entry `e` in its file's symbol table.
+    fn entry_name(&self, e: SymEntry) -> Vec<u8> {
+        self.sym_of(e)
+            .and_then(|(t, s)| t.strings().get(s.st_name).ok())
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default()
+    }
+
+    /// The `.symtab` name of a patch (S-80) and its size, as `mortar-map 1`
+    /// lists it.
+    fn patch_line(&self, p: &mortar_core::layout::Patch) -> (Vec<u8>, u64) {
+        use mortar_core::layout::{PatchKind, ThunkTarget};
+        let l = &self.link;
+        match p.kind {
+            PatchKind::Thunk(t) => {
+                let (key, addend, plt) = match t {
+                    ThunkTarget::Sym { key, addend } => (key, addend, false),
+                    ThunkTarget::Plt(key) => (key, 0, true),
+                };
+                let mut name = b"__".to_vec();
+                name.extend_from_slice(l.facts.name(key));
+                if plt {
+                    name.extend_from_slice(b"@plt");
+                }
+                if addend > 0 {
+                    name.extend_from_slice(format!("+{addend:#x}").as_bytes());
+                } else if addend < 0 {
+                    name.extend_from_slice(format!("-{:#x}", addend.unsigned_abs()).as_bytes());
+                }
+                name.extend_from_slice(b"_veneer");
+                (name, l.arch.thunk().map_or(0, |t| u64::from(t.size)))
+            }
+            PatchKind::Erratum { erratum, .. } => (
+                mortar_synth::symtab::ERRATUM_843419.to_vec(),
+                l.arch.patch(erratum).map_or(0, |s| u64::from(s.size)),
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn text_map(&self, output: &[u8], roots: &[(u32, Vec<u8>)]) -> crate::textmap::TextMap {
+        use crate::textmap::{Item, OutSection as TextSection, TextMap, target_name};
+        use mortar_core::resolution::{DropReason, FileLive, SectionState};
+        use mortar_elf::Class;
+        let l = &self.link;
+        let pl = &l.layout.placement;
+        let facts = l.arch.facts();
+        let class64 = facts.class == Class::Elf64;
+        let mut m = TextMap {
+            digits: if class64 { 16 } else { 8 },
+            output: output.to_vec(),
+            target: target_name(facts.e_machine, class64),
+            ..TextMap::default()
+        };
+        // 1. The archive members taken, and by whom (FileId order).
+        for (file, live) in l.resolution.file_live.iter() {
+            let FileLive::Extracted(by) = *live else { continue };
+            let (taker, symbol) = if by.file == FileId::INTERNAL {
+                let name = roots.iter().find(|r| r.0 == by.index.0).map(|r| r.1.clone());
+                (Vec::new(), name.unwrap_or_default())
+            } else {
+                (self.file_text(by.file), self.entry_name(by))
+            };
+            m.archive.push((self.file_text(file), taker, symbol));
+        }
+        // 2, 4. Per live object: its discarded sections, its placed ones.
+        // Per section index: (position, input section, item).
+        let rows = self.sections.len();
+        let mut items: Vec<Vec<(u64, Option<SectionId>, Item)>> = vec![Vec::new(); rows];
+        for (file, row) in l.inputs.files.iter() {
+            if file == FileId::INTERNAL
+                || !l.resolution.file_live.get(file).is_some_and(|x| x.is_live())
+            {
+                continue;
+            }
+            let Reader::Object(o) = &row.reader else { continue };
+            let text = self.file_text(file);
+            let range = l.resolution.section_base[file];
+            for i in 1..range.len() {
+                let sid = SectionId(range.start.0 + i);
+                let Some(r) = l.resolution.sections.get(sid) else { continue };
+                let name = o.section(SectionIndex(i)).ok().and_then(|s| s.name().ok());
+                let name = name.map(<[u8]>::to_vec).unwrap_or_default();
+                let size = self.section_size(sid).unwrap_or(0);
+                let dropped = match r.state {
+                    SectionState::Dropped(DropReason::Consumed) => continue,
+                    SectionState::Dropped(_) => true,
+                    SectionState::Kept => !l.liveness.is_live(sid),
+                };
+                if dropped {
+                    m.discarded.push((name, size, text.clone()));
+                    continue;
+                }
+                // Merged and `.eh_frame` bytes are their output section's
+                // linker-made chunk (below).
+                if matches!(r.kind, SectionKind::Merge | SectionKind::EhFrame) {
+                    continue;
+                }
+                let Some((c, at)) = pl.place.get(sid).and_then(|p| p.get()) else { continue };
+                let Some((shndx, pos)) = self.chunk_at(c, at) else { continue };
+                if let Some(v) = items.get_mut(shndx as usize) {
+                    let item = Item::Input { name, addr: pos, size, file: text.clone() };
+                    v.push((pos, Some(sid), item));
+                }
+            }
+        }
+        // Each global symbol, under the input section defining it.
+        // A symbol in merged or `.eh_frame` bytes goes under its output
+        // section's linker-made chunk, as do the patches' names (S-80).
+        let mut syms: Vec<(SectionId, u64, Vec<u8>)> = Vec::new();
+        let mut chunk_syms: Vec<(u32, u64, Vec<u8>)> = Vec::new();
+        for (id, key) in l.inputs.symbols.iter() {
+            let Some(Def::Defined(e)) = l.assignment.def(l.resolution, id) else { continue };
+            let Some(Ok((sid, _))) = self.entry_place(e) else { continue };
+            if self.section_flags(sid) & SHF_ALLOC == 0 {
+                continue;
+            }
+            let Some(Some(addr)) = self.global.get(id.0 as usize) else { continue };
+            if matches!(self.kind_of(sid), Some(SectionKind::Merge | SectionKind::EhFrame)) {
+                let shndx = self.chunk_of(sid).and_then(|(c, _)| self.chunk_at(c, 0));
+                if let Some((shndx, _)) = shndx {
+                    chunk_syms.push((shndx, *addr, key.name.to_vec()));
+                }
+            } else {
+                syms.push((sid, *addr, key.name.to_vec()));
+            }
+        }
+        syms.sort();
+        // The linker-made chunks: merged fragments, synthetic sections,
+        // patches (with their `.symtab` names, S-80).
+        for (c, chunk) in pl.chunks.iter() {
+            let Some(shndx) = chunk.shndx else { continue };
+            let Some(v) = items.get_mut(shndx as usize) else { continue };
+            let Some((_, pos)) = self.chunk_at(c, 0) else { continue };
+            let (name, file): (&[u8], &[u8]) = match chunk.kind {
+                ChunkKind::Merged(o) => (l.assignment.outsecs[o].name, b"mortar"),
+                ChunkKind::Synthetic(s) => (s.name, b"mortar"),
+                ChunkKind::Patches(p) => (l.assignment.outsecs[p.out].name, b"linker stubs"),
+                _ => continue,
+            };
+            if chunk.size == 0 {
+                continue;
+            }
+            let item = Item::Input {
+                name: name.to_vec(),
+                addr: pos,
+                size: chunk.size,
+                file: file.to_vec(),
+            };
+            v.push((pos, None, item));
+        }
+        for p in &pl.patches {
+            let Some((shndx, pos)) = self.chunk_at(p.chunk, p.offset) else { continue };
+            chunk_syms.push((shndx, pos, self.patch_line(p).0));
+        }
+        chunk_syms.sort();
+        // The name and flags of each output section, from its first chunk.
+        let mut owners: Vec<Option<(&[u8], u64)>> = vec![None; rows];
+        for (_, chunk) in pl.chunks.iter() {
+            let Some(shndx) = chunk.shndx else { continue };
+            let name: &[u8] = match chunk.kind {
+                ChunkKind::Body(p) | ChunkKind::Patches(p) => l.assignment.outsecs[p.out].name,
+                ChunkKind::Merged(o) | ChunkKind::Group(o) | ChunkKind::Relocs(o) => {
+                    l.assignment.outsecs[o].name
+                }
+                ChunkKind::Synthetic(s) => s.name,
+                _ => continue,
+            };
+            if let Some(slot) = owners.get_mut(shndx as usize)
+                && slot.is_none()
+            {
+                *slot = Some((name, chunk.flags));
+            }
+        }
+        // Output sections in section-index order: items by position, each
+        // input's symbols after it, fill in an allocated section's gaps.
+        for (shndx, mut row) in items.into_iter().enumerate() {
+            let Some((name, flags)) = owners[shndx] else { continue };
+            let sec = &self.sections[shndx];
+            let alloc = flags & SHF_ALLOC != 0;
+            let pattern = (flags & SHF_EXECINSTR != 0).then(|| facts.code_fill.to_vec());
+            row.sort_by_key(|a| (a.0, a.1));
+            let mut out = Vec::with_capacity(row.len());
+            let start = if alloc { sec.addr } else { 0 };
+            let mut end = start;
+            for (pos, sid, item) in row {
+                let Item::Input { size, .. } = item else { continue };
+                if alloc && pos > end {
+                    out.push(Item::Fill { addr: end, size: pos - end, pattern: pattern.clone() });
+                }
+                end = end.max(pos + size);
+                out.push(item);
+                let symbol = |s: &(u64, Vec<u8>)| Item::Symbol { addr: s.0, name: s.1.clone() };
+                if let Some(sid) = sid {
+                    let lo = syms.partition_point(|s| s.0 < sid);
+                    let hi = syms.partition_point(|s| s.0 <= sid);
+                    out.extend(syms[lo..hi].iter().map(|s| symbol(&(s.1, s.2.clone()))));
+                } else {
+                    let n = shndx as u32;
+                    let lo = chunk_syms.partition_point(|s| (s.0, s.1) < (n, pos));
+                    let hi = chunk_syms.partition_point(|s| (s.0, s.1) < (n, pos + size));
+                    out.extend(chunk_syms[lo..hi].iter().map(|s| symbol(&(s.1, s.2.clone()))));
+                }
+            }
+            if alloc && start + sec.size > end {
+                out.push(Item::Fill { addr: end, size: start + sec.size - end, pattern });
+            }
+            m.sections.push(TextSection {
+                name: name.to_vec(),
+                addr: start,
+                size: sec.size,
+                items: out,
+            });
+        }
+        // `LOAD` per input, an archive once (FileId order).
+        let mut last_archive = None;
+        for (file, row) in l.inputs.files.iter() {
+            if file == FileId::INTERNAL {
+                continue;
+            }
+            if let Some(mm) = &row.member {
+                if last_archive == Some(mm.archive) {
+                    continue;
+                }
+                last_archive = Some(mm.archive);
+            }
+            m.loads.push(row.path.to_vec());
+        }
+        m
+    }
+}
