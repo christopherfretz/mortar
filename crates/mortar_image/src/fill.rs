@@ -298,6 +298,9 @@ pub(crate) fn write_error(path: &str, e: &io::Error) -> (Key, Diagnostic) {
 /// Fills the bytes of `[lo, hi)` of the file into `out`
 /// (`out.len() == hi − lo`): every row overlapping the range (I-33 steps
 /// 1-3). Relocation errors go to `errs`; the first failed read is returned.
+/// A fault in a section deferred to fill (I-14) has no report here (that
+/// is the scan's walk, `link::write`): it is an internal error in `errs`,
+/// so that no fault passes unseen.
 pub fn fill_range(
     img: &Image<'_>,
     lo: u64,
@@ -305,7 +308,15 @@ pub fn fill_range(
     errs: &mut Vec<(Key, Diagnostic)>,
 ) -> Result<(), (Key, Diagnostic)> {
     let mut scratch = Scratch::default();
-    fill_into(img, &mut scratch, lo, out, errs)
+    let r = fill_into(img, &mut scratch, lo, out, errs);
+    if !scratch.flagged.is_empty() {
+        let what = format!(
+            "fill: {} deferred section(s) have faults and no report (I-14)",
+            scratch.flagged.len()
+        );
+        errs.push((Key::new(PHASE_IMAGE, 0, 0), internal(what)));
+    }
+    r
 }
 
 fn fill_into(
