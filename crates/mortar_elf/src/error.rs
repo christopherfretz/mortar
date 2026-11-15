@@ -202,6 +202,10 @@ pub enum Error {
     /// `DT_SYMTAB` without `DT_HASH` or `DT_GNU_HASH`: without section
     /// headers, nothing says how many dynamic symbols there are.
     NoSymbolCount,
+    /// There is no `DT_HASH`, and `DT_GNU_HASH` hashes no symbol (every
+    /// bucket is empty), so it states only that there are at least
+    /// `symoffset` symbols.
+    UnhashedSymbolCount { symoffset: u32 },
     /// A hash table that does not lie within its segment, or whose chains
     /// do not end.
     BadHashTable { d_tag: i64, addr: u64 },
@@ -571,6 +575,11 @@ impl fmt::Display for Error {
             Error::NoSymbolCount => f.write_str(
                 "the dynamic table has DT_SYMTAB but neither DT_HASH nor DT_GNU_HASH: the number \
                  of dynamic symbols is not known",
+            ),
+            Error::UnhashedSymbolCount { symoffset } => write!(
+                f,
+                "DT_GNU_HASH hashes no symbols and there is no DT_HASH: the number of dynamic \
+                 symbols is not known (at least {symoffset})"
             ),
             Error::BadHashTable { d_tag, addr } => write!(
                 f,

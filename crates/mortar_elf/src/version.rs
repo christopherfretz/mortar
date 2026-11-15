@@ -89,7 +89,7 @@ impl<'a> VersionDefinitions<'a> {
     }
 
     /// The number of definitions the file says there are.
-    pub fn count(&self) -> u64 {
+    pub fn declared(&self) -> u64 {
         self.chain.count
     }
 }
@@ -247,7 +247,7 @@ impl<'a> VersionNeeds<'a> {
     }
 
     /// The number of files the file says it needs versions of.
-    pub fn count(&self) -> u64 {
+    pub fn declared(&self) -> u64 {
         self.chain.count
     }
 }

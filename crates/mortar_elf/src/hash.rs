@@ -23,14 +23,25 @@ pub(crate) fn sysv_count(bytes: &[u8]) -> Option<u32> {
     Some(nchain)
 }
 
+/// What a `DT_GNU_HASH` table says about the number of dynamic symbols.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GnuCount {
+    /// One past the last symbol of the chain that starts at the highest
+    /// bucket: the count, since the hashed symbols come last.
+    Count(u32),
+    /// Every bucket is empty: no symbol is hashed, and the table says only
+    /// that there are at least `symoffset` symbols. Linkers do not agree on
+    /// `symoffset` here (GNU ld writes 1 for a PIE whose 31 symbols are all
+    /// unhashed), so it is not the count.
+    Unhashed { symoffset: u32 },
+}
+
 /// The symbol count of a `DT_GNU_HASH` table (the GNU hash table as glibc
-/// and binutils define it): one past the last symbol of the chain that
-/// starts at the highest bucket, or `symoffset` when every bucket is
-/// empty. `None` when the table does not fit in `bytes`, a bucket is below
+/// and binutils define it); see [`GnuCount`]. `None` when the table does not fit in `bytes`, a bucket is below
 /// `symoffset`, or the last chain does not end within `bytes`. The bloom
 /// filter words are 4 bytes in `ELFCLASS32` and 8 in `ELFCLASS64`; the
 /// other words are 4 bytes in both.
-pub(crate) fn gnu_count(bytes: &[u8], class: Class) -> Option<u32> {
+pub(crate) fn gnu_count(bytes: &[u8], class: Class) -> Option<GnuCount> {
     let nbuckets = u64::from(word(bytes, 0)?);
     let symoffset = word(bytes, 1)?;
     let bloom_size = u64::from(word(bytes, 2)?);
@@ -49,7 +60,7 @@ pub(crate) fn gnu_count(bytes: &[u8], class: Class) -> Option<u32> {
         last = last.max(value);
     }
     if last == 0 {
-        return Some(symoffset);
+        return Some(GnuCount::Unhashed { symoffset });
     }
     // Walk the last chain to the entry whose low bit marks its end; the
     // walk ends within `bytes`, so it is bounded by the file.
@@ -57,7 +68,7 @@ pub(crate) fn gnu_count(bytes: &[u8], class: Class) -> Option<u32> {
     loop {
         let entry = word(bytes, chains_at + u64::from(symbol - symoffset))?;
         if entry & 1 != 0 {
-            return symbol.checked_add(1);
+            return symbol.checked_add(1).map(GnuCount::Count);
         }
         symbol = symbol.checked_add(1)?;
     }
@@ -80,19 +91,22 @@ mod tests {
         assert_eq!(sysv_count(&words(&[0])), None);
     }
 
-    /// §6.6: the end of the last chain; `symoffset` when every bucket is
-    /// empty; buckets below `symoffset` and chains that run off the end
+    /// §6.6: the end of the last chain; no count, only `symoffset`, when
+    /// every bucket is empty; buckets below `symoffset` and chains that run off the end
     /// are refused.
     #[test]
     fn s6_6_gnu_count_is_the_end_of_the_last_chain() {
         // nbuckets 2, symoffset 3, bloom 1 (one 4-byte word in ELF32),
         // shift 6; buckets 3 and 5; chains for symbols 3..=6.
         let table = words(&[2, 3, 1, 6, 0, 3, 5, 10, 11, 20, 21]);
-        assert_eq!(gnu_count(&table, Class::Elf32), Some(7));
+        assert_eq!(gnu_count(&table, Class::Elf32), Some(GnuCount::Count(7)));
         // In ELF64 the bloom word is 8 bytes: the same words read
         // differently, and here the chain does not end.
         assert_eq!(gnu_count(&table, Class::Elf64), None);
-        assert_eq!(gnu_count(&words(&[1, 4, 1, 6, 0, 0]), Class::Elf32), Some(4));
+        assert_eq!(
+            gnu_count(&words(&[1, 4, 1, 6, 0, 0]), Class::Elf32),
+            Some(GnuCount::Unhashed { symoffset: 4 })
+        );
         assert_eq!(gnu_count(&words(&[1, 4, 1, 6, 0, 2, 1]), Class::Elf32), None);
         assert_eq!(gnu_count(&words(&[1, 1, 1, 6, 0, 1, 0, 0]), Class::Elf32), None);
         assert_eq!(gnu_count(&words(&[u32::MAX, 1, u32::MAX, 6]), Class::Elf64), None);

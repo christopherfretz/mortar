@@ -11,7 +11,7 @@ use crate::consts::{
 };
 use crate::dynamic::DynamicTable;
 use crate::error::Error;
-use crate::hash;
+use crate::hash::{self, GnuCount};
 use crate::header::{FileHeader, Machine};
 use crate::note::Note;
 use crate::raw::{Class, Dyn, Record, Sym, Table, Versym, Word};
@@ -394,25 +394,47 @@ fn dynamic_symbols<'a>(
 }
 
 /// §6.6: the number of dynamic symbols, from `DT_GNU_HASH` and `DT_HASH`;
-/// when both are present they must agree.
+/// when both are present they must agree. A GNU table that hashes no
+/// symbol states only a lower bound, which `DT_HASH` must meet.
 fn symbol_count(
     segments: &ProgramHeaders<'_>,
     class: Class,
     table: &DynamicTable<'_>,
 ) -> Result<u32, Error> {
-    let count = |d_tag: i64| -> Result<Option<u32>, Error> {
+    let bytes = |d_tag: i64| -> Result<Option<(u64, &[u8])>, Error> {
         let Some(address) = table.value(d_tag)? else { return Ok(None) };
-        let bad = Error::BadHashTable { d_tag, addr: address };
-        let (_, bytes) = segments.file_bytes_from(address).ok_or(bad)?;
-        let count =
-            if d_tag == DT_HASH { hash::sysv_count(bytes) } else { hash::gnu_count(bytes, class) };
-        count.ok_or(bad).map(Some)
+        let (_, bytes) = segments
+            .file_bytes_from(address)
+            .ok_or(Error::BadHashTable { d_tag, addr: address })?;
+        Ok(Some((address, bytes)))
     };
-    match (count(DT_HASH)?, count(DT_GNU_HASH)?) {
-        (Some(hash), Some(gnu_hash)) if hash != gnu_hash => {
+    let hash = match bytes(DT_HASH)? {
+        Some((addr, bytes)) => {
+            Some(hash::sysv_count(bytes).ok_or(Error::BadHashTable { d_tag: DT_HASH, addr })?)
+        }
+        None => None,
+    };
+    let gnu_hash = match bytes(DT_GNU_HASH)? {
+        Some((addr, bytes)) => Some(
+            hash::gnu_count(bytes, class)
+                .ok_or(Error::BadHashTable { d_tag: DT_GNU_HASH, addr })?,
+        ),
+        None => None,
+    };
+    match (hash, gnu_hash) {
+        (Some(hash), Some(GnuCount::Count(gnu_hash))) if hash != gnu_hash => {
             Err(Error::SymbolCountMismatch { hash: u64::from(hash), gnu_hash: u64::from(gnu_hash) })
         }
-        (Some(count), _) | (None, Some(count)) => Ok(count),
+        (Some(hash), Some(GnuCount::Unhashed { symoffset })) if hash < symoffset => {
+            Err(Error::SymbolCountMismatch {
+                hash: u64::from(hash),
+                gnu_hash: u64::from(symoffset),
+            })
+        }
+        (Some(count), _) | (None, Some(GnuCount::Count(count))) => Ok(count),
+        (None, Some(GnuCount::Unhashed { symoffset })) => {
+            Err(Error::UnhashedSymbolCount { symoffset })
+        }
         (None, None) => Err(Error::NoSymbolCount),
     }
 }
