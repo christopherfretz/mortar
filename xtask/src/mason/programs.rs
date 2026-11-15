@@ -226,7 +226,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let args = parse(args)?;
     let Some(mason) = Mason::find_or_skip("programs")? else { return Ok(ExitCode::SUCCESS) };
     if std::env::consts::ARCH != "aarch64" {
-        println!(
+        say!(
             "xtask mason programs: skipped: kiln and hod's lane runs natively on AArch64 only here"
         );
         return Ok(ExitCode::SUCCESS);
@@ -257,13 +257,13 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         })(),
     };
     if tools.cross.is_none() {
-        println!(
+        say!(
             "xtask mason programs: no {X64} cross tools ({X64}-g++, -gfortran, -ld.bfd, \
              qemu-x86_64): x64 variants skipped"
         );
     }
     if tools.libcxx.is_none() {
-        println!(
+        say!(
             "xtask mason programs: no libc++ tree (cargo xtask mason setup): libc++ variants skipped"
         );
     }
@@ -308,22 +308,18 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let mut cells = cells.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     cells.sort_by_key(|(i, _)| *i);
     let cells: Vec<Cell> = cells.into_iter().map(|(_, c)| c).collect();
-    print!("{}", table(&cells, &tools));
+    say_raw!("{}", table(&cells, &tools));
     if args.census {
         let groups = census_groups(&scratch);
-        print!("{}", census::compare(&groups)?);
+        say_raw!("{}", census::compare(&groups)?);
     }
     let bad = cells.iter().filter(|c| !c.ok).count();
     if args.keep {
-        println!("xtask mason programs: kept {}", scratch.display());
+        say!("xtask mason programs: kept {}", scratch.display());
     } else {
         let _ = std::fs::remove_dir_all(&scratch);
     }
-    println!(
-        "xtask mason programs: {} cells, {} hold, {bad} do not",
-        cells.len(),
-        cells.len() - bad
-    );
+    say!("xtask mason programs: {} cells, {} hold, {bad} do not", cells.len(), cells.len() - bad);
     Ok(if bad == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 

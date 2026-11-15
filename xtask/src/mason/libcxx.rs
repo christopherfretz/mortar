@@ -227,7 +227,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         if super::required() {
             return Err(e);
         }
-        println!("xtask mason libcxx: skipped: {e}");
+        say!("xtask mason libcxx: skipped: {e}");
         return Ok(ExitCode::SUCCESS);
     }
     let lane_scripts = crate::linktest::workspace_root().join("tests/mason/lane");
@@ -249,8 +249,12 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         let stats = dir.join("stats.jsonl");
         let results_file = dir.join("results.tsv");
         let out = std::fs::File::create(dir.join("out.log")).map_err(|e| e.to_string())?;
-        let mut c = std::process::Command::new(&kx);
-        c.arg("libcxx")
+        // Core dumps off: tests that abort by design (libc++'s death and
+        // root-only filesystem tests) would leave core files in the scratch.
+        let mut c = std::process::Command::new("/bin/sh");
+        c.args(["-c", "ulimit -c 0 && exec \"$0\" \"$@\""])
+            .arg(&kx)
+            .arg("libcxx")
             .args(["--tag", setup::TAG, "--libcxx-tests"])
             .arg(&tests)
             .arg("--compiler")
@@ -292,7 +296,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         if args.backend == "hod" {
             c.env("KILN_BACKEND", "hod").env("KILN_HOD", &mason.hod).env("KILN_HOD_STRICT", "1");
         }
-        println!("xtask mason libcxx: mode {m} ({} backend) ...", args.backend);
+        say!("xtask mason libcxx: mode {m} ({} backend) ...", args.backend);
         match crate::process::run_step(&mut c, false) {
             Ok((s, _)) if s.success() => {}
             Ok((s, _)) => {
@@ -327,7 +331,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned();
             *backends.entry(b).or_insert(0) += 1;
         }
-        println!("xtask mason libcxx: mode {m}: {summary}");
+        say!("xtask mason libcxx: mode {m}: {summary}");
         modes.push(Mode {
             name: m.clone(),
             results: results(&read(&results_file)),
@@ -337,12 +341,12 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         });
     }
     let report = render(&args, &modes);
-    print!("{report}");
+    say_raw!("{report}");
     if let Some(p) = &args.report {
         std::fs::write(p, &report).map_err(|e| format!("{}: {e}", p.display()))?;
     }
     if args.keep || args.out.is_some() {
-        println!("xtask mason libcxx: kept {}", scratch.display());
+        say!("xtask mason libcxx: kept {}", scratch.display());
     } else {
         let _ = std::fs::remove_dir_all(&scratch);
     }
@@ -384,7 +388,7 @@ fn collect_dir(dir: &Path, names: Option<&[String]>) -> Result<Vec<outcomes::Rec
 fn finish(args: &Args, recs: &[outcomes::Rec]) -> Result<ExitCode, String> {
     if let Some(p) = &args.results {
         std::fs::write(p, outcomes::render(recs)).map_err(|e| format!("{}: {e}", p.display()))?;
-        println!("xtask mason libcxx: results: {} ({} lines)", p.display(), recs.len());
+        say!("xtask mason libcxx: results: {} ({} lines)", p.display(), recs.len());
     }
     let mut modes: Vec<&str> = Vec::new();
     for r in recs {
@@ -396,17 +400,17 @@ fn finish(args: &Args, recs: &[outcomes::Rec]) -> Result<ExitCode, String> {
         .iter()
         .map(|m| outcomes::select(recs, Some(m)).map(|s| (*m, s)))
         .collect::<Result<_, _>>()?;
-    println!(
+    say!(
         "
 {}",
         outcomes::TIMES_HEADER
     );
     for (m, s) in &by {
-        println!("{}", outcomes::times(m, s));
+        say!("{}", outcomes::times(m, s));
     }
     if let Some((_, r)) = by.iter().find(|(m, _)| *m == "bfd") {
         for (m, s) in by.iter().filter(|(m, _)| *m != "bfd") {
-            println!(
+            say!(
                 "
 ### {m} against bfd
 
@@ -424,7 +428,7 @@ fn finish(args: &Args, recs: &[outcomes::Rec]) -> Result<ExitCode, String> {
         if let Some(p) = &args.baseline {
             let base = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
             let (regressed, fixed) = outcomes::against_baseline(m, &base);
-            println!(
+            say!(
                 "
 against {}: regressed {}, fixed {}",
                 p.display(),
@@ -432,10 +436,10 @@ against {}: regressed {}, fixed {}",
                 fixed.len()
             );
             for t in &regressed {
-                println!("regressed: {t}");
+                say!("regressed: {t}");
             }
             for t in &fixed {
-                println!("fixed: {t}");
+                say!("fixed: {t}");
             }
             if !regressed.is_empty() {
                 code = ExitCode::FAILURE;
@@ -465,12 +469,12 @@ fn compare_files(a: &str, b: &str) -> Result<ExitCode, String> {
     let (na, nb) = (name(&sa), name(&sb));
     let (na, nb) = if na == nb { (format!("{na} (a)"), format!("{nb} (b)")) } else { (na, nb) };
     let (text, _) = outcomes::compare(&na, &sa, &nb, &sb);
-    println!(
+    say!(
         "{text}
 {}",
         outcomes::TIMES_HEADER
     );
-    println!(
+    say!(
         "{}
 {}",
         outcomes::times(&na, &sa),

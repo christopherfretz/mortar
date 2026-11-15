@@ -21,11 +21,38 @@ use std::time::Duration;
 
 use crate::process::{self, Limits, Output};
 
+/// `println!` for the lane's commands: a reader that closes the pipe
+/// (`| head`) ends the command with status 141 (as a shell's SIGPIPE
+/// would) instead of a panic, which `panic = "abort"` turns into SIGABRT
+/// and a core file.
+macro_rules! say {
+    () => { $crate::mason::emit(format_args!("\n")) };
+    ($($t:tt)*) => { $crate::mason::emit(format_args!("{}\n", format_args!($($t)*))) };
+}
+
+/// `print!` likewise.
+macro_rules! say_raw {
+    ($($t:tt)*) => { $crate::mason::emit(format_args!($($t)*)) };
+}
+
 pub mod census;
 pub mod libcxx;
 pub mod outcomes;
 pub mod programs;
 pub mod setup;
+
+/// Writes to standard output; a closed pipe exits with 141, another
+/// error with 1 (`say!`).
+pub fn emit(a: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    if let Err(e) = std::io::stdout().lock().write_fmt(a) {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(141);
+        }
+        eprintln!("xtask mason: standard output: {e}");
+        std::process::exit(1);
+    }
+}
 
 pub const USAGE: &str = "usage: cargo xtask mason [programs] [--mortar <path>] [--filter <s>]... [--keep] [-j <n>]\n       \
      cargo xtask mason census [--group <name> <path>...]...\n       \
@@ -119,7 +146,7 @@ impl Mason {
             Ok(m) => Ok(Some(m)),
             Err(e) if required() => Err(format!("{e} (MASON_REQUIRE_TOOLS=1)")),
             Err(e) => {
-                println!("xtask mason {what}: skipped: {e}");
+                say!("xtask mason {what}: skipped: {e}");
                 Ok(None)
             }
         }
@@ -259,8 +286,8 @@ fn verify_main(args: &[String]) -> Result<ExitCode, String> {
     let [output, map] = args else { return Err("verify needs <output> <map>".into()) };
     let p = plumb(Path::new(output), Path::new(map), Path::new(""))?;
     match &p.first {
-        Some(first) => println!("plumb: {p}: {first}"),
-        None => println!("plumb: {p}"),
+        Some(first) => say!("plumb: {p}: {first}"),
+        None => say!("plumb: {p}"),
     }
     Ok(if p.findings == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
