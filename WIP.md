@@ -22,5 +22,9 @@ Measured, not written: hello-cxx "members as symbol tables" upper bound
   hello-c default threads 25.7 -> 23.5 ms (load 10). Identity set with 10
   default-thread links (64) identical.
 
-Next: small costs (fixed.rs needs, sites.rs code, check.rs), then the
-record, e2e table, plumb, gate.
+- fixed.rs branch needs: only the needs collected (no per-branch result
+  buffer): protoc 3.0 -> 0.8 ms per link at 1 and 8 threads.
+- Tried, no effect, reverted: erratum code read once per output for both
+  errata (4.7 -> 4.9 ms); stable sorts in check.rs validate (3.5 -> 3.5).
+
+Next: the record, e2e table, plumb, gate.
