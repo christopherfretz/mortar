@@ -110,10 +110,15 @@ fn main() {
         .collect();
     let cx = FillCx { tables: &tables, output: OutputKind::Static, got_base: None, tls: None };
     let records: &[Reloc] = &relocs;
+    // `RelocAt.leads` (arch.md §3.5) as scan would record it: whether a
+    // record has a type in `Facts.seq_leads`. `MORTAR_BENCH_LEADS=1` sets
+    // it anyway, to time the pattern test it gates.
+    let leads = std::env::var_os("MORTAR_BENCH_LEADS").is_some()
+        || relocs.iter().any(|r| arch.facts().seq_leads.contains(&r.r_type));
     let mut best = f64::MAX;
     for _ in 0..rounds {
         let start = Instant::now();
-        let mut out = SectionOut { bytes: &mut bytes, addr: base, alloc: true, name: b".text" };
+        let mut out = SectionOut::whole(&mut bytes, base, true, b".text");
         for (i, (r, h)) in relocs.iter().zip(&howtos).enumerate() {
             let at = RelocAt {
                 file: FileId(0),
@@ -127,6 +132,7 @@ fn main() {
                 site: Site { bytes: &input, offset: r.r_offset },
                 records: &records,
                 proof: &[],
+                leads,
             };
             arch.apply(&cx, &at, &mut out).expect("in range");
         }

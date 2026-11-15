@@ -31,7 +31,7 @@ use mortar_core::par::Pool;
 
 use crate::address::{Addressed, address};
 use crate::chunk::Staged;
-use crate::diag::{LayoutDiag, feature, internal, refused};
+use crate::diag::{LayoutDiag, internal, refused};
 use crate::target::{Options, Target};
 
 /// arch.md §6 item 6 and L-112: `need::FIXED_POINT`.
@@ -39,20 +39,18 @@ fn cap_refusal() -> LayoutDiag {
     refused(FIXED_POINT.class, FIXED_POINT.name.to_string())
 }
 
-/// a64.md §11.1 condition 5.
-fn unproved_refusal() -> LayoutDiag {
-    feature("erratum 843419 scan without mapping symbols")
-}
-
-/// The size and log2 alignment of an erratum patch. `mortar_arch::Arch`
-/// has no erratum patch shape (only `thunk()`); a64.md §11.2 fixes the
-/// 843419 patch at two words (`W4'`, then `b F + 4`).
-const fn erratum_patch_shape(e: Erratum) -> Option<(u64, u8)> {
-    match e {
-        Erratum::E843419 => Some((8, 2)),
-        #[allow(unreachable_patterns)]
-        _ => None,
-    }
+/// a64.md §11.1 condition 5: `mortar_arch::diag::unproved`, with the
+/// candidate's input section and the offset of `W1` in it (at `q`, an
+/// address) as a note. `LayoutDiag` carries no file place or key; the
+/// key is `diag::unproved_key` of that section's chunk.
+fn unproved_refusal(e: Erratum, at: Option<(SectionId, u64)>) -> LayoutDiag {
+    let d = mortar_arch::diag::unproved(e);
+    LayoutDiag::from(match at {
+        Some((section, offset)) => {
+            d.note(format!("W1 at offset {offset:#x} of input section {}", section.0))
+        }
+        None => d,
+    })
 }
 
 /// A branch site of the link: where it is, and what `need::branch_site`
@@ -287,7 +285,9 @@ fn patch_shape(arch: &dyn Arch, k: Key) -> Result<(u64, u8), LayoutDiag> {
             Ok((u64::from(t.size), align))
         }
         Key::Erratum(_, _, e) => {
-            erratum_patch_shape(e).ok_or_else(|| internal("an erratum with no patch shape"))
+            let p = arch.patch(e).ok_or_else(|| internal("an erratum with no patch shape"))?;
+            let align = u8::try_from(p.align.max(1).trailing_zeros()).unwrap_or(0);
+            Ok((u64::from(p.size), align))
         }
     }
 }
@@ -388,7 +388,9 @@ fn needs(
             let Some(code) = range.sites.code(out_sec, round) else { return Ok(Vec::new()) };
             let view = Code { bytes: &code.bytes, addr: code.addr, proof: &code.proof };
             let mut sites: Vec<ErratumSite> = Vec::new();
-            range.arch.erratum_sites(e, &view, &mut sites).map_err(|_| unproved_refusal())?;
+            range.arch.erratum_sites(e, &view, &mut sites).map_err(|u| {
+                unproved_refusal(e, key_at(bodies, round.chunks, code.addr.wrapping_add(u.q)))
+            })?;
             let mut found = Vec::with_capacity(sites.len());
             for s in sites {
                 // `ErratumSite` holds code offsets; the need functions take
@@ -396,8 +398,12 @@ fn needs(
                 let w1 =
                     view.word(s.q).ok_or_else(|| internal("an erratum site outside its code"))?;
                 let (q, f) = (code.addr.wrapping_add(s.q), code.addr.wrapping_add(s.f));
-                let (section, offset) = key_at(bodies, round.chunks, f)
-                    .ok_or_else(|| internal("an erratum site outside every input section"))?;
+                // Proved unreachable (arch.md §3.7, a64.md §11.1 "Sites and
+                // synthetic chunks"): no site has a word in a synthetic
+                // chunk, so `F` is in an input section.
+                let (section, offset) = key_at(bodies, round.chunks, f).ok_or_else(|| {
+                    internal("an erratum site whose final word is in no input section")
+                })?;
                 let r = round.redirect_addr(section, offset);
                 let needed = erratum_need(range.arch, e, q, w1, f, r) != ErratumNeed::None;
                 let need = Need { addr: f, section, offset, record: 0, kind: NeedKind::Erratum(e) };

@@ -17,8 +17,10 @@
 //!   and R5 inhibited (the fixed point needs the unrelaxed form);
 //!   R1 (TLSDESC → LE) is compared on canonical input words instead.
 //!   For IE → LE, R3's bytes are compared on the input rebuilt from the
-//!   reference's register (`relaxed_eq`); R3's registers are checked on
-//!   the input objects by `s8_3_r3_from_the_inputs`.
+//!   reference's register (`relaxed_eq`), and each `movz` paired with a
+//!   `movk` of the same symbol into the same register (`relaxed_paired`);
+//!   R3's registers are checked on the input objects by
+//!   `s8_3_r3_from_the_inputs`, as is R5.
 //! - **ifunc**: the target is an `STT_GNU_IFUNC`; the reference points the
 //!   field at its IPLT entry, which this harness does not locate (the
 //!   IPLT path is tested in `a64.rs` §10.4).
@@ -68,6 +70,12 @@ struct Tally {
     /// Of `relaxed`, the IE → LE records whose bytes mortar's R3 writes
     /// too (§8.3).
     relaxed_eq: u32,
+    /// Of `relaxed_eq`, the records whose pair's other half (same symbol,
+    /// same register) is in the section too.
+    relaxed_paired: u32,
+    /// Of `relaxed_eq`, the records whose pair is split over two
+    /// registers (the references' miscompile, a64.md §15).
+    r3_rt_ne_rn: u32,
 }
 
 type Tallies = BTreeMap<u32, Tally>;
@@ -102,6 +110,12 @@ fn compare(
     {
         let target = img.sections[rs.info as usize].clone();
         let tdata = img.data(&target);
+        // The references' R3 records written as mortar writes them, as
+        // (symbol index, type, register, offset): each `movz` must have a
+        // `movk` of the same symbol into the same register, and the
+        // reverse (a64.md §8.3: the pair computes `TPREL(S)` in one
+        // register).
+        let mut r3_words: Vec<(u64, u32, u32, u64)> = Vec::new();
         for e in img.data(rs).chunks_exact(24) {
             let r_offset = u64_at(e, 0);
             let info = u64_at(e, 8);
@@ -267,6 +281,7 @@ fn compare(
                 };
                 if same {
                     entry.relaxed_eq += 1;
+                    r3_words.push((info >> 32, r_type, rd, r_offset));
                 } else {
                     entry.mismatch += 1;
                     mismatches.push(format!(
@@ -303,6 +318,24 @@ fn compare(
                         ));
                     }
                 }
+            }
+        }
+        for &(sym, r_type, rd, r_offset) in &r3_words {
+            let other = if r_type == 541 { 542 } else { 541 };
+            let near = if r_type == 541 { r_offset + 4 } else { r_offset.wrapping_sub(4) };
+            if r3_words.iter().any(|&(s2, t2, rd2, _)| (s2, t2, rd2) == (sym, other, rd)) {
+                tallies.entry(r_type).or_default().relaxed_paired += 1;
+            } else if r3_words.iter().any(|&(s2, t2, _, o2)| (s2, t2, o2) == (sym, other, near)) {
+                // The adjacent pair, into two registers: the references'
+                // IE → LE of an input with `Rt ≠ Rn` (a64.md §8.3, §15:
+                // wrong code; mortar keeps IE).
+                tallies.entry(r_type).or_default().r3_rt_ne_rn += 1;
+            } else {
+                tallies.entry(r_type).or_default().mismatch += 1;
+                mismatches.push(format!(
+                    "{label}: R3 {r_type} at {r_offset:#x} in {}: no {other} of symbol {sym} into x{rd}",
+                    target.name
+                ));
             }
         }
     }
@@ -892,11 +925,19 @@ fn s6_1_apply_against_reference_linkers() {
         eprintln!("MISMATCH {m}");
     }
     for l in &linkers {
-        let (n, eq) = [541, 542]
-            .iter()
-            .filter_map(|r| all[l].get(r))
-            .fold((0, 0), |a, x| (a.0 + x.relaxed, a.1 + x.relaxed_eq));
-        eprintln!("{l}: IE → LE relaxed {n}, of which R3 writes the same bytes {eq}");
+        let (mut n, mut eq, mut paired, mut split) = (0, 0, 0, 0);
+        for x in [541, 542].iter().filter_map(|r| all[l].get(r)) {
+            (n, eq, paired, split) = (
+                n + x.relaxed,
+                eq + x.relaxed_eq,
+                paired + x.relaxed_paired,
+                split + x.r3_rt_ne_rn,
+            );
+        }
+        eprintln!(
+            "{l}: IE → LE relaxed {n}, of which R3 writes the same bytes {eq}; paired movz/movk {paired}, split over two registers (a64.md §15) {split}"
+        );
+        assert_eq!(paired + split, eq, "{l}: every relaxed R3 record is paired or split");
     }
     // §7: static glibc's `_nl_current_LC_*` references (`uselocale.o`,
     // `setlocale.o`) reach every reference linker's output.
@@ -1097,6 +1138,181 @@ fn r3_object(label: &str, obj: &Image, tally: &mut R3Tally, bad: &mut Vec<String
     }
 }
 
+/// What R5 did to the GOT records of one link's inputs (a64.md §8.5).
+#[derive(Default, Debug)]
+struct R5Tally {
+    /// Pairs mortar relaxed, decoded to `adrp xR, S; add xR, xR, lo12(S)`.
+    relaxed: u32,
+    /// Records kept as GOT loads (decoded to `G`), by reason: the symbol
+    /// has `GOT_NORELAX` (some use is unpaired); the target is not local;
+    /// `Page(S)` is out of the ADRP's range.
+    kept_norelax: u32,
+    kept_not_local: u32,
+    kept_range: u32,
+}
+
+/// R5 over every GOT record pair of `obj` (a relocatable object): scan
+/// raises `GOT_NORELAX`, apply relaxes each record on its own, and the
+/// result is decoded. A relaxed `312` must be an `add xR, xR` whose
+/// previous record is its `311` at `o − 4`, relaxed to `adrp xR` with
+/// the same `R`, the two computing `S` exactly; a kept pair must compute
+/// the slot's address `G`. A record is relaxed exactly when its symbol is
+/// local, has no `GOT_NORELAX`, and `Page(S)` is in range.
+fn r5_object(label: &str, obj: &Image, tally: &mut R5Tally, bad: &mut Vec<String>) {
+    use mortar_a64::forms::{ADRP, extract};
+    use support::{Sink, raised, scan_all};
+    let syms = obj.symbols();
+    let addr = 0x40_0000u64;
+    // `S`: near the code, or (one in seven) beyond the ADRP's ±4 GiB.
+    let s_of = |i: u32| {
+        let near = 0x40_1000 + u64::from(i.wrapping_mul(0x9E37) % 0x7_0000);
+        if i % 7 == 3 { near + 0x2_0000_0000 } else { near }
+    };
+    let g_of = |i: u32| 0x50_0000 + 8 * u64::from(i);
+    let mut t = Tables::default();
+    let mut index = std::collections::HashMap::new();
+    let mut sections = Vec::new();
+    for rs in obj.sections.iter().filter(|s| s.kind == SHT_RELA && s.info != 0) {
+        let target = &obj.sections[rs.info as usize];
+        if target.flags & SHF_ALLOC == 0 {
+            continue;
+        }
+        let relocs: Vec<Reloc> = obj
+            .data(rs)
+            .chunks_exact(24)
+            .filter_map(|e| {
+                let info = u64_at(e, 8);
+                let r_type = (info & 0xFFFF_FFFF) as u32;
+                let sym = (info >> 32) as u32;
+                index.insert(key(sym + 1), sym);
+                matches!(r_type, 311 | 312).then(|| Reloc {
+                    r_offset: u64_at(e, 0),
+                    key: key(sym + 1),
+                    r_type,
+                    addend: u64_at(e, 16) as i64,
+                })
+            })
+            .collect();
+        if relocs.is_empty() {
+            continue;
+        }
+        for r in &relocs {
+            let i = index[&r.key];
+            let sym = &syms[i as usize];
+            let kind = match (sym.shndx, sym.info >> 4, sym.info & 0xF) {
+                (_, _, STT_GNU_IFUNC) => TargetKind::Ifunc,
+                (0, 2, _) => TargetKind::Weak0,
+                _ => TargetKind::Local,
+            };
+            t.sym(r.key, s_of(i), kind);
+            t.slots.insert((r.key, SlotKind::Addr), g_of(i));
+        }
+        sections.push((target.clone(), relocs));
+    }
+    for (target, relocs) in &sections {
+        let mut sink = Sink::default();
+        let place = mortar_arch::PlaceFacts { alloc: true, writable: false };
+        let output = mortar_arch::OutputKind::Static;
+        scan_all(M2, &t, output, place, obj.data(target), relocs, &mut sink).unwrap();
+        assert!(sink.errors.is_empty(), "{label} {}: {:?}", target.name, sink.errors);
+        let keys: Vec<_> = sink.raised.iter().map(|(k, _)| *k).collect();
+        for k in keys {
+            *t.flags.entry(k).or_default() |= raised(&sink, k);
+        }
+    }
+    for (target, relocs) in &sections {
+        let input = obj.data(target);
+        let mut c = Case::new(&t, input, addr);
+        c.arch = M2;
+        let word_at = |b: &[u8], o: u64| u32_at(b, usize::try_from(o).unwrap());
+        let page = |o: u64, w: u32| ((addr + o) & !0xFFF).wrapping_add(extract(ADRP, w) as u64);
+        let outs: Vec<Option<u32>> = relocs
+            .iter()
+            .enumerate()
+            .map(|(i, r)| match c.apply_at(relocs, i) {
+                Ok(out) => Some(word_at(&out, r.r_offset)),
+                Err(e) => {
+                    bad.push(format!("{label} {}+{:#x}: {e:?}", target.name, r.r_offset));
+                    None
+                }
+            })
+            .collect();
+        for (i, r) in relocs.iter().enumerate() {
+            let Some(out) = outs[i] else { continue };
+            let sym = t.syms[&r.key];
+            let k = index[&r.key];
+            let (s, g) = (sym.s.wrapping_add(r.addend as u64), g_of(k));
+            let w = word_at(input, r.r_offset);
+            let norelax = t.flags.get(&r.key).is_some_and(|f| f.contains(DemandFlags::GOT_NORELAX));
+            let local = sym.kind == TargetKind::Local;
+            let in_range = {
+                let d = (s & !0xFFF).wrapping_sub((addr + r.r_offset) & !0xFFF) as i64;
+                (-(1i64 << 32)..1i64 << 32).contains(&d)
+            };
+            let fail = |what: &str| {
+                format!(
+                    "{label} {}+{:#x} type {}: {what}: input {w:#010x} output {out:#010x} S={s:#x}",
+                    target.name, r.r_offset, r.r_type
+                )
+            };
+            let relaxed = if r.r_type == 311 {
+                page(r.r_offset, out) == s & !0xFFF
+            } else {
+                out & 0xFFC0_0000 == 0x9100_0000
+            };
+            if relaxed != (local && !norelax && in_range) {
+                bad.push(fail(if relaxed { "relaxed, not allowed" } else { "not relaxed" }));
+                continue;
+            }
+            if !relaxed {
+                let ok = if r.r_type == 311 {
+                    page(r.r_offset, out) == g & !0xFFF && out & 0x9F00_001F == w & 0x9F00_001F
+                } else {
+                    out & !(0xFFF << 10) == w & !(0xFFF << 10)
+                        && u64::from((out >> 10) & 0xFFF) << 3 == g & 0xFFF
+                };
+                if !ok {
+                    bad.push(fail("kept form does not address G"));
+                }
+                if r.r_type == 312 {
+                    match () {
+                        () if !local => tally.kept_not_local += 1,
+                        () if norelax => tally.kept_norelax += 1,
+                        () => tally.kept_range += 1,
+                    }
+                }
+                continue;
+            }
+            if r.r_type == 311 {
+                // Its 312 is the next record, relaxed too (checked there).
+                let next = relocs.get(i + 1);
+                if !next.is_some_and(|n| n.r_type == 312 && n.r_offset == r.r_offset + 4) {
+                    bad.push(fail("relaxed 311 without its 312"));
+                }
+                continue;
+            }
+            // A relaxed 312: `add xR, xR, #lo12(S)` after `adrp xR, S`.
+            let (rd, rn) = (out & 0x1F, (out >> 5) & 0x1F);
+            let lead = i.checked_sub(1).map(|j| (&relocs[j], outs[j]));
+            let Some((p, Some(m))) = lead else {
+                bad.push(fail("relaxed 312 without its 311"));
+                continue;
+            };
+            let paired = p.r_type == 311 && p.r_offset + 4 == r.r_offset && p.key == r.key;
+            if !paired || m & 0x9F00_001F != 0x9000_0000 | rn || rd != rn || w & 0x1F != rd {
+                bad.push(fail("relaxed 312 not paired with adrp into its register"));
+                continue;
+            }
+            let x = page(p.r_offset, m) + u64::from((out >> 10) & 0xFFF);
+            if x != s {
+                bad.push(fail(&format!("computes {x:#x}")));
+                continue;
+            }
+            tally.relaxed += 1;
+        }
+    }
+}
+
 /// R4's window (§8.4) over one object: each GD sequence matching the
 /// pattern (`adrp; add; bl __tls_get_addr; nop` with records 513, 514,
 /// `CALL26` in order), and every other record whose window meets
@@ -1155,7 +1371,8 @@ fn r4_object(label: &str, obj: &Image, found: &mut [u32; 2], bad: &mut Vec<Strin
 /// member of the static libraries the corpus links (a superset of what the
 /// reference links pulled in), checked by decoding; the byte equality with
 /// the references' relaxed records is in `compare` (`relaxed_eq`). Also
-/// §8.4: no ordinary input has a record in an R4 window.
+/// §8.4: no ordinary input has a record in an R4 window; and §8.5, R5 on
+/// the same inputs (`r5_object`).
 #[test]
 fn s8_3_r3_from_the_inputs() {
     let Some(t) = tools() else { return };
@@ -1163,6 +1380,7 @@ fn s8_3_r3_from_the_inputs() {
     let mut tally = R3Tally::default();
     // R4 patterns, and records overlapping their windows.
     let mut r4 = [0u32; 2];
+    let mut r5 = R5Tally::default();
     let mut bad = Vec::new();
     let units = ASM_UNITS.iter().map(|&(name, src)| Build {
         name,
@@ -1177,6 +1395,7 @@ fn s8_3_r3_from_the_inputs() {
             let img = Image::read(&obj);
             r3_object(&label, &img, &mut tally, &mut bad);
             r4_object(&label, &img, &mut r4, &mut bad);
+            r5_object(&label, &img, &mut r5, &mut bad);
         }
     }
     // GCC's traditional GD, which no default build emits: R4's pattern.
@@ -1189,6 +1408,7 @@ fn s8_3_r3_from_the_inputs() {
     let img = Image::read(&obj);
     r3_object("trad/gcc", &img, &mut tally, &mut bad);
     r4_object("trad/gcc", &img, &mut r4, &mut bad);
+    r5_object("trad/gcc", &img, &mut r5, &mut bad);
     let mut members = 0;
     for lib in ["libc.a", "libm.a", "libstdc++.a", "libgfortran.a", "libgcc.a", "libgcc_eh.a"] {
         let o = run(&t.gcc, [format!("-print-file-name={lib}")]);
@@ -1204,14 +1424,17 @@ fn s8_3_r3_from_the_inputs() {
             let img = Image::parse(m);
             r3_object(&format!("{lib}({name})"), &img, &mut tally, &mut bad);
             r4_object(&format!("{lib}({name})"), &img, &mut r4, &mut bad);
+            r5_object(&format!("{lib}({name})"), &img, &mut r5, &mut bad);
         }
     }
     eprintln!("R3 over the inputs ({members} archive members): {tally:?}");
     eprintln!("R4 patterns {}, records overlapping their windows {}", r4[0], r4[1]);
+    eprintln!("R5 over the inputs: {r5:?}");
     for b in bad.iter().take(20) {
-        eprintln!("R3 BAD {b}");
+        eprintln!("R3/R4/R5 BAD {b}");
     }
-    assert!(bad.is_empty(), "{} R3/R4 failures", bad.len());
+    assert!(bad.is_empty(), "{} R3/R4/R5 failures", bad.len());
+    assert!(r5.relaxed > 100 && r5.kept_norelax > 0 && r5.kept_range > 0, "{r5:?}");
     assert!(tally.relaxed > 1000 && tally.kept_rt_ne_rn > 0, "{tally:?}");
     assert!(r4[0] > 0, "no R4 pattern in the inputs");
 }
