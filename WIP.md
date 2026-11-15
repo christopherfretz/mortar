@@ -1,11 +1,11 @@
 # WIP: WP-051 (dynamic linktest harness)
 
 ## Done
-- Harness: fixtures (`#@ fixture:`, tests/link/fixtures/*.fixture, built once per (name, arch) per run under <work>/fixtures), `shlib` step, `env:` on run, check tools elflint/ldd/gdb/lldb, expectations then/count/allow, `Raw::Skip` (gdb/lldb on emulated arch), per-test xfails in tests/link/xfails, stage-3 probe (engine.rs `stage3_present`) with "stage 3 absent".
-- Cases: dyn/kinds/output-kind-table, dyn/tools/{ldd-lists,gdb-break-main,lldb-break-main,elflint-dynamic}: references PASS, mortar XFAIL by package.
+- Harness (committed): fixtures, shlib, env, then/count/allow, check elflint/ldd/gdb/lldb, Raw::Skip, per-test xfails, stage-3 probe; spec/harness.md documented; unit tests.
+- 80 dyn cases under tests/link/dyn (kinds, shlib, dynsym, dynamic, reloc, layout, tools, census), 6 fixtures; xfails grouped by package. Full dyn run both arches: 0 FAIL/ORACLE/ERROR/XPASS, 31.8 s at -j 6.
+- Merged main once (i386 run-wide xfail removed).
 
 ## Next
-1. Unit tests for new parser forms, program_env, Raw::Skip in self_check, stage3_present.
-2. spec/harness.md linktest sections: document all of the above.
-3. Author all dyn.md §16 rows + census (subagents by area), xfail lines.
-4. Gate, timings, spec/landed/dyn/WP-051.md, delete WIP.md, rm /tmp/mortar-wp051-137416.
+1. Gate `MORTAR_REQUIRE_TOOLS=1 cargo xtask ci --quick` (running), measure quick linktest time vs before (baseline ~45 s for 36 tests).
+2. spec/landed/dyn/WP-051.md (findings from the case authors: in the supervisor's notes).
+3. Delete WIP.md; rm /tmp/mortar-wp051-137416.
