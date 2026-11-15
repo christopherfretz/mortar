@@ -29,6 +29,7 @@ mod common;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use common::Arch;
 use mortar_input::walk::ProbeOutcome;
 use mortar_testutil::Scratch;
 
@@ -63,12 +64,14 @@ fn emulation(args: &[OsString]) -> Option<String> {
     None
 }
 
-fn bfd_for(emulation: &str) -> &'static str {
+/// The GNU ld of an emulation's architecture.
+fn bfd_for(emulation: &str) -> String {
     match emulation {
-        "elf_x86_64" => "x86_64-linux-gnu-ld.bfd",
-        "elf_i386" => "i686-linux-gnu-ld.bfd",
-        _ => "ld.bfd",
+        "elf_x86_64" => Arch::X86_64,
+        "elf_i386" => Arch::I386,
+        _ => Arch::Aarch64,
     }
+    .gnu("ld.bfd")
 }
 
 /// The line without `-o X` and `--trace`, which the comparison adds.
@@ -88,7 +91,7 @@ fn strip_output(args: Vec<OsString>) -> Vec<OsString> {
 #[allow(clippy::too_many_lines, reason = "the comparisons in order")]
 fn compare(w: &Path, line: &Line, t: &mut Tally) {
     let em = emulation(&line.args).unwrap_or_else(|| "aarch64linux".into());
-    let Some(ld) = common::need(bfd_for(&em)) else { return };
+    let Some(ld) = common::need(&bfd_for(&em)) else { return };
     let mut a = line.args.clone();
     a.extend([
         "--trace".into(),
@@ -228,49 +231,39 @@ const CXX: &str = "#include <iostream>\nint main() { std::cout << \"hi\\n\"; }\n
 const F90: &str = "program p\nprint *, 'hi'\nend program\n";
 const PIC: &str = "int lib_f(int x) { return x + 1; }\n";
 
-/// One driver family: its compilers, its `-###` drivers, its objects.
+/// One driver family: its architecture (whose compilers and `-###`
+/// drivers it uses, by their names on this host), its objects.
 struct Family {
     tag: &'static str,
-    cc: &'static str,
-    cxx: &'static str,
-    fc: Option<&'static str>,
-    clang: &'static [&'static str],
+    arch: Arch,
+    fortran: bool,
 }
 
 const FAMILIES: &[Family] = &[
-    Family { tag: "a64", cc: "gcc", cxx: "g++", fc: Some("gfortran"), clang: &[] },
-    Family {
-        tag: "x86",
-        cc: "x86_64-linux-gnu-gcc",
-        cxx: "x86_64-linux-gnu-g++",
-        fc: Some("x86_64-linux-gnu-gfortran"),
-        clang: &["--target=x86_64-linux-gnu"],
-    },
-    Family {
-        tag: "i686",
-        cc: "i686-linux-gnu-gcc",
-        cxx: "i686-linux-gnu-g++",
-        fc: None,
-        clang: &["--target=i686-linux-gnu"],
-    },
+    Family { tag: "a64", arch: Arch::Aarch64, fortran: true },
+    Family { tag: "x86", arch: Arch::X86_64, fortran: true },
+    Family { tag: "i686", arch: Arch::I386, fortran: false },
 ];
 
 fn fresh_lines(w: &Path) -> Vec<Line> {
     let mut lines = Vec::new();
     for f in FAMILIES {
         let t = f.tag;
+        let (cc_name, cxx_name, fc_name) =
+            (f.arch.gnu("gcc"), f.arch.gnu("g++"), f.arch.gnu("gfortran"));
+        let clang_args = f.arch.clang_args();
+        let clang_args: Vec<&str> = clang_args.iter().map(String::as_str).collect();
         let (m, mm, c, pic) =
             (format!("{t}m.o"), format!("{t}mm.o"), format!("{t}c.o"), format!("{t}pic.o"));
-        if !compile(f.cc, &[], w, (&format!("{t}m.c"), C_MAIN), &m, &[])
-            || !compile(f.cc, &[], w, (&format!("{t}mm.c"), C_MATH), &mm, &[])
-            || !compile(f.cxx, &[], w, (&format!("{t}c.cc"), CXX), &c, &[])
-            || !compile(f.cc, &[], w, (&format!("{t}pic.c"), PIC), &pic, &["-fPIC"])
+        if !compile(&cc_name, &[], w, (&format!("{t}m.c"), C_MAIN), &m, &[])
+            || !compile(&cc_name, &[], w, (&format!("{t}mm.c"), C_MATH), &mm, &[])
+            || !compile(&cxx_name, &[], w, (&format!("{t}c.cc"), CXX), &c, &[])
+            || !compile(&cc_name, &[], w, (&format!("{t}pic.c"), PIC), &pic, &["-fPIC"])
         {
             continue;
         }
         let fo = format!("{t}f.o");
-        let fortran =
-            f.fc.is_some_and(|fc| compile(fc, &[], w, (&format!("{t}f.f90"), F90), &fo, &[]));
+        let fortran = f.fortran && compile(&fc_name, &[], w, (&format!("{t}f.f90"), F90), &fo, &[]);
         let modes: &[(&str, &[&str])] = &[
             ("dyn", &[]),
             ("nopie", &["-no-pie"]),
@@ -278,21 +271,16 @@ fn fresh_lines(w: &Path) -> Vec<Line> {
             ("spie", &["-static-pie"]),
         ];
         let mut drivers: Vec<(String, PathBuf, Vec<&str>, String)> = Vec::new();
-        let cc = common::need(f.cc).unwrap();
+        let cc = common::need(&cc_name).unwrap();
         drivers.push(("gcc".into(), cc.clone(), vec![], mm.clone()));
-        drivers.push(("gxx".into(), common::need(f.cxx).unwrap(), vec![], c.clone()));
+        drivers.push(("gxx".into(), common::need(&cxx_name).unwrap(), vec![], c.clone()));
         if fortran {
-            drivers.push((
-                "gfortran".into(),
-                common::need(f.fc.unwrap()).unwrap(),
-                vec![],
-                fo.clone(),
-            ));
+            drivers.push(("gfortran".into(), common::need(&fc_name).unwrap(), vec![], fo.clone()));
         }
         if let Some(clang) = common::need("clang") {
-            drivers.push(("clang".into(), clang.clone(), f.clang.to_vec(), mm.clone()));
+            drivers.push(("clang".into(), clang.clone(), clang_args.clone(), mm.clone()));
             if let Some(clangxx) = common::need("clang++") {
-                drivers.push(("clangxx".into(), clangxx, f.clang.to_vec(), c.clone()));
+                drivers.push(("clangxx".into(), clangxx, clang_args.clone(), c.clone()));
             }
         }
         for (dname, d, extra, obj) in &drivers {
@@ -321,8 +309,11 @@ fn fresh_lines(w: &Path) -> Vec<Line> {
         }
         // Multiarch: another target's library directory first, so its
         // libraries are skipped (§4.4).
-        if t != "a64" {
-            let a = ["-L/usr/lib/aarch64-linux-gnu", mm.as_str(), "-lm", "-o", "out"];
+        if f.arch != Arch::Aarch64
+            && let Some(dir) = common::libc_dir("native")
+        {
+            let l = format!("-L{}", dir.display());
+            let a = [l.as_str(), mm.as_str(), "-lm", "-o", "out"];
             if let Some(args) = common::driver_link_args(&cc, &a, w) {
                 lines.push(Line { name: format!("{t}-gcc-multiarch"), args: strip_output(args) });
             }
@@ -370,15 +361,16 @@ fn review_work(w: &Path) -> bool {
     for d in ["bin", "bi", "bx", "lib"] {
         std::fs::create_dir_all(w.join(d)).unwrap();
     }
-    let ok = compile("gcc", &[], w, ("rm.c", C_MAIN), "m.o", &[])
-        && compile("gcc", &[], w, ("rmm.c", C_MATH), "mm.o", &[])
-        && compile("g++", &[], w, ("rc.cc", CXX), "c.o", &[])
-        && compile("gfortran", &[], w, ("rf.f90", F90), "f.o", &[])
-        && compile("gcc", &[], w, ("rpic.c", PIC), "mpic.o", &["-fPIC"])
-        && compile("i686-linux-gnu-gcc", &[], w, ("rimm.c", C_MATH), "imm.o", &[])
-        && compile("x86_64-linux-gnu-gcc", &[], w, ("rxmm.c", C_MATH), "xmm.o", &[])
-        && compile("x86_64-linux-gnu-g++", &[], w, ("rxc.cc", CXX), "x86c.o", &[])
-        && compile("gcc", &[], w, ("z9.c", "int z9(void) { return 9; }\n"), "lib/z9.o", &[]);
+    let a64 = |tool: &str| Arch::Aarch64.gnu(tool);
+    let ok = compile(&a64("gcc"), &[], w, ("rm.c", C_MAIN), "m.o", &[])
+        && compile(&a64("gcc"), &[], w, ("rmm.c", C_MATH), "mm.o", &[])
+        && compile(&a64("g++"), &[], w, ("rc.cc", CXX), "c.o", &[])
+        && compile(&a64("gfortran"), &[], w, ("rf.f90", F90), "f.o", &[])
+        && compile(&a64("gcc"), &[], w, ("rpic.c", PIC), "mpic.o", &["-fPIC"])
+        && compile(&Arch::I386.gnu("gcc"), &[], w, ("rimm.c", C_MATH), "imm.o", &[])
+        && compile(&Arch::X86_64.gnu("gcc"), &[], w, ("rxmm.c", C_MATH), "xmm.o", &[])
+        && compile(&Arch::X86_64.gnu("g++"), &[], w, ("rxc.cc", CXX), "x86c.o", &[])
+        && compile(&a64("gcc"), &[], w, ("z9.c", "int z9(void) { return 9; }\n"), "lib/z9.o", &[]);
     ok && common::ar(&w.join("lib"), "libz9.a", &["z9.o"], false).is_some()
 }
 

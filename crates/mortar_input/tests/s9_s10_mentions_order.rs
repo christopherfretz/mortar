@@ -76,7 +76,7 @@ fn s9_3_error_keyed_to_lowest_mention() {
 #[test]
 fn s9_4_identity() {
     let s = Scratch::new("s9ident");
-    let Some(ar) = common::need("ar") else { return };
+    let Some(ar) = common::gnu("native", "ar") else { return };
     if !objs(&s, &["a.o"]) {
         return;
     }

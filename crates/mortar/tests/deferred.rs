@@ -16,7 +16,7 @@ use mortar_core::par::Pool;
 use mortar_diag::{Collector, Policy, Style};
 use mortar_image::fill::Failed;
 use mortar_input::store::{Store, StorePolicy};
-use mortar_testutil::{Scratch, tool, tools_required};
+use mortar_testutil::{Scratch, tools_required};
 
 const START: &str = "
     .text
@@ -85,13 +85,10 @@ f:
 
 /// Assembles `(object, source)` in `dir`; `None` without the tools.
 fn assemble(dir: &Path, units: &[(&str, &str)]) -> Option<()> {
-    let Some(cc) = tool("gcc") else {
+    let Some(cc) = support::AARCH64.tool("gcc") else {
         assert!(!tools_required(), "gcc is required");
         return None;
     };
-    if std::env::consts::ARCH != "aarch64" {
-        return None;
-    }
     for (out, src) in units {
         let s = format!("{out}.s");
         std::fs::write(dir.join(&s), src).unwrap();

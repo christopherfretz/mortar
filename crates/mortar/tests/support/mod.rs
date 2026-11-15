@@ -1,6 +1,12 @@
 //! Support for the front's differential tests (WP-027a): programs built
 //! with the system compilers, linked by GNU ld, lld and mold, and laid out
 //! by `mortar::front`; each link summarized the same way.
+//!
+//! The programs are AArch64's on every host ([`build`], [`AARCH64`]): the
+//! AArch64 toolchain by its plain names on an AArch64 host and as
+//! `aarch64-linux-gnu-*` elsewhere, the programs run natively or under
+//! `qemu-aarch64` (`spec/harness.md` "Hosted CI", "A test's subject
+//! decides its tools").
 
 #![allow(dead_code, reason = "each test binary uses part of it")]
 
@@ -13,7 +19,11 @@ use mortar::timing::Timer;
 use mortar_core::par::Pool;
 use mortar_diag::{Collector, Policy, Report};
 use mortar_input::store::{Store, StorePolicy};
+use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, run, tool};
+
+/// The architecture of the programs these tests build and link.
+pub const AARCH64: Arch = Arch::Aarch64;
 
 pub mod plumb;
 
@@ -112,14 +122,24 @@ pub enum Driver {
 }
 
 impl Driver {
-    pub fn tool(self) -> &'static str {
+    /// The driver's name for [`AARCH64`] on this host.
+    pub fn tool(self) -> String {
         match self {
-            Self::Gcc => "gcc",
-            Self::Gxx => "g++",
-            Self::Clang => "clang",
-            Self::Clangxx => "clang++",
-            Self::Gfortran => "gfortran",
-            Self::Clang22 => "clang-22",
+            Self::Gcc => AARCH64.gnu("gcc"),
+            Self::Gxx => AARCH64.gnu("g++"),
+            Self::Gfortran => AARCH64.gnu("gfortran"),
+            Self::Clang => "clang".into(),
+            Self::Clangxx => "clang++".into(),
+            Self::Clang22 => "clang-22".into(),
+        }
+    }
+
+    /// What the driver is given first, to compile and to link for
+    /// [`AARCH64`]: Clang's `--target` off an AArch64 host.
+    pub fn target_args(self) -> Vec<String> {
+        match self {
+            Self::Clang | Self::Clangxx | Self::Clang22 => AARCH64.clang_args(),
+            Self::Gcc | Self::Gxx | Self::Gfortran => Vec::new(),
         }
     }
 }
@@ -169,15 +189,19 @@ fn words(line: &str) -> Vec<String> {
     out
 }
 
-/// Compiles `sources` with `driver` and `flags` in `scratch`, and asks the
-/// driver for its static link line. `None` when a tool is missing.
+/// Compiles `sources` with `driver` and `flags` in `scratch`, for
+/// [`AARCH64`], and asks the driver for its static link line. `None` when
+/// a tool is missing.
 pub fn build(
     scratch: &Scratch,
     driver: Driver,
     flags: &[&str],
     sources: &[Source],
 ) -> Option<Built> {
-    build_by(scratch, driver.tool(), flags, sources)
+    let target = driver.target_args();
+    let mut all: Vec<&str> = target.iter().map(String::as_str).collect();
+    all.extend_from_slice(flags);
+    build_by(scratch, &driver.tool(), &all, sources)
 }
 
 /// [`build`] with the driver named `cc` (a cross driver such as
@@ -522,7 +546,8 @@ pub fn segment_flags(f: u32) -> String {
 /// The reference links of `built`: `(linker, summary)` for each found.
 pub fn references(built: &Built) -> Vec<(&'static str, Summary)> {
     let mut out = Vec::new();
-    for (name, exe) in [("bfd", "ld.bfd"), ("lld", "ld.lld"), ("mold", "mold")] {
+    let bfd = AARCH64.gnu("ld.bfd");
+    for (name, exe) in [("bfd", bfd.as_str()), ("lld", "ld.lld"), ("mold", "mold")] {
         let Some(ld) = tool(exe) else { continue };
         let path = built.dir.join(format!("out.{name}"));
         let args = with_output(&built.args, &path);

@@ -14,7 +14,7 @@ fn lib(dir: &Path, target: &str, name: &str) {
     std::fs::create_dir_all(dir).unwrap();
     let o = format!("{name}.o");
     common::cc(dir, target, &o, C, &[]);
-    common::ar(dir, &format!("lib{name}.a"), &[&o], false);
+    common::ar_for(dir, target, &format!("lib{name}.a"), &[&o], false);
 }
 
 fn so(dir: &Path, target: &str, name: &str) {

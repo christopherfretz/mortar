@@ -32,7 +32,13 @@ BINUTILS_VERSION=2.44   # ld.bfd --version
 GCC_VERSION=14.2        # gcc -dumpfullversion, major.minor
 LLVM_MAJOR=22           # mortar_testutil::LLVM_MAJORS[0]: the LLVM tools the tests run
 LLVM_VERSION=22.1.8     # clang-22 -dumpversion
+DEBIAN_LLVM_MAJOR=19    # Debian 13's own LLVM: lldb (find_tool tries 22, then 19), the
+                        # clang-19 of the compiler censuses, the ld.lld of gcc -fuse-ld=lld
+DEBIAN_LLVM_VERSION=19.1.7  # lldb-19 --version, clang-19 -dumpversion, ld.lld --version
 MOLD_VERSION=2.37.1     # mold --version
+GDB_VERSION=16.3        # gdb --version
+ELFUTILS_VERSION=0.192  # eu-elflint --version
+QEMU_VERSION=10.0.13    # qemu-<arch> --version
 
 # The GNU triples of the three architectures (xtask::linktest::target::Arch),
 # Debian's dashed package spelling of each, and its Debian architecture.
@@ -45,6 +51,34 @@ debian_arch() {
     i686-linux-gnu) echo i386 ;;
   esac
 }
+
+# The tool guard (spec/harness.md "Hosted CI", "The tool guard"): every
+# name a test or the link-test harness looks a tool up by
+# (mortar_testutil::tool, mortar_testutil::find_listed_tool) must be
+# covered by one of the four lists below, or that lookup fails, on every
+# machine and whatever MORTAR_REQUIRE_TOOLS says;
+# mortar_testutil::ci_tools reads them from this file. A name is covered
+# when it is in TOOLS; or is `<triple>-<t>` with <triple> one of TRIPLES
+# and <t> in TRIPLE_TOOLS; or is in LLVM_TOOLS, bare or with a `-<major>`
+# suffix; or is in SETUP_TOOLS. A new tool goes into a list here (and its
+# package into packages() below) in the change that first asks for it.
+# Each list is one line, `NAME=(...)`, of plain words.
+#
+# On PATH, by these names, on both hosts:
+TOOLS=(gcc g++ gfortran as ar nm objdump readelf ld ld.bfd mold gdb gdb-multiarch eu-elflint file ldd qemu-aarch64 qemu-x86_64 qemu-i386 python3 bash git dpkg-query sha1sum sha256sum mkfifo nohup realpath ps pgrep)
+# `<triple>-<tool>` for each of the three TRIPLES (the host's own too):
+TRIPLE_TOOLS=(gcc g++ gfortran as ar nm objdump readelf ld ld.bfd)
+# The pinned LLVM's, /usr/lib/llvm-$LLVM_MAJOR/bin/<tool> (lldb: Debian's own,
+# DEBIAN_LLVM_MAJOR's); mortar_testutil::find_tool finds them as
+# <tool>-<major> or there. clang-19 and clang++-19 are Debian's (the
+# censuses), and so is the bare ld.lld on PATH, which gcc -fuse-ld=lld runs:
+LLVM_TOOLS=(clang clang++ ld.lld yaml2obj llvm-readelf llvm-readobj llvm-ar llvm-nm llvm-objcopy llvm-dwarfdump llvm-mc lldb)
+# Given by the job's Rust set-up (.github/actions/mortar-ci), not by apt:
+SETUP_TOOLS=(rustc)
+# Looked up only when a listed name is missing (mold as ld.mold, a
+# static-only qemu): covered, never checked here.
+FALLBACK_TOOLS=(ld.mold qemu-aarch64-static qemu-x86_64-static qemu-i386-static)
+
 # The user-mode emulator that runs the architecture's programs off its
 # own host.
 qemu() {
@@ -53,9 +87,6 @@ qemu() {
     *) echo "qemu-${1%%-*}" ;;
   esac
 }
-# No i686 gfortran: `lang/fortran-c` and the Fortran objects of
-# mortar_elf's tests run on AArch64 and x86-64 only.
-fortran() { [ "$1" != i686-linux-gnu ]; }
 
 host_arch() {
   case "$(uname -m)" in
@@ -69,18 +100,24 @@ HOST="$(host_arch)"
 
 packages() {
   # What the job and the harness run, beyond the tools under test.
-  echo bash ca-certificates curl git make procps python3 time xz-utils
+  echo bash ca-certificates coreutils curl git make procps python3 time xz-utils
   # The host's own toolchain: gcc, g++, gfortran, the binutils (ld.bfd).
   echo build-essential binutils gfortran
-  # The pinned LLVM: clang, clang++, ld.lld, yaml2obj, llvm-readelf,
-  # llvm-readobj, llvm-ar, llvm-nm (/usr/lib/llvm-22/bin).
+  # The pinned LLVM (/usr/lib/llvm-22/bin: clang, ld.lld, yaml2obj, the
+  # llvm- tools).
   echo "clang-$LLVM_MAJOR" "llvm-$LLVM_MAJOR" "lld-$LLVM_MAJOR"
+  # Debian's own LLVM: its lldb, its clang (the compiler censuses), and its
+  # lld as the ld.lld on PATH (gcc -fuse-ld=lld).
+  echo "clang-$DEBIAN_LLVM_MAJOR" "lldb-$DEBIAN_LLVM_MAJOR" lld
   echo mold qemu-user
+  # The debuggers of the debugger tests and the link tests' `check gdb`
+  # (gdb-multiarch reads the other architectures' programs), elfutils'
+  # eu-elflint, file, and ldd (libc-bin, in every Debian).
+  echo gdb gdb-multiarch elfutils file libc-bin
   local t d
   for t in "${TRIPLES[@]}"; do
     d="$(dashed "$t")"
-    echo "gcc-$d" "g++-$d" "binutils-$d"
-    if fortran "$t"; then echo "gfortran-$d"; fi
+    echo "gcc-$d" "g++-$d" "gfortran-$d" "binutils-$d"
     # The system root of a cross target, /usr/<triple> (the cross
     # compilers only recommend the C library).
     if [ "$t" != "$HOST" ]; then
@@ -123,29 +160,34 @@ check() {
   for p in "${PACKAGES[@]}"; do
     installed "$p" || fail "package not installed: $p"
   done
-  # The host's tools, unprefixed, as the link tests name them.
-  need gcc g++ gfortran as ar nm objdump readelf ld.bfd
-  # Every architecture's, prefixed (the host's own too: mortar_elf's tests
-  # ask for `<triple>-gcc` first), its emulator, and a cross system root.
+  need "${TOOLS[@]}"
   for t in "${TRIPLES[@]}"; do
-    need "$t-gcc" "$t-g++" "$t-as" "$t-ar" "$t-nm" "$t-objdump" "$t-readelf" "$t-ld.bfd"
-    if fortran "$t"; then need "$t-gfortran"; fi
+    need "${TRIPLE_TOOLS[@]/#/$t-}"
     if [ "$t" != "$HOST" ]; then
-      need "$(qemu "$t")"
       [ -d "/usr/$t" ] || fail "missing: the system root /usr/$t"
     fi
   done
-  local llvm="/usr/lib/llvm-$LLVM_MAJOR/bin"
-  need "$llvm/clang" "$llvm/clang++" "$llvm/ld.lld" "$llvm/yaml2obj" "$llvm/llvm-readelf" \
-    "$llvm/llvm-readobj" "$llvm/llvm-ar" "$llvm/llvm-nm"
-  need mold /usr/bin/time python3 bash ps pgrep mkfifo nohup realpath git
+  local llvm="/usr/lib/llvm-$LLVM_MAJOR/bin" lldb="/usr/lib/llvm-$DEBIAN_LLVM_MAJOR/bin/lldb" l
+  for l in "${LLVM_TOOLS[@]}"; do
+    if [ "$l" = lldb ]; then need "$lldb"; else need "$llvm/$l"; fi
+  done
+  # What the harness itself runs.
+  need /usr/bin/time "clang-$DEBIAN_LLVM_MAJOR" "clang++-$DEBIAN_LLVM_MAJOR" ld.lld
   if [ "$FAILED" = 0 ]; then
     echo "ci-tools.sh: versions on $HOST:"
     pinned "GNU ld" "$BINUTILS_VERSION" "$(ld.bfd --version | head -1 | awk '{print $NF}')"
     pinned "GCC" "$GCC_VERSION" "$(gcc -dumpfullversion)"
     pinned "LLVM" "$LLVM_VERSION" "$("$llvm/clang" -dumpversion)"
     pinned "mold" "$MOLD_VERSION" "$(mold --version | awk '{print $2}')"
-    echo "  qemu $(qemu-i386 --version | head -1 | awk '{print $3}')"
+    pinned "LLDB" "$DEBIAN_LLVM_VERSION" "$("$lldb" --version | head -1 | awk '{print $3}')"
+    pinned "clang-$DEBIAN_LLVM_MAJOR" "$DEBIAN_LLVM_VERSION" "$("clang-$DEBIAN_LLVM_MAJOR" -dumpversion)"
+    pinned "ld.lld" "$DEBIAN_LLVM_VERSION" "$(ld.lld --version | awk '{print $3}')"
+    pinned "gdb" "$GDB_VERSION" "$(gdb --version | head -1 | awk '{print $NF}')"
+    pinned "gdb-multiarch" "$GDB_VERSION" "$(gdb-multiarch --version | head -1 | awk '{print $NF}')"
+    pinned "elfutils" "$ELFUTILS_VERSION" "$(eu-elflint --version | head -1 | awk '{print $NF}')"
+    for t in "${TRIPLES[@]}"; do
+      pinned "$(qemu "$t")" "$QEMU_VERSION" "$("$(qemu "$t")" --version | head -1 | awk '{print $3}')"
+    done
   fi
   if [ "$FAILED" != 0 ]; then
     echo "ci-tools.sh: the reference tools are incomplete (scripts/ci-tools.sh installs them)" >&2

@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use mortar_testutil::{Outcome, Scratch, run_with, tool, tools_required};
+use mortar_testutil::{Outcome, Scratch, run_with, target, tool, tools_required};
 use support::{Built, Source, build_by, with_output};
 
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
@@ -83,8 +83,9 @@ struct Target {
     /// Clang's `--target`, `None` on the host.
     clang_triple: Option<&'static str>,
     ld: &'static str,
-    /// The emulator, `None` when the target is the host's.
-    qemu: Option<&'static str>,
+    /// Its architecture: the emulator and gdb by the host
+    /// (`mortar_testutil::target`).
+    arch: target::Arch,
     /// ELFCLASS32: `--verify` is held to lld's count too (I-47).
     class32: bool,
 }
@@ -95,7 +96,7 @@ const AARCH64: Target = Target {
     gxx: "aarch64-linux-gnu-g++",
     clang_triple: Some("aarch64-linux-gnu"),
     ld: "aarch64-linux-gnu-ld.bfd",
-    qemu: None,
+    arch: target::Arch::Aarch64,
     class32: false,
 };
 
@@ -105,7 +106,7 @@ const X86_64: Target = Target {
     gxx: "x86_64-linux-gnu-g++",
     clang_triple: Some("x86_64-linux-gnu"),
     ld: "x86_64-linux-gnu-ld.bfd",
-    qemu: Some("qemu-x86_64"),
+    arch: target::Arch::X86_64,
     class32: false,
 };
 
@@ -115,9 +116,16 @@ const I386: Target = Target {
     gxx: "i686-linux-gnu-g++",
     clang_triple: Some("i686-linux-gnu"),
     ld: "i686-linux-gnu-ld.bfd",
-    qemu: Some("qemu-i386"),
+    arch: target::Arch::I386,
     class32: true,
 };
+
+impl Target {
+    /// The emulator, `None` when the target is the host's.
+    fn qemu(&self) -> Option<&'static str> {
+        (!self.arch.is_host()).then(|| self.arch.qemu())
+    }
+}
 
 /// One configuration of the matrix.
 struct Config {
@@ -154,15 +162,17 @@ struct Tools {
 }
 
 fn tools(t: &Target) -> Option<Tools> {
-    let need = [t.gcc, t.gxx, "clang", "clang++", t.ld, "gdb", "llvm-dwarfdump", "ld.lld"];
+    let gdb = t.arch.gdb();
+    let need = [t.gcc, t.gxx, "clang", "clang++", t.ld, gdb, "llvm-dwarfdump", "ld.lld"];
     let missing: Vec<&str> = need.iter().copied().filter(|n| tool(n).is_none()).collect();
-    let qemu_missing = t.qemu.is_some_and(|q| tool(q).is_none());
+    let qemu = t.qemu();
+    let qemu_missing = qemu.is_some_and(|q| tool(q).is_none());
     if !missing.is_empty() || qemu_missing {
-        assert!(!tools_required(), "{}: {missing:?} or {:?} is missing", t.name, t.qemu);
-        eprintln!("note: {}: {missing:?} or {:?} is missing; skipping", t.name, t.qemu);
+        assert!(!tools_required(), "{}: {missing:?} or {qemu:?} is missing", t.name);
+        eprintln!("note: {}: {missing:?} or {qemu:?} is missing; skipping", t.name);
         return None;
     }
-    Some(Tools { gdb: tool("gdb")?, dwarfdump: tool("llvm-dwarfdump")?, lld: tool("ld.lld")? })
+    Some(Tools { gdb: tool(gdb)?, dwarfdump: tool("llvm-dwarfdump")?, lld: tool("ld.lld")? })
 }
 
 fn linker(exe: &Path, args: &[OsString], dir: &Path) -> Outcome {
@@ -180,15 +190,7 @@ fn tool_run(exe: &Path, args: &[&str], dir: &Path, limit: Duration) -> Outcome {
 
 /// The program's standard output and exit status.
 fn execute(t: &Target, exe: &Path) -> (String, Option<i32>) {
-    let mut c = match t.qemu {
-        Some(q) => {
-            let mut c = Command::new(q);
-            c.arg(exe);
-            c
-        }
-        None => Command::new(exe),
-    };
-    let o = run_with(&mut c, b"", Duration::from_mins(2));
+    let o = run_with(&mut t.arch.command(exe, None), b"", Duration::from_mins(2));
     (o.stdout_text(), o.status.and_then(|s| s.code()))
 }
 
@@ -323,7 +325,46 @@ fn holds(t: &Target, tools: &Tools, c: &Config) {
     let g_b = gdb(tools, &theirs, dir, kept, dead_fn);
     assert!(g_m.contains("Breakpoint 1 at ADDR: file "), "{label}: gdb: {g_m}");
     assert!(g_m.contains(&format!("Function \"{dead_fn}\" not defined")), "{label}: gdb: {g_m}");
+    // What lies after a function is not this test's subject: mortar puts
+    // archive members' sections in archive order, GNU ld in extraction
+    // order (spec/layout.md §21, "Archive members"), so `info line`'s
+    // "ends at ADDR <symbol>" may name another neighbour (with the cross
+    // libstdc++.a: bad_alloc.o's `~bad_alloc` against eh_alloc.o's
+    // `exception()`, spec/landed/harness/WP-015.md). The neighbour is
+    // masked in both, on every runtime (the native one hides it only by
+    // the padding before its 32-byte-aligned function sections), and
+    // every other line is compared exactly.
+    let (g_m, next_m) = mask_neighbour(&g_m);
+    let (g_b, next_b) = mask_neighbour(&g_b);
+    if next_m != next_b {
+        eprintln!("{label}: gdb: after {kept}: mortar {next_m:?}, GNU ld {next_b:?}");
+    }
     assert_eq!(g_m, g_b, "{label}: gdb on mortar's output against GNU ld's");
+}
+
+/// `transcript` with the symbol of each "and ends at ADDR <symbol>" (gdb's
+/// `info line`: the code after the line) replaced by `NEXT`, and those
+/// symbols.
+fn mask_neighbour(transcript: &str) -> (String, Vec<String>) {
+    const ENDS: &str = "and ends at ADDR <";
+    let mut out = String::new();
+    let mut names = Vec::new();
+    for line in transcript.lines() {
+        match line.find(ENDS).and_then(|i| {
+            let from = i + ENDS.len();
+            line[from..].find('>').map(|n| (from, from + n))
+        }) {
+            Some((from, to)) => {
+                names.push(line[from..to].to_owned());
+                out.push_str(&line[..from]);
+                out.push_str("NEXT");
+                out.push_str(&line[to..]);
+            }
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    (out, names)
 }
 
 fn matrix(t: &Target) {

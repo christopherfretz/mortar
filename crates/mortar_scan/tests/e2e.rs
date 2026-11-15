@@ -1,7 +1,7 @@
 //! `spec/image.md` §4, end to end: static AArch64 C, C++ and Fortran
-//! programs, compiled by the system's GCC, through the phases before the
-//! scan and the scan itself (`support::link`), against GNU ld's and
-//! lld's outputs.
+//! programs, compiled by the AArch64 GCC (`support::ARCH`, on any host),
+//! through the phases before the scan and the scan itself
+//! (`support::link`), against GNU ld's and lld's outputs.
 
 mod support;
 
@@ -9,13 +9,13 @@ use std::ffi::OsString;
 
 use mortar_core::par::Pool;
 use mortar_testutil::Scratch;
-use support::{compile, driver_link_args, link, need};
+use support::{compile, driver_link_args, fuse_lld, link, need, need_gnu};
 
 const HELLO: &str = "#include <stdio.h>\nint main(void){printf(\"hi %d\\n\", 3);return 0;}\n";
 
 #[test]
 fn i13_e2e_smoke_c() {
-    let Some(gcc) = need("gcc") else { return };
+    let Some(gcc) = need_gnu("gcc") else { return };
     let dir = Scratch::new("scan-e2e-smoke");
     let Some(_o) = compile(dir.path(), "gcc", "hello.o", "c", HELLO, &["-O1"]) else { return };
     let Some(args) = driver_link_args(&gcc, &["-static", "-o", "hello", "hello.o"], dir.path())
@@ -118,9 +118,9 @@ fn differential(
     src: &str,
     libs: &[&str],
 ) -> Option<(Counts, Reference, Reference)> {
-    let cc = need(driver)?;
-    need("ld.bfd")?;
-    need("ld.lld")?;
+    let cc = need_gnu(driver)?;
+    need_gnu("ld.bfd")?;
+    let lld = need("ld.lld")?;
     let dir = Scratch::new(&format!("scan-e2e-{name}"));
     compile(dir.path(), driver, "main.o", ext, src, &["-O2", "-g"])?;
     let mut line = vec!["-static", "-o", "out", "main.o"];
@@ -133,9 +133,13 @@ fn differential(
     let mut refs = Vec::new();
     for ld in ["bfd", "lld"] {
         let out = format!("out.{ld}");
-        let fuse = format!("-fuse-ld={ld}");
-        let mut a: Vec<OsString> =
-            vec!["-static".into(), fuse.into(), "-o".into(), out.clone().into(), "main.o".into()];
+        let mut a: Vec<OsString> = vec!["-static".into()];
+        if ld == "lld" {
+            a.extend(fuse_lld(dir.path(), &lld));
+        } else {
+            a.push("-fuse-ld=bfd".into());
+        }
+        a.extend(["-o".into(), out.clone().into(), "main.o".into()]);
         a.extend(libs.iter().map(OsString::from));
         let r = support::run_in(&cc, &a, dir.path());
         assert!(r.success(), "{name} {ld}: {}", r.stderr_text());
@@ -212,8 +216,8 @@ fn gnu_undefined(text: &str) -> std::collections::BTreeSet<String> {
 
 #[test]
 fn i20_e2e_undefined_set_equals_gnu_ld() {
-    let Some(cc) = need("g++") else { return };
-    let Some(bfd) = need("ld.bfd") else { return };
+    let Some(cc) = need_gnu("g++") else { return };
+    let Some(bfd) = need_gnu("ld.bfd") else { return };
     let dir = Scratch::new("scan-e2e-undef");
     compile(dir.path(), "g++", "main.o", "cc", CXX, &["-O2"]).expect("g++");
     let args = driver_link_args(&cc, &["-static", "-o", "out", "main.o"], dir.path())

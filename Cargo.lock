@@ -258,6 +258,7 @@ dependencies = [
  "mortar_elf",
  "mortar_merge",
  "mortar_testutil",
+ "mortar_x64",
 ]
 
 [[package]]

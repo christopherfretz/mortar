@@ -1,8 +1,9 @@
 //! `spec/resolve.md` §4.3, §15.1 `s4_3_system_lines_match_gnu`: real link
 //! lines against the reference linkers.
 //!
-//! Each line is compiled with the system's GCC (native AArch64, the
-//! x86-64 and i686 cross compilers), its linker argument vector is taken
+//! Each line is compiled with its target's GCC (AArch64, x86-64, i686;
+//! native on its own host, a cross compiler elsewhere), its linker
+//! argument vector is taken
 //! from `gcc -###`, and the inputs are read into the test model in
 //! command-line order. Then:
 //!
@@ -29,30 +30,22 @@ use mortar_elf::{Machine, SymbolSection};
 use mortar_resolve::options::{Entry, Options, Output};
 use mortar_resolve::view::{FileKind, View};
 use mortar_resolve::{Def, Resolved, resolve};
+use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, tool};
 use support::{Model, canon, exec, member_label, ok, parse_trace};
 
+/// A target of the lines: its tools are its architecture's (by their
+/// names on this host, [`Arch::gnu`]).
 #[derive(Clone, Copy)]
 struct Target {
     machine: Machine,
-    prefix: &'static str,
-    bfd: &'static str,
+    arch: Arch,
     tag: &'static str,
 }
 
-const A64: Target = Target { machine: Machine::AArch64, prefix: "", bfd: "ld.bfd", tag: "" };
-const X64: Target = Target {
-    machine: Machine::X86_64,
-    prefix: "x86_64-linux-gnu-",
-    bfd: "x86_64-linux-gnu-ld.bfd",
-    tag: "64",
-};
-const X86: Target = Target {
-    machine: Machine::I386,
-    prefix: "i686-linux-gnu-",
-    bfd: "i686-linux-gnu-ld.bfd",
-    tag: "32",
-};
+const A64: Target = Target { machine: Machine::AArch64, arch: Arch::Aarch64, tag: "" };
+const X64: Target = Target { machine: Machine::X86_64, arch: Arch::X86_64, tag: "64" };
+const X86: Target = Target { machine: Machine::I386, arch: Arch::I386, tag: "32" };
 
 const HELLO: &str = "#include <stdio.h>\nint main(void){printf(\"hi %d\\n\", 3);return 0;}\n";
 const CXX: &str = r#"#include <iostream>
@@ -428,8 +421,8 @@ struct Built {
 }
 
 fn build(l: &Line) -> Option<Built> {
-    let driver = tool_of(&format!("{}{}", l.target.prefix, l.driver))?;
-    let ar = tool_of(&format!("{}ar", l.target.prefix)).or_else(|| tool_of("ar"))?;
+    let driver = l.target.arch.tool(l.driver)?;
+    let ar = l.target.arch.tool("ar")?;
     let dir = Scratch::new(&format!("resolve-diff-{}", l.name));
     for (name, text) in &l.headers {
         dir.write(name, text);
@@ -625,7 +618,7 @@ fn definers(
 fn check_line(name: &str, target: Target) {
     let l = line(name, target);
     let Some(built) = build(&l) else { return };
-    let Some(bfd) = tool_of(target.bfd) else { return };
+    let Some(bfd) = target.arch.tool("ld.bfd") else { return };
     let Some(lld) = tool_of("ld.lld") else { return };
     let Some(mold) = tool_of("mold") else { return };
     let dir = built.dir.path().to_path_buf();
