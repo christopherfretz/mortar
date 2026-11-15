@@ -8,7 +8,8 @@
 # W10 (dyn.md 13.2, review-m2/dynamic/interp.sh): no reference refuses.
 # GNU ld writes its built-in default interpreter, right on AArch64
 # (/lib/ld-linux-aarch64.so.1: the program runs) and wrong on x86-64
-# (/lib/ld64.so.1: the program cannot start; qemu exits 255); lld and
+# (/lib/ld64.so.1: the program cannot start, `exit: no-start`: qemu
+# exits 255, natively the exec fails); lld and
 # mold write no PT_INTERP at all and the program dies by SIGSEGV.
 # AArch64: GNU ld's output is the reference; lld and mold are XFAIL W10.
 # x86-64: every reference is wrong. W10: the references' output is
@@ -36,9 +37,9 @@ run(aarch64,bfd,lld,mold) exec
 check(x86_64,bfd) readelf -lW pie
   has: Requesting program interpreter: /lib/ld64.so.1]
 run(x86_64,bfd) pie
-  exit: 255
+  exit: no-start
 run(x86_64,bfd) exec
-  exit: 255
+  exit: no-start
 check(x86_64,lld,mold) readelf -lW pie
   has: ^ DYNAMIC
   not: ^ INTERP

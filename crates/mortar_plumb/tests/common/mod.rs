@@ -1,6 +1,11 @@
 //! The reference corpus (`spec/plumb.md` §9.1): programs compiled at test
 //! time with gcc, g++, gfortran and clang-22, each linked by GNU ld, lld 22
 //! and mold with a map file. Nothing binary is checked in.
+//!
+//! The corpus is AArch64 (`spec/harness.md` "A test's subject decides its
+//! tools"): the AArch64 GNU tools by [`Arch::gnu`]'s names, clang with
+//! `--target`, and the programs run natively on an AArch64 host and under
+//! qemu elsewhere.
 
 #![allow(dead_code)]
 
@@ -9,7 +14,11 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use mortar_plumb::{Format, Input, Map, Report};
+use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, tool};
+
+/// The architecture of the corpus.
+pub const ARCH: Arch = Arch::Aarch64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Linker {
@@ -81,7 +90,7 @@ impl Link {
     /// Runs the output with no arguments: its exit status, `None` if it
     /// ended by a signal or did not end in time.
     pub fn run(&self) -> Option<i32> {
-        let mut c = Command::new(&self.output);
+        let mut c = ARCH.command(&self.output, None);
         c.current_dir(&self.dir);
         let out = mortar_testutil::run_with(&mut c, b"", mortar_testutil::DEFAULT_TIMEOUT);
         out.status.and_then(|s| s.code())
@@ -537,14 +546,14 @@ struct Tools {
 }
 
 fn tools() -> Option<Tools> {
-    let need = ["ld.bfd", "mold"];
-    if need.iter().any(|t| tool(t).is_none()) {
+    // GNU ld through the driver: the AArch64 one's `-fuse-ld=bfd`.
+    if ARCH.tool("ld.bfd").is_none() || tool("mold").is_none() {
         return None;
     }
     Some(Tools {
-        gcc: tool("gcc")?,
-        gxx: tool("g++")?,
-        gfortran: tool("gfortran")?,
+        gcc: ARCH.tool("gcc")?,
+        gxx: ARCH.tool("g++")?,
+        gfortran: ARCH.tool("gfortran")?,
         clang: tool("clang-22")?,
         lld: tool("ld.lld-22")?,
     })

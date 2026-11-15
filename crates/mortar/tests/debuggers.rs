@@ -39,7 +39,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use mortar_testutil::{Outcome, Scratch, run_with, tool, tools_required};
-use support::{Built, Driver, Source, build, with_output};
+use support::{AARCH64, Built, Driver, Source, build, with_output};
 
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
 
@@ -330,12 +330,11 @@ struct Tools {
     ld: PathBuf,
 }
 
+/// The programs are AArch64's on every host ([`support::AARCH64`]): off
+/// an AArch64 host gdb is `gdb-multiarch`, which reads them (the static
+/// checks); the sessions, which run them, are named skips there.
 fn tools() -> Option<Tools> {
-    if std::env::consts::ARCH != "aarch64" {
-        eprintln!("note: the debugger tests run on an AArch64 host only; skipping");
-        return None;
-    }
-    let found = (tool("gdb"), tool("lldb"), tool("llvm-dwarfdump"), tool("ld.bfd"));
+    let found = (tool(AARCH64.gdb()), tool("lldb"), tool("llvm-dwarfdump"), AARCH64.tool("ld.bfd"));
     let (Some(gdb), Some(lldb), Some(dwarfdump), Some(ld)) = found else {
         eprintln!("note: gdb, lldb, llvm-dwarfdump or ld.bfd is missing; skipping");
         assert!(!tools_required(), "the debugger tests need gdb, lldb, llvm-dwarfdump, ld.bfd");
@@ -878,7 +877,18 @@ fn sessions(name: &str, driver: Driver, p: &Program) {
 }
 
 /// [`sessions`], with `--gc-sections` on both links when `gc`.
+///
+/// A session runs the program under gdb and lldb: a process of the host's
+/// own architecture. Off an AArch64 host it is a named skip (the static
+/// checks, [`dwarf`], run on every host).
 fn sessions_gc(name: &str, driver: Driver, p: &Program, gc: bool) {
+    if !AARCH64.is_host() {
+        mortar_testutil::named_skip(
+            &format!("debuggers::{name}"),
+            "gdb and lldb sessions run the AArch64 program: on an AArch64 host only",
+        );
+        return;
+    }
     each_gc(name, driver, p, gc, |label, _, t, pair| {
         let (eo, et) = (elf(&pair.ours), elf(&pair.theirs));
         let addr = |e: &Elf| p.comdat.map(|(sym, _)| e.values[sym]);

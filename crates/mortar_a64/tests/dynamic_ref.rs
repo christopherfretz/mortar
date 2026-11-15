@@ -160,7 +160,8 @@ fn tools() -> Option<Tools> {
         tool("ld.lld")?;
         return None;
     };
-    Some(Tools { gcc: tool("gcc")?, lld_dir })
+    // The AArch64 GCC by the host's name (mortar_testutil::target).
+    Some(Tools { gcc: mortar_testutil::target::Arch::Aarch64.tool("gcc")?, lld_dir })
 }
 
 fn must(what: &str, o: &mortar_testutil::Outcome) {

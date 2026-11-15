@@ -1,7 +1,7 @@
 //! `cargo xtask <task>`: the developer and CI entry point
 //! (`spec/harness.md`).
 //!
-//!   cargo xtask ci [--quick] [--step <name>]...    the gate: fmt, clippy, tests, link tests
+//!   cargo xtask ci [--quick] [--no-fail-fast] [--step <name>]...    the gate: fmt, clippy, tests, link tests
 //!   cargo xtask linktest [options] [paths...]      the link tests ("Link tests")
 //!   cargo xtask static-identical [--update]        static links' digests ("static-identical")
 //!   cargo xtask bench [options]                    link speed and memory
@@ -10,7 +10,7 @@
 
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cargo xtask ci [--quick] [--step fmt|clippy|test|linktest]...\n       \
+const USAGE: &str = "usage: cargo xtask ci [--quick] [--no-fail-fast] [--step fmt|clippy|test|linktest|static-identical]...\n       \
                      cargo xtask linktest [options] [<file or directory>...]\n       \
                      cargo xtask static-identical [--update] [-j <n>]\n       \
                      cargo xtask bench [options]   (cargo xtask bench --help)\n       \

@@ -456,9 +456,16 @@ wins.
 ## 9. Input order within an output section (stage B)
 
 The default order is `SectionId` order: files in load order, sections by
-index. That is lld's and mold's order and GNU's order within each script
-pattern. The exceptions below are each a sort by a key that ends in
-`SectionId`, so they are total and deterministic.
+index. Load order (`model.md` §2.1) puts an archive's members in archive
+order, whichever reference pulled which member first. For files named
+directly that is the order of the three references (GNU's within each
+script pattern); for archive members it is mold's, and GNU ld and lld
+place members in the order they extract them (§21, "archive members").
+mortar has no order of extraction (`resolve.md` §6.1), and its order does
+not depend on the history of resolution: it is deterministic, needs no
+sequential walk, and stays put in an incremental link. The exceptions
+below are each a sort by a key that ends in `SectionId`, so they are
+total and deterministic.
 
 - **L-53 [C] (.text categories)** In `.text`, inputs are grouped into
   categories, in this order:
@@ -1625,6 +1632,29 @@ the static IPLT is in `.plt`, `.rela.plt` and `.got.plt` (S-68);
 | i386 address overflow | error | error | wraps silently | error | L-73 |
 | `.init`/`.fini` vs `.text` | `.init`, `.plt`, `.text`, `.fini` | `.text`, `.init`, `.fini`, `.iplt` | `.init`, `.text`, `.fini` | GNU | L-62 |
 | `.gnu.warning*` | consumed | copied as orphans | one `.gnu.warning` | consumed | L-33 |
+| archive members' sections | extraction order | extraction order | archive order | archive order | §9 |
+
+**Archive members (measured, WP-015).** Within an output section, the
+sections of the members an archive contributes come in archive order in
+mortar's output (load order, `model.md` §2.1; there is no order of
+extraction, `resolve.md` §6.1) and in mold's, and in extraction order in
+GNU ld's and lld's. Measured on one static AArch64 C++ link
+(`crates/mortar/tests/debug_gc.rs`'s `dg_a.cc` and `dg_b.cc`, `-O2
+-gdwarf-5 -ffunction-sections`, `--gc-sections`, Debian's cross
+`libstdc++.a` 14.2.0-19cross1) with GNU ld 2.44, lld 19.1.7 and 22.1.8
+and mold 2.37.1: the input section after `dg_b.o`'s `.text._Z6helperi`
+is `libstdc++.a(eh_alloc.o)`'s `.text._ZNSt9exceptionC2Ev` for GNU ld and
+both lld (`eh_alloc.o` is the first member extracted, for `dg_a.o`'s
+`__cxa_allocate_exception`), and `libstdc++.a(bad_alloc.o)`'s
+`.text._ZNSt9bad_allocD2Ev` for mold and mortar (`bad_alloc.o` is the
+first of the loaded members in the archive). The observable consequence:
+for the same inputs, what lies next to a function differs from GNU ld's
+output, so a debugger's "ends at ... <symbol>" (gdb's `info line`), `nm
+-n` neighbours and addresses differ, while every function, its size and
+its line table are the same. With Debian's native `libstdc++.a`, whose
+function sections are 32-byte aligned, padding follows a short function
+in both outputs and gdb names no neighbour; the order differs all the
+same. The record is `spec/landed/harness/WP-015.md`.
 
 ## 22. Open questions
 
