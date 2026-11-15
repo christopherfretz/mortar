@@ -4,7 +4,9 @@ Status: §1 to §7 normative for stage 1 (WP-009, crate
 `crates/mortar_script`): the lexer, the commands of implicit linker scripts,
 recognizing a script. Later stages (`SECTIONS`, `MEMORY`, `PHDRS`,
 expressions and assignments, version scripts, dynamic lists) extend §1 and
-§2 and are planned (§8). "MUST" and "SHOULD" carry their RFC 2119 meanings.
+§2 and are planned (§8). Amended by WP-020d for `spec/input.md` §17
+(`spec/landed/model/WP-020d.md`). "MUST" and "SHOULD" carry their RFC
+2119 meanings.
 Every test names the section it checks with a `// spec: script.md §N`
 comment; §7 maps sections to tests.
 
@@ -304,7 +306,9 @@ entry = file / "AS_NEEDED" "(" list ")"
   in source order.
 - `STARTUP ( word )` takes one file name in `Script` mode (manual: like
   `INPUT`, but the file becomes the first input of the link). lld and mold
-  do not implement it (`unknown directive`).
+  do not implement it (`unknown directive`). The parser keeps it
+  (`CommandKind::Startup`); `mortar_input` refuses it (`spec/input.md`
+  §5.1): no system script uses it.
 
 What the consumer does (manual, "File Commands"; GNU ld 2.44):
 
@@ -367,14 +371,17 @@ differ the choice is stated):
    in all three). If a sysroot is set and `name` does not start with `/`,
    GNU ld and mold concatenate (`=a.o` with `--sysroot=sr` is `sra.o`) and
    lld joins with `/` (`sr/a.o`): mortar MUST make that an error naming
-   both readings. `$SYSROOT` is GNU ld's alone (lld and mold look for a
+   both readings, the error `ambiguous-sysroot-path` (`spec/input.md`
+   §4.3), shared with `-L`. `$SYSROOT` is GNU ld's alone (lld and mold look for a
    file literally named `$SYSROOT/...`); mortar follows GNU ld, as the
    manual documents it.
 3. **Relative `Path`.** Tried in order, first found wins (all three
    agree): the directory containing the script (the script's path as
    given, its directory part: `sd/s.ld` with `INPUT(q.o)` finds `sd/q.o`);
    the current directory; then each directory of the library search path
-   in order (§2.6).
+   in order (§2.6). Each of these probes is a search: a candidate of
+   another target is skipped with `skipped-incompatible` and the search
+   continues (`spec/input.md` §4.4); every probe is recorded (§4.6).
 4. **`Library` and `LibraryVerbatim`.** As `-lname` and `-l:file` on the
    command line at the script's position: the library search path, with
    the `-Bstatic`/`-Bdynamic` state then in effect choosing `libname.so`
@@ -418,6 +425,10 @@ consumer (`TARGET(binary)` reads raw files in GNU ld). lld does not support
 `TARGET` names it cannot map to a target; mold implements neither
 `OUTPUT_ARCH` nor `TARGET`.
 
+A script found by a search whose `OUTPUT_FORMAT` names another target is
+skipped as a candidate of another target, and the search continues
+(`spec/input.md` §4.4).
+
 ### 2.6 SEARCH_DIR
 
 `SEARCH_DIR ( word )`, one path, `Script` mode. An unquoted `=` cannot
@@ -433,7 +444,9 @@ all of that script's `-l` entries, also to those before it
 (`INPUT(-lfoo) SEARCH_DIR(L)` finds `L/libfoo.a`); lld only to later ones;
 mold does not implement `SEARCH_DIR`. mortar takes GNU ld's rule: it never
 makes a link lld accepts resolve differently, because both search the
-command line's `-L` first.
+command line's `-L` first. GNU ld and lld also apply them to every
+command-line `-l` after the script, neither to one before it; under
+`-nostdlib` neither applies them at all (`spec/input.md` §4.2).
 
 ### 2.7 OUTPUT, ENTRY, EXTERN
 

@@ -18,31 +18,80 @@ use crate::id::{
     ChunkId, ComdatId, FileId, FragId, Id, LocalSym, OutSecId, SectionId, SymEntry, SymKey,
     SymKind, SymbolId,
 };
-use crate::inputs::{Comdat, ContentHash, Inputs, SymbolKey};
+use crate::inputs::{Comdat, ContentHash, Inputs, Probe, ProbeOutcome, SymbolKey};
 use crate::layout::{AllocKey, ChunkKind, CopyAlloc, Patch, Placement, SlotKind, Slots};
 use crate::resolution::Resolution;
 use mortar_elf::{SectionIndex, SymbolIndex};
 
-/// The identity of a file (§7.1): the path as resolved, plus, for an
-/// archive member, its name and ordinal among same-named members. The
-/// content hash that detects change is the file's `hash`, not part of the
-/// key. The internal file's path is empty.
+/// The identity of a file (§7.1): the found path (`spec/input.md` §4.5)
+/// and the mention ordinal among files with that path, plus, for an
+/// archive member, its name and ordinal among same-named members. Two
+/// mentions of one path are two files (`spec/input.md` §9.4). The content
+/// hash that detects change is the file's `hash`, not part of the key;
+/// the probes that chose the path are re-checked beside it
+/// ([`Inputs::probe_checks`]). The internal file's path is empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FileIdentity<'a> {
     pub path: &'a [u8],
+    /// For a file named directly: how many earlier files not archive
+    /// members have the same path. For a member: how many earlier archive
+    /// mentions have its archive's path.
+    pub mention: u32,
     pub member: Option<(&'a [u8], u32)>,
+}
+
+/// What an incremental link re-checks of one probe, by one `stat`
+/// (§7.1; `spec/input.md` §4.6): that the candidate is still there, or
+/// still absent. A probe whose candidate was skipped for its target must
+/// still be there and still of another target; one that failed is never
+/// recorded in a link state (the link failed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProbeCheck<'a> {
+    pub path: &'a [u8],
+    /// `true`: a file was there (found or skipped); `false`: absent.
+    pub present: bool,
 }
 
 impl<'store> Inputs<'store> {
     /// The identity of every file.
     #[must_use]
     pub fn file_identities(&self) -> Column<FileId, FileIdentity<'store>> {
-        let rows = self
-            .files
-            .as_slice()
+        // Ordinals by sorting, not by counting: links have many files.
+        let archives = Ordinals::new(self.archives.as_slice().iter().map(|a| a.path).collect());
+        let files = self.files.as_slice();
+        let direct =
+            Ordinals::new(files.iter().map(|f| f.member.is_none().then_some(f.path)).collect());
+        let mut rows = Vec::with_capacity(files.len());
+        for (row, f) in files.iter().enumerate() {
+            let mention = match f.member {
+                Some(m) => archives.ordinal(m.archive.0),
+                None => direct.ordinal(row as u32),
+            };
+            rows.push(FileIdentity {
+                path: f.path,
+                mention: mention.unwrap_or(0),
+                member: f.member.map(|m| (m.name, m.ordinal)),
+            });
+        }
+        Column::from_vec(rows).unwrap_or_default()
+    }
+
+    /// The probes of the link, as what an incremental link re-checks
+    /// (§7.1): a new candidate earlier in a search changes neither a path
+    /// nor a hash, only a probe. In probe order; `None` if a probe failed.
+    #[must_use]
+    pub fn probe_checks(&self) -> Option<Vec<ProbeCheck<'store>>> {
+        self.link
+            .probes
             .iter()
-            .map(|f| FileIdentity { path: f.path, member: f.member.map(|m| (m.name, m.ordinal)) });
-        Column::from_vec(rows.collect()).unwrap_or_default()
+            .map(|&Probe { path, outcome, .. }| match outcome {
+                ProbeOutcome::Absent => Some(ProbeCheck { path, present: false }),
+                ProbeOutcome::Skipped(_) | ProbeOutcome::Found(_) => {
+                    Some(ProbeCheck { path, present: true })
+                }
+                ProbeOutcome::Error(_) => None,
+            })
+            .collect()
     }
 }
 

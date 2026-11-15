@@ -3,10 +3,10 @@
 # on the command line ("Command-line Options", -l: "the linker searches
 # the archive only once"), so the symbol stays undefined. lld and mold
 # remember every archive seen and find it: the reference linkers
-# DIFFER, and each is held to its own behavior. mortar follows GNU ld,
-# whose drop-in it is (docs/ARCHITECTURE.md); resolve.md records the
-# choice.
-#@ spec: resolve.md "Archives"
+# DIFFER, and each is held to its own behavior. mortar follows lld and
+# mold (resolve.md §4.3); GNU ld rejects it. Under --warn-backrefs mortar
+# says what GNU ld would do.
+#@ spec: resolve.md §4.3
 #@ xfail(mortar): no linking yet (M1)
 
 cc -O1 main.c -o main.o
@@ -14,13 +14,14 @@ cc -O1 helper.c -o helper.o
 cc -O1 user.c -o user.o
 ar rcs libhelper.a helper.o
 ar rcs libuser.a user.o
-link(bfd,mortar) gcc -static -no-pie main.o -L. -lhelper -luser -o prog
+link(bfd) gcc -static -no-pie main.o -L. -lhelper -luser -o prog
   exit: fail
   diag(bfd): undefined reference to `helper'
-  diag(mortar): helper
-link(lld,mold) gcc -static -no-pie main.o -L. -lhelper -luser -o prog
-run(lld,mold) prog
+link(lld,mold,mortar) gcc -static -no-pie main.o -L. -lhelper -luser -o prog
+run(lld,mold,mortar) prog
   exit: 7
+link(mortar) gcc -static -no-pie main.o -L. -lhelper -luser -Wl,--warn-backrefs -o prog_backrefs
+  diag(mortar): backward reference to an archive member: helper
 
 #--- main.c
 int user(void);

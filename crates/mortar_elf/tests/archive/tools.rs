@@ -160,6 +160,7 @@ fn check(path: &Path, tools: &Tools, totals: &mut Totals) {
     });
     let mut read = 0;
     if let Some(index) = archive.symbol_index() {
+        let index = index.unwrap_or_else(|e| panic!("{at}: {e}"));
         assert_eq!(entries.len(), index.len(), "{at}: index entries");
         for (entry, symbol) in entries.iter().zip(index) {
             let symbol = symbol.unwrap_or_else(|e| panic!("{at}: {e}"));
@@ -322,7 +323,11 @@ fn forms(path: &Path) -> (Kind, Option<IndexKind>, Vec<String>) {
             Content::ExternalMember { archive_path, .. } => format!("in {}", show(archive_path)),
         })
         .collect();
-    (archive.kind(), archive.symbol_index().map(|index| index.kind()), contents)
+    (
+        archive.kind(),
+        archive.symbol_index().map(|index| index.expect("a well-formed index").kind()),
+        contents,
+    )
 }
 
 #[test]
