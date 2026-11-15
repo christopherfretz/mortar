@@ -471,3 +471,246 @@ fn l5_dynbss_aligned_as_bss() {
     let v = check(&w, &a, &placed).unwrap_err();
     assert!(v.what.contains("less aligned than its section"), "{v:?}");
 }
+
+// -- reference comparison ---------------------------------------------------
+//
+// The program of E-dynamic's copy experiment (a read-only copy, typeinfo,
+// and a writable one, `environ`) linked by lld and GNU ld for each kind x
+// `-z now` x `-z norelro`; its output sections become the inputs of a
+// mortar layout (the linker's own sections synthetic chunks), and each
+// section's class (R, RX, RELRO, RW: the PT_LOAD flags and PT_GNU_RELRO
+// membership) is compared by name. lld: equal (D-60 "lld's order").
+// GNU ld: equal except the stated differences: on AArch64 its R sections
+// are in its RX PT_LOAD (2 PT_LOADs, D-61), and without `-z now` its RELRO
+// covers the head of `.got.plt`. Its program header order is D-61's.
+
+const COPY_PROGRAM: &str = "#include <typeinfo>\n#include <new>\n#include <cstdio>\n\
+    extern \"C\" char **environ;\nint x[100] = {1};\n\
+    __attribute__((noinline)) const std::type_info *get() { return &typeid(std::bad_alloc); }\n\
+    int main() { std::printf(\"%s %p %d\\n\", get()->name(), (void*)environ, x[0]); return 0; }\n";
+
+const LINKER_MADE: [&str; 20] = [
+    ".interp",
+    ".note.gnu.build-id",
+    ".note.gnu.property",
+    ".gnu.hash",
+    ".hash",
+    ".dynsym",
+    ".dynstr",
+    ".gnu.version",
+    ".gnu.version_r",
+    ".rela.dyn",
+    ".rela.plt",
+    ".eh_frame_hdr",
+    ".plt",
+    ".plt.got",
+    ".iplt",
+    ".got",
+    ".got.plt",
+    ".dynamic",
+    ".bss.rel.ro",
+    ".dynbss",
+];
+
+/// A reference's output sections as one file's inputs; `.bss.rel.ro`
+/// holds one copy allocation of its size.
+fn shaped(machine: Machine, exe: &[u8], k: Kind) -> (World, Vec<CopyRow>) {
+    use common::Row;
+    use mortar_core::resolution::{SectionKind, SectionState};
+    use mortar_layout::Header;
+    let elf = read_elf(exe);
+    let mut rows = Vec::new();
+    let mut synthetic = Vec::new();
+    let mut copies = Vec::new();
+    for s in elf.sections.iter().skip(1) {
+        if s.flags & SHF_ALLOC == 0 || s.name == ".relro_padding" {
+            continue;
+        }
+        let name: &'static [u8] = Box::leak(s.name.clone().into_bytes().into_boxed_slice());
+        let align = s.align.max(1).trailing_zeros() as u8;
+        if LINKER_MADE.contains(&s.name.as_str()) {
+            if s.name == ".bss.rel.ro" {
+                copies.push(CopyRow {
+                    index: 0,
+                    place: CopyPlace::RelRo,
+                    size: s.size,
+                    align,
+                    first: SymbolId(0),
+                });
+            }
+            synthetic.push(SynthChunk {
+                synth: Synth { name, address_dependent: false },
+                sh_type: s.ty,
+                flags: s.flags,
+                align,
+                size: s.size,
+            });
+            continue;
+        }
+        let kind = match s.ty {
+            SHT_NOBITS => SectionKind::Nobits,
+            SHT_NOTE => SectionKind::Note,
+            _ => SectionKind::Regular,
+        };
+        rows.push(Row {
+            header: Header {
+                name,
+                sh_type: s.ty,
+                flags: s.flags & !0x30,
+                size: s.size,
+                align,
+                link: None,
+                entsize: 0,
+            },
+            link: 0,
+            kind,
+            state: SectionState::Kept,
+        });
+    }
+    let mut w = World::from_rows(machine, &[rows], &[]);
+    w.synthetic = synthetic;
+    w.options.pie = k.pie;
+    w.options.now = k.now;
+    w.options.relro = k.relro;
+    w.options.eh_frame_hdr = w.synthetic.iter().any(|s| s.synth.name == b".eh_frame_hdr");
+    (w, copies)
+}
+
+/// Each allocated, non-empty section's class: its PT_LOAD's flags, or
+/// RELRO inside PT_GNU_RELRO.
+fn classes(elf: &common::elf::Elf) -> std::collections::BTreeMap<String, &'static str> {
+    let relro = elf.segments.iter().find(|p| p.ty == PT_GNU_RELRO);
+    let mut out = std::collections::BTreeMap::new();
+    for s in &elf.sections {
+        if s.flags & SHF_ALLOC == 0 || s.size == 0 || s.name == ".relro_padding" {
+            continue;
+        }
+        let Some(load) = elf
+            .segments
+            .iter()
+            .find(|p| p.ty == PT_LOAD && s.addr >= p.vaddr && s.addr < p.vaddr + p.memsz)
+        else {
+            out.insert(s.name.clone(), "none");
+            continue;
+        };
+        let class = if relro.is_some_and(|r| s.addr >= r.vaddr && s.addr < r.vaddr + r.memsz) {
+            "RELRO"
+        } else if load.flags & PF_W != 0 {
+            "RW"
+        } else if load.flags & PF_X != 0 {
+            "RX"
+        } else {
+            "R"
+        };
+        out.insert(s.name.clone(), class);
+    }
+    out
+}
+
+/// The program header types in order, runs of one type collapsed and
+/// PT_LOAD left out.
+fn phdr_order(elf: &common::elf::Elf) -> Vec<u32> {
+    let mut v: Vec<u32> = elf.segments.iter().map(|p| p.ty).filter(|&t| t != PT_LOAD).collect();
+    v.dedup();
+    v
+}
+
+// spec: dyn.md D-60 (lld's order with GNU ld's dynamic tables), D-61
+// (GNU ld's program header order; four PT_LOADs as lld), against lld and
+// GNU ld on E-dynamic's copy program
+#[test]
+fn d60_d61_against_references() {
+    use mortar_testutil::{Scratch, run_with, tool};
+    use std::time::Duration;
+    if tool("ld.lld").is_none() || tool("ld.bfd").is_none() {
+        return;
+    }
+    let dir = Scratch::new("layout-dyn-ref");
+    let src = dir.path().join("copy.cc");
+    std::fs::write(&src, COPY_PROGRAM).unwrap();
+    let mut compared = 0;
+    let mut stated = Vec::new();
+    for (arch, machine, cxx) in
+        [("aarch64", Machine::AArch64, "g++"), ("x86-64", Machine::X86_64, "x86_64-linux-gnu-g++")]
+    {
+        if tool(cxx).is_none() {
+            continue;
+        }
+        for pie in [false, true] {
+            let obj = dir.path().join(format!("copy-{arch}-{pie}.o"));
+            let mut cmd = std::process::Command::new(cxx);
+            cmd.args(["-O1", "-c", if pie { "-fPIE" } else { "-fno-pie" }]).arg(&src).arg("-o");
+            cmd.arg(&obj);
+            let o = run_with(&mut cmd, &[], Duration::from_mins(5));
+            assert!(o.success(), "{cxx}: {}", o.stderr_text());
+            for (now, relro) in [(false, true), (true, true), (false, false), (true, false)] {
+                let k = Kind { pie, now, relro, interp: true };
+                for ld in ["lld", "bfd"] {
+                    let what = format!("{arch} {ld} {k:?}");
+                    let exe = dir.path().join(format!("copy-{arch}-{pie}-{now}-{relro}-{ld}"));
+                    let mut cmd = std::process::Command::new(cxx);
+                    cmd.arg(if pie { "-pie" } else { "-no-pie" })
+                        .arg(format!("-fuse-ld={ld}"))
+                        .arg(format!("-Wl,-z,{}", if now { "now" } else { "lazy" }))
+                        .arg(format!("-Wl,-z,{}", if relro { "relro" } else { "norelro" }))
+                        .arg(&obj)
+                        .arg("-o")
+                        .arg(&exe);
+                    let o = run_with(&mut cmd, &[], Duration::from_mins(5));
+                    assert!(o.success(), "{what}: {}", o.stderr_text());
+                    let bytes = std::fs::read(&exe).unwrap();
+                    let reference = read_elf(&bytes);
+                    let (w, copies) = shaped(machine, &bytes, k);
+                    let pool = Pool::sequential();
+                    let mut a = w.stage_a(&pool).unwrap();
+                    let placed =
+                        place_with_copies(&w.link(), &copies, &mut a, None, |_| None, &pool, None)
+                            .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+                    let mine = read_elf(&write_skeleton(&placed.placement, &a, machine, true));
+                    let g = check_g(&mine);
+                    assert!(g.is_empty(), "{what}: {g:?}");
+                    let (theirs, ours) = (classes(&reference), classes(&mine));
+                    let mut differ = Vec::new();
+                    for (name, &c) in &theirs {
+                        let m = ours.get(name).copied().unwrap_or("absent");
+                        if m != c {
+                            differ.push(format!("{name}: {ld} {c}, mortar {m}"));
+                        }
+                    }
+                    if ld == "lld" {
+                        assert!(differ.is_empty(), "{what}: {differ:?}");
+                        assert_eq!(
+                            mine.segments.iter().filter(|p| p.ty == PT_LOAD).count(),
+                            reference.segments.iter().filter(|p| p.ty == PT_LOAD).count(),
+                            "{what}: PT_LOAD count"
+                        );
+                    } else {
+                        // D-61: GNU ld's program header order (NOTE runs
+                        // and the types mortar writes for this input).
+                        let mut gnu = phdr_order(&reference);
+                        let ours = phdr_order(&mine);
+                        gnu.retain(|t| ours.contains(t));
+                        assert_eq!(ours, gnu, "{what}: program header order");
+                        // The stated difference: AArch64 R sections in RX.
+                        // The stated differences: AArch64 R sections in
+                        // RX; lazy `.got.plt` starts inside GNU ld's RELRO
+                        // (its RELRO ends after the three reserved words,
+                        // DATA_SEGMENT_RELRO_END(24, .)).
+                        for d in &differ {
+                            let ok = (machine == Machine::AArch64
+                                && d.ends_with("bfd RX, mortar R"))
+                                || (!now && d == ".got.plt: bfd RELRO, mortar RW");
+                            assert!(ok, "{what}: {d}");
+                        }
+                        stated.extend(differ.into_iter().map(|d| format!("{what}: {d}")));
+                    }
+                    compared += 1;
+                }
+            }
+        }
+    }
+    eprintln!("{compared} reference links compared; {} stated differences", stated.len());
+    for s in &stated {
+        eprintln!("  {s}");
+    }
+}

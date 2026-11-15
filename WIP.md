@@ -23,6 +23,12 @@ Deleted in the final commit.
   target.rs (pie, ELF32 refused), address.rs (base 0), symbols.rs _DYNAMIC.
 - static-identical: ok (167 links, 0 differ).
 
+- tests/dynamic.rs: table (18 cases), d62_again, copy chunk size, L-5
+  leading copy chunk alignment (chunk.rs post-pass + check rule), input
+  .interp, reference comparison (32 links: lld classes equal, GNU ld
+  phdr order equal; stated: AArch64 R in RX, lazy .got.plt head in RELRO).
+
 ## Next
-- crates/mortar_layout/tests/dynamic.rs (written, not yet run).
-- reference comparison (GNU ld, lld), spec/landed/dyn/WP-049.md, gate.
+- D-60 proof image: GNU ld script in D-60/D-61 order, run natively,
+  eu-elflint, gdb, lldb (scratch).
+- spec/landed/dyn/WP-049.md; merge main when WP-051 lands; gate.
