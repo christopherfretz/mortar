@@ -89,6 +89,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mortar_layout"
+version = "0.0.0"
+dependencies = [
+ "mortar_arch",
+ "mortar_core",
+ "mortar_diag",
+ "mortar_elf",
+ "mortar_testutil",
+]
+
+[[package]]
 name = "mortar_plumb"
 version = "0.0.0"
 dependencies = [

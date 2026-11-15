@@ -4,12 +4,15 @@
 
 use mortar_core::assignment::{Assignment, OutSec};
 use mortar_core::column::Column;
-use mortar_core::id::{FileId, IdRange, LocalSym, OutSecId, SectionId, SymbolId};
+use mortar_core::demands::DemandFlags;
+use mortar_core::id::{ChunkId, FileId, IdRange, LocalSym, OutSecId, SectionId, SymKey, SymbolId};
 use mortar_core::identity::{
-    Anchor, FileIdentity, Identities, Ordinals, SectionIdentity, SectionKey, outsec_id,
-    outsec_identity, outsec_ordinals, symbol_id, symbol_identity, symbol_lookup,
+    AllocIdentity, Anchor, ChunkTag, Dependee, FileIdentity, Identities, KeyIdentity, Ordinals,
+    SectionIdentity, SectionKey, flag_dependees, outsec_id, outsec_identity, outsec_ordinals,
+    patch_at, patch_identity, symbol_id, symbol_identity, symbol_lookup,
 };
 use mortar_core::inputs::SymbolKey;
+use mortar_core::layout::{AllocKey, CopyAlloc, Erratum, Patch, PatchKind, Placement, Slots};
 use mortar_core::resolution::{FileLive, Resolution};
 use mortar_elf::SymbolIndex;
 
@@ -76,7 +79,7 @@ fn link(files: &[FileSpec]) -> Link {
         base += len;
     }
     let identities =
-        files.iter().map(|f| FileIdentity { path: f.path, member: f.member }).collect();
+        files.iter().map(|f| FileIdentity { path: f.path, mention: 0, member: f.member }).collect();
     let sections = files.iter().map(|f| Ordinals::new(f.sections.clone())).collect();
     let locals = files.iter().map(|f| Ordinals::new(f.locals.clone())).collect();
     let ids = Identities::new(
@@ -110,7 +113,7 @@ fn s7_files_survive_an_input_added_in_front() {
         let identity = one.ids.file(FileId(file)).unwrap();
         assert_eq!(two.ids.file_id(&identity), Some(FileId(want)));
     }
-    let gone = FileIdentity { path: b"gone.o", member: None };
+    let gone = FileIdentity { path: b"gone.o", mention: 0, member: None };
     assert_eq!(two.ids.file_id(&gone), None);
 }
 
@@ -205,4 +208,135 @@ fn s7_output_sections_by_name() {
         let identity = outsec_identity(&o1, OutSecId(id)).unwrap();
         assert_eq!(outsec_id(&o2, &identity), Some(OutSecId(want)));
     }
+}
+
+// ---- §7.2: the dependees of the dependency index ----------------------------
+
+fn sym_key(name: &'static [u8]) -> SymbolKey<'static> {
+    SymbolKey { name, version: None, hash: 0 }
+}
+
+// spec: model.md §7.2 (keys, global and local, survive a renumbering)
+#[test]
+fn s7_2_keys_survive() {
+    let (one, two) = (first(), second());
+    let g1 = Column::from_vec(vec![sym_key(b"main"), sym_key(b"f")]).unwrap();
+    let g2 = Column::from_vec(vec![sym_key(b"new"), sym_key(b"f"), sym_key(b"main")]).unwrap();
+    let lookup = symbol_lookup(&g2);
+    let local =
+        |file, index| SymKey::local(LocalSym { file: FileId(file), index: SymbolIndex(index) });
+    for (key, want) in [
+        (SymKey::global(SymbolId(0)), SymKey::global(SymbolId(2))),
+        (SymKey::global(SymbolId(1)), SymKey::global(SymbolId(1))),
+        (local(1, 4), local(2, 5)),
+        (local(1, 3), local(2, 4)),
+    ] {
+        let identity = one.ids.key(&g1, key).unwrap();
+        assert!(matches!(
+            (identity, key.as_global()),
+            (KeyIdentity::Global(_), Some(_)) | (KeyIdentity::Local(_), None)
+        ));
+        assert_eq!(two.ids.key_id(&g2, &lookup, &identity), Some(want), "{key:?}");
+    }
+}
+
+// spec: model.md §7.2 (a redirected site: a section and an offset in it)
+#[test]
+fn s7_2_sites_survive() {
+    let (one, two) = (first(), second());
+    // .data of a.o: section 3 in the first link, 5 in the second.
+    let site = one.ids.site(&one.resolution, SectionId(3), 0x14).unwrap();
+    assert_eq!(site.offset, 0x14);
+    assert_eq!(two.ids.site_id(&two.resolution, &site), Some((SectionId(5), 0x14)));
+    let new = two.ids.site(&two.resolution, SectionId(3), 0).unwrap();
+    assert_eq!(new.section.key.name, b".text.h");
+    assert_eq!(one.ids.site_id(&one.resolution, &new), None, ".text.h is new");
+}
+
+// spec: model.md §7.2 (a patch: its chunk and its offset there)
+#[test]
+fn s7_2_patches_survive() {
+    let thunk = |chunk, offset| Patch {
+        chunk: ChunkId(chunk),
+        offset,
+        kind: PatchKind::Erratum { erratum: Erratum::E843419, section: SectionId(3), offset: 8 },
+    };
+    // Chunk keys: in the second link a patch chunk of another output section
+    // comes first, so the `.text` patch chunk moves from 1 to 2.
+    let first = Ordinals::new(vec![
+        (ChunkTag::Body, Some(&b".text"[..])),
+        (ChunkTag::Patches, Some(&b".text"[..])),
+    ]);
+    let second = Ordinals::new(vec![
+        (ChunkTag::Patches, Some(&b".init"[..])),
+        (ChunkTag::Body, Some(&b".text"[..])),
+        (ChunkTag::Patches, Some(&b".text"[..])),
+    ]);
+    let placement = Placement {
+        patches: Box::new([thunk(0, 0), thunk(2, 0), thunk(2, 0x10)]),
+        ..Placement::default()
+    };
+    let identity = patch_identity(&first, &thunk(1, 0x10)).unwrap();
+    assert_eq!(identity.offset, 0x10);
+    assert_eq!(patch_at(&second, &placement, &identity), Some(2));
+    let gone = patch_identity(&first, &thunk(1, 0x20)).unwrap();
+    assert_eq!(patch_at(&second, &placement, &gone), None);
+}
+
+// spec: model.md §7.2 (a symbol-anchored allocation: a common's key, or a copy
+// allocation's shared object and value)
+#[test]
+fn s7_2_allocations_survive() {
+    let (one, two) = (first(), second());
+    let g1 = Column::from_vec(vec![sym_key(b"buf")]).unwrap();
+    let g2 = Column::from_vec(vec![sym_key(b"new"), sym_key(b"buf")]).unwrap();
+    let lookup = symbol_lookup(&g2);
+    let s1 = Slots {
+        copies: Box::new([CopyAlloc { file: FileId(3), value: 0x40 }]),
+        ..Slots::default()
+    };
+    let s2 = Slots {
+        copies: Box::new([
+            CopyAlloc { file: FileId(3), value: 0x10 },
+            CopyAlloc { file: FileId(4), value: 0x40 },
+        ]),
+        ..Slots::default()
+    };
+    let common = one.ids.alloc(&g1, &s1, AllocKey::Common(SymbolId(0))).unwrap();
+    assert_eq!(two.ids.alloc_key(&g2, &lookup, &s2, &common), Some(AllocKey::Common(SymbolId(1))));
+    let copy = one.ids.alloc(&g1, &s1, AllocKey::Copy(0)).unwrap();
+    let AllocIdentity::Copy { file, value } = copy else { panic!("{copy:?}") };
+    assert_eq!((file.member, value), (Some((&b"x.o"[..], 1)), 0x40));
+    assert_eq!(two.ids.alloc_key(&g2, &lookup, &s2, &copy), Some(AllocKey::Copy(1)));
+    assert_eq!(one.ids.alloc(&g1, &s1, AllocKey::Copy(1)), None);
+}
+
+// spec: model.md §7.2 (one dependee per cross-file flag of a key: GOT_NORELAX,
+// TLSIE_NORELAX, CANON_PLT, COPY; no other flag)
+#[test]
+fn s7_2_flag_dependees() {
+    let key = KeyIdentity::Global(
+        symbol_identity(&Column::from_vec(vec![sym_key(b"f")]).unwrap(), SymbolId(0)).unwrap(),
+    );
+    let all = DemandFlags::from_bits(0x7ff).unwrap();
+    let flags: Vec<DemandFlags> = flag_dependees(key, all)
+        .map(|d| match d {
+            Dependee::Flag { key: k, flag } => {
+                assert_eq!(k, key);
+                flag
+            }
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            DemandFlags::COPY,
+            DemandFlags::CANON_PLT,
+            DemandFlags::GOT_NORELAX,
+            DemandFlags::TLSIE_NORELAX
+        ]
+    );
+    let none = DemandFlags::GOT | DemandFlags::PLT | DemandFlags::IPLT | DemandFlags::EXPORT;
+    assert_eq!(flag_dependees(key, none).count(), 0);
 }

@@ -35,7 +35,12 @@ fn walk(bytes: &[u8], probes: impl Iterator<Item = u64>, tally: &mut Tally) {
         Err(error) => return tally.error(error),
     };
     tally.parsed += 1;
-    if let Some(index) = archive.symbol_index() {
+    // A malformed index is reported and the members are still walked
+    // (§6.5).
+    if let Some(Err(error)) = archive.symbol_index() {
+        tally.error(error);
+    }
+    if let Some(Ok(index)) = archive.symbol_index() {
         // An entry takes at least one byte of the archive (§6).
         assert!(index.len() <= bytes.len(), "{} entries in {} bytes", index.len(), bytes.len());
         let mut entries = 0;

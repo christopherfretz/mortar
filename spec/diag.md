@@ -1,6 +1,10 @@
 # spec: mortar_diag
 
-Status: normative (WP-007, crate `crates/mortar_diag`). "MUST" and "SHOULD"
+Status: normative (WP-007, crate `crates/mortar_diag`; the relocation
+kinds, `undefined-symbol` as the scan reports it and `internal-error` by
+WP-020c, for `spec/arch.md` §7 and §10; the kinds of the input phase and
+of resolution, and the wording policy of §8.3, by WP-020d, for
+`spec/input.md` §13 and `spec/resolve.md` §14). "MUST" and "SHOULD"
 carry their RFC 2119 meanings. Every test in `crates/mortar_diag` names the
 section it checks with a `// spec: diag.md §N` comment; §11 maps sections
 to tests.
@@ -43,7 +47,12 @@ going on pointless is an error and the phase that found it returns; the
 link stops at the next poll of §7. What other tools print as a note is a
 context line of the diagnostic it belongs to (§2.4), so that a diagnostic
 is one value and its lines cannot be interleaved with another's. A bug of
-mortar's is a panic, not a diagnostic (`docs/AGENTS.md`, rule 5).
+mortar's is a panic, not a diagnostic (`docs/AGENTS.md`, rule 5), with one
+exception: a table that a check finds in violation of its own validity
+rules (`spec/model.md` §4.4, `Layout::check`) is reported as
+`internal-error` (§3.2). The check runs on data, in production as well as
+in tests, so its finding is a value to report, and the link then fails
+like any other: status 1, no output file (§7).
 
 ### 2.2 Kind and id
 
@@ -130,8 +139,13 @@ it is created on a worker thread and outlives the inputs it describes.
 
 ### 3.1 The table
 
-`{x}` is the field `x` after §5.5; `{name}` of the two symbol kinds goes
-through §5.4. The wording column is the message of §5.2, complete: nothing
+`{x}` is the field `x` after §5.5; `{name}` of the kinds that name a
+symbol (every `{name}` of the area "symbols", `relocation-incompatible`,
+`relocation-out-of-range`) goes through §5.4, also where it appears
+twice. The areas, in order: command line (`conflicting-options` to
+`unknown-option`), files (`ambiguous-sysroot-path` to
+`static-link-of-shared-object`), file formats, symbols (`archive-backref`
+to `version-reassigned`), relocations, refusals, internal. The wording column is the message of §5.2, complete: nothing
 is added before or after it.
 
 | id | variant | message | wording from |
@@ -143,14 +157,44 @@ is added before or after it.
 | `response-file-limit` | `ResponseFileLimit { limit }` | `too many response files: more than {limit} expanded` | own (GNU ld: `too many @-files encountered`) |
 | `unbalanced-option` | `UnbalancedOption { option, counterpart }` | `{option} without a matching {counterpart}` | own (lld: `stray --end-group`, `unbalanced --push-state/--pop-state`) |
 | `unknown-option` | `UnknownOption { option }` | `unknown argument '{option}'` | lld |
+| `ambiguous-sysroot-path` | `AmbiguousSysrootPath { spelling }` | `ambiguous sysroot path '{spelling}'` | own |
 | `cannot-open-file` | `CannotOpenFile { path, reason }` | `cannot open {path}: {reason}` | lld, mold |
 | `cannot-open-output` | `CannotOpenOutput { path, reason }` | `cannot open output file {path}: {reason}` | GNU ld, lld |
-| `library-not-found` | `LibraryNotFound { name }` | `unable to find library -l{name}` | lld |
+| `duplicate-soname` | `DuplicateSoname { soname }` | `DT_SONAME '{soname}' is already loaded; this file is not used` | own |
+| `ignored-member` | `IgnoredMember { what }` | `archive member is not a relocatable object: {what}` | own (lld: `archive member 'x' is neither ET_REL nor LLVM bitcode`) |
+| `incompatible-file` | `IncompatibleFile { expected, found }` | `incompatible file: {expected} is expected but got {found}` | mold |
+| `input-changed` | `InputChanged` | `file changed while it was read` | own |
+| `library-not-found` | `LibraryNotFound { name }` | `cannot find -l{name}: No such file or directory` | GNU ld (§8.3) |
+| `needed-not-found` | `NeededNotFound { name, needed_by }` | `{name}, needed by {needed_by}, not found (try using -rpath or -rpath-link)` | GNU ld (§8.3) |
+| `no-target` | `NoTarget` | `target emulation unknown: -m or at least one .o file required` | lld |
+| `script-cycle` | `ScriptCycle` | `linker script names itself` | own |
+| `skipped-incompatible` | `SkippedIncompatible { path, search }` | `skipping incompatible {path} when searching for {search}` | GNU ld (§8.3) |
+| `static-link-of-shared-object` | `StaticLinkOfSharedObject { path }` | `attempted static link of dynamic object {path}` | GNU ld, lld (§8.3) |
 | `malformed-input` | `Malformed { what }` | `{what}` | lld's shape |
-| `unknown-file-type` | `UnknownFileType` | `unknown file type` | lld, mold |
-| `duplicate-symbol` | `DuplicateSymbol { name }` | `duplicate symbol: {name}` | lld |
-| `undefined-symbol` | `UndefinedSymbol { name }` | `undefined symbol: {name}` | lld, mold |
-| `refused` | `Refused { class, name }` | `unsupported {noun of class}: {name}` (§4) | own (§8.2) |
+| `unknown-file-type` | `UnknownFileType` | `file not recognized: file format not recognized` | GNU ld (§8.3) |
+| `archive-backref` | `ArchiveBackref { name }` | `backward reference to an archive member: {name}` | own (lld: `backward reference detected: x in b refers to a`) |
+| `archive-choice` | `ArchiveChoice { name }` | `GNU ld would choose another definition of {name}` | own |
+| `comdat-mismatch` | `ComdatMismatch { name, signature }` | `symbol {name} is defined only in a discarded copy of COMDAT group {signature}` | own |
+| `common-alignment` | `CommonAlignment { name }` | `definition of {name} is less aligned than its common symbols` | own |
+| `common-larger-than-definition` | `CommonLargerThanDefinition { name }` | `common symbol {name} is larger than its definition` | own |
+| `common-overridden` | `CommonOverridden { name }` | `common symbol {name} is overridden by a definition` | own |
+| `discarded-section-reference` | `DiscardedSectionReference { name }` | `relocation refers to a symbol in a discarded section: {name}` | lld |
+| `duplicate-symbol` | `DuplicateSymbol { name }` | ``duplicate symbol: {name} (multiple definition of `{name}')`` | lld, with GNU ld's phrase (§8.3) |
+| `entry-not-found` | `EntryNotFound { name }` | `cannot find entry symbol {name}` | GNU ld, lld (their lines go on: `; defaulting to …`, `; not setting start address`) |
+| `gnu-warning` | `GnuWarning { text }` | `{text}` | GNU ld (the section's text) |
+| `linker-symbol-redefined` | `LinkerSymbolRedefined { name }` | `cannot redefine linker-defined symbol: {name}` | lld's (`cannot redefine linker defined symbol`) |
+| `multiple-common` | `MultipleCommon { name }` | `multiple common symbols: {name}` | own |
+| `non-exported-symbol` | `NonExportedSymbol { name }` | `non-exported symbol referenced by a shared object: {name}` | own |
+| `required-symbol` | `RequiredSymbol { name }` | `required symbol not defined: {name}` | own (GNU ld: ``required symbol `x' not defined``) |
+| `tls-mismatch` | `TlsMismatch { name }` | `TLS attribute mismatch: {name}` | lld |
+| `undefined-symbol` | `UndefinedSymbol { name }` | ``undefined symbol: {name} (undefined reference to `{name}')`` | lld, with GNU ld's phrase (§8.3) |
+| `undefined-version` | `UndefinedVersion { name, version }` | `version {version} of {name} is not defined` | own |
+| `version-reassigned` | `VersionReassigned { name, first, second }` | `{name} is assigned to version {first} and {second}; {first} is kept` | own |
+| `relocation-incompatible` | `RelocationIncompatible { r_type, name, reason }` | `relocation {r_type} cannot be used against symbol '{name}'; {reason}` | lld's shape, with a reason (§3.2) |
+| `relocation-misaligned` | `RelocationMisaligned { r_type, value, align }` | `improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes` | lld |
+| `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation {r_type} out of range: {value} is not in [{min}, {max}]; references '{name}'` | lld |
+| `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) |
+| `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
 
 ### 3.2 Notes on the kinds
 
@@ -173,18 +217,119 @@ is added before or after it.
   (`No such file or directory`). mortar does not call `setlocale`, so the
   text is the C locale's.
 - `library-not-found`: `{name}` is the text after `-l`, so `-l:libx.a`
-  gives `unable to find library -l:libx.a`.
+  gives `cannot find -l:libx.a: No such file or directory`, GNU ld's line
+  (§8.3). The directories searched are notes (`spec/input.md` §4.4).
+- The other kinds of the files area are the input phase's
+  (`spec/input.md` §13, phase 20, the key of its §12.2), each `.at` the
+  file it is about (an archive member as `archive(member)`), with the
+  `>>> named by` lines of §2.4 for a file a script or a closure edge
+  brought in:
+  - `ambiguous-sysroot-path`: `{spelling}` is the path as written (`-L`,
+    or a script entry), and two notes give the two readings
+    (`spec/input.md` §4.3);
+  - `skipped-incompatible`, a warning: `{search}` is `-l{name}` for a
+    library, or the name as written for a script entry or a `DT_NEEDED`
+    edge (`spec/input.md` §4.4);
+  - `incompatible-file`: `{expected}` and `{found}` are target names
+    (`aarch64`, `x86_64`, `i386`), with a note saying what set the
+    target (`spec/input.md` §3.3);
+  - `no-target`: no `-m` and no ELF input (`spec/input.md` §3.1); no
+    place;
+  - `ignored-member`: a warning for a lazy member, an error under
+    `--whole-archive`; `{what}` says what the member is
+    (`spec/input.md` §7.2);
+  - `input-changed`, at the lowest mention of the file
+    (`spec/input.md` §11.5);
+  - `script-cycle`, at the script position that names a script already
+    being read, with the chain as `named by` lines (`spec/input.md` §5.3);
+  - `duplicate-soname`, a warning, with the note `loaded from {path}`
+    (`spec/input.md` §8.3);
+  - `static-link-of-shared-object` (`spec/input.md` §8.4) and
+    `needed-not-found`, a warning whose notes are the directories
+    searched (`spec/input.md` §8.6): GNU ld's phrases (§8.3).
 - `malformed-input` and `unknown-file-type` are emitted with a place
   (`.at`): the file, or the section and offset when the reader knows it.
   `{what}` is the reader's own statement (`mortar_elf`'s error values
   render to it): lower-case, no final period, naming the field and the
-  offending value. `unknown-file-type` is for bytes mortar cannot name; a
+  offending value. `unknown-file-type` is for bytes mortar cannot name, and
+  its line at the file is GNU ld's
+  (`trunc.o: file not recognized: file format not recognized`, §8.3); a
   format it can name and does not read is `refused` with class
-  `file-format`.
-- `duplicate-symbol` and `undefined-symbol` carry the symbol-table name.
-  Where the definitions or references are is context (`DefinedIn`,
-  `ReferencedBy`); how many of them a diagnostic lists is decided by
-  `spec/resolve.md`.
+  `file-format`, built with `Diagnostic::refused_unrecognized_format` when
+  GNU ld does not read it either (§8.3).
+- `duplicate-symbol` and `undefined-symbol` carry the symbol-table name,
+  shown twice: after lld's head and inside GNU ld's phrase, quoted as GNU
+  ld quotes it (`` `name' ``, §8.3). For `duplicate-symbol`, where the
+  definitions are is context (`DefinedIn`); how many of them a diagnostic
+  lists is decided by `spec/resolve.md` (§3.8, §14: the key of the second
+  definition, phase 30).
+- `undefined-symbol` is **one diagnostic per key** (`spec/resolve.md`
+  §5.3): its references are context, `>>> referenced by
+  file:(section+0xoff)` for the first three surviving references in order
+  of `(FileId, section index, relocation index)`, then the note
+  `referenced N more times`. Its key is that of the least surviving
+  reference: phase 70, `(70, FileId, section index × 2^32 + relocation
+  index)` (`spec/model.md` §8), so the order of the report is the order of
+  first references. It is emitted by the relocation scan
+  (`spec/arch.md` §3.4), after sequence recognition, from `Resolution`'s
+  `def`; the undefined references of a needed shared object are emitted by
+  resolution (phase 30, unit = the shared object, seq = its `.dynsym`
+  index). So `ld: error: undefined symbol: missing (undefined reference
+  to `missing')` / `>>> referenced by undef.o:(.text+0xc)`. It is an
+  error, or a warning where `spec/resolve.md` §5.2 says so
+  (`--warn-unresolved-symbols`); a hidden undefined symbol with a
+  surviving reference is always an error.
+- The other kinds of the symbols area are resolution's (`spec/resolve.md`
+  §14 gives each its severity and key), except `comdat-mismatch` and
+  `discarded-section-reference`, which the scan emits per key like
+  `undefined-symbol`, and `gnu-warning` per symbol at the scan (phase 70)
+  or per file at resolution (phase 30). `archive-backref` and
+  `archive-choice` are emitted only under `--warn-backrefs`
+  (`spec/resolve.md` §4.6); `multiple-common` and `common-overridden` only
+  under `--warn-common`. `entry-not-found`, `common-*`, `archive-*` and
+  `version-reassigned` are warnings, the others errors. `gnu-warning`'s
+  `{text}` is the section's text, as written, after §5.5; it names no
+  symbol for §5.4.
+- The **relocation kinds** are reported with `.at` the relocation's place
+  (`file:(section+0xoff)`); for a synthetic chunk (a PLT entry, a thunk, a
+  patch) the place is the output section and offset. `{r_type}` is the
+  type's ABI name (`R_AARCH64_CALL26`), or `0x…` for a number without one.
+  `{name}` is the target's symbol-table name; for a section symbol it is
+  the section and offset (`.text+0x40`); for a branch through the PLT it is
+  the symbol's name. `{value}`, `{min}`, `{max}` (`i64`) and `{align}`
+  (`u64`) are printed in decimal, negative values with `-`, as lld prints
+  them; for ELFCLASS32 the value is the 32-bit-reduced one
+  (`spec/arch.md` §2.3). Who emits which, with which key, is
+  `spec/arch.md` §7's: `relocation-incompatible` at scan (phase 70), the
+  other two at fill (phase 100).
+- `relocation-incompatible`'s `{reason}` is one of a closed list,
+  `IncompatibleReason`, which a test compares instead of the text:
+
+  | variant | words |
+  |---|---|
+  | `RecompileFpic` | `recompile with -fPIC` |
+  | `RecompileFpie` | `recompile with -fPIE` |
+  | `ReadOnlySection` | `it is in a read-only section` |
+  | `AddendMustBeZero` | `the addend must be 0` |
+  | `NotThreadLocal` | `it is not thread-local` |
+  | `ThreadLocal` | `it is thread-local` |
+  | `LocalExecInShared` | `local-exec TLS in a shared object` |
+  | `InstructionMismatch` | `the instruction does not match the relocation` |
+  | `NonAlloc` | `not allowed in a non-allocated section` |
+
+  A reason is added like a refusal class (§4.1): the variant, the row, the
+  test.
+- `internal-error` is a bug of mortar's that a check of its own data
+  found (§2.1): today, a layout mortar computed that `Layout::check`
+  rejects (`spec/model.md` §4.4). `{what}` names the table, the rule and
+  what is wrong (`invalid layout: §4.4 rule 1: a live section has no
+  place`); the rows involved are notes. Like `refused` it is always an
+  error (`Diagnostic::warning` of it is an error, and `-w` cannot hide it):
+  an output written from data mortar knows to be wrong would be a wrong
+  link. It has no place: the input is not at fault. A layout *loaded from a
+  link state* that fails the same check is not an internal error but
+  untrusted input that is not reused (phase 15, `spec/incr.md`); the
+  incremental phase reports it in its own terms.
 
 ### 3.3 Adding a kind
 
@@ -193,12 +338,14 @@ id in `Kind::id` and `Kind::IDS`, its message in the renderer, its row in
 §3.1, and a test of its exact text in `tests/kinds.rs`.
 
 - Variants, rows and tests are grouped by area (command line, files, file
-  formats, symbols, refusals) and sorted by id inside an area. A new one is
+  formats, symbols, relocations, refusals, internal) and sorted by id
+  inside an area. A new one is
   **inserted at its place, not appended**: two branches that add different
   kinds then touch different lines.
-- The wording follows §8.2: an existing linker's wording where one fits
-  the shape, lower-case, no final period, names after a colon or in single
-  quotes.
+- The wording follows §8.2 and the wording policy of §8.3: GNU ld's phrase
+  verbatim where it has one for the condition, otherwise an existing
+  linker's wording where one fits the shape; lower-case, no final period,
+  names after a colon or in single quotes.
 - A field that holds a symbol name MUST be returned by `Kind::symbol` so
   that it reaches the demangling hook.
 - Refusing a construct never needs a new kind (§4).
@@ -321,8 +468,9 @@ uses the model, not the text (§5.7).
 
 The head line starts with the diagnostic's place when it has one
 (`.at`): `ld: error: foo.o:(.rela.text+0x18): unsupported relocation type:
-0x999`. A diagnostic about a symbol (`undefined-symbol`,
-`duplicate-symbol`) names its places in context lines instead, one per
+0x999`. The relocation kinds are one diagnostic per relocation and start
+with its place (§3.2). `undefined-symbol` (one per key) and
+`duplicate-symbol` name their places in context lines instead, one per
 reference or definition.
 
 ### 5.4 Symbol names and the demangling hook
@@ -339,7 +487,7 @@ never calls it.
   `>>> mangled name: <name>`. Symbol places get no such line.
 
 ```text
-ld: error: undefined symbol: ns::f(int, char)
+ld: error: undefined symbol: ns::f(int, char) (undefined reference to `ns::f(int, char)')
 >>> mangled name: _ZN2ns1fEic
 >>> referenced by cxx.o:(.text+0x18)
 ```
@@ -371,7 +519,7 @@ true the severity word and its colon are wrapped, and nothing else is:
 | error (and the limit line) | `ESC [ 0 ; 3 1 m` | `error:` | `ESC [ 0 m` |
 | warning | `ESC [ 0 ; 3 5 m` | `warning:` | `ESC [ 0 m` |
 
-so `ld: \x1b[0;31merror:\x1b[0m undefined symbol: f`. The sequences are
+so ``ld: \x1b[0;31merror:\x1b[0m undefined symbol: f (undefined reference to `f')``. The sequences are
 lld's (red, magenta). Removing them from a colored rendering MUST give the
 uncolored rendering.
 
@@ -557,13 +705,16 @@ from lld and mold; and no message needs debug information to be formed
 and, with `-g`, its line table).
 
 The wording is lld's wherever lld has a wording that fits, because the
-shape is: a tool that matches `error: undefined symbol: ` was written
-against lld or mold. The table of §3.1 names the source of each. Where
+shape is: a tool that matches `error: duplicate symbol: ` was written
+against lld or mold. Where GNU ld has a phrase for the condition, the
+message also contains that phrase (§8.3), which wins over lld's wording
+when both cannot be had. The table of §3.1 names the source of each. Where
 mortar differs from lld:
 
 | what | lld | mortar | why |
 |---|---|---|---|
 | place of an archive member | `y.o:(.text+0x10) in archive libx.a` | `libx.a(y.o):(.text+0x10)` | One form for a file wherever it appears (§2.3). `archive(member)` is GNU ld's and mold's form and keeps the place a single token. |
+| undefined symbol | `error: undefined symbol: missing`, then the references as context | ``error: undefined symbol: missing (undefined reference to `missing')``, then the references as context | lld's shape (one diagnostic per key, `spec/resolve.md` §5.3), so that a key referenced a thousand times is one line and the error limit counts keys; GNU ld's phrase inside it, by the policy of §8.3. A search for lld's `undefined symbol: ` and one for GNU ld's ``undefined reference to `missing'`` both match. |
 | context lines | two lines per reference (`>>> referenced by undef.c` / `>>>               undef.o:(_start)`), the first from the `STT_FILE` symbol or the line table | one line per place: `>>> referenced by undef.o:(.text+0xc)` | Every `>>> ` line is self-contained and has one grammar; no alignment by spaces; no dependence on `STT_FILE` or DWARF. Source positions are a planned place form (§9). |
 | duplicate symbol | `>>> defined at dup1.c` / `>>>            dup1.o:(twice)` | `>>> defined in dup1.o:(.text+0x0)` | `defined in` for a place in a file; `defined at` is kept for the source-position form of §9. |
 | blank line between diagnostics | after a diagnostic with context lines | never | Property 1 of §5.2: every line is a head line or a context line. mold prints none either. |
@@ -576,17 +727,37 @@ mortar differs from lld:
 | `--fatal-warnings` | `error:` | `error:` (as lld and mold; GNU ld prints `warning:` and fails) | A failed link whose log has no `error:` line misleads people and the tools that count them. |
 | error limit | stops the link at the limit | every phase that started reports fully; the report shows the first N in report order | Determinism (§6.1): which N errors are shown must not depend on scheduling. The memory bound of §6.4 keeps the cost of the rest small. |
 
-`library-not-found` is lld's `unable to find library -l<x>`, not GNU ld's
-`cannot find -l<x>: No such file or directory`. Reasons: the head line is
-already not GNU ld's (`ld: error: ...` against `ld: ...`), so a pattern
-anchored on GNU ld's line fails whatever the wording; a tool that reads
-this shape was written against lld; lld and mold are in wide use as
-drop-in linkers, so scripts that search for GNU ld's phrase already miss
-there; and GNU ld's line ends in an `errno` text that describes no system
-call that failed (a search of several directories found nothing). The
-cost is that an unanchored search for `cannot find -l` does not match
-mortar's output. The wording lives in one line of the renderer and one row
-of §3.1 if this is decided otherwise.
+### 8.3 The wording policy
+
+Where GNU ld has a phrase for a condition that configure scripts and build
+tools match, mortar's message for the same condition **contains that
+phrase verbatim** (the operator's ruling, 2026-11-14). The head line stays
+mortar's (`ld: error: ...`, §5.1); the phrase is inside the message, so an
+unanchored search for it matches mortar's output as it matches GNU ld's.
+Where lld's wording fits too, the message is lld's with GNU ld's phrase
+after it (`undefined-symbol`, `duplicate-symbol`), so both searches match.
+
+| GNU ld phrase | kinds that carry it | how |
+|---|---|---|
+| ``undefined reference to `{name}'`` | `undefined-symbol` | ``undefined symbol: {name} (undefined reference to `{name}')`` |
+| ``multiple definition of `{name}'`` | `duplicate-symbol` | ``duplicate symbol: {name} (multiple definition of `{name}')`` |
+| `cannot find -l{name}` (and `cannot find -l:{file}`) | `library-not-found` | the whole message: `cannot find -l{name}: No such file or directory` |
+| `skipping incompatible {path} when searching for {search}` | `skipped-incompatible` | the whole message |
+| `file not recognized: file format not recognized` | `unknown-file-type`; `refused` of a format GNU ld does not recognize either (`not_recognized`); `cannot-open-file` for a directory (`file format not recognized` in its reason) | `unknown-file-type`: the whole message, `.at` the file. `refused`: after its own text, `unsupported file format: Mach-O; file not recognized: file format not recognized` (`Diagnostic::refused_unrecognized_format`). A directory: the reason `Is a directory; file format not recognized` (`spec/input.md` §13) |
+| `No such file or directory` | `cannot-open-file` (the reason, `strerror(ENOENT)`, §3.2), `library-not-found` | the reason; the end of `library-not-found`'s message |
+| `attempted static link of dynamic object` | `static-link-of-shared-object` | the whole message |
+| `needed by {path}, not found (try using -rpath or -rpath-link)` | `needed-not-found` | the whole message |
+| `cannot find entry symbol` | `entry-not-found` | the whole message (GNU ld's line goes on with `; defaulting to …`, which mortar cannot promise: the address is layout's) |
+
+Every kind in the list holds the phrase; `tests/kinds.rs` checks each
+message whole, and `tests/kinds.rs` `wording_policy_phrases` checks the
+table: for each row, a message of each kind it names contains the phrase.
+A new condition GNU ld has a phrase for gets a row here with its kind.
+
+`library-not-found` was lld's `unable to find library -l<x>` before this
+policy; the argument for lld's wording (a tool reading `ld: error:` lines
+was written against lld) is answered by the head line, which stays lld's
+shape.
 
 ## 9. Planned extensions
 
@@ -620,8 +791,12 @@ pub enum Severity { Warning, Error }
 impl RefusalClass { pub const ALL: [Self; 14]; pub const fn id(self) -> &'static str;
     pub const fn noun(self) -> &'static str; }
 #[non_exhaustive] pub enum Kind { /* §3.1 */ }
-impl Kind { pub const IDS: [&'static str; 15]; pub const fn id(&self) -> &'static str;
+impl Kind { pub const IDS: [&'static str; 45]; pub const fn id(&self) -> &'static str;
     pub fn symbol(&self) -> Option<&str>; }
+#[non_exhaustive] pub enum IncompatibleReason { RecompileFpic, RecompileFpie, ReadOnlySection,
+    AddendMustBeZero, NotThreadLocal, ThreadLocal, LocalExecInShared, InstructionMismatch,
+    NonAlloc }
+impl IncompatibleReason { pub const ALL: [Self; 9]; pub const fn text(self) -> &'static str; }
 
 pub struct FileRef { /* path, member */ }
 impl FileRef { pub fn new(path: impl Into<String>) -> Self;
@@ -648,6 +823,7 @@ impl Diagnostic {
     pub fn error(kind: Kind) -> Self;
     pub fn warning(kind: Kind) -> Self;
     pub fn refused(class: RefusalClass, name: impl Into<String>) -> Self;
+    pub fn refused_unrecognized_format(name: impl Into<String>) -> Self;   // §8.3
     pub fn at(self, place: impl Into<Place>) -> Self;
     pub fn with(self, relation: Relation, place: impl Into<Place>) -> Self;
     pub fn note(self, text: impl Into<String>) -> Self;
@@ -662,6 +838,7 @@ pub fn no_demangling(name: &str) -> Option<String>;
 pub struct Style<'a> { pub prog: &'a str, pub color: bool, pub demangle: Demangle<'a> }
 impl<'a> Style<'a> { pub fn plain(prog: &'a str) -> Self; }
 pub fn os_reason(error: &std::io::Error) -> String;
+pub const NOT_RECOGNIZED: &str = "file not recognized: file format not recognized";   // §8.3
 
 pub const DEFAULT_ERROR_LIMIT: usize = 20;
 pub struct Key { pub phase: u16, pub unit: u32, pub seq: u64 }
@@ -703,9 +880,12 @@ Files are under `crates/mortar_diag/` unless a crate is named.
 | §2.5 | builder and accessors; `Send`/`Sync`/`'static` | `tests/model.rs` `builder_and_accessors`, `types_are_send_and_sync` |
 | §3.1 | every kind, exact text, as error and as warning | `tests/kinds.rs` (one test per kind) |
 | §3.2 | `os_reason` | `tests/kinds.rs` `os_reason_is_the_system_message` |
+| §3.2 | `undefined-symbol` one per key with its references as context; the relocation kinds' fields; every reason's words and the table | `tests/kinds.rs` `undefined_symbol`, `relocation_*`, `tests/spec_tables.rs` `incompatible_reasons_match_the_spec_table` |
+| §2.1, §3.2 | `internal-error` is always an error | `tests/kinds.rs` `internal_error` |
 | §3.3 | symbol fields reach the hook | `tests/kinds.rs` `symbol_kinds_report_their_symbol` |
 | §4, §4.1 | every class: id, noun, exact text; the table | `tests/refusal.rs` `every_class_renders_uniformly`, `tests/spec_tables.rs` `refusal_classes_match_the_spec_table` |
 | §4.2 | class and name are readable by tests; place in the head | `tests/refusal.rs` `class_and_name_are_data`, `refusal_with_a_place` |
+| §8.3 | every phrase of the wording policy is in the message of each kind it names; a refusal of a format GNU ld does not recognize carries the phrase; a directory's reason | `tests/kinds.rs` `wording_policy_phrases`, `cannot_open_file_for_a_directory`, `tests/refusal.rs` `a_format_gnu_ld_does_not_recognize_carries_its_phrase` |
 | §4.3 | a refusal is always an error, also under `-w` | `tests/refusal.rs` `a_refusal_is_never_a_warning`, `no_warnings_does_not_hide_a_refusal` |
 | §5.2 | line properties 1 to 3 over every sample, hostile fields included | `tests/render.rs` `every_line_is_a_head_or_a_context_line` |
 | §5.1, §5.3 | the program name; place in the head line | `tests/render.rs` `head_line_place`; `crates/mortar/src/lib.rs` `program_name_is_the_basename`, `crates/mortar/tests/cli.rs` `diagnostics_start_with_the_invoked_name` |

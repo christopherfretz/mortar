@@ -37,5 +37,7 @@ mod model;
 mod render;
 
 pub use collect::{Collector, DEFAULT_ERROR_LIMIT, Key, Policy, Report};
-pub use model::{Context, Diagnostic, FileRef, Kind, Place, RefusalClass, Relation, Severity};
-pub use render::{Demangle, Style, no_demangling, os_reason};
+pub use model::{
+    Context, Diagnostic, FileRef, IncompatibleReason, Kind, Place, RefusalClass, Relation, Severity,
+};
+pub use render::{Demangle, NOT_RECOGNIZED, Style, no_demangling, os_reason};

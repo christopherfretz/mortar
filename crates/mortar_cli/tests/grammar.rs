@@ -418,6 +418,56 @@ fn typed_fields() {
     assert_eq!(plan.plugin.options, args(&["-fresolution=r"]));
 }
 
+// spec: cli.md §3.3, §3.6, §3.9 (the fields of spec/input.md §17 and spec/resolve.md §18:
+// -rpath-link as written, --[no-]allow-shlib-undefined, --[no-]warn-backrefs, --[no-]warn-common)
+#[test]
+fn input_and_resolve_fields() {
+    let plan = p(&["a.o"]).plan;
+    assert_eq!(plan.dynamic.allow_shlib_undefined, None);
+    assert!(!plan.diagnostics.warn_backrefs && !plan.diagnostics.warn_common);
+    let parsed = p(&[
+        "a.o",
+        "-rpath-link",
+        "/a:/b",
+        "-rpath-link=/c",
+        "--allow-shlib-undefined",
+        "--warn-backrefs",
+        "--warn-common",
+    ]);
+    assert_eq!(errors(&parsed), Vec::<String>::new());
+    let plan = &parsed.plan;
+    assert_eq!(plan.dynamic.rpath_link, args(&["/a:/b", "/c"]), "split by mortar_input, not here");
+    assert_eq!(plan.dynamic.allow_shlib_undefined, Some(true));
+    assert!(plan.diagnostics.warn_backrefs && plan.diagnostics.warn_common);
+    let off = p(&[
+        "a.o",
+        "--warn-backrefs",
+        "--no-warn-backrefs",
+        "--warn-common",
+        "--no-warn-common",
+        "--allow-shlib-undefined",
+        "--no-allow-shlib-undefined",
+    ])
+    .plan;
+    assert_eq!(off.dynamic.allow_shlib_undefined, Some(false), "the last wins");
+    assert!(!off.diagnostics.warn_backrefs && !off.diagnostics.warn_common);
+}
+
+// spec: cli.md §2.10 (the grammar's diagnostics have phase 10, spec/model.md §8; refusals
+// come after the errors of their argument)
+#[test]
+fn keys_have_the_command_line_phase() {
+    let parsed = p(&["--no-such-option", "a.o", "--no-fortran-common"]);
+    assert!(!parsed.diagnostics.is_empty());
+    for (key, _) in parsed.diagnostics.iter().cloned().chain(parsed.refusals()) {
+        assert_eq!(key.phase, mortar_cli::PHASE, "{key:?}");
+    }
+    assert_eq!(mortar_cli::PHASE, 10);
+    let refused: Vec<String> =
+        parsed.refusals().iter().map(|(_, d)| d.render(&Style::plain("ld"))).collect();
+    assert!(refused.iter().any(|r| r.contains("--no-fortran-common")), "{refused:?}");
+}
+
 // spec: cli.md §2.9 (options of one target)
 #[test]
 fn options_of_one_target() {

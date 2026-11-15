@@ -100,7 +100,7 @@ pub fn invoke(prog: &str, args: &[OsString]) -> Invocation {
     // do not stop the refusal of linking itself.
     if !parsed.failed() {
         diagnostics.emit(
-            Key::new(1, 0, 0),
+            Key::new(mortar_cli::PHASE + 1, 0, 0),
             Diagnostic::refused(RefusalClass::Feature, "linking")
                 .note("no link is implemented yet (docs/ROADMAP.md, milestone M1)"),
         );

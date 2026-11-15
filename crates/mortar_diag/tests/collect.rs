@@ -64,12 +64,12 @@ fn report_order_is_by_key() {
     let report = collect(Policy::default(), &items);
     assert_eq!(
         text(&report),
-        "ld: error: undefined symbol: a\n\
-         ld: error: undefined symbol: b\n\
+        "ld: error: undefined symbol: a (undefined reference to `a')\n\
+         ld: error: undefined symbol: b (undefined reference to `b')\n\
          ld: warning: c\n\
-         ld: error: undefined symbol: d\n\
-         ld: error: undefined symbol: e\n\
-         ld: error: undefined symbol: f\n"
+         ld: error: undefined symbol: d (undefined reference to `d')\n\
+         ld: error: undefined symbol: e (undefined reference to `e')\n\
+         ld: error: undefined symbol: f (undefined reference to `f')\n"
     );
     let ids: Vec<&str> = report.diagnostics().iter().map(Diagnostic::id).collect();
     assert_eq!(ids[2], "malformed-input");
@@ -85,19 +85,19 @@ fn report_order_breaks_ties_by_text() {
         (key, undefined("a").with(Relation::ReferencedBy, Place::file("z.o"))),
         (key, undefined("a").with(Relation::ReferencedBy, Place::file("a.o"))),
         (key, undefined("a")),
-        (key, odd("undefined symbol: a")),
+        (key, odd("undefined symbol: a (undefined reference to `a')")),
         (key, undefined("B")),
         (key, Diagnostic::error(Kind::NoInputFiles)),
     ];
     let expected = "ld: error: no input files\n\
-                    ld: error: undefined symbol: B\n\
-                    ld: error: undefined symbol: a\n\
-                    ld: error: undefined symbol: a\n\
+                    ld: error: undefined symbol: B (undefined reference to `B')\n\
+                    ld: error: undefined symbol: a (undefined reference to `a')\n\
+                    ld: error: undefined symbol: a (undefined reference to `a')\n\
                     >>> referenced by a.o\n\
-                    ld: error: undefined symbol: a\n\
+                    ld: error: undefined symbol: a (undefined reference to `a')\n\
                     >>> referenced by z.o\n\
-                    ld: error: undefined symbol: b\n\
-                    ld: warning: undefined symbol: a\n";
+                    ld: error: undefined symbol: b (undefined reference to `b')\n\
+                    ld: warning: undefined symbol: a (undefined reference to `a')\n";
     for seed in 0..20 {
         shuffle(&mut items, seed);
         assert_eq!(text(&collect(Policy::default(), &items)), expected);
@@ -210,7 +210,7 @@ fn no_warnings_drops_warnings() {
         (Key::new(0, 0, 2), odd("w2")),
     ];
     let report = collect(Policy { no_warnings: true, ..Policy::default() }, &items);
-    assert_eq!(text(&report), "ld: error: undefined symbol: e1\n");
+    assert_eq!(text(&report), "ld: error: undefined symbol: e1 (undefined reference to `e1')\n");
     assert_eq!((report.error_count(), report.warning_count()), (1, 0));
 
     let only_warnings = collect(Policy { no_warnings: true, ..Policy::default() }, &items[..1]);
@@ -284,9 +284,9 @@ fn limit_below_and_at() {
     let at = collect(Policy { error_limit: 3, ..Policy::default() }, &errors_and_warnings(3));
     assert_eq!(
         text(&at),
-        "ld: error: undefined symbol: u0\nld: warning: w0\n\
-         ld: error: undefined symbol: u1\nld: warning: w1\n\
-         ld: error: undefined symbol: u2\nld: warning: w2\n"
+        "ld: error: undefined symbol: u0 (undefined reference to `u0')\nld: warning: w0\n\
+         ld: error: undefined symbol: u1 (undefined reference to `u1')\nld: warning: w1\n\
+         ld: error: undefined symbol: u2 (undefined reference to `u2')\nld: warning: w2\n"
     );
 }
 
@@ -305,14 +305,17 @@ fn limit_above() {
         assert_eq!(
             text(&report),
             format!(
-                "ld: error: undefined symbol: u0\nld: warning: w0\n\
-                 ld: error: undefined symbol: u1\nld: warning: w1\n\
-                 ld: error: undefined symbol: u2\n{LIMIT_LINE}"
+                "ld: error: undefined symbol: u0 (undefined reference to `u0')\nld: warning: w0\n\
+                 ld: error: undefined symbol: u1 (undefined reference to `u1')\nld: warning: w1\n\
+                 ld: error: undefined symbol: u2 (undefined reference to `u2')\n{LIMIT_LINE}"
             )
         );
     }
     let one = collect(Policy { error_limit: 1, ..Policy::default() }, &errors_and_warnings(25));
-    assert_eq!(text(&one), format!("ld: error: undefined symbol: u0\n{LIMIT_LINE}"));
+    assert_eq!(
+        text(&one),
+        format!("ld: error: undefined symbol: u0 (undefined reference to `u0')\n{LIMIT_LINE}")
+    );
     assert_eq!(one.error_count(), 25);
 }
 
@@ -344,7 +347,9 @@ fn limit_default_is_20() {
     assert!(more.truncated());
     let out = text(&more);
     assert_eq!(out.lines().count(), 21);
-    assert!(out.ends_with(&format!("ld: error: undefined symbol: u19\n{LIMIT_LINE}")));
+    assert!(out.ends_with(&format!(
+        "ld: error: undefined symbol: u19 (undefined reference to `u19')\n{LIMIT_LINE}"
+    )));
     assert_eq!(text(&collect(Policy::default(), &errors)), out);
 }
 
@@ -372,7 +377,7 @@ fn limit_counts_errors_only_and_promoted_warnings() {
     let report = collect(Policy { error_limit: 2, ..Policy::default() }, &items);
     let out = text(&report);
     assert!(out.ends_with(&format!(
-        "ld: warning: w45\nld: error: undefined symbol: second\n{LIMIT_LINE}"
+        "ld: warning: w45\nld: error: undefined symbol: second (undefined reference to `second')\n{LIMIT_LINE}"
     )));
     assert_eq!(report.diagnostics().len(), 46 + 2);
     assert_eq!((report.error_count(), report.warning_count()), (3, 50));
@@ -396,11 +401,11 @@ fn limit_shows_the_first_errors_under_threads() {
     items.push((Key::new(0, 1, 0), odd("at the cut")));
     items.push((Key::new(0, 2, 0), odd("late")));
     let expected = format!(
-        "ld: error: undefined symbol: u00000\nld: error: undefined symbol: u00001\n\
-         ld: error: undefined symbol: u00002\nld: error: undefined symbol: u00003\n\
+        "ld: error: undefined symbol: u00000 (undefined reference to `u00000')\nld: error: undefined symbol: u00001 (undefined reference to `u00001')\n\
+         ld: error: undefined symbol: u00002 (undefined reference to `u00002')\nld: error: undefined symbol: u00003 (undefined reference to `u00003')\n\
          ld: warning: early\n\
-         ld: error: undefined symbol: u00004\nld: error: undefined symbol: u00005\n\
-         ld: error: undefined symbol: u00006\n{LIMIT_LINE}"
+         ld: error: undefined symbol: u00004 (undefined reference to `u00004')\nld: error: undefined symbol: u00005 (undefined reference to `u00005')\n\
+         ld: error: undefined symbol: u00006 (undefined reference to `u00006')\n{LIMIT_LINE}"
     );
     let policy = Policy { error_limit: limit, ..Policy::default() };
     // Ascending, descending, shuffled: one thread.
@@ -461,7 +466,7 @@ fn report_renders_each_diagnostic_with_the_style() {
     assert_eq!(
         each,
         "mortar: \x1b[0;35mwarning:\x1b[0m w\n\
-         mortar: \x1b[0;31merror:\x1b[0m undefined symbol: f()\n\
+         mortar: \x1b[0;31merror:\x1b[0m undefined symbol: f() (undefined reference to `f()')\n\
          >>> mangled name: _Z1fv\n\
          >>> referenced by a.o\n"
     );

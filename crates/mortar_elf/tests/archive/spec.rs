@@ -23,7 +23,8 @@ fn names<'a>(archive: &Archive<'a>) -> Vec<&'a [u8]> {
 }
 
 fn symbols<'a>(archive: &Archive<'a>) -> Vec<Symbol<'a>> {
-    let index = archive.symbol_index().expect("the archive has an index");
+    let index =
+        archive.symbol_index().expect("the archive has an index").expect("a well-formed index");
     index.iter().collect::<Result<_, _>>().unwrap_or_else(|e| panic!("index: {e}"))
 }
 
@@ -438,7 +439,7 @@ fn s5_the_long_name_table_may_come_first() {
 fn s5_an_archive_may_hold_special_members_only() {
     let bytes = concat(&[REGULAR, &member(b"/", &gnu_index(&[], false))]);
     let archive = parse(&bytes);
-    assert_eq!(archive.symbol_index().map(|index| index.len()), Some(0));
+    assert_eq!(archive.symbol_index().map(|index| index.map(|index| index.len())), Some(Ok(0)));
     assert_eq!(archive.members().count(), 0);
     let bytes = concat(&[REGULAR, &member(b"/", &gnu_index(&[], false)), &member(b"//", b"")]);
     assert_eq!(parse(&bytes).members().count(), 0);
@@ -521,7 +522,7 @@ fn seed(names: Names, index: Index) -> crate::build::Fixture {
 fn check_seed_index(names: Names, index: Index, kind: IndexKind) {
     let fixture = seed(names, index);
     let archive = parse(&fixture.bytes);
-    let index = archive.symbol_index().expect("an index");
+    let index = archive.symbol_index().expect("an index").expect("a well-formed index");
     assert_eq!(index.kind(), kind);
     assert_eq!(index.len(), SEED_SYMBOLS.len());
     assert!(!index.is_empty());
@@ -570,7 +571,7 @@ fn s6_1_bytes_after_the_last_name_are_ignored() {
 fn s6_1_an_index_may_be_empty() {
     let bytes = concat(&[REGULAR, &member(b"/", &[0, 0, 0, 0]), &member(b"a.o/", b"")]);
     let archive = parse(&bytes);
-    let index = archive.symbol_index().expect("an empty index is an index");
+    let index = archive.symbol_index().expect("an empty index is an index").expect("well-formed");
     assert!(index.is_empty());
     assert_eq!(index.iter().count(), 0);
     assert_eq!(index.member_offset(0), None);
@@ -612,7 +613,10 @@ fn s6_3_bsd_index() {
     for spelling in &spellings {
         let bytes = concat(&[REGULAR, spelling, &member(b"a.o", b"data")]);
         let archive = parse(&bytes);
-        assert_eq!(archive.symbol_index().map(|index| index.kind()), Some(IndexKind::Bsd));
+        assert_eq!(
+            archive.symbol_index().map(|index| index.map(|index| index.kind())),
+            Some(Ok(IndexKind::Bsd))
+        );
         assert_eq!(symbols(&archive), expected);
         assert_eq!(names(&archive), [b"a.o"]);
     }
@@ -629,7 +633,10 @@ fn s6_3_bsd_index() {
     ] {
         let bytes = concat(&[REGULAR, &spelling]);
         let archive = parse(&bytes);
-        assert_eq!(archive.symbol_index().map(|index| index.kind()), Some(IndexKind::Bsd64));
+        assert_eq!(
+            archive.symbol_index().map(|index| index.map(|index| index.kind())),
+            Some(Ok(IndexKind::Bsd64))
+        );
         assert_eq!(symbols(&archive), expected);
     }
 }
@@ -667,14 +674,12 @@ fn s6_4_no_index_is_not_an_error() {
 
 fn index_error(name: &[u8], body: &[u8]) -> Error {
     let bytes = concat(&[REGULAR, &member(name, body)]);
-    match Archive::parse(&bytes) {
+    // A malformed index never fails `parse` (§6.5): its framing is
+    // reported by `symbol_index`, its names by iteration.
+    let archive = Archive::parse(&bytes).expect("parse succeeds whatever the index holds");
+    match archive.symbol_index().expect("an index") {
         Err(error) => error,
-        Ok(archive) => archive
-            .symbol_index()
-            .expect("an index")
-            .iter()
-            .find_map(Result::err)
-            .expect("the index must fail"),
+        Ok(index) => index.iter().find_map(Result::err).expect("the index must fail"),
     }
 }
 
@@ -715,7 +720,7 @@ fn s6_5_a_name_must_be_terminated() {
     let body = concat(&[&[0, 0, 0, 3], &[0; 12], b"one\0two\0thr"]);
     let bytes = concat(&[REGULAR, &member(b"/", &body)]);
     let archive = parse(&bytes);
-    let index = archive.symbol_index().unwrap();
+    let index = archive.symbol_index().unwrap().unwrap();
     assert_eq!(index.len(), 3);
     let mut entries = index.iter();
     assert_eq!(entries.next(), Some(Ok(Symbol { name: b"one", member_offset: 0 })));
@@ -760,6 +765,20 @@ fn s6_5_a_bsd_index_must_hold_what_it_announces() {
 }
 
 #[test]
+fn s6_5_a_malformed_index_does_not_fail_parse() {
+    // A GNU index announcing more entries than it holds, then a member: the
+    // archive parses, `symbol_index` reports the error, the walk still
+    // yields the member.
+    let bytes = concat(&[REGULAR, &member(b"/", &[0, 0, 0, 9]), &member(b"a.o/", b"x")]);
+    let archive = Archive::parse(&bytes).expect("a malformed index does not fail parse");
+    let problem = IndexProblem::TableOutOfRange { announced: 9, size: 4 };
+    let error = Error::BadIndex { offset: 8, kind: IndexKind::Gnu, problem };
+    assert_eq!(archive.symbol_index().map(|index| index.map(|_| ())), Some(Err(error)));
+    let names: Vec<&[u8]> = names(&archive);
+    assert_eq!(names, [b"a.o".as_slice()]);
+}
+
+#[test]
 fn s6_6_an_index_of_a_hundred_thousand_symbols() {
     let count = 100_000u32;
     let mut body = count.to_be_bytes().to_vec();
@@ -771,7 +790,7 @@ fn s6_6_an_index_of_a_hundred_thousand_symbols() {
     }
     let bytes = concat(&[REGULAR, &member(b"/", &body), &member(b"a.o/", b"")]);
     let archive = parse(&bytes);
-    let index = archive.symbol_index().unwrap();
+    let index = archive.symbol_index().unwrap().unwrap();
     assert_eq!(index.len(), 100_000);
     assert_eq!(index.member_offset(99_999), Some(199_998));
     let mut seen = 0u32;

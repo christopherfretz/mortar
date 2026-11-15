@@ -28,7 +28,8 @@ pub struct Plan {
     pub library_paths: Vec<SearchPath>,
     /// `--sysroot`.
     pub sysroot: Option<OsString>,
-    /// `-nostdlib`: only the `-L` directories are searched.
+    /// `-nostdlib`: the `SEARCH_DIR` directories of linker scripts are not
+    /// searched (`spec/input.md` §4.2).
     pub nostdlib: bool,
     /// Scripts and lists named by options, in order (§3.4).
     pub scripts: Vec<ScriptArg>,
@@ -305,7 +306,8 @@ pub struct Dynamic {
     pub soname: Option<OsString>,
     /// `-rpath`, in order (GNU ld joins them with `:`).
     pub rpath: Vec<OsString>,
-    /// `-rpath-link`, in order.
+    /// `-rpath-link`, in order, each as written: `mortar_input` splits a
+    /// `:`-separated list (`spec/input.md` §8.6).
     pub rpath_link: Vec<OsString>,
     /// `-I`, `--dynamic-linker`, `--no-dynamic-linker`; the last wins.
     pub dynamic_linker: Option<DynamicLinker>,
@@ -319,6 +321,10 @@ pub struct Dynamic {
     pub export_dynamic: bool,
     /// `-Bsymbolic` and its variants; `-Bno-symbolic` clears it.
     pub bsymbolic: Option<Bsymbolic>,
+    /// `--allow-shlib-undefined` (`true`), `--no-allow-shlib-undefined`
+    /// (`false`); `None`: the default for the output kind
+    /// (`spec/input.md` §8.6, `spec/resolve.md` §5.2).
+    pub allow_shlib_undefined: Option<bool>,
 }
 
 /// The program interpreter.
@@ -553,6 +559,12 @@ pub struct Diagnostics {
     pub allow_multiple_definition: bool,
     /// `--noinhibit-exec`.
     pub noinhibit_exec: bool,
+    /// `--warn-backrefs` (until `--no-warn-backrefs`): report
+    /// `archive-backref` (`spec/resolve.md` §4.3).
+    pub warn_backrefs: bool,
+    /// `--warn-common` (until `--no-warn-common`): report the common-symbol
+    /// kinds (`spec/resolve.md` §3.3).
+    pub warn_common: bool,
 }
 
 /// When diagnostics are colored.
