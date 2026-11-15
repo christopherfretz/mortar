@@ -40,6 +40,28 @@ enum SeqX {
     /// Not a form the linker writes: the message, the bytes expected, and
     /// the output bytes the finding covers (for S12).
     Bad(String, Vec<u8>, Option<(u64, u64)>),
+    /// Not judged: the symbol cannot be resolved (a stripped output).
+    Unknown(Reason),
+}
+
+/// Why T of a TLS reference is not known.
+enum NoT {
+    /// The symbol is not resolved: not judged.
+    Unknown(Reason),
+    /// The reference is wrong: the message.
+    Bad(String),
+}
+
+/// The output bytes around `p` a rewriting of a record of type `ty` may
+/// change (§5.9): exempted from S12 when the record is not judged.
+fn rewrite_window(ty: u32, p: u64) -> Option<(u64, u64)> {
+    match ty {
+        x::GOTPCREL | x::GOTPCRELX | x::REX_GOTPCRELX => Some((p.wrapping_sub(3), p + 5)),
+        x::GOTTPOFF | x::GOTPC32_TLSDESC => Some((p.wrapping_sub(3), p)),
+        x::TLSDESC_CALL => Some((p, p + 2)),
+        x::TLSGD | x::TLSLD => Some((p.wrapping_sub(4), p + 18)),
+        _ => None,
+    }
 }
 
 impl Engine<'_, '_> {
@@ -68,6 +90,7 @@ impl Engine<'_, '_> {
             return match self.x64_seq(oi, si, recs, sorted, lead) {
                 SeqX::Relaxed(rw, ..) => self.cov.add_accepted(rw, ty),
                 SeqX::Bad(..) => self.not_checked(Reason::TlsSequence, 1),
+                SeqX::Unknown(r) => self.not_checked(r, 1),
             };
         }
         match rec.def.op {
@@ -85,6 +108,7 @@ impl Engine<'_, '_> {
                         f.expected = (!want.is_empty()).then(|| le(&want));
                         self.fail(f);
                     }
+                    SeqX::Unknown(r) => self.x64_unjudged(rec, r),
                 };
             }
             Op::Slot(Slot::Desc | Slot::TpRel, _) | Op::DescCall | Op::TpRel => {
@@ -99,7 +123,7 @@ impl Engine<'_, '_> {
         }
         let (target, addend) = self.resolve_at(oi, rec.sym, rec.addend);
         let (s, kind) = match target {
-            Target::Skip(r) => return self.not_checked(r, 1),
+            Target::Skip(r) => return self.x64_unjudged(rec, r),
             Target::Discarded(name) => {
                 let f = Self::finding(
                     Rule::DiscardedTarget,
@@ -195,7 +219,7 @@ impl Engine<'_, '_> {
                     return self.fail(f);
                 }
                 let Some(ev) = self.slot_evidence(rec) else {
-                    return self.not_checked(Reason::SymbolUnresolved, 1);
+                    return self.x64_unjudged(rec, Reason::SymbolUnresolved);
                 };
                 let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(s), w1: false };
                 self.got_groups.entry((slot, oi, rec.sym, 0)).or_default().members.push((pend, ev));
@@ -204,6 +228,15 @@ impl Engine<'_, '_> {
             _ => return self.not_checked(Reason::Type, 1),
         };
         self.x64_judge(rec, &site, &symbol, xv as i64);
+    }
+
+    /// A record not judged for `r`: the bytes a rewriting of it may change
+    /// are not compared either (S12).
+    fn x64_unjudged(&mut self, rec: &Rec, r: Reason) {
+        if let Some((lo, hi)) = rewrite_window(rec.def.r_type, rec.p) {
+            self.x64_rewrote(lo, hi);
+        }
+        self.not_checked(r, 1);
     }
 
     /// R1-R3 for a data value, the record counted as verified directly.
@@ -469,7 +502,8 @@ impl Engine<'_, '_> {
         let t = if gd {
             match self.x64_tls_value(oi, lead, b) {
                 Ok(v) => v,
-                Err(m) => return SeqX::Bad(m, Vec::new(), None),
+                Err(NoT::Bad(m)) => return SeqX::Bad(m, Vec::new(), None),
+                Err(NoT::Unknown(r)) => return SeqX::Unknown(r),
             }
         } else {
             0
@@ -582,7 +616,7 @@ impl Engine<'_, '_> {
 
     /// T, the TP offset a relaxed GD, IE or descriptor sequence of
     /// `rec`'s symbol loads (X-18, X-23, X-25, X-47), per the map's linker.
-    fn x64_tls_value(&self, oi: usize, rec: &Rec, b: TlsBlock) -> Result<u64, String> {
+    fn x64_tls_value(&self, oi: usize, rec: &Rec, b: TlsBlock) -> Result<u64, NoT> {
         match self.resolve_uncached(oi, rec.sym) {
             Target::Tls(s) => {
                 let name = self.sym_name(oi, rec.sym);
@@ -597,8 +631,8 @@ impl Engine<'_, '_> {
                 Format::Gnu | Format::Mold => b.tprel(0),
                 _ => 0,
             }),
-            Target::Skip(r) => Err(format!("the TLS symbol is not judged ({})", r.id())),
-            _ => Err("a thread-local type against a symbol that is not thread-local".into()),
+            Target::Skip(r) => Err(NoT::Unknown(r)),
+            _ => Err(NoT::Bad("a thread-local type against a symbol that is not thread-local".into())),
         }
     }
 
@@ -618,7 +652,7 @@ impl Engine<'_, '_> {
                 );
                 return self.fail(f);
             }
-            Err(_) => return self.not_checked(Reason::Tls, 1),
+            Err(_) => return self.x64_unjudged(rec, Reason::Tls),
         };
         if ty == x::TLSDESC_CALL {
             // T2: `call *(%rax)` -> `xchg %ax,%ax`.
@@ -651,10 +685,11 @@ impl Engine<'_, '_> {
         }
         let t = match self.x64_tls_value(oi, rec, b) {
             Ok(t) => t,
-            Err(m) => {
+            Err(NoT::Bad(m)) => {
                 let f = Self::finding(Rule::Insn, rec, &site, &symbol, m);
                 return self.fail(f);
             }
+            Err(NoT::Unknown(r)) => return self.x64_unjudged(rec, r),
         };
         if rec.def.op == Op::TpRel {
             // TPOFF32/TPOFF64: TpRel(S + A); an undefined weak's (X-18).
@@ -667,19 +702,17 @@ impl Engine<'_, '_> {
         let (inp, out) = (inp.to_vec(), out.to_vec());
         let (rex, op, modrm) = (inp[0], inp[1], inp[2]);
         let reg = rip_reg(modrm).filter(|_| rex & 0xf0 == 0x40 && rec.addend == -4);
-        let weak = matches!(self.resolve_uncached(oi, rec.sym), Target::UndefWeak);
         let f = self.format;
         let tb = (t as u32).to_le_bytes();
         let mut cands: Vec<Vec<u8>> = Vec::new();
         if let Some(r) = reg {
             let p = rex_rb(rex);
             match (ty, op) {
-                // T1, I1: `mov $T, %reg`.
-                // mold keeps IE for a defined symbol but relaxes an
-                // undefined weak one (observed, §10.2 notes).
-                (x::GOTPC32_TLSDESC, 0x8d) | (x::GOTTPOFF, 0x8b)
-                    if f != Format::Mold || ty != x::GOTTPOFF || weak =>
-                {
+                // T1, I1: `mov $T, %reg`. mold relaxes a symbol's `mov`
+                // references only when none of its references is an `add`
+                // (which it never relaxes): otherwise the symbol has a GOT
+                // slot and every reference keeps it (observed, §10.1).
+                (x::GOTPC32_TLSDESC, 0x8d) | (x::GOTTPOFF, 0x8b) => {
                     cands.push([&[p, 0xc7, 0xc0 | r][..], &tb].concat());
                 }
                 // I2: mortar's `add $T`; GNU ld's and lld's `lea T(%reg)`
@@ -735,7 +768,7 @@ impl Engine<'_, '_> {
             return self.fail(f);
         }
         let Some(ev) = self.slot_evidence(rec) else {
-            return self.not_checked(Reason::SymbolUnresolved, 1);
+            return self.x64_unjudged(rec, Reason::SymbolUnresolved);
         };
         let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(t), w1: false };
         self.got_groups.entry((Slot::TpRel, oi, rec.sym, 0)).or_default().members.push((pend, ev));

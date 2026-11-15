@@ -32,6 +32,14 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A12: lld writes the 16-byte local-exec form over the 22-byte general-dynamic sequence (spec/x64.md W4)",
         );
     }
+    if mold
+        && f.rule == Rule::Structure(11)
+        && f.message.ends_with("only with padding to 4")
+    {
+        return Some(
+            "A13: mold puts 4-aligned notes in the PT_NOTE of the 8-aligned .note.gnu.property, with p_align 8",
+        );
+    }
     let sym = f.symbol.as_deref().unwrap_or("");
     let y = |n| f.rule == Rule::SymbolTable(n);
     if mold && y(3) && f.message.contains("binding") && f.found == Some(0) {

@@ -352,10 +352,17 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
         };
         let align: usize = if p.p_align == 8 { 8 } else { 4 };
         if !notes_ok(bytes, align) {
-            out.push(
-                s(11, format!("PT_NOTE at {:#x} is not a sequence of whole notes", p.p_vaddr))
-                    .at(p.p_vaddr),
-            );
+            // A segment of notes padded to 4 under a p_align of 8: what a
+            // reader that pads by p_align (glibc's PT_NOTE scan) misreads.
+            let msg = if align == 8 && notes_ok(bytes, 4) {
+                format!(
+                    "PT_NOTE at {:#x} has p_align 8 but is a sequence of whole notes only with padding to 4",
+                    p.p_vaddr
+                )
+            } else {
+                format!("PT_NOTE at {:#x} is not a sequence of whole notes", p.p_vaddr)
+            };
+            out.push(s(11, msg).at(p.p_vaddr));
         }
     }
     out
