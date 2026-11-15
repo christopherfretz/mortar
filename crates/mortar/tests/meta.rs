@@ -173,6 +173,21 @@ enum Mt5 {
 }
 
 // spec: meta.md T-MT-5, MT-5
+/// The LLVM majors whose `llvm-strip`/`llvm-objcopy` MT-5's rows run: the
+/// pinned one (required with the reference tools), and Debian's own when
+/// its tools are installed (the hosted lanes install only its clang and
+/// lldb).
+fn llvm_majors() -> Vec<String> {
+    let pinned = mortar_testutil::LLVM_MAJORS[0];
+    mortar_testutil::LLVM_MAJORS
+        .iter()
+        .filter(|&&m| {
+            m == pinned || mortar_testutil::find_listed_tool(&format!("llvm-strip-{m}")).is_some()
+        })
+        .map(u32::to_string)
+        .collect()
+}
+
 #[test]
 #[allow(clippy::too_many_lines)] // MT-5's table, one row per line
 fn mt5_tools_that_keep_it_and_tools_that_lose_it() {
@@ -227,7 +242,7 @@ fn mt5_tools_that_keep_it_and_tools_that_lose_it() {
     row("objcopy --redefine-sym", "objcopy", &["--redefine-sym", "anchor_a=other"], KeptUnanchored);
     row("objcopy -N", "objcopy", &["-N", "anchor_a"], KeptUnanchored);
     row("objcopy --extract-dwo", "objcopy", &["--extract-dwo"], Removed);
-    for v in ["19", "22"] {
+    for v in llvm_majors() {
         row("llvm-strip", &format!("llvm-strip-{v}"), &[], Removed);
         row("llvm-strip --strip-all", &format!("llvm-strip-{v}"), &["--strip-all"], Removed);
         row(
@@ -268,7 +283,7 @@ fn mt5_tools_that_keep_it_and_tools_that_lose_it() {
     };
     archive("ar", None, Kept);
     archive("strip --strip-unneeded archive", Some(("strip", &["--strip-unneeded"])), Kept);
-    for v in ["19", "22"] {
+    for v in llvm_majors() {
         let exe = format!("llvm-strip-{v}");
         archive(&format!("llvm-strip-{v} archive"), Some((&exe, &[])), Removed);
     }
