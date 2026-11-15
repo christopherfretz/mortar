@@ -1,0 +1,20 @@
+[package]
+name = "mortar_live"
+description = "Section liveness: the live set without and with --gc-sections."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mortar_core.workspace = true
+mortar_diag.workspace = true
+mortar_elf.workspace = true
+
+[dev-dependencies]
+mortar_testutil.workspace = true
+
+[lints]
+workspace = true

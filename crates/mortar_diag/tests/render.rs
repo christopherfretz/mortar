@@ -285,6 +285,21 @@ fn control_characters_are_made_visible() {
             format!("relocation {shown} out of range: 9 is not in [-1, 8]; references '{shown}'"),
         ),
         (
+            Kind::ExecutableStack { file: h() },
+            format!(
+                "{shown}: requires executable stack (because the .note.GNU-stack section is \
+                 executable)"
+            ),
+        ),
+        (
+            Kind::OutputTooLarge { what: h(), limit: h() },
+            format!("output too large: {shown} exceeds {shown}"),
+        ),
+        (
+            Kind::SectionConflict { name: h(), first: h(), second: h() },
+            format!("section {shown}: {shown} and {shown} inputs cannot be combined"),
+        ),
+        (
             Kind::Refused { class: RefusalClass::SectionType, name: h(), not_recognized: false },
             format!("unsupported section type: {shown}"),
         ),
@@ -357,6 +372,9 @@ fn samples() -> Vec<Diagnostic> {
                 max: 0,
                 name: s(x),
             },
+            Kind::ExecutableStack { file: s(x) },
+            Kind::OutputTooLarge { what: s(x), limit: s(x) },
+            Kind::SectionConflict { name: s(x), first: s(x), second: s(x) },
             Kind::Refused { class: RefusalClass::RelocationType, name: s(x), not_recognized: true },
             Kind::InternalError { what: s(x) },
         ]

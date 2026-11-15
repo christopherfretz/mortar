@@ -153,12 +153,14 @@ parallel work on them starts.
 | `mortar_input` | Search paths and sysroot, file reading, format sniffing, parallel parsing into `Inputs`. Owns how bytes get into memory. | `mortar_core`, `mortar_script` |
 | `mortar_resolve` | Symbol resolution: binding and visibility rules, archive extraction, COMDAT, common symbols, versions, `--wrap`, `--defsym`. | `mortar_core` |
 | `mortar_live` | Section liveness (`--gc-sections`), identical code folding. | `mortar_core` |
+| `mortar_scan` | The relocation scan driver: `Arch::scan` over every live relocation in parallel, the deterministic merge of demands, one diagnostic per undefined key (`spec/image.md` §4). | `mortar_core`, `mortar_arch` |
+| `mortar_digest` | SHA-1, SHA-256 and the fast leaf hash written from scratch; the build-id tree (`spec/image.md` §8). | none |
 | `mortar_merge` | `SHF_MERGE` sections: string and constant deduplication. | `mortar_core` |
 | `mortar_arch` | The `Arch` trait: classify, scan, apply and relax relocations; PLT, GOT and thunk shapes; TLS sequences; unwind encodings. | `mortar_core` |
 | `mortar_a64`, `mortar_x64`, `mortar_x86` | The architectures: AArch64, x86-64, 32-bit x86. | `mortar_arch` |
 | `mortar_synth` | Synthetic sections: `.dynamic`, `.dynsym`, hash tables, version sections, GOT and PLT, dynamic relocations (RELA, RELR), `.eh_frame` and `.eh_frame_hdr`, notes, `.symtab`, debug indexes. | `mortar_core`, `mortar_arch` |
 | `mortar_layout` | Output sections from the default rules or a script, their order, segments, addresses, thunk insertion: `Layout`. | `mortar_core`, `mortar_arch`, `mortar_script` |
-| `mortar_image` | Image synthesis and the file writer; debug section handling (tombstones, compression). | `mortar_core`, `mortar_arch`, `mortar_synth` |
+| `mortar_image` | Image synthesis and the file writer; debug section handling (tombstones, compression). | `mortar_core`, `mortar_arch`, `mortar_synth`, `mortar_digest` |
 | `mortar_meta` | The Mason metadata container: reader and writer of the format shared with kiln, hod and tuck (`spec/meta.md`). | `mortar_elf` |
 | `mortar_odr` | One-definition-rule checks at static link time; the tables and the load-time hook for dynamic checks. | `mortar_core`, `mortar_meta` |
 | `mortar_incr` | The link state, change detection, delta layout, patching. | everything above |

@@ -663,6 +663,39 @@ fn relocation_out_of_range() {
     );
 }
 
+// -- layout -------------------------------------------------------------
+
+// spec: diag.md §3.1 `executable-stack` (GNU ld's words; a warning, layout.md L-84)
+#[test]
+fn executable_stack() {
+    let kind = Kind::ExecutableStack { file: s("libx.a(y.o)") };
+    assert_eq!(kind.id(), "executable-stack");
+    assert_eq!(
+        Diagnostic::warning(kind).render(&Style::plain("ld")),
+        "ld: warning: libx.a(y.o): requires executable stack (because the .note.GNU-stack \
+         section is executable)\n"
+    );
+}
+
+// spec: diag.md §3.1 `output-too-large` (layout.md L-73)
+#[test]
+fn output_too_large() {
+    let kind = Kind::OutputTooLarge { what: s("chunk 7"), limit: s("0x100000000") };
+    assert_eq!(kind.id(), "output-too-large");
+    assert_eq!(text(kind), "ld: error: output too large: chunk 7 exceeds 0x100000000\n");
+}
+
+// spec: diag.md §3.1 `section-conflict` (layout.md L-47, L-49, L-61)
+#[test]
+fn section_conflict() {
+    let kind = Kind::SectionConflict { name: s(".tdata"), first: s("TLS"), second: s("non-TLS") };
+    assert_eq!(kind.id(), "section-conflict");
+    assert_eq!(
+        text(kind),
+        "ld: error: section .tdata: TLS and non-TLS inputs cannot be combined\n"
+    );
+}
+
 // -- refusals -----------------------------------------------------------
 // `refused` has a file of its own: tests/refusal.rs.
 
