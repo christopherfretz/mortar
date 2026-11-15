@@ -1,0 +1,16 @@
+# Run-wide xfails of mortar by architecture (spec/harness.md "Markers"):
+# mortar has no back end there yet, so every mortar link of the
+# architecture is expected to fail. One line per architecture:
+#
+#   mortar,<arch>: <reason>
+#
+# It takes the place of a test's own xfail(mortar) on that architecture
+# (a test's skip still applies). A mortar link that passes is XPASS, so
+# the line goes when the back end lands.
+
+# Every x86-64 link is refused (crates/mortar/src/front.rs, "linking for
+# x86-64").
+mortar,x86_64: mortar: x86-64 back end is WP-029b stage B
+
+# No i386 back end.
+mortar,i386: mortar: i386 back end is WP-030 stage 2

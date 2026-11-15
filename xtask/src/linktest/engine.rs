@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::format::{
-    Anomaly, Check, CheckTool, Driver, Exit, Expectation, Language, Link, MarkerKind, Run, Stdout,
-    Step, StepKind, Template, Test, Vars,
+    Anomaly, ArchXfail, Check, CheckTool, Driver, Exit, Expectation, Language, Link, Marker,
+    MarkerKind, Run, Stdout, Step, StepKind, Template, Test, Vars,
 };
 use super::outcome::{self, Outcome, Printed, Raw, Reference, Verdict};
 use super::pattern::Pattern;
@@ -55,6 +55,9 @@ pub struct Matrix {
     /// The run-wide default anomalies, `tests/link/anomalies`
     /// (`spec/harness.md` "L3").
     pub defaults: Vec<Anomaly>,
+    /// The run-wide mortar `xfail`s by architecture, `tests/link/xfails`
+    /// (`spec/harness.md` "Markers").
+    pub xfails: Vec<ArchXfail>,
 }
 
 impl Matrix {
@@ -404,6 +407,7 @@ impl Unit<'_> {
         if let Some(skip) = marker.filter(|m| m.kind == MarkerKind::Skip) {
             return self.record(mortar, Outcome::Skip, &skip.reason);
         }
+        let xfail = mortar_xfail(marker, &self.matrix.xfails, self.arch());
         let expected = match verdict {
             Verdict::Unproven => {
                 return self.record(
@@ -428,7 +432,7 @@ impl Unit<'_> {
                 .unwrap_or_default(),
         };
         let (raw, _) = self.run_linker(Linker::Mortar, Some(&expected), plumb);
-        let (outcome, detail) = outcome::marked(&raw, marker.map(|m| m.reason.as_str()));
+        let (outcome, detail) = outcome::marked(&raw, xfail);
         self.record(mortar, outcome, detail)
     }
 
@@ -1078,8 +1082,42 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The reason of the `xfail` that applies to mortar on `arch`: the run-wide
+/// one of `tests/link/xfails` (mortar has no back end there), else the
+/// test's own. A test's `skip` is taken before this.
+fn mortar_xfail<'a>(
+    marker: Option<&'a Marker>,
+    xfails: &'a [ArchXfail],
+    arch: Arch,
+) -> Option<&'a str> {
+    xfails
+        .iter()
+        .find(|x| x.arch == arch)
+        .map(|x| x.reason.as_str())
+        .or_else(|| marker.filter(|m| m.kind == MarkerKind::Xfail).map(|m| m.reason.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
+    // "Markers": a run-wide mortar xfail takes the place of the test's
+    // own xfail on its architecture, and nowhere else.
+    #[test]
+    fn a_run_wide_xfail_applies_to_mortar_on_its_architecture() {
+        use super::super::format::Scope;
+        use super::{Arch, ArchXfail, Marker, MarkerKind, mortar_xfail};
+        let own = Marker {
+            line: 1,
+            kind: MarkerKind::Xfail,
+            scope: Scope::default(),
+            reason: "no linking yet (M1)".to_owned(),
+        };
+        let x = [ArchXfail { line: 3, arch: Arch::X86_64, reason: "no back end".to_owned() }];
+        assert_eq!(mortar_xfail(Some(&own), &x, Arch::X86_64), Some("no back end"));
+        assert_eq!(mortar_xfail(None, &x, Arch::X86_64), Some("no back end"));
+        assert_eq!(mortar_xfail(Some(&own), &x, Arch::Aarch64), Some("no linking yet (M1)"));
+        assert_eq!(mortar_xfail(None, &x, Arch::I386), None);
+    }
+
     use super::{Arch, Linker, Plumb, map_option, not_judged, output_name};
 
     fn strings(args: &[&str]) -> Vec<String> {
