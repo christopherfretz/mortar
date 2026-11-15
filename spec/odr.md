@@ -524,7 +524,9 @@ the two (an `-fno-rtti` library linked with RTTI code is common), so the
 mismatch alone proves nothing. Where it does cross, kind 3 sees it (K16a
 enum size, K16c RTTI slot) and the error names the key in a note. K16e
 (i386 struct return) has no kind 3 witness: it stays a warning
-(`--odr=strict` makes it an error).
+(`--odr=strict` makes it an error). Cost: about 16 rows a unit, grouped
+by name and value once per link [estimate: 16,000 rows for 1,000 TUs,
+under 1 ms].
 
 **O-31 (`isa`).** For a COMDAT group whose copies come from units with
 different `isa` strings, when the keeper's `isa` differs from that of a
@@ -674,7 +676,9 @@ input): a difference is `odr-violation` with the library as the other
 place, an error, before anything runs. Kind 5 sizes of variables the
 executable references are compared with the `.so`'s `st_size`
 (`odr-size-mismatch`, a warning; K18b's copy relocation would truncate).
-What only load time can see: a different build of the library at run
+Cost: one merge of the executable's
+sorted kind 2 rows with each table (both sorted by key) [estimate: the
+hook's 2.3 ns a row]. What only load time can see: a different build of the library at run
 time (K18b's v2), libraries loaded by `dlopen`, and libraries the link
 never named.
 
