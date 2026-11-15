@@ -17,7 +17,16 @@ fn s6_object_rows() {
     let readelf = common::need("readelf").unwrap();
     let o = common::tool_run(&readelf, &["-hsSW".into(), "t.o".into()], s.path());
     let text = o.stdout_text();
-    let shnum: u32 = text.lines().find(|l| l.contains("Number of section headers")).unwrap().split(':').nth(1).unwrap().trim().parse().unwrap();
+    let shnum: u32 = text
+        .lines()
+        .find(|l| l.contains("Number of section headers"))
+        .unwrap()
+        .split(':')
+        .nth(1)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert_eq!(f.sections, shnum);
     let globals = text.lines().filter(|l| l.contains(" GLOBAL ") || l.contains(" WEAK ")).count();
     assert_eq!(f.globals as usize, globals);
@@ -74,7 +83,10 @@ fn s7_2_thin_relative_to_archive() {
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     assert_eq!(common::names(&out), ["sub/libt.a(sub/objs/f.o)"]);
     assert_eq!(common::opened(&out), ["sub/libt.a", "sub/objs/f.o"]);
-    assert_eq!(out.files[0].member.as_ref().unwrap().thin_path.as_deref(), Some(&b"sub/objs/f.o"[..]));
+    assert_eq!(
+        out.files[0].member.as_ref().unwrap().thin_path.as_deref(),
+        Some(&b"sub/objs/f.o"[..])
+    );
 }
 
 #[test]
@@ -88,7 +100,10 @@ fn s7_2_thin_missing_unneeded_member() {
     common::ar(s.path(), "libt.a", &["f.o", "g.o"], true);
     std::fs::remove_file(s.join("g.o")).unwrap();
     let out = common::run(s.path(), &["-maarch64linux", "libt.a"]);
-    assert_eq!(common::report(&out), ["error: libt.a(g.o): cannot open g.o: No such file or directory"]);
+    assert_eq!(
+        common::report(&out),
+        ["error: libt.a(g.o): cannot open g.o: No such file or directory"]
+    );
 }
 
 #[test]
@@ -99,7 +114,13 @@ fn s7_2_thin_size_changed() {
     }
     common::cc(s.path(), "native", "f.o", C, &[]);
     common::ar(s.path(), "libt.a", &["f.o"], true);
-    common::cc(s.path(), "native", "f.o", "int f(void){return 1;}\nint more(int x){return x*x+3;}\n", &[]);
+    common::cc(
+        s.path(),
+        "native",
+        "f.o",
+        "int f(void){return 1;}\nint more(int x){return x*x+3;}\n",
+        &[],
+    );
     let out = common::run(s.path(), &["-maarch64linux", "libt.a"]);
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     assert_eq!(out.files[0].len, std::fs::metadata(s.join("f.o")).unwrap().len());
@@ -145,11 +166,22 @@ fn s7_3_member_table() {
     common::cc(s.path(), "native", "libs.so", C, &["-shared", "-fPIC"]);
     common::cc(s.path(), "native", "exe", "int main(void){return 0;}\n", &["--link", "-no-pie"]);
     s.write("bc.o", b"BC\xC0\xDE\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
-    common::cc(s.path(), "native", "slim.o", "int s(void){return 3;}\n", &["-flto", "-fno-fat-lto-objects"]);
+    common::cc(
+        s.path(),
+        "native",
+        "slim.o",
+        "int s(void){return 3;}\n",
+        &["-flto", "-fno-fat-lto-objects"],
+    );
     let mut bad = std::fs::read(s.join("ok.o")).unwrap();
     bad[5] = 2; // big-endian
     s.write("be.o", bad);
-    common::ar(s.path(), "libmix.a", &["ok.o", "text.txt", "empty.o", "libnested.a", "libs.so", "exe", "bc.o", "slim.o", "be.o"], false);
+    common::ar(
+        s.path(),
+        "libmix.a",
+        &["ok.o", "text.txt", "empty.o", "libnested.a", "libs.so", "exe", "bc.o", "slim.o", "be.o"],
+        false,
+    );
     let lazy = common::run(s.path(), &["-maarch64linux", "libmix.a"]);
     let whole = common::run(s.path(), &["-maarch64linux", "--whole-archive", "libmix.a"]);
     let expect = |sev: &str| {
@@ -174,7 +206,9 @@ fn s7_4_no_index() {
     let s = Scratch::new("s7noidx");
     let Some(ar) = common::need("ar") else { return };
     let Some(_) = common::cc(s.path(), "native", "f.o", C, &[]) else { return };
-    assert!(common::tool_run(&ar, &["rcS".into(), "libf.a".into(), "f.o".into()], s.path()).success());
+    assert!(
+        common::tool_run(&ar, &["rcS".into(), "libf.a".into(), "f.o".into()], s.path()).success()
+    );
     let out = common::run(s.path(), &["-maarch64linux", "libf.a"]);
     assert!(out.problems.is_empty());
     assert_eq!(out.files[0].globals, 1);
@@ -184,11 +218,16 @@ fn s7_4_no_index() {
 fn s7_4_stale_index_is_ignored() {
     let s = Scratch::new("s7stale");
     let Some(ar) = common::need("ar") else { return };
-    let Some(_) = common::cc(s.path(), "native", "f.o", "int old_sym(void){return 1;}\n", &[]) else { return };
+    let Some(_) = common::cc(s.path(), "native", "f.o", "int old_sym(void){return 1;}\n", &[])
+    else {
+        return;
+    };
     common::ar(s.path(), "libf.a", &["f.o"], false);
     // Replace the member without updating the index.
     common::cc(s.path(), "native", "f.o", "int new_sym(void){return 2;}\nint new_two;\n", &[]);
-    assert!(common::tool_run(&ar, &["rS".into(), "libf.a".into(), "f.o".into()], s.path()).success());
+    assert!(
+        common::tool_run(&ar, &["rS".into(), "libf.a".into(), "f.o".into()], s.path()).success()
+    );
     let out = common::run(s.path(), &["-maarch64linux", "libf.a"]);
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     // The member's own symbols, not the index's.
@@ -203,7 +242,10 @@ fn s7_5_whole_archive_state() {
     }
     common::cc(s.path(), "native", "f.o", C, &[]);
     common::ar(s.path(), "libf.a", &["f.o"], false);
-    let out = common::run(s.path(), &["-maarch64linux", "--whole-archive", "libf.a", "--no-whole-archive", "libf.a"]);
+    let out = common::run(
+        s.path(),
+        &["-maarch64linux", "--whole-archive", "libf.a", "--no-whole-archive", "libf.a"],
+    );
     let w: Vec<_> = out.files.iter().map(|f| f.state.whole_archive).collect();
     assert_eq!(w, [true, false]);
 }
@@ -218,8 +260,24 @@ fn s7_6_start_lib() {
     common::cc(s.path(), "native", "f.o", "int g;\n", &[]);
     common::ar(s.path(), "libf.a", &["f.o"], false);
     common::cc(s.path(), "native", "libs.so", C, &["-shared", "-fPIC", "-Wl,-soname,libs.so"]);
-    let out = common::run(s.path(), &["-shared", "-maarch64linux", "--whole-archive", "--start-lib", "k.o", "libf.a", "libs.so", "--end-lib"]);
+    let out = common::run(
+        s.path(),
+        &[
+            "-shared",
+            "-maarch64linux",
+            "--whole-archive",
+            "--start-lib",
+            "k.o",
+            "libf.a",
+            "libs.so",
+            "--end-lib",
+        ],
+    );
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
-    let st: Vec<_> = out.files.iter().map(|f| (f.state.lazy, f.member.is_some(), f.state.whole_archive)).collect();
+    let st: Vec<_> = out
+        .files
+        .iter()
+        .map(|f| (f.state.lazy, f.member.is_some(), f.state.whole_archive))
+        .collect();
     assert_eq!(st, [(true, false, true), (false, true, true), (false, false, true)]);
 }

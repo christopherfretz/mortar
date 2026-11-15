@@ -23,6 +23,7 @@ fn one(bad: &mut Vec<String>, s: &Scratch, args: &[&str], id: &str, text: &str) 
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one case per row of the table")]
 fn s13_table() {
     let s = Scratch::new("s13");
     if !common::have(&["native", "x86"]) {
@@ -30,7 +31,13 @@ fn s13_table() {
     }
     common::cc(s.path(), "native", "f.o", "int f(void){return 1;}\n", &[]);
     common::cc(s.path(), "x86", "x.o", "int x;\n", &[]);
-    common::cc(s.path(), "native", "libf.so", "int f(void){return 1;}\n", &["-shared", "-fPIC", "-nostdlib"]);
+    common::cc(
+        s.path(),
+        "native",
+        "libf.so",
+        "int f(void){return 1;}\n",
+        &["-shared", "-fPIC", "-nostdlib"],
+    );
     std::fs::create_dir(s.join("dir")).unwrap();
     std::fs::create_dir(s.join("loops")).unwrap();
     std::os::unix::fs::symlink("libl.so", s.join("loops/libl.so")).unwrap();
@@ -39,7 +46,13 @@ fn s13_table() {
     s.write("self.ld", "INPUT(self.ld)\n");
     let mut bad = Vec::new();
 
-    one(&mut bad, &s, &[M, "nothere.o"], "cannot-open-file", "error: nothere.o: cannot open nothere.o: No such file or directory");
+    one(
+        &mut bad,
+        &s,
+        &[M, "nothere.o"],
+        "cannot-open-file",
+        "error: nothere.o: cannot open nothere.o: No such file or directory",
+    );
     one(
         &mut bad,
         &s,
@@ -61,7 +74,13 @@ fn s13_table() {
         "library-not-found",
         "error: argument '-lnope': cannot find -lnope: No such file or directory\n>>> the library search path is empty",
     );
-    one(&mut bad, &s, &[M, "-L", ""], "invalid-option-value", "error: argument '-L': -L: invalid value ''");
+    one(
+        &mut bad,
+        &s,
+        &[M, "-L", ""],
+        "invalid-option-value",
+        "error: argument '-L': -L: invalid value ''",
+    );
     one(
         &mut bad,
         &s,
@@ -80,7 +99,13 @@ fn s13_table() {
         ]
     );
     s.write("empty.o", b"");
-    one(&mut bad, &s, &["empty.o"], "no-target", "error: target emulation unknown: -m or at least one .o file required");
+    one(
+        &mut bad,
+        &s,
+        &["empty.o"],
+        "no-target",
+        "error: target emulation unknown: -m or at least one .o file required",
+    );
     one(
         &mut bad,
         &s,
@@ -88,7 +113,13 @@ fn s13_table() {
         "incompatible-file",
         "error: x.o: incompatible file: elf64-littleaarch64 is expected but got elf64-x86-64\n>>> the target was set by -m aarch64linux",
     );
-    one(&mut bad, &s, &[M, "junk.o"], "unknown-file-type", "error: junk.o: file not recognized: file format not recognized");
+    one(
+        &mut bad,
+        &s,
+        &[M, "junk.o"],
+        "unknown-file-type",
+        "error: junk.o: file not recognized: file format not recognized",
+    );
     s.write("m.o", b"\xcf\xfa\xed\xfe\x0c\x00\x00\x01rest");
     one(
         &mut bad,

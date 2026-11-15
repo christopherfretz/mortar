@@ -24,7 +24,13 @@ fn s2_1_sniff_table() {
     let ff = |n: &str| Some((RefusalClass::FileFormat, n.to_owned()));
     assert_eq!(refused(&pad(b"BC\xC0\xDE")), ff("LLVM bitcode"));
     assert_eq!(refused(&pad(b"\xDE\xC0\x17\x0B")), ff("LLVM bitcode"));
-    for m in [&b"\xFE\xED\xFA\xCE"[..], b"\xFE\xED\xFA\xCF", b"\xCE\xFA\xED\xFE", b"\xCF\xFA\xED\xFE", b"\xCA\xFE\xBA\xBE"] {
+    for m in [
+        &b"\xFE\xED\xFA\xCE"[..],
+        b"\xFE\xED\xFA\xCF",
+        b"\xCE\xFA\xED\xFE",
+        b"\xCF\xFA\xED\xFE",
+        b"\xCA\xFE\xBA\xBE",
+    ] {
         assert_eq!(refused(&pad(m)), ff("Mach-O"));
     }
     assert_eq!(refused(&pad(b"\0asm")), ff("WebAssembly"));
@@ -43,12 +49,17 @@ fn s2_1_sniff_table() {
     let out = common::run(s.path(), &["-maarch64linux", "m.o"]);
     assert_eq!(
         common::report(&out),
-        ["error: m.o: unsupported file format: Mach-O; file not recognized: file format not recognized"]
+        [
+            "error: m.o: unsupported file format: Mach-O; file not recognized: file format not recognized"
+        ]
     );
     s.write("u.o", b"\x01\x02 garbage");
     let out = common::run(s.path(), &["-maarch64linux", "u.o"]);
     assert_eq!(common::ids(&out), ["unknown-file-type"]);
-    assert_eq!(common::report(&out), ["error: u.o: file not recognized: file format not recognized"]);
+    assert_eq!(
+        common::report(&out),
+        ["error: u.o: file not recognized: file format not recognized"]
+    );
 }
 
 #[test]
@@ -80,25 +91,37 @@ fn s2_2_e_type() {
     assert_eq!(refused(&patch(&bytes, 16, &0xfe01u16.to_le_bytes())), ot("0xfe01"));
     assert!(matches!(analyse(&bytes, false).kind, Kind::Object(_)));
     // A real executable.
-    let Some(exe) = common::cc(s.path(), "native", "exe", "int main(void){return 0;}\n", &["-no-pie"]) else { return };
+    let Some(exe) =
+        common::cc(s.path(), "native", "exe", "int main(void){return 0;}\n", &["-no-pie"])
+    else {
+        return;
+    };
     let _ = exe;
 }
 
 #[test]
 fn s2_2_gcc_slim_lto_refused() {
     let s = Scratch::new("s2lto");
-    let Some(_) = common::cc(s.path(), "native", "slim.o", C, &["-flto", "-fno-fat-lto-objects"]) else { return };
+    let Some(_) = common::cc(s.path(), "native", "slim.o", C, &["-flto", "-fno-fat-lto-objects"])
+    else {
+        return;
+    };
     let out = common::run(s.path(), &["-maarch64linux", "slim.o"]);
     assert_eq!(
         common::report(&out),
-        ["error: slim.o: unsupported file format: GCC LTO object\n>>> mortar does not perform link-time optimization; compile without -flto, or with -ffat-lto-objects"]
+        [
+            "error: slim.o: unsupported file format: GCC LTO object\n>>> mortar does not perform link-time optimization; compile without -flto, or with -ffat-lto-objects"
+        ]
     );
 }
 
 #[test]
 fn s2_2_gcc_fat_lto_linked() {
     let s = Scratch::new("s2fat");
-    let Some(_) = common::cc(s.path(), "native", "fat.o", C, &["-flto", "-ffat-lto-objects"]) else { return };
+    let Some(_) = common::cc(s.path(), "native", "fat.o", C, &["-flto", "-ffat-lto-objects"])
+    else {
+        return;
+    };
     let out = common::run(s.path(), &["-maarch64linux", "fat.o"]);
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     assert_eq!(common::names(&out), ["fat.o"]);
@@ -108,12 +131,18 @@ fn s2_2_gcc_fat_lto_linked() {
 fn s2_2_flto_line_refused_naming_lto() {
     let s = Scratch::new("s2fltoline");
     let Some(gcc) = common::need("gcc") else { return };
-    let Some(_) = common::cc(s.path(), "native", "m.o", "int main(void){return 0;}\n", &["-flto"]) else { return };
+    let Some(_) = common::cc(s.path(), "native", "m.o", "int main(void){return 0;}\n", &["-flto"])
+    else {
+        return;
+    };
     let args = common::driver_link_args(&gcc, &["-flto", "m.o"], s.path()).unwrap();
     assert!(args.iter().any(|a| a == "-plugin"), "the line has -plugin");
     let out = common::run(s.path(), &args);
     let r = common::report(&out);
-    assert!(r.iter().any(|l| l.starts_with("error: m.o: unsupported file format: GCC LTO object")), "{r:?}");
+    assert!(
+        r.iter().any(|l| l.starts_with("error: m.o: unsupported file format: GCC LTO object")),
+        "{r:?}"
+    );
 }
 
 #[test]
@@ -144,8 +173,14 @@ fn s2_4_header_errors() {
     let bytes = std::fs::read(o).unwrap();
     let ff = |n: &str| Some((RefusalClass::FileFormat, n.to_owned()));
     assert_eq!(refused(&patch(&bytes, 5, &[2])), ff("big-endian ELF"));
-    assert_eq!(refused(&patch(&bytes, 18, &40u16.to_le_bytes())), Some((RefusalClass::Machine, "EM_ARM".to_owned())));
-    assert_eq!(refused(&patch(&bytes, 18, &0x7777u16.to_le_bytes())), Some((RefusalClass::Machine, "0x7777".to_owned())));
+    assert_eq!(
+        refused(&patch(&bytes, 18, &40u16.to_le_bytes())),
+        Some((RefusalClass::Machine, "EM_ARM".to_owned()))
+    );
+    assert_eq!(
+        refused(&patch(&bytes, 18, &0x7777u16.to_le_bytes())),
+        Some((RefusalClass::Machine, "0x7777".to_owned()))
+    );
     if let Some(x32) = common::cc(s.path(), "x86", "x32.o", C, &["-mx32"]) {
         assert_eq!(refused(&std::fs::read(x32).unwrap()), ff("x32"));
     }
@@ -155,7 +190,11 @@ fn s2_4_header_errors() {
     assert_eq!(refused(&patch(&ib, 4, &[2])).map(|r| r.0), Some(RefusalClass::FileFormat));
     // Truncated and corrupt headers are malformed, with the reader's text.
     for broken in [&bytes[..10], &patch(&bytes, 4, &[9])[..], &patch(&bytes, 6, &[7])[..]] {
-        assert!(matches!(analyse(broken, false).kind, Kind::Bad(Bad::Malformed(_))), "{:?}", analyse(broken, false).kind);
+        assert!(
+            matches!(analyse(broken, false).kind, Kind::Bad(Bad::Malformed(_))),
+            "{:?}",
+            analyse(broken, false).kind
+        );
     }
     s.write("t.o", &bytes[..40]);
     let out = common::run(s.path(), &["-maarch64linux", "t.o"]);
@@ -167,7 +206,12 @@ fn s2_5_directory() {
     let s = Scratch::new("s2dir");
     std::fs::create_dir(s.join("d")).unwrap();
     let out = common::run(s.path(), &["-maarch64linux", "d"]);
-    assert_eq!(common::report(&out), ["error: d: cannot open d: Is a directory; file not recognized: file format not recognized"]);
+    assert_eq!(
+        common::report(&out),
+        [
+            "error: d: cannot open d: Is a directory; file not recognized: file format not recognized"
+        ]
+    );
 }
 
 #[test]
@@ -213,7 +257,10 @@ fn s2_6_formats() {
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     assert_eq!(out.files.len(), 1);
     let out = common::run(s.path(), &["-maarch64linux", "-b", "elf32-i386", "a.o"]);
-    assert_eq!(common::report(&out), ["error: argument 'a.o': unsupported file format: elf32-i386"]);
+    assert_eq!(
+        common::report(&out),
+        ["error: argument 'a.o': unsupported file format: elf32-i386"]
+    );
     s.write("t.ld", "INPUT(a.o)\n");
     let out = common::run(s.path(), &["-maarch64linux", "-b", "elf64-littleaarch64", "t.ld"]);
     assert_eq!(common::report(&out), ["error: t.ld: unsupported file format: elf64-littleaarch64"]);

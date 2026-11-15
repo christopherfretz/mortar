@@ -19,6 +19,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use mortar_core::hash::HashMap as FixedMap;
 use mortar_core::inputs::{ContentHash, LinkTarget, Reader};
@@ -277,6 +278,25 @@ pub struct Loaded<'s> {
     pub problems: Vec<Problem>,
     /// The number of waves the walk took.
     pub waves: u32,
+    /// Where the time went (for the bench; not part of the result).
+    pub timing: Timing,
+}
+
+/// Wall time per step of [`walk`], summed over the waves.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Timing {
+    /// The sequential passes of the walk.
+    pub walk: Duration,
+    /// `stat` of every path asked for.
+    pub stat: Duration,
+    /// `canonicalize` (§5.3 cycle detection, §9).
+    pub canon: Duration,
+    /// [`Store::read_many`].
+    pub read: Duration,
+    /// Sniffing and parsing files and archive members.
+    pub facts: Duration,
+    /// The content hashes of archive members.
+    pub hash: Duration,
 }
 
 impl Loaded<'_> {
@@ -377,18 +397,23 @@ impl<'c, 's> Look<'c, 's> {
 }
 
 impl<'s> Caches<'s> {
-    fn fill(&mut self, store: &'s Store, pool: &Pool, needs: Needs) {
+    fn fill(&mut self, store: &'s Store, pool: &Pool, needs: Needs, timing: &mut Timing) {
+        let t = Instant::now();
         let mut stat_paths: Vec<PathBuf> =
             needs.stat.into_iter().filter(|p| !self.stats.contains_key(p)).collect();
         stat_paths.sort();
         stat_paths.dedup();
         let stats = pool.map(stat_paths.len(), |i| store.stat(&stat_paths[i]));
         self.stats.extend(stat_paths.into_iter().zip(stats));
+        timing.stat += t.elapsed();
+        let t = Instant::now();
 
         let canon_paths: Vec<PathBuf> =
             needs.canon.into_iter().filter(|p| !self.canon.contains_key(p)).collect();
         let canon = pool.map(canon_paths.len(), |i| std::fs::canonicalize(&canon_paths[i]).ok());
         self.canon.extend(canon_paths.into_iter().zip(canon));
+        timing.canon += t.elapsed();
+        let t = Instant::now();
 
         // Reads, one job per distinct inode (§9.3).
         let mut wanted_facts: BTreeSet<(Blob, bool)> = needs.facts;
@@ -419,6 +444,8 @@ impl<'s> Caches<'s> {
             job_of.push((p, j));
         }
         let results = store.read_many(pool, &jobs);
+        timing.read += t.elapsed();
+        let t = Instant::now();
         for (p, j) in job_of {
             self.reads.insert(p, results[j].clone());
         }
@@ -462,6 +489,7 @@ impl<'s> Caches<'s> {
             }
         }
         self.facts.extend(wanted.into_iter().zip(new));
+        timing.facts += t.elapsed();
     }
 }
 
@@ -477,18 +505,25 @@ pub fn walk<'s>(
 ) -> Loaded<'s> {
     let mut caches = Caches::default();
     let mut waves = 0u32;
+    let mut timing = Timing::default();
     loop {
+        let t = Instant::now();
         let mut w = Walk::new(plan, env, store, &caches, options);
         w.run();
         if w.needs.is_empty() {
             let mut out = w.finish();
+            timing.walk += t.elapsed();
             out.waves = waves;
+            let t = Instant::now();
             hash_members(store, pool, &mut out.files);
+            timing.hash += t.elapsed();
+            out.timing = timing;
             return out;
         }
         let needs = std::mem::take(&mut w.needs);
         drop(w);
-        caches.fill(store, pool, needs);
+        timing.walk += t.elapsed();
+        caches.fill(store, pool, needs, &mut timing);
         waves += 1;
         assert!(waves < 100_000, "the input walk does not converge (an internal error)");
     }
@@ -676,6 +711,7 @@ impl<'c, 's> Walk<'c, 's> {
         out
     }
 
+    #[allow(clippy::too_many_lines, reason = "the passes of §10.1 over the plan inputs, in order")]
     fn run(&mut self) {
         self.resolve_cli_dirs();
         self.decide_target_early();
@@ -928,6 +964,7 @@ impl<'c, 's> Walk<'c, 's> {
     /// Makes the probes of one search (§4.4, §4.6) over `dirs` × `names`;
     /// `skip` applies the skip rule when the target is known.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines, reason = "the §4.4 candidate loop with its probe records")]
     fn search(
         &mut self,
         m: &Mention,
@@ -1529,6 +1566,7 @@ impl<'c, 's> Walk<'c, 's> {
     }
 
     /// §7.1-§7.5.
+    #[allow(clippy::too_many_lines, reason = "the §7.3 member table, case by case")]
     fn visit_archive(&mut self, m: &Mention, path: &Spelled, blob: Blob, a: &'c ArchiveFacts<'s>) {
         // Every member's file first, so that one wave reads them all.
         let mut pending = false;
@@ -1647,6 +1685,7 @@ impl<'c, 's> Walk<'c, 's> {
     // -------------------------------------------------------- scripts
 
     /// §5: an implicit script.
+    #[allow(clippy::too_many_lines, reason = "the §5 script cases in order")]
     fn visit_script(&mut self, m: &Mention, path: &Spelled, blob: Blob, s: &'c facts::ScriptFacts) {
         let unit = m.arg;
         if m.chain.contains(&blob) {
@@ -1789,6 +1828,7 @@ impl<'c, 's> Walk<'c, 's> {
 
     /// Splices `INCLUDE`d files (script.md §2.8). `false`: not all known
     /// yet, or an `INCLUDE` failed (an error was emitted).
+    #[allow(clippy::too_many_lines, reason = "the §5.2 entry kinds in order")]
     fn splice(
         &mut self,
         m: &Mention,
@@ -1842,8 +1882,7 @@ impl<'c, 's> Walk<'c, 's> {
                     let mut sub = m.clone();
                     sub.place = place.clone();
                     sub.seq = at;
-                    sub.named_by =
-                        std::iter::once(place.clone()).chain(m.chain_places()).collect();
+                    sub.named_by = std::iter::once(place.clone()).chain(m.chain_places()).collect();
                     match self.search(&sub, SearchForm::Name, name, &candidates, sref, false) {
                         Searched::Pending | Searched::Failed => complete = false,
                         Searched::NotFound { .. } => {
@@ -1947,9 +1986,7 @@ impl<'c, 's> Walk<'c, 's> {
                         arg: m.arg,
                         state,
                         chain: chain.to_vec(),
-                        named_by: std::iter::once(place.clone())
-                            .chain(m.chain_places())
-                            .collect(),
+                        named_by: std::iter::once(place.clone()).chain(m.chain_places()).collect(),
                         entry: Some(entry),
                         edge: None,
                         via: Via::Script,
@@ -2436,6 +2473,7 @@ impl<'c, 's> Walk<'c, 's> {
             link: self.link,
             problems: self.problems,
             waves: 0,
+            timing: Timing::default(),
         }
     }
 }

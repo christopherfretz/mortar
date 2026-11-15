@@ -14,13 +14,23 @@ fn so(dir: &std::path::Path, name: &str, src: &str, extra: &[&str]) -> bool {
 #[test]
 fn s8_1_pie_is_refused() {
     let s = Scratch::new("s8pie");
-    if common::cc(s.path(), "native", "pie", "int main(void){return 0;}\n", &["--link", "-fPIE", "-pie"]).is_none() {
+    if common::cc(
+        s.path(),
+        "native",
+        "pie",
+        "int main(void){return 0;}\n",
+        &["--link", "-fPIE", "-pie"],
+    )
+    .is_none()
+    {
         return;
     }
     let out = common::run(s.path(), &["-shared", "-maarch64linux", "pie"]);
     assert_eq!(
         common::report(&out),
-        ["error: pie: unsupported object type: DF_1_PIE\n>>> a position-independent executable cannot be linked against"]
+        [
+            "error: pie: unsupported object type: DF_1_PIE\n>>> a position-independent executable cannot be linked against"
+        ]
     );
     assert!(out.files.is_empty());
 }
@@ -87,7 +97,10 @@ fn s8_1_soname_twice_is_malformed() {
     }
     let val = soname_val.unwrap();
     // The DT_NEEDED entry becomes a second DT_SONAME.
-    let e = (off..off + size).step_by(16).find(|&e| u64::from_le_bytes(b[e..e + 8].try_into().unwrap()) == 1).unwrap();
+    let e = (off..off + size)
+        .step_by(16)
+        .find(|&e| u64::from_le_bytes(b[e..e + 8].try_into().unwrap()) == 1)
+        .unwrap();
     b[e..e + 8].copy_from_slice(&14u64.to_le_bytes());
     b[e + 8..e + 16].copy_from_slice(&val);
     s.write("libf.so", b);
@@ -109,7 +122,8 @@ fn s8_1_static_link_of_shared_object() {
         ["error: d1/libf.so: attempted static link of dynamic object d1/libf.so"]
     );
     // -l under -Bstatic finds only .a: not found, not this error.
-    let out = common::run(s.path(), &["-shared", "-maarch64linux", "-Ld1", "-Bstatic", "-l:libf.so"]);
+    let out =
+        common::run(s.path(), &["-shared", "-maarch64linux", "-Ld1", "-Bstatic", "-l:libf.so"]);
     assert_eq!(common::ids(&out), ["static-link-of-shared-object"]);
 }
 
@@ -121,7 +135,12 @@ fn s8_2_one_file_per_soname() {
     if !so(&s.join("d1"), "libf.so", C, &["-Wl,-soname,libf.so.1"]) {
         return;
     }
-    so(&s.join("d2"), "libf.so", "int f(void){return 2;}\nint g(void){return 3;}\n", &["-Wl,-soname,libf.so.1"]);
+    so(
+        &s.join("d2"),
+        "libf.so",
+        "int f(void){return 2;}\nint g(void){return 3;}\n",
+        &["-Wl,-soname,libf.so.1"],
+    );
     std::fs::copy(s.join("d1/libf.so"), s.join("copy.so")).unwrap();
     let out = common::run(
         s.path(),
@@ -129,7 +148,9 @@ fn s8_2_one_file_per_soname() {
     );
     assert_eq!(
         common::report(&out),
-        ["warning: d2/libf.so: DT_SONAME 'libf.so.1' is already loaded; this file is not used\n>>> loaded from d1/libf.so"]
+        [
+            "warning: d2/libf.so: DT_SONAME 'libf.so.1' is already loaded; this file is not used\n>>> loaded from d1/libf.so"
+        ]
     );
     assert_eq!(common::names(&out), ["d1/libf.so"]);
     assert_eq!(out.link.sonames.len(), 1);
@@ -145,7 +166,15 @@ fn s8_2_as_needed_merge() {
     }
     let mixed = common::run(
         s.path(),
-        &["-shared", "-maarch64linux", "--as-needed", "libf.so", "--no-as-needed", "--copy-dt-needed-entries", "libf.so"],
+        &[
+            "-shared",
+            "-maarch64linux",
+            "--as-needed",
+            "libf.so",
+            "--no-as-needed",
+            "--copy-dt-needed-entries",
+            "libf.so",
+        ],
     );
     let u = &mixed.link.sonames[0];
     assert!(!u.as_needed);
@@ -153,7 +182,8 @@ fn s8_2_as_needed_merge() {
     // The row keeps the first mention's state.
     assert!(mixed.files[0].state.as_needed);
     assert!(!mixed.files[0].state.copy_dt_needed);
-    let all = common::run(s.path(), &["-shared", "-maarch64linux", "--as-needed", "libf.so", "libf.so"]);
+    let all =
+        common::run(s.path(), &["-shared", "-maarch64linux", "--as-needed", "libf.so", "libf.so"]);
     assert!(all.link.sonames[0].as_needed);
 }
 
@@ -168,7 +198,16 @@ fn s8_3_needed_names_and_s8_5_spellings() {
     let abs = abs.to_str().unwrap();
     let out = common::run(
         s.path(),
-        &["-shared", "-maarch64linux", "-Lns2", "-lf", "ns2/libf.so", "./ns2/libf.so", abs, "ns2/libf.so"],
+        &[
+            "-shared",
+            "-maarch64linux",
+            "-Lns2",
+            "-lf",
+            "ns2/libf.so",
+            "./ns2/libf.so",
+            abs,
+            "ns2/libf.so",
+        ],
     );
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     let sonames: Vec<_> = out
@@ -196,7 +235,9 @@ fn s8_3_script_names_soname_less_object() {
     let out = common::run(s.path(), &["-shared", "-maarch64linux", "s.ld"]);
     assert_eq!(
         common::report(&out),
-        ["error: ns/libf.so: unsupported feature: shared object without DT_SONAME named by a linker script\n>>> named by s.ld:1:7\n>>> named by argument 's.ld'"]
+        [
+            "error: ns/libf.so: unsupported feature: shared object without DT_SONAME named by a linker script\n>>> named by s.ld:1:7\n>>> named by argument 's.ld'"
+        ]
     );
     assert_eq!(common::names(&out), ["ns/libg.so"]);
 }
@@ -211,9 +252,14 @@ fn s8_4_no_interpreter_is_refused() {
     let out = common::run(s.path(), &["-maarch64linux", "libf.so", "libg.so"]);
     assert_eq!(
         common::report(&out),
-        ["error: libf.so: unsupported feature: dynamic executable without -dynamic-linker\n>>> the shared object is libf.so"]
+        [
+            "error: libf.so: unsupported feature: dynamic executable without -dynamic-linker\n>>> the shared object is libf.so"
+        ]
     );
-    let out = common::run(s.path(), &["-maarch64linux", "-dynamic-linker", "/lib/ld-linux-aarch64.so.1", "libf.so"]);
+    let out = common::run(
+        s.path(),
+        &["-maarch64linux", "-dynamic-linker", "/lib/ld-linux-aarch64.so.1", "libf.so"],
+    );
     assert!(out.problems.is_empty());
 }
 
@@ -234,7 +280,12 @@ fn closure_fixture(s: &Scratch, g_flags: &[&str]) -> bool {
     }
     let hid = s.join("hid");
     let l = format!("-L{}", hid.display());
-    so(&hid, "libh.so", "extern int hook(void);\nint h(void){return hook();}\n", &[&l, "-Wl,--no-as-needed", "-l:libz.so.9"]);
+    so(
+        &hid,
+        "libh.so",
+        "extern int hook(void);\nint h(void){return hook();}\n",
+        &[&l, "-Wl,--no-as-needed", "-l:libz.so.9"],
+    );
     std::fs::rename(hid.join("libz.so.9"), s.join("libz.so.9")).unwrap();
     // hid/libz.so.9 is moved out: libh's own need must be searched for.
     let mut g = vec![l.as_str(), "-Wl,--no-as-needed", "-lh"];
@@ -249,7 +300,10 @@ fn s8_6_closure_rpath_link_and_numbering() {
     if !closure_fixture(&s, &[]) {
         return;
     }
-    let out = common::run_closure(s.path(), &args(&["dg/libg.so", "-rpath-link", "/nonexist::hid", "-L."]));
+    let out = common::run_closure(
+        s.path(),
+        &args(&["dg/libg.so", "-rpath-link", "/nonexist::hid", "-L."]),
+    );
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     assert_eq!(common::names(&out), ["dg/libg.so", "hid/libh.so", "./libz.so.9"]);
     let edges: Vec<_> = out
@@ -271,14 +325,28 @@ fn s8_6_closure_only_where_said() {
     if !closure_fixture(&s, &[]) {
         return;
     }
-    let shared = common::run_closure(s.path(), &["-shared", "-maarch64linux", "dg/libg.so", "-rpath-link", "hid"]);
+    let shared = common::run_closure(
+        s.path(),
+        &["-shared", "-maarch64linux", "dg/libg.so", "-rpath-link", "hid"],
+    );
     assert_eq!(shared.files.len(), 1);
     let copy = common::run_closure(
         s.path(),
-        &["-shared", "-maarch64linux", "--copy-dt-needed-entries", "dg/libg.so", "-rpath-link", "hid", "-L."],
+        &[
+            "-shared",
+            "-maarch64linux",
+            "--copy-dt-needed-entries",
+            "dg/libg.so",
+            "-rpath-link",
+            "hid",
+            "-L.",
+        ],
     );
     assert_eq!(copy.files.len(), 3, "{:?}", common::report(&copy));
-    let reloc = common::run_closure(s.path(), &["-r", "-maarch64linux", "dg/libg.so", "-rpath-link", "hid"]);
+    let reloc = common::run_closure(
+        s.path(),
+        &["-r", "-maarch64linux", "dg/libg.so", "-rpath-link", "hid"],
+    );
     assert!(reloc.link.closure.is_empty());
     // Not asked for (the driver of stage A): nothing.
     let off = common::run(s.path(), &args(&["dg/libg.so", "-rpath-link", "hid"]));
@@ -330,10 +398,12 @@ fn s8_6_closure_satisfied_by_walk() {
     if !closure_fixture(&s, &[]) {
         return;
     }
-    let out = common::run_closure(s.path(), &args(&["dg/libg.so", "libz.so.9", "-rpath-link", "hid"]));
+    let out =
+        common::run_closure(s.path(), &args(&["dg/libg.so", "libz.so.9", "-rpath-link", "hid"]));
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     assert_eq!(common::names(&out), ["dg/libg.so", "libz.so.9", "hid/libh.so"]);
-    let edges: Vec<_> = out.link.closure.iter().map(|e| (e.needing, e.index, e.satisfied)).collect();
+    let edges: Vec<_> =
+        out.link.closure.iter().map(|e| (e.needing, e.index, e.satisfied)).collect();
     assert_eq!(edges, [(1, 0, Some(3)), (3, 0, Some(2))]);
     // §8.5: hid/libh.so named by path has soname `hid/libh.so`, so the
     // edge `libh.so` is not satisfied by it and is searched.

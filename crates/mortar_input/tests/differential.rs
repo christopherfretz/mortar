@@ -22,6 +22,8 @@
 //! §12.2, so the report orders them by text), and each `DT_NEEDED`
 //! entry of GNU ld's output against the sonames of the walk's shared
 //! objects (§8.2, §8.3).
+#![allow(clippy::many_single_char_names, reason = "short names for fixtures and tallies")]
+
 mod common;
 
 use std::ffi::OsString;
@@ -83,11 +85,16 @@ fn strip_output(args: Vec<OsString>) -> Vec<OsString> {
     out
 }
 
+#[allow(clippy::too_many_lines, reason = "the comparisons in order")]
 fn compare(w: &Path, line: &Line, t: &mut Tally) {
     let em = emulation(&line.args).unwrap_or_else(|| "aarch64linux".into());
     let Some(ld) = common::need(bfd_for(&em)) else { return };
     let mut a = line.args.clone();
-    a.extend(["--trace".into(), "-o".into(), w.join(format!("out.{}", line.name)).into_os_string()]);
+    a.extend([
+        "--trace".into(),
+        "-o".into(),
+        w.join(format!("out.{}", line.name)).into_os_string(),
+    ]);
     let o = common::tool_run(&ld, &a, w);
     let stdout = o.stdout_text();
     let stderr = o.stderr_text();
@@ -109,7 +116,11 @@ fn compare(w: &Path, line: &Line, t: &mut Tally) {
         } else if seen.contains(&b.as_str()) {
             t.rescans += 1;
         } else {
-            t.different.push(format!("{}: GNU ld opened {b}; the walk's next is {:?}", line.name, ours.get(j)));
+            t.different.push(format!(
+                "{}: GNU ld opened {b}; the walk's next is {:?}",
+                line.name,
+                ours.get(j)
+            ));
         }
         seen.push(b);
     }
@@ -126,7 +137,7 @@ fn compare(w: &Path, line: &Line, t: &mut Tally) {
         .problems
         .iter()
         .filter(|p| p.id() == "skipped-incompatible")
-        .map(|p| p.message())
+        .map(mortar_input::problem::Problem::message)
         .collect();
     // The order: the warnings of one search share a key (§12.2) and sort
     // by text, so the search order is read from the probes (§4.6).
@@ -139,7 +150,9 @@ fn compare(w: &Path, line: &Line, t: &mut Tally) {
         .collect();
     let bfd_order: Vec<String> = bfd_skips
         .iter()
-        .map(|l| l["skipping incompatible ".len()..].split(" when searching").next().unwrap().to_owned())
+        .map(|l| {
+            l["skipping incompatible ".len()..].split(" when searching").next().unwrap().to_owned()
+        })
         .collect();
     let mut bfd_sorted = bfd_skips.clone();
     bfd_sorted.sort();
@@ -154,7 +167,12 @@ fn compare(w: &Path, line: &Line, t: &mut Tally) {
             our_skips.join("\n      ")
         ));
     }
-    let errors: Vec<String> = out.problems.iter().filter(|p| p.is_error()).map(|p| p.render()).collect();
+    let errors: Vec<String> = out
+        .problems
+        .iter()
+        .filter(|p| p.is_error())
+        .map(mortar_input::problem::Problem::render)
+        .collect();
     if !errors.is_empty() {
         t.different.push(format!("{}: the walk failed: {errors:?}", line.name));
     }
@@ -163,7 +181,8 @@ fn compare(w: &Path, line: &Line, t: &mut Tally) {
     if o.success()
         && let Some(readelf) = common::need("readelf")
     {
-        let d = common::tool_run(&readelf, &["-dW".into(), output.clone().into_os_string()], w).stdout_text();
+        let d = common::tool_run(&readelf, &["-dW".into(), output.clone().into_os_string()], w)
+            .stdout_text();
         let sonames: Vec<String> = out
             .files
             .iter()
@@ -174,14 +193,24 @@ fn compare(w: &Path, line: &Line, t: &mut Tally) {
             if sonames.iter().any(|s| s == n) {
                 t.needed_equal += 1;
             } else {
-                t.different.push(format!("{}: DT_NEEDED {n} is no soname of the walk ({sonames:?})", line.name));
+                t.different.push(format!(
+                    "{}: DT_NEEDED {n} is no soname of the walk ({sonames:?})",
+                    line.name
+                ));
             }
         }
     }
     let _ = std::fs::remove_file(output);
 }
 
-fn compile(driver: &str, extra: &[&str], dir: &Path, src: (&str, &str), out: &str, flags: &[&str]) -> bool {
+fn compile(
+    driver: &str,
+    extra: &[&str],
+    dir: &Path,
+    src: (&str, &str),
+    out: &str,
+    flags: &[&str],
+) -> bool {
     let Some(d) = common::need(driver) else { return false };
     std::fs::write(dir.join(src.0), src.1).unwrap();
     let mut a: Vec<OsString> = extra.iter().map(OsString::from).collect();
@@ -193,7 +222,8 @@ fn compile(driver: &str, extra: &[&str], dir: &Path, src: (&str, &str), out: &st
 }
 
 const C_MAIN: &str = "int main(void) { return 0; }\n";
-const C_MATH: &str = "#include <math.h>\nvolatile double x = 2;\nint main(void) { return (int)sin(x); }\n";
+const C_MATH: &str =
+    "#include <math.h>\nvolatile double x = 2;\nint main(void) { return (int)sin(x); }\n";
 const CXX: &str = "#include <iostream>\nint main() { std::cout << \"hi\\n\"; }\n";
 const F90: &str = "program p\nprint *, 'hi'\nend program\n";
 const PIC: &str = "int lib_f(int x) { return x + 1; }\n";
@@ -229,7 +259,8 @@ fn fresh_lines(w: &Path) -> Vec<Line> {
     let mut lines = Vec::new();
     for f in FAMILIES {
         let t = f.tag;
-        let (m, mm, c, pic) = (format!("{t}m.o"), format!("{t}mm.o"), format!("{t}c.o"), format!("{t}pic.o"));
+        let (m, mm, c, pic) =
+            (format!("{t}m.o"), format!("{t}mm.o"), format!("{t}c.o"), format!("{t}pic.o"));
         if !compile(f.cc, &[], w, (&format!("{t}m.c"), C_MAIN), &m, &[])
             || !compile(f.cc, &[], w, (&format!("{t}mm.c"), C_MATH), &mm, &[])
             || !compile(f.cxx, &[], w, (&format!("{t}c.cc"), CXX), &c, &[])
@@ -238,7 +269,8 @@ fn fresh_lines(w: &Path) -> Vec<Line> {
             continue;
         }
         let fo = format!("{t}f.o");
-        let fortran = f.fc.is_some_and(|fc| compile(fc, &[], w, (&format!("{t}f.f90"), F90), &fo, &[]));
+        let fortran =
+            f.fc.is_some_and(|fc| compile(fc, &[], w, (&format!("{t}f.f90"), F90), &fo, &[]));
         let modes: &[(&str, &[&str])] = &[
             ("dyn", &[]),
             ("nopie", &["-no-pie"]),
@@ -250,7 +282,12 @@ fn fresh_lines(w: &Path) -> Vec<Line> {
         drivers.push(("gcc".into(), cc.clone(), vec![], mm.clone()));
         drivers.push(("gxx".into(), common::need(f.cxx).unwrap(), vec![], c.clone()));
         if fortran {
-            drivers.push(("gfortran".into(), common::need(f.fc.unwrap()).unwrap(), vec![], fo.clone()));
+            drivers.push((
+                "gfortran".into(),
+                common::need(f.fc.unwrap()).unwrap(),
+                vec![],
+                fo.clone(),
+            ));
         }
         if let Some(clang) = common::need("clang") {
             drivers.push(("clang".into(), clang.clone(), f.clang.to_vec(), mm.clone()));
@@ -264,7 +301,10 @@ fn fresh_lines(w: &Path) -> Vec<Line> {
                 a.extend_from_slice(flags);
                 a.extend([obj.as_str(), "-lm", "-o", "out"]);
                 if let Some(args) = common::driver_link_args(d, &a, w) {
-                    lines.push(Line { name: format!("{t}-{dname}-{mode}"), args: strip_output(args) });
+                    lines.push(Line {
+                        name: format!("{t}-{dname}-{mode}"),
+                        args: strip_output(args),
+                    });
                 }
             }
             let mut a: Vec<&str> = extra.clone();
@@ -309,7 +349,9 @@ fn review_lines(dir: &Path, w: &Path) -> Vec<Line> {
             .skip(1)
             .take_while(|l| *l != "----")
             .map(|l| {
-                let l = l.replace(&format!("{root}/w"), &w.to_string_lossy()).replace(root, &w.to_string_lossy());
+                let l = l
+                    .replace(&format!("{root}/w"), &w.to_string_lossy())
+                    .replace(root, &w.to_string_lossy());
                 // The one object the reviewer compiled through a temporary.
                 OsString::from(if l == "/tmp/ccZajPJA.o" { "x86c.o".to_owned() } else { l })
             })

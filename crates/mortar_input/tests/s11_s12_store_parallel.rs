@@ -1,4 +1,6 @@
 //! `spec/input.md` §11 (the store) and §12 (parallelism and determinism).
+#![allow(clippy::many_single_char_names, reason = "short names for fixtures and tallies")]
+
 mod common;
 
 use std::io::Write as _;
@@ -43,7 +45,10 @@ fn s11_2_chunked_read() {
         let mut out = [0u8; 4];
         store.copy_to(b, 100..104, &mut out).unwrap();
         assert_eq!(out, bytes[100..104]);
-        assert!(matches!(store.copy_to(b, n as u64 - 2..n as u64 + 2, &mut out), Err(ReadError::OutOfRange)));
+        assert!(matches!(
+            store.copy_to(b, n as u64 - 2..n as u64 + 2, &mut out),
+            Err(ReadError::OutOfRange)
+        ));
     }
 }
 
@@ -209,7 +214,7 @@ fn summary(out: &Loaded<'_>) -> String {
         rows.join("\n"),
         out.archives,
         out.link,
-        common::report(&out).join("\n")
+        common::report(out).join("\n")
     )
 }
 
@@ -222,20 +227,64 @@ fn s12_determinism() {
     std::fs::create_dir_all(s.join("lib")).unwrap();
     std::fs::create_dir_all(s.join("hid")).unwrap();
     for i in 0..12 {
-        common::cc(s.path(), "native", &format!("o{i}.o"), &format!("int o{i}(void){{return {i};}}\n"), &[]);
+        common::cc(
+            s.path(),
+            "native",
+            &format!("o{i}.o"),
+            &format!("int o{i}(void){{return {i};}}\n"),
+            &[],
+        );
     }
     common::cc(s.path(), "native", "big.o", "char big[5 << 20] = {1};\n", &[]);
     common::ar(s.path(), "lib/libm1.a", &["o0.o", "o1.o", "o2.o"], false);
     common::ar(s.path(), "lib/libthin.a", &["o3.o", "o4.o"], true);
-    common::cc(&s.join("hid"), "native", "libz.so.9", "int z;\n", &["-shared", "-fPIC", "-nostdlib", "-Wl,-soname,libz.so.9"]);
+    common::cc(
+        &s.join("hid"),
+        "native",
+        "libz.so.9",
+        "int z;\n",
+        &["-shared", "-fPIC", "-nostdlib", "-Wl,-soname,libz.so.9"],
+    );
     let hid = format!("-L{}", s.join("hid").display());
-    common::cc(&s.join("lib"), "native", "libd.so", "int d;\n", &["-shared", "-fPIC", "-nostdlib", &hid, "-Wl,--no-as-needed", "-l:libz.so.9", "-Wl,-soname,libd.so"]);
+    common::cc(
+        &s.join("lib"),
+        "native",
+        "libd.so",
+        "int d;\n",
+        &[
+            "-shared",
+            "-fPIC",
+            "-nostdlib",
+            &hid,
+            "-Wl,--no-as-needed",
+            "-l:libz.so.9",
+            "-Wl,-soname,libd.so",
+        ],
+    );
     s.write("s.ld", "GROUP(o5.o -lm1 AS_NEEDED(-ld))\nINPUT(missing.o)\n");
     s.write("junk.o", "junk\n");
     let args = [
-        "-maarch64linux", "-dynamic-linker", "/lib/ld.so", "-Llib", "o6.o", "big.o", "s.ld", "junk.o",
-        "--start-group", "lib/libthin.a", "o7.o", "--end-group", "-lnothere", "o8.o", "o9.o",
-        "lib/libm1.a", "-rpath-link", "hid", "o10.o", "o11.o", "big.o",
+        "-maarch64linux",
+        "-dynamic-linker",
+        "/lib/ld.so",
+        "-Llib",
+        "o6.o",
+        "big.o",
+        "s.ld",
+        "junk.o",
+        "--start-group",
+        "lib/libthin.a",
+        "o7.o",
+        "--end-group",
+        "-lnothere",
+        "o8.o",
+        "o9.o",
+        "lib/libm1.a",
+        "-rpath-link",
+        "hid",
+        "o10.o",
+        "o11.o",
+        "big.o",
     ];
     let plan = common::plan(&args);
     let reference = check_schedules(|pool| {
@@ -243,7 +292,12 @@ fn s12_determinism() {
     });
     // §16: thread counts 1, 2, 7, 64.
     for threads in [1, 2, 7, 64] {
-        let got = summary(&common::run_plan(s.path(), &plan, Options { closure: true }, &Pool::new(threads)));
+        let got = summary(&common::run_plan(
+            s.path(),
+            &plan,
+            Options { closure: true },
+            &Pool::new(threads),
+        ));
         assert_eq!(got, reference, "{threads} threads");
     }
     assert!(reference.contains("libz.so.9"), "{reference}");

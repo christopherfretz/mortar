@@ -1,4 +1,6 @@
 //! `spec/input.md` §4: finding files.
+#![allow(clippy::many_single_char_names, reason = "short names for fixtures and tallies")]
+
 mod common;
 
 use std::path::Path;
@@ -17,11 +19,21 @@ fn lib(dir: &Path, target: &str, name: &str) {
 
 fn so(dir: &Path, target: &str, name: &str) {
     std::fs::create_dir_all(dir).unwrap();
-    common::cc(dir, target, &format!("lib{name}.so"), C, &["-shared", "-fPIC", &format!("-Wl,-soname,lib{name}.so")]);
+    common::cc(
+        dir,
+        target,
+        &format!("lib{name}.so"),
+        C,
+        &["-shared", "-fPIC", &format!("-Wl,-soname,lib{name}.so")],
+    );
 }
 
 fn probes(out: &mortar_input::walk::Loaded<'_>) -> Vec<(String, ProbeOutcome)> {
-    out.link.probes.iter().map(|p| (String::from_utf8_lossy(&p.path).into_owned(), p.outcome.clone())).collect()
+    out.link
+        .probes
+        .iter()
+        .map(|p| (String::from_utf8_lossy(&p.path).into_owned(), p.outcome.clone()))
+        .collect()
 }
 
 #[test]
@@ -32,7 +44,10 @@ fn s4_1_paths_not_searched() {
     }
     lib(&s.join("dd"), "native", "q");
     let out = common::run(s.path(), &["-maarch64linux", "-Ldd", "libq.a"]);
-    assert_eq!(common::report(&out), ["error: libq.a: cannot open libq.a: No such file or directory"]);
+    assert_eq!(
+        common::report(&out),
+        ["error: libq.a: cannot open libq.a: No such file or directory"]
+    );
     assert!(out.link.probes.is_empty());
 }
 
@@ -50,7 +65,9 @@ fn s4_1_equals_path_refused() {
     let s = Scratch::new("s4eq");
     let out = common::run(s.path(), &["-maarch64linux", "--sysroot=/", "=/lib/x.o"]);
     assert_eq!(common::ids(&out), ["refused"]);
-    assert!(common::report(&out)[0].starts_with("error: argument '=/lib/x.o': unsupported feature: '=' prefix on an input path\n>>> "));
+    assert!(common::report(&out)[0].starts_with(
+        "error: argument '=/lib/x.o': unsupported feature: '=' prefix on an input path\n>>> "
+    ));
 }
 
 #[test]
@@ -89,7 +106,9 @@ fn s4_2_no_builtin_dirs() {
     let out = common::run(s.path(), &["-maarch64linux", "-lc"]);
     assert_eq!(
         common::report(&out),
-        ["error: argument '-lc': cannot find -lc: No such file or directory\n>>> the library search path is empty"]
+        [
+            "error: argument '-lc': cannot find -lc: No such file or directory\n>>> the library search path is empty"
+        ]
     );
 }
 
@@ -199,7 +218,8 @@ fn s4_4_l_colon() {
         return;
     }
     so(&s.join("d"), "native", "f");
-    let out = common::run(s.path(), &["-shared", "-maarch64linux", "-Ld", "-Bstatic", "-l:libf.so"]);
+    let out =
+        common::run(s.path(), &["-shared", "-maarch64linux", "-Ld", "-Bstatic", "-l:libf.so"]);
     // `-l:` ignores -Bstatic for its candidate; the shared object is then
     // a static link of a shared object (§8.1).
     assert_eq!(common::ids(&out), ["static-link-of-shared-object"]);
@@ -223,7 +243,10 @@ fn s4_4_candidate_stat_table() {
     assert_eq!(common::names(&out), ["good/libf.a(f.o)"]);
     assert_eq!(probes(&out)[0], ("dangling/libf.so".to_owned(), ProbeOutcome::Absent));
     let out = common::run(s.path(), &["-maarch64linux", "-Ldir", "-Lgood", "-lf"]);
-    assert_eq!(common::report(&out), ["error: argument '-lf': cannot open dir/libf.so: Is a directory"]);
+    assert_eq!(
+        common::report(&out),
+        ["error: argument '-lf': cannot open dir/libf.so: Is a directory"]
+    );
     assert!(out.files.is_empty());
     let out = common::run(s.path(), &["-maarch64linux", "-Lloop", "-Lgood", "-lf"]);
     assert_eq!(common::ids(&out), ["cannot-open-file"]);
@@ -281,7 +304,11 @@ fn s4_4_skip_table() {
     let out = common::run(s.path(), &["-maarch64linux", "-Lx", "-Ln", "sd/s.ld"]);
     let r = common::report(&out);
     assert_eq!(common::names(&out), ["n/e.o"], "{r:?}");
-    let skipped: Vec<_> = probes(&out).into_iter().filter(|p| matches!(p.1, ProbeOutcome::Skipped(_))).map(|p| p.0).collect();
+    let skipped: Vec<_> = probes(&out)
+        .into_iter()
+        .filter(|p| matches!(p.1, ProbeOutcome::Skipped(_)))
+        .map(|p| p.0)
+        .collect();
     assert_eq!(skipped, ["sd/e.o", "e.o", "x/e.o"]);
     assert!(r.iter().all(|l| l.ends_with(">>> named by argument 'sd/s.ld'")));
     assert!(r.contains(&"warning: sd/s.ld:1:7: skipping incompatible sd/e.o when searching for e.o\n>>> named by argument 'sd/s.ld'".to_owned()), "{r:?}");
@@ -304,7 +331,9 @@ fn s4_4_not_found_notes() {
         ]
     );
     let out = common::run(s.path(), &["-maarch64linux", "-Lxd", "-l:none.a"]);
-    assert!(common::report(&out)[0].starts_with("error: argument '-l:none.a': cannot find -l:none.a: No such file or directory"));
+    assert!(common::report(&out)[0].starts_with(
+        "error: argument '-l:none.a': cannot find -l:none.a: No such file or directory"
+    ));
 }
 
 #[test]
@@ -425,5 +454,8 @@ fn s4_8_r_file_refused() {
     let s = Scratch::new("s4Rfile");
     s.write("syms", b"");
     let out = common::run(s.path(), &["-maarch64linux", "-R", "syms"]);
-    assert_eq!(common::report(&out), ["error: argument '-R syms': unsupported feature: --just-symbols"]);
+    assert_eq!(
+        common::report(&out),
+        ["error: argument '-R syms': unsupported feature: --just-symbols"]
+    );
 }

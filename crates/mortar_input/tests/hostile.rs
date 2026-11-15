@@ -4,6 +4,8 @@
 //! `s11_s12_store_parallel.rs`.
 mod common;
 
+use std::fmt::Write as _;
+
 use mortar_input::facts::analyse;
 use mortar_testutil::Scratch;
 
@@ -29,9 +31,11 @@ fn hostile_truncated_archive() {
     for cut in (0..whole.len()).step_by(37) {
         s.write("cut.a", &whole[..cut]);
         let out = common::run(s.path(), &[M, "cut.a"]);
-        if cut > 8 && cut < whole.len() && out.problems.is_empty() {
-            panic!("cut at {cut} of {} accepted", whole.len());
-        }
+        assert!(
+            !(cut > 8 && cut < whole.len() && out.problems.is_empty()),
+            "cut at {cut} of {} accepted",
+            whole.len()
+        );
         seen_member |= !out.files.is_empty() && out.failed();
     }
     assert!(seen_member, "a cut after the first member keeps the first member");
@@ -55,7 +59,8 @@ fn hostile_corrupt_archive_headers() {
         errors += usize::from(out.failed());
         for p in &out.problems {
             assert!(
-                ["malformed-input", "ignored-member", "refused", "incompatible-file"].contains(&p.id()),
+                ["malformed-input", "ignored-member", "refused", "incompatible-file"]
+                    .contains(&p.id()),
                 "{}",
                 p.render()
             );
@@ -102,7 +107,7 @@ fn hostile_unreadable_and_loops() {
     use std::os::unix::fs::PermissionsExt;
     let s = Scratch::new("hostperm");
     s.write("locked.o", b"\x7fELF");
-    std::fs::set_permissions(s.join("locked.o"), std::fs::Permissions::from_mode(0)).unwrap();
+    std::fs::set_permissions(s.join("locked.o"), std::fs::Permissions::from_mode(0o000)).unwrap();
     std::os::unix::fs::symlink("loop1.o", s.join("loop2.o")).unwrap();
     std::os::unix::fs::symlink("loop2.o", s.join("loop1.o")).unwrap();
     let out = common::run(s.path(), &[M, "loop1.o"]);
@@ -116,7 +121,10 @@ fn hostile_unreadable_and_loops() {
         // Root reads mode 000 files: the bytes are a short ELF header.
         assert_eq!(common::ids(&out), ["malformed-input"]);
     } else {
-        assert_eq!(common::report(&out), ["error: locked.o: cannot open locked.o: Permission denied"]);
+        assert_eq!(
+            common::report(&out),
+            ["error: locked.o: cannot open locked.o: Permission denied"]
+        );
     }
     std::fs::set_permissions(s.join("locked.o"), std::fs::Permissions::from_mode(0o644)).unwrap();
 }
@@ -127,7 +135,10 @@ fn hostile_zero_length_files() {
     for n in ["z.o", "libz.a", "libz.so", "z.ld"] {
         s.write(n, b"");
     }
-    let out = common::run(s.path(), &[M, "z.o", "libz.a", "-L.", "-lz", "z.ld", "--whole-archive", "libz.a"]);
+    let out = common::run(
+        s.path(),
+        &[M, "z.o", "libz.a", "-L.", "-lz", "z.ld", "--whole-archive", "libz.a"],
+    );
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     assert!(out.files.is_empty());
     assert_eq!(out.link.opened.len(), 5);
@@ -154,14 +165,19 @@ fn hostile_ten_thousand_small_files() {
             }
             _ => {
                 s.write(&name, &bytes);
-                script.push_str(&format!("INPUT({name})\n"));
+                let _ = writeln!(script, "INPUT({name})");
             }
         }
     }
     s.write("all.ld", script);
     args.push("all.ld".into());
     let pool = mortar_core::par::Pool::new(4);
-    let out = common::run_plan(s.path(), &common::plan(&args), mortar_input::walk::Options::default(), &pool);
+    let out = common::run_plan(
+        s.path(),
+        &common::plan(&args),
+        mortar_input::walk::Options::default(),
+        &pool,
+    );
     assert!(out.problems.is_empty(), "{:?}", &common::report(&out)[..1]);
     assert_eq!(out.files.len(), 3334 + 3333);
     assert!(out.waves <= 3, "{} waves", out.waves);

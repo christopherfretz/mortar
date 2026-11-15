@@ -11,7 +11,13 @@ fn objs(s: &Scratch, names: &[&str]) -> bool {
         return false;
     }
     for n in names {
-        common::cc(s.path(), "native", n, &format!("int {}_v;\n", n.replace(['.', '/', '-'], "_")), &[]);
+        common::cc(
+            s.path(),
+            "native",
+            n,
+            &format!("int {}_v;\n", n.replace(['.', '/', '-'], "_")),
+            &[],
+        );
     }
     true
 }
@@ -30,20 +36,43 @@ fn s5_1_commands() {
     let out = common::run(s.path(), &["-maarch64linux", "s.ld"]);
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));
     assert_eq!(common::names(&out), ["a.o", "b.o", "c.o", "d.o"]);
-    assert_eq!(out.files[2].state.as_needed, true);
-    assert_eq!(out.files[1].state.as_needed, false);
+    assert!(out.files[2].state.as_needed);
+    assert!(!out.files[1].state.as_needed);
     assert_eq!(out.link.group, [None, Some(1), Some(1), None]);
-    let d: Vec<_> = out.link.directives.iter().map(|d| (d.command, String::from_utf8_lossy(&d.value).into_owned())).collect();
-    assert_eq!(d, [("OUTPUT", "o.out".into()), ("ENTRY", "go".into()), ("EXTERN", "u1".into()), ("EXTERN", "u2".into())]);
+    let d: Vec<_> = out
+        .link
+        .directives
+        .iter()
+        .map(|d| (d.command, String::from_utf8_lossy(&d.value).into_owned()))
+        .collect();
+    assert_eq!(
+        d,
+        [
+            ("OUTPUT", "o.out".into()),
+            ("ENTRY", "go".into()),
+            ("EXTERN", "u1".into()),
+            ("EXTERN", "u2".into())
+        ]
+    );
     let kinds: Vec<_> = out.link.opened.iter().map(|o| o.kind).collect();
     assert_eq!(
         kinds,
-        [OpenedKind::Script, OpenedKind::Include, OpenedKind::Object, OpenedKind::Object, OpenedKind::Object, OpenedKind::Object]
+        [
+            OpenedKind::Script,
+            OpenedKind::Include,
+            OpenedKind::Object,
+            OpenedKind::Object,
+            OpenedKind::Object,
+            OpenedKind::Object
+        ]
     );
     // STARTUP is refused.
     s.write("st.ld", "STARTUP(a.o)\n");
     let out = common::run(s.path(), &["-maarch64linux", "st.ld"]);
-    assert_eq!(common::report(&out), ["error: st.ld:1:1: unsupported linker script command: STARTUP"]);
+    assert_eq!(
+        common::report(&out),
+        ["error: st.ld:1:1: unsupported linker script command: STARTUP"]
+    );
     // A script that does not parse contributes nothing.
     s.write("bad.ld", "INPUT(a.o\n");
     let out = common::run(s.path(), &["-maarch64linux", "bad.ld", "b.o"]);
@@ -70,7 +99,8 @@ fn s5_1_system_scripts() {
         let Some(gcc) = common::need(driver) else { continue };
         let o = format!("m-{target}.o");
         common::cc(s.path(), target, &o, "int main(void){return 0;}\n", &[]);
-        let args = common::driver_link_args(&gcc, &[&o, "-lm", "-shared-libgcc"], s.path()).unwrap();
+        let args =
+            common::driver_link_args(&gcc, &[&o, "-lm", "-shared-libgcc"], s.path()).unwrap();
         let out = common::run(s.path(), &args);
         assert!(out.problems.is_empty(), "{target}: {:?}", common::report(&out));
         let names = common::names(&out);
@@ -81,12 +111,28 @@ fn s5_1_system_scripts() {
     }
     // The i686 line with an x86-64 -L first: libgcc_s.so.1 found past it.
     let Some(gcc) = common::need("i686-linux-gnu-gcc") else { return };
-    let args = common::driver_link_args(&gcc, &["m-i686.o", "-L/usr/x86_64-linux-gnu/lib", "-lm", "-shared-libgcc"], s.path()).unwrap();
+    let args = common::driver_link_args(
+        &gcc,
+        &["m-i686.o", "-L/usr/x86_64-linux-gnu/lib", "-lm", "-shared-libgcc"],
+        s.path(),
+    )
+    .unwrap();
     let out = common::run(s.path(), &args);
-    assert!(out.problems.iter().all(|p| p.id() == "skipped-incompatible"), "{:?}", common::report(&out));
+    assert!(
+        out.problems.iter().all(|p| p.id() == "skipped-incompatible"),
+        "{:?}",
+        common::report(&out)
+    );
     let r = common::report(&out);
-    assert!(r.iter().any(|l| l.contains("skipping incompatible /usr/x86_64-linux-gnu/lib/libm.so when searching for -lm")), "{r:?}");
-    assert!(common::names(&out).iter().any(|n| n.ends_with("libgcc_s.so.1") && !n.contains("x86_64")));
+    assert!(
+        r.iter().any(|l| l.contains(
+            "skipping incompatible /usr/x86_64-linux-gnu/lib/libm.so when searching for -lm"
+        )),
+        "{r:?}"
+    );
+    assert!(
+        common::names(&out).iter().any(|n| n.ends_with("libgcc_s.so.1") && !n.contains("x86_64"))
+    );
 }
 
 #[test]
@@ -113,7 +159,19 @@ fn s5_2_state_table() {
     assert_eq!(common::names(&out), ["both/libq.a(q.o)"]);
     // A script in a lib region; GROUP inside a command-line group.
     s.write("g.ld", "GROUP(a.o b.o)\n");
-    let out = common::run(s.path(), &["-maarch64linux", "--start-lib", "g.ld", "--end-lib", "--start-group", "g.ld", "--end-group", "g.ld"]);
+    let out = common::run(
+        s.path(),
+        &[
+            "-maarch64linux",
+            "--start-lib",
+            "g.ld",
+            "--end-lib",
+            "--start-group",
+            "g.ld",
+            "--end-group",
+            "g.ld",
+        ],
+    );
     let lazy: Vec<_> = out.files.iter().map(|f| f.state.lazy).collect();
     assert_eq!(lazy, [true, true, false, false, false, false]);
     assert_eq!(out.link.group, [Some(1), Some(1), Some(2), Some(2), Some(3), Some(3)]);
@@ -144,7 +202,9 @@ fn s5_3_cycle_two() {
     let out = common::run(s.path(), &["-maarch64linux", "c1.ld"]);
     assert_eq!(
         common::report(&out),
-        ["error: c2.ld:1:7: linker script names itself\n>>> named by c1.ld:1:7\n>>> named by argument 'c1.ld'"]
+        [
+            "error: c2.ld:1:7: linker script names itself\n>>> named by c1.ld:1:7\n>>> named by argument 'c1.ld'"
+        ]
     );
 }
 
@@ -153,7 +213,10 @@ fn s5_3_cycle_self() {
     let s = Scratch::new("s5cycle1");
     s.write("me.ld", "INPUT(me.ld)\n");
     let out = common::run(s.path(), &["-maarch64linux", "me.ld"]);
-    assert_eq!(common::report(&out), ["error: me.ld:1:7: linker script names itself\n>>> named by argument 'me.ld'"]);
+    assert_eq!(
+        common::report(&out),
+        ["error: me.ld:1:7: linker script names itself\n>>> named by argument 'me.ld'"]
+    );
     // Through a symbolic link: the same file.
     std::os::unix::fs::symlink("me.ld", s.join("alias.ld")).unwrap();
     s.write("viaalias.ld", "INPUT(alias.ld)\n");
@@ -171,7 +234,9 @@ fn s5_3_depth() {
     s.write("d20.ld", "");
     let out = common::run(s.path(), &["-maarch64linux", "d0.ld"]);
     assert_eq!(common::ids(&out), ["refused"]);
-    assert!(common::report(&out)[0].starts_with("error: d15.ld:1:7: unsupported feature: linker scripts nested more than 16 deep"));
+    assert!(common::report(&out)[0].starts_with(
+        "error: d15.ld:1:7: unsupported feature: linker scripts nested more than 16 deep"
+    ));
     // 16 deep is fine.
     let out = common::run(s.path(), &["-maarch64linux", "d4.ld"]);
     assert!(out.problems.is_empty(), "{:?}", common::report(&out));

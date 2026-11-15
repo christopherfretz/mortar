@@ -25,7 +25,9 @@ fn s3_1_m_decides() {
     assert_eq!(machine(&out), Some((Machine::X86_64, 1)));
     assert_eq!(
         common::report(&out),
-        ["error: a.o: incompatible file: elf64-x86-64 is expected but got elf64-littleaarch64\n>>> the target was set by -m elf_x86_64"]
+        [
+            "error: a.o: incompatible file: elf64-x86-64 is expected but got elf64-littleaarch64\n>>> the target was set by -m elf_x86_64"
+        ]
     );
 }
 
@@ -120,7 +122,10 @@ fn s3_1_rule_3_load_order() {
         (common::names(&out), common::report(&out))
     });
     assert_eq!(names, ["d2/libf.a(f.o)", "d2/libg.a(g.o)"]);
-    assert_eq!(report, ["warning: argument '-lg': skipping incompatible d1/libg.a when searching for -lg"]);
+    assert_eq!(
+        report,
+        ["warning: argument '-lg': skipping incompatible d1/libg.a when searching for -lg"]
+    );
     // `-lg` first: it takes d1's (AArch64), which sets the target.
     let out = common::run(s.path(), &["-Ld1", "-Ld2", "-lg", "-lf"]);
     assert_eq!(machine(&out), Some((Machine::AArch64, 3)));
@@ -136,7 +141,10 @@ fn s3_1_no_target() {
     s.write("e.ld", "/* nothing */\n");
     let out = common::run(s.path(), &["e.ld", "/dev/null"]);
     assert_eq!(out.target, None);
-    assert_eq!(common::report(&out), ["error: target emulation unknown: -m or at least one .o file required"]);
+    assert_eq!(
+        common::report(&out),
+        ["error: target emulation unknown: -m or at least one .o file required"]
+    );
 }
 
 #[test]
@@ -186,7 +194,9 @@ fn s3_3_incompatible_lazy_member() {
     let out = common::run(s.path(), &["-maarch64linux", "libm.a"]);
     assert_eq!(
         common::report(&out),
-        ["error: libm.a(x.o): incompatible file: elf64-littleaarch64 is expected but got elf64-x86-64\n>>> the target was set by -m aarch64linux"]
+        [
+            "error: libm.a(x.o): incompatible file: elf64-littleaarch64 is expected but got elf64-x86-64\n>>> the target was set by -m aarch64linux"
+        ]
     );
     assert_eq!(common::names(&out), ["libm.a(a.o)"]);
 }
@@ -202,7 +212,9 @@ fn s3_3_note_names_the_decider() {
     let out = common::run(s.path(), &["start.o", "i.o"]);
     assert_eq!(
         common::report(&out),
-        ["error: i.o: incompatible file: elf64-littleaarch64 is expected but got elf32-i386\n>>> the target was set by start.o"]
+        [
+            "error: i.o: incompatible file: elf64-littleaarch64 is expected but got elf32-i386\n>>> the target was set by start.o"
+        ]
     );
 }
 

@@ -578,7 +578,7 @@ impl Store {
                         live.hashes[c].store(hash_bytes(slice), Ordering::Relaxed);
                     }
                     Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                        live.fail(ReadError::Changed)
+                        live.fail(ReadError::Changed);
                     }
                     Err(e) => live.fail(ReadError::os(&e)),
                 }
