@@ -49,7 +49,7 @@ struct CodeSec {
 }
 
 /// The synthetic chunks whose addresses relocations read.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SynthIds {
     pub got: Option<ChunkId>,
     pub got_plt: Option<ChunkId>,

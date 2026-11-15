@@ -454,6 +454,86 @@ fn needs(
     Ok((out, keys))
 }
 
+/// Stage E for a stage C that differs from `prev`'s only in the sizes of
+/// non-alloc chunks after every alloc chunk (the symbol tables and
+/// `.shstrtab`, sized after the fixed point: `spec/synth.md` R-L5, S-90):
+/// `prev`'s fixed point, readdressed. `None` when `staged` differs in any
+/// other way, or stage D fails on it (the caller then runs
+/// [`fixed_point`], which reports that failure as its own).
+///
+/// It is the result [`fixed_point`] would give: stage D gives every alloc
+/// chunk an address and offset that do not depend on a non-alloc chunk
+/// after the last alloc one (L-72: those only move the file cursor past
+/// it), so every round sees the addresses `prev`'s round saw, and the sites
+/// read only alloc addresses ([`Sites`]). That is checked on the result:
+/// every alloc chunk must keep `prev`'s address and offset.
+#[must_use]
+pub fn refix(
+    staged: &Staged,
+    prev: &Staged,
+    prev_fixed: &mortar_core::layout::Placement,
+    rounds: u32,
+    target: &Target,
+    options: &Options,
+    rules: &SegmentRules,
+) -> Option<Fixed> {
+    if staged.chunks.len() != prev.chunks.len()
+        || staged.order != prev.order
+        || staged.islands != prev.islands
+        || staged.relro_padding != prev.relro_padding
+    {
+        return None;
+    }
+    // The first chunk in file order whose size changed; no alloc chunk may
+    // follow it, and nothing but sizes may differ.
+    let mut changed = false;
+    for &c in staged.order.iter() {
+        let (a, b) = (&staged.chunks[c], &prev.chunks[c]);
+        let resized = a.size != b.size || a.capacity != b.capacity;
+        changed |= resized;
+        let others_equal = Chunk { size: b.size, capacity: b.capacity, ..*a } == *b;
+        if (changed && a.is_alloc()) || !others_equal {
+            return None;
+        }
+    }
+    if staged.ranks != prev.ranks
+        || staged.out_of != prev.out_of
+        || staged.sym_place != prev.sym_place
+        || staged.place != prev.place
+    {
+        return None;
+    }
+    let island_sizes: Vec<u64> =
+        staged.islands.iter().map(|&i| prev_fixed.chunks.get(i).map_or(0, |c| c.size)).collect();
+    let addressed = address(staged, &island_sizes, target, options, rules).ok()?;
+    let same = staged.order.iter().all(|&c| {
+        let (a, b) = (&addressed.chunks[c], prev_fixed.chunks.get(c));
+        !a.is_alloc() || b.is_some_and(|b| a.addr == b.addr && a.offset == b.offset && a.size == b.size)
+    });
+    if !same || addressed.chunks.len() != prev_fixed.chunks.len() {
+        return None;
+    }
+    let mut sized: Vec<Sized> = staged
+        .islands
+        .iter()
+        .zip(&island_sizes)
+        .map(|(&chunk, &size)| Sized { chunk, size })
+        .collect();
+    for (chunk, c) in addressed.chunks.iter() {
+        if matches!(c.kind, ChunkKind::Synthetic(s) if s.address_dependent) {
+            sized.push(Sized { chunk, size: c.size });
+        }
+    }
+    sized.sort_unstable_by_key(|s| s.chunk);
+    Some(Fixed {
+        addressed,
+        patches: prev_fixed.patches.clone(),
+        redirects: prev_fixed.redirects.clone(),
+        sized: sized.into(),
+        rounds,
+    })
+}
+
 /// Stage E: rounds of arch.md §6 until one has no needs. `None`: no
 /// range extension (an architecture with no veneers, or a caller with no
 /// relocation scan); one round.

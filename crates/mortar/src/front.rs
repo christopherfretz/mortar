@@ -497,6 +497,15 @@ pub fn front<'s>(
     let mut shndx = SymtabPlan::needs_shndx(names.len() as u32 + 2);
     let walker = Walker::new(&arch, &scan_inputs, scan_options);
     let mut attempt = 0;
+    // The sites read the slots' key lists only, which every attempt shares
+    // (`slots`, before the sizes are set); they are found once per set of
+    // synthetic chunk ids. The placement of the attempt before is the next
+    // one's start (`mortar_layout::place_again`), and the symbol tables'
+    // plan is made once per patch table (a function of it).
+    let demand_slots = &slots;
+    let mut sites: Option<(SynthIds, LinkSites<'_, '_>)> = None;
+    let mut prev: Option<Placed> = None;
+    let mut planned_for: Option<Box<[mortar_core::layout::Patch]>> = None;
     steps.step("prepare", 0, "");
     let (placement_assignment, placed, layout, erratum_fixes) = loop {
         attempt += 1;
@@ -530,19 +539,22 @@ pub fn front<'s>(
             merge: &order.map,
             demands: &scanned.demands,
             order: &scanned.order,
-            slots: &slots,
+            slots: demand_slots,
             got: &plans.got,
             ids,
         };
-        let link_sites = match LinkSites::new(site_inputs, &arch, &walker, &pool) {
-            Ok(s) => s,
-            Err((k, d)) => {
-                diag.emit(k, d);
-                return None;
+        if sites.as_ref().is_none_or(|(i, _)| *i != ids) {
+            match LinkSites::new(site_inputs, &arch, &walker, &pool) {
+                Ok(s) => sites = Some((ids, s)),
+                Err((k, d)) => {
+                    diag.emit(k, d);
+                    return None;
+                }
             }
-        };
+        }
+        let Some((_, link_sites)) = &sites else { return None };
         steps.step("sites", 0, "");
-        let range = RangeExtension { arch: &arch, sites: &link_sites };
+        let range = RangeExtension { arch: &arch, sites: link_sites };
         let link = mortar_layout::Link {
             headers: &headers,
             resolution: &resolution,
@@ -560,8 +572,14 @@ pub fn front<'s>(
         let mut a = assignment.clone();
         steps.step("assignment clone", 0, "");
         let placed =
-            match mortar_layout::place(&link, &mut a, Some(&range), |e| inputs.entry_def(e), &pool)
-            {
+            match mortar_layout::place_again(
+                &link,
+                &mut a,
+                Some(&range),
+                |e| inputs.entry_def(e),
+                &pool,
+                prev.as_ref(),
+            ) {
                 Ok(p) => p,
                 Err(errors) => {
                     for (n, d) in errors.into_iter().enumerate() {
@@ -585,6 +603,7 @@ pub fn front<'s>(
         again |= exact_shndx != shndx;
         shndx = exact_shndx;
         if !placed.placement.patches.is_empty()
+            && planned_for.as_ref() != Some(&placed.placement.patches)
             && let Some(old) = &plans.symtab
         {
             let new = SymtabPlan::new(
@@ -600,9 +619,11 @@ pub fn front<'s>(
                 || new.strtab_size() != old.strtab_size()
                 || (shndx && new.shndx_size() != old.shndx_size());
             plans.symtab = Some(new);
+            planned_for = Some(placed.placement.patches.clone());
             steps.step("symtab replan", placed.placement.patches.len() as u64, "patch");
         }
         if again && attempt < 3 {
+            prev = Some(placed);
             continue;
         }
         if again {
@@ -680,6 +701,7 @@ pub fn front<'s>(
         return None;
     }
     timer.phase(90, "layout");
+    drop(sites);
     drop(walker);
     drop(merge_eh);
     Some(Front {
