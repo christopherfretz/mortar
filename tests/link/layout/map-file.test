@@ -5,6 +5,7 @@
 # must at least name the input file, the section and the symbol.
 #@ spec: plumb.md "Map file"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(mold): A3 A9
 
 as start-%{arch}.s -o start.o
 link ld -Map=prog.map start.o -o prog

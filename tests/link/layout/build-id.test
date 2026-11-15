@@ -5,6 +5,7 @@
 # own way.
 #@ spec: synth.md ".note.gnu.build-id"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(mold): A3 A9
 
 as start-%{arch}.s -o start.o
 link ld --build-id=sha1 start.o -o sha1

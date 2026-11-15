@@ -5,6 +5,8 @@
 # reverse, so the prioritized destructors run last.
 #@ spec: layout.md "Initialization and termination"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O1 a.c -o a.o
 cc -O1 b.c -o b.o

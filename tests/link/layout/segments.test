@@ -4,6 +4,8 @@
 # aligned to the page size of the psABI's maximum, 64 KiB on AArch64.
 #@ spec: layout.md "Segments"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O1 main.c -o main.o
 link gcc -static -no-pie main.o -o prog

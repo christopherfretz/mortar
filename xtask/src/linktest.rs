@@ -37,7 +37,7 @@ use target::{Arch, ArchTools, CommonTools, Linker};
 
 pub const USAGE: &str = "usage: cargo xtask linktest [--linker bfd,lld,mold,mortar] \
                          [--arch aarch64,x86_64,i386] [--filter <text>]... [-j <n>] \
-                         [--mortar <binary>] [--results <file>] [--keep] [-v] \
+                         [--mortar <binary>] [--results <file>] [--keep] [--no-plumb] [-v] \
                          [<file or directory>...]\n";
 
 /// The most worker threads a run starts by default.
@@ -63,6 +63,8 @@ pub struct Args {
     pub keep: bool,
     /// List the passes too.
     pub verbose: bool,
+    /// Do not run the verifier on the links' outputs (L3).
+    pub no_plumb: bool,
     /// Test files and directories; `tests/link` when empty.
     pub paths: Vec<PathBuf>,
 }
@@ -109,6 +111,7 @@ impl Args {
                 "--mortar" => parsed.mortar = Some(PathBuf::from(value("--mortar")?)),
                 "--results" => parsed.results = Some(PathBuf::from(value("--results")?)),
                 "--keep" if inline.is_none() => parsed.keep = true,
+                "--no-plumb" if inline.is_none() => parsed.no_plumb = true,
                 "-v" | "--verbose" if inline.is_none() => parsed.verbose = true,
                 other => match other.strip_prefix("-j").filter(|n| !n.is_empty()) {
                     Some(number) => parsed.jobs = Some(jobs(number)?),
@@ -364,7 +367,8 @@ pub fn run(args: &Args) -> Result<Report, String> {
     report.arches = arches.iter().map(|tools| tools.arch).collect();
     report.linkers.clone_from(&linkers);
     report.configuration = configuration(&report, mortar.as_deref(), jobs);
-    let matrix = Matrix { host, common, linkers, mortar, wrappers: work.join("bin") };
+    let matrix =
+        Matrix { host, common, linkers, mortar, wrappers: work.join("bin"), plumb: !args.no_plumb };
     if let Err(e) = matrix.write_wrappers(&arches) {
         report.errors.push(e);
     }
@@ -402,12 +406,17 @@ pub fn run(args: &Args) -> Result<Report, String> {
     } else {
         Vec::new()
     };
+    let mut plumb = engine::Plumb::default();
     for results in run_units(&units, jobs) {
+        plumb.add(&results.plumb);
         report.records.extend(results.records);
         report.missing.extend(results.missing.into_iter().map(|tool| format!("{tool} not found")));
     }
     report.missing.sort();
     report.missing.dedup();
+    if plumb != engine::Plumb::default() {
+        report.notes.push(plumb.note());
+    }
     // Deterministic: by test, architecture, linker, and a record without a
     // linker after those with one.
     report.records.sort_by_key(|record| {
@@ -491,6 +500,7 @@ mod tests {
             "/x/mortar",
             "--results=/x/r.tsv",
             "--keep",
+            "--no-plumb",
             "-v",
             "tests/link/start",
             "a.test",
@@ -502,7 +512,8 @@ mod tests {
         assert_eq!(args.jobs, Some(3));
         assert_eq!(args.mortar.as_deref(), Some(Path::new("/x/mortar")));
         assert_eq!(args.results.as_deref(), Some(Path::new("/x/r.tsv")));
-        assert!(args.keep && args.verbose);
+        assert!(args.keep && args.verbose && args.no_plumb);
+        assert!(!parse(&[]).unwrap().no_plumb);
         assert_eq!(args.paths, [PathBuf::from("tests/link/start"), PathBuf::from("a.test")]);
         assert_eq!(parse(&["-j", "2"]).unwrap().jobs, Some(2));
         assert_eq!(parse(&["--jobs=4"]).unwrap().jobs, Some(4));

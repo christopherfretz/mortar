@@ -3,6 +3,7 @@
 # e_entry): `_start` would exit 1, `begin` exits 42.
 #@ spec: layout.md "Entry point"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(mold): A3 A9
 
 as start-%{arch}.s -o start.o
 link ld -e begin start.o -o prog

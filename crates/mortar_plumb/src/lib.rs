@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod a64;
+pub mod anomaly;
 mod content;
 mod image;
 mod locate;
@@ -18,6 +19,7 @@ pub mod report;
 mod structure;
 mod symbols;
 
+pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};
 pub use report::{Coverage, Finding, Reason, Report, Rewrite, Rule, Site, Via};
 

@@ -1257,50 +1257,13 @@ fn tls_cases(t: &Tools, scratch: &Scratch) -> Vec<Case> {
 /// defect that `spec/plumb.md` §10.2 records, by name. Everything else
 /// fails the corpus test.
 pub fn known_anomaly(link: &Link, f: &mortar_plumb::Finding) -> Option<&'static str> {
-    if f.rule == mortar_plumb::Rule::GotSlot
-        && f.symbol.as_deref().is_some_and(|s| s.starts_with('.'))
-        && f.found.zip(f.expected).is_some_and(|(found, want)| found < want)
-    {
-        return Some(
-            "A6: GNU ld, lld and mold fill the GOT slot of a section symbol plus an addend without the addend",
-        );
-    }
-    let sym = f.symbol.as_deref().unwrap_or("");
-    let y = |n| f.rule == mortar_plumb::Rule::SymbolTable(n);
-    if link.linker == Linker::Mold && y(3) && f.message.contains("binding") && f.found == Some(0) {
-        return Some("A9: mold makes every global of a static executable STB_LOCAL in .symtab");
-    }
-    if link.linker == Linker::Bfd && y(3) && f.message.starts_with("a label of an empty section") {
-        return Some(
-            "A10: GNU ld gives a label of an empty output section it removes the index of a section that does not hold it",
-        );
-    }
-    if link.linker == Linker::Mold && y(5) && sym == "__bss_start" && f.found == Some(0) {
-        return Some("A11: mold's __bss_start is 0 when --gc-sections leaves no .bss");
-    }
-    if link.linker == Linker::Mold && y(5) && sym == "_TLS_MODULE_BASE_" {
-        return Some("A3: mold's _TLS_MODULE_BASE_ is an address, or there is no PT_TLS");
-    }
-    if link.linker != Linker::Mold || f.rule != mortar_plumb::Rule::Structure(8) {
-        return None;
-    }
-    if sym == "_TLS_MODULE_BASE_" {
-        return Some("A3: mold's _TLS_MODULE_BASE_ is an address, or there is no PT_TLS");
-    }
-    let addr = f.addr?;
-    if addr >= 1 << 32 {
-        return Some("A2: mold gives an alias of an IFUNC the value 2^32 + x");
-    }
-    let bytes = link.output_bytes();
-    let h = mortar_elf::FileHeader::parse(&bytes).ok()?;
-    let table = mortar_elf::SectionTable::parse(&bytes, &h).ok()?;
-    let in_plt = table.iter().any(|s| {
-        s.name().is_ok_and(|n| n == b".plt.got" || n == b".iplt" || n == b".plt")
-            && (s.header().sh_addr..s.header().sh_addr + s.header().sh_size).contains(&addr)
-    });
-    in_plt.then_some(
-        "A1: mold's canonical IFUNC symbol is in .plt.got but names .text with the resolver's size",
-    )
+    // The output is read only for the one class that needs its sections.
+    let format = link.linker.format();
+    mortar_plumb::anomaly::classify(format, &[], f).or_else(|| {
+        (f.rule == mortar_plumb::Rule::Structure(8))
+            .then(|| mortar_plumb::anomaly::classify(format, &link.output_bytes(), f))
+            .flatten()
+    })
 }
 
 /// The findings of a report on `link` that are not recorded anomalies.

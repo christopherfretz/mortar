@@ -236,6 +236,18 @@ pub struct Marker {
     pub reason: String,
 }
 
+/// An `anomaly(...)` directive: on the links of these reference linkers,
+/// the verifier's findings that `spec/plumb.md` §10.2 records under these
+/// ids are expected (L3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Anomaly {
+    pub line: usize,
+    /// At least one linker, never mortar.
+    pub scope: Scope,
+    /// `A1`, `A9`, ...
+    pub ids: Vec<String>,
+}
+
 /// The language of a compile step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
@@ -438,6 +450,7 @@ pub struct Test {
     pub arches: Vec<Arch>,
     pub requires: Vec<Feature>,
     pub markers: Vec<Marker>,
+    pub anomalies: Vec<Anomaly>,
     /// The wall-clock limit of each link and run step, if the test sets
     /// one.
     pub timeout: Option<Duration>,
@@ -624,6 +637,7 @@ struct Parser {
     arches: Option<(usize, Vec<Arch>)>,
     requires: Option<(usize, Vec<Feature>)>,
     markers: Vec<Marker>,
+    anomalies: Vec<Anomaly>,
     timeout: Option<Duration>,
     memory_mib: Option<u64>,
     steps: Vec<Step>,
@@ -691,6 +705,31 @@ impl Parser {
                 return self.error(line, format!("'{key}' needs a reason"));
             }
             self.markers.push(Marker { line, kind, scope, reason: value.to_owned() });
+            return;
+        }
+        if key == "anomaly" {
+            if let Err(message) = qualifiers.no_family("'anomaly'") {
+                return self.error(line, message);
+            }
+            let scope = qualifiers.scope;
+            if scope.linkers.is_empty() || scope.linkers.contains(&Linker::Mortar) {
+                return self.error(
+                    line,
+                    "'anomaly' names the reference linkers it is for: 'anomaly(mold): A9'",
+                );
+            }
+            let ids: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
+            let valid = |id: &String| {
+                id.strip_prefix('A')
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            };
+            if ids.is_empty() || !ids.iter().all(valid) {
+                return self.error(
+                    line,
+                    format!("'anomaly: {value}' is not a list of plumb.md anomaly ids ('A9 A11')"),
+                );
+            }
+            self.anomalies.push(Anomaly { line, scope, ids });
             return;
         }
         if qualified {
@@ -1042,6 +1081,7 @@ impl Parser {
             arches,
             requires: self.requires.map(|(_, features)| features).unwrap_or_default(),
             markers: self.markers,
+            anomalies: self.anomalies,
             timeout: self.timeout,
             memory_mib: self.memory_mib,
             steps,
@@ -1063,6 +1103,8 @@ impl Parser {
         }
         let markers = self.markers.clone();
         scopes.extend(markers.iter().map(|marker| (marker.line, &marker.scope)));
+        let anomalies = self.anomalies.clone();
+        scopes.extend(anomalies.iter().map(|anomaly| (anomaly.line, &anomaly.scope)));
         for (line, scope) in scopes {
             if let Some(arch) = scope.arches.iter().find(|arch| !arches.contains(arch)) {
                 self.error(
@@ -1449,6 +1491,25 @@ FileHeader:
         // Marked on different architectures: each keeps a reference.
         let split = "#@ xfail(bfd,lld,i386): a\n#@ xfail(mold,aarch64): c\n";
         assert!(parse(&with(split)).is_ok());
+    }
+
+    // "Directives", "L3": `anomaly` names reference linkers and anomaly
+    // ids of plumb.md §10.2.
+    #[test]
+    fn anomaly_declarations() {
+        let with = |directives: &str| {
+            format!("#@ spec: layout.md \"x\"\n#@ arch: aarch64 i386\n{directives}link ld a.o\n")
+        };
+        let test =
+            parse(&with("#@ anomaly(mold): A9 A11\n#@ anomaly(bfd,aarch64): A10\n")).unwrap();
+        assert_eq!(test.anomalies.len(), 2);
+        assert_eq!(test.anomalies[0].ids, ["A9", "A11"]);
+        assert_eq!(test.anomalies[1].scope.arches, [Arch::Aarch64]);
+        assert!(has_error(&with("#@ anomaly: A9\n"), 3, "names the reference linkers"));
+        assert!(has_error(&with("#@ anomaly(mortar): A9\n"), 3, "names the reference linkers"));
+        assert!(has_error(&with("#@ anomaly(mold): 9\n"), 3, "not a list of plumb.md anomaly"));
+        assert!(has_error(&with("#@ anomaly(mold): A\n"), 3, "not a list of plumb.md anomaly"));
+        assert!(has_error(&with("#@ anomaly(mold,x86_64): A9\n"), 3, "not an architecture of"));
     }
 
     // "Steps": the keywords, their qualifiers and their arguments.

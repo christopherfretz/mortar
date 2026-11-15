@@ -6,6 +6,7 @@
 #@ spec: synth.md ".eh_frame_hdr"
 #@ requires: llvm-readelf
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(mold): A3 A9
 
 as start-%{arch}.s -o start.o
 link ld --eh-frame-hdr start.o -o with

@@ -8,6 +8,8 @@
 # differ; measured), lld and mold keep it, so the references DIFFER there.
 #@ spec: synth.md "IRELATIVE"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O1 -fno-pie pick.c -o pick.o
 cc -O1 -fno-pie main.c -o main.o

@@ -36,6 +36,21 @@ describes how x86-64 and i386 fit.
 On the reference corpus, a stage-1 report may give only the stage-2
 reasons in "not checked" (§9.1).
 
+Of stage 2, static TLS (§4.7), call frame information (§6.4) and the
+symbol table (§6.5) have landed. These are not yet done and keep their
+not-checked reasons:
+
+- IFUNC: IPLT entries, `.rela.iplt` and `__rela_iplt_*`, GOT slots that
+  hold a resolver or an IPLT address, address-of and pointer equality
+  (`ifunc`; Y5 already checks the `__rela_iplt_*` bounds);
+- non-alloc relocations: `.debug_*` (static values even in a PIE), the
+  tombstones for discarded targets (0, 1, −1, −2) and mortar's
+  convention (`non-alloc`). Compressed debug sections are to be named as
+  not judged.
+
+`cargo xtask linktest` runs the verifier on every link (`spec/harness.md`
+"L3").
+
 ## 2. Inputs
 
 `verify(output, inputs, map) -> Report`:
@@ -68,10 +83,16 @@ report has the single finding O1 (§6.1).
 Each input is identified by the path the map spells. `Input::path` must
 match that spelling exactly. `xtask plumb` resolves paths against its
 working directory and then reads them (§8). A map file of the form
-`archive(member)` names a member of a regular archive. The member is found
+`archive(member)` names a member of an archive: the member is the text
+between the last `(` and the final `)`. The member is found
 by name, and by header offset when the map gives one (mortar's format).
 The member must be the only one with that name, or the record is refused
-(I2). Thin archives are refused (I2, stage 3).
+(I2). A member of a thin archive is the file at its stored path, from
+the archive's directory when the path is relative (GNU ar manual,
+"--thin"). That file must be among the inputs under that path, or the
+record is I2. `thin_members(path, bytes)` lists those paths for a
+caller, and `xtask plumb` reads them. A thin archive's member that is
+itself a member of another archive is refused (I2).
 
 An input object must be `ET_REL` of the output's machine. Otherwise the
 finding is I2. A file the map names that is not among the inputs is I1,
@@ -302,6 +323,9 @@ Ambiguities:
   mold's spelling.
 - **Symbol names.** mold demangles them in the `Symbol` column. They are
   not read.
+- **Common symbols.** mold lists a file's common symbols as an input row
+  `file:(.common)`. This is read as lld's `COMMON`: a chunk, not an input
+  section (`resolve/common` in the link tests).
 - **Unlisted inputs.** mold lists neither `.eh_frame` input sections nor
   mergeable ones. `.eh_frame` is *absent*, which counts as `eh-frame`, and
   mergeable sections are *merged*.
@@ -465,7 +489,10 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
      place, as for a local symbol. This step covers hidden symbols, which
      lld and mold make local in the output.
   3. **The unique output symbol of that name**, of any binding.
-  4. **An undefined weak** in the input.
+  4. **An undefined weak** in the input, when the output has a `.symtab`.
+     A stripped output (`-s`) does not say whether the linker defined the
+     name (glibc's weak `__rela_iplt_start`), so the record is
+     `symbol-unresolved` (`resolve/symtab` in the link tests).
 
   If none applies, the record is `symbol-unresolved`.
 
@@ -1294,7 +1321,7 @@ corpus test accepts them by name and nothing else.
   segment (S8).
 - **A3 (mold).** `_TLS_MODULE_BASE_` is defined `STT_TLS` even with no
   `PT_TLS`. When there is one, its value is the segment's address rather
-  than an offset (S8).
+  than an offset (S8, and Y5 of §6.5).
 
 - **A6 (GNU ld, lld, mold).** A `:got:` reference to a local symbol, which the
   assembler writes as a section symbol plus an addend

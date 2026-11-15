@@ -9,6 +9,8 @@
 #@ spec: resolve.md "Common symbols"
 #@ xfail(mold): mold 2.37.1 sizes a common symbol by its first definition, not the largest
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O0 -fcommon a.c -o a.o
 cc -O0 -fcommon b.c -o b.o

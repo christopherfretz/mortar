@@ -4,6 +4,8 @@
 # dynamic segment (gABI "Program Header"); arguments reach main.
 #@ spec: layout.md "Static executables"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O2 hello.c -o hello.o
 link gcc -static -no-pie hello.o -o hello

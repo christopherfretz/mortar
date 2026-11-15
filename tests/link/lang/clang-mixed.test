@@ -4,6 +4,8 @@
 #@ spec: layout.md "Static executables"
 #@ requires: clang
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O1 gcc_part.c -o gcc_part.o
 cc(clang) -O1 clang_part.c -o clang_part.o

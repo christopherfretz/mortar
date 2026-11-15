@@ -8,6 +8,8 @@
 # checks only that no definition was pulled in.
 #@ spec: resolve.md "Weak symbols"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O1 main.c -o main.o
 cc -O1 maybe.c -o maybe.o

@@ -5,6 +5,8 @@
 #@ spec: resolve.md "COMDAT groups"
 #@ requires: g++
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 cxx -O0 a.cc -o a.o
 cxx -O0 b.cc -o b.o

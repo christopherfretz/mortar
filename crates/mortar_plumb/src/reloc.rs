@@ -637,7 +637,13 @@ impl<'a, 'b> Engine<'a, 'b> {
                 return Target::Addr(out.sym.st_value);
             }
         }
-        if matches!(where_, Ok(SymbolSection::Undefined)) && sym.binding() == STB_WEAK {
+        // 4. An undefined weak: only when the output has a `.symtab`. A
+        // stripped output (`-s`) does not say whether the linker defined
+        // the name (`__rela_iplt_start`).
+        if matches!(where_, Ok(SymbolSection::Undefined))
+            && sym.binding() == STB_WEAK
+            && !self.image.symbols.is_empty()
+        {
             return Target::UndefWeak;
         }
         Target::Skip(Reason::SymbolUnresolved)

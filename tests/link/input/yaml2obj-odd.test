@@ -7,6 +7,8 @@
 #@ spec: input.md "Relocatable objects"
 #@ requires: yaml2obj
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 yaml2obj odd-%{arch}.yaml -o odd.o
 cc -O1 main.c -o main.o

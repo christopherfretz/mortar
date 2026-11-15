@@ -8,6 +8,7 @@
 # choice.
 #@ spec: resolve.md "Archives"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O1 main.c -o main.o
 cc -O1 helper.c -o helper.o

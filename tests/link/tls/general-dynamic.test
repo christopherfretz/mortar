@@ -6,6 +6,8 @@
 # relaxation").
 #@ spec: layout.md "Thread-local storage"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O1 -fPIC -ftls-model=global-dynamic main.c -o main.o
 cc -O1 -fPIC -ftls-model=global-dynamic vars.c -o vars.o

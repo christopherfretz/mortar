@@ -4,6 +4,8 @@
 # Thread-Local Storage, "Local Exec"; the psABI's TLS layout).
 #@ spec: layout.md "Thread-local storage"
 #@ xfail(mortar): no linking yet (M1)
+#@ anomaly(bfd): A10
+#@ anomaly(mold): A1 A2 A3 A9
 
 cc -O1 -ftls-model=local-exec -pthread tls.c -o tls.o
 link gcc -static -no-pie -pthread tls.o -o prog

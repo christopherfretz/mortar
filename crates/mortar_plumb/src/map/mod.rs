@@ -307,17 +307,15 @@ pub fn parse(format: Format, text: &str) -> Result<Map, MapError> {
 }
 
 /// Splits a foreign map's file spelling `path(member)` (§3.3): the member
-/// is the text between the first `(` after the last `/` and a final `)`.
-/// A spelling without that shape is a plain path.
+/// is the text between the last `(` and a final `)`. A thin archive's
+/// member is a path and may have `/` in it (`libt.a(lib/one.o)`). A
+/// spelling without that shape is a plain path.
 pub(crate) fn split_member(spec: &str) -> MapFile {
-    let base_start = spec.rfind('/').map_or(0, |i| i + 1);
     if let Some(stripped) = spec.strip_suffix(')')
-        && let Some(open) = spec[base_start..].find('(')
+        && let Some(open) = stripped.rfind('(')
+        && open > 0
     {
-        let open = base_start + open;
-        if open > 0 {
-            return MapFile::member(&spec[..open], &stripped[open + 1..]);
-        }
+        return MapFile::member(&spec[..open], &stripped[open + 1..]);
     }
     MapFile::plain(spec)
 }
@@ -353,7 +351,7 @@ mod tests {
 
     // spec/plumb.md §3.3: archive member spelling.
     #[test]
-    fn s3_3_member_spelling_splits_after_the_last_slash() {
+    fn s3_3_member_spelling_splits_at_the_last_paren() {
         assert_eq!(
             split_member("/usr/lib/libc.a(ioputs.o)"),
             MapFile::member("/usr/lib/libc.a", "ioputs.o")
@@ -362,6 +360,7 @@ mod tests {
         assert_eq!(split_member("/a(b)/lib.a(m.o)"), MapFile::member("/a(b)/lib.a", "m.o"));
         assert_eq!(split_member("/a(b)/x.o"), MapFile::plain("/a(b)/x.o"));
         assert_eq!(split_member("(odd)"), MapFile::plain("(odd)"));
+        assert_eq!(split_member("libt.a(lib/one.o)"), MapFile::member("libt.a", "lib/one.o"));
     }
 
     // §3.5: the input spelling of lld and mold.
