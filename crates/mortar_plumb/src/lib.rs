@@ -24,6 +24,8 @@ pub mod report;
 mod structure;
 mod symbols;
 pub mod x64;
+pub mod x86;
+mod x86op;
 
 pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};

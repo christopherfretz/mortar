@@ -161,6 +161,29 @@ impl PieceIndex {
         })
     }
 
+    /// The row of `section` in the index ([`PieceIndex::section_symbol_in`]).
+    #[must_use]
+    pub fn row_of(&self, section: SectionId) -> Option<u32> {
+        let at = self.rows.binary_search_by_key(&section, |r| r.section).ok()?;
+        u32::try_from(at).ok()
+    }
+
+    /// [`PieceIndex::section_symbol`] of the section of row `row`
+    /// ([`PieceIndex::row_of`]); `None` when there is no such row.
+    #[must_use]
+    pub fn section_symbol_in(
+        &self,
+        split: &Split,
+        row: u32,
+        r: i64,
+    ) -> Option<Result<PieceRef, What>> {
+        let row = self.rows.get(row as usize)?;
+        Some(match u64::try_from(r).ok().filter(|&r| r < row.size) {
+            Some(r) => self.at(split, row, r).ok_or(What::OutsideSection),
+            None => Err(What::OutsideSection),
+        })
+    }
+
     /// [`named_symbol`] of `section` with the size the index holds;
     /// `None` when the index does not hold the section.
     #[must_use]

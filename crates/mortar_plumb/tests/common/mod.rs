@@ -1639,7 +1639,8 @@ pub fn known_anomaly(link: &Link, f: &mortar_plumb::Finding) -> Option<&'static 
     // The output is read only for the one class that needs its sections.
     let format = link.linker.format();
     mortar_plumb::anomaly::classify(format, &[], f).or_else(|| {
-        (f.rule == mortar_plumb::Rule::Structure(8))
+        // S8, and Y1 for i386's A2 (its value is 16 bytes before .plt.got).
+        matches!(f.rule, mortar_plumb::Rule::Structure(8) | mortar_plumb::Rule::SymbolValue)
             .then(|| mortar_plumb::anomaly::classify(format, &link.output_bytes(), f))
             .flatten()
     })

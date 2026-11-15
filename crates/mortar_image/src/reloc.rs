@@ -48,7 +48,7 @@ use mortar_elf::raw::{Record, Rela};
 
 const _: () = assert!(Rela::SIZE64 == 24 && Rela::SIZE32 == 12);
 
-use crate::fill::{Image, Tables};
+use crate::fill::{Image, SplitPlace, Tables};
 use crate::plan::{InputUnit, Plan, RecRows, RelaTable, RelocSection};
 use crate::source;
 use crate::tombstone;
@@ -92,6 +92,109 @@ pub(crate) struct Scratch {
     /// The deferred sections a fault was found in (I-14), in the order
     /// found; taken by the job.
     pub flagged: Vec<SectionId>,
+    /// Recent keys' values (and a deferred record's facts), direct-mapped.
+    memo: Memo,
+}
+
+/// A worker's memo of [`Tables::record_sym`] (and [`Tables::scan_facts`]
+/// at a mention) by key: both are functions of the key (and the mention)
+/// alone over one link, and a section's records name few keys many
+/// times (a `.debug_info`'s: its file's `.debug_str` section symbol).
+#[derive(Debug, Default)]
+struct Memo {
+    slots: Vec<Option<MemoSlot>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MemoSlot {
+    key: SymKey,
+    value: SymValue,
+    split: bool,
+    /// The facts at a mention, when asked for.
+    at: Option<(Option<SymEntry>, Option<SymFacts>)>,
+    /// [`Tables::split_place`], when asked for.
+    place: Asked,
+}
+
+/// A memo slot's [`Tables::split_place`].
+#[derive(Debug, Clone, Copy)]
+enum Asked {
+    Not,
+    Got(Option<SplitPlace>),
+}
+
+impl Memo {
+    const SLOTS: usize = 1024;
+
+    fn slot(&mut self, key: SymKey) -> &mut Option<MemoSlot> {
+        if self.slots.is_empty() {
+            self.slots.resize(Self::SLOTS, None);
+        }
+        let h = match key.kind() {
+            mortar_core::SymKind::Global(id) => id.0,
+            mortar_core::SymKind::Local(e) => e.file.0.wrapping_mul(0x9e37_79b9) ^ e.index.0,
+        };
+        let i = (h.wrapping_mul(0x85eb_ca6b) >> 22) as usize % Self::SLOTS;
+        &mut self.slots[i]
+    }
+
+    /// [`Tables::record_sym`].
+    fn record_sym(&mut self, tables: &dyn Tables, key: SymKey) -> (SymValue, bool) {
+        let slot = self.slot(key);
+        if let Some(m) = slot
+            && m.key == key
+        {
+            return (m.value, m.split);
+        }
+        let (value, split) = tables.record_sym(key);
+        *slot = Some(MemoSlot { key, value, split, at: None, place: Asked::Not });
+        (value, split)
+    }
+
+    /// [`Tables::split_target`], with the key's place read once.
+    fn split_target(
+        &mut self,
+        tables: &dyn Tables,
+        key: SymKey,
+        addend: i64,
+    ) -> Option<Result<Option<u64>, Diagnostic>> {
+        let slot = self.slot(key);
+        let place = match slot {
+            Some(m) if m.key == key => match m.place {
+                Asked::Got(p) => p,
+                Asked::Not => {
+                    let p = tables.split_place(key);
+                    m.place = Asked::Got(p);
+                    p
+                }
+            },
+            _ => tables.split_place(key),
+        };
+        match place {
+            Some(p) => tables.split_at(&p, key, addend),
+            None => tables.split_target(key, addend),
+        }
+    }
+
+    /// [`Tables::record_sym_at`].
+    fn record_sym_at(
+        &mut self,
+        tables: &dyn Tables,
+        key: SymKey,
+        mention: Option<SymEntry>,
+    ) -> (SymValue, bool, Option<SymFacts>) {
+        let slot = self.slot(key);
+        if let Some(m) = slot
+            && m.key == key
+            && let Some((at, facts)) = m.at
+            && at == mention
+        {
+            return (m.value, m.split, facts);
+        }
+        let (value, split, facts) = tables.record_sym_at(key, mention);
+        *slot = Some(MemoSlot { key, value, split, at: Some((mention, facts)), place: Asked::Not });
+        (value, split, facts)
+    }
 }
 
 /// One clip of a relocated section: `[a, b)` in section offsets, held by
@@ -150,6 +253,9 @@ struct View<'a> {
     first: u32,
     total: u32,
     base: u64,
+    /// `recs` are in `r_offset` order (found for `.debug_aranges` only:
+    /// [`tomb`]'s search; `false` elsewhere).
+    sorted: bool,
 }
 
 impl View<'_> {
@@ -487,8 +593,19 @@ pub(crate) fn relocate(
     // its end too (each such record is a fault).
     let last = deferred && b >= c.section_size;
     let hi = if last { u64::MAX } else { b.saturating_add(reach.0) };
-    let Scratch { site: site_buf, proof, picks, raw, recs, syms, perm, windows, pairs, flagged } =
-        s;
+    let Scratch {
+        site: site_buf,
+        proof,
+        picks,
+        raw,
+        recs,
+        syms,
+        perm,
+        windows,
+        pairs,
+        flagged,
+        memo,
+    } = s;
     picks.clear();
     syms.clear();
     windows.clear();
@@ -533,7 +650,8 @@ pub(crate) fn relocate(
         (&site_buf[..], base)
     };
     let total = c.rs.len();
-    let view = View { recs, first, total, base };
+    let sorted = aranges && recs.is_sorted_by_key(|r| r.r_offset);
+    let view = View { recs, first, total, base, sorted };
     proof.clear();
     proof.extend(c.rs.proof.iter().filter(|p| p.end > base).map(|p| ProofRun {
         start: p.start.saturating_sub(base),
@@ -589,9 +707,11 @@ pub(crate) fn relocate(
             proof,
             leads,
         };
-        if deferred {
+        // A deferred record's value and its check's facts: one read.
+        let (mut sym, split) = if deferred {
             let mention = r_sym.map(|s| SymEntry { file: c.file, index: SymbolIndex(s) });
-            let check = check(img, c, &at, mention);
+            let (sym, split, facts) = memo.record_sym_at(img.tables, rec.key, mention);
+            let check = check(img, c, &at, mention, facts);
             fault |= check.fault && reports;
             if check.errored {
                 continue;
@@ -599,15 +719,18 @@ pub(crate) fn relocate(
             if let Some(w) = img.arch.unit_window(img.output, &at, img.tables) {
                 windows.push(w);
             }
-        }
+            (sym, split)
+        } else {
+            memo.record_sym(img.tables, rec.key)
+        };
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name)
             .with_exec(c.exec);
-        let (mut sym, split) = img.tables.record_sym(rec.key);
         // A live key's split target first: under `--gc-sections` a live
         // merge section can hold a collected piece (I-7), and a debug
         // reference to one is the tombstone (I-47), as one to a collected
         // section is.
-        let mut target = (split && sym.live).then(|| img.tables.split_target(rec.key, rec.addend));
+        let mut target =
+            (split && sym.live).then(|| memo.split_target(img.tables, rec.key, rec.addend));
         let value = match howto.field {
             Field::Data { bytes: width } if !sym.live || matches!(target, Some(Some(Ok(None)))) => {
                 tombstone::field(img.arch, c.name, c.alloc, width).map(|v| (v, width))
@@ -619,8 +742,9 @@ pub(crate) fn relocate(
             Ok(())
         } else {
             if split {
-                let target =
-                    target.take().unwrap_or_else(|| img.tables.split_target(rec.key, rec.addend));
+                let target = target
+                    .take()
+                    .unwrap_or_else(|| memo.split_target(img.tables, rec.key, rec.addend));
                 match target {
                     None => sym = img.tables.sym(rec.key),
                     Some(Ok(Some(v))) => sym.s = v.wrapping_sub(rec.addend.cast_unsigned()),
@@ -687,6 +811,9 @@ struct CheckTables<'a> {
     tables: &'a dyn Tables,
     key: SymKey,
     mention: Option<SymEntry>,
+    /// `key`'s facts at `mention`, read with its value
+    /// ([`Tables::record_sym_at`]).
+    facts: Option<SymFacts>,
     missing: std::sync::atomic::AtomicBool,
 }
 
@@ -698,6 +825,11 @@ impl SymNames for CheckTables<'_> {
 
 impl ScanTables for CheckTables<'_> {
     fn sym(&self, key: SymKey) -> SymFacts {
+        if key == self.key
+            && let Some(f) = self.facts
+        {
+            return f;
+        }
         let mention = if key == self.key { self.mention } else { None };
         self.tables.scan_facts(key, mention).unwrap_or_else(|| {
             self.missing.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -753,11 +885,18 @@ impl DemandOut for Check {
 
 /// `arch.scan` of a deferred record (I-14), as the scan's walk calls it
 /// (§4.1 step 2: the record's own mention for an undefined key's type).
-fn check(img: &Image<'_>, c: &Clip<'_>, at: &RelocAt<'_>, mention: Option<SymEntry>) -> Check {
+fn check(
+    img: &Image<'_>,
+    c: &Clip<'_>,
+    at: &RelocAt<'_>,
+    mention: Option<SymEntry>,
+    facts: Option<SymFacts>,
+) -> Check {
     let tables = CheckTables {
         tables: img.tables,
         key: at.key,
         mention,
+        facts,
         missing: std::sync::atomic::AtomicBool::new(false),
     };
     let mut out = Check {
@@ -798,11 +937,13 @@ fn tomb(
         let (lo, hi) = (rec.r_offset + u64::from(width), rec.r_offset + 2 * u64::from(width));
         // Every decoded record: the following ones of a sorted section
         // (the window reaches past the clip's), all of an unsorted one.
-        let occupied = view
-            .recs
+        // In a sorted one, the records from the first at `lo` on.
+        let from = if view.sorted { view.recs.partition_point(|x| x.r_offset < lo) } else { 0 };
+        let occupied = view.recs[from..]
             .iter()
             .enumerate()
-            .any(|(k, x)| k as u32 + view.first != i && (lo..hi).contains(&x.r_offset));
+            .take_while(|(_, x)| !view.sorted || x.r_offset < hi)
+            .any(|(k, x)| (from + k) as u32 + view.first != i && (lo..hi).contains(&x.r_offset));
         if !occupied && hi <= section_size {
             out.write(at + u64::from(width), &[0u8; 8][..w]);
         }

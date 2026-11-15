@@ -61,8 +61,8 @@ pub(crate) fn check_content(e: &mut Engine<'_, '_>) {
                 continue;
             };
             let cov = covered(o, si);
-            // x86-64 rewritings are recorded byte by byte (§5.9).
-            let gran = if machine == mortar_elf::Machine::X86_64 { 1 } else { 4 };
+            // x86 rewritings are recorded byte by byte (§5.9, §5.11).
+            let gran = if machine == mortar_elf::Machine::AArch64 { 4 } else { 1 };
             if let Some(k) = first_difference(s.data, &cov, out, gran, |k| {
                 // A word an erratum 843419 patch replaced by a branch (W8).
                 let p = addr + k;
