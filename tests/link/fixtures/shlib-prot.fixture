@@ -1,0 +1,19 @@
+# A shared library with protected definitions for the D-18 tests
+# (spec/dyn.md "D-18"): `libprot.so` (soname `libprot.so`), linked by GNU
+# ld, defines the protected datum `pv` (9) and the protected function `pf`
+# (returns 9), and the library's own view of them: `get_pv` reads `pv`
+# in place, `addr_pf` returns the address the library has for `pf`.
+
+cc -O1 -fPIC prot.c -o prot.o
+shlib gcc prot.o -Wl,-soname,libprot.so -o libprot.so
+
+#--- prot.h
+extern int pv;
+int pf(void);
+int get_pv(void);
+void *addr_pf(void);
+#--- prot.c
+__attribute__((visibility("protected"))) int pv = 9;
+__attribute__((visibility("protected"))) int pf(void) { return 9; }
+int get_pv(void) { return pv; }
+void *addr_pf(void) { return (void *)pf; }

@@ -1,0 +1,46 @@
+# dyn.md §2.1 variants, D-21: gcc's default line with `-rdynamic`
+# (`-export-dynamic` on the line), as users link, PIE (the driver's
+# default) and `-no-pie`, each run. Every global definition of the
+# executable is exported: `dlsym(RTLD_DEFAULT, ...)` finds the program's
+# own function and datum at the addresses the program uses, and the
+# `.dynsym` has them and `main`.
+#
+# mortar: AArch64 WP-056 (OPTS), x86-64 WP-056 (OPTS), in tests/link/xfails.
+#@ spec: dyn.md "2.1 Default link lines"
+#@ spec: dyn.md "D-21"
+#@ arch: aarch64 x86_64
+
+cc -O2 hello.c -o hello.o
+link gcc -rdynamic hello.o -o pie
+run pie
+  stdout: exported_fn found 1, same 1, returns 42
+  stdout: exported_data found 1, same 1, value 7
+link gcc -no-pie -rdynamic hello.o -o exec
+run exec
+  stdout: exported_fn found 1, same 1, returns 42
+  stdout: exported_data found 1, same 1, value 7
+check readelf --dyn-syms -W pie
+  has: FUNC GLOBAL DEFAULT * exported_fn$
+  has: OBJECT GLOBAL DEFAULT * exported_data$
+  has: FUNC GLOBAL DEFAULT * main$
+check readelf --dyn-syms -W exec
+  has: FUNC GLOBAL DEFAULT * exported_fn$
+  has: OBJECT GLOBAL DEFAULT * exported_data$
+  has: FUNC GLOBAL DEFAULT * main$
+
+#--- hello.c
+#include <dlfcn.h>
+#include <stdio.h>
+
+int exported_data = 7;
+__attribute__((noinline)) int exported_fn(void) { return 42; }
+
+int main(void) {
+  int (*f)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "exported_fn");
+  int *d = (int *)dlsym(RTLD_DEFAULT, "exported_data");
+  printf("exported_fn found %d, same %d, returns %d\n", f != 0, f == exported_fn,
+         f ? f() : -1);
+  printf("exported_data found %d, same %d, value %d\n", d != 0, d == &exported_data,
+         d ? *d : -1);
+  return 0;
+}

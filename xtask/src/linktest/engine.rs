@@ -10,11 +10,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt::{Display, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::format::{
-    Anomaly, ArchXfail, Check, CheckTool, Driver, Exit, Expectation, Language, Link, Marker,
-    MarkerKind, Run, Stdout, Step, StepKind, Template, Test, Vars,
+    Anomaly, ArchXfail, Check, CheckTool, Driver, Exit, Expectation, Fixture, Language, Link,
+    Marker, MarkerKind, Run, Stdout, Step, StepKind, Template, Test, Vars, Want,
 };
 use super::outcome::{self, Outcome, Printed, Raw, Reference, Verdict};
 use super::pattern::Pattern;
@@ -55,15 +56,56 @@ pub struct Matrix {
     /// The run-wide default anomalies, `tests/link/anomalies`
     /// (`spec/harness.md` "L3").
     pub defaults: Vec<Anomaly>,
-    /// The run-wide mortar `xfail`s by architecture, `tests/link/xfails`
-    /// (`spec/harness.md` "Markers").
+    /// The mortar `xfail`s of `tests/link/xfails`, run-wide by
+    /// architecture and by test (`spec/harness.md` "Markers").
     pub xfails: Vec<ArchXfail>,
+    /// Whether the verifier has stage 3 ([`stage3_present`]): it judges
+    /// dynamic outputs, which are otherwise not judged by the name
+    /// [`STAGE3_ABSENT`].
+    pub stage3: bool,
+    /// The fixtures the tests of the run name, by name: parsed, or why not
+    /// (`spec/harness.md` "Fixtures").
+    pub fixtures: BTreeMap<String, Result<Fixture, String>>,
+    /// Where fixtures are built, `<work>/fixtures/<arch>/<name>`.
+    pub fixture_dir: PathBuf,
+    /// The fixtures built in this run, each once per architecture.
+    pub built: FixtureCache,
     /// The digest mode of `cargo xtask static-identical` (`spec/harness.md`
     /// "static-identical"): mortar alone, its link steps only, each
     /// recorded as a [`DigestRow`]; compile steps get
     /// `-ffile-prefix-map=<inputs>=.` so that no object names the work
     /// directory.
     pub digest: bool,
+}
+
+/// The fixtures a run has built or is building, by name and architecture:
+/// the first unit that needs one builds it, the others wait for it.
+pub type FixtureCache = Mutex<BTreeMap<(String, Arch), Arc<OnceLock<Result<PathBuf, String>>>>>;
+
+/// The reason a dynamic output is not judged while the verifier has no
+/// stage 3 (`spec/harness.md` "L3").
+pub const STAGE3_ABSENT: &str = "stage 3 absent";
+
+/// Whether the verifier judges dynamic outputs (stage 3, `spec/plumb.md`
+/// §1, WP-050). Asked of the verifier itself, so that the day stage 3
+/// lands the dynamic outputs are judged without an edit here: stages 1
+/// and 2 answer an `ET_DYN` output with S1's `not ET_EXEC` finding
+/// (`crates/mortar_plumb/src/structure.rs`, "stage 1 checks static
+/// executables"), and stage 3 does not.
+pub fn stage3_present() -> bool {
+    // An ELF64 little-endian AArch64 `ET_DYN` header and nothing else.
+    let mut header = vec![0u8; 64];
+    header[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+    header[16..18].copy_from_slice(&3u16.to_le_bytes());
+    header[18..20].copy_from_slice(&183u16.to_le_bytes());
+    header[20..24].copy_from_slice(&1u32.to_le_bytes());
+    header[52..54].copy_from_slice(&64u16.to_le_bytes());
+    let map = mortar_plumb::Map::new(mortar_plumb::Format::Gnu);
+    let report = mortar_plumb::verify(&header, &[], &map);
+    !report
+        .findings
+        .iter()
+        .any(|f| f.rule == mortar_plumb::Rule::Structure(1) && f.message.contains("not ET_EXEC"))
 }
 
 impl Matrix {
@@ -113,6 +155,9 @@ impl Matrix {
             Feature::Clang => self.common.clang.is_some() && self.common.clangxx.is_some(),
             Feature::Yaml2obj => self.common.yaml2obj.is_some(),
             Feature::LlvmReadelf => self.common.llvm_readelf.is_some(),
+            Feature::Gdb => self.common.gdb.is_some(),
+            Feature::Lldb => self.common.lldb.is_some(),
+            Feature::Elflint => self.common.elflint.is_some(),
         }
     }
 }
@@ -396,9 +441,26 @@ impl Unit<'_> {
     /// the references first.
     pub fn run(&self) -> Results {
         let mut results = Results::default();
-        let missing: Vec<String> = self
-            .test
-            .requires
+        // The fixtures' tools are the test's too.
+        let mut requires = self.test.requires.clone();
+        for name in &self.test.fixtures {
+            match self.matrix.fixtures.get(name) {
+                Some(Ok(fixture)) => requires.extend(fixture.requires.iter().copied()),
+                Some(Err(why)) => {
+                    let detail = format!("fixture {name}: {why}");
+                    results.records.push(self.record(None, Outcome::Error, detail));
+                    return results;
+                }
+                None => {
+                    let detail = format!("fixture {name}: not loaded");
+                    results.records.push(self.record(None, Outcome::Error, detail));
+                    return results;
+                }
+            }
+        }
+        requires.sort_unstable();
+        requires.dedup();
+        let missing: Vec<String> = requires
             .iter()
             .filter(|feature| !self.matrix.has(self.tools, **feature))
             .map(|feature| {
@@ -483,7 +545,7 @@ impl Unit<'_> {
         if let Some(skip) = marker.filter(|m| m.kind == MarkerKind::Skip) {
             return self.record(mortar, Outcome::Skip, &skip.reason);
         }
-        let xfail = mortar_xfail(marker, &self.matrix.xfails, self.arch());
+        let xfail = mortar_xfail(marker, &self.matrix.xfails, self.arch(), self.name);
         let expected = match verdict {
             Verdict::Unproven => {
                 return self.record(
@@ -512,30 +574,70 @@ impl Unit<'_> {
         self.record(mortar, outcome, detail)
     }
 
-    /// Writes the embedded files to `<dir>/inputs` and runs the steps that
-    /// build inputs there.
+    /// Copies the built files of the test's fixtures to `<dir>/inputs`,
+    /// writes the embedded files there (a test's file replaces a fixture's
+    /// of the same name) and runs the steps that build inputs there.
     fn build_inputs(&self) -> Result<(), Raw> {
         let inputs = self.dir.join("inputs");
+        std::fs::create_dir_all(&inputs)
+            .map_err(|e| Raw::Error(format!("cannot write '{}': {e}", inputs.display())))?;
+        for name in &self.test.fixtures {
+            let built =
+                self.fixture(name).map_err(|e| Raw::Error(format!("fixture {name}: {e}")))?;
+            copy_dir(&built, &inputs).map_err(Raw::Error)?;
+        }
+        self.build(&self.test.files, &self.test.steps, &inputs)
+    }
+
+    /// The directory of the fixture `name` built for the unit's
+    /// architecture: built by the first unit of the run that asks, once.
+    fn fixture(&self, name: &str) -> Result<PathBuf, String> {
+        let cell = {
+            let mut built =
+                self.matrix.built.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(built.entry((name.to_owned(), self.arch())).or_default())
+        };
+        cell.get_or_init(|| {
+            let Some(Ok(fixture)) = self.matrix.fixtures.get(name) else {
+                return Err("not loaded".to_owned());
+            };
+            let dir = self.matrix.fixture_dir.join(self.arch().name()).join(name);
+            match self.build(&fixture.files, &fixture.steps, &dir) {
+                Ok(()) => Ok(dir),
+                Err(Raw::Error(e) | Raw::Fail(e) | Raw::Killed(e) | Raw::Skip(e)) => Err(e),
+                Err(Raw::Pass) => Err(String::new()),
+            }
+        })
+        .clone()
+    }
+
+    /// Writes `files` to `dir` and runs the build steps of `steps` there.
+    fn build(
+        &self,
+        files: &[super::format::Embedded],
+        steps: &[Step],
+        dir: &Path,
+    ) -> Result<(), Raw> {
         let error = |e: std::io::Error, path: &Path| {
             Raw::Error(format!("cannot write '{}': {e}", path.display()))
         };
-        std::fs::create_dir_all(&inputs).map_err(|e| error(e, &inputs))?;
-        for file in &self.test.files {
-            let path = inputs.join(&file.name);
+        std::fs::create_dir_all(dir).map_err(|e| error(e, dir))?;
+        for file in files {
+            let path = dir.join(&file.name);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| error(e, parent))?;
             }
             std::fs::write(&path, &file.contents).map_err(|e| error(e, &path))?;
         }
         let vars = Vars { arch: self.arch(), host: self.matrix.host, linker: None };
-        for step in &self.test.steps {
+        for step in steps {
             if !step.is_build() || !step.scope.has_arch(self.arch()) {
                 continue;
             }
             let args = expand(build_args(step), vars);
             let (program, mut full) = self.build_tool(step)?;
             full.extend(args.into_iter().map(OsString::from));
-            let output = spawn(step, &program, &full, &inputs, &[], TOOL_LIMITS)?;
+            let output = spawn(step, &program, &full, dir, &[], TOOL_LIMITS)?;
             if !output.end.success() {
                 return Err(Raw::Error(format!(
                     "{}: {}: {}",
@@ -577,6 +679,17 @@ impl Unit<'_> {
             }
             StepKind::Yaml2obj(_) => (common.yaml2obj.clone().ok_or_else(missing)?, Vec::new()),
             StepKind::Ar(_) => (self.tools.ar.clone(), Vec::new()),
+            // The system's own GNU ld links every fixture library, whatever
+            // linkers the run has.
+            StepKind::Shlib(shlib) => {
+                let program = match shlib.driver {
+                    Driver::Gxx => self.tools.gxx.as_ref(),
+                    Driver::Gfortran => self.tools.gfortran.as_ref(),
+                    _ => Some(&self.tools.gcc),
+                };
+                let before = vec!["-shared".into(), "-fuse-ld=bfd".into()];
+                (program.ok_or_else(missing)?.clone(), before)
+            }
             StepKind::Link(_) | StepKind::Run(_) | StepKind::Check(_) => {
                 unreachable!("{} does not build an input", step.describe())
             }
@@ -645,7 +758,10 @@ impl Unit<'_> {
                     self.run_program(step, run, &dir, vars, expected, &mut printed)
                 }
                 StepKind::Check(check) => self.check(step, check, linker, &dir, vars),
-                StepKind::Compile(_) | StepKind::Yaml2obj(_) | StepKind::Ar(_) => {
+                StepKind::Compile(_)
+                | StepKind::Yaml2obj(_)
+                | StepKind::Ar(_)
+                | StepKind::Shlib(_) => {
                     unreachable!("build steps are run once, before the linkers")
                 }
             };
@@ -836,9 +952,19 @@ impl Unit<'_> {
         let error = |what: &dyn Display| Raw::Error(format!("{}: L3: {what}", step.describe()));
         let bytes = std::fs::read(output_file)
             .map_err(|e| error(&format_args!("{}: {e}", output_file.display())))?;
-        if let Some(reason) = not_judged(&bytes) {
-            *judged.plumb.not_judged.entry(reason).or_default() += 1;
-            return Ok(());
+        match not_judged(&bytes) {
+            // Stage 3 (WP-050) judges dynamic outputs; until it lands they
+            // are not judged, by that name.
+            Some("dynamic" | "pie-or-shared") if self.matrix.stage3 => {}
+            Some("dynamic" | "pie-or-shared") => {
+                *judged.plumb.not_judged.entry(STAGE3_ABSENT).or_default() += 1;
+                return Ok(());
+            }
+            Some(reason) => {
+                *judged.plumb.not_judged.entry(reason).or_default() += 1;
+                return Ok(());
+            }
+            None => {}
         }
         drop(bytes);
         let format = match linker {
@@ -927,29 +1053,27 @@ impl Unit<'_> {
         }
         let args = expand(&run.args, vars);
         let mut limits = self.limits(RUN_LIMITS);
-        let (program, mut full) = match &self.tools.runner {
-            Runner::Native => {
-                // `/bin/sh` runs a file the kernel refuses as a script.
-                let mut magic = [0u8; 4];
-                let is_elf = std::fs::File::open(&path)
-                    .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut magic))
-                    .is_ok()
-                    && magic == *b"\x7fELF";
-                if !is_elf {
-                    return Err(fail(&format_args!("'{name}' is not an ELF file")));
-                }
-                (path.clone(), Vec::new())
+        if let Runner::Native = &self.tools.runner {
+            // `/bin/sh` runs a file the kernel refuses as a script.
+            let mut magic = [0u8; 4];
+            let is_elf = std::fs::File::open(&path)
+                .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut magic))
+                .is_ok()
+                && magic == *b"\x7fELF";
+            if !is_elf {
+                return Err(fail(&format_args!("'{name}' is not an ELF file")));
             }
-            Runner::Emulated { qemu, sysroot } => {
-                limits.time *= EMULATED_TIME_FACTOR;
-                if self.arch() == Arch::I386 {
-                    limits.memory_kib += I386_GUEST_KIB;
-                }
-                (qemu.clone(), vec!["-L".into(), sysroot.clone().into_os_string(), path.into()])
+        } else {
+            limits.time *= EMULATED_TIME_FACTOR;
+            if self.arch() == Arch::I386 {
+                limits.memory_kib += I386_GUEST_KIB;
             }
-        };
-        full.extend(args.into_iter().map(OsString::from));
-        let output = spawn(step, &program, &full, dir, &[], limits)?;
+        }
+        let env = program_env(dir, &run.env, vars);
+        let (program, full, host_env) = self.under_runner(&path, &env, args);
+        let host_env: Vec<(&str, &std::ffi::OsStr)> =
+            host_env.iter().map(|(n, v)| (n.as_str(), v.as_os_str())).collect();
+        let output = spawn(step, &program, &full, dir, &host_env, limits)?;
         let met = match (run.exit, output.end) {
             (Exit::Status(want), End::Exit(got)) | (Exit::Signal(want), End::Signal(got)) => {
                 want == got
@@ -1000,6 +1124,36 @@ impl Unit<'_> {
         Ok(())
     }
 
+    /// The program, arguments and host environment that run `program` of
+    /// the unit's architecture with `env` and the arguments `args`:
+    /// natively with `env` in its environment, or under qemu with `-L
+    /// <system root>` and each variable as `-E NAME=value` (the guest's,
+    /// not qemu's: an `LD_PRELOAD` of a guest library must not reach the
+    /// host's loader).
+    fn under_runner(
+        &self,
+        program: &Path,
+        env: &[(String, String)],
+        args: Vec<String>,
+    ) -> (PathBuf, Vec<OsString>, Vec<(String, OsString)>) {
+        match &self.tools.runner {
+            Runner::Native => {
+                let host = env.iter().map(|(n, v)| (n.clone(), OsString::from(v))).collect();
+                (program.to_path_buf(), args.into_iter().map(OsString::from).collect(), host)
+            }
+            Runner::Emulated { qemu, sysroot } => {
+                let mut full: Vec<OsString> = vec!["-L".into(), sysroot.clone().into_os_string()];
+                for (name, value) in env {
+                    full.push("-E".into());
+                    full.push(format!("{name}={value}").into());
+                }
+                full.push(program.as_os_str().to_owned());
+                full.extend(args.into_iter().map(OsString::from));
+                (qemu.clone(), full, Vec::new())
+            }
+        }
+    }
+
     fn check(
         &self,
         step: &Step,
@@ -1011,36 +1165,135 @@ impl Unit<'_> {
         let fail = |what: &dyn Display| Raw::Fail(format!("{}: {what}", step.describe()));
         let args = expand(&check.args, vars);
         let shown = format!("{} {}", check.tool.name(), args.join(" "));
-        let text = if check.tool == CheckTool::Text {
-            let path = dir.join(&args[0]);
-            match std::fs::read(&path) {
-                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-                Err(e) => return Err(fail(&format_args!("cannot read '{}': {e}", args[0]))),
+        let common = &self.matrix.common;
+        let env = program_env(dir, &[], vars);
+        let text = match check.tool {
+            CheckTool::Text => {
+                let path = dir.join(&args[0]);
+                match std::fs::read(&path) {
+                    Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                    Err(e) => return Err(fail(&format_args!("cannot read '{}': {e}", args[0]))),
+                }
             }
-        } else {
-            let program = match check.tool {
-                CheckTool::Readelf => Some(&self.tools.readelf),
-                CheckTool::Nm => Some(&self.tools.nm),
-                CheckTool::Objdump => Some(&self.tools.objdump),
-                CheckTool::LlvmReadelf => self.matrix.common.llvm_readelf.as_ref(),
-                CheckTool::Text => unreachable!("read above"),
-            };
-            let Some(program) = program else {
-                return Err(Raw::Error(format!("{}: its tool is not there", step.describe())));
-            };
-            let full: Vec<OsString> = args.iter().map(OsString::from).collect();
-            let output = spawn(step, program, &full, dir, &[], TOOL_LIMITS)?;
-            if !output.end.success() {
-                return Err(fail(&format_args!(
-                    "`{shown}`: {}: {}",
-                    output.end,
-                    first_error(&output)
+            CheckTool::Gdb | CheckTool::Lldb if self.tools.runner != Runner::Native => {
+                return Err(Raw::Skip(format!(
+                    "{}: {} runs only programs of the host here, and {} programs run under qemu",
+                    step.describe(),
+                    check.tool.name(),
+                    self.arch().name()
                 )));
             }
-            String::from_utf8_lossy(&output.stdout).into_owned()
+            tool => {
+                let (program, full, host_env): (PathBuf, Vec<OsString>, Vec<(String, OsString)>) =
+                    match tool {
+                        CheckTool::Ldd => {
+                            let loader = self.arch().loader(self.matrix.host);
+                            // A name without a slash would be searched for
+                            // as a library.
+                            let mut list = vec!["--list".to_owned()];
+                            list.extend(args.iter().map(|arg| {
+                                if arg.contains('/') { arg.clone() } else { format!("./{arg}") }
+                            }));
+                            self.under_runner(&loader, &env, list)
+                        }
+                        CheckTool::Gdb | CheckTool::Lldb => {
+                            let (program, full) =
+                                debugger(tool, common, &args).ok_or_else(|| {
+                                    Raw::Error(format!(
+                                        "{}: its tool is not there",
+                                        step.describe()
+                                    ))
+                                })?;
+                            let host = env.iter().map(|(n, v)| (n.clone(), v.into())).collect();
+                            (program, full, host)
+                        }
+                        _ => {
+                            let (program, before): (Option<&PathBuf>, &[&str]) = match tool {
+                                CheckTool::Readelf => (Some(&self.tools.readelf), &[]),
+                                CheckTool::Nm => (Some(&self.tools.nm), &[]),
+                                CheckTool::Objdump => (Some(&self.tools.objdump), &[]),
+                                CheckTool::LlvmReadelf => (common.llvm_readelf.as_ref(), &[]),
+                                _ => (common.elflint.as_ref(), &["--gnu-ld"]),
+                            };
+                            let Some(program) = program else {
+                                return Err(Raw::Error(format!(
+                                    "{}: its tool is not there",
+                                    step.describe()
+                                )));
+                            };
+                            let mut full: Vec<OsString> =
+                                before.iter().map(OsString::from).collect();
+                            full.extend(args.iter().map(OsString::from));
+                            (program.clone(), full, Vec::new())
+                        }
+                    };
+                let host_env: Vec<(&str, &std::ffi::OsStr)> =
+                    host_env.iter().map(|(n, v)| (n.as_str(), v.as_os_str())).collect();
+                let mut limits = TOOL_LIMITS;
+                if tool == CheckTool::Ldd && self.tools.runner != Runner::Native {
+                    limits.time *= EMULATED_TIME_FACTOR;
+                    if self.arch() == Arch::I386 {
+                        limits.memory_kib += I386_GUEST_KIB;
+                    }
+                }
+                let output = spawn(step, &program, &full, dir, &host_env, limits)?;
+                let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+                if tool == CheckTool::Elflint {
+                    // Its complaints are judged by the `allow` lines, not
+                    // by its exit status.
+                    text.push_str(&String::from_utf8_lossy(&output.stderr));
+                    self.allowed(&check.expectations, linker, &text, &shown)
+                        .map_err(|w| fail(&w))?;
+                } else if !output.end.success() {
+                    return Err(fail(&format_args!(
+                        "`{shown}`: {}: {}",
+                        output.end,
+                        first_error(&output)
+                    )));
+                }
+                text
+            }
         };
         self.expect(&check.expectations, linker, &text, &format!("`{shown}`"))
             .map_err(|what| fail(&what))
+    }
+
+    /// `check elflint`: every line it prints is `No errors` or matches an
+    /// `allow` line that applies to `linker` (`spec/harness.md` "Checks").
+    fn allowed(
+        &self,
+        expectations: &[Expectation],
+        linker: Linker,
+        text: &str,
+        shown: &str,
+    ) -> Result<(), String> {
+        let vars = Vars { arch: self.arch(), host: self.matrix.host, linker: Some(linker) };
+        let mut allow = Vec::new();
+        for e in expectations.iter().filter(|e| e.want == Want::Allow) {
+            if e.scope.applies(self.arch(), linker) {
+                let source = e.pattern.expand_pattern(vars);
+                allow.push(
+                    Pattern::parse(&source).map_err(|err| format!("line {}: {err}", e.line))?,
+                );
+            }
+        }
+        let complaints: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && *line != "No errors")
+            .filter(|line| !allow.iter().any(|p| p.matches_line(line)))
+            .collect();
+        match complaints.as_slice() {
+            [] => Ok(()),
+            [first, rest @ ..] => {
+                let more = if rest.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (and {} more)", rest.len())
+                };
+                Err(format!("`{shown}` complains, and no 'allow' line allows it: {first}{more}"))
+            }
+        }
     }
 
     /// Checks the expectations that apply to `linker` against the lines
@@ -1053,12 +1306,48 @@ impl Unit<'_> {
         what: &str,
     ) -> Result<(), String> {
         let vars = Vars { arch: self.arch(), host: self.matrix.host, linker: Some(linker) };
+        let lines = || text.lines().map(|line| line.strip_suffix('\r').unwrap_or(line));
+        // The line after the one the last `has` or `then` matched.
+        let mut next = 0;
         for expectation in expectations.iter().filter(|e| e.scope.applies(self.arch(), linker)) {
             let source = expectation.pattern.expand_pattern(vars);
             let pattern =
                 Pattern::parse(&source).map_err(|e| format!("line {}: {e}", expectation.line))?;
-            let lines = || text.lines().map(|line| line.strip_suffix('\r').unwrap_or(line));
-            let hit = lines().find(|line| pattern.matches_line(line));
+            match expectation.want {
+                Want::Allow => continue,
+                Want::Count(want) => {
+                    let got = lines().filter(|line| pattern.matches_line(line)).count();
+                    if u32::try_from(got).ok() != Some(want) {
+                        return Err(format!(
+                            "line {}: {got} lines of {what} match '{pattern}', not {want}{}",
+                            expectation.line,
+                            first_lines(text)
+                        ));
+                    }
+                    continue;
+                }
+                Want::Then => {
+                    let hit = lines().enumerate().skip(next).find(|(_, l)| pattern.matches_line(l));
+                    match hit {
+                        Some((at, _)) => next = at + 1,
+                        None => {
+                            return Err(format!(
+                                "line {}: no line of {what} after the one the expectation before \
+                                 matched matches '{pattern}'{}",
+                                expectation.line,
+                                first_lines(text)
+                            ));
+                        }
+                    }
+                    continue;
+                }
+                Want::Line => {}
+            }
+            let hit = lines().enumerate().find(|(_, line)| pattern.matches_line(line));
+            if let (true, Some((at, _))) = (expectation.present, hit) {
+                next = at + 1;
+            }
+            let hit = hit.map(|(_, line)| line);
             match (expectation.present, hit) {
                 (true, None) => {
                     return Err(format!(
@@ -1094,12 +1383,65 @@ fn build_args(step: &Step) -> &[Template] {
     match &step.kind {
         StepKind::Compile(compile) => &compile.args,
         StepKind::Yaml2obj(args) | StepKind::Ar(args) => args,
+        StepKind::Shlib(shlib) => &shlib.args,
         StepKind::Link(_) | StepKind::Run(_) | StepKind::Check(_) => &[],
     }
 }
 
 fn expand(templates: &[Template], vars: Vars) -> Vec<String> {
     templates.iter().map(|template| template.expand(vars)).collect()
+}
+
+/// The environment a linked program gets beyond the harness's
+/// (`spec/harness.md` "Runs"): `LD_LIBRARY_PATH` is the linker's
+/// directory, where the fixture libraries are, unless an `env` line sets
+/// it (to nothing, for none); then the `env` lines in order.
+pub fn program_env(dir: &Path, env: &[(String, Template)], vars: Vars) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if !env.iter().any(|(name, _)| name == "LD_LIBRARY_PATH") {
+        let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+        out.push(("LD_LIBRARY_PATH".to_owned(), dir.display().to_string()));
+    }
+    out.extend(env.iter().map(|(name, value)| (name.clone(), value.expand(vars))));
+    out
+}
+
+/// The command of `check gdb` or `check lldb`: the debugger in batch mode
+/// on the program (the first argument), each further argument one of its
+/// commands. gdb: no init files, no pager, no debuginfod; lldb: ASLR as
+/// the program would have it (the container refuses `personality`,
+/// `spec/dyn.md` D-70).
+fn debugger(
+    tool: CheckTool,
+    common: &CommonTools,
+    args: &[String],
+) -> Option<(PathBuf, Vec<OsString>)> {
+    let (program, commands) = args.split_first()?;
+    let mut full: Vec<OsString> = Vec::new();
+    let path = if tool == CheckTool::Gdb {
+        for arg in
+            ["-nx", "-batch", "-ex", "set pagination off", "-ex", "set debuginfod enabled off"]
+        {
+            full.push(arg.into());
+        }
+        for command in commands {
+            full.push("-ex".into());
+            full.push(command.into());
+        }
+        full.push(program.into());
+        common.gdb.clone()?
+    } else {
+        for arg in ["--no-lldbinit", "-b", "-o", "settings set target.disable-aslr false"] {
+            full.push(arg.into());
+        }
+        for command in commands {
+            full.push("-o".into());
+            full.push(command.into());
+        }
+        full.push(program.into());
+        common.lldb.clone()?
+    };
+    Some((path, full))
 }
 
 /// Runs a step's program in `dir`, in the C locale (diagnostics are
@@ -1213,10 +1555,12 @@ fn mortar_xfail<'a>(
     marker: Option<&'a Marker>,
     xfails: &'a [ArchXfail],
     arch: Arch,
+    test: &str,
 ) -> Option<&'a str> {
-    xfails
-        .iter()
-        .find(|x| x.arch == arch)
+    let line =
+        |test: Option<&str>| xfails.iter().find(|x| x.arch == arch && x.test.as_deref() == test);
+    line(None)
+        .or_else(|| line(Some(test)))
         .map(|x| x.reason.as_str())
         .or_else(|| marker.filter(|m| m.kind == MarkerKind::Xfail).map(|m| m.reason.as_str()))
 }
@@ -1235,11 +1579,55 @@ mod tests {
             scope: Scope::default(),
             reason: "no linking yet (M1)".to_owned(),
         };
-        let x = [ArchXfail { line: 3, arch: Arch::X86_64, reason: "no back end".to_owned() }];
-        assert_eq!(mortar_xfail(Some(&own), &x, Arch::X86_64), Some("no back end"));
-        assert_eq!(mortar_xfail(None, &x, Arch::X86_64), Some("no back end"));
-        assert_eq!(mortar_xfail(Some(&own), &x, Arch::Aarch64), Some("no linking yet (M1)"));
-        assert_eq!(mortar_xfail(None, &x, Arch::I386), None);
+        let x = [
+            ArchXfail { line: 3, arch: Arch::X86_64, test: None, reason: "no back end".to_owned() },
+            ArchXfail {
+                line: 4,
+                arch: Arch::Aarch64,
+                test: Some("dyn/a.test".to_owned()),
+                reason: "M2: WP-053".to_owned(),
+            },
+        ];
+        let t = "t.test";
+        assert_eq!(mortar_xfail(Some(&own), &x, Arch::X86_64, t), Some("no back end"));
+        assert_eq!(mortar_xfail(None, &x, Arch::X86_64, t), Some("no back end"));
+        assert_eq!(mortar_xfail(Some(&own), &x, Arch::Aarch64, t), Some("no linking yet (M1)"));
+        assert_eq!(mortar_xfail(None, &x, Arch::I386, t), None);
+        // A test's line, on its architecture only; the run-wide line first.
+        assert_eq!(mortar_xfail(None, &x, Arch::Aarch64, "dyn/a.test"), Some("M2: WP-053"));
+        assert_eq!(mortar_xfail(None, &x, Arch::X86_64, "dyn/a.test"), Some("no back end"));
+        assert_eq!(mortar_xfail(None, &x, Arch::I386, "dyn/a.test"), None);
+    }
+
+    // spec/harness.md "Runs": a program finds the fixture libraries in its
+    // linker's directory; an `env` line adds a variable or replaces that.
+    #[test]
+    fn the_environment_of_a_run() {
+        use super::super::format::{Template, Vars};
+        use super::program_env;
+        let vars =
+            Vars { arch: Arch::X86_64, host: Some(Arch::Aarch64), linker: Some(Linker::Bfd) };
+        let dir = std::path::Path::new("/w/u/x86_64/bfd");
+        let none = program_env(dir, &[], vars);
+        assert_eq!(none, [("LD_LIBRARY_PATH".to_owned(), "/w/u/x86_64/bfd".to_owned())]);
+        let env = [
+            ("LD_PRELOAD".to_owned(), Template::parse("./libhook.so").unwrap()),
+            ("LD_BIND_NOW".to_owned(), Template::parse("1").unwrap()),
+        ];
+        let names: Vec<String> = program_env(dir, &env, vars).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["LD_LIBRARY_PATH", "LD_PRELOAD", "LD_BIND_NOW"]);
+        let own = [("LD_LIBRARY_PATH".to_owned(), Template::parse("%{arch}").unwrap())];
+        assert_eq!(
+            program_env(dir, &own, vars),
+            [("LD_LIBRARY_PATH".to_owned(), "x86_64".to_owned())]
+        );
+    }
+
+    // "L3", "Stage 3": the verifier has no stage 3 until WP-050 lands. When
+    // it does, this assertion is the one line to turn round.
+    #[test]
+    fn stage_3_is_absent_today() {
+        assert!(!super::stage3_present());
     }
 
     use super::{Arch, Linker, Plumb, map_option, not_judged, output_name};

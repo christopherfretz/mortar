@@ -1,0 +1,62 @@
+# dyn.md D-11, D-12, D-13 (experiment X3 of review-m2/shlib/usedset.sh):
+# a used object's references never make an object needed. libtop2.so
+# (needed: the program calls top2_fn) lists libmid2.so in DT_NEEDED, so
+# libmid2.so is used, not needed; libmid2.so calls leaf_fn without a
+# DT_NEEDED entry for libleaf.so (under-linked); libleaf.so is on the
+# line, as-needed (the driver's default), and nothing needed references
+# it. D-13 judges libmid2.so's strong reference (a used object), which no
+# member of N or U satisfies: the link is refused, `undefined-symbol` at
+# libmid2.so, as GNU ld does (``./libmid2.so: undefined reference to
+# `leaf_fn'``).
+#
+# What the other references do (not a W of dyn.md 13.2; see the report
+# of WP-051): lld and mold link it, drop libleaf.so (DT_NEEDED is
+# libtop2.so, libc.so.6), and the program fails at load with ``symbol
+# lookup error: ... libmid2.so: undefined symbol: leaf_fn`` (exit 127),
+# recorded here as what they do.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-13"
+#@ spec: dyn.md "D-11"
+#@ spec: dyn.md "D-12"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC leaf.c -o leaf.o
+shlib gcc leaf.o -Wl,-soname,libleaf.so -o libleaf.so
+cc -O1 -fPIC mid2.c -o mid2.o
+shlib gcc mid2.o -Wl,-soname,libmid2.so -o libmid2.so
+cc -O1 -fPIC top2.c -o top2.o
+shlib gcc top2.o -Wl,-soname,libtop2.so -L. -lmid2 -o libtop2.so
+cc -O1 -fPIE main.c -o main.o
+
+link(bfd) gcc -pie main.o -L. -ltop2 -lmid2 -lleaf -o prog
+  exit: fail
+  diag: libmid2.so: undefined reference to `leaf_fn'
+link(lld,mold) gcc -pie main.o -L. -ltop2 -lmid2 -lleaf -o prog
+check(lld,mold) readelf -dW prog
+  count: 2 (NEEDED)
+  has: [libtop2.so]
+  then: [libc.so.6]
+run(lld,mold) prog
+  exit: 127
+link(mortar) gcc -pie main.o -L. -ltop2 -lmid2 -lleaf -o prog-mortar
+  exit: fail
+  diag: undefined symbol: leaf_fn
+
+#--- leaf.c
+int leaf_fn(void) { return 7; }
+#--- mid2.c
+int leaf_fn(void);
+int mid2_fn(void) { return 100 + leaf_fn(); }
+#--- top2.c
+int mid2_fn(void);
+int top2_fn(void) { return 1000 + mid2_fn(); }
+#--- main.c
+#include <stdio.h>
+int top2_fn(void);
+
+int main(void) {
+  printf("%d\n", top2_fn());
+  return 0;
+}

@@ -1,0 +1,39 @@
+# dyn.md D-11, D-12: under `--as-needed` (the driver's default) only the
+# shared object that gives the program's reference is needed, even when
+# its whole `DT_NEEDED` chain is also on the command line. `main` calls
+# `top_fn` alone; `-ltop -lmid -lleaf` are all named. `libtop.so` gives
+# `top_fn` (D-11 item 2); `libmid.so` and `libleaf.so` give the program
+# nothing and are reached from `libtop.so` along `DT_NEEDED` edges
+# (`reach(N0)`), so D-11 item 3 does not add them: they are used objects
+# (D-12), loaded through `libtop.so`'s entries, never `DT_NEEDED` of the
+# program. Exactly two entries: `libtop.so`, `libc.so.6`. It runs: 1103.
+# GNU ld, lld and mold agree (E-shlib 2.3a).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-11"
+#@ spec: dyn.md "D-12"
+#@ arch: aarch64 x86_64
+#@ fixture: shlib-chain
+
+cc -O1 -fPIE main.c -o main.o
+link gcc -pie main.o -L. -ltop -lmid -lleaf -o prog
+run prog
+  stdout: 1103
+check readelf -dW prog
+  has: (NEEDED) Shared library: [libtop.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+  count: 2 (NEEDED)
+check ldd prog
+  has: libtop.so => */libtop.so (0x
+  has: libmid.so => */libmid.so (0x
+  has: libleaf.so => */libleaf.so (0x
+
+#--- main.c
+#include <stdio.h>
+#include "chain.h"
+
+int main(void) {
+  printf("%d\n", top_fn());
+  return 0;
+}

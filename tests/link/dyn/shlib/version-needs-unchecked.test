@@ -1,0 +1,63 @@
+# dyn.md D-14: a shared object's own version needs of its dependencies
+# are the loader's to check, not the linker's. `libvn.so` was linked
+# against a newer `libdep.so` (`libdep-new.so`, soname `libdep.so`, with
+# versions `DEP_1` and `DEP_2`) and needs `DEP_1` (`old_fn`, strong) and
+# `DEP_2` (`dep_fn`, a weak reference); the `libdep.so` of the link and of
+# the run is the older one, which defines only `DEP_1` (`old_fn` and
+# `dep_fn` at `DEP_1`). Every linker and mortar link `main` against
+# `libvn.so` and the older `libdep.so`; glibc refuses at load (``version
+# `DEP_2' not found (required by .../libvn.so)``, status 1), so `main`
+# prints nothing.
+#
+# The weak reference keeps D-13 out of it: D-13 judges strong undefined
+# references, with the version each requires (with a strong `dep_fn@DEP_2`
+# GNU ld and lld refuse ``libvn.so: undefined reference to
+# `dep_fn@DEP_2'``, measured). What is left is the `Vernaux` entry for
+# `DEP_2`, which no linker checks.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-14"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC dep.c -o dep.o
+cc -O1 -fPIC vn.c -o vn.o
+shlib gcc dep.o -Wl,-soname,libdep.so -Wl,--version-script=new.map -o libdep-new.so
+shlib gcc vn.o -Wl,-soname,libvn.so libdep-new.so -o libvn.so
+shlib gcc dep.o -Wl,-soname,libdep.so -Wl,--version-script=old.map -o libdep.so
+cc -O1 -fPIE main.c -o main.o
+check readelf -VW libvn.so
+  has: File: libdep.so
+  has: Name: DEP_1
+  has: Name: DEP_2
+check readelf -VW libdep.so
+  has: Name: DEP_1
+  not: DEP_2
+link gcc -pie main.o -L. -lvn -ldep -o prog
+run prog
+  exit: 1
+check readelf -dW prog
+  has: (NEEDED) Shared library: [libvn.so]
+  not: [libdep.so]
+
+#--- new.map
+DEP_1 { global: old_fn; local: *; };
+DEP_2 { global: dep_fn; } DEP_1;
+#--- old.map
+DEP_1 { global: old_fn; dep_fn; local: *; };
+#--- dep.c
+int old_fn(void) { return 1; }
+int dep_fn(void) { return 2; }
+#--- vn.c
+int old_fn(void);
+int dep_fn(void) __attribute__((weak));
+int vn_fn(void) { return dep_fn ? 40 + dep_fn() : old_fn(); }
+#--- main.c
+#include <stdio.h>
+
+int vn_fn(void);
+
+int main(void) {
+  printf("%d\n", vn_fn());
+  return 0;
+}

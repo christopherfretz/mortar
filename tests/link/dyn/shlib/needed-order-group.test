@@ -1,0 +1,134 @@
+# dyn.md D-19a: groups. An as-needed library is kept at a mention that a
+# strong reference anywhere in the same --start-group/--end-group or
+# GROUP() follows (GNU ld rescans the group); the entries are written by
+# the keeping mention's position, not by the time GNU ld decided
+# (group-time-vs-position). Lines from review-m2/dynamic/needed_order.sh
+# (grp_*, scr_group) and review-m2-adv/neededorder (group, group-after),
+# fixture needed-libs; each program prints its constructors (reverse of
+# the loader's order) and "main". The three references agree on every
+# grouped line.
+#
+# group-none (grp_no_group) is the same line without the group: the
+# reference to nc comes after its only, as-needed, mention. GNU ld
+# refuses it (undefined reference); mortar links it with nc at its first
+# mention (D-19a's fallback), as lld and mold do.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-19a"
+#@ arch: aarch64 x86_64
+#@ fixture: needed-libs
+
+cc -O1 -fPIE use_c.c -o use_c.o
+cc -O1 -fPIE -DREFS=f_nx() main.c -o main_x.o
+
+# grp_rescan_script: GROUP(AS_NEEDED(libnc.so) use_c.o): the object after nc
+# in its group references it; kept at its mention.
+link gcc -pie main_abd.o -Wl,--no-as-needed libna.so rescan.so libnb.so libnd.so -o group-script
+check readelf -dW group-script
+  count: 5 (NEEDED)
+  has: [libna.so]
+  then: [libnc.so]
+  then: [libnb.so]
+  then: [libnd.so]
+  then: [libc.so.6]
+run group-script
+  stdout: nd nb nc na main
+
+# grp_rescan_flags: the same group written with --start-group/--end-group.
+link gcc -pie main_abd.o -Wl,--no-as-needed libna.so -Wl,--start-group -Wl,--as-needed libnc.so -Wl,--no-as-needed use_c.o libnd.so -Wl,--end-group libnb.so -o group-flags
+check readelf -dW group-flags
+  count: 5 (NEEDED)
+  has: [libna.so]
+  then: [libnc.so]
+  then: [libnd.so]
+  then: [libnb.so]
+  then: [libc.so.6]
+run group-flags
+  stdout: nb nd nc na main
+
+# grp_rescan_time_vs_pos: GNU ld decides nd (referenced earlier) before the
+# group rescan keeps nc, and still writes nc first: position, not time.
+link gcc -pie main_abd.o -Wl,--no-as-needed libna.so libnb.so -Wl,--start-group -Wl,--as-needed libnc.so libnd.so -Wl,--no-as-needed use_c.o -Wl,--end-group -o group-time-vs-position
+check readelf -dW group-time-vs-position
+  count: 5 (NEEDED)
+  has: [libna.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libnd.so]
+  then: [libc.so.6]
+run group-time-vs-position
+  stdout: nd nc nb na main
+
+# grp_rescan_later_plain: a later plain mention of nc does not move it.
+link gcc -pie main_abd.o -Wl,--no-as-needed libna.so -Wl,--start-group -Wl,--as-needed libnc.so -Wl,--no-as-needed use_c.o libnd.so -Wl,--end-group libnb.so libnc.so -o group-later-plain
+check readelf -dW group-later-plain
+  count: 5 (NEEDED)
+  has: [libna.so]
+  then: [libnc.so]
+  then: [libnd.so]
+  then: [libnb.so]
+  then: [libc.so.6]
+run group-later-plain
+  stdout: nb nd nc na main
+
+# group (review-m2-adv/neededorder): nx as-needed, its reference after it in
+# the same group.
+link gcc -pie -Wl,--no-as-needed libnb.so -Wl,--as-needed -Wl,--start-group libnx.so main_x.o -Wl,--end-group -Wl,--no-as-needed libnc.so -o group-ref-inside
+check readelf -dW group-ref-inside
+  count: 4 (NEEDED)
+  has: [libnb.so]
+  then: [libnx.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run group-ref-inside
+  stdout: nc nx nb main
+
+# group-after (review-m2-adv/neededorder): the reference after the group,
+# then nx as-needed again.
+link gcc -pie -Wl,--no-as-needed libnb.so -Wl,--as-needed -Wl,--start-group libnx.so -Wl,--end-group main_x.o libnx.so -Wl,--no-as-needed libnc.so -o group-ref-after
+check readelf -dW group-ref-after
+  count: 4 (NEEDED)
+  has: [libnb.so]
+  then: [libnx.so]
+  then: [libnc.so]
+  then: [libc.so.6]
+run group-ref-after
+  stdout: nc nx nb main
+
+# scr_group: GROUP(libna.so libnb.so) expands at its position.
+link gcc -pie main.o -Wl,--no-as-needed libnd.so grp_ab.so libnc.so libne.so libnf.so -o script-group
+check readelf -dW script-group
+  count: 7 (NEEDED)
+  has: [libnd.so]
+  then: [libna.so]
+  then: [libnb.so]
+  then: [libnc.so]
+  then: [libne.so]
+  then: [libnf.so]
+  then: [libc.so.6]
+run script-group
+  stdout: nf ne nc nb na nd main
+
+# grp_no_group.
+link(bfd) gcc -pie main_abd.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnc.so -Wl,--no-as-needed use_c.o libnd.so libnb.so -o group-none
+  exit: fail
+  diag: undefined reference to `f_nc'
+link(lld,mold,mortar) gcc -pie main_abd.o -Wl,--no-as-needed libna.so -Wl,--as-needed libnc.so -Wl,--no-as-needed use_c.o libnd.so libnb.so -o group-none
+check(lld,mold,mortar) readelf -dW group-none
+  count: 5 (NEEDED)
+  has: [libna.so]
+  then: [libnc.so]
+  then: [libnd.so]
+  then: [libnb.so]
+  then: [libc.so.6]
+run(lld,mold,mortar) group-none
+  stdout: nb nd nc na main
+
+#--- use_c.c
+int f_nc(void);
+int use_c(void) { return f_nc(); }
+#--- rescan.so
+GROUP ( AS_NEEDED ( libnc.so ) use_c.o )
+#--- grp_ab.so
+GROUP ( libna.so libnb.so )
