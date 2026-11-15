@@ -20,7 +20,7 @@ if [ $st = 0 ] && [ "${MASON_PLUMB:-}" = 1 ]; then
   if ! e2=$("$MASON_MORTAR" "${args[@]}" --mortar-map="$out.map" 2>&1 >/dev/null); then
     plumb="second link failed: $(printf '%s' "$e2" | head -n 1)"
   elif ! cmp -s "$out" "$out.plumb"; then
-    plumb="nondeterministic: the output with -Map differs"
+    plumb="nondeterministic: the output with --mortar-map differs"
   else
     plumb=$("${MASON_XTASK:?}" mason verify "$out.plumb" "$out.map" 2>&1 | head -c 1000 | tr '\n\t' '  ')
   fi

@@ -99,7 +99,8 @@ link the archives without `.ARM.attributes` (and `.deplibs`) that
 `setup` makes; since WP-034 they show nothing `mortar` does not, and stay
 for comparison. `dyn` is kiln's procedure unchanged (static libc++,
 dynamic glibc, the host's `ld`). mortar's `ld` logs each link, and with
-`--plumb` links a second time with `-Map`, checks that the output is the
+`--plumb` links a second time with `--mortar-map` (the verifier's
+machine map), checks that the output is the
 same bytes, and runs `xtask mason verify` on it. The report: kiln's
 summary per mode; for each mortar mode the tests the reference (`bfd`,
 else `dyn`) passes and it does not, of which WRONG (mortar linked and the
@@ -118,7 +119,7 @@ keep the path short: libc++'s filesystem tests build paths under its
 link to `<mode>/times.tsv`: the runner's scratch directory, the linker,
 the status, the wall time in microseconds (bash's `$EPOCHREALTIME`
 around GNU time) and the peak RSS in KiB (GNU time's `%M`). mortar's
-timed link is the caller's command, without `-Map` or the verifier.
+timed link is the caller's command, without the map or the verifier.
 mold forks a background process that finishes after the parent exits,
 so its wall time is what the caller waits for and its RSS is the
 parent's.
@@ -140,7 +141,7 @@ pass (not PASS, UNSUPPORTED or XFAIL) on the full suite, with their
 reason. `--baseline tests/mason/baseline-mortar.tsv` prints `regressed:`
 for a test that does not pass and is not listed (and fails the command)
 and `fixed:` for a listed test that passes; `--write-baseline <file>`
-writes a new one.
+writes a new one; its reasons are then written by hand (the triage).
 
 ## Reproducers
 
