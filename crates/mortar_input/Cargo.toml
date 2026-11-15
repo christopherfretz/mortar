@@ -1,0 +1,21 @@
+[package]
+name = "mortar_input"
+description = "The input phase: finding, sniffing, reading and loading the files of a link."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mortar_core.workspace = true
+mortar_diag.workspace = true
+mortar_elf.workspace = true
+mortar_script.workspace = true
+
+[dev-dependencies]
+mortar_testutil.workspace = true
+
+[lints]
+workspace = true
