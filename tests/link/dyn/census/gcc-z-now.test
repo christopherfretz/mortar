@@ -1,0 +1,39 @@
+# dyn.md §2.1 variants, D-49: gcc's default line with `-Wl,-z,now`, as
+# users link, PIE (the driver's default) and `-no-pie`, each run: a C
+# program calling libc through the PLT, bound at start. `DT_FLAGS` has
+# `BIND_NOW` and `DT_FLAGS_1` has `NOW` (D-30); `.rela.plt` keeps its
+# `JUMP_SLOT` records (the lazy shapes stay). `plt-now` checks where the
+# slots go.
+#
+# mortar: AArch64 WP-056 (OPTS), x86-64 WP-056 (OPTS), in tests/link/xfails.
+#@ spec: dyn.md "2.1 Default link lines"
+#@ spec: dyn.md "D-49"
+#@ arch: aarch64 x86_64
+
+cc -O2 hello.c -o hello.o
+link gcc -Wl,-z,now hello.o -o pie
+run pie
+  stdout: hello now, 5
+link gcc -no-pie -Wl,-z,now hello.o -o exec
+run exec
+  stdout: hello now, 5
+check readelf -dW pie
+  has: (FLAGS) BIND_NOW
+  has: (FLAGS_1) Flags: NOW PIE
+  has: (NEEDED) Shared library: [libc.so.6]
+check readelf -dW exec
+  has: (FLAGS) BIND_NOW
+  has: (FLAGS_1) Flags: NOW
+check readelf -rW pie
+  has(aarch64): R_AARCH64_JUMP_SLOT * printf@
+  has(x86_64): R_X86_64_JUMP_SLOT * printf@
+
+#--- hello.c
+#include <stdio.h>
+#include <string.h>
+
+int main(int argc, char **argv) {
+  (void)argv;
+  printf("hello now, %zu\n", strlen("hello") * (size_t)argc);
+  return 0;
+}

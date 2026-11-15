@@ -1,0 +1,158 @@
+# dyn.md D-34, the section headers of the dynamic sections, as GNU ld and
+# lld write them: type, flags, `sh_link` (by name), `sh_info`, entry size
+# and alignment of `.interp`, `.gnu.hash`, `.dynsym` (`sh_info` 1: one
+# local, the null entry), `.dynstr`, `.gnu.version`, `.gnu.version_r`
+# (`sh_info` the `Verneed` count, alignment 4), `.rela.dyn`, `.rela.plt`
+# (`SHF_INFO_LINK`, `sh_info` `.got.plt`) and `.dynamic` (`WA`), and
+# `e_type` (D-1: `ET_DYN` for a PIE, `ET_EXEC` otherwise). The loader reads
+# none of this, so the program reads its own section headers from
+# `/proc/self/exe` and prints them, naming the sections `sh_link` and
+# `sh_info` point at.
+#
+# Where the references differ (D-34, §13.1): GNU ld aligns
+# `.gnu.version_r` to 8, and on AArch64 its PIE `.dynsym` has `sh_info` 3
+# (two section symbols); mold leaves `SHF_INFO_LINK` off `.rela.plt`.
+# mortar's are lld's, the table's.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-34"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libsh.so -o libsh.so
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+
+link gcc -pie pie.o -L. -lsh -o pie
+run(lld,mortar) pie
+  stdout: e_type DYN
+  stdout: .interp: PROGBITS A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.hash: GNU_HASH A link .dynsym info 0 entsize 0 align 8
+  stdout: .dynsym: DYNSYM A link .dynstr info 1 entsize 24 align 8
+  stdout: .dynstr: STRTAB A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.version: VERSYM A link .dynsym info 0 entsize 2 align 2
+  stdout: .gnu.version_r: VERNEED A link .dynstr info 1 entsize 0 align 4
+  stdout: .rela.dyn: RELA A link .dynsym info 0 entsize 24 align 8
+  stdout: .rela.plt: RELA AI link .dynsym info .got.plt entsize 24 align 8
+  stdout: .dynamic: DYNAMIC WA link .dynstr info 0 entsize 16 align 8
+run(bfd,aarch64) pie
+  stdout: e_type DYN
+  stdout: .interp: PROGBITS A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.hash: GNU_HASH A link .dynsym info 0 entsize 0 align 8
+  stdout: .dynsym: DYNSYM A link .dynstr info 3 entsize 24 align 8
+  stdout: .dynstr: STRTAB A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.version: VERSYM A link .dynsym info 0 entsize 2 align 2
+  stdout: .gnu.version_r: VERNEED A link .dynstr info 1 entsize 0 align 8
+  stdout: .rela.dyn: RELA A link .dynsym info 0 entsize 24 align 8
+  stdout: .rela.plt: RELA AI link .dynsym info .got.plt entsize 24 align 8
+  stdout: .dynamic: DYNAMIC WA link .dynstr info 0 entsize 16 align 8
+run(bfd,x86_64) pie
+  stdout: e_type DYN
+  stdout: .interp: PROGBITS A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.hash: GNU_HASH A link .dynsym info 0 entsize 0 align 8
+  stdout: .dynsym: DYNSYM A link .dynstr info 1 entsize 24 align 8
+  stdout: .dynstr: STRTAB A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.version: VERSYM A link .dynsym info 0 entsize 2 align 2
+  stdout: .gnu.version_r: VERNEED A link .dynstr info 1 entsize 0 align 8
+  stdout: .rela.dyn: RELA A link .dynsym info 0 entsize 24 align 8
+  stdout: .rela.plt: RELA AI link .dynsym info .got.plt entsize 24 align 8
+  stdout: .dynamic: DYNAMIC WA link .dynstr info 0 entsize 16 align 8
+run(mold) pie
+  stdout: e_type DYN
+  stdout: .interp: PROGBITS A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.hash: GNU_HASH A link .dynsym info 0 entsize 0 align 8
+  stdout: .dynsym: DYNSYM A link .dynstr info 1 entsize 24 align 8
+  stdout: .dynstr: STRTAB A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.version: VERSYM A link .dynsym info 0 entsize 2 align 2
+  stdout: .gnu.version_r: VERNEED A link .dynstr info 1 entsize 0 align 4
+  stdout: .rela.dyn: RELA A link .dynsym info 0 entsize 24 align 8
+  stdout: .rela.plt: RELA A link .dynsym info .got.plt entsize 24 align 8
+  stdout: .dynamic: DYNAMIC WA link .dynstr info 0 entsize 16 align 8
+
+link gcc -no-pie exec.o -L. -lsh -o exec
+run(lld,mortar) exec
+  stdout: e_type EXEC
+  stdout: .interp: PROGBITS A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.hash: GNU_HASH A link .dynsym info 0 entsize 0 align 8
+  stdout: .dynsym: DYNSYM A link .dynstr info 1 entsize 24 align 8
+  stdout: .dynstr: STRTAB A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.version: VERSYM A link .dynsym info 0 entsize 2 align 2
+  stdout: .gnu.version_r: VERNEED A link .dynstr info 1 entsize 0 align 4
+  stdout: .rela.dyn: RELA A link .dynsym info 0 entsize 24 align 8
+  stdout: .rela.plt: RELA AI link .dynsym info .got.plt entsize 24 align 8
+  stdout: .dynamic: DYNAMIC WA link .dynstr info 0 entsize 16 align 8
+run(bfd) exec
+  stdout: e_type EXEC
+  stdout: .interp: PROGBITS A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.hash: GNU_HASH A link .dynsym info 0 entsize 0 align 8
+  stdout: .dynsym: DYNSYM A link .dynstr info 1 entsize 24 align 8
+  stdout: .dynstr: STRTAB A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.version: VERSYM A link .dynsym info 0 entsize 2 align 2
+  stdout: .gnu.version_r: VERNEED A link .dynstr info 1 entsize 0 align 8
+  stdout: .rela.dyn: RELA A link .dynsym info 0 entsize 24 align 8
+  stdout: .rela.plt: RELA AI link .dynsym info .got.plt entsize 24 align 8
+  stdout: .dynamic: DYNAMIC WA link .dynstr info 0 entsize 16 align 8
+run(mold) exec
+  stdout: e_type EXEC
+  stdout: .interp: PROGBITS A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.hash: GNU_HASH A link .dynsym info 0 entsize 0 align 8
+  stdout: .dynsym: DYNSYM A link .dynstr info 1 entsize 24 align 8
+  stdout: .dynstr: STRTAB A link 0 info 0 entsize 0 align 1
+  stdout: .gnu.version: VERSYM A link .dynsym info 0 entsize 2 align 2
+  stdout: .gnu.version_r: VERNEED A link .dynstr info 1 entsize 0 align 4
+  stdout: .rela.dyn: RELA A link .dynsym info 0 entsize 24 align 8
+  stdout: .rela.plt: RELA A link .dynsym info .got.plt entsize 24 align 8
+  stdout: .dynamic: DYNAMIC WA link .dynstr info 0 entsize 16 align 8
+
+#--- lib.c
+int lib_fn(void) { return 1; }
+int lib_var = 5;
+#--- main.c
+#include <elf.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+int lib_fn(void);
+extern int lib_var;
+
+static const char *type(unsigned t) {
+  switch (t) {
+  case SHT_PROGBITS: return "PROGBITS"; case SHT_GNU_HASH: return "GNU_HASH";
+  case SHT_DYNSYM: return "DYNSYM"; case SHT_STRTAB: return "STRTAB";
+  case SHT_GNU_versym: return "VERSYM"; case SHT_GNU_verneed: return "VERNEED";
+  case SHT_RELA: return "RELA"; case SHT_REL: return "REL"; case SHT_DYNAMIC: return "DYNAMIC";
+  default: return "other";
+  }
+}
+
+int main(void) {
+  FILE *f = fopen("/proc/self/exe", "rb");
+  if (!f) return 1;
+  static unsigned char buf[1 << 22];
+  size_t n = fread(buf, 1, sizeof buf, f);
+  fclose(f);
+  const Elf64_Ehdr *eh = (const Elf64_Ehdr *)buf;
+  if (n < sizeof *eh || eh->e_shoff + (size_t)eh->e_shnum * sizeof(Elf64_Shdr) > n) return 2;
+  const Elf64_Shdr *sh = (const Elf64_Shdr *)(buf + eh->e_shoff);
+  const char *names = (const char *)buf + sh[eh->e_shstrndx].sh_offset;
+  printf("e_type %s\n", eh->e_type == ET_DYN ? "DYN" : eh->e_type == ET_EXEC ? "EXEC" : "other");
+  static const char *const want[] = {".interp", ".gnu.hash", ".dynsym", ".dynstr", ".gnu.version",
+                                     ".gnu.version_r", ".rela.dyn", ".rela.plt", ".dynamic"};
+  for (size_t w = 0; w < sizeof want / sizeof *want; w++)
+    for (int i = 1; i < eh->e_shnum; i++) {
+      const Elf64_Shdr *s = &sh[i];
+      if (strcmp(names + s->sh_name, want[w])) continue;
+      char fl[8] = "", info[32];
+      if (s->sh_flags & SHF_WRITE) strcat(fl, "W");
+      if (s->sh_flags & SHF_ALLOC) strcat(fl, "A");
+      if (s->sh_flags & SHF_INFO_LINK) strcat(fl, "I");
+      if (s->sh_flags & ~(Elf64_Xword)(SHF_WRITE | SHF_ALLOC | SHF_INFO_LINK)) strcat(fl, "?");
+      if (s->sh_type == SHT_RELA && s->sh_info) snprintf(info, sizeof info, "%s", names + sh[s->sh_info].sh_name);
+      else snprintf(info, sizeof info, "%u", s->sh_info);
+      printf("%s: %s %s link %s info %s entsize %lu align %lu\n", want[w], type(s->sh_type), fl,
+             s->sh_link ? names + sh[s->sh_link].sh_name : "0", info,
+             (unsigned long)s->sh_entsize, (unsigned long)s->sh_addralign);
+    }
+  return lib_fn() + lib_var == 6 ? 0 : 3;
+}

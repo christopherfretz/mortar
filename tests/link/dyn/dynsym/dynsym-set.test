@@ -1,0 +1,120 @@
+# dyn.md D-21, which symbols `.dynsym` holds: imports (a key a needed
+# shared object defines and a live object mentions), exports (here: the
+# callback `app_hook` the library references, `ref_dynamic`), copy aliases
+# (`environ-aliases`) and the dynamic weak undefined keys of D-25
+# (`__gmon_start__`, `_ITM_*`: `weak-undef-pie`). Never: local, hidden or
+# unreferenced definitions, section symbols, `_DYNAMIC`,
+# `_GLOBAL_OFFSET_TABLE_`, `__dso_handle`, linker-defined keys nobody
+# dynamic references (`_end`, `_edata`, `__bss_start`), a library's
+# definitions the program does not mention. The run shows the export
+# working (the library calls back into the program); the entry count pins
+# the whole set.
+#
+# Where the references differ (dyn.md §13.1, D-21, D-25): GNU ld writes
+# two `STT_SECTION` entries in an AArch64 PIE; mold makes the weak
+# undefined `__gmon_start__`/`_ITM_*` 0 everywhere and leaves them out;
+# in an x86-64 `-no-pie` link crtbegin.o reaches `_ITM_*` by
+# `R_X86_64_32` only, an unfillable use, so D-25 makes them `Weak0` and
+# they stay out (GNU ld's set) while lld exports them. mortar's set is
+# lld's but there (a spec finding reported with WP-051: D-21's "the set
+# equals lld's" does not hold for x86-64 `-no-pie`).
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-21"
+#@ spec: dyn.md "D-25"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libset.so -o libset.so
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+
+link gcc -pie pie.o -L. -lset -o pie
+run pie
+  stdout: app_hook 41
+  stdout: lib_call 42
+check readelf --dyn-syms -W pie
+  has(lld,mortar,aarch64): Symbol table '.dynsym' contains 10 entries
+  has(bfd,aarch64): Symbol table '.dynsym' contains 12 entries
+  has(mold,aarch64): Symbol table '.dynsym' contains 7 entries
+  has(bfd,lld,mortar,x86_64): Symbol table '.dynsym' contains 9 entries
+  has(mold,x86_64): Symbol table '.dynsym' contains 6 entries
+  has: FUNC GLOBAL DEFAULT UND lib_call$
+  has: FUNC GLOBAL DEFAULT UND printf@
+  has: FUNC GLOBAL DEFAULT UND __libc_start_main@
+  has: FUNC WEAK DEFAULT UND __cxa_finalize@
+  has(aarch64): FUNC GLOBAL DEFAULT UND abort@
+  has(bfd,lld,mortar): NOTYPE WEAK DEFAULT UND __gmon_start__$
+  has(bfd,lld,mortar): NOTYPE WEAK DEFAULT UND _ITM_deregisterTMCloneTable$
+  has(bfd,lld,mortar): NOTYPE WEAK DEFAULT UND _ITM_registerTMCloneTable$
+  has: FUNC GLOBAL DEFAULT * app_hook$
+  not: UND app_hook
+  not: app_unused
+  not: app_hidden
+  not: app_local
+  not: lib_unused
+  not: lib_data
+  not: DEFAULT * main$
+  not: _end$
+  not: _edata$
+  not: __bss_start
+  not: _DYNAMIC
+  not: _GLOBAL_OFFSET_TABLE_
+  not: __dso_handle
+  not(lld,mold,mortar): SECTION
+  count(bfd,aarch64): 2 SECTION LOCAL
+
+link gcc -no-pie exec.o -L. -lset -o exec
+run exec
+  stdout: app_hook 41
+  stdout: lib_call 42
+check readelf --dyn-syms -W exec
+  has(bfd,lld,mortar,aarch64): Symbol table '.dynsym' contains 9 entries
+  has(mold,aarch64): Symbol table '.dynsym' contains 6 entries
+  has(bfd,mortar,x86_64): Symbol table '.dynsym' contains 6 entries
+  has(lld,x86_64): Symbol table '.dynsym' contains 8 entries
+  has(mold,x86_64): Symbol table '.dynsym' contains 5 entries
+  has: FUNC GLOBAL DEFAULT UND lib_call$
+  has: FUNC GLOBAL DEFAULT UND printf@
+  has: FUNC GLOBAL DEFAULT UND __libc_start_main@
+  not: __cxa_finalize
+  has(bfd,lld,mortar): NOTYPE WEAK DEFAULT UND __gmon_start__$
+  has(bfd,lld,mortar,aarch64): NOTYPE WEAK DEFAULT UND _ITM_deregisterTMCloneTable$
+  has(lld,x86_64): NOTYPE WEAK DEFAULT UND _ITM_deregisterTMCloneTable$
+  not(bfd,mortar,x86_64): _ITM_
+  has: FUNC GLOBAL DEFAULT * app_hook$
+  not: UND app_hook
+  not: app_unused
+  not: app_hidden
+  not: app_local
+  not: lib_unused
+  not: lib_data
+  not: DEFAULT * main$
+  not: _end$
+  not: _edata$
+  not: __bss_start
+  not: _DYNAMIC
+  not: _GLOBAL_OFFSET_TABLE_
+  not: __dso_handle
+  not: SECTION
+
+#--- lib.c
+extern void app_hook(int);
+int lib_data = 1;
+int lib_call(int x) {
+  app_hook(x);
+  return x + 1;
+}
+int lib_unused(void) { return 0; }
+#--- main.c
+#include <stdio.h>
+int lib_call(int);
+void app_hook(int x) { printf("app_hook %d\n", x); }
+int app_unused(void) { return 3; }
+__attribute__((visibility("hidden"))) int app_hidden(void) { return 4; }
+static int app_local(int x) { return x - 5; }
+int main(void) {
+  printf("lib_call %d\n", lib_call(41) + app_local(5) + app_hidden() - 4);
+  return 0;
+}

@@ -1,0 +1,36 @@
+# dyn.md D-15: `--copy-dt-needed-entries` is refused by name (a command-
+# line refusal: `unsupported option: --copy-dt-needed-entries`). Only GNU
+# ld accepts it: with `--no-as-needed`, `libtop.so`'s `DT_NEEDED` entry
+# `libmid.so` (a closure file, `-rpath-link`) is copied into the program,
+# after `libc.so.6`, and gives `mid_fn` (prints 103). lld (`unknown
+# argument`) and mold (`unknown command line option`) refuse it (E-shlib
+# 2.10b).
+#
+# mortar: passes already (mortar_cli refuses the option by name); no line
+# in tests/link/xfails. WP-042 (CLI) keeps the refusal.
+#@ spec: dyn.md "D-15"
+#@ arch: aarch64 x86_64
+#@ fixture: shlib-chain
+
+cc -O1 -fPIE main.c -o main.o
+link(bfd) gcc -pie main.o -Wl,--no-as-needed -Wl,--copy-dt-needed-entries -L. -ltop -Wl,-rpath-link,. -o prog
+run(bfd) prog
+  stdout: 103
+check(bfd) readelf -dW prog
+  has: (NEEDED) Shared library: [libtop.so]
+  then: (NEEDED) Shared library: [libc.so.6]
+  then: (NEEDED) Shared library: [libmid.so]
+link(lld,mold,mortar) gcc -pie main.o -Wl,--no-as-needed -Wl,--copy-dt-needed-entries -L. -ltop -Wl,-rpath-link,. -o prog
+  exit: fail
+  diag(lld): unknown argument '--copy-dt-needed-entries'
+  diag(mold): unknown command line option: --copy-dt-needed-entries
+  diag(mortar): unsupported option: --copy-dt-needed-entries
+
+#--- main.c
+#include <stdio.h>
+#include "chain.h"
+
+int main(void) {
+  printf("%d\n", mid_fn());
+  return 0;
+}

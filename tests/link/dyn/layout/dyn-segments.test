@@ -1,0 +1,103 @@
+# dyn.md D-61 (layout L-64..L-68): the program headers of a PIE and of a
+# -no-pie executable. mortar writes GNU ld's order: PT_PHDR, PT_INTERP,
+# the PT_LOADs, PT_DYNAMIC, the PT_NOTEs, PT_TLS, PT_GNU_PROPERTY (x86-64:
+# the objects carry the x86 feature note), PT_GNU_EH_FRAME, PT_GNU_STACK,
+# PT_GNU_RELRO; four PT_LOADs R, RX, RW (RELRO), RW, as lld and mold
+# (layout L-65); base 0 for the PIE, 0x400000 for -no-pie (D-1, L-68).
+#
+# Where the references differ (measured, both architectures): lld puts
+# PT_TLS before PT_DYNAMIC, PT_GNU_RELRO before PT_GNU_EH_FRAME and the
+# notes last; mold puts PT_NOTE after PT_INTERP. GNU ld writes two
+# PT_LOADs on AArch64 (RX with the read-only data, RW) and four on x86-64
+# (R, RX, R, RW: its -z separate-code default, layout L-71 Q2); lld and
+# mold put -no-pie at 0x200000, which dyn.md D-1 does not record. lld
+# writes no PT_GNU_PROPERTY on x86-64. Every reference: PT_PHDR,
+# PT_INTERP, a PT_LOAD and PT_DYNAMIC in that order, and PT_TLS,
+# PT_GNU_EH_FRAME, PT_GNU_STACK, PT_GNU_RELRO present.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-61"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE lay.c -o pie.o
+cc -O1 -fno-pie lay.c -o exec.o
+link gcc -pie pie.o -o pie
+run pie
+  stdout: a b 5 1 4
+link gcc -no-pie exec.o -o exec
+run exec
+  stdout: a b 5 1 4
+check readelf -lW pie
+  has: ^ PHDR
+  then: ^ INTERP
+  then: ^ LOAD
+  then: ^ DYNAMIC
+  has: ^ TLS
+  has: ^ GNU_EH_FRAME
+  has: ^ GNU_STACK
+  has: ^ GNU_RELRO
+  has: ^ LOAD 0x000000 0x0000000000000000 0x0000000000000000
+  count(lld,mold,mortar): 4 ^ LOAD
+  has(lld,mold,mortar): ^ LOAD * R 0x
+  then(lld,mold,mortar): ^ LOAD * R E 0x
+  then(lld,mold,mortar): ^ LOAD * RW 0x
+  then(lld,mold,mortar): ^ LOAD * RW 0x
+  count(bfd,aarch64): 2 ^ LOAD
+  count(bfd,x86_64): 4 ^ LOAD
+  has(bfd,mortar): ^ PHDR
+  then(bfd,mortar): ^ INTERP
+  then(bfd,mortar): ^ LOAD
+  then(bfd,mortar): ^ DYNAMIC
+  then(bfd,mortar): ^ NOTE
+  then(bfd,mortar): ^ TLS
+  then(bfd,mortar,x86_64): ^ GNU_PROPERTY
+  then(bfd,mortar): ^ GNU_EH_FRAME
+  then(bfd,mortar): ^ GNU_STACK
+  then(bfd,mortar): ^ GNU_RELRO
+check readelf -lW exec
+  has: ^ PHDR
+  then: ^ INTERP
+  then: ^ LOAD
+  then: ^ DYNAMIC
+  has: ^ TLS
+  has: ^ GNU_EH_FRAME
+  has: ^ GNU_STACK
+  has: ^ GNU_RELRO
+  has(bfd,mortar): ^ LOAD 0x000000 0x0000000000400000 0x0000000000400000
+  has(lld,mold): ^ LOAD 0x000000 0x0000000000200000 0x0000000000200000
+  count(lld,mold,mortar): 4 ^ LOAD
+  has(lld,mold,mortar): ^ LOAD * R 0x
+  then(lld,mold,mortar): ^ LOAD * R E 0x
+  then(lld,mold,mortar): ^ LOAD * RW 0x
+  then(lld,mold,mortar): ^ LOAD * RW 0x
+  count(bfd,aarch64): 2 ^ LOAD
+  count(bfd,x86_64): 4 ^ LOAD
+  has(bfd,mortar): ^ PHDR
+  then(bfd,mortar): ^ INTERP
+  then(bfd,mortar): ^ LOAD
+  then(bfd,mortar): ^ DYNAMIC
+  then(bfd,mortar): ^ NOTE
+  then(bfd,mortar): ^ TLS
+  then(bfd,mortar,x86_64): ^ GNU_PROPERTY
+  then(bfd,mortar): ^ GNU_EH_FRAME
+  then(bfd,mortar): ^ GNU_STACK
+  then(bfd,mortar): ^ GNU_RELRO
+
+#--- lay.c
+#include <stdio.h>
+
+__thread int tv = 3;
+__thread int tz;
+int dv = 5;
+int bz[16];
+static const char *const names[] = {"a", "b"};
+const char *const *np = names;
+
+__attribute__((constructor)) static void init(void) { bz[0] = 1; }
+
+int main(void) {
+  tz = tv + 1;
+  printf("%s %s %d %d %d\n", np[0], names[1], dv, bz[0], tz);
+  return 0;
+}

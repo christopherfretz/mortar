@@ -1,0 +1,64 @@
+# dyn.md D-48: in `Exec` and `Pie`, TLS of a shared object is reached by
+# initial-exec: one `GOT_TPREL` slot with a `TLS_TPREL64` /
+# `R_X86_64_TPOFF64` record against the key, addend 0. A `-fPIE` unit
+# reads the fixture library's `tlsx` as IE; a `-fPIC` unit reads it with
+# the compiler's general sequence (AArch64: TLSDESC, GCC's default
+# dialect; x86-64: traditional GD), which the architecture recognises
+# and every reference relaxes to IE. No `DTPMOD`/`DTPOFF` or `TLSDESC`
+# record is left, and no `__tls_get_addr` call (GNU ld on x86-64
+# keeps an unused `JUMP_SLOT` for `__tls_get_addr` after relaxing the GD
+# call, so it is not held to its absence). The program prints the
+# values both units read and whether their addresses equal the
+# library's `&tlsx`, from the main thread. PIE and non-PIE.
+#
+# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
+# tests/link/xfails.
+#@ spec: dyn.md "D-48"
+#@ arch: aarch64 x86_64
+#@ fixture: reloc-libd
+
+cc -O1 -fPIE main.c -o pie.o
+cc -O1 -fno-pie main.c -o exec.o
+cc -O1 -fPIC gd.c -o gd.o
+link gcc -pie pie.o gd.o -L. -ld -o pie
+run pie
+  stdout: ie 5 gd 5 same 1 1
+link gcc -no-pie exec.o gd.o -L. -ld -o exec
+run exec
+  stdout: ie 5 gd 5 same 1 1
+check readelf -rW pie
+  count(aarch64): 1 R_AARCH64_TLS_TPREL64 * tlsx + 0$
+  count(x86_64): 1 R_X86_64_TPOFF64 * tlsx + 0$
+  not: DTPMOD
+  not: DTPREL
+  not: DTPOFF
+  not: TLSDESC
+  not(lld,mold,mortar): __tls_get_addr
+check readelf -rW exec
+  count(aarch64): 1 R_AARCH64_TLS_TPREL64 * tlsx + 0$
+  count(x86_64): 1 R_X86_64_TPOFF64 * tlsx + 0$
+  not: DTPMOD
+  not: DTPREL
+  not: DTPOFF
+  not: TLSDESC
+  not(lld,mold,mortar): __tls_get_addr
+
+#--- gd.c
+#include "libd.h"
+
+/* -fPIC: TLSDESC (AArch64) or traditional GD (x86-64) */
+int *gd_addr(void) { return &tlsx; }
+#--- main.c
+#include <stdio.h>
+#include "libd.h"
+
+int *gd_addr(void);
+
+/* -fPIE / -fno-pie: initial-exec */
+__attribute__((noinline)) static int *ie_addr(void) { return &tlsx; }
+
+int main(void) {
+  int *i = ie_addr(), *g = gd_addr();
+  printf("ie %d gd %d same %d %d\n", *i, *g, i == lib_tlsx(), g == lib_tlsx());
+  return 0;
+}
