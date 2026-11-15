@@ -55,7 +55,7 @@ fn mortar(
     env: &[(&str, &str)],
 ) -> Outcome {
     let mut a = with_output(args, out);
-    a.push(format!("-Map={}", map_of(out).display()).into());
+    a.push(format!("--mortar-map={}", map_of(out).display()).into());
     a.extend(extra.iter().map(OsString::from));
     run_in(Path::new(MORTAR), &a, dir, env)
 }
