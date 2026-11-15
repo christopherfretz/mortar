@@ -79,7 +79,7 @@ fn link(files: &[FileSpec]) -> Link {
         base += len;
     }
     let identities =
-        files.iter().map(|f| FileIdentity { path: f.path, member: f.member }).collect();
+        files.iter().map(|f| FileIdentity { path: f.path, mention: 0, member: f.member }).collect();
     let sections = files.iter().map(|f| Ordinals::new(f.sections.clone())).collect();
     let locals = files.iter().map(|f| Ordinals::new(f.locals.clone())).collect();
     let ids = Identities::new(
@@ -113,7 +113,7 @@ fn s7_files_survive_an_input_added_in_front() {
         let identity = one.ids.file(FileId(file)).unwrap();
         assert_eq!(two.ids.file_id(&identity), Some(FileId(want)));
     }
-    let gone = FileIdentity { path: b"gone.o", member: None };
+    let gone = FileIdentity { path: b"gone.o", mention: 0, member: None };
     assert_eq!(two.ids.file_id(&gone), None);
 }
 

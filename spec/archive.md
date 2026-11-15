@@ -180,7 +180,11 @@ regular one, with their padding.
 table, and the header that follows them when it has to look at it to know
 that it is not one of them: that is, the first header, and the header
 after a symbol index. It reports every error of those headers except the
-lookup of a long name (§4.2), and the errors of §6.5 that are marked so.
+lookup of a long name (§4.2). A malformed symbol index does not fail
+`parse`: the errors of §6.5 marked "`symbol_index`" are returned by
+`Archive::symbol_index()` as `Some(Err(BadIndex))`, and the members are
+read as if the index were well formed. A linker does not need the index
+(`spec/input.md` §7.1), and GNU ld, lld and mold link such archives.
 It reads no other header, so its cost does not depend on the number of
 members or symbols; the errors of every other header are reported by the
 walk or `member_at` (§7.1).
@@ -251,16 +255,18 @@ one of:
 
 | problem | when | reported by |
 |---|---|---|
-| `NoCount` | the member is smaller than one word | `parse` |
-| `TableOutOfRange` | the table the first word announces (GNU: entries; BSD: bytes) does not fit in the member, or its size overflows | `parse` |
-| `TableNotWhole` | BSD: the table size is not a multiple of two words | `parse` |
-| `NoNamesSize` | BSD: no word follows the table | `parse` |
-| `NamesOutOfRange` | BSD: the names do not fit in the member | `parse` |
+| `NoCount` | the member is smaller than one word | `symbol_index` |
+| `TableOutOfRange` | the table the first word announces (GNU: entries; BSD: bytes) does not fit in the member, or its size overflows | `symbol_index` |
+| `TableNotWhole` | BSD: the table size is not a multiple of two words | `symbol_index` |
+| `NoNamesSize` | BSD: no word follows the table | `symbol_index` |
+| `NamesOutOfRange` | BSD: the names do not fit in the member | `symbol_index` |
 | `NameUnterminated` | an entry's name has no NUL before the names end | iteration, at that entry |
 | `NameOutOfRange` | BSD: an entry's name offset is at or past the end of the names | iteration, at that entry |
 
-A member offset of the index is not checked until it is given to
-`member_at` (§7.1).
+The framing problems (`symbol_index`) are found by `parse`, which keeps
+the result; `symbol_index()` returns it on every call, without reading
+the member again. A member offset of the index is not checked until it is
+given to `member_at` (§7.1).
 
 ### 6.6 Cost
 
@@ -303,7 +309,9 @@ next header: no content, no padding. Its name is a path, as stored:
 relative to the directory that holds the archive unless it starts with
 `/`. `content()` is `Content::External { path }` and `size()` the size
 the header gives for that file; the reader does not open it. `name()` is
-the same path, which is what `ar t` lists.
+the same path, which is what `ar t` lists when run in the archive's
+directory; run elsewhere, `ar t` joins it with the archive's directory
+(`sub/objs/f.o` for `sub/libt.a`).
 
 Both tools store every path in the long-name table. A short name (§4.1)
 is read as a path too.
@@ -447,7 +455,7 @@ impl<'a> Archive<'a> {            // Copy; borrows the file's bytes
     pub fn sniff(bytes: &[u8]) -> Option<Kind>;
     pub fn parse(bytes: &'a [u8]) -> Result<Archive<'a>, Error>;
     pub fn kind(&self) -> Kind;
-    pub fn symbol_index(&self) -> Option<SymbolIndex<'a>>;
+    pub fn symbol_index(&self) -> Option<Result<SymbolIndex<'a>, Error>>;   // Err: §6.5
     pub fn members(&self) -> Members<'a>;      // Iterator<Item = Result<Member<'a>, Error>>
     pub fn member_at(&self, header_offset: u64) -> Result<Member<'a>, Error>;
 }

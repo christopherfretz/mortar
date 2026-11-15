@@ -122,6 +122,15 @@ names are pinned, so that a change in either tool shows up:
 
 ## 3. The object reader
 
+*Later stage (a package after WP-021; `spec/input.md` §11.3, §17).* The
+reader of this section borrows the whole file. A later stage adds a reader
+over a **parts view**: every structure is read through `resident(range) ->
+Option<&[u8]>`; a structure not inside one part is `malformed-input`; a
+section body that is not resident is reported to the caller as
+`NotResident`, which copies it with `copy_to`. Parts are disjoint and not
+adjacent, so no structure spans two. Until then `mortar_input` keeps every
+object it parses wholly resident.
+
 ### 3.1 Identification
 
 `Object::parse` checks the following, in this order, and refuses the file with
@@ -580,6 +589,14 @@ borrowed `&[u8]`:
 It has no policy. What a linker does with a symbol's version, a `DT_SONAME`
 or a segment's alignment is `resolve.md`'s; which files a link accepts as
 shared objects is `input.md`'s.
+
+What `mortar_input` reads of a shared object (`spec/input.md` §8.1,
+§8.6), all of it provided here: `DT_SONAME`, `DT_FLAGS_1`, `DT_NEEDED`
+in table order, `DT_RUNPATH` and `DT_RPATH` (§6.4); the dynamic symbols
+with their versions (§6.5, §6.7); whether the file has section headers
+(`SharedObject::entry`, §6.3). `SharedObject::parse`, whose entry path
+follows the section headers when there are any, is the entry
+`mortar_input` uses.
 
 ### 6.1 Identification
 

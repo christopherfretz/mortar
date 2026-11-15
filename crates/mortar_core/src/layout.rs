@@ -598,7 +598,8 @@ impl<'t, 'n> Addresses<'t, 'n> {
     /// (`entry` reads the entry, [`Inputs::entry_def`]); a common through
     /// `sym_place`; a shared definition through its copy allocation, if it
     /// has one; a linker-defined one through `defined`; a weak undefined is
-    /// 0. Otherwise `None`: the symbol has no address in this output.
+    /// 0, and so is a withdrawn conditional symbol unless a reference to it
+    /// is strong (`Assignment::def`). Otherwise `None`: the symbol has no address in this output.
     #[must_use]
     pub fn symbol_addr(
         &self,
@@ -607,7 +608,7 @@ impl<'t, 'n> Addresses<'t, 'n> {
     ) -> Option<u64> {
         let symbol = *self.resolution.redirect.get(symbol)?;
         let placement = &self.layout.placement;
-        match *self.resolution.def.get(symbol)? {
+        match self.assignment.def(self.resolution, symbol)? {
             Def::Undefined { weak: true } => Some(0),
             Def::Undefined { weak: false } => None,
             Def::Defined(e) => match entry(e)? {
@@ -622,7 +623,7 @@ impl<'t, 'n> Addresses<'t, 'n> {
                 let at = copies.binary_search_by_key(&symbol, |row| row.0).ok()?;
                 self.sym_place_addr(AllocKey::Copy(copies[at].1))
             }
-            Def::Internal => placement.defined_of(symbol),
+            Def::Internal(_) => placement.defined_of(symbol),
         }
     }
 

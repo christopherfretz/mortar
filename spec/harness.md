@@ -828,7 +828,11 @@ says what mortar does.
 
 | what | bfd | lld | mold | mortar | test |
 |---|---|---|---|---|---|
-| a later archive's member needs an earlier archive (`-lh -lu`) | undefined | resolved | resolved | as bfd (open question) | `resolve/archive-backref` |
+| a later archive's member needs an earlier archive (`-lh -lu`) | undefined | resolved | resolved | resolved (as lld, mold): `spec/resolve.md` §4.3 | `resolve/archive-backref` |
+| a weak definition named after an archive whose member defines the key strongly | member extracted, 2 | 2 | not extracted, 1 | 2 (`spec/resolve.md` §4.1) | `resolve/weak-after-archive` |
+| a strong definition named after such an archive | duplicate | duplicate | links silently, 3 | duplicate | `resolve/weak-after-archive` |
+| the kept COMDAT copy lacks a symbol another copy defines | first loaded copy, links | first loaded copy, links | lowest live copy, `undefined symbol` | lowest live copy, `comdat-mismatch` (`spec/resolve.md` §6.1, §6.3) | `resolve/comdat-mismatch` |
+| the default entry `_start` defined only in an archive member | extracted | extracted | extracted, made local | extracted (`spec/resolve.md` §4.2) | `resolve/entry-default-root` |
 | an executable's global symbols in `.symtab` | GLOBAL | GLOBAL | LOCAL | GLOBAL | `resolve/symtab` |
 | `.eh_frame_hdr` without `--eh-frame-hdr` | none | none | always | none | `layout/eh-frame-hdr`, `lang/cxx-exceptions` |
 | map file format | `Linker script and memory map` | `VMA LMA Size Align Out In Symbol` | `VMA Size Align Out In Symbol` | plumb.md (WP-011) | `layout/map-file` |
