@@ -906,7 +906,7 @@ fn check(
     };
     // A deferred section is not `SHF_ALLOC`, where `writable` is not read
     // (`spec/arch.md` §4.3 "Non-alloc places").
-    let place = PlaceFacts { alloc: c.alloc, writable: false };
+    let place = PlaceFacts { alloc: c.alloc, writable: false, exec: None };
     let cx = ScanCx { tables: &tables, output: img.output, place, name: c.name };
     img.arch.scan(&cx, at, &mut DemandSink::new(&mut out));
     if tables.missing.into_inner() {

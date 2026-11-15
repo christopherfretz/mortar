@@ -97,17 +97,18 @@ pub fn order(
     pool: &Pool,
 ) -> Result<Ordered, Vec<LayoutDiag>> {
     let files = resolution.section_base.len() as usize;
-    let gathered = pool.map_collect(files, |f, out: &mut Vec<(OutSecId, SectionId)>| {
-        let range = resolution.section_base[mortar_core::id::FileId(f as u32)];
-        for i in 0..range.len() {
-            let s = SectionId(range.start.0 + i);
-            if is_member(s, assignment, resolution, liveness, folds)
-                && let Some(o) = assignment.out(s)
-            {
-                out.push((o, s));
+    let gathered =
+        pool.unit_cost(150).map_collect(files, |f, out: &mut Vec<(OutSecId, SectionId)>| {
+            let range = resolution.section_base[mortar_core::id::FileId(f as u32)];
+            for i in 0..range.len() {
+                let s = SectionId(range.start.0 + i);
+                if is_member(s, assignment, resolution, liveness, folds)
+                    && let Some(o) = assignment.out(s)
+                {
+                    out.push((o, s));
+                }
             }
-        }
-    });
+        });
     let outs = assignment.outsecs.len() as usize;
     let mut counts = vec![0usize; outs];
     for &(o, _) in &gathered.items {
@@ -123,7 +124,8 @@ pub fn order(
         .enumerate()
         .map(|(o, m)| (assignment.outsecs[OutSecId(o as u32)].name, m, Ok(())))
         .collect();
-    pool.for_each_mut(&mut work, |_, (name, m, r)| *r = sort_named(name, m, headers));
+    pool.unit_cost(60000)
+        .for_each_mut(&mut work, |_, (name, m, r)| *r = sort_named(name, m, headers));
     let mut members = Vec::with_capacity(work.len());
     let mut results = Vec::with_capacity(work.len());
     for (_, m, r) in work {

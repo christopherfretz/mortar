@@ -284,7 +284,7 @@ pub fn resolve_steps<V: View>(
     let found = Mutex::new(Found::default());
     {
         let parts = split_offsets(&mut sections, &offsets);
-        pool.for_each_part_init(
+        pool.unit_cost(6300).for_each_part_init(
             live_objects.iter().copied().zip(parts),
             Scratch::default,
             |scratch, _, (file, rows)| {
@@ -304,8 +304,8 @@ pub fn resolve_steps<V: View>(
 
     // def (§3.2) and the merged properties (§3.5, §3.6).
     let mut def = vec![Def::Undefined { weak: false }; keys];
-    pool.for_each_mut(&mut def, |k, d| *d = def_of(&acc, k));
-    let props: Vec<Props> = pool.map(keys, |k| Props {
+    pool.unit_cost(2).for_each_mut(&mut def, |k, d| *d = def_of(&acc, k));
+    let props: Vec<Props> = pool.unit_cost(1).map(keys, |k| Props {
         visibility: rank_vis(acc.vis[k].load(Relaxed)),
         flags: acc.flags[k].load(Relaxed),
     });
@@ -350,7 +350,8 @@ pub fn resolve_steps<V: View>(
     // The rules over several mentions of a key (D2).
     let mut clash = vec![false; keys];
     let mut comdat_mismatch = Vec::new();
-    let interest: Vec<u8> = pool.map(keys, |k| interest_of(props[k].flags, def[k], opts));
+    let interest: Vec<u8> =
+        pool.unit_cost(2).map(keys, |k| interest_of(props[k].flags, def[k], opts));
     if interest.iter().any(|&i| i != 0) {
         let rare = d2(&ctx, &live_objects, &interest, pool);
         several(

@@ -432,7 +432,7 @@ impl<'s> Caches<'s> {
             needs.stat.into_iter().filter(|p| !self.stats.contains_key(p)).collect();
         stat_paths.sort();
         stat_paths.dedup();
-        let stats = pool.map(stat_paths.len(), |i| store.stat(&stat_paths[i]));
+        let stats = pool.unit_cost(6200).map(stat_paths.len(), |i| store.stat(&stat_paths[i]));
         self.stats.extend(stat_paths.into_iter().zip(stats));
         timing.stat += t.elapsed();
         let t = Instant::now();
@@ -498,7 +498,7 @@ impl<'s> Caches<'s> {
                 }
             }
         }
-        let member_facts = pool.map(slots.len(), |s| {
+        let member_facts = pool.unit_cost(2400).map(slots.len(), |s| {
             let (_, _, b, offset, len) = slots[s];
             // The member's view: its parts, which hold what the analysis
             // reads (§11.3).

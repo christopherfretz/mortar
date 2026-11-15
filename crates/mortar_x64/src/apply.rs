@@ -323,7 +323,7 @@ fn value(
     // place is the offset in the TLS block.
     if writes_dtprel(
         h.class,
-        mortar_arch::PlaceFacts { alloc: out.alloc, writable: false },
+        mortar_arch::PlaceFacts { alloc: out.alloc, writable: false, exec: None },
         sym.tls,
     ) {
         return checked(h.check, tls_off(cx, sym, a, TlsAbi::dtp_rel)?);

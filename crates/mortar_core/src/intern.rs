@@ -401,7 +401,7 @@ where
 {
     let m = 1usize << HLL_BITS;
     let shared: Vec<AtomicU8> = (0..m).map(|_| AtomicU8::new(0)).collect();
-    pool.for_each_init(
+    pool.unit_cost(600).for_each_init(
         units,
         || Sketch { local: vec![0; m], shared: &shared },
         |sketch, u| {
@@ -566,7 +566,7 @@ where
     let table = loop {
         let interner = Interner::with_capacity(size);
         let full = AtomicBool::new(false);
-        pool.for_each_part_init(
+        pool.unit_cost(800).for_each_part_init(
             split_offsets(&mut map, &offsets),
             || interner.inserter(),
             |ins, u, out| {
@@ -587,7 +587,7 @@ where
     };
 
     // Pass 2: the first mentions, in unit order, are the ids in order.
-    let collected = pool.map_collect(counts.len(), |u, out| {
+    let collected = pool.unit_cost(400).map_collect(counts.len(), |u, out| {
         for (n, s) in map[offsets[u]..offsets[u + 1]].iter().enumerate() {
             let slot = Slot(s.index());
             if table.first(slot) == (Mention { unit: u as u32, ordinal: n as u32 }) {
@@ -602,12 +602,12 @@ where
 
     // Pass 3: ids by slot, then the map from slots to ids.
     let ids: Vec<AtomicU32> = (0..table.slots()).map(|_| AtomicU32::new(0)).collect();
-    pool.for_each_block(slot_of.len(), REWRITE_BLOCK, |_, range| {
+    pool.unit_cost(11600).for_each_block(slot_of.len(), REWRITE_BLOCK, |_, range| {
         for id in range {
             ids[slot_of[id].0 as usize].store(id as u32, atomic::Ordering::Relaxed);
         }
     });
-    pool.for_each_part(map.chunks_mut(REWRITE_BLOCK), |_, chunk| {
+    pool.unit_cost(6300).for_each_part(map.chunks_mut(REWRITE_BLOCK), |_, chunk| {
         for x in chunk {
             *x = I::from_index(ids[x.slot()].load(atomic::Ordering::Relaxed));
         }

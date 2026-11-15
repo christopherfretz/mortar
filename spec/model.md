@@ -655,6 +655,14 @@ order and yield at unit boundaries, so that a test can run a phase under
 many schedules and thread counts and require identical tables. Every
 helper and every parallel phase has such a test.
 
+How many workers a call uses is a schedule, never an input (rule 6
+partitions by unit, never by worker): at most the thread count, at most
+the number of items, at most `units × c / 200 µs` when the call site
+states an estimated cost `c` per unit (a constant measured once, never a
+timing taken during the link), and, without a seed, a worker spawns
+another only while units are left untaken. With a seed every worker
+runs, so that the tests exercise schedules (WP-032g).
+
 `<n>` is a decimal integer below 2^64 (surrounding white space allowed).
 Any other value is an error of the command-line phase, which the driver
 reports before the first phase runs and with no output written:
