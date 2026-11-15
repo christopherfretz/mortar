@@ -7,6 +7,3 @@
 # It takes the place of a test's own xfail(mortar) on that architecture
 # (a test's skip still applies). A mortar link that passes is XPASS, so
 # the line goes when the back end lands.
-
-# No i386 back end.
-mortar,i386: mortar: i386 back end is WP-030 stage 2

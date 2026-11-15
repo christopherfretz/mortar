@@ -130,9 +130,15 @@ pub const FEATURE_1_AND: u32 = 0xc000_0002;
 pub const FEATURE_1_IBT: u32 = 1;
 pub const FEATURE_1_SHSTK: u32 = 2;
 
-/// The refusal of an input `e_flags` other than 0 (X86-1).
-pub const E_FLAGS: Refusal =
-    Refusal::named(RefusalClass::Feature, "an i386 input with e_flags other than 0");
+/// The refusal of an input `e_flags` other than 0 (X86-1): class
+/// `feature`, the value shown (`e_flags 0x5`).
+#[must_use]
+pub fn e_flags_refused(e_flags: u32) -> Refusal {
+    Refusal {
+        class: RefusalClass::Feature,
+        name: RefName::Value { what: "e_flags", value: u64::from(e_flags) },
+    }
+}
 
 /// The refusal name of a type: its `R_386_*` name, or its number in hex
 /// when it has none (diag.md §4.2).
@@ -149,7 +155,7 @@ impl Arch for X86 {
     fn e_flags(&self, inputs: &mut dyn Iterator<Item = u32>) -> Result<u32, Refusal> {
         for f in inputs {
             if f != 0 {
-                return Err(E_FLAGS);
+                return Err(e_flags_refused(f));
             }
         }
         Ok(0)

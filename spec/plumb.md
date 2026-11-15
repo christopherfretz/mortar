@@ -137,6 +137,17 @@ discard <file> <section> gc|comdat|script|unspecified
 fold <file> <section> <into-file> <into-section>
 chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
 define <name> <value>
+output static|exec|pie|static-pie
+interp <path>
+runpath|rpath <paths>
+bind lazy|now
+relro on|off
+arg <word>
+needed <name>
+copy <name> <addr> <size>
+export <name>
+plt <name>
+iplt <name>
 end
 ```
 
@@ -171,9 +182,38 @@ non-alloc section is also accepted, with `<addr>` read as the output
 section's `sh_addr` (0) plus the offset: that is what a converted GNU ld
 or lld map holds.
 
+**The dynamic records** (`spec/dyn.md` P-D3; WP-040 step 0d) follow
+`define`. A static link writes none of them; a dynamic link (`Exec`,
+`Pie`, `StaticPie`) writes them, each package filling its own. Every
+string is a string token.
+
+| record | count | meaning |
+|---|---|---|
+| `output <kind>` | at most one | the output kind of `dyn.md` D-1: `static`, `exec`, `pie`, `static-pie` |
+| `interp <path>` | at most one | the `-dynamic-linker` path |
+| `runpath <paths>`, `rpath <paths>` | at most one of the two | the `-rpath` list joined by `:` as written (`$ORIGIN` kept); `rpath` under `--disable-new-dtags` (`DT_RPATH`) |
+| `bind lazy`, `bind now` | at most one | `-z now` in force or not |
+| `relro on`, `relro off` | at most one | `-z norelro` in force or not |
+| `arg <word>` | any | the link's command line, one word per record, in order, with response files expanded and the program name left out |
+| `needed <name>` | any | **hint**: a `DT_NEEDED` name, in the order written |
+| `copy <name> <addr> <size>` | any | **hint**: a copy allocation, by the name its `COPY` record names |
+| `export <name>` | any | **hint**: an exported name |
+| `plt <name>` | any | **hint**: the key of a PLT entry, in PLT order (`name` or `name@version`) |
+| `iplt <name>` | any | **hint**: the key of an IPLT entry, in IPLT order |
+
+The first six records are facts of the command line: the verifier
+recomputes each from the `arg` words (or, for a reference link, from its
+response file) and reports a record that disagrees. The **hints** are
+never the expected value: every decision they name (the needed set and
+order, the copies, the export set, PLT order) is recomputed from the
+inputs (`spec/dyn.md` §12), and a hint only names what is compared. A
+second `output`, `interp`, `runpath`/`rpath`, `bind` or `relro` record
+is a `MapError`.
+
 The writer emits records in a fixed order: files by id, then places and
 pieces, the non-alloc records, discards, folds, chunks and defined
-symbols, each group in the order of the map's vectors.
+symbols, each group in the order of the map's vectors, then the dynamic
+records in the order of the grammar above.
 
 Every syntax error is a `MapError { line, message }`. Line 0 means the map
 was truncated, with no `end`. Tests:
@@ -181,6 +221,9 @@ was truncated, with no `end`. Tests:
 - `map::mortar::tests::s3_2_round_trip`
 - `s3_2_tokens_encode_every_byte`
 - `s3_2_malformed_maps_are_errors`
+- `s3_2_dynamic_records_round_trip`, `s3_2_malformed_dynamic_records_are_errors`
+- `crates/mortar/tests/image.rs map_dynamic_records_read_by_the_verifier`
+  (the writer side, `mortar_image::map::DynRecords`)
 - `s3_7_truncations_are_answers`
 - `tests/corpus.rs s3_2_reference_maps_round_trip_through_mortar_format`
 
