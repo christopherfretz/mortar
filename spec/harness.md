@@ -522,7 +522,8 @@ can pass is a wrong case.
 ```
 cargo xtask linktest [--linker bfd,lld,mold,mortar] [--arch aarch64,x86_64,i386]
                      [--filter <text>]... [-j <n>] [--mortar <binary>]
-                     [--results <file>] [--keep] [-v] [<file or directory>...]
+                     [--results <file>] [--keep] [--no-plumb] [-v]
+                     [<file or directory>...]
 ```
 
 - `--linker`, `--arch`: comma lists (repeatable; `--opt=v` works too);
@@ -546,6 +547,9 @@ cargo xtask linktest [--linker bfd,lld,mold,mortar] [--arch aarch64,x86_64,i386]
   (otherwise removed at the end), which has a directory per unit,
   `<NNNN>-<test name>/<arch>/`, with the built `inputs/` and a copy of
   them per linker in which that linker's steps ran.
+- `--no-plumb`: do not run the verifier on the links' outputs ("L3").
+  The harness's own test uses it, because its fake linkers are GNU ld
+  under every name. The gate never does.
 - `-v`: list the PASS results too.
 
 A usage error prints `xtask linktest: <what>` and the usage on standard
@@ -621,6 +625,7 @@ this order: directives, steps, embedded files.
 #@ skip(mold,i386): <why>                   not run there
 #@ timeout: 30                              s, of each link and run step
 #@ mem: 512                                 MiB, of each link and run step
+#@ anomaly(mold): A11                       verifier findings expected ("L3")
 cc -O1 main.c -o main.o                     build steps, once per unit
 ar rcs libm.a m.o
 link gcc -static -no-pie main.o -L. -lm -o prog    per linker
@@ -660,6 +665,11 @@ file with neither architecture nor linker.
   not `xfail` (a run step does not fail when its output differs, so
   `xfail` would be `XPASS`).
 - `timeout: <seconds>` (1 to 3600), `mem: <MiB>` (16 to 65536).
+- `anomaly(<qualifiers>): <id>...`: the recorded reference-linker defects
+  (`spec/plumb.md` §10.2) the verifier is expected to find on these
+  linkers' outputs ("L3"), beyond the run-wide defaults of
+  `tests/link/anomalies`. The qualifiers name at least one reference
+  linker and never mortar.
 
 **Qualifiers** are words in parentheses after a keyword, of three kinds:
 compiler (`gcc`, the default, or `clang`) on compile steps only; linker
@@ -748,9 +758,84 @@ mold leave a stale one alone.) The test must give a `diag` that applies
 to mortar on every architecture: a refusal names its reason
 (`docs/ARCHITECTURE.md`, correct-or-refused-by-name).
 
-**L3** (WP-028): the verifier, `mortar_plumb`, is to check every output a
-link step produced, by every linker, where the link step ends
-(`xtask/src/linktest/engine.rs`, marked `L3 (WP-028)`).
+### L3: the verifier on every link
+
+Every link step that is to succeed (no `exit: fail`) writes a map, and
+the verifier, `mortar_plumb` (`spec/plumb.md`), judges its output once the
+step's own expectations have passed. This applies to every linker,
+mortar included (`docs/VALIDATION.md` layer L3).
+
+- **The map.** If the link line names one already (`-Map=X`, `-Map X`,
+  `--Map=X`, `-Wl,-Map=X`, `-Wl,-Map,X`), that map is used. Otherwise the
+  harness adds `-Map=.linktest-plumb-<line>.map` to a `link ld` step, or
+  `-Wl,-Map=.linktest-plumb-<line>.map` to a driver step, in the linker's
+  directory. All four linkers take `-Map=`: mortar must accept it and
+  write its own format (`spec/plumb.md` §3.2). The format is the
+  linker's: `gnu`, `lld`, `mold` or `mortar`. The inputs are the files the
+  map names, a relative path being read from the linker's directory.
+- **What is judged.** The verifier judges what its stages cover
+  (`spec/plumb.md` §1): AArch64 ELF64 `ET_EXEC` without `PT_INTERP` and
+  `PT_DYNAMIC`. Every other output is counted, by reason, as not judged:
+  `machine` (x86-64, i386; any non-AArch64 machine), `pie-or-shared`
+  (`ET_DYN`: PIE, static PIE and shared objects, stage 3), `dynamic`
+  (`ET_EXEC` with `PT_INTERP` or `PT_DYNAMIC`, stage 3) and `relocatable`
+  (`-r`). A file that is not ELF is judged, and fails S1.
+- **The verdict.** A finding fails the step: `FAIL`, or `XFAIL` under an
+  `xfail` marker, with the detail `<step>: L3: the verifier finds
+  <output>: <rule> <message> at <address> (and N more)`. Run
+  `cargo xtask plumb` on the kept work directory (`--keep`) for the whole
+  report. The only exception is a finding that `spec/plumb.md` §10.2
+  records as a defect of a reference linker
+  (`mortar_plumb::anomaly::classify`), and that is expected of that
+  linker: by a run-wide default, or by the test with the following
+  directive:
+
+  ```
+  #@ anomaly(mold): A9 A11          ids of plumb.md §10.2, for these linkers
+  ```
+
+  The qualifiers name at least one reference linker, never mortar, and
+  can also name architectures. A recorded anomaly that the test does not
+  declare is a failure, and its detail names the directive that would
+  expect it. A declared anomaly that none of the linker's judged outputs
+  in the unit has is stale, and is a `FAIL` as well. A map or an output
+  that cannot be read is an `ERROR`.
+- **The defaults.** `tests/link/anomalies` lists the anomalies a
+  reference linker shows on essentially every link of a kind, so that no
+  test declares them:
+
+  ```
+  # a comment; blank lines are ignored
+  mold: A1 A2 A3 A9                 <linker>[,<linker or arch>...]: <id>...
+  bfd: A10
+  ```
+
+  Each line names at least one reference linker, never mortar, and can
+  name architectures (none is every architecture); the ids are those of
+  `spec/plumb.md` §10.2. A line that does not parse is a run error (exit
+  3); without the file there are no defaults. A defaulted anomaly is
+  expected on every judged output of that linker and architecture, and is
+  not stale in a unit that does not show it. mortar has no defaults even
+  if the file named it. Instead, the run checks the file itself: a
+  default that no judged output of the run of that linker and
+  architecture shows is a run error naming the line. A run of part of the
+  corpus (paths or `--filter`) may well not meet every default, so it
+  does not check that, and says so in a note. A test declares only what
+  is outside the defaults, under the strict rule above in both directions.
+- **The note.** The summary has the note `L3: the verifier judged N link
+  outputs in T s` (T is the verifier's time summed over the threads), the
+  number of findings expected as anomalies, and the counts not judged by
+  reason.
+
+**Cost.** This was measured with WP-028 on the reference machine, on the
+AArch64 corpus at `-j 8` with a load average of about 28, in the debug
+profile `xtask` builds in. The verifier judges 119 outputs, and 18129 of
+its findings are expected anomalies (almost all A9 and A1/A2 on mold). Its
+time summed over the threads is 55–57 s. The linktest step takes 8.3 s and
+11.1 s with `--no-plumb`, and 19.7 s and 18.7 s with L3, so L3 adds about
+10 s to `cargo xtask ci --quick`. That is under the 20 s at which the quick
+gate would sample, so every output is judged in the quick gate as in the
+full one.
 
 **Runs**. A program on the host's architecture is run natively after a
 check that it is a file beginning with `\x7fELF` (`process::run` starts a
@@ -871,7 +956,11 @@ reference machine) and `reloc/aarch64-veneer` (AArch64 only).
 `references_that_disagree_on_output_refute_a_test`.
 `xtask/src/linktest/report.rs`: `the_exit_status_of_a_run`,
 `the_results_file`, `the_summary`, `who_a_line_is_for`.
-`xtask/src/linktest/engine.rs`: `the_output_file_of_a_link_line`.
+`xtask/src/linktest/engine.rs`: `the_output_file_of_a_link_line`,
+`the_map_of_a_link_line`, `what_the_verifier_does_not_judge`,
+`a_default_anomaly_goes_stale`.
+`xtask/src/linktest/format.rs`: `anomaly_declarations`,
+`default_anomalies`.
 `xtask/src/linktest.rs`: `the_command_line`, `usage_errors`,
 `collecting_test_files`.
 

@@ -158,7 +158,34 @@ pub(crate) struct Located<'a> {
     pub findings: Vec<Finding>,
 }
 
-fn find_member<'a>(bytes: &'a [u8], file: &MapFile) -> Result<&'a [u8], String> {
+/// The path of a thin archive's member: the stored path, from the
+/// archive's directory when it is relative (GNU ar manual, "--thin").
+pub(crate) fn thin_member_path(archive: &str, stored: &[u8]) -> String {
+    let stored = String::from_utf8_lossy(stored);
+    let dir = std::path::Path::new(archive).parent().unwrap_or(std::path::Path::new(""));
+    dir.join(stored.as_ref()).to_string_lossy().into_owned()
+}
+
+/// The files a thin archive's members are, as [`Input::path`]s
+/// (§2.2): what a caller reads besides the paths the map names. Empty for
+/// anything that is not a thin archive.
+pub fn thin_members(archive_path: &str, bytes: &[u8]) -> Vec<String> {
+    let Ok(archive) = Archive::parse(bytes) else { return Vec::new() };
+    archive
+        .members()
+        .filter_map(Result::ok)
+        .filter_map(|m| match m.content() {
+            Content::External { path } => Some(thin_member_path(archive_path, path)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn find_member<'a>(
+    bytes: &'a [u8],
+    file: &MapFile,
+    by_path: &HashMap<&str, &'a [u8]>,
+) -> Result<&'a [u8], String> {
     let archive = Archive::parse(bytes).map_err(|e| e.to_string())?;
     let name = file.member.as_deref().unwrap_or("").as_bytes();
     let mut found: Option<&'a [u8]> = None;
@@ -171,9 +198,20 @@ fn find_member<'a>(bytes: &'a [u8], file: &MapFile) -> Result<&'a [u8], String> 
         count += 1;
         match m.content() {
             Content::Inline { data, .. } => found = found.or(Some(data)),
-            Content::External { .. } | Content::ExternalMember { .. } => {
+            Content::External { path } => {
+                let at = thin_member_path(&file.path, path);
+                match by_path.get(at.as_str()) {
+                    Some(data) => found = found.or(Some(*data)),
+                    None => {
+                        return Err(format!(
+                            "a member of a thin archive, '{at}', which is not among the inputs"
+                        ));
+                    }
+                }
+            }
+            Content::ExternalMember { .. } => {
                 return Err(
-                    "a member of a thin archive (stage 1 reads regular archives only)".into()
+                    "a thin archive's member that is a member of another archive (not read)".into(),
                 );
             }
         }
@@ -190,8 +228,12 @@ fn find_member<'a>(bytes: &'a [u8], file: &MapFile) -> Result<&'a [u8], String> 
     }
 }
 
-fn read_obj<'a>(bytes: &'a [u8], file: &MapFile) -> Result<Obj<'a>, String> {
-    let data = if file.member.is_some() { find_member(bytes, file)? } else { bytes };
+fn read_obj<'a>(
+    bytes: &'a [u8],
+    file: &MapFile,
+    by_path: &HashMap<&str, &'a [u8]>,
+) -> Result<Obj<'a>, String> {
+    let data = if file.member.is_some() { find_member(bytes, file, by_path)? } else { bytes };
     let elf = Object::parse(data).map_err(|e| e.to_string())?;
     let symtab = elf.symbols().map_err(|e| e.to_string())?;
     let mut secs: Vec<Sec<'a>> = Vec::with_capacity(elf.section_count() as usize);
@@ -230,7 +272,7 @@ pub(crate) fn locate<'a>(map: &Map, inputs: &[Input<'a>], image: &Image<'_>) -> 
             }
             continue;
         };
-        match read_obj(bytes, f) {
+        match read_obj(bytes, f, &by_path) {
             Ok(obj) if obj.elf.header().e_machine == out_machine => {
                 obj_of[i] = Some(out.objs.len());
                 out.objs.push(obj);
@@ -537,3 +579,30 @@ fn check_map(out: &mut Located<'_>, image: &Image<'_>) {
 /// A relocation record as read: `(r_offset, symbol, type, addend)`, the
 /// addend `None` for REL.
 pub type RawRecord = (u64, u32, u32, Option<i64>);
+
+#[cfg(test)]
+mod tests {
+    use super::{thin_member_path, thin_members};
+
+    /// A thin archive of `names` (each a short name, no data).
+    fn thin(names: &[&str]) -> Vec<u8> {
+        let mut b = b"!<thin>\n".to_vec();
+        for n in names {
+            let head =
+                format!("{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n", format!("{n}/"), 0, 0, 0, 644, 10);
+            b.extend_from_slice(head.as_bytes());
+        }
+        b
+    }
+
+    // spec/plumb.md §2.2: a thin archive's member is the file at its stored
+    // path, from the archive's directory.
+    #[test]
+    fn s2_2_thin_archive_members() {
+        assert_eq!(thin_member_path("libt.a", b"one.o"), "one.o");
+        assert_eq!(thin_member_path("d/libt.a", b"lib/one.o"), "d/lib/one.o");
+        assert_eq!(thin_member_path("d/libt.a", b"/abs/one.o"), "/abs/one.o");
+        assert_eq!(thin_members("d/libt.a", &thin(&["one.o", "two.o"])), ["d/one.o", "d/two.o"]);
+        assert!(thin_members("x.o", b"\x7fELF").is_empty());
+    }
+}

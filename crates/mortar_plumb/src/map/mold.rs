@@ -42,7 +42,7 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{MapFile, SectionRef};
+    use super::super::{ChunkKind, MapFile, SectionRef};
     use super::*;
 
     /// Captured from mold 2.37 (`-Wl,-Map`), trimmed.
@@ -55,6 +55,8 @@ mod tests {
           0x2398e0         32     4         a.o:(.text._Z9shared_fni)
           0x2398e0          0     0                 shared_fn(int)
           0x20f3b0       1015    16         /usr/lib/aarch64-linux-gnu/libc.a(gconv_conf.o):(.rodata)
+          0x2bbd28         16     8 .common
+          0x2bbd28         16     8         a.o:(.common)
                  0         37     1 .comment
 ";
 
@@ -91,6 +93,13 @@ mod tests {
         assert_eq!(
             m.files[2],
             MapFile::member("/usr/lib/aarch64-linux-gnu/libc.a", "gconv_conf.o")
+        );
+        // A file's common symbols are a chunk, not an input section.
+        let common: Vec<_> = m.chunks.iter().filter(|c| c.kind == ChunkKind::Common).collect();
+        assert_eq!(common.len(), 1);
+        assert_eq!(
+            (common[0].name.as_str(), common[0].addr, common[0].size),
+            ("a.o", Some(0x2b_bd28), 16)
         );
     }
 
