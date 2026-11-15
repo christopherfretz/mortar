@@ -65,7 +65,7 @@ fn rewrite_window(ty: u32, p: u64) -> Option<(u64, u64)> {
 
 impl Engine<'_, '_> {
     /// One x86-64 record (§5.1 steps 2 to 7).
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines, clippy::many_single_char_names)]
     pub(super) fn x64_record(
         &mut self,
         oi: usize,
@@ -84,7 +84,7 @@ impl Engine<'_, '_> {
         // The follower of a TLS sequence: the lead's verdict (X-25, X-27).
         if symbol == TLS_GET_ADDR
             && alloc
-            && let Some(lead) = self.x64_lead_of(recs, sorted, rec)
+            && let Some(lead) = Self::x64_lead_of(recs, sorted, rec)
         {
             return match self.x64_seq(oi, si, recs, sorted, lead) {
                 SeqX::Relaxed(rw, ..) => self.cov.add_accepted(rw, ty),
@@ -113,7 +113,7 @@ impl Engine<'_, '_> {
             Op::Slot(Slot::Desc | Slot::TpRel, _) | Op::DescCall | Op::TpRel => {
                 return self.x64_tls(oi, si, rec, site, symbol);
             }
-            Op::DtpRel => return self.x64_dtprel(oi, rec, site, symbol, alloc, exec),
+            Op::DtpRel => return self.x64_dtprel(oi, rec, &site, &symbol, alloc, exec),
             Op::None => {
                 self.cov.none += 1;
                 return;
@@ -175,7 +175,7 @@ impl Engine<'_, '_> {
                     );
                     return self.fail(f);
                 }
-                return self.x64_debug_tls(rec, site, symbol, s.wrapping_add(addend as u64));
+                return self.x64_debug_tls(rec, &site, &symbol, s.wrapping_add(addend as u64));
             }
             Target::Addr(s) => (s, if self.x64_abs(oi, rec.sym) { Kind::Abs } else { Kind::Local }),
             Target::UndefWeak => (0, Kind::Weak0),
@@ -251,7 +251,7 @@ impl Engine<'_, '_> {
     /// `64`/`32` against a TLS symbol at a non-alloc place (X-53): the
     /// DTP offset; GNU ld and mold write the template address `t`
     /// (`spec/x64.md` W10), which is a finding §10.2 names.
-    fn x64_debug_tls(&mut self, rec: &Rec, site: Site, symbol: String, t: u64) {
+    fn x64_debug_tls(&mut self, rec: &Rec, site: &Site, symbol: &str, t: u64) {
         let Ok(Some(b)) = self.tls else { return self.not_checked(Reason::Tls, 1) };
         let want = b.dtprel(t) as i64;
         if let Verdict::Ok(_) = judge(rec, want) {
@@ -261,15 +261,15 @@ impl Engine<'_, '_> {
             let mut f = Self::finding(
                 Rule::Field,
                 rec,
-                &site,
-                &symbol,
+                site,
+                symbol,
                 "a TLS symbol's template address where the DTP offset belongs (spec/x64.md X-53)",
             );
             f.expected = Some(want as u64);
             f.found = Some(rec.out_word);
             return self.fail(f);
         }
-        self.x64_judge(rec, &site, &symbol, want);
+        self.x64_judge(rec, site, symbol, want);
     }
 
     /// Whether symbol `idx` of object `oi` is absolute: `SHN_ABS` in the
@@ -338,6 +338,7 @@ impl Engine<'_, '_> {
 
     /// The GOTPCRELX rewritings of §5.9 the map's linker writes, for a
     /// symbol of `kind` at `s`: the one the output holds.
+    #[allow(clippy::many_single_char_names)] // s, k, p, r: the psABI's names
     fn x64_got_form(
         &mut self,
         oi: usize,
@@ -447,12 +448,7 @@ impl Engine<'_, '_> {
 
     /// The lead of the TLS sequence whose follower `rec` is (X-30): a
     /// `TLSGD`/`TLSLD` at the offset its form puts the call's record.
-    fn x64_lead_of<'r>(
-        &self,
-        recs: &'r [Rec],
-        sorted: &[(u64, usize)],
-        rec: &Rec,
-    ) -> Option<&'r Rec> {
+    fn x64_lead_of<'r>(recs: &'r [Rec], sorted: &[(u64, usize)], rec: &Rec) -> Option<&'r Rec> {
         let deltas: &[(u64, u32)] = match rec.def.r_type {
             x::PLT32 | x::PC32 => &[(8, x::TLSGD), (5, x::TLSLD)],
             x::GOTPCRELX | x::GOTPCREL => &[(8, x::TLSGD), (6, x::TLSLD)],
@@ -477,7 +473,7 @@ impl Engine<'_, '_> {
 
     /// A `TLSGD`/`TLSLD` sequence (X-25, X-27; §5.9): the input form, and
     /// the output against the LE forms the map's linker writes.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
     fn x64_seq(
         &self,
         oi: usize,
@@ -495,15 +491,12 @@ impl Engine<'_, '_> {
                 None,
             )
         };
-        let b = match self.tls {
-            Ok(Some(b)) => b,
-            _ => {
-                return SeqX::Bad(
-                    "a TLS sequence in an output without a usable PT_TLS".into(),
-                    Vec::new(),
-                    None,
-                );
-            }
+        let Ok(Some(b)) = self.tls else {
+            return SeqX::Bad(
+                "a TLS sequence in an output without a usable PT_TLS".into(),
+                Vec::new(),
+                None,
+            );
         };
         let f = self.format;
         let mold = f == Format::Mold;
@@ -538,13 +531,10 @@ impl Engine<'_, '_> {
         let (before, after, want): (u64, u64, Vec<u8>) = if gd {
             let g16 = at(-4, 4) == Some(&[0x66, 0x48, 0x8d, 0x3d]);
             if g16
-                && at(4, 4) == Some(&[0x66, 0x66, 0x48, 0xe8])
-                && follows(8, &[x::PLT32, x::PC32])
-            {
-                (4, 8, x::gd_le(t as u32, mold).to_vec())
-            } else if g16
-                && at(4, 4) == Some(&[0x66, 0x48, 0xff, 0x15])
-                && follows(8, &[x::GOTPCRELX, x::GOTPCREL])
+                && ((at(4, 4) == Some(&[0x66, 0x66, 0x48, 0xe8])
+                    && follows(8, &[x::PLT32, x::PC32]))
+                    || (at(4, 4) == Some(&[0x66, 0x48, 0xff, 0x15])
+                        && follows(8, &[x::GOTPCRELX, x::GOTPCREL])))
             {
                 (4, 8, x::gd_le(t as u32, mold).to_vec())
             } else if at(-3, 3) == Some(&[0x48, 0x8d, 0x3d])
@@ -807,13 +797,13 @@ impl Engine<'_, '_> {
         self.got_groups.entry((Slot::TpRel, oi, rec.sym, 0)).or_default().members.push((pend, ev));
     }
 
-    /// `DTPOFF32`/`DTPOFF64` (X-46): TpRel or DtpRel by section and linker.
+    /// `DTPOFF32`/`DTPOFF64` (X-46): `TpRel` or `DtpRel` by section and linker.
     fn x64_dtprel(
         &mut self,
         oi: usize,
         rec: &Rec,
-        site: Site,
-        symbol: String,
+        site: &Site,
+        symbol: &str,
         alloc: bool,
         exec: bool,
     ) {
@@ -823,8 +813,8 @@ impl Engine<'_, '_> {
                 let f = Self::finding(
                     Rule::NoTls,
                     rec,
-                    &site,
-                    &symbol,
+                    site,
+                    symbol,
                     "a thread-local relocation in an output without PT_TLS",
                 );
                 return self.fail(f);
@@ -838,7 +828,7 @@ impl Engine<'_, '_> {
                 // X-18: A; the references' choices are not specified.
                 let a = rec.addend;
                 if self.format == Format::Mortar || matches!(judge(rec, a), Verdict::Ok(_)) {
-                    return self.x64_judge(rec, &site, &symbol, a);
+                    return self.x64_judge(rec, site, symbol, a);
                 }
                 return self.not_checked(Reason::Tls, 1);
             }
@@ -847,8 +837,8 @@ impl Engine<'_, '_> {
                 let f = Self::finding(
                     Rule::Insn,
                     rec,
-                    &site,
-                    &symbol,
+                    site,
+                    symbol,
                     "a thread-local relocation against a symbol that is not thread-local",
                 );
                 return self.fail(f);
@@ -861,7 +851,7 @@ impl Engine<'_, '_> {
             Format::Mold => false,
         };
         let xv = if tp { b.tprel(s) } else { b.dtprel(s) };
-        self.x64_judge(rec, &site, &symbol, xv as i64);
+        self.x64_judge(rec, site, symbol, xv as i64);
     }
 }
 

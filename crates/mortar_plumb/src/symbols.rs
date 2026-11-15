@@ -548,7 +548,7 @@ fn linker_defined(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
     };
     let small_end = data().filter(|s| !large(s)).map(end).max();
     let e_end = data()
-        .filter(|s| !nobits(s) && !(large(s) && small_end.is_some_and(|m| s.shdr.sh_addr >= m)))
+        .filter(|s| !nobits(s) && (!large(s) || small_end.is_none_or(|m| s.shdr.sh_addr < m)))
         .map(end)
         .max();
     let m_end = data().map(end).max();

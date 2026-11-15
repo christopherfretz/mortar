@@ -343,3 +343,210 @@ fn x64_relax_case_accepts_every_rewriting_family() {
         }
     }
 }
+
+// ---- mutations (spec/plumb.md §9.2, x86-64) ----
+
+fn le64(b: &[u8], o: usize) -> u64 {
+    u64::from_le_bytes(b[o..o + 8].try_into().unwrap())
+}
+fn le32(b: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+}
+
+/// The file offset of an address in a `PT_LOAD`'s file image.
+fn file_offset(b: &[u8], addr: u64) -> Option<usize> {
+    let phoff = le64(b, 32) as usize;
+    let n = usize::from(u16::from_le_bytes([b[56], b[57]]));
+    (0..n).map(|i| phoff + i * 56).find_map(|o| {
+        let (ty, off, va, fsz) = (le32(b, o), le64(b, o + 8), le64(b, o + 16), le64(b, o + 32));
+        (ty == 1 && va <= addr && addr < va + fsz).then(|| (off + (addr - va)) as usize)
+    })
+}
+
+/// A link, its inputs and map, and whether a mutant is found.
+struct Ctx<'c> {
+    link: &'c Link,
+    output: Vec<u8>,
+    files: Vec<(String, Vec<u8>)>,
+    map: mortar_plumb::Map,
+}
+
+impl<'c> Ctx<'c> {
+    fn of(link: &'c Link) -> Self {
+        let map = link.parse_map();
+        let files = link.inputs(&map);
+        Ctx { link, output: link.output_bytes(), files, map }
+    }
+    fn report(&self, output: &[u8]) -> Report {
+        common::verify_with(output, &self.files, &self.map)
+    }
+    /// A finding that is not a recorded anomaly.
+    fn found(&self, output: &[u8]) -> bool {
+        !common::unexpected(self.link, &self.report(output)).is_empty()
+    }
+}
+
+fn link_of<'c>(c: &'c Corpus, case: &str, linker: Linker) -> Option<&'c Link> {
+    c.links.iter().map(|(l, ..)| l).find(|l| l.case == case && l.linker == linker)
+}
+
+/// The relocated places of `relax.o`: (address, field width, type name),
+/// and for the GOT and TLS types the instruction bytes before the field.
+fn relax_places(ctx: &Ctx) -> Vec<(u64, usize, &'static str)> {
+    let mut out = Vec::new();
+    for (path, bytes) in &ctx.files {
+        if !path.starts_with("relax") {
+            continue;
+        }
+        let fi = ctx.map.files.iter().position(|f| &f.path == path).unwrap();
+        let obj = mortar_elf::Object::parse(bytes).unwrap();
+        for s in obj.sections() {
+            if s.sh_type() != mortar_elf::consts::SHT_RELA {
+                continue;
+            }
+            let target = obj.section(s.info_section().unwrap()).unwrap();
+            if target.flags() & mortar_elf::consts::SHF_ALLOC == 0 {
+                continue;
+            }
+            let name = String::from_utf8_lossy(target.name().unwrap()).into_owned();
+            let Some(pl) = ctx.map.placed.iter().find(|p| {
+                p.file as usize == fi && p.section == mortar_plumb::map::SectionRef::Name(name.clone())
+            }) else {
+                continue;
+            };
+            for r in s.rela().unwrap() {
+                let Some(def) = mortar_plumb::x64::def(r.r_type) else { continue };
+                let w = usize::from(def.field.width());
+                if w > 0 {
+                    out.push((pl.addr + r.r_offset, w, def.name));
+                }
+            }
+        }
+    }
+    out
+}
+
+// spec/plumb.md §9.2 (a) for x86-64: a flipped bit in every relocated field
+// of the relax case (lowest and highest bit), per linker; and a flipped
+// bit in the opcode byte before every GOT and TLS field, which a
+// rewriting may have changed (§5.9).
+#[test]
+fn x64_flipped_fields_and_opcodes_are_found() {
+    let Some(c) = corpus() else { return };
+    let (mut total, mut found, mut op_total, mut op_found) = (0, 0, 0, 0);
+    let mut missed = Vec::new();
+    for linker in Linker::ALL {
+        let link = link_of(c, "relax", linker).unwrap();
+        let ctx = Ctx::of(link);
+        let base: Vec<u64> = ctx.report(&ctx.output).findings.iter().filter_map(|f| f.addr).collect();
+        for (p, w, name) in relax_places(&ctx) {
+            if base.contains(&p) {
+                continue;
+            }
+            let off = file_offset(&ctx.output, p).unwrap();
+            for bit in [0, 8 * w - 1] {
+                let mut m = ctx.output.clone();
+                m[off + bit / 8] ^= 1 << (bit % 8);
+                total += 1;
+                if ctx.found(&m) {
+                    found += 1;
+                } else {
+                    missed.push(format!("{} {name} at {p:#x} bit {bit}", link.label()));
+                }
+            }
+            if name.contains("GOT") || name.contains("TLS") {
+                let mut m = ctx.output.clone();
+                m[off - 2] ^= 0x01;
+                op_total += 1;
+                if ctx.found(&m) {
+                    op_found += 1;
+                } else {
+                    missed.push(format!("{} {name} at {p:#x}: opcode byte", link.label()));
+                }
+            }
+        }
+    }
+    eprintln!("§9.2 (a) x86-64 field bit flips: {found}/{total}; opcode bytes: {op_found}/{op_total}");
+    assert!(missed.is_empty(), "not found:\n{}", missed.join("\n"));
+}
+
+/// The section header table: (name, `sh_addr`, `sh_offset`, `sh_size`).
+fn sections(b: &[u8]) -> Vec<(String, u64, u64, u64)> {
+    let h = mortar_elf::FileHeader::parse(b).unwrap();
+    let t = mortar_elf::SectionTable::parse(b, &h).unwrap();
+    t.iter()
+        .map(|s| {
+            let sh = s.header();
+            let n = String::from_utf8_lossy(s.name().unwrap_or(b"")).into_owned();
+            (n, sh.sh_addr, sh.sh_offset, sh.sh_size)
+        })
+        .collect()
+}
+
+// spec/plumb.md §9.2 for the rules WP-028c adds: S19 (an `int3` in GNU
+// ld's `.init` padding), Y3 for a common (lc made absolute, as lld's
+// W9), P1 (an x86 property bit), S11 (a 4-aligned note under p_align 8
+// in a GNU ld output), the TLS block (PT_TLS memsz).
+#[test]
+fn x64_new_rules_are_enforced() {
+    let Some(c) = corpus() else { return };
+    let mut results = Vec::new();
+    // S19: GNU ld's NOP padding in `.init`, one byte made int3.
+    let ctx = Ctx::of(link_of(c, "w8", Linker::Bfd).unwrap());
+    let init = sections(&ctx.output).into_iter().find(|s| s.0 == ".init").unwrap();
+    assert!(!ctx.found(&ctx.output), "w8/bfd is not clean");
+    let mut hit = 0;
+    let mut tried = 0;
+    for k in 0..init.3 as usize {
+        let at = init.2 as usize + k;
+        // A byte of the padding: a NOP byte after crti's 18 bytes.
+        if k < 18 || ctx.output[at] != 0x66 && ctx.output[at] != 0x0f && ctx.output[at] != 0x2e {
+            continue;
+        }
+        let mut m = ctx.output.clone();
+        m[at] = 0xcc;
+        tried += 1;
+        hit += usize::from(ctx.report(&m).with_rule("S19").next().is_some());
+        break;
+    }
+    results.push(("S19 .init padding made int3", hit, tried));
+    // Y3: the large common made absolute.
+    let ctx = Ctx::of(link_of(c, "w9", Linker::Bfd).unwrap());
+    let st = sections(&ctx.output).into_iter().find(|s| s.0 == ".symtab").unwrap();
+    let strtab = sections(&ctx.output).into_iter().find(|s| s.0 == ".strtab").unwrap();
+    let mut hit = 0;
+    for i in 0..(st.3 / 24) as usize {
+        let e = st.2 as usize + i * 24;
+        let name_at = strtab.2 as usize + le32(&ctx.output, e) as usize;
+        if ctx.output[name_at..].starts_with(b"lc\0") {
+            let mut m = ctx.output.clone();
+            m[e + 6..e + 8].copy_from_slice(&0xfff1u16.to_le_bytes());
+            hit = usize::from(ctx.report(&m).findings.iter().any(|f| f.message.starts_with("common symbol")));
+        }
+    }
+    results.push(("Y3 common made absolute", hit, 1));
+    // P1: the ISA_1_NEEDED bit of a GNU ld C output flipped.
+    let ctx = Ctx::of(link_of(c, "c-gcc", Linker::Bfd).unwrap());
+    let note = sections(&ctx.output).into_iter().find(|s| s.0 == ".note.gnu.property").unwrap();
+    let mut m = ctx.output.clone();
+    // namesz, descsz, type, "GNU\0", then (pr_type, pr_datasz, data).
+    let d = note.2 as usize + 16;
+    assert_eq!(le32(&m, d), 0xc000_8002, "the first property is ISA_1_NEEDED");
+    m[d + 8] ^= 0x02;
+    results.push(("P1 x86 property bit", usize::from(ctx.report(&m).with_rule("P1").next().is_some()), 1));
+    // TLS: PT_TLS memsz grown by its alignment moves every TP offset.
+    let ctx = Ctx::of(link_of(c, "tls-ie", Linker::Bfd).unwrap());
+    let b = &ctx.output;
+    let phoff = le64(b, 32) as usize;
+    let n = usize::from(u16::from_le_bytes([b[56], b[57]]));
+    let tls = (0..n).map(|i| phoff + i * 56).find(|&o| le32(b, o) == 7).unwrap();
+    let mut m = b.clone();
+    let memsz = le64(&m, tls + 40) + le64(&m, tls + 48);
+    m[tls + 40..tls + 48].copy_from_slice(&memsz.to_le_bytes());
+    results.push(("TLS block memsz grown", usize::from(ctx.found(&m)), 1));
+    for (what, hit, of) in &results {
+        eprintln!("§9.2 x86-64 {what}: {hit}/{of} found");
+    }
+    let missed: Vec<_> = results.iter().filter(|(_, h, o)| h != o).collect();
+    assert!(missed.is_empty(), "not found: {missed:?}");
+}

@@ -63,11 +63,9 @@ fn rule(machine: u16, t: u32) -> Option<Merge> {
         // spec/x64.md X-41: the legacy COMPAT_ISA_1_USED and _NEEDED, the
         // UINT32_AND, _OR and _OR_AND ranges (binutils' UINT32_OR_HI is
         // 0xc000ffff; synth.md S-95's 0xc0008fff is request R-7).
-        0xc000_0000 if x86 => Merge::OrAll,
-        0xc000_0001 if x86 => Merge::Or,
         0xc000_0002..=0xc000_7fff if x86 => Merge::And,
-        0xc000_8000..=0xc000_ffff if x86 => Merge::Or,
-        0xc001_0000..=0xc001_7fff if x86 => Merge::OrAll,
+        0xc000_0001 | 0xc000_8000..=0xc000_ffff if x86 => Merge::Or,
+        0xc000_0000 | 0xc001_0000..=0xc001_7fff if x86 => Merge::OrAll,
         _ => return None,
     })
 }

@@ -428,7 +428,7 @@ impl Engine<'_, '_> {
             let pointer: fn(u32) -> bool = match o.elf.machine() {
                 Machine::AArch64 => |ty| matches!(ty, 257 | 258 | 260 | 261),
                 Machine::X86_64 => |ty| matches!(ty, 1 | 2 | 10 | 11 | 24),
-                _ => {
+                Machine::I386 => {
                     self.not_checked(Reason::Machine, n);
                     continue;
                 }
