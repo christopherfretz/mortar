@@ -1,0 +1,18 @@
+[package]
+name = "mortar_cli"
+description = "GNU ld's command line, parsed to a link plan; the option table."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mortar_diag.workspace = true
+
+[dev-dependencies]
+mortar_testutil.workspace = true
+
+[lints]
+workspace = true

@@ -27,6 +27,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mortar_cli"
+version = "0.0.0"
+dependencies = [
+ "mortar_diag",
+ "mortar_testutil",
+]
+
+[[package]]
 name = "mortar_diag"
 version = "0.0.0"
 
@@ -34,6 +42,14 @@ version = "0.0.0"
 name = "mortar_elf"
 version = "0.0.0"
 dependencies = [
+ "mortar_testutil",
+]
+
+[[package]]
+name = "mortar_script"
+version = "0.0.0"
+dependencies = [
+ "mortar_diag",
  "mortar_testutil",
 ]
 
