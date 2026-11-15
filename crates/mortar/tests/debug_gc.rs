@@ -350,3 +350,161 @@ fn debug_gc_x86_64() {
 fn debug_gc_i386() {
     matrix(&I386);
 }
+
+// ---------------------------------------------------------------------
+// The sibling audit's fields (WP-030d): every data width, a PC-relative
+// field, a collected section and a collected merge piece, in every
+// tombstone row of I-47, on a REL input (i386) and a RELA one (x86-64).
+
+/// `debug_gc_fields.s`: in each debug section, sentinel words (`0xa5`)
+/// around references to `.text.dead` (collected) and to `dead_s` (a
+/// collected piece of a live `SHF_MERGE` section): `addr dead + 1`,
+/// `.long dead`, `.word dead`, `.byte dead`, `.long dead - .`,
+/// `addr dead_s` (not in `.debug_aranges`), and a live `addr live_s`.
+const FIELDS_S: &str = include_str!("debug_gc_fields.s");
+
+/// The sections of an ELF file: name and file bytes.
+fn section_bytes(path: &Path) -> Vec<(String, Vec<u8>)> {
+    let b = std::fs::read(path).expect("the output");
+    let h = mortar_elf::FileHeader::parse(&b).expect("an ELF header");
+    let t = mortar_elf::SectionTable::parse(&b, &h).expect("section headers");
+    t.iter()
+        .map(|s| {
+            let sh = s.header();
+            let name = String::from_utf8_lossy(s.name().unwrap_or(b"")).into_owned();
+            let bytes = if sh.sh_type == 8 {
+                Vec::new()
+            } else {
+                b[sh.sh_offset as usize..(sh.sh_offset + sh.sh_size) as usize].to_vec()
+            };
+            (name, bytes)
+        })
+        .collect()
+}
+
+/// The tombstone of I-47 for `section` in the class of `w`-byte
+/// addresses, as `w` bytes.
+fn tombstone(section: &str, w: usize) -> Vec<u8> {
+    let v: u64 = match section {
+        ".debug_ranges" | ".debug_loc" => 1,
+        ".debug_rnglists" | ".debug_loclists" | ".debug_addr" => 0,
+        ".debug_aranges" | ".debug_frame" => u64::MAX,
+        _ if w == 8 => u64::MAX,
+        _ => 0,
+    };
+    v.to_le_bytes()[..w].to_vec()
+}
+
+/// Links `debug_gc_fields.s` with mortar for one class and checks every
+/// field: the verifier is clean, and in each debug section the first
+/// reference (`addr dead + 1`, after one sentinel address) is I-47's
+/// tombstone at the address width, the sentinel after it intact (or, in
+/// `.debug_aranges`, the I-112 length 0); each narrower field holds the
+/// tombstone truncated (I-48) and its sentinel is intact (the verifier
+/// judges the live reference to `live_s`).
+#[allow(clippy::many_single_char_names)] // offsets, widths and bytes of one layout
+fn fields(asm: &str, emulation: &str, w64: bool) {
+    let Some(asm_tool) = tool(asm) else {
+        assert!(!tools_required(), "{asm} is required");
+        return;
+    };
+    let label = format!("debug-gc-fields-{emulation}");
+    let scratch = Scratch::new(&label);
+    let src = scratch.write("fields.s", FIELDS_S);
+    let dir = scratch.path();
+    let mut args: Vec<OsString> = Vec::new();
+    if w64 {
+        args.extend(["--defsym".into(), "W64=1".into()]);
+    }
+    args.extend([src.into_os_string(), "-o".into(), dir.join("fields.o").into_os_string()]);
+    let o = mortar_testutil::run(&asm_tool, &args);
+    assert!(o.success(), "{label}: {asm}: {}", o.stderr_text());
+    let (out, map) = (dir.join("out"), dir.join("out.map"));
+    let args: Vec<OsString> = vec![
+        "-m".into(),
+        emulation.into(),
+        "-static".into(),
+        "-e".into(),
+        "_start".into(),
+        "--gc-sections".into(),
+        "fields.o".into(),
+        "-o".into(),
+        out.clone().into_os_string(),
+        format!("--mortar-map={}", map.display()).into(),
+    ];
+    let m = linker(Path::new(MORTAR), &args, dir);
+    assert!(m.success(), "{label}: mortar: {}", m.stderr_text());
+    assert_eq!(m.stderr_text(), "", "{label}: mortar warns");
+    support::plumb::clean(&out, &map, dir);
+    let w = if w64 { 8 } else { 4 };
+    let secs = section_bytes(&out);
+    let names = [
+        ".debug_info",
+        ".debug_line",
+        ".debug_str_offsets",
+        ".debug_ranges",
+        ".debug_loc",
+        ".debug_rnglists",
+        ".debug_loclists",
+        ".debug_addr",
+        ".debug_frame",
+        ".debug_aranges",
+    ];
+    let sentinel = |n: usize| {
+        let mut v = vec![0xa5u8; n.min(4)];
+        v.resize(n, 0);
+        v
+    };
+    for name in names {
+        let (_, b) = secs.iter().find(|s| s.0 == name).unwrap_or_else(|| panic!("{label}: {name}"));
+        assert_eq!(b[..w], sentinel(w), "{label}: {name}: the leading sentinel");
+        assert_eq!(
+            b[w..2 * w],
+            tombstone(name, w),
+            "{label}: {name}: the tombstone of `addr dead + 1`"
+        );
+        let after = if name == ".debug_aranges" { vec![0u8; w] } else { sentinel(w) };
+        assert_eq!(b[2 * w..3 * w], after, "{label}: {name}: the word after the tombstone");
+        // `.long dead`: on i386 the address-sized absolute type (I-112
+        // in `.debug_aranges`: the next 4 bytes are 0), on x86-64
+        // `R_X86_64_32`.
+        let at = 3 * w;
+        let t4 = if name == ".debug_aranges" {
+            vec![0xff; 4]
+        } else {
+            let mut t = tombstone(name, w);
+            t.truncate(4);
+            t
+        };
+        assert_eq!(b[at..at + 4], t4, "{label}: {name}: `.long dead`");
+        let zeroed = name == ".debug_aranges" && !w64;
+        let s4 = if zeroed { vec![0; 4] } else { sentinel(4) };
+        assert_eq!(b[at + 4..at + 8], s4, "{label}: {name}: the word after `.long dead`");
+        // `.word dead`, `.byte dead`, each followed by its sentinel.
+        let t = tombstone(name, w);
+        assert_eq!(b[at + 8..at + 10], t[..2], "{label}: {name}: `.word dead`");
+        assert_eq!(b[at + 10..at + 12], [0xa5, 0xa5], "{label}: {name}: after `.word dead`");
+        assert_eq!(b[at + 12], t[0], "{label}: {name}: `.byte dead`");
+        assert_eq!(b[at + 13], 0xa5, "{label}: {name}: after `.byte dead`");
+        // `.long dead - .`: PC-relative, the tombstone at 4 bytes too.
+        assert_eq!(b[at + 14..at + 18], t[..4], "{label}: {name}: `.long dead - .`");
+        assert_eq!(b[at + 18..at + 22], [0xa5; 4], "{label}: {name}: after `.long dead - .`");
+        if name != ".debug_aranges" {
+            let p = at + 22;
+            assert_eq!(b[p..p + w], t[..], "{label}: {name}: `addr dead_s` (a collected piece)");
+            assert_eq!(b[p + w..p + 2 * w], sentinel(w), "{label}: {name}: after `addr dead_s`");
+        }
+    }
+}
+
+// spec: image.md I-45, I-47 (ELFCLASS32), I-48, I-112; x86.md X86-59
+#[test]
+fn tombstones_are_as_wide_as_their_rel_fields_on_i386() {
+    fields("i686-linux-gnu-as", "elf_i386", false);
+}
+
+// spec: image.md I-45, I-47, I-48, I-112
+#[test]
+fn tombstones_are_as_wide_as_their_fields_on_x86_64() {
+    fields("x86_64-linux-gnu-as", "elf_x86_64", true);
+}
