@@ -681,8 +681,10 @@ usually a duplicate of `crt1.o`'s and removed by S-44 (X-12, X-25).
   and parallel by section; liveness is a lookup per FDE; identity interns
   only the CIEs (thousands); offsets are a per-section count and a prefix
   sum; `Slots.eh_records` is 8 MB; writing is a copy plus three or four
-  field rewrites per record, parallel by range. A few tens of ms on 8
-  threads, dominated by reading the input.
+  field rewrites per record, parallel by range. Measured (WP-025's bench,
+  10^6 input FDEs in 10^4 sections, 92% live, 22 MB written; median of
+  5, load average 32): plan 60/37/25/21 ms and write 20/11/7.5/5.3 ms on
+  1/2/4/8 threads. Parsing (`mortar_merge`) is not included.
 
 ## 5. .eh_frame_hdr
 
@@ -1075,11 +1077,26 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   file by a pass over globals (a parallel counting sort by `FileId`).
 - **S-89 [C] (cost).** For 10^7 symbols (240 MB of `.symtab` on ELF64,
   and about 300 MB of names for a large C++ program): counting is one
-  parallel pass over the kept symbols; filling is parallel by file and
-  bound by memory bandwidth (about 0.1 s on 8 threads for 540 MB written).
-  No table of 10^7 rows is built beyond the existing symbol columns: the
-  output index of an entry is computed from its file's base and its
-  position.
+  parallel pass over the kept symbols; filling is parallel by window
+  (S-4). No table of 10^7 rows is built beyond the existing symbol
+  columns: the output index of an entry is computed from its file's base
+  and its position, and the write resumes from a checkpoint every 1024
+  entries. Measured (`examples/synth_bench.rs`, WP-025; AArch64, shared
+  host at load average 32, 10^7 symbols, half local over 2000 files;
+  240 MB of `.symtab` and 248 MB of `.strtab` written by 4 MiB windows;
+  median of 5):
+
+  | threads | plan | write | peak RSS |
+  |---|---|---|---|
+  | 1 | 106 ms | 549 ms | 51 MiB |
+  | 2 | 59 ms | 280 ms | 53 MiB |
+  | 4 | 36 ms | 148 ms | 56 MiB |
+  | 8 | 26 ms | 92 ms | 57 MiB |
+
+  For 10^6 symbols: 4 ms plan and 12 ms write on 8 threads. The peak RSS
+  is the bench's inputs plus the windows in flight; the plan itself is
+  a 40-byte segment row per file block, 24 bytes per checkpoint (10^7
+  entries: 230 KB) and 24 bytes per demoted global.
 
 ### 7.4 .shstrtab
 
@@ -1337,7 +1354,7 @@ edit changes.
 - **S-112 [M7] (a symbol added or removed).** `.symtab`, `.strtab` and
   `.symtab_shndx` are rewritten whole: they are non-allocated and last
   (layout rank 10), so their size changes no address and no other unit.
-  Rewriting 10^7 symbols is about 0.1 s (S-89). A per-file capacity in
+  Rewriting 10^7 symbols is about 0.12 s on 8 threads (S-89, measured). A per-file capacity in
   `.symtab` (with null local entries as holes) is possible and is not
   done unless the bench shows the rewrite matters; Q8 records it.
 - **S-113 [M7] (a GOT or IPLT slot added or removed).** A new slot is
