@@ -352,11 +352,11 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
         let bytes = contents(view, file, &s, sec_buf).map_err(|f| fail(f, index))?;
         let name = s.name().unwrap_or_default();
         let exec = flags & SHF_EXECINSTR != 0;
-        let place = PlaceFacts {
-            alloc: flags & SHF_ALLOC != 0,
-            writable: flags & SHF_WRITE != 0,
-            exec: Some(exec),
-        };
+        // D-25, D-46, D-47: a place is writable when its OUTPUT section
+        // has `SHF_WRITE` (the section mapping, known before addresses);
+        // without a mapping (a static link) the input section's flag.
+        let writable = view.opts.sections.map_or(flags & SHF_WRITE != 0, |m| m.writable(sid));
+        let place = PlaceFacts { alloc: flags & SHF_ALLOC != 0, writable, exec: Some(exec) };
         let mut proof = Vec::new();
         if exec {
             let mut marks = view.marks(file, index);

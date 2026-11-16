@@ -98,8 +98,19 @@ pub const LINKTEST: &str = "linktest";
 /// (`spec/harness.md` "static-identical").
 pub const STATIC_IDENTICAL: &str = "static-identical";
 
+/// The census step, after the link tests: `cargo xtask census --quick`
+/// (`--quick`) or `cargo xtask census` (full) in-process
+/// (`spec/harness.md` "ci", "census").
+pub const CENSUS: &str = "census";
+
 /// Every step's name, in the order they run.
-pub const STEP_NAMES: [&str; 5] = [STEPS[0].0, STEPS[1].0, STEPS[2].0, LINKTEST, STATIC_IDENTICAL];
+pub const STEP_NAMES: [&str; 6] =
+    [STEPS[0].0, STEPS[1].0, STEPS[2].0, LINKTEST, CENSUS, STATIC_IDENTICAL];
+
+/// The arguments of the census step.
+pub fn census_args(quick: bool) -> Vec<String> {
+    if quick { vec!["--quick".to_owned()] } else { Vec::new() }
+}
 
 /// The arguments of the link-test step: the host's architecture only for
 /// `--quick` (when it is one of the three), every architecture otherwise.
@@ -224,6 +235,8 @@ pub fn run(args: &Args) -> bool {
             // Any exit status but 0 fails the gate ("Link tests", "Exit
             // status").
             None if name == LINKTEST => crate::linktest::main(&linktest_args(args.quick)) == 0,
+            #[cfg(unix)]
+            None if name == CENSUS => crate::census::main(&census_args(args.quick)) == 0,
             None => crate::identical::run(&crate::identical::Args::default()),
         };
         if name == "test" {
@@ -262,7 +275,7 @@ mod tests {
         let all = parse(&["--quick"]).unwrap();
         assert!(all.quick);
         assert_eq!(all.steps, STEP_NAMES);
-        assert_eq!(all.steps, ["fmt", "clippy", "test", "linktest", "static-identical"]);
+        assert_eq!(all.steps, ["fmt", "clippy", "test", "linktest", "census", "static-identical"]);
         assert_eq!(parse(&[]).unwrap().steps, all.steps);
         let two = parse(&["--step", "test", "--step=fmt"]).unwrap();
         assert!(!two.quick);

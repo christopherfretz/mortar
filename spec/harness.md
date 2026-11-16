@@ -20,6 +20,7 @@ tests ("Link tests"), the gate's hosted runs on GitHub Actions
 | `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `test` | `cargo test --workspace` |
 | `linktest` | `cargo xtask linktest --arch <host>` (`--quick`), `cargo xtask linktest` (full) |
+| `census` | `cargo xtask census --quick` (`--quick`), `cargo xtask census` (full) |
 | `static-identical` | `cargo xtask static-identical` (both; every architecture) |
 
 Before a step it prints `[ci] <step>` on standard error. It stops at the
@@ -48,7 +49,13 @@ three), which adds well under a minute on the reference machine; the full
 gate runs every architecture (the others under qemu). The differential
 lanes join the full gate as they land (`docs/VALIDATION.md`).
 
-`static-identical` is run in-process after `linktest`, with or without
+`census` is run in-process after `linktest` ("census"): any exit status
+but 0 fails it. With `--quick` it runs the host's architecture and a
+subset of the drivers and variations (20 lines on AArch64; 2 s measured
+by WP-056); the full gate runs every census line of AArch64 and x86-64
+(440 lines; 19 s on the reference machine with `-j 6`).
+
+`static-identical` is run in-process after `census`, with or without
 `--quick`, on every architecture ("static-identical"); any failure fails
 it.
 
@@ -1130,6 +1137,48 @@ The corpus itself is the test of the format against real linkers: `cargo
 xtask linktest` must give every reference `PASS` (bar the recorded
 reference bugs, `XFAIL`) and mortar `XFAIL` on every case until M1.
 
+## census
+
+`cargo xtask census [--quick] [--arch <a>[,<a>]] [--filter <s>]...
+[--mortar <path>] [-j <n>] [--keep]` is the driver-line census of
+`spec/dyn.md` §2 as a lane (`xtask/src/census.rs`, WP-056). The
+drivers are those of `scripts/ci-tools.sh`, found through the tool
+guard: GCC's `gcc`, `g++` and `gfortran` of each architecture (plain on
+the host, `<triple>-` otherwise), `clang-22`/`clang++-22` and
+`clang-19`/`clang++-19` (with `--target=<triple>` off the host), and
+`kiln++` with hod where the workspace has their builds (natively on
+AArch64; skipped by name otherwise, with the reason as a note). Each
+compiles a hello (C; C++ with an exception, iostream and a
+`thread_local`; Fortran) once per flavour (plain, `-fsanitize=address`,
+`-flto`) and links it in each variation of `VARIATIONS` (the census's
+twenty and the `x-` options of real builds: `-z norelro`, `-no-pie -z
+now`, `-static-pie`, `-static-pie --export-dynamic`, `-init`/`-fini`,
+`--export-dynamic-symbol` by name and by glob, `-Bstatic -Bdynamic`,
+`--disable-new-dtags`, `-z text`). The driver runs with
+`-B<wrapper dir>/`: a wrapper per linker name records the linker's
+arguments, then runs the real linker (GNU ld of the architecture; lld
+and mold for `-fuse-ld=`), so the reference links the line and its
+program runs (under qemu off the host). mortar links the same words (the
+wrapper's `-L` removed, `-o` and `--mortar-map=` its own), its program
+runs, and the verifier judges the output with the line
+(`plumb::verify_link_line`).
+
+A line passes when mortar's program exits and prints as the
+reference's and the verifier is clean; or mortar refuses it with a key
+of `OUT_OF_M2` (the rule that puts it out of the milestone is printed);
+or GNU ld cannot link it either and mortar refuses it; or the driver
+writes no line (a note); or its findings are all of one rule
+`KNOWN_FINDINGS` lists for that variation (a verifier defect a record
+names). Anything else fails: a refusal no rule names, a program that
+runs differently, a line mortar links that GNU ld cannot, any other
+finding. It prints a table (architecture, variation, outcome, lines),
+one line per line that is not plain ok, and `census: <n> lines, <d>
+drivers, <p> pass, <f> fail, in <t> s`; exit status 1 when one fails.
+Scratch is `<build directory>/census/run-<pid>`, removed unless
+`--keep`. `--quick` is the host's architecture, `QUICK_DRIVERS` x
+`QUICK_VARIATIONS`. Under `MORTAR_REQUIRE_TOOLS=1` an architecture
+whose tools are missing is an error. Tests: `xtask/src/census.rs`.
+
 ## static-identical
 
 `cargo xtask static-identical [--update] [-j <n>] [--mortar <binary>]` checks that mortar's
@@ -1541,7 +1590,7 @@ class or shape, and a missing required key, are errors naming the line.
 
 | key | kinds | meaning |
 |---|---|---|
-| `class` | all | `small`, `medium`, `large`, `extreme`, `rust`, or `calibration` (exactly one workload: "Calibration") |
+| `class` | all | `small`, `medium`, `large`, `extreme`, `rust`, `calibration` (exactly one workload: "Calibration"), or `on-request` (built and measured only when named with `--workload`: inputs too large to keep, generated, measured and deleted) |
 | `kind` | all | `sources`, `synthetic`, `cmake`, `cargo`, `planned` |
 | `about` | all | one sentence for the report |
 | `sources` | sources | files of `bench/workloads/src/` |
@@ -1573,6 +1622,7 @@ The workloads (sizes as the census of this machine counted them are in
 | `rust-self-static` | rust | `rust-self` with `-C target-feature=+crt-static -C relocation-model=static`: static, not PIE |
 | `synthetic-<shape>-static` | extreme | each `synthetic-*` above with `ldflags = -static`, the same sources and flags |
 | `synthetic-library-static` | extreme | one archive of 20000 members of which `main` needs every 50th, `-static` |
+| `synthetic-objects-g10x` | on-request | `synthetic-objects` at 8150 objects with `-g` (`-O1 -g`), `-static`: at least 10× protoc `-g`'s live input, the large workload of `spec/incr.md` §1.5's go/no-go rule (WP-061 stage B) |
 | `fortran-static` | small | `fortran.f90` (a Fortran main calling C through `BIND(C)`) and `fortran-sum.c`, gfortran `-O1`, `-static` against libgfortran |
 
 **Static twins.** Until M2 mortar links static, non-PIE executables only

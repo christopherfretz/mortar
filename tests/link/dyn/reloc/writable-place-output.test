@@ -1,0 +1,119 @@
+# dyn.md D-25 ("a writable place is a place whose OUTPUT section has
+# SHF_WRITE"), D-46 and D-47: the output section decides, never the input
+# section. Two input sections land in one output section `.rodata`
+# (layout L-50: the output's flags are the OR of its inputs'):
+# `.rodata.roin` ("a", read-only) and `.rodata.rwin` ("aw", writable),
+# each holding two absolute words, one to the shared datum
+# `shared_datum` and one to the undefined weak `hook`. The output section
+# is writable, so each word of either input gets its record (D-46:
+# `ABS64`/`R_X86_64_64` against the key; `hook` is `WeakDyn`, D-25, and
+# the preloaded library's definition reaches the words), in both input
+# orders, PIE and `-no-pie`. Without the writable input the output
+# `.rodata` is read-only and the PIE is refused (D-47, `text-relocation`);
+# in `-no-pie` the datum is copied (D-42) and `hook` is `Weak0` (its use
+# is unfillable, D-25).
+#
+# Before WP-056 mortar judged the input section's flags and refused every
+# link with the read-only input (conservative; WP-083 finding 39).
+#
+# References (dyn.md §13.1): GNU ld and mold judge the output section and
+# link every case (the read-only-only PIE too: GNU ld warns of a
+# relocation in a read-only section on x86-64 and writes DT_TEXTREL);
+# lld judges the input section and refuses every PIE here ("relocation
+# R_AARCH64_ABS64 cannot be used against symbol 'hook'; recompile with
+# -fPIC"), linking the `-no-pie` ones. mold makes the weak key 0
+# everywhere (dyn.md §13.1), so the preloaded runs are not its; in
+# `-no-pie` lld writes no record for an absolute word to a weak key (W12),
+# so the `-no-pie` preloaded run is GNU ld's and mortar's.
+#@ spec: dyn.md "D-25"
+#@ spec: dyn.md "D-47"
+#@ spec: layout.md "L-50"
+#@ arch: aarch64 x86_64
+#@ xfail(bfd): puts the writable .rodata in an RWX segment and writes no PT_GNU_RELRO (P-D4)
+#@ anomaly(mold): A24
+#@ xfail(lld): judges the input section's SHF_WRITE and refuses the PIE links (recompile with -fPIC)
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libs.so -o libs.so
+cc -O1 -fPIC hook.c -o hook.o
+shlib gcc hook.o -o libhook.so
+cc -O1 -fPIE main.c -o main.o
+cc -O1 -fPIE rw.c -o rw.o
+
+link gcc -pie main.o rw.o -L. -ls -o pie-rofirst
+run pie-rofirst
+  env: LD_LIBRARY_PATH=.
+  stdout: ro: datum 5 same 1 hook-null 1
+  stdout: rw: datum 5 same 1 hook-null 1
+run(bfd,lld,mortar) pie-rofirst
+  env: LD_LIBRARY_PATH=.
+  env: LD_PRELOAD=./libhook.so
+  stdout: ro: datum 5 same 1 hook-null 0
+  stdout: rw: datum 5 same 1 hook-null 0
+check(mortar) readelf -SW pie-rofirst
+  has: .rodata * PROGBITS * WA
+check(mortar,aarch64) readelf -rW pie-rofirst
+  count: 2 R_AARCH64_ABS64 * hook + 0
+  count: 2 R_AARCH64_ABS64 * shared_datum + 0
+check(mortar,x86_64) readelf -rW pie-rofirst
+  count: 2 R_X86_64_64 * hook + 0
+  count: 2 R_X86_64_64 * shared_datum + 0
+
+link gcc -pie rw.o main.o -L. -ls -o pie-rwfirst
+run pie-rwfirst
+  env: LD_LIBRARY_PATH=.
+  stdout: ro: datum 5 same 1 hook-null 1
+  stdout: rw: datum 5 same 1 hook-null 1
+
+link gcc -no-pie main.o rw.o -L. -ls -o exec-rofirst
+run exec-rofirst
+  env: LD_LIBRARY_PATH=.
+  stdout: ro: datum 5 same 1 hook-null 1
+  stdout: rw: datum 5 same 1 hook-null 1
+run(bfd,mortar) exec-rofirst
+  env: LD_LIBRARY_PATH=.
+  env: LD_PRELOAD=./libhook.so
+  stdout: ro: datum 5 same 1 hook-null 0
+  stdout: rw: datum 5 same 1 hook-null 0
+
+link gcc -no-pie rw.o main.o -L. -ls -o exec-rwfirst
+run exec-rwfirst
+  env: LD_LIBRARY_PATH=.
+  stdout: ro: datum 5 same 1 hook-null 1
+  stdout: rw: datum 5 same 1 hook-null 1
+
+link(mortar) gcc -pie main.o -L. -ls -o pie-roonly
+  exit: fail
+  diag: relocation R_* against symbol `shared_datum' can not be used when making a PIE object; recompile with -fPIE
+link gcc -no-pie main.o -L. -ls -o exec-roonly
+run exec-roonly
+  env: LD_LIBRARY_PATH=.
+  stdout: ro: datum 5 same 1 hook-null 1
+
+#--- lib.c
+int shared_datum = 5;
+#--- hook.c
+void hook(void) {}
+#--- main.c
+#include <stdio.h>
+extern int shared_datum;
+/* The read-only input section of the output section .rodata. */
+__asm__(".weak hook\n"
+        ".section .rodata.roin,\"a\"\n.balign 8\n.globl ro_words\nro_words:\n"
+        ".quad shared_datum\n.quad hook\n.previous\n");
+extern void *const ro_words[2];
+extern void *const rw_words[2] __attribute__((weak));
+int main(void) {
+  printf("ro: datum %d same %d hook-null %d\n", *(int *)ro_words[0],
+         ro_words[0] == (void *)&shared_datum, ro_words[1] == 0);
+  if (rw_words)
+    printf("rw: datum %d same %d hook-null %d\n", *(int *)rw_words[0],
+           rw_words[0] == (void *)&shared_datum, rw_words[1] == 0);
+  return 0;
+}
+#--- rw.c
+/* The writable input section of the output section .rodata (the
+   assembler warns of the flags; they are the point). */
+__asm__(".weak hook\n"
+        ".section .rodata.rwin,\"aw\"\n.balign 8\n.globl rw_words\nrw_words:\n"
+        ".quad shared_datum\n.quad hook\n.previous\n");
