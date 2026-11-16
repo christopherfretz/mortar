@@ -17,7 +17,7 @@ use std::time::Duration;
 use mortar_incr::format::{self, FLAG_UPDATING, State, StateError};
 use mortar_incr::stamp::{self, Cleanliness, Tuple};
 use mortar_testutil::target::Arch;
-use mortar_testutil::{Outcome, Scratch, run_with, tools_required};
+use mortar_testutil::{Outcome, Scratch, run_exec_with, run_with, tools_required};
 use support::{AARCH64, Built, Driver, Source, build, with_output};
 
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
@@ -204,10 +204,17 @@ impl Prog {
     fn run(&self, out: &str) -> (Option<i32>, Vec<u8>) {
         std::fs::copy(self.path(out), self.path("runme")).unwrap();
         let (exe, args) = self.arch.runner(&self.path("runme"));
-        let mut c = Command::new("sh");
-        c.arg("-c").arg("ulimit -c 0; exec \"$0\" \"$@\"").arg(exe).args(args);
-        c.current_dir(&self.built.dir);
-        let o = run_with(&mut c, b"", Duration::from_mins(1));
+        // The copy can be busy for a moment (`run_exec_with`).
+        let o = run_exec_with(
+            || {
+                let mut c = Command::new("sh");
+                c.arg("-c").arg("ulimit -c 0; exec \"$0\" \"$@\"").arg(&exe).args(&args);
+                c.current_dir(&self.built.dir);
+                c
+            },
+            b"",
+            Duration::from_mins(1),
+        );
         (o.status.and_then(|s| s.code()), o.stdout.clone())
     }
 
