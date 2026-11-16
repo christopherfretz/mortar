@@ -407,8 +407,11 @@ WP-073 those of the record checks). The table above stays the list of
   WP-072 and WP-073 as each check lands, per §3.3) are warnings in the
   default mode `--odr=warn`; `odr-violation`, `odr-type-mismatch`
   (layout differences) and `odr-declaration-mismatch` are errors under
-  `--odr=error` and `--odr=strict`, `meta-malformed` and `meta-version`
-  under `--odr=strict` (`spec/odr.md` O-40, O-41). Which checks are on
+  `--odr=error` and `--odr=strict`; `meta-malformed` and `meta-version`
+  of a container's contents are errors reported under `--odr=strict`
+  only, the one mode that reads containers, and `meta-malformed` for a
+  section of the name that is not a container is a warning in every
+  mode (`spec/odr.md` O-40, O-41, O-42, O-47). Which checks are on
   by default is `spec/odr.md` O-47's register; `odr-internal-reference`
   `odr-strong-and-comdat` and `odr-contents-mismatch` are reported only
   under `--odr=strict`,

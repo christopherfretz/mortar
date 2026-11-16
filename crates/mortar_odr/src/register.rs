@@ -41,7 +41,11 @@ pub enum Check {
     W1,
     /// W2 `odr-symbol-type-mismatch`.
     W2,
-    /// `meta-malformed`, `meta-version` (WP-071, WP-073).
+    /// `meta-malformed`, `meta-version` of a container's contents (WP-071,
+    /// WP-073): reported under strict only, the one mode that reads
+    /// containers (O-42). The MT-6 warning for a section of the name that
+    /// is not a container is resolution's (`mortar_resolve`), not a row
+    /// here.
     MetaHeaders,
     /// W3 `odr-strong-and-comdat`.
     W3,
@@ -119,7 +123,10 @@ impl Status {
 pub const REGISTER: [Row; 20] = [
     Row { check: "W1 `odr-size-mismatch`", status: Status::On },
     Row { check: "W2 `odr-symbol-type-mismatch`", status: Status::On },
-    Row { check: "`meta-malformed`, `meta-version`", status: Status::On },
+    Row {
+        check: "`meta-malformed`, `meta-version` (a container's contents, MT-14, MT-35)",
+        status: Status::Strict,
+    },
     Row { check: "W3 `odr-strong-and-comdat`", status: Status::Strict },
     Row { check: "W4", status: Status::Strict },
     Row { check: "kind 5 C++ linkage `odr-declaration-mismatch`", status: Status::Strict },
@@ -197,6 +204,9 @@ mod tests {
         }
         for check in [Check::W1, Check::W2, Check::W3, Check::W4, Check::MetaHeaders] {
             assert!(!check.runs(&at(OdrMode::Off)));
+        }
+        for mode in [OdrMode::Warn, OdrMode::Error, OdrMode::Strict] {
+            assert_eq!(Check::MetaHeaders.runs(&at(mode)), mode == OdrMode::Strict);
         }
         // The record checks: strict only today (O-47); O-32 is reported
         // under strict and only counted otherwise.

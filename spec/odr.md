@@ -161,8 +161,10 @@ on by default and catch K5 and K6 when two copies' sizes differ; nothing
 else measured. Mixed links (one side with records): O-34.
 
 **What the default guarantees today.** Following O-1, only checks that
-have run on a corpus are on: W1, W2, `meta-malformed`, `meta-version`
-(O-47). The default mode guarantees what those checks find and nothing
+have run on a corpus are on: W1, W2, and `meta-malformed` for a
+section named `.mason.meta` that is not a container (O-47); the
+container findings `meta-malformed` and `meta-version` are reported
+under strict only, the one mode that reads containers (O-42). The default mode guarantees what those checks find and nothing
 more; it grows into the guarantee above check by check, as O-46 moves
 each one and records it in O-47.
 
@@ -958,8 +960,8 @@ mode's (`--odr=warn`, O-40) for a check that is on; O-47 says which are.
 | `odr-type-mismatch` | `OdrTypeMismatch { name }` | `type {name} violates the one-definition rule` | warning; layout differences are errors under `--odr=error`/`strict` |
 | `odr-violation` | `OdrViolation { name }` | `{name} violates the one-definition rule` | warning; error under `--odr=error`/`strict` |
 | `odr-vtable-rtti-mismatch` | `OdrVtableRttiMismatch { name }` | `the vtable of {name} is emitted by translation units compiled with and without RTTI` | warning |
-| `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | warning; error under `strict` |
-| `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | warning; error under `strict` |
+| `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | a container's contents: error, `strict` only (O-42, O-47); a section of the name that is not a container (MT-6): warning in every mode |
+| `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | error, `strict` only (O-42, O-47) |
 
 Every `{name}` goes through the demangling hook (`spec/diag.md` §5.4).
 Context lines (`spec/diag.md` §2.4), e.g. for K1 linked `a.o b.o`:
@@ -1022,9 +1024,14 @@ every warning (`spec/diag.md` §6.3).
   `odr-type-mismatch` (layout) and `odr-declaration-mismatch` (C++
   linkage) are errors; everything else as in `warn`.
 - `--odr=strict`: **every** check runs, those of O-47's strict column
-  included, plus unanchored, `PARTIAL` and `INLINED_ONLY` rows; the
-  record-based findings above are errors, every other finding a warning,
-  `meta-malformed` and `meta-version` errors.
+  included, plus `PARTIAL` and `INLINED_ONLY` rows. Of the unanchored
+  rows, strict compares the kind 2 rows flagged `INLINED_ONLY` (their
+  entity has no symbol by construction); other unanchored rows are
+  counted, not compared (§3 N12, N13). The record-based findings above
+  are errors, every other finding a warning; the container findings
+  `meta-malformed` and `meta-version` (MT-14, MT-35) are errors, and
+  strict is the only mode that reports them, since no other mode reads
+  a container (O-42).
 - The W checks (§8.1) are warnings in every mode, `error` and `strict`
   included (O-40); `--fatal-warnings` makes them errors.
 - `--odr=off`, also spelled **`--no-odr-check`**: no check runs, no
@@ -1080,7 +1087,7 @@ O-47's table, by amendment.
 |---|---|---|---|---|
 | W1 `odr-size-mismatch` | foreign facts | **on** (warning) | experiment 1: zero on every corpus of §8.1 | — |
 | W2 `odr-symbol-type-mismatch` | foreign facts | **on** (warning) | experiment 1: zero; N23 excluded by its wording | — |
-| `meta-malformed`, `meta-version` | container headers | **on** (warning) | no object of the corpora has a container; they fire only on broken producers | — |
+| `meta-malformed`, `meta-version` (a container's contents, MT-14, MT-35) | container headers | strict (error); not reported in other modes, which read no container (O-42) | no object of the corpora has a container; they fire only on broken producers | with the first record check that moves to on |
 | W3 `odr-strong-and-comdat` | foreign facts | strict | N20-N22 | never by default (Q12 withdrawn) |
 | W4 | foreign facts | strict | N3's vtable | never by default |
 | kind 5 C++ linkage `odr-declaration-mismatch` | kiln K-1, K-5 (first in kiln's order) | strict | cannot run yet | WP-074's oracle at zero |
@@ -1098,6 +1105,12 @@ O-47's table, by amendment.
 | `SYSTEM` `-std` differences (O-32) | K-3 | strict (warnings, O-32); an `--odr-stats` count in any other mode that compares | `std-mix`: 210 in one pair of TUs | Q6 |
 | `odr-archive-shadow` | K-3 | opt-in flag | — | never by default |
 | load-time hook | a runtime | **none**: a prototype direction (§10.3), never in M6 | the matrix of O-58 not yet green | O-58, then Q2 and Q3 |
+
+Outside the table: `meta-malformed` for a section named `.mason.meta`
+that is not a container (`spec/meta.md` MT-6) is resolution's
+classification, not a container read; it is a warning in every mode,
+`--odr=off` included, and never an error (zero on every corpus of §12.3,
+MT-6).
 
 ### 9.3 ABI and ISA summaries
 
