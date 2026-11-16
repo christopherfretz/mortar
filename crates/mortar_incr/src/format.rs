@@ -1031,13 +1031,25 @@ impl Row for [u8; 32] {
 
 // ---- encoding -------------------------------------------------------------------
 
+/// A table's record, its rows written in place after its head (no copy
+/// of the body), the head filled in once the body's hash is known.
 fn table<T: Row>(out: &mut Vec<u8>, kind: u32, rows: &[T]) {
-    let mut body = Vec::with_capacity(rows.len().saturating_mul(T::WIDTH));
-    let mut w = W(&mut body);
+    let head = out.len();
+    out.resize(head + RECORD_LEN, 0);
+    out.reserve(rows.len().saturating_mul(T::WIDTH));
+    let mut w = W(out);
     for row in rows {
         row.put(&mut w);
     }
-    record(out, kind, rows.len() as u64, &body);
+    let body = &out[head + RECORD_LEN..];
+    let mut h = Vec::with_capacity(RECORD_LEN);
+    W(&mut h).u32(kind).u32(0).u64(rows.len() as u64).u64(body.len() as u64).bytes(&l128(body));
+    out[head..head + RECORD_LEN].copy_from_slice(&h);
+}
+
+/// The bytes a table's record takes.
+fn table_len<T: Row>(rows: &[T]) -> usize {
+    RECORD_LEN + rows.len().saturating_mul(T::WIDTH)
 }
 
 fn record(out: &mut Vec<u8>, kind: u32, rows: u64, body: &[u8]) {
@@ -1057,7 +1069,37 @@ fn header_hash(header: &[u8]) -> Hash16 {
 /// The bytes of a state.
 #[must_use]
 pub fn encode(s: &State) -> Vec<u8> {
-    let mut out = vec![0u8; HEADER_LEN];
+    // The whole size up front: one allocation, no growth by copies.
+    let len = HEADER_LEN
+        + table_len(std::slice::from_ref(&s.meta))
+        + table_len(&s.stat)
+        + table_len(&s.files)
+        + table_len(&s.probes)
+        + table_len(&s.outsecs)
+        + table_len(&s.symbols)
+        + table_len(&s.sections)
+        + table_len(&s.chunks)
+        + table_len(&s.order)
+        + table_len(&s.segments)
+        + table_len(&s.frags)
+        + table_len(&s.slots)
+        + table_len(&s.eh_records)
+        + table_len(&s.symtab_locals)
+        + table_len(&s.sizes)
+        + table_len(&s.sym_place)
+        + table_len(&s.defined)
+        + table_len(&s.patches)
+        + table_len(&s.redirects)
+        + table_len(&s.sized)
+        + table_len(std::slice::from_ref(&s.layout))
+        + table_len(&s.leaves)
+        + table_len(&s.mentions)
+        + table_len(&s.resolved)
+        + table_len(&s.index)
+        + RECORD_LEN
+        + s.strings.len();
+    let mut out = Vec::with_capacity(len);
+    out.resize(HEADER_LEN, 0);
     table(&mut out, kind::META, std::slice::from_ref(&s.meta));
     table(&mut out, kind::STAT, &s.stat);
     table(&mut out, kind::FILES, &s.files);
