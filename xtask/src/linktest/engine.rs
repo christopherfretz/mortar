@@ -226,6 +226,49 @@ pub fn normalise(text: &[u8], subs: &[(String, &str)]) -> Vec<u8> {
     text.into_bytes()
 }
 
+/// The prefix of the map record of gcc's LTO plugin's resolution file
+/// (`spec/plumb.md`, the `arg` record): gcc's driver passes
+/// `-plugin-opt=-fresolution=<TMPDIR>/ccXXXXXX.res` on every link it makes
+/// without `-static`, a new temporary name each time.
+const RESOLUTION_ARG: &str = "arg -plugin-opt=-fresolution=";
+
+/// What [`normalise_map`] writes for the resolution file's path.
+pub const RESOLUTION_NAME: &str = "<gcc-resolution>.res";
+
+/// A map's text with the one input of a link that changes from run to run
+/// and is not mortar's replaced (`spec/harness.md` "static-identical"): a
+/// whole line `arg -plugin-opt=-fresolution=<path>` whose `<path>` ends
+/// in `/cc` and six ASCII letters or digits and `.res` (libiberty's
+/// `make_temp_file`, which gcc's driver names it with) has its `<path>`
+/// replaced by [`RESOLUTION_NAME`]. Any other line is left as it is.
+pub fn normalise_map(text: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(text);
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (body, end) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        let temporary = body.strip_prefix(RESOLUTION_ARG).is_some_and(|path| {
+            path.strip_suffix(".res").and_then(|stem| stem.rsplit_once("/cc")).is_some_and(
+                |(dir, x)| {
+                    !dir.contains(char::is_whitespace)
+                        && x.len() == 6
+                        && x.bytes().all(|b| b.is_ascii_alphanumeric())
+                },
+            )
+        });
+        if temporary {
+            out.push_str(RESOLUTION_ARG);
+            out.push_str(RESOLUTION_NAME);
+            out.push_str(end);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out.into_bytes()
+}
+
 /// What L3, the verifier on every link's output, did (`spec/harness.md`
 /// "L3").
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -947,8 +990,8 @@ impl Unit<'_> {
             (self.dir.display().to_string(), "<unit>"),
             (work.display().to_string(), "<work>"),
         ];
-        let file = |path: &Path, text: bool| match std::fs::read(path) {
-            Ok(bytes) if text => digest_hex(&normalise(&bytes, &subs)),
+        let file = |path: &Path, map: bool| match std::fs::read(path) {
+            Ok(bytes) if map => digest_hex(&normalise(&normalise_map(&bytes), &subs)),
             Ok(bytes) => digest_hex(&bytes),
             Err(_) => "-".to_owned(),
         };
@@ -1638,6 +1681,29 @@ fn mortar_xfail<'a>(
 
 #[cfg(test)]
 mod tests {
+    // spec/harness.md "static-identical": gcc's resolution file is the
+    // one word of a map replaced, and only in its own form.
+    #[test]
+    fn a_map_loses_only_gccs_resolution_file_name() {
+        use super::{RESOLUTION_NAME, normalise_map};
+        let map = "arg -plugin\narg -plugin-opt=-fresolution=/tmp/ccIJMg1f.res\narg a.o";
+        let want = format!("arg -plugin\narg -plugin-opt=-fresolution={RESOLUTION_NAME}\narg a.o");
+        assert_eq!(String::from_utf8(normalise_map(map.as_bytes())).unwrap(), want);
+        let other = "arg -plugin-opt=-fresolution=/tmp/x/ccABC123.res\n";
+        assert_ne!(normalise_map(other.as_bytes()), other.as_bytes(), "any directory");
+        for kept in [
+            "arg -plugin-opt=-fresolution=/tmp/ccABC12.res\n",
+            "arg -plugin-opt=-fresolution=/tmp/ccABC1234.res\n",
+            "arg -plugin-opt=-fresolution=/tmp/ccAB_123.res\n",
+            "arg -plugin-opt=-fresolution=/tmp/ccABC123.o\n",
+            "arg -plugin-opt=-fresolution=ccABC123.res\n",
+            "arg x -plugin-opt=-fresolution=/tmp/ccABC123.res\n",
+            "sym -plugin-opt=-fresolution=/tmp/ccABC123.res\n",
+        ] {
+            assert_eq!(normalise_map(kept.as_bytes()), kept.as_bytes(), "{kept}");
+        }
+    }
+
     // "Markers": a run-wide mortar xfail takes the place of the test's
     // own xfail on its architecture, and nowhere else.
     #[test]

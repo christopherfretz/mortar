@@ -210,14 +210,9 @@ pub fn main(args: &[String]) -> u8 {
     }
 }
 
-/// The directory of `tests/link` that holds M2's dynamic cases: not in
-/// the corpus (`spec/harness.md` "static-identical"). None of its links is
-/// a static link; mortar refuses them until their packages land, and the
-/// refusals would churn the baseline at each landing.
-pub const DYNAMIC_CASES: &str = "dyn";
-
-/// The corpus: every directory of `tests/link` but [`DYNAMIC_CASES`], and
-/// `tests/identical`.
+/// The corpus: every directory of `tests/link` (the dynamic, PIE and
+/// static-pie cases of `tests/link/dyn` among them, `spec/harness.md`
+/// "static-identical", "The corpus"), and `tests/identical`.
 fn corpus(root: &std::path::Path) -> Result<Vec<PathBuf>, String> {
     let link = root.join("tests").join("link");
     let entries =
@@ -226,7 +221,7 @@ fn corpus(root: &std::path::Path) -> Result<Vec<PathBuf>, String> {
     for entry in entries {
         let entry = entry.map_err(|e| format!("cannot read '{}': {e}", link.display()))?;
         let path = entry.path();
-        if path.is_dir() && entry.file_name() != DYNAMIC_CASES {
+        if path.is_dir() {
             paths.push(path);
         }
     }
@@ -382,15 +377,16 @@ pub fn run(args: &Args) -> bool {
 mod tests {
     use super::*;
 
-    // spec/harness.md "static-identical", "The corpus": `tests/link` but
-    // its dynamic cases, and `tests/identical`.
+    // spec/harness.md "static-identical", "The corpus": every directory
+    // of `tests/link`, the dynamic cases of `dyn/` among them, and
+    // `tests/identical`.
     #[test]
-    fn the_corpus_leaves_out_the_dynamic_cases() {
+    fn the_corpus_is_every_link_test() {
         let root = workspace_root();
         let paths = corpus(&root).unwrap();
         let link = root.join("tests").join("link");
         assert!(paths.contains(&link.join("resolve")));
-        assert!(!paths.contains(&link.join(DYNAMIC_CASES)));
+        assert!(paths.contains(&link.join("dyn")));
         assert_eq!(paths.last(), Some(&root.join("tests").join("identical")));
     }
 
