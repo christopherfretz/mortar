@@ -673,7 +673,8 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
     let labels = (live_ends(image, e.objs, map, true), end_labels(e.objs));
     named_by_symbols(image, &set, &labels, &mut out);
     named_by_relocations(e, &set, &mut out);
-    named_by_tables(image, &set, &ends, &mut out);
+    let places = relocated_places(e);
+    named_by_tables(image, &set, &ends, &places, &mut out);
     crate::deaddwarf::check(image, e.objs, map, &set, &mut out);
     e.findings.append(&mut out);
 }
@@ -1201,6 +1202,38 @@ fn named_by_relocations(e: &Engine<'_, '_>, set: &DeadSet, out: &mut Vec<Finding
     }
 }
 
+/// The output addresses of the fields of every live allocated input
+/// section's relocation records (whole places and pieces).
+fn relocated_places(e: &Engine<'_, '_>) -> BTreeSet<u64> {
+    let mut v = BTreeSet::new();
+    for o in e.objs {
+        for s in &o.secs {
+            if !s.alloc() {
+                continue;
+            }
+            let Some(rs) = s.relocs else { continue };
+            let Some(recs) = o.records(rs) else { continue };
+            for (off, ..) in recs {
+                match &s.place {
+                    Place::Whole(a) => {
+                        v.insert(a.wrapping_add(off));
+                    }
+                    Place::Pieces(ps) => {
+                        if let Some(p) = ps
+                            .iter()
+                            .find(|p| p.input_offset <= off && off - p.input_offset < p.size)
+                        {
+                            v.insert(p.addr.wrapping_add(off - p.input_offset));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    v
+}
+
 /// Whether `[a, +len)` of a section's address space meets a dead range.
 fn over(image: &Image<'_>, set: &DeadSet, a: u64, len: u64, tbss: bool) -> bool {
     set.ranges.iter().any(|r| {
@@ -1220,7 +1253,13 @@ fn over(image: &Image<'_>, set: &DeadSet, a: u64, len: u64, tbss: bool) -> bool 
 /// words, the allocated relocation sections (where they write, and the
 /// target of a `RELATIVE`/`IRELATIVE` record), `.eh_frame_hdr`'s table,
 /// and `e_entry`.
-fn named_by_tables(image: &Image<'_>, set: &DeadSet, ends: &BTreeSet<u64>, out: &mut Vec<Finding>) {
+fn named_by_tables(
+    image: &Image<'_>,
+    set: &DeadSet,
+    ends: &BTreeSet<u64>,
+    places: &BTreeSet<u64>,
+    out: &mut Vec<Finding>,
+) {
     let w: u64 = if image.class() == Class::Elf64 { 8 } else { 4 };
     let machine = image.header.e_machine;
     let entry = image.header.e_entry;
@@ -1288,7 +1327,16 @@ fn named_by_tables(image: &Image<'_>, set: &DeadSet, ends: &BTreeSet<u64>, out: 
                             .at(a),
                         );
                     }
-                    if Some(ty) == relative_type(machine) || Some(ty) == irelative_type(machine) {
+                    // A RELATIVE record written at a live input
+                    // relocation's place is that relocation's dynamic
+                    // form: judged by what it names (N3, the relocation
+                    // walk above), not by the address its addend holds
+                    // (gfortran's `blk_-8` in a PIE; WP-092).
+                    let named = Some(ty) == relative_type(machine) && places.contains(&off);
+                    if !named
+                        && (Some(ty) == relative_type(machine)
+                            || Some(ty) == irelative_type(machine))
+                    {
                         let target = if rela {
                             image.value(a + 2 * w, w as u8)
                         } else {
