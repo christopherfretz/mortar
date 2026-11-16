@@ -1051,6 +1051,15 @@ program is the program a from-scratch link would have made.
   be used. *Test:* one link test per option: the warning, no state file
   written, and the output byte-identical to a plain link's; with
   `--incremental=update`, the error.
+- **IN-12a [M4] (`-shared` stays unsupported).** Request R-N10 of
+  `spec/dyn.md` §18.2. WP-066 lifts IN-12's output-kind clause for
+  executables only: `-shared` (output kind `Shared`) stays an
+  unsupported incremental kind, IN-12's warning and plain link, until
+  `spec/dyn.md` D-127's interface comparison (export set, versions,
+  `DT_SONAME`, the `NONPREEMPTIBLE` set; `interface-changed`) is
+  designed in its own package (none cut yet). No `Shared` package of
+  WP-117..WP-130 writes incremental state. *Test:* IN-12's, with
+  `-shared`.
 
 ### 5.2 The update, phase by phase
 
