@@ -777,7 +777,15 @@ says whose rule this is.
 
 The lexer's **version** mode (§1.10): a name token is a maximal run of
 bytes other than whitespace and `{ } ; :` and `"`; it may hold the glob
-bytes `* ? [ ]`; a quoted string is a name taken literally (no glob).
+bytes `* ? [ ]` and `\`; a quoted string is a name taken literally:
+the bytes between the quotes, no escape processed, never a glob. The
+lexer keeps a name token's text as written (backslashes included); what
+it means, exact name or glob, with the escape rules and the glob syntax
+(`fnmatch(3)` without flags: `*`, `?`, classes with ranges and `!`/`^`
+negation, `\` escaping; an unterminated `[` is the character `[`), is
+resolve §9.7 "Entries" (WP-110's third pass, `exp3/vs3/globs.py`; lld
+and mold refuse an unterminated `[` and a glob ending in `\`, GNU ld
+and mortar accept both).
 
 ```
 version-script := node+                      ; named nodes
@@ -834,7 +842,9 @@ supported (§2.10).
 
 ### 9.3 Tests
 
-`version-script-grammar` (each production, each refusal; the zlib.map
+`version-script-grammar` (each production, each refusal; quoted and
+unquoted entries with `\`, `*`, `?`, `[`, an unterminated `[` and a
+trailing `\` lex as one token each, text kept; the zlib.map
 of `spec/dyn.md` record §A parses to 14 nodes and 13 parent links; the
 comment forms; two files as one script), `dynamic-list-grammar` (the
 comment forms).

@@ -1348,31 +1348,66 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
 
 Parsed by `spec/script.md` §9. Applied to each key defined by a live
 object, by its name before `@` (versioned names `foo@V` from `.symver`
-carry their version and are matched only by rule 12). Restated by
-WP-110's second pass from the review's `vmatch` model, re-run and
-extended (`.build/target-wp-110/exp2/vmatch2/`: 53 scripts × 3 names
-`foo`, `_Z3fooi` = `foo(int)`, `_ZN2ns3fooEv` = `ns::foo()`; the model
-`model.py` is written from this text; its GNU column equals GNU ld on
-159/159 rows; result line: `vmatch2/result.txt`).
+carry their version and are matched only by rule 12, whether `foo@V`
+or `foo@@V`). Restated by WP-110's third pass from two executable
+models written from this text, the author's (`model_a.py`) and the
+re-reviewer's (`model_r.py`), over the union of every script measured
+(`.build/target-wp-110/exp3/vs3/`: 213 scripts, 2,249 (script, name)
+rows: the second pass's 53 scripts × 3 names `foo`, `_Z3fooi` =
+`foo(int)`, `_ZN2ns3fooEv` = `ns::foo()`; the re-review's 60; 43 glob
+patterns over 22 odd names; 17 duplicate cases; 40 `.symver` cases
+with and without `--export-dynamic`; reference answers from GNU ld 2.44,
+`gnuref.py`). Result line (`compare.out`): `cases 213 model-runs 852
+A/mortar=8 R/mortar=8`: with rule 8 read as GNU ld does (a syntax
+error) both models equal GNU ld on all 213 scripts; in mortar's mode
+both differ from GNU ld on exactly the 8 scripts that put `local:`
+before `global:` (rule 8, the deliberate difference: A-S8, A-L1, A-L2,
+A-E6, R-r11, R-r32, R-r47, R-s10), and on nothing else.
 
 **Entries.** An entry is a pattern under `global:` or `local:` of a
 node, in a language: plain (and `extern "C"`) entries are compared with
 the symbol's name, `extern "C++"` entries with its demangled name (the
 name itself when it does not demangle; `ns::*` matches `ns::foo()`).
-A **quoted** entry, or one without any of `* ? [`, is **exact**; any
-other is a **glob**; the glob that is `*` alone is the **star**. A
-quoted entry is exact even when it holds `*` (`"foo*"` matches only
-the name `foo*`; GNU ld; lld and mold treat it as a glob).
+An entry is **exact** when it is quoted, or unquoted without an
+unescaped `*`, `?` or `[` (a `\` followed by a character escapes it);
+any other entry is a **glob**; the glob that is `*` alone is the
+**star**. An exact entry's **name**: a quoted entry's text between the
+quotes, verbatim (no escapes are processed: `"foo\\"` names `foo\\`); an
+unquoted entry's text with every `\c` pair replaced by `c` (`fo\o` names
+`foo`, `fo\*` names `fo*`), a final lone `\` kept (`foo\` names
+`foo\`). A quoted entry is exact even when it holds `*` (`"foo*"`
+matches only the name `foo*`; GNU ld; lld and mold treat it as a glob,
+and keep the `\` of `fo\o`).
+
+A glob matches a subject when the whole subject matches it as
+`fnmatch(3)` without flags matches (GNU ld; `exp3/vs3/globs.py`, 43
+patterns × 22 names): `*` matches any string, the empty one and `.`
+included; `?` one character; `\c` the character `c`; a glob whose last
+character is a lone `\` matches nothing; `[` opens a class closed by
+the next `]`: a first `!` or `^` negates it, then a first `]` is a
+member (`[]o]`, `[!]]`), `a-b` is the range of characters from `a` to
+`b` (empty when `a` > `b`: `f[o-a]?` matches nothing), a `-` first or
+last is itself, `\c` inside is `c`; a `[` with no closing `]` is the
+character `[` (`[oo` matches `[oo`; `f[o` matches only `f[o`). lld and
+mold refuse an unterminated `[` and a glob ending in `\`, lld matches
+nothing with `[!]]`, mold reads a first `!` as a member (17.6 of
+`spec/dyn.md`).
 
 **Refused before matching** (`duplicate-version-pattern`, an error
 naming the entry and both nodes; GNU ld: ``duplicate expression `foo'
-in version information``): the same entry (same language, same text,
-same quoting) under `global:` in one node and under `local:` in
-another node (`V1 { global: foo; }; V2 { local: foo; };`, either order;
-the same for globs, `foo*`, and for `*`). lld and mold accept these
-with differing answers (17.6). The same entry twice in one node, or
+in version information``): the same entry under `global:` in one node
+and under `local:` in another node, either order. Two entries are the
+**same** when they are in the same language and either both are exact
+with equal names (`foo`, `"foo"` and `fo\o` are one; `"fo*"` and
+`fo\*` are one) or both are globs with identical text (`fo*` and
+`fo*`; `*` and `*`; not `fo*` and `fo**`, not `f[o]o` and `foo`). A glob
+and an exact entry are never the same (`global: fo*` with `local:
+"fo*"` is accepted). Measured, `exp3/vs3/dups.py` d01-d17. lld and mold
+accept these with differing answers (17.6). The same entry twice in one
+node, under `global:` in two nodes, under `local:` in two nodes, or
 under `global:` and `local:` of one node, is not an error (the
-`global:` one counts).
+`global:` one counts); entries in different languages are never the
+same (`extern "C++" { foo; }` and `foo`).
 
 **The decision** for a name: scan the nodes in script order and, in
 each node, its `global:` entries before its `local:` entries:
@@ -1388,8 +1423,10 @@ each node, its `global:` entries before its `local:` entries:
 
 After the scan: G if set; else local if L is set; else G* if set; else
 local if L* is set; else the base version (rule 7). So exact names
-first, then non-star globs (the last node wins, `global:` over `local:`
-within a node), then `*` (`global: *` over `local: *`). Examples, all
+first; then non-star globs, where a `global:` glob match in any node
+beats a `local:` glob match in any node and, among `global:` glob
+matches, the last node wins; then `*` (`global: *` in the last such
+node, over `local: *`). Examples, all
 three references agreeing unless noted: `V1 { global: f*; }; V2 {
 global: foo; };` puts `foo` in V2 (exact first); `V1 { global: foo*;
 }; V2 { global: *; };` V1 (star last); `V1 { global: *; local: foo*;
@@ -1432,16 +1469,27 @@ The other rules, unchanged in substance:
 11. A script with one anonymous node (`{ global: a; local: *; };`)
     exports the matched keys unversioned and defines no version (all
     three).
-12. A definition versioned by `.symver` (`foo@V1`, non-default) is
-    local exactly when node V1's **own** `local:` entries match `foo`
-    by the decision above restricted to that node (GNU ld and lld:
-    `V1 { global: bar; local: *; };` drops `foo@V1`; a `local: *` in
-    another node V2 does not, all three; `exp2/vscript2` `sv_*`). mortar
-    drops it, as GNU ld and lld, with the warning
+12. A definition versioned by `.symver`, `foo@V1` or `foo@@V1`, is
+    matched by node V1 only; no other node's entry affects it (`V2 {
+    global: foo; }` and `V2 { global: *; }` leave `foo@@V1` at V1). It
+    is **local** exactly when one of V1's `local:` entries matches
+    `foo`, none of V1's `global:` entries (exact or glob) matches `foo`,
+    and the line does not have `--export-dynamic` (`-E`); otherwise it
+    keeps version V1. (GNU ld: `V1 { global: bar; local: *; };` drops
+    `foo@V1` and `foo@@V1`; `V1 { global: o*; local: old; };` keeps
+    `old@V1`; with `-E` nothing is dropped; `exp3/vs3/expdyn.py` e01-e13,
+    `atat.py` a01-a07, `exp2/vscript2` `sv_*`.) `-E` affects no other
+    rule of this section: exact, glob and star `local:` entries, and a
+    `local:` in another node, hide unversioned names with and without it
+    (e01-e05). A script without a node V1 (an anonymous script
+    included) is refused, as D-114 says (all three refuse, e04). mortar
+    drops a hidden definition, as GNU ld, with the warning
     `versioned-definition-hidden` naming it (an executable linked
     against the earlier library then fails to load: ``undefined symbol:
-    foo, version V1``). mold keeps it (an anomaly, `spec/dyn.md` 17.8).
-    `foo@@V` is matched as `foo` by every node.
+    foo, version V1``). lld also hides `foo@V1` when a `global:` glob of
+    V1 matches and under `-E`, hides `foo@@V1` only for an exact
+    `local:`, and refuses a script naming `foo` exactly in another node;
+    mold never hides (anomalies, `spec/dyn.md` 17.8).
 13. Several `--version-script` files are one script: their texts are
     parsed in command-line order as one sequence of nodes (all three:
     `V1` in one file and `V2 { … } V1;` in the next link, `exp2/vscript2`
