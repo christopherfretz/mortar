@@ -973,15 +973,17 @@ pub enum HoleKind {
     /// A dead range an earlier link's debug contribution held (IN-3a):
     /// the section's neutral form.
     DeadDebug,
-    /// A dead merged piece (IN-3a, L-147): its bytes are left as written.
+    /// A dead merged string piece (IN-3a, L-147): its bytes are left as
+    /// written (the map's `dead … strings`). A dead constant piece takes
+    /// the fill instead: it is a [`HoleKind::Fill`] hole.
     DeadFragment,
     /// An unused CIE in `.eh_frame` (IN-3a): a padding CIE.
     DeadCie,
 }
 
 impl HoleKind {
-    /// Whether the map lists it as a `dead` line (`spec/plumb.md` §3.2),
-    /// rather than a `hole` line.
+    /// Whether it is a dead range (IN-3a): what an earlier link's live
+    /// unit held, not slack.
     #[must_use]
     pub fn is_dead(self) -> bool {
         matches!(self, Self::DeadDebug | Self::DeadFragment | Self::DeadCie)

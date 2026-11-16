@@ -138,8 +138,6 @@ discard <file> <section> gc|comdat|script|unspecified
 fold <file> <section> <into-file> <into-section>
 chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
 define <name> <value>
-hole <output-section> <offset> <size>
-dead <output-section> <offset> <size> debug|fragment|cie
 output static|exec|pie|static-pie
 interp <path>
 runpath|rpath <paths>
@@ -185,36 +183,8 @@ non-alloc section is also accepted, with `<addr>` read as the output
 section's `sh_addr` (0) plus the offset: that is what a converted GNU ld
 or lld map holds.
 
-**The dead-range records** (`spec/incr.md` IN-3, IN-3a, IN-60;
-WP-062) follow `define`. A plain link writes none of them; a link in
-incremental mode (`--incremental`) writes them. `<output-section>` is
-the output section's name as a string token; `<offset>` is from the
-output section's start (`sh_offset`, or `sh_addr` for an allocated
-section: the same distance) and `<size>` is the length, both non-zero
-hex as above; the range lies inside the section's `sh_size`.
-
-- `hole`: a range no live unit owns, made by the linker as slack: an
-  allocated region's slack (IN-30) holding IN-3's fill (trap in code,
-  zero in other `PROGBITS`, nothing in `NOBITS`), a padding CIE ending a
-  per-file `.eh_frame` range (IN-34a), or a debug contribution's
-  neutral padding (IN-50, IN-51b), or the neutral abbreviation table
-  in `.debug_abbrev` (IN-51b). An `.eh_frame` hole of 4, 8 or 12 bytes
-  is not a CIE: it is the `DW_CFA_nop` padding the record before it
-  absorbs (its length field covers the hole). A hole is not the
-  alignment padding a plain link also has between two placements: that
-  is listed by no record, as in a plain map.
-- `dead`: a range an earlier link's live unit held and the current
-  inputs do not (IN-3a), by kind: `debug` a dead debug contribution,
-  `fragment` a dead piece of a merged section, `cie` an unused CIE in
-  `.eh_frame`. An allocated hole an update leaves is a `hole`, not a
-  `dead` record. A first link writes no `dead` record.
-
-`hole` and `dead` records are ordered by output section (in section
-header order), then by offset, and two of them never overlap. The
-checks on them are §9's (IN-60, WP-091).
-
 **The dynamic records** (§12 P-D3; WP-040 step 0d) follow
-`define` and the dead-range records. A static link writes none of them; a dynamic link (`Exec`,
+`define`. A static link writes none of them; a dynamic link (`Exec`,
 `Pie`, `StaticPie`) writes them, each package filling its own. Every
 string is a string token.
 
@@ -243,8 +213,7 @@ is a `MapError`.
 
 The writer emits records in a fixed order: files by id, then places and
 pieces, the non-alloc records, discards, folds, chunks and defined
-symbols, each group in the order of the map's vectors, then the
-dead-range records, then the dynamic
+symbols, each group in the order of the map's vectors, then the dynamic
 records in the order of the grammar above.
 
 Every syntax error is a `MapError { line, message }`. Line 0 means the map

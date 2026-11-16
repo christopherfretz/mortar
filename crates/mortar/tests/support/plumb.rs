@@ -33,10 +33,13 @@ pub fn verify(out: &Path, map: &Path, dir: &Path) -> Vec<mortar_plumb::Finding> 
     let parsed = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &text)
         .or_else(|e| {
             // Waiting for WP-091: a verifier without plumb.md §3.2's
-            // `hole` and `dead` records (an incremental-mode link's,
-            // WP-062) refuses the line. Until it reads them, it is given
-            // the map without them; a map that parses is given whole.
-            let known = |l: &&str| !l.starts_with("hole ") && !l.starts_with("dead ");
+            // `incremental`, `hole` and `dead` records (an
+            // incremental-mode link's, WP-062) refuses the line. Until it
+            // reads them, it is given the map without them; a map that
+            // parses is given whole.
+            let known = |l: &&str| {
+                *l != "incremental" && !l.starts_with("hole ") && !l.starts_with("dead ")
+            };
             let stripped: String = text.lines().filter(known).flat_map(|l| [l, "\n"]).collect();
             if stripped.len() == text.len() {
                 return Err(e);

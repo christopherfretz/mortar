@@ -982,15 +982,24 @@ fn padding_cies_and_dead_ranges_through_the_replay() {
         return;
     };
     let prog = Prog { scratch, built, arch: AARCH64 };
-    prog.link("plain", &[]);
+    prog.link("plain", &["--mortar-map=plain.map"]);
     prog.link("full", &["--incremental=full", "--mortar-map=full.map"]);
     let expected = prog.run("plain");
     assert_eq!(prog.run("full"), expected);
     let map = std::fs::read_to_string(prog.path("full.map")).unwrap();
     let first = hole_records(&map);
-    assert!(first.iter().all(|h| h.0 == "hole"), "a first link writes no dead record");
+    assert_eq!(map.lines().filter(|l| *l == "incremental").count(), 1, "no incremental record");
+    let plain_map = std::fs::read_to_string(prog.path("plain.map")).unwrap();
+    assert!(!plain_map.lines().any(|l| l == "incremental"), "a plain map claims coverage");
+    // Allocated slack is `hole`; a debug section's neutral room is
+    // `dead … neutral` (plumb.md §3.2, §6.8), the only dead kind of a
+    // first link.
+    for h in &first {
+        let debug = h.1.starts_with(".debug_");
+        assert!(if debug { h.0 == "dead" && h.4 == "neutral" } else { h.0 == "hole" }, "{h:?}");
+    }
     for sec in [".text", ".data", ".debug_info", ".debug_abbrev", ".debug_line"] {
-        assert!(first.iter().any(|h| h.1 == sec), "no hole in {sec}");
+        assert!(first.iter().any(|h| h.1 == sec), "no hole or neutral range in {sec}");
     }
     assert!(!first.iter().any(|h| h.1 == ".eh_frame"), "a first link's .eh_frame has no hole");
     support::plumb::readers(&prog.path("full"));
@@ -1014,8 +1023,11 @@ fn padding_cies_and_dead_ranges_through_the_replay() {
         support::plumb::readers(&prog.path(&out));
         assert_eq!(prog.run(&out), expected, "{size}: the program throws otherwise");
         let m = std::fs::read_to_string(prog.path(&format!("{out}.map"))).unwrap();
+        // A padding CIE is a hole; an absorbed pad is no line (the
+        // record before it is its piece, P-I1).
         let want = ("hole".to_owned(), ".eh_frame".to_owned(), at, size, String::new());
-        assert!(hole_records(&m).contains(&want), "{size}: the map does not list the hole");
+        let listed = hole_records(&m).contains(&want);
+        assert_eq!(listed, size >= 16, "{size}: the map's .eh_frame hole");
         let bytes = prog.bytes(&out);
         let off = (state.chunks[eh].offset + at) as usize;
         let rec = &bytes[off..][..size as usize];
@@ -1046,14 +1058,17 @@ fn padding_cies_and_dead_ranges_through_the_replay() {
     }
     let m = std::fs::read_to_string(prog.path("dead.map")).unwrap();
     let records = hole_records(&m);
-    let dead: Vec<_> = records.iter().filter(|h| h.0 == "dead").collect();
-    assert_eq!(dead.len(), 2, "{dead:?}");
+    // The dead CIE replaces pad16's hole line; a dead debug range is
+    // neutral, as the allotment it replaces was.
+    let cie = ("dead".to_owned(), ".eh_frame".to_owned(), at, 16, "cie".to_owned());
+    let mut want = hole_records(&std::fs::read_to_string(prog.path("pad16.map")).unwrap());
+    let hole = want.iter().position(|h| h.0 == "hole" && h.1 == ".eh_frame").expect("pad16's");
+    want[hole] = cie;
+    assert_eq!(records, want, "the dead records");
     assert!(
-        dead.iter().any(|h| (h.1.as_str(), h.2, h.3, h.4.as_str()) == (".eh_frame", at, 16, "cie"))
+        records.iter().any(|h| h.0 == "dead" && h.4 == "neutral" && h.3 == dead_debug.size),
+        "no neutral record of the dead debug range"
     );
-    let dd = dead.iter().find(|h| h.4 == "debug").expect("a dead debug record");
-    assert_eq!(dd.3, dead_debug.size);
-    assert_eq!(records.len(), first.len() + 1, "the other holes stay holes");
     support::plumb::readers(&prog.path("dead"));
 }
 

@@ -447,6 +447,18 @@ impl EhPlan {
         self.out_off[n]
     }
 
+    /// The output bytes of output record `n` (`n < records().len()`):
+    /// up to the next record, with a 4-, 8- or 12-byte pad it absorbs
+    /// (IN-34a, its length covers it) and without a padding CIE after it,
+    /// which is a hole of its own.
+    #[must_use]
+    pub fn record_span(&self, n: usize) -> u64 {
+        let (start, next) = (self.out_off[n], self.out_off[n + 1]);
+        let at = self.pads.partition_point(|p| p.0 + p.1 < next);
+        let cie = self.pads.get(at).filter(|p| p.0 + p.1 == next && p.1 >= 16).map_or(0, |p| p.1);
+        next - start - cie
+    }
+
     /// For output record `n`, the output index of its CIE if it is an FDE.
     #[must_use]
     pub fn cie_of(&self, n: usize) -> Option<usize> {

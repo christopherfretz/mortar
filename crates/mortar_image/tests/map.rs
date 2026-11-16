@@ -141,10 +141,15 @@ fn parse(text: &str) -> Map {
                 });
             }
             "define" => m.defines.push((untoken(t[1]), hex(t[2]))),
+            "incremental" => {
+                assert!(!m.incremental && t.len() == 1, "a second or malformed incremental");
+                m.incremental = true;
+            }
             "hole" | "dead" => {
                 let kind = (t[0] == "dead").then(|| match t[4] {
-                    "debug" => DeadKind::Debug,
-                    "fragment" => DeadKind::Fragment,
+                    "neutral" => DeadKind::Neutral,
+                    "contribution" => DeadKind::Contribution,
+                    "strings" => DeadKind::Strings,
                     "cie" => DeadKind::Cie,
                     k => panic!("unknown dead kind {k}"),
                 });
@@ -233,9 +238,16 @@ fn random_map(g: &mut Gen) -> Map {
     for _ in 0..g.below(6) {
         m.defines.push((name(g), g.next()));
     }
-    let kinds = [None, Some(DeadKind::Debug), Some(DeadKind::Fragment), Some(DeadKind::Cie)];
+    let kinds = [
+        None,
+        Some(DeadKind::Neutral),
+        Some(DeadKind::Contribution),
+        Some(DeadKind::Strings),
+        Some(DeadKind::Cie),
+    ];
+    m.incremental = g.below(2) == 1;
     for _ in 0..g.below(6) {
-        let kind = kinds[g.below(4) as usize];
+        let kind = kinds[g.below(5) as usize];
         m.dead.push(DeadLine { out: name(g), offset: g.next(), size: g.next(), kind });
     }
     m
@@ -252,9 +264,20 @@ fn i79_map_round_trips_through_the_grammar() {
         let s = String::from_utf8(text).unwrap();
         assert_eq!(parse(&s), m);
         // Group order: files, places/pieces, the non-alloc records,
-        // discards, folds, chunks, defines, holes and dead ranges.
-        let order =
-            ["file", "place", "nplace", "discard", "fold", "chunk", "define", "hole", "end"];
+        // discards, folds, chunks, defines, `incremental`, holes and dead
+        // ranges.
+        let order = [
+            "file",
+            "place",
+            "nplace",
+            "discard",
+            "fold",
+            "chunk",
+            "define",
+            "incremental",
+            "hole",
+            "end",
+        ];
         let ranks: Vec<usize> = s
             .lines()
             .skip(1)

@@ -104,7 +104,11 @@ pub struct Map {
     pub folds: Vec<Fold>,
     pub chunks: Vec<MapChunk>,
     pub defines: Vec<(Vec<u8>, u64)>,
-    /// The dead-range records (`spec/plumb.md` §3.2, `spec/incr.md`
+    /// The `incremental` record (`spec/plumb.md` §3.2): the link was made
+    /// in incremental mode, so the map claims IN-60's coverage, with or
+    /// without `hole`/`dead` lines. `false` in a plain link.
+    pub incremental: bool,
+    /// The `hole` and `dead` records (`spec/plumb.md` §3.2, `spec/incr.md`
     /// IN-60), by output section in header order, then offset: empty in
     /// a plain link.
     pub dead: Vec<DeadLine>,
@@ -113,12 +117,16 @@ pub struct Map {
     pub dynamic: Option<DynRecords>,
 }
 
-/// The kind of a `dead` record (`spec/plumb.md` §3.2, `spec/incr.md`
-/// IN-3a).
+/// The kind of a `dead` record (`spec/plumb.md` §3.2 and §6.8,
+/// `spec/incr.md` IN-3a): `neutral` an IN-51/IN-51b neutral form of a
+/// debug section, `contribution` a whole dead debug contribution as its
+/// compiler wrote it (IN-53), `strings` dead fragments of a merged string
+/// section (L-147), `cie` unused CIEs in `.eh_frame`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeadKind {
-    Debug,
-    Fragment,
+    Neutral,
+    Contribution,
+    Strings,
     Cie,
 }
 
@@ -126,8 +134,9 @@ impl DeadKind {
     #[must_use]
     pub const fn token(self) -> &'static str {
         match self {
-            Self::Debug => "debug",
-            Self::Fragment => "fragment",
+            Self::Neutral => "neutral",
+            Self::Contribution => "contribution",
+            Self::Strings => "strings",
             Self::Cie => "cie",
         }
     }
@@ -313,6 +322,9 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         out.push_str("define ");
         token(name, &mut out);
         let _ = writeln!(out, " {value:x}");
+    }
+    if map.incremental {
+        out.push_str("incremental\n");
     }
     for d in &map.dead {
         out.push_str(if d.kind.is_some() { "dead " } else { "hole " });

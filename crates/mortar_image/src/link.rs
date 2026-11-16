@@ -194,6 +194,9 @@ pub struct LinkOptions {
     /// incremental-mode link stores them in its state, `L128` leaves when
     /// no id is hashed. `false` in a plain link.
     pub keep_leaves: bool,
+    /// An incremental-mode link: the map writes `incremental`
+    /// (`spec/plumb.md` §3.2). `false` in a plain link.
+    pub incremental: bool,
 }
 
 /// The tree of a `--build-id` style (I-72); `None` for a style the
@@ -2190,7 +2193,7 @@ impl LinkTables<'_, '_> {
                     section: index.0,
                     input_offset: u64::from(rec.offset),
                     addr: base + off,
-                    size: plan.out_offset(n + 1) - off,
+                    size: plan.record_span(n),
                 });
             }
         }
@@ -2262,6 +2265,7 @@ impl LinkTables<'_, '_> {
                 m.defines.push((k.name.to_vec(), v));
             }
         }
+        m.incremental = l.options.incremental;
         m.dead = self.dead_lines();
         if let Some(d) = l.synth.dynamic {
             m.dynamic = Some(self.dyn_records(d));
@@ -2269,10 +2273,14 @@ impl LinkTables<'_, '_> {
         m
     }
 
-    /// The `hole` and `dead` records (`spec/plumb.md` §3.2,
+    /// The `hole` and `dead` records (`spec/plumb.md` §3.2 and §6.8,
     /// `spec/incr.md` IN-60): every hole of the layout, at its offset from
     /// its output section's start (by address in an allocated section,
-    /// by file offset in another), in section header order.
+    /// by file offset in another), in section header order. An allocated
+    /// range holding its section's fill, or a padding CIE, is a `hole`;
+    /// a debug section's neutral form is `dead … neutral`; a 4-, 8- or
+    /// 12-byte `.eh_frame` pad is no line (the record before it absorbs
+    /// it, and its `piece` covers it).
     fn dead_lines(&self) -> Vec<crate::map::DeadLine> {
         use crate::map::{DeadKind, DeadLine};
         use mortar_core::layout::HoleKind;
@@ -2301,10 +2309,16 @@ impl LinkTables<'_, '_> {
                     _ => c.name(l.assignment)?,
                 };
                 let kind = match h.kind {
-                    HoleKind::DeadDebug => Some(DeadKind::Debug),
-                    HoleKind::DeadFragment => Some(DeadKind::Fragment),
+                    HoleKind::Fill => None,
+                    HoleKind::EhPad if h.size >= 16 => None,
+                    HoleKind::EhPad => return None,
+                    HoleKind::Debug | HoleKind::AbbrevTable | HoleKind::DeadDebug => {
+                        Some(DeadKind::Neutral)
+                    }
+                    // Dead string fragments; a dead constant fragment
+                    // takes the fill and is a `Fill` hole (its writer's).
+                    HoleKind::DeadFragment => Some(DeadKind::Strings),
                     HoleKind::DeadCie => Some(DeadKind::Cie),
-                    _ => None,
                 };
                 let offset = pos(c) + h.offset - starts.get(&i).copied().unwrap_or(0);
                 Some((i, DeadLine { out: name.to_vec(), offset, size: h.size, kind }))
