@@ -82,6 +82,13 @@ const fn zx(text: &'static str) -> Spelling {
     Spelling::z(text, false)
 }
 
+/// The reasons some `refused` rows give in their refusal's note
+/// (`spec/cli.md` §4.4), by row name.
+pub(crate) static REFUSED_NOTES: &[(&str, &str)] = &[(
+    "--debug-names",
+    "gdb 16 ignores a .debug_names it did not write; use --gdb-index (spec/synth.md S-G9)",
+)];
+
 /// The table.
 #[rustfmt::skip]
 pub(crate) static ROWS: &[Row] = &[
@@ -126,10 +133,10 @@ pub(crate) static ROWS: &[Row] = &[
     r(&[x("keep-unique")], Arg::Required(Values::Any), "SYMBOL", L, &[], Group::Output, Refused, Lands::Other, "Do not fold SYMBOL"),
     r(&[x("ignore-data-address-equality")], Arg::None, "", LM, &[], Group::Output, Refused, Lands::Other, "Allow folding data whose address is compared"),
     r(&[x("ignore-function-address-equality")], Arg::None, "", L, &[], Group::Output, Refused, Lands::Other, "Allow folding functions whose address is compared"),
-    r(&[x("gdb-index")], Arg::None, "", LM, &[], Group::Output, Refused, Lands::GdbIndex(true), "Write a .gdb_index section"),
-    r(&[x("no-gdb-index")], Arg::None, "", LM, &[], Group::Output, Noop("mortar writes no .gdb_index (the default); --gdb-index is refused"), Lands::GdbIndex(false), "Write no .gdb_index section (default)"),
+    r(&[x("gdb-index")], Arg::None, "", LM, &[], Group::Output, Supported, Lands::GdbIndex(true), "Write a .gdb_index section"),
+    r(&[x("no-gdb-index")], Arg::None, "", LM, &[], Group::Output, Noop("the default: no .gdb_index is written; the last of --gdb-index and --no-gdb-index wins"), Lands::GdbIndex(false), "Write no .gdb_index section (default)"),
     r(&[x("debug-names")], Arg::None, "", L, &[], Group::Output, Refused, Lands::Other, "Write a merged .debug_names section"),
-    r(&[x("no-debug-names")], Arg::None, "", L, &[], Group::Output, Refused, Lands::Other, "Write no merged .debug_names (default)"),
+    r(&[x("no-debug-names")], Arg::None, "", L, &[], Group::Output, Noop("the default: no merged .debug_names is written"), Lands::Other, "Write no merged .debug_names (default)"),
     r(&[g("relax")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Other, "Relax instructions where the target allows"),
     r(&[g("no-relax")], Arg::None, "", GLM, &[], Group::Output, Refused, Lands::Other, "Do not relax instructions"),
     r(&[g("force-group-allocation")], Arg::None, "", GL, &[], Group::Output, Refused, Lands::Other, "Place section group members as ordinary sections"),

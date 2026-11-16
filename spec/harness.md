@@ -22,6 +22,7 @@ tests ("Link tests"), the gate's hosted runs on GitHub Actions
 | `linktest` | `cargo xtask linktest --arch <host>` (`--quick`), `cargo xtask linktest` (full) |
 | `census` | `cargo xtask census --quick` (`--quick`), `cargo xtask census` (full) |
 | `mason` | `cargo xtask mason libcxx --sample ci --mode mortar --mode dyn-mortar --plumb --baseline tests/mason/baseline-mortar.tsv` (both); `cargo xtask mason programs` (full) |
+| `sweep` | `cargo xtask sweep --quick` (`--quick`), `cargo xtask sweep` (full) |
 | `static-identical` | `cargo xtask static-identical` (both; every architecture) |
 
 Before a step it prints `[ci] <step>` on standard error. It stops at the
@@ -70,7 +71,26 @@ that does not hold. Without kiln and hod builds or the lane's
 unless `MASON_REQUIRE_TOOLS=1`. Cost on the reference machine: see
 `spec/landed/mason/WP-058.md`.
 
-`static-identical` is run in-process after `census` and `mason`, with or without
+`sweep` is run in-process after `mason` (WP-088): the byte sweep of
+`spec/plumb.md` §12.3 on mortar's own dynamic outputs. GCC compiles a
+hello program, mortar links it behind a `-B` directory whose `ld` is
+mortar, with its map (`--mortar-map`), and every byte of the output's
+synthetic sections is flipped (bit 0, bit 7) and the mutant judged by
+the verifier; a static-pie's sections are swept 256 bytes at each end.
+The cases are a C PIE (lazy and `-z now`), a C `-no-pie`, a C++ PIE and
+a C static-pie. Any exit status but 0 fails it: a finding on the
+unmutated output, a panic of the verifier on a mutant, or a byte no flip
+makes a new finding for (a survivor; mortar's outputs have none). It
+runs on the host's architecture (AArch64 when the host is neither 64-bit
+one; `cargo xtask sweep --arch aarch64,x86_64` for both), so the two
+hosted lanes cover both targets. With `--quick` it runs the cases
+`pie.lazy` and `nopie` (about 30 s); the full gate runs every case
+(with the debug `xtask`: about 4 minutes a target on the reference
+machine, 7.6 and 8.4 minutes on the hosted x86-64 and AArch64 lanes;
+WP-088).
+Each sweep thread holds a jobserver token (at most 4, `--threads`).
+
+`static-identical` is run in-process after `sweep`, with or without
 `--quick`, on every architecture ("static-identical"); any failure fails
 it.
 

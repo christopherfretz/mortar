@@ -1,0 +1,127 @@
+# --gdb-index (WP-097, spec/synth.md §17) without split DWARF: GCC 14
+# -g -ggnu-pubnames, DWARF 5 and 4, at -O0 and -O2 with
+# -ffunction-sections, so the root DIEs give their ranges through
+# DW_AT_ranges into .debug_rnglists (DWARF 5) and .debug_ranges (DWARF 4)
+# besides low_pc/high_pc (S-G5); and Clang 22 -g -ggnu-pubnames at -O2.
+# The program and checks of gdb-index-gcc.test.
+#@ skip(bfd): GNU ld has no --gdb-index
+#@ spec: synth.md S-G2 S-G4 S-G5 S-G6 S-G7
+#@ requires: g++ clang llvm-dwarfdump
+
+cxx -g -ggnu-pubnames -gdwarf-5 -O0 -ffunction-sections main.cc -o main-d5o0.o
+cxx -g -ggnu-pubnames -gdwarf-5 -O0 -ffunction-sections b.cc -o b-d5o0.o
+cxx -g -ggnu-pubnames -gdwarf-5 -O0 -ffunction-sections c.cc -o c-d5o0.o
+cxx -g -ggnu-pubnames -gdwarf-4 -O0 -ffunction-sections main.cc -o main-d4o0.o
+cxx -g -ggnu-pubnames -gdwarf-4 -O0 -ffunction-sections b.cc -o b-d4o0.o
+cxx -g -ggnu-pubnames -gdwarf-4 -O0 -ffunction-sections c.cc -o c-d4o0.o
+cxx -g -ggnu-pubnames -gdwarf-5 -O2 -ffunction-sections main.cc -o main-d5o2.o
+cxx -g -ggnu-pubnames -gdwarf-5 -O2 -ffunction-sections b.cc -o b-d5o2.o
+cxx -g -ggnu-pubnames -gdwarf-5 -O2 -ffunction-sections c.cc -o c-d5o2.o
+cxx -g -ggnu-pubnames -gdwarf-4 -O2 -ffunction-sections main.cc -o main-d4o2.o
+cxx -g -ggnu-pubnames -gdwarf-4 -O2 -ffunction-sections b.cc -o b-d4o2.o
+cxx -g -ggnu-pubnames -gdwarf-4 -O2 -ffunction-sections c.cc -o c-d4o2.o
+cxx(clang) -g -ggnu-pubnames -gdwarf-5 -O2 -ffunction-sections main.cc -o main-cl5o2.o
+cxx(clang) -g -ggnu-pubnames -gdwarf-5 -O2 -ffunction-sections b.cc -o b-cl5o2.o
+cxx(clang) -g -ggnu-pubnames -gdwarf-5 -O2 -ffunction-sections c.cc -o c-cl5o2.o
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index main-d5o0.o b-d5o0.o c-d5o0.o -o prog-d5o0
+run prog-d5o0
+  stdout: 5 10 15
+check readelf -SW prog-d5o0
+  has: .gdb_index
+  not: .debug_gnu_pubnames
+check readelf --debug-dump=gdb_index prog-d5o0
+  has: Version 7
+  has: ns::c_fn: 2 [global, function]
+  has: g_only_c: 2 [global, variable]
+  has: helper: 1 [global, function]
+check llvm-dwarfdump --gdb-index prog-d5o0
+  has: CU list offset = 0x18, has 3 entries:
+  not: error
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index main-d4o0.o b-d4o0.o c-d4o0.o -o prog-d4o0
+run prog-d4o0
+  stdout: 5 10 15
+check readelf -SW prog-d4o0
+  has: .gdb_index
+  not: .debug_gnu_pubnames
+check readelf --debug-dump=gdb_index prog-d4o0
+  has: Version 7
+  has: ns::c_fn: 2 [global, function]
+  has: g_only_c: 2 [global, variable]
+  has: helper: 1 [global, function]
+check llvm-dwarfdump --gdb-index prog-d4o0
+  has: CU list offset = 0x18, has 3 entries:
+  not: error
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index main-d5o2.o b-d5o2.o c-d5o2.o -o prog-d5o2
+run prog-d5o2
+  stdout: 5 10 15
+check readelf -SW prog-d5o2
+  has: .gdb_index
+  not: .debug_gnu_pubnames
+check readelf --debug-dump=gdb_index prog-d5o2
+  has: Version 7
+  has: ns::c_fn: 2 [global, function]
+  has: g_only_c: 2 [global, variable]
+  has: helper: 1 [global, function]
+check llvm-dwarfdump --gdb-index prog-d5o2
+  has: CU list offset = 0x18, has 3 entries:
+  not: error
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index main-d4o2.o b-d4o2.o c-d4o2.o -o prog-d4o2
+run prog-d4o2
+  stdout: 5 10 15
+check readelf -SW prog-d4o2
+  has: .gdb_index
+  not: .debug_gnu_pubnames
+check readelf --debug-dump=gdb_index prog-d4o2
+  has: Version 7
+  has: ns::c_fn: 2 [global, function]
+  has: g_only_c: 2 [global, variable]
+  has: helper: 1 [global, function]
+check llvm-dwarfdump --gdb-index prog-d4o2
+  has: CU list offset = 0x18, has 3 entries:
+  not: error
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index main-cl5o2.o b-cl5o2.o c-cl5o2.o -o prog-cl5o2
+run prog-cl5o2
+  stdout: 5 10 15
+check readelf -SW prog-cl5o2
+  has: .gdb_index
+  not: .debug_gnu_pubnames
+check readelf --debug-dump=gdb_index prog-cl5o2
+  has: Version 7
+  has: ns::c_fn: 2 [global, function]
+  has: g_only_c: 2 [global, variable]
+  has: helper: 1 [global, function]
+check llvm-dwarfdump --gdb-index prog-cl5o2
+  has: CU list offset = 0x18, has 3 entries:
+  not: error
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index -Wl,--gc-sections main-d5o2.o b-d5o2.o c-d5o2.o -o prog-gc
+run prog-gc
+  stdout: 5 10 15
+check nm prog-gc
+  not: unused_fn
+check readelf --debug-dump=gdb_index prog-gc
+  has: unused_fn: 1 [global, function]
+check llvm-dwarfdump --gdb-index prog-gc
+  has: CU list offset = 0x18, has 3 entries:
+  not: error
+
+#--- main.cc
+#include <cstdio>
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+struct Point { int x; double y; };
+int g_total = 3;
+int helper(int);
+int c_use();
+int main(int argc, char **) {
+  Point p{argc, 2.5};
+  std::printf("%d %d %d\n", twice(argc) + g_total, helper(argc) + (int)p.y, c_use());
+  return 0;
+}
+#--- b.cc
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+__attribute__((noinline)) int unused_fn(int x) { return x * 9; }
+__attribute__((noinline)) int helper(int x) { return twice(x + 1) + 4; }
+#--- c.cc
+namespace ns { struct OnlyInC { int a; long b; }; __attribute__((noinline)) int c_fn(int x) { return x * 3; } }
+ns::OnlyInC g_only_c = {4, 2};
+static int s_c_static = 3;
+int c_use() { return ns::c_fn(g_only_c.a) + s_c_static; }

@@ -1,0 +1,351 @@
+//! `cargo xtask sweep`: the byte sweep of `spec/plumb.md` §12.3 on
+//! mortar's own dynamic outputs, as a lane (WP-088). Each case compiles a
+//! hello program with GCC, links it with mortar behind a `-B` directory
+//! whose `ld` is mortar (its map beside the output), and sweeps the
+//! output's synthetic sections in-process: every byte flipped by bit 0
+//! and by bit 7, each mutant judged by the verifier.
+//!
+//!   cargo xtask sweep [--quick] [--arch <a>[,<a>]] [--case <c>[,<c>]] [--threads <n>]
+//!
+//! The lane fails when the unmutated output has a finding, when a mutant
+//! makes the verifier panic (a hostile-input bug, §9.4), or when a byte
+//! survives: no flip of it makes a new finding. Mortar's outputs have no
+//! survivor (measured by WP-088 on both targets); one is a gap of the
+//! verifier to close, or a byte to explain in §12.3 and name here.
+//! The architecture is the host's (AArch64 when the host is neither
+//! 64-bit one) unless `--arch` names others: each hosted lane sweeps its
+//! own, so the full gate's two lanes cover both targets. `--quick` is
+//! what `cargo xtask ci --quick` runs: [`QUICK_CASES`]; the full lane
+//! runs every case.
+
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use crate::linktest::target::Arch;
+use crate::process::{self, Limits};
+
+pub const USAGE: &str =
+    "usage: cargo xtask sweep [--quick] [--arch <a>[,<a>]] [--case <c>[,<c>]] [--threads <n>]\n";
+
+/// The limits of a compile or a link.
+const TOOL_LIMITS: Limits = Limits { time: Duration::from_mins(3), memory_kib: 8 << 20 };
+
+const HELLO_C: &str = "#include <stdio.h>\nint main(void){puts(\"hello\");return 0;}\n";
+const HELLO_CXX: &str = "#include <iostream>\n#include <string>\n\
+                         int main(){std::string s=\"hi\"; std::cout<<s<<std::endl; return 0;}\n";
+
+/// One output of the lane.
+struct Case {
+    name: &'static str,
+    cxx: bool,
+    /// The compile's options (besides `-c -O1`).
+    compile: &'static [&'static str],
+    /// The link's options.
+    link: &'static [&'static str],
+    /// [`mortar_plumb::sweep::run`]'s window: 0 sweeps every byte; a
+    /// static-pie's `.rela.dyn`, `.got` and `.eh_frame_hdr` are swept at
+    /// their two ends only (every byte of them is one of a few fields
+    /// repeated: 537 s on AArch64 for the whole, measured).
+    window: u64,
+    /// The sections swept: [`mortar_plumb::sweep::SECTIONS`] when empty.
+    only: &'static [&'static str],
+}
+
+const CASES: &[Case] = &[
+    Case {
+        name: "pie.lazy",
+        cxx: false,
+        compile: &["-fPIE"],
+        link: &["-pie"],
+        window: 0,
+        only: &[],
+    },
+    Case {
+        name: "pie.now",
+        cxx: false,
+        compile: &["-fPIE"],
+        link: &["-pie", "-Wl,-z,now"],
+        window: 0,
+        only: &[],
+    },
+    Case {
+        name: "nopie",
+        cxx: false,
+        compile: &["-fno-PIE"],
+        link: &["-no-pie"],
+        window: 0,
+        only: &[],
+    },
+    Case { name: "cxx", cxx: true, compile: &["-fPIE"], link: &["-pie"], window: 0, only: &[] },
+    Case {
+        name: "spie",
+        cxx: false,
+        compile: &["-fPIE"],
+        link: &["-static-pie"],
+        window: 256,
+        only: &[],
+    },
+    // `.gdb_index` (WP-098), its bytes only. Without a build id: B1
+    // would catch every flip (the other cases' outputs have one, so
+    // their sweep measures B1 first; WP-098's record).
+    Case {
+        name: "gdbindex",
+        cxx: false,
+        compile: &["-fPIE", "-g", "-ggnu-pubnames"],
+        link: &["-pie", "-Wl,--gdb-index", "-Wl,--build-id=none"],
+        window: 0,
+        only: &[".gdb_index"],
+    },
+];
+
+/// The cases of `--quick`.
+pub const QUICK_CASES: &[&str] = &["pie.lazy", "nopie"];
+
+/// What `cargo xtask sweep` was asked.
+#[derive(Debug, Default)]
+pub struct Args {
+    pub quick: bool,
+    pub arches: Vec<Arch>,
+    pub threads: Option<usize>,
+    /// `--case <name>[,<name>]`: these cases only.
+    pub cases: Vec<String>,
+}
+
+impl Args {
+    /// # Errors
+    /// An unknown argument, architecture or a bad number.
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        let mut a = Self::default();
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
+            match arg.as_str() {
+                "--quick" => a.quick = true,
+                "--arch" => {
+                    let list = it.next().ok_or("--arch needs a value")?;
+                    for name in list.split(',') {
+                        a.arches.push(
+                            Arch::parse(name).ok_or_else(|| format!("unknown arch `{name}`"))?,
+                        );
+                    }
+                }
+                "--threads" => {
+                    let n = it.next().ok_or("--threads needs a value")?;
+                    a.threads = Some(
+                        n.parse()
+                            .ok()
+                            .filter(|n| *n > 0)
+                            .ok_or_else(|| format!("bad --threads `{n}`"))?,
+                    );
+                }
+                "--case" => {
+                    let list = it.next().ok_or("--case needs a value")?;
+                    for name in list.split(',') {
+                        if !CASES.iter().any(|c| c.name == name) {
+                            return Err(format!("unknown case `{name}`"));
+                        }
+                        a.cases.push(name.to_owned());
+                    }
+                }
+                other => return Err(format!("unknown argument `{other}`")),
+            }
+        }
+        Ok(a)
+    }
+}
+
+/// `cargo xtask sweep <args>`: 0 when every case is clean, 1 when one is
+/// not or the lane cannot run, 2 for bad arguments.
+pub fn main(args: &[String]) -> u8 {
+    match Args::parse(args) {
+        Ok(a) => match run_lane(&a) {
+            Ok(true) => 0,
+            Ok(false) => 1,
+            Err(e) => {
+                eprintln!("xtask sweep: {e}");
+                1
+            }
+        },
+        Err(e) => {
+            eprint!("xtask sweep: {e}\n{USAGE}");
+            2
+        }
+    }
+}
+
+/// The architectures of a run: those asked, else the host's (AArch64
+/// when the host is none of the two 64-bit ones).
+fn arches(a: &Args, host: Option<Arch>) -> Vec<Arch> {
+    if !a.arches.is_empty() {
+        return a.arches.clone();
+    }
+    match host {
+        Some(h @ (Arch::Aarch64 | Arch::X86_64)) => vec![h],
+        _ => vec![Arch::Aarch64],
+    }
+}
+
+fn run_lane(a: &Args) -> Result<bool, String> {
+    let started = Instant::now();
+    let host = Arch::host();
+    let mortar = crate::linktest::build_mortar()?;
+    let threads = a
+        .threads
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(2, |n| n.get().min(4)));
+    let mut clean = true;
+    let mut swept = 0usize;
+    for arch in arches(a, host) {
+        let work = crate::linktest::build_dir().join("sweep").join(arch.name());
+        let bin = work.join("bin");
+        std::fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+        let ld = bin.join("ld");
+        let _ = std::fs::remove_file(&ld);
+        std::os::unix::fs::symlink(&mortar, &ld).map_err(|e| format!("{}: {e}", ld.display()))?;
+        std::fs::write(work.join("hello.c"), HELLO_C).map_err(|e| e.to_string())?;
+        std::fs::write(work.join("hello.cc"), HELLO_CXX).map_err(|e| e.to_string())?;
+        let wanted = |c: &&Case| {
+            (!a.quick || QUICK_CASES.contains(&c.name))
+                && (a.cases.is_empty() || a.cases.iter().any(|n| n == c.name))
+        };
+        for case in CASES.iter().filter(wanted) {
+            let id = format!("{}/{}", arch.name(), case.name);
+            let t = Instant::now();
+            let verdict = sweep_case(arch, host, case, &work, &bin, threads);
+            let secs = t.elapsed().as_secs_f64();
+            match verdict {
+                Ok((n, problems)) if problems.is_empty() => {
+                    swept += n;
+                    eprintln!("sweep: {id}: {n} bytes, 0 survivors ({secs:.1} s)");
+                }
+                Ok((n, problems)) => {
+                    swept += n;
+                    clean = false;
+                    eprintln!("sweep: {id}: FAIL ({secs:.1} s)");
+                    for p in problems {
+                        eprintln!("sweep:   {p}");
+                    }
+                }
+                Err(e) => {
+                    clean = false;
+                    eprintln!("sweep: {id}: FAIL: {e}");
+                }
+            }
+        }
+    }
+    eprintln!(
+        "sweep: {swept} bytes on {threads} thread(s) in {:.1} s: {}",
+        started.elapsed().as_secs_f64(),
+        if clean { "ok" } else { "FAILED" }
+    );
+    Ok(clean)
+}
+
+/// Builds, links and sweeps one case in `work`: the bytes swept and what
+/// fails the lane.
+fn sweep_case(
+    arch: Arch,
+    host: Option<Arch>,
+    case: &Case,
+    work: &Path,
+    bin: &Path,
+    threads: usize,
+) -> Result<(usize, Vec<String>), String> {
+    let driver_name = arch.gnu_tool(host, if case.cxx { "g++" } else { "gcc" });
+    let driver: PathBuf = mortar_testutil::find_listed_tool(&driver_name)
+        .ok_or_else(|| format!("`{driver_name}` not found"))?;
+    let source = if case.cxx { "hello.cc" } else { "hello.c" };
+    let object = format!("{}.o", case.name);
+    let output = case.name.to_owned();
+    let map = format!("{}.map", case.name);
+    let mut compile: Vec<String> = vec!["-c".into(), "-O1".into()];
+    compile.extend(case.compile.iter().map(|s| (*s).to_owned()));
+    compile.extend([source.to_owned(), "-o".into(), object.clone()]);
+    tool(&driver, &compile, work)?;
+    let mut link: Vec<String> = vec![format!("-B{}/", bin.display())];
+    link.extend(case.link.iter().map(|s| (*s).to_owned()));
+    link.extend([object, "-o".into(), output.clone(), format!("-Wl,--mortar-map={map}")]);
+    tool(&driver, &link, work)?;
+    // The sweep's threads each hold a jobserver token (spec/harness.md
+    // "Jobserver"); the first is this process's own.
+    let client = crate::jobs::global();
+    let tokens: Vec<_> = (0..threads).map(|_| client.acquire()).collect();
+    let sweep = crate::plumb::sweep_link(
+        &work.join(&output),
+        &work.join(&map),
+        mortar_plumb::Format::Mortar,
+        work,
+        threads,
+        case.window,
+        if case.only.is_empty() { mortar_plumb::sweep::SECTIONS } else { case.only },
+    )?;
+    drop(tokens);
+    let mut problems = Vec::new();
+    if sweep.baseline > 0 {
+        problems.push(format!("the output has {} finding(s) unmutated", sweep.baseline));
+    }
+    for b in &sweep.bytes {
+        if b.panicked {
+            problems.push(format!("panic {} +{:#x} {} {}", b.section, b.off, b.kind, b.instance));
+        } else if b.caught.iter().any(|c| !c) {
+            problems
+                .push(format!("survivor {} +{:#x} {} {}", b.section, b.off, b.kind, b.instance));
+        }
+    }
+    Ok((sweep.bytes.len(), problems))
+}
+
+/// Runs `program args` in `dir`; an error unless it exits 0.
+fn tool(program: &Path, args: &[String], dir: &Path) -> Result<(), String> {
+    let o = process::run(
+        program,
+        |c| {
+            c.args(args).current_dir(dir).env("LC_ALL", "C");
+        },
+        b"",
+        TOOL_LIMITS,
+    )?;
+    if o.end.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} {}: {}: {}",
+            program.display(),
+            args.join(" "),
+            o.end,
+            o.first_error_line()
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arguments() {
+        let a = Args::parse(&["--quick".into(), "--arch".into(), "x86_64".into()]).unwrap();
+        assert!(a.quick && a.arches == [Arch::X86_64] && a.threads.is_none());
+        assert_eq!(Args::parse(&["--threads".into(), "3".into()]).unwrap().threads, Some(3));
+        assert!(Args::parse(&["--threads".into(), "0".into()]).is_err());
+        assert!(Args::parse(&["--bogus".into()]).is_err());
+        assert_eq!(Args::parse(&["--case".into(), "gdbindex".into()]).unwrap().cases, ["gdbindex"]);
+        assert!(Args::parse(&["--case".into(), "nope".into()]).is_err());
+    }
+
+    // The host's architecture unless `--arch` names others.
+    #[test]
+    fn architectures() {
+        let quick = Args { quick: true, ..Args::default() };
+        assert_eq!(arches(&quick, Some(Arch::X86_64)), [Arch::X86_64]);
+        assert_eq!(arches(&quick, Some(Arch::I386)), [Arch::Aarch64]);
+        assert_eq!(arches(&Args::default(), Some(Arch::Aarch64)), [Arch::Aarch64]);
+        let both = Args { arches: vec![Arch::Aarch64, Arch::X86_64], ..Args::default() };
+        assert_eq!(arches(&both, None), [Arch::Aarch64, Arch::X86_64]);
+    }
+
+    #[test]
+    fn quick_cases_exist() {
+        for q in QUICK_CASES {
+            assert!(CASES.iter().any(|c| c.name == *q), "{q}");
+        }
+    }
+}

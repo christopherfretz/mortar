@@ -2,8 +2,8 @@
 //! `spec/plumb.md` §12.2): every byte of `.plt`, `.plt.sec`, `.plt.got`,
 //! `.iplt`, `.got`, `.got.plt`, `.dynamic`, `.dynsym`, `.dynstr`,
 //! `.gnu.hash`, `.gnu.version`, `.gnu.version_r`, `.rela.dyn`,
-//! `.rela.plt`, `.interp`, `.eh_frame_hdr` and of the `.eh_frame` records
-//! that cover a PLT section is flipped (bit 0, then bit 7), the mutant is
+//! `.rela.plt`, `.interp`, `.eh_frame_hdr`, `.gdb_index` (WP-098) and of
+//! the `.eh_frame` records that cover a PLT section is flipped (bit 0, then bit 7), the mutant is
 //! judged, and every byte no flip makes a new finding for is a survivor.
 //! Survivors are named by field and coalesced into ranges. This measures
 //! what the verifier does not judge; it is not a test (a survivor may be
@@ -37,6 +37,7 @@ pub const SECTIONS: &[&str] = &[
     ".dynamic",
     ".got",
     ".got.plt",
+    ".gdb_index",
 ];
 
 /// The bits each byte is flipped by, one mutant each.
@@ -368,6 +369,24 @@ pub fn run(
     window: u64,
     ctx: &crate::Ctx<'_>,
 ) -> Result<Sweep, String> {
+    run_sections(output, inputs, map, threads, window, ctx, SECTIONS)
+}
+
+/// [`run`] over the sections of `sections` only (each one of
+/// [`SECTIONS`]).
+///
+/// # Errors
+///
+/// When the output cannot be read or is not dynamic.
+pub fn run_sections(
+    output: &[u8],
+    inputs: &[Input<'_>],
+    map: &Map,
+    threads: usize,
+    window: u64,
+    ctx: &crate::Ctx<'_>,
+    sections: &[&str],
+) -> Result<Sweep, String> {
     let image = Image::read(output)?;
     let out = DynOut::read(&image).ok_or("not a dynamic output")?;
     let verify = |b: &[u8]| crate::verify_with(b, inputs, map, ctx);
@@ -376,13 +395,15 @@ pub fn run(
     let mut bytes = Vec::new();
     // (file offset, Byte)
     let mut sites: Vec<(usize, Byte)> = Vec::new();
-    for &name in SECTIONS {
-        for s in image.sections.iter().filter(|s| s.name == name) {
+    for &name in SECTIONS.iter().filter(|n| sections.contains(n)) {
+        for (si, s) in image.sections.iter().enumerate().filter(|(_, s)| s.name == name) {
             if s.shdr.sh_type == SHT_NOBITS || s.shdr.sh_size == 0 {
                 continue;
             }
             let (addr, size) = (s.shdr.sh_addr, s.shdr.sh_size);
-            let Some(data) = image.bytes(addr, size) else { continue };
+            let alloc = s.shdr.sh_flags & mortar_elf::consts::SHF_ALLOC != 0;
+            let data = if alloc { image.bytes(addr, size) } else { image.section_data(si) };
+            let Some(data) = data else { continue };
             let file = s.shdr.sh_offset as usize;
             let ranges: Vec<(u64, u64)> = if name == ".eh_frame" {
                 plt_eh_ranges(&image, addr, data)
@@ -393,7 +414,11 @@ pub fn run(
             };
             for (lo, hi) in ranges {
                 for off in lo..hi {
-                    let (kind, instance) = field(&image, &out, name, addr, size, off);
+                    let (kind, instance) = if name == crate::gdbindex::NAME {
+                        crate::gdbindex::field(data, off)
+                    } else {
+                        field(&image, &out, name, addr, size, off)
+                    };
                     sites.push((
                         file + off as usize,
                         Byte {

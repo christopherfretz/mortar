@@ -67,6 +67,16 @@ cast_sign_loss = "allow"
 # measured a smaller binary with fewer start-up page faults). A panic is a
 # bug of mortar's: the process aborts, no caller catches it. Tests keep
 # unwinding (cargo ignores `panic` for test targets).
+# The verifier runs thousands of times in every gate (L3 judges each link
+# output; the sweep judges each mutant): its own code and the readers it
+# uses are optimised in debug builds too. Debug assertions and overflow
+# checks stay on.
+[profile.dev.package.mortar_plumb]
+opt-level = 2
+
+[profile.dev.package.mortar_elf]
+opt-level = 2
+
 [profile.release]
 debug = 1
 lto = "fat"

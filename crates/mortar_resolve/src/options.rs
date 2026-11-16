@@ -63,6 +63,10 @@ pub struct Options {
     pub warn_backrefs: bool,
     /// `-S` / `-s`: debug sections are `Dropped(Stripped)` (§10).
     pub strip_debug: bool,
+    /// `--gdb-index` without `-S`/`-s`: the kept `.debug_gnu_pubnames` and
+    /// `.debug_gnu_pubtypes` are `Dropped(Consumed)` (§10; `spec/synth.md`
+    /// S-G6).
+    pub consume_gnu_pubnames: bool,
     pub output: Output,
     /// `--unresolved-symbols`, `--warn-unresolved-symbols` (§5.2).
     pub unresolved: crate::verdict::Unresolved,
@@ -143,6 +147,7 @@ impl Default for Options {
             warn_common: false,
             warn_backrefs: false,
             strip_debug: false,
+            consume_gnu_pubnames: false,
             output: Output::default(),
             unresolved: crate::verdict::Unresolved::Error,
             ignore_unresolved: Vec::new(),

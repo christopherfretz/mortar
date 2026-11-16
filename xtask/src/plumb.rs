@@ -368,22 +368,7 @@ pub fn verify_link_line(
     let mut parsed = mortar_plumb::map::parse(format, &text)
         .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?;
     parsed.fix_843419 = fix_843419;
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    for path in parsed.paths() {
-        let full = base.join(path);
-        if allowed.is_some_and(|a| !a.contains(&canonical(&full))) {
-            continue;
-        }
-        if let Ok(b) = std::fs::read(&full) {
-            // A thin archive's members are files of their own (§2.2).
-            for member in mortar_plumb::thin_members(path, &b) {
-                if let Ok(m) = std::fs::read(base.join(&member)) {
-                    files.push((member, m));
-                }
-            }
-            files.push((path.to_string(), b));
-        }
-    }
+    let files = link_files(&parsed, base, allowed);
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
     let report = if mortar_plumb::is_dynamic(&output) {
         let files = BaseFiles(base);
@@ -394,6 +379,61 @@ pub fn verify_link_line(
     };
     drop(inputs);
     Ok((output, report, files))
+}
+
+/// The files `map` names, a relative path read from `base`; with
+/// `allowed`, only those of its files. A thin archive's members are files
+/// of their own (spec/plumb.md §2.2); an unreadable file is left out.
+fn link_files(
+    map: &mortar_plumb::map::Map,
+    base: &Path,
+    allowed: Option<&BTreeSet<PathBuf>>,
+) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for path in map.paths() {
+        let full = base.join(path);
+        if allowed.is_some_and(|a| !a.contains(&canonical(&full))) {
+            continue;
+        }
+        if let Ok(b) = std::fs::read(&full) {
+            for member in mortar_plumb::thin_members(path, &b) {
+                if let Ok(m) = std::fs::read(base.join(&member)) {
+                    files.push((member, m));
+                }
+            }
+            files.push((path.to_string(), b));
+        }
+    }
+    files
+}
+
+/// The byte sweep (`mortar_plumb::sweep`, spec/plumb.md §12.3) of the
+/// dynamic `output` a link in `base` wrote with `map` (in `format`); the
+/// map's `arg` records are its line (a mortar map). WP-088's lane
+/// (`xtask sweep`).
+///
+/// # Errors
+/// The output or the map cannot be read, the map does not parse, or the
+/// output is not dynamic.
+pub fn sweep_link(
+    output: &Path,
+    map: &Path,
+    format: Format,
+    base: &Path,
+    threads: usize,
+    window: u64,
+    sections: &[&str],
+) -> Result<mortar_plumb::sweep::Sweep, String> {
+    let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+    let bytes = read(output)?;
+    let map_bytes = read(map)?;
+    let parsed = mortar_plumb::map::parse(format, &String::from_utf8_lossy(&map_bytes))
+        .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?;
+    let files = link_files(&parsed, base, None);
+    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+    let dir = BaseFiles(base);
+    let ctx = mortar_plumb::Ctx { line: None, files: &dir };
+    mortar_plumb::sweep::run_sections(&bytes, &inputs, &parsed, threads, window, &ctx, sections)
 }
 
 /// [`verify_link`]'s answer: the output's bytes, the report, and the

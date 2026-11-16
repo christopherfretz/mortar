@@ -118,6 +118,21 @@ fn fetch<'a>(image: &Image<'a>, at: u64) -> Option<&'a [u8]> {
 /// x86-64: the entry at `entry` run to the jump through `slot`, then from
 /// the slot's initial word to the next indirect jump.
 fn x64_walk(image: &Image<'_>, entry: u64, slot: u64) -> Result<Walk, (String, u64)> {
+    x64_walk_depths(image, entry, slot, &mut Vec::new())
+}
+
+/// [`x64_walk`], recording in `depths` each instruction it reaches with
+/// the bytes the path has pushed above the caller's stack pointer,
+/// counting the return address (the CFA is `%rsp` + that at the
+/// instruction): 8 at the entry, 8 more per `push`. Kept on an error too:
+/// what was reached before it.
+fn x64_walk_depths(
+    image: &Image<'_>,
+    entry: u64,
+    slot: u64,
+    depths: &mut Vec<(u64, u64)>,
+) -> Result<Walk, (String, u64)> {
+    let mut depth = 8u64;
     let mut pc = entry;
     let mut r11: Option<u64> = None;
     let mut pushes = Vec::new();
@@ -131,6 +146,7 @@ fn x64_walk(image: &Image<'_>, entry: u64, slot: u64) -> Result<Walk, (String, u
         let b = fetch(image, at).ok_or_else(|| {
             (format!("the lazy path reaches {at:#x}, outside executable bytes"), at)
         })?;
+        depths.push((at, depth));
         let unknown =
             || (format!("the lazy path reaches an instruction it does not know at {at:#x}"), at);
         // A `bnd` prefix (MPX) before a jump is ignored.
@@ -148,6 +164,7 @@ fn x64_walk(image: &Image<'_>, entry: u64, slot: u64) -> Result<Walk, (String, u
                 if lazy.is_none() {
                     return Err(early(at));
                 }
+                depth += 8;
                 pushes.push((Push::Imm(rel32(c, 1) as u64), at));
                 trace.push((Step::PushImm, at, true));
                 pc = next(5);
@@ -162,6 +179,7 @@ fn x64_walk(image: &Image<'_>, entry: u64, slot: u64) -> Result<Walk, (String, u
                 if lazy.is_none() {
                     return Err(early(at));
                 }
+                depth += 8;
                 pushes.push((Push::Imm(v), at));
                 pc = next(2);
             }
@@ -169,6 +187,7 @@ fn x64_walk(image: &Image<'_>, entry: u64, slot: u64) -> Result<Walk, (String, u
                 if lazy.is_none() {
                     return Err(early(at));
                 }
+                depth += 8;
                 pushes.push((Push::Word(next(6).wrapping_add_signed(rel32(c, 2))), at));
                 trace.push((Step::PushWord, at + o as u64, true));
                 pc = next(6);
@@ -543,6 +562,38 @@ pub(crate) fn check(
 /// A walk's steps: what, at which address, whether in the entry (before
 /// its own slot's jump) or on the lazy path.
 pub(crate) type Trace = Vec<(Step, u64, bool)>;
+
+/// The PLT section of the output `pc` is in: its name, start and end.
+pub(crate) fn in_plt<'a>(image: &'a Image<'_>, pc: u64) -> Option<(&'a str, u64, u64)> {
+    image.sections.iter().find_map(|s| {
+        let (lo, hi) = (s.shdr.sh_addr, s.shdr.sh_addr.saturating_add(s.shdr.sh_size));
+        (matches!(s.name.as_str(), ".plt" | ".plt.got" | ".plt.sec" | ".iplt")
+            && (lo..hi).contains(&pc))
+        .then_some((s.name.as_str(), lo, hi))
+    })
+}
+
+/// x86-64: the stack depth (CFA - `%rsp`, see [`x64_walk_depths`]) at
+/// each instruction of a PLT section that a PLT entry or its lazy path
+/// executes, the entries being [`crate::loader::plt_entries`]'s and the
+/// lazy target each entry's word holds in the file (E6, `spec/plumb.md`
+/// §6.4): `image` is the file's, not a loaded view's. An instruction reached at two depths keeps the first (the PLT
+/// is then P-D10's finding). Padding no path reaches is not in the map.
+pub(crate) fn x64_depths(image: &Image<'_>) -> BTreeMap<u64, u64> {
+    let entries = crate::loader::plt_entries(image);
+    let mut out = BTreeMap::new();
+    let mut v = Vec::new();
+    for (&e, &slot) in &entries {
+        v.clear();
+        let _ = x64_walk_depths(image, e, slot, &mut v);
+        for &(pc, d) in &v {
+            if in_plt(image, pc).is_some() {
+                out.entry(pc).or_insert(d);
+            }
+        }
+    }
+    out
+}
 
 /// The traces of every lazy path that walks to an indirect jump: for the
 /// mutation classes (`dynmutate.rs`). Entry address, its slot, the trace.

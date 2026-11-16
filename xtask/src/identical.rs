@@ -396,10 +396,14 @@ mod tests {
             test: test.to_owned(),
             arch: Arch::Aarch64,
             line,
+            variant: 0,
             end: "exit status 0".to_owned(),
             output: output.to_owned(),
             map: "m".to_owned(),
             stderr: "e".to_owned(),
+            stderr_text: String::new(),
+            meta_section: false,
+            keeps_meta: false,
         }
     }
 

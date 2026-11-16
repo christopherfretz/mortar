@@ -79,8 +79,13 @@ pub enum SynthKind {
     /// WP-076: `.mason.meta`, the live inputs' Mason units kept for tools
     /// (`spec/meta.md` MT-32; `--keep-mason-meta`), non-allocated, planned
     /// by the front from `mortar_odr::kept_units` as
-    /// [`crate::MasonMetaPlan`]. Last, so every chunk keeps its id.
+    /// [`crate::MasonMetaPlan`]. After `.note.mason` so every chunk keeps
+    /// its id.
     MasonMeta = 27,
+    /// WP-097: `.gdb_index` (`spec/synth.md` §17; `--gdb-index`),
+    /// non-allocated, planned by the front from `mortar_synth::gdbread` as
+    /// [`crate::GdbIndexPlan`]. Last, so every chunk keeps its id.
+    GdbIndex = 28,
 }
 
 /// The section header fields of a synthetic chunk that do not depend on
@@ -143,6 +148,7 @@ impl SynthKind {
             Self::BssRelRo => b".bss.rel.ro",
             Self::NoteMason => b".note.mason",
             Self::MasonMeta => b".mason.meta",
+            Self::GdbIndex => b".gdb_index",
         }
     }
 
@@ -169,6 +175,8 @@ impl SynthKind {
             // meta.md MT-32: `SHT_PROGBITS`, no flags, alignment 8 (MT-1's,
             // without `SHF_EXCLUDE`).
             Self::MasonMeta => h(SHT_PROGBITS, 0, 8, 0),
+            // S-G1: `SHT_PROGBITS`, no flags, alignment 4.
+            Self::GdbIndex => h(SHT_PROGBITS, 0, 4, 0),
             // S-69: SHF_INFO_LINK, sh_info `.got.plt`.
             Self::RelaPlt => {
                 let (t, e) = rel_form(class, rel);
@@ -262,6 +270,10 @@ mod tests {
             (&b".mason.meta"[..], SHT_PROGBITS, 0, 8)
         );
         assert!(SynthKind::MasonMeta > SynthKind::NoteMason);
+        // synth.md S-G1 (WP-097): `.gdb_index` is row 28, non-allocated.
+        let g = h(SynthKind::GdbIndex, Class::Elf64);
+        assert_eq!((g.name, g.sh_type, g.flags, g.align), (&b".gdb_index"[..], SHT_PROGBITS, 0, 4));
+        assert_eq!(SynthKind::GdbIndex.number(), 28);
         assert!(SynthKind::DynBss > SynthKind::Comment && SynthKind::BssRelRo > SynthKind::DynBss);
         let ids = chunk_ids(ChunkId(4), &[(SynthKind::Comment, 9), (SynthKind::Shstrtab, 3)]);
         assert_eq!(ids.unwrap()[..], [(ChunkId(4), 3), (ChunkId(5), 9)]);

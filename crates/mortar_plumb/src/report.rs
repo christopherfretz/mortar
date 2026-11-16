@@ -63,6 +63,8 @@ pub enum Rule {
     /// P-E1 .. P-E6: an update and a full link not equivalent (§6.9;
     /// `spec/incr.md` IN-2, IN-62).
     Equiv(u8),
+    /// P-G1 .. P-G9: `.gdb_index` (§6.10; `spec/synth.md` §17).
+    GdbIndex(u8),
 }
 
 impl Rule {
@@ -94,6 +96,7 @@ impl Rule {
             Rule::Dyn(n) => format!("P-D{n}"),
             Rule::Incr(n) => format!("P-I{n}"),
             Rule::Equiv(n) => format!("P-E{n}"),
+            Rule::GdbIndex(n) => format!("P-G{n}"),
         }
     }
 }
@@ -422,6 +425,8 @@ pub struct Coverage {
     pub fdes_neutralised: u64,
     /// Output FDEs a reference linker made for its own PLT (stage 3).
     pub fdes_linker_plt: u64,
+    /// PLT instructions E6 judged those FDEs at (x86-64).
+    pub plt_fde_insns: u64,
     /// Search table entries of `.eh_frame_hdr` checked (§6.4).
     pub eh_frame_hdr_entries: u64,
     /// Output symbols Y3 checked against their global definitions, and
@@ -442,6 +447,8 @@ pub struct Coverage {
     pub properties_not_judged: u64,
     /// What B1 made of the build id, when the output has one (§6.7).
     pub build_id: Option<String>,
+    /// What §6.10 made of `.gdb_index`, when the output has one.
+    pub gdb_index: Option<String>,
     pub linker_defined_not_judged: Vec<String>,
     /// Output sections whose placement no rule judges, by name: x86-64
     /// large sections (`SHF_X86_64_LARGE`), whose order differs by linker
@@ -528,6 +535,7 @@ impl Report {
     }
 
     /// The coverage summary, one item per line (§7.2).
+    #[allow(clippy::too_many_lines)] // one line per coverage item
     pub fn summary(&self) -> String {
         let c = &self.coverage;
         let mut s = String::new();
@@ -576,11 +584,12 @@ impl Report {
         let _ = writeln!(
             s,
             "FDEs: checked {}, dropped with their function {}, neutralised {}, \
-             the linker's PLT FDEs {}; .eh_frame_hdr entries checked {}",
+             the linker's PLT FDEs {} (at {} instructions); .eh_frame_hdr entries checked {}",
             c.fdes_checked,
             c.fdes_dropped,
             c.fdes_neutralised,
             c.fdes_linker_plt,
+            c.plt_fde_insns,
             c.eh_frame_hdr_entries
         );
         let _ = writeln!(
@@ -611,6 +620,9 @@ impl Report {
         }
         if let Some(b) = &c.build_id {
             let _ = writeln!(s, "build id: {b}");
+        }
+        if let Some(g) = &c.gdb_index {
+            let _ = writeln!(s, "gdb index: {g}");
         }
         if !c.linker_defined_not_judged.is_empty() {
             let _ = writeln!(

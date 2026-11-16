@@ -1,0 +1,98 @@
+# --gdb-index (WP-097, spec/synth.md §17), GCC 14 -gsplit-dwarf (which
+# implies the GNU name index, -ggnu-pubnames): DWARF 5 and 4, three units,
+# twice<int> defined in two of them (one COMDAT copy kept, the other's
+# range left out, S-G5 rule 2, and both units named, S-G4), plain and
+# with --gc-sections (unused_fn collected: its range left out, its name
+# kept, S-G5a). The index is version 7 with one CU per unit, and the
+# input .debug_gnu_pubnames/pubtypes are consumed, not copied (S-G6);
+# lld and mold do the same. GNU ld has no --gdb-index.
+# The symbolic content against lld's and mold's: crates/mortar/tests/
+# gdb_index.rs; gdb's use of it: crates/mortar/tests/debuggers.rs.
+#@ skip(bfd): GNU ld has no --gdb-index
+#@ spec: synth.md S-G1 S-G2 S-G4 S-G5 S-G5a S-G6 S-G7
+#@ requires: g++ llvm-dwarfdump
+
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections main.cc -o main-d5.o
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections b.cc -o b-d5.o
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 -ffunction-sections c.cc -o c-d5.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections main.cc -o main-d4.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections b.cc -o b-d4.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections c.cc -o c-d4.o
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index main-d5.o b-d5.o c-d5.o -o prog-d5
+run prog-d5
+  stdout: 5 10 15
+check readelf -SW prog-d5
+  has: .gdb_index
+  not: .debug_gnu_pubnames
+  not: .debug_gnu_pubtypes
+# lld lists ns::OnlyInC's one value twice (gdb_index.rs explains it).
+check readelf --debug-dump=gdb_index prog-d5
+  has: Version 7
+  has: twice<int>:
+  has: ns::c_fn: 2 [global, function]
+  has: g_only_c: 2 [global, variable]
+  has: s_c_static: 2 [static, variable]
+  has: unused_fn: 1 [global, function]
+  has(mortar,mold): ns::OnlyInC: 2 [global, type]
+check llvm-dwarfdump --gdb-index prog-d5
+  has: Version = 7
+  has: CU list offset = 0x18, has 3 entries:
+  has: Types CU list offset = 0x48, has 0 entries:
+  not: error
+check llvm-dwarfdump --verify prog-d5
+  has: No errors.
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index main-d4.o b-d4.o c-d4.o -o prog-d4
+run prog-d4
+  stdout: 5 10 15
+check readelf --debug-dump=gdb_index prog-d4
+  has: Version 7
+  has: twice<int>:
+  has: ns::c_fn: 2 [global, function]
+  has: s_c_static: 2 [static, variable]
+check llvm-dwarfdump --gdb-index prog-d4
+  has: CU list offset = 0x18, has 3 entries:
+  not: error
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index -Wl,--gc-sections main-d5.o b-d5.o c-d5.o -o prog-gc
+run prog-gc
+  stdout: 5 10 15
+check nm prog-gc
+  not: unused_fn
+check readelf --debug-dump=gdb_index prog-gc
+  has: Version 7
+  has: unused_fn: 1 [global, function]
+  has: ns::c_fn: 2 [global, function]
+check llvm-dwarfdump --gdb-index prog-gc
+  has: CU list offset = 0x18, has 3 entries:
+  not: error
+# The last of --gdb-index and --no-gdb-index wins (spec/cli.md §4.2).
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index -Wl,--no-gdb-index main-d5.o b-d5.o c-d5.o -o prog-off
+check readelf -SW prog-off
+  not: .gdb_index
+  has: .debug_gnu_pubnames
+# -S: no .debug_info, so no index and nothing read (S-G8).
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gdb-index -Wl,-S main-d5.o b-d5.o c-d5.o -o prog-s
+check(mortar) readelf -SW prog-s
+  not: .gdb_index
+  not: .debug_
+
+#--- main.cc
+#include <cstdio>
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+struct Point { int x; double y; };
+int g_total = 3;
+int helper(int);
+int c_use();
+int main(int argc, char **) {
+  Point p{argc, 2.5};
+  std::printf("%d %d %d\n", twice(argc) + g_total, helper(argc) + (int)p.y, c_use());
+  return 0;
+}
+#--- b.cc
+template <class T> __attribute__((noinline)) T twice(T x) { return x + x; }
+__attribute__((noinline)) int unused_fn(int x) { return x * 9; }
+__attribute__((noinline)) int helper(int x) { return twice(x + 1) + 4; }
+#--- c.cc
+namespace ns { struct OnlyInC { int a; long b; }; __attribute__((noinline)) int c_fn(int x) { return x * 3; } }
+ns::OnlyInC g_only_c = {4, 2};
+static int s_c_static = 3;
+int c_use() { return ns::c_fn(g_only_c.a) + s_c_static; }
