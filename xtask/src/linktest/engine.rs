@@ -635,6 +635,11 @@ impl Unit<'_> {
                 continue;
             }
             let args = expand(build_args(step), vars);
+            if let StepKind::Meta(_) = step.kind {
+                let (program, _) = self.build_tool(step)?;
+                meta_step(step, &program, &args, dir)?;
+                continue;
+            }
             let (program, mut full) = self.build_tool(step)?;
             full.extend(args.into_iter().map(OsString::from));
             let output = spawn(step, &program, &full, dir, &[], TOOL_LIMITS)?;
@@ -679,6 +684,7 @@ impl Unit<'_> {
             }
             StepKind::Yaml2obj(_) => (common.yaml2obj.clone().ok_or_else(missing)?, Vec::new()),
             StepKind::Ar(_) => (self.tools.ar.clone(), Vec::new()),
+            StepKind::Meta(_) => (self.tools.objcopy.clone(), Vec::new()),
             // The system's own GNU ld links every fixture library, whatever
             // linkers the run has.
             StepKind::Shlib(shlib) => {
@@ -761,6 +767,7 @@ impl Unit<'_> {
                 StepKind::Compile(_)
                 | StepKind::Yaml2obj(_)
                 | StepKind::Ar(_)
+                | StepKind::Meta(_)
                 | StepKind::Shlib(_) => {
                     unreachable!("build steps are run once, before the linkers")
                 }
@@ -1420,11 +1427,27 @@ impl Unit<'_> {
     }
 }
 
+/// A `meta <description> <in.o> -o <out.o>` step: the description's one
+/// section, written by the test producer and added by `objcopy`.
+fn meta_step(step: &Step, objcopy: &Path, args: &[String], dir: &Path) -> Result<(), Raw> {
+    let fail = |e: String| Raw::Error(format!("{}: {e}", step.describe()));
+    let [description, input, _, out] = args else {
+        return Err(fail("not 'meta <description> <in.o> -o <out.o>'".to_owned()));
+    };
+    let text = std::fs::read_to_string(dir.join(description))
+        .map_err(|e| fail(format!("cannot read '{description}': {e}")))?;
+    let sections = crate::meta::parse(&text).map_err(fail)?;
+    let [items] = sections.as_slice() else {
+        return Err(fail("the description of a 'meta' step has one section".to_owned()));
+    };
+    crate::meta::add_with(objcopy, items, &dir.join(input), &dir.join(out)).map_err(fail)
+}
+
 /// The arguments of a build step.
 fn build_args(step: &Step) -> &[Template] {
     match &step.kind {
         StepKind::Compile(compile) => &compile.args,
-        StepKind::Yaml2obj(args) | StepKind::Ar(args) => args,
+        StepKind::Yaml2obj(args) | StepKind::Ar(args) | StepKind::Meta(args) => args,
         StepKind::Shlib(shlib) => &shlib.args,
         StepKind::Link(_) | StepKind::Run(_) | StepKind::Check(_) => &[],
     }

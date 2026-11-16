@@ -1,0 +1,54 @@
+# Model case K7-revised (spec/odr.md §12.7, experiments 2 and 3), under
+# --odr=strict.
+# The revised O-10 hashes an enumerator as type, name and value, and the
+# revised O-17 writes a row for the type of every expression: isB(int)
+# differs (odr-violation) and so does E's layout (odr-type-mismatch);
+# both are errors under strict.
+#@ spec: odr.md §12.7, "O-10", "O-17", "O-41"
+#@ requires: g++
+#@ diag: odr-type-mismatch a.o b.o
+#@ diag: odr-violation a.o b.o
+
+cxx -O0 a.cc -o a0.o
+meta a.meta a0.o -o a.o
+cxx -O0 b.cc -o b0.o
+meta b.meta b0.o -o b.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+  exit: fail
+  diag: violates the one-definition rule
+run(bfd,lld,mold) prog
+  stdout: 1 0
+
+#--- a.cc
+enum E { A, B };
+__attribute__((noinline)) inline int isB(int e) { return e == B; }
+int fa() { return isB(B); }
+#--- a.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++17
+definition anchor=_Z3isBi hash=06435268e06c77acd35e7a1cb4cc8782 class=1 flags=1 file=h.h line=1
+type name=1E hash=88aaa53975aba44a9d9d6c6d0d7440b9 layout=0x878620ecf5f4df8b size=4 align=4 flags=1 file=h.h line=1
+#--- b.cc
+enum E { A, X, B };
+__attribute__((noinline)) inline int isB(int e) { return e == B; }
+int fb() { return isB(B); }
+#--- b.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++17
+definition anchor=_Z3isBi hash=54134e90c54edece67e905d6368f8469 class=1 flags=1 file=h.h line=1
+type name=1E hash=fb080ed9473221cdf9170c000b222843 layout=0xab71bbad2243b8b0 size=4 align=4 flags=1 file=h.h line=1
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int main() { std::printf("%d %d\n", fa(), fb()); }

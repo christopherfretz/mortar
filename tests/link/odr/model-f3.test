@@ -1,0 +1,52 @@
+# Model case F3 (spec/odr.md §12.7, experiments 2 and 3), under
+# --odr=strict.
+# A static constexpr member: a C++14 out-of-line strong definition and a
+# C++17 inline copy (N22). The strong row and the VAGUE row are compared by
+# hash only and are equal (O-15). W3 is the strict-only foreign check that
+# fires on this shape (§8.1).
+#@ spec: odr.md §3 N22, §12.7, "O-15"
+#@ requires: clang g++
+#@ diag: odr-strong-and-comdat a14.o b17.o
+
+cxx(clang) -O0 -std=c++14 a14.cc -o a140.o
+meta a14.meta a140.o -o a14.o
+cxx(clang) -O0 -std=c++17 b17.cc -o b170.o
+meta b17.meta b170.o -o b17.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a14.o b17.o -o prog
+link(mortar) g++ -static -no-pie main.o a14.o b17.o -Wl,--odr=strict -o prog
+run prog
+  stdout: 3 3
+
+#--- a14.cc
+struct A { static constexpr int n = 3; };
+__attribute__((noinline)) inline const int* addr() { return &A::n; }
+constexpr int A::n;
+int fa() { return *addr(); }
+#--- a14.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++14
+definition anchor=_ZN1A1nE hash=9e70c43bb79ee7d9f2d46c6927435f01 class=2 flags=0 file=h.h line=1
+definition anchor=_Z4addrv hash=5613a39f98f0bff657de825293403fc4 class=1 flags=1 file=h.h line=1
+#--- b17.cc
+struct A { static constexpr int n = 3; };
+__attribute__((noinline)) inline const int* addr() { return &A::n; }
+int fb() { return *addr(); }
+#--- b17.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++17
+definition anchor=_ZN1A1nE hash=9e70c43bb79ee7d9f2d46c6927435f01 class=2 flags=1 file=h.h line=1
+definition anchor=_Z4addrv hash=5613a39f98f0bff657de825293403fc4 class=1 flags=1 file=h.h line=1
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int main() { std::printf("%d %d\n", fa(), fb()); }

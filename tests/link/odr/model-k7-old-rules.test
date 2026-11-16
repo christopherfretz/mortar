@@ -1,0 +1,47 @@
+# Model case K7-old-rules (spec/odr.md §12.7, experiments 2 and 3), under
+# --odr=strict.
+# The old O-10 hashed the enumerator by name and the old O-17 did not reach
+# E: both units write equal rows, and nothing is reported (the review's
+# B2, the reason for the revision).
+#@ spec: odr.md §12.7
+#@ requires: g++
+
+cxx -O0 a.cc -o a0.o
+meta a.meta a0.o -o a.o
+cxx -O0 b.cc -o b0.o
+meta b.meta b0.o -o b.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+run prog
+  stdout: 1 0
+
+#--- a.cc
+enum E { A, B };
+__attribute__((noinline)) inline int isB(int e) { return e == B; }
+int fa() { return isB(B); }
+#--- a.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++17
+definition anchor=_Z3isBi hash=94c4dae775abcf72ee6a5ca68628a1aa class=1 flags=1 file=h.h line=1
+#--- b.cc
+enum E { A, X, B };
+__attribute__((noinline)) inline int isB(int e) { return e == B; }
+int fb() { return isB(B); }
+#--- b.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++17
+definition anchor=_Z3isBi hash=94c4dae775abcf72ee6a5ca68628a1aa class=1 flags=1 file=h.h line=1
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int main() { std::printf("%d %d\n", fa(), fb()); }
