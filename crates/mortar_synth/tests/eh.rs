@@ -413,7 +413,10 @@ fn s49_the_plan_follows_the_list() {
     let p = EhPlan::from_records(&eh, &kept, &pool, &diag).unwrap();
     assert!(!diag.finish().failed());
     assert_eq!(p.records(), &kept[..]);
-    assert_eq!((p.cie_of(1), p.cie_of(2), p.cie_of(4), p.cie_of(5)), (Some(0), Some(0), Some(3), Some(3)));
+    assert_eq!(
+        (p.cie_of(1), p.cie_of(2), p.cie_of(4), p.cie_of(5)),
+        (Some(0), Some(0), Some(3), Some(3))
+    );
     assert_eq!(p.size(), plan(&eh, &[]).size() + 24, "one more CIE of 4 + 20 bytes");
     let (recs, term) = walk(&bytes(&p, &eh));
     assert!(term);
@@ -439,11 +442,9 @@ fn s49_lists_the_rules_do_not_admit_fail_by_name() {
         (&eh, list(&[(1, 1), (2, 0), (2, 1)]), "no CIE to take"),
         (&eh, list(&[(1, 0), (1, 1), (2, 0)]), "a CIE no listed FDE takes"),
     ];
-    for (src, rows, what) in cases.iter().chain(&[(
-        &internal,
-        list(&[(2, 0), (2, 1), (1, 1)]),
-        "no CIE to take",
-    )]) {
+    for (src, rows, what) in
+        cases.iter().chain(&[(&internal, list(&[(2, 0), (2, 1), (1, 1)]), "no CIE to take")])
+    {
         let diag = collector();
         let p = EhPlan::from_records(*src, rows, &Pool::sequential(), &diag);
         let report = diag.finish();

@@ -1290,8 +1290,8 @@ with each phase fed from the state for unchanged files:
   | 10 | `SEGMENTS` | `p_type u32`, `p_flags u32`, offset, address, `filesz`, `memsz` `u64`, alignment `u64` holding the **log2** of `p_align` (below 64), as `Segment::align` (48) | `Placement::segments` |
   | 11 | `FRAGS` | output section `OUTSECS` row, ordinal `u32` or `NONE`, content hash, offset `u64` (32) | one per fragment identity (model §7.1: output section and content hash) that has a live fragment, strictly ascending by (output section as a number, hash compared as 16 bytes from the first, ordinal as a number, `NONE` greatest); ordinal `NONE` when all its live fragments share one offset, else one row per live fragment with its ordinal among them in `FragId` order |
   | 12 | `SLOTS` | slot kind `u8` (0 GOT, 1 PLT, 2 IPLT, 3 TLS descriptor, 4 TLS GD, 5 TLS IE), pad 3, key `SYMBOLS` row (8) | the slot lists in that kind order, each in its order |
-  | 13 | `EH_RECORDS` | section `SECTIONS` row, piece `u32` (8) | `Slots::eh_records` |
-  | 14 | `SYMTAB_LOCALS` | start `u32`, length `u32` (8) | `Slots::symtab_locals`, one per `FILES` row (or none) |
+  | 13 | `EH_RECORDS` | section `SECTIONS` row, piece `u32` (8) | `Slots::eh_records`: the output `.eh_frame` is made from this list (synth.md S-49, which says which lists are admitted) |
+  | 14 | `SYMTAB_LOCALS` | start `u32`, length `u32` (8) | `Slots::symtab_locals`, one per `FILES` row (or none: no `.symtab`); held to the symbol table's own spans, the only value S-88 admits in version 1, and read by an update for the previous output's entries (IN-49a) |
   | 15 | `SIZES` | chunk `CHUNKS` row, size `u64` (12) | `Slots::sizes` |
   | 16 | `SYM_PLACE` | kind `u8` (0 common), pad 3, symbol `SYMBOLS` row, chunk `CHUNKS` row, offset, size `u64`, alignment `u8` (log2), pad 3 (32) | `Placement::sym_place` |
   | 17 | `DEFINED` | symbol `SYMBOLS` row, kind `u8` (0 absolute, 1 in a chunk), pad 3, chunk `CHUNKS` row (kind 1; else `NONE`), value or offset `u64` (20) | `Placement::defined` |
@@ -2661,20 +2661,27 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   not translate is a named replay failure) and put in place of the
   computed ones before `Layout::validate`; the harness
   compares its output with the update's byte for byte outside the dead
-  ranges, which it compares by IN-3a's checks (IN-1 B). Some stored
-  rows are words the image does not take from the layout but from plans
-  the front computed with its own layout: `.eh_frame`'s record list
-  (`EH_RECORDS`), `.symtab`'s local spans (`SYMTAB_LOCALS`), and the
-  erratum fixes (the branch at each erratum site and its patch's words,
-  `Front::erratum_fixes`, computed from the placement before the replay
-  puts its own in place, so an erratum patch's `REDIRECTS` row is not
-  read by the image: dropping it replayed to the same bytes, the WP-061
-  review's F8). For those the replay refuses a stored row that is not
-  the computed one, by name; S-49 (WP-086) makes the image follow the
-  layout for the first two. *Test:* every L10
-  step runs it; a mutation that changes one decision-table entry in the
-  state must make the comparison fail or the replay refuse it
-  (`replay_reproduces_and_each_table_matters`, with an erratum link).
+  ranges, which it compares by IN-3a's checks (IN-1 B). Every plan the
+  image writes from is made from the layout after the replay has put its
+  tables in place (image.md §1, WP-086): `.eh_frame` and `.eh_frame_hdr`
+  from `EH_RECORDS` (S-49), `.symtab`'s patch rows from `PATCHES` and its
+  spans held to `SYMTAB_LOCALS` (S-88), `.got` from `SLOTS`, `.shstrtab`
+  from `CHUNKS`, the merged chunks' order from `FRAGS`, and the erratum
+  fixes (the branch at each erratum site and its patch's words) from the
+  final placement and slots, so no stored row is ignored and none is
+  refused for differing from the computed one (the WP-061 review's F8 is
+  closed). A table the rules do not admit fails by name (in
+  `Layout::check`, or in the plan that holds it to a rule), or, for the
+  few the checks do not cover, gives an output the verifier rejects.
+  *Test:* every L10 step runs it;
+  `replay_reproduces_and_each_table_matters` (with an erratum link)
+  changes each decision table: a valid change (two GOT slots or two
+  merged strings trade places) gives other bytes the verifier accepts
+  and a program that runs the same, an invalid one fails by name or is
+  rejected by the verifier, and no change is ignored;
+  `a_kept_equal_cie_is_followed` replays a list that keeps a CIE S-44
+  would remove; `a_state_written_before_wp086_replays_identically` reads
+  states written before.
 - **IN-62 [v1] The equivalence check.** `mortar_plumb --equiv X.map
   F.map X F` checks IN-2's items 1–6 between an update `X` and a full
   link `F` of the same inputs (§3). It lives in `mortar_plumb` because it

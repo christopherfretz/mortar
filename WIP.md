@@ -30,7 +30,13 @@
   differ; Order follow compare-then-rebuild; sizes vs `Slots.sizes`).
 - capture.rs: eh/symtab/errata refusals removed.
 
+- Replay test outcomes asserted (valid: changed bytes, verifier clean,
+  same run; invalid: named failure or verifier finding);
+  `a_kept_equal_cie_is_followed` (eh rebuild path).
+- RSS: the placement moves into the layout (no second copy) and the
+  erratum fixes are made in the loop for a plain link, made again under a
+  replay (+3 MiB peak on cxx-medium-g-static otherwise; now equal).
+
 ## Next
-- Outcome assertions in the replay test; valid EH test (sibling link
-  with a differing CIE of the same size).
-- Specs, gate, hosted run, bench, record.
+- Tests, the dropped-FDE verifier experiment, gate, hosted run, bench,
+  incremental cost, record `spec/landed/incr/WP-086.md`.

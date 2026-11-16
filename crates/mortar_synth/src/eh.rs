@@ -216,7 +216,8 @@ impl EhPlan {
         let parts = mortar_core::par::split_offsets(&mut records, &bounds);
         pool.unit_cost(40).for_each_part(parts.into_iter(), |p, recs| {
             let sec = &sections[order[p] as usize];
-            let m = &marks[sec.records.start as usize..(sec.records.start + sec.records.len) as usize];
+            let m =
+                &marks[sec.records.start as usize..(sec.records.start + sec.records.len) as usize];
             let kept = m.iter().enumerate().filter(|&(_, &m)| m != REMOVED);
             for (slot, (r, _)) in recs.iter_mut().zip(kept) {
                 *slot = EhRecord { section: sec.section, piece: r as u32 };
@@ -256,7 +257,11 @@ impl EhPlan {
         let total = records.len();
         let bad = |k: usize, what: String| {
             let r = records[k];
-            fail(diag, record_key(r.section, r.piece), internal(format!("EH_RECORDS row {k}: {what}")))
+            fail(
+                diag,
+                record_key(r.section, r.piece),
+                internal(format!("EH_RECORDS row {k}: {what}")),
+            )
         };
         // The list's section runs, in S-46's order; per record its row and
         // its index in `EhFrames::records`; per class the listed CIEs.
@@ -638,7 +643,8 @@ impl Cies {
 /// row's position in it.
 fn section_order<S: EhSource + ?Sized>(src: &S) -> (Vec<bool>, Vec<u32>, Vec<u32>) {
     let n_sec = src.frames().sections.len();
-    let internal_sec: Vec<bool> = (0..n_sec).map(|s| src.info(s).file == FileId::INTERNAL).collect();
+    let internal_sec: Vec<bool> =
+        (0..n_sec).map(|s| src.info(s).file == FileId::INTERNAL).collect();
     // S-55, review finding 13: the internal file's records come last.
     let order: Vec<u32> = (0..n_sec as u32)
         .filter(|&i| !internal_sec[i as usize])

@@ -581,6 +581,24 @@ fn mutations() -> Vec<TableMutation> {
             s.eh_records.insert(r.start + 1, row);
             true
         }),
+        // A record the list left out that is not a section's first: an
+        // FDE of dead code (S-41) or a CIE that S-44 removed, in place.
+        ("EH_RECORDS (unlisted)", Invalid, |s| {
+            let mut at = 0;
+            while at < s.eh_records.len() {
+                let sec = s.eh_records[at].section;
+                let n = s.eh_records[at..].iter().take_while(|r| r.section == sec).count();
+                for k in at..at + n - 1 {
+                    let (p, q) = (s.eh_records[k].piece, s.eh_records[k + 1].piece);
+                    if q > p + 1 {
+                        s.eh_records.insert(k + 1, format::EhRow { section: sec, piece: p + 1 });
+                        return true;
+                    }
+                }
+                at += n;
+            }
+            false
+        }),
         // A CIE that S-44 removed as a duplicate is kept in its section,
         // the rest of the state unchanged: a list S-49 admits, but not
         // with this placement (the chunk grows, and on AArch64 its `$d`
@@ -765,8 +783,7 @@ fn a_kept_equal_cie_is_followed() {
 // bytes); the fixtures' README says how they were made.
 #[test]
 fn a_state_written_before_wp086_replays_identically() {
-    let root =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/incr-state-v1-51aa582");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/incr-state-v1-51aa582");
     for (dir, objects) in [("a64", &["a.o", "b.o"][..]), ("x86_64", &["a.o"][..])] {
         let scratch = Scratch::new(&format!("incr-v1-{dir}"));
         for f in objects.iter().chain(&["out", "out.mortar-state"]) {

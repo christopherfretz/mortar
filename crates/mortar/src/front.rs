@@ -132,7 +132,8 @@ pub struct Front<'s> {
     pub commons: Vec<Common>,
     pub layout: Layout,
     /// What `place` returned besides the placement (the segment rules
-    /// `Layout::validate` used, the rounds of the fixed point).
+    /// `Layout::validate` used, the rounds of the fixed point); its
+    /// `placement` is empty, moved into `layout`.
     pub placed: Placed,
     /// The erratum fixes (`spec/a64.md` §11.2): words written over fill's
     /// bytes, by address, sorted (`LinkSites::erratum_fixes`).
@@ -533,7 +534,8 @@ pub fn front<'s>(
     // S-49: the decision (`Slots.eh_records`), then the plan of that list:
     // the one the image writes unless a replay's list differs (rebuilt
     // after the layout, WP-086).
-    let eh_list = EhPlan::select(&merge_eh, |s: SectionId| liveness.is_live(s), &pool, diag).ok()?;
+    let eh_list =
+        EhPlan::select(&merge_eh, |s: SectionId| liveness.is_live(s), &pool, diag).ok()?;
     let mut eh = EhPlan::from_records(&merge_eh, &eh_list, &pool, diag).ok()?;
     drop(eh_list);
     steps.step("eh plan", 0, "");
@@ -673,7 +675,7 @@ pub fn front<'s>(
     let mut prev: Option<Placed> = None;
     let mut planned_for: Option<Box<[mortar_core::layout::Patch]>> = None;
     steps.step("prepare", 0, "");
-    let (placement_assignment, placed, layout) = loop {
+    let (placement_assignment, placed, layout, computed_fixes) = loop {
         attempt += 1;
         plans.shstrtab = shstrtab.clone();
         let (synthetic, present) = synth_chunks(&plans, &dyn_chunks, &eh, shndx, target.class, rel);
@@ -798,25 +800,33 @@ pub fn front<'s>(
             diag.emit(Key::new(90, 0, 0), internal("the non-allocated sizes do not settle"));
             return None;
         }
+        // a64.md §11.2: the erratum fixes at the computed placement, while
+        // it is the only copy held (made again below from a replay's layout:
+        // made after the layout is, they cost a plain link's peak 1.3 MiB
+        // on cxx-medium-g-static, WP-086).
+        let fixes = match &kept_sites {
+            Some((_, s)) => s.erratum_fixes(&placed.placement, &pool),
+            None => Ok(Vec::new()),
+        };
+        steps.step("erratum fixes", 0, "");
         // The exact names, in section index order (S-90: `sh_name` of
         // section `n` is the plan's `n`-th name); their size is the one
         // placed.
         plans.shstrtab = shstrtab.clone();
-        let layout = Layout {
-            folds: folds.clone(),
-            merge: order.map.clone(),
-            slots,
-            placement: placed.placement.clone(),
-        };
+        // The placement moves into the layout: one copy is held, not two
+        // (`Front.placed` keeps the rest; its `placement` is left empty).
+        let mut placed = placed;
+        let placement = std::mem::take(&mut placed.placement);
+        let layout = Layout { folds: folds.clone(), merge: order.map.clone(), slots, placement };
         steps.step("layout clone", 0, "");
-        break (a, placed, layout);
+        break (a, placed, layout, fixes);
     };
     // X86-45, X86-38: an ELFCLASS32 TLS block of 2^31 bytes or more would
     // put a TP offset outside s(32); refused by name, as L-73 refuses an
     // end beyond 2^32.
     if target.class == Class::Elf32
         && let Some((_, tls)) =
-            placed.placement.segments.iter().find(|(_, g)| g.p_type == mortar_elf::consts::PT_TLS)
+            layout.placement.segments.iter().find(|(_, g)| g.p_type == mortar_elf::consts::PT_TLS)
         && tls.memsz >= 1 << 31
     {
         let d = Diagnostic::error(Kind::OutputTooLarge {
@@ -836,7 +846,7 @@ pub fn front<'s>(
     // Every synthetic chunk has the id its plan was given.
     for &(kind, id) in &plans.chunks {
         let ok = matches!(
-            placed.placement.chunks.get(id).map(|c| c.kind),
+            layout.placement.chunks.get(id).map(|c| c.kind),
             Some(ChunkKind::Synthetic(s)) if s.name == kind.name(rel)
         );
         if !ok {
@@ -852,7 +862,7 @@ pub fn front<'s>(
     let cx = CheckContext {
         class: target.class,
         page_size: options.max_page,
-        needs_entry: placed.placement.entry.is_some(),
+        needs_entry: layout.placement.entry.is_some(),
         segment_rules: placed.rules,
         resolution: &resolution,
         assignment: &placement_assignment,
@@ -863,6 +873,7 @@ pub fn front<'s>(
     };
     steps.step("checks", 0, "");
     // IN-61: the replay's decision tables in place of the computed ones.
+    let replayed = env.replay.is_some();
     let layout = match env.replay {
         None => layout,
         Some(replay) => {
@@ -881,6 +892,14 @@ pub fn front<'s>(
             }
         }
     };
+    // The sites read the slots' lists and the merged map: a layout whose
+    // are not theirs needs them made again for the erratum fixes, and so
+    // the branch candidates; else those go now, before the checks, and the
+    // sites too when no replay's placement needs fixes of its own.
+    let sites_stale = !arch.errata().is_empty()
+        && (!same_slot_lists(&layout.slots, demand_slots) || layout.merge != order.map);
+    let branch_candidates = if sites_stale { branch_candidates } else { Vec::new() };
+    let kept_sites = if replayed { kept_sites } else { None };
     let validated = layout.validate(&cx);
     steps.step("validate", 0, "");
     if let Err(v) = validated {
@@ -944,13 +963,14 @@ pub fn front<'s>(
         Some(GotPlan::new(arch, &layout.slots, got_output, variant, diag).ok()?)
     };
     // a64.md §11.2: the erratum fixes, from the words fill writes at the
-    // final layout's addresses. One path; the sites read the slots' lists
-    // and the merged map, so they are made again when the layout's are
-    // not theirs (compare-then-rebuild: a second walk of the code is a
-    // cost).
-    let sites_stale = !arch.errata().is_empty()
-        && (!same_slot_lists(&layout.slots, demand_slots) || layout.merge != order.map);
-    let fixes = if sites_stale {
+    // final layout's addresses. A plain link's layout is the computed one
+    // and so are its fixes (above); a replay's are made again from its
+    // placement. The sites read the slots' lists and the merged map, so
+    // they are made again too when the layout's are not theirs
+    // (compare-then-rebuild: a second walk of the code is a cost).
+    let fixes = if !replayed {
+        computed_fixes
+    } else if sites_stale {
         let ids = kept_sites.as_ref().map(|(i, _)| *i).unwrap_or_default();
         let site_inputs = SiteInputs {
             resolution: &resolution,
@@ -978,6 +998,9 @@ pub fn front<'s>(
             None => Ok(Vec::new()),
         }
     };
+    if replayed {
+        steps.step("erratum fixes from the layout", 0, "");
+    }
     let erratum_fixes = match fixes {
         Ok(f) => f,
         Err(d) => {
@@ -986,7 +1009,6 @@ pub fn front<'s>(
             return None;
         }
     };
-    steps.step("erratum fixes", 0, "");
     drop(kept_sites);
     drop(branch_candidates);
     if let Some(g) = final_got {

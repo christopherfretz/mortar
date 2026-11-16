@@ -20,8 +20,8 @@ use mortar_arch::{
 use mortar_core::assignment::Assignment;
 use mortar_core::demands::DemandFlags;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, SymKind};
-use mortar_core::layout::{SlotIndex, Slots};
 use mortar_core::layout::{ChunkKind, MergeMap, ThunkTarget};
+use mortar_core::layout::{SlotIndex, Slots};
 use mortar_core::par::Pool;
 use mortar_core::resolution::{Def, Resolution, SectionKind};
 use mortar_core::split::Split;
@@ -633,7 +633,6 @@ impl RoundTables<'_, '_, '_> {
             },
         }
     }
-
 }
 
 /// One section's use of a round's [`RoundTables`] as fill's tables: the
