@@ -251,7 +251,7 @@ mod tests {
         let so = neutral(b".debug_str_offsets").unwrap();
         for n in (8..2000u64).step_by(4) {
             let a = s.allotment(n, so);
-            assert!(a == 0 || (a >= 8 && a % 4 == 0), "{n}: {a}");
+            assert!(a == 0 || (a >= 8 && a.is_multiple_of(4)), "{n}: {a}");
         }
         for n in 1..3000u64 {
             let a = s.allotment(n, info);

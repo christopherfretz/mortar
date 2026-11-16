@@ -37,7 +37,7 @@ pub fn verify(out: &Path, map: &Path, dir: &Path) -> Vec<mortar_plumb::Finding> 
             // WP-062) refuses the line. Until it reads them, it is given
             // the map without them; a map that parses is given whole.
             let known = |l: &&str| !l.starts_with("hole ") && !l.starts_with("dead ");
-            let stripped: String = text.lines().filter(known).map(|l| format!("{l}\n")).collect();
+            let stripped: String = text.lines().filter(known).flat_map(|l| [l, "\n"]).collect();
             if stripped.len() == text.len() {
                 return Err(e);
             }

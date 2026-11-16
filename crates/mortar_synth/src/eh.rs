@@ -366,28 +366,7 @@ impl EhPlan {
         }
         let body = pool.unit_cost(1).prefix_sum(&mut out_size);
         out_size[total] = body;
-        // IN-34a: the pads shift every record after them.
-        let mut shift = 0u64;
-        let mut j = 0usize;
-        for (k, off) in out_size.iter_mut().enumerate() {
-            let at = *off + shift;
-            if let Some(&(p, size)) = pads.get(j)
-                && p == at
-            {
-                let short = matches!(size, 4 | 8 | 12);
-                if !(short || (size >= 16 && size % 4 == 0)) || (short && k == 0) {
-                    let what = format!("an .eh_frame pad of {size:#x} bytes at {p:#x} (IN-34a)");
-                    return fail(diag, record_key(SectionId(0), 0), internal(what));
-                }
-                shift += size;
-                j += 1;
-            }
-            *off += shift;
-        }
-        if let Some(&(p, size)) = pads.get(j) {
-            let what = format!("an .eh_frame pad of {size:#x} bytes at {p:#x} at no boundary");
-            return fail(diag, record_key(SectionId(0), 0), internal(what));
-        }
+        shift_by_pads(&mut out_size, pads, diag)?;
         let body = out_size[total];
         if body + 4 > u64::from(u32::MAX) {
             return fail(
@@ -873,4 +852,33 @@ fn out_type(sections: &[EhInfo]) -> (u8, u32) {
         _ => SHT_PROGBITS,
     };
     (align, sh_type)
+}
+
+/// IN-34a: the pads shift every record after them. `out_off` holds each
+/// record's output offset and the body's end; a pad of 4, 8 or 12 bytes
+/// needs a record before it, a longer one is a multiple of 4 from 16 up,
+/// and every pad lies at a boundary.
+fn shift_by_pads(out_off: &mut [u64], pads: &[(u64, u64)], diag: &Collector) -> Result<(), Failed> {
+    let mut shift = 0u64;
+    let mut j = 0usize;
+    for (k, off) in out_off.iter_mut().enumerate() {
+        let at = *off + shift;
+        if let Some(&(p, size)) = pads.get(j)
+            && p == at
+        {
+            let short = matches!(size, 4 | 8 | 12);
+            if !(short || (size >= 16 && size % 4 == 0)) || (short && k == 0) {
+                let what = format!("an .eh_frame pad of {size:#x} bytes at {p:#x} (IN-34a)");
+                return fail(diag, record_key(SectionId(0), 0), internal(what));
+            }
+            shift += size;
+            j += 1;
+        }
+        *off += shift;
+    }
+    if let Some(&(p, size)) = pads.get(j) {
+        let what = format!("an .eh_frame pad of {size:#x} bytes at {p:#x} at no boundary");
+        return fail(diag, record_key(SectionId(0), 0), internal(what));
+    }
+    Ok(())
 }

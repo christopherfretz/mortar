@@ -973,8 +973,30 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             )?;
             taken.push((row.chunk, row.offset, end(row.offset, row.size), me));
         }
-        // spec/incr.md IN-3: a hole is a non-empty range of its chunk's
-        // content, in order, overlapping no place.
+        self.holes(&mut taken)?;
+        taken.sort_unstable_by_key(|t| (t.0, t.1, t.2));
+        let mut last: Option<(ChunkId, u128, Row)> = None;
+        for &(chunk, off, stop, row) in &taken {
+            if let Some((c, max, prev)) = last
+                && c == chunk
+                && u128::from(off) < max
+                && stop > off.into()
+            {
+                return fail(r, "two places overlap", [prev, row]);
+            }
+            if last.is_none_or(|(c, max, _)| c != chunk || stop > max) {
+                last = Some((chunk, stop, row));
+            }
+        }
+        Ok(())
+    }
+
+    /// spec/incr.md IN-3: a hole is a non-empty range of its chunk's
+    /// content, in order, overlapping no place (§4.4 rule 1 judges the
+    /// overlap with the places `taken` collects).
+    fn holes(&self, taken: &mut Vec<(ChunkId, u64, u128, Row)>) -> Check {
+        let r = Rule::Places;
+        let p = &self.layout.placement;
         for (at, h) in p.holes.iter().enumerate() {
             let me = Row::Entry("holes", at as u32);
             let Some(c) = p.chunks.get(h.chunk) else {
@@ -996,20 +1018,6 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                 )?;
             }
             taken.push((h.chunk, h.offset, end(h.offset, h.size), me));
-        }
-        taken.sort_unstable_by_key(|t| (t.0, t.1, t.2));
-        let mut last: Option<(ChunkId, u128, Row)> = None;
-        for &(chunk, off, stop, row) in &taken {
-            if let Some((c, max, prev)) = last
-                && c == chunk
-                && u128::from(off) < max
-                && stop > off.into()
-            {
-                return fail(r, "two places overlap", [prev, row]);
-            }
-            if last.is_none_or(|(c, max, _)| c != chunk || stop > max) {
-                last = Some((chunk, stop, row));
-            }
         }
         Ok(())
     }

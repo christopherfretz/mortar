@@ -1305,7 +1305,7 @@ fn padding_ra(machine: mortar_elf::Machine) -> u8 {
     match machine {
         mortar_elf::Machine::AArch64 => 30,
         mortar_elf::Machine::X86_64 => 16,
-        _ => 8,
+        mortar_elf::Machine::I386 => 8,
     }
 }
 

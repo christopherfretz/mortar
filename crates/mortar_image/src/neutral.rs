@@ -138,7 +138,7 @@ mod tests {
         for size in 14..400u64 {
             let u = unit(b".debug_info", size, 4, 8, 0x40).unwrap();
             assert_eq!(u.len() as u64, size);
-            assert_eq!(u32::from_le_bytes(u[0..4].try_into().unwrap()) as u64, size - 4);
+            assert_eq!(u64::from(u32::from_le_bytes(u[0..4].try_into().unwrap())), size - 4);
             assert_eq!(&u[4..6], &[4, 0]);
             assert_eq!(u[11], 1);
         }

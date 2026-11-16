@@ -459,7 +459,7 @@ pub fn chunk(
     // debug contributions.
     let slack = inputs.slack;
     let mut starts: Vec<(u32, u32)> = match inputs.section_base.filter(|_| slack.on) {
-        Some(b) => b.iter().filter(|(_, r)| r.len() > 0).map(|(f, r)| (r.start.0, f.0)).collect(),
+        Some(b) => b.iter().filter(|(_, r)| !r.is_empty()).map(|(f, r)| (r.start.0, f.0)).collect(),
         None => Vec::new(),
     };
     starts.sort_unstable();
