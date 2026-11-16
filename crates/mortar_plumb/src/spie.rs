@@ -106,6 +106,34 @@ pub(crate) fn is_static_pie(image: &Image<'_>) -> bool {
         && !image.phdrs.iter().any(|p| p.p_type == PT_INTERP)
 }
 
+/// P-D14's entry rule, and P-D4's for an `Exec` or `Pie` (WP-088): the
+/// entry point is in an executable `PT_LOAD` and is the entry symbol's
+/// value (`-e`, else `_start`) when `.symtab` defines it (S7 judges
+/// `ET_EXEC`'s segment only). Findings of rule P-D`n`.
+pub(crate) fn entry_point(image: &Image<'_>, entry: Option<&str>, n: u8, v: &mut Vec<Finding>) {
+    let e = image.header.e_entry;
+    let insn = if image.header.e_machine == EM_AARCH64 { 4 } else { 1 };
+    if image.load_of(e, insn).is_none_or(|p| p.p_flags & mortar_elf::consts::PF_X == 0) {
+        v.push(
+            Finding::new(
+                Rule::Dyn(n),
+                format!("the entry point {e:#x} is in no executable PT_LOAD"),
+            )
+            .at(e),
+        );
+    }
+    let name = entry.unwrap_or("_start");
+    if let Some(s) = image.global(name).or_else(|| image.unique(name))
+        && s.sym.st_shndx != 0
+        && s.sym.st_value != e
+    {
+        let mut f = Finding::new(Rule::Dyn(n), format!("the entry point is not '{name}'")).at(e);
+        f.expected = Some(s.sym.st_value);
+        f.found = Some(e);
+        v.push(f);
+    }
+}
+
 /// P-D14 and P-D15.
 #[allow(clippy::too_many_lines)] // one block per property
 pub(crate) fn check(
@@ -132,23 +160,7 @@ pub(crate) fn check(
     {
         v.push(d14(format!("__ehdr_start is {:#x}, not 0 (D-1)", e.sym.st_value)));
     }
-    // The entry: executable, and the entry symbol's value (`-e`, else
-    // `_start`) when .symtab defines it (S7 judges ET_EXEC only).
-    let e = image.header.e_entry;
-    let insn = if machine == EM_AARCH64 { 4 } else { 1 };
-    if image.load_of(e, insn).is_none_or(|p| p.p_flags & mortar_elf::consts::PF_X == 0) {
-        v.push(d14(format!("the entry point {e:#x} is in no executable PT_LOAD")).at(e));
-    }
-    let name = entry.unwrap_or("_start");
-    if let Some(s) = image.global(name).or_else(|| image.unique(name))
-        && s.sym.st_shndx != 0
-        && s.sym.st_value != e
-    {
-        let mut f = d14(format!("the entry point is not '{name}'")).at(e);
-        f.expected = Some(s.sym.st_value);
-        f.found = Some(e);
-        v.push(f);
-    }
+    entry_point(image, entry, 14, v);
     if mortar && image.phdrs.iter().any(|p| p.p_type == PT_PHDR) {
         v.push(d14("PT_PHDR in a static-pie (D-1; layout L-67)"));
     }

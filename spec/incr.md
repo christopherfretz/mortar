@@ -821,7 +821,10 @@ program is the program a from-scratch link would have made.
      `ADR`/`ADRP`+`ADD` where arch.md relaxes them, the choice of a range
      thunk or a direct branch (arch.md "Incremental links"), erratum
      843419 patches, and x86-64 `R_X86_64_GOTPCRELX` relaxations whose
-     choice depends on whether the target fits in 32 bits. Relaxations
+     choice depends on whether the target fits in 32 bits, **in an
+     `ET_DYN` output only** (v1: in a static or other `ET_EXEC` output the
+     `GOTPCRELX` forms must be the same, so an update whose distances
+     would make them differ is refused; `plumb.md` §6.9 P-E4). Relaxations
      whose outcome depends only on symbol properties (TLS model
      relaxation, `GOTPCRELX` for a non-preemptible symbol in a non-PIC
      link) must be the same;
@@ -847,7 +850,8 @@ program is the program a from-scratch link would have made.
 
   Equal bytes are not required: placement differs (slack, holes, a
   region moved to a tail), and so do the build id and every address.
-  *Test:* `mortar_plumb --equiv X.map F.map` (an extension of the map
+  *Test:* `cargo xtask plumb --equiv X.map F.map X F` (`plumb.md` §6.9,
+  §8; `mortar_plumb::equiv::check` in a test; an extension of the map
   checks, §8.2) checks 1–3 and 5 from the two maps and 4 by re-deriving
   each field's value through both placements; a program-level check runs
   both (L10). R13 (`equiv.py`, §12; 6,654 units, 539 KB compared, with
@@ -2764,8 +2768,9 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   `a_kept_equal_cie_is_followed` replays a list that keeps a CIE S-44
   would remove; `a_state_written_before_wp086_replays_identically` reads
   states written before.
-- **IN-62 [v1] The equivalence check.** `mortar_plumb --equiv X.map
-  F.map X F` checks IN-2's items 1–6 between an update `X` and a full
+- **IN-62 [v1] The equivalence check.** `cargo xtask plumb --equiv
+  X.map F.map X F` (the verifier has no binary of its own;
+  `mortar_plumb::equiv::check` in a test; `plumb.md` §6.9, §8) checks IN-2's items 1–6 between an update `X` and a full
   link `F` of the same inputs (§3). It lives in `mortar_plumb` because it
   is a verifier of the incremental linker's claim and must not share its
   code. *Test:* R13's two cases (accept a re-link with other addresses

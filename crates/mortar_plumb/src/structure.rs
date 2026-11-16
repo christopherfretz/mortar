@@ -151,7 +151,12 @@ pub(crate) fn check(image: &Image<'_>) -> Vec<Finding> {
                 );
             }
         }
-        if p.p_offset.checked_add(p.p_filesz).is_none_or(|e| e > image.data.len() as u64) {
+        // An empty file image `[p_offset, p_offset)` lies in any file,
+        // whatever `p_offset` (§6.2 S2; GNU ld's AArch64 `.bss`-only
+        // segment, WP-059's F1).
+        if p.p_filesz > 0
+            && p.p_offset.checked_add(p.p_filesz).is_none_or(|e| e > image.data.len() as u64)
+        {
             out.push(
                 s(
                     2,
@@ -777,7 +782,10 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
         // image (L-18).
         if sh.sh_flags & SHF_ALLOC == 0 && sh.sh_type != SHT_NOBITS && sh.sh_size > 0 {
             let (lo, hi) = (sh.sh_offset, sh.sh_offset.saturating_add(sh.sh_size));
-            if loads.iter().any(|p| lo < p.p_offset.saturating_add(p.p_filesz) && p.p_offset < hi) {
+            // An empty file image overlaps nothing (WP-059's F1).
+            if loads.iter().any(|p| {
+                p.p_filesz > 0 && lo < p.p_offset.saturating_add(p.p_filesz) && p.p_offset < hi
+            }) {
                 out.push(s(
                     17,
                     format!("non-allocated section '{}' lies in a PT_LOAD's file image", sec.name),
@@ -923,10 +931,11 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
             s(7, format!("the entry point {:#x} is no symbol's value", h.e_entry)).at(h.e_entry),
         );
     }
-    // S5 (mortar): a PT_LOAD is PF_W only when it holds a writable section,
-    // PF_X only when it holds an executable one (L-6, strengthened: mortar
-    // asks for no permission it does not need; WP-028d).
-    if format == Format::Mortar {
+    // S5: a PT_LOAD is PF_W only when it holds a writable section, PF_X
+    // only when it holds an executable one (L-6, strengthened: no
+    // permission the program does not need; WP-028d for mortar, every
+    // format since WP-088: the references' outputs obey it too).
+    {
         for p in &loads {
             let secs = sections_in(image, p);
             if secs.is_empty() {
