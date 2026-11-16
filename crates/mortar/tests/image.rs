@@ -646,19 +646,25 @@ fn map_dynamic_records_read_by_the_verifier() {
     let pool = Pool::new(1);
     let static_text = mortar_image::map::render(&m, &pool);
     assert_eq!(static_text, b"mortar-map 2\nend\n", "a static map writes no dynamic record");
+    // A static map's line: its `arg` records alone (plumb.md §3.2a).
+    m.args = vec![b"a b.o".to_vec(), b"-o".to_vec(), b"out".to_vec()];
+    let text = String::from_utf8(mortar_image::map::render(&m, &pool)).unwrap();
+    assert_eq!(text, "mortar-map 2\narg a%20b.o\narg -o\narg out\nend\n");
+    let parsed = pm::parse(pm::Format::Mortar, &text).unwrap();
+    assert_eq!((parsed.dynamic, parsed.args.len()), (None, 3));
     m.dynamic = Some(DynRecords {
         kind: Some(OutputKind::Exec),
         interp: Some(b"/lib64/ld-linux-x86-64.so.2".to_vec()),
         runpath: Some((RunpathTag::Rpath, b"$ORIGIN:/a b".to_vec())),
         now: Some(false),
         relro: Some(true),
-        args: vec![b"--as-needed".to_vec(), b"-lc".to_vec()],
         needed: vec![b"libc.so.6".to_vec()],
         copies: vec![CopyHint { name: b"environ".to_vec(), addr: 0x40_1000, size: 8, align: 8 }],
         exports: vec![b"main".to_vec()],
         plt: vec![b"puts".to_vec()],
         iplt: vec![b"f".to_vec()],
     });
+    m.args = vec![b"--as-needed".to_vec(), b"-lc".to_vec()];
     let text = String::from_utf8(mortar_image::map::render(&m, &pool)).unwrap();
     let parsed = pm::parse(pm::Format::Mortar, &text).unwrap();
     // The line is the map's, not a dynamic record of the verifier's.

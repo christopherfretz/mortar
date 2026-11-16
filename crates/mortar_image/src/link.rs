@@ -148,8 +148,6 @@ pub struct DynPlans<'a> {
     /// The context `.dynsym`'s exported values are read with, as
     /// `.symtab`'s (D-23 "exactly as `.symtab`").
     pub syms: SymCtx<'a>,
-    /// The command line's words (the map's `arg` records, P-D3).
-    pub args: &'a [Vec<u8>],
 }
 
 impl std::fmt::Debug for DynPlans<'_> {
@@ -255,6 +253,10 @@ pub struct Link<'a, 's> {
     /// fixes (`spec/a64.md` §11.2; the front computes them from the words
     /// fill writes at the final addresses).
     pub fixups: &'a [(u64, [u8; 4])],
+    /// The command line's words, response files expanded, the program
+    /// name excluded: the map's `arg` records, in every map
+    /// (`spec/plumb.md` §3.2a, I-78).
+    pub args: &'a [Vec<u8>],
 }
 
 impl std::fmt::Debug for Link<'_, '_> {
@@ -2424,6 +2426,7 @@ impl LinkTables<'_, '_> {
         if let Some(d) = l.synth.dynamic {
             m.dynamic = Some(self.dyn_records(d));
         }
+        m.args = l.args.to_vec();
         m
     }
 
@@ -2530,7 +2533,6 @@ impl LinkTables<'_, '_> {
         let view = DynView { t: self, d };
         let mut r = crate::map::DynRecords::default();
         crate::dynamic::fill_records(&mut r, d.kind, d.interp, d.runpath, d.bind_now, d.relro);
-        r.args = d.args.to_vec();
         r.needed = slots.needed.iter().map(|&f| d.src.needed(f).to_vec()).collect();
         r.copies = slots
             .copies
