@@ -1,0 +1,63 @@
+# `--no-eh-frame-hdr` (spec/synth.md S-57; GNU ld manual
+# "--no-eh-frame-hdr"): no `.eh_frame_hdr` and no PT_GNU_EH_FRAME. It
+# undoes an earlier `--eh-frame-hdr` (the last one wins; every compiler
+# driver passes `--eh-frame-hdr`, so `-Wl,--no-eh-frame-hdr` is how a
+# line turns it off): the output is the same bytes as the link's without
+# either option in GNU ld, lld and mortar. mold always writes the header
+# without an option (layout/eh-frame-hdr); with `--no-eh-frame-hdr` it
+# writes none, so its three outputs differ in bytes but none has one.
+# The program's unwind information itself (`.eh_frame`) stays.
+#@ spec: synth.md "S-57"
+
+as start-%{arch}.s -o start.o
+link ld start.o -o plain
+link ld --eh-frame-hdr start.o -o with
+link ld --eh-frame-hdr --no-eh-frame-hdr start.o -o undone
+link ld --no-eh-frame-hdr start.o -o alone
+run undone
+  exit: 42
+check readelf -lSW with
+  has: .eh_frame_hdr
+  has: GNU_EH_FRAME
+check readelf -lSW undone
+  has: .eh_frame PROGBITS
+  not: .eh_frame_hdr
+  not: GNU_EH_FRAME
+check readelf -lSW alone
+  not: .eh_frame_hdr
+  not: GNU_EH_FRAME
+check(bfd,lld,mortar) cmp undone plain
+  has: ^identical$
+check(bfd,lld,mortar) cmp alone plain
+  has: ^identical$
+
+#--- start-aarch64.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.cfi_endproc
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.cfi_endproc
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.text
+	.globl	_start
+_start:
+	.cfi_startproc
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.cfi_endproc
+	.section .note.GNU-stack,"",%progbits

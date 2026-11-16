@@ -1,0 +1,92 @@
+# `--strip-discarded` (a `noop` row: "synth.md S-76: locals of sections
+# that are not live are always dropped (the default)"; GNU ld manual
+# "--strip-discarded": drop the symbols of discarded sections, which is
+# its default). A local of a section that is not in the output is never
+# in `.symtab`: here `local2`, in the COMDAT copy of b.o that the copy of
+# a.o replaces, and `dead_local`, in a section `--gc-sections` removes.
+# `local1`, in the kept copy, is. With and without the option GNU ld's and
+# mortar's outputs are the same bytes. Its inverse,
+# `--no-strip-discarded`, is refused by name (so the default cannot be
+# turned off silently); GNU ld's output with it is the same bytes as well
+# on these inputs (its effect is on sections a script discards, which
+# mortar refuses with `-T`).
+#
+# lld and mold know neither option ("unknown argument"); they drop the
+# same locals. mold's output carries its recorded A11 (plumb.md §10.2:
+# `__bss_start` where there is no `.bss`).
+#@ spec: synth.md "S-76"
+#@ anomaly(mold): A11
+
+as start-%{arch}.s -o start.o
+as grp1.s -o a.o
+as grp2.s -o b.o
+link ld --gc-sections start.o a.o b.o -o plain
+link(bfd,mortar) ld --gc-sections start.o a.o b.o --strip-discarded -o strip
+link(bfd) ld --gc-sections start.o a.o b.o --no-strip-discarded -o nostrip
+link(mortar) ld --gc-sections start.o a.o b.o --no-strip-discarded -o nostrip
+  exit: fail
+  diag(mortar): unsupported option: --no-strip-discarded
+run plain
+  exit: 42
+check nm plain
+  has: t local1$
+  not: local2
+  not: dead_local
+check(bfd,mortar) cmp plain strip
+  has: ^identical$
+check(bfd) cmp plain nostrip
+  has: ^identical$
+
+#--- start-aarch64.s
+	.section .text._start,"ax",%progbits
+	.globl	_start
+_start:
+	bl	grpfn
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.section .text.dead,"ax",%progbits
+	.type	dead_local, %function
+dead_local:
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.section .text._start,"ax",%progbits
+	.globl	_start
+_start:
+	call	grpfn
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.section .text.dead,"ax",%progbits
+	.type	dead_local, @function
+dead_local:
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.section .text._start,"ax",%progbits
+	.globl	_start
+_start:
+	call	grpfn
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.section .text.dead,"ax",%progbits
+	.type	dead_local, @function
+dead_local:
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- grp1.s
+	.section .text.grp,"axG",%progbits,grp,comdat
+	.globl	grpfn
+grpfn:
+local1:
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- grp2.s
+	.section .text.grp,"axG",%progbits,grp,comdat
+	.globl	grpfn
+grpfn:
+local2:
+	ret
+	.section .note.GNU-stack,"",%progbits

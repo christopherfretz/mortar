@@ -1,0 +1,123 @@
+# The options around `--gc-sections` (spec/image.md I-5, I-6, I-10; GNU ld
+# manual "--gc-sections", "--print-gc-sections", "--gc-keep-exported"):
+#
+# - `--no-gc-sections` undoes an earlier `--gc-sections` (the last one
+#   wins): nothing is removed, the output is the same bytes as the link's
+#   without either option, and `dead_local`'s section is in it.
+# - `--print-gc-sections` lists each removed section. The references
+#   DIFFER (image.md I-10): GNU ld writes `removing unused section
+#   '.text.dead' in file 'start.o'` on standard error and only for
+#   sections with bytes; lld and mold write `removing unused section
+#   start.o:(.text.dead)` on standard output, empty `.text`, `.data` and
+#   `.bss` too. mortar writes GNU ld's line, on standard error. The
+#   output is the same bytes as without it.
+# - `--no-print-gc-sections` undoes it: nothing is listed.
+# - `--gc-keep-exported` (GNU ld only; lld and mold do not know it) keeps
+#   the sections that define a global of default visibility
+#   (`exported_fn`), not a hidden one (`hidden_fn`).
+#@ spec: image.md "I-5"
+#@ spec: image.md "I-6"
+#@ spec: image.md "I-10"
+#@ anomaly(mold): A11
+
+as start-%{arch}.s -o start.o
+link ld start.o -o plain
+link ld --gc-sections --no-gc-sections start.o -o undone
+link ld --gc-sections start.o -o gc
+link ld --gc-sections --print-gc-sections start.o -o printed
+  diag(bfd,mortar): removing unused section '.text.dead' in file 'start.o'
+  diag(bfd,mortar): removing unused section '.text.exported' in file 'start.o'
+  print(lld,mold): ^removing unused section start.o:(.text.dead)$
+link ld --gc-sections --print-gc-sections --no-print-gc-sections start.o -o quiet
+  no-diag: removing
+  no-print: removing
+link(bfd,mortar) ld --gc-sections --gc-keep-exported start.o -o kept
+run gc
+  exit: 42
+check cmp undone plain
+  has: ^identical$
+check nm undone
+  has: t dead_local$
+check nm gc
+  not: dead_local
+  not: exported_fn
+check cmp printed gc
+  has: ^identical$
+check cmp quiet gc
+  has: ^identical$
+check(bfd,mortar) nm kept
+  has: T exported_fn$
+  not: hidden_fn
+  not: dead_local
+run(bfd,mortar) kept
+  exit: 42
+
+#--- start-aarch64.s
+	.section .text._start,"ax",%progbits
+	.globl	_start
+_start:
+	mov	x0, #42
+	mov	x8, #93		// exit
+	svc	#0
+	.section .text.dead,"ax",%progbits
+	.type	dead_local, %function
+dead_local:
+	ret
+	.section .text.exported,"ax",%progbits
+	.globl	exported_fn
+	.type	exported_fn, %function
+exported_fn:
+	ret
+	.section .text.hidden,"ax",%progbits
+	.globl	hidden_fn
+	.hidden	hidden_fn
+	.type	hidden_fn, %function
+hidden_fn:
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- start-x86_64.s
+	.section .text._start,"ax",%progbits
+	.globl	_start
+_start:
+	movl	$60, %eax	# exit
+	movl	$42, %edi
+	syscall
+	.section .text.dead,"ax",%progbits
+	.type	dead_local, @function
+dead_local:
+	ret
+	.section .text.exported,"ax",%progbits
+	.globl	exported_fn
+	.type	exported_fn, @function
+exported_fn:
+	ret
+	.section .text.hidden,"ax",%progbits
+	.globl	hidden_fn
+	.hidden	hidden_fn
+	.type	hidden_fn, @function
+hidden_fn:
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- start-i386.s
+	.section .text._start,"ax",%progbits
+	.globl	_start
+_start:
+	movl	$1, %eax	# exit
+	movl	$42, %ebx
+	int	$0x80
+	.section .text.dead,"ax",%progbits
+	.type	dead_local, @function
+dead_local:
+	ret
+	.section .text.exported,"ax",%progbits
+	.globl	exported_fn
+	.type	exported_fn, @function
+exported_fn:
+	ret
+	.section .text.hidden,"ax",%progbits
+	.globl	hidden_fn
+	.hidden	hidden_fn
+	.type	hidden_fn, @function
+hidden_fn:
+	ret
+	.section .note.GNU-stack,"",%progbits
