@@ -49,6 +49,21 @@ const ASM_E843419: &str = "    .text\n    .globl _start\n_start:\n\
     m3:\t.asciz \"again\"\n\t.section .rodata\n\t.quad m1\n\t.quad m2\n\t.quad m3\n\
     \t.section .note.GNU-stack,\"\",%progbits\n";
 
+/// Two calls beyond `bl`'s reach (AAELF64 "Call and Jump relocations";
+/// as `tests/pipeline.rs`'s `a_far_call_goes_through_a_thunk`): 128 MiB
+/// of code between `_start` and `far`/`far2`, so the calls go through two
+/// thunks in one island (L-110, L-115), named in `.symtab` (S-74). Exits
+/// 42 only if both calls arrive, in order. (The object and each output
+/// are 128 MiB; the replay test removes each output once judged.)
+const ASM_THUNKS: &str = "    .text\n    .globl _start\n    .type _start, %function\n_start:\n\
+    \n    mov x0, #0\n    bl far\n    bl far2\n    mov x8, #93\n    svc #0\n\
+    \n    .section .text.gap1,\"ax\",@progbits\n    .skip 0x4000000\n\
+    \n    .section .text.gap2,\"ax\",@progbits\n    .skip 0x4000000\n\
+    \n    .section .text.far,\"ax\",@progbits\n    .globl far\n    .type far, %function\n\
+    far:\n    add x0, x0, #40\n    ret\n    .globl far2\n    .type far2, %function\n\
+    far2:\n    lsl x0, x0, #1\n    sub x0, x0, #38\n    ret\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+
 /// The same on x86-64: a GOT load, a call, CFI, data and merged strings.
 const ASM_X86_64: &str = "\t.text\n\t.globl _start\n\t.type _start, @function\n_start:\n\t.cfi_startproc\n\
     \tmovq word@GOTPCREL(%rip), %rax\n\tleaq msg(%rip), %rsi\n\tcall sfn\n\tmovl $60, %eax\n\tsyscall\n\
@@ -103,6 +118,12 @@ impl Prog {
     /// redirect of its site.
     fn erratum() -> Option<Self> {
         Self::asm_for(AARCH64, "incr-e843", ASM_E843419, &["--fix-cortex-a53-843419"])
+    }
+
+    /// Range-extension thunks (`spec/a64.md` §9): two patches in an
+    /// island and the redirects of their sites.
+    fn thunks() -> Option<Self> {
+        Self::asm_for(AARCH64, "incr-thunks", ASM_THUNKS, &[])
     }
 
     /// The x86-64 assembly program.
@@ -485,6 +506,27 @@ fn same_size_frags(s: &State) -> Option<(usize, usize)> {
     })
 }
 
+/// `PATCHES` kind of an erratum patch (`spec/incr.md` IN-18a); the
+/// others are thunks.
+const PATCH_ERRATUM: u8 = 2;
+
+/// Two thunk rows of `PATCHES` in one island, adjacent, of one size (the
+/// first's size the distance to the second, the second's to the end of
+/// its chunk): their rows.
+fn same_size_thunks(s: &State) -> Option<(usize, usize)> {
+    (1..s.patches.len()).find_map(|b| {
+        let a = b - 1;
+        let (pa, pb) = (&s.patches[a], &s.patches[b]);
+        let end = s.chunks.get(pb.chunk as usize)?.size;
+        (pa.kind != PATCH_ERRATUM
+            && pb.kind != PATCH_ERRATUM
+            && pa.chunk == pb.chunk
+            && s.patches.get(b + 1).is_none_or(|p| p.chunk != pb.chunk)
+            && pb.offset - pa.offset == end - pb.offset)
+            .then_some((a, b))
+    })
+}
+
 #[allow(clippy::too_many_lines, reason = "one row per mutation")]
 fn mutations() -> Vec<TableMutation> {
     use Kind::{Invalid, Valid};
@@ -635,9 +677,60 @@ fn mutations() -> Vec<TableMutation> {
         ("SYM_PLACE", Invalid, |s| first(&mut s.sym_place, |p| p.offset += 8)),
         ("DEFINED", Invalid, |s| first(&mut s.defined, |d| d.value += 4)),
         ("PATCHES", Invalid, |s| first(&mut s.patches, |p| p.offset += 4)),
+        // A thunk dropped with its redirects: its sites are out of reach.
+        ("PATCHES (drop a thunk)", Invalid, |s| {
+            let Some(at) = s.patches.iter().position(|p| p.kind != PATCH_ERRATUM) else {
+                return false;
+            };
+            s.patches.remove(at);
+            let at = at as u32;
+            s.redirects.retain(|r| r.patch != at);
+            for r in &mut s.redirects {
+                if r.patch > at {
+                    r.patch -= 1;
+                }
+            }
+            true
+        }),
+        // Two thunks of one island, one after the other and of one size,
+        // trade places, and their sites follow: a placement the rules
+        // admit (L-110, L-115).
+        ("PATCHES (swap thunks)", Valid, |s| {
+            let Some((a, b)) = same_size_thunks(s) else { return false };
+            let (pa, pb) = (s.patches[a].clone(), s.patches[b].clone());
+            (s.patches[a].symbol, s.patches[a].section, s.patches[a].value) =
+                (pb.symbol, pb.section, pb.value);
+            s.patches[a].kind = pb.kind;
+            (s.patches[b].symbol, s.patches[b].section, s.patches[b].value) =
+                (pa.symbol, pa.section, pa.value);
+            s.patches[b].kind = pa.kind;
+            let (a, b) = (a as u32, b as u32);
+            for r in &mut s.redirects {
+                if r.patch == a {
+                    r.patch = b;
+                } else if r.patch == b {
+                    r.patch = a;
+                }
+            }
+            true
+        }),
         ("REDIRECTS", Invalid, |s| first(&mut s.redirects, |r| r.offset += 4)),
-        // The WP-061 review's F8: an erratum site's redirect dropped.
+        // The WP-061 review's F8: an erratum site's redirect dropped (or,
+        // with thunks, a site that is out of reach left without one).
         ("REDIRECTS (drop)", Invalid, |s| s.redirects.pop().is_some()),
+        // A site sent to the other thunk: it would branch to another
+        // function.
+        ("REDIRECTS (other thunk)", Invalid, |s| {
+            let thunks: Vec<u32> = (0..s.patches.len() as u32)
+                .filter(|&i| s.patches[i as usize].kind != PATCH_ERRATUM)
+                .collect();
+            thunks.len() >= 2
+                && s.redirects
+                    .iter_mut()
+                    .find(|r| thunks.contains(&r.patch))
+                    .map(|r| r.patch = *thunks.iter().find(|&&t| t != r.patch).unwrap())
+                    .is_some()
+        }),
         ("SIZED", Invalid, |s| first(&mut s.sized, |z| z.size += 8)),
         ("LAYOUT", Invalid, |s| {
             s.layout.entry += 4;
@@ -656,7 +749,8 @@ fn reason(report: &str) -> &str {
 // fails the link)
 #[test]
 fn replay_reproduces_and_each_table_matters() {
-    let progs = [Prog::asm(), Prog::c(), Prog::cxx(), Prog::asm_x86_64(), Prog::erratum()];
+    let progs =
+        [Prog::asm(), Prog::c(), Prog::cxx(), Prog::asm_x86_64(), Prog::erratum(), Prog::thunks()];
     for prog in progs.into_iter().flatten() {
         let dir = prog.built.dir.display().to_string();
         prog.link("plain", &[]);
@@ -702,6 +796,10 @@ fn replay_reproduces_and_each_table_matters() {
                 }
             };
             eprintln!("OUTCOME {dir} | {table} | {kind:?} | {line}");
+            // The thunk program's outputs are 128 MiB each.
+            for f in [out.clone(), format!("{out}.map"), "runme".to_owned()] {
+                let _ = std::fs::remove_file(prog.path(&f));
+            }
         }
         eprintln!("{dir}: mutated {applied:?}");
         for need in ["CHUNKS", "ORDER", "SEGMENTS", "SECTIONS", "SIZES", "LAYOUT"] {

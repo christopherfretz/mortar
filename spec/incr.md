@@ -2674,9 +2674,10 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   `Layout::check`, or in the plan that holds it to a rule), or, for the
   few the checks do not cover, gives an output the verifier rejects.
   *Test:* every L10 step runs it;
-  `replay_reproduces_and_each_table_matters` (with an erratum link)
-  changes each decision table: a valid change (two GOT slots or two
-  merged strings trade places) gives other bytes the verifier accepts
+  `replay_reproduces_and_each_table_matters` (with an erratum link and a
+  link with range-extension thunks) changes each decision table: a valid
+  change (two GOT slots, two merged strings, or two thunks of one island
+  with their sites, trade places) gives other bytes the verifier accepts
   and a program that runs the same, an invalid one fails by name or is
   rejected by the verifier, and no change is ignored;
   `a_kept_equal_cie_is_followed` replays a list that keeps a CIE S-44
