@@ -1,0 +1,9 @@
+gcc-i386.pie objects 50
+gcc-i386.pie use	i386	ABS	NONALLOC	FUNC	inside	section	1054
+gcc-i386.pie use	i386	ABS	NONALLOC	FUNC	start	section	308
+gcc-i386.pie use	i386	GOTOFF	DATA	FUNC	inside	named-local	104
+gcc-i386.pie use	i386	PC	EH	FUNC	start	section	254
+gcc-i386.pie overapprox-objects 3
+gcc-i386.pie overapprox-objects-with-unnamed-def 3
+gcc-i386.pie objects-with-data-hit 0
+gcc-i386.pie RULE-objects-refused 0

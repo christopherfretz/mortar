@@ -1,0 +1,44 @@
+g00 f[^o]o       gnu={f.o} | lld={f.o} | mold={f.o}
+g01 f[!o]o       gnu={f.o} | lld={f.o} | mold={foo}
+g02 f[^o]*       gnu={f.o fa} | lld={f.o fa} | mold={f.o fa}
+g03 f[!o]*       gnu={f.o fa} | lld={f.o fa} | mold={fo fo* fo\o foo foo2 foo\ fop}
+g04 f[a-o]?      gnu={fo* foo fop} | lld={fo* foo fop} | mold={fo* foo fop}
+g05 f[o-a]?      gnu={} | lld=ERR(collect2: error: ld returned 1 exit status) | mold=ERR(collect2: error: ld returned 1 exit status)
+g06 []]oo        gnu={]oo} | lld={]oo} | mold={}
+g07 []o]oo       gnu={]oo} | lld={]oo} | mold={}
+g08 [!]]oo       gnu={!oo -oo [oo ^oo eoo foo goo} | lld={} | mold={}
+g09 [^]]oo       gnu={!oo -oo [oo ^oo eoo foo goo} | lld={} | mold={}
+g10 f[o          gnu={} | lld=ERR(collect2: error: ld returned 1 exit status) | mold=ERR(collect2: error: ld returned 1 exit status)
+g11 [oo          gnu={[oo} | lld=ERR(collect2: error: ld returned 1 exit status) | mold=ERR(collect2: error: ld returned 1 exit status)
+g12 fo\*         gnu={fo*} | lld={fo*} | mold={fo\o}
+g13 fo*          gnu={fo fo* fo\o foo foo2 foo\ fop} | lld={fo fo* fo\o foo foo2 foo\ fop} | mold={fo fo* fo\o foo foo2 foo\ fop}
+g14 "fo*"        gnu={fo*} | lld={fo fo* fo\o foo foo2 foo\ fop} | mold={fo fo* fo\o foo foo2 foo\ fop}
+g15 fo\o         gnu={foo} | lld={fo\o} | mold={fo\o}
+g16 foo\         gnu={foo\} | lld={foo\} | mold={foo\}
+g17 "foo\\"      gnu={} | lld=ERR(collect2: error: ld returned 1 exit status) | mold={}
+g18 foo\\        gnu={foo\} | lld=ERR(collect2: error: ld returned 1 exit status) | mold={}
+g19 foo*         gnu={foo foo2 foo\} | lld={foo foo2 foo\} | mold={foo foo2 foo\}
+g20 fo[o]*       gnu={foo foo2 foo\} | lld={foo foo2 foo\} | mold={foo foo2 foo\}
+g21 f*o          gnu={f.o fo fo\o foo} | lld={f.o fo fo\o foo} | mold={f.o fo fo\o foo}
+g22 f*           gnu={f f.o fa fo fo* fo\o foo foo2 foo\ fop} | lld={f f.o fa fo fo* fo\o foo foo2 foo\ fop} | mold={f f.o fa fo fo* fo\o foo foo2 foo\ fop}
+g23 *o           gnu={!oo -oo [oo ]oo ^oo eoo f.o fo fo\o foo goo} | lld={!oo -oo [oo ]oo ^oo eoo f.o fo fo\o foo goo} | mold={!oo -oo [oo ]oo ^oo eoo f.o fo fo\o foo goo}
+g24 [[]oo        gnu={[oo} | lld={[oo} | mold={[oo}
+g25 [-]oo        gnu={-oo} | lld={-oo} | mold={-oo}
+g26 [a-]oo       gnu={-oo} | lld={-oo} | mold=ERR(collect2: error: ld returned 1 exit status)
+g27 [\]]oo       gnu={]oo} | lld={} | mold={]oo}
+g28 f[.]o        gnu={f.o} | lld={f.o} | mold={f.o}
+g29 f?o          gnu={f.o foo} | lld={f.o foo} | mold={f.o foo}
+g30 ???          gnu={!oo -oo [oo ]oo ^oo bar baz eoo f.o fo* foo fop goo} | lld={!oo -oo [oo ]oo ^oo bar baz eoo f.o fo* foo fop goo} | mold={!oo -oo [oo ]oo ^oo bar baz eoo f.o fo* foo fop goo}
+g31 \fo?         gnu={fo* foo fop} | lld={fo* foo fop} | mold={fo* foo fop}
+g32 fo[*]        gnu={fo*} | lld={fo*} | mold={fo*}
+g33 [!a-z]oo     gnu={!oo -oo [oo ]oo ^oo} | lld={!oo -oo [oo ]oo ^oo} | mold={!oo eoo foo goo}
+g34 [^a-z]oo     gnu={!oo -oo [oo ]oo ^oo} | lld={!oo -oo [oo ]oo ^oo} | mold={!oo -oo [oo ]oo ^oo}
+g35 [o*          gnu={[oo} | lld=ERR(collect2: error: ld returned 1 exit status) | mold=ERR(collect2: error: ld returned 1 exit status)
+g36 f[o*         gnu={} | lld=ERR(collect2: error: ld returned 1 exit status) | mold=ERR(collect2: error: ld returned 1 exit status)
+g37 f*\          gnu={} | lld=ERR(collect2: error: ld returned 1 exit status) | mold=ERR(collect2: error: ld returned 1 exit status)
+g38 foo*\        gnu={} | lld=ERR(collect2: error: ld returned 1 exit status) | mold=ERR(collect2: error: ld returned 1 exit status)
+g39 fo[o-o]\     gnu={} | lld=ERR(collect2: error: ld returned 1 exit status) | mold=ERR(collect2: error: ld returned 1 exit status)
+g40 *            gnu={!oo -oo [oo ]oo ^oo _Z3fooi _ZN2ns3barIiEEiv _ZN2ns3fooEv bar baz eoo f f.o fa fo fo* fo\o foo foo2 foo\ fop goo} | lld={!oo -oo [oo ]oo ^oo _Z3fooi _ZN2ns3barIiEEiv _ZN2ns3fooEv bar baz eoo f f.o fa fo fo* fo\o foo foo2 foo\ fop goo} | mold={}
+g41 fo[]         gnu={} | lld=ERR(collect2: error: ld returned 1 exit status) | mold={}
+g42 fo[!]        gnu={} | lld={fo* foo fop} | mold={}
+GLOBS-DONE

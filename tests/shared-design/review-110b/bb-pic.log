@@ -1,0 +1,84 @@
+  GEN     /Volumes/AgentWork/mortar-helper/.build/review-110b/bb-pic/Makefile
+  Using /Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1 as source for busybox
+  GEN     /Volumes/AgentWork/mortar-helper/.build/review-110b/bb-pic/Makefile
+scripts/kconfig/conf -s Config.in
+#
+# using defaults found in .config
+#
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/modutils/modutils.c: In function ‘filename2modname’:
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/modutils/modutils.c:115:1: warning: function may return address of local variable [-Wreturn-local-addr]
+  115 | }
+      | ^
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/modutils/modutils.c:94:14: note: declared here
+   94 |         char local_modname[MODULE_NAME_LEN];
+      |              ^~~~~~~~~~~~~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/miscutils/i2c_tools.c: In function ‘list_i2c_busses_and_exit’:
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/miscutils/i2c_tools.c:1152:46: warning: ‘%s’ directive output may be truncated writing up to 255 bytes into a region of size 236 [-Wformat-truncation=]
+ 1152 |                 snprintf(path, NAME_MAX, "%s/%s/name",
+      |                                              ^~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/miscutils/i2c_tools.c:1152:17: note: ‘snprintf’ output between 25 and 280 bytes into a destination of size 255
+ 1152 |                 snprintf(path, NAME_MAX, "%s/%s/name",
+      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1153 |                          i2cdev_path, de->d_name);
+      |                          ~~~~~~~~~~~~~~~~~~~~~~~~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/miscutils/i2c_tools.c:1157:38: warning: ‘%s’ directive output may be truncated writing up to 255 bytes into a region of size 236 [-Wformat-truncation=]
+ 1157 |                                  "%s/%s/device/name",
+      |                                      ^~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/miscutils/i2c_tools.c:1156:25: note: ‘snprintf’ output between 32 and 287 bytes into a destination of size 255
+ 1156 |                         snprintf(path, NAME_MAX,
+      |                         ^~~~~~~~~~~~~~~~~~~~~~~~
+ 1157 |                                  "%s/%s/device/name",
+      |                                  ~~~~~~~~~~~~~~~~~~~~
+ 1158 |                                  i2cdev_path, de->d_name);
+      |                                  ~~~~~~~~~~~~~~~~~~~~~~~~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/miscutils/i2c_tools.c:1165:38: warning: ‘%s’ directive output may be truncated writing up to 255 bytes into a region of size 236 [-Wformat-truncation=]
+ 1165 |                                  "%s/%s/device/name",
+      |                                      ^~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/miscutils/i2c_tools.c:1164:25: note: ‘snprintf’ output between 32 and 287 bytes into a destination of size 255
+ 1164 |                         snprintf(path, NAME_MAX,
+      |                         ^~~~~~~~~~~~~~~~~~~~~~~~
+ 1165 |                                  "%s/%s/device/name",
+      |                                  ~~~~~~~~~~~~~~~~~~~~
+ 1166 |                                  i2cdev_path, de->d_name);
+      |                                  ~~~~~~~~~~~~~~~~~~~~~~~~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/miscutils/i2c_tools.c:1177:54: warning: ‘%s’ directive output may be truncated writing up to 255 bytes into a region of size 236 [-Wformat-truncation=]
+ 1177 |                                                  "%s/%s/device/%s/name",
+      |                                                      ^~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/miscutils/i2c_tools.c:1176:41: note: ‘snprintf’ output between 33 and 543 bytes into a destination of size 255
+ 1176 |                                         snprintf(path, NAME_MAX,
+      |                                         ^~~~~~~~~~~~~~~~~~~~~~~~
+ 1177 |                                                  "%s/%s/device/%s/name",
+      |                                                  ~~~~~~~~~~~~~~~~~~~~~~~
+ 1178 |                                                  i2cdev_path, de->d_name,
+      |                                                  ~~~~~~~~~~~~~~~~~~~~~~~~
+ 1179 |                                                  subde->d_name);
+      |                                                  ~~~~~~~~~~~~~~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/networking/tftp.c: In function ‘tftpd_main’:
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/networking/tftp.c:886:15: warning: ‘local_file’ is used uninitialized [-Wuninitialized]
+  886 |         char *local_file = local_file;
+      |               ^~~~~~~~~~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/networking/tftp.c:886:15: note: ‘local_file’ was declared here
+  886 |         char *local_file = local_file;
+      |               ^~~~~~~~~~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/procps/powertop.c: In function ‘read_cstate_counts’:
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/procps/powertop.c:181:34: warning: ‘%s’ directive writing up to 255 bytes into a region of size 171 [-Wformat-overflow=]
+  181 |                 sprintf(buf, "%s/%s/power", "/proc/acpi/processor", d->d_name);
+      |                                  ^~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/procps/powertop.c:181:17: note: ‘sprintf’ output between 28 and 283 bytes into a destination of size 192
+  181 |                 sprintf(buf, "%s/%s/power", "/proc/acpi/processor", d->d_name);
+      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/shell/hush.c: In function ‘expand_one_var’:
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/shell/hush.c:6606:15: warning: ‘exp_word’ is used uninitialized [-Wuninitialized]
+ 6606 |         char *exp_word = exp_word; /* for compiler */
+      |               ^~~~~~~~
+/Volumes/AgentWork/mortar-helper/.build/review-110b/src/busybox-1.36.1/shell/hush.c:6606:15: note: ‘exp_word’ was declared here
+ 6606 |         char *exp_word = exp_word; /* for compiler */
+      |               ^~~~~~~~
+Trying libraries: crypt m resolv rt
+ Library crypt is not needed, excluding it
+ Library m is needed, can't exclude it (yet)
+ Library resolv is needed, can't exclude it (yet)
+ Library rt is not needed, excluding it
+ Library m is needed, can't exclude it (yet)
+ Library resolv is needed, can't exclude it (yet)
+Final link with: m resolv

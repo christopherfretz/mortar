@@ -1,0 +1,4 @@
+/Volumes/AgentWork/mortar-helper/.build/review-110b/bb-pic/scripts/kconfig/conf.o pre=1 rule=0 ana=18 words=1212 funcs=8
+/Volumes/AgentWork/mortar-helper/.build/review-110b/bb-pic/scripts/kconfig/mconf.o pre=1 rule=0 ana=2 words=2060 funcs=12
+/Volumes/AgentWork/mortar-helper/.build/review-110b/bb-pic/scripts/kconfig/zconf.tab.o pre=1 rule=191 ana=150 words=9842 funcs=144
+TOTAL objs=577 pre=3 rule_objs=1 ana_objs=3 ana_only_objs=2 rule=191 ana=170 words=13114 undec=98

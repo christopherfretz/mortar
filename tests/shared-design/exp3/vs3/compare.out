@@ -1,0 +1,20 @@
+DIFF A mortar A-S8 | V1 { local: foo*; global: fo*; }; | GNU REFUSED | model {'foo': 'V1', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base'}
+DIFF R mortar A-S8 | V1 { local: foo*; global: fo*; }; | GNU REFUSED | model {'foo': 'V1', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base'}
+DIFF A mortar A-L1 | V1 { local: *; global: foo; }; | GNU REFUSED | model {'foo': 'V1', '_Z3fooi': 'local', '_ZN2ns3fooEv': 'local'}
+DIFF R mortar A-L1 | V1 { local: *; global: foo; }; | GNU REFUSED | model {'foo': 'V1', '_Z3fooi': 'local', '_ZN2ns3fooEv': 'local'}
+DIFF A mortar A-L2 | V1 { local: foo; global: fo*; }; | GNU REFUSED | model {'foo': 'local', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base'}
+DIFF R mortar A-L2 | V1 { local: foo; global: fo*; }; | GNU REFUSED | model {'foo': 'local', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base'}
+DIFF A mortar A-E6 | V1 { local: f*; }; V2 { local: fo*; global: *; }; | GNU REFUSED | model {'foo': 'local', '_Z3fooi': 'V2', '_ZN2ns3fooEv': 'V2'}
+DIFF R mortar A-E6 | V1 { local: f*; }; V2 { local: fo*; global: *; }; | GNU REFUSED | model {'foo': 'local', '_Z3fooi': 'V2', '_ZN2ns3fooEv': 'V2'}
+DIFF A mortar R-r11 | V1 { local: foo; global: *; }; | GNU REFUSED | model {'foo': 'local', 'foo2': 'V1', 'fop': 'V1', 'bar': 'V1', 'baz': 'V1', 'fa': 'V1', '_Z3fooi': 'V1', '_ZN2ns3fooEv': 'V1', '_ZN2ns3barIiEEiv': 'V1'}
+DIFF R mortar R-r11 | V1 { local: foo; global: *; }; | GNU REFUSED | model {'foo': 'local', 'foo2': 'V1', 'fop': 'V1', 'bar': 'V1', 'baz': 'V1', 'fa': 'V1', '_Z3fooi': 'V1', '_ZN2ns3fooEv': 'V1', '_ZN2ns3barIiEEiv': 'V1'}
+DIFF A mortar R-r32 | V1 { global: f*; }; V2 { local: fo*; global: foo2; }; | GNU REFUSED | model {'foo': 'V1', 'foo2': 'V2', 'fop': 'V1', 'bar': 'base', 'baz': 'base', 'fa': 'V1', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+DIFF R mortar R-r32 | V1 { global: f*; }; V2 { local: fo*; global: foo2; }; | GNU REFUSED | model {'foo': 'V1', 'foo2': 'V2', 'fop': 'V1', 'bar': 'base', 'baz': 'base', 'fa': 'V1', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+DIFF A mortar R-r47 | V1 { global: *; }; V2 { local: f*; global: foo; }; | GNU REFUSED | model {'foo': 'V2', 'foo2': 'local', 'fop': 'local', 'bar': 'V1', 'baz': 'V1', 'fa': 'local', '_Z3fooi': 'V1', '_ZN2ns3fooEv': 'V1', '_ZN2ns3barIiEEiv': 'V1'}
+DIFF R mortar R-r47 | V1 { global: *; }; V2 { local: f*; global: foo; }; | GNU REFUSED | model {'foo': 'V2', 'foo2': 'local', 'fop': 'local', 'bar': 'V1', 'baz': 'V1', 'fa': 'local', '_Z3fooi': 'V1', '_ZN2ns3fooEv': 'V1', '_ZN2ns3barIiEEiv': 'V1'}
+DIFF A mortar R-s10 | V1 { local: *; global: old; }; V2 { global: cur; }; | GNU REFUSED | model {'old': 'V1', 'cur': 'V2', 'bar': 'local', 'old_impl': 'local'}
+DIFF R mortar R-s10 | V1 { local: *; global: old; }; V2 { global: cur; }; | GNU REFUSED | model {'old': 'V1', 'cur': 'V2', 'bar': 'local', 'old_impl': 'local'}
+DIFFSET ('A', 'mortar') 8 A-S8 A-L1 A-L2 A-E6 R-r11 R-r32 R-r47 R-s10 all-rule8
+DIFFSET ('R', 'mortar') 8 A-S8 A-L1 A-L2 A-E6 R-r11 R-r32 R-r47 R-s10 all-rule8
+FAMILY 8 A-E6 A-L1 A-L2 A-S8 R-r11 R-r32 R-r47 R-s10
+RESULT cases 213 model-runs 852 A/mortar=8 R/mortar=8

@@ -1,0 +1,14 @@
+bfd 4k: PT_LOADs 2 p_align 0x10000,0x10000 congruent=True relro-end=0x20000 aligned-to-max-page=True
+bfd 4k: run: f=106 OK
+bfd 64k: PT_LOADs 2 p_align 0x10000,0x10000 congruent=True relro-end=0x20000 aligned-to-max-page=True
+bfd 64k: run: f=106 OK
+lld 4k: PT_LOADs 4 p_align 0x10000,0x10000,0x10000,0x10000 congruent=True relro-end=0x21000 aligned-to-max-page=False
+lld 4k: run: f=106 OK
+lld 64k: PT_LOADs 4 p_align 0x10000,0x10000,0x10000,0x10000 congruent=True relro-end=0x21000 aligned-to-max-page=False
+lld 64k: run: f=106 OK
+mold 4k: PT_LOADs 4 p_align 0x10000,0x10000,0x10000,0x10000 congruent=True relro-end=0x30000 aligned-to-max-page=True
+mold 4k: run: f=106 OK
+mold 64k: PT_LOADs 4 p_align 0x10000,0x10000,0x10000,0x10000 congruent=True relro-end=0x30000 aligned-to-max-page=True
+mold 64k: run: f=106 OK
+patched: PT_LOADs 2 p_align 0x10000,0x10000 congruent=True relro-end=0x20000 aligned-to-max-page=True
+patched: run: f=106 OK

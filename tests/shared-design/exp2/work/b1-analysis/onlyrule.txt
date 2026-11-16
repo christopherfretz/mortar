@@ -1,0 +1,5 @@
+only-rule	gcc-a64.pie.case.anchorgap.c.o
+only-rule	gcc-a64.pie.census.lib.c.o
+only-rule	gcc-a64.pie.zlib.zutil.c.o
+only-rule	libgomp.a(env.o)
+refused by the rule: 8; of them with no symbol-named use (the references link them): 4

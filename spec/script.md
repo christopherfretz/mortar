@@ -756,8 +756,95 @@ Files under `crates/mortar_script/`.
   in full expressions is the expression stage's to sweep.
 - Sysroot containment (§2.4 rule 1) through symbolic links is unmeasured;
   mortar compares resolved absolute paths.
-- `-T` scripts, `--defsym`, `-c` (MRI) and `--version-script` use this
-  crate later; their differences from implicit scripts (§3.1: invalid
+- `-T` scripts, `--defsym`, `-c` (MRI) use this crate later
+  (`--version-script` and `--dynamic-list`: §9); their differences from implicit scripts (§3.1: invalid
   characters ignored under `-T`) are `spec/cli.md`'s to state.
 - libc++'s text `libc++.so` (`INPUT(libc++.so.1 -lc++abi)` on some
   distributions) joins the corpus when the machine has one.
+
+## 9. Version scripts and dynamic lists (M4; WP-110)
+
+The grammar of the files given to `--version-script=FILE`
+(`-version-script FILE`, libtool's spelling) and `--dynamic-list=FILE`,
+and of the `VERSION { … }` command. What a parsed script means for a
+link is `spec/resolve.md` §9.7 (matching, precedence) and
+`spec/dyn.md` D-112, D-114, D-115 (preemption, rulings, the sections
+written). Measured by WP-110 (`spec/dyn.md` E-shared-export, part F)
+on GNU ld 2.44, lld 19/22 and mold 2.37; where they differ the column
+says whose rule this is.
+
+### 9.1 Grammar
+
+The lexer's **version** mode (§1.10): a name token is a maximal run of
+bytes other than whitespace and `{ } ; :` and `"`; it may hold the glob
+bytes `* ? [ ]` and `\`; a quoted string is a name taken literally:
+the bytes between the quotes, no escape processed, never a glob. The
+lexer keeps a name token's text as written (backslashes included); what
+it means, exact name or glob, with the escape rules and the glob syntax
+(`fnmatch(3)` without flags: `*`, `?`, classes with ranges and `!`/`^`
+negation, `\` escaping; an unterminated `[` is the character `[`), is
+resolve §9.7 "Entries" (WP-110's third pass, `exp3/vs3/globs.py`; lld
+and mold refuse an unterminated `[` and a glob ending in `\`, GNU ld
+and mortar accept both).
+
+```
+version-script := node+                      ; named nodes
+                | "{" body "}" ";"            ; one anonymous node, alone in the file
+node           := NAME "{" body "}" parents ";"
+parents        := NAME*                      ; zero or more parent node names
+body           := ( "global" ":" | "local" ":" | entry )*
+entry          := pattern ";"
+                | "extern" STRING "{" ( pattern ";"? )* "}" ";"
+pattern        := NAME | STRING
+dynamic-list   := "{" ( entry )* "}" ";"
+VERSION        := "VERSION" "{" version-script "}"
+```
+
+- Entries before the first `global:`/`local:` of a node are `global`
+  (all three; zlib.map's 13 later nodes are written so).
+- `local:` before `global:` in one node: accepted (lld, mold; GNU ld
+  reports a syntax error).
+- Several parents (`V3 { … } V1 V2;`): accepted (GNU ld; lld and mold
+  report a syntax error: ``; expected, but got V2``).
+- An anonymous node may not be combined with named nodes, before or
+  after them: refused, `version-script-syntax` (GNU ld: ``anonymous
+  version tag cannot be combined with other version tags``; lld refuses
+  both orders; mold accepts; WP-110 `exp2/vscript2`).
+- `extern "C"` holds plain names; `extern "C++"` names are matched
+  against the demangled name (resolve §9.7 rule 6) and are refused by
+  name until the demangler exists (`spec/diag.md` §9). Any other
+  language string is refused.
+- A node name used twice: `version-script-syntax` (GNU ld: ``duplicate
+  version tag `V1'``; lld and mold merge the two; `exp2/vscript2`).
+- A parent that is not a node defined earlier (forward, or absent):
+  `version-script-syntax` (GNU ld: ``unable to find version dependency
+  `V1'``; lld and mold accept both; `exp2/vscript2`).
+- Several `--version-script` options: their files are read as one
+  script, in command-line order, so a parent may be a node of an
+  earlier file (all three; `exp2/vscript2` `two`). `--dynamic-list`
+  files likewise form one list.
+- Comments, in version scripts and dynamic lists alike: `#` to the end
+  of the line (whole-line or after an entry; `foo; #bar;` lists only
+  `foo`), and `/* … */` as in §1.3, also across lines. `//` is not a
+  comment: `version-script-syntax` (GNU ld: ``ignoring invalid
+  character `/' in script`` and fails; lld and mold refuse too). All
+  three references agree on each of these (WP-110 `exp2/comments`,
+  AArch64).
+
+### 9.2 Diagnostics
+
+A syntax error is `version-script-syntax`, with file, line and column
+(§1.1) and GNU ld's text (``syntax error in VERSION script``). An entry
+under `global:` in one node and `local:` in another is not a syntax
+error but resolve §9.7's `duplicate-version-pattern`. The
+`VERSION` command in a `-T` script is refused until `-T` scripts are
+supported (§2.10).
+
+### 9.3 Tests
+
+`version-script-grammar` (each production, each refusal; quoted and
+unquoted entries with `\`, `*`, `?`, `[`, an unterminated `[` and a
+trailing `\` lex as one token each, text kept; the zlib.map
+of `spec/dyn.md` record §A parses to 14 nodes and 13 parent links; the
+comment forms; two files as one script), `dynamic-list-grammar` (the
+comment forms).

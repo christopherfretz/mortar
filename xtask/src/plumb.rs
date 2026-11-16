@@ -180,7 +180,13 @@ const SEPARATE_VALUE: [&str; 24] = [
 /// per directory (`.a` only where `-static`/`-Bstatic` is in effect),
 /// `-l:file` as `D/file`. An `-l` that names no existing file is left
 /// out (the verifier then reports the inputs of the map it misses).
-pub fn response_inputs(text: &str, cwd: &Path) -> Vec<PathBuf> {
+/// A file that is a linker script (neither an object nor an archive:
+/// glibc's `libm.a` is `GROUP ( libm-2.41.a libmvec.a )`) stands for the
+/// files it names, found as the linker finds them ([`script_inputs`]).
+///
+/// # Errors
+/// A linker script with a command [`script_inputs`] does not read.
+pub fn response_inputs(text: &str, cwd: &Path) -> Result<Vec<PathBuf>, String> {
     let words = response_words(text);
     let mut dirs = Vec::new();
     let mut sysroot: Option<String> = None;
@@ -239,7 +245,9 @@ pub fn response_inputs(text: &str, cwd: &Path) -> Vec<PathBuf> {
             w.strip_prefix("--library=").or_else(|| w.strip_prefix("-l")).map(str::to_owned)
         };
         if let Some(name) = library {
-            out.extend(find(&name, link_static));
+            if let Some(f) = find(&name, link_static) {
+                out.extend(script_inputs(&f, cwd, &dirs, 0)?);
+            }
             continue;
         }
         match w {
@@ -248,11 +256,98 @@ pub fn response_inputs(text: &str, cwd: &Path) -> Vec<PathBuf> {
             "--push-state" => states.push(link_static),
             "--pop-state" => link_static = states.pop().unwrap_or(link_static),
             w if SEPARATE_VALUE.contains(&w) || w == "-L" => at += 1,
-            w if !w.starts_with('-') => out.push(cwd.join(w)),
+            w if !w.starts_with('-') => out.extend(script_inputs(&cwd.join(w), cwd, &dirs, 0)?),
             _ => {}
         }
     }
-    out
+    Ok(out)
+}
+
+/// The files the link reads for `file`: `file` itself when it is an
+/// object, an archive, or cannot be read; for a linker script, the files
+/// of its `INPUT` and `GROUP` commands (`AS_NEEDED` lists among them),
+/// each a plain file name found as GNU ld finds it ("File Commands" of
+/// its manual): an absolute name as it is, any other in `cwd`, then in
+/// the library directories in order. `OUTPUT_FORMAT` names no file and
+/// is passed over. A name found nowhere adds nothing.
+///
+/// # Errors
+/// Any other command, a `-l` name in a script, or scripts nested more
+/// than 8 deep: refused by name, not guessed at.
+pub fn script_inputs(
+    file: &Path,
+    cwd: &Path,
+    dirs: &[PathBuf],
+    depth: usize,
+) -> Result<Vec<PathBuf>, String> {
+    let Ok(bytes) = std::fs::read(file) else { return Ok(vec![file.to_path_buf()]) };
+    if [&b"\x7fELF"[..], b"!<arch>\n", b"!<thin>\n"].iter().any(|m| bytes.starts_with(m)) {
+        return Ok(vec![file.to_path_buf()]);
+    }
+    let what = |m: String| {
+        format!(
+            "{}: a linker script {m} (--inputs-from reads INPUT, GROUP and AS_NEEDED of file names)",
+            file.display()
+        )
+    };
+    if depth >= 8 {
+        return Err(what("nested more than 8 deep".into()));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    // Comments out; parentheses and commas are separators of their own.
+    let mut plain = String::new();
+    let mut rest = text.as_ref();
+    while let Some(i) = rest.find("/*") {
+        plain.push_str(&rest[..i]);
+        plain.push(' ');
+        rest = rest[i + 2..].split_once("*/").map_or("", |(_, after)| after);
+    }
+    plain.push_str(rest);
+    let spaced = plain.replace('(', " ( ").replace(')', " ) ").replace(',', " ");
+    let mut words = spaced.split_whitespace().peekable();
+    let mut out = Vec::new();
+    // The open lists: each is `true` when its words are file names.
+    let mut open: Vec<bool> = Vec::new();
+    while let Some(w) = words.next() {
+        match w {
+            "(" => return Err(what("with a '(' that opens no command".into())),
+            ")" => {
+                if open.pop().is_none() {
+                    return Err(what("with a ')' that closes nothing".into()));
+                }
+            }
+            "INPUT" | "GROUP" | "AS_NEEDED" | "OUTPUT_FORMAT" if words.peek() == Some(&"(") => {
+                words.next();
+                if w == "AS_NEEDED" && open.last() != Some(&true) {
+                    return Err(what("with AS_NEEDED outside INPUT or GROUP".into()));
+                }
+                open.push(w != "OUTPUT_FORMAT");
+            }
+            _ if open.last() == Some(&false) => {}
+            name if open.last() == Some(&true) => {
+                if name.starts_with("-l") {
+                    return Err(what(format!("with the library name '{name}'")));
+                }
+                let p = Path::new(name);
+                let found = if p.is_absolute() {
+                    Some(p.to_path_buf())
+                } else {
+                    std::iter::once(cwd.to_path_buf())
+                        .chain(dirs.iter().cloned())
+                        .map(|d| d.join(p))
+                        .find(|c| c.is_file())
+                };
+                if let Some(f) = found {
+                    out.extend(script_inputs(&f, cwd, dirs, depth + 1)?);
+                }
+            }
+            other => return Err(what(format!("command '{other}'"))),
+        }
+    }
+    if !open.is_empty() {
+        return Err(what("with a command that is not closed".into()));
+    }
+    Ok(out)
 }
 
 /// What a response file says of `--fix-cortex-a53-843419`: the last of it
@@ -412,8 +507,10 @@ pub fn verify_link_line(
     line: Option<Vec<String>>,
 ) -> Result<Verified, String> {
     let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+    mortar_plumb::prof::mark("start");
     let output = read(output)?;
     let map_bytes = read(map)?;
+    mortar_plumb::prof::mark("read output and map");
     let text = String::from_utf8_lossy(&map_bytes);
     let mut parsed = mortar_plumb::map::parse(format, &text)
         .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?;
@@ -425,7 +522,9 @@ pub fn verify_link_line(
         parsed.fix_843419 =
             fix_843419.or_else(|| line.as_deref().map(|l| line_fix_843419(l, base)));
     }
-    let files = link_files(&parsed, base, allowed);
+    mortar_plumb::prof::mark("parse map");
+    let files = link_files(&parsed, base, allowed)?;
+    mortar_plumb::prof::mark("read inputs");
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
     let report = if mortar_plumb::is_dynamic(&output) {
         let files = BaseFiles(base);
@@ -441,15 +540,35 @@ pub fn verify_link_line(
 /// The files `map` names, a relative path read from `base`; with
 /// `allowed`, only those of its files. A thin archive's members are files
 /// of their own (spec/plumb.md §2.2); an unreadable file is left out.
+///
+/// # Errors
+/// The map names files and not one of them can be read: the verifier is
+/// run from the wrong directory (a mortar map records none, §3.2), and
+/// every input would be I1 (spec/plumb.md §8).
 fn link_files(
     map: &mortar_plumb::map::Map,
     base: &Path,
     allowed: Option<&BTreeSet<PathBuf>>,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let paths = map.paths();
+    let files = read_files(paths.iter().copied(), base, |full| {
+        allowed.is_none_or(|a| a.contains(&canonical(full)))
+    });
+    unresolved(&paths, &files, base, allowed.is_some())?;
+    Ok(files)
+}
+
+/// The files of `paths` read from `base` (those `keep` keeps), each thin
+/// archive's members before it.
+fn read_files<'p>(
+    paths: impl Iterator<Item = &'p str>,
+    base: &Path,
+    keep: impl Fn(&Path) -> bool,
 ) -> Vec<(String, Vec<u8>)> {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    for path in map.paths() {
+    for path in paths {
         let full = base.join(path);
-        if allowed.is_some_and(|a| !a.contains(&canonical(&full))) {
+        if !keep(&full) {
             continue;
         }
         if let Ok(b) = std::fs::read(&full) {
@@ -462,6 +581,33 @@ fn link_files(
         }
     }
     files
+}
+
+/// The usage error of a map none of whose files was read (spec/plumb.md
+/// §8): it names the first and the directory it was looked for in
+/// (`filtered`: `--inputs-from` chose among them).
+fn unresolved(
+    paths: &[&str],
+    files: &[(String, Vec<u8>)],
+    base: &Path,
+    filtered: bool,
+) -> Result<(), String> {
+    match paths.first() {
+        Some(first) if files.is_empty() => {
+            let dir = if base.as_os_str().is_empty() {
+                std::env::current_dir().map_or_else(|_| ".".into(), |d| d.display().to_string())
+            } else {
+                base.display().to_string()
+            };
+            Err(format!(
+                "not one of the {} files the map names can be read from {dir}{} (the first: {first}); \
+                 run the verifier from the directory the link was run in",
+                paths.len(),
+                if filtered { " among those --inputs-from names" } else { "" }
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The byte sweep (`mortar_plumb::sweep`, spec/plumb.md §12.3) of the
@@ -486,7 +632,7 @@ pub fn sweep_link(
     let map_bytes = read(map)?;
     let parsed = mortar_plumb::map::parse(format, &String::from_utf8_lossy(&map_bytes))
         .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?;
-    let files = link_files(&parsed, base, None);
+    let files = link_files(&parsed, base, None)?;
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
     let dir = BaseFiles(base);
     let ctx = mortar_plumb::Ctx { line: None, files: &dir };
@@ -515,6 +661,7 @@ pub fn run(args: &Args) -> Result<bool, String> {
             fix = fix.or_else(|| response_fix_843419(&String::from_utf8_lossy(&t)));
             Some(
                 response_inputs(&String::from_utf8_lossy(&t), Path::new(""))
+                    .map_err(|e| format!("{}: {e}", rsp.display()))?
                     .iter()
                     .map(|e| canonical(e))
                     .collect(),
@@ -589,7 +736,16 @@ pub fn run(args: &Args) -> Result<bool, String> {
     )?;
     print!("{}", report.render(&args.output.display().to_string()));
     print!("{}", report.summary());
+    print_profile();
     Ok(report.clean())
+}
+
+/// The verifier's phase marks (`MORTAR_PLUMB_PROFILE`, WP-109), on
+/// standard error.
+fn print_profile() {
+    for l in mortar_plumb::prof::take() {
+        eprintln!("{l}");
+    }
 }
 
 /// The command's entry point: exit 0 when clean, 1 on any finding, 2 on
@@ -678,18 +834,15 @@ pub fn run_equiv(a: &EquivArgs) -> Result<bool, String> {
     let mut paths: BTreeSet<String> = BTreeSet::new();
     paths.extend(xm.paths().into_iter().map(str::to_string));
     paths.extend(fm.paths().into_iter().map(str::to_string));
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    for path in &paths {
-        if let Ok(b) = std::fs::read(path) {
-            for member in mortar_plumb::thin_members(path, &b) {
-                if let Ok(m) = std::fs::read(&member) {
-                    files.push((member, m));
-                }
-            }
-            files.push((path.clone(), b));
-        }
-    }
+    let files = read_files(paths.iter().map(String::as_str), Path::new(""), |_| true);
+    unresolved(
+        &paths.iter().map(String::as_str).collect::<Vec<_>>(),
+        &files,
+        Path::new(""),
+        false,
+    )?;
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+    mortar_plumb::prof::mark("read outputs, maps, inputs");
     let eq = mortar_plumb::equiv::check(&x, &xm, &f, &fm, &inputs);
     let (xn, fname) = (a.x.display().to_string(), a.f.display().to_string());
     for line in eq.x.render(&xn).lines() {
@@ -706,6 +859,7 @@ pub fn run_equiv(a: &EquivArgs) -> Result<bool, String> {
     println!("X: {} findings, {} records", eq.x.findings.len(), eq.x.coverage.records);
     println!("F: {} findings, {} records", eq.f.findings.len(), eq.f.coverage.records);
     println!("{}", eq.summary());
+    print_profile();
     Ok(eq.clean())
 }
 
@@ -843,10 +997,11 @@ mod tests {
         let root = scratch.path();
         for f in ["d1/libf.a", "d2/libf.so", "d2/libf.a", "d2/libg.a", "s/lib/libq.a", "d1/crt.o"] {
             std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
-            std::fs::write(root.join(f), b"x").unwrap();
+            std::fs::write(root.join(f), b"!<arch>\n").unwrap();
         }
         let got = |text: &str| -> Vec<String> {
             response_inputs(text, root)
+                .unwrap()
                 .iter()
                 .map(|p| p.strip_prefix(root).unwrap().display().to_string())
                 .collect()
@@ -881,6 +1036,74 @@ mod tests {
             got("--library-path=d1 -plugin p.so -m aarch64linux -o out -lf -dynamic-linker ld.so"),
             ["d1/libf.a"]
         );
+    }
+
+    // spec/plumb.md §8: a linker script among the inputs (glibc's
+    // `libm.a`) stands for the files of its INPUT and GROUP commands;
+    // a command not read is refused by name.
+    #[test]
+    fn s8_linker_scripts_are_followed() {
+        let scratch = mortar_testutil::Scratch::new("plumb-scripts");
+        let root = scratch.path();
+        std::fs::create_dir_all(root.join("d")).unwrap();
+        for f in ["d/libm-2.41.a", "d/libmvec.a", "d/libz.so.1", "a.o"] {
+            std::fs::write(root.join(f), b"!<arch>\n").unwrap();
+        }
+        let abs = root.join("d/libm-2.41.a");
+        let script = |name: &str, text: &str| std::fs::write(root.join(name), text).unwrap();
+        script(
+            "d/libm.a",
+            &format!(
+                "/* GNU ld script\n*/\nOUTPUT_FORMAT(elf64-littleaarch64)\nGROUP ( {} libmvec.a )\n",
+                abs.display()
+            ),
+        );
+        script("d/libz.so", "INPUT(AS_NEEDED(libz.so.1),a.o)");
+        script("d/libbad.a", "SEARCH_DIR(/x) GROUP(libmvec.a)");
+        script("d/libl.a", "GROUP(-lz)");
+        script("d/libopen.a", "GROUP(libmvec.a");
+        let got = |text: &str| -> Result<Vec<String>, String> {
+            response_inputs(text, root).map(|v| {
+                v.iter().map(|p| p.strip_prefix(root).unwrap().display().to_string()).collect()
+            })
+        };
+        // An absolute name as it is; a relative one in the working
+        // directory first (a.o), then the library directories.
+        assert_eq!(got("-static -Ld -lm").unwrap(), ["d/libm-2.41.a", "d/libmvec.a"]);
+        assert_eq!(got("-Ld -lz").unwrap(), ["d/libz.so.1", "a.o"]);
+        assert_eq!(got("-Ld d/libm.a").unwrap(), ["d/libm-2.41.a", "d/libmvec.a"]);
+        for (lib, why) in [
+            ("bad", "command 'SEARCH_DIR'"),
+            ("l", "the library name '-lz'"),
+            ("open", "a command that is not closed"),
+        ] {
+            let e = got(&format!("-static -Ld -l{lib}")).unwrap_err();
+            assert!(e.contains(&format!("lib{lib}.a")) && e.contains(why), "{e}");
+        }
+    }
+
+    // spec/plumb.md §8: a map none of whose files can be read (the
+    // verifier run from another directory) is a usage error naming the
+    // first file and the directory, not a report of every input I1.
+    #[test]
+    fn s8_no_input_resolved_is_a_usage_error() {
+        let scratch = mortar_testutil::Scratch::new("plumb-unresolved");
+        let root = scratch.path();
+        std::fs::write(root.join("a.o"), b"\x7fELF").unwrap();
+        let paths = ["a.o", "b.o"];
+        let read = |base: &Path| read_files(paths.iter().copied(), base, |_| true);
+        let found = read(root);
+        assert_eq!(found.len(), 1);
+        assert!(unresolved(&paths, &found, root, false).is_ok());
+        let elsewhere = root.join("elsewhere");
+        let e = unresolved(&paths, &read(&elsewhere), &elsewhere, false).unwrap_err();
+        assert!(
+            e.contains("the first: a.o") && e.contains("elsewhere") && e.contains("2 files"),
+            "{e}"
+        );
+        let e = unresolved(&paths, &[], root, true).unwrap_err();
+        assert!(e.contains("--inputs-from"), "{e}");
+        assert!(unresolved(&[], &[], root, false).is_ok());
     }
 
     // spec/plumb.md §8.

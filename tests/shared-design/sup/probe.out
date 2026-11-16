@@ -1,0 +1,50 @@
+c-clang19-a64-O0.o pre=1 rule=0 ana=1 words=72 funcs=3 selfgot
+    ANA f+0x18 add .data+0x10 gcount 
+c-clang19-a64-O1.o pre=1 rule=0 ana=0 words=37 funcs=3 selfgot
+c-clang19-a64-O2.o pre=1 rule=0 ana=0 words=69 funcs=3 selfgot
+c-clang19-a64-O3.o pre=1 rule=0 ana=0 words=69 funcs=3 selfgot
+c-clang19-a64-Os.o pre=1 rule=0 ana=0 words=37 funcs=3 selfgot
+c-clang22-a64-O0.o pre=1 rule=0 ana=1 words=70 funcs=3 selfgot
+    ANA f+0x14 add .data+0x10 gcount 
+c-clang22-a64-O1.o pre=1 rule=0 ana=0 words=37 funcs=3 selfgot
+c-clang22-a64-O2.o pre=1 rule=0 ana=0 words=69 funcs=3 selfgot
+c-clang22-a64-O3.o pre=1 rule=0 ana=0 words=69 funcs=3 selfgot
+c-clang22-a64-Os.o pre=1 rule=0 ana=0 words=37 funcs=3 selfgot
+c-gcc-a64-O0.o pre=1 rule=2 ana=0 words=78 funcs=3 selfgot
+    RULE .text+0xc reloc275 .data+0x8 gvar 
+    RULE .text+0x10 reloc277 .data+0x8 gvar 
+c-gcc-a64-O1.o pre=1 rule=0 ana=0 words=40 funcs=3 selfgot
+c-gcc-a64-O2.o pre=1 rule=0 ana=0 words=43 funcs=3 selfgot
+c-gcc-a64-O3.o pre=1 rule=0 ana=0 words=43 funcs=3 selfgot
+c-gcc-a64-Os.o pre=1 rule=0 ana=0 words=37 funcs=3 selfgot
+l-gf-a64-O0.o pre=1 rule=0 ana=0 words=99 funcs=2 selfgot
+l-gf-a64-O1.o pre=1 rule=0 ana=0 words=38 funcs=2 selfgot
+l-gf-a64-O2.o pre=1 rule=0 ana=0 words=40 funcs=2 selfgot
+l-gf-a64-O3.o pre=1 rule=0 ana=0 words=74 funcs=2 selfgot
+l-gf-a64-Os.o pre=1 rule=0 ana=0 words=34 funcs=2 selfgot
+m-gf-a64-O0.o pre=1 rule=0 ana=0 words=83 funcs=2 selfgot
+m-gf-a64-O1.o pre=1 rule=0 ana=0 words=37 funcs=2 selfgot
+m-gf-a64-O2.o pre=1 rule=0 ana=0 words=37 funcs=2 selfgot
+m-gf-a64-O3.o pre=1 rule=0 ana=0 words=37 funcs=2 selfgot
+m-gf-a64-Os.o pre=1 rule=0 ana=0 words=37 funcs=2 selfgot
+c-clang22-x64-O0.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+c-clang22-x64-O1.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+c-clang22-x64-O2.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+c-clang22-x64-O3.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+c-clang22-x64-Os.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+c-gcc-x64-O0.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+c-gcc-x64-O1.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+c-gcc-x64-O2.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+c-gcc-x64-O3.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+c-gcc-x64-Os.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+l-gf-x64-O0.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+l-gf-x64-O1.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+l-gf-x64-O2.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+l-gf-x64-O3.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+l-gf-x64-Os.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+m-gf-x64-O0.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+m-gf-x64-O1.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+m-gf-x64-O2.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+m-gf-x64-O3.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+m-gf-x64-Os.o pre=0 rule=0 ana=0 words=0 funcs=0 selfgot
+PROBE-DONE

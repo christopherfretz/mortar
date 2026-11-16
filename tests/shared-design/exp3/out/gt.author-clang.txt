@@ -1,0 +1,8 @@
+REFUSED /Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pie.case.anchorgap.c.o bound 1 analysis - unseen -
+REFUSED /Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pie.case.boundary.c.o bound 2 analysis - unseen asmlabel
+REFUSED /Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pie.case.vague.cc.o bound 6 analysis - unseen -
+REFUSED /Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pie.census.lib.c.o bound 2 analysis - unseen -
+REFUSED /Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pie.census.lib.cpp.o bound 2 analysis - unseen -
+REFUSED /Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pie.gtest.gtest-all.cc.o bound 73 analysis - unseen -
+REFUSED /Volumes/AgentWork/mortar-helper/.build/target-wp-110/exp2/work/b1corpus/obj/clang-a64.pie.zlib.zutil.c.o bound 1 analysis - unseen -
+TABLE author-clang objs=54 users=7 refused=7 escapes=0 defs=87 symbol=86 rule=0 analysis=0 unseen=1

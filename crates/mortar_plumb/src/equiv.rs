@@ -10,6 +10,8 @@
 #![allow(clippy::result_large_err)] // a side that cannot be read is reported once
 
 use std::collections::{BTreeMap, BTreeSet};
+
+use crate::hasher::HashMap;
 use std::fmt::Write as _;
 
 use mortar_elf::Machine;
@@ -81,11 +83,9 @@ pub(crate) enum Form {
 /// One traced record.
 #[derive(Debug, Clone)]
 pub(crate) struct Traced {
-    pub oi: usize,
-    pub si: usize,
+    pub oi: u32,
+    pub si: u32,
     pub off: u64,
-    /// The output place, by which a GOT group's member is found again.
-    pub p: u64,
     pub form: Form,
 }
 
@@ -128,10 +128,23 @@ fn form_since(e: &Engine<'_, '_>, b: &Tally) -> Form {
     }
 }
 
+/// The records traced in one side's engine, in the order judged, with
+/// the last one traced at each output place (WP-109: [`reform`] found it
+/// by a backward scan of the whole trace, once per GOT group member, the
+/// quadratic term of `--equiv` on a large link).
+#[derive(Debug, Default)]
+pub(crate) struct Trace {
+    pub records: Vec<Traced>,
+    /// The output place -> the last record traced there, by which a GOT
+    /// group's member is found again.
+    last: HashMap<u64, usize>,
+}
+
 pub(crate) fn traced(e: &mut Engine<'_, '_>, at: (usize, usize, u64), p: u64, b: &Tally) {
     let form = form_since(e, b);
     if let Some(t) = e.trace.as_mut() {
-        t.push(Traced { oi: at.0, si: at.1, off: at.2, p, form });
+        t.last.insert(p, t.records.len());
+        t.records.push(Traced { oi: at.0 as u32, si: at.1 as u32, off: at.2, form });
     }
 }
 
@@ -146,7 +159,8 @@ pub(crate) fn retraced(e: &mut Engine<'_, '_>, p: u64, b: &Tally) {
 /// it is already a finding.
 pub(crate) fn reform(e: &mut Engine<'_, '_>, p: u64, form: Form) {
     if let Some(t) = e.trace.as_mut()
-        && let Some(r) = t.iter_mut().rev().find(|r| r.p == p)
+        && let Some(&i) = t.last.get(&p)
+        && let Some(r) = t.records.get_mut(i)
         && r.form != Form::Failed
     {
         r.form = form;
@@ -178,22 +192,30 @@ struct Unit {
     eh_len: BTreeMap<u64, u64>,
 }
 
+/// An address range with its identity: `(start, end, id, base)`.
+type Span = (u64, u64, String, u64);
+
 /// One side, read and verified.
 struct Side<'a> {
     tag: &'static str,
     image: Image<'a>,
     map: &'a Map,
     report: Report,
-    forms: BTreeMap<(UKey, u64), Form>,
+    /// Each unit's traced records: `(offset, form)` sorted by offset,
+    /// the last traced at an offset (WP-109: one key per unit, not one
+    /// with its path per record: 1.3 GB a side on opt `-g`).
+    forms: BTreeMap<UKey, Vec<(u64, Form)>>,
     units: BTreeMap<UKey, Unit>,
     /// Global definitions of the inputs: `(unit, value)`, or `None` for an
     /// absolute one with its value.
     defs: BTreeMap<String, Vec<(Option<UKey>, u64)>>,
     rewritten: BTreeSet<u64>,
-    /// `(start, end, id, base)` sorted by start, with the running maximum
-    /// of `end` (§6.9 identities).
-    spans: Vec<(u64, u64, String, u64)>,
-    pmax: Vec<u64>,
+    /// `(start, end, id, base)` (§6.9 identities) sorted by start.
+    spans: Vec<Span>,
+    /// The largest `end` of each node of a segment tree over `spans`
+    /// (node 1 the root; node `k`'s children `2k`, `2k + 1`; leaves from
+    /// `ends.len() / 2`).
+    ends: Vec<u64>,
     tls: Option<u64>,
     machine: Option<Machine>,
     /// The `.tbss` input sections, `(path, member, index)`: their TLS
@@ -223,17 +245,28 @@ impl<'a> Side<'a> {
 
     /// [`Side::ids`] with whether the span holds `v` before its end.
     fn ids_open(&self, v: u64) -> BTreeSet<(&str, u64, bool)> {
+        // WP-109: a descent of the segment tree into the nodes whose
+        // largest end reaches `v`, among the spans that start at or before
+        // it. A backward walk bounded by the running maximum of the ends
+        // was linear in the spans under a long one (thousands overlap on a
+        // `-g` link: non-allocated offsets, empty sections at one address),
+        // quadratic over the symbols and `.eh_frame_hdr`'s entries.
         let mut out = BTreeSet::new();
-        let mut i = self.spans.partition_point(|s| s.0 <= v);
-        while i > 0 {
-            i -= 1;
-            if self.pmax[i] < v {
-                break;
+        let n = self.spans.partition_point(|s| s.0 <= v);
+        let leaves = self.ends.len() / 2;
+        let mut stack = vec![(1usize, 0usize, leaves)];
+        while let Some((k, lo, hi)) = stack.pop() {
+            if lo >= n || self.ends[k] < v {
+                continue;
             }
-            let (a, z, id, base) = &self.spans[i];
-            if *a <= v && v <= *z {
+            if hi - lo == 1 {
+                let (a, z, id, base) = &self.spans[lo];
                 out.insert((id.as_str(), base + (v - a), v < *z));
+                continue;
             }
+            let mid = lo + (hi - lo) / 2;
+            stack.push((2 * k + 1, mid, hi));
+            stack.push((2 * k, lo, mid));
         }
         out
     }
@@ -250,10 +283,19 @@ impl<'a> Side<'a> {
     /// The address of input definition `(unit, value)` on this side.
     fn def_addr(&self, u: &UKey, value: u64) -> Option<u64> {
         let unit = self.units.get(u)?;
-        unit.pieces
-            .iter()
-            .find(|(o, _, z)| *o <= value && value <= o + z)
-            .map(|(o, a, _)| a + (value - o))
+        // The piece that holds the value; a value at a piece's end only
+        // when no piece holds it (an end symbol). WP-109: the end was
+        // taken first, so a definition at the start of a string piece
+        // that follows a one-byte piece merged elsewhere (glibc's
+        // `__nptl_version` in `.rodata.str1.8`) was given the address
+        // after the merged byte, a P-E3 finding on two identical links.
+        let at = |inside: bool| {
+            unit.pieces
+                .iter()
+                .find(|(o, _, z)| *o <= value && (value < o + z || !inside && value == o + z))
+                .map(|(o, a, _)| a + (value - o))
+        };
+        at(true).or_else(|| at(false))
     }
 
     fn word(&self) -> u64 {
@@ -298,8 +340,9 @@ fn run_side<'a>(
     let located = crate::locate::locate(map, inputs, &image);
     let objs: Vec<Obj<'a>> = located.objs;
     let mut engine = Engine::new(&image, &objs, map.format);
-    engine.trace = Some(Vec::new());
+    engine.trace = Some(Trace::default());
     crate::run_engine(&mut engine, &image, map, None);
+    crate::prof::mark("side: engine");
     let dynamic = crate::is_dynamic(output);
     let report = if dynamic {
         let ctx = crate::Ctx { line: None, files: &crate::HostFiles };
@@ -323,10 +366,28 @@ fn run_side<'a>(
             (o.path.clone(), o.member.clone(), *n - 1)
         })
         .collect();
-    let mut forms = BTreeMap::new();
-    for t in engine.trace.take().unwrap_or_default() {
-        forms.insert(((keys[t.oi].clone(), t.si as u32), t.off), t.form);
+    let mut recs = engine.trace.take().unwrap_or_default().records;
+    // Stable: of the records at one place, the last traced is kept.
+    recs.sort_by_key(|t| (t.oi, t.si, t.off));
+    let mut forms: BTreeMap<UKey, Vec<(u64, Form)>> = BTreeMap::new();
+    let mut at: Option<(u32, u32)> = None;
+    let mut cur: Vec<(u64, Form)> = Vec::new();
+    for t in recs {
+        if at != Some((t.oi, t.si)) {
+            if let Some((oi, si)) = at {
+                forms.insert((keys[oi as usize].clone(), si), std::mem::take(&mut cur));
+            }
+            at = Some((t.oi, t.si));
+        }
+        match cur.last_mut() {
+            Some(last) if last.0 == t.off => last.1 = t.form,
+            _ => cur.push((t.off, t.form)),
+        }
     }
+    if let Some((oi, si)) = at {
+        forms.insert((keys[oi as usize].clone(), si), cur);
+    }
+    crate::prof::mark("side: report, forms");
     let mut units = BTreeMap::new();
     for (oi, o) in objs.iter().enumerate() {
         let machine = o.elf.machine();
@@ -388,10 +449,11 @@ fn run_side<'a>(
             defs.entry(name.clone()).or_default().push(d);
         }
     }
+    crate::prof::mark("side: units, defs");
     let rewritten = std::mem::take(&mut engine.rewritten_words);
     let machine = objs.first().map(|o| o.elf.machine());
     drop(engine);
-    let mut spans: Vec<(u64, u64, String, u64)> = Vec::new();
+    let mut spans: Vec<Span> = Vec::new();
     for p in &map.placed {
         let id = format!("u:{}:{}", file_key(map, p.file), sec_key(&p.section));
         spans.push((p.addr, p.addr.saturating_add(p.size), id, p.input_offset.unwrap_or(0)));
@@ -422,11 +484,13 @@ fn run_side<'a>(
         }
     }
     spans.sort();
-    let mut pmax = Vec::with_capacity(spans.len());
-    let mut m = 0;
-    for s in &spans {
-        m = m.max(s.1);
-        pmax.push(m);
+    let leaves = spans.len().next_power_of_two();
+    let mut ends = vec![0u64; 2 * leaves];
+    for (i, s) in spans.iter().enumerate() {
+        ends[leaves + i] = s.1;
+    }
+    for k in (1..leaves).rev() {
+        ends[k] = ends[2 * k].max(ends[2 * k + 1]);
     }
     let tls = image.phdrs.iter().find(|p| p.p_type == PT_TLS).map(|p| p.p_vaddr);
     let tbss = units
@@ -444,7 +508,7 @@ fn run_side<'a>(
         defs,
         rewritten,
         spans,
-        pmax,
+        ends,
         tls,
         machine,
         tbss,
@@ -480,7 +544,11 @@ fn finding(n: u8, msg: impl Into<String>) -> Finding {
 /// name. Never panics.
 pub fn check(x_out: &[u8], x_map: &Map, f_out: &[u8], f_map: &Map, inputs: &[Input<'_>]) -> Equiv {
     let mut eq = Equiv::default();
-    let (x, f) = match (run_side("X", x_out, inputs, x_map), run_side("F", f_out, inputs, f_map)) {
+    let x = run_side("X", x_out, inputs, x_map);
+    crate::prof::mark("equiv side X");
+    let f = run_side("F", f_out, inputs, f_map);
+    crate::prof::mark("equiv side F");
+    let (x, f) = match (x, f) {
         (Ok(x), Ok(f)) => (x, f),
         (x, f) => {
             eq.x = x.map_or_else(|r| r, |s| s.report);
@@ -492,11 +560,17 @@ pub fn check(x_out: &[u8], x_map: &Map, f_out: &[u8], f_map: &Map, inputs: &[Inp
     let mut out = Vec::new();
     headers(&x, &f, &mut out);
     units(&x, &f, &mut out, &mut eq);
+    crate::prof::mark("equiv headers, units");
     symbols(&x, &f, &mut out, &mut eq);
+    crate::prof::mark("equiv symbols");
     records(&x, &f, &mut out, &mut eq);
+    crate::prof::mark("equiv records");
     tables(&x, &f, &mut out, &mut eq);
+    crate::prof::mark("equiv tables");
     packed(&x, &f, &mut out);
+    crate::prof::mark("equiv packed");
     rest(&x, &f, &mut out);
+    crate::prof::mark("equiv rest");
     out.sort_by(|a, b| {
         (a.addr.is_none(), a.addr, a.rule, &a.site, &a.message).cmp(&(
             b.addr.is_none(),
@@ -1014,8 +1088,14 @@ fn records(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
     };
     // The forms of each record of a unit placed in both.
     let mut windows: BTreeMap<&UKey, Vec<u64>> = BTreeMap::new();
-    for ((u, off), a) in &x.forms {
-        let Some(b) = f.forms.get(&(u.clone(), *off)) else { continue };
+    let pairs =
+        x.forms.iter().filter_map(|(u, v)| Some((u, v, f.forms.get(u)?))).flat_map(|(u, v, w)| {
+            v.iter().filter_map(move |(off, a)| {
+                let j = w.binary_search_by_key(off, |e| e.0).ok()?;
+                Some((u, off, a, &w[j].1))
+            })
+        });
+    for (u, off, a, b) in pairs {
         eq.records += 1;
         if *a == Form::Failed || *b == Form::Failed {
             continue; // the side's own finding says it
@@ -1130,6 +1210,31 @@ type Item = (String, Vec<u64>);
 /// Matches two multisets of items whose address parts correspond
 /// (P-E5): returns the unmatched items of each side.
 fn match_items(x: &Side<'_>, xs: Vec<Item>, f: &Side<'_>, fs: Vec<Item>) -> (Vec<Item>, Vec<Item>) {
+    // First (WP-109), the pairs whose address parts have the same first
+    // identity on each side ([`Side::canon`]; without identities, the
+    // same value): such parts correspond, so the pair matches. One map
+    // lookup an item: the pairwise search below, over every item, was
+    // quadratic in the size of a table (`.eh_frame_hdr`'s entries all
+    // share the empty exact part). It then runs on what is left.
+    type Key = (String, Vec<Result<(String, u64), u64>>);
+    let key = |s: &Side<'_>, k: &str, a: &[u64]| -> Key {
+        (k.to_string(), a.iter().map(|&v| s.canon(v).ok_or(v)).collect())
+    };
+    let mut free: HashMap<Key, Vec<usize>> = HashMap::default();
+    for (j, (k, a)) in fs.iter().enumerate().rev() {
+        free.entry(key(f, k, a)).or_default().push(j);
+    }
+    let mut taken = vec![false; fs.len()];
+    let mut xs_left = Vec::new();
+    for (k, a) in xs {
+        match free.get_mut(&key(x, &k, &a)).and_then(Vec::pop) {
+            Some(j) => taken[j] = true,
+            None => xs_left.push((k, a)),
+        }
+    }
+    let fs: Vec<Item> =
+        fs.into_iter().zip(taken).filter(|(_, t)| !*t).map(|(item, _)| item).collect();
+    let xs = xs_left;
     let mut by: BTreeMap<String, Vec<Vec<u64>>> = BTreeMap::new();
     for (k, a) in fs {
         by.entry(k).or_default().push(a);

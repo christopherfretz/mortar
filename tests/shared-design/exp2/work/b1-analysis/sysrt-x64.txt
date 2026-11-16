@@ -1,0 +1,9 @@
+sysrt-x64 objects 1496
+sysrt-x64 use	x64	PC	CODE	FUNC	inside	section	47
+sysrt-x64 use	x64	PC	CODE	FUNC	start	section	12
+sysrt-x64 use	x64	PC	DATA	FUNC	inside	section	695
+sysrt-x64 use	x64	PC	EH	FUNC	start	section	8047
+sysrt-x64 overapprox-objects 1
+sysrt-x64 overapprox-objects-with-unnamed-def 0
+sysrt-x64 objects-with-data-hit 0
+sysrt-x64 RULE-objects-refused 0

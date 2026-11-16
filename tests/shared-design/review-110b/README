@@ -1,0 +1,55 @@
+review-110b: the second adversarial review of WP-110 (-shared design, 3d3a5b5).
+Report: /Volumes/AgentWork/mortar-helper/briefs/reviews/review-110-shared-2.md
+Everything here was written by the reviewer; nothing is committed.
+Always:  ulimit -c 0; cd /Volumes/AgentWork/mortar-helper/.build/review-110b
+
+Libraries
+  elf.py             own ELF32/64 LE relocatable + ar reader (no readelf).
+
+Attack 1 (address rule, D-117)
+  rule.py            own D-117 from the text.  python3 rule.py [--xt=least|none] [--hits] FILES...
+                     prints REFUSE <obj> <n> <PIC|NONPIC>[+SELFGOT], hits tagged start=end-of-local.
+  author_relscan.py  copy of exp2/b1/relscan.py, for the comparison (same CLI as the original).
+  corpora:
+    archives.lst     79 system archives (15,749 objects):
+                     python3 rule.py --hits $(cat archives.lst) > sys.mine.txt   (sys.author.txt likewise)
+                     sys.mine.none.txt: same with --xt=none.
+    jobs.txt         abseil 20240722 (163 TUs) + fmt 11.0.2 in configs A-J (obj/<cfg>.*.o):
+                     A gcc-a64 -O2 -fPIC; B gcc-a64 -O3 -fpic -fno-semantic-interposition;
+                     C gcc-x64 -O2 -fPIC; D clang22-a64 -O2 -fPIC -fno-sem-int; E clang19-x64 -Os -fPIC;
+                     F gcc-a64 -O2 -fPIE (the non-PIC twin of A).  Run: xargs -P4 -d'\n' -n1 sh -c < jobs.txt
+    jobs2.txt        arpack-ng 3.9.1 gfortran P=-fPIC / Q=-fPIE (objf/).
+    bb-pic/ bb-pie/  busybox 1.36.1 defconfig, CFLAGS -fPIC / -fPIE (make -j4 in each; *.lst = object lists).
+    cx/              c1.cc, c2.c constructed idioms (arrays to their end, static members, inline vars,
+                     constexpr tables beside exported globals) x gcc/clang19/clang22/x86 gcc/clang x86
+                     x O0..Os x 8 flag sets; cx.mine.txt / cx.author.txt.
+                     Boundary false refusal: cx/c2.clang22-O2-fPIC.o (AArch64, `static int arr[10]; int after;`).
+    xt/              x1-x4.c x86 t-clause cases, built as xt/xN.<compiler>-<O>.o with -fPIC.
+                     python3 rule.py --hits xt/x4.x86_64-linux-gnu-gcc-O2.o -> refused
+                     (movl $99999,sz(%rip) named as exported gz); python3 xamb.py xt/*.o
+  xamb.py            checks the x86 `+4+t` clause against the true instruction end (objdump -dw):
+                     python3 xamb.py FILES...  -> WRONG/ok per t-sensitive use, TOTAL line.
+                     real false refusal: python3 xamb.py obj/C.abseil-cpp-20240722.0_absl_time_format.cc.o
+                     needs-t case: tmp/asan_rtl.o (from libasan.a, x86-64).
+  gt.py              ground truth for the gap: python3 gt.py PIC_OBJ PIE_OBJ ...  (pairs; bound defs = own exported
+                     data reached through the GOT in the -fPIC twin; SYMBOL / RULE / UNSEEN; REFUSED / ESCAPES).
+                     gt.abseil.txt (A vs F), gt.author-a64.txt (author's corpus), gt.fortran.txt.
+                     Escapes: absl/base/internal/raw_logging.cc, absl/time/format.cc (config F).
+  anchordec.py       Q21 option (a): python3 anchordec.py --scope=block|func FILES  (dec.*.txt);
+  gtdec.py           compares gt UNSEEN with anchordec hits:  python3 gtdec.py gt.abseil.txt dec.F.txt
+  sig.py             closure candidates OVER / S1 (no self-GOT) / S2: python3 sig.py FILES
+
+Attack 2 (verifier rows built with references)
+  wlibs/run.sh       builds W20 (mold IRELATIVE exported), W22 (mold DT_INIT 0), W24 (lld22 .ctors),
+                     W31 (lld22 -Bsymbolic + dynamic-list), W43 (lld22 x86-64 TLS GD, pre/pre4 interposers),
+                     prints the bytes each P-R reads (readelf -d / -r / -S) and the run outputs under qemu.
+  w28/               GNU ld -shared -static attempts (refused on 64-bit).
+
+Attack 3 (version scripts)
+  vs/vmodel.py       own model of resolve 9.7 + rule 12 from the text (modes gnu / mortar).
+  vs/scripts.py      the 60 new scripts (r01-r50 over vs/names.o, s01-s10 .symver over vs/sv.o).
+  vs/runvs.py        links each with GNU ld 2.44 (and lld22, mold), compares with the model: python3 vs/runvs.py > vs/runvs.out
+  vs/cmpauthor.py    my model vs exp2/vmatch2/model.py on the union of scripts (run after the above).
+
+Attack 4 (D-112 on x86-64)
+  bsym/run.sh        14 option lines x bfd/lld22/mold, x86-64 under qemu-x86_64; bits FUNC OBJECT NOTYPE TLS IFUNC.

@@ -1,0 +1,14 @@
+clang-a64.pie objects 54
+clang-a64.pie use	a64	ABS	DATA	DATA	start=end-of-local	section	2
+clang-a64.pie use	a64	ABS	NONALLOC	FUNC	inside	section	16602
+clang-a64.pie use	a64	ABS	NONALLOC	FUNC	start	section	1376
+clang-a64.pie use	a64	LO12	CODE	DATA	start=end-of-local	section	2
+clang-a64.pie use	a64	PC	CODE	DATA	start=end-of-local	section	2
+clang-a64.pie use	a64	PC	EH	FUNC	start	section	1007
+clang-a64.pie use	a64	RULE	ABS	DATA	start	section	2
+clang-a64.pie use	a64	RULE	LO12	CODE	start	section	2
+clang-a64.pie use	a64	RULE	PC	CODE	start	section	2
+clang-a64.pie overapprox-objects 5
+clang-a64.pie overapprox-objects-with-unnamed-def 5
+clang-a64.pie objects-with-data-hit 2
+clang-a64.pie RULE-objects-refused 2

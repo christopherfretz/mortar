@@ -1417,6 +1417,15 @@ a *merged* section:
    - **R1, R2 or R3** otherwise;
    - **`piece-not-locatable`** if there are no candidates at all.
 
+When a group is decided does not change its verdict, only how long its
+members are held (WP-109). A group whose section no other object can
+name (the section defines no symbol that is not `STB_LOCAL`) has all its
+members once the objects are read past its own, so it is decided then;
+the others, and every group when the objects are not read in order, are
+decided after the last section. Before WP-109 every group waited for the
+end: tens of millions of members on a `-g` link (`.debug_info`'s
+references to `.debug_str`), the verifier's largest structure.
+
 ### 5.7 Discarded targets (R5)
 
 A relocation of a placed section whose symbol's section is discarded or
@@ -1502,6 +1511,88 @@ or absent holds the linker's *tombstone*, compared in the field's width:
   other than the column's is R1.
 
 Verified tombstones count under `tombstone` (§7.2).
+
+**A target only a shared library defines** (stage 3, WP-104; the
+ruling of the RB-1 defect, `spec/landed/harness/WP-100.md` §5). Nothing
+relocates a non-alloc section at run time (`spec/arch.md` §4.3
+"Non-alloc places", `spec/a64.md` §13.2), so such a field cannot hold
+the address the loader gives a library's symbol; it holds the
+symbol's *link-time* value. The rule, for a record of a placed section
+without `SHF_ALLOC` in a dynamic output (`PT_DYNAMIC`, §12) whose
+symbol is a name of binding `STB_GLOBAL`, `STB_WEAK` or
+`STB_GNU_UNIQUE` (any visibility of the reference: a `.hidden` or
+`.protected` undefined reference is the same record) such that:
+
+1. the output's `.symtab` has no defined global of the name (a name
+   the output defines, a copy allocation included, is §4.4 step 1's:
+   S is that definition; the copy itself is judged by P-D11, which
+   holds every alias of the library's definition at the `COPY`
+   record's place);
+2. no input object has a placed definition of it (§4.4 step 2); and
+3. a shared object of the loader's order (§12.1: the executable's
+   `DT_NEEDED` entries breadth-first) has a visible definition of it
+   (`.dynsym`, `st_shndx` not `SHN_UNDEF`, not `STV_HIDDEN` or
+   `STV_INTERNAL`; the first such object is the *library*, its entry's
+   `st_value` is `v` and its type `t`).
+
+Then S is:
+
+- **the copy** when the output's `.dynsym` defines the name
+  (`st_shndx` not `SHN_UNDEF`): no input defines it (item 2), so the
+  definition is a `COPY` record's allocation, and P-D11 holds every
+  alias of the library's definition at that record's place; S is that
+  `st_value`. (Item 1 sends a name `.symtab` defines to §4.4, with the
+  same value; `.dynsym` decides when `.symtab` does not name it, as in
+  mortar's outputs);
+- **the canonical PLT entry** when the output is `ET_EXEC` and its
+  `.dynsym` has an entry of the name with `st_shndx = SHN_UNDEF` and a
+  non-zero `st_value` (`spec/dyn.md` D-44: that value is the symbol's
+  address in the whole program; P-D9 and P-D13 judge the entry): S is
+  that `st_value`. The verifier reads this from the output's `.dynsym`,
+  not from its own D-43/D-44 decision, because P-D7 and P-D9 already
+  hold the output's choice to that decision;
+- **0** otherwise. An ordinary PLT entry (a PIE's, or one no address is
+  taken of), an IPLT entry for a library's IFUNC, a GOT slot and the
+  loader's address of the definition are *not* the symbol's address.
+
+The field is then decided by §5.2 with, by the record's operation:
+
+| operation (types) | X |
+|---|---|
+| absolute (`R_AARCH64_ABS64`/`ABS32`/`ABS16`; `R_X86_64_64`/`32`/`32S`; `R_386_32`, REL's implicit addend read from the input) | S + A |
+| PC-relative (`R_AARCH64_PREL64`/`PREL32`/`PREL16`; `R_X86_64_PC64`/`PC32`; `R_386_PC32`) | S + A − P, P the place (`sh_addr` of the output section, 0, plus the offset: §5.8) |
+| DTP offset (`R_X86_64_DTPOFF64`/`DTPOFF32`; `R_AARCH64_TLS_DTPREL64`, `R_386_TLS_LDO_32`) when `t` is `STT_TLS` | 0 + A, whether or not the output has a `PT_TLS` |
+
+and every other operation falls to the general procedure (§5.1). A
+record whose operation is absolute or PC-relative while `t` is
+`STT_TLS` is P-D12 "a non-TLS data word in a non-alloc section against
+'...', whose shared definition is STT_TLS (refused by name: spec/a64.md
+§13.2, spec/arch.md §4.3)", whatever the field holds: GNU ld refuses
+it ("bad value"), and so does mortar. An undefined weak no shared
+object defines is not this rule's (item 3 fails): it is §4.4's
+undefined weak, X = A for a PC-relative type on AArch64 (S = P) and
+S = 0 on x86. i386 dynamic outputs are outside stage 3 (§12.1), so
+the i386 rows are the references' measurement, not judged.
+
+A field that differs is R1, and its message names what the field holds
+when it is one of the references' conventions, after "the relocated
+field holds the wrong value (a word against 'n', which only a shared
+library defines, holds its link-time value (copy, canonical PLT entry or 0) + A: spec/plumb.md §5.8)":
+"; it holds the library's PLT entry" (A37, A40), "; it holds 0, the
+addend dropped" (A38), "; it holds the library's st_value" (A39),
+"; it holds A − the PT_TLS address" (A42). The anomaly a suffix names
+is accepted only from its linker (§10.2), never from mortar's map. The
+rule is in `crates/mortar_plumb/src/dsoword.rs`.
+
+Measured (WP-104, `spec/landed/plumb/WP-104.md`, the table in §10.6):
+GNU ld on AArch64 writes exactly this rule's values on every variant;
+lld writes them for every PC-relative word and 0 for every absolute
+one (A38); GNU ld on x86-64 writes the PLT entry for a function or an
+IFUNC that has one in a PIE, and on AArch64 too in a non-PIE for a
+function the program only calls (A37); mold writes the library's `st_value`
+(A39) or the PLT entry (A40). Test:
+`tests/link/dyn/reloc/debug-word-shared.test` (the RB-1 defect's file,
+moved and extended), `tests/dyn.rs` `s5_8_a_word_against_a_shared_definition`.
 
 Observed (AArch64, GCC 14 `-g -O0`, the corpus's `debug-comdat`, and
 `-gdwarf-4 -O2 --gc-sections`, `debug-gc`): GNU ld redirects the dropped
@@ -2995,7 +3086,11 @@ cargo xtask plumb <output> --map <file> --map-format gnu|lld|mold|mortar
 ```
 
 The inputs are the files the map names, read from the paths it gives.
-Relative paths are taken from the current directory.
+Relative paths are taken from the current directory (no map format this
+verifier reads records the link's directory; a mortar map has no `cwd`
+record, §3.2). When the map names files and not one of them can be read,
+the command is a usage error naming the first file and the directory it
+looked in (WP-109): before, it judged every input I1.
 
 With `--inputs-from <file>`, only the map's files whose canonical path
 equals that of an entry in the response file are read; the others are I1.
@@ -3012,12 +3107,25 @@ effect (`-Bdynamic` and `--push-state`/`--pop-state` as the linker reads
 them). A library found nowhere adds nothing (WP-036: before it, every
 member of `libc.a` was I1 on a static hello).
 
+A file of the response file, or a library found, that is neither an ELF
+file nor an archive is read as a linker script (glibc's `libm.a` is
+`GROUP ( libm-2.41.a libmvec.a )`; WP-109: before, its two archives were
+I1 and every reference into them E4). It stands for the files of its
+`INPUT` and `GROUP` commands, an `AS_NEEDED` list inside them included,
+each a plain file name found as GNU ld finds it: an absolute name as it
+is, any other in the current directory and then the library directories
+in order; a name found nowhere adds nothing. `OUTPUT_FORMAT` names no
+file and is passed over. Any other command, an `-l` name inside the
+script, unbalanced parentheses or scripts nested more than 8 deep are a
+usage error naming the script, not a guess.
+
 The command prints the rendered findings and the coverage summary. It
 exits 0 when the report is clean, 1 on any finding, and 2 on a usage error
 or an unreadable output or map.
 
 Tests: `xtask/src/plumb.rs s8_arguments`, `s8_response_files`,
-`s8_libraries_are_resolved`.
+`s8_libraries_are_resolved`, `s8_linker_scripts_are_followed`,
+`s8_no_input_resolved_is_a_usage_error`.
 
 ```text
 cargo xtask plumb --equiv <X.map> <F.map> <X> <F>
@@ -3032,11 +3140,52 @@ line per side and for the pair. It exits 0 when both sides are clean
 and no P-E finding was made, 1 on any finding, and 2 on a usage error:
 a missing or extra argument, an option it does not take, an output or
 map it cannot read, a map that is not a mortar map, or an `X` map that
-claims no coverage (§3.2: a plain map given as `X`). Swapped arguments
+claims no coverage (§3.2: a plain map given as `X`), or maps none of
+whose files can be read from the current directory. Swapped arguments
 (a map where an output is expected) are one of these. It never panics:
 a truncated output is the side's findings (O1, S1) or exit 2.
 
 Tests: `xtask/src/plumb.rs s8_equiv_arguments`; `tests/equiv.rs`.
+
+### 8.1 Resources (WP-109)
+
+The verifier judges every link mortar is asked to make, so it must fit
+where the link fits. **The budget**: the verifier's peak resident set is
+at most twice the linker's peak on the same link, and at most 4 GB on the
+reference `-g` link (`cxx-large-g`, LLVM's clang with `-g`, linker peak
+1,958 MiB); `--equiv` holds two outputs and two engines, and is held to
+the same 4 GB. Time: a plain pass is linear in the records and bytes it
+judges; `--equiv` costs about two plain passes and a comparison linear in
+what it compares. Memory is saved by not holding data, never by skipping
+a rule: a rule that cannot be run within the budget is named in the
+coverage (§7.2), not dropped.
+
+What is held, and for how long:
+
+- the output, whole, for the run (every rule reads it);
+- the inputs the map names, whole, for the run (WP-109's design for
+  positioned reads, which hold an object's skeleton only, is in
+  `spec/landed/plumb/WP-109.md`);
+- per record, nothing after its verdict, except the members of a GOT
+  group (§5.5) and of a piece group (§5.6) until the group is decided
+  (§5.6: as early as its members are known);
+- `--equiv`: each side's traced form per record, keyed by input section
+  (§6.9), and its identity spans in a segment tree (each lookup
+  logarithmic in the spans, linear in those that hold the address).
+
+`MORTAR_PLUMB_PROFILE=1` (or `=<file>`) prints (or appends to the file,
+line by line, so a run killed at a memory cap keeps them) the resident
+set and its peak after each phase and the sizes of the large structures.
+It is the measurement of this section, not a rule; it changes no verdict.
+
+Measured (WP-109, the dev-profile verifier as the bench and CI run it):
+
+| link | plain: peak, time | `--equiv`: peak, time |
+|---|---|---|
+| protoc `-g` static (control) | 365 MB, 1.0 s | |
+| clang split (`cxx-large-split`) | 1.83 GB, 3.8 s | 4.7 GB, 22 s |
+| opt `-g` (`cxx-large-g-opt`) | 1.80 GB, 5.9 s | 3.4 GB, 17 s |
+| clang `-g` (`cxx-large-g`) | 3.85 GB, 15 s | not run (the two outputs alone are 2.3 GB) |
 
 ## 9. Validation
 
@@ -3804,6 +3953,58 @@ Static-pie (WP-089, §12.4; each shown by running a program, the cases of
   link; mold refuses the `PC32`/`PC64` data forms. Reproducer:
   `tests/dyn.rs` case `abspc`.
 
+A37–A43 are the references' conventions for a non-alloc word against a
+name only a shared library defines (§5.8 "A target only a shared
+library defines", WP-104; measured in §10.6). Nothing relocates such a
+word at run time, so none of them is a mislink of the program; each
+gives a debugger a value that is not the symbol's address (§10.6). Each
+is accepted from its linker only, never from mortar's map.
+
+- **A37 (GNU ld; x86-64, and AArch64 `-no-pie`).** A word against a
+  function or an IFUNC the library defines, for which the output has an
+  ordinary PLT entry (a PIE's, or a non-PIE's for a function the program
+  only calls), holds that entry's address + A (PC-relative: − P): R1
+  ending "; it holds the library's PLT entry". In an AArch64 or i386 PIE
+  GNU ld writes 0 + A. Reproducer: `tests/link/dyn/reloc/debug-word-shared.test`.
+- **A38 (lld).** An absolute word against a name the library defines
+  holds 0: the addend dropped (S + A with S = 0 would be A). R1 ending
+  "; it holds 0, the addend dropped"; with A = 0 lld's word is the
+  rule's. The same for a DTP-offset word against a library's TLS
+  symbol (`R_X86_64_DTPOFF64`/`DTPOFF32`, with or without a `PT_TLS`).
+  lld's PC-relative words are the rule's (A − P).
+- **A39 (mold).** An absolute word (and, on i386, a PC-relative one,
+  where mold also ignores P) against a data object the library defines
+  holds the library's `st_value` + A: an address in the library's own
+  numbering, of nothing in the program. R1 ending "; it holds the
+  library's st_value" (the RB-1 defect's finding on mold's outputs,
+  `spec/landed/harness/WP-100.md`). mold refuses a PC-relative
+  non-alloc word against an import on AArch64 and x86-64 ("relocation
+  ... cannot be used against symbol"), so those links have no output.
+- **A40 (mold).** A word against a function or an IFUNC the library
+  defines, for which the output has an ordinary PLT entry, holds that
+  entry's address + A: R1 ending "; it holds the library's PLT entry".
+- **A41 (lld, mold).** An absolute word against a library's `STT_TLS`
+  symbol is linked (lld: 0; mold: `st_value` + A), where GNU ld ("bad
+  value") and mortar refuse it by name: P-D12 "a non-TLS data word in a
+  non-alloc section against '...', whose shared definition is STT_TLS
+  (refused by name: ...)".
+- **A42 (GNU ld, mold).** A DTP-offset word against a library's TLS
+  symbol, in an output with a `PT_TLS` of its own, holds A − the
+  `PT_TLS` segment's `p_vaddr` (the reference computes the offset as if
+  the symbol were the executable's, at address 0); without a `PT_TLS`
+  both write 0 + A, the rule's. R1 ending "; it holds A − the PT_TLS
+  address".
+- **A43 (lld, AArch64).** A PC-relative non-alloc word against an
+  undefined weak no object defines holds A − P (S = 0), where §4.4 makes
+  S the place on AArch64 (X = A, as GNU ld and mortar write): R1 ending
+  "; it holds A − P, S = 0 for an undefined weak (spec/plumb.md §4.4,
+  §5.8)". On x86 all four write A − P (S = 0 there).
+
+lld also links a `.hidden` or `.protected` undefined reference that only
+a library defines (writing 0) and drops the library from `DT_NEEDED`:
+that is dyn.md W9, P-D6 (A36's family), declared where a test has it,
+not a §5.8 convention.
+
 On i386 (WP-028e, `tests/x86.rs`; x86.md §15.2): W1 (two readings of a
 `GOT32X` operand) is R8 under every map; W3 (mold's no-base GOT value
 G − `.got`) is R4, and its no-base `mov` → `lea` R1; W4 (mold's LE form
@@ -3946,6 +4147,52 @@ Observed (AArch64; GCC 14 and Clang; the corpus's `debug-comdat`,
 
 These are per-linker rules (§5.8), not anomalies: none is a defect by
 DWARF's text, and each is accepted only from its own linker.
+
+**A word against a name only a shared library defines** (WP-104, the
+RB-1 defect; §5.8's rule; GNU ld 2.44, lld 19, mold 2.37, Debian 13's
+cross toolchains; AArch64, x86-64, i386; `-pie` with the inputs
+`-fPIE`, and non-PIE `-no-pie`; one test per type and mode, every word
+in a `.debug_` section). A is the addend, P the place, `st` the
+library's `st_value`, `plt` the output's ordinary PLT entry, `copy` and
+`canon` the output's copy and canonical PLT entry:
+
+| reference against | GNU ld | lld | mold | rule (mortar) |
+|---|---|---|---|---|
+| data object, PIE, absolute | 0 + A | 0 (A38) | st + A (A39) | 0 + A |
+| function or IFUNC, PIE, absolute | 0 + A (AArch64, i386); plt + A (x86-64, A37) | 0 (A38 if A ≠ 0) | plt + A (A40) | 0 + A |
+| any import, PIE, PC-relative | A − P (x86-64 function: plt + A − P, A37) | A − P | refused (AArch64, x86-64); i386 st + A, P ignored (A39) | A − P |
+| protected in the library; weak reference the library defines; a name only debug words reference | 0 + A | 0 | st + A (A39) | 0 + A |
+| data object, non-PIE (copied) | copy + A | copy + A | copy + A | copy + A |
+| function, non-PIE (address taken) | canon + A | canon + A | canon + A | canon + A |
+| function, non-PIE (only called: an ordinary PLT entry) | plt + A (A37) | 0 (A38) | plt + A (A40) | 0 + A |
+| undefined weak, no definition, PC-relative | AArch64 A (S = P), x86 A − P | A − P (AArch64: A43) | A − P | §4.4 |
+| library `STT_TLS`, absolute | refused ("bad value") | 0 (A41) | st + A (A41) | refused by name (P-D12) |
+| library `STT_TLS`, `DTPOFF64`/`DTPOFF32`, no `PT_TLS` | 0 + A | 0 (A38) | 0 + A | 0 + A |
+| the same, the output has a `PT_TLS` | A − `PT_TLS` p_vaddr (A42) | 0 (A38) | A − p_vaddr (A42) | 0 + A |
+| `.hidden` undefined reference | refused | 0, library dropped (P-D6) | refused | refused |
+| `.protected` undefined reference | refused | 0, library dropped (P-D6) | st + A (A39) | 0 + A |
+
+AArch64's `R_AARCH64_TLS_DTPREL64` in a non-alloc section against a
+library's TLS symbol is refused by all three references and by mortar.
+i386 rows are measured only: mortar refuses every i386 dynamic output
+and stage 3 does not judge one (§12.1). GNU ld and lld differ on the
+DTP offset with a `PT_TLS` (A − p_vaddr against 0); the rule's 0 + A is
+GNU ld's value without one and the value the offset has in no module,
+and is the supervisor's ruling (WP-104).
+
+**What a debugger does with the word** (WP-104; gdb 16.3, lldb 19.1.7;
+Clang 22 `-g -O2`, whose `DW_TAG_variable` `_vtable$` of a class with a
+library-defined vtable, `std::bad_alloc`'s `_ZTVSt9bad_alloc`, is a
+`DW_OP_addrx` into `.debug_addr`): neither debugger reads `_vtable$`.
+gdb prints `static _vtable$ = <optimized out>` and `info vtbl` reads the
+object's vtable pointer; lldb finds no `_vtable$` variable. Both behave
+the same with 0 (GNU ld, lld, mortar), the library's `st_value` (mold)
+and a PLT entry (a patched copy of GNU ld's output). A consumer that
+did read it would see 0 as "no address" but would take `st_value` for
+an address of the executable (of nothing, or of the wrong object) and a
+PLT entry for code: `image lookup` names it "symbol stub for:
+std::bad_alloc::what() const". So the tombstone 0 + A is the only one of
+the three a consumer can tell from an address.
 
 ## 11. Open questions
 
@@ -4267,7 +4514,10 @@ from the file system (`line::Files`).
   `0x6000_0000_0000 + 0x1000·n`). In view 3 every use must reach the
   definition, except a use whose field cannot hold any library address
   (R2: an input's 32-bit absolute use in a no-PIE executable), which
-  fails only when another use does reach it (a split: W12, F2). An import
+  fails only when another use does reach it (a split: W12, F2). A use
+  in a section without `SHF_ALLOC` is not a use here: nothing relocates
+  it at run time, so view 3 does not judge it (view 1 does, by §5.8:
+  WP-104, lld's exported weak key in a PIE). An import
   is `Target::Tls` at its fake TLS address; the kept GD, LD and
   descriptor sequences are judged against the GOT pair the loader wrote;
   GNU ld's x86-64 GD to IE form (`mov %fs:0,%rax; add G(%rip),%rax`) is
@@ -4674,6 +4924,200 @@ made a `RELATIVE` on a `.data` word no record writes, view 1 unchanged),
 made `DT_NEEDED`), `spie-relacount` (plus and minus one; minus one is
 equivalent for a reference: glibc applies that record as an ordinary
 one), `spie-dynamic-word` (the GOT's `_DYNAMIC` word 0 or plus 8).
+
+### 12.5 Shared objects (M4; planned: WP-121)
+
+Requests P-R1-P-R11 of `spec/dyn.md` §18.3, applied by WP-115 as rules
+P-D16-P-D26 (P-R*n* is P-D(15+*n*)). Until WP-121 lands, P-D1 rejects
+an `ET_DYN` without `DF_1_PIE` and without `PT_INTERP` that is not a
+static-pie, as today. The `D-` rules cited are `spec/dyn.md` §17's; D-117
+items 1-9 are its "Bound use through a register" and are cited, not
+restated: the verifier implements them from that text.
+
+A shared object cannot be judged "resolves as the program assumed" from
+the library alone: what a preemptible reference binds to depends on the
+process (D-112). **The interposer stands in for the host.** P-D9's
+loader model runs with a synthetic first module, the interposer, in
+place of an executable. It defines **every key the verifier computes as
+exported** (D-110: the whole export set, preemptible and bound alike)
+**and every key the inputs import**, each at a fresh address: a
+function at a fresh code address, data at a fresh allocation of its
+`st_size`, a TLS key at a fresh offset in a second module's block, as a
+preloaded library would. Both sets and each key's binding are
+**recomputed** from the inputs and the map's record of the line (the
+`-Bsymbolic` forms in order, `--dynamic-list` and version-script files,
+`--exclude-libs`, `-soname`, `-init`/`-fini`: D-110, D-112, D-114),
+never read from the output's `.dynsym`, `.gnu.version_d` or
+`DF_SYMBOLIC`. Two views:
+
+- **view A**: no interposer; a defined key resolves to the library's
+  own definition, an import to its definition in the shared inputs
+  (P-D2), at P-D9's two load biases;
+- **view B**: the interposer first in lookup order.
+
+The loader model resolves every record of the output by the symbol it
+names, as glibc would. Each input relocation's place must hold, in both
+views, the value the input computes with `S` the **expected**
+definition: the library's own for a key the verifier computes as bound,
+in both views and whatever the interposer defines; the interposer's for
+a preemptible key or an import in view B. So a record that names a
+bound key resolves to the interposer in view B and its place differs
+from the expected value, and P-D25 names the cause. This is P-D9's view
+3 generalised from `WeakDyn` keys to every exported and imported key,
+and what turns P-D9's equality into a check of D-112.
+
+- **P-D16 (accept; request P-R1).** P-D1 accepts `ET_DYN` without
+  `DF_1_PIE` and without `PT_INTERP`, and with no static-pie line
+  (`-static-pie` absent from the map's line), as `Shared`; the kind is
+  recomputed from the headers and the line (`-shared`) and must agree.
+  P-D2-P-D15 apply with this section's changes: P-D4 has no `PT_PHDR`
+  and no `PT_INTERP` rule for `Shared` (D-100: mortar writes neither; a
+  reference's `PT_PHDR` is accepted); P-D9 runs views A and B in place
+  of its views 1 and 3 (view 2, a second load bias, stays, within view
+  A); P-D12 is replaced by P-D26; P-D7's set is P-D19's.
+- **P-D17 (the views; request P-R2).** *Recomputed:* for every relocation
+  of an `SHF_ALLOC` place of a live input (`.eh_frame` and the LSDA
+  included: checked by value, not by the address clause), the expected
+  value in each view. *Read:* the place's bytes after the loader model
+  applies the output's records. *Reported:* a place whose value differs
+  in either view, naming the input relocation, the view and the key.
+  **The address clause** (D-117): a use whose named address lies in a
+  preemptible data definition is reported even when both views agree
+  on its value. The named address is computed by the verifier's own
+  implementation, written from D-117's text, of (a) the relocation-level
+  rule with its scope (exact fields only; on x86 no PC-relative code
+  field is judged, so there is no x86 instruction decoder in the
+  verifier), its boundary rule and its "before the start" paragraph (a
+  known refusal of correct code, reported like the linker's), and (b)
+  on AArch64 the analysis, D-117 items 1-9 (an AArch64 def-use decoder
+  of the verifier's own). Each part is checked, off the gate, against
+  the oracle `tests/shared-design/exp3/s1d.py` on the record's corpora
+  (same refused objects, same definitions). *Not checked:* non-alloc
+  places (debug sections hold link-time addresses by design); the
+  residual hole D-117 names (asserted not caught, by a test).
+- **P-D18 (IFUNC; request P-R3).** Every use of one IFUNC key, in every
+  place and both views, yields one address: the IPLT entry for a bound
+  key, the interposer's or the resolver's record for a preemptible one
+  (W21). An i386 `Shared` output has no `STT_GNU_IFUNC` symbol and no
+  `IRELATIVE` record (D-130).
+- **P-D19 (`.dynsym`; request P-R4).** *Recomputed:* the export set
+  (D-110, `__start_`/`__stop_` `PROTECTED` included) with each entry's
+  binding, type, visibility and version (D-115). *Read:* `.dynsym`'s
+  defined entries and `.gnu.version`. *Reported:* a defined entry
+  missing, extra or with a field or version that differs. Imports are
+  P-D7's import rule and P-D8, unchanged.
+- **P-D20 (forbidden forms; request P-R5).** Reported, each by name: a
+  `COPY` record; a canonical PLT (`SHN_UNDEF` with a non-zero
+  `st_value`); `DT_TEXTREL`; a dynamic record whose place is in a
+  `PT_LOAD` without `PF_W` outside `PT_GNU_RELRO`; an LE TLS form in the
+  output's code (D-117, D-119, D-122); an output section `.ctors` or
+  `.dtors` (their input goes to `.init_array`/`.fini_array`, D-124).
+  i386: every place the output resolves to a PLT entry or GOT slot comes
+  from an input relocation whose form sets `%ebx` (`PLT32`, `GOT32X`
+  with a base register; D-130).
+- **P-D21 (segments; request P-R6).** Each `PT_LOAD` has `p_align` the
+  max page size and `p_offset ≡ p_vaddr (mod p_align)` (glibc checks
+  only the page, D-123).
+- **P-D22 (`.dynamic` of a shared object; request P-R7).** In addition
+  to P-D6 with D-102's rows: `DT_SYMBOLIC` and `DF_SYMBOLIC` present iff
+  the line's last `-Bsymbolic` form is `-Bsymbolic` and the line has no
+  `--dynamic-list` (D-112, D-102, D-103); `DT_INIT`/`DT_FINI` point at
+  defined, live code (D-124); `DT_SONAME` the `-soname` string;
+  `DT_VERDEF`/`DT_VERDEFNUM` consistent with `.gnu.version_d` (D-115);
+  `GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS` present iff an input
+  has it (D-112).
+- **P-D23 (mutations; request P-R8).** Each wrong output of `spec/dyn.md`
+  §17.7, written into a correct mortar library (or, where it concerns
+  the executable, a host), is reported by the rule the table below
+  names, and each row is a test (`dynmutate.rs`); a row marked NOT
+  caught is a test that asserts it is not.
+- **P-D24 (executables: a copy of locally bound data; request P-R9).**
+  P-D11 gains, for `Exec` and `Pie`: a `COPY` of a definition its
+  library binds locally (`DT_SYMBOLIC`/`DF_SYMBOLIC`, or a `.note.mason`
+  row with `NONPREEMPTIBLE`, odr.md O-60) whose `st_value` lies in a
+  writable `PT_LOAD` of that library outside `PT_GNU_RELRO`, or in no
+  `PT_LOAD`, is reported (`spec/dyn.md` D-43a; WP-122 owns this rule's
+  body in `dyncheck.rs`, WP-121 its call). Decided from the library's
+  program headers and `.dynamic`, as the linker's rule.
+- **P-D25 (records name only preemptible keys; request P-R10; amends
+  P-D9 for `Shared`).** No dynamic record of a `Shared` output names
+  (`r_sym` not 0) a key the verifier computes as bound (D-112: hidden,
+  protected, local by a version script, `-Bsymbolic`,
+  `-Bsymbolic-functions` for a function, unlisted by `--dynamic-list`).
+  A use of a bound key that needs a record has one of these kinds, with
+  `r_sym` 0: AArch64 `R_AARCH64_RELATIVE` (1027), `IRELATIVE` (1032),
+  `TLS_DTPMOD64` (1028), `TLS_TPREL64` (1030), `TLSDESC` (1031); x86-64
+  `R_X86_64_RELATIVE` (8), `IRELATIVE` (37), `DTPMOD64` (16), `TPOFF64`
+  (18), `TLSDESC` (36, refused as an input form by x64.md §6.2 until a
+  compiler emits it); i386 `R_386_RELATIVE` (8), `IRELATIVE` (42, never
+  in i386 `Shared`: D-130), `TLS_DTPMOD32` (35), `TLS_TPOFF` (14),
+  `TLS_DESC` (41). Every other kind with `r_sym` 0 is reported (P-D9's
+  `RELATIVE`/`IRELATIVE` symbol-0 rule stays).
+- **P-D26 (TLS in a shared object; request P-R11; replaces P-D12's
+  executable forms for `Shared`; D-119).** Per model and binding, the
+  records of a live TLS use are:
+  - GD and LD against a preemptible key or an import: `DTPMOD` +
+    `DTPOFF` (AArch64 `TLS_DTPMOD64` + `TLS_DTPREL64`, x86-64 `DTPMOD64`
+    + `DTPOFF64`, i386 `TLS_DTPMOD32` + `TLS_DTPOFF32`), both naming the
+    key; against a bound key: one `DTPMOD` with `r_sym` 0 per pair, the
+    offset word the static offset with no record (a `DTPOFF` record with
+    `r_sym` 0 holding the same offset is accepted from a reference);
+  - TLSDESC against a preemptible key or an import: one `TLSDESC`
+    naming the key (in `.rela.dyn` for mortar, D-119; in `.rela.plt`
+    from a reference); against a bound key: `TLSDESC` with `r_sym` 0 and
+    the offset as addend (RELA) or in the descriptor's second word
+    (i386 REL);
+  - IE against a preemptible key or an import: `TPREL64`/`TPOFF64`/
+    `TLS_TPOFF` naming the key; against a bound key: the same type with
+    `r_sym` 0 and the offset as addend (RELA) or in place (REL);
+  - LE: none (refused, P-D20).
+
+  No relaxation: the number of `__tls_get_addr` calls equals the
+  input's (D-119). `DF_STATIC_TLS` iff some IE slot exists. The values:
+  in view B a preemptible key's module and offset are the interposer's,
+  a bound key's the library's (P-D17). P-D12's D-16 direction (W14)
+  applies unchanged.
+
+What reports each wrong output of `spec/dyn.md` §17.7 (P-D23; the P-D
+rules are this section's, applied through P-D16; the table was redone
+by WP-110's third pass against the interposer above, P-D25 and P-D26):
+
+| wrong output | reported by |
+|---|---|
+| W19 (LE TLS against own TLS, AArch64) | P-D20 (LE form in a shared object's code); P-D26 (a live TLS use without its records) |
+| W20 (exported IFUNC bound) | P-D17, view B; P-D18 |
+| W21 (two addresses of one IFUNC) | P-D18 |
+| W22 (`DT_INIT = 0`, the function collected) | P-D22 |
+| W23 (`__start_` undefined, section dropped) | P-D17 (the input's relocation against `__start_cid_ref` computes the section's address; the output's place holds 0); not P-D19: the version script makes `__start_cid_ref` local, so it is outside the export set |
+| W24 (`.ctors` kept as an output section) | P-D20 |
+| W25 (text relocations in `.eh_frame`, i386) | P-D20 (record in a non-writable `PT_LOAD`; `DT_TEXTREL`) |
+| W26 (`%ebx`-relative IPLT entry as canonical address, i386) | P-D18 (no IFUNC in i386 `Shared`) |
+| W27 (hidden IFUNC called through an `%ebx` stub, i386) | P-D18 |
+| W28 (`-shared -static` C++ without `--eh-frame-hdr`, i386) | NOT caught: the image is what the line asks (no `--eh-frame-hdr`, so no `PT_GNU_EH_FRAME`); needs a check of the line, not the image (a `-shared` line with C++ unwind tables and no `--eh-frame-hdr`), proposed for WP-130 (i386), which reduces the root cause the record lists as untraced (D-100's `-shared -static` cell) |
+| W29 (`-shared -static` C library crashes, mold i386) | NOT caught: the cause was not isolated (record §B); WP-130 (i386) reduces it to a record or a PLT form before a rule can name it |
+| W30 (a `COPY` of writable locally bound data) | P-D24 (executables) |
+| W31 (`DF_SYMBOLIC` with `--dynamic-list`) | P-D22; view B (P-D17) |
+| W32 (`ADR_PREL_LO21`, `LD_PREL_LO19`, `PREL32` without a record, AArch64) | P-D17, view B |
+| W33 (`PREL32` in `.data` bound; weak undefined non-zero) | P-D17, view B; P-D9 (P-D16) for the weak key |
+| W34 (`PC32` dynamic record truncated, x86-64) | P-D17: view A with P-D9's second bias gives a truncated value |
+| W35 (`PC32` call through an `%ebx` PLT, i386) | P-D20 (i386 clause) |
+| W36 (`GOT32X` without a base register, i386) | P-D20 (i386 clause) |
+| W37 (`GOTOFF` to a preemptible key, i386) | P-D17, view B |
+| W38 (`&f` of an import is a PLT stub, AArch64) | P-D17: view A's value is the import's definition, the place holds the stub |
+| W39 (`R_386_TLS_IE` in `.text` without `DT_TEXTREL`) | P-D20 (record in a non-writable `PT_LOAD`) |
+| W40 (`extern "C++" {*}` exports nothing) | P-D19 |
+| W41 (`NEEDED_INDIRECT_EXTERN_ACCESS` dropped) | P-D22 |
+| W42 (versioned reference unversioned, `DT_NEEDED` dropped) | P-D6, P-D8 (P-D16) |
+| W43 (TLS GD pair half bound, x86-64) | P-D25 (the `DTPMOD64` names `tv`, which `--dynamic-list` leaves bound) and P-D26 (a bound GD pair is `DTPMOD` with `r_sym` 0); P-D17, view B: the interposer defines `tv` (it is exported), the loader model resolves the `DTPMOD64` to the interposer's module while the offset is the library's, and the expected value is the library's own `tv` |
+| W44 (anchor+immediate bound use, AArch64) | P-D17's address clause (b): the verifier's analysis derives `.data + 4`, inside `g`, from the `ldr` that follows the anchor (both views agree on the value, the clause reports it). What D-117's residual hole names stays not caught, by the verifier as by the linker |
+| a use of a preemptible key bound locally through a named symbol (a `PREL32`, `ABS64` or `ADRP`/`ADD` resolved statically, no record) | P-D17, view B: the interposer defines the key, the place holds the library's own address |
+| an export missing from `.dynsym` | P-D19 (the defined set differs from the verifier's export set); P-D17, view B, for every record that should have named it |
+| a wrong version index on a defined entry or an import | P-D19 (a defined entry's version, D-115); P-D8 (an import's `.gnu.version` index against its Verneed and the shared definition's version, through P-D16) |
+| a `JUMP_SLOT` naming the wrong symbol index | P-D10 (the slot's record is against another key than its PLT entry's); P-D17, view B (the interposer defines both keys at distinct addresses, the call place reaches the wrong one); P-D25 too when the named key is bound |
+
+`[unmeasured]` for WP-121: its own implementation of D-117 against the
+oracle on every corpus of `spec/landed/dyn/WP-110.md` §G.1 (same
+verdicts); each row above as a mutation of a mortar library.
 
 ## 13. Stage 4: Mason metadata and the ODR table (M6)
 

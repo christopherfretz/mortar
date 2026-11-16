@@ -1,0 +1,494 @@
+# filtered from s1d.sys.txt (WP-115): only objects with rule>0 or ana>0, 38 of 11700 objects
+/usr/lib/aarch64-linux-gnu/libc.a(libc-tls.o) pre=1 rule=0 ana=9 words=102 funcs=2
+    ANA __libc_setup_tls+0xa8 ldst .bss+0x410 _dl_tls_max_dtv_idx boundary
+    ANA __libc_setup_tls+0xac ldst .bss+0x418 _dl_tls_dtv_slotinfo_list 
+    ANA __libc_setup_tls+0xc8 ldst .bss+0x410 _dl_tls_max_dtv_idx boundary
+    ANA __libc_setup_tls+0xd4 ldst .bss+0x420 _dl_tls_static_nelem 
+    ANA __libc_setup_tls+0xe0 ldst .bss+0x428 _dl_tls_static_align 
+    ANA __libc_setup_tls+0xe4 ldst .bss+0x430 _dl_tls_static_size 
+    ANA __libc_setup_tls+0x108 add .bss+0x448 _dl_static_dtv 
+    ANA __libc_setup_tls+0x10c ldst .bss+0x428 _dl_tls_static_align 
+    ANA __libc_setup_tls+0x12c ldst .bss+0x438 _dl_static_dtv 
+/usr/lib/aarch64-linux-gnu/libc.a(gconv_conf.o) pre=1 rule=17 ana=1 words=966 funcs=8
+    RULE .text+0x8 reloc275 .bss+0x0 __gconv_path_elem 
+    RULE .text+0x30 reloc286 .bss+0x0 __gconv_path_elem 
+    RULE .text+0x44 reloc275 .bss+0x0 __gconv_path_elem 
+    RULE .text+0x48 reloc277 .bss+0x0 __gconv_path_elem 
+    RULE .text+0x140 reloc275 .bss+0x0 __gconv_path_elem 
+    RULE .text+0x144 reloc277 .bss+0x0 __gconv_path_elem 
+    RULE .text+0x22c reloc275 .bss+0x0 __gconv_path_elem 
+    RULE .text+0x230 reloc286 .bss+0x0 __gconv_path_elem 
+    RULE .text+0xb68 reloc275 .bss+0x0 __gconv_path_elem 
+    RULE .text+0xb6c reloc277 .bss+0x0 __gconv_path_elem 
+    RULE .text+0xc44 reloc275 .bss+0x0 __gconv_path_elem 
+    RULE .text+0xc64 reloc286 .bss+0x0 __gconv_path_elem 
+    RULE .text+0xda0 reloc286 .bss+0x0 __gconv_path_elem 
+    RULE .text+0xee4 reloc275 .bss+0x0 __gconv_path_elem 
+    RULE .text+0xee8 reloc277 .bss+0x0 __gconv_path_elem 
+    RULE .text+0xf04 reloc275 .bss+0x0 __gconv_path_elem 
+    RULE .text+0xf10 reloc286 .bss+0x0 __gconv_path_elem 
+    ANA __gconv_get_path+0x168 ldst .bss+0x10 __gconv_max_path_elem_len 
+/usr/lib/aarch64-linux-gnu/libc.a(dcigettext.o) pre=1 rule=0 ana=4 words=1235 funcs=5
+    ANA __dcigettext+0x164 ldst .bss+0xa8 _nl_domain_bindings boundary
+    ANA __intl_freemem+0x1c ldst .bss+0xa8 _nl_domain_bindings boundary
+    ANA __intl_freemem+0x30 ldst .bss+0xa8 _nl_domain_bindings boundary
+    ANA __intl_freemem+0x50 ldst .bss+0xa8 _nl_domain_bindings boundary
+/usr/lib/aarch64-linux-gnu/libc.a(cxa_atexit.o) pre=1 rule=0 ana=3 words=143 funcs=3
+    ANA __internal_atexit+0x24 add .bss+0x8 __exit_funcs_lock 
+    ANA __internal_atexit+0x6c add .bss+0x8 __exit_funcs_lock 
+    ANA __internal_atexit+0xc4 add .bss+0x8 __exit_funcs_lock 
+/usr/lib/aarch64-linux-gnu/libc.a(libc_dlerror_result.o) pre=1 rule=2 ana=0 words=32 funcs=1
+    RULE .text+0x14 reloc541 .tbss+0x0 __libc_dlerror_result 
+    RULE .text+0x18 reloc542 .tbss+0x0 __libc_dlerror_result 
+/usr/lib/aarch64-linux-gnu/libc.a(aio_misc.o) pre=1 rule=0 ana=3 words=778 funcs=10
+    ANA handle_fildes_io+0x224 add .bss+0x20 __aio_new_request_notification boundary
+    ANA handle_fildes_io+0x2c4 add .bss+0x20 __aio_new_request_notification boundary
+    ANA __aio_enqueue_request+0x344 add .bss+0x20 __aio_new_request_notification boundary
+/usr/lib/aarch64-linux-gnu/libc.a(obstack.o) pre=1 rule=8 ana=0 words=291 funcs=7
+    RULE .text+0x38 reloc275 .data+0x0 obstack_exit_failure 
+    RULE .text+0x3c reloc285 .data+0x0 obstack_exit_failure 
+    RULE .text+0x100 reloc275 .data.rel.local+0x0 obstack_alloc_failed_handler 
+    RULE .text+0x104 reloc286 .data.rel.local+0x0 obstack_alloc_failed_handler 
+    RULE .text+0x1d4 reloc275 .data.rel.local+0x0 obstack_alloc_failed_handler 
+    RULE .text+0x1d8 reloc286 .data.rel.local+0x0 obstack_alloc_failed_handler 
+    RULE .text+0x340 reloc275 .data.rel.local+0x0 obstack_alloc_failed_handler 
+    RULE .text+0x344 reloc286 .data.rel.local+0x0 obstack_alloc_failed_handler 
+/usr/lib/aarch64-linux-gnu/libc.a(tzset.o) pre=1 rule=8 ana=7 words=1152 funcs=12
+    RULE .text+0xba0 reloc275 .data.rel.local+0x0 __tzname 
+    RULE .text+0xba4 reloc277 .data.rel.local+0x0 __tzname 
+    RULE .text+0xe1c reloc275 .data.rel.local+0x0 __tzname 
+    RULE .text+0xe24 reloc277 .data.rel.local+0x0 __tzname 
+    RULE .text+0xf10 reloc275 .data.rel.local+0x0 __tzname 
+    RULE .text+0xf14 reloc277 .data.rel.local+0x0 __tzname 
+    RULE .text+0xfa8 reloc275 .data.rel.local+0x0 __tzname 
+    RULE .text+0xfac reloc277 .data.rel.local+0x0 __tzname 
+    ANA __tzset_parse_tz+0x7c ldst .data.rel.local+0x0 __tzname 
+    ANA __tzset_parse_tz+0x80 ldst .bss+0x70 __daylight boundary
+    ANA __tzset_parse_tz+0x84 ldst .bss+0x78 __timezone 
+    ANA tzset_internal+0x154 ldst .data.rel.local+0x0 __tzname 
+    ANA tzset_internal+0x170 ldst .bss+0x70 __daylight boundary
+    ANA tzset_internal+0x174 ldst .bss+0x78 __timezone 
+    ANA __tzset+0x58 ldst .data.rel.local+0x0 __tzname 
+/usr/lib/aarch64-linux-gnu/libc.a(getdate.o) pre=1 rule=0 ana=1 words=427 funcs=2
+    ANA getdate+0x40 ldst .bss+0x38 getdate_err boundary
+/usr/lib/aarch64-linux-gnu/libc.a(getopt.o) pre=1 rule=12 ana=9 words=898 funcs=6
+    RULE .text+0xcd4 reloc275 .data+0x0 optind 
+    RULE .text+0xcdc reloc277 .data+0x0 optind 
+    RULE .text+0xce8 reloc285 .data+0x0 optind 
+    RULE .text+0xd10 reloc285 .data+0x0 optind 
+    RULE .text+0xd40 reloc275 .data+0x0 optind 
+    RULE .text+0xd48 reloc277 .data+0x0 optind 
+    RULE .text+0xd54 reloc285 .data+0x0 optind 
+    RULE .text+0xd84 reloc285 .data+0x0 optind 
+    RULE .text+0xdb8 reloc275 .data+0x0 optind 
+    RULE .text+0xdc0 reloc277 .data+0x0 optind 
+    RULE .text+0xdcc reloc285 .data+0x0 optind 
+    RULE .text+0xdfc reloc285 .data+0x0 optind 
+    ANA _getopt_internal+0x2c ldst .data+0x4 opterr 
+    ANA _getopt_internal+0x40 ldst .bss+0x38 optarg boundary
+    ANA _getopt_internal+0x48 ldst .data+0x8 optopt 
+    ANA getopt+0x30 ldst .data+0x4 opterr 
+    ANA getopt+0x4c ldst .bss+0x38 optarg boundary
+    ANA getopt+0x54 ldst .data+0x8 optopt 
+    ANA __posix_getopt+0x30 ldst .data+0x4 opterr 
+    ANA __posix_getopt+0x4c ldst .bss+0x38 optarg boundary
+    ANA __posix_getopt+0x54 ldst .data+0x8 optopt 
+/usr/lib/aarch64-linux-gnu/libc.a(regex.o) pre=1 rule=15 ana=0 words=15136 funcs=80
+    RULE .text+0xe0cc reloc275 .bss+0x0 re_syntax_options 
+    RULE .text+0xe0e0 reloc286 .bss+0x0 re_syntax_options 
+    RULE .text+0xe164 reloc275 .bss+0x0 re_syntax_options 
+    RULE .text+0xe16c reloc286 .bss+0x0 re_syntax_options 
+    RULE .text+0xe170 reloc286 .bss+0x0 re_syntax_options 
+    RULE .text+0xe950 reloc275 .bss+0x0 re_syntax_options 
+    RULE .text+0xe954 reloc277 .bss+0x0 re_syntax_options 
+    RULE .text+0xe9a0 reloc277 .bss+0x0 re_syntax_options 
+    RULE .text+0xe9c0 reloc286 .bss+0x0 re_syntax_options 
+    RULE .text+0xea34 reloc277 .bss+0x0 re_syntax_options 
+    RULE .text+0xea94 reloc275 .bss+0x0 re_syntax_options 
+    RULE .text+0xea98 reloc277 .bss+0x0 re_syntax_options 
+    RULE .text+0xeaa8 reloc277 .bss+0x0 re_syntax_options 
+    RULE .text+0xecf4 reloc275 .bss+0x0 re_syntax_options 
+    RULE .text+0xecf8 reloc277 .bss+0x0 re_syntax_options 
+/usr/lib/aarch64-linux-gnu/libc.a(ttyname.o) pre=1 rule=4 ana=0 words=48 funcs=1
+    RULE .text+0x38 reloc275 .bss+0x0 __ttyname_freemem_ptr 
+    RULE .text+0x3c reloc286 .bss+0x0 __ttyname_freemem_ptr 
+    RULE .text+0x54 reloc286 .bss+0x0 __ttyname_freemem_ptr 
+    RULE .text+0x90 reloc286 .bss+0x0 __ttyname_freemem_ptr 
+/usr/lib/aarch64-linux-gnu/libc.a(brk.o) pre=1 rule=2 ana=0 words=17 funcs=1
+    RULE .text+0x10 reloc275 .bss+0x0 __curbrk 
+    RULE .text+0x14 reloc286 .bss+0x0 __curbrk 
+/usr/lib/aarch64-linux-gnu/libc.a(error.o) pre=1 rule=9 ana=2 words=328 funcs=6
+    RULE .text+0xd0 reloc275 .bss+0x0 error_message_count 
+    RULE .text+0xd4 reloc285 .bss+0x0 error_message_count 
+    RULE .text+0xdc reloc285 .bss+0x0 error_message_count 
+    RULE .text+0x1c4 reloc275 .bss+0x8 error_print_progname 
+    RULE .text+0x1c8 reloc286 .bss+0x8 error_print_progname 
+    RULE .text+0x320 reloc275 .bss+0x0 error_message_count 
+    RULE .text+0x324 reloc277 .bss+0x0 error_message_count 
+    RULE .text+0x370 reloc277 .bss+0x0 error_message_count 
+    RULE .text+0x39c reloc277 .bss+0x0 error_message_count 
+    ANA __error_at_line_internal+0x38 ldst .bss+0x10 error_one_per_line 
+    ANA __error_at_line_internal+0x9c ldst .bss+0x8 error_print_progname 
+/usr/lib/aarch64-linux-gnu/libc.a(init-misc.o) pre=1 rule=3 ana=1 words=24 funcs=1
+    RULE .text+0x34 reloc275 .data.rel.local+0x0 __progname 
+    RULE .text+0x3c reloc277 .data.rel.local+0x0 __progname 
+    RULE .text+0x40 reloc286 .data.rel.local+0x0 __progname 
+    ANA __init_misc+0x48 ldst .data.rel.local+0x8 __progname_full 
+/usr/lib/aarch64-linux-gnu/libc.a(rcmd.o) pre=1 rule=8 ana=0 words=1396 funcs=11
+    RULE .text+0x70 reloc275 .bss+0x0 __rcmd_errstr 
+    RULE .text+0x74 reloc286 .bss+0x0 __rcmd_errstr 
+    RULE .text+0x180 reloc275 .bss+0x0 __rcmd_errstr 
+    RULE .text+0x188 reloc286 .bss+0x0 __rcmd_errstr 
+    RULE .text+0x7e4 reloc275 .data+0x0 __check_rhosts_file 
+    RULE .text+0x7e8 reloc285 .data+0x0 __check_rhosts_file 
+    RULE .text+0xaa0 reloc275 .bss+0x0 __rcmd_errstr 
+    RULE .text+0xaa4 reloc277 .bss+0x0 __rcmd_errstr 
+/usr/lib/aarch64-linux-gnu/libc.a(herror.o) pre=1 rule=2 ana=0 words=84 funcs=2
+    RULE .text+0x2c reloc275 .data.rel.ro.local+0x0 h_errlist 
+    RULE .text+0x30 reloc277 .data.rel.ro.local+0x0 h_errlist 
+/usr/lib/aarch64-linux-gnu/libc.a(res_hconf.o) pre=1 rule=27 ana=13 words=757 funcs=7
+    RULE .text+0x54 reloc275 .bss+0x0 _res_hconf 
+    RULE .text+0x58 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0xb8 reloc275 .bss+0x0 _res_hconf 
+    RULE .text+0xbc reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x190 reloc275 .bss+0x0 _res_hconf 
+    RULE .text+0x1d8 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x36c reloc275 .bss+0x0 _res_hconf 
+    RULE .text+0x388 reloc275 .bss+0x0 _res_hconf 
+    RULE .text+0x394 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x60c reloc275 .bss+0x0 _res_hconf 
+    RULE .text+0x610 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x624 reloc275 .bss+0x0 _res_hconf 
+    RULE .text+0x628 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x724 reloc275 .bss+0x0 _res_hconf 
+    RULE .text+0x728 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x764 reloc275 .bss+0x0 _res_hconf 
+    RULE .text+0x768 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x7e4 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x88c reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x904 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x9ac reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0x9d0 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0xa14 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0xadc reloc275 .bss+0x0 _res_hconf 
+    RULE .text+0xae0 reloc277 .bss+0x0 _res_hconf 
+    RULE .text+0xb78 reloc275 .bss+0x18 _res_hconf 
+    RULE .text+0xb88 reloc285 .bss+0x18 _res_hconf 
+    ANA arg_bool+0x60 ldst .bss+0x40 _res_hconf 
+    ANA arg_bool+0x68 ldst .bss+0x40 _res_hconf 
+    ANA arg_bool+0xc4 ldst .bss+0x40 _res_hconf 
+    ANA arg_bool+0xcc ldst .bss+0x40 _res_hconf 
+    ANA arg_trimdomain_list+0x9c ldst .bss+0x18 _res_hconf 
+    ANA arg_trimdomain_list+0xb0 ldst .bss+0x18 _res_hconf 
+    ANA do_init+0x40 ldst .bss+0x40 _res_hconf 
+    ANA do_init+0x44 ldst .bss+0x0 _res_hconf 
+    ANA do_init+0x48 ldst .bss+0x20 _res_hconf 
+    ANA do_init+0x29c ldst .bss+0x18 _res_hconf 
+    ANA do_init+0x2b0 ldst .bss+0x0 _res_hconf 
+    ANA _res_hconf_reorder_addrs+0x38 ldst .bss+0x40 _res_hconf 
+    ANA _res_hconf_trim_domain+0x24 ldst .bss+0x18 _res_hconf 
+/usr/lib/aarch64-linux-gnu/libc.a(gai_misc.o) pre=1 rule=10 ana=3 words=417 funcs=5
+    RULE .text+0x28 reloc275 .data+0x0 __gai_requests_mutex 
+    RULE .text+0x44 reloc277 .data+0x0 __gai_requests_mutex 
+    RULE .text+0xc4 reloc277 .data+0x0 __gai_requests_mutex 
+    RULE .text+0x128 reloc277 .data+0x0 __gai_requests_mutex 
+    RULE .text+0x148 reloc277 .data+0x0 __gai_requests_mutex 
+    RULE .text+0x214 reloc277 .data+0x0 __gai_requests_mutex 
+    RULE .text+0x354 reloc275 .data+0x0 __gai_requests_mutex 
+    RULE .text+0x36c reloc277 .data+0x0 __gai_requests_mutex 
+    RULE .text+0x3d4 reloc277 .data+0x0 __gai_requests_mutex 
+    RULE .text+0x5d8 reloc277 .data+0x0 __gai_requests_mutex 
+    ANA handle_requests+0xcc add .bss+0x20 __gai_new_request_notification 
+    ANA handle_requests+0x1b8 add .bss+0x20 __gai_new_request_notification 
+    ANA __gai_enqueue_request+0xa0 add .bss+0x20 __gai_new_request_notification 
+/usr/lib/aarch64-linux-gnu/libc.a(getsgent.o) pre=1 rule=0 ana=1 words=53 funcs=1
+    ANA getsgent+0x44 add .bss+0x10 __libc_getsgent_freemem_ptr boundary
+/usr/lib/aarch64-linux-gnu/libc.a(getsgnam.o) pre=1 rule=0 ana=4 words=100 funcs=1
+    ANA getsgnam+0x50 ldst .bss+0x8 __libc_getsgnam_freemem_ptr 
+    ANA getsgnam+0x90 ldst .bss+0x8 __libc_getsgnam_freemem_ptr 
+    ANA getsgnam+0xa8 ldst .bss+0x8 __libc_getsgnam_freemem_ptr 
+    ANA getsgnam+0x11c ldst .bss+0x8 __libc_getsgnam_freemem_ptr 
+/usr/lib/aarch64-linux-gnu/libc.a(dl-tls_init_tp.o) pre=1 rule=2 ana=0 words=95 funcs=2
+    RULE .text+0x78 reloc275 .bss+0x0 __nptl_initial_report_events 
+    RULE .text+0x88 reloc278 .bss+0x0 __nptl_initial_report_events 
+/usr/lib/aarch64-linux-gnu/libresolv.a(ns_parse.o) pre=1 rule=2 ana=0 words=303 funcs=4
+    RULE .text+0x8 reloc275 .rodata+0x0 _ns_flagdata 
+    RULE .text+0xc reloc277 .rodata+0x0 _ns_flagdata 
+/usr/lib/aarch64-linux-gnu/libresolv.a(res_debug.o) pre=1 rule=16 ana=8 words=2079 funcs=22
+    RULE .text+0x4b4 reloc275 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x4b8 reloc277 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x5b0 reloc277 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x5d0 reloc277 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x950 reloc275 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x954 reloc277 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0xa64 reloc275 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0xa6c reloc277 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0xd6c reloc275 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0xd8c reloc275 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x12f0 reloc275 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x12f4 reloc277 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x1364 reloc275 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x1368 reloc277 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x1704 reloc275 .data.rel.ro.local+0x0 __p_type_syms 
+    RULE .text+0x1708 reloc277 .data.rel.ro.local+0x0 __p_type_syms 
+    ANA do_section+0xc4 add .data.rel.ro.local+0x4f8 __p_update_section_syms 
+    ANA do_section+0xc8 add .data.rel.ro.local+0x570 __p_default_section_syms 
+    ANA do_section+0x1dc add .data.rel.ro.local+0x450 __p_class_syms 
+    ANA __fp_nquery+0xd8 add .data.rel.ro.local+0x5e8 __p_rcode_syms 
+    ANA __fp_nquery+0x1f8 add .data.rel.ro.local+0x570 __p_default_section_syms 
+    ANA __fp_nquery+0x4d8 add .data.rel.ro.local+0x4f8 __p_update_section_syms 
+    ANA __p_class+0x14 add .data.rel.ro.local+0x450 __p_class_syms 
+    ANA __p_rcode+0x14 add .data.rel.ro.local+0x5e8 __p_rcode_syms 
+/usr/lib/gcc/aarch64-linux-gnu/14/libgomp.a(env.o) pre=1 rule=4 ana=1 words=4737 funcs=24
+    RULE .text+0x874 reloc275 .bss+0x8 gomp_def_allocator_envvar 
+    RULE .text+0x878 reloc286 .bss+0x8 gomp_def_allocator_envvar 
+    RULE .text.exit+0x4 reloc275 .bss+0x8 gomp_def_allocator_envvar 
+    RULE .text.exit+0x8 reloc286 .bss+0x8 gomp_def_allocator_envvar 
+    ANA omp_display_env+0xb98 ldst .bss+0x8 gomp_def_allocator_envvar 
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc.a(class.o) pre=1 rule=0 ana=3 words=1493 funcs=24
+    ANA objc_get_class.part.0+0x3c ldst .bss+0x8 _objc_lookup_class boundary
+    ANA objc_getMetaClass+0x124 ldst .bss+0x8 _objc_lookup_class boundary
+    ANA objc_getRequiredClass+0x12c ldst .bss+0x8 _objc_lookup_class boundary
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc.a(init.o) pre=1 rule=2 ana=8 words=1185 funcs=16
+    RULE .text+0x11c8 reloc275 .data+0x0 __objc_runtime_threads_alive 
+    RULE .text+0x11d8 reloc285 .data+0x0 __objc_runtime_threads_alive 
+    ANA __objc_init_protocols.part.0+0x20 ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_init_protocols.part.0+0x5c ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_init_protocols.part.0+0x9c ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_exec_class+0x6c ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_exec_class+0x214 ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_exec_class+0x294 ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_exec_class+0x77c ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_exec_class+0x7c0 ldst .bss+0x18 __objc_runtime_mutex boundary
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc.a(sarray.o) pre=1 rule=0 ana=16 words=457 funcs=8
+    ANA sarray_at_put+0xbc ldst .bss+0x8 nbuckets boundary
+    ANA sarray_at_put+0xfc ldst .bss+0x8 nbuckets boundary
+    ANA sarray_new+0x68 ldst .bss+0xc narrays 
+    ANA sarray_new+0x78 ldst .bss+0xc narrays 
+    ANA sarray_new+0x84 ldst .bss+0x8 nbuckets boundary
+    ANA sarray_new+0x98 ldst .bss+0x8 nbuckets boundary
+    ANA sarray_realloc+0xd0 ldst .bss+0x10 idxsize 
+    ANA sarray_realloc+0xdc ldst .bss+0x10 idxsize 
+    ANA sarray_free+0x88 ldst .bss+0x8 nbuckets boundary
+    ANA sarray_free+0x98 ldst .bss+0x8 nbuckets boundary
+    ANA sarray_free+0xc4 ldst .bss+0xc narrays 
+    ANA sarray_free+0xd4 ldst .bss+0xc narrays 
+    ANA sarray_free+0x124 ldst .bss+0x8 nbuckets boundary
+    ANA sarray_free+0x12c ldst .bss+0x8 nbuckets boundary
+    ANA sarray_lazy_copy+0x90 ldst .bss+0xc narrays 
+    ANA sarray_lazy_copy+0x9c ldst .bss+0xc narrays 
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc.a(selector.o) pre=1 rule=2 ana=4 words=887 funcs=20
+    RULE .text+0xc94 reloc275 .bss+0x20 __objc_selector_max_index boundary
+    RULE .text+0xc98 reloc285 .bss+0x20 __objc_selector_max_index boundary
+    ANA __sel_register_typed_name+0xf0 ldst .bss+0x20 __objc_selector_max_index boundary
+    ANA __sel_register_typed_name+0xfc ldst .bss+0x20 __objc_selector_max_index boundary
+    ANA __sel_register_typed_name+0x190 ldst .bss+0x20 __objc_selector_max_index boundary
+    ANA sel_getName+0x60 ldst .bss+0x20 __objc_selector_max_index boundary
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc.a(sendmsg.o) pre=1 rule=40 ana=25 words=1810 funcs=32
+    RULE .text+0xbc reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xc4 reloc286 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xe4 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1bc reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1c4 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x204 reloc275 .bss+0x10 __objc_uninstalled_dtable 
+    RULE .text+0x208 reloc286 .bss+0x10 __objc_uninstalled_dtable 
+    RULE .text+0x568 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x570 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x584 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x5dc reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x654 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x734 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x740 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x754 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x7a4 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x7cc reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x8f8 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x900 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xa70 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xacc reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xb2c reloc286 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xb48 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xc58 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xc74 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xf18 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xf1c reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x102c reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1030 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1168 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x116c reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1510 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x151c reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x153c reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1584 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1618 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1974 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1978 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1ab4 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1acc reloc277 .bss+0x0 __objc_msg_forward2 
+    ANA __objc_get_forward_imp+0x3c ldst .bss+0x8 __objc_msg_forward 
+    ANA __objc_init_dispatch_tables+0x30 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_install_dtable_for_class+0x30 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_install_dtable_for_class+0x9c ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_install_dtable_for_class+0xc0 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_install_dtable_for_class+0x114 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_prepare_dtable_for_class+0x38 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_prepare_dtable_for_class+0x88 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_prepare_dtable_for_class+0xe4 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA get_implementation+0x27c ldst .bss+0x8 __objc_msg_forward 
+    ANA get_implementation+0x38c ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_responds_to+0x28 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_responds_to+0xb4 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_responds_to+0xdc ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA class_respondsToSelector+0x38 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA class_respondsToSelector+0xc4 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA class_respondsToSelector+0xec ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_update_dispatch_table_for_class+0x30 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_forward+0x40 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_forward+0x90 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_forward+0x184 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_forward+0x1cc ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_forward+0x1f0 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA class_getInstanceMethod+0x194 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA class_getInstanceMethod+0x1b8 ldst .bss+0x10 __objc_uninstalled_dtable 
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc.a(thr.o) pre=1 rule=14 ana=3 words=590 funcs=23
+    RULE .text+0x4 reloc275 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0xc reloc286 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x10 reloc286 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x34 reloc275 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x38 reloc277 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x504 reloc275 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x508 reloc277 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x5e8 reloc275 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x5ec reloc277 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x61c reloc275 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x620 reloc277 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x644 reloc286 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x8b4 reloc275 .bss+0x54 __objc_is_multi_threaded 
+    RULE .text+0x8c4 reloc285 .bss+0x54 __objc_is_multi_threaded 
+    ANA objc_thread_exit+0x44 add .bss+0x50 __objc_thread_exit_status boundary
+    ANA __objc_thread_detach_function+0x3c ldst .bss+0x54 __objc_is_multi_threaded 
+    ANA __objc_thread_detach_function+0x4c ldst .bss+0x54 __objc_is_multi_threaded 
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc_gc.a(class_gc.o) pre=1 rule=0 ana=3 words=1493 funcs=24
+    ANA objc_get_class.part.0+0x3c ldst .bss+0x8 _objc_lookup_class boundary
+    ANA objc_getMetaClass+0x124 ldst .bss+0x8 _objc_lookup_class boundary
+    ANA objc_getRequiredClass+0x12c ldst .bss+0x8 _objc_lookup_class boundary
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc_gc.a(init_gc.o) pre=1 rule=2 ana=8 words=1185 funcs=16
+    RULE .text+0x11c8 reloc275 .data+0x0 __objc_runtime_threads_alive 
+    RULE .text+0x11d8 reloc285 .data+0x0 __objc_runtime_threads_alive 
+    ANA __objc_init_protocols.part.0+0x20 ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_init_protocols.part.0+0x5c ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_init_protocols.part.0+0x9c ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_exec_class+0x6c ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_exec_class+0x214 ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_exec_class+0x294 ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_exec_class+0x77c ldst .bss+0x18 __objc_runtime_mutex boundary
+    ANA __objc_exec_class+0x7c0 ldst .bss+0x18 __objc_runtime_mutex boundary
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc_gc.a(sarray_gc.o) pre=1 rule=0 ana=16 words=457 funcs=8
+    ANA sarray_at_put+0xbc ldst .bss+0x8 nbuckets boundary
+    ANA sarray_at_put+0xfc ldst .bss+0x8 nbuckets boundary
+    ANA sarray_new+0x68 ldst .bss+0xc narrays 
+    ANA sarray_new+0x78 ldst .bss+0xc narrays 
+    ANA sarray_new+0x84 ldst .bss+0x8 nbuckets boundary
+    ANA sarray_new+0x98 ldst .bss+0x8 nbuckets boundary
+    ANA sarray_realloc+0xd0 ldst .bss+0x10 idxsize 
+    ANA sarray_realloc+0xdc ldst .bss+0x10 idxsize 
+    ANA sarray_free+0x88 ldst .bss+0x8 nbuckets boundary
+    ANA sarray_free+0x98 ldst .bss+0x8 nbuckets boundary
+    ANA sarray_free+0xc4 ldst .bss+0xc narrays 
+    ANA sarray_free+0xd4 ldst .bss+0xc narrays 
+    ANA sarray_free+0x124 ldst .bss+0x8 nbuckets boundary
+    ANA sarray_free+0x12c ldst .bss+0x8 nbuckets boundary
+    ANA sarray_lazy_copy+0x90 ldst .bss+0xc narrays 
+    ANA sarray_lazy_copy+0x9c ldst .bss+0xc narrays 
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc_gc.a(selector_gc.o) pre=1 rule=2 ana=4 words=887 funcs=20
+    RULE .text+0xc94 reloc275 .bss+0x20 __objc_selector_max_index boundary
+    RULE .text+0xc98 reloc285 .bss+0x20 __objc_selector_max_index boundary
+    ANA __sel_register_typed_name+0xf0 ldst .bss+0x20 __objc_selector_max_index boundary
+    ANA __sel_register_typed_name+0xfc ldst .bss+0x20 __objc_selector_max_index boundary
+    ANA __sel_register_typed_name+0x190 ldst .bss+0x20 __objc_selector_max_index boundary
+    ANA sel_getName+0x60 ldst .bss+0x20 __objc_selector_max_index boundary
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc_gc.a(sendmsg_gc.o) pre=1 rule=40 ana=25 words=1810 funcs=32
+    RULE .text+0xbc reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xc4 reloc286 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xe4 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1bc reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1c4 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x204 reloc275 .bss+0x10 __objc_uninstalled_dtable 
+    RULE .text+0x208 reloc286 .bss+0x10 __objc_uninstalled_dtable 
+    RULE .text+0x568 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x570 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x584 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x5dc reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x654 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x734 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x740 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x754 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x7a4 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x7cc reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x8f8 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x900 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xa70 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xacc reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xb2c reloc286 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xb48 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xc58 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xc74 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xf18 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0xf1c reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x102c reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1030 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1168 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x116c reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1510 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x151c reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x153c reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1584 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1618 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1974 reloc275 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1978 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1ab4 reloc277 .bss+0x0 __objc_msg_forward2 
+    RULE .text+0x1acc reloc277 .bss+0x0 __objc_msg_forward2 
+    ANA __objc_get_forward_imp+0x3c ldst .bss+0x8 __objc_msg_forward 
+    ANA __objc_init_dispatch_tables+0x30 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_install_dtable_for_class+0x30 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_install_dtable_for_class+0x9c ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_install_dtable_for_class+0xc0 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_install_dtable_for_class+0x114 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_prepare_dtable_for_class+0x38 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_prepare_dtable_for_class+0x88 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_prepare_dtable_for_class+0xe4 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA get_implementation+0x27c ldst .bss+0x8 __objc_msg_forward 
+    ANA get_implementation+0x38c ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_responds_to+0x28 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_responds_to+0xb4 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_responds_to+0xdc ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA class_respondsToSelector+0x38 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA class_respondsToSelector+0xc4 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA class_respondsToSelector+0xec ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_update_dispatch_table_for_class+0x30 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_forward+0x40 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_forward+0x90 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_forward+0x184 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_forward+0x1cc ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA __objc_forward+0x1f0 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA class_getInstanceMethod+0x194 ldst .bss+0x10 __objc_uninstalled_dtable 
+    ANA class_getInstanceMethod+0x1b8 ldst .bss+0x10 __objc_uninstalled_dtable 
+/usr/lib/gcc/aarch64-linux-gnu/14/libobjc_gc.a(thr_gc.o) pre=1 rule=14 ana=3 words=590 funcs=23
+    RULE .text+0x4 reloc275 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0xc reloc286 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x10 reloc286 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x34 reloc275 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x38 reloc277 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x504 reloc275 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x508 reloc277 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x5e8 reloc275 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x5ec reloc277 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x61c reloc275 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x620 reloc277 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x644 reloc286 .bss+0x0 _objc_became_multi_threaded 
+    RULE .text+0x8b4 reloc275 .bss+0x54 __objc_is_multi_threaded 
+    RULE .text+0x8c4 reloc285 .bss+0x54 __objc_is_multi_threaded 
+    ANA objc_thread_exit+0x44 add .bss+0x50 __objc_thread_exit_status boundary
+    ANA __objc_thread_detach_function+0x3c ldst .bss+0x54 __objc_is_multi_threaded 
+    ANA __objc_thread_detach_function+0x4c ldst .bss+0x54 __objc_is_multi_threaded 
+TOTAL objs=11699 pre=51 rule_objs=26 ana_objs=28 ana_only_objs=11 rule=267 ana=188 words=123763 undec=2414

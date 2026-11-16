@@ -1,0 +1,10 @@
+hod/anchorgap.x86_64-fPIC.o hod/anchorgap.x86_64-fPIE.o
+hod/c1.x86_64-fPIC.o hod/c1.x86_64-fPIE.o
+hod/c2.x86_64-fPIC.o hod/c2.x86_64-fPIE.o
+hod/gap2.x86_64-fPIC.o hod/gap2.x86_64-fPIE.o
+hod/hodt.x86_64-fPIC.o hod/hodt.x86_64-fPIE.o
+hod/vague.x86_64-fPIC.o hod/vague.x86_64-fPIE.o
+hod/x1.x86_64-fPIC.o hod/x1.x86_64-fPIE.o
+hod/x2.x86_64-fPIC.o hod/x2.x86_64-fPIE.o
+hod/x3.x86_64-fPIC.o hod/x3.x86_64-fPIE.o
+hod/x4.x86_64-fPIC.o hod/x4.x86_64-fPIE.o

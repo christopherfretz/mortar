@@ -1,0 +1,20 @@
+id    model    bfd      lld22    mold      script
+S1    V2       V2       V2       V2        V1 { local: foo*; }; V2 { global: fo*; };
+S2    LOCAL    V1       LOCAL    V1        V1 { global: fo*; }; V2 { local: foo*; };
+S5    V2       V2       V2       V2        V1 { global: f?o; }; V2 { global: [f]oo; };
+S6    V2       V2       V2       V2        V1 { global: *; }; V2 { global: foo*; };
+S6r   V2       V1       V1       V1        V1 { global: foo*; }; V2 { global: *; };
+S7    V1       V1       V1       V1        V1 { global: foo*; local: fo*; };
+S8    V1       ERR      V1       V1        V1 { local: foo*; global: fo*; };
+S9    V1       LOCAL    LOCAL    LOCAL     V1 { global: *; local: foo*; };
+S10   LOCAL    LOCAL    LOCAL    LOCAL     V1 { global: *; }; V2 { local: foo*; };
+S10r  V2       LOCAL    LOCAL    LOCAL     V1 { local: foo*; }; V2 { global: *; };
+S11   LOCAL    V1       LOCAL    V1        V1 { global: fo*; local: *; }; V2 { local: foo*; };
+S12   V1       ERR      V1       V1        V1 { global: foo; }; V2 { local: foo; };
+S13   LOCAL    ERR      LOCAL    V2        V1 { local: foo; }; V2 { global: foo; };
+S14   V3       V3       V3       V3        V1 { global: f*; }; V2 { global: fo*; }; V3 { global: foo*; };
+S15   V3       V3       V3       V3        V1 { global: foo*; }; V2 { global: fo*; }; V3 { global: f*; };
+S16   V1       V1       V1       LOCAL     V1 { global: *; local: *; };
+S17   V2       V2       V2       V2        V1 { local: *; }; V2 { global: foo*; };
+S18   LOCAL    V1       V1       V1        V1 { global: *o*; }; V2 { local: *; };
+S19   V1       V1       V1       V2        V1 { global: foo; }; V2 { global: foo; };

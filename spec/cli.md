@@ -337,6 +337,10 @@ contents.
 - GNU ld gives a non-PIE executable its default interpreter when a
   shared object is linked in. That decision belongs to the phase that
   reads the inputs; it is not made here.
+- [M4; planned: WP-117] `-shared` with `-dynamic-linker P` is `Shared`:
+  the interpreter is accepted and not written (no `PT_INTERP`,
+  `spec/dyn.md` D-100). `-shared -static` is `Shared` with
+  `link_static` (`-static` is `-Bstatic`, as above; D-100).
 
 ### 3.3 Inputs and positional state
 
@@ -426,7 +430,15 @@ A line that has `-T` or `-dT` needs no input file.
 - `hash_style`;
 - `pack_dyn_relocs`;
 - `export_dynamic` (`-E`, `--export-dynamic`, `--no-export-dynamic`);
-- `bsymbolic`, one of the four `-Bsymbolic` forms;
+- `bsymbolic`, one of the four `-Bsymbolic` forms; [M4; planned: the
+  shape WP-116] as `spec/dyn.md` D-112 resolves it: the last of
+  `-Bsymbolic` (`All`), `-Bsymbolic-functions` (`Functions`) and
+  `-Bno-symbolic` (`None`, also the default) wins; beside it
+  `has_dynamic_list` (some `--dynamic-list`; the list then decides
+  alone, whatever form comes before or after it); the forms D-112
+  refuses (`-Bsymbolic-non-weak`, `-Bsymbolic-non-weak-functions`,
+  `--dynamic-list-data`, `--dynamic-list-cpp-new`,
+  `--dynamic-list-cpp-typeinfo`) never reach the plan (§4.2);
 - `allow_shlib_undefined`: `--allow-shlib-undefined` (`true`),
   `--no-allow-shlib-undefined` (`false`), the last wins; `None` is the
   default for the output kind (`spec/input.md` §8.6, `spec/resolve.md`
@@ -564,8 +576,9 @@ standard error. Its first line is IN-10's:
     incremental: full (<reason>) changed=<files> refilled=<units> bytes=<written> time=<ms>
 
 When the link found and checked a state of its output that could be
-updated (the reason would be `update-not-implemented`), the dry run
-(WP-063) follows. It is IN-22's change detection, IN-25..29's delta and
+updated (the reason is `update-not-implemented` or `small-output`:
+`spec/incr.md` IN-10a), the dry run (WP-063) follows. After any other
+reason the report is its first line alone. It is IN-22's change detection, IN-25..29's delta and
 IN-27's refill set computed against the old state. The link then runs
 in full. The new side is the full link's own layout, so the set says
 which units an update laid out that way would rewrite. It is not yet
@@ -592,6 +605,8 @@ hex digits. An empty field is `-`. The lines appear in this order:
 | `delta unit <reasons> <path> <member> <shndx> <name>` | per refilled unit, in the new link's section order. `<shndx>` is the section's index in its file (as in `--mortar-map`). |
 | `delta hole <reasons> <path> <member> <shndx> <old address> <size> <name>` | per old unit whose bytes are not where the new link puts that unit. `<shndx>` is the index in the new link's file, or `-` when the file left. The address and size are hex; the address is `-` when the old unit was not allocated. |
 | `delta chunk <reasons> <tag> <chunk> <output section>` | per refilled chunk (headers, synthetic tables, merged sections, patches, a body's fill between units). |
+| `delta elided <kind> listed=10000 total=<n>` | after the last line of a kind above (`path`, `stat-missed`, `file`, `probe`, `symbol`, `fallback`, `unit`, `hole`, `chunk`) of which more than 10,000 were found: the bound below. |
+| `delta listed bound=10000 elided=<n>` | once: the bound, and the number of lines of every kind left out (0 when none). |
 | `delta time detect=<ms> delta=<ms>` | the cost of detection, and of the delta and the report. |
 | `delta end` | last. A report without it is truncated. |
 
@@ -612,6 +627,15 @@ hex digits. An empty field is `-`. The lines appear in this order:
 | `eh-frame` | IN-34a: an `.eh_frame` contribution after the first record that differs. |
 | `eh-ref` | Row 10: a reference into an input `.eh_frame`. |
 | `headers`, `gaps` | The file, program and section headers, and a body's fill (chunks). |
+
+**The bound** (`spec/incr.md` IN-10b, WP-106). Of each kind of line
+that names one item (`path`, `stat-missed`, `file`, `probe`, `symbol`,
+`fallback`, `unit`, `hole`, `chunk`) the report writes the first 10,000
+in the order above (`mortar_incr::delta::REPORT_BOUND`) and counts the
+rest, which its `delta elided` line states. The count lines (`delta
+inputs`, `delta symbols`, `delta refill`) are not bounded. A report is
+the same bytes for the same inputs, options and state, but for `time=`
+and the `delta time` line.
 
 The fall-back reasons are IN-16's. The dry run raises
 `new-output-section`, `property-changed`, `options-changed`,
@@ -1001,6 +1025,60 @@ until the phase that honors them lands with its test:
     `-Bsymbolic` rows, `--no-undefined` and `-z defs` stay `noop` with a
     reason that no longer names the refusal (GNU ld and mold write
     nothing for `-Bsymbolic` in a PIE; lld writes `DF_SYMBOLIC`).
+- **M4, shared-object output** (`spec/dyn.md` §17, request R-C10; the
+  packages are the WP-110 record's §D) [planned]. A row's status is one
+  for every output kind; an option whose `Shared` effect a later package
+  implements is refused **in a `Shared` link** by the front
+  (`Refused{Option, spelling}`, with the note naming the package's
+  rule) until that package lands, and keeps its executable status
+  otherwise (WP-053's guard is the model). Per package:
+  - WP-117 (`Shared` front, resolve and scan, AArch64): `-shared`
+    (`-Bshareable`) `supported`, with x86-64 and i386 `Shared` links
+    refused by `feature` until WP-127 and WP-130; `-h`/`-soname`
+    `supported` (`DT_SONAME`, written by WP-118); `-Bsymbolic-functions`
+    and `-Bno-symbolic` `supported` (D-112; Python's `LDSHARED` line
+    passes `-Bsymbolic-functions`, the record's §A.4); `-z defs` and
+    `--no-undefined` `supported` (D-118: they refuse a `Shared` link's
+    undefined references; in an executable nothing changes, which their
+    reason already says); `--allow-shlib-undefined` and
+    `--no-allow-shlib-undefined` `supported` in every kind (the
+    default per kind: D-13 for executables, D-118 for `Shared`); the
+    `-shared` status text is the record's §G.4 (written with the row).
+    In a `Shared` link until their packages: `-Bsymbolic`,
+    `--dynamic-list`, `--exclude-libs`, `-init`, `-fini`,
+    `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin`,
+    `--version-script` are refused (WP-125, WP-128).
+  - WP-118 (`Shared` synth, layout, image): `-z now` in `Shared`
+    (`DF_BIND_NOW`, `DF_1_NOW`, D-103; rustc's `cdylib` line passes
+    `-z relro,-z now`); the row is `supported` already.
+  - WP-125 (versions): `--version-script` (and GNU ld's one-dash
+    `-version-script`, an abbreviation, §2.4) `supported`; several
+    `--version-script` options are one script, in order (resolve.md
+    §9.7 rule 13; all three); `--no-undefined-version` `supported`;
+    `--undefined-version` `noop` (the default: D-114 accepts a name no
+    file defines, with a warning).
+  - WP-128 (the option tail): `-Bsymbolic` `supported` (D-112, D-103:
+    `DT_SYMBOLIC`, `DF_SYMBOLIC`), `--dynamic-list` `supported` (D-112;
+    the grammar is WP-125's), `--exclude-libs` `supported` (D-110 item
+    1), `-z nodelete`, `-z nodlopen`, `-z initfirst`, `-z interpose`,
+    `-z origin` `supported` (D-103's flags; in an executable GNU ld
+    writes the same flags), `-init`/`-fini` in `Shared` (D-102 rows
+    3-4: an explicit name that is not defined is refused,
+    `undefined-init-symbol`), `--whole-archive` `supported`.
+  - Refused by name, class `option`, in every kind, not planned:
+    `--Bsymbolic-non-weak`, `--Bsymbolic-non-weak-functions` (GNU ld
+    does not know them; their `noop` status of WP-027e becomes
+    `refused`), `--dynamic-list-data`, `--dynamic-list-cpp-new`,
+    `--dynamic-list-cpp-typeinfo` (D-112), `-z notext`/`-z textoff`
+    (D-47, D-117), `-f`/`--auxiliary`, `-F`/`--filter` (D-102),
+    `--spare-dynamic-tags` (D-102); with `--incremental`, `-shared`
+    stays IN-12's (`spec/incr.md` IN-12a, request R-N10).
+  - Rows whose executable `noop` reason names a shared object
+    (`-Bsymbolic`, `-Bsymbolic-functions`, `-Bno-symbolic`,
+    `--no-undefined`, `-z defs`): when the row becomes `supported` its
+    help says what it does in a `Shared` link and that an executable
+    needs nothing (D-112: GNU ld and mold write nothing for
+    `-Bsymbolic` in a PIE).
 
 ### 4.3 What the facade does with a parse
 

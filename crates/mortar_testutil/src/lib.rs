@@ -16,6 +16,7 @@
 //! Ported from hod's `hod_testutil`.
 
 pub mod ci_tools;
+pub mod dev_stdout;
 pub mod jobs;
 pub mod target;
 

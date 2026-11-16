@@ -1,0 +1,42 @@
+bfd hash: verdefs=[hash.bfd.so V1 ] dynsyms=[V1 bar@@V1 foo@@V1 ] 
+bfd empty: verdefs=[empty.bfd.so V1 ] dynsyms=[V1 ] 
+bfd two: verdefs=[two.bfd.so V1 V2 ] dynsyms=[V1 V2 bar@@V2 foo@@V1 ] 
+bfd sv_v1local: verdefs=[sv_v1local.bfd.so V1 ] dynsyms=[V1 bar@@V1 ] 
+bfd sv_v2local: verdefs=[sv_v2local.bfd.so V1 V2 ] dynsyms=[V1 V2 bar@@V1 foo@V1 ] 
+bfd sv_v2local_foo: verdefs=[sv_v2local_foo.bfd.so V1 V2 ] dynsyms=[V1 V2 bar@@V1 foo@@V2 foo@V1 ] 
+lld hash: verdefs=[hash.lld.so V1 ] dynsyms=[bar@@V1 foo@@V1 ] 
+lld empty: ERROR ld.lld: error: version script assignment of 'V1' to symbol 'nosuch' failed: symbol not defined
+lld two: verdefs=[two.lld.so V1 V2 ] dynsyms=[bar@@V2 foo@@V1 ] 
+lld sv_v1local: verdefs=[sv_v1local.lld.so V1 ] dynsyms=[bar@@V1 ] 
+lld sv_v2local: verdefs=[sv_v2local.lld.so V1 V2 ] dynsyms=[bar@@V1 foo@V1 ] 
+lld sv_v2local_foo: verdefs=[sv_v2local_foo.lld.so V1 V2 ] dynsyms=[bar@@V1 foo@@V2 foo@V1 ] 
+mold hash: verdefs=[hash.mold.so V1 ] dynsyms=[bar@@V1 foo@@V1 ] 
+mold empty: verdefs=[empty.mold.so V1 ] dynsyms=[] mold: warning: empty.map: cannot assign version `V1` to symbol `nosuch`: symbol not found
+mold two: verdefs=[two.mold.so V1 V2 ] dynsyms=[bar@@V2 foo@@V1 ] 
+mold sv_v1local: verdefs=[sv_v1local.mold.so V1 ] dynsyms=[bar@@V1 foo@V1 ] 
+mold sv_v2local: verdefs=[sv_v2local.mold.so V1 V2 ] dynsyms=[bar@@V1 foo@V1 ] 
+mold sv_v2local_foo: verdefs=[sv_v2local_foo.mold.so V1 V2 ] dynsyms=[bar@@V1 foo@@V2 foo@V1 ] 
+bfd inline: verdefs=[inline.bfd.so V1 ] dynsyms=[V1 bar@@V1 foo@@V1 ] 
+bfd fwdparent: ERROR /usr/bin/ld.bfd: unable to find version dependency `V1'
+bfd noparent: ERROR /usr/bin/ld.bfd: unable to find version dependency `V9'
+lld inline: verdefs=[inline.lld.so V1 ] dynsyms=[bar@@V1 foo@@V1 ] 
+lld fwdparent: verdefs=[fwdparent.lld.so V2 V1 ] dynsyms=[bar@@V2 foo@@V1 ] 
+lld noparent: verdefs=[noparent.lld.so V1 V2 ] dynsyms=[bar@@V2 foo@@V1 ] 
+mold inline: verdefs=[inline.mold.so V1 ] dynsyms=[bar@@V1 foo@@V1 ] 
+mold fwdparent: verdefs=[fwdparent.mold.so V2 V1 ] dynsyms=[bar@@V2 foo@@V1 ] 
+mold noparent: verdefs=[noparent.mold.so V1 V2 ] dynsyms=[bar@@V2 foo@@V1 ] 
+bfd sv_v1exact: ERROR /usr/bin/ld.bfd: duplicate expression `foo' in version information
+bfd sv_v2star: dynsyms=[V1 V2 bar@@V1 foo@@V2 foo@V1 ] 
+lld sv_v1exact: dynsyms=[bar@@V1 foo_old ] ld.lld: warning: attempt to reassign symbol 'foo' of VER_NDX_LOCAL to version 'V2'
+lld sv_v2star: dynsyms=[bar@@V1 foo@@V2 foo@V1 ] 
+mold sv_v1exact: dynsyms=[bar@@V1 foo@@V2 foo@V1 foo_old ] 
+mold sv_v2star: dynsyms=[bar@@V1 foo@@V2 foo@V1 ] 
+bfd dupnode: ERROR /usr/bin/ld.bfd: duplicate version tag `V1'
+bfd anon_named: ERROR /usr/bin/ld.bfd: anonymous version tag cannot be combined with other version tags
+bfd named_anon: ERROR /usr/bin/ld.bfd: anonymous version tag cannot be combined with other version tags
+lld dupnode: dynsyms=[bar@@V1 foo@@V1 ] 
+lld anon_named: ERROR ld.lld: error: anon_named.map:1: EOF expected, but got V1
+lld named_anon: ERROR ld.lld: error: named_anon.map:2: anonymous version definition is used in combination with other version definitions
+mold dupnode: dynsyms=[bar@@V1 foo@@V1 ] 
+mold anon_named: dynsyms=[bar@@V1 foo ] 
+mold named_anon: dynsyms=[bar foo@@V1 ] 

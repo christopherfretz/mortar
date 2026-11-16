@@ -1,0 +1,113 @@
+tests/shared-design: what the shared-object design (WP-110) measured with
+==========================================================================
+
+Reference material, not tests: nothing here is run by `cargo test`,
+`cargo xtask linktest` (it reads only `*.test` files under tests/link) or
+the gate. WP-115 copied it from the design's uncommitted scratch so the
+implementation packages (WP-116..WP-130) keep the oracle, the corpora's
+names and the measurements that `spec/dyn.md` §17 and the record
+`spec/landed/dyn/WP-110.md` cite. Those two documents cite paths relative
+to this directory (`exp3/s1d.py`, `exp2/q10b/`, ...).
+
+The scripts are copied unchanged: they still name the absolute paths they
+were run from (`/Volumes/AgentWork/mortar-helper/.build/target-wp-110/...`,
+`.build/review-110-adv`, `.build/review-110b`). To re-run one, copy its
+directory into a scratch tree, point those paths at it, and rebuild the
+corpus it reads (each README says how). Tools used: GCC/G++/gfortran
+14.2.0 (Debian 14.2.0-19, native and cross), clang 19.1.7 and 22.1.8, GNU
+ld 2.44, ld.lld 19.1.7 and 22.1.8, mold 2.37.1, qemu-user 10.0.13, glibc
+2.41 (Debian 13), Python 3.13.5; AArch64 host, 4 KiB pages.
+
+Layout (source in `.build/` -> here)
+------------------------------------
+
+exp/              target-wp-110/exp: the first pass. run-all.sh WORK runs the
+                  four areas (census/, export/, dyn/, tools/), each with its
+                  own sources (census/src, tools/src). PREAMBLE.txt.
+work/             target-wp-110/work/<area>-REPORT.txt: the four reports.
+exp2/             target-wp-110/exp2: the second pass (README there): b1/
+                  (the address-level rule over ~14,400 objects; b1/src holds
+                  the constructed boundary.c, anchorgap.c, vague.cc),
+                  gapdemo/ (W44), escape/, bsym2/, vmatch2/, vscript2/,
+                  comments/, startstop/, q10b/ (classify.py: the phdr-only
+                  copy decision, R-D43), dynorder/, maxpage/, ldlines/, probe/.
+                  work/b1-analysis/*.txt: per-group counts (not the .hits).
+exp3/             target-wp-110/exp3: the third pass (README there, one line
+                  per script).
+  s1d.py, elf.py  THE ORACLE of dyn.md D-117 (the relocation-level rule with
+                  its x86 scope and boundary rule, and the AArch64 analysis,
+                  items 1-9). WP-119 and WP-121 check against it.
+                    python3 s1d.py [--x86] [--hits] [--mode=...] OBJ|ARCHIVE...
+  gt3.py          the detection table on -fPIE/-fPIC twins (pairs/*.txt).
+  x86gt.py        how x86 non-PIC code reaches its own exported data (WP-127
+                  repeats it); i386how.py the i386 forms (WP-130).
+  run_*.sh        the runners (s1d, modes, x86, bnd); their logs; out/ the
+                  results, except s1d.sys.txt (1 MB, the 79 system archives),
+                  kept filtered as out/s1d.sys.refused.txt (objects with a
+                  rule or analysis hit only, with their hit lines).
+  lists/*.lst     the corpus lists the runners read: object and archive paths
+                  (see "Third-party corpora" below for what they name).
+  pairs/*.txt     the twin pairs ("PIC PIE" per line).
+  hod/, i386/     kiln+hod and i386 builds: sources and build.sh (the
+                  constructed units), hod/backend.txt; objects not kept.
+  vs3/            version scripts: cases.py (the 213 scripts: second pass 53,
+                  re-review 60, third pass 100, with names and .symver maps),
+                  gnuref.json (GNU ld 2.44's answer to every case: the
+                  reference), model_a.py (the author's model of resolve.md
+                  §9.7) and model_r.py (the re-reviewer's), compare.py and
+                  compare.out (both models, GNU and mortar modes, against
+                  gnuref.json), globs.py, dups.py, expdyn.py, atat.py and
+                  their .out, the sources (sv.c, sv3.c, odd.s, odd.names).
+                  WP-125's test is the mortar column of the models.
+  ss/, bsym3/     -shared -static per reference; mold's --dynamic-list with
+                  -Bsymbolic-functions (gen.sh writes the sources).
+sup/              the before-the-start probe of D-117 (WP-115): c.c (`tab - 1`
+                  between exported data), m.f90 and l.f90 (gfortran 1-based
+                  SAVE arrays beside module variables), probe.sh ORACLE_DIR
+                  (every -O, -fPIC, GCC/Clang 22/Clang 19/gfortran, AArch64
+                  and x86-64, through s1d.py --hits), probe.out (45 objects,
+                  3 refused: GCC, Clang 22, Clang 19 AArch64 -O0).
+review-110-adv/   the first adversarial review's reproducers (README there):
+                  bsymfunc/, fpie/, vmatch/, vscript/, startstop/, q10/, pifunc/,
+                  cut/; suite.out (the author's run-all.sh re-run).
+review-110b/      the second review's (README there): rule.py (its own D-117),
+                  gt.py, gtdec.py, anchordec.py, sig.py (the no-self-GOT
+                  signature, record §E Q24), xamb.py, elf.py; cx/ (c1.cc, c2.c
+                  constructed idioms) and xt/ (x1-x4.c) sources and results;
+                  vs/ (vmodel.py, scripts.py, runvs.py, cmpauthor.py and
+                  outputs); bsym/, wlibs/, w28/ scripts; the corpus lists
+                  (a.lst, archives.lst, m.lst, sa.lst, sm.lst, sn.lst,
+                  absl.list, bb-*.lst), jobs.txt and jobs2.txt (the compile
+                  lines of every abseil/fmt config A-J and arpack-ng P/Q
+                  object), gt.*.txt, dec.*.txt, diff.txt.
+
+Third-party corpora (named here, not copied)
+--------------------------------------------
+
+abseil-cpp 20240722.0 and fmt 11.0.2 (configs A-J of review-110b/jobs.txt),
+busybox 1.36.1 defconfig (-fPIC and -fPIE builds), arpack-ng 3.9.1
+(gfortran), gmp 6.3.0 (sources only), expat 2.6.4 and pcre2 10.44 (by their
+own configure+make, libtool .libs objects), Lua 5.4.7, zlib 1.3.1,
+googletest 1.15.2, rustc 1.95's std/core/alloc/compiler_builtins rlibs, and
+the distribution's archives (Debian 13: libc.a, libm.a, libgcc*.a,
+libstdc++.a, libsupc++.a, libgfortran.a, libatomic.a, libgomp.a, libobjc*.a,
+BLAS, LAPACK, libcrypt.a, libresolv.a, the sanitizer runtimes: the 79
+archives of exp3/lists/sys.lst and review-110b/archives.lst).
+
+Left in `.build` (deleted with it) and why
+------------------------------------------
+
+- Every object file, archive, executable and shared object the experiments
+  built (exp2/work/b1corpus 162 MB, review-110b/obj, objf, bb-pic, bb-pie,
+  exp3/out's link outputs, vs3/ref 13 MB of GNU ld links, vs3/out 7 MB):
+  reproducible from the scripts and sources here; the answers they gave are
+  kept as text (gnuref.json, out/, the .txt results).
+- The third-party source trees (review-110b/src, 45 MB; the b1corpus
+  sources): named above by project and version, fetched again by their
+  public release.
+- The large hit listings: exp2/work/b1-analysis/*.hits (216 MB),
+  review-110b/author-corpus.author.txt (220 MB), sys.author.txt (10 MB),
+  sys.mine.txt (1 MB), exp2/work/b1corpus/jobs.txt (0.6 MB); their counts
+  are in the .txt summaries kept here and in the record.
+- The design's own patch scripts (exp2/patch_*.py, rec_*.md, exp3/patch/):
+  the text they spliced is in spec/dyn.md and the record.

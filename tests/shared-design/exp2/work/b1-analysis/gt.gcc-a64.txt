@@ -1,0 +1,21 @@
+unseen-def	gcc-a64.pie.case.vague.cc.o	exported_table
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing17FLAGS_gtest_colorB5cxx11E
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing18FLAGS_gtest_filterB5cxx11E
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing18FLAGS_gtest_outputB5cxx11E
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing18FLAGS_gtest_repeatE
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing20FLAGS_gtest_flagfileB5cxx11E
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing21FLAGS_gtest_fail_fastE
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing23FLAGS_gtest_random_seedE
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing28FLAGS_gtest_break_on_failureE
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing28FLAGS_gtest_catch_exceptionsE
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing28FLAGS_gtest_death_test_styleB5cxx11E
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing28FLAGS_gtest_stream_result_toB5cxx11E
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing28FLAGS_gtest_throw_on_failureE
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing31FLAGS_gtest_death_test_use_forkE
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing35FLAGS_gtest_internal_run_death_testB5cxx11E
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing42FLAGS_gtest_install_failure_signal_handlerE
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing48FLAGS_gtest_recreate_environments_when_repeatingE
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing8internal17kStackTraceMarkerE
+unseen-def	gcc-a64.pie.gtest.gtest-all.cc.o	_ZN7testing8internal23kTestTypeIdInGoogleTestE
+gcc-a64 sources 54; objects whose code accesses its own exported data 7; -fPIE objects refused (the new rule, or D-117 against the symbol) 7; locally bound defs 84, of which named by a use the rule sees 17
+defs named by D-117 (symbol) only: 48

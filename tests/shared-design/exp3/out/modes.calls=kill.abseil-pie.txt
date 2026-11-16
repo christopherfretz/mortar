@@ -1,0 +1,14 @@
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_base_internal_cycleclock.cc.o pre=1 rule=2 ana=1 words=4 funcs=1
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_base_internal_raw_logging.cc.o pre=1 rule=0 ana=2 words=327 funcs=11
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_container_internal_raw_hash_set.cc.o pre=1 rule=2 ana=1 words=1152 funcs=24
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_debugging_internal_elf_mem_image.cc.o pre=1 rule=2 ana=0 words=767 funcs=22
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_debugging_internal_vdso_support.cc.o pre=1 rule=22 ana=19 words=233 funcs=8
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_flags_parse.cc.o pre=1 rule=23 ana=11 words=6513 funcs=48
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_hash_internal_hash.cc.o pre=1 rule=6 ana=0 words=193 funcs=3
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_log_flags.cc.o pre=1 rule=18 ana=14 words=855 funcs=17
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_strings_ascii.cc.o pre=1 rule=4 ana=0 words=269 funcs=6
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_strings_internal_charconv_bigint.cc.o pre=1 rule=32 ana=6 words=3011 funcs=45
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_strings_internal_cordz_functions.cc.o pre=1 rule=4 ana=0 words=74 funcs=4
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_strings_internal_cordz_info.cc.o pre=1 rule=8 ana=3 words=1133 funcs=24
+/Volumes/AgentWork/mortar-helper/.build/review-110b/obj/F.abseil-cpp-20240722.0_absl_time_format.cc.o pre=1 rule=0 ana=3 words=480 funcs=10
+TOTAL objs=163 pre=16 rule_objs=11 ana_objs=9 ana_only_objs=2 rule=123 ana=60 words=26993 undec=224

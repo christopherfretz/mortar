@@ -786,8 +786,10 @@ of it is read beyond what the link reads today.
 
 Identity (`meta.md` MT-13) is (name, version node): a table row's
 version is its `.dynsym` entry's `.gnu.version` index (index 1, or no
-`.gnu.version` at all, is **unversioned**); a mortar-made output's
-definitions are unversioned (`--version-script` is refused). Two rows of
+`.gnu.version` at all, is **unversioned**); a row's version is its
+`.dynsym` entry's version node (`spec/dyn.md` D-115; O-60 [M4; planned:
+WP-129]): a mortar-made output's definitions are unversioned until
+`--version-script` lands in WP-125. Two rows of
 one name are compared when the loader connects them, which glibc's does
 as follows (each measured, the rows of the record):
 
@@ -1271,7 +1273,7 @@ WP-077, never by `--odr-table`.
 Implemented (WP-075) for dynamic executables, PIE or not: `=exported`
 writes the table; `=full` writes it and a second note (WP-076, O-52);
 a static executable exports nothing and gets no table, with `=full`
-too; a shared object's table is `[M4]`. Every row of an executable's table carries `NONPREEMPTIBLE`:
+too; a shared object's table is `[M4]` (O-60; planned: WP-129). Every row of an executable's table carries `NONPREEMPTIBLE`:
 an executable comes first in lookup order and binds its own definitions
 at link time, so it always runs its own copy. The keeper's unit is the
 file whose definition resolution kept; its first kind 2 row for the
@@ -1341,6 +1343,38 @@ exported weak or unique definitions in system libraries (`nm -D`, by
 hand): `libstdc++.so.6` 3,991, `libclang-cpp.so.19.1` 12,929,
 `libLLVM.so.19.1` 15,129: 96 KB, 310 KB and 363 KB of table, in pages
 that are read at load and never written.
+
+**O-60 [M4; planned: WP-129] (the table of a shared object).** Request
+R-O10 of `spec/dyn.md` §18.2 (D-126 item 1). A `Shared` output's table
+is O-50's and O-51's with three statements:
+
+1. **Version.** A row's version is its `.dynsym` entry's version node
+   (`spec/dyn.md` D-115: the node a version script or a `.symver`
+   definition gives it; index 1, unversioned, otherwise). The row
+   carries no version of its own (O-51), so this is a statement about
+   `.gnu.version`, which O-24's identity reads.
+2. **`NONPREEMPTIBLE`** is set exactly for the definitions `spec/dyn.md`
+   D-112 binds inside the library (protected; `-Bsymbolic`;
+   `-Bsymbolic-functions` for a function; not listed by
+   `--dynamic-list`), which are `Resolution`'s exported keys outside
+   `preemptible` (`spec/model.md` §3.3); a preemptible definition's row
+   has it clear. Unlike an executable's, a library's rows do not all
+   carry it. The bit is truthful because D-117's rule, its boundary
+   rule and its analysis refuse a library whose code binds a
+   preemptible datum without naming it, with one exception: D-117's
+   residual hole (forms the analysis does not follow; 3 of 306 measured
+   bound definitions), where a row says preemptible while the library's
+   code is bound. A reader must not take a clear bit as proof of
+   interposability for a datum defined by an object without a
+   `reloc-model` row saying `pic` (H-3, `spec/meta.md` MT-26); with that
+   row, it is proof.
+3. **Readers.** A consumer of a row (O-24's comparison across
+   libraries, Tuck, and the executable link's check of a copy of
+   locally bound data, `spec/dyn.md` D-43 as amended by R-D43, WP-122)
+   reads `NONPREEMPTIBLE` as that check does: the library runs its own
+   copy whatever an earlier module defines.
+
+*Test:* `odr-table-shared` (rows; the bit per D-112 case; versions).
 
 ### 10.2 Section and segment
 
@@ -1800,7 +1834,60 @@ Estimates are the receiving agents' own (kiln's and hod's review,
   the same answer on both 64-bit targets with every opt-in (WP-099,
   `cargo xtask mason producers`). hod does not target i386; i386 Mason
   objects do not exist.
-- Nothing else: per-section content hashes are not needed
+- **H-3 — the relocation model, in a unit of hod's own** [M4; requested
+  by WP-115 (`spec/landed/dyn/WP-110.md` §G.5); mortar's reader WP-129;
+  not yet sent: hod is open to requests since its 1.0.0, and the
+  supervisor sends it once this text is on `main`]. *Context:* mortar
+  refuses, in a shared object, non-PIC code that binds the library's own
+  exported data (`spec/dyn.md` D-117). For GCC and Clang objects it
+  infers this from relocations and an AArch64 register analysis, which
+  leave a measured residual hole (3 of 306 bound definitions) and cost a
+  decode of the code of objects that pass a pre-filter. hod knows the
+  model it compiled under; one row makes the refusal exact for every hod
+  object and needs no analysis. *Ask:* in every object hod writes, a
+  `.mason.meta` unit of its own (`meta.md` MT-10: magic `MASN`, major 1,
+  minor 0, `producer` 2, `flags` 0) with one kind-1 block (MT-11,
+  `version` 1, `row_size` 16) holding one row (MT-26: `{u32 name; u32
+  value; u32 flags; u32 reserved}`, both strings in the unit's string
+  table, MT-12, which starts with the empty string): name `reloc-model`,
+  value `static`, `pie` or `pic` (the model hod's code generation used:
+  `-fno-pic`, `-fPIE`, `-fPIC`; `pic` exactly when the module's own
+  default-visibility definitions are reached through the GOT, as llc's
+  `pic` relocation model), flags 0 (not `ENFORCE`). It may be emitted as
+  a second private excluded global in section `.mason.meta`, listed in
+  `@llvm.compiler.used` and **not** `@llvm.used` (which adds `R`), in no
+  comdat (which adds `G`): a section with any flag beyond `SHF_EXCLUDE`
+  is not a container (MT-6, MT-2) and its units are never read. hod's
+  H-1 lowering concatenates the initializers of one section name, so
+  kiln's unit, when present, and hod's unit share one container (each a
+  multiple of 8 bytes, MT-10); H-2 still holds for kiln's bytes. Or it
+  may be written by the object API directly; either way the section is
+  H-1's (`SHT_PROGBITS`, flags exactly `E`, alignment 8, no group, no
+  relocation section, MT-2a). *What mortar does with it* (`dyn.md`
+  D-117; the read is a check under MT-42, done only in a `Shared` link
+  and only for objects that define an exported preemptible data
+  definition): `Shared`: a unit saying `static` or `pie` in such an
+  object refuses it, `non-pic-in-shared-object` (naming the object and
+  the row; exact, no analysis); `pic`, or no unit, or no row: D-117's
+  rules and analysis as for any object (the row never exempts). `Exec`,
+  `Pie`, static: no effect (information). `-r`: units are concatenated
+  unchanged (MT-10); a later `Shared` link refuses an object any of
+  whose units says `static` or `pie`. *Why only hod:* a GCC or Clang
+  object carries the model nowhere: `DW_AT_producer` exists only with
+  `-g`; GCC's records the switches given on the line, so its default
+  `-fPIE` is absent, and Clang records none unless
+  `-grecord-command-line`; no ELF header or note field holds it.
+  *Amendments* (R-MT11, applied as planned rules in `meta.md`): MT-10's
+  "one per translation unit" and MT-20's "one unit per TU" become "one
+  per translation unit and producer"; MT-26's table gains the row
+  `reloc-model` (`static`/`pie`/`pic`, enforce no, "dyn.md D-117: exact
+  refusal of non-PIC code in a shared object") marked [hod]. *Test:* for
+  each target (x86-64, AArch64) and model, the object holds exactly one
+  hod unit with the row, read back by `mortar_meta`'s MT-10 reader; with
+  kiln's container present, both units parse in order; the rest of the
+  object is unchanged (hod's irdiff against llc, `.mason.meta`
+  excluded). *Estimate:* half a day (hod's to confirm).
+- Nothing else beyond H-3: per-section content hashes are not needed
   (`spec/incr.md` IN-22); DWARF is unchanged.
 
 ### Landing order

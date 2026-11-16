@@ -1,0 +1,40 @@
+e01 exact-local      -   gnu={bar@@V1 cur@@V1 cur_impl fop old@V1 old_impl} | lld={bar@@V1 cur@@V1 cur_impl fop old@V1 old_impl} | mold={bar@@V1 cur@@V1 cur_impl fop old@V1 old_impl}
+e01 exact-local      E   gnu={bar@@V1 cur@@V1 cur_impl fop old@V1 old_impl} | lld={bar@@V1 cur@@V1 cur_impl fop old@V1 old_impl} | mold={bar@@V1 cur@@V1 cur_impl fop old@V1 old_impl}
+     V1 { global: bar; local: foo; };
+e02 glob-local       -   gnu={bar@@V1 cur@@V1 cur_impl old@V1 old_impl} | lld={bar@@V1 cur@@V1 cur_impl old@V1 old_impl} | mold={bar@@V1 cur@@V1 cur_impl old@V1 old_impl}
+e02 glob-local       E   gnu={bar@@V1 cur@@V1 cur_impl old@V1 old_impl} | lld={bar@@V1 cur@@V1 cur_impl old@V1 old_impl} | mold={bar@@V1 cur@@V1 cur_impl old@V1 old_impl}
+     V1 { global: bar; local: f*; };
+e03 star-local       -   gnu={bar@@V1} | lld={bar@@V1 cur@@V1} | mold={bar@@V1 cur@@V1 old@V1}
+e03 star-local       E   gnu={bar@@V1 cur@@V1 old@V1} | lld={bar@@V1 cur@@V1} | mold={bar@@V1 cur@@V1 old@V1}
+     V1 { global: bar; local: *; };
+e04 anon-star        -   gnu=ERR | lld=ERR | mold=ERR
+e04 anon-star        E   gnu=ERR | lld=ERR | mold=ERR
+     { global: bar; local: *; };
+e05 V2-star          -   gnu={bar@@V1 cur@@V1 old@V1} | lld={bar@@V1 cur@@V1 old@V1} | mold={bar@@V1 cur@@V1 old@V1}
+e05 V2-star          E   gnu={bar@@V1 cur@@V1 old@V1} | lld={bar@@V1 cur@@V1 old@V1} | mold={bar@@V1 cur@@V1 old@V1}
+     V1 { global: bar; }; V2 { local: *; };
+e06 sv-exact-local   -   gnu={bar@@V1 cur@@V1 cur_impl foo fop old_impl} | lld={bar@@V1 cur@@V1 cur_impl foo fop old_impl} | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl}
+e06 sv-exact-local   E   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl} | lld={bar@@V1 cur@@V1 cur_impl foo fop old_impl} | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl}
+     V1 { global: bar; local: old; };
+e07 sv-glob-local    -   gnu={bar@@V1 cur@@V1 cur_impl foo fop} | lld={bar@@V1 cur@@V1 cur_impl foo fop} | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1}
+e07 sv-glob-local    E   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1} | lld={bar@@V1 cur@@V1 cur_impl foo fop} | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1}
+     V1 { global: bar; local: o*; };
+e08 sv-star-local    -   gnu={} | lld={cur@@V1} | mold={cur@@V1 old@V1}
+e08 sv-star-local    E   gnu={cur@@V1 old@V1} | lld={cur@@V1} | mold={cur@@V1 old@V1}
+     V1 { local: *; };
+e09 sv-g-and-l       -   gnu={bar cur@@V1 cur_impl foo fop old@V1 old_impl@@V1} | lld={bar cur@@V1 cur_impl foo fop old_impl@@V1} | mold={bar cur@@V1 cur_impl foo fop old@V1 old_impl@@V1}
+e09 sv-g-and-l       E   gnu={bar cur@@V1 cur_impl foo fop old@V1 old_impl@@V1} | lld={bar cur@@V1 cur_impl foo fop old_impl@@V1} | mold={bar cur@@V1 cur_impl foo fop old@V1 old_impl@@V1}
+     V1 { global: o*; local: old; };
+e10 sv-V2local       -   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl} | lld=ERR | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl}
+e10 sv-V2local       E   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl} | lld=ERR | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl}
+     V1 { global: bar; }; V2 { local: old; };
+e11 atat-local       -   gnu={bar@@V1 cur_impl foo fop old@V1 old_impl} | lld={bar@@V1 cur_impl foo fop old@V1 old_impl} | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl}
+e11 atat-local       E   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl} | lld={bar@@V1 cur_impl foo fop old@V1 old_impl} | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1 old_impl}
+     V1 { global: bar; local: cur; };
+e12 atat-star        -   gnu={bar@@V1 foo@@V2} | lld={bar@@V1 cur@@V1 foo@@V2} | mold={bar@@V1 cur@@V1 foo@@V2 old@V1}
+e12 atat-star        E   gnu={bar@@V1 cur@@V1 foo@@V2 old@V1} | lld={bar@@V1 cur@@V1 foo@@V2} | mold={bar@@V1 cur@@V1 foo@@V2 old@V1}
+     V1 { global: bar; local: *; }; V2 { global: foo; } V1;
+e13 impl-local       -   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1} | lld={bar@@V1 cur@@V1 cur_impl foo fop old@V1} | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1}
+e13 impl-local       E   gnu={bar@@V1 cur@@V1 cur_impl foo fop old@V1} | lld={bar@@V1 cur@@V1 cur_impl foo fop old@V1} | mold={bar@@V1 cur@@V1 cur_impl foo fop old@V1}
+     V1 { global: bar; local: old_impl; };
+EXPDYN-DONE

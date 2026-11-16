@@ -1,0 +1,111 @@
+r01 model-gnu==GNU:True model-mortar==GNU:True
+r02 model-gnu==GNU:True model-mortar==GNU:True
+r03 model-gnu==GNU:True model-mortar==GNU:True
+r04 model-gnu==GNU:True model-mortar==GNU:True
+r05 model-gnu==GNU:True model-mortar==GNU:True
+r06 model-gnu==GNU:True model-mortar==GNU:True
+r07 model-gnu==GNU:True model-mortar==GNU:True
+r08 model-gnu==GNU:False model-mortar==GNU:False
+   GNU    REFUSED
+   lld    {'foo': 'V1', 'foo2': 'base', 'fop': 'base', 'bar': 'base', 'baz': 'base', 'fa': 'base', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+   mold   {'foo': 'V1', 'foo2': 'base', 'fop': 'base', 'bar': 'base', 'baz': 'base', 'fa': 'base', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+   model  {'foo': 'V1', 'foo2': 'base', 'fop': 'base', 'bar': 'base', 'baz': 'base', 'fa': 'base', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+   mortar {'foo': 'V1', 'foo2': 'base', 'fop': 'base', 'bar': 'base', 'baz': 'base', 'fa': 'base', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+r09 model-gnu==GNU:True model-mortar==GNU:True
+r10 model-gnu==GNU:True model-mortar==GNU:True
+r11 model-gnu==GNU:True model-mortar==GNU:False
+   GNU    REFUSED
+   lld    {'foo': 'local', 'foo2': 'V1', 'fop': 'V1', 'bar': 'V1', 'baz': 'V1', 'fa': 'V1', '_Z3fooi': 'V1', '_ZN2ns3fooEv': 'V1', '_ZN2ns3barIiEEiv': 'V1'}
+   mold   {'foo': 'local', 'foo2': 'V1', 'fop': 'V1', 'bar': 'V1', 'baz': 'V1', 'fa': 'V1', '_Z3fooi': 'V1', '_ZN2ns3fooEv': 'V1', '_ZN2ns3barIiEEiv': 'V1'}
+   model  REFUSED
+   mortar {'foo': 'local', 'foo2': 'V1', 'fop': 'V1', 'bar': 'V1', 'baz': 'V1', 'fa': 'V1', '_Z3fooi': 'V1', '_ZN2ns3fooEv': 'V1', '_ZN2ns3barIiEEiv': 'V1'}
+r12 model-gnu==GNU:True model-mortar==GNU:True
+r13 model-gnu==GNU:True model-mortar==GNU:True
+r14 model-gnu==GNU:True model-mortar==GNU:True
+r15 model-gnu==GNU:True model-mortar==GNU:True
+r16 model-gnu==GNU:True model-mortar==GNU:True
+r17 model-gnu==GNU:True model-mortar==GNU:True
+r18 model-gnu==GNU:True model-mortar==GNU:True
+r19 model-gnu==GNU:True model-mortar==GNU:True
+r20 model-gnu==GNU:True model-mortar==GNU:True
+r21 model-gnu==GNU:True model-mortar==GNU:True
+r22 model-gnu==GNU:True model-mortar==GNU:True
+r23 model-gnu==GNU:True model-mortar==GNU:True
+r24 model-gnu==GNU:True model-mortar==GNU:True
+r25 model-gnu==GNU:True model-mortar==GNU:True
+r26 model-gnu==GNU:True model-mortar==GNU:True
+r27 model-gnu==GNU:True model-mortar==GNU:True
+r28 model-gnu==GNU:True model-mortar==GNU:True
+r29 model-gnu==GNU:True model-mortar==GNU:True
+r30 model-gnu==GNU:True model-mortar==GNU:True
+r31 model-gnu==GNU:True model-mortar==GNU:True
+r32 model-gnu==GNU:True model-mortar==GNU:False
+   GNU    REFUSED
+   lld    {'foo': 'local', 'foo2': 'V2', 'fop': 'local', 'bar': 'base', 'baz': 'base', 'fa': 'V1', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+   mold   {'foo': 'V1', 'foo2': 'V2', 'fop': 'V1', 'bar': 'base', 'baz': 'base', 'fa': 'V1', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+   model  REFUSED
+   mortar {'foo': 'V1', 'foo2': 'V2', 'fop': 'V1', 'bar': 'base', 'baz': 'base', 'fa': 'V1', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+r33 model-gnu==GNU:True model-mortar==GNU:True
+r34 model-gnu==GNU:True model-mortar==GNU:True
+r35 model-gnu==GNU:True model-mortar==GNU:True
+r36 model-gnu==GNU:True model-mortar==GNU:True
+r37 model-gnu==GNU:True model-mortar==GNU:True
+r38 model-gnu==GNU:True model-mortar==GNU:True
+r39 model-gnu==GNU:True model-mortar==GNU:True
+r40 model-gnu==GNU:True model-mortar==GNU:True
+r41 model-gnu==GNU:True model-mortar==GNU:True
+r42 model-gnu==GNU:True model-mortar==GNU:True
+r43 model-gnu==GNU:True model-mortar==GNU:True
+r44 model-gnu==GNU:True model-mortar==GNU:True
+r45 model-gnu==GNU:True model-mortar==GNU:True
+r46 model-gnu==GNU:False model-mortar==GNU:False
+   GNU    REFUSED
+   lld    {'foo': 'local', 'foo2': 'base', 'fop': 'base', 'bar': 'base', 'baz': 'base', 'fa': 'base', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+   mold   {'foo': 'V2', 'foo2': 'base', 'fop': 'base', 'bar': 'base', 'baz': 'base', 'fa': 'base', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+   model  {'foo': 'local', 'foo2': 'base', 'fop': 'base', 'bar': 'base', 'baz': 'base', 'fa': 'base', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+   mortar {'foo': 'local', 'foo2': 'base', 'fop': 'base', 'bar': 'base', 'baz': 'base', 'fa': 'base', '_Z3fooi': 'base', '_ZN2ns3fooEv': 'base', '_ZN2ns3barIiEEiv': 'base'}
+r47 model-gnu==GNU:True model-mortar==GNU:False
+   GNU    REFUSED
+   lld    {'foo': 'V2', 'foo2': 'local', 'fop': 'local', 'bar': 'V1', 'baz': 'V1', 'fa': 'local', '_Z3fooi': 'V1', '_ZN2ns3fooEv': 'V1', '_ZN2ns3barIiEEiv': 'V1'}
+   mold   {'foo': 'V2', 'foo2': 'local', 'fop': 'local', 'bar': 'V1', 'baz': 'V1', 'fa': 'local', '_Z3fooi': 'V1', '_ZN2ns3fooEv': 'V1', '_ZN2ns3barIiEEiv': 'V1'}
+   model  REFUSED
+   mortar {'foo': 'V2', 'foo2': 'local', 'fop': 'local', 'bar': 'V1', 'baz': 'V1', 'fa': 'local', '_Z3fooi': 'V1', '_ZN2ns3fooEv': 'V1', '_ZN2ns3barIiEEiv': 'V1'}
+r48 model-gnu==GNU:True model-mortar==GNU:True
+r49 model-gnu==GNU:True model-mortar==GNU:True
+r50 model-gnu==GNU:True model-mortar==GNU:True
+s01 model-gnu==GNU:True model-mortar==GNU:True
+s02 model-gnu==GNU:True model-mortar==GNU:True
+s03 model-gnu==GNU:False model-mortar==GNU:False
+   GNU    {'old': 'V1', 'cur': 'V2', 'bar': 'base', 'old_impl': 'V1'}
+   lld    {'old': 'local', 'cur': 'V2', 'bar': 'base', 'old_impl': 'V1'}
+   mold   {'old': 'V1', 'cur': 'V2', 'bar': 'base', 'old_impl': 'V1'}
+   model  {'old': 'local', 'cur': 'V2', 'bar': 'base', 'old_impl': 'V1'}
+   mortar {'old': 'local', 'cur': 'V2', 'bar': 'base', 'old_impl': 'V1'}
+s04 model-gnu==GNU:False model-mortar==GNU:False
+   GNU    {'old': 'V1', 'cur': 'V2', 'bar': 'V1', 'old_impl': 'V1'}
+   lld    {'old': 'local', 'cur': 'V2', 'bar': 'V1', 'old_impl': 'V1'}
+   mold   {'old': 'V1', 'cur': 'V2', 'bar': 'V1', 'old_impl': 'V1'}
+   model  {'old': 'local', 'cur': 'V2', 'bar': 'V1', 'old_impl': 'V1'}
+   mortar {'old': 'local', 'cur': 'V2', 'bar': 'V1', 'old_impl': 'V1'}
+s05 model-gnu==GNU:True model-mortar==GNU:True
+s06 model-gnu==GNU:False model-mortar==GNU:False
+   GNU    {'old': 'V1', 'cur': 'V2', 'bar': 'V1', 'old_impl': 'local'}
+   lld    {'old': 'local', 'cur': 'V2', 'bar': 'V1', 'old_impl': 'local'}
+   mold   {'old': 'V1', 'cur': 'V2', 'bar': 'V1', 'old_impl': 'local'}
+   model  {'old': 'local', 'cur': 'V2', 'bar': 'V1', 'old_impl': 'local'}
+   mortar {'old': 'local', 'cur': 'V2', 'bar': 'V1', 'old_impl': 'local'}
+s07 model-gnu==GNU:True model-mortar==GNU:True
+s08 model-gnu==GNU:True model-mortar==GNU:True
+s09 model-gnu==GNU:False model-mortar==GNU:False
+   GNU    {'old': 'V1', 'cur': 'V2', 'bar': 'base', 'old_impl': 'base'}
+   lld    {'old': 'local', 'cur': 'V2', 'bar': 'base', 'old_impl': 'base'}
+   mold   {'old': 'V1', 'cur': 'V2', 'bar': 'base', 'old_impl': 'base'}
+   model  {'old': 'local', 'cur': 'V2', 'bar': 'base', 'old_impl': 'base'}
+   mortar {'old': 'local', 'cur': 'V2', 'bar': 'base', 'old_impl': 'base'}
+s10 model-gnu==GNU:True model-mortar==GNU:False
+   GNU    REFUSED
+   lld    {'old': 'V1', 'cur': 'V2', 'bar': 'local', 'old_impl': 'local'}
+   mold   {'old': 'V1', 'cur': 'V2', 'bar': 'local', 'old_impl': 'local'}
+   model  REFUSED
+   mortar {'old': 'V1', 'cur': 'V2', 'bar': 'local', 'old_impl': 'local'}
+SCRIPTS 60 model(gnu)!=GNU 6 model(mortar)!=GNU 10

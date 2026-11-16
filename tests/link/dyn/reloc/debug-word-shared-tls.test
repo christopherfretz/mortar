@@ -1,0 +1,68 @@
+# plumb.md §5.8 "A target only a shared library defines", its TLS rows:
+# a non-alloc DTP-offset word (`R_X86_64_DTPOFF64`/`DTPOFF32`, what
+# DWARF's DW_OP_const8u x DW_OP_GNU_push_tls_address carries) against a
+# TLS variable only a shared library defines holds 0 + A, whether or not
+# the output has a PT_TLS of its own; an absolute word against the
+# library's STT_TLS symbol is refused by name (P-D12; a64.md §13.2,
+# arch.md §4.3), as GNU ld refuses it ("bad value").
+#
+# Measured (WP-104, plumb.md §10.6): without a PT_TLS GNU ld and mold
+# write 0 + A; with one they write A - the PT_TLS p_vaddr (A42), lld
+# writes 0 (the addend dropped, A38). lld and mold link the absolute
+# word (A41). The supervisor's ruling for the DTP offset is 0 + A.
+#
+# x86-64 only: on AArch64 all three references and mortar refuse
+# `R_AARCH64_TLS_DTPREL64` against a library's TLS symbol in a
+# non-alloc section, and i386 dynamic outputs are outside stage 3.
+#@ spec: plumb.md "5.8 Non-alloc relocations"
+#@ spec: plumb.md "10.6 Tombstones"
+#@ arch: x86_64
+#@ anomaly(lld): A38 A41
+#@ anomaly(bfd,mold): A42
+#@ anomaly(mold): A41
+
+cc -O1 -fPIC lib.c -o lib.o
+shlib gcc lib.o -Wl,-soname,libv.so -o libv.so
+cc -O1 -fPIC main.c -o main.o
+cc -O1 -fPIC notls.c -o notls.o
+cc -O1 -fPIE dtp.c -o dtp.o
+cc -O1 -fPIE abs.c -o abs.o
+
+link gcc -pie main.o dtp.o -L. -lv -o pie
+run pie
+  stdout: ok
+link gcc -no-pie main.o dtp.o -L. -lv -o exec
+run exec
+  stdout: ok
+link gcc -pie notls.o dtp.o -L. -lv -o pie-notls
+run pie-notls
+  stdout: ok
+
+link(lld,mold) gcc -pie notls.o abs.o -L. -lv -o pie-abs
+run(lld,mold) pie-abs
+  stdout: ok
+link(bfd,mortar) gcc -pie notls.o abs.o -L. -lv -o pie-abs
+  exit: fail
+  diag(bfd): bad value
+  diag(mortar): TLS attribute mismatch: tvar
+
+#--- lib.c
+__thread int t0 = 1;
+__thread int tvar = 4;
+int get_t0(void) { return t0; }
+#--- main.c
+#include <stdio.h>
+extern __thread int tvar;
+__thread int mine = 3;
+int main(void) { puts(tvar == 4 && mine == 3 ? "ok" : "bad"); return 0; }
+#--- notls.c
+#include <stdio.h>
+extern __thread int tvar;
+int main(void) { puts(tvar == 4 ? "ok" : "bad"); return 0; }
+#--- dtp.c
+__asm__(".section .debug_mortar_dsoref,\"\",@progbits\n"
+        "\t.quad tvar@dtpoff+16\n\t.long tvar@dtpoff+16\n\t.long tvar@dtpoff\n"
+        "\t.text");
+#--- abs.c
+__asm__(".section .debug_mortar_dsoref,\"\",@progbits\n"
+        "\t.quad tvar\n\t.quad tvar+16\n\t.text");
