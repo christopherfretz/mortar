@@ -338,6 +338,54 @@ kind = planned
 about = One libc++ test program as the libc++ lane links it, nine thousand times per run.
 needs = kiln and hod objects; the libc++ build of the L8 lane (WP for M3)
 
+# The archive line (WP-081): the archive count of the operator's link
+# lines (hundreds to low thousands), members shaped like cxx-large-g's.
+[synthetic-line-1000]
+class = on-request
+kind = synthetic
+about = 1000 static archives of 20 members on one line, in dependency order: what the count of archives costs.
+shape = line
+params = 1000 20
+driver = gcc
+cflags = -O1
+ldflags = -static
+run =
+
+[synthetic-line-1000-group]
+class = on-request
+kind = synthetic
+about = 1000 static archives of 20 members on one line, in one --start-group: what the count of archives costs.
+shape = line
+params = 1000 20
+group = yes
+driver = gcc
+cflags = -O1
+ldflags = -static
+run =
+
+[synthetic-line-3000]
+class = on-request
+kind = synthetic
+about = 3000 static archives of 20 members on one line, in dependency order: what the count of archives costs.
+shape = line
+params = 3000 20
+driver = gcc
+cflags = -O1
+ldflags = -static
+run =
+
+[synthetic-line-3000-group]
+class = on-request
+kind = synthetic
+about = 3000 static archives of 20 members on one line, in one --start-group: what the count of archives costs.
+shape = line
+params = 3000 20
+group = yes
+driver = gcc
+cflags = -O1
+ldflags = -static
+run =
+
 # The large real links (WP-081; spec/harness.md "bench", "Large
 # workloads"): LLVM/clang 19.1.7, the release of the container's clang,
 # lld and lldb, built once by bench/workloads/large/llvm-build.sh

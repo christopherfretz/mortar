@@ -27,7 +27,8 @@ const STAMP_MAGIC: &str = "# mortar-bench-stamp 1";
 pub const GNU_LD: &str = "/usr/bin/ld.bfd";
 
 /// A compiler or archiver of a build.
-pub(super) const TOOL_LIMITS: Limits = Limits { time: Duration::from_mins(15), memory_kib: 8 << 20 };
+pub(super) const TOOL_LIMITS: Limits =
+    Limits { time: Duration::from_mins(15), memory_kib: 8 << 20 };
 /// make, for a whole build.
 const MAKE_LIMITS: Limits = Limits { time: Duration::from_hours(3), memory_kib: 8 << 20 };
 /// A download.
@@ -280,7 +281,17 @@ fn link_with_driver(
         &format!("{}: linking with the recording ld", w.name),
         driver,
         |c| {
-            c.args(&w.ldflags).args(inputs).args(["-o", "out"]).current_dir(build);
+            c.args(&w.ldflags);
+            match inputs.split_first() {
+                // The generated inputs after `main.o` in one group.
+                Some((first, rest)) if w.group => {
+                    c.arg(first).arg("-Wl,--start-group").args(rest).arg("-Wl,--end-group");
+                }
+                _ => {
+                    c.args(inputs);
+                }
+            }
+            c.args(["-o", "out"]).current_dir(build);
             capture_env(c);
         },
         TOOL_LIMITS,
@@ -357,7 +368,7 @@ fn synthesize(
         return Err(e);
     }
     let main = "main.o".to_owned();
-    if !matches!(request.shape, Shape::Archives | Shape::Library) {
+    if !matches!(request.shape, Shape::Archives | Shape::Library | Shape::Line) {
         let mut inputs = vec![main.clone()];
         inputs.extend(
             compiled

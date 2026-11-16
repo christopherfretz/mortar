@@ -22,7 +22,7 @@ fn path_part(arg: &str) -> (&str, &str) {
     if arg.starts_with("--")
         && let Some((option, path)) = arg.split_once('=')
     {
-        return (&arg[..option.len() + 1], path);
+        return (&arg[..=option.len()], path);
     }
     ("", arg)
 }
@@ -67,11 +67,7 @@ pub enum Move {
 /// The argument relocated from the tree to `inputs`, and what is to be
 /// done for it. `stat` says whether a path of the tree is a file
 /// (`Some(true)`), a directory (`Some(false)`) or nothing.
-pub fn relocate(
-    arg: &str,
-    build: &Path,
-    stat: &dyn Fn(&Path) -> Option<bool>,
-) -> (String, Move) {
+pub fn relocate(arg: &str, build: &Path, stat: &dyn Fn(&Path) -> Option<bool>) -> (String, Move) {
     let (prefix, path) = path_part(arg);
     let Some(rel) = inside(path, build) else { return (arg.to_owned(), Move::Keep) };
     let named = format!("{prefix}{}", rel.display());
@@ -104,7 +100,8 @@ pub fn prepare(
     let response = dir.join("response.txt");
     let stamp_path = dir.join("stamp");
     if response.is_file() {
-        let stamp = std::fs::read_to_string(&stamp_path).ok().and_then(|t| prepare::Stamp::parse(&t));
+        let stamp =
+            std::fs::read_to_string(&stamp_path).ok().and_then(|t| prepare::Stamp::parse(&t));
         if let Some(stamp) = stamp.filter(|s| s.key == key && s.files_unchanged()) {
             return Ok(stamp.prepared(w, dir, response));
         }
@@ -286,7 +283,10 @@ mod tests {
         let r = |a: &str| relocate(a, build, &stat);
         assert_eq!(r("lib/libA.a"), ("lib/libA.a".into(), Move::Copy("lib/libA.a".into())));
         assert_eq!(r("./main.o"), ("main.o".into(), Move::Copy("main.o".into())));
-        assert_eq!(r("/w/t/build/lib/libA.a"), ("lib/libA.a".into(), Move::Copy("lib/libA.a".into())));
+        assert_eq!(
+            r("/w/t/build/lib/libA.a"),
+            ("lib/libA.a".into(), Move::Copy("lib/libA.a".into()))
+        );
         assert_eq!(r("-L/w/t/build/lib"), ("-Llib".into(), Move::Name("lib".into())));
         assert_eq!(r("-L/usr/lib"), ("-L/usr/lib".into(), Move::Keep));
         assert_eq!(r("-lm"), ("-lm".into(), Move::Keep));

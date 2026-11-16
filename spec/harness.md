@@ -1666,14 +1666,15 @@ class or shape, and a missing required key, are errors naming the line.
 | key | kinds | meaning |
 |---|---|---|
 | `class` | all | `small`, `medium`, `large`, `extreme`, `rust`, `calibration` (exactly one workload: "Calibration"), or `on-request` (built and measured only when named with `--workload`: inputs too large to keep, generated, measured and deleted) |
-| `kind` | all | `sources`, `synthetic`, `cmake`, `cargo`, `planned` |
+| `kind` | all | `sources`, `synthetic`, `cmake`, `cargo`, `ninja`, `planned` |
 | `about` | all | one sentence for the report |
 | `sources` | sources | files of `bench/workloads/src/` |
 | `shape`, `params` | synthetic | the generator's shape and its two parameters ("Generated workloads") |
 | `url`, `sha256`, `root` | cmake | the source archive, its SHA-256, the directory in it with the top `CMakeLists.txt` |
 | `options`, `prebuild`, `target` | cmake | cmake `-D` options; make targets built first without capture; the make target whose link is the workload |
 | `rev`, `package`, `bin`, `rustc_args` | cargo | a commit of this repository; `cargo rustc -p <package> --bin <bin> -- <rustc_args>` |
-| `driver`, `cflags`, `ldflags` | sources, synthetic, cmake (no `ldflags`) | the compiler driver on `PATH`, compiler flags, driver flags of the link |
+| `script`, `sha256`, `root`, `tree`, `target` | ninja | the script of this checkout that makes the build tree, and its arguments after `<work>`; the SHA-256 of the source archive it unpacks and the directory in it (`$S`); the directory under `<work>/workloads` that holds the tree and the captured inputs, shared by the workloads of one tree; the Ninja output whose link is the workload ("Large workloads") |
+| `driver`, `cflags`, `ldflags` | sources, synthetic, cmake (no `ldflags`), ninja (`driver` only, for the key) | the compiler driver on `PATH`, compiler flags, driver flags of the link |
 | `capture` | all built | the pattern the basename of the captured link's output matches (`*` is any run of characters); default `out` |
 | `needs` | planned | what the workload waits for |
 | `run` | all built | the arguments the linked program is run with once ("Running the outputs"); `run =` runs it without arguments, no `run` does not run it; `$S` in an argument is the source directory (the unpacked archive's `root` for `cmake`, `bench/workloads/src` for `sources`, else the workload's directory) |
@@ -1777,7 +1778,9 @@ The key is FNV-1a 64 over the stamp's first line, the manifest section
 line of `<driver> --version` and of `ld.bfd --version`, and per kind: the
 name and bytes of each source; the generator's version (`GENERATOR` in
 `xtask/src/bench/synth.rs`); `cmake --version` and `make --version`;
-`rustc --version`. A workload is ready when its stamp's key is the current
+`rustc --version`; the bytes of the `ninja` kind's script and `ninja
+--version`. A `ninja` workload is never rebuilt by the bench ("Large
+workloads"). A workload is ready when its stamp's key is the current
 key, its `response.txt` exists and every `file` line still has its size
 and time. When only files changed (a system library was upgraded), the
 census alone is redone. Otherwise the workload's directory is removed and
@@ -1824,6 +1827,52 @@ directory is the cache's, the same for every checkout.
   `CARGO_BUILD_RUSTFLAGS`, `RUSTC_WRAPPER` removed. `rust-self` passes
   `-C save-temps`: without it rustc deletes the `symbols.o` its link reads
   (under `deps/rustcXXXXXX/`) once the link is done.
+
+### Large workloads
+
+A `ninja` workload (WP-081) is a link of a build too long for a bench
+run: LLVM/clang takes hours to compile on the shared host. Its tree is
+made ONCE, outside the bench, by the section's `script`; the bench
+captures the link of `target` from the tree and keeps what that link
+reads, not the tree.
+
+- **The tree**: `<script> <work> <args>` makes `<work>/workloads/<tree>/build`
+  (a Ninja tree; its archives are thin while it is built, half the disk).
+  It fetches the pinned archive into `<work>/downloads/`, checks its
+  SHA-256 and unpacks it once into `<work>/src/<first 16 digits>/`, as the
+  `cmake` kind does. It compiles every input of the large links and links
+  none of them. Ninja 1.12 is not a jobserver client: the script takes a
+  fixed `-j` (at most 6 on the shared host, 4 while other packages wait for
+  the load) and runs under `nice -n 10`.
+- **The capture** (`--prepare --workload <name>`, or any run naming the
+  workload, when `<work>/workloads/<name>/response.txt` does not exist):
+  `ninja -C <build> -t commands -s <target>` gives the link's command; it
+  runs with `/bin/sh -c` in the tree with the recording `ld` of
+  "Capture" (`COMPILER_PATH`; the wrapper exits 0 and writes nothing), and
+  the one record whose output matches `capture` is the link. The link
+  must have run in the tree. Each argument that names a file of the tree
+  (relative to it, or absolute under it; also after `-L` and after
+  `--<option>=`) is copied to `<work>/workloads/<tree>/inputs/` under the
+  same relative path and named by it; a thin archive is written as the
+  regular archive of the same members in the same order (`ar Dqc`, then
+  `ranlib -D`: LLVM's own archive rule); a directory of the tree after
+  `-L`, or the directory of a file a `--<option>=` names in the tree (the
+  `--dependency-file` CMake passes), is made there. Arguments outside the
+  tree stay as they are. `response.txt` gets the relocated arguments, and
+  the link runs in `inputs/` (the stamp's `cwd`). A file already in
+  `inputs/` (by the same size, or a regular archive already written) is
+  not copied again: the workloads of one tree share their inputs.
+- **The census** is "Census"'s, with `$W` standing for the tree's
+  directory.
+- **Never rebuilt.** A prepared `ninja` workload whose key changed, or
+  whose files changed, is counted again; it is never deleted or rebuilt by
+  the bench. Without `response.txt` and without a tree the preparation is
+  an error naming the script to run. To rebuild: delete
+  `<work>/workloads/<tree>` and the workloads' directories, run the script,
+  prepare.
+- **After the capture** the tree is deleted by hand
+  (`rm -rf <work>/workloads/<tree>/build`, a literal path); the cache keeps
+  `inputs/` and each workload's `response.txt` and `stamp`.
 
 ### Capture
 

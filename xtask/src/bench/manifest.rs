@@ -113,6 +113,9 @@ pub struct Workload {
     pub cflags: Vec<String>,
     /// Driver flags of the link, as words.
     pub ldflags: Vec<String>,
+    /// `group = yes` (synthetic): the generated inputs after `main.o`
+    /// between `-Wl,--start-group` and `-Wl,--end-group`.
+    pub group: bool,
     /// The glob the basename of the captured link's output must match;
     /// exactly one recorded link matches.
     pub capture: String,
@@ -156,7 +159,9 @@ const CLASSES: [&str; 7] = ["small", "medium", "large", "extreme", "rust", CALIB
 fn keys_of(kind: &str) -> Option<&'static [&'static str]> {
     Some(match kind {
         "sources" => &["sources", "driver", "cflags", "ldflags", "capture", "run"],
-        "synthetic" => &["shape", "params", "driver", "cflags", "ldflags", "capture", "run"],
+        "synthetic" => {
+            &["shape", "params", "group", "driver", "cflags", "ldflags", "capture", "run"]
+        }
         "cmake" => &[
             "url", "sha256", "root", "options", "prebuild", "target", "driver", "cflags",
             "capture", "run",
@@ -208,6 +213,7 @@ pub fn parse(text: &str) -> Result<Vec<Workload>, String> {
     sections.into_iter().map(|(at, name, entries)| section(at, name, &entries)).collect()
 }
 
+#[allow(clippy::too_many_lines, reason = "one arm per kind, read top to bottom")]
 fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, String> {
     let get = |key: &str| entries.iter().find(|(_, k, _)| k == key).map(|(_, _, v)| v.as_str());
     let fail = |what: String| format!("line {at}: workload `{name}`: {what}");
@@ -301,6 +307,11 @@ fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, Strin
         Kind::Cargo(_) => "cc".to_owned(),
         _ => need("driver")?.to_owned(),
     };
+    let group = match get("group") {
+        None | Some("no") => false,
+        Some("yes") => true,
+        Some(_) => return Err(fail("`group` is `yes` or `no`".into())),
+    };
     let capture = get("capture").unwrap_or("out").to_owned();
     if !planned && (capture.is_empty() || capture.contains('/')) {
         return Err(fail("`capture` is a file name pattern".into()));
@@ -316,6 +327,7 @@ fn section(at: usize, name: String, entries: &[Entry]) -> Result<Workload, Strin
         driver,
         cflags: words("cflags"),
         ldflags: words("ldflags"),
+        group,
         capture,
         run: get("run").map(|v| v.split_whitespace().map(str::to_owned).collect()),
         text,
@@ -429,7 +441,10 @@ run = -cc1 $S/x.c
         let Kind::Ninja(ninja) = &workloads[5].kind else { panic!("{:?}", workloads[5]) };
         assert_eq!(ninja.script, ["bench/b.sh", "g"]);
         assert_eq!((ninja.tree.as_str(), ninja.target.as_str()), ("big-g", "bin/big"));
-        assert_eq!((workloads[5].driver.as_str(), workloads[5].capture.as_str()), ("clang++", "big"));
+        assert_eq!(
+            (workloads[5].driver.as_str(), workloads[5].capture.as_str()),
+            ("clang++", "big")
+        );
         assert!(workloads[5].measured());
     }
 
@@ -472,6 +487,10 @@ run = -cc1 $S/x.c
                 .contains("kind `planned` takes no `run`")
         );
         assert!(broken("tree = big-g", "tree = ../x").contains("`tree`"));
+        assert!(broken("params = 10 20", "params = 10 20\ngroup = maybe").contains("`group`"));
+        assert!(
+            parse(&GOOD.replace("params = 10 20", "params = 10 20\ngroup = yes")).unwrap()[1].group
+        );
         assert!(broken("script = bench/b.sh g\n", "").contains("no `script`"));
         assert!(broken("target = bin/big\n", "").contains("no `target`"));
         assert!(

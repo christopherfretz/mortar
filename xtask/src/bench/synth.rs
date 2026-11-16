@@ -38,11 +38,28 @@ pub enum Shape {
     /// the stride of the needed ones (every `stride`-th member, the first
     /// included).
     Library,
+    /// A long link line of archives (WP-081): members of
+    /// [`LINE_FUNCTIONS`] functions; three of every four members are
+    /// needed, each by the same member of the archive before it and by one
+    /// further back, so the line links in its order without a group.
+    /// Parameters: archives, members per archive.
+    Line,
 }
 
+/// The functions of a member of the `line` shape (WP-081: about the
+/// global definitions of a loaded member of `cxx-large-g`).
+pub const LINE_FUNCTIONS: usize = 32;
+
 impl Shape {
-    pub const ALL: [Self; 6] =
-        [Self::Objects, Self::Sections, Self::Comdat, Self::Strings, Self::Archives, Self::Library];
+    pub const ALL: [Self; 7] = [
+        Self::Objects,
+        Self::Sections,
+        Self::Comdat,
+        Self::Strings,
+        Self::Archives,
+        Self::Library,
+        Self::Line,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -52,6 +69,7 @@ impl Shape {
             Self::Strings => "strings",
             Self::Archives => "archives",
             Self::Library => "library",
+            Self::Line => "line",
         }
     }
 
@@ -94,7 +112,7 @@ impl Request {
         match self.shape {
             Shape::Objects | Shape::Sections | Shape::Strings | Shape::Library => a + 1,
             Shape::Comdat => a + 2,
-            Shape::Archives => a * b + 1,
+            Shape::Archives | Shape::Line => a * b + 1,
         }
     }
 
@@ -124,6 +142,15 @@ impl Request {
                 Source {
                     name: format!("a{archive:05}_m{member:05}.c"),
                     text: archive_member(archive, member, a, b),
+                    compiled: true,
+                    archive: Some(archive),
+                }
+            }
+            Shape::Line => {
+                let (archive, member) = (index / b, index % b);
+                Source {
+                    name: format!("a{archive:05}_m{member:05}.c"),
+                    text: line_member(archive, member, a),
                     compiled: true,
                     archive: Some(archive),
                 }
@@ -164,12 +191,17 @@ impl Request {
                 |m| format!("int {}(int);\n", archive_name(0, m, 0)),
                 |m| format!("  sum += {}(sum);\n", archive_name(0, m, 0)),
             ),
+            Shape::Line => (
+                |m| format!("int {}(int);\n", line_name(0, m, 0)),
+                |m| format!("  sum += {}(sum);\n", line_name(0, m, 0)),
+            ),
         };
         // The archives' chain starts at the needed members of the first;
         // the library's needed members are every `b`-th.
         let units: Vec<usize> = match self.shape {
             Shape::Archives => (0..needed_members(b)).collect(),
             Shape::Library => (0..a).step_by(b).collect(),
+            Shape::Line => (0..b).filter(|&m| line_needed(m)).collect(),
             _ => (0..a).collect(),
         };
         for &i in &units {
@@ -365,6 +397,55 @@ fn archive_member(archive: usize, member: usize, archives: usize, members: usize
     text
 }
 
+/// Whether the `line` shape's members at position `member` are needed:
+/// three of every four.
+fn line_needed(member: usize) -> bool {
+    member % 4 != 3
+}
+
+fn line_name(archive: usize, member: usize, function: usize) -> String {
+    format!("mortar_bench_line_a{archive:05}_m{member:05}_f{function:02}")
+}
+
+/// Member `member` of archive `archive` of the `line` shape:
+/// [`LINE_FUNCTIONS`] functions and a table. A needed member's first
+/// function calls the same member of the next archive and a needed member
+/// of an archive further on (never backwards); the others call nothing.
+fn line_member(archive: usize, member: usize, archives: usize) -> String {
+    let mut text = String::new();
+    let mut callees = Vec::new();
+    if line_needed(member) && archive + 1 < archives {
+        callees.push(line_name(archive + 1, member, 0));
+        let ahead = archives - archive - 1;
+        if ahead > 1 {
+            let far = archive + 2 + mix(archive, member) % (ahead - 1);
+            callees.push(line_name(far, member, 0));
+        }
+    }
+    for callee in &callees {
+        let _ = writeln!(text, "int {callee}(int);");
+    }
+    let _ = writeln!(
+        text,
+        "int mortar_bench_line_a{archive:05}_m{member:05}_table[8] = {{{member}, 1, 2, 3}};"
+    );
+    for f in 0..LINE_FUNCTIONS {
+        let _ = write!(
+            text,
+            "int {}(int x) {{ return x + mortar_bench_line_a{archive:05}_m{member:05}_table[{}]",
+            line_name(archive, member, f),
+            f % 8
+        );
+        if f == 0 {
+            for callee in &callees {
+                let _ = write!(text, " + {callee}(x)");
+            }
+        }
+        text.push_str("; }\n");
+    }
+    text
+}
+
 // spec/harness.md "bench", "Synthetic workloads".
 #[cfg(test)]
 mod tests {
@@ -421,6 +502,7 @@ mod tests {
                 "fnv1a64:ba3451fddf5f19c7",
                 "fnv1a64:4ded4bcf6bccb165",
                 "fnv1a64:6129bd24f943a2cc",
+                "fnv1a64:fcf700b2786033d0",
             ]
         );
     }
@@ -491,5 +573,20 @@ mod tests {
         let main = library.source(8).text;
         assert_eq!(main.matches("sum += mortar_bench_archives_a00000_m").count(), 3, "{main}");
         assert!(main.contains("_m00006_f0(sum)") && !main.contains("_m00007_"), "{main}");
+
+        // Archives of members of 32 functions; members 0-2 of each four
+        // are needed, called from the archive before and from one further
+        // back; main needs those of the first.
+        let line = Request { shape: Shape::Line, params: (5, 4) };
+        assert_eq!(line.count(), 21);
+        let member = |archive: usize, member: usize| line.source(archive * 4 + member);
+        assert_eq!(member(2, 3).name, "a00002_m00003.c");
+        assert_eq!(member(0, 0).text.matches("(int x) {").count(), LINE_FUNCTIONS);
+        let first = member(0, 1).text;
+        assert!(first.contains("+ mortar_bench_line_a00001_m00001_f00(x)"), "{first}");
+        assert_eq!(first.matches("(int);").count(), 2, "{first}");
+        assert!(!member(0, 3).text.contains("(int);") && !member(4, 0).text.contains("(int);"));
+        let main = line.source(20).text;
+        assert_eq!(main.matches("sum += mortar_bench_line_a00000_m").count(), 3, "{main}");
     }
 }
