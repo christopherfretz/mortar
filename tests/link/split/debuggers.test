@@ -2,7 +2,10 @@
 # objects: a breakpoint by line and by function, a backtrace with
 # arguments, a global, a type, a step into a function of another unit
 # (twice<int>, whose kept copy is main.cc's); with --gc-sections a
-# breakpoint by line in the collected unused_fn finds no code. gdb and
+# breakpoint by line in the collected unused_fn finds no code (gdb's
+# "No compiled code for line 3" goes to standard error, which a check does
+# not read; the pending-breakpoint question on standard output and the
+# next breakpoint's being number 1 say the same). gdb and
 # lldb run host programs only. The transcripts against GNU ld's are
 # crates/mortar/tests/debuggers.rs split_sessions_*.
 #@ spec: image.md I-47
@@ -17,8 +20,9 @@ cxx(clang) -g -gsplit-dwarf -gdwarf-4 -O0 -ffunction-sections b.cc -o b-c4.o
 link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gc-sections main-g5.o b-g5.o -o g5
 link g++ -static -no-pie -fno-use-linker-plugin -Wl,--gc-sections main-c4.o b-c4.o -o c4
 check gdb g5 "break b.cc:3" "break b.cc:4" run bt "print x" "print g_total" "ptype Point" step bt kill
-  has: No compiled code for line 3 in file "b.cc".
-  has: Breakpoint 2, helper (x=1) at b.cc:4
+  has: Make breakpoint pending on future shared library load?
+  then: Breakpoint 1 at * file b.cc, line 4.
+  has: Breakpoint 1, helper (x=1) at b.cc:4
   has: #1 * in main (argc=1) at main.cc:10
   has: $1 = 1
   has: $2 = 3
@@ -27,8 +31,9 @@ check gdb g5 "break b.cc:3" "break b.cc:4" run bt "print x" "print g_total" "pty
   then: #1 * in helper (x=1) at b.cc:4
   not: Could not find DWO
 check gdb c4 "break b.cc:3" "break b.cc:4" run bt "print x" "print g_total" "ptype Point" step bt kill
-  has: No compiled code for line 3 in file "b.cc".
-  has: Breakpoint 2, helper (x=1) at b.cc:4
+  has: Make breakpoint pending on future shared library load?
+  then: Breakpoint 1 at * file b.cc, line 4.
+  has: Breakpoint 1, helper (x=1) at b.cc:4
   has: #1 * in main (argc=1) at main.cc:10
   has: $2 = 3
   has: type = struct Point {

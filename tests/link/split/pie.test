@@ -6,9 +6,11 @@
 # GCC's .debug_addr entry of a TLS variable (R_X86_64_64/R_386_32
 # against tl_count) is its DTP offset (spec/x64.md X-53, spec/x86.md
 # X86-62); GNU ld and mold write the template address (plumb.md A15).
-# GNU ld's static-pie carries A30 on AArch64 (plumb.md §10.2).
+# GNU ld's static-pie carries A30 on AArch64 and A31 on x86-64
+# (crtbeginS's .plt.got entry; plumb.md §10.2).
 #@ anomaly(bfd,mold,x86_64): A15
 #@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
 #@ spec: image.md I-49a
 #@ spec: dyn.md "D-72"
 #@ arch: aarch64 x86_64

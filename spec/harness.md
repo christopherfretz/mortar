@@ -693,8 +693,8 @@ file with neither architecture nor linker.
 - `requires: <word>...`: once; exactly the tools the steps use beyond
   `gcc` and the binutils: `g++` (a `cxx` step, `link g++` or `shlib g++`),
   `gfortran`, `clang` (a `(clang)` compile step or `link clang`/`clang++`),
-  `yaml2obj`, `llvm-readelf`, `gdb`, `lldb`, `eu-elflint` (a `check` with
-  that tool). A missing word and an unused one are both errors. A
+  `yaml2obj`, `llvm-readelf`, `llvm-dwarfdump`, `gdb`, `lldb`, `eu-elflint`
+  (a `check` with that tool). A missing word and an unused one are both errors. A
   fixture states its own `requires`, which every test naming it gets.
 - `fixture: <name>...`: the fixtures (each named once) whose built files the test's
   inputs start from ("Fixtures").
@@ -760,7 +760,7 @@ keeps blanks (with `\"` and `\\`).
 | `shlib <driver> <args>` | a shared library, by the architecture's `gcc`, `g++` or `gfortran` with `-shared -fuse-ld=bfd`: GNU ld links every fixture library, whatever the run's linkers |
 | `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
 | `run <program> [<args>]` | runs a linked program |
-| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `text` (the file named by the one argument, read), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
+| `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `llvm-dwarfdump` (WP-080: `--verify`, the DWARF of a split-DWARF output), `text` (the file named by the one argument, read), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
 
 The build steps come before every link, run and check step. Expectations
 are the indented lines under a step:
