@@ -1031,6 +1031,17 @@ fn verbose(cx: &Cx) {
     let o = cx.mortar(&["undef.o", "-o", "verbose.out", "--verbose"]);
     assert!(!o.success() && o.stdout_text().is_empty(), "{}", o.stdout_text());
     assert!(!cx.mortar(&["--verbose=x"]).success());
+    // cli.md §5.1: `-v` and `-V` on a line with inputs print their text
+    // before the link, which goes on; the exit status is the link's.
+    for (flag, text) in [("-v", mortar_cli::version_text()), ("-V", v.clone())] {
+        let o = cx.mortar(&[flag, "start.o", "-o", "verbose.out"]);
+        assert!(o.success(), "{flag}: {}", o.stderr_text());
+        assert_eq!(o.stdout_text(), text, "{flag}");
+        assert_eq!(std::fs::read(cx.scratch.join("verbose.out")).unwrap(), plain, "{flag}");
+        let o = cx.mortar(&["undef.o", flag, "-o", "verbose.out"]);
+        assert!(!o.success(), "{flag}");
+        assert_eq!(o.stdout_text(), text, "{flag}: printed before the failed link");
+    }
 }
 
 // spec: diag.md (colored diagnostics)

@@ -1151,6 +1151,15 @@ because a failed link prints nothing on standard output
 - `-v` prints the same line and parsing goes on.
 - `-V` prints the line, then `  Supported emulations:` and the four
   names, each indented by three spaces, as GNU ld does.
+- `-v` and `-V` (either, any number of times; `-V`'s text if both) print
+  on standard output, through descriptor 1:
+  - with no input file, the text alone, exit status 0;
+  - on a line with inputs, the text once, before the link, which then
+    goes on: the exit status is the link's, and a link that fails (or
+    whose inputs cannot be opened) has still printed the text. A line
+    whose parse fails, or that names a refused option, prints nothing
+    and links nothing (§4.3). Measured (WP-112): GNU ld 2.44, lld and
+    mold print their version line and link.
 - `--verbose` and `--verbose=N` (`N` a decimal number, as the row says,
   else `invalid-option-value`; measured, GNU ld 2.44 also accepts a
   word that is not a number) print `-V`'s text on standard output, through
