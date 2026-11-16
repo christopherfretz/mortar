@@ -1,0 +1,79 @@
+# synth.md S-127, resolve.md §3.7: `STO_AARCH64_VARIANT_PCS` (the vector
+# calling convention, `st_other` bit 7) in a static executable's
+# `.symtab`. A definition keeps its own bit: global, weak, protected,
+# hidden (demoted to a local, S-77) and `static` functions. GNU ld 2.44,
+# lld 19/22 and mold 2.37.1 all keep it (mold writes every entry local,
+# A9; GNU ld keeps the hidden one global, S-77). Before WP-059 mortar
+# kept it on the `static` function only.
+#
+# Where the references differ (S-127 argues the rule):
+# - `plain_def`: defined without the bit, declared with it by the caller.
+#   GNU ld ORs every entry's bits and writes it; lld, mold and mortar
+#   write the definition's: none.
+# - `marked_def`: defined with the bit, declared without it: every
+#   linker writes the definition's bit.
+# - `wref`, `wref2`: undefined weak references (`wref` declared with the
+#   bit by one object, `wref2` with the bit in the second object only).
+#   GNU ld has no entry for them in a static output; lld and mold write
+#   the FIRST mention's bits (so `wref2` without it), mortar the OR of the
+#   references (with it, both).
+#@ spec: synth.md "S-127"
+#@ spec: resolve.md "3.7 Binding and visibility in the output"
+#@ arch: aarch64
+
+cc -O1 main.c -o main.o
+cc -O1 defs.c -o defs.o
+cc -O1 refs.c -o refs.o
+link gcc -static main.o refs.o defs.o -o prog
+run prog
+  stdout: 0 15 3 0
+check readelf -sW prog
+  has: FUNC LOCAL DEFAULT [VARIANT_PCS] * vloc$
+  has(lld,mortar): FUNC LOCAL HIDDEN [VARIANT_PCS] * vhid$
+  has(mold): FUNC LOCAL HIDDEN [VARIANT_PCS] * vhid$
+  has(bfd): FUNC GLOBAL HIDDEN [VARIANT_PCS] * vhid$
+  has(bfd,lld,mortar): FUNC GLOBAL DEFAULT [VARIANT_PCS] * vglob$
+  has(bfd,lld,mortar): FUNC WEAK DEFAULT [VARIANT_PCS] * vweak$
+  has(bfd,lld,mortar): FUNC GLOBAL PROTECTED [VARIANT_PCS] * vprot$
+  has(mold): FUNC LOCAL DEFAULT [VARIANT_PCS] * vglob$
+  has(mold): FUNC LOCAL PROTECTED [VARIANT_PCS] * vprot$
+  has(bfd): FUNC GLOBAL DEFAULT [VARIANT_PCS] * plain_def$
+  has(lld,mortar): FUNC GLOBAL DEFAULT * plain_def$
+  not(lld,mold,mortar): [VARIANT_PCS] * plain_def$
+  has(bfd,lld,mortar): FUNC GLOBAL DEFAULT [VARIANT_PCS] * marked_def$
+  has(mold): FUNC LOCAL DEFAULT [VARIANT_PCS] * marked_def$
+  not(bfd): UND wref$
+  not(bfd): UND wref2$
+  has(lld,mortar): NOTYPE WEAK DEFAULT [VARIANT_PCS] UND wref$
+  has(mortar): NOTYPE WEAK DEFAULT [VARIANT_PCS] UND wref2$
+  has(lld): NOTYPE WEAK DEFAULT UND wref2$
+  not(lld,mold): [VARIANT_PCS] UND wref2$
+
+#--- main.c
+#include <stdio.h>
+#define V __attribute__((aarch64_vector_pcs, noinline))
+V int vglob(int x) { return x + 1; }
+V __attribute__((visibility("hidden"))) int vhid(int x) { return x + 2; }
+V static int vloc(int x) { return x + 3; }
+V __attribute__((weak)) int vweak(int x) { return x + 4; }
+V __attribute__((visibility("protected"))) int vprot(int x) { return x + 5; }
+__attribute__((aarch64_vector_pcs)) int (*volatile fp)(int) = vloc;
+int refs(void);
+__attribute__((weak)) int wref2(int);
+int main(void) {
+  printf("%d %d %d\n", vglob(0) + vhid(0) + fp(0) + vweak(0) + vprot(0), refs(), wref2 != 0);
+  return 0;
+}
+#--- refs.c
+#include <stdio.h>
+__attribute__((aarch64_vector_pcs)) int plain_def(int);
+int marked_def(int);
+__attribute__((aarch64_vector_pcs, weak)) int wref(int);
+__attribute__((aarch64_vector_pcs, weak)) int wref2(int);
+int refs(void) {
+  printf("%d ", wref != 0 || wref2 != 0);
+  return plain_def(0) + marked_def(0);
+}
+#--- defs.c
+int plain_def(int x) { return x + 1; }
+__attribute__((aarch64_vector_pcs)) int marked_def(int x) { return x + 2; }

@@ -328,6 +328,14 @@ What `spec/synth.md` writes, decided here:
 An undefined key that no live relocation uses is absent from both tables
 (all three, E15).
 
+The `st_other` bits above the visibility (AArch64's
+`STO_AARCH64_VARIANT_PCS`) are the defining entry's for a definition,
+and for an undefined entry the OR over the key's live references in
+relocatable objects (undefined and demoted mentions, §3.6): resolution
+records that OR as `RefFlags::VARIANT_PCS` (bit 7 of `st_other`, the one
+bit above the visibility the three targets define); `spec/synth.md`
+S-127 gives the rule and the measurements.
+
 ### 3.8 Duplicates and `--allow-multiple-definition`
 
 M1. Let `S` be the set of live `Strong` candidates; `clash[K]` is set when `|S| ≥ 2`, unless every

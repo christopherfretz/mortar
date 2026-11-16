@@ -6,10 +6,10 @@ use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_elf::consts::{
-    STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_NOTYPE, STT_OBJECT, STT_TLS, STV_DEFAULT, STV_HIDDEN,
-    STV_INTERNAL, STV_PROTECTED,
+    STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STO_AARCH64_VARIANT_PCS, STT_NOTYPE, STT_OBJECT, STT_TLS,
+    STV_DEFAULT, STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
 };
-use mortar_elf::{Sym, SymbolIndex, SymbolSection, SymbolTable};
+use mortar_elf::{Machine, Sym, SymbolIndex, SymbolSection, SymbolTable};
 use mortar_synth::SymSource;
 use mortar_synth::symtab::{CoreSections, GlobalIn, LocalIn, SecKind, Sections, SymDef};
 
@@ -173,6 +173,9 @@ impl SymSource for CoreSyms<'_, '_> {
         let props = self.resolution.props.get(id).copied().unwrap_or_default();
         let referenced = props.refs.contains(RefFlags::FROM_OBJECT);
         let other = props.visibility & 3;
+        // synth.md S-121: the bits above the visibility
+        // (`STO_AARCH64_VARIANT_PCS`) are the defining entry's, or for an
+        // undefined entry those of its references (resolve.md §3.7).
         let row = |typ, size, def, file, binding| GlobalIn {
             name: key.name,
             typ,
@@ -194,11 +197,15 @@ impl SymSource for CoreSyms<'_, '_> {
                 } else {
                     props.binding
                 };
-                row(s.sym_type(), s.st_size, self.def_of(e, &s, t), e.file, binding)
+                let mut g = row(s.sym_type(), s.st_size, self.def_of(e, &s, t), e.file, binding);
+                g.other |= s.st_other & !3;
+                g
             }
             Def::Common(e) => {
                 let size = self.resolution.common_of(id).map_or(0, |c| c.size);
-                row(STT_OBJECT, size, SymDef::Common, e.file, props.binding)
+                let mut g = row(STT_OBJECT, size, SymDef::Common, e.file, props.binding);
+                g.other |= self.sym(e).map_or(0, |(s, _)| s.st_other & !3);
+                g
             }
             // resolve.md §8.1: the table's visibility (local hidden for
             // `__ehdr_start`, the array bounds, `__rela_iplt_*`, ...;
@@ -228,7 +235,13 @@ impl SymSource for CoreSyms<'_, '_> {
             Def::Undefined { .. } if matches!(other, STV_INTERNAL | STV_HIDDEN) => return None,
             Def::Undefined { weak } if referenced => {
                 let binding = if weak { STB_WEAK } else { STB_GLOBAL };
-                row(STT_NOTYPE, 0, SymDef::Undefined, FileId::INTERNAL, binding)
+                let mut g = row(STT_NOTYPE, 0, SymDef::Undefined, FileId::INTERNAL, binding);
+                if self.inputs.target.machine == Machine::AArch64
+                    && props.refs.contains(RefFlags::VARIANT_PCS)
+                {
+                    g.other |= STO_AARCH64_VARIANT_PCS;
+                }
+                g
             }
             // A key no live object references has no entry; a shared
             // definition is M2 (no shared object is loaded in M1).

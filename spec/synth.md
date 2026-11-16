@@ -1016,6 +1016,39 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   checks it. Type, size and visibility are the chosen definition's, the
   visibility being the most constraining over every non-local input
   entry of the name (gABI "Symbol Visibility"; Y3).
+- **S-127 [C] (`st_other` above the visibility).** The bits of a
+  global's `st_other` above the visibility (the gABI leaves them to the
+  processor; of the three targets only AArch64 defines one,
+  `STO_AARCH64_VARIANT_PCS`, 0x80: the function follows the vector or
+  SVE calling convention) are, for a definition (demoted ones of S-77
+  included), the defining entry's bits; for a common, the chosen common
+  entry's; for an undefined entry (a referenced weak undefined key, S-75)
+  on AArch64, `STO_AARCH64_VARIANT_PCS` when some live reference has it
+  (resolve.md §3.7: `RefFlags::VARIANT_PCS`), and no other bit; for a
+  linker-defined symbol (§8.1 of resolve.md), none. A local of an input
+  file keeps its whole `st_other` (S-76). In every output kind (static,
+  PIE, static-pie, `-no-pie`). Measured (WP-059 §2, GCC 14
+  `aarch64_vector_pcs` functions: global, weak, protected, hidden and
+  `static`): GNU ld 2.44, lld 19 and mold 2.37.1 keep the bit on every
+  such entry in static, PIE and static-pie outputs; mold writes the
+  entries `STB_LOCAL` (A9), GNU ld's demoted entry is `STV_DEFAULT` (its
+  hidden form, S-77). Where they differ the rule is argued:
+  - a definition without the bit and a reference with it: GNU ld ORs
+    every entry's bits and writes it; lld and mold write the definition's
+    (none). The bit describes the code at the symbol's address, which is
+    the definition's; a debugger, `perf` and an unwinder reading
+    `.symtab` need the convention that code follows, so the definition's
+    bits are written (lld, mold; `spec/dyn.md` D-23's export row is the
+    same rule for `.dynsym`);
+  - an undefined weak entry: lld and mold write the first mention's bits
+    (by input order: the bit or not depending on the command line), GNU
+    ld has no entry in a static output and ORs in a PIE. An undefined
+    entry describes no code; the OR is GNU's, does not depend on the
+    input order, and is what the loader needs on a `.dynsym` import
+    (`spec/dyn.md` D-23's `WeakDyn` row), so `.symtab` writes the same.
+  Before WP-059 mortar wrote only the visibility (`STO_AARCH64_VARIANT_PCS`
+  was lost on every global; WP-053 §4). *Test:*
+  `tests/link/resolve/symtab-variant-pcs.test`.
 - **S-76 [C] (which locals).** A local of an input file is kept when:
   - it is not `STT_SECTION` (S-79);
   - its section is live (or it is `SHN_ABS`), and, if its section is
@@ -1611,6 +1644,7 @@ edit changes.
 | `STT_FILE` for an input without one | one named after the member | none | none | none (S-83) | cosmetic in gdb (X-32) |
 | hidden definitions | `STB_GLOBAL STV_HIDDEN` | local, in its file's block | local | local, in its file's block (S-77) | resolve.md §3.7 |
 | globals in a static executable | global | global | local (A9) | global (S-75, S-121) | verifier Y3 |
+| `STO_AARCH64_VARIANT_PCS` of a global | OR of every entry's | the definition's; an undefined entry the first mention's | as lld | the definition's; an undefined entry the OR of its references' (S-127) | the code's convention; input-order free |
 | label of an empty input section (`__TMC_END__`) | index of a section below it (A10) | — | — | index of the section holding it (S-122, S-123) | verifier Y3 |
 | `__bss_start` with no `.bss` | `edata` | `edata` | 0 under gc (A11) | `edata` (S-124) | verifier Y5 |
 | `.strtab` de-duplication | full, tail merged | almost none | none | fixed table only (S-86) | |
