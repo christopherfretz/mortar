@@ -61,6 +61,41 @@ pub struct Plan {
     pub incremental: Incremental,
 }
 
+impl Plan {
+    /// The line's preemption options as `spec/dyn.md` D-112 resolves them
+    /// (`spec/cli.md` §3.6) [M4]: the last `-Bsymbolic` form
+    /// ([`Dynamic::bsymbolic`], none being `-Bno-symbolic`) and whether
+    /// some `--dynamic-list` names a file. `None` when the last form is one
+    /// D-112 refuses (`-Bsymbolic-non-weak`,
+    /// `-Bsymbolic-non-weak-functions`): a `Shared` link refuses such a
+    /// line before it asks (`spec/cli.md` §4.2). Read in a `Shared` link
+    /// only; the other kinds ignore the forms (`spec/dyn.md` D-1).
+    #[must_use]
+    pub fn symbolic(&self) -> Option<SymbolicLine> {
+        let form = match self.dynamic.bsymbolic {
+            None => Symbolic::None,
+            Some(Bsymbolic::All) => Symbolic::All,
+            Some(Bsymbolic::Functions) => Symbolic::Functions,
+            Some(Bsymbolic::NonWeak | Bsymbolic::NonWeakFunctions) => return None,
+        };
+        let has_dynamic_list = self.dynamic_lists().next().is_some();
+        Some(SymbolicLine { form, has_dynamic_list })
+    }
+
+    /// The `--version-script` files, in command-line order: one script
+    /// (`spec/script.md` §9.1) [M4].
+    pub fn version_scripts(&self) -> impl Iterator<Item = &ScriptArg> {
+        self.scripts.iter().filter(|s| s.role == ScriptRole::VersionScript)
+    }
+
+    /// The `--dynamic-list` files, in command-line order: one list
+    /// (`spec/script.md` §9.1) [M4]. `--export-dynamic-symbol-list` is not
+    /// one of them: it exports and does not decide preemption.
+    pub fn dynamic_lists(&self) -> impl Iterator<Item = &ScriptArg> {
+        self.scripts.iter().filter(|s| s.role == ScriptRole::DynamicList)
+    }
+}
+
 /// Incremental linking (`spec/cli.md` §3.13; `spec/incr.md` IN-10). The
 /// default is a plain link, which never looks at a state (IN-11).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -343,9 +378,13 @@ pub struct Dynamic {
     pub hash_style: Option<HashStyle>,
     /// `--pack-dyn-relocs`.
     pub pack_dyn_relocs: Option<PackDynRelocs>,
-    /// `-E`, `--export-dynamic` (until `--no-export-dynamic`).
+    /// `-E`, `--export-dynamic` (until `--no-export-dynamic`). Read in
+    /// every dynamic kind, `Shared` included (`spec/resolve.md` §9.7 rule
+    /// 12: it keeps a `.symver` definition exported) [M4].
     pub export_dynamic: bool,
-    /// `-Bsymbolic` and its variants; `-Bno-symbolic` clears it.
+    /// `-Bsymbolic` and its variants, the last wins; `-Bno-symbolic` clears
+    /// it. What it means for a shared object is [`Plan::symbolic`]
+    /// (`spec/dyn.md` D-112).
     pub bsymbolic: Option<Bsymbolic>,
     /// `--allow-shlib-undefined` (`true`), `--no-allow-shlib-undefined`
     /// (`false`); `None`: the default for the output kind
@@ -418,16 +457,54 @@ pub enum PackDynRelocs {
     AndroidRelr,
 }
 
-/// `-Bsymbolic` and its variants.
+/// The line's preemption options as `spec/dyn.md` D-112 resolves them
+/// (`spec/cli.md` §3.6) [M4]: the last of `-Bsymbolic`,
+/// `-Bsymbolic-functions` and `-Bno-symbolic`, and whether the line has a
+/// `--dynamic-list` (which then decides alone, whatever form comes before
+/// or after it). Read by [`Plan::symbolic`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SymbolicLine {
+    /// The last form.
+    pub form: Symbolic,
+    /// Some `--dynamic-list` is on the line.
+    pub has_dynamic_list: bool,
+}
+
+impl SymbolicLine {
+    /// Whether `.dynamic` carries `DT_SYMBOLIC`/`DF_SYMBOLIC`: the last
+    /// form is `-Bsymbolic` and the line has no `--dynamic-list`
+    /// (`spec/dyn.md` D-112, D-102).
+    #[must_use]
+    pub const fn writes_symbolic_tags(self) -> bool {
+        matches!(self.form, Symbolic::All) && !self.has_dynamic_list
+    }
+}
+
+/// D-112's form of the line (`spec/dyn.md` D-112's table).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Symbolic {
+    /// `-Bno-symbolic`, or no form: every exported definition preemptible
+    /// (but those D-112 binds on every line).
+    #[default]
+    None,
+    /// `-Bsymbolic`: every exported definition bound.
+    All,
+    /// `-Bsymbolic-functions`: `STT_FUNC` definitions bound.
+    Functions,
+}
+
+/// `-Bsymbolic` and its variants, as the line spells them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Bsymbolic {
     /// `-Bsymbolic`.
     All,
     /// `-Bsymbolic-functions`.
     Functions,
-    /// `-Bsymbolic-non-weak` (lld, mold).
+    /// `-Bsymbolic-non-weak` (lld, mold). Refused in a shared object
+    /// (`spec/dyn.md` D-112): no [`Symbolic`] form.
     NonWeak,
-    /// `-Bsymbolic-non-weak-functions` (lld, mold).
+    /// `-Bsymbolic-non-weak-functions` (lld, mold). Refused like
+    /// [`Bsymbolic::NonWeak`].
     NonWeakFunctions,
 }
 
@@ -808,4 +885,43 @@ pub enum VersionStyle {
     Version,
     /// `-V`: the version line and the emulations.
     Emulations,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn script(arg: u32, role: ScriptRole) -> ScriptArg {
+        ScriptArg { arg, role, path: format!("f{arg}").into() }
+    }
+
+    // spec: dyn.md D-112 (the last of -Bsymbolic, -Bsymbolic-functions and
+    // -Bno-symbolic wins; a --dynamic-list decides alone; DT_SYMBOLIC only
+    // for -Bsymbolic without a list), cli.md §3.6
+    #[test]
+    fn d112_symbolic_form_of_the_line() {
+        let mut plan = Plan::default();
+        let line = |p: &Plan| p.symbolic().map(|l| (l.form, l.has_dynamic_list));
+        assert_eq!(line(&plan), Some((Symbolic::None, false)));
+        plan.dynamic.bsymbolic = Some(Bsymbolic::Functions);
+        assert_eq!(line(&plan), Some((Symbolic::Functions, false)));
+        plan.dynamic.bsymbolic = Some(Bsymbolic::All);
+        assert!(plan.symbolic().unwrap().writes_symbolic_tags());
+        plan.scripts = vec![
+            script(1, ScriptRole::VersionScript),
+            script(2, ScriptRole::ExportDynamicSymbolList),
+            script(3, ScriptRole::DynamicList),
+            script(4, ScriptRole::VersionScript),
+            script(5, ScriptRole::DynamicList),
+        ];
+        assert_eq!(line(&plan), Some((Symbolic::All, true)));
+        assert!(!plan.symbolic().unwrap().writes_symbolic_tags());
+        let args = |it: &mut dyn Iterator<Item = &ScriptArg>| it.map(|s| s.arg).collect::<Vec<_>>();
+        assert_eq!(args(&mut plan.version_scripts()), [1, 4]);
+        assert_eq!(args(&mut plan.dynamic_lists()), [3, 5]);
+        for refused in [Bsymbolic::NonWeak, Bsymbolic::NonWeakFunctions] {
+            plan.dynamic.bsymbolic = Some(refused);
+            assert_eq!(plan.symbolic(), None);
+        }
+    }
 }

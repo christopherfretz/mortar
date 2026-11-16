@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod comdat;
+pub mod export;
 pub mod gnu;
 pub mod index;
 pub mod linker;
@@ -36,6 +37,7 @@ pub mod shared;
 pub mod steps;
 pub mod tables;
 pub mod verdict;
+pub mod version;
 pub mod view;
 
 pub use options::Options;

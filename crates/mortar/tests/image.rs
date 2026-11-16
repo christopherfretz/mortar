@@ -658,6 +658,7 @@ fn map_dynamic_records_read_by_the_verifier() {
         runpath: Some((RunpathTag::Rpath, b"$ORIGIN:/a b".to_vec())),
         now: Some(false),
         relro: Some(true),
+        shared: None,
         needed: vec![b"libc.so.6".to_vec()],
         copies: vec![CopyHint { name: b"environ".to_vec(), addr: 0x40_1000, size: 8, align: 8 }],
         exports: vec![b"main".to_vec()],

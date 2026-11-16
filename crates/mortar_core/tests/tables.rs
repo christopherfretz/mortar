@@ -487,6 +487,25 @@ fn s3_3_rule7_dynamic_columns() {
     assert!(r.file_live[FileId(2)].is_needed());
 }
 
+// spec: model.md §3.3 `preemptible` (R-M10) and check (8): empty outside
+// `Shared`, a subset of `exported`
+#[test]
+fn s3_3_check8_preemptible() {
+    use mortar_core::IdSet;
+    let mut r = resolution();
+    assert!(r.preemptible.is_empty());
+    assert_eq!(r.check_preemptible(false), Ok(()));
+    r.exported = IdSet::from_ids(2, [SymbolId(0)]).unwrap();
+    r.preemptible = IdSet::with_len(1);
+    assert!(r.check().unwrap_err().what.contains("rule 7: preemptible"));
+    r.preemptible = IdSet::from_ids(2, [SymbolId(0)]).unwrap();
+    assert_eq!(r.check(), Ok(()));
+    assert_eq!(r.check_preemptible(true), Ok(()));
+    assert!(r.check_preemptible(false).unwrap_err().what.contains("check 8"));
+    r.exported = IdSet::with_len(2);
+    assert!(r.check().unwrap_err().what.contains("preemptible but not exported"));
+}
+
 /// A resolution of `world()`: every file live by its kind.
 fn world_resolution() -> Resolution {
     let mut r = Resolution::empty(6, 0, 0);

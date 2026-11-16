@@ -475,8 +475,7 @@ fn duplicate_symbol() {
 // spec: diag.md §3.1 `duplicate-version-pattern` (dyn.md D-114)
 #[test]
 fn duplicate_version_pattern() {
-    let kind =
-        Kind::DuplicateVersionPattern { pattern: s("fo*"), first: s("V1"), second: s("V2") };
+    let kind = Kind::DuplicateVersionPattern { pattern: s("fo*"), first: s("V1"), second: s("V2") };
     assert_eq!(kind.id(), "duplicate-version-pattern");
     // A pattern is not a symbol: no demangling hook.
     assert_eq!(kind.symbol(), None);
@@ -636,7 +635,8 @@ fn versioned_definition_hidden() {
     );
     let upper = |name: &str| Some(name.to_uppercase());
     let kind = Kind::VersionedDefinitionHidden { name: s("foo"), version: s("V1") };
-    let shown = Diagnostic::warning(kind).render(&Style { prog: "ld", color: false, demangle: &upper });
+    let shown =
+        Diagnostic::warning(kind).render(&Style { prog: "ld", color: false, demangle: &upper });
     assert!(shown.starts_with("ld: warning: FOO@V1 is made local"), "{shown}");
     assert!(shown.contains("linked against FOO@V1 will not load"), "{shown}");
 }
@@ -853,7 +853,11 @@ fn symbol_kinds_report_their_symbol() {
         Kind::UndefinedInitSymbol { name: s("_Z1mv") },
         Kind::VersionScriptUndefinedName { name: s("_Z1mv"), version: s("V1") },
         Kind::VersionedDefinitionHidden { name: s("_Z1mv"), version: s("V1") },
-        Kind::NonPicInSharedObject { r_type: s("R_AARCH64_ABS64"), name: s("_Z1mv"), file: s("a.o") },
+        Kind::NonPicInSharedObject {
+            r_type: s("R_AARCH64_ABS64"),
+            name: s("_Z1mv"),
+            file: s("a.o"),
+        },
     ];
     for kind in shared {
         assert_eq!(kind.symbol(), Some("_Z1mv"), "{kind:?}");

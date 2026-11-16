@@ -1063,7 +1063,7 @@ cell, read for `Shared`:
   target; a `Preemptible` target never relaxes.
 - **The names of the `E` cells.** `AbsNarrow`, `Pc`, `Lo` and `GotRel`
   against a non-`Local` kind, and every `C` cell refused by the rule
-  above: `non-pic-in-shared-object` (`spec/diag.md` §3.4, planned;
+  above: `non-pic-in-shared-object` (`spec/diag.md` §3.1, WP-116;
   GNU ld's ``relocation {r_type} against symbol `{name}' which may bind
   externally can not be used when making a shared object; recompile
   with -fPIC``); `AbsNarrow` against `Local` the same kind with
