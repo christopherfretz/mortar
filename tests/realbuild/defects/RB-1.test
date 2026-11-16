@@ -1,0 +1,39 @@
+# A debug section's absolute word against a symbol only a shared library
+# defines (WP-100 defect RB-1, found by `cargo xtask realbuild` in GMP
+# 6.3.0's tests/cxx/t-ops2z, Clang 22 row: Clang's `.debug_addr` entry for
+# the `_vtable$` variable of std::bad_alloc, `_ZTVSt9bad_alloc` in
+# libstdc++.so). Nothing relocates a non-alloc section at run time, so
+# the word cannot hold the library's address: GNU ld, lld and mortar all
+# write 0 (GNU ld refuses the same word in a non-debug section,
+# "unresolvable R_AARCH64_ABS64 relocation"; lld writes 0 there too).
+# The program's own references go through the GOT as usual.
+#
+# The verifier (spec/plumb.md §5.8) expects the library's run-time
+# address in that field (its view's library base plus `st_value`) and
+# reports R1 on every linker's output, GNU ld's, lld's and mold's as
+# well as mortar's; neither spec/plumb.md §5.8 nor spec/image.md says
+# what such a field holds. The minimised form: one `.quad environ` in a
+# `.debug_` section.
+#
+# Why it is here and not under tests/link: every reference fails L3, so
+# the harness's self-check refutes the test (ORACLE), and a test may not
+# mark every reference (spec/harness.md "Markers"). Today
+#   cargo xtask linktest --arch aarch64 tests/realbuild/defects/RB-1.test
+# reports ORACLE (bfd, lld, mold: L3 R1 at 0x0); once the verifier
+# accepts the field this file moves to tests/link/dyn/reloc/ and passes.
+#@ spec: plumb.md "5.8 Non-alloc relocations"
+#@ arch: aarch64
+
+cc -O1 -fPIE main.c -o main.o
+link gcc -pie main.o -o prog
+run prog
+  stdout: env
+check readelf -x .debug_mortar_dsoref prog
+  has: 0x00000000 00000000 00000000
+
+#--- main.c
+#include <stdio.h>
+extern char **environ;
+/* A debug section holding the address of a symbol only libc.so defines. */
+__asm__(".section .debug_mortar_dsoref,\"\",%progbits\n\t.quad environ\n\t.text");
+int main(void) { puts(environ != 0 ? "env" : "none"); return 0; }
