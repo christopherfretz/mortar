@@ -9,5 +9,8 @@
 #![forbid(unsafe_code)]
 
 pub mod capture;
+pub mod delta;
+pub mod detect;
 pub mod format;
 pub mod stamp;
+mod tables;
