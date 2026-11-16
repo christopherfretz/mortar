@@ -1241,7 +1241,9 @@ lookup matters for user objects built with `.symver`. In shared-object output (M
 with version `V` and `foo@V` exports a hidden `foo@V`; `V` must be a
 version node of the version script, else the error
 `undefined-version` (GNU ld: ``version node not found for symbol
-foo@V``; not verified here).
+foo@V``; lld ``symbol foo@V1 has undefined version V1``; mold ``symbol
+foo has undefined version V1``: all three refuse, with or without a
+script, WP-110 E-shared-export F2; `spec/dyn.md` D-114).
 
 ### 9.5 `--as-needed` and `DT_NEEDED`
 
@@ -1285,19 +1287,31 @@ What resolution marks for `.dynsym` (M2 executables; M4 shared output):
   (§8: `__bss_start`, `_edata`, `_end`, …) is exported only when
   `ref_dynamic`, never by `--export-dynamic` or a glob alone
   (`spec/dyn.md` D-21 item 2; lld and mold; GNU ld exports them).
-- **Exported from a shared object** (M4): every defined key of default or
-  protected visibility not made local by a version script (§9.7), by
-  `--exclude-libs` (defined by a member of a named archive, or every
-  archive for `ALL`), or by `-Bsymbolic` variants' export rules (they do
-  not change export, only preemption).
+- **Exported from a shared object** (M4; the normative rule is
+  `spec/dyn.md` D-110): every key defined by a live relocatable object,
+  of default or protected visibility, weak, vague-linkage and
+  `STB_GNU_UNIQUE` ones included, not made local by a version script
+  (§9.7) or by `--exclude-libs` (defined by a member of a named archive,
+  or of every archive for `ALL`). A linker-defined key of file 0 is
+  exported only when `ref_dynamic`, as from an executable (no reference
+  exports one from a shared object, WP-110). `--export-dynamic`,
+  `--export-dynamic-symbol` and the `-Bsymbolic` variants change nothing
+  in the export set; `--dynamic-list` changes preemption only.
 - **Preemptible** (M2 for executables: a definition in the executable is
-  never preemptible; a `Shared` def always is): in a shared object (M4), a
-  defined default-visibility key is preemptible unless `-Bsymbolic`,
-  `-Bsymbolic-functions` (for `STT_FUNC`), `-Bsymbolic-non-weak-functions`
-  (lld: non-weak `STT_FUNC`) or `-Bsymbolic-non-weak` applies, or it is
-  version-local, or `--dynamic-list` is given and does not list it
-  (`--dynamic-list` keeps the listed symbols preemptible under
-  `-Bsymbolic`). `STV_PROTECTED` is never preemptible.
+  never preemptible; a `Shared` def always is): in a shared object (M4;
+  `spec/dyn.md` D-112, measured under `LD_PRELOAD`), an exported
+  default-visibility definition is preemptible unless `-Bsymbolic`
+  applies (every key), or `-Bsymbolic-functions` (every `STT_FUNC` key,
+  weak ones too; not `STT_GNU_IFUNC`, not data: GNU ld and lld), or
+  `--dynamic-list` is given and does not list it (with or without
+  `-Bsymbolic`, the listed keys stay preemptible), or it is
+  version-local. `-Bsymbolic-non-weak-functions` and
+  `-Bsymbolic-non-weak` are lld's and mold's; GNU ld does not know them,
+  and mortar refuses them by name. `STV_PROTECTED` is never preemptible.
+  A definition of the output that a needed shared input also defines is
+  `def` (the object's definition wins, a weak one over a shared strong
+  one) and stays preemptible. Resolution stores the result per key
+  (`preemptible`, `spec/dyn.md` D-113).
 - **Copy relocations and canonical PLTs** are demands of the scan
   (`spec/model.md` §3.7). Resolution gives the scan, for a `Shared`
   definition: the aliases (§7.3); the **alignment** of the copy,
@@ -1334,25 +1348,46 @@ agreeing except where noted:
    `{ global: *; }; V2 { local: foo; };` hides `foo`).
 5. An exact name in two nodes: GNU ld and lld keep the **first** (lld
    warns `attempt to reassign symbol 'foo' of version 'V1' to version
-   'V2'`), mold the last. mortar: the first, with the warning
-   `version-reassigned`.
+   'V2'`, GNU ld is silent), mold the last. mortar: the first, with the
+   warning `version-reassigned` (re-measured, WP-110 F1).
 6. `extern "C++" { "baz()"; }` and `extern "C++" { baz*; }` match the
    demangled name (all three, E16; demangling is `spec/diag.md` §9's
-   later demangler, which this needs).
+   later demangler, which this needs; until it exists a script with
+   `extern "C++"` is refused by name). `extern "C++" { *; }` in
+   `global:` with `local: *` exports every symbol (GNU ld, lld; mold
+   exports none, a wrong output, `spec/dyn.md` W40).
 7. A key matched by no pattern keeps the base version (exported
    unversioned).
 8. `local:` before `global:` in one node: GNU ld rejects it as a syntax
-   error, lld and mold accept (E16). `spec/script.md` decides (accepting
-   it costs nothing and loses nothing).
-9. A name in a script that no file defines: an error under
-   `--no-undefined-version` (lld's default since lld 16; GNU ld's default
-   accepts it; not verified here), refused until decided (§17 Q6).
+   error, lld and mold accept (E16, WP-110 F1). Accepted
+   (`spec/script.md` §9).
+9. A name in a script that no file defines: **accepted, with the
+   warning `version-script-undefined-name`** (§17 Q6's recommendation;
+   GNU ld's default accepts silently; WP-110 F1: lld refuses ``version script assignment
+   of 'V1' to symbol 'nosuch' failed: symbol not defined``, mold warns;
+   zlib's `configure` probe depends on the link succeeding). Under
+   `--no-undefined-version` it is the error `undefined-version`
+   (GNU ld: ``nosuch: undefined version: V1``); `--undefined-version` is
+   a no-op. (Closes §17 Q6, as recommended.)
+10. A node with several parents (`V3 { … } V1 V2;`): accepted, every
+    parent written (GNU ld; lld and mold refuse the syntax).
+11. A script with one anonymous node (`{ global: a; local: *; };`)
+    exports the matched keys unversioned and defines no version (all
+    three).
+12. A definition versioned by `.symver` (`foo@V1`) is not matched by the
+    script's patterns (the rule's first paragraph): it keeps its version
+    and stays exported even when a `local:` pattern matches `foo`. GNU
+    ld and lld drop it from `.dynsym` (an executable linked against the
+    earlier library then fails to load: ``undefined symbol: foo, version
+    V1``); mold keeps it. mortar keeps it and warns
+    `versioned-definition-not-hidden` (`spec/dyn.md` D-114, Q12 of
+    WP-110's record).
 
 Version definitions written for shared output keep the script's parent
 links (`V2 { … } V1;`): GNU ld writes them (`readelf -V`: `Parent 1:
 V1`), lld and mold do not (E16). glibc's loader ignores parents; mortar
 follows GNU ld so that `readelf -V` of a mortar library reads like GNU
-ld's (`spec/synth.md`).
+ld's. The section's fields are `spec/dyn.md` D-115.
 
 ## 10. The fate of sections
 
@@ -1854,7 +1889,8 @@ section-symbol signatures (E18), lld's stale `--fortran-common` help text
    flag at resolution, a check in the scan).
 6. **`--no-undefined-version` default** for version scripts (M4): lld's
    default errors, GNU ld's accepts. Recommended: accept with a warning
-   (GNU ld's acceptance plus visibility), decided in `spec/script.md`.
+   (GNU ld's acceptance plus visibility). Closed by WP-110 as
+   recommended (§9.7 rule 9; `spec/dyn.md` D-114).
 7. **`-y` output** (M4): standard output text, not a diagnostic;
    needs a decision in `spec/diag.md` (an informational channel).
 8. **Did-you-mean hints** (§5.3): propose a small WP after M1.

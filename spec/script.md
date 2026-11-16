@@ -756,8 +756,70 @@ Files under `crates/mortar_script/`.
   in full expressions is the expression stage's to sweep.
 - Sysroot containment (§2.4 rule 1) through symbolic links is unmeasured;
   mortar compares resolved absolute paths.
-- `-T` scripts, `--defsym`, `-c` (MRI) and `--version-script` use this
-  crate later; their differences from implicit scripts (§3.1: invalid
+- `-T` scripts, `--defsym`, `-c` (MRI) use this crate later
+  (`--version-script` and `--dynamic-list`: §9); their differences from implicit scripts (§3.1: invalid
   characters ignored under `-T`) are `spec/cli.md`'s to state.
 - libc++'s text `libc++.so` (`INPUT(libc++.so.1 -lc++abi)` on some
   distributions) joins the corpus when the machine has one.
+
+## 9. Version scripts and dynamic lists (M4; WP-110)
+
+The grammar of the files given to `--version-script=FILE`
+(`-version-script FILE`, libtool's spelling) and `--dynamic-list=FILE`,
+and of the `VERSION { … }` command. What a parsed script means for a
+link is `spec/resolve.md` §9.7 (matching, precedence) and
+`spec/dyn.md` D-112, D-114, D-115 (preemption, rulings, the sections
+written). Measured by WP-110 (`spec/dyn.md` E-shared-export, part F)
+on GNU ld 2.44, lld 19/22 and mold 2.37; where they differ the column
+says whose rule this is.
+
+### 9.1 Grammar
+
+The lexer's **version** mode (§1.10): a name token is a maximal run of
+bytes other than whitespace and `{ } ; :` and `"`; it may hold the glob
+bytes `* ? [ ]`; a quoted string is a name taken literally (no glob).
+
+```
+version-script := node+                      ; named nodes
+                | "{" body "}" ";"            ; one anonymous node, alone in the file
+node           := NAME "{" body "}" parents ";"
+parents        := NAME*                      ; zero or more parent node names
+body           := ( "global" ":" | "local" ":" | entry )*
+entry          := pattern ";"
+                | "extern" STRING "{" ( pattern ";"? )* "}" ";"
+pattern        := NAME | STRING
+dynamic-list   := "{" ( entry )* "}" ";"
+VERSION        := "VERSION" "{" version-script "}"
+```
+
+- Entries before the first `global:`/`local:` of a node are `global`
+  (all three; zlib.map's 13 later nodes are written so).
+- `local:` before `global:` in one node: accepted (lld, mold; GNU ld
+  reports a syntax error).
+- Several parents (`V3 { … } V1 V2;`): accepted (GNU ld; lld and mold
+  report a syntax error: ``; expected, but got V2``).
+- An anonymous node may not be combined with named nodes: refused,
+  `version-script-syntax` (GNU ld's rule [unmeasured on the
+  references]).
+- `extern "C"` holds plain names; `extern "C++"` names are matched
+  against the demangled name (resolve §9.7 rule 6) and are refused by
+  name until the demangler exists (`spec/diag.md` §9). Any other
+  language string is refused.
+- A node name used twice, or a parent that is not a node defined
+  earlier in the file: `version-script-syntax` [unmeasured on the
+  references].
+- Comments `/* … */` as in §1.3 [the `#` line comment of some scripts
+  unmeasured: refused until measured].
+
+### 9.2 Diagnostics
+
+A syntax error is `version-script-syntax`, with file, line and column
+(§1.1) and GNU ld's text (``syntax error in VERSION script``). The
+`VERSION` command in a `-T` script is refused until `-T` scripts are
+supported (§2.10).
+
+### 9.3 Tests
+
+`version-script-grammar` (each production, each refusal; the zlib.map
+of `spec/dyn.md` record §A parses to 14 nodes and 13 parent links),
+`dynamic-list-grammar`.
