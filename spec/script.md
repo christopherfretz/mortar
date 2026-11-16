@@ -798,28 +798,43 @@ VERSION        := "VERSION" "{" version-script "}"
   reports a syntax error).
 - Several parents (`V3 { … } V1 V2;`): accepted (GNU ld; lld and mold
   report a syntax error: ``; expected, but got V2``).
-- An anonymous node may not be combined with named nodes: refused,
-  `version-script-syntax` (GNU ld's rule [unmeasured on the
-  references]).
+- An anonymous node may not be combined with named nodes, before or
+  after them: refused, `version-script-syntax` (GNU ld: ``anonymous
+  version tag cannot be combined with other version tags``; lld refuses
+  both orders; mold accepts; WP-110 `exp2/vscript2`).
 - `extern "C"` holds plain names; `extern "C++"` names are matched
   against the demangled name (resolve §9.7 rule 6) and are refused by
   name until the demangler exists (`spec/diag.md` §9). Any other
   language string is refused.
-- A node name used twice, or a parent that is not a node defined
-  earlier in the file: `version-script-syntax` [unmeasured on the
-  references].
-- Comments `/* … */` as in §1.3 [the `#` line comment of some scripts
-  unmeasured: refused until measured].
+- A node name used twice: `version-script-syntax` (GNU ld: ``duplicate
+  version tag `V1'``; lld and mold merge the two; `exp2/vscript2`).
+- A parent that is not a node defined earlier (forward, or absent):
+  `version-script-syntax` (GNU ld: ``unable to find version dependency
+  `V1'``; lld and mold accept both; `exp2/vscript2`).
+- Several `--version-script` options: their files are read as one
+  script, in command-line order, so a parent may be a node of an
+  earlier file (all three; `exp2/vscript2` `two`). `--dynamic-list`
+  files likewise form one list.
+- Comments, in version scripts and dynamic lists alike: `#` to the end
+  of the line (whole-line or after an entry; `foo; #bar;` lists only
+  `foo`), and `/* … */` as in §1.3, also across lines. `//` is not a
+  comment: `version-script-syntax` (GNU ld: ``ignoring invalid
+  character `/' in script`` and fails; lld and mold refuse too). All
+  three references agree on each of these (WP-110 `exp2/comments`,
+  AArch64).
 
 ### 9.2 Diagnostics
 
 A syntax error is `version-script-syntax`, with file, line and column
-(§1.1) and GNU ld's text (``syntax error in VERSION script``). The
+(§1.1) and GNU ld's text (``syntax error in VERSION script``). An entry
+under `global:` in one node and `local:` in another is not a syntax
+error but resolve §9.7's `duplicate-version-pattern`. The
 `VERSION` command in a `-T` script is refused until `-T` scripts are
 supported (§2.10).
 
 ### 9.3 Tests
 
 `version-script-grammar` (each production, each refusal; the zlib.map
-of `spec/dyn.md` record §A parses to 14 nodes and 13 parent links),
-`dynamic-list-grammar`.
+of `spec/dyn.md` record §A parses to 14 nodes and 13 parent links; the
+comment forms; two files as one script), `dynamic-list-grammar` (the
+comment forms).

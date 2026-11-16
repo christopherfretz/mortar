@@ -163,9 +163,20 @@ Parallel tracks, each closing a class of real-world links.
 - Shared-object output: symbol visibility and export rules, version scripts,
   `-Bsymbolic*`, `--dynamic-list`, `DT_SONAME`, `DT_RUNPATH`. Designed by
   WP-110 (`spec/dyn.md` §17; the cut in `spec/landed/dyn/WP-110.md` §D):
-  first joined target a C library with a soname on AArch64, loaded by a
-  GNU-ld-linked and a mortar-linked host, verified; then versions, C++,
-  x86-64, the option tail.
+  first joined target a C library with a soname on AArch64 (the default
+  driver line and Python's `LDSHARED` line, `-Bsymbolic-functions`
+  included), loaded by a GNU-ld-linked and a mortar-linked host,
+  verified; then versions (rustc's `cdylib` line), C++, x86-64, the
+  option tail. The cut: a docs step 0 and a code step 0 (the shared
+  types), then six parallel worktrees with disjoint files (the `Shared`
+  front/resolve/scan, synth/layout/image, the harness for library
+  outputs, stage 3 for `Shared`, the executables' refusal of copies of
+  locally bound writable data, the version-script parser); the first
+  target is gated on their join, stage 3 and the harness. Non-PIC code
+  that binds an exported datum is refused at the address level
+  (`non-pic-in-shared-object`); the one form no rule sees yet (GCC
+  AArch64 section anchor plus an instruction immediate) is an open
+  question with a known-gap test.
 - Linker scripts: `SECTIONS`, `MEMORY`, `PHDRS`, expressions, `PROVIDE`,
   `KEEP`, `INSERT`.
 - `-r`, `-static-pie` (x86-64's rows from M1 and M2, above), `--wrap`, `--defsym`, `--exclude-libs`,

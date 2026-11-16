@@ -1787,7 +1787,10 @@ for that kind. Measured with GCC 14 objects, GNU ld 2.44, lld 19.1.7 and
 22.1.8 (identical in every block measured) and mold 2.37.1 on AArch64,
 x86-64 and i386, each library loaded and run by a host program
 (`DT_NEEDED` and `dlopen`); the experiments are `E-shared-*` of
-Appendix A, and `[A]`-`[F]` below cite the `dyn` area's parts.
+Appendix A, and `[A]`-`[F]` below cite the `dyn` area's parts. The
+second design pass (after the adversarial review) re-measured what it
+changed with the scripts of `.build/target-wp-110/exp2/` (README there;
+cited `exp2/<dir>`), on AArch64 natively and x86-64 under qemu-user.
 
 ### 17.1 The kind, the entry, `.dynamic`
 
@@ -1836,9 +1839,9 @@ as in D-30):
 
 | D-30 row | change for `Shared` |
 |---|---|
-| after 1 | `DT_SONAME` iff `-soname` (the name as given), then `DT_SYMBOLIC` iff `-Bsymbolic` without `--dynamic-list` (D-112; GNU ld; lld writes `DF_SYMBOLIC` only, mold neither) |
+| after 1 | `DT_SONAME` iff `-soname` (the name as given), then `DT_SYMBOLIC` iff the line's last `-Bsymbolic` form is `-Bsymbolic` and it has no `--dynamic-list` (D-112; GNU ld; lld writes `DF_SYMBOLIC` only, mold neither) |
 | 2 | `DT_RUNPATH`/`DT_RPATH` unchanged (after `DT_SONAME`/`DT_SYMBOLIC`, GNU ld and mold; lld puts it first) |
-| 3-4 | `DT_INIT`/`DT_FINI`: `-init`/`-fini` naming a symbol that is not defined is refused by name, `undefined-init-symbol` (all three silently omit both tags and the library's `_init`/`_fini` never run, [B] `b_init_undef`) |
+| 3-4 | `DT_INIT`/`DT_FINI`: an explicit `-init`/`-fini` naming a symbol that is not defined is refused by name, `undefined-init-symbol` (all three silently omit both tags and the library's `_init`/`_fini` never run, [B] `b_init_undef`). Without the option, an undefined default `_init`/`_fini` (`-nostdlib`, no `crti.o`) omits the tag silently, as D-30 rows 3-4 |
 | 5-6 | `DT_PREINIT_ARRAY*`: a `.preinit_array` in a shared object is refused by name, `preinit-array-in-shared-object` (glibc runs pre-initialisers of the executable only) [unmeasured on the references] |
 | 16 | `DT_DEBUG`: never |
 | 26-27 | `DT_FLAGS`/`DT_FLAGS_1`: D-103 |
@@ -1862,7 +1865,7 @@ them identically ([B]: 12 of 12 runs per option):
 | option | `DT_FLAGS` | `DT_FLAGS_1` | measured effect |
 |---|---|---|---|
 | `-z now` | `DF_BIND_NOW` | `DF_1_NOW` | a missing function fails `dlopen` with `RTLD_LAZY` too |
-| `-Bsymbolic` (without `--dynamic-list`, D-112) | `DF_SYMBOLIC` | — | the library binds its own definitions |
+| `-Bsymbolic` (the line's last `-Bsymbolic` form, without `--dynamic-list`, D-112) | `DF_SYMBOLIC` | — | the library binds its own definitions |
 | `-z nodelete` | — | `DF_1_NODELETE` | stays mapped after `dlclose` |
 | `-z nodlopen` | — | `DF_1_NOOPEN` | `dlopen` fails, "shared object cannot be dlopen()ed" |
 | `-z initfirst` | — | `DF_1_INITFIRST` | its constructors run first |
@@ -1888,10 +1891,21 @@ whose `def` is a definition of a live relocatable object with
    (defined by a member of a named archive, or of any archive for `ALL`;
    all three, [X-A], [X-G]);
 2. linker-defined (file 0): exported only when `ref_dynamic`, as D-21
-   item 2 says for executables. No reference exports one in `-shared`
-   ([X-A] A1: none of `_end`, `_edata`, `__bss_start`); layout L-100's
-   "exported `STB_GLOBAL STV_DEFAULT` when defined (GNU and lld)" is
-   withdrawn (request R-L10);
+   item 2 says for executables; no reference exports `_end`, `_edata`
+   or `__bss_start` in `-shared` ([X-A] A1); layout L-100's "exported
+   `STB_GLOBAL STV_DEFAULT` when defined (GNU and lld)" is withdrawn
+   (request R-L10). **Except** `__start_NAME` and `__stop_NAME` of a
+   C-identifier output section that a live object references: exported
+   `STB_GLOBAL STT_NOTYPE STV_PROTECTED` (GNU ld and lld, AArch64 and
+   x86-64, with and without `--gc-sections`; mold exports neither, a
+   difference, 17.6; `exp2/startstop`). Protected, they are never
+   preempted: an `LD_PRELOAD` definition of both leaves the library's
+   count unchanged with every reference (`count=1`). This agrees with
+   layout L-96, which roots the section for gc and says nothing of
+   export, and with D-124 item 4: the section is kept by the reference,
+   not by the export, so a version script that makes the two symbols
+   local (item 1) leaves the section in place and the symbols defined
+   (lld's W23 drops it);
 3. a version node's name: GNU ld exports each node name as an `SHN_ABS`
    `STT_OBJECT` entry (`V1@V1`; the system's `libz.so` has them); lld
    and mold do not and every library runs alike (zlib 48 cross-runs):
@@ -1934,9 +1948,14 @@ No copy aliases and no canonical PLT entries (D-122). Order: D-22
 GNU ld and mold use their own, all valid, [X-A] A3; `sh_entsize` 4 on
 ELF32 as D-34, which GNU ld writes and lld and mold do not in
 `-shared`). Fields: D-23's rows; an import whose shared definition is a
-function gets `STT_FUNC` (lld and mold give `__cxa_finalize` `WEAK FUNC`;
-GNU ld `NOTYPE`); an export keeps its `.symtab` type and binding, an
-exported preemptible IFUNC `STT_GNU_IFUNC` at its resolver (D-121).
+function gets `STT_FUNC`, and keeps the binding of the references to it:
+`STB_WEAK` when every reference is weak (crtbeginS's `__cxa_finalize`:
+`WEAK FUNC` with every reference, AArch64, x86-64 and i386, 9 census
+libraries; the first pass's "GNU ld `NOTYPE`" did not reproduce), else
+`STB_GLOBAL`; a weak undefined key with no shared definition is item
+3's `WEAK NOTYPE` (`__gmon_start__`, `_ITM_*`); an export keeps its
+`.symtab` type and binding, an exported preemptible IFUNC
+`STT_GNU_IFUNC` at its resolver (D-121).
 `.gnu.version` of an unversioned import is 1 (GNU ld, mold, lld 19;
 lld 22 writes 0 for weak ones, [X-F] F4; glibc accepts both). *Tests:*
 `shared-dynsym-set`, `dynsym-order` and `gnu-hash-lookup` gain the
@@ -1944,89 +1963,146 @@ lld 22 writes 0 for weak ones, [X-F] F4; glibc accepts both). *Tests:*
 
 **D-112 [M4] (preemption).** An exported definition is **preemptible**
 (its uses go through a record the loader binds, so an executable, an
-earlier library or `LD_PRELOAD` can interpose it) unless one of these
-binds it inside the library at link time:
+earlier library or `LD_PRELOAD` can interpose it) or **bound** (inside
+the library at link time). `STV_PROTECTED` and version-local (D-114)
+definitions are bound on every line; every other exported definition
+follows this table, by the line's options and the key's type
+(`exp2/bsym2`: 14 definitions, one per type × binding × visibility,
+interposed by `LD_PRELOAD`; AArch64 natively, x86-64 under qemu; 17
+lines × 3 references × 2 targets; the full answers per reference and
+cell are in `exp2/bsym2/result.txt`, summarised in the record §F.2).
+`P` preemptible, `B` bound; a weak definition is its type's column
+(measured: every weak cell equals its global cell, all three):
 
-| option or property | binds locally | measured ([X-C] C2, interposition under `LD_PRELOAD`) |
-|---|---|---|
-| `STV_PROTECTED` | that key | all three |
-| version-local (D-114) | that key (not exported) | all three |
-| `-Bsymbolic` | every exported key | all three; GNU ld refuses on AArch64 when an IFUNC is reached through the PLT (an assertion, `elfnn-aarch64.c:10072`) |
-| `-Bsymbolic-functions` | every `STT_FUNC` key (weak ones too); not `STT_GNU_IFUNC`, not data | GNU ld and lld; mold binds the IFUNC too |
-| `--dynamic-list=FILE` | every exported key the list does not name; with `-Bsymbolic` too, the listed ones stay preemptible | GNU ld and mold; lld writes `DF_SYMBOLIC` and glibc then binds the listed ones locally as well (W31) |
-| `-Bsymbolic-non-weak-functions`, `-Bsymbolic-non-weak` | — | GNU ld does not know them: refused by name, as GNU ld (lld and mold accept) |
+| line (in order) | `FUNC` | `OBJECT` | `COMMON` | `NOTYPE` | `TLS` | `GNU_IFUNC` | the references |
+|---|---|---|---|---|---|---|---|
+| none | P | P | P | P | P | P | GNU ld, lld; mold binds `GNU_IFUNC` (W20) |
+| `-Bsymbolic` | B | B | B | B | B | B | all three |
+| `-Bsymbolic-functions` | B | P | P | P | P | P | lld; GNU ld also binds `NOTYPE`; mold also binds `GNU_IFUNC` (W20) |
+| `--dynamic-list=F`, key not in F | B | B | B | B | B | B | lld on AArch64; GNU ld keeps `TLS` and `GNU_IFUNC` `P`; lld on x86-64 binds `TLS` half (W43); mold |
+| `--dynamic-list=F`, key in F | P | P | P | P | P | P | GNU ld, lld; mold binds `GNU_IFUNC` (W20) |
+| `--dynamic-list` with `-Bsymbolic` or `-Bsymbolic-functions`, either order | as `--dynamic-list` alone | | | | | | GNU ld (both forms), lld (`-Bsymbolic-functions`); lld binds every key with `-Bsymbolic` and writes `DF_SYMBOLIC` (W31); mold takes whichever comes last for `-Bsymbolic-functions` and ignores `-Bsymbolic` |
+| `--dynamic-list` then `-Bno-symbolic` | as `--dynamic-list` alone | | | | | | GNU ld, lld; mold makes every key `P` |
+| `-Bsymbolic -Bno-symbolic`, `-Bsymbolic-functions -Bno-symbolic` | P | P | P | P | P | P | all three |
+| `-Bno-symbolic -Bsymbolic`, `-Bsymbolic-functions -Bsymbolic` | B | B | B | B | B | B | all three |
+| `-Bsymbolic -Bsymbolic-functions` | as `-Bsymbolic-functions` | | | | | | all three (the last form wins) |
+| `STV_PROTECTED` (any line) | B | B | — | — | B | B | all three |
+| `--dynamic-list-data`, `--dynamic-list-cpp-new`, `--dynamic-list-cpp-typeinfo` | refused by name | | | | | | GNU ld accepts all three (`-data` acts as `-Bsymbolic-functions` binding `NOTYPE` too; `-cpp-*` as a list of `operator new`/`delete` or typeinfo); lld refuses all three (`unknown argument`); mold accepts `-data` and changes nothing, refuses `-cpp-*` |
+| `-Bsymbolic-non-weak-functions`, `-Bsymbolic-non-weak` | refused by name | | | | | | GNU ld does not know them (lld and mold accept) |
+
+In words: without `--dynamic-list`, the last of `-Bsymbolic`,
+`-Bsymbolic-functions` and `-Bno-symbolic` decides (`-Bsymbolic` binds
+every type; `-Bsymbolic-functions` binds `STT_FUNC` only, lld's rule;
+`-Bno-symbolic` none). With a `--dynamic-list`, the list decides alone
+(every unlisted key bound, of every type, lld's rule; every listed key
+preemptible) whatever `-Bsymbolic` form comes before or after it (GNU
+ld's rule; mold's order dependence is in 17.8). `DT_SYMBOLIC`/
+`DF_SYMBOLIC` are written iff the line has no `--dynamic-list` and its
+last form is `-Bsymbolic` (D-102, D-103; request P-R7): glibc applies
+them to every symbol of the library, so with a list they would bind the
+listed keys too (W31); with every key bound at link time they change
+nothing and tell a reader of the library (D-126 item 2) that it is
+symbolic. A key bound by the table is `Local` (or `Ifunc`, `Abs`) for
+the relocation rules (D-113), a preemptible one `Preemptible` (request
+R-A10); a bound `STT_TLS` key's GD pair is one `DTPMOD` with `r_sym` 0
+and a static offset (D-119), never lld's x86-64 mixture (W43).
 
 Everything else exported is preemptible: default visibility, weak
 definitions, IFUNCs (D-121), and a definition that a needed shared
 input also defines (the library's own wins at link time, even weak over
 the shared strong, and stays preemptible: with the other library first
 in the loader's order its definition is used by the library too; all
-three, [X-G] G2). `DT_SYMBOLIC`/`DF_SYMBOLIC` are written for `-Bsymbolic`
-without `--dynamic-list` only (D-102, D-103): glibc applies them to every
-symbol of the library, so with a dynamic list they would bind the listed
-keys locally (W31); with every key bound at link time they change
-nothing and tell a reader of the library (D-126 item 2) that it is
-symbolic. A non-preemptible definition is a `Local` target kind for the
-relocation rules (arch.md §2.1), a preemptible one `Preemptible`
-(request R-A10). The input property
+three, [X-G] G2). A data definition that some input binds without a
+record (D-117's address-level rule, non-PIC code) is not made bound: the
+link is refused. The input property
 `GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS` (`-mno-direct-extern-access`,
 `-z indirect-extern-access`) is kept in the output when any input has
 it, as GNU ld (lld and mold drop it, and a copy-relocating executable
 then runs with two instances of protected data where glibc refuses GNU
-ld's library: W41) [x86-64 and i386 measured; the AArch64 property
-unmeasured]. *Tests:* `shared-preemption` (the table, run under
-`LD_PRELOAD`), `shared-protected` (executables against a protected
-definition: `-fPIE` GOT ones run, COPY and canonical PLT ones refused,
-D-18), `dynamic-list-symbolic` (W31).
+ld's library: W41; glibc 2.41 refuses a protected `COPY` at run time only
+when the library has the property, and otherwise warns ``copy
+relocation against non-copyable protected symbol`` and runs with two
+instances, `exp2/escape/run2.sh`) [x86-64 and i386 measured; the
+AArch64 property unmeasured]. *Tests:* `shared-preemption` (the table:
+every row and column, run under `LD_PRELOAD`, both targets),
+`shared-protected` (executables against a protected definition:
+`-fPIE` GOT ones run, COPY and canonical PLT ones refused, D-18),
+`dynamic-list-symbolic` (W31), `dynamic-list-tls-x64` (W43).
 
 **D-113 [M4] (where preemption lives).** Preemption is a property of a
 key computed by resolution after the export set, before the relocation
 scan (resolve §9.6), stored per key in `Resolution` (request R-M10:
 model.md gains a `preemptible` bit per key, `false` for every key of an
-executable). `target_kind` (arch.md §2.1) reads it: `Preemptible` for an
-exported preemptible definition, `Local` otherwise, `Shlib` for an
-import and for a strong key nothing defines (D-111 item 2: it is
-reached exactly as an import, through a record naming it), `WeakDyn`
-for every weak undefined key. Nothing else in the pipeline asks whether the output is
-`Shared`.
+executable). `target_kind` (arch.md §2.1) reads it: `Preemptible`
+replaces arch §2.1's kind for an exported preemptible definition; a
+definition that is not preemptible keeps §2.1's kind (`Local`, `Abs` for
+an `SHN_ABS` key: never a `RELATIVE`, D-100; `Ifunc` for a
+non-preemptible IFUNC: its IPLT entry, D-121); an import is `Shlib`; a
+strong key that nothing defines is `Shlib{func: false}` (D-111 item 2:
+it is reached exactly as an import, through a record naming it); every
+weak undefined key is `WeakDyn`. Nothing else in the pipeline asks
+whether the output is `Shared`.
 
 **D-114 [M4] (version scripts applied).** resolve.md §9.7 is the rule,
-amended by this package (all three agree on its rules 1-4, 6, 7, [X-F]
-F1). Rulings for `Shared`:
+restated by WP-110's second pass from an executed model
+(`exp2/vmatch2`: its GNU column equals GNU ld on 159 of 159 rows of 53
+scripts × 3 names; lld and mold differ where 17.6 says). mortar is GNU
+ld wherever the references differ, with these rulings for `Shared`:
 
-- rule 5 (an exact name in two nodes): the first, warning
-  `version-reassigned` (GNU ld silent, lld warns, mold takes the last);
-- rule 8 (`local:` before `global:`): accepted (lld, mold; GNU ld
-  refuses with a syntax error);
-- rule 9 (a name no file defines): **accepted with the warning
-  `version-script-undefined-name`** (GNU ld accepts silently; zlib's `configure` probe links `zlib.map` against one function, so
-  under lld's refusal Clang+lld builds no shared zlib, record §A);
+- matching: exact names first, then non-star globs (the last node wins,
+  `global:` over `local:` within a node), then `*` (resolve §9.7's
+  decision). The two scripts on which GNU ld and mold give V1 and lld
+  local (`V1 { global: fo*; }; V2 { local: foo*; };` and the same with
+  `local: *` in V1) follow GNU ld: a recorded difference;
+- quoted entries are exact, `"foo*"` included (GNU ld; lld and mold
+  glob them);
+- an exact name under `global:` in two nodes: the first, warning
+  `version-reassigned` (GNU ld silent, lld warns, mold the last);
+- the same entry under `global:` in one node and `local:` in another
+  (exact, glob or `*`): refused, `duplicate-version-pattern`, as GNU ld
+  (lld and mold accept with differing answers);
+- `local:` before `global:` in one node: accepted (lld, mold; GNU ld
+  refuses with a syntax error); the `global:` entries still count first;
+- a name in a script that no file defines: **accepted with the warning
+  `version-script-undefined-name`** (GNU ld accepts silently; zlib's
+  `configure` probe links `zlib.map` against one function, so under
+  lld's refusal Clang+lld builds no shared zlib, record §A);
   `--no-undefined-version` refuses with `undefined-version` (GNU ld:
   `nosuch: undefined version: V1`); `--undefined-version` is a no-op;
 - several parents (`V3 { … } V1 V2;`): accepted, every parent written
-  (GNU ld; lld and mold refuse the syntax);
+  (GNU ld; lld and mold refuse the syntax); a forward or missing parent,
+  a node name used twice, an anonymous node with named ones: refused
+  (GNU ld; script.md §9.1);
+- several `--version-script` files: one script, in order (all three);
+- comments: `#` to the end of the line and `/* */` (all three);
+  `//` refused (all three; script.md §9.1);
 - `extern "C++"` patterns need the demangler (diag.md §9): until it
   exists a script with `extern "C++"` is refused by name; `extern "C"`
   is plain names. `extern "C++" { *; }` with `local: *` exports every
   symbol (GNU ld, lld; mold exports none, W40);
 - an anonymous script (`{ global: a; local: *; };`) exports the listed
   keys unversioned and writes no `.gnu.version_d` (all three);
-- a `.symver` definition `foo@V1` whose name a `local:` pattern matches:
-  GNU ld and lld drop it from `.dynsym` (an executable linked against
-  the earlier library then fails to load: ``undefined symbol: foo,
-  version V1``); mold keeps it. resolve §9.7 already says versioned
-  names are not matched, so mortar keeps it, with the warning
-  `versioned-definition-not-hidden` (Q12);
+- a `.symver` definition `foo@V1` (non-default) is local exactly when
+  node V1's own `local:` entries match `foo` (resolve §9.7 rule 12): GNU
+  ld and lld drop it (`V1 { global: bar; local: *; };`), and all three
+  keep it when the `local:` is in another node (`exp2/vscript2`).
+  mortar drops it as GNU ld and lld, with the warning
+  `versioned-definition-hidden` (an executable linked against the
+  earlier library then fails to load, ``undefined symbol: foo, version
+  V1``: the warning says so). mold keeps it (17.8). Q12 is closed this
+  way (the review's ruling);
 - `foo@V`/`foo@@V` with no node `V` in the script, or with no script:
   refused, `undefined-version` (all three, [X-F] F2; resolve §9.4
   confirmed; D-27's note on GNU ld writing a verdef holds for
   executables only).
 
 The script grammar is script.md §9. *Tests:* `version-script-rules`
-(rules 1-9, each with its `readelf --dyn-syms -V`), `version-script-zlib`
-(zlib.map; the 48 cross-runs), `version-script-undefined-name`,
+(every script of `exp2/vmatch2/scripts.txt`, each with its
+`readelf --dyn-syms -V`; the model's mortar column is the expectation),
+`version-script-zlib` (zlib.map; the 48 cross-runs),
+`version-script-undefined-name`, `version-script-comments`,
 `symver-old-and-default` (an old and a new executable run against one
-library).
+library), `symver-hidden-by-own-node`.
 
 **D-115 [M4] (`.gnu.version_d`).** Written iff a version script names at
 least one version node (or a `.symver` definition names one). Entries,
@@ -2097,7 +2173,86 @@ compiler writes it in `-fPIC` code) and i386 `R_386_PC32` in data (GNU
 ld and lld write a record that runs; mold refuses) are refused.
 Requests R-A10 (arch §4.3's `Shared` row: `TX` becomes `E`; `Pc` and
 narrow absolute against `Local` resolved), R-A11 (a64), R-X10 (x64),
-R-X86-10 (x86). *Tests:* `shared-reloc-table` (every row and kind, each
+R-X86-10 (x86).
+
+**Bound use of exported data (the address-level rule; review B-1).** The
+table above judges a use by the key its relocation names. Non-PIC code
+can reach an exported datum without naming it: GCC 14's AArch64 `-fPIE`
+(its default, and what a static library built without `-fPIC` holds)
+reads its own exported `int g` through the section anchor,
+`R_AARCH64_ADR_PREL_PG_HI21 .data + 8`; GNU ld, lld and mold link it
+into `-shared` silently, export `g` preemptible, and a `-no-pie` host
+that copies `g` gets two instances (`exp2/gapdemo`: `all=10 g=100`
+where `all=107 g=7` is right, all three). The rule:
+
+- A **preemptible data definition** is a definition D of a live object
+  O, in an input section T of O without `SHF_EXECINSTR` (`STT_TLS`
+  included), whose key this table's D-112 makes preemptible. Its
+  **interval** is `[st_value, st_value + max(st_size, 1))`, in T's input
+  offsets (before merging and layout).
+- A **use** is a relocation of O, of any type but `R_*_NONE` and the
+  `SIZE` types, whose place is in an `SHF_ALLOC` section of O other than
+  `.eh_frame` and `.gcc_except_table*`, and whose symbol is local to O
+  (`STB_LOCAL`: a section symbol, a named local, a GCC `.localalias` or
+  Clang `$local` alias) defined in T. The address it **names** is
+  `st_value + A` (A: the RELA addend, or the REL implicit addend), and,
+  for an x86-64 or i386 PC-relative or `PLT32` field in an
+  `SHF_EXECINSTR` section, `st_value + A + 4 + t`, where t is the least
+  of 0, 1, 2, 4 for which that address is the `st_value` of a symbol of
+  T with a non-zero `st_size` (the immediate after the displacement),
+  else 0.
+- A use whose named address lies in a preemptible data definition's
+  interval is refused, `non-pic-in-shared-object`, naming the
+  definition, the object, the relocation and its place, and the remedy
+  ``recompile with -fPIC``. When the address is also the end of a local
+  object of T (one past the end of a preceding `static` array, which is
+  then the next definition's start) the note names `-fdata-sections` as
+  the remedy: the use is ambiguous, and refused.
+
+Not uses: debug and other non-alloc places (every `DW_OP_addr` of an
+exported variable, 864k measured references in `.debug_*` against
+functions and data), `.eh_frame` (FDE `PREL32` to functions: 44,869)
+and the LSDA; uses against a function definition (an exported function
+reached through `.L$local` or `.localalias` under
+`-fno-semantic-interposition` is the compilers' documented contract,
+and both compilers emit it in `-fPIC` code: 913 code-place uses whose
+address lies in a function, over the corpus, none refused; per-group
+counts in `exp2/work/b1-analysis/<group>.txt`). Measured with `exp2/b1/relscan.py` (the rule as code) over
+14,316 objects (`exp2/b1/analyze.sh`):
+
+| corpus | objects | refused | what |
+|---|---|---|---|
+| GCC 14, Clang 22, AArch64 and x86-64, `-fPIC`, `-fPIC -fno-semantic-interposition`, `-fPIC -fvisibility-inlines-hidden`; GCC i386 `-fPIC` (Lua, zlib, googletest, the census sources, libstdc++-style C++) | 498 | 18 | only the constructed one-past-the-end words of `boundary.c` and `vague.cc`, every compiler and target; 0 with `-fdata-sections` (`exp2/b1/fds`) |
+| the census's `-fPIC` objects (the 25 real lines: Lua modules, zlib, libtool and CMake objects) | 47 | 0 | |
+| expat 2.6.4 and pcre2 10.44 by their own `configure`+`make`, libtool's `.libs` objects | 35 | 0 | |
+| `liblapack_pic.a`; rustc 1.95's `std`, `core`, `alloc`, `compiler_builtins` rlibs (a `cdylib` links them) | 2,388 | 0 | |
+| `libgcc.a`, `libgcc_eh.a`, `libstdc++.a`, `libsupc++.a`, `libgfortran.a`, `libatomic.a`, `libgomp.a` (`-static-lib*` in a library), AArch64 and x86-64 | 3,131 | 1 | `libgomp.a(env.o)`, a non-PIC member that binds its exported `gomp_def_allocator_envvar` (`.bss + 8`): a correct refusal |
+| GCC AArch64 `-fPIE` (the default), the same sources | 54 | 7 | every object whose code reaches its own exported data (7 of 7, ground truth from the `-fPIC` twin, `exp2/b1/groundtruth.py`); 17 of the 84 bound definitions named individually, the other 48 by D-117 against the symbol, 19 not seen (the gap below) |
+| GCC x86-64, Clang AArch64 and x86-64, GCC i386 `-fPIE` | 212 | 5 | the boundary cases; of the 262 bound definitions, 253 are named by symbol (refused by D-117's table already) and 9 by this rule; none unseen |
+| distribution `libc.a`, `libm.a`, BLAS, LAPACK, `libcrypt.a`, `libresolv.a` (default, non-PIC) | 8,071 | 21 | non-PIC members (correct refusals) |
+
+The **known gap**: GCC AArch64 `-fPIE` code that reaches a definition
+through an anchor **and** an instruction immediate (`adrp x0, .data;
+add x0, x0, :lo12:.data; ldr w1, [x0, #8]`) names only the anchor's
+start: the rule sees `.data + 0` (a local `static`), not `g`. Ground
+truth on the corpus: 19 of 84 bound definitions (18 in googletest, 1 in
+`vague.cc`), every one in an object the rule refuses for another use,
+except where an object's only bound uses are of this form (none in the
+corpus; `exp2/gapdemo/gap2.c` is one, linked silently by all three and by
+this rule). A definition-level over-approximation (refuse every non-GOT
+use of a section holding exported data) would refuse correct `-fPIC`
+objects of zlib, Lua and googletest (record §F.1), so it is not the rule.
+The gap is recorded as open question Q21 and as the class of mislink
+§18.3's verifier cannot see (P-R8).
+
+The rule depends on D-112: under `-Bsymbolic` (or a `--dynamic-list`
+not listing it) the definition is bound and the same object links
+correctly. It never changes a link of an executable. *Tests:*
+`shared-nonpic-anchor` (GCC AArch64 `-fPIE`: refused, naming `g`;
+`-fPIC`: links), `shared-nonpic-boundary` (the one-past-the-end word:
+refused with the `-fdata-sections` note; with it: links),
+`shared-nonpic-not-uses` (debug, `.eh_frame`, `$local` function
+aliases: links), `shared-reloc-table` (every row and kind, each
 architecture, run plain and interposed; the refusals' messages).
 
 **D-118 [M4] (undefined references, `-z defs`, `DT_NEEDED`).**
@@ -2211,11 +2366,22 @@ references' wording: ``relocation R_AARCH64_ADR_PREL_PG_HI21 against
 symbol `ext_data' which may bind externally can not be used when making
 a shared object; recompile with -fPIC`` (`non-pic-in-shared-object`; all
 three on AArch64 and x86-64, [E] E1). The same applies to a non-GOT use
-of a preemptible definition of the library itself (D-112): x86-64
-`-fPIE` code (`R_X86_64_PC32` against a default-visibility global) is
-refused, AArch64 and i386 `-fPIE` code links as `-fPIC` (all three).
-A text relocation is refused (D-117). *Tests:*
-`shared-nonpic-refused` (refuse, each architecture), `shared-fpie-objects`.
+of a preemptible definition of the library itself (D-112), which is what
+`-fPIE` code gives, per compiler and target (`exp2/b1`, ground truth
+from `-fPIC` twins; `review-110-adv/fpie`):
+
+| `-fPIE` object | own exported data | own exported function's address | in `-shared` |
+|---|---|---|---|
+| GCC 14, AArch64 | through the section anchor (`.data + off`, local symbol), or by symbol | by symbol (`ADR_PREL_PG_HI21 f`) | refused: by D-117's address-level rule (anchor), by D-117's table (symbol); the anchor+immediate form is the gap (Q21) |
+| Clang 22, AArch64 | by symbol (`ADR_PREL_PG_HI21 g`) | by symbol | refused by D-117's table (all three refuse it too) |
+| GCC 14 and Clang 22, x86-64 | by symbol (`R_X86_64_PC32 g`) | by symbol | refused by D-117's table (all three refuse) |
+| GCC 14, i386 | through the GOT (`GOT32X`, `GOTOFF` to locals only) | through the GOT | links as `-fPIC` (no own exported datum bound in 50 sources) |
+
+So "AArch64 `-fPIE` links as `-fPIC`" holds for none of the 64-bit
+compilers; GCC's i386 `-fPIE` is the one that does. A text relocation is
+refused (D-117). *Tests:*
+`shared-nonpic-refused` (refuse, each architecture), `shared-fpie-objects`
+(the four `-fPIE` rows of this table, each refused or linked as it says).
 
 ### 17.4 Layout, gc, tools
 
@@ -2323,21 +2489,45 @@ TLS is D-119's refusal.
    rows' versions are D-115's nodes: odr.md O-24's "a mortar-made
    output's definitions are unversioned (`--version-script` is refused)"
    becomes "a row's version is its `.dynsym` entry's version node"
-   (request R-O10).
-2. **A copy of a definition that its library binds locally is refused**
-   in an executable (`copy-of-locally-bound-definition`; a new rule for
-   `Exec` and `Pie` that needs no `Shared` output). The executable's
-   copy and the library's own instance are then two objects: the
-   executable writes `v = 99`, the library reads 10 (`E-shared-tools`
-   D, x86-64 PIE and `-no-pie`, AArch64 `-no-pie`; every reference links
-   it silently, mortar included: W30). mortar knows a definition is
-   bound locally when its library has `DF_SYMBOLIC` (GNU ld and lld write
-   it; mold does not, so its `-Bsymbolic` libraries are not caught) or
-   when its `.note.mason` row carries `NONPREEMPTIBLE` (any mortar-made
-   library with a table, `-Bsymbolic-functions` excluded since it binds
-   functions only). Protected data is already refused (D-18). The fix in
-   the program is to reach the datum through the GOT (`-fPIC`, or
-   Clang's default `-fPIE`), which all four then link correctly.
+   (request R-O10). The bit is truthful because D-117's address-level
+   rule refuses a library in which non-PIC code binds a preemptible
+   datum without naming it: a row says `NONPREEMPTIBLE` clear only when
+   every use of the definition goes through a record. The one exception
+   is the anchor+immediate gap (D-117, Q21): a GCC AArch64 `-fPIE`
+   object whose only bound use of a datum is of that form links, and its
+   row says preemptible while the library's code is bound. A consumer of
+   the table (an ODR check across libraries, Tuck) must not treat a clear
+   bit as proof of interposability until Q21 is closed.
+2. **A copy of a definition that its library binds locally** is a rule
+   for `Exec` and `Pie`, not for `Shared`: it is request R-D43 against
+   D-43 (§18.4), its own package (record §D, S-R43). Its substance: the
+   executable's copy and the library's own instance are two objects, and
+   whether that is wrong depends on where the library keeps the datum,
+   which the executable's link reads from the library's program headers
+   and the definition's `st_value` (no section header is needed):
+   - in a `PT_LOAD` with `PF_W` and outside every `PT_GNU_RELRO`:
+     **refused**, `copy-of-locally-bound-definition` (the library writes
+     its own instance, the executable reads its copy: `exp2/q10b`, a
+     `-no-pie` host copying `.data` and `.bss` data of a `-Bsymbolic`
+     library MISLINKs with every reference, AArch64 and x86-64);
+   - in a read-only `PT_LOAD` or inside `PT_GNU_RELRO` (`.rodata`,
+     `.data.rel.ro`): **warned**, same kind as a warning (two instances
+     of a constant with equal contents; the same run is correct with
+     every reference: only `&v` differs between executable and library);
+   - in no `PT_LOAD`: refused (mortar cannot tell).
+   A definition is locally bound when its library has `DF_SYMBOLIC` or
+   `DT_SYMBOLIC` (GNU ld and lld write them; mold does not, so its
+   `-Bsymbolic` libraries are not seen: a recorded gap of the rule) or
+   when its `.note.mason` row carries `NONPREEMPTIBLE`. `exp2/q10b`'s
+   `classify.py` decides from the program headers alone and agrees with
+   every run (4 kinds of datum × 3 references × 2 targets) and on the
+   system's `libgdk_pixbuf-2.0.so` (`gdk_pixbuf_version`, `.data`:
+   refused; the three `.rodata` version constants: warned). W30 is
+   reclassified accordingly: the warned cases are defined behaviour
+   (two equal constants), the refused ones a wrong output the rule
+   catches. Protected data is already refused (D-18). The fix in the
+   program is to reach the datum through the GOT (`-fPIC`, or Clang's
+   default `-fPIE`), which all four then link correctly.
 3. `--keep-mason-meta` (meta.md MT-32) keeps the units in a shared
    object as in an executable; the sections are non-alloc and change no
    loaded byte [unmeasured for `Shared`; MT-32's executable tests carry
@@ -2348,8 +2538,9 @@ TLS is D-119's refusal.
    library to its separate debug file.
 
 *Tests:* `odr-table-shared` (rows, `NONPREEMPTIBLE` per D-112 case,
-versions), `copy-of-symbolic-refused` (refuse; W30; a GNU ld
-`-Bsymbolic` library and a mortar one with a table).
+versions); R-D43's `copy-of-symbolic` (refuse `.data`/`.bss`, warn
+`.rodata`/`.data.rel.ro`, refuse outside every `PT_LOAD`; a GNU ld and
+an lld `-Bsymbolic` library and a mortar one with a table; W30).
 
 **D-127 [M4] (incremental, M7).** Constraints, not a design (§14's
 form):
@@ -2396,21 +2587,32 @@ form):
 | `.ctors` input | into `.init_array` | own section, never run (W24) | into `.init_array` | into `.init_array` (D-124) |
 | hidden `-init` function under gc | kept | kept | collected, `DT_INIT = 0` (W22) | kept (D-124) |
 | C-identifier section hidden by a version script | kept | dropped, `__start_` undefined (W23) | every one kept | kept (D-124) |
-| linker-defined exports | none | none | none | none (D-110; L-100 withdrawn) |
+| linker-defined exports | `__start_`/`__stop_` of a referenced C-identifier section, `PROTECTED` | same | none | GNU ld's and lld's (D-110 item 2; L-100's other exports withdrawn) |
 | version-node name symbols | exported (`ABS`) | no | no | no (D-110) |
 | `STT_SECTION` in `.dynsym` | AArch64 2 | none | none | none (D-110) |
 | `.gnu.hash` geometry | own | D-26 | own | D-26 (D-111) |
 | version script: exact name in two nodes | first, silent | first, warns | last | first, warns (D-114) |
 | `local:` before `global:` | syntax error | accepted | accepted | accepted (D-114) |
+| one entry under `global:` of one node and `local:` of another | refused (`duplicate expression`) | accepted, answers vary | accepted, answers vary | refused, `duplicate-version-pattern` (D-114) |
+| quoted entry with `*` (`"foo*"`) | exact | glob | glob | exact (D-114) |
+| `global: fo*` in V1, `local: foo*` in V2 | V1 | local | V1 | V1 (D-114; resolve §9.7) |
+| forward or missing parent; node name twice; anonymous with named nodes | refused | accepted; merged; refused | accepted; merged; accepted | refused (D-114; script.md §9.1) |
+| empty version script | accepted | refused | accepted | accepted (script.md §9.1) |
+| comments `#`, `/* */`; `//` | accepted; error | same | same | same (D-114) |
 | several parents | accepted | refused | refused | accepted (D-114) |
 | undefined name in a script | silent | refused | warns | warns; `--no-undefined-version` refuses (D-114) |
 | `extern "C++" {*}; local: *` | all exported | all exported, warns | none (W40) | refused until the demangler, then all (D-114) |
-| `.symver` `foo@V1` matched by `local:` | dropped | dropped | kept | kept, warns (D-114, Q12) |
+| `.symver` `foo@V1` matched by V1's own `local:` | dropped | dropped | kept | dropped, warns `versioned-definition-hidden` (D-114; resolve §9.7 rule 12) |
+| `.symver` `foo@V1` matched by another node's `local:` | kept | kept | kept | kept (resolve §9.7 rule 12) |
 | `Verdef` parents | written | not written | not written | written (D-115) |
 | base `Verdef` without `-soname` | basename | the path as given | basename | basename (D-115) |
 | `.gnu.version_d` alignment | 8 | 4 | 4 | 4 (D-115) |
 | `NEEDED_INDIRECT_EXTERN_ACCESS` | kept | dropped (W41) | dropped (W41) | kept (D-112) |
 | `-Bsymbolic-non-weak*` | unknown option | accepted | accepted | refused (D-112) |
+| `-Bsymbolic-functions` binds | `FUNC`, `NOTYPE` | `FUNC` | `FUNC`, `GNU_IFUNC` | `FUNC` (D-112) |
+| `--dynamic-list`: unlisted `TLS`, `GNU_IFUNC` | preemptible | bound (x86-64 `TLS` half: W43) | bound | bound (D-112) |
+| `--dynamic-list` with a `-Bsymbolic` form | the list decides | the list, but `-Bsymbolic` binds all (W31) | the last option | the list decides (D-112) |
+| `--dynamic-list-data`, `--dynamic-list-cpp-*` | accepted | unknown | `-data` a no-op; `-cpp-*` unknown | refused (D-112) |
 | versioned reference to an absent version | refused | refused | links, unversioned, `NEEDED` dropped (W42) | refused (D-118) |
 | `--as-needed` with only weak references to libc | dropped | dropped | kept | dropped (D-118) |
 
@@ -2433,7 +2635,7 @@ from `run-all.sh WORK`.
 | W27 | mold (i386) | `call h_hid` to a hidden IFUNC goes through an `%ebx` stub from code that has not set `%ebx` | `dyn/partD.py` |
 | W28 | GNU ld + gcc (i386) | `-shared -static` C++: no `--eh-frame-hdr` on gcc's line, the library aborts on a throw | `census/odd.sh` (B) |
 | W29 | mold (i386) | `-shared -static` C library links silently and crashes on the first call | `census/odd.sh` (B) |
-| W30 | all four, mortar included | an executable copies (`COPY`) data of a `-Bsymbolic` library: the executable writes 99, the library reads 10 (x86-64 PIE and `-no-pie`, AArch64 `-no-pie`) | `tools/part_d.sh` |
+| W30 | all four, mortar included | an executable copies (`COPY`) writable data of a `-Bsymbolic` library: the executable writes 99, the library reads 10 (x86-64 PIE and `-no-pie`, AArch64 `-no-pie`). Reclassified by the second pass: a copy of read-only or RELRO data is defined behaviour (two equal constants); only the writable case is wrong, refused by R-D43 (D-126 item 2) | `tools/part_d.sh`; `exp2/q10b/run.sh` |
 | W31 | lld 19, 22 | `--dynamic-list` with `-Bsymbolic` writes `DF_SYMBOLIC`; glibc binds the listed symbol locally (not interposable) although it is exported with a record | `export/partC.py` (`dynlist-f+Bsym`) |
 | W32 | mold (AArch64) | `ADR_PREL_LO21`, `LD_PREL_LO19`, `PREL32` against preemptible, imported and weak keys link with no record: wrong values | `export/partD.py` |
 | W33 | GNU ld (AArch64) | `PREL32` in `.data` against a preemptible key binds locally (interposition lost); against a weak undefined key gives a non-zero value | `export/partD.py` |
@@ -2446,9 +2648,35 @@ from `run-all.sh WORK`.
 | W40 | mold | `extern "C++" { *; }; local: *;` exports nothing | `export/partF.py` (`cxx_wild_all`) |
 | W41 | lld 19, 22, mold (x86) | `GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS` dropped: a copy-relocating executable then runs with two instances of protected data, where GNU ld's library is refused by glibc | `export/partB.py` |
 | W42 | mold | a versioned reference `vf@VA` is linked unversioned and `DT_NEEDED` dropped: `dlopen` fails `undefined symbol: vf`; with `-z defs` the valid link is refused | `export/partA.py` |
+| W43 | lld 22 (x86-64) | `--dynamic-list` not listing an `STT_TLS` definition: the GD pair gets `DTPMOD64` naming the key and a static `DTPOFF` of the library's block; under an interposer with a different TLS layout the library reads `tv=7` (another variable) | `exp2/bsym2/tvprobe.sh` |
+| W44 | GNU ld, lld, mold (AArch64) | GCC `-fPIE` code reaching its own exported datum through the section anchor and an instruction immediate links into `-shared` silently; a `-no-pie` host that copies the datum runs with two instances (`all=10 g=100`) | `exp2/gapdemo/run.sh` |
 
 Every one is a test on which mortar refuses or is right (the rules
-cited in §17.6).
+cited in §17.6), except W44: mortar links it too (D-117's known gap,
+Q21), and its test asserts the current behaviour until Q21 is closed.
+
+### 17.8 Anomalies and recorded differences (not wrong outputs)
+
+Behaviours of one reference that mortar does not follow and that do not
+by themselves produce a wrong program (each measured, `exp2/`):
+
+| reference | behaviour | mortar | script |
+|---|---|---|---|
+| mold | an exported `GNU_IFUNC` is bound on every line (W20 where it is interposed) | D-112's table | `exp2/bsym2/run.sh` |
+| mold | `--dynamic-list` with `-Bsymbolic-functions`: whichever comes last decides; with `-Bsymbolic` the list decides | the list decides | `exp2/bsym2/run.sh` |
+| mold | `--dynamic-list` then `-Bno-symbolic`: every key preemptible | the list decides | `exp2/bsym2/run.sh` |
+| mold | `--dynamic-list-data`: accepted, no effect | refused | `exp2/bsym2/run.sh` |
+| mold | `__start_`/`__stop_` of a referenced section not exported | exported `PROTECTED` | `exp2/startstop/run.sh` |
+| mold | `.symver` `foo@V1` matched by V1's `local:` kept | dropped, warned | `exp2/vscript2/run.sh` |
+| mold | vmatch2 S16 (`V1 { global: *; local: *; }`) and X7 (`extern "C++" { *; }; local: *`, W40): no name exported; S19 (an exact name in two nodes): the last node; X6 (an exact `extern "C++"` name in V1, `_Z*` in V2): V2 | GNU ld's answer | `exp2/vmatch2/result.txt` |
+| mold | an anonymous node combined with named ones accepted | refused | `exp2/vscript2/run.sh` |
+| lld | quoted entries with `*` are globs (vmatch2 Q1, Q4) | exact | `exp2/vmatch2/result.txt` |
+| lld | `global: fo*` in V1 and `local: foo*` (or `*`) in V2: local (vmatch2 S2, S11) | V1 (GNU ld, mold) | `exp2/vmatch2/result.txt` |
+| lld, mold | a forward or missing parent accepted; a node name twice merged | refused | `exp2/vscript2/run.sh` |
+| lld | an empty version script refused | accepted | `exp2/vscript2/run.sh` |
+| GNU ld | `--dynamic-list` keeps unlisted `TLS` and `GNU_IFUNC` preemptible | bound (lld) | `exp2/bsym2/run.sh` |
+| GNU ld | `-Bsymbolic-functions` also binds `NOTYPE` definitions | `FUNC` only (lld) | `exp2/bsym2/run.sh` |
+| GNU ld | `local:` before `global:` a syntax error | accepted | `exp2/vmatch2/result.txt` |
 
 ## 18. Requests from §17 (WP-110)
 
@@ -2471,13 +2699,13 @@ The packages of the record's §D name the requests each needs.
 | R-R10 | resolve §4.7 | the keys named by `-init`/`-fini` are roots, every kind (D-124) |
 | R-R11 | resolve §5.2 | `--allow-shlib-undefined` is the default in `Shared`; `-z defs`/`--no-undefined` refuse undefined references in `Shared` with an indirect-dependency definition not counting (D-118); a versioned reference needs its version (D-118) |
 | R-M10 | model §3 (`Resolution`) | a `preemptible` bit per key (D-113) |
-| R-C10 | cli §2.3, §4.2, `docs/status/options.md` | per package (record §D): `-shared`, `-soname`/`-h`, `--version-script`/`-version-script`, `--no-undefined-version`, `--undefined-version`, `-z defs`/`--no-undefined`, `--whole-archive`, `-Bsymbolic`, `-Bsymbolic-functions`, `--dynamic-list`, `--exclude-libs`, `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin`, `--allow-shlib-undefined` supported; `-Bsymbolic-non-weak*`, `-z notext`, `-f`/`-F`, `--spare-dynamic-tags` refused; the `-Bsymbolic` and `-z defs` no-op rows written for executables keep their meaning there |
+| R-C10 | cli §2.3, §4.2, `docs/status/options.md` | per package (record §D): `-shared`, `-soname`/`-h`, `--version-script`/`-version-script`, `--no-undefined-version`, `--undefined-version`, `-z defs`/`--no-undefined`, `--whole-archive`, `-Bsymbolic`, `-Bsymbolic-functions`, `--dynamic-list`, `-Bno-symbolic`, `--exclude-libs`, `-z nodelete`/`nodlopen`/`initfirst`/`interpose`/`origin`, `--allow-shlib-undefined` supported; several `--version-script` options read as one script, in order (resolve §9.7 rule 13; all three, m-4); `-Bsymbolic-functions` and `-z now` in the first packages (`-Bsymbolic-functions` S1a, `-z now` S1b: Python's `LDSHARED` line and rustc's `cdylib` line carry them, record §A.4); `-Bsymbolic-non-weak*`, `--dynamic-list-data`, `--dynamic-list-cpp-new`, `--dynamic-list-cpp-typeinfo`, `-z notext`, `-f`/`-F`, `--spare-dynamic-tags` refused (class `option`, D-112); the `-Bsymbolic` and `-z defs` no-op rows written for executables keep their meaning there |
 | R-L10 | layout L-100 | withdrawn: no linker-defined symbol is exported from a shared object unless `ref_dynamic` (D-110) |
 | R-L11 | layout L-103 | last sentence replaced by D-101 (`_start` or `-e` in `Shared`; 0 silently when the default `_start` is undefined) |
 | R-L12 | layout L-60 | `.gnu.version_d` between `.gnu.version` and `.gnu.version_r` (D-123) |
 | R-S10 | synth S-3 | row 8 (verdef) written by D-115; `.dynamic` of `Shared` per D-102; `DT_SONAME`, `DT_VERDEF*`, `DT_SYMBOLIC` rows |
 | R-I10 | image I-40 | section header of `.gnu.version_d` (D-115) |
-| R-O10 | odr O-24, O-50, O-51 | a row's version is its `.dynsym` version node (D-115); `NONPREEMPTIBLE` is D-112's set; a `COPY` of a locally bound definition is refused in an executable (D-126 item 2) |
+| R-O10 | odr O-24, O-50, O-51 | a row's version is its `.dynsym` version node (D-115); `NONPREEMPTIBLE` is D-112's bound set, truthful but for D-117's gap (D-126 item 1); a consumer of a row (odr.md's cross-library checks) reads `NONPREEMPTIBLE` as R-D43 does (D-126 item 2) |
 | R-MT10 | meta MT-32 | `--keep-mason-meta` applies to `Shared` (D-126) |
 | R-N10 | incr IN-12 | `-shared` stays an unsupported incremental kind until D-127's interface comparison is designed |
 
@@ -2485,20 +2713,73 @@ The packages of the record's §D name the requests each needs.
 
 plumb.md §12 (P-D1) accepts only executables. A shared object cannot be
 judged "resolves as the program assumed" from the library alone: what a
-preemptible reference binds to depends on the process (D-112). The
-verifier checks instead that the library's records say exactly what
-D-112 decided, structurally:
+preemptible reference binds to depends on the process (D-112).
+
+**What stands in for the host.** P-D9's loader model runs with a
+synthetic first module, the **interposer**, in place of an executable:
+it defines every key the verifier computes as preemptible (D-110,
+D-112, recomputed from the inputs and the options, never from the
+output's `.dynsym` or `DF_SYMBOLIC`) at a fresh address (a function at
+a fresh code address, data at a fresh allocation of its `st_size`, a
+TLS key at a fresh offset in a second module's block), as a preloaded
+library would. Two views: (A) no interposer, every key resolved to the
+library's own definition; (B) the interposer first. Each input
+relocation's place must hold, in both views, the value the input
+computes with `S` the run-time address of the definition the view
+binds: the library's own for a bound key in both views, the
+interposer's for a preemptible key in view B. This is P-D9's view 3
+generalised from `WeakDyn` keys to every preemptible key, and it is
+what turns P-D9's equality into a check of D-112.
 
 | id | request |
 |---|---|
-| P-R1 | P-D1 accepts `ET_DYN` without `DF_1_PIE` and without `PT_INTERP` as `Shared`; P-D2-P-D13 apply with this section's changes |
-| P-R2 | every use of a key the verifier computes as preemptible (from the inputs and the options: D-110, D-112, recomputed independently) goes through a record naming that key (`GLOB_DAT`, `JUMP_SLOT`, symbolic, TLS); no word holds its link-time address. DF_SYMBOLIC is not trusted as evidence (mold omits it); the options are |
-| P-R3 | no use of a non-preemptible key has a record naming it (`RELATIVE`/`IRELATIVE`/`r_sym` 0 TLS only) |
-| P-R4 | `.dynsym`'s defined set equals the verifier's export set (D-110), with each entry's binding, type, visibility and version (D-115) |
-| P-R5 | no `COPY`, no canonical PLT, no `DT_TEXTREL`, no LE TLS form in the output's code (D-117, D-119, D-122) |
+| P-R1 | P-D1 accepts `ET_DYN` without `DF_1_PIE` and without `PT_INTERP` as `Shared`; P-D2-P-D13 apply with this section's changes; P-D9 runs the two views above in place of its views 1 and 3 (view 2, a second load bias, stays) |
+| P-R2 | for every relocation of an `SHF_ALLOC` place of a live input (`.eh_frame` and the LSDA included: they are checked by value, not by the address rule) the views agree with the input. Plus D-117's address-level clause: a use whose named address (D-117's rule, computed by the verifier's own decoder from the input) lies in a preemptible data definition is reported even when both views agree on its value. Not checked: non-alloc places (debug sections hold link-time addresses by design) |
+| P-R3 | every use of one IFUNC key, in every place and both views, yields one address: the IPLT entry for a bound key, the interposer's or the resolver's record for a preemptible one (W21); an i386 `Shared` output has no `STT_GNU_IFUNC` and no `IRELATIVE` (D-130) |
+| P-R4 | `.dynsym`'s defined set equals the verifier's export set (D-110, `__start_`/`__stop_` `PROTECTED` included), with each entry's binding, type, visibility and version (D-115) |
+| P-R5 | no `COPY`, no canonical PLT, no `DT_TEXTREL`, no dynamic record whose place is in a `PT_LOAD` without `PF_W` (outside `PT_GNU_RELRO`: such a record would write read-only text), no LE TLS form in the output's code (D-117, D-119, D-122), no output section `.ctors` or `.dtors` (their input goes to `.init_array`/`.fini_array`, D-124). i386: every place the output resolves to a PLT entry or GOT slot comes from an input relocation whose form sets `%ebx` (`PLT32`, `GOT32X` with a base register; D-130) |
 | P-R6 | each `PT_LOAD` has `p_align` the max page size and `p_offset ≡ p_vaddr (mod p_align)` (glibc checks only the page, D-123) |
-| P-R7 | `DT_INIT`/`DT_FINI` point at defined code; `DT_SONAME`, `DT_VERDEF*` are consistent with `.gnu.version_d` |
-| P-R8 | mutations: each of W19-W24, W31-W39 written into a correct mortar library is reported by one of P-R2-P-R7 |
+| P-R7 | `DT_SYMBOLIC` and `DF_SYMBOLIC` present iff the line's last `-Bsymbolic` form is `-Bsymbolic` and it has no `--dynamic-list` (D-112, D-102, D-103); `DT_INIT`/`DT_FINI` point at defined, live code (D-124); `DT_SONAME`, `DT_VERDEF*` consistent with `.gnu.version_d`; `GNU_PROPERTY_1_NEEDED_INDIRECT_EXTERN_ACCESS` present iff an input has it (D-112) |
+| P-R8 | mutations: each wrong output of §17.7 written into a correct mortar library (or, where it concerns the executable, a host) is reported as the table below says, and its test says so |
+| P-R9 | (executables, with R-D43) P-D11 gains: a `COPY` of a definition its library binds locally (`DT_SYMBOLIC`/`DF_SYMBOLIC`, or a `NONPREEMPTIBLE` row) whose `st_value` lies in a writable `PT_LOAD` of that library outside `PT_GNU_RELRO`, or in none, is reported |
+
+P-R8's table (the P-D rules are main's plumb.md §12, applied through P-R1):
+
+| wrong output | reported by |
+|---|---|
+| W19 (LE TLS against own TLS, AArch64) | P-R5 (LE form in a shared object's code); view B (P-R1) gives another block |
+| W20 (exported IFUNC bound) | P-R2, view B; P-R3 |
+| W21 (two addresses of one IFUNC) | P-R3 |
+| W22 (`DT_INIT = 0`, the function collected) | P-R7 |
+| W23 (`__start_` undefined, section dropped) | P-R4; P-D7's undefined-entry check |
+| W24 (`.ctors` kept as an output section) | P-R5 |
+| W25 (text relocations in `.eh_frame`, i386) | P-R5 (record in a non-writable `PT_LOAD`; `DT_TEXTREL`) |
+| W26 (`%ebx`-relative IPLT entry as canonical address, i386) | P-R3 (no IFUNC in i386 `Shared`) |
+| W27 (hidden IFUNC called through an `%ebx` stub, i386) | P-R3 |
+| W28 (`-shared -static` C++ without `--eh-frame-hdr`, i386) | NOT caught: the image is what the line asks (no `--eh-frame-hdr`, so no `PT_GNU_EH_FRAME`); needs a check of the line, not the image (a `-shared` line with C++ unwind tables and no `--eh-frame-hdr`), proposed for S7 (i386) with the root cause the record lists as untraced |
+| W29 (`-shared -static` C library crashes, mold i386) | NOT caught: the cause was not isolated (record §B); needs S7 (i386) to reduce it to a record or a PLT form before a rule can name it |
+| W30 (a `COPY` of writable locally bound data) | P-R9 (executables) |
+| W31 (`DF_SYMBOLIC` with `--dynamic-list`) | P-R7; view B (P-R2) |
+| W32 (`ADR_PREL_LO21`, `LD_PREL_LO19`, `PREL32` without a record, AArch64) | P-R2, view B |
+| W33 (`PREL32` in `.data` bound; weak undefined non-zero) | P-R2, view B; P-D9 (P-R1) for the weak key |
+| W34 (`PC32` dynamic record truncated, x86-64) | P-R2: view A with P-D9's second bias gives a truncated value |
+| W35 (`PC32` call through an `%ebx` PLT, i386) | P-R5 (i386 clause) |
+| W36 (`GOT32X` without a base register, i386) | P-R5 (i386 clause) |
+| W37 (`GOTOFF` to a preemptible key, i386) | P-R2, view B |
+| W38 (`&f` of an import is a PLT stub, AArch64) | P-R2: view A's value is the import's definition, the place holds the stub |
+| W39 (`R_386_TLS_IE` in `.text` without `DT_TEXTREL`) | P-R5 (record in a non-writable `PT_LOAD`) |
+| W40 (`extern "C++" {*}` exports nothing) | P-R4 |
+| W41 (`NEEDED_INDIRECT_EXTERN_ACCESS` dropped) | P-R7 |
+| W42 (versioned reference unversioned, `DT_NEEDED` dropped) | P-D6, P-D8 (P-R1) |
+| W43 (TLS GD pair half bound, x86-64) | P-R2, view B (the interposer's block differs); P-D12 |
+| W44 (anchor+immediate bound use, AArch64) | NOT caught: needs the verifier to decode the instruction immediate that follows the anchor's `ADRP`/`ADD` (an AArch64 load/store offset decoder over the input's code and its def-use within the block); both views agree, because the input's own relocation is to `.data + 0` and its value is right. This is the class of mislink no P-R catches: **a bound use whose relocation names neither the key nor an address inside it** (Q21) |
+
+### 18.4 Requests to `diag.md` and to this spec
+
+| id | target | request |
+|---|---|---|
+| R-D10 | diag §3.1 (symbols and relocations areas), §3.2 | new kinds: `non-pic-in-shared-object` (`NonPicInSharedObject { r_type, name, file }`, error, ``relocation {r_type} against symbol `{name}' which may bind externally can not be used when making a shared object; recompile with -fPIC``, GNU ld's; for D-117's address-level rule `{name}` is the definition and a note names the relocation's own symbol and place, and `-fdata-sections` at a boundary); `duplicate-version-pattern` (`DuplicateVersionPattern { pattern, first, second }`, error, `{pattern} is listed as global in version {first} and local in version {second}`, own; GNU ld: `duplicate expression`); `versioned-definition-hidden` (`VersionedDefinitionHidden { name, version }`, warning, `{name}@{version} is made local by version {version}'s local: entries; executables linked against {name}@{version} will not load`, own); `copy-of-locally-bound-definition` (`CopyOfLocallyBoundDefinition { name, file }`, error, `copy relocation against {name}, which {file} binds to itself; the program and {file} would use two different objects`, own; warning when R-D43 says so, with the note `{name} is read-only in {file}: two equal copies`); `version-script-undefined-name` (`VersionScriptUndefinedName { name, version }`, warning, `version script assigns {name} to {version}, but no file defines it`, own). `version-reassigned` exists (§3.1) and is used by resolve §9.7 rule 7 |
+| R-D43 | this spec, D-43 (and D-18's neighbourhood) | the copy rule of D-126 item 2 for `Exec` and `Pie`: refuse `copy-of-locally-bound-definition` when the copied definition's library binds it locally and its `st_value` lies in a `PF_W` `PT_LOAD` outside `PT_GNU_RELRO` or in none; warn when it lies in a read-only `PT_LOAD` or in `PT_GNU_RELRO`. "Binds locally": `DT_SYMBOLIC`/`DF_SYMBOLIC`, or a `.note.mason` row with `NONPREEMPTIBLE`. Decided from the library's program headers and `.dynamic` (the symbol count from `DT_GNU_HASH` or `DT_HASH`), never its section headers. Its own package (record §D, S-R43); plumb request P-R9 |
 
 ## Appendix A. Experiments
 
@@ -2528,6 +2809,7 @@ and this spec cites them by directory (`review-m2-adv/<dir>`).
 | E-shared-export | `target-wp-110/exp/export/run.sh` (`partA.py`-`partG.py`) | §17: export set, protected, preemption under `LD_PRELOAD`, relocation classes × target kinds, versions written, archives | 3 architectures × 4 references; about 2 min |
 | E-shared-dyn | `target-wp-110/exp/dyn/run.sh` (`partA.py`-`partF.py`) | §17: the kind's headers, `.dynamic` per option and its run-time effect, TLS, IFUNC, other rules, `p_align` and the loader | 3 architectures × 4 references; about 45 s |
 | E-shared-tools | `target-wp-110/exp/tools/run.sh` (`part_a.sh`-`part_e.sh`) | §17: gdb, lldb, ldd, `ld.so --verify`, elflint on libraries; `dlopen`, TLS, EH, Fortran; which definition a library's own references reach; mortar-linked hosts | 21 libraries per architecture and reference; about 70 s |
+| E-shared-exp2 | `target-wp-110/exp2/` (README; `b1/`, `gapdemo/`, `escape/`, `bsym2/`, `vmatch2/`, `vscript2/`, `comments/`, `startstop/`, `q10b/`, `dynorder/`, `maxpage/`, `ldlines/`) | §17's second pass: the address-level rule over about 14,400 objects; the anchor gap; the protected escape; preemption per line; version-script model and grammar; `__start_`; copies of locally bound data; orders; max page; generators' lines (record §F) | each under a minute but `b1/` (about 10 min) |
 
 `target-wp-110` is `/Volumes/AgentWork/mortar-helper/.build/target-wp-110`;
 its `exp/run-all.sh WORK` runs the four into a fresh directory.
