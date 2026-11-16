@@ -4,7 +4,7 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-487 rows: 77 supported, 5 partial, 35 noop, 370 refused.
+487 rows: 80 supported, 4 partial, 35 noop, 368 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar's own.
 
@@ -293,9 +293,9 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--odr` | warn \| error \| strict \| off | mortar | all | supported | `diagnostics.odr.mode` | Check the one-definition rule: warn (default), error, strict or off |
 | `--no-odr-check` |  | mortar | all | supported | `diagnostics.odr.mode` | Run no one-definition-rule check (--odr=off) |
 | `--odr-stats` |  | mortar | all | supported | `diagnostics.odr.stats` | Print one line of one-definition-rule statistics |
-| `--odr-check-archives` |  | mortar | all | refused | `other` | Also check archive members that are not linked (WP-076) |
-| `--odr-table` | off \| exported \| full | mortar | all | partial: `=full` refused (odr.md O-50: =full is WP-076; mortar writes =off and =exported (dynamic executables)) | `diagnostics.odr.table` | Write a loadable one-definition-rule table: off (default), exported or full |
-| `--keep-mason-meta` |  | mortar | all | refused | `other` | Keep Mason metadata in the output (WP-076) |
+| `--odr-check-archives` |  | mortar | all | supported | `diagnostics.odr.check_archives` | Also compare the archive members that are not linked (odr.md O-23) |
+| `--odr-table` | off \| exported \| full | mortar | all | supported | `diagnostics.odr.table` | Write a loadable one-definition-rule table: off (default), exported or full |
+| `--keep-mason-meta` |  | mortar | all | supported | `diagnostics.odr.keep_meta` | Keep the inputs' Mason metadata in the output (meta.md MT-32) |
 | `--detect-odr-violations` |  | mortar | all | noop: odr.md O-41: mortar checks the one-definition rule by default; --detect-odr-violations has no further effect | `other` | GNU gold's: check the one-definition rule |
 
 ## Maps, traces, threads and information

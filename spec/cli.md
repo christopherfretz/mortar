@@ -922,6 +922,11 @@ WP-075 made `--odr-table` `partial`: `=off` and `=exported` are
 accepted (the table is written in dynamic executables, `spec/odr.md`
 O-50; a static executable exports nothing and gets none), `=full` is
 refused by name until WP-076.
+WP-076 made `--odr-check-archives`, `--odr-table` (all three values)
+and `--keep-mason-meta` `supported` (`spec/odr.md` O-23, O-50;
+`spec/meta.md` MT-32). The first two act in `warn`, `error` and
+`strict` and do nothing under `--odr=off`; `--keep-mason-meta` acts in
+every mode, `--odr=off` included.
 `docs/status/options.md` has the counts.
 
 Rows whose status the M1 and M2 packages change (`spec/input.md` §17,

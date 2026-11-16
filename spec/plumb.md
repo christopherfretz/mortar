@@ -226,6 +226,15 @@ that is not incremental writes none of them, and its map claims nothing
 | `hole <output-section> <offset> <size>` | any | an allocated range that holds its section's fill (IN-3): room an update left, a dead input section's or a dead constant fragment's bytes |
 | `dead <output-section> <offset> <size> <kind>` | any | a dead range whose bytes are a record of its section's grammar (IN-3a check 2), by `<kind>`: `neutral` (IN-51's block unit or IN-51b's neutral form of a debug section), `contribution` (a whole dead debug contribution as its compiler wrote it, addresses tombstoned, IN-53), `strings` (dead fragments of a merged string section, kept bytes, L-147), `cie` (unused CIEs in `.eh_frame`) |
 
+All slack is listed as holes, and so is the start padding of
+`layout.md` L-118 (the 843419 padding before a synthetic code chunk on
+AArch64: trap fill that no item owns and no alignment explains, from the
+end of the chunk before it in the same section): an incremental-mode
+map lists it as a `hole`, which §6.8 then judges like any other (P-I5's
+fill; P-I1 counts it covered). A plain map is unchanged: it claims no
+coverage, and §6.8 does not run on it (WP-062's finding 8; the
+`incr-e843` program of `crates/mortar/tests/incremental.rs`).
+
 `<output-section>` is a string token naming the output section;
 `<offset>` is from the section's start (`sh_addr`, or 0 for a non-alloc
 section) and `<size>` its length, both hex. A map with `incremental` or
@@ -565,9 +574,37 @@ offset; through the output's `.symtab` that address is `PT_TLS` `p_vaddr`
     `.eh_frame` pointers (fixed by WP-028c; the verifier first found the
     piece of `st_value` for section symbols too);
   - **merged:** §5.6;
+  - **offset 0 of an input `.eh_frame`, under mortar's map** (WP-088;
+    `synth.md` S-50 rule 1): a section symbol with `st_value + A = 0`, or
+    any other symbol except a mapping symbol with `st_value = 0` (A is
+    then added after), in an input `.eh_frame` the map does not discard
+    is the start of the output's allocated `.eh_frame`, whatever the
+    input section holds: nothing (x86's crtbeginT.o), a kept record that
+    is not first in the output (crtbeginT.o's own CIE under IN-34a's
+    per-file CIEs, or any CIE no other equals), or a removed one. A
+    non-zero offset follows its record by the rows above (rule 2). This
+    holds for relocations, `.symtab` labels (Y4: `__EH_FRAME_BEGIN__` is
+    the section's start) and every other consumer of a resolved target.
+    It applies to `Format::Mortar` only, and only when the output has an
+    allocated `.eh_frame` (otherwise the row below). Measured on the
+    shape (an object whose own CIE is not first, with words referring to
+    offset 0 and to its FDE; an object with an empty `.eh_frame`;
+    AArch64, x86-64 and i386 alike): offset 0 is the record's place for
+    GNU ld and lld 19/22 and the empty section's place after the
+    previous file's records for GNU ld; lld gives the empty one the
+    section's start; mold gives the section's start for both, and for
+    the FDE's offset 0x18 the section's start plus 0x18, not the record
+    (§10.4). Under their own maps the references are judged by these
+    places (pieces or whole, the rows above) or not at all (mold's
+    absent `.eh_frame`). Test: `tests/eh.rs
+    s4_4_eh_frame_offset_zero_is_the_output_section_start` (GNU ld's
+    bytes under mortar's map: two R1 and two Y4; the section's start:
+    accepted; a word or label 4 bytes past the start, or the FDE's word
+    at the start: one finding each);
   - **in `.eh_frame`** (a label such as crtbeginT.o's
     `__EH_FRAME_BEGIN__`) when the section is rewritten, absent, or the
-    label is in a dropped part: `eh-frame`;
+    label is in a dropped part, and the row above does not apply:
+    `eh-frame`;
   - **ambiguous:** `section-not-locatable`;
   - **discarded or absent:** R5 (§5.7).
 
@@ -1702,9 +1739,13 @@ follows:
 **Not judged.** These are reported by name:
 
 - relocations from other sections to a label inside an input `.eh_frame`
-  (crtbeginT.o's `__EH_FRAME_BEGIN__`, 4 records per glibc link):
+  (crtbeginT.o's `__EH_FRAME_BEGIN__`, 4 records per glibc link) under a
+  foreign map that rewrites or does not list `.eh_frame` (GNU ld, mold):
   `eh-frame`. Their value is where that input's frames begin in the
-  output, which a rewritten or unlisted `.eh_frame` does not say;
+  output, which a rewritten or unlisted `.eh_frame` does not say. Under
+  mortar's map offset 0 is judged (§4.4, S-50 rule 1), and so is any
+  offset of a kept record (rule 2); an offset in or at a removed record
+  (rules 3 and 4) is still `eh-frame`;
 - the instructions' meaning (they are compared byte for byte, not
   interpreted);
 - the LSDA's contents (`.gcc_except_table` is checked by S12 and its
@@ -2056,7 +2097,22 @@ what a reference names (the re-review's N3):
 - P-I3, relocations: a record of a live input section whose symbol's
   input section (its base, whatever the addend; an undefined symbol's
   chosen definition) is placed in a range. So `arr+40` for a 40-byte
-  `arr` and gfortran's `blk_-8` are accepted wherever they point;
+  `arr` and gfortran's `blk_-8` are accepted wherever they point. An
+  input section (or piece) of size 0 covers no byte: it is in a range
+  only when its address is strictly inside it; at a range's start or
+  end it names the boundary, as `arr+40` does (N3), whatever the
+  range's kind (WP-088, WP-062's finding 9). GNU ld, lld and mold all
+  place an empty input section at the address of the next item after
+  its alignment (libgfortran's `.bss.empty_string.0`-`.4`, NOBITS of
+  size 0, 8-aligned: at `unit.o`'s `.bss._gfortrani_c_locale` in all
+  three static links of `lang/fortran-c.test`'s program), so in an
+  incremental-mode layout the last ones of a region sit at its slack
+  hole's start. Only allocated sections are judged here, so the
+  debug-only kinds (`contribution`, `neutral`) never meet the case
+  (P-I4 judges those); a size-0 section at a `contribution` range's start
+  would name the boundary the same way. Tests: `tests/dead.rs
+  in3a_size_zero_section_at_a_range_boundary_is_accepted` (at the hole's
+  start and end: accepted; 8 bytes inside: P-I3);
 - P-I3, tables: a word of `.got`, `.got.plt`, `.igot`, `.igot.plt`
   (outside the ranges) holding an address in a range that is not the
   end of a live item; an allocated relocation record (outside the ranges)
@@ -2940,6 +2996,17 @@ The `tls-types` case does the same for §4.7:
 - **Dropped FDEs.** An FDE whose function is in a discarded COMDAT group
   or a collected section is absent from all three outputs. None of them
   writes a neutralised FDE on the corpus.
+- **Offset 0 of an input `.eh_frame`** (WP-088, §4.4; all three
+  machines, GNU ld 2.44, lld 19 and 22, mold 2.37.1). For an input whose
+  own CIE is kept but not first: GNU ld and lld give the CIE's place;
+  mold the output section's start. For an empty input `.eh_frame`: GNU
+  ld the place after the previous input's records; lld and mold the
+  start. For offset 0x18 (the input's FDE): GNU ld and lld the FDE's
+  place; mold the section's start plus 0x18, which is not the FDE (on
+  AArch64 inside the CIE, on x86 the CIE's start: mold places every input `.eh_frame`'s symbols as if at the
+  section's start; its map lists none, so the verifier does not judge
+  them). mortar gives the start for offset 0 and the FDE's place for
+  0x18 (`synth.md` S-50).
 
 ### 10.5 Symbol tables
 

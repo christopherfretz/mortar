@@ -12,6 +12,7 @@
 
 #![allow(clippy::many_single_char_names)] // test models: a, b, d, m
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use mortar_plumb::map::{Chunk, ChunkKind, DeadKind, DeadRange, Map, Placed, SectionRef};
@@ -243,11 +244,33 @@ fn tool(arch: Arch, name: &str) -> Option<std::path::PathBuf> {
 /// Links the program for `arch` and models the incremental output: the
 /// baseline.
 fn build(arch: Arch) -> Option<(Scratch, Built)> {
+    build_with(arch, false)
+}
+
+/// [`build`]; with `empty`, `arr.o` also has `.data.empty`, an input
+/// section of size 0 with the global `empty_lbl` (8-aligned, after `arr`:
+/// GNU ld places it at `arr`'s end, which is the start of the hole
+/// `dead.o`'s `.data` leaves), and `main.o` a word referring to it.
+fn build_with(arch: Arch, empty: bool) -> Option<(Scratch, Built)> {
     let asm = tool(arch, "as")?;
     let ld = tool(arch, "ld.bfd")?;
-    let dir = Scratch::new(&format!("dead-{}", arch.triple()));
+    let dir = Scratch::new(&format!("dead-{}{}", arch.triple(), if empty { "-empty" } else { "" }));
     let mut objs = Vec::new();
-    for (name, text) in sources(arch) {
+    let mut texts = sources(arch);
+    if empty {
+        let (word, sec) = match arch {
+            Arch::Aarch64 => (".quad", "%progbits"),
+            Arch::X86_64 => (".quad", "@progbits"),
+            Arch::I386 => (".long", "@progbits"),
+        };
+        write!(texts[0].1, "\t.data\n\t{word} empty_lbl\n").unwrap();
+        write!(
+            texts[1].1,
+            "\t.section .data.empty,\"aw\",{sec}\n\t.balign 8\n\t.globl empty_lbl\nempty_lbl:\n"
+        )
+        .unwrap();
+    }
+    for (name, text) in texts {
         std::fs::write(dir.join(format!("{name}.s")), text).unwrap();
         run(dir.path(), &asm, &[&format!("{name}.s"), "-o", &format!("{name}.o")]);
         objs.push(format!("{name}.o"));
@@ -389,6 +412,41 @@ fn in3a_live_relocation_naming_a_hole_is_rejected() {
         // e_entry is at offset 24 in both classes.
         m.output[24..24 + w].copy_from_slice(&entry.to_le_bytes()[..w]);
         expect(arch, "e_entry in hole", &base, &m, "P-I3", "e_entry");
+    }
+}
+
+// P-I3 and an input section of size 0 (WP-062's finding 9, libgfortran's
+// `.bss.empty_string.N` at their region's end): it covers no byte, so it
+// is in a range only strictly inside it. At the hole's start (GNU ld's
+// place: `arr`'s end) and at its end it names the boundary (N3), and the
+// relocation naming it is ACCEPTED; placed strictly inside the hole it is
+// REJECTED (a section with bytes there is `in3a_live_relocation_…`'s).
+#[test]
+fn in3a_size_zero_section_at_a_range_boundary_is_accepted() {
+    for arch in archs() {
+        let Some((_dir, b)) = build_with(arch, true) else { return };
+        let base = b.judge();
+        assert!(base.is_empty(), "{arch:?}: {base:#?}");
+        let hole = b.map.dead.iter().find(|d| d.section == ".data").unwrap().clone();
+        let lo = b.sec(".data").addr + hole.offset;
+        let (at, size) = b.placed("arr.o", ".data.empty");
+        assert_eq!((at, size), (lo, 0), "{arch:?}: .data.empty is at the hole's start");
+        let fi = b.map.files.iter().position(|f| f.path == "arr.o").unwrap() as u32;
+        let moved = |to: u64| {
+            let mut m = b.clone();
+            let p = m
+                .map
+                .placed
+                .iter_mut()
+                .find(|p| p.file == fi && p.section == SectionRef::Name(".data.empty".into()))
+                .unwrap();
+            p.addr = to;
+            m
+        };
+        let end = moved(lo + hole.size);
+        assert!(added(&base, &end).is_empty(), "{arch:?}: at the end: {:#?}", added(&base, &end));
+        let inside = moved(lo + 8);
+        expect(arch, "size 0 inside", &base, &inside, "P-I3", "names 'empty_lbl'");
     }
 }
 

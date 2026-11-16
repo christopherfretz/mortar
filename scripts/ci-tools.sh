@@ -72,7 +72,7 @@ TRIPLE_TOOLS=(gcc g++ gfortran as ar nm objdump objcopy readelf ld ld.bfd)
 # DEBIAN_LLVM_MAJOR's); mortar_testutil::find_tool finds them as
 # <tool>-<major> or there. clang-19 and clang++-19 are Debian's (the
 # censuses), and so is the bare ld.lld on PATH, which gcc -fuse-ld=lld runs:
-LLVM_TOOLS=(clang clang++ ld.lld yaml2obj llvm-readelf llvm-readobj llvm-ar llvm-nm llvm-objcopy llvm-strip llvm-dwarfdump llvm-mc lldb)
+LLVM_TOOLS=(clang clang++ ld.lld yaml2obj llvm-readelf llvm-readobj llvm-ar llvm-nm llvm-objcopy llvm-strip llvm-dwarfdump llvm-mc lldb llvm-dwp)
 # Given by the job's Rust set-up (.github/actions/mortar-ci), not by apt:
 SETUP_TOOLS=(rustc)
 # Looked up only when a listed name is missing (mold as ld.mold, a

@@ -1,0 +1,53 @@
+# MT-32 (spec/meta.md; WP-076): --keep-mason-meta keeps the live inputs'
+# units in a non-allocated .mason.meta (SHT_PROGBITS, no flags, alignment
+# 8) of a PIE and a non-PIE dynamic executable: a.o's unit, then b.o's, in
+# FileId order (0x90 bytes each); an unextracted member's unit is not
+# kept. It takes no address and no segment: the program runs, and gdb and
+# lldb stop at main. The reference linkers drop the containers (MT-3).
+#@ spec: meta.md "MT-30", "MT-31", "MT-32"
+#@ arch: aarch64 x86_64
+#@ requires: gdb lldb
+
+cc -O0 -g a.c -o a0.o
+meta a.meta a0.o -o a.o
+cc -O0 -g b.c -o b0.o
+meta b.meta b0.o -o b.o
+cc -O0 u.c -o u0.o
+meta u.meta u0.o -o u.o
+ar rcs libu.a u.o
+link(bfd,lld,mold) gcc -pie a.o b.o libu.a -o prog
+link(mortar) gcc -pie a.o b.o libu.a -Wl,--keep-mason-meta -o prog
+run prog
+  stdout: 5
+check(mortar) readelf -SW prog
+  has: ] .mason.meta * PROGBITS * 0000000000000000 * 000120 00 * 0 * 0 * 8$
+check(mortar) readelf -lW prog
+  not: .mason.meta
+check(mortar) gdb prog "break main" run bt kill
+  has: Breakpoint 1, main () at a.c:
+check(mortar) lldb prog "b main" run bt kill
+  has: stop reason = breakpoint 1.1
+link(bfd,lld,mold) gcc -no-pie a.o b.o libu.a -o pie
+link(mortar) gcc -no-pie a.o b.o libu.a -Wl,--keep-mason-meta -o pie
+run pie
+  stdout: 5
+check(mortar) readelf -SW pie
+  has: ] .mason.meta * PROGBITS * 0000000000000000 * 000120 00 * 0 * 0 * 8$
+
+#--- a.c
+#include <stdio.h>
+int b(void);
+int main(void) { printf("%d\n", b()); return 0; }
+#--- a.meta
+summary name=lang value=c++
+definition anchor=main hash=01010101010101010101010101010101 class=1 flags=0
+#--- b.c
+int b(void) { return 5; }
+#--- b.meta
+summary name=lang value=c++
+definition anchor=b hash=02020202020202020202020202020202 class=1 flags=0
+#--- u.c
+int u(void) { return 4; }
+#--- u.meta
+summary name=lang value=c++
+definition anchor=u hash=03030303030303030303030303030303 class=1 flags=0

@@ -45,6 +45,17 @@ pub struct Switches {
     pub shared: bool,
     /// O-50's table (O-47 row "`.note.mason` table").
     pub table: bool,
+    /// O-50's `=full`: the table's second note, of the hidden vague
+    /// definitions and the types (WP-076). Only with [`Switches::table`].
+    pub full: bool,
+}
+
+/// `=full`'s rows (O-50, WP-076): the vague definitions the output defines
+/// and does not export, and the live units' types.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FullRows {
+    pub definitions: Vec<table::FullRow>,
+    pub types: Vec<table::FullRow>,
 }
 
 /// A row of the output's table before its `.dynsym` index is known: the
@@ -113,9 +124,77 @@ pub struct Found {
     pub diagnostics: Vec<(Key, Diagnostic)>,
     /// The output's table rows, sorted by symbol (with the table on).
     pub table: Option<Vec<TableRow>>,
+    /// `=full`'s rows (with `=full`).
+    pub full: Option<FullRows>,
     /// Libraries whose table was read, and their rows.
     pub tables: u64,
     pub rows: u64,
+}
+
+/// `=full`'s rows (O-50, WP-076). The definitions: each keeper row with
+/// `VAGUE` or `EXPLICIT_SPEC` whose symbol the output does not export (so
+/// that no row is in both notes), keyed by the symbol's name (MT-13), its
+/// O-15 flags without `NONPREEMPTIBLE` (no other module binds it). The
+/// types: the first kind 3 row of each type of the live units
+/// ([`Dynamic::types`]), its hash's first 8 bytes.
+fn full_rows(
+    inputs: &Inputs<'_>,
+    dynamic: &Dynamic,
+    exported: &dyn Fn(SymbolId) -> bool,
+) -> FullRows {
+    let definitions = dynamic
+        .keepers
+        .iter()
+        .filter(|k| !exported(k.sym) && k.flags & (flags::VAGUE | flags::EXPLICIT_SPEC) != 0)
+        .filter_map(|k| {
+            let name = inputs.symbols.get(k.sym)?.name;
+            let mut hash = [0; 8];
+            hash.copy_from_slice(&k.hash[..8]);
+            Some(table::FullRow {
+                key: fnv1a64(name),
+                hash,
+                flags: k.flags & !NONPREEMPTIBLE,
+                ..table::FullRow::default()
+            })
+        })
+        .collect();
+    let types = dynamic
+        .types
+        .iter()
+        .map(|t| {
+            let mut hash = [0; 8];
+            hash.copy_from_slice(&t.hash[..8]);
+            table::FullRow {
+                key: t.key,
+                hash,
+                layout: t.layout,
+                size: t.size,
+                align: t.align,
+                flags: t.flags,
+            }
+        })
+        .collect();
+    FullRows { definitions, types }
+}
+
+/// O-50's rows of the exported keepers (`=exported`'s note).
+fn table_rows(resolution: &Resolution, output: Output<'_>, keepers: &[&Keeper]) -> Vec<TableRow> {
+    keepers
+        .iter()
+        .filter(|k| k.flags & (flags::VAGUE | flags::EXPLICIT_SPEC) != 0)
+        .map(|k| {
+            let protected =
+                resolution.props.get(k.sym).is_some_and(|p| p.visibility == STV_PROTECTED);
+            let np = output.executable || protected;
+            let mut hash = [0; 8];
+            hash.copy_from_slice(&k.hash[..8]);
+            TableRow {
+                sym: k.sym,
+                hash,
+                flags: (k.flags & !NONPREEMPTIBLE) | if np { NONPREEMPTIBLE } else { 0 },
+            }
+        })
+        .collect()
 }
 
 /// Runs O-24 and gathers O-50's rows.
@@ -137,23 +216,10 @@ pub fn check(
     };
     let keepers: Vec<&Keeper> = dynamic.keepers.iter().filter(|k| exported(k.sym)).collect();
     if switches.table {
-        let rows = keepers
-            .iter()
-            .filter(|k| k.flags & (flags::VAGUE | flags::EXPLICIT_SPEC) != 0)
-            .map(|k| {
-                let protected =
-                    resolution.props.get(k.sym).is_some_and(|p| p.visibility == STV_PROTECTED);
-                let np = output.executable || protected;
-                let mut hash = [0; 8];
-                hash.copy_from_slice(&k.hash[..8]);
-                TableRow {
-                    sym: k.sym,
-                    hash,
-                    flags: (k.flags & !NONPREEMPTIBLE) | if np { NONPREEMPTIBLE } else { 0 },
-                }
-            })
-            .collect();
-        found.table = Some(rows);
+        found.table = Some(table_rows(resolution, output, &keepers));
+        if switches.full {
+            found.full = Some(full_rows(inputs, dynamic, &exported));
+        }
     }
     if !switches.shared {
         return found;
