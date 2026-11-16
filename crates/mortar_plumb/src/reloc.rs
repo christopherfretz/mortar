@@ -495,6 +495,10 @@ pub(crate) struct Engine<'a, 'b> {
     pub(crate) dynamic: bool,
     /// PLT entries: entry address -> `.got.plt` word (stage 3).
     pub(crate) plt: BTreeMap<u64, u64>,
+    /// Stage 3, x86-64: [`crate::plt::x64_depths`] of the file (the
+    /// engine's image is a loaded view, whose lazy words the loader
+    /// rewrote); `None`: the engine's image is the file.
+    pub(crate) plt_depths: Option<BTreeMap<u64, u64>>,
     /// Verified absolute words and GOT words: `(place, width, value,
     /// internal)`, for the bias view (P-D9 view 2).
     pub(crate) abs_words: Vec<(u64, u8, u64, bool)>,
@@ -688,6 +692,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             dyn_tls_mod: HashMap::default(),
             dynamic: false,
             plt: BTreeMap::new(),
+            plt_depths: None,
             abs_words: Vec::new(),
             ifunc_chosen: BTreeMap::new(),
             extent: {

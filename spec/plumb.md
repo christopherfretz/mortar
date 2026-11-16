@@ -1725,7 +1725,7 @@ one.
   duplicate input FDE needs a duplicate output FDE.
 - **E4.** An output FDE that no live input FDE gives, unless it is
   neutralised (initial location 0 or range 0, counted in
-  `fdes_neutralised`).
+  `fdes_neutralised`) or, under a reference's map, a PLT FDE (E6).
 - **E5.** `.eh_frame_hdr` (only when there is one, or a
   `PT_GNU_EH_FRAME`):
   - exactly one `PT_GNU_EH_FRAME` covers exactly the section;
@@ -1737,6 +1737,42 @@ one.
 
   The `DW_EH_PE_omit` table that the LSB allows is accepted, without a
   table.
+- **E6.** An output FDE no live input gives whose initial location is in
+  a PLT section (`.plt`, `.plt.got`, `.plt.sec`, `.iplt`) is the
+  linker's own unwind information for its PLT (GNU ld's
+  `--ld-generated-unwind-info`; lld and mold write none), accepted
+  instead of E4 under a reference's map and counted in
+  `fdes_linker_plt`. On x86-64 it is judged against the PLT's stack
+  (WP-088):
+  - it lies inside that one section;
+  - at every instruction of the section that a PLT entry or its lazy
+    path executes (P-D10's walk, §12.2, from each entry the PLT
+    decoder finds, with the lazy word as the file holds it), its CIE's
+    initial instructions and its own, run as DWARF 4 §6.4.2 says, give
+    the CFA as `%rsp` + *d*, where *d* is 8 (the return address) plus 8
+    for each `push` the path has run (`push $n`, `push *GOT+8(%rip)`,
+    `push %r11`); a CFA expression is evaluated with `%rsp` and `%rip`
+    (the instruction's address) and no other register, at two stack
+    pointers;
+  - the return address register's rule is "saved at CFA - 8", and no
+    other register has a rule other than "same value" (the PLT saves
+    none).
+
+  One finding per FDE, at its first wrong instruction, with the count.
+  Padding no path executes is not judged (the GNU ld expression's
+  `lit11` and `lit10` differ only at offset 10 of an entry, inside the
+  `push`). A shorter range, a PLT partly without unwind information, is
+  accepted: lld, mold and mortar give none for all of it. AArch64 and
+  i386 PLT FDEs are counted and not judged (no reference writes one on
+  AArch64; i386 is not a stage 3 target). The instructions judged are
+  reported (`plt_fde_insns`). Measured on GNU ld 2.44's x86-64 hello PIE
+  lazy and `-z now`, no-PIE, and `-z ibtplt` lazy and now (the `.plt`
+  FDE with `lit11`, `lit9` under IBT; the `.plt.got` and `.plt.sec`
+  FDEs with the CIE's rule only): clean. Test: `tests/dyn.rs`
+  `s6_4_e6_plt_fde_against_the_plt` (case `plt-fde`: three outputs,
+  three mutants each: the range 16 bytes past `.plt`, the expression's
+  `lit` raised by one, PLT0's `def_cfa_offset 24` lowered to 16; each
+  is E6, and none is found with E6 dropped); `src/cfa.rs` unit tests.
 
 **Coverage.** The relocation records of an input `.eh_frame` are counted as
 follows:
@@ -3357,7 +3393,7 @@ from the file system (`line::Files`).
   `-z now` `_GLOBAL_OFFSET_TABLE_` is the `.got` word holding `_DYNAMIC`
   (GOT[0], after the PLT's slots); a GNU map's repeated `.eh_frame`
   placement of the first input is skipped; an output FDE covering a PLT
-  section (GNU ld x86-64) is counted as the linker's.
+  section (GNU ld x86-64) is the linker's, judged by E6 (§6.4).
 
 - **Static-pie** (WP-089): §12.4.
 

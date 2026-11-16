@@ -418,6 +418,8 @@ pub struct Coverage {
     pub fdes_neutralised: u64,
     /// Output FDEs a reference linker made for its own PLT (stage 3).
     pub fdes_linker_plt: u64,
+    /// PLT instructions E6 judged those FDEs at (x86-64).
+    pub plt_fde_insns: u64,
     /// Search table entries of `.eh_frame_hdr` checked (§6.4).
     pub eh_frame_hdr_entries: u64,
     /// Output symbols Y3 checked against their global definitions, and
@@ -524,6 +526,7 @@ impl Report {
     }
 
     /// The coverage summary, one item per line (§7.2).
+    #[allow(clippy::too_many_lines)] // one line per coverage item
     pub fn summary(&self) -> String {
         let c = &self.coverage;
         let mut s = String::new();
@@ -572,11 +575,12 @@ impl Report {
         let _ = writeln!(
             s,
             "FDEs: checked {}, dropped with their function {}, neutralised {}, \
-             the linker's PLT FDEs {}; .eh_frame_hdr entries checked {}",
+             the linker's PLT FDEs {} (at {} instructions); .eh_frame_hdr entries checked {}",
             c.fdes_checked,
             c.fdes_dropped,
             c.fdes_neutralised,
             c.fdes_linker_plt,
+            c.plt_fde_insns,
             c.eh_frame_hdr_entries
         );
         let _ = writeln!(

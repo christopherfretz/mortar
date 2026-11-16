@@ -497,6 +497,44 @@ fn build() -> Option<Corpus> {
             }
         }
 
+        // E6 (WP-088, WP-082 follow-up 1): GNU ld's x86-64 PLT FDEs
+        // (`.plt`, `.plt.got`, `.plt.sec`), judged against the PLT's
+        // stack at each instruction: the lazy PIE, the `-z now` no-PIE
+        // and the IBT shape, each with its `.plt` FDE's range run past
+        // the section, the expression's `lit11`/`lit9` raised by one (the
+        // CFA at each entry's `jmp PLT0` 8 short) and PLT0's
+        // `def_cfa_offset 24` lowered to 16.
+        if x64 {
+            type Patch = (&'static str, fn(&mut [u8]));
+            let patches: [Patch; 3] = [
+                ("range", plt_fde_range_past),
+                ("lit", plt_fde_lit_raised),
+                ("offset", plt_fde_offset_lowered),
+            ];
+            for (dir, from) in [
+                ("hello", "hello-pie.lazy"),
+                ("hello", "hello-no-pie.now"),
+                ("shapes", "shapes.lazy"),
+            ] {
+                let d = b.dir(arch, dir);
+                let from = format!("{from}.bfd");
+                for (what, patch) in patches {
+                    b.patched(
+                        "plt-fde",
+                        arch,
+                        &d,
+                        &from,
+                        &format!("{from}.fde-{what}"),
+                        &format!("{from}.map"),
+                        &format!("{from}.line"),
+                        Linker::Bfd,
+                        patch,
+                        &["E6"],
+                    );
+                }
+            }
+        }
+
         // X-58 (WP-082 V2): a TLS descriptor relaxed to initial-exec
         // into each of the sixteen registers (`f_R` in the source; the
         // programs exit 0 when every one reads the library's 5).
@@ -982,6 +1020,54 @@ fn plt0_jump_lowered(b: &mut [u8]) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }
 
+/// The file offset of the `.eh_frame` FDE whose initial location (GNU
+/// ld's `pcrel|sdata4`) is `.plt`'s address, and its length.
+fn plt_fde(b: &[u8]) -> (usize, usize) {
+    let s = sections(b);
+    let plt = section(&s, ".plt").2;
+    let eh = section(&s, ".eh_frame");
+    let (mut o, end) = (eh.3, eh.3 + eh.4);
+    while o + 16 <= end {
+        let len = le32(b, o) as usize;
+        if len == 0 {
+            break;
+        }
+        if le32(b, o + 4) != 0 {
+            let field = eh.2 + (o + 8 - eh.3) as u64;
+            if field.wrapping_add_signed(i64::from(le32(b, o + 8) as i32)) == plt {
+                return (o, len + 4);
+            }
+        }
+        o += len + 4;
+    }
+    panic!("no FDE for .plt");
+}
+
+/// E6: the `.plt` FDE's address range 16 bytes longer (past `.plt`).
+fn plt_fde_range_past(b: &mut [u8]) {
+    let (o, _) = plt_fde(b);
+    let v = le32(b, o + 12) + 16;
+    b[o + 12..o + 16].copy_from_slice(&v.to_le_bytes());
+}
+
+/// E6: the `.plt` FDE's expression compares the entry offset with one
+/// more than the `push` ends at (`DW_OP_and; DW_OP_lit11` or `lit9`).
+fn plt_fde_lit_raised(b: &mut [u8]) {
+    let (o, n) = plt_fde(b);
+    let i = (o + 17..o + n - 1)
+        .find(|&i| b[i] == 0x1a && (0x30..0x4f).contains(&b[i + 1]))
+        .expect("DW_OP_and; DW_OP_lit<n>");
+    b[i + 1] += 1;
+}
+
+/// E6: the `.plt` FDE's second `DW_CFA_def_cfa_offset` (24, after PLT0's
+/// `push`) lowered to 16.
+fn plt_fde_offset_lowered(b: &mut [u8]) {
+    let (o, n) = plt_fde(b);
+    let i = (o + 17..o + n - 1).find(|&i| b[i..i + 2] == [0x0e, 0x18]).expect("def_cfa_offset 24");
+    b[i + 1] = 0x10;
+}
+
 /// AArch64: the PLT header's `ldr x17, [x16, #lo]` (its third word, after
 /// `stp` and `adrp`) reads the next word.
 fn a64_header_ldr_moved(b: &mut [u8]) {
@@ -1216,6 +1302,13 @@ fn s12_h1_irelative_before_jump_slot_is_p_d10() {
 #[test]
 fn s12_p_d10_plt_header_reads_its_words() {
     judge("PLT0");
+}
+
+// spec/plumb.md §6.4 E6 (WP-088): GNU ld's x86-64 PLT FDEs are judged
+// against the PLT's stack; the clean ones are the other cases'.
+#[test]
+fn s6_4_e6_plt_fde_against_the_plt() {
+    judge("plt-fde");
 }
 
 // spec/plumb.md §12 P-D10 (WP-082): the IBT and BTI PLT shapes are judged.
