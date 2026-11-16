@@ -1,0 +1,22 @@
+# dyn.md D-2: in a static-pie an undefined (non-weak) symbol has no
+# dynamic record to take it (`.dynsym` holds the null entry only):
+# refused by name, `undefined symbol` (resolve.md §5), as all three
+# references refuse it (measured, both architectures). The reference is
+# an address word in `.data.rel`, the place a PIE would give a symbolic
+# record.
+#
+#@ spec: dyn.md "D-2"
+#@ spec: resolve.md §5
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE main.c -o main.o
+link gcc -static-pie main.o -o spie
+  exit: fail
+  diag(bfd): undefined reference to `missing'
+  diag(lld,mold,mortar): undefined symbol: missing
+
+#--- main.c
+extern int missing;
+int *p = &missing;
+
+int main(void) { return p != 0; }

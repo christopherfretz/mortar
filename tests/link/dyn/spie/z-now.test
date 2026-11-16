@@ -1,0 +1,35 @@
+# dyn.md D-30 in a static-pie: `-z now` writes DF_BIND_NOW (and
+# DF_1_NOW) as in a PIE; with no PLT entry nothing is bound lazily, and
+# the program runs. `-z norelro` drops PT_GNU_RELRO.
+#
+# Stage 3 judges it (spec/plumb.md §12.4, WP-089): GNU ld's static-pie
+# carries A30 on AArch64 (a RELATIVE on the GOT slot of glibc's absolute
+# `_nl_current_*_used`) and A31 on x86-64 (crtbeginS's `.plt.got` entry
+# of `__cxa_finalize` through the slot plus 1); plumb.md §10.2.
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
+#@ spec: dyn.md "D-30"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fPIE main.c -o main.o
+link gcc -static-pie -Wl,-z,now main.o -o now
+run now
+  stdout: hello
+check readelf -dW now
+  has: (FLAGS)*BIND_NOW
+  has: (FLAGS_1) Flags:*NOW
+check readelf -lW now
+  has: ^ GNU_RELRO
+link gcc -static-pie -Wl,-z,norelro main.o -o norelro
+run norelro
+  stdout: hello
+check readelf -lW norelro
+  not: ^ GNU_RELRO
+
+#--- main.c
+#include <stdio.h>
+
+int main(void) {
+  puts("hello");
+  return 0;
+}
