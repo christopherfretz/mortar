@@ -524,16 +524,11 @@ pub fn verify_link_line(
     }
     mortar_plumb::prof::mark("parse map");
     let files = link_files(&parsed, base, allowed)?;
-    mortar_plumb::prof::mark("read inputs");
-    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
-    let report = if mortar_plumb::is_dynamic(&output) {
-        let files = BaseFiles(base);
-        let ctx = mortar_plumb::Ctx { line, files: &files };
-        mortar_plumb::verify_with(&output, &inputs, &parsed, &ctx)
-    } else {
-        mortar_plumb::verify(&output, &inputs, &parsed)
-    };
-    drop(inputs);
+    mortar_plumb::prof::mark("open inputs");
+    // A static output is judged without stage 3 (verify_from's dispatch).
+    let dir = BaseFiles(base);
+    let ctx = mortar_plumb::Ctx { line, files: &dir };
+    let report = mortar_plumb::verify_from(&output, &files, &parsed, &ctx);
     Ok((output, report, files))
 }
 
@@ -549,51 +544,112 @@ fn link_files(
     map: &mortar_plumb::map::Map,
     base: &Path,
     allowed: Option<&BTreeSet<PathBuf>>,
-) -> Result<Vec<(String, Vec<u8>)>, String> {
+) -> Result<FileSource, String> {
     let paths = map.paths();
-    let files = read_files(paths.iter().copied(), base, |full| {
+    let files = FileSource::open(paths.iter().copied(), base, |full| {
         allowed.is_none_or(|a| a.contains(&canonical(full)))
     });
-    unresolved(&paths, &files, base, allowed.is_some())?;
+    unresolved(&paths, files.files.len(), base, allowed.is_some())?;
     Ok(files)
 }
 
-/// The files of `paths` read from `base` (those `keep` keeps), each thin
-/// archive's members before it.
-fn read_files<'p>(
-    paths: impl Iterator<Item = &'p str>,
-    base: &Path,
-    keep: impl Fn(&Path) -> bool,
-) -> Vec<(String, Vec<u8>)> {
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    for path in paths {
-        let full = base.join(path);
-        if !keep(&full) {
-            continue;
-        }
-        if let Ok(b) = std::fs::read(&full) {
-            for member in mortar_plumb::thin_members(path, &b) {
-                if let Ok(m) = std::fs::read(base.join(&member)) {
-                    files.push((member, m));
+/// The input files of a link, open, read by position (spec/plumb.md §8.1,
+/// WP-109 §6.3): the verifier's [`mortar_plumb::Source`]. A file is
+/// named by the path the map gives; its length is taken when it is opened.
+#[derive(Debug, Default)]
+pub struct FileSource {
+    files: Vec<(String, std::fs::File, u64)>,
+}
+
+impl FileSource {
+    /// The files of `paths`, opened from `base` (those `keep` keeps), each
+    /// thin archive's members before it (spec/plumb.md §2.2). A file that
+    /// cannot be opened, or is not a regular file, is left out.
+    fn open<'p>(
+        paths: impl Iterator<Item = &'p str>,
+        base: &Path,
+        keep: impl Fn(&Path) -> bool,
+    ) -> FileSource {
+        let mut out = FileSource::default();
+        for path in paths {
+            let full = base.join(path);
+            if !keep(&full) {
+                continue;
+            }
+            let Some((file, len)) = open_file(&full) else { continue };
+            // A thin archive holds its members' paths, not their bytes: it
+            // is small, and read whole for them. A regular archive is not.
+            let mut magic = [0u8; 8];
+            if len >= 8
+                && std::os::unix::fs::FileExt::read_exact_at(&file, &mut magic, 0).is_ok()
+                && &magic == b"!<thin>\n"
+                && let Ok(b) = std::fs::read(&full)
+            {
+                for member in mortar_plumb::thin_members(path, &b) {
+                    if let Some((m, n)) = open_file(&base.join(&member)) {
+                        out.files.push((member, m, n));
+                    }
                 }
             }
-            files.push((path.to_string(), b));
+            out.files.push((path.to_string(), file, len));
         }
+        out
     }
-    files
+
+    /// Every file read whole (path as the map names it, bytes); a file
+    /// that can no longer be read is left out.
+    pub fn read_all(&self) -> Vec<(String, Vec<u8>)> {
+        self.files
+            .iter()
+            .filter_map(|(p, f, n)| {
+                let mut b = vec![0u8; usize::try_from(*n).ok()?];
+                std::os::unix::fs::FileExt::read_exact_at(f, &mut b, 0).ok()?;
+                Some((p.clone(), b))
+            })
+            .collect()
+    }
+}
+
+/// A regular file, open, and its length.
+fn open_file(path: &Path) -> Option<(std::fs::File, u64)> {
+    let file = std::fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    let len = meta.len();
+    meta.is_file().then_some((file, len))
+}
+
+impl mortar_plumb::Source for FileSource {
+    fn count(&self) -> usize {
+        self.files.len()
+    }
+    fn path(&self, i: usize) -> &str {
+        self.files.get(i).map_or("", |f| f.0.as_str())
+    }
+    fn len(&self, i: usize) -> u64 {
+        self.files.get(i).map_or(0, |f| f.2)
+    }
+    fn read_at(&self, i: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+        let Some((path, file, len)) = self.files.get(i) else {
+            return Err(format!("no input {i}"));
+        };
+        if offset.checked_add(buf.len() as u64).is_none_or(|end| end > *len) {
+            return Err(format!(
+                "{path}: {} bytes at offset {offset:#x} are past its end ({len} bytes when opened)",
+                buf.len()
+            ));
+        }
+        std::os::unix::fs::FileExt::read_exact_at(file, buf, offset).map_err(|e| {
+            format!("{path}: {} bytes at offset {offset:#x} cannot be read: {e}", buf.len())
+        })
+    }
 }
 
 /// The usage error of a map none of whose files was read (spec/plumb.md
 /// §8): it names the first and the directory it was looked for in
 /// (`filtered`: `--inputs-from` chose among them).
-fn unresolved(
-    paths: &[&str],
-    files: &[(String, Vec<u8>)],
-    base: &Path,
-    filtered: bool,
-) -> Result<(), String> {
+fn unresolved(paths: &[&str], read: usize, base: &Path, filtered: bool) -> Result<(), String> {
     match paths.first() {
-        Some(first) if files.is_empty() => {
+        Some(first) if read == 0 => {
             let dir = if base.as_os_str().is_empty() {
                 std::env::current_dir().map_or_else(|_| ".".into(), |d| d.display().to_string())
             } else {
@@ -632,7 +688,7 @@ pub fn sweep_link(
     let map_bytes = read(map)?;
     let parsed = mortar_plumb::map::parse(format, &String::from_utf8_lossy(&map_bytes))
         .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?;
-    let files = link_files(&parsed, base, None)?;
+    let files = link_files(&parsed, base, None)?.read_all();
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
     let dir = BaseFiles(base);
     let ctx = mortar_plumb::Ctx { line: None, files: &dir };
@@ -640,8 +696,9 @@ pub fn sweep_link(
 }
 
 /// [`verify_link`]'s answer: the output's bytes, the report, and the
-/// inputs read (path as the map names it, bytes).
-pub type Verified = (Vec<u8>, mortar_plumb::Report, Vec<(String, Vec<u8>)>);
+/// inputs (open, as the map names them; [`FileSource::read_all`] reads
+/// them whole).
+pub type Verified = (Vec<u8>, mortar_plumb::Report, FileSource);
 
 /// Runs the command; prints the findings and the coverage. `Ok(clean)`.
 pub fn run(args: &Args) -> Result<bool, String> {
@@ -680,6 +737,7 @@ pub fn run(args: &Args) -> Result<bool, String> {
         let map_bytes = read(&args.map)?;
         let parsed = mortar_plumb::map::parse(args.format, &String::from_utf8_lossy(&map_bytes))
             .map_err(|e| format!("{}:{}: {}", args.map.display(), e.line, e.message))?;
+        let files = files.read_all();
         let inputs: Vec<Input<'_>> =
             files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
         let (cover, findings) = mortar_plumb::dead::coverage_table(&output, &inputs, &parsed)?;
@@ -703,6 +761,7 @@ pub fn run(args: &Args) -> Result<bool, String> {
             mortar_plumb::map::parse(args.format, &String::from_utf8_lossy(&map_bytes))
                 .map_err(|e| format!("{}:{}: {}", args.map.display(), e.line, e.message))?;
         parsed.fix_843419 = fix;
+        let files = files.read_all();
         let inputs: Vec<Input<'_>> =
             files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
         // Stage 3 judges the mutants of a dynamic output (spec/plumb.md §12).
@@ -834,16 +893,15 @@ pub fn run_equiv(a: &EquivArgs) -> Result<bool, String> {
     let mut paths: BTreeSet<String> = BTreeSet::new();
     paths.extend(xm.paths().into_iter().map(str::to_string));
     paths.extend(fm.paths().into_iter().map(str::to_string));
-    let files = read_files(paths.iter().map(String::as_str), Path::new(""), |_| true);
+    let files = FileSource::open(paths.iter().map(String::as_str), Path::new(""), |_| true);
     unresolved(
         &paths.iter().map(String::as_str).collect::<Vec<_>>(),
-        &files,
+        files.files.len(),
         Path::new(""),
         false,
     )?;
-    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
-    mortar_plumb::prof::mark("read outputs, maps, inputs");
-    let eq = mortar_plumb::equiv::check(&x, &xm, &f, &fm, &inputs);
+    mortar_plumb::prof::mark("read outputs, maps; open inputs");
+    let eq = mortar_plumb::equiv::check_from(&x, &xm, &f, &fm, &files);
     let (xn, fname) = (a.x.display().to_string(), a.f.display().to_string());
     for line in eq.x.render(&xn).lines() {
         println!("X: {line}");
@@ -1082,6 +1140,38 @@ mod tests {
         }
     }
 
+    // spec/plumb.md §8.1: the command's source reads by position; a read
+    // past the length the file had when it was opened, or of a file that
+    // shrank since, is an error naming the file, not a panic. A thin
+    // archive's members are files of their own, before it; a directory is
+    // not an input.
+    #[test]
+    fn s8_1_file_source() {
+        use mortar_plumb::Source;
+        let scratch = mortar_testutil::Scratch::new("plumb-file-source");
+        let root = scratch.path();
+        std::fs::write(root.join("a.o"), b"0123456789").unwrap();
+        std::fs::write(root.join("m.o"), b"member").unwrap();
+        let mut thin = b"!<thin>\n".to_vec();
+        thin.extend_from_slice(format!("{:<16}{:<32}{:<10}`\n", "m.o/", "", 6).as_bytes());
+        std::fs::write(root.join("libt.a"), &thin).unwrap();
+        std::fs::create_dir(root.join("d.o")).unwrap();
+        let src = FileSource::open(["a.o", "libt.a", "d.o", "none.o"].into_iter(), root, |_| true);
+        let paths: Vec<&str> = (0..src.count()).map(|i| src.path(i)).collect();
+        assert_eq!(paths, ["a.o", "m.o", "libt.a"]);
+        assert_eq!(Source::len(&src, 0), 10);
+        let mut b = [0u8; 4];
+        src.read_at(0, 6, &mut b).unwrap();
+        assert_eq!(&b, b"6789");
+        let e = src.read_at(0, 7, &mut b).unwrap_err();
+        assert!(e.contains("a.o") && e.contains("past its end"), "{e}");
+        std::fs::write(root.join("a.o"), b"01").unwrap();
+        let e = src.read_at(0, 2, &mut b).unwrap_err();
+        assert!(e.contains("a.o") && e.contains("cannot be read"), "{e}");
+        assert!(src.read_at(9, 0, &mut b).is_err());
+        assert_eq!(src.read_all().len(), 2, "a.o shrank: left out");
+    }
+
     // spec/plumb.md §8: a map none of whose files can be read (the
     // verifier run from another directory) is a usage error naming the
     // first file and the directory, not a report of every input I1.
@@ -1091,19 +1181,19 @@ mod tests {
         let root = scratch.path();
         std::fs::write(root.join("a.o"), b"\x7fELF").unwrap();
         let paths = ["a.o", "b.o"];
-        let read = |base: &Path| read_files(paths.iter().copied(), base, |_| true);
+        let read = |base: &Path| FileSource::open(paths.iter().copied(), base, |_| true);
         let found = read(root);
-        assert_eq!(found.len(), 1);
-        assert!(unresolved(&paths, &found, root, false).is_ok());
+        assert_eq!(found.files.len(), 1);
+        assert!(unresolved(&paths, found.files.len(), root, false).is_ok());
         let elsewhere = root.join("elsewhere");
-        let e = unresolved(&paths, &read(&elsewhere), &elsewhere, false).unwrap_err();
+        let e = unresolved(&paths, read(&elsewhere).files.len(), &elsewhere, false).unwrap_err();
         assert!(
             e.contains("the first: a.o") && e.contains("elsewhere") && e.contains("2 files"),
             "{e}"
         );
-        let e = unresolved(&paths, &[], root, true).unwrap_err();
+        let e = unresolved(&paths, 0, root, true).unwrap_err();
         assert!(e.contains("--inputs-from"), "{e}");
-        assert!(unresolved(&[], &[], root, false).is_ok());
+        assert!(unresolved(&[], 0, root, false).is_ok());
     }
 
     // spec/plumb.md §8.

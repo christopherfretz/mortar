@@ -539,6 +539,29 @@ fn finding(n: u8, msg: impl Into<String>) -> Finding {
     Finding::new(Rule::Equiv(n), msg)
 }
 
+/// [`check`] with the inputs read through `src` (§8.1), which holds the
+/// files both maps name; both sides share it. A file that cannot be read
+/// whole is an I2 finding of each side.
+pub fn check_from(
+    x_out: &[u8],
+    x_map: &Map,
+    f_out: &[u8],
+    f_map: &Map,
+    src: &dyn crate::Source,
+) -> Equiv {
+    let mut unread = Vec::new();
+    let files = crate::read_whole(src, &mut unread);
+    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+    let mut eq = check(x_out, x_map, f_out, f_map, &inputs);
+    if !unread.is_empty() {
+        for side in [&mut eq.x, &mut eq.f] {
+            side.findings.extend(unread.iter().cloned());
+            side.sort();
+        }
+    }
+    eq
+}
+
 /// `equiv(X, F)` (§6.9): `X` an update (its map claims coverage), `F` a full
 /// or plain link of the same inputs. `inputs` holds the files both maps
 /// name. Never panics.
