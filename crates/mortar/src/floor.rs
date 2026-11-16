@@ -76,6 +76,10 @@ pub struct Summary {
     /// The output's size and the new state's.
     pub file_size: u64,
     pub state_size: u64,
+    /// The dirty windows by kind (`header`, `file`: the changed file's
+    /// sections, `symtab`, `eh_frame`, `aranges`, `build-id`), each kind's
+    /// own count: `kind:count,...`.
+    pub kinds: String,
 }
 
 /// How an update ended: done, or the reason it could not update (nothing
@@ -244,39 +248,59 @@ fn run(
     // 5. The dirty windows, filled into memory.
     let pl = &f.layout.placement;
     // The ELF header first.
-    let mut ranges: Vec<Range<u64>> = Vec::new();
-    ranges.push(0..64);
+    let mut ranges: Vec<(&str, Range<u64>)> = Vec::new();
+    ranges.push(("header", 0..64));
     for sid in f.resolution.section_base[file].iter() {
         let Some((c, off)) = pl.place.get(sid).and_then(|p| p.get()) else { continue };
         let chunk = &pl.chunks[c];
         if chunk.in_file() {
             let at = chunk.offset + off;
-            ranges.push(at..at + f.headers[sid].size);
+            ranges.push(("file", at..at + f.headers[sid].size));
         }
     }
     for (_, c) in pl.chunks.iter() {
         let whole = match c.kind {
-            ChunkKind::Synthetic(s) => matches!(
-                s.name,
-                b".symtab" | b".strtab" | b".symtab_shndx" | b".eh_frame_hdr" | b".eh_frame"
-            ),
-            k => k.out().is_some_and(|o| f.assignment.outsecs[o].name == b".debug_aranges"),
+            ChunkKind::Synthetic(s) => match s.name {
+                b".symtab" | b".strtab" | b".symtab_shndx" => Some("symtab"),
+                b".eh_frame_hdr" | b".eh_frame" => Some("eh_frame"),
+                _ => None,
+            },
+            k => k
+                .out()
+                .is_some_and(|o| f.assignment.outsecs[o].name == b".debug_aranges")
+                .then_some("aranges"),
         };
-        if whole && c.in_file() {
-            ranges.push(c.offset..c.offset + c.size);
+        if let Some(label) = whole.filter(|_| c.in_file()) {
+            ranges.push((label, c.offset..c.offset + c.size));
         }
     }
     let m = &state.meta;
     if m.sealed_end > m.sealed_start {
-        ranges.push(m.sealed_start..m.sealed_end);
+        ranges.push(("build-id", m.sealed_start..m.sealed_end));
     }
     let w = mortar_image::IMAGE_BLOCK;
     let mut windows: Vec<u64> = Vec::new();
-    for r in ranges.iter().filter(|r| r.end > r.start) {
-        windows.extend(r.start / w..=(r.end - 1) / w);
+    // Each kind's windows (a window may hold several kinds).
+    let mut by_kind: Vec<(&str, Vec<u64>)> = Vec::new();
+    for (label, r) in ranges.iter().filter(|(_, r)| r.end > r.start) {
+        let these = r.start / w..=(r.end - 1) / w;
+        windows.extend(these.clone());
+        match by_kind.iter_mut().find(|(l, _)| l == label) {
+            Some((_, v)) => v.extend(these),
+            None => by_kind.push((label, these.collect())),
+        }
     }
     windows.sort_unstable();
     windows.dedup();
+    let kinds = by_kind
+        .iter_mut()
+        .map(|(l, v)| {
+            v.sort_unstable();
+            v.dedup();
+            format!("{l}:{}", v.len())
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     let mut refilled = match crate::image::refill(&f, &store, &out_path, &windows) {
         Ok(r) => r,
         Err(e) => {
@@ -412,6 +436,7 @@ fn run(
         refilled: summary_refilled,
         file_size: size,
         state_size: encoded.len() as u64,
+        kinds,
     })
 }
 

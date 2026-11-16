@@ -30,8 +30,16 @@ fn main() {
     let u = update(&link, &cwd, write);
     match &u.outcome {
         Ok(s) => eprintln!(
-            "ok changed={} inputs={} hashed={} windows={} jobs={} refilled={} size={} state={}",
-            s.changed, s.inputs, s.hashed, s.windows, s.jobs, s.refilled, s.file_size, s.state_size
+            "ok changed={} inputs={} hashed={} windows={} jobs={} refilled={} size={} state={} kinds={}",
+            s.changed,
+            s.inputs,
+            s.hashed,
+            s.windows,
+            s.jobs,
+            s.refilled,
+            s.file_size,
+            s.state_size,
+            s.kinds
         ),
         Err(why) => {
             eprintln!("failed: {why}");
