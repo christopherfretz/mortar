@@ -1,5 +1,5 @@
 //! Relocations per second of `X86::scan` and `X86::apply` on one thread
-//! (WP-030b), comparable with `mortar_x64`'s `apply_bench`.
+//! (WP-030b), comparable with `mortar_x64`'s `apply_bench_x64`.
 //!
 //! Synthesises a section of `N` 16-byte sites carrying the mix of types a
 //! static i386 C++ link sees most (`PLT32` calls, `PC32`, `GOTOFF`
@@ -9,7 +9,7 @@
 //! classifies them once, and times `scan` and `apply` over every record,
 //! several rounds. Prints relocations per second and the machine load.
 //!
-//! `cargo run --release -p mortar_x86 --example apply_bench [N] [rounds]`
+//! `cargo run --release -p mortar_x86 --example apply_bench_x86 [N] [rounds]`
 
 #![allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 

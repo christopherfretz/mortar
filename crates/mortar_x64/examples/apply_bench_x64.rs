@@ -8,7 +8,7 @@
 //! classifies them once, and times `scan` and `apply` over every record,
 //! several rounds. Prints relocations per second and the machine load.
 //!
-//! `cargo run --release -p mortar_x64 --example apply_bench [N] [rounds]`
+//! `cargo run --release -p mortar_x64 --example apply_bench_x64 [N] [rounds]`
 
 #![allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 
