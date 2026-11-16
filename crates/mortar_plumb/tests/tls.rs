@@ -157,6 +157,7 @@ fn s4_4_undefined_weak_pc_relative_is_the_place() {
 // mold's GOT entry holding TPREL with S = 0. A mutant of the code word
 // and (where there is one) of the GOT entry is a finding.
 #[test]
+#[allow(clippy::many_single_char_names)] // offsets and words of one output
 fn s4_7_undefined_weak_tls_initial_exec_is_judged() {
     let Some(c) = corpus(Size::Tls) else { return };
     for linker in Linker::ALL {

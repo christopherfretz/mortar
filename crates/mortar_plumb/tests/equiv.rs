@@ -842,7 +842,8 @@ fn p_e5_dynamic_tables() {
 // cannot be split into mortar's per-record pieces.
 #[test]
 fn p_e5_eh_frame_hdr() {
-    for arch in [Arch::Aarch64] {
+    let arch = Arch::Aarch64;
+    {
         let cfi = "\t.cfi_startproc\n\tnop\n\t.cfi_endproc\n";
         let Some(p) = assemble(arch, "ehh", "", cfi, &[]) else { return };
         let flags = ["--eh-frame-hdr", "-z", "norelro"];
