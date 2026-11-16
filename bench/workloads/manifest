@@ -124,6 +124,24 @@ cflags = -O0 -g
 capture = protoc*
 run = -I$S/src --include_imports --descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto
 
+# Its split-DWARF variant (WP-094): the same protoc with -gsplit-dwarf, so
+# that the link reads skeleton units; the .dwo files are not inputs of the
+# link. Built only when named.
+[cxx-medium-g-split-static]
+class = on-request
+kind = cmake
+about = protoc at -O0 -g -gsplit-dwarf linked -static: skeleton units, static libstdc++ and glibc.
+url = https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12.tar.gz
+sha256 = 4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460
+root = protobuf-3.21.12
+options = -DCMAKE_BUILD_TYPE=None -DCMAKE_C_COMPILER=gcc -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_WITH_ZLIB=OFF -Dprotobuf_BUILD_SHARED_LIBS=OFF -DCMAKE_EXE_LINKER_FLAGS=-static
+prebuild = libprotobuf libprotoc
+target = protoc
+driver = g++
+cflags = -O0 -g -gsplit-dwarf
+capture = protoc*
+run = -I$S/src --include_imports --descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto
+
 [cxx-medium-static]
 class = medium
 kind = cmake

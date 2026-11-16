@@ -336,6 +336,9 @@ pub(crate) struct Symbols<'k, 's> {
     /// Each global's first mention (file, entry from `first_global`), made
     /// on the first global row (WP-094).
     first: Vec<(u32, u32)>,
+    /// Each global's row by `SymbolId` (`NONE`: none yet), made on the
+    /// first global row: the lookup without hashing (WP-094 (c)).
+    global_rows: Vec<u32>,
 }
 
 /// Each global's first mention: the file and its entry among the file's
@@ -354,7 +357,16 @@ fn first_mentions(inputs: &Inputs<'_>) -> Vec<(u32, u32)> {
 
 impl Symbols<'_, '_> {
     pub(crate) fn row(&mut self, strings: &mut Strings, key: SymKey) -> Result<u32, String> {
-        if let Some(&row) = self.index.get(&key) {
+        if let SymKind::Global(id) = key.kind() {
+            if self.global_rows.is_empty() {
+                self.global_rows = vec![NONE; self.inputs.symbols.len() as usize];
+            }
+            match self.global_rows.get(id.0 as usize) {
+                Some(&NONE) => {}
+                Some(&row) => return Ok(row),
+                None => return Err("a global out of range".into()),
+            }
+        } else if let Some(&row) = self.index.get(&key) {
             return Ok(row);
         }
         let row = match key.kind() {
@@ -390,7 +402,12 @@ impl Symbols<'_, '_> {
         };
         let at = self.rows.len() as u32;
         self.rows.push(row);
-        self.index.insert(key, at);
+        match key.kind() {
+            SymKind::Global(id) => self.global_rows[id.0 as usize] = at,
+            SymKind::Local(_) => {
+                self.index.insert(key, at);
+            }
+        }
         Ok(at)
     }
 }
@@ -598,8 +615,14 @@ pub fn capture_timed(
         i = j;
     }
     clock.lap("capture frags");
-    let mut syms =
-        Symbols { keys, inputs, rows: Vec::new(), index: HashMap::default(), first: Vec::new() };
+    let mut syms = Symbols {
+        keys,
+        inputs,
+        rows: Vec::new(),
+        index: HashMap::default(),
+        first: Vec::new(),
+        global_rows: Vec::new(),
+    };
     for (k, kind) in SLOT_LISTS.iter().enumerate() {
         for &key in slot_list(slots, *kind) {
             s.slots.push(SlotRow { kind: k as u8, symbol: syms.row(strings, key)? });
@@ -788,25 +811,30 @@ fn map(
     let pos = match changed {
         None => None,
         Some(changed) => {
-            let positional: Vec<bool> =
+            // IN-28a's conditions: each one that fails sends the file (or,
+            // for the order of SECTIONS, every file) to the identities.
+            let mut positional: Vec<bool> =
                 files.iter().map(|f| f.is_some_and(|f| !changed(f))).collect();
             let mut row_of = vec![NONE; inputs.files.len() as usize];
             for (r, f) in files.iter().enumerate() {
                 let Some(f) = *f else { continue };
                 row_of[f.slot()] = r as u32;
-                // Same bytes: the same range of the same kind of file.
+                // Same bytes: the same range of the same kind of file (a
+                // member moved inside its archive is read by identity).
                 let row = &s.files[r];
                 let new = &inputs.files[f];
                 let (base, len) = new.bytes.map_or((0, 0), |b| (b.base, b.len));
-                if positional[r] && (row.base, row.len) != (base, len) {
-                    return Err(format!("positional replay: FILES row {r} is not the same bytes"));
+                if (row.base, row.len) != (base, len) {
+                    positional[r] = false;
                 }
             }
             let mut first = vec![(NONE, 0u32); s.files.len()];
             let mut last = 0;
+            let mut by_file = true;
             for (i, x) in s.sections.iter().enumerate() {
                 if x.file < last {
-                    return Err("positional replay: SECTIONS rows are not by file".into());
+                    by_file = false;
+                    break;
                 }
                 last = x.file;
                 let e = first.get_mut(x.file as usize).ok_or("a SECTIONS row's file")?;
@@ -815,17 +843,15 @@ fn map(
                 }
                 e.1 += 1;
             }
+            if !by_file {
+                positional.iter_mut().for_each(|p| *p = false);
+            }
             for (r, &(_, count)) in first.iter().enumerate() {
-                if !positional[r] {
-                    continue;
-                }
                 if let Some(f) = files[r]
                     && count != 0
                     && count != link.resolution.section_base[f].len()
                 {
-                    return Err(format!(
-                        "positional replay: FILES row {r}'s section count changed"
-                    ));
+                    positional[r] = false;
                 }
             }
             Some(Pos { positional, first, row_of })
