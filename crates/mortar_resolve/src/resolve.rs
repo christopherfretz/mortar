@@ -101,6 +101,10 @@ pub mod flags {
     /// A live common mention is `SHN_COMMON` (not x86-64's
     /// `SHN_X86_64_LCOMMON`): the common is small (§3.3).
     pub const SMALL_COMMON: u16 = 1 << 9;
+    /// A live reference (an undefined or demoted mention) has bit 7 of
+    /// `st_other` set, AArch64's `STO_AARCH64_VARIANT_PCS` (§3.7: an
+    /// undefined key's `.symtab` entry carries it).
+    pub const VARIANT_PCS: u16 = 1 << 10;
 }
 
 /// The entry address (§5.5).
@@ -551,6 +555,9 @@ fn d1_file<V: View>(
                 }
                 if dropped {
                     bits |= flags::DEMOTED;
+                }
+                if m.other & 0x80 != 0 {
+                    bits |= flags::VARIANT_PCS;
                 }
                 or_u16(&acc.flags[k], bits);
                 min_u8(&acc.vis[k], rank);

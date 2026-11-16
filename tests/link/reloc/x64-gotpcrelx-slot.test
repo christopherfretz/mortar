@@ -1,0 +1,149 @@
+# x64.md X-19, X-21 (WP-059): the GOT slot of a key whose `GOTPCRELX`
+# uses are relaxed. `x.s`'s keys: `allr` (two `mov` loads, relaxable),
+# `some` (one relaxable `mov`, one `movq` to `%xmm0`, a plain
+# `GOTPCREL`), `none` (`GOTPCREL` only), `bin` (an `add`, G5: an
+# immediate in static and `exec`, the GOT load in a PIE); the program
+# sums the values (13). `big.s` loads a key in `.ldata`
+# (`SHF_X86_64_LARGE`; its `.bss` keeps mold's `__bss_start` out of
+# the picture, plumb.md A11); `far.s` one 2.5 GiB away in `.bss`.
+#
+# Measured (GNU ld 2.44, lld 19/22, mold 2.37.1; mortar):
+# - `x`: GNU ld (`mov $imm` for the three relaxable loads in static and
+#   `exec`, X-20) and lld (`lea`) drop `allr`'s slot, and `bin`'s where G5 becomes
+#   an immediate: `.got` 16 bytes in static and `exec`, 24 in `pie` and
+#   static-pie with 3 `RELATIVE`. mold keeps every slot (40 bytes, 4
+#   `RELATIVE`). mortar relaxes as lld but keeps the four slots (32
+#   bytes, 4 `RELATIVE`): whether every use of a key relaxes depends on
+#   the relaxed field fitting, a layout fact (X-19, WP-059's record).
+# - `big`: GNU ld does not relax (the load reads the slot); lld relaxes
+#   to `lea` and drops the slot; mold and mortar relax and keep it.
+# - `far`: no linker relaxes (the `lea` would not fit); all keep the
+#   load and its slot.
+# lld's and mold's `-no-pie -nostdlib` programs do not start under qemu
+# (not a property of this rule), and static-pie needs the C library's
+# self-relocation, so neither is run. Without `-static`, gcc passes its
+# LTO plugin and a `/tmp/ccXXXXXX.res` of a new name per link, which
+# mortar's map records: `-fno-use-linker-plugin` keeps static-identical
+# stable.
+#@ spec: x64.md "X-19"
+#@ spec: x64.md "X-21"
+#@ arch: x86_64
+
+cc x.s -o x.o
+cc big.s -o big.o
+cc far.s -o far.o
+link gcc -static -nostdlib x.o -o static
+run static
+  exit: 13
+link gcc -pie -fno-use-linker-plugin -nostdlib x.o -o pie
+run pie
+  exit: 13
+link gcc -static-pie -fno-use-linker-plugin -nostdlib x.o -o spie
+link gcc -no-pie -fno-use-linker-plugin -nostdlib x.o -o exec
+run(bfd,mortar) exec
+  exit: 13
+check objdump -d static
+  count(lld,mold,mortar): 2 lea * <allr>
+  has(lld,mold,mortar): lea * <some>
+  count(bfd): 3 48 c7 c* mov *,%r
+  has(bfd,lld,mortar): 48 81 c2 * add *,%rdx
+  has(mold): 48 03 15 * add *(%rip),%rdx
+check readelf -SW static
+  has(bfd,lld): ] .got PROGBITS * 000010 0
+  has(mold): ] .got PROGBITS * 000028 0
+  has(mortar): ] .got PROGBITS * 000020 0
+check readelf -SW exec
+  has(bfd,lld): ] .got PROGBITS * 000010 0
+  has(mold): ] .got PROGBITS * 000028 0
+  has(mortar): ] .got PROGBITS * 000020 0
+check objdump -d pie
+  count: 2 lea * <allr>
+  has: 48 03 15 * add *(%rip),%rdx
+check readelf -SW pie
+  has(bfd,lld): ] .got PROGBITS * 000018 0
+  has(mold): ] .got PROGBITS * 000028 0
+  has(mortar): ] .got PROGBITS * 000020 0
+check readelf -rW pie
+  count(bfd,lld): 3 R_X86_64_RELATIVE
+  count(mold,mortar): 4 R_X86_64_RELATIVE
+check readelf -rW spie
+  count(bfd,lld): 3 R_X86_64_RELATIVE
+  count(mold,mortar): 4 R_X86_64_RELATIVE
+
+link gcc -static -nostdlib big.o -o big
+run big
+  exit: 5
+check objdump -d big
+  has(bfd): 48 8b 05 * mov *(%rip),%rax
+  has(lld,mold,mortar): 48 8d 05 * lea * <big>
+check readelf -SW big
+  has(bfd,mortar): ] .got PROGBITS * 000008 0
+  not(lld): ] .got PROGBITS * 000008
+
+link gcc -static -nostdlib far.o -o far
+check objdump -d far
+  has: 48 8b 05 * mov *(%rip),%rax
+  not: lea
+
+#--- x.s
+	.text
+	.globl	_start
+_start:
+	call	probe
+	movl	%eax, %edi
+	movl	$60, %eax
+	syscall
+	.globl	probe
+	.type	probe,@function
+probe:
+	# allr: every use a relaxable form
+	movq	allr@GOTPCREL(%rip), %rax
+	movq	(%rax), %rax
+	movq	allr@GOTPCREL(%rip), %rcx
+	addq	(%rcx), %rax
+	# some: one relaxable use, one GOTPCREL (movq to %xmm)
+	movq	some@GOTPCREL(%rip), %rdx
+	addq	(%rdx), %rax
+	movq	some@GOTPCREL(%rip), %xmm0
+	movq	%xmm0, %rdx
+	addq	(%rdx), %rax
+	# none: GOTPCREL only
+	movq	none@GOTPCREL(%rip), %xmm1
+	movq	%xmm1, %rdx
+	addq	(%rdx), %rax
+	# bin: a binop (G5), an immediate in static and exec, the GOT in PIE
+	xorl	%edx, %edx
+	addq	bin@GOTPCREL(%rip), %rdx
+	addq	(%rdx), %rax
+	ret
+	.data
+	.globl	allr, some, none, bin
+allr:	.quad 1
+some:	.quad 2
+none:	.quad 3
+bin:	.quad 4
+#--- big.s
+	.text
+	.globl	_start
+_start:
+	movq	big@GOTPCREL(%rip), %rax
+	movl	(%rax), %edi
+	movl	$60, %eax
+	syscall
+	.section .ldata,"awl",@progbits
+	.globl	big
+big:	.quad 5
+	.bss
+	.zero	8
+#--- far.s
+	.text
+	.globl	_start
+_start:
+	movq	far@GOTPCREL(%rip), %rax
+	movl	(%rax), %edi
+	movl	$60, %eax
+	syscall
+	.bss
+	.globl	huge, far
+huge:	.zero 0xa0000000
+far:	.zero 8

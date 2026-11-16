@@ -1,0 +1,69 @@
+# resolve.md §3.7, synth.md S-75, dyn.md D-23: an `STB_GNU_UNIQUE`
+# definition (GCC's template static data member `S<int>::v` and the
+# function-local static of an inline function, `counter()::c`) stays
+# `STB_GNU_UNIQUE` in a static executable's `.symtab`, as in a dynamic
+# one (`dyn/cxx/unique-shared`, `dyn/dynsym/dynsym-fields`), and the
+# output's `EI_OSABI` is then `ELFOSABI_GNU` (a64.md Q11, x64 X-49, x86
+# X86-64). A glibc static link has IFUNCs and is `ELFOSABI_GNU` anyway;
+# the `-nostdlib` link `nn`, whose only GNU symbol is the unique one,
+# shows the binding alone decides it. (Its `c` is initialized, so that
+# the writable segment is not `.bss` alone: `-nostdlib` links of that
+# shape draw verifier findings of their own, WP-059's record.)
+#
+# Measured (WP-059; GNU ld 2.44, lld 19/22, mold 2.37.1; all three
+# targets): GNU ld keeps binding 10 and writes `EI_OSABI` 3; lld keeps
+# binding 10 and writes 0 (readelf then names it `<OS specific>: 10`);
+# mold makes both symbols `STB_LOCAL` and writes 0. mortar wrote
+# `STB_GLOBAL` and 0 in a static output before WP-059.
+#@ spec: resolve.md "3.7"
+#@ spec: synth.md "S-75"
+#@ requires: g++
+
+cxx -O0 u.cc -o u.o
+cxx -O0 u2.cc -o u2.o
+cxx -O0 n.cc -o n.o
+link g++ -static u.o u2.o -o prog
+run prog
+  stdout: 7 1 9
+check readelf -sW prog
+  has(bfd,mortar): OBJECT UNIQUE DEFAULT * _ZN1SIiE1vE$
+  has(bfd,mortar): OBJECT UNIQUE DEFAULT * _ZZ7countervE1c$
+  has(lld): OBJECT <OS specific>: 10 DEFAULT * _ZN1SIiE1vE$
+  has(lld): OBJECT <OS specific>: 10 DEFAULT * _ZZ7countervE1c$
+  has(mold): OBJECT LOCAL DEFAULT * _ZN1SIiE1vE$
+  has(mold): OBJECT LOCAL DEFAULT * _ZZ7countervE1c$
+  not: OBJECT GLOBAL DEFAULT * _ZN1SIiE1vE$
+  not: OBJECT GLOBAL DEFAULT * _ZZ7countervE1c$
+check nm prog
+  has(bfd,lld,mortar): u _ZN1SIiE1vE$
+  has(bfd,lld,mortar): u _ZZ7countervE1c$
+  has(mold): d _ZN1SIiE1vE$
+link gcc -static -nostdlib n.o -o nn
+check readelf -hW nn
+  has(bfd,mortar): OS/ABI: UNIX - GNU$
+  has(lld,mold): OS/ABI: UNIX - System V$
+check readelf -sW nn
+  has(bfd,mortar): OBJECT UNIQUE DEFAULT * _ZZ7countervE1c$
+  has(lld): OBJECT <OS specific>: 10 DEFAULT * _ZZ7countervE1c$
+  has(mold): OBJECT LOCAL DEFAULT * _ZZ7countervE1c$
+
+#--- u.cc
+#include <cstdio>
+template<typename T> struct S { static int v; };
+template<typename T> int S<T>::v = 7;
+inline int &counter() { static int c = 0; return ++c, c; }
+int use();
+int main() {
+  int a = counter();
+  int b = use();
+  std::printf("%d %d %d\n", S<int>::v, a, b);
+  return 0;
+}
+#--- u2.cc
+template<typename T> struct S { static int v; };
+template<typename T> int S<T>::v = 7;
+inline int &counter() { static int c = 0; return ++c, c; }
+int use() { return S<int>::v + counter(); }
+#--- n.cc
+inline int &counter() { static int c = 5; return ++c, c; }
+extern "C" void _start() { counter(); for (;;); }

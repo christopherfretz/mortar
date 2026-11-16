@@ -6,10 +6,10 @@ use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::resolution::{Def, InternalDef, RefFlags, Resolution};
 use mortar_core::{FileId, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_elf::consts::{
-    STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_NOTYPE, STT_OBJECT, STT_TLS, STV_DEFAULT, STV_HIDDEN,
-    STV_INTERNAL, STV_PROTECTED,
+    STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STO_AARCH64_VARIANT_PCS, STT_NOTYPE, STT_OBJECT, STT_TLS,
+    STV_DEFAULT, STV_HIDDEN, STV_INTERNAL, STV_PROTECTED,
 };
-use mortar_elf::{Sym, SymbolIndex, SymbolSection, SymbolTable};
+use mortar_elf::{Machine, Sym, SymbolIndex, SymbolSection, SymbolTable};
 use mortar_synth::SymSource;
 use mortar_synth::symtab::{CoreSections, GlobalIn, LocalIn, SecKind, Sections, SymDef};
 
@@ -32,9 +32,6 @@ pub struct CoreSyms<'a, 's> {
     assignment: &'a Assignment<'a>,
     /// Per file: the symbol table of a live object.
     tables: Vec<Option<SymbolTable<'s>>>,
-    /// An output with `.dynamic`: a `STB_GNU_UNIQUE` definition keeps its
-    /// binding in `.symtab` and `.dynsym` (`spec/dyn.md` D-23).
-    keep_unique: bool,
 }
 
 impl std::fmt::Debug for CoreSyms<'_, '_> {
@@ -61,20 +58,7 @@ impl<'a, 's> CoreSyms<'a, 's> {
                 }
             })
             .collect();
-        Self { inputs, resolution, assignment, tables, keep_unique: false }
-    }
-
-    /// `dynamic`: the output has `.dynamic`. Its `STB_GNU_UNIQUE`
-    /// definitions stay unique in `.symtab` and, when exported, in
-    /// `.dynsym` (`spec/dyn.md` D-23, as GNU ld, lld and mold write them):
-    /// glibc's unique-symbol table then holds the executable's instance,
-    /// which an `RTLD_DEEPBIND` library also binds to. A static link
-    /// keeps resolve §3.7's `STB_GLOBAL` (its bytes are unchanged; the
-    /// follow-up is the record's, `spec/landed/dyn/WP-054.md`).
-    #[must_use]
-    pub fn dynamic(mut self, dynamic: bool) -> Self {
-        self.keep_unique = dynamic;
-        self
+        Self { inputs, resolution, assignment, tables }
     }
 
     fn table(&self, file: FileId) -> Option<&SymbolTable<'s>> {
@@ -173,6 +157,9 @@ impl SymSource for CoreSyms<'_, '_> {
         let props = self.resolution.props.get(id).copied().unwrap_or_default();
         let referenced = props.refs.contains(RefFlags::FROM_OBJECT);
         let other = props.visibility & 3;
+        // synth.md S-121: the bits above the visibility
+        // (`STO_AARCH64_VARIANT_PCS`) are the defining entry's, or for an
+        // undefined entry those of its references (resolve.md §3.7).
         let row = |typ, size, def, file, binding| GlobalIn {
             name: key.name,
             typ,
@@ -186,19 +173,23 @@ impl SymSource for CoreSyms<'_, '_> {
         Some(match def {
             Def::Defined(e) => {
                 let (s, t) = self.sym(e)?;
-                let binding = if self.keep_unique
-                    && props.binding == STB_GLOBAL
-                    && s.st_info >> 4 == STB_GNU_UNIQUE
-                {
+                // resolve.md §3.7, synth.md S-75, dyn.md D-23: a unique
+                // definition stays `STB_GNU_UNIQUE` in every output kind,
+                // static included (GNU ld and lld; WP-059 B).
+                let binding = if props.binding == STB_GLOBAL && s.st_info >> 4 == STB_GNU_UNIQUE {
                     STB_GNU_UNIQUE
                 } else {
                     props.binding
                 };
-                row(s.sym_type(), s.st_size, self.def_of(e, &s, t), e.file, binding)
+                let mut g = row(s.sym_type(), s.st_size, self.def_of(e, &s, t), e.file, binding);
+                g.other |= s.st_other & !3;
+                g
             }
             Def::Common(e) => {
                 let size = self.resolution.common_of(id).map_or(0, |c| c.size);
-                row(STT_OBJECT, size, SymDef::Common, e.file, props.binding)
+                let mut g = row(STT_OBJECT, size, SymDef::Common, e.file, props.binding);
+                g.other |= self.sym(e).map_or(0, |(s, _)| s.st_other & !3);
+                g
             }
             // resolve.md §8.1: the table's visibility (local hidden for
             // `__ehdr_start`, the array bounds, `__rela_iplt_*`, ...;
@@ -228,7 +219,13 @@ impl SymSource for CoreSyms<'_, '_> {
             Def::Undefined { .. } if matches!(other, STV_INTERNAL | STV_HIDDEN) => return None,
             Def::Undefined { weak } if referenced => {
                 let binding = if weak { STB_WEAK } else { STB_GLOBAL };
-                row(STT_NOTYPE, 0, SymDef::Undefined, FileId::INTERNAL, binding)
+                let mut g = row(STT_NOTYPE, 0, SymDef::Undefined, FileId::INTERNAL, binding);
+                if self.inputs.target.machine == Machine::AArch64
+                    && props.refs.contains(RefFlags::VARIANT_PCS)
+                {
+                    g.other |= STO_AARCH64_VARIANT_PCS;
+                }
+                g
             }
             // A key no live object references has no entry; a shared
             // definition is M2 (no shared object is loaded in M1).
