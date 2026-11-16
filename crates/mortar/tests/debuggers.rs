@@ -1993,3 +1993,183 @@ fn split_dwarf_cxx_gxx() {
 fn split_dwarf_cxx_clangxx() {
     split_dwarf("split-dwarf-cxx-clangxx", Driver::Clangxx);
 }
+
+// ---------------------------------------------------------------------
+// `--gdb-index` (WP-097, `spec/synth.md` §17): gdb with mortar's index
+// answers what it answers without one, and uses the index.
+
+/// mortar's link of `built` to `<dir>/<sub>/prog` with `extra`, through
+/// the verifier.
+fn link_mortar(label: &str, built: &Built, sub: &str, extra: &[&str]) -> PathBuf {
+    let out = built.dir.join(sub).join("prog");
+    std::fs::create_dir_all(out.parent().expect("a directory")).expect("create a directory");
+    let map = out.with_extension("map");
+    let mut args = with_output(&built.args, &out);
+    args.push(map_option(&map));
+    args.extend(extra.iter().map(OsString::from));
+    let m = linker(Path::new(MORTAR), &args, &built.dir);
+    assert!(m.success(), "{label}: mortar {extra:?}: {}", m.stderr_text());
+    assert_eq!(m.stderr_text(), "", "{label}: mortar {extra:?} warns");
+    support::plumb::clean(&out, &map, &built.dir);
+    out
+}
+
+/// gdb's `maint print objfiles` on `prog`: which index it read.
+fn gdb_objfiles(t: &Tools, prog: &Path, dir: &Path) -> String {
+    let args: Vec<String> =
+        ["-batch", "-nx", "-iex", "set debuginfod enabled off", "-ex", "maint print objfiles"]
+            .map(String::from)
+            .into_iter()
+            .chain([prog.display().to_string()])
+            .collect();
+    text(&tool_run(&t.gdb, &args, dir, Duration::from_mins(2)))
+}
+
+/// The split sessions of [`split_gdb_args`] on mortar's output with
+/// `--gdb-index` and without (and lldb's of [`split_lldb_args`]), for GCC's and Clang's DWARF 5 and 4 split
+/// forms: the transcripts are equal (addresses aside, which the non-alloc
+/// `.gdb_index` does not move), the session did its work, and gdb read
+/// the index (`maint print objfiles` names `.gdb_index: version 7`; on
+/// the output without it gdb builds its own, "Cooked index in use").
+// spec: synth.md S-G1, S-G4, S-G5; VALIDATION.md L6
+fn gdb_index_sessions(name: &str, driver: Driver) {
+    if !AARCH64.is_host() {
+        mortar_testutil::named_skip(
+            &format!("debuggers::{name}"),
+            "gdb sessions run the AArch64 program: on an AArch64 host only",
+        );
+        return;
+    }
+    let Some(t) = tools() else { return };
+    for (tag, flags, _) in split_forms(driver) {
+        if !matches!(*tag, "split-d5-O0" | "split-d4-O0") {
+            continue;
+        }
+        let label = format!("{name}-{tag}");
+        let Some((_scratch, built)) = split_built(&label, driver, flags, false) else { return };
+        let plain = link_mortar(&label, &built, "plain", &[]);
+        let indexed = link_mortar(&label, &built, "index", &["--gdb-index"]);
+        let (ep, ei) = (elf(&plain), elf(&indexed));
+        let ga = split_gdb_args(false);
+        let without = session(&t.gdb, &ga, &plain, &built.dir, &ep);
+        let with = session(&t.gdb, &ga, &indexed, &built.dir, &ei);
+        same(&label, "the gdb session with mortar's .gdb_index against without", &with, &without);
+        // lldb does not read `.gdb_index` (stage B §2.1): its sessions
+        // are the same too.
+        let la = split_lldb_args(false);
+        let l_without = session(&t.lldb, &la, &plain, &built.dir, &ep);
+        let l_with = session(&t.lldb, &la, &indexed, &built.dir, &ei);
+        same(
+            &label,
+            "the lldb session with mortar's .gdb_index against without",
+            &l_with,
+            &l_without,
+        );
+        split_sessions_did_their_work(&label, &with, &l_with);
+        let used = gdb_objfiles(&t, &indexed, &built.dir);
+        assert!(
+            used.contains(".gdb_index: version 7"),
+            "{label}: gdb did not read the index:\n{used}"
+        );
+        let cooked = gdb_objfiles(&t, &plain, &built.dir);
+        assert!(cooked.contains("Cooked index in use"), "{label}: gdb's own index:\n{cooked}");
+        assert!(!cooked.contains(".gdb_index"), "{label}: an index without --gdb-index:\n{cooked}");
+    }
+}
+
+// spec: synth.md S-G1; VALIDATION.md L6
+#[test]
+fn gdb_index_is_used_and_answers_the_same() {
+    gdb_index_sessions("gdb-index-dbg-cxx-gxx", Driver::Gxx);
+    gdb_index_sessions("gdb-index-dbg-cxx-clangxx", Driver::Clangxx);
+}
+
+/// The mixed build of WP-080 stage B §2.1: two units with the GNU name
+/// index (GCC `-gsplit-dwarf`) and one without (`-g`). lld's index lists
+/// only the first two units' names and gdb trusts it: the type and the
+/// variable only the third unit defines are not found. Without an index
+/// gdb finds both. mortar refuses `--gdb-index` on these objects by name
+/// (S-G3), naming the third object.
+const MIXED_SOURCES: &[Source] = &[
+    Source {
+        name: "gm_main.cpp",
+        text: r"int helper(int);
+int c_use();
+int main(int argc, char **) { return helper(argc) + c_use() - 22; }
+",
+    },
+    Source {
+        name: "gm_b.cpp",
+        text: "__attribute__((noinline)) int helper(int x) { return x + 1; }\n",
+    },
+    Source {
+        name: "gm_c.cpp",
+        text: r"namespace ns { struct OnlyInC { int a; long b; }; }
+ns::OnlyInC g_only_c = {4, 2};
+int c_use() { return g_only_c.a * 5; }
+",
+    },
+];
+
+// spec: synth.md S-G3; landed/image/WP-080-stage-b.md §2.1; VALIDATION.md L6
+#[test]
+fn gdb_index_of_a_mixed_build_is_refused() {
+    let label = "gdb-index-mixed";
+    if !AARCH64.is_host() {
+        mortar_testutil::named_skip(
+            &format!("debuggers::{label}"),
+            "gdb sessions run the AArch64 program: on an AArch64 host only",
+        );
+        return;
+    }
+    let Some(tools) = tools() else { return };
+    let Some(lld) = tool("ld.lld") else {
+        assert!(!tools_required(), "{label}: ld.lld is required");
+        return;
+    };
+    let scratch = Scratch::new(label);
+    let split = ["-g", "-gsplit-dwarf", "-O0"];
+    let Some(built) = build(&scratch, Driver::Gxx, &split, MIXED_SOURCES) else { return };
+    // The third unit again, without split DWARF and so without pubnames.
+    let gxx = tool(&Driver::Gxx.tool()).expect("g++");
+    let unit = built.dir.join("gm_c.cpp.o");
+    let compiled = run_with(
+        Command::new(&gxx)
+            .args(["-g", "-O0", "-c", "gm_c.cpp", "-o"])
+            .arg(&unit)
+            .current_dir(&built.dir),
+        b"",
+        Duration::from_mins(1),
+    );
+    assert!(compiled.success(), "{label}: g++: {}", compiled.stderr_text());
+    let plain = link_mortar(label, &built, "plain", &[]);
+    let theirs = built.dir.join("lld").join("prog");
+    std::fs::create_dir_all(theirs.parent().expect("a directory")).expect("create a directory");
+    let mut args = with_output(&built.args, &theirs);
+    args.push("--gdb-index".into());
+    let lld_link = linker(&lld, &args, &built.dir);
+    assert!(lld_link.success(), "{label}: ld.lld --gdb-index: {}", lld_link.stderr_text());
+    let ask: Vec<String> = ["-batch", "-nx", "-iex", "set debuginfod enabled off"]
+        .into_iter()
+        .chain(["-ex", "ptype ns::OnlyInC", "-ex", "print g_only_c"])
+        .map(String::from)
+        .collect();
+    let without = session(&tools.gdb, &ask, &plain, &built.dir, &elf(&plain));
+    let with_lld = session(&tools.gdb, &ask, &theirs, &built.dir, &elf(&theirs));
+    assert!(without.contains("type = struct ns::OnlyInC {"), "{label}: no index:\n{without}");
+    assert!(without.contains("{a = 4, b = 2}"), "{label}: no index:\n{without}");
+    assert!(
+        with_lld.contains("No symbol \"ns\" in current context")
+            && with_lld.contains("'g_only_c' has unknown type"),
+        "{label}: lld's index no longer hides the third unit (stage B §2.1):\n{with_lld}"
+    );
+    let mut args = with_output(&built.args, &built.dir.join("refused"));
+    args.push("--gdb-index".into());
+    let refused = linker(Path::new(MORTAR), &args, &built.dir);
+    let err = refused.stderr_text();
+    assert!(!refused.success(), "{label}: mortar linked a mixed build with --gdb-index");
+    assert!(
+        err.contains("gm_c.cpp.o: unsupported feature: gdb-index-incomplete"),
+        "{label}: {err}"
+    );
+}

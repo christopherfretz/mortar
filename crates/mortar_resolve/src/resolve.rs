@@ -599,6 +599,26 @@ fn d1_file<V: View>(
     }
 }
 
+/// The state of one kept-kind section (§10); with `--gdb-index` the
+/// index consumes the GNU name sets (spec/synth.md S-G6).
+fn row_state(
+    opts: &Options,
+    s: &crate::view::SectionInfo<'_>,
+    kind: SectionKind,
+    excluded: DropReason,
+    dropped: bool,
+) -> SectionState {
+    let strip = opts.strip_debug && sections::is_debug(s);
+    let state = sections::state(kind, excluded, dropped, strip);
+    if opts.consume_gnu_pubnames
+        && state == SectionState::Kept
+        && matches!(s.name, b".debug_gnu_pubnames" | b".debug_gnu_pubtypes")
+    {
+        return SectionState::Dropped(DropReason::Consumed);
+    }
+    state
+}
+
 /// §10 for the sections of one live object.
 fn section_rows<V: View>(
     ctx: &Ctx<'_, V>,
@@ -627,8 +647,7 @@ fn section_rows<V: View>(
                     out.meta.push((file, SectionIndex(i)));
                 }
                 let excluded = sections::excluded_reason(&s, note);
-                let strip = ctx.opts.strip_debug && sections::is_debug(&s);
-                row.state = sections::state(kind, excluded, dropped, strip);
+                row.state = row_state(ctx.opts, &s, kind, excluded, dropped);
                 match note {
                     Note::Retain if row.is_kept() => out.retained.push((file, SectionIndex(i))),
                     Note::GnuWarning if !dropped => out.problems.push(Problem {

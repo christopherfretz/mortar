@@ -717,6 +717,17 @@ impl Row {
         self.spellings[0].display()
     }
 
+    /// The reason a `refused` row gives in its refusal's note, if it has
+    /// one (`crate::rows::REFUSED_NOTES`).
+    #[must_use]
+    pub fn refused_note(&self) -> Option<&'static str> {
+        if self.status != Status::Refused {
+            return None;
+        }
+        let name = self.name();
+        crate::rows::REFUSED_NOTES.iter().find(|(n, _)| *n == name).map(|(_, note)| *note)
+    }
+
     /// Whether the row is a `-z` keyword.
     #[must_use]
     pub fn is_z(&self) -> bool {
