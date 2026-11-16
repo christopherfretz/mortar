@@ -32,6 +32,14 @@ pub const NON_ALLOC_TLS_ABS: &str =
 pub const LARGE_TLSDESC_DYNAMIC: &str =
     "large-model TLSDESC whose TLSDESC_ADD is not followed by its TLSDESC_CALL";
 
+/// The feature refused for a traditional general-dynamic member (513,
+/// 514) whose sequence does not match R4's pattern in a link of the
+/// static tables (a static executable or a static PIE, a64.md §8.4, R4's
+/// static column): such an output has no module/offset pair to keep, so
+/// the sequence is either rewritten whole to LE or refused, never applied
+/// half. x86-64's name for the same case (x64.md X-26).
+pub const UNRECOGNIZED_GD: &str = "unrecognized general-dynamic TLS sequence";
+
 /// The input-only checks of arch.md §3.4 for one relocation: the field and
 /// its window lie in the section; the addend rule (a64.md §3.1); the
 /// instruction the field form requires (§3.2). The type's status was
@@ -57,7 +65,9 @@ pub fn scan_checks(at: &RelocAt<'_>) -> Result<(), ScanError> {
 
 /// `scan` (arch.md §3.4): the checks, then the class rule of §4.3, the
 /// TLS table of a64.md §8 and §12, and the inhibitor flags of R3 and R5.
-pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
+/// `m2` is the dynamic tables (a dynamic executable); without it a
+/// traditional GD member is accepted only inside R4's pattern (§8.4).
+pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
     if let Err(e) = scan_checks(at) {
         out.error(at.index, e);
         return;
@@ -137,6 +147,15 @@ pub fn scan(cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_>) {
         ClassOutcome::ArchTls => {
             let gd =
                 exec && h.class == DemandClass::TlsGd && relax::gd_lead(at, cx.tables).is_some();
+            // §8.4, R4's static column: the static tables have no
+            // unrelaxed GD (no module/offset pair, no call kept).
+            if !m2 && h.class == DemandClass::TlsGd && !gd {
+                out.error(
+                    at.index,
+                    ScanError::Refused(Refusal::named(RefusalClass::Feature, UNRECOGNIZED_GD)),
+                );
+                return;
+            }
             let large = matches!(at.r_type, 565..=568) || relax::large_call(at);
             let (flags, global) = tls_demand(h.class, large, cx.output, kind, gd);
             out.raise(at.key, flags);
