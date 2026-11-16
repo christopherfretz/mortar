@@ -10,6 +10,8 @@
 //! That baseline must be judged with no P-I finding; each mutation of it
 //! must be rejected by the finding it names, beyond the baseline's.
 
+#![allow(clippy::many_single_char_names)] // test models: a, b, d, m
+
 use std::path::Path;
 
 use mortar_plumb::map::{Chunk, ChunkKind, DeadKind, DeadRange, Map, Placed, SectionRef};
@@ -40,13 +42,18 @@ fn sources(arch: Arch) -> [(&'static str, String); 4] {
          \t.cfi_startproc\n{live_ret}\t.cfi_endproc\n\t.size live, .-live\n\
          \t.section .init,\"ax\",{sec}\n\t.balign 4\n\tnop\n\
          \t.section my_array,\"aw\",{sec}\n\t{word} live\n\
+         \t.section .tdata,\"awT\",{sec}\n\t.balign 8\n\t.fill 8,1,2\n\
+         \t.section .rodata.str1.1,\"aMS\",{sec},1\n\t.asciz \"live\"\n\
          \t.data\n\t.globl ptrs\nptrs:\n\t{word} arr+40\n\t{word} blk_-8\n\t{word} arr_end\n"
     );
     let arr =
         "\t.data\n\t.balign 8\n\t.globl arr\narr:\t.fill 40,1,1\n\t.globl arr_end\narr_end:\n"
             .to_string();
-    let dead =
-        format!("\t.text\n\t.cfi_startproc\n\t{fill}\n\t.cfi_endproc\n\t.data\n\t.fill 16,1,0\n");
+    let dead = format!(
+        "\t.text\n\t.cfi_startproc\n\t{fill}\n\t.cfi_endproc\n\t.data\n\t.fill 16,1,0\n\
+                 \t.section .tdata,\"awT\",{sec}\n\t.balign 8\n\t.fill 8,1,3\n\
+                 \t.section .rodata.str1.1,\"aMS\",{sec},1\n\t.asciz \"deadstr\"\n"
+    );
     let blk = format!("\t.data\n\t.globl blk_\nblk_:\t{word} 7\n");
     [("main", main), ("arr", arr), ("dead", dead), ("blk", blk)]
 }
@@ -269,7 +276,8 @@ fn build(arch: Arch) -> Option<(Scratch, Built)> {
     let eh = b.sec(".eh_frame").clone();
     b.map.placed.retain(|p| p.section != SectionRef::Name(".eh_frame".into()));
     for p in gone.iter().filter(|p| p.size > 0) {
-        let owner = b.owner(p.addr, p.size).unwrap().name.clone();
+        // GNU ld merges the dead string into main.o's block: no range.
+        let Some(owner) = b.owner(p.addr, p.size).map(|s| s.name.clone()) else { continue };
         if owner == ".eh_frame" {
             assert!(p.size >= 16, "the dead FDE is {} bytes", p.size);
             b.patch(".eh_frame", p.addr, &padding_cie(arch, p.size as usize));
@@ -285,9 +293,18 @@ fn build(arch: Arch) -> Option<(Scratch, Built)> {
                     });
                 }
             }
+        } else {
+            // What an update leaves in a hole: the fill (IN-3).
+            let f = if owner == ".text" { code_fill(arch) } else { 0 };
+            b.patch(&owner, p.addr, &vec![f; p.size as usize]);
         }
         b.hole(&owner, p.addr, p.size);
     }
+    // GNU ld merged dead.o's "deadstr" after main.o's "live": the dead
+    // fragment is a `strings` range (IN-3a: dead fragments are dead
+    // ranges).
+    let ro = b.sec(".rodata").size;
+    b.dead(".rodata", ro - 8, 8, DeadKind::Strings);
     Some((dir, b))
 }
 
@@ -434,6 +451,18 @@ fn in60_unlisted_hole_and_bad_lines_are_rejected() {
         let mut m = b.clone();
         m.map.dead.push(DeadRange { section: ".shstrtab".into(), offset: 0, size: 1, ..d });
         expect(arch, "non-alloc hole", &base, &m, "P-I2", "allocated section only");
+        // A `.tdata` hole not at the section's end (L-143): main.o's word,
+        // with dead.o's after it.
+        let mut m = b.clone();
+        let (a, size) = m.unplace("main.o", ".tdata");
+        m.patch(".tdata", a, &vec![0; size as usize]);
+        m.hole(".tdata", a, size);
+        expect(arch, "tls hole", &base, &m, "P-I2", "thread-local");
+        // The dead string a `strings` range that does not end with a NUL.
+        let mut m = b.clone();
+        let s = m.sec(".rodata").clone();
+        m.patch(".rodata", s.addr + s.size - 1, b"x");
+        expect(arch, "strings NUL", &base, &m, "P-I6", "NUL");
     }
 }
 
@@ -496,6 +525,15 @@ fn in34a_eh_frame_holes_are_padding_cies() {
         not_cie.extend_from_slice(&0x10u32.to_le_bytes());
         m.patch(".eh_frame", a, &not_cie);
         expect(arch, "cie kind", &base, &m, "P-I6", "not a CIE");
+        // A live FDE whose CIE pointer names the padding CIE of the hole.
+        let mut m = b.clone();
+        let eh = m.sec(".eh_frame").clone();
+        let o = eh.offset as usize;
+        let cie_len = u64::from(u32::from_le_bytes(m.output[o..o + 4].try_into().unwrap()));
+        let field = eh.addr + 4 + cie_len + 4;
+        let ptr = (field.wrapping_sub(a)) as u32;
+        m.patch(".eh_frame", field, &ptr.to_le_bytes());
+        expect(arch, "eh CIE pointer", &base, &m, "P-I3", "CIE");
     }
 }
 
@@ -700,7 +738,6 @@ fn in51_neutral_debug_ranges_are_accepted() {
 }
 
 #[test]
-#[allow(clippy::many_single_char_names)]
 fn in3a_debug_mutations_are_rejected() {
     for arch in debug_archs() {
         for dwarf in [4, 5] {
@@ -749,6 +786,28 @@ fn in3a_debug_mutations_are_rejected() {
             let i = m.map.dead.iter().position(|x| x.section == ".debug_info").unwrap();
             m.map.dead[i].kind = Some(DeadKind::Contribution);
             expect(arch, &case("contribution kind"), &base, &m, "P-I2", "'contribution' range");
+            // main.o's FDE aimed at the dead contribution's CIE.
+            if let Some((_, fr, _)) = d.dead.iter().find(|x| x.0 == ".debug_frame").cloned() {
+                let mut m = d.b.clone();
+                let o = d.file_offset(".debug_frame", 0);
+                let cie_len = u32::from_le_bytes(m.output[o..o + 4].try_into().unwrap()) as usize;
+                let f = o + 4 + cie_len + 4;
+                m.output[f..f + 4].copy_from_slice(&(fr as u32).to_le_bytes());
+                expect(arch, &case("frame CIE pointer"), &base, &m, "P-I4", "CIE");
+            }
+            // ELFCLASS32 position-independent: a dead `.debug_line` left as
+            // written (IN-53: neutral there).
+            if arch == Arch::I386 {
+                let mut m = d.b.clone();
+                let (_, line, size) =
+                    d.dead.iter().find(|x| x.0 == ".debug_line").cloned().unwrap();
+                let o = d.file_offset(".debug_line", line);
+                m.output[o..o + size as usize].copy_from_slice(&d.raw[o..o + size as usize]);
+                let i = m.map.dead.iter().position(|x| x.section == ".debug_line").unwrap();
+                m.map.dead[i].kind = Some(DeadKind::Contribution);
+                m.output[16..18].copy_from_slice(&3u16.to_le_bytes());
+                expect(arch, &case("pie"), &base, &m, "P-I6", "position-independent");
+            }
             // `.debug_aranges` has no dead range (IN-54).
             let mut m = d.b.clone();
             m.dead(".debug_aranges", 0, 4, DeadKind::Neutral);

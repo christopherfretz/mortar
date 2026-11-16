@@ -1166,7 +1166,14 @@ fn eh_cie_pointers(image: &Image<'_>, i: usize, set: &DeadSet, out: &mut Vec<Fin
             && let Some(id) = r.n(osz)
             && id != 0
         {
-            let cie = field.wrapping_sub(id);
+            // A 32-bit pointer is read modulo 2^32 (a forward one, never
+            // valid, still names the bytes it lands on).
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            let cie = if osz == 4 {
+                field.wrapping_add_signed(-i64::from(id as u32 as i32))
+            } else {
+                field.wrapping_sub(id)
+            };
             if let Some(dd) = set.in_section(i, cie) {
                 out.push(
                     finding(

@@ -2393,6 +2393,35 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   rewritten): `W2` made a NOP in input and output is C2 (GNU ld's ADR)
   and C3 (lld's patch), the option stated off is C6, and a chunk at
   `.text + 0x1000` is C5.
+- **(p)** Holes and dead ranges (§6.8, `incr.md` IN-60; WP-091,
+  `tests/dead.rs`). A GNU ld link is read as an incremental output: one
+  input (`dead.o`) leaves the map, and the ranges it held become `hole`
+  lines holding their fill (an `.eh_frame` one a padding CIE among
+  `.eh_frame` chunks), or, in a debug program, neutral `.debug_info`,
+  `.debug_abbrev`, `.debug_line` ranges and a tombstoned `.debug_frame`
+  contribution. On AArch64, x86-64 and i386 (REL: the addends are in the
+  words), DWARF 4 and 5:
+  - ACCEPTED: the baseline, with `arr+40` (one past `arr`'s end, the
+    first byte of the `.data` hole), the label `arr_end` there and
+    gfortran's `blk_-8` inside the hole; the debug baseline;
+  - REJECTED: a live relocation aimed into a hole (its section declared a
+    hole: P-I3, and P-I1 covered twice); the same with the section out of
+    the map (its symbol: P-I3); `e_entry` in the code hole (P-I3); a
+    stale byte in a code and in a data hole (P-I5); a live unit's
+    `DW_AT_stmt_list` aimed at a dead `.debug_line` range (P-I4); the
+    dead `.debug_info` unit not neutralized (P-I6); a stray byte in the
+    neutral `.debug_abbrev` (P-I6), a line program byte other than
+    `0x06` (P-I6); the dead FDE's address left (P-I6); a 12-byte CIE and
+    a zero word in the `.eh_frame` hole (P-I5); a 12-byte `.eh_frame`
+    hole (P-I5); a `cie` range over an FDE (P-I6); a hole in `.init` and
+    a zero slot in the `__start_my_array` array (P-I2); the `.data` hole
+    unlisted (P-I1); overlapping lines, a line past its section, a line
+    naming no section, `cie`, `strings` or `neutral` in a section that
+    has no such range, a hole in `.shstrtab`, a line in `.debug_aranges`
+    (P-I2); a `strings` range of `.debug_str` not ending with a NUL
+    (P-I6);
+  - and every dead line of 8 sections × 5 kinds × 9 offsets × 9 sizes
+    (hostile, 3,240 lines) is judged without a panic.
 
 ### 9.3 Map readers
 
