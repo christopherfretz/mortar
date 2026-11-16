@@ -1403,13 +1403,7 @@ fn symtabs_against(label: &str, t: &Tools, pair: &Pair, elfs: (&Elf, &Elf)) {
 /// [`symtabs_against`]; with `shared`, a `maint check-symtabs` finding on
 /// GNU ld's output too is not mortar's (a split-DWARF `.dwo` that gdb
 /// rejects whatever the linker, WP-080).
-fn symtabs_against_with(
-    label: &str,
-    t: &Tools,
-    pair: &Pair,
-    (eo, et): (&Elf, &Elf),
-    shared: bool,
-) {
+fn symtabs_against_with(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &Elf), shared: bool) {
     let ours = gdb_symtabs(t, &pair.ours, &pair.dir, eo);
     let theirs = gdb_symtabs(t, &pair.theirs, &pair.dir, et);
     let check: Vec<&String> = ours
@@ -1745,7 +1739,8 @@ fn split_lldb_args(gc: bool) -> Vec<String> {
 }
 
 /// What says that a debugger did not find a `.dwo` (or the `.dwp`).
-const NO_DWO: &[&str] = &["Could not find DWO", "could not find '", "unable to locate separate debug"];
+const NO_DWO: &[&str] =
+    &["Could not find DWO", "could not find '", "unable to locate separate debug"];
 
 /// The split sessions did their work on mortar's output (at `-O0`, where
 /// every value is there): both stops, the values, the type, the step into
@@ -1795,7 +1790,8 @@ fn entry_values_masked(t: &str) -> String {
     while let Some(at) = rest.find("@entry=") {
         let head = &rest[..at];
         // `name=name@entry=` → `name=`; `name@entry=` → `name=`.
-        let name_at = head.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).map_or(0, |i| i + 1);
+        let name_at =
+            head.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).map_or(0, |i| i + 1);
         let name = &head[name_at..];
         let dup = format!("{name}={name}");
         if head.ends_with(&dup) {
@@ -1868,7 +1864,9 @@ fn split_built(label: &str, driver: Driver, flags: &[&str], gc: bool) -> Option<
 }
 
 /// The forms of [`SPLIT_FLAGS`] `driver` takes.
-fn split_forms(driver: Driver) -> impl Iterator<Item = &'static (&'static str, &'static [&'static str], bool)> {
+fn split_forms(
+    driver: Driver,
+) -> impl Iterator<Item = &'static (&'static str, &'static [&'static str], bool)> {
     let clang = matches!(driver, Driver::Clang | Driver::Clangxx | Driver::Clang22);
     SPLIT_FLAGS.iter().filter(move |f| clang || !f.2)
 }
@@ -1948,9 +1946,9 @@ fn split_verify_against(label: &str, t: &Tools, pair: &Pair, (eo, et): (&Elf, &E
     };
     let ours = verify(t, &pair.ours, &pair.dir, eo)
         .unwrap_or_else(|| panic!("{label}: llvm-dwarfdump --verify timed out on mortar's output"));
-    let overlap = |l: &str| l.contains("overlapping ranges") || l.contains("overlapping DW_AT_ranges");
-    let extra: Vec<&String> =
-        ours.difference(&theirs).filter(|l| !(gc && overlap(l))).collect();
+    let overlap =
+        |l: &str| l.contains("overlapping ranges") || l.contains("overlapping DW_AT_ranges");
+    let extra: Vec<&String> = ours.difference(&theirs).filter(|l| !(gc && overlap(l))).collect();
     assert!(
         extra.is_empty(),
         "{label}: llvm-dwarfdump --verify complains of mortar's output only:\n{extra:#?}"

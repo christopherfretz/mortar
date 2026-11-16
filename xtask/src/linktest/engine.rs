@@ -1264,9 +1264,7 @@ impl Unit<'_> {
                                 CheckTool::Nm => (Some(&self.tools.nm), &[]),
                                 CheckTool::Objdump => (Some(&self.tools.objdump), &[]),
                                 CheckTool::LlvmReadelf => (common.llvm_readelf.as_ref(), &[]),
-                                CheckTool::LlvmDwarfdump => {
-                                    (common.llvm_dwarfdump.as_ref(), &[])
-                                }
+                                CheckTool::LlvmDwarfdump => (common.llvm_dwarfdump.as_ref(), &[]),
                                 _ => (common.elflint.as_ref(), &["--gnu-ld"]),
                             };
                             let Some(program) = program else {
