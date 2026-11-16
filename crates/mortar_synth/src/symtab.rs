@@ -60,6 +60,21 @@ fn region_len(name: &[u8]) -> u64 {
     if fixed_name(name).is_some() { 0 } else { name.len() as u64 + 1 }
 }
 
+/// S-88 with no `.symtab` (`--strip-all`): every span of a layout's
+/// `Slots.symtab_locals` is empty.
+///
+/// # Errors
+///
+/// The first file with a span, by name.
+pub fn check_no_spans(spans: &Column<FileId, Span>) -> Result<(), SynthError> {
+    match spans.as_slice().iter().position(|s| s.len != 0) {
+        None => Ok(()),
+        Some(f) => Err(internal(format!(
+            "SYMTAB_LOCALS: file {f} has a span and the output no .symtab (S-88)"
+        ))),
+    }
+}
+
 /// An AArch64 mapping symbol (AAELF64 "Mapping symbols"): `$x`, `$d`,
 /// `$x.<any>`, `$d.<any>`.
 #[must_use]
@@ -805,6 +820,34 @@ impl SymtabPlan {
     #[must_use]
     pub fn symtab_locals(&self) -> &Column<FileId, Span> {
         &self.symtab_locals
+    }
+
+    /// S-88: whether a layout's `Slots.symtab_locals` are this plan's
+    /// spans. Format version 1 (`spec/incr.md` IN-18a) admits no other
+    /// value: each file's block starts where the one before ends, from
+    /// entry 1, and holds its kept locals and demoted globals, so the
+    /// spans follow from the plan; an update (IN-49a) reads the previous
+    /// link's from its state. (Q8's per-file ranges with holes would admit
+    /// others.)
+    ///
+    /// # Errors
+    ///
+    /// The first file whose span differs, by name.
+    pub fn check_spans(&self, spans: &Column<FileId, Span>) -> Result<(), SynthError> {
+        if spans.len() != self.symtab_locals.len() {
+            return Err(internal("SYMTAB_LOCALS: not one span per file (S-88)"));
+        }
+        let mine = self.symtab_locals.as_slice().iter();
+        match spans.as_slice().iter().zip(mine).position(|(a, b)| a != b) {
+            None => Ok(()),
+            Some(f) => {
+                let (a, b) = (spans.as_slice()[f], self.symtab_locals.as_slice()[f]);
+                Err(internal(format!(
+                    "SYMTAB_LOCALS: file {f}'s span is entries {}+{}, its block {}+{} (S-88)",
+                    a.start, a.len, b.start, b.len
+                )))
+            }
+        }
     }
 
     fn entsize(&self) -> u64 {

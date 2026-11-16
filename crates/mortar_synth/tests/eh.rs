@@ -390,3 +390,65 @@ fn hdr_does_not_depend_on_the_schedule() {
 fn internal_file_id_is_zero() {
     assert_eq!(FileId::INTERNAL, FileId(0));
 }
+
+fn list(rows: &[(u32, u32)]) -> Vec<mortar_core::layout::EhRecord> {
+    rows.iter()
+        .map(|&(s, p)| mortar_core::layout::EhRecord { section: SectionId(s), piece: p })
+        .collect()
+}
+
+// spec: synth.md S-49 (the plan follows the list: `select` then
+// `from_records` is `new`; an equal CIE that the list keeps is taken by
+// its section's FDEs, the CIE rule)
+#[test]
+fn s49_the_plan_follows_the_list() {
+    let eh = two_objects();
+    let diag = collector();
+    let pool = Pool::sequential();
+    let chosen = EhPlan::select(&eh, |_| true, &pool, &diag).unwrap();
+    assert_eq!(chosen, list(&[(1, 0), (1, 1), (1, 2), (2, 1), (2, 2)]));
+    assert_eq!(EhPlan::from_records(&eh, &chosen, &pool, &diag).unwrap(), plan(&eh, &[]));
+    // Section 2's CIE kept: its FDEs take it, section 1's take theirs.
+    let kept = list(&[(1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)]);
+    let p = EhPlan::from_records(&eh, &kept, &pool, &diag).unwrap();
+    assert!(!diag.finish().failed());
+    assert_eq!(p.records(), &kept[..]);
+    assert_eq!((p.cie_of(1), p.cie_of(2), p.cie_of(4), p.cie_of(5)), (Some(0), Some(0), Some(3), Some(3)));
+    assert_eq!(p.size(), plan(&eh, &[]).size() + 24, "one more CIE of 4 + 20 bytes");
+    let (recs, term) = walk(&bytes(&p, &eh));
+    assert!(term);
+    assert_eq!(recs.iter().filter(|r| r.2 == 0).count(), 2);
+    for &(at, _, ptr) in &recs[4..] {
+        assert_eq!(ptr as usize, at + 4 - recs[3].0, "section 2's FDEs point at its CIE");
+    }
+}
+
+// spec: synth.md S-49 (a list the rules do not admit fails by name)
+#[test]
+fn s49_lists_the_rules_do_not_admit_fail_by_name() {
+    let eh = two_objects();
+    let mut internal = Eh::default();
+    internal.add(1, 0, &[cie(0, 16), fde(0, 5, 0)]);
+    internal.add(2, 1, &[cie(0, 16), fde(0, 10, 0)]);
+    let cases: [(&Eh, Vec<_>, &str); 7] = [
+        (&eh, list(&[(1, 0), (1, 1), (3, 0)]), "section 3 is no live .eh_frame"),
+        (&eh, list(&[(1, 0), (1, 1), (1, 7)]), "section 1 has no record 7"),
+        (&eh, list(&[(2, 0), (2, 1), (1, 0), (1, 1)]), "S-46's order (sections)"),
+        (&eh, list(&[(1, 0), (1, 2), (1, 1)]), "S-46's order (records)"),
+        (&eh, list(&[(1, 0), (1, 1), (1, 1)]), "given twice"),
+        (&eh, list(&[(1, 1), (2, 0), (2, 1)]), "no CIE to take"),
+        (&eh, list(&[(1, 0), (1, 1), (2, 0)]), "a CIE no listed FDE takes"),
+    ];
+    for (src, rows, what) in cases.iter().chain(&[(
+        &internal,
+        list(&[(2, 0), (2, 1), (1, 1)]),
+        "no CIE to take",
+    )]) {
+        let diag = collector();
+        let p = EhPlan::from_records(*src, rows, &Pool::sequential(), &diag);
+        let report = diag.finish();
+        assert!(p.is_err(), "{rows:?} accepted");
+        let t = text(&report);
+        assert!(t.contains("EH_RECORDS row") && t.contains(what), "{rows:?}: {t}");
+    }
+}

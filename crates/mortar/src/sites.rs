@@ -20,7 +20,7 @@ use mortar_arch::{
 use mortar_core::assignment::Assignment;
 use mortar_core::demands::DemandFlags;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, SymKind};
-use mortar_core::layout::Slots;
+use mortar_core::layout::{SlotIndex, Slots};
 use mortar_core::layout::{ChunkKind, MergeMap, ThunkTarget};
 use mortar_core::par::Pool;
 use mortar_core::resolution::{Def, Resolution, SectionKind};
@@ -79,6 +79,9 @@ pub struct LinkSites<'a, 's> {
     branches: Vec<BranchAt>,
     /// Whether `code` is asked (`Arch::errata()` is not empty).
     errata: bool,
+    /// The slot lists' indexes (`got`, `tls_ie`, `tls_gd`, `tls_desc`):
+    /// a layout's lists may be in any order (WP-086).
+    slot_index: [SlotIndex; 4],
 }
 
 impl std::fmt::Debug for LinkSites<'_, '_> {
@@ -134,7 +137,9 @@ impl<'a, 's> LinkSites<'a, 's> {
             let by_walk = walk_branches(&t, arch, walker, pool, &code)?;
             assert!(by_walk == branches, "the scan's branch sites differ from a walk's");
         }
-        Ok(Self { t, arch, walker, code, branches, errata: !arch.errata().is_empty() })
+        let s = t.slots;
+        let slot_index = [&s.got, &s.tls_ie, &s.tls_gd, &s.tls_desc].map(|l| SlotIndex::new(l));
+        Ok(Self { t, arch, walker, code, branches, errata: !arch.errata().is_empty(), slot_index })
     }
 
     /// The addresses of a round, as fill's tables.
@@ -629,9 +634,6 @@ impl RoundTables<'_, '_, '_> {
         }
     }
 
-    fn slot_index(list: &[SymKey], key: SymKey) -> Option<u32> {
-        list.binary_search(&key).ok().map(|i| i as u32)
-    }
 }
 
 /// One section's use of a round's [`RoundTables`] as fill's tables: the
@@ -684,12 +686,12 @@ impl FillTables for Probe<'_, '_, '_, '_> {
 
 impl RoundTables<'_, '_, '_> {
     fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {
-        let slots = self.sites.t.slots;
+        let [got, tls_ie, tls_gd, tls_desc] = &self.sites.slot_index;
         let (region, index) = match kind {
-            SlotKind::Addr => (Region::Addr, Self::slot_index(&slots.got, key)?),
-            SlotKind::TpOff { .. } => (Region::TpOff, Self::slot_index(&slots.tls_ie, key)?),
-            SlotKind::TlsGd => (Region::TlsGd, Self::slot_index(&slots.tls_gd, key)?),
-            SlotKind::TlsDesc => (Region::TlsDesc, Self::slot_index(&slots.tls_desc, key)?),
+            SlotKind::Addr => (Region::Addr, got.find(key)?),
+            SlotKind::TpOff { .. } => (Region::TpOff, tls_ie.find(key)?),
+            SlotKind::TlsGd => (Region::TlsGd, tls_gd.find(key)?),
+            SlotKind::TlsDesc => (Region::TlsDesc, tls_desc.find(key)?),
             SlotKind::TlsLd => (Region::TlsLd, 0),
             SlotKind::PltGot => return None,
         };

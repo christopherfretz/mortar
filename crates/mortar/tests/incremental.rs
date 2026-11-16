@@ -35,13 +35,18 @@ const ASM: &str = "\t.text\n\t.globl _start\n\t.type _start, %function\n_start:\
     \t.section .note.GNU-stack,\"\",%progbits\n";
 
 /// An ADRP at a page's `0xff8` whose load is two words on: erratum
-/// 843419's site, fixed through a patch (from `tests/pipeline.rs`).
-const ASM_E843419: &str = "    .text\n    .globl _start\n_start:\n    bl f\n    mov x8, #93\n    svc #0\n\
+/// 843419's site, fixed through a patch (from `tests/pipeline.rs`). The
+/// site loads a GOT slot, and `_start` another, so that the patch's words
+/// depend on the slots' order; three merged strings.
+const ASM_E843419: &str = "    .text\n    .globl _start\n_start:\n\
+    \n    adrp x1, :got:other\n    ldr x1, [x1, :got_lo12:other]\n    bl f\n    mov x8, #93\n    svc #0\n\
     \n    .section .text.f,\"ax\",@progbits\n    .balign 4096\n    .skip 0xff8\n\
-    \n    .globl f\n    .type f, %function\nf:\n    adrp x0, val\n    ldr x2, [sp]\n\
-    \n    ldr x0, [x0, #:lo12:val]\n    ret\n\
+    \n    .globl f\n    .type f, %function\nf:\n    adrp x0, :got:val\n    ldr x2, [sp]\n\
+    \n    ldr x0, [x0, :got_lo12:val]\n    ldr x0, [x0]\n    ret\n\
     \n    .section .text.gap,\"ax\",@progbits\n    .skip 0x200000\n\
-    \n    .data\n    .balign 8\nval:\n    .xword 42\n\
+    \n    .data\n    .balign 8\n    .globl val\nval:\n    .xword 42\n    .globl other\nother:\n    .xword 7\n\
+    \t.section .rodata.str1.1,\"aMS\",%progbits,1\nm1:\t.asciz \"hello\"\nm2:\t.asciz \"world\"\n\
+    m3:\t.asciz \"again\"\n\t.section .rodata\n\t.quad m1\n\t.quad m2\n\t.quad m3\n\
     \t.section .note.GNU-stack,\"\",%progbits\n";
 
 /// The same on x86-64: a GOT load, a call, CFI, data and merged strings.
@@ -51,7 +56,7 @@ const ASM_X86_64: &str = "\t.text\n\t.globl _start\n\t.type _start, @function\n_
     \t.cfi_endproc\n\t.data\n\t.globl word\nword:\t.quad 1\n\
     \t.section .rodata.str1.1,\"aMS\",@progbits,1\nmsg:\t.asciz \"hello\"\nm2:\t.asciz \"lo\"\n\
     m3:\t.asciz \"world\"\nm4:\t.asciz \"again\"\n\
-    \t.section .rodata\n\t.long 7\n\t.quad m3\n\t.quad m4\n\
+    \t.section .rodata\n\t.long 7\n\t.long m3 - .\n\t.long m4 - .\n\
     \t.section .note.GNU-stack,\"\",@progbits\n";
 
 fn run_in(dir: &Path, exe: &Path, args: &[OsString], env: &[(&str, &str)]) -> Outcome {
@@ -67,6 +72,8 @@ fn run_in(dir: &Path, exe: &Path, args: &[OsString], env: &[(&str, &str)]) -> Ou
 struct Prog {
     _scratch: Scratch,
     built: Built,
+    /// The programs' architecture (natively on its host, else under qemu).
+    arch: Arch,
 }
 
 impl Prog {
@@ -84,7 +91,7 @@ impl Prog {
             assert!(!tools_required(), "{} is required", driver.tool());
             return None;
         };
-        Some(Self { _scratch: scratch, built })
+        Some(Self { _scratch: scratch, built, arch: AARCH64 })
     }
 
     /// The AArch64 assembly program: `gcc -c` and a bare link line.
@@ -126,7 +133,7 @@ impl Prog {
                 .chain(["-o".into(), "out".into()])
                 .collect(),
         };
-        Some(Self { _scratch: scratch, built })
+        Some(Self { _scratch: scratch, built, arch })
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -149,6 +156,19 @@ impl Prog {
         let o = self.mortar_env(out, extra, &[]);
         assert!(o.success(), "mortar {extra:?}: {}", o.stderr_text());
         o.stderr_text()
+    }
+
+    /// Runs the linked program `out` (no core file) under one name
+    /// (`runme`: a program may print its `argv[0]`): its exit status and
+    /// standard output.
+    fn run(&self, out: &str) -> (Option<i32>, Vec<u8>) {
+        std::fs::copy(self.path(out), self.path("runme")).unwrap();
+        let (exe, args) = self.arch.runner(&self.path("runme"));
+        let mut c = Command::new("sh");
+        c.arg("-c").arg("ulimit -c 0; exec \"$0\" \"$@\"").arg(exe).args(args);
+        c.current_dir(&self.built.dir);
+        let o = run_with(&mut c, b"", Duration::from_mins(1));
+        (o.status.and_then(|s| s.code()), o.stdout.clone())
     }
 
     fn bytes(&self, out: &str) -> Vec<u8> {
@@ -562,9 +582,11 @@ fn mutations() -> Vec<TableMutation> {
             true
         }),
         // A CIE that S-44 removed as a duplicate is kept in its section,
-        // before that section's FDEs (IN-34a keeps one per file): its FDEs
-        // point to it.
-        ("EH_RECORDS (keep a CIE)", Valid, |s| {
+        // the rest of the state unchanged: a list S-49 admits, but not
+        // with this placement (the chunk grows, and on AArch64 its `$d`
+        // joins the symbol table). The admitted layout with its own
+        // placement is `a_kept_equal_cie_is_followed`.
+        ("EH_RECORDS (keep a CIE)", Invalid, |s| {
             let mut at = 0;
             while at < s.eh_records.len() {
                 let sec = s.eh_records[at].section;
@@ -624,11 +646,13 @@ fn replay_reproduces_and_each_table_matters() {
         let (_, state) = prog.read_state("full");
         let plain = prog.bytes("plain");
         match replay_judged(&prog, "replayed", &state) {
-            Replayed::Linked(same, _) => {
+            Replayed::Linked(same, f) => {
                 assert!(same == plain, "{dir}: the replay differs from the plain link");
+                assert!(f.is_empty(), "{dir}: the verifier rejects the plain link: {f:?}");
             }
             Replayed::Failed(r) => panic!("{dir}: the replay failed: {r}"),
         }
+        let expected = prog.run("plain");
         let mut applied = Vec::new();
         for (n, (table, kind, mutate)) in mutations().into_iter().enumerate() {
             let mut s = state.clone();
@@ -637,13 +661,27 @@ fn replay_reproduces_and_each_table_matters() {
             }
             applied.push(table);
             let out = format!("mut{n}");
+            // A valid layout: changed bytes the verifier accepts, and the
+            // program runs as the plain link's. An invalid one: a named
+            // failure, or bytes the verifier rejects. Never the same bytes.
             let line = match replay_judged(&prog, &out, &s) {
-                Replayed::Linked(bytes, _) if bytes == plain => "SAME BYTES".to_owned(),
-                Replayed::Linked(_, f) if f.is_empty() => "changed, verifier accepts".to_owned(),
+                Replayed::Linked(bytes, _) if bytes == plain => {
+                    panic!("{dir}: {table}: the replay ignored the change")
+                }
+                Replayed::Linked(_, f) if f.is_empty() => {
+                    assert_eq!(kind, Kind::Valid, "{dir}: {table}: an invalid layout accepted");
+                    let ran = prog.run(&out);
+                    assert_eq!(ran, expected, "{dir}: {table}: the program runs otherwise");
+                    format!("changed, verifier accepts, runs as plain (exit {:?})", ran.0)
+                }
                 Replayed::Linked(_, f) => {
+                    assert_eq!(kind, Kind::Invalid, "{dir}: {table}: the verifier rejects {f:?}");
                     format!("changed, verifier rejects ({}): {}", f.len(), f[0])
                 }
-                Replayed::Failed(r) => format!("failed: {}", reason(&r)),
+                Replayed::Failed(r) => {
+                    assert_eq!(kind, Kind::Invalid, "{dir}: {table}: {r}");
+                    format!("failed: {}", reason(&r))
+                }
             };
             eprintln!("OUTCOME {dir} | {table} | {kind:?} | {line}");
         }
@@ -651,6 +689,74 @@ fn replay_reproduces_and_each_table_matters() {
         for need in ["CHUNKS", "ORDER", "SEGMENTS", "SECTIONS", "SIZES", "LAYOUT"] {
             assert!(applied.contains(&need), "{need} was empty");
         }
+    }
+}
+
+// spec: synth.md S-49 (the CIE rule: a listed CIE that S-44 would have
+// removed is taken by its own FDEs), incr.md IN-61 (the image follows the
+// state's list)
+//
+// The state of a link whose second object has its own CIE (return column
+// 29) is replayed over the same objects with that CIE equal to the first
+// one's (return column 30, the same size): a layout the rules admit that
+// the computed link would not choose. Its bytes differ from the plain
+// link's, the verifier accepts them and the program runs the same.
+#[test]
+fn a_kept_equal_cie_is_followed() {
+    let Some(gcc) = AARCH64.tool("gcc") else {
+        assert!(!tools_required(), "{} is required", AARCH64.gnu("gcc"));
+        return;
+    };
+    let a = "\t.text\n\t.globl _start\n\t.type _start, %function\n_start:\n\t.cfi_startproc\n\
+        \tbl f\n\tmov x8, #93\n\tsvc #0\n\t.cfi_endproc\n\
+        \t.section .note.GNU-stack,\"\",%progbits\n";
+    let b = |column: u32| {
+        format!(
+            "\t.text\n\t.globl f\n\t.type f, %function\nf:\n\t.cfi_startproc\n\
+             \t.cfi_return_column {column}\n\tmov x0, #42\n\tret\n\t.cfi_endproc\n\
+             \t.section .note.GNU-stack,\"\",%progbits\n"
+        )
+    };
+    let scratch = Scratch::new("incr-kept-cie");
+    let gcc_c = |scratch: &Scratch, src: &str, text: &str, obj: &str| {
+        let src = scratch.write(src, text);
+        let args: [OsString; 4] = ["-c".into(), src.into(), "-o".into(), scratch.join(obj).into()];
+        let o = run_in(scratch.path(), &gcc, &args, &[]);
+        assert!(o.success(), "gcc: {}", o.stderr_text());
+        std::fs::read(scratch.join(obj)).unwrap()
+    };
+    gcc_c(&scratch, "a.s", a, "a.o");
+    let own = gcc_c(&scratch, "b29.s", &b(29), "b.o");
+    let built = Built {
+        dir: scratch.path().to_path_buf(),
+        args: vec![
+            scratch.join("a.o").display().to_string(),
+            scratch.join("b.o").display().to_string(),
+            "-static".into(),
+            "--eh-frame-hdr".into(),
+            "-o".into(),
+            "out".into(),
+        ],
+    };
+    let prog = Prog { _scratch: scratch, built, arch: AARCH64 };
+    prog.link("full", &["--incremental=full"]);
+    let (_, state) = prog.read_state("full");
+    let kept = |s: &State| s.eh_records.iter().filter(|r| r.piece == 0).count();
+    assert_eq!(kept(&state), 2, "two CIEs that differ are both kept");
+    // b.o again, its CIE now equal to a.o's: the same size.
+    let equal = gcc_c(&prog._scratch, "b30.s", &b(30), "b.o");
+    assert_eq!(own.len(), equal.len());
+    prog.link("plain", &[]);
+    let plain = prog.bytes("plain");
+    match replay_judged(&prog, "replayed", &state) {
+        Replayed::Linked(bytes, findings) => {
+            assert!(bytes != plain, "the replay did not keep the CIE");
+            assert!(findings.is_empty(), "the verifier rejects: {findings:?}");
+            assert!(bytes.len() > plain.len());
+            assert_eq!(prog.run("replayed"), prog.run("plain"));
+            assert_eq!(prog.run("plain").0, Some(42));
+        }
+        Replayed::Failed(r) => panic!("the replay failed: {r}"),
     }
 }
 
