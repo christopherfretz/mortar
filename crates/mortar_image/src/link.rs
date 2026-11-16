@@ -2338,10 +2338,14 @@ impl LinkTables<'_, '_> {
                 Placed::Piece { addr, section, input_offset, .. } => (addr, section, input_offset),
             });
         }
-        for (_, c) in pl.chunks.iter() {
+        // A NOBITS synthetic chunk is listed when it holds no allocation
+        // of its own (`spec/plumb.md` §3.2, the allocation records: today
+        // `.pad.relro`); the copy chunks' allocations are `copy` records.
+        let holds: std::collections::BTreeSet<_> = pl.sym_place.iter().map(|r| r.chunk).collect();
+        for (id, c) in pl.chunks.iter() {
             if let ChunkKind::Synthetic(s) = c.kind
                 && c.size > 0
-                && c.sh_type != SHT_NOBITS
+                && (c.sh_type != SHT_NOBITS || !holds.contains(&id))
             {
                 m.chunks.push(MapChunk {
                     kind: map::ChunkKind::Synthetic,
@@ -2393,6 +2397,23 @@ impl LinkTables<'_, '_> {
                 },
             };
             m.chunks.push(chunk);
+        }
+        // The `common` records (§3.2): each common's allocation, in
+        // `SymbolId` order (`sym_place` is sorted by key), at the
+        // alignment layout placed it (L-88).
+        for r in &pl.sym_place {
+            let AllocKey::Common(id) = r.key else { continue };
+            let (Some(k), Some((_, addr))) =
+                (l.inputs.symbols.get(id), self.chunk_at(r.chunk, r.offset))
+            else {
+                continue;
+            };
+            m.commons.push(map::MapCommon {
+                name: k.name.to_vec(),
+                addr,
+                size: r.size,
+                align: 1u64 << r.align.min(63),
+            });
         }
         for d in &pl.defined {
             if let (Some(k), Some(v)) = (l.inputs.symbols.get(d.symbol), pl.defined_of(d.symbol)) {
@@ -2517,10 +2538,12 @@ impl LinkTables<'_, '_> {
             .iter()
             .enumerate()
             .filter_map(|(a, c)| {
+                let row = l.layout.placement.sym_place_of(AllocKey::Copy(a as u32))?;
                 Some(CopyHint {
                     name: d.src.symbol(c.alias).to_vec(),
                     addr: view.copy(a as u32)?.1,
                     size: *d.copy_size.get(a)?,
+                    align: 1u64 << row.align.min(63),
                 })
             })
             .collect();
@@ -2589,7 +2612,7 @@ impl LinkTables<'_, '_> {
             .unwrap_or_default()
     }
 
-    /// The `.symtab` name of a patch (S-80) and its size, as `mortar-map 1`
+    /// The `.symtab` name of a patch (S-80) and its size, as `mortar-map 2`
     /// lists it.
     fn patch_line(&self, p: &mortar_core::layout::Patch) -> (Vec<u8>, u64) {
         use mortar_core::layout::{PatchKind, ThunkTarget};

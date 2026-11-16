@@ -6,8 +6,8 @@ mod support;
 
 use mortar_core::par::{self, Pool};
 use mortar_image::map::{
-    ChunkKind, DeadKind, DeadLine, DiscardWhy, Fold, Map, MapChunk, MapFile, NonAlloc, Placed,
-    render, token,
+    ChunkKind, DeadKind, DeadLine, DiscardWhy, Fold, Map, MapChunk, MapCommon, MapFile, NonAlloc,
+    Placed, render, token,
 };
 use support::Gen;
 
@@ -40,11 +40,11 @@ fn hex(t: &str) -> u64 {
     u64::from_str_radix(t, 16).unwrap()
 }
 
-/// A reader of `mortar-map 1`, from the grammar alone.
+/// A reader of `mortar-map 2`, from the grammar alone.
 #[allow(clippy::too_many_lines)]
 fn parse(text: &str) -> Map {
     let mut lines = text.lines();
-    assert_eq!(lines.next(), Some("mortar-map 1"));
+    assert_eq!(lines.next(), Some("mortar-map 2"));
     let mut m = Map::default();
     let mut ended = false;
     for line in lines {
@@ -138,6 +138,17 @@ fn parse(text: &str) -> Map {
                     addr,
                     size: hex(t[4]),
                     target,
+                });
+            }
+            "common" => {
+                assert_eq!(t.len(), 5, "common <name> <addr> <size> <align>");
+                let align = hex(t[4]);
+                assert!(align.is_power_of_two(), "{align}");
+                m.commons.push(MapCommon {
+                    name: untoken(t[1]),
+                    addr: hex(t[2]),
+                    size: hex(t[3]),
+                    align,
                 });
             }
             "define" => m.defines.push((untoken(t[1]), hex(t[2]))),
@@ -236,6 +247,10 @@ fn random_map(g: &mut Gen) -> Map {
         target: Some((vec![b'x'], i64::MIN)),
     });
     for _ in 0..g.below(6) {
+        let align = 1 << g.below(13);
+        m.commons.push(MapCommon { name: name(g), addr: g.next(), size: g.next(), align });
+    }
+    for _ in 0..g.below(6) {
         m.defines.push((name(g), g.next()));
     }
     let kinds = [
@@ -264,8 +279,8 @@ fn i79_map_round_trips_through_the_grammar() {
         let s = String::from_utf8(text).unwrap();
         assert_eq!(parse(&s), m);
         // Group order: files, places/pieces, the non-alloc records,
-        // discards, folds, chunks, defines, `incremental`, holes and dead
-        // ranges.
+        // discards, folds, chunks, commons, defines, `incremental`, holes
+        // and dead ranges.
         let order = [
             "file",
             "place",
@@ -273,6 +288,7 @@ fn i79_map_round_trips_through_the_grammar() {
             "discard",
             "fold",
             "chunk",
+            "common",
             "define",
             "incremental",
             "hole",
