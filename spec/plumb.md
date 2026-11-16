@@ -1497,7 +1497,22 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   - `p_filesz <= p_memsz`;
   - `p_align` is 0, 1 or a power of two;
   - `p_vaddr ≡ p_offset (mod p_align)`;
-  - its file image lies inside the file;
+  - its file image lies inside the file. A file image of size 0
+    (`p_filesz` 0: a segment of `.bss` only) is the empty range
+    `[p_offset, p_offset)`, which lies inside any file whatever
+    `p_offset` (WP-088, WP-059's F1). Measured on a `-nostdlib` static
+    link whose only writable data is one `.bss` word: GNU ld writes
+    `p_filesz` 0 with `p_offset` 0xffe8 in a 1,736-byte file on AArch64
+    and `p_offset` 0 on x86-64, lld `p_filesz` 0 on both, mortar
+    `p_filesz` 0 on both (on x86-64 with `p_offset` inside `.comment`'s
+    bytes); every output runs (natively, kernel 6.8, and under qemu),
+    the loader mapping such a segment as anonymous memory. On i386 GNU
+    ld, lld and mortar give that segment 12 or 13 file bytes (`.got.plt`
+    and the like), and mold, on all three machines, writes file-backed
+    writable segments: no empty image there. Tests: `tests/mutation.rs
+    s6_2_s2_s17_an_empty_file_image_lies_anywhere` (an empty image past
+    the end of the file and one inside `.symtab`: accepted; the same with
+    8 file bytes: S2, S17);
   - its memory does not wrap (in an `ELFCLASS32` output, it ends at or
     below 2^32);
   - in mortar's output (by map format), `p_align` is at least 4 KiB
@@ -1597,7 +1612,8 @@ S18 is S17 here; its T1 is S18):
   bytes into `.got.plt`, after its reserved words, which a static
   program never writes (observed, `c-hello`).
 - **S17.** No non-allocated section with file bytes overlaps a
-  `PT_LOAD`'s file image (L-18).
+  `PT_LOAD`'s file image (L-18). An empty file image (`p_filesz` 0)
+  overlaps nothing, wherever its `p_offset` (S2; WP-059's F1).
 - **S18 (mortar only).** The end of every `PT_LOAD`'s memory is the end
   of a section, or of the headers (L-9). The reference linkers do not
   promise it (strip rebuilds `p_memsz` from the sections, E-14), so S18

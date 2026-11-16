@@ -559,7 +559,7 @@ fn tools() -> Option<Tools> {
     })
 }
 
-fn run_in(dir: &Path, program: &Path, args: &[&str]) {
+pub fn run_in(dir: &Path, program: &Path, args: &[&str]) {
     let mut c = Command::new(program);
     c.current_dir(dir).args(args);
     let out = mortar_testutil::run_with(&mut c, b"", mortar_testutil::DEFAULT_TIMEOUT);
