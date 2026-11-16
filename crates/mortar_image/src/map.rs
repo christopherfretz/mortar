@@ -1,4 +1,4 @@
-//! The map file (§9.2, I-77..I-79): `spec/plumb.md` §3.2's `mortar-map 1`.
+//! The map file (§9.2, I-77..I-79): `spec/plumb.md` §3.2's `mortar-map 2`.
 
 use std::fmt::Write as _;
 
@@ -81,6 +81,17 @@ pub struct MapChunk {
     pub target: Option<(Vec<u8>, i64)>,
 }
 
+/// A `common` record (`spec/plumb.md` §3.2, the allocation records): a
+/// common symbol's allocation and the alignment it was placed at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapCommon {
+    pub name: Vec<u8>,
+    pub addr: u64,
+    pub size: u64,
+    /// A power of two.
+    pub align: u64,
+}
+
 /// A `fold` record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Fold {
@@ -103,6 +114,8 @@ pub struct Map {
     pub discards: Vec<Vec<(u32, DiscardWhy)>>,
     pub folds: Vec<Fold>,
     pub chunks: Vec<MapChunk>,
+    /// The `common` records, in `SymbolId` order (layout L-88).
+    pub commons: Vec<MapCommon>,
     pub defines: Vec<(Vec<u8>, u64)>,
     /// The `incremental` record (`spec/plumb.md` §3.2): the link was made
     /// in incremental mode, so the map claims IN-60's coverage, with or
@@ -182,12 +195,14 @@ pub enum RunpathTag {
 }
 
 /// A `copy` record: the name of the alias the `COPY` record names, the
-/// allocation's address and size.
+/// allocation's address and size, and the alignment it was placed at
+/// (`spec/dyn.md` D-42; a power of two).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopyHint {
     pub name: Vec<u8>,
     pub addr: u64,
     pub size: u64,
+    pub align: u64,
 }
 
 /// The dynamic records (`spec/plumb.md` §3.2; P-D3): facts of the command
@@ -240,7 +255,7 @@ pub fn token(s: &[u8], out: &mut String) {
 /// concatenated in the format's group order.
 #[must_use]
 pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
-    let mut out = String::from("mortar-map 1\n");
+    let mut out = String::from("mortar-map 2\n");
     for (id, f) in map.files.iter().enumerate() {
         let _ = write!(out, "file {id} ");
         token(&f.path, &mut out);
@@ -318,6 +333,11 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         }
         out.push('\n');
     }
+    for c in &map.commons {
+        out.push_str("common ");
+        token(&c.name, &mut out);
+        let _ = writeln!(out, " {:x} {:x} {:x}", c.addr, c.size, c.align);
+    }
     for (name, value) in &map.defines {
         out.push_str("define ");
         token(name, &mut out);
@@ -384,7 +404,7 @@ fn render_dynamic(d: &DynRecords, out: &mut String) {
     for c in &d.copies {
         out.push_str("copy ");
         token(&c.name, out);
-        let _ = writeln!(out, " {:x} {:x}", c.addr, c.size);
+        let _ = writeln!(out, " {:x} {:x} {:x}", c.addr, c.size, c.align);
     }
     for e in &d.exports {
         named(out, "export", e);

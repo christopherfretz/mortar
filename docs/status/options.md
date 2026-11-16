@@ -321,7 +321,7 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 18 mortar'
 | `--threads` | optional, `=` only: N (number) | lld, mold | all | supported | `bookkeeping.threads` | Use N threads (alone: all processors) |
 | `--thread-count` | N (number) | mold | all | refused | `bookkeeping.threads` | Use N threads |
 | `--no-threads` |  | mold | all | refused | `bookkeeping.threads` | Use one thread |
-| `--mortar-map` | FILE | mortar | all | supported | `bookkeeping.mortar_map` | Write the machine-readable map (mortar-map 1) to FILE |
+| `--mortar-map` | FILE | mortar | all | supported | `bookkeeping.mortar_map` | Write the machine-readable map (mortar-map 2) to FILE |
 | `--time-phases` |  | mortar | all | supported | `bookkeeping.time_phases` | Report the time and memory of each phase |
 | `--verify` |  | mortar | all | refused | `bookkeeping.verify` | Check the output with mortar_plumb (reserved) |
 | `--incremental` | optional, `=` only: full \| update | mortar | all | supported | `incremental.mode` | Link incrementally: update the output from its state if possible (alone), always from scratch (full), or update or fail (update) |

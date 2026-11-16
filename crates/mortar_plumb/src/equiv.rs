@@ -405,6 +405,14 @@ fn run_side<'a>(
             spans.push((a, a.saturating_add(c.size), id, 0));
         }
     }
+    // The allocation records (§3.2): a common by its name, a copy by the
+    // name its COPY record names.
+    for c in &map.commons {
+        spans.push((c.addr, c.addr.saturating_add(c.size), format!("m:{}", c.name), 0));
+    }
+    for c in map.dynamic.iter().flat_map(|d| &d.copies) {
+        spans.push((c.addr, c.addr.saturating_add(c.size), format!("y:{}", c.name), 0));
+    }
     for s in &image.sections {
         if s.alloc() {
             let a = s.shdr.sh_addr;
@@ -672,6 +680,16 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, _eq: &mut Equiv) {
                 2,
                 format!("the {} chunk '{}' ({}) is only in {which}", c.0, c.1, c.2),
             ));
+        }
+    }
+    let commons = |s: &Side<'_>| -> BTreeSet<String> {
+        s.map.commons.iter().map(|c| c.name.clone()).collect()
+    };
+    for (a, b, which) in
+        [(commons(x), commons(f), "the update"), (commons(f), commons(x), "the full link")]
+    {
+        for c in a.difference(&b) {
+            out.push(finding(2, format!("the common '{c}' is allocated only in {which}")));
         }
     }
     let folds = |s: &Side<'_>| -> BTreeSet<String> {

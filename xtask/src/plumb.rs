@@ -663,7 +663,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mortar-wp092-args-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let plain = dir.join("plain.map");
-        std::fs::write(&plain, "mortar-map 1\nend\n").unwrap();
+        std::fs::write(&plain, "mortar-map 2\nend\n").unwrap();
         let elf = dir.join("x");
         std::fs::write(&elf, b"\x7fELF\x02\x01").unwrap();
         let arg = |p: &Path| p.display().to_string();
