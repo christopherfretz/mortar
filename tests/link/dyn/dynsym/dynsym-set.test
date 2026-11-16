@@ -18,9 +18,6 @@
 # they stay out (GNU ld's set) while lld exports them. mortar's set is
 # lld's but there (a spec finding reported with WP-051: D-21's "the set
 # equals lld's" does not hold for x86-64 `-no-pie`).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-21"
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64

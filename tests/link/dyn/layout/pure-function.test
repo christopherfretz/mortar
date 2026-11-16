@@ -14,9 +14,6 @@
 # any program) reads the section headers of both outputs and prints
 # whether the names and sizes agree and whether `.dynamic` moved (proof
 # that the perturbation took effect). The three references agree.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-62"
 #@ arch: aarch64 x86_64
 #@ fixture: greet

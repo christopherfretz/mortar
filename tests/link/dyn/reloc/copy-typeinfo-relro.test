@@ -9,8 +9,6 @@
 # `.copyrel.rel.ro`: dyn.md §13.1). The program checks at run time that
 # both addresses are inside RELRO and equal to what a `-fPIC` library
 # sees, and that a `std::bad_alloc` thrown by libstdc++ is caught by type.
-#
-# mortar: AArch64 WP-054 (CXX), x86-64 WP-055 (X64-JOIN), in tests/link/xfails.
 #@ spec: dyn.md "D-42"
 #@ arch: aarch64 x86_64
 #@ requires: g++

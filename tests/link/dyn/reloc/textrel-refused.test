@@ -14,9 +14,6 @@
 # `-fno-pic` object's 32-bit words (`R_X86_64_32S`, which no record can
 # express), not for this word (reported as a spec finding). The test
 # records each reference's answer and holds mortar to the refusal.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-47"
 #@ arch: aarch64 x86_64
 #@ anomaly(bfd,mold): A24

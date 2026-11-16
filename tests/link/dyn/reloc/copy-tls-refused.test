@@ -16,9 +16,6 @@
 # at the start of the library's file (`tlsx 1179403647`, "\x7fELF"),
 # measured on both architectures: a wrong output of mold that dyn.md
 # §13.2 does not list (reported).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-42"
 #@ spec: dyn.md "D-16"
 #@ arch: aarch64 x86_64

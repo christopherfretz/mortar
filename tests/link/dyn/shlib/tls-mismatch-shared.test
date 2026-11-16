@@ -15,9 +15,6 @@
 # mismatch: nv`; on x86-64 its second link dies on an assertion, signal
 # 6). Their programs crash (SIGSEGV) or print garbage (mold: `1179403647
 # 4`): wrong outputs, not yet in dyn.md §13.2.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-16"
 #@ arch: aarch64 x86_64
 #@ xfail(lld,mold): unrecorded in dyn.md §13.2: a TLS/non-TLS mismatch against a shared definition links, and the program crashes or reads garbage

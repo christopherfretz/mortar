@@ -14,9 +14,6 @@
 # Where the references differ (dyn.md §13.1): the tag order (lld puts
 # `DT_RUNPATH` first and `DT_FLAGS`/`DT_FLAGS_1` after the `DT_NEEDED`
 # entries; mold has its own); mortar's is GNU ld's.
-#
-# mortar: WP-056 (OPTS) on both architectures, in tests/link/xfails
-# (`-init`/`-fini` are refused today, R-C1).
 #@ spec: dyn.md "D-30"
 #@ arch: aarch64 x86_64
 #@ fixture: dynsym-walk

@@ -10,9 +10,6 @@
 # `liba.so` as needed and the program prints `1 20`. Not a wrong output
 # (the weak reference binds to a library the program names), so mold is
 # held to its own behaviour; mortar to D-11's.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-11"
 #@ arch: aarch64 x86_64
 

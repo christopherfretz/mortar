@@ -15,9 +15,6 @@
 # crashes under both on both architectures, lazily (and also with
 # `LD_BIND_NOW` on AArch64); the non-PIE survives lazily. mortar takes GNU
 # ld's order.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-41"
 #@ arch: aarch64 x86_64
 #@ fixture: reloc-libd

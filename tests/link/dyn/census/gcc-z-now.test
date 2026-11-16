@@ -4,8 +4,6 @@
 # `BIND_NOW` and `DT_FLAGS_1` has `NOW` (D-30); `.rela.plt` keeps its
 # `JUMP_SLOT` records (the lazy shapes stay). `plt-now` checks where the
 # slots go.
-#
-# mortar: AArch64 WP-056 (OPTS), x86-64 WP-056 (OPTS), in tests/link/xfails.
 #@ spec: dyn.md "2.1 Default link lines"
 #@ spec: dyn.md "D-49"
 #@ arch: aarch64 x86_64

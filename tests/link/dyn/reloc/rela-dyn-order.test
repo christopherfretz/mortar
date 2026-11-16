@@ -20,9 +20,6 @@
 # against `fa`). D-40's `--threads=1` against many threads is not here:
 # the references have no such guarantee to compare with, and it is
 # mortar's determinism (the `pure-function` layout test).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-40"
 #@ arch: aarch64 x86_64
 #@ fixture: reloc-libd

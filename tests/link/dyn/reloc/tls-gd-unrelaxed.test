@@ -20,8 +20,6 @@
 # `mov` with its `add x0, x1, x0`, and the program reads the wrong
 # address (`same 0` and a garbage value): a wrong output of GNU ld that
 # dyn.md §13.2 does not list (reported).
-#
-# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
 #@ spec: dyn.md "D-48"
 #@ arch: aarch64
 #@ fixture: reloc-libd

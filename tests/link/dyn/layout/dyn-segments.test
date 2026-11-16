@@ -14,9 +14,6 @@
 # writes no PT_GNU_PROPERTY on x86-64. Every reference: PT_PHDR,
 # PT_INTERP, a PT_LOAD and PT_DYNAMIC in that order, and PT_TLS,
 # PT_GNU_EH_FRAME, PT_GNU_STACK, PT_GNU_RELRO present.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-61"
 #@ arch: aarch64 x86_64
 

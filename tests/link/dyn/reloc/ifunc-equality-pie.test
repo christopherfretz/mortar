@@ -13,9 +13,6 @@
 # x86-64 PIE (GNU ld, mold) and non-PIE (GNU ld); AArch64 PIE with a
 # `-fno-pic` unit (mold, and GNU ld as well: measured here, `a != b`,
 # beyond what §13.2 lists; reported). lld is right everywhere.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-45"
 #@ arch: aarch64 x86_64
 #@ xfail(bfd,mold): W3: the executable's IFUNC gets a second address through the GOT's own IRELATIVE

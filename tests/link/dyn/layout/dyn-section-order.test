@@ -20,9 +20,6 @@
 # after `.dynamic`. The references are held to the order the three share
 # (unqualified), and to the first section: `.interp` for lld, mold and
 # mortar, a note for GNU ld.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-60"
 #@ spec: dyn.md "D-31"
 #@ arch: aarch64 x86_64

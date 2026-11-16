@@ -11,9 +11,6 @@
 # on a 4 KiB one (mid-page on a 64 KiB-page kernel; not run: none
 # available), so lld's AArch64 run prints `relro-end-maxpage 0`. All
 # three end it on a 4 KiB boundary on x86-64.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-61"
 #@ arch: aarch64 x86_64
 

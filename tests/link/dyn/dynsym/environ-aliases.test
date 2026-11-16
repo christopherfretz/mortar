@@ -16,9 +16,6 @@
 # Bindings differ (not in §13.1; reported with WP-051): lld makes the
 # referenced `environ` global, mold makes `environ` global and `__environ`
 # weak; mortar's are D-23's.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-21"
 #@ spec: dyn.md "D-23"
 #@ arch: aarch64 x86_64

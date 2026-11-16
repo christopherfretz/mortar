@@ -11,9 +11,6 @@
 # called and never bound; with `LD_BIND_NOW=1` the loader binds every
 # slot at start-up and stops with `symbol lookup error` (exit 127).
 # The `-z now` link is `plt-now`.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-49"
 #@ arch: aarch64 x86_64
 

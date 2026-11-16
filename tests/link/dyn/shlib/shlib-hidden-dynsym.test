@@ -18,9 +18,6 @@
 # status 127). The references' output is wrong; the (bfd,lld,mold) steps
 # record it, the hazard mortar must refuse. The mortar steps state the
 # correct behaviour.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-10"
 #@ arch: aarch64 x86_64
 #@ requires: yaml2obj

@@ -22,9 +22,6 @@
 # otherwise (`--spare-dynamic-tags`), lld 1, mold 6, mortar 6. mold drops
 # the BTI property of its inputs, and so writes no `DT_AARCH64_BTI_PLT`
 # (not in dyn.md; reported with WP-051).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-30"
 #@ arch: aarch64 x86_64
 
