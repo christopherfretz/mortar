@@ -29,6 +29,7 @@ mod plt;
 mod property;
 mod reloc;
 pub mod report;
+mod spie;
 mod structure;
 pub mod sweep;
 mod symbols;

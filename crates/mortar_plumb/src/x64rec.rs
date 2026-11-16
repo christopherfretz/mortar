@@ -184,6 +184,7 @@ impl Engine<'_, '_> {
                     rec,
                     site,
                     symbol,
+                    self.objs[oi].secs[si].alloc(),
                     &|_, _| None,
                 );
             }
@@ -244,8 +245,14 @@ impl Engine<'_, '_> {
                 let Some(ev) = self.slot_evidence(rec) else {
                     return self.x64_unjudged(rec, Reason::SymbolUnresolved);
                 };
-                let pend =
-                    Pending { rec: rec.clone(), site, symbol, want: Want::Word(s), w1: false };
+                let pend = Pending {
+                    rec: rec.clone(),
+                    site,
+                    symbol,
+                    want: Want::Word(s),
+                    w1: false,
+                    loaded: false,
+                };
                 self.got_groups.entry((slot, oi, rec.sym, 0)).or_default().members.push((pend, ev));
                 return;
             }
@@ -277,7 +284,8 @@ impl Engine<'_, '_> {
             && self.cov.failed == failed
             && self.objs[oi].secs[si].alloc()
         {
-            self.abs_words.push((rec.p, rec.def.field.width(), xv, self.internal(s)));
+            let internal = self.internal(s) && !self.absolute(oi, rec.sym);
+            self.abs_words.push((rec.p, rec.def.field.width(), xv, internal));
         }
     }
 
@@ -883,7 +891,8 @@ impl Engine<'_, '_> {
                 } else {
                     (Slot::Desc, Want::Pair(crate::loader::TLSDESC_MARK, t))
                 };
-                let pend = Pending { rec: rec.clone(), site, symbol, want, w1: false };
+                let pend =
+                    Pending { rec: rec.clone(), site, symbol, want, w1: false, loaded: false };
                 self.got_groups.entry((slot, oi, rec.sym, 0)).or_default().members.push((pend, ev));
                 return;
             }
@@ -922,7 +931,14 @@ impl Engine<'_, '_> {
         let Some(ev) = self.slot_evidence(rec) else {
             return self.x64_unjudged(rec, Reason::SymbolUnresolved);
         };
-        let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(t), w1: false };
+        let pend = Pending {
+            rec: rec.clone(),
+            site,
+            symbol,
+            want: Want::Word(t),
+            w1: false,
+            loaded: false,
+        };
         self.got_groups.entry((Slot::TpRel, oi, rec.sym, 0)).or_default().members.push((pend, ev));
     }
 
