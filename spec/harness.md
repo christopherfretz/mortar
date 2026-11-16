@@ -77,10 +77,17 @@ hello program, mortar links it behind a `-B` directory whose `ld` is
 mortar, with its map (`--mortar-map`), and every byte of the output's
 synthetic sections is flipped (bit 0, bit 7) and the mutant judged by
 the verifier; a static-pie's sections are swept 256 bytes at each end.
-The cases are a C PIE (lazy and `-z now`), a C `-no-pie`, a C++ PIE and
-a C static-pie. Any exit status but 0 fails it: a finding on the
-unmutated output, a panic of the verifier on a mutant, or a byte no flip
-makes a new finding for (a survivor; mortar's outputs have none). It
+After each flip the build id is resealed (WP-101: unsealed, B1 caught
+every flip and the sweep measured nothing else); the id's own bytes are
+flipped unsealed, and one unsealed flip of `e_ident`'s padding must be
+B1's. The cases are a C PIE (lazy and `-z now`), a C `-no-pie`, a C++
+PIE, a C static-pie and a `.gdb_index` PIE (full lane). Each case prints
+`<bytes> bytes, <flips> flips: <caught> caught, <equivalent> equivalent,
+<survive> survive` and the flips each rule caught. Any exit status but 0
+fails it: a finding on the unmutated output, a panic of the verifier on
+a mutant, a byte no flip makes a new finding for (a survivor) whose
+field is not in `spec/plumb.md` §12.3's table of equivalent fields, or
+an unsealed flip that is not B1's. It
 runs on the host's architecture (AArch64 when the host is neither 64-bit
 one; `cargo xtask sweep --arch aarch64,x86_64` for both), so the two
 hosted lanes cover both targets. With `--quick` it runs the cases

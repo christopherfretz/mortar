@@ -47,6 +47,7 @@ pub(crate) fn check(
     }
     if line.kind != Some(OutputKind::StaticPie) {
         imports(image, out, line, model, ld, objs, v);
+        copies(image, out, model, ld, v);
         got_header(image, out, v);
     }
     bloom(image, out, v);
@@ -54,6 +55,47 @@ pub(crate) fn check(
     places(image, out, v);
     got_plt_header(image, out, v);
     tables(image, out, v);
+    a64_entry_add(image, v);
+}
+
+/// P-D10 **(mortar)**, a64.md §10.3 and §10.4: every AArch64 PLT and IPLT
+/// entry of mortar's is `[bti c;] adrp x16, G; ldr x17, [x16, :lo12:G];
+/// add x16, x16, :lo12:G; br x17`. §12.2's walk judges the `adrp`, `ldr`
+/// and `br` of every entry and the `add` where the lazy path reads `x16`;
+/// an IPLT entry's `x16` reaches only the IFUNC's chosen function, where
+/// `IP0` is a scratch register (AAPCS64), so its `add` is held to the
+/// shape here, by mortar's single answer. (GNU ld and lld write the same
+/// `add`, mold none.)
+fn a64_entry_add(image: &Image<'_>, v: &mut Vec<Finding>) {
+    if image.header.e_machine != EM_AARCH64 {
+        return;
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for (&e, &slot) in &crate::loader::plt_entries(image) {
+        let mut a = e;
+        if image.insn(a).is_some_and(crate::a64::bti) {
+            a += 4;
+        }
+        if !seen.insert(a) {
+            continue;
+        }
+        let Some(w) = image.insn(a + 8) else { continue };
+        let want = slot & 0xfff;
+        match crate::a64::add_imm(w) {
+            Some((16, 16, imm)) if imm == want => {}
+            _ => {
+                let mut f = fd(
+                    10,
+                    format!(
+                        "the PLT entry at {e:#x} has {w:#010x} where a64.md §10.3 puts `add x16, x16, #{want:#x}` (the low 12 bits of its word {slot:#x})"
+                    ),
+                )
+                .at(a + 8);
+                f.found = Some(u64::from(w));
+                v.push(f);
+            }
+        }
+    }
 }
 
 /// P-D10 **(mortar)**, D-32 and D-49: `.got.plt`'s three reserved words
@@ -237,6 +279,50 @@ fn imports(
     }
 }
 
+/// P-D7 **(mortar)**, D-23's copy row: a defined `.dynsym` entry at a
+/// `COPY` record's place (the copy and each alias of it) has the shared
+/// definition's type and `st_size`, and `STV_DEFAULT`. (The binding is
+/// left to the existing export rules: the model does not keep a shared
+/// definition's binding.)
+fn copies(image: &Image<'_>, out: &DynOut, model: &Model, ld: &Loader<'_>, v: &mut Vec<Finding>) {
+    let m = image.header.e_machine;
+    let places: std::collections::BTreeSet<u64> =
+        out.rels.iter().filter(|r| kind(m, r.ty) == Kind::Copy).map(|r| r.offset).collect();
+    if places.is_empty() {
+        return;
+    }
+    for s in out.syms.iter().skip(1) {
+        if !s.defined() || !places.contains(&s.st_value) {
+            continue;
+        }
+        let asked = model.keys.get(&s.name).and_then(|k| k.version.as_deref());
+        let Some((_, d)) = ld
+            .model
+            .bind_in(&ld.order, &s.name, asked)
+            .or_else(|| ld.model.lookup(&ld.order, &s.name, asked))
+        else {
+            continue;
+        };
+        let mut bad = Vec::new();
+        if s.sym_type() != d.ty {
+            bad.push(format!("type {} (the definition's {})", s.sym_type(), d.ty));
+        }
+        if s.st_size != d.size {
+            bad.push(format!("st_size {} (the definition's {})", s.st_size, d.size));
+        }
+        if s.st_other & 3 != 0 {
+            bad.push(format!("visibility {} (STV_DEFAULT)", s.st_other & 3));
+        }
+        if !bad.is_empty() {
+            v.push(sym_fd(
+                7,
+                &s.name,
+                format!("the copy '{}' has {} (D-23, the copy row)", s.name, bad.join(", ")),
+            ));
+        }
+    }
+}
+
 /// P-D10 **(mortar)**, D-32: AArch64's `.got[0]` holds `_DYNAMIC`'s
 /// link-time address and no record writes it (x86-64's `.got.plt[0]` is
 /// §12.2's reserved word, every format).
@@ -335,9 +421,14 @@ fn places(image: &Image<'_>, out: &DynOut, v: &mut Vec<Finding>) {
     if m != EM_AARCH64 && m != EM_X86_64 {
         return;
     }
-    for r in out.rels.iter().filter(|r| !r.plt) {
+    for r in &out.rels {
         let k = kind(m, r.ty);
         let want = match k {
+            // The IPLT word (a64.md §10.2 and §10.4: the resolver's
+            // address; x64.md X-39: 0), in either table.
+            Kind::Irelative if m == EM_AARCH64 => r.addend.unwrap_or(0) as u64,
+            Kind::Irelative => 0,
+            _ if r.plt => continue,
             Kind::Relative => r.addend.unwrap_or(0) as u64,
             Kind::GlobDat | Kind::Abs | Kind::TpOff => 0,
             _ => continue,
@@ -347,7 +438,12 @@ fn places(image: &Image<'_>, out: &DynOut, v: &mut Vec<Finding>) {
             let mut f = fd(
                 9,
                 format!(
-                    "the place of a {k:?} record holds {have:#x} in the file; D-46 writes {want:#x}"
+                    "the place of a {k:?} record holds {have:#x} in the file; {} writes {want:#x}",
+                    match (k, m) {
+                        (Kind::Irelative, EM_AARCH64) => "a64.md §10.2",
+                        (Kind::Irelative, _) => "x64.md X-39",
+                        _ => "D-46",
+                    }
                 ),
             )
             .at(r.offset);

@@ -45,6 +45,24 @@ pub const SECTIONS: &[&str] = &[
 /// own case).
 pub const BUILD_ID: &str = ".note.gnu.build-id";
 
+/// The fields whose bytes are equivalent mutants (`spec/plumb.md` §12.3,
+/// the table): `(section, field kind, who reads it and why no correct
+/// consumer can do otherwise)`. Equivalence is by field, never by offset;
+/// a survivor of any other field fails the lane.
+pub const EQUIVALENT: &[(&str, &str, &str)] = &[
+    (
+        ".plt",
+        "code no path executes",
+        "no path executes it: every PLT entry and its lazy path, walked as §12.2 walks them, ends in an unconditional indirect jump before these bytes, and every input branch into the PLT is judged to reach an entry",
+    ),
+];
+
+/// The reason a surviving byte is equivalent, when its field is in
+/// [`EQUIVALENT`].
+pub fn equivalent(b: &Byte) -> Option<&'static str> {
+    EQUIVALENT.iter().find(|(s, k, _)| *s == b.section && *k == b.kind).map(|e| e.2)
+}
+
 /// The bits each byte is flipped by, one mutant each.
 pub const FLIPS: [u8; 2] = [0x01, 0x80];
 
@@ -72,6 +90,12 @@ pub struct Byte {
 pub struct Sweep {
     pub baseline: usize,
     pub bytes: Vec<Byte>,
+    /// The id's own case (§12.3): in an output with mortar's build id,
+    /// the rules a flip of `e_ident`'s last padding byte left unsealed
+    /// brings (B1
+    /// among them, or B1 does not judge the id); `None` without an id or
+    /// with `reseal` off.
+    pub unsealed: Option<Vec<String>>,
 }
 
 impl Sweep {
@@ -102,7 +126,20 @@ impl Sweep {
         }
         let flips = self.bytes.len() * FLIPS.len();
         let caught = self.bytes.iter().flat_map(|b| b.caught).filter(|c| *c).count();
-        let _ = writeln!(s, "flips {flips}, caught {caught}, survived {}", flips - caught);
+        let equiv: usize = self
+            .bytes
+            .iter()
+            .filter(|b| equivalent(b).is_some())
+            .map(|b| b.caught.iter().filter(|c| !**c).count())
+            .sum();
+        let _ = writeln!(
+            s,
+            "flips {flips}, caught {caught}, survived {} ({equiv} of fields named equivalent)",
+            flips - caught
+        );
+        if let Some(u) = &self.unsealed {
+            let _ = writeln!(s, "an e_ident padding flip left unsealed: {}", u.join(", "));
+        }
         for (rule, (any, only)) in self.by_rule() {
             let _ = writeln!(s, "caught by {rule:8} {any:>7} flips ({only} by it alone)");
         }
@@ -138,13 +175,14 @@ impl Sweep {
                 .collect();
             let _ = writeln!(
                 s,
-                "survives {} [{:#x}, {:#x}) {} {} (flip {})",
+                "survives {} [{:#x}, {:#x}) {} {} (flip {}){}",
                 b.section,
                 b.off,
                 self.bytes[j - 1].off + 1,
                 b.kind,
                 b.instance,
-                flips.join(",")
+                flips.join(","),
+                if equivalent(b).is_some() { " equivalent" } else { "" }
             );
             i = j;
         }
@@ -560,5 +598,22 @@ pub fn run_with(
         b.panicked = p;
         bytes.push(b);
     }
-    Ok(Sweep { baseline: base.findings.len(), bytes })
+    // The id's own case: one flip the reseal does not follow.
+    let unsealed = (opts.reseal && !ids.is_empty())
+        .then(|| {
+            // e_ident's last padding byte (gABI: reserved, set to 0).
+            let o = 15;
+            let mut m = output.to_vec();
+            *m.get_mut(o)? ^= 1;
+            let rep = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| verify(&m))).ok()?;
+            let new: std::collections::BTreeSet<String> = rep
+                .findings
+                .iter()
+                .filter(|x| !base_keys.contains(&(x.rule.id(), x.addr, x.message.clone())))
+                .map(|x| x.rule.id())
+                .collect();
+            Some(new.into_iter().collect())
+        })
+        .flatten();
+    Ok(Sweep { baseline: base.findings.len(), bytes, unsealed })
 }

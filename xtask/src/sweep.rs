@@ -7,11 +7,16 @@
 //!
 //!   cargo xtask sweep [--quick] [--arch <a>[,<a>]] [--case <c>[,<c>]] [--threads <n>]
 //!
-//! The lane fails when the unmutated output has a finding, when a mutant
-//! makes the verifier panic (a hostile-input bug, §9.4), or when a byte
-//! survives: no flip of it makes a new finding. Mortar's outputs have no
-//! survivor (measured by WP-088 on both targets); one is a gap of the
-//! verifier to close, or a byte to explain in §12.3 and name here.
+//! After each flip the sweep reseals mortar's build id (WP-101: unsealed,
+//! every flip was B1's finding and the other rules went unmeasured); the
+//! id's own bytes are swept unsealed, and one flip of `e_ident`'s padding is judged
+//! unsealed to show B1 still judges the id. The lane fails when the
+//! unmutated output has a finding, when a mutant makes the verifier panic
+//! (a hostile-input bug, §9.4), when a byte survives (no flip of it makes
+//! a new finding) and its field is not in §12.3's table of equivalent
+//! fields ([`mortar_plumb::sweep::EQUIVALENT`]), or when the unsealed
+//! flip is not B1's. Each case's line prints the flips, those caught (and
+//! by which rule), those of equivalent fields and those surviving.
 //! The architecture is the host's (AArch64 when the host is neither
 //! 64-bit one) unless `--arch` names others: each hosted lane sweeps its
 //! own, so the full gate's two lanes cover both targets. `--quick` is
@@ -85,9 +90,8 @@ const CASES: &[Case] = &[
         window: 256,
         only: &[],
     },
-    // `.gdb_index` (WP-098), its bytes only. Without a build id: B1
-    // would catch every flip (the other cases' outputs have one, so
-    // their sweep measures B1 first; WP-098's record).
+    // `.gdb_index` (WP-098), its bytes only; without a build id (WP-098,
+    // before the sweep resealed one: WP-101).
     Case {
         name: "gdbindex",
         cxx: false,
@@ -212,14 +216,22 @@ fn run_lane(a: &Args) -> Result<bool, String> {
             let verdict = sweep_case(arch, host, case, &work, &bin, threads);
             let secs = t.elapsed().as_secs_f64();
             match verdict {
-                Ok((n, problems)) if problems.is_empty() => {
-                    swept += n;
-                    eprintln!("sweep: {id}: {n} bytes, 0 survivors ({secs:.1} s)");
-                }
-                Ok((n, problems)) => {
-                    swept += n;
+                Ok((t, problems)) => {
+                    swept += t.bytes;
+                    eprintln!(
+                        "sweep: {id}: {} bytes, {} flips: {} caught, {} equivalent, {} survive{} ({secs:.1} s)",
+                        t.bytes,
+                        t.flips,
+                        t.caught,
+                        t.equivalent,
+                        t.flips - t.caught - t.equivalent,
+                        if problems.is_empty() { "" } else { ": FAIL" }
+                    );
+                    eprintln!("sweep:   caught by: {}", t.by_rule);
+                    if problems.is_empty() {
+                        continue;
+                    }
                     clean = false;
-                    eprintln!("sweep: {id}: FAIL ({secs:.1} s)");
                     for p in problems {
                         eprintln!("sweep:   {p}");
                     }
@@ -248,7 +260,7 @@ fn sweep_case(
     work: &Path,
     bin: &Path,
     threads: usize,
-) -> Result<(usize, Vec<String>), String> {
+) -> Result<(Tally, Vec<String>), String> {
     let driver_name = arch.gnu_tool(host, if case.cxx { "g++" } else { "gcc" });
     let driver: PathBuf = mortar_testutil::find_listed_tool(&driver_name)
         .ok_or_else(|| format!("`{driver_name}` not found"))?;
@@ -288,12 +300,46 @@ fn sweep_case(
     for b in &sweep.bytes {
         if b.panicked {
             problems.push(format!("panic {} +{:#x} {} {}", b.section, b.off, b.kind, b.instance));
-        } else if b.caught.iter().any(|c| !c) {
+        } else if b.caught.iter().any(|c| !c) && mortar_plumb::sweep::equivalent(b).is_none() {
             problems
                 .push(format!("survivor {} +{:#x} {} {}", b.section, b.off, b.kind, b.instance));
         }
     }
-    Ok((sweep.bytes.len(), problems))
+    if let Some(u) = &sweep.unsealed
+        && !u.iter().any(|r| r == "B1")
+    {
+        problems.push(format!("a flip left unsealed is not B1's (its rules: {u:?})"));
+    }
+    Ok((tally(&sweep), problems))
+}
+
+/// What a case's line reports: bytes, flips, flips caught by each rule,
+/// flips of fields named equivalent.
+#[derive(Debug, Default)]
+struct Tally {
+    bytes: usize,
+    flips: usize,
+    caught: usize,
+    equivalent: usize,
+    by_rule: String,
+}
+
+fn tally(sweep: &mortar_plumb::sweep::Sweep) -> Tally {
+    let flips = sweep.bytes.len() * mortar_plumb::sweep::FLIPS.len();
+    let caught = sweep.bytes.iter().flat_map(|b| b.caught).filter(|c| *c).count();
+    let equivalent = sweep
+        .bytes
+        .iter()
+        .filter(|b| mortar_plumb::sweep::equivalent(b).is_some())
+        .map(|b| b.caught.iter().filter(|c| !**c).count())
+        .sum();
+    let by_rule = sweep
+        .by_rule()
+        .iter()
+        .map(|(r, (any, _))| format!("{r} {any}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Tally { bytes: sweep.bytes.len(), flips, caught, equivalent, by_rule }
 }
 
 /// Runs `program args` in `dir`; an error unless it exits 0.
