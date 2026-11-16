@@ -2360,7 +2360,9 @@ relocated fields by value (§5.8 tombstones included).
 - `.eh_frame_hdr`: the same set of entries, each the pair (initial
   location, FDE) by identity (the location corresponding, the FDE the
   same input record);
-- notes: in each `SHT_NOTE` section, the same notes in the same order,
+- notes: in each allocated `SHT_NOTE` section (a non-allocated one,
+  `.note.stapsdt` with addresses in its descriptors, is made of units
+  that (4) and P-E6 compare), the same notes in the same order,
   each by name, type and descriptor, except the descriptor of
   `NT_GNU_BUILD_ID` ("GNU", 3), whose length only is compared (IN-2: the
   build id differs);

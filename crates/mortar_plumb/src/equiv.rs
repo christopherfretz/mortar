@@ -1082,7 +1082,9 @@ fn tables(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
     }
     // Notes, in order.
     for (i, c) in x.image.sections.iter().enumerate() {
-        if c.shdr.sh_type != SHT_NOTE {
+        // A non-allocated note section (`.note.stapsdt`: addresses in
+        // its descriptors) is made of units, compared by P-E4.
+        if c.shdr.sh_type != SHT_NOTE || !c.alloc() {
             continue;
         }
         let a = x.image.section_data(i).map(notes);
