@@ -218,6 +218,10 @@ struct Pending {
     want: Want,
     /// The record is half of an ADRP+ADD made NOP+ADR (merge path).
     w1: bool,
+    /// The place is in an allocated section (merge path: only a loaded
+    /// word is an address word of stage 3's view 2; a `.debug_*` place's
+    /// address overlaps the image's).
+    loaded: bool,
 }
 
 /// What a GOT entry must hold (§5.5, §4.7).
@@ -1299,6 +1303,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                     rec,
                     site,
                     symbol,
+                    self.objs[oi].secs[si].alloc(),
                     &partner,
                 );
             }
@@ -1324,7 +1329,14 @@ impl<'a, 'b> Engine<'a, 'b> {
             let Some(ev) = self.slot_evidence(rec) else {
                 return self.not_checked(Reason::SymbolUnresolved, 1);
             };
-            let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(sa), w1: false };
+            let pend = Pending {
+                rec: rec.clone(),
+                site,
+                symbol,
+                want: Want::Word(sa),
+                w1: false,
+                loaded: false,
+            };
             self.got_groups
                 .entry((slot, oi, rec.sym, rec.addend))
                 .or_default()
@@ -1572,7 +1584,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         let Some(ev) = self.slot_evidence(rec) else {
             return self.not_checked(Reason::SymbolUnresolved, 1);
         };
-        let pend = Pending { rec: rec.clone(), site, symbol, want, w1: false };
+        let pend = Pending { rec: rec.clone(), site, symbol, want, w1: false, loaded: false };
         self.got_groups
             .entry((slot, oi, rec.sym, rec.addend))
             .or_default()
@@ -1950,6 +1962,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         rec: &Rec,
         site: Site,
         symbol: String,
+        loaded: bool,
         partner: &dyn Fn(i64, &[u32]) -> Option<&'r Rec>,
     ) {
         let (r, extra) = if section_sym {
@@ -2027,7 +2040,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             }
             _ => Evidence::None,
         };
-        let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(0), w1 };
+        let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(0), w1, loaded };
         self.piece_groups.entry((oi, sec, r, extra)).or_default().members.push((pend, ev));
     }
 
@@ -2162,6 +2175,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                             let w = rec.def.field.width();
                             if rec.def.op == Op::Abs
                                 && matches!(rec.def.field, Field::Data(4 | 8))
+                                && pend.loaded
                                 && self.image.load_of(rec.p, u64::from(w)).is_some()
                             {
                                 self.abs_words.push((rec.p, w, v, true));

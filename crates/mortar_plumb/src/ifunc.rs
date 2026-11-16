@@ -568,7 +568,14 @@ impl Engine<'_, '_> {
         {
             self.iplt.claimed.insert(rec.p);
             self.abs_words.push((rec.p, rec.def.field.width(), resolver, true));
-            let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(0), w1: false };
+            let pend = Pending {
+                rec: rec.clone(),
+                site,
+                symbol,
+                want: Want::Word(0),
+                w1: false,
+                loaded: false,
+            };
             self.ifunc_groups
                 .entry(key)
                 .or_insert_with(|| IfGroup {
@@ -581,7 +588,14 @@ impl Engine<'_, '_> {
                 .push(pend);
             return;
         }
-        let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(0), w1: false };
+        let pend = Pending {
+            rec: rec.clone(),
+            site,
+            symbol,
+            want: Want::Word(0),
+            w1: false,
+            loaded: false,
+        };
         if let Op::Slot(..) = rec.def.op {
             let ok: Vec<(u64, Option<Rewrite>)> = entries
                 .iter()
