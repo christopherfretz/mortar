@@ -75,6 +75,11 @@ pub struct Line {
 
 /// Options whose value is the next word.
 const WITH_ARG: &[&str] = &[
+    // spec/cli.md §2.3: these take their value as the next word too.
+    "--odr-table",
+    "-odr-table",
+    "--odr",
+    "-odr",
     "-o",
     "-m",
     "-e",

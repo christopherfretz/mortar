@@ -7,7 +7,7 @@
 //! local symbol's name) come from each object's symbol table, read here
 //! once per file ([`Keys::new`]).
 
-use std::collections::HashMap;
+use mortar_core::hash::HashMap;
 
 use mortar_core::assignment::Assignment;
 use mortar_core::column::Column;
@@ -25,6 +25,7 @@ use mortar_core::layout::{
     MergeMap, Patch, PatchKind, Place, Placement, Redirect, Segment, Sized, SlotKind, Slots,
     SymPlace, ThunkTarget, Tls,
 };
+use mortar_core::par::Pool;
 use mortar_core::resolution::Resolution;
 use mortar_core::split::Split;
 use mortar_elf::consts::{STT_FILE, STT_SECTION};
@@ -51,6 +52,9 @@ pub struct Keys<'s> {
     pub identities: Identities<'s>,
     pub outsecs: Ordinals<&'s [u8]>,
     pub symbols: Lookup<SymbolId>,
+    /// Whether every file was read and `symbols` holds every key: false
+    /// for [`Keys::partial`] (WP-094).
+    pub complete: bool,
 }
 
 /// The slot lists in `SLOTS`' kind order (IN-18a).
@@ -129,69 +133,130 @@ fn tag_byte(tag: ChunkTag) -> u8 {
 impl<'s> Keys<'s> {
     /// Reads every object's anchors and local names (§7.1).
     pub fn new(link: &Link<'_, 's>) -> Result<Self, String> {
+        Self::build(link, &|_| true, true, None)
+    }
+
+    /// WP-094 (c): the keys [`capture`] needs, every file's read in
+    /// parallel on `pool`, without the global lookup (a replay's).
+    pub fn for_capture(link: &Link<'_, 's>, pool: &Pool) -> Result<Self, String> {
+        Self::build(link, &|_| true, false, Some(pool))
+    }
+
+    /// WP-094: the anchors and local names of the files `read` selects
+    /// only, and `symbols` over the keys those files mention: what the
+    /// replay by position needs ([`replay_by_position`]). The other files'
+    /// sections and locals have no keys here.
+    pub fn partial(
+        link: &Link<'_, 's>,
+        read: &(dyn Fn(FileId) -> bool + Sync),
+    ) -> Result<Self, String> {
+        Self::build(link, read, false, None)
+    }
+
+    /// One object's section keys and local names.
+    fn file_keys(
+        link: &Link<'_, 's>,
+        file: FileId,
+    ) -> Result<(Ordinals<SectionKey<'s>>, Ordinals<&'s [u8]>), String> {
         let inputs = link.inputs;
-        let mut sections = Vec::with_capacity(inputs.files.len() as usize);
-        let mut locals = Vec::with_capacity(inputs.files.len() as usize);
-        for (file, f) in inputs.files.iter() {
-            let Reader::Object(object) = f.reader else {
-                sections.push(Ordinals::new(Vec::new()));
-                locals.push(Ordinals::new(Vec::new()));
-                continue;
-            };
-            let bad = |what: &str| format!("{}: {what}", String::from_utf8_lossy(f.path));
-            let count = object.section_count() as usize;
-            let mut global: Vec<Option<&'s [u8]>> = vec![None; count];
-            let mut local: Vec<Option<&'s [u8]>> = vec![None; count];
-            let mut names = Vec::new();
-            if let Some(symbols) = object.symbols().map_err(|_| bad("symbol table"))? {
-                let first_global = symbols.first_global().0;
-                for (index, sym) in symbols.iter() {
-                    let name = symbols.name(&sym).map_err(|_| bad("symbol name"))?;
-                    if index.0 < first_global {
-                        names.push(name);
-                    }
-                    let kind = sym.st_info & 0xf;
-                    if name.is_empty()
-                        || kind == STT_SECTION
-                        || kind == STT_FILE
-                        || sym.st_value != 0
-                    {
-                        continue;
-                    }
-                    let Ok(SymbolSection::Section(at)) = symbols.section_of(index, &sym) else {
-                        continue;
-                    };
-                    let slot = if index.0 < first_global { &mut local } else { &mut global };
-                    if let Some(s @ None) = slot.get_mut(at.0 as usize) {
-                        *s = Some(name);
-                    }
+        let f = &inputs.files[file];
+        let Reader::Object(object) = f.reader else {
+            return Ok((Ordinals::new(Vec::new()), Ordinals::new(Vec::new())));
+        };
+        let bad = |what: &str| format!("{}: {what}", String::from_utf8_lossy(f.path));
+        let count = object.section_count() as usize;
+        let mut global: Vec<Option<&'s [u8]>> = vec![None; count];
+        let mut local: Vec<Option<&'s [u8]>> = vec![None; count];
+        let mut names = Vec::new();
+        if let Some(symbols) = object.symbols().map_err(|_| bad("symbol table"))? {
+            let first_global = symbols.first_global().0;
+            for (index, sym) in symbols.iter() {
+                let name = symbols.name(&sym).map_err(|_| bad("symbol name"))?;
+                if index.0 < first_global {
+                    names.push(name);
+                }
+                let kind = sym.st_info & 0xf;
+                if name.is_empty() || kind == STT_SECTION || kind == STT_FILE || sym.st_value != 0 {
+                    continue;
+                }
+                let Ok(SymbolSection::Section(at)) = symbols.section_of(index, &sym) else {
+                    continue;
+                };
+                let slot = if index.0 < first_global { &mut local } else { &mut global };
+                if let Some(s @ None) = slot.get_mut(at.0 as usize) {
+                    *s = Some(name);
                 }
             }
-            let mut keys = Vec::with_capacity(count);
-            for i in 0..count {
-                let name = match object.section(SectionIndex(i as u32)) {
-                    Ok(s) if i > 0 => s.name().map_err(|_| bad("section name"))?,
-                    _ => &[][..],
-                };
-                let comdat = link
-                    .resolution
-                    .section_id(file, SectionIndex(i as u32))
-                    .and_then(|id| link.resolution.sections.get(id))
-                    .and_then(|row| row.comdat.get())
-                    .and_then(|c| inputs.comdats.get(c))
-                    .map(|c| c.name);
-                let anchor = Anchor::choose(comdat, global[i], local[i]);
-                keys.push(SectionKey { anchor, name });
+        }
+        let mut keys = Vec::with_capacity(count);
+        for i in 0..count {
+            let name = match object.section(SectionIndex(i as u32)) {
+                Ok(s) if i > 0 => s.name().map_err(|_| bad("section name"))?,
+                _ => &[][..],
+            };
+            let comdat = link
+                .resolution
+                .section_id(file, SectionIndex(i as u32))
+                .and_then(|id| link.resolution.sections.get(id))
+                .and_then(|row| row.comdat.get())
+                .and_then(|c| inputs.comdats.get(c))
+                .map(|c| c.name);
+            let anchor = Anchor::choose(comdat, global[i], local[i]);
+            keys.push(SectionKey { anchor, name });
+        }
+        Ok((Ordinals::new(keys), Ordinals::new(names)))
+    }
+
+    fn build(
+        link: &Link<'_, 's>,
+        read: &(dyn Fn(FileId) -> bool + Sync),
+        complete: bool,
+        pool: Option<&Pool>,
+    ) -> Result<Self, String> {
+        let inputs = link.inputs;
+        let one = |i: usize| {
+            let file = FileId(i as u32);
+            if read(file) {
+                Self::file_keys(link, file)
+            } else {
+                Ok((Ordinals::new(Vec::new()), Ordinals::new(Vec::new())))
             }
-            sections.push(Ordinals::new(keys));
-            locals.push(Ordinals::new(names));
+        };
+        let n = inputs.files.len() as usize;
+        let rows: Vec<_> = match pool {
+            Some(pool) => pool.map(n, one),
+            None => (0..n).map(one).collect(),
+        };
+        let mut sections = Vec::with_capacity(n);
+        let mut locals = Vec::with_capacity(n);
+        for r in rows {
+            let (s, l) = r?;
+            sections.push(s);
+            locals.push(l);
         }
         let sections = Column::from_vec(sections).map_err(|_| "too many files".to_owned())?;
         let locals = Column::from_vec(locals).map_err(|_| "too many files".to_owned())?;
+        let symbols = if complete {
+            symbol_lookup(&inputs.symbols)
+        } else if pool.is_some() {
+            Lookup::new(std::iter::empty(), |s: SymbolId| s)
+        } else {
+            let mut ids: Vec<SymbolId> = Vec::new();
+            for (file, _) in inputs.files.iter() {
+                if read(file) {
+                    ids.extend_from_slice(inputs.sym_map_of(file));
+                }
+            }
+            ids.sort_unstable();
+            ids.dedup();
+            let k = &inputs.symbols;
+            Lookup::new(ids.into_iter(), |s| (k[s].name, k[s].version))
+        };
         Ok(Self {
             identities: Identities::new(inputs.file_identities(), sections, locals),
             outsecs: outsec_ordinals(link.assignment),
-            symbols: symbol_lookup(&inputs.symbols),
+            symbols,
+            complete,
         })
     }
 }
@@ -268,17 +333,53 @@ pub(crate) struct Symbols<'k, 's> {
     inputs: &'k Inputs<'s>,
     rows: Vec<SymbolRow>,
     index: HashMap<SymKey, u32>,
+    /// Each global's first mention (file, entry from `first_global`), made
+    /// on the first global row (WP-094).
+    first: Vec<(u32, u32)>,
+    /// Each global's row by `SymbolId` (`NONE`: none yet), made on the
+    /// first global row: the lookup without hashing (WP-094 (c)).
+    global_rows: Vec<u32>,
+}
+
+/// Each global's first mention: the file and its entry among the file's
+/// non-local entries; `(NONE, 0)` for a key no file mentions.
+fn first_mentions(inputs: &Inputs<'_>) -> Vec<(u32, u32)> {
+    let mut first = vec![(NONE, 0); inputs.symbols.len() as usize];
+    for (file, _) in inputs.files.iter() {
+        for (i, id) in inputs.sym_map_of(file).iter().enumerate() {
+            if let Some(slot @ (NONE, _)) = first.get_mut(id.0 as usize) {
+                *slot = (file.0, i as u32);
+            }
+        }
+    }
+    first
 }
 
 impl Symbols<'_, '_> {
     pub(crate) fn row(&mut self, strings: &mut Strings, key: SymKey) -> Result<u32, String> {
-        if let Some(&row) = self.index.get(&key) {
+        if let SymKind::Global(id) = key.kind() {
+            if self.global_rows.is_empty() {
+                self.global_rows = vec![NONE; self.inputs.symbols.len() as usize];
+            }
+            match self.global_rows.get(id.0 as usize) {
+                Some(&NONE) => {}
+                Some(&row) => return Ok(row),
+                None => return Err("a global out of range".into()),
+            }
+        } else if let Some(&row) = self.index.get(&key) {
             return Ok(row);
         }
         let row = match key.kind() {
             SymKind::Global(id) => {
                 let k = self.inputs.symbols.get(id).ok_or("a global out of range")?;
+                if self.first.is_empty() {
+                    self.first = first_mentions(self.inputs);
+                }
+                let (at_file, at_index) =
+                    self.first.get(id.0 as usize).copied().unwrap_or((NONE, 0));
                 SymbolRow {
+                    at_file,
+                    at_index,
                     kind: if k.version.is_some() { sym_kind::VERSIONED } else { sym_kind::GLOBAL },
                     file: NONE,
                     ordinal: 0,
@@ -289,6 +390,8 @@ impl Symbols<'_, '_> {
             SymKind::Local(sym) => {
                 let l = self.keys.identities.local(sym).ok_or("a local out of range")?;
                 SymbolRow {
+                    at_file: sym.file.0,
+                    at_index: sym.index.0,
                     kind: sym_kind::LOCAL,
                     file: sym.file.0,
                     ordinal: l.ordinal,
@@ -299,7 +402,12 @@ impl Symbols<'_, '_> {
         };
         let at = self.rows.len() as u32;
         self.rows.push(row);
-        self.index.insert(key, at);
+        match key.kind() {
+            SymKind::Global(id) => self.global_rows[id.0 as usize] = at,
+            SymKind::Local(_) => {
+                self.index.insert(key, at);
+            }
+        }
         Ok(at)
     }
 }
@@ -309,7 +417,6 @@ impl Symbols<'_, '_> {
 /// is each file's content hash (`None`: none could be computed). The
 /// caller fills `META`, `STAT`, `LEAVES` and the pool. An `Err` names why
 /// no state can be written (dynamic tables, `--icf`'s folds).
-#[allow(clippy::too_many_lines)] // one block per table, in IN-18a's order
 pub fn capture(
     link: &Link<'_, '_>,
     keys: &Keys<'_>,
@@ -318,6 +425,23 @@ pub fn capture(
     file_hash: &dyn Fn(FileId) -> Option<[u8; 16]>,
     arch: &dyn mortar_arch::Arch,
 ) -> Result<State, String> {
+    let pool = Pool::sequential();
+    capture_timed(link, keys, layout, strings, file_hash, arch, &pool, &mut Laps::new())
+}
+
+/// [`capture`], with its parts timed into `laps` (WP-094).
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one block per table, in IN-18a's order
+pub fn capture_timed(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    layout: &Layout,
+    strings: &mut Strings,
+    file_hash: &dyn Fn(FileId) -> Option<[u8; 16]>,
+    arch: &dyn mortar_arch::Arch,
+    pool: &Pool,
+    laps: &mut Laps,
+) -> Result<State, String> {
+    let mut clock = Clock { laps, at: std::time::Instant::now() };
     let slots = &layout.slots;
     let p = &layout.placement;
     if layout.folds.folded.is_some()
@@ -352,6 +476,7 @@ pub fn capture(
             hash: if f.bytes.is_some() { file_hash(id).ok_or("a file's hash")? } else { [0; 16] },
         });
     }
+    clock.lap("capture files");
     for probe in inputs.probe_checks().ok_or("a probe failed")? {
         s.probes.push(ProbeRow { path: strings.add(probe.path), present: u8::from(probe.present) });
     }
@@ -361,6 +486,7 @@ pub fn capture(
         s.outsecs.push(OutSecRow { name: strings.add(o.name), ordinal: o.ordinal });
     }
     let chunk_ord = chunk_ordinals(p, link.assignment);
+    clock.lap("capture probes, outsecs");
     for (id, row) in link.resolution.sections.iter() {
         let _ = row;
         let si =
@@ -391,6 +517,7 @@ pub fn capture(
         }
         s.sections.push(row);
     }
+    clock.lap("capture sections");
     for (id, c) in p.chunks.iter() {
         let (kind, name) = chunk_ord.key(id.0).ok_or("a chunk")?;
         let ordinal = chunk_ord.ordinal(id.0).ok_or("a chunk")?;
@@ -445,6 +572,7 @@ pub fn capture(
             align: u64::from(g.align),
         })
         .collect();
+    clock.lap("capture chunks, order, segments");
     // FRAGS: per (output section, hash), the live fragments' offsets.
     let mut live: Vec<(u32, [u8; 16], u32, u64)> = Vec::new();
     let mut buf = Vec::new();
@@ -456,7 +584,14 @@ pub fn capture(
         let out = link.assignment.out(f.section).ok_or("a live fragment without output section")?;
         let hash = frag_hash(link, frag, &mut buf).ok_or("a fragment's bytes")?;
         live.push((out.0, hash, frag.0, off));
+        // `SECTIONS` has a row per `SectionId`, in order.
+        s.frag_at.push(crate::format::FragAtRow {
+            section: f.section.0,
+            offset: f.offset,
+            at: off,
+        });
     }
+    s.frag_at.sort_unstable();
     live.sort_unstable();
     let mut i = 0;
     while i < live.len() {
@@ -479,7 +614,15 @@ pub fn capture(
         }
         i = j;
     }
-    let mut syms = Symbols { keys, inputs, rows: Vec::new(), index: HashMap::new() };
+    clock.lap("capture frags");
+    let mut syms = Symbols {
+        keys,
+        inputs,
+        rows: Vec::new(),
+        index: HashMap::default(),
+        first: Vec::new(),
+        global_rows: Vec::new(),
+    };
     for (k, kind) in SLOT_LISTS.iter().enumerate() {
         for &key in slot_list(slots, *kind) {
             s.slots.push(SlotRow { kind: k as u8, symbol: syms.row(strings, key)? });
@@ -576,7 +719,9 @@ pub fn capture(
         bits |= layout_bits::TLS_LD;
     }
     s.layout.bits = bits;
-    crate::tables::fill(link, &mut syms, strings, &mut s, arch)?;
+    clock.lap("capture slots to holes");
+    crate::tables::fill(link, &mut syms, strings, &mut s, arch, pool)?;
+    clock.lap("capture delta tables");
     s.symbols = syms.rows;
     if !strings.fits() {
         return Err("the string pool exceeds 4 GiB".into());
@@ -612,18 +757,118 @@ fn anchor_of(s: &State, kind: u8, name: Str) -> Anchor<'_> {
     }
 }
 
+/// WP-094: the parts of a replay, timed (name, ms).
+pub type Laps = Vec<(&'static str, f64)>;
+
+struct Clock<'l> {
+    laps: &'l mut Laps,
+    at: std::time::Instant,
+}
+
+impl Clock<'_> {
+    fn lap(&mut self, name: &'static str) {
+        let now = std::time::Instant::now();
+        self.laps.push((name, (now - self.at).as_secs_f64() * 1e3));
+        self.at = now;
+    }
+}
+
+/// WP-094: what the replay by position knows of the state's files.
+struct Pos {
+    /// Per `FILES` row: its bytes are those of the file it maps to
+    /// (IN-22/IN-24 found them unchanged), so its section and symbol
+    /// indices stand.
+    positional: Vec<bool>,
+    /// Per `FILES` row: its first `SECTIONS` row and its row count.
+    first: Vec<(u32, u32)>,
+    /// Per present `FileId`: its `FILES` row, `NONE` if none.
+    row_of: Vec<u32>,
+}
+
+impl Pos {
+    /// The present file of a positional `FILES` row.
+    fn file(&self, files: &[Option<FileId>], row: u32) -> Option<FileId> {
+        if *self.positional.get(row as usize)? {
+            files.get(row as usize).copied().flatten()
+        } else {
+            None
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)] // one block per table
 fn map(
     link: &Link<'_, '_>,
     keys: &Keys<'_>,
     s: &State,
     placement: &Placement,
-) -> Result<Map, String> {
+    clock: &mut Clock<'_>,
+    changed: Option<&dyn Fn(FileId) -> bool>,
+) -> Result<(Map, Option<Pos>), String> {
+    let inputs = link.inputs;
     let files: Vec<Option<FileId>> =
         s.files.iter().map(|f| keys.identities.file_id(&file_identity(s, f))).collect();
+    let pos = match changed {
+        None => None,
+        Some(changed) => {
+            // IN-28a's conditions: each one that fails sends the file (or,
+            // for the order of SECTIONS, every file) to the identities.
+            let mut positional: Vec<bool> =
+                files.iter().map(|f| f.is_some_and(|f| !changed(f))).collect();
+            let mut row_of = vec![NONE; inputs.files.len() as usize];
+            for (r, f) in files.iter().enumerate() {
+                let Some(f) = *f else { continue };
+                row_of[f.slot()] = r as u32;
+                // Same bytes: the same range of the same kind of file (a
+                // member moved inside its archive is read by identity).
+                let row = &s.files[r];
+                let new = &inputs.files[f];
+                let (base, len) = new.bytes.map_or((0, 0), |b| (b.base, b.len));
+                if (row.base, row.len) != (base, len) {
+                    positional[r] = false;
+                }
+            }
+            let mut first = vec![(NONE, 0u32); s.files.len()];
+            let mut last = 0;
+            let mut by_file = true;
+            for (i, x) in s.sections.iter().enumerate() {
+                if x.file < last {
+                    by_file = false;
+                    break;
+                }
+                last = x.file;
+                let e = first.get_mut(x.file as usize).ok_or("a SECTIONS row's file")?;
+                if e.0 == NONE {
+                    *e = (i as u32, 0);
+                }
+                e.1 += 1;
+            }
+            if !by_file {
+                positional.fill(false);
+            }
+            for (r, &(_, count)) in first.iter().enumerate() {
+                if let Some(f) = files[r]
+                    && count != 0
+                    && count != link.resolution.section_base[f].len()
+                {
+                    positional[r] = false;
+                }
+            }
+            Some(Pos { positional, first, row_of })
+        }
+    };
+    clock.lap("map files");
     let sections = s
         .sections
         .iter()
-        .map(|x| {
+        .enumerate()
+        .map(|(i, x)| {
+            if let Some(p) = &pos
+                && let Some(f) = p.file(&files, x.file)
+            {
+                let index = i as u32 - p.first[x.file as usize].0;
+                return link.resolution.section_id(f, SectionIndex(index));
+            }
             let file = s.files.get(x.file as usize)?;
             let identity = SectionIdentity {
                 file: file_identity(s, file),
@@ -636,6 +881,7 @@ fn map(
             keys.identities.section_id(link.resolution, &identity)
         })
         .collect();
+    clock.lap("map sections");
     let outsecs: Vec<Option<OutSecId>> = s
         .outsecs
         .iter()
@@ -671,27 +917,104 @@ fn map(
         }
         chunks.push(id);
     }
-    let symbols = s
-        .symbols
-        .iter()
-        .map(|y| match y.kind {
+    clock.lap("map outsecs and chunks");
+    // A key the partial lookup does not hold (a key the changed files no
+    // longer mention): the whole lookup, made once, on the first miss.
+    let mut whole: Option<Lookup<SymbolId>> = None;
+    let mut misses = 0u32;
+    let mut symbols = Vec::with_capacity(s.symbols.len());
+    for y in &s.symbols {
+        let key = match y.kind {
             sym_kind::LOCAL => {
-                let file = s.files.get(y.file as usize)?;
-                let l = LocalIdentity {
-                    file: file_identity(s, file),
-                    name: s.str(y.name),
-                    ordinal: y.ordinal,
-                };
-                keys.identities.local_sym(&l).map(SymKey::local)
+                if let Some(p) = &pos
+                    && let Some(f) = p.file(&files, y.file)
+                {
+                    symbols.push(Some(SymKey::local(mortar_core::id::SymEntry {
+                        file: f,
+                        index: mortar_elf::SymbolIndex(y.at_index),
+                    })));
+                    continue;
+                }
+                let file = s.files.get(y.file as usize);
+                file.and_then(|file| {
+                    let l = LocalIdentity {
+                        file: file_identity(s, file),
+                        name: s.str(y.name),
+                        ordinal: y.ordinal,
+                    };
+                    keys.identities.local_sym(&l).map(SymKey::local)
+                })
             }
             k => {
                 let version = (k == sym_kind::VERSIONED).then(|| s.str(y.version));
-                let g = SymbolIdentity { name: s.str(y.name), version };
-                symbol_id(&link.inputs.symbols, &keys.symbols, &g).map(SymKey::global)
+                let (name, version) = (s.str(y.name), version);
+                if let Some(p) = &pos
+                    && let Some(f) = p.file(&files, y.at_file)
+                    && let Some(&id) = inputs.sym_map_of(f).get(y.at_index as usize)
+                    && inputs
+                        .symbols
+                        .get(id)
+                        .is_some_and(|k| k.name == name && k.version == version)
+                {
+                    symbols.push(Some(SymKey::global(id)));
+                    continue;
+                }
+                let g = SymbolIdentity { name, version };
+                let found = symbol_id(&inputs.symbols, &keys.symbols, &g);
+                if found.is_none() && !keys.complete {
+                    misses += 1;
+                    let all = whole.get_or_insert_with(|| symbol_lookup(&inputs.symbols));
+                    symbol_id(&inputs.symbols, all, &g)
+                } else {
+                    found
+                }
+                .map(SymKey::global)
             }
-        })
-        .collect();
-    Ok(Map { files, sections, chunks, symbols, outsecs })
+        };
+        symbols.push(key);
+    }
+    let _ = misses;
+    clock.lap(if whole.is_some() { "map symbols (whole lookup)" } else { "map symbols" });
+    Ok((Map { files, sections, chunks, symbols, outsecs }, pos))
+}
+
+/// The merged map by identity (IN-18a `FRAGS`): every live fragment
+/// hashed, and ranked among those of its identity.
+fn frags_by_identity(
+    link: &Link<'_, '_>,
+    s: &State,
+    m: &Map,
+    frag_off: &mut Column<FragId, u64>,
+) -> Result<(), String> {
+    let mut by_identity: HashMap<(OutSecId, [u8; 16]), Vec<&FragRow>> = HashMap::default();
+    for f in &s.frags {
+        let out = get(&m.outsecs, f.out, "OUTSECS")?;
+        by_identity.entry((out, f.hash)).or_default().push(f);
+    }
+    let mut buf = Vec::new();
+    let mut rank: HashMap<(OutSecId, [u8; 16]), u32> = HashMap::default();
+    for (i, off) in frag_off.as_mut_slice().iter_mut().enumerate() {
+        let frag = FragId::from_index(i as u32);
+        if *off == MergeMap::NONE {
+            continue;
+        }
+        let f = link.split.frags.get(frag).ok_or("a fragment")?;
+        let out = link.assignment.out(f.section).ok_or("a fragment's output section")?;
+        let hash = frag_hash(link, frag, &mut buf).ok_or("a fragment's bytes")?;
+        let rows = by_identity.get(&(out, hash)).ok_or("a live fragment has no FRAGS row")?;
+        let n = rank.entry((out, hash)).or_insert(0);
+        let row = if rows.len() == 1 && rows[0].ordinal == NONE {
+            rows[0]
+        } else {
+            rows.iter()
+                .find(|r| r.ordinal == *n)
+                .copied()
+                .ok_or("a live fragment's ordinal has no row")?
+        };
+        *n += 1;
+        *off = row.offset;
+    }
+    Ok(())
 }
 
 fn get<T: Copy>(v: &[Option<T>], i: u32, what: &str) -> Result<T, String> {
@@ -703,15 +1026,58 @@ fn get<T: Copy>(v: &[Option<T>], i: u32, what: &str) -> Result<T, String> {
 /// must translate and every chunk of this link must be named once; a
 /// failure is named. `Folds` and the dynamic tables are `computed`'s
 /// (format 1 stores none).
-#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one block per table
 pub fn replay(
     link: &Link<'_, '_>,
     keys: &Keys<'_>,
     s: &State,
     computed: &Layout,
 ) -> Result<Layout, String> {
+    replay_timed(link, keys, s, computed, &mut Laps::new())
+}
+
+/// [`replay`], with its parts timed into `laps` (WP-094).
+pub fn replay_timed(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    s: &State,
+    computed: &Layout,
+    laps: &mut Laps,
+) -> Result<Layout, String> {
+    replay_inner(link, keys, s, computed, laps, None)
+}
+
+/// WP-094 escape (a): [`replay`] with the rows of every file but the
+/// `changed` ones mapped by position (section index, symbol index,
+/// fragment position) instead of by identity. The caller vouches that a
+/// file not `changed` has the bytes of the `FILES` row it maps to
+/// (IN-22/IN-24: clean, or hashed equal); `keys` need hold the `changed`
+/// files only ([`Keys::partial`]). The result
+/// is the identity replay's: positions are read where identities would
+/// be found, and every position is checked against the present link's
+/// counts and keys.
+pub fn replay_by_position(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    s: &State,
+    computed: &Layout,
+    changed: &dyn Fn(FileId) -> bool,
+    laps: &mut Laps,
+) -> Result<Layout, String> {
+    replay_inner(link, keys, s, computed, laps, Some(changed))
+}
+
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one block per table
+fn replay_inner(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    s: &State,
+    computed: &Layout,
+    laps: &mut Laps,
+    changed: Option<&dyn Fn(FileId) -> bool>,
+) -> Result<Layout, String> {
+    let mut clock = Clock { laps, at: std::time::Instant::now() };
     let cp = &computed.placement;
-    let m = map(link, keys, s, cp)?;
+    let (m, pos) = map(link, keys, s, cp, &mut clock, changed)?;
     let mut chunks: Vec<Option<Chunk>> = vec![None; cp.chunks.len() as usize];
     for (row, (c, &id)) in s.chunks.iter().zip(&m.chunks).enumerate() {
         let slot = &mut chunks[id.slot()];
@@ -850,37 +1216,75 @@ pub fn replay(
         entry: (l.bits & layout_bits::ENTRY != 0).then_some(l.entry),
         holes: holes.into(),
     };
+    clock.lap("placement");
     // The merged map: this link's live fragments take their identity's
-    // stored offset; its dead ones stay dead (IN-18a `FRAGS`).
-    let mut by_identity: HashMap<(OutSecId, [u8; 16]), Vec<&FragRow>> = HashMap::new();
-    for f in &s.frags {
-        let out = get(&m.outsecs, f.out, "OUTSECS")?;
-        by_identity.entry((out, f.hash)).or_default().push(f);
-    }
+    // stored offset; its dead ones stay dead (IN-18a `FRAGS`). By
+    // position (WP-094): a fragment first found in a positional file at a
+    // position `FRAG_AT` holds takes that row's offset; the others are
+    // hashed and found by identity.
     let mut frag_off = computed.merge.frag_off.clone();
-    let mut buf = Vec::new();
-    let mut rank: HashMap<(OutSecId, [u8; 16]), u32> = HashMap::new();
-    for (i, off) in frag_off.as_mut_slice().iter_mut().enumerate() {
-        let frag = FragId::from_index(i as u32);
-        if *off == MergeMap::NONE {
-            continue;
+    let mut done = false;
+    if let Some(p) = &pos {
+        let mut out_rows = vec![NONE; link.assignment.outsecs.len() as usize];
+        for (r, o) in m.outsecs.iter().enumerate() {
+            if let Some(o) = o
+                && let Some(x) = out_rows.get_mut(o.0 as usize)
+            {
+                *x = r as u32;
+            }
         }
-        let f = link.split.frags.get(frag).ok_or("a fragment")?;
-        let out = link.assignment.out(f.section).ok_or("a fragment's output section")?;
-        let hash = frag_hash(link, frag, &mut buf).ok_or("a fragment's bytes")?;
-        let rows = by_identity.get(&(out, hash)).ok_or("a live fragment has no FRAGS row")?;
-        let n = rank.entry((out, hash)).or_insert(0);
-        let row = if rows.len() == 1 && rows[0].ordinal == NONE {
-            rows[0]
-        } else {
-            rows.iter()
-                .find(|r| r.ordinal == *n)
-                .copied()
-                .ok_or("a live fragment's ordinal has no row")?
-        };
-        *n += 1;
-        *off = row.offset;
+        let mut buf = Vec::new();
+        let mut ok = true;
+        let mut hashed = 0u32;
+        for (i, off) in frag_off.as_mut_slice().iter_mut().enumerate() {
+            let frag = FragId::from_index(i as u32);
+            if *off == MergeMap::NONE {
+                continue;
+            }
+            let f = link.split.frags.get(frag).ok_or("a fragment")?;
+            let (file, index) =
+                link.resolution.sh_index(f.section).ok_or("a fragment's section")?;
+            let row = p.row_of.get(file.0 as usize).copied().unwrap_or(NONE);
+            if row != NONE && p.positional[row as usize] {
+                let section = p.first[row as usize].0 + index.0;
+                let want = (section, f.offset);
+                let at = s.frag_at.partition_point(|r| (r.section, r.offset) < want);
+                if let Some(r) = s.frag_at.get(at)
+                    && (r.section, r.offset) == want
+                {
+                    *off = r.at;
+                    continue;
+                }
+            }
+            hashed += 1;
+            let out = link.assignment.out(f.section).ok_or("a fragment's output section")?;
+            let out_row = out_rows.get(out.0 as usize).copied().unwrap_or(NONE);
+            if out_row == NONE {
+                return Err("a fragment's output section has no OUTSECS row".into());
+            }
+            let hash = frag_hash(link, frag, &mut buf).ok_or("a fragment's bytes")?;
+            let want = (out_row, hash);
+            let at = s.frags.partition_point(|r| (r.out, r.hash) < want);
+            match s.frags.get(at) {
+                Some(r) if (r.out, r.hash) == want && r.ordinal == NONE => *off = r.offset,
+                // An identity with ordinals ranks the fragments of every
+                // file: the replay by identity decides.
+                _ => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        let _ = hashed;
+        done = ok;
+        if !ok {
+            frag_off = computed.merge.frag_off.clone();
+        }
     }
+    if !done {
+        frags_by_identity(link, s, &m, &mut frag_off)?;
+    }
+    clock.lap("fragments");
     let mut slots = computed.slots.clone();
     for (k, kind) in SLOT_LISTS.iter().enumerate() {
         let list: Result<Vec<SymKey>, String> = s
@@ -914,5 +1318,6 @@ pub fn replay(
     }
     slots.sizes =
         s.sizes.iter().map(|z| Ok((chunk(z.chunk)?, z.size))).collect::<Result<_, String>>()?;
+    clock.lap("slots");
     Ok(Layout { folds: computed.folds.clone(), merge: MergeMap { frag_off }, slots, placement })
 }

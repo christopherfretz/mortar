@@ -1422,6 +1422,37 @@ with each phase fed from the state for unchanged files:
   (each table matters), and `a_version_1_state_is_refused_by_name` (the
   version-1 fixtures `crates/mortar/tests/fixtures/incr-state-v1-51aa582/`
   are `state-version` and give a full link).
+- **IN-18a3 [v1] Format version 3: positions** (WP-094, for IN-28a).
+  Version 3 is version 2 with these changes:
+  - The format version is 3. The table count is 28.
+  - `SYMBOLS` (6) rows are 36 bytes: after the version str, `at_file`
+    and `at_index`, two `u32`. A local's are its own `FILES` row (equal
+    to `file`) and its index in that file's symbol table. A global's are
+    the file of its **first mention** (inputs rule 6: the first live
+    object, in load order, whose symbol table names the key) and the
+    entry's position among that file's non-local entries (its index
+    minus `sh_info`). A key no object mentions (linker-defined, a
+    `--defsym`) has `at_file` `NONE` and `at_index` 0.
+  - A new table, kind 40, `FRAG_AT`, comes after `HOLES` and before
+    `STRINGS`: section `SECTIONS` row, offset `u32` (the fragment's
+    offset in its input section), `FRAGS` row `u64` (16); one per
+    fragment of a split section, strictly ascending by (section,
+    offset). It is `FRAGS` keyed by where a fragment was read, not by
+    what it holds.
+
+  A state of version 2 is refused by name (`state-version`, `format
+  version 2, this mortar reads 3`) and gives a full link that writes a
+  version-3 state; no compatibility path reads it. The reader adds these
+  checks to IN-18a2's: a local row's `at_file` equals its `file`; a
+  global's `at_file` is a `FILES` row or `NONE`, and `at_index` is 0 when
+  it is `NONE`; `FRAG_AT`'s section is in range, its `FRAGS` row is in
+  range, and its rows strictly ascend. Cost (WP-094, measured): the
+  state grows 5.6% on protoc `-g` (29.4 to 31.0 MB) and 10.8% on
+  `synthetic-objects-g10x` (364.7 to 404.2 MB), `FRAG_AT` being most
+  of it; a plain link writes no state and pays nothing (IN-11).
+  *Test:* `mortar_incr`'s round trip and validation tests; the
+  incremental tests' replay; `the_floor_update_is_the_full_link_of_the_edited_inputs`
+  (the update maps by position).
 - **IN-18b [v1] The normalized plan.** The plan hash is `L128` of a
   sequence of items, each a tag byte followed by fields that are each a
   `u32` length and that many bytes: first `C` with the working
@@ -1723,6 +1754,51 @@ with each phase fed from the state for unchanged files:
   appended (S-113) and recorded in the decision tables, which (B)
   replays. A plain link pays nothing. *Test:* (B) after an edit that
   adds a file in the middle of the command line.
+- **IN-28a [v1] Unchanged files translate by position** (WP-094). The
+  translation of IN-28 reads every input's symbol table and section names
+  to build identities (model §7.1); measured, it was the largest term of
+  an update (WP-061b: 74 ms on protoc `-g`, 2.3-2.7 s on
+  `synthetic-objects-g10x`). An update translates instead:
+  - **by position**, every `FILES` row whose file is unchanged (its
+    content hash equals the row's, IN-24) and whose new `FILES` entry
+    has the same path, base and length. Its `SECTIONS` rows map to
+    `section_base[file] + index` by arithmetic; a local `SYMBOLS` row to
+    `(file, at_index)`; a global row to `sym_map(at_file)[at_index]`,
+    accepted only when that key's name and version equal the row's;
+    a fragment of a split section through `FRAG_AT` (its section and
+    offset), accepted only when the fragment found there has the
+    stored `FRAGS` hash;
+  - **by identity** (model §7.1, as before), every row of a changed
+    file and every row the positional rules do not accept. The
+    identities are built only from the symbol tables and section names
+    of the files not translated by position (the update decides that set
+    from `FILES` and the stamps before it builds them); a global the
+    partial lookup does not hold builds the whole lookup once, and the
+    update goes on.
+
+  The positional rules are **conditions, each checked**: the file is
+  unchanged (IN-22: clean by its stamp, or hashed equal); its new entry
+  is the same range of the same file (a member that moved inside a
+  regular archive, or whose archive was rewritten around it, is
+  translated by identity); its section count is the stored one; the
+  `SECTIONS` rows of each file are contiguous and in file order (else no
+  file is positional); a global's name and version at its position
+  match; a fragment's hash at its position matches. A file that moved on
+  the command line is `options-changed` (IN-18b) before any of this; a
+  changed extraction order of unchanged members is `inputs-reordered`
+  (§7) as before: `FILES` rows are matched to the new files by file
+  identity, never by row number, so position is only ever position
+  inside one file. A condition that fails does not fall
+  back: the row goes through identities, which either translate it or
+  fail as IN-28 does (the replay's `internal-error` in the test path,
+  the fall-backs of §7 in the update). So the result is IN-28's by
+  construction, and IN-2 is untouched. Measured on the test path
+  (WP-094): the translation falls from 103.5 to 6.9 ms on protoc `-g`
+  and from 7.4 s to 0.15 s on `synthetic-objects-g10x` (replay keys
+  included). *Test:* the floor test (each update is the
+  incremental-mode full link's bytes) translates by position; with
+  `MORTAR_FLOOR_IDENTITY` set the test path translates by identity only,
+  for comparison (WP-094's measurements, `scripts/incr-floor.py`).
 - **IN-29 [v1] Liveness** under `--gc-sections` is recomputed in full
   from the roots, without reading unchanged files, by walking a **stored
   graph that is, by construction, the edge set the full link's liveness

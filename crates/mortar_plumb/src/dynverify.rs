@@ -83,6 +83,11 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         return report;
     };
     let line = Line::parse(&args, ctx.files);
+    // Stage 4 (§13) runs before stage 3's early returns.
+    let mut meta_cov = crate::report::MetaCoverage::default();
+    let meta = crate::odrtable::check(&image, &objs, map, Some(&args), Some(&line), &mut meta_cov);
+    report.findings.extend(meta);
+    report.coverage.meta = meta_cov.clone();
     // P-D1: a link stage 3 does not model is reported by name, as one
     // finding each, and nothing else is judged (§12.1).
     let mut outside: Vec<String> = line.outside.clone();
@@ -233,6 +238,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     }
     let view1_findings = std::mem::take(&mut engine.findings);
     report.coverage = std::mem::take(&mut engine.cov);
+    report.coverage.meta = meta_cov;
     drop(engine);
     // View 2: a second bias (Pie): every word that holds an address of the
     // executable moves with it, every other word does not.
