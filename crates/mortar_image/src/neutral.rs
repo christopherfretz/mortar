@@ -5,7 +5,8 @@
 
 /// The neutral abbreviation table (IN-51b): code 1, `DW_TAG_compile_unit`,
 /// no children, `DW_AT_lo_user` as `DW_FORM_block`, then the two zeros
-/// ending the attribute list and the table.
+/// ending the attribute list. The table ends at the next 0 code: its hole
+/// is one byte longer, written 0 (`mortar_layout::slack::ABBREV_TABLE`).
 pub const ABBREV_TABLE: [u8; 8] = [0x01, 0x11, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00];
 
 /// The length of `v` as a ULEB128.

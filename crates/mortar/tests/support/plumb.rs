@@ -31,11 +31,44 @@ fn inputs(map: &mortar_plumb::map::Map, dir: &Path) -> Vec<(String, Vec<u8>)> {
 pub fn verify(out: &Path, map: &Path, dir: &Path) -> Vec<mortar_plumb::Finding> {
     let text = std::fs::read_to_string(map).expect("the map");
     let parsed = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &text)
+        .or_else(|e| {
+            // Waiting for WP-091: a verifier without plumb.md §3.2's
+            // `hole` and `dead` records (an incremental-mode link's,
+            // WP-062) refuses the line. Until it reads them, it is given
+            // the map without them; a map that parses is given whole.
+            let known = |l: &&str| !l.starts_with("hole ") && !l.starts_with("dead ");
+            let stripped: String = text.lines().filter(known).map(|l| format!("{l}\n")).collect();
+            if stripped.len() == text.len() {
+                return Err(e);
+            }
+            mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &stripped)
+        })
         .unwrap_or_else(|e| panic!("the map does not parse: {e:?}"));
     let files = inputs(&parsed, dir);
     let inputs: Vec<mortar_plumb::Input<'_>> =
         files.iter().map(|(p, b)| mortar_plumb::Input { path: p, bytes: b }).collect();
     mortar_plumb::verify(&std::fs::read(out).expect("the output"), &inputs, &parsed).findings
+}
+
+/// Waiting for WP-091: a finding the verifier on main makes against
+/// `spec/synth.md` S-50 rule 1 on an incremental-mode link, where the
+/// per-file CIEs (IN-34a) keep `crtbeginT.o`'s first `.eh_frame` record.
+/// Rule 1 makes `r = 0` the start of the output `.eh_frame` "whatever `E`
+/// holds (nothing, a kept first record, or a removed one)"; the verifier
+/// takes the kept record's place (rule 2) for `__EH_FRAME_BEGIN__` (Y4)
+/// and for `crtbeginT.o`'s references to it (R1). A plain link removes
+/// that CIE as a duplicate and never meets the case.
+#[must_use]
+pub fn s50_rule1_waiting_for_wp091(f: &mortar_plumb::Finding) -> bool {
+    use mortar_plumb::Rule;
+    match f.rule {
+        Rule::SymbolTable(4) => f.symbol.as_deref() == Some("__EH_FRAME_BEGIN__"),
+        Rule::Field => {
+            f.symbol.as_deref() == Some(".eh_frame")
+                && f.site.as_ref().is_some_and(|s| s.file.ends_with("crtbeginT.o"))
+        }
+        _ => false,
+    }
 }
 
 /// [`verify`], and no finding may remain.

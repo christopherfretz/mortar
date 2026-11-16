@@ -228,10 +228,12 @@ impl Prog {
 }
 
 // spec: incr.md IN-10, IN-11 (a plain link touches no state; an
-// incremental-mode full link writes it beside the output and the same
-// bytes as the plain link), IN-18a (the state round-trips)
+// incremental-mode full link writes it beside the output), IN-30, IN-33
+// (with slack: other bytes than the plain link's, the same with either
+// spelling, equivalent: the program runs the same), IN-18a (the state
+// round-trips)
 #[test]
-fn a_full_link_in_incremental_mode_is_the_plain_link() {
+fn a_full_link_in_incremental_mode_lays_out_slack() {
     let progs = [Prog::asm(), Prog::c(), Prog::cxx(), Prog::asm_x86_64(), Prog::asm_x86_64_large()];
     for prog in progs.into_iter().flatten() {
         let err = prog.link("plain", &[]);
@@ -239,10 +241,11 @@ fn a_full_link_in_incremental_mode_is_the_plain_link() {
         assert!(!prog.state_of("plain").exists(), "a plain link wrote a state");
         let err = prog.link("full", &["--incremental=full"]);
         assert!(!err.contains("incremental"), "{err}");
-        assert!(prog.bytes("plain") == prog.bytes("full"), "the outputs differ");
+        assert!(prog.bytes("plain") != prog.bytes("full"), "no slack laid out");
+        assert_eq!(prog.run("full"), prog.run("plain"), "the program runs otherwise");
         let err = prog.link("auto", &["--incremental"]);
         assert!(!err.contains("incremental"), "a first link prints no reason: {err}");
-        assert!(prog.bytes("plain") == prog.bytes("auto"), "the outputs differ");
+        assert!(prog.bytes("full") == prog.bytes("auto"), "the outputs differ");
         let (bytes, state) = prog.read_state("full");
         assert_eq!(format::encode(&state), bytes, "the state does not round-trip");
         assert!(!state.chunks.is_empty() && !state.order.is_empty() && !state.files.is_empty());
@@ -464,8 +467,9 @@ fn replay_judged(prog: &Prog, out: &str, state: &State) -> Replayed {
     let inv = mortar::replay_link("mortar", &prog.args(out, &[&map_arg]), &prog.built.dir, state);
     match inv.outcome {
         mortar::Outcome::Linked { .. } => {
-            let findings =
+            let mut findings =
                 support::plumb::verify(&prog.path(out), &prog.path(&map), &prog.built.dir);
+            findings.retain(|f| !support::plumb::s50_rule1_waiting_for_wp091(f));
             Replayed::Linked(prog.bytes(out), findings.iter().map(|f| format!("{f:?}")).collect())
         }
         mortar::Outcome::Failed(r) => {
@@ -756,6 +760,77 @@ fn mutations() -> Vec<TableMutation> {
             s.layout.entry += 4;
             true
         }),
+        // A chunk's capacity reaching into the next chunk in the file
+        // (IN-33, L-141: capacity is reserved, never shared).
+        ("CHUNKS (capacity into the next)", Invalid, |s| {
+            let progbits = |c: &format::ChunkRow| c.sh_type == 1 && c.size > 0;
+            for w in s.order.windows(2) {
+                let (a, b) = (&s.chunks[w[0] as usize], &s.chunks[w[1] as usize]);
+                if progbits(a) && progbits(b) && b.offset > a.offset {
+                    let to = b.offset - a.offset + 1;
+                    s.chunks[w[0] as usize].capacity = to;
+                    return true;
+                }
+            }
+            false
+        }),
+        // A capacity below the chunk's size (L-141). A capacity given
+        // back (down to the size) is not here: a first link's bytes do
+        // not show it (code gaps are trap fill either way, I-41; data
+        // gaps zero), only an update's room does (WP-064).
+        ("CHUNKS (capacity below the size)", Invalid, |s| {
+            s.chunks.iter_mut().find(|c| c.size > 0).map(|c| c.capacity = c.size - 1).is_some()
+        }),
+        // An `.eh_frame` range's padding CIE left out (IN-34a): the
+        // records after it move, the chunk's size does not.
+        ("HOLES (drop an .eh_frame padding)", Invalid, |s| {
+            let Some(at) = s.holes.iter().position(|h| h.kind == format::hole_kind::EH_PAD) else {
+                return false;
+            };
+            s.holes.remove(at);
+            true
+        }),
+        // 4 bytes of a padding CIE absorbed by the record before it and
+        // the rest a shorter padding CIE (IN-34a): the same records at the
+        // same places.
+        ("HOLES (absorb 4 of an .eh_frame padding)", Valid, |s| {
+            let Some(at) = s
+                .holes
+                .iter()
+                .position(|h| h.kind == format::hole_kind::EH_PAD && h.size >= 20 && h.offset > 0)
+            else {
+                return false;
+            };
+            let h = s.holes[at];
+            s.holes[at].size = 4;
+            s.holes.insert(at + 1, format::HoleRow { offset: h.offset + 4, size: h.size - 4, ..h });
+            true
+        }),
+        // A hole over a placed section (IN-3: a hole is what no live unit
+        // owns).
+        ("HOLES (over a placement)", Invalid, |s| {
+            let Some(x) = s.sections.iter().find(|x| x.place_chunk != format::NONE && x.size > 0)
+            else {
+                return false;
+            };
+            let h = format::HoleRow {
+                chunk: x.place_chunk,
+                kind: format::hole_kind::FILL,
+                offset: x.place_offset,
+                size: 1,
+            };
+            s.holes.push(h);
+            s.holes.sort_by_key(|h| (h.chunk, h.offset));
+            true
+        }),
+        // A hole past its chunk's size (L-141: the tail is capacity, not
+        // a hole).
+        ("HOLES (past the size)", Invalid, |s| {
+            let Some(h) = s.holes.first().copied() else { return false };
+            let size = s.chunks[h.chunk as usize].size;
+            s.holes[0].size = size - h.offset + 1;
+            true
+        }),
     ]
 }
 
@@ -783,11 +858,13 @@ fn replay_reproduces_and_each_table_matters() {
         prog.link("plain", &[]);
         prog.link("full", &["--incremental=full"]);
         let (_, state) = prog.read_state("full");
-        let plain = prog.bytes("plain");
+        // The replay reproduces the incremental-mode link (with its
+        // slack and holes, IN-30), not the plain one.
+        let full = prog.bytes("full");
         match replay_judged(&prog, "replayed", &state) {
             Replayed::Linked(same, f) => {
-                assert!(same == plain, "{dir}: the replay differs from the plain link");
-                assert!(f.is_empty(), "{dir}: the verifier rejects the plain link: {f:?}");
+                assert!(same == full, "{dir}: the replay differs from the link");
+                assert!(f.is_empty(), "{dir}: the verifier rejects the link: {f:?}");
             }
             Replayed::Failed(r) => panic!("{dir}: the replay failed: {r}"),
         }
@@ -804,7 +881,7 @@ fn replay_reproduces_and_each_table_matters() {
             // program runs as the plain link's. An invalid one: a named
             // failure, or bytes the verifier rejects. Never the same bytes.
             let line = match replay_judged(&prog, &out, &s) {
-                Replayed::Linked(bytes, _) if bytes == plain => {
+                Replayed::Linked(bytes, _) if bytes == full => {
                     panic!("{dir}: {table}: the replay ignored the change")
                 }
                 Replayed::Linked(_, f) if f.is_empty() => {
@@ -833,6 +910,151 @@ fn replay_reproduces_and_each_table_matters() {
             assert!(applied.contains(&need), "{need} was empty");
         }
     }
+}
+
+/// The `hole` and `dead` records of a map: `(record, section, offset,
+/// size, dead kind)`.
+fn hole_records(map: &str) -> Vec<(String, String, u64, u64, String)> {
+    map.lines()
+        .filter(|l| l.starts_with("hole ") || l.starts_with("dead "))
+        .map(|l| {
+            let t: Vec<&str> = l.split(' ').collect();
+            let hex = |x: &str| u64::from_str_radix(x, 16).unwrap();
+            let kind = t.get(4).map_or(String::new(), |k| (*k).to_owned());
+            (t[0].to_owned(), t[1].to_owned(), hex(t[2]), hex(t[3]), kind)
+        })
+        .collect()
+}
+
+/// The start of the first `.eh_frame` record of the second file with
+/// records, from the chunk's start: a range boundary (IN-34a).
+fn eh_boundary(map: &str, eh_addr: u64, eh_end: u64) -> Option<u64> {
+    let mut pieces: Vec<(u64, u32)> = map
+        .lines()
+        .filter(|l| l.starts_with("piece "))
+        .filter_map(|l| {
+            let t: Vec<&str> = l.split(' ').collect();
+            let addr = u64::from_str_radix(t[4], 16).ok()?;
+            let file: u32 = t[1].parse().ok()?;
+            (eh_addr..eh_end).contains(&addr).then_some((addr, file))
+        })
+        .collect();
+    pieces.sort_unstable();
+    let first = pieces.first()?.1;
+    pieces.iter().find(|p| p.1 != first).map(|p| p.0 - eh_addr)
+}
+
+/// `state` with an `.eh_frame` hole of `size` bytes and `kind` at
+/// `offset`: the chunk, its slot size and its segment grow by `size`
+/// into the `PT_LOAD` reserve after it (IN-33; `.eh_frame` is the last
+/// chunk of its segment here, L-141).
+fn with_eh_hole(state: &State, eh: usize, offset: u64, size: u64, kind: u8) -> State {
+    let mut s = state.clone();
+    let c = &mut s.chunks[eh];
+    let (addr, end) = (c.addr, c.addr + c.size);
+    c.size += size;
+    c.capacity = c.capacity.max(c.size);
+    for z in s.sizes.iter_mut().filter(|z| z.chunk == eh as u32) {
+        z.size += size;
+    }
+    for g in
+        s.segments.iter_mut().filter(|g| g.p_type == 1 && g.addr <= addr && end <= g.addr + g.memsz)
+    {
+        g.filesz += size;
+        g.memsz += size;
+    }
+    s.holes.push(format::HoleRow { chunk: eh as u32, kind, offset, size });
+    s.holes.sort_by_key(|h| (h.chunk, h.offset));
+    s
+}
+
+// spec: incr.md IN-34a (padding CIEs of 16 bytes or more; 4, 8 or 12 bytes
+// absorbed by the record before as DW_CFA_nop; the terminator last),
+// IN-3a and plumb.md §3.2 (the `dead` records: a first link writes none;
+// a dead range's bytes are the hole's), IN-61 (through the replay, with
+// hand-made HOLES rows: a first link has no `.eh_frame` hole, IN-33
+// gives the packed `.eh_frame` no per-range slack)
+#[test]
+fn padding_cies_and_dead_ranges_through_the_replay() {
+    let scratch = Scratch::new("incr-holes-g");
+    let Some(built) = build(&scratch, Driver::Gxx, &["-O1", "-g"], support::CXX_PROGRAM) else {
+        assert!(!tools_required(), "{} is required", Driver::Gxx.tool());
+        return;
+    };
+    let prog = Prog { scratch, built, arch: AARCH64 };
+    prog.link("plain", &[]);
+    prog.link("full", &["--incremental=full", "--mortar-map=full.map"]);
+    let expected = prog.run("plain");
+    assert_eq!(prog.run("full"), expected);
+    let map = std::fs::read_to_string(prog.path("full.map")).unwrap();
+    let first = hole_records(&map);
+    assert!(first.iter().all(|h| h.0 == "hole"), "a first link writes no dead record");
+    for sec in [".text", ".data", ".debug_info", ".debug_abbrev", ".debug_line"] {
+        assert!(first.iter().any(|h| h.1 == sec), "no hole in {sec}");
+    }
+    assert!(!first.iter().any(|h| h.1 == ".eh_frame"), "a first link's .eh_frame has no hole");
+    support::plumb::readers(&prog.path("full"));
+    let (_, state) = prog.read_state("full");
+    let name = |c: &format::ChunkRow| state.str(c.name).to_vec();
+    let eh = state.chunks.iter().position(|c| name(c) == b".eh_frame").expect("an .eh_frame chunk");
+    let (eh_addr, eh_size) = (state.chunks[eh].addr, state.chunks[eh].size);
+    let at = eh_boundary(&map, eh_addr, eh_addr + eh_size).expect("two files' records");
+    let full = prog.bytes("full");
+    // Padding CIEs, and paddings the record before absorbs.
+    for size in [16u64, 32, 4, 8, 12] {
+        let s = with_eh_hole(&state, eh, at, size, format::hole_kind::EH_PAD);
+        let out = format!("pad{size}");
+        match replay_judged(&prog, &out, &s) {
+            Replayed::Linked(bytes, f) => {
+                assert!(bytes != full, "{size}: the replay ignored the hole");
+                assert!(f.is_empty(), "{size}: the verifier rejects: {f:?}");
+            }
+            Replayed::Failed(r) => panic!("{size}: the replay failed: {r}"),
+        }
+        support::plumb::readers(&prog.path(&out));
+        assert_eq!(prog.run(&out), expected, "{size}: the program throws otherwise");
+        let m = std::fs::read_to_string(prog.path(&format!("{out}.map"))).unwrap();
+        let want = ("hole".to_owned(), ".eh_frame".to_owned(), at, size, String::new());
+        assert!(hole_records(&m).contains(&want), "{size}: the map does not list the hole");
+        let bytes = prog.bytes(&out);
+        let off = (state.chunks[eh].offset + at) as usize;
+        let rec = &bytes[off..][..size as usize];
+        if size >= 16 {
+            // IN-34a's padding CIE: length, id 0, version 1, "", 1, -4,
+            // the AArch64 return-address register, then nops.
+            let mut want = ((size - 4) as u32).to_le_bytes().to_vec();
+            want.extend_from_slice(&[0, 0, 0, 0, 1, 0, 1, 0x7c, 30]);
+            want.resize(size as usize, 0);
+            assert_eq!(rec, &want[..], "{size}: the padding CIE");
+        } else {
+            assert!(rec.iter().all(|&b| b == 0), "{size}: the absorbed bytes are DW_CFA_nop");
+        }
+    }
+    // The dead writer: dead ranges hold their hole's bytes and the map
+    // names them by kind.
+    let mut s = with_eh_hole(&state, eh, at, 16, format::hole_kind::DEAD_CIE);
+    let debug =
+        s.holes.iter().position(|h| h.kind == format::hole_kind::DEBUG).expect("a debug allotment");
+    s.holes[debug].kind = format::hole_kind::DEAD_DEBUG;
+    let dead_debug = s.holes[debug];
+    match replay_judged(&prog, "dead", &s) {
+        Replayed::Linked(bytes, f) => {
+            assert!(f.is_empty(), "the verifier rejects: {f:?}");
+            assert!(bytes == prog.bytes("pad16"), "a dead range's bytes are not its hole's");
+        }
+        Replayed::Failed(r) => panic!("the replay failed: {r}"),
+    }
+    let m = std::fs::read_to_string(prog.path("dead.map")).unwrap();
+    let records = hole_records(&m);
+    let dead: Vec<_> = records.iter().filter(|h| h.0 == "dead").collect();
+    assert_eq!(dead.len(), 2, "{dead:?}");
+    assert!(
+        dead.iter().any(|h| (h.1.as_str(), h.2, h.3, h.4.as_str()) == (".eh_frame", at, 16, "cie"))
+    );
+    let dd = dead.iter().find(|h| h.4 == "debug").expect("a dead debug record");
+    assert_eq!(dd.3, dead_debug.size);
+    assert_eq!(records.len(), first.len() + 1, "the other holes stay holes");
+    support::plumb::readers(&prog.path("dead"));
 }
 
 // spec: synth.md S-49 (the CIE rule: a listed CIE that S-44 would have

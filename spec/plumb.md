@@ -197,9 +197,12 @@ hex as above; the range lies inside the section's `sh_size`.
   allocated region's slack (IN-30) holding IN-3's fill (trap in code,
   zero in other `PROGBITS`, nothing in `NOBITS`), a padding CIE ending a
   per-file `.eh_frame` range (IN-34a), or a debug contribution's
-  neutral padding (IN-50, IN-51b). A hole is not the alignment padding
-  a plain link also has between two placements: that is listed by no
-  record, as in a plain map.
+  neutral padding (IN-50, IN-51b), or the neutral abbreviation table
+  in `.debug_abbrev` (IN-51b). An `.eh_frame` hole of 4, 8 or 12 bytes
+  is not a CIE: it is the `DW_CFA_nop` padding the record before it
+  absorbs (its length field covers the hole). A hole is not the
+  alignment padding a plain link also has between two placements: that
+  is listed by no record, as in a plain map.
 - `dead`: a range an earlier link's live unit held and the current
   inputs do not (IN-3a), by kind: `debug` a dead debug contribution,
   `fragment` a dead piece of a merged section, `cie` an unused CIE in

@@ -26,8 +26,13 @@ pub const PACKED_DIV: u64 = 8;
 pub const DEBUG_TAIL_DIV: u64 = 32;
 /// The smallest debug size class (`at least 32 B`).
 pub const CLASS_MIN: u64 = 32;
-/// The neutral abbreviation table's size (IN-51b).
-pub const ABBREV_TABLE: u64 = 8;
+/// The neutral abbreviation table's hole (IN-51b): its 8 bytes and the
+/// 0 code that ends the table. IN-51's 8 bytes end the abbreviation's
+/// attribute list only; in a dead contribution the zeros after them end
+/// the table, but a table at the end of `.debug_abbrev` needs its own
+/// (readelf: "section not zero terminated", and the units' abbreviation
+/// 1 is not found).
+pub const ABBREV_TABLE: u64 = 9;
 
 /// Whether a link lays out slack, and how much. [`Slack::NONE`] in a
 /// plain link.
