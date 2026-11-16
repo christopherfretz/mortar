@@ -8,8 +8,8 @@ use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
     Base, Check, ClassOutcome, DeadRef, Demand, DemandClass, DemandFlags, DemandSink, EventClass,
     Field, FieldError, FillCx, GlobalFlags, Incompatible, Minus, OutputKind, Refusal, RelocAt,
-    ScanCx, ScanError, SectionOut, SlotKind, SymValue, TargetKind, Terms, TlsAbi, WeakClass,
-    class_outcome, dead_reference, writes_dtprel,
+    ScanCx, ScanError, SectionOut, SlotKind, SymValue, TargetKind, Terms, WeakClass, class_outcome,
+    dead_reference, writes_dtprel,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::Class;
@@ -405,7 +405,7 @@ fn value(
         mortar_arch::PlaceFacts { alloc: out.alloc, writable: false, exec: None },
         sym.tls,
     ) {
-        return checked(h.check, tls_off(cx, sym, a, TlsAbi::dtp_rel)?);
+        return checked(h.check, cx.dtp_rel(sym, a)?);
     }
     // §7 (`Facts`' `weak0` rule): `S = 0` for every class. X-57: a `PC32`
     // on a branch opcode against a `weakdyn` key goes through its PLT entry.
@@ -460,7 +460,7 @@ fn dtpoff(
     if code {
         tls_off(cx, sym, at.rela_addend(), |x, tls| TLS.tp_rel(x, tls))
     } else {
-        tls_off(cx, sym, at.rela_addend(), TlsAbi::dtp_rel)
+        cx.dtp_rel(sym, at.rela_addend())
     }
 }
 

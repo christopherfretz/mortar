@@ -655,8 +655,20 @@ impl LinkTables<'_, '_> {
                 (self.global.get(id.0 as usize).copied().flatten(), live)
             }
         };
-        // S-71: every address of an IFUNC with an IPLT entry is the entry.
-        let s = self.plt(key).or(s).unwrap_or(0);
+        // A PLT entry is `S` only where it is the symbol's address for the
+        // whole program (`spec/arch.md` §3.6, WP-113): the canonical entry
+        // of a `CANON_PLT` key (`spec/dyn.md` D-44), and, S-71, the IPLT
+        // entry of an IFUNC defined in this output. An ordinary PLT entry
+        // (a `JUMP_SLOT`'s, a library IFUNC's) is a stand-in for calls
+        // only: such a key's `S` is its copy, or 0 (arch.md §4.3).
+        let entry = if self.flags(key).contains(DemandFlags::CANON_PLT) {
+            self.plt(key)
+        } else if matches!(facts.kind, TargetKind::Shlib { .. } | TargetKind::WeakDyn) {
+            None
+        } else {
+            self.link.synth.got.iplt_address(&self.got_addrs, key)
+        };
+        let s = entry.or(s).unwrap_or(0);
         (SymValue { s, kind: facts.kind, size, live, tls: facts.tls }, is_split)
     }
 }

@@ -311,6 +311,14 @@ pub fn class_outcome(
         if !class.is_tls() && tls && !writes_dtprel(class, place, tls) {
             return ClassOutcome::Incompatible(Incompatible::ThreadLocal);
         }
+        // WP-113: `writes_dtprel`'s exception is for a TLS symbol defined
+        // in this output; an absolute word against one only a shared
+        // library defines keeps the TLS mismatch rule.
+        if writes_dtprel(class, place, tls)
+            && matches!(target, TargetKind::Shlib { .. } | TargetKind::WeakDyn)
+        {
+            return ClassOutcome::Incompatible(Incompatible::ThreadLocal);
+        }
         // `GotRel` writes `S + A − GOT`: the base must exist.
         let global =
             if class == DemandClass::GotRel { GlobalFlags::GOT_BASE } else { GlobalFlags::empty() };
