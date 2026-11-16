@@ -137,12 +137,20 @@ impl Output {
     /// as given in every diagnostic.
     pub fn create(path: &Path, opts: &OutputOptions) -> Result<Self, (Key, Diagnostic)> {
         let shown = path.to_string_lossy().into_owned();
+        let follow = fs::metadata(path).ok();
         // I-57: a directory, following symbolic links.
-        if fs::metadata(path).is_ok_and(|m| m.is_dir()) {
+        if follow.as_ref().is_some_and(fs::Metadata::is_dir) {
             return Err(cannot_open(&shown, "Is a directory".into()));
         }
         let link = fs::symlink_metadata(path).ok();
-        if let Some(m) = &link {
+        // I-58a: a symbolic link through a descriptor table (`/dev/stdout`
+        // redirected to a file) is written in place, truncated: renaming
+        // over it would replace the link, not write the file.
+        let alias = link.as_ref().is_some_and(|l| l.file_type().is_symlink())
+            && follow.as_ref().is_some_and(fs::Metadata::is_file)
+            && through_descriptor(path);
+        // I-58: the type of the file `P` names, following symbolic links.
+        if let Some(m) = follow.as_ref().filter(|_| !alias) {
             let t = m.file_type();
             if t.is_char_device() {
                 // I-58: written in place, not created or truncated.
@@ -171,6 +179,20 @@ impl Output {
                 let (key, d) = cannot_open(&shown, "not a regular file".into());
                 return Err((key, d.note(note)));
             }
+        }
+        if alias {
+            let file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path)
+                .map_err(|e| cannot_open(&shown, open_reason(&e)))?;
+            return Ok(Self {
+                path: path.to_path_buf(),
+                shown,
+                target: Some(Target::InPlace(file)),
+                aside: None,
+                helper: None,
+            });
         }
         let (file, tmp) =
             Self::temp(path, opts).map_err(|e| cannot_open(&shown, open_reason(&e)))?;
@@ -386,14 +408,93 @@ pub fn remove_stale_output(path: &Path, inputs: &[FileIdentity]) -> bool {
     if !(t.is_file() || t.is_symlink()) {
         return false;
     }
+    // A symbolic link to a device, a FIFO or a socket (`/dev/stdout`), or
+    // through a descriptor table, is not an output this link left (I-58,
+    // I-58a).
+    if t.is_symlink()
+        && (fs::metadata(path).is_ok_and(|f| !f.is_file()) || through_descriptor(path))
+    {
+        return false;
+    }
     if identity(path).is_some_and(|id| inputs.contains(&id)) {
         return false;
     }
     fs::remove_file(path).is_ok()
 }
 
-/// Writes `bytes` to `path` with the same protocol (I-79: the map file).
+/// Whether `path` reaches its file through a process's descriptor table
+/// (`/dev/stdout`, `/dev/fd/1`, `/proc/self/fd/1`; I-58a): one of the
+/// symbolic links it follows is an entry of a `/proc/<pid>/fd` directory.
+#[must_use]
+pub fn through_descriptor(path: &Path) -> bool {
+    let mut p = path.to_path_buf();
+    // The kernel's limit on nested symbolic links.
+    for _ in 0..40 {
+        let Ok(m) = fs::symlink_metadata(&p) else { return false };
+        if !m.file_type().is_symlink() {
+            return false;
+        }
+        let dir = split(&p).0;
+        if fs::canonicalize(&dir).is_ok_and(|c| is_descriptor_dir(&c)) {
+            return true;
+        }
+        let Ok(target) = fs::read_link(&p) else { return false };
+        p = dir.join(target);
+    }
+    false
+}
+
+/// `/proc/<pid>/fd` or `/proc/<pid>/task/<tid>/fd`.
+fn is_descriptor_dir(dir: &Path) -> bool {
+    let parts: Vec<&std::ffi::OsStr> = dir.iter().collect();
+    let digits = |s: &std::ffi::OsStr| {
+        let b = s.as_encoded_bytes();
+        !b.is_empty() && b.iter().all(u8::is_ascii_digit)
+    };
+    match parts.as_slice() {
+        [root, proc, pid, fd] => {
+            *root == "/" && *proc == "proc" && digits(pid) && *fd == "fd"
+        }
+        [root, proc, pid, task, tid, fd] => {
+            *root == "/"
+                && *proc == "proc"
+                && digits(pid)
+                && *task == "task"
+                && digits(tid)
+                && *fd == "fd"
+        }
+        _ => false,
+    }
+}
+
+/// I-79a: a file written whole that is a stream is written in order, in
+/// place: a character device or a FIFO (`-Map=/dev/stdout` on a terminal
+/// or a pipe; `/dev/null`), and a regular file reached through a
+/// descriptor table (`-Map=/dev/stdout` redirected to a file), which is
+/// truncated first. `None` for every other path.
+fn stream_target(path: &Path) -> Option<bool> {
+    let m = fs::metadata(path).ok()?;
+    let t = m.file_type();
+    if t.is_char_device() || t.is_fifo() {
+        return Some(false);
+    }
+    let link = fs::symlink_metadata(path).ok()?;
+    (m.is_file() && link.file_type().is_symlink() && through_descriptor(path)).then_some(true)
+}
+
+/// Writes `bytes` to `path` with the same protocol (I-79: the map file),
+/// or in place for a stream (I-79a).
 pub fn write_whole(path: &Path, bytes: &[u8], mode: u32) -> Result<(), (Key, Diagnostic)> {
+    if let Some(truncate) = stream_target(path) {
+        use std::io::Write as _;
+        let shown = path.to_string_lossy().into_owned();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(truncate)
+            .open(path)
+            .map_err(|e| cannot_open(&shown, open_reason(&e)))?;
+        return file.write_all(bytes).map_err(|e| write_error(&shown, &e));
+    }
     let opts = OutputOptions { mode, inputs: Vec::new(), lock: LockMode::Probe };
     let out = Output::create(path, &opts)?;
     if let Err(e) = out.write_at(0, bytes) {

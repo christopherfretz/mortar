@@ -2,8 +2,10 @@
 //! GNU ld's (libiberty's), found by experiment with GNU ld 2.44.
 
 use std::ffi::OsString;
+use std::io::Read as _;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::Path;
+use std::os::unix::fs::MetadataExt as _;
+use std::path::{Path, PathBuf};
 
 use crate::PHASE;
 use mortar_diag::{Diagnostic, Key, Kind, Place};
@@ -12,14 +14,44 @@ use mortar_diag::{Diagnostic, Key, Kind, Place};
 /// expands 1999 and fails on the 2000th.
 pub const LIMIT: u32 = 1999;
 
+/// A response file that was expanded: its path as the `@file` argument
+/// spelled it, and the device and inode of the file read (`spec/cli.md`
+/// §2.6.4: a file the link writes must not be one of these).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseFile {
+    pub path: PathBuf,
+    pub dev: u64,
+    pub ino: u64,
+}
+
+/// What [`expand_recorded`] returns.
+#[derive(Debug, Clone, Default)]
+pub struct Expanded {
+    /// The expanded command line.
+    pub args: Vec<OsString>,
+    /// The errors, keyed on the position of the `@file` argument.
+    pub diagnostics: Vec<(Key, Diagnostic)>,
+    /// Every response file read, in the order it was expanded (a file
+    /// named twice is listed twice).
+    pub files: Vec<ResponseFile>,
+}
+
 /// Expands every `@file` argument in place, recursively (§2.6). An
 /// argument whose file cannot be opened stays as it is; a directory is an
 /// error. Errors key on the position of the `@file` argument in the
 /// expanded command line.
 #[must_use]
 pub fn expand(args: &[OsString]) -> (Vec<OsString>, Vec<(Key, Diagnostic)>) {
+    let e = expand_recorded(args);
+    (e.args, e.diagnostics)
+}
+
+/// [`expand`], also recording each file read (§2.6.4).
+#[must_use]
+pub fn expand_recorded(args: &[OsString]) -> Expanded {
     let mut out: Vec<OsString> = args.to_vec();
     let mut diagnostics = Vec::new();
+    let mut files = Vec::new();
     let mut expanded = 0u32;
     let mut i = 0;
     while i < out.len() {
@@ -29,7 +61,14 @@ pub fn expand(args: &[OsString]) -> (Vec<OsString>, Vec<(Key, Diagnostic)>) {
             continue;
         }
         let path = Path::new(std::ffi::OsStr::from_bytes(&bytes[1..])).to_path_buf();
-        if path.is_dir() {
+        // One `open` and one `fstat`: the identity recorded is the file's
+        // whose bytes are read.
+        let opened = std::fs::File::open(&path).and_then(|f| f.metadata().map(|m| (f, m)));
+        let is_dir = match &opened {
+            Ok((_, m)) => m.is_dir(),
+            Err(_) => path.is_dir(),
+        };
+        if is_dir {
             let key = Key::new(PHASE, index(i), 0);
             diagnostics.push((
                 key,
@@ -43,7 +82,11 @@ pub fn expand(args: &[OsString]) -> (Vec<OsString>, Vec<(Key, Diagnostic)>) {
             continue;
         }
         // GNU ld: a file that cannot be read is an ordinary argument.
-        let Ok(contents) = std::fs::read(&path) else {
+        let read = opened.and_then(|(mut f, m)| {
+            let mut contents = Vec::with_capacity(usize::try_from(m.len()).unwrap_or(0));
+            f.read_to_end(&mut contents).map(|_| (contents, m))
+        });
+        let Ok((contents, meta)) = read else {
             i += 1;
             continue;
         };
@@ -57,11 +100,12 @@ pub fn expand(args: &[OsString]) -> (Vec<OsString>, Vec<(Key, Diagnostic)>) {
             break;
         }
         expanded += 1;
+        files.push(ResponseFile { path, dev: meta.dev(), ino: meta.ino() });
         let words = split(&contents);
         out.splice(i..=i, words.into_iter().map(OsString::from_vec));
         // Re-scan from `i`: the file's own `@file` arguments expand too.
     }
-    (out, diagnostics)
+    Expanded { args: out, diagnostics, files }
 }
 
 fn index(i: usize) -> u32 {
