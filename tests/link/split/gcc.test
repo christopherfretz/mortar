@@ -9,6 +9,10 @@
 # GCC's .debug_addr entry of a TLS variable (R_X86_64_64/R_386_32
 # against tl_count) is its DTP offset (spec/x64.md X-53, spec/x86.md
 # X86-62); GNU ld and mold write the template address (plumb.md A15).
+# GCC's -O2 form is not here: GCC 14's DWO ID at -O2 differs between two
+# compiles of the same source (with -frandom-seed too), so its link could
+# not be in static-identical; the census and debuggers.rs split-d5-O2
+# cover it.
 #@ anomaly(bfd,mold,x86_64,i386): A15
 #@ spec: image.md I-49a
 #@ requires: g++ llvm-dwarfdump
@@ -21,8 +25,6 @@ cxx -g -gsplit-dwarf -gdwarf-5 -fdebug-types-section -O0 -ffunction-sections mai
 cxx -g -gsplit-dwarf -gdwarf-5 -fdebug-types-section -O0 -ffunction-sections b.cc -o b-d5t.o
 cxx -g -gsplit-dwarf -gdwarf-4 -fdebug-types-section -O0 -ffunction-sections main.cc -o main-d4t.o
 cxx -g -gsplit-dwarf -gdwarf-4 -fdebug-types-section -O0 -ffunction-sections b.cc -o b-d4t.o
-cxx -g -gsplit-dwarf -gdwarf-5 -O2 -ffunction-sections main.cc -o main-d5o.o
-cxx -g -gsplit-dwarf -gdwarf-5 -O2 -ffunction-sections b.cc -o b-d5o.o
 cxx -g -gsplit-dwarf -gdwarf-4 -gno-pubnames -O0 -ffunction-sections main.cc -o main-d4np.o
 cxx -g -gsplit-dwarf -gdwarf-4 -gno-pubnames -O0 -ffunction-sections b.cc -o b-d4np.o
 link g++ -static -no-pie -fno-use-linker-plugin main-d5.o b-d5.o -o prog-d5
@@ -80,21 +82,6 @@ check readelf --debug-dump=info prog-d4t
   has: Found separate debug object file: */main-d4t.dwo
   has: Found separate debug object file: */b-d4t.dwo
 check llvm-dwarfdump --verify prog-d4t
-  has: No errors.
-link g++ -static -no-pie -fno-use-linker-plugin main-d5o.o b-d5o.o -o prog-d5o
-run prog-d5o
-  stdout: 5 10 8
-check readelf -SW prog-d5o
-  has: .debug_addr
-  has: .debug_info
-  not: .dwo
-check readelf --debug-dump=info prog-d5o
-  has: DW_UT_skeleton
-  has: DW_AT_dwo_name
-  has: DW_UT_split_compile
-  has: Found separate debug object file: */main-d5o.dwo
-  has: Found separate debug object file: */b-d5o.dwo
-check llvm-dwarfdump --verify prog-d5o
   has: No errors.
 link g++ -static -no-pie -fno-use-linker-plugin main-d4np.o b-d4np.o -o prog-d4np
 run prog-d4np

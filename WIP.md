@@ -4,19 +4,13 @@ Stage A (split DWARF tested). Stage B (index question) waits for the
 supervisor.
 
 ## Done
-- `scripts/split-census.py`: the census (producers x forms x arches x
-  linkers, plain and --gc-sections): object sections, fates, runs,
-  verifier, address/tombstone counts. First run: every cell links, runs
-  as GNU ld's, verifier clean (200 mortar outputs); mortar's section fate
-  and size equal at least one reference's everywhere.
-
-## Half-done
-- census re-run with tombstone counts and the single-form/type-unit forms.
+- census (`scripts/split-census.py`), record `spec/landed/image/WP-080.md`,
+  rule `spec/image.md` I-49a.
+- `tests/link/split/` (5 tests, 48 PASS), `llvm-dwarfdump` check tool.
+- debugger sessions in `crates/mortar/tests/debuggers.rs` (split_*), green.
+- Mason lane sample (shard 1/46, 202 tests): 0 DIFFERENT, 151 links clean.
+- merged main once (1a6152e; WP-059 not on main yet).
 
 ## Next
-- record `spec/landed/image/WP-080.md` (census table, item 2 table).
-- `tests/link/split/*.test` (gcc and clang 22; static, PIE, static-pie).
-- debugger sessions: split flag sets in `crates/mortar/tests/debuggers.rs`,
-  `.dwp` row with llvm-dwp (GNU dwp is not installed: request).
-- static-identical rows: `tests/identical/split-dwarf.test`.
-- Mason lane sample with `--cflags -gsplit-dwarf`.
+- static-identical --update (aarch64), push, hosted ci, x86_64 rows from
+  the lane log, gate, final commit deleting this file.
