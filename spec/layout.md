@@ -507,6 +507,56 @@ total and deterministic.
   section. The grouping affects every `-O2` GCC link, not only
   `-ffunction-sections` ones: GCC puts `main` in `.text.startup` and
   cold paths in `.text.unlikely` at `-O2` (Q7, decided).
+- **L-53a [C] (`--sort-section`, WP-111)** With `--sort-section=alignment`
+  or `--sort-section=name` (`Shaping.sort_section`, the last use wins),
+  the inputs of an output section named in GNU ld's default scripts
+  (`order::SCRIPT_SECTIONS`: `.text`, `.rodata`, `.rodata1`, `.data`,
+  `.data1`, `.data.rel.ro`, `.bss`, `.tdata`, `.tbss`, `.preinit_array`,
+  `.init_array`, `.fini_array`, `.ctors`, `.dtors`, `.jcr`, `.eh_frame`,
+  `.gcc_except_table`, `.gnu_extab`, `.exception_ranges`, `.sframe`,
+  `.interp`, `.comment`, `.note.gnu.build-id`, `.note.ABI-tag`,
+  `.note.package`, `.lrodata`, `.ldata`, `.lbss`) are ordered by the key
+  (group, sort key, `SectionId`):
+  - the group is what the section had without the option: the L-53
+    category in `.text` (with `.text.sorted.*`'s name first, so that
+    category is by name, then by the sort key), numbered or unnumbered in
+    `.init_array`/`.fini_array` (the numbered keep L-54's key and are not
+    re-sorted: GNU's `SORT_BY_INIT_PRIORITY` is a sort of its own, which
+    the option does not replace), one group elsewhere;
+  - the sort key is the input's alignment (`sh_addralign`), largest
+    first, for `alignment`; its name, by byte order, for `name`.
+  `.init` and `.fini` are not sorted (`SORT_NONE` in the script), nor is
+  any other output section (an orphan in GNU's script). Merged chunks
+  (`SHF_MERGE`, synth.md R-L4), synthetic chunks and the commons (L-88,
+  L-88a) are not input sections of a pattern and do not move; L-57 sorts
+  the `SHF_LINK_ORDER` inputs after this key, as without the option.
+  Measured, GNU ld 2.44 on the three targets (WP-111): the option makes
+  every input-section statement of its built-in script without a sort
+  keyword a `SORT_BY_ALIGNMENT` or `SORT_BY_NAME` one, each statement
+  sorted on its own (so the `.text` categories stay); ties stay in input
+  order (a stable sort); `SORT(.text.sorted.*)` becomes name, then
+  alignment; orphans are placed unsorted. lld and mold accept the option
+  and ignore it without a script (input order; lld sorts only a script's
+  patterns). Known differences from GNU ld, all in the order of inputs
+  inside an output section, none in what the program does:
+  - GNU's `.data.rel.ro` has two statements, `.data.rel.ro.local*`
+    first; mortar has one group there, with or without the option;
+  - `.lrodata`, `.ldata`, `.lbss` are script sections only in GNU's
+    x86-64 scripts; on the other targets GNU leaves them unsorted;
+  - GNU's script statements name a few input sections a different
+    output section takes in mortar (`spec/layout.md` §8); such an input
+    is sorted with its mortar output section.
+  The unnumbered `.init_array`/`.fini_array` inputs change order under
+  the option, in GNU ld as in mortar: that is the order of constructors
+  from different translation units, which C and C++ leave unspecified.
+  With a `-T` script: `SECTIONS` is refused today (`spec/script.md`), so
+  the option meets no `SORT*` keyword; when `SECTIONS` lands, the option
+  applies to each input-section pattern of the user's script that has no
+  sort keyword (GNU ld's rule), a pattern with `SORT_NONE` or its own
+  `SORT_BY_*` keeps its own order, and `SORT_BY_NAME(SORT_BY_ALIGNMENT)`
+  nesting is as GNU ld's manual gives it. Until then a `-T` script with
+  `SECTIONS` is refused whatever the options, and one without it has no
+  pattern for the option to meet.
 ### 9.1 Initialization and termination
 
 The start-up code runs `.preinit_array`, then `.init_array`, from the
@@ -944,13 +994,38 @@ order of the output sections themselves is in §10.
 
 - **L-88 [C]** A common symbol that resolution chose is allocated in
   `.bss` (`sym_place`), after the `.bss` input sections, in `SymbolId`
-  order, each aligned to its `st_value` (the common alignment). GNU
-  orders commons by name within the `COMMON` pattern, lld by input
+  order, each aligned to its `st_value` (the common alignment). GNU ld
+  allocates commons per file, in the `COMMON` section of the file that
+  holds each (the first common of the largest size), in input order of
+  those files and, inside one, in the order of its symbol hash table
+  (measured, 2.44, WP-111: not by name); lld and mold in symbol-table
   order. The order has no observable effect. `SymbolId` is
   deterministic and needs no sort. A large common (x86-64
   `SHN_X86_64_LCOMMON`, `spec/resolve.md` §3.3: one whose every
   mention is `LCOMMON`) is allocated the same way in `.lbss` (L-36a;
   `spec/x64.md` X-55).
+- **L-88a [C] (`--sort-common`, WP-111)** With `--sort-common`
+  (`Shaping.sort_common`, the last use wins), the commons of `.bss`, and
+  separately those of `.lbss`, are allocated in the order of the key
+  (common alignment, `SymbolId`): the alignment largest first for
+  `--sort-common` and `--sort-common=descending`, smallest first for
+  `--sort-common=ascending`. The key is total and deterministic and is
+  applied to `place`'s list of commons, before chunking (L-85); each
+  common keeps its own alignment and size. Measured, GNU ld 2.44 on the
+  three targets (WP-111): without a value the order is descending;
+  GNU sorts each holder file's `COMMON` section on its own, by the
+  classes alignment ≥ 16, 8, 4, 2, 1 (descending) or 1, 2, 4, 8, then
+  every alignment ≥ 16 together (ascending), and leaves ties, and the
+  alignments inside the ≥ 16 class, in its symbol hash table's order.
+  mortar's key refines that: the same order wherever GNU's is
+  determined (one holder file, one common per class), and a total one
+  where GNU's is the order of a hash table or of holder files. It applies
+  to `SHN_COMMON` commons and to x86-64 large commons (in `.lbss`) alike.
+  `-z common` (the type `STT_COMMON`) and `--no-define-common` (commons
+  left unallocated) are refused (`docs/status/options.md`), so neither
+  meets the option. lld and mold accept `--sort-common` and
+  ignore it (symbol-table order); neither accepts `=ascending` or
+  `=descending`.
 - **L-89 [C] [M1]** A TLS common (`STT_TLS` with `SHN_COMMON`) is
   refused (`feature`, `TLS common symbol`). GCC emits it only with
   `-fcommon` on TLS variables, which no current default does.
@@ -1656,6 +1731,9 @@ the static IPLT is in `.plt`, `.rela.plt` and `.got.plt` (S-68);
 | base, AArch64 | 0x400000 | 0x200000 | 0x200000 | 0x400000 | L-68 |
 | rodata vs text order | text first | rodata first | rodata first | rodata first | L-62 |
 | `.text` input order | categories | input order | input order | categories | L-53 |
+| `--sort-section` | sorts each default-script statement | ignored (no script) | ignored | per L-53 group | L-53a |
+| commons' order | per holder file, hash order | symbol table | symbol table | `SymbolId` | L-88 |
+| `--sort-common` | per holder file, alignment classes | ignored | ignored | (alignment, `SymbolId`) | L-88a |
 | `.ctors` | into init_array, reversed | separate, not run | as GNU | as GNU (M2), refused (M1) | L-56 |
 | `.preinit_array` vs `.init_array` | pre first | after | pre first | pre first | L-62 |
 | merged sections | one output | one output, MERGE kept | one per class | one output, MERGE dropped if mixed | L-50 |

@@ -234,3 +234,25 @@ pub fn sort_commons(commons: &[Common], dir: mortar_core::plan::SortCommon) -> V
     }
     v
 }
+
+#[cfg(test)]
+mod sort_tests {
+    use super::*;
+    use mortar_core::plan::SortCommon;
+
+    // spec: layout.md §12.2 L-88a (by alignment, then SymbolId)
+    #[test]
+    fn l88a_sort_commons() {
+        let c = |symbol: u32, align: u8| Common {
+            symbol: SymbolId(symbol),
+            size: 1,
+            align,
+            tls: false,
+            large: false,
+        };
+        let commons = [c(1, 2), c(2, 6), c(3, 0), c(4, 3), c(5, 6), c(6, 3)];
+        let ids = |v: Vec<Common>| v.iter().map(|c| c.symbol.0).collect::<Vec<_>>();
+        assert_eq!(ids(sort_commons(&commons, SortCommon::Descending)), [2, 5, 4, 6, 1, 3]);
+        assert_eq!(ids(sort_commons(&commons, SortCommon::Ascending)), [3, 1, 4, 6, 2, 5]);
+    }
+}

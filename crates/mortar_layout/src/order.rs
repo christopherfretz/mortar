@@ -214,7 +214,9 @@ fn sort_named(
             let (na, nb) = (headers[a].name, headers[b].name);
             let (ca, cb) = (text_category(na), text_category(nb));
             ca.cmp(&cb)
-                .then_with(|| if ca == 4 && cb == 4 { na.cmp(nb) } else { std::cmp::Ordering::Equal })
+                .then_with(
+                    || if ca == 4 && cb == 4 { na.cmp(nb) } else { std::cmp::Ordering::Equal },
+                )
                 .then_with(|| section_key(a, b, headers, by))
                 .then(a.cmp(&b))
         });
@@ -229,7 +231,13 @@ fn sort_named(
         // `--sort-section` does not replace; the unnumbered take its key.
         keyed.sort_by(|&(ka, a), &(kb, b)| {
             ka.cmp(&kb)
-                .then_with(|| if ka.0 == 1 { section_key(a, b, headers, by) } else { std::cmp::Ordering::Equal })
+                .then_with(|| {
+                    if ka.0 == 1 {
+                        section_key(a, b, headers, by)
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
                 .then(a.cmp(&b))
         });
         for (slot, (_, s)) in m.iter_mut().zip(keyed) {
@@ -305,6 +313,18 @@ mod tests {
         assert_eq!(text_category(b".text"), 5);
         assert_eq!(text_category(b".text.f"), 5);
         assert_eq!(text_category(b".text.hotter"), 5);
+    }
+
+    // spec: layout.md §9 L-53a (the output sections --sort-section sorts)
+    #[test]
+    fn l53a_script_sections() {
+        for n in [&b".text"[..], b".rodata", b".data", b".bss", b".tdata", b".tbss", b".init_array"]
+        {
+            assert!(sorted_by_sort_section(n), "{n:?}");
+        }
+        for n in [&b".init"[..], b".fini", b".text.f", b"my_section", b".got", b".debug_info"] {
+            assert!(!sorted_by_sort_section(n), "{n:?}");
+        }
     }
 
     // spec: layout.md §9.1 L-54 (init priorities: decimal 0..65535, else refused)

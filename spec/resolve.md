@@ -213,11 +213,29 @@ stand. Warnings (GNU ld's, which gfortran users meet; mortar's wording is
   is smaller than the largest common alignment. GNU ld prints ``alignment
   8 of normal symbol `x' in d8.o is smaller than 16 used by the common
   definition in c64.o``.
-- Under `--warn-common` (M1): `multiple-common` for a key with commons in
-  two files (GNU: ``common of `x' overriding smaller common``), and
-  `common-overridden` when a definition beats a common (GNU: ``definition
-  of `x' overriding common``). One warning per key, at the second mention
-  by `≺`.
+- Under `--warn-common` (M1; accepted since WP-111, until
+  `--no-warn-common`): `multiple-common` for a key with commons in
+  two files, and `common-overridden` when a definition beats a common.
+  One warning per key, at the second mention by `≺`; the place is that
+  mention (`common-overridden`: the definition), with a `>>> defined in`
+  line for the first common. Warnings; `--fatal-warnings` makes them
+  errors (diag.md §3.1). Measured, GNU ld 2.44 (WP-111) has five texts,
+  one per merge as it meets the mentions in its order of loading
+  (archive members included, named `libx.a(m.o)`), which mortar's two
+  cover by kind:
+
+  | GNU ld 2.44 (`X` the later file, `Y` the earlier) | mortar |
+  |---|---|
+  | ``X: warning: definition of `x' overriding common from Y`` | `common-overridden` |
+  | ``X: warning: common of `x' overridden by definition from Y`` | `common-overridden` |
+  | ``X and Y: warning: multiple common of `x'`` (same size) | `multiple-common` |
+  | ``X: warning: common of `x' overriding smaller common from Y`` | `multiple-common` |
+  | ``X: warning: common of `x' overridden by larger common from Y`` | `multiple-common` |
+
+  GNU warns at every merge of a key (three commons: two warnings);
+  mortar once per key. lld 22 prints ``common x is overridden`` and
+  ``multiple common of x``; mold ``multiple common symbols: x``. GNU ld
+  2.44 has no `--no-warn-common` (lld and mold do; it is the default).
 
 In a `-fno-common` world (GCC 10 and later, Clang 11 and later by default)
 C produces no commons; gfortran still emits every named COMMON block as a

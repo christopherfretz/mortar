@@ -740,10 +740,11 @@ impl Parser<'_> {
             Lands::WarnBackrefs(on) => plan.diagnostics.warn_backrefs = on,
             Lands::WarnCommon(on) => plan.diagnostics.warn_common = on,
             Lands::SortCommon => {
-                plan.shaping.sort_common = Some(match value.as_ref().map(|v| v.to_string_lossy()) {
-                    Some(v) if v == "ascending" => crate::plan::SortCommon::Ascending,
-                    _ => crate::plan::SortCommon::Descending,
-                });
+                plan.shaping.sort_common =
+                    Some(match value.as_ref().map(|v| v.to_string_lossy()) {
+                        Some(v) if v == "ascending" => crate::plan::SortCommon::Ascending,
+                        _ => crate::plan::SortCommon::Descending,
+                    });
             }
             Lands::SortSection => {
                 plan.shaping.sort_section = Some(match word().as_str() {
