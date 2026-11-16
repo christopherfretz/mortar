@@ -494,6 +494,16 @@ pub fn run(args: &Args) -> Result<bool, String> {
 /// a usage or read error.
 pub fn main(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
+    if args.first().is_some_and(|a| a == "--equiv") {
+        return match EquivArgs::parse(args).and_then(|a| run_equiv(&a)) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(message) => {
+                eprint!("xtask plumb --equiv: {message}\n{EQUIV_USAGE}");
+                ExitCode::from(2)
+            }
+        };
+    }
     match Args::parse(args).and_then(|a| run(&a)) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
@@ -504,9 +514,123 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
     }
 }
 
+pub const EQUIV_USAGE: &str = "usage: cargo xtask plumb --equiv <X.map> <F.map> <X> <F>\n";
+
+/// The command line of `xtask plumb --equiv` (§8; `spec/incr.md` IN-62).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EquivArgs {
+    pub x_map: PathBuf,
+    pub f_map: PathBuf,
+    pub x: PathBuf,
+    pub f: PathBuf,
+}
+
+impl EquivArgs {
+    pub fn parse(args: &[String]) -> Result<EquivArgs, String> {
+        let rest: Vec<&String> = args.iter().skip(1).collect();
+        if let Some(o) = rest.iter().find(|a| a.starts_with('-')) {
+            return Err(format!("unknown option '{o}'"));
+        }
+        match rest.as_slice() {
+            [xm, fm, x, f] => Ok(EquivArgs {
+                x_map: PathBuf::from(xm),
+                f_map: PathBuf::from(fm),
+                x: PathBuf::from(x),
+                f: PathBuf::from(f),
+            }),
+            _ => Err(format!("--equiv takes four files, {} given", rest.len())),
+        }
+    }
+}
+
+/// A mortar map, read and parsed; a usage error otherwise (§8).
+fn read_mortar_map(p: &Path) -> Result<mortar_plumb::Map, String> {
+    let b = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let text = std::str::from_utf8(&b).map_err(|_| format!("{}: not a mortar map (not text)", p.display()))?;
+    mortar_plumb::map::parse(Format::Mortar, text)
+        .map_err(|e| format!("{}:{}: not a mortar map: {}", p.display(), e.line, e.message))
+}
+
+/// Runs `--equiv`: prints each side's findings, the P-E findings and the
+/// summaries. `Ok(clean)`; `Err` is a usage error (exit 2).
+pub fn run_equiv(a: &EquivArgs) -> Result<bool, String> {
+    let xm = read_mortar_map(&a.x_map)?;
+    let fm = read_mortar_map(&a.f_map)?;
+    if !xm.claims_coverage() {
+        return Err(format!(
+            "{}: X's map claims no coverage (no `incremental` and no hole or dead line): not an update's map",
+            a.x_map.display()
+        ));
+    }
+    let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+    let (x, f) = (read(&a.x)?, read(&a.f)?);
+    for (p, b) in [(&a.x, &x), (&a.f, &f)] {
+        if !b.starts_with(b"\x7fELF") {
+            return Err(format!("{}: not an ELF file (are the arguments in the order X.map F.map X F?)", p.display()));
+        }
+    }
+    let mut paths: BTreeSet<String> = BTreeSet::new();
+    paths.extend(xm.paths().into_iter().map(str::to_string));
+    paths.extend(fm.paths().into_iter().map(str::to_string));
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for path in &paths {
+        if let Ok(b) = std::fs::read(path) {
+            for member in mortar_plumb::thin_members(path, &b) {
+                if let Ok(m) = std::fs::read(&member) {
+                    files.push((member, m));
+                }
+            }
+            files.push((path.clone(), b));
+        }
+    }
+    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+    let eq = mortar_plumb::equiv::check(&x, &xm, &f, &fm, &inputs);
+    let (xn, fname) = (a.x.display().to_string(), a.f.display().to_string());
+    for line in eq.x.render(&xn).lines() {
+        println!("X: {line}");
+    }
+    for line in eq.f.render(&fname).lines() {
+        println!("F: {line}");
+    }
+    let pe = mortar_plumb::Report { findings: eq.findings.clone(), coverage: Default::default() };
+    print!("{}", pe.render(&xn));
+    println!("X: {} findings, {} records", eq.x.findings.len(), eq.x.coverage.records);
+    println!("F: {} findings, {} records", eq.f.findings.len(), eq.f.coverage.records);
+    println!("{}", eq.summary());
+    Ok(eq.clean())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // spec/plumb.md §8: `--equiv`.
+    #[test]
+    fn s8_equiv_arguments() {
+        let a = EquivArgs::parse(&s(&["--equiv", "x.map", "f.map", "x", "f"])).unwrap();
+        assert_eq!(a.x_map, PathBuf::from("x.map"));
+        assert_eq!(a.f, PathBuf::from("f"));
+        assert!(EquivArgs::parse(&s(&["--equiv", "x.map", "f.map", "x"])).is_err());
+        assert!(EquivArgs::parse(&s(&["--equiv", "x.map", "f.map", "x", "f", "g"])).is_err());
+        assert!(EquivArgs::parse(&s(&["--equiv", "--map", "f.map", "x", "f"])).is_err());
+        let dir = std::env::temp_dir().join(format!("mortar-wp092-args-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plain = dir.join("plain.map");
+        std::fs::write(&plain, "mortar-map 1\nend\n").unwrap();
+        let elf = dir.join("x");
+        std::fs::write(&elf, b"\x7fELF\x02\x01").unwrap();
+        let arg = |p: &Path| p.display().to_string();
+        // A plain map as X, a missing file, swapped arguments: exit 2.
+        let r = run_equiv(&EquivArgs::parse(&s(&["--equiv", &arg(&plain), &arg(&plain), &arg(&elf), &arg(&elf)])).unwrap());
+        assert!(r.is_err(), "{r:?}");
+        let r = run_equiv(&EquivArgs::parse(&s(&["--equiv", &arg(&elf), &arg(&plain), &arg(&plain), &arg(&elf)])).unwrap());
+        assert!(r.is_err(), "{r:?}");
+        let r = run_equiv(&EquivArgs::parse(&s(&["--equiv", "/nonexistent/x.map", &arg(&plain), &arg(&elf), &arg(&elf)])).unwrap());
+        assert!(r.is_err(), "{r:?}");
+        std::fs::remove_file(&plain).unwrap();
+        std::fs::remove_file(&elf).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| (*x).to_string()).collect()
