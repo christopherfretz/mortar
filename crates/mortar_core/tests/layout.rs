@@ -371,6 +371,20 @@ impl World {
         self.layout.placement.segments = col(segments);
     }
 
+    /// Gives the chunks' section indices again, densely in the new chunk
+    /// order (L-86), after a mutation of `order` that a test means to break
+    /// another rule.
+    fn renumber(&mut self) {
+        let p = &mut self.layout.placement;
+        let mut new = std::collections::HashMap::new();
+        for &id in &p.order {
+            if let Some(old) = p.chunks[id].shndx {
+                let next = new.len() as u32 + 1;
+                p.chunks[id].shndx = Some(*new.entry(old).or_insert(next));
+            }
+        }
+    }
+
     /// The rule the layout breaks, and the message.
     #[track_caller]
     fn rejects(&self, rule: Rule, words: &str) -> Violation {
@@ -580,6 +594,7 @@ fn s4_4_rule3_segment_flags() {
 fn s4_4_rule3_split_tls() {
     let mut w = World::new();
     w.p().order.swap(6, 7);
+    w.renumber();
     w.rejects(Rule::Segments, "TLS chunks are split");
 }
 
@@ -603,6 +618,7 @@ fn s4_4_rule3_tls_template() {
 fn tls_after_data() -> World {
     let mut w = World::new();
     w.p().order = [0, 1, 2, 3, 4, 7, 5, 6, 8, 9].into_iter().map(ChunkId).collect();
+    w.renumber();
     let mut at = |c: u32, addr: u64| {
         let chunk = &mut w.layout.placement.chunks[ChunkId(c)];
         chunk.addr = Some(addr);
