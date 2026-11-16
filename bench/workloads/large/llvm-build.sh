@@ -65,7 +65,7 @@ cmake -S "$SRC/llvm-project-19.1.7.src/llvm" -B "$B" -G Ninja \
   $EXTRA
 # The small tools the tests need, linked by the build; of the three large
 # links only the inputs (the capture records the links themselves).
-ninja -C "$B" -j "$JOBS" FileCheck not count split-file llvm-config
+ninja -C "$B" -j "$JOBS" FileCheck not count split-file llvm-config clang-resource-headers
 ninja -C "$B" -t inputs bin/clang-19 bin/opt bin/llvm-lto2 | grep -E '[.](o|a)$' > "$B/large-inputs.txt"
 xargs ninja -C "$B" -j "$JOBS" < "$B/large-inputs.txt"
 echo "llvm-build.sh: done"

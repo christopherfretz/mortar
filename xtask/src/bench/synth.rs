@@ -39,16 +39,16 @@ pub enum Shape {
     /// included).
     Library,
     /// A long link line of archives (WP-081): members of
-    /// [`LINE_FUNCTIONS`] functions; three of every four members are
-    /// needed, each by the same member of the archive before it and by one
+    /// [`LINE_FUNCTIONS`] functions; seven of every eight members are
+    /// needed (`cxx-large-g` loads 87% of its members), each by the same member of the archive before it and by one
     /// further back, so the line links in its order without a group.
     /// Parameters: archives, members per archive.
     Line,
 }
 
-/// The functions of a member of the `line` shape (WP-081: about the
-/// global definitions of a loaded member of `cxx-large-g`).
-pub const LINE_FUNCTIONS: usize = 32;
+/// The functions of a member of the `line` shape (WP-081: a loaded member
+/// of `cxx-large-g` defines 74 global symbols on average).
+pub const LINE_FUNCTIONS: usize = 64;
 
 impl Shape {
     pub const ALL: [Self; 7] = [
@@ -398,9 +398,9 @@ fn archive_member(archive: usize, member: usize, archives: usize, members: usize
 }
 
 /// Whether the `line` shape's members at position `member` are needed:
-/// three of every four.
+/// seven of every eight.
 fn line_needed(member: usize) -> bool {
-    member % 4 != 3
+    member % 8 != 7
 }
 
 fn line_name(archive: usize, member: usize, function: usize) -> String {
@@ -502,7 +502,7 @@ mod tests {
                 "fnv1a64:ba3451fddf5f19c7",
                 "fnv1a64:4ded4bcf6bccb165",
                 "fnv1a64:6129bd24f943a2cc",
-                "fnv1a64:fcf700b2786033d0",
+                "fnv1a64:b07e8a4af43efdd6",
             ]
         );
     }
@@ -574,19 +574,19 @@ mod tests {
         assert_eq!(main.matches("sum += mortar_bench_archives_a00000_m").count(), 3, "{main}");
         assert!(main.contains("_m00006_f0(sum)") && !main.contains("_m00007_"), "{main}");
 
-        // Archives of members of 32 functions; members 0-2 of each four
+        // Archives of members of 64 functions; members 0-6 of each eight
         // are needed, called from the archive before and from one further
         // back; main needs those of the first.
-        let line = Request { shape: Shape::Line, params: (5, 4) };
-        assert_eq!(line.count(), 21);
-        let member = |archive: usize, member: usize| line.source(archive * 4 + member);
+        let line = Request { shape: Shape::Line, params: (5, 8) };
+        assert_eq!(line.count(), 41);
+        let member = |archive: usize, member: usize| line.source(archive * 8 + member);
         assert_eq!(member(2, 3).name, "a00002_m00003.c");
         assert_eq!(member(0, 0).text.matches("(int x) {").count(), LINE_FUNCTIONS);
         let first = member(0, 1).text;
         assert!(first.contains("+ mortar_bench_line_a00001_m00001_f00(x)"), "{first}");
         assert_eq!(first.matches("(int);").count(), 2, "{first}");
-        assert!(!member(0, 3).text.contains("(int);") && !member(4, 0).text.contains("(int);"));
-        let main = line.source(20).text;
-        assert_eq!(main.matches("sum += mortar_bench_line_a00000_m").count(), 3, "{main}");
+        assert!(!member(0, 7).text.contains("(int);") && !member(4, 0).text.contains("(int);"));
+        let main = line.source(40).text;
+        assert_eq!(main.matches("sum += mortar_bench_line_a00000_m").count(), 7, "{main}");
     }
 }
