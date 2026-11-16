@@ -1112,7 +1112,7 @@ fn print_steps(
     for (name, n) in counts {
         let _ = writeln!(s, "mortar: steps: {phase} count {name}: {n}");
     }
-    eprint!("{s}");
+    mortar_diag::stream::to_stderr(&s);
 }
 
 /// WP-032c (`spec/image.md` I-14): a link that fails after the scan and

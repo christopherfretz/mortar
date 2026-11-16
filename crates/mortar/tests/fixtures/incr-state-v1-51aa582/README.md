@@ -2,11 +2,13 @@
 
 Format version 1 states (`spec/incr.md` IN-18a) written by mortar at
 main 51aa582 (WP-061 stage A merged), before WP-086 made the image read
-`EH_RECORDS` and `SYMTAB_LOCALS`. The test
-`a_state_written_before_wp086_replays_identically`
-(`crates/mortar/tests/incremental.rs`) reads each state with today's
-reader, replays it (IN-61) and requires the bytes of `out`; a plain link
-of the same line must give them too.
+`EH_RECORDS` and `SYMTAB_LOCALS`. Format version 2 (WP-062's `HOLES`,
+WP-063's `MENTIONS`, `RESOLVED`, `INDEX`) refuses them by name: the test
+`a_version_1_state_is_refused_by_name`
+(`crates/mortar/tests/incremental.rs`) requires `state-version` from
+the reader and a full link (`full (state-version: format version 1, ...)`)
+that writes a version-2 state in its place. Until WP-063 the test
+replayed them (IN-61) to the bytes of `out`.
 
 How they were made (AArch64 host, 2026-11-15), in each directory:
 

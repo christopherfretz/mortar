@@ -284,12 +284,14 @@ impl FillSteps {
             take(&self.write_ns),
             take(&self.write_bytes),
         );
-        eprintln!("mortar: steps: image fill jobs (cpu): {:.2} ms", ms(fill));
-        eprintln!(
-            "mortar: steps: image fill reads (cpu): {:.2} ms, {rb} byte, {reads} read",
-            ms(read)
-        );
-        eprintln!("mortar: steps: image fill writes (cpu): {:.2} ms, {wb} byte", ms(write));
+        mortar_diag::stream::to_stderr(&format!(
+            "mortar: steps: image fill jobs (cpu): {:.2} ms\n\
+             mortar: steps: image fill reads (cpu): {:.2} ms, {rb} byte, {reads} read\n\
+             mortar: steps: image fill writes (cpu): {:.2} ms, {wb} byte\n",
+            ms(fill),
+            ms(read),
+            ms(write)
+        ));
     }
 }
 

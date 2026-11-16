@@ -164,7 +164,7 @@ parallel work on them starts.
 | `mortar_image` | Image synthesis and the file writer; debug section handling (tombstones, compression). | `mortar_core`, `mortar_arch`, `mortar_merge` (fragment runs: `Order::frags_in`), `mortar_synth`, `mortar_digest` |
 | `mortar_meta` | The Mason metadata container: reader and writer of the format shared with kiln, hod and tuck (`spec/meta.md`). | `mortar_elf` |
 | `mortar_odr` | One-definition-rule checks at static link time; the tables and the load-time hook for dynamic checks. | `mortar_core`, `mortar_meta`, `mortar_diag` (its diagnostics), `mortar_elf` (the symbol tables of the COMDAT copies, as `mortar_resolve` reads them) |
-| `mortar_incr` | The link state, change detection, delta layout, patching. | everything above; today `mortar_core`, `mortar_diag`, `mortar_digest`, `mortar_elf`; never `mortar_plumb` |
+| `mortar_incr` | The link state, change detection, delta layout, patching. | everything above; today `mortar_arch` (relocation classes for the delta's index, WP-063), `mortar_core`, `mortar_diag`, `mortar_digest`, `mortar_elf`; never `mortar_plumb` |
 | `mortar_plumb` | The independent verifier. Depends on `mortar_elf` and `mortar_diag` only, by rule: it shares no algorithm with the linker. | `mortar_elf`, `mortar_diag` |
 | `mortar` | The facade (`mortar::link`) and the `mortar` executable (also invoked as `ld.mortar` or `ld`). | all |
 | `mortar_testutil`, `xtask` | Test support and the harness: link tests, differential runs against the reference linkers, external suites, benchmarks, the jobserver client. | `xtask`: `mortar_diag` (the wording a `#@ diag:` directive matches, `spec/harness.md`), `mortar_meta` (the test producer and dumper of `spec/meta.md` §12, `cargo xtask meta`) |
