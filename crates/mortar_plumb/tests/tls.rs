@@ -152,6 +152,74 @@ fn s4_4_undefined_weak_pc_relative_is_the_place() {
     }
 }
 
+// spec/plumb.md §4.7 (WP-092b): an initial-exec load of an undefined
+// weak TLS symbol is judged per linker: lld's LE with T = A, GNU ld's and
+// mold's GOT entry holding TPREL with S = 0. A mutant of the code word
+// and (where there is one) of the GOT entry is a finding.
+#[test]
+#[allow(clippy::many_single_char_names)] // offsets and words of one output
+fn s4_7_undefined_weak_tls_initial_exec_is_judged() {
+    let Some(c) = corpus(Size::Tls) else { return };
+    for linker in Linker::ALL {
+        let link = c.get("weak-tls-ie", linker);
+        assert_eq!(link.run(), Some(0), "{}", link.label());
+        let r = link.verify();
+        assert_clean(link, &r);
+        let label = link.label();
+        assert_eq!(r.coverage.not_checked_total(), 0, "{label}\n{}", r.summary());
+        let judged = if linker == Linker::Lld {
+            r.coverage.accepted_of(Rewrite::TlsIeToLe)
+        } else {
+            r.coverage.verified_of(Via::GotSlot)
+        };
+        assert_eq!(judged, 2, "{label}\n{}", r.summary());
+        let map = link.parse_map();
+        let files = link.inputs(&map);
+        let out = link.output_bytes();
+        let h = mortar_elf::FileHeader::parse(&out).unwrap();
+        let secs: Vec<(String, u64, u64, u64)> = mortar_elf::SectionTable::parse(&out, &h)
+            .unwrap()
+            .iter()
+            .map(|s| {
+                let n = String::from_utf8_lossy(s.name().unwrap_or(b"")).into_owned();
+                (n, s.header().sh_addr, s.header().sh_size, s.header().sh_offset)
+            })
+            .collect();
+        let entry = h.e_entry;
+        let off = |va: u64| {
+            secs.iter()
+                .find(|s| s.1 != 0 && s.1 <= va && va < s.1 + s.2)
+                .map(|s| (s.3 + va - s.1) as usize)
+                .unwrap()
+        };
+        // The LDR's or MOVK's immediate, one bit up.
+        let mut m = out.clone();
+        let o = off(entry + 4);
+        m[o] ^= 1 << 5;
+        let r = common::verify_with(&m, &files, &map);
+        assert!(!r.findings.is_empty(), "{label}: a code mutant passes\n{}", r.summary());
+        if linker != Linker::Lld {
+            // The GOT entry: TPREL(0) on these, made TPREL(8).
+            let (_, ga, gs, _) = secs.iter().find(|s| s.0 == ".got").unwrap().clone();
+            let words = (0..gs / 8).map(|k| ga + 8 * k);
+            let tp = words
+                .filter(|&g| {
+                    let o = off(g);
+                    u64::from_le_bytes(out[o..o + 8].try_into().unwrap()) >> 63 == 1
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(tp.len(), 1, "{label}: one negative GOT word");
+            let mut m = out.clone();
+            let o = off(tp[0]);
+            let v = u64::from_le_bytes(m[o..o + 8].try_into().unwrap()).wrapping_add(8);
+            m[o..o + 8].copy_from_slice(&v.to_le_bytes());
+            let r = common::verify_with(&m, &files, &map);
+            let ids = ids(&r);
+            assert!(ids.iter().any(|i| i == "R4"), "{label}: {ids:?}\n{}", r.summary());
+        }
+    }
+}
+
 // spec/plumb.md §4.8, §9.1: the IFUNC programs run, and every reference
 // to an IFUNC is judged through an IPLT entry.
 #[test]

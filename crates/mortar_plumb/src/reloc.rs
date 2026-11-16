@@ -1289,7 +1289,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             let before = self.trace.is_some().then(|| crate::equiv::tally(self));
             self.record(oi, si, &recs, &sorted, i);
             if let Some(b) = before {
-                crate::equiv::traced(self, oi, si, recs[i].off, &b);
+                crate::equiv::traced(self, (oi, si, recs[i].off), recs[i].p, &b);
             }
         }
     }
@@ -1533,7 +1533,8 @@ impl<'a, 'b> Engine<'a, 'b> {
         let sa = match t {
             Target::Tls(s) => s.wrapping_add(a as u64),
             Target::Skip(r) => return Err(Outcome::Skip(r)),
-            Target::UndefWeak | Target::Merge { .. } | Target::Outside(_) => {
+            Target::UndefWeak => return self.weak0_tls(rec, a),
+            Target::Merge { .. } | Target::Outside(_) => {
                 return Err(Outcome::Skip(Reason::Tls));
             }
             Target::Addr(_) | Target::Ifunc { .. } => {
@@ -1560,6 +1561,35 @@ impl<'a, 'b> Engine<'a, 'b> {
             )),
             Err(_) => Err(Outcome::Skip(Reason::Tls)),
         }
+    }
+
+    /// An AArch64 thread-local undefined weak in a static output (§4.7,
+    /// a64.md §7 "thread-local `weak0`"): a block whose TPREL and DTPREL
+    /// of `S + A` are what the output's linker writes. mortar and lld:
+    /// `A` (TP and DTP offset 0, no `PT_TLS` needed); GNU ld and mold, the
+    /// formula with `S = 0` against `PT_TLS` (GNU ld's LE, `GD` and mold's
+    /// `GD` stay unjudged: no single rule, a64.md §7's experiment).
+    fn weak0_tls(&self, rec: &Rec, a: i64) -> Result<(TlsBlock, u64), Outcome> {
+        let zero = TlsBlock { start: 0, tcb: 0 };
+        if self.dynamic {
+            return Err(Outcome::Skip(Reason::Tls));
+        }
+        let ie = matches!(rec.def.op, Op::Slot(Slot::TpRel | Slot::Desc, _) | Op::DescCall);
+        let b = match self.format {
+            Format::Mortar | Format::Lld => zero,
+            Format::Mold if !matches!(rec.def.op, Op::Slot(Slot::Gd | Slot::Ld, _)) => {
+                match self.tls {
+                    Ok(Some(b)) => b,
+                    _ => return Err(Outcome::Skip(Reason::Tls)),
+                }
+            }
+            Format::Gnu if ie => match self.tls {
+                Ok(Some(b)) => b,
+                _ => return Err(Outcome::Skip(Reason::Tls)),
+            },
+            _ => return Err(Outcome::Skip(Reason::Tls)),
+        };
+        Ok((b, a as u64))
     }
 
     fn outcome(&mut self, rec: &Rec, site: &Site, symbol: &str, o: Outcome) {
@@ -2125,13 +2155,23 @@ impl<'a, 'b> Engine<'a, 'b> {
         for ((_, goi, gsym, _), g) in groups {
             if g.unpaired() {
                 self.not_checked(Reason::GotUnpaired, g.members.len() as u64);
+                for (pend, _) in &g.members {
+                    let form = crate::equiv::Form::NotChecked(Reason::GotUnpaired);
+                    crate::equiv::reform(self, pend.rec.p, form);
+                }
                 continue;
             }
             let want = g.members[0].0.want;
             let cands = g.candidates_from(self.got);
             let valid: Vec<u64> =
                 cands.iter().copied().filter(|&c| self.slot_ok(c, want)).collect();
+            let mut held: Option<(u64, crate::equiv::Tally)> = None;
             for (pend, _) in &g.members {
+                // §6.9 (P-E4): the outcome of the member before, now known.
+                if let Some((p, b)) = held.take() {
+                    crate::equiv::retraced(self, p, &b);
+                }
+                held = self.trace.is_some().then(|| (pend.rec.p, crate::equiv::tally(self)));
                 let rec = &pend.rec;
                 if valid.is_empty() {
                     let mut f = Self::finding(
@@ -2192,6 +2232,9 @@ impl<'a, 'b> Engine<'a, 'b> {
                         self.fail(f);
                     }
                 }
+            }
+            if let Some((p, b)) = held {
+                crate::equiv::retraced(self, p, &b);
             }
         }
     }
