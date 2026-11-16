@@ -87,6 +87,20 @@ const SMALL: &[(&str, &str)] = &[
         "xstack.s",
         "\t.text\n\t.globl xs_f\nxs_f:\tnop\n\t.section .note.GNU-stack,\"x\",%progbits\n",
     ),
+    // W13 (WP-088): an exported IFUNC the program never references.
+    (
+        "ifx.c",
+        "static int ifx_impl(void){return 1;}\nstatic void *ifx_resolve(void){return (void *)ifx_impl;}\nint ifx(void) __attribute__((ifunc(\"ifx_resolve\")));\nint main(void){return 0;}\n",
+    ),
+    // dyn.md W14 (WP-088): a non-TLS reference to a shared TLS definition.
+    ("libtv.c", "__thread int tv = 4; int get_tv(void){return tv;}\n"),
+    ("w14.c", "extern int tv; int get_tv(void);\nint main(void){return tv + get_tv() - 8;}\n"),
+    // dyn.md W16 (WP-088): a used object's reference no member of N ∪ U
+    // satisfies (D-13).
+    ("libleaf.c", "int leaf_fn(void){return 7;}\n"),
+    ("libmid2.c", "int leaf_fn(void); int mid2_fn(void){return 100 + leaf_fn();}\n"),
+    ("libtop2.c", "int mid2_fn(void); int top2_fn(void){return 1000 + mid2_fn();}\n"),
+    ("w16.c", "int top2_fn(void); int main(void){return top2_fn() - 1107;}\n"),
     ("libvis.c", "int vf(void){return 3;} int vg(void){return 4;}\n"),
     ("w1.c", "int vf(void); int main(void){return vf()-3;}\n"),
     (
@@ -276,6 +290,20 @@ const LLD_RELX: &[&str] =
     &["P-D9@that no input relocation makes an address of the executable", "R1"];
 /// mold's `call 0x1234` in a PIE (plumb.md §5.1a).
 const A35: Option<&[&str]> = Some(&["R1@to an absolute symbol", "A35"]);
+/// dyn.md W14's outputs (lld, mold).
+const W14: Option<&[&str]> = Some(&["P-D12@whose shared definition is STT_TLS"]);
+/// mold's x86-64 W14 output: a `COPY` of the `STT_TLS` definition (a PIE's
+/// `PC32` to it; lld refuses that link).
+const W14_COPY: Option<&[&str]> = Some(&["S8@TLS symbol 'tv' and no PT_TLS"]);
+/// mold's `-no-pie -E` export of an unreferenced IFUNC, outside every
+/// section.
+const MOLD_IFX: Option<&[&str]> = Some(&[
+    "S8@is outside its section",
+    "Y1@is not STT_GNU_IFUNC at its resolver",
+    "P-D7@which does not hold it",
+]);
+/// dyn.md W16's outputs (lld, mold).
+const W16: Option<&[&str]> = Some(&["P-D6@(D-13: the link is refused)", "A36"]);
 /// lld's x86-64 large-model GD outputs (dyn.md W17).
 const A12: Option<&[&str]> = Some(&["A12"]);
 
@@ -870,6 +898,58 @@ fn build() -> Option<Corpus> {
             // The program's TLS uses then see the wrong offset (R1, R4);
             // x86-64 PIE keeps GNU ld's F3 (W3).
             if x64 { &["F3", "P-D12", "R1", "R4"] } else { &["P-D12", "R1", "R4"] },
+        );
+
+        // W13 measured (WP-088): `-E` exports `ifx`, an IFUNC nothing
+        // references, from a PIE and from a `-no-pie` executable. Every
+        // reference exports it at its resolver (clean); mold's `-no-pie`
+        // export (and `.symtab` entry) is 0xfffffff0 / 0xfffffff8, in no
+        // section.
+        let d = b.dir(arch, "W13E");
+        b.obj(arch, &d, "ifx.c", &["-O1", "-fPIE"], "p.o");
+        b.obj(arch, &d, "ifx.c", &["-O1", "-fno-pie"], "n.o");
+        b.link("W13E", arch, &d, "ifx.pie", &["-pie", "-Wl,-E", "p.o"], [CLEAN; 3]);
+        b.link(
+            "W13E",
+            arch,
+            &d,
+            "ifx.nopie",
+            &["-no-pie", "-Wl,-E", "n.o"],
+            [CLEAN, CLEAN, MOLD_IFX],
+        );
+
+        // W14: data.o reads `tv` as an address; libtv.so's `tv` is
+        // STT_TLS. GNU ld refuses (D-16); on AArch64 lld (a TPREL64 GOT
+        // slot) and mold (a GLOB_DAT) link it and the program runs
+        // wrong: P-D12. On x86-64 lld refuses the PIE's PC32 and mold
+        // copies the TLS definition: S8.
+        let d = b.dir(arch, "W14");
+        b.so(arch, &d, "libtv.c", "libtv.so", "libtv.so", &[]);
+        b.obj(arch, &d, "w14.c", &["-O1", "-fPIE"], "w14.o");
+        b.link(
+            "W14",
+            arch,
+            &d,
+            "w14",
+            &["-pie", "w14.o", "libtv.so"],
+            a([B, W14, W14], [B, B, W14_COPY]),
+        );
+
+        // W16: libmid2.so (used: libtop2.so needs it) calls leaf_fn, which
+        // only the as-needed libleaf.so defines. GNU ld refuses (D-13);
+        // lld and mold drop libleaf.so: P-D6.
+        let d = b.dir(arch, "W16");
+        b.so(arch, &d, "libleaf.c", "libleaf.so", "libleaf.so", &[]);
+        b.so(arch, &d, "libmid2.c", "libmid2.so", "libmid2.so", &[]);
+        b.so(arch, &d, "libtop2.c", "libtop2.so", "libtop2.so", &["-L.", "-lmid2"]);
+        b.obj(arch, &d, "w16.c", &["-O1", "-fPIE"], "w16.o");
+        b.link(
+            "W16",
+            arch,
+            &d,
+            "w16",
+            &["-pie", "w16.o", "-L.", "-ltop2", "-lmid2", "-lleaf"],
+            [B, W16, W16],
         );
 
         // W1: an import whose only definition is STV_HIDDEN.
@@ -1648,6 +1728,24 @@ fn s12_p_d10_plt_header_reads_its_words() {
 #[test]
 fn r1_a64_large_model_local_exec_in_a_dynamic_executable() {
     judge("tlsle");
+}
+
+// W13 (WP-088): an exported, unreferenced IFUNC under `-E`.
+#[test]
+fn w13_exported_unreferenced_ifunc() {
+    judge("W13E");
+}
+
+// dyn.md W14 and W16 (WP-088): P-D12's non-TLS reference to a shared TLS
+// definition, P-D6's D-13 check of the used objects' references.
+#[test]
+fn w14_non_tls_reference_to_shared_tls() {
+    judge("W14");
+}
+
+#[test]
+fn w16_used_object_reference_unsatisfied() {
+    judge("W16");
 }
 
 // dyn.md W17: what the verifier reports on lld's large-model GD outputs.

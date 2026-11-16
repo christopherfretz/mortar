@@ -3005,6 +3005,13 @@ Static-pie (WP-089, §12.4; each shown by running a program, the cases of
   records that glibc's self-relocation applies before the thread pointer
   exists (P-D14): the program faults at start-up (SIGSEGV, WP-056 F4).
   lld and mold write neither.
+- **A36 (lld, mold).** dyn.md W16: a used shared object's strong
+  reference that no member of N ∪ U satisfies is linked, the library that
+  defines it is left out of `DT_NEEDED` (it is not needed by D-11), and
+  the program fails at load (`symbol lookup error`, exit 127): P-D6
+  ending "(D-13: the link is refused)" (WP-088). Reproducer:
+  `tests/link/dyn/shlib/used-underlinks-refused.test`; `tests/dyn.rs`
+  case `W16`.
 - **A35 (mold, x86-64, new).** A `call sym@PLT` (`R_X86_64_PLT32`) to
   an absolute symbol (`SHN_ABS`) in a `-pie` or `-static-pie` output is
   written as a PC-relative `call` to the symbol's value, right at load
@@ -3230,7 +3237,12 @@ own implementation of D-11-D-27 and compared with the output.
 - **P-D4 (segments).** `PT_PHDR` covers the program headers and lies in
   the first `PT_LOAD`; `PT_INTERP` exists in `Exec`/`Pie`, covers
   `.interp`, and its string is the command line's `-dynamic-linker`
-  (W10); `PT_DYNAMIC` covers exactly `.dynamic` and is writable; unless
+  (W10; when the line names none, D-31 refuses the link, so any
+  `PT_INTERP` is P-D4 "a linker default (D-31, W10)" and none is P-D1
+  and P-D4 "(no -dynamic-linker, no PT_INTERP: D-31, W10)": a reference's
+  output is anomaly A22, GNU ld's built-in string, right on AArch64 and
+  `/lib/ld64.so.1` on x86-64, or A23, lld's and mold's missing
+  `PT_INTERP`; WP-050 proposal 3); `PT_DYNAMIC` covers exactly `.dynamic` and is writable; unless
   `-z norelro`, `PT_GNU_RELRO` covers `.dynamic`, `.got`, `.bss.rel.ro`
   and (`-z now`) `.got.plt`, and ends on maxpage (D-33, D-42, D-49,
   D-61); under `-z norelro` there is no `PT_GNU_RELRO`.
@@ -3271,6 +3283,15 @@ own implementation of D-11-D-27 and compared with the output.
   six `DT_NULL` entries at the end. The `DT_NEEDED` entries equal the
   needed set the verifier computes by D-11/D-12 from the P-D2 inputs, in
   D-19a's order (W9).
+  D-13 (WP-088, W16): unless the line has `--allow-shlib-undefined`,
+  every strong undefined reference of a member of N ∪ U is satisfied by
+  a program definition that is not hidden, or by a visible definition, of
+  the version it requires, in a member of N ∪ U; one that is not is P-D6
+  "... (D-13: the link is refused)", once per name. lld and mold make
+  that link and leave the defining library out of `DT_NEEDED` (it is not
+  needed by D-11), so the equality above holds and only this rule sees
+  the program fail at load (`symbol lookup error`, exit 127). Test:
+  `tests/dyn.rs` `w16_used_object_reference_unsatisfied`.
 - **P-D7 (`.dynsym`).** The set equals D-21 recomputed from the inputs:
   imports are the program's references the verifier resolves to needed
   shared objects (hidden `.dynsym` entries ignored, W1), exports the
@@ -3330,13 +3351,27 @@ own implementation of D-11-D-27 and compared with the output.
 - **P-D12 (TLS).** Every TLS slot holds the record of its model (IE:
   `TPREL`; unrelaxed GD: `DTPMOD` + `DTPOFF`; LE: none, value checked by
   stage 2) and no TLS relocation against an executable-defined symbol
-  leaves a dynamic record (D-48). The one kept descriptor (D-48): an
+  leaves a dynamic record (D-48). A TLS record with symbol 0 (against the
+  executable's own block) is accepted from a reference and is P-D12 in
+  mortar's output, which D-48 relaxes to local-exec (WP-050 proposal
+  12). The one kept descriptor (D-48): an
   AArch64 large-model TLSDESC sequence (`movz`/`movk` of
   `:tlsdesc_off_g1:`/`:tlsdesc_off_g0_nc:`, relocations 565 and 566 with
   567 and 569 against the same symbol, no small-model TLSDESC reference
   to it) keeps one `TLSDESC` record, exactly at the pair the two
   instructions address (`_GLOBAL_OFFSET_TABLE_` + their 32-bit offset);
   any other `TLSDESC` record in mortar's output is P-D12 (WP-082).
+  D-16's other direction (WP-088, W14): an input's reference of a
+  non-TLS type of the machine's table, from an allocated section, to an
+  undefined name the loader binds to a library's `STT_TLS` definition is
+  P-D12 "a non-TLS reference to '...', whose shared definition is
+  STT_TLS (D-16)", once per name. lld writes the GOT word the code reads
+  as an address as a `TPREL64` slot, mold a `GLOB_DAT` that glibc
+  resolves to the library's base plus the TLS offset (the program reads
+  the library's ELF header); GNU ld and mortar refuse the link. The TLS
+  direction (a TLS reference to a non-TLS definition) was already P-D12's
+  record rule, and T1 where the output has no `PT_TLS`. Test:
+  `tests/dyn.rs` `w14_non_tls_reference_to_shared_tls`.
 - **P-D13 (protected).** No `COPY` record and no canonical PLT
   (`SHN_UNDEF` with a non-zero `st_value`) names a key whose shared
   definition is `STV_PROTECTED` (D-18; W5): P-D9's equality cannot see
@@ -3355,7 +3390,7 @@ What reports each wrong output and hazard of `spec/dyn.md` §13.2:
 |---|---|
 | W1 hidden `.dynsym` entry bound | P-D7 (the verifier's resolution sees the reference undefined) |
 | W2 copy alias not exported | P-D11, P-D7 |
-| W3 IFUNC address inequality | P-D9 |
+| W3 IFUNC address inequality | F3 (stage 2, in view 1), P-D9 |
 | W4 zero-size copy | P-D11 |
 | W5 protected canonical PLT or copy | P-D13 |
 | W6 text relocation | P-D9 (record in a non-writable place) |
@@ -3366,6 +3401,10 @@ What reports each wrong output and hazard of `spec/dyn.md` §13.2:
 | W11 canonical PLT word without a record in a PIE | P-D9 (views 1 and 2) |
 | W12 weak symbol split between GOT and absolute use | P-D9 (view 3) |
 | W13 executable IFUNC exported as `STT_GNU_IFUNC` / at the implementation | P-D7 (D-23 fields), P-D9 |
+| W14 TLS/non-TLS mismatch against a shared definition (lld, mold) | P-D12 (a non-TLS reference to a shared `STT_TLS` definition; a TLS reference to a non-TLS one: the record rule, and T1 without `PT_TLS`); mold's copy of an `STT_TLS` definition: S8 (WP-088) |
+| W15 GNU ld's AArch64 GD relaxed to IE without a64 R4's `nop` | R1 "the instruction is rewritten into a form no specified rewriting allows" (`tls-gd-unrelaxed`, L3) |
+| W16 a used object's reference left unsatisfied, its library dropped (lld, mold) | P-D6 (D-13, WP-088) |
+| W17 lld's x86-64 large-model general-dynamic TLS (crashes) | R1, anomaly A12 (x64.md W4's 16-byte local-exec form over the 22-byte sequence; `tests/dyn.rs` case `w17`, PIE and `-no-pie`) |
 | H1 `IRELATIVE` before `JUMP_SLOT`s | P-D10 |
 | F2 image (GOT `WeakDyn`, call `Weak0`) | P-D9 (view 3) |
 
@@ -3452,7 +3491,17 @@ from the file system (`line::Files`).
   executable's IFUNC exported as `STT_GNU_IFUNC` makes the loader refuse
   (P-D7); on AArch64 such an export is P-D9 when the executable's own uses
   take an IPLT entry (two addresses), and accepted when every use is the
-  `IRELATIVE` slot.
+  `IRELATIVE` slot. An exported IFUNC nothing in the program uses
+  (WP-088) is accepted when `.symtab`'s global of the name is
+  `STT_GNU_IFUNC` at the same value (Y1 holds that value to the
+  resolver): before, every reference's `-E` output of one was a false
+  P-D7 "... which is no resolver of the program (W13)" (measured, `tests/dyn.rs`
+  case `W13E`: GNU ld, lld and mold, PIE and `-no-pie`, both machines,
+  all at the resolver), except mold's `-no-pie` outputs, which export it
+  (and write `.symtab`'s entry) at 0xfffffff0 (AArch64) or 0xfffffff8
+  (x86-64), in no section: S8, Y1 and P-D7, a defect of mold's. mortar
+  refuses the link by name (`exported IFUNC ifx that no relocation names`,
+  D-23), so W13 cannot fire on mortar's output there.
 - **Mutations** (`dynmutate.rs`, §9.5's table): `dyn-needed`, `dyn-tag`,
   `dyn-rel-offset`, `dyn-rel-drop`, `dyn-rel-addend`, `dyn-rel-symbol`,
   `dyn-rel-order` (only swaps that move a `RELATIVE` or `IRELATIVE`),

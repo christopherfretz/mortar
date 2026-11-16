@@ -418,7 +418,18 @@ fn exported_ifuncs(
             );
             continue;
         }
+        // An IFUNC nothing in the program uses (WP-088, measured with
+        // `-E`): no use chose it, and `.symtab`'s global of the name at
+        // the same value is the program's IFUNC, which Y1 holds to its
+        // resolver. A library that binds it gets what the program would.
+        let unused = !chosen.contains_key(&s.st_value)
+            && image.global(&s.name).is_some_and(|g| {
+                g.sym.sym_type() == mortar_elf::consts::STT_GNU_IFUNC
+                    && g.sym.st_value == s.st_value
+                    && g.sym.st_shndx != 0
+            });
         match chosen.get(&s.st_value) {
+            None if unused => {}
             None => f(
                 7,
                 format!(
