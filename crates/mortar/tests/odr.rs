@@ -169,7 +169,12 @@ fn stats_line() {
     let last = e.lines().last().unwrap_or_default();
     assert!(last.starts_with("mortar: odr-stats: mode warn; units 0, rows 0 (kind 1 0,"), "{e}");
     // O-42: the default reads no container.
-    assert!(last.contains(", container bytes read 0, shared-object tables 0 (0 rows), record findings 0;"), "{e}");
+    assert!(
+        last.contains(
+            ", container bytes read 0, shared-object tables 0 (0 rows), record findings 0;"
+        ),
+        "{e}"
+    );
     assert!(last.contains("findings W1 1, W2 1, W3 0, W4 0;"), "{e}");
     assert_eq!(e.matches("odr-stats").count(), 1, "{e}");
     let e = cx.stderr(&["a.o", "b.o"], &["--odr=off", "--odr-stats"], "st0.out");

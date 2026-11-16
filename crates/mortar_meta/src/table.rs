@@ -100,10 +100,12 @@ impl TableError {
             }
             Self::Version(v) => format!("the .note.mason table has version {v}, not 1"),
             Self::RowSize(s) => format!("the .note.mason table's rows are {s} bytes, not 24"),
-            Self::Count { count, room } => format!(
-                "the .note.mason table counts {count} rows and its descriptor holds {room}"
-            ),
-            Self::Unsorted { row } => format!("the .note.mason table's row {row} is out of key order"),
+            Self::Count { count, room } => {
+                format!("the .note.mason table counts {count} rows and its descriptor holds {room}")
+            }
+            Self::Unsorted { row } => {
+                format!("the .note.mason table's row {row} is out of key order")
+            }
             Self::Twice => "two .note.mason tables".to_owned(),
             Self::Dynsym { row, index } => format!(
                 "the .note.mason table's row {row} names .dynsym entry {index}, which does not exist"
@@ -284,7 +286,10 @@ mod tests {
                 }
             }
         }
-        assert_eq!(Table::parse(&[2, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0]).unwrap_err(), TableError::Version(2));
+        assert_eq!(
+            Table::parse(&[2, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0]).unwrap_err(),
+            TableError::Version(2)
+        );
         let mut m = desc.to_vec();
         m[8] = 16;
         assert_eq!(Table::parse(&m).unwrap_err(), TableError::RowSize(16));

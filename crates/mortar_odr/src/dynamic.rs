@@ -205,7 +205,8 @@ pub fn check(
     let mut start = 0;
     while start < rows.len() {
         let name = rows[start].name;
-        let end = rows[start..].iter().position(|r| r.name != name).map_or(rows.len(), |p| start + p);
+        let end =
+            rows[start..].iter().position(|r| r.name != name).map_or(rows.len(), |p| start + p);
         if names.binary_search(&name).is_err() {
             cx.pairs(&rows[start..end]);
         }
@@ -217,7 +218,9 @@ pub fn check(
         if !output.needed.contains(&e.file) {
             continue;
         }
-        let Some(Reader::Shared(so)) = inputs.files.get(e.file).map(|f| &f.reader) else { continue };
+        let Some(Reader::Shared(so)) = inputs.files.get(e.file).map(|f| &f.reader) else {
+            continue;
+        };
         let Ok(Some(symbols)) = so.symbols() else { continue };
         let Ok(s) = symbols.get(e.index) else { continue };
         if s.st_size != 0 && s.st_size != size {
@@ -231,7 +234,10 @@ pub fn check(
 }
 
 /// A library's table rows, decoded; `None` without a table.
-fn library_rows<'s>(so: &SharedObject<'s>, pos: usize) -> Result<Option<Vec<LibRow<'s>>>, TableError> {
+fn library_rows<'s>(
+    so: &SharedObject<'s>,
+    pos: usize,
+) -> Result<Option<Vec<LibRow<'s>>>, TableError> {
     let Some(t) = table::find(so)? else { return Ok(None) };
     let symbols = so.symbols().ok().flatten();
     let count = symbols.as_ref().map_or(0, mortar_elf::SymbolTable::len);
@@ -290,8 +296,11 @@ impl Cx<'_, '_> {
 
     fn malformed(&mut self, file: FileId, e: &TableError) {
         let key = self.key(file, tag::DYN_META);
-        let d = Diagnostic::error(Kind::MetaMalformed { reason: e.reason() })
-            .at(Place::section(self.file_ref(file), ".note.mason", 0));
+        let d = Diagnostic::error(Kind::MetaMalformed { reason: e.reason() }).at(Place::section(
+            self.file_ref(file),
+            ".note.mason",
+            0,
+        ));
         self.out.push((key, d));
     }
 

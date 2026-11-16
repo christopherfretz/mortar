@@ -1683,6 +1683,12 @@ work within, stated so that M2's rules do not close the door.
   written only with `--odr-table`; O-24 reads the tables of
   shared-object inputs that stay in `DT_NEEDED`, identifying rows by
   (name, version node). No runtime is added in M6 (`spec/odr.md` O-58).
+  Implemented (WP-075): `--odr-table=exported` writes it in a dynamic
+  executable (synthetic chunk 26, `spec/synth.md` S-3), in a `PT_NOTE`
+  of alignment 8 after the 4-aligned notes' one; `eu-elflint` names its
+  type as unknown (`spec/odr.md` O-52), so D-71's "no allowance" holds
+  for an output without the table. O-24 reads input tables under
+  `--odr=strict` only.
 
 ## 15. Open questions (each with a recommendation)
 

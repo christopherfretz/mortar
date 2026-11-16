@@ -22,11 +22,11 @@ use mortar_core::{Inputs, Resolution};
 use mortar_diag::{Diagnostic, Key};
 
 pub use crate::dynamic::{Output, TableRow};
-/// O-51's row and O-52's note encoder, for the front that writes the table.
-pub use mortar_meta::table::{Row as NoteRow, note as table_note};
 use crate::foreign::{Checks, Counts};
 use crate::records::Switches;
 use crate::register::Check;
+/// O-51's row and O-52's note encoder, for the front that writes the table.
+pub use mortar_meta::table::{Row as NoteRow, note as table_note};
 
 /// What the checks of a link found.
 #[derive(Debug, Default)]

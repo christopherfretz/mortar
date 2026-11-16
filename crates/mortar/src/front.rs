@@ -374,8 +374,9 @@ pub fn front<'s>(
     // read under `--odr=off` (O-42).
     // A dynamic output's scope (O-24: its `DT_NEEDED`) and kind; the only
     // dynamic outputs are executables (shared objects are M4).
-    let odr_output = matches!(plan.kind, plan::OutputKind::Executable | plan::OutputKind::PieExecutable)
-        .then_some(mortar_odr::Output { needed: &outcome.needed, executable: true });
+    let odr_output =
+        matches!(plan.kind, plan::OutputKind::Executable | plan::OutputKind::PieExecutable)
+            .then_some(mortar_odr::Output { needed: &outcome.needed, executable: true });
     let odr =
         mortar_odr::check(&inputs, &outcome.resolution, &plan.diagnostics.odr, odr_output, &pool);
     let odr_table = odr.table;

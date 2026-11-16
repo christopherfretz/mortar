@@ -1224,6 +1224,17 @@ default), no table. The table is data only: it adds no code to the
 output. The runtime of §10.3 is added only by the prototype option of
 WP-077, never by `--odr-table`.
 
+Implemented (WP-075) for dynamic executables, PIE or not: `=exported`
+writes the table; `=full` is refused by name until WP-076; a static
+executable exports nothing and gets no table; a shared object's table
+is `[M4]`. Every row of an executable's table carries `NONPREEMPTIBLE`:
+an executable comes first in lookup order and binds its own definitions
+at link time, so it always runs its own copy. The keeper's unit is the
+file whose definition resolution kept; its first kind 2 row for the
+symbol is the row written. Bytes are a function of the rows (sorted by
+key, then `.dynsym` index), so the output stays deterministic, and the
+verifier's verdict on an output does not change with the table (T-O-50).
+
 **O-51 (row).** `{u64 key; u64 hash; u32 dynsym; u16 flags; u16
 reserved}` (24 bytes), sorted by key: the key of MT-13; the first 8 bytes
 of the kind 2 hash of the **keeper's unit's** row (the copy that runs:
@@ -1242,10 +1253,14 @@ the only carrier of that fact for a reader of the output. The key is
 FNV-1a 64 of the `.dynsym` name (without its version, which
 `.gnu.version` carries). Header `{u32 version = 1; u32 count; u32
 row_size = 24; u32 reserved}`. A table that does not parse (a note too
-short for its header, a `row_size` other than 24, a `count` the
-descriptor cannot hold, a `dynsym` index outside `.dynsym`) is
-`meta-malformed` naming the library, never a panic; with `--odr=strict`
-it stops the link like any other malformed container (MT-14).
+short for its header, a version other than 1, a `row_size` other than
+24, a `count` the descriptor cannot hold, rows out of key order, a
+second `MasonMeta` table note in the same object, a `dynsym` index
+outside `.dynsym`) is `meta-malformed` at the library's `.note.mason`,
+never a panic (`mortar_meta::table`'s mutation test: every truncation
+and every single-byte change of a table is a table or a named error).
+Tables are read only under `--odr=strict` (O-24), where a malformed one
+stops the link like any other malformed container (MT-14).
 
 Size: 24 bytes per exported vague definition. Measured counts of
 exported weak or unique definitions in system libraries (`nm -D`, by
@@ -1277,6 +1292,20 @@ the program. `eu-elflint` exits non-zero (`unknown object file note type
 … with owner name 'MasonMeta'`), as for every unknown note; whether any
 distribution's QA runs `eu-elflint` on development builds is not known:
 a known cost of `--odr-table`, and one reason it is off by default.
+
+Measured again on mortar's own output (WP-075; aarch64 natively, x86-64
+under qemu; binutils 2.44, elfutils 0.192, gdb 16.3, lldb 19):
+`.note.mason` gets a `PT_NOTE` of its own (alignment 8) after the
+4-aligned one; `readelf -n` and `eu-readelf -n` print the note as
+above; `strip` (default, `--strip-debug`, `--strip-unneeded`,
+`--strip-all`) and `eu-strip` keep the descriptor byte for byte;
+`objcopy --remove-section=.note.mason` removes the section and the note
+(`readelf -n` no longer finds it), and the stripped and the
+note-removed programs run; `eu-elflint --gnu-ld` makes the one
+complaint above twice (the segment and the section), and nothing else:
+the same output without the table passes with no allowance (`dyn.md`
+D-71); gdb (aarch64) and lldb stop at `main` and print the backtrace
+(`tests/link/odr/o50-table.test`).
 
 Why a note, measured against the alternatives (`dynamic`; the same table
 in a `PT_NOTE`, in a `PT_LOOS`-range segment `0x6d736e00`, and found
@@ -1804,7 +1833,7 @@ implementation of the verdict) is Q11.
 | O-20, O-21 | T-O-21 | the optimisation and the normative rule report the same findings over the whole corpus, K13 included |
 | O-22 | T-O-22 | kind 3 and 5 rows from 3 units grouped in `FileId` order |
 | O-23 | T-O-23 | K17 with and without `--odr-check-archives` |
-| O-24 | T-O-24 | the shapes listed in O-24: (a) exported and hidden; (b) two libraries; `-Bsymbolic`, `-Bsymbolic-functions` and `protected` libraries (R4/R5, findings); an `--as-needed`-dropped library (none); one version node per library (R6, none) and a shared node (a finding); (c) K18b |
+| O-24 | T-O-24 | the shapes listed in O-24: (a) exported and hidden; (b) two libraries; `-Bsymbolic`, `-Bsymbolic-functions` and `protected` libraries (R4/R5, findings); an `--as-needed`-dropped library (none); one version node per library (R6, none) and a shared node (a finding); unversioned against versioned, both orders; (c) K18b; a malformed table; libraries without tables and the default mode (none). `tests/link/odr/o24-*.test` (WP-075) |
 | O-25 | T-O-25 | K16c with two vtable copies; F5 silent |
 | O-30, O-31 | T-O-30 | K16a/K16e/K16d notes under strict; `abi.rtti` never a finding |
 | O-32 | T-O-32 | `mixed-std-system-row` → a stats count; `mixed-std-user-body` → a finding |
@@ -1815,7 +1844,7 @@ implementation of the verdict) is Q11.
 | O-42 | T-O-42 | `meta.md` T-MT-42: bytes read counted |
 | O-44 | T-O-44 | the stats line's fields on a corpus link |
 | O-45 | T-O-45 | the bench lane's comparison |
-| O-50, O-51 | T-O-50 | the row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link |
+| O-50, O-51 | T-O-50 | the row set: default, protected, `-Bsymbolic` and `-Bsymbolic-functions` definitions have rows (the last three `NONPREEMPTIBLE`), hidden and version-script `local:` ones do not; versioned names; the keeper's hash after a warned link. In an executable (WP-075, `tests/link/odr/o50-table.test`, `crates/mortar/tests/odr_dynamic.rs`): default and protected rows, every one `NONPREEMPTIBLE`, none for hidden; identical bytes on two links; none without the option |
 | O-52 | T-O-52 | `note-final`'s tolerance matrix |
 | O-53, O-54, O-56 | T-O-54 | WP-077's prototype matrix (O-58) on three targets; not a release test until a runtime ships |
 | O-55, O-57 | T-O-57 | K18c's two outcomes unchanged by the table |
@@ -2051,9 +2080,13 @@ Experiment 7 (real units at real row counts) is WP-071's acceptance test
 - Everything that needs kiln's hasher: the false-positive rates of the
   record checks, of the odr-use analysis and of the C canonical types;
   the model (§12.7) checks the rules, not the hasher.
-- The O-24 check itself (specified, not prototyped).
-- The O-24 shapes R4/R5, `--as-needed` and R6 at static link time (the
-  re-review ran them at load time only).
+- O-24 under musl's loader, and glibc's choice for an unversioned
+  reference against an earlier versioned library with no definition at
+  index 2 (excluded, "Not compared"). O-24 for shared-object outputs
+  (`[M4]`).
+- O-24's cost in a link of real libraries with tables (none exist before
+  M4): measured on generated tables of 4,000, 13,000 and 15,000 rows
+  only (`spec/landed/meta/WP-075.md`).
 - The hook as a whole: the open problem of O-54 (R1m, R2m, R3m, R6 fail
   on prototype 2), versioned lookup, the quadratic path at K = 10, its
   `secure_getenv` and `write`-only output: WP-077's matrix.
