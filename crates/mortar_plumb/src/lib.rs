@@ -32,7 +32,9 @@ pub mod line;
 mod loader;
 mod locate;
 pub mod map;
+mod meta;
 pub mod mutate;
+mod odrtable;
 mod plt;
 mod property;
 mod reloc;
@@ -55,7 +57,9 @@ pub const STAGE: u8 = 3;
 pub use line::{Files, HostFiles};
 pub use locate::thin_members;
 pub use map::{Format, Map, MapError, MapFile};
-pub use report::{Coverage, Finding, OUTSIDE, Reason, Report, Rewrite, Rule, Site, Via};
+pub use report::{
+    Coverage, Finding, MetaCoverage, OUTSIDE, Reason, Report, Rewrite, Rule, Site, Via,
+};
 
 /// An input file of the link, by the path the map names it with (§2.1).
 #[derive(Debug, Clone, Copy)]
@@ -84,6 +88,12 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
     report.coverage = std::mem::take(&mut engine.cov);
+    // Stage 4 (§13): a static map has no `arg` records, so the options
+    // are unknown unless a static-pie's map gives them.
+    let args = map.dynamic.as_ref().map(|d| d.args.clone()).filter(|a| !a.is_empty());
+    let meta =
+        odrtable::check(&image, &objs, map, args.as_deref(), None, &mut report.coverage.meta);
+    report.findings.extend(meta);
     report.sort();
     report
 }
