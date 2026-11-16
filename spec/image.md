@@ -32,7 +32,7 @@ asked for it (§13).
 
 Rules are numbered **I-1**, **I-2**, …. Each carries the milestone where it
 binds: **[M1]** static AArch64 (`docs/ROADMAP.md`), **[M2]** dynamic AArch64
-with `--gc-sections`, **[M4]** compressed debug, `-r`, `.gdb_index`,
+with `--gc-sections` (and `.gdb_index`, I-54), **[M4]** compressed debug, `-r`,
 **[M7]** incremental linking, **[perf]** the performance package that
 follows M2 (`docs/ROADMAP.md`). A rule marked for a later milestone is
 specified so that nothing in the M1 design must be redone for it; its code
@@ -1039,8 +1039,21 @@ writes a value chosen by the referring section's name, as
   and `.strtab` under `-s`; references into stripped sections do not
   occur (stripped sections are referring sections, never targets of
   alloc code).
-- **I-54 [M4]** `.gdb_index` and `.debug_names` are synthetic chunks of
-  `spec/synth.md` that read DWARF; they are divisible by CU range (§13).
+- **I-54 [M2] `.gdb_index`** (WP-097; amended from "[M4] `.gdb_index`
+  and `.debug_names` are synthetic chunks of `spec/synth.md` that read
+  DWARF; they are divisible by CU range"). `--gdb-index` makes the
+  synthetic chunk of `spec/synth.md` §17 (S-3 row 28): complete for
+  every live unit, or the link is refused by name
+  (`gdb-index-incomplete`, S-G3). Its plan reads the inputs' unit
+  headers, root DIEs, range lists and GNU name sets in phase 80; the
+  image writes its header, CU list and address area from the layout and
+  copies the rest from the plan; it is `Whole` (S-G7a), not divided by
+  CU range until a measurement asks for it. With the option the input
+  `.debug_gnu_pubnames`/`.debug_gnu_pubtypes` are consumed, not copied
+  (S-G6); everything else of I-49 and I-49a is unchanged, and the other
+  debug sections are still not parsed by the image. A merged
+  `.debug_names` is not written: `--debug-names` stays refused (S-G9);
+  the inputs' per-unit tables are concatenated (I-49a).
 - **I-55 [M1]** The image adds no bytes of its own to any section other
   than synthetic and structural units. In particular it writes no
   identification string into `.comment` (lld and mold do, GNU ld does

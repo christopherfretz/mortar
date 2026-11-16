@@ -176,7 +176,10 @@ pub fn status_markdown() -> String {
         for row in rows().iter().filter(|r| r.group == group) {
             let spellings: Vec<String> =
                 row.spellings.iter().map(|s| format!("`{}`", s.display())).collect();
-            let status = status_cell(row.status);
+            let status = match row.refused_note() {
+                Some(note) => format!("refused: {note}"),
+                None => status_cell(row.status),
+            };
             let _ = writeln!(
                 out,
                 "| {} | {} | {} | {} | {} | `{}` | {} |",
