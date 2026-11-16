@@ -156,7 +156,7 @@ symbol (every `{name}` of the area "symbols", `relocation-incompatible`,
 `relocation-out-of-range`) goes through §5.4, also where it appears
 twice. The areas, in order: command line (`conflicting-options` to
 `unknown-option`), files (`ambiguous-sysroot-path` to
-`static-link-of-shared-object`), file formats, symbols (`archive-backref`
+`written-file-clash`), file formats, symbols (`archive-backref`
 to `version-reassigned`), one-definition rule (`meta-malformed` to
 `odr-vtable-rtti-mismatch`, M6), relocations, layout (`executable-stack` to
 `section-conflict`), incremental linking (`incremental-not-reproducible`
@@ -186,6 +186,7 @@ is added before or after it.
 | `script-cycle` | `ScriptCycle` | `linker script names itself` | own |
 | `skipped-incompatible` | `SkippedIncompatible { path, search }` | `skipping incompatible {path} when searching for {search}` | GNU ld (§8.3) |
 | `static-link-of-shared-object` | `StaticLinkOfSharedObject { path }` | `attempted static link of dynamic object {path}` | GNU ld, lld (§8.3) |
+| `written-file-clash` | `WrittenFileClash { written, what }` | `{written} names {what}; nothing is written to it` | own (`spec/cli.md` §3.14; GNU ld: `input file 'a.o' is the same as output file`) |
 | `cet-report` | `CetReport { path, property }` | `{path}: missing {property} property (-z cet-report)` | own (GNU ld: `an.o: error: missing IBT and SHSTK properties`); severity from `-z cet-report` (`spec/x64.md` X-43) |
 | `malformed-input` | `Malformed { what }` | `{what}` | lld's shape |
 | `unknown-file-type` | `UnknownFileType` | `file not recognized: file format not recognized` | GNU ld (§8.3) |
@@ -236,7 +237,7 @@ is added before or after it.
 | `incremental-not-reproducible` | `IncrementalNotReproducible` | `SOURCE_DATE_EPOCH is set, but an incremental link's output depends on its edit history` | own (`spec/incr.md` IN-7) |
 | `incremental-unsupported` | `IncrementalUnsupported { option }` | `--incremental is not supported with {option}; linking without a state` | own (`spec/incr.md` IN-12) |
 | `incremental-update-failed` | `IncrementalUpdateFailed { reason }` | `--incremental=update: cannot update: {reason}` | own (`spec/incr.md` IN-10) |
-| `incremental-file-clash` | `IncrementalFileClash { option, path, what }` | `{option}={path} names {what}; nothing is written to it` | own (`spec/incr.md` IN-17) |
+| `incremental-file-clash` | `IncrementalFileClash { option, path, what }` | `{option}={path} names {what}; nothing is written to it` | own (`spec/incr.md` IN-17); no longer emitted since WP-087, which made `written-file-clash` cover the state and the report (the id stays, never reused) |
 | `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) |
 | `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
 

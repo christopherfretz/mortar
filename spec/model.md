@@ -796,6 +796,7 @@ renumbering.
 | scan | 70 | `FileId` | section index × 2^32 + relocation index |
 | synthetic sections | 80 | 0 | `SymbolId`, or a count in a sequential step |
 | layout | 90 | 0 | `ChunkId`, or a count in a sequential step |
+| written paths (`spec/cli.md` §3.14, after the front, before anything is written) | 95 | 0 | the written file's place in the registry |
 | image | 100 | `FileId` (0 for synthetic chunks) | section index × 2^32 + relocation index; `ChunkId` for file 0 |
 | verify (`--verify`) | 110 | 0 | output offset |
 
