@@ -331,8 +331,6 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// The dynamic records, in the format's fixed order (`spec/plumb.md` §3.2).
-
 /// The `incremental`, `hole` and `dead` records (`spec/plumb.md` §3.2).
 fn render_dead(map: &Map, out: &mut String) {
     if map.incremental {
@@ -350,6 +348,7 @@ fn render_dead(map: &Map, out: &mut String) {
     }
 }
 
+/// The dynamic records, in the format's fixed order (`spec/plumb.md` §3.2).
 fn render_dynamic(d: &DynRecords, out: &mut String) {
     let named = |out: &mut String, record: &str, name: &[u8]| {
         out.push_str(record);
