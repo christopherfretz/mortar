@@ -1350,7 +1350,8 @@ WP-029b's linker writes has a rule and a mutation that it catches
   mutant (§9.5); judging them needs the map to name each slot's owner.
 - the non-`PT_LOAD` segments' `p_flags` and `p_align`, and
   `PT_GNU_RELRO`'s `p_filesz` (the loader reads `p_memsz`);
-- `PT_GNU_STACK`'s `PF_X` (§11 item 11);
+- `PT_GNU_STACK`'s `PF_X` in a static output (§11 item 11; a dynamic
+  output's is P-D4's, WP-088);
 - the large-model sections' placement (`placement_not_judged`).
 
 A record whose rewriting cannot be judged (its symbol unresolved, as in a
@@ -1529,9 +1530,13 @@ that breaks it (`tests/mutation.rs s9_2e_each_structure_rule_is_enforced`).
   allocated section is `PF_R`, unless (AArch64) every section in it is
   `SHF_AARCH64_PURECODE` (lld 22's execute-only `.iplt`): a text segment
   without `PF_R` is execute-only where the hardware allows it, and its
-  literal pools fault. In mortar's output (by map format) a `PT_LOAD` is
-  `PF_W` only if it holds a writable section and `PF_X` only if it holds
-  an executable one (L-6 made a rule for mortar; WP-028d).
+  literal pools fault. A `PT_LOAD` that holds sections is `PF_W` only
+  if it holds a writable section and `PF_X` only if it holds an
+  executable one (L-6 made a rule for mortar, WP-028d; every format
+  since WP-088: no reference output of the test corpora, static or
+  dynamic, GNU ld, lld and mold on the three machines, asks for a
+  permission none of its sections needs, and a writable text or an
+  executable data segment is the permission an attacker needs).
 - **S6.** No two sections overlap. In memory this covers allocated
   sections other than `.tbss`. In the file it covers sections with bytes,
   the file header, the program header table and the section header table.
@@ -2622,7 +2627,16 @@ every linker and asserts the classes that must have no miss.
   on x86-64 (relaxed references keep their slot); `GOTPCREL` against
   glibc's `_nl_current_*_used` (every slot holds 1, so another slot or
   symbol gives the same value); the non-`PT_LOAD` segments' flags and
-  alignment; `PT_LOAD` `p_align` of `ET_EXEC`; `PT_GNU_STACK`'s and
+  alignment (but `PT_GNU_STACK`'s `PF_X`, P-D4 in stage 3, and
+  `PT_NOTE`'s and `PT_GNU_PROPERTY`'s `p_align`, S11; `PT_DYNAMIC`'s
+  `PF_W` is read by glibc since 2.35 as "`.dynamic` is read-only", which
+  only changes whether ld.so relocates its pointers in place or adds the
+  bias on each read: a GNU ld AArch64 PIE with it cleared runs, and gdb
+  lists its libraries, WP-088); `PT_LOAD` `p_align` doubled (the
+  congruence still holds or S2 finds it; a bias aligned more) or halved
+  below the page (kernel 6.8 and glibc 2.41's ld.so, run directly and
+  as `ld.so ./prog`, both start a GNU ld AArch64 PIE whose `PT_LOAD`s
+  have `p_align` 0x800, WP-088); `PT_GNU_STACK`'s and
   `PT_GNU_RELRO`'s `p_filesz`, `PT_GNU_STACK`'s `p_memsz`.
 - **Holes, cheap, closed in WP-028d:** the W1 NOP-ADRP form (§5.3), S5
   (flags), S7 (entry), S9 (TLS), S11 (notes), S13 (`PT_PHDR`), S20
@@ -2630,8 +2644,9 @@ every linker and asserts the classes that must have no miss.
   or `$d` was judged before).
 - **Holes, by cost:**
   1. `PT_GNU_STACK` `PF_X` flipped (the stack made executable): needs
-     the link's `-z execstack` from the map (§11 item 11). Cheap once
-     the map carries it.
+     the link's `-z execstack` from the map (§11 item 11). Judged in
+     stage 3, which has the line (P-D4, WP-088); a static output's map
+     does not carry it yet.
   2. Linker-defined symbols' `st_size` (`_GLOBAL_OFFSET_TABLE_`,
      `__init_array_start`, … made 1): no spec states the size; a line
      in synth.md (size 0) makes it a Y5 clause.
@@ -3184,6 +3199,25 @@ own implementation of D-11-D-27 and compared with the output.
   `-z norelro`, `PT_GNU_RELRO` covers `.dynamic`, `.got`, `.bss.rel.ro`
   and (`-z now`) `.got.plt`, and ends on maxpage (D-33, D-42, D-49,
   D-61); under `-z norelro` there is no `PT_GNU_RELRO`.
+  `PT_GNU_STACK`'s `PF_X` (WP-088; the kernel and glibc read only that
+  bit of it): under the line's last `-z execstack` it is set, under
+  `-z noexecstack` clear; with neither, it is set only when an input
+  object's `.note.GNU-stack` is `SHF_EXECINSTR`, and under mortar's map
+  exactly then (L-84). Measured (GNU ld 2.44, lld 19, mold 2.37.1,
+  mortar; x86-64 and AArch64; an object with no stack note, one with an
+  executable note, one with a plain note, each with no option, `-z
+  execstack` and `-z noexecstack`): every linker obeys the options; with
+  neither, an executable note gives `PF_X` from GNU ld and mortar (with
+  a warning), none from lld 19 or mold, and lld 22 refuses the link
+  ("requires an executable stack, but -z execstack is not specified");
+  a missing note gives no `PF_X` from any (GNU ld 2.44's default). An executable stack the link did not ask
+  for is a permission the program does not need; one it asked for and
+  did not get faults in the code that needed it (a nested function's
+  trampoline). No `PT_GNU_STACK`: not judged here (S10). Test:
+  `tests/dyn.rs` `s12_p_d4_gnu_stack_execute` (case `stack`: the three
+  linkers' `-z execstack` and `-z noexecstack` PIEs and GNU ld's and
+  mold's executable-note PIEs clean, each `-z` output and the lazy hello PIE with `PF_X` flipped
+  P-D4).
 - **P-D5 (`.gnu.hash`).** Recompute the table from `.dynsym` with D-26's
   formulas and compare word for word; then look up every exported and
   every canonical-PLT name with the loader's algorithm (it is found at
@@ -3489,7 +3523,15 @@ or named as equivalent or as a follow-up row in WP-082's record.
   name every input defines `STB_GNU_UNIQUE` is exported `STB_GNU_UNIQUE`
   (dyn.md D-23's export row: glibc's unique table then holds the
   program's instance, which an `RTLD_DEEPBIND` library binds to); mortar's
-  `EI_OSABI` is then S1's (lld and mold write 0).
+  `EI_OSABI` is then S1's (lld and mold write 0). The `STT_SECTION`
+  entries are GNU ld's (its AArch64 PIE writes `.init` and `.data`;
+  mortar writes none, D-21): no loader looks one up, so only their
+  section and value are judged; their name, `st_info`'s binding,
+  `st_other` and size are equivalent mutants (WP-088: the sweep of GNU
+  ld's AArch64 C and C++ PIEs leaves no `st_value` or `st_shndx`
+  survivor). Test: `tests/dyn.rs` `s12_p_d7_dynsym_section_symbols`
+  (case `secsym`: the last section symbol's value + 8, its `st_shndx`
+  + 1; each P-D7, neither found with the check dropped).
 - **P-D8.** `.gnu.version` entry 0 is 0; every Verneed has `vn_version`
   1 and `vn_cnt` its chain's length; the last Verneed's `vn_next` and
   each chain's last `vna_next` are 0; `vna_flags` is 0 or `VER_FLG_WEAK`.

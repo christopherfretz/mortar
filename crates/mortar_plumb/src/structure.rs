@@ -931,10 +931,11 @@ pub(crate) fn check_layout(image: &Image<'_>, format: Format) -> Vec<Finding> {
             s(7, format!("the entry point {:#x} is no symbol's value", h.e_entry)).at(h.e_entry),
         );
     }
-    // S5 (mortar): a PT_LOAD is PF_W only when it holds a writable section,
-    // PF_X only when it holds an executable one (L-6, strengthened: mortar
-    // asks for no permission it does not need; WP-028d).
-    if format == Format::Mortar {
+    // S5: a PT_LOAD is PF_W only when it holds a writable section, PF_X
+    // only when it holds an executable one (L-6, strengthened: no
+    // permission the program does not need; WP-028d for mortar, every
+    // format since WP-088: the references' outputs obey it too).
+    {
         for p in &loads {
             let secs = sections_in(image, p);
             if secs.is_empty() {

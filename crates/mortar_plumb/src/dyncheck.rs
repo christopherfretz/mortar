@@ -60,6 +60,7 @@ pub(crate) fn check(
     }
     pd1(image, out, line, &mut v);
     pd4(image, out, line, format, &mut v);
+    pd4_stack(image, line, objs, format, &mut v);
     pd5(image, out, format, &mut v);
     pd6(image, out, line, model, format, &mut v);
     let spie = line.kind == Some(OutputKind::StaticPie);
@@ -115,6 +116,50 @@ fn pd1(image: &Image<'_>, out: &DynOut, line: &Line, v: &mut Vec<Finding>) {
     }
     if want == OutputKind::Pie && h.e_type == ET_DYN && !pie {
         v.push(fd(1, "a PIE without DF_1_PIE in DT_FLAGS_1 (D-1)"));
+    }
+}
+
+/// P-D4, `PT_GNU_STACK`'s `PF_X` (WP-088): the line's last `-z execstack`
+/// sets it and `-z noexecstack` clears it; with neither it is set only
+/// when an input object's `.note.GNU-stack` is `SHF_EXECINSTR` (GNU ld
+/// and mortar set it then, lld and mold never: under mortar's map it is
+/// set exactly then). An executable stack the link did not ask for is a
+/// permission the program does not need; one it asked for and did not
+/// get faults in the code that needed it (a nested function's
+/// trampoline). With no `PT_GNU_STACK` nothing is judged here.
+fn pd4_stack(
+    image: &Image<'_>,
+    line: &Line,
+    objs: &[Obj<'_>],
+    format: Format,
+    v: &mut Vec<Finding>,
+) {
+    let Some(p) = image.phdrs.iter().find(|p| p.p_type == mortar_elf::consts::PT_GNU_STACK) else {
+        return;
+    };
+    let x = p.p_flags & mortar_elf::consts::PF_X != 0;
+    let note = objs.iter().find(|o| {
+        o.secs.iter().any(|s| {
+            s.name == ".note.GNU-stack" && s.shdr.sh_flags & mortar_elf::consts::SHF_EXECINSTR != 0
+        })
+    });
+    let why = match (line.execstack, x) {
+        (Some(true), false) => Some("PT_GNU_STACK is not PF_X under -z execstack".to_string()),
+        (Some(false), true) => Some("PT_GNU_STACK is PF_X under -z noexecstack".to_string()),
+        (None, true) if note.is_none() => Some(
+            "PT_GNU_STACK is PF_X: no -z execstack and no input's .note.GNU-stack is executable"
+                .to_string(),
+        ),
+        (None, false) if format == Format::Mortar => note.map(|o| {
+            format!(
+                "PT_GNU_STACK is not PF_X and {}'s .note.GNU-stack is executable (L-84)",
+                o.label()
+            )
+        }),
+        _ => None,
+    };
+    if let Some(m) = why {
+        v.push(fd(4, m).at(p.p_vaddr));
     }
 }
 

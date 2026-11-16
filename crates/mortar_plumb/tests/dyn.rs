@@ -57,6 +57,12 @@ const SOURCES: &[(&str, &str)] = src![
 /// Small sources written by the test itself.
 const SMALL: &[(&str, &str)] = &[
     ("hello.c", "#include <stdio.h>\nint main(void){puts(\"hi\");return 0;}\n"),
+    // P-D4's PT_GNU_STACK (WP-088): an object whose stack note asks for
+    // an executable stack.
+    (
+        "xstack.s",
+        "\t.text\n\t.globl xs_f\nxs_f:\tnop\n\t.section .note.GNU-stack,\"x\",%progbits\n",
+    ),
     ("libvis.c", "int vf(void){return 3;} int vg(void){return 4;}\n"),
     ("w1.c", "int vf(void); int main(void){return vf()-3;}\n"),
     (
@@ -505,7 +511,6 @@ fn build() -> Option<Corpus> {
         // CFA at each entry's `jmp PLT0` 8 short) and PLT0's
         // `def_cfa_offset 24` lowered to 16.
         if x64 {
-            type Patch = (&'static str, fn(&mut [u8]));
             let patches: [Patch; 3] = [
                 ("range", plt_fde_range_past),
                 ("lit", plt_fde_lit_raised),
@@ -533,6 +538,98 @@ fn build() -> Option<Corpus> {
                     );
                 }
             }
+        }
+
+        // P-D4, PT_GNU_STACK's PF_X (WP-088): `-z execstack` (all three
+        // set it), `-z noexecstack`, and an input whose `.note.GNU-stack`
+        // is executable (GNU ld sets PF_X, mold does not: both clean;
+        // lld 22 refuses the link); each `-z` output with PF_X flipped is P-D4, and so is
+        // the lazy hello PIE with PF_X set.
+        let d = b.dir(arch, "stack");
+        b.obj(arch, &d, "hello.c", &["-O1", "-fPIE"], "h.o");
+        b.obj(arch, &d, "xstack.s", &[], "x.o");
+        for (out, z) in [("stack.exec", "-Wl,-z,execstack"), ("stack.noexec", "-Wl,-z,noexecstack")]
+        {
+            b.link("stack", arch, &d, out, &["-pie", z, "h.o"], [CLEAN; 3]);
+            for linker in Linker::ALL {
+                let from = format!("{out}.{}", linker.name());
+                b.patched(
+                    "stack",
+                    arch,
+                    &d,
+                    &from,
+                    &format!("{from}.flipped"),
+                    &format!("{from}.map"),
+                    &format!("{from}.line"),
+                    linker,
+                    gnu_stack_x_flipped,
+                    &["P-D4@PT_GNU_STACK"],
+                );
+            }
+        }
+        // lld 22 refuses the executable note without `-z execstack`.
+        for k in [0, 2] {
+            b.link_one("stack", arch, &d, "stack.note", &["-pie", "h.o", "x.o"], k, CLEAN);
+        }
+        // P-D7 (WP-082 follow-up 3, WP-088): GNU ld's AArch64 PIE writes
+        // `.dynsym` section symbols (`.init`, `.data`); one moved 8 bytes
+        // into its section, and one naming the next section.
+        if !x64 {
+            let hello = b.dir(arch, "hello");
+            let from = "hello-pie.lazy.bfd";
+            let secsyms: [Patch; 2] =
+                [("secsym-value", dynsym_section_value), ("secsym-shndx", dynsym_section_shndx)];
+            for (what, patch) in secsyms {
+                b.patched(
+                    "secsym",
+                    arch,
+                    &hello,
+                    from,
+                    &format!("{from}.{what}"),
+                    &format!("{from}.map"),
+                    &format!("{from}.line"),
+                    Linker::Bfd,
+                    patch,
+                    &["P-D7@which does not hold it"],
+                );
+            }
+        }
+        // S5 (every format since WP-088): the text PT_LOAD made PF_W, the
+        // data PT_LOAD made PF_X, in each linker's lazy hello PIE.
+        let hello = b.dir(arch, "hello");
+        let perms: [Patch; 2] = [("textw", text_writable), ("datax", data_executable)];
+        for linker in Linker::ALL {
+            for (what, patch) in perms {
+                let from = format!("hello-pie.lazy.{}", linker.name());
+                b.patched(
+                    "perm",
+                    arch,
+                    &hello,
+                    &from,
+                    &format!("{from}.{what}"),
+                    &format!("{from}.map"),
+                    &format!("{from}.line"),
+                    linker,
+                    patch,
+                    &["S5@holds no section that needs it"],
+                );
+            }
+        }
+        let hello = b.dir(arch, "hello");
+        for linker in Linker::ALL {
+            let from = format!("hello-pie.lazy.{}", linker.name());
+            b.patched(
+                "stack",
+                arch,
+                &hello,
+                &from,
+                &format!("{from}.xstack"),
+                &format!("{from}.map"),
+                &format!("{from}.line"),
+                linker,
+                gnu_stack_x_flipped,
+                &["P-D4@PT_GNU_STACK"],
+            );
         }
 
         // X-58 (WP-082 V2): a TLS descriptor relaxed to initial-exec
@@ -945,6 +1042,9 @@ fn build() -> Option<Corpus> {
 
 // ---- ELF64 little-endian edits ----
 
+/// A named edit of an output's bytes.
+type Patch = (&'static str, fn(&mut [u8]));
+
 fn le16(b: &[u8], o: usize) -> usize {
     u16::from_le_bytes([b[o], b[o + 1]]) as usize
 }
@@ -1018,6 +1118,58 @@ fn plt0_jump_lowered(b: &mut [u8]) {
     let o = (p..p + 16).find(|&o| b[o..o + 2] == [0xff, 0x25]).expect("PLT0's jmp") + 2;
     let v = le32(b, o).wrapping_sub(0x1030);
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+/// The file offset of the last `STT_SECTION` entry of `.dynsym`.
+fn dynsym_section(b: &[u8]) -> usize {
+    let s = sections(b);
+    let d = section(&s, ".dynsym");
+    (d.3..d.3 + d.4).step_by(24).rfind(|&o| b[o + 4] & 0xf == 3).expect("a section symbol")
+}
+
+/// P-D7: a `.dynsym` section symbol's value 8 bytes into its section.
+fn dynsym_section_value(b: &mut [u8]) {
+    let o = dynsym_section(b) + 8;
+    let v = le64(b, o) + 8;
+    b[o..o + 8].copy_from_slice(&v.to_le_bytes());
+}
+
+/// P-D7: a `.dynsym` section symbol naming the next section.
+fn dynsym_section_shndx(b: &mut [u8]) {
+    let o = dynsym_section(b) + 6;
+    let v = le16(b, o) as u16 + 1;
+    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+/// The file offset of the first `PT_LOAD` whose flags have `has`.
+fn load_with(b: &[u8], has: u32) -> usize {
+    let (phoff, phentsize, phnum) = (le64(b, 0x20) as usize, le16(b, 0x36), le16(b, 0x38));
+    (0..phnum)
+        .map(|i| phoff + i * phentsize)
+        .find(|&o| le32(b, o) == 1 && le32(b, o + 4) & has != 0)
+        .expect("a PT_LOAD with the flag")
+}
+
+/// S5: the text `PT_LOAD` made `PF_W`.
+fn text_writable(b: &mut [u8]) {
+    let o = load_with(b, 1);
+    b[o + 4] |= 2;
+}
+
+/// S5: the data `PT_LOAD` made `PF_X`.
+fn data_executable(b: &mut [u8]) {
+    let o = load_with(b, 2);
+    b[o + 4] |= 1;
+}
+
+/// P-D4: `PT_GNU_STACK`'s `PF_X` flipped.
+fn gnu_stack_x_flipped(b: &mut [u8]) {
+    let (phoff, phentsize, phnum) = (le64(b, 0x20) as usize, le16(b, 0x36), le16(b, 0x38));
+    let o = (0..phnum)
+        .map(|i| phoff + i * phentsize)
+        .find(|&o| le32(b, o) == 0x6474_e551)
+        .expect("PT_GNU_STACK");
+    b[o + 4] ^= 1;
 }
 
 /// The file offset of the `.eh_frame` FDE whose initial location (GNU
@@ -1302,6 +1454,27 @@ fn s12_h1_irelative_before_jump_slot_is_p_d10() {
 #[test]
 fn s12_p_d10_plt_header_reads_its_words() {
     judge("PLT0");
+}
+
+// spec/plumb.md §12 P-D7 (WP-088): a reference's `.dynsym` section symbol
+// is at its section's start.
+#[test]
+fn s12_p_d7_dynsym_section_symbols() {
+    judge("secsym");
+}
+
+// spec/plumb.md §6.2 S5 (every format since WP-088): no PT_LOAD asks for
+// a permission none of its sections needs.
+#[test]
+fn s6_2_s5_no_unneeded_permission() {
+    judge("perm");
+}
+
+// spec/plumb.md §12 P-D4 (WP-088): PT_GNU_STACK's PF_X against the line's
+// `-z execstack`/`-z noexecstack` and the inputs' stack notes.
+#[test]
+fn s12_p_d4_gnu_stack_execute() {
+    judge("stack");
 }
 
 // spec/plumb.md §6.4 E6 (WP-088): GNU ld's x86-64 PLT FDEs are judged

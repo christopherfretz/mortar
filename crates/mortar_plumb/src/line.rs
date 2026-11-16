@@ -46,6 +46,8 @@ pub struct Line {
     pub now: bool,
     /// `-z relro` unless `-z norelro` (the default on GNU ld, lld, mold).
     pub relro: bool,
+    /// The last of `-z execstack` (true) and `-z noexecstack` (false).
+    pub execstack: Option<bool>,
     pub export_dynamic: bool,
     /// `--export-dynamic-symbol` or `--export-dynamic-symbol-list` (D-21;
     /// in a static-pie D-1 gives them no effect, §12.4).
@@ -323,6 +325,8 @@ impl Line {
             "lazy" => self.now = false,
             "relro" => self.relro = true,
             "norelro" => self.relro = false,
+            "execstack" => self.execstack = Some(true),
+            "noexecstack" => self.execstack = Some(false),
             _ => {}
         }
     }
