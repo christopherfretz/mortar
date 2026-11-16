@@ -62,7 +62,7 @@ pub const USAGE: &str = "usage: cargo xtask mason [programs] [--mortar <path>] [
      [--results <file>] [--baseline <file>] [--write-baseline <file>] [<dir>...]\n       \
      cargo xtask mason libcxx --collect <dir> [--results <file>] [--baseline <file>]\n       \
      cargo xtask mason libcxx --compare <file>[:<mode>] <file>[:<mode>]\n       \
-     cargo xtask mason verify <output> <map>\n";
+     cargo xtask mason verify <output> <map> [<line>]\n";
 
 /// The entry point.
 pub fn main(args: &[String]) -> ExitCode {
@@ -264,10 +264,23 @@ impl std::fmt::Display for Plumbed {
 }
 
 /// Runs the verifier on mortar's `output` and its mortar-map `map`, the
-/// inputs read relative to `base`.
-pub fn plumb(output: &Path, map: &Path, base: &Path) -> Result<Plumbed, String> {
-    let (_, report, _) =
-        crate::plumb::verify_link(output, map, mortar_plumb::Format::Mortar, base, None)?;
+/// inputs read relative to `base`; `line`, the linker's words, lets stage 3
+/// judge a dynamic output with its line (spec/plumb.md §12).
+pub fn plumb(
+    output: &Path,
+    map: &Path,
+    base: &Path,
+    line: Option<Vec<String>>,
+) -> Result<Plumbed, String> {
+    let (_, report, _) = crate::plumb::verify_link_line(
+        output,
+        map,
+        mortar_plumb::Format::Mortar,
+        base,
+        None,
+        None,
+        line,
+    )?;
     let mut p = Plumbed::default();
     let name = output.display().to_string();
     for f in &report.findings {
@@ -280,11 +293,19 @@ pub fn plumb(output: &Path, map: &Path, base: &Path) -> Result<Plumbed, String> 
     Ok(p)
 }
 
-/// `verify <output> <map>`: one line, `plumb: <result>[: <first>]`; exit 0
-/// when clean.
+/// `verify <output> <map> [<line>]`: one line, `plumb: <result>[:
+/// <first>]`; exit 0 when clean. `<line>` is a file of the linker's words,
+/// one per line.
 fn verify_main(args: &[String]) -> Result<ExitCode, String> {
-    let [output, map] = args else { return Err("verify needs <output> <map>".into()) };
-    let p = plumb(Path::new(output), Path::new(map), Path::new(""))?;
+    let (output, map, line) = match args {
+        [output, map] => (output, map, None),
+        [output, map, line] => {
+            let text = std::fs::read_to_string(line).map_err(|e| format!("{line}: {e}"))?;
+            (output, map, Some(text.lines().map(str::to_owned).collect()))
+        }
+        _ => return Err("verify needs <output> <map> [<line>]".into()),
+    };
+    let p = plumb(Path::new(output), Path::new(map), Path::new(""), line)?;
     match &p.first {
         Some(first) => say!("plumb: {p}: {first}"),
         None => say!("plumb: {p}"),

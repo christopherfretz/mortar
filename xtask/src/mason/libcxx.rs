@@ -9,7 +9,10 @@
 //! - `mortar-noattrs`: mortar on the archives without `.ARM.attributes`
 //!   (what mortar does once that is accepted);
 //! - `mortar-stripped`: mortar on the archives without `.ARM.attributes`
-//!   and `.deplibs` (what mortar does once those are accepted).
+//!   and `.deplibs` (what mortar does once those are accepted);
+//! - `dyn-bfd`, `dyn-lld`, `dyn-mold`, `dyn-mortar`: kiln's dynamic line
+//!   as `dyn` (static libc++, dynamic glibc, the driver's default PIE),
+//!   linked by that linker (WP-058); `dyn-bfd` is their reference.
 //!
 //! The report: counts per mode, the tests a reference mode passes and a
 //! mortar mode does not (a link refusal, or WRONG: linked and failed to
@@ -23,8 +26,36 @@ use std::process::ExitCode;
 
 use super::{outcomes, setup};
 
-pub const MODES: &[&str] =
-    &["dyn", "bfd", "lld", "mold", "mortar", "mortar-noattrs", "mortar-stripped"];
+pub const MODES: &[&str] = &[
+    "dyn",
+    "bfd",
+    "lld",
+    "mold",
+    "mortar",
+    "mortar-noattrs",
+    "mortar-stripped",
+    "dyn-bfd",
+    "dyn-lld",
+    "dyn-mold",
+    "dyn-mortar",
+];
+
+/// Whether `mode` links with mortar.
+pub fn is_mortar(mode: &str) -> bool {
+    mode.starts_with("mortar") || mode == "dyn-mortar"
+}
+
+/// The linker of the lane's `ld` a mode uses (`lane/ld/<linker>`).
+pub fn linker_of(mode: &str) -> &str {
+    let m = mode.strip_prefix("dyn-").unwrap_or(mode);
+    if m.starts_with("mortar") { "mortar" } else { m }
+}
+
+/// The reference mode a mode is compared with: `dyn-bfd` for a `dyn-*`
+/// mode, else `bfd`.
+pub fn reference_of(mode: &str) -> &'static str {
+    if mode.starts_with("dyn-") { "dyn-bfd" } else { "bfd" }
+}
 
 /// The samples: named sets of test directories (relative to
 /// `libcxx/test`) with a shard.
@@ -231,7 +262,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     let lane_scripts = crate::linktest::workspace_root().join("tests/mason/lane");
-    let mortar = if args.modes.iter().any(|m| m.starts_with("mortar")) {
+    let mortar = if args.modes.iter().any(|m| is_mortar(m)) {
         Some(super::mortar_binary(args.mortar.as_deref())?)
     } else {
         None
@@ -270,12 +301,16 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         c.args(&args.dirs);
         c.current_dir(&dir)
             .stdout(out)
-            .env("CARGO_TARGET_DIR", super::lane_dir().join("kiln-target"))
+            // kiln's runner keeps its scratch (each test's directory, the
+            // link outputs) under its target directory: the mode's own, so
+            // that with `--out` outside the synced workspace the links
+            // write there too (WP-034's follow-up). Its build is not used.
+            .env("CARGO_TARGET_DIR", dir.join("runner"))
             .env("TMPDIR", &tmp)
             .env("MASON_KILN", &mason.kiln)
             .env("MASON_MODE", m)
             .env("MASON_LANE", &lane_scripts)
-            .env("MASON_LD", if m.starts_with("mortar") { "mortar" } else { m.as_str() })
+            .env("MASON_LD", linker_of(m))
             .env("MASON_LOG", &log)
             .env("MASON_TIMES", dir.join("times.tsv"))
             .env("MASON_XTASK", &me)
@@ -325,7 +360,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         // `ld` the driver skipped) would report another linker's outcomes.
         let link_jobs =
             read(&stats).lines().filter(|l| l.contains("\"output_kind\":\"link\"")).count();
-        if m.starts_with("mortar") && link_jobs > 0 && links.is_empty() {
+        if is_mortar(m) && link_jobs > 0 && links.is_empty() {
             return Err(format!(
                 "mode {m}: kiln made {link_jobs} links and none reached mortar's lane ld (see {})",
                 dir.join("out.log").display()
@@ -418,19 +453,25 @@ fn finish(args: &Args, recs: &[outcomes::Rec]) -> Result<ExitCode, String> {
     for (m, s) in &by {
         say!("{}", outcomes::times(m, s));
     }
-    if let Some((_, r)) = by.iter().find(|(m, _)| *m == "bfd") {
-        for (m, s) in by.iter().filter(|(m, _)| *m != "bfd") {
+    for (m, s) in &by {
+        let rn = reference_of(m);
+        if *m == rn {
+            continue;
+        }
+        if let Some((_, r)) = by.iter().find(|(x, _)| *x == rn) {
             say!(
                 "
-### {m} against bfd
+### {m} against {rn}
 
 {}",
-                outcomes::compare("bfd", r, m, s).0
+                outcomes::compare(rn, r, m, s).0
             );
         }
     }
     let mut code = ExitCode::SUCCESS;
-    if let Some((_, m)) = by.iter().find(|(m, _)| *m == "mortar") {
+    // The baseline is mortar's, static and dynamic alike: each of the two
+    // mortar modes present is checked against it.
+    for (name, m) in by.iter().filter(|(m, _)| matches!(*m, "mortar" | "dyn-mortar")) {
         if let Some(p) = &args.write_baseline {
             std::fs::write(p, outcomes::baseline(m))
                 .map_err(|e| format!("{}: {e}", p.display()))?;
@@ -440,7 +481,7 @@ fn finish(args: &Args, recs: &[outcomes::Rec]) -> Result<ExitCode, String> {
             let (regressed, fixed) = outcomes::against_baseline(m, &base);
             say!(
                 "
-against {}: regressed {}, fixed {}",
+{name} against {}: regressed {}, fixed {}",
                 p.display(),
                 regressed.len(),
                 fixed.len()
@@ -493,14 +534,15 @@ fn compare_files(a: &str, b: &str) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The reference mode: `bfd`, else `dyn`.
-fn reference(modes: &[Mode]) -> Option<&Mode> {
-    modes.iter().find(|m| m.name == "bfd").or_else(|| modes.iter().find(|m| m.name == "dyn"))
+/// The reference mode of `m`: [`reference_of`], else `dyn`.
+fn reference<'a>(modes: &'a [Mode], m: &str) -> Option<&'a Mode> {
+    let rn = reference_of(m);
+    modes.iter().find(|x| x.name == rn).or_else(|| modes.iter().find(|x| x.name == "dyn"))
 }
 
 /// Tests the reference passes and `m` fails after its link succeeded.
 fn wrong_outputs<'a>(modes: &'a [Mode], m: &'a Mode) -> Vec<(&'a String, &'a Line)> {
-    let Some(r) = reference(modes) else { return Vec::new() };
+    let Some(r) = reference(modes, &m.name) else { return Vec::new() };
     if std::ptr::eq(r, m) || m.name == "dyn" {
         return Vec::new();
     }
@@ -530,7 +572,6 @@ fn render(args: &Args, modes: &[Mode]) -> String {
         let b: Vec<String> = m.backends.iter().map(|(k, n)| format!("{k} {n}")).collect();
         let _ = writeln!(s, "| {} | {} | {} |", m.name, m.summary.trim(), b.join(", "));
     }
-    let reference = reference(modes);
     for m in modes {
         let failed: Vec<&String> = m
             .results
@@ -547,9 +588,9 @@ fn render(args: &Args, modes: &[Mode]) -> String {
             );
         }
     }
-    for m in modes.iter().filter(|m| m.name.starts_with("mortar")) {
+    for m in modes.iter().filter(|m| is_mortar(&m.name)) {
         let _ = writeln!(s, "\n### {}", m.name);
-        if let Some(r) = reference {
+        if let Some(r) = reference(modes, &m.name) {
             let lost: Vec<&String> = m
                 .results
                 .iter()
@@ -630,6 +671,22 @@ mod tests {
             "unsupported section type: 0x6fff4c04"
         );
         assert_eq!(refusal("link: a.o: undefined symbol: f"), "a.o: undefined symbol: f");
+    }
+
+    #[test]
+    fn modes_and_their_references() {
+        assert_eq!(linker_of("dyn-mortar"), "mortar");
+        assert_eq!(linker_of("mortar-noattrs"), "mortar");
+        assert_eq!(linker_of("dyn-lld"), "lld");
+        assert_eq!(linker_of("bfd"), "bfd");
+        assert!(is_mortar("dyn-mortar") && is_mortar("mortar-stripped") && !is_mortar("dyn-bfd"));
+        assert_eq!(reference_of("dyn-mold"), "dyn-bfd");
+        assert_eq!(reference_of("mortar"), "bfd");
+        assert!(
+            MODES
+                .iter()
+                .all(|m| *m == "dyn" || MODES.contains(&linker_of(m)) || linker_of(m) == "mortar")
+        );
     }
 
     #[test]
