@@ -1,0 +1,45 @@
+# Model case C-enum-compatible-type (spec/odr.md §12.7, experiments 2 and 3), under
+# --odr=strict.
+# enum mode get(void) defined in one C unit, declared unsigned get(void) in
+# another (N28): legal, but the Itanium type encodings differ, and C-linkage
+# kind 5 compares the bytes kiln writes (O-33): a strict-only warning until
+# kiln writes the canonical C type (model-c-enum-canonical.test).
+#@ spec: odr.md §3 N28, §12.7, "O-33", "O-35"
+#@ diag: odr-declaration-mismatch def.o use.o
+
+cc -O0 def.c -o def0.o
+meta def.meta def0.o -o def.o
+cc -O0 use.c -o use0.o
+meta use.meta use0.o -o use.o
+cc -O0 main.c -o main.o
+link(bfd,lld,mold) gcc -static -no-pie main.o def.o use.o -o prog
+link(mortar) gcc -static -no-pie main.o def.o use.o -Wl,--odr=strict -o prog
+run prog
+  stdout: 1
+
+#--- def.c
+enum mode { M0, M1 };
+enum mode get(void) { return M1; }
+#--- def.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c11
+declaration anchor=get ty=0x5fc7ca2e1aed457a size=0 type_name=F4modevE flags=5
+#--- use.c
+unsigned get(void);
+int fu(void) { return (int)get(); }
+#--- use.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c11
+declaration anchor=get ty=0x6973425f0bc550f6 size=0 type_name=FjvE flags=4
+#--- main.c
+#include <stdio.h>
+int fu(void);
+int main(void) { printf("%d\n", fu()); return 0; }

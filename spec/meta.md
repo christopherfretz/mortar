@@ -255,7 +255,13 @@ the one `meta-malformed` (naming the unit's offset and MT-10 or MT-14)
 and reads no more of that section; the file's other containers are read
 (MT-4). **Malformed metadata never
 fails a link** unless the user asked for strictness (`odr.md` O-40): it
-is additive.
+is additive. Rows of one entity that contradict each other within one
+unit (one key, different hashes or flags) are not malformed: the reader
+sets them aside and counts them (`--odr-stats` "rows set aside"); they
+are compared with no other unit. Which mode reports these findings is `odr.md`'s:
+the warnings `meta-malformed` (of a unit) and `meta-version` (MT-35)
+are reported only under `--odr=strict`, the one mode that reads
+containers (O-42), where they are errors (O-41, O-47).
 
 ## 5. References to symbols, sections and types
 

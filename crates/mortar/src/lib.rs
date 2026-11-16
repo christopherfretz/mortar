@@ -30,7 +30,7 @@ pub use mortar_cli::Color;
 use mortar_cli::{Exit, Plan};
 use mortar_core::par::Pool;
 use mortar_core::plan::Threads;
-use mortar_input::store::{Store, StorePolicy};
+use mortar_input::store::{Hooks, Store, StoreConfig, StorePolicy};
 
 use crate::timing::Timer;
 use mortar_diag::{Collector, DEFAULT_ERROR_LIMIT, Diagnostic, Key, Policy, RefusalClass, Report};
@@ -226,7 +226,13 @@ fn invoke_with(
     timer.phase(10, "command line");
     // The default store is the staged one (`spec/landed/input/WP-021b.md`);
     // `MORTAR_STORE=resident` is the tests' switch to the other.
-    let store = Store::new(StorePolicy::from_env());
+    // spec/meta.md MT-42, odr.md O-42: containers are kept only when a
+    // record check reads them.
+    let config = StoreConfig {
+        containers: mortar_odr::reads_containers(&plan.diagnostics.odr),
+        ..StoreConfig::default()
+    };
+    let store = Store::with_config(StorePolicy::from_env(), config, Hooks::default());
     let out_path = cwd.join(plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out")));
     let map_path = plan.bookkeeping.map.as_deref().map(|m| cwd.join(m));
     let mortar_map_path = plan.bookkeeping.mortar_map.as_deref().map(|m| cwd.join(m));

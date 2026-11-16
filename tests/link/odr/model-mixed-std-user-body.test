@@ -1,0 +1,59 @@
+# Model case mixed-std-user-body (spec/odr.md §12.7, experiments 2 and 3), under
+# --odr=strict.
+# User code whose tokens differ by __cplusplus: the rows are not SYSTEM, so
+# the difference stays a finding (O-32, Q6), an error under strict.
+#@ spec: odr.md §12.7, "O-32"
+#@ requires: g++
+#@ diag: odr-violation a.o b.o
+
+cxx -O0 -std=c++17 a.cc -o a0.o
+meta a.meta a0.o -o a.o
+cxx -O0 -std=c++20 b.cc -o b0.o
+meta b.meta b0.o -o b.o
+cxx -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o b.o -o prog
+link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
+  exit: fail
+  diag: violates the one-definition rule
+run(bfd,lld,mold) prog
+  stdout: 17 17
+
+#--- a.cc
+__attribute__((noinline)) inline int ver() {
+#if __cplusplus >= 202002L
+  return 20;
+#else
+  return 17;
+#endif
+}
+int fa() { return ver(); }
+#--- a.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++17
+definition anchor=_Z3verv hash=be11a96c46bea849f04574a6804764fb class=1 flags=1 file=h.h line=1
+#--- b.cc
+__attribute__((noinline)) inline int ver() {
+#if __cplusplus >= 202002L
+  return 20;
+#else
+  return 17;
+#endif
+}
+int fb() { return ver(); }
+#--- b.meta
+# the records kiln would write (spec/odr.md §12.7)
+summary name=abi.rtti value=on
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-070 model)"
+summary name=std value=c++20
+definition anchor=_Z3verv hash=82cf1f3aa6818398df6718702d4d9bb2 class=1 flags=1 file=h.h line=1
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int main() { std::printf("%d %d\n", fa(), fb()); }

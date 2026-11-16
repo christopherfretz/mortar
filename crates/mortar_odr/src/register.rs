@@ -41,12 +41,37 @@ pub enum Check {
     W1,
     /// W2 `odr-symbol-type-mismatch`.
     W2,
-    /// `meta-malformed`, `meta-version` (WP-071, WP-073).
+    /// `meta-malformed`, `meta-version` of a container's contents (WP-071,
+    /// WP-073): reported under strict only, the one mode that reads
+    /// containers (O-42). The MT-6 warning for a section of the name that
+    /// is not a container is resolution's (`mortar_resolve`), not a row
+    /// here.
     MetaHeaders,
     /// W3 `odr-strong-and-comdat`.
     W3,
     /// W4 `odr-contents-mismatch`.
     W4,
+    /// Kind 5, C++ linkage (O-35).
+    Kind5Cxx,
+    /// Kind 5, C linkage (O-33).
+    Kind5C,
+    /// Kind 3 layouts (O-17, O-18).
+    Kind3Layout,
+    /// Kind 3 definition-only differences (O-17).
+    Kind3Definition,
+    /// Kind 3 size, alignment and shape flags across schemes (O-11's
+    /// strict exception).
+    Kind3Shape,
+    /// Kind 2 (O-15).
+    Kind2,
+    /// `odr-internal-reference` (O-16).
+    InternalReference,
+    /// `odr-abi-mismatch` (O-30), `odr-isa-mismatch` (O-31).
+    AbiIsa,
+    /// `odr-vtable-rtti-mismatch` (O-25).
+    VtableRtti,
+    /// O-32's `SYSTEM` `-std` differences.
+    SystemStd,
 }
 
 impl Check {
@@ -59,6 +84,16 @@ impl Check {
             Self::MetaHeaders => 2,
             Self::W3 => 3,
             Self::W4 => 4,
+            Self::Kind5Cxx => 5,
+            Self::Kind5C => 6,
+            Self::Kind3Layout => 7,
+            Self::Kind3Definition => 8,
+            Self::Kind3Shape => 9,
+            Self::Kind2 => 10,
+            Self::InternalReference => 11,
+            Self::AbiIsa => 12,
+            Self::VtableRtti => 13,
+            Self::SystemStd => 17,
         }]
     }
 
@@ -85,16 +120,20 @@ impl Status {
 }
 
 /// O-47's table, in the spec's order.
-pub const REGISTER: [Row; 19] = [
+pub const REGISTER: [Row; 20] = [
     Row { check: "W1 `odr-size-mismatch`", status: Status::On },
     Row { check: "W2 `odr-symbol-type-mismatch`", status: Status::On },
-    Row { check: "`meta-malformed`, `meta-version`", status: Status::On },
+    Row {
+        check: "`meta-malformed`, `meta-version` (a container's contents, MT-14, MT-35)",
+        status: Status::Strict,
+    },
     Row { check: "W3 `odr-strong-and-comdat`", status: Status::Strict },
     Row { check: "W4", status: Status::Strict },
     Row { check: "kind 5 C++ linkage `odr-declaration-mismatch`", status: Status::Strict },
     Row { check: "kind 5 C linkage", status: Status::Strict },
     Row { check: "kind 3 `odr-type-mismatch` (layout)", status: Status::Strict },
     Row { check: "kind 3 definition-only differences", status: Status::Strict },
+    Row { check: "kind 3 size and alignment across schemes (O-11)", status: Status::Strict },
     Row { check: "kind 2 `odr-violation` (hash, K13 flags)", status: Status::Strict },
     Row { check: "`odr-internal-reference`", status: Status::Strict },
     Row {
@@ -105,7 +144,7 @@ pub const REGISTER: [Row; 19] = [
     Row { check: "O-24 (shared-object inputs)", status: Status::Strict },
     Row { check: "`.note.mason` table", status: Status::Off },
     Row { check: "O-34 kind 5 vs foreign sizes", status: Status::Strict },
-    Row { check: "`SYSTEM` `-std` differences (O-32)", status: Status::StatsOnly },
+    Row { check: "`SYSTEM` `-std` differences (O-32)", status: Status::Strict },
     Row { check: "`odr-archive-shadow`", status: Status::OptIn },
     Row { check: "load-time hook", status: Status::Never },
 ];
@@ -165,6 +204,28 @@ mod tests {
         }
         for check in [Check::W1, Check::W2, Check::W3, Check::W4, Check::MetaHeaders] {
             assert!(!check.runs(&at(OdrMode::Off)));
+        }
+        for mode in [OdrMode::Warn, OdrMode::Error, OdrMode::Strict] {
+            assert_eq!(Check::MetaHeaders.runs(&at(mode)), mode == OdrMode::Strict);
+        }
+        // The record checks: strict only today (O-47); O-32 is reported
+        // under strict and only counted otherwise.
+        let records = [
+            Check::Kind5Cxx,
+            Check::Kind5C,
+            Check::Kind3Layout,
+            Check::Kind3Definition,
+            Check::Kind3Shape,
+            Check::Kind2,
+            Check::SystemStd,
+            Check::InternalReference,
+            Check::AbiIsa,
+            Check::VtableRtti,
+        ];
+        for check in records {
+            for mode in [OdrMode::Off, OdrMode::Warn, OdrMode::Error, OdrMode::Strict] {
+                assert_eq!(check.runs(&at(mode)), mode == OdrMode::Strict, "{check:?}");
+            }
         }
         assert!(!Status::OptIn.runs(&at(OdrMode::Strict)));
         assert!(Status::OptIn.runs(&Odr { check_archives: true, ..at(OdrMode::Warn) }));
