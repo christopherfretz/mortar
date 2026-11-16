@@ -923,18 +923,26 @@ fn hostile_dead_lines_never_panic() {
 // records and their targets, `.eh_frame_hdr`) and IN-3's fill of an
 // allocated relocation section exist only there.
 
-/// The PIE program: `main.s` loads `live` through the GOT and holds the
-/// three N3 words (each a `RELATIVE` record in a PIE), `dead.s` the dead
+/// The PIE program: `main.s` loads `live` and `arr_end` (a label at
+/// `arr`'s end, the data hole's first byte: a GOT word at a live item's
+/// end, N3) through the GOT and holds the three N3 words (each a
+/// `RELATIVE` record in a PIE), `dead.s` the dead
 /// version of a file with code and two words that point at it (two
 /// `RELATIVE` records that become the `.rela.dyn` hole).
 fn pie_sources(arch: Arch) -> [(&'static str, String); 4] {
     let (got, ty, sec) = match arch {
         Arch::Aarch64 => (
-            "\tadrp x0, :got:live\n\tldr x0, [x0, :got_lo12:live]\n\tbl live\n\tb .\n",
+            "\tadrp x0, :got:live\n\tldr x0, [x0, :got_lo12:live]\n\
+             \tadrp x1, :got:arr_end\n\tldr x1, [x1, :got_lo12:arr_end]\n\tbl live\n\tb .\n",
             "%function",
             "%progbits",
         ),
-        _ => ("\taddq live@GOTPCREL(%rip), %rax\n\tcall live\n\thlt\n", "@function", "@progbits"),
+        _ => (
+            "\taddq live@GOTPCREL(%rip), %rax\n\taddq arr_end@GOTPCREL(%rip), %rax\n\
+             \tcall live\n\thlt\n",
+            "@function",
+            "@progbits",
+        ),
     };
     let ret = "\tret\n";
     let main = format!(
@@ -1092,9 +1100,11 @@ fn pie_archs() -> [Arch; 2] {
 }
 
 // The PIE model is ACCEPTED: the `.rela.dyn` hole's RELATIVE records aim
-// at one scratch word, and `ptrs`' `RELATIVE` record for `arr+40` targets
-// the data hole's first byte, which is the end of the live `arr` (N3:
-// a table word at a live item's end names that item). Each table
+// at one scratch word; `ptrs`' `RELATIVE` records for `arr+40` and
+// `blk_-8` (in the data hole) are judged by the input relocations they
+// come from (by name, N3), and `arr_end`'s GOT word, the data hole's
+// first byte, is the end of the live `arr` (N3 for a word no input
+// relocation names). Each table
 // reference into a range is REJECTED (P-I3), and so is each wrong fill
 // of the relocation hole (P-I5).
 #[test]
@@ -1115,9 +1125,13 @@ fn in3a_pie_tables_and_relocation_fill() {
         let got = b.sec(".got").clone();
         let slot = recs
             .iter()
-            .find(|r| r.1 >= got.addr && r.1 < got.addr + got.size)
+            .find(|r| r.1 >= got.addr && r.1 < got.addr + got.size && r.4 != in_data)
             .copied()
-            .expect("the GOT slot's RELATIVE record");
+            .expect("`live`'s GOT slot's RELATIVE record");
+        assert!(
+            recs.iter().any(|r| r.1 >= got.addr && r.1 < got.addr + got.size && r.4 == in_data),
+            "{arch:?}: arr_end's GOT word is the data hole's first byte"
+        );
         let mut m = b.clone();
         m.patch(".got", slot.1, &in_text.to_le_bytes());
         expect(arch, "got word", &base, &m, "P-I3", ".got word");
