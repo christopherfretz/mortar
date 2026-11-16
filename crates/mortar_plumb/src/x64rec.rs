@@ -227,6 +227,7 @@ impl Engine<'_, '_> {
                 None => return self.not_checked(Reason::SymbolUnresolved, 1),
             },
             Op::Slot(slot, _) => {
+                self.got_demands.insert(s);
                 if alloc && let Some(rw) = self.x64_got_form(oi, si, rec, s, kind) {
                     if rw == Rewrite::GotToLea && self.abs_in_pic(oi, rec.sym, kind) {
                         return self.fail(Self::pc_to_absolute(rec, &site, &symbol));
@@ -924,6 +925,7 @@ impl Engine<'_, '_> {
                 } else {
                     (Slot::Desc, Want::Pair(crate::loader::TLSDESC_MARK, t))
                 };
+                self.demand(want);
                 let pend =
                     Pending { rec: rec.clone(), site, symbol, want, w1: false, loaded: false };
                 self.got_groups.entry((slot, oi, rec.sym, 0)).or_default().members.push((pend, ev));
@@ -961,6 +963,7 @@ impl Engine<'_, '_> {
             f.found = Some(le(&out));
             return self.fail(f);
         }
+        self.demand(Want::Word(t));
         let Some(ev) = self.slot_evidence(rec) else {
             return self.x64_unjudged(rec, Reason::SymbolUnresolved);
         };

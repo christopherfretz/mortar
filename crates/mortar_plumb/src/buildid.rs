@@ -374,6 +374,34 @@ pub fn seal(file: &mut [u8], style: Tree) -> usize {
     n
 }
 
+/// The file ranges of the build-id descriptors of `file` (every
+/// `NT_GNU_BUILD_ID` note of an allocated `SHT_NOTE` section, whatever
+/// its length): the bytes [`reseal`] rewrites.
+pub fn id_ranges(file: &[u8]) -> Vec<std::ops::Range<usize>> {
+    match Image::read(file) {
+        Ok(image) => ids(&image).into_iter().map(|(_, off, len)| off..off + len).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Reseals mortar's build id after an edit of `file`, as a linker that
+/// wrote the edited bytes would have sealed them (§6.7, §9.5, §12.3):
+/// under mortar's map only, by the tree its style names (`L128` when it
+/// names none); a `given` or unknown style, and every other linker's id
+/// (not mortar's scheme, never judged), are left alone. The number of
+/// ids rewritten. One implementation for the mutation tool and the
+/// sweep.
+pub fn reseal(file: &mut [u8], map: &crate::Map) -> usize {
+    if map.format != crate::Format::Mortar {
+        return 0;
+    }
+    match Style::of(map) {
+        Style::Tree(t, _) => seal(file, t),
+        Style::Unstated => seal(file, Tree::L128),
+        Style::Given | Style::Unknown => 0,
+    }
+}
+
 /// The style mortar's map states for the build id (§6.7): the target
 /// token of its `chunk synthetic .note.gnu.build-id` record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

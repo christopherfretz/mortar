@@ -3255,7 +3255,9 @@ a property bit; a linker-defined symbol; two sections overlapping; a
 thunk's target; an IPLT entry; an erratum fix (§5.10). A mutant is
 **caught** when the report has a finding the unmutated output's report
 does not. mortar's build id is resealed after each edit (B1 would
-otherwise catch everything). Places that carry a baseline finding are
+otherwise catch everything), by `buildid::reseal`, the function the byte
+sweep uses too (§12.3, WP-101): a map in mortar's format only, so a
+reference's id is never rewritten. Places that carry a baseline finding are
 not mutated. The choice is a SplitMix64 sequence from a fixed seed: the
 table is the same on every run. `cargo xtask plumb <out> --map <map>
 --map-format F --mutate [--per-class N] [--seed S] [--threads T]`
@@ -4263,27 +4265,51 @@ the entry's `JUMP_SLOT` record in `DT_JMPREL`.
   path's `jmp PLT0` ±16; AArch64 has none: the lazy word is its way
   back), `lazy-slot` (the lazy word + 4).
 
-### 12.3 The byte sweep and the field rules (WP-082)
+### 12.3 The byte sweep and the field rules (WP-082, WP-101)
 
 **The sweep** (`sweep.rs`, `xtask plumb --sweep`) flips bit 0 and bit 7
 of every byte of the synthetic sections (`.dynamic`, `.dynsym`,
 `.dynstr`, `.gnu.hash`, `.gnu.version`, `.gnu.version_r`, `.rela.dyn`,
 `.rela.plt`, `.plt`, `.plt.got`, `.plt.sec`, `.iplt`, `.got`, `.got.plt`,
-`.interp`, `.eh_frame_hdr`, `.eh_frame`, and `.gdb_index`, WP-098; stage 4's
-`.note.mason` and the kept `.mason.meta`, §13) one mutant at a time and
-judges each. A mutant is caught when a finding key appears that the
-unmutated output does not have (a panic counts as caught). It prints,
-per section and field range, the flips and the survivors. It is a
-measuring tool, not a gate: a survivor is either closed by a rule below
-or named as equivalent or as a follow-up row in WP-082's record.
+`.interp`, `.eh_frame_hdr`, `.eh_frame`, `.gdb_index` (WP-098), stage
+4's `.note.mason` and the kept `.mason.meta` (§13), and the descriptor
+of `.note.gnu.build-id`) one mutant at a time and judges each. A mutant
+is caught when a finding key (rule, address, message) appears that the
+unmutated output does not have (a panic counts as caught).
 
-The lane's `gdbindex` case (WP-098; full lane) sweeps `.gdb_index` only,
-of a `-g -ggnu-pubnames` PIE linked `--gdb-index --build-id=none`: 8441
-bytes, no survivor on AArch64. Without a build id because the sweep does
-not reseal one (the mutation tool does, §9.5): in an output with mortar's
-build id every flip is a B1 finding, so the other cases measure B1 first
-(WP-098's record, §4: the `-pie` case without the id leaves 33 survivor
-ranges).
+**What it measures** (WP-101). In an output with mortar's build id (B1,
+§6.7: a hash of the whole file with the id zeroed) every unsealed flip
+is a B1 finding, so before WP-101 the sweep measured B1 and nothing
+else: "0 survivors" on mortar's outputs (WP-082, WP-088) was B1's. Now,
+after each flip of a byte outside the id, the sweep reseals the id with
+the mutation tool's function (`buildid::reseal`, §9.5: mortar's map
+only; a reference's id is left as its linker wrote it, so a reference's
+sweep measures the same as before), and records for each flip the rules
+whose findings are new. Two cases keep B1 judged: the id's own bytes
+are flipped and never resealed (each must be B1's), and one flip of
+`e_ident`'s last padding byte is judged unsealed (B1 must be among its
+rules). `--no-reseal` turns the reseal off (to measure B1 alone). It
+prints per section and field the bytes and survivors, each surviving
+range (marked `equivalent` when its field is in the table below), then
+`flips N, caught M, survived K (E of fields named equivalent)`, and per
+rule the flips it caught and those it alone caught.
+
+**The equivalent fields.** A survivor is closed either by a rule (below,
+and "The field rules of WP-101") or by naming its field here, with who
+reads the bytes and why no correct consumer can act otherwise. By field
+(the sweep's `kind`), never by offset; `sweep::EQUIVALENT` holds the same
+rows and the lane (harness.md "ci") fails on a survivor of any other
+field.
+
+| section | field | reason |
+|---|---|---|
+| `.plt` | code no path executes | Bytes of the PLT that no walk of §12.2 reaches (from every entry `loader::plt_entries` finds, to the jump through its word and on from the word's initial content to the next indirect jump; `plt::executed`): the AArch64 header's three `nop`s after `br x17`, x86-64's padding after the header's `jmp *GOTPLT+16`. Every path through the PLT ends in an unconditional indirect jump before them, and every input branch into the PLT is judged to reach an entry (R1-R4), so no instruction there is ever fetched. |
+
+**The lane's cases** (WP-101, resealed). The `gdbindex` case (WP-098)
+sweeps `.gdb_index` only, of a PIE linked `--gdb-index --build-id=none`.
+Measured on both targets after WP-101's rules: every case but the
+equivalent `.plt` bytes is caught (`spec/landed/plumb/WP-101.md` has the
+table before and after).
 
 **The field rules** (`dyncheck.rs` `fields`, every format unless marked):
 
@@ -4336,6 +4362,74 @@ ranges).
   dynamic output is `mov G(%rip), %reg` into any of the sixteen
   registers (REX.W and ModRM kept, `8d` made `8b`), G a GOT entry with
   the symbol's `TPOFF64` record.
+
+**The field rules of WP-101** (`dynfields.rs`, and where named
+`dynverify.rs`, `eh.rs`): what the resealed sweep showed no rule judged.
+Each was written here before its code; the ones marked **(mortar)** hold
+`Format::Mortar` only, where `spec/dyn.md`, `a64.md` or `x64.md` gives
+mortar a single answer and the references differ or are not ruled.
+
+- **P-D5 (mortar), D-26.** The Bloom words are exactly the two bits of
+  each hashed entry (a cleared bit is every format's finding already: the
+  name's lookup fails; a bit no entry sets only sends a lookup on to the
+  chains, which no correct loader can tell from a true hit). `symoffset`
+  is the index of the first hashed entry (the `.dynsym` count when none
+  is hashed).
+- **P-D6 (mortar), D-30.** Every `DT_NULL` from the first to the end of
+  `PT_DYNAMIC` has value 0 (the first's is every format's; the spare
+  ones' `d_un` the gABI says is ignored).
+- **P-D7 (mortar), D-23.** An import (not under `-static-pie`) has
+  `st_size` 0; `STB_WEAK` exactly when no input references it strongly
+  and the line does not `-u` it; type `STT_FUNC` for a function or IFUNC
+  definition or a canonical PLT, else the definition's, `STT_NOTYPE` when
+  nothing defines it (`WeakDyn`); on AArch64 `STO_AARCH64_VARIANT_PCS`
+  exactly when the definition has it or, with none, an input's undefined
+  reference has it. A defined entry at a `COPY` record's place (the copy
+  and each alias) has the shared definition's type and `st_size`, and
+  `STV_DEFAULT` (D-23's copy row).
+- **P-D8.** Every format: a defined global or weak entry (a local one,
+  GNU ld's `STT_SECTION` entries, is index 0 by right) with version index 0 (gABI
+  `VER_NDX_LOCAL`: musl skips it, glibc does not, so the export is one a
+  loader may refuse). An import's index 0 is read as 1 (unversioned:
+  glibc reads 0 and 1 alike for a reference, musl reads no reference's
+  index), and
+  **(mortar)** is a finding (D-27 writes 1).
+- **P-D9.** Every format: a `RELATIVE` record on a word that no input's
+  absolute use makes an address is the record of a GOT slot an input
+  demands (D-40, D-46): its place is an aligned word of `.got` and its
+  addend the value some GOT-indirect reference of the inputs asks a slot
+  to hold (relaxed or not, a TLS reference's TPREL word or module pair
+  included; `reloc.rs`'s `got_demands`), or an IPLT entry (D-45: an
+  entry whose word carries an `IRELATIVE`, in `.plt` or `.iplt`). For a
+  reference the value of `_GLOBAL_OFFSET_TABLE_` is accepted too: mold
+  gives an x86-64 `GOTPC64` reference to it a GOT slot of that symbol
+  which nothing loads (measured, WP-101: `weak-class-table`, the
+  large-model tests; harmless, so not an anomaly). Before WP-101 any
+  addend inside a `PT_LOAD` passed.
+  **(mortar)**, D-46: a record's place holds in the file `S + A` for
+  `RELATIVE` (the addend) and 0 for `GLOB_DAT`, the symbolic word type
+  and `TPOFF`; an `IRELATIVE` record's place (the IPLT word) holds the
+  resolver's address on AArch64 (a64.md §10.2) and 0 on x86-64 (x64.md
+  X-39); a `.got` word no record writes (AArch64's `.got[0]` aside)
+  holds a value an input's GOT reference demands. For a reference these
+  bytes are equivalent (every RELA type of the two machines but a lazy
+  `JUMP_SLOT` computes the word from S, A and the base and ignores the
+  place), so the rule is mortar's alone.
+- **P-D10 (mortar).** AArch64's `.got[0]` holds `_DYNAMIC`'s link-time
+  address and no record writes it (D-32); `DT_PLTGOT` is `.got.plt`'s
+  address and `.got.plt[0..3]` are (x86-64 `_DYNAMIC`, else 0), 0, 0
+  with no record on them, in every kind, a static-pie's included (D-32,
+  D-49; §12.2 judges them only with a `JUMP_SLOT`); no `JUMP_SLOT` record
+  is outside `DT_JMPREL` (D-41); every AArch64 PLT and IPLT entry's third
+  instruction is `add x16, x16, #lo12(G)` (a64.md §10.3, §10.4: the walk
+  judges it where the lazy path reads `x16`; an IPLT entry's `x16`
+  reaches only the chosen function, where IP0 is scratch, so only
+  mortar's single answer holds it).
+- **E5, every format.** `.eh_frame_hdr`'s encodings with
+  `DW_EH_PE_indirect` (0x80) are read as libgcc's
+  `read_encoded_value_with_base` and LLVM libunwind's `getEncodedP` read
+  them: the value is the word at the decoded address. The flag was
+  ignored, and a header no unwinder reads as written passed.
 
 **Mutations.** `dynsym-unique`: an exported `STB_GNU_UNIQUE` definition
 made `STB_GLOBAL` in `.dynsym` and in its `.symtab` entry (WP-054's case
