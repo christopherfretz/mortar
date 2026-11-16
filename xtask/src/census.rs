@@ -580,15 +580,16 @@ impl Lane {
                 ours.1.trim()
             ));
         }
-        let fix = crate::plumb::line_fix_843419(&words, &dir);
+        // Mortar's map states its line (`arg`, spec/plumb.md §3.2a): the
+        // verifier reads the option and stage 3's words from it alone.
         let verified = crate::plumb::verify_link_line(
             &out,
             &map,
             mortar_plumb::Format::Mortar,
             &dir,
             None,
-            Some(fix),
-            Some(words),
+            None,
+            None,
         );
         let report = match verified {
             Ok((_, report, _)) => report,
@@ -597,7 +598,7 @@ impl Lane {
         self.erratum
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .count(Some(fix), &report.coverage);
+            .count(report.coverage.erratum_option, &report.coverage);
         if !report.findings.is_empty() {
             let text = report.render(&out.display().to_string());
             let rules: Vec<String> = report.findings.iter().map(|f| f.rule.id()).collect();

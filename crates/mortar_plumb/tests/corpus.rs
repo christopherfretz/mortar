@@ -180,7 +180,7 @@ fn s3_2_reference_maps_round_trip_through_mortar_format() {
     let Some(c) = corpus(Size::Small) else { return };
     for link in &c.links {
         let map = link.parse_map();
-        let text = mortar_plumb::map::mortar::write(&map);
+        let text = mortar_plumb::map::mortar::write(&with_line(&map));
         let back = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &text).unwrap();
         let key = |m: &mortar_plumb::Map| {
             let placed: Vec<_> = m
@@ -222,4 +222,19 @@ fn s7_1_reports_are_deterministic() {
         assert_eq!(link.verify(), link.verify(), "{}", link.label());
         let _ = report_text;
     }
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &mortar_plumb::Map) -> mortar_plumb::Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }

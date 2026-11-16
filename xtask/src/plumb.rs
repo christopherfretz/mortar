@@ -417,9 +417,14 @@ pub fn verify_link_line(
     let text = String::from_utf8_lossy(&map_bytes);
     let mut parsed = mortar_plumb::map::parse(format, &text)
         .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?;
-    // The caller's word, else the link's own words (WP-103: every lane
-    // passes the linker's line; with neither, the verifier infers it).
-    parsed.fix_843419 = fix_843419.or_else(|| line.as_deref().map(|l| line_fix_843419(l, base)));
+    // A reference's map: the caller's word, else the link's own words
+    // (WP-103: every lane passes the linker's line; with neither, the
+    // verifier infers it). Mortar's map states its line (`arg`,
+    // spec/plumb.md §3.2a), which is all the verifier reads.
+    if format != Format::Mortar {
+        parsed.fix_843419 =
+            fix_843419.or_else(|| line.as_deref().map(|l| line_fix_843419(l, base)));
+    }
     let files = link_files(&parsed, base, allowed);
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
     let report = if mortar_plumb::is_dynamic(&output) {
@@ -742,7 +747,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mortar-wp092-args-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let plain = dir.join("plain.map");
-        std::fs::write(&plain, "mortar-map 2\nend\n").unwrap();
+        std::fs::write(&plain, "mortar-map 2\narg x.o\nend\n").unwrap();
         let elf = dir.join("x");
         std::fs::write(&elf, b"\x7fELF\x02\x01").unwrap();
         let arg = |p: &Path| p.display().to_string();

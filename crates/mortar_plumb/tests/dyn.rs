@@ -1888,8 +1888,10 @@ fn s3_3_m8_copy_records_are_the_copies() {
         base.dynamic = Some(DynRecords { copies, ..DynRecords::default() });
         let line: Vec<String> =
             std::fs::read_to_string(&o.line).unwrap().lines().map(str::to_string).collect();
+        // The map's line is the link's (plumb.md §3.2a).
+        base.args = line.iter().map(|w| w.as_bytes().to_vec()).collect();
         let m8 = |map: &Map| -> Vec<String> {
-            let text = mortar_plumb::map::mortar::write(map);
+            let text = mortar_plumb::map::mortar::write(&with_line(map));
             let map = mortar_plumb::map::parse(Format::Mortar, &text).unwrap();
             let inputs: Vec<Input<'_>> =
                 files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
@@ -1933,4 +1935,19 @@ fn s3_3_m8_copy_records_are_the_copies() {
         );
     }
     assert!(n > 0 || c.outs.is_empty(), "no lld outputs of copy-relro");
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &mortar_plumb::Map) -> mortar_plumb::Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }

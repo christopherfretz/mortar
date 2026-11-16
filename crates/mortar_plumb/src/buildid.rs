@@ -9,6 +9,7 @@
 use mortar_elf::consts::{SHF_ALLOC, SHT_NOTE};
 
 use crate::image::Image;
+use crate::opts::{BuildId, Options};
 use crate::report::{Coverage, Finding, Rule};
 
 const NT_GNU_BUILD_ID: u32 = 3;
@@ -406,9 +407,8 @@ pub fn reseal(file: &mut [u8], map: &crate::Map) -> usize {
 /// token of its `chunk synthetic .note.gnu.build-id` record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Style {
-    /// The map states none (maps written before the record had a
-    /// target): any tree that fits the length is accepted, and an
-    /// 8-, 20- or 32-byte `--build-id=0xHEX` is judged as a hash.
+    /// The line asks for no note (B1 then finds the note by its
+    /// presence): any tree that fits the length is accepted.
     Unstated,
     /// `default`, `sha1`, `sha256` or `fast` (image.md I-69): the tree
     /// and the length.
@@ -420,25 +420,78 @@ pub enum Style {
 }
 
 impl Style {
-    /// The style of `map`'s build-id chunk.
+    /// The style of `map`'s build id: its line's (§3.2a, the last of
+    /// `--build-id[=STYLE]` and `--no-build-id`). A line that asks for no
+    /// note, or a map that is not mortar's, gives [`Style::Unstated`]:
+    /// [`line_rules`] judges the presence.
     pub fn of(map: &crate::Map) -> Style {
-        let Some(c) = map
-            .chunks
-            .iter()
-            .find(|c| c.kind == crate::map::ChunkKind::Synthetic && c.name == ".note.gnu.build-id")
-        else {
-            return Style::Unstated;
-        };
-        match c.target.as_ref().map(|t| t.0.as_str()) {
-            None => Style::Unstated,
-            Some("default") => Style::Tree(Tree::L128, 20),
-            Some("fast") => Style::Tree(Tree::L128, 8),
-            Some("sha1") => Style::Tree(Tree::Sha1, 20),
-            Some("sha256") => Style::Tree(Tree::Sha256, 32),
-            Some("given") => Style::Given,
-            Some(_) => Style::Unknown,
+        crate::opts::of(map).and_then(|o| Self::asked(&o.build_id)).unwrap_or(Style::Unstated)
+    }
+
+    /// The style a line asks for; `None`: no note (I-69).
+    pub fn asked(b: &BuildId) -> Option<Style> {
+        match b {
+            BuildId::None => None,
+            BuildId::Given => Some(Style::Given),
+            BuildId::Style(s) => Some(Self::named(s)),
         }
     }
+
+    fn named(token: &str) -> Style {
+        match token {
+            "default" => Style::Tree(Tree::L128, 20),
+            "fast" => Style::Tree(Tree::L128, 8),
+            "sha1" => Style::Tree(Tree::Sha1, 20),
+            "sha256" => Style::Tree(Tree::Sha256, 32),
+            "given" => Style::Given,
+            _ => Style::Unknown,
+        }
+    }
+}
+
+/// The target token of `map`'s `chunk synthetic .note.gnu.build-id`.
+fn chunk_style(map: &crate::Map) -> Option<&str> {
+    map.chunks
+        .iter()
+        .find(|c| c.kind == crate::map::ChunkKind::Synthetic && c.name == ".note.gnu.build-id")?
+        .target
+        .as_ref()
+        .map(|t| t.0.as_str())
+}
+
+/// B1's line clauses (§6.7, §3.2a), for a mortar map with `arg`
+/// records: the output has a build-id note exactly when the line asks
+/// for one, and a style the map's chunk states is the line's.
+pub(crate) fn line_rules(image: &Image<'_>, map: &crate::Map, opts: &Options) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let found = ids(image);
+    let asked = Style::asked(&opts.build_id);
+    match (&asked, found.first()) {
+        (None, Some(&(addr, _, len))) => out.push(
+            Finding::new(
+                Rule::BuildId,
+                format!(
+                    "a {len}-byte build id the line does not ask for (no --build-id, or \
+                     --build-id=none or --no-build-id last; spec/image.md I-69)"
+                ),
+            )
+            .at(addr),
+        ),
+        (Some(_), None) => out.push(Finding::new(
+            Rule::BuildId,
+            "no build-id note; the line asks for one (--build-id, spec/image.md I-69)",
+        )),
+        _ => {}
+    }
+    if let (Some(a), Some(t)) = (&asked, chunk_style(map))
+        && Style::named(t) != *a
+    {
+        out.push(Finding::new(
+            Rule::BuildId,
+            format!("the map's build-id chunk states the style '{t}'; the line asks for {a:?}"),
+        ));
+    }
+    out
 }
 
 /// B1 (§6.7), for mortar's map only: the id of an `NT_GNU_BUILD_ID` note

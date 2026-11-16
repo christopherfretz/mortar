@@ -115,8 +115,11 @@ fn case(triple: &str, w64: bool) -> Option<Case> {
     }
     at.sort_unstable();
     assert_eq!(at.len(), 2, "{triple}: the two inputs' .debug_aranges");
-    let map = mortar_plumb::map::parse(Format::Mortar, &mortar_plumb::map::mortar::write(&base))
-        .unwrap_or_else(|e| panic!("{triple}: mortar's map: line {}: {}", e.line, e.message));
+    let map = mortar_plumb::map::parse(
+        Format::Mortar,
+        &mortar_plumb::map::mortar::write(&with_line(&base)),
+    )
+    .unwrap_or_else(|e| panic!("{triple}: mortar's map: line {}: {}", e.line, e.message));
     Some(Case { output, files, map, w: if w64 { 8 } else { 4 }, at: [at[0], at[1]] })
 }
 
@@ -208,4 +211,19 @@ fn i112_aranges_length_on_x86_64() {
     if let Some(c) = case("x86_64-linux-gnu", true) {
         c.check("x86-64");
     }
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &Map) -> Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }
