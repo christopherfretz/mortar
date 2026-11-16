@@ -16,6 +16,11 @@
 # not know relocation 513; mold 2.37.1 keeps the sequence, calling the
 # static `__tls_get_addr` with a GOT pair (1, DTPREL(S)): a correct form
 # mortar does not write. Every program prints the same.
+#
+# GNU ld's static-pie carries A30 (plumb.md §10.2: the GOT slot of
+# glibc's absolute `_nl_current_*_used` gets a RELATIVE record),
+# unrelated to TLS.
+#@ anomaly(bfd): A30
 #@ spec: a64.md "8.4"
 #@ spec: a64.md "12.5"
 #@ spec: dyn.md "D-2"
