@@ -3,7 +3,8 @@
 //! IN-22a, the existing state read and validated, the fall-back reason of
 //! §7), and after a successful full link the state written beside the
 //! output and bound to it (IN-17, IN-18a, IN-21). There is no update yet:
-//! every incremental link is a full link (`update-not-implemented`).
+//! every incremental link is a full link (`small-output` below its bound,
+//! else `update-not-implemented`).
 //!
 //! A plain link never reaches this module (IN-11): [`start`] returns
 //! [`Start::Plain`] before it touches anything when `--incremental` is
@@ -225,7 +226,20 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     } else {
         check(&state_path, plan_hash, out_path)
     };
-    let old = old.filter(|_| report.is_some() && reason == "update-not-implemented").map(Box::new);
+    // §7 `small-output`: a state that could be updated from, of an output
+    // below the bound, is linked in full; `--incremental=update` updates
+    // whatever the size (so far: fails, `update-not-implemented`).
+    let reason = match &old {
+        Some(s)
+            if !update && reason == UPDATABLE && mortar_incr::small_output(s.meta.file_size) =>
+        {
+            SMALL_OUTPUT.to_owned()
+        }
+        _ => reason,
+    };
+    // The dry run (WP-063, WP-106) is computed only for a state an update
+    // could start from, and only when the report asks for it.
+    let old = old.filter(|_| report.is_some() && dry_run_wanted(&reason)).map(Box::new);
     if update {
         emit(diagnostics, 2, Diagnostic::error(Kind::IncrementalUpdateFailed { reason }));
         return Start::Failed;
@@ -311,6 +325,23 @@ fn check(
     (check_state(&state, plan_hash, out_path), target, Some(state))
 }
 
+/// The reason of a state every check of §7 accepted: an update could start
+/// from it, and the update does not exist yet (stage A).
+const UPDATABLE: &str = "update-not-implemented";
+
+/// §7's `small-output` (`mortar_incr::SMALL_OUTPUT`).
+const SMALL_OUTPUT: &str = "small-output";
+
+/// Whether a link whose reason is `reason` computes the dry run when the
+/// report asks for it (`spec/incr.md` IN-10a): only for a state an update
+/// could start from, an updatable one or one below `small-output`'s bound
+/// (a policy decided from the size alone, which `--incremental=update`
+/// does not apply). Every other reason says before the delta that no
+/// update could run, and the report names it alone.
+fn dry_run_wanted(reason: &str) -> bool {
+    reason == UPDATABLE || reason == SMALL_OUTPUT
+}
+
 pub(crate) fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -> String {
     if state.plan_hash != plan_hash {
         return "options-changed".to_owned();
@@ -321,7 +352,7 @@ pub(crate) fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -
     if let Err(why) = output_matches(state, out_path) {
         return format!("output-changed: {why}");
     }
-    "update-not-implemented".to_owned()
+    UPDATABLE.to_owned()
 }
 
 /// IN-21's check of the output against the state: its tuple, then its
@@ -439,6 +470,11 @@ impl Session {
             && self.reason != "options-changed"
         {
             "options-changed".clone_into(&mut self.reason);
+        }
+        // No update could start from a state of another target: no dry run
+        // (WP-106; it ran on one before).
+        if !dry_run_wanted(&self.reason) {
+            self.old = None;
         }
         if f.dyn_tables.is_some() {
             emit(

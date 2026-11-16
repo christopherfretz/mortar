@@ -564,8 +564,9 @@ standard error. Its first line is IN-10's:
     incremental: full (<reason>) changed=<files> refilled=<units> bytes=<written> time=<ms>
 
 When the link found and checked a state of its output that could be
-updated (the reason would be `update-not-implemented`), the dry run
-(WP-063) follows. It is IN-22's change detection, IN-25..29's delta and
+updated (the reason is `update-not-implemented` or `small-output`:
+`spec/incr.md` IN-10a), the dry run (WP-063) follows. After any other
+reason the report is its first line alone. It is IN-22's change detection, IN-25..29's delta and
 IN-27's refill set computed against the old state. The link then runs
 in full. The new side is the full link's own layout, so the set says
 which units an update laid out that way would rewrite. It is not yet
@@ -592,6 +593,8 @@ hex digits. An empty field is `-`. The lines appear in this order:
 | `delta unit <reasons> <path> <member> <shndx> <name>` | per refilled unit, in the new link's section order. `<shndx>` is the section's index in its file (as in `--mortar-map`). |
 | `delta hole <reasons> <path> <member> <shndx> <old address> <size> <name>` | per old unit whose bytes are not where the new link puts that unit. `<shndx>` is the index in the new link's file, or `-` when the file left. The address and size are hex; the address is `-` when the old unit was not allocated. |
 | `delta chunk <reasons> <tag> <chunk> <output section>` | per refilled chunk (headers, synthetic tables, merged sections, patches, a body's fill between units). |
+| `delta elided <kind> listed=1000 total=<n>` | after the last line of a kind above (`path`, `stat-missed`, `file`, `probe`, `symbol`, `fallback`, `unit`, `hole`, `chunk`) of which more than 1,000 were found: the bound below. |
+| `delta listed bound=1000 elided=<n>` | once: the bound, and the number of lines of every kind left out (0 when none). |
 | `delta time detect=<ms> delta=<ms>` | the cost of detection, and of the delta and the report. |
 | `delta end` | last. A report without it is truncated. |
 
@@ -612,6 +615,15 @@ hex digits. An empty field is `-`. The lines appear in this order:
 | `eh-frame` | IN-34a: an `.eh_frame` contribution after the first record that differs. |
 | `eh-ref` | Row 10: a reference into an input `.eh_frame`. |
 | `headers`, `gaps` | The file, program and section headers, and a body's fill (chunks). |
+
+**The bound** (`spec/incr.md` IN-10b, WP-106). Of each kind of line
+that names one item (`path`, `stat-missed`, `file`, `probe`, `symbol`,
+`fallback`, `unit`, `hole`, `chunk`) the report writes the first 1,000
+in the order above (`mortar_incr::delta::REPORT_BOUND`) and counts the
+rest, which its `delta elided` line states. The count lines (`delta
+inputs`, `delta symbols`, `delta refill`) are not bounded. A report is
+the same bytes for the same inputs, options and state, but for `time=`
+and the `delta time` line.
 
 The fall-back reasons are IN-16's. The dry run raises
 `new-output-section`, `property-changed`, `options-changed`,

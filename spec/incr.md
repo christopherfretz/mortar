@@ -1024,7 +1024,7 @@ program is the program a from-scratch link would have made.
   | `--incremental=update` | update or fail: a fall-back reason is an error (`incremental-update-failed`) naming the reason, and nothing is written; for tests and for users who want to know (gold's `--incremental-update`) |
   | `--no-incremental` | the default: a plain link; never reads or writes a state |
   | `--incremental-state=PATH` | where the state is (default `<output>.mortar-state`, IN-17) |
-  | `--incremental-report[=FILE]` | one line per link to `FILE` (default stderr): `incremental: update` or `incremental: full (<reason>)`, then `changed=<files> refilled=<units> bytes=<written> time=<ms>` |
+  | `--incremental-report[=FILE]` | one line per link to `FILE` (default stderr): `incremental: update` or `incremental: full (<reason>)`, then `changed=<files> refilled=<units> bytes=<written> time=<ms>`; after it, when IN-10a says so, the dry run's `delta` lines, bounded (IN-10b) |
 
   A fall-back is reported without `--incremental-report` too, as one
   report line (`incr-full-link`; a line, not a diagnostic: `spec/diag.md`
@@ -1033,11 +1033,53 @@ program is the program a from-scratch link would have made.
   `--incremental-unchanged` and `--incremental-unknown` are not taken
   (IN-23); `--incremental-base` neither (the state names its output).
   *Test:* a link test per row of the table.
+- **IN-10a [v1] Which links compute a delta** (WP-106). The delta
+  (change detection, IN-25..IN-29, the refill set) is computed only for
+  a state an update could start from: one that passed every check of §7
+  before the delta (read and validated, the plan, the target, the
+  updating flag, the output), so that the reason is
+  `update-not-implemented` (stage A) or `small-output`. `small-output`
+  is a policy decided from the output's size alone, which
+  `--incremental=update` does not apply; the dry run says what that
+  update would have done, at the cost of the delta of an output under
+  256 MiB. Every other reason (`no-state`, `state-corrupt`,
+  `state-version`, `options-changed`, a state of another target among
+  them, `output-changed`, `output-torn`, `--incremental=full`, a shared
+  object input) says before any delta that no update could run: the
+  link keeps no old state past the check and the report names the
+  reason alone. Until WP-064 the dry run is computed only when
+  `--incremental-report` asks for it: a link without the report
+  computes no delta and keeps no old state. A fall-back that the delta
+  itself finds (`delta fallback`, `delta policy`) does not stop it: its
+  refill set is the oracle's evidence that each fall-back is needed
+  (IN-63b), and IN-10b bounds what is printed of it. *Test:*
+  `a_target_change_at_the_same_path_is_options_changed` (a state of
+  another target: no `delta` line), `a_small_output_is_linked_in_full_by_name`
+  (the dry run under `small-output`), `fall_back_reasons`.
+- **IN-10b [v1] The report is bounded** (WP-106; WP-094 measured
+  801,742,419 B, 12,924,615 lines, on one fall-back of g10x). Each kind
+  of listing line (`path`, `stat-missed`, `file`, `probe`, `symbol`,
+  `fallback`, `unit`, `hole`, `chunk`: `docs/cli.md` §3.13) is written
+  for its first `REPORT_BOUND` = 1,000 instances in the report's order
+  (`mortar_incr::delta::REPORT_BOUND`); past that the lines are counted,
+  not formatted, and the kind's last line is followed by `delta elided
+  <kind> listed=1000 total=<n>`. The count lines (`delta inputs`, `delta
+  symbols`, `delta refill`) are never bounded, so every total is stated,
+  and `delta listed bound=1000 elided=<n>` before `delta time` gives the
+  number of lines left out (0 when none): nothing is dropped unsaid. A
+  reader that needs every line (the oracle lane, IN-63a) treats a report
+  with a `delta elided` line as one it cannot judge. The report is a
+  function of the link's inputs, options and state except for its two
+  times (`time=` and `delta time`). *Test:* `the_report_is_bounded`
+  (100,000 moved sections), `delta::tests::the_report_bound`.
 - **IN-11 [v1] A plain link never looks.** Without `--incremental`,
   mortar does not open, stat or remove a state file. A state left beside
   an output that a plain link replaced no longer matches it (IN-21) and
   the next incremental link says `output-changed`. *Test:* plain link
-  over an incremental output, then `--incremental`, checks the reason.
+  over an incremental output, then `--incremental`, checks the reason;
+  `a_plain_link_touches_nothing_of_incremental_mode` (WP-106: FIFOs at
+  both state paths, an existing state's bytes and times, the report
+  options without `--incremental`, the directory's entries).
 - **IN-12 [v1] Incompatible modes.** With `-r`, `--emit-relocs`, a
   `SECTIONS` script, `--compress-debug-sections` other than `none`,
   `--gdb-index`/`--debug-names` generation or `--icf`, and (until WP-066)
@@ -1607,7 +1649,14 @@ with each phase fed from the state for unchanged files:
   so only changed members count as changed files; added and removed
   members change the archive's symbol index, and resolution (IN-26)
   decides what is extracted. A thin archive's members are files and are
-  stat'ed as such (IN-22). Measured (R1, the "detect" part): reading and
+  stat'ed as such (IN-22). A member file's `STAT` path is its own while
+  its `FILES` row's path is the archive's (model §7.1), so change
+  detection ties the two by content: a read path whose bytes are a
+  member row's whole range (an object, base 0, the same length and
+  content hash) and whose last components are the row's member name is
+  that member's file, and its change is judged by the member's row, not
+  taken for a script's (§7 `options-changed`; WP-106). A path that
+  matches no member row stays a script's (conservative). Measured (R1, the "detect" part): reading and
   hashing `libprotobuf.a` (84.7 MB) costs 53–94 ms here on one thread
   (one `read` of the file from the page cache, then CRC-32 per member),
   40–70% of a regular-archive update (§1.5); parallel hashing divides
@@ -2734,10 +2783,11 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `no-state` | no state at the state path (the first link); reported only by `--incremental-report` | permanent |
 | `state-corrupt` | the state fails validation (IN-18) | permanent |
 | `state-version` | the state's format or mortar version differs | permanent |
-| `options-changed` | the normalized plan differs: any option, the target, the emulation, the library search path, the input list's order (adding or removing an input, or an archive's members changing, is not a change of plan). The delta also raises it when a path whose content changed is no file of either link: a linker script, whose content the plan does not hash (WP-063) | permanent; [later] options that touch no layout (`-Map`, `--time-phases`, `--threads`, `--incremental-report` are excluded already) |
+| `options-changed` | the normalized plan differs: any option, the target, the emulation, the library search path, the input list's order (adding or removing an input, or an archive's members changing, is not a change of plan). The delta also raises it when a path whose content changed is no file of either link: a linker script, whose content the plan does not hash (WP-063). A thin archive's member file is its member's (IN-24), not such a path: a changed, added or removed member is a changed, appeared or gone file (WP-106) | permanent; [later] options that touch no layout (`-Map`, `--time-phases`, `--threads`, `--incremental-report` are excluded already) |
 | `output-changed` | `P` is missing, or its stat tuple or build id differs from the state's, or it is racy and a build-id leaf differs (IN-21) | permanent |
 | `output-torn` | the state's "updating" flag is set (IN-46) | permanent |
-| `update-not-implemented` | the state is valid, the plan and the output match it, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order) | stage A only; WP-064 deletes the row |
+| `small-output` | the output the state describes (`META`'s output size) is smaller than 256 MiB (`mortar_incr::SMALL_OUTPUT`), checked after every row above. Not with `--incremental=update`, which updates whatever the size. **A policy constant, not a measured crossover**: an update was measured at 55 MB (0.67-1.15 of a plain link, saving at most 124 ms) and at 583-832 MB (0.70-0.94; 0.19-0.26 with the state read and written by range), and on no workload between (WP-094 §7). 256 MiB is a power of two between them, so that the mode can be told from `ls -l`; WP-105 measures a workload in that range and moves it if the crossover is elsewhere | permanent (the bound a policy constant) |
+| `update-not-implemented` | the state is valid, the plan and the output match it, the output is not small, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order; `--incremental=update` fails with it whatever the size) | stage A only; WP-064 deletes the row |
 | `inputs-reordered` | two unchanged inputs' relative order changed. The input list's order is in the plan (`options-changed`, checked first), so the delta meets this only through archive extraction order (WP-063: two unchanged `FILES` rows in a different relative order) | v1; [later] when no COMDAT keeper or placement order depends on it |
 | `too-much-changed` | IN-16's threshold | permanent (it is the compaction rule) |
 | `reserve-exhausted` | a segment reserve, a packed array's, `.eh_frame`'s, a slot region's or a dynamic table's capacity is exhausted (IN-32, IN-34) | permanent |
