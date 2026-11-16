@@ -17,7 +17,7 @@ use std::time::Duration;
 use mortar_incr::format::{self, FLAG_UPDATING, State, StateError};
 use mortar_incr::stamp::{self, Cleanliness, Tuple};
 use mortar_testutil::target::Arch;
-use mortar_testutil::{Outcome, Scratch, run_with, tools_required};
+use mortar_testutil::{Outcome, Scratch, run_exec_with, run_with, tools_required};
 use support::{AARCH64, Built, Driver, Source, build, with_output};
 
 const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
@@ -204,10 +204,17 @@ impl Prog {
     fn run(&self, out: &str) -> (Option<i32>, Vec<u8>) {
         std::fs::copy(self.path(out), self.path("runme")).unwrap();
         let (exe, args) = self.arch.runner(&self.path("runme"));
-        let mut c = Command::new("sh");
-        c.arg("-c").arg("ulimit -c 0; exec \"$0\" \"$@\"").arg(exe).args(args);
-        c.current_dir(&self.built.dir);
-        let o = run_with(&mut c, b"", Duration::from_mins(1));
+        // The copy can be busy for a moment (`run_exec_with`).
+        let o = run_exec_with(
+            || {
+                let mut c = Command::new("sh");
+                c.arg("-c").arg("ulimit -c 0; exec \"$0\" \"$@\"").arg(&exe).args(&args);
+                c.current_dir(&self.built.dir);
+                c
+            },
+            b"",
+            Duration::from_mins(1),
+        );
         (o.status.and_then(|s| s.code()), o.stdout.clone())
     }
 
@@ -1227,6 +1234,53 @@ fn x86_64_dynamic_outputs_are_unsupported() {
         args.push("--incremental=update".into());
         let o = run_in(&prog.built.dir, Path::new(MORTAR), &args, &[]);
         assert!(!o.success() && o.stderr_text().contains("incremental-unsupported"), "{out}");
+    }
+}
+
+// spec: incr.md IN-12 (`-static-pie` is not a static executable: a
+// warning naming it, a plain link with no state, the same bytes as the
+// plain link; `--incremental=update` the error), WP-052, both
+// architectures. AArch64's assembly keeps its address word in a writable
+// section (in `.rodata` a static-pie refuses it, D-47).
+#[test]
+fn static_pie_is_unsupported() {
+    let pic = ASM.replace(
+        "\t.section .rodata\n\t.quad msg\n",
+        "\t.section .data.rel.ro,\"aw\"\n\t.quad msg\n",
+    );
+    assert_ne!(pic, ASM);
+    for prog in [
+        Prog::asm_for(AARCH64, "incr-spie", &pic, &["-pie", "--no-dynamic-linker"]),
+        Prog::asm_for(
+            Arch::X86_64,
+            "incr-spie-x86-64",
+            ASM_X86_64,
+            &["-pie", "--no-dynamic-linker"],
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        prog.link("plain", &[]);
+        assert!(!prog.state_of("plain").exists());
+        for mode in ["--incremental", "--incremental=full"] {
+            let err = prog.link("spie", &[mode]);
+            assert!(
+                err.contains("--incremental is not supported with -static-pie"),
+                "{mode}: {err}"
+            );
+            assert!(err.contains("linking without a state"), "{mode}: {err}");
+            assert!(!prog.state_of("spie").exists(), "{mode}: a state was written");
+            assert_eq!(
+                prog.bytes("spie"),
+                prog.bytes("plain"),
+                "{mode}: not the plain link's bytes"
+            );
+        }
+        let o = prog.mortar_env("upd", &["--incremental=update"], &[]);
+        let err = o.stderr_text();
+        assert!(!o.success() && err.contains("incremental-unsupported (-static-pie)"), "{err}");
+        assert!(!prog.state_of("upd").exists());
     }
 }
 

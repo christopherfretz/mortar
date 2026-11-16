@@ -210,7 +210,7 @@ pub fn with_link<T>(
                     src,
                     rela: &d.rela,
                     dynamic: &d.dynamic,
-                    interp: &d.interp,
+                    interp: d.interp.as_ref(),
                     runpath: d.runpath.as_ref().map(|(t, p)| (*t, p.as_slice())),
                     copy_size: &d.copy.size,
                     bind_now: d.bind_now,

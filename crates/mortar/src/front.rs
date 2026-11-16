@@ -408,8 +408,14 @@ pub fn front<'s>(
             return None;
         }
     };
-    // An output with `.dynamic` (`Exec`, `Pie`; WP-053).
+    // A dynamic output (`Exec`, `Pie`; WP-053): shared objects, a
+    // dynamic symbol table, the scan's dynamic rules.
     let dynamic = status == mortar_arch::Status::M2;
+    // An output with `.dynamic`: the dynamic ones and a `StaticPie`
+    // (`spec/dyn.md` D-1, D-2: `.dynamic` for glibc's self-relocation,
+    // nothing a loader reads; its scan, its architecture tables and its
+    // symbols are a static link's, WP-052).
+    let has_dynamic = dynamic || plan.kind == plan::OutputKind::StaticPie;
     let Some(link_arch) = LinkArch::of(machine, options.fix_843419, status) else {
         diag.emit(Key::new(45, 0, 0), internal(format!("no architecture for {}", machine.name())));
         return None;
@@ -547,7 +553,7 @@ pub fn front<'s>(
     let feature_1_and = property.value_u32(link_arch.feature_1().0);
     // D-49: `-z now` binds every PLT entry at load (always `false` in a
     // static link).
-    let bind_now = dynamic && plan.z.now == Some(true);
+    let bind_now = has_dynamic && plan.z.now == Some(true);
     let variant = arch
         .plt_variant(&OutputCx {
             output,
@@ -561,7 +567,7 @@ pub fn front<'s>(
     let got_output = got_base_defined(&inputs, &resolution, scanned.demands.output);
     let walker = Walker::new(arch, &scan_inputs, scan_options)
         .with_weak_dyn(scanned.demands.weak_dyn.clone());
-    let (got, dyn_tables) = if dynamic {
+    let (got, dyn_tables) = if has_dynamic {
         let src = crate::dynlink::DynSource::new(&inputs, &resolution, &assignment, &plan);
         let kinds = crate::dynlink::ScanKinds(&walker);
         let t = crate::dynlink::PlanIn {
@@ -956,8 +962,9 @@ pub fn front<'s>(
     // section index order. One path.
     plans.shstrtab = ShstrtabPlan::new(&placed_names(&layout.placement, &placement_assignment));
     // `.got` (S-64) of a static link: the final layout's slot lists. One
-    // path. (A dynamic link's is `dynlink`'s, WP-066.)
-    let final_got = if dynamic {
+    // path. (An output with `.dynamic`, a `StaticPie` among them, has
+    // `dynlink`'s, WP-066.)
+    let final_got = if has_dynamic {
         None
     } else {
         Some(GotPlan::new(arch, &layout.slots, got_output, variant, diag).ok()?)
@@ -1241,7 +1248,9 @@ fn dyn_chunks(
     rows: &[mortar_layout::chunk::CopyRow],
 ) -> Result<Vec<DynChunk>, LayoutDiag> {
     let Some(d) = d else { return Ok(Vec::new()) };
-    let mut v: Vec<DynChunk> = vec![(SynthKind::Interp, d.interp.size(), None)];
+    // D-1: no `.interp` in a `StaticPie`.
+    let mut v: Vec<DynChunk> =
+        d.interp.iter().map(|i| (SynthKind::Interp, i.size(), None)).collect();
     v.extend(d.sizes.iter().map(|&(k, size)| (k, size, None)));
     if d.rela.size() > 0 {
         v.push((SynthKind::RelaDyn, d.rela.size(), None));

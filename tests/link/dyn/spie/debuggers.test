@@ -1,0 +1,53 @@
+# dyn.md D-70 for a static-pie: gdb sets `break main` before `run` (the
+# address is unrelocated then; gdb computes the bias from the auxiliary
+# vector), stops there, stops in `__cxa_throw` with a backtrace through
+# the thrower and `main`, and lists no shared library; lldb the same
+# with `b main` and `b __cxa_throw`. The loader's `--list` says
+# "statically linked". gdb and lldb run host programs only.
+#
+# Stage 3 judges it (spec/plumb.md §12.4, WP-089): GNU ld's static-pie
+# carries A30 (plumb.md §10.2).
+#@ anomaly(bfd): A30
+#@ spec: dyn.md "D-70"
+#@ spec: dyn.md "D-71"
+#@ arch: aarch64
+#@ requires: g++ gdb lldb
+
+cxx -O0 -g -fPIE main.cc -o main.o
+link g++ -static-pie main.o -o spie
+run spie
+  stdout: caught 7
+check gdb spie "break main" run bt "catch throw" continue bt "info sharedlibrary" kill
+  has: Breakpoint 1, main () at main.cc:
+  has: #0 main () at main.cc:
+  has: __cxa_throw
+  has: thrower (x=7) at main.cc:
+  has: main () at main.cc:
+  has: No shared libraries loaded at this time.
+  not: Cannot insert breakpoint
+check lldb spie "b main" "b __cxa_throw" run bt continue bt kill
+  has: stop reason = breakpoint 1.1
+  has: frame #0: * spie`main at main.cc:
+  has: spie`__cxa_throw
+  has: spie`thrower(x=7) at main.cc:
+check ldd spie
+  has: statically linked
+
+#--- main.cc
+#include <cstdio>
+#include <stdexcept>
+
+int thrower(int x) {
+  if (x > 0)
+    throw std::runtime_error("boom");
+  return x;
+}
+
+int main() {
+  try {
+    thrower(7);
+  } catch (const std::exception &) {
+    std::printf("caught 7\n");
+  }
+  return 0;
+}

@@ -10,7 +10,9 @@
 //!
 //! **Order** (D-40): every `RELATIVE` first, by `r_offset`; then every
 //! other record by (`.dynsym` index, `r_offset`). `IRELATIVE` is never in
-//! `.rela.dyn` of an `Exec` or `Pie` (D-41: `.rela.plt`). The `RELATIVE`
+//! `.rela.dyn` of an `Exec` or `Pie` (D-41: `.rela.plt`); in a `StaticPie`
+//! every `IRELATIVE` is (synth S-70), last, in IPLT order
+//! ([`GotPlan::irelative_records`]). The `RELATIVE`
 //! part is the concatenation, in address order, of each unit's records
 //! sorted by offset ([`RelaPlan::relative_starts`]: a unit's slice starts
 //! at a prefix sum of the counts, so the units are filled in parallel and
@@ -57,6 +59,8 @@ pub struct RelaPlan {
     copies: u32,
     relative: u64,
     other: u64,
+    /// The `IRELATIVE`s after the others (S-70: a `StaticPie`'s).
+    irelative: u64,
 }
 
 impl RelaPlan {
@@ -94,6 +98,7 @@ impl RelaPlan {
         let copies = u32::try_from(copies).map_err(|_| internal::<SynthError>("copies"))?;
         relative += u64::from(got_relative);
         other += u64::from(got_other) + u64::from(copies);
+        let irelative = u64::from(got.rela_dyn_irelative());
         Ok(Self {
             class,
             rel,
@@ -103,6 +108,7 @@ impl RelaPlan {
             copies,
             relative,
             other,
+            irelative,
         })
     }
 
@@ -115,7 +121,13 @@ impl RelaPlan {
     /// The size of `.rela.dyn`; 0 means no chunk.
     #[must_use]
     pub fn size(&self) -> u64 {
-        (self.relative + self.other) * self.entsize()
+        (self.relative + self.other + self.irelative) * self.entsize()
+    }
+
+    /// The `IRELATIVE` records, last (S-70; 0 outside a `StaticPie`).
+    #[must_use]
+    pub fn irelative_count(&self) -> u64 {
+        self.irelative
     }
 
     /// `DT_RELACOUNT` (D-40): the `RELATIVE` records.
@@ -124,7 +136,7 @@ impl RelaPlan {
         self.relative
     }
 
-    /// The records after the `RELATIVE` ones.
+    /// The records after the `RELATIVE` ones, before the `IRELATIVE` ones.
     #[must_use]
     pub fn other_count(&self) -> u64 {
         self.other
