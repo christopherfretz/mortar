@@ -1711,6 +1711,11 @@ fn the_floor_update_is_the_full_link_of_the_edited_inputs() {
         let inode =
             || std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(prog.path("o")).unwrap());
         let before = inode();
+        // The first output stays open to the end of the test: a file system
+        // may give the number of a freed inode to the next file made, and
+        // the second copy would then "keep" an inode that the first copy
+        // had replaced (seen once on the hosted x86-64 lane).
+        let _first = std::fs::File::open(prog.path("o")).unwrap();
         // mov w0, #1 -> #2 -> #3
         for (step, (from, to)) in
             [(0x5280_0020_u32, 0x5280_0040_u32), (0x5280_0040, 0x5280_0060)].into_iter().enumerate()
