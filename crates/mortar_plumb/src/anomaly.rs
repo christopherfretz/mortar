@@ -123,6 +123,56 @@ fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
             "A35: mold links an x86-64 PLT32 call to an absolute symbol in a PIE or static-pie as a PC-relative call, right at load bias 0 only (spec/plumb.md §5.1a)",
         );
     }
+    // §5.8, a non-alloc word against a name only a shared library defines
+    // (WP-104): each reference's convention, from that reference only.
+    {
+        use crate::reloc::dsoword as w;
+        let x64 = output.get(18..20) == Some(&[62, 0][..]);
+        let exec = mortar_elf::FileHeader::parse(output)
+            .is_ok_and(|h| h.e_type == mortar_elf::consts::ET_EXEC);
+        match w::holds(f) {
+            Some(h) if bfd && (x64 || exec) && h == w::HOLDS_PLT => {
+                return Some(
+                    "A37: GNU ld writes a function's ordinary PLT entry (x86-64; AArch64 -no-pie) into a non-alloc word against a function or IFUNC only a shared library defines (spec/plumb.md §5.8)",
+                );
+            }
+            Some(h) if lld && h == w::HOLDS_NO_ADDEND => {
+                return Some(
+                    "A38: lld drops the addend of a non-alloc absolute word against a symbol only a shared library defines (spec/plumb.md §5.8)",
+                );
+            }
+            Some(h) if mold && h == w::HOLDS_ST_VALUE => {
+                return Some(
+                    "A39: mold writes the library's st_value into a non-alloc word against a symbol only a shared library defines (spec/plumb.md §5.8)",
+                );
+            }
+            Some(h) if mold && h == w::HOLDS_PLT => {
+                return Some(
+                    "A40: mold writes a function's PLT entry into a non-alloc word against a function or IFUNC only a shared library defines (spec/plumb.md §5.8)",
+                );
+            }
+            Some(h) if (bfd || mold) && h == w::HOLDS_TLS_BASE => {
+                return Some(
+                    "A42: GNU ld and mold write A minus the output's PT_TLS address into a non-alloc DTP-offset word against a shared library's TLS symbol (spec/plumb.md §5.8)",
+                );
+            }
+            _ => {}
+        }
+        if (lld || mold)
+            && f.rule == Rule::Dyn(12)
+            && f.message.starts_with(w::TLS_WORD)
+            && f.message.ends_with(w::TLS_WORD_END)
+        {
+            return Some(
+                "A41: lld and mold link a non-TLS data word in a non-alloc section against a shared library's STT_TLS symbol, which GNU ld and mortar refuse (spec/plumb.md §5.8)",
+            );
+        }
+        if lld && f.rule == Rule::Field && f.message.ends_with(w::WEAK_ZERO) {
+            return Some(
+                "A43: lld writes A - P (S = 0) into a non-alloc AArch64 PC-relative word against an undefined weak, where AAELF64 makes S the place (spec/plumb.md §4.4, §5.8)",
+            );
+        }
+    }
     if (lld || mold) && f.rule == Rule::Dyn(6) && f.message.ends_with("(D-13: the link is refused)")
     {
         return Some(
