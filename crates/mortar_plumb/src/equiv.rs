@@ -83,8 +83,8 @@ pub(crate) enum Form {
 /// One traced record.
 #[derive(Debug, Clone)]
 pub(crate) struct Traced {
-    pub oi: usize,
-    pub si: usize,
+    pub oi: u32,
+    pub si: u32,
     pub off: u64,
     pub form: Form,
 }
@@ -144,7 +144,7 @@ pub(crate) fn traced(e: &mut Engine<'_, '_>, at: (usize, usize, u64), p: u64, b:
     let form = form_since(e, b);
     if let Some(t) = e.trace.as_mut() {
         t.last.insert(p, t.records.len());
-        t.records.push(Traced { oi: at.0, si: at.1, off: at.2, form });
+        t.records.push(Traced { oi: at.0 as u32, si: at.1 as u32, off: at.2, form });
     }
 }
 
@@ -201,7 +201,10 @@ struct Side<'a> {
     image: Image<'a>,
     map: &'a Map,
     report: Report,
-    forms: BTreeMap<(UKey, u64), Form>,
+    /// Each unit's traced records: `(offset, form)` sorted by offset,
+    /// the last traced at an offset (WP-109: one key per unit, not one
+    /// with its path per record: 1.3 GB a side on opt `-g`).
+    forms: BTreeMap<UKey, Vec<(u64, Form)>>,
     units: BTreeMap<UKey, Unit>,
     /// Global definitions of the inputs: `(unit, value)`, or `None` for an
     /// absolute one with its value.
@@ -363,9 +366,26 @@ fn run_side<'a>(
             (o.path.clone(), o.member.clone(), *n - 1)
         })
         .collect();
-    let mut forms = BTreeMap::new();
-    for t in engine.trace.take().unwrap_or_default().records {
-        forms.insert(((keys[t.oi].clone(), t.si as u32), t.off), t.form);
+    let mut recs = engine.trace.take().unwrap_or_default().records;
+    // Stable: of the records at one place, the last traced is kept.
+    recs.sort_by_key(|t| (t.oi, t.si, t.off));
+    let mut forms: BTreeMap<UKey, Vec<(u64, Form)>> = BTreeMap::new();
+    let mut at: Option<(u32, u32)> = None;
+    let mut cur: Vec<(u64, Form)> = Vec::new();
+    for t in recs {
+        if at != Some((t.oi, t.si)) {
+            if let Some((oi, si)) = at {
+                forms.insert((keys[oi as usize].clone(), si), std::mem::take(&mut cur));
+            }
+            at = Some((t.oi, t.si));
+        }
+        match cur.last_mut() {
+            Some(last) if last.0 == t.off => last.1 = t.form,
+            _ => cur.push((t.off, t.form)),
+        }
+    }
+    if let Some((oi, si)) = at {
+        forms.insert((keys[oi as usize].clone(), si), cur);
     }
     crate::prof::mark("side: report, forms");
     let mut units = BTreeMap::new();
@@ -1068,8 +1088,14 @@ fn records(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
     };
     // The forms of each record of a unit placed in both.
     let mut windows: BTreeMap<&UKey, Vec<u64>> = BTreeMap::new();
-    for ((u, off), a) in &x.forms {
-        let Some(b) = f.forms.get(&(u.clone(), *off)) else { continue };
+    let pairs =
+        x.forms.iter().filter_map(|(u, v)| Some((u, v, f.forms.get(u)?))).flat_map(|(u, v, w)| {
+            v.iter().filter_map(move |(off, a)| {
+                let j = w.binary_search_by_key(off, |e| e.0).ok()?;
+                Some((u, off, a, &w[j].1))
+            })
+        });
+    for (u, off, a, b) in pairs {
         eq.records += 1;
         if *a == Form::Failed || *b == Form::Failed {
             continue; // the side's own finding says it
