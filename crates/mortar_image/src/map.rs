@@ -323,19 +323,7 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         token(name, &mut out);
         let _ = writeln!(out, " {value:x}");
     }
-    if map.incremental {
-        out.push_str("incremental\n");
-    }
-    for d in &map.dead {
-        out.push_str(if d.kind.is_some() { "dead " } else { "hole " });
-        token(&d.out, &mut out);
-        let _ = write!(out, " {:x} {:x}", d.offset, d.size);
-        if let Some(k) = d.kind {
-            out.push(' ');
-            out.push_str(k.token());
-        }
-        out.push('\n');
-    }
+    render_dead(map, &mut out);
     if let Some(d) = &map.dynamic {
         render_dynamic(d, &mut out);
     }
@@ -344,6 +332,24 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
 }
 
 /// The dynamic records, in the format's fixed order (`spec/plumb.md` §3.2).
+
+/// The `incremental`, `hole` and `dead` records (`spec/plumb.md` §3.2).
+fn render_dead(map: &Map, out: &mut String) {
+    if map.incremental {
+        out.push_str("incremental\n");
+    }
+    for d in &map.dead {
+        out.push_str(if d.kind.is_some() { "dead " } else { "hole " });
+        token(&d.out, out);
+        let _ = write!(out, " {:x} {:x}", d.offset, d.size);
+        if let Some(k) = d.kind {
+            out.push(' ');
+            out.push_str(k.token());
+        }
+        out.push('\n');
+    }
+}
+
 fn render_dynamic(d: &DynRecords, out: &mut String) {
     let named = |out: &mut String, record: &str, name: &[u8]| {
         out.push_str(record);

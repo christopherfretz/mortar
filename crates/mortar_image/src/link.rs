@@ -194,9 +194,6 @@ pub struct LinkOptions {
     /// incremental-mode link stores them in its state, `L128` leaves when
     /// no id is hashed. `false` in a plain link.
     pub keep_leaves: bool,
-    /// An incremental-mode link: the map writes `incremental`
-    /// (`spec/plumb.md` §3.2). `false` in a plain link.
-    pub incremental: bool,
 }
 
 /// The tree of a `--build-id` style (I-72); `None` for a style the
@@ -2265,7 +2262,8 @@ impl LinkTables<'_, '_> {
                 m.defines.push((k.name.to_vec(), v));
             }
         }
-        m.incremental = l.options.incremental;
+        // `keep_leaves` is set exactly in incremental mode.
+        m.incremental = l.options.keep_leaves;
         m.dead = self.dead_lines();
         if let Some(d) = l.synth.dynamic {
             m.dynamic = Some(self.dyn_records(d));

@@ -233,8 +233,6 @@ pub fn with_link<T>(
                 s.property.value_u32(ty) & bit != 0
             },
             keep_leaves: f.keep_leaves,
-            // `keep_leaves` is set exactly in incremental mode (lib.rs).
-            incremental: f.keep_leaves,
         },
         fixups: &f.erratum_fixes,
     };
