@@ -21,6 +21,7 @@ tests ("Link tests"), the gate's hosted runs on GitHub Actions
 | `test` | `cargo test --workspace` |
 | `linktest` | `cargo xtask linktest --arch <host>` (`--quick`), `cargo xtask linktest` (full) |
 | `census` | `cargo xtask census --quick` (`--quick`), `cargo xtask census` (full) |
+| `sweep` | `cargo xtask sweep --quick` (`--quick`), `cargo xtask sweep` (full) |
 | `static-identical` | `cargo xtask static-identical` (both; every architecture) |
 
 Before a step it prints `[ci] <step>` on standard error. It stops at the
@@ -55,7 +56,22 @@ subset of the drivers and variations (20 lines on AArch64; 2 s measured
 by WP-056); the full gate runs every census line of AArch64 and x86-64
 (440 lines; 19 s on the reference machine with `-j 6`).
 
-`static-identical` is run in-process after `census`, with or without
+`sweep` is run in-process after `census` (WP-088): the byte sweep of
+`spec/plumb.md` §12.3 on mortar's own dynamic outputs. GCC compiles a
+hello program, mortar links it behind a `-B` directory whose `ld` is
+mortar, with its map (`--mortar-map`), and every byte of the output's
+synthetic sections is flipped (bit 0, bit 7) and the mutant judged by
+the verifier; a static-pie's sections are swept 256 bytes at each end.
+The cases are a C PIE (lazy and `-z now`), a C `-no-pie`, a C++ PIE and
+a C static-pie. Any exit status but 0 fails it: a finding on the
+unmutated output, a panic of the verifier on a mutant, or a byte no flip
+makes a new finding for (a survivor; mortar's outputs have none). With
+`--quick` it runs the host's architecture (AArch64 when the host is
+neither 64-bit one) and the cases `pie.lazy` and `nopie`; the
+full gate runs every case on AArch64 and x86-64. Each sweep thread holds
+a jobserver token (at most 4, `--threads`).
+
+`static-identical` is run in-process after `sweep`, with or without
 `--quick`, on every architecture ("static-identical"); any failure fails
 it.
 

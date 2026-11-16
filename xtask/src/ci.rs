@@ -103,13 +103,23 @@ pub const STATIC_IDENTICAL: &str = "static-identical";
 /// (`spec/harness.md` "ci", "census").
 pub const CENSUS: &str = "census";
 
+/// The sweep step, after the census: `cargo xtask sweep --quick`
+/// (`--quick`) or `cargo xtask sweep` (full) in-process
+/// (`spec/harness.md` "ci", "sweep").
+pub const SWEEP: &str = "sweep";
+
 /// Every step's name, in the order they run.
-pub const STEP_NAMES: [&str; 6] =
-    [STEPS[0].0, STEPS[1].0, STEPS[2].0, LINKTEST, CENSUS, STATIC_IDENTICAL];
+pub const STEP_NAMES: [&str; 7] =
+    [STEPS[0].0, STEPS[1].0, STEPS[2].0, LINKTEST, CENSUS, SWEEP, STATIC_IDENTICAL];
 
 /// The arguments of the census step.
 pub fn census_args(quick: bool) -> Vec<String> {
     if quick { vec!["--quick".to_owned()] } else { Vec::new() }
+}
+
+/// The arguments of the sweep step.
+pub fn sweep_args(quick: bool) -> Vec<String> {
+    census_args(quick)
 }
 
 /// The arguments of the link-test step: the host's architecture only for
@@ -237,6 +247,8 @@ pub fn run(args: &Args) -> bool {
             None if name == LINKTEST => crate::linktest::main(&linktest_args(args.quick)) == 0,
             #[cfg(unix)]
             None if name == CENSUS => crate::census::main(&census_args(args.quick)) == 0,
+            #[cfg(unix)]
+            None if name == SWEEP => crate::sweep::main(&sweep_args(args.quick)) == 0,
             None => crate::identical::run(&crate::identical::Args::default()),
         };
         if name == "test" {
@@ -264,7 +276,9 @@ pub fn run(args: &Args) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, STEP_NAMES, STEPS, cargo_args, linktest_args, named_skips, should_retry};
+    use super::{
+        Args, STEP_NAMES, STEPS, cargo_args, linktest_args, named_skips, should_retry, sweep_args,
+    };
 
     // spec/harness.md "ci": `--step` selects steps, which run in the
     // gate's order whatever the order they are named in.
@@ -275,7 +289,10 @@ mod tests {
         let all = parse(&["--quick"]).unwrap();
         assert!(all.quick);
         assert_eq!(all.steps, STEP_NAMES);
-        assert_eq!(all.steps, ["fmt", "clippy", "test", "linktest", "census", "static-identical"]);
+        assert_eq!(
+            all.steps,
+            ["fmt", "clippy", "test", "linktest", "census", "sweep", "static-identical"]
+        );
         assert_eq!(parse(&[]).unwrap().steps, all.steps);
         let two = parse(&["--step", "test", "--step=fmt"]).unwrap();
         assert!(!two.quick);
@@ -316,6 +333,8 @@ mod tests {
     #[test]
     fn the_steps_are_fmt_clippy_test_and_linktest() {
         assert!(linktest_args(false).is_empty());
+        assert_eq!(sweep_args(true), ["--quick"]);
+        assert!(sweep_args(false).is_empty());
         if let Some(host) = crate::linktest::target::Arch::host() {
             assert_eq!(linktest_args(true), ["--arch", host.name()]);
         }
