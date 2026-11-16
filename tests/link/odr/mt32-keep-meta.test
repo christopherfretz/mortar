@@ -31,8 +31,12 @@ check(mortar) gdb prog "break main" run bt kill
   has: Breakpoint 1, main () at a.c:
 check(mortar) lldb prog "b main" run bt kill
   has: stop reason = breakpoint 1.1
-link(bfd,lld,mold) gcc -static-pie a.o b.o libu.a -o pie
-link(mortar) gcc -static-pie a.o b.o libu.a -Wl,--keep-mason-meta -o pie
+# The static-pie links pass `-fno-use-linker-plugin` (no input is LTO):
+# a static-pie's `--mortar-map` records the command line, and gcc's
+# plugin option names a new `/tmp/ccXXXXXX.res` each run, which
+# static-identical's map digest would not reproduce (as WP-090).
+link(bfd,lld,mold) gcc -static-pie -fno-use-linker-plugin a.o b.o libu.a -o pie
+link(mortar) gcc -static-pie -fno-use-linker-plugin a.o b.o libu.a -Wl,--keep-mason-meta -o pie
 run pie
   stdout: 5
 check(mortar) readelf -SW pie
