@@ -368,13 +368,17 @@ pub fn verify_link_line(
     line: Option<Vec<String>>,
 ) -> Result<Verified, String> {
     let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+    mortar_plumb::prof::mark("start");
     let output = read(output)?;
     let map_bytes = read(map)?;
+    mortar_plumb::prof::mark("read output and map");
     let text = String::from_utf8_lossy(&map_bytes);
     let mut parsed = mortar_plumb::map::parse(format, &text)
         .map_err(|e| format!("{}:{}: {}", map.display(), e.line, e.message))?;
     parsed.fix_843419 = fix_843419;
+    mortar_plumb::prof::mark("parse map");
     let files = link_files(&parsed, base, allowed);
+    mortar_plumb::prof::mark("read inputs");
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
     let report = if mortar_plumb::is_dynamic(&output) {
         let files = BaseFiles(base);
@@ -538,7 +542,16 @@ pub fn run(args: &Args) -> Result<bool, String> {
     )?;
     print!("{}", report.render(&args.output.display().to_string()));
     print!("{}", report.summary());
+    print_profile();
     Ok(report.clean())
+}
+
+/// The verifier's phase marks (`MORTAR_PLUMB_PROFILE`, WP-109), on
+/// standard error.
+fn print_profile() {
+    for l in mortar_plumb::prof::take() {
+        eprintln!("{l}");
+    }
 }
 
 /// The command's entry point: exit 0 when clean, 1 on any finding, 2 on
@@ -639,6 +652,7 @@ pub fn run_equiv(a: &EquivArgs) -> Result<bool, String> {
         }
     }
     let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+    mortar_plumb::prof::mark("read outputs, maps, inputs");
     let eq = mortar_plumb::equiv::check(&x, &xm, &f, &fm, &inputs);
     let (xn, fname) = (a.x.display().to_string(), a.f.display().to_string());
     for line in eq.x.render(&xn).lines() {
@@ -655,6 +669,7 @@ pub fn run_equiv(a: &EquivArgs) -> Result<bool, String> {
     println!("X: {} findings, {} records", eq.x.findings.len(), eq.x.coverage.records);
     println!("F: {} findings, {} records", eq.f.findings.len(), eq.f.coverage.records);
     println!("{}", eq.summary());
+    print_profile();
     Ok(eq.clean())
 }
 

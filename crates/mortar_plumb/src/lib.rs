@@ -37,6 +37,7 @@ mod meta;
 pub mod mutate;
 mod odrtable;
 mod plt;
+pub mod prof;
 mod property;
 mod reloc;
 pub mod report;
@@ -80,12 +81,19 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
             return report;
         }
     };
+    prof::mark("image");
     report.findings.extend(structure::check(&image));
     report.findings.extend(structure::check_layout(&image, map.format));
+    prof::mark("structure");
     let located = locate::locate(map, inputs, &image);
     report.findings.extend(located.findings);
     let objs = located.objs;
+    prof::mark("locate");
+    if prof::enabled() {
+        gauges(inputs, map, &objs);
+    }
     let mut engine = reloc::Engine::new(&image, &objs, map.format);
+    prof::mark("engine new");
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
     // M8 (§3.3): an output with no dynamic section has no COPY record.
@@ -100,7 +108,43 @@ pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
         odrtable::check(&image, &objs, map, args.as_deref(), None, &mut report.coverage.meta);
     report.findings.extend(meta);
     report.sort();
+    prof::mark("odr table, sort");
     report
+}
+
+/// The sizes of the inputs, the map's rows and the located objects
+/// (WP-109's table), under [`prof::enabled`].
+fn gauges(inputs: &[Input<'_>], map: &Map, objs: &[locate::Obj<'_>]) {
+    use std::mem::size_of;
+    let n = |len: usize, size: usize| (len * size) as u64;
+    prof::gauge(
+        "inputs held (bytes of the files)",
+        inputs.iter().map(|i| i.bytes.len() as u64).sum(),
+    );
+    prof::gauge("map files", n(map.files.len(), size_of::<MapFile>()));
+    prof::gauge("map placed", n(map.placed.len(), size_of::<map::Placed>()));
+    prof::gauge("map discarded", n(map.discarded.len(), size_of::<map::Discarded>()));
+    prof::gauge("map nonalloc", n(map.nonalloc.len(), size_of::<map::NonAlloc>()));
+    prof::gauge("map chunks", n(map.chunks.len(), size_of::<map::Chunk>()));
+    prof::gauge("map defined", n(map.defined.len(), size_of::<map::Defined>()));
+    let secs: usize = objs.iter().map(|o| o.secs.len()).sum();
+    let names: usize = objs.iter().flat_map(|o| &o.secs).map(|s| s.name.capacity()).sum();
+    let pieces: usize = objs
+        .iter()
+        .flat_map(|o| &o.secs)
+        .map(|s| match &s.place {
+            locate::Place::Pieces(p) => p.capacity() * size_of::<locate::Piece>(),
+            _ => 0,
+        })
+        .sum();
+    prof::gauge(
+        &format!("objs ({}) secs ({secs})", objs.len()),
+        n(secs, size_of::<locate::Sec<'_>>()),
+    );
+    prof::gauge("objs section names", names as u64);
+    prof::gauge("objs pieces", pieces as u64);
+    let syms: usize = objs.iter().map(|o| o.symtab.map_or(0, |t| t.len() as usize)).sum();
+    prof::gauge(&format!("input symbols ({syms}), not held"), 0);
 }
 
 /// Stage 2's judgement over every placed section, then the checks that
@@ -114,6 +158,10 @@ pub(crate) fn run_engine(
 ) {
     let objs = engine.objs;
     for (oi, o) in objs.iter().enumerate() {
+        if prof::enabled() && oi % 400 == 399 {
+            prof::mark(&format!("records of {} objects", oi + 1));
+            engine.gauges();
+        }
         for (si, s) in o.secs.iter().enumerate() {
             if s.consumed() {
                 continue;
@@ -135,32 +183,46 @@ pub(crate) fn run_engine(
             engine.section(oi, si);
         }
     }
+    prof::mark("records (engine.section)");
+    if prof::enabled() {
+        engine.gauges();
+    }
     engine.finish_ifunc();
     engine.check_landing_pads();
     engine.finish_got();
     engine.finish_pieces();
+    prof::mark("finish ifunc, landing pads, got, pieces");
     if only.is_some() {
         return;
     }
     engine.check_eh_frame();
+    prof::mark("eh_frame");
     content::check_content(engine);
+    prof::mark("content (S12)");
     erratum::check(engine, map);
     content::check_init_padding(engine);
     content::check_symbols(engine);
+    prof::mark("erratum, padding, content symbols");
     symbols::check(engine);
+    prof::mark("symbols");
     let (gdb, line) = gdbindex::check(image, objs, map);
     engine.findings.extend(gdb);
     engine.cov.gdb_index = line;
+    prof::mark("gdb_index");
     let props = property::check(image, objs, map.format, &mut engine.cov);
     engine.findings.extend(props);
+    prof::mark("properties");
     if map.claims_coverage() {
         dead::check(engine, map);
+        prof::mark("dead ranges");
     }
     if map.format == Format::Mortar {
         let ids = buildid::check(image, &mut engine.cov, buildid::Style::of(map));
         engine.findings.extend(ids);
+        prof::mark("build id");
         // M6, M7 (§3.3): the allocation records, in every mortar map.
         engine.findings.extend(maprec::check(image, objs, map));
+        prof::mark("allocation records");
     }
     if image.header.e_machine == mortar_elf::consts::EM_X86_64 {
         use mortar_elf::consts::{SHF_ALLOC, SHF_X86_64_LARGE};

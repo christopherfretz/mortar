@@ -10,6 +10,8 @@
 #![allow(clippy::result_large_err)] // a side that cannot be read is reported once
 
 use std::collections::{BTreeMap, BTreeSet};
+
+use crate::hasher::HashMap;
 use std::fmt::Write as _;
 
 use mortar_elf::Machine;
@@ -84,8 +86,6 @@ pub(crate) struct Traced {
     pub oi: usize,
     pub si: usize,
     pub off: u64,
-    /// The output place, by which a GOT group's member is found again.
-    pub p: u64,
     pub form: Form,
 }
 
@@ -128,10 +128,23 @@ fn form_since(e: &Engine<'_, '_>, b: &Tally) -> Form {
     }
 }
 
+/// The records traced in one side's engine, in the order judged, with
+/// the last one traced at each output place (WP-109: [`reform`] found it
+/// by a backward scan of the whole trace, once per GOT group member, the
+/// quadratic term of `--equiv` on a large link).
+#[derive(Debug, Default)]
+pub(crate) struct Trace {
+    pub records: Vec<Traced>,
+    /// The output place -> the last record traced there, by which a GOT
+    /// group's member is found again.
+    last: HashMap<u64, usize>,
+}
+
 pub(crate) fn traced(e: &mut Engine<'_, '_>, at: (usize, usize, u64), p: u64, b: &Tally) {
     let form = form_since(e, b);
     if let Some(t) = e.trace.as_mut() {
-        t.push(Traced { oi: at.0, si: at.1, off: at.2, p, form });
+        t.last.insert(p, t.records.len());
+        t.records.push(Traced { oi: at.0, si: at.1, off: at.2, form });
     }
 }
 
@@ -146,7 +159,8 @@ pub(crate) fn retraced(e: &mut Engine<'_, '_>, p: u64, b: &Tally) {
 /// it is already a finding.
 pub(crate) fn reform(e: &mut Engine<'_, '_>, p: u64, form: Form) {
     if let Some(t) = e.trace.as_mut()
-        && let Some(r) = t.iter_mut().rev().find(|r| r.p == p)
+        && let Some(&i) = t.last.get(&p)
+        && let Some(r) = t.records.get_mut(i)
         && r.form != Form::Failed
     {
         r.form = form;
@@ -250,10 +264,19 @@ impl<'a> Side<'a> {
     /// The address of input definition `(unit, value)` on this side.
     fn def_addr(&self, u: &UKey, value: u64) -> Option<u64> {
         let unit = self.units.get(u)?;
-        unit.pieces
-            .iter()
-            .find(|(o, _, z)| *o <= value && value <= o + z)
-            .map(|(o, a, _)| a + (value - o))
+        // The piece that holds the value; a value at a piece's end only
+        // when no piece holds it (an end symbol). WP-109: the end was
+        // taken first, so a definition at the start of a string piece
+        // that follows a one-byte piece merged elsewhere (glibc's
+        // `__nptl_version` in `.rodata.str1.8`) was given the address
+        // after the merged byte, a P-E3 finding on two identical links.
+        let at = |inside: bool| {
+            unit.pieces
+                .iter()
+                .find(|(o, _, z)| *o <= value && (value < o + z || !inside && value == o + z))
+                .map(|(o, a, _)| a + (value - o))
+        };
+        at(true).or_else(|| at(false))
     }
 
     fn word(&self) -> u64 {
@@ -298,8 +321,9 @@ fn run_side<'a>(
     let located = crate::locate::locate(map, inputs, &image);
     let objs: Vec<Obj<'a>> = located.objs;
     let mut engine = Engine::new(&image, &objs, map.format);
-    engine.trace = Some(Vec::new());
+    engine.trace = Some(Trace::default());
     crate::run_engine(&mut engine, &image, map, None);
+    crate::prof::mark("side: engine");
     let dynamic = crate::is_dynamic(output);
     let report = if dynamic {
         let ctx = crate::Ctx { line: None, files: &crate::HostFiles };
@@ -324,9 +348,10 @@ fn run_side<'a>(
         })
         .collect();
     let mut forms = BTreeMap::new();
-    for t in engine.trace.take().unwrap_or_default() {
+    for t in engine.trace.take().unwrap_or_default().records {
         forms.insert(((keys[t.oi].clone(), t.si as u32), t.off), t.form);
     }
+    crate::prof::mark("side: report, forms");
     let mut units = BTreeMap::new();
     for (oi, o) in objs.iter().enumerate() {
         let machine = o.elf.machine();
@@ -388,6 +413,7 @@ fn run_side<'a>(
             defs.entry(name.clone()).or_default().push(d);
         }
     }
+    crate::prof::mark("side: units, defs");
     let rewritten = std::mem::take(&mut engine.rewritten_words);
     let machine = objs.first().map(|o| o.elf.machine());
     drop(engine);
@@ -480,7 +506,11 @@ fn finding(n: u8, msg: impl Into<String>) -> Finding {
 /// name. Never panics.
 pub fn check(x_out: &[u8], x_map: &Map, f_out: &[u8], f_map: &Map, inputs: &[Input<'_>]) -> Equiv {
     let mut eq = Equiv::default();
-    let (x, f) = match (run_side("X", x_out, inputs, x_map), run_side("F", f_out, inputs, f_map)) {
+    let x = run_side("X", x_out, inputs, x_map);
+    crate::prof::mark("equiv side X");
+    let f = run_side("F", f_out, inputs, f_map);
+    crate::prof::mark("equiv side F");
+    let (x, f) = match (x, f) {
         (Ok(x), Ok(f)) => (x, f),
         (x, f) => {
             eq.x = x.map_or_else(|r| r, |s| s.report);
@@ -492,11 +522,17 @@ pub fn check(x_out: &[u8], x_map: &Map, f_out: &[u8], f_map: &Map, inputs: &[Inp
     let mut out = Vec::new();
     headers(&x, &f, &mut out);
     units(&x, &f, &mut out, &mut eq);
+    crate::prof::mark("equiv headers, units");
     symbols(&x, &f, &mut out, &mut eq);
+    crate::prof::mark("equiv symbols");
     records(&x, &f, &mut out, &mut eq);
+    crate::prof::mark("equiv records");
     tables(&x, &f, &mut out, &mut eq);
+    crate::prof::mark("equiv tables");
     packed(&x, &f, &mut out);
+    crate::prof::mark("equiv packed");
     rest(&x, &f, &mut out);
+    crate::prof::mark("equiv rest");
     out.sort_by(|a, b| {
         (a.addr.is_none(), a.addr, a.rule, &a.site, &a.message).cmp(&(
             b.addr.is_none(),
@@ -1130,6 +1166,31 @@ type Item = (String, Vec<u64>);
 /// Matches two multisets of items whose address parts correspond
 /// (P-E5): returns the unmatched items of each side.
 fn match_items(x: &Side<'_>, xs: Vec<Item>, f: &Side<'_>, fs: Vec<Item>) -> (Vec<Item>, Vec<Item>) {
+    // First (WP-109), the pairs whose address parts have the same first
+    // identity on each side ([`Side::canon`]; without identities, the
+    // same value): such parts correspond, so the pair matches. One map
+    // lookup an item: the pairwise search below, over every item, was
+    // quadratic in the size of a table (`.eh_frame_hdr`'s entries all
+    // share the empty exact part). It then runs on what is left.
+    type Key = (String, Vec<Result<(String, u64), u64>>);
+    let key = |s: &Side<'_>, k: &str, a: &[u64]| -> Key {
+        (k.to_string(), a.iter().map(|&v| s.canon(v).ok_or(v)).collect())
+    };
+    let mut free: HashMap<Key, Vec<usize>> = HashMap::default();
+    for (j, (k, a)) in fs.iter().enumerate().rev() {
+        free.entry(key(f, k, a)).or_default().push(j);
+    }
+    let mut taken = vec![false; fs.len()];
+    let mut xs_left = Vec::new();
+    for (k, a) in xs {
+        match free.get_mut(&key(x, &k, &a)).and_then(Vec::pop) {
+            Some(j) => taken[j] = true,
+            None => xs_left.push((k, a)),
+        }
+    }
+    let fs: Vec<Item> =
+        fs.into_iter().zip(taken).filter(|(_, t)| !*t).map(|(item, _)| item).collect();
+    let xs = xs_left;
     let mut by: BTreeMap<String, Vec<Vec<u64>>> = BTreeMap::new();
     for (k, a) in fs {
         by.entry(k).or_default().push(a);

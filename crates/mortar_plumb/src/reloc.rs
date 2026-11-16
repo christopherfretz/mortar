@@ -516,10 +516,39 @@ pub(crate) struct Engine<'a, 'b> {
     pub(crate) extent: (u64, u64),
     /// §6.9: each record's outcome, by section and offset, when the
     /// equivalence check runs the engine (`None` otherwise).
-    pub(crate) trace: Option<Vec<crate::equiv::Traced>>,
+    pub(crate) trace: Option<crate::equiv::Trace>,
 }
 
 impl<'a, 'b> Engine<'a, 'b> {
+    /// The sizes of the engine's tables (WP-109), under
+    /// [`crate::prof::enabled`]: estimates, by element size.
+    pub(crate) fn gauges(&self) {
+        use std::mem::size_of;
+        fn members<K>(m: &BTreeMap<K, Group>) -> usize {
+            m.values().map(|g| g.members.capacity()).sum()
+        }
+        let g = |name: &str, len: usize, size: usize| {
+            crate::prof::gauge(&format!("engine {name} ({len})"), (len * size) as u64);
+        };
+        g("symbol cache", self.cache.iter().map(Vec::len).sum(), size_of::<Option<Target>>());
+        g("defs", self.defs.len(), size_of::<(String, Vec<(usize, u32)>)>() + 48);
+        g("got groups", self.got_groups.len(), 64);
+        g("got group members", members(&self.got_groups), size_of::<(Pending, Evidence)>());
+        g("piece groups", self.piece_groups.len(), 64);
+        g("piece group members", members(&self.piece_groups), size_of::<(Pending, Evidence)>());
+        g("rewritten words", self.rewritten_words.len(), 16);
+        g("abs words", self.abs_words.capacity(), size_of::<(u64, u8, u64, bool)>());
+        g("got demands", self.got_demands.len(), 16);
+        g("veneers", self.veneers.len(), 128);
+        g("findings", self.findings.len(), size_of::<Finding>());
+        g(
+            "trace",
+            self.trace.as_ref().map_or(0, |t| t.records.capacity()),
+            size_of::<crate::equiv::Traced>(),
+        );
+        g("eh sections", self.eh_sections.len(), 16);
+    }
+
     /// Whether an address is the executable's (moves with the bias).
     pub(crate) fn internal(&self, s: u64) -> bool {
         self.extent.0 <= s && s < self.extent.1
