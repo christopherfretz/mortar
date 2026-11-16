@@ -38,6 +38,13 @@ pub const CLASSES: &[(&str, &str)] = &[
     ("plt0-disp2", "P-D10"),
     ("plt-index", "P-D10"),
     ("plt-back-jump", "P-D10"),
+    ("spie-rel-drop", "P-D9 (view 2)"),
+    ("spie-rel-extra", "P-D9 (§12.4)"),
+    ("spie-irel-twice", "P-D15"),
+    ("spie-interp", "P-D1, P-D4"),
+    ("spie-needed", "P-D14"),
+    ("spie-relacount", "P-D6"),
+    ("spie-dynamic-word", "P-D14"),
 ];
 
 /// A candidate: its class, its description and its byte edits.
@@ -319,7 +326,135 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
         }
     }
     plt_classes(image, &out, &mut c);
+    if crate::spie::is_static_pie(image) {
+        spie_classes(image, &out, &mut c);
+    }
     c
+}
+
+/// The static-pie classes (`spec/plumb.md` §12.4, WP-089).
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one block per class
+fn spie_classes(image: &Image<'_>, out: &DynOut, c: &mut Vec<Cand>) {
+    use crate::dynout::{DT_DEBUG, DT_RELACOUNT};
+    let b = image.data;
+    let m = image.header.e_machine;
+    let recs = crate::spie::records(image);
+    let dyn_off = image.phdrs.iter().find(|p| p.p_type == PT_DYNAMIC).map(|p| p.p_offset as usize);
+    let entry = |tag: u64| -> Option<usize> {
+        let i = out.entries.iter().position(|e| e.0 == tag)?;
+        Some(dyn_off? + 16 * i)
+    };
+    // spie-rel-drop: a RELATIVE record removed for real: the records after
+    // it in its section move down one, the section and DT_RELASZ shrink
+    // by one record, and DT_RELACOUNT by one when the record was counted.
+    let rela = out.get(DT_RELA).unwrap_or(0);
+    let relasz = out.get(DT_RELASZ).unwrap_or(0);
+    let count = out.get(DT_RELACOUNT);
+    let shoff = image.header.e_shoff as usize;
+    for (si, s) in image.sections.iter().enumerate() {
+        if !(s.alloc() && s.shdr.sh_type == 4 && s.shdr.sh_addr == rela && s.shdr.sh_size == relasz)
+        {
+            continue;
+        }
+        let Some(so) = off(image, s.shdr.sh_addr, s.shdr.sh_size) else { continue };
+        let n = (s.shdr.sh_size / 24) as usize;
+        // At most 32 records, evenly spaced: each mutant moves the table.
+        let rel: Vec<usize> = (0..n)
+            .filter(|&i| kind(m, recs[&(s.shdr.sh_addr + 24 * i as u64)].ty) == Kind::Relative)
+            .collect();
+        let step = rel.len().div_ceil(32).max(1);
+        for &i in rel.iter().step_by(step) {
+            let r = recs[&(s.shdr.sh_addr + 24 * i as u64)];
+            let mut moved = b[so + 24 * (i + 1)..so + 24 * n].to_vec();
+            moved.extend_from_slice(&[0; 24]);
+            let mut e = vec![(so + 24 * i, moved)];
+            if let Some(o) = entry(DT_RELASZ) {
+                e.push((o + 8, wr(relasz - 24, 8)));
+            }
+            if let (Some(k), Some(o)) = (count, entry(DT_RELACOUNT))
+                && (i as u64) < k
+            {
+                e.push((o + 8, wr(k - 1, 8)));
+            }
+            e.push((shoff + 64 * si + 32, wr(s.shdr.sh_size - 24, 8)));
+            c.push(("spie-rel-drop", format!("RELATIVE record for {:#x} removed", r.offset), e));
+        }
+    }
+    // spie-rel-extra: an R_*_NONE record made a RELATIVE on a word of
+    // .data no record writes, its addend the word's content (view 1 sees
+    // nothing; only the address-word rule can).
+    let written: std::collections::BTreeSet<u64> = recs.values().map(|r| r.offset).collect();
+    let target = image.sections.iter().find(|s| s.name == ".data").and_then(|d| {
+        (0..d.shdr.sh_size / 8)
+            .map(|k| d.shdr.sh_addr.next_multiple_of(8) + 8 * k)
+            .find(|a| !written.contains(a) && image.value(*a, 8).is_some_and(|v| v != 0))
+    });
+    let relative = match m {
+        mortar_elf::consts::EM_AARCH64 => 1027,
+        _ => 8,
+    };
+    if let Some(t) = target {
+        let content = image.value(t, 8).unwrap_or(0);
+        for r in recs.values().filter(|r| kind(m, r.ty) == Kind::None) {
+            let Some(o) = off(image, r.at, 24) else { continue };
+            let mut rec = wr(t, 8);
+            rec.extend(wr(relative, 8));
+            rec.extend(wr(content, 8));
+            c.push((
+                "spie-rel-extra",
+                format!("NONE record at {:#x} made RELATIVE for {t:#x} (a .data word)", r.at),
+                vec![(o, rec)],
+            ));
+        }
+    }
+    // spie-irel-twice: the C runtime's range made to cover an IRELATIVE
+    // record, where .symtab defines both bounds.
+    let sym = |n: &str| image.global(n).or_else(|| image.unique(n)).filter(|o| o.sym.st_shndx != 0);
+    let symtab = image.sections.iter().find(|x| x.shdr.sh_type == mortar_elf::consts::SHT_SYMTAB);
+    if let (Some(lo), Some(hi), Some(t)) =
+        (sym("__rela_iplt_start"), sym("__rela_iplt_end"), symtab)
+    {
+        for r in recs.values().filter(|r| kind(m, r.ty) == Kind::Irelative).take(2) {
+            let at = |x: u32| (t.shdr.sh_offset + 24 * u64::from(x)) as usize + 8;
+            c.push((
+                "spie-irel-twice",
+                format!("__rela_iplt_start..end set to the IRELATIVE record at {:#x}", r.at),
+                vec![(at(lo.index), wr(r.at, 8)), (at(hi.index), wr(r.at + 24, 8))],
+            ));
+        }
+    }
+    // spie-interp: a PT_NOTE made a PT_INTERP.
+    let (phoff, phent) = (image.header.e_phoff as usize, usize::from(image.header.e_phentsize));
+    if let Some(i) = image.phdrs.iter().position(|p| p.p_type == mortar_elf::consts::PT_NOTE) {
+        c.push((
+            "spie-interp",
+            "a PT_NOTE made a PT_INTERP".into(),
+            vec![(phoff + i * phent, wr(u64::from(PT_INTERP), 4))],
+        ));
+    }
+    // spie-needed: DT_DEBUG made a DT_NEEDED of .dynstr's empty name.
+    if let Some(o) = entry(DT_DEBUG) {
+        c.push(("spie-needed", "DT_DEBUG made DT_NEEDED".into(), vec![(o, wr(DT_NEEDED, 8))]));
+    }
+    // spie-relacount: DT_RELACOUNT off by one either way.
+    if let (Some(k), Some(o)) = (count, entry(DT_RELACOUNT)) {
+        for (d, to) in [("+ 1", k + 1), ("- 1", k.saturating_sub(1))] {
+            c.push(("spie-relacount", format!("DT_RELACOUNT {k} {d}"), vec![(o + 8, wr(to, 8))]));
+        }
+    }
+    // spie-dynamic-word: the GOT's _DYNAMIC word changed.
+    if let Some(g) = sym("_GLOBAL_OFFSET_TABLE_")
+        && let Some(o) = off(image, g.sym.st_value, 8)
+    {
+        let v = rd(b, o, 8);
+        for to in [0, v.wrapping_add(8)] {
+            c.push((
+                "spie-dynamic-word",
+                format!("the word at _GLOBAL_OFFSET_TABLE_ {v:#x} -> {to:#x}"),
+                vec![(o, wr(to, 8))],
+            ));
+        }
+    }
 }
 
 /// The PLT header and the way back to it (WP-082): sites found by

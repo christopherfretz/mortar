@@ -2489,6 +2489,38 @@ reference behaviours `spec/dyn.md` already names; A28 and A29 are new.
   address below `.eh_frame_hdr`). Reproducer:
   `tests/link/dyn/reloc/weak-class-table.test`, x86-64 `exec` (lld 22).
 
+Static-pie (WP-089, §12.4; each shown by running a program, the cases of
+`crates/mortar_plumb/tests/spie.rs`, declared by
+`tests/link/dyn/kinds/output-kind-table-static-pie.test`):
+
+- **A30 (GNU ld, AArch64, new).** The GOT slot of an absolute symbol
+  (`SHN_ABS`; glibc's `_nl_current_*_used`, value 2, in every static-pie
+  with the C library) gets a `RELATIVE` record: the program reads the
+  value plus the load bias (P-D9 view 2 ending "(a record moves a value
+  that is not an address of the executable)"). The same slot in a `-pie`
+  output does too. glibc only tests those words for non-zero, so its own
+  are harmless; a program's absolute symbol read through the GOT is wrong
+  (`tests/spie/absgot.c` exits 1). lld and mold write 2 and no record.
+- **A31 (GNU ld, x86-64, new).** The `.plt.got` entry of an undefined
+  weak function (crtbeginS's `__cxa_finalize`, g++'s `_ZTH` init guard of
+  a `thread_local` with a constant initializer) jumps through its GOT slot
+  plus 1, a misaligned word no record writes (P-D10 "jumps through" an
+  address not a multiple of 8, and R1 on each `R_X86_64_PLT32` call whose
+  rel32 reaches such an entry). Dead code: each caller tests the slot
+  itself for 0 first (`cmpq $0, sym@GOTPCREL(%rip)`; `je`).
+- **A32 (GNU ld, mold, x86-64).** W3 in a static-pie: an address word of
+  an IFUNC is its own `IRELATIVE` slot (the resolved function) while a
+  PC-relative use takes the IPLT entry, so `fp == f` is false (F3 "takes
+  the function its IRELATIVE record resolves to"; `tests/spie/ifunc.c`
+  prints 0). lld makes every use the IPLT entry; on AArch64 every use of
+  all three is the resolved function (a GOT load).
+- **A33 (mold).** A shared object named on a `-static-pie` line (after
+  the driver's `-Bstatic`) is linked: the output has `DT_NEEDED` and no
+  `PT_INTERP`, nothing loads the library, and the call to it faults
+  (WP-052's `dyn/spie/shlib-refused`, both architectures: SIGSEGV). GNU
+  ld and lld refuse it, as D-19 and D-2 do; stage 3 stops at P-D2 "a
+  shared object after -Bstatic (dyn.md D-19)".
+
 On i386 (WP-028e, `tests/x86.rs`; x86.md §15.2): W1 (two readings of a
 `GOT32X` operand) is R8 under every map; W3 (mold's no-base GOT value
 G − `.got`) is R4, and its no-base `mov` → `lea` R1; W4 (mold's LE form
@@ -2678,8 +2710,9 @@ bound, copy and canonical-PLT choice) is recomputed by the verifier's
 own implementation of D-11-D-27 and compared with the output.
 
 - **P-D1 (accept).** `ET_DYN` with `DF_1_PIE` and `ET_EXEC` with
-  `PT_INTERP` are verified; the kind is recomputed from the headers and
-  the command line and must agree (D-1 table, every row).
+  `PT_INTERP` are verified, and so is a static-pie (`ET_DYN` with
+  `PT_DYNAMIC`, no `PT_INTERP`; §12.4); the kind is recomputed from the
+  headers and the command line and must agree (D-1 table, every row).
 - **P-D2 (shared inputs).** Read every shared object the command line or
   a script names, and the `DT_NEEDED` closure (input §8.6, searched by
   the verifier itself), with `mortar_elf`: `.dynsym`, versym, verdefs,
@@ -2769,6 +2802,13 @@ own implementation of D-11-D-27 and compared with the output.
   (`SHN_UNDEF` with a non-zero `st_value`) names a key whose shared
   definition is `STV_PROTECTED` (D-18; W5): P-D9's equality cannot see
   it, because the executable's own `&pf` is its PLT entry everywhere.
+- **P-D14 (static-pie: what it owes glibc).** The headers, `.dynamic`,
+  `.dynsym`, the record types and the GOT's `_DYNAMIC` word of a
+  static-pie (§12.4).
+- **P-D15 (static-pie: how glibc applies it).** Every `RELATIVE` and
+  `IRELATIVE` record is applied exactly once by glibc's self-relocation,
+  no `RELATIVE` after an `IRELATIVE`, and the C runtime's
+  `__rela_iplt_*` range is empty (§12.4).
 
 What reports each wrong output and hazard of `spec/dyn.md` §13.2:
 
@@ -2833,7 +2873,11 @@ from the file system (`line::Files`).
   `mortar_plumb::OUTSIDE`): a link stage 3 does not model is named and
   nothing of stage 3 is judged: an option `spec/dyn.md` refuses
   (`--hash-style` other than `gnu`, `--copy-dt-needed-entries`,
-  `-shared`), static-pie (WP-052), an output with version definitions
+  `-shared`), a static-pie linked with `-E` (its exports are M4, D-1),
+  any i386 dynamic output (`Pie`, `Exec` with `PT_DYNAMIC`, static-pie:
+  REL records and `DT_REL`, while every stage 3 rule is written for the
+  RELA targets; one line "outside stage 3: i386 ..." replaces every
+  other, WP-089), an output with version definitions
   (`DT_VERDEF`, M4), and a `DT_NEEDED` object of the closure no search
   finds (a link D-13 refuses, which lld and mold make). It is a finding,
   so mortar's output fails with it; the link-test harness counts a
@@ -2877,7 +2921,7 @@ from the file system (`line::Files`).
   `dynsym-value`, `dynsym-visibility`, `dynsym-unique` (§12.3), `gnu-hash`, `versym`,
   `version-need`, `interp`, `relro`, `lazy-slot` (under `-z now` too,
   WP-082), `copy-size`, and §12.2's `plt0-disp1`, `plt0-disp2`,
-  `plt-index`, `plt-back-jump`. `xtask plumb --mutate --line` judges each mutant with
+  `plt-index`, `plt-back-jump`, and §12.4's static-pie classes. `xtask plumb --mutate --line` judges each mutant with
   stage 3. The kill table and its survivors are WP-050's record.
 - **Stage 2 inside a dynamic output**: `__rela_iplt_start` and
   `__rela_iplt_end` are equal (the loader applies `IRELATIVE`); a
@@ -2886,6 +2930,8 @@ from the file system (`line::Files`).
   (GOT[0], after the PLT's slots); a GNU map's repeated `.eh_frame`
   placement of the first input is skipped; an output FDE covering a PLT
   section (GNU ld x86-64) is counted as the linker's.
+
+- **Static-pie** (WP-089): §12.4.
 
 ### 12.2 The PLT header and the way back to it (WP-082)
 
@@ -2998,6 +3044,126 @@ or named as equivalent or as a follow-up row in WP-082's record.
 **Mutations.** `dynsym-unique`: an exported `STB_GNU_UNIQUE` definition
 made `STB_GLOBAL` in `.dynsym` and in its `.symtab` entry (WP-054's case
 (a)), caught by P-D7.
+
+### 12.4 Static-pie (WP-089)
+
+A static-pie (D-1's `StaticPie`: `ET_DYN`, `PT_DYNAMIC`, no `PT_INTERP`)
+has a `.dynamic` for one reader, glibc's `_dl_relocate_static_pie`
+(`elf/dl-reloc-static-pie.c`, 2.41), and nothing a loader reads (D-2).
+That function takes the load bias from `&__ehdr_start`, finds `.dynamic`
+through `_DYNAMIC`, and runs `ELF_DYNAMIC_RELOCATE` with lazy 0 (every
+`DT_JMPREL` record is applied at start-up, whatever `-z now` says), its
+symbol lookup answering with the executable itself; TLS is set up after
+it. `csu/libc-start.c` then applies `[__rela_iplt_start,
+__rela_iplt_end)` with `apply_irel`, which adds no load bias. The
+verifier judges a static-pie with the whole of stage 3 (the views, the
+model, P-D4..P-D13) plus the rules below; a static-pie linked with `-E`
+is outside stage 3 (its exports are M4, D-1), so is an i386 static-pie
+(REL records; §12.1, one P-D1 line), and `.dynsym`'s set is
+P-D14's, not P-D7's.
+
+- **P-D14, the headers.** The first `PT_LOAD` maps the ELF header at
+  address 0 (`p_vaddr` and `p_offset` 0) and `__ehdr_start`, where
+  `.symtab` defines it, is 0: glibc's bias is `&__ehdr_start`. The entry
+  point is in an executable `PT_LOAD` and is the entry symbol's value
+  (`-e`, else `_start`) where `.symtab` defines it (S7 judges `ET_EXEC`
+  only). `Format::Mortar`: no `PT_PHDR` (D-1, layout L-67; lld and mold
+  write one, GNU ld none).
+- **P-D14, `.dynamic`.** No `DT_NEEDED` (a static-pie loads nothing),
+  no `DT_VERSYM` (glibc's self-relocation would take the versioned path),
+  no `DT_VERNEED`, `DT_VERNEEDNUM`, `DT_VERDEF`, and no `DT_RELR` (stage 3
+  does not model it). `DT_TEXTREL`, the address/size pairs, the flags
+  (`DF_1_PIE`, `-z now`'s two) and `DT_RELACOUNT` are P-D6's as for a
+  `Pie`. The references' tag sets (measured, both architectures): GNU ld
+  `INIT FINI INIT_ARRAY(SZ) FINI_ARRAY(SZ) GNU_HASH STRTAB SYMTAB STRSZ
+  SYMENT DEBUG PLTGOT PLTRELSZ PLTREL JMPREL RELA RELASZ RELAENT [FLAGS]
+  FLAGS_1 RELACOUNT`; lld `FLAGS_1 DEBUG RELA* RELACOUNT SYMTAB SYMENT
+  STRTAB STRSZ GNU_HASH`, the arrays, `INIT FINI [FLAGS]`; mold `RELA*
+  PLTGOT SYMTAB SYMENT STRTAB STRSZ`, the arrays, `INIT FINI GNU_HASH
+  FLAGS FLAGS_1 DEBUG` (no `DT_RELACOUNT`; on AArch64 `DF_STATIC_TLS`).
+  `Format::Mortar` is D-30's set and order (P-D6).
+- **P-D14, `.dynsym`.** No defined entry (nothing can look one up),
+  except GNU ld's AArch64 `STT_SECTION` entries (`.init`, `.data`) in a
+  reference's output; `Format::Mortar`: the null entry only (D-1). An
+  undefined entry in a reference's output is inert (no record names one:
+  lld 19's x86-64 `__tls_get_addr`). `.gnu.hash` is P-D5's.
+- **P-D14, the records.** Every record of an allocated `SHT_RELA`
+  section is `RELATIVE` or `IRELATIVE` with symbol 0, or `R_*_NONE`
+  (GNU ld writes two on AArch64, mold two on x86-64; `Format::Mortar`:
+  none, D-40). A TLS record is named: glibc sets the thread pointer up
+  after self-relocation. Any other type is refused even though glibc's
+  lookup would answer with the executable: no reference writes one.
+- **P-D14, the GOT's `_DYNAMIC` word (D-32).** Where `.symtab` defines
+  `_GLOBAL_OFFSET_TABLE_`, the word there holds `.dynamic`'s link-time
+  address and no record writes it (all three references, both
+  architectures, lazy and `-z now`; lld's AArch64 output defines no
+  `_GLOBAL_OFFSET_TABLE_`). `Format::Mortar`: x86-64 `.got.plt[0]` and
+  AArch64 `.got[0]` hold `_DYNAMIC`.
+- **P-D15, application.** glibc's ranges (`elf/dynamic-link.h`,
+  `_ELF_DYNAMIC_DO_RELOC`): range 0 is `DT_RELA`/`DT_RELASZ`; when
+  `DT_JMPREL` is present it becomes range 0's start if `DT_RELA` is
+  absent, is cut off range 0's end when range 0 ends where it does, joins
+  range 0 when it starts where range 0 ends, and is range 1 otherwise.
+  glibc reads `DT_JMPREL` only under `DT_PLTREL`, and the RELA pass only
+  when `DT_PLTREL` is `DT_RELA` (7): a `DT_JMPREL` without it is a table
+  glibc does not apply, and its records are "does not apply".
+  Every `RELATIVE` and `IRELATIVE` record of an allocated `SHT_RELA`
+  section is in exactly one range (0: "does not apply"; 2: "applies n
+  times"), and a range covers records only. The first `DT_RELACOUNT`
+  records of range 0 are applied as `RELATIVE` whatever their type
+  (P-D6 holds the count to the leading run).
+- **P-D15, order (measured).** No `RELATIVE` record is applied after an
+  `IRELATIVE` one, the order being glibc's: range 0, then range 1; on
+  x86-64 each range's `IRELATIVE` records are deferred to its end
+  (`ELF_MACHINE_IRELATIVE`), on AArch64 a range is applied in table order.
+  Measured with `tests/spie/order.c`, whose resolver picks the right
+  function only if its pointer's `RELATIVE` record was applied first:
+  lld's and mold's tables rewritten with the `IRELATIVE` records first
+  (`DT_RELACOUNT` 0) run right on x86-64 and wrong on AArch64; GNU ld's
+  `DT_RELA` and `DT_JMPREL` swapped (the `IRELATIVE` table as range 0)
+  runs wrong on x86-64 and faults on AArch64 (glibc's own resolvers).
+  The references as written all apply every `IRELATIVE` last.
+- **P-D15, the C runtime's range.** `__rela_iplt_start` and
+  `__rela_iplt_end`, where `.symtab` defines both, are equal (lld leaves
+  them undefined, GNU ld absent, mold absolute 0): a non-empty range is
+  applied without the load bias, and twice when it covers records the
+  self-relocation applies. Stage 2's `Want::Equal` holds the same in
+  every dynamic output (§12.1).
+- **IFUNC (§4.8 in a static-pie).** An IPLT word has one `IRELATIVE`
+  record whose addend is the resolver (F2), counted per entry by P-D10;
+  a PLT entry of an undefined weak function may jump through an aligned
+  word holding 0 that no record writes (it reaches 0 at any bias, as the
+  call does in a static executable: GNU ld x86-64). An input's address
+  word against an IFUNC may be its own `IRELATIVE` slot of that resolver
+  (x86.md X86-50's form; GNU ld and mold): it is the resolved function,
+  F3 when another use takes an IPLT entry (A32), and an `IRELATIVE` slot
+  inside a placed section that no such word claims is F2. P-D10's header
+  and lazy walk (§12.2) and the lazy-binding record rule do not apply:
+  nothing is bound lazily.
+- **No record on a non-address word (P-D9, static-pie).** Every
+  `RELATIVE` record's place is a word the verifier knows holds an address
+  of the executable: an input's absolute use of an internal target
+  (direct, through a mergeable piece, an IFUNC's canonical IPLT entry),
+  or a GOT slot such a use reaches; outside the placed sections (a
+  linker-made word, such as a GOT slot no relaxed reference still uses)
+  the record's addend must be an address inside a `PT_LOAD`. View 2
+  checks the other direction (every address word moves) and now also
+  holds an absolute symbol's word (`SHN_ABS`, glibc's
+  `_nl_current_*_used`) to its value at any bias, in a `Pie` as well:
+  A30.
+- **What is stricter for `Format::Mortar`.** No `PT_PHDR`; the null
+  `.dynsym` entry only; no `R_*_NONE`; GOT[0] holds `_DYNAMIC` at D-32's
+  place; `DT_RELACOUNT` exactly the leading run; D-30's tags in order.
+
+Mutation classes (`dynmutate.rs`; kill table in WP-089's record):
+`spie-rel-drop` (a `RELATIVE` record removed, the table, `DT_RELASZ`,
+`DT_RELACOUNT` and `sh_size` adjusted), `spie-rel-extra` (an `R_*_NONE`
+made a `RELATIVE` on a `.data` word no record writes, view 1 unchanged),
+`spie-irel-twice` (the `__rela_iplt_*` range set over an `IRELATIVE`),
+`spie-interp` (a `PT_NOTE` made `PT_INTERP`), `spie-needed` (`DT_DEBUG`
+made `DT_NEEDED`), `spie-relacount` (plus and minus one; minus one is
+equivalent for a reference: glibc applies that record as an ordinary
+one), `spie-dynamic-word` (the GOT's `_DYNAMIC` word 0 or plus 8).
 
 ## 13. Stage 4: Mason metadata and the ODR table (M6)
 

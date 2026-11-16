@@ -589,10 +589,14 @@ pub(crate) const fn dyn_kind(role: DynRole) -> DynKind {
 /// `spec/dyn.md` D-47: in an output with `.dynamic`, a record that
 /// would be dynamic at a read-only place (arch.md §4.3 `TX`, the
 /// `read-only` reason of `relocation-incompatible`) is `text-relocation`.
-/// A static link (static PIE included) keeps the M1 diagnostic.
+/// The outputs with `.dynamic` are the dynamic ones and static-pie (D-1:
+/// "text relocation: refused" in its column too; its scan is otherwise a
+/// static one, `output` `Pie` with `dynamic` false, WP-052). A static
+/// non-PIE link has no `TX` cell.
 pub(crate) fn dynamic_error(view: &View<'_, '_>, e: ScanError) -> ScanError {
+    let has_dynamic = view.opts.dynamic || view.opts.output == mortar_arch::OutputKind::Pie;
     match e {
-        ScanError::Incompatible(Incompatible::ReadOnly) if view.opts.dynamic => {
+        ScanError::Incompatible(Incompatible::ReadOnly) if has_dynamic => {
             ScanError::Dynamic(DynRefusal::TextRelocation)
         }
         e => e,

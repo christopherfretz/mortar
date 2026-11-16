@@ -18,7 +18,7 @@ use super::{
     Engine, Evidence, Group, Pending, Rec, Target, Verdict, Want, got_rewrite, is_branch, judge,
     slot_addend, verdict_finding, x_direct, x_got,
 };
-use crate::a64::{self, Op};
+use crate::a64::{self, Field, Op};
 use crate::map::Format;
 use crate::report::{Finding, Reason, Rewrite, Rule, Site, Via};
 
@@ -39,6 +39,16 @@ pub(crate) struct Iplt {
     /// The IPLT entries of each resolver, sorted: an entry loads an
     /// `IRELATIVE` slot of the resolver and branches to what it holds.
     by_resolver: BTreeMap<u64, Vec<u64>>,
+    /// The output is a static-pie: an address word of the inputs may be
+    /// its own `IRELATIVE` slot (x86.md X86-50's form, `spec/plumb.md`
+    /// §12.4).
+    spie: bool,
+    /// Static-pie `IRELATIVE` slots inside the placed sections, `(slot,
+    /// resolver)`: each must be claimed by an input's address word
+    /// against an IFUNC of that resolver (F2 otherwise, `finish_ifunc`).
+    words: Vec<(u64, u64)>,
+    /// The slots of `words` an input's address word claimed.
+    claimed: BTreeSet<u64>,
 }
 
 impl Iplt {
@@ -74,6 +84,9 @@ pub(crate) struct IfGroup {
     addrs: Vec<(Pending, Accepts)>,
     /// GOT-indirect references by object, symbol and addend (§5.5).
     gots: BTreeMap<(usize, u32, i64), Group>,
+    /// Static-pie address words that are their own `IRELATIVE` slot of
+    /// the resolver: each holds the function the resolver picks.
+    words: Vec<Pending>,
 }
 
 /// One relocation record of an allocated relocation section of the output.
@@ -193,6 +206,8 @@ impl Engine<'_, '_> {
         let word = self.word();
         let static_exec = image.header.e_type == ET_EXEC
             && !image.phdrs.iter().any(|p| matches!(p.p_type, PT_DYNAMIC | PT_INTERP));
+        let static_pie = crate::spie::is_static_pie(image);
+        self.iplt.spie = static_pie;
         let rows = self.output_rows();
         let mut fs = Vec::new();
         // The resolvers: the places of the inputs' IFUNC definitions.
@@ -234,7 +249,11 @@ impl Engine<'_, '_> {
             self.cov.irelative_checked += 1;
             let slot = r.offset;
             let writable = image.load_of(slot, word).is_some_and(|p| p.p_flags & PF_W != 0);
-            if slot % word != 0 || !writable || self.occupied_at(slot) {
+            if static_pie && slot % word == 0 && writable && self.occupied_at(slot) {
+                // Judged when the records are (an input's address word
+                // must claim it, finish_ifunc).
+                self.iplt.words.push((slot, resolver));
+            } else if slot % word != 0 || !writable || self.occupied_at(slot) {
                 fs.push(
                     f(
                         2,
@@ -510,7 +529,7 @@ impl Engine<'_, '_> {
     }
 
     /// A record whose symbol is an IFUNC (§4.8).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) fn ifunc_record<'r>(
         &mut self,
         oi: usize,
@@ -537,7 +556,46 @@ impl Engine<'_, '_> {
             x.expected = Some(resolver);
             return self.fail(x);
         }
-        let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(0), w1: false };
+        // A static-pie address word that is its own IRELATIVE slot of the
+        // resolver (x86.md X86-50's form): it holds the function the
+        // resolver picks; view 2 checks it moves with the bias.
+        if self.iplt.spie
+            && rec.addend == 0
+            && rec.def.op == Op::Abs
+            && matches!(rec.def.field, Field::Data(_))
+            && u64::from(rec.def.field.width()) == self.word()
+            && self.iplt.words.iter().any(|&(w, r)| w == rec.p && r == resolver)
+        {
+            self.iplt.claimed.insert(rec.p);
+            self.abs_words.push((rec.p, rec.def.field.width(), resolver, true));
+            let pend = Pending {
+                rec: rec.clone(),
+                site,
+                symbol,
+                want: Want::Word(0),
+                w1: false,
+                loaded: false,
+            };
+            self.ifunc_groups
+                .entry(key)
+                .or_insert_with(|| IfGroup {
+                    resolver,
+                    addrs: Vec::new(),
+                    gots: BTreeMap::new(),
+                    words: Vec::new(),
+                })
+                .words
+                .push(pend);
+            return;
+        }
+        let pend = Pending {
+            rec: rec.clone(),
+            site,
+            symbol,
+            want: Want::Word(0),
+            w1: false,
+            loaded: false,
+        };
         if let Op::Slot(..) = rec.def.op {
             let ok: Vec<(u64, Option<Rewrite>)> = entries
                 .iter()
@@ -565,6 +623,7 @@ impl Engine<'_, '_> {
                 resolver,
                 addrs: Vec::new(),
                 gots: BTreeMap::new(),
+                words: Vec::new(),
             });
             if ok.is_empty() {
                 g.gots.entry((oi, rec.sym, rec.addend)).or_default().members.push((pend, ev));
@@ -623,7 +682,12 @@ impl Engine<'_, '_> {
         }
         self.ifunc_groups
             .entry(key)
-            .or_insert_with(|| IfGroup { resolver, addrs: Vec::new(), gots: BTreeMap::new() })
+            .or_insert_with(|| IfGroup {
+                resolver,
+                addrs: Vec::new(),
+                gots: BTreeMap::new(),
+                words: Vec::new(),
+            })
             .addrs
             .push((pend, ok));
     }
@@ -632,6 +696,19 @@ impl Engine<'_, '_> {
     #[allow(clippy::too_many_lines)]
     pub fn finish_ifunc(&mut self) {
         let groups = std::mem::take(&mut self.ifunc_groups);
+        // A static-pie IRELATIVE slot inside the placed sections that no
+        // input's address word against an IFUNC of its resolver claims.
+        for (slot, _) in std::mem::take(&mut self.iplt.words) {
+            if !self.iplt.claimed.contains(&slot) {
+                self.findings.push(
+                    f(
+                        2,
+                        "the IRELATIVE slot is inside a placed section and is not an address word of the inputs against an IFUNC of its resolver",
+                    )
+                    .at(slot),
+                );
+            }
+        }
         for (_, g) in groups {
             let entries = self.iplt.entries_of(g.resolver).to_vec();
             // GOT members: the entries a slot they reach holds, and whether
@@ -669,6 +746,9 @@ impl Engine<'_, '_> {
                     gots.push((pend, canon, resolved, last));
                 }
             }
+            for pend in g.words {
+                gots.push((pend, Vec::new(), true, None));
+            }
             // The canonical entry: the one most references take (the
             // lowest on a tie).
             let mut count: BTreeMap<u64, usize> = BTreeMap::new();
@@ -701,6 +781,22 @@ impl Engine<'_, '_> {
                 x
             };
             for (pend, ok) in g.addrs {
+                // Stage 3's view 2: an absolute word holding the canonical
+                // IPLT entry moves with the executable.
+                let w = pend.rec.def.field.width();
+                if let Some(c) = chosen
+                    && pend.rec.def.op == Op::Abs
+                    && matches!(pend.rec.def.field, Field::Data(4 | 8))
+                    && ok.iter().any(|o| o.0 == c)
+                    && self.image.load_of(pend.rec.p, u64::from(w)).is_some()
+                {
+                    self.abs_words.push((
+                        pend.rec.p,
+                        w,
+                        c.wrapping_add(pend.rec.addend as u64),
+                        true,
+                    ));
+                }
                 match ok.iter().find(|o| Some(o.0) == chosen) {
                     Some((_, Some(rw))) => self.cov.add_accepted(*rw, pend.rec.def.r_type),
                     Some((_, None)) => self.cov.add_verified(Via::Iplt, pend.rec.def.r_type),
@@ -715,7 +811,7 @@ impl Engine<'_, '_> {
                 if chosen.is_some_and(|c| canon.contains(&c)) || (resolved && chosen.is_none()) {
                     self.cov.add_verified(Via::Iplt, ty);
                 } else if resolved {
-                    let x = unequal(&pend, "loads the function its IRELATIVE slot resolves to");
+                    let x = unequal(&pend, "takes the function its IRELATIVE record resolves to");
                     self.fail(x);
                 } else if let Some(&e) = canon.first() {
                     let x = unequal(&pend, &format!("loads IPLT entry {e:#x}"));

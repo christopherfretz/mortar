@@ -44,7 +44,15 @@ are not followed or disagree (§15).
 - **The image is a function** (`spec/model.md` §5). Fill reads the tables
   of model §3 and §4 and the input bytes, and nothing else. A cache this
   spec builds (§5.2) is a function of those tables, lives only for the
-  phase, and is never an input to another phase.
+  phase, and is never an input to another phase. The synthetic chunks'
+  plans (`spec/synth.md`) are such functions too: each is made from the
+  inputs, the command line and the final `Layout` (its `.eh_frame`
+  records, slot lists, chunks, merged map and patches), never from a
+  table the front computed on the way to it (WP-086). A link that
+  computes its layout makes them from the tables it chose; a layout from
+  elsewhere (a replay, IN-61; an update) gets the plans of its own
+  tables, or fails by name where a plan holds a table to a rule (S-49,
+  S-88).
 - **No per-relocation table** (model §5, §9). Scan and fill each decode
   every relocation record from the input bytes. A per-relocation byte of
   classification, cached between them, would cost 1 byte × 2.2 M records

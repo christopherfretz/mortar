@@ -218,6 +218,10 @@ struct Pending {
     want: Want,
     /// The record is half of an ADRP+ADD made NOP+ADR (merge path).
     w1: bool,
+    /// The place is in an allocated section (merge path: only a loaded
+    /// word is an address word of stage 3's view 2; a `.debug_*` place's
+    /// address overlaps the image's).
+    loaded: bool,
 }
 
 /// What a GOT entry must hold (§5.5, §4.7).
@@ -506,6 +510,47 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// Whether an address is the executable's (moves with the bias).
     pub(crate) fn internal(&self, s: u64) -> bool {
         self.extent.0 <= s && s < self.extent.1
+    }
+
+    /// Whether symbol `idx` of object `oi` resolves to an absolute
+    /// definition (`SHN_ABS`): its value is not an address of the image
+    /// and no load bias moves it (gABI "Symbol Values"; dyn.md D-46's
+    /// `Abs` row: the value, no record). Resolution follows §4.4: a local
+    /// by its own section, a global by the chosen input definition, else
+    /// (linker-defined) by the output's symbol of the name (stage 3,
+    /// WP-089: glibc's `_nl_current_*_used`, mold's absolute
+    /// `__rela_iplt_*`).
+    pub(crate) fn absolute(&self, oi: usize, idx: u32) -> bool {
+        let o = &self.objs[oi];
+        let Some(t) = o.symtab else { return false };
+        let Ok(sym) = t.get(SymbolIndex(idx)) else { return false };
+        if idx == 0 {
+            return false;
+        }
+        if !matches!(sym.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE) {
+            return matches!(t.section_of(SymbolIndex(idx), &sym), Ok(SymbolSection::Absolute));
+        }
+        let name = String::from_utf8_lossy(t.name(&sym).unwrap_or(b"")).into_owned();
+        if let Some((doi, di)) = self.chosen_def(&name) {
+            return self.objs[doi].symtab.is_some_and(|dt| {
+                dt.get(SymbolIndex(di)).is_ok_and(|ds| {
+                    matches!(dt.section_of(SymbolIndex(di), &ds), Ok(SymbolSection::Absolute))
+                })
+            });
+        }
+        // A linker-defined symbol: GNU ld writes `_DYNAMIC` and
+        // `_GLOBAL_OFFSET_TABLE_` as `SHN_ABS` on AArch64 although they
+        // are addresses, so `SHN_ABS` counts only for a value no allocated
+        // section holds (end inclusive; mold's absolute 0 `__rela_iplt_*`).
+        self.image.global(&name).or_else(|| self.image.unique(&name)).is_some_and(|out| {
+            let v = out.sym.st_value;
+            out.sym.st_shndx == mortar_elf::consts::SHN_ABS
+                && !self.image.sections.iter().any(|x| {
+                    x.shdr.sh_flags & mortar_elf::consts::SHF_ALLOC != 0
+                        && x.shdr.sh_addr <= v
+                        && v <= x.shdr.sh_addr + x.shdr.sh_size
+                })
+        })
     }
 
     /// A branch whose target is a PLT entry whose word holds `s` after
@@ -1267,6 +1312,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                     rec,
                     site,
                     symbol,
+                    self.objs[oi].secs[si].alloc(),
                     &partner,
                 );
             }
@@ -1292,7 +1338,14 @@ impl<'a, 'b> Engine<'a, 'b> {
             let Some(ev) = self.slot_evidence(rec) else {
                 return self.not_checked(Reason::SymbolUnresolved, 1);
             };
-            let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(sa), w1: false };
+            let pend = Pending {
+                rec: rec.clone(),
+                site,
+                symbol,
+                want: Want::Word(sa),
+                w1: false,
+                loaded: false,
+            };
             self.got_groups
                 .entry((slot, oi, rec.sym, rec.addend))
                 .or_default()
@@ -1313,7 +1366,8 @@ impl<'a, 'b> Engine<'a, 'b> {
                 && self.objs[oi].secs[si].alloc()
             {
                 let s = sa.wrapping_sub(addend as u64);
-                self.abs_words.push((rec.p, rec.def.field.width(), sa, self.internal(s)));
+                let internal = self.internal(s) && !self.absolute(oi, rec.sym);
+                self.abs_words.push((rec.p, rec.def.field.width(), sa, internal));
             }
             match rw {
                 Some(r) => self.cov.add_accepted(r, rec.def.r_type),
@@ -1539,7 +1593,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         let Some(ev) = self.slot_evidence(rec) else {
             return self.not_checked(Reason::SymbolUnresolved, 1);
         };
-        let pend = Pending { rec: rec.clone(), site, symbol, want, w1: false };
+        let pend = Pending { rec: rec.clone(), site, symbol, want, w1: false, loaded: false };
         self.got_groups
             .entry((slot, oi, rec.sym, rec.addend))
             .or_default()
@@ -1917,6 +1971,7 @@ impl<'a, 'b> Engine<'a, 'b> {
         rec: &Rec,
         site: Site,
         symbol: String,
+        loaded: bool,
         partner: &dyn Fn(i64, &[u32]) -> Option<&'r Rec>,
     ) {
         let (r, extra) = if section_sym {
@@ -1994,7 +2049,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             }
             _ => Evidence::None,
         };
-        let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(0), w1 };
+        let pend = Pending { rec: rec.clone(), site, symbol, want: Want::Word(0), w1, loaded };
         self.piece_groups.entry((oi, sec, r, extra)).or_default().members.push((pend, ev));
     }
 
@@ -2057,7 +2112,8 @@ impl<'a, 'b> Engine<'a, 'b> {
                 {
                     let w = self.word() as u8;
                     let internal = self.internal(v.wrapping_sub(slot_addend(rec)))
-                        && !matches!(self.resolve_any(goi, gsym), Target::UndefWeak);
+                        && !matches!(self.resolve_any(goi, gsym), Target::UndefWeak)
+                        && !self.absolute(goi, gsym);
                     for &gv in &valid {
                         self.abs_words.push((gv, w, v, internal));
                     }
@@ -2123,6 +2179,16 @@ impl<'a, 'b> Engine<'a, 'b> {
                     match judge(rec, x) {
                         Verdict::Ok(rw) => {
                             ok = Some(rw);
+                            // Stage 3's view 2: an absolute word naming a
+                            // piece moves with the executable.
+                            let w = rec.def.field.width();
+                            if rec.def.op == Op::Abs
+                                && matches!(rec.def.field, Field::Data(4 | 8))
+                                && pend.loaded
+                                && self.image.load_of(rec.p, u64::from(w)).is_some()
+                            {
+                                self.abs_words.push((rec.p, w, v, true));
+                            }
                             break;
                         }
                         vv => last = Some((vv, x)),

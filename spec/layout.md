@@ -934,8 +934,9 @@ order of the output sections themselves is in §10.
   header. Its `sh_addr` is the first chunk's address, and its `sh_size`
   runs from there to the end of the last chunk's `size`, never its
   capacity: no parser ever sees slack through a section header (L-141).
-  Section indices are given densely in chunk order (`check.rs`), header
-  chunks aside.
+  Section indices are given densely in chunk order (`Placement.order`),
+  header chunks aside; `Layout::check` holds a layout to this (WP-086:
+  `.shstrtab`'s names and every header's index follow it).
 - **L-87 [C]** A chunk's `capacity` is its `size` by default. Only an
   incremental policy (§18) leaves slack.
 

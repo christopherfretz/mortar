@@ -5,7 +5,7 @@
 //!                     [--inputs-from <response file>|map]
 //!                     [--fix-cortex-a53-843419|--no-fix-cortex-a53-843419]
 //!                     [--mutate [--per-class N] [--seed S] [--threads T]]
-//!                     [--sweep [--threads T]]
+//!                     [--sweep [--window W] [--threads T]]
 //!
 //! With `--mutate`, the link is not judged but mutated (§9.5): the table
 //! of mutants applied, caught and missed per class, then every missed one.
@@ -24,7 +24,7 @@ use mortar_plumb::{Format, Input};
 pub const USAGE: &str = "usage: cargo xtask plumb <output> --map <file> --map-format gnu|lld|mold|mortar \
                          [--inputs-from <response file>|map] [--line <file>] \
                          [--fix-cortex-a53-843419|--no-fix-cortex-a53-843419] \
-                         [--mutate [--per-class N] [--seed S] [--threads T]] [--sweep]\n";
+                         [--mutate [--per-class N] [--seed S] [--threads T]] [--sweep [--window W]]\n";
 
 /// The command line of `xtask plumb`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,12 +85,13 @@ impl Args {
                 {
                     fix_843419 = Some(true);
                 }
-                o @ ("--per-class" | "--seed" | "--threads") => {
+                o @ ("--per-class" | "--seed" | "--threads" | "--window") => {
                     let v = value(o)?;
                     let n: u64 = v.parse().map_err(|_| format!("{o}: not a number '{v}'"))?;
                     match o {
                         "--per-class" => cfg.per_class = n as usize,
                         "--seed" => cfg.seed = n,
+                        "--window" => cfg.window = n,
                         _ => cfg.threads = n as usize,
                     }
                 }
@@ -437,7 +438,8 @@ pub fn run(args: &Args) -> Result<bool, String> {
         let files = BaseFiles(Path::new(""));
         let ctx = mortar_plumb::Ctx { line: line.clone(), files: &files };
         if cfg.sweep {
-            let sweep = mortar_plumb::sweep::run(&output, &inputs, &parsed, cfg.threads, &ctx)?;
+            let sweep =
+                mortar_plumb::sweep::run(&output, &inputs, &parsed, cfg.threads, cfg.window, &ctx)?;
             println!("{}: baseline findings {}", args.output.display(), sweep.baseline);
             print!("{}", sweep.render());
             return Ok(true);

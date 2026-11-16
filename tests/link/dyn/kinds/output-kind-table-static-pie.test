@@ -15,8 +15,14 @@
 # (STT_SECTION symbols of `.init` and `.data`); lld's and mold's, and GNU
 # ld's on x86-64, have the null entry only.
 #
-# mortar: AArch64 WP-052 (SPIE), x86-64 WP-052 (SPIE), in
-# tests/link/xfails.
+# Stage 3 judges it (spec/plumb.md §12.4, WP-089). GNU ld's wrong outputs
+# here, each shown by running a program: on AArch64 it writes a RELATIVE
+# record on the GOT slot of an absolute symbol (glibc's
+# `_nl_current_*_used`, value 2: A30); on x86-64 its `.plt.got` entry of
+# the undefined weak `__cxa_finalize` jumps through the slot plus 1 (dead
+# behind crtbeginS's null test: A31).
+#@ anomaly(bfd,aarch64): A30
+#@ anomaly(bfd,x86_64): A31
 #@ spec: dyn.md "D-1"
 #@ spec: dyn.md "D-2"
 #@ arch: aarch64 x86_64

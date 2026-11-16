@@ -213,38 +213,45 @@ where
 }
 
 /// `.rela.dyn`'s bytes once its records are known: the `RELATIVE` part
-/// ([`fill_relative`]), then every other record sorted (D-40 step 2).
+/// ([`fill_relative`]), then every other record sorted (D-40 step 2),
+/// then a `StaticPie`'s `IRELATIVE`s in IPLT order (synth S-70).
 #[derive(Debug, Clone)]
 pub struct RelaDyn {
     class: Class,
     form: RelForm,
     relative: Vec<u8>,
+    /// The sorted others, then the `IRELATIVE`s.
     other: Vec<DynRecord>,
 }
 
 impl RelaDyn {
-    /// From the `RELATIVE` part's bytes and the other records (any
-    /// order), checked against `plan`'s counts.
+    /// From the `RELATIVE` part's bytes, the other records (any order)
+    /// and the `IRELATIVE`s (in order), checked against `plan`'s counts.
     pub fn new(
         plan: &RelaPlan,
         class: Class,
         form: RelForm,
         relative: Vec<u8>,
         mut other: Vec<DynRecord>,
+        irelative: Vec<DynRecord>,
     ) -> Result<Self, SynthError> {
         let e = rela::entsize(class, form);
         if relative.len() as u64 != plan.relative_count() * e
             || other.len() as u64 != plan.other_count()
+            || irelative.len() as u64 != plan.irelative_count()
         {
             return Err(mortar_synth::error::internal(format!(
-                ".rela.dyn: {} RELATIVE and {} other records, the plan {} and {}",
+                ".rela.dyn: {} RELATIVE, {} other and {} IRELATIVE records, the plan {}, {} and {}",
                 relative.len() as u64 / e,
                 other.len(),
+                irelative.len(),
                 plan.relative_count(),
-                plan.other_count()
+                plan.other_count(),
+                plan.irelative_count()
             )));
         }
         rela::sort_symbolic(&mut other);
+        other.extend(irelative);
         Ok(Self { class, form, relative, other })
     }
 

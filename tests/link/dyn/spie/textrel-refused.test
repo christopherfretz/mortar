@@ -1,0 +1,37 @@
+# dyn.md D-47 in the `StaticPie` column: a `-fno-pic` object's absolute
+# address word in `.rodata` (a `const` pointer: R_AARCH64_ABS64 /
+# R_X86_64_64) would need a `RELATIVE` record in read-only memory, a
+# text relocation: refused by name, `text-relocation`, as in a PIE. On
+# x86-64 the same object's `R_X86_64_32` in `.text` has no PIE form at
+# all (x64.md, the M1 Error cell: "recompile with -fPIE").
+#
+# Measured (both architectures): GNU ld refuses ("read-only segment has
+# dynamic relocations" on AArch64; R_X86_64_32 "can not be used when
+# making a PIE object" on x86-64), lld refuses ("cannot be used against
+# local symbol; recompile with -fPIC"), mold refuses ("can not be used;
+# recompile with -fPIC").
+#
+#@ spec: dyn.md "D-47"
+#@ arch: aarch64 x86_64
+
+cc -O1 -fno-pic main.c -o main.o
+link gcc -static-pie main.o -o spie
+  exit: fail
+  diag(bfd,aarch64): read-only segment has dynamic relocations
+  diag(bfd,x86_64): relocation R_X86_64_32 against * can not be used when making a PIE object; recompile with -fPIE
+  diag(lld): recompile with -fPIC
+  diag(mold): can not be used; recompile with -fPIC
+  diag(mortar,aarch64): relocation R_AARCH64_ABS64 against symbol `*' can not be used when making a PIE object; recompile with -fPIE
+  diag(mortar,x86_64): relocation R_X86_64_64 against symbol `*' can not be used when making a PIE object; recompile with -fPIE
+  diag(mortar,x86_64): relocation R_X86_64_32 cannot be used against symbol '*'; recompile with -fPIE
+
+#--- main.c
+#include <stdio.h>
+
+static int target = 5;
+int *const ro_ptr = &target;
+
+int main(void) {
+  printf("%d\n", *ro_ptr);
+  return 0;
+}
