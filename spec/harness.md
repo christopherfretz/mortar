@@ -749,6 +749,7 @@ keeps blanks (with `\"` and `\\`).
 | `as <args>` | the C driver with `-c` (so `.S` files are preprocessed) |
 | `yaml2obj <args>` | `yaml2obj` |
 | `ar <args>` | the architecture's `ar` |
+| `meta <description> <in> -o <out>` | the test producer (`spec/meta.md` §12): a `.mason.meta` container added to the object `<in>` by the architecture's `objcopy`; with a shared object `<in>.so`, its placeholder `.note.mason` table filled from `row` lines (`spec/odr.md` O-50 to O-52; `cargo xtask meta table`, WP-075) |
 | `shlib <driver> <args>` | a shared library, by the architecture's `gcc`, `g++` or `gfortran` with `-shared -fuse-ld=bfd`: GNU ld links every fixture library, whatever the run's linkers |
 | `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
 | `run <program> [<args>]` | runs a linked program |

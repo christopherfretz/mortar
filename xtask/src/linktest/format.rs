@@ -1029,7 +1029,11 @@ impl Parser {
                 qualifiers.no_linker("'meta'")?;
                 let shape = raw.len() == 4 && raw[2] == "-o";
                 if !shape {
-                    return Err("'meta' is 'meta <description> <in.o> -o <out.o>'".to_owned());
+                    return Err(
+                        "'meta' is 'meta <description> <in.o> -o <out.o>' (or <in.so> -o <out.so>, \
+                         its .note.mason table)"
+                            .to_owned(),
+                    );
                 }
                 ("meta", StepKind::Meta(args))
             }

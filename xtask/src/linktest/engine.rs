@@ -1436,6 +1436,11 @@ fn meta_step(step: &Step, objcopy: &Path, args: &[String], dir: &Path) -> Result
     };
     let text = std::fs::read_to_string(dir.join(description))
         .map_err(|e| fail(format!("cannot read '{description}': {e}")))?;
+    // A shared object: its `.note.mason` table (`spec/odr.md` O-50 to
+    // O-52), from `row` lines (`cargo xtask meta table`).
+    if input.ends_with(".so") {
+        return crate::meta::fill_table(&text, &dir.join(input), &dir.join(out)).map_err(fail);
+    }
     let sections = crate::meta::parse(&text).map_err(fail)?;
     let [items] = sections.as_slice() else {
         return Err(fail("the description of a 'meta' step has one section".to_owned()));

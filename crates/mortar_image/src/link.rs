@@ -143,6 +143,8 @@ pub struct DynPlans<'a> {
     pub copy_size: &'a [u64],
     pub bind_now: bool,
     pub relro: bool,
+    /// `.note.mason` (`spec/odr.md` O-52), with `--odr-table`.
+    pub note_mason: Option<&'a mortar_synth::NoteMasonPlan>,
     /// The context `.dynsym`'s exported values are read with, as
     /// `.symtab`'s (D-23 "exactly as `.symtab`").
     pub syms: SymCtx<'a>,
@@ -1517,6 +1519,7 @@ impl SynthChunk for Nobits {
 /// The dynamic sections' chunks (D-20 to D-49), over a [`DynView`].
 struct DynChunks<'v> {
     interp: Option<&'v InterpPlan>,
+    note_mason: Option<&'v mortar_synth::NoteMasonPlan>,
     gnu_hash: GnuHashChunk<'v>,
     dynsym: DynsymChunk<'v>,
     dynstr: DynstrChunk<'v>,
@@ -1545,6 +1548,7 @@ impl<'v> DynChunks<'v> {
         };
         Self {
             interp: d.interp,
+            note_mason: d.note_mason,
             gnu_hash: GnuHashChunk { plan: d.dynsym, src: d.src, class },
             dynsym: DynsymChunk {
                 plan: d.dynsym,
@@ -1583,6 +1587,7 @@ impl<'v> DynChunks<'v> {
     fn get(&self, kind: SynthKind) -> Option<&(dyn SynthChunk + Sync + 'v)> {
         Some(match kind {
             SynthKind::Interp => self.interp?,
+            SynthKind::NoteMason => self.note_mason?,
             SynthKind::GnuHash => &self.gnu_hash,
             SynthKind::Dynsym => &self.dynsym,
             SynthKind::Dynstr => &self.dynstr,

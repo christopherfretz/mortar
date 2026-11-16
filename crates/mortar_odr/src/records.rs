@@ -21,7 +21,7 @@ use std::borrow::Cow;
 use mortar_core::inputs::{File, Reader};
 use mortar_core::par::Pool;
 use mortar_core::resolution::Def;
-use mortar_core::{ComdatId, FileId, Inputs, Resolution};
+use mortar_core::{ComdatId, FileId, Inputs, Resolution, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Key, Kind, Place, Relation};
 use mortar_elf::consts::STB_LOCAL;
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection};
@@ -48,7 +48,7 @@ const META_SEQ: u64 = 1 << 42;
 const TAG_SHIFT: u32 = 44;
 
 /// The tag of each record check in a key's `seq`, in O-47's order.
-mod tag {
+pub(crate) mod tag {
     pub const ENFORCE: u64 = 1;
     pub const KIND5: u64 = 2;
     pub const KIND3: u64 = 3;
@@ -57,10 +57,16 @@ mod tag {
     pub const ISA: u64 = 6;
     pub const VTABLE: u64 = 7;
     pub const META: u64 = 8;
+    /// O-24 (a) and (b) (`crate::dynamic`).
+    pub const DYNAMIC: u64 = 9;
+    /// A malformed `.note.mason` table (O-51).
+    pub const DYN_META: u64 = 10;
+    /// O-24 (c).
+    pub const SIZE: u64 = 11;
 }
 
 /// A record check's `seq`: its tag above `base`.
-const fn seq(tag: u64, base: u64) -> u64 {
+pub(crate) const fn seq(tag: u64, base: u64) -> u64 {
     (tag << TAG_SHIFT) | base
 }
 
@@ -95,6 +101,12 @@ pub struct Switches {
     pub system_std_reported: bool,
     /// Unanchored `INLINED_ONLY` rows are compared (O-41, `strict`).
     pub inlined_only: bool,
+    /// The keeper's kind 2 row of each symbol is gathered (O-24 (a),
+    /// O-50's table): [`Dynamic::keepers`].
+    pub keepers: bool,
+    /// The sized kind 5 declarations of variables are gathered (O-24
+    /// (c)): [`Dynamic::declared`].
+    pub declared: bool,
 }
 
 impl Switches {
@@ -110,7 +122,36 @@ impl Switches {
             || self.kind3_definition
             || self.kind2
             || self.internal
+            || self.keepers
+            || self.declared
     }
+}
+
+/// What the dynamic side (O-24, O-50) takes from the output's units.
+#[derive(Debug, Default)]
+pub struct Dynamic {
+    /// Per symbol with a kind 2 row in the unit of the file the link keeps
+    /// its definition from: that row (the first of that file's, in unit
+    /// order), sorted by symbol.
+    pub keepers: Vec<Keeper>,
+    /// The kind 5 declarations of variables with a size, not definitions,
+    /// anchored or named to a symbol: (symbol, size, declaring file),
+    /// sorted.
+    pub declared: Vec<(SymbolId, u64, FileId)>,
+}
+
+/// The keeper's kind 2 row of a symbol (O-51: "the copy that runs").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keeper {
+    pub sym: SymbolId,
+    /// The file the link keeps the definition from.
+    pub file: FileId,
+    /// The row's hash, whole (O-51 writes its first 8 bytes).
+    pub hash: [u8; 16],
+    /// O-15's flags.
+    pub flags: u16,
+    /// O-15's class.
+    pub class: u16,
 }
 
 /// What the record checks counted, for `--odr-stats` (O-44).
@@ -140,6 +181,10 @@ pub struct Counts {
     pub ignored: u64,
     /// Container bytes read.
     pub bytes: u64,
+    /// Shared-object inputs whose `.note.mason` table O-24 read, and the
+    /// tables' rows (`crate::dynamic`).
+    pub tables: u64,
+    pub table_rows: u64,
     /// Findings, by diagnostic.
     pub findings: u64,
 }
@@ -249,10 +294,10 @@ pub fn check(
     resolution: &Resolution,
     switches: Switches,
     pool: &Pool,
-) -> (Vec<(Key, Diagnostic)>, Counts) {
+) -> (Vec<(Key, Diagnostic)>, Counts, Dynamic) {
     let mut counts = Counts::default();
     if !switches.any() || resolution.meta.is_empty() {
-        return (Vec::new(), counts);
+        return (Vec::new(), counts, Dynamic::default());
     }
     // The live files with a container, and their sections (sorted).
     let meta = &resolution.meta;
@@ -337,6 +382,7 @@ pub fn check(
         counts.add(&f.counts);
         diagnostics.extend(f.diagnostic);
     }
+    let dynamic = cx.dynamic(&entries, &groups);
     if switches.abi {
         let before = diagnostics.len();
         cx.enforce(&mut diagnostics);
@@ -349,7 +395,7 @@ pub fn check(
         counts.findings += (diagnostics.len() - before) as u64;
     }
     diagnostics.sort_by_key(|(k, _)| *k);
-    (diagnostics, counts)
+    (diagnostics, counts, dynamic)
 }
 
 /// Reads one live file's containers (`sections` all of that file) and
@@ -606,7 +652,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         let syms = &self.loaded[info.at].syms;
         let unit_id = u as u32;
         let s = self.switches;
-        if (s.kind2 || s.internal) && !info.lang_c {
+        if (s.kind2 || s.internal || s.keepers) && !info.lang_c {
             for (i, r) in unit.definitions().iter().enumerate() {
                 let (name, sym) = if r.name != 0 {
                     (unit.string(r.name), None)
@@ -644,7 +690,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                 });
             }
         }
-        if s.kind5_cxx || s.kind5_c {
+        if s.kind5_cxx || s.kind5_c || s.declared {
             for (i, r) in unit.declarations().iter().enumerate() {
                 let (name, sym) = if r.name != 0 {
                     (unit.string(r.name), None)
@@ -726,6 +772,76 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             Some(Def::Defined(d) | Def::Common(d)) => Some(d.file),
             _ => None,
         }
+    }
+
+    /// The symbol an entry names: its anchor's, or for a named row the
+    /// file's global of that name (defined first, O-4).
+    fn symbol_of(&self, e: &Entry<'_>) -> Option<SymbolId> {
+        let l = &self.loaded[self.info[e.unit as usize].at];
+        let index = match e.sym {
+            Some(i) => i,
+            None if e.name.is_empty() => return None,
+            None => {
+                let key = fnv1a64(e.name);
+                let at = l.syms.partition_point(|s| s.key < key);
+                let same = l.syms[at..].iter().take_while(|s| s.key == key);
+                let mut named = same.filter(|s| s.name == e.name);
+                let first = named.clone().find(|s| s.defined).or_else(|| named.next())?;
+                first.index
+            }
+        };
+        let i = index.0.checked_sub(l.first_global)?;
+        self.inputs.sym_map_of(l.file).get(i as usize).copied()
+    }
+
+    /// The dynamic side's rows (O-24, O-50): each kind 2 group's keeper
+    /// row, and the sized kind 5 declarations of variables.
+    fn dynamic(&self, entries: &[Entry<'_>], groups: &[(usize, usize)]) -> Dynamic {
+        let mut out = Dynamic::default();
+        if self.switches.keepers {
+            for &(a, b) in groups {
+                let group = &entries[a..b];
+                if group[0].kind != 2 {
+                    continue;
+                }
+                let Some(sym) = group.iter().find_map(|e| self.symbol_of(e)) else { continue };
+                let file = match self.resolution.def.get(sym) {
+                    Some(Def::Defined(d) | Def::Common(d)) => d.file,
+                    _ => continue,
+                };
+                let Some(row) = group
+                    .iter()
+                    .filter(|e| self.file_of(e) == file)
+                    .find_map(|e| self.definition(e))
+                else {
+                    continue;
+                };
+                out.keepers.push(Keeper {
+                    sym,
+                    file,
+                    hash: row.hash,
+                    flags: row.flags,
+                    class: row.class,
+                });
+            }
+            out.keepers.sort_by_key(|k| k.sym);
+            out.keepers.dedup_by_key(|k| k.sym);
+        }
+        if self.switches.declared {
+            for e in entries.iter().filter(|e| e.kind == 5) {
+                let Some(r) = self.declaration(e) else { continue };
+                let variable = r.flags & flags::DECL_VARIABLE != 0;
+                if !variable || r.flags & flags::DECL_DEFINITION != 0 || r.size == 0 {
+                    continue;
+                }
+                if let Some(sym) = self.symbol_of(e) {
+                    out.declared.push((sym, r.size, self.file_of(e)));
+                }
+            }
+            out.declared.sort_unstable();
+            out.declared.dedup();
+        }
+        out
     }
 
     /// One group: rows of one (kind, key, name, class).

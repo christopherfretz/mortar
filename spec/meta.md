@@ -235,8 +235,10 @@ name and of the key; a version that a version script assigns at link
 time is not in any object and is not part of the key. It is part of the
 identity wherever it exists, in a shared object's `.dynsym` (through
 `.gnu.version`): a `.note.mason` row (`odr.md` O-51) is identified by
-(name, version node), and two rows of one name with different version
-nodes are different entities (`odr.md` O-24, O-54).
+(name, version node): two rows of one name with different version node
+names are different entities, while an unversioned definition (version
+index 1, or no `.gnu.version`) is connected to the versioned ones of its
+name as glibc's loader binds them (measured, `odr.md` O-24, O-54).
 
 **MT-14 (validity).** A unit is malformed if its magic is wrong,
 `unit_size` runs past the section or is not a multiple of 8, a block runs

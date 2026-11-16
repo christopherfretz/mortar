@@ -7,6 +7,7 @@
 //!   cargo xtask meta write <description> --object <out.o> --target <arch>
 //!   cargo xtask meta write <description> --into <in.o> -o <out.o>   (objcopy)
 //!   cargo xtask meta dump <object>
+//!   cargo xtask meta table <rows> --into <in.so> -o <out.so>    (`.note.mason`)
 //!
 //! `<arch>` is `x86_64`, `aarch64` or `i386`.
 //!
@@ -37,6 +38,24 @@
 //! The dump is a description: `meta write` of a dump gives the bytes that
 //! were dumped, for every unit the writer could have written (a canonical
 //! unit, MT-38). The reader's findings are `#` lines.
+//!
+//! # A shared object's table (`spec/odr.md` O-50 to O-52; WP-075)
+//!
+//! `meta table` fills the `.note.mason` table of a shared object that was
+//! linked with a placeholder note (owner `MasonMeta`, type `0x4d4f4401`,
+//! a header and room for the rows: `.long 1, N, 24, 0` and `.zero 24*N`
+//! after the note header), so that the table sits in a `PT_NOTE` as a
+//! mortar-made library's would. One row per line:
+//!
+//! ```text
+//! row name=S version=V hash=HEX16 flags=N
+//! ```
+//!
+//! The row's `.dynsym` index is that of the defined symbol `S` whose
+//! version node is `V` (`version=` left out: the definition of `S`, which
+//! must be the only one); the key is FNV-1a 64 of `S` (O-51); `hash` is the
+//! 8 bytes written (16 hex digits); `flags` are O-51's (`0x8000` is
+//! `NONPREEMPTIBLE`). The header's count becomes the number of rows.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -48,7 +67,8 @@ use mortar_meta::{UnitBuilder, kind, producer};
 
 pub const USAGE: &str = "usage: cargo xtask meta write <description> (-o <out.s> | --bin <out> | \
                          --object <out.o> --target x86_64|aarch64|i386 | --into <in.o> -o <out.o>)\n       \
-                         cargo xtask meta dump <object>\n";
+                         cargo xtask meta dump <object>\n       \
+                         cargo xtask meta table <rows> --into <in.so> -o <out.so>\n";
 
 /// One item of a section: a unit, or zero words before the next one.
 #[derive(Debug, Clone)]
@@ -673,11 +693,39 @@ pub fn assemble(sections: &Sections, target: &str, out: &Path) -> Result<(), Str
 /// `readonly`, and ignores `--set-section-alignment` for a section it adds
 /// in the same run: so two runs, the second setting MT-1's alignment.
 ///
+/// The objcopy is the input's own target's (`<triple>-objcopy`, from its
+/// `e_machine`): the host's objcopy does not know another target's
+/// objects (WP-075: an x86-64 object on an AArch64 host was "file format
+/// not recognized").
+///
 /// # Errors
 /// The writer's, or objcopy's.
 pub fn add_to(items: &[Item], input: &Path, out: &Path) -> Result<(), String> {
-    let program = crate::mason::tool("objcopy").ok_or("objcopy is not installed")?;
+    let bytes = std::fs::read(input).map_err(|e| format!("{}: {e}", input.display()))?;
+    let name = objcopy_for(&bytes).map_err(|e| format!("{}: {e}", input.display()))?;
+    let program = crate::mason::tool(name).ok_or_else(|| format!("{name} is not installed"))?;
     add_with(&program, items, input, out)
+}
+
+/// The objcopy of an ELF file's target, by its `e_machine`.
+///
+/// # Errors
+/// Not ELF, or a machine without a target here.
+pub fn objcopy_for(elf: &[u8]) -> Result<&'static str, String> {
+    if elf.len() < 20 || elf[..4] != *b"\x7fELF" {
+        return Err("not an ELF file".into());
+    }
+    let machine = match elf[5] {
+        1 => u16::from_le_bytes([elf[18], elf[19]]),
+        2 => u16::from_be_bytes([elf[18], elf[19]]),
+        d => return Err(format!("ELF data encoding {d}")),
+    };
+    match machine {
+        62 => Ok("x86_64-linux-gnu-objcopy"),
+        183 => Ok("aarch64-linux-gnu-objcopy"),
+        3 => Ok("i686-linux-gnu-objcopy"),
+        m => Err(format!("e_machine {m}: no target (x86_64, aarch64, i386)")),
+    }
 }
 
 /// [`add_to`] with the `objcopy` given (a cross target's own).
@@ -718,6 +766,107 @@ pub fn add_with(objcopy: &Path, items: &[Item], input: &Path, out: &Path) -> Res
     r
 }
 
+/// One row of a `meta table` description.
+struct TableRow {
+    name: Vec<u8>,
+    version: Option<Vec<u8>>,
+    hash: [u8; 8],
+    flags: u16,
+}
+
+fn table_rows(text: &str) -> Result<Vec<TableRow>, String> {
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let at = |e: String| format!("line {}: {e}", n + 1);
+        let words = split(line).map_err(at)?;
+        let Some((directive, rest)) = words.split_first() else { continue };
+        if directive != b"row" {
+            return Err(at(format!("'{}' is not 'row'", String::from_utf8_lossy(directive))));
+        }
+        let fields = Fields::parse(rest).map_err(at)?;
+        fields.done(&["name", "version", "hash", "flags"]).map_err(at)?;
+        let hash = fields.bytes("hash").map_err(at)?;
+        let hash: [u8; 8] =
+            hash.try_into().map_err(|_| at("hash= takes 8 bytes (16 hex digits)".into()))?;
+        out.push(TableRow {
+            name: fields.string("name"),
+            version: fields.get("version").map(|_| fields.string("version")),
+            hash,
+            flags: fields.num("flags", 0).map_err(at)?,
+        });
+    }
+    Ok(out)
+}
+
+/// `meta table`: fills the placeholder table of `input` with the rows of
+/// `text`, as `out`.
+///
+/// # Errors
+/// A malformed description, no placeholder or too little room in it, a row
+/// whose symbol is not defined once.
+pub fn fill_table(text: &str, input: &Path, out: &Path) -> Result<(), String> {
+    use mortar_meta::table;
+    let rows = table_rows(text)?;
+    let mut bytes = std::fs::read(input).map_err(|e| format!("{}: {e}", input.display()))?;
+    let (at, room, encoded) = {
+        let so = mortar_elf::SharedObject::parse(&bytes).map_err(|e| e.to_string())?;
+        let mut place = None;
+        for seg in so.program_headers().iter() {
+            if seg.p_type() != mortar_elf::consts::PT_NOTE {
+                continue;
+            }
+            for note in seg.notes().map_err(|e| e.to_string())? {
+                let note = note.map_err(|e| e.to_string())?;
+                if note.n_type == table::NT_MASON_ODR && note.name_bytes() == table::OWNER {
+                    let at = note.desc().as_ptr() as usize - so.data().as_ptr() as usize;
+                    place = Some((at, note.desc().len()));
+                }
+            }
+        }
+        let (at, len) = place.ok_or("no placeholder .note.mason table in a PT_NOTE")?;
+        let symbols = so.symbols().map_err(|e| e.to_string())?.ok_or("no .dynsym")?;
+        let versions = so.versions().map_err(|e| e.to_string())?;
+        let mut encoded = Vec::new();
+        for r in &rows {
+            let mut found = Vec::new();
+            for (index, sym) in symbols.iter() {
+                if sym.st_shndx == 0 || symbols.name(&sym).ok() != Some(r.name.as_slice()) {
+                    continue;
+                }
+                let node = versions
+                    .of(index)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.name().ok().flatten())
+                    .map(<[u8]>::to_vec);
+                if r.version.is_none() || node == r.version {
+                    found.push(index.0);
+                }
+            }
+            let [dynsym] = found.as_slice() else {
+                return Err(format!(
+                    "row {}: {} definitions in .dynsym",
+                    String::from_utf8_lossy(&r.name),
+                    found.len()
+                ));
+            };
+            encoded.push(table::Row {
+                key: mortar_meta::fnv1a64(&r.name),
+                hash: r.hash,
+                dynsym: *dynsym,
+                flags: r.flags,
+            });
+        }
+        (at, len, table::note(&encoded))
+    };
+    let desc = &encoded[table::DESC_OFFSET..];
+    if desc.len() > room {
+        return Err(format!("the placeholder holds {room} bytes, the table takes {}", desc.len()));
+    }
+    bytes[at..at + desc.len()].copy_from_slice(desc);
+    std::fs::write(out, &bytes).map_err(|e| format!("{}: {e}", out.display()))
+}
+
 /// `cargo xtask meta ...`.
 pub fn main(args: &[String]) -> ExitCode {
     match run(args) {
@@ -735,6 +884,10 @@ fn run(args: &[String]) -> Result<(), String> {
             let bytes = std::fs::read(object).map_err(|e| format!("{object}: {e}"))?;
             print!("{}", dump(&bytes)?);
             Ok(())
+        }
+        [cmd, rows, into, input, o, out] if cmd == "table" && into == "--into" && o == "-o" => {
+            let text = std::fs::read_to_string(rows).map_err(|e| format!("{rows}: {e}"))?;
+            fill_table(&text, Path::new(input), Path::new(out))
         }
         [cmd, description, rest @ ..] if cmd == "write" => {
             let text =
@@ -866,6 +1019,55 @@ definition name=f
         }
         assert_eq!(quote(b""), "\"\"");
         assert_eq!(quote(b"a=b"), "\"a=b\"");
+    }
+
+    // WP-075 (ruling item 4): `--into` uses the input's own target's
+    // objcopy, so an x86-64 or i386 object takes a container on an AArch64
+    // host (and the reverse); the container is MT-1's (alignment 8,
+    // excluded) and reads back.
+    #[test]
+    fn into_uses_the_targets_objcopy() {
+        let scratch = mortar_testutil::Scratch::new("meta-into");
+        let items = &parse("definition name=f class=1\n").unwrap()[0];
+        for target in ["x86_64", "aarch64", "i386"] {
+            let (asm, flags) = assembler(target).unwrap();
+            let objcopy = objcopy_for(&elf_header(target)).unwrap();
+            if crate::mason::tool(asm).is_none() || crate::mason::tool(objcopy).is_none() {
+                assert!(!mortar_testutil::tools_required(), "{asm} and {objcopy} are required");
+                continue;
+            }
+            let src = scratch.write(&format!("{target}.s"), "\t.text\n\t.globl f\nf:\n");
+            let input = scratch.join(format!("{target}.o"));
+            let out = scratch.join(format!("{target}-meta.o"));
+            let mut args: Vec<String> = flags.iter().map(|f| (*f).to_string()).collect();
+            args.extend(["-o".into(), input.display().to_string(), src.display().to_string()]);
+            run_tool(asm, &args).unwrap();
+            add_to(items, &input, &out).unwrap();
+            let bytes = std::fs::read(&out).unwrap();
+            let object = mortar_elf::Object::parse(&bytes).unwrap();
+            let meta = object
+                .sections()
+                .find(|s| s.name().is_ok_and(|n| n == mortar_meta::SECTION_NAME))
+                .expect("a .mason.meta section");
+            assert_eq!(meta.header().sh_addralign, 8, "{target}");
+            assert!(mortar_meta::is_container(b".mason.meta", meta.sh_type(), meta.flags()));
+            let text = dump(&bytes).unwrap();
+            assert!(text.contains("definition key="), "{target}: {text}");
+        }
+        assert!(objcopy_for(b"not an elf file at all").is_err());
+    }
+
+    /// The first 20 bytes of an ELF header of `target`.
+    fn elf_header(target: &str) -> Vec<u8> {
+        let machine: u16 = match target {
+            "x86_64" => 62,
+            "aarch64" => 183,
+            _ => 3,
+        };
+        let mut h = vec![0x7f, b'E', b'L', b'F', 2, 1, 1];
+        h.resize(18, 0);
+        h.extend_from_slice(&machine.to_le_bytes());
+        h
     }
 
     #[test]

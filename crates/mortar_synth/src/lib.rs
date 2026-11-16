@@ -76,7 +76,7 @@ pub use got::{DynGotCx, GotPlan, GotRecord, KeyKinds, SlotValues};
 pub use hdr::HdrPlan;
 pub use image::{COMMENT, Comment, Division, FillCx, SizeCx, SynthChunk};
 pub use interp::InterpPlan;
-pub use notes::{BuildIdPlan, PropertyPlan};
+pub use notes::{BuildIdPlan, NoteMasonPlan, PropertyPlan};
 pub use out::Window;
 pub use rela::{DynRecord, RelUnit, RelaPlan};
 pub use shstrtab::ShstrtabPlan;
