@@ -96,6 +96,7 @@ fn fill(p: &GotPlan, part: GotPart) -> Vec<u8> {
         got: AT,
         hdr: HdrAddrs { hdr: 0, eh: 0 },
         code_addr: &code,
+        section_offset: &|_| None,
     };
     let chunk = GotChunk { plan: p, part };
     let size = chunk.size(&SizeCx::new());

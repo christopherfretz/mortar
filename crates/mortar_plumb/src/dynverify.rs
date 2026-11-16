@@ -182,13 +182,19 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         return report;
     };
     let plt = loader::plt_entries(&image);
+    let depths = if image.header.e_machine == mortar_elf::consts::EM_X86_64 {
+        crate::plt::x64_depths(&image)
+    } else {
+        std::collections::BTreeMap::new()
+    };
     let mut engine = reloc::Engine::new(&img1, &objs, map.format);
-    dyn_engine(&mut engine, &v1, &plt);
+    dyn_engine(&mut engine, &v1, &plt, &depths);
     run_engine(&mut engine, &image, map, None);
     let abs = std::mem::take(&mut engine.abs_words);
-    if kind == OutputKind::StaticPie {
-        // §12.4: no RELATIVE record on a word that holds no address of the
-        // executable (what view 2 cannot see when the word is not an
+    if matches!(kind, OutputKind::StaticPie | OutputKind::Pie) {
+        // §12.4 (a Pie's too since WP-088): no RELATIVE record on a word
+        // that holds no address of the executable (what view 2 cannot see
+        // when the word is not an
         // input's absolute use).
         let known: BTreeSet<u64> = abs.iter().filter(|w| w.3).map(|w| w.0).collect();
         for r in &dout.rels {
@@ -283,7 +289,7 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         if let Ok(img3) = Image::read(&v3.bytes) {
             let names: HashSet<String> = fresh.keys().cloned().collect();
             let mut e3 = reloc::Engine::new(&img3, &objs, map.format);
-            dyn_engine(&mut e3, &v3, &plt);
+            dyn_engine(&mut e3, &v3, &plt, &depths);
             run_engine(&mut e3, &image, map, Some(&names));
             let mut bad: HashMap<String, Vec<Finding>> = HashMap::new();
             let mut ok: HashMap<String, u64> = HashMap::new();
@@ -412,7 +418,18 @@ fn exported_ifuncs(
             );
             continue;
         }
+        // An IFUNC nothing in the program uses (WP-088, measured with
+        // `-E`): no use chose it, and `.symtab`'s global of the name at
+        // the same value is the program's IFUNC, which Y1 holds to its
+        // resolver. A library that binds it gets what the program would.
+        let unused = !chosen.contains_key(&s.st_value)
+            && image.global(&s.name).is_some_and(|g| {
+                g.sym.sym_type() == mortar_elf::consts::STT_GNU_IFUNC
+                    && g.sym.st_value == s.st_value
+                    && g.sym.st_shndx != 0
+            });
         match chosen.get(&s.st_value) {
+            None if unused => {}
             None => f(
                 7,
                 format!(
@@ -473,7 +490,9 @@ fn dyn_engine(
     e: &mut reloc::Engine<'_, '_>,
     v: &loader::View,
     plt: &std::collections::BTreeMap<u64, u64>,
+    depths: &std::collections::BTreeMap<u64, u64>,
 ) {
+    e.plt_depths = Some(depths.clone());
     e.dynbind = v.dynbind.iter().map(|(k, x)| (k.clone(), *x)).collect();
     e.dyn_tls.clone_from(&v.dyn_tls);
     e.dyn_tls_mod = v.dyn_tls_mod.iter().map(|(k, x)| (k.clone(), *x)).collect();

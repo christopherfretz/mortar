@@ -62,13 +62,16 @@ impl Use {
     /// out of [`Parsed::refused_uses`] reports for them.
     #[must_use]
     pub fn refusal(&self) -> (Key, Diagnostic) {
-        let d = match self.row().status {
-            Status::Partial { note, .. } => {
-                let value = self.value.as_deref().unwrap_or_default().to_string_lossy();
-                Diagnostic::refused(RefusalClass::OptionValue, format!("{}={value}", self.spelling))
-                    .note(note)
+        let d = if let Status::Partial { note, .. } = self.row().status {
+            let value = self.value.as_deref().unwrap_or_default().to_string_lossy();
+            Diagnostic::refused(RefusalClass::OptionValue, format!("{}={value}", self.spelling))
+                .note(note)
+        } else {
+            let d = Diagnostic::refused(RefusalClass::Option, self.spelling.clone());
+            match self.row().refused_note() {
+                Some(note) => d.note(note),
+                None => d,
             }
-            _ => Diagnostic::refused(RefusalClass::Option, self.spelling.clone()),
         };
         (Key::new(PHASE, self.arg, u64::MAX), d)
     }

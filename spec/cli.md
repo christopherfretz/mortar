@@ -474,7 +474,8 @@ lands in `plan.other` (§3.12).
   `-Trodata-segment`, `-Tldata-segment` and `--section-start SEC=ADDR`.
   A `--section-start` without `=` is `invalid-option-value`.
 - `emit_relocs`;
-- `gdb_index`.
+- `gdb_index` (`--gdb-index`, `--no-gdb-index`; the last wins;
+  `spec/synth.md` S-G1).
 
 ### 3.9 Diagnostic switches
 
@@ -895,6 +896,23 @@ this list are those of WP-027e; WP-031, WP-027d's later rows and WP-042
   I-5): it was `supported` while every link that used it was refused by
   liveness. `--warn-common` stays refused (WP-027e: it needs a resolve
   warning with GNU's three texts).
+
+WP-097 (`spec/synth.md` §17) changed three rows of the output group:
+- `--gdb-index` is `supported`: it writes `.gdb_index` (S-G1), or the
+  link is refused by one of S-G's names (§17.6). With `--incremental`
+  it stays refused (`spec/incr.md` IN-58), by the facade.
+- `--no-gdb-index` stays `noop`, with the reason "the default: no
+  .gdb_index is written; the last of --gdb-index and --no-gdb-index
+  wins" (the two share `shaping.gdb_index`, last wins).
+- `--no-debug-names` is `noop` ("the default: no merged .debug_names is
+  written"); it was `refused`, which refused a request for the
+  default.
+- `--debug-names` stays `refused`, and its refusal carries a note:
+  "gdb 16 ignores a .debug_names it did not write; use --gdb-index
+  (spec/synth.md S-G9)". A refused row's reason is in
+  `rows::REFUSED_NOTES` by row name (`Row::refused_note`); the refusal
+  of §4.4 adds it as a note and the generated table prints it after
+  `refused:`.
 
 A work package that implements an option changes the row's status in the
 same change, and adds the row's evidence to the audit, which fails while

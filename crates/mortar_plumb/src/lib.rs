@@ -11,6 +11,7 @@
 pub mod a64;
 pub mod anomaly;
 pub mod buildid;
+mod cfa;
 mod content;
 pub mod dead;
 mod deaddwarf;

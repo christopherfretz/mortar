@@ -142,8 +142,10 @@ pub enum What {
     GnuWarning { file: FileId, section: SectionIndex },
     /// `meta-malformed` (`spec/meta.md` MT-6), a warning, once per file:
     /// a section named `.mason.meta` that is not a container (its type or
-    /// flags are not MT-1's); it took the other rows of §10.
-    MetaNotContainer { file: FileId, section: SectionIndex },
+    /// flags are not MT-1's); it took the other rows of §10. `relocated`:
+    /// its type and flags are MT-1's but a relocation section applies to
+    /// it (MT-2, WP-099): it is not read, and takes the `SHF_EXCLUDE` row.
+    MetaNotContainer { file: FileId, section: SectionIndex, relocated: bool },
 }
 
 /// A diagnostic of resolution.

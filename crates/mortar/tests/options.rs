@@ -67,7 +67,12 @@ const AUDIT: &[(&str, Proof)] = &[
         "--gc-keep-exported",
         Test("crates/mortar/tests/gc.rs", "gc_keep_exported_roots_default_visibility_globals"),
     ),
+    (
+        "--gdb-index",
+        Test("crates/mortar/tests/debuggers.rs", "gdb_index_is_used_and_answers_the_same"),
+    ),
     ("--no-gdb-index", Same(&["--no-gdb-index"], None)),
+    ("--no-debug-names", Same(&["--no-debug-names"], None)),
     ("-l", Check(libraries)),
     ("-(", Check(groups)),
     ("-)", Check(groups)),
