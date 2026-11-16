@@ -1,0 +1,5 @@
+@__mason_meta = internal constant [80 x i8] c"MASN\01\00\00\00P\00\00\00 \00\00\00\01\00\00\00@\00\00\00\10\00\00\00\04\00\00\00\01\00\01\00 \00\00\00\10\00\00\00\01\00\00\00\01\00\00\00\06\00\00\00\00\00\00\00\00\00\00\00\00lang\00c++\00\00\00\00\00\00\00", section ".mason.meta", align 8, !exclude !{}
+@llvm.used = appending global [1 x ptr] [ptr @__mason_meta], section "llvm.metadata"
+define i32 @main() {
+  ret i32 0
+}

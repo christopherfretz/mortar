@@ -28,6 +28,7 @@
 //! | [`version`] | `.gnu.version`, `.gnu.version_r` (WP-M2-DYNSYM) | D-27 |
 //! | [`dynamic`] | `.dynamic`'s tags, order and size; the write over a value resolver (WP-M2-DYNAMIC) | D-30 |
 //! | [`interp`] | `.interp` (WP-M2-DYNAMIC) | D-31 |
+//! | [`gdbindex`], [`gdbread`] | `.gdb_index` (WP-097) | S-G1 to S-G9 |
 //! | [`chunks`] | the S-3 list: names, types, flags, alignment; `Slots.sizes` | S-3, S-108 |
 //! | [`image`] | the chunk interface of `spec/image.md` §13 over every plan | S-4, I-103 to I-108 |
 //!
@@ -53,6 +54,8 @@ pub mod dynstr;
 pub mod dynsym;
 pub mod eh;
 pub mod error;
+pub mod gdbindex;
+pub mod gdbread;
 pub mod gnuhash;
 pub mod got;
 pub mod hdr;
@@ -72,6 +75,7 @@ pub use dynstr::{DynNames, dynstr_plan};
 pub use dynsym::{DynAddrs, DynSymSource, DynsymPlan, dynsym_plan};
 pub use eh::{EhInfo, EhPlan, EhSource, EhValue, EhWho, MergeEh};
 pub use error::{Failed, PHASE, SynthError};
+pub use gdbindex::GdbIndexPlan;
 pub use got::{DynGotCx, GotPlan, GotRecord, KeyKinds, SlotValues};
 pub use hdr::HdrPlan;
 pub use image::{COMMENT, Comment, Division, FillCx, SizeCx, SynthChunk};

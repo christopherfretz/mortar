@@ -1775,6 +1775,31 @@ Estimates are the receiving agents' own (kiln's and hod's review,
   check with GNU ld, lld and mold (hod's estimate).
 - **H-2 — opacity.** hod never interprets the section's bytes: its
   contents equal the IR constant's bytes (a test).
+- **Status: H-1 and H-2 LANDED** (hod `a598555f`, hod's rule 9.7.4 and
+  its record WP-273; measured by mortar's WP-099,
+  `spec/landed/meta/WP-099.md`). The exact condition: the section gets
+  `SHF_EXCLUDE` without `SHF_ALLOC` only when the variable has an explicit
+  section, is not thread-local, not common, and its **first** `!exclude`
+  node is an empty tuple. For `@__mason_meta = private constant [N x i8]
+  c"…", section ".mason.meta", align 8, !exclude !{}` in
+  `@llvm.compiler.used` (what `cargo xtask meta write --ll` writes) hod
+  writes `.mason.meta`, `SHT_PROGBITS`, flags exactly `E`, alignment 8, no
+  group, no relocation section, the initializer's bytes. Other flags join
+  `E` as llc adds them: `R` (`SHF_GNU_RETAIN`) for a global in
+  `@llvm.used`; `G` in a comdat; `l` for an x86-64 large-section name; a
+  `.bss*`/`.tbss*`/`.tdata*` name loses the exclusion; an initializer
+  with a pointer gets a `.rela` section; two excluded variables of one
+  section name share one section (their initializers concatenated).
+  **What mortar relies on**: the name, type and flags of MT-1/MT-6 and the
+  bytes (H-2); nothing else. **What it does not**: the section's
+  position, a symbol in it (hod writes none: neither the private global's
+  nor a section symbol), the order of the other sections, flags beyond `E`
+  (each makes the section not a container: `meta.md` MT-6, MT-2a, a
+  warning or a drop, never records read). Equality: the one-definition-rule
+  corpus through hod's container and through the test producer's gives
+  the same answer on both 64-bit targets with every opt-in (WP-099,
+  `cargo xtask mason producers`). hod does not target i386; i386 Mason
+  objects do not exist.
 - Nothing else: per-section content hashes are not needed
   (`spec/incr.md` IN-22); DWARF is unchanged.
 
@@ -1788,7 +1813,8 @@ operator's decision. Each step is useful and testable alone:
    acceptance test is experiment 7) and WP-072 (W1-W3, switches): no other
    project needed.
 2. **hod** H-1 (half a day): useful to any IR producer; tested by irdiff;
-   needed before K-1 on the hod route.
+   needed before K-1 on the hod route. **Done** (hod `a598555f`, with
+   H-2; mortar's side WP-099).
 3. **kiln** K-1 + K-2 (1 package): units with kind 1 only.
 4. **kiln** K-5 (1 package): kind 5, C++ and C linkage.
 5. **kiln** K-4 (2 packages: the syntactic test, then the rows): kind 3.

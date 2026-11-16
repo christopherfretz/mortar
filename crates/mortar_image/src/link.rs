@@ -174,6 +174,8 @@ pub struct SynthPlans<'a> {
     /// `.mason.meta` kept for tools (`spec/meta.md` MT-32), with
     /// `--keep-mason-meta` and some live unit; any output kind.
     pub mason_meta: Option<&'a mortar_synth::MasonMetaPlan>,
+    /// `.gdb_index` (`spec/synth.md` §17), with `--gdb-index`.
+    pub gdb_index: Option<&'a mortar_synth::GdbIndexPlan>,
     /// An output with `.dynamic`'s plans; `None` in a static link.
     pub dynamic: Option<DynPlans<'a>>,
 }
@@ -1797,6 +1799,7 @@ impl<'a> Chunks<'a> {
             SynthKind::NoteGnuProperty => link.synth.property,
             SynthKind::Comment => &mortar_synth::Comment,
             SynthKind::MasonMeta => link.synth.mason_meta?,
+            SynthKind::GdbIndex => link.synth.gdb_index?,
             _ => return None,
         })
     }
@@ -2066,6 +2069,12 @@ fn with_image<T>(
         let off = u64::try_from(c.offset).ok()?;
         tables.addrs.addr_in(c.section, off)
     };
+    // spec/synth.md S-G2: a non-allocated input section's offset from its
+    // output section's start (`.gdb_index`'s CU list).
+    let section_offset = |s: SectionId| -> Option<u64> {
+        let (c, at) = link.layout.placement.place.get(s)?.get()?;
+        Some(tables.chunk_at(c, at)?.1)
+    };
     let got_base = match link.arch.facts().got_base {
         mortar_arch::GotBase::GotStart => {
             (tables.got_addrs.got != 0).then_some(tables.got_addrs.got)
@@ -2100,6 +2109,7 @@ fn with_image<T>(
             got: tables.got_addrs,
             hdr: HdrAddrs { hdr: hdr_addr, eh: eh_addr.unwrap_or(0) },
             code_addr: &code_addr,
+            section_offset: &section_offset,
         },
         merged: Some(MergedFrags { order: link.order, split: link.split }),
         eh: match (link.eh, eh_addr) {
