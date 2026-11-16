@@ -31,21 +31,6 @@ fn inputs(map: &mortar_plumb::map::Map, dir: &Path) -> Vec<(String, Vec<u8>)> {
 pub fn verify(out: &Path, map: &Path, dir: &Path) -> Vec<mortar_plumb::Finding> {
     let text = std::fs::read_to_string(map).expect("the map");
     let parsed = mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &text)
-        .or_else(|e| {
-            // Waiting for WP-091: a verifier without plumb.md §3.2's
-            // `incremental`, `hole` and `dead` records (an
-            // incremental-mode link's, WP-062) refuses the line. Until it
-            // reads them, it is given the map without them; a map that
-            // parses is given whole.
-            let known = |l: &&str| {
-                *l != "incremental" && !l.starts_with("hole ") && !l.starts_with("dead ")
-            };
-            let stripped: String = text.lines().filter(known).flat_map(|l| [l, "\n"]).collect();
-            if stripped.len() == text.len() {
-                return Err(e);
-            }
-            mortar_plumb::map::parse(mortar_plumb::Format::Mortar, &stripped)
-        })
         .unwrap_or_else(|e| panic!("the map does not parse: {e:?}"));
     let files = inputs(&parsed, dir);
     let inputs: Vec<mortar_plumb::Input<'_>> =
@@ -53,8 +38,9 @@ pub fn verify(out: &Path, map: &Path, dir: &Path) -> Vec<mortar_plumb::Finding> 
     mortar_plumb::verify(&std::fs::read(out).expect("the output"), &inputs, &parsed).findings
 }
 
-/// Waiting for WP-091: a finding the verifier on main makes against
-/// `spec/synth.md` S-50 rule 1 on an incremental-mode link, where the
+/// A verifier finding (brought back by WP-062, `spec/landed/incr/WP-062.md`
+/// §3 finding 1): the verifier disagrees with `spec/synth.md` S-50 rule 1
+/// on an incremental-mode link, where the
 /// per-file CIEs (IN-34a) keep `crtbeginT.o`'s first `.eh_frame` record.
 /// Rule 1 makes `r = 0` the start of the output `.eh_frame` "whatever `E`
 /// holds (nothing, a kept first record, or a removed one)"; the verifier
@@ -62,7 +48,7 @@ pub fn verify(out: &Path, map: &Path, dir: &Path) -> Vec<mortar_plumb::Finding> 
 /// and for `crtbeginT.o`'s references to it (R1). A plain link removes
 /// that CIE as a duplicate and never meets the case.
 #[must_use]
-pub fn s50_rule1_waiting_for_wp091(f: &mortar_plumb::Finding) -> bool {
+pub fn s50_rule1_verifier_finding(f: &mortar_plumb::Finding) -> bool {
     use mortar_plumb::Rule;
     match f.rule {
         Rule::SymbolTable(4) => f.symbol.as_deref() == Some("__EH_FRAME_BEGIN__"),
@@ -72,6 +58,44 @@ pub fn s50_rule1_waiting_for_wp091(f: &mortar_plumb::Finding) -> bool {
         }
         _ => false,
     }
+}
+
+/// A verifier finding (brought back by WP-062, `spec/landed/incr/WP-062.md`
+/// §3 finding 9): P-I3 takes an input section of size 0 as one byte
+/// (`mortar_plumb` `dead.rs` `named_by_relocations`, `sh_size.max(1)`),
+/// so a zero-size section placed at a hole's start (libgfortran's
+/// `.bss.empty_string.N`, the last sections of their region) is "in" the
+/// hole, though it covers no byte and its address is the region's end
+/// (the boundary N3 admits for `arr+size`). True exactly for a P-I3
+/// finding whose named section, read from the input under `dir`, has
+/// size 0.
+#[must_use]
+pub fn p_i3_zero_size_verifier_finding(f: &mortar_plumb::Finding, dir: &Path) -> bool {
+    if f.rule != mortar_plumb::Rule::Incr(3) {
+        return false;
+    }
+    let Some(rest) = f.message.split_once(" names '").map(|(_, r)| r) else { return false };
+    let Some((section, rest)) = rest.split_once("' of ") else { return false };
+    let Some(file) = rest.strip_suffix(", which is placed in a dead range") else { return false };
+    let (path, member) = match file.strip_suffix(')').and_then(|f| f.rsplit_once('(')) {
+        Some((p, m)) => (p, Some(m)),
+        None => (file, None),
+    };
+    let Ok(bytes) = std::fs::read(dir.join(path)) else { return false };
+    let object = match member {
+        None => bytes.as_slice(),
+        Some(m) => {
+            let Ok(a) = mortar_elf::archive::Archive::parse(&bytes) else { return false };
+            let found = a.members().flatten().find(|x| {
+                let n = x.name();
+                n == m.as_bytes() || n.strip_suffix(b"/") == Some(m.as_bytes())
+            });
+            let Some(data) = found.and_then(|x| x.data()) else { return false };
+            data
+        }
+    };
+    let Ok(o) = mortar_elf::Object::parse(object) else { return false };
+    o.sections().any(|s| s.name().is_ok_and(|n| n == section.as_bytes()) && s.size() == 0)
 }
 
 /// [`verify`], and no finding may remain.

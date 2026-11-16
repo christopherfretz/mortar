@@ -2169,7 +2169,7 @@ objects.
   (image.md I-100). A failed update removes the output (image.md I-66)
   and the state. *Test:* an update that introduces an undefined symbol
   leaves neither file; the next `--incremental` link reports `no-state`.
-- **IN-49 [v1] The map** (`--mortar-map`, plumb.md §2.3) is rewritten
+- **IN-49 [v1] The map** (`--mortar-map`, plumb.md §3.2) is rewritten
   whole (image.md I-99), with `hole` and `dead` lines (§8.2). *Test:*
   plumb reads every L10 step's map.
 - **IN-49a [v1] `.symtab` and `.strtab`.** S-112 rewrites them whole. In
@@ -2321,6 +2321,8 @@ file changes or when one of its file's sections moves (IN-25).
   `.debug_addr`, `.debug_rnglists`, `.debug_loclists`, `.debug_ranges`,
   `.debug_loc`, `.debug_macro` or `.debug_frame` may keep the bytes its
   compiler wrote, with every address in it tombstoned (image.md I-47).
+  A dead `.debug_ranges` or `.debug_loc` contribution has every pair
+  `(1, 1)` or a base selection of 1 followed by its offsets.
   Nothing live names it (IN-3a check 1). E6b and R9 left `.debug_line`,
   `.debug_str_offsets`, `.debug_addr` and `.debug_rnglists` this way and
   measured equal transcripts. When part of it is reused, the remainder
@@ -2641,9 +2643,12 @@ time and of peak RSS on protoc (*target*, S1 measures it).
 
 - **IN-60 [v1] The verifier needs no state.** `mortar_plumb` checks an
   update's output from the output and the map alone, as for any link
-  (`docs/VALIDATION.md` "independent verifier"). The map gains two line
-  kinds (plumb.md §2.3): `hole <output section> <offset> <size>` and
-  `dead <output section> <offset> <size> <kind>`. plumb checks that every
+  (`docs/VALIDATION.md` "independent verifier"). The map gains the
+  `incremental` record, exactly once in every map of an
+  incremental-mode layout and never in a plain one, and two line kinds
+  (plumb.md §3.2, after the defines and before the dynamic records):
+  `hole <output section> <offset> <size>` and `dead <output section>
+  <offset> <size> neutral|contribution|strings|cie`. plumb checks that every
   byte of an allocated output section is covered exactly once by a
   `place`, `piece`, synthetic chunk, `hole` or `dead` line, and runs
   IN-3a's three checks on every `hole` and `dead` range. *Test:* plumb's
@@ -2941,7 +2946,7 @@ urgent for M2 code.
 | 4 | `synth.md` S-111 | text D | "`.eh_frame` grows by layout L-144" and "a CIE that becomes unused stays" vs IN-34a's per-file ranges, padding CIEs and rewrite in full-link order |
 | 5 | `layout.md` L-147, `synth.md` S-110 | text E | L-147's "every hole is a valid piece" says nothing of the verifier; IN-3a makes dead fragments dead ranges with its three checks |
 | 6 | `model.md` §7.3 | invariant (C) and equivalence (IN-1, IN-2); (B) holds modulo the dead ranges of IN-3a, which the decision tables record | — |
-| 7 | `plumb.md` §2.3, §9 | the map's `hole` and `dead` lines; plumb's dead-range checker (IN-3a's three checks) and its mutation cases (IN-60); `--equiv` (IN-62) | — |
+| 7 | `plumb.md` §3.2, §6.8, §9 | the map's `hole` and `dead` lines; plumb's dead-range checker (IN-3a's three checks) and its mutation cases (IN-60); `--equiv` (IN-62) | — |
 | 8 | `model.md` §7.2 | IN-25 implements §7.2's per-unit index; it adds the liveness graph and names the non-relocation targets (slots, patches' redirected sites, demand flags) | — |
 | 9 | `image.md` I-96 | IN-45's default (copy) and conditions for in place; IN-46's order with four `fdatasync`s; IN-47's sync before rename | — |
 | 10 | `model.md` §7.1, `docs/ROADMAP.md` "Cross-project" | drop the request to kiln and hod for per-section content hashes (§8.3); IN-31 computes its own | — |

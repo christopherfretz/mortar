@@ -476,7 +476,10 @@ fn replay_judged(prog: &Prog, out: &str, state: &State) -> Replayed {
         mortar::Outcome::Linked { .. } => {
             let mut findings =
                 support::plumb::verify(&prog.path(out), &prog.path(&map), &prog.built.dir);
-            findings.retain(|f| !support::plumb::s50_rule1_waiting_for_wp091(f));
+            findings.retain(|f| {
+                !support::plumb::s50_rule1_verifier_finding(f)
+                    && !support::plumb::p_i3_zero_size_verifier_finding(f, &prog.built.dir)
+            });
             Replayed::Linked(prog.bytes(out), findings.iter().map(|f| format!("{f:?}")).collect())
         }
         mortar::Outcome::Failed(r) => {

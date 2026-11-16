@@ -2265,8 +2265,7 @@ impl LinkTables<'_, '_> {
                 m.defines.push((k.name.to_vec(), v));
             }
         }
-        // `keep_leaves` is set exactly in incremental mode.
-        m.incremental = l.options.keep_leaves;
+        m.incremental = self.incremental_layout();
         m.dead = self.dead_lines();
         if let Some(d) = l.synth.dynamic {
             m.dynamic = Some(self.dyn_records(d));
@@ -2282,12 +2281,20 @@ impl LinkTables<'_, '_> {
     /// a debug section's neutral form is `dead … neutral`; a 4-, 8- or
     /// 12-byte `.eh_frame` pad is no line (the record before it absorbs
     /// it, and its `piece` covers it).
+    /// Whether the layout is an incremental-mode one (`spec/incr.md`
+    /// IN-30): linked in incremental mode (`keep_leaves` is set exactly
+    /// then), or replayed from an incremental state, whose layout has
+    /// holes (a plain layout never has one).
+    fn incremental_layout(&self) -> bool {
+        self.link.options.keep_leaves || !self.link.layout.placement.holes.is_empty()
+    }
+
     fn dead_lines(&self) -> Vec<crate::map::DeadLine> {
         use crate::map::{DeadKind, DeadLine};
         use mortar_core::layout::HoleKind;
         let l = &self.link;
         let pl = &l.layout.placement;
-        if pl.holes.is_empty() {
+        if !self.incremental_layout() {
             return Vec::new();
         }
         // Per section index, the start of its first chunk.
@@ -2325,6 +2332,38 @@ impl LinkTables<'_, '_> {
                 Some((i, DeadLine { out: name.to_vec(), offset, size: h.size, kind }))
             })
             .collect();
+        {
+            // layout.md L-118: the 843419 start padding before a synthetic
+            // code chunk is fill no item owns and no alignment explains:
+            // an incremental-mode map lists it as a hole (plumb.md §6.8,
+            // P-I1). From the end of the chunk before it in the section.
+            let mut alloc: Vec<&mortar_core::layout::Chunk> = pl
+                .chunks
+                .iter()
+                .map(|(_, c)| c)
+                .filter(|c| c.is_alloc() && c.in_file() && c.addr.is_some() && c.shndx.is_some())
+                .collect();
+            alloc.sort_by_key(|c| (c.addr, c.shndx));
+            for w in alloc.windows(2) {
+                let (prev, c) = (w[0], w[1]);
+                let code = matches!(c.kind, ChunkKind::Patches(_) | ChunkKind::Synthetic(_))
+                    && c.flags & SHF_EXECINSTR != 0;
+                let (Some(i), Some(a), Some(p)) = (c.shndx, c.addr, prev.addr) else { continue };
+                let end = p + prev.capacity;
+                let align = 1u64 << c.align.min(63);
+                if !code || prev.shndx != Some(i) || a <= end.next_multiple_of(align) {
+                    continue;
+                }
+                let Some(name) = (match c.kind {
+                    ChunkKind::Synthetic(s) => Some(s.name),
+                    _ => c.name(l.assignment).or_else(|| prev.name(l.assignment)),
+                }) else {
+                    continue;
+                };
+                let offset = end - starts.get(&i).copied().unwrap_or(0);
+                out.push((i, DeadLine { out: name.to_vec(), offset, size: a - end, kind: None }));
+            }
+        }
         out.sort_by_key(|(i, d)| (*i, d.offset));
         out.into_iter().map(|(_, d)| d).collect()
     }
