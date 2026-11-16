@@ -16,6 +16,7 @@ pub mod response;
 pub mod run;
 pub mod stats;
 pub mod synth;
+pub mod tree;
 pub mod verify;
 
 use std::path::{Path, PathBuf};

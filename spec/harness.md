@@ -1693,14 +1693,16 @@ class or shape, and a missing required key, are errors naming the line.
 | key | kinds | meaning |
 |---|---|---|
 | `class` | all | `small`, `medium`, `large`, `extreme`, `rust`, `calibration` (exactly one workload: "Calibration"), or `on-request` (built and measured only when named with `--workload`: inputs too large to keep, generated, measured and deleted) |
-| `kind` | all | `sources`, `synthetic`, `cmake`, `cargo`, `planned` |
+| `kind` | all | `sources`, `synthetic`, `cmake`, `cargo`, `ninja`, `planned` |
 | `about` | all | one sentence for the report |
 | `sources` | sources | files of `bench/workloads/src/` |
 | `shape`, `params` | synthetic | the generator's shape and its two parameters ("Generated workloads") |
+| `group` | synthetic | `yes`: the link puts every input after `main.o` in one `-Wl,--start-group` … `-Wl,--end-group`; default `no` |
 | `url`, `sha256`, `root` | cmake | the source archive, its SHA-256, the directory in it with the top `CMakeLists.txt` |
 | `options`, `prebuild`, `target` | cmake | cmake `-D` options; make targets built first without capture; the make target whose link is the workload |
 | `rev`, `package`, `bin`, `rustc_args` | cargo | a commit of this repository; `cargo rustc -p <package> --bin <bin> -- <rustc_args>` |
-| `driver`, `cflags`, `ldflags` | sources, synthetic, cmake (no `ldflags`) | the compiler driver on `PATH`, compiler flags, driver flags of the link |
+| `script`, `sha256`, `root`, `tree`, `target` | ninja | the script of this checkout that makes the build tree, and its arguments after `<work>`; the SHA-256 of the source archive it unpacks and the directory in it (`$S`); the directory under `<work>/workloads` that holds the tree and the captured inputs, shared by the workloads of one tree; the Ninja output whose link is the workload ("Large workloads") |
+| `driver`, `cflags`, `ldflags` | sources, synthetic, cmake (no `ldflags`), ninja (`driver` only, for the key) | the compiler driver on `PATH`, compiler flags, driver flags of the link |
 | `capture` | all built | the pattern the basename of the captured link's output matches (`*` is any run of characters); default `out` |
 | `needs` | planned | what the workload waits for |
 | `run` | all built | the arguments the linked program is run with once ("Running the outputs"); `run =` runs it without arguments, no `run` does not run it; `$S` in an argument is the source directory (the unpacked archive's `root` for `cmake`, `bench/workloads/src` for `sources`, else the workload's directory) |
@@ -1725,6 +1727,11 @@ The workloads (sizes as the census of this machine counted them are in
 | `synthetic-<shape>-static` | extreme | each `synthetic-*` above with `ldflags = -static`, the same sources and flags |
 | `synthetic-library-static` | extreme | one archive of 20000 members of which `main` needs every 50th, `-static` |
 | `synthetic-objects-g10x` | on-request | `synthetic-objects` at 8150 objects with `-g` (`-O1 -g`), `-static`: at least 10× protoc `-g`'s live input, the large workload of `spec/incr.md` §1.5's go/no-go rule (WP-061 stage B) |
+| `synthetic-line-1000`, `synthetic-line-3000` | on-request | 1000 / 3000 static archives of 25 members (the `line` shape), on one line in dependency order, `-static`: what the count of archives alone costs (WP-081) |
+| `synthetic-line-1000-group`, `synthetic-line-3000-group` | on-request | the same with the archives in one `--start-group` … `--end-group` (`group = yes`) |
+| `cxx-large-g` | on-request | clang 19.1.7, `RelWithDebInfo` (`-O2 -g`), AArch64 target only, linked `-static`: 88 archives, 2.4 GB of input, some 1.1 GB of output ("Large workloads"; record `spec/landed/harness/WP-081.md`) |
+| `cxx-large-g-opt` | on-request | `opt` of the same tree: 52 of the same archives, some 530 MB of output |
+| `cxx-large-split` | on-request | `cxx-large-g` compiled with `-gsplit-dwarf` (`LLVM_USE_SPLIT_DWARF`): the `.dwo` files stay beside the objects and are not linked |
 | `fortran-static` | small | `fortran.f90` (a Fortran main calling C through `BIND(C)`) and `fortran-sum.c`, gfortran `-O1`, `-static` against libgfortran |
 
 **Static twins.** Until M2 mortar links static, non-PIE executables only
@@ -1747,17 +1754,18 @@ the scale this machine's disk and time allow, by `synthetic-objects` and
 --descriptor_set_out=/dev/fd/1 $S/src/google/protobuf/unittest.proto`
 (the descriptor set of `unittest.proto` and its imports, written to
 standard output); `rust-self*` `--version`; the `synthetic-*` workloads
-without arguments (their `main` exits 0) except `synthetic-objects*`,
-which is not run: each of its functions calls two further on, so a run
-makes exponentially many calls.
+without arguments (their `main` exits 0) except `synthetic-objects*`
+and `synthetic-line-*`, which are not run: each of their functions (each
+needed member's first function) calls two further on, so a run makes
+exponentially many calls.
 
 ### Planned workloads
 
 `kind = planned` sections are specified and not built: `--list` and the
 report name them with what they need. Today: `libcxx-test` (one libc++
 test program as the L8 lane links it; needs kiln and hod and the libc++
-build), `cxx-large-g` and `cxx-large` (a large open-source C++ program's
-objects captured once and pinned; needs tens of GB of disk),
+build), `cxx-large` (`cxx-large-g`'s program without debug information:
+needs a third build of the tree),
 `kiln-hod-medium` (the medium program compiled by kiln and hod),
 `incremental-function`, `incremental-object`, `incremental-archive`
 (M7), and `cross-x86-64` (the x86-64 and i386 rows, on an x86-64 machine).
@@ -1804,7 +1812,9 @@ The key is FNV-1a 64 over the stamp's first line, the manifest section
 line of `<driver> --version` and of `ld.bfd --version`, and per kind: the
 name and bytes of each source; the generator's version (`GENERATOR` in
 `xtask/src/bench/synth.rs`); `cmake --version` and `make --version`;
-`rustc --version`. A workload is ready when its stamp's key is the current
+`rustc --version`; the bytes of the `ninja` kind's script and `ninja
+--version`. A `ninja` workload is never rebuilt by the bench ("Large
+workloads"). A workload is ready when its stamp's key is the current
 key, its `response.txt` exists and every `file` line still has its size
 and time. When only files changed (a system library was upgraded), the
 census alone is redone. Otherwise the workload's directory is removed and
@@ -1852,6 +1862,52 @@ directory is the cache's, the same for every checkout.
   `CARGO_BUILD_RUSTFLAGS`, `RUSTC_WRAPPER` removed. `rust-self` passes
   `-C save-temps`: without it rustc deletes the `symbols.o` its link reads
   (under `deps/rustcXXXXXX/`) once the link is done.
+
+### Large workloads
+
+A `ninja` workload (WP-081) is a link of a build too long for a bench
+run: LLVM/clang takes hours to compile on the shared host. Its tree is
+made ONCE, outside the bench, by the section's `script`; the bench
+captures the link of `target` from the tree and keeps what that link
+reads, not the tree.
+
+- **The tree**: `<script> <work> <args>` makes `<work>/workloads/<tree>/build`
+  (a Ninja tree; its archives are thin while it is built, half the disk).
+  It fetches the pinned archive into `<work>/downloads/`, checks its
+  SHA-256 and unpacks it once into `<work>/src/<first 16 digits>/`, as the
+  `cmake` kind does. It compiles every input of the large links and links
+  none of them. Ninja 1.12 is not a jobserver client: the script takes a
+  fixed `-j` (at most 6 on the shared host, 4 while other packages wait for
+  the load) and runs under `nice -n 10`.
+- **The capture** (`--prepare --workload <name>`, or any run naming the
+  workload, when `<work>/workloads/<name>/response.txt` does not exist):
+  `ninja -C <build> -t commands -s <target>` gives the link's command; it
+  runs with `/bin/sh -c` in the tree with the recording `ld` of
+  "Capture" (`COMPILER_PATH`; the wrapper exits 0 and writes nothing), and
+  the one record whose output matches `capture` is the link. The link
+  must have run in the tree. Each argument that names a file of the tree
+  (relative to it, or absolute under it; also after `-L` and after
+  `--<option>=`) is copied to `<work>/workloads/<tree>/inputs/` under the
+  same relative path and named by it; a thin archive is written as the
+  regular archive of the same members in the same order (`ar Dqc`, then
+  `ranlib -D`: LLVM's own archive rule); a directory of the tree after
+  `-L`, or the directory of a file a `--<option>=` names in the tree (the
+  `--dependency-file` CMake passes), is made there. Arguments outside the
+  tree stay as they are. `response.txt` gets the relocated arguments, and
+  the link runs in `inputs/` (the stamp's `cwd`). A file already in
+  `inputs/` (by the same size, or a regular archive already written) is
+  not copied again: the workloads of one tree share their inputs.
+- **The census** is "Census"'s, with `$W` standing for the tree's
+  directory.
+- **Never rebuilt.** A prepared `ninja` workload whose key changed, or
+  whose files changed, is counted again; it is never deleted or rebuilt by
+  the bench. Without `response.txt` and without a tree the preparation is
+  an error naming the script to run. To rebuild: delete
+  `<work>/workloads/<tree>` and the workloads' directories, run the script,
+  prepare.
+- **After the capture** the tree is deleted by hand
+  (`rm -rf <work>/workloads/<tree>/build`, a literal path); the cache keeps
+  `inputs/` and each workload's `response.txt` and `stamp`.
 
 ### Capture
 
@@ -2255,10 +2311,12 @@ test.
 | `strings (n, s)` | `n` objects with a table of `s` literals; even positions the same in every object | mergeable string sections |
 | `comdat (n, i)` | a header of `i` inline functions (an inline variable per eight, a class template) and `n` C++ units that all use them | COMDAT groups, duplicate debug information |
 | `archives (a, m)` | `a` archives of `m` members of eight functions; the first half of each archive's members call the same member of the next archive | archive member extraction |
+| `line (a, m)` | `a` archives of `m` members of 64 functions and a table; seven members in eight are needed: function 0 of each calls the same member of the next archive and of one archive further on, never backwards, so one pass over the line in order loads them all | the count of archives: opening, symbol-table scans, the order of extraction |
 | `library (m, k)` | one archive of `m` members of eight functions that call nothing; `main` calls every `k`-th member, the first included | the search of a big archive of which little is needed |
 
 Every shape has a `main` that calls into every unit (for `archives`, into
-the needed members of the first; for `library`, into its needed
+the needed members of the first; for `line`, into the needed members of
+the first archive; for `library`, into its needed
 members), so a link drops nothing it was meant to keep. Adding a shape
 changes no other shape's output and so not `GENERATOR`.
 
@@ -2277,6 +2335,7 @@ changes no other shape's output and so not `GENERATOR`.
 `dependency_files_are_parsed`, `globs`. `xtask/src/bench/prepare.rs`:
 `arguments_are_normalized`, `files_are_classified`,
 `symbol_tables_are_counted`, `stamps_round_trip`, `the_cache_is_locked`.
+`xtask/src/bench/tree.rs`: `arguments_are_relocated`.
 `xtask/src/bench/measure.rs`: `linker_configurations`, `statuses`,
 `figures_of_runs`. `xtask/src/bench/manifest.rs`:
 `the_manifest_is_read`, `malformed_manifests`.
