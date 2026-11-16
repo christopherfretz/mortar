@@ -407,12 +407,7 @@ fn link_incr(label: &str, built: &Built) -> Pair {
     assert_eq!(m.stderr_text(), "", "{label}: mortar --incremental=full warns");
     let p = linker(Path::new(MORTAR), &with_output(&built.args, &theirs), &built.dir);
     assert!(p.success(), "{label}: mortar: {}", p.stderr_text());
-    let mut findings = support::plumb::verify(&ours, &map, &built.dir);
-    findings.retain(|f| {
-        !support::plumb::s50_rule1_verifier_finding(f)
-            && !support::plumb::p_i3_zero_size_verifier_finding(f, &built.dir)
-    });
-    assert!(findings.is_empty(), "plumb on {}: {findings:#?}", ours.display());
+    support::plumb::clean(&ours, &map, &built.dir);
     Pair { dir: built.dir.clone(), ours, theirs, gc: false }
 }
 

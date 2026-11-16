@@ -154,6 +154,16 @@ fn placed_def(e: &Engine<'_, '_>, oi: usize, di: u32) -> Option<Def> {
             if !s.alloc() {
                 return None;
             }
+            // S-50 rule 1 (§4.4): a label at offset 0 of an input
+            // `.eh_frame` (crtbeginT.o's `__EH_FRAME_BEGIN__`) is the
+            // output section's start under mortar's map; a mapping symbol
+            // stays at its record (S-76).
+            if d.st_value == 0
+                && !t.name(&d).is_ok_and(|n| n.starts_with(b"$"))
+                && let Some(a) = e.eh_frame_start(oi, k.0 as usize)
+            {
+                return Some(Def { value: a, within: Some((a, a)), sym: d });
+            }
             match &s.place {
                 Place::Whole(a) => Some(Def {
                     value: a.wrapping_add(d.st_value),
