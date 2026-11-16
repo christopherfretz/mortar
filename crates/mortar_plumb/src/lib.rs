@@ -71,6 +71,114 @@ pub struct Input<'a> {
     pub bytes: &'a [u8],
 }
 
+/// The link's input files, read by position (§8.1; WP-109 §6.3): the
+/// verifier does no I/O of its own, the caller reads. Implemented by the
+/// command over open files and by `[Input]` (whole bytes) for the tests.
+///
+/// A source is a list of files by path (§2.2: a thin archive's members
+/// are files of their own); the members of a regular archive are found by
+/// the verifier, which reads the archive's headers through the source.
+pub trait Source: Sync {
+    /// The number of files.
+    fn count(&self) -> usize;
+    /// The path of file `i`, as the map names it.
+    fn path(&self, i: usize) -> &str;
+    /// The length of file `i` in bytes.
+    fn len(&self, i: usize) -> u64;
+    /// Exactly `buf.len()` bytes of file `i` from `offset`. A read that
+    /// cannot be made whole (past the end, a file that shrank since it was
+    /// opened, an I/O error) is an error naming the file, never a panic.
+    ///
+    /// # Errors
+    /// The message names the file and what failed.
+    fn read_at(&self, i: usize, offset: u64, buf: &mut [u8]) -> Result<(), String>;
+}
+
+/// Whole bytes as a source (the tests', and the callers' that hold every
+/// input in memory): `&inputs[..]` or `&inputs` (a `Vec`).
+impl Source for &[Input<'_>] {
+    fn count(&self) -> usize {
+        <[Input<'_>]>::len(self)
+    }
+    fn path(&self, i: usize) -> &str {
+        self.get(i).map_or("", |f| f.path)
+    }
+    fn len(&self, i: usize) -> u64 {
+        self.get(i).map_or(0, |f| f.bytes.len() as u64)
+    }
+    fn read_at(&self, i: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+        whole_read_at(self, i, offset, buf)
+    }
+}
+
+impl Source for Vec<Input<'_>> {
+    fn count(&self) -> usize {
+        <[Input<'_>]>::len(self)
+    }
+    fn path(&self, i: usize) -> &str {
+        self.get(i).map_or("", |f| f.path)
+    }
+    fn len(&self, i: usize) -> u64 {
+        self.get(i).map_or(0, |f| f.bytes.len() as u64)
+    }
+    fn read_at(&self, i: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+        whole_read_at(self, i, offset, buf)
+    }
+}
+
+fn whole_read_at(files: &[Input<'_>], i: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+    let Some(f) = files.get(i) else { return Err(format!("no input {i}")) };
+    let got =
+        usize::try_from(offset).ok().and_then(|at| f.bytes.get(at..at.checked_add(buf.len())?));
+    match got {
+        Some(b) => {
+            buf.copy_from_slice(b);
+            Ok(())
+        }
+        None => Err(format!(
+            "{}: {} bytes at offset {offset:#x} are past its end ({} bytes)",
+            f.path,
+            buf.len(),
+            f.bytes.len()
+        )),
+    }
+}
+
+/// The whole bytes of every file of `src`, in its order; a file that
+/// cannot be read whole is left out, with an I2 finding naming it.
+fn read_whole(src: &dyn Source, findings: &mut Vec<Finding>) -> Vec<(String, Vec<u8>)> {
+    let mut files = Vec::with_capacity(src.count());
+    for i in 0..src.count() {
+        let path = src.path(i).to_owned();
+        let Ok(n) = usize::try_from(src.len(i)) else {
+            findings.push(Finding::new(Rule::InputUnreadable, format!("{path}: too large")));
+            continue;
+        };
+        let mut bytes = vec![0u8; n];
+        match src.read_at(i, 0, &mut bytes) {
+            Ok(()) => files.push((path, bytes)),
+            Err(e) => findings.push(Finding::new(Rule::InputUnreadable, e)),
+        }
+    }
+    files
+}
+
+/// Verifies a link (§2) whose inputs are read through `src`, with stage 3
+/// for a dynamic output (§12; a static output is judged as [`verify`]
+/// judges it). The verdict is [`verify_with`]'s on the same bytes.
+pub fn verify_from(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) -> Report {
+    let mut unread = Vec::new();
+    let files = read_whole(src, &mut unread);
+    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+    prof::mark("read inputs (whole, through the source)");
+    let mut report = verify_with(output, &inputs, map, ctx);
+    if !unread.is_empty() {
+        report.findings.extend(unread);
+        report.sort();
+    }
+    report
+}
+
 /// Verifies a link (§2): the output's bytes, the inputs the map names, and
 /// the map. Never panics on any input; what it cannot read is a finding.
 pub fn verify(output: &[u8], inputs: &[Input<'_>], map: &Map) -> Report {
