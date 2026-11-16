@@ -126,6 +126,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | 25 | `.bss.rel.ro` | copy allocations of read-only or RELRO shared data (D-42); output section `.bss.rel.ro` | some such allocation | M2 |
   | 26 | `.note.mason` | the one-definition-rule table (`spec/odr.md` O-50-O-52): `SHT_NOTE`, `SHF_ALLOC`, alignment 8; with `=full` a second note (WP-076) | `--odr-table=exported` or `=full` and a dynamic executable | M6 |
   | 27 | `.mason.meta` | the live inputs' Mason units, kept for tools (`spec/meta.md` MT-32): `SHT_PROGBITS`, no flags, alignment 8, not allocated | `--keep-mason-meta` and some live unit (WP-076) | M6 |
+  | 28 | `.gdb_index` | gdb's name and address index, version 7 (§17): `SHT_PROGBITS`, no flags, alignment 4, not allocated | `--gdb-index` and some unit in the output's `.debug_info` (S-G1; WP-097) | M2 |
 
   There is no `.hash` chunk: an executable gets `.gnu.hash` only
   (`spec/dyn.md` D-20; `--hash-style` other than `gnu` is refused).
@@ -134,7 +135,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   name, not an order: `Placement.order` (layout §10) is the order.
   `.comment` was last so the earlier chunks kept their ids (WP-027e); the
   M2 rows 24-25 and M6's rows 26 (WP-075) and 27 (WP-076) follow it for
-  the same reason.
+  the same reason; so does row 28 (WP-097).
 - **S-4 [C] (division).** Each chunk declares its `Division`
   (`spec/image.md` §13, I-104) through the `SynthChunk` interface
   (`size`, `division`, `write(cx, range, out)`, `sealed`). `Divisible`
@@ -152,6 +153,7 @@ a diagnostic is model §8's: 60 for split and merge (unit `FileId`, seq
   | `.note.gnu.property` | `16 + Σ(8 + align_up(datasz, a))` |
   | `.note.mason` | `40 + 24 × rows`, plus `40 + 32 × (definitions + types)` with `=full` (`spec/odr.md` O-51, O-52) |
   | `.mason.meta` | `Σ align_up(unit, 8)` over the live units kept (`spec/meta.md` MT-32) |
+  | `.gdb_index` | its size (S-G7a) |
 
   `.strtab`'s range start is found through per-file prefix sums and the
   name offset of every 1024th symbol (input local, global id, or demoted
@@ -1538,6 +1540,7 @@ the rules below keep their ids and cite it (request R-S1).
   | `.gnu.version_r` [M2] | `16 × (Verneed + Vernaux entries)` (D-27) |
   | `.rela.dyn` [M2] | `records × entsize` (D-40; entsize 24, `.rel.dyn` 8) |
   | `.dynamic` [M2] | `(tags present + 6) × (16, ELF32 8)`: D-30's rows under their conditions, plus the six `DT_NULL`s (row 32) |
+  | `.gdb_index` [M2] | `24 + 16 C + 20 R + 8 T + Σ (4 + 4 × vector) + Σ (name + 1)` (S-G7a) |
   | `.dynbss`, `.bss.rel.ro` [M2] | the end of the last allocation, each allocation placed at `align_up(end, its alignment)` in D-42's order (a function of the shared definitions' `st_size` and alignment) |
 
   Each is a function of counts. `Merged` chunk sizes come from
@@ -2147,3 +2150,378 @@ differ. Required, per family:
   `from_records` is the plan; a kept equal CIE is taken by its section's
   FDEs; each of the five refusals by name); S-50's five cases; S-88
   counts against a model; S-95 and S-126 against a table of cases.
+
+## 17. `.gdb_index` (WP-097)
+
+*Added by WP-097 from WP-080 stage B's proposal
+(`spec/landed/image/WP-080-stage-b.md` §4, S-G1 to S-G9); the evidence
+is in `spec/landed/image/WP-097.md`. The numbering of §13 to §16 is
+kept, since other specs and the verifier cite them: the brief's
+"section 13" is this section.*
+
+`--gdb-index` asks for a `.gdb_index` section: a name and address index
+that gdb reads instead of scanning every unit at start-up. gdb trusts it:
+a name the index does not list is a name gdb does not find, and an
+address the index does not map is an address gdb cannot attribute to a
+unit (stage B §2.1 measured both with lld's and mold's output). So the
+index mortar writes is **complete**, or the link is refused by name.
+Rules that only gdb's reader defines cite it: gdb's manual, appendix
+"`.gdb_index` section format", and the reader in gdb 16.3
+(`gdb/dwarf2/read-gdb-index.c`), with what was observed in
+`spec/landed/image/WP-097.md`.
+
+### 17.1 When there is one
+
+- **S-G1 [M2] (the chunk).** With `--gdb-index` in force
+  (`plan.shaping.gdb_index == Some(true)`: of `--gdb-index` and
+  `--no-gdb-index` the last wins) and at least one unit in the output's
+  `.debug_info` (S-G2), the link has one synthetic chunk `.gdb_index`,
+  S-3 row 28: `SHT_PROGBITS`, no flags, alignment 4, `sh_entsize` 0, not
+  allocated; layout places it in rank 9 (`spec/layout.md` L-60) after
+  the `.debug_*` output sections, before `.symtab`. Its content is
+  version 7 of gdb's format (§17.5), the version lld 22 and mold write;
+  gdb 16 reads it (its `maint print objfiles` names `.gdb_index:
+  version 7`). Versions 8 and 9 (what `gdb-add-index` writes; 9 adds a
+  shortcut table for the main function and its language) add nothing a
+  linker's index needs. Without the option nothing of this section
+  runs: no input is read, no table is built, and every byte of the
+  output is what it was before WP-097 (S-109; the bench's static rows
+  and the byte-identical lane show it).
+- **S-G8 [M2] (with other options).** `--gdb-index` with
+  `--incremental` is refused (`spec/incr.md` IN-58, unchanged:
+  `unsupported option: --gdb-index`). With `-S`/`--strip-debug` or `-s`
+  the output has no `.debug_info`, so S-G1 makes no chunk and nothing is
+  read or refused. `-r` is refused as a whole today (`spec/cli.md`);
+  when it lands, a relocatable output gets no `.gdb_index` (an index is a
+  property of the final link: lld and gold write none with `-r`).
+- **S-G9 [M2] (`--debug-names`).** `--debug-names` (lld's merged
+  `.debug_names`) stays refused, with the reason in the diagnostic's
+  note: gdb 16.3 ignores every `.debug_names` it did not write
+  ("`.debug_names` not created by gdb; ignoring", stage B §2.1 item 1),
+  so a merged table would give gdb nothing; `.gdb_index` is the index
+  mortar writes. `--no-debug-names` is a no-op (it asks for mortar's
+  behaviour; refusing it was a defect).
+
+### 17.2 Units
+
+- **S-G2 [M2] (the units; the CU list).** A *unit* is a unit header in
+  an input section named `.debug_info` that is in the output: kept by
+  resolution (not dropped as a COMDAT copy, not stripped) and live
+  (`spec/image.md` I-6: a non-allocated section is a root unless it is
+  in a section group with an allocated member, with which it lives and
+  dies). A unit is *live* exactly when its section is. The CU list is
+  every unit, in output order: the `.debug_info` input sections in the
+  order layout places them in output section `.debug_info` (`SectionId`
+  order, which is input order), and the units of one section in section
+  order. Units are read from offset 0 of their section to its end; a
+  section's bytes that are not a whole number of units are
+  `gdb-index-malformed-unit`. Each unit is accepted when:
+  - the unit length is not `0xffffffff` (DWARF64 is refused,
+    `gdb-index-malformed-unit`);
+  - the version is 2, 3, 4 or 5;
+  - the address size is the output's word size (8, or 4 on i386);
+  - its type is a compile unit: DWARF 5 `DW_UT_compile` (1) or
+    `DW_UT_skeleton` (4), a DWARF 2-4 unit whose root DIE is
+    `DW_TAG_compile_unit` (0x11). `DW_UT_type` (2) and `DW_UT_split_type`
+    (6) are `gdb-index-type-unit`, and so is any live input section named
+    `.debug_types` (DWARF 4 type units): the TU list stays empty until a
+    package tests one (stage B S-G2). `DW_UT_partial` (3),
+    `DW_UT_split_compile` (5), a root `DW_TAG_partial_unit` (0x3c) and
+    every other value are `gdb-index-malformed-unit`.
+
+  The CU list entry is (the unit's offset in the output's `.debug_info`,
+  its length including the 4-byte length field), both `u64`.
+- **S-G3a [M2] (debug-bearing).** A unit is *debug-bearing* when it is a
+  skeleton (`DW_UT_skeleton`, or a root DIE with `DW_AT_GNU_dwo_name`
+  (0x2130) or `DW_AT_dwo_name` (0x76)) or its root DIE has children (its
+  abbreviation's `DW_CHILDREN_yes`). A unit that is neither (what an
+  assembler writes for `gcc -g x.S`: a root DIE with a line table and an
+  address range, nothing to name) needs no name set; it is in the CU
+  list and the address area all the same.
+- **S-G3 [M2] (complete, or refused).** Every live debug-bearing unit
+  must be named by exactly one GNU pubnames set and exactly one GNU
+  pubtypes set (S-G4a). The first live debug-bearing unit, in CU-list
+  order, that has none of one of them refuses the link as
+  `gdb-index-incomplete`, placed at its file (`{path}` or
+  `{archive}({member})`), with a note giving the unit's offset in its
+  section, which set is missing, and the fix: compile it with
+  `-ggnu-pubnames` (GCC and Clang; GCC's `-gsplit-dwarf` implies it) or
+  link without `--gdb-index`. When the file has a `.debug_names` section
+  (Clang's `-gpubnames`) or a `.debug_pubnames` section (DWARF's own
+  `.debug_pubnames`, which has no attribute byte and cannot give gdb its
+  kinds), the note says it is not read (S-G4a). This rule is one
+  decision in one place (`mortar_synth::gdbindex::INCOMPLETE`): the
+  operator may later make it "warn and write no index", which changes
+  that constant, this paragraph and the tests of the refusal, nothing
+  else.
+
+### 17.3 Name sets
+
+- **S-G4a [M2] (the sources).** The names come from the sets of the
+  input sections named `.debug_gnu_pubnames` and `.debug_gnu_pubtypes`
+  that are not dropped as COMDAT copies (with the option they are read
+  and not copied, S-G6). A section holds sets one after another, from
+  offset 0 to its end. A set is:
+
+  | field | size | rule |
+  |---|---|---|
+  | `unit_length` | 4 | not `0xffffffff` (DWARF64 refused); the set ends `4 + unit_length` after its start, within the section |
+  | `version` | 2 | 2 |
+  | `debug_info_offset` | 4 | relocated (below): names the unit |
+  | `debug_info_length` | 4 | not read (for a skeleton it is the `.dwo` unit's length) |
+  | entries | | `(u32 die_offset, u8 attributes, name)` until a `die_offset` of 0; the name is NUL-terminated, at least one byte before the NUL |
+
+  The terminator is the set's last 4 bytes; a set that ends before it,
+  bytes after it, a name that runs past the set, or an attribute byte
+  whose bits 0-3 are not 0 or whose kind (bits 4-6) is 5, 6 or 7 are
+  `gdb-index-malformed-name-set`. Its `debug_info_offset` field has a
+  relocation of absolute class (`R_AARCH64_ABS32`, `R_X86_64_32`,
+  `R_386_32`) against a symbol in an input `.debug_info` section of the
+  same file; the target is that section at `st_value + addend` (REL:
+  the implicit addend). A field without such a relocation, or a target
+  that is not the start of a unit of its section, is
+  `gdb-index-malformed-name-set`; a target section that is not in the
+  output (a dropped COMDAT copy) is `gdb-index-orphan-name-set`. Two
+  pubnames sets (or two pubtypes sets) naming one unit are
+  `gdb-index-malformed-name-set`. A set naming a unit that is not
+  debug-bearing is read as any other.
+
+  Not read: `.debug_names` (Clang's `-gpubnames`, DWARF 5's per-unit
+  name index). Its entries carry `DW_IDX_die_offset` and an abbreviation
+  tag, from which a kind could be derived (a tag of a type is
+  `TYPE`, a subprogram `FUNCTION`, a variable `VARIABLE`), but no
+  static bit: gdb's `.gdb_index` reader treats a name without the static
+  bit as global, so a file-local `static int x` in two units would be
+  indexed as two globals. And stage B's observation that lld and mold
+  build 30 symbols from such inputs is not what lld 22 and mold write
+  here: both write an empty symbol table for Clang `-gpubnames` objects
+  (`spec/landed/image/WP-097.md`). So a unit named only by `.debug_names`
+  has no set (S-G3). Input `.debug_names` sections are copied as
+  before (I-49a; lldb reads them): gdb 16.3 ignores a `.debug_names` it
+  did not write (stage B §2.1) and uses `.gdb_index`. Old-style
+  `.debug_pubnames`/`.debug_pubtypes` (no attribute byte) are not read
+  either and are copied as before.
+- **S-G4 [M2] (names and attributes).** A unit's names are the entries
+  of its pubnames set in set order, then those of its pubtypes set.
+  Each entry gives the name (its bytes, without the NUL, compared byte
+  for byte: `Foo` and `foo` are two names) and the CU-vector value
+  `cu | (attributes << 24)`, where `cu` is the unit's index in the CU
+  list and `attributes` the entry's attribute byte unchanged: bits 28-30
+  of the value are the kind (gdb's `GDB_INDEX_SYMBOL_KIND`: 0 none, 1
+  type, 2 variable, 3 function, 4 other) and bit 31 is static, as the
+  pubnames attribute byte has them in bits 4-6 and 7 (gdb manual,
+  "Index Section Format", the CU vector; GCC's `dwarf2out.cc` writes the
+  byte with gdb's macros). A name's CU vector is the set of the values
+  of all its entries, sorted ascending as `u32` with equal values
+  written once (gdb's own writer does this; lld 22 writes duplicates,
+  `spec/landed/image/WP-097.md`). `cu` must be below 2^24 (24 bits);
+  more units than that are `gdb-index-too-large`.
+- **S-G6 [M2] (the input sets are consumed).** With `--gdb-index` in
+  force and neither `-S` nor `-s`, resolution gives the input
+  `.debug_gnu_pubnames` and `.debug_gnu_pubtypes` sections that it would
+  keep the state `Dropped(Consumed)` (`spec/resolve.md` §10): phase 80
+  reads them and they are not copied (lld and mold drop them too). A
+  COMDAT copy stays `Dropped(Comdat)` and a stripped one
+  `Dropped(Stripped)`. Without the option I-49a is unchanged: they are
+  ordinary debug sections, copied and relocated.
+
+### 17.4 Address ranges
+
+- **S-G5 [M2] (the address area).** A unit's ranges are read from its
+  root DIE only (what gdb's reader of the unit's addresses uses when
+  there is no index; `.debug_aranges` is not read):
+  - `DW_AT_low_pc` with `DW_AT_high_pc`: one range `[low, high)`, or
+    `[low, low + n)` when `DW_AT_high_pc` is a constant (`DW_FORM_data1`
+    to `data8`, `udata`, `implicit_const`);
+  - `DW_AT_ranges`: the range list it names. DWARF 5:
+    `DW_FORM_sec_offset` into `.debug_rnglists`, or `DW_FORM_rnglistx`
+    through the offsets table at `DW_AT_rnglists_base`. DWARF 2-4:
+    `DW_FORM_sec_offset` (`data4` before DWARF 4) into `.debug_ranges`.
+    `DW_AT_GNU_ranges_base` is not added: in a DWARF 4 skeleton it
+    applies to the `.dwo` unit's `DW_AT_ranges`, never the skeleton's
+    own (LLVM's reader says so; GCC 14's skeletons agree);
+  - neither: no range.
+
+  An address is read through the relocation at its field: `DW_FORM_addr`
+  in `.debug_info`, a `.debug_addr` entry for `DW_FORM_addrx`,
+  `addrx1`-`addrx4` and `DW_FORM_GNU_addr_index` (at `DW_AT_addr_base`
+  or `DW_AT_GNU_addr_base` plus index × address size; the base is a
+  relocated section offset into the file's `.debug_addr`), or a range
+  list entry. Range list entries: `.debug_rnglists` (DWARF 5) codes 0
+  `end_of_list`, 1 `base_addressx`, 2 `startx_endx`, 3 `startx_length`,
+  4 `offset_pair`, 5 `base_address`, 6 `start_end`, 7 `start_length`;
+  `.debug_ranges` pairs `(begin, end)` with a begin of all ones (in the
+  address size) selecting a base and a pair of two zeros **without
+  relocations** ending the list. The base address starts as the unit's
+  `DW_AT_low_pc` (0 if absent). A section offset (`DW_AT_ranges`,
+  `DW_AT_rnglists_base`, `DW_AT_addr_base`, `DW_AT_GNU_addr_base`, the
+  unit header's `debug_abbrev_offset`) is read through its relocation,
+  whose target names the section (the file's `.debug_rnglists`,
+  `.debug_ranges`, `.debug_addr`, `.debug_abbrev`) and the offset in it
+  (`st_value + addend`). An offset without a relocation, or one whose
+  target has another name, is `gdb-index-malformed-unit`.
+
+  An address is a pair (section or none, offset): with a relocation of
+  absolute class against a symbol defined in an input section, that
+  section and `st_value + addend` (plus a constant added to it, such as
+  an `offset_pair`'s); without one, no section and the field's value. A
+  range is `[start, end)` whose two ends have the same section (or both
+  none); its length is `end − start` in input terms, so it is known
+  before layout. Then:
+  1. a range of length 0 is left out (lld and mold leave them out; gdb
+     ignores them);
+  2. a range whose section is not in the output (a COMDAT copy dropped
+     for another unit's, a section collected by `--gc-sections`) is left
+     out: its addresses are the tombstone in the output (`spec/image.md`
+     I-45, I-47) and gdb finds no code there either;
+  3. a range with no section and a length above 0 is
+     `gdb-index-malformed-unit` (no code of a relocatable object is at an
+     absolute address), and so are ends in two sections, a negative
+     length, a relocation of another class at an address field
+     (`R_*_NONE` counts as none), a symbol that is not defined in a
+     section of the link, a form or code not listed here in the attributes
+     read, and any read past the end of a section.
+
+  The address area lists, for each unit in CU-list order, its kept
+  ranges in the order its DIE and range list state them, each as
+  `(u64 low, u64 high, u32 cu)` with `low` the output address of the
+  range's start (`addr_in(section, offset)`, model §4.3, merge-aware) and
+  `high = low + length`, exclusive. Nothing is sorted, merged or
+  de-duplicated (lld does the same; gdb's reader builds its own map).
+  A unit with no kept range has no entry: gdb finds it by name only (a
+  data-only unit, or one whose code was all collected).
+
+  The other attributes of the root DIE are skipped by their form's size:
+  every DWARF 5 form, `DW_FORM_indirect`, and GNU's `0x1f01`
+  (`GNU_addr_index`), `0x1f02` (`GNU_str_index`), `0x1f20` and `0x1f21`
+  (`GNU_ref_alt`, `GNU_strp_alt`, 4 bytes in 32-bit DWARF).
+- **S-G5a [M2] (a dead unit).** A unit stays in the CU list while its
+  `.debug_info` section is in the output, even when `--gc-sections`
+  collected every function it describes: its names are indexed (S-G4)
+  and its ranges are all left out (S-G5 rule 2). gdb then finds such a
+  name, expands the unit and reads the DIEs, whose addresses are the
+  tombstone: what it reads without an index (the session test of
+  `crates/mortar/tests/debuggers.rs` compares both). A unit whose
+  `.debug_info` section is dropped (a COMDAT group not kept) is not in
+  the output, so it has no entry and its names, if a set of a kept
+  section names it, are `gdb-index-orphan-name-set`.
+
+### 17.5 The bytes
+
+- **S-G7 [M2] (the format, version 7, little-endian).** All integers are
+  little-endian, whatever the target (gdb's format). With `C` units, `R`
+  kept ranges, `N` distinct names and `T` slots:
+
+  | offset | size | field |
+  |---|---|---|
+  | 0 | 4 | version: 7 |
+  | 4 | 4 | CU list offset: 24 |
+  | 8 | 4 | TU list offset: `24 + 16 C` |
+  | 12 | 4 | address area offset: the TU list offset (the TU list is empty) |
+  | 16 | 4 | symbol table offset: `24 + 16 C + 20 R` |
+  | 20 | 4 | constant pool offset: the symbol table offset `+ 8 T` |
+  | 24 | `16 C` | the CU list (S-G2): `(u64 offset, u64 length)` per unit |
+  | | `20 R` | the address area (S-G5) |
+  | | `8 T` | the symbol table: `T` slots of `(u32 name, u32 vector)`, both offsets from the start of the constant pool; an empty slot is `(0, 0)` |
+  | | | the constant pool: first the CU vectors of the `N` names in name order, each `u32 count` then `count` values; then the names in name order, each its bytes and a NUL |
+
+  **Name order** is the order of first occurrence: the units in CU-list
+  order, each unit's names in S-G4's order (pubnames, then pubtypes,
+  each in set order); a name takes the next number the first time it
+  is seen. Its vector holds every value of S-G4, wherever it occurs.
+
+  **The hash** is gdb's `mapped_index_string_hash` for versions 5 and
+  later: `h = 0`, then for each byte `c` of the name (unsigned, without
+  the NUL) `h = h × 67 + lower(c) − 113` modulo 2^32, where `lower` maps
+  ASCII `A`-`Z` to `a`-`z` and leaves every other byte (gdb uses
+  libiberty's `TOLOWER`, which is ASCII-only).
+
+  **The table's size** `T` is `max(1024, P)`, where `P` is the smallest
+  power of two strictly greater than `⌊4N/3⌋` (lld 22's rule; it keeps
+  the load at most 3/4, and gdb's reader needs a power of two). For `N`
+  up to 767, `T` is 1024.
+
+  **The probe sequence** (gdb's writer and reader): with `m = T − 1`,
+  the first slot is `h & m` and the step `((h × 17) & m) | 1` (modulo
+  2^32 before the mask); the next slot is `(slot + step) & m`. Names are
+  inserted in name order, each into the first empty slot of its
+  sequence. Every name is distinct, so a slot is never shared.
+
+  Every offset and count fits its `u32` field; a section of more than
+  `2^32 − 1` bytes is `gdb-index-too-large`. The bytes are a pure
+  function of the CU list and the address area (the layout's offsets and
+  addresses) and of the names and their values (the input sets): no
+  hash order, thread count or address enters anything but the fields
+  that hold them.
+- **S-G7a [M2] (sizes and division).** The size is
+  `24 + 16 C + 20 R + 8 T + Σ (4 + 4 × |vector|) + Σ (|name| + 1)`, a
+  function of counts known after phase 80 (S-G5's lengths are input
+  terms), so the chunk's size never depends on an address (S-1). The
+  symbol table and the constant pool are built in phase 80 (they need no
+  address); the header, the CU list and the address area are written at
+  fill, from the layout. The chunk is `Whole` (S-4), bound by its size:
+  one job writes it. A later package can make it `Divisible` (the CU
+  list and the address area by entry, the rest by copying), which the
+  bench does not ask for yet (`spec/landed/image/WP-097.md`, cost).
+  The plan holds the distinct names once (in the pool it will write) and
+  one `(name, value)` pair per entry before the vectors are built; it
+  reads each input set once; nothing is quadratic.
+
+### 17.6 The refusals
+
+All are `Refused { Feature, name }` errors (`spec/diag.md` §4), placed
+at the file (and the section and offset when one is known), with the
+detail in a note. Each stops the link in phase 80.
+
+| name | when | rule |
+|---|---|---|
+| `gdb-index-incomplete` | a live debug-bearing unit has no pubnames set or no pubtypes set | S-G3 |
+| `gdb-index-type-unit` | a type unit in `.debug_info`, or a live `.debug_types` | S-G2 |
+| `gdb-index-malformed-unit` | a unit, its root DIE, an abbreviation, a range list or an address field that S-G2/S-G5 cannot read | S-G2, S-G5 |
+| `gdb-index-malformed-name-set` | a set that does not parse, does not name the start of a unit, or names a unit a second time | S-G4a |
+| `gdb-index-orphan-name-set` | a set naming a unit whose section is not in the output | S-G4a, S-G5a |
+| `gdb-index-too-large` | `2^24` units or more, or a section above `2^32 − 1` bytes | S-G4, S-G7 |
+
+`--gdb-index` with `--incremental` is `unsupported option: --gdb-index`
+(IN-58), and `--debug-names` is `unsupported option: --debug-names`
+with S-G9's note.
+
+### 17.7 What the verifier reads (WP-098)
+
+Everything S-G1 to S-G7 use is in the inputs and the map
+(`spec/plumb.md` §3.2) already: the `.debug_info` input sections'
+output offsets are their `nplace` records, the code sections' addresses
+their `place` records, and the consumed sets are input sections of
+known names whose state the verifier recomputes from the option (`arg`
+records give `--gdb-index`). The chunk is named by its `chunk synthetic
+.gdb_index - <size>` record. No map record is added.
+
+### 17.8 Where the references differ
+
+| point | lld 22 | mold | mortar |
+|---|---|---|---|
+| a unit with no name set | indexed without names: gdb misses its types and globals | the same | refused, `gdb-index-incomplete` (S-G3) |
+| Clang `-gpubnames` (`.debug_names` only) | empty symbol table | empty symbol table | refused, the note naming `.debug_names` (S-G4a) |
+| duplicate values in a CU vector | written | removed | removed, sorted (S-G4) |
+| table size | `max(1024, next power of two above 4N/3)` | smaller (64 slots for 45 names) | lld's (S-G7) |
+| alignment | 1 | 4 | 4 (S-G1) |
+| type units | TU list | TU list | refused (S-G2) |
+| input pubnames | dropped | dropped | dropped (S-G6) |
+| ranges | from the unit DIE, empty ones left out | from the unit DIE | from the unit DIE, empty and dead ones left out (S-G5) |
+
+### 17.9 Tests
+
+- unit tests in `mortar_synth::gdbindex`: the hash against gdb's
+  values; the table and the CU vectors against the bytes `gdb-add-index`
+  wrote for a small program (`crates/mortar_synth/tests/data/`); the size
+  rule; each refusal of the readers by name; the output a pure function
+  of its inputs;
+- link tests: `tests/link/split/gdb-index-*.test` (GCC DWARF 4 and 5
+  split, Clang split, Clang `-ggnu-pubnames` and `-gpubnames`, a mixed
+  build refused with the object named, `--gc-sections`, a COMDAT
+  function kept from another unit) and `tests/link/debug/gdb-index.test`
+  (a non-split `-g -ggnu-pubnames` link), each with `readelf
+  --debug-dump=gdb_index` and `llvm-dwarfdump --gdb-index`;
+- `crates/mortar/tests/debuggers.rs`: gdb's transcripts with and
+  without the index are equal, and gdb reports the index in use; stage
+  B's failure case refused.
