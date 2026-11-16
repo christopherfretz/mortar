@@ -519,3 +519,177 @@ fn p_e4_x86_64_gotpcrelx_must_not_differ_in_exec() {
     assert_eq!(xs, 0, "X's lea is accepted on its own side");
     assert!(has(&pe, "P-E4", "got-to-lea"), "{pe:#?}");
 }
+
+// ---------------------------------------------------------------------
+// More mutants, one per clause (the mutation run over the check, §9.5).
+
+/// A `.symtab` entry's file offset: `(offset of the entry, entry size)`.
+fn sym_entry(x: &Link, name: &str) -> (usize, usize) {
+    let h = mortar_elf::FileHeader::parse(&x.output).unwrap();
+    let t = mortar_elf::SectionTable::parse(&x.output, &h).unwrap();
+    let s = t.find_symbol_table(mortar_elf::consts::SHT_SYMTAB).unwrap().unwrap();
+    let ent = if h.class == mortar_elf::Class::Elf64 { 24 } else { 16 };
+    let idx = s.iter().find(|(_, y)| s.name(y).ok() == Some(name.as_bytes())).unwrap().0.0 as usize;
+    (x.sec(".symtab").2 as usize + idx * ent, ent)
+}
+
+// e_flags, a unit's size, a synthetic chunk, a global made local.
+#[test]
+fn p_e1_to_p_e3_clauses() {
+    for arch in archs() {
+        let Some(p) = assemble(arch, "cl", "", "", &[]) else { return };
+        let x = p.update(&[]);
+        let f = p.link(&["main.o", "a.o", "b.o"], &[]);
+        let mut m = x.clone();
+        let at = if word(arch) == 8 { 48 } else { 36 };
+        m.output[at] ^= 0x40;
+        let (pe, _, _) = p.equiv(&m, &f);
+        assert!(has(&pe, "P-E1", "file headers differ"), "{arch:?}: {pe:#?}");
+        let mut m = x.clone();
+        let fi = m.map.files.iter().position(|q| q.path == "b.o").unwrap() as u32;
+        for q in m.map.placed.iter_mut().filter(|q| q.file == fi && q.section == SectionRef::Name(".data".into())) {
+            q.size += 8;
+        }
+        let (pe, _, _) = p.equiv(&m, &f);
+        assert!(has(&pe, "P-E2", "has size"), "{arch:?}: {pe:#?}");
+        let mut m = x.clone();
+        m.map.chunks.push(Chunk { kind: ChunkKind::Synthetic, name: ".extra".into(), addr: None, size: 0, target: None, line: 0 });
+        let (pe, _, _) = p.equiv(&m, &f);
+        assert!(has(&pe, "P-E2", "chunk '.extra'"), "{arch:?}: {pe:#?}");
+        // `bvar`'s binding made STB_LOCAL in X.
+        let (o, ent) = sym_entry(&x, "bvar");
+        let info = o + if ent == 24 { 4 } else { 12 };
+        let mut m = x.clone();
+        m.output[info] &= 0x0f;
+        let (pe, _, _) = p.equiv(&m, &f);
+        assert!(has(&pe, "P-E3", "local symbols 'bvar'"), "{arch:?}: {pe:#?}");
+    }
+}
+
+// A record neither side checks (AArch64: an initial-exec load of an
+// undefined weak TLS symbol, glibc's pattern in `setlocale.o`): REJECTED
+// by P-E4 1 (the value is not seen; the conservative reading, §6.9).
+#[test]
+fn p_e4_a_record_neither_side_checks_is_rejected() {
+    let arch = Arch::Aarch64;
+    let seq = "\t.section .tbss,\"awT\",%nobits\n\t.space 8\n\t.text\n\t.weak tv\n\tadrp x0, :gottprel:tv\n\tldr x0, [x0, :gottprel_lo12:tv]\n";
+    let Some(p) = assemble(arch, "nc", seq, "", &[]) else { return };
+    let x = p.update(&[]);
+    let f = p.link(&["main.o", "a.o", "b.o"], &[]);
+    let (pe, _, _) = p.equiv(&x, &f);
+    assert!(has(&pe, "P-E4", "not checked (tls)"), "{pe:#?}");
+}
+
+// x86-64: a GOT kept (`addq S@GOTPCREL`, not relaxable): the update's
+// GOT word aimed at another place is REJECTED by P-E5.
+#[test]
+fn p_e5_got_words() {
+    let arch = Arch::X86_64;
+    let seq = "\taddq avar@GOTPCREL(%rip), %rax\n";
+    let Some(p) = assemble(arch, "got", seq, "", &["-mrelax-relocations=no"]) else { return };
+    let x = p.update(&[]);
+    let f = p.link(&["main.o", "a.o", "b.o"], &[]);
+    let (pe, xs, fs) = p.equiv(&x, &f);
+    assert!(pe.is_empty() && xs == 0 && fs == 0, "{pe:#?}");
+    let (g, _, _) = x.sec(".got");
+    let mut m = x.clone();
+    let o = m.off(g);
+    let v = u64::from_le_bytes(m.output[o..o + 8].try_into().unwrap()) + 8;
+    m.output[o..o + 8].copy_from_slice(&v.to_le_bytes());
+    let (pe, _, _) = p.equiv(&m, &f);
+    assert!(has(&pe, "P-E5", "the .got word"), "{pe:#?}");
+}
+
+// A non-allocated section of units: `.myinfo` in a.o. X's map without
+// the unit's last two bytes (its size made 2) leaves them in no unit:
+// REJECTED by P-E6 (and P-E2: the size).
+#[test]
+fn p_e6_non_alloc_tiling() {
+    for arch in archs() {
+        let sec = if arch == Arch::Aarch64 { "%progbits" } else { "@progbits" };
+        let extra = format!("\t.section .myinfo,\"\",{sec}\n\t.long 0x11223344\n\t.text\n");
+        let Some(p) = assemble(arch, "na", "", &extra, &[]) else { return };
+        // GNU ld's map gives the non-allocated piece without its offset:
+        // mortar's `nplace` (with it) replaces it on both sides.
+        let nplace = |l: &mut Link, size: u64| {
+            let fi = l.map.files.iter().position(|q| q.path == "a.o").unwrap() as u32;
+            let myinfo = SectionRef::Name(".myinfo".into());
+            l.map.placed.retain(|q| !(q.file == fi && q.section == myinfo));
+            l.map.nonalloc.retain(|q| !(q.file == fi && q.section == myinfo));
+            l.map.nonalloc.push(mortar_plumb::map::NonAlloc {
+                file: fi,
+                section: myinfo,
+                out: ".myinfo".into(),
+                offset: Some(0),
+                size,
+                line: 0,
+            });
+        };
+        let mut x = p.update(&[]);
+        let mut f = p.link(&["main.o", "a.o", "b.o"], &[]);
+        nplace(&mut x, 4);
+        nplace(&mut f, 4);
+        let (pe, xs, _) = p.equiv(&x, &f);
+        assert!(pe.is_empty() && xs == 0, "{arch:?}: {pe:#?}");
+        let mut m = x.clone();
+        nplace(&mut m, 2);
+        let (pe, _, _) = p.equiv(&m, &f);
+        assert!(has(&pe, "P-E6", ".myinfo, which no unit holds") || has(&pe, "P-E6", "in no unit"), "{arch:?}: {pe:#?}");
+    }
+}
+
+// A PIE pair (GNU ld `-pie --no-dynamic-linker --export-dynamic`): its
+// dynamic tables. ACCEPTED as built; REJECTED (P-E5, P-E3) with a
+// `.rela.dyn` addend, a `.dynamic` value, a `.dynstr` byte and a
+// `.dynsym` entry changed in X.
+#[test]
+fn p_e5_dynamic_tables() {
+    for arch in [Arch::Aarch64, Arch::X86_64] {
+        let Some(p) = assemble(arch, "pie", "", "", &[]) else { return };
+        let flags = ["-pie", "--no-dynamic-linker", "--export-dynamic", "-z", "norelro"];
+        let mut x = p.update(&flags);
+        // The linker's own sections, chunks in X's map (it claims coverage).
+        let mut chunks = Vec::new();
+        for (n, a, z, _) in &x.secs {
+            let covered = x.map.placed.iter().any(|q| *a <= q.addr && q.addr < a + z)
+                || x.map.chunks.iter().any(|c| c.addr.is_some_and(|ca| *a <= ca && ca < a + z));
+            if *a != 0 && *z > 0 && !covered {
+                chunks.push(Chunk { kind: ChunkKind::Synthetic, name: n.clone(), addr: Some(*a), size: *z, target: None, line: 0 });
+            }
+        }
+        x.map.chunks.extend(chunks);
+        let f = p.link(&["main.o", "a.o", "b.o"], &flags);
+        let (pe, _, _) = p.equiv(&x, &f);
+        assert!(pe.is_empty(), "{arch:?}: {pe:#?}");
+        // The first .rela.dyn record's addend + 8.
+        let (r, _, _) = x.sec(".rela.dyn");
+        let mut m = x.clone();
+        let o = m.off(r) + 16;
+        let v = u64::from_le_bytes(m.output[o..o + 8].try_into().unwrap()) + 8;
+        m.output[o..o + 8].copy_from_slice(&v.to_le_bytes());
+        let (pe, _, _) = p.equiv(&m, &f);
+        assert!(has(&pe, "P-E5", "the .rela.dyn record"), "{arch:?}: {pe:#?}");
+        // DT_SYMENT (11) made 0x20.
+        let (d, z, _) = x.sec(".dynamic");
+        let mut m = x.clone();
+        let o = m.off(d);
+        let k = (0..z as usize / 16).find(|i| m.output[o + i * 16] == 11).expect("DT_SYMENT");
+        m.output[o + k * 16 + 8] = 0x20;
+        let (pe, _, _) = p.equiv(&m, &f);
+        assert!(has(&pe, "P-E5", ".dynamic entry"), "{arch:?}: {pe:#?}");
+        // A `.dynstr` byte (the last name's last character).
+        let (s, z, _) = x.sec(".dynstr");
+        let mut m = x.clone();
+        let o = m.off(s) + z as usize - 2;
+        m.output[o] ^= 1;
+        let (pe, _, _) = p.equiv(&m, &f);
+        assert!(has(&pe, "P-E5", ".dynstr differs"), "{arch:?}: {pe:#?}");
+        // The last `.dynsym` entry's size + 1.
+        let (y, z, _) = x.sec(".dynsym");
+        let mut m = x.clone();
+        let o = m.off(y) + z as usize - 24 + 16;
+        m.output[o] = m.output[o].wrapping_add(1);
+        let (pe, _, _) = p.equiv(&m, &f);
+        assert!(has(&pe, "P-E3", ".dynsym entry"), "{arch:?}: {pe:#?}");
+    }
+}
