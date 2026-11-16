@@ -29,6 +29,11 @@ a2.patch = the .dynsym WeakDyn fix, re-applied after commit A).
 - C: GNU ld refuses "failed to convert GOTPCREL relocation; relink with --no-relax" when the
   relaxed form does not fit; GNU keeps the GOT (no relax) for a target in SHF_X86_64_LARGE.
 
+- C x86-64: stop condition met (relaxation is kind 2: fit is an address fact); built as 9ab85d9,
+  reverted 711767d; options in the record. X-19 paragraph + test reloc/x64-gotpcrelx-slot.
+- C i386: GOT32X that relaxes (kind 1) demands no slot at scan; X86-25 paragraph; test
+  reloc/x86-got32x-slot; baseline: 68 i386 links change (.got + knock-on), 7 rows added.
+
 ## Next
-- C: x64 scan: GOTPCRELX relaxed at scan (kind 1 + refusal when it does not fit and no slot);
-  SymFacts.large; i386 GOT32X scan; spec X-19, X86-25; tests; baseline.
+- record spec/landed/synth/WP-059.md (draft, uncommitted); merge main; gate; hosted run for
+  x86_64 baseline rows; remove WIP.md; rm -rf /tmp/mortar-wp059-a.
