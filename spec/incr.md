@@ -1358,6 +1358,66 @@ with each phase fed from the state for unchanged files:
   mutation tests: every single-byte change and every truncation of a
   state of the link-test corpus is a named error or (a change of the
   header's flags) accepted; never a panic.
+- **IN-18a2 [v2] Format version 2: the delta tables and the holes**
+  (WP-063, WP-062). Version 2 is version 1 with these changes:
+  - The format version is 2.
+  - The table count is 27.
+  - Four tables, kinds 32, 33, 34 and 39 (IN-19's reserved numbers),
+    come after `LEAVES` and before `STRINGS`. Kind numbers do not give
+    the order; the file order is this list, each table exactly once:
+    `META` (1), `STAT` (2), `FILES` (3), `PROBES` (4), `OUTSECS` (5),
+    `SYMBOLS` (6), `SECTIONS` (7), `CHUNKS` (8), `ORDER` (9),
+    `SEGMENTS` (10), `FRAGS` (11), `SLOTS` (12), `EH_RECORDS` (13),
+    `SYMTAB_LOCALS` (14), `SIZES` (15), `SYM_PLACE` (16), `DEFINED`
+    (17), `PATCHES` (18), `REDIRECTS` (19), `SIZED` (20), `LAYOUT` (21),
+    `LEAVES` (22), `MENTIONS` (32), `RESOLVED` (33), `INDEX` (34),
+    `HOLES` (39), `STRINGS` (23) last.
+
+  There is one version 2. A state of version 1 is refused by name like
+  any other version (`state-version`, `format version 1, this mortar
+  reads 2`): it has none of these tables, an update has nothing to
+  compute a delta from, and no compatibility path reads it (nothing
+  shipped a version-1 state). The link is a full link that writes a
+  version-2 state. A reader of version 1 likewise answers a version-2
+  state `state-version`.
+
+  | kind | table | row (width) | rows |
+  |---|---|---|---|
+  | 32 | `MENTIONS` | file `FILES` row, key `SYMBOLS` row, kind `u8` (0 undefined, 1 in a section, 2 absolute, 3 common), `st_bind u8`, `st_type u8`, `st_other u8`, section `SECTIONS` row (kind 1; else `NONE`) (16) | one per (live object, global key in its symbol table), strictly ascending by (file, key). An entry the file's symbol table repeats keeps the first. |
+  | 33 | `RESOLVED` | kind `u8` (0..5 as `MENTIONS` plus 4 linker-defined and 5 shared object; 6 COMDAT keeper; 7 live file), `st_type u8`, `st_bind u8`, `st_other u8`, key `SYMBOLS` row (kinds 0..5; else `NONE`), file `FILES` row (the definer, the keeper or the live file; `NONE` for kinds 0 and 4), section `SECTIONS` row (kind 1; else `NONE`), value `u64` (`st_value` for kinds 1..3; the definer's symbol index for kind 5, and for a definition outside an object's symbol table, which is recorded as kind 2; else 0), size `u64` (`st_size`; for a common, the resolved size), name str (kind 6: the group signature; else empty) (40). An undefined key has `st_bind` 2 when weak, else 1, and its resolved visibility in `st_other`; a linker-defined key only its visibility. A definition in a section the reader keeps no id for is recorded as kind 2, in both tables. | first one row per key the resolution names (kinds 0..5), ascending by key; then one per COMDAT group with a keeper, ascending by signature bytes; then one per live file, ascending by file |
+  | 34 | `INDEX` | unit `SECTIONS` row, kind `u8` (0 global, 1 section, 2 slot, 3 `.eh_frame`, 4 link order, 5 local slot), pad 3, target `u32` (a `SYMBOLS` row for kinds 0 and 2; a `SECTIONS` row for 1, 3, 4 and 5) (12) | one per (unit, kind, target), strictly ascending in that order |
+  | 39 | `HOLES` | chunk `CHUNKS` row, kind `u8` (`mortar_core::layout::HoleKind`: 0 fill, 1 `.eh_frame` padding, 2 debug, 3 abbreviation table, 4 dead debug, 5 dead fragment, 6 dead CIE), pad 3, offset `u64`, size `u64` (24) | one per range of a chunk no live unit owns (IN-3, IN-3a, IN-30), ascending by (chunk, offset), never overlapping, inside the chunk's size (a capacity tail is not a hole, L-141) (WP-062) |
+
+  `INDEX` records the references of every kept allocated section and of
+  every `.eh_frame` input of a live object file, read from its
+  relocations. One relocation gives these rows:
+  - A global key gives kind 0. Through a GOT, PLT or TLS slot, or the
+    GOT's base (the architecture's class of the type), it also gives
+    kind 2. An undefined entry is first redirected to its definition.
+  - A local with a section gives kind 1 for that section, or kind 3
+    when the section is an `.eh_frame`. A slot class also gives kind 5
+    with the section as target.
+  - Symbol 0, or a local without a section, gives kind 5 with the unit
+    itself as target when the class is a slot.
+  - A type the architecture cannot classify counts as a slot use.
+  - A unit's references to its own section are not recorded.
+  - An `SHF_LINK_ORDER` unit gives kind 4 for its `sh_link` section.
+
+  The reader adds these checks to IN-18a's:
+  - every reference is in range;
+  - `MENTIONS`' kind is 1 exactly when it has a section;
+  - `RESOLVED`'s fields match its kind as stated, and its rows are in
+    the stated order with no key, group or file twice;
+  - `INDEX`'s kind is in range, its target is in its table, and its rows
+    strictly ascend.
+  - `HOLES`' chunk and kind are in range, no size is 0, its rows
+    ascend by (chunk, offset) without overlap, and each lies inside its
+    chunk's size.
+
+  *Test:* `mortar_incr`'s round trip, the incremental tests' replay
+  (each table matters), and `a_version_1_state_is_refused_by_name` (the
+  version-1 fixtures `crates/mortar/tests/fixtures/incr-state-v1-51aa582/`
+  are `state-version` and give a full link).
 - **IN-18b [v1] The normalized plan.** The plan hash is `L128` of a
   sequence of items, each a tag byte followed by fields that are each a
   `u32` length and that many bytes: first `C` with the working
@@ -1948,6 +2008,19 @@ with each phase fed from the state for unchanged files:
     holds 0x41d4a8 and 0x41d4c0 in the two full links, each the start of
     that link's `.eh_frame`, and the oracle, which did not implement
     S-50, compared it raw.
+  - **Which records the delta refills** (WP-063, against a full link's
+    layout, S-46/S-47's packing): the records equal from the start (same
+    piece of the same section of an unchanged file) keep their offsets;
+    when the output `.eh_frame` keeps its address and size, so do the
+    records equal from the end, provided each FDE there points to the
+    same CIE in both links: its own CIE kept at or after the suffix's
+    start, or its own CIE removed by S-44 (an equal CIE earlier) while
+    the new link keeps no CIE between the prefix and the suffix; a piece
+    the new link's split does not know counts as a CIE. The records
+    between are refilled (`eh-frame`). A reference into an input
+    `.eh_frame` is refilled unless its section is empty and the chunk
+    did not move (rule 1), or every piece of its section is kept and
+    none is between (rule 3's next record is then the same).
   *Test:* R5 in L10 (each row a scenario; the first three must pass, the
   others are the verifier's negative cases: plumb rejects a hole that is
   not one padding CIE of ≥ 16 bytes, and a zero word before the end); an
@@ -2581,11 +2654,11 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `no-state` | no state at the state path (the first link); reported only by `--incremental-report` | permanent |
 | `state-corrupt` | the state fails validation (IN-18) | permanent |
 | `state-version` | the state's format or mortar version differs | permanent |
-| `options-changed` | the normalized plan differs: any option, the target, the emulation, the library search path, the input list's order (adding or removing an input, or an archive's members changing, is not a change of plan) | permanent; [later] options that touch no layout (`-Map`, `--time-phases`, `--threads`, `--incremental-report` are excluded already) |
+| `options-changed` | the normalized plan differs: any option, the target, the emulation, the library search path, the input list's order (adding or removing an input, or an archive's members changing, is not a change of plan). The delta also raises it when a path whose content changed is no file of either link: a linker script, whose content the plan does not hash (WP-063) | permanent; [later] options that touch no layout (`-Map`, `--time-phases`, `--threads`, `--incremental-report` are excluded already) |
 | `output-changed` | `P` is missing, or its stat tuple or build id differs from the state's, or it is racy and a build-id leaf differs (IN-21) | permanent |
 | `output-torn` | the state's "updating" flag is set (IN-46) | permanent |
 | `update-not-implemented` | the state is valid, the plan and the output match it, and the update path does not exist yet (WP-061 stage A: every incremental link is a full one after the checks above, in this order) | stage A only; WP-064 deletes the row |
-| `inputs-reordered` | two unchanged inputs' relative order changed | v1; [later] when no COMDAT keeper or placement order depends on it |
+| `inputs-reordered` | two unchanged inputs' relative order changed. The input list's order is in the plan (`options-changed`, checked first), so the delta meets this only through archive extraction order (WP-063: two unchanged `FILES` rows in a different relative order) | v1; [later] when no COMDAT keeper or placement order depends on it |
 | `too-much-changed` | IN-16's threshold | permanent (it is the compaction rule) |
 | `reserve-exhausted` | a segment reserve, a packed array's, `.eh_frame`'s, a slot region's or a dynamic table's capacity is exhausted (IN-32, IN-34) | permanent |
 | `island-exhausted` | a new thunk or patch does not fit its island | permanent |
@@ -2857,6 +2930,14 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   `f(5)=10`; wx `-100` then `14`; lx `1 -1` then `1 -1 -2`), as the
   AArch64 runs do.
 
+  A fall-back row may be not caught, conservative, with its reason: a
+  full link is never wrong, and two full links cannot show that a
+  fall-back was needed (only an update without it can, WP-064). WP-063's
+  record lists `inputs-reordered`, `options-changed`, `property-changed`
+  and `symbol-kind-changed` this way. A refill row (not a fall-back) not
+  caught still needs a scenario: the `.eh_frame`-reference row is one
+  (WP-069).
+
 - **IN-64 [v1] The bench** gains incremental rows: for protoc `-g` and
   without, and for the go/no-go workload, the full link plain and in
   incremental mode, and an update after (a) one body edit in
@@ -3093,6 +3174,13 @@ default) are in the record, not here.
     `dm-flakey` here). Default: argue it in the spec and test it where a
     host provides `dm-flakey` or a fault-injecting file system (WP-064's
     gate, if available; not a blocker).
+11. **`property-changed` on the size only** (WP-063). The trigger is the
+    `.note.gnu.property` chunk's size; the note itself is refilled
+    either way. Open for WP-064: whether a change of the property bits
+    (BTI, IBT, SHSTK) at the same size changes anything else in the
+    image (segment flags, the PLT's form). Default: the size; if
+    something depends on the bits, the trigger becomes "the bits
+    differ".
 
 ## 12. Appendix: experiments
 
