@@ -1,11 +1,11 @@
 //! The `mortar` command-line tool. All behavior is in the library.
 
 use std::ffi::OsString;
-use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use mortar::{Color, Outcome};
 use mortar_diag::Style;
+use mortar_diag::stream::{stderr_is_terminal, to_stderr, to_stdout};
 
 /// `--color-diagnostics=auto` (the default): color when standard error is
 /// a terminal that is not `TERM=dumb` (`spec/cli.md` §3.9).
@@ -14,7 +14,7 @@ fn colored(choice: Color) -> bool {
         Color::Always => true,
         Color::Never => false,
         Color::Auto => {
-            std::io::stderr().is_terminal() && std::env::var_os("TERM").is_none_or(|t| t != "dumb")
+            stderr_is_terminal() && std::env::var_os("TERM").is_none_or(|t| t != "dumb")
         }
     }
 }
@@ -66,33 +66,28 @@ fn main() -> ExitCode {
     let mut command_line = std::env::args_os();
     let prog = mortar::program_name(command_line.next().as_deref());
     let args: Vec<OsString> = command_line.collect();
-    let invocation = mortar::invoke(&prog, &args);
-    match invocation.outcome {
+    // spec/cli.md §3.15: nothing below can fail the process. A message
+    // that cannot be written (S-1) is dropped, and the status is the
+    // link's; -M's map was written by the link itself (S-2).
+    let invocation = mortar::run(&prog, &args);
+    let style = Style { color: colored(invocation.color), ..Style::plain(&prog) };
+    let (report, status) = match invocation.outcome {
         Outcome::Done(text) => {
-            // A closed pipe is not an error worth a second message.
-            let _ = std::io::stdout().write_all(text.as_bytes());
-            ExitCode::SUCCESS
+            let _ = to_stdout(&text);
+            return ExitCode::SUCCESS;
         }
         Outcome::Linked { report, stdout } => {
-            let style = Style { color: colored(invocation.color), ..Style::plain(&prog) };
-            let mut err = std::io::stderr().lock();
-            let _ = err.write_all(invocation.removed.as_bytes());
-            let _ = err.write_all(report.render(&style).as_bytes());
-            let _ = err.write_all(invocation.incremental.as_bytes());
-            let _ = err.write_all(invocation.phases.as_bytes());
-            let _ = std::io::stdout().write_all(stdout.as_bytes());
-            ExitCode::SUCCESS
+            // Empty: `mortar::run` printed the map before its verdict.
+            let _ = to_stdout(&stdout);
+            (report, ExitCode::SUCCESS)
         }
-        Outcome::Failed(report) => {
-            // Demangling comes with the phases that name symbols.
-            let style = Style { color: colored(invocation.color), ..Style::plain(&prog) };
-            let text = report.render(&style);
-            let mut err = std::io::stderr().lock();
-            let _ = err.write_all(invocation.removed.as_bytes());
-            let _ = err.write_all(text.as_bytes());
-            let _ = err.write_all(invocation.incremental.as_bytes());
-            let _ = err.write_all(invocation.phases.as_bytes());
-            ExitCode::FAILURE
-        }
-    }
+        // Demangling comes with the phases that name symbols.
+        Outcome::Failed(report) => (report, ExitCode::FAILURE),
+    };
+    let mut text = invocation.removed;
+    text.push_str(&report.render(&style));
+    text.push_str(&invocation.incremental);
+    text.push_str(&invocation.phases);
+    to_stderr(&text);
+    status
 }

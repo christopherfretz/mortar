@@ -131,7 +131,27 @@ pub fn invoke(prog: &str, args: &[OsString]) -> Invocation {
 /// [`invoke`] with relative paths relative to `cwd`.
 #[must_use]
 pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
-    invoke_with(prog, args, cwd, None)
+    invoke_with(prog, args, cwd, None, PrintMap::Capture)
+}
+
+/// [`invoke`] as the executable runs it: `-M`'s map is written to standard
+/// output (through `mortar_diag::stream`) before the link's verdict, so a
+/// map that cannot be written fails the link by name and leaves no output
+/// (`spec/cli.md` §3.15, S-2); [`Outcome::Linked`]'s `stdout` is then
+/// empty. Everything else is [`invoke`]'s.
+#[must_use]
+pub fn run(prog: &str, args: &[OsString]) -> Invocation {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    invoke_with(prog, args, &cwd, None, PrintMap::Stdout)
+}
+
+/// Where `-M`'s map goes (`spec/cli.md` §3.15).
+#[derive(Clone, Copy)]
+enum PrintMap {
+    /// Into [`Outcome::Linked`]'s `stdout`, for the caller.
+    Capture,
+    /// To the process's standard output, before the verdict.
+    Stdout,
 }
 
 /// The replay hook of `spec/incr.md` IN-61 (model §7.3), for tests: the
@@ -150,7 +170,7 @@ pub fn replay_link(
         let keys = mortar_incr::capture::Keys::new(link)?;
         mortar_incr::capture::replay(link, &keys, state, computed)
     };
-    invoke_with(prog, args, cwd, Some(&hook))
+    invoke_with(prog, args, cwd, Some(&hook), PrintMap::Capture)
 }
 
 #[allow(clippy::too_many_lines, reason = "the steps of spec/cli.md §4.3 in order")]
@@ -159,6 +179,7 @@ fn invoke_with(
     args: &[OsString],
     cwd: &Path,
     replay: Option<&front::Replay<'_>>,
+    print_to: PrintMap,
 ) -> Invocation {
     let parsed = mortar_cli::parse(args);
     let plan = &parsed.plan;
@@ -289,12 +310,28 @@ fn invoke_with(
                     diagnostics.emit(k, d);
                 }
             }
-            if print_map {
-                stdout = String::from_utf8_lossy(&maps.text).into_owned();
-            }
             // input.md §10.4: the dependency file, of a successful link.
             if let Some(d) = &dependency_path {
                 write_dependency_file(f, d, &diagnostics);
+            }
+            // cli.md §3.15 (S-2): -M's map is an output; written last of
+            // the outputs that can fail the link, before the state.
+            if print_map && !diagnostics.has_errors() {
+                let text = String::from_utf8_lossy(&maps.text);
+                match print_to {
+                    PrintMap::Capture => stdout = text.into_owned(),
+                    PrintMap::Stdout => {
+                        if let Err(e) = mortar_diag::stream::to_stdout(&text) {
+                            diagnostics.emit(
+                                Key::new(mortar_image::PHASE_OUTPUT, 0, 0),
+                                Diagnostic::error(mortar_diag::Kind::CannotWriteOutput {
+                                    path: "standard output (-M)".to_owned(),
+                                    reason: mortar_diag::os_reason(&e),
+                                }),
+                            );
+                        }
+                    }
+                }
             }
             // spec/incr.md IN-17, IN-21: the state, of a successful link.
             if let Some(s) = session

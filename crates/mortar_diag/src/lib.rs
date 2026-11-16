@@ -15,6 +15,8 @@
 //!   and answers "has the link failed?" with one atomic load.
 //! - [`Style`]: the program name, color and the demangling hook, for
 //!   [`Report::render`] and [`Diagnostic::render`].
+//! - [`stream`]: the one writer to standard error and standard output; a
+//!   failed write never panics (`spec/cli.md` §3.15).
 //!
 //! ```
 //! use mortar_diag::{Collector, Diagnostic, Key, Policy, RefusalClass, Style};
@@ -35,6 +37,7 @@
 mod collect;
 mod model;
 mod render;
+pub mod stream;
 
 pub use collect::{Collector, DEFAULT_ERROR_LIMIT, Key, Policy, Report};
 pub use model::{
