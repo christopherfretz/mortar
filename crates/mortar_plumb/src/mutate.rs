@@ -93,11 +93,16 @@ pub struct Config {
     /// The byte sweep of the synthetic sections instead of the classes
     /// (`crate::sweep`, WP-082).
     pub sweep: bool,
+    /// The sweep's window: in a section larger than twice this many
+    /// bytes, only the first and last `window` bytes are flipped (a
+    /// static-pie's `.rela.dyn` holds a thousand alike records; WP-089);
+    /// 0: every byte.
+    pub window: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { seed: 0x6d6f_7274_6172_0028, per_class: 16, threads: 1, sweep: false }
+        Config { seed: 0x6d6f_7274_6172_0028, per_class: 16, threads: 1, sweep: false, window: 0 }
     }
 }
 

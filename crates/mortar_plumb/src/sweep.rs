@@ -365,6 +365,7 @@ pub fn run(
     inputs: &[Input<'_>],
     map: &Map,
     threads: usize,
+    window: u64,
     ctx: &crate::Ctx<'_>,
 ) -> Result<Sweep, String> {
     let image = Image::read(output)?;
@@ -385,6 +386,8 @@ pub fn run(
             let file = s.shdr.sh_offset as usize;
             let ranges: Vec<(u64, u64)> = if name == ".eh_frame" {
                 plt_eh_ranges(&image, addr, data)
+            } else if window > 0 && size > 2 * window {
+                vec![(0, window), (size - window, size)]
             } else {
                 vec![(0, size)]
             };
