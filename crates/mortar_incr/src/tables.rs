@@ -10,7 +10,7 @@
 //! classify is recorded as a slot use as well as a reference: the
 //! conservative answer (it may only add refills).
 
-use std::collections::HashMap;
+use mortar_core::hash::HashMap;
 
 use mortar_arch::{Arch, DemandClass, Site};
 use mortar_core::FileId;

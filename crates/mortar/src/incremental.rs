@@ -501,9 +501,15 @@ impl Session {
     }
 
     fn write_state(&self, state: State, out_path: &Path, written: &Written) -> Result<(), String> {
+        let mut t = Instant::now();
         let result = bind(state, out_path, written).and_then(|state| {
-            write_atomically(&self.state_path, &format::encode(&state))
-                .map_err(|e| format!("cannot write {}: {e}", self.state_path.display()))
+            lap(&self.times, &mut t, "bind");
+            let bytes = format::encode(&state);
+            lap(&self.times, &mut t, "encode");
+            let r = write_atomically(&self.state_path, &bytes)
+                .map_err(|e| format!("cannot write {}: {e}", self.state_path.display()));
+            lap(&self.times, &mut t, "write and sync");
+            r
         });
         if result.is_err() {
             // No state is left that the next link could accept: an older
@@ -528,7 +534,8 @@ impl Session {
             split: &f.merge.split,
         };
         let mut t = Instant::now();
-        let keys = Keys::new(&link)?;
+        // WP-094 (c): every file's keys in parallel; no global lookup.
+        let keys = Keys::for_capture(&link, &f.pool)?;
         lap(&self.times, &mut t, "keys");
         let mut strings = Strings::default();
         // IN-24: the files' and members' hashes, one task per file on the
@@ -546,15 +553,18 @@ impl Session {
         let hashes = f.pool.map(f.inputs.files.len() as usize, |i| hash_of(FileId(i as u32)));
         lap(&self.times, &mut t, "file hashes");
         let file_hash = |id: FileId| hashes.get(id.0 as usize).copied().flatten();
-        let mut state = mortar_incr::capture::capture(
+        let mut laps = mortar_incr::capture::Laps::new();
+        let mut state = mortar_incr::capture::capture_timed(
             &link,
             &keys,
             &f.layout,
             &mut strings,
             &file_hash,
             f.arch.get(),
+            &mut laps,
         )?;
         lap(&self.times, &mut t, "capture");
+        self.times.borrow_mut().extend(laps);
         state.plan_hash = self.plan_hash;
         for s in &self.stamps {
             state.stat.push(StatRow {

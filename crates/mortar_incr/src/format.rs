@@ -566,24 +566,46 @@ impl State {
 #[derive(Debug, Default)]
 pub struct Strings {
     bytes: Vec<u8>,
-    seen: HashMap<Vec<u8>, Str>,
+    /// WP-094: by the fixed hash of the bytes (`spec/model.md` §6 rule 5),
+    /// the first string with it; no copy of the bytes is kept.
+    seen: mortar_core::hash::HashMap<u64, Str>,
+    /// The strings whose hash an earlier, different string has.
+    collided: Vec<(u64, Str)>,
 }
 
 impl Strings {
+    fn bytes_of(&self, at: Str) -> &[u8] {
+        let start = at.off as usize;
+        self.bytes.get(start..start + at.len as usize).unwrap_or_default()
+    }
+
     /// The string's place in the pool, adding it if new.
     pub fn add(&mut self, s: &[u8]) -> Str {
         if s.is_empty() {
             return Str::default();
         }
-        if let Some(&at) = self.seen.get(s) {
-            return at;
+        let h = mortar_core::hash::hash_bytes(s);
+        let first = self.seen.get(&h).copied();
+        if let Some(at) = first {
+            if self.bytes_of(at) == s {
+                return at;
+            }
+            if let Some(&(_, at)) =
+                self.collided.iter().find(|(k, at)| *k == h && self.bytes_of(*at) == s)
+            {
+                return at;
+            }
         }
         let at = Str {
             off: u32::try_from(self.bytes.len()).unwrap_or(u32::MAX),
             len: u32::try_from(s.len()).unwrap_or(u32::MAX),
         };
         self.bytes.extend_from_slice(s);
-        self.seen.insert(s.to_vec(), at);
+        if first.is_some() {
+            self.collided.push((h, at));
+        } else {
+            self.seen.insert(h, at);
+        }
         at
     }
 

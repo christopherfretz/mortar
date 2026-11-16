@@ -7,7 +7,7 @@
 //! local symbol's name) come from each object's symbol table, read here
 //! once per file ([`Keys::new`]).
 
-use std::collections::HashMap;
+use mortar_core::hash::HashMap;
 
 use mortar_core::assignment::Assignment;
 use mortar_core::column::Column;
@@ -20,6 +20,7 @@ use mortar_core::identity::{
     outsec_ordinals, symbol_id, symbol_lookup,
 };
 use mortar_core::inputs::{Inputs, Reader};
+use mortar_core::par::Pool;
 use mortar_core::layout::{
     AllocKey, Chunk, ChunkKind, DefValue, Defined, EhRecord, Erratum, Hole, HoleKind, Layout,
     MergeMap, Patch, PatchKind, Place, Placement, Redirect, Segment, Sized, SlotKind, Slots,
@@ -132,88 +133,114 @@ fn tag_byte(tag: ChunkTag) -> u8 {
 impl<'s> Keys<'s> {
     /// Reads every object's anchors and local names (§7.1).
     pub fn new(link: &Link<'_, 's>) -> Result<Self, String> {
-        Self::build(link, &|_| true, true)
+        Self::build(link, &|_| true, true, None)
+    }
+
+    /// WP-094 (c): the keys [`capture`] needs, every file's read in
+    /// parallel on `pool`, without the global lookup (a replay's).
+    pub fn for_capture(link: &Link<'_, 's>, pool: &Pool) -> Result<Self, String> {
+        Self::build(link, &|_| true, false, Some(pool))
     }
 
     /// WP-094: the anchors and local names of the files `read` selects
     /// only, and `symbols` over the keys those files mention: what the
     /// replay by position needs ([`replay_by_position`]). The other files'
     /// sections and locals have no keys here.
-    pub fn partial(link: &Link<'_, 's>, read: &dyn Fn(FileId) -> bool) -> Result<Self, String> {
-        Self::build(link, read, false)
+    pub fn partial(
+        link: &Link<'_, 's>,
+        read: &(dyn Fn(FileId) -> bool + Sync),
+    ) -> Result<Self, String> {
+        Self::build(link, read, false, None)
+    }
+
+    /// One object's section keys and local names.
+    fn file_keys(
+        link: &Link<'_, 's>,
+        file: FileId,
+    ) -> Result<(Ordinals<SectionKey<'s>>, Ordinals<&'s [u8]>), String> {
+        let inputs = link.inputs;
+        let f = &inputs.files[file];
+        let Reader::Object(object) = f.reader else {
+            return Ok((Ordinals::new(Vec::new()), Ordinals::new(Vec::new())));
+        };
+        let bad = |what: &str| format!("{}: {what}", String::from_utf8_lossy(f.path));
+        let count = object.section_count() as usize;
+        let mut global: Vec<Option<&'s [u8]>> = vec![None; count];
+        let mut local: Vec<Option<&'s [u8]>> = vec![None; count];
+        let mut names = Vec::new();
+        if let Some(symbols) = object.symbols().map_err(|_| bad("symbol table"))? {
+            let first_global = symbols.first_global().0;
+            for (index, sym) in symbols.iter() {
+                let name = symbols.name(&sym).map_err(|_| bad("symbol name"))?;
+                if index.0 < first_global {
+                    names.push(name);
+                }
+                let kind = sym.st_info & 0xf;
+                if name.is_empty() || kind == STT_SECTION || kind == STT_FILE || sym.st_value != 0
+                {
+                    continue;
+                }
+                let Ok(SymbolSection::Section(at)) = symbols.section_of(index, &sym) else {
+                    continue;
+                };
+                let slot = if index.0 < first_global { &mut local } else { &mut global };
+                if let Some(s @ None) = slot.get_mut(at.0 as usize) {
+                    *s = Some(name);
+                }
+            }
+        }
+        let mut keys = Vec::with_capacity(count);
+        for i in 0..count {
+            let name = match object.section(SectionIndex(i as u32)) {
+                Ok(s) if i > 0 => s.name().map_err(|_| bad("section name"))?,
+                _ => &[][..],
+            };
+            let comdat = link
+                .resolution
+                .section_id(file, SectionIndex(i as u32))
+                .and_then(|id| link.resolution.sections.get(id))
+                .and_then(|row| row.comdat.get())
+                .and_then(|c| inputs.comdats.get(c))
+                .map(|c| c.name);
+            let anchor = Anchor::choose(comdat, global[i], local[i]);
+            keys.push(SectionKey { anchor, name });
+        }
+        Ok((Ordinals::new(keys), Ordinals::new(names)))
     }
 
     fn build(
         link: &Link<'_, 's>,
-        read: &dyn Fn(FileId) -> bool,
+        read: &(dyn Fn(FileId) -> bool + Sync),
         complete: bool,
+        pool: Option<&Pool>,
     ) -> Result<Self, String> {
         let inputs = link.inputs;
-        let mut sections = Vec::with_capacity(inputs.files.len() as usize);
-        let mut locals = Vec::with_capacity(inputs.files.len() as usize);
-        for (file, f) in inputs.files.iter() {
-            let Reader::Object(object) = f.reader else {
-                sections.push(Ordinals::new(Vec::new()));
-                locals.push(Ordinals::new(Vec::new()));
-                continue;
-            };
-            if !read(file) {
-                sections.push(Ordinals::new(Vec::new()));
-                locals.push(Ordinals::new(Vec::new()));
-                continue;
+        let one = |i: usize| {
+            let file = FileId(i as u32);
+            if read(file) {
+                Self::file_keys(link, file)
+            } else {
+                Ok((Ordinals::new(Vec::new()), Ordinals::new(Vec::new())))
             }
-            let bad = |what: &str| format!("{}: {what}", String::from_utf8_lossy(f.path));
-            let count = object.section_count() as usize;
-            let mut global: Vec<Option<&'s [u8]>> = vec![None; count];
-            let mut local: Vec<Option<&'s [u8]>> = vec![None; count];
-            let mut names = Vec::new();
-            if let Some(symbols) = object.symbols().map_err(|_| bad("symbol table"))? {
-                let first_global = symbols.first_global().0;
-                for (index, sym) in symbols.iter() {
-                    let name = symbols.name(&sym).map_err(|_| bad("symbol name"))?;
-                    if index.0 < first_global {
-                        names.push(name);
-                    }
-                    let kind = sym.st_info & 0xf;
-                    if name.is_empty()
-                        || kind == STT_SECTION
-                        || kind == STT_FILE
-                        || sym.st_value != 0
-                    {
-                        continue;
-                    }
-                    let Ok(SymbolSection::Section(at)) = symbols.section_of(index, &sym) else {
-                        continue;
-                    };
-                    let slot = if index.0 < first_global { &mut local } else { &mut global };
-                    if let Some(s @ None) = slot.get_mut(at.0 as usize) {
-                        *s = Some(name);
-                    }
-                }
-            }
-            let mut keys = Vec::with_capacity(count);
-            for i in 0..count {
-                let name = match object.section(SectionIndex(i as u32)) {
-                    Ok(s) if i > 0 => s.name().map_err(|_| bad("section name"))?,
-                    _ => &[][..],
-                };
-                let comdat = link
-                    .resolution
-                    .section_id(file, SectionIndex(i as u32))
-                    .and_then(|id| link.resolution.sections.get(id))
-                    .and_then(|row| row.comdat.get())
-                    .and_then(|c| inputs.comdats.get(c))
-                    .map(|c| c.name);
-                let anchor = Anchor::choose(comdat, global[i], local[i]);
-                keys.push(SectionKey { anchor, name });
-            }
-            sections.push(Ordinals::new(keys));
-            locals.push(Ordinals::new(names));
+        };
+        let n = inputs.files.len() as usize;
+        let rows: Vec<_> = match pool {
+            Some(pool) => pool.map(n, one),
+            None => (0..n).map(one).collect(),
+        };
+        let mut sections = Vec::with_capacity(n);
+        let mut locals = Vec::with_capacity(n);
+        for r in rows {
+            let (s, l) = r?;
+            sections.push(s);
+            locals.push(l);
         }
         let sections = Column::from_vec(sections).map_err(|_| "too many files".to_owned())?;
         let locals = Column::from_vec(locals).map_err(|_| "too many files".to_owned())?;
         let symbols = if complete {
             symbol_lookup(&inputs.symbols)
+        } else if pool.is_some() {
+            Lookup::new(std::iter::empty(), |s: SymbolId| s)
         } else {
             let mut ids: Vec<SymbolId> = Vec::new();
             for (file, _) in inputs.files.iter() {
@@ -374,7 +401,6 @@ impl Symbols<'_, '_> {
 /// is each file's content hash (`None`: none could be computed). The
 /// caller fills `META`, `STAT`, `LEAVES` and the pool. An `Err` names why
 /// no state can be written (dynamic tables, `--icf`'s folds).
-#[allow(clippy::too_many_lines)] // one block per table, in IN-18a's order
 pub fn capture(
     link: &Link<'_, '_>,
     keys: &Keys<'_>,
@@ -383,6 +409,21 @@ pub fn capture(
     file_hash: &dyn Fn(FileId) -> Option<[u8; 16]>,
     arch: &dyn mortar_arch::Arch,
 ) -> Result<State, String> {
+    capture_timed(link, keys, layout, strings, file_hash, arch, &mut Laps::new())
+}
+
+/// [`capture`], with its parts timed into `laps` (WP-094).
+#[allow(clippy::too_many_lines)] // one block per table, in IN-18a's order
+pub fn capture_timed(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    layout: &Layout,
+    strings: &mut Strings,
+    file_hash: &dyn Fn(FileId) -> Option<[u8; 16]>,
+    arch: &dyn mortar_arch::Arch,
+    laps: &mut Laps,
+) -> Result<State, String> {
+    let mut clock = Clock { laps, at: std::time::Instant::now() };
     let slots = &layout.slots;
     let p = &layout.placement;
     if layout.folds.folded.is_some()
@@ -417,6 +458,7 @@ pub fn capture(
             hash: if f.bytes.is_some() { file_hash(id).ok_or("a file's hash")? } else { [0; 16] },
         });
     }
+    clock.lap("capture files");
     for probe in inputs.probe_checks().ok_or("a probe failed")? {
         s.probes.push(ProbeRow { path: strings.add(probe.path), present: u8::from(probe.present) });
     }
@@ -426,6 +468,7 @@ pub fn capture(
         s.outsecs.push(OutSecRow { name: strings.add(o.name), ordinal: o.ordinal });
     }
     let chunk_ord = chunk_ordinals(p, link.assignment);
+    clock.lap("capture probes, outsecs");
     for (id, row) in link.resolution.sections.iter() {
         let _ = row;
         let si =
@@ -456,6 +499,7 @@ pub fn capture(
         }
         s.sections.push(row);
     }
+    clock.lap("capture sections");
     for (id, c) in p.chunks.iter() {
         let (kind, name) = chunk_ord.key(id.0).ok_or("a chunk")?;
         let ordinal = chunk_ord.ordinal(id.0).ok_or("a chunk")?;
@@ -510,6 +554,7 @@ pub fn capture(
             align: u64::from(g.align),
         })
         .collect();
+    clock.lap("capture chunks, order, segments");
     // FRAGS: per (output section, hash), the live fragments' offsets.
     let mut live: Vec<(u32, [u8; 16], u32, u64)> = Vec::new();
     let mut buf = Vec::new();
@@ -547,8 +592,9 @@ pub fn capture(
         }
         i = j;
     }
+    clock.lap("capture frags");
     let mut syms =
-        Symbols { keys, inputs, rows: Vec::new(), index: HashMap::new(), first: Vec::new() };
+        Symbols { keys, inputs, rows: Vec::new(), index: HashMap::default(), first: Vec::new() };
     for (k, kind) in SLOT_LISTS.iter().enumerate() {
         for &key in slot_list(slots, *kind) {
             s.slots.push(SlotRow { kind: k as u8, symbol: syms.row(strings, key)? });
@@ -645,7 +691,9 @@ pub fn capture(
         bits |= layout_bits::TLS_LD;
     }
     s.layout.bits = bits;
+    clock.lap("capture slots to holes");
     crate::tables::fill(link, &mut syms, strings, &mut s, arch)?;
+    clock.lap("capture delta tables");
     s.symbols = syms.rows;
     if !strings.fits() {
         return Err("the string pool exceeds 4 GiB".into());
@@ -898,13 +946,13 @@ fn frags_by_identity(
     m: &Map,
     frag_off: &mut Column<FragId, u64>,
 ) -> Result<(), String> {
-    let mut by_identity: HashMap<(OutSecId, [u8; 16]), Vec<&FragRow>> = HashMap::new();
+    let mut by_identity: HashMap<(OutSecId, [u8; 16]), Vec<&FragRow>> = HashMap::default();
     for f in &s.frags {
         let out = get(&m.outsecs, f.out, "OUTSECS")?;
         by_identity.entry((out, f.hash)).or_default().push(f);
     }
     let mut buf = Vec::new();
-    let mut rank: HashMap<(OutSecId, [u8; 16]), u32> = HashMap::new();
+    let mut rank: HashMap<(OutSecId, [u8; 16]), u32> = HashMap::default();
     for (i, off) in frag_off.as_mut_slice().iter_mut().enumerate() {
         let frag = FragId::from_index(i as u32);
         if *off == MergeMap::NONE {

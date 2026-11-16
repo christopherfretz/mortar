@@ -234,7 +234,7 @@ fn run(
                 _ => None,
             });
             let changed_id = changed_id.ok_or("the changed file is not an object of this link")?;
-            let changed = |f: mortar_core::id::FileId| f == changed_id;
+            let changed = move |f: mortar_core::id::FileId| f == changed_id;
             let keys = mortar_incr::capture::Keys::partial(link, &changed)?;
             t1 = std::time::Instant::now();
             mortar_incr::capture::replay_by_position(
