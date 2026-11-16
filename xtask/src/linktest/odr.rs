@@ -34,13 +34,14 @@ const HOLE: &str = "@@hole@@";
 /// The one-definition-rule kinds the code has (`spec/diag.md` §3.1, the
 /// area of that name), each with a value whose text fields are [`HOLE`].
 /// The package that adds a kind of the area adds it here (WP-071 the
-/// `meta-` kinds, WP-073 the record checks').
+/// `meta-` kinds, WP-073 the record checks', WP-076 `odr-archive-shadow`).
 fn kinds() -> Vec<Kind> {
     let h = || HOLE.to_owned();
     // `odr-type-mismatch` before `odr-violation`: the first wording that
     // fits names the kind, and "type x violates ..." fits both.
     vec![
         Kind::OdrAbiMismatch { option: h(), first: h(), second: h() },
+        Kind::OdrArchiveShadow { name: h() },
         Kind::OdrContentsMismatch { name: h() },
         Kind::OdrDeclarationMismatch { name: h() },
         Kind::OdrInternalReference { name: h() },

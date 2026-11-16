@@ -1,0 +1,64 @@
+# K17's archive (spec/odr.md O-23) where odr-archive-shadow is not
+# reported: without --odr-check-archives (the members are never read);
+# under --odr=off, which runs no check (O-41); with a member that a later
+# reference extracts from a thin archive, beside a member that is not ELF
+# (the member is live, and only the record checks, under --odr=strict,
+# compare it). No directive: no link reports a one-definition-rule
+# diagnostic.
+#@ spec: odr.md "O-20", "O-23", "O-41"
+#@ requires: g++
+
+cxx -O0 a.cc -o a0.o
+meta a.meta a0.o -o a.o
+cxx -O0 m.cc -o m0.o
+meta m.meta m0.o -o m.o
+cxx -O0 b.cc -o b.o
+ar rcs libk17.a m.o
+ar rcs libb.a b.o
+ar rcsT libthin.a m.o notelf.txt
+cxx -O0 main.cc -o main.o
+cxx -O0 main2.cc -o main2.o
+link(bfd,lld,mold) g++ -static -no-pie main.o a.o libk17.a -o prog
+link(mortar) g++ -static -no-pie main.o a.o libk17.a -o prog
+run prog
+  stdout: 1
+link(mortar) g++ -static -no-pie main.o a.o libk17.a -Wl,--odr=off -Wl,--odr-check-archives -o prog
+run prog
+  stdout: 1
+link(bfd,lld,mold) g++ -static -no-pie main2.o a.o libb.a libthin.a -o prog2
+link(mortar) g++ -static -no-pie main2.o a.o libb.a libthin.a -Wl,--odr-check-archives -o prog2
+run prog2
+  stdout: 1 1
+
+#--- a.cc
+__attribute__((noinline)) inline int f() { return 1; }
+int fa() { return f(); }
+#--- a.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-076 model)"
+summary name=std value=c++17
+definition anchor=_Z1fv hash=11111111111111111111111111111111 class=1 flags=1 file=h.h line=1
+#--- m.cc
+__attribute__((noinline)) inline int f() { return 2; }
+int fm() { return 1; }
+#--- m.meta
+summary name=lang value=c++
+summary name=odr.scheme value=model-1
+summary name=producer value="hand (WP-076 model)"
+summary name=std value=c++17
+definition anchor=_Z1fv hash=22222222222222222222222222222222 class=1 flags=1 file=h.h line=1
+#--- b.cc
+int fm();
+int fb() { return fm(); }
+#--- notelf.txt
+not an object
+#--- main.cc
+#include <cstdio>
+int fa();
+int main() { std::printf("%d\n", fa()); }
+#--- main2.cc
+#include <cstdio>
+int fa();
+int fb();
+int main() { std::printf("%d %d\n", fa(), fb()); }

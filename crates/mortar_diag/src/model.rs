@@ -366,6 +366,10 @@ pub enum Kind {
     /// of `name` whose type does not match its definition or another
     /// declaration.
     OdrDeclarationMismatch { name: String },
+    /// `odr-archive-shadow` (`spec/odr.md` O-23, `--odr-check-archives`):
+    /// an archive member that is not linked defines `name` differently
+    /// from the definition the link uses.
+    OdrArchiveShadow { name: String },
     /// `odr-internal-reference` (`spec/odr.md` O-16): the inline entity
     /// `name` uses an entity with internal linkage.
     OdrInternalReference { name: String },
@@ -610,6 +614,7 @@ impl Kind {
             Self::OdrAbiMismatch { .. } => "odr-abi-mismatch",
             Self::OdrContentsMismatch { .. } => "odr-contents-mismatch",
             Self::OdrDeclarationMismatch { .. } => "odr-declaration-mismatch",
+            Self::OdrArchiveShadow { .. } => "odr-archive-shadow",
             Self::OdrInternalReference { .. } => "odr-internal-reference",
             Self::OdrIsaMismatch { .. } => "odr-isa-mismatch",
             Self::OdrSizeMismatch { .. } => "odr-size-mismatch",
@@ -664,6 +669,7 @@ impl Kind {
             | Self::OdrContentsMismatch { name }
             | Self::OdrDeclarationMismatch { name }
             | Self::OdrInternalReference { name }
+            | Self::OdrArchiveShadow { name }
             | Self::OdrIsaMismatch { name }
             | Self::OdrSizeMismatch { name }
             | Self::OdrStrongAndComdat { name }
@@ -1052,6 +1058,7 @@ mod tests {
             Kind::IncrementalFileClash { .. } => 72,
             Kind::Refused { .. } => 73,
             Kind::InternalError { .. } => 74,
+            Kind::OdrArchiveShadow { .. } => 75,
         }
     }
 
@@ -1112,6 +1119,7 @@ mod tests {
             Kind::OdrContentsMismatch { name: s() },
             Kind::OdrDeclarationMismatch { name: s() },
             Kind::OdrInternalReference { name: s() },
+            Kind::OdrArchiveShadow { name: s() },
             Kind::OdrIsaMismatch { name: s() },
             Kind::OdrSizeMismatch { name: s() },
             Kind::OdrStrongAndComdat { name: s() },

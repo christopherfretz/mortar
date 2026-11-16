@@ -9,6 +9,7 @@
 //! `.note.mason` table's rows (O-50).
 #![forbid(unsafe_code)]
 
+pub mod archives;
 pub mod dynamic;
 pub mod foreign;
 pub mod records;
@@ -110,6 +111,8 @@ pub fn switches(odr: &Odr) -> Switches {
         inlined_only: odr.mode == OdrMode::Strict,
         keepers: false,
         declared: false,
+        archives: Check::ArchiveShadow.runs(odr),
+        types: false,
     }
 }
 
@@ -126,7 +129,8 @@ fn stats_line(odr: Odr, c: &Counts, r: &records::Counts, micros: u128) -> String
         "mortar: odr-stats: mode {}; units {}, rows {} (kind 1 {}, kind 2 {}, kind 3 {}, kind 5 \
          {}), schemes {}, pairs not compared {}, type groups compared across schemes {}, ambiguous anchors {}, unanchored rows {}, \
          system -std differences {}, rows set aside {}, container bytes read {}, shared-object \
-         tables {} ({} rows), record findings {}; files with COMDAT copies {}, groups {}, copies {}, definitions {}; \
+         tables {} ({} rows), archive members {} ({} units, {} bytes, {} rows compared), record \
+         findings {}; files with COMDAT copies {}, groups {}, copies {}, definitions {}; \
          findings W1 {}, W2 {}, W3 {}, W4 {}; time {}.{:03} ms",
         odr.mode.word(),
         r.units,
@@ -145,6 +149,10 @@ fn stats_line(odr: Odr, c: &Counts, r: &records::Counts, micros: u128) -> String
         r.bytes,
         r.tables,
         r.table_rows,
+        r.archive_members,
+        r.archive_units,
+        r.archive_bytes,
+        r.archive_compared,
         r.findings,
         c.files,
         c.groups,
