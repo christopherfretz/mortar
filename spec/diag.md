@@ -157,7 +157,7 @@ symbol (every `{name}` of the area "symbols", `relocation-incompatible`,
 twice. The areas, in order: command line (`conflicting-options` to
 `unknown-option`), files (`ambiguous-sysroot-path` to
 `written-file-clash`), file formats, symbols (`archive-backref`
-to `version-reassigned`), one-definition rule (`meta-malformed` to
+to `versioned-export`), one-definition rule (`meta-malformed` to
 `odr-vtable-rtti-mismatch`, M6), relocations, layout (`executable-stack` to
 `section-conflict`), incremental linking (`incremental-not-reproducible`
 to `incremental-file-clash`), refusals, internal. The wording column is the message of §5.2, complete: nothing
@@ -197,8 +197,10 @@ is added before or after it.
 | `common-alignment` | `CommonAlignment { name }` | `definition of {name} is less aligned than its common symbols` | own |
 | `common-larger-than-definition` | `CommonLargerThanDefinition { name }` | `common symbol {name} is larger than its definition` | own |
 | `common-overridden` | `CommonOverridden { name }` | `common symbol {name} is overridden by a definition` | own |
+| `copy-of-locally-bound-definition` | `CopyOfLocallyBoundDefinition { name, file }` | `copy relocation against {name}, which {file} binds to itself; the program and {file} would use two different objects` | own (`spec/dyn.md` D-43a; M4, WP-122) |
 | `discarded-section-reference` | `DiscardedSectionReference { name }` | `relocation refers to a symbol in a discarded section: {name}` | lld |
 | `duplicate-symbol` | `DuplicateSymbol { name }` | ``duplicate symbol: {name} (multiple definition of `{name}')`` | lld, with GNU ld's phrase (§8.3) |
+| `duplicate-version-pattern` | `DuplicateVersionPattern { pattern, first, second }` | `{pattern} is listed as global in version {first} and local in version {second}` | own (GNU ld: `duplicate expression`; `spec/dyn.md` D-114; M4, WP-125) |
 | `entry-not-found` | `EntryNotFound { name }` | `cannot find entry symbol {name}` | GNU ld, lld (their lines go on: `; defaulting to …`, `; not setting start address`) |
 | `gnu-warning` | `GnuWarning { text }` | `{text}` | GNU ld (the section's text) |
 | `linker-symbol-redefined` | `LinkerSymbolRedefined { name }` | `cannot redefine linker-defined symbol: {name}` | lld's (`cannot redefine linker defined symbol`) |
@@ -206,9 +208,12 @@ is added before or after it.
 | `non-exported-symbol` | `NonExportedSymbol { name }` | `non-exported symbol referenced by a shared object: {name}` | own |
 | `required-symbol` | `RequiredSymbol { name }` | `required symbol not defined: {name}` | own (GNU ld: ``required symbol `x' not defined``) |
 | `tls-mismatch` | `TlsMismatch { name }` | `TLS attribute mismatch: {name}` | lld |
+| `undefined-init-symbol` | `UndefinedInitSymbol { name }` | `-init/-fini symbol {name} is not defined` | own (`spec/dyn.md` D-102 rows 3-4: GNU ld, lld and mold omit the tag silently; M4, WP-128; record `spec/landed/dyn/WP-116.md`, Q26) |
 | `undefined-symbol` | `UndefinedSymbol { name }` | ``undefined symbol: {name} (undefined reference to `{name}')`` | lld, with GNU ld's phrase (§8.3) |
 | `undefined-version` | `UndefinedVersion { name, version }` | `version {version} of {name} is not defined` | own |
 | `version-reassigned` | `VersionReassigned { name, first, second }` | `{name} is assigned to version {first} and {second}; {first} is kept` | own |
+| `version-script-undefined-name` | `VersionScriptUndefinedName { name, version }` | `version script assigns {name} to {version}, but no file defines it` | own (`spec/dyn.md` D-114: GNU ld silent, lld refuses; M4, WP-125) |
+| `versioned-definition-hidden` | `VersionedDefinitionHidden { name, version }` | `{name}@{version} is made local by version {version}'s local: entries; executables linked against {name}@{version} will not load` | own (`spec/resolve.md` §9.7 rule 12; M4, WP-125) |
 | `versioned-export` | `VersionedExport { name, version }` | `versioned definition {name}@@{version} cannot be exported (version definitions are not supported)` | own (`spec/dyn.md` D-27: GNU ld writes a verdef, lld and mold export it unversioned; M4) |
 | `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | own |
 | `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | own |
@@ -227,6 +232,7 @@ is added before or after it.
 | `canonical-plt-in-pie` | `CanonicalPltInPie { r_type, name }` | ``relocation {r_type} against symbol `{name}' cannot be used in a position-independent executable; recompile with -fPIE, or link with -no-pie`` | GNU ld (`spec/dyn.md` D-44) |
 | `copy-relocation-against-protected` | `CopyRelocationAgainstProtected { name, file }` | ``copy relocation against non-copyable protected symbol `{name}' in {file}`` | GNU ld (`spec/dyn.md` D-18) |
 | `copy-relocation-of-zero-size` | `CopyRelocationOfZeroSize { name }` | `cannot create a copy relocation for symbol {name}` | lld (`spec/dyn.md` D-42) |
+| `non-pic-in-shared-object` | `NonPicInSharedObject { r_type, name, file }` | ``relocation {r_type} against symbol `{name}' which may bind externally can not be used when making a shared object; recompile with -fPIC`` | GNU ld (`spec/dyn.md` D-117; M4, WP-117 the table and the address-level rule, WP-119 the analysis) |
 | `relocation-incompatible` | `RelocationIncompatible { r_type, name, reason }` | `relocation {r_type} cannot be used against symbol '{name}'; {reason}` | lld's shape, with a reason (§3.2) |
 | `relocation-misaligned` | `RelocationMisaligned { r_type, value, align }` | `improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes` | lld |
 | `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation truncated to fit: {r_type} against '{name}': {value} is not in [{min}, {max}]` | lld's value and bounds; GNU ld's phrase |
@@ -342,7 +348,9 @@ is added before or after it.
   `archive-choice` are emitted only under `--warn-backrefs`
   (`spec/resolve.md` §4.6); `multiple-common` and `common-overridden` only
   under `--warn-common`. `entry-not-found`, `common-*`, `archive-*` and
-  `version-reassigned` are warnings, the others errors. `gnu-warning`'s
+  `version-reassigned`, `version-script-undefined-name` and
+  `versioned-definition-hidden` are warnings, `copy-of-locally-bound-definition`
+  an error or a warning as `spec/dyn.md` D-43a says, the others errors. `gnu-warning`'s
   `{text}` is the section's text, as written, after §5.5; it names no
   symbol for §5.4.
 - `cet-report` (`spec/x64.md` X-43, R-11): `{property}` is `IBT` or
@@ -418,6 +426,36 @@ is added before or after it.
   symbol) are `spec/odr.md` §9.1's. Never a `refused`: a finding is not a
   limit of mortar's.
 
+- **Shared-object output (M4; R-D10, moved from §3.4 by WP-116).**
+  `non-pic-in-shared-object`: for a cell of `spec/dyn.md` D-117's table
+  `{name}` is the relocation's symbol. For D-117's address-level rule
+  `{name}` is the preemptible definition the address lies in, and a note
+  names the relocation's own symbol and place; at a boundary (D-117's
+  boundary rule) and before the start of a local object (D-117's
+  "before the start" paragraph) the note adds `-fdata-sections` (each
+  object in its own section), and before the start also `do not form
+  an address before an object`. For D-117's analysis the note names the
+  function, the instruction's offset and the relocation that formed the
+  address. For hod's `reloc-model` row (`spec/meta.md` MT-26, H-3) the
+  note names the object and the row. `{file}` is the input object, also
+  the head line's place; it is not in the message. `{name}` goes through
+  §5.4. `copy-of-locally-bound-definition` is a warning where D-43a
+  says so, with the note `{name} is read-only in {file}: two equal
+  copies`. `version-reassigned` (above) is what `spec/resolve.md` §9.7
+  rule 7 uses; it needs no new kind. `undefined-init-symbol` (D-102
+  rows 3-4) is an error of an explicit `-init`/`-fini`; the default
+  `_init`/`_fini` undefined omits the tag silently (D-30 rows 3-4).
+- Names `spec/dyn.md` §17 uses that are **not** kinds:
+  `local-exec-tls-in-shared-object` (D-119) is
+  `relocation-incompatible` with the existing reason `LocalExecInShared`
+  ("local-exec TLS in a shared object"); `ifunc-in-i386-shared-object`
+  (D-130) is a refusal, class `feature`, that name (§4.2);
+  `preinit-array-in-shared-object` (D-102 rows 5-6) is a refusal, class
+  `feature`, name `.preinit_array in a shared object` (glibc runs the
+  pre-initialisers of the executable only, and no line in the census
+  has one: record `spec/landed/dyn/WP-110.md` §E Q26, decided by
+  WP-116).
+
 ### 3.3 Adding a kind
 
 A work package that needs a new kind adds, in one change: the variant, its
@@ -440,51 +478,19 @@ id in `Kind::id` and `Kind::IDS`, its message in the renderer, its row in
 `Kind` is `#[non_exhaustive]`: adding a kind does not break a crate that
 matches on kinds.
 
-### 3.4 Planned kinds of shared-object output (M4)
+### 3.4 Kinds of shared-object output (M4)
 
-Request R-D10 of `spec/dyn.md` §18.4, applied by WP-115. These kinds are
-**planned**: none is in `Kind::IDS`, so none is in §3.1's table, which
-lists exactly the implemented kinds (`tests/spec_tables.rs`). WP-116
-moves each row into §3.1 at its place in its area (§3.3), with its
-variant and its test, and deletes it here; until then a `Shared` link
-cannot reach them (`-shared` is refused by the front, `spec/cli.md`
-§4.2). The package column names the first package that emits it.
-
-| planned id | variant | severity | message | wording from | area | emitted by |
-|---|---|---|---|---|---|---|
-| `copy-of-locally-bound-definition` | `CopyOfLocallyBoundDefinition { name, file }` | error; warning when `spec/dyn.md` D-43's R-D43 clause says so, with the note `{name} is read-only in {file}: two equal copies` | `copy relocation against {name}, which {file} binds to itself; the program and {file} would use two different objects` | own | symbols | WP-122 |
-| `duplicate-version-pattern` | `DuplicateVersionPattern { pattern, first, second }` | error | `{pattern} is listed as global in version {first} and local in version {second}` | own (GNU ld: `duplicate expression`) | symbols | WP-125 |
-| `version-script-undefined-name` | `VersionScriptUndefinedName { name, version }` | warning | `version script assigns {name} to {version}, but no file defines it` | own | symbols | WP-125 |
-| `versioned-definition-hidden` | `VersionedDefinitionHidden { name, version }` | warning | `{name}@{version} is made local by version {version}'s local: entries; executables linked against {name}@{version} will not load` | own | symbols | WP-125 |
-| `non-pic-in-shared-object` | `NonPicInSharedObject { r_type, name, file }` | error | ``relocation {r_type} against symbol `{name}' which may bind externally can not be used when making a shared object; recompile with -fPIC`` | GNU ld | relocations | WP-117 (the table and the address-level rule), WP-119 (the analysis) |
-
-Notes, for §3.2 when the rows move:
-
-- `non-pic-in-shared-object`: for a cell of `spec/dyn.md` D-117's table
-  `{name}` is the relocation's symbol. For D-117's address-level rule
-  `{name}` is the preemptible definition the address lies in, and a note
-  names the relocation's own symbol and place; at a boundary (D-117's
-  boundary rule) and before the start of a local object (D-117's
-  "before the start" paragraph) the note adds `-fdata-sections` (each
-  object in its own section), and before the start also `do not form
-  an address before an object`. For D-117's analysis the note names the
-  function, the instruction's offset and the relocation that formed the
-  address. For hod's `reloc-model` row (`spec/meta.md` MT-26, H-3) the
-  note names the object and the row. `{name}` goes through §5.4.
-- `version-reassigned` exists (§3.1) and is what resolve §9.7 rule 7
-  uses; it needs no new kind.
-- Names `spec/dyn.md` §17 uses that are **not** kinds: `local-exec-tls-in-
-  shared-object` (D-119) is `relocation-incompatible` with the existing
-  reason `LocalExecInShared` ("local-exec TLS in a shared object");
-  `ifunc-in-i386-shared-object` (D-130) is a refusal, class `feature`,
-  that name (§4.2). Still open, for WP-116 to decide (record
-  `spec/landed/dyn/WP-115.md`): `undefined-init-symbol` (D-102: an
-  explicit `-init`/`-fini` naming an undefined symbol; recommended an
-  error kind of the symbols area, own wording `-init/-fini symbol {name}
-  is not defined`) and `preinit-array-in-shared-object` (D-102;
-  recommended a refusal, class `feature`, name `.preinit_array in a
-  shared object`, since glibc never runs it and no line in the census
-  has one).
+Request R-D10 of `spec/dyn.md` §18.4 (applied by WP-115 as planned
+rows here) was **moved into §3.1 by WP-116** (record
+`spec/landed/dyn/WP-116.md`): `copy-of-locally-bound-definition`,
+`duplicate-version-pattern`, `version-script-undefined-name`,
+`versioned-definition-hidden` and `non-pic-in-shared-object` are rows of
+§3.1 at their places in their areas, with their variants and their
+tests (`tests/kinds.rs`), and so is `undefined-init-symbol` (record
+§E Q26, decided by WP-116). Each is emitted by the package its row
+names, once `-shared` reaches it (`spec/cli.md` §4.2): until then no
+link emits them. Their notes are §3.2's; the names `spec/dyn.md` §17
+uses that are not kinds are there too.
 
 ## 4. Refusals
 

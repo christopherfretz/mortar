@@ -418,6 +418,26 @@ fn common_overridden() {
     assert_eq!(symbol_text(kind), "ld: error: common symbol x is overridden by a definition\n");
 }
 
+// spec: diag.md §3.1 `copy-of-locally-bound-definition`, §3.2 (dyn.md
+// D-43a: an error, or a warning with its note)
+#[test]
+fn copy_of_locally_bound_definition() {
+    let kind = Kind::CopyOfLocallyBoundDefinition { name: s("counter"), file: s("libc1.so") };
+    assert_eq!(kind.id(), "copy-of-locally-bound-definition");
+    assert_eq!(
+        symbol_text(kind.clone()),
+        "ld: error: copy relocation against counter, which libc1.so binds to itself; the program \
+         and libc1.so would use two different objects\n"
+    );
+    let diag = Diagnostic::warning(kind).note("counter is read-only in libc1.so: two equal copies");
+    assert_eq!(
+        diag.render(&Style::plain("ld")),
+        "ld: warning: copy relocation against counter, which libc1.so binds to itself; the \
+         program and libc1.so would use two different objects\n\
+         >>> counter is read-only in libc1.so: two equal copies\n"
+    );
+}
+
 // spec: diag.md §3.1 `discarded-section-reference`
 #[test]
 fn discarded_section_reference() {
@@ -449,6 +469,20 @@ fn duplicate_symbol() {
         "ld: error: duplicate symbol: twice (multiple definition of `twice')\n\
          >>> defined in dup1.o:(.text+0x0)\n\
          >>> defined in libdup.a(dup2.o):(.text+0x0)\n"
+    );
+}
+
+// spec: diag.md §3.1 `duplicate-version-pattern` (dyn.md D-114)
+#[test]
+fn duplicate_version_pattern() {
+    let kind =
+        Kind::DuplicateVersionPattern { pattern: s("fo*"), first: s("V1"), second: s("V2") };
+    assert_eq!(kind.id(), "duplicate-version-pattern");
+    // A pattern is not a symbol: no demangling hook.
+    assert_eq!(kind.symbol(), None);
+    assert_eq!(
+        text(kind),
+        "ld: error: fo* is listed as global in version V1 and local in version V2\n"
     );
 }
 
@@ -519,6 +553,15 @@ fn tls_mismatch() {
     assert_eq!(symbol_text(kind), "ld: error: TLS attribute mismatch: t\n");
 }
 
+// spec: diag.md §3.1 `undefined-init-symbol` (dyn.md D-102 rows 3-4; record
+// WP-110 §E Q26 as decided by WP-116)
+#[test]
+fn undefined_init_symbol() {
+    let kind = Kind::UndefinedInitSymbol { name: s("my_init") };
+    assert_eq!(kind.id(), "undefined-init-symbol");
+    assert_eq!(symbol_text(kind), "ld: error: -init/-fini symbol my_init is not defined\n");
+}
+
 // spec: diag.md §3.1 `undefined-symbol`, §3.2 (one per key, its references
 // as context; GNU ld's phrase), §8.3
 #[test]
@@ -566,6 +609,36 @@ fn version_reassigned() {
     let kind = Kind::VersionReassigned { name: s("foo"), first: s("V1"), second: s("V2") };
     assert_eq!(kind.id(), "version-reassigned");
     assert_eq!(symbol_text(kind), "ld: error: foo is assigned to version V1 and V2; V1 is kept\n");
+}
+
+// spec: diag.md §3.1 `version-script-undefined-name` (dyn.md D-114, a
+// warning)
+#[test]
+fn version_script_undefined_name() {
+    let kind = Kind::VersionScriptUndefinedName { name: s("nosuch"), version: s("ZLIB_1.2.0") };
+    assert_eq!(kind.id(), "version-script-undefined-name");
+    assert_eq!(
+        symbol_text(kind),
+        "ld: error: version script assigns nosuch to ZLIB_1.2.0, but no file defines it\n"
+    );
+}
+
+// spec: diag.md §3.1 `versioned-definition-hidden` (resolve.md §9.7 rule
+// 12, a warning); §3.1's introduction: `{name}` twice, both demangled
+#[test]
+fn versioned_definition_hidden() {
+    let kind = Kind::VersionedDefinitionHidden { name: s("foo"), version: s("V1") };
+    assert_eq!(kind.id(), "versioned-definition-hidden");
+    assert_eq!(
+        symbol_text(kind),
+        "ld: error: foo@V1 is made local by version V1's local: entries; executables linked \
+         against foo@V1 will not load\n"
+    );
+    let upper = |name: &str| Some(name.to_uppercase());
+    let kind = Kind::VersionedDefinitionHidden { name: s("foo"), version: s("V1") };
+    let shown = Diagnostic::warning(kind).render(&Style { prog: "ld", color: false, demangle: &upper });
+    assert!(shown.starts_with("ld: warning: FOO@V1 is made local"), "{shown}");
+    assert!(shown.contains("linked against FOO@V1 will not load"), "{shown}");
 }
 
 // spec: diag.md §3.1 `versioned-export` (dyn.md D-27)
@@ -687,6 +760,33 @@ fn copy_relocation_of_zero_size() {
     assert_eq!(symbol_text(kind), "ld: error: cannot create a copy relocation for symbol zsym\n");
 }
 
+// spec: diag.md §3.1 `non-pic-in-shared-object`, §3.2 (dyn.md D-117: the
+// address-level rule's note)
+#[test]
+fn non_pic_in_shared_object() {
+    let kind = Kind::NonPicInSharedObject {
+        r_type: s("R_AARCH64_ADR_PREL_PG_HI21"),
+        name: s("gvar"),
+        file: s("c.o"),
+    };
+    assert_eq!(kind.id(), "non-pic-in-shared-object");
+    assert_eq!(
+        symbol_text(kind.clone()),
+        "ld: error: relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `gvar' which may bind \
+         externally can not be used when making a shared object; recompile with -fPIC\n"
+    );
+    let diag = Diagnostic::error(kind)
+        .at(Place::section(FileRef::new("c.o"), ".text", 0xc))
+        .note("the address is .data+0x8, inside gvar; compile with -fdata-sections");
+    assert_eq!(
+        diag.render(&Style::plain("ld")),
+        "ld: error: c.o:(.text+0xc): relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `gvar' \
+         which may bind externally can not be used when making a shared object; recompile \
+         with -fPIC\n\
+         >>> the address is .data+0x8, inside gvar; compile with -fdata-sections\n"
+    );
+}
+
 // spec: diag.md §3.1 `text-relocation` (dyn.md D-47)
 #[test]
 fn text_relocation() {
@@ -747,6 +847,17 @@ fn symbol_kinds_report_their_symbol() {
         Kind::VersionReassigned { name: s("_Z1lv"), first: s("V1"), second: s("V2") }.symbol(),
         Some("_Z1lv")
     );
+    // The kinds of shared-object output (§3.1, M4).
+    let shared = [
+        Kind::CopyOfLocallyBoundDefinition { name: s("_Z1mv"), file: s("l.so") },
+        Kind::UndefinedInitSymbol { name: s("_Z1mv") },
+        Kind::VersionScriptUndefinedName { name: s("_Z1mv"), version: s("V1") },
+        Kind::VersionedDefinitionHidden { name: s("_Z1mv"), version: s("V1") },
+        Kind::NonPicInSharedObject { r_type: s("R_AARCH64_ABS64"), name: s("_Z1mv"), file: s("a.o") },
+    ];
+    for kind in shared {
+        assert_eq!(kind.symbol(), Some("_Z1mv"), "{kind:?}");
+    }
     assert_eq!(Kind::NoInputFiles.symbol(), None);
 }
 
