@@ -1,13 +1,15 @@
 # WIP — WP-058 (the Mason lane on the dynamic line)
 
-Done:
-- `tests/mason/lane/kiln++`: `dyn-<linker>` modes keep kiln's dynamic line, add `-B` lane ld.
-- `tests/mason/lane/ld/mortar/ld`: passes the link's words to `xtask mason verify` (stage 3).
-- `xtask/src/mason.rs`: `plumb(.., line)`, `verify <out> <map> [<line>]`.
-- `xtask/src/mason/libcxx.rs`: modes `dyn-bfd|lld|mold|mortar`, `reference_of`, baseline on both mortar modes.
-- `xtask/src/mason/programs.rs`: `Link` (Static/Pie/NoPie), dynamic variants, qemu `-L`, x86-64 dynamic verified.
+Done (committed): dyn-* modes (kiln++ shim, libcxx.rs), mortar shim passes the line to
+`xtask mason verify`, programs dynamic variants (171 cells hold), census kiln x86-64 row
+(56 kiln lines pass), `ci` step `mason` (sample `ci`, 11 tests, mortar + dyn-mortar; full gate
+adds programs), collect-before-remove fix in libcxx.rs.
 
-Half-done: programs table run; suite not started.
+Running: full suite dyn-bfd + dyn-mortar, shards 1-6 of 6, /tmp/mortar-wp058-279433/shards.sh
+(results /tmp/mortar-wp058-279433/full/d-<k>.tsv). Shard 1: 1423/1423, 0 DIFFERENT, 1201 clean.
 
-Next: programs table -> suite sample -> full suite shards (scratch /tmp/mortar-wp058-279433) ->
-census kiln x86-64 row -> ci step -> record spec/landed/mason/WP-058.md.
+Learned: no libc++1-22 runtime in Debian trixie (libc++-22-dev depends on libc++1-19): a
+shared-libc++ mode needs a libc++ 22 runtime from elsewhere.
+
+Next: lld/mold dyn on shards 1,2; typical-link bench (/tmp/mortar-wp058-279433/typical);
+record spec/landed/mason/WP-058.md with xz data; merge main; gate; push; hosted run.
