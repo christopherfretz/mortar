@@ -115,7 +115,7 @@ fn s9_4_mutated_maps() {
             let base = link.parse_map();
             let files = link.inputs(&base);
             let out = link.output_bytes();
-            let mortar = mortar_plumb::map::mortar::write(&base);
+            let mortar = mortar_plumb::map::mortar::write(&with_line(&base));
             for (format, text) in
                 [(link.linker.format(), link.map_text()), (Format::Mortar, mortar)]
             {
@@ -141,4 +141,19 @@ fn s9_4_mutated_maps() {
             }
         }
     }
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &mortar_plumb::Map) -> mortar_plumb::Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }

@@ -75,10 +75,15 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
     let located = locate::locate(map, inputs, &image);
     report.findings.extend(located.findings);
     let objs = located.objs;
-    let args = ctx
-        .line
-        .clone()
-        .or_else(|| map.dynamic.as_ref().map(|d| d.args.clone()).filter(|a| !a.is_empty()));
+    // A mortar map's line is its `arg` records (§3.2a); a reference's is
+    // the caller's.
+    let args = if map.format == crate::Format::Mortar {
+        (!map.args.is_empty()).then(|| {
+            map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>()
+        })
+    } else {
+        ctx.line.clone()
+    };
     let Some(args) = args else {
         report.findings.push(Finding::new(
             Rule::Dyn(2),
@@ -87,10 +92,22 @@ pub fn verify_with(output: &[u8], inputs: &[Input<'_>], map: &Map, ctx: &Ctx<'_>
         report.sort();
         return report;
     };
-    let line = Line::parse(&args, ctx.files);
+    let mut line = Line::parse(&args, ctx.files);
     // Stage 4 (§13) runs before stage 3's early returns.
     let mut meta_cov = crate::report::MetaCoverage::default();
-    let meta = crate::odrtable::check(&image, &objs, map, Some(&args), Some(&line), &mut meta_cov);
+    // The options of §3.2a's table: for a mortar map, from its words by
+    // the one reader (P-D4's `-z execstack` included).
+    let opts = match crate::opts::of(map) {
+        Some(o) => {
+            report.findings.extend(crate::opts::unread_findings(&o));
+            line.execstack = o.execstack;
+            o
+        }
+        None => crate::opts::Options::read(
+            &args.iter().map(|w| w.as_bytes().to_vec()).collect::<Vec<_>>(),
+        ),
+    };
+    let meta = crate::odrtable::check(&image, &objs, map, Some(&opts), Some(&line), &mut meta_cov);
     report.findings.extend(meta);
     report.coverage.meta = meta_cov.clone();
     // P-D1: a link stage 3 does not model is reported by name, as one

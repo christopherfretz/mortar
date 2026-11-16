@@ -279,7 +279,11 @@ impl Pair {
             if m.format != Format::Mortar {
                 return m.clone();
             }
-            mortar_plumb::map::parse(Format::Mortar, &mortar_plumb::map::mortar::write(m)).unwrap()
+            mortar_plumb::map::parse(
+                Format::Mortar,
+                &mortar_plumb::map::mortar::write(&with_line(m)),
+            )
+            .unwrap()
         };
         let (xm, fm) = (text(&x.map), text(&f.map));
         let inputs: Vec<Input<'_>> =
@@ -872,8 +876,8 @@ fn hostile_pairs_never_panic() {
         let f = p.link(&["main.o", "a.o", "b.o"], &[]);
         let inputs: Vec<Input<'_>> =
             p.files.iter().map(|(q, b)| Input { path: q, bytes: b }).collect();
-        let xt = mortar_plumb::map::mortar::write(&x.map);
-        let ft = mortar_plumb::map::mortar::write(&f.map);
+        let xt = mortar_plumb::map::mortar::write(&with_line(&x.map));
+        let ft = mortar_plumb::map::mortar::write(&with_line(&f.map));
         let xm = mortar_plumb::map::parse(Format::Mortar, &xt).unwrap();
         let fm = mortar_plumb::map::parse(Format::Mortar, &ft).unwrap();
         let n = x.output.len();
@@ -898,12 +902,29 @@ fn hostile_pairs_never_panic() {
         let e = mortar_plumb::equiv::check(&f.output, &xm, &x.output, &fm, &inputs);
         assert!(!e.clean(), "{arch:?}: swapped outputs are clean");
         let other = p.link(&["main.o", "a.o", "b.o", "pad.o"], &[]);
-        let om =
-            mortar_plumb::map::parse(Format::Mortar, &mortar_plumb::map::mortar::write(&other.map))
-                .unwrap();
+        let om = mortar_plumb::map::parse(
+            Format::Mortar,
+            &mortar_plumb::map::mortar::write(&with_line(&other.map)),
+        )
+        .unwrap();
         let e = mortar_plumb::equiv::check(&x.output, &xm, &other.output, &om, &inputs);
         assert!(!e.clean(), "{arch:?}: a foreign F is clean");
         let e = mortar_plumb::equiv::check(&x.output, &xm, &[], &fm, &inputs);
         assert!(!e.clean(), "{arch:?}: an empty F is clean");
     }
+}
+
+/// `map` with a line (`spec/plumb.md` §3.2a: every mortar map states its
+/// link's words, and mortar's reader refuses one without). A reference's
+/// map has none: these links gave none of the options §3.2a's rules read,
+/// so the map's input paths stand for the words.
+fn with_line(map: &Map) -> Map {
+    let mut m = map.clone();
+    if m.args.is_empty() {
+        m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        if m.args.is_empty() {
+            m.args.push(b"a.o".to_vec());
+        }
+    }
+    m
 }

@@ -1615,6 +1615,13 @@ random input's).
       alignment the copy was placed at (`spec/dyn.md` D-42);
   - `define` per symbol of file 0 that layout defined
     (`spec/layout.md` §13), with its value;
+  - `arg` per word of the link's command line as mortar received it
+    (after response files are expanded, `spec/cli.md` §2.1), in order,
+    in every map, static or dynamic (WP-102; before it only a dynamic
+    link's map had them): the verifier reads the options that decide its
+    rules from them (`spec/plumb.md` §3.2a). They take their place in
+    the dynamic-records group (after `relro`, before `needed`), which a
+    static map holds no other record of;
   - non-alloc input sections (R-9, applied by WP-028b; written by
     WP-027b): `nplace` per non-alloc input section placed whole, with
     its output section's name and its offset from that section's start;

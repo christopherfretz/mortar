@@ -3,7 +3,7 @@
 //! llvm-readelf) without a warning, and eu-elflint with only the findings
 //! listed here, each with its reason.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mortar_testutil::{run, tool};
 
@@ -36,6 +36,102 @@ pub fn verify(out: &Path, map: &Path, dir: &Path) -> Vec<mortar_plumb::Finding> 
     let inputs: Vec<mortar_plumb::Input<'_>> =
         files.iter().map(|(p, b)| mortar_plumb::Input { path: p, bytes: b }).collect();
     mortar_plumb::verify(&std::fs::read(out).expect("the output"), &inputs, &parsed).findings
+}
+
+/// A change to a map's line (its `arg` records, `spec/plumb.md` §3.2a):
+/// the mutants of WP-102, which show that a rule reading an option
+/// follows the map's line. The words are the records' tokens (an option
+/// has no byte the token escapes).
+#[derive(Debug, Clone, Copy)]
+pub enum LineEdit {
+    /// The words, consecutive, taken out wherever they are.
+    Remove(&'static [&'static str]),
+    /// The words added at the end of the line (the last one wins).
+    Add(&'static [&'static str]),
+}
+
+/// [`verify`] with the map's line changed by `edit`: the map is written
+/// next to `map` as `<map>.edited`, the `arg` records in their place.
+///
+/// # Panics
+///
+/// As [`verify`]; and if the map has no `arg` record, or a word to remove
+/// is not in its line.
+pub fn verify_line(
+    out: &Path,
+    map: &Path,
+    dir: &Path,
+    edit: LineEdit,
+) -> Vec<mortar_plumb::Finding> {
+    let text = std::fs::read_to_string(map).expect("the map");
+    let mut kept: Vec<String> = Vec::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut at = None;
+    for l in text.lines() {
+        if let Some(w) = l.strip_prefix("arg ") {
+            at.get_or_insert(kept.len());
+            words.push(w.to_owned());
+        } else {
+            kept.push(l.to_owned());
+        }
+    }
+    let at = at.unwrap_or_else(|| panic!("{}: no arg record", map.display()));
+    match edit {
+        LineEdit::Remove(gone) => {
+            let i = words
+                .windows(gone.len())
+                .position(|w| w.iter().zip(gone).all(|(a, b)| a == b))
+                .unwrap_or_else(|| panic!("{gone:?} is not in the line {words:?}"));
+            words.drain(i..i + gone.len());
+        }
+        LineEdit::Add(more) => words.extend(more.iter().map(|w| (*w).to_owned())),
+    }
+    kept.splice(at..at, words.iter().map(|w| format!("arg {w}")));
+    let edited = PathBuf::from(format!("{}.edited", map.display()));
+    std::fs::write(&edited, kept.join("\n") + "\n").expect("the edited map");
+    verify(out, &edited, dir)
+}
+
+/// The verdict of each `(edit, rule)`: `rule` is not among the findings on
+/// `out` and `map` as written, and is among them, with no rule the
+/// unedited map does not also give, after `edit`.
+///
+/// # Panics
+///
+/// When a verdict is not so.
+pub fn line_mutants(out: &Path, map: &Path, dir: &Path, cases: &[(LineEdit, mortar_plumb::Rule)]) {
+    let rules = |f: &[mortar_plumb::Finding]| f.iter().map(|f| f.rule).collect::<Vec<_>>();
+    let before = verify(out, map, dir);
+    for &(edit, rule) in cases {
+        assert!(
+            !rules(&before).contains(&rule),
+            "{}: {} before {edit:?}: {before:#?}",
+            out.display(),
+            rule.id()
+        );
+        let after = verify_line(out, map, dir, edit);
+        let got = rules(&after);
+        assert!(
+            got.contains(&rule) && got.iter().all(|r| *r == rule || rules(&before).contains(r)),
+            "{}: {edit:?} must give {} and nothing new: {after:#?}",
+            out.display(),
+            rule.id()
+        );
+    }
+}
+
+/// The map at `map` without its `arg` records: what two links of the same
+/// inputs with other words (the output's name, `--threads`) must agree on
+/// (`spec/plumb.md` §3.2a: the line is the link's own words).
+///
+/// # Panics
+///
+/// If the map cannot be read or has no `arg` record.
+pub fn map_without_line(map: &Path) -> String {
+    let text = std::fs::read_to_string(map).expect("the map");
+    let (args, rest): (Vec<&str>, Vec<&str>) = text.lines().partition(|l| l.starts_with("arg "));
+    assert!(!args.is_empty(), "{}: no arg record", map.display());
+    rest.join("\n")
 }
 
 /// [`verify`], and no finding may remain.

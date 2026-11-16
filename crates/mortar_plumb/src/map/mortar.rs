@@ -53,11 +53,23 @@ pub const HEADER: &str = "mortar-map 2";
 /// `%` stand for themselves, every other byte is `%XX` (upper-case hex),
 /// and the empty string is a lone `%`.
 pub fn encode(text: &str, out: &mut String) {
-    if text.is_empty() {
+    encode_bytes(text.as_bytes(), out);
+}
+
+/// Decodes a token written by [`encode`]. `None` for a malformed escape or
+/// for bytes that are not UTF-8.
+pub fn decode(token: &str) -> Option<String> {
+    String::from_utf8(decode_bytes(token)?).ok()
+}
+
+/// Encodes bytes as a token (§3.2): an `arg` word, which need not be
+/// UTF-8.
+pub fn encode_bytes(bytes: &[u8], out: &mut String) {
+    if bytes.is_empty() {
         out.push('%');
         return;
     }
-    for &b in text.as_bytes() {
+    for &b in bytes {
         if (0x21..=0x7e).contains(&b) && b != b'%' {
             out.push(b as char);
         } else {
@@ -66,11 +78,11 @@ pub fn encode(text: &str, out: &mut String) {
     }
 }
 
-/// Decodes a token written by [`encode`]. `None` for a malformed escape or
-/// for bytes that are not UTF-8.
-pub fn decode(token: &str) -> Option<String> {
+/// Decodes a token to its bytes: an `arg` word (§3.2), which need not be
+/// UTF-8. `None` for a malformed escape.
+pub fn decode_bytes(token: &str) -> Option<Vec<u8>> {
     if token == "%" {
-        return Some(String::new());
+        return Some(Vec::new());
     }
     let bytes = token.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -94,7 +106,7 @@ pub fn decode(token: &str) -> Option<String> {
             return None;
         }
     }
-    String::from_utf8(out).ok()
+    Some(out)
 }
 
 fn signed_hex(v: i64, out: &mut String) {
@@ -231,15 +243,16 @@ pub fn write(map: &Map) -> String {
         }
         out.push('\n');
     }
-    if let Some(d) = &map.dynamic {
-        write_dynamic(d, &mut out);
-    }
+    write_line(map, &mut out);
     out.push_str("end\n");
     out
 }
 
-/// The dynamic records of §3.2, in their fixed order.
-fn write_dynamic(d: &DynRecords, out: &mut String) {
+/// The dynamic records and the `arg` records of §3.2, in their fixed
+/// order: a static map's `arg` records stand where a dynamic one's do.
+fn write_line(map: &Map, out: &mut String) {
+    let empty = DynRecords::default();
+    let d = map.dynamic.as_ref().unwrap_or(&empty);
     let named = |out: &mut String, record: &str, name: &str| {
         out.push_str(record);
         out.push(' ');
@@ -265,8 +278,10 @@ fn write_dynamic(d: &DynRecords, out: &mut String) {
     if let Some(relro) = d.relro {
         out.push_str(if relro { "relro on\n" } else { "relro off\n" });
     }
-    for a in &d.args {
-        named(out, "arg", a);
+    for a in &map.args {
+        out.push_str("arg ");
+        encode_bytes(a, out);
+        out.push('\n');
     }
     for n in &d.needed {
         named(out, "needed", n);
@@ -481,11 +496,14 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                     return Err(bad("a second 'relro' record"));
                 }
             }
-            ("arg" | "needed" | "export" | "plt" | "iplt", 2) => {
+            ("arg", 2) => {
+                // A word is bytes (`spec/cli.md` §2.1): not held to UTF-8.
+                map.args.push(decode_bytes(t[1]).ok_or_else(|| bad("word"))?);
+            }
+            ("needed" | "export" | "plt" | "iplt", 2) => {
                 let v = decode(t[1]).ok_or_else(|| bad("name"))?;
                 let d = map.dynamic.get_or_insert_with(DynRecords::default);
                 match t[0] {
-                    "arg" => d.args.push(v),
                     "needed" => d.needed.push(v),
                     "export" => d.exports.push(v),
                     "plt" => d.plt.push(v),
@@ -521,12 +539,37 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
     if !ended {
         return Err(MapError::new(0, "truncated mortar map: no 'end' record"));
     }
+    // §3.2a: every mortar map states its line; a link has at least one
+    // word (none is `no-input-files`). A map without one (written before
+    // WP-102) is refused rather than judged without its options.
+    if map.args.is_empty() {
+        return Err(MapError::new(
+            0,
+            "no 'arg' record: a mortar map states its link's line (spec/plumb.md §3.2a)",
+        ));
+    }
     Ok(map)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reader, for the tests of the other records: a text with no
+    /// `arg` record is read with one added before `end`, and the result
+    /// has none (§3.2a's requirement is `s3_7_malformed_maps_are_errors`').
+    fn parse(text: &str) -> Result<Map, MapError> {
+        match super::parse(text) {
+            Err(e) if e.message.contains("no 'arg' record") => {
+                let at = text.rfind("end\n").unwrap_or(text.len());
+                let with = format!("{}arg a.o\n{}", &text[..at], &text[at..]);
+                let mut m = super::parse(&with)?;
+                m.args.clear();
+                Ok(m)
+            }
+            r => r,
+        }
+    }
 
     fn sample() -> Map {
         let mut m = Map::new(Format::Mortar);
@@ -669,7 +712,10 @@ mod tests {
             let e = parse(text).unwrap_err();
             assert_eq!(e.line, *line, "{text:?}: {e}");
         }
-        assert!(parse("mortar-map 2\nend\n\n").is_ok());
+        assert!(parse("mortar-map 2\narg a.o\nend\n\n").is_ok());
+        // §3.2a: a map without its line (written before WP-102) is refused.
+        let e = super::parse("mortar-map 2\nend\n").unwrap_err();
+        assert!(e.message.contains("no 'arg' record"), "{e}");
     }
 
     // §3.2 (P-D3 of spec/dyn.md): the dynamic records round-trip, in their
@@ -684,7 +730,6 @@ mod tests {
             runpath: Some((RunpathTag::Runpath, "$ORIGIN/lib:/opt/x y".into())),
             now: Some(true),
             relro: Some(false),
-            args: vec!["-pie".into(), "--as-needed".into(), "-lc".into(), String::new()],
             needed: vec!["libc.so.6".into(), "libm.so.6".into()],
             copies: vec![
                 CopyHint { name: "stdout".into(), addr: 0x2_0010, size: 8, align: 8 },
@@ -694,6 +739,7 @@ mod tests {
             plt: vec!["puts".into(), "memcpy@GLIBC_2.2.5".into()],
             iplt: vec!["my_ifunc".into()],
         });
+        m.args = vec![b"-pie".to_vec(), b"--as-needed".to_vec(), b"-lc".to_vec(), Vec::new()];
         let text = write(&m);
         assert!(
             text.ends_with(
@@ -715,6 +761,43 @@ mod tests {
                 ..DynRecords::default()
             })
         );
+    }
+
+    // §3.2, §3.2a: a static map's `arg` records stand where a dynamic
+    // one's do (after the defines and the incremental records, before
+    // `end`) and make no dynamic record; a word is bytes: a space, a
+    // newline, `%`, the empty word and bytes that are not UTF-8 all
+    // round-trip.
+    #[test]
+    fn s3_2_arg_records_in_every_map() {
+        let mut m = sample();
+        m.incremental = true;
+        m.args = vec![
+            b"-o".to_vec(),
+            b"dir with space/out".to_vec(),
+            b"line\nbreak.o".to_vec(),
+            b"\xff\xfe-latin1.o".to_vec(),
+            b"100%".to_vec(),
+            Vec::new(),
+            "é.o".as_bytes().to_vec(),
+        ];
+        let text = write(&m);
+        assert!(
+            text.ends_with(
+                "define _end 500000\nincremental\narg -o\narg dir%20with%20space/out\n\
+                 arg line%0Abreak.o\narg %FF%FE-latin1.o\narg 100%25\narg %\narg %C3%A9.o\nend\n"
+            ),
+            "{text}"
+        );
+        let back = parse(&text).unwrap();
+        assert_eq!(back.dynamic, None, "arg records alone are no dynamic record");
+        assert_eq!(strip_lines(back), m);
+        // A malformed escape is still an error; bytes that are not UTF-8
+        // are an error everywhere but in a word.
+        assert_eq!(parse("mortar-map 2\narg %F\nend\n").unwrap_err().line, 2);
+        assert_eq!(parse("mortar-map 2\narg a b\nend\n").unwrap_err().line, 2);
+        assert_eq!(parse("mortar-map 2\nneeded %FF\nend\n").unwrap_err().line, 2);
+        assert_eq!(parse("mortar-map 2\narg %FF\nend\n").unwrap().args, vec![vec![0xff]]);
     }
 
     // §3.2: malformed dynamic records.
