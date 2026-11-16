@@ -337,7 +337,7 @@ impl LinkSites<'_, '_> {
         // Each section's words are a prefix of the bytes from its offset
         // to the next section's: disjoint parts, filled in parallel.
         let mut bytes = vec![0u8; size];
-        let mut results: Vec<Result<(Vec<ProofRun>, Vec<u64>), LayoutDiag>> =
+        let mut results: Vec<Result<SectionWords, LayoutDiag>> =
             secs.iter().map(|_| Ok((Vec::new(), Vec::new()))).collect();
         let mut parts = Vec::with_capacity(secs.len());
         let mut rest: &mut [u8] = &mut bytes;
@@ -504,7 +504,7 @@ impl LinkSites<'_, '_> {
         addr: u64,
         rel_start: u64,
         room: &mut [u8],
-    ) -> Result<(Vec<ProofRun>, Vec<u64>), LayoutDiag> {
+    ) -> Result<SectionWords, LayoutDiag> {
         // Its bytes: resident, or copied (a `.text` over the staged
         // store's limits is not resident); a failed read fails the link,
         // never "no sites".
@@ -632,6 +632,10 @@ impl LinkSites<'_, '_> {
         Ok((proof, unknown.into_iter().map(|r| addr + r).collect()))
     }
 }
+
+/// A code section's proof runs and the addresses of its words that depend
+/// on an address not known at the round ([`LinkSites::code_words`]).
+type SectionWords = (Vec<ProofRun>, Vec<u64>);
 
 /// An ADRP of the same register whose page is `Page(Q) − 2^32`: immhi
 /// (bits 5-23) and immlo (bits 29-30) hold −2^20, out of every ADR's reach
@@ -770,6 +774,7 @@ impl RoundTables<'_, '_, '_> {
     /// piece at the target offset `st_value + a`, less `a`. `None`: the key
     /// is no such symbol (`S` is [`RoundTables::value`]); `Some(None)`: the
     /// piece's address is not known here.
+    #[allow(clippy::option_option, reason = "not such a symbol, or such a symbol not placed")]
     fn split_value(&self, key: SymKey, a: i64) -> Option<Option<u64>> {
         let t = &self.sites.t;
         let e = match key.kind() {

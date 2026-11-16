@@ -1310,16 +1310,13 @@ impl Unit<'_> {
         }
         match map_file {
             Some(map) if self.matrix.plumb => {
-                let words: Option<Vec<String>> = match ld_words {
-                    Some(words) => Some(words),
-                    None => {
-                        let mut recorded = status_file.clone().into_os_string();
-                        recorded.push(".line");
-                        std::fs::read_to_string(&recorded)
-                            .ok()
-                            .map(|text| text.lines().map(str::to_owned).collect())
-                    }
-                };
+                let words: Option<Vec<String>> = ld_words.or_else(|| {
+                    let mut recorded = status_file.clone().into_os_string();
+                    recorded.push(".line");
+                    std::fs::read_to_string(&recorded)
+                        .ok()
+                        .map(|text| text.lines().map(str::to_owned).collect())
+                });
                 // The linker's words state `--fix-cortex-a53-843419`
                 // (WP-103), mortar's too; stage 3 judges a mortar output
                 // with its map's `arg` records only ("L3").
