@@ -1985,8 +1985,9 @@ scan (resolve §9.6), stored per key in `Resolution` (request R-M10:
 model.md gains a `preemptible` bit per key, `false` for every key of an
 executable). `target_kind` (arch.md §2.1) reads it: `Preemptible` for an
 exported preemptible definition, `Local` otherwise, `Shlib` for an
-import, `WeakDyn` for every weak undefined key and every undefined key
-of D-111 item 2. Nothing else in the pipeline asks whether the output is
+import and for a strong key nothing defines (D-111 item 2: it is
+reached exactly as an import, through a record naming it), `WeakDyn`
+for every weak undefined key. Nothing else in the pipeline asks whether the output is
 `Shared`.
 
 **D-114 [M4] (version scripts applied).** resolve.md §9.7 is the rule,

@@ -21,8 +21,10 @@ W27 mold i386 hidden IFUNC; W28 bfd i386 -shared -static C++; W29 mold i386
 -shared -static C; W30 -Bsymbolic + exe COPY (all, tools part d).
 
 ## Verified
-- areas census, dyn, tools done (reports in .build/target-wp-110/work/).
+- areas census, export, dyn, tools done; reports in .build/target-wp-110/work/.
+- dyn.md §17-§18, resolve §9.4/9.6/9.7, script §9, record A-E + appendices committed.
+- no docs check touched (only diag.md/odr.md are read by tests): no ci run.
 
 ## Next step
-- export report -> D-110..D-118, resolve §9.6/§9.7, script.md §9; insert
-  §17 + §18 into dyn.md; record D, E, appendices; run-all.sh `design`.
+- rerun of run-all.sh into .build/target-wp-110/rerun (background): check rc,
+  then delete rerun/ and the s17-*.md drafts; delete WIP.md; final commit.
