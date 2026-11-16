@@ -56,7 +56,8 @@ impl Steps {
         if n != 0 {
             let _ = write!(line, ", {n} {unit}, {:.1} ns/{unit}", ns as f64 / n as f64);
         }
-        eprintln!("{line}");
+        line.push('\n');
+        mortar_diag::stream::to_stderr(&line);
         self.last = Some(Instant::now());
     }
 }

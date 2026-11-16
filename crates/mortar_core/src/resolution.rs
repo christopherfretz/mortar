@@ -129,6 +129,11 @@ flag_set! {
         /// The definition can be preempted at run time; always for a
         /// `Shared` definition (`spec/resolve.md` §9.6).
         const PREEMPTIBLE = 1 << 5;
+        /// A live reference in a relocatable object (an undefined or
+        /// demoted mention) has bit 7 of `st_other`, AArch64's
+        /// `STO_AARCH64_VARIANT_PCS`: an undefined key's `.symtab` entry
+        /// carries it (`spec/resolve.md` §3.7).
+        const VARIANT_PCS = 1 << 6;
     }
 }
 

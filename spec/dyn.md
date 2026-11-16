@@ -834,7 +834,7 @@ permutations that keep `SymbolId`s; `--threads=1` vs many).
 | import with `CANON_PLT` | as above, `STT_FUNC` | `STV_DEFAULT` (plus `STO_AARCH64_VARIANT_PCS` when the definition has it) | `SHN_UNDEF` | the PLT entry's address | 0 |
 | copy allocation (each alias) | binding `STB_WEAK` iff the shared definition is weak, else `STB_GLOBAL`; the definition's type | `STV_DEFAULT` | the copy's output section | the copy's address | the definition's `st_size` |
 | export | the output binding and type of `.symtab` (an exported non-preemptible IFUNC: `STT_FUNC` at its IPLT entry, a64 §10.4) | the merged visibility (`STV_PROTECTED` kept), plus `STO_AARCH64_VARIANT_PCS` when the defining entry has it (GNU ld, lld and mold, WP-053) | its output section | its address | its size |
-| `WeakDyn` | `STB_WEAK`, `STT_NOTYPE` | `STV_DEFAULT` | `SHN_UNDEF` | 0 | 0 |
+| `WeakDyn` | `STB_WEAK`, `STT_NOTYPE` | `STV_DEFAULT` (plus `STO_AARCH64_VARIANT_PCS` when a live reference has it, resolve §3.7 `RefFlags::VARIANT_PCS`: the loader reads the bit of the `JUMP_SLOT`'s symbol, so a lazy binding of a vector-PCS callee keeps its registers only if it is there; GNU ld and lld, WP-059) | `SHN_UNDEF` | 0 | 0 |
 
 The canonical PLT is `SHN_UNDEF` with the entry's address in all three
 references, on every architecture (E-dynsym §2, E-reloc §5); a64.md §10.5
@@ -852,7 +852,9 @@ of the output holds an `STT_GNU_IFUNC` or `STB_GNU_UNIQUE` symbol or the
 output has an `IRELATIVE` record, else `ELFOSABI_NONE`. An executable's
 own unique definitions (GCC template statics, function-local statics of
 inline functions) stay `STB_GNU_UNIQUE` in `.symtab`, so a C++ PIE is
-usually `ELFOSABI_GNU`. Only GNU ld also writes `EI_OSABI` 3; lld and
+usually `ELFOSABI_GNU`; that is resolve.md §3.7's rule, the same for a
+static output (WP-059 B: before it a static `.symtab` wrote them
+`STB_GLOBAL`). Only GNU ld also writes `EI_OSABI` 3; lld and
 mold write 0 (`review-m2-adv/unique`, both architectures; glibc accepts
 both). *Test:* `dynsym-fields` (one case per row,
 per architecture).
@@ -1081,7 +1083,7 @@ each is present exactly under its condition, which depends on no address:
 | 18-20 | `DT_PLTRELSZ`, `DT_PLTREL`, `DT_JMPREL` | `.rela.plt` is not empty | size, `DT_RELA` (`DT_REL` on i386), address |
 | 21-23 | `DT_RELA`, `DT_RELASZ`, `DT_RELAENT` (i386: `DT_REL`, `DT_RELSZ`, `DT_RELENT`) | `.rela.dyn` is not empty (mold; GNU ld and lld also write an empty one) | address, size, 24 (8) |
 | 24 | `DT_AARCH64_BTI_PLT` | a64 §10.3 (the output has the BTI property) | 0 |
-| 25 | `DT_AARCH64_VARIANT_PCS` | a64 §10.3 (a `JUMP_SLOT` symbol is `STO_AARCH64_VARIANT_PCS`; all four references, E-dynamic §1) | 0 |
+| 25 | `DT_AARCH64_VARIANT_PCS` | a64 §10.3 (a `JUMP_SLOT` symbol is `STO_AARCH64_VARIANT_PCS`, a `WeakDyn` one included by its D-23 row; all four references, E-dynamic §1) | 0 |
 | 26 | `DT_FLAGS` | `-z now` | `DF_BIND_NOW` |
 | 27 | `DT_FLAGS_1` | `Pie`, or `-z now` | `DF_1_PIE` if `Pie`, `DF_1_NOW` if `-z now` |
 | 28-30 | `DT_VERNEED`, `DT_VERNEEDNUM`, `DT_VERSYM` | `.gnu.version_r` exists (D-27) | address, count, address |

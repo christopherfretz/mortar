@@ -719,13 +719,13 @@ impl Drop for Region {
         if let Some(start) = self.start {
             let ms = start.elapsed().as_nanos() as f64 / 1e6;
             let file = self.at.file().rsplit("crates/").next().unwrap_or(self.at.file());
-            eprintln!(
-                "mortar: steps: par {file}:{}: {ms:.3} ms, {} item, {} worker, {} spawned",
+            mortar_diag::stream::to_stderr(&format!(
+                "mortar: steps: par {file}:{}: {ms:.3} ms, {} item, {} worker, {} spawned\n",
                 self.at.line(),
                 self.items,
                 self.workers,
                 self.spawned
-            );
+            ));
         }
     }
 }
