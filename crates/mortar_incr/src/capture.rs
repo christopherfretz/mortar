@@ -757,6 +757,7 @@ pub fn replay(
             align: l.tls_align,
         }),
         entry: (l.bits & layout_bits::ENTRY != 0).then_some(l.entry),
+        holes: Box::new([]),
     };
     // The merged map: this link's live fragments take their identity's
     // stored offset; its dead ones stay dead (IN-18a `FRAGS`).

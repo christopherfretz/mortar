@@ -395,7 +395,7 @@ fn the_front_does_not_depend_on_the_schedule() {
             let diag = mortar_diag::Collector::new(mortar_diag::Policy::default());
             let f = mortar::front::front(
                 parsed.plan,
-                mortar::front::Env { cwd: &built.dir, pool: *pool, replay: None },
+                mortar::front::Env { cwd: &built.dir, pool: *pool, replay: None, slack: false },
                 &store,
                 &diag,
                 &mut mortar::timing::Timer::new(false),

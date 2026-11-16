@@ -157,6 +157,12 @@ pub struct EhPlan {
     align: u8,
     sh_type: u32,
     fdes: u32,
+    /// The padding between records (`spec/incr.md` IN-34a): `(output
+    /// offset, size)`, ascending; empty in a plain link.
+    pads: Box<[(u64, u64)]>,
+    /// The return-address register of a padding CIE (IN-34a: 30 on
+    /// AArch64, 16 on x86-64, 8 on i386).
+    ra: u8,
 }
 
 /// The per-record liveness marks: 0 removed, 1 live FDE, 2 used CIE.
@@ -194,13 +200,32 @@ impl EhPlan {
         S: EhSource + ?Sized,
         L: Fn(SectionId) -> bool + Sync,
     {
+        Self::select_in(src, code_live, false, pool, diag)
+    }
+
+    /// [`EhPlan::select`], with S-44's de-duplication per file when
+    /// `per_file` (`spec/incr.md` IN-34a, synth.md S-111: an
+    /// incremental-mode link, so that no FDE takes another file's CIE).
+    pub fn select_in<S, L>(
+        src: &S,
+        code_live: L,
+        per_file: bool,
+        pool: &Pool,
+        diag: &Collector,
+    ) -> Result<Vec<EhRecord>, Failed>
+    where
+        S: EhSource + ?Sized,
+        L: Fn(SectionId) -> bool + Sync,
+    {
         let frames = src.frames();
         let sections = &frames.sections;
         let n_sec = sections.len();
         check_rows(frames, diag)?;
         let (internal_sec, order, _) = section_order(src);
         let mut marks = mark_live(src, &code_live, pool, diag)?;
-        Cies::new(frames, &internal_sec, &mut marks);
+        let files: Option<Vec<FileId>> =
+            per_file.then(|| (0..n_sec).map(|s| src.info(s).file).collect());
+        Cies::new(frames, &internal_sec, files.as_deref(), &mut marks);
         // S-46: the kept records per position.
         let mut first: Vec<u32> = pool.unit_cost(31).map(n_sec, |p| {
             let r = sections[order[p] as usize].records;
@@ -242,6 +267,28 @@ impl EhPlan {
     pub fn from_records<S>(
         src: &S,
         records: &[EhRecord],
+        pool: &Pool,
+        diag: &Collector,
+    ) -> Result<Self, Failed>
+    where
+        S: EhSource + ?Sized,
+    {
+        Self::from_records_padded(src, records, &[], 0, pool, diag)
+    }
+
+    /// [`EhPlan::from_records`] with padding between the records
+    /// (`spec/incr.md` IN-34a): each `(offset, size)` of `pads`, ascending
+    /// by output offset, lies at a record boundary (or before the
+    /// terminator) of the padded section. A pad of 4, 8 or 12 bytes is
+    /// `DW_CFA_nop` padding of the record before it; one of 16 bytes or
+    /// more is one padding CIE with return-address register `ra`. Any
+    /// other size, a pad at no boundary, two pads at one boundary, or a
+    /// short pad with no record before it fails by name.
+    pub fn from_records_padded<S>(
+        src: &S,
+        records: &[EhRecord],
+        pads: &[(u64, u64)],
+        ra: u8,
         pool: &Pool,
         diag: &Collector,
     ) -> Result<Self, Failed>
@@ -319,6 +366,29 @@ impl EhPlan {
         }
         let body = pool.unit_cost(1).prefix_sum(&mut out_size);
         out_size[total] = body;
+        // IN-34a: the pads shift every record after them.
+        let mut shift = 0u64;
+        let mut j = 0usize;
+        for (k, off) in out_size.iter_mut().enumerate() {
+            let at = *off + shift;
+            if let Some(&(p, size)) = pads.get(j)
+                && p == at
+            {
+                let short = matches!(size, 4 | 8 | 12);
+                if !(short || (size >= 16 && size % 4 == 0)) || (short && k == 0) {
+                    let what = format!("an .eh_frame pad of {size:#x} bytes at {p:#x} (IN-34a)");
+                    return fail(diag, record_key(SectionId(0), 0), internal(what));
+                }
+                shift += size;
+                j += 1;
+            }
+            *off += shift;
+        }
+        if let Some(&(p, size)) = pads.get(j) {
+            let what = format!("an .eh_frame pad of {size:#x} bytes at {p:#x} at no boundary");
+            return fail(diag, record_key(SectionId(0), 0), internal(what));
+        }
+        let body = out_size[total];
         if body + 4 > u64::from(u32::MAX) {
             return fail(
                 diag,
@@ -342,7 +412,16 @@ impl EhPlan {
             align,
             sh_type,
             fdes,
+            pads: pads.into(),
+            ra,
         })
+    }
+
+    /// The padding between records (`spec/incr.md` IN-34a): `(output
+    /// offset, size)`, ascending.
+    #[must_use]
+    pub fn pads(&self) -> &[(u64, u64)] {
+        &self.pads
     }
 
     /// `Slots.eh_records` (S-49): the kept records in output order.
@@ -468,6 +547,14 @@ impl EhPlan {
     {
         let frames = src.frames();
         let count = self.records.len();
+        // IN-34a: a pad of 16 bytes or more is a padding CIE.
+        for &(p, size) in self.pads.iter().filter(|p| p.1 >= 16) {
+            if p < out.end() && p + size > out.start() {
+                out.word(p, 4, size - 4);
+                out.zero(p + 4, size - 4);
+                out.put(p + 8, &[1, 0, 1, 0x7c, self.ra]);
+            }
+        }
         let first = self.out_off[1..=count].partition_point(|&end| end <= out.start());
         for k in first..count {
             let at = self.out_off[k];
@@ -483,6 +570,10 @@ impl EhPlan {
                 return Err(internal("an .eh_frame record runs past its section"));
             };
             let padded = align_up(l as u64, 4);
+            // IN-34a: 4, 8 or 12 bytes of padding after the record are its
+            // own `DW_CFA_nop`s.
+            let gap = self.out_off[k + 1] - (at + 4 + padded);
+            let padded = if matches!(gap, 4 | 8 | 12) { padded + gap } else { padded };
             out.word(at, 4, padded);
             match self.cie_of(k) {
                 Some(c) => {
@@ -542,17 +633,28 @@ fn check_rows(frames: &EhFrames, diag: &Collector) -> Result<(), Failed> {
     Ok(())
 }
 
-/// S-43, S-44: per identity class (merge's), the kept CIE.
+/// S-43, S-44: per identity class (merge's), the kept CIE; per file and
+/// class with `files` (IN-34a).
 struct Cies {
     keep: Vec<u32>,
     /// The internal file's records, as ranges of `EhFrames::records`
     /// (S-44: they take no part in de-duplication).
     internal: Vec<(u32, u32)>,
+    /// Per file and class, the kept CIE (`files` given).
+    per_file: std::collections::HashMap<(FileId, u32), u32>,
+    /// Per section row its file and record range (`files` given).
+    rows: Vec<(u32, u32, FileId)>,
 }
 
 impl Cies {
     /// The kept CIEs; marks every used CIE that is not kept removed.
-    fn new(frames: &EhFrames, internal_sec: &[bool], marks: &mut [u8]) -> Self {
+    /// `files` is each section row's file, for S-44 per file.
+    fn new(
+        frames: &EhFrames,
+        internal_sec: &[bool],
+        files: Option<&[FileId]>,
+        marks: &mut [u8],
+    ) -> Self {
         let internal = frames
             .sections
             .iter()
@@ -560,8 +662,28 @@ impl Cies {
             .filter(|(_, i)| **i)
             .map(|(s, _)| (s.records.start, s.records.start + s.records.len))
             .collect();
-        let mut cies = Self { keep: Vec::new(), internal };
-        cies.keep = frames.keepers(|g| marks[g as usize] == USED_CIE && !cies.is_internal(g));
+        let mut cies = Self {
+            keep: Vec::new(),
+            internal,
+            per_file: std::collections::HashMap::new(),
+            rows: Vec::new(),
+        };
+        if let Some(files) = files {
+            for (s, &f) in frames.sections.iter().zip(files) {
+                let r = s.records;
+                cies.rows.push((r.start, r.start + r.len, f));
+                for g in r.start..r.start + r.len {
+                    if let Kind::Cie(c) = frames.records[g as usize].kind
+                        && marks[g as usize] == USED_CIE
+                        && !cies.is_internal(g)
+                    {
+                        cies.per_file.entry((f, c.class)).or_insert(g);
+                    }
+                }
+            }
+        } else {
+            cies.keep = frames.keepers(|g| marks[g as usize] == USED_CIE && !cies.is_internal(g));
+        }
         for (g, m) in marks.iter_mut().enumerate() {
             if *m == USED_CIE && cies.rep(frames, g as u32) != g as u32 {
                 *m = REMOVED;
@@ -577,7 +699,17 @@ impl Cies {
     /// The kept CIE for CIE `g`.
     fn rep(&self, frames: &EhFrames, g: u32) -> u32 {
         match frames.records[g as usize].kind {
-            Kind::Cie(c) if !self.is_internal(g) => self.keep[c.class as usize],
+            Kind::Cie(c) if !self.is_internal(g) && self.rows.is_empty() => {
+                self.keep[c.class as usize]
+            }
+            Kind::Cie(c) if !self.is_internal(g) => {
+                let at = self.rows.partition_point(|r| r.1 <= g);
+                self.rows
+                    .get(at)
+                    .and_then(|r| self.per_file.get(&(r.2, c.class)))
+                    .copied()
+                    .unwrap_or(g)
+            }
             _ => g,
         }
     }

@@ -973,6 +973,30 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
             )?;
             taken.push((row.chunk, row.offset, end(row.offset, row.size), me));
         }
+        // spec/incr.md IN-3: a hole is a non-empty range of its chunk's
+        // content, in order, overlapping no place.
+        for (at, h) in p.holes.iter().enumerate() {
+            let me = Row::Entry("holes", at as u32);
+            let Some(c) = p.chunks.get(h.chunk) else {
+                return fail(r, "a hole's chunk does not exist", [me]);
+            };
+            need(
+                h.size > 0 && end(h.offset, h.size) <= c.size.into(),
+                r,
+                || "a hole is empty or ends past its chunk's size".into(),
+                [me, Row::Chunk(h.chunk)],
+            )?;
+            if at > 0 {
+                let q = &p.holes[at - 1];
+                need(
+                    (q.chunk, end(q.offset, q.size)) <= (h.chunk, u128::from(h.offset)),
+                    r,
+                    || "holes are not sorted or overlap".into(),
+                    [Row::Entry("holes", at as u32 - 1), me],
+                )?;
+            }
+            taken.push((h.chunk, h.offset, end(h.offset, h.size), me));
+        }
         taken.sort_unstable_by_key(|t| (t.0, t.1, t.2));
         let mut last: Option<(ChunkId, u128, Row)> = None;
         for &(chunk, off, stop, row) in &taken {

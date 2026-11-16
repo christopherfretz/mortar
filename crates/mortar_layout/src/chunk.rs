@@ -9,11 +9,11 @@
 
 use mortar_core::assignment::Assignment;
 use mortar_core::column::Column;
-use mortar_core::id::{ChunkId, OutSecId, SectionId, SymbolId};
+use mortar_core::id::{ChunkId, FileId, IdRange, OutSecId, SectionId, SymbolId};
 use mortar_core::inputs::{Inputs, Reader, SymbolKey};
 use mortar_core::layout::{
-    AllocKey, Chunk, ChunkKind, CopyAlloc, CopyPlace, Folds, MergeMap, Part, Place, SegmentRules,
-    Slots, SymPlace, Synth, derive_segments,
+    AllocKey, Chunk, ChunkKind, CopyAlloc, CopyPlace, Folds, Hole, HoleKind, MergeMap, Part, Place,
+    SegmentRules, Slots, SymPlace, Synth, derive_segments,
 };
 use mortar_core::liveness::Liveness;
 use mortar_core::par::Pool;
@@ -27,8 +27,9 @@ use mortar_elf::consts::{
 use crate::assign::{OutInfo, is_c_identifier};
 use crate::diag::{LayoutDiag, feature, internal, section_conflict};
 use crate::headers::Headers;
-use crate::order::Ordered;
+use crate::order::{Ordered, text_category};
 use crate::rank::{Rank, Z, home, leads, rank_in};
+use crate::slack::{self, Neutral, Slack};
 use crate::target::Target;
 
 /// A synthetic chunk the caller (synthesis) asks for, with its
@@ -41,6 +42,17 @@ pub struct SynthChunk {
     /// log2.
     pub align: u8,
     pub size: u64,
+}
+
+/// A hole the caller lays out inside a synthetic chunk (`spec/incr.md`
+/// IN-34a: an `.eh_frame` range's padding), at an offset from the
+/// chunk's start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SynthHole {
+    pub synth: Synth,
+    pub offset: u64,
+    pub size: u64,
+    pub kind: HoleKind,
 }
 
 /// A common symbol resolution chose (L-88), with whether it is `STT_TLS`
@@ -224,6 +236,9 @@ pub struct Staged {
     pub relro_padding: Option<ChunkId>,
     /// The output section of each chunk that is part of one.
     pub out_of: Column<ChunkId, Option<OutSecId>>,
+    /// The holes (`spec/incr.md` IN-3), sorted by `(chunk, offset)`:
+    /// empty without slack.
+    pub holes: Box<[Hole]>,
 }
 
 impl Staged {
@@ -258,25 +273,85 @@ pub struct ChunkInputs<'t, 'n> {
     /// The copy-relocation allocations (D-42), placed in the synthetic
     /// chunks `.dynbss` and `.bss.rel.ro`; empty in a static link.
     pub copies: &'t [CopyRow],
+    /// The slack policy (`spec/incr.md` IN-33).
+    pub slack: Slack,
+    /// Per file, its section ids (`Resolution::section_base`): the files
+    /// of regions (IN-30) and debug contributions (IN-50). Needed with
+    /// slack only.
+    pub section_base: Option<&'t Column<FileId, IdRange<SectionId>>>,
+    /// The holes inside synthetic chunks (IN-34a).
+    pub synth_holes: &'t [SynthHole],
 }
 
-/// One body part: its members and their offsets, size and alignment.
+/// One body part: its members and their offsets, size and alignment,
+/// and its holes (offset, size, kind).
 #[derive(Debug, Clone, Default)]
 struct PartPlan {
     members: Vec<(SectionId, u64)>,
     size: u64,
     align: u8,
+    holes: Vec<(u64, u64, HoleKind)>,
+}
+
+/// The gaps an output section's body takes between its members
+/// (`spec/incr.md` IN-30, IN-50): none in a plain link.
+#[derive(Clone, Copy)]
+enum Gaps<'a> {
+    None,
+    /// IN-30: a region per run of members with one key (file, category),
+    /// followed by [`Slack::region`]'s slack as a [`HoleKind::Fill`] hole.
+    Regions(&'a dyn Fn(SectionId) -> u64, Slack),
+    /// IN-50: a contribution per run of one file's members, allotted its
+    /// size class; the rest a [`HoleKind::Debug`] hole. With `abbrev`, the
+    /// neutral abbreviation table follows the last member.
+    Debug { file: &'a dyn Fn(SectionId) -> u64, slack: Slack, form: Neutral, abbrev: bool },
+}
+
+/// The open region of [`plan_parts`]: its key, start offset in the
+/// current part and alignment.
+#[derive(Clone, Copy)]
+struct Open {
+    key: u64,
+    start: u64,
+    align: u8,
+}
+
+/// Closes `open` at the end of `part`: its slack (at most up to `limit`)
+/// becomes a hole.
+fn close(part: &mut PartPlan, open: Open, gaps: Gaps<'_>, limit: Option<u64>) {
+    let size = part.size - open.start;
+    let (pad, kind) = match gaps {
+        Gaps::None => return,
+        Gaps::Regions(_, slack) => (slack.region(size, open.align), HoleKind::Fill),
+        Gaps::Debug { slack, form, .. } => (slack.allotment(size, form), HoleKind::Debug),
+    };
+    let room = limit.map_or(u64::MAX, |l| l.saturating_sub(part.size));
+    let pad = if matches!(gaps, Gaps::Regions(..)) { pad.min(room) } else { pad };
+    if pad == 0 || (matches!(gaps, Gaps::Debug { .. }) && pad > room) {
+        return;
+    }
+    let Some(end) = part.size.checked_add(pad) else { return };
+    part.holes.push((part.size, pad, kind));
+    part.size = end;
 }
 
 /// The parts of one output section's body (L-22, L-110): the aligned
 /// prefix sum, cut before the member that would make a part larger than
-/// `limit`.
+/// `limit`; with `gaps`, each region's or contribution's slack after it
+/// (IN-30, IN-50).
 fn plan_parts(
     members: &[SectionId],
     headers: &Headers<'_>,
     limit: Option<u64>,
+    gaps: Gaps<'_>,
 ) -> Result<Vec<PartPlan>, LayoutDiag> {
     let mut parts = vec![PartPlan::default()];
+    let key_of = |s: SectionId| match gaps {
+        Gaps::None => 0,
+        Gaps::Regions(key, _) => key(s),
+        Gaps::Debug { file, .. } => file(s),
+    };
+    let mut open: Option<Open> = None;
     for &s in members {
         let h = &headers[s];
         if h.align > 63 {
@@ -287,6 +362,13 @@ fn plan_parts(
         {
             return Err(feature("code section larger than branch reach"));
         }
+        let key = key_of(s);
+        if let Some(o) = open
+            && o.key != key
+        {
+            close(parts.last_mut().expect("one part at least"), o, gaps, limit);
+            open = None;
+        }
         let a = 1u64 << h.align;
         let place = |p: &PartPlan| p.size.checked_next_multiple_of(a);
         let mut part = parts.last_mut().expect("one part at least");
@@ -296,14 +378,30 @@ fn plan_parts(
             && end > limit
             && !part.members.is_empty()
         {
+            if let Some(o) = open.take() {
+                close(part, o, gaps, Some(limit));
+            }
             parts.push(PartPlan::default());
             part = parts.last_mut().expect("just pushed");
             at = 0;
             end = h.size;
         }
+        let o = open.get_or_insert(Open { key, start: at, align: h.align });
+        o.align = o.align.max(h.align);
         part.members.push((s, at));
         part.size = end;
         part.align = part.align.max(h.align);
+    }
+    let part = parts.last_mut().expect("one part at least");
+    if let Some(o) = open {
+        close(part, o, gaps, limit);
+    }
+    if let Gaps::Debug { slack, abbrev: true, .. } = gaps
+        && slack.on
+        && !part.members.is_empty()
+    {
+        part.holes.push((part.size, slack::ABBREV_TABLE, HoleKind::AbbrevTable));
+        part.size += slack::ABBREV_TABLE;
     }
     Ok(parts)
 }
@@ -352,13 +450,46 @@ pub fn chunk(
     {
         return Err(section_conflict(".lbss".into(), "SHF_X86_64_LARGE", "not SHF_X86_64_LARGE"));
     }
+    // spec/incr.md IN-30, IN-50: the file of a section, for regions and
+    // debug contributions.
+    let slack = inputs.slack;
+    let mut starts: Vec<(u32, u32)> = match inputs.section_base.filter(|_| slack.on) {
+        Some(b) => b.iter().filter(|(_, r)| r.len() > 0).map(|(f, r)| (r.start.0, f.0)).collect(),
+        None => Vec::new(),
+    };
+    starts.sort_unstable();
+    let file_of = |s: SectionId| -> u64 {
+        let at = starts.partition_point(|&(start, _)| start <= s.0);
+        at.checked_sub(1).map_or(u64::from(u32::MAX), |i| u64::from(starts[i].1))
+    };
+    let region_key = |s: SectionId| -> u64 {
+        let h = &inputs.headers[s];
+        let cat = if h.flags & SHF_EXECINSTR != 0 { u64::from(text_category(h.name)) } else { 0 };
+        file_of(s) << 8 | cat
+    };
+    let debug_info = a.outsecs.iter().any(|(id, o)| {
+        o.name == b".debug_info" && !inputs.ordered.members[id].is_empty()
+    });
     // Parts per output section, parallel over output sections (L-22).
     let planned: Vec<Result<Vec<PartPlan>, LayoutDiag>> = pool.unit_cost(10000).map(outs, |o| {
         let id = OutSecId(o as u32);
         let out = &a.outsecs[id];
         let exec = out.flags & SHF_EXECINSTR != 0;
         let limit = target.islands.filter(|_| exec).map(|i| i.part_limit);
-        plan_parts(&inputs.ordered.members[id], inputs.headers, limit)
+        let gaps = if !slack.on || inputs.section_base.is_none() {
+            Gaps::None
+        } else if out.flags & SHF_ALLOC != 0 {
+            match slack::class(out.name, out.flags) {
+                slack::Class::Tolerant => Gaps::Regions(&region_key, slack),
+                _ => Gaps::None,
+            }
+        } else if let Some(form) = slack::neutral(out.name) {
+            let abbrev = out.name == b".debug_abbrev" && debug_info;
+            Gaps::Debug { file: &file_of, slack, form, abbrev }
+        } else {
+            Gaps::None
+        };
+        plan_parts(&inputs.ordered.members[id], inputs.headers, limit, gaps)
     });
     let mut plans = Vec::with_capacity(outs);
     for p in planned {
@@ -582,6 +713,7 @@ pub fn chunk(
     // Per output section: bodies, islands, merged.
     let mut islands = Vec::new();
     let mut place_rows: Vec<(SectionId, ChunkId, u64)> = Vec::new();
+    let mut holes: Vec<Hole> = Vec::new();
     for o in 0..outs {
         if !present[o] {
             continue;
@@ -636,6 +768,9 @@ pub fn chunk(
             sub += 1;
             for &(s, off) in &plan.members {
                 place_rows.push((s, body, off));
+            }
+            for &(offset, size, kind) in &plan.holes {
+                holes.push(Hole { chunk: body, offset, size, kind });
             }
             if with_islands {
                 let isl = target.islands.map_or(2, |i| i.align);
@@ -770,6 +905,20 @@ pub fn chunk(
         }
         chunks[c].align = chunks[c].align.max(widest[o.0 as usize]);
     }
+    // spec/incr.md IN-34a: the holes the caller lays out in synthetic
+    // chunks.
+    for h in inputs.synth_holes {
+        let Some(c) = order.iter().copied().find(
+            |&c| matches!(chunks[c].kind, ChunkKind::Synthetic(s) if s == h.synth),
+        ) else {
+            return Err(internal("a hole in a synthetic chunk that does not exist"));
+        };
+        holes.push(Hole { chunk: c, offset: h.offset, size: h.size, kind: h.kind });
+    }
+    holes.sort_unstable();
+    if slack.on {
+        capacities(&mut chunks, &order, &out_of, a, slack);
+    }
     // Rule 5: sorted by key (commons, then copies by index).
     sym_place.sort_by_key(|p: &SymPlace| p.key);
     Ok(Staged {
@@ -781,7 +930,56 @@ pub fn chunk(
         islands: islands.into(),
         relro_padding,
         out_of: Column::from_vec(out_of).map_err(|_| internal("too many chunks"))?,
+        holes: holes.into(),
     })
+}
+
+/// `spec/incr.md` IN-33's capacities past `size` (layout.md L-141): per
+/// output section (or synthetic chunk standing alone) the last chunk in
+/// order takes the section's tail, packed capacity or debug tail. Stage D
+/// takes it back from the last chunk of each `PT_LOAD` (L-9) and adds the
+/// segment reserves.
+fn capacities(
+    chunks: &mut Column<ChunkId, Chunk>,
+    order: &[ChunkId],
+    out_of: &[Option<OutSecId>],
+    a: &Assignment<'_>,
+    slack: Slack,
+) {
+    let mut k = 0;
+    while k < order.len() {
+        let c = order[k];
+        let group = out_of[c.0 as usize];
+        let mut end = k + 1;
+        if group.is_some() {
+            while end < order.len() && out_of[order[end].0 as usize] == group {
+                end += 1;
+            }
+        }
+        let last = order[end - 1];
+        let size: u64 = order[k..end].iter().map(|&c| chunks[c].size).sum();
+        let ch = &chunks[last];
+        let name: Option<&[u8]> = match (group, ch.kind) {
+            (Some(o), _) => Some(a.outsecs[o].name),
+            (None, ChunkKind::Synthetic(s)) if !ch.is_relro_padding() => Some(s.name),
+            _ => None,
+        };
+        k = end;
+        let Some(name) = name else { continue };
+        let extra = if ch.flags & SHF_ALLOC != 0 {
+            match slack::class(name, ch.flags) {
+                slack::Class::Tolerant => slack.tail(size),
+                slack::Class::Packed => slack.packed(size),
+                slack::Class::None => 0,
+            }
+        } else if slack::is_debug(name, ch.flags) {
+            slack.debug_tail(size)
+        } else {
+            0
+        };
+        let ch = &mut chunks[last];
+        ch.capacity = ch.capacity.saturating_add(extra);
+    }
 }
 
 #[cfg(test)]

@@ -104,9 +104,43 @@ pub struct Map {
     pub folds: Vec<Fold>,
     pub chunks: Vec<MapChunk>,
     pub defines: Vec<(Vec<u8>, u64)>,
+    /// The dead-range records (`spec/plumb.md` §3.2, `spec/incr.md`
+    /// IN-60), by output section in header order, then offset: empty in
+    /// a plain link.
+    pub dead: Vec<DeadLine>,
     /// The dynamic records (`spec/plumb.md` §3.2, `spec/dyn.md` P-D3);
     /// `None` for a static link, which then writes none of them.
     pub dynamic: Option<DynRecords>,
+}
+
+/// The kind of a `dead` record (`spec/plumb.md` §3.2, `spec/incr.md`
+/// IN-3a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DeadKind {
+    Debug,
+    Fragment,
+    Cie,
+}
+
+impl DeadKind {
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Fragment => "fragment",
+            Self::Cie => "cie",
+        }
+    }
+}
+
+/// A `hole` record (`kind` `None`) or a `dead` record: a range of output
+/// section `out` at `offset` from its start.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DeadLine {
+    pub out: Vec<u8>,
+    pub offset: u64,
+    pub size: u64,
+    pub kind: Option<DeadKind>,
 }
 
 /// The output kind of the `output` record (`spec/dyn.md` D-1).
@@ -279,6 +313,16 @@ pub fn render(map: &Map, pool: &Pool) -> Vec<u8> {
         out.push_str("define ");
         token(name, &mut out);
         let _ = writeln!(out, " {value:x}");
+    }
+    for d in &map.dead {
+        out.push_str(if d.kind.is_some() { "dead " } else { "hole " });
+        token(&d.out, &mut out);
+        let _ = write!(out, " {:x} {:x}", d.offset, d.size);
+        if let Some(k) = d.kind {
+            out.push(' ');
+            out.push_str(k.token());
+        }
+        out.push('\n');
     }
     if let Some(d) = &map.dynamic {
         render_dynamic(d, &mut out);

@@ -2262,10 +2262,56 @@ impl LinkTables<'_, '_> {
                 m.defines.push((k.name.to_vec(), v));
             }
         }
+        m.dead = self.dead_lines();
         if let Some(d) = l.synth.dynamic {
             m.dynamic = Some(self.dyn_records(d));
         }
         m
+    }
+
+    /// The `hole` and `dead` records (`spec/plumb.md` §3.2,
+    /// `spec/incr.md` IN-60): every hole of the layout, at its offset from
+    /// its output section's start (by address in an allocated section,
+    /// by file offset in another), in section header order.
+    fn dead_lines(&self) -> Vec<crate::map::DeadLine> {
+        use crate::map::{DeadKind, DeadLine};
+        use mortar_core::layout::HoleKind;
+        let l = &self.link;
+        let pl = &l.layout.placement;
+        if pl.holes.is_empty() {
+            return Vec::new();
+        }
+        // Per section index, the start of its first chunk.
+        let mut starts: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+        let pos = |c: &mortar_core::layout::Chunk| c.addr.unwrap_or(c.offset);
+        for (_, c) in pl.chunks.iter() {
+            if let Some(i) = c.shndx {
+                let e = starts.entry(i).or_insert(u64::MAX);
+                *e = (*e).min(pos(c));
+            }
+        }
+        let mut out: Vec<(u32, DeadLine)> = pl
+            .holes
+            .iter()
+            .filter_map(|h| {
+                let c = &pl.chunks[h.chunk];
+                let i = c.shndx?;
+                let name = match c.kind {
+                    ChunkKind::Synthetic(s) => s.name,
+                    _ => c.name(l.assignment)?,
+                };
+                let kind = match h.kind {
+                    HoleKind::DeadDebug => Some(DeadKind::Debug),
+                    HoleKind::DeadFragment => Some(DeadKind::Fragment),
+                    HoleKind::DeadCie => Some(DeadKind::Cie),
+                    _ => None,
+                };
+                let offset = pos(c) + h.offset - starts.get(&i).copied().unwrap_or(0);
+                Some((i, DeadLine { out: name.to_vec(), offset, size: h.size, kind }))
+            })
+            .collect();
+        out.sort_by_key(|(i, d)| (*i, d.offset));
+        out.into_iter().map(|(_, d)| d).collect()
     }
 
     /// The map's dynamic records (`spec/plumb.md` §3.2, P-D3).
