@@ -693,3 +693,47 @@ fn p_e5_dynamic_tables() {
         assert!(has(&pe, "P-E3", ".dynsym entry"), "{arch:?}: {pe:#?}");
     }
 }
+
+// §9.4 for `--equiv`: truncations and byte flips of X's output, X's and
+// F's map text cut short, the sides swapped, a foreign map (another
+// program's) as F: judged without a panic; a truncated X is never clean.
+#[test]
+fn hostile_pairs_never_panic() {
+    for arch in archs() {
+        let Some(p) = assemble(arch, "hostile", "", "", &[]) else { return };
+        let x = p.update(&[]);
+        let f = p.link(&["main.o", "a.o", "b.o"], &[]);
+        let inputs: Vec<Input<'_>> = p.files.iter().map(|(q, b)| Input { path: q, bytes: b }).collect();
+        let xt = mortar_plumb::map::mortar::write(&x.map);
+        let ft = mortar_plumb::map::mortar::write(&f.map);
+        let xm = mortar_plumb::map::parse(Format::Mortar, &xt).unwrap();
+        let fm = mortar_plumb::map::parse(Format::Mortar, &ft).unwrap();
+        let n = x.output.len();
+        for k in (0..n).step_by((n / 300).max(1)) {
+            let e = mortar_plumb::equiv::check(&x.output[..k], &xm, &f.output, &fm, &inputs);
+            assert!(!e.clean(), "{arch:?}: X cut at {k} is clean");
+            let mut b = x.output.clone();
+            b[k] ^= 0xff;
+            let _ = mortar_plumb::equiv::check(&b, &xm, &f.output, &fm, &inputs);
+            let _ = mortar_plumb::equiv::check(&x.output, &xm, &b, &fm, &inputs);
+        }
+        for text in [&xt, &ft] {
+            for k in (0..text.len()).step_by((text.len() / 100).max(1)) {
+                let Some(cut) = text.get(..k) else { continue };
+                if let Ok(m) = mortar_plumb::map::parse(Format::Mortar, cut) {
+                    let _ = mortar_plumb::equiv::check(&x.output, &m, &f.output, &fm, &inputs);
+                    let _ = mortar_plumb::equiv::check(&x.output, &xm, &f.output, &m, &inputs);
+                }
+            }
+        }
+        // Swapped and foreign: F's output with X's map, X's with F's.
+        let e = mortar_plumb::equiv::check(&f.output, &xm, &x.output, &fm, &inputs);
+        assert!(!e.clean(), "{arch:?}: swapped outputs are clean");
+        let other = p.link(&["main.o", "a.o", "b.o", "pad.o"], &[]);
+        let om = mortar_plumb::map::parse(Format::Mortar, &mortar_plumb::map::mortar::write(&other.map)).unwrap();
+        let e = mortar_plumb::equiv::check(&x.output, &xm, &other.output, &om, &inputs);
+        assert!(!e.clean(), "{arch:?}: a foreign F is clean");
+        let e = mortar_plumb::equiv::check(&x.output, &xm, &[], &fm, &inputs);
+        assert!(!e.clean(), "{arch:?}: an empty F is clean");
+    }
+}

@@ -2429,6 +2429,20 @@ conservatively above):
 7. File padding outside every section is required to be zero in `X`
    (P-E6); IN-2 does not say what the bytes of a gap between segments
    hold.
+8. A record neither side checks is P-E4 (the value is not seen). On a
+   real glibc static AArch64 pair this is 20 records of `setlocale.o`
+   (initial-exec loads of undefined weak TLS symbols, §4.7's `tls`
+   reason): every such pair is refused until the verifier judges them,
+   or IN-2 says such a field compares by its bytes.
+9. IN-2 item 5 lists `.eh_frame`'s records among the packed sections, so
+   a re-link with the files in another command-line order (R13's
+   "a.o main.o b.o", which its prototype accepted) is refused by
+   `.eh_frame`'s order even where `myset` agrees; R13's case 1 is
+   therefore the pair at other addresses in the same order (the IN-8
+   pair, or the model of `tests/equiv.rs`).
+10. Two values whose identity sets meet only at a unit's end and the
+    next unit's start correspond (a label at an end is either); `F`
+    cannot say which it meant (identities, above).
 
 Tests: `tests/equiv.rs` (§9.2 (q)).
 
@@ -2753,6 +2767,38 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
     and one of `.debug_str` under a name only a `.debug_str_offsets`
     entry names (`DW_FORM_strx1`).
 
+- **(q)** Equivalence (§6.9, `incr.md` IN-2, IN-62; WP-092,
+  `tests/equiv.rs`). `X` is a GNU ld link with `pad.o` (code, data) after
+  `main.o`, `pad.o` out of the map and its ranges holes holding the fill
+  (every unit of `a.o` and `b.o` at another address); `F` the link
+  without it. AArch64, x86-64 and i386 unless named:
+  - ACCEPTED: R13 case 1, `X` against `F`, and `X` against itself; a
+    `--build-id` pair (the descriptors differ); a non-allocated
+    section of units; a PIE pair (AArch64, x86-64: `-pie
+    --no-dynamic-linker --export-dynamic`); AArch64 `ADRP`+`ADD` in `F`,
+    `NOP`+`ADR` in `X` (W1); x86-64 a GOT kept by `addq S@GOTPCREL`;
+  - REJECTED: R13 case 2, `F` of `main.o b.o a.o` (P-E5, `myset` in
+    another order); the one-byte control, a code byte no relocation
+    covers flipped in `X` (P-E4); `e_flags`, a section's flags, a
+    segment's flags, `e_entry` (P-E1); a unit in one map only, a size, a
+    synthetic chunk in one map only (P-E2); a global naming another
+    placed definition, a global renamed, a global made local (P-E3); the
+    `.init` byte (P-E4); a note's type (P-E5); a stray byte between
+    sections (P-E6); a non-allocated unit made shorter (P-E6, P-E2);
+    AArch64 an undefined weak TLS initial-exec load neither side checks
+    (P-E4 1); x86-64 `GOTPCRELX` as `mov $S` (X4, `F`, GNU ld's map) and
+    as `lea` (X1, `X`) in an `ET_EXEC` output (P-E4 2); a `.got` word
+    (P-E5); in the PIE pair a `.rela.dyn` addend, a `.dynamic` value, a
+    `.dynstr` byte (P-E5) and a `.dynsym` entry's size (P-E3);
+  - the forms that may differ, per output type
+    (`equiv::tests::p_e4_forms_that_may_differ`: W1-W3, W6-W8 always,
+    X1-X4 in `ET_DYN` only; W4, W5, W9-W13, GD to IE never; a record not
+    checked never);
+  - hostile (`hostile_pairs_never_panic`): `X` cut at 300 lengths and
+    flipped at 300 bytes, either map's text cut at 100 lengths, the
+    outputs swapped, a foreign `F`, an empty `F`: no panic, and a cut,
+    swapped, foreign or empty side is never clean.
+
 ### 9.3 Map readers
 
 There are unit tests on excerpts captured from each linker (§3.4 to
@@ -2962,6 +3008,14 @@ The PIE model found one false finding of the table walk, now ruled
 (§6.8 P-I3, tables): a `RELATIVE` record at a live relocation's place
 carries an address that may lie in a hole by an addend (`blk_-8`); it
 is judged by the input record's name.
+
+
+**The equivalence check** (WP-092, §6.9): 25 mutations of
+`src/equiv.rs` (a condition made `false`, a clause or a finding
+dropped), each run against `tests/equiv.rs` and the unit test; caught
+23. Survivors: the `.dynsym` name and `st_info` clauses (the tests
+change an entry's size only) and the `.eh_frame_hdr` entries (no pair
+here has an `.eh_frame_hdr`; the real pairs of the record do).
 
 ## 10. The reference linkers, observed
 
