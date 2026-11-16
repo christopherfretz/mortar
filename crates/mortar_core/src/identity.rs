@@ -127,6 +127,9 @@ pub struct Ordinals<K> {
     keys: Box<[K]>,
     /// Row numbers sorted by `(key, row)`.
     sorted: Box<[u32]>,
+    /// Each row's ordinal, from one pass over `sorted` (WP-094: a lookup,
+    /// not two binary searches).
+    of_row: Box<[u32]>,
 }
 
 impl<K: Ord + Copy> Ordinals<K> {
@@ -135,7 +138,14 @@ impl<K: Ord + Copy> Ordinals<K> {
     pub fn new(keys: Vec<K>) -> Self {
         let mut sorted: Vec<u32> = (0..keys.len() as u32).collect();
         sorted.sort_by(|&a, &b| keys[a as usize].cmp(&keys[b as usize]).then(a.cmp(&b)));
-        Self { keys: keys.into(), sorted: sorted.into() }
+        let mut ordinals = vec![0u32; keys.len()];
+        let mut run = 0u32;
+        for (i, &r) in sorted.iter().enumerate() {
+            run =
+                if i > 0 && keys[sorted[i - 1] as usize] == keys[r as usize] { run + 1 } else { 0 };
+            ordinals[r as usize] = run;
+        }
+        Self { keys: keys.into(), sorted: sorted.into(), of_row: ordinals.into() }
     }
 
     /// The number of rows.
@@ -162,10 +172,7 @@ impl<K: Ord + Copy> Ordinals<K> {
     /// Row `row`'s ordinal among the rows with its key.
     #[must_use]
     pub fn ordinal(&self, row: u32) -> Option<u32> {
-        let key = self.key(row)?;
-        let first = self.first(&key);
-        let at = self.sorted.partition_point(|&r| (self.keys[r as usize], r) < (key, row));
-        Some((at - first) as u32)
+        self.of_row.get(row as usize).copied()
     }
 
     /// The row with key `key` and ordinal `ordinal`.

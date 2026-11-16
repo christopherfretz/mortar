@@ -30,13 +30,15 @@ fn main() {
     let u = update(&link, &cwd, write);
     match &u.outcome {
         Ok(s) => eprintln!(
-            "ok changed={} inputs={} hashed={} windows={} jobs={} refilled={} size={} state={} kinds={}",
+            "ok changed={} inputs={} hashed={} windows={} jobs={} refilled={} dirty={} written={} size={} state={} kinds={}",
             s.changed,
             s.inputs,
             s.hashed,
             s.windows,
             s.jobs,
             s.refilled,
+            s.dirty,
+            s.written,
             s.file_size,
             s.state_size,
             s.kinds

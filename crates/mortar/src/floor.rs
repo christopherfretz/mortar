@@ -73,6 +73,11 @@ pub struct Summary {
     pub windows: usize,
     pub jobs: usize,
     pub refilled: u64,
+    /// WP-094: the bytes of the dirty ranges themselves (their union),
+    /// which the windows round up to `IMAGE_BLOCK`.
+    pub dirty: u64,
+    /// WP-094: the bytes written into the output.
+    pub written: u64,
     /// The output's size and the new state's.
     pub file_size: u64,
     pub state_size: u64,
@@ -117,7 +122,11 @@ fn add_str(state: &mut State, s: &[u8]) -> Str {
     at
 }
 
-#[allow(clippy::too_many_lines, reason = "the steps of the module's text, in order")]
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "the steps of the module's text, in order"
+)]
 fn run(
     args: &[OsString],
     cwd: &Path,
@@ -211,12 +220,46 @@ fn run(
         Store::with_config(StorePolicy::from_env(), config, mortar_input::store::Hooks::default());
     // The replay's two parts, timed apart (inside phase 90's wall time).
     let replay_ms = std::cell::Cell::new((0.0_f64, 0.0_f64));
+    // WP-094 (a): the replay by position unless MORTAR_FLOOR_IDENTITY is set.
+    let by_position = std::env::var_os("MORTAR_FLOOR_IDENTITY").is_none();
+    let laps = std::cell::RefCell::new(mortar_incr::capture::Laps::new());
     let hook = |link: &mortar_incr::capture::Link<'_, '_>,
                 computed: &mortar_core::layout::Layout| {
         let t0 = std::time::Instant::now();
-        let keys = mortar_incr::capture::Keys::new(link)?;
-        let t1 = std::time::Instant::now();
-        let r = mortar_incr::capture::replay(link, &keys, &state, computed);
+        let t1;
+        let r = if by_position {
+            // WP-094 (a): every file but the changed one has the bytes
+            // its FILES row was captured from (IN-22: clean or hashed
+            // equal, step 3).
+            let changed_id = link.inputs.link.opened.iter().find_map(|o| match o.kind {
+                mortar_core::inputs::OpenedKind::Object(id) if o.path == &changed_path[..] => {
+                    Some(id)
+                }
+                _ => None,
+            });
+            let changed_id = changed_id.ok_or("the changed file is not an object of this link")?;
+            let changed = move |f: mortar_core::id::FileId| f == changed_id;
+            let keys = mortar_incr::capture::Keys::partial(link, &changed)?;
+            t1 = std::time::Instant::now();
+            mortar_incr::capture::replay_by_position(
+                link,
+                &keys,
+                &state,
+                computed,
+                &changed,
+                &mut laps.borrow_mut(),
+            )
+        } else {
+            let keys = mortar_incr::capture::Keys::new(link)?;
+            t1 = std::time::Instant::now();
+            mortar_incr::capture::replay_timed(
+                link,
+                &keys,
+                &state,
+                computed,
+                &mut laps.borrow_mut(),
+            )
+        };
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
         replay_ms.set((ms(t1 - t0), ms(t1.elapsed())));
         r
@@ -233,6 +276,9 @@ fn run(
     let (keys_ms, replay_ms) = replay_ms.get();
     timer.line(format!("mortar: floor: replay keys: {keys_ms:.1} ms"));
     timer.line(format!("mortar: floor: replay translate: {replay_ms:.1} ms"));
+    for (name, ms) in laps.borrow().iter() {
+        timer.line(format!("mortar: floor: replay {name}: {ms:.1} ms"));
+    }
     if f.dyn_tables.is_some() {
         return Err("incremental-unsupported (a dynamic executable)".to_owned());
     }
@@ -250,7 +296,7 @@ fn run(
     // 5. The dirty windows, filled into memory.
     let pl = &f.layout.placement;
     // The ELF header first.
-    let mut ranges: Vec<(&str, Range<u64>)> = Vec::new();
+    let mut ranges: Vec<(&'static str, Range<u64>)> = Vec::new();
     ranges.push(("header", 0..64));
     for sid in f.resolution.section_base[file].iter() {
         let Some((c, off)) = pl.place.get(sid).and_then(|p| p.get()) else { continue };
@@ -260,11 +306,18 @@ fn run(
             ranges.push(("file", at..at + f.headers[sid].size));
         }
     }
+    // WP-094 (b): the symbol tables and `.eh_frame` by the changed file's
+    // ranges, unless MORTAR_FLOOR_WHOLE_TABLES is set.
+    let per_file = std::env::var_os("MORTAR_FLOOR_WHOLE_TABLES").is_none();
+    if per_file {
+        per_file_ranges(&f, file, &mut ranges)?;
+    }
     for (_, c) in pl.chunks.iter() {
         let whole = match c.kind {
             ChunkKind::Synthetic(s) => match s.name {
-                b".symtab" | b".strtab" | b".symtab_shndx" => Some("symtab"),
-                b".eh_frame_hdr" | b".eh_frame" => Some("eh_frame"),
+                b".symtab" | b".strtab" | b".symtab_shndx" if !per_file => Some("symtab"),
+                b".eh_frame" if !per_file => Some("eh_frame"),
+                b".eh_frame_hdr" => Some("eh_frame"),
                 _ => None,
             },
             k => k
@@ -294,12 +347,28 @@ fn run(
     }
     windows.sort_unstable();
     windows.dedup();
+    // WP-094: the dirty bytes themselves (the ranges' union), per kind.
+    let union = |mut rs: Vec<Range<u64>>| -> u64 {
+        rs.sort_by_key(|r| r.start);
+        let (mut total, mut end) = (0u64, 0u64);
+        for r in rs {
+            let start = r.start.max(end);
+            if r.end > start {
+                total += r.end - start;
+                end = r.end;
+            }
+        }
+        total
+    };
+    let dirty = union(ranges.iter().map(|(_, r)| r.clone()).collect());
     let kinds = by_kind
         .iter_mut()
         .map(|(l, v)| {
             v.sort_unstable();
             v.dedup();
-            format!("{l}:{}", v.len())
+            let bytes =
+                union(ranges.iter().filter(|(k, _)| k == l).map(|(_, r)| r.clone()).collect());
+            format!("{l}:{}/{bytes}", v.len())
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -364,9 +433,36 @@ fn run(
 
     // 6. The writes (IN-46, IN-47), after everything was filled (IN-13).
     set_updating(&state_path).map_err(|e| format!("cannot set the updating flag: {e}"))?;
+    // WP-094 (b): only the dirty ranges are written (the windows are
+    // filled whole for their leaves), unless MORTAR_FLOOR_WRITE_WINDOWS.
+    let writes: Vec<(Range<u64>, Vec<u8>)> = if std::env::var_os("MORTAR_FLOOR_WRITE_WINDOWS")
+        .is_some()
+    {
+        refilled.jobs.clone()
+    } else {
+        let mut rs: Vec<Range<u64>> = ranges.iter().map(|(_, r)| r.clone()).collect();
+        rs.sort_by_key(|r| r.start);
+        let mut merged: Vec<Range<u64>> = Vec::new();
+        for r in rs.into_iter().filter(|r| r.end > r.start) {
+            match merged.last_mut() {
+                Some(m) if r.start <= m.end => m.end = m.end.max(r.end),
+                _ => merged.push(r),
+            }
+        }
+        let mut out = Vec::new();
+        for (jr, bytes) in &refilled.jobs {
+            let first = merged.partition_point(|m| m.end <= jr.start);
+            for m in merged[first..].iter().take_while(|m| m.start < jr.end) {
+                let (a, b) = (m.start.max(jr.start), m.end.min(jr.end));
+                out.push((a..b, bytes[(a - jr.start) as usize..(b - jr.start) as usize].to_vec()));
+            }
+        }
+        out
+    };
+    let written_bytes: u64 = writes.iter().map(|w| w.0.end - w.0.start).sum();
     let written = match write {
-        WritePath::InPlace => in_place(&out_path, &refilled.jobs, size),
-        WritePath::Copy => by_copy(&out_path, &refilled.jobs, size),
+        WritePath::InPlace => in_place(&out_path, &writes, size),
+        WritePath::Copy => by_copy(&out_path, &writes, size),
     }
     .map_err(|e| format!("cannot write {}: {e}", out_path.display()))?;
     timer.phase(105, "writes");
@@ -436,10 +532,81 @@ fn run(
         windows: windows.len(),
         jobs: refilled.jobs.len(),
         refilled: summary_refilled,
+        dirty,
+        written: written_bytes,
         file_size: size,
         state_size: encoded.len() as u64,
         kinds,
     })
+}
+
+/// WP-094 (b): the ranges of the symbol tables and `.eh_frame` that a
+/// change of `file` can change: its `.symtab` block, its strings, the
+/// entries and names of the globals it defines (S-88's per-file blocks),
+/// and its `.eh_frame` range (IN-34a's per-file ranges in incremental
+/// mode), with the padding after it.
+fn per_file_ranges(
+    f: &crate::front::Front<'_>,
+    file: mortar_core::id::FileId,
+    ranges: &mut Vec<(&'static str, Range<u64>)>,
+) -> Result<(), String> {
+    let pl = &f.layout.placement;
+    let chunk = |name: &[u8]| {
+        pl.chunks
+            .iter()
+            .find(|(_, c)| matches!(c.kind, ChunkKind::Synthetic(s) if s.name == name))
+            .map(|(_, c)| c)
+            .filter(|c| c.in_file())
+    };
+    if let Some(plan) = &f.synth.symtab {
+        let (entries, strings) = f
+            .with_sym_cx(|cx| {
+                let defined: Vec<mortar_core::id::SymbolId> = f
+                    .inputs
+                    .sym_map_of(file)
+                    .iter()
+                    .copied()
+                    .filter(|&id| cx.syms.global(id).is_some_and(|g| g.file == file))
+                    .collect();
+                plan.file_entries(cx, file, &defined)
+            })
+            .and_then(|r| r)
+            .map_err(|e| format!("the symbol table's ranges: {e:?}"))?;
+        let es = plan.entry_size();
+        if let Some(c) = chunk(b".symtab") {
+            for e in &entries {
+                let r = c.offset + u64::from(e.start) * es..c.offset + u64::from(e.end) * es;
+                ranges.push(("symtab", r));
+            }
+        }
+        if let Some(c) = chunk(b".symtab_shndx") {
+            for e in &entries {
+                let r = c.offset + u64::from(e.start) * 4..c.offset + u64::from(e.end) * 4;
+                ranges.push(("symtab", r));
+            }
+        }
+        if let Some(c) = chunk(b".strtab") {
+            for r in &strings {
+                ranges.push(("strtab", c.offset + r.start..c.offset + r.end));
+            }
+        }
+    }
+    if let Some(c) = chunk(b".eh_frame") {
+        let recs = f.eh.records();
+        let mine: Vec<usize> = (0..recs.len())
+            .filter(|&n| f.resolution.sh_index(recs[n].section).is_some_and(|(x, _)| x == file))
+            .collect();
+        if let (Some(&lo), Some(&hi)) = (mine.first(), mine.last()) {
+            if hi - lo + 1 != mine.len() {
+                return Err("the changed file's .eh_frame records are not one range".to_owned());
+            }
+            ranges.push((
+                "eh_frame",
+                c.offset + f.eh.out_offset(lo)..c.offset + f.eh.out_offset(hi + 1),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// IN-46 step 1 (and IN-47's): the state's updating flag, set by a

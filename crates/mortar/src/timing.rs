@@ -16,6 +16,12 @@ impl Timer {
         Self(on.then(PhaseTimer::start), Vec::new())
     }
 
+    /// Whether phases are timed (`--time-phases`).
+    #[must_use]
+    pub fn on(&self) -> bool {
+        self.0.is_some()
+    }
+
     /// The phase `ordinal name` (model §8's names) ended now.
     pub fn phase(&mut self, ordinal: u16, name: &str) {
         if let Some(t) = &mut self.0 {
