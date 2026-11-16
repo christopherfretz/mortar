@@ -135,8 +135,7 @@ fn run(
     let mut state = format::decode(&bytes, crate::VERSION.as_bytes())
         .map_err(|e| format!("{}: {}", e.reason(), e.detail()))?;
     drop(bytes);
-    let reason =
-        incremental::check_state(&state, incremental::plan_hash(&parsed, cwd), &out_path);
+    let reason = incremental::check_state(&state, incremental::plan_hash(&parsed, cwd), &out_path);
     if reason != "update-not-implemented" {
         return Err(reason);
     }
@@ -204,7 +203,8 @@ fn run(
         containers: mortar_odr::reads_containers(&plan.diagnostics.odr),
         ..StoreConfig::default()
     };
-    let store = Store::with_config(StorePolicy::from_env(), config, Default::default());
+    let store =
+        Store::with_config(StorePolicy::from_env(), config, mortar_input::store::Hooks::default());
     let hook = |link: &mortar_incr::capture::Link<'_, '_>,
                 computed: &mortar_core::layout::Layout| {
         let keys = mortar_incr::capture::Keys::new(link)?;
@@ -233,7 +233,9 @@ fn run(
 
     // 5. The dirty windows, filled into memory.
     let pl = &f.layout.placement;
-    let mut ranges: Vec<Range<u64>> = vec![0..64];
+    // The ELF header first.
+    let mut ranges: Vec<Range<u64>> = Vec::new();
+    ranges.push(0..64);
     for sid in f.resolution.section_base[file].iter() {
         let Some((c, off)) = pl.place.get(sid).and_then(|p| p.get()) else { continue };
         let chunk = &pl.chunks[c];
