@@ -16,9 +16,6 @@
 # x86-64 all three agree. `_DYNAMIC` is hidden in lld's `.symtab` only
 # (GNU ld and mold: local, default visibility; GNU ld's is `ABS` on
 # AArch64).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-32"
 #@ arch: aarch64 x86_64
 #@ fixture: dynsym-walk

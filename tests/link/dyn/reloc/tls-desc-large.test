@@ -18,9 +18,7 @@
 # 565-568 and refuse. GNU ld links and runs, but relaxes the large form
 # to IE against `tlsx` (`ldr x0, [x2, x0]` from a `TLS_TPREL64` slot),
 # which a64.md §8.2 says has no IE form, and to LE against `own`; so it
-# is held to its own records (reported: a64.md §8.2 and Q10).
-#
-# mortar: AArch64 WP-053 (JOIN-C), in tests/link/xfails.
+# is held to its own records (a64.md §8.2; Q10 answered by this case).
 #@ spec: dyn.md "D-48"
 #@ spec: a64.md "8.2"
 #@ arch: aarch64

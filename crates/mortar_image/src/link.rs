@@ -726,8 +726,15 @@ impl Tables for LinkTables<'_, '_> {
         (value, split, Some(at))
     }
 
+    /// D-25, D-46: the OUTPUT section's `SHF_WRITE` (the loader maps the
+    /// output section; RELRO sections have it), as the scan's place.
     fn section_writable(&self, section: SectionId) -> Option<bool> {
-        Some(self.section_flags(section) & mortar_elf::consts::SHF_WRITE != 0)
+        let a = self.link.assignment;
+        let flags = match a.out(section).and_then(|o| a.outsecs.get(o)) {
+            Some(out) => out.flags,
+            None => self.section_flags(section),
+        };
+        Some(flags & mortar_elf::consts::SHF_WRITE != 0)
     }
 
     fn target_alloc(&self, key: SymKey) -> bool {
@@ -1333,7 +1340,7 @@ fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
         });
         row.sh_addralign = row.sh_addralign.max(1u64 << c.align);
         match c.kind {
-            // Layout's own chunk (L-74's `.relro_padding`): NOBITS, no plan.
+            // Layout's own chunk (L-64's `.pad.relro`): NOBITS, no plan.
             ChunkKind::Synthetic(s) if s == mortar_core::layout::Synth::RELRO_PADDING => {}
             ChunkKind::Synthetic(_) => {
                 let Some(kind) = kind_of(id) else {

@@ -10,8 +10,6 @@
 # the GOT (`ADR_GOT_PAGE`/`LD64_GOT_LO12_NC`), so an AArch64 PIE never
 # demands a copy (and `-fno-pic` code in an AArch64 PIE is
 # `canonical-plt-in-pie` or a text relocation, not a copy).
-#
-# mortar: x86-64 WP-055 (X64-JOIN), in tests/link/xfails.
 #@ spec: dyn.md "D-43"
 #@ spec: dyn.md "D-42"
 #@ arch: x86_64

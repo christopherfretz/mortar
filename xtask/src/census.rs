@@ -1,0 +1,857 @@
+//! `cargo xtask census`: the driver-line census of `spec/dyn.md` §2 as a
+//! lane (WP-056). Every compiler driver of `scripts/ci-tools.sh` (GCC's
+//! `gcc`, `g++` and `gfortran`; Clang 22's and 19's `clang` and
+//! `clang++`; kiln's `kiln++` where the workspace has a kiln and hod
+//! build, skipped by name where not) links a hello program in each
+//! variation a real build passes; GNU ld's line is captured behind `-B`
+//! wrappers, linked by the reference and run; mortar links the same line,
+//! its program runs and the verifier judges its output.
+//!
+//!   cargo xtask census [--quick] [--arch <a>[,<a>]] [--filter <s>]... [--mortar <path>] [-j <n>] [--keep]
+//!
+//! A line passes when mortar's program runs as the reference's (exit
+//! status and standard output) and the verifier is clean, or when mortar
+//! refuses it by a name of [`OUT_OF_M2`] (a rule puts it out of the
+//! milestone), or when GNU ld cannot link it either. Every other outcome
+//! fails the lane: a refusal no rule names, a program that runs
+//! differently, a verifier finding [`KNOWN_FINDINGS`] does not list.
+//! `--quick` is the subset `cargo xtask ci --quick` runs: the host's
+//! architecture, [`QUICK_DRIVERS`] x [`QUICK_VARIATIONS`].
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use crate::linktest::target::{Arch, ArchTools, Runner};
+use crate::process::{self, End, Limits};
+
+pub const USAGE: &str = "usage: cargo xtask census [--quick] [--arch <a>[,<a>]] [--filter <s>]... \
+                         [--mortar <path>] [-j <n>] [--keep]\n";
+
+/// The limits of a compile or a link.
+const TOOL_LIMITS: Limits = Limits { time: Duration::from_mins(3), memory_kib: 8 << 20 };
+/// The limits of a program.
+const RUN_LIMITS: Limits = Limits { time: Duration::from_mins(1), memory_kib: 4 << 20 };
+
+/// The language of a driver's hello.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Lang {
+    C,
+    Cxx,
+    Fortran,
+}
+
+impl Lang {
+    fn name(self) -> &'static str {
+        match self {
+            Self::C => "c",
+            Self::Cxx => "c++",
+            Self::Fortran => "fortran",
+        }
+    }
+
+    /// The source file and its text: `spec/dyn.md` §2's census programs
+    /// (C++: an exception, iostream, a `thread_local`).
+    fn source(self) -> (&'static str, &'static str) {
+        match self {
+            Self::C => (
+                "hello.c",
+                "#include <stdio.h>\nint main(void){printf(\"hello C\\n\");return 0;}\n",
+            ),
+            Self::Cxx => (
+                "hello.cpp",
+                "#include <iostream>\n#include <stdexcept>\nthread_local int tl = 41;\n\
+                 int main(){ try { throw std::runtime_error(\"boom\"); } catch (const std::exception&e)\
+                 { std::cout << \"hello C++ \" << e.what() << \" \" << ++tl << std::endl; } return 0; }\n",
+            ),
+            Self::Fortran => {
+                ("hello.f90", "program hello\nprint *, 'hello Fortran'\nend program hello\n")
+            }
+        }
+    }
+}
+
+/// The objects a variation links: plain, `-fsanitize=address`, `-flto`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Flavour {
+    Plain,
+    Asan,
+    Lto,
+}
+
+impl Flavour {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Asan => "asan",
+            Self::Lto => "lto",
+        }
+    }
+
+    fn args(self) -> &'static [&'static str] {
+        match self {
+            Self::Plain => &[],
+            Self::Asan => &["-fsanitize=address"],
+            Self::Lto => &["-flto"],
+        }
+    }
+}
+
+/// A variation of the link line: the driver options a real build adds.
+#[derive(Clone, Copy, Debug)]
+pub struct Variation {
+    pub name: &'static str,
+    pub args: &'static [&'static str],
+    pub flavour: Flavour,
+}
+
+const fn v(name: &'static str, args: &'static [&'static str], flavour: Flavour) -> Variation {
+    Variation { name, args, flavour }
+}
+
+/// The census's twenty variations (`spec/dyn.md` §2), then those WP-056
+/// added (`x-`: the options of a real build no default line passes).
+pub const VARIATIONS: &[Variation] = &[
+    v("default", &[], Flavour::Plain),
+    v("no-pie", &["-no-pie"], Flavour::Plain),
+    v("pie", &["-pie"], Flavour::Plain),
+    v("shared-libgcc", &["-shared-libgcc"], Flavour::Plain),
+    v("static-libgcc", &["-static-libgcc"], Flavour::Plain),
+    v("static-libstdc++", &["-static-libstdc++"], Flavour::Plain),
+    v("pthread", &["-pthread"], Flavour::Plain),
+    v("rdynamic", &["-rdynamic"], Flavour::Plain),
+    v("as-needed", &["-Wl,--as-needed"], Flavour::Plain),
+    v("relro", &["-Wl,-z,relro"], Flavour::Plain),
+    v("now", &["-Wl,-z,now"], Flavour::Plain),
+    v("hash-gnu", &["-Wl,--hash-style=gnu"], Flavour::Plain),
+    v("hash-sysv", &["-Wl,--hash-style=sysv"], Flavour::Plain),
+    v("hash-both", &["-Wl,--hash-style=both"], Flavour::Plain),
+    v("build-id", &["-Wl,--build-id"], Flavour::Plain),
+    v("rpath", &["-Wl,-rpath,/x"], Flavour::Plain),
+    v("lld", &["-fuse-ld=lld"], Flavour::Plain),
+    v("mold", &["-fuse-ld=mold"], Flavour::Plain),
+    v("asan", &["-fsanitize=address"], Flavour::Asan),
+    v("lto", &["-flto"], Flavour::Lto),
+    v("x-norelro", &["-Wl,-z,norelro"], Flavour::Plain),
+    v("x-no-pie-now", &["-no-pie", "-Wl,-z,now"], Flavour::Plain),
+    v("x-static-pie", &["-static-pie"], Flavour::Plain),
+    v("x-static-pie-export", &["-static-pie", "-Wl,--export-dynamic"], Flavour::Plain),
+    v("x-init-fini", &["-Wl,-init=main", "-Wl,-fini=main"], Flavour::Plain),
+    v("x-export-symbol", &["-Wl,--export-dynamic-symbol=main"], Flavour::Plain),
+    v("x-export-glob", &["-Wl,--export-dynamic-symbol=ma*"], Flavour::Plain),
+    v("x-bdynamic", &["-Wl,-Bstatic", "-Wl,-Bdynamic"], Flavour::Plain),
+    v("x-runpath-old", &["-Wl,-rpath,/x", "-Wl,--disable-new-dtags"], Flavour::Plain),
+    v("x-ztext", &["-Wl,-z,text"], Flavour::Plain),
+];
+
+/// The drivers of `--quick` (by [`Driver::name`]'s family and language).
+pub const QUICK_DRIVERS: &[&str] = &["gcc/c", "gcc/c++", "gcc/fortran", "clang22/c++"];
+/// The variations of `--quick`.
+pub const QUICK_VARIATIONS: &[&str] =
+    &["default", "no-pie", "rdynamic", "x-no-pie-now", "x-static-pie"];
+
+/// The refusals a rule puts out of M2: a key mortar's diagnostic carries,
+/// and the rule.
+pub const OUT_OF_M2: &[(&str, &str)] = &[
+    (
+        "unsupported option value: --hash-style=sysv",
+        "dyn.md D-20: an executable gets .gnu.hash and no .hash; =sysv, =both and =none are refused",
+    ),
+    (
+        "unsupported option value: --hash-style=both",
+        "dyn.md D-20: an executable gets .gnu.hash and no .hash; =sysv, =both and =none are refused",
+    ),
+    ("unsupported file format: GCC LTO object", "LTO is out of M2 (dyn.md §2.7, item 6)"),
+    ("unsupported file format: LLVM bitcode", "LTO is out of M2 (dyn.md §2.7, item 6)"),
+    (
+        "unsupported option: --whole-archive",
+        "asan's runtime: --whole-archive is out of M2 (dyn.md §2.7, item 6)",
+    ),
+    (
+        "unsupported feature: --export-dynamic in a static-pie",
+        "dyn.md D-1: a static-pie's .dynsym is the null entry; exports are M4 (WP-056 measured them useless)",
+    ),
+    ("unsupported feature: dynamically linked output on i386", "i386 dynamic output is M4"),
+    ("unsupported feature: position-independent executable output", "i386 PIE output is M4"),
+];
+
+/// Verifier findings judged wrong in the verifier, not in mortar (a
+/// finding of the record that names them): the variation, the rule, and
+/// the reason. Only a line whose findings are all of that rule passes.
+pub const KNOWN_FINDINGS: &[(&str, &str, &str)] = &[(
+    "x-norelro",
+    "P-D11",
+    "suspected verifier defect: with -z norelro there is no PT_GNU_RELRO, D-42 keeps the copy in \
+     .bss.rel.ro, and P-D11 asks for RELRO (spec/landed/dyn/WP-056.md, finding F1)",
+)];
+
+/// A compiler driver of the census.
+#[derive(Clone, Debug)]
+pub struct Driver {
+    /// `<family>/<arch>/<lang>`, the family `gcc`, `clang22`, `clang19`
+    /// or `kiln`.
+    pub name: String,
+    pub family: &'static str,
+    pub arch: Arch,
+    pub lang: Lang,
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+}
+
+impl Driver {
+    fn short(&self) -> String {
+        format!("{}/{}", self.family, self.lang.name())
+    }
+}
+
+/// The command line.
+#[derive(Clone, Debug, Default)]
+pub struct Args {
+    pub quick: bool,
+    pub arches: Vec<Arch>,
+    pub filters: Vec<String>,
+    pub mortar: Option<PathBuf>,
+    pub jobs: usize,
+    pub keep: bool,
+}
+
+impl Args {
+    /// Parses `cargo xtask census`'s arguments.
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        let mut a = Args {
+            jobs: std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
+            ..Args::default()
+        };
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
+            let mut value = |what: &str| it.next().cloned().ok_or(format!("{arg} needs {what}"));
+            match arg.as_str() {
+                "--quick" => a.quick = true,
+                "--keep" => a.keep = true,
+                "--arch" => {
+                    for name in value("an architecture")?.split(',') {
+                        a.arches
+                            .push(Arch::parse(name).ok_or(format!("unknown architecture {name}"))?);
+                    }
+                }
+                "--filter" => a.filters.push(value("a string")?),
+                "--mortar" => a.mortar = Some(PathBuf::from(value("a path")?)),
+                "-j" => {
+                    a.jobs =
+                        value("a number")?.parse().map_err(|_| "-j needs a number".to_owned())?;
+                }
+                other => return Err(format!("unknown argument {other}")),
+            }
+        }
+        a.jobs = a.jobs.max(1);
+        Ok(a)
+    }
+}
+
+/// What became of one line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Linked, ran as the reference's, verifier clean.
+    Ok,
+    /// As [`Outcome::Ok`], the reference's program failing the same way.
+    OkSameFailure,
+    /// The driver writes no link line (it fails before linking).
+    NoLine(String),
+    /// Refused by a name of [`OUT_OF_M2`]: the key, the rule.
+    OutOfM2(&'static str, &'static str),
+    /// Refused; GNU ld cannot link the line either.
+    RefusedWithReference(String),
+    /// A finding of [`KNOWN_FINDINGS`]: the rule, the reason.
+    KnownFinding(&'static str, &'static str),
+    /// Fails the lane.
+    Fail(String),
+}
+
+impl Outcome {
+    fn word(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::OkSameFailure => "ok (the reference's program fails alike)",
+            Self::NoLine(_) => "no line (the driver fails)",
+            Self::OutOfM2(..) => "refused by name, out of M2",
+            Self::RefusedWithReference(_) => "refused (GNU ld cannot link it either)",
+            Self::KnownFinding(..) => "known verifier finding",
+            Self::Fail(_) => "FAIL",
+        }
+    }
+
+    fn key(&self) -> String {
+        match self {
+            Self::Ok | Self::OkSameFailure => String::new(),
+            Self::NoLine(k) | Self::RefusedWithReference(k) | Self::Fail(k) => k.clone(),
+            Self::OutOfM2(k, why) | Self::KnownFinding(k, why) => format!("{k} ({why})"),
+        }
+    }
+
+    /// Whether the line passes the lane.
+    pub fn passes(&self) -> bool {
+        !matches!(self, Self::Fail(_))
+    }
+}
+
+/// One line's result.
+#[derive(Clone, Debug)]
+pub struct Line {
+    pub driver: String,
+    pub short: String,
+    pub arch: Arch,
+    pub variation: &'static str,
+    pub outcome: Outcome,
+}
+
+impl Line {
+    fn id(&self) -> String {
+        format!("{}.{}", self.driver, self.variation)
+    }
+}
+
+/// The drivers of `arches` found on this machine; what is missing is a
+/// note.
+fn drivers(arches: &[Arch], host: Option<Arch>, notes: &mut Vec<String>) -> Vec<Driver> {
+    let find = mortar_testutil::find_listed_tool;
+    let mut out = Vec::new();
+    for &arch in arches {
+        for (lang, tool) in [(Lang::C, "gcc"), (Lang::Cxx, "g++"), (Lang::Fortran, "gfortran")] {
+            let name = arch.gnu_tool(host, tool);
+            match find(&name) {
+                Some(program) => out.push(Driver {
+                    name: format!("gcc/{}/{}", arch.name(), lang.name()),
+                    family: "gcc",
+                    arch,
+                    lang,
+                    program,
+                    args: Vec::new(),
+                    env: Vec::new(),
+                }),
+                None => notes.push(format!("{name} not found: its lines skipped")),
+            }
+        }
+        for (family, major) in [("clang22", "22"), ("clang19", "19")] {
+            for (lang, tool) in [(Lang::C, "clang"), (Lang::Cxx, "clang++")] {
+                let name = format!("{tool}-{major}");
+                let target = if host == Some(arch) {
+                    Vec::new()
+                } else {
+                    vec![format!("--target={}", arch.triple())]
+                };
+                match find(&name) {
+                    Some(program) => out.push(Driver {
+                        name: format!("{family}/{}/{}", arch.name(), lang.name()),
+                        family,
+                        arch,
+                        lang,
+                        program,
+                        args: target,
+                        env: Vec::new(),
+                    }),
+                    None => notes.push(format!("{name} not found: its lines skipped")),
+                }
+            }
+        }
+        if arch == Arch::Aarch64 {
+            match crate::mason::Mason::find() {
+                Ok(m) if host == Some(Arch::Aarch64) => {
+                    let hod_dir = m.hod.parent().map(Path::to_path_buf).unwrap_or_default();
+                    let path = std::env::var_os("PATH").unwrap_or_default();
+                    let mut dirs = vec![hod_dir];
+                    dirs.extend(std::env::split_paths(&path));
+                    let path = std::env::join_paths(dirs).unwrap_or(path);
+                    out.push(Driver {
+                        name: "kiln/aarch64/c++".into(),
+                        family: "kiln",
+                        arch,
+                        lang: Lang::Cxx,
+                        program: m.kiln.clone(),
+                        args: Vec::new(),
+                        env: vec![
+                            ("PATH".into(), path.to_string_lossy().into_owned()),
+                            ("KILN_BACKEND".into(), "hod".into()),
+                            ("KILN_HOD".into(), m.hod.display().to_string()),
+                            ("KILN_HOD_STRICT".into(), "1".into()),
+                        ],
+                    });
+                }
+                Ok(_) => notes
+                    .push("kiln++: skipped, the census runs kiln natively on AArch64 only".into()),
+                Err(e) => notes.push(format!("kiln++: skipped: {e}")),
+            }
+        }
+    }
+    out
+}
+
+/// The `-B` wrapper: records the linker's name and arguments in
+/// `$CENSUS_ARGS`, then runs the real linker of its name.
+fn wrapper(bfd: &Path, lld: Option<&Path>, mold: Option<&Path>) -> String {
+    let or_missing =
+        |p: Option<&Path>| p.map_or_else(|| "/nonexistent".to_owned(), |p| p.display().to_string());
+    format!(
+        "#!/bin/bash\nname=$(basename \"$0\")\n\
+         if [ -n \"$CENSUS_ARGS\" ]; then printf '%s\\n' \"$name\" \"$@\" > \"$CENSUS_ARGS\"; fi\n\
+         case \"$name\" in\n  *ld.lld) real={} ;;\n  *ld.mold) real={} ;;\n  *) real={} ;;\nesac\n\
+         exec \"$real\" \"$@\"\n",
+        or_missing(lld),
+        or_missing(mold),
+        bfd.display()
+    )
+}
+
+/// The tools of the lane.
+struct Lane {
+    work: PathBuf,
+    mortar: PathBuf,
+    arch_tools: BTreeMap<Arch, ArchTools>,
+}
+
+impl Lane {
+    fn wrap_dir(&self, arch: Arch) -> PathBuf {
+        self.work.join("wrap").join(arch.name())
+    }
+
+    fn object(&self, d: &Driver, f: Flavour) -> PathBuf {
+        self.work.join("obj").join(format!("{}.{}.o", d.name.replace('/', "_"), f.name()))
+    }
+
+    fn run_program(&self, arch: Arch, exe: &Path) -> Result<(End, String), String> {
+        let dir = exe.parent().unwrap_or(Path::new("."));
+        let (program, args) = match &self.arch_tools[&arch].runner {
+            Runner::Native => (exe.to_path_buf(), Vec::new()),
+            Runner::Emulated { qemu, sysroot } => (
+                qemu.clone(),
+                vec!["-L".to_owned(), sysroot.display().to_string(), exe.display().to_string()],
+            ),
+        };
+        let o = run(&program, &args, dir, &[], RUN_LIMITS)?;
+        Ok((o.end, String::from_utf8_lossy(&o.stdout).into_owned()))
+    }
+
+    #[allow(clippy::too_many_lines, reason = "one line, start to verdict")]
+    fn line(&self, d: &Driver, var: &Variation) -> Outcome {
+        let id = format!("{}.{}", d.name.replace('/', "_"), var.name);
+        let dir = self.work.join("lines").join(&id);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return Outcome::Fail(format!("{}: {e}", dir.display()));
+        }
+        let args_file = dir.join("ld.args");
+        let reference = dir.join("ref");
+        let wrap = self.wrap_dir(d.arch);
+        let mut argv = d.args.clone();
+        argv.push(format!("-B{}/", wrap.display()));
+        argv.extend(var.args.iter().map(|s| (*s).to_owned()));
+        argv.push(self.object(d, var.flavour).display().to_string());
+        argv.extend(["-o".to_owned(), reference.display().to_string()]);
+        let mut env: Vec<(&str, &str)> =
+            d.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let args_s = args_file.display().to_string();
+        env.push(("CENSUS_ARGS", &args_s));
+        let linked = match run(&d.program, &argv, &dir, &env, TOOL_LIMITS) {
+            Ok(o) => o,
+            Err(e) => return Outcome::Fail(format!("{}: {e}", d.program.display())),
+        };
+        let Ok(captured) = std::fs::read_to_string(&args_file) else {
+            return Outcome::NoLine(linked.first_error_line());
+        };
+        let wrap_s = wrap.display().to_string();
+        let mut words: Vec<String> = captured
+            .lines()
+            .skip(1)
+            .filter(|w| !(w.starts_with("-L") && w[2..].trim_end_matches('/') == wrap_s))
+            .map(str::to_owned)
+            .collect();
+        let ref_run = if linked.end.success() && reference.is_file() {
+            match self.run_program(d.arch, &reference) {
+                Ok(r) => Some(r),
+                Err(e) => return Outcome::Fail(format!("the reference's program: {e}")),
+            }
+        } else {
+            None
+        };
+        // mortar on the same words, its output and map beside.
+        let out = dir.join("mortar.out");
+        let map = dir.join("mortar.map");
+        if let Some(i) = words.iter().position(|w| w == "-o")
+            && let Some(o) = words.get_mut(i + 1)
+        {
+            *o = out.display().to_string();
+        }
+        let mut margs = words.clone();
+        margs.push(format!("--mortar-map={}", map.display()));
+        let linked = match run(&self.mortar, &margs, &dir, &[], TOOL_LIMITS) {
+            Ok(o) => o,
+            Err(e) => return Outcome::Fail(format!("mortar: {e}")),
+        };
+        if !linked.end.success() {
+            let text = String::from_utf8_lossy(&linked.stderr).into_owned();
+            if let Some((key, why)) = OUT_OF_M2.iter().find(|(k, _)| text.contains(k)) {
+                return Outcome::OutOfM2(key, why);
+            }
+            let first = text.lines().find(|l| l.contains("error")).unwrap_or_else(|| text.trim());
+            let first = first.to_owned();
+            return if ref_run.is_none() {
+                Outcome::RefusedWithReference(first)
+            } else {
+                Outcome::Fail(format!("refused, no rule puts it out of M2: {first}"))
+            };
+        }
+        let ours = match self.run_program(d.arch, &out) {
+            Ok(r) => r,
+            Err(e) => return Outcome::Fail(format!("mortar's program: {e}")),
+        };
+        let Some(theirs) = ref_run else {
+            return Outcome::Fail(format!(
+                "mortar links a line GNU ld cannot ({:?}, {:?})",
+                ours.0,
+                ours.1.trim()
+            ));
+        };
+        if ours != theirs {
+            return Outcome::Fail(format!(
+                "runs differently: GNU ld's {:?} {:?}, mortar's {:?} {:?}",
+                theirs.0,
+                theirs.1.trim(),
+                ours.0,
+                ours.1.trim()
+            ));
+        }
+        let verified = crate::plumb::verify_link_line(
+            &out,
+            &map,
+            mortar_plumb::Format::Mortar,
+            &dir,
+            None,
+            None,
+            Some(words),
+        );
+        let report = match verified {
+            Ok((_, report, _)) => report,
+            Err(e) => return Outcome::Fail(format!("the verifier: {e}")),
+        };
+        if !report.findings.is_empty() {
+            let text = report.render(&out.display().to_string());
+            let rules: Vec<String> = report.findings.iter().map(|f| f.rule.id()).collect();
+            if let Some((_, rule, why)) = KNOWN_FINDINGS.iter().find(|(var_name, rule, _)| {
+                *var_name == var.name && rules.iter().all(|r| r == rule)
+            }) {
+                return Outcome::KnownFinding(rule, why);
+            }
+            let first = text.lines().next().unwrap_or("").to_owned();
+            return Outcome::Fail(format!("{} verifier finding(s): {first}", rules.len()));
+        }
+        if theirs.0.success() { Outcome::Ok } else { Outcome::OkSameFailure }
+    }
+}
+
+/// Runs `program args` in `dir` with `env`.
+fn run(
+    program: &Path,
+    args: &[String],
+    dir: &Path,
+    env: &[(&str, &str)],
+    limits: Limits,
+) -> Result<process::Output, String> {
+    process::run(
+        program,
+        |c| {
+            c.args(args).current_dir(dir).env("LC_ALL", "C");
+            for (k, v) in env {
+                c.env(k, v);
+            }
+        },
+        b"",
+        limits,
+    )
+}
+
+/// Runs `work` over `items` on `jobs` threads, results in item order.
+fn parallel<T: Sync, R: Send>(items: &[T], jobs: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = Mutex::new(0usize);
+    let done = Mutex::new(Vec::with_capacity(items.len()));
+    std::thread::scope(|s| {
+        for _ in 0..jobs.min(items.len()).max(1) {
+            s.spawn(|| {
+                loop {
+                    let i = {
+                        let mut n = next.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let i = *n;
+                        *n += 1;
+                        i
+                    };
+                    let Some(item) = items.get(i) else { break };
+                    let r = work(item);
+                    done.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((i, r));
+                }
+            });
+        }
+    });
+    let mut done = done.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+    done.sort_by_key(|(i, _)| *i);
+    done.into_iter().map(|(_, r)| r).collect()
+}
+
+/// The lines of a run: (driver, variation), filtered.
+fn plan<'a>(drivers: &'a [Driver], args: &Args) -> Vec<(&'a Driver, &'static Variation)> {
+    let mut out = Vec::new();
+    for d in drivers {
+        for var in VARIATIONS {
+            if var.name == "static-libstdc++" && d.lang != Lang::Cxx {
+                continue;
+            }
+            if d.family == "kiln" && var.flavour != Flavour::Plain {
+                continue;
+            }
+            if args.quick
+                && !(QUICK_DRIVERS.contains(&d.short().as_str())
+                    && QUICK_VARIATIONS.contains(&var.name))
+            {
+                continue;
+            }
+            let id = format!("{}.{}", d.name, var.name);
+            if !args.filters.is_empty() && !args.filters.iter().any(|f| id.contains(f.as_str())) {
+                continue;
+            }
+            out.push((d, var));
+        }
+    }
+    out
+}
+
+/// Runs the lane; `Ok(passed)`.
+#[allow(
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "args and argv; the lane start to end"
+)]
+pub fn run_lane(args: &Args) -> Result<bool, String> {
+    let started = Instant::now();
+    let host = Arch::host();
+    let arches: Vec<Arch> = if !args.arches.is_empty() {
+        args.arches.clone()
+    } else if args.quick {
+        host.into_iter().filter(|a| *a != Arch::I386).collect()
+    } else {
+        vec![Arch::Aarch64, Arch::X86_64]
+    };
+    let mut notes = Vec::new();
+    let mut arch_tools = BTreeMap::new();
+    for &arch in &arches {
+        match ArchTools::find(arch, host, mortar_testutil::find_listed_tool) {
+            Ok(t) if t.bfd.is_some() => {
+                arch_tools.insert(arch, t);
+            }
+            Ok(_) => notes.push(format!("{}: no GNU ld: skipped", arch.name())),
+            Err(m) => notes.push(format!("{}: {} not found: skipped", arch.name(), m.what)),
+        }
+    }
+    if mortar_testutil::tools_required() && !notes.is_empty() {
+        return Err(format!("{} (MORTAR_REQUIRE_TOOLS=1)", notes.join("; ")));
+    }
+    let arches: Vec<Arch> = arch_tools.keys().copied().collect();
+    let all = drivers(&arches, host, &mut notes);
+    let lines = plan(&all, args);
+    let mortar = match &args.mortar {
+        Some(p) => p.clone(),
+        None => crate::linktest::build_mortar()?,
+    };
+    let work =
+        crate::linktest::build_dir().join("census").join(format!("run-{}", std::process::id()));
+    let lane = Lane { work, mortar, arch_tools };
+    let mk = |p: &Path| std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()));
+    mk(&lane.work.join("obj"))?;
+    let lld = mortar_testutil::find_listed_tool("ld.lld");
+    let mold = mortar_testutil::find_listed_tool("mold");
+    for (arch, t) in &lane.arch_tools {
+        let dir = lane.wrap_dir(*arch);
+        mk(&dir)?;
+        let bfd = t.bfd.as_deref().unwrap_or(Path::new("ld.bfd"));
+        let text = wrapper(bfd, lld.as_deref(), mold.as_deref());
+        let mut names = vec!["ld".to_owned(), "ld.bfd".into(), "ld.lld".into(), "ld.mold".into()];
+        for a in Arch::ALL {
+            names.extend(
+                ["ld", "ld.bfd", "ld.lld", "ld.mold"].iter().map(|n| format!("{}-{n}", a.triple())),
+            );
+        }
+        for n in names {
+            let p = dir.join(n);
+            std::fs::write(&p, &text).map_err(|e| format!("{}: {e}", p.display()))?;
+            set_executable(&p)?;
+        }
+    }
+    for lang in [Lang::C, Lang::Cxx, Lang::Fortran] {
+        let (file, text) = lang.source();
+        let p = lane.work.join("obj").join(file);
+        std::fs::write(&p, text).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    // The objects the planned lines link, once each.
+    let mut objects: Vec<(&Driver, Flavour)> = Vec::new();
+    for (d, var) in &lines {
+        if !objects.iter().any(|(o, f)| o.name == d.name && *f == var.flavour) {
+            objects.push((d, var.flavour));
+        }
+    }
+    let compiled = parallel(&objects, args.jobs, |(d, f)| {
+        let mut argv = d.args.clone();
+        argv.extend(f.args().iter().map(|s| (*s).to_owned()));
+        let (src, _) = d.lang.source();
+        argv.extend(["-c".to_owned(), src.to_owned(), "-o".to_owned()]);
+        argv.push(lane.object(d, *f).display().to_string());
+        let env: Vec<(&str, &str)> = d.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        match run(&d.program, &argv, &lane.work.join("obj"), &env, TOOL_LIMITS) {
+            Ok(o) if o.end.success() => None,
+            Ok(o) => {
+                Some(format!("{} {}: does not compile: {}", d.name, f.name(), o.first_error_line()))
+            }
+            Err(e) => Some(format!("{} {}: {e}", d.name, f.name())),
+        }
+    });
+    let compile_failures: Vec<String> = compiled.into_iter().flatten().collect();
+    let results: Vec<Line> = parallel(&lines, args.jobs, |(d, var)| Line {
+        driver: d.name.clone(),
+        short: d.short(),
+        arch: d.arch,
+        variation: var.name,
+        outcome: if lane.object(d, var.flavour).is_file() {
+            lane.line(d, var)
+        } else {
+            Outcome::Fail(format!("{} {}: no object", d.name, var.flavour.name()))
+        },
+    });
+    print!("{}", report(&results, &notes, &compile_failures));
+    let failed = results.iter().filter(|l| !l.outcome.passes()).count() + compile_failures.len();
+    eprintln!(
+        "census: {} lines, {} drivers, {} pass, {failed} fail, in {:.1} s",
+        results.len(),
+        all.len(),
+        results.len() - results.iter().filter(|l| !l.outcome.passes()).count(),
+        started.elapsed().as_secs_f64()
+    );
+    if args.keep {
+        eprintln!("census: kept {}", lane.work.display());
+    } else {
+        let _ = std::fs::remove_dir_all(&lane.work);
+    }
+    Ok(failed == 0)
+}
+
+#[cfg(unix)]
+fn set_executable(p: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("{}: {e}", p.display()))
+}
+
+/// The table (architecture, variation, outcome: count), then every line
+/// that is not `ok`, with its key.
+pub fn report(lines: &[Line], notes: &[String], compile_failures: &[String]) -> String {
+    let mut s = String::new();
+    for n in notes {
+        let _ = writeln!(s, "census: note: {n}");
+    }
+    for c in compile_failures {
+        let _ = writeln!(s, "census: FAIL: {c}");
+    }
+    let mut counts: BTreeMap<(&str, usize, &str), usize> = BTreeMap::new();
+    for l in lines {
+        let order = VARIATIONS.iter().position(|v| v.name == l.variation).unwrap_or(usize::MAX);
+        *counts.entry((l.arch.name(), order, l.outcome.word())).or_default() += 1;
+    }
+    let _ = writeln!(s, "| arch | variation | outcome | lines |");
+    let _ = writeln!(s, "|---|---|---|---|");
+    for ((arch, order, word), n) in &counts {
+        let name = VARIATIONS.get(*order).map_or("?", |v| v.name);
+        let _ = writeln!(s, "| {arch} | {name} | {word} | {n} |");
+    }
+    for l in lines.iter().filter(|l| l.outcome != Outcome::Ok) {
+        let tag = if l.outcome.passes() { "note" } else { "FAIL" };
+        let _ = writeln!(
+            s,
+            "census: {tag}: {} [{}]: {}: {}",
+            l.id(),
+            l.short,
+            l.outcome.word(),
+            l.outcome.key()
+        );
+    }
+    s
+}
+
+/// The entry point: exit status 0 when every line passes.
+pub fn main(args: &[String]) -> u8 {
+    match Args::parse(args) {
+        Ok(a) => match run_lane(&a) {
+            Ok(true) => 0,
+            Ok(false) => 1,
+            Err(e) => {
+                eprintln!("xtask census: {e}");
+                1
+            }
+        },
+        Err(e) => {
+            eprint!("xtask census: {e}\n{USAGE}");
+            2
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arguments() {
+        let a = Args::parse(&[
+            "--quick".into(),
+            "--arch".into(),
+            "aarch64,x86_64".into(),
+            "-j".into(),
+            "3".into(),
+        ])
+        .unwrap();
+        assert!(a.quick && a.jobs == 3);
+        assert_eq!(a.arches, [Arch::Aarch64, Arch::X86_64]);
+        assert!(Args::parse(&["--bogus".into()]).is_err());
+    }
+
+    // The quick subset names variations and drivers that exist.
+    #[test]
+    fn quick_names_exist() {
+        for q in QUICK_VARIATIONS {
+            assert!(VARIATIONS.iter().any(|v| v.name == *q), "{q}");
+        }
+        for k in KNOWN_FINDINGS {
+            assert!(VARIATIONS.iter().any(|v| v.name == k.0), "{}", k.0);
+        }
+        for d in QUICK_DRIVERS {
+            let (family, lang) = d.split_once('/').unwrap();
+            assert!(["gcc", "clang22", "clang19", "kiln"].contains(&family));
+            assert!(["c", "c++", "fortran"].contains(&lang));
+        }
+    }
+
+    #[test]
+    fn outcomes_pass_or_fail() {
+        assert!(Outcome::Ok.passes());
+        assert!(Outcome::OutOfM2(OUT_OF_M2[0].0, OUT_OF_M2[0].1).passes());
+        assert!(!Outcome::Fail("x".into()).passes());
+        let line = Line {
+            driver: "gcc/aarch64/c".into(),
+            short: "gcc/c".into(),
+            arch: Arch::Aarch64,
+            variation: "hash-sysv",
+            outcome: Outcome::OutOfM2(OUT_OF_M2[0].0, OUT_OF_M2[0].1),
+        };
+        let text = report(&[line], &[], &[]);
+        assert!(
+            text.contains("| aarch64 | hash-sysv | refused by name, out of M2 | 1 |"),
+            "{text}"
+        );
+        assert!(text.contains("census: note: gcc/aarch64/c.hash-sysv"), "{text}");
+    }
+}

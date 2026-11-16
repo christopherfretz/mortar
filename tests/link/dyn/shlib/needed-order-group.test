@@ -12,9 +12,6 @@
 # reference to nc comes after its only, as-needed, mention. GNU ld
 # refuses it (undefined reference); mortar links it with nc at its first
 # mention (D-19a's fallback), as lld and mold do.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-19a"
 #@ arch: aarch64 x86_64
 #@ fixture: needed-libs

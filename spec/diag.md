@@ -493,6 +493,23 @@ Detail (why, what to use instead, the milestone that brings it) goes in a
 note, not in the name: tests compare the name
 (`docs/VALIDATION.md`, "A test of a refusal checks the name").
 
+A `feature` name has no outside document, so the spec that refuses the
+construct spells it, and the test of the refusal compares that spelling.
+The dynamic outputs (M2) added these, without a kind of their own
+(WP-083 found them in the code and not here):
+
+| name | refused by | where |
+|---|---|---|
+| `dynamic executable without -dynamic-linker` | the input phase | `spec/input.md` §8.4 |
+| `a dynamic executable that names no interpreter (-dynamic-linker)` | the plan of `.interp`, behind the input phase's refusal | `spec/dyn.md` D-31 |
+| `dynamically linked output on i386` | the front, until M4 | `spec/dyn.md` §1 (i386 dynamic is M4) |
+| `thread-local undefined weak symbol in a dynamic executable` | the scan | `spec/dyn.md` D-25 |
+| `lazy PLT (shared-library calls)` | `mortar_x64`, `mortar_x86` outside a dynamic plan | `spec/x64.md` §10.3 |
+
+A dynamic link's notes are the refusing spec's as well: the D-12 note
+`defined in {path}, which is not on the command line`
+(`spec/resolve.md`, `spec/dyn.md` D-12) is one, on `undefined-symbol`.
+
 A refusal SHOULD carry the place of the construct: `.at` the section and
 offset for a relocation, the file for a section or a header field, the
 script position for a command, and nothing for an option (the name is the

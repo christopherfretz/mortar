@@ -7,8 +7,6 @@
 # `.got.plt` as a section of its own inside RELRO, GNU ld merges it into
 # `.got`, dyn.md §13.1; both are inside RELRO). The lazy shapes stay
 # (`.rela.plt` with `JUMP_SLOT` records). The lazy default is `plt-lazy`.
-#
-# mortar: AArch64 WP-056 (OPTS), x86-64 WP-056 (OPTS), in tests/link/xfails.
 #@ spec: dyn.md "D-49"
 #@ spec: dyn.md "D-30"
 #@ arch: aarch64 x86_64

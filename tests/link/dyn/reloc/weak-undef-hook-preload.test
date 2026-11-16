@@ -13,9 +13,6 @@
 # runs under the preload: consistent, but the idiom is lost (dyn.md §13.1
 # "undefined weak, GOT-used, in a PIE"; mold's runs are held to what it
 # prints).
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-25"
 #@ arch: aarch64 x86_64
 

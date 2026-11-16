@@ -7,9 +7,6 @@
 # `libstdc++.so.6`, `libm.so.6` (clang's line keeps it), `libgcc_s.so.1`,
 # `libc.so.6`, in that order. The unwinder needs `.eh_frame_hdr`
 # (`--eh-frame-hdr`, passed by the driver).
-#
-# mortar: AArch64 WP-054 (CXX), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "2.1 Default link lines"
 #@ spec: dyn.md "D-1"
 #@ arch: aarch64 x86_64

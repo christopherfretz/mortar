@@ -13,9 +13,6 @@
 # AArch64 and needs no copy: it links and prints `9 9` (5.6a); on x86-64
 # GCC's `-fPIE` reads extern data PC-relatively, which needs a copy in a
 # PIE too, and it is refused.
-#
-# mortar: AArch64 WP-053 (JOIN-C), x86-64 WP-055 (X64-JOIN), in
-# tests/link/xfails.
 #@ spec: dyn.md "D-18"
 #@ arch: aarch64 x86_64
 #@ fixture: shlib-prot
