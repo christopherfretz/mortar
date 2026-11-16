@@ -1658,8 +1658,8 @@ pub fn known_anomaly(link: &Link, f: &mortar_plumb::Finding) -> Option<&'static 
                 | mortar_plumb::Rule::Field
                 | mortar_plumb::Rule::Ifunc(3)
         )
-            .then(|| mortar_plumb::anomaly::classify(format, &link.output_bytes(), f))
-            .flatten()
+        .then(|| mortar_plumb::anomaly::classify(format, &link.output_bytes(), f))
+        .flatten()
     })
 }
 

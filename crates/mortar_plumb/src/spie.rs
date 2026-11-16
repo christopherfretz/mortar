@@ -17,8 +17,8 @@ use std::collections::BTreeMap;
 use mortar_elf::consts::{EM_AARCH64, EM_X86_64, PT_LOAD, PT_PHDR};
 
 use crate::dynout::{
-    self, DT_JMPREL, DT_NEEDED, DT_PLTREL, DT_PLTRELSZ, DT_RELA, DT_RELACOUNT, DT_RELASZ,
-    DT_RELR, DT_VERDEF, DT_VERNEED, DT_VERNEEDNUM, DT_VERSYM, DynOut,
+    self, DT_JMPREL, DT_NEEDED, DT_PLTREL, DT_PLTRELSZ, DT_RELA, DT_RELACOUNT, DT_RELASZ, DT_RELR,
+    DT_VERDEF, DT_VERNEED, DT_VERNEEDNUM, DT_VERSYM, DynOut,
 };
 use crate::image::Image;
 use crate::loader::{Kind, kind};
@@ -58,12 +58,7 @@ pub(crate) fn records(image: &Image<'_>) -> BTreeMap<u64, Rec> {
             let info = q(8);
             m.insert(
                 at,
-                Rec {
-                    at,
-                    offset: q(0),
-                    ty: (info & 0xffff_ffff) as u32,
-                    sym: (info >> 32) as u32,
-                },
+                Rec { at, offset: q(0), ty: (info & 0xffff_ffff) as u32, sym: (info >> 32) as u32 },
             );
         }
     }
@@ -169,7 +164,7 @@ pub(crate) fn check(
     // P-D14, .dynsym: exports nothing (no -E, which is outside stage 3).
     for s in out.syms.iter().skip(1) {
         // GNU ld's AArch64 section symbols name nothing a lookup finds.
-        if s.defined() && !(s.sym_type() == mortar_elf::consts::STT_SECTION && !mortar) {
+        if s.defined() && (mortar || s.sym_type() != mortar_elf::consts::STT_SECTION) {
             v.push(d14(format!(
                 "'{}' is exported by a static-pie: nothing can look it up (D-1)",
                 s.name
@@ -214,8 +209,8 @@ pub(crate) fn check(
             let at = g.sym.st_value;
             let w = image.value(at, 8);
             if w != Some(dyn_at) {
-                let mut f = d14("the word at _GLOBAL_OFFSET_TABLE_ does not hold _DYNAMIC (D-32)")
-                    .at(at);
+                let mut f =
+                    d14("the word at _GLOBAL_OFFSET_TABLE_ does not hold _DYNAMIC (D-32)").at(at);
                 f.expected = Some(dyn_at);
                 f.found = w;
                 v.push(f);
@@ -253,26 +248,22 @@ pub(crate) fn check(
         let mut at = start;
         let end = start.saturating_add(size);
         while at < end {
-            match recs.get(&at) {
-                Some(r) => {
-                    *applied.entry(at).or_default() += 1;
-                    let k = if ri == 0 && (at - start) / 24 < nrel {
-                        Kind::Relative
-                    } else {
-                        kind(machine, r.ty)
-                    };
-                    run.push((at, k));
-                }
-                None => {
-                    v.push(
-                        d15(format!(
-                            "glibc's relocation range [{start:#x}, +{size:#x}) covers {at:#x}, which is not a record of an allocated SHT_RELA section"
-                        ))
-                        .at(at),
-                    );
-                    break;
-                }
-            }
+            let Some(r) = recs.get(&at) else {
+                v.push(
+                    d15(format!(
+                        "glibc's relocation range [{start:#x}, +{size:#x}) covers {at:#x}, which is not a record of an allocated SHT_RELA section"
+                    ))
+                    .at(at),
+                );
+                break;
+            };
+            *applied.entry(at).or_default() += 1;
+            let k = if ri == 0 && (at - start) / 24 < nrel {
+                Kind::Relative
+            } else {
+                kind(machine, r.ty)
+            };
+            run.push((at, k));
             at += 24;
         }
         // x86-64 (ELF_MACHINE_IRELATIVE) defers a range's IRELATIVE
@@ -310,7 +301,11 @@ pub(crate) fn check(
     }
     // The C runtime's range: empty.
     let val = |n: &str| {
-        image.global(n).or_else(|| image.unique(n)).filter(|o| o.sym.st_shndx != 0).map(|o| o.sym.st_value)
+        image
+            .global(n)
+            .or_else(|| image.unique(n))
+            .filter(|o| o.sym.st_shndx != 0)
+            .map(|o| o.sym.st_value)
     };
     if let (Some(lo), Some(hi)) = (val("__rela_iplt_start"), val("__rela_iplt_end"))
         && lo != hi

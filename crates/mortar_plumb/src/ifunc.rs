@@ -45,7 +45,7 @@ pub(crate) struct Iplt {
     spie: bool,
     /// Static-pie `IRELATIVE` slots inside the placed sections, `(slot,
     /// resolver)`: each must be claimed by an input's address word
-    /// against an IFUNC of that resolver (F2 otherwise, finish_ifunc).
+    /// against an IFUNC of that resolver (F2 otherwise, `finish_ifunc`).
     words: Vec<(u64, u64)>,
     /// The slots of `words` an input's address word claimed.
     claimed: BTreeSet<u64>,
@@ -529,7 +529,7 @@ impl Engine<'_, '_> {
     }
 
     /// A record whose symbol is an IFUNC (§4.8).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) fn ifunc_record<'r>(
         &mut self,
         oi: usize,
@@ -776,7 +776,12 @@ impl Engine<'_, '_> {
                     && ok.iter().any(|o| o.0 == c)
                     && self.image.load_of(pend.rec.p, u64::from(w)).is_some()
                 {
-                    self.abs_words.push((pend.rec.p, w, c.wrapping_add(pend.rec.addend as u64), true));
+                    self.abs_words.push((
+                        pend.rec.p,
+                        w,
+                        c.wrapping_add(pend.rec.addend as u64),
+                        true,
+                    ));
                 }
                 match ok.iter().find(|o| Some(o.0) == chosen) {
                     Some((_, Some(rw))) => self.cov.add_accepted(*rw, pend.rec.def.r_type),

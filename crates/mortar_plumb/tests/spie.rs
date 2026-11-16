@@ -7,6 +7,8 @@
 //! application is measured on rewritten outputs; the static-pie mutation
 //! classes must all be caught where they apply. Every source is in
 //! `tests/spie/`; every binary is built at test time.
+// ELF fields and addresses read best by the specs' short names.
+#![allow(clippy::many_single_char_names, clippy::similar_names)]
 
 mod common;
 
@@ -64,7 +66,10 @@ struct Tools {
 fn tools() -> Option<Tools> {
     Some(Tools {
         cc: [tool("aarch64-linux-gnu-gcc").or_else(|| tool("gcc"))?, tool("x86_64-linux-gnu-gcc")?],
-        cxx: [tool("aarch64-linux-gnu-g++").or_else(|| tool("g++"))?, tool("x86_64-linux-gnu-g++")?],
+        cxx: [
+            tool("aarch64-linux-gnu-g++").or_else(|| tool("g++"))?,
+            tool("x86_64-linux-gnu-g++")?,
+        ],
         fc: [
             tool("aarch64-linux-gnu-gfortran").or_else(|| tool("gfortran")),
             tool("x86_64-linux-gnu-gfortran"),
@@ -227,7 +232,11 @@ fn build() -> Option<Corpus> {
                     if now {
                         a.push("-Wl,-z,now");
                     }
-                    assert!(run_in(&dir, driver, &a, Some(&line)), "{name} [{}]: link", arch.name());
+                    assert!(
+                        run_in(&dir, driver, &a, Some(&line)),
+                        "{name} [{}]: link",
+                        arch.name()
+                    );
                     let mut e = expect(case, arch, linker);
                     if case == "absgot" && arch == Arch::A64 && linker == Linker::Bfd {
                         e = vec!["A30"];
@@ -294,12 +303,8 @@ fn s12_4_static_pie_references_verify_clean() {
         let r = o.verify();
         let f = found(o, &r);
         assert!(r.coverage.records > 0, "{}: no records", o.label());
-        let allowed: BTreeSet<String> = o
-            .expect
-            .iter()
-            .chain(defaults(o.link.linker))
-            .map(|s| (*s).to_string())
-            .collect();
+        let allowed: BTreeSet<String> =
+            o.expect.iter().chain(defaults(o.link.linker)).map(|s| (*s).to_string()).collect();
         let missing: Vec<&&str> = o.expect.iter().filter(|e| !f.contains(**e)).collect();
         let extra: Vec<&String> = f.iter().filter(|x| !allowed.contains(*x)).collect();
         if !missing.is_empty() || !extra.is_empty() {
@@ -323,7 +328,7 @@ fn s12_4_static_pie_references_verify_clean() {
 fn s12_4_a30_absolute_got_slot_runs_wrong() {
     let Some(c) = corpus() else { return };
     for o in c.outs.iter().filter(|o| o.case == "absgot" && o.arch == Arch::A64 && o.arch.host()) {
-        let want = if o.link.linker == Linker::Bfd { 1 } else { 0 };
+        let want = i32::from(o.link.linker == Linker::Bfd);
         assert_eq!(status(&o.link.dir, &o.link.output), Some(want), "{}", o.label());
     }
 }
@@ -354,7 +359,7 @@ fn set(b: &mut [u8], o: usize, v: u64) {
 }
 
 /// lld's (and mold's) table with its IRELATIVE records moved before the
-/// RELATIVEs, DT_RELACOUNT 0.
+/// RELATIVEs, `DT_RELACOUNT` 0.
 fn irelative_first(b: &mut [u8], irelative: u32) {
     let d = dynamic(b);
     let get = |t: u64| d.iter().find(|e| e.1 == t).map(|e| (e.0, e.2));
@@ -372,7 +377,7 @@ fn irelative_first(b: &mut [u8], irelative: u32) {
     }
 }
 
-/// GNU ld's DT_RELA and DT_JMPREL ranges swapped: the IRELATIVE table is
+/// GNU ld's `DT_RELA` and `DT_JMPREL` ranges swapped: the IRELATIVE table is
 /// glibc's range 0, applied before the RELATIVE one.
 fn ranges_swapped(b: &mut [u8]) {
     let d = dynamic(b);
@@ -400,7 +405,9 @@ fn s12_4_irelative_order_is_measured_then_judged() {
         let a64 = o.arch == Arch::A64;
         let (patch, wrong): (Box<dyn Fn(&mut [u8])>, bool) = match o.link.linker {
             Linker::Bfd => (Box::new(ranges_swapped), true),
-            _ => (Box::new(move |b: &mut [u8]| irelative_first(b, if a64 { 1032 } else { 37 })), a64),
+            _ => {
+                (Box::new(move |b: &mut [u8]| irelative_first(b, if a64 { 1032 } else { 37 })), a64)
+            }
         };
         let mut b = o.link.output_bytes();
         patch(&mut b);
@@ -431,7 +438,9 @@ fn s12_4_static_pie_mutants_are_caught() {
     let Some(c) = corpus() else { return };
     let cfg = Config { per_class: 8, threads: 4, ..Config::default() };
     let mut total = Outcome::default();
-    for o in c.outs.iter().filter(|o| matches!(o.case, "hello" | "ifunc") && !o.label().contains(".now")) {
+    for o in
+        c.outs.iter().filter(|o| matches!(o.case, "hello" | "ifunc") && !o.label().contains(".now"))
+    {
         let map = o.link.parse_map();
         let files = o.link.inputs(&map);
         let inputs: Vec<Input<'_>> =
@@ -444,7 +453,9 @@ fn s12_4_static_pie_mutants_are_caught() {
     }
     let table = total.render();
     println!("{table}");
-    for class in ["spie-irel-twice", "spie-interp", "spie-needed", "spie-dynamic-word", "spie-rel-extra"] {
+    for class in
+        ["spie-irel-twice", "spie-interp", "spie-needed", "spie-dynamic-word", "spie-rel-extra"]
+    {
         let r = total.classes.iter().find(|r| r.class == class).unwrap();
         assert!(r.applied > 0 && r.missed.is_empty(), "{class}\n{table}");
     }

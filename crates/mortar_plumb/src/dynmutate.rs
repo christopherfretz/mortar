@@ -333,7 +333,7 @@ pub fn candidates(image: &Image<'_>) -> Vec<Cand> {
 }
 
 /// The static-pie classes (`spec/plumb.md` §12.4, WP-089).
-#[allow(clippy::too_many_lines)] // one block per class
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one block per class
 fn spie_classes(image: &Image<'_>, out: &DynOut, c: &mut Vec<Cand>) {
     use crate::dynout::{DT_DEBUG, DT_RELACOUNT};
     let b = image.data;
@@ -360,9 +360,7 @@ fn spie_classes(image: &Image<'_>, out: &DynOut, c: &mut Vec<Cand>) {
         let n = (s.shdr.sh_size / 24) as usize;
         // At most 32 records, evenly spaced: each mutant moves the table.
         let rel: Vec<usize> = (0..n)
-            .filter(|&i| {
-                kind(m, recs[&(s.shdr.sh_addr + 24 * i as u64)].ty) == Kind::Relative
-            })
+            .filter(|&i| kind(m, recs[&(s.shdr.sh_addr + 24 * i as u64)].ty) == Kind::Relative)
             .collect();
         let step = rel.len().div_ceil(32).max(1);
         for &i in rel.iter().step_by(step) {

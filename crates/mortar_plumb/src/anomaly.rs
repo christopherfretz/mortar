@@ -109,6 +109,7 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
 /// The anomalies of dynamic outputs (stage 3, `spec/plumb.md` §10.2,
 /// A20-A32): the wrong outputs of `spec/dyn.md` §13.2 a test records
 /// for a reference, and two found by WP-050's judging of WP-051's cases.
+#[allow(clippy::too_many_lines)] // one block per anomaly
 fn dynamic(linker: Format, output: &[u8], f: &Finding) -> Option<&'static str> {
     let (bfd, lld, mold) = (linker == Format::Gnu, linker == Format::Lld, linker == Format::Mold);
     let d = |n| f.rule == Rule::Dyn(n);
