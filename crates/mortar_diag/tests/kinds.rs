@@ -267,6 +267,14 @@ fn static_link_of_shared_object() {
     assert_eq!(text(kind), "ld: error: attempted static link of dynamic object libc.so.6\n");
 }
 
+// spec: diag.md §3.1 `written-file-clash`; cli.md §3.14
+#[test]
+fn written_file_clash() {
+    let kind = Kind::WrittenFileClash { written: s("-Map=a.o"), what: s("the input a.o") };
+    assert_eq!(kind.id(), "written-file-clash");
+    assert_eq!(text(kind), "ld: error: -Map=a.o names the input a.o; nothing is written to it\n");
+}
+
 // spec: diag.md §3.2 (`{reason}` is the system's message, without Rust's
 // ` (os error N)`)
 #[test]

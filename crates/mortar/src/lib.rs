@@ -22,6 +22,7 @@ mod proof;
 mod sites;
 pub mod syms;
 pub mod timing;
+pub mod written;
 
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
@@ -260,9 +261,22 @@ fn invoke_with(
     let mut incremental_lines = String::new();
     let mut stdout = String::new();
     let removed = front.as_ref().map_or_else(String::new, |f| removed_lines(prog, f));
-    // spec/incr.md IN-17: the state and the report are no input.
+    // cli.md §3.14: no file the link writes is a file it read or another
+    // file it writes, decided before anything is written.
+    let reads = written::Reads::new(&parsed, cwd, store.inodes());
     if let Some(f) = &front
-        && session.as_ref().is_none_or(|s| s.clear_of(&store, &diagnostics))
+        && written::clear(
+            &written::registry(
+                &parsed,
+                cwd,
+                &out_path,
+                &session.as_ref().map(incremental::Session::written).unwrap_or_default(),
+            ),
+            &reads,
+            &f.inputs.link.opened,
+            cwd,
+            &diagnostics,
+        )
     {
         let linked = link_image(f, &store, &out_path, &diagnostics, &mut timer);
         if let Some((maps, written)) = linked {
@@ -294,7 +308,7 @@ fn invoke_with(
     if diagnostics.has_errors() {
         // I-66: a link that fails after the command line leaves no output
         // (GNU ld's choice; never an input, never a non-regular file).
-        mortar_image::output::remove_stale_output(&out_path, &store.inodes());
+        mortar_image::output::remove_stale_output(&out_path, &reads.identities());
         return Invocation {
             removed,
             incremental: incremental_lines,
