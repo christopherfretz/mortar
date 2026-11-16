@@ -1009,6 +1009,77 @@ impl SymtabPlan {
         Ok((shndx, addr))
     }
 
+    /// WP-094 (b) prototype: the entries and string bytes a change of
+    /// `file` can change, as `(entry ranges, .strtab byte ranges)`: its
+    /// block (its kept locals and demoted globals, S-88) and its strings,
+    /// and the entry and name of each kept global in `defined` (the keys
+    /// `file` defines, by `SymbolId`). A global's place is found from its
+    /// block's checkpoint, at most [`CHECKPOINT`] keys walked.
+    ///
+    /// # Errors
+    ///
+    /// The walk's (a row without a place).
+    pub fn file_entries(
+        &self,
+        cx: &SymCtx<'_>,
+        file: FileId,
+        defined: &[SymbolId],
+    ) -> Result<(Vec<Range<u32>>, Vec<Range<u64>>), SynthError> {
+        let mut entries = Vec::new();
+        let mut strings = Vec::new();
+        let str_end = |i: usize| self.segs.get(i + 1).map_or(self.strtab, |n| n.str_off);
+        for (i, seg) in self.segs.iter().enumerate() {
+            if matches!(seg.seg, Seg::Locals(f) | Seg::Demoted(f) if f == file) {
+                entries.push(seg.entry..seg.entry + seg.len);
+                strings.push(seg.str_off..str_end(i));
+            }
+        }
+        let Some(gseg) = self.segs.iter().position(|s| s.seg == Seg::Globals) else {
+            return Ok((entries, strings));
+        };
+        let mut ids = defined.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            let c = self.checks.partition_point(|c| {
+                (c.seg as usize) < gseg || (c.seg as usize == gseg && c.cursor <= id.0)
+            });
+            let Some(c) = c.checked_sub(1).map(|c| self.checks[c]).filter(|c| c.seg as usize == gseg)
+            else {
+                continue;
+            };
+            let mut w = Walk {
+                plan: self,
+                cx,
+                seg: gseg,
+                cursor: c.cursor,
+                entry: c.entry,
+                str_off: c.str_off,
+            };
+            loop {
+                let before = w.str_off;
+                let Some((entry, _, row)) = w.next()? else { break };
+                if w.seg != gseg || w.cursor > id.0 + 1 {
+                    break;
+                }
+                if w.cursor == id.0 + 1 {
+                    entries.push(entry..entry + 1);
+                    if fixed_name(&row.name).is_none() {
+                        strings.push(before..before + region_len(&row.name));
+                    }
+                    break;
+                }
+            }
+        }
+        Ok((entries, strings))
+    }
+
+    /// The bytes of one `.symtab` entry.
+    #[must_use]
+    pub fn entry_size(&self) -> u64 {
+        self.entsize()
+    }
+
     /// Fills the window's range of `.symtab` (S-73, S-81, S-82).
     pub fn write_symtab(
         &self,
