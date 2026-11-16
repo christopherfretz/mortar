@@ -9,8 +9,8 @@ use mortar_arch::seq::{field_window, in_section};
 use mortar_arch::{
     Base, Check, ClassOutcome, DeadRef, DemandClass, DemandFlags, DemandSink, EventClass, Field,
     FieldError, FillCx, GlobalFlags, Incompatible, Minus, OutputKind, Refusal, RelocAt, ScanCx,
-    ScanError, SectionOut, SlotKind, SymValue, TargetKind, Terms, class_outcome,
-    dead_reference, writes_dtprel,
+    ScanError, SectionOut, SlotKind, SymValue, TargetKind, Terms, class_outcome, dead_reference,
+    writes_dtprel,
 };
 use mortar_diag::RefusalClass;
 use mortar_elf::Class;
@@ -513,11 +513,7 @@ fn dtpoff(
     } else {
         false
     };
-    if code {
-        tls_off(cx, sym, a, |x, tls| TLS.tp_rel(x, tls))
-    } else {
-        cx.dtp_rel(sym, a)
-    }
+    if code { tls_off(cx, sym, a, |x, tls| TLS.tp_rel(x, tls)) } else { cx.dtp_rel(sym, a) }
 }
 
 /// The input word at the place, for an `InstructionMismatch` refusal.

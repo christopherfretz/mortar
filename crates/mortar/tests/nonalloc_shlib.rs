@@ -9,12 +9,13 @@
 //!   library's IFUNC) is not the symbol's address. The word is `0 + A`,
 //!   or `0 + A − P`. Before WP-113 mortar wrote the PLT stub.
 //! - `DTPOFF64`/`DTPOFF32` (x86-64) and `TLS_DTPREL64` (AArch64) against
-//!   a library's TLS variable write `DtpRel(0 + A)`: `0 + A` without a
-//!   `PT_TLS` (before: an internal error), `0 + A − start` with one; an
+//!   a library's TLS variable write `0 + A`, with or without a `PT_TLS`
+//!   (before: an internal error without one, `A − start` with one); an
 //!   absolute word against it is refused by name.
 //!
 //! The bytes are asserted directly, and against GNU ld 2.44's where it
-//! writes the ruling's words (AArch64 PIE words; x86-64 `DTPOFF*`). The
+//! writes the ruling's words (AArch64 PIE words; x86-64 `DTPOFF*` without
+//! a `PT_TLS`). The
 //! same shapes as link tests (L3-judged) wait for the verifier's rule
 //! (WP-104): `spec/landed/dyn/WP-113.md`.
 
@@ -273,8 +274,10 @@ const DTPREL_S: &str = ".type tvar,%tls_object\n.section .debug_mortar_dsoref,\"
 // spec: arch.md §4.3 "Non-alloc places", x64.md X-53, X-46 (WP-113):
 // `DTPOFF64`/`DTPOFF32` against libv.so's TLS variable, in a link with no
 // TLS of its own (mortar stopped with "internal error: no PT_TLS in the
-// tables"), write 0 + A; with a PT_TLS, `DtpRel(0 + A)` = A − its start.
-// GNU ld 2.44 (and mold 2.37) write these bytes in PIEs and non-PIEs.
+// tables"), write 0 + A, and so do they in a link with a PT_TLS (the
+// symbol is not in this module's block; the supervisor's ruling). GNU ld
+// 2.44 (and mold 2.37) write these bytes without a PT_TLS; with one they
+// write A − its start, a number that names nothing (lld writes 0).
 #[test]
 fn dtpoff_against_a_library_tls_variable() {
     let Some(cx) = Cx::new("nonalloc-dtpoff", &X86_64, &[("dtp", DTPOFF_S.to_owned())]) else {
@@ -287,19 +290,16 @@ fn dtpoff_against_a_library_tls_variable() {
             let out = cx.linked(false, mode, &objs, "tls");
             let start = out.tls_start();
             assert_eq!(start.is_some(), own, "{mode} PT_TLS");
-            let base = start.unwrap_or(0);
             let w = out.section(SECTION);
-            assert_eq!(q(w, 0), 0u64.wrapping_sub(base), "{mode} {own}");
-            assert_eq!(l(w, 8), 0u64.wrapping_sub(base) as u32, "{mode} {own}");
-            assert_eq!(q(w, 12), 8u64.wrapping_sub(base), "{mode} {own}");
-            assert_eq!(l(w, 20), 8u64.wrapping_sub(base) as u32, "{mode} {own}");
+            assert_eq!((q(w, 0), l(w, 8)), (0, 0), "{mode} {own}");
+            assert_eq!((q(w, 12), l(w, 20)), (8, 8), "{mode} {own}");
             let bfd = cx.linked(true, mode, &objs, "tls.bfd");
             let bfd_base = bfd.tls_start().unwrap_or(0);
             let b = bfd.section(SECTION);
             assert_eq!(
                 (q(b, 0).wrapping_add(bfd_base), q(b, 12).wrapping_add(bfd_base)),
                 (0, 8),
-                "GNU ld's DtpRel(0 + A) ({mode} {own})"
+                "GNU ld's DtpRel(0 + A), which mortar does not follow with a PT_TLS ({mode} {own})"
             );
             if !own {
                 assert_eq!(w, b, "GNU ld's bytes ({mode})");
@@ -310,8 +310,8 @@ fn dtpoff_against_a_library_tls_variable() {
 
 // spec: arch.md §4.3 "Non-alloc places", a64.md §13.2 (WP-113): the same
 // rule for AArch64's `TLS_DTPREL64`, written by hand (every reference
-// refuses it): 0 + A without a PT_TLS (mortar's internal error before),
-// A − start with one.
+// refuses it): 0 + A with or without a PT_TLS (mortar's internal error
+// before without one).
 #[test]
 fn dtprel64_against_a_library_tls_variable() {
     let Some(cx) = Cx::new("nonalloc-dtprel", &AARCH64, &[("dtp", DTPREL_S.to_owned())]) else {
@@ -319,10 +319,9 @@ fn dtprel64_against_a_library_tls_variable() {
     };
     for (own, objs) in [(false, &["pie.o", "dtp.o"][..]), (true, &["pie.o", "own.o", "dtp.o"])] {
         let out = cx.linked(false, "-pie", objs, "tls");
-        let base = out.tls_start().unwrap_or(0);
         assert_eq!(out.tls_start().is_some(), own);
         let w = out.section(SECTION);
-        assert_eq!((q(w, 0), q(w, 8)), (0u64.wrapping_sub(base), 8u64.wrapping_sub(base)));
+        assert_eq!((q(w, 0), q(w, 8)), (0, 8), "own {own}");
     }
 }
 
