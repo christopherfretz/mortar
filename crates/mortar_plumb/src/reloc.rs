@@ -553,6 +553,43 @@ impl<'a, 'b> Engine<'a, 'b> {
         })
     }
 
+    /// `synth.md` S-50 rule 1 under mortar's map (§4.4, "offset 0 of an
+    /// input `.eh_frame`"): the address offset 0 of section `sec` of
+    /// object `oi` has when it is an input `.eh_frame` the map does not
+    /// discard, the start of the output's allocated `.eh_frame`, whatever
+    /// the input section holds. `None` under a foreign map (GNU ld and lld
+    /// give a kept record's own place, §10.4), for any other section, or
+    /// when the output has no `.eh_frame`.
+    pub(crate) fn eh_frame_start(&self, oi: usize, sec: usize) -> Option<u64> {
+        if self.format != Format::Mortar {
+            return None;
+        }
+        let o = &self.objs[oi];
+        let s = o.secs.get(sec)?;
+        if !s.alloc()
+            || !s.is_eh_frame(o.elf.machine())
+            || matches!(s.place, Place::Discarded | Place::Ambiguous)
+        {
+            return None;
+        }
+        self.image.sections.iter().find(|x| x.name == ".eh_frame" && x.alloc()).map(|x| x.shdr.sh_addr)
+    }
+
+    /// S-50 rule 1 for a section symbol (§4.4): `st_value + A = 0` in an
+    /// input `.eh_frame` is the output `.eh_frame`'s start, with nothing
+    /// left to add.
+    fn eh_frame_section_start(&self, oi: usize, idx: u32, addend: i64) -> Option<Target> {
+        let table = self.objs[oi].symtab?;
+        let sym = table.get(SymbolIndex(idx)).ok()?;
+        if sym.sym_type() != STT_SECTION || sym.st_value.wrapping_add(addend as u64) != 0 {
+            return None;
+        }
+        let Ok(SymbolSection::Section(k)) = table.section_of(SymbolIndex(idx), &sym) else {
+            return None;
+        };
+        self.eh_frame_start(oi, k.0 as usize).map(Target::Addr)
+    }
+
     /// A branch whose target is a PLT entry whose word holds `s` after
     /// loading (stage 3).
     pub(crate) fn plt_hop(&self, t: u64, s: u64) -> bool {
@@ -692,6 +729,14 @@ impl<'a, 'b> Engine<'a, 'b> {
     fn in_section(&self, oi: usize, sec: usize, value: u64, section_sym: bool) -> Target {
         let o = &self.objs[oi];
         let Some(s) = o.secs.get(sec) else { return Target::Skip(Reason::SymbolUnresolved) };
+        // S-50 rule 1 for a named symbol at offset 0 (a section symbol's
+        // offset includes its addend: `resolve_at`).
+        if !section_sym
+            && value == 0
+            && let Some(a) = self.eh_frame_start(oi, sec)
+        {
+            return Target::Addr(a);
+        }
         match &s.place {
             Place::Whole(a) => Target::Addr(a.wrapping_add(value)),
             Place::Pieces(ps) => ps
@@ -730,6 +775,9 @@ impl<'a, 'b> Engine<'a, 'b> {
     /// to add. Any other symbol is resolved alone and keeps its addend
     /// (S-19: the addend of a named symbol does not choose the piece).
     fn resolve_at(&mut self, oi: usize, idx: u32, addend: i64) -> (Target, i64) {
+        if let Some(t) = self.eh_frame_section_start(oi, idx, addend) {
+            return (t, 0);
+        }
         if let Some(t) = self.section_piece(oi, idx, addend) {
             return (t, 0);
         }
