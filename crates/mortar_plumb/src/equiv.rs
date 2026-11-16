@@ -192,6 +192,9 @@ struct Unit {
     eh_len: BTreeMap<u64, u64>,
 }
 
+/// An address range with its identity: `(start, end, id, base)`.
+type Span = (u64, u64, String, u64);
+
 /// One side, read and verified.
 struct Side<'a> {
     tag: &'static str,
@@ -204,10 +207,12 @@ struct Side<'a> {
     /// absolute one with its value.
     defs: BTreeMap<String, Vec<(Option<UKey>, u64)>>,
     rewritten: BTreeSet<u64>,
-    /// `(start, end, id, base)` sorted by start, with the running maximum
-    /// of `end` (§6.9 identities).
-    spans: Vec<(u64, u64, String, u64)>,
-    pmax: Vec<u64>,
+    /// `(start, end, id, base)` (§6.9 identities) sorted by start.
+    spans: Vec<Span>,
+    /// The largest `end` of each node of a segment tree over `spans`
+    /// (node 1 the root; node `k`'s children `2k`, `2k + 1`; leaves from
+    /// `ends.len() / 2`).
+    ends: Vec<u64>,
     tls: Option<u64>,
     machine: Option<Machine>,
     /// The `.tbss` input sections, `(path, member, index)`: their TLS
@@ -237,17 +242,28 @@ impl<'a> Side<'a> {
 
     /// [`Side::ids`] with whether the span holds `v` before its end.
     fn ids_open(&self, v: u64) -> BTreeSet<(&str, u64, bool)> {
+        // WP-109: a descent of the segment tree into the nodes whose
+        // largest end reaches `v`, among the spans that start at or before
+        // it. A backward walk bounded by the running maximum of the ends
+        // was linear in the spans under a long one (thousands overlap on a
+        // `-g` link: non-allocated offsets, empty sections at one address),
+        // quadratic over the symbols and `.eh_frame_hdr`'s entries.
         let mut out = BTreeSet::new();
-        let mut i = self.spans.partition_point(|s| s.0 <= v);
-        while i > 0 {
-            i -= 1;
-            if self.pmax[i] < v {
-                break;
+        let n = self.spans.partition_point(|s| s.0 <= v);
+        let leaves = self.ends.len() / 2;
+        let mut stack = vec![(1usize, 0usize, leaves)];
+        while let Some((k, lo, hi)) = stack.pop() {
+            if lo >= n || self.ends[k] < v {
+                continue;
             }
-            let (a, z, id, base) = &self.spans[i];
-            if *a <= v && v <= *z {
+            if hi - lo == 1 {
+                let (a, z, id, base) = &self.spans[lo];
                 out.insert((id.as_str(), base + (v - a), v < *z));
+                continue;
             }
+            let mid = lo + (hi - lo) / 2;
+            stack.push((2 * k + 1, mid, hi));
+            stack.push((2 * k, lo, mid));
         }
         out
     }
@@ -417,7 +433,7 @@ fn run_side<'a>(
     let rewritten = std::mem::take(&mut engine.rewritten_words);
     let machine = objs.first().map(|o| o.elf.machine());
     drop(engine);
-    let mut spans: Vec<(u64, u64, String, u64)> = Vec::new();
+    let mut spans: Vec<Span> = Vec::new();
     for p in &map.placed {
         let id = format!("u:{}:{}", file_key(map, p.file), sec_key(&p.section));
         spans.push((p.addr, p.addr.saturating_add(p.size), id, p.input_offset.unwrap_or(0)));
@@ -448,11 +464,13 @@ fn run_side<'a>(
         }
     }
     spans.sort();
-    let mut pmax = Vec::with_capacity(spans.len());
-    let mut m = 0;
-    for s in &spans {
-        m = m.max(s.1);
-        pmax.push(m);
+    let leaves = spans.len().next_power_of_two();
+    let mut ends = vec![0u64; 2 * leaves];
+    for (i, s) in spans.iter().enumerate() {
+        ends[leaves + i] = s.1;
+    }
+    for k in (1..leaves).rev() {
+        ends[k] = ends[2 * k].max(ends[2 * k + 1]);
     }
     let tls = image.phdrs.iter().find(|p| p.p_type == PT_TLS).map(|p| p.p_vaddr);
     let tbss = units
@@ -470,7 +488,7 @@ fn run_side<'a>(
         defs,
         rewritten,
         spans,
-        pmax,
+        ends,
         tls,
         machine,
         tbss,

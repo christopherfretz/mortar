@@ -75,6 +75,14 @@ impl Range {
 #[derive(Debug, Default)]
 pub(crate) struct DeadSet {
     pub ranges: Vec<Range>,
+    /// The ranges [`DeadSet::in_memory`] looks at, `(start, end, index)`
+    /// sorted by start, with the running maximum of `end` (WP-109: the
+    /// scan of every range per address was quadratic in a map's holes).
+    memory: Vec<(u64, u64, usize)>,
+    memory_max: Vec<u64>,
+    /// The ranges of thread-local `NOBITS` allocated sections: `(start,
+    /// end)`.
+    tls: Vec<(u64, u64)>,
 }
 
 impl DeadSet {
@@ -88,14 +96,54 @@ impl DeadSet {
     /// The range of an allocated section, other than a thread-local
     /// `NOBITS` one (whose addresses are TLS offsets laid over the
     /// sections after it), that holds address `a`.
-    pub fn in_memory(&self, image: &Image<'_>, a: u64) -> Option<&Range> {
-        self.ranges.iter().find(|r| {
-            r.start <= a && a < r.end && {
+    /// The first such range in [`DeadSet::ranges`]' order.
+    pub fn in_memory(&self, _image: &Image<'_>, a: u64) -> Option<&Range> {
+        let mut i = self.memory.partition_point(|m| m.0 <= a);
+        let mut first: Option<usize> = None;
+        while i > 0 && self.memory_max[i - 1] > a {
+            i -= 1;
+            let (start, end, k) = self.memory[i];
+            if start <= a && a < end && first.is_none_or(|f| k < f) {
+                first = Some(k);
+            }
+        }
+        first.map(|k| &self.ranges[k])
+    }
+
+    /// Builds the index of [`DeadSet::in_memory`] and [`over`]: the
+    /// ranges of allocated sections other than thread-local `NOBITS` ones
+    /// (and those apart).
+    fn index(&mut self, image: &Image<'_>) {
+        self.tls = self
+            .ranges
+            .iter()
+            .filter(|r| {
+                let s = &image.sections[r.sec].shdr;
+                s.sh_flags & SHF_ALLOC != 0 && s.sh_flags & SHF_TLS != 0 && s.sh_type == SHT_NOBITS
+            })
+            .map(|r| (r.start, r.end))
+            .collect();
+        self.memory = self
+            .ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
                 let s = &image.sections[r.sec].shdr;
                 s.sh_flags & SHF_ALLOC != 0
                     && !(s.sh_flags & SHF_TLS != 0 && s.sh_type == SHT_NOBITS)
-            }
-        })
+            })
+            .map(|(k, r)| (r.start, r.end, k))
+            .collect();
+        self.memory.sort_unstable();
+        let mut m = 0;
+        self.memory_max = self
+            .memory
+            .iter()
+            .map(|r| {
+                m = m.max(r.1);
+                m
+            })
+            .collect();
     }
 }
 
@@ -276,6 +324,7 @@ pub(crate) fn resolve(image: &Image<'_>, lines: &[DeadRange], out: &mut Vec<Find
         keep.push(r);
     }
     set.ranges = keep;
+    set.index(image);
     set
 }
 
@@ -1091,7 +1140,6 @@ fn dynsym(image: &Image<'_>) -> Vec<(String, u16, u8, u64)> {
 /// whatever the addend) is placed inside a dead range. Coverage (P-I1)
 /// already reports the placement; this names the referrers.
 fn named_by_relocations(e: &Engine<'_, '_>, set: &DeadSet, out: &mut Vec<Finding>) {
-    let image = e.image;
     // The live input sections placed over a dead range.
     let mut bad: BTreeSet<(usize, usize)> = BTreeSet::new();
     for (oi, o) in e.objs.iter().enumerate() {
@@ -1100,8 +1148,8 @@ fn named_by_relocations(e: &Engine<'_, '_>, set: &DeadSet, out: &mut Vec<Finding
                 continue;
             }
             let hit = match &s.place {
-                Place::Whole(a) => over(image, set, *a, s.shdr.sh_size, s.tbss()),
-                Place::Pieces(ps) => ps.iter().any(|p| over(image, set, p.addr, p.size, s.tbss())),
+                Place::Whole(a) => over(set, *a, s.shdr.sh_size, s.tbss()),
+                Place::Pieces(ps) => ps.iter().any(|p| over(set, p.addr, p.size, s.tbss())),
                 _ => false,
             };
             if hit {
@@ -1193,18 +1241,18 @@ fn relocated_places(e: &Engine<'_, '_>) -> BTreeSet<u64> {
 }
 
 /// Whether `[a, +len)` of a section's address space meets a dead range.
-fn over(image: &Image<'_>, set: &DeadSet, a: u64, len: u64, tbss: bool) -> bool {
-    set.ranges.iter().any(|r| {
-        let s = &image.sections[r.sec].shdr;
-        let tls_nobits = s.sh_flags & SHF_TLS != 0 && s.sh_type == SHT_NOBITS;
-        s.sh_flags & SHF_ALLOC != 0
-            && tls_nobits == tbss
-            && a < r.end
-            // An empty item (an input section or piece of size 0) covers
-            // no byte: it is in a range only strictly inside it; at the
-            // range's start or end it names the boundary (§6.8 P-I3, N3).
-            && if len == 0 { r.start < a } else { r.start < a.saturating_add(len) }
-    })
+fn over(set: &DeadSet, a: u64, len: u64, tbss: bool) -> bool {
+    // An empty item (an input section or piece of size 0) covers no byte:
+    // it is in a range only strictly inside it; at the range's start or
+    // end it names the boundary (§6.8 P-I3, N3).
+    let below = if len == 0 { a } else { a.saturating_add(len) };
+    if tbss {
+        return set.tls.iter().any(|&(start, end)| a < end && start < below);
+    }
+    // WP-109: of the ranges starting below `below`, one ends after `a`
+    // (a scan of every range per input section was quadratic).
+    let n = set.memory.partition_point(|m| m.0 < below);
+    n > 0 && set.memory_max[n - 1] > a
 }
 
 /// IN-3a check 1 for the synthetic and dynamic tables (P-I3): the GOT's
