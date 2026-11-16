@@ -88,45 +88,6 @@ fn ie_relaxed(at: &RelocAt<'_>, output: OutputKind, kind: TargetKind, alloc: boo
     forms::form(GOTTPOFF, at.site).filter(|f| matches!(f, Form::I1 { .. } | Form::I2 { .. }))
 }
 
-/// X-19, X-20 as scan decides them: the record relaxes unless its new
-/// field does not fit, which only layout knows. Its key then demands no
-/// GOT slot for it (X-21). The conditions are input facts: an allocated
-/// place, a `local` target outside large data (`SymFacts::large`, X-52),
-/// `A = −4`, and the bytes of G1–G4, or of G5/G6 in a non-PIE output.
-fn got_relaxable(output: OutputKind, at: &RelocAt<'_>, kind: TargetKind, large: bool) -> bool {
-    if !matches!(at.r_type, GOTPCRELX | REX_GOTPCRELX)
-        || kind != TargetKind::Local
-        || large
-        || at.rela_addend() != -4
-    {
-        return false;
-    }
-    match forms::form(at.r_type, at.site) {
-        Some(Form::G1 { .. } | Form::G2 | Form::G3 | Form::G4) => true,
-        Some(Form::G5 { .. } | Form::G6 { .. }) => {
-            matches!(output, OutputKind::Static | OutputKind::Exec)
-        }
-        _ => false,
-    }
-}
-
-/// X-19: a record scan decided relaxes ([`got_relaxable`]) and whose new
-/// field does not fit has no GOT slot to fall back on: the new field is
-/// `relocation-out-of-range` (GNU ld refuses the same link, "failed to
-/// convert GOTPCREL relocation").
-#[allow(clippy::cast_lossless)] // the spec's S, A, P in i128
-fn relaxed_range(at: &RelocAt<'_>, addr: u64, sym: SymValue) -> FieldError {
-    let p = i128::from(addr.wrapping_add(at.r_offset));
-    let pc = i128::from(sym.s) + i128::from(at.rela_addend()) - p;
-    let (value, check) = match forms::form(at.r_type, at.site) {
-        Some(Form::G5 { .. } | Form::G6 { .. }) => (i128::from(sym.s), Check::Unsigned(31)),
-        Some(Form::G4) => (pc + 1, Check::Signed(32)),
-        _ => (pc, Check::Signed(32)),
-    };
-    let (min, max) = check.bounds().unwrap_or((0, 0));
-    FieldError::Range(mortar_arch::Range { value, min, max })
-}
-
 /// T1 (with `A = −4`) or T2 (X-28).
 fn desc_form(at: &RelocAt<'_>) -> Option<Form> {
     match forms::form(at.r_type, at.site)? {
@@ -212,11 +173,6 @@ pub fn scan(m2: bool, cx: &ScanCx<'_>, at: &RelocAt<'_>, out: &mut DemandSink<'_
         return;
     }
     let kind = effective(sym.kind, h.class);
-    // X-19, X-20: a record that relaxes demands no GOT slot (kind 1 for
-    // the demand; the fit is checked at apply, `relaxed_range`).
-    if cx.place.alloc && got_relaxable(cx.output, at, kind, sym.large) {
-        return;
-    }
     let data = matches!(h.field, Field::Data { .. });
     let mut outcome = class_outcome(h.class, data, cx.output, kind, cx.place, sym.tls);
     if m2 && cx.place.alloc {
@@ -413,19 +369,12 @@ pub fn apply(
                 return ie(cx, at, out, sym, f);
             }
         }
-        // X-32: in a non-alloc section, applied as its §6.1 row.
-        GOTPCRELX | REX_GOTPCRELX if out.alloc => {
-            if let Some((off, bytes, n)) = got_relaxed(cx.output, at, out.addr, sym) {
-                return put(at, out, off, &bytes[..n]);
-            }
-            // Not relaxed: the GOT load, when scan kept the slot (another
-            // use of the key, or a record that does not relax); else the
-            // relaxed field did not fit.
-            if let Base::G(k) = h.value.base
-                && sym.kind == TargetKind::Local
-                && cx.tables.slot(at.key, k).is_none()
+        GOTPCRELX | REX_GOTPCRELX => {
+            // X-32: in a non-alloc section, applied as its §6.1 row.
+            if out.alloc
+                && let Some((off, bytes, n)) = got_relaxed(cx.output, at, out.addr, sym)
             {
-                return Err(relaxed_range(at, out.addr, sym));
+                return put(at, out, off, &bytes[..n]);
             }
         }
         _ => {}
@@ -681,10 +630,8 @@ fn ie(
     put(at, out, back(at, 3)?, &[rex_prime(rex), op, 0xc0 | reg, t[0], t[1], t[2], t[3]])
 }
 
-/// G1 to G6 (X-19, X-20): the bytes to write and where, when the form
-/// matches and its condition holds; `None` keeps the GOT load. Scan's
-/// [`got_relaxable`] is this without the fit (and without large data,
-/// which is relaxed here when it fits, its slot being kept).
+/// G1 to G6 (X-19, X-20; kind 2): the bytes to write and where, when the
+/// form matches and its condition holds; `None` keeps the GOT load.
 #[allow(clippy::many_single_char_names)]
 fn got_relaxed(
     output: OutputKind,

@@ -148,13 +148,6 @@ pub struct SymFacts {
     /// A live file has a `.gnu.warning.<name>` section for the key
     /// (`spec/resolve.md` §10).
     pub gnu_warning: bool,
-    /// x86-64: the definition is in an `SHF_X86_64_LARGE` input section
-    /// or is a large common (`SHN_X86_64_LCOMMON`, `spec/resolve.md`
-    /// §3.3). Layout puts large data after every small section, where it
-    /// may lie beyond ±2 GiB of the code (`spec/x64.md` X-52), so scan
-    /// does not decide a GOT relaxation against it (X-19). Always `false`
-    /// on another machine.
-    pub large: bool,
 }
 
 /// The tables scan reads (§3.4: `Inputs`, `Resolution`, `Liveness`),

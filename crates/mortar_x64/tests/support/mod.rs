@@ -40,7 +40,6 @@ impl Tables {
                 dead: false,
                 comdat_only: false,
                 gnu_warning: false,
-                large: false,
             },
         );
         self

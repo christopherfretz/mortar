@@ -852,7 +852,6 @@ impl ScanTables for CheckTables<'_> {
                 dead: false,
                 comdat_only: false,
                 gnu_warning: false,
-                large: false,
             }
         })
     }
